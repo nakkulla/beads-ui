@@ -2944,13 +2944,6 @@ html[data-theme='dark'] {
   font-weight: 700;
 }
 
-/* 자동 진행이 꺼졌는데 세션이 뜨는 이유 (UI-jaua §5.6). 경고가 아니라 설명이므로
-   danger를 쓰지 않는다 — 사용자가 켠 적 없는 축이 도는 것은 정상 동작이다. */
-.worker-kpi__chip--armed {
-  border-color: var(--border-warn);
-  color: var(--accent-warn);
-}
-
 /* KPI 숫자는 그 레인의 생애 단계 색을 쓴다 — 칩과 레인 스파인이 같은 색을 말해야
    툴바에서 읽은 수가 어느 레인의 수인지 다시 찾을 필요가 없다. */
 .worker-kpi__chip--running b {
@@ -5719,15 +5712,12 @@ html[data-theme='dark'] {
 }
 
 /* 중첩 한 단계 = 토큰 한 단계 아래 (§4.5): 바깥 다섯 pane은 panel 토큰, 대기
-   본문 안의 직렬 pane과 연결 레인 pane은 card 토큰이다. 폭 하한도 여기서
+   본문 안의 직렬 pane은 card 토큰이다. 폭 하한도 여기서
    풀린다 — 220px은 최상위 레인만의 것이고, 중첩 pane이 물려받으면 바깥 대기
    pane 밖으로 삐져나온다.
 
-   Monitor 연결 레인(`.mon2-clane`)은 `.worker-pane`이 아니라 div이지만 같은
-   중첩 단계에 서므로 같은 토큰을 여기서 받는다 — 자기 테두리·모서리를 따로
-   선언하면 두 중첩 pane이 다른 톤으로 갈라진다 (UI-5ksp §4.5). */
-.worker-wait .worker-pane,
-.worker-wait .mon2-clane {
+   중첩 pane이 물려받으면 바깥 대기 pane 밖으로 삐져나온다. */
+.worker-wait .worker-pane {
   min-width: 0;
   border: 1px solid var(--border-card);
   border-radius: var(--r-6);
@@ -7083,7 +7073,6 @@ html[data-theme='dark'] {
    흐려도 보여야 한다. 타일은 제어 표면이라 덜 흐리게 둔다. */
 .mon.has-focus .mon2-sec:not(.is-focus),
 .mon.has-focus .mon2-item:not(.is-focus),
-.mon.has-focus .mon2-crow:not(.is-focus),
 .mon.has-focus .rtile:not(.is-focus),
 .mon.has-focus .worker-mini:not(.is-focus) {
   opacity: 0.38;
@@ -7121,8 +7110,7 @@ html[data-theme='dark'] {
 }
 
 .mon2-sec__toggle,
-.mon2-sec__worker,
-.mon2-newlane {
+.mon2-sec__worker {
   border: none;
   background: transparent;
   color: var(--text-muted);
@@ -7131,8 +7119,7 @@ html[data-theme='dark'] {
 }
 
 .mon2-sec__toggle:hover,
-.mon2-sec__worker:hover,
-.mon2-newlane:hover:not(:disabled) {
+.mon2-sec__worker:hover {
   color: var(--text-primary);
 }
 
@@ -7188,91 +7175,6 @@ html[data-theme='dark'] {
   font-size: var(--fs-caption);
 }
 
-/* `+ 연결 레인`은 빈 레인이 이미 있으면 잠긴다 — 빈 레인은 하나면 족하다.
-   자리는 공유 대기 본문 직렬 영역 헤더의 `header_control` 슬롯이다. */
-.mon2-newlane {
-  margin-left: auto;
-  padding: 0 var(--sp-5);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-}
-
-.mon2-newlane:disabled {
-  color: var(--text-dim);
-  cursor: default;
-}
-
-/* 연결 레인 (§4.2): blocks 의존이 만든 레포 간 순서. 레포 직렬 레인과 같은
-   pane 톤을 쓰되 이름으로 구분한다 — 테두리·모서리·배경은 공유 중첩 규칙
-   (`.worker-wait .mon2-clane`)이 준다. */
-.mon2-clane {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  padding: var(--sp-5) var(--sp-6);
-}
-
-.mon2-clane__hd {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-5);
-  font-size: var(--fs-chip);
-}
-
-.mon2-clane__name {
-  color: var(--text-secondary);
-}
-
-.mon2-clane__count {
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-}
-
-.mon2-clane__body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-}
-
-.mon2-clane__hint {
-  padding: var(--sp-2) var(--sp-4);
-  color: var(--text-dim);
-  font-size: var(--fs-caption);
-}
-
-.mon2-crow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-4);
-  padding: var(--sp-2) var(--sp-4);
-  color: var(--text-secondary);
-  font-size: var(--fs-chip);
-  cursor: pointer;
-}
-
-.mon2-crow:hover {
-  color: var(--text-primary);
-}
-
-.mon2-crow__seq {
-  flex: 0 0 auto;
-  color: var(--text-dim);
-}
-
-.mon2-crow__title {
-  flex: 1 1 12ch;
-  overflow: hidden;
-  min-width: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mon2-crow__where {
-  flex: 0 0 auto;
-  color: var(--text-dim);
-}
-
 /* 드롭 대상 표시 (§5.4): 대상은 영역/레인이지 카드가 아니므로 테두리가 아니라
    윤곽선으로 말한다 — 카드 테두리는 이미 다른 사실을 싣고 있다. */
 [data-drop].is-drop-over {
@@ -7316,139 +7218,6 @@ html[data-theme='dark'] {
   .worker-mini__rowops-down {
     display: inline-flex;
   }
-}
-
-/* 연결 레인 행의 `✕`는 화면 폭과 무관한 상시 조작이라 대기 행 조작 묶음과 같은
-   칩 톤만 나눠 쓴다. 같은 규칙을 쓰던 후보 카드의 ⛓은 UI-lx45에서 사라졌다. */
-.mon2-crow__detach {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-3);
-  min-width: 28px;
-  padding: var(--sp-2) var(--sp-4);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  cursor: pointer;
-}
-
-/* 연결 레인 헤더의 상태 배지와 조작 (UI-j92s §5.1). 배지는 레인의 생애를,
-   버튼은 그 생애를 옮기는 유일한 경로를 말한다. */
-.mon2-clane__badge {
-  flex: 0 0 auto;
-  padding: 0 var(--sp-4);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  color: var(--text-muted);
-  font-size: var(--fs-caption);
-}
-
-.mon2-clane__badge--confirmed {
-  border-color: var(--stage-plan-dim);
-  color: var(--stage-plan-on);
-}
-
-.mon2-clane__badge--done,
-.mon2-clane__badge--all_done {
-  border-color: var(--border-chip);
-  color: var(--text-dim);
-}
-
-/* 발차 축의 세 상태 (UI-jaua §5.5). 배타 우선순위로 하나만 그려지므로 색도
-   서로 겹치지 않는다: 실패는 danger, 재시작은 warn, 진행 중은 merge 계열이다. */
-.mon2-clane__badge--running {
-  border-color: var(--stage-merge-dim);
-  color: var(--accent-success);
-}
-
-.mon2-clane__badge--failed {
-  border-color: var(--border-danger);
-  color: var(--accent-danger);
-}
-
-.mon2-clane__badge--restart {
-  border-color: var(--border-warn);
-  color: var(--accent-warn);
-}
-
-.mon2-clane__confirm,
-.mon2-clane__reapply,
-.mon2-clane__run,
-.mon2-clane__stop,
-.mon2-clane__remove {
-  flex: 0 0 auto;
-  padding: 0 var(--sp-5);
-  border: 1px solid var(--stage-plan-dim);
-  border-radius: var(--r-5);
-  background: transparent;
-  color: var(--stage-plan-on);
-  font: inherit;
-  font-size: var(--fs-caption);
-  cursor: pointer;
-}
-
-.mon2-clane__remove {
-  margin-left: auto;
-  border-color: var(--border-chip);
-  color: var(--text-muted);
-}
-
-/* 정지는 되돌릴 수 있는 조작이지만 진행과 같은 강조를 쓰지 않는다 — 나란히 선
-   두 버튼이 같은 색이면 어느 쪽이 지금 상태를 바꾸는지 읽히지 않는다. */
-.mon2-clane__stop {
-  border-color: var(--border-warn);
-  color: var(--accent-warn);
-}
-
-.mon2-clane__confirm:disabled,
-.mon2-clane__reapply:disabled,
-.mon2-clane__run:disabled,
-.mon2-clane__stop:disabled,
-.mon2-clane__remove:disabled {
-  border-color: var(--border-chip);
-  color: var(--text-dim);
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-/* 저장소를 읽지 못한 구간 (§7): 레인을 그리지 않는 이유를 한 줄로 말한다 —
-   빈 목록은 "레인이 없다"는 거짓말이 된다. */
-.mon2-clane__unreadable {
-  padding: var(--sp-3) var(--sp-5);
-  border: 1px dashed var(--border-warn);
-  border-radius: var(--r-6);
-  color: var(--accent-warn);
-  font-size: var(--fs-caption);
-}
-
-/* 자동 교정의 결과 표시 (UI-jaua §6.3): 카드가 사용자가 놓은 자리와 다른 곳에
-   앉은 이유, 그리고 교정이 돌 수 없는 두 이유를 헤더가 말한다. */
-.mon2-clane__corrected {
-  flex: 0 0 auto;
-  color: var(--chip-route);
-  font-size: var(--fs-caption);
-}
-
-.mon2-clane__cycle,
-.mon2-clane__hold {
-  flex: 0 0 auto;
-  color: var(--accent-warn);
-  font-size: var(--fs-caption);
-}
-
-/* 레인 순서가 주장하는 선행이 bd 의존에 없다 (§5.2). */
-.mon2-crow__mismatch {
-  flex: 0 0 auto;
-  color: var(--accent-warn);
-  font-size: var(--fs-caption);
-}
-
-/* 실행중·PR 대기·완료 멤버는 고정 행이다 (§5.3): 끌 수 없고 그 앞에 넣을 수도
-   없다는 사실을 손잡이 대신 색으로만 말한다. */
-.mon2-crow--fixed {
-  color: var(--text-dim);
 }
 
 /* 의존 칩 (§5.1): 두 방향을 색이 아니라 **이름**으로 가르되, 색도 서로 다르게
@@ -7524,26 +7293,6 @@ html[data-theme='dark'] {
   color: var(--chip-blocked-foreign);
 }
 
-/* 고아 발차 칩 안의 해제 버튼만 남은 내부 버튼 자리다. */
-.worker-dep__label {
-  border: none;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  padding: 0;
-  cursor: pointer;
-}
-
-/* 소속 칩 (§5.2a): 숨기지 않는 저장 레인 멤버가 자기 레인을 가리킨다. 자리는
-   좌표 줄이다 (UI-8x90 §4.1). */
-.worker-dep--lane {
-  border-color: var(--border-route);
-  color: var(--chip-route);
-  font: inherit;
-  font-size: var(--fs-caption);
-  cursor: pointer;
-}
-
 /* scope 겹침 칩 (UI-qm12 §5.3): 🔒/🔗는 blocks 의존 전용이므로 재사용하지 않고
    겹침은 호박색 `⧉`로 따로 말한다. 치수는 기존 `worker-dep` 그대로다 — 같은
    줄에 서는 칩이 서로 다른 높이를 가지면 줄이 흔들린다. */
@@ -7555,31 +7304,6 @@ html[data-theme='dark'] {
 
 .worker-dep--overlap:hover {
   background: color-mix(in srgb, var(--accent-warn) 24%, transparent);
-}
-
-/* 발차 칩 (UI-jaua §5.6): 소속 칩(`--lane`)과 다른 질문에 답하므로 색도 다르다 —
-   "이 레인 것이다"가 아니라 "지금 이 레인이 이것을 굴리고 있다"이다. 고아 arm은
-   그 사실이 위험이므로 warn으로 서고 해제 버튼을 안에 둔다 (§5.3 (2)). */
-.worker-dep--armed {
-  border-color: var(--stage-merge-dim);
-  color: var(--accent-success);
-}
-
-.worker-dep--armed-orphan {
-  border-color: var(--border-warn);
-  background: color-mix(in srgb, var(--accent-warn) 14%, transparent);
-  color: var(--accent-warn);
-}
-
-.mon2-arm__release {
-  padding: 0 var(--sp-4);
-  border: 1px solid var(--border-warn);
-  border-radius: var(--r-5);
-  background: transparent;
-  color: var(--accent-warn);
-  font: inherit;
-  font-size: var(--fs-caption);
-  cursor: pointer;
 }
 
 /* 게이트 칩 (UI-01wh §3.2). 두 변형만 색을 갈라 든다: 체계적 정지는 사람의

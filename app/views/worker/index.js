@@ -1883,19 +1883,12 @@ export function createWorkerView(mount_element, options = {}) {
   /** @type {Array<Record<string, any>>} */
   let last_workspaces = [];
 
-  /**
-   * 드롭 식별자·계획 실행 컨트롤러 (UI-4tud §4.5). Monitor 탭과 **같은** 모듈이고,
-   * Worker는 연결 레인이 없으므로 `cross_lanes`를 넘기지 않는다 — chain 맵이 비어
-   * 계획기가 chain 타깃을 스스로 거부한다(코드 분기가 아니라 데이터).
-   */
+  /** 드롭 식별자·계획 실행 컨트롤러 (UI-4tud §4.5). */
   const lane_drag = createLaneDrag({
     transport,
     console_el,
     getLanes: () => current_lanes,
     getWorkspaces: () => last_workspaces,
-    getCrossLanes: () => null,
-    reproject: () => ({ lanes: laneModel(), raw_lanes: null }),
-    onCorrection: () => {},
     showToast,
     requestRender: () => doRender(),
     adoptQueue: (_root_dir, queue) => {
@@ -2878,8 +2871,6 @@ export function createWorkerView(mount_element, options = {}) {
    * 후보 순서는 어댑터의 정렬 체인과 그 뒤의 의존 인접화 패스가 이미 정했으므로
    * (UI-q1y7 §4.2) `as_given`이다. 대기·직렬·후보가 모두 비어도 그룹은 남아야
    * 하므로 (`slots`·머지 큐·저장소 작업이 그 안에 산다) `groups: 'all'`이다.
-   * `cross_lanes` 키는 넘기지 않는다 — 연결 레인은 모니터 탭의 사실이고, 키의
-   * 부재가 "모른다"(구서버와 같은 자리)다.
    *
    * @returns {LaneModel}
    */
@@ -2919,10 +2910,6 @@ export function createWorkerView(mount_element, options = {}) {
    * One row's 의존·겹침 칩 (UI-anna §5.3, UI-e9sg). 투영이 이미 만든
    * `dependency_chips`에 겹침 파생(`overlap_chips`·`scope_state`)을 얹는다.
    * 재료가 하나도 없으면 `null`이다.
-   *
-   * 발차 칩(`armed_lane_chip`)은 얹지 않는다: 워커 탭은 한 레포의 화면이라 연결
-   * 레인 번호를 해석할 수 없고, "연결 레인이 발차했다"는 사실은 툴바의
-   * `⏸ 자동 진행 꺼짐 · 연결 레인 n건` 힌트가 이미 소유한다.
    *
    * @param {LaneItem} row
    * @returns {import('./lanes.js').DependencyChips|null}
@@ -3558,25 +3545,6 @@ export function createWorkerView(mount_element, options = {}) {
           >cap 초과</span
         >`
       : '';
-    // 자동 진행이 꺼졌는데 세션이 뜨는 이유를 화면이 말한다 (UI-jaua §5.6):
-    // 연결 레인이 병렬 대기 행을 발차하면 전역 토글과 무관하게 그 항목만 나간다.
-    // 켜져 있을 때는 후보 집합이 현행과 같으므로 할 말이 없다 (fail-quiet).
-    const armed_count = q.auto_advance
-      ? 0
-      : (Array.isArray(q.queue) ? q.queue : []).filter(
-          (/** @type {any} */ entry) =>
-            entry &&
-            typeof entry.armed_by_lane === 'string' &&
-            entry.armed_by_lane.length > 0
-        ).length;
-    const armed_hint =
-      armed_count > 0
-        ? html`<span
-            class="worker-kpi__chip worker-kpi__chip--armed"
-            title="모니터 연결 레인이 발차한 대기 행입니다 — 이 레포의 자동 진행은 꺼진 채입니다"
-            >⏸ 자동 진행 꺼짐 · 연결 레인 ${armed_count}건 진행 중</span
-          >`
-        : '';
     // 세 카운트는 데스크톱 KPI 줄과 모바일 리본이 함께 쓴다 — 같은 수를 두 번
     // 정의하지 않기 위해 템플릿 하나로 둔다.
     const counts = html`<span class="worker-kpi__chip worker-kpi__chip--running"
@@ -3648,9 +3616,7 @@ export function createWorkerView(mount_element, options = {}) {
       // 화면이 줄어든다.
       return html`<div class="worker-ribbon">
           ${play} ${merge_all}
-          <div class="worker-kpi worker-kpi--ribbon">
-            ${overcap}${armed_hint}${counts}
-          </div>
+          <div class="worker-kpi worker-kpi--ribbon">${overcap}${counts}</div>
         </div>
         <div class="worker-ctrl worker-ctrl--mobile">
           <div class="worker-ctrl__ops">${settings}${search}</div>
@@ -3664,7 +3630,7 @@ export function createWorkerView(mount_element, options = {}) {
           ${play}${merge_all}${settings}${search}
         </div>
         <div class="worker-kpi">
-          ${overcap}${armed_hint}${counts}${base_chip}
+          ${overcap}${counts}${base_chip}
           ${(Array.isArray(group.token_total)
             ? group.token_total
             : group.token_total

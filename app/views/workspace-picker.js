@@ -55,7 +55,10 @@ export function createWorkspacePicker(
     const s = store.getState();
     const current_path = s.workspace?.current?.path || '';
 
-    if (new_path && new_path !== current_path) {
+    if (
+      new_path &&
+      (new_path !== current_path || store.getState().view === 'monitor')
+    ) {
       log('switching workspace to %s', new_path);
       is_switching = true;
       doRender();

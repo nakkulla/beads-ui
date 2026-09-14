@@ -16,11 +16,9 @@ function laneModelOf(over = {}) {
     pr_wait: [],
     done: [],
     queue_groups: [],
-    chain_lanes: [],
     parallel_rows: [],
     parallel_raw_length: {},
     owner_of: {},
-    cross_lanes_revision: null,
     ...over
   };
 }
@@ -53,7 +51,7 @@ function groupOf(revision, root_dir = '/r') {
 }
 
 /**
- * Mount the shared drag DOM: 병렬 영역 · 직렬 레인 · 연결 레인 · 후보 · 접힌 띠.
+ * Mount the shared drag DOM: 병렬 영역 · 직렬 레인 · 후보 · 접힌 띠.
  *
  * @param {{ rows?: string, extra?: string }} [parts]
  */
@@ -70,7 +68,6 @@ function mountDom(parts = {}) {
         data-lane-id="s1"
         data-lane-length="2"
       ></div>
-      <div id="chain" data-drop="chain" data-lane-id="cl_1"></div>
       <div id="candidate" data-drop="candidate"></div>
       <div
         id="strip"
@@ -155,9 +152,6 @@ function setup(over = {}) {
     console_el: dom.console_el,
     getLanes: () => over.lanes ?? laneModelOf(),
     getWorkspaces: () => over.workspaces ?? [],
-    getCrossLanes: () => over.cross_lanes ?? null,
-    reproject,
-    onCorrection,
     showToast,
     requestRender,
     adoptQueue: over.adoptQueue ?? (() => {}),
@@ -373,20 +367,6 @@ describe('드롭 타깃 식별자 (UI-4tud §4.5)', () => {
     ]);
   });
 
-  test('refuses a chain target when the model has no chain lanes', async () => {
-    const dom = mountDom({
-      extra: sourceHtml({ id: 'C', kind: 'candidate' })
-    });
-    const ctx = setup({ dom });
-
-    startDrag(ctx.mount, 'C');
-    fireDrag(document.getElementById('chain'), 'drop');
-    await flush();
-
-    expect(ctx.sent).toEqual([]);
-    expect(ctx.showToast).toHaveBeenCalledWith('연결 레인이 없습니다', 'error');
-  });
-
   test('marks the console as dragging while a row is held', () => {
     const dom = mountDom({
       rows: sourceHtml({
@@ -407,228 +387,6 @@ describe('드롭 타깃 식별자 (UI-4tud §4.5)', () => {
 
     expect(ctx.console_el.classList.contains('is-dragging')).toBe(false);
     expect(ctx.drag.isDragging()).toBe(false);
-  });
-});
-
-/**
- * A projection that carries one confirmed 연결 레인 (Monitor 모양) plus the
- * candidate row a drop starts from.
- *
- * @param {Record<string, any>} [over]
- */
-function chainSetup(over = {}) {
-  const dom = mountDom({ extra: sourceHtml({ id: 'C', kind: 'candidate' }) });
-  const lanes = laneModelOf({
-    cross_lanes_revision: 5,
-    owner_of: { A: '/r', B: '/r', C: '/r' },
-    parallel_raw_length: { '/r': 2 },
-    queue_groups: [groupOf(1)],
-    chain_lanes: [
-      {
-        lane_id: 'cl_1',
-        status: 'confirmed',
-        rows: [
-          { id: 'A', root_dir: '/r' },
-          { id: 'B', root_dir: '/r' }
-        ]
-      }
-    ],
-    ...(over.lanes ?? {})
-  });
-  return { dom, lanes };
-}
-
-describe('계획 전송 (§5.5)', () => {
-  test('sends one plan in the 레인 op → dep-add → provenance order', async () => {
-    const { dom, lanes } = chainSetup();
-    /** @type {string[]} */
-    const order = [];
-    const transport = vi.fn(async (/** @type {string} */ type) => {
-      order.push(type);
-      if (
-        type === 'monitor-lane-update' ||
-        type === 'monitor-lane-provenance'
-      ) {
-        return { revision: 6 };
-      }
-      return { applied: true, conflict: false, queue: { revision: 2 } };
-    });
-    const ctx = setup({
-      dom,
-      lanes,
-      transport,
-      cross_lanes: {
-        revision: 5,
-        lanes: [{ id: 'cl_1', entries: [{ bead_id: 'A' }, { bead_id: 'B' }] }]
-      },
-      workspaces: [
-        { root_dir: '/r', bead_blocked_by: { A: [], B: ['A'], C: [] } }
-      ]
-    });
-
-    startDrag(ctx.mount, 'C');
-    fireDrag(document.getElementById('chain'), 'drop');
-    await flush();
-
-    expect(order).toEqual([
-      'monitor-lane-update',
-      'dep-add',
-      'monitor-lane-provenance'
-    ]);
-  });
-
-  test('replans the whole drop once from the reprojected lanes on a CAS conflict', async () => {
-    const { dom, lanes } = chainSetup();
-    let lane_calls = 0;
-    const transport = vi.fn(async (/** @type {string} */ type) => {
-      if (type === 'monitor-lane-update') {
-        lane_calls += 1;
-        if (lane_calls === 1) {
-          throw {
-            code: 'conflict',
-            details: {
-              cross_lanes: {
-                revision: 9,
-                lanes: [
-                  {
-                    id: 'cl_1',
-                    entries: [{ bead_id: 'A' }, { bead_id: 'B' }]
-                  }
-                ]
-              }
-            }
-          };
-        }
-        return { revision: 10 };
-      }
-      if (type === 'monitor-lane-provenance') {
-        return { revision: 11 };
-      }
-      return { applied: true, conflict: false, queue: { revision: 2 } };
-    });
-    const ctx = setup({
-      dom,
-      lanes,
-      transport,
-      reprojected: lanes,
-      reprojected_raw: {
-        revision: 9,
-        lanes: [{ id: 'cl_1', entries: [{ bead_id: 'A' }, { bead_id: 'B' }] }]
-      },
-      cross_lanes: {
-        revision: 5,
-        lanes: [{ id: 'cl_1', entries: [{ bead_id: 'A' }, { bead_id: 'B' }] }]
-      },
-      workspaces: [
-        { root_dir: '/r', bead_blocked_by: { A: [], B: ['A'], C: [] } }
-      ]
-    });
-
-    startDrag(ctx.mount, 'C');
-    fireDrag(document.getElementById('chain'), 'drop');
-    await flush();
-
-    expect(ctx.reproject).toHaveBeenCalledTimes(1);
-    expect(ctx.reproject.mock.calls[0][0]).toEqual({
-      revision: 9,
-      lanes: [{ id: 'cl_1', entries: [{ bead_id: 'A' }, { bead_id: 'B' }] }]
-    });
-    expect(lane_calls).toBe(2);
-    expect(ctx.requestRender).toHaveBeenCalledTimes(1);
-  });
-
-  test('reports the plan correction to the caller', async () => {
-    // C는 B가 막고 있으므로 맨 앞에 놓아도 교정이 B 뒤로 옮긴다 (UI-jaua §6.2).
-    const { dom, lanes } = chainSetup();
-    const ctx = setup({
-      dom,
-      lanes,
-      cross_lanes: {
-        revision: 5,
-        lanes: [{ id: 'cl_1', entries: [{ bead_id: 'A' }, { bead_id: 'B' }] }]
-      },
-      workspaces: [
-        {
-          root_dir: '/r',
-          bead_blocked_by: { A: [], B: ['A'], C: ['B'] },
-          runnable: [{ bead_id: 'C', blocked_by: ['B'] }]
-        }
-      ]
-    });
-
-    startDrag(ctx.mount, 'C');
-    fireDrag(document.getElementById('chain'), 'drop');
-    await flush();
-
-    const call = ctx.onCorrection.mock.calls.find(
-      (/** @type {any[]} */ args) => args[1] > 0
-    );
-    expect(call?.[0]).toBe('cl_1');
-  });
-
-  test('makes no dep op for a queue-only model whose snapshot declares no blockers', async () => {
-    const dom = mountDom({
-      rows: sourceHtml({
-        id: 'A',
-        kind: 'parallel',
-        row_index: 0,
-        queue_index: 0
-      })
-    });
-    const ctx = setup({
-      dom,
-      lanes: laneModelOf({
-        parallel_rows: [parallelRow('A', 0)],
-        parallel_raw_length: { '/r': 1 },
-        owner_of: { A: '/r' },
-        queue: [parallelRow('A', 0)],
-        queue_groups: [groupOf(1)]
-      }),
-      workspaces: [{ root_dir: '/r' }]
-    });
-
-    startDrag(ctx.mount, 'A');
-    fireDrag(document.getElementById('serial'), 'drop');
-    await flush();
-
-    expect(ctx.sent.map((/** @type {any} */ entry) => entry.type)).toEqual([
-      'worker-queue-place'
-    ]);
-    expect(ctx.drag.dropModel().snapshot_blocked_by?.size).toBe(0);
-    expect(ctx.drag.dropModel().runnable_blocked_by?.size).toBe(0);
-  });
-
-  test('reads blocker completeness from the snapshot, not the projection', () => {
-    const ctx = setup({
-      workspaces: [
-        {
-          root_dir: '/r',
-          bead_blocked_by: { A: [] },
-          runnable: [{ bead_id: 'C', blocked_by: ['A'] }]
-        }
-      ]
-    });
-
-    const model = ctx.drag.dropModel();
-
-    expect(model.snapshot_blocked_by?.get('A')).toEqual([]);
-    expect(model.runnable_blocked_by?.get('C')).toEqual(['A']);
-  });
-
-  test('folds a remembered dep op into the next plan model', () => {
-    const ctx = setup({
-      workspaces: [{ root_dir: '/r', bead_blocked_by: { B: ['A'] } }]
-    });
-
-    ctx.drag.rememberDep({
-      type: 'dep-remove',
-      a: 'B',
-      b: 'A',
-      root_dir: '/r'
-    });
-
-    expect(ctx.drag.dropModel().blocked_by_map.get('B')).toEqual([]);
-    expect(ctx.drag.dropModel().snapshot_blocked_by?.get('B')).toEqual([]);
   });
 });
 

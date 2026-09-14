@@ -12,7 +12,7 @@
 /** @typedef {{ provider: 'claude'|'codex', role: string, turn_id: string, model: string|null, usage: Record<string, number>, partial?: boolean, cost_covered?: boolean }} UsageSegment */
 /** @typedef {{ provider: 'claude'|'codex', session_id: string|null, observed_at: number, model: string|null, usage: Record<string, number>|null, usage_legs: UsageSegment[], delegations: Array<Record<string, unknown>>, partial?: boolean }} SessionObservation */
 
-/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'update-assignee'|'dep-add'|'dep-remove'|'update-exec-settings'|'update-impl-target'|'get-session-defaults'|'set-session-defaults'|'get-workspace-accounts'|'set-workspace-accounts'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-automation-toggle'|'worker-provider-limit-policy-set'|'worker-repo-ops-opt-out-toggle'|'worker-repo-operation-dismiss'|'worker-repo-operation-deploy-run'|'worker-queue-set-slots'|'worker-queue-set-serial-lane-count'|'worker-queue-set-orchestration-defaults'|'worker-queue-remove'|'worker-queue-arm'|'worker-queue-disarm'|'worker-queue-start-now'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-cleanup-retry'|'worker-resolve-in-session'|'worker-queue-hold-resume'|'worker-queue-hold-retry-now'|'worker-provider-probe-now'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-discard'|'worker-discard-abandon'|'worker-stale-work-continue'|'worker-stale-work-backup-fresh'|'worker-stale-work-recheck'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-ui-order'|'unsubscribe-ui-order'|'ui-order-set'|'ui-order-snapshot'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'get-attempt-prompt'|'get-bead-prompt'|'get-bead-timeline'|'get-session-refs'|'get-worker-system-prompt'|'subscribe-adr'|'unsubscribe-adr'|'adr-snapshot'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'|'monitor-auto-toggle'|'monitor-lane-create'|'monitor-lane-update'|'monitor-lane-confirm'|'monitor-lane-remove'|'monitor-lane-provenance'|'subscribe-impl-presets'|'unsubscribe-impl-presets'|'impl-presets-snapshot'|'impl-preset-create'|'impl-preset-update'|'impl-preset-delete'|'apply-impl-preset'|'apply-impl-preset-global'|'get-compare'|'compare-snapshot'|'bench-run-create'} MessageType */
+/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'update-assignee'|'dep-add'|'dep-remove'|'update-exec-settings'|'update-impl-target'|'get-session-defaults'|'set-session-defaults'|'get-workspace-accounts'|'set-workspace-accounts'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-automation-toggle'|'worker-provider-limit-policy-set'|'worker-repo-ops-opt-out-toggle'|'worker-repo-operation-dismiss'|'worker-repo-operation-deploy-run'|'worker-queue-set-slots'|'worker-queue-set-serial-lane-count'|'worker-queue-set-orchestration-defaults'|'worker-queue-remove'|'worker-queue-start-now'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-cleanup-retry'|'worker-resolve-in-session'|'worker-queue-hold-resume'|'worker-queue-hold-retry-now'|'worker-provider-probe-now'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-discard'|'worker-discard-abandon'|'worker-stale-work-continue'|'worker-stale-work-backup-fresh'|'worker-stale-work-recheck'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-ui-order'|'unsubscribe-ui-order'|'ui-order-set'|'ui-order-snapshot'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'get-attempt-prompt'|'get-bead-prompt'|'get-bead-timeline'|'get-session-refs'|'get-worker-system-prompt'|'subscribe-adr'|'unsubscribe-adr'|'adr-snapshot'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'|'monitor-auto-toggle'|'subscribe-impl-presets'|'unsubscribe-impl-presets'|'impl-presets-snapshot'|'impl-preset-create'|'impl-preset-update'|'impl-preset-delete'|'apply-impl-preset'|'apply-impl-preset-global'|'get-compare'|'compare-snapshot'|'bench-run-create'} MessageType */
 
 /**
  * @typedef {Object} RequestEnvelope
@@ -110,8 +110,6 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   // the retired `worker-queue-set-default-exec-preset` preset reference.
   'worker-queue-set-orchestration-defaults',
   'worker-queue-remove',
-  'worker-queue-arm',
-  'worker-queue-disarm',
   // `[지금 시작]` (2026-09-03 monitor-exec-material-queue-grace §3.3): payload
   // `{ bead_id }`. 대기 진입 유예(20초)를 그 행 하나에 대해서만 걷고 `▶ 진행`과
   // 같은 명시적 실행 경로로 dispatch한다. `added_at`은 건드리지 않는다.
@@ -218,14 +216,6 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   // on/off across EVERY visible workspace at once. No `root_dir` — the target
   // is the whole visible set, which is also the button's denominator.
   'monitor-auto-toggle',
-  // Stored cross-lane membership (UI-j92s §4.3). Server-global like the channel
-  // that carries them: a 연결 레인 spans repos, so no `root_dir` addresses it.
-  // Every op is CAS-guarded by the snapshot's `cross_lanes.revision`.
-  'monitor-lane-create',
-  'monitor-lane-update',
-  'monitor-lane-confirm',
-  'monitor-lane-remove',
-  'monitor-lane-provenance',
   // Preset comparison table (preset-compare §3.5). A request/response pair, not
   // a subscription: the answer is read from dozens of attempt record files and
   // nothing a Worker tick changes needs to redraw it.

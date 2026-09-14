@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   formatAttemptOrchestrationChip,
+  formatImplReviewChip,
   formatOrchestrationChip,
   formatWorkerChip
 } from './exec-settings-chip.js';
@@ -273,5 +274,62 @@ describe('formatWorkerChip', () => {
     const chip = formatWorkerChip(rows, 'codex');
 
     expect(chip?.title).not.toContain('undefined');
+  });
+});
+
+describe('formatImplReviewChip', () => {
+  /**
+   * @param {string|null} value
+   * @param {string} [display]
+   * @param {import('./execution-defaults.js').ExecutionValue['resolution']} [resolution]
+   * @returns {import('./execution-defaults.js').ExecutionValue}
+   */
+  const row = (value, display = value ?? '', resolution = 'default') => ({
+    value,
+    full_value: value,
+    display,
+    resolution,
+    source: 'base'
+  });
+
+  test('shows the resolved model and effort', () => {
+    const chip = formatImplReviewChip({
+      impl_review_model: row('codex'),
+      impl_review_effort: row('xhigh')
+    });
+
+    expect(chip?.text).toBe('codex · xhigh');
+  });
+
+  test('names self and skip without an effort suffix', () => {
+    const self = formatImplReviewChip({
+      impl_review_model: row('self'),
+      impl_review_effort: row('xhigh')
+    });
+    const skip = formatImplReviewChip({
+      impl_review_model: row('skip'),
+      impl_review_effort: row('xhigh')
+    });
+
+    expect([self?.text, skip?.text]).toEqual(['자체 검토', '생략']);
+  });
+
+  test('shows a valid model when effort is absent', () => {
+    const chip = formatImplReviewChip({
+      impl_review_model: row('codex')
+    });
+
+    expect(chip?.text).toBe('codex');
+  });
+
+  test('omits unavailable and malformed model rows', () => {
+    const unavailable = formatImplReviewChip({
+      impl_review_model: row(null, '사용 불가', 'unavailable')
+    });
+
+    expect(unavailable).toBeNull();
+    expect(
+      formatImplReviewChip(/** @type {any} */ ({ impl_review_model: 'codex' }))
+    ).toBeNull();
   });
 });

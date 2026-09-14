@@ -284,7 +284,33 @@ describe('createRepoDeck tile content (§4.2)', () => {
     expect(chips[0]).toContain('opus');
     expect(chips[1]).toContain('워커');
     expect(chips[1]).toContain('codex');
+    expect(chips[2]).toContain('구현 리뷰');
+    expect(chips[2]).toContain('sol');
+    expect(
+      mount.querySelectorAll('.mon2-deck__chip')[2]?.getAttribute('title')
+    ).toContain('gpt-5.6-sol');
   });
+
+  test.each([
+    [{ impl_review_model: 'self' }, '구현 리뷰 자체 검토'],
+    [{ impl_review_model: 'skip' }, '구현 리뷰 생략']
+  ])(
+    'renders the resolved implementation review special value %#',
+    (defaults, text) => {
+      const { mount, deck } = setup({
+        rows: [
+          state({
+            session_defaults: defaults,
+            counts: { running: 1, pr_wait: 0, queue: 0, runnable: 0 }
+          })
+        ]
+      });
+
+      deck.render();
+
+      expect(mount.textContent).toContain(text);
+    }
+  );
 
   test('omits the chip row entirely on an older server payload (§12)', () => {
     const row = state({
@@ -760,20 +786,26 @@ describe('repo health header group (UI-y9hl U2)', () => {
     };
   }
 
-  test('renders 미확인 when the record is unknown', () => {
+  test('explains when the health record is unknown', () => {
     const { mount, deck } = setup({
       rows: [state({ repo_health: health({ state: 'unknown' }) })]
     });
     deck.render();
 
-    expect(el(mount, '.mon2-deck__health').textContent?.trim()).toBe('미확인');
+    const chip = el(mount, '.mon2-deck__health');
+    expect(chip.textContent?.trim()).toBe('건강 점검 정보 없음');
+    expect(chip.title).toBe(
+      '저장소 건강 점검의 유효한 기록을 아직 확인하지 못했습니다. 기록 부재·조회 중·조회 실패가 포함되며, 실행 설정 오류를 뜻하지 않습니다.'
+    );
   });
 
-  test('renders 미확인 for a server that ships no repo_health field', () => {
+  test('explains when a server ships no repo_health field', () => {
     const { mount, deck } = setup();
     deck.render();
 
-    expect(el(mount, '.mon2-deck__health').textContent?.trim()).toBe('미확인');
+    expect(el(mount, '.mon2-deck__health').textContent?.trim()).toBe(
+      '건강 점검 정보 없음'
+    );
   });
 
   test('names the relation and the observation age for a current record', () => {

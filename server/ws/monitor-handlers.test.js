@@ -120,13 +120,11 @@ function warmCache(root_dir, issues) {
  *   runnableFails?: string[],
  *   sessionActiveFails?: string[],
  *   titleCache?: any,
- *   cross_lanes?: any,
  *   carried_to?: Record<string, Record<string, string[]>>
  * }} input
  */
 function build(input) {
   return buildMonitorPipeline({
-    cross_lanes: input.cross_lanes || null,
     carriedToFor: (key, parent_ids) => {
       const index = (input.carried_to || {})[key] || {};
       /** @type {Record<string, string[]>} */
@@ -967,19 +965,6 @@ describe('buildMonitorPipeline bead overlay (UI-q1tg §3.1)', () => {
   });
 });
 
-/**
- * One stored cross-lane state holding a single confirmed lane.
- *
- * @param {Array<{ bead_id: string, root_dir: string }>} entries
- * @returns {any}
- */
-function crossLanes(entries) {
-  return {
-    revision: 7,
-    lanes: [{ id: 'lane-1', status: 'confirmed', entries }]
-  };
-}
-
 describe('buildMonitorPipeline carryover overlay (UI-ys18 §3.2)', () => {
   test('carries the carryover successors of a done bead', () => {
     const out = build({
@@ -1038,121 +1023,6 @@ describe('buildMonitorPipeline carryover overlay (UI-ys18 §3.2)', () => {
     });
 
     expect(overlayOf(out)['A-done']).toBeUndefined();
-  });
-});
-
-describe('buildMonitorPipeline cross-lane overlay (UI-ys18 §4.1)', () => {
-  test('carries route and execution pin for a cross-lane member outside the queue', () => {
-    const out = build({
-      workspaces: [WS_A],
-      snapshots: {
-        [WS_A]: snapshot({ queue: [{ bead_id: 'A-q', added_at: NOW }] })
-      },
-      cross_lanes: crossLanes([{ bead_id: 'A-x', root_dir: WS_A }]),
-      titleCache: warmCache(WS_A, [
-        { id: 'A-q', title: '대기', workflow: { route: 'quick_fix' } },
-        {
-          id: 'A-x',
-          title: '연결 레인',
-          workflow: { route: 'spec_backed' },
-          metadata: { impl_runtime: 'codex' }
-        }
-      ])
-    });
-
-    expect(overlayOf(out)['A-x']).toEqual({
-      route: 'spec_backed',
-      metadata: { impl_runtime: 'codex' }
-    });
-  });
-
-  test('omits the execution pin of a done cross-lane member', () => {
-    const out = build({
-      workspaces: [WS_A],
-      snapshots: {
-        [WS_A]: snapshot({ done: [{ bead_id: 'A-x', added_at: NOW }] })
-      },
-      cross_lanes: crossLanes([{ bead_id: 'A-x', root_dir: WS_A }]),
-      titleCache: warmCache(WS_A, [
-        {
-          id: 'A-x',
-          title: '완료',
-          workflow: { route: 'spec_backed' },
-          metadata: { impl_runtime: 'codex' }
-        }
-      ])
-    });
-
-    expect(overlayOf(out)['A-x']).toEqual({ route: 'spec_backed' });
-  });
-
-  test('never lends one root settings to the same id under another root', () => {
-    const out = build({
-      workspaces: [WS_A],
-      snapshots: {
-        [WS_A]: snapshot({ queue: [{ bead_id: 'A-q', added_at: NOW }] })
-      },
-      cross_lanes: crossLanes([{ bead_id: 'A-x', root_dir: WS_B }]),
-      titleCache: warmCache(WS_A, [
-        { id: 'A-q', title: '대기', workflow: { route: 'quick_fix' } }
-      ])
-    });
-
-    expect(overlayOf(out)['A-x']).toBeUndefined();
-  });
-
-  test('leaves the queue lane and its count untouched', () => {
-    const without_lane = build({
-      workspaces: [WS_A],
-      snapshots: {
-        [WS_A]: snapshot({ queue: [{ bead_id: 'A-q', added_at: NOW }] })
-      }
-    });
-    const with_lane = build({
-      workspaces: [WS_A],
-      snapshots: {
-        [WS_A]: snapshot({ queue: [{ bead_id: 'A-q', added_at: NOW }] })
-      },
-      cross_lanes: crossLanes([{ bead_id: 'A-x', root_dir: WS_A }])
-    });
-
-    expect(with_lane[0].queue).toEqual(without_lane[0].queue);
-    expect(with_lane[0].counts).toEqual(without_lane[0].counts);
-  });
-
-  test('keeps a workspace whose only pipeline member sits in a cross lane', () => {
-    const out = build({
-      workspaces: [WS_A],
-      snapshots: { [WS_A]: snapshot() },
-      cross_lanes: crossLanes([{ bead_id: 'A-x', root_dir: WS_A }]),
-      titleCache: warmCache(WS_A, [
-        {
-          id: 'A-x',
-          title: '연결 레인',
-          workflow: { route: 'spec_backed' },
-          metadata: { impl_runtime: 'codex' }
-        }
-      ])
-    });
-
-    expect([out.map((w) => w.root_dir), overlayOf(out)['A-x']]).toEqual([
-      [WS_A],
-      { route: 'spec_backed', metadata: { impl_runtime: 'codex' } }
-    ]);
-  });
-
-  test('exposes no hidden workspace through a cross-lane entry', () => {
-    const out = build({
-      workspaces: [WS_A, WS_B],
-      hidden: [WS_B],
-      snapshots: {
-        [WS_A]: snapshot({ queue: [{ bead_id: 'A-q', added_at: NOW }] }),
-        [WS_B]: snapshot({ queue: [{ bead_id: 'B-q', added_at: NOW }] })
-      },
-      cross_lanes: crossLanes([{ bead_id: 'B-q', root_dir: WS_B }])
-    });
-
-    expect(out.map((w) => w.root_dir)).toEqual([WS_A]);
   });
 });
 

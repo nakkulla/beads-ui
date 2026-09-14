@@ -41,7 +41,6 @@ import {
   providerHoldBadgeText
 } from './gate-labels.js';
 import {
-  crossLaneChipTemplate,
   dependencyChipsTemplate,
   discardReceiptTemplate,
   execChipsTemplate,
@@ -734,7 +733,6 @@ function providerHoldPopoverTemplate(hold) {
  * The attempt's last non-thinking transcript line (§9.3).
  * @property {Array<{ label: string, state: 'live'|'done'|'failed'|'interrupted', agent_type?: string|null, model?: string|null, usage?: Record<string, number>|null, price_usd?: number|null, price_basis?: string, native?: boolean }>} [legs] -
  * Delegation legs; only the unfinished ones are spelled out.
- * @property {{ lane_id: string, label: string }|null} [cross_lane_chip] -
  * `연결 n` 소속 칩 (UI-8x90 §4.1): 슬롯 5 좌표 칩이므로 직렬 레인 칩 다음이다.
  * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
  * 의존·겹침 칩 (§5.1). 실행중 타일도 `⛓ blocked` · `⧉ 겹침` · `scope 없음`을
@@ -1174,7 +1172,6 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const monitor_chips = monitorTileChips(monitor);
   // 소속 칩은 좌표(레포·직렬 레인) 다음이다 (UI-8x90 §4.1). 재료가 없으면 빈
   // 문자열이라 줄 판정에 영향이 없다.
-  const cross_lane_chip = crossLaneChipTemplate(monitor?.cross_lane_chip);
   // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 자식 롤업·landing
   // 진행이 모두 슬롯 3이므로 그 뒤에 선다.
   const monitor_deps = monitor
@@ -1233,7 +1230,6 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     : '';
   const session_meta =
     monitor_chips ||
-    cross_lane_chip ||
     route_chip ||
     session_ref_chip ||
     session_receipt_chip ||
@@ -1241,7 +1237,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     provider_badges.length > 0 ||
     usage_label
       ? html`<div class="rtile__meta">
-          ${monitor_chips}${cross_lane_chip}${route_chip}${session_ref_chip}${session_receipt_chip}${rec_chip}${provider_badges.length >
+          ${monitor_chips}${route_chip}${session_ref_chip}${session_receipt_chip}${rec_chip}${provider_badges.length >
           0
             ? provider_badges.map(
                 (badge) =>
@@ -1560,14 +1556,13 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
             ${session
               ? session_meta
               : monitor_chips ||
-                  cross_lane_chip ||
                   route_chip ||
                   exec_chips ||
                   rec_chip ||
                   provider_badges.length > 0 ||
                   usage_label
                 ? html`<div class="rtile__meta">
-                    ${monitor_chips}${cross_lane_chip}${route_chip}${execChipsTemplate(
+                    ${monitor_chips}${route_chip}${execChipsTemplate(
                       tile.exec_chips
                     )}${rec_chip}
                     ${provider_badges.length > 0
