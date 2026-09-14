@@ -12050,6 +12050,32 @@ describe('worker/queue-store — post-merge job ledger (UI-i60a §3)', () => {
     expect(store.snapshot(WS).post_merge_jobs[loser]).toBeUndefined();
   });
 
+  test('rejects nested repair before changing either ledger link', () => {
+    const store = createQueueStore();
+    const middle_key = seedRepair(store);
+    const middle = store.snapshot(WS).repo_operations['job-new'];
+    store.settleRepoOperation(WS, {
+      operation_id: 'job-new',
+      attempt_id: middle.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    const newest_key = `10-reindex@${'3'.repeat(40)}`;
+    prerecordJob(store, 'job-newest', '3'.repeat(40));
+    const before = store.snapshot(WS).post_merge_jobs;
+
+    const result = store.recordPostMergeJobIntent(WS, {
+      key: newest_key,
+      operation_id: 'job-newest',
+      repo_id: WS,
+      replaces: { key: middle_key, operation_id: 'job-new' }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).post_merge_jobs).toEqual(before);
+    expect(store.snapshot(WS).post_merge_jobs[newest_key]).toBeUndefined();
+  });
+
   test('moves both corrective and predecessor pointers on corrective retry', () => {
     const store = createQueueStore();
     const successor_key = `10-reindex@${'2'.repeat(40)}`;
@@ -12320,6 +12346,37 @@ describe('worker/queue-store — post-merge job ledger (UI-i60a §3)', () => {
     const queue_path = queueFilePath(WS);
     const stored = JSON.parse(fs.readFileSync(queue_path, 'utf8'));
     damage(stored.repo_operations['job-new']);
+    const original = JSON.stringify(stored);
+    fs.writeFileSync(queue_path, original);
+
+    expect(() => createQueueStore().snapshot(WS)).toThrow(
+      'post_merge_job_repair_malformed:'
+    );
+    expect(fs.readFileSync(queue_path, 'utf8')).toBe(original);
+  });
+
+  test.each([
+    ['partial applied pair', (/** @type {any} */ stored) => void stored],
+    [
+      'failed successor evidence',
+      (/** @type {any} */ stored) => {
+        stored.repo_operations['job-new'].state = 'failed';
+        stored.repo_operations['job-new'].exit_code = 1;
+        stored.repo_operations['job-new'].failure = {
+          code: 'script_failed',
+          fingerprint: '',
+          detail: '',
+          interrupted: false
+        };
+      }
+    ]
+  ])('fails closed on %s', (_label, damage) => {
+    const store = createQueueStore();
+    const successor_key = seedRepair(store, { success: true });
+    const queue_path = queueFilePath(WS);
+    const stored = JSON.parse(fs.readFileSync(queue_path, 'utf8'));
+    stored.post_merge_jobs[successor_key].state = 'applied';
+    damage(stored);
     const original = JSON.stringify(stored);
     fs.writeFileSync(queue_path, original);
 

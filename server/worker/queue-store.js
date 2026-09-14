@@ -3703,7 +3703,12 @@ function normalizePostMergeJobs(raw, operations) {
         previous_operation.script_blob_sha !== previous_blob ||
         operation.script_blob_sha !== blob ||
         (value.state !== 'intent' && value.state !== 'applied') ||
-        (previous.state !== 'intent' && previous.state !== 'superseded')
+        (value.state === 'intent' && previous.state !== 'intent') ||
+        (value.state === 'applied' && previous.state !== 'superseded') ||
+        (value.state === 'applied' &&
+          (previous_operation.state !== 'failed' ||
+            previous_operation.superseded_by !== value.operation_id ||
+            !exactPostMergeJobSuccess(operation)))
       ) {
         throw new Error(`post_merge_job_repair_malformed:${key}`);
       }
@@ -6530,7 +6535,7 @@ export function createQueueStore(options = {}) {
      * Bind a live detached process to the pre-recorded operation.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, attempt_id: string, process_identity: RepoOperation['process_identity'], log_path: string, target_sha?: string, target_tree?: string, deploy_worktree?: string }} input
+     * @param {{ operation_id: string, attempt_id: string, process_identity: RepoOperation['process_identity'], log_path: string, target_sha?: string, target_tree?: string, deploy_worktree?: string, started_at?: number }} input
      * @returns {QueueOpResult}
      */
     startRepoOperation(workspace, input) {
@@ -6546,7 +6551,11 @@ export function createQueueStore(options = {}) {
           return false;
         }
         operation.state = 'running';
-        operation.started_at = operation.started_at ?? now();
+        operation.started_at =
+          operation.started_at ??
+          (Number.isFinite(input.started_at)
+            ? Number(input.started_at)
+            : now());
         operation.process_identity = input.process_identity;
         operation.log_path = input.log_path;
         if (isSha(input.target_sha))
@@ -6680,7 +6689,7 @@ export function createQueueStore(options = {}) {
      * a previously terminal record.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure?: RepoOperation['failure'], log_digest?: string|null, retry_outcome?: 'not_applicable'|'consumed', retry_blocked_reason?: string|null, target_sha?: string, deploy_worktree?: string }} input
+     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure?: RepoOperation['failure'], log_digest?: string|null, retry_outcome?: 'not_applicable'|'consumed', retry_blocked_reason?: string|null, target_sha?: string, deploy_worktree?: string, finished_at?: number }} input
      * @returns {QueueOpResult}
      */
     settleRepoOperation(workspace, input) {
@@ -6696,7 +6705,9 @@ export function createQueueStore(options = {}) {
         operation.signal =
           typeof input.signal === 'string' ? input.signal : null;
         operation.log_digest = input.log_digest ?? operation.log_digest;
-        operation.finished_at = now();
+        operation.finished_at = Number.isFinite(input.finished_at)
+          ? Number(input.finished_at)
+          : now();
         operation.process_identity = null;
         // A settle that never went through `startRepoOperation` (the covered
         // shortcut) carries the SHA it proved on disk here; without it the
@@ -6982,6 +6993,7 @@ export function createQueueStore(options = {}) {
             predecessor.state !== 'intent' ||
             predecessor.operation_id !== input.replaces.operation_id ||
             predecessor.repo_id !== input.repo_id ||
+            predecessor.replaces !== null ||
             !predecessor_operation ||
             !postMergeJobIdentity(
               input.replaces.key,
