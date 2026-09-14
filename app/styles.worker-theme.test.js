@@ -417,11 +417,9 @@ describe('worker console styles', () => {
   // 단계가 지우면 안 되는 구조 규칙이다: 중첩 pane의 토큰과 폭 하한, 빈 레인의
   // 뷰포트별 표시, 데스크톱 세로 띠.
   test('gives the nested wait panes card tokens and no lane min-width', () => {
-    // 선택자 목록이다 — Monitor 연결 레인도 같은 중첩 단계라 같은 토큰을 받는다
-    // (UI-5ksp §4.5), 그래서 규칙 본문 하나만 읽는다.
     const nestedRule =
       workerBlock.match(
-        /(?:^|\n)\.worker-wait \.worker-pane,[^{]*{([^}]*)}/
+        /(?:^|\n)\.worker-wait \.worker-pane\s*{([^}]*)}/
       )?.[1] || '';
 
     expect(nestedRule).toContain('min-width: 0');

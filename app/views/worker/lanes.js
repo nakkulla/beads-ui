@@ -870,13 +870,6 @@ export function execChipsTemplate(chips, options = {}) {
  * @property {OverlapChip[]} [overlaps] - `⧉ <ID>` (UI-qm12 §5.3).
  * @property {boolean} [scope_missing] - 선언 원천은 읽혔는데 scope 선언이
  * 비었다 — 겹침을 판정할 수 없다는 사실 자체를 드러낸다.
- * @property {{ lane_id: string, label: string, orphan: boolean }} [armed_lane]
- * - `▶ 연결 n` 발차 칩 (UI-jaua §5.6). 그 행이 연결 레인의 발차 축으로 돌고
- * 있다는 사실이고, 소속 칩과 다른 질문에 답한다("이 레인 것이다"가 아니라 "지금
- * 이 레인이 이것을 굴리고 있다"). `orphan`이면 라벨이
- * `▶ 진행 중 · 레인 없음`이고 그 자리에 해제 버튼이 함께 선다 — 스케줄러는 계속
- * 발차하므로 조용히 두지 않는다 (fail-visible, §5.3 (2)). 발차는 행동 상태라
- * 상단 줄 맨 앞이다 (UI-8x90 §4.1).
  */
 
 /**
@@ -1032,7 +1025,7 @@ function readinessChipTemplate(judgement, open) {
 
 /**
  * The two lines of 슬롯 4 (UI-8x90 §4.1·§4.2). 상단은 "지금 갈 수 있나"를 바꾸는
- * 사실(`▶ 연결` 발차 · `⛓` 선행 · `→` 후속), 하단은 판단 재료(`🔓` 해제 ·
+ * 사실(`⛓` 선행 · `→` 후속), 하단은 판단 재료(`🔓` 해제 ·
  * `⧉` 겹침 · `scope 없음`)다. 재료가 없는 줄은 그리지 않으며 두 줄은 서로를
  * 기다리지 않는다.
  *
@@ -1045,10 +1038,10 @@ function readinessChipTemplate(judgement, open) {
  * 칩 하나를 위해 이 템플릿이 `MiniItem`을 통째로 읽게 만들지 않으려고 호출
  * 자리가 만들어 넘긴다. 값이 있으면 상단 줄은 선행 칩이 없어도 선다.
  * @param {import('lit-html').TemplateResult|''} [leading] - 의존 줄의 **맨 앞**에
- * 서는 조각 — 게이트 칩 (UI-01wh §3.2). "왜 못 가나"의 가장 바깥 사정이라 발차
+ * 서는 조각 — 게이트 칩 (UI-01wh §3.2). "왜 못 가나"의 가장 바깥 사정이라
  * 칩보다도 먼저다. 값이 있으면 역시 상단 줄이 선다.
  * @param {import('lit-html').TemplateResult|''} [trailing] - 의존 줄의 **끝**에
- * 서는 조각 — 유예 `⏳` (UI-01wh §3.2 순서: 게이트 → 발차 → 선행 → 후속 → 유예).
+ * 서는 조각 — 유예 `⏳` (UI-01wh §3.2 순서: 게이트 → 선행 → 후속 → 유예).
  * 값이 있으면 역시 상단 줄이 선다.
  * @returns {import('lit-html').TemplateResult|''}
  */
@@ -1074,9 +1067,7 @@ export function dependencyChipsTemplate(
   const dependents = byId(chips.dependents);
   const overlaps = byId(chips.overlaps);
   const scope_missing = chips.scope_missing === true;
-  const armed_lane = chips.armed_lane || null;
   const has_primary =
-    !!armed_lane ||
     predecessors.length > 0 ||
     dependents.length > 0 ||
     after_predecessors !== '' ||
@@ -1089,23 +1080,7 @@ export function dependencyChipsTemplate(
   }
   return html`${has_primary
     ? html`<div class="worker-deps worker-deps--primary">
-        ${leading}${armed_lane
-          ? html`<span
-              class=${`worker-dep worker-dep--armed${armed_lane.orphan ? ' worker-dep--armed-orphan' : ''}`}
-              title=${armed_lane.orphan
-                ? '이 항목을 발차한 연결 레인이 없습니다 — 스케줄러는 계속 발차합니다'
-                : '연결 레인이 이 항목을 발차했습니다 — 레포 자동 진행과 무관합니다'}
-              >${armed_lane.orphan
-                ? html`${armed_lane.label}<button
-                      type="button"
-                      class="worker-dep__label mon2-arm__release"
-                      data-lane-id=${armed_lane.lane_id}
-                    >
-                      해제
-                    </button>`
-                : armed_lane.label}</span
-            >`
-          : ''}${predecessors.map((chip) =>
+        ${leading}${predecessors.map((chip) =>
           openableChipTemplate(chip, 'pred')
         )}${after_predecessors}${dependents.map((chip) =>
           openableChipTemplate(chip, 'dependents')
@@ -1169,28 +1144,6 @@ export function carryoverChipsTemplate(carried_to, root_dir = '') {
       )
     )}
   </div>`;
-}
-
-/**
- * The `연결 n` 소속 칩 (UI-j92s §5.2a, 자리는 UI-8x90 §4.1). "어느 레인 소속인가"는
- * 레포·직렬 레인 칩과 같은 좌표이므로 슬롯 5 줄이 싣는다. 클릭은 그대로 그
- * 레인으로의 스크롤이다. 재료가 없으면 빈 문자열이다 (fail-quiet).
- *
- * @param {{ lane_id: string, label: string }|null|undefined} chip
- * @returns {import('lit-html').TemplateResult|''}
- */
-export function crossLaneChipTemplate(chip) {
-  if (!chip) {
-    return '';
-  }
-  return html`<button
-    type="button"
-    class="worker-dep worker-dep--lane mon-lane__chip"
-    data-lane-id=${chip.lane_id}
-    title="이 연결 레인으로 이동"
-  >
-    ${chip.label}
-  </button>`;
 }
 
 /**
@@ -1647,9 +1600,6 @@ export function priorityBadgeTemplate(priority) {
  * 완료를 만든 마지막 구현 attempt가 기록한 값이다.
  * @property {DependencyChips|null} [dependency_chips] - 슬롯 4 두 줄의 의존·
  * 정보 칩 (UI-eey2 §5.1, 두 줄은 UI-8x90 §4.1).
- * @property {{ lane_id: string, label: string }|null} [cross_lane_chip] -
- * `연결 n` 소속 칩 (UI-j92s §5.2a). 슬롯 5 재료이므로 다른 좌표 칩
- * (`route`·`from_id`·`exec_chips`)과 같이 항목 최상위 필드다 (UI-8x90 §4.2).
  * @property {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null} [chip_popover] -
  * 이 카드에서 열려 있는 판정 칩 사유 팝업 (UI-8x90 §4.5). 열림 상태는 뷰가
  * 소유하고 (`app/views/chip-popover.js`), 템플릿은 어느 칩 아래에 무엇을 그릴지만
@@ -2334,7 +2284,6 @@ export function miniRow(item, options = {}) {
     chipOpen(item, 'receipt')
   );
   // 소속 칩은 슬롯 5의 좌표 칩이다 (UI-8x90 §4.1): 레포 다음, route 앞.
-  const cross_lane_el = crossLaneChipTemplate(item.cross_lane_chip);
   // 실패 로그 경로도 슬롯 5다 (UI-251y §5.1 정정, UI-8w4t §4): "어느 경로의
   // 것인가"는 이 줄이 답하는 질문이고, 복사 버튼은 값에 붙은 어포던스일 뿐
   // 카드의 처분을 바꾸지 않는다. 타임라인 `세부`와 같은 템플릿·같은 토스트를
@@ -2342,7 +2291,6 @@ export function miniRow(item, options = {}) {
   const log_path_el = logPathTemplate(item.log_path);
   const chips_el =
     repo_el ||
-    cross_lane_el ||
     route_el ||
     from_el ||
     has_exec_chips ||
@@ -2351,13 +2299,13 @@ export function miniRow(item, options = {}) {
     usage_el ||
     log_path_el
       ? html`<div class="worker-chips">
-          ${repo_el}${cross_lane_el}${route_el}${from_el}${exec_chips_el}${rec_el}${receipt_badge_el}${usage_el}${log_path_el}${gate_open
+          ${repo_el}${route_el}${from_el}${exec_chips_el}${rec_el}${receipt_badge_el}${usage_el}${log_path_el}${gate_open
             ? ''
             : judgementPopover(item)}
         </div>`
       : '';
   // 유예 칩은 슬롯 4a다 (UI-q1tg §3.3) — `⛓` 선행 칩과 같은 질문에 답하므로 그
-  // 줄 안에 서고, 자리는 줄의 끝이다 (§3.2 순서: 게이트 → 발차 → 선행 → 후속 →
+  // 줄 안에 서고, 자리는 줄의 끝이다 (§3.2 순서: 게이트 → 선행 → 후속 →
   // 유예). 게이트 칩은 같은 줄의 맨 앞이고 그 팝업은 칩 바로 뒤에 붙는다.
   const deps_el = dependencyChipsTemplate(
     item.dependency_chips,
@@ -2461,7 +2409,7 @@ export function miniRow(item, options = {}) {
  * @property {string} id - The coordinate a click hands back to the view.
  * @property {string} label - Text on the left of the row.
  * @property {number|null} [count] - Tally on the right. 없으면 자리 자체가 비어
- * 있다 (`+ 새 연결 레인`처럼 셀 것이 없는 항목).
+ * 있다.
  * @property {string} [group] - Group this entry belongs to. 앞 항목과 다르면 그
  * 자리에 그룹 헤더가 선다. 값이 없으면 헤더 없이 그린다 — Worker 콘솔은 그룹을
  * 쓰지 않는다 (§6.4).
@@ -2795,7 +2743,6 @@ export function candidateCard(item, place_menu = null, options = {}) {
         >${item.workspace_name}</span
       >`
     : '';
-  const cross_lane_el = crossLaneChipTemplate(item.cross_lane_chip);
   const route_el = routeChipTemplate(workflow);
   const from_el = creationSourceChipsTemplate(item);
   const has_exec_chips = !!(
@@ -2867,14 +2814,11 @@ export function candidateCard(item, place_menu = null, options = {}) {
           onOpenDoc: options.onOpenDoc
         })
       : ''}${deps_el}
-    ${repo_el || cross_lane_el || route_el || from_el || has_exec_chips
+    ${repo_el || route_el || from_el || has_exec_chips
       ? html`<div class="worker-chips">
-          ${repo_el}${cross_lane_el}${route_el}${from_el}${execChipsTemplate(
-            item.exec_chips,
-            {
-              pin: options.exec_chips_mode === 'pinned_only'
-            }
-          )}
+          ${repo_el}${route_el}${from_el}${execChipsTemplate(item.exec_chips, {
+            pin: options.exec_chips_mode === 'pinned_only'
+          })}
         </div>`
       : ''}
     <div
@@ -3083,7 +3027,7 @@ function areaToggle(area, name, collapsed) {
 
 /**
  * One 대기 본문 (UI-5ksp §4.2): 병렬 영역 하나 + 직렬 영역 하나. 본문은
- * **구조**만 소유한다 — 행, 레포 배지, 연결 레인 pane, `+ 연결 레인` 버튼,
+ * **구조**만 소유한다 — 행, 레포 배지, pane,
  * 레포 간 상호 정지 경고는 호출 측이 만들어 슬롯으로 넘긴다. 재료가 없는
  * 자리는 그리지 않는다(fail-quiet).
  *

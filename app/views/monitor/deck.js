@@ -28,6 +28,7 @@
  */
 import { html, render } from 'lit-html';
 import {
+  formatImplReviewChip,
   formatOrchestrationChip,
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
@@ -90,7 +91,7 @@ function mergeQueue(row, adopted) {
  * One repo's 오케/워커 exec chips. 재료(투영 3종)가 하나라도 없으면 `null`이다.
  *
  * @param {any} row
- * @returns {{ orchestration: { text: string, title: string }|null, worker: { text: string, title: string }|null }|null}
+ * @returns {{ orchestration: { text: string, title: string }|null, worker: { text: string, title: string }|null, review: { text: string, title: string }|null }|null}
  */
 export function deckExecChips(row) {
   if (
@@ -123,9 +124,10 @@ export function deckExecChips(row) {
   );
   const orchestration = formatOrchestrationChip(rows, row.runner_catalog);
   const worker = formatWorkerChip(rows, controller_runtime);
-  return orchestration === null && worker === null
+  const review = formatImplReviewChip(rows);
+  return orchestration === null && worker === null && review === null
     ? null
-    : { orchestration, worker };
+    : { orchestration, worker, review };
 }
 
 /**
@@ -457,6 +459,11 @@ export function createRepoDeck(mount_element, options) {
             >워커 ${chips.worker.text}</span
           >`
         : ''}
+      ${chips.review
+        ? html`<span class="mon2-deck__chip" title=${chips.review.title}
+            >구현 리뷰 ${chips.review.text}</span
+          >`
+        : ''}
     </div>`;
   }
 
@@ -529,7 +536,8 @@ export function createRepoDeck(mount_element, options) {
    * The repo header's health group (UI-y9hl U2).
    *
    * dotfiles collects the record every 15 minutes and this only reads it — the
-   * deck runs no git command of its own. `unknown` renders a muted `미확인`
+   * deck runs no git command of its own. `unknown` renders an explicit
+   * explanation of the missing observation
    * rather than a guess, and an old record keeps its last error instead of
    * reading as currently healthy.
    *
@@ -542,8 +550,8 @@ export function createRepoDeck(mount_element, options) {
     if (!health || state === 'unknown') {
       return html`<span
         class="mon2-deck__health is-unknown"
-        title="저장소 건강 기록이 없습니다"
-        >미확인</span
+        title="저장소 건강 점검의 유효한 기록을 아직 확인하지 못했습니다. 기록 부재·조회 중·조회 실패가 포함되며, 실행 설정 오류를 뜻하지 않습니다."
+        >건강 점검 정보 없음</span
       >`;
     }
     const age =

@@ -43,11 +43,6 @@ import {
   detachMonitorPipeline,
   ensureRunnableScanWired,
   handleMonitorAutoToggle,
-  handleMonitorLaneConfirm,
-  handleMonitorLaneCreate,
-  handleMonitorLaneProvenance,
-  handleMonitorLaneRemove,
-  handleMonitorLaneUpdate,
   handleSubscribeMonitorPipeline,
   handleUnsubscribeMonitorPipeline
 } from './monitor-handlers.js';
@@ -110,8 +105,6 @@ import {
   handleWorkerPrDiscard,
   handleWorkerProviderLimitPolicySet,
   handleWorkerProviderProbeNow,
-  handleWorkerQueueArm,
-  handleWorkerQueueDisarm,
   handleWorkerQueueHoldResume,
   handleWorkerQueueHoldRetryNow,
   handleWorkerQueuePlace,
@@ -553,32 +546,11 @@ export async function handleMessage(ws, data) {
     case 'monitor-auto-toggle':
       handleMonitorAutoToggle(ws, req);
       return;
-    case 'monitor-lane-create':
-      handleMonitorLaneCreate(ws, req);
-      return;
-    case 'monitor-lane-update':
-      handleMonitorLaneUpdate(ws, req);
-      return;
-    case 'monitor-lane-confirm':
-      handleMonitorLaneConfirm(ws, req);
-      return;
-    case 'monitor-lane-remove':
-      handleMonitorLaneRemove(ws, req);
-      return;
-    case 'monitor-lane-provenance':
-      handleMonitorLaneProvenance(ws, req);
-      return;
     case 'worker-queue-place':
       await handleWorkerQueuePlace(ws, req);
       return;
     case 'worker-queue-reorder':
       handleWorkerQueueReorder(ws, req);
-      return;
-    case 'worker-queue-arm':
-      handleWorkerQueueArm(ws, req);
-      return;
-    case 'worker-queue-disarm':
-      handleWorkerQueueDisarm(ws, req);
       return;
     case 'worker-queue-start-now':
       handleWorkerQueueStartNow(ws, req);

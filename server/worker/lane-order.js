@@ -1,12 +1,8 @@
 /**
  * The ONE ordering rule every lane correction uses.
  *
- * Lives apart from `queue-store.js` because both sides of the wire need it:
- * the worker queue corrects 레포 직렬 레인 order here, and the Monitor's
- * 연결 레인 자동 교정 (UI-jaua §6.1) runs the SAME function in the browser.
- * `queue-store.js` reaches for `node:fs`, so a browser bundle cannot import it
- * — and a second, cross-lane-only sort would be exactly the divergence UI-jaua
- * §4 forbids ("정렬 규칙은 하나다").
+ * Lives apart from `queue-store.js` so every serial-lane caller uses the same
+ * stable correction rule.
  */
 
 /**

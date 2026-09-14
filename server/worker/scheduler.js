@@ -793,19 +793,6 @@ function waitingLaneOf(q, bead_id) {
 }
 
 /**
- * Whether a waiting row carries a cross-lane arm (UI-jaua §5.1). The scheduler
- * asks only this — it never resolves the id, because the lane store is
- * server-global and this module is per-workspace (§4).
- *
- * @param {{ armed_by_lane?: string|null }} entry
- */
-function isArmedEntry(entry) {
-  return (
-    typeof entry.armed_by_lane === 'string' && entry.armed_by_lane.length > 0
-  );
-}
-
-/**
  * The beads a `[지금 시작]` click named, with the moment it was clicked (§3.3).
  * In memory on purpose: this spec READS `added_at` and never writes it, so the
  * skip leaves no durable residue, and a restart simply lets the grace stand
@@ -884,11 +871,7 @@ function startNowRequestedAt(workspace, bead_id, at) {
 }
 
 /**
- * Does a live `[지금 시작]` click name this waiting entry? Kept apart from
- * {@link isExplicitRunEntry} because the two instructions differ in durability
- * and origin: `armed_by_lane` is a stored cross-lane fact on the row (UI-jaua
- * §5.2, UI-tjus §3.2) while this one is an in-memory click. Both now reach a
- * row wherever it sits.
+ * Does a live `[지금 시작]` click name this waiting entry?
  *
  * @param {string} workspace
  * @param {{ bead_id: string, added_at?: number }} entry
@@ -904,46 +887,14 @@ function isStartNowEntry(workspace, entry, at) {
 }
 
 /**
- * Does this waiting entry carry an explicit run instruction? `▶ 진행` writes one
- * durably (`armed_by_lane`) and `[지금 시작]` holds one in memory; decision 2 of
- * §3.3 keeps both out of the grace, because deferring what the user just pressed
- * reads as the click not having landed.
+ * Does this waiting entry carry an explicit `[지금 시작]` instruction?
  *
  * @param {string} workspace
- * @param {{ bead_id: string, added_at?: number, armed_by_lane?: string|null }} entry
+ * @param {{ bead_id: string, added_at?: number }} entry
  * @param {number} at - Epoch ms this pass reads as now.
  */
 function isExplicitRunEntry(workspace, entry, at) {
-  return isArmedEntry(entry) || isStartNowEntry(workspace, entry, at);
-}
-
-/**
- * The serial lane heads carrying an explicit run instruction — a cross lane's
- * arm or a live `[지금 시작]` click (§3.3 결정 2, UI-tjus §3.2). Every OTHER
- * serial head stays out of an `armed_only` pass: automatic serial candidacy is
- * what `auto_advance` owns.
- *
- * HEAD ONLY. An armed member BEHIND the head is not named here — the exclusive
- * chain in front of it is what its serial lane means, and letting an arm jump
- * that chain would reorder the sequence the user chose. This set only WIDENS
- * the candidate list; lane occupancy, readiness, slots and every other fence
- * still run on the head it names.
- *
- * @param {{ serial_lanes?: Array<{ entries?: any[] }> }} q
- * @param {string} workspace
- * @param {number} at
- * @returns {Set<string>}
- */
-function explicitRunSerialHeads(q, workspace, at) {
-  /** @type {Set<string>} */
-  const named = new Set();
-  for (const lane of Array.isArray(q.serial_lanes) ? q.serial_lanes : []) {
-    const head = Array.isArray(lane.entries) ? lane.entries[0] : null;
-    if (head && isExplicitRunEntry(workspace, head, at)) {
-      named.add(head.bead_id);
-    }
-  }
-  return named;
+  return isStartNowEntry(workspace, entry, at);
 }
 
 /**
@@ -952,7 +903,7 @@ function explicitRunSerialHeads(q, workspace, at) {
  * instruction.
  *
  * @param {string} workspace
- * @param {{ bead_id: string, added_at?: number, armed_by_lane?: string|null }} entry
+ * @param {{ bead_id: string, added_at?: number }} entry
  * @param {number} at - Epoch ms this pass reads as now.
  * @returns {number}
  */
@@ -968,11 +919,11 @@ function graceRemainingMs(workspace, entry, at) {
  * A bead's current waiting row in a snapshot, from EITHER waiting area — the
  * parallel queue or a serial lane (UI-tjus §3.2). Null when the bead is not
  * waiting. The row itself is what dispatch-time judgments read, because
- * `added_at` and `armed_by_lane` live on it and a re-seat replaces them.
+ * `added_at` lives on it and a re-seat replaces it.
  *
  * @param {{ queue?: Array<{ bead_id: string }>, serial_lanes?: Array<{ entries?: Array<{ bead_id: string }> }> }} q
  * @param {string} bead_id
- * @returns {{ bead_id: string, added_at?: number, armed_by_lane?: string|null }|null}
+ * @returns {{ bead_id: string, added_at?: number }|null}
  */
 function waitingEntryOf(q, bead_id) {
   for (const row of q.queue || []) {
@@ -988,24 +939,6 @@ function waitingEntryOf(q, bead_id) {
     }
   }
   return null;
-}
-
-/**
- * The cross lane a bead's waiting row is armed by, for the dispatch snapshot
- * (UI-jaua §5.1). Both waiting areas are read (UI-tjus §3.2): a serial member
- * now dispatches from the lane the user placed it in, and the attempt has to
- * record the arm that actually launched it so the failure path disarms that
- * same row. Null when the row is unarmed or absent.
- *
- * @param {{ queue?: Array<{ bead_id: string, armed_by_lane?: string|null }>, serial_lanes?: Array<{ entries?: Array<{ bead_id: string, armed_by_lane?: string|null }> }> }} q
- * @param {string} bead_id
- * @returns {string|null}
- */
-function armedByLaneOf(q, bead_id) {
-  const entry = waitingEntryOf(q, bead_id);
-  return entry && isArmedEntry(entry)
-    ? /** @type {string} */ (entry.armed_by_lane)
-    : null;
 }
 
 /**
@@ -1403,7 +1336,7 @@ export function createScheduler(deps) {
   /** Beads currently claimed (dispatching or running) — prevents double launch. @type {Set<string>} */
   const claimed = new Set();
   /**
-   * @typedef {{ bead_id: string, lineage_id: string, serial_lane_id: string|null, continuation?: boolean }} LaneLaunchInput
+   * @typedef {{ bead_id: string, lineage_id: string, serial_lane_id: string|null, continuation?: boolean, bypassed_before?: string[] }} LaneLaunchInput
    */
   /**
    * @typedef {{
@@ -4590,6 +4523,12 @@ export function createScheduler(deps) {
       return 'bead_running';
     }
     const lane_id = input.serial_lane_id;
+    if (
+      input.continuation !== true &&
+      waitingLaneOf(q, input.bead_id) !== lane_id
+    ) {
+      return 'serial_lane_not_head';
+    }
     if (lane_id === null) {
       return null;
     }
@@ -4607,11 +4546,23 @@ export function createScheduler(deps) {
       return 'serial_lane_occupied';
     }
     if (input.continuation !== true) {
-      // A fresh dispatch may only take a lane through its head — non-head
-      // entries wait for the exclusive chain in front of them.
       const index = /** @type {number} */ (serialLaneIndexOf(lane_id));
       const entries = q.serial_lanes?.[index]?.entries || [];
-      if (entries.length === 0 || entries[0].bead_id !== input.bead_id) {
+      const bead_index = entries.findIndex(
+        (/** @type {{ bead_id: string }} */ entry) =>
+          entry.bead_id === input.bead_id
+      );
+      const prefix = entries
+        .slice(0, bead_index)
+        .map((/** @type {{ bead_id: string }} */ entry) => entry.bead_id);
+      if (
+        bead_index < 0 ||
+        prefix.length !== (input.bypassed_before || []).length ||
+        prefix.some(
+          (/** @type {string} */ id, /** @type {number} */ prefix_index) =>
+            id !== input.bypassed_before?.[prefix_index]
+        )
+      ) {
         return 'serial_lane_not_head';
       }
     }
@@ -5146,7 +5097,6 @@ export function createScheduler(deps) {
       // held by the bd dependency gate while this bead stays open. It applies
       // to every tier: an env retry and a parked resume both dispatch through
       // their own path, never through the lane's arm.
-      deps.store.disarmEntry(workspace, { bead_id });
     }
     // The bead goes back to `open` on EVERY tier, including `parked`: the whole
     // point of a park is that the USER's own session picks the bead up, and it
@@ -6042,6 +5992,9 @@ export function createScheduler(deps) {
     if (!issue || typeof issue !== 'object') {
       return null;
     }
+    if (hasDeferReason(issue.defer)) {
+      return null;
+    }
     try {
       return await unresolvedBlockersOf(workspace, issue);
     } catch (err) {
@@ -6062,9 +6015,140 @@ export function createScheduler(deps) {
     const blockers = await prerequisiteBlockersOf(workspace, bead_id, snap);
     if (blockers !== null && blockers.length > 0) {
       recordSkipReason(workspace, bead_id, 'prerequisite_unmet', { blockers });
-      return;
+      return true;
     }
     recordSkipReason(workspace, bead_id, notReadyReason(snap));
+    return false;
+  }
+
+  /**
+   * Whether local scheduler state makes a serial predecessor ineligible for a
+   * prerequisite-only bypass.
+   *
+   * @param {string} workspace
+   * @param {any} q
+   * @param {{ bead_id: string, added_at?: number }} predecessor
+   */
+  function serialBypassLocallyBlocked(workspace, q, predecessor) {
+    return (
+      cleanup_pending.has(predecessor.bead_id) ||
+      claimed.has(predecessor.bead_id) ||
+      dispatch_refused.has(predecessor.bead_id) ||
+      leafPausedBeads(q).has(predecessor.bead_id) ||
+      ['pending', 'running'].includes(
+        latestImplementationAttempt(q, predecessor.bead_id)?.status || ''
+      ) ||
+      graceRemainingMs(workspace, predecessor, now()) > 0 ||
+      settledAttemptFence(q, predecessor.bead_id) !== null
+    );
+  }
+
+  /**
+   * Freshly verify every serial predecessor that a launch would bypass.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: true, ids: string[], lane_id: string|null }|{ ok: false, reason: string }>}
+   */
+  async function verifySerialBypass(workspace, bead_id) {
+    const q = deps.store.snapshot(workspace);
+    const lane_id = waitingLaneOf(q, bead_id);
+    if (lane_id === null) {
+      return { ok: true, ids: [], lane_id: null };
+    }
+    const lane = q.serial_lanes.find(
+      (/** @type {{ id: string }} */ entry) => entry.id === lane_id
+    );
+    const index =
+      lane?.entries.findIndex(
+        (/** @type {{ bead_id: string }} */ entry) => entry.bead_id === bead_id
+      ) ?? -1;
+    if (!lane || index < 0) {
+      return { ok: false, reason: 'serial_lane_not_head' };
+    }
+    /** @type {string[]} */
+    const ids = [];
+    for (const predecessor of lane.entries.slice(0, index)) {
+      if (serialBypassLocallyBlocked(workspace, q, predecessor)) {
+        return { ok: false, reason: 'serial_lane_not_head' };
+      }
+      /** @type {BeadSnapshot} */
+      let snap;
+      try {
+        snap = await deps.bd.snapshotBead(predecessor.bead_id);
+      } catch {
+        recordSkipReason(workspace, predecessor.bead_id, 'bd_snapshot_failed');
+        return { ok: false, reason: 'serial_lane_not_head' };
+      }
+      if (snap.ready && !snap.blocked) {
+        return { ok: false, reason: 'serial_lane_not_head' };
+      }
+      if (
+        isWorkerIneligible(snap.labels) ||
+        Object.hasOwn(snap, 'awaiting_user')
+      ) {
+        return { ok: false, reason: 'serial_lane_not_head' };
+      }
+      if (!(await recordNotReady(workspace, predecessor.bead_id, snap))) {
+        return { ok: false, reason: 'serial_lane_not_head' };
+      }
+      ids.push(predecessor.bead_id);
+    }
+    // A later predecessor read may reveal that an earlier prerequisite changed
+    // meanwhile. Confirm the prefix again in reverse so no newer observation
+    // made during the forward pass is ignored.
+    for (const predecessor of [...lane.entries.slice(0, index)].reverse()) {
+      /** @type {BeadSnapshot} */
+      let snap;
+      try {
+        snap = await deps.bd.snapshotBead(predecessor.bead_id);
+      } catch {
+        return { ok: false, reason: 'serial_lane_not_head' };
+      }
+      const blockers = await prerequisiteBlockersOf(
+        workspace,
+        predecessor.bead_id,
+        snap
+      );
+      if (
+        (snap.ready && !snap.blocked) ||
+        isWorkerIneligible(snap.labels) ||
+        Object.hasOwn(snap, 'awaiting_user') ||
+        blockers === null ||
+        blockers.length === 0
+      ) {
+        return { ok: false, reason: 'serial_lane_not_head' };
+      }
+    }
+    // Queue state is synchronous within this turn. Refresh it after the async
+    // prerequisite probes so a newly paused/settled prefix or a reorder is
+    // part of the reservation input that follows immediately.
+    const final_q = deps.store.snapshot(workspace);
+    const final_lane_id = waitingLaneOf(final_q, bead_id);
+    const final_lane = final_q.serial_lanes.find(
+      (/** @type {{ id: string }} */ entry) => entry.id === final_lane_id
+    );
+    const final_index =
+      final_lane?.entries.findIndex(
+        (/** @type {{ bead_id: string }} */ entry) => entry.bead_id === bead_id
+      ) ?? -1;
+    const final_prefix = final_lane?.entries.slice(0, final_index) || [];
+    if (
+      final_lane_id !== lane_id ||
+      final_index < 0 ||
+      final_prefix.length !== ids.length ||
+      final_prefix.some(
+        (
+          /** @type {{ bead_id: string, added_at?: number }} */ predecessor,
+          /** @type {number} */ prefix_index
+        ) =>
+          predecessor.bead_id !== ids[prefix_index] ||
+          serialBypassLocallyBlocked(workspace, final_q, predecessor)
+      )
+    ) {
+      return { ok: false, reason: 'serial_lane_not_head' };
+    }
+    return { ok: true, ids, lane_id: final_lane_id };
   }
 
   /**
@@ -7929,16 +8013,18 @@ export function createScheduler(deps) {
       // `serial_lane_id` snapshot must match the lane the launch actually
       // consumed.
       const dispatch_snapshot = deps.store.snapshot(workspace);
-      const serial_lane_id = waitingLaneOf(dispatch_snapshot, bead_id);
-      // Same re-read, same reason (UI-jaua §5.1): the arm is snapshotted onto
-      // the attempt because the parallel row is replaced at the PR-wait
-      // transition, and the failure judgment needs to know which lane launched
-      // this attempt rather than which lane is armed now.
-      const armed_by_lane = armedByLaneOf(dispatch_snapshot, bead_id);
+      const bypass = await verifySerialBypass(workspace, bead_id);
+      if (!bypass.ok) {
+        reservation?.release();
+        refuseDispatch(workspace, bead_id, bypass.reason);
+        return;
+      }
+      let serial_lane_id = bypass.lane_id;
       const lane_input = {
         bead_id,
         lineage_id: bead_id,
-        serial_lane_id
+        serial_lane_id: bypass.lane_id,
+        bypassed_before: bypass.ids
       };
       const serial_launch = reservation
         ? reservation.revalidate(lane_input)
@@ -7959,7 +8045,7 @@ export function createScheduler(deps) {
         await readWorkspaceAccountsLayer(workspace)
       );
       if (!resolved_exec.ok) {
-        reservation.release();
+        reservation?.release();
         refuseDispatch(workspace, bead_id, resolved_exec.reason);
         return;
       }
@@ -7979,9 +8065,7 @@ export function createScheduler(deps) {
       // the waiting row itself rather than the bare request time, because
       // {@link isStartNowEntry} also requires `added_at <= requested_at`: a row
       // re-seated after the click carries a newer `added_at` and must not
-      // inherit that click's bypass. `armed_by_lane` deliberately does NOT
-      // bypass — it is durable and replays across a restart, so it cannot mean
-      // "push this row past a gate standing right now".
+      // inherit that click's bypass.
       const waiting_entry = waitingEntryOf(dispatch_snapshot, bead_id);
       const start_now_bypass =
         waiting_entry !== null &&
@@ -8341,6 +8425,55 @@ export function createScheduler(deps) {
       // reason: after the first metadata write nothing can tell an appeared key
       // from a pre-existing one (UI-bu6d §2).
       const receipt_baseline = await captureReceiptBaseline(bead_id);
+      /** @param {string} reason */
+      const abortPreparedLaunch = async (reason) => {
+        reservation?.release();
+        removeGuardHook(workspace, attempt_id);
+        if (!stale_context) {
+          try {
+            await deps.worktree.remove({ repo: snap.repo, bead_id });
+          } catch {
+            // The visible refusal remains the recovery evidence.
+          }
+        }
+        refuseDispatch(workspace, bead_id, reason);
+      };
+
+      // Every awaited preparation step above can change readiness or queue
+      // placement. Re-read both immediately before the first durable launch
+      // write, then synchronously revalidate the held lane reservation.
+      let final_snap;
+      try {
+        final_snap = await deps.bd.snapshotBead(bead_id);
+      } catch {
+        await abortPreparedLaunch('bd_snapshot_failed');
+        recordSkipReason(workspace, bead_id, 'bd_snapshot_failed');
+        return;
+      }
+      const final_bypass = await verifySerialBypass(workspace, bead_id);
+      if (
+        !final_bypass.ok ||
+        !final_snap.ready ||
+        final_snap.blocked ||
+        isWorkerIneligible(final_snap.labels)
+      ) {
+        await abortPreparedLaunch(
+          final_bypass.ok ? 'serial_lane_not_head' : final_bypass.reason
+        );
+        return;
+      }
+      const final_launch = reservation.revalidate({
+        bead_id,
+        lineage_id: bead_id,
+        serial_lane_id: final_bypass.lane_id,
+        bypassed_before: final_bypass.ids
+      });
+      if (!final_launch.ok) {
+        await abortPreparedLaunch(final_launch.reason);
+        return;
+      }
+      reservation = final_launch.lease;
+      serial_lane_id = final_bypass.lane_id;
 
       // DURABLE pre-record before the FIRST metadata write. It carries the whole
       // effective 15-key snapshot and exact cleanup provenance.
@@ -8375,7 +8508,6 @@ export function createScheduler(deps) {
           // without re-reading a bead it may already have closed.
           bench_run,
           serial_lane_id,
-          armed_by_lane,
           ...(retry_context
             ? {
                 retry: {
@@ -12263,7 +12395,7 @@ export function createScheduler(deps) {
     }
     // 큐·직렬 레인에 앉은 채 `prerequisite_unmet`으로 거부된 항목도 후보다
     // (UI-d3i1 §6.2): 그 항목에는 attempt가 없으므로 위의 waiting 순회가
-    // 영영 보지 못한다. 직렬 레인의 head가 아닌 멤버도 넣는다 — 발차 규칙은
+    // 영영 보지 못한다. 직렬 레인의 head가 아닌 멤버도 넣는다 — 시작 규칙은
     // `tickPass`가 그대로 소유하고 재스캔은 "다시 물을 가치가 있나"만 답한다.
     /** @type {Set<string>} */
     const admission_candidates = new Set();
@@ -12305,7 +12437,7 @@ export function createScheduler(deps) {
     );
     if (returned.length > 0) {
       // 복귀가 확인된 선행 대기 기록만 지운다 (§5.3): 슬롯이 없어 이번 pass가
-      // 발차하지 못해도 닫힌 선행을 가리키는 뱃지가 남지 않게 한다. 사람의
+      // 시작하지 못해도 닫힌 선행을 가리키는 뱃지가 남지 않게 한다. 사람의
       // 처분을 기다리는 다른 reason은 건드리지 않는다.
       for (const bead_id of returned) {
         if (admission_candidates.has(bead_id)) {
@@ -13210,28 +13342,29 @@ export function createScheduler(deps) {
    */
   async function runPass(workspace) {
     let q = deps.store.snapshot(workspace);
-    // UI-jaua §5.2: `auto_advance` OFF no longer stops the pass — it NARROWS
-    // the candidate set to the waiting rows a cross lane armed — parallel rows
-    // and serial lane HEADS alike (UI-tjus §3.2). With the toggle ON the set is
-    // unchanged, arm or no arm. With it OFF and nothing armed there is no
-    // candidate at all, which is the old bail-out verbatim.
-    // TWO independent narrowings, one candidate set (2026-08-28
-    // worker-failure-tiers spec §4): the user's ⏸ (`auto_advance`) and the
-    // failure-owned stop (`queue.hold`). Either one alone leaves only the rows
-    // a cross lane armed, which is the UI-jaua §5.2 exception verbatim; neither
-    // implies the other, so `▶` no longer overrides a systemic stop and a
-    // released hold no longer resumes a paused queue.
     const at = now();
-    const armed_only = q.auto_advance !== true || q.hold !== null;
-    // 명시적 실행 지시는 직렬 레인 선두도 지목하므로 이 문은 병렬 큐만 보면 안
-    // 된다 (§3.3 결정 2, UI-tjus §3.2): 그러면 서버가 arm과 `[지금 시작]`에
-    // 성공을 돌려주고도 아무것도 발차하지 않는다.
-    const explicit_serial_heads = explicitRunSerialHeads(q, workspace, at);
+    const explicit_only = q.auto_advance !== true || q.hold !== null;
+    const explicit_serial = new Map();
+    for (const lane of q.serial_lanes || []) {
+      let index = -1;
+      for (
+        let candidate_index = 0;
+        candidate_index < lane.entries.length;
+        candidate_index += 1
+      ) {
+        if (isStartNowEntry(workspace, lane.entries[candidate_index], at)) {
+          index = candidate_index;
+        }
+      }
+      if (index >= 0) {
+        explicit_serial.set(lane.id, index);
+      }
+    }
     if (
-      armed_only &&
-      explicit_serial_heads.size === 0 &&
+      explicit_only &&
+      explicit_serial.size === 0 &&
       !q.queue.some((/** @type {any} */ entry) =>
-        isExplicitRunEntry(workspace, entry, at)
+        isStartNowEntry(workspace, entry, at)
       )
     ) {
       return;
@@ -13239,7 +13372,7 @@ export function createScheduler(deps) {
     const paused_beads = leafPausedBeads(q);
     const active_beads = activeBeadIdsFrom(q);
 
-    /** @type {Array<{ bead_id: string, snap: BeadSnapshot }>} */
+    /** @type {Array<{ bead_id: string, snap: BeadSnapshot, bypassed_before: string[] }>} */
     const to_dispatch = [];
 
     // Occupancy is `claimed`, NOT `running`: a dispatch that has taken its claim
@@ -13255,58 +13388,68 @@ export function createScheduler(deps) {
     // what the cap limits, so a bead in both sets is never counted twice.
     const occupied = occupiedBeadIds(q);
     let free = slotsOf(q) - occupied.size;
-    // Candidate order (UI-04vo §2): every parallel-lane entry first, then the
-    // head of each UNOCCUPIED serial lane. Non-head serial entries are never
-    // candidates — the exclusive chain in front of them is what a serial lane
-    // means — and an occupied lane contributes nothing until its lineage
-    // merges, is cleaned up, or is discarded.
+    // Parallel entries keep their ordinary order. An unoccupied serial lane is
+    // scanned in order until the first runnable row; only verified prerequisite
+    // waits may be bypassed.
     const lane_occupancy = activeLaneLineages(q);
-    /** @type {Array<{ bead_id: string, serial_lane_id: string|null, grace_left: number }>} */
+    /** @type {Array<{ bead_id: string, serial_lane_id: string|null, grace_left: number, explicit_target: boolean }>} */
     const candidates = q.queue
       .filter(
-        (
-          /** @type {{ bead_id: string, added_at?: number, armed_by_lane?: string|null }} */ entry
-        ) => !armed_only || isExplicitRunEntry(workspace, entry, at)
+        (/** @type {{ bead_id: string, added_at?: number }} */ entry) =>
+          !explicit_only || isStartNowEntry(workspace, entry, at)
       )
-      .map(
-        (
-          /** @type {{ bead_id: string, added_at?: number, armed_by_lane?: string|null }} */ entry
-        ) => ({
-          bead_id: entry.bead_id,
-          serial_lane_id: /** @type {string|null} */ (null),
-          grace_left: graceRemainingMs(workspace, entry, at)
-        })
-      );
-    // armed_only 패스에서 직렬 선두는 명시적 실행 지시를 든 것만 후보다
-    // (UI-tjus §3.2): 연결 레인의 arm이나 `[지금 시작]`이 그 선두를 지목한
-    // 경우다. 그 밖의 선두는 여전히 `auto_advance`의 축에 남는다. 지시는 후보를
-    // 넓힐 뿐이어서 아래의 점유 검사도, 뒤따르는 준비·슬롯 검사도 그대로 걸린다
-    // — 뒤에 선 armed 멤버 때문에 앞의 unarmed 선두를 건너뛰는 일은 없다.
+      .map((/** @type {{ bead_id: string, added_at?: number }} */ entry) => ({
+        bead_id: entry.bead_id,
+        serial_lane_id: /** @type {string|null} */ (null),
+        grace_left: graceRemainingMs(workspace, entry, at),
+        explicit_target: isStartNowEntry(workspace, entry, at)
+      }));
     for (const lane of q.serial_lanes || []) {
-      const head = lane.entries[0];
-      if (!head) {
+      if (lane.entries.length === 0) {
         continue;
       }
-      if (armed_only && !explicit_serial_heads.has(head.bead_id)) {
+      const explicit_index = explicit_serial.get(lane.id);
+      if (explicit_only && explicit_index === undefined) {
         continue;
       }
-      if (laneOccupiedByOther(lane_occupancy, lane.id, head.bead_id)) {
+      if (
+        laneOccupiedByOther(lane_occupancy, lane.id, lane.entries[0].bead_id)
+      ) {
         continue;
       }
-      candidates.push({
-        bead_id: head.bead_id,
-        serial_lane_id: lane.id,
-        grace_left: graceRemainingMs(workspace, head, at)
-      });
+      const entries = explicit_only
+        ? lane.entries.slice(0, /** @type {number} */ (explicit_index) + 1)
+        : lane.entries;
+      for (const entry of entries) {
+        candidates.push({
+          bead_id: entry.bead_id,
+          serial_lane_id: lane.id,
+          grace_left: graceRemainingMs(workspace, entry, at),
+          explicit_target: isStartNowEntry(workspace, entry, at)
+        });
+      }
     }
+    const stopped_serial_lanes = new Set();
+    /** @type {Map<string, string[]>} */
+    const bypassed_by_lane = new Map();
     for (const entry of candidates) {
       if (free <= 0) {
         break;
       }
+      const lane_id = entry.serial_lane_id;
+      if (lane_id !== null && stopped_serial_lanes.has(lane_id)) {
+        continue;
+      }
+      const stopSerialLane = () => {
+        if (lane_id !== null) {
+          stopped_serial_lanes.add(lane_id);
+        }
+      };
       // A stop whose residue cleanup is still in flight: RECORDED, not silent —
       // a silent skip is the exact failure mode this phase removes.
       if (cleanup_pending.has(entry.bead_id)) {
         recordSkipReason(workspace, entry.bead_id, 'stop_cleanup_pending');
+        stopSerialLane();
         continue;
       }
       if (
@@ -13315,6 +13458,7 @@ export function createScheduler(deps) {
         paused_beads.has(entry.bead_id) ||
         active_beads.has(entry.bead_id)
       ) {
+        stopSerialLane();
         continue;
       }
       // 대기 진입 유예 (§3.3): 방금 앉은 항목은 자동 dispatch가 집지 않는다.
@@ -13324,6 +13468,7 @@ export function createScheduler(deps) {
       if (entry.grace_left > 0) {
         grace_refused.set(entry.bead_id, at + entry.grace_left);
         refuseDispatch(workspace, entry.bead_id, 'grace_period');
+        stopSerialLane();
         continue;
       }
       // A bead whose last implementation attempt settled unhandled is not a
@@ -13332,6 +13477,7 @@ export function createScheduler(deps) {
       const fenced = settledAttemptFence(q, entry.bead_id);
       if (fenced !== null) {
         recordSkipReason(workspace, entry.bead_id, fenced);
+        stopSerialLane();
         continue;
       }
       let snap;
@@ -13339,17 +13485,48 @@ export function createScheduler(deps) {
         snap = await deps.bd.snapshotBead(entry.bead_id);
       } catch {
         recordSkipReason(workspace, entry.bead_id, 'bd_snapshot_failed');
+        stopSerialLane();
         continue;
       }
       if (!snap.ready || snap.blocked) {
-        if (!dequeueIfClosed(workspace, entry.bead_id, snap)) {
-          await recordNotReady(workspace, entry.bead_id, snap);
+        if (
+          isWorkerIneligible(snap.labels) ||
+          Object.hasOwn(snap, 'awaiting_user')
+        ) {
+          recordSkipReason(
+            workspace,
+            entry.bead_id,
+            Object.hasOwn(snap, 'awaiting_user')
+              ? 'awaiting_user'
+              : 'worker_ineligible'
+          );
+          stopSerialLane();
+          continue;
         }
+        if (!dequeueIfClosed(workspace, entry.bead_id, snap)) {
+          const prerequisite_wait = await recordNotReady(
+            workspace,
+            entry.bead_id,
+            snap
+          );
+          if (lane_id !== null && prerequisite_wait) {
+            const bypassed = bypassed_by_lane.get(lane_id) || [];
+            bypassed.push(entry.bead_id);
+            bypassed_by_lane.set(lane_id, bypassed);
+            continue;
+          }
+        }
+        stopSerialLane();
+        continue;
+      }
+      if (explicit_only && lane_id !== null && !entry.explicit_target) {
+        stopSerialLane();
         continue;
       }
       const adm = await checkAdmission(snap);
       if (!adm.ok) {
         recordSkipReason(workspace, entry.bead_id, adm.reason || 'git_error');
+        stopSerialLane();
         continue;
       }
       // Admitted-but-stale: badge it and dispatch anyway. The scan's verdict is
@@ -13358,7 +13535,13 @@ export function createScheduler(deps) {
       if (adm.stale) {
         recordStale(workspace, entry.bead_id);
       }
-      to_dispatch.push({ bead_id: entry.bead_id, snap });
+      to_dispatch.push({
+        bead_id: entry.bead_id,
+        snap,
+        bypassed_before:
+          lane_id === null ? [] : [...(bypassed_by_lane.get(lane_id) || [])]
+      });
+      stopSerialLane();
       free -= 1;
     }
 
@@ -13400,7 +13583,8 @@ export function createScheduler(deps) {
       const reservation = acquireLaneLaunch(workspace, {
         bead_id: d.bead_id,
         lineage_id: d.bead_id,
-        serial_lane_id: waitingLaneOf(live_snapshot, d.bead_id)
+        serial_lane_id: waitingLaneOf(live_snapshot, d.bead_id),
+        bypassed_before: d.bypassed_before
       });
       if (!reservation.ok) {
         continue;

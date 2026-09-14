@@ -148,13 +148,9 @@ describe('server/protocol', () => {
     expect(MESSAGE_TYPES.length).toBeGreaterThan(0);
   });
 
-  test('registers the lane provenance and queue arm message types', () => {
-    expect(MESSAGE_TYPES).toEqual(
-      expect.arrayContaining([
-        'monitor-lane-provenance',
-        'worker-queue-arm',
-        'worker-queue-disarm'
-      ])
+  test('rejects retired connected-lane message types', () => {
+    expect(MESSAGE_TYPES).not.toEqual(
+      expect.arrayContaining(['monitor-lane-provenance', 'worker-queue-arm'])
     );
   });
 

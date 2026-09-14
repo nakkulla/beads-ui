@@ -4,9 +4,9 @@ import { createWorkspacePicker } from './workspace-picker.js';
 /**
  * @param {any} workspace
  */
-function makeStore(workspace) {
+function makeStore(workspace, view = 'worker') {
   return {
-    state: { workspace },
+    state: { workspace, view },
     getState() {
       return this.state;
     },
@@ -20,6 +20,142 @@ function makeStore(workspace) {
 }
 
 describe('views/workspace-picker', () => {
+  test('forwards a same-workspace selection from Monitor', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = makeStore(
+      {
+        current: { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+        available: [
+          { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+          { path: '/repo-b', database: '/repo-b/.beads/ui.db' }
+        ]
+      },
+      'monitor'
+    );
+    const onWorkspaceChange = vi.fn(async () => {});
+    createWorkspacePicker(mount, /** @type {any} */ (store), onWorkspaceChange);
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.workspace-picker__select')
+    );
+    expect(select.value).toBe('');
+
+    select.value = '/repo-a';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await Promise.resolve();
+
+    expect(onWorkspaceChange).toHaveBeenCalledWith('/repo-a');
+  });
+
+  test('renders a real project choice from Monitor with one visible workspace', () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = makeStore(
+      {
+        current: { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+        available: [{ path: '/repo-a', database: '/repo-a/.beads/ui.db' }]
+      },
+      'monitor'
+    );
+
+    createWorkspacePicker(mount, /** @type {any} */ (store), vi.fn());
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.workspace-picker__select')
+    );
+    expect(select.value).toBe('');
+    expect(Array.from(select.options).map((option) => option.value)).toEqual([
+      '',
+      '/repo-a'
+    ]);
+  });
+
+  test('restores the Monitor placeholder after rejection and forwards the same retry', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = makeStore(
+      {
+        current: { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+        available: [
+          { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+          { path: '/repo-b', database: '/repo-b/.beads/ui.db' }
+        ]
+      },
+      'monitor'
+    );
+    const onWorkspaceChange = vi.fn(async () => {
+      throw new Error('switch rejected');
+    });
+    createWorkspacePicker(mount, /** @type {any} */ (store), onWorkspaceChange);
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.workspace-picker__select')
+    );
+
+    select.value = '/repo-b';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(select.value).toBe('');
+
+    select.value = '/repo-b';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onWorkspaceChange).toHaveBeenCalledTimes(2);
+    expect(select.value).toBe('');
+  });
+
+  test('restores the current workspace after rejection outside Monitor', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = makeStore({
+      current: { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+      available: [
+        { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+        { path: '/repo-b', database: '/repo-b/.beads/ui.db' }
+      ]
+    });
+    const onWorkspaceChange = vi.fn(async () => {
+      throw new Error('switch rejected');
+    });
+    createWorkspacePicker(mount, /** @type {any} */ (store), onWorkspaceChange);
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.workspace-picker__select')
+    );
+
+    select.value = '/repo-b';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onWorkspaceChange).toHaveBeenCalledWith('/repo-b');
+    expect(select.value).toBe('/repo-a');
+  });
+
+  test('ignores a same-workspace selection outside Monitor', async () => {
+    document.body.innerHTML = '<div id="mount"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));
+    const store = makeStore({
+      current: { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+      available: [
+        { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+        { path: '/repo-b', database: '/repo-b/.beads/ui.db' }
+      ]
+    });
+    const onWorkspaceChange = vi.fn(async () => {});
+    createWorkspacePicker(mount, /** @type {any} */ (store), onWorkspaceChange);
+
+    /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.workspace-picker__select')
+    ).dispatchEvent(new Event('change', { bubbles: true }));
+    await Promise.resolve();
+
+    expect(onWorkspaceChange).not.toHaveBeenCalled();
+  });
+
   test('renders Git Pull icon button for a single current workspace and calls git-pull handler', async () => {
     document.body.innerHTML = '<div id="mount"></div>';
     const mount = /** @type {HTMLElement} */ (document.getElementById('mount'));

@@ -125,18 +125,6 @@ describe('monitor tab styles (UI-eey2)', () => {
     expect(CSS).not.toContain('.mon2-sec__auto');
   });
 
-  test('keeps only the cross-repo wait-lane material in the monitor block (UI-5ksp §4.2)', () => {
-    const block = monitorBlock();
-
-    // 대기 본문 구조는 두 탭이 공유하는 `.worker-wait__*`가 소유한다 — Monitor
-    // 블록에 남는 것은 cross-repo 사실(연결 레인·상호 정지 경고)뿐이다.
-    expect(block).toContain('.mon2-lane__cross-wait');
-    expect(block).toContain('.mon2-clane__body');
-    expect(block).toContain('.mon2-crow');
-    expect(block).toContain('.mon2-newlane');
-    expect(block).toMatch(/\[data-drop\]\.is-drop-over\s*{/);
-  });
-
   test('leaves no rule behind for the monitor-only wait surfaces (UI-5ksp §4.2)', () => {
     expect(CSS).not.toContain('.mon2-wait');
     expect(CSS).not.toContain('.mon2-area');
@@ -158,22 +146,8 @@ describe('monitor tab styles (UI-eey2)', () => {
     expect(CSS).toMatch(
       /\.worker-lanes > \.worker-pane\s*{[^}]*min-width:\s*220px/
     );
-    expect(CSS).toMatch(
-      /\.worker-wait \.worker-pane,[^{]*{[^}]*min-width:\s*0/
-    );
+    expect(CSS).toMatch(/\.worker-wait \.worker-pane\s*{[^}]*min-width:\s*0/);
     expect(CSS).toContain('.worker-mini__rowops');
-  });
-
-  test('lets the chain lane pane take the shared nested card tokens (UI-5ksp §4.5)', () => {
-    const selectors =
-      CSS.match(/(?:^|\n)(\.worker-wait \.worker-pane,[^{]*){/)?.[1] || '';
-    const clane =
-      monitorBlock().match(/(?:^|\n)\.mon2-clane\s*{([^}]*)}/)?.[1] || '';
-
-    // 두 중첩 pane이 다른 톤으로 갈라지지 않도록 토큰은 공유 규칙 하나가 준다.
-    expect(selectors).toContain('.worker-wait .mon2-clane');
-    expect(clane).not.toContain('border:');
-    expect(clane).not.toContain('border-radius:');
   });
 
   test('highlights a collapsed lane strip as a drop target (UI-5ksp §4.4)', () => {

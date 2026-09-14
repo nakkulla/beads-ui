@@ -264,40 +264,9 @@ const DONE_KIND_LABELS = {
  *   dependents_info?: import('./queue-blockers.js').DependentsInfo,
  *   overlap_chips?: OverlapChip[],
  *   scope_state?: 'declared'|'missing',
- *   cross_lane_chip?: CrossLaneChip,
- *   armed_lane_chip?: ArmedLaneChip,
  *   session_refs?: import('../../../server/worker/session-ref.js').SessionRefView[],
  *   search_match?: boolean
  * }} LaneItem
- */
-
-/**
- * `연결 n` / `연결 n (draft)` 칩 (UI-j92s §5.2a). draft 멤버는 어디에서도
- * 숨기지 않고, confirmed 멤버 중 실행가능·미적재인 것(어긋남)도 숨기지 않으므로,
- * 그 카드·행이 소속을 말하는 자리다. 칩 클릭 = 그 레인으로 스크롤이며 좌표는
- * `lane_id`다.
- *
- * @typedef {Object} CrossLaneChip
- * @property {string} lane_id
- * @property {number} number - 1부터. `label`과 같은 사실의 기계 판독형.
- * @property {'draft'|'confirmed'} status
- * @property {string} label
- */
-
-/**
- * `▶ 연결 n` / `▶ 진행 중 · 레인 없음` 칩 (UI-jaua §5.6·§5.3 (2)). 그 엔트리가
- * armed일 때 병렬 대기 행·실행중 타일이 그린다. 자리는 카드 문법 §5.1 슬롯 4
- * "의존·겹침"이다 — 그 표가 `연결 레인 칩`을 이미 그 슬롯에 배정했고, 이 칩이
- * 답하는 질문도 "지금 갈 수 있나"다.
- *
- * `orphan`은 `armed_by_lane`이 스냅샷에 없거나 draft로 돌아간 레인을 가리키는
- * 상태다. 스케줄러는 계속 발차하므로 숨기지 않고 드러내며(fail-visible), 그
- * 자리에서 해제할 수 있게 칩이 해제 버튼을 함께 싣는다.
- *
- * @typedef {Object} ArmedLaneChip
- * @property {string} lane_id
- * @property {string} label
- * @property {boolean} orphan
  */
 
 /**
@@ -386,79 +355,6 @@ const DONE_KIND_LABELS = {
  */
 
 /**
- * 저장 레인 한 줄의 투영 (UI-j92s §5.2). 겹침 칩·`← 선행` 칩은 이 행에 없다 —
- * 레인 순서가 곧 의존이므로 같은 사실을 두 번 말하지 않는다.
- *
- * **정정(UI-q1tg §3.5).** route와 실행 주체는 그 배제에 들어가지 않는다. 위
- * 근거는 **의존** 축의 것이고, route·오케·워커는 다른 질문에 답하므로 같은
- * 대기 레인의 병렬·직렬 행과 같은 칩을 얻는다.
- *
- * @typedef {Object} MonitorChainLaneRow
- * @property {string} id
- * @property {string} title
- * @property {string} root_dir - 위치가 해석되면 그 레포, 아니면 저장 entry가
- * 실어 온 값. 레인 멤버십은 위치보다 오래 살아 있다.
- * @property {string} workspace_name - 행이 그리는 레포 배지 (§5.2). 등록·표시되지
- * 않는 레포면 빈 문자열이다.
- * @property {number} seq - 1부터. ①②③ 표시는 뷰가 소유한다.
- * @property {string} location_label - "지금 막혀 있나"를 답하는 칩 (UI-jaua §8):
- * `🔒 대기`/`대기`/`▶ 실행중`/`PR 대기`/`완료`/`실행가능`/`미적재`/`외부`/
- * `위치 미확인`. 레포별 큐 순번은 라벨이 아니라 {@link location_title}이다 —
- * 레인 순번 `①②` 옆의 `#n`이 전역 실행 순서로 오독됐다 (§1.4).
- * @property {string} location_title - `beads-ui 병렬 #1` 같은 좌표 툴팁. 큐 밖
- * 행에는 말할 좌표가 없으므로 빈 문자열이다 (fail-quiet).
- * @property {boolean} draggable - 고정 행이 아닌 행만 끌 수 있다 (§5.3).
- * @property {boolean} fixed - 실행중·PR 대기·완료 (§5.3). 이 행 앞에는 넣을 수
- * 없고, 이 행의 `✕`는 허용된다.
- * @property {boolean} done
- * @property {boolean} unplaced - 큐·실행중·PR 대기·완료 어디에도 없다 (§5.2).
- * 위치 칩 `미적재`/`외부`가 그 자체로 어긋남 신호다.
- * @property {boolean} mismatch - `⚠ 의존 없음` (§5.2): confirmed 레인에서
- * 바로 앞 멤버가 이 행의 blocker가 아니다.
- * @property {number} [queue_index] - 병렬 큐 raw 좌표. 큐 밖 행에는 없다.
- * @property {string|null} route - 이 멤버의 route (UI-q1tg §3.5). 오버레이나 그
- * 행의 레인 투영이 아는 값이고, 모르면 `null`이라 칩이 서지 않는다.
- * @property {string|null} route_source - `derived`면 route 칩이 `unset`을
- * 그린다. 모르면 `null`이다.
- * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} exec_chips
- * - 그 멤버가 자기 레인에서 얻은 오케/워커 칩. 재료가 없으면 `null`이다.
- * @property {number|null} added_at - 큐 항목의 대기 진입 시각. 유예 칩과
- * `[지금 시작]`의 유일한 판정 재료이고, 큐 밖 행(`unplaced`)에는 없으므로
- * `null`이다 (fail-quiet).
- */
-
-/**
- * 저장 레인 하나 (UI-j92s §4.1·§5.1). 표시 번호 `number`는 `lanes` 배열 순서에서
- * 나오며 어디에도 저장되지 않는다.
- *
- * @typedef {Object} MonitorChainLane
- * @property {string} lane_id - 서버가 발급한 불변 id (`cl_<ulid>`).
- * @property {'draft'|'confirmed'} status
- * @property {boolean} draft
- * @property {number} number - 1부터.
- * @property {string} label - `연결 n · 레포 간`.
- * @property {MonitorChainLaneRow[]} rows
- * @property {boolean} all_done - 멤버 전원이 완료 (§5.1). 자동 삭제는 없다.
- * @property {boolean} can_confirm - draft이고 멤버가 2개 이상 (§5.1).
- * @property {boolean} has_mismatch - `재적용` 버튼의 조건 (§5.2): 어긋남 칩이나
- * `미적재` 멤버가 하나라도 있다.
- * @property {'draft'|'confirmed'|'running'|'failed'|'restart'|'all_done'} state
- * - 저장하지 않고 파생하는 레인 상태 (UI-jaua §5.5). 판정은 배타 우선순위로
- * 위에서 아래로 한 번만 한다: 실패 > 재시작 > 진행 중 > 모두 완료/확정. draft
- * 레인에는 발차 축이 없으므로 언제나 `draft`다.
- * @property {string} badge - 헤더 상태 배지 (`draft`/`확정`/`▶ 진행 중`/
- * `⛔ 실패`/`⏸ 재시작`). `모두 완료`는 {@link all_done}이 따로 그린다.
- * @property {string|null} run_label - `▶ 진행`/`▶ 이어서 진행`/`▶ 다시 진행`,
- * 그릴 것이 없으면 `null`. 미발차 멤버가 남아 있는 한 이 조작이 사라지지 않는
- * 것이 §9 복구 경로의 성립 조건이다.
- * @property {boolean} can_stop - Whether `⏸ 정지`가 선다 (진행 중일 때만).
- * 이미 도는 세션과 이미 머지 큐에 든 항목은 그대로 간다 — 회수가 아니라 후보
- * 축소다.
- * @property {string[]} unlaunched - 완료·실행중·PR 대기·머지 대기 어디에도 없고
- * 이 레인에 armed되지도 않은 멤버 (§5.5).
- */
-
-/**
  * @typedef {Object} LaneModel
  * @property {LaneItem[]} runnable - Filter/sort 적용 후의 평면 목록.
  * @property {LaneItem[]} runnable_all - Filter 이전의 실행가능 목록. 의존성
@@ -480,21 +376,10 @@ const DONE_KIND_LABELS = {
  * @property {LaneItem[]} done
  * @property {LaneItem[]} parallel_rows - 병렬 통합 큐 (UI-e6hw §4.1): 모든
  * visible 레포의 병렬 큐 행을 레포명 → 자기 레포 큐 순서로 이은 평면 목록.
- * **confirmed** 연결 레인에 들어 있는 버드는 빠진다 (UI-j92s §5.2a).
- * @property {MonitorChainLane[]} chain_lanes - 저장 연결 레인 (UI-j92s §4.1).
- * 스냅샷 `cross_lanes.lanes` 순서 그대로이며 표시 번호도 그 순서다.
- * @property {number|null} cross_lanes_revision - 레인 op의 CAS 값. 저장소를
- * 읽을 수 없거나(스냅샷 `null`) 키 자체가 없는 구서버(`undefined`)면 `null`이고,
- * 그때 레인 op는 비활성이다 (UI-j92s §4.4·§7).
- * @property {boolean} cross_lanes_unreadable - 스냅샷이 `null`을 실어 왔다 =
- * 저장소 읽기 실패. 뷰는 `연결 레인 저장소를 읽을 수 없음` 한 줄을 그린다.
- * 구서버(키 없음)는 여기서 `false`다 — 없는 기능과 고장 난 기능은 다른 말이다.
  * @property {Record<string, number>} parallel_raw_length - root_dir → 병렬 큐
  * 서버 배열의 entry 수 (§5.1). 통합 pane은 단일 `data-lane-length`를 가질 수
  * 없으므로 드롭 좌표는 이 값에서만 나온다.
- * @property {Record<string, string>} owner_of - bead_id → root_dir. 어느 레인에도
- * 없지만 저장 연결 레인이 등록된 레포로 지목한 버드도 여기 들어온다 (§7): 의존
- * op의 root는 이 맵에서만 나오고, 숨김·해제된 레포 멤버는 키 자체가 없다.
+ * @property {Record<string, string>} owner_of - bead_id → root_dir.
  */
 
 /**
@@ -2105,7 +1990,7 @@ function doneTokenTotal(rows) {
  * @param {Array<Record<string, any>>} states
  * @returns {string}
  */
-function chainScopeLabel(bead_id, states) {
+function scopeLocationLabel(bead_id, states) {
   const scope = classifyBlockerPrefix(bead_id, states);
   return scope === 'internal'
     ? '미적재'
@@ -2115,8 +2000,8 @@ function chainScopeLabel(bead_id, states) {
 }
 
 /**
- * The 연결 레인 행의 위치 칩 (§4.2). 큐 안의 노드는 자기 레포 큐 순번을 보이고,
- * 그 밖에는 현행 `blockerLocationLabel`/`chainScopeLabel` 값을 그대로 쓴다 —
+ * Location 큐 안의 노드는 자기 레포 큐 순번을 보이고,
+ * 그 밖에는 현행 `blockerLocationLabel`/`scopeLocationLabel` 값을 그대로 쓴다 —
  * 같은 사실에 새 문자열을 발명하지 않는다.
  *
  * @param {string} bead_id
@@ -2124,10 +2009,10 @@ function chainScopeLabel(bead_id, states) {
  * @param {Array<Record<string, any>>} states
  * @returns {string}
  */
-function chainRowLocationLabel(bead_id, locations, states) {
+function rowLocationLabel(bead_id, locations, states) {
   const location = locations.get(bead_id);
   if (!location) {
-    return chainScopeLabel(bead_id, states);
+    return scopeLocationLabel(bead_id, states);
   }
   if (typeof location.position === 'number') {
     if (location.lane === 'parallel') {
@@ -2138,368 +2023,6 @@ function chainRowLocationLabel(bead_id, locations, states) {
     }
   }
   return blockerLocationLabel(location);
-}
-
-/**
- * The 연결 레인 행의 위치 칩 (UI-jaua §8). 답하는 질문이 "어디 있나"가 아니라
- * **"지금 막혀 있나"**다: 레인 순번 `①②` 옆에 선 큐 순번 `#n`을 사용자가 전역
- * 실행 순서로 읽었기 때문에(§1.4), 순번은 툴팁으로 내리고 라벨은 막힘 여부만
- * 말한다.
- *
- * blocked 판정 재료는 스냅샷 `bead_blocked_by`뿐이다. 그 맵은 닫힌 blocker를
- * 이미 뺀 뒤이므로(같은 rig는 `status`, foreign은 모니터의 prune) 항목이 비어
- * 있지 않으면 아직 열린 blocker가 있다는 뜻이고, **키 자체가 없으면 모르는
- * 것**이므로 순번 없는 `대기`로 수렴한다 (fail-quiet).
- *
- * 큐 안에서는 스케줄러가 증명한 `prerequisite_unmet` admission이 `🔒 대기`보다
- * 앞선다 (UI-d3i1 §8): 전자는 판정이고 후자는 표시 캐시의 추정이다. 큐 밖
- * confirmed 레인 멤버는 `▶ 진행`을 아직 누르지 않은 정상 상태이므로 어긋남처럼
- * 읽히는 `미적재`가 아니라 `진행 대기`다.
- *
- * @param {string} bead_id
- * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} locations
- * @param {Array<Record<string, any>>} states
- * @param {Map<string, string[]>} blocked_by_map
- * @param {Map<string, Record<string, any>>} admission_by_bead
- * @param {boolean} confirmed
- * @returns {{ label: string, title: string }}
- */
-function chainRowLocation(
-  bead_id,
-  locations,
-  states,
-  blocked_by_map,
-  admission_by_bead,
-  confirmed
-) {
-  const location = locations.get(bead_id);
-  if (!location) {
-    return {
-      label:
-        confirmed && classifyBlockerPrefix(bead_id, states) === 'internal'
-          ? '진행 대기'
-          : chainScopeLabel(bead_id, states),
-      title: ''
-    };
-  }
-  // 실행가능 레인은 큐 밖이다 — confirmed 같은 rig 멤버는 위치가 없을 때와
-  // 같은 `진행 대기`다 (§8 "큐 밖" 행).
-  if (
-    location.state === 'runnable' &&
-    confirmed &&
-    classifyBlockerPrefix(bead_id, states) === 'internal'
-  ) {
-    return { label: '진행 대기', title: '' };
-  }
-  const queued =
-    typeof location.position === 'number' &&
-    (location.lane === 'parallel' || /^s[1-5]$/.test(location.lane));
-  if (queued) {
-    const blockers = blocked_by_map.get(bead_id);
-    const lane_name = location.lane === 'parallel' ? '병렬' : location.lane;
-    const record = admission_by_bead.get(bead_id);
-    const proven =
-      !!record &&
-      record.reason === 'prerequisite_unmet' &&
-      Array.isArray(record.blockers) &&
-      record.blockers.length > 0;
-    return {
-      label: proven
-        ? '⛓ 선행 대기'
-        : blockers && blockers.length > 0
-          ? '🔒 대기'
-          : '대기',
-      title: `${location.workspace_name || location.root_dir} ${lane_name} #${location.position}`
-    };
-  }
-  return {
-    label:
-      location.state === 'running'
-        ? '▶ 실행중'
-        : blockerLocationLabel(location),
-    title: ''
-  };
-}
-
-/**
- * The `armed_by_lane` ONE attempt was dispatched with (UI-jaua §5.1), or `null`.
- * 레코드를 값으로 훑는다 — 키가 attempt_id라는 관례에 실패 판정을 걸면, 그
- * 관례가 어긋난 스냅샷에서 실패가 조용히 `▶ 진행 중`으로 읽힌다.
- *
- * @param {Record<string, any>} attempts
- * @param {string} attempt_id
- * @returns {string|null}
- */
-function armedLaneOfAttempt(attempts, attempt_id) {
-  for (const attempt of Object.values(attempts || {})) {
-    if (
-      attempt &&
-      attempt.attempt_id === attempt_id &&
-      typeof attempt.armed_by_lane === 'string' &&
-      attempt.armed_by_lane.length > 0
-    ) {
-      return attempt.armed_by_lane;
-    }
-  }
-  return null;
-}
-
-/**
- * 발차 축의 스냅샷 재료 (UI-jaua §5.5). 세 값 모두 workspace를 가로질러 모은
- * 것이다 — 한 레인의 멤버가 여러 레포에 걸치므로 레인 상태는 레포 하나로
- * 판정할 수 없다.
- *
- * @typedef {Object} LaneRunAxis
- * @property {Map<string, string>} armed_by_bead - bead_id → 그 엔트리의
- * `armed_by_lane` (병렬·직렬 대기 행과 PR 대기 행).
- * @property {Map<string, string>} failed_by_bead - bead_id → 그 버드의 마지막
- * terminal 구현 attempt가 실어 온 `armed_by_lane`. 실패한 attempt만 들어온다.
- * @property {Set<string>} disarmed_lanes - 보이는 workspace들의
- * `disarmed_on_load` 합집합 (§5.1): 한 레포에서라도 해제됐으면 그 레인은
- * 재시작이 멈춘 것이다.
- */
-
-/**
- * Derive ONE lane's 상태와 조작 (UI-jaua §5.5 두 표). 판정은 **배타
- * 우선순위**로 위에서 아래로 한 번만 한다: 실패(1) > 재시작(2) > 진행 중(3) >
- * 모두 완료·확정·draft(4). 상태가 한 곳에서만 나와야 배지와 버튼이 어긋나지
- * 않는다.
- *
- * 실패는 attempt 스냅샷의 `armed_by_lane`에 결속된다 (§5.1). 이 결속이 없으면
- * 그 실패가 이 레인의 발차에서 왔는지 사용자가 켠 `auto_advance`에서 왔는지
- * 구별할 수 없고, 무관한 실패가 레인을 멈춘 것처럼 보인다.
- *
- * draft 레인에는 발차 축이 없다 — `진행`은 확정 레인의 조작이므로 draft는
- * armed될 수 없고, 상태도 `draft` 하나다.
- *
- * @param {string} lane_id
- * @param {'draft'|'confirmed'} status
- * @param {MonitorChainLaneRow[]} rows
- * @param {boolean} all_done
- * @param {string[]} unlaunched
- * @param {LaneRunAxis} axis
- * @returns {{ state: MonitorChainLane['state'], badge: string, run_label: string|null, can_stop: boolean }}
- */
-function laneRunState(lane_id, status, rows, all_done, unlaunched, axis) {
-  if (status === 'draft') {
-    return { state: 'draft', badge: 'draft', run_label: null, can_stop: false };
-  }
-  if (rows.some((row) => axis.failed_by_bead.get(row.id) === lane_id)) {
-    return {
-      state: 'failed',
-      badge: '⛔ 실패',
-      run_label: '▶ 다시 진행',
-      can_stop: false
-    };
-  }
-  if (axis.disarmed_lanes.has(lane_id)) {
-    return {
-      state: 'restart',
-      badge: '⏸ 재시작',
-      run_label: '▶ 진행',
-      can_stop: false
-    };
-  }
-  if (rows.some((row) => axis.armed_by_bead.get(row.id) === lane_id)) {
-    return {
-      state: 'running',
-      badge: '▶ 진행 중',
-      // 부분 성공으로 진행 중이 되어도 남은 멤버를 올릴 버튼은 사라지지 않는다
-      // (§9): 그 재클릭이 복구 경로다.
-      run_label: unlaunched.length > 0 ? '▶ 이어서 진행' : null,
-      can_stop: true
-    };
-  }
-  if (all_done) {
-    // 상태 배지는 하나다 (§5.5 표): 전원 완료 행의 헤더는 `모두 완료`이고,
-    // 그 옆에 `확정`을 함께 세우면 배타 상태 표가 두 배지로 갈라진다.
-    return {
-      state: 'all_done',
-      badge: '모두 완료',
-      run_label: null,
-      can_stop: false
-    };
-  }
-  return {
-    state: 'confirmed',
-    badge: '확정',
-    run_label: '▶ 진행',
-    can_stop: false
-  };
-}
-
-/**
- * 연결 레인 행이 자기 멤버의 레인 행에서 그대로 받아 오는 재료 (UI-q1tg §3.5).
- *
- * @typedef {Object} ChainRowMaterial
- * @property {string|null} route
- * @property {string|null} route_source
- * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} exec_chips
- * @property {number|null} added_at
- */
-
-/**
- * `chain_material`의 키 (UI-ys18 §4.2): root 하나에 bead 하나. Monitor는 여러
- * workspace를 한 화면에 섞으므로 bead ID만으로는 자리가 유일하지 않다.
- *
- * @param {unknown} root_dir
- * @param {string} bead_id
- */
-function chainMaterialKey(root_dir, bead_id) {
-  return `${typeof root_dir === 'string' ? root_dir : ''}\u0000${bead_id}`;
-}
-
-/**
- * The 저장 연결 레인 투영 (UI-j92s §4.1·§5.1·§5.2·§5.3). 파생이 아니라 서버가
- * 보관한 멤버십이므로, 이 함수는 순서를 **계산하지 않고** 읽는다: `entries`
- * 순서가 곧 레인 순서이고 표시 번호는 배열 자리다.
- *
- * bd `blocks` 의존은 여전히 실행 진실이므로, 저장 순서와 의존이 어긋나면
- * (confirmed 레인에서) `⚠ 의존 없음`으로 드러낼 뿐 어느 쪽도 고치지 않는다.
- *
- * @param {Array<Record<string, any>>} lanes - 스냅샷 `cross_lanes.lanes`.
- * @param {Map<string, string[]>} blocked_by_map
- * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} locations
- * @param {Array<Record<string, any>>} states
- * @param {Map<string, string>} title_by_bead
- * @param {Map<string, string>} name_by_root
- * @param {LaneRunAxis} axis
- * @param {Map<string, Record<string, any>>} admission_by_bead - 보이는 workspace
- * 전부의 admission 합집합 (UI-d3i1 §8). 같은 bead가 두 workspace에 설 수 없으므로
- * 충돌 규칙이 필요 없다.
- * @param {Map<string, ChainRowMaterial>} material_by_bead - `(root_dir, bead_id)`
- * 키({@link chainMaterialKey})로 그 멤버가 자기 레인 행으로 이미 얻은 route·실행 칩·대기 진입 시각 (UI-q1tg §3.5). 파생을 여기서
- * 다시 하지 않으므로 연결 레인 행과 병렬 행이 같은 칩을 말한다.
- * @returns {MonitorChainLane[]}
- */
-function buildCrossLanes(
-  lanes,
-  blocked_by_map,
-  locations,
-  states,
-  title_by_bead,
-  name_by_root,
-  axis,
-  admission_by_bead,
-  material_by_bead
-) {
-  /** @type {MonitorChainLane[]} */
-  const projected = [];
-  lanes.forEach((lane, index) => {
-    const lane_id = typeof lane.id === 'string' ? lane.id : '';
-    if (lane_id.length === 0) {
-      return;
-    }
-    const status = lane.status === 'confirmed' ? 'confirmed' : 'draft';
-    const entries = Array.isArray(lane.entries) ? lane.entries : [];
-    /** @type {MonitorChainLaneRow[]} */
-    const rows = [];
-    entries.forEach((entry, position) => {
-      const bead_id =
-        entry && typeof entry.bead_id === 'string' ? entry.bead_id : '';
-      if (bead_id.length === 0) {
-        return;
-      }
-      const entry_root =
-        entry && typeof entry.root_dir === 'string' ? entry.root_dir : '';
-      const location = locations.get(bead_id);
-      const state = location ? location.state : undefined;
-      const fixed =
-        state === 'running' || state === 'pr_wait' || state === 'done';
-      // 실행가능은 "적재된 자리"가 아니다 (§5.2·§5.4): 확정·재적용이 병렬 큐
-      // 끝에 올리는 대상이 곧 이 집합이다.
-      const unplaced = !location || state === 'runnable';
-      const parallel_index =
-        location &&
-        location.lane === 'parallel' &&
-        typeof location.position === 'number'
-          ? location.position - 1
-          : null;
-      const location_chip = chainRowLocation(
-        bead_id,
-        locations,
-        states,
-        blocked_by_map,
-        admission_by_bead,
-        status === 'confirmed'
-      );
-      const previous_row = rows.length > 0 ? rows[rows.length - 1] : null;
-      // 바로 앞 멤버가 `완료`면 의존은 이미 이행된 것이고, 그 사실은 열린
-      // blocker 목록에서 읽을 수 없다 (UI-d3i1 §9.1) — 판정 재료가 이미 닫힌
-      // 사실이면 판정하지 않는다.
-      const mismatch =
-        status === 'confirmed' &&
-        previous_row !== null &&
-        !previous_row.done &&
-        !(blocked_by_map.get(bead_id) || []).includes(previous_row.id);
-      // entry가 root를 말하면 그 root가 정본이다 — `locations`는 bead ID로만
-      // 찾으므로 다른 workspace의 같은 ID 행을 가리킬 수 있다 (UI-ys18 §4.2).
-      const material =
-        material_by_bead.get(
-          chainMaterialKey(
-            entry_root.length > 0 || !location ? entry_root : location.root_dir,
-            bead_id
-          )
-        ) || null;
-      rows.push({
-        id: bead_id,
-        title: title_by_bead.get(bead_id) || bead_id,
-        route: material ? material.route : null,
-        route_source: material ? material.route_source : null,
-        exec_chips: material ? material.exec_chips : null,
-        added_at: material ? material.added_at : null,
-        root_dir: location ? location.root_dir : entry_root,
-        workspace_name: location
-          ? location.workspace_name
-          : name_by_root.get(entry_root) || '',
-        seq: position + 1,
-        location_label: location_chip.label,
-        location_title: location_chip.title,
-        draggable: !fixed,
-        fixed,
-        done: state === 'done',
-        unplaced,
-        mismatch,
-        ...(parallel_index !== null ? { queue_index: parallel_index } : {})
-      });
-    });
-    // 순번은 저장 배열이 아니라 그린 행 기준이다 — 형식이 깨진 entry는 위에서
-    // 빠지므로 ①②③에 구멍이 생기면 안 된다.
-    rows.forEach((row, seq) => {
-      row.seq = seq + 1;
-    });
-    const all_done = rows.length > 0 && rows.every((row) => row.done);
-    // 미발차 = 완료·실행중·PR 대기·머지 대기 어디에도 없고 이 레인에 armed되지도
-    // 않은 멤버 (§5.5). 고정 행이 그 네 자리를 모두 대표한다 — 머지 대기 항목은
-    // PR 대기 행이므로 고정이다.
-    const unlaunched = rows
-      .filter((row) => !row.fixed && axis.armed_by_bead.get(row.id) !== lane_id)
-      .map((row) => row.id);
-    const derived = laneRunState(
-      lane_id,
-      status,
-      rows,
-      all_done,
-      unlaunched,
-      axis
-    );
-    projected.push({
-      lane_id,
-      status,
-      draft: status === 'draft',
-      number: index + 1,
-      label: `연결 ${index + 1} · 레포 간`,
-      rows,
-      all_done,
-      can_confirm: status === 'draft' && rows.length >= 2,
-      // `unplaced`를 세지 않는다 (UI-d3i1 §9.2): §7 뒤에는 큐 밖이 정상 상태
-      // (`진행 대기`)이고 그 복구 조작은 `재적용`이 아니라 `▶ 진행`이다.
-      has_mismatch: status === 'confirmed' && rows.some((row) => row.mismatch),
-      unlaunched,
-      ...derived
-    });
-  });
-  return projected;
 }
 
 /**
@@ -2639,7 +2162,7 @@ function applyScopeOverlaps(
     const chip = {
       id: other.id,
       title: other.title,
-      location_label: chainRowLocationLabel(other.id, locations, states),
+      location_label: rowLocationLabel(other.id, locations, states),
       prefixes,
       // 겹침은 레포 안에서만 정의되지만 (UI-qm12 §5.2) 그 레포가 지금 활성
       // workspace라는 보장은 없다 — 칩 클릭이 이슈 상세가 된 뒤로 (UI-8x90 §4.3)
@@ -2882,12 +2405,7 @@ function tagSearchMatches(model, matches) {
 }
 
 /**
- * Merge the aggregated snapshot into the five exclusive lanes, the repo
- * sections, and the 저장 연결 레인 projection on top of them.
- *
- * `options.cross_lanes`는 스냅샷 최상위 키를 그대로 받는다 (UI-j92s §4.4):
- * `null` = 저장소 읽기 실패, `undefined` = 그 키를 모르는 구서버. 둘 다 빈 레인
- * 목록으로 그리지만 사용자에게 하는 말이 다르므로 모델에서 갈라 둔다.
+ * Merge the aggregated snapshot into the five exclusive lanes and repo sections.
  *
  * `options.candidate_sort: 'as_given'`은 정렬을 이미 끝낸 호출자(Worker
  * 어댑터)의 값이다 (UI-4tud §4.3): 입력 순서를 그대로 두고 섹션도 만들지 않는다.
@@ -2905,7 +2423,7 @@ function tagSearchMatches(model, matches) {
  *
  * @param {Array<Record<string, any>>|null|undefined} workspaces
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state]
- * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', candidate_hidden_counts?: 'sequential'|'per_control', groups?: 'nonempty'|'all', cross_lanes?: { revision: number, lanes: Array<Record<string, any>> }|null, search?: string }} [options]
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', candidate_hidden_counts?: 'sequential'|'per_control', groups?: 'nonempty'|'all', search?: string }} [options]
  * @returns {LaneModel}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
@@ -2919,11 +2437,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
     ...CANDIDATE_FILTER_DEFAULT,
     ...(options && options.candidate_filter ? options.candidate_filter : {})
   };
-  // 키 부재(구서버)와 `null`(읽기 실패)을 끝까지 구분한다 (§4.4).
-  const cross_lanes_input =
-    options && Object.hasOwn(options, 'cross_lanes')
-      ? (options.cross_lanes ?? null)
-      : undefined;
   const candidate_sort =
     options && options.candidate_sort === 'as_given'
       ? /** @type {const} */ ('as_given')
@@ -2952,25 +2465,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       state_by_root.set(s.root_dir, s);
     }
   }
-  // 저장 연결 레인 행의 배지·소유 레포 판정은 위치가 아니라 등록 사실에서
-  // 나온다 (UI-j92s §7): 어느 레인에도 없는 멤버도 자기 레포가 보이면 배지를
-  // 갖는다.
   /** @type {Map<string, string>} */
-  const name_by_root = new Map();
-  for (const s of states) {
-    if (s && typeof s.root_dir === 'string') {
-      name_by_root.set(s.root_dir, s.name || s.root_dir);
-    }
-  }
-  for (const workspace of list) {
-    if (workspace && typeof workspace.root_dir === 'string') {
-      name_by_root.set(
-        workspace.root_dir,
-        workspace.name || workspace.root_dir
-      );
-    }
-  }
-
   /** @type {LaneItem[]} */
   const runnable = [];
   /** @type {LaneItem[]} */
@@ -3006,10 +2501,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const overlay_by_key = new Map();
   /** @type {Map<string, string[]>} */
   const blocked_by_map = new Map();
-  // 연결 레인 행이 읽는 admission 합집합 (UI-d3i1 §8). `blocked_by_map`과 같은
-  // 방식의 cross-workspace 수집이고 새 프로토콜 필드는 없다.
-  /** @type {Map<string, Record<string, any>>} */
-  const admission_by_bead = new Map();
   /** @type {Map<string, Record<string, string>>} */
   const blocker_workspaces_by_root = new Map();
   /** @type {Map<string, string[]>} */
@@ -3019,27 +2510,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // `dependents_info`와의 합집합으로만 한다 (§4.4).
   /** @type {Map<string, { ids: Set<string>, root_dirs: Record<string, string> }>} */
   const dependents_by_bead = new Map();
-  // 발차 축의 스냅샷 재료 (UI-jaua §5.5). 레인은 레포를 가로지르므로 세 값 모두
-  // 보이는 workspace 전부에서 모은다.
-  /** @type {Map<string, string>} */
-  const armed_by_bead = new Map();
   // 막힌 대기 행을 판정할 저장소별 재료 (UI-01wh §3.1). 행 투영이 끝난 뒤
   // 한 번에 얹는다 — 러너·계정 해석에 오버레이 metadata가 필요하고 그것은
   // 이 루프보다 뒤에서 채워진다.
   /** @type {Map<string, { hold: any, lineages: any[], provider_hold: Record<string, any>, account_catalog: Record<string, any>, workspace_account_defaults: Record<string, any> }>} */
   const gate_input_by_root = new Map();
-  /** @type {Map<string, string>} */
-  const failed_by_bead = new Map();
-  /** @type {Set<string>} */
-  const disarmed_lanes = new Set();
   // 선언 scope 사실 (UI-qm12 §5.2). 겹침은 레포 안에서만 정의되므로 레포별로
   // 모으고, 실행가능 항목의 scope는 큐 장식이 아니라 자기 행이 싣고 온다.
   /** @type {Map<string, Record<string, any>>} */
   const bead_scope_by_root = new Map();
   /** @type {Map<string, string[]>} */
   const runnable_scope_by_bead = new Map();
-  /** @type {Map<string, string>} */
-  const title_by_bead = new Map();
 
   for (const workspace of list) {
     if (!workspace || typeof workspace.root_dir !== 'string') {
@@ -3062,21 +2543,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
       /** @type {any} */ (workspace).runner_catalog ||
       null;
     const titles = objectOf(workspace.bead_titles);
-    for (const [bead_id, title] of Object.entries(titles)) {
-      if (typeof title === 'string' && title.length > 0) {
-        title_by_bead.set(bead_id, title);
-      }
-    }
     const times = objectOf(workspace.bead_times);
     const observations = objectOf(workspace.pr_observations);
     const admission = objectOf(workspace.admission);
     const blocker_workspaces = objectOf(workspace.blocker_workspaces);
     blocker_workspaces_by_root.set(root_dir, blocker_workspaces);
-    for (const [bead_id, record] of Object.entries(admission)) {
-      if (record && typeof record === 'object') {
-        admission_by_bead.set(bead_id, record);
-      }
-    }
     const revise_parked = objectOf(workspace.revise_parked);
     const merge_state = objectOf(workspace.merge_queue_state);
     const cleanup_failed = objectOf(workspace.cleanup_failed);
@@ -3091,8 +2562,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     if (Object.hasOwn(workspace, 'bead_scope')) {
       bead_scope_by_root.set(root_dir, objectOf(workspace.bead_scope));
     }
-    // 대기·PR 대기·실행중 행의 route 칩 재료 (UI-yrzu §7.2). 연결 레인 행은
-    // route 칩을 그리지 않으므로 (UI-j92s §5.2) 여기 항목에만 실린다.
+    // 대기·PR 대기·실행중 행의 route 칩 재료 (UI-yrzu §7.2).
     const bead_workflow = objectOf(workspace.bead_workflow);
     const pr_activity = objectOf(workspace.pr_activity);
     const repo_operations = Array.isArray(workspace.repo_operations)
@@ -3243,37 +2713,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
       workspace_account_defaults: objectOf(workspace.workspace_account_defaults)
     });
     const queue_lane = Array.isArray(workspace.queue) ? workspace.queue : [];
-    // arm은 병렬·직렬 두 대기 영역 모두에 쓰이고 (UI-tjus §3.2) PR 대기 행으로
-    // 옮겨 실린다 (§5.1) — 세 자리를 같이 읽어야 자기 직렬 자리를 지킨 멤버도,
-    // PR 대기에 닿은 멤버도 `▶ 진행 중`으로 남는다.
-    for (const entry of [
-      ...queue_lane,
-      ...(Array.isArray(workspace.serial_lanes)
-        ? workspace.serial_lanes
-        : []
-      ).flatMap((/** @type {any} */ lane) =>
-        Array.isArray(lane?.entries) ? lane.entries : []
-      ),
-      ...(Array.isArray(workspace.pr_wait) ? workspace.pr_wait : [])
-    ]) {
-      if (
-        entry &&
-        typeof entry.bead_id === 'string' &&
-        typeof entry.armed_by_lane === 'string' &&
-        entry.armed_by_lane.length > 0
-      ) {
-        armed_by_bead.set(entry.bead_id, entry.armed_by_lane);
-      }
-    }
-    // 키가 없는 구서버는 아무 레인도 재시작으로 멈추지 않았다고 읽는다
-    // (fail-quiet): 없는 기능과 "해제된 레인 없음"은 여기서 같은 그림이다.
-    for (const lane_id of Array.isArray(workspace.disarmed_on_load)
-      ? workspace.disarmed_on_load
-      : []) {
-      if (typeof lane_id === 'string' && lane_id.length > 0) {
-        disarmed_lanes.add(lane_id);
-      }
-    }
     const serial_lanes = (
       Array.isArray(workspace.serial_lanes) ? workspace.serial_lanes : []
     ).filter(
@@ -3485,17 +2924,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
       admission
     })) {
       claimed.add(bead_id);
-      // 실패 판정은 **attempt 스냅샷**의 `armed_by_lane`에 결속된다 (§5.5): 지금
-      // 큐 행이 무엇으로 armed되어 있는지가 아니라 그 실행이 무엇으로 출발했는지가
-      // 질문이다. `activeByBead`가 이미 처리되지 않은 마지막 구현 실패만
-      // 남기므로(dismiss·완료 해소 제외) 여기 오는 것은 아직 서 있는 실패다.
-      const failed_arm =
-        live.run_state === 'failed'
-          ? armedLaneOfAttempt(attempts, live.attempt_id)
-          : null;
-      if (failed_arm !== null) {
-        failed_by_bead.set(bead_id, failed_arm);
-      }
       // Worker 실행 중 타일 전용 필드 (UI-4tud §4.3). 재료가 없으면 키 자체를
       // 만들지 않는다 (fail-quiet) — Monitor 타일 표시는 그대로다.
       const attempt = attempt_by_id.get(live.attempt_id) || null;
@@ -3698,9 +3126,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
               typeof id === 'string' && id.length > 0
           )
         );
-      }
-      if (typeof entry.title === 'string' && entry.title.length > 0) {
-        title_by_bead.set(bead_id, entry.title);
       }
       running.push({
         ...base(bead_id),
@@ -4199,11 +3624,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
           )
         );
       }
-      // 연결 레인은 실행가능 멤버도 그린다 (UI-j92s §5.2) — 큐 제목 캐시에 없는
-      // 그 제목이 여기서만 들어온다.
-      if (typeof entry.title === 'string' && entry.title.length > 0) {
-        title_by_bead.set(bead_id, entry.title);
-      }
       if (Array.isArray(entry.scope)) {
         runnable_scope_by_bead.set(
           bead_id,
@@ -4536,12 +3956,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }
       serial_head_seen.add(lane_key);
     }
-    // arm 제외는 **큐 게이트 판정에만** 적용한다 (§3.1): arm된 행은 정지 중에도
-    // 디스패치되지만, 공급자 게이트는 launch 경로에서 arm과 무관하게 선다.
-    const armed = armed_by_bead.has(item.id);
-    const queue_gate = armed
-      ? null
-      : queueHoldGate(gate_input.hold, gate_input.lineages);
+    const queue_gate = queueHoldGate(gate_input.hold, gate_input.lineages);
     const state = objectOf(state_by_root.get(item.root_dir));
     const overlay = overlay_by_key.get(`${item.root_dir}\u0000${item.id}`);
     // 공급자 판정은 이 bead의 metadata를 **관측한** 뒤에만 한다 — exec 칩과
@@ -4755,12 +4170,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
     pr_wait,
     done,
     parallel_rows: [],
-    chain_lanes: [],
-    cross_lanes_revision:
-      cross_lanes_input && typeof cross_lanes_input.revision === 'number'
-        ? cross_lanes_input.revision
-        : null,
-    cross_lanes_unreadable: cross_lanes_input === null,
     parallel_raw_length: Object.fromEntries(raw_queue_length_by_root),
     owner_of: {}
   };
@@ -4897,209 +4306,18 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
   }
 
-  // 대기 레인 통합 투영 (UI-e6hw §4). 연결 레인이 먼저다 — 병렬 통합 큐의
-  // 숨김 규칙이 confirmed 레인 멤버 집합에서 나온다 (UI-j92s §5.2a).
-  // 연결 레인 행의 route·오케/워커·유예 재료 (UI-q1tg §3.5). 파생은 이미 각
-  // 레인 행이 끝냈으므로 여기서는 옮겨 담기만 한다 — 같은 사실을 두 벌로 파생
-  // 하면 같은 bead가 두 자리에서 다른 칩을 말한다. `runnable` 행의 `exec_chips`
-  // 도 같은 뜻이므로(후보·대기·직렬이 한 파생식을 쓴다) 그대로 싣는다: 확정 레인
-  // 드롭이 더는 큐에 적재하지 않아 멤버는 `▶ 진행` 전까지 후보 행으로만 서고,
-  // 그 행을 빼면 같은 레인 안에서 적재 전후로 칩이 달라진다.
-  // 키는 `(root_dir, bead_id)`다 (UI-ys18 §4.2): 다른 workspace의 같은 ID
-  // 기존 행이 이 root의 큐 밖 멤버 자리를 가로채지 않는다.
-  /** @type {Map<string, ChainRowMaterial>} */
-  const chain_material = new Map();
-  for (const item of [
-    ...model.queue,
-    ...model.running,
-    ...model.pr_wait,
-    ...model.done,
-    ...model.runnable
-  ]) {
-    const material_key = chainMaterialKey(item.root_dir, item.id);
-    if (chain_material.has(material_key)) {
-      continue;
-    }
-    const workflow = objectOf(item.workflow);
-    const chips = objectOf(workflow.chips);
-    const overlay = overlay_by_key.get(`${item.root_dir}\u0000${item.id}`);
-    const route =
-      (typeof chips.route === 'string' && chips.route.length > 0
-        ? chips.route
-        : typeof workflow.route === 'string' && workflow.route.length > 0
-          ? workflow.route
-          : overlay &&
-              typeof overlay.route === 'string' &&
-              overlay.route.length > 0
-            ? overlay.route
-            : null) || null;
-    const route_source =
-      typeof chips.route_source === 'string'
-        ? chips.route_source
-        : typeof workflow.route_source === 'string'
-          ? workflow.route_source
-          : null;
-    chain_material.set(material_key, {
-      route,
-      route_source,
-      exec_chips: item.exec_chips || null,
-      added_at: typeof item.added_at === 'number' ? item.added_at : null
-    });
-  }
-
-  // 어느 레인 행도 없는 연결 레인 entry의 빈자리 (UI-ys18 §4.2). 큐·실행·PR
-  // 대기·완료·후보 어디에도 서지 않은 멤버는 복사해 올 행이 없으므로, 그
-  // entry의 `(root_dir, bead_id)` overlay와 그 root의 설정으로 예정 칩만
-  // 만든다. 실제 실행·완료 행의 칩은 덮어쓰지 않고(위 루프가 먼저 담는다),
-  // `added_at`·유예·대기열 위치도 합성하지 않는다 — 이 항목은 계속 큐 밖이다.
-  for (const lane of cross_lanes_input && Array.isArray(cross_lanes_input.lanes)
-    ? cross_lanes_input.lanes
-    : []) {
-    for (const entry of Array.isArray(lane?.entries) ? lane.entries : []) {
-      const bead_id =
-        entry && typeof entry.bead_id === 'string' ? entry.bead_id : '';
-      const entry_root =
-        entry && typeof entry.root_dir === 'string' ? entry.root_dir : '';
-      if (
-        bead_id.length === 0 ||
-        chain_material.has(chainMaterialKey(entry_root, bead_id))
-      ) {
-        continue;
-      }
-      // root가 다른 동일 ID는 서로의 설정을 쓰지 않는다: 조회 키가 두 값이다.
-      const overlay = overlay_by_key.get(`${entry_root}\u0000${bead_id}`);
-      if (!overlay) {
-        continue;
-      }
-      const route =
-        typeof overlay.route === 'string' && overlay.route.length > 0
-          ? overlay.route
-          : null;
-      const chips = Object.hasOwn(overlay, 'metadata')
-        ? overlayExecChips(
-            objectOf(state_by_root.get(entry_root)),
-            objectOf(overlay.metadata),
-            route
-          )
-        : null;
-      if (route === null && chips === null) {
-        continue;
-      }
-      chain_material.set(chainMaterialKey(entry_root, bead_id), {
-        route,
-        route_source: null,
-        exec_chips: chips,
-        added_at: null
-      });
-    }
-  }
-
-  model.chain_lanes = buildCrossLanes(
-    cross_lanes_input && Array.isArray(cross_lanes_input.lanes)
-      ? cross_lanes_input.lanes
-      : [],
-    blocked_by_map,
-    locations,
-    states,
-    title_by_bead,
-    name_by_root,
-    { armed_by_bead, failed_by_bead, disarmed_lanes },
-    admission_by_bead,
-    chain_material
-  );
-
-  // 소속 칩은 실행가능 카드와 대기 행에만 붙는다 (§5.2a).
-  /** @type {Map<string, LaneItem>} */
-  const item_by_bead = new Map();
-  for (const item of [...model.queue, ...model.runnable]) {
-    if (!item_by_bead.has(item.id)) {
-      item_by_bead.set(item.id, item);
-    }
-  }
-
-  // confirmed 멤버만 병렬 영역에서 숨긴다 (§5.2a): draft는 아직 대기가 아니므로
-  // 어디에서도 숨기지 않고, 숨기지 않는 멤버는 대신 소속 칩을 단다.
-  /** @type {Set<string>} */
-  const confirmed_parallel_members = new Set();
-  for (const lane of model.chain_lanes) {
-    for (const row of lane.rows) {
-      if (lane.status === 'confirmed' && !row.unplaced && !row.fixed) {
-        confirmed_parallel_members.add(row.id);
-      }
-      // 숨기는 멤버는 칩이 필요 없다 — 레인 행이 이미 그 사실을 말한다.
-      if (!lane.draft && !row.unplaced) {
-        continue;
-      }
-      const item = item_by_bead.get(row.id);
-      if (!item) {
-        continue;
-      }
-      item.cross_lane_chip = {
-        lane_id: lane.lane_id,
-        number: lane.number,
-        status: lane.status,
-        label: lane.draft
-          ? `연결 ${lane.number} (draft)`
-          : `연결 ${lane.number}`
-      };
-    }
-  }
-  // 발차 칩 (§5.6). 자리는 카드 문법 §5.1 슬롯 4 "의존·겹침"이며, 재료가 없는
-  // 카드에는 칩이 없다 (fail-quiet). 레인 번호는 스냅샷 순서에서 나오고, 그
-  // 순서에 없는 lane id는 고아 arm이므로 숨기지 않고 드러낸다 (§5.3 (2)).
-  /** @type {Map<string, MonitorChainLane>} */
-  const lane_by_id = new Map(
-    model.chain_lanes.map((lane) => [lane.lane_id, lane])
-  );
-  for (const item of [...model.queue, ...model.running]) {
-    const lane_id = armed_by_bead.get(item.id);
-    if (typeof lane_id !== 'string' || lane_id.length === 0) {
-      continue;
-    }
-    const lane = lane_by_id.get(lane_id);
-    item.armed_lane_chip =
-      lane === undefined || lane.status === 'draft'
-        ? { lane_id, label: '▶ 진행 중 · 레인 없음', orphan: true }
-        : { lane_id, label: `▶ 연결 ${lane.number}`, orphan: false };
-  }
-
-  /** @type {LaneItem[]} */
-  const parallel_rows = [];
-  for (const items of queue_by_root.values()) {
-    for (const item of items) {
-      if (!confirmed_parallel_members.has(item.id)) {
-        parallel_rows.push(item);
-      }
-    }
-  }
-  // 레포명 오름차순으로 같은 레포 행을 붙이고, 레포 안에서는 서버 큐 순서 (§4.1).
-  parallel_rows.sort((a, b) => {
+  model.parallel_rows = [...queue_by_root.values()].flat().sort((a, b) => {
     const by_name = a.workspace_name.localeCompare(b.workspace_name);
     return by_name !== 0
       ? by_name
       : (a.queue_index ?? 0) - (b.queue_index ?? 0);
   });
-  model.parallel_rows = parallel_rows;
 
   /** @type {Record<string, string>} */
   const owner_of = {};
   for (const [bead_id, location] of locations) {
     if (typeof location.root_dir === 'string' && location.root_dir.length > 0) {
       owner_of[bead_id] = location.root_dir;
-    }
-  }
-  // 어느 레인에도 없는 레인 멤버의 레포는 저장 entry만이 안다 (§7). 등록·표시된
-  // 레포일 때만 싣는다 — 숨김·해제된 레포 멤버는 키가 없어야 그 멤버가 낀 의존
-  // 계획이 거부된다.
-  for (const lane of model.chain_lanes) {
-    for (const row of lane.rows) {
-      if (
-        !Object.hasOwn(owner_of, row.id) &&
-        row.root_dir.length > 0 &&
-        name_by_root.has(row.root_dir)
-      ) {
-        owner_of[row.id] = row.root_dir;
-      }
     }
   }
   model.owner_of = owner_of;
