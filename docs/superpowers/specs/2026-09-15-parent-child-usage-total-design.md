@@ -16,6 +16,9 @@ scope:
   - app/views/monitor/usage
   - app/views/detail-panel/session-history
   - app/views/detail-panel/index
+  - app/views/compare/format
+  - app/views/compare/index
+  - app/views/compare/bench-model
   - app/protocol.md
   - docs/adr/
   - docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md
@@ -89,7 +92,7 @@ UI-pqel의 저장된 부모 구간에는 `model=astra`, `usage.replayed=true`, `
 - 카드의 기존 슬롯 5 사용량/비용 자리에 부모와 자식이 포함된 총합을 표시한다. 부모 단독 비용은 상세 분해와 사용량 설명에서 항상 확인할 수 있다. 자식의 개별 비용은 슬롯 3 위임 행 및 상세 자식 행에서 계속 표시한다.
 - 합산된 카드의 `native child 비용 · 부모 합계 제외`는 `부모·자식 합계`로 바꾼다. 덜 관측된 카드에는 같은 자리에서 `부분 집계`를 함께 표시한다. 근거가 없어 자식 일부를 합산하지 못했다면 설명에 대상과 이유를 표시한다. 자료 없는 범위 설명은 그리지 않는다.
 - 기존 카드 헤더 정본 §5.1의 슬롯 5를 `본체 usage/비용`에서 `부모·자식 합계 usage/비용과 집계 범위 설명`으로 정정한 뒤 렌더러를 바꾼다. 새로운 조작 버튼이나 클릭 동작은 추가하지 않는다.
-- 부모/자식/총합의 값은 공용 투영 하나에서 나온다. Worker·Monitor의 실행/대기/완료 행, 상세의 attempt 및 Bead 총계, 비교 화면과 워크스페이스 비용이 같은 기여를 사용한다. 비교의 집계·중앙값도 부분 데이터 여부를 잃지 않으며 부분 금액을 완전한 비용으로 설명하지 않는다.
+- 부모/자식/총합의 값은 공용 투영 하나에서 나온다. Worker·Monitor의 실행/대기/완료 행, 상세의 attempt 및 Bead 총계, 비교 화면과 워크스페이스 비용이 같은 기여를 사용한다. 일반 비교와 벤치마크의 집계·중앙값도 부분 데이터 여부를 잃지 않으며 부분 금액을 완전한 비용으로 설명하지 않는다. 서버의 비교 투영뿐 아니라 `app/views/compare/format.js`의 비용 전달, `index.js`의 중앙값 표시, `bench-model.js`의 중앙값 재계산과 각각의 기존 테스트까지 같은 부분 집계 정보를 전달·검증한다.
 - 직접 세션 카드에도 현재 참조 대화와 연결된 자식의 합계를 표시한다. 같은 직접 대화가 여러 Bead 카드에 나타나도 워크스페이스 비용에 가산하지 않는 ADR UI-42l2-2는 유지한다.
 - `total_tokens`와 세부 토큰 수를 한 번씩만 센다. provider별 토큰 의미는 기존 규칙을 유지하며, USD 비용 합계와 토큰 소계는 구분한다.
 
@@ -113,7 +116,7 @@ UI-pqel처럼 이미 끝난 이슈도 수정 후 부모의 가격과 합산 가�
 | 경계 | 재시작·새 attempt 재개·같은 child 재사용·동일 경계 시각·이전 turn의 누적값이 새 attempt에 재가산되지 않음 |
 | 모델·불완전성 | 모델 변경 구간별 가격, 일부 단가 부재, 경계 불명, 사용량 없는 child, 겹침 미해소, 값 충돌, 명시적 0 |
 | 저장·과거 | 새 구간의 queue/archive round trip, UI-pqel 같은 종료 기록 보완, 원본 부재, truncate·미완성 줄, snapshot+tail과 재시작 결과 일치 |
-| 소비자 | Worker/Monitor/상세/비교/워크스페이스의 같은 합계 및 부분 표시, 직접 대화 중복 카드의 워크스페이스 제외 유지 |
+| 소비자 | Worker/Monitor/상세/비교/워크스페이스의 같은 합계 및 부분 표시, 일반 비교와 벤치마크 중앙값의 부분 여부 유지, 직접 대화 중복 카드의 워크스페이스 제외 유지 |
 | provider 회귀 | Codex cache/reasoning 이중 과금 없음, Claude reported 비용 및 covered subagent의 기존 총액 유지 |
 
 구현 검증은 새 worktree Node engine 확인과 `npm ci` 뒤 관련 관측·저장·투영·UI 테스트, `npm run tsc`, `npm run lint`, 변경 파일 prettier, 전체 `npx vitest run --reporter=dot`(120초), `npm run build`로 한다. 기존 자식 제외 테스트는 새 합산 기준과 부분/미확정 사례로 교체한다. 실서비스에 가짜 이슈나 사용량을 쓰지 않는다.
