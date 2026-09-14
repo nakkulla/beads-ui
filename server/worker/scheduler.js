@@ -9113,13 +9113,13 @@ export function createScheduler(deps) {
       settings.env = {
         ...(settings.env || {}),
         WORKFLOW_REPO_ROOT: repo,
-        WORKFLOW_BEAD_ID: bead_id
+        WORKFLOW_BEAD_ID: bead_id,
+        BDUI_ATTEMPT_ID: attempt_id
       };
     }
     if (receipt_dir !== null || monitor_dir !== null) {
       settings.env = {
         ...(settings.env || {}),
-        BDUI_ATTEMPT_ID: attempt_id,
         ...(receipt_dir !== null
           ? { BDUI_CODEX_USAGE_RECEIPT_DIR: receipt_dir }
           : {}),

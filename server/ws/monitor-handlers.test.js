@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { buildLanes } from '../../app/views/worker/lane-model.js';
 import {
   __resetScopeCacheForTest,
   __setScopeCacheForTest,
@@ -833,7 +834,118 @@ function overlayOf(out) {
   return /** @type {any} */ (out[0].bead_overlay);
 }
 
+/**
+ * Feed a server pipeline result into the Monitor's shared lane projection.
+ *
+ * @param {Array<Record<string, any>>} out
+ */
+function lanesOf(out) {
+  return buildLanes(
+    out,
+    out.map((workspace) => ({
+      root_dir: workspace.root_dir,
+      name: workspace.name,
+      revision: workspace.revision,
+      slots: 1,
+      auto_advance: false,
+      auto_merge: false
+    }))
+  );
+}
+
 describe('buildMonitorPipeline bead overlay (UI-q1tg §3.1)', () => {
+  test('carries a runnable candidate source owner in the overlay', () => {
+    const cache = warmCache(WS_A, [
+      {
+        id: 'A-candidate',
+        title: 'candidate',
+        workflow: { worker_created_from: 'B-source' }
+      }
+    ]);
+    cache.sourceOwnerFor = () => WS_B;
+    const out = build({
+      workspaces: [WS_A, WS_B],
+      runnable: { [WS_A]: [candidate('A-candidate')] },
+      titleCache: cache
+    });
+
+    expect(overlayOf(out)['A-candidate']).toMatchObject({
+      worker_created_from: 'B-source',
+      worker_created_from_root_dir: WS_B
+    });
+  });
+
+  test('carries Worker provenance and its confirmed cross-workspace owner', () => {
+    const cache = warmCache(WS_A, [
+      {
+        id: 'A-child',
+        title: 'child',
+        workflow: {
+          route: 'quick_fix',
+          worker_created_from: 'B-source'
+        }
+      }
+    ]);
+    cache.sourceOwnerFor = () => WS_B;
+    const out = build({
+      workspaces: [WS_A, WS_B],
+      snapshots: {
+        [WS_A]: snapshot({ queue: [{ bead_id: 'A-child', added_at: NOW }] }),
+        [WS_B]: snapshot({ queue: [{ bead_id: 'B-source', added_at: NOW }] })
+      },
+      titleCache: cache
+    });
+
+    expect(overlayOf(out)['A-child']).toMatchObject({
+      worker_created_from: 'B-source',
+      worker_created_from_root_dir: WS_B
+    });
+  });
+
+  test('projects provenance from a PR-only server row into buildLanes', () => {
+    const cache = warmCache(WS_A, [
+      {
+        id: 'A-pr',
+        title: 'PR child',
+        workflow: { worker_created_from: 'B-source' }
+      }
+    ]);
+    cache.sourceOwnerFor = () => WS_B;
+    const out = build({
+      workspaces: [WS_A, WS_B],
+      snapshots: {
+        [WS_A]: snapshot({ pr_wait: [{ bead_id: 'A-pr', added_at: NOW }] })
+      },
+      titleCache: cache
+    });
+
+    expect(lanesOf(out).pr_wait[0]).toMatchObject({
+      worker_created_from: 'B-source',
+      worker_created_from_root_dir: WS_B
+    });
+  });
+
+  test('projects provenance from a manual-session-only server row into buildLanes', () => {
+    const cache = warmCache(WS_A, [
+      {
+        id: 'A-session',
+        title: 'session child',
+        workflow: { worker_created_from: 'B-source' }
+      }
+    ]);
+    cache.sourceOwnerFor = () => WS_B;
+    const out = build({
+      workspaces: [WS_A, WS_B],
+      sessionActive: { [WS_A]: [sessionItem('A-session')] },
+      titleCache: cache
+    });
+
+    expect(lanesOf(out).running[0]).toMatchObject({
+      worker_created_from: 'B-source',
+      worker_created_from_root_dir: WS_B
+    });
+  });
+
   test('carries the route of every lane member and done bead', () => {
     const out = build({
       workspaces: [WS_A],

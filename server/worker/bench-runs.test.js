@@ -331,11 +331,12 @@ describe('benchSourceEligibility', () => {
 });
 
 /**
- * @param {{ fail_at?: number, close_fails?: boolean, readback_status?: string|null }} [options]
+ * @param {{ fail_at?: number, fail_with_id_at?: number, close_fails?: boolean, readback_status?: string|null }} [options]
  */
 function fakeBd(options = {}) {
   const calls = {
     /** @type {string[]} */ created: [],
+    /** @type {Array<Record<string, any>>} */ create_inputs: [],
     /** @type {string[]} */ placed: [],
     /** @type {Array<{ bead_id: string, reason: string }>} */ closed: [],
     /** @type {Array<{ bead_id: string, values: Record<string, string> }>} */
@@ -344,13 +345,21 @@ function fakeBd(options = {}) {
   let n = 0;
   return {
     calls,
-    async create() {
+    async create(/** @type {Record<string, any>} */ input) {
       n += 1;
       if (options.fail_at === n) {
         return { ok: false, reason: 'clone_create_failed' };
       }
       const id = `UI-clone${n}`;
       calls.created.push(id);
+      calls.create_inputs.push(input);
+      if (options.fail_with_id_at === n) {
+        return {
+          ok: false,
+          id,
+          reason: 'clone_metadata_readback_failed'
+        };
+      }
       return { ok: true, id };
     },
     async addLabels() {
@@ -473,6 +482,26 @@ describe('createBenchRun', () => {
     expect(readBenchManifest(WS, 'bench-run-1')).toBeNull();
   });
 
+  test('aborts a known clone when its initial metadata readback fails', async () => {
+    const bd = fakeBd({ fail_with_id_at: 1 });
+
+    const result = await createBenchRun(runInput(bd));
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'clone_metadata_readback_failed',
+      aborted: ['UI-clone1'],
+      residue: []
+    });
+    expect(bd.calls.create_inputs[0].metadata.worker_created_from).toBe(
+      'UI-src'
+    );
+    expect(bd.calls.closed).toEqual([
+      { bead_id: 'UI-clone1', reason: 'bench:bench-run-1:aborted' }
+    ]);
+    expect(readBenchManifest(WS, 'bench-run-1')).toBeNull();
+  });
+
   test('refuses to start without a readable base tip', async () => {
     const bd = fakeBd();
 
@@ -498,20 +527,23 @@ describe('createBenchRun', () => {
     expect(result.ok === false && result.reason).toBe('source_not_quick_fix');
   });
 
-  test('stamps every cell with the resolved tuple and the bench pins', async () => {
+  test('creates every cell with tuple, identity, and provenance metadata', async () => {
     const bd = fakeBd();
 
     await createBenchRun(runInput(bd));
 
-    expect(bd.calls.metadata[0].values).toMatchObject({
+    expect(bd.calls.create_inputs[0].metadata).toMatchObject({
       route: 'quick_fix',
       impl_model: 'sol',
       impl_runtime: 'codex',
       impl_dispatch: 'delegated',
       bench_run: 'bench-run-1',
+      bench_source: 'UI-src',
+      worker_created_from: 'UI-src',
       bench_base: BASE,
       landing: 'none'
     });
+    expect(bd.calls.metadata).toEqual([]);
   });
 });
 

@@ -14530,7 +14530,7 @@ describe('worker 탭 blocked 칩 열기 (UI-u6zf §5)', () => {
 
   /**
    * @param {any} queue
-   * @param {{ gotoIssue: any, switchWorkspace?: any }} handlers
+   * @param {{ gotoIssue: any, switchWorkspace?: any, issueStores?: any }} handlers
    * @returns {HTMLElement}
    */
   function mountWithHandlers(queue, handlers) {
@@ -14575,6 +14575,37 @@ describe('worker 탭 blocked 칩 열기 (UI-u6zf §5)', () => {
     )?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(gotoIssue.mock.calls).toEqual([['W-8']]);
+  });
+
+  test('switches to the confirmed source repo before opening a Worker source', async () => {
+    const gotoIssue = vi.fn();
+    const switchWorkspace = vi.fn(async () => {});
+    const issueStores = seedCandidates();
+    seed(issueStores, 'tab:worker:in-progress', [
+      {
+        id: 'W-1',
+        title: 'Worker child',
+        status: 'in_progress',
+        workflow: { worker_created_from: 'UI-source' },
+        worker_created_from_root_dir: OTHER_WS
+      }
+    ]);
+    const mount = mountWithHandlers(
+      queueOf({
+        queue: [{ bead_id: 'W-1', added_at: 1 }]
+      }),
+      { gotoIssue, switchWorkspace, issueStores }
+    );
+
+    /** @type {HTMLElement|null} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="W-1"] .worker-created-source'
+      )
+    )?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(switchWorkspace.mock.calls).toEqual([[OTHER_WS]]);
+    expect(gotoIssue.mock.calls).toEqual([['UI-source']]);
   });
 
   test('draws an open button on a same-repo blocker', () => {

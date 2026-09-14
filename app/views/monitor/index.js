@@ -1206,6 +1206,8 @@ export function createMonitorView(mount_element, options) {
                     }
                   : {}),
                 workflow: /** @type {any} */ (item.workflow || null),
+                worker_created_from: item.worker_created_from,
+                worker_created_from_root_dir: item.worker_created_from_root_dir,
                 resumed_from: item.resumed_from ?? null,
                 continuation_mode: item.continuation_mode ?? null,
                 paused: item.run_state === 'paused',
@@ -2128,6 +2130,13 @@ export function createMonitorView(mount_element, options) {
       // `의존성` 절이 소유한다 — 칩 자리에서는 끊지 않는다.
       openRow(
         button.getAttribute('data-dep-id') || '',
+        button.getAttribute('data-root-dir') || ''
+      );
+      return;
+    }
+    if (cls.contains('worker-created-source')) {
+      openRow(
+        button.getAttribute('data-source-id') || '',
         button.getAttribute('data-root-dir') || ''
       );
       return;

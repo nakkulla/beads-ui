@@ -7,6 +7,7 @@
 | --- | --- | --- | --- |
 | UI-wc67 | [연결 레인을 폐기하고 저장소별 대기열에서 확인된 선행 대기만 건너뛴다](UI-wc67-retire-connected-lanes-use-repository-queues.md) | 2026-09-15 | 연결 레인은 폐기하고 저장소별 병렬·직렬 대기열과 blocks 의존만 사용하며 직렬 레인은 확인된 선행 대기 항목을 건너뛰되 한 번에 하나만 실행한다 |
 | UI-j9j5 | [수정 잡의 원자적 예약과 실제 성공으로 원래 실패를 완료한다](UI-j9j5-post-merge-job-repair-succession.md) | 2026-09-15 | post-merge 잡은 기존 RepoOperation 봉투를 유지하고 명시적 수정 선언의 원자적 예약과 성공 승계로 원래 실패를 완료한다 |
+| UI-j10d | [완료 행은 실행 사실과 워커 생성 출처를 함께 표시한다](UI-j10d-done-row-worker-creation-provenance.md) | 2026-09-15 | 완료 행은 마지막 구현 실행 사실과 명시적 워커 생성 출처를 슬롯 5에 함께 표시한다 |
 | UI-42l2-2 | [직접 세션 카드는 현재 참조 대화 전체 사용량을 표시하고 워크스페이스 합계에는 가산하지 않는다](UI-42l2-2-direct-session-current-conversation-usage.md) | 2026-09-11 | 직접 세션 카드의 사용량은 현재 참조 대화 전체이며 Bead별 비용으로 나누거나 워크스페이스 합계에 자동 가산하지 않는다 |
 | UI-42l2 | [Codex native child의 개별 사용량과 환산 비용은 카드에 표시하고 부모 합계에서는 제외한다](UI-42l2-codex-native-child-card-usage-not-summed.md) | 2026-09-11 | Codex native child의 개별 사용량과 환산 비용은 카드·상세에 표시하고 중복 여부가 미확인된 값은 부모 합계에 더하지 않는다 |
 | UI-o5ll | [공급자 보류의 해제는 프로브만이 판정한다 — outage 프로브에는 상한이 없고 사람의 ↻ 지금 프로브는 그 판정을 앞당길 뿐 target을 지우지 않는다](UI-o5ll-provider-hold-release-is-probe-only-no-cap-manual-probe-now.md) | 2026-09-10 | 공급자 보류의 해제는 프로브만이 판정한다 — outage 프로브에는 상한이 없고 백오프 상한은 1시간이며, 사람의 `↻ 지금 프로브`는 그 판정을 앞당길 뿐 target을 지우지 않는다. 상한에 걸린 계정 한도 target도 그 조작으로 다시 프로브된다. |
@@ -22,7 +23,6 @@
 | 0040 | [머지 게이트의 영수증 보류는 자동 해소 주체 유무로 나뉘고 위조 3종은 즉시 terminal needs_human이다](0040-receipt-hold-unresolvable-terminal-needs-human.md) | 2026-09-07 | 머지 게이트의 영수증 보류는 자동 해소 주체가 있는지로 나뉘고, 사람의 baseline 원상복원으로만 풀리는 위조 3종은 대기 없이 terminal needs_human으로 종단해 알림과 두 클릭으로 넘긴다 |
 | 0039 | [ADR 탭 신호는 설치본 체커를 runtime spawn해 --json으로 소비한다](0039-adr-tab-spawns-installed-checkers-json.md) | 2026-09-06 | ADR 탭 신호는 설치본 체커를 runtime spawn해 --json으로 소비하고 규칙을 JS로 복제하지 않으며 현재 표만 JS frontmatter 리더가 읽는다 |
 | 0038 | [처분 대기 admission이 화면 대표를 정한다 — 대기 행이 held 타일·점유 ghost를 이긴다](0038-stale-disposition-admission-elects-the-waiting-row.md) | 2026-09-04 | 처분 대기 admission이 선 bead는 held 타일·점유 ghost가 아니라 대기 행이 대표하고 stale-work 처분 조작은 대기 행에만 산다 |
-| 0037 | [완료 레인 행은 슬롯 5 줄에서 실행 사실을 말한다](0037-done-lane-row-states-execution-facts.md) | 2026-09-04 | 완료 레인 행은 슬롯 5 줄을 갖고 route와 오케/워커를 실어 '무엇으로 돌았나'에 답한다 |
 | 0036 | [파킹의 출구는 문의 세션뿐이고 해제 전이 재디스패치는 stale 두 값에만 걸린다](0036-parked-exit-is-inquiry-session-only.md) | 2026-09-03 | Worker 파킹(`awaiting_user` 존재)의 출구는 값별 문의 세션의 자동 기동과 파킹 타일 `[세션에서 해결]` 클릭뿐이고 새 attempt `[재시도]`는 없으며, `awaiting_user` 해제 전이의 자동 재디스패치는 문의 세션이 구현을 착수하지 않는 stale 두 값에만 걸리고 구현 충돌 값은 PR 관측으로만 정산한다 — parked 분류와 '자동 재디스패치 없음'은 0017에서 승계한다 |
 | 0034 | [복귀 재스캔 후보는 waiting attempt와 prerequisite_unmet admission 큐 항목이다](0034-return-rescan-candidates-include-prerequisite-unmet-admission.md) | 2026-09-03 | Worker의 복귀 트리거는 이벤트 구독이며 재스캔 후보는 waiting attempt와 `prerequisite_unmet` admission 큐 항목이다 — 판정은 요청 rig의 `bd ready` 한 번, 복귀는 `tickPass`, not-ready에는 쓰지 않고 ready에서만 그 admission을 지운다 |
 | 0033 | [후보 레인은 admission 통과 집합이 아니라 관측 집합이다](0033-candidate-lane-is-observation-set-not-admission-set.md) | 2026-09-03 | 후보 레인은 Worker가 지금 집을 수 있는 집합이 아니라 미착수 이슈의 관측 집합이고, 실행 안전은 서버 admission이 지킨다 |
@@ -63,6 +63,7 @@
 | 0030 | [post-merge 잡은 RepoOperation kind job 봉투로 실행하고 원장은 queue.json 맵이다](0030-post-merge-job-repo-operation-envelope.md) | superseded | [UI-j9j5](UI-j9j5-post-merge-job-repair-succession.md) |
 | 0032 | [실행 프리셋은 레인 무관 프로파일이고 워크스페이스가 일반·quick_fix 두 레인에 각각 적용한다](0032-execution-preset-is-lane-neutral-applied-per-lane.md) | superseded | [UI-s8qn](UI-s8qn-impl-runtime-auto-derives-no-provider-inherit-retired-lane-apply.md) |
 | 0035 | [연결 레인 확정은 blocks 의존만 만들고 큐 적재와 arm은 ▶ 진행이 한다](0035-lane-confirm-writes-deps-only-run-places-and-arms.md) | superseded | [0041](0041-connected-run-preserves-waiting-lanes.md) |
+| 0037 | [완료 레인 행은 슬롯 5 줄에서 실행 사실을 말한다](0037-done-lane-row-states-execution-facts.md) | superseded | [UI-j10d](UI-j10d-done-row-worker-creation-provenance.md) |
 | 0041 | [연결 레인 확정은 의존만 쓰고 진행은 기존 병렬·직렬 위치를 보존하며 같은 진행 권한을 적용한다](0041-connected-run-preserves-waiting-lanes.md) | superseded | [UI-wc67](UI-wc67-retire-connected-lanes-use-repository-queues.md) |
 | 0047 | [Codex native child는 검증된 내부 관측으로 표시하고 부모와의 중복이 미확인된 사용량은 합계에 더하지 않는다](0047-codex-native-child-internal-observation-not-summed.md) | superseded | [UI-42l2](UI-42l2-codex-native-child-card-usage-not-summed.md) |
 | 0048 | [Worker 체계적 정지의 해제는 사람의 승인 한 번이며 재개 버튼과 큐를 세운 attempt의 ↻ 이어하기가 같은 승인이다](0048-resume-click-releases-systemic-hold.md) | superseded | [0049](0049-queue-gate-lives-on-blocked-card-no-banner.md) |

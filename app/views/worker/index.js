@@ -3409,6 +3409,8 @@ export function createWorkerView(mount_element, options = {}) {
           workflow: bead_workflow[e.bead_id] || null,
           priority: item?.priority,
           from_id: item?.from_id,
+          worker_created_from: item?.worker_created_from,
+          worker_created_from_root_dir: item?.worker_created_from_root_dir,
           ...(item?.created_at === undefined
             ? {}
             : { created_at: item.created_at }),
@@ -4615,6 +4617,16 @@ export function createWorkerView(mount_element, options = {}) {
       openBlocker(
         dep_chip.getAttribute('data-dep-id') || '',
         dep_chip.getAttribute('data-root-dir') || ''
+      );
+      return;
+    }
+    const source_chip = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-created-source')
+    );
+    if (source_chip) {
+      openBlocker(
+        source_chip.getAttribute('data-source-id') || '',
+        source_chip.getAttribute('data-root-dir') || ''
       );
       return;
     }

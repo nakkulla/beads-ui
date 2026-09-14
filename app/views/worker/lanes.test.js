@@ -406,6 +406,66 @@ describe('waiting row (UI-04vo 직렬 레인)', () => {
 });
 
 describe('discovered-from chip', () => {
+  test('renders confirmed Worker provenance before a distinct relation', () => {
+    const row = renderRow({
+      lane: 'queue',
+      worker_created_from: 'UI-source',
+      worker_created_from_root_dir: '/repo/source',
+      from_id: 'UI-related'
+    });
+    const chips = Array.from(
+      /** @type {HTMLElement} */ (row.querySelector('.worker-chips')).children
+    );
+
+    expect(chips.map((chip) => chip.textContent?.trim())).toEqual(
+      expect.arrayContaining([
+        '워커 생성',
+        '↩ 생성 원본 UI-source',
+        '↩ from UI-related'
+      ])
+    );
+    expect(
+      row.querySelector('.worker-created-source')?.getAttribute('data-root-dir')
+    ).toBe('/repo/source');
+  });
+
+  test('deduplicates the relation and disables an unresolved source', () => {
+    const row = renderRow({
+      lane: 'done',
+      worker_created_from: 'UI-source',
+      from_id: 'UI-source'
+    });
+
+    expect(row.textContent).toContain('워커 생성');
+    expect(row.textContent).toContain('↩ 생성 원본 UI-source');
+    expect(row.textContent).not.toContain('↩ from');
+    expect(row.querySelector('.worker-created-source')).toBeNull();
+    expect(row.querySelector('.ctl-chip--disabled')).not.toBeNull();
+  });
+
+  test('draws Worker provenance only on row 2 of a two-line done row', () => {
+    const row = renderRow({
+      workflow: /** @type {any} */ ({ route: 'quick_fix' }),
+      worker_created_from: 'UI-source',
+      worker_created_from_root_dir: '/repo/source'
+    });
+
+    expect(
+      row.querySelector('.worker-mini__row1 .ctl-chip--worker-created')
+    ).toBeNull();
+    expect(
+      row.querySelector('.worker-mini__row1 .worker-created-source')
+    ).toBeNull();
+    expect(
+      row.querySelector('.worker-mini__row2 .ctl-chip--worker-created')
+        ?.textContent
+    ).toContain('워커 생성');
+    expect(
+      row.querySelector('.worker-mini__row2 .worker-created-source')
+        ?.textContent
+    ).toContain('UI-source');
+  });
+
   test('renders a from chip on a waiting row', () => {
     const row = renderRow({
       lane: 'queue',

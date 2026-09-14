@@ -41,6 +41,7 @@ import {
   providerHoldBadgeText
 } from './gate-labels.js';
 import {
+  creationSourceChipsTemplate,
   dependencyChipsTemplate,
   discardReceiptTemplate,
   execChipsTemplate,
@@ -66,6 +67,8 @@ import { logPathTemplate } from './log-path.js';
  * (UI-yrzu §6). attempt가 없으므로 운영 버튼·세션 드로어·위임 칩이 없고,
  * 경과는 bead의 `started_at`에서 온다. 생략(=Worker attempt 타일)이 기본이다.
  * @property {number} [priority] - Bead 우선순위 0..4 (배지 `P<n>`).
+ * @property {string} [worker_created_from] - Immutable Worker creation source.
+ * @property {string} [worker_created_from_root_dir] - Confirmed source owner.
  * @property {import('./lanes.js').MiniItem['workflow']} [workflow] - route 칩과
  * (세션 타일의) exec_receipt 칩 재료 (UI-yrzu §7.2). 없으면 칩이 생략된다.
  * @property {SessionRefView[]} [session_refs] - 이 이슈를 잡은 세션들 (UI-4xzk
@@ -1200,6 +1203,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // route 칩은 헤더가 아니라 meta 줄이 싣는다: 분류 사실은 슬롯 5고, 헤더에
   // 끼면 좁은 타일에서 조작 버튼이 통째로 다음 줄로 밀린다 (UI-251y §2).
   const route_chip = routeChipTemplate(tile.workflow);
+  const source_chips = creationSourceChipsTemplate(tile);
   const rec_chip = recChipTemplate(
     tile.rec,
     tile.chip_popover?.chip_key === 'rec'
@@ -1231,13 +1235,14 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const session_meta =
     monitor_chips ||
     route_chip ||
+    source_chips ||
     session_ref_chip ||
     session_receipt_chip ||
     rec_chip ||
     provider_badges.length > 0 ||
     usage_label
       ? html`<div class="rtile__meta">
-          ${monitor_chips}${route_chip}${session_ref_chip}${session_receipt_chip}${rec_chip}${provider_badges.length >
+          ${monitor_chips}${route_chip}${source_chips}${session_ref_chip}${session_receipt_chip}${rec_chip}${provider_badges.length >
           0
             ? provider_badges.map(
                 (badge) =>
@@ -1557,12 +1562,13 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
               ? session_meta
               : monitor_chips ||
                   route_chip ||
+                  source_chips ||
                   exec_chips ||
                   rec_chip ||
                   provider_badges.length > 0 ||
                   usage_label
                 ? html`<div class="rtile__meta">
-                    ${monitor_chips}${route_chip}${execChipsTemplate(
+                    ${monitor_chips}${route_chip}${source_chips}${execChipsTemplate(
                       tile.exec_chips
                     )}${rec_chip}
                     ${provider_badges.length > 0

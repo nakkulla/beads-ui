@@ -455,6 +455,7 @@ export function benchCloneFields(input) {
     bench_run: input.run_id,
     bench_cell: `${input.preset.id}:${input.k}`,
     bench_source: input.source.id,
+    worker_created_from: input.source.id,
     bench_base: input.base_sha,
     landing: 'none'
   };
@@ -626,7 +627,7 @@ export function benchRunBeadIds(manifest) {
  *   reviewer_mode: 'fixed'|'preset',
  *   reviewer: Record<string, string>|null,
  *   bd: {
- *     create: (input: { title: string, description: string, issue_type: string|null, priority: number|null }) => Promise<{ ok: boolean, id?: string, reason?: string }>,
+ *     create: (input: { title: string, description: string, issue_type: string|null, priority: number|null, metadata: Record<string, string> }) => Promise<{ ok: boolean, id?: string, reason?: string }>,
  *     setMetadata: (bead_id: string, values: Record<string, string>) => Promise<{ ok: boolean, reason?: string }>,
  *     addLabels: (bead_id: string, labels: string[]) => Promise<{ ok: boolean, reason?: string }>,
  *     closeWithReason: (bead_id: string, reason: string) => Promise<{ ok: boolean, reason?: string }>,
@@ -757,17 +758,21 @@ export async function createBenchRun(input) {
           title: fields.title,
           description: fields.description,
           issue_type: fields.issue_type,
-          priority: fields.priority
+          priority: fields.priority,
+          metadata: fields.metadata
         });
       } catch (err) {
         log('bench clone create threw: %o', err);
         return abort('clone_create_failed');
       }
-      const bead_id = created.ok ? usableString(created.id) : null;
+      const bead_id = usableString(created.id);
       if (bead_id === null) {
         return abort(created.reason || 'clone_create_failed');
       }
       cells.push({ preset_id: preset.id, k, bead_id });
+      if (!created.ok) {
+        return abort(created.reason || 'clone_create_failed');
+      }
 
       /** @type {{ ok: boolean, reason?: string }} */
       let labelled;
@@ -779,18 +784,6 @@ export async function createBenchRun(input) {
       }
       if (!labelled.ok) {
         return abort(labelled.reason || 'clone_label_failed');
-      }
-
-      /** @type {{ ok: boolean, reason?: string }} */
-      let stamped;
-      try {
-        stamped = await input.bd.setMetadata(bead_id, fields.metadata);
-      } catch (err) {
-        log('bench clone metadata failed for %s: %o', bead_id, err);
-        return abort('clone_metadata_failed');
-      }
-      if (!stamped.ok) {
-        return abort(stamped.reason || 'clone_metadata_failed');
       }
 
       // §4.4 first line: the clone goes into the parallel queue through the

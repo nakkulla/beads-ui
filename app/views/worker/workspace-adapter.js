@@ -436,6 +436,14 @@ export function createWorkspaceAdapter(options = {}) {
         updated_at: it.updated_at,
         status: it.status,
         workflow: it.workflow || null,
+        worker_created_from:
+          typeof it.workflow?.worker_created_from === 'string'
+            ? it.workflow.worker_created_from
+            : undefined,
+        worker_created_from_root_dir:
+          typeof it.worker_created_from_root_dir === 'string'
+            ? it.worker_created_from_root_dir
+            : undefined,
         exec_pins: execPinsOf(objectOf(it.metadata)),
         // 복잡 판정은 `bead_overlay`의 metadata가 덧씌운다 (§4.1) — 후보는 언제나
         // 구독 집합 안이므로 그쪽이 더 온전한 원천이다.
@@ -520,6 +528,19 @@ export function createWorkspaceAdapter(options = {}) {
       }
       if (typeof issue.from_id === 'string' && !('from_id' in entry)) {
         entry.from_id = issue.from_id;
+      }
+      const worker_created_from = objectOf(issue.workflow).worker_created_from;
+      if (
+        typeof worker_created_from === 'string' &&
+        !('worker_created_from' in entry)
+      ) {
+        entry.worker_created_from = worker_created_from;
+      }
+      if (
+        typeof issue.worker_created_from_root_dir === 'string' &&
+        !('worker_created_from_root_dir' in entry)
+      ) {
+        entry.worker_created_from_root_dir = issue.worker_created_from_root_dir;
       }
       if (with_metadata && !('metadata' in entry)) {
         entry.metadata = objectOf(issue.metadata);

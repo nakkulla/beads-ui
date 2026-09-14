@@ -13904,7 +13904,8 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
 
     expect(env.runner.settingsFor('S1').env).toMatchObject({
       WORKFLOW_REPO_ROOT: '/repo',
-      WORKFLOW_BEAD_ID: 'S1'
+      WORKFLOW_BEAD_ID: 'S1',
+      BDUI_ATTEMPT_ID: 'S1-1000-1'
     });
   });
 
@@ -16693,6 +16694,45 @@ describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () =
 });
 
 describe('scheduler delegation monitor wiring', () => {
+  test('carries attempt and workflow locators when both record directories fail', async () => {
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      usageReceipts: {
+        ensureUsageReceiptInbox: vi.fn(() => ({ ok: false, reason: 'mode' })),
+        readAttemptUsageReceipts: vi.fn(() => ({
+          legs: [],
+          files: [],
+          warnings: []
+        })),
+        normalizeUsageLegs: vi.fn((legs) => legs),
+        removeEmptyUsageReceiptInbox: vi.fn(),
+        consumeUsageReceiptFiles: vi.fn()
+      },
+      delegationMonitor: fakeDelegationMonitor({
+        ensureDelegationMonitorDir: vi.fn(() => ({
+          ok: false,
+          reason: 'mode'
+        }))
+      })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.settingsFor('S1').env).toMatchObject({
+      BDUI_ATTEMPT_ID: 'S1-1000-1',
+      WORKFLOW_REPO_ROOT: '/repo',
+      WORKFLOW_BEAD_ID: 'S1'
+    });
+    expect(env.runner.settingsFor('S1').env).not.toHaveProperty(
+      'BDUI_CODEX_USAGE_RECEIPT_DIR'
+    );
+    expect(env.runner.settingsFor('S1').env).not.toHaveProperty(
+      'BDUI_CODEX_DELEGATION_MONITOR_DIR'
+    );
+  });
+
   test('continues launch without the monitor env when directory setup fails', async () => {
     const delegationMonitor = fakeDelegationMonitor({
       ensureDelegationMonitorDir: vi.fn(() => ({

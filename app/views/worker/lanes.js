@@ -1269,6 +1269,51 @@ export function fromChipTemplate(from_id) {
 }
 
 /**
+ * Render immutable Worker creation provenance and the distinct relation origin.
+ *
+ * @param {{ worker_created_from?: string, worker_created_from_root_dir?: string, from_id?: string }} item
+ * @param {{ include_from?: boolean }} [options]
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function creationSourceChipsTemplate(item, options = {}) {
+  const source_id =
+    typeof item.worker_created_from === 'string'
+      ? item.worker_created_from
+      : '';
+  const source_root =
+    typeof item.worker_created_from_root_dir === 'string'
+      ? item.worker_created_from_root_dir
+      : '';
+  const include_from = options.include_from !== false;
+  const relation =
+    include_from && item.from_id !== source_id
+      ? fromChipTemplate(item.from_id)
+      : '';
+  if (source_id.length === 0) {
+    return relation;
+  }
+  return html`<span
+      class="ctl-chip ctl-chip--worker-created"
+      title=${`Worker가 ${source_id}에서 새로 만든 이슈입니다`}
+      >워커 생성</span
+    >${source_root.length > 0
+      ? html`<button
+          type="button"
+          class="ctl-chip ctl-chip--from worker-created-source"
+          data-source-id=${source_id}
+          data-root-dir=${source_root}
+          title=${`생성 원본 ${source_id} 열기`}
+        >
+          ↩ 생성 원본 ${source_id}
+        </button>`
+      : html`<span
+          class="ctl-chip ctl-chip--from ctl-chip--disabled"
+          title="원본 저장소를 확인할 수 없음"
+          >↩ 생성 원본 ${source_id}</span
+        >`}${relation}`;
+}
+
+/**
  * `복잡` chip (UI-sbum §3): the workflow judged this bead complex enough to
  * recommend a different execution setting. 클릭은 어디서나 사유 팝업이고, 적용은
  * 실행 설정 편집기에서 사용자가 수동으로 한다 (UI-8x90 §4.5) — 카드 위의 칩은
@@ -1592,6 +1637,8 @@ export function priorityBadgeTemplate(priority) {
  * 판정을 바꾸지 않으므로 슬롯 5 판정 칩 하나로만 선다. 코드가 없으면 필드도
  * 없다.
  * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
+ * @property {string} [worker_created_from] - Immutable Worker creation source.
+ * @property {string} [worker_created_from_root_dir] - Confirmed source owner.
  * @property {string[]} [carried_to] - 이 bead에서 이월된 후속 ID들 (UI-btj6 §3).
  * 투영이 `carried_from` metadata와 이 bead를 가리키는 `blocks` 간선만으로 접은
  * 값이며, 완료 행만 싣는다. 칩은 {@link carryoverChipsTemplate}이 슬롯 4b에
@@ -1616,8 +1663,8 @@ export function priorityBadgeTemplate(priority) {
  */
 function doneThreeLineRow(item) {
   // 3번째 줄은 이미 usage/작업 시간을 싣는 슬롯 5 줄이다 — 그 앞쪽에 route →
-  // 오케 → 워커를 붙이므로 줄 수는 늘지 않는다 (UI-q1tg §3.4). 출처 칩은 계속
-  // 빠진다: 좁은 화면에서 칩이 가져가는 가로가 그대로 제목이 잃는 가로다.
+  // 오케 → 워커를 붙이므로 줄 수는 늘지 않는다 (UI-q1tg §3.4). 일반 출처 칩은
+  // 빠지고, Worker 생성 그룹은 생성 사실을 설명하기 위해 남는다 (UI-j10d §4).
   const badges = Array.isArray(item.badges) ? item.badges : [];
   const provider_badges = providerUsageBadges(item.usage);
   const usage_label = formatUsageTotalWithCost(item.usage);
@@ -1660,7 +1707,9 @@ function doneThreeLineRow(item) {
     </div>
     ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
     <div class="worker-mini__row3">
-      ${routeChipTemplate(item.workflow)}${item.exec_chips
+      ${routeChipTemplate(item.workflow)}${creationSourceChipsTemplate(item, {
+        include_from: false
+      })}${item.exec_chips
         ? execChipsTemplate(item.exec_chips)
         : ''}${provider_badges.length > 0
         ? provider_badges.map(
@@ -1983,10 +2032,11 @@ export function miniRow(item, options = {}) {
   // route 칩은 좌표 칩 줄이 싣는다 (UI-251y §2). 완료 행도 얻는다 (UI-q1tg
   // §3.4): 끝난 일에 대해서도 사용자는 "무엇으로 돌았나"를 묻는다.
   const route_el = routeChipTemplate(item.workflow);
-  // 출처 칩도 완료 행에서는 빠진다 — route 칩과 같은 이유다. 끝난 일에서 남는
-  // 질문은 "무엇이 끝났나"뿐이라 ID와 제목이면 충분하고, 좁은 화면에서 칩이
-  // 가져가는 가로는 그대로 제목이 잃는 가로다.
-  const from_el = item.lane === 'done' ? '' : fromChipTemplate(item.from_id);
+  // 일반 discovered-from 출처는 완료 행에서 빠진다. Worker 생성 그룹은 immutable
+  // 생성 원본을 설명하므로 완료 행에도 남는다 (UI-j10d §4).
+  const from_el = creationSourceChipsTemplate(item, {
+    include_from: item.lane !== 'done'
+  });
   // 우선순위는 ID 바로 다음이다 — Board 카드와 같은 자리, 같은 문장.
   const pri_el = priorityBadgeTemplate(item.priority);
   const title_el = html`<span class="worker-mini__title">${item.title}</span>`;
@@ -2303,11 +2353,11 @@ export function miniRow(item, options = {}) {
   >
     ${two_line
       ? html`<div class="worker-mini__row1">
-            ${repo_el}${id_el}${pri_el}${from_el}${pr_el}${foreign_repo_el}${title_el}${actions_el}
+            ${repo_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${title_el}${actions_el}
           </div>
           ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
           <div class="worker-mini__row2">
-            ${route_el}${exec_chips_el}${usage_el}${done_at_label
+            ${route_el}${from_el}${exec_chips_el}${usage_el}${done_at_label
               ? html`<span
                   class="worker-mini__done-at"
                   title=${`완료 ${formatTimestampLocal(item.done_at)}`}
@@ -2694,7 +2744,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
       >`
     : '';
   const route_el = routeChipTemplate(workflow);
-  const from_el = fromChipTemplate(item.from_id);
+  const from_el = creationSourceChipsTemplate(item);
   const has_exec_chips = !!(
     item.exec_chips &&
     (item.exec_chips.orchestration || item.exec_chips.worker)

@@ -1959,7 +1959,10 @@ export function createPrActions(deps) {
               typeof parent_detail.priority === 'number'
                 ? parent_detail.priority
                 : DEFAULT_CARRYOVER_PRIORITY,
-            metadata: succession
+            metadata: {
+              ...succession,
+              worker_created_from: child.id
+            }
           })
         );
       } catch (err) {

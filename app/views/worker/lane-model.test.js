@@ -4785,11 +4785,26 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
       },
       bead_overlay: {
         'A-1': { priority: 0, from_id: 'A-100' },
-        'A-2': { priority: 1, from_id: 'A-100' },
+        'A-2': {
+          priority: 1,
+          from_id: 'A-100',
+          worker_created_from: 'SRC',
+          worker_created_from_root_dir: '/repo/source'
+        },
         'A-3': { priority: 2, from_id: 'A-100' },
-        'A-4': { priority: 3, from_id: 'A-100' },
+        'A-4': {
+          priority: 3,
+          from_id: 'A-100',
+          worker_created_from: 'SRC',
+          worker_created_from_root_dir: '/repo/source'
+        },
         'A-5': { priority: 4, from_id: 'A-100' },
-        'A-6': { priority: 1, from_id: 'A-100' }
+        'A-6': {
+          priority: 1,
+          from_id: 'A-100',
+          worker_created_from: 'SRC',
+          worker_created_from_root_dir: '/repo/source'
+        }
       }
     });
   }
@@ -4816,6 +4831,23 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
         ['A-6', 1, 'A-100']
       ].sort()
     );
+  });
+
+  test('preserves creation provenance on noncandidate and done rows', () => {
+    const lanes = buildLanes([overlayWorkspace()], [state()]);
+
+    expect([lanes.queue[0], lanes.pr_wait[0], lanes.done[0]]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          worker_created_from: 'SRC',
+          worker_created_from_root_dir: '/repo/source'
+        })
+      ])
+    );
+    for (const row of [lanes.queue[0], lanes.pr_wait[0], lanes.done[0]]) {
+      expect(row.worker_created_from).toBe('SRC');
+      expect(row.worker_created_from_root_dir).toBe('/repo/source');
+    }
   });
 
   test('overlays the carryover successors on the done row (UI-btj6 §3)', () => {

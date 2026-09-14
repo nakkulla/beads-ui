@@ -1451,6 +1451,31 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
 });
 
 describe('worker running tile route chip (UI-yrzu §7.2)', () => {
+  test('draws confirmed Worker creation provenance in the meta row', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        tileInput({
+          worker_created_from: 'UI-source',
+          worker_created_from_root_dir: '/repo/source'
+        }),
+        5000
+      ),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__meta')?.textContent).toContain(
+      '워커 생성'
+    );
+    expect(
+      mount
+        .querySelector('.worker-created-source')
+        ?.getAttribute('data-root-dir')
+    ).toBe('/repo/source');
+    expect(mount.querySelector('.rtile__hd .worker-created-source')).toBeNull();
+  });
+
   test('marks an estimated native child amount on the card row', () => {
     const rendered = shape(
       runningGridTemplate(

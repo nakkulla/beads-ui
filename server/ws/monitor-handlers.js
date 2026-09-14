@@ -649,12 +649,11 @@ function laneMemberIds(snapshot) {
  * client adapter produces (UI-q1tg §3.1):
  * `{ [bead_id]: { route?: string, metadata?: Record<string, string> } }`.
  *
- * `route` and execution pins cover lane members, while `carried_to` covers this
- * root's `done` alone. `runnable` rows carry
- * their own `workflow` already and need no overlay.
- *
- * Reading cross-lane ids here never places anything into `queue` and never arms
- * a lane (ADR 0041): it is the same read-only projection the lane members get.
+ * `route` covers lane members and `done`; execution pins cover non-done lane
+ * members. `carried_to` covers this root's `done` alone. `runnable` rows carry
+ * their own workflow values, but join this projection for the independently
+ * confirmed source workspace. `pr_wait` and `session_active` also join the
+ * provenance read even though they remain outside execution-pin selection.
  *
  * Reads the warm cache alone, so this projection spawns no synchronous child
  * process (ADR 0043), and is partial on the cache's existing contract: a bead
@@ -665,10 +664,17 @@ function laneMemberIds(snapshot) {
  * @param {Record<string, any>} snapshot
  * @param {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null} cache
  * @param {((workspace_key: string, parent_ids: Iterable<string>) => Record<string, string[]>)|null} [carriedToFor]
- * @returns {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[] }>}
+ * @param {string[]} [workspace_roots]
+ * @returns {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string }>}
  */
-function beadOverlayFor(root_dir, snapshot, cache, carriedToFor = null) {
-  /** @type {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[] }>} */
+function beadOverlayFor(
+  root_dir,
+  snapshot,
+  cache,
+  carriedToFor = null,
+  workspace_roots = []
+) {
+  /** @type {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string }>} */
   const overlay = {};
   const done_ids = [...laneBeadIds(snapshot, ['done'])];
   if (carriedToFor && done_ids.length > 0) {
@@ -693,7 +699,18 @@ function beadOverlayFor(root_dir, snapshot, cache, carriedToFor = null) {
     (bead_id) => !done_set.has(bead_id)
   );
   const lane_ids = [...lane_member_ids];
-  const ids = [...new Set([...lane_ids, ...done_ids])];
+  const runnable_ids = [...laneBeadIds(snapshot, ['runnable'])];
+  const provenance_only_ids = [
+    ...laneBeadIds(snapshot, ['pr_wait', 'session_active'])
+  ];
+  const ids = [
+    ...new Set([
+      ...lane_ids,
+      ...done_ids,
+      ...runnable_ids,
+      ...provenance_only_ids
+    ])
+  ];
   if (ids.length === 0) {
     return overlay;
   }
@@ -704,6 +721,18 @@ function beadOverlayFor(root_dir, snapshot, cache, carriedToFor = null) {
     if (typeof route === 'string' && route.length > 0) {
       const entry = overlay[bead_id] || (overlay[bead_id] = {});
       entry.route = route;
+    }
+    const worker_created_from = workflow?.worker_created_from;
+    if (typeof worker_created_from === 'string') {
+      const entry = overlay[bead_id] || (overlay[bead_id] = {});
+      entry.worker_created_from = worker_created_from;
+      const owner_root =
+        typeof cache.sourceOwnerFor === 'function'
+          ? cache.sourceOwnerFor(workspace_roots, worker_created_from)
+          : null;
+      if (owner_root !== null) {
+        entry.worker_created_from_root_dir = owner_root;
+      }
     }
   }
   if (pin_ids.length === 0) {
@@ -769,7 +798,8 @@ export function buildMonitorPipeline(options = {}) {
   const out = [];
   const cache = titleCache();
 
-  for (const root_dir of visibleWorkspaceRoots(options)) {
+  const workspace_roots = visibleWorkspaceRoots(options);
+  for (const root_dir of workspace_roots) {
     /** @type {Record<string, any>} */
     let decorated;
     try {
@@ -816,7 +846,8 @@ export function buildMonitorPipeline(options = {}) {
         root_dir,
         projected,
         cache,
-        carriedToFor
+        carriedToFor,
+        workspace_roots
       );
     } catch (err) {
       log('monitor: bead overlay failed for %s: %o', root_dir, err);

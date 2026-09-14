@@ -414,7 +414,11 @@ describe('worker/bd-metadata carryover mutators (2026-09-01 sweep carryover §2)
       description: '본문',
       type: 'task',
       priority: 1,
-      metadata: { carried_from: 'UI-1.2', route: 'spec_backed' }
+      metadata: {
+        carried_from: 'UI-1.2',
+        worker_created_from: 'UI-1.2',
+        route: 'spec_backed'
+      }
     });
 
     expect(created).toBe('UI-9');
@@ -430,7 +434,7 @@ describe('worker/bd-metadata carryover mutators (2026-09-01 sweep carryover §2)
         '--priority',
         '1',
         '--metadata',
-        '{"carried_from":"UI-1.2","route":"spec_backed"}',
+        '{"carried_from":"UI-1.2","worker_created_from":"UI-1.2","route":"spec_backed"}',
         '--json'
       ],
       { cwd: '/repo' }

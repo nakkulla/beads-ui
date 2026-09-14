@@ -470,7 +470,13 @@ describe('worker workspace adapter', () => {
       { id: 'P', priority: 3, metadata: {} }
     ]);
     seed(stores, 'tab:worker:resolved', [
-      { id: 'V', priority: 4, from_id: 'SRC' }
+      {
+        id: 'V',
+        priority: 4,
+        from_id: 'SRC',
+        workflow: { worker_created_from: 'ORIGIN' },
+        worker_created_from_root_dir: '/repo/origin'
+      }
     ]);
     seed(stores, 'tab:worker:closed', [{ id: 'C', priority: 0 }]);
     const adapter = adapterOf({ stores });
@@ -479,7 +485,12 @@ describe('worker workspace adapter', () => {
       .bead_overlay;
 
     expect(Object.keys(overlay).sort()).toEqual(['B', 'C', 'P', 'R', 'V']);
-    expect(overlay.V).toEqual({ priority: 4, from_id: 'SRC' });
+    expect(overlay.V).toEqual({
+      priority: 4,
+      from_id: 'SRC',
+      worker_created_from: 'ORIGIN',
+      worker_created_from_root_dir: '/repo/origin'
+    });
   });
 
   test('carries metadata only for the subscribed ready, blocked and in_progress columns', () => {
