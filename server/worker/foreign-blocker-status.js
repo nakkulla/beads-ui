@@ -416,8 +416,9 @@ export function foreignBlockerClosedAtFor(bead_id, owner_root, requester_root) {
  * `ok:false` is JUDGMENT IMPOSSIBLE, never "assume still blocking": the caller
  * falls back to its ordinary settlement rather than inventing an answer.
  *
- * The prefix→rig resolution IS shared with the display path, because there is
- * only one of it. A cold prefix is resolved with an immediate `bd config` read
+ * The prefix→rig resolution uses all registered roots, including hidden ones:
+ * display visibility does not change dependency ownership. A cold prefix is
+ * resolved with an immediate `bd config` read
  * rather than {@link prewarmIssuePrefix}, so this call never depends on a
  * background lookup landing first — and never fills the cache on its behalf.
  *
@@ -437,7 +438,7 @@ export async function queryForeignBlockerStatus(
   options = {}
 ) {
   const runJson = options.runJson || runBdJsonProjected;
-  const listRoots = options.listRoots || (() => visibleWorkspaceRoots());
+  const listRoots = options.listRoots || registeredWorkspaceRoots;
   const issuePrefixFor = options.issuePrefixFor || cachedIssuePrefixFor;
   const requester = path.resolve(String(requester_root || ''));
   const prefix = prefixOfBeadId(bead_id);
@@ -446,7 +447,7 @@ export async function queryForeignBlockerStatus(
   try {
     roots = listRoots();
   } catch (err) {
-    log('visible roots unreadable while resolving %s: %o', bead_id, err);
+    log('registered roots unreadable while resolving %s: %o', bead_id, err);
     return { ok: false, reason: 'no_rig' };
   }
   /** @type {string|null} */
@@ -557,6 +558,18 @@ export function visibleWorkspaceRoots(options = {}) {
   } catch (err) {
     log('hidden set unreadable: %o', err);
   }
+  return registeredWorkspaceRoots(listWorkspaces).filter(
+    (root_dir) => !hidden.has(root_dir)
+  );
+}
+
+/**
+ * Normalize registered roots independently of display visibility.
+ *
+ * @param {() => Array<{ path: string }>} [listWorkspaces]
+ * @returns {string[]}
+ */
+function registeredWorkspaceRoots(listWorkspaces = getAvailableWorkspaces) {
   /** @type {string[]} */
   const out = [];
   /** @type {Set<string>} */
@@ -571,7 +584,7 @@ export function visibleWorkspaceRoots(options = {}) {
         continue;
       }
       const root_dir = path.resolve(raw);
-      if (hidden.has(root_dir) || seen.has(root_dir)) {
+      if (seen.has(root_dir)) {
         continue;
       }
       seen.add(root_dir);

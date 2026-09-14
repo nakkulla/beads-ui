@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { runBdJsonProjected } from '../bd.js';
+import * as registry from '../registry-watcher.js';
+import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
 import {
   __resetForeignBlockerCachesForTest,
   applyForeignBlockerCleanup,
@@ -8,7 +10,8 @@ import {
   foreignBlockerStatusFor,
   onForeignBlockerResolved,
   prewarmIssuePrefix,
-  queryForeignBlockerStatus
+  queryForeignBlockerStatus,
+  visibleWorkspaceRoots
 } from './foreign-blocker-status.js';
 import {
   onWorkspaceActivity,
@@ -723,6 +726,47 @@ describe('foreign blocker close time (UI-d13v §3.4)', () => {
 });
 
 describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
+  test.each(['open', 'closed'])(
+    'reads %s from a hidden registered owner while keeping it out of display',
+    async (status) => {
+      vi.spyOn(registry, 'getAvailableWorkspaces').mockReturnValue([
+        { path: WS_B, database: '', pid: 0, version: '' }
+      ]);
+      vi.spyOn(sharedVisibleWorkspacesStore(), 'listHidden').mockReturnValue([
+        WS_B
+      ]);
+      vi.mocked(runBdJsonProjected).mockResolvedValue(
+        /** @type {any} */ ({ ok: true, data: { status } })
+      );
+
+      const result = await queryForeignBlockerStatus('dotfiles-1', WS_A, {
+        issuePrefixFor: () => 'dotfiles'
+      });
+
+      expect(result).toEqual({ ok: true, status });
+      expect(runBdJsonProjected).toHaveBeenCalledWith(
+        'show',
+        ['show', 'dotfiles-1', '--json'],
+        { cwd: WS_B, expected_id: 'dotfiles-1' }
+      );
+      expect(visibleWorkspaceRoots()).toEqual([]);
+    }
+  );
+
+  test('does not treat a hidden but unregistered root as an owner', async () => {
+    vi.spyOn(registry, 'getAvailableWorkspaces').mockReturnValue([]);
+    vi.spyOn(sharedVisibleWorkspacesStore(), 'listHidden').mockReturnValue([
+      WS_B
+    ]);
+
+    const result = await queryForeignBlockerStatus('dotfiles-1', WS_A, {
+      issuePrefixFor: () => 'dotfiles'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'no_rig' });
+    expect(runBdJsonProjected).not.toHaveBeenCalled();
+  });
+
   /**
    * @param {Record<string, string|null>} prefixes
    */
@@ -750,7 +794,7 @@ describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
     expect(result).toEqual({ ok: true, status: 'open' });
   });
 
-  test('reports no_rig when no visible rig owns the prefix', async () => {
+  test('reports no_rig when no registered rig owns the prefix', async () => {
     const result = await queryForeignBlockerStatus(
       'Analysis-2zly',
       WS_A,
