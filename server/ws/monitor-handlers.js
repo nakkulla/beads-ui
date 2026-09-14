@@ -659,7 +659,8 @@ function laneMemberIds(snapshot) {
  * moving after the run, while a 큐 밖 연결 레인 멤버 has no lane row to carry its
  * 예정 설정. `carried_to` covers this root's `done` alone. `runnable` rows carry
  * their own workflow values, but join this projection for the independently
- * confirmed source workspace.
+ * confirmed source workspace. `pr_wait` and `session_active` also join the
+ * provenance read even though they remain outside execution-pin selection.
  *
  * Reading cross-lane ids here never places anything into `queue` and never arms
  * a lane (ADR 0041): it is the same read-only projection the lane members get.
@@ -718,8 +719,17 @@ function beadOverlayFor(
   ];
   const lane_ids = [...lane_member_ids];
   const runnable_ids = [...laneBeadIds(snapshot, ['runnable'])];
+  const provenance_only_ids = [
+    ...laneBeadIds(snapshot, ['pr_wait', 'session_active'])
+  ];
   const ids = [
-    ...new Set([...lane_ids, ...done_ids, ...cross_lane_ids, ...runnable_ids])
+    ...new Set([
+      ...lane_ids,
+      ...done_ids,
+      ...cross_lane_ids,
+      ...runnable_ids,
+      ...provenance_only_ids
+    ])
   ];
   if (ids.length === 0) {
     return overlay;

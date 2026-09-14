@@ -244,6 +244,25 @@ export function createTitleCache(options = {}) {
   }
 
   /**
+   * Current ownership evidence for one workspace and native id.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {number} at
+   * @returns {'present'|'missing'|null}
+   */
+  function sourceEvidence(workspace, bead_id, at) {
+    const record = laneFor(workspace).get(bead_id);
+    if (record && at - record.at < positive_ttl_ms) {
+      return 'present';
+    }
+    const missing_until = missingFor(workspace).get(bead_id);
+    return typeof missing_until === 'number' && missing_until > at
+      ? 'missing'
+      : null;
+  }
+
+  /**
    * @param {string} workspace
    * @returns {Map<string, number>}
    */
@@ -672,16 +691,17 @@ export function createTitleCache(options = {}) {
       const owners = [];
       /** @type {Promise<string|null>[]} */
       const runs = [];
+      /** @type {string[]} */
+      const queried_keys = [];
       let unresolved = false;
       for (const workspace of workspaces) {
         const key = keyOf(workspace);
-        const record = laneFor(key).get(bead_id);
-        if (record && at - record.at < positive_ttl_ms) {
+        const evidence = sourceEvidence(key, bead_id, at);
+        if (evidence === 'present') {
           owners.push(key);
           continue;
         }
-        const missing_until = missingFor(key).get(bead_id);
-        if (typeof missing_until === 'number' && missing_until > at) {
+        if (evidence === 'missing') {
           continue;
         }
         const until = failedFor(key).get(bead_id);
@@ -690,10 +710,20 @@ export function createTitleCache(options = {}) {
           continue;
         }
         unresolved = true;
+        queried_keys.push(key);
         runs.push(lookup(key, bead_id));
       }
       if (runs.length > 0) {
-        void Promise.all(runs).then(() => announceFilled(workspaces[0] || ''));
+        void Promise.all(runs).then(() => {
+          const completed_at = now();
+          if (
+            queried_keys.some(
+              (key) => sourceEvidence(key, bead_id, completed_at) !== null
+            )
+          ) {
+            announceFilled(workspaces[0] || '');
+          }
+        });
       }
       return !unresolved && owners.length === 1 ? owners[0] : null;
     },

@@ -77,11 +77,38 @@ describe('worker title cache (UI-12k6)', () => {
       runJson: /** @type {any} */ (bd.runJson)
     });
     cache.refreshFromIssue('/one', { id: 'SRC', title: 'source' });
+    const onFilled = vi.fn();
+    cache.setOnFilled(onFilled);
 
     expect(cache.sourceOwnerFor(['/one', '/two'], 'SRC')).toBeNull();
     await bd.settled();
 
     expect(cache.sourceOwnerFor(['/one', '/two'], 'SRC')).toBe('/one');
+    expect(onFilled).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not rebuild source ownership after a protocol lookup failure', async () => {
+    const runJson = vi.fn(async () => ({
+      ok: false,
+      error: { code: 'bd_json_invalid', message: 'invalid JSON' }
+    }));
+    const cache = createTitleCache({ runJson: /** @type {any} */ (runJson) });
+    cache.refreshFromIssue('/one', { id: 'SRC', title: 'source' });
+    const onFilled = vi.fn(() => {
+      cache.sourceOwnerFor(['/one', '/two'], 'SRC');
+    });
+    cache.setOnFilled(onFilled);
+
+    expect(cache.sourceOwnerFor(['/one', '/two'], 'SRC')).toBeNull();
+    await vi.waitFor(() => expect(runJson).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onFilled).not.toHaveBeenCalled();
+    expect(runJson).toHaveBeenCalledTimes(1);
+
+    cache.sourceOwnerFor(['/one', '/two'], 'SRC');
+    await vi.waitFor(() => expect(runJson).toHaveBeenCalledTimes(2));
   });
 
   test('keeps source ownership unknown after a peer database error', async () => {
