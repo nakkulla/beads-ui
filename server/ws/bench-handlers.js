@@ -149,19 +149,10 @@ function benchBd(ws, root_dir) {
   const run = (args) => runBdInWorkspace(ws, args, { cwd: root_dir });
   return {
     /**
-     * @param {{ title: string, description: string, issue_type: string|null, priority: number|null }} input
+     * @param {{ title: string, description: string, issue_type: string|null, priority: number|null, metadata: Record<string, string> }} input
      */
     async create(input) {
-      const args = ['create', '--title', input.title, '--json'];
-      if (input.issue_type !== null) {
-        args.push('--type', input.issue_type);
-      }
-      if (input.priority !== null) {
-        args.push('--priority', String(input.priority));
-      }
-      if (input.description.length > 0) {
-        args.push('--description', input.description);
-      }
+      const args = benchCreateArgs(input);
       const res = await run(args);
       if (res.code !== 0) {
         return { ok: false, reason: 'clone_create_failed' };
@@ -170,12 +161,35 @@ function benchBd(ws, root_dir) {
       // that makes the rest of the cell addressable, so a payload without one
       // is a creation failure even though bd exited 0. The parse is the shared
       // one (`bd-metadata.js`), never a second reading of the same payload
-      // shape, and the AUTHORITY is still the exact-id readback the metadata
-      // write performs below.
+      // shape. The exact-id readback below is the authority for the initial
+      // metadata write.
       const id = createdIdOf(res.stdout);
-      return id === null
-        ? { ok: false, reason: 'clone_id_unreadable' }
-        : { ok: true, id };
+      if (id === null) {
+        return { ok: false, reason: 'clone_id_unreadable' };
+      }
+      let shown;
+      try {
+        shown = await runBdJsonProjectedInWorkspace(
+          ws,
+          'show',
+          ['show', id, '--json'],
+          { expected_id: id, cwd: root_dir }
+        );
+      } catch {
+        return { ok: false, id, reason: 'clone_metadata_readback_failed' };
+      }
+      if (shown.ok !== true) {
+        return { ok: false, id, reason: 'clone_metadata_readback_failed' };
+      }
+      const metadata = isRecord(/** @type {any} */ (shown.data).metadata)
+        ? /** @type {any} */ (shown.data).metadata
+        : {};
+      for (const [key, value] of Object.entries(input.metadata)) {
+        if (metadata[key] !== value) {
+          return { ok: false, id, reason: 'clone_metadata_readback_failed' };
+        }
+      }
+      return { ok: true, id };
     },
     /**
      * @param {string} bead_id
@@ -255,6 +269,27 @@ function benchBd(ws, root_dir) {
       return typeof status === 'string' && status.length > 0 ? status : null;
     }
   };
+}
+
+/**
+ * Build the atomic clone-create argv, including identity and provenance.
+ *
+ * @param {{ title: string, description: string, issue_type: string|null, priority: number|null, metadata: Record<string, string> }} input
+ * @returns {string[]}
+ */
+export function benchCreateArgs(input) {
+  const args = ['create', '--title', input.title, '--json'];
+  if (input.issue_type !== null) {
+    args.push('--type', input.issue_type);
+  }
+  if (input.priority !== null) {
+    args.push('--priority', String(input.priority));
+  }
+  if (input.description.length > 0) {
+    args.push('--description', input.description);
+  }
+  args.push('--metadata', JSON.stringify(input.metadata));
+  return args;
 }
 
 /**

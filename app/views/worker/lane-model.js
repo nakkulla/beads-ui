@@ -4446,6 +4446,19 @@ export function buildLanes(workspaces, workspaces_state, options) {
       if (typeof overlay.from_id === 'string' && overlay.from_id.length > 0) {
         item.from_id = overlay.from_id;
       }
+      if (
+        typeof overlay.worker_created_from === 'string' &&
+        overlay.worker_created_from.length > 0
+      ) {
+        item.worker_created_from = overlay.worker_created_from;
+      }
+      if (
+        typeof overlay.worker_created_from_root_dir === 'string' &&
+        overlay.worker_created_from_root_dir.length > 0
+      ) {
+        item.worker_created_from_root_dir =
+          overlay.worker_created_from_root_dir;
+      }
       // 이월 후속 (UI-btj6 §3). 완료 행만 이 사실을 묻는다 — 끝난 일이 무엇으로
       // 이어졌나. metadata 검사보다 앞에 서는 이유는 완료 bead가 닫힌 열에
       // 있어 오버레이가 그 metadata를 싣지 않기 때문이다. 재료가 없으면 필드

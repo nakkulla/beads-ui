@@ -131,6 +131,15 @@ body {
   font-size: var(--fs-chip-lg);
   cursor: pointer;
 }
+.ctl-chip--worker-created {
+  color: var(--text-muted);
+  border-color: var(--border-label);
+}
+.ctl-chip--from.ctl-chip--disabled {
+  color: var(--text-muted);
+  border-color: var(--border-label);
+  cursor: default;
+}
 .ctl-chip--blocked {
   color: var(--chip-blocked);
   border-color: var(--border-blocked);

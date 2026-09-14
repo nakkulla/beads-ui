@@ -658,7 +658,8 @@ function laneMemberIds(snapshot) {
  * with, which comes from the attempt record (§3.4) and not from a pin that keeps
  * moving after the run, while a 큐 밖 연결 레인 멤버 has no lane row to carry its
  * 예정 설정. `carried_to` covers this root's `done` alone. `runnable` rows carry
- * their own `workflow` already and need no overlay.
+ * their own workflow values, but join this projection for the independently
+ * confirmed source workspace.
  *
  * Reading cross-lane ids here never places anything into `queue` and never arms
  * a lane (ADR 0041): it is the same read-only projection the lane members get.
@@ -673,16 +674,18 @@ function laneMemberIds(snapshot) {
  * @param {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null} cache
  * @param {string[]} [cross_lane_ids] - 이 root의 보이는 연결 레인 entry ID들.
  * @param {((workspace_key: string, parent_ids: Iterable<string>) => Record<string, string[]>)|null} [carriedToFor]
- * @returns {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[] }>}
+ * @param {string[]} [workspace_roots]
+ * @returns {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string }>}
  */
 function beadOverlayFor(
   root_dir,
   snapshot,
   cache,
   cross_lane_ids = [],
-  carriedToFor = null
+  carriedToFor = null,
+  workspace_roots = []
 ) {
-  /** @type {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[] }>} */
+  /** @type {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string }>} */
   const overlay = {};
   const done_ids = [...laneBeadIds(snapshot, ['done'])];
   if (carriedToFor && done_ids.length > 0) {
@@ -714,7 +717,10 @@ function beadOverlayFor(
     ])
   ];
   const lane_ids = [...lane_member_ids];
-  const ids = [...new Set([...lane_ids, ...done_ids, ...cross_lane_ids])];
+  const runnable_ids = [...laneBeadIds(snapshot, ['runnable'])];
+  const ids = [
+    ...new Set([...lane_ids, ...done_ids, ...cross_lane_ids, ...runnable_ids])
+  ];
   if (ids.length === 0) {
     return overlay;
   }
@@ -725,6 +731,18 @@ function beadOverlayFor(
     if (typeof route === 'string' && route.length > 0) {
       const entry = overlay[bead_id] || (overlay[bead_id] = {});
       entry.route = route;
+    }
+    const worker_created_from = workflow?.worker_created_from;
+    if (typeof worker_created_from === 'string') {
+      const entry = overlay[bead_id] || (overlay[bead_id] = {});
+      entry.worker_created_from = worker_created_from;
+      const owner_root =
+        typeof cache.sourceOwnerFor === 'function'
+          ? cache.sourceOwnerFor(workspace_roots, worker_created_from)
+          : null;
+      if (owner_root !== null) {
+        entry.worker_created_from_root_dir = owner_root;
+      }
     }
   }
   if (pin_ids.length === 0) {
@@ -826,7 +844,8 @@ export function buildMonitorPipeline(options = {}) {
   const out = [];
   const cache = titleCache();
 
-  for (const root_dir of visibleWorkspaceRoots(options)) {
+  const workspace_roots = visibleWorkspaceRoots(options);
+  for (const root_dir of workspace_roots) {
     /** @type {Record<string, any>} */
     let decorated;
     try {
@@ -875,7 +894,8 @@ export function buildMonitorPipeline(options = {}) {
         projected,
         cache,
         cross_lane_ids,
-        carriedToFor
+        carriedToFor,
+        workspace_roots
       );
     } catch (err) {
       log('monitor: bead overlay failed for %s: %o', root_dir, err);

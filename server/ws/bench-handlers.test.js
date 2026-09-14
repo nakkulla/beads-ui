@@ -1,5 +1,29 @@
 import { describe, expect, test } from 'vitest';
-import { benchSourceOf, newBenchRunId } from './bench-handlers.js';
+import {
+  benchCreateArgs,
+  benchSourceOf,
+  newBenchRunId
+} from './bench-handlers.js';
+
+describe('benchCreateArgs', () => {
+  test('writes clone identity and creation provenance in the initial create', () => {
+    const args = benchCreateArgs({
+      title: 'clone',
+      description: 'body',
+      issue_type: 'task',
+      priority: 2,
+      metadata: {
+        bench_source: 'UI-source',
+        worker_created_from: 'UI-source'
+      }
+    });
+
+    expect(args).toContain('--metadata');
+    expect(args[args.indexOf('--metadata') + 1]).toBe(
+      '{"bench_source":"UI-source","worker_created_from":"UI-source"}'
+    );
+  });
+});
 
 describe('newBenchRunId', () => {
   test('produces an id in the contract run-id vocabulary', () => {

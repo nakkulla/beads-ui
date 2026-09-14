@@ -293,6 +293,29 @@ export function parseExecReceipt(value) {
 }
 
 /**
+ * Validate immutable Worker creation provenance for display.
+ *
+ * @param {unknown} value
+ * @param {unknown} issue_id
+ * @returns {string|null}
+ */
+export function parseWorkerCreatedFrom(value, issue_id) {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.trim() !== value ||
+    [...value].some((char) => {
+      const code = char.charCodeAt(0);
+      return code <= 31 || (code >= 127 && code <= 159);
+    }) ||
+    value === issue_id
+  ) {
+    return null;
+  }
+  return value;
+}
+
+/**
  * @typedef {Object} PlannedExecution
  * @property {'delegated'|'main'} kind
  * @property {string | null} reason
@@ -1784,6 +1807,7 @@ function mergeStage(md, status) {
  * @property {{ actor: string, sha: string }|null} impl_entry
  * @property {ResolverReceipt|null} resolver
  * @property {{ spec: ReviewStats|null, impl: ReviewStats|null, plan: ReviewStats|null }} review_stats
+ * @property {string|null} worker_created_from
  * Structured review outcome per step, read from the contract's
  * `<step>_review_stats` metadata. Display only — a step whose key is absent or
  * malformed is `null` and draws nothing.
@@ -1836,6 +1860,10 @@ export function enrichIssueWorkflow(
   );
   const exec_receipt = parseExecReceipt(md.exec_receipt);
   const impl_entry = parseImplEntry(md.impl_entry);
+  const worker_created_from = parseWorkerCreatedFrom(
+    md.worker_created_from,
+    bead_id
+  );
   // A conflict-resolution session is the only writer of this receipt form, so
   // its presence is the whole fact the detail panel reports beside the raw
   // receipt: this head did not reach the merge gate on the reviewed delta
@@ -1879,6 +1907,7 @@ export function enrichIssueWorkflow(
     exec_receipt,
     impl_entry,
     resolver,
+    worker_created_from,
     review_stats: reviewStats(md),
     chips: {
       route,

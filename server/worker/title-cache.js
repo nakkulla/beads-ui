@@ -155,6 +155,8 @@ export function createTitleCache(options = {}) {
   const titles_by_workspace = new Map();
   /** @type {Map<string, Map<string, number>>} */
   const failed_by_workspace = new Map();
+  /** @type {Map<string, Map<string, number>>} */
+  const missing_by_workspace = new Map();
   /**
    * Fills currently running, keyed `<workspace>\0<bead>`. A bead already being
    * filled is NOT queued again — the in-flight run's completion callback is
@@ -220,6 +222,23 @@ export function createTitleCache(options = {}) {
     if (!lane) {
       lane = new Map();
       failed_by_workspace.set(key, lane);
+    }
+    return lane;
+  }
+
+  /**
+   * Confirmed native-id absences, kept separate from retry suppression because
+   * a database error says nothing about ownership.
+   *
+   * @param {string} workspace
+   * @returns {Map<string, number>}
+   */
+  function missingFor(workspace) {
+    const key = keyOf(workspace);
+    let lane = missing_by_workspace.get(key);
+    if (!lane) {
+      lane = new Map();
+      missing_by_workspace.set(key, lane);
     }
     return lane;
   }
@@ -321,7 +340,7 @@ export function createTitleCache(options = {}) {
    *
    * @param {string} workspace
    * @param {string} bead_id
-   * @returns {Promise<{ record: BeadRecord|null, protocol_failure: boolean }>}
+   * @returns {Promise<{ record: BeadRecord|null, protocol_failure: boolean, missing: boolean }>}
    */
   async function fetchBead(workspace, bead_id) {
     const r = await runJson('show', ['show', bead_id, '--json'], {
@@ -332,11 +351,24 @@ export function createTitleCache(options = {}) {
       // A protocol fault is reported separately so the caller does not
       // negative-cache it: suppressing the retry would hide a compatibility
       // break behind a bead that simply "has no title".
-      return { record: null, protocol_failure: isBdProtocolFailure(r) };
+      const error_code = /** @type {any} */ (r)?.error?.code;
+      const error_message = String(
+        /** @type {any} */ (r)?.error?.message || ''
+      );
+      return {
+        record: null,
+        protocol_failure: isBdProtocolFailure(r),
+        missing:
+          error_code === 'not_found' ||
+          /\b(?:issue|bead)\b[^\n]*\bnot found\b|\bno such issue\b/i.test(
+            error_message
+          )
+      };
     }
     return {
       record: recordFromIssue(r.data, workspace),
-      protocol_failure: false
+      protocol_failure: false,
+      missing: false
     };
   }
 
@@ -383,6 +415,7 @@ export function createTitleCache(options = {}) {
       }
       const lane = laneFor(workspace);
       const failed = failedFor(workspace);
+      const missing = missingFor(workspace);
       try {
         const fetched = await fetchBead(workspace, bead_id);
         const bead = fetched.record;
@@ -390,6 +423,7 @@ export function createTitleCache(options = {}) {
           if ((generationsFor(workspace).get(bead_id) || 0) === generation) {
             lane.set(bead_id, bead);
             failed.delete(bead_id);
+            missing.delete(bead_id);
             return bead.title;
           }
           const fresh = lane.get(bead_id);
@@ -404,6 +438,11 @@ export function createTitleCache(options = {}) {
           (generationsFor(workspace).get(bead_id) || 0) === generation
         ) {
           failed.set(bead_id, now() + negative_ttl_ms);
+          if (fetched.missing) {
+            missing.set(bead_id, now() + negative_ttl_ms);
+          } else {
+            missing.delete(bead_id);
+          }
         }
         log('no title for %s in %s', bead_id, workspace);
         const stale = lane.get(bead_id);
@@ -411,6 +450,7 @@ export function createTitleCache(options = {}) {
       } catch (err) {
         if ((generationsFor(workspace).get(bead_id) || 0) === generation) {
           failed.set(bead_id, now() + negative_ttl_ms);
+          missing.delete(bead_id);
         }
         log('title lookup failed for %s in %s: %o', bead_id, workspace, err);
         const stale = lane.get(bead_id);
@@ -617,6 +657,48 @@ export function createTitleCache(options = {}) {
     },
 
     /**
+     * Confirm one native id's unique owner across the supplied workspaces.
+     * Cold entries are filled asynchronously as one batch; until every
+     * workspace has either a record or a negative-cache answer, ownership is
+     * unknown and callers keep the source inactive.
+     *
+     * @param {string[]} workspaces
+     * @param {string} bead_id
+     * @returns {string|null}
+     */
+    sourceOwnerFor(workspaces, bead_id) {
+      const at = now();
+      /** @type {string[]} */
+      const owners = [];
+      /** @type {Promise<string|null>[]} */
+      const runs = [];
+      let unresolved = false;
+      for (const workspace of workspaces) {
+        const key = keyOf(workspace);
+        const record = laneFor(key).get(bead_id);
+        if (record && at - record.at < positive_ttl_ms) {
+          owners.push(key);
+          continue;
+        }
+        const missing_until = missingFor(key).get(bead_id);
+        if (typeof missing_until === 'number' && missing_until > at) {
+          continue;
+        }
+        const until = failedFor(key).get(bead_id);
+        if (typeof until === 'number' && until > at) {
+          unresolved = true;
+          continue;
+        }
+        unresolved = true;
+        runs.push(lookup(key, bead_id));
+      }
+      if (runs.length > 0) {
+        void Promise.all(runs).then(() => announceFilled(workspaces[0] || ''));
+      }
+      return !unresolved && owners.length === 1 ? owners[0] : null;
+    },
+
+    /**
      * Cache hits for `ids` as execution pins (UI-q1tg §3.1) — the allow-listed
      * metadata subset the exec chips resolve against. Same partiality contract
      * as the projections above: a bead whose record has not landed is ABSENT,
@@ -709,15 +791,18 @@ export function createTitleCache(options = {}) {
       generations.set(bead_id, (generations.get(bead_id) || 0) + 1);
       const lane = laneFor(workspace);
       const failed = failedFor(workspace);
+      const missing = missingFor(workspace);
       const record = recordFromIssue(issue, workspace);
       if (record) {
         lane.set(bead_id, record);
         failed.delete(bead_id);
+        missing.delete(bead_id);
         announceFilled(workspace);
         return;
       }
       lane.delete(bead_id);
       failed.delete(bead_id);
+      missing.delete(bead_id);
     },
 
     /**
@@ -736,6 +821,7 @@ export function createTitleCache(options = {}) {
       generations.set(id, (generations.get(id) || 0) + 1);
       laneFor(workspace).delete(id);
       failedFor(workspace).delete(id);
+      missingFor(workspace).delete(id);
     },
 
     /**

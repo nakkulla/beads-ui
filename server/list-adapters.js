@@ -239,12 +239,51 @@ async function fetchWorkspaceSnapshotProjection(spec, options) {
     snapshot_result.snapshot
   );
   items = enrichIssuesWorkflow(/** @type {any} */ (items), options.cwd, probes);
+  items = attachWorkerCreationOwners(
+    items,
+    snapshot_result.snapshot,
+    options.cwd
+  );
   /** @type {FetchListResultSuccess} */
   const result = {
     ok: true,
     items
   };
   return snapshot_result.stale ? { ...result, stale: true } : result;
+}
+
+/**
+ * Resolve creation-source ownership only from snapshots that actually contain
+ * the native id. A duplicate id across visible rigs is ambiguous and remains
+ * inactive rather than being guessed from a prefix.
+ *
+ * @param {NormalizedIssue[]} items
+ * @param {WorkspaceSnapshot} snapshot
+ * @param {string|undefined} root_dir
+ * @returns {NormalizedIssue[]}
+ */
+function attachWorkerCreationOwners(items, snapshot, root_dir) {
+  const context = createDecorationContext(snapshot, root_dir);
+  const snapshots = [
+    { root_dir: context.root_dir, snapshot: context.snapshot },
+    ...context.peer_snapshots
+  ];
+  return items.map((item) => {
+    const source_id = /** @type {any} */ (item.workflow)?.worker_created_from;
+    if (typeof source_id !== 'string') {
+      return item;
+    }
+    if (!context.peer_snapshots_complete) {
+      return item;
+    }
+    const owners = snapshots.filter(({ snapshot: candidate }) =>
+      candidate.id_index.has(source_id)
+    );
+    if (owners.length !== 1 || owners[0].root_dir.length === 0) {
+      return item;
+    }
+    return { ...item, worker_created_from_root_dir: owners[0].root_dir };
+  });
 }
 
 /**
@@ -450,7 +489,7 @@ function projectBlockedIssues(snapshot, root_dir) {
  * @typedef {{ released_by: ReleasedBlocker[], last_released_at: number }} ReleaseInfo
  * @typedef {{ count: number, ids: string[], root_dirs?: Record<string, string> }} DependentsInfo
  * @typedef {{ root_dir: string, snapshot: WorkspaceSnapshot }} PeerSnapshot
- * @typedef {{ snapshot: WorkspaceSnapshot, root_dir: string, self_prefix: string | null, owner_by_prefix: Map<string, string>, peer_snapshots: PeerSnapshot[] }} DecorationContext
+ * @typedef {{ snapshot: WorkspaceSnapshot, root_dir: string, self_prefix: string | null, owner_by_prefix: Map<string, string>, peer_snapshots: PeerSnapshot[], peer_snapshots_complete: boolean }} DecorationContext
  */
 
 /**
@@ -503,8 +542,10 @@ export function createDecorationContext(snapshot, root_dir) {
   const self_resolved = self_root.length > 0 ? path.resolve(self_root) : '';
   /** @type {string[]} */
   let roots = [];
+  let roots_readable = false;
   try {
     roots = visibleWorkspaceRoots();
+    roots_readable = true;
   } catch (err) {
     log('visible workspace roots unreadable for decorations: %o', err);
   }
@@ -512,6 +553,7 @@ export function createDecorationContext(snapshot, root_dir) {
   const owner_by_prefix = new Map();
   /** @type {PeerSnapshot[]} */
   const peer_snapshots = [];
+  let peer_snapshots_complete = roots_readable && roots.length > 0;
   for (const other_root of roots) {
     if (other_root === self_resolved) {
       continue;
@@ -526,6 +568,8 @@ export function createDecorationContext(snapshot, root_dir) {
     const peer = peekWorkspaceSnapshot(other_root);
     if (peer !== null) {
       peer_snapshots.push({ root_dir: other_root, snapshot: peer });
+    } else {
+      peer_snapshots_complete = false;
     }
   }
   return {
@@ -534,7 +578,8 @@ export function createDecorationContext(snapshot, root_dir) {
     self_prefix:
       self_resolved.length > 0 ? cachedIssuePrefixFor(self_resolved) : null,
     owner_by_prefix,
-    peer_snapshots
+    peer_snapshots,
+    peer_snapshots_complete
   };
 }
 

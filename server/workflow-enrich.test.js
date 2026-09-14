@@ -19,8 +19,33 @@ import {
   parseReceipt,
   parseResolverReceipt,
   parseReviewStats,
+  parseWorkerCreatedFrom,
   warmWorkflowProbes
 } from './workflow-enrich.js';
+
+describe('worker creation provenance', () => {
+  test.each([
+    [undefined, null],
+    [42, null],
+    ['', null],
+    [' UI-1', null],
+    ['UI-1\n', null],
+    ['UI-1\u0085', null],
+    ['UI-self', null],
+    ['UI-source', 'UI-source']
+  ])('validates %o', (value, expected) => {
+    expect(parseWorkerCreatedFrom(value, 'UI-self')).toBe(expected);
+  });
+
+  test('projects valid provenance independently of execution history', () => {
+    const workflow = enrichIssueWorkflow({
+      id: 'UI-child',
+      metadata: { worker_created_from: 'UI-source' }
+    });
+
+    expect(workflow.worker_created_from).toBe('UI-source');
+  });
+});
 
 vi.mock('node:child_process', async (importOriginal) => {
   /** @type {typeof import('node:child_process')} */

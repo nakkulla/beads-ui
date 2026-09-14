@@ -205,6 +205,15 @@ row's execution metadata pins only (the per-bead preset axes plus
 `claude_account`/`codex_account`); the rest of `metadata` never travels, so the
 whole backlog's metadata stays off the wire.
 
+`WorkflowSummary.worker_created_from: string|null` is the validated immutable
+native source ID from `metadata.worker_created_from`. Invalid, blank,
+whitespace-padded, control-character, and self-referential values become `null`.
+Snapshot list items additionally carry `worker_created_from_root_dir?: string`
+only when exactly one visible workspace snapshot contains that source ID; an
+absent or ambiguous owner leaves the source chip inactive. Worker `bead_overlay`
+preserves both fields across all five issue columns so waiting, running,
+PR-wait, and done rows do not depend on the candidate row being present.
+
 Runnable rows also carry `rec: Record<string, string>|null` (UI-sbum §2) — the
 workflow's RECOMMENDED execution settings under their original `rec_*` key names
 (`rec_orchestration_model`, optional `rec_impl_runtime`, optional `rec_reason`),

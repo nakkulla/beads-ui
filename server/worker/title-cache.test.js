@@ -26,7 +26,7 @@ function fakeBd(titles, options = {}) {
           ) {
             resolve({
               ok: false,
-              error: { code: 'bd_exit_error', message: 'not found' }
+              error: { code: 'bd_exit_error', message: 'Issue not found' }
             });
             return;
           }
@@ -71,6 +71,40 @@ function fakeBd(titles, options = {}) {
 }
 
 describe('worker title cache (UI-12k6)', () => {
+  test('confirms a source owner only after every workspace is genuinely missing or present', async () => {
+    const bd = fakeBd({});
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
+    cache.refreshFromIssue('/one', { id: 'SRC', title: 'source' });
+
+    expect(cache.sourceOwnerFor(['/one', '/two'], 'SRC')).toBeNull();
+    await bd.settled();
+
+    expect(cache.sourceOwnerFor(['/one', '/two'], 'SRC')).toBe('/one');
+  });
+
+  test('keeps source ownership unknown after a peer database error', async () => {
+    const runJson = vi.fn(async () => {
+      throw new Error('database unreachable');
+    });
+    const cache = createTitleCache({ runJson: /** @type {any} */ (runJson) });
+    cache.refreshFromIssue('/one', { id: 'SRC', title: 'source' });
+
+    expect(cache.sourceOwnerFor(['/one', '/two'], 'SRC')).toBeNull();
+    await vi.waitFor(() => expect(runJson).toHaveBeenCalled());
+
+    expect(cache.sourceOwnerFor(['/one', '/two'], 'SRC')).toBeNull();
+  });
+
+  test('keeps a duplicate source id owner unresolved', () => {
+    const cache = createTitleCache();
+    cache.refreshFromIssue('/one', { id: 'SRC', title: 'one' });
+    cache.refreshFromIssue('/two', { id: 'SRC', title: 'two' });
+
+    expect(cache.sourceOwnerFor(['/one', '/two'], 'SRC')).toBeNull();
+  });
+
   test('returns normalized labels from the title cache fill', async () => {
     const bd = fakeBd({
       'UI-1': { title: '첫 제목', labels: ['worker-serial', 3, 'frontend'] }

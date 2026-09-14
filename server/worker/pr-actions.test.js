@@ -4337,6 +4337,7 @@ describe('post-merge sweep — child disposition (2026-09-01 carryover §1)', ()
 
     expect(issueOf(env, successorOf(env)).metadata).toMatchObject({
       carried_from: CHILD,
+      worker_created_from: CHILD,
       plan_path: PLAN_PATH,
       plan_task_anchor: ANCHOR,
       route: 'spec_backed'
@@ -4452,6 +4453,7 @@ describe('post-merge sweep — child disposition (2026-09-01 carryover §1)', ()
     await env.actions.merge(BEAD);
 
     expect(env.bd.createTopLevelIssue).not.toHaveBeenCalled();
+    expect(issueOf(env, 'UI-9').metadata.worker_created_from).toBeUndefined();
   });
 
   test('completes the edges an interrupted sweep never added', async () => {

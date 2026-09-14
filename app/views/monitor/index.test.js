@@ -3688,6 +3688,36 @@ describe('monitor 의존성 편집 이관 (UI-lx45 §5)', () => {
     expect(switchWorkspace).not.toHaveBeenCalled();
   });
 
+  test('switches to the confirmed source repo before opening a Worker source', async () => {
+    const { mount, view, gotoIssue, switchWorkspace } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-9',
+              title: '가운데',
+              workflow: { worker_created_from: 'B-source' }
+            }
+          ],
+          bead_overlay: {
+            'A-9': {
+              worker_created_from: 'B-source',
+              worker_created_from_root_dir: WS_B
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '#monitor-runnable .worker-created-source');
+    await flushMicrotasks();
+
+    expect(switchWorkspace).toHaveBeenCalledWith(WS_B);
+    expect(gotoIssue).toHaveBeenCalledWith('B-source');
+  });
+
   test('switches the repo before opening a blocker of another one', async () => {
     const { mount, view, gotoIssue, switchWorkspace } = setup({
       workspaces: [

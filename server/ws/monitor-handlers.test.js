@@ -836,6 +836,54 @@ function overlayOf(out) {
 }
 
 describe('buildMonitorPipeline bead overlay (UI-q1tg §3.1)', () => {
+  test('carries a runnable candidate source owner in the overlay', () => {
+    const cache = warmCache(WS_A, [
+      {
+        id: 'A-candidate',
+        title: 'candidate',
+        workflow: { worker_created_from: 'B-source' }
+      }
+    ]);
+    cache.sourceOwnerFor = () => WS_B;
+    const out = build({
+      workspaces: [WS_A, WS_B],
+      runnable: { [WS_A]: [candidate('A-candidate')] },
+      titleCache: cache
+    });
+
+    expect(overlayOf(out)['A-candidate']).toMatchObject({
+      worker_created_from: 'B-source',
+      worker_created_from_root_dir: WS_B
+    });
+  });
+
+  test('carries Worker provenance and its confirmed cross-workspace owner', () => {
+    const cache = warmCache(WS_A, [
+      {
+        id: 'A-child',
+        title: 'child',
+        workflow: {
+          route: 'quick_fix',
+          worker_created_from: 'B-source'
+        }
+      }
+    ]);
+    cache.sourceOwnerFor = () => WS_B;
+    const out = build({
+      workspaces: [WS_A, WS_B],
+      snapshots: {
+        [WS_A]: snapshot({ queue: [{ bead_id: 'A-child', added_at: NOW }] }),
+        [WS_B]: snapshot({ queue: [{ bead_id: 'B-source', added_at: NOW }] })
+      },
+      titleCache: cache
+    });
+
+    expect(overlayOf(out)['A-child']).toMatchObject({
+      worker_created_from: 'B-source',
+      worker_created_from_root_dir: WS_B
+    });
+  });
+
   test('carries the route of every lane member and done bead', () => {
     const out = build({
       workspaces: [WS_A],

@@ -1561,6 +1561,78 @@ describe('ready/blocked candidate decorations (UI-d13v §3.3·§3.5·§3.7)', ()
     });
   });
 
+  test('resolves a Worker creation source from the snapshot that contains it', async () => {
+    vi.mocked(visibleWorkspaceRoots).mockReturnValue([WS_MAIN, WS_PEER]);
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          {
+            id: 'UI-child',
+            status: 'open',
+            workflow: { worker_created_from: 'dotfiles-source' }
+          }
+        ],
+        ready: ['UI-child']
+      },
+      [WS_PEER]: {
+        all: [{ id: 'dotfiles-source', status: 'closed' }],
+        ready: []
+      }
+    });
+    await projectIn(WS_PEER);
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(items[0].worker_created_from_root_dir).toBe(WS_PEER);
+  });
+
+  test('leaves source ownership unresolved while a visible peer snapshot is unavailable', async () => {
+    vi.mocked(visibleWorkspaceRoots).mockReturnValue([WS_MAIN, WS_PEER]);
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          { id: 'SRC', status: 'closed' },
+          {
+            id: 'UI-child',
+            status: 'open',
+            workflow: { worker_created_from: 'SRC' }
+          }
+        ],
+        ready: ['UI-child']
+      }
+    });
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(items[0].worker_created_from_root_dir).toBeUndefined();
+  });
+
+  test('leaves duplicate source ownership unresolved', async () => {
+    vi.mocked(visibleWorkspaceRoots).mockReturnValue([WS_MAIN, WS_PEER]);
+    mockWorkspaces({
+      [WS_MAIN]: {
+        all: [
+          { id: 'SRC', status: 'closed' },
+          {
+            id: 'UI-child',
+            status: 'open',
+            workflow: { worker_created_from: 'SRC' }
+          }
+        ],
+        ready: ['UI-child']
+      },
+      [WS_PEER]: {
+        all: [{ id: 'SRC', status: 'closed' }],
+        ready: []
+      }
+    });
+    await projectIn(WS_PEER);
+
+    const items = await projectIn(WS_MAIN);
+
+    expect(items[0].worker_created_from_root_dir).toBeUndefined();
+  });
+
   test('changes decoration_rev when only the owning repo changed', async () => {
     vi.mocked(visibleWorkspaceRoots).mockReturnValue([WS_MAIN, WS_PEER]);
     mockWorkspaces({

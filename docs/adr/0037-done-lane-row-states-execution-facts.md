@@ -1,7 +1,8 @@
 ---
 id: 37
 title: 완료 레인 행은 슬롯 5 줄에서 실행 사실을 말한다
-status: accepted
+status: superseded
+superseded_by: UI-j10d
 date: 2026-09-04
 summary: "완료 레인 행은 슬롯 5 줄을 갖고 route와 오케/워커를 실어 '무엇으로 돌았나'에 답한다"
 spec: docs/superpowers/specs/2026-09-03-monitor-exec-material-queue-grace-design.md
