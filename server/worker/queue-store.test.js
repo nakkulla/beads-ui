@@ -3016,6 +3016,57 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
     ).toEqual([]);
   });
 
+  test('native direct usage segments survive queue reload', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-native', bead_id: 'UI-native' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'att-native',
+      patch: {
+        codex_children: [
+          {
+            thread_id: 'child-1',
+            parent_thread_id: 'parent-1',
+            launch_id: null,
+            agent_path: null,
+            model: 'gpt-5.6-terra',
+            effort: null,
+            status: 'done',
+            started_at: 10,
+            completed_at: 11,
+            last_event_at: 11,
+            usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 },
+            usage_segments: [
+              {
+                scope_id: 'thread:child-1:turn:t1:10',
+                turn_id: 't1',
+                model: 'gpt-5.6-terra',
+                usage: { input_tokens: 10, output_tokens: 1 },
+                observed_from: 10,
+                observed_through: 11
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    const reloaded = createQueueStore().load(WS);
+
+    expect(reloaded.attempts['att-native'].codex_children[0]).toMatchObject({
+      usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 },
+      usage_segments: [
+        {
+          scope_id: 'thread:child-1:turn:t1:10',
+          model: 'gpt-5.6-terra',
+          usage: { input_tokens: 10, output_tokens: 1 }
+        }
+      ]
+    });
+  });
+
   test('observed effort survives updateAttempt and normalizes legacy attempts', () => {
     const store = createQueueStore();
     store.appendAttempt(WS, {

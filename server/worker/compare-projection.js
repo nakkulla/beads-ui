@@ -419,7 +419,7 @@ export function isRetryAttempt(attempt) {
  *
  * @param {Record<string, any>} attempt
  * @param {ResolvedCatalog|null} catalog
- * @returns {{ tokens: number, total_cost_usd: number|null, unpriced_leg_count: number, cost_estimated: boolean }|null}
+ * @returns {{ tokens: number, total_cost_usd: number|null, unpriced_leg_count: number, cost_estimated: boolean, partial: boolean, partial_reasons: string[] }|null}
  */
 export function attemptUsageSummary(attempt, catalog) {
   /** @type {any} */
@@ -437,6 +437,8 @@ export function attemptUsageSummary(attempt, catalog) {
   let priced = false;
   let unpriced = 0;
   let estimated = false;
+  let partial = false;
+  const partial_reasons = new Set();
   for (const summary of Object.values(projection.providers)) {
     if (!isRecord(summary)) {
       continue;
@@ -451,12 +453,22 @@ export function attemptUsageSummary(attempt, catalog) {
     if (summary.cost_estimated === true) {
       estimated = true;
     }
+    if (summary.partial === true) {
+      partial = true;
+      for (const reason of Array.isArray(summary.partial_reasons)
+        ? summary.partial_reasons
+        : []) {
+        partial_reasons.add(reason);
+      }
+    }
   }
   return {
     tokens,
     total_cost_usd: priced ? cost : null,
     unpriced_leg_count: unpriced,
-    cost_estimated: estimated
+    cost_estimated: estimated,
+    partial,
+    partial_reasons: [...partial_reasons]
   };
 }
 
@@ -761,7 +773,11 @@ function groupOf(key, name, rows) {
     retry_count: rows.filter((row) => row.is_retry).length,
     duration_ms: medianOf(rows.map((row) => row.duration_ms)),
     tokens: medianOf(rows.map((row) => row.usage?.tokens ?? null)),
-    cost_usd: medianOf(rows.map((row) => row.usage?.total_cost_usd ?? null)),
+    cost_usd: {
+      ...medianOf(rows.map((row) => row.usage?.total_cost_usd ?? null)),
+      partial: rows.some((row) => row.usage?.partial === true),
+      partial_count: rows.filter((row) => row.usage?.partial === true).length
+    },
     blocking: medianOf(rows.map((row) => row.review?.blocking ?? null)),
     minor: medianOf(rows.map((row) => row.review?.minor ?? null)),
     round: medianOf(rows.map((row) => row.review?.round ?? null)),
@@ -1199,7 +1215,7 @@ export function collectCompareWorkspaces(seams = {}) {
  * `get-compare` the client used to need for its experiment table.
  *
  * @param {unknown} filters
- * @param {{ roots?: string[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, presets?: any[], catalog?: ResolvedCatalog|null, listRuns?: typeof listBenchManifests }} [seams]
+ * @param {{ roots?: string[], workspaces?: CompareWorkspaceInput[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, presets?: any[], catalog?: ResolvedCatalog|null, listRuns?: typeof listBenchManifests }} [seams]
  */
 export function compareSnapshot(filters, seams = {}) {
   /** @type {any[]} */
@@ -1224,7 +1240,7 @@ export function compareSnapshot(filters, seams = {}) {
       catalog = null;
     }
   }
-  const workspaces = collectCompareWorkspaces(seams);
+  const workspaces = seams.workspaces || collectCompareWorkspaces(seams);
   const model = buildCompareModel({ workspaces, presets, catalog, filters });
   return {
     ...model,
@@ -1237,4 +1253,59 @@ export function compareSnapshot(filters, seams = {}) {
       name: workspace.name
     }))
   };
+}
+
+/**
+ * Prepare ended Codex attempts before projecting the comparison response. The
+ * observation store single-flights identical attempts across simultaneous
+ * detail and compare requests.
+ *
+ * @param {unknown} filters - User-selected row restrictions.
+ * @param {{ roots?: string[], workspaces?: CompareWorkspaceInput[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, presets?: any[], catalog?: ResolvedCatalog|null, listRuns?: typeof listBenchManifests, observations?: ReturnType<typeof import('./session-observation.js').createWorkerSessionObservationStore> }} [seams]
+ */
+export async function prepareCompareSnapshot(filters, seams = {}) {
+  const workspaces = seams.workspaces || collectCompareWorkspaces(seams);
+  const normalized = normalizeCompareFilters(filters);
+  const observations =
+    seams.observations || getWorkerRuntime().workerSessionObservations;
+  await Promise.all(
+    workspaces.flatMap((workspace) =>
+      workspace.attempts
+        .filter((attempt) => {
+          const issue = workspace.issues?.[attempt.bead_id];
+          const bench =
+            stringList(issue?.labels).includes(BENCH_LABEL) ||
+            isRecord(attempt.bench_verify);
+          if (bench) {
+            return true;
+          }
+          return (
+            (normalized.root_dirs.length === 0 ||
+              normalized.root_dirs.includes(
+                path.resolve(workspace.root_dir)
+              )) &&
+            (normalized.since === null ||
+              (Number.isFinite(attempt.finished_at) &&
+                attempt.finished_at >= normalized.since)) &&
+            (normalized.issue_types.length === 0 ||
+              (typeof issue?.issue_type === 'string' &&
+                normalized.issue_types.includes(issue.issue_type))) &&
+            (normalized.routes.length === 0 ||
+              (typeof issue?.route === 'string' &&
+                normalized.routes.includes(issue.route)))
+          );
+        })
+        .map(async (attempt) => {
+          await observations.prepareHistorical(workspace.root_dir, attempt);
+        })
+    )
+  );
+  const prepared = workspaces.map((workspace) => ({
+    ...workspace,
+    attempts: workspace.attempts.map((attempt) => {
+      const value = observations.get(workspace.root_dir, attempt.attempt_id);
+      return value ? { ...attempt, ...value } : attempt;
+    })
+  }));
+  return compareSnapshot(filters, { ...seams, workspaces: prepared });
 }

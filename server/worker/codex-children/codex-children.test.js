@@ -132,7 +132,7 @@ describe('codex-children rollout grammar (UI-mn5u §6.1)', () => {
       ...tagged(CHILD_ID, child)
     ]);
 
-    expect(rows).toEqual([
+    expect(rows).toMatchObject([
       {
         thread_id: CHILD_ID,
         parent_thread_id: ROOT_ID,
@@ -151,7 +151,18 @@ describe('codex-children rollout grammar (UI-mn5u §6.1)', () => {
           output_tokens: 902,
           reasoning_output_tokens: 276,
           total_tokens: 114343
-        }
+        },
+        usage_segments: [
+          {
+            model: 'gpt-5.6-terra',
+            usage: {
+              input_tokens: 113441,
+              cached_input_tokens: 87040,
+              output_tokens: 902,
+              reasoning_output_tokens: 276
+            }
+          }
+        ]
       }
     ]);
   });
@@ -432,6 +443,49 @@ describe('codex-children lifecycle (UI-mn5u §6.2)', () => {
 });
 
 describe('codex-children usage (UI-mn5u §6.4)', () => {
+  test('excludes a response id claimed by both root and child owners', () => {
+    const { root, child } = fixtureHalves();
+    const root_response = root.find(
+      (/** @type {any} */ record) => record.type === 'token_usage_record'
+    );
+    const child_copy = clone(child);
+    const child_response = child_copy.find(
+      (/** @type {any} */ record) => record.type === 'token_usage_record'
+    );
+    child_response.payload.response_id = root_response.payload.response_id;
+
+    const rows = accumulateCodexChildren({
+      root_thread_id: ROOT_ID,
+      records: [...tagged(ROOT_ID, root), ...tagged(CHILD_ID, child_copy)],
+      attempt_started_at: ATTEMPT_STARTED_AT,
+      parent_terminated: true
+    });
+
+    expect(rows[0].usage_partial_reasons).toContain('response_conflict');
+    expect(rows[0].usage?.input_tokens).toBe(94_444);
+  });
+
+  test('marks a cumulative child snapshot larger than its direct responses', () => {
+    const { root, child } = fixtureHalves();
+    const child_copy = clone(child);
+    const last_usage = child_copy
+      .filter(
+        (/** @type {any} */ record) => record.type === 'token_usage_record'
+      )
+      .at(-1);
+    last_usage.payload.thread_token_usage.input_tokens += 1;
+
+    const rows = accumulateCodexChildren({
+      root_thread_id: ROOT_ID,
+      records: [...tagged(ROOT_ID, root), ...tagged(CHILD_ID, child_copy)],
+      attempt_started_at: ATTEMPT_STARTED_AT,
+      parent_terminated: true
+    });
+
+    expect(rows[0].usage?.input_tokens).toBe(113_441);
+    expect(rows[0].usage_partial_reasons).toContain('cumulative_gap');
+  });
+
   test('replaces the cumulative total instead of summing turns', () => {
     const { root, child } = fixtureHalves();
     const totals = child
@@ -507,12 +561,34 @@ describe('codex-children stored field (UI-mn5u §6.3)', () => {
           started_at: 5,
           completed_at: 6,
           last_event_at: 7,
-          usage: { total_tokens: 9 }
+          usage: { total_tokens: 9 },
+          usage_partial: true,
+          usage_partial_reasons: ['child_terminal_unconfirmed'],
+          usage_segments: [
+            {
+              scope_id: 'thread:child:turn:t1:5',
+              turn_id: 't1',
+              model: 'gpt-5.6-terra',
+              usage: { input_tokens: 8, output_tokens: 1 },
+              observed_from: 5,
+              observed_through: 6
+            }
+          ]
         }
       ]
     });
 
     expect(attempt.codex_children[0].usage).toEqual({ total_tokens: 9 });
+    expect(attempt.codex_children[0]).toMatchObject({
+      usage_partial: true,
+      usage_partial_reasons: ['child_terminal_unconfirmed'],
+      usage_segments: [
+        {
+          scope_id: 'thread:child:turn:t1:5',
+          usage: { input_tokens: 8, output_tokens: 1 }
+        }
+      ]
+    });
   });
 
   test('drops a stored row with an unexplained shape', () => {
@@ -536,7 +612,8 @@ describe('codex-children stored field (UI-mn5u §6.3)', () => {
         started_at: null,
         completed_at: null,
         last_event_at: null,
-        usage: null
+        usage: null,
+        usage_segments: []
       }
     ]);
   });

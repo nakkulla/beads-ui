@@ -206,11 +206,17 @@ export function createSessionMonitors(deps) {
     if (!attempt) {
       return;
     }
+    const observed_attempt =
+      parent_terminated && !Number.isFinite(attempt.finished_at)
+        ? { ...attempt, finished_at: now() }
+        : attempt;
     let prepared = null;
     try {
-      prepared = deps.workerSessionObservations?.observe(workspace, attempt, {
-        parent_terminated
-      });
+      prepared = deps.workerSessionObservations?.observe(
+        workspace,
+        observed_attempt,
+        { parent_terminated }
+      );
     } catch (err) {
       log('root usage observation failed for %s: %o', attempt_id, err);
     }
@@ -221,7 +227,10 @@ export function createSessionMonitors(deps) {
       : null;
     if (rows === null) {
       try {
-        rows = observeChildren({ attempt, parent_terminated });
+        rows = observeChildren({
+          attempt: observed_attempt,
+          parent_terminated
+        });
       } catch (err) {
         log('native child observation failed for %s: %o', attempt_id, err);
         return;

@@ -59,7 +59,7 @@ const ISSUES = [
 ];
 
 /**
- * @param {{ runs?: any[], onCreate?: (payload: any) => any }} [options]
+ * @param {{ runs?: any[], benchRows?: any[], onCreate?: (payload: any) => any }} [options]
  */
 function mountView(options = {}) {
   const root = document.createElement('div');
@@ -68,7 +68,7 @@ function mountView(options = {}) {
   const transport = vi.fn(async (type, payload) => {
     calls.push({ type, payload });
     if (type === 'get-compare') {
-      const bench_rows = [
+      const bench_rows = options.benchRows ?? [
         {
           attempt_id: 'a1',
           bead_id: 'UI-c1',
@@ -159,6 +159,36 @@ describe('compare view experiment list', () => {
       root.querySelector('.cmp-table--bench')
     );
     expect(table.textContent).toContain('pass^2');
+  });
+
+  test('marks a partial benchmark cost median', async () => {
+    const { root, view } = mountView({
+      benchRows: [
+        {
+          attempt_id: 'a1',
+          bead_id: 'UI-c1',
+          status: 'done',
+          verify: 'pass',
+          usage: { tokens: 1000, total_cost_usd: 1, partial: true }
+        },
+        {
+          attempt_id: 'a2',
+          bead_id: 'UI-c2',
+          status: 'done',
+          verify: 'pass',
+          usage: { tokens: 1000, total_cost_usd: 1 }
+        }
+      ]
+    });
+
+    view.load();
+    await settle();
+    /** @type {HTMLButtonElement} */ (root.querySelector('.cmp-run')).click();
+    await settle();
+
+    expect(root.querySelector('.cmp-table--bench')?.textContent).toContain(
+      '부분 집계'
+    );
   });
 
   test('marks the experiment table as delegate-forced', async () => {

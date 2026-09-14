@@ -1481,11 +1481,13 @@ describe('worker running tile route chip (UI-yrzu §7.2)', () => {
       runningGridTemplate(
         [
           tileInput({
+            usage: { input_tokens: 100, output_tokens: 10 },
             legs: [
               {
                 label: 'native child',
                 state: 'done',
                 native: true,
+                usage_included: true,
                 usage: { total_tokens: 1_000_000 },
                 price_usd: 2,
                 price_basis: 'estimated'
@@ -1499,6 +1501,8 @@ describe('worker running tile route chip (UI-yrzu §7.2)', () => {
     );
 
     expect(rendered).toContain('$2 추정');
+    expect(rendered).toContain('부모·자식 합계');
+    expect(rendered).not.toContain('부모 합계 제외');
   });
 
   test('draws the route chip when the tile carries a workflow', () => {

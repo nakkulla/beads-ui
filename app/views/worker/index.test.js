@@ -7546,7 +7546,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
       mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
     );
     expect(el.textContent?.trim()).toBe(
-      'Claude τ 31.1k · $1.50 (+1 leg 단가 없음)'
+      'Claude τ 31.1k · $1.50 (+1 leg 단가 없음) · 부분 집계'
     );
   });
 
@@ -9571,7 +9571,9 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
 
     expect(
       mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
-    ).toBe('오늘 완료 · 누적 Claude τ 2.0k · $1.50 (+1 leg 단가 없음)');
+    ).toBe(
+      '오늘 완료 · 누적 Claude τ 2.0k · $1.50 (+1 leg 단가 없음) · 부분 집계'
+    );
   });
 });
 

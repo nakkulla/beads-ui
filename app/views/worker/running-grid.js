@@ -156,7 +156,7 @@ import { logPathTemplate } from './log-path.js';
  * @property {{ at?: number|null, kind?: string, text?: string, tool?: string }|null} [last_activity] -
  * 이 attempt의 마지막 비-thinking 전사 한 줄 (UI-4tud §4.3). 타일이 직접 싣는다 —
  * 조립이 타일 밖 `Map`으로 같은 재료를 두 번 나르지 않는다.
- * @property {Array<{ label: string, state: 'live'|'done'|'failed'|'interrupted', agent_type?: string|null, model?: string|null, usage?: Record<string, number>|null, price_usd?: number|null, price_basis?: string, native?: boolean }>} [legs] -
+ * @property {Array<{ label: string, state: 'live'|'done'|'failed'|'interrupted', agent_type?: string|null, model?: string|null, usage?: Record<string, number>|null, price_usd?: number|null, price_basis?: string, native?: boolean, usage_included?: boolean }>} [legs] -
  * 위임 leg. 끝난 것은 접혀 한 칩이 된다.
  * @property {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null} [chip_popover] -
  * 이 타일에서 열려 있는 판정 칩 사유 팝업 (UI-8x90 §4.5). 슬롯 5 줄이 싣는다.
@@ -737,7 +737,7 @@ function providerHoldPopoverTemplate(hold) {
  * @property {'s1'|'s2'|'s3'|'s4'|'s5'} [serial_lane_id] - Serial lane chip.
  * @property {{ at?: number|null, kind?: string, text?: string, tool?: string }|null} [last_activity] -
  * The attempt's last non-thinking transcript line (§9.3).
- * @property {Array<{ label: string, state: 'live'|'done'|'failed'|'interrupted', agent_type?: string|null, model?: string|null, usage?: Record<string, number>|null, price_usd?: number|null, price_basis?: string, native?: boolean }>} [legs] -
+ * @property {Array<{ label: string, state: 'live'|'done'|'failed'|'interrupted', agent_type?: string|null, model?: string|null, usage?: Record<string, number>|null, price_usd?: number|null, price_basis?: string, native?: boolean, usage_included?: boolean }>} [legs] -
  * Delegation legs; only the unfinished ones are spelled out.
  * `연결 n` 소속 칩 (UI-8x90 §4.1): 슬롯 5 좌표 칩이므로 직렬 레인 칩 다음이다.
  * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
@@ -1109,6 +1109,12 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const has_native_usage = Array.isArray(tile.legs)
     ? tile.legs.some((leg) => leg?.native === true && leg.usage)
     : false;
+  const has_included_native_usage = Array.isArray(tile.legs)
+    ? tile.legs.some(
+        (leg) =>
+          leg?.native === true && leg.usage && leg.usage_included === true
+      )
+    : false;
   // 계약 값의 마지막 유효 항목이 현재 세션이다 (UI-4xzk §3.1). 없으면 이 타일은
   // 자기 정체를 모르므로 UI-yrzu §6 그대로 그린다 (fail-quiet).
   const session_current =
@@ -1281,7 +1287,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
               >`
             : ''}${has_native_usage
             ? html`<span class="rtile__usage-scope"
-                >native child 비용 · 부모 합계 제외</span
+                >${has_included_native_usage
+                  ? '부모·자식 합계'
+                  : '자식 사용량 · 부모 합계 제외'}</span
               >`
             : ''}${tile.usage
             ? html`<span class="rtile__usage-scope"
@@ -1613,7 +1621,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                         : ''}${chip_popover}
                     ${has_native_usage
                       ? html`<span class="rtile__usage-scope"
-                          >native child 비용 · 부모 합계 제외</span
+                          >${has_included_native_usage
+                            ? '부모·자식 합계'
+                            : '자식 사용량 · 부모 합계 제외'}</span
                         >`
                       : ''}${tile.usage
                       ? html`<span class="rtile__usage-scope"

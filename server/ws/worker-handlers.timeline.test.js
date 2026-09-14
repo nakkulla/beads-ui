@@ -14,7 +14,8 @@ const state = vi.hoisted(() => ({
   /** @type {Set<string>} */
   existing_logs: new Set(),
   /** @type {Set<string>} */
-  unreadable_logs: new Set()
+  unreadable_logs: new Set(),
+  prepared: /** @type {Record<string, any>} */ ({})
 }));
 
 vi.mock('../worker/runtime.js', () => ({
@@ -24,6 +25,16 @@ vi.mock('../worker/runtime.js', () => ({
         /** @type {string} */ _workspace,
         /** @type {string} */ bead_id
       ) => state.bead_attempts[bead_id] || []
+    },
+    workerSessionObservations: {
+      prepareHistorical: async (
+        /** @type {string} */ _workspace,
+        /** @type {any} */ attempt
+      ) => state.prepared[attempt.attempt_id] || null,
+      get: (
+        /** @type {string} */ _workspace,
+        /** @type {string} */ attempt_id
+      ) => state.prepared[attempt_id] || null
     }
   })
 }));
@@ -100,11 +111,11 @@ function event(event_id, at) {
 }
 
 describe('get-bead-timeline (record-timeline-retention §9)', () => {
-  test("returns a bead's whole timeline newest first", () => {
+  test("returns a bead's whole timeline newest first", async () => {
     state.timelines = { 'UI-1': [event('e1', 1000), event('e2', 2000)] };
     const sock = fakeSocket();
 
-    handleGetBeadTimeline(sock, {
+    await handleGetBeadTimeline(sock, {
       id: 'r1',
       type: 'get-bead-timeline',
       payload: { bead_id: 'UI-1' }
@@ -116,7 +127,7 @@ describe('get-bead-timeline (record-timeline-retention §9)', () => {
     ).toEqual(['e2', 'e1']);
   });
 
-  test("returns the bead's attempt union alongside its events", () => {
+  test("returns the bead's attempt union alongside its events", async () => {
     // A bead whose finished records already left `queue.json` (§7): the client
     // store cannot see them, so the detail panel's 세션 이력 and 총 사용량 read
     // this list.
@@ -129,7 +140,7 @@ describe('get-bead-timeline (record-timeline-retention §9)', () => {
     };
     const sock = fakeSocket();
 
-    handleGetBeadTimeline(sock, {
+    await handleGetBeadTimeline(sock, {
       id: 'r1',
       type: 'get-bead-timeline',
       payload: { bead_id: 'UI-1' }
@@ -140,11 +151,42 @@ describe('get-bead-timeline (record-timeline-retention §9)', () => {
     ).toEqual(['a-old', 'a-new']);
   });
 
-  test('returns an empty list for an unknown bead', () => {
+  test('hydrates an ended attempt before returning detail history', async () => {
+    state.bead_attempts = {
+      'UI-1': [
+        {
+          attempt_id: 'a-old',
+          bead_id: 'UI-1',
+          runner: 'codex',
+          status: 'done'
+        }
+      ]
+    };
+    state.prepared = {
+      'a-old': {
+        usage_segments: [{ usage: { input_tokens: 32 } }],
+        codex_children: [{ session_id: 'child-1' }]
+      }
+    };
+    const sock = fakeSocket();
+
+    await handleGetBeadTimeline(sock, {
+      id: 'r1',
+      type: 'get-bead-timeline',
+      payload: { bead_id: 'UI-1' }
+    });
+
+    expect(lastPayload(sock).attempts[0]).toMatchObject({
+      usage_segments: [{ usage: { input_tokens: 32 } }],
+      codex_children: [{ session_id: 'child-1' }]
+    });
+  });
+
+  test('returns an empty list for an unknown bead', async () => {
     state.timelines = { 'UI-1': [event('e1', 1000)] };
     const sock = fakeSocket();
 
-    handleGetBeadTimeline(sock, {
+    await handleGetBeadTimeline(sock, {
       id: 'r1',
       type: 'get-bead-timeline',
       payload: { bead_id: 'UI-nope' }

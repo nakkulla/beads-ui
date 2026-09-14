@@ -485,17 +485,22 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
     durable vocabulary, so `label` names the ordinal only
     (`구현 unit 3 · codex`, `review-consult · codex`).
 - An attempt may carry
-  `usage_segments: Array<{ provider, role, turn_id, model, usage, partial?, cost_covered? }>`.
+  `usage_segments: Array<{ provider, role, scope_id?, turn_id, model, usage, observed_from?, observed_through?, partial?, partial_reasons?, cost_covered? }>`.
   These model-scoped root ranges survive terminal persistence and replay;
-  `partial:true` marks an observed range whose attempt boundary or model could
-  not be proven, so pricing leaves it unpriced rather than assigning a default.
+  `scope_id` identifies the thread, turn, model and proven attempt window.
+  Observation bounds are epoch milliseconds; raw response IDs stay server-side.
+  `partial:true` marks an incomplete observation. A known model still receives
+  its configured price; completeness does not erase model identity. Unknown
+  model ranges remain unpriced, and ranges without proven attempt ownership stay
+  outside the attempt total. Partial state and its reasons survive provider,
+  attempt, bead, workspace and comparison aggregation, including medians.
   `cost_covered:true` is present only on model-scoped token segments whose same
   terminal result group also carries a valid reported `total_cost_usd` segment.
   Their token counts remain in totals and model detail, while pricing excludes
   them from priced, estimated, and unpriced leg counts because that reported
   amount already covers the group once.
 - An attempt may carry
-  `codex_children: Array<{ thread_id, parent_thread_id, launch_id, agent_path, model, effort, status, started_at, completed_at, last_event_at, usage }>`
+  `codex_children: Array<{ thread_id, parent_thread_id, launch_id, agent_path, model, effort, status, started_at, completed_at, last_event_at, usage, usage_segments?, usage_partial?, usage_partial_reasons? }>`
   (UI-mn5u §6.2) — Codex NATIVE subagents observed from the rollout files Codex
   wrote, since `codex exec --json` carries no child event at all. It is a
   UI-owned OBSERVATION record: never workflow metadata, never an execution
@@ -506,11 +511,23 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   evidence for that child, not that anything was killed. `usage` carries only
   the six Codex keys (`input_tokens`, `cached_input_tokens`,
   `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`,
-  `total_tokens`) or null, is the LAST cumulative thread total rather than a sum
-  over turns, and is displayed on the child row only — the attempt's own totals,
-  headline and cost sums exclude it. A running attempt gets the field as a live
-  overlay; a settled one carries the normalized rows on its record. Consumers
-  fail-quiet on its absence: no field means "not observed", never zero.
+  `total_tokens`) or null. Newly observed direct records produce the sum of the
+  child's verified response segments within the attempt window. Legacy rows
+  without such segments retain their last cumulative observation for individual
+  display. Child segments carry `scope_id`, `turn_id`, `model`, `usage`,
+  `observed_from`, `observed_through`, and optional partial state and reasons.
+  Parent and child totals use verified direct contributions once, rather than
+  adding cumulative snapshots to response usage. Unproven boundaries, missing
+  child usage and unresolved receipt overlap leave the total partial. A running
+  attempt gets the field as a live overlay; a settled one carries the normalized
+  rows on its record. Consumers fail-quiet on its absence: no field means "not
+  observed", never zero.
+
+  Historical preparation is asynchronous and shares work for the exact connected
+  attempt/session. Synchronous projections consume the prepared observation and
+  never scan transcripts or run extra `bd` reads. Missing or truncated originals
+  do not replace saved usage with zero. Parent termination alone does not prove
+  child completion or a fully drained usage range.
 
 - `declared_base: string|null` — what this workspace DECLARES as its target base
   (`docs/agents/repo-ops.toml` top-level `base`), read from the declaration

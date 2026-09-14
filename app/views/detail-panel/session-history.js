@@ -177,17 +177,6 @@ function totalTemplate(total) {
 }
 
 /**
- * @param {import('../../utils/token-usage.js').UsageProjection|null} projection
- * @returns {import('../../utils/token-usage.js').UsageProjection|null}
- */
-function outerProjection(projection) {
-  if (!projection || !projection.roles.orchestrator) {
-    return null;
-  }
-  return { providers: projection.roles.orchestrator, roles: {} };
-}
-
-/**
  * A receipt's completion time as `HH:MM`. Codex writes an ISO string; a Claude
  * subagent receipt carries epoch ms, or null when the stream line it came from
  * had no `timestamp` of its own — which renders an empty cell, never a zero
@@ -541,7 +530,27 @@ function sameDelegationIdentity(session, leg) {
  *
  * @type {string}
  */
-const NATIVE_CHILD_USAGE_NOTE = '전체 합계에 별도 가산하지 않음';
+/**
+ * @param {Record<string, any>} child - Native child row.
+ * @param {Array<Record<string, any>>} legs - Shared projection legs.
+ */
+function nativeChildUsageNote(child, legs) {
+  const admitted = legs.some((leg) => leg.included === true);
+  if (admitted) {
+    return legs.length > 1 || child.usage_partial === true
+      ? '검증된 범위만 부모·자식 합계에 포함'
+      : '부모·자식 합계에 포함';
+  }
+  const reasons = [
+    ...(Array.isArray(child.usage_partial_reasons)
+      ? child.usage_partial_reasons
+      : []),
+    ...legs.flatMap((leg) =>
+      Array.isArray(leg?.partial_reasons) ? leg.partial_reasons : []
+    )
+  ];
+  return `부모·자식 합계 제외${reasons.length > 0 ? ` · ${[...new Set(reasons)].join(' · ')}` : ' · 직접 범위 미확정'}`;
+}
 
 /**
  * One Codex native child's usage in the display vocabulary. Only the keys the
@@ -628,25 +637,40 @@ function nativeChildUsage(usage) {
  */
 function nativeChildTemplate(child, catalog) {
   const usage = nativeChildUsage(child.usage);
-  const price = usage
-    ? priceUsage(usage.breakdown, child.model, catalog)
-    : null;
-  const badges = usage
+  const direct_summary = projectAttemptUsage(
+    {
+      attempt_id: '__native-child__',
+      bead_id: '__native-child__',
+      runner: 'codex',
+      codex_children: [child]
+    },
+    catalog
+  )?.roles.subagent?.codex;
+  const price =
+    usage && !direct_summary
+      ? priceUsage(usage.breakdown, child.model, catalog)
+      : null;
+  const badges = direct_summary
     ? providerUsageBadges({
-        providers: {
-          codex: {
-            subtotal: usage.subtotal,
-            breakdown: usage.breakdown,
-            ...(price && price.usd !== null
-              ? { total_cost_usd: price.usd }
-              : {}),
-            ...(price?.basis === 'estimated' ? { cost_estimated: true } : {}),
-            ...(price?.basis === 'none' ? { unpriced_leg_count: 1 } : {})
-          }
-        },
+        providers: { codex: direct_summary },
         roles: {}
       })
-    : [];
+    : usage
+      ? providerUsageBadges({
+          providers: {
+            codex: {
+              subtotal: usage.subtotal,
+              breakdown: usage.breakdown,
+              ...(price && price.usd !== null
+                ? { total_cost_usd: price.usd }
+                : {}),
+              ...(price?.basis === 'estimated' ? { cost_estimated: true } : {}),
+              ...(price?.basis === 'none' ? { unpriced_leg_count: 1 } : {})
+            }
+          },
+          roles: {}
+        })
+      : [];
   const badge = badges[0];
   const price_lines = price
     ? costTooltipLines({
@@ -699,7 +723,7 @@ function nativeChildTemplate(child, catalog) {
           title=${[
             ...usage.lines,
             ...price_lines.slice(1),
-            NATIVE_CHILD_USAGE_NOTE
+            nativeChildUsageNote(child, direct_summary?.legs || [])
           ].join('\n')}
           >${badge.label}${price?.basis === 'estimated' ? ' 추정' : ''}</span
         >`
@@ -926,9 +950,9 @@ function usageDetail(usage, provider) {
  * @property {Array<Record<string, any>>} [delegation_sessions] - Durable/live
  * normalized delegation summaries, same two providers.
  * @property {Array<Record<string, any>>} [codex_children] - Codex NATIVE
- * subagent observations (UI-mn5u §6.4). Display-only: the usage shown on a
- * child row is NOT part of this attempt's totals, and an absent field means the
- * observation was never made, never that the children used nothing.
+ * subagent observations (UI-mn5u §6.4). Verified direct child segments join
+ * this attempt's total; an absent field means the observation was never made,
+ * never that the children used nothing.
  * @property {string|null} [exec_default_preset_id] - Outer launch preset id.
  * @property {number|null} [exec_default_preset_revision] - Pinned preset revision.
  * @property {Record<string, string|null>|null} [exec_values] - Outer resolved values.
@@ -1199,7 +1223,7 @@ export function sessionHistoryTemplate(
    * @returns {TemplateResult|''}
    */
   const usageButton = (a) => {
-    const projection = outerProjection(projectAttemptUsage(a, catalog));
+    const projection = projectAttemptUsage(a, catalog);
     if (
       providerUsageBadges(projection).length === 0 &&
       !formatUsageTotal(a.usage)
@@ -1231,8 +1255,13 @@ export function sessionHistoryTemplate(
     <div class="detail-sessions" data-seam="session-history">
       ${session_rows}${list.map((a) => {
         const projection = projectAttemptUsage(a, catalog);
-        const outer = outerProjection(projection);
-        const outer_badges = providerUsageBadges(outer);
+        const total_badges = providerUsageBadges(projection);
+        const parent_badges = providerUsageBadges(
+          projectAttemptUsage(
+            { ...a, codex_children: [], usage_legs: [] },
+            catalog
+          )
+        );
         return html`<div class="detail-session-row">
           <button
             type="button"
@@ -1252,16 +1281,16 @@ export function sessionHistoryTemplate(
                 >`
               : ''}
             <span class="detail-session__meta">${formatAttemptTuple(a)}</span>
-            ${outer_badges.length > 0
-              ? html`<span class="detail-session__role">orchestrator</span>`
+            ${total_badges.length > 0
+              ? html`<span class="detail-session__role">부모·자식 합계</span>`
               : ''}
             ${a.session_id
               ? html`<span class="detail-session__sid" title=${a.session_id}
                   >${String(a.session_id).slice(0, 8)}</span
                 >`
               : ''}
-            ${outer_badges.length > 0
-              ? outer_badges.map(
+            ${total_badges.length > 0
+              ? total_badges.map(
                   (badge) =>
                     html`<span
                       class="detail-session__usage"
@@ -1279,6 +1308,19 @@ export function sessionHistoryTemplate(
           ${usageButton(a)} ${resumeButton(a)} ${causeLine(a)} ${presetAudit(a)}
           ${expanded.has(a.attempt_id) && a.usage
             ? usageDetail(a.usage, a.runner === 'codex' ? 'codex' : 'claude')
+            : ''}
+          ${expanded.has(a.attempt_id) && parent_badges.length > 0
+            ? html`<div class="detail-session__usage-detail">
+                <span class="detail-session__usage-label">부모 본체</span>
+                ${parent_badges.map(
+                  (badge) =>
+                    html`<span
+                      class="detail-session__usage-value"
+                      title=${badge.tooltip}
+                      >${badge.label}</span
+                    >`
+                )}
+              </div>`
             : ''}
           ${delegationLegs(a, projection, handlers)}${nativeChildLegs(
             a,

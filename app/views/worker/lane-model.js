@@ -42,6 +42,7 @@ import {
   SUM_FIELDS,
   formatUsageTotalWithCost,
   mergeUsageProjections,
+  projectAttemptUsage,
   providerUsageBadges,
   sumAttemptUsage
 } from '../../utils/token-usage.js';
@@ -644,8 +645,8 @@ function liveAttemptFields(a, attempts, run_state, runner_catalog = null) {
 
 /**
  * Merge external delegation rows with Codex native children and attach each
- * row's own display price. Native values remain outside the parent usage
- * projection by construction.
+ * row's own display price. The shared usage projection separately includes the
+ * same verified native values in the parent-child total.
  *
  * @param {any} source - Attempt or direct-session observation.
  * @param {any} catalog - Current runtime catalog.
@@ -653,9 +654,49 @@ function liveAttemptFields(a, attempts, run_state, runner_catalog = null) {
 function observedLegs(source, catalog) {
   /** @type {any[]} */
   const rows = Array.isArray(source?.legs) ? source.legs.slice() : [];
+  const projected_children =
+    projectAttemptUsage(
+      {
+        ...source,
+        attempt_id: source?.attempt_id || '__observed__',
+        bead_id: '__observed__'
+      },
+      catalog
+    )?.roles.subagent?.codex?.legs || [];
   for (const child of Array.isArray(source?.codex_children)
     ? source.codex_children
     : []) {
+    const child_legs = projected_children.filter(
+      (/** @type {any} */ leg) => leg.session_id === child.thread_id
+    );
+    /** @type {Record<string, number>} */
+    const child_usage = {};
+    for (const leg of child_legs) {
+      for (const field of [
+        ...SUM_FIELDS,
+        'reasoning_output_tokens',
+        'total_tokens'
+      ]) {
+        const value = /** @type {Record<string, any>} */ (leg.usage || {})[
+          field
+        ];
+        if (Number.isFinite(value)) {
+          child_usage[field] = (child_usage[field] || 0) + Number(value);
+        }
+      }
+    }
+    const priced = child_legs.filter((leg) => Number.isFinite(leg.price_usd));
+    const price_basis = child_legs.some(
+      (leg) => leg.price_basis === 'estimated'
+    )
+      ? 'estimated'
+      : child_legs.some((leg) => leg.price_basis === 'computed')
+        ? 'computed'
+        : child_legs.some((leg) => leg.price_basis === 'reported')
+          ? 'reported'
+          : child_legs.some((leg) => leg.price_basis === 'none')
+            ? 'none'
+            : undefined;
     const name =
       typeof child.agent_path === 'string'
         ? child.agent_path.split('/').filter(Boolean).pop()
@@ -671,8 +712,18 @@ function observedLegs(source, catalog) {
               ? 'interrupted'
               : 'failed',
       model: child.model ?? null,
-      usage: child.usage ?? null,
-      native: true
+      usage: child_legs.length > 0 ? child_usage : (child.usage ?? null),
+      native: true,
+      usage_included: child_legs.some((leg) => leg.included === true),
+      ...(priced.length > 0
+        ? {
+            price_usd: priced.reduce(
+              (total, leg) => total + Number(leg.price_usd),
+              0
+            )
+          }
+        : {}),
+      ...(price_basis ? { price_basis } : {})
     });
   }
   return rows.map((/** @type {any} */ row) => {
@@ -691,6 +742,9 @@ function observedLegs(source, catalog) {
       total_tokens: row.usage.total_tokens,
       total_cost_usd: row.usage.total_cost_usd
     };
+    if (row.native) {
+      return { ...row, usage: normalized };
+    }
     const price = priceUsage(normalized, row.model, catalog);
     return {
       ...row,
@@ -731,7 +785,12 @@ function directSessionUsage(observation, catalog) {
           ? observation.usage_legs.filter(
               (/** @type {any} */ leg) => leg.role !== 'orchestrator'
             )
-          : []
+          : [],
+        codex_children:
+          observation.provider === 'codex' &&
+          Array.isArray(observation.delegations)
+            ? observation.delegations
+            : []
       }
     },
     '__direct__',

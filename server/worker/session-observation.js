@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { accumulateCodexChildren } from './codex-children/accumulate.js';
 import {
   codexSessionsRootFor,
   createIncrementalCodexChildObserver,
@@ -25,18 +26,94 @@ import { readSessionSnapshot, uuidV7StartedAt } from './session-ref.js';
 import { createUsageStore } from './usage-store.js';
 
 /** Prepared asynchronous observations consumed by synchronous queue projection. */
-/** @param {{ createReader?: typeof createTailReader, readSnapshot?: typeof readSessionSnapshot, sessionsRootFor?: (attempt: any) => string }} [options] */
+/** @param {{ createReader?: typeof createTailReader, readSnapshot?: typeof readSessionSnapshot, sessionsRootFor?: (attempt: any) => string, historicalTtlMs?: number }} [options] */
 export function createWorkerSessionObservationStore(options = {}) {
   /** @type {Map<string, Record<string, any>>} */
   const values = new Map();
   /** @type {Map<string, any>} */
   const observers = new Map();
+  /** @type {Map<string, Promise<Record<string, any>|null>>} */
+  const historical_preparations = new Map();
+  /** @type {Set<string>} */
+  const historical_keys = new Set();
+  /** @type {Set<string>} */
+  const historical_completed = new Set();
+  /** @type {Map<string, ReturnType<typeof setTimeout>>} */
+  const historical_expiry = new Map();
+  let clear_generation = 0;
+  /** @type {Map<string, number>} */
+  const workspace_generations = new Map();
   const make_reader = options.createReader || createTailReader;
   const read_snapshot = options.readSnapshot || readSessionSnapshot;
   /** @param {string} workspace - Workspace. @param {string} attempt_id - Attempt. */
   const keyOf = (workspace, attempt_id) =>
     `${path.resolve(workspace)}\0${attempt_id}`;
-  return {
+  /** @param {any} attempt - Bounded ended attempt. */
+  function readBoundedAttempt(attempt) {
+    const sessions_root = options.sessionsRootFor
+      ? options.sessionsRootFor(attempt)
+      : codexSessionsRootFor(attempt);
+    const observed = readCodexChildRecords({
+      root_thread_id: attempt.session_id,
+      sessions_root,
+      started_at: attempt.started_at ?? null,
+      ended_at: attempt.finished_at ?? null
+    });
+    if (observed.root_file === null) {
+      return null;
+    }
+    const conflict_ids = conflictingResponseIds(observed.records);
+    const root_records = observed.records
+      .filter((entry) => entry.thread_id === attempt.session_id)
+      .map((entry) => entry.record)
+      .filter((record) => {
+        const response_id = responseIdOf(record);
+        return response_id === null || !conflict_ids.has(response_id);
+      });
+    const usage_segments = /** @type {Array<Record<string, any>>} */ (
+      foldCodexAttemptUsage(
+        root_records,
+        Number.isFinite(attempt.started_at) ? attempt.started_at : null,
+        Number.isFinite(attempt.finished_at) ? attempt.finished_at : null
+      )
+    );
+    if (conflict_ids.size > 0) {
+      usage_segments.push({
+        provider: 'codex',
+        role: 'orchestrator',
+        attempt_id: `session:${attempt.session_id}`,
+        scope_id: `thread:${attempt.session_id}:conflict:window:${attempt.started_at ?? 'open'}:${attempt.finished_at ?? 'open'}`,
+        turn_id: 'unattributed',
+        model: null,
+        usage: {},
+        partial: true,
+        partial_reasons: ['response_conflict']
+      });
+    }
+    const usage = sumUsage(
+      usage_segments.map((/** @type {any} */ leg) => leg.usage)
+    );
+    const codex_children = accumulateCodexChildren({
+      root_thread_id: attempt.session_id,
+      records: observed.records,
+      attempt_started_at: attempt.started_at ?? null,
+      attempt_ended_at: attempt.finished_at ?? null,
+      parent_terminated: true
+    });
+    return {
+      usage:
+        usage_segments.length > 0 || !attempt.usage ? usage : attempt.usage,
+      usage_segments:
+        usage_segments.length > 0 || !Array.isArray(attempt.usage_segments)
+          ? usage_segments
+          : attempt.usage_segments,
+      codex_children:
+        codex_children.length > 0 || !Array.isArray(attempt.codex_children)
+          ? codex_children
+          : attempt.codex_children
+    };
+  }
+  const api = {
     /** @param {string} workspace - Workspace. @param {string} attempt_id - Attempt. @param {Record<string, any>} value - Observation. */
     set(workspace, attempt_id, value) {
       const key = keyOf(workspace, attempt_id);
@@ -57,6 +134,26 @@ export function createWorkerSessionObservationStore(options = {}) {
         return null;
       }
       const key = keyOf(workspace, attempt.attempt_id);
+      if (observation_options.parent_terminated !== true) {
+        clearTimeout(historical_expiry.get(key));
+        historical_expiry.delete(key);
+        historical_keys.delete(key);
+        historical_completed.delete(key);
+      }
+      if (
+        observation_options.parent_terminated === true &&
+        Number.isFinite(attempt.finished_at)
+      ) {
+        const held = observers.get(key);
+        held?.reader.stop?.();
+        held?.children.stop();
+        observers.delete(key);
+        const bounded = readBoundedAttempt(attempt);
+        if (bounded) {
+          values.set(key, { ...(values.get(key) || {}), ...bounded });
+        }
+        return bounded;
+      }
       let held = observers.get(key);
       if (!held) {
         const sessions_root = options.sessionsRootFor
@@ -87,7 +184,7 @@ export function createWorkerSessionObservationStore(options = {}) {
             typeof record.timestamp === 'string'
               ? Date.parse(record.timestamp)
               : NaN;
-          if (!Number.isFinite(at)) {
+          if (record.type === 'token_usage_record' && !Number.isFinite(at)) {
             held.boundary_unproven = true;
           } else if (
             Number.isFinite(attempt.started_at) &&
@@ -108,6 +205,7 @@ export function createWorkerSessionObservationStore(options = {}) {
             root_file: file,
             sessions_root,
             started_at: attempt.started_at,
+            ended_at: attempt.finished_at,
             createReader: make_reader,
             readSnapshot: read_snapshot
           })
@@ -159,14 +257,44 @@ export function createWorkerSessionObservationStore(options = {}) {
       const prior = new Map(
         held.baseline
           .snapshot()
-          .usage_legs.map((/** @type {any} */ leg) => [leg.turn_id, leg.usage])
+          .usage_legs.map((/** @type {any} */ leg) => [
+            `${leg.turn_id}\0${leg.model}`,
+            leg.usage
+          ])
       );
       const usage_segments = current.usage_legs.flatMap(
         (/** @type {any} */ leg) => {
-          const old = prior.get(leg.turn_id);
+          const old = prior.get(`${leg.turn_id}\0${leg.model}`);
           if (!old) {
             return [
-              { ...leg, ...(held.boundary_unproven ? { partial: true } : {}) }
+              {
+                ...leg,
+                ...(leg.scope_id
+                  ? {
+                      scope_id: attemptScopeId(
+                        leg.scope_id,
+                        attempt.started_at,
+                        attempt.finished_at
+                      )
+                    }
+                  : {}),
+                ...(Number.isFinite(attempt.started_at)
+                  ? {
+                      observed_from: Math.max(
+                        Number.isFinite(leg.observed_from)
+                          ? leg.observed_from
+                          : attempt.started_at,
+                        attempt.started_at
+                      )
+                    }
+                  : {}),
+                ...(held.boundary_unproven
+                  ? {
+                      partial: true,
+                      partial_reasons: ['attempt_boundary_unproven']
+                    }
+                  : {})
+              }
             ];
           }
           /** @type {Record<string, number>} */
@@ -179,7 +307,22 @@ export function createWorkerSessionObservationStore(options = {}) {
                 {
                   ...leg,
                   usage,
-                  ...(held.boundary_unproven ? { partial: true } : {})
+                  ...(leg.scope_id
+                    ? {
+                        scope_id: attemptScopeId(
+                          leg.scope_id,
+                          attempt.started_at,
+                          attempt.finished_at
+                        )
+                      }
+                    : {}),
+                  observed_from: attempt.started_at,
+                  ...(held.boundary_unproven
+                    ? {
+                        partial: true,
+                        partial_reasons: ['attempt_boundary_unproven']
+                      }
+                    : {})
                 }
               ]
             : [];
@@ -188,16 +331,125 @@ export function createWorkerSessionObservationStore(options = {}) {
       const usage = sumUsage(
         usage_segments.map((/** @type {any} */ leg) => leg.usage)
       );
+      const observed_children = held.children.snapshot(
+        observation_options.parent_terminated === true
+      );
+      const has_observed_usage = usage_segments.length > 0;
       const value = {
         ...(values.get(key) || {}),
-        usage,
-        usage_segments,
-        codex_children: held.children.snapshot(
-          observation_options.parent_terminated === true
-        )
+        usage: has_observed_usage || !attempt.usage ? usage : attempt.usage,
+        usage_segments:
+          has_observed_usage || !Array.isArray(attempt.usage_segments)
+            ? usage_segments
+            : attempt.usage_segments,
+        codex_children:
+          observed_children.length > 0 || !Array.isArray(attempt.codex_children)
+            ? observed_children
+            : attempt.codex_children
       };
       values.set(key, value);
       return value;
+    },
+    /**
+     * Read one ended rollout asynchronously and retain only its bounded
+     * projection. Concurrent detail, compare and queue consumers share the
+     * same preparation; the temporary readers are released when it settles.
+     *
+     * @param {string} workspace - Workspace root containing the attempt.
+     * @param {any} attempt - Ended Codex attempt.
+     * @returns {Promise<Record<string, any>|null>|null}
+     */
+    prepareHistorical(workspace, attempt) {
+      if (
+        attempt?.runner !== 'codex' ||
+        attempt.status === 'running' ||
+        typeof attempt.session_id !== 'string'
+      ) {
+        return null;
+      }
+      const key = keyOf(workspace, attempt.attempt_id);
+      if (historical_completed.has(key)) {
+        return null;
+      }
+      const pending = historical_preparations.get(key);
+      if (pending) {
+        return pending;
+      }
+      const resolved_workspace = path.resolve(workspace);
+      const generation = workspace_generations.get(resolved_workspace) || 0;
+      const global_generation = clear_generation;
+      /** @type {Promise<Record<string, any>|null>} */
+      let preparation;
+      preparation = Promise.resolve()
+        .then(() => readBoundedAttempt(attempt))
+        .then((value) => {
+          if (
+            global_generation !== clear_generation ||
+            generation !== (workspace_generations.get(resolved_workspace) || 0)
+          ) {
+            return null;
+          }
+          if (observers.has(key)) {
+            return value;
+          }
+          historical_completed.add(key);
+          if (value) {
+            historical_keys.add(key);
+            values.set(key, { ...(values.get(key) || {}), ...value });
+          }
+          const timer = setTimeout(
+            () => {
+              if (historical_expiry.get(key) !== timer) {
+                return;
+              }
+              historical_completed.delete(key);
+              historical_keys.delete(key);
+              if (!observers.has(key)) {
+                values.delete(key);
+              }
+              historical_expiry.delete(key);
+            },
+            Number.isFinite(options.historicalTtlMs)
+              ? options.historicalTtlMs
+              : 60_000
+          );
+          timer.unref?.();
+          historical_expiry.set(key, timer);
+          return value;
+        })
+        .finally(() => {
+          if (historical_preparations.get(key) === preparation) {
+            historical_preparations.delete(key);
+          }
+        });
+      historical_preparations.set(key, preparation);
+      return preparation;
+    },
+    /** @param {string} workspace - Workspace whose last card subscriber left. */
+    releaseHistorical(workspace) {
+      const resolved_workspace = path.resolve(workspace);
+      workspace_generations.set(
+        resolved_workspace,
+        (workspace_generations.get(resolved_workspace) || 0) + 1
+      );
+      const prefix = `${resolved_workspace}\0`;
+      for (const key of historical_keys) {
+        if (!key.startsWith(prefix)) {
+          continue;
+        }
+        historical_keys.delete(key);
+        historical_completed.delete(key);
+        values.delete(key);
+        clearTimeout(historical_expiry.get(key));
+        historical_expiry.delete(key);
+      }
+      for (const key of historical_completed) {
+        if (key.startsWith(prefix)) {
+          historical_completed.delete(key);
+          clearTimeout(historical_expiry.get(key));
+          historical_expiry.delete(key);
+        }
+      }
     },
     /** @param {string} workspace - Workspace. @param {string} attempt_id - Attempt. */
     drain(workspace, attempt_id) {
@@ -215,17 +467,31 @@ export function createWorkerSessionObservationStore(options = {}) {
       observers.get(key)?.reader.stop?.();
       observers.get(key)?.children.stop();
       observers.delete(key);
+      historical_keys.delete(key);
+      historical_completed.delete(key);
+      clearTimeout(historical_expiry.get(key));
+      historical_expiry.delete(key);
       values.delete(key);
     },
     clear() {
+      clear_generation += 1;
+      workspace_generations.clear();
       for (const held of observers.values()) {
         held.reader.stop?.();
         held.children.stop();
       }
       observers.clear();
+      historical_preparations.clear();
+      historical_keys.clear();
+      historical_completed.clear();
+      for (const timer of historical_expiry.values()) {
+        clearTimeout(timer);
+      }
+      historical_expiry.clear();
       values.clear();
     }
   };
+  return api;
 }
 
 /** @param {unknown} value */
@@ -261,6 +527,51 @@ function codexUsage(raw) {
       ? { total_tokens: usage.total_tokens }
       : {})
   };
+}
+
+/** @param {Record<string, any>} record */
+function responseIdOf(record) {
+  const payload = objectOf(record?.payload);
+  return record?.type === 'token_usage_record' &&
+    typeof payload?.response_id === 'string'
+    ? payload.response_id
+    : null;
+}
+
+/**
+ * Find response identities claimed by more than one owner or value. The raw
+ * identity ledger stays local; callers receive only an empty partial marker.
+ *
+ * @param {Array<{ thread_id: string, record: Record<string, any> }>} records
+ */
+function conflictingResponseIds(records) {
+  /** @type {Map<string, { owner: string, usage: Record<string, number> }>} */
+  const seen = new Map();
+  /** @type {Set<string>} */
+  const conflicts = new Set();
+  for (const entry of records) {
+    const response_id = responseIdOf(entry.record);
+    const payload = objectOf(entry.record?.payload);
+    const usage = codexUsage(payload?.usage);
+    if (!response_id || !usage) {
+      continue;
+    }
+    const owner =
+      typeof payload?.thread_id === 'string'
+        ? payload.thread_id
+        : entry.thread_id;
+    const prior = seen.get(response_id);
+    if (
+      prior &&
+      (prior.owner !== owner ||
+        JSON.stringify(prior.usage) !== JSON.stringify(usage))
+    ) {
+      conflicts.add(response_id);
+    } else if (!prior) {
+      seen.set(response_id, { owner, usage });
+    }
+  }
+  return conflicts;
 }
 
 /** @param {any} message - Claude assistant message. */
@@ -300,6 +611,10 @@ function createCodexAccumulator() {
   const turn_models = new Map();
   /** @type {Map<string, Record<string, number>>} */
   const turns = new Map();
+  /** @type {Map<string, { usage: Record<string, number>, turn_id: string|null, model: string|null, at: number|null, owner: string|null }>} */
+  const responses = new Map();
+  /** @type {Set<string>} */
+  const response_conflicts = new Set();
   /** @type {Record<string, number>|null} */
   let thread_usage = null;
   /** @param {Record<string, any>} record */
@@ -339,6 +654,41 @@ function createCodexAccumulator() {
       }
       const turn_id =
         typeof payload.turn_id === 'string' ? payload.turn_id : current_turn;
+      const response_id =
+        typeof payload.response_id === 'string' &&
+        payload.response_id.length > 0
+          ? payload.response_id
+          : null;
+      const direct_usage = codexUsage(payload.usage);
+      if (response_id && direct_usage) {
+        const owner =
+          typeof payload.thread_id === 'string'
+            ? payload.thread_id
+            : session_id;
+        const prior = responses.get(response_id);
+        if (
+          prior &&
+          (JSON.stringify(prior.usage) !== JSON.stringify(direct_usage) ||
+            prior.owner !== owner)
+        ) {
+          responses.delete(response_id);
+          response_conflicts.add(response_id);
+        } else if (!prior && !response_conflicts.has(response_id)) {
+          const at =
+            typeof record.timestamp === 'string'
+              ? Date.parse(record.timestamp)
+              : NaN;
+          responses.set(response_id, {
+            usage: direct_usage,
+            turn_id,
+            model: turn_id
+              ? (turn_models.get(turn_id) ?? current_model)
+              : current_model,
+            at: Number.isFinite(at) ? at : null,
+            owner
+          });
+        }
+      }
       const turn_usage = codexUsage(payload.turn_token_usage ?? payload.usage);
       if (turn_id && turn_usage) {
         turns.set(turn_id, turn_usage);
@@ -361,17 +711,68 @@ function createCodexAccumulator() {
   function snapshot() {
     /** @type {Array<Record<string, any>>} */
     const usage_legs = [];
-    for (const [turn_id, usage] of turns) {
-      usage_legs.push({
-        provider: 'codex',
-        role: 'orchestrator',
-        attempt_id: `session:${session_id || 'unknown'}`,
-        turn_id,
-        model: turn_models.get(turn_id) ?? null,
-        usage
-      });
+    if (responses.size > 0 || response_conflicts.size > 0) {
+      const grouped = new Map();
+      for (const response of responses.values()) {
+        const key = `${response.turn_id || 'unknown'}\0${response.model || 'unknown'}`;
+        let segment = grouped.get(key);
+        if (!segment) {
+          segment = {
+            provider: 'codex',
+            role: 'orchestrator',
+            attempt_id: `session:${session_id || 'unknown'}`,
+            scope_id: `thread:${session_id || 'unknown'}:turn:${response.turn_id || 'unknown'}:model:${response.model || 'unknown'}`,
+            turn_id: response.turn_id,
+            model: response.model,
+            usage: {},
+            observed_from: response.at,
+            observed_through: response.at
+          };
+          grouped.set(key, segment);
+        }
+        for (const [field, value] of Object.entries(response.usage)) {
+          if (field !== 'total_tokens' && Number.isFinite(value)) {
+            segment.usage[field] = (segment.usage[field] || 0) + value;
+          }
+        }
+        if (response.at !== null) {
+          segment.observed_from =
+            segment.observed_from === null
+              ? response.at
+              : Math.min(segment.observed_from, response.at);
+          segment.observed_through =
+            segment.observed_through === null
+              ? response.at
+              : Math.max(segment.observed_through, response.at);
+        }
+      }
+      usage_legs.push(...grouped.values());
+      if (response_conflicts.size > 0) {
+        usage_legs.push({
+          provider: 'codex',
+          role: 'orchestrator',
+          attempt_id: `session:${session_id || 'unknown'}`,
+          scope_id: `thread:${session_id || 'unknown'}:conflict`,
+          turn_id: 'unattributed',
+          model: null,
+          usage: {},
+          partial: true,
+          partial_reasons: ['response_conflict']
+        });
+      }
+    } else {
+      for (const [turn_id, usage] of turns) {
+        usage_legs.push({
+          provider: 'codex',
+          role: 'orchestrator',
+          attempt_id: `session:${session_id || 'unknown'}`,
+          turn_id,
+          model: turn_models.get(turn_id) ?? null,
+          usage
+        });
+      }
     }
-    if (thread_usage) {
+    if (thread_usage && response_conflicts.size === 0) {
       /** @type {Record<string, number>} */
       const summed = {};
       for (const leg of usage_legs) {
@@ -382,6 +783,9 @@ function createCodexAccumulator() {
       /** @type {Record<string, number>} */
       const residual = {};
       for (const [field, value] of Object.entries(thread_usage)) {
+        if (field === 'total_tokens') {
+          continue;
+        }
         residual[field] = Math.max(0, value - (summed[field] || 0));
       }
       if (Object.values(residual).some((value) => value > 0)) {
@@ -391,12 +795,23 @@ function createCodexAccumulator() {
           attempt_id: `session:${session_id || 'unknown'}`,
           turn_id: 'unattributed',
           model: null,
-          usage: residual,
-          partial: true
+          usage: responses.size > 0 ? {} : residual,
+          partial: true,
+          ...(responses.size > 0 ? { partial_reasons: ['cumulative_gap'] } : {})
         });
       }
     }
-    const usage = thread_usage ?? sumUsage(usage_legs.map((leg) => leg.usage));
+    const usage =
+      responses.size > 0 || response_conflicts.size > 0
+        ? sumUsage(usage_legs.map((leg) => leg.usage))
+        : (thread_usage ?? sumUsage(usage_legs.map((leg) => leg.usage)));
+    if (
+      usage &&
+      Number.isFinite(usage.input_tokens) &&
+      Number.isFinite(usage.output_tokens)
+    ) {
+      usage.total_tokens = usage.input_tokens + usage.output_tokens;
+    }
     return { session_id, model: current_model, usage, usage_legs };
   }
   return { apply, snapshot };
@@ -470,6 +885,9 @@ export function observeCodexRootUsage(attempt) {
  */
 export function foldCodexAttemptUsage(records, started_at, ended_at) {
   const boundary_unproven = records.some((record) => {
+    if (record.type !== 'token_usage_record') {
+      return false;
+    }
     if (typeof record.timestamp !== 'string') {
       return true;
     }
@@ -480,11 +898,22 @@ export function foldCodexAttemptUsage(records, started_at, ended_at) {
       return true;
     }
     const at = Date.parse(record.timestamp);
-    return !Number.isFinite(at) || at <= ended_at;
+    return !Number.isFinite(at) || at < ended_at;
   });
   const current = foldCodex(in_window).usage_legs;
   if (started_at === null) {
-    return current;
+    return current.map((leg) => ({
+      ...leg,
+      ...(leg.scope_id
+        ? { scope_id: attemptScopeId(leg.scope_id, started_at, ended_at) }
+        : {}),
+      ...(boundary_unproven
+        ? {
+            partial: true,
+            partial_reasons: ['attempt_boundary_unproven']
+          }
+        : {})
+    }));
   }
   const before = foldCodex(
     in_window.filter((record) => {
@@ -495,11 +924,30 @@ export function foldCodexAttemptUsage(records, started_at, ended_at) {
       return Number.isFinite(at) && at < started_at;
     })
   ).usage_legs;
-  const baseline = new Map(before.map((leg) => [leg.turn_id, leg.usage]));
+  const baseline = new Map(
+    before.map((leg) => [`${leg.turn_id}\0${leg.model}`, leg.usage])
+  );
   return current.flatMap((leg) => {
-    const prior = baseline.get(leg.turn_id);
+    const prior = baseline.get(`${leg.turn_id}\0${leg.model}`);
     if (!prior) {
-      return [{ ...leg, ...(boundary_unproven ? { partial: true } : {}) }];
+      return [
+        {
+          ...leg,
+          ...(leg.scope_id
+            ? { scope_id: attemptScopeId(leg.scope_id, started_at, ended_at) }
+            : {}),
+          observed_from: Math.max(
+            Number.isFinite(leg.observed_from) ? leg.observed_from : started_at,
+            started_at
+          ),
+          ...(boundary_unproven
+            ? {
+                partial: true,
+                partial_reasons: ['attempt_boundary_unproven']
+              }
+            : {})
+        }
+      ];
     }
     /** @type {Record<string, number>} */
     const usage = {};
@@ -511,9 +959,37 @@ export function foldCodexAttemptUsage(records, started_at, ended_at) {
       usage[field] = Math.max(0, value - old);
     }
     return Object.values(usage).some((value) => value > 0)
-      ? [{ ...leg, usage, ...(boundary_unproven ? { partial: true } : {}) }]
+      ? [
+          {
+            ...leg,
+            usage,
+            ...(leg.scope_id
+              ? {
+                  scope_id: attemptScopeId(leg.scope_id, started_at, ended_at)
+                }
+              : {}),
+            observed_from: started_at,
+            ...(boundary_unproven
+              ? {
+                  partial: true,
+                  partial_reasons: ['attempt_boundary_unproven']
+                }
+              : {})
+          }
+        ]
       : [];
   });
+}
+
+/**
+ * A response scope is reusable only within the same proven attempt window.
+ *
+ * @param {string} scope_id - Thread, turn and model identity.
+ * @param {number|null|undefined} started_at - Inclusive start.
+ * @param {number|null|undefined} ended_at - Exclusive end.
+ */
+function attemptScopeId(scope_id, started_at, ended_at) {
+  return `${scope_id}:window:${Number.isFinite(started_at) ? started_at : 'open'}:${Number.isFinite(ended_at) ? ended_at : 'open'}`;
 }
 
 /**

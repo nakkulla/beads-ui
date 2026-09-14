@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import {
   attemptSignature,
   buildCompareModel,
@@ -9,6 +9,7 @@ import {
   medianOf,
   normalizeCompareFilters,
   passCaret,
+  prepareCompareSnapshot,
   presetMatchesSignature,
   projectBenchRun,
   signatureName
@@ -652,7 +653,9 @@ describe('worker/compare-projection aggregates', () => {
       tokens: 1500,
       total_cost_usd: 1.5,
       unpriced_leg_count: 0,
-      cost_estimated: false
+      cost_estimated: false,
+      partial: false,
+      partial_reasons: []
     });
     expect(model.groups[0].duration_ms.median).toBe(60_000);
     expect(model.groups[0].cost_usd.median).toBe(1.5);
@@ -675,6 +678,34 @@ describe('worker/compare-projection aggregates', () => {
     });
 
     expect(model.groups.map((group) => group.success_rate)).toEqual([1, 0]);
+  });
+
+  test('keeps partial cost evidence on the comparison median', () => {
+    const model = buildCompareModel({
+      workspaces: [
+        makeWorkspace({
+          attempts: [
+            makeAttempt({
+              usage_segments: [
+                {
+                  model: 'opus',
+                  partial: true,
+                  partial_reasons: ['attempt_boundary_unproven'],
+                  usage: { input_tokens: 100, total_cost_usd: 1 }
+                }
+              ]
+            })
+          ]
+        })
+      ]
+    });
+
+    expect(model.rows[0].usage).toMatchObject({ partial: true });
+    expect(model.groups[0].cost_usd).toMatchObject({
+      median: null,
+      partial: true,
+      partial_count: 1
+    });
   });
 });
 
@@ -781,6 +812,73 @@ describe('worker/compare-projection review attribution', () => {
 });
 
 describe('worker/compare-projection filters', () => {
+  test('prepares ended attempts before projecting comparison rows', async () => {
+    const attempt = makeAttempt({
+      runner: 'codex',
+      model: 'gpt-5.6-sol',
+      session_id: 'history-session'
+    });
+    const prepared = {
+      usage_segments: [
+        {
+          runtime: 'codex',
+          role: 'parent',
+          model: 'gpt-5.6-sol',
+          usage: { input_tokens: 40, output_tokens: 4 }
+        }
+      ]
+    };
+    const prepareHistorical = vi.fn(async () => prepared);
+    const observations = {
+      prepareHistorical,
+      get: () => prepared
+    };
+
+    const model = await prepareCompareSnapshot(
+      {},
+      {
+        workspaces: [
+          makeWorkspace({
+            attempts: [attempt],
+            issues: { 'UI-1': makeIssue() }
+          })
+        ],
+        observations: /** @type {any} */ (observations),
+        presets: [],
+        catalog: null,
+        listRuns: () => []
+      }
+    );
+
+    expect(model.rows[0].usage.tokens).toBe(44);
+    expect(prepareHistorical).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not prepare an ended attempt excluded by compare filters', async () => {
+    const prepareHistorical = vi.fn(async () => null);
+
+    await prepareCompareSnapshot(
+      { root_dirs: ['/repo/two'] },
+      {
+        workspaces: [
+          makeWorkspace({
+            attempts: [makeAttempt({ runner: 'codex', session_id: 's1' })],
+            issues: { 'UI-1': makeIssue() }
+          })
+        ],
+        observations: /** @type {any} */ ({
+          prepareHistorical,
+          get: () => null
+        }),
+        presets: [],
+        catalog: null,
+        listRuns: () => []
+      }
+    );
+
+    expect(prepareHistorical).not.toHaveBeenCalled();
+  });
+
   test('defaults to excluding bench experiment rows', () => {
     const filters = normalizeCompareFilters({});
 

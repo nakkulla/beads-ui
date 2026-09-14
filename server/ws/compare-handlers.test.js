@@ -11,11 +11,11 @@ function makeSocket() {
 }
 
 describe('ws/compare-handlers', () => {
-  test('replies with a compare-snapshot envelope', () => {
+  test('replies with a compare-snapshot envelope', async () => {
     const ws = makeSocket();
     const snapshot = vi.fn(() => ({ rows: [], groups: [], workspaces: [] }));
 
-    handleGetCompare(
+    await handleGetCompare(
       /** @type {any} */ (ws),
       /** @type {any} */ ({ id: 'r1', type: 'get-compare', payload: {} }),
       { snapshot: /** @type {any} */ (snapshot) }
@@ -30,11 +30,11 @@ describe('ws/compare-handlers', () => {
     });
   });
 
-  test('forwards the filters and resolves the period into a since bound', () => {
+  test('forwards the filters and resolves the period into a since bound', async () => {
     const ws = makeSocket();
     const snapshot = vi.fn(() => ({ rows: [], groups: [], workspaces: [] }));
 
-    handleGetCompare(
+    await handleGetCompare(
       /** @type {any} */ (ws),
       /** @type {any} */ ({
         id: 'r2',
@@ -56,10 +56,10 @@ describe('ws/compare-handlers', () => {
     expect(typeof passed.since).toBe('number');
   });
 
-  test('answers a projection failure with an error reply', () => {
+  test('answers a projection failure with an error reply', async () => {
     const ws = makeSocket();
 
-    handleGetCompare(
+    await handleGetCompare(
       /** @type {any} */ (ws),
       /** @type {any} */ ({ id: 'r3', type: 'get-compare', payload: {} }),
       {

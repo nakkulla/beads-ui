@@ -41,11 +41,11 @@ import { priceUsage } from '../../server/worker/usage-pricing.js';
  */
 
 /**
- * @typedef {{ provider: UsageProvider, role: UsageRole, attempt_id: string, receipt_id?: string, agent_type?: string, agent_id?: string, model?: string, effort?: string, session_id?: string, turn_id?: string, completed_at?: string|number, usage: UsageRecord, subtotal: number, replayed?: boolean, cost_covered?: boolean, price_usd?: number, price_basis?: PriceBasis }} UsageLeg
+ * @typedef {{ provider: UsageProvider, role: UsageRole, attempt_id: string, receipt_id?: string, scope_id?: string, agent_type?: string, agent_id?: string, model?: string, effort?: string, session_id?: string, turn_id?: string, completed_at?: string|number, usage: UsageRecord, subtotal: number, included?: boolean, replayed?: boolean, cost_covered?: boolean, partial?: boolean, partial_reasons?: string[], price_usd?: number, price_basis?: PriceBasis }} UsageLeg
  */
 
 /**
- * @typedef {{ subtotal: number, breakdown: UsageRecord, total_only_subtotal?: number, replayed?: boolean, total_cost_usd?: number, unpriced_leg_count?: number, cost_estimated?: boolean }} ProviderUsageSummary
+ * @typedef {{ subtotal: number, breakdown: UsageRecord, total_only_subtotal?: number, replayed?: boolean, partial?: boolean, partial_reasons?: string[], total_cost_usd?: number, unpriced_leg_count?: number, cost_estimated?: boolean }} ProviderUsageSummary
  */
 
 /**
@@ -127,7 +127,7 @@ function formatUsd(usd) {
  * be priced at all. Unpriced legs are NAMED rather than dropped, because a sum
  * that silently omits legs reads as the whole attempt's price.
  *
- * @param {{ total_cost_usd?: number, unpriced_leg_count?: number }|null|undefined} summary
+ * @param {{ total_cost_usd?: number, unpriced_leg_count?: number, partial?: boolean }|null|undefined} summary
  * @returns {string|null}
  */
 export function formatCost(summary) {
@@ -142,14 +142,29 @@ export function formatCost(summary) {
     return unpriced > 0 ? '단가 없음' : null;
   }
   const amount = formatUsd(summary.total_cost_usd);
-  return unpriced > 0 ? `${amount} (+${unpriced} leg 단가 없음)` : amount;
+  const priced =
+    unpriced > 0 ? `${amount} (+${unpriced} leg 단가 없음)` : amount;
+  return summary.partial === true ? `${priced} · 부분 집계` : priced;
 }
+
+/** @type {Record<string, string>} */
+const PARTIAL_REASON_TEXT = {
+  replayed: '서버 재시작 뒤 복구된 범위',
+  model_unknown: '모델 미확정',
+  usage_missing: '사용량 미관측',
+  attempt_boundary_unproven: 'attempt 경계 미확정',
+  response_conflict: '같은 응답의 사용량 충돌',
+  child_terminal_unconfirmed: '자식 종료 미확인',
+  native_external_overlap: 'native·외부 범위 겹침 미해소',
+  legacy_child_scope: '과거 자식의 직접 범위 미확정',
+  usage_incomplete: '관측 범위 불완전'
+};
 
 /**
  * The tooltip lines behind a cost: the figure, the estimate caveat when one
  * applies, and the rate note. Empty when there is no cost to explain.
  *
- * @param {{ total_cost_usd?: number, unpriced_leg_count?: number, cost_estimated?: boolean }|null|undefined} summary
+ * @param {{ total_cost_usd?: number, unpriced_leg_count?: number, cost_estimated?: boolean, partial?: boolean, partial_reasons?: string[] }|null|undefined} summary
  * @returns {string[]}
  */
 export function costTooltipLines(summary) {
@@ -161,6 +176,16 @@ export function costTooltipLines(summary) {
   const lines = [label];
   if (summary.cost_estimated === true) {
     lines.push(ESTIMATED_COST_NOTE);
+  }
+  if (summary.partial === true) {
+    const reasons = Array.isArray(summary.partial_reasons)
+      ? summary.partial_reasons
+          .map((reason) => PARTIAL_REASON_TEXT[reason] || reason)
+          .filter(Boolean)
+      : [];
+    lines.push(
+      `부분 집계${reasons.length > 0 ? ` — ${reasons.join(' · ')}` : ''}`
+    );
   }
   lines.push(API_RATE_NOTE);
   return lines;
@@ -517,6 +542,15 @@ export function mergeUsageProjections(projections) {
       if (summary.replayed) {
         merged.replayed = true;
       }
+      if (summary.partial === true) {
+        merged.partial = true;
+        merged.partial_reasons = [
+          ...new Set([
+            ...(merged.partial_reasons || []),
+            ...(summary.partial_reasons || [])
+          ])
+        ];
+      }
       // Both providers price now, and an incomplete sum no longer suppresses
       // the figure: the unpriced legs travel with it as their own count.
       if (
@@ -608,7 +642,7 @@ function providerForRunner(runner) {
 }
 
 /**
- * @returns {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, cost_usd: number, priced_count: number, unpriced_count: number, estimated: boolean }}
+ * @returns {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, partial_reasons: Set<string>, cost_usd: number, priced_count: number, unpriced_count: number, estimated: boolean }}
  */
 function createAccumulator() {
   return {
@@ -617,6 +651,7 @@ function createAccumulator() {
     total_only: 0,
     legs: [],
     replayed: false,
+    partial_reasons: new Set(),
     cost_usd: 0,
     priced_count: 0,
     unpriced_count: 0,
@@ -625,7 +660,7 @@ function createAccumulator() {
 }
 
 /**
- * @param {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, cost_usd: number, priced_count: number, unpriced_count: number, estimated: boolean }} accumulator
+ * @param {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, partial_reasons: Set<string>, cost_usd: number, priced_count: number, unpriced_count: number, estimated: boolean }} accumulator
  * @param {UsageLeg} leg
  */
 function addLeg(accumulator, leg) {
@@ -644,6 +679,12 @@ function addLeg(accumulator, leg) {
   accumulator.legs.push(leg);
   if (leg.replayed === true) {
     accumulator.replayed = true;
+    accumulator.partial_reasons.add('replayed');
+  }
+  if (leg.partial === true) {
+    for (const reason of leg.partial_reasons || ['usage_incomplete']) {
+      accumulator.partial_reasons.add(reason);
+    }
   }
   if (leg.cost_covered === true) {
     return;
@@ -662,11 +703,11 @@ function addLeg(accumulator, leg) {
 }
 
 /**
- * @param {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, cost_usd: number, priced_count: number, unpriced_count: number, estimated: boolean }} accumulator
+ * @param {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, partial_reasons: Set<string>, cost_usd: number, priced_count: number, unpriced_count: number, estimated: boolean }} accumulator
  * @param {boolean} include_legs
  */
 function accumulatorSummary(accumulator, include_legs) {
-  /** @type {{ subtotal: number, breakdown: UsageRecord, total_only_subtotal?: number, legs?: UsageLeg[], replayed?: boolean, total_cost_usd?: number, unpriced_leg_count?: number, cost_estimated?: boolean }} */
+  /** @type {{ subtotal: number, breakdown: UsageRecord, total_only_subtotal?: number, legs?: UsageLeg[], replayed?: boolean, partial?: boolean, partial_reasons?: string[], total_cost_usd?: number, unpriced_leg_count?: number, cost_estimated?: boolean }} */
   const summary = {
     subtotal: accumulator.subtotal,
     breakdown: accumulator.breakdown
@@ -688,6 +729,10 @@ function accumulatorSummary(accumulator, include_legs) {
   }
   if (accumulator.replayed) {
     summary.replayed = true;
+  }
+  if (accumulator.partial_reasons.size > 0) {
+    summary.partial = true;
+    summary.partial_reasons = [...accumulator.partial_reasons];
   }
   return summary;
 }
@@ -776,6 +821,39 @@ export function usageTooltip(usage) {
 }
 
 /**
+ * Convert the Codex rollout vocabulary used by `codex_children` into the
+ * shared projection vocabulary. Cached input and reasoning remain subsets.
+ *
+ * @param {Record<string, any>|null|undefined} raw
+ * @returns {UsageRecord}
+ */
+function nativeUsageRecord(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return {};
+  }
+  return reportedUsage({
+    ...(Number.isFinite(raw.input_tokens)
+      ? { input_tokens: raw.input_tokens }
+      : {}),
+    ...(Number.isFinite(raw.cached_input_tokens)
+      ? { cache_read_input_tokens: raw.cached_input_tokens }
+      : {}),
+    ...(Number.isFinite(raw.cache_write_input_tokens)
+      ? { cache_creation_input_tokens: raw.cache_write_input_tokens }
+      : {}),
+    ...(Number.isFinite(raw.output_tokens)
+      ? { output_tokens: raw.output_tokens }
+      : {}),
+    ...(Number.isFinite(raw.reasoning_output_tokens)
+      ? { reasoning_output_tokens: raw.reasoning_output_tokens }
+      : {}),
+    ...(Number.isFinite(raw.total_tokens)
+      ? { total_tokens: raw.total_tokens }
+      : {})
+  });
+}
+
+/**
  * @param {Record<string, any>} attempts
  * @param {string} bead_id
  * @param {ResolvedCatalog|null} [catalog] - Without one, only a CLI-reported cost prices a leg.
@@ -808,8 +886,44 @@ export function sumAttemptUsage(attempts, bead_id, catalog = null) {
   };
   /** @type {Set<string>} */
   const receipt_ids = new Set();
+  /** @type {Set<string>} */
+  const contribution_scopes = new Set();
+  /** @type {Set<string>} */
+  const native_sessions = new Set();
+  /** @type {Set<string>} */
+  const native_turn_scopes = new Set();
+  /** @type {Set<string>} */
+  const native_scope_ids = new Set();
   /** @type {UsageLeg[]} */
   const priced_legs = [];
+  for (const attempt of Object.values(attempts || {})) {
+    if (!attempt || attempt.bead_id !== bead_id) {
+      continue;
+    }
+    for (const child of Array.isArray(attempt.codex_children)
+      ? attempt.codex_children
+      : []) {
+      if (
+        child &&
+        typeof child.thread_id === 'string' &&
+        ((Array.isArray(child.usage_segments) &&
+          child.usage_segments.length > 0) ||
+          hasReportedUsage(nativeUsageRecord(child.usage)))
+      ) {
+        native_sessions.add(child.thread_id);
+        for (const segment of Array.isArray(child.usage_segments)
+          ? child.usage_segments
+          : []) {
+          if (typeof segment?.turn_id === 'string') {
+            native_turn_scopes.add(`${child.thread_id}:${segment.turn_id}`);
+          }
+          if (typeof segment?.scope_id === 'string') {
+            native_scope_ids.add(segment.scope_id);
+          }
+        }
+      }
+    }
+  }
   for (const attempt of Object.values(attempts || {})) {
     if (!attempt || attempt.bead_id !== bead_id) {
       continue;
@@ -841,6 +955,9 @@ export function sumAttemptUsage(attempts, bead_id, catalog = null) {
       }
       if (typeof attempt.model === 'string') {
         leg.model = attempt.model;
+      } else if (!Number.isFinite(usage.total_cost_usd)) {
+        leg.partial = true;
+        leg.partial_reasons = ['model_unknown'];
       }
       if (typeof attempt.session_id === 'string') {
         leg.session_id = attempt.session_id;
@@ -851,11 +968,20 @@ export function sumAttemptUsage(attempts, bead_id, catalog = null) {
       addLeg(roles.orchestrator[provider], leg);
     }
     for (const segment of usage_segments) {
-      if (!segment || !hasReportedUsage(segment.usage)) {
+      if (!segment) {
         continue;
       }
       const provider = providerForRunner(attempt.runner);
-      const usage = reportedUsage(segment.usage);
+      const scope_id =
+        typeof segment.scope_id === 'string' ? segment.scope_id : null;
+      const scope_key = scope_id ? `${provider}:${scope_id}` : null;
+      if (scope_key && contribution_scopes.has(scope_key)) {
+        continue;
+      }
+      if (scope_key) {
+        contribution_scopes.add(scope_key);
+      }
+      const usage = reportedUsage(segment.usage || {});
       /** @type {UsageLeg} */
       const leg = {
         provider,
@@ -864,8 +990,11 @@ export function sumAttemptUsage(attempts, bead_id, catalog = null) {
         usage,
         subtotal: providerSubtotal(provider, usage)
       };
-      if (segment.partial !== true && typeof segment.model === 'string') {
+      if (typeof segment.model === 'string') {
         leg.model = segment.model;
+      }
+      if (scope_id) {
+        leg.scope_id = scope_id;
       }
       if (typeof segment.turn_id === 'string') {
         leg.turn_id = segment.turn_id;
@@ -875,9 +1004,143 @@ export function sumAttemptUsage(attempts, bead_id, catalog = null) {
       } else {
         applyLegPrice(leg, catalog);
       }
+      if (segment.partial === true) {
+        leg.partial = true;
+        leg.partial_reasons = Array.isArray(segment.partial_reasons)
+          ? segment.partial_reasons.filter(
+              (/** @type {unknown} */ reason) => typeof reason === 'string'
+            )
+          : ['usage_incomplete'];
+      }
+      const excluded_from_total = (leg.partial_reasons || []).some((reason) =>
+        [
+          'attempt_boundary_unproven',
+          'response_conflict',
+          'owner_conflict'
+        ].includes(reason)
+      );
+      leg.included = !excluded_from_total;
+      if (!hasReportedUsage(usage)) {
+        leg.cost_covered = true;
+      }
+      if (
+        typeof leg.model !== 'string' &&
+        !Number.isFinite(usage.total_cost_usd)
+      ) {
+        leg.partial = true;
+        leg.partial_reasons = [
+          ...new Set([...(leg.partial_reasons || []), 'model_unknown'])
+        ];
+      }
       priced_legs.push(leg);
-      addLeg(providers[provider], leg);
       addLeg(roles.orchestrator[provider], leg);
+      if (excluded_from_total) {
+        for (const reason of leg.partial_reasons || []) {
+          providers[provider].partial_reasons.add(reason);
+        }
+      } else {
+        addLeg(providers[provider], leg);
+      }
+    }
+    const native_children = Array.isArray(attempt.codex_children)
+      ? attempt.codex_children
+      : [];
+    for (const child of native_children) {
+      if (!child || typeof child.thread_id !== 'string') {
+        continue;
+      }
+      const child_segments =
+        Array.isArray(child.usage_segments) && child.usage_segments.length > 0
+          ? child.usage_segments
+          : [];
+      if (child_segments.length === 0) {
+        const reason = hasReportedUsage(nativeUsageRecord(child.usage))
+          ? 'legacy_child_scope'
+          : 'usage_missing';
+        providers.codex.partial_reasons.add(reason);
+        roles.subagent.codex.partial_reasons.add(reason);
+        continue;
+      }
+      native_sessions.add(child.thread_id);
+      for (const reason of Array.isArray(child.usage_partial_reasons)
+        ? child.usage_partial_reasons
+        : []) {
+        providers.codex.partial_reasons.add(reason);
+        roles.subagent.codex.partial_reasons.add(reason);
+      }
+      for (const segment of child_segments) {
+        const usage = nativeUsageRecord(segment.usage);
+        if (!hasReportedUsage(usage)) {
+          continue;
+        }
+        const scope_id =
+          typeof segment.scope_id === 'string'
+            ? segment.scope_id
+            : `thread:${child.thread_id}:legacy`;
+        const scope_key = `codex:${scope_id}`;
+        if (contribution_scopes.has(scope_key)) {
+          continue;
+        }
+        contribution_scopes.add(scope_key);
+        if (typeof segment.turn_id === 'string') {
+          native_turn_scopes.add(`${child.thread_id}:${segment.turn_id}`);
+        }
+        native_scope_ids.add(scope_id);
+        /** @type {UsageLeg} */
+        const leg = {
+          provider: 'codex',
+          role: 'subagent',
+          attempt_id: String(attempt.attempt_id || ''),
+          session_id: child.thread_id,
+          scope_id,
+          usage,
+          subtotal: providerSubtotal('codex', usage)
+        };
+        if (typeof segment.turn_id === 'string') {
+          leg.turn_id = segment.turn_id;
+        }
+        const model = typeof segment.model === 'string' ? segment.model : null;
+        if (typeof model === 'string') {
+          leg.model = model;
+        } else if (!Number.isFinite(usage.total_cost_usd)) {
+          leg.partial = true;
+          leg.partial_reasons = ['model_unknown'];
+        }
+        if (segment.partial === true) {
+          leg.partial = true;
+          leg.partial_reasons = [
+            ...new Set([
+              ...(leg.partial_reasons || []),
+              ...(Array.isArray(segment.partial_reasons)
+                ? segment.partial_reasons
+                : []),
+              ...(segment.partial === true &&
+              !Array.isArray(segment.partial_reasons)
+                ? ['usage_incomplete']
+                : [])
+            ])
+          ];
+        }
+        const excluded_from_total = (leg.partial_reasons || []).some((reason) =>
+          [
+            'attempt_boundary_unproven',
+            'response_conflict',
+            'owner_conflict',
+            'legacy_child_scope'
+          ].includes(reason)
+        );
+        leg.included = !excluded_from_total;
+        applyLegPrice(leg, catalog);
+        priced_legs.push(leg);
+        addLeg(roles.subagent.codex, leg);
+        if (excluded_from_total) {
+          for (const reason of leg.partial_reasons || []) {
+            providers.codex.partial_reasons.add(reason);
+          }
+        } else {
+          addLeg(providers.codex, leg);
+        }
+      }
     }
     const usage_legs = Array.isArray(attempt.usage_legs)
       ? attempt.usage_legs
@@ -905,6 +1168,29 @@ export function sumAttemptUsage(attempts, bead_id, catalog = null) {
       if (!receipt_id || receipt_ids.has(receipt_id)) {
         continue;
       }
+      const candidate_session =
+        typeof candidate.session_id === 'string'
+          ? candidate.session_id
+          : typeof candidate.thread_id === 'string'
+            ? candidate.thread_id
+            : null;
+      if (candidate_session && native_sessions.has(candidate_session)) {
+        const candidate_scope =
+          typeof candidate.scope_id === 'string' ? candidate.scope_id : null;
+        const same_turn =
+          typeof candidate.turn_id === 'string' &&
+          native_turn_scopes.has(`${candidate_session}:${candidate.turn_id}`);
+        if (candidate_scope && native_scope_ids.has(candidate_scope)) {
+          receipt_ids.add(receipt_id);
+          continue;
+        }
+        if (same_turn || typeof candidate.turn_id !== 'string') {
+          providers.codex.partial_reasons.add('native_external_overlap');
+          roles.subagent.codex.partial_reasons.add('native_external_overlap');
+          receipt_ids.add(receipt_id);
+          continue;
+        }
+      }
       receipt_ids.add(receipt_id);
       const usage = reportedUsage(candidate.usage);
       /** @type {UsageLeg} */
@@ -924,6 +1210,9 @@ export function sumAttemptUsage(attempts, bead_id, catalog = null) {
       }
       if (typeof candidate.model === 'string') {
         leg.model = candidate.model;
+      } else if (!Number.isFinite(usage.total_cost_usd)) {
+        leg.partial = true;
+        leg.partial_reasons = ['model_unknown'];
       }
       if (
         typeof candidate.effort === 'string' &&
@@ -949,6 +1238,19 @@ export function sumAttemptUsage(attempts, bead_id, catalog = null) {
       if (usage.replayed === true) {
         leg.replayed = true;
       }
+      if (candidate.partial === true) {
+        leg.partial = true;
+        leg.partial_reasons = [
+          ...new Set([
+            ...(leg.partial_reasons || []),
+            ...(Array.isArray(candidate.partial_reasons)
+              ? candidate.partial_reasons.filter(
+                  (/** @type {unknown} */ reason) => typeof reason === 'string'
+                )
+              : ['usage_incomplete'])
+          ])
+        ];
+      }
       applyLegPrice(leg, catalog);
       priced_legs.push(leg);
       addLeg(providers[leg_provider], leg);
@@ -960,7 +1262,10 @@ export function sumAttemptUsage(attempts, bead_id, catalog = null) {
   const projected_providers = {};
   for (const provider of /** @type {UsageProvider[]} */ (['claude', 'codex'])) {
     const accumulator = providers[provider];
-    if (accumulator.legs.length === 0) {
+    if (
+      accumulator.legs.length === 0 &&
+      accumulator.partial_reasons.size === 0
+    ) {
       continue;
     }
     projected_providers[provider] = accumulatorSummary(accumulator, false);

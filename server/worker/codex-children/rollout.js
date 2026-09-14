@@ -25,9 +25,13 @@
  * @property {string|null} [model]
  * @property {string|null} [effort]
  * @property {string|null} [launch_id]
+ * @property {string|null} [response_id]
+ * @property {string|null} [thread_id]
+ * @property {string|null} [turn_id]
  * @property {number|null} [event_at] - Epoch ms the payload itself states
  * (`started_at`/`completed_at`), which is not the record's own timestamp.
  * @property {CodexChildUsage|null} [usage]
+ * @property {CodexChildUsage|null} [cumulative_usage]
  */
 
 /**
@@ -199,10 +203,16 @@ export function liftCodexChildSignal(record) {
     };
   }
   if (record.type === 'token_usage_record' && payload) {
+    const direct_usage = normalizeCodexChildUsage(payload.usage);
     return {
       kind: 'usage',
       at,
-      usage: normalizeCodexChildUsage(payload.thread_token_usage)
+      usage:
+        direct_usage ?? normalizeCodexChildUsage(payload.thread_token_usage),
+      cumulative_usage: normalizeCodexChildUsage(payload.thread_token_usage),
+      response_id: direct_usage ? stringOrNull(payload.response_id) : null,
+      thread_id: stringOrNull(payload.thread_id),
+      turn_id: stringOrNull(payload.turn_id)
     };
   }
   if (record.type === 'event_msg' && payload) {

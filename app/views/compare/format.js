@@ -60,7 +60,7 @@ export function formatTokens(tokens) {
  * The 가격 cell. Delegates to the shared formatter so the partial-sum notation
  * `$1.23 (+2 leg 단가 없음)` is written in exactly one place (§1.3).
  *
- * @param {{ total_cost_usd?: number|null, unpriced_leg_count?: number, cost_estimated?: boolean }|null|undefined} usage
+ * @param {{ total_cost_usd?: number|null, unpriced_leg_count?: number, cost_estimated?: boolean, partial?: boolean }|null|undefined} usage
  * @returns {string}
  */
 export function formatPrice(usage) {
@@ -71,7 +71,8 @@ export function formatPrice(usage) {
     formatCost(
       /** @type {any} */ ({
         total_cost_usd: usage.total_cost_usd,
-        unpriced_leg_count: usage.unpriced_leg_count
+        unpriced_leg_count: usage.unpriced_leg_count,
+        partial: usage.partial
       })
     ) ?? EMPTY_CELL
   );

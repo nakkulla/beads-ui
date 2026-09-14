@@ -54,7 +54,7 @@ export const MAX_CHILD_CANDIDATES = 512;
 /**
  * Observe a proven root's linked child files incrementally.
  *
- * @param {{ root_thread_id: string, root_file: string, sessions_root?: string, started_at?: number|null, fs?: typeof node_fs, createReader?: typeof createTailReader, readSnapshot?: typeof readSessionSnapshot, onChange?: () => void, now?: () => number }} input
+ * @param {{ root_thread_id: string, root_file: string, sessions_root?: string, started_at?: number|null, ended_at?: number|null, fs?: typeof node_fs, createReader?: typeof createTailReader, readSnapshot?: typeof readSessionSnapshot, onChange?: () => void, now?: () => number }} input
  */
 export function createIncrementalCodexChildObserver(input) {
   const file_system = input.fs || node_fs;
@@ -62,7 +62,8 @@ export function createIncrementalCodexChildObserver(input) {
   const read_snapshot = input.readSnapshot || readSessionSnapshot;
   const accumulator = createCodexChildAccumulator({
     root_thread_id: input.root_thread_id,
-    attempt_started_at: input.started_at
+    attempt_started_at: input.started_at,
+    attempt_ended_at: input.ended_at
   });
   const now = input.now || (() => Date.now());
   const root_dir = path.dirname(input.root_file);

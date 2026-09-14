@@ -145,6 +145,21 @@ describe('benchPresetGroups', () => {
     expect(groups[0].pass_caret).toEqual({ k: 2, value: 1 });
   });
 
+  test('keeps partial cost evidence on the benchmark median', () => {
+    const groups = benchPresetGroups(makeRun(), [
+      makeRow('a1', {
+        usage: { tokens: 1000, total_cost_usd: 1, partial: true }
+      }),
+      makeRow('a2')
+    ]);
+
+    expect(groups[0].cost_usd).toMatchObject({
+      median: 1,
+      partial: true,
+      partial_count: 1
+    });
+  });
+
   test('counts an unjudged cell as 미상 rather than a failure', () => {
     const groups = benchPresetGroups(makeRun(), [
       makeRow('a3', { verify: 'fail' })

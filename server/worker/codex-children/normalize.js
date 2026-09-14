@@ -37,6 +37,42 @@ function epochOrNull(value) {
     : null;
 }
 
+/** @param {unknown} raw */
+function normalizeUsageSegments(raw) {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.flatMap((candidate) => {
+    if (typeof candidate !== 'object' || candidate === null) {
+      return [];
+    }
+    const segment = /** @type {Record<string, unknown>} */ (candidate);
+    const scope_id = stringOrNull(segment.scope_id);
+    const usage = normalizeCodexChildUsage(segment.usage);
+    if (scope_id === null || usage === null) {
+      return [];
+    }
+    return [
+      {
+        scope_id,
+        turn_id: stringOrNull(segment.turn_id),
+        model: stringOrNull(segment.model),
+        usage,
+        observed_from: epochOrNull(segment.observed_from),
+        observed_through: epochOrNull(segment.observed_through),
+        ...(segment.partial === true ? { partial: true } : {}),
+        ...(Array.isArray(segment.partial_reasons)
+          ? {
+              partial_reasons: segment.partial_reasons.filter(
+                (reason) => typeof reason === 'string'
+              )
+            }
+          : {})
+      }
+    ];
+  });
+}
+
 /**
  * Validate one stored row.
  *
@@ -71,7 +107,16 @@ export function normalizeCodexChildRow(raw) {
     started_at: epochOrNull(row.started_at),
     completed_at: epochOrNull(row.completed_at),
     last_event_at: epochOrNull(row.last_event_at),
-    usage: normalizeCodexChildUsage(row.usage)
+    usage: normalizeCodexChildUsage(row.usage),
+    usage_segments: normalizeUsageSegments(row.usage_segments),
+    ...(row.usage_partial === true ? { usage_partial: true } : {}),
+    ...(Array.isArray(row.usage_partial_reasons)
+      ? {
+          usage_partial_reasons: row.usage_partial_reasons.filter(
+            (reason) => typeof reason === 'string'
+          )
+        }
+      : {})
   };
 }
 

@@ -678,13 +678,13 @@ export async function handleMessage(ws, data) {
       handleGetBeadPrompt(ws, req);
       return;
     case 'get-bead-timeline':
-      handleGetBeadTimeline(ws, req);
+      await handleGetBeadTimeline(ws, req);
       return;
     case 'get-worker-system-prompt':
       handleGetWorkerSystemPrompt(ws, req);
       return;
     case 'get-compare':
-      handleGetCompare(ws, req);
+      await handleGetCompare(ws, req);
       return;
     case 'bench-run-create':
       void handleBenchRunCreate(ws, req);

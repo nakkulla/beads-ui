@@ -2836,7 +2836,7 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
     ).toBe(4.25);
   });
 
-  test('keeps native child usage outside the worker parent total', () => {
+  test('adds native child usage to the worker parent total', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -2854,7 +2854,15 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
                   agent_path: '/root/unit',
                   model: 'gpt-5.6-terra',
                   status: 'done',
-                  usage: { input_tokens: 50, output_tokens: 5 }
+                  usage: { input_tokens: 50, output_tokens: 5 },
+                  usage_segments: [
+                    {
+                      scope_id: 'thread:child:turn:t1:model:gpt-5.6-terra',
+                      turn_id: 't1',
+                      model: 'gpt-5.6-terra',
+                      usage: { input_tokens: 50, output_tokens: 5 }
+                    }
+                  ]
                 }
               ]
             }
@@ -2865,12 +2873,83 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
     );
 
     const tile = lanes.running[0];
-    expect(/** @type {any} */ (tile.usage).providers.codex.subtotal).toBe(110);
+    expect(/** @type {any} */ (tile.usage).providers.codex.subtotal).toBe(165);
     expect(/** @type {any} */ (tile.legs)[0]).toMatchObject({
       label: 'unit · gpt-5.6-terra',
       state: 'done',
-      native: true
+      native: true,
+      usage_included: true
     });
+  });
+
+  test('prices native child model segments and includes safe segments from a partial row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              runner: 'codex',
+              codex_children: [
+                {
+                  thread_id: 'child',
+                  agent_path: '/root/unit',
+                  model: 'model-b',
+                  status: 'done',
+                  usage_partial: true,
+                  usage_partial_reasons: ['response_conflict'],
+                  usage_segments: [
+                    {
+                      scope_id: 'child:model-a',
+                      turn_id: 't1',
+                      model: 'model-a',
+                      usage: { input_tokens: 10, output_tokens: 0 }
+                    },
+                    {
+                      scope_id: 'child:model-b',
+                      turn_id: 't2',
+                      model: 'model-b',
+                      usage: { input_tokens: 10, output_tokens: 0 }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        })
+      ],
+      [
+        state({
+          runner_catalog: {
+            model_index: { 'model-a': 'codex', 'model-b': 'codex' },
+            runners: {
+              codex: {
+                models: {
+                  'model-a': { id: 'model-a', price: { input: 1, output: 1 } },
+                  'model-b': { id: 'model-b', price: { input: 3, output: 1 } }
+                }
+              }
+            }
+          }
+        })
+      ]
+    );
+
+    expect(/** @type {any} */ (lanes.running[0].legs)[0]).toMatchObject({
+      usage: { input_tokens: 20, output_tokens: 0 },
+      usage_included: true,
+      price_usd: 0.00004,
+      price_basis: 'computed'
+    });
+    expect(
+      /** @type {any} */ (lanes.running[0].usage).providers.codex.subtotal
+    ).toBe(20);
+    expect(
+      /** @type {any} */ (lanes.running[0].usage).providers.codex
+        .partial_reasons
+    ).toContain('response_conflict');
   });
 
   test('orders every session tile after the worker tiles by newest update', () => {
