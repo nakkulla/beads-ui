@@ -36,6 +36,7 @@ import {
   resolvedRunnerOf
 } from '../../utils/exec-settings-chip.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import { RESUME_REFUSALS } from '../../utils/failure-sentences.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
 import { recSettings } from '../../utils/rec-settings.js';
 import { overlapPrefixes } from '../../utils/scope-overlap.js';
@@ -859,6 +860,14 @@ function failureProjection(a, ctx) {
     retry: retryProjection(a),
     resume_eligible: ctx.resume_eligible,
     resume_reason: ctx.resume_reason,
+    ...(typeof a.resume_refused === 'string' &&
+    a.resume_refused.startsWith('route_changed:')
+      ? {
+          resume_refused_sentence: RESUME_REFUSALS.route_changed(
+            routeChangeOf(a.resume_refused)
+          )
+        }
+      : {}),
     // 이 자식이 어떤 재개 의미로 시작됐는지 (UI-qce9 §5.3): 팝오버의 원인
     // 문장이 '새 세션으로 대체'를 말해도 되는지가 여기서 갈린다. 그 선택이
     // 없는 기록에는 키를 만들지 않는다 (fail-quiet).
@@ -869,6 +878,17 @@ function failureProjection(a, ctx) {
     confirmation: ctx.confirmation,
     ...timelineFields(ctx.history)
   };
+}
+
+/**
+ * @param {string} resume_refused
+ * @returns {{ prior_lane: string, current_route: string }|null}
+ */
+function routeChangeOf(resume_refused) {
+  const [prior_lane, current_route] = resume_refused
+    .slice('route_changed:'.length)
+    .split('→');
+  return prior_lane && current_route ? { prior_lane, current_route } : null;
 }
 
 /**

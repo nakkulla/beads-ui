@@ -114,6 +114,7 @@
  * how an attempt was continued after a provider hold: `provider_outage` is the
  * one capped automatic reset resume, `account_switch` is a limit switch child
  * and does not consume that cap.
+ * @property {string|null} resume_refused - Diagnostic from a refused continuation.
  * @property {string|null} auto_resume_refused - Why the recovery resume was
  * turned away (`worktree_missing` and the like). Kept on the attempt because
  * recovery deletes the target the receipt came from before the resume runs.
@@ -2973,6 +2974,11 @@ export function makeAttempt(fields) {
       fields.auto_resume_kind === 'provider_outage' ||
       fields.auto_resume_kind === 'account_switch'
         ? fields.auto_resume_kind
+        : null,
+    resume_refused:
+      typeof fields.resume_refused === 'string' &&
+      fields.resume_refused.length > 0
+        ? fields.resume_refused
         : null,
     auto_resume_refused:
       typeof fields.auto_resume_refused === 'string' &&

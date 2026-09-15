@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { runBdJsonProjected } from '../bd.js';
 import { registerWorkspace } from '../registry-watcher.js';
 import {
+  __registerWorkerAttachmentForTest,
+  __resetWorkerAttachmentsForTest
+} from '../worker/attach.js';
+import {
   __resetForeignBlockerCachesForTest,
   cachedIssuePrefixFor,
   prewarmIssuePrefix
@@ -21,7 +25,8 @@ import {
   __setWorkspaceSnapshotCoordinatorFactoryForTest,
   requestWorkspaceSnapshot
 } from '../workspace-snapshot-runtime.js';
-import { decorateQueue } from './worker-handlers.js';
+import { setConnWorkspace } from './context.js';
+import { decorateQueue, handleWorkerAttemptResume } from './worker-handlers.js';
 
 vi.mock('../bd.js', async (importOriginal) => {
   /** @type {any} */
@@ -254,12 +259,51 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetWorkerAttachmentsForTest();
   __resetScopeCacheForTest();
   __resetWorkspaceSnapshotRuntimeForTest();
   __resetForeignBlockerCachesForTest();
   process.env.HOME = original_home;
   process.env.XDG_STATE_HOME = original_state_home;
   vi.restoreAllMocks();
+});
+
+describe('worker attempt route refusal', () => {
+  test('returns the route change without creating a fanout snapshot', async () => {
+    const socket = /** @type {any} */ ({ send: vi.fn() });
+    const route_change = {
+      prior_lane: 'quick_fix',
+      current_route: 'spec_backed'
+    };
+    const resume = vi.fn(async () => ({
+      ok: false,
+      reason: 'route_changed',
+      route_change
+    }));
+    setConnWorkspace(socket, { root_dir: WS, db_path: '/tmp/db' });
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({ scheduler: { resume } })
+    );
+    const store = getWorkerRuntime().queueStore;
+    const revision = store.snapshot(WS).revision;
+    const snapshot = vi.spyOn(store, 'snapshot');
+
+    await handleWorkerAttemptResume(socket, {
+      id: 'resume-route',
+      type: 'worker-attempt-resume',
+      payload: { attempt_id: 'route-prior', expected_revision: revision }
+    });
+
+    expect(JSON.parse(socket.send.mock.calls[0][0]).payload).toMatchObject({
+      resumed: false,
+      reason: 'route_changed',
+      route_change
+    });
+    expect(resume).toHaveBeenCalledOnce();
+    expect(socket.send).toHaveBeenCalledOnce();
+    expect(snapshot).toHaveBeenCalledOnce();
+  });
 });
 
 describe('decorateQueue bead_dependents (UI-8x90 §6.2)', () => {

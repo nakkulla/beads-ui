@@ -76,6 +76,7 @@
     "app/utils/spec-after-blocker.js",
     "app/utils/token-usage.js",
     "app/utils/failure-sentences.js",
+    "app/utils/quickfix-lane.js",
     "app/utils/quickfix-resume-kind.js",
     "app/utils/transcript-lines.js",
     "app/utils/execution-defaults.js",

@@ -5400,7 +5400,7 @@ export async function handleWorkerAttemptResume(ws, req) {
     );
     return;
   }
-  /** @type {{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }} */
+  /** @type {{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, route_change?: { prior_lane: string, current_route: string|null }, fallback?: string|null }} */
   let result = { ok: false, reason: 'no_attachment' };
   try {
     result = await resumeWorkerAttempt(key, p.attempt_id, {
@@ -5422,6 +5422,7 @@ export async function handleWorkerAttemptResume(ws, req) {
         new_attempt_id: result.attempt_id || null,
         reason: result.ok ? null : result.reason || null,
         continuation_mismatch: result.continuation_mismatch || null,
+        route_change: result.route_change || null,
         fallback: result.fallback || null
       })
     )

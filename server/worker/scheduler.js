@@ -50,6 +50,7 @@ import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
+import { laneMismatchOf, laneOfRoute } from '../../app/utils/quickfix-lane.js';
 import { resumeKindOf } from '../../app/utils/quickfix-resume-kind.js';
 import { createTranscriptReducer } from '../../app/utils/transcript-lines.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
@@ -8527,7 +8528,7 @@ export function createScheduler(deps) {
         refuseDispatch(workspace, bead_id, snap.base_unresolved);
         return;
       }
-      const quickfix_lane = snap.route === 'quick_fix';
+      const quickfix_lane = laneOfRoute(snap.route) === 'quick_fix';
       const bench_run =
         typeof snap.bench_run === 'string' && snap.bench_run.length > 0
           ? snap.bench_run
@@ -10194,7 +10195,7 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
    * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
-   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>}
+   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, route_change?: { prior_lane: string, current_route: string|null }, fallback?: string|null }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
     const q = deps.store.snapshot(workspace);
@@ -10228,42 +10229,6 @@ export function createScheduler(deps) {
     }
     const bead_id = prior.bead_id;
     const repo = typeof prior.repo === 'string' ? prior.repo : '';
-    const base_moved_resume =
-      prior.status === 'waiting' &&
-      prior.cause === 'base_moved' &&
-      prior.quickfix_lane === true &&
-      prior.quickfix_landing?.reason === 'base_moved';
-    if (base_moved_resume) {
-      const candidate_sha = prior.quickfix_landing?.head_sha;
-      const base_sha = prior.cause_detail?.base_sha;
-      if (
-        typeof prior.session_id !== 'string' ||
-        prior.session_id.length === 0 ||
-        typeof candidate_sha !== 'string' ||
-        typeof base_sha !== 'string' ||
-        continuation.continuation === 'fresh_current' ||
-        continuation.exec_override !== undefined ||
-        !transcriptPresent(prior.runner, prior.session_id, prior)
-      ) {
-        return { ok: false, reason: 'prior_session_unavailable' };
-      }
-      const preserved = await proveBaseMovedWait(
-        workspace,
-        attempt_id,
-        bead_id,
-        /** @type {RunnerVerdict} */ ({
-          success: true,
-          terminal_result: {
-            kind: 'base_moved',
-            candidate_sha,
-            base_sha
-          }
-        })
-      );
-      if (preserved === null) {
-        return { ok: false, reason: 'preserved_candidate_invalid' };
-      }
-    }
     // Which resume a failed quick_fix landing gets is decided by the FAILURE
     // REASON, never by the settlement cursor (UI-8h1x §3.2). The same cursor
     // carries opposite-natured failures — `base_containment` holds both
@@ -10343,6 +10308,46 @@ export function createScheduler(deps) {
     } catch {
       recordSkipReason(workspace, bead_id, 'bd_snapshot_failed');
       return { ok: false, reason: 'bd_snapshot_failed' };
+    }
+    const lane_mismatch = refuseLaneMismatch(workspace, prior, snap);
+    if (lane_mismatch) {
+      return lane_mismatch;
+    }
+    const base_moved_resume =
+      prior.status === 'waiting' &&
+      prior.cause === 'base_moved' &&
+      prior.quickfix_lane === true &&
+      prior.quickfix_landing?.reason === 'base_moved';
+    if (base_moved_resume) {
+      const candidate_sha = prior.quickfix_landing?.head_sha;
+      const base_sha = prior.cause_detail?.base_sha;
+      if (
+        typeof prior.session_id !== 'string' ||
+        prior.session_id.length === 0 ||
+        typeof candidate_sha !== 'string' ||
+        typeof base_sha !== 'string' ||
+        continuation.continuation === 'fresh_current' ||
+        continuation.exec_override !== undefined ||
+        !transcriptPresent(prior.runner, prior.session_id, prior)
+      ) {
+        return { ok: false, reason: 'prior_session_unavailable' };
+      }
+      const preserved = await proveBaseMovedWait(
+        workspace,
+        attempt_id,
+        bead_id,
+        /** @type {RunnerVerdict} */ ({
+          success: true,
+          terminal_result: {
+            kind: 'base_moved',
+            candidate_sha,
+            base_sha
+          }
+        })
+      );
+      if (preserved === null) {
+        return { ok: false, reason: 'preserved_candidate_invalid' };
+      }
     }
     const adm = await checkAdmission(
       snap,
@@ -11058,6 +11063,17 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'bead_running' };
       }
     }
+    /** @type {BeadSnapshot} */
+    let snap;
+    try {
+      snap = await deps.bd.snapshotBead(bead_id);
+    } catch {
+      return { ok: false, reason: 'bd_snapshot_failed' };
+    }
+    const lane_mismatch = refuseLaneMismatch(workspace, source, snap);
+    if (lane_mismatch) {
+      return lane_mismatch;
+    }
     const repo = typeof source.repo === 'string' ? source.repo : '';
     const wt_present =
       typeof deps.worktree.exists === 'function'
@@ -11076,6 +11092,7 @@ export function createScheduler(deps) {
         conflictPrompt(bead_id, target_base, new_attempt_id),
       conflict_resolution: true,
       resolution_wait,
+      bead_snapshot: snap,
       continuation: continuation.continuation,
       decision_token: continuation.decision_token
     });
@@ -11180,6 +11197,13 @@ export function createScheduler(deps) {
     } catch {
       return { ok: false, reason: 'bd_snapshot_failed' };
     }
+    const prior_attempt = lastExternalConflictAttemptOf(workspace, bead_id);
+    if (prior_attempt) {
+      const lane_mismatch = refuseLaneMismatch(workspace, prior_attempt, snap);
+      if (lane_mismatch) {
+        return lane_mismatch;
+      }
+    }
     const repo = snap.repo;
     const wt_present =
       typeof deps.worktree.exists === 'function'
@@ -11196,7 +11220,6 @@ export function createScheduler(deps) {
       typeof target_base === 'string' && target_base.length > 0
         ? target_base
         : 'main';
-    const prior_attempt = lastExternalConflictAttemptOf(workspace, bead_id);
     // The first observed external conflict has no durable source session and
     // remains a fresh dispatch. A later conflict is attempt-derived and must
     // cross the same current-resolution / mismatch boundary as every other
@@ -11208,6 +11231,7 @@ export function createScheduler(deps) {
         conflict_resolution: true,
         external_conflict: true,
         resolution_wait,
+        bead_snapshot: snap,
         resume:
           typeof prior_attempt.session_id === 'string' &&
           prior_attempt.session_id.length > 0,
@@ -11549,6 +11573,10 @@ export function createScheduler(deps) {
       } catch {
         return { ok: false, reason: 'bd_snapshot_failed' };
       }
+    }
+    const lane_mismatch = refuseLaneMismatch(workspace, prior, bead_snapshot);
+    if (lane_mismatch) {
+      return lane_mismatch;
     }
     const base_resolved =
       provider_auto_resume || prior_attempt_choice
@@ -11938,6 +11966,30 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Record only the diagnostic, once per distinct route change.
+   *
+   * @param {string} workspace
+   * @param {any} prior
+   * @param {BeadSnapshot} bead_snapshot
+   */
+  function refuseLaneMismatch(workspace, prior, bead_snapshot) {
+    const mismatch = laneMismatchOf(prior, bead_snapshot);
+    if (mismatch) {
+      const { prior_lane, current_route } = mismatch.route_change;
+      const resume_refused = `route_changed:${prior_lane}→${current_route}`;
+      const current =
+        deps.store.snapshot(workspace).attempts?.[prior.attempt_id];
+      if (current?.resume_refused !== resume_refused) {
+        deps.store.updateAttempt(workspace, {
+          attempt_id: prior.attempt_id,
+          patch: { resume_refused }
+        });
+      }
+    }
+    return mismatch;
+  }
+
+  /**
    * Resolve the ordered fallback for a disappeared resume worktree.
    *
    * @param {string} workspace
@@ -12015,7 +12067,7 @@ export function createScheduler(deps) {
         : base_prompt;
     const target_base =
       typeof prior.target_base === 'string' ? prior.target_base : 'main';
-    const quickfix_lane = prior.quickfix_lane === true;
+    const quickfix_lane = laneOfRoute(bead_snapshot.route) === 'quick_fix';
     const serial_launch = acquireLaneLaunch(workspace, {
       bead_id,
       lineage_id: serialLineageId(prior) || bead_id,
