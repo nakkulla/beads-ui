@@ -12,7 +12,10 @@ import {
   matchEnvPattern,
   scriptSummary
 } from './failure-class.js';
-import { workRecoveryClassification } from './work-recovery-policy.js';
+import {
+  recoveryResultLineReasons,
+  workRecoveryClassification
+} from './work-recovery-policy.js';
 
 /**
  * @param {Object} [overrides]
@@ -23,7 +26,10 @@ function input(overrides) {
 }
 
 describe('work recovery classification', () => {
-  const recovery = { classify: workRecoveryClassification };
+  const recovery = {
+    classify: workRecoveryClassification,
+    resultLineReasons: recoveryResultLineReasons
+  };
 
   test.each([
     ['session_ended_unresolved', 'finished_without_result_line'],
@@ -97,6 +103,23 @@ describe('work recovery classification', () => {
           token === 'invented' ? 'unknown_error' : 'session_recovery_wait',
         disposition: token === 'reconcile' ? 'reconcile' : 'wait',
         reason: token === 'invented' ? 'unclassified' : token
+      }
+    });
+  });
+
+  test('ignores a declared token when the reason list is not injected', () => {
+    const classified = classifyFailure({
+      cause: 'session_recovery_wait',
+      recovery: { classify: workRecoveryClassification },
+      cause_detail: { reason_token: 'provider' }
+    });
+
+    expect(classified).toMatchObject({
+      tier: 'waiting',
+      recovery: {
+        classification: 'unknown_error',
+        disposition: 'wait',
+        reason: 'unclassified'
       }
     });
   });

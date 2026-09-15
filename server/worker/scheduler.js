@@ -573,7 +573,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
 
 /**
  * @typedef {Object} SchedulerDeps
- * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryReady'|'workRecoveryClassification'|'workRecoveryReadinessEnv'>} [workRecoveryPolicy]
+ * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryReady'|'workRecoveryClassification'|'workRecoveryReadinessEnv'|'recoveryResultLineReasons'>} [workRecoveryPolicy]
  * @property {any} store - Queue store (queue-store.js).
  * @property {ReturnType<typeof import('./exec-preset-coordinator.js').createExecPresetCoordinator>} execPresetCoordinator
  * The sole authority for workspace preset resolution. It snapshots the selected
@@ -5485,7 +5485,8 @@ export function createScheduler(deps) {
       ...(work_recovery_policy.workRecoveryReady()
         ? {
             recovery: {
-              classify: work_recovery_policy.workRecoveryClassification
+              classify: work_recovery_policy.workRecoveryClassification,
+              resultLineReasons: work_recovery_policy.recoveryResultLineReasons
             }
           }
         : {}),
@@ -8651,7 +8652,10 @@ export function createScheduler(deps) {
         cause,
         cause_detail,
         verdict: { success: false, summary: cause_detail?.summary ?? null },
-        recovery: { classify: work_recovery_policy.workRecoveryClassification }
+        recovery: {
+          classify: work_recovery_policy.workRecoveryClassification,
+          resultLineReasons: work_recovery_policy.recoveryResultLineReasons
+        }
       });
       if (
         classification.tier !== 'waiting' ||

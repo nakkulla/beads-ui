@@ -23,7 +23,6 @@
 // direction `completion-intent.js` already takes: the map is pure data shared
 // by both runtimes, so reading it here keeps this module pure.
 import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
-import { recoveryResultLineReasons } from './work-recovery-policy.js';
 
 /**
  * @typedef {'parked' | 'waiting' | 'individual' | 'env' | 'systemic'} FailureTier
@@ -44,7 +43,7 @@ import { recoveryResultLineReasons } from './work-recovery-policy.js';
  * @property {string | null} [bead_status]
  * @property {string | null} [pr_url]
  * @property {string | null} [awaiting_user]
- * @property {{ classify: (key: string) => { disposition: string, reason: string|null, next?: string|null }|null }} [recovery]
+ * @property {{ classify: (key: string) => { disposition: string, reason: string|null, next?: string|null }|null, resultLineReasons?: () => ReadonlyArray<string> }} [recovery]
  * @property {'waiting'} [tier_hint] - The caller's PROOF that it already
  * observed the four prerequisite-wait conditions (waiting-tier spec §4.2).
  * Without it a `prerequisite_unmet` cause classifies as the fail-quiet default,
@@ -517,10 +516,14 @@ export function classifyFailure(input) {
             input.cause_detail
           );
         const token = detail?.reason_token;
-        if (
-          typeof token === 'string' &&
-          recoveryResultLineReasons().includes(token)
-        ) {
+        // The reason vocabulary is INJECTED, never imported: this module is
+        // reachable from the browser bundle through `lane-model.js`, and the
+        // policy module that owns the list reads the pinned contract off disk.
+        // An absent injection leaves the legacy classification untouched.
+        const line_reasons = input.recovery.resultLineReasons
+          ? input.recovery.resultLineReasons()
+          : [];
+        if (typeof token === 'string' && line_reasons.includes(token)) {
           recovery = {
             classification: 'session_recovery_wait',
             disposition: token === 'reconcile' ? 'reconcile' : 'wait',
