@@ -381,8 +381,7 @@ export function bootstrap(root_element) {
       }
     });
 
-    // ADR 채널(UI-8uz7 §6)의 push. 모니터 파이프라인과 같이 서버 전역이고 부분
-    // 패치가 없어서 스냅샷을 통째로 교체한다.
+    // ADR 채널(UI-8uz7 §6)의 push. 서버 전역이며 스냅샷을 통째로 교체한다.
     client.on('adr-snapshot', (payload) => {
       const p = /** @type {any} */ (payload);
       if (!p || !Array.isArray(p.workspaces)) {
@@ -405,9 +404,21 @@ export function bootstrap(root_element) {
         // the ones with an empty pipeline, so it is kept ALONGSIDE the heavy
         // array rather than derived from it. A server that omits it leaves the
         // store's empty default in place.
-        monitor_pipeline_store.set(p.workspaces, p.workspaces_state);
+        monitor_pipeline_store.set(p.workspaces, p.workspaces_state, p.seq);
       } catch {
         // ignore
+      }
+    });
+
+    client.on('monitor-pipeline-patch', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (!p) {
+        return;
+      }
+      if (!monitor_pipeline_store.applyPatch(p)) {
+        log('monitor-pipeline patch sequence mismatch; resubscribing');
+        clearMonitorPipelineChannel();
+        ensureMonitorPipelineChannel(true);
       }
     });
 
@@ -1563,9 +1574,30 @@ export function bootstrap(root_element) {
         return;
       }
       try {
-        worker_queue_store.set(p.queue);
+        worker_queue_store.setSnapshot(p);
       } catch {
         // ignore
+      }
+    });
+
+    client.on('worker-queue-patch', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (!p) {
+        return;
+      }
+      const current_path = store.getState().workspace.current?.path;
+      if (
+        typeof current_path === 'string' &&
+        current_path.length > 0 &&
+        p.root_dir !== current_path
+      ) {
+        log('dropping worker-queue patch for %s', String(p.root_dir));
+        return;
+      }
+      if (!worker_queue_store.applyPatch(p)) {
+        log('worker-queue patch sequence mismatch; resubscribing');
+        clearWorkerQueueChannel();
+        ensureWorkerQueueChannel(true);
       }
     });
 

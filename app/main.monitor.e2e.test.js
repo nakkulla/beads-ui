@@ -841,6 +841,141 @@ describe('monitor 완료 기간 select (UI-qrfo §7)', () => {
   });
 });
 
+describe('monitor keyed patch lifecycle', () => {
+  async function mountMonitor() {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    bootstrap(/** @type {HTMLElement} */ (document.getElementById('app')));
+    await flush();
+    const store = /** @type {any} */ (
+      await import('./data/monitor-pipeline-store.js')
+    ).__currentMonitorPipelineStore();
+    return { client, store };
+  }
+
+  /** @param {number} seq */
+  function snapshot(seq) {
+    return {
+      seq,
+      workspaces: [
+        {
+          root_dir: '/tmp/ws-a',
+          name: 'ws-a',
+          queue: [{ bead_id: 'UI-wait', added_at: NOW }],
+          pr_wait: [],
+          done: [],
+          attempts: {},
+          bead_titles: {},
+          pr_observations: {}
+        }
+      ],
+      workspaces_state: [{ root_dir: '/tmp/ws-a', revision: 1 }]
+    };
+  }
+
+  test('renders a consecutive patch from an explicit snapshot sequence', async () => {
+    const { client, store } = await mountMonitor();
+    client._trigger('monitor-pipeline-snapshot', snapshot(8));
+    await flush();
+    client._clearSent();
+
+    client._trigger('monitor-pipeline-patch', {
+      seq: 9,
+      set: { 'ws//tmp/ws-a/queue': [] },
+      unset: []
+    });
+    await flush();
+
+    expect(store.get()[0].queue).toEqual([]);
+    expect(
+      document.querySelector(
+        '#monitor-queue .worker-mini[data-bead-id="UI-wait"]'
+      )
+    ).toBeNull();
+    expect(sentTypes(client)).not.toContain('subscribe-monitor-pipeline');
+  });
+
+  test.each([1, 3])(
+    'resubscribes once after mismatched seq %i and accepts recovery',
+    async (seq) => {
+      const { client, store } = await mountMonitor();
+      client._trigger('monitor-pipeline-snapshot', snapshot(1));
+      await flush();
+      client._clearSent();
+
+      client._trigger('monitor-pipeline-patch', { seq, set: {}, unset: [] });
+      const cleared = store.get();
+      const cleared_state = store.getWorkspacesState();
+      client._trigger('monitor-pipeline-snapshot', snapshot(1));
+      client._trigger('monitor-pipeline-patch', {
+        seq: 2,
+        set: { 'ws//tmp/ws-a/queue': [] },
+        unset: []
+      });
+      await flush();
+
+      expect(cleared).toBeNull();
+      expect(cleared_state).toEqual([]);
+      expect(
+        sentTypes(client).filter((type) => type.endsWith('monitor-pipeline'))
+      ).toEqual(['unsubscribe-monitor-pipeline', 'subscribe-monitor-pipeline']);
+      expect(store.get()[0].queue).toEqual([]);
+    }
+  );
+
+  test('preserves the monitor channel, map and seq across a workspace switch', async () => {
+    const { client, store } = await mountMonitor();
+    client._trigger('monitor-pipeline-snapshot', snapshot(8));
+    await flush();
+    const previous = store.get();
+    const previous_state = store.getWorkspacesState();
+    client._clearSent();
+
+    client._trigger('workspace-changed', {
+      root_dir: '/tmp/ws-b',
+      db_path: '/tmp/ws-b/.beads/ui.db'
+    });
+    await flush();
+    const after_switch = store.get();
+    const state_after_switch = store.getWorkspacesState();
+    client._trigger('monitor-pipeline-patch', {
+      seq: 9,
+      set: { 'ws//tmp/ws-a/queue': [] },
+      unset: []
+    });
+    await flush();
+
+    expect(after_switch).toBe(previous);
+    expect(state_after_switch).toBe(previous_state);
+    expect(store.get()[0]).toEqual({ ...previous[0], queue: [] });
+    expect(store.getWorkspacesState()).toBe(previous_state);
+    expect(
+      sentTypes(client).filter((type) => type.endsWith('monitor-pipeline'))
+    ).toEqual([]);
+  });
+
+  test('restarts sequencing from the snapshot after reconnect', async () => {
+    const { client, store } = await mountMonitor();
+    client._trigger('monitor-pipeline-snapshot', snapshot(8));
+
+    client._emitConn('reconnecting');
+    client._emitConn('open');
+    await flush();
+    client._trigger('monitor-pipeline-snapshot', snapshot(1));
+    client._clearSent();
+    client._trigger('monitor-pipeline-patch', {
+      seq: 2,
+      set: { 'ws//tmp/ws-a/queue': [] },
+      unset: []
+    });
+    await flush();
+
+    expect(store.get()[0].queue).toEqual([]);
+    expect(sentTypes(client)).not.toContain('subscribe-monitor-pipeline');
+  });
+});
+
 describe('subscription lifecycle after a reconnect', () => {
   // 재접속하면 이전 socket의 unsub 클로저는 죽는다. 그 map을 그대로 두면
   // `ensure*Subscriptions`가 "이미 구독됨"으로 읽고 건너뛰어, 활성 탭이 데이터
