@@ -174,17 +174,7 @@ export async function handleSetSessionDefaults(ws, req) {
     return;
   }
   const next = mergeSessionDefaults(before.raw, validated.patch);
-  const written = await writeKv(ws, target, SESSION_DEFAULTS_KV_KEY, next);
-  if (!written.ok) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'kv_write_failed', written.error || 'bd kv set failed')
-      )
-    );
-    return;
-  }
-
-  const after = await readSessionDefaults(ws, target);
+  const planned = normalizeSessionDefaults(next);
   try {
     const runtime = getWorkerRuntime();
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -194,8 +184,7 @@ export async function handleSetSessionDefaults(ws, req) {
         !runtime.execPresetCoordinator.changesAppliedExecPreset(
           queue.applied_exec_preset,
           before.values,
-          // An unreadable readback cannot rule out the requested value change.
-          after.ok ? after.values : normalizeSessionDefaults(next).values
+          planned.values
         )
       ) {
         break;
@@ -207,12 +196,16 @@ export async function handleSetSessionDefaults(ws, req) {
         break;
       }
       if (!cleared.conflict || attempt === 1) {
-        log(
-          'session defaults preset identity clear failed for %s (conflict=%s)',
-          target.root,
-          cleared.conflict
+        ws.send(
+          JSON.stringify(
+            makeError(
+              req,
+              'queue_write_failed',
+              'Failed to clear preset identity'
+            )
+          )
         );
-        break;
+        return;
       }
     }
   } catch (err) {
@@ -221,8 +214,25 @@ export async function handleSetSessionDefaults(ws, req) {
       target.root,
       err
     );
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'queue_write_failed', 'Failed to clear preset identity')
+      )
+    );
+    return;
   }
 
+  const written = await writeKv(ws, target, SESSION_DEFAULTS_KV_KEY, next);
+  if (!written.ok) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'kv_write_failed', written.error || 'bd kv set failed')
+      )
+    );
+    return;
+  }
+
+  const after = await readSessionDefaults(ws, target);
   if (!after.ok) {
     ws.send(
       JSON.stringify(

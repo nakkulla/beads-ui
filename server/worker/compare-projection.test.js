@@ -1,4 +1,8 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
+import { createExecPresetStore } from '../exec-preset-store.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import {
   buildCompareModel,
@@ -16,7 +20,8 @@ import {
   presetMatch,
   projectBenchRun
 } from './compare-projection.js';
-import { TERMINAL_ATTEMPT_STATUSES } from './queue-store.js';
+import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
+import { TERMINAL_ATTEMPT_STATUSES, createQueueStore } from './queue-store.js';
 import { resolveCatalog } from './runner-catalog.js';
 import * as worker_runtime from './runtime.js';
 
@@ -2091,6 +2096,68 @@ describe('worker/compare-projection collection', () => {
       intent: 'intent-url'
     });
   });
+
+  test.each(['read', 'parse', 'missing'])(
+    'projects actual preset-store %s results through the coordinator',
+    (failure) => {
+      const tmp_dir = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'bdui-compare-store-')
+      );
+      const file_path = path.join(tmp_dir, 'exec-presets.json');
+      if (failure === 'read') {
+        fs.mkdirSync(file_path);
+      } else if (failure === 'parse') {
+        fs.writeFileSync(file_path, '{broken');
+      }
+      const coordinator = createExecPresetCoordinator({
+        presetStore: createExecPresetStore({ filePath: file_path }),
+        queueStore: createQueueStore()
+      });
+      const runtime_spy = vi
+        .spyOn(worker_runtime, 'getWorkerRuntime')
+        .mockReturnValue(
+          /** @type {any} */ ({ execPresetCoordinator: coordinator })
+        );
+      try {
+        const model = compareSnapshot(
+          {},
+          {
+            workspaces: [
+              makeWorkspace({
+                attempts: [
+                  makeAttempt({
+                    exec_preset: {
+                      id: 'recorded',
+                      name: 'Recorded',
+                      revision: 1,
+                      deviated_keys: []
+                    }
+                  })
+                ]
+              })
+            ],
+            catalog: null,
+            listRuns: () => []
+          }
+        );
+
+        if (failure === 'missing') {
+          expect(model.warnings).toEqual([]);
+          expect(model.rows[0].preset).toMatchObject({
+            id: 'recorded',
+            name: 'Recorded(삭제됨)'
+          });
+        } else {
+          expect(model.warnings).toEqual(['preset_store_unreadable']);
+          expect(model.rows[0].preset).toBeNull();
+          expect(model.rows[0].preset_candidates).toEqual([]);
+        }
+      } finally {
+        runtime_spy.mockRestore();
+        fs.rmSync(tmp_dir, { recursive: true, force: true });
+      }
+    }
+  );
 
   test('reports preset-store read failure in snapshot warnings', () => {
     const runtime_spy = vi

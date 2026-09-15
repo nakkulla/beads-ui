@@ -16,6 +16,69 @@ afterEach(() => {
 });
 
 describe('exec-preset-store defaults', () => {
+  test.each(['EACCES', 'EIO'])(
+    'caches the read failure signal for %s',
+    (code) => {
+      const readFileSync = vi.fn(() => {
+        throw Object.assign(new Error('read failed'), { code });
+      });
+      const store = createExecPresetStore({
+        filePath: path.join(tmp_dir, 'exec-presets.json'),
+        fs: { ...fs, readFileSync }
+      });
+
+      const first = store.snapshot();
+      const second = store.snapshot();
+
+      expect(first).toEqual({ revision: 0, presets: [], read_failed: true });
+      expect(second).toEqual(first);
+      expect(readFileSync).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test('caches malformed JSON as an observation without rewriting its bytes', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(file_path, '{broken');
+    const store = createExecPresetStore({ filePath: file_path });
+
+    const snapshot = store.snapshot();
+    expect(fs.readFileSync(file_path, 'utf8')).toBe('{broken');
+    fs.writeFileSync(file_path, JSON.stringify({ revision: 0, presets: [] }));
+
+    expect(snapshot).toEqual({ revision: 0, presets: [], read_failed: true });
+    expect(store.snapshot()).toEqual(snapshot);
+  });
+
+  test('preserves writes after a read failure without persisting its signal', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(file_path, '{broken');
+    const store = createExecPresetStore({ filePath: file_path });
+    store.snapshot();
+
+    const result = store.create({
+      expected_revision: 0,
+      name: 'New',
+      settings: {}
+    });
+
+    expect(result.applied).toBe(true);
+    expect(JSON.parse(fs.readFileSync(file_path, 'utf8'))).toEqual({
+      revision: 1,
+      presets: result.presets
+    });
+  });
+
+  test('drops the read failure signal once a write replaces the unreadable bytes', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(file_path, '{broken');
+    const store = createExecPresetStore({ filePath: file_path });
+    expect(store.snapshot().read_failed).toBe(true);
+
+    store.create({ expected_revision: 0, name: 'New', settings: {} });
+
+    expect(store.snapshot().read_failed).toBeUndefined();
+  });
+
   test('starts with an empty revision zero snapshot when the file is absent', () => {
     const store = createExecPresetStore({
       filePath: path.join(tmp_dir, 'exec-presets.json')

@@ -150,6 +150,10 @@ describe('session defaults preset identity', () => {
         });
         return clear(workspace, input);
       });
+    kvSetJsonAtRoot.mockImplementation(async () => {
+      expect(store.snapshot(WS_OTHER).applied_exec_preset).toBeNull();
+      return { ok: true };
+    });
 
     await handleSetSessionDefaults(ws, req);
 
@@ -165,7 +169,7 @@ describe('session defaults preset identity', () => {
   });
 
   test.each(['conflict', 'exception'])(
-    'preserves the successful settings response when the retry fails with %s',
+    'refuses the settings write when the retry fails with %s',
     async (failure) => {
       const { ws, sent, store, req, applied_exec_preset } =
         changedDefaultsFixture();
@@ -188,21 +192,58 @@ describe('session defaults preset identity', () => {
       await handleSetSessionDefaults(ws, req);
 
       expect(clearAppliedExecPreset).toHaveBeenCalledTimes(2);
-      expect(kvSetJsonAtRoot).toHaveBeenCalledExactlyOnceWith(
-        WS_OTHER,
-        'workflow_session_defaults',
-        { schema: 1, impl_runtime: 'claude' }
-      );
+      expect(kvSetJsonAtRoot).not.toHaveBeenCalled();
+      expect(kvGetJsonAtRoot).toHaveBeenCalledTimes(1);
       expect(sent).toHaveLength(1);
       expect(sent[0]).toMatchObject({
-        ok: true,
-        payload: { values: { impl_runtime: 'claude' } }
+        ok: false,
+        error: { code: 'queue_write_failed' }
       });
       expect(store.snapshot(WS_OTHER).applied_exec_preset).toEqual(
         applied_exec_preset
       );
     }
   );
+
+  test.each(['exception', 'rejection'])(
+    'refuses the settings write when the first clear fails with %s',
+    async (failure) => {
+      const { ws, sent, store, req } = changedDefaultsFixture();
+      const clearAppliedExecPreset = vi
+        .spyOn(store, 'clearAppliedExecPreset')
+        .mockImplementationOnce(() => {
+          if (failure === 'exception') {
+            throw new Error('queue unavailable');
+          }
+          return {
+            ok: false,
+            conflict: false,
+            queue: store.snapshot(WS_OTHER)
+          };
+        });
+
+      await handleSetSessionDefaults(ws, req);
+
+      expect(clearAppliedExecPreset).toHaveBeenCalledTimes(1);
+      expect(kvSetJsonAtRoot).not.toHaveBeenCalled();
+      expect(sent.at(-1)).toMatchObject({
+        ok: false,
+        error: { code: 'queue_write_failed' }
+      });
+    }
+  );
+
+  test('keeps the queue revision when identity is already null', async () => {
+    const { ws, store, req } = changedDefaultsFixture();
+    store.clearAppliedExecPreset(WS_OTHER, { expected_revision: 1 });
+    const clearAppliedExecPreset = vi.spyOn(store, 'clearAppliedExecPreset');
+
+    await handleSetSessionDefaults(ws, req);
+
+    expect(clearAppliedExecPreset).not.toHaveBeenCalled();
+    expect(store.snapshot(WS_OTHER).revision).toBe(2);
+    expect(kvSetJsonAtRoot).toHaveBeenCalledTimes(1);
+  });
 
   test('skips the retry when another writer has already cleared identity', async () => {
     const { ws, sent, store, req } = changedDefaultsFixture();
@@ -229,8 +270,8 @@ describe('session defaults preset identity', () => {
     ['missing', { impl_effort: 'high' }, true],
     ['unreadable', { impl_effort: 'high' }, true],
     ['missing-same', { impl_runtime: 'codex' }, false],
-    ['write-failed', { impl_runtime: 'claude' }, false],
-    ['readback-same', { impl_runtime: 'claude' }, false],
+    ['write-failed', { impl_runtime: 'claude' }, true],
+    ['readback-same', { impl_runtime: 'claude' }, true],
     ['readback-failed', { impl_runtime: 'claude' }, true]
   ])(
     'updates identity only for changed owned keys: %s',

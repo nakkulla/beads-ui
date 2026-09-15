@@ -8679,28 +8679,13 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Clear provenance before a non-atomic profile write without spending an empty revision.
+     * Consume a revision before every non-atomic profile write, even with null provenance.
      *
      * @param {string} workspace
      * @param {{ expected_revision: number }} input
      * @returns {QueueOpResult}
      */
     clearAppliedExecPreset(workspace, input) {
-      const current = ensureLoaded(workspace);
-      if (current.revision !== input.expected_revision) {
-        return {
-          ok: false,
-          conflict: true,
-          queue: exportQueue(workspace, current)
-        };
-      }
-      if (current.applied_exec_preset === null) {
-        return {
-          ok: true,
-          conflict: false,
-          queue: exportQueue(workspace, current)
-        };
-      }
       return applyMutation(workspace, input.expected_revision, (next) => {
         next.applied_exec_preset = null;
         return true;

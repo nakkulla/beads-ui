@@ -2059,16 +2059,19 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
     expect(createQueueStore().snapshot(WS).applied_exec_preset).toBeNull();
   });
 
-  test('keeps the revision when preset identity is already null', () => {
+  test('consumes a durable revision when preset identity is already null', () => {
     const store = createQueueStore();
 
     const result = store.clearAppliedExecPreset(WS, { expected_revision: 0 });
 
     expect(result).toMatchObject({
       ok: true,
-      queue: { revision: 0, applied_exec_preset: null }
+      queue: { revision: 1, applied_exec_preset: null }
     });
-    expect(fs.existsSync(queueFilePath(WS))).toBe(false);
+    expect(createQueueStore().snapshot(WS)).toMatchObject({
+      revision: 1,
+      applied_exec_preset: null
+    });
   });
 
   test('checks CAS even when preset identity is already null', () => {

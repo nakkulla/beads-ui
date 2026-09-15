@@ -134,6 +134,7 @@ export function createExecPresetCoordinator(options) {
     const state = presetStore.snapshot();
     return {
       revision: state.revision,
+      ...(state.read_failed ? { read_failed: true } : {}),
       presets: state.presets
         .filter((preset) => !isLegacyPreset(preset))
         .map((preset) => {

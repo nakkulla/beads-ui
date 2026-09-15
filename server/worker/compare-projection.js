@@ -1537,10 +1537,11 @@ export function compareSnapshot(filters, seams = {}) {
     presets = seams.presets;
   } else {
     try {
-      presets = getWorkerRuntime().execPresetCoordinator.snapshot().presets;
-      if (!Array.isArray(presets)) {
+      const snapshot = getWorkerRuntime().execPresetCoordinator.snapshot();
+      if (snapshot.read_failed || !Array.isArray(snapshot.presets)) {
         throw new Error('preset_store_unreadable');
       }
+      presets = snapshot.presets;
     } catch {
       presets = [];
       warnings.push('preset_store_unreadable');

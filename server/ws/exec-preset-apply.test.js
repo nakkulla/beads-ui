@@ -251,6 +251,85 @@ describe('global preset identity recording', () => {
     }
   );
 
+  test('rejects a concurrent apply before kv when both start with null identity', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, {
+      impl_runtime: 'codex',
+      orchestration_model: 'sol'
+    });
+    const runtime = getWorkerRuntime();
+    const created = runtime.execPresetCoordinator.create({
+      expected_revision: 1,
+      name: 'Other',
+      settings: { impl_runtime: 'claude', orchestration_model: 'sonnet' }
+    });
+    const other_id = created.presets.find(
+      (preset) => preset.id !== preset_id
+    )?.id;
+    /** @type {Record<string, unknown>} */
+    let kv_values = { schema: 1 };
+    kvGetJsonInWorkspace.mockImplementation(async () => ({
+      ok: true,
+      value: kv_values
+    }));
+    kvSetJsonInWorkspace.mockImplementation(async (_ws, _key, value) => {
+      kv_values = value;
+      return { ok: true };
+    });
+
+    await Promise.all([
+      handleApplyImplPresetGlobal(ws, {
+        id: 'first',
+        type: 'apply-impl-preset-global',
+        payload: { preset_id, expected_revision: 2, expected_queue_revision: 0 }
+      }),
+      handleApplyImplPresetGlobal(ws, {
+        id: 'second',
+        type: 'apply-impl-preset-global',
+        payload: {
+          preset_id: other_id,
+          expected_revision: 2,
+          expected_queue_revision: 0
+        }
+      })
+    ]);
+
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledTimes(1);
+    expect(kv_values).toEqual({ schema: 1, impl_runtime: 'codex' });
+    expect(sent.find((reply) => reply.id === 'second').payload).toMatchObject({
+      applied: false,
+      queue_conflict: true
+    });
+    expect(runtime.queueStore.snapshot('/workspace')).toMatchObject({
+      revision: 2,
+      orchestration_model: 'sol',
+      applied_exec_preset: { id: preset_id }
+    });
+  });
+
+  test('keeps empty queue revisions when updating an unapplied preset', () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent);
+    const store = getWorkerRuntime().queueStore;
+    const clearAppliedExecPreset = vi.spyOn(store, 'clearAppliedExecPreset');
+
+    handleImplPresetUpdate(ws, {
+      id: 'update',
+      type: 'impl-preset-update',
+      payload: {
+        id: preset_id,
+        expected_revision: 1,
+        name: 'Renamed',
+        settings: {}
+      }
+    });
+
+    expect(sent.at(-1).payload.applied).toBe(true);
+    expect(clearAppliedExecPreset).not.toHaveBeenCalled();
+    expect(store.snapshot('/workspace').revision).toBe(0);
+    expect(store.snapshot('/other-repo').revision).toBe(0);
+  });
+
   test('preserves identity and kv when the first clear conflicts', async () => {
     const { ws, sent, store, applied_exec_preset, req } = appliedFixture();
     req.payload.expected_queue_revision = 0;
@@ -817,7 +896,7 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
         quick_fix_impl_model: 'sol'
       },
       queue: {
-        revision: 1,
+        revision: 2,
         orchestration_model: 'sol',
         orchestration_effort: null,
         orchestration_speed: null,
@@ -831,7 +910,7 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
     expect(fanoutWorkerQueue).toHaveBeenCalledWith(
       '/workspace',
       expect.objectContaining({
-        revision: 1,
+        revision: 2,
         orchestration_model: 'sol',
         orchestration_effort: null,
         orchestration_speed: null,
@@ -1044,7 +1123,7 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
       queue_applied: false,
       queue_conflict: true,
       values: { impl_runtime: 'codex' },
-      queue: { revision: 1, orchestration_model: 'sol' }
+      queue: { revision: 2, orchestration_model: 'sol' }
     });
     expect(kvSetJsonInWorkspace).toHaveBeenCalledTimes(1);
     expect(fanoutWorkerQueue).not.toHaveBeenCalled();
