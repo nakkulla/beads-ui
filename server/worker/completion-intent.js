@@ -22,6 +22,8 @@ import {
 import { RECEIPT_HOLD_RESOLUTION } from './receipt-check.js';
 import {
   cleanupFailureRetryClass,
+  cleanupRetryParked,
+  cleanupRetryWaitUntil,
   isCleanupResolutionFailure
 } from './resolution-ladder.js';
 
@@ -531,7 +533,7 @@ export function decideCompletionAction(input) {
   if (intent.phase === 'cleaning') {
     if (fact.state === 'cleanup_repairable') {
       if (cleanupFailureRetryClass(fact.evidence) === 'transient') {
-        const { retry_count, next_retry_at } = fact.evidence;
+        const { retry_count } = fact.evidence;
         if (Number.isInteger(retry_count) && retry_count >= 3) {
           return needsHuman(
             `retry_exhausted:${completionFailureReason(fact)}`,
@@ -539,13 +541,9 @@ export function decideCompletionAction(input) {
           );
         }
         // Legacy or malformed scheduling evidence must not wait forever.
-        if (
-          Number.isInteger(retry_count) &&
-          retry_count >= 0 &&
-          typeof next_retry_at === 'number' &&
-          Number.isFinite(next_retry_at)
-        ) {
-          return typeof input.now === 'number' && input.now >= next_retry_at
+        const until = cleanupRetryWaitUntil(fact.evidence);
+        if (until !== null) {
+          return typeof input.now === 'number' && input.now >= until
             ? { kind: 'retry_cleanup' }
             : null;
         }
@@ -650,7 +648,9 @@ export function createCompletionIntentCoordinator(deps) {
     }
     const head = Array.isArray(queue.merge_queue)
       ? queue.merge_queue.find(
-          (/** @type {any} */ entry) => entry?.resolution?.state !== 'yielded'
+          (/** @type {any} */ entry) =>
+            entry?.resolution?.state !== 'yielded' &&
+            !cleanupRetryParked(queue, entry?.bead_id, now())
         )
       : null;
     const root_bead_id =
@@ -1309,6 +1309,7 @@ export function createCompletionActionDriver(deps) {
         base_sha: current.subject.base_sha,
         evidence: {}
       });
+    const recovering = current.active_op !== null;
     if (current.active_op === null) {
       const op_id = operationIdentity(
         root_bead_id,
@@ -1350,6 +1351,34 @@ export function createCompletionActionDriver(deps) {
     }
     const cleanup_failure = deps.store.snapshot(deps.workspace)
       .cleanup_failed?.[root_bead_id];
+    const until = cleanupRetryWaitUntil(cleanup_failure);
+    // Preparation only happens after the deadline. A newer wait or exhausted
+    // budget therefore proves this recovered operation already failed.
+    if (
+      recovering &&
+      cleanupFailureRetryClass(cleanup_failure) === 'transient' &&
+      (cleanup_failure.retry_count >= 3 || (until !== null && now() < until))
+    ) {
+      const advanced = deps.store.advanceCompletionOp(deps.workspace, {
+        root_bead_id,
+        op_id: op.op_id,
+        status: 'consumed',
+        next_phase: 'cleaning',
+        clear: true
+      });
+      if (!advanced.ok) {
+        settleFailure(
+          root_bead_id,
+          'cleanup_settlement_record_failed',
+          'post_merge_cleanup',
+          failure_key,
+          cleanup_failure
+        );
+        return;
+      }
+      notify();
+      return;
+    }
     if (
       cleanupFailureRetryClass(cleanup_failure) === 'transient' &&
       Number.isInteger(cleanup_failure.retry_count) &&

@@ -6366,11 +6366,19 @@ describe('post-merge cleanup — the post-merge job step (UI-i60a §1–§3)', (
 describe('cleanup stop notification (UI-jw27 §2)', () => {
   test('announces a base containment stop with its cause and PR', async () => {
     const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+    h.store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'base_containment',
+      reason: 'base_fetch_failed',
+      retryable: true,
+      retry_count: 2
+    });
 
     await h.actions.merge(BEAD);
 
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'base_containment'
+      step: 'base_containment',
+      retry_count: 3
     });
     expect(h.human_notices).toEqual([
       expect.objectContaining({
@@ -6381,6 +6389,18 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
         repo: REPO
       })
     ]);
+  });
+
+  test('announces nothing while a base containment retry is scheduled', async () => {
+    const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.human_notices).toEqual([]);
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      retry_count: 0,
+      next_retry_at: 61_000
+    });
   });
 
   test('sends nothing when the store refuses the failure record', async () => {
@@ -6404,11 +6424,21 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
         reason: 'ref_delete_failed'
       }
     });
-
     await h.actions.merge(BEAD);
+    h.store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'branch_cleanup',
+      reason: 'local_branch_delete_failed',
+      detail: 'manager_reason=ref_delete_failed',
+      retryable: true,
+      retry_count: 2
+    });
+
+    await h.actions.retryCleanup(BEAD);
 
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'branch_cleanup'
+      step: 'branch_cleanup',
+      retry_count: 3
     });
     expect(h.human_notices).toEqual([
       expect.objectContaining({
@@ -6416,6 +6446,24 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
         reason: 'local_branch_delete_failed'
       })
     ]);
+  });
+
+  test('announces nothing while a branch cleanup retry is scheduled', async () => {
+    const h = makeActions({
+      removeByBranchResult: {
+        ok: false,
+        removed: false,
+        reason: 'ref_delete_failed'
+      }
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.human_notices).toEqual([]);
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      retry_count: 0,
+      next_retry_at: 61_000
+    });
   });
 
   test('announces a parent close stop', async () => {
@@ -6439,6 +6487,13 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
 
   test('completes the merge normally when the notifier throws', async () => {
     const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+    h.store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'base_containment',
+      reason: 'base_fetch_failed',
+      retryable: true,
+      retry_count: 2
+    });
     h.notify.needsHuman.mockImplementation(() => {
       throw new Error('notifier broken');
     });

@@ -1452,6 +1452,59 @@ describe('worker/completion-intent action driver', () => {
 });
 
 describe('worker/completion-intent lifecycle', () => {
+  test('skips a parked cleanup head and retries it when its deadline arrives', async () => {
+    let now = 999;
+    const failure = {
+      step: 'branch_cleanup',
+      reason: 'remote_branch_delete_failed',
+      retry_count: 0,
+      next_retry_at: 1000
+    };
+    const queue = {
+      auto_merge: true,
+      merge_queue: [{ bead_id: 'UI-root' }, { bead_id: 'UI-later' }],
+      completion_intents: {
+        'UI-root': intent({ phase: 'cleaning' }),
+        'UI-later': intent({
+          subject: { ...intent().subject, bead_id: 'UI-later' }
+        })
+      },
+      cleanup_failed: { 'UI-root': failure }
+    };
+    const onAction = vi.fn();
+    const coordinator = createCompletionIntentCoordinator({
+      workspace: DRIVER_WS,
+      store: { snapshot: () => queue },
+      now: () => now,
+      onAction,
+      observe: async (bead_id) =>
+        bead_id === 'UI-root'
+          ? { state: 'cleanup_repairable', evidence: failure }
+          : { state: 'green' }
+    });
+
+    await coordinator.reconcile();
+    now = 1000;
+    await coordinator.reconcile();
+
+    expect(onAction.mock.calls).toEqual([
+      [
+        'UI-later',
+        { kind: 'merge_subject' },
+        queue.completion_intents['UI-later']
+      ],
+      [
+        'UI-root',
+        { kind: 'retry_cleanup' },
+        queue.completion_intents['UI-root']
+      ]
+    ]);
+    expect(queue.merge_queue.map((entry) => entry.bead_id)).toEqual([
+      'UI-root',
+      'UI-later'
+    ]);
+  });
+
   test('does nothing for a legacy workspace with no intents', async () => {
     const observe = vi.fn();
     const onAction = vi.fn();
@@ -2684,6 +2737,76 @@ describe('worker/completion-intent needs_human 5종 접기 (UI-5ym8 §7)', () =>
 });
 
 describe('cleanup observation retries', () => {
+  test.each([
+    [3, undefined],
+    [1, 2000]
+  ])(
+    'settles a recovered cleanup operation without replay after failure count %i and deadline %s',
+    async (retry_count, next_retry_at) => {
+      const store = seededCompletionStore();
+      store.prepareCompletionOp(DRIVER_WS, {
+        root_bead_id: 'UI-root',
+        phase: 'cleaning',
+        op: {
+          op_id: 'cleanup-crashed',
+          kind: 'retry_cleanup',
+          failure_key: createCompletionFailureKey({
+            stage: 'branch_cleanup',
+            reason: 'remote_branch_delete_failed',
+            subject_sha: 'a'.repeat(40),
+            base_sha: 'b'.repeat(40),
+            evidence: {}
+          }),
+          attempt_id: null,
+          status: 'prepared'
+        }
+      });
+      store.recordCleanupFailure(DRIVER_WS, {
+        bead_id: 'UI-root',
+        step: 'branch_cleanup',
+        reason: 'remote_branch_delete_failed',
+        retryable: true,
+        retry_count,
+        next_retry_at
+      });
+      const resumeCompletionCleanup = vi.fn();
+      const append = vi.fn();
+      const advance = vi.spyOn(store, 'advanceCompletionOp');
+      const notifyChanged = vi.fn();
+      const driver = actionDriver(store, {
+        now: () => 1000,
+        prActions: { resumeCompletionCleanup },
+        timeline: { append },
+        notifyChanged
+      });
+      const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+      await driver.observe('UI-root', current);
+      await driver.onAction('UI-root', { kind: 'reconcile_op' }, current);
+
+      expect(resumeCompletionCleanup).not.toHaveBeenCalled();
+      expect(append).not.toHaveBeenCalled();
+      expect(advance).toHaveBeenCalledWith(DRIVER_WS, {
+        root_bead_id: 'UI-root',
+        op_id: 'cleanup-crashed',
+        status: 'consumed',
+        next_phase: 'cleaning',
+        clear: true
+      });
+      expect(
+        store.snapshot(DRIVER_WS).completion_intents['UI-root']
+      ).toMatchObject({
+        phase: 'cleaning',
+        active_op: null,
+        terminal_reason: null
+      });
+      expect(
+        store.snapshot(DRIVER_WS).cleanup_failed['UI-root'].retry_count
+      ).toBe(retry_count);
+      expect(notifyChanged).toHaveBeenCalledTimes(1);
+    }
+  );
+
   test.each([
     [0, 999, null],
     [0, 1000, { kind: 'retry_cleanup' }],

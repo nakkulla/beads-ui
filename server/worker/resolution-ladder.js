@@ -124,6 +124,43 @@ function validFailure(value) {
 }
 
 /**
+ * Return the durable deadline only for a schedulable cleanup observation.
+ *
+ * @param {unknown} failure
+ * @returns {number|null}
+ */
+export function cleanupRetryWaitUntil(failure) {
+  if (!isRecord(failure) || cleanupFailureRetryClass(failure) !== 'transient') {
+    return null;
+  }
+  const { retry_count, next_retry_at } = failure;
+  return Number.isInteger(retry_count) &&
+    retry_count >= 0 &&
+    retry_count < 3 &&
+    typeof next_retry_at === 'number' &&
+    Number.isFinite(next_retry_at)
+    ? next_retry_at
+    : null;
+}
+
+/**
+ * Keep a scheduled cleanup in the queue without blocking later merges.
+ *
+ * @param {any} queue
+ * @param {string} bead_id
+ * @param {number} now
+ * @returns {boolean}
+ */
+export function cleanupRetryParked(queue, bead_id, now) {
+  const intent = queue?.completion_intents?.[bead_id];
+  if (intent?.phase !== 'cleaning' || intent.active_op) {
+    return false;
+  }
+  const until = cleanupRetryWaitUntil(queue?.cleanup_failed?.[bead_id]);
+  return until !== null && now < until;
+}
+
+/**
  * Whether a cleanup row carries a recorded failure reason. Read by the merge
  * candidate and completion-intent lanes to recognize the repository's existing
  * cleanup state surface; it decides nothing about the ladder.

@@ -3475,7 +3475,7 @@ export function createPrActions(deps) {
       // No record, no push (UI-jw27 §2): an external row never wrote one here,
       // and a write the store REFUSED on its own validation left none either,
       // so there is nothing for this announcement to be about.
-      if (written.ok) {
+      if (written.ok && cleanup_retry.next_retry_at === undefined) {
         announceCleanupStop(q, bead_id, step, reason, summary);
       }
     }

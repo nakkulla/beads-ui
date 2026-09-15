@@ -648,6 +648,50 @@ describe('worker/merge-queue — completion subject continuity', () => {
     expect(store.snapshot(WS).merge_queue[0].bead_id).toBe('UI-root');
   });
 
+  test('skips a cleaning head whose cleanup retry is scheduled and merges the next entry', async () => {
+    const store = seed(['UI-root', 'UI-next']);
+    const subject = {
+      role: /** @type {const} */ ('root'),
+      bead_id: 'UI-root',
+      pr_url: 'https://github.com/o/r/pull/1',
+      head_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      merged_sha: 'a'.repeat(40)
+    };
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
+      target_base: 'main',
+      subject
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'cleaning',
+      subject
+    });
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-root',
+      step: 'branch_cleanup',
+      reason: 'remote_branch_delete_failed',
+      retryable: true,
+      retry_count: 0,
+      next_retry_at: 60_000
+    });
+    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
+      landMerge(store, bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const mq = driver(store, { merge });
+
+    await mq.kick();
+
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(merge.mock.calls[0][0]).toBe('UI-next');
+    expect(
+      store.snapshot(WS).merge_queue.map((entry) => entry.bead_id)
+    ).toEqual(['UI-root']);
+  });
+
   test('preserves a completion kick requested during an active drain', async () => {
     const store = seed(['UI-root']);
     store.enqueueCompletionIntent(WS, {
