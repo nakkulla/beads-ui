@@ -113,6 +113,61 @@ export function formatRate(rate) {
 }
 
 /**
+ * Describe the server's outcome, with verification as supporting evidence.
+ *
+ * @param {Record<string, any>} row
+ */
+export function formatOutcomeText(row) {
+  const outcome = row.outcome;
+  const kind = outcome?.kind;
+  const evidence = outcome?.evidence;
+  let text = '미상';
+  if (kind === 'landed') {
+    text = '착지';
+    if (evidence === 'closed' && outcome.pr_url) {
+      const number = String(outcome.pr_url).match(/(\d+)\/?$/)?.[1];
+      text += number ? ` · PR #${number}` : ' · PR';
+    } else if (evidence === 'push') {
+      text += ` · push${outcome.head_sha ? ` ${String(outcome.head_sha).slice(0, 7)}` : ''}`;
+    } else if (evidence === 'no_change') {
+      text += ' · 무변경';
+    }
+  } else if (kind === 'failed') {
+    text = evidence ? `실패 · ${evidence}` : '실패';
+  } else if (kind === 'aborted') {
+    text = evidence === 'stopped' ? '중지' : '폐기';
+  } else if (kind === 'parked') {
+    text = '파킹';
+  } else if (kind === 'waiting') {
+    text = '대기';
+  } else if (kind === 'superseded') {
+    text = '대체됨';
+  } else if (kind === 'in_flight') {
+    text = evidence === 'pr_open' ? '진행 중 · PR open' : '진행 중';
+  }
+  if (row.verify === 'pass' || row.verify === 'fail') {
+    text += ` · verify ${row.verify === 'pass' ? '통과' : '실패'}`;
+  }
+  return text;
+}
+
+/** @param {Record<string, any>} row */
+export function outcomeDotKind(row) {
+  const kind = row.outcome?.kind;
+  if (kind === 'landed') {
+    return 'landed';
+  }
+  if (kind === 'failed' || kind === 'aborted') {
+    return 'failed';
+  }
+  return ['failed', 'retry', 'review', 'human'].some(
+    (key) => row.problems?.[key] === true
+  )
+    ? 'problem'
+    : 'muted';
+}
+
+/**
  * The 검증 cell. `null` is 미상 — never a failure, and never counted as a pass.
  *
  * @param {unknown} verify
