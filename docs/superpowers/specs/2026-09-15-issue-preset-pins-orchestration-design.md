@@ -88,16 +88,19 @@ dotfiles 계약(`workflow-state.yaml metadata`)은 `orchestration_model`을
    그 모델 러너의 `modelSpeedTiers`에 들어가는지 본다. 모델이 없으면 effort·speed는 각 키의
    전역 enum(`execSettingEnums`)만 본다. 실패는 `{ ok:false, reason:'invalid_orchestration_<key>' }`
    이고 핸들러는 `impl_preset_incompatible:<reason>`으로 거절하며 metadata를 쓰지 않는다.
-   quick_fix 역매핑으로 일반 모델과 quick_fix effort가 섞이는 조합을 여기서 걸러, `policy.js`의
-   fail-closed 폴백이 디스패치 시점에 조용히 다른 값을 고르는 일을 막는다.
+   quick_fix 역매핑으로 일반 모델과 quick_fix effort가 섞이는 조합은 지금도 디스패치 시점에
+   `policy.js resolveExecSettings`가 `invalid_reason`을 내고 `scheduler.js`가 디스패치를 거절한다.
+   이 검증은 그 거절을 프리셋 적용 시점으로 앞당겨 사용자가 적용 직후에 알게 하는 것이다.
 5. **`skipped_orchestration_keys`는 폐기한다.** 서버 응답에서 필드를 제거하고, 클라이언트의
    상태 변수·토스트 분기·`data-preset-skip-notice` 힌트를 제거한다. 성공 토스트는
    "실행 프리셋을 적용했습니다." 하나다. `app/protocol.md`는 이 필드를 문서화한 적이 없고
    소비자는 이 저장소의 상세 패널뿐이라 호환 분기를 두지 않는다. 구 클라이언트는 필드 부재를
    빈 배열로 읽어 힌트를 그리지 않는다.
 6. **적용 결과 표시는 기존 층 모델로 충분하다.** 적용 뒤 서버가 돌려주는 readback 이슈로 유효
-   실행 설정 카드가 다시 그려지고, 오케스트레이션 3행은 `핀` 배지와 값을 보인다. 새 표시
-   요소는 없다.
+   실행 설정 카드가 다시 그려지고, 오케스트레이션 3행은 `핀` 배지와 값을 보인다. 카드의 표시
+   우선순위는 `app/utils/execution-defaults.js resolveExecutionSettings`가 이미 핀 > (route가
+   quick_fix면 `quick_fix_*` 전역값) > 일반 전역값 순으로 고르므로 디스패치 해석과 같다. 새 표시
+   요소는 없고 표시 로직은 건드리지 않는다.
 7. **ADR UI-7yh2의 "오케스트레이션 키는 핀하지 않는다" 조항을 supersede한다.** 나머지 조항
    (25키 프리셋, 단일 전역 적용, workflow_mode 제외, quick_fix 역매핑, UI-s8qn 승계분)은 새
    ADR이 그대로 승계한다.
@@ -158,10 +161,6 @@ Pre-Handoff Validation 그대로: `npm run tsc`, `npm run lint`,
 
 ## 경계·후속
 
-- 관찰: 유효 실행 설정 카드의 오케스트레이션 `전역` 층은 route와 무관하게 일반 큐 값을 보이지만
-  디스패치는 quick_fix route면 quick_fix 레인 값을 먼저 읽는다 — 표시 층 문제로 이 설계와
-  독립이며, 이번 변경으로 quick_fix 이슈에 프리셋을 적용하면 핀이 생겨 그 차이가 가려진다.
-  admission 근거가 없어 Bead를 만들지 않는다.
 - 결정: 실행 프리셋 저장 형식(25키)과 전역 적용 프로토콜은 바꾸지 않는다 — 이 설계는 이슈별
   적용 경로만 다룬다.
 
