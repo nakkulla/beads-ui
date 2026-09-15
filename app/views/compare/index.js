@@ -1,14 +1,12 @@
 /**
- * 비교 탭 (preset-compare §3) — 실행 프리셋별 실작업 결과를 한 표에 놓는다.
+ * 비교 탭 (compare-redesign §3) — 프리셋·모델별 실작업 결과를 카드로 비교한다.
  *
  * 프리셋 저장소가 서버 전역이라 이 탭은 Monitor와 같은 global 마운트 쪽이며,
  * 보이는 저장소 전부를 한 표에 놓고 저장소 필터로 좁힌다(§3.1). 데이터는
  * `get-compare` → `compare-snapshot` 요청·응답 한 쌍이고 실시간 push는 없다 —
  * 탭을 열 때·필터를 바꿀 때·`새로고침`을 누를 때만 다시 읽는다(§3.5).
  *
- * 표만 그린다: 정확도 대 비용 점 그래프는 §3.6이 범위 밖으로 뺐다.
- *
- * 탭 위쪽은 실험(§4.7)이다: `새 실험` 폼과 실험 목록, 그리고 고른 실험을
+ * 탭 아래 접힌 절은 실험(§4.7)이다: `새 실험` 폼과 실험 목록, 그리고 고른 실험을
  * 프리셋별로 묶어 §3과 같은 여섯 열로 보이는 표. 실험 목록 `runs`와 실험 셀 행
  * `bench_rows`는 같은 `compare-snapshot` 응답에 함께 온다 — 이 스펙이 더하는 ws
  * op은 §3.5가 셋으로 열거했고, 결과 원장을 따로 두지 않는다는 §4.7의 결정이
@@ -17,7 +15,6 @@
  */
 import { html, render } from 'lit-html';
 import { CLOSED_RANGE_OPTIONS } from '../../data/closed-range.js';
-import { ISSUE_TYPES } from '../../utils/issue-type.js';
 import { debug } from '../../utils/logging.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { costTooltipLines } from '../../utils/token-usage.js';
@@ -37,11 +34,13 @@ import {
   formatCostMedian,
   formatDuration,
   formatOutcome,
+  formatOutcomeText,
   formatPrice,
   formatRate,
   formatReview,
   formatTokens,
   formatVerify,
+  outcomeDotKind,
   sampleNote
 } from './format.js';
 
@@ -72,16 +71,23 @@ export function createCompareView(root, options = {}) {
   const execPresetStore = options.execPresetStore;
   const sourceCandidates = options.sourceCandidates;
 
-  /** @type {{ range: string, root_dir: string, issue_type: string, route: string, include_bench: boolean }} */
+  /** @type {{ range: string, root_dir: string, route: string, include_bench: boolean }} */
   const filters = {
     range: DEFAULT_RANGE,
     root_dir: '',
-    issue_type: '',
     route: '',
     include_bench: false
   };
-  /** @type {{ rows: any[], groups: any[], workspaces: Array<{ root_dir: string, name: string }> }} */
-  let model = { rows: [], groups: [], workspaces: [] };
+  /** @type {{ rows: any[], groups: any[], summary: any, warnings: string[], workspaces: Array<{ root_dir: string, name: string }> }} */
+  let model = {
+    rows: [],
+    groups: [],
+    summary: null,
+    warnings: [],
+    workspaces: []
+  };
+  let group_by = 'preset';
+  let sort = 'landing';
   /** @type {Set<string>} */
   const expanded = new Set();
   let loading = false;
@@ -138,15 +144,17 @@ export function createCompareView(root, options = {}) {
       const reply = await transport('get-compare', {
         range: filters.range,
         root_dirs: filters.root_dir ? [filters.root_dir] : [],
-        issue_types: filters.issue_type ? [filters.issue_type] : [],
         routes: filters.route ? [filters.route] : [],
-        include_bench: filters.include_bench
+        include_bench: filters.include_bench,
+        group_by
       });
       if (seq !== request_seq) {
         return;
       }
       const payload = reply && reply.payload ? reply.payload : reply;
       model = {
+        summary: payload?.summary ?? null,
+        warnings: Array.isArray(payload?.warnings) ? payload.warnings : [],
         rows: Array.isArray(payload?.rows) ? payload.rows : [],
         groups: Array.isArray(payload?.groups) ? payload.groups : [],
         workspaces: Array.isArray(payload?.workspaces)
@@ -309,55 +317,69 @@ export function createCompareView(root, options = {}) {
       }))
     ];
     return html`
-      <div class="cmp-filters">
-        ${selectTemplate(
-          '기간',
-          filters.range,
-          CLOSED_RANGE_OPTIONS.map((option) => ({
-            value: option.value,
-            label: option.label
-          })),
-          (next) => onFilterChange('range', next)
-        )}
-        ${selectTemplate(
-          '저장소',
-          filters.root_dir,
-          workspace_choices,
-          (next) => onFilterChange('root_dir', next)
-        )}
-        ${selectTemplate(
-          '유형',
-          filters.issue_type,
-          [
-            { value: '', label: '전체 유형' },
-            ...ISSUE_TYPES.map((type) => ({ value: type, label: type }))
-          ],
-          (next) => onFilterChange('issue_type', next)
-        )}
-        ${selectTemplate(
-          'route',
-          filters.route,
-          [
-            { value: '', label: '전체 route' },
-            ...ROUTE_FILTER_OPTIONS.filter(
-              (option) => option.value !== 'unset'
-            ).map((option) => ({ value: option.value, label: option.label }))
-          ],
-          (next) => onFilterChange('route', next)
-        )}
-        <label class="cmp-filter cmp-filter--check">
-          <input
-            type="checkbox"
-            .checked=${filters.include_bench}
-            @change=${(/** @type {Event} */ ev) => {
-              filters.include_bench = /** @type {HTMLInputElement} */ (
-                ev.target
-              ).checked;
-              void fetchSnapshot();
-            }}
-          />
-          <span>bench 실험 포함</span>
-        </label>
+      <div class="cmp-controls">
+        <div class="cmp-group-by" role="group" aria-label="묶기 축">
+          ${[
+            { value: 'preset', label: '프리셋' },
+            { value: 'orchestration', label: '오케스트레이션 모델' },
+            { value: 'impl_actor', label: '구현 실행자' }
+          ].map(
+            (choice) =>
+              html`<button
+                type="button"
+                class="op-btn"
+                aria-pressed=${group_by === choice.value}
+                @click=${() => {
+                  group_by = choice.value;
+                  void fetchSnapshot();
+                }}
+              >
+                ${choice.label}
+              </button>`
+          )}
+        </div>
+        <div class="cmp-filters">
+          ${selectTemplate(
+            '기간',
+            filters.range,
+            CLOSED_RANGE_OPTIONS.map((option) => ({
+              value: option.value,
+              label: option.label
+            })),
+            (next) => onFilterChange('range', next)
+          )}
+          ${selectTemplate(
+            '저장소',
+            filters.root_dir,
+            workspace_choices,
+            (next) => onFilterChange('root_dir', next)
+          )}
+          ${selectTemplate(
+            'route',
+            filters.route,
+            [
+              { value: '', label: '전체 route' },
+              ...ROUTE_FILTER_OPTIONS.filter(
+                (option) => option.value !== 'unset'
+              ).map((option) => ({ value: option.value, label: option.label }))
+            ],
+            (next) => onFilterChange('route', next)
+          )}
+          ${selectTemplate(
+            '정렬',
+            sort,
+            [
+              { value: 'landing', label: '착지율' },
+              { value: 'problem', label: '문제율' },
+              { value: 'duration', label: '평균 시간' },
+              { value: 'cost', label: '평균 비용' }
+            ],
+            (next) => {
+              sort = next;
+              doRender();
+            }
+          )}
+        </div>
         <button
           type="button"
           class="op-btn cmp-refresh"
@@ -407,7 +429,7 @@ export function createCompareView(root, options = {}) {
   }
 
   /** @param {any} row */
-  function attemptRowTemplate(row) {
+  function benchAttemptRowTemplate(row) {
     const cost_title = costTooltipLines(row.usage || null).join('\n');
     return html`
       <tr
@@ -435,48 +457,284 @@ export function createCompareView(root, options = {}) {
   }
 
   /** @param {any} group */
-  function groupRowsTemplate(group) {
+  function groupCardTemplate(group) {
     const open = expanded.has(group.key);
     const ids = new Set(group.attempt_ids || []);
-    const rows = open
-      ? model.rows.filter((row) => ids.has(row.attempt_id))
-      : [];
-    return html`
-      <tr
-        class="cmp-row cmp-row--group ${open ? 'is-open' : ''}"
+    const rows = model.rows.filter((row) => ids.has(row.attempt_id));
+    const compositions = group.compositions || [];
+    let composition = compositions[0]?.composition || '';
+    if (compositions.length > 1) {
+      composition += ` 외 ${compositions.length - 1}`;
+    }
+    if (group.badge === 'unmatched') {
+      const candidates = [
+        ...new Set(rows.flatMap((row) => row.preset_candidates || []))
+      ].sort();
+      const reason =
+        candidates.length > 0
+          ? `프리셋 미확정 — ${candidates.join('·')} 중 판별 불가`
+          : '일치하는 프리셋 없음';
+      composition = [composition, reason].filter(Boolean).join(' · ');
+    }
+    return html`<article
+      class="cmp-card ${open ? 'is-open' : ''}"
+      data-group-key=${group.key}
+    >
+      <header class="cmp-card__head">
+        <h3 class="cmp-group-name">${group.name}</h3>
+        ${group.badge === 'preset' || group.badge === 'unmatched'
+          ? html`<span class="cmp-badge"
+              >${group.badge === 'preset' ? '프리셋' : '미대조'}</span
+            >`
+          : null}
+        <span class="cmp-card__count"
+          >세션 ${group.n} · 이슈 ${group.issue_count}</span
+        >
+      </header>
+      ${composition
+        ? html`<div
+            class="cmp-composition"
+            title=${compositions
+              .map(
+                (/** @type {any} */ item) =>
+                  `${item.composition} ${item.count}건`
+              )
+              .join('\n')}
+          >
+            ${composition}
+          </div>`
+        : null}
+      <div class="cmp-kpis">${metricsTemplate(group)}</div>
+      <div class="cmp-problems">
+        ${[
+          ['failed', '실패·폐기'],
+          ['retry', '재시도'],
+          ['review', '리뷰 지적'],
+          ['human', '사람 개입']
+        ].map(
+          ([key, label]) =>
+            html`<span
+              class="cmp-chip ${group.problems?.[key] ? '' : 'is-zero'}"
+              >${label} ${group.problems?.[key] ?? 0}</span
+            >`
+        )}
+      </div>
+      <button
+        type="button"
+        class="op-btn cmp-expand"
+        aria-expanded=${open}
         @click=${() => toggleGroup(group.key)}
       >
-        <td class="cmp-cell cmp-cell--name">
-          <span class="cmp-caret" aria-hidden="true">${open ? '▾' : '▸'}</span>
-          <span class="cmp-group-name">${group.name}</span>
-          <span class="cmp-note">${group.n}건</span>
-        </td>
-        <td class="cmp-cell">
-          ${medianTemplate(group.duration_ms, formatDuration)}
-        </td>
-        <td class="cmp-cell">
-          실패 ${group.failed_count} · 재시도 ${group.retry_count}
-        </td>
-        <td class="cmp-cell">${successTemplate(group)}</td>
-        <td class="cmp-cell">
-          ${medianTemplate(group.blocking, (value) =>
-            typeof value === 'number' ? `b${value}` : EMPTY_CELL
-          )}
-          ${medianTemplate(group.minor, (value) =>
-            typeof value === 'number' ? `m${value}` : EMPTY_CELL
-          )}
-          ${medianTemplate(group.round, (value) =>
-            typeof value === 'number' ? `r${value}` : EMPTY_CELL
-          )}
-        </td>
-        <td class="cmp-cell">${medianTemplate(group.tokens, formatTokens)}</td>
-        <td class="cmp-cell">
-          ${medianTemplate(group.cost_usd, formatCostMedian)}
-        </td>
-        <td class="cmp-cell cmp-cell--time"></td>
-      </tr>
-      ${rows.map((row) => attemptRowTemplate(row))}
+        세션 ${group.n}건 ${open ? '접기 ▴' : '보기 ▾'}
+      </button>
+      ${open
+        ? html`<div class="cmp-sessions">
+            ${rows.map((row) => attemptRowTemplate(row))}
+          </div>`
+        : null}
+    </article>`;
+  }
+
+  /** @param {any} row */
+  function attemptRowTemplate(row) {
+    const problems = row.problems;
+    const evidence = problems?.evidence;
+    const review = evidence?.review;
+    const review_label =
+      review?.round >= 2
+        ? `리뷰 r${review.round}`
+        : review?.blocking >= 1
+          ? `리뷰 b${review.blocking}`
+          : '리뷰';
+    const chips = [
+      { show: problems?.failed, label: '실패', title: evidence?.failed || '' },
+      { show: problems?.retry, label: '재시도', title: evidence?.retry || '' },
+      {
+        show: problems?.review,
+        label: review_label,
+        title: review
+          ? `라운드 ${review.round ?? EMPTY_CELL} · blocking ${review.blocking ?? EMPTY_CELL} · minor ${review.minor ?? EMPTY_CELL}`
+          : ''
+      },
+      {
+        show: problems?.human,
+        label: '개입',
+        title: (evidence?.human || []).join('\n')
+      },
+      {
+        show: row.preset?.deviated_keys?.length > 0,
+        label: '핀 조정',
+        title: (row.preset?.deviated_keys || []).join(', ')
+      }
+    ].filter((chip) => chip.show);
+    return html`<a
+      class="cmp-session"
+      href=${`#/compare?issue=${encodeURIComponent(row.bead_id)}`}
+      @click=${(/** @type {MouseEvent} */ ev) => {
+        if (
+          gotoIssue &&
+          !ev.metaKey &&
+          !ev.ctrlKey &&
+          !ev.shiftKey &&
+          !ev.altKey &&
+          ev.button === 0
+        ) {
+          ev.preventDefault();
+          gotoIssue(row.bead_id);
+        }
+      }}
+    >
+      <span
+        class="cmp-dot cmp-dot--${outcomeDotKind(row)}"
+        aria-hidden="true"
+      ></span>
+      <span
+        class="cmp-session__title"
+        title=${`${row.bead_id} ${row.title || ''}`}
+        ><span class="cmp-issue-id">${row.bead_id}</span>${row.title ||
+        ''}</span
+      >
+      <span class="cmp-session__outcome">${formatOutcomeText(row)}</span>
+      ${chips.length > 0
+        ? html`<span class="cmp-session__chips"
+            >${chips.map(
+              (chip) =>
+                html`<span class="cmp-chip" title=${chip.title}
+                  >${chip.label}</span
+                >`
+            )}</span
+          >`
+        : null}
+      <span class="cmp-session__time"
+        >${formatDuration(row.duration_ms)}${row.finished_at
+          ? html` · <span>${formatTimestampLocal(row.finished_at)}</span>`
+          : null}</span
+      >
+      <span
+        class="cmp-session__cost"
+        title=${costTooltipLines(row.usage || null).join('\n')}
+        >${formatPrice(row.usage)}</span
+      >
+    </a>`;
+  }
+
+  /**
+   * Keep benchmark sampleNote behavior; comparison KPIs always show coverage.
+   *
+   * @param {any} stat
+   */
+  function costSampleNote(stat) {
+    return sampleNote(stat) || `n=${stat?.sample ?? 0}/${stat?.total ?? 0}`;
+  }
+
+  /**
+   * @param {string} metric
+   * @param {string} label
+   * @param {string} value
+   * @param {string} note
+   * @param {string[]} best
+   * @param {number|null} [rate]
+   */
+  function metricTemplate(metric, label, value, note, best, rate = null) {
+    const best_label = /** @type {Record<string, string>} */ ({
+      landing: '최고',
+      duration: '최단',
+      cost: '최저'
+    })[metric];
+    const is_best = Boolean(best_label && best.includes(metric));
+    return html`<div
+      class="cmp-kpi ${is_best ? 'is-best' : ''}"
+      data-metric=${metric}
+    >
+      <div class="cmp-kpi__label">
+        ${label}${is_best
+          ? html`<span class="cmp-best">${best_label}</span>`
+          : null}
+      </div>
+      <div class="cmp-kpi__value">${value}</div>
+      <div class="cmp-kpi__note">${note}</div>
+      ${typeof rate === 'number' && Number.isFinite(rate)
+        ? html`<div class="cmp-bar" aria-hidden="true">
+            <span
+              style=${`width: ${Math.max(0, Math.min(100, rate * 100))}%`}
+            ></span>
+          </div>`
+        : null}
+    </div>`;
+  }
+
+  /**
+   * @param {any} group
+   * @param {boolean} [summary]
+   */
+  function metricsTemplate(group, summary = false) {
+    const best = summary ? [] : group.best || [];
+    const cost = group.cost_usd;
+    return html`
+      ${metricTemplate(
+        'landing',
+        '착지율',
+        formatRate(group.landing_rate),
+        `${group.landed}/${group.judged}${summary ? '' : ` · 진행 중 ${group.in_flight}`}`,
+        best,
+        summary ? null : group.landing_rate
+      )}
+      ${metricTemplate(
+        'problem',
+        '문제 세션',
+        formatRate(group.problem_rate),
+        `${group.problem_count}/${group.n}`,
+        best,
+        summary ? null : group.problem_rate
+      )}
+      ${metricTemplate(
+        'duration',
+        '평균 시간',
+        formatDuration(group.duration_ms?.mean),
+        `중앙값 ${formatDuration(group.duration_ms?.median)}`,
+        best
+      )}
+      ${metricTemplate(
+        'cost',
+        '평균 비용',
+        formatCostMedian(cost?.mean),
+        `중앙값 ${formatCostMedian(cost?.median)} · ${costSampleNote(cost)}${!summary && cost?.partial_count > 0 ? ` · 부분 ${cost.partial_count}` : ''}`,
+        best
+      )}
     `;
+  }
+
+  /**
+   * @param {number|null|undefined} left
+   * @param {number|null|undefined} right
+   * @param {boolean} [descending]
+   */
+  function compareMetric(left, right, descending = false) {
+    if (left == null) {
+      return right == null ? 0 : 1;
+    }
+    if (right == null) {
+      return -1;
+    }
+    return descending ? right - left : left - right;
+  }
+
+  function sortedGroups() {
+    return [...model.groups].sort((left, right) => {
+      if (sort === 'problem') {
+        return compareMetric(left.problem_rate, right.problem_rate);
+      }
+      if (sort === 'duration') {
+        return compareMetric(left.duration_ms?.mean, right.duration_ms?.mean);
+      }
+      if (sort === 'cost') {
+        return compareMetric(left.cost_usd?.mean, right.cost_usd?.mean);
+      }
+      return (
+        compareMetric(left.landing_rate, right.landing_rate, true) ||
+        compareMetric(left.cost_usd?.mean, right.cost_usd?.mean)
+      );
+    });
   }
 
   /**
@@ -568,7 +826,7 @@ export function createCompareView(root, options = {}) {
       </tr>
       ${open
         ? (group.rows || []).map((/** @type {any} */ row) =>
-            attemptRowTemplate(row)
+            benchAttemptRowTemplate(row)
           )
         : null}
     `;
@@ -799,41 +1057,57 @@ export function createCompareView(root, options = {}) {
     `;
   }
 
-  /** The whole experiment section above the comparison table (§4.7). */
+  /** The collapsed experiment section below the comparison cards (§4.7). */
   function benchTemplate() {
     const selected =
       bench.selected === null
         ? null
         : (bench.runs.find((run) => run.run_id === bench.selected) ?? null);
     return html`
-      <section class="cmp-bench">
-        <div class="cmp-bench__head">
-          <h3 class="cmp-bench__title">실험</h3>
-          <button
-            type="button"
-            class="op-btn cmp-bench__new"
-            @click=${() => {
-              form.open = !form.open;
-              if (form.open) {
-                form.error = null;
-                form.reviewer = reviewerDefaults(bench.runs);
-              }
-              doRender();
-            }}
-          >
-            새 실험
-          </button>
+      <details class="cmp-bench">
+        <summary>실험 (bench 클론 실행) · ${bench.runs.length}건</summary>
+        <div class="cmp-bench__body">
+          <label class="cmp-filter cmp-filter--check">
+            <input
+              type="checkbox"
+              .checked=${filters.include_bench}
+              @change=${(/** @type {Event} */ ev) => {
+                filters.include_bench = /** @type {HTMLInputElement} */ (
+                  ev.target
+                ).checked;
+                void fetchSnapshot();
+              }}
+            />
+            <span>실사용 표에 실험 세션 포함</span>
+          </label>
+          <div class="cmp-bench__head">
+            <h3 class="cmp-bench__title">실험</h3>
+            <button
+              type="button"
+              class="op-btn cmp-bench__new"
+              @click=${() => {
+                form.open = !form.open;
+                if (form.open) {
+                  form.error = null;
+                  form.reviewer = reviewerDefaults(bench.runs);
+                }
+                doRender();
+              }}
+            >
+              새 실험
+            </button>
+          </div>
+          ${form.open ? formTemplate() : null}
+          ${bench.runs.length === 0
+            ? html`<div class="cmp-empty">
+                ${loading ? '읽는 중…' : '실험 없음'}
+              </div>`
+            : html`<div class="cmp-runs">
+                ${bench.runs.map((run) => runRowTemplate(run))}
+              </div>`}
+          ${selected === null ? null : runDetailTemplate(selected)}
         </div>
-        ${form.open ? formTemplate() : null}
-        ${bench.runs.length === 0
-          ? html`<div class="cmp-empty">
-              ${loading ? '읽는 중…' : '실험 없음'}
-            </div>`
-          : html`<div class="cmp-runs">
-              ${bench.runs.map((run) => runRowTemplate(run))}
-            </div>`}
-        ${selected === null ? null : runDetailTemplate(selected)}
-      </section>
+      </details>
     `;
   }
 
@@ -861,34 +1135,57 @@ export function createCompareView(root, options = {}) {
       </div>`;
     }
     return html`
-      <table class="cmp-table">
-        <thead>
-          <tr>
-            <th scope="col">프리셋 · 서명</th>
-            <th scope="col">시간</th>
-            <th scope="col">실패 · 재시도</th>
-            <th scope="col">검증</th>
-            <th scope="col">리뷰 지적 · 라운드</th>
-            <th scope="col">토큰</th>
-            <th scope="col">가격</th>
-            <th scope="col">종료</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${model.groups.map((group) => groupRowsTemplate(group))}
-        </tbody>
-      </table>
+      <section class="cmp-grid" aria-label="그룹별 비교">
+        ${sortedGroups().map((group) => groupCardTemplate(group))}
+      </section>
     `;
   }
 
   function template() {
+    const summary = model.summary;
+    const range_label =
+      CLOSED_RANGE_OPTIONS.find((option) => option.value === filters.range)
+        ?.label || filters.range;
+    const workspace_label = filters.root_dir
+      ? model.workspaces.find(
+          (workspace) => workspace.root_dir === filters.root_dir
+        )?.name || filters.root_dir
+      : '전체 저장소';
     return html`
       <div class="cmp">
         <header class="cmp-head">
-          <h2 class="cmp-title">프리셋 실사용 비교</h2>
-          ${filtersTemplate()}
+          <h2 class="cmp-title">프리셋 비교</h2>
+          <span class="cmp-head__summary"
+            >${range_label} · ${workspace_label} · 세션 ${summary?.n ?? 0}건 ·
+            이슈 ${summary?.issue_count ?? 0}건</span
+          >
         </header>
-        ${benchTemplate()} ${bodyTemplate()}
+        ${filtersTemplate()}
+        ${summary
+          ? html`<section class="cmp-summary" aria-label="전체 요약">
+              ${metricTemplate(
+                'sessions',
+                '전체 세션',
+                `${summary.n}건`,
+                `이슈 ${summary.issue_count} · 진행 중 ${summary.in_flight}`,
+                []
+              )}
+              ${metricsTemplate(summary, true)}
+            </section>`
+          : null}
+        ${model.warnings.includes('preset_store_unreadable')
+          ? html`<div class="cmp-warning">
+              프리셋 저장소를 읽지 못해 프리셋 대조를 건너뛰었습니다
+            </div>`
+          : null}
+        ${bodyTemplate()}
+        <p class="cmp-legend">
+          착지율 = 착지(PR 머지·quick_fix push·무변경 close 관측) ÷ 판정된
+          세션(착지·실패·폐기). 문제 세션 = 실패·폐기, 재시도·재개, 리뷰
+          REVISE/blocking, 사람 개입 중 하나라도 있는 세션. 평균은 값이 있는
+          세션만(n 표기), 비용은 API 환산 단가 기준.
+        </p>
+        ${benchTemplate()}
       </div>
     `;
   }

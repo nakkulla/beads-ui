@@ -46,10 +46,14 @@ export async function handleGetCompare(ws, req, seams = {}) {
   try {
     model = await build({
       root_dirs: payload.root_dirs,
-      issue_types: payload.issue_types,
+      group_by:
+        payload.group_by === 'orchestration' ||
+        payload.group_by === 'impl_actor'
+          ? payload.group_by
+          : 'preset',
       routes: payload.routes,
       include_bench: payload.include_bench,
-      since: compareRangeSince(payload.range)
+      since: compareRangeSince(payload.range ?? '30d')
     });
   } catch (err) {
     log('compare snapshot failed: %o', err);

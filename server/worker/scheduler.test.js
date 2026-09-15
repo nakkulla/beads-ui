@@ -4,9 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createExecPresetStore } from '../exec-preset-store.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { writeBenchManifest } from './bench-runs.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
+import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { install as guardHookInstall } from './guard-hook.js';
 import { resolveExecSettings } from './policy.js';
 import { RETRY_DELAYS_MS } from './queue-hold.js';
@@ -51,6 +53,144 @@ vi.mock('./foreign-blocker-status.js', async (importOriginal) => {
 });
 
 const WS = '/tmp/example-workspace/project-a';
+
+describe('dispatch preset observations', () => {
+  /** @param {'present'|'deleted'|'unreadable'|'absent'} [state] */
+  function presetFixture(state = 'present') {
+    const queueStore = createQueueStore();
+    const presetStore = createExecPresetStore();
+    const coordinator = createExecPresetCoordinator({
+      queueStore,
+      presetStore
+    });
+    const created = coordinator.create({
+      expected_revision: 0,
+      name: 'Profile',
+      settings: {
+        orchestration_model: 'opus',
+        orchestration_effort: 'high',
+        orchestration_speed: 'default',
+        spec_review_speed: 'default',
+        impl_runtime: 'claude',
+        impl_model: 'auto',
+        quick_fix_orchestration_model: 'sol',
+        quick_fix_orchestration_effort: 'xhigh',
+        quick_fix_impl_model: 'sol'
+      }
+    });
+    const applied = {
+      id: created.presets[0].id,
+      name: 'Recorded name',
+      revision: 1,
+      applied_at: 10
+    };
+    queueStore.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'opus' },
+      applied_exec_preset: state === 'absent' ? null : applied
+    });
+    if (state === 'deleted') {
+      coordinator.delete({ id: applied.id, expected_revision: 1 });
+    } else if (state === 'unreadable') {
+      vi.spyOn(presetStore, 'snapshot').mockImplementation(() => {
+        throw new Error('unreadable');
+      });
+    }
+    return { coordinator, applied };
+  }
+
+  test.each([
+    [
+      'spec_backed',
+      {
+        model: 'opus',
+        effort: 'high',
+        impl_runtime: 'codex',
+        impl_model: 'sol',
+        impl_effort: 'high'
+      },
+      ['impl_runtime', 'impl_model']
+    ],
+    [
+      'quick_fix',
+      {
+        model: 'sol',
+        effort: 'xhigh',
+        impl_runtime: 'codex',
+        impl_model: 'sol'
+      },
+      ['impl_runtime']
+    ],
+    [
+      'quick_fix',
+      { model: 'opus', effort: 'high', impl_model: 'auto' },
+      ['orchestration_model', 'orchestration_effort', 'impl_model']
+    ],
+    [
+      'spec_backed',
+      { model: 'sonnet', effort: 'low' },
+      ['orchestration_model', 'orchestration_effort']
+    ],
+    [
+      'quick_fix',
+      { orchestration_speed: 'fast', spec_review_speed: 'fast' },
+      ['orchestration_speed', 'spec_review_speed']
+    ],
+    ['full_plan', {}, []],
+    ['spec_backed', { impl_runtime: null, impl_model: '' }, []]
+  ])(
+    'compares actual pins with route-specific declared values: %s %j',
+    (route, pins, deviated_keys) => {
+      const { coordinator, applied } = presetFixture();
+
+      const result = coordinator.resolveForDispatch(WS, { route, ...pins });
+
+      expect(result).toMatchObject({
+        ok: true,
+        preset_id: null,
+        preset_revision: null,
+        exec_preset: {
+          id: applied.id,
+          name: applied.name,
+          revision: 1,
+          deviated_keys
+        }
+      });
+    }
+  );
+
+  test.each(['deleted', 'unreadable'])(
+    'preserves recorded identity without deviation guesses when the preset is %s',
+    (state) => {
+      const { coordinator, applied } = presetFixture(
+        /** @type {'deleted'|'unreadable'} */ (state)
+      );
+
+      const result = coordinator.resolveForDispatch(WS, {
+        route: 'spec_backed',
+        impl_runtime: 'codex'
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        exec_preset: {
+          id: applied.id,
+          name: applied.name,
+          revision: applied.revision,
+          deviated_keys: []
+        }
+      });
+    }
+  );
+
+  test('records null when the queue has no applied preset', () => {
+    const { coordinator } = presetFixture('absent');
+
+    const result = coordinator.resolveForDispatch(WS, { route: 'spec_backed' });
+
+    expect(result).toMatchObject({ ok: true, exec_preset: null });
+  });
+});
 
 /** The dispatch head every resolution binding in this file is taken on. */
 const RESOLUTION_DISPATCH_HEAD = 'd'.repeat(40);
@@ -714,6 +854,12 @@ function setup(opts) {
         ok: true,
         preset_id: null,
         preset_revision: null,
+        exec_preset: store.snapshot(workspace).applied_exec_preset
+          ? {
+              ...store.snapshot(workspace).applied_exec_preset,
+              deviated_keys: []
+            }
+          : null,
         settings: {},
         exec: resolveExecSettings({
           bead,
@@ -4765,6 +4911,12 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
         ok: true,
         preset_id: 'preset-1',
         preset_revision: 7,
+        exec_preset: {
+          id: 'preset-1',
+          name: 'Profile',
+          revision: 7,
+          deviated_keys: []
+        },
         settings: {
           orchestration_model: 'sonnet',
           spec_review_model: 'codex'
@@ -4783,8 +4935,12 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
             }
             const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
             expect(attempt).toMatchObject({
-              exec_default_preset_id: 'preset-1',
-              exec_default_preset_revision: 7,
+              exec_preset: {
+                id: 'preset-1',
+                name: 'Profile',
+                revision: 7,
+                deviated_keys: []
+              },
               exec_stamped_keys: null,
               exec_values: {
                 orchestration_model: 'sonnet',
@@ -4804,8 +4960,14 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(resolveForDispatch).toHaveBeenCalledTimes(1);
     const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
     expect(attempt).toMatchObject({
-      exec_default_preset_id: 'preset-1',
-      exec_default_preset_revision: 7,
+      exec_preset: {
+        id: 'preset-1',
+        name: 'Profile',
+        revision: 7,
+        deviated_keys: []
+      },
+      exec_default_preset_id: null,
+      exec_default_preset_revision: null,
       exec_values: {
         orchestration_model: 'sonnet',
         spec_review_model: null
@@ -5587,6 +5749,64 @@ describe('scheduler resume (spec §1)', () => {
     ]);
   });
 
+  test.each([false, true])(
+    'records current preset identity on current-settings resume (override=%s)',
+    async (override) => {
+      const env = setup({
+        config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
+        slots: 1,
+        gitRun: ownedWorktreeGit()
+      });
+      const current = {
+        id: 'new',
+        name: 'Current profile',
+        revision: 8,
+        applied_at: 100
+      };
+      env.store.setOrchestrationDefaults(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        values: { orchestration_model: 'opus' },
+        applied_exec_preset: current
+      });
+      seedAttempt(
+        env.store,
+        'preset-current',
+        resumablePrior({
+          exec_preset: {
+            id: 'old',
+            name: 'Old profile',
+            revision: 3,
+            deviated_keys: []
+          }
+        })
+      );
+
+      const result = await env.scheduler.resume(
+        WS,
+        'preset-current',
+        override
+          ? {
+              exec_override: {
+                runner: 'claude',
+                model: 'opus-4.8',
+                effort: 'xhigh'
+              }
+            }
+          : { continuation: 'fresh_current' }
+      );
+
+      expect(result.ok).toBe(true);
+      expect(
+        env.store.snapshot(WS).attempts[String(result.attempt_id)].exec_preset
+      ).toEqual({
+        id: current.id,
+        name: current.name,
+        revision: current.revision,
+        deviated_keys: []
+      });
+    }
+  );
+
   test('applies a same-runner override without dropping session continuation', async () => {
     const env = setup({
       config: { B1: { status: 'open', model: 'opus', effort: 'high' } },
@@ -5999,6 +6219,50 @@ describe('scheduler resume (spec §1)', () => {
       ...over
     });
   }
+
+  test.each([
+    null,
+    {
+      id: 'old',
+      name: 'Old profile',
+      revision: 3,
+      deviated_keys: ['impl_runtime']
+    }
+  ])(
+    'inherits recorded preset identity with a prior_attempt tuple: %j',
+    async (exec_preset) => {
+      const env = setup({
+        config: { B1: { status: 'open', model: 'opus' } },
+        slots: 1,
+        gitRun: ownedWorktreeGit(),
+        ...accountDeps()
+      });
+      env.store.setOrchestrationDefaults(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        values: { orchestration_model: 'opus' },
+        applied_exec_preset: {
+          id: 'new',
+          name: 'Current profile',
+          revision: 8,
+          applied_at: 100
+        }
+      });
+      seedAttempt(
+        env.store,
+        'preset-prior',
+        pausedRestartablePrior({ exec_preset })
+      );
+
+      const result = await env.scheduler.resume(WS, 'preset-prior', {
+        continuation: 'prior_attempt'
+      });
+
+      expect(result.ok).toBe(true);
+      expect(
+        env.store.snapshot(WS).attempts[String(result.attempt_id)].exec_preset
+      ).toEqual(exec_preset);
+    }
+  );
 
   test('reuses the recorded tuple and account on a prior_attempt resume', async () => {
     const deps = accountDeps();
@@ -6495,6 +6759,22 @@ describe('scheduler resume (spec §1)', () => {
 
   test('keeps a recorded codex session when the current runner is claude', async () => {
     const env = setup({ config: { B1: { model: 'opus' } }, slots: 1 });
+    const exec_preset = {
+      id: 'recorded',
+      name: 'Recorded profile',
+      revision: 2,
+      deviated_keys: ['impl_runtime']
+    };
+    env.store.setOrchestrationDefaults(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      values: { orchestration_model: 'opus' },
+      applied_exec_preset: {
+        id: 'current',
+        name: 'Current profile',
+        revision: 3,
+        applied_at: 100
+      }
+    });
     const exec_values = /** @type {Record<string, string|null>} */ (
       Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null]))
     );
@@ -6502,7 +6782,12 @@ describe('scheduler resume (spec §1)', () => {
     seedAttempt(
       env.store,
       'r3',
-      resumablePrior({ runner: 'codex', model: 'sol', exec_values })
+      resumablePrior({
+        runner: 'codex',
+        model: 'sol',
+        exec_values,
+        exec_preset
+      })
     );
 
     const mismatch = await env.scheduler.resume(WS, 'r3');
@@ -6514,6 +6799,9 @@ describe('scheduler resume (spec §1)', () => {
     expect(
       env.store.snapshot(WS).attempts[String(resumed.attempt_id)].runner
     ).toBe('codex');
+    expect(
+      env.store.snapshot(WS).attempts[String(resumed.attempt_id)].exec_preset
+    ).toEqual(exec_preset);
   });
 
   test('spends the prior codex account when resuming across providers', async () => {

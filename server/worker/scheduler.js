@@ -2888,7 +2888,7 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {BeadSnapshot} bead_snapshot
    * @param {import('../workspace-accounts.js').WorkspaceAccountsLayer} [workspace_accounts]
-   * @returns {{ ok: true, preset_id: string|null, preset_revision: number|null, settings: Readonly<Record<string, string>>, exec: any, accounts: { claude: string|null, codex: string|null }, account_sources: AccountSources }|{ ok: false, reason: string }}
+   * @returns {{ ok: true, preset_id: string|null, preset_revision: number|null, exec_preset: import('./queue-store.js').ExecPresetRecord|null, settings: Readonly<Record<string, string>>, exec: any, accounts: { claude: string|null, codex: string|null }, account_sources: AccountSources }|{ ok: false, reason: string }}
    */
   function resolveDispatchSettings(
     workspace,
@@ -8904,8 +8904,7 @@ export function createScheduler(deps) {
           workflow_mode_prior: prior,
           workflow_mode_source_prior: prior_source,
           receipt_baseline,
-          exec_default_preset_id: resolved_exec.preset_id,
-          exec_default_preset_revision: resolved_exec.preset_revision,
+          exec_preset: resolved_exec.exec_preset ?? null,
           exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
           exec_values,
           exec_restore_values,
@@ -11273,10 +11272,6 @@ export function createScheduler(deps) {
     let stamped_keys;
     /** @type {Record<string, string|null>|null} */
     let exec_values;
-    /** @type {string|null} */
-    let preset_id;
-    /** @type {number|null} */
-    let preset_revision;
     const resolved_exec = resolveDispatchSettings(
       workspace,
       snap,
@@ -11295,8 +11290,6 @@ export function createScheduler(deps) {
     launch_speed = exec.orchestration_speed ?? 'default';
     stamped_keys = exec.stamped_keys;
     exec_values = execValuesFor(exec);
-    preset_id = resolved_exec.preset_id;
-    preset_revision = resolved_exec.preset_revision;
     // The first observed conflict on an external row (UI-p206 §5.2). The bead
     // was implemented by an interactive session whose judgments — which review
     // points were taken and which were refused, and why — never all reach the
@@ -11402,8 +11395,7 @@ export function createScheduler(deps) {
         workflow_mode_prior: prior,
         workflow_mode_source_prior: snap.workflow_mode_source ?? null,
         receipt_baseline,
-        exec_default_preset_id: preset_id,
-        exec_default_preset_revision: preset_revision,
+        exec_preset: resolved_exec.exec_preset ?? null,
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
         exec_values,
         exec_restore_values,
@@ -11606,6 +11598,7 @@ export function createScheduler(deps) {
             ok: /** @type {const} */ (true),
             preset_id: prior.exec_default_preset_id ?? null,
             preset_revision: prior.exec_default_preset_revision ?? null,
+            exec_preset: prior.exec_preset ?? null,
             exec: {
               ...(prior.exec_values || {}),
               runner: recorded_prior_runner,
@@ -11661,6 +11654,18 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'bad_request' };
     }
     const current_exec_values = execValuesFor(resolved.exec);
+    let current_exec_preset = resolved.exec_preset ?? null;
+    if (provider_auto_resume && override_result.applied) {
+      try {
+        const current = deps.execPresetCoordinator.resolveForDispatch(
+          workspace,
+          bead_snapshot
+        );
+        current_exec_preset = current.ok ? current.exec_preset : null;
+      } catch {
+        current_exec_preset = null;
+      }
+    }
     const decision_token = {
       source_attempt_id: prior.attempt_id,
       source_attempt_digest: continuationDigest(
@@ -11916,6 +11921,9 @@ export function createScheduler(deps) {
       stamped_keys,
       decision_token,
       runner_mismatch,
+      exec_preset: use_prior
+        ? (prior.exec_preset ?? null)
+        : current_exec_preset,
       preset_id: use_prior
         ? (prior.exec_default_preset_id ?? null)
         : resolved.preset_id,
@@ -12069,8 +12077,7 @@ export function createScheduler(deps) {
       account_switched_from,
       exec_restore_values,
       stamped_keys,
-      preset_id,
-      preset_revision,
+      exec_preset,
       continuation_mode,
       continuation_choice,
       resume_fallback,
@@ -12138,8 +12145,7 @@ export function createScheduler(deps) {
       workflow_mode_prior: prior_wf,
       workflow_mode_source_prior: prior_wf_source,
       receipt_baseline,
-      exec_default_preset_id: preset_id,
-      exec_default_preset_revision: preset_revision,
+      exec_preset,
       exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
       exec_values,
       exec_restore_values,
