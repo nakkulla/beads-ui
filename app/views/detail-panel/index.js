@@ -134,8 +134,6 @@ export function createDetailPanel(mount_element, options) {
   let exec_local = {};
   let selected_preset_id = '';
   let applying_preset = false;
-  /** @type {string[]} */
-  let skipped_orchestration_keys = [];
   let effective_expanded = false;
   /**
    * 레인 선택 메뉴가 열려 있는가 (UI-6g3t §6.2). 상세 패널은 한 번에 bead 하나만
@@ -1235,7 +1233,6 @@ export function createDetailPanel(mount_element, options) {
       return;
     }
     applying_preset = true;
-    skipped_orchestration_keys = [];
     doRender();
     try {
       const res = /** @type {any} */ (
@@ -1258,23 +1255,10 @@ export function createDetailPanel(mount_element, options) {
       const issue = res && Array.isArray(res.issue) ? res.issue[0] : res?.issue;
       if (res && res.applied && issue && typeof issue === 'object') {
         current = issue;
-        skipped_orchestration_keys = Array.isArray(
-          res.skipped_orchestration_keys
-        )
-          ? res.skipped_orchestration_keys.filter(
-              (/** @type {unknown} */ key) => typeof key === 'string'
-            )
-          : [];
         for (const key of EXEC_KEYS) {
           delete exec_local[key];
         }
-        showToast(
-          skipped_orchestration_keys.length > 0
-            ? '실행 프리셋을 적용했습니다. 오케스트레이션 3키는 Bead에 핀할 수 없어 건너뛰었습니다.'
-            : '실행 프리셋을 적용했습니다.',
-          'success',
-          4000
-        );
+        showToast('실행 프리셋을 적용했습니다.', 'success', 4000);
         return;
       }
       if (res && res.error === 'bd_readback_failed') {
@@ -2979,8 +2963,7 @@ export function createDetailPanel(mount_element, options) {
               expanded: effective_expanded,
               presets: execPresetState()?.presets || [],
               preset_id: selected_preset_id,
-              preset_busy: applying_preset,
-              skipped_orchestration_keys
+              preset_busy: applying_preset
             },
             {
               onToggle: (open) => {
@@ -3000,7 +2983,6 @@ export function createDetailPanel(mount_element, options) {
               },
               onPresetSelect: (id) => {
                 selected_preset_id = id;
-                skipped_orchestration_keys = [];
                 doRender();
               },
               onPresetApply: () => void applyImplPreset()
@@ -3069,7 +3051,6 @@ export function createDetailPanel(mount_element, options) {
         exec_local = {};
         place_menu_open = false;
         selected_preset_id = '';
-        skipped_orchestration_keys = [];
         effective_expanded = false;
         resetEditors();
         resetComments();
@@ -3100,7 +3081,6 @@ export function createDetailPanel(mount_element, options) {
       place_menu_open = false;
       selected_preset_id = '';
       applying_preset = false;
-      skipped_orchestration_keys = [];
       effective_expanded = false;
       resetEditors();
       resetComments();
@@ -3148,7 +3128,6 @@ export function createDetailPanel(mount_element, options) {
       resetExecAccountCatalog();
       selected_preset_id = '';
       applying_preset = false;
-      skipped_orchestration_keys = [];
       resetComments();
       resetTaskPrompt();
       resetSessionRefs();

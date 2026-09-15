@@ -36,6 +36,7 @@ import {
   catalogOrchestrationEfforts,
   catalogSpeedTiers,
   modelEfforts,
+  modelOrchestrationEfforts,
   modelRunner,
   modelSpeedTiers
 } from './runner-catalog.js';
@@ -241,6 +242,9 @@ export const ORCHESTRATION_KEYS = [
   'orchestration_effort',
   'orchestration_speed'
 ];
+
+/** The 17 keys replaced when a user applies a preset to one Bead. */
+export const BEAD_PIN_KEYS = [...ORCHESTRATION_KEYS, ...BEAD_APPLY_KEYS];
 
 /** Route-scoped queue keys used only for quick_fix dispatches. */
 export const QUICK_FIX_ORCHESTRATION_KEYS = [
@@ -649,6 +653,37 @@ export function validateExecSettings(settings, options = {}) {
     return { ok: false, reason: `invalid_${key}` };
   }
   return validateImplSettings(settings, { ...options, catalog });
+}
+
+/**
+ * Validate projected orchestration pins against the selected model's limits.
+ * Without a model pin, effort and speed use the global enum vocabulary.
+ *
+ * @param {Record<string, unknown>} settings
+ * @param {{ catalog?: ResolvedCatalog }} [options]
+ * @returns {{ ok: true }|{ ok: false, reason: string }}
+ */
+export function validateOrchestrationPin(settings, options = {}) {
+  const catalog = options.catalog ?? runtimeCatalog();
+  const enums = execSettingEnums(catalog);
+  const model = settings.orchestration_model;
+  if (model !== undefined && !modelRunner(catalog, model)) {
+    return { ok: false, reason: 'invalid_orchestration_model' };
+  }
+  if (model !== undefined) {
+    enums.orchestration_effort = modelOrchestrationEfforts(catalog, model);
+    enums.orchestration_speed = modelSpeedTiers(catalog, model);
+  }
+  for (const key of ORCHESTRATION_KEYS) {
+    const value = settings[key];
+    if (value === undefined) {
+      continue;
+    }
+    if (typeof value !== 'string' || !enums[key].includes(value)) {
+      return { ok: false, reason: `invalid_${key}` };
+    }
+  }
+  return { ok: true };
 }
 
 /**

@@ -1,7 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { IMPL_PRESET_KEYS as SERVER_IMPL_PRESET_KEYS } from '../../../server/worker/exec-enums.js';
+import {
+  BEAD_PIN_KEYS as SERVER_BEAD_PIN_KEYS,
+  IMPL_PRESET_KEYS as SERVER_IMPL_PRESET_KEYS
+} from '../../../server/worker/exec-enums.js';
 import {
   BEAD_APPLY_KEYS,
+  BEAD_PIN_KEYS,
   BOOLEAN_DRAFT_ON,
   IMPL_DISPATCHES,
   IMPL_PRESET_KEYS,
@@ -198,6 +202,12 @@ describe('session key lists', () => {
     expect(
       BEAD_APPLY_KEYS.some((key) => key.startsWith('orchestration_'))
     ).toBe(false);
+  });
+
+  test('mirrors the 17 server pin keys with orchestration first', () => {
+    expect(BEAD_PIN_KEYS).toEqual([...ORCHESTRATION_KEYS, ...BEAD_APPLY_KEYS]);
+    expect(BEAD_PIN_KEYS).toEqual([...SERVER_BEAD_PIN_KEYS]);
+    expect(BEAD_PIN_KEYS).toHaveLength(17);
   });
 
   test('keeps workflow_mode out of the per-bead keys', () => {

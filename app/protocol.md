@@ -887,11 +887,12 @@ provider from it — only an exact `impl_model` token names one.
   and the general and quick_fix runtime/model/effort triples; `fast` quick_fix
   implementation speed requires a runner whose catalog exposes that speed tier.
 - `apply-impl-preset` payload: `{ id, preset_id, expected_revision }`. It
-  replaces the issue's 14 per-Bead keys and never pins either orchestration
-  triple. For a `route=quick_fix` issue, each implementation axis uses its
-  `quick_fix_*` preset value before the general value; an exact quick_fix model
-  derives its runtime before the general runtime fallback. An incompatible
-  projected pin is `impl_preset_incompatible` and no metadata is written.
+  replaces the issue's 17 pin keys (three orchestration keys plus 14 session
+  keys). For a `route=quick_fix` issue, each orchestration and implementation
+  axis uses its `quick_fix_*` preset value before the general value; an exact
+  quick_fix model derives its runtime before the general runtime fallback. An
+  incompatible projected pin is `impl_preset_incompatible` and no metadata is
+  written.
 - `apply-impl-preset-global` payload:
   `{ preset_id, expected_revision, expected_queue_revision, root_dir? }`. A
   `lane` field is `bad_request`. One apply replaces all 18 preset-carried kv

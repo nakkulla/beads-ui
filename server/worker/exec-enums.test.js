@@ -15,6 +15,7 @@ import * as enums from './exec-enums.js';
 import {
   ACCOUNT_KEYS,
   BEAD_APPLY_KEYS,
+  BEAD_PIN_KEYS,
   EXEC_SETTING_KEYS,
   IMPL_PRESET_KEYS,
   IMPL_RUNTIMES,
@@ -36,9 +37,88 @@ import {
   sessionDefaultEnums,
   validateExecSettings,
   validateImplPresetSettings,
-  validateImplSettings
+  validateImplSettings,
+  validateOrchestrationPin
 } from './exec-enums.js';
 import { resolveCatalog } from './runner-catalog.js';
+
+describe('validateOrchestrationPin', () => {
+  test.each([
+    [{}, { ok: true }],
+    [
+      { orchestration_effort: 'ultra', orchestration_speed: 'fast' },
+      { ok: true }
+    ],
+    [
+      { orchestration_effort: 'auto' },
+      { ok: false, reason: 'invalid_orchestration_effort' }
+    ],
+    [
+      { orchestration_speed: 'turbo' },
+      { ok: false, reason: 'invalid_orchestration_speed' }
+    ]
+  ])(
+    'validates model-less pins %j against the global enums',
+    (settings, expected) => {
+      const catalog = resolveCatalog({ warn: () => {} });
+
+      const result = validateOrchestrationPin(settings, { catalog });
+
+      expect(result).toEqual(expected);
+    }
+  );
+
+  test.each(['missing-model', 'auto', '', null, 42])(
+    'rejects unknown catalog model %j',
+    (model) => {
+      const catalog = resolveCatalog({ warn: () => {} });
+
+      const result = validateOrchestrationPin(
+        { orchestration_model: model },
+        { catalog }
+      );
+
+      expect(result).toEqual({
+        ok: false,
+        reason: 'invalid_orchestration_model'
+      });
+    }
+  );
+
+  test.each([
+    ['astra', 'ultra', { ok: true }],
+    ['opus', 'ultra', { ok: false, reason: 'invalid_orchestration_effort' }]
+  ])(
+    'validates %s orchestration effort %s against the model',
+    (model, effort, expected) => {
+      const catalog = resolveCatalog({ warn: () => {} });
+
+      const result = validateOrchestrationPin(
+        { orchestration_model: model, orchestration_effort: effort },
+        { catalog }
+      );
+
+      expect(result).toEqual(expected);
+    }
+  );
+
+  test.each([
+    ['astra', { ok: true }],
+    ['opus', { ok: false, reason: 'invalid_orchestration_speed' }]
+  ])(
+    'validates fast speed against the %s runner capability',
+    (model, expected) => {
+      const catalog = resolveCatalog({ warn: () => {} });
+
+      const result = validateOrchestrationPin(
+        { orchestration_model: model, orchestration_speed: 'fast' },
+        { catalog }
+      );
+
+      expect(result).toEqual(expected);
+    }
+  );
+});
 
 /** The 15 workspace-global-capable exec keys (workflow_mode excluded). */
 const EXPECTED_KEYS = [
@@ -60,6 +140,12 @@ const EXPECTED_KEYS = [
 ];
 
 describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
+  test('orders the 17 preset pin keys with orchestration first', () => {
+    expect(BEAD_PIN_KEYS).toEqual([...ORCHESTRATION_KEYS, ...BEAD_APPLY_KEYS]);
+    expect(BEAD_PIN_KEYS).toHaveLength(17);
+    expect(new Set(BEAD_PIN_KEYS).size).toBe(17);
+  });
+
   test('keeps account pins outside every preset and exec axis', () => {
     expect(ACCOUNT_KEYS).toEqual(['claude_account', 'codex_account']);
 

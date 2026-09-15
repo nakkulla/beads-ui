@@ -196,7 +196,7 @@ describe('broadcastImplPresets', () => {
 });
 
 describe('buildApplyImplPresetArgs', () => {
-  test('writes every session key in canonical order with one update argv', () => {
+  test('writes every pin key in canonical order with one update argv', () => {
     const args = buildApplyImplPresetArgs('UI-1', {
       impl_dispatch: 'delegated',
       impl_effort: 'high',
@@ -208,6 +208,9 @@ describe('buildApplyImplPresetArgs', () => {
       .filter((_, index) => index % 2 === 1)
       .map((value) => value.split('=')[0]);
     expect(named).toEqual([
+      'orchestration_model',
+      'orchestration_effort',
+      'orchestration_speed',
       'spec_review_model',
       'spec_review_effort',
       'spec_review_speed',
@@ -225,20 +228,176 @@ describe('buildApplyImplPresetArgs', () => {
     ]);
     expect(args).toContain('impl_dispatch=delegated');
     expect(args).toContain('impl_effort=high');
-    expect(args.some((arg) => arg.includes('orchestration_'))).toBe(false);
+    expect(args.slice(2, 8)).toEqual([
+      '--set-metadata',
+      'orchestration_model=sol',
+      '--unset-metadata',
+      'orchestration_effort',
+      '--unset-metadata',
+      'orchestration_speed'
+    ]);
   });
 
-  test('names exactly the fourteen session keys and no orchestration key', () => {
+  test('unsets exactly the 17 pin keys for an empty preset', () => {
     const args = buildApplyImplPresetArgs('UI-1', {});
 
     const named = args.slice(2).filter((_, index) => index % 2 === 1);
-    expect(named).toHaveLength(14);
+    expect(named).toHaveLength(17);
     expect(named).not.toContain('workflow_mode');
-    expect(args.some((arg) => arg.includes('orchestration_'))).toBe(false);
+    expect(named.slice(0, 3)).toEqual([
+      'orchestration_model',
+      'orchestration_effort',
+      'orchestration_speed'
+    ]);
+    expect(args.slice(2).filter((_, index) => index % 2 === 0)).toEqual(
+      Array(17).fill('--unset-metadata')
+    );
   });
 });
 
 describe('handleApplyImplPreset (Bead metadata path)', () => {
+  test.each([undefined, 'spec_backed', 'full_plan'])(
+    'replaces general orchestration pins for route %s',
+    async (route) => {
+      const { ws, sent } = fakeWs();
+      const preset_id = seedPreset(ws, sent, {
+        orchestration_model: 'astra',
+        orchestration_effort: 'ultra',
+        quick_fix_orchestration_model: 'opus',
+        quick_fix_orchestration_effort: 'high',
+        quick_fix_orchestration_speed: 'default'
+      });
+      runBdJsonProjectedInWorkspace.mockResolvedValue({
+        ok: true,
+        data: {
+          id: 'UI-1',
+          metadata: {
+            route,
+            orchestration_model: 'sol',
+            orchestration_speed: 'fast'
+          }
+        }
+      });
+      runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
+
+      await handleApplyImplPreset(ws, {
+        id: 'apply',
+        type: 'apply-impl-preset',
+        payload: { id: 'UI-1', preset_id, expected_revision: 1 }
+      });
+
+      const args = runBdInWorkspace.mock.calls[0][1];
+      expect(args.slice(2, 8)).toEqual([
+        '--set-metadata',
+        'orchestration_model=astra',
+        '--set-metadata',
+        'orchestration_effort=ultra',
+        '--unset-metadata',
+        'orchestration_speed'
+      ]);
+      expect(
+        args.some((/** @type {string} */ arg) => arg.includes('quick_fix_'))
+      ).toBe(false);
+    }
+  );
+
+  test.each([
+    [
+      {
+        quick_fix_orchestration_model: 'sol',
+        quick_fix_orchestration_effort: 'ultra',
+        quick_fix_orchestration_speed: 'fast'
+      },
+      ['sol', 'ultra', 'fast']
+    ],
+    [
+      { quick_fix_orchestration_effort: 'medium' },
+      ['astra', 'medium', 'default']
+    ]
+  ])(
+    'projects quick_fix orchestration overrides %j onto canonical pins',
+    async (overrides, expected) => {
+      const { ws, sent } = fakeWs();
+      const preset_id = seedPreset(ws, sent, {
+        orchestration_model: 'astra',
+        orchestration_effort: 'high',
+        orchestration_speed: 'default',
+        ...overrides
+      });
+      runBdJsonProjectedInWorkspace.mockResolvedValue({
+        ok: true,
+        data: { id: 'UI-1', metadata: { route: 'quick_fix' } }
+      });
+      runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
+
+      await handleApplyImplPreset(ws, {
+        id: 'apply',
+        type: 'apply-impl-preset',
+        payload: { id: 'UI-1', preset_id, expected_revision: 1 }
+      });
+
+      const args = runBdInWorkspace.mock.calls[0][1];
+      expect(args.slice(2, 8)).toEqual([
+        '--set-metadata',
+        `orchestration_model=${expected[0]}`,
+        '--set-metadata',
+        `orchestration_effort=${expected[1]}`,
+        '--set-metadata',
+        `orchestration_speed=${expected[2]}`
+      ]);
+      expect(
+        args.some((/** @type {string} */ arg) => arg.includes('quick_fix_'))
+      ).toBe(false);
+    }
+  );
+
+  test.each([
+    [
+      'quick_fix',
+      { orchestration_model: 'opus', quick_fix_orchestration_effort: 'ultra' },
+      'invalid_orchestration_effort'
+    ],
+    [
+      'quick_fix',
+      {
+        orchestration_model: 'astra',
+        orchestration_speed: 'fast',
+        quick_fix_orchestration_model: 'opus'
+      },
+      'invalid_orchestration_speed'
+    ],
+    [
+      'spec_backed',
+      { orchestration_model: 'opus', orchestration_effort: 'ultra' },
+      'invalid_orchestration_effort'
+    ],
+    [
+      'full_plan',
+      { orchestration_model: 'opus', orchestration_speed: 'fast' },
+      'invalid_orchestration_speed'
+    ]
+  ])(
+    'rejects incompatible %s orchestration projection %j before writing',
+    async (route, settings, reason) => {
+      const { ws, sent } = fakeWs();
+      const preset_id = seedPreset(ws, sent, settings);
+      runBdJsonProjectedInWorkspace.mockResolvedValue({
+        ok: true,
+        data: { id: 'UI-1', metadata: { route } }
+      });
+
+      await handleApplyImplPreset(ws, {
+        id: 'apply',
+        type: 'apply-impl-preset',
+        payload: { id: 'UI-1', preset_id, expected_revision: 1 }
+      });
+
+      expect(sent[sent.length - 1].error.code).toBe('impl_preset_incompatible');
+      expect(sent[sent.length - 1].error.message).toContain(reason);
+      expect(runBdInWorkspace).not.toHaveBeenCalled();
+    }
+  );
+
   test('pins the preset onto the bead and replies with the readback issue', async () => {
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(ws, sent, {
@@ -277,13 +436,12 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
     expect(reply.ok).toBe(true);
     expect(reply.payload.applied).toBe(true);
     expect(reply.payload.issue.id).toBe('UI-1');
-    expect(reply.payload.skipped_orchestration_keys).toEqual([
-      'orchestration_model',
-      'orchestration_effort',
-      'orchestration_speed',
-      'quick_fix_orchestration_model',
-      'quick_fix_orchestration_effort',
-      'quick_fix_orchestration_speed'
+    expect(reply.payload).not.toHaveProperty('skipped_orchestration_keys');
+    expect(Object.keys(reply.payload).sort()).toEqual([
+      'applied',
+      'conflict',
+      'issue',
+      'revision'
     ]);
   });
 
