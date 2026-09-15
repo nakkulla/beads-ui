@@ -52,8 +52,48 @@ describe('ws/compare-handlers', () => {
 
     const passed = /** @type {any} */ (snapshot.mock.calls[0])[0];
     expect(passed.root_dirs).toEqual(['/repo/one']);
+    expect(passed).not.toHaveProperty('issue_types');
+    expect(passed.group_by).toBe('preset');
     expect(passed.include_bench).toBe(true);
     expect(typeof passed.since).toBe('number');
+  });
+
+  test.each([
+    ['preset', 'preset'],
+    ['orchestration', 'orchestration'],
+    ['impl_actor', 'impl_actor'],
+    ['unknown', 'preset'],
+    [null, 'preset'],
+    [undefined, 'preset']
+  ])('normalizes group_by %s to %s', async (group_by, expected) => {
+    const ws = makeSocket();
+    const snapshot = vi.fn(() => ({}));
+
+    await handleGetCompare(
+      /** @type {any} */ (ws),
+      /** @type {any} */ ({ id: 'group', payload: { group_by } }),
+      { snapshot: /** @type {any} */ (snapshot) }
+    );
+
+    expect(snapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ group_by: expected })
+    );
+  });
+
+  test('defaults an omitted range to thirty days', async () => {
+    const ws = makeSocket();
+    const snapshot = vi.fn(() => ({}));
+    const before = Date.now() - 30 * 864e5;
+
+    await handleGetCompare(
+      /** @type {any} */ (ws),
+      /** @type {any} */ ({ id: 'default', payload: {} }),
+      { snapshot: /** @type {any} */ (snapshot) }
+    );
+
+    const passed = /** @type {any} */ (snapshot.mock.calls[0])[0];
+    expect(passed.since).toBeGreaterThanOrEqual(before);
+    expect(passed.since).toBeLessThanOrEqual(Date.now() - 30 * 864e5);
   });
 
   test('answers a projection failure with an error reply', async () => {
