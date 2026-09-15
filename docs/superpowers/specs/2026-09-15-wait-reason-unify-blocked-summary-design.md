@@ -16,6 +16,7 @@ scope:
   - app/views/worker/index.js
   - app/views/monitor/
   - app/views/detail-panel/
+  - app/styles.css
   - docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md
 ---
 
@@ -58,6 +59,18 @@ scope:
    종료·정산 시 보낸다(§8, dotfiles 형제). beads-ui는 그 알림 예정 사실을 행에
    표시하고, 자기 판정(지연·조치 필요)만 스스로 알린다. 완료=관측기, 지연=beads-ui로
    주체가 갈려 중복되지 않는다.
+4. **선행 대기는 레인 위치와 무관하게 판정하고, 직렬 레인 안에서 눈으로 가른다
+   (addendum, 2026-09-15).** 관측: microbiome_bile s1은 `xz9d → c312 → wq0w → hkit`
+   순인데 선행 대기 admission 기록은 스케줄러가 레인 head를 dispatch하려 할 때만
+   남으므로(`recordNotReady`, `tickPass`는 head가 아니면 판정하지 않는다) head가 아닌
+   자리의 선행 대기 항목은 배지 없이 보통 큐 행으로 보이고, 사슬이 길어질수록 무엇이
+   막혀 있는지 구분되지 않는다. 사용자 질문 "막힌 항목을 대기 영역으로 다시 빼야
+   하나"에 대한 결정: **빼지 않는다.** 직렬 레인은 사용자가 정한 실행 순서 자체라
+   항목을 다른 영역으로 옮기면 "c312는 xz9d 다음"이라는 순서 정보가 사라진다
+   (UI-d3i1 §5.4 "새 status 어휘도 새 레인도 없이"를 유지). 대신 `prerequisite` 사유의
+   재료에 서버가 큐·직렬 레인 전 항목에 싣는 `bead_blocked_by`를 더해 head가 아닌
+   항목도 같은 판정을 받게 하고(§5.1), 직렬 레인 행에 선행 대기 표시를 얹어 순서를
+   지킨 채 구분한다(§7.7).
 
 ## 3. 검증된 전제
 
@@ -135,7 +148,7 @@ WaitReason
 | kind | 재료 | headline | release |
 | --- | --- | --- | --- |
 | `external_job` | watch + gate + 원래 이슈 제목 | `<원래 이슈>가 <ssh_host> 작업 <job_id> 종료를 기다림 · <작업 상태>` | `<interval>분마다 자동 확인 · 종료 확인되면 대기 자동 해제` + (`notify.on_complete === "discord"`일 때만) ` · 완료 시 Discord 알림`; `none`·부재·미지원 값이면 그 조각을 그리지 않는다 |
-| `prerequisite` | held `waiting` attempt 중 `cause_detail.blockers[]`가 있고 `cause !== 'base_moved'`인 것, 또는 `prerequisite_unmet` admission의 `blockers[]`(같은 rig) + blocker 제목·status | `<blocker ID> "<제목 앞 40자>" 완료를 기다림 (<status>)` | `선행이 닫히면 bd ready 재스캔으로 자동 복귀` |
+| `prerequisite` | held `waiting` attempt 중 `cause_detail.blockers[]`가 있고 `cause !== 'base_moved'`인 것, 또는 `prerequisite_unmet` admission의 `blockers[]`(같은 rig), 또는 (addendum §2-4) attempt도 admission 기록도 없는 큐·직렬 레인 항목의 `bead_blocked_by[bead]`가 비어 있지 않은 것 — 세 재료의 합집합에서 같은 blocker ID는 한 번만 센다 + blocker 제목·status | `<blocker ID> "<제목 앞 40자>" 완료를 기다림 (<status>)` | `선행이 닫히면 bd ready 재스캔으로 자동 복귀` |
 | `prerequisite_foreign` | 위 `blockers[]` 중 `rig`가 다른 것 + foreign readback status(UI-yue8 §7의 상태 캐시) | 위와 같고 `<rig>/<ID>` 표기 | `다른 저장소 선행이 닫히면 자동 복귀` |
 | `base_moved` | held `waiting` attempt 중 `cause === 'base_moved'`(`waitProjection`) | `기준 이동 대기 · 보존 후보 <sha7>가 새 base 위에서 재검증을 기다림` | `↻ 이어하기로 보존 세션 재개` (ADR UI-lmqu·UI-lmqu-2의 출구 그대로) |
 | `provider_hold` (`target.kind=usage_limit`) | target + 계정 카탈로그 alias | `<runner> <계정 alias>(<plan>) <창> 한도 초과` | `리셋 <resets_at\|미상> 뒤 자동 프로브 (자동 재개 <남은 회수>회)` / 소진이면 `자동 재개 꺼짐 · ↻ 지금 프로브 필요` |
@@ -149,6 +162,13 @@ WaitReason
 
 작업 상태 문구는 UI-7341 §4.2 표를 유지한다. 원래 이슈 제목은 40자에서 자르고 없으면
 ID만 쓴다. 문장의 모든 조각은 재료가 있을 때만 붙인다.
+
+`bead_blocked_by`는 `worker-handlers.js`의 `beadBlockedByFor`가 큐·`pr_wait`·`done`·
+직렬 레인 전 항목과 실행 중 항목에 대해 title cache의 직접 `blocks` blocker 목록을
+싣는 키다(UI-04vo §3). 부분성 계약을 그대로 따른다: **키 부재는 미상**이지 "선행
+없음"이 아니므로 판정하지 않고, 빈 배열만이 "열린 선행 없음"이다. 닫힌 foreign
+blocker는 `cleanForeignBlockers`가 이미 뺀다. `pr_wait`·`done`·실행 중 항목은 이
+사유의 대상이 아니다 — 큐와 직렬 레인 항목만 본다.
 
 ### 5.2 판정 규칙과 임계 (`server/worker/wait-judgment.js` 상수 한 곳)
 
@@ -292,7 +312,8 @@ microbiome_bile · 작업 246428 · wallace
 보이는 전 저장소, Worker는 현재 워크스페이스. 클릭 팝오버: 사유 종류별 그룹(`외부 계산
 a · 선행 b · 공급자 c · 사람 d · 수동 출발 e`), 각 항목 한 줄
 `<판정 배지> <저장소> <ID> — <headline>`, 클릭은 그 카드로 스크롤하고 강조한다. 0건이면
-배지를 그리지 않는다.
+배지를 그리지 않는다. `선행 b`는 §5.1의 세 재료를 합친 수이므로 직렬 레인 head가 아닌
+선행 대기 항목도 센다(addendum §2-4).
 
 ### 7.5 상세 패널
 
@@ -312,6 +333,29 @@ headline·release를 붙이고 기존 `↻ 이어하기` 조작과 `기준 이�
 ↻ 지금 프로브`; `outage`는 `codex 공급자 장애 · <detail> · 다음 프로브 14:31` + `⏳
 정상 대기`(프로브 시각이 5분 넘게 지나면 `⚠ 지연 · 프로브 지연`). 계정 alias는 기존
 카탈로그가 없으면 계정 키 앞 8자로 대신한다. 조작은 기존 버튼이다.
+
+### 7.7 직렬 레인 선행 대기 행의 시각 구분 (addendum §2-4)
+
+큐·직렬 레인 행(`miniRow`) 중 `wait_reasons`에 `prerequisite`(`_foreign`) 사유가 붙은
+항목은 자리를 지킨 채 다음을 얹는다.
+
+- 행 수식자 `worker-mini--prerequisite`(`app/styles.css`): 본문을 흐리게(기존
+  `is-dimmed`와 같은 강도) 하고 왼쪽 테두리를 held 색으로 긋는다. 드래그·순번·조작은
+  그대로다 — 순서를 바꾸는 것은 여전히 사용자다.
+- 슬롯 1 정체성: 기존 `⛓ 선행 대기` held 판정 뱃지(카드 문법 §5.1 슬롯 1의 "held 판정
+  뱃지")를 admission 기록 없이도 §5.1 재료로 그린다. 새 라벨이 아니라 이미 슬롯이
+  있는 뱃지의 재료 확대이므로 슬롯 표는 바꾸지 않는다(ADR 0014).
+- 슬롯 3 진행: §7.1과 같은 headline·release 두 줄. 슬롯 4a의 `⛓ <ID>` 칩은 이미
+  `bead_blocked_by`로 그려지므로 변화 없다.
+- 판정 배지(§7.1 슬롯 1)는 `prerequisite` 규칙(§5.2)을 그대로 따른다: 열린 선행이
+  `blocked`·`deferred`·`worker-ineligible`이면 `⛔ 조치 필요`, 그 밖에는 `⏳ 정상 대기`.
+- 레인 헤더의 기존 `held` 뱃지·`lane_states.corrections`(선행이 뒤에 있는 항목의
+  순서 정정 제안)는 건드리지 않는다.
+
+같은 항목이 held `waiting` 타일로도 서면(attempt가 있는 경우) 타일이 §7.6을 따르고,
+큐 행은 이 절을 따른다 — 두 자리가 같은 `wait_reasons`를 읽으므로 문장이 어긋나지
+않는다. 후보 레인(`runnable`)은 큐에 넣기 전 항목이고 UI-q1y7의 의존 인접화와
+`⛓ <ID>` 칩이 이미 사슬을 보여 주므로 이 절의 대상이 아니다.
 
 ## 8. dotfiles 형제 — 관측기 완료 알림
 
@@ -348,12 +392,19 @@ beads-ui는 `notify.on_complete === "discord"`일 때만 `완료 시 Discord 알
   만들지 않고 초과 시 `running`을 낸다;
   `decorateQueue`의 `external_waits`·`wait_reasons` 부착; `buildLanes`의 `reason`
   부착; 렌더 템플릿(각 판정 배지·문장·버튼 존재/부재); `[지금 확인]` 핸들러(fake spawn
-  으로 `settled`/`still_waiting`/`skipped`/`error`, in-flight 거부, `since` 불일치 거부).
+  으로 `settled`/`still_waiting`/`skipped`/`error`, in-flight 거부, `since` 불일치 거부);
+  (addendum §2-4) `wait-judgment.js`가 attempt·admission 기록 없는 직렬 레인 두 번째
+  항목에 `bead_blocked_by`만으로 `prerequisite`를 내고, 키 부재에는 내지 않으며, 빈
+  배열에는 내지 않고, admission `blockers`와 겹치는 ID를 한 번만 세는 것;
+  `buildLanes`가 그 항목의 큐 행에 `⛓ 선행 대기` 뱃지와 `prerequisite` 사유를 붙이고
+  `miniRow`가 `worker-mini--prerequisite`를 달며 순번·드래그 속성이 그대로인 것;
+  `pr_wait`·`done` 항목에는 붙지 않는 것.
 - 재현: watch fixture를 `terminal_recorded` 35분으로 두면 `⚠ 해제 지연`이 뜨고 알림이
   1회 가며, 다음 판정 주기에 두 번째 알림이 없고, `complete`가 되면 배지와 키가 사라진다.
 - 브라우저 QA 1280px/390px: Worker 탭 대기 영역에 외부 작업 묶음과 요약 배지가 보이고,
-  Monitor 행이 §7.2 문장으로 읽히며, 요약 팝오버 클릭이 카드로 이동한다. 스크린샷을
-  남긴다.
+  Monitor 행이 §7.2 문장으로 읽히며, 요약 팝오버 클릭이 카드로 이동한다. 직렬 레인에서
+  head가 아닌 선행 대기 행이 흐려지고 `⛓ 선행 대기`가 서며 순번이 유지되는 것을 같은
+  스크린샷에 담는다. 스크린샷을 남긴다.
 - Pre-Handoff Validation 전체(`tsc`·`lint`·`prettier`·Vitest).
 
 ## 11. 경계·후속
@@ -371,9 +422,15 @@ beads-ui는 `notify.on_complete === "discord"`일 때만 `완료 시 Discord 알
 - 관찰: UI-wecw와 `server/ws/connection.js`·`app/protocol.js` scope 겹침 — 결정 충돌
   없음(경로만 같다).
 - 비목표: 관측기 판정·900초 주기·gate 해제 순서 변경, 이슈 `status`·admission 쓰기,
-  gate 닫기 조작, 새 탭, HTTP 큐 API 변경, 해소 알림.
+  gate 닫기 조작, 새 탭, HTTP 큐 API 변경, 해소 알림, 선행 대기 항목의 레인 이동·
+  자동 재배치, `auto_advance` 토글.
+- 관찰: 직렬 레인에 남은 closed 항목(prostate s1의 PROSTATE-n50, microbiome_bile s1의
+  Analysis-dyv)은 UI-tqqp(closed-queue sweep이 leaf paused attempt 때문에 건너뜀)의
+  소유다. 이 설계는 closed 항목에 사유를 만들지 않는다.
 - 결정: 판정 임계는 설정이 아니라 코드 상수다 — 두 탭과 알림이 같은 값을 읽어야 하고
   사용자 설정면이 아직 없다.
+- 결정: 선행 대기 항목은 레인 밖으로 옮기지 않는다 — 직렬 레인 순서는 사용자의 실행
+  순서이고 순서 정보는 항목의 자리에만 있다(§2-4, UI-d3i1 §5.4 유지).
 
 ## 결정 (ADR 후보)
 
