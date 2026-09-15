@@ -133,7 +133,7 @@ import {
 } from './state-paths.js';
 import * as default_usage_receipts from './usage-receipts.js';
 import { publishWorkspaceActivity } from './workspace-activity.js';
-import { branchForBead } from './worktree.js';
+import { branchForBead, readRebaseBranch } from './worktree.js';
 
 const log = debug('worker:scheduler');
 
@@ -12077,26 +12077,28 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Resolve the ordered fallback for a disappeared resume worktree.
+   * Resolve the ordered fallback when resume worktree ownership fails.
    *
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {string} bead_id
    * @param {any} options
-   * @returns {Promise<'repair_target_resolved'|'fresh'|'worktree_missing'>}
+   * @param {string} reason
+   * @returns {Promise<string>}
    */
   async function missingRelaunchDecision(
     workspace,
     attempt_id,
     bead_id,
-    options
+    options,
+    reason
   ) {
     let target_resolved = null;
     try {
       const snapshot = await deps.bd.snapshotBead(bead_id);
       target_resolved = snapshot.status === 'closed';
     } catch {
-      return 'worktree_missing';
+      return reason;
     }
     if (target_resolved) {
       return 'repair_target_resolved';
@@ -12104,7 +12106,7 @@ export function createScheduler(deps) {
     if (options.disposition) {
       return 'fresh';
     }
-    return 'worktree_missing';
+    return reason;
   }
 
   /**
@@ -12371,7 +12373,8 @@ export function createScheduler(deps) {
           workspace,
           new_attempt_id,
           bead_id,
-          options
+          options,
+          owned.reason
         );
         if (decision === 'fresh') {
           wt_path = repo;
@@ -12478,7 +12481,8 @@ export function createScheduler(deps) {
         workspace,
         new_attempt_id,
         bead_id,
-        options
+        options,
+        launched.reason
       );
       if (decision === 'fresh') {
         deps.store.updateAttempt(workspace, {
@@ -12597,7 +12601,12 @@ export function createScheduler(deps) {
     if (branch.code !== 0) {
       return { ok: false, reason: 'worktree_branch_unreadable' };
     }
-    if (String(branch.stdout || '').trim() !== bead_id) {
+    /** @type {string|null} */
+    let branch_name = String(branch.stdout || '').trim();
+    if (branch_name === 'HEAD') {
+      branch_name = await readRebaseBranch(wt_path, deps.gitRun);
+    }
+    if (branch_name !== bead_id) {
       return { ok: false, reason: 'worktree_branch_mismatch' };
     }
     return { ok: true, path: wt_path };

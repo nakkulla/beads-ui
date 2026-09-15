@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -6814,6 +6815,176 @@ describe('scheduler resume (spec §1)', () => {
       expect(prompt).not.toContain('private-key');
     }
   );
+
+  test.each(['merge', 'apply'])(
+    'resumes the owned worktree during a conflicting %s rebase',
+    async (backend) => {
+      const repo = path.join(tmp_state, 'repo');
+      const wt_path = path.join(repo, '.worktrees', 'B1');
+      fs.mkdirSync(repo);
+      /**
+       * @param {string[]} args
+       * @param {{ cwd?: string }} [options]
+       */
+      function gitRun(args, options = {}) {
+        const result = spawnSync('git', args, {
+          cwd: options.cwd || repo,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            GIT_CONFIG_GLOBAL: '/dev/null',
+            GIT_CONFIG_SYSTEM: '/dev/null'
+          }
+        });
+        return {
+          code: result.status,
+          stdout: result.stdout,
+          stderr: result.stderr
+        };
+      }
+      /**
+       * @param {string[]} args
+       * @param {string} [cwd]
+       */
+      function gitOk(args, cwd = repo) {
+        const result = gitRun(args, { cwd });
+        expect(result.code, result.stderr).toBe(0);
+      }
+      gitOk(['init', '-b', 'main']);
+      gitOk(['config', 'user.name', 'Test']);
+      gitOk(['config', 'user.email', 'test@example.com']);
+      fs.writeFileSync(path.join(repo, 'conflict.txt'), 'base\n');
+      gitOk(['add', 'conflict.txt']);
+      gitOk(['commit', '-m', 'base']);
+      gitOk(['worktree', 'add', '-b', 'B1', wt_path]);
+      fs.writeFileSync(path.join(repo, 'conflict.txt'), 'main\n');
+      gitOk(['commit', '-am', 'main']);
+      fs.writeFileSync(path.join(wt_path, 'conflict.txt'), 'bead\n');
+      gitOk(['commit', '-am', 'bead'], wt_path);
+      expect(
+        gitRun(['rebase', `--${backend}`, 'main'], { cwd: wt_path }).code
+      ).toBe(1);
+      expect(
+        gitRun(['rev-parse', '--abbrev-ref', 'HEAD'], {
+          cwd: wt_path
+        }).stdout.trim()
+      ).toBe('HEAD');
+      const env = setup({
+        config: {},
+        slots: 1,
+        gitRun,
+        worktree: { pathFor: () => wt_path }
+      });
+      seedAttempt(env.store, 'r1', resumablePrior({ repo }));
+
+      const result = await env.scheduler.resume(WS, 'r1');
+
+      expect(result.ok).toBe(true);
+      expect(env.runner.cwdFor('B1')).toBe(wt_path);
+      expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
+      expect(env.worktree.add).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([
+    { branch: 'HEAD', head_name: null, backend: 'rebase-merge' },
+    { branch: 'other', head_name: null, backend: 'rebase-merge' },
+    { branch: 'HEAD', head_name: 'refs/heads/other', backend: 'rebase-merge' },
+    { branch: 'HEAD', head_name: 'refs/heads/other', backend: 'rebase-apply' },
+    { branch: 'HEAD', head_name: 'B1', backend: 'rebase-merge' }
+  ])(
+    'preserves branch mismatch for $branch with $backend head-name $head_name',
+    async ({ branch, head_name, backend }) => {
+      const git_dir = path.join(tmp_state, 'git-dir');
+      fs.mkdirSync(path.join(git_dir, backend), { recursive: true });
+      if (head_name !== null) {
+        fs.writeFileSync(
+          path.join(git_dir, backend, 'head-name'),
+          `${head_name}\n`
+        );
+      }
+      const env = setup({
+        config: {},
+        slots: 1,
+        gitRun: vi.fn(async (args) => ({
+          code: 0,
+          stdout: args.includes('--git-dir') ? git_dir : branch,
+          stderr: ''
+        }))
+      });
+      seedAttempt(env.store, 'r1', resumablePrior());
+
+      const result = await env.scheduler.resume(WS, 'r1');
+
+      expect(result).toEqual({ ok: false, reason: 'worktree_branch_mismatch' });
+      expect(
+        Object.values(env.store.snapshot(WS).attempts).find(
+          (attempt) => attempt.resumed_from === 'r1'
+        )
+      ).toMatchObject({
+        status: 'failed',
+        cause: 'worktree_branch_mismatch'
+      });
+      expect(env.runner.spawnOrder).toEqual([]);
+    }
+  );
+
+  test.each(['failure', 'throw'])(
+    'preserves branch unreadable on git %s',
+    async (mode) => {
+      const env = setup({
+        config: {},
+        slots: 1,
+        gitRun: vi.fn(async () => {
+          if (mode === 'throw') {
+            throw new Error('git unavailable');
+          }
+          return { code: 1, stdout: '', stderr: 'unreadable' };
+        })
+      });
+      seedAttempt(env.store, 'r1', resumablePrior());
+
+      const result = await env.scheduler.resume(WS, 'r1');
+
+      expect(result).toEqual({
+        ok: false,
+        reason: 'worktree_branch_unreadable'
+      });
+      expect(
+        Object.values(env.store.snapshot(WS).attempts).find(
+          (attempt) => attempt.resumed_from === 'r1'
+        )
+      ).toMatchObject({
+        status: 'failed',
+        cause: 'worktree_branch_unreadable'
+      });
+      expect(env.runner.spawnOrder).toEqual([]);
+    }
+  );
+
+  test('preserves an unowned worktree refusal', async () => {
+    const env = setup({
+      config: {},
+      slots: 1,
+      worktree: {
+        pathFor: vi.fn().mockReturnValueOnce('/wt/B1').mockReturnValue('')
+      }
+    });
+    seedAttempt(env.store, 'r1', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'r1');
+
+    expect(result).toEqual({ ok: false, reason: 'worktree_unowned' });
+    expect(
+      Object.values(env.store.snapshot(WS).attempts).find(
+        (attempt) => attempt.resumed_from === 'r1'
+      )
+    ).toMatchObject({
+      status: 'failed',
+      cause: 'worktree_unowned'
+    });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
 
   test('refuses worktree_missing when the bead worktree is gone', async () => {
     const env = setup({ config: {}, slots: 1 });

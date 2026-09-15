@@ -82,6 +82,43 @@ export function branchForBead(bead_id) {
 }
 
 /**
+ * Read the original branch while a rebase temporarily detaches HEAD.
+ *
+ * @param {string} wt_path
+ * @param {GitRunner} gitRun
+ * @returns {Promise<string|null>}
+ */
+export async function readRebaseBranch(wt_path, gitRun) {
+  /** @type {string} */
+  let git_dir;
+  try {
+    const result = await gitRun(['rev-parse', '--git-dir'], { cwd: wt_path });
+    if (result.code !== 0 || !result.stdout.trim()) {
+      return null;
+    }
+    git_dir = path.resolve(wt_path, result.stdout.trim());
+  } catch {
+    return null;
+  }
+  for (const backend of ['rebase-merge', 'rebase-apply']) {
+    try {
+      const head_name = (
+        await nodeFs.promises.readFile(
+          path.join(git_dir, backend, 'head-name'),
+          'utf8'
+        )
+      ).trim();
+      return head_name.startsWith('refs/heads/')
+        ? head_name.slice('refs/heads/'.length)
+        : null;
+    } catch {
+      // The other rebase backend may hold the branch record.
+    }
+  }
+  return null;
+}
+
+/**
  * How long a dispatch-time dependency install may run before it is killed
  * (spec D3). A cold `npm ci` on this repo takes well under a minute; the
  * ceiling exists so a hung registry cannot hold a slot open forever.
