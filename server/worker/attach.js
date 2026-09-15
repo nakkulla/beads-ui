@@ -26,6 +26,7 @@
  * @import { BeadSnapshot } from './scheduler.js'
  */
 import { execFileSync, spawn } from 'node:child_process';
+import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -34,6 +35,7 @@ import {
 } from '../../app/utils/worker-eligibility.js';
 import { kvGetJson, runBdJsonProjected, runShell } from '../bd.js';
 import { getConfig } from '../config.js';
+import { createExternalJobObservations } from '../external-job-observations.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
 import {
@@ -61,14 +63,16 @@ import { createDiscardCoordinator } from './discard-coordinator.js';
 import { discardOperationActive } from './discard-phase.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
 import {
+  applyForeignBlockerCleanup,
   cachedIssuePrefixFor,
+  foreignBlockerStatusFor,
   prewarmIssuePrefix
 } from './foreign-blocker-status.js';
 import { readPushLog } from './guard-hook.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
 import { createMergeQueue } from './merge-queue.js';
-import { createNotifier } from './notify.js';
+import { createNotifier, notifyWaitReasons } from './notify.js';
 import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
@@ -107,6 +111,7 @@ import { baseUnresolvedReason, resolveTargetBase } from './target-base.js';
 import { replayUsage } from './usage-replay.js';
 import { runVerifyAtSha } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
+import { judgeWaitReasons } from './wait-judgment.js';
 import {
   onWorkspaceActivity,
   publishWorkspaceActivity
@@ -114,6 +119,263 @@ import {
 import { createWorktreeManager } from './worktree.js';
 
 const log = debug('worker:attach');
+
+export const WAIT_JUDGE_INTERVAL_SECONDS = 5 * 60;
+
+/** @typedef {{ root_dir: string, name: string, snapshot: any, snapshot_stale?: boolean }} WaitWorkspace */
+/** @type {Map<string, ReturnType<typeof createWaitObservationCollector>>} */
+const wait_collectors = new Map();
+
+/**
+ * Retain the judgment fields from the collector's SAME validated watch reads.
+ * The existing external-row projection deliberately carries a smaller shape.
+ *
+ * @param {Parameters<typeof createExternalJobObservations>[0]} [options]
+ */
+export function createWaitObservationCollector(options = {}) {
+  const io = options.fs || fs;
+  /** @type {Map<string, Record<string, any>>} */
+  const watches = new Map();
+  const collector = createExternalJobObservations({
+    ...options,
+    fs: {
+      readdir: async (file) => {
+        const names = await io.readdir(file);
+        watches.clear();
+        return names;
+      },
+      readFile: async (file) => {
+        const raw = await io.readFile(file, 'utf8');
+        const watch = JSON.parse(raw);
+        if (watch && typeof watch.watch_id === 'string') {
+          watches.set(watch.watch_id, {
+            interval_seconds: watch.interval_seconds,
+            ssh_host: watch.ssh_host,
+            error_count: watch.error_count,
+            notify: { on_complete: watch.notify?.on_complete },
+            registered_at: watch.registered_at,
+            terminal_recorded_at: watch.terminal_recorded_at
+          });
+        }
+        return raw;
+      }
+    }
+  });
+  /** @type {{ rows: Record<string, any>[], collected_at: number, stale: boolean }|null} */
+  let completed = null;
+  return {
+    /** @param {WaitWorkspace[]} workspaces */
+    async collect(workspaces) {
+      await collector.collect(workspaces);
+      const snapshot = collector.get();
+      completed = {
+        ...snapshot,
+        rows: snapshot.rows.map((row) => ({
+          ...watches.get(row.watch_id),
+          ...row,
+          collected_at: snapshot.collected_at
+        }))
+      };
+      return completed.rows;
+    },
+    /** @returns {{ rows: Record<string, any>[], collected_at: number, stale: boolean }} */
+    get() {
+      return completed || collector.get();
+    },
+    clear() {
+      collector.clear();
+      watches.clear();
+      completed = null;
+    }
+  };
+}
+
+/**
+ * A workspace owns its in-flight collection so overlapping roots never join a
+ * promise that collected only a different workspace.
+ *
+ * @param {string} workspace_root
+ */
+function waitCollectorFor(workspace_root) {
+  const key = keyFor(workspace_root);
+  let collector = wait_collectors.get(key);
+  if (!collector) {
+    collector = createWaitObservationCollector();
+    wait_collectors.set(key, collector);
+  }
+  return collector;
+}
+
+/** The Monitor and attached Worker both consume these same per-root caches. */
+export const workerExternalWaitObservations = {
+  /** @param {WaitWorkspace[]} workspaces */
+  async collect(workspaces) {
+    await Promise.all(
+      workspaces.map(async (workspace) => {
+        const att = ATTACHMENTS.get(keyFor(workspace.root_dir));
+        if (att?.waitJudge) {
+          await att.waitJudge.refresh(workspace);
+        } else {
+          await waitCollectorFor(workspace.root_dir).collect([workspace]);
+        }
+      })
+    );
+  },
+  get() {
+    const snapshots = [...wait_collectors.values()].map((collector) =>
+      collector.get()
+    );
+    return {
+      rows: snapshots.flatMap((snapshot) => snapshot.rows),
+      collected_at: snapshots.length
+        ? Math.max(...snapshots.map((snapshot) => snapshot.collected_at))
+        : 0,
+      stale: snapshots.some((snapshot) => snapshot.stale)
+    };
+  }
+};
+
+/**
+ * Viewer-independent wait-judge lifecycle and memory-only observation clocks.
+ *
+ * @param {{ workspace: string, repo: string, store: Pick<ReturnType<import('./queue-store.js').createQueueStore>, 'snapshot'|'claimWaitNotifications'|'recordTimelineEvent'>, notifier: Pick<ReturnType<typeof createNotifier>, 'waitOverdue'|'waitActionRequired'>, collector?: ReturnType<typeof createWaitObservationCollector>, requestSnapshot?: typeof requestWorkspaceSnapshot, readFacts: (queue: any, workspace: WaitWorkspace) => Promise<{ bead_blocked_by?: Record<string, string[]>, blocker_facts?: Record<string, any>, foreign_readback?: Record<string, any>, account_catalog?: Record<string, any> }>, now?: () => number, onChanged?: (workspace: string) => void, subscribe?: typeof onQueueChanged }} deps
+ */
+export function createWaitJudge(deps) {
+  const now = deps.now || Date.now;
+  const collector = deps.collector || waitCollectorFor(deps.workspace);
+  const requestSnapshot = deps.requestSnapshot || requestWorkspaceSnapshot;
+  const onChanged = deps.onChanged || emitQueueChanged;
+  /** @type {import('./wait-judgment.js').ObservationTimes} */
+  let observed_at = {};
+  /** @type {{ wait_reasons: import('./wait-judgment.js').WaitReason[], external_waits: Record<string, any>[] }} */
+  let state = { wait_reasons: [], external_waits: [] };
+  /** @type {Promise<void>|null} */
+  let in_flight = null;
+  /** @type {(() => void)|null} */
+  let unsubscribe = null;
+  let controls = '';
+  let epoch = 0;
+  let rerun = false;
+
+  /** @param {WaitWorkspace} [workspace] */
+  function refresh(workspace) {
+    if (in_flight) {
+      return in_flight;
+    }
+    const run_epoch = epoch;
+    in_flight = (async () => {
+      let material = workspace;
+      if (!material) {
+        const result = await requestSnapshot(deps.workspace, 'wait-judge');
+        material = {
+          root_dir: deps.workspace,
+          name: path.basename(deps.repo),
+          snapshot: result.ok ? result.snapshot : null,
+          snapshot_stale: !result.ok || result.stale === true
+        };
+      }
+      await collector.collect([material]);
+      const queue = deps.store.snapshot(deps.workspace);
+      const facts = await deps.readFacts(queue, material);
+      if (epoch !== run_epoch) {
+        return;
+      }
+      const snapshot = collector.get();
+      const external_waits = snapshot.rows
+        .filter((row) => row.root_dir === deps.workspace)
+        .map((row) => ({
+          ...row,
+          collected_at: snapshot.collected_at,
+          stale: row.stale === true
+        }));
+      const result = judgeWaitReasons({
+        root_dir: deps.workspace,
+        queue,
+        external_waits,
+        ...facts,
+        observed_at,
+        now: now()
+      });
+      observed_at = result.observed_at;
+      state = { wait_reasons: result.wait_reasons, external_waits };
+      await notifyWaitReasons({
+        workspace: deps.workspace,
+        repo: deps.repo,
+        wait_reasons: state.wait_reasons,
+        now: now(),
+        store: deps.store,
+        notifier: deps.notifier
+      });
+      if (epoch === run_epoch) {
+        onChanged(deps.workspace);
+      }
+    })()
+      .catch((err) => {
+        log('wait judgment failed for %s: %o', deps.workspace, err);
+      })
+      .finally(() => {
+        in_flight = null;
+        if (rerun && epoch === run_epoch) {
+          rerun = false;
+          void refresh();
+        }
+      });
+    return in_flight;
+  }
+  const poller = createPoller({
+    intervalSeconds: WAIT_JUDGE_INTERVAL_SECONDS,
+    getClientCount: () => 1,
+    onTick: () => {
+      void refresh();
+    }
+  });
+
+  function controlState() {
+    const queue = deps.store.snapshot(deps.workspace);
+    return JSON.stringify([
+      queue.provider_hold,
+      queue.hold,
+      queue.auto_advance
+    ]);
+  }
+  return {
+    refresh,
+    get: () => structuredClone(state),
+    start() {
+      if (unsubscribe) {
+        return;
+      }
+      controls = controlState();
+      unsubscribe = (deps.subscribe || onQueueChanged)((workspace) => {
+        if (keyFor(workspace) !== keyFor(deps.workspace)) {
+          return;
+        }
+        const next = controlState();
+        if (next !== controls) {
+          controls = next;
+          if (in_flight) {
+            rerun = true;
+          } else {
+            void refresh();
+          }
+        }
+      });
+      poller.start();
+      void refresh();
+    },
+    stop() {
+      epoch += 1;
+      rerun = false;
+      poller.stop();
+      if (unsubscribe) {
+        unsubscribe();
+        unsubscribe = null;
+      }
+      observed_at = {};
+      state = { wait_reasons: [], external_waits: [] };
+    }
+  };
+}
 
 /**
  * Cadence of the per-attachment reconcile pass
@@ -1918,9 +2180,79 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     notifyChanged: (ws_key) => emitQueueChanged(ws_key)
   });
 
+  const waitJudge = createWaitJudge({
+    workspace: keyFor(workspace_root),
+    repo,
+    store: runtime.queueStore,
+    notifier: notify,
+    readFacts: async (queue, workspace) => {
+      const ids = [
+        ...new Set(
+          [
+            ...queue.queue,
+            ...queue.serial_lanes.flatMap(
+              (/** @type {any} */ lane) => lane.entries
+            ),
+            ...Object.values(queue.attempts)
+          ].map((/** @type {any} */ entry) => entry.bead_id)
+        )
+      ];
+      const projected = {
+        bead_blocked_by: runtime.titleCache.blockedByFor(workspace_root, ids),
+        /** @type {Record<string, string>} */
+        blocker_workspaces: {}
+      };
+      applyForeignBlockerCleanup(projected, workspace_root);
+      /** @type {Record<string, any>} */
+      const foreign_readback = {};
+      for (const [id, owner] of Object.entries(projected.blocker_workspaces)) {
+        foreign_readback[id] = {
+          rig: path.basename(owner),
+          status: foreignBlockerStatusFor(id, owner, workspace_root)
+        };
+      }
+      /** @type {Record<string, any>} */
+      const blocker_facts = {};
+      if (workspace.snapshot?.id_index) {
+        for (const [id, issue] of workspace.snapshot.id_index) {
+          blocker_facts[id] = {
+            status: issue.status,
+            title: issue.title,
+            labels: issue.labels
+          };
+        }
+      }
+      /** @type {Record<string, any>} */
+      const account_catalog = {};
+      if (Object.keys(queue.provider_hold).length > 0) {
+        const lists = await Promise.allSettled([
+          accountCatalog.listClaude(),
+          accountCatalog.listCodex()
+        ]);
+        for (const listed of lists) {
+          if (listed.status === 'fulfilled' && listed.value.ok) {
+            for (const account of listed.value.accounts) {
+              account_catalog[account.key] = account;
+              if (account.email) {
+                account_catalog[account.email] = account;
+              }
+            }
+          }
+        }
+      }
+      return {
+        bead_blocked_by: projected.bead_blocked_by,
+        blocker_facts,
+        foreign_readback,
+        account_catalog
+      };
+    }
+  });
+
   return {
     runtime,
     scheduler,
+    waitJudge,
     reconciler,
     prPoller,
     prActions,
@@ -2476,6 +2808,7 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   } catch (err) {
     log('reconcile timer start failed for %s: %o', key, err);
   }
+  att.waitJudge?.start();
   // The startup retention pass and its daily timer (§8.2). Fire-and-forget:
   // archiving a month-old transcript is never on the path of anything a client
   // is waiting for, and a failed pass simply runs again tomorrow.
@@ -3180,6 +3513,32 @@ export function workerMergeQueueState(workspace_root) {
 }
 
 /**
+ * Cached internal wait contract for the next snapshot-decoration unit.
+ *
+ * @param {string} workspace_root
+ */
+export function workerWaitState(workspace_root) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  return att?.waitJudge
+    ? att.waitJudge.get()
+    : { wait_reasons: [], external_waits: [] };
+}
+
+/**
+ * Refresh the attached cache after an explicit observation operation.
+ *
+ * @param {string} workspace_root
+ */
+export async function refreshWorkerWaitReasons(workspace_root) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att?.waitJudge) {
+    return false;
+  }
+  await att.waitJudge.refresh();
+  return true;
+}
+
+/**
  * Re-scan a workspace's external PR rows (UI-7agi §1), IF an attachment is
  * registered. Inert without one — an unattached workspace renders no lane.
  *
@@ -3393,6 +3752,7 @@ export function __setUnattachedAdmissionCheckForTest(reader) {
  */
 export function __resetWorkerAttachmentsForTest() {
   for (const att of ATTACHMENTS.values()) {
+    att.waitJudge?.stop();
     try {
       att.prPoller?.stop();
     } catch {
@@ -3430,6 +3790,10 @@ export function __resetWorkerAttachmentsForTest() {
     }
   }
   ATTACHMENTS.clear();
+  for (const collector of wait_collectors.values()) {
+    collector.clear();
+  }
+  wait_collectors.clear();
   ATTACHMENT_STARTUPS.clear();
   __resetRecordMigrationPendingForTest();
   auto_advance_restore_controller = null;

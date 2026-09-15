@@ -20,7 +20,7 @@ const OUTAGE_BACKOFF_MS = Object.freeze([
 ]);
 const USAGE_FALLBACK_MS = 900_000;
 const USAGE_RESET_GRACE_MS = 60_000;
-const USAGE_REARM_CAP = 3;
+export const USAGE_REARM_CAP = 3;
 const HOLD_AGE_CAP_MS = 24 * 60 * 60 * 1000;
 
 /**

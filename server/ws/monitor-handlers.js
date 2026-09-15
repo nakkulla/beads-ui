@@ -27,7 +27,6 @@ import {
   isImplementationAttempt
 } from '../../app/utils/active-attempts.js';
 import { getConfig } from '../config.js';
-import { createExternalJobObservations } from '../external-job-observations.js';
 import { createPoller } from '../poller.js';
 import {
   SESSION_DEFAULTS_KV_KEY,
@@ -39,6 +38,7 @@ import {
   observeWorkerPrs,
   refreshWorkerExternalPrs,
   tickWorkerQueue,
+  workerExternalWaitObservations,
   workerMergeQueueState
 } from '../worker/attach.js';
 import { projectExecutionDefaults } from '../worker/execution-defaults.js';
@@ -105,7 +105,7 @@ let foreign_resolved_unsubscribe = null;
 /** @type {{ start: () => void, stop: () => void } | null} */
 let refresh_driver = null;
 
-const external_job_observations = createExternalJobObservations();
+const external_job_observations = workerExternalWaitObservations;
 
 /** @type {Promise<void>|null} */
 let external_wait_refresh = null;
@@ -871,7 +871,7 @@ export function buildMonitorPipeline(options = {}) {
       .filter((row) => row.root_dir === root_dir)
       .map((row) => ({
         ...row,
-        collected_at: external_rows.collected_at,
+        collected_at: row.collected_at ?? external_rows.collected_at,
         stale: row.stale === true
       }));
     try {
@@ -1522,7 +1522,6 @@ function cancelExternalWaitRefreshIfIdle() {
   }
   external_wait_refresh_epoch += 1;
   external_wait_refresh = null;
-  external_job_observations.clear();
 }
 
 /**
@@ -2015,5 +2014,4 @@ export function __resetMonitorPipelineForTest() {
   last_seen_revision.clear();
   session_defaults_cache.clear();
   poll_interval_seconds = null;
-  external_job_observations.clear();
 }

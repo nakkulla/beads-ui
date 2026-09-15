@@ -96,6 +96,67 @@ const TITLE_MAX = 60;
  */
 
 /**
+ * @typedef {{ bead_id: string, kind: string, headline: string, verdict_reason: import('./wait-judgment.js').VerdictReason, repo: string }} WaitNotificationInput
+ */
+
+/**
+ * Claim current abnormal reasons before sending; a disappearing key rearms it.
+ * The store owns only suppression state; the timeline owns notification history.
+ *
+ * @param {{ workspace: string, repo: string, wait_reasons: import('./wait-judgment.js').WaitReason[], now: number, store: Pick<ReturnType<typeof import('./queue-store.js').createQueueStore>, 'claimWaitNotifications'|'recordTimelineEvent'>, notifier: Pick<ReturnType<typeof createNotifier>, 'waitOverdue'|'waitActionRequired'> }} input
+ */
+export async function notifyWaitReasons(input) {
+  /** @type {Map<string, import('./wait-judgment.js').WaitReason & { verdict_reason: import('./wait-judgment.js').VerdictReason }>} */
+  const by_key = new Map();
+  for (const item of input.wait_reasons) {
+    if (
+      item.verdict !== 'normal' &&
+      item.verdict_reason &&
+      item.notify_plan.on_overdue === 'discord'
+    ) {
+      const key = JSON.stringify([
+        item.subject.bead_id,
+        item.kind,
+        item.verdict_reason.code
+      ]);
+      by_key.set(key, { ...item, verdict_reason: item.verdict_reason });
+    }
+  }
+  const claimed = input.store.claimWaitNotifications(
+    input.workspace,
+    [...by_key.keys()],
+    input.now
+  );
+  for (const key of claimed) {
+    const item = by_key.get(key);
+    if (!item) {
+      continue;
+    }
+    const notification = {
+      bead_id: item.subject.bead_id,
+      kind: item.kind,
+      headline: item.headline,
+      verdict_reason: item.verdict_reason,
+      repo: input.repo
+    };
+    const sent =
+      item.verdict === 'action_required'
+        ? await input.notifier.waitActionRequired(notification)
+        : await input.notifier.waitOverdue(notification);
+    if (sent) {
+      input.store.recordTimelineEvent(input.workspace, {
+        bead_id: item.subject.bead_id,
+        kind: 'wait_notified',
+        seq: `${key}:${input.now}`,
+        at: input.now,
+        summary: `${item.headline} · ${item.verdict_reason.message}`,
+        detail: `${item.kind}:${item.verdict_reason.code}`
+      });
+    }
+  }
+}
+
+/**
  * The repo's display label — its basename. One operator watches many
  * workspaces, so a bare bead id is not enough to place a notification.
  *
@@ -179,7 +240,9 @@ function headline(transition, bead_id, bead_title) {
  *   providerHoldEntered: (input: { bead_id: string, runner: string, kind: string, detail: string, summary: string, account?: string|null, resets_at?: number|null, auto_switch?: 'none'|'cap'|'unconfigured'|'disabled'|null, repo?: string|null }) => Promise<void>,
  *   providerRecovered: (input: { bead_id: string, runner: string, duration_ms: number, resumed_beads?: string[], refusal?: string|null, switched_from?: string|null, switched_to?: string|null, repo?: string|null }) => Promise<void>,
  *   providerAutoResumeDisarmed: (input: { bead_id: string, runner: string, reason: string, repo?: string|null }) => Promise<void>,
- *   needsHuman: (input: NeedsHumanInput) => Promise<void>
+ *   needsHuman: (input: NeedsHumanInput) => Promise<void>,
+ *   waitOverdue: (input: WaitNotificationInput) => Promise<boolean>,
+ *   waitActionRequired: (input: WaitNotificationInput) => Promise<boolean>
  * }}
  */
 export function createNotifier(deps) {
@@ -254,8 +317,10 @@ export function createNotifier(deps) {
       if (child && typeof child.unref === 'function') {
         child.unref();
       }
+      return true;
     } catch (err) {
       log('notify spawn failed: %o', err);
+      return false;
     }
   }
 
@@ -342,7 +407,29 @@ export function createNotifier(deps) {
     return `not_launched · ${text(input.reason) ?? 'unknown'}`;
   }
 
+  /**
+   * @param {WaitNotificationInput} input
+   */
+  async function sendWait(input) {
+    try {
+      const cmd = resolveCmd();
+      if (!cmd) {
+        return false;
+      }
+      const subject = [repoLabel(input.repo), input.bead_id]
+        .filter(Boolean)
+        .join(' ');
+      const message = `⚠ ${subject} 지연 · ${input.headline} · ${input.verdict_reason.message}`;
+      return send(cmd, message.replace(/\s+/g, ' ').trim());
+    } catch (err) {
+      log('wait notification failed: %o', err);
+      return false;
+    }
+  }
+
   return {
+    waitOverdue: sendWait,
+    waitActionRequired: sendWait,
     async attemptStarted(input) {
       try {
         // Config FIRST, before any lookup: notifications being off has to stay

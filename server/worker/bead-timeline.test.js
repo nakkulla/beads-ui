@@ -250,7 +250,7 @@ describe('bead-timeline readTimeline', () => {
 });
 
 describe('TIMELINE_KINDS', () => {
-  test('carries exactly the fifteen kinds of the event table', () => {
+  test('carries exactly the sixteen kinds of the event table', () => {
     expect([...TIMELINE_KINDS]).toEqual([
       'dispatched',
       'guard_warning',
@@ -266,7 +266,8 @@ describe('TIMELINE_KINDS', () => {
       'merge_step',
       'operation_failed',
       'needs_human',
-      'user_action'
+      'user_action',
+      'wait_notified'
     ]);
   });
 });
