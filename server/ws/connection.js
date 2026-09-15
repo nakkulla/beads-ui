@@ -68,6 +68,7 @@ import {
   handleGetSessionDefaults,
   handleGetWorkspaceAccounts,
   handleSetSessionDefaults,
+  handleSetWorkerUrlCommon,
   handleSetWorkspaceAccounts
 } from './session-defaults-handlers.js';
 import {
@@ -443,6 +444,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'set-session-defaults':
       await handleSetSessionDefaults(ws, req);
+      return;
+    case 'set-worker-url-common':
+      await handleSetWorkerUrlCommon(ws, req);
       return;
     case 'get-workspace-accounts':
       await handleGetWorkspaceAccounts(ws, req);

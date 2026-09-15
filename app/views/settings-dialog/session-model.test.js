@@ -20,6 +20,7 @@ import {
   REVIEW_STEP_MODELS,
   WORKSPACE_KV_KEYS,
   adoptSessionDefaultValues,
+  adoptWorkerCommon,
   buildExecutionOptionView,
   buildOrchestrationPatch,
   buildPresetDiff,
@@ -33,7 +34,8 @@ import {
   orchestrationModelOptions,
   orchestrationRuntimeInitial,
   orchestrationRuntimeOptions,
-  speedVisible
+  speedVisible,
+  workerUrlMessage
 } from './session-model.js';
 
 const PROJECTION = {
@@ -940,5 +942,75 @@ describe('buildOrchestrationPatch', () => {
     );
 
     expect(patch).toEqual({ quick_fix_orchestration_model: 'sol' });
+  });
+});
+describe('common Worker draft', () => {
+  test('adopts value and revision together while clean', () => {
+    const draft = { value: '', revision: null, dirty: false };
+
+    const next = adoptWorkerCommon(draft, {
+      value: 'http://common',
+      revision: 'new'
+    });
+
+    expect(next).toEqual({
+      value: 'http://common',
+      revision: 'new',
+      dirty: false
+    });
+  });
+
+  test('keeps a dirty value bound to its original revision', () => {
+    const draft = { value: 'http://draft', revision: 'old', dirty: true };
+
+    const next = adoptWorkerCommon(draft, {
+      value: 'http://common',
+      revision: 'new'
+    });
+
+    expect(next).toBe(draft);
+  });
+
+  test('rebinds only on explicit adoption of a dirty draft', () => {
+    const draft = { value: 'http://draft', revision: 'old', dirty: true };
+
+    const next = adoptWorkerCommon(
+      draft,
+      { value: 'http://common', revision: 'new' },
+      true
+    );
+
+    expect(next).toEqual({
+      value: 'http://common',
+      revision: 'new',
+      dirty: false
+    });
+  });
+
+  test.each([
+    ['workspace', '이 저장소의 예외'],
+    ['common', '공통 기본값'],
+    ['unset', '미설정']
+  ])('labels source %s', (source, label) => {
+    const message = workerUrlMessage({
+      status: 'ok',
+      source,
+      effective_url: source === 'unset' ? null : 'http://host'
+    });
+
+    expect(message).toContain(label);
+  });
+
+  test.each([
+    ['helper_unavailable', '도우미 설치/실행 필요'],
+    ['workspace_unavailable', '저장소 설정 읽기 오류']
+  ])('distinguishes %s from unset', (code, label) => {
+    const message = workerUrlMessage({
+      status: 'unavailable',
+      error: { code }
+    });
+
+    expect(message).toContain(label);
+    expect(message).not.toContain('미설정');
   });
 });

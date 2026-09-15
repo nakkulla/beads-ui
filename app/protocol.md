@@ -1010,14 +1010,33 @@ picks the provider per delegated unit at run time and beads-ui derives no
 provider from it — only an exact `impl_model` token names one.
 
 - `get-session-defaults` payload: `{ root_dir? }` — replies
-  `{ values: Record<string,string|boolean>, warnings: string[] }`. Read is
-  fail-quiet: an absent key or an out-of-vocabulary value yields an
+  `{ values: Record<string,string|boolean>, warnings: string[], worker_url }`.
+  Read is fail-quiet: an absent key or an out-of-vocabulary value yields an
   empty/partial layer plus warnings rather than an error. A value is a boolean
   only for a key the contract types `type: bool`.
 - `set-session-defaults` payload: `{ values, root_dir? }` — STRICT: an unknown
   key or an illegal value is refused before bd is touched. `bd kv` has no CAS,
   so the write re-reads immediately beforehand, making it per-KEY
-  last-write-wins, and confirms with a readback.
+  last-write-wins, and confirms with a readback. Success has the same shape as
+  GET; a resolver failure does not fail a successful kv write.
+- Both replies keep `values.bdui_url` as the stored repository exception only.
+  `worker_url` is
+  `{ status: 'ok', effective_url: string|null, source: 'workspace'|'common'|'unset', workspace_override: string|null, common: { value: string|null, state: 'configured'|'unset'|'invalid'|'unavailable', revision: string|null }, warnings: unknown[] }`.
+  A missing common document uses revision `missing`. Resolver warnings are
+  separate from kv `warnings`. Failure is
+  `{ status: 'unavailable', effective_url: null, source: null, error: { code: 'helper_unavailable'|'workspace_unavailable' } }`;
+  normal absence resolves an empty snapshot, while an unreadable stored value is
+  unavailable.
+- `set-worker-url-common` payload:
+  `{ root_dir?, value: string|null, expected_revision: string }`. A canonical
+  HTTP(S) origin sets the common default; only `null` deletes it (empty strings
+  are `bad_request`). Root must be registered and revision non-empty. This
+  writes neither kv nor queue. Success is
+  `{ common_saved: true, common, worker_url }`, including when the follow-up
+  root read fails (`worker_url.error.code: 'workspace_unavailable'`). CLI errors
+  use the normal error envelope: `revision_conflict`, `invalid_input`,
+  `common_invalid`, `common_unavailable`, or `helper_unavailable`. Clients keep
+  the draft and its original revision on conflict and never retry automatically.
 - `impl-preset-create` payload: `{ expected_revision, name, settings }`;
   `impl-preset-update` adds `id`. `settings` is a sparse 25-key profile: the 14
   per-Bead execution keys, the three general orchestration keys, the five

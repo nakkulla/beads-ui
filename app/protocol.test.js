@@ -14,6 +14,14 @@ import {
 } from './protocol.js';
 
 describe('protocol', () => {
+  test('accepts the common Worker address request', () => {
+    const payload = { value: null, expected_revision: 'missing' };
+
+    const request = makeRequest('set-worker-url-common', payload);
+
+    expect(isRequest(request)).toBe(true);
+    expect(MESSAGE_TYPES).toContain('set-worker-url-common');
+  });
   test('accepts the external wait check-now request', () => {
     const payload = { root_dir: '/repo', watch_id: 'watch-1', since: 123 };
 

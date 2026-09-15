@@ -49,6 +49,7 @@ import {
   WORKFLOW_MODES,
   WORKSPACE_KV_KEYS,
   adoptSessionDefaultValues,
+  adoptWorkerCommon,
   buildExecutionOptionView,
   buildOrchestrationPatch,
   buildPresetDiff,
@@ -61,7 +62,9 @@ import {
   orchestrationModelOptions,
   orchestrationRuntimeInitial,
   orchestrationRuntimeOptions,
-  speedVisible
+  speedVisible,
+  workerUrlMessage,
+  workerUrlWarning
 } from './session-model.js';
 
 /** The `(기본)` sentinel a select uses for "no explicit value". */
@@ -207,6 +210,14 @@ export function createExecutionPane(mount_element, binding) {
   /** @type {string[]} */
   let session_warnings = [];
   let session_loading = false;
+  let generation = 0;
+  let worker_query = 0;
+  /** @type {any} */
+  let worker_url = null;
+  /** @type {{ value: string, revision: string|null, dirty: boolean }} */
+  let common_draft = { value: '', revision: null, dirty: false };
+  let common_saving = false;
+  let common_invalid = false;
 
   /**
    * The repo's `bd kv` exec account layer as the server last reported it
@@ -367,7 +378,201 @@ export function createExecutionPane(mount_element, binding) {
     if (destroyed || !transport) {
       return null;
     }
-    return await transport(/** @type {any} */ (type), payload);
+    const request_generation = generation;
+    const request_root = root_dir;
+    const response = await transport(/** @type {any} */ (type), payload);
+    return isCurrent(request_generation, request_root) ? response : null;
+  }
+
+  /**
+   * @param {number} request_generation
+   * @param {string|null} request_root
+   */
+  function isCurrent(request_generation, request_root) {
+    return (
+      !destroyed &&
+      generation === request_generation &&
+      root_dir === request_root
+    );
+  }
+
+  /** @param {any} value */
+  function adoptWorkerUrl(value) {
+    worker_url = value || null;
+    common_draft = adoptWorkerCommon(common_draft, worker_url?.common ?? null);
+  }
+
+  /** Permit writes only with a readable common document and revision. */
+  function commonEditable() {
+    return (
+      worker_url?.status === 'ok' &&
+      ['configured', 'unset'].includes(worker_url.common.state) &&
+      typeof worker_url.common.revision === 'string' &&
+      !common_saving
+    );
+  }
+
+  /** @param {Event} event */
+  function onCommonInput(event) {
+    common_draft = {
+      ...common_draft,
+      value: /** @type {HTMLInputElement} */ (event.target).value,
+      dirty: true
+    };
+    common_invalid = false;
+    doRender();
+  }
+
+  /** Explicitly discard the common edit and bind the latest observed revision. */
+  function cancelCommonEdit() {
+    common_draft = adoptWorkerCommon(
+      common_draft,
+      worker_url?.common ?? null,
+      true
+    );
+    common_invalid = false;
+    doRender();
+  }
+
+  /** @param {boolean} [clear] */
+  async function saveCommon(clear = false) {
+    if (!commonEditable() || common_draft.revision === null) {
+      return;
+    }
+    const value = clear ? null : common_draft.value.trim() || null;
+    if (value !== null && !isHttpOriginValue(value)) {
+      common_invalid = true;
+      doRender();
+      return;
+    }
+    const request_generation = generation;
+    const request_root = root_dir;
+    common_saving = true;
+    doRender();
+    try {
+      const res = await send('set-worker-url-common', {
+        value,
+        expected_revision: common_draft.revision,
+        ...rootPayload()
+      });
+      if (!res || !isCurrent(request_generation, request_root)) {
+        return;
+      }
+      if (res.common_saved === true) {
+        ++worker_query;
+        session_loading = false;
+        common_draft = adoptWorkerCommon(common_draft, res.common, true);
+        // The common readback remains usable even if resolving this root failed.
+        worker_url = res.worker_url;
+        common_invalid = false;
+      }
+    } catch (err) {
+      if (!isCurrent(request_generation, request_root)) {
+        return;
+      }
+      const code = /** @type {any} */ (err).code;
+      notify(
+        code === 'revision_conflict'
+          ? '다른 창에서 변경됨 — 새로고침 후 다시 시도'
+          : `공통 기본값 저장 실패: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      if (isCurrent(request_generation, request_root)) {
+        common_saving = false;
+        doRender();
+      }
+    }
+  }
+
+  /** Render applied origin separately from both stored forms. */
+  function workerAddressRows() {
+    const common = worker_url?.common;
+    const cause =
+      common?.state === 'invalid'
+        ? '공통 설정 형식 오류 — 편집할 수 없습니다'
+        : common?.state === 'unavailable'
+          ? '공통 설정 읽기 오류 — 편집할 수 없습니다'
+          : common && common.revision === null
+            ? '공통 설정의 버전을 확인할 수 없어 편집할 수 없습니다'
+            : '';
+    return html` <div class="settings-dialog__row" data-worker-url>
+        <span class="settings-dialog__row-label">실제 적용 주소</span>
+        <span class="settings-dialog__controls">
+          <span data-worker-url-effective>${workerUrlMessage(worker_url)}</span>
+          <button type="button" data-worker-url-refresh @click=${onWindowFocus}>
+            새로고침
+          </button>
+          ${worker_url?.warnings?.length
+            ? html`<span class="settings-dialog__hint"
+                >${worker_url.warnings.map(workerUrlWarning).join(', ')}</span
+              >`
+            : ''}
+        </span>
+      </div>
+      ${textRow(
+        'bdui_url',
+        '이 저장소의 예외',
+        'http://호스트:3000',
+        `비워 저장하면 공통값을 사용합니다${!session_draft.bdui_url && worker_url?.status === 'ok' && common.value ? ` — 공통 기본값: ${common.value}` : ''}`,
+        'http:// 또는 https:// 로 시작하는 주소만 저장됩니다 (경로 없이)',
+        isHttpOriginValue
+      )}
+      <div class="settings-dialog__row" data-worker-url-common>
+        <span class="settings-dialog__row-label">공통 기본값</span>
+        <span class="settings-dialog__controls">
+          <input
+            type="text"
+            data-worker-common-input
+            aria-label="공통 기본값"
+            class=${`settings-dialog__text${common_invalid ? ' settings-dialog__text--invalid' : ''}`}
+            aria-invalid=${String(common_invalid)}
+            .value=${live(common_draft.value)}
+            ?disabled=${!commonEditable()}
+            @input=${onCommonInput}
+          />
+          <button
+            type="button"
+            data-worker-common-save
+            ?disabled=${!commonEditable()}
+            @click=${() => saveCommon()}
+          >
+            저장
+          </button>
+          <button
+            type="button"
+            data-worker-common-clear
+            ?disabled=${!commonEditable()}
+            @click=${() => saveCommon(true)}
+          >
+            지우기
+          </button>
+          <button
+            type="button"
+            data-worker-common-cancel
+            ?disabled=${common_saving || !common_draft.dirty}
+            @click=${cancelCommonEdit}
+          >
+            취소/최신값 채택
+          </button>
+          <span class="settings-dialog__hint"
+            >이 서버 운영 계정의 모든 저장소에 적용됩니다. 자체 예외가 있는
+            저장소는 그 예외를 계속 사용합니다.</span
+          >
+          <span class="settings-dialog__hint" data-worker-common-latest
+            >최근 조회값: ${common?.value ?? '없음'}</span
+          >
+          <span class="settings-dialog__hint"
+            >${common_invalid
+              ? 'http:// 또는 https:// 로 시작하는 주소만 저장됩니다 (경로 없이)'
+              : cause}</span
+          >
+        </span>
+      </div>`;
+  }
+
+  /** Refresh without discarding either form's pending edits. */
+  function onWindowFocus() {
+    void loadSessionDefaults();
   }
 
   /** @param {any} res */
@@ -412,25 +617,66 @@ export function createExecutionPane(mount_element, binding) {
     return res;
   }
 
-  /** Read the workspace session defaults; a failure leaves the tab empty. */
-  async function loadSessionDefaults() {
-    session_loading = true;
+  /**
+   * Read the workspace session defaults without hiding edits during refresh.
+   *
+   * @param {{ initial?: boolean, worker_only?: boolean }} [options]
+   */
+  async function loadSessionDefaults({
+    initial = false,
+    worker_only = false
+  } = {}) {
+    const request_generation = generation;
+    const request_root = root_dir;
+    const query = ++worker_query;
+    session_loading = initial;
     doRender();
     try {
       const res = await send('get-session-defaults', { ...rootPayload() });
-      session_baseline = adoptSessionDefaultValues(res?.values);
-      session_draft = { ...session_baseline };
-      session_text_draft = {};
-      session_text_invalid = {};
-      session_warnings = Array.isArray(res?.warnings) ? res.warnings : [];
+      if (
+        !res ||
+        !isCurrent(request_generation, request_root) ||
+        query !== worker_query
+      ) {
+        return;
+      }
+      adoptWorkerUrl(res.worker_url);
+      if (
+        !worker_only &&
+        Object.keys(buildSessionDefaultsPatch(session_baseline, session_draft))
+          .length === 0 &&
+        Object.keys(session_text_draft).length === 0
+      ) {
+        session_baseline = adoptSessionDefaultValues(res.values);
+        session_draft = { ...session_baseline };
+        session_text_invalid = {};
+      }
+      if (!worker_only) {
+        session_warnings = Array.isArray(res?.warnings) ? res.warnings : [];
+      }
     } catch (err) {
+      if (
+        !isCurrent(request_generation, request_root) ||
+        query !== worker_query
+      ) {
+        return;
+      }
+      adoptWorkerUrl({
+        status: 'unavailable',
+        error: { code: 'workspace_unavailable' }
+      });
       session_warnings = ['kv_read_failed'];
       notify(
         `세션 기본값을 읽지 못했습니다: ${err instanceof Error ? err.message : String(err)}`
       );
     } finally {
-      session_loading = false;
-      doRender();
+      if (
+        isCurrent(request_generation, request_root) &&
+        query === worker_query
+      ) {
+        session_loading = false;
+        doRender();
+      }
     }
   }
 
@@ -476,6 +722,8 @@ export function createExecutionPane(mount_element, binding) {
 
   /** Save the session-tab diff. On failure the draft is KEPT (spec §F). */
   async function saveSessionDefaults() {
+    const request_generation = generation;
+    const request_root = root_dir;
     const patch = buildSessionDefaultsPatch(session_baseline, session_draft);
     if (Object.keys(patch).length === 0) {
       return;
@@ -486,6 +734,12 @@ export function createExecutionPane(mount_element, binding) {
         values: patch,
         ...rootPayload()
       });
+      if (!res || !isCurrent(request_generation, request_root)) {
+        return;
+      }
+      ++worker_query;
+      session_loading = false;
+      adoptWorkerUrl(res.worker_url);
       session_baseline = adoptSessionDefaultValues(res?.values);
       session_draft = reconcileSessionDraft(sent, session_baseline);
       // `session_text_draft` deliberately survives: this save may belong to an
@@ -494,6 +748,9 @@ export function createExecutionPane(mount_element, binding) {
       // is still fixing.
       session_warnings = Array.isArray(res?.warnings) ? res.warnings : [];
     } catch (err) {
+      if (!isCurrent(request_generation, request_root)) {
+        return;
+      }
       // Keep `session_draft` exactly as the user left it so a retry does not
       // ask them to re-enter anything.
       notify(
@@ -1269,6 +1526,7 @@ export function createExecutionPane(mount_element, binding) {
       worker_draft = {};
       orchestration_runtime = null;
     }
+    void loadSessionDefaults({ worker_only: true });
   }
 
   /**
@@ -2493,14 +2751,7 @@ export function createExecutionPane(mount_element, binding) {
       </div>
       <div class="settings-dialog__group" data-session-advanced-group>
         <div class="settings-dialog__group-title">고급</div>
-        ${textRow(
-          'bdui_url',
-          'beads-ui 주소',
-          'http://호스트:3000',
-          '대화형 세션이 `Worker 레인에 배치` 답을 내려고 Worker 큐를 probe하는 주소입니다 — 워크스페이스마다 한 번만 채웁니다',
-          'http:// 또는 https:// 로 시작하는 주소만 저장됩니다 (경로 없이)',
-          isHttpOriginValue
-        )}
+        ${workerAddressRows()}
         ${checkRow(
           'base_sync_accept_local_commits',
           'base 동기화',
@@ -2553,12 +2804,18 @@ export function createExecutionPane(mount_element, binding) {
   return {
     /** Reset the per-open drafts and read the bound repo's kv layers. */
     load() {
+      ++generation;
+      common_saving = false;
+      window.addEventListener('focus', onWindowFocus);
       worker_draft = {};
       orchestration_runtime = null;
       session_text_draft = {};
       session_text_invalid = {};
       /** @type {Promise<void>[]} */
-      const pending = [loadSessionDefaults(), loadWorkspaceAccounts()];
+      const pending = [
+        loadSessionDefaults({ initial: true }),
+        loadWorkspaceAccounts()
+      ];
       if (!account_catalog_loaded) {
         pending.push(loadAccountCatalog());
       }
@@ -2583,9 +2840,11 @@ export function createExecutionPane(mount_element, binding) {
     sessionDraft: () => ({ ...session_draft }),
     destroy() {
       destroyed = true;
+      ++generation;
+      window.removeEventListener('focus', onWindowFocus);
       // lit owns every listener it installed inside this host, so clearing the
-      // host through lit is what releases them; the pane installs none of its
-      // own. The clear MUST go through `render` — `replaceChildren()` would
+      // host through lit is what releases them. The clear MUST go through
+      // `render` — `replaceChildren()` would
       // eject lit's marker nodes and break the next pane mounted on this same
       // host (the monitor panel reuses one host for every repo).
       render(html``, mount_element);

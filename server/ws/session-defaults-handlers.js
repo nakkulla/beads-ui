@@ -19,10 +19,12 @@
 import { makeError, makeOk } from '../../app/protocol.js';
 import {
   SESSION_DEFAULTS_KV_KEY,
+  isHttpOriginValue,
   mergeSessionDefaults,
   normalizeSessionDefaults,
   validateSessionDefaultsPatch
 } from '../session-defaults.js';
+import { commonSet, resolveWorkerUrl } from '../worker-url.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import {
   WORKSPACE_ACCOUNTS_KV_KEY,
@@ -90,7 +92,7 @@ function writeKv(ws, target, key, value) {
  *
  * @param {WebSocket} ws
  * @param {{ root: string, explicit: boolean }} target
- * @returns {Promise<{ ok: true, values: Record<string, string|boolean>, warnings: string[], raw: Record<string, unknown>|undefined }|{ ok: false, error: string }>}
+ * @returns {Promise<{ ok: true, found: boolean|undefined, warning: string|undefined, values: Record<string, string|boolean>, warnings: string[], raw: Record<string, unknown>|undefined }|{ ok: false, error: string }>}
  */
 async function readSessionDefaults(ws, target) {
   const read = await readKv(ws, target, SESSION_DEFAULTS_KV_KEY);
@@ -103,10 +105,45 @@ async function readSessionDefaults(ws, target) {
     : normalized.warnings;
   return {
     ok: true,
+    found: read.found,
+    warning: read.warning,
     values: normalized.values,
     warnings,
     raw: read.value
   };
+}
+
+/** @param {string} code */
+function workerUnavailable(code) {
+  return {
+    status: 'unavailable',
+    effective_url: null,
+    source: null,
+    error: { code }
+  };
+}
+
+/**
+ * @param {string} root
+ * @param {Awaited<ReturnType<typeof readSessionDefaults>>} read
+ */
+async function resolveSnapshot(root, read) {
+  if (
+    !read.ok ||
+    (read.found !== false && (read.raw === undefined || read.warning))
+  ) {
+    return workerUnavailable('workspace_unavailable');
+  }
+  const result = await resolveWorkerUrl({
+    root,
+    workspace:
+      read.found === false
+        ? {}
+        : /** @type {Record<string, unknown>} */ (read.raw)
+  });
+  return result.status === 'ok'
+    ? result
+    : workerUnavailable('helper_unavailable');
 }
 
 /**
@@ -135,7 +172,11 @@ export async function handleGetSessionDefaults(ws, req) {
   }
   ws.send(
     JSON.stringify(
-      makeOk(req, { values: read.values, warnings: read.warnings })
+      makeOk(req, {
+        values: read.values,
+        warnings: read.warnings,
+        worker_url: await resolveSnapshot(target.root, read)
+      })
     )
   );
 }
@@ -269,7 +310,62 @@ export async function handleSetSessionDefaults(ws, req) {
   invalidateSessionDefaults(target.root);
   ws.send(
     JSON.stringify(
-      makeOk(req, { values: after.values, warnings: after.warnings })
+      makeOk(req, {
+        values: after.values,
+        warnings: after.warnings,
+        worker_url: await resolveSnapshot(target.root, after)
+      })
+    )
+  );
+}
+
+/**
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleSetWorkerUrlCommon(ws, req) {
+  log('set-worker-url-common');
+  const target = kvTargetOf(ws, req.payload);
+  if (!target.ok) {
+    sendBadRoot(ws, req);
+    return;
+  }
+  const { value, expected_revision } = /** @type {any} */ (req.payload || {});
+  if (
+    (value !== null &&
+      (typeof value !== 'string' || !isHttpOriginValue(value))) ||
+    typeof expected_revision !== 'string' ||
+    expected_revision.length === 0
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'A canonical origin or null and a non-empty revision are required'
+        )
+      )
+    );
+    return;
+  }
+  const saved = await commonSet({ value, expected_revision });
+  if (saved.status !== 'ok') {
+    const code = saved.error.code;
+    ws.send(
+      JSON.stringify(
+        makeError(req, code, `Common Worker address save failed: ${code}`)
+      )
+    );
+    return;
+  }
+  const read = await readSessionDefaults(ws, target);
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        common_saved: true,
+        common: saved.common,
+        worker_url: await resolveSnapshot(target.root, read)
+      })
     )
   );
 }

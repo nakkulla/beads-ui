@@ -3,11 +3,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createExecPresetStore } from '../exec-preset-store.js';
+import { commonSet, resolveWorkerUrl } from '../worker-url.js';
 import { createExecPresetCoordinator } from '../worker/exec-preset-coordinator.js';
 import {
   __resetWorkerRuntimeForTest,
   getWorkerRuntime
 } from '../worker/runtime.js';
+
+vi.mock('../worker-url.js', () => ({
+  resolveWorkerUrl: vi.fn(),
+  commonSet: vi.fn()
+}));
 
 const kvGetJsonInWorkspace = vi.fn();
 const kvSetJsonInWorkspace = vi.fn();
@@ -64,6 +70,7 @@ const {
   handleGetSessionDefaults,
   handleGetWorkspaceAccounts,
   handleSetSessionDefaults,
+  handleSetWorkerUrlCommon,
   handleSetWorkspaceAccounts
 } = await import('./session-defaults-handlers.js');
 
@@ -84,6 +91,13 @@ function fakeWs() {
 }
 
 beforeEach(() => {
+  vi.mocked(resolveWorkerUrl)
+    .mockReset()
+    .mockResolvedValue({
+      status: 'unavailable',
+      error: { code: 'helper_unavailable' }
+    });
+  vi.mocked(commonSet).mockReset();
   original_state_home = process.env.XDG_STATE_HOME;
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-session-preset-'));
   process.env.XDG_STATE_HOME = tmp_state;
@@ -760,5 +774,228 @@ describe('set-workspace-accounts (UI-d3cb §4)', () => {
 
     expect(sent[0].error.code).toBe('bad_request');
     expect(kvSetJsonAtRoot).not.toHaveBeenCalled();
+  });
+});
+const COMMON = {
+  value: 'http://common:3000',
+  state: 'configured',
+  revision: 'a'.repeat(64)
+};
+const WORKER_URL = {
+  status: 'ok',
+  effective_url: COMMON.value,
+  source: 'common',
+  workspace_override: null,
+  common: COMMON,
+  warnings: []
+};
+
+/** @param {Record<string, unknown>} [patch] */
+function commonRequest(patch = {}) {
+  return {
+    id: 'common',
+    type: /** @type {const} */ ('set-worker-url-common'),
+    payload: {
+      root_dir: WS_OTHER,
+      value: 'http://next:3000',
+      expected_revision: COMMON.revision,
+      ...patch
+    }
+  };
+}
+
+describe('Worker URL session defaults', () => {
+  beforeEach(() => {
+    vi.mocked(resolveWorkerUrl).mockResolvedValue(WORKER_URL);
+    kvGetJsonAtRoot.mockResolvedValue({ ok: true, found: false });
+  });
+
+  test('resolves normal absence with one empty snapshot and no writes', async () => {
+    const { ws, sent } = fakeWs();
+
+    await handleGetSessionDefaults(ws, {
+      id: 'get',
+      type: 'get-session-defaults',
+      payload: { root_dir: WS_OTHER }
+    });
+
+    expect(resolveWorkerUrl).toHaveBeenCalledExactlyOnceWith({
+      root: WS_OTHER,
+      workspace: {}
+    });
+    expect(kvGetJsonAtRoot).toHaveBeenCalledTimes(1);
+    expect(sent[0].payload).toEqual({
+      values: {},
+      warnings: [],
+      worker_url: WORKER_URL
+    });
+    expect(kvSetJsonAtRoot).not.toHaveBeenCalled();
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+    expect(commonSet).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    { ok: true, found: true },
+    { ok: true, found: true, warning: 'kv_value_unparsable' },
+    { ok: true, found: true, value: {}, warning: 'kv_value_unparsable' }
+  ])('blocks resolution of unreadable stored snapshots %j', async (read) => {
+    const { ws, sent } = fakeWs();
+    kvGetJsonAtRoot.mockResolvedValue(read);
+
+    await handleGetSessionDefaults(ws, {
+      id: 'get',
+      type: 'get-session-defaults',
+      payload: { root_dir: WS_OTHER }
+    });
+
+    expect(resolveWorkerUrl).not.toHaveBeenCalled();
+    expect(sent[0].payload.worker_url.error.code).toBe('workspace_unavailable');
+    expect(sent[0].payload.warnings).toEqual(
+      read.warning ? [read.warning] : []
+    );
+  });
+
+  test('preserves stored values and kv warnings when the helper fails', async () => {
+    const { ws, sent } = fakeWs();
+    const raw = { schema: 1, bdui_url: 'http://exception:3000', extra: 'kept' };
+    kvGetJsonAtRoot.mockResolvedValue({ ok: true, found: true, value: raw });
+    vi.mocked(resolveWorkerUrl).mockResolvedValue({
+      status: 'unavailable',
+      error: { code: 'helper_unavailable' }
+    });
+
+    await handleGetSessionDefaults(ws, {
+      id: 'get',
+      type: 'get-session-defaults',
+      payload: { root_dir: WS_OTHER }
+    });
+
+    expect(resolveWorkerUrl).toHaveBeenCalledExactlyOnceWith({
+      root: WS_OTHER,
+      workspace: raw
+    });
+    expect(sent[0].payload.values.bdui_url).toBe('http://exception:3000');
+    expect(sent[0].payload.warnings.length).toBeGreaterThan(0);
+    expect(sent[0].payload.worker_url).toEqual({
+      status: 'unavailable',
+      effective_url: null,
+      source: null,
+      error: { code: 'helper_unavailable' }
+    });
+  });
+
+  test.each([true, false])(
+    'preserves deletion readback and other keys with helper success %s',
+    async (helper_ok) => {
+      const { ws, sent } = fakeWs();
+      const after = {
+        schema: 1,
+        workflow_mode: 'fast_track',
+        foreign_key: 'preserved'
+      };
+      kvGetJsonAtRoot
+        .mockResolvedValueOnce({
+          ok: true,
+          found: true,
+          value: { ...after, bdui_url: 'http://exception:3000' }
+        })
+        .mockResolvedValueOnce({ ok: true, found: true, value: after });
+      kvSetJsonAtRoot.mockResolvedValue({ ok: true });
+      if (!helper_ok) {
+        vi.mocked(resolveWorkerUrl).mockResolvedValue({
+          status: 'unavailable',
+          error: { code: 'helper_unavailable' }
+        });
+      }
+
+      await handleSetSessionDefaults(ws, {
+        id: 'set',
+        type: 'set-session-defaults',
+        payload: { root_dir: WS_OTHER, values: { bdui_url: null } }
+      });
+
+      expect(sent[0].ok).toBe(true);
+      expect(sent[0].payload.values).toEqual({ workflow_mode: 'fast_track' });
+      expect(sent[0].payload.worker_url.status).toBe(
+        helper_ok ? 'ok' : 'unavailable'
+      );
+      expect(kvSetJsonAtRoot).toHaveBeenCalledExactlyOnceWith(
+        WS_OTHER,
+        'workflow_session_defaults',
+        after
+      );
+      expect(resolveWorkerUrl).toHaveBeenCalledExactlyOnceWith({
+        root: WS_OTHER,
+        workspace: after
+      });
+    }
+  );
+
+  test('saves common independently and returns the resolved readback', async () => {
+    const { ws, sent } = fakeWs();
+    vi.mocked(commonSet).mockResolvedValue({ status: 'ok', common: COMMON });
+
+    await handleSetWorkerUrlCommon(ws, commonRequest());
+
+    expect(commonSet).toHaveBeenCalledExactlyOnceWith({
+      value: 'http://next:3000',
+      expected_revision: COMMON.revision
+    });
+    expect(sent[0].payload).toEqual({
+      common_saved: true,
+      common: COMMON,
+      worker_url: WORKER_URL
+    });
+    expect(kvSetJsonAtRoot).not.toHaveBeenCalled();
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    { value: '' },
+    { value: false },
+    { value: 'http://host/path' },
+    { expected_revision: '' },
+    { root_dir: '/unregistered' }
+  ])('refuses malformed common requests %j', async (patch) => {
+    const { ws, sent } = fakeWs();
+
+    await handleSetWorkerUrlCommon(ws, commonRequest(patch));
+
+    expect(sent[0].error.code).toBe('bad_request');
+    expect(commonSet).not.toHaveBeenCalled();
+  });
+
+  test('reports common success even if the root read fails afterward', async () => {
+    const { ws, sent } = fakeWs();
+    vi.mocked(commonSet).mockResolvedValue({ status: 'ok', common: COMMON });
+    kvGetJsonAtRoot.mockResolvedValue({ ok: false, error: 'bd unavailable' });
+
+    await handleSetWorkerUrlCommon(ws, commonRequest());
+
+    expect(sent[0].ok).toBe(true);
+    expect(sent[0].payload.common_saved).toBe(true);
+    expect(sent[0].payload.worker_url.error.code).toBe('workspace_unavailable');
+    expect(resolveWorkerUrl).not.toHaveBeenCalled();
+  });
+
+  test('lets only the first client save a shared revision', async () => {
+    const first = fakeWs();
+    const second = fakeWs();
+    vi.mocked(commonSet)
+      .mockResolvedValueOnce({ status: 'ok', common: COMMON })
+      .mockResolvedValueOnce({
+        status: 'unavailable',
+        error: { code: 'revision_conflict' }
+      });
+
+    await handleSetWorkerUrlCommon(first.ws, commonRequest());
+    await handleSetWorkerUrlCommon(second.ws, commonRequest());
+
+    expect(
+      [...first.sent, ...second.sent].filter((reply) => reply.ok)
+    ).toHaveLength(1);
+    expect(second.sent[0].error.code).toBe('revision_conflict');
+    expect(commonSet).toHaveBeenCalledTimes(2);
+    expect(kvGetJsonAtRoot).toHaveBeenCalledTimes(1);
   });
 });

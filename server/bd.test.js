@@ -227,6 +227,20 @@ describe('runBdJson', () => {
 });
 
 describe('kvGetJson', () => {
+  test.each(['', 'not-json{'])(
+    'retains found for an unusable stored value %s',
+    async (value) => {
+      mockedSpawn.mockReturnValueOnce(
+        makeFakeProc(JSON.stringify({ found: true, value }), '', 0)
+      );
+
+      const res = await kvGetJson('workflow_session_defaults');
+
+      expect(res.found).toBe(true);
+      expect(res.ok).toBe(true);
+      expect(res.value).toBeUndefined();
+    }
+  );
   test('returns the parsed object for a stored JSON value', async () => {
     const payload = JSON.stringify({
       found: true,
@@ -239,6 +253,7 @@ describe('kvGetJson', () => {
 
     expect(res.ok).toBe(true);
     expect(res.value).toEqual({ schema: 1, workflow_mode: 'fast_track' });
+    expect(res.found).toBe(true);
   });
 
   test('returns a stored JSON value from a schema v2 envelope', async () => {
@@ -255,7 +270,7 @@ describe('kvGetJson', () => {
 
     const res = await kvGetJson('workflow_session_defaults');
 
-    expect(res).toEqual({ ok: true, value: stored_value });
+    expect(res).toEqual({ ok: true, found: true, value: stored_value });
   });
 
   test('calls bd kv get with the json flag', async () => {
@@ -286,6 +301,7 @@ describe('kvGetJson', () => {
     expect(res.ok).toBe(true);
     expect(res.value).toBeUndefined();
     expect(res.warning).toBeUndefined();
+    expect(res.found).toBe(false);
   });
 
   test('returns undefined value when the key is absent with exit 0', async () => {
@@ -298,6 +314,7 @@ describe('kvGetJson', () => {
     expect(res.ok).toBe(true);
     expect(res.value).toBeUndefined();
     expect(res.warning).toBeUndefined();
+    expect(res.found).toBe(false);
   });
 
   test('returns undefined value plus a warning when the value is unparsable', async () => {
@@ -358,7 +375,7 @@ describe('kvGetJson', () => {
 
     const res = await kvGetJson('workflow_session_defaults');
 
-    expect(res).toEqual({ ok: true, value: undefined });
+    expect(res).toEqual({ ok: true, found: false, value: undefined });
   });
 
   test('propagates a bd failure to the caller', async () => {

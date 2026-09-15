@@ -545,6 +545,7 @@ function bdCommandFamily(args) {
  * @typedef {Object} KvGetResult
  * @property {boolean} ok - False only when `bd` itself failed; an absent or
  * unparsable value is a successful read of "no usable layer".
+ * @property {boolean} [found] - Present on successful reads, including unusable values.
  * @property {Record<string, unknown>|undefined} [value] - The decoded JSON
  * object, or undefined when the key is absent or its value is unusable.
  * @property {string} [warning] - Stable warning code for a present-but-unusable
@@ -655,7 +656,7 @@ export async function kvGetJson(key, options = {}) {
   // `{found: false}` record but exits 1, so the record is authoritative over
   // the exit code here.
   if (record.found === false) {
-    return { ok: true, value: undefined };
+    return { ok: true, found: false, value: undefined };
   }
   if (result.code !== 0) {
     return cliFailure();
@@ -663,7 +664,7 @@ export async function kvGetJson(key, options = {}) {
 
   const raw_value = record.value;
   if (typeof raw_value !== 'string' || raw_value.length === 0) {
-    return { ok: true, value: undefined };
+    return { ok: true, found: true, value: undefined };
   }
   // From here the record itself is well formed; only its stored VALUE can be
   // unusable, which is the one case the workspace-defaults layer skips with a
@@ -674,12 +675,26 @@ export async function kvGetJson(key, options = {}) {
     decoded = JSON.parse(raw_value);
   } catch {
     log('bd kv value is not JSON (key=%s)', key);
-    return { ok: true, value: undefined, warning: 'kv_value_unparsable' };
+    return {
+      ok: true,
+      found: true,
+      value: undefined,
+      warning: 'kv_value_unparsable'
+    };
   }
   if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
-    return { ok: true, value: undefined, warning: 'kv_value_unparsable' };
+    return {
+      ok: true,
+      found: true,
+      value: undefined,
+      warning: 'kv_value_unparsable'
+    };
   }
-  return { ok: true, value: /** @type {Record<string, unknown>} */ (decoded) };
+  return {
+    ok: true,
+    found: true,
+    value: /** @type {Record<string, unknown>} */ (decoded)
+  };
 }
 
 /**
