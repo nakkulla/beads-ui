@@ -852,6 +852,58 @@ describe('codex-children reader (UI-mn5u §6.1)', () => {
     expect(rows.map((row) => row.thread_id)).toEqual([CHILD_ID]);
   });
 
+  test('reads only the head of an unrelated transcript for the link test', () => {
+    const { child } = fixtureHalves();
+    const stranger_id = '01a07fe0-5555-7443-b224-30d21a82419a';
+    const stranger_file = `/sessions/2026/09/08/rollout-2026-09-08T07-16-40-${stranger_id}.jsonl`;
+    const stranger = rethread(child, {
+      thread_id: stranger_id,
+      parent_thread_id: '01a07fdf-9999-7ac3-8e6f-bc0910eee0af'
+    });
+    const sessions = fakeSessions({
+      extra: {
+        [stranger_file]: {
+          text: stranger
+            .map((/** @type {any} */ r) => JSON.stringify(r))
+            .join('\n'),
+          mtime: ATTEMPT_STARTED_AT + 90_000
+        }
+      }
+    });
+    /** @type {string[]} */
+    const full_reads = [];
+    const fs_with_head = {
+      ...sessions.fs,
+      /** @param {string} file */
+      readFileSync(file) {
+        full_reads.push(file);
+        return sessions.fs.readFileSync(file);
+      },
+      /** @param {string} file */
+      openSync(file) {
+        sessions.fs.statSync(file);
+        return file;
+      },
+      /** @param {string} fd - Opened file. @param {Buffer} buffer - Target. */
+      readSync(fd, buffer) {
+        return buffer.write(sessions.files[fd].text.slice(0, buffer.length));
+      },
+      closeSync() {}
+    };
+
+    const { records } = readCodexChildRecords({
+      root_thread_id: ROOT_ID,
+      sessions_root: '/sessions',
+      started_at: ATTEMPT_STARTED_AT,
+      fs: /** @type {any} */ (fs_with_head)
+    });
+
+    expect(new Set(records.map((entry) => entry.thread_id))).toEqual(
+      new Set([ROOT_ID, CHILD_ID])
+    );
+    expect(full_reads).not.toContain(stranger_file);
+  });
+
   test('excludes a child file written before this attempt started', () => {
     const sessions = fakeSessions();
     const child_file = Object.keys(sessions.files).find((file) =>

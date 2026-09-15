@@ -52,6 +52,14 @@ export const MAX_CHILD_FILES = 64;
 export const MAX_CHILD_CANDIDATES = 512;
 
 /**
+ * Bytes read from a candidate's head for the link test: `session_meta` is the
+ * first line, so this is far more than the identity needs.
+ *
+ * @type {number}
+ */
+const HEAD_BYTES = 64 * 1024;
+
+/**
  * Observe a proven root's linked child files incrementally.
  *
  * @param {{ root_thread_id: string, root_file: string, sessions_root?: string, started_at?: number|null, ended_at?: number|null, fs?: typeof node_fs, createReader?: typeof createTailReader, readSnapshot?: typeof readSessionSnapshot, responseLedger?: ReturnType<typeof import('./response-ledger.js').createCodexResponseLedger>, onChange?: () => void, now?: () => number }} input
@@ -89,7 +97,7 @@ export function createIncrementalCodexChildObserver(input) {
     let fd;
     try {
       fd = file_system.openSync(file, 'r');
-      const buffer = Buffer.alloc(64 * 1024);
+      const buffer = Buffer.alloc(HEAD_BYTES);
       const size = file_system.readSync(fd, buffer, 0, buffer.length, 0);
       return buffer.subarray(0, size).toString('utf8');
     } catch {
@@ -389,7 +397,7 @@ function windowDateDirs(from, to) {
  *   sessions_root: string,
  *   started_at?: number|null,
  *   ended_at?: number|null,
- *   fs?: Pick<typeof node_fs, 'readdirSync'|'readFileSync'|'statSync'>,
+ *   fs?: Pick<typeof node_fs, 'readdirSync'|'readFileSync'|'statSync'> & Partial<Pick<typeof node_fs, 'openSync'|'readSync'|'closeSync'>>,
  *   now?: () => number
  * }} input
  * @returns {{ root_file: string|null, files: string[], records: Array<{ thread_id: string, ordinal: number, record: Record<string, unknown> }> }}
@@ -440,6 +448,45 @@ export function readCodexChildRecords(input) {
     } catch (err) {
       log('rollout read failed for %s: %o', file, err);
       return null;
+    }
+  }
+
+  /**
+   * The first {@link HEAD_BYTES} of a candidate, enough for `session_meta`.
+   * A day directory can hold hundreds of megabytes of unrelated transcripts,
+   * and this scan runs on the event loop for every ended attempt: reading each
+   * candidate in full stalled the server for seconds per attempt (UI-1j5v).
+   * A fake fs without positional reads keeps the whole-file path.
+   *
+   * @param {string} file
+   * @returns {string|null}
+   */
+  function headOf(file) {
+    if (
+      typeof file_system.openSync !== 'function' ||
+      typeof file_system.readSync !== 'function' ||
+      typeof file_system.closeSync !== 'function'
+    ) {
+      return textOf(file);
+    }
+    /** @type {number|undefined} */
+    let fd;
+    try {
+      fd = file_system.openSync(file, 'r');
+      const buffer = Buffer.alloc(HEAD_BYTES);
+      const size = file_system.readSync(fd, buffer, 0, buffer.length, 0);
+      return buffer.subarray(0, size).toString('utf8');
+    } catch (err) {
+      log('rollout head read failed for %s: %o', file, err);
+      return null;
+    } finally {
+      if (fd !== undefined) {
+        try {
+          file_system.closeSync(fd);
+        } catch {
+          // Discovery must remain fail-quiet for an unreadable candidate.
+        }
+      }
     }
   }
 
@@ -502,12 +549,12 @@ export function readCodexChildRecords(input) {
   /** @type {Map<string, { parent_thread_id: string|null, file: string }>} */
   const by_thread = new Map();
   for (const candidate of candidates.slice(0, MAX_CHILD_CANDIDATES)) {
-    const text = textOf(candidate.file);
+    // HEAD ONLY: the link lives in `session_meta`, so an unrelated transcript
+    // costs one bounded read and is never parsed further (§6.1).
+    const text = headOf(candidate.file);
     if (text === null) {
       continue;
     }
-    // HEAD ONLY: the link lives in `session_meta`, so an unrelated transcript
-    // costs a few lines and is never parsed further (§6.1).
     const identity = rolloutHeadIdentity(text);
     if (identity === null || !identity.subagent) {
       continue;
