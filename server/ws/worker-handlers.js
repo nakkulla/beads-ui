@@ -2357,12 +2357,12 @@ export function attemptsWithUsage(queue, workspace_key) {
           (value) => {
             if (
               value &&
-              JSON.stringify({
+              canonicalJson({
                 usage: attempt.usage ?? null,
                 usage_segments: attempt.usage_segments ?? [],
                 codex_children: attempt.codex_children ?? []
               }) !==
-                JSON.stringify({
+                canonicalJson({
                   usage: value.usage ?? null,
                   usage_segments: value.usage_segments ?? [],
                   codex_children: value.codex_children ?? []
@@ -2468,6 +2468,7 @@ export function attemptsWithUsage(queue, workspace_key) {
     }
     out[attempt_id] = projected;
   }
+  observations?.pruneHistorical(workspace_key, new Set(Object.keys(attempts)));
   return out;
 }
 
