@@ -58,7 +58,8 @@ export const TIMELINE_KINDS = Object.freeze(
     'merge_step',
     'operation_failed',
     'needs_human',
-    'user_action'
+    'user_action',
+    'wait_notified'
   ])
 );
 

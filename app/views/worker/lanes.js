@@ -1486,7 +1486,7 @@ export function priorityBadgeTemplate(priority) {
  * @typedef {Object} MiniItem
  * @property {string} id - Bead id.
  * @property {string} title - Bead title (falls back to id).
- * @property {string} [reason] - Candidate reason chip (missing_description /
+ * @property {string|import('../../protocol.js').WaitReason} [reason] - Candidate reason chip or external wait judgment (missing_description /
  * spec 없음 / 🔒 target).
  * @property {boolean} draggable - Whether this row can be dragged. 후보 카드는
  * 언제나 `false`다 (UI-d13v §6): 후보 레인은 드래그 소스도 드롭 대상도 아니고,
@@ -1626,6 +1626,7 @@ export function priorityBadgeTemplate(priority) {
  * `dependency_chips.predecessors`가 그리고, 여기 배열은 판정 팝업의 문장이
  * 읽는다.
  * @property {number} [external_wait_count] - 열린 외부 작업 gate 수.
+ * @property {import('../../protocol.js').WaitReason[]} [wait_reasons] - Server display judgments for this issue.
  * @property {Array<Record<string, any>>} [external_waits] - `status`와 gate 이동
  * 대상을 함께 싣는 요약 칩 자료.
  * @property {boolean} [spec_after_blocker] - 선행의 결과가 이 bead의 설계
@@ -1815,11 +1816,16 @@ export function graceChipTemplate(added_at, now = Date.now()) {
  *
  * @param {{ id: string, added_at?: number, gate?: import('./lane-model.js').LaneGate }} item
  * @param {number} [now]
+ * @param {boolean} [requested] - A server action explicitly offers immediate start.
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function startNowButtonTemplate(item, now = Date.now()) {
+export function startNowButtonTemplate(
+  item,
+  now = Date.now(),
+  requested = false
+) {
   const gated = !!item.gate;
-  if (graceRemainingMs(item.added_at, now) <= 0 && !gated) {
+  if (graceRemainingMs(item.added_at, now) <= 0 && !gated && !requested) {
     return '';
   }
   return html`<button
@@ -1841,7 +1847,7 @@ export function startNowButtonTemplate(item, now = Date.now()) {
  * 그 hold의 `since`다. 막힌 행 전부에 그린다 — 같은 행동이고 `since` CAS가 두
  * 번째 클릭을 no-op으로 만든다 (ADR 0048 §3.3).
  *
- * @param {{ gate?: import('./lane-model.js').LaneGate }} item
+ * @param {{ gate?: Pick<import('./lane-model.js').LaneGate, 'kind'|'since'> }} item
  * @returns {import('lit-html').TemplateResult|''}
  */
 export function holdResumeButtonTemplate(item) {
@@ -1887,7 +1893,7 @@ export function providerProbeRefusalText(reason) {
  * 않는다 (fail-quiet). 막힌 행 전부에 그린다 — `▶ 재개`와 같은 근거이고 중복
  * 클릭은 서버의 in-flight 술어가 흡수한다.
  *
- * @param {{ gate?: import('./lane-model.js').LaneGate }} item
+ * @param {{ gate?: Pick<import('./lane-model.js').LaneGate, 'kind'|'since'|'runner'|'probe_ready'> }} item
  * @returns {import('lit-html').TemplateResult|''}
  */
 export function providerProbeButtonTemplate(item) {
@@ -1914,6 +1920,371 @@ export function providerProbeButtonTemplate(item) {
 }
 
 /**
+ * Display the server verdict without interpreting its thresholds.
+ *
+ * @param {import('../../protocol.js').WaitReason} reason
+ * @returns {string}
+ */
+export function waitVerdictLabel(reason) {
+  const label = {
+    normal: '⏳ 정상 대기',
+    overdue:
+      reason.kind === 'external_job' &&
+      reason.verdict_reason?.code === 'settle_overdue'
+        ? '⚠ 해제 지연'
+        : '⚠ 지연',
+    action_required: '⛔ 조치 필요'
+  }[reason.verdict];
+  return label
+    ? `${label}${reason.verdict !== 'normal' && reason.verdict_reason?.message ? ` · ${reason.verdict_reason.message}` : ''}`
+    : '';
+}
+
+/**
+ * Keep informational clicks inside their popup instead of opening the card.
+ *
+ * @param {Event} event
+ */
+function stopWaitClick(event) {
+  event.stopPropagation();
+}
+
+/**
+ * Separate WaitReason fragments by the shared card slots. Existing operations
+ * need their original projection; missing operation material stays absent.
+ *
+ * @param {import('../../protocol.js').WaitReason|null|undefined} reason
+ * @param {{ item?: MiniItem, resume?: import('lit-html').TemplateResult|'', disposition?: import('lit-html').TemplateResult|'', now?: number, last_observed_at?: number|null }} [options]
+ */
+export function waitReasonLines(reason, options = {}) {
+  if (!reason) {
+    return { badge: '', body: '', actions: '', times: '' };
+  }
+  const label = waitVerdictLabel(reason);
+  const since = formatTimestampLocal(reason.since);
+  const next = formatTimestampLocal(reason.next_check_at);
+  const reset = formatTimestampLocal(reason.resets_at);
+  const observed =
+    options.last_observed_at === undefined
+      ? since
+      : formatTimestampLocal(options.last_observed_at);
+  const countdown =
+    reason.kind === 'provider_hold' &&
+    reason.verdict === 'normal' &&
+    typeof reason.resets_at === 'number' &&
+    reason.resets_at > (options.now ?? Date.now())
+      ? ` · 리셋까지 ${Math.ceil((reason.resets_at - (options.now ?? Date.now())) / 60000)}분`
+      : '';
+  const evidence = [
+    reason.verdict_reason?.message,
+    since ? `관측 시작 ${since}` : '',
+    next ? `다음 확인 ${next}` : '',
+    reset ? `리셋 ${reset}` : ''
+  ].filter(Boolean);
+  const item = options.item;
+  const actions = (reason.actions || []).map((action) => {
+    const payload = action.payload;
+    if (
+      action.op === 'monitor_tick_now' &&
+      payload.watch_id &&
+      payload.root_dir &&
+      typeof payload.since === 'number' &&
+      Number.isFinite(payload.since)
+    ) {
+      return html`<button
+        type="button"
+        class="op-btn external-wait__check-now"
+        data-external-check-now=${payload.watch_id}
+        data-root-dir=${payload.root_dir}
+        data-since=${ifDefined(payload.since)}
+        title="관측기를 지금 한 번 실행합니다 — 이 호스트의 확인 시각이 된 항목 전부가 처리됩니다"
+      >
+        지금 확인
+      </button>`;
+    }
+    if (action.op === 'probe_now') {
+      return providerProbeButtonTemplate(
+        item?.gate &&
+          ['provider_usage', 'provider_outage'].includes(item.gate.kind)
+          ? item
+          : {
+              gate: {
+                kind: 'provider_outage',
+                since: reason.since ?? null,
+                runner: payload.runner,
+                probe_ready: true
+              }
+            }
+      );
+    }
+    if (action.op === 'resume') {
+      return reason.kind === 'base_moved'
+        ? options.resume || ''
+        : holdResumeButtonTemplate(
+            item?.gate?.kind === 'systemic'
+              ? item
+              : {
+                  gate: { kind: 'systemic', since: reason.since ?? null }
+                }
+          );
+    }
+    if (action.op === 'start_now' && payload.bead_id) {
+      return startNowButtonTemplate(
+        item || { id: payload.bead_id },
+        options.now,
+        true
+      );
+    }
+    return action.op === 'disposition' ? options.disposition || '' : '';
+  });
+  return {
+    badge: label
+      ? html`<details class="wait-verdict" @click=${stopWaitClick}>
+          <summary class="worker-mini__badge" data-verdict=${reason.verdict}>
+            ${label}${countdown}
+          </summary>
+          ${chipPopoverTemplate({
+            title: '대기 판정 근거',
+            lines: /** @type {string[]} */ (evidence)
+          })}
+        </details>`
+      : '',
+    body:
+      reason.headline || reason.release
+        ? html`<div class="wait-reason__lines">
+            ${reason.headline
+              ? html`<div class="wait-reason__headline">
+                  ${reason.headline}
+                </div>`
+              : ''}
+            ${reason.release
+              ? html`<div class="wait-reason__release">${reason.release}</div>`
+              : ''}
+          </div>`
+        : '',
+    actions: actions.some((action) => action !== '') ? html`${actions}` : '',
+    times:
+      reset || observed || next
+        ? html`<div class="worker-mini__times wait-reason__times">
+            ${reset
+              ? `리셋 ${reset}`
+              : [
+                  observed ? `마지막 확인 ${observed}` : '',
+                  next ? `다음 ${next}` : ''
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+          </div>`
+        : ''
+  };
+}
+
+/**
+ * Count original issues once, including within each displayed group.
+ *
+ * @param {Array<{ root_dir: string, name?: string, wait_reasons?: import('../../protocol.js').WaitReason[] }>} workspaces
+ */
+export function blockedSummary(workspaces) {
+  /** @type {Map<string, { root_dir: string, id: string, name: string, reasons: import('../../protocol.js').WaitReason[] }>} */
+  const subjects = new Map();
+  for (const workspace of workspaces) {
+    for (const reason of workspace.wait_reasons || []) {
+      if (reason.subject.root_dir !== workspace.root_dir) {
+        continue;
+      }
+      const key = `${workspace.root_dir}\u0000${reason.subject.bead_id}`;
+      const entry = subjects.get(key) || {
+        root_dir: workspace.root_dir,
+        id: reason.subject.bead_id,
+        name: workspace.name || workspace.root_dir,
+        reasons: []
+      };
+      entry.reasons.push(reason);
+      subjects.set(key, entry);
+    }
+  }
+  const entries = [...subjects.values()];
+  const groups = [
+    { label: '외부 계산', kinds: ['external_job'] },
+    { label: '선행', kinds: ['prerequisite', 'prerequisite_foreign'] },
+    { label: '공급자', kinds: ['provider_hold', 'queue_hold'] },
+    { label: '사람', kinds: ['awaiting_user', 'stale_work'] },
+    { label: '수동 출발', kinds: ['auto_advance_off'] },
+    { label: '기준 이동', kinds: ['base_moved'] },
+    { label: '재시도', kinds: ['retry_wait'] }
+  ]
+    .map((group) => ({
+      label: group.label,
+      entries: entries
+        .map((entry) => ({
+          ...entry,
+          reasons: entry.reasons.filter((reason) =>
+            group.kinds.includes(reason.kind)
+          )
+        }))
+        .filter((entry) => entry.reasons.length > 0)
+    }))
+    .filter((group) => group.entries.length > 0);
+  return {
+    count: entries.length,
+    action_count: entries.filter((entry) =>
+      entry.reasons.some((reason) => reason.verdict === 'action_required')
+    ).length,
+    groups
+  };
+}
+
+/**
+ * Reveal and highlight the exact workspace card without changing queue order.
+ *
+ * @param {Event} event
+ * @param {string} root_dir
+ * @param {string} bead_id
+ * @param {import('../../protocol.js').WaitReason} reason
+ * @param {((root_dir: string, bead_id: string) => void)|undefined} reveal
+ */
+function scrollToWaitCard(event, root_dir, bead_id, reason, reveal) {
+  event.stopPropagation();
+  const source = /** @type {HTMLElement} */ (event.currentTarget);
+  const scope = source.closest('.worker-console, .mon') || source.ownerDocument;
+  const target_ids = [
+    bead_id,
+    ...(reason.kind === 'external_job'
+      ? reason.targets
+          .filter((target) => target.kind === 'gate')
+          .map((target) => target.id)
+      : [])
+  ];
+  /** @type {Element|undefined} */
+  let card;
+  for (const target_id of target_ids) {
+    if (reveal) {
+      reveal(root_dir, target_id);
+    }
+    card = Array.from(
+      scope.querySelectorAll('.worker-mini, .rtile, .worker-card')
+    ).find(
+      (entry) =>
+        entry.getAttribute('data-bead-id') === target_id &&
+        entry.closest('[data-root-dir]')?.getAttribute('data-root-dir') ===
+          root_dir
+    );
+    if (card) {
+      break;
+    }
+  }
+  if (!(card instanceof HTMLElement)) {
+    return;
+  }
+  for (let parent = card.parentElement; parent; parent = parent.parentElement) {
+    if (parent instanceof HTMLDetailsElement) {
+      parent.open = true;
+    }
+  }
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.classList.add('wait-reason--highlight');
+  card.setAttribute('tabindex', '-1');
+  card.focus({ preventScroll: true });
+  setTimeout(() => card.classList.remove('wait-reason--highlight'), 2000);
+  const popup = source.closest('details');
+  if (popup) {
+    popup.open = false;
+  }
+}
+
+/**
+ * Shared Worker/Monitor summary and its grouped navigation popup.
+ *
+ * @param {Parameters<typeof blockedSummary>[0]} workspaces
+ * @param {(root_dir: string, bead_id: string) => void} [reveal]
+ */
+export function blockedSummaryTemplate(workspaces, reveal) {
+  const summary = blockedSummary(workspaces);
+  if (summary.count === 0) {
+    return '';
+  }
+  return html`<details class="wait-summary" @click=${stopWaitClick}>
+    <summary class="worker-kpi__chip">
+      막힘 ${summary.count} · 조치 필요 ${summary.action_count}
+    </summary>
+    <div class="wait-summary__popover" role="dialog" aria-label="막힘 요약">
+      ${summary.groups.map(
+        (group) =>
+          html`<section>
+            <strong>${group.label} ${group.entries.length}</strong>
+            ${group.entries.map((entry) =>
+              entry.reasons.map(
+                (reason) =>
+                  html`<button
+                    type="button"
+                    class="wait-summary__item"
+                    @click=${(/** @type {Event} */ event) =>
+                      scrollToWaitCard(
+                        event,
+                        entry.root_dir,
+                        entry.id,
+                        reason,
+                        reveal
+                      )}
+                  >
+                    ${waitVerdictLabel(reason)} ${entry.name} ${entry.id} —
+                    ${reason.headline}
+                  </button>`
+              )
+            )}
+          </section>`
+      )}
+    </div>
+  </details>`;
+}
+
+/**
+ * Expand only the lane and area containing a summary subject before rendering.
+ *
+ * @param {import('./lane-model.js').LaneModel} model
+ * @param {ReturnType<import('./lane-collapse.js').createLaneCollapse>} collapse
+ * @param {string} root_dir
+ * @param {string} bead_id
+ */
+export function expandWaitSubject(model, collapse, root_dir, bead_id) {
+  const item = [
+    ...model.queue,
+    ...model.running,
+    ...model.pr_wait,
+    ...model.runnable,
+    ...model.external_waits
+  ].find((entry) => entry.root_dir === root_dir && entry.id === bead_id);
+  if (!item) {
+    return;
+  }
+  const serial = /^s[1-5]$/.test(item.lane);
+  const lane =
+    serial || item.lane === 'external_wait'
+      ? 'queue'
+      : item.lane === 'runnable'
+        ? 'candidate'
+        : item.lane;
+  if (
+    lane === 'queue' ||
+    lane === 'running' ||
+    lane === 'pr_wait' ||
+    lane === 'candidate'
+  ) {
+    if (collapse.isCollapsed(lane)) {
+      collapse.toggle(lane);
+    }
+  }
+  const area = serial ? 'serial' : 'parallel';
+  if (
+    lane === 'queue' &&
+    item.lane !== 'external_wait' &&
+    collapse.isAreaCollapsed(area)
+  ) {
+    collapse.toggleArea(area);
+  }
+}
+
+/**
  * The 대기 행 조작 묶음 — 행 1번 줄 끝의 조작 슬롯이다 (UI-6g3t §4). Worker
  * `queueRowActions`와 Monitor `rowActions`가 같은 조각을 따로 들고 있어 두 탭의
  * 조작 밀도가 갈렸다 — Monitor 직렬 행에는 `✕`가 아예 없었다. 여기 하나로 합친다.
@@ -1937,11 +2308,37 @@ export function queueRowOps(item, options = {}) {
   if (item.draggable !== true || item.done === true) {
     return undefined;
   }
+  /** @type {Set<string>} */
+  const offered = new Set();
+  /** @type {Set<string>} */
+  const action_keys = new Set();
+  const wait_actions = (item.wait_reasons || []).map(
+    (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
+      waitReasonLines(
+        {
+          ...reason,
+          actions: reason.actions.filter((action) => {
+            const key = `${action.op}:${action.payload.watch_id || action.payload.runner || ''}`;
+            if (action_keys.has(key)) {
+              return false;
+            }
+            action_keys.add(key);
+            offered.add(action.op);
+            return true;
+          })
+        },
+        { item }
+      ).actions
+  );
   // 순서는 넓은 것(큐 전체) → 좁은 것(이 행) → 자리 조작 → 빼기다 (UI-01wh §3.3).
   return html`<span class="worker-mini__rowops">
-    ${holdResumeButtonTemplate(item)}${providerProbeButtonTemplate(
-      item
-    )}${startNowButtonTemplate(item)}${options.nudgeable === true
+    ${offered.has('resume') ? '' : holdResumeButtonTemplate(item)}${offered.has(
+      'probe_now'
+    )
+      ? ''
+      : providerProbeButtonTemplate(item)}${offered.has('start_now')
+      ? ''
+      : startNowButtonTemplate(item)}${wait_actions}${options.nudgeable === true
       ? html`<button
             type="button"
             class="op-btn op-btn--icon worker-mini__rowops-up"
@@ -2001,6 +2398,20 @@ export function miniRow(item, options = {}) {
     return doneThreeLineRow(item);
   }
   const draggable = item.draggable && !item.done;
+  const queue_row = item.lane === 'queue' || /^s[1-5]$/.test(item.lane);
+  const wait_reasons = (item.wait_reasons || []).filter(
+    (reason) =>
+      !['prerequisite', 'prerequisite_foreign'].includes(reason.kind) ||
+      queue_row
+  );
+  const prerequisite =
+    queue_row &&
+    wait_reasons.some((reason) =>
+      ['prerequisite', 'prerequisite_foreign'].includes(reason.kind)
+    );
+  const wait_lines = wait_reasons.map((reason) =>
+    waitReasonLines(reason, { item })
+  );
   const badges = Array.isArray(item.badges) ? item.badges : [];
   const provider_badges = providerUsageBadges(item.usage);
   const usage_label = formatUsageTotalWithCost(item.usage);
@@ -2078,9 +2489,10 @@ export function miniRow(item, options = {}) {
           >${b}</span
         >`
   );
-  const reason_el = item.reason
-    ? html`<span class="worker-mini__reason">${item.reason}</span>`
-    : '';
+  const reason_el =
+    typeof item.reason === 'string' && item.reason
+      ? html`<span class="worker-mini__reason">${item.reason}</span>`
+      : '';
   const usage_el =
     provider_badges.length > 0
       ? provider_badges.map(
@@ -2352,12 +2764,15 @@ export function miniRow(item, options = {}) {
       ? ' worker-mini--merging'
       : ''}${merging?.failed ? ' worker-mini--merge-failed' : ''}${item.external
       ? ' worker-mini--external'
+      : ''}${prerequisite
+      ? ' worker-mini--prerequisite'
       : ''}${route_tone.tinted
       ? ' worker-mini--route-bg'
       : ''}${item.search_match === false ? ' is-dimmed' : ''}"
     style=${merging ? `--progress: ${merging.percent}%` : ''}
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
+    data-root-dir=${ifDefined(item.root_dir)}
     data-lane=${item.lane}
     data-route=${ifDefined(route_tone.route)}
   >
@@ -2387,10 +2802,14 @@ export function miniRow(item, options = {}) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${reason_el}${actions_el}
+              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${reason_el}${wait_lines.map(
+                (line) => line.badge
+              )}${actions_el}
             </div>
             <div class="worker-mini__body">${title_el}${stale_details}</div>
-            ${deps_el}${chips_el}${has_foot
+            ${wait_lines.map(
+              (line) => line.body
+            )}${deps_el}${chips_el}${has_foot
               ? html`<div class="worker-mini__foot">
                   ${merge_step_el}
                   <span class="worker-mini__actions"
@@ -2399,14 +2818,21 @@ export function miniRow(item, options = {}) {
                   ${discardReceiptTemplate(item)}
                 </div>`
               : ''}
-            ${timesMeta(item)}`
+            ${wait_lines.map((line) => line.times)}${timesMeta(item)}`
         : // 한 줄 변형은 본문을 `__line`으로 감싸고 메타 줄을 형제로 붙인다
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${foreign_repo_el}${badge_els}${reason_el}${merge_step_el}${merge_el}${cancel_el}${discard_actions_el}${actions_el}
+              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${foreign_repo_el}${badge_els}${reason_el}${wait_lines.map(
+                (line) => line.badge
+              )}${merge_step_el}${merge_el}${cancel_el}${discard_actions_el}${actions_el}
             </div>
-            ${deps_el}${chips_el}${receipt_el} ${timesMeta(item)}`}
+            ${wait_lines.map(
+              (line) => line.body
+            )}${deps_el}${chips_el}${receipt_el}${wait_lines.map(
+              (line) => line.times
+            )}
+            ${timesMeta(item)}`}
   </div>`;
 }
 
@@ -2418,19 +2844,28 @@ export function miniRow(item, options = {}) {
  * @returns {import('lit-html').TemplateResult}
  */
 export function externalWaitRow(item) {
+  const reason = typeof item.reason === 'object' ? item.reason : null;
+  const lines = waitReasonLines(reason);
   const last_at = formatTimestampLocal(item.last_observed_at);
   const next_at = formatTimestampLocal(item.next_observation_at);
   const completed_at = formatTimestampLocal(item.completed_at);
   return html`<article
     class="worker-mini worker-mini--card worker-mini--static worker-mini--external-wait"
     data-bead-id=${item.id}
+    data-root-dir=${item.root_dir}
     data-lane="external_wait"
   >
     <div class="worker-mini__row1 external-wait__headline">
+      ${lines.badge}${reason ? html`<span>${item.gate_id} ·</span>` : ''}
       <span class="external-wait__kind"
-        >${item.watch_id ? '외부 작업' : '대기 조건'}</span
+        >${item.watch_id
+          ? reason
+            ? '외부 계산'
+            : '외부 작업'
+          : '대기 조건'}</span
       >
       <strong class="external-wait__job-state">${item.job_state}</strong>
+      ${lines.actions}
     </div>
     <button
       type="button"
@@ -2441,6 +2876,7 @@ export function externalWaitRow(item) {
       <span class="worker-mini__id external-wait__gate"> ${item.gate_id} </span>
       <span class="worker-mini__title">${item.gate_title}</span>
     </button>
+    ${lines.body}
     <div class="external-wait__monitor">
       <span
         class=${item.monitor_reason || item.overdue
@@ -2454,6 +2890,28 @@ export function externalWaitRow(item) {
         : ''}
       ${item.stale ? html`<span>· 오래된 자료</span>` : ''}
     </div>
+    ${reason?.verdict === 'overdue'
+      ? html`<div class="wait-reason__guidance">
+          [지금 확인]으로 관측기를 지금 실행하거나 관측기 상태를 점검하세요
+        </div>`
+      : ''}
+    ${reason?.verdict_reason?.code === 'job_failed'
+      ? html`<div class="wait-reason__guidance">
+          원래 이슈가 재개되면 복구 판단이 필요합니다
+        </div>`
+      : ''}
+    ${reason
+      ? html`<div class="worker-deps worker-deps--primary">
+          <button
+            type="button"
+            class="worker-dep worker-dep__open"
+            data-external-open=${item.gate_id}
+            data-root-dir=${item.root_dir}
+          >
+            ⛓ ${item.gate_id}
+          </button>
+        </div>`
+      : ''}
     ${item.consumer_id
       ? html`<div class="external-wait__consumer">
           원래 이슈
@@ -2475,13 +2933,24 @@ export function externalWaitRow(item) {
         >${item.workspace_name}</span
       >
       ${item.job_id
-        ? html`<span class="worker-chip">외부 작업 ${item.job_id}</span>`
+        ? html`<span class="worker-chip"
+            >${reason ? '작업' : '외부 작업'} ${item.job_id}</span
+          >`
+        : ''}
+      ${reason && item.ssh_host
+        ? html`<span class="worker-chip">${item.ssh_host}</span>`
         : ''}
     </div>
     ${last_at || next_at || completed_at
       ? html`<div class="worker-mini__times external-wait__times">
-          ${last_at ? html`<span>마지막 확인 시도 ${last_at}</span>` : ''}
-          ${next_at ? html`<span>다음 확인 ${next_at}</span>` : ''}
+          ${last_at
+            ? html`<span
+                >${reason ? '마지막 확인' : '마지막 확인 시도'} ${last_at}</span
+              >`
+            : ''}
+          ${next_at
+            ? html`<span>${reason ? '· 다음' : '다음 확인'} ${next_at}</span>`
+            : ''}
           ${completed_at ? html`<span>종료 ${completed_at}</span>` : ''}
         </div>`
       : ''}

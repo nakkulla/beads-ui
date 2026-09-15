@@ -22,7 +22,7 @@ import {
   ORCHESTRATION_KEYS,
   QUICK_FIX_ORCHESTRATION_KEYS
 } from '../settings-dialog/session-model.js';
-import { placeMenuList } from '../worker/lanes.js';
+import { placeMenuList, waitReasonLines } from '../worker/lanes.js';
 import {
   candidatePlacement,
   placeLaneLabel,
@@ -120,6 +120,67 @@ export function createDetailPanel(mount_element, options) {
   const issueStores = options.issueStores;
   const onClose = options.onClose;
   const transport = options.transport;
+
+  /** @type {Set<string>} */
+  const external_checks = new Set();
+
+  /** Keep replacement buttons disabled when a snapshot redraws the view. */
+  function syncExternalChecks() {
+    for (const button of Array.from(
+      mount_element.querySelectorAll('[data-external-check-now]')
+    )) {
+      const element = /** @type {HTMLButtonElement} */ (button);
+      element.disabled = external_checks.has(element.dataset.rootDir || '');
+    }
+  }
+
+  /** @param {HTMLButtonElement} button */
+  async function checkExternalWaitNow(button) {
+    const root_dir = button.dataset.rootDir || '';
+    const watch_id = button.dataset.externalCheckNow || '';
+    const since = Number(button.dataset.since);
+    if (
+      !transport ||
+      !root_dir ||
+      !watch_id ||
+      !button.dataset.since ||
+      !Number.isFinite(since) ||
+      external_checks.has(root_dir)
+    ) {
+      return;
+    }
+    external_checks.add(root_dir);
+    syncExternalChecks();
+    try {
+      const res = /** @type {any} */ (
+        await transport('worker-external-wait-check-now', {
+          root_dir,
+          watch_id,
+          since
+        })
+      );
+
+      const summaries = {
+        settled: '대기 조건이 해제되었습니다',
+        still_waiting: '확인했습니다 — 아직 대기 중입니다',
+        skipped: '이미 실행 중',
+        running: '관측기가 계속 실행 중입니다',
+        error: '관측기 실행에 실패했습니다'
+      };
+      const outcome = /** @type {keyof typeof summaries} */ (res?.outcome);
+      showToast(
+        res?.summary || summaries[outcome] || summaries.error,
+        res?.ok === false || outcome === 'error' ? 'error' : 'success',
+        4000
+      );
+    } catch {
+      showToast('관측기 실행 요청에 실패했습니다', 'error', 4000);
+    } finally {
+      external_checks.delete(root_dir);
+      syncExternalChecks();
+      doRender();
+    }
+  }
   const onNavigate = options.onNavigate;
   const queueStore = options.queueStore;
   const pipelineStore = options.pipelineStore;
@@ -1316,7 +1377,7 @@ export function createDetailPanel(mount_element, options) {
   let unsubscribe_pipeline = null;
   if (pipelineStore && typeof pipelineStore.subscribe === 'function') {
     unsubscribe_pipeline = pipelineStore.subscribe(() => {
-      if (current_id && current?.issue_type === 'gate') {
+      if (current_id) {
         doRender();
       }
     });
@@ -2182,6 +2243,24 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
+   * Read only server judgments belonging to the selected workspace.
+   *
+   * @returns {import('../../protocol.js').WaitReason[]}
+   */
+  function currentWaitReasons() {
+    const root_dir = options.getWorkspacePath?.() || '';
+    const workspace = (pipelineStore?.get() || []).find(
+      (/** @type {Record<string, any>} */ entry) => entry.root_dir === root_dir
+    );
+    const reasons =
+      queueStore?.get()?.wait_reasons ?? workspace?.wait_reasons ?? [];
+    return reasons.filter(
+      (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
+        reason.subject.root_dir === root_dir
+    );
+  }
+
+  /**
    * The 의존성 절 (UI-lx45 §4). 선행(`dependencies` 중 `blocks`)·후행
    * (`dependents` 중 `blocks`)·나머지(`dependencies` 중 그 외)를 한 절에 두고,
    * 종류는 글리프(UI-8x90 §3)와 색 티어로 구분한다. 편집은 선행 한 방향뿐이다.
@@ -2189,6 +2268,9 @@ export function createDetailPanel(mount_element, options) {
    * @param {any} data
    */
   function depsTemplate(data) {
+    const wait_reasons = currentWaitReasons().filter(
+      (reason) => reason.subject.bead_id === current_id
+    );
     const deps = Array.isArray(data.dependencies) ? data.dependencies : [];
     const dependents = Array.isArray(data.dependents) ? data.dependents : [];
     /** @type {Array<{ id: string, label: string, kind: 'pred'|'succ'|'other', title: string|undefined }>} */
@@ -2254,7 +2336,23 @@ export function createDetailPanel(mount_element, options) {
       ${chips.length === 0
         ? html`<div class="detail-empty">의존성 없음</div>`
         : html`<div class="detail-deps">
-            ${chips.map((chip) => depChipTemplate(chip, root_by_id))}
+            ${chips.map(
+              (chip) =>
+                html`${depChipTemplate(chip, root_by_id)}${chip.kind === 'pred'
+                  ? wait_reasons
+                      .filter((reason) =>
+                        reason.targets.some((target) => target.id === chip.id)
+                      )
+                      .map(
+                        (reason) =>
+                          html`<span class="detail-dep__wait"
+                            >${waitReasonLines(reason).badge}${reason.headline
+                              ? html`<span>${reason.headline}</span>`
+                              : ''}</span
+                          >`
+                      )
+                  : ''}`
+            )}
           </div>`}
       ${model === null
         ? html`<div class="detail-empty">후보를 불러올 수 없음</div>`
@@ -2729,13 +2827,25 @@ export function createDetailPanel(mount_element, options) {
         (/** @type {Record<string, any>} */ entry) =>
           entry?.root_dir === root_dir
       );
-      const external_wait = (workspace?.external_waits || []).find(
+      const external_wait = (
+        queueStore?.get()?.external_waits ??
+        workspace?.external_waits ??
+        []
+      ).find(
         (/** @type {Record<string, any>} */ entry) => entry?.gate_id === id
       );
       const verified_external_wait =
         external_wait && typeof external_wait.watch_id === 'string'
           ? external_wait
           : null;
+      const wait_reason = currentWaitReasons().find(
+        (reason) =>
+          reason.kind === 'external_job' &&
+          reason.targets.some((target) => target.id === id)
+      );
+      const wait_lines = waitReasonLines(wait_reason, {
+        last_observed_at: verified_external_wait?.last_observed_at
+      });
       const show_next_observation = !!(
         verified_external_wait?.next_observation_at &&
         verified_external_wait.stage !== 'stopped' &&
@@ -2748,7 +2858,20 @@ export function createDetailPanel(mount_element, options) {
       return html`<div class="detail-overlay" role="dialog" aria-modal="true">
         <div class="detail-overlay__backdrop" @click=${() => onClose()}></div>
         <div class="detail-overlay__panel detail-overlay__panel--gate">
-          <div class="detail-overlay__bar">
+          <div
+            class="detail-overlay__bar"
+            @click=${(/** @type {Event} */ event) => {
+              const button = /** @type {HTMLButtonElement|null} */ (
+                event.target instanceof Element
+                  ? event.target.closest('[data-external-check-now]')
+                  : null
+              );
+              if (button) {
+                event.stopPropagation();
+                void checkExternalWaitNow(button);
+              }
+            }}
+          >
             <button
               type="button"
               class="detail-overlay__id"
@@ -2758,6 +2881,7 @@ export function createDetailPanel(mount_element, options) {
               ${id}
             </button>
             <span class="detail-gate__badge">대기 조건</span>
+            ${wait_lines.badge}${wait_lines.actions}
             <button
               type="button"
               class="detail-overlay__close"
@@ -2770,75 +2894,92 @@ export function createDetailPanel(mount_element, options) {
           <div class="detail-title-row">
             <h2 class="detail-overlay__title">${title}</h2>
           </div>
-          ${verified_external_wait
+          ${wait_reason
             ? html`<section class="detail-gate__monitor">
-                <strong
-                  >외부 작업의 종료를 시스템이 확인합니다. 직접 닫을 필요가
-                  없습니다.</strong
-                >
-                <div>${verified_external_wait.job_state}</div>
-                <div>
-                  ${verified_external_wait.monitor_state}${verified_external_wait.monitor_reason
-                    ? ` · ${verified_external_wait.monitor_reason}`
-                    : ''}
-                  ${verified_external_wait.stale ? ' · 오래된 자료' : ''}
-                </div>
-                ${verified_external_wait.previous_job_state
+                ${wait_lines.body}
+                ${verified_external_wait
                   ? html`<div>
-                      ${verified_external_wait.previous_job_state}
+                      ${[
+                        verified_external_wait.monitor_state,
+                        verified_external_wait.monitor_reason,
+                        verified_external_wait.previous_job_state,
+                        verified_external_wait.stale ? '오래된 자료' : ''
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
                     </div>`
                   : ''}
-                ${verified_external_wait.last_observed_at
-                  ? html`<div>
-                      마지막 확인 시도
-                      ${formatTimestampLocal(
-                        verified_external_wait.last_observed_at
-                      )}
-                    </div>`
-                  : ''}
-                ${show_next_observation
-                  ? html`<div>
-                      다음 확인
-                      ${formatTimestampLocal(
-                        verified_external_wait.next_observation_at
-                      )}
-                    </div>`
-                  : ''}
-                ${verified_external_wait.completed_at
-                  ? html`<div>
-                      종료
-                      ${formatTimestampLocal(
-                        verified_external_wait.completed_at
-                      )}
-                    </div>`
-                  : ''}
-                ${verified_external_wait.consumer_id
-                  ? html`<div>
-                      원래 이슈
-                      <button
-                        type="button"
-                        class="detail-dep detail-dep--link"
-                        @click=${() =>
-                          onNavigate?.(verified_external_wait.consumer_id)}
-                      >
-                        ${verified_external_wait.consumer_id}
-                      </button>
-                      ${verified_external_wait.consumer_title
-                        ? ` · ${verified_external_wait.consumer_title}`
-                        : ''}
-                    </div>`
-                  : ''}
-                <div>
-                  해제 조건 · 등록된 외부 작업의 종료를 확인하고 대기 조건이
-                  닫힘
-                </div>
+                ${wait_lines.times}
               </section>`
-            : html`<section
-                class="detail-gate__monitor detail-gate__monitor--unknown"
-              >
-                자동 감시 연결을 확인할 자료가 없습니다. 아래 대기 조건 원문과
-                관계를 확인하세요.
-              </section>`}
+            : verified_external_wait
+              ? html`<section class="detail-gate__monitor">
+                  <strong
+                    >외부 작업의 종료를 시스템이 확인합니다. 직접 닫을 필요가
+                    없습니다.</strong
+                  >
+                  <div>${verified_external_wait.job_state}</div>
+                  <div>
+                    ${verified_external_wait.monitor_state}${verified_external_wait.monitor_reason
+                      ? ` · ${verified_external_wait.monitor_reason}`
+                      : ''}
+                    ${verified_external_wait.stale ? ' · 오래된 자료' : ''}
+                  </div>
+                  ${verified_external_wait.previous_job_state
+                    ? html`<div>
+                        ${verified_external_wait.previous_job_state}
+                      </div>`
+                    : ''}
+                  ${verified_external_wait.last_observed_at
+                    ? html`<div>
+                        마지막 확인 시도
+                        ${formatTimestampLocal(
+                          verified_external_wait.last_observed_at
+                        )}
+                      </div>`
+                    : ''}
+                  ${show_next_observation
+                    ? html`<div>
+                        다음 확인
+                        ${formatTimestampLocal(
+                          verified_external_wait.next_observation_at
+                        )}
+                      </div>`
+                    : ''}
+                  ${verified_external_wait.completed_at
+                    ? html`<div>
+                        종료
+                        ${formatTimestampLocal(
+                          verified_external_wait.completed_at
+                        )}
+                      </div>`
+                    : ''}
+                  ${verified_external_wait.consumer_id
+                    ? html`<div>
+                        원래 이슈
+                        <button
+                          type="button"
+                          class="detail-dep detail-dep--link"
+                          @click=${() =>
+                            onNavigate?.(verified_external_wait.consumer_id)}
+                        >
+                          ${verified_external_wait.consumer_id}
+                        </button>
+                        ${verified_external_wait.consumer_title
+                          ? ` · ${verified_external_wait.consumer_title}`
+                          : ''}
+                      </div>`
+                    : ''}
+                  <div>
+                    해제 조건 · 등록된 외부 작업의 종료를 확인하고 대기 조건이
+                    닫힘
+                  </div>
+                </section>`
+              : html`<section
+                  class="detail-gate__monitor detail-gate__monitor--unknown"
+                >
+                  자동 감시 연결을 확인할 자료가 없습니다. 아래 대기 조건 원문과
+                  관계를 확인하세요.
+                </section>`}
           <div class="detail-section-label">상태</div>
           <div class="detail-kv">
             <span class="detail-kv__k">status</span>
@@ -3040,6 +3181,7 @@ export function createDetailPanel(mount_element, options) {
 
   function doRender() {
     render(template(), mount_element);
+    syncExternalChecks();
   }
 
   return {

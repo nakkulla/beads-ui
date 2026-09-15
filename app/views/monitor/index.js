@@ -56,6 +56,7 @@ import {
   discardAbandonConfirmationMessage,
   discardCompletionMessage,
   discardConfirmationMessage,
+  expandWaitSubject,
   judgementPopoverOf,
   miniRow,
   nowPanel,
@@ -329,6 +330,69 @@ export function createMonitorView(mount_element, options) {
   const gotoIssue = options.gotoIssue;
   const pipelineStore = options.pipelineStore;
   const transport = options.transport;
+
+  /** @type {Set<string>} */
+  const external_checks = new Set();
+
+  /** Keep replacement buttons disabled when a snapshot redraws the view. */
+  function syncExternalChecks() {
+    for (const button of Array.from(
+      mount_element.querySelectorAll('[data-external-check-now]')
+    )) {
+      const element = /** @type {HTMLButtonElement} */ (button);
+      element.disabled = external_checks.has(element.dataset.rootDir || '');
+    }
+  }
+
+  /** @param {HTMLButtonElement} button */
+  async function checkExternalWaitNow(button) {
+    const root_dir = button.dataset.rootDir || '';
+    const watch_id = button.dataset.externalCheckNow || '';
+    const since = Number(button.dataset.since);
+    if (
+      !transport ||
+      !root_dir ||
+      !watch_id ||
+      !button.dataset.since ||
+      !Number.isFinite(since) ||
+      external_checks.has(root_dir)
+    ) {
+      return;
+    }
+    external_checks.add(root_dir);
+    syncExternalChecks();
+    try {
+      const res = /** @type {any} */ (
+        await transport('worker-external-wait-check-now', {
+          root_dir,
+          watch_id,
+          since
+        })
+      );
+      if (res?.queue) {
+        exec_adopted.set(root_dir, res.queue);
+      }
+      const summaries = {
+        settled: '대기 조건이 해제되었습니다',
+        still_waiting: '확인했습니다 — 아직 대기 중입니다',
+        skipped: '이미 실행 중',
+        running: '관측기가 계속 실행 중입니다',
+        error: '관측기 실행에 실패했습니다'
+      };
+      const outcome = /** @type {keyof typeof summaries} */ (res?.outcome);
+      showToast(
+        res?.summary || summaries[outcome] || summaries.error,
+        res?.ok === false || outcome === 'error' ? 'error' : 'success',
+        4000
+      );
+    } catch {
+      showToast('관측기 실행 요청에 실패했습니다', 'error', 4000);
+    } finally {
+      external_checks.delete(root_dir);
+      syncExternalChecks();
+      doRender();
+    }
+  }
   const getWorkspacePath = options.getWorkspacePath;
   const openDoc = options.openDoc;
   const switchWorkspace = options.switchWorkspace;
@@ -1198,6 +1262,7 @@ export function createMonitorView(mount_element, options) {
             runningTile(
               {
                 bead_id: item.id,
+                root_dir: item.root_dir,
                 attempt_id: item.attempt_id || '',
                 title: item.title,
                 runner: item.runner ?? null,
@@ -1211,6 +1276,7 @@ export function createMonitorView(mount_element, options) {
                 kind: item.kind === 'session' ? 'session' : undefined,
                 external_wait_count: item.external_wait_count,
                 external_waits: item.external_waits,
+                wait_reasons: item.wait_reasons,
                 ...(item.kind === 'session'
                   ? {
                       updated_at: item.updated_at,
@@ -1600,6 +1666,7 @@ export function createMonitorView(mount_element, options) {
       }
     }
     render(monitorTemplate(now), console_el);
+    syncExternalChecks();
     showProviderResumeDialog(console_el);
     ensureDeck()?.render();
     applyRepoAutomationTooltips();
@@ -1654,6 +1721,11 @@ export function createMonitorView(mount_element, options) {
       return null;
     }
     deck = createRepoDeck(host, {
+      workspaces: () => pipelineStore?.get() || [],
+      revealWaitSubject: (root_dir, bead_id) => {
+        expandWaitSubject(lanes, collapse, root_dir, bead_id);
+        doRender();
+      },
       workspacesState: () =>
         pipelineStore && pipelineStore.getWorkspacesState
           ? pipelineStore.getWorkspacesState()
@@ -2432,6 +2504,14 @@ export function createMonitorView(mount_element, options) {
       return;
     }
 
+    const external_check = /** @type {HTMLButtonElement|null} */ (
+      target?.closest?.('[data-external-check-now]')
+    );
+    if (external_check) {
+      ev.preventDefault();
+      void checkExternalWaitNow(external_check);
+      return;
+    }
     const external_open = /** @type {HTMLElement|null} */ (
       target.closest('[data-external-open]')
     );
@@ -2444,6 +2524,9 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (target.closest('.external-wait-summary > summary')) {
+      return;
+    }
+    if (target.closest('[data-external-check-now]')) {
       return;
     }
 

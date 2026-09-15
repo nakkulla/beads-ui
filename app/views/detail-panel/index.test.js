@@ -5,6 +5,120 @@ import { createSubscriptionIssueStores } from '../../data/subscription-issue-sto
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import { createDetailPanel } from './index.js';
 
+test.each(['settled', 'still_waiting', 'skipped', 'running', 'error'])(
+  'sends external check-now and disables its button until %s arrives',
+  async (outcome) => {
+    const row = {
+      kind: 'external_wait',
+      root_dir: '/repo',
+      workspace_name: 'repo',
+      gate_id: 'G-1',
+      gate_title: '계산 관측',
+      consumer_id: 'A-1',
+      consumer_title: '분석',
+      watch_id: 'a'.repeat(24),
+      job_id: '42',
+      stage: 'active',
+      gate_open: true,
+      recent_complete: false,
+      job_state: '계산 중',
+      previous_job_state: null,
+      monitor_state: '자동 확인 중',
+      monitor_reason: null,
+      overdue: false,
+      last_observed_at: 123,
+      next_observation_at: 456,
+      completed_at: null,
+      recovery_needed: false
+    };
+    const reason = {
+      kind: 'external_job',
+      subject: { bead_id: 'A-1', root_dir: '/repo' },
+      headline: '계산 종료 대기',
+      release: '관측 후 자동 해제',
+      verdict: 'normal',
+      targets: [{ id: 'G-1', kind: 'gate' }],
+      actions: [
+        {
+          op: 'monitor_tick_now',
+          label: '지금 확인',
+          payload: { root_dir: '/repo', watch_id: 'a'.repeat(24), since: 123 }
+        }
+      ]
+    };
+    /** @type {(value: any) => void} */
+    let resolveCheck = () => {};
+    const pending = new Promise((resolve) => {
+      resolveCheck = resolve;
+    });
+    const transport = vi.fn((/** @type {string} */ type) =>
+      type === 'worker-external-wait-check-now' ? pending : Promise.resolve({})
+    );
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const view = createDetailPanel(mount, {
+      issueStores,
+      transport,
+      onClose: vi.fn(),
+      getWorkspacePath: () => '/repo',
+      pipelineStore: {
+        get: () => [
+          { root_dir: '/repo', external_waits: [row], wait_reasons: [reason] }
+        ]
+      }
+    });
+    issueStores.register('detail:G-1', {
+      type: 'issue-detail',
+      params: { id: 'G-1' }
+    });
+    issueStores.getStore('detail:G-1')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:G-1',
+      revision: 1,
+      issues: /** @type {any} */ ([
+        { id: 'G-1', title: '계산', issue_type: 'gate', status: 'open' }
+      ])
+    });
+    view.load('G-1');
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-external-check-now]')
+    );
+
+    button.click();
+
+    expect(transport).toHaveBeenCalledWith('worker-external-wait-check-now', {
+      root_dir: '/repo',
+      watch_id: 'a'.repeat(24),
+      since: 123
+    });
+    expect(button.disabled).toBe(true);
+    view.load('G-1');
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('[data-external-check-now]')
+      ).disabled
+    ).toBe(true);
+    resolveCheck({
+      ok: outcome !== 'error',
+      outcome,
+      summary: '관측 결과: ' + outcome
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('[data-external-check-now]')
+      ).disabled
+    ).toBe(false);
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '관측 결과: ' + outcome
+    );
+    view.destroy();
+  }
+);
+
 describe('views/detail-panel', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
@@ -112,6 +226,83 @@ describe('views/detail-panel', () => {
     expect(mount.textContent).toContain('in_progress');
     expect(mount.textContent).toContain('설명 본문');
   });
+
+  test.each(['gate', 'task'])(
+    'renders server wait judgments in %s detail',
+    (issue_type) => {
+      const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+      const issueStores = createSubscriptionIssueStores();
+      const reason = {
+        kind: 'external_job',
+        subject: { bead_id: 'A-1', root_dir: '/repo' },
+        headline: 'wallace 작업 42 종료 대기',
+        release: '15분마다 자동 확인',
+        verdict: 'overdue',
+        verdict_reason: {
+          code: 'settle_overdue',
+          message: '종료 확인 후 두 주기가 지남'
+        },
+        targets: [{ id: 'G-1', kind: 'gate' }],
+        actions: [
+          {
+            op: 'monitor_tick_now',
+            label: '',
+            payload: { root_dir: '/repo', watch_id: 'watch-1', since: 123 }
+          }
+        ]
+      };
+      const id = issue_type === 'gate' ? 'G-1' : 'A-1';
+      const panel = createDetailPanel(mount, {
+        issueStores,
+        getWorkspacePath: () => '/repo',
+        pipelineStore: {
+          get: () => [{ root_dir: '/repo', wait_reasons: [reason] }]
+        },
+        onClose: vi.fn()
+      });
+      issueStores.register(`detail:${id}`, {
+        type: 'issue-detail',
+        params: { id }
+      });
+      issueStores.getStore(`detail:${id}`)?.applyPush({
+        type: 'snapshot',
+        id: `detail:${id}`,
+        revision: 1,
+        issues: /** @type {any} */ ([
+          {
+            id,
+            title: '계산',
+            issue_type,
+            status: 'open',
+            dependencies:
+              issue_type === 'task' ? [{ id: 'G-1', type: 'blocks' }] : []
+          }
+        ])
+      });
+
+      panel.load(id);
+
+      expect(mount.querySelector('.wait-verdict')?.textContent).toContain(
+        '⚠ 해제 지연'
+      );
+      expect(mount.textContent).toContain(reason.headline);
+      if (issue_type === 'gate') {
+        expect(
+          mount
+            .querySelector('[data-external-check-now]')
+            ?.getAttribute('data-since')
+        ).toBe('123');
+        expect(mount.textContent).toContain(reason.release);
+        expect(mount.querySelector('[data-edit="status"]')).toBeNull();
+      } else {
+        expect(mount.querySelector('.detail-dep__wait')?.textContent).toContain(
+          reason.headline
+        );
+        expect(mount.querySelector('[data-external-check-now]')).toBeNull();
+      }
+      panel.destroy();
+    }
+  );
 
   test('renders a gate as read-only with verified external monitor context', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));

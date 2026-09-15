@@ -526,6 +526,7 @@
  * @property {import('./queue-hold.js').HoldHistoryEntry[]} hold_history -
  * Recent env failures, pruned to the 30-minute cross-bead repetition window.
  * @property {Record<string, ProviderHold>} provider_hold - Provider-health dispatch gates by runner.
+ * @property {Record<string, number>} wait_notified - Current wait notification suppression keys; history lives in the bead timeline.
  * @property {{ claude: ProviderLimitPolicy, codex: ProviderLimitPolicy }} provider_limit_policy -
  * Durable per-runner usage-limit policy (2026-09-09 usage-limit-account-switch
  * spec §3.1). Replaces the retired `provider_auto_switch` boolean.
@@ -2013,6 +2014,7 @@ function normalizeExecPresetRecord(value) {
 // migration deletes them itself once its completion marker is written.
 const KNOWN_QUEUE_FIELDS = new Set([
   'applied_exec_preset',
+  'wait_notified',
   'revision',
   'auto_advance',
   'hold',
@@ -2095,6 +2097,7 @@ function emptyQueue() {
     lineages: [],
     hold_history: [],
     provider_hold: {},
+    wait_notified: {},
     provider_limit_policy: emptyProviderLimitPolicy(),
     auto_resume_pending: [],
     orchestration_model: null,
@@ -4150,6 +4153,13 @@ function normalizeQueue(raw) {
       ? Math.max(0, Math.floor(raw.revision))
       : 0;
   q.provider_hold = normalizeProviderHolds(raw.provider_hold);
+  if (isRecord(raw.wait_notified)) {
+    for (const [key, at] of Object.entries(raw.wait_notified)) {
+      if (typeof at === 'number' && Number.isFinite(at)) {
+        q.wait_notified[key] = at;
+      }
+    }
+  }
   q.provider_limit_policy = normalizeProviderLimitPolicy(
     raw.provider_limit_policy,
     raw.provider_auto_switch
@@ -5894,6 +5904,31 @@ export function createQueueStore(options = {}) {
      */
     snapshot(workspace) {
       return exportQueue(workspace, ensureLoaded(workspace));
+    },
+
+    /**
+     * Persist only active suppression keys and return newly claimed keys.
+     * Unchanged judgments do not rewrite the queue or bump its revision.
+     *
+     * @param {string} workspace
+     * @param {string[]} keys
+     * @param {number} at
+     * @returns {string[]}
+     */
+    claimWaitNotifications(workspace, keys, at) {
+      const prior = ensureLoaded(workspace).wait_notified;
+      const active = [...new Set(keys)];
+      const fresh = active.filter((key) => !Object.hasOwn(prior, key));
+      if (fresh.length === 0 && active.length === Object.keys(prior).length) {
+        return [];
+      }
+      applyUnconditional(workspace, (next) => {
+        next.wait_notified = Object.fromEntries(
+          active.map((key) => [key, prior[key] ?? at])
+        );
+        return true;
+      });
+      return fresh;
     },
 
     /**

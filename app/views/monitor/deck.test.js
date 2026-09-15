@@ -135,6 +135,65 @@ function click(mount, selector) {
   el(mount, selector).dispatchEvent(new MouseEvent('click', { bubbles: true }));
 }
 
+test('counts wait subjects only in visible repositories using pipeline judgments', () => {
+  document.body.innerHTML = '<div id="summary-deck"></div>';
+  const mount = /** @type {HTMLElement} */ (
+    document.getElementById('summary-deck')
+  );
+  const reason = {
+    kind: 'prerequisite',
+    subject: { root_dir: WS_A, bead_id: 'A-1' },
+    headline: '선행 대기',
+    verdict: 'normal',
+    targets: [],
+    actions: []
+  };
+  const deck = createRepoDeck(mount, {
+    workspacesState: () => [state()],
+    workspaces: () => [
+      {
+        root_dir: WS_A,
+        wait_reasons: [
+          reason,
+          {
+            ...reason,
+            kind: 'prerequisite_foreign',
+            verdict: 'action_required'
+          }
+        ]
+      },
+      {
+        root_dir: WS_B,
+        wait_reasons: [
+          { ...reason, subject: { root_dir: WS_B, bead_id: 'B-1' } }
+        ]
+      }
+    ]
+  });
+  active.push(deck);
+
+  deck.render();
+
+  expect(
+    mount.querySelector('.mon2-deck__total-counts .wait-summary > summary')
+      ?.textContent
+  ).toMatch(/막힘 1 · 조치 필요 1/);
+  expect(mount.querySelector('.wait-summary__popover')?.textContent).toContain(
+    '선행 1'
+  );
+  expect(
+    mount.querySelector('.wait-summary__popover')?.textContent
+  ).not.toContain('B-1');
+});
+
+test('omits zero wait summary from the deck', () => {
+  const { mount, deck } = setup({ rows: [state()] });
+
+  deck.render();
+
+  expect(mount.querySelector('.wait-summary')).toBeNull();
+});
+
 /** Let a switch op and its retry settle. */
 async function settle() {
   await Promise.resolve();

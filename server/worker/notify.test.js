@@ -1,6 +1,12 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, test, vi } from 'vitest';
-import { createNotifier } from './notify.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import { createBeadTimeline } from './bead-timeline.js';
+import { createNotifier, notifyWaitReasons } from './notify.js';
+import { createQueueStore } from './queue-store.js';
+import { judgeWaitReasons } from './wait-judgment.js';
 
 /**
  * A fake spawn that records every call and hands back a child whose `error`
@@ -37,6 +43,175 @@ function makeNotifier(worker_notify, overrides = {}) {
 }
 
 const ENABLED = { enabled: true, cmd: ['discord'] };
+
+describe('wait notification suppression', () => {
+  /** @type {string[]} */
+  const temporary_roots = [];
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    for (const root of temporary_roots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /** @param {boolean} [enabled] */
+  function fixture(enabled = true) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wait-notify-'));
+    temporary_roots.push(root);
+    vi.stubEnv('XDG_STATE_HOME', root);
+    const timeline = createBeadTimeline({ workspace_root: '/repo' });
+    const store = createQueueStore({ timeline });
+    const recordTimelineEvent = vi.spyOn(store, 'recordTimelineEvent');
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(
+      { enabled, cmd: ['discord'] },
+      { spawnImpl: spawn.spawnImpl }
+    );
+    const wait_reasons = judgeWaitReasons({
+      root_dir: '/repo',
+      now: 1000,
+      queue: {
+        hold: { kind: 'systemic', cause: '검증 오류', bead_ids: ['UI-a'] }
+      }
+    }).wait_reasons;
+    const input = {
+      workspace: '/repo',
+      repo: '/repo',
+      store,
+      notifier,
+      wait_reasons,
+      now: 1000
+    };
+    return { input, store, spawn, recordTimelineEvent, timeline };
+  }
+
+  test('sends a repeated reason key only once', async () => {
+    const { input, spawn } = fixture();
+
+    await notifyWaitReasons(input);
+    await notifyWaitReasons({ ...input, now: 2000 });
+
+    expect(spawn.calls).toHaveLength(1);
+  });
+
+  test('sends a recurring reason again after disappearance', async () => {
+    const { input, spawn } = fixture();
+
+    await notifyWaitReasons(input);
+    await notifyWaitReasons({ ...input, wait_reasons: [], now: 2000 });
+    await notifyWaitReasons({ ...input, now: 3000 });
+
+    expect(spawn.calls).toHaveLength(2);
+  });
+
+  test('records suppression silently when notifications are disabled', async () => {
+    const { input, spawn, store, recordTimelineEvent } = fixture(false);
+
+    await notifyWaitReasons(input);
+
+    expect(spawn.calls).toEqual([]);
+    expect(Object.keys(store.snapshot('/repo').wait_notified)).toHaveLength(1);
+    expect(recordTimelineEvent).not.toHaveBeenCalled();
+  });
+
+  test('keeps suppression keys across a store reload', async () => {
+    const { input, spawn } = fixture();
+    await notifyWaitReasons(input);
+
+    await notifyWaitReasons({ ...input, store: createQueueStore(), now: 2000 });
+
+    expect(spawn.calls).toHaveLength(1);
+  });
+
+  test('does not rewrite unchanged suppression state', async () => {
+    const { input, store } = fixture();
+    await notifyWaitReasons(input);
+    const revision = store.snapshot('/repo').revision;
+
+    await notifyWaitReasons({ ...input, now: 2000 });
+
+    expect(store.snapshot('/repo').revision).toBe(revision);
+  });
+
+  test('requests a bead timeline event only for an emitted notification', async () => {
+    const { input, recordTimelineEvent } = fixture();
+
+    await notifyWaitReasons(input);
+
+    expect(recordTimelineEvent).toHaveBeenCalledWith(
+      '/repo',
+      expect.objectContaining({
+        kind: 'wait_notified',
+        bead_id: 'UI-a',
+        at: 1000,
+        detail: 'queue_hold:hold'
+      })
+    );
+  });
+
+  test('persists the emitted wait notification through timeline validation', async () => {
+    const { input, timeline } = fixture();
+    const append = vi.spyOn(timeline, 'append');
+
+    await notifyWaitReasons(input);
+
+    expect(append).toHaveReturnedWith({
+      ok: true,
+      event: expect.objectContaining({
+        kind: 'wait_notified',
+        bead_id: 'UI-a',
+        at: 1000,
+        detail: 'queue_hold:hold'
+      })
+    });
+  });
+
+  test('leaves the timeline untouched when the notifier returns false', async () => {
+    const { input, timeline } = fixture(false);
+    const send = vi.spyOn(input.notifier, 'waitActionRequired');
+    const append = vi.spyOn(timeline, 'append');
+
+    await notifyWaitReasons(input);
+
+    expect(await send.mock.results[0].value).toBe(false);
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  test('does not send a resolution notification', async () => {
+    const { input, spawn } = fixture();
+    await notifyWaitReasons(input);
+
+    await notifyWaitReasons({
+      ...input,
+      wait_reasons: input.wait_reasons.map((reason) => ({
+        ...reason,
+        verdict: 'normal'
+      }))
+    });
+
+    expect(spawn.calls).toHaveLength(1);
+  });
+
+  test.each(/** @type {const} */ (['waitOverdue', 'waitActionRequired']))(
+    'sends %s as one line and one argv argument',
+    async (method) => {
+      const spawn = makeFakeSpawn();
+      const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+      await notifier[method]({
+        bead_id: 'UI-a',
+        kind: 'queue_hold',
+        headline: '큐 정지\n검증 오류',
+        verdict_reason: { code: 'hold', message: '사람 승인 필요' },
+        repo: '/repos/example'
+      });
+
+      expect(spawn.last().args).toEqual([
+        '⚠ example UI-a 지연 · 큐 정지 검증 오류 · 사람 승인 필요'
+      ]);
+    }
+  );
+});
 
 /** The message is the last argument, and the only one after the argv. */
 const messageOf = (/** @type {{ args: string[] }} */ call) =>
