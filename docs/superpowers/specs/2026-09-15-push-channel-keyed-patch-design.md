@@ -140,14 +140,18 @@ root_dir로 정확히 매칭**해 나눈다. 분할·조립은 `attempt_id`에 `
      재사용한다. 각 키의 canonical 문자열도 한 번만 계산해 `Map<key, canonical>`
      으로 함께 넘긴다.
   2. `sub.last`가 없으면 전체 스냅샷을 보낸다: 기존 `<channel>-snapshot` 봉투에
-     `seq: 1`을 더한 형태. `sub.last`를 canonical 맵으로 채운다.
+     `seq: 1`을 더한 형태. 전송이 성공하면 `sub.seq = 1`, `sub.last`를 canonical
+     맵으로 채운다.
   3. 있으면 `set = { key: value }`(canonical이 다르거나 새 키), `unset = [key]`
      (사라진 키)를 만든다. 둘 다 비면 보내지 않는다(현재 `pushSnapshotIfChanged`
      의 "같으면 안 보냄"과 같은 의미).
-  4. `<channel>-patch` 봉투 `{ type, id, seq, set, unset }`를 보내고 `sub.seq += 1`,
-     `sub.last` 갱신. 워커 채널 패치는 `root_dir`도 봉투에 넣는다(클라이언트의
+  4. `next_seq = sub.seq + 1`로 `<channel>-patch` 봉투
+     `{ type, id, seq: next_seq, set, unset }`를 보내고, 전송이 성공한 뒤에만
+     `sub.seq = next_seq`와 `sub.last`를 갱신한다. 따라서 스냅샷은 `seq 1`, 첫
+     패치는 `seq 2`다. 워커 채널 패치는 `root_dir`도 봉투에 넣는다(클라이언트의
      워크스페이스 guard가 읽는다).
-  5. `ws.send` 실패 시 `sub.last`를 건드리지 않는다(다음 push가 다시 시도).
+  5. `ws.send` 실패 시 `sub.seq`·`sub.last`를 건드리지 않는다(다음 push가 같은
+     번호로 다시 시도).
 - 채널명: `monitor-pipeline` → `monitor-pipeline-snapshot` / `monitor-pipeline-patch`,
   `worker-queue` → `worker-queue-snapshot` / `worker-queue-patch`.
 - `pushSnapshotIfChanged`는 ADR 채널이 계속 쓴다. 두 채널은 더 이상 부르지
@@ -189,14 +193,25 @@ root_dir로 정확히 매칭**해 나눈다. 분할·조립은 `attempt_id`에 `
 
 - `attempt.finished_at`이 유한한 **종료 attempt**의 historical 값은 TTL 없이
   보존한다. `readBoundedAttempt`가 `ended_at = finished_at`로 레코드를 자르므로
-  종료 뒤 결과는 결정적이다. 해제는 기존 경로만: `releaseHistorical(workspace)`,
-  `delete(workspace, attempt_id)`, `clear`. 큐의 attempts 집합이 ADR 0029의
-  접미 불변식으로 유한하므로 메모리도 그에 비례한다.
+  종료 뒤 결과는 결정적이다. 결과가 `null`(세션 로그 파일 없음)이어도
+  `historical_completed`를 보존해 재조회하지 않는다 — 종료 attempt의 세션 루트는
+  고정이라 파일 부재도 결정적이다. 해제는 기존 경로(`releaseHistorical(workspace)`,
+  `delete(workspace, attempt_id)`, `clear`)와 아래 정리(prune)뿐이다.
+- **큐를 떠난 attempt의 캐시 정리.** `transferProcessedAttempts`
+  (`server/worker/queue-store.js`)는 큐 항목만 지우고 관측 캐시는 건드리지 않으므로,
+  TTL을 없애면 이관된 attempt의 값이 구독이 살아 있는 동안 계속 쌓인다. 새
+  `pruneHistorical(workspace, live_attempt_ids)`를 두고 `attemptsWithUsage`가 매
+  호출 끝에 현재 `queue.attempts`의 id 집합을 넘긴다: 그 워크스페이스의
+  historical 키(`historical_keys`·`historical_completed`·`historical_expiry`·`values`)
+  중 집합에 없고 `observers`가 잡고 있지 않은 키를 지운다. 캐시 크기는 항상
+  살아 있는 `queue.attempts` 수 이하이며(ADR 0029의 접미 불변식이 그 수를
+  유한하게 둔다), 구독을 유지한 채 이관을 반복해도 누적되지 않는다.
 - `finished_at`이 없는 비실행 attempt(paused 등)는 60초 TTL을 유지하되, 만료
   시 `values`의 값을 지우지 않고 `historical_completed`만 지운다. 다음
   `prepareHistorical`이 새 값으로 덮을 때까지 마지막 관측 형태가 유지되어 저장
-  형태로 되돌아가는 push가 사라진다. `observers`가 잡고 있는 키는 기존처럼
-  손대지 않는다.
+  형태로 되돌아가는 push가 사라진다. 결과가 `null`인 비종료 attempt는 지금처럼
+  60초 뒤 재조회한다(세션이 재개되면 로그가 생길 수 있다). `observers`가 잡고
+  있는 키는 기존처럼 손대지 않는다.
 - 테스트 훅 `historicalTtlMs`는 그대로 두고, 종료 attempt 보존은 옵션 없이
   고정한다.
 
@@ -205,13 +220,25 @@ root_dir로 정확히 매칭**해 나눈다. 분할·조립은 `attempt_id`에 `
 `app/data/worker-queue-store.js`
 
 - 내부 상태를 `Map<key, value>` + `seq`로 바꾸고 `get()`은 조립 결과를 다음
-  변경 전까지 메모한다. `set(queue_body)`는 전체 스냅샷(`{ root_dir, queue, seq }`)
-  을 `splitWorkerQueue`로 넣고, `applyPatch(patch)`는 `seq`가 `last_seq + 1`일
-  때만 적용한다. 두 경우 모두 조립 결과가 바뀌면 한 번 통지한다(ADR 0044의
-  "내용 변경만 통지"와 같은 의미; 패치는 정의상 변경이므로 항상 통지).
+  변경 전까지 메모한다. 들어오는 큐 본문은 두 종류이고 적용 규칙이 다르다.
+  - **구독 스냅샷** — `worker-queue-snapshot` push(`seq` 있음). `setSnapshot(body)`
+    가 Map 전체를 `splitWorkerQueue` 결과로 교체하고 `seq`를 그 값으로 잡는다.
+    기준선(baseline) 재설정은 이 경로뿐이다.
+  - **조작 응답 overlay** — `queue-place`·`update-exec-settings`·repo-ops 설정 등
+    조작 응답의 `queue`를 `adopt`가 넘기는 기존 `set(q)`(`app/views/worker/index.js`,
+    `app/views/detail-panel/index.js`, `app/views/worker/repo-ops-settings.js`).
+    `seq`가 없고 서버 sub의 기준선과 무관한 out-of-band 본문이므로 **`seq`와
+    기준선을 건드리지 않는다**: `splitWorkerQueue`로 나눈 키를 Map에 `set`으로
+    겹치되(overlay), 응답 큐의 `queue/revision`이 store가 가진 revision보다 낮으면
+    버린다(도착 순서가 뒤바뀐 오래된 응답의 회귀 방지). 그 조작이 만든 변경은
+    서버 기준선 대비 차이이므로 다음 fanout 패치가 같은 값을 다시 싣고, 클라이언트
+    는 동일 값 재적용으로 끝난다.
+  - `applyPatch(patch)`는 `seq`가 `last_seq + 1`일 때만 적용한다. 세 경로 모두
+    조립 결과가 바뀌면 한 번 통지한다(ADR 0044의 "내용 변경만 통지"와 같은 의미).
 - `seq` 불일치(건너뜀·역행)는 `false`를 반환하고 store를 비운다.
 - 기존 `set(q)` 호출 형태(테스트 seam `CLIENT.trigger('worker-queue-snapshot', …)`)
-  는 유지된다 — `seq`가 없는 스냅샷은 `seq = 1`로 간주한다.
+  는 유지된다 — `main.js`의 snapshot handler가 `setSnapshot`을 부르고, `seq`가
+  없는 스냅샷은 `seq = 1`로 간주한다. `set(q)`는 overlay 의미로 남는다.
 
 `app/data/monitor-pipeline-store.js`
 
@@ -228,8 +255,13 @@ root_dir로 정확히 매칭**해 나눈다. 분할·조립은 `attempt_id`에 `
   전체 스냅샷을 보낸다.
 - `client.on('monitor-pipeline-patch')`: `monitor_pipeline_store.applyPatch`,
   실패 시 모니터 채널 재구독.
-- 재연결·워크스페이스 전환은 기존대로 채널을 다시 구독하므로 서버 sub가 새로
-  만들어지고 스냅샷부터 시작한다.
+- 재연결(`resubscribeAfterReconnect`)은 두 채널을 새 소켓에서 다시 구독하므로
+  서버 sub가 새로 만들어지고 두 store 모두 스냅샷부터 시작한다. 워크스페이스
+  전환(`clearAndResubscribe`)은 워커 채널만 끊고 `worker_queue_store.clear()` 뒤
+  다시 구독하므로 워커 store만 스냅샷으로 재설정되고, 모니터 채널은 서버 전역이라
+  구독·Map·`seq`를 그대로 보존한다(`ensureMonitorPipelineChannel`이 필요를
+  계속 판정할 때). 모니터 store는 채널을 끊었다 다시 열 때(탭 이탈 후 복귀,
+  `seq` 불일치 복구)만 스냅샷으로 재설정된다.
 
 ### 4.7 프로토콜 (`app/protocol.js`, `app/protocol.md`)
 
@@ -258,16 +290,23 @@ root_dir로 정확히 매칭**해 나눈다. 분할·조립은 `attempt_id`에 `
 | 클라이언트 `seq` 불일치 | store 비움 + 채널 재구독 1회, 로그. 재구독 응답도 실패하면 기존 fatal 경로 |
 | 패치의 `unset`이 없는 키 | 무시 |
 | `ws-order`에 있는 root_dir의 엔트리 키 부재 | 그 엔트리 생략(fail-quiet) |
-| 종료 attempt historical 값 부재(로그 파일 없음) | 기존과 같이 `null` → 저장값 사용, 재시도 없음 |
+| 종료 attempt(`finished_at` 유한)의 historical 결과 `null` | 저장값 사용, `historical_completed` 보존 → 해제·정리 전까지 재조회 없음(§4.5) |
+| 비종료 attempt의 historical 결과 `null` | 저장값 사용, 60초 뒤 재조회(현행) |
+| 조작 응답 `queue/revision`이 store보다 낮음 | overlay 버림, `seq`·기준선 불변 |
 
 검증 조건(구현 완료 판정)
 
 - 단위: `keyed-patch` 분할·조립 왕복(두 채널), `canonicalJson` 키 순서 무시,
   `applyPatch`의 미변경 키 identity 유지; `push-patch`의 스냅샷→패치→무전송→
-  unset 시퀀스; monitor-handlers.channel 테스트의 디바운스 1초 반영과 "값 같으면
-  무전송"; worker-handlers fanout 패치; session-observation 종료 attempt 보존과
-  비종료 TTL 만료 시 값 유지; `attemptsWithUsage`가 키 순서만 다른 결과에 fanout
-  하지 않음; 클라이언트 store 패치 적용·seq 불일치·재구독(e2e).
+  unset 시퀀스(스냅샷 `seq 1`, 첫 패치 `seq 2`, 전송 실패 시 번호 유지);
+  monitor-handlers.channel 테스트의 디바운스 1초 반영과 "값 같으면 무전송";
+  worker-handlers fanout 패치; session-observation 종료 attempt 보존(`null` 포함)과
+  비종료 TTL 만료 시 값 유지; `pruneHistorical`로 구독을 유지한 채 이관을 반복해도
+  캐시 크기가 살아 있는 attempts 수를 넘지 않음; `attemptsWithUsage`가 키 순서만
+  다른 결과에 fanout하지 않음; 클라이언트 store의 스냅샷·패치·overlay 세 경로
+  (조작 응답이 `seq`·기준선을 바꾸지 않음, 응답과 패치의 도착 순서를 바꿔도 최종
+  상태가 같음, 낮은 revision 응답 폐기)·seq 불일치·재구독(e2e); 워크스페이스
+  전환 시 모니터 store 보존(e2e).
 - 실측(공유 서버 배포 뒤, 완료 보고서에 기록): 같은 측정 스크립트(Node 내장
   `WebSocket`으로 `/ws` 구독, push 크기·횟수 집계)로 (a) 모니터 구독 직후 12초
   총 바이트가 스냅샷 1회 + 300KB 이하, (b) 정상 상태 5분 평균 두 채널 합계
@@ -303,8 +342,9 @@ root_dir로 정확히 매칭**해 나눈다. 분할·조립은 `attempt_id`에 `
   슬롯 표를 바꾸지 않는다.
 - 전제: ADR 0044 — store는 내용 변경만 통지한다는 리스너 의미를 두 채널 store에
   같이 적용하고, 목록 채널의 봉투(`snapshot`·`upsert`·`delete`)는 건드리지 않는다.
-- 전제: ADR 0029 — 살아 있는 `queue.attempts`가 유한하므로 종료 attempt의
-  historical 관측 보존이 큐 크기에 비례해 유한하다.
+- 전제: ADR 0029 — 살아 있는 `queue.attempts`가 유한하고, §4.5의 정리(prune)가
+  캐시를 그 집합으로 맞추므로 종료 attempt의 historical 관측 보존이 큐 크기에
+  비례해 유한하다.
 - 전제: ADR 0043 — 투영 경로에 동기 자식 프로세스를 새로 두지 않는다.
 - 워커·모니터 push 채널은 첫 구독만 전체 스냅샷이고 이후는 키 단위 패치이며
   변경 감지는 키별 정규화 직렬화로 한다. 되돌리기 어려움: 두 채널의 봉투·클라이언트
@@ -313,8 +353,14 @@ root_dir로 정확히 매칭**해 나눈다. 분할·조립은 `attempt_id`에 `
   않는다. 실제 절충: 전체 스냅샷의 단순함 대신 두 곳의 분할 규칙 공유와 seq
   연속성 관리를 택한다. `summary`: "워커·모니터 push 채널은 첫 구독만 전체
   스냅샷이고 이후는 키 단위 패치이며 변경 감지는 키별 정규화 직렬화로 한다" → ADR
-- 종료 attempt의 historical usage 관측을 TTL 없이 보존하고 비종료는 만료 시 값을
-  유지한다. 되돌리기 쉬움: 캐시 수명 상수와 분기 하나다. 맥락은 위 ADR의 "값이
-  같은 변경은 보내지 않는다"에서 따라온다 → ADR 아님
-- 모니터 디바운스 1초·워커 fanout 즉시 유지. 되돌리기 쉬움, 배경 없이 의외
-  아님 → ADR 아님
+- 종료 attempt의 historical usage 관측을 TTL 없이 보존하고 큐를 떠나면 정리하며
+  비종료는 만료 시 값을 유지한다. 되돌리기 쉬움: 캐시 수명 상수·prune 호출·분기
+  하나라 되돌려도 다른 소비자가 없다. 맥락 필요 낮음: "종료 뒤 결과는 결정적"이
+  `readBoundedAttempt`의 `finished_at` 절단에서 코드로 드러난다. 실제 절충 없음:
+  메모리는 큐 크기에 묶이고 대안(TTL 유지)은 §1의 flip을 남기므로 경쟁하는
+  선택지가 아니다 → ADR 아님
+- 모니터 디바운스 1초·워커 fanout 즉시 유지. 되돌리기 쉬움: 상수 하나와 "coalescer
+  를 더하지 않는다"는 부작위라 되돌림 비용이 없다. 맥락 필요 낮음: 사용자가 고른
+  지연 허용치(1초)와 워커 push 빈도 실측이 §1·§4.4에 적혀 있고 코드 상수에 그
+  출처를 주석으로 남긴다. 실제 절충 있음(지연 vs 전송량)이지만 한 조건만 성립한다
+  → ADR 아님
