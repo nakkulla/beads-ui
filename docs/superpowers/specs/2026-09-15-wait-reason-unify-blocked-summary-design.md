@@ -318,7 +318,7 @@ sjob의 잡 완료 알림과는 별개(그것은 잡, 이것은 대기 해제)�
 
 ## 11. 경계·후속
 
-| 종류(형제\|발견) | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
+| 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
 | --- | --- | --- | --- | --- | --- |
 | 형제 | dotfiles | user_request | 다른 저장소·소유권 — 관측기 등록과 tick이 완료 알림을 보낸다(§8) | 없음 | dotfiles-qh5e |
 
