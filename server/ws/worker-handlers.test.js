@@ -4,11 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { runBdJsonProjected } from '../bd.js';
+import { createExecPresetStore } from '../exec-preset-store.js';
 import { registerWorkspace } from '../registry-watcher.js';
 import {
   __registerWorkerAttachmentForTest,
   __resetWorkerAttachmentsForTest
 } from '../worker/attach.js';
+import { createExecPresetCoordinator } from '../worker/exec-preset-coordinator.js';
 import {
   __resetForeignBlockerCachesForTest,
   cachedIssuePrefixFor,
@@ -30,6 +32,7 @@ import {
   attemptsWithUsage,
   decorateQueue,
   handleWorkerAttemptResume,
+  handleWorkerQueueSetOrchestrationDefaults,
   onWorkerSnapshotRefresh
 } from './worker-handlers.js';
 
@@ -336,6 +339,81 @@ afterEach(() => {
   process.env.HOME = original_home;
   process.env.XDG_STATE_HOME = original_state_home;
   vi.restoreAllMocks();
+});
+
+describe('queue defaults preset identity', () => {
+  test.each([
+    ['declared', { orchestration_model: 'opus' }, true],
+    ['same', { orchestration_model: 'sonnet' }, false],
+    ['undeclared', { orchestration_effort: 'high' }, false],
+    ['cleared', { orchestration_model: null }, true],
+    ['missing', { orchestration_effort: 'high' }, true],
+    ['unreadable', { orchestration_effort: 'high' }, true],
+    ['missing-same', { orchestration_model: 'sonnet' }, false],
+    ['invalid', { orchestration_model: 'invalid' }, false],
+    ['conflict', { orchestration_model: 'opus' }, false]
+  ])(
+    'changes preset identity only with an owned value: %s',
+    (kind, values, clears) => {
+      const runtime = getWorkerRuntime();
+      const created = runtime.execPresetCoordinator.create({
+        expected_revision: runtime.execPresetCoordinator.snapshot().revision,
+        name: `Profile ${kind}`,
+        settings: { orchestration_model: 'sonnet' }
+      });
+      const preset = created.presets.find(
+        (entry) => entry.name === `Profile ${kind}`
+      );
+      if (!preset) {
+        throw new Error('Missing test preset');
+      }
+      const applied_exec_preset = {
+        id: preset.id,
+        name: preset.name,
+        revision: created.revision,
+        applied_at: 10
+      };
+      const seeded = runtime.queueStore.setOrchestrationDefaults(WS, {
+        expected_revision: runtime.queueStore.snapshot(WS).revision,
+        values: { orchestration_model: 'sonnet', orchestration_effort: null },
+        applied_exec_preset
+      });
+      if (kind === 'missing' || kind === 'missing-same') {
+        runtime.execPresetCoordinator.delete({
+          expected_revision: created.revision,
+          id: preset.id
+        });
+      } else if (kind === 'unreadable') {
+        const presetStore = createExecPresetStore();
+        vi.spyOn(presetStore, 'snapshot').mockImplementation(() => {
+          throw new Error('unreadable');
+        });
+        const coordinator = createExecPresetCoordinator({
+          queueStore: runtime.queueStore,
+          presetStore
+        });
+        vi.spyOn(
+          runtime.execPresetCoordinator,
+          'changesAppliedExecPreset'
+        ).mockImplementation(coordinator.changesAppliedExecPreset);
+      }
+      const socket = /** @type {any} */ ({ send: vi.fn() });
+      setConnWorkspace(socket, /** @type {any} */ ({ root_dir: WS }));
+
+      handleWorkerQueueSetOrchestrationDefaults(socket, {
+        id: 'defaults',
+        type: 'worker-queue-set-orchestration-defaults',
+        payload: {
+          expected_revision: kind === 'conflict' ? -1 : seeded.queue.revision,
+          values
+        }
+      });
+
+      expect(runtime.queueStore.snapshot(WS).applied_exec_preset).toEqual(
+        clears ? null : applied_exec_preset
+      );
+    }
+  );
 });
 
 describe('worker attempt route refusal', () => {

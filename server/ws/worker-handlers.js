@@ -5150,9 +5150,8 @@ export function handleWorkerQueueSetSerialLaneCount(ws, req) {
 }
 
 /**
- * Store the workspace's three orchestration defaults as values (spec §C.5).
- * There is no preset reference any more, so this is a plain CAS-guarded queue
- * mutation with the queue's own revision.
+ * Store orchestration defaults and invalidate changed preset provenance under
+ * the same queue CAS (spec §C.5, compare-tab redesign §6).
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -5171,9 +5170,23 @@ export function handleWorkerQueueSetOrchestrationDefaults(ws, req) {
   if (key === null) {
     return;
   }
+  const queue = queueStore().snapshot(key);
+  const values = Object.fromEntries(
+    Object.entries(p.values).map(([name, value]) => [
+      name,
+      value === '' ? null : value
+    ])
+  );
+  const clear_preset =
+    getWorkerRuntime().execPresetCoordinator.changesAppliedExecPreset(
+      queue.applied_exec_preset,
+      queue,
+      { ...queue, ...values }
+    );
   const result = queueStore().setOrchestrationDefaults(key, {
     expected_revision: revisionOf(p),
-    values: p.values
+    values: p.values,
+    ...(clear_preset ? { applied_exec_preset: null } : {})
   });
   replyMutation(ws, req, key, result);
 }

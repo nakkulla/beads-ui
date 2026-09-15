@@ -13,6 +13,7 @@ import {
   normalizeSessionDefaults
 } from '../session-defaults.js';
 import {
+  BEAD_PIN_KEYS,
   IMPL_PRESET_KEYS,
   ORCHESTRATION_KEYS,
   PRESET_KV_KEYS,
@@ -25,6 +26,11 @@ import { resolveExecSettings } from './policy.js';
 import { discoverQueueStates } from './queue-state-discovery.js';
 
 const RESEED_MIGRATION_VERSION = 1;
+/** @type {Readonly<Record<string, string>>} */
+const BEAD_SNAPSHOT_PIN_FIELDS = {
+  orchestration_model: 'model',
+  orchestration_effort: 'effort'
+};
 /** @type {Array<{ name: string, settings: Record<string, string> }>} */
 const RESEED_PRESETS = [
   {
@@ -46,7 +52,7 @@ const RESEED_PRESETS = [
 ];
 
 /**
- * @typedef {{ ok: true, preset_id: null, preset_revision: null, settings: Readonly<Record<string, string>>, exec: any }|{ ok: false, reason: string }} DispatchResolution
+ * @typedef {{ ok: true, preset_id: null, preset_revision: null, exec_preset: import('./queue-store.js').ExecPresetRecord|null, settings: Readonly<Record<string, string>>, exec: any }|{ ok: false, reason: string }} DispatchResolution
  */
 
 /**
@@ -128,6 +134,7 @@ export function createExecPresetCoordinator(options) {
     const state = presetStore.snapshot();
     return {
       revision: state.revision,
+      ...(state.read_failed ? { read_failed: true } : {}),
       presets: state.presets
         .filter((preset) => !isLegacyPreset(preset))
         .map((preset) => {
@@ -150,9 +157,81 @@ export function createExecPresetCoordinator(options) {
   }
 
   /**
-   * Resolve the workspace launch settings for one dispatch. The workspace layer
-   * is now the queue's own three orchestration values (spec §C.5) — there is no
-   * preset reference to read, and no session key is supplied here at all.
+   * An unreadable or deleted preset cannot identify which changed keys it owned.
+   *
+   * @param {import('./queue-store.js').AppliedExecPreset|null} applied
+   * @param {Record<string, unknown>} before
+   * @param {Record<string, unknown>} after
+   */
+  function changesAppliedExecPreset(applied, before, after) {
+    if (!applied) {
+      return false;
+    }
+    let preset = null;
+    try {
+      preset =
+        snapshot().presets.find((entry) => entry.id === applied.id) || null;
+    } catch {
+      // Unknown ownership clears provenance on any changed execution key.
+    }
+    return IMPL_PRESET_KEYS.some(
+      (key) =>
+        (before[key] ?? null) !== (after[key] ?? null) &&
+        (!preset || Object.hasOwn(preset.settings, key))
+    );
+  }
+
+  /**
+   * @param {import('./queue-store.js').AppliedExecPreset|null} applied
+   * @param {any} bead_snapshot
+   * @returns {import('./queue-store.js').ExecPresetRecord|null}
+   */
+  function dispatchPreset(applied, bead_snapshot) {
+    if (!applied) {
+      return null;
+    }
+    /** @type {string[]} */
+    const deviated_keys = [];
+    try {
+      const preset = snapshot().presets.find(
+        (entry) => entry.id === applied.id
+      );
+      if (preset) {
+        for (const key of BEAD_PIN_KEYS) {
+          const bead_key = BEAD_SNAPSHOT_PIN_FIELDS[key] || key;
+          const pin = bead_snapshot?.[bead_key];
+          if (pin === undefined || pin === null || pin === '') {
+            continue;
+          }
+          const lane_key = QUICK_FIX_LANE_MAP[key];
+          const comparison_key =
+            bead_snapshot.route === 'quick_fix' &&
+            lane_key &&
+            Object.hasOwn(preset.settings, lane_key)
+              ? lane_key
+              : key;
+          if (
+            Object.hasOwn(preset.settings, comparison_key) &&
+            pin !== preset.settings[comparison_key]
+          ) {
+            deviated_keys.push(key);
+          }
+        }
+      }
+    } catch {
+      // The recorded identity survives loss of the comparison profile.
+    }
+    return {
+      id: applied.id,
+      name: applied.name,
+      revision: applied.revision,
+      deviated_keys
+    };
+  }
+
+  /**
+   * Resolve launch settings from queue values and attach observational preset
+   * identity independently. The preset never supplies execution defaults here.
    *
    * @param {string} workspace
    * @param {any} bead_snapshot
@@ -182,8 +261,8 @@ export function createExecPresetCoordinator(options) {
     });
     return Object.freeze({
       ok: true,
-      // No preset is referenced any more; the provenance fields stay so an
-      // attempt record written before this change keeps the same shape.
+      exec_preset: dispatchPreset(queue.applied_exec_preset, bead_snapshot),
+      // Retired fields remain null for older consumers.
       preset_id: null,
       preset_revision: null,
       settings: Object.freeze(settings),
@@ -576,6 +655,7 @@ export function createExecPresetCoordinator(options) {
 
   return {
     snapshot,
+    changesAppliedExecPreset,
     /** @param {{ expected_revision: number, name: string, settings: Record<string, string> }} input */
     create(input) {
       return annotated(presetStore.create(input));

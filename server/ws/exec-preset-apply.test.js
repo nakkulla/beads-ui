@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { MESSAGE_TYPES } from '../../app/protocol.js';
+import { getWorkerRuntime } from '../worker/runtime.js';
 
 const runBdInWorkspace = vi.fn();
 const runBdJsonProjectedInWorkspace = vi.fn();
@@ -93,6 +94,8 @@ const {
   handleApplyImplPreset,
   handleApplyImplPresetGlobal,
   handleImplPresetCreate,
+  handleImplPresetUpdate,
+  handleImplPresetDelete,
   handleSubscribeImplPresets
 } = await import('./exec-preset-handlers.js');
 
@@ -148,6 +151,281 @@ afterEach(() => {
   delete process.env.XDG_STATE_HOME;
   __resetImplPresetsForTest();
   fs.rmSync(tmp_state, { recursive: true, force: true });
+});
+
+describe('global preset identity recording', () => {
+  /** @param {Record<string, string>} [settings] */
+  function appliedFixture(
+    settings = { impl_runtime: 'codex', orchestration_model: 'sol' }
+  ) {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, settings);
+    const store = getWorkerRuntime().queueStore;
+    const applied_exec_preset = {
+      id: preset_id,
+      name: '프리셋',
+      revision: 1,
+      applied_at: 10
+    };
+    store.setOrchestrationDefaults('/workspace', {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet' },
+      applied_exec_preset
+    });
+    kvGetJsonInWorkspace.mockResolvedValue({
+      ok: true,
+      value: { schema: 1, impl_runtime: 'codex' }
+    });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const req = {
+      id: 'global',
+      type: /** @type {const} */ ('apply-impl-preset-global'),
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 1
+      }
+    };
+    return { ws, sent, store, preset_id, applied_exec_preset, req };
+  }
+
+  test('clears identity before kv and commits new identity with queue settings', async () => {
+    const { ws, store, preset_id, req } = appliedFixture();
+    kvSetJsonInWorkspace.mockImplementation(async () => {
+      expect(store.snapshot('/workspace')).toMatchObject({
+        revision: 2,
+        applied_exec_preset: null,
+        orchestration_model: 'sonnet'
+      });
+      return { ok: true };
+    });
+
+    await handleApplyImplPresetGlobal(ws, req);
+
+    expect(store.snapshot('/workspace')).toMatchObject({
+      revision: 3,
+      orchestration_model: 'sol',
+      applied_exec_preset: {
+        id: preset_id,
+        name: '프리셋',
+        revision: 1,
+        applied_at: expect.any(Number)
+      }
+    });
+  });
+
+  test.each(['write', 'readback', 'mismatch', 'queue', 'conflict'])(
+    'leaves identity null after the %s step fails',
+    async (failure) => {
+      const { ws, store, req } = appliedFixture();
+      if (failure === 'write') {
+        kvSetJsonInWorkspace.mockResolvedValue({ ok: false, error: 'failed' });
+      } else if (failure === 'readback' || failure === 'mismatch') {
+        kvGetJsonInWorkspace
+          .mockReset()
+          .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
+          .mockResolvedValueOnce(
+            failure === 'readback'
+              ? { ok: false, error: 'failed' }
+              : { ok: true, value: { schema: 1 } }
+          );
+      } else if (failure === 'queue') {
+        vi.spyOn(store, 'setOrchestrationDefaults').mockImplementationOnce(
+          () => {
+            throw new Error('disk full');
+          }
+        );
+      } else {
+        kvSetJsonInWorkspace.mockImplementation(async () => {
+          store.setOrchestrationDefaults('/workspace', {
+            expected_revision: store.snapshot('/workspace').revision,
+            values: { orchestration_effort: 'high' }
+          });
+          return { ok: true };
+        });
+      }
+
+      await handleApplyImplPresetGlobal(ws, req);
+
+      expect(store.snapshot('/workspace').applied_exec_preset).toBeNull();
+    }
+  );
+
+  test('rejects a concurrent apply before kv when both start with null identity', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, {
+      impl_runtime: 'codex',
+      orchestration_model: 'sol'
+    });
+    const runtime = getWorkerRuntime();
+    const created = runtime.execPresetCoordinator.create({
+      expected_revision: 1,
+      name: 'Other',
+      settings: { impl_runtime: 'claude', orchestration_model: 'sonnet' }
+    });
+    const other_id = created.presets.find(
+      (preset) => preset.id !== preset_id
+    )?.id;
+    /** @type {Record<string, unknown>} */
+    let kv_values = { schema: 1 };
+    kvGetJsonInWorkspace.mockImplementation(async () => ({
+      ok: true,
+      value: kv_values
+    }));
+    kvSetJsonInWorkspace.mockImplementation(async (_ws, _key, value) => {
+      kv_values = value;
+      return { ok: true };
+    });
+
+    await Promise.all([
+      handleApplyImplPresetGlobal(ws, {
+        id: 'first',
+        type: 'apply-impl-preset-global',
+        payload: { preset_id, expected_revision: 2, expected_queue_revision: 0 }
+      }),
+      handleApplyImplPresetGlobal(ws, {
+        id: 'second',
+        type: 'apply-impl-preset-global',
+        payload: {
+          preset_id: other_id,
+          expected_revision: 2,
+          expected_queue_revision: 0
+        }
+      })
+    ]);
+
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledTimes(1);
+    expect(kv_values).toEqual({ schema: 1, impl_runtime: 'codex' });
+    expect(sent.find((reply) => reply.id === 'second').payload).toMatchObject({
+      applied: false,
+      queue_conflict: true
+    });
+    expect(runtime.queueStore.snapshot('/workspace')).toMatchObject({
+      revision: 2,
+      orchestration_model: 'sol',
+      applied_exec_preset: { id: preset_id }
+    });
+  });
+
+  test('keeps empty queue revisions when updating an unapplied preset', () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent);
+    const store = getWorkerRuntime().queueStore;
+    const clearAppliedExecPreset = vi.spyOn(store, 'clearAppliedExecPreset');
+
+    handleImplPresetUpdate(ws, {
+      id: 'update',
+      type: 'impl-preset-update',
+      payload: {
+        id: preset_id,
+        expected_revision: 1,
+        name: 'Renamed',
+        settings: {}
+      }
+    });
+
+    expect(sent.at(-1).payload.applied).toBe(true);
+    expect(clearAppliedExecPreset).not.toHaveBeenCalled();
+    expect(store.snapshot('/workspace').revision).toBe(0);
+    expect(store.snapshot('/other-repo').revision).toBe(0);
+  });
+
+  test('preserves identity and kv when the first clear conflicts', async () => {
+    const { ws, sent, store, applied_exec_preset, req } = appliedFixture();
+    req.payload.expected_queue_revision = 0;
+
+    await handleApplyImplPresetGlobal(ws, req);
+
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+    expect(sent.at(-1).payload).toMatchObject({
+      queue_applied: false,
+      queue_conflict: true
+    });
+    expect(store.snapshot('/workspace').applied_exec_preset).toEqual(
+      applied_exec_preset
+    );
+  });
+
+  test('preserves global identity when applying a preset to one bead', async () => {
+    const { ws, sent, store, preset_id, applied_exec_preset } = appliedFixture({
+      impl_runtime: 'codex'
+    });
+    runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
+    runBdJsonProjectedInWorkspace.mockResolvedValue({
+      ok: true,
+      data: { id: 'UI-one', metadata: { impl_runtime: 'codex' } }
+    });
+
+    await handleApplyImplPreset(ws, {
+      id: 'one',
+      type: 'apply-impl-preset',
+      payload: { id: 'UI-one', preset_id, expected_revision: 1 }
+    });
+
+    expect(sent.at(-1).ok).toBe(true);
+    expect(store.snapshot('/workspace').applied_exec_preset).toEqual(
+      applied_exec_preset
+    );
+  });
+
+  test.each(['settings', 'name', 'same', 'other', 'delete'])(
+    'invalidates only an actual applied preset update: %s',
+    (change) => {
+      const { ws, store, preset_id, applied_exec_preset } = appliedFixture();
+      store.setOrchestrationDefaults('/other-repo', {
+        expected_revision: 0,
+        values: { orchestration_model: 'sol' },
+        applied_exec_preset
+      });
+      let id = preset_id;
+      let revision = 1;
+      if (change === 'other') {
+        const created = getWorkerRuntime().execPresetCoordinator.create({
+          expected_revision: revision,
+          name: 'Other',
+          settings: {}
+        });
+        const other = created.presets.find((preset) => preset.id !== preset_id);
+        if (!other) {
+          throw new Error('Missing test preset');
+        }
+        id = other.id;
+        revision = created.revision;
+      }
+
+      if (change === 'delete') {
+        handleImplPresetDelete(ws, {
+          id: 'delete',
+          type: 'impl-preset-delete',
+          payload: { id, expected_revision: revision }
+        });
+      } else {
+        handleImplPresetUpdate(ws, {
+          id: 'update',
+          type: 'impl-preset-update',
+          payload: {
+            id,
+            expected_revision: revision,
+            name:
+              change === 'name' || change === 'other' ? 'Renamed' : '프리셋',
+            settings: {
+              impl_runtime: change === 'settings' ? 'claude' : 'codex',
+              orchestration_model: 'sol'
+            }
+          }
+        });
+      }
+
+      const expected =
+        change === 'settings' || change === 'name' ? null : applied_exec_preset;
+      expect(store.snapshot('/workspace').applied_exec_preset).toEqual(
+        expected
+      );
+      expect(store.snapshot('/other-repo').applied_exec_preset).toEqual(
+        expected
+      );
+    }
+  );
 });
 
 describe('retired 12-key preset protocol', () => {
@@ -618,7 +896,7 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
         quick_fix_impl_model: 'sol'
       },
       queue: {
-        revision: 1,
+        revision: 2,
         orchestration_model: 'sol',
         orchestration_effort: null,
         orchestration_speed: null,
@@ -632,7 +910,7 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
     expect(fanoutWorkerQueue).toHaveBeenCalledWith(
       '/workspace',
       expect.objectContaining({
-        revision: 1,
+        revision: 2,
         orchestration_model: 'sol',
         orchestration_effort: null,
         orchestration_speed: null,
@@ -804,7 +1082,7 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
     expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
   });
 
-  test('keeps the kv apply when the queue revision conflicts', async () => {
+  test('refuses the kv apply when the initial queue revision conflicts', async () => {
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(ws, sent, {
       impl_runtime: 'codex',
@@ -840,14 +1118,14 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
     const reply = sent[sent.length - 1];
     expect(reply.ok).toBe(true);
     expect(reply.payload).toMatchObject({
-      applied: true,
+      applied: false,
       conflict: false,
       queue_applied: false,
       queue_conflict: true,
       values: { impl_runtime: 'codex' },
-      queue: { revision: 1, orchestration_model: 'sol' }
+      queue: { revision: 2, orchestration_model: 'sol' }
     });
-    expect(kvSetJsonInWorkspace).toHaveBeenCalledTimes(2);
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledTimes(1);
     expect(fanoutWorkerQueue).not.toHaveBeenCalled();
   });
 

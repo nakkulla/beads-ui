@@ -137,6 +137,21 @@ export function createExecPresetStore(options = {}) {
   const settingEnums = options.settingEnums || (() => implPresetEnums());
   /** @type {ExecPresetState|null} */
   let cache = null;
+  // Observation only: never persist the cached read failure with preset data.
+  let read_failed = false;
+
+  /**
+   * Adopt state that was read or written successfully, so a later create after
+   * an unreadable file stops reporting read_failed for bytes now known good.
+   *
+   * @param {ExecPresetState} next
+   * @returns {ExecPresetState}
+   */
+  function commitCache(next) {
+    cache = next;
+    read_failed = false;
+    return cache;
+  }
 
   /** @returns {ExecPresetState} */
   function ensureLoaded() {
@@ -147,7 +162,9 @@ export function createExecPresetStore(options = {}) {
     try {
       const raw = fs.readFileSync(file_path, 'utf8');
       parsed = JSON.parse(raw);
-    } catch {
+    } catch (err) {
+      read_failed =
+        /** @type {NodeJS.ErrnoException} */ (err).code !== 'ENOENT';
       cache = emptyState();
       return cache;
     }
@@ -161,8 +178,7 @@ export function createExecPresetStore(options = {}) {
         );
       }
     }
-    cache = normalized;
-    return cache;
+    return commitCache(normalized);
   }
 
   /**
@@ -247,7 +263,7 @@ export function createExecPresetStore(options = {}) {
     }
     next.revision = current.revision + 1;
     persist(next);
-    cache = next;
+    commitCache(next);
     return {
       applied: true,
       conflict: false,
@@ -257,9 +273,10 @@ export function createExecPresetStore(options = {}) {
   }
 
   return {
-    /** @returns {ExecPresetState} */
+    /** @returns {ExecPresetState & { read_failed?: boolean }} */
     snapshot() {
-      return clone(ensureLoaded());
+      const state = clone(ensureLoaded());
+      return { ...state, ...(read_failed ? { read_failed: true } : {}) };
     },
 
     /**
@@ -393,7 +410,7 @@ export function createExecPresetStore(options = {}) {
       next.presets.push(preset);
       next.revision = current.revision + 1;
       persist(next);
-      cache = next;
+      commitCache(next);
       return {
         applied: true,
         reused: false,
@@ -430,7 +447,7 @@ export function createExecPresetStore(options = {}) {
         presets: remaining
       };
       persist(next);
-      cache = next;
+      commitCache(next);
       return {
         applied: true,
         conflict: false,
@@ -500,7 +517,7 @@ export function createExecPresetStore(options = {}) {
       if (JSON.stringify(readback) !== JSON.stringify(next)) {
         throw new Error('Exec preset reseed failed readback verification');
       }
-      cache = next;
+      commitCache(next);
       return {
         applied: true,
         conflict: false,

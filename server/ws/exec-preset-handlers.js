@@ -12,6 +12,7 @@
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
 import { makeError, makeOk } from '../../app/protocol.js';
+import { getAvailableWorkspaces } from '../registry-watcher.js';
 import {
   SESSION_DEFAULTS_KV_KEY,
   mergeSessionDefaults,
@@ -153,7 +154,42 @@ export function broadcastImplPresets() {
 function handleMutation(ws, req, operation) {
   try {
     const input = /** @type {any} */ (req.payload || {});
+    const before =
+      operation === 'update'
+        ? coordinator()
+            .snapshot()
+            .presets.find((preset) => preset.id === input.id)
+        : null;
     const result = coordinator()[operation](input);
+    if (result.applied && before) {
+      const after = result.presets.find((preset) => preset.id === input.id);
+      const changed =
+        after &&
+        (before.name !== after.name ||
+          Object.keys({ ...before.settings, ...after.settings }).some(
+            (key) => before.settings[key] !== after.settings[key]
+          ));
+      if (changed) {
+        const workspaces = new Set(
+          getAvailableWorkspaces().map((entry) => entry.path)
+        );
+        const connected = targetWorkspaceOf(ws, {});
+        if (connected !== null) {
+          workspaces.add(connected);
+        }
+        for (const workspace of workspaces) {
+          const queue = queueStore().snapshot(workspace);
+          if (queue.applied_exec_preset?.id === input.id) {
+            const cleared = queueStore().clearAppliedExecPreset(workspace, {
+              expected_revision: queue.revision
+            });
+            if (cleared.ok) {
+              fanoutWorkerQueue(workspace, cleared.queue);
+            }
+          }
+        }
+      }
+    }
     ws.send(JSON.stringify(makeOk(req, result)));
     if (result.applied) {
       fanout({ revision: result.revision, presets: result.presets });
@@ -593,6 +629,43 @@ export async function handleApplyImplPresetGlobal(ws, req) {
       ? resolved.preset.settings[key]
       : null;
   }
+  let cleared;
+  try {
+    cleared = queueStore().clearAppliedExecPreset(workspace_key, {
+      expected_revision: expected_queue_revision
+    });
+  } catch (err) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'queue_write_failed',
+          err instanceof Error ? err.message : String(err)
+        )
+      )
+    );
+    return;
+  }
+  if (!cleared.ok) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          applied: false,
+          conflict: false,
+          revision: resolved.revision,
+          values: normalizeSessionDefaults(read.value).values,
+          warnings: normalizeSessionDefaults(read.value).warnings,
+          queue_applied: false,
+          queue_conflict: cleared.conflict,
+          queue: decorateQueue(workspace_key, cleared.queue)
+        })
+      )
+    );
+    return;
+  }
+  if (cleared.queue.revision !== expected_queue_revision) {
+    fanoutWorkerQueue(workspace_key, cleared.queue);
+  }
   const written = await writeKv(
     SESSION_DEFAULTS_KV_KEY,
     mergeSessionDefaults(read.value, patch)
@@ -653,8 +726,14 @@ export async function handleApplyImplPresetGlobal(ws, req) {
   let queue_result;
   try {
     queue_result = queueStore().setOrchestrationDefaults(workspace_key, {
-      expected_revision: expected_queue_revision,
-      values: orchestration_values
+      expected_revision: cleared.queue.revision,
+      values: orchestration_values,
+      applied_exec_preset: {
+        id: resolved.preset.id,
+        name: resolved.preset.name,
+        revision: resolved.revision,
+        applied_at: Date.now()
+      }
     });
   } catch {
     const queue = queueStore().snapshot(workspace_key);

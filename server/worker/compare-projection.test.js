@@ -1,8 +1,15 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
+import { createExecPresetStore } from '../exec-preset-store.js';
+import { createBeadTimeline } from './bead-timeline.js';
 import {
-  attemptSignature,
   buildCompareModel,
+  collectCompareWorkspaces,
   compareBenchRuns,
+  compareIssueIndex,
+  compareSnapshot,
   compareVerifyReceipts,
   implActorOf,
   isRetryAttempt,
@@ -10,11 +17,13 @@ import {
   normalizeCompareFilters,
   passCaret,
   prepareCompareSnapshot,
-  presetMatchesSignature,
-  projectBenchRun,
-  signatureName
+  presetMatch,
+  projectBenchRun
 } from './compare-projection.js';
+import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
+import { TERMINAL_ATTEMPT_STATUSES, createQueueStore } from './queue-store.js';
 import { resolveCatalog } from './runner-catalog.js';
+import * as worker_runtime from './runtime.js';
 
 const SHA = 'a'.repeat(40);
 
@@ -84,13 +93,48 @@ function makeWorkspace(overrides = {}) {
   };
 }
 
-describe('worker/compare-projection signature', () => {
-  test('reads the implementer from the attempt receipt_check, not the Bead', () => {
-    const attempt = makeAttempt();
+/** @type {any} */
+const CATALOG = {
+  runners: {
+    claude: { models: { opus: { id: 'claude-opus-5' } } },
+    codex: {
+      models: { sol: { id: 'gpt-5.6-sol' }, terra: { id: 'gpt-5.6-terra' } }
+    }
+  },
+  model_index: { opus: 'claude', sol: 'codex', terra: 'codex' }
+};
 
-    const signature = attemptSignature(attempt);
+/** @param {Record<string, any>} [settings] */
+function makePreset(settings = {}) {
+  return {
+    id: 'p1',
+    name: '기본',
+    settings: {
+      orchestration_model: 'opus',
+      orchestration_effort: 'high',
+      impl_runtime: 'codex',
+      impl_model: 'sol',
+      ...settings
+    }
+  };
+}
 
-    expect(signature.impl_actor).toEqual({
+/** @param {Record<string, any>} [overrides] */
+function makeFacts(overrides = {}) {
+  return {
+    route: 'spec_backed',
+    orch_model: 'claude-opus-5',
+    orch_effort: 'high',
+    impl_actor: implActorOf(makeAttempt().receipt_check),
+    ...overrides
+  };
+}
+
+describe('worker/compare-projection executor', () => {
+  test('reads the preserved executor from a parsed receipt', () => {
+    const actor = implActorOf(makeAttempt().receipt_check);
+
+    expect(actor).toEqual({
       kind: 'delegated',
       model: 'gpt-5.6-sol',
       effort: 'high',
@@ -98,7 +142,7 @@ describe('worker/compare-projection signature', () => {
     });
   });
 
-  test('parses a legacy raw receipt string in the same slot', () => {
+  test('parses a legacy receipt in the same slot', () => {
     const actor = implActorOf({
       checks: { exec_receipt: `delegated:gpt-5.6-sol:high@${SHA}` }
     });
@@ -106,206 +150,343 @@ describe('worker/compare-projection signature', () => {
     expect(actor.label).toBe('gpt-5.6-sol/high');
   });
 
-  test('groups a main receipt as main whatever exec_values pinned', () => {
-    const attempt = makeAttempt({
-      exec_values: { impl_model: 'gpt-5.6-sol' },
-      receipt_check: {
-        checks: { exec_receipt: { kind: 'main', actor: 'quick_fix_default' } }
-      }
+  test('collapses main receipt reasons into main', () => {
+    const actor = implActorOf({
+      checks: { exec_receipt: { kind: 'main', actor: 'quick_fix_default' } }
     });
 
-    const signature = attemptSignature(attempt);
-
-    expect(signature.impl_actor.label).toBe('main');
+    expect(actor).toEqual({
+      kind: 'main',
+      model: null,
+      effort: null,
+      label: 'main'
+    });
   });
 
-  test('reports 미기록 when the attempt preserved no exec_receipt', () => {
-    const attempt = makeAttempt({ receipt_check: null });
+  test('keeps missing receipts unrecorded', () => {
+    const actor = implActorOf(null);
 
-    const signature = attemptSignature(attempt);
-
-    expect(signature.impl_actor.kind).toBe('missing');
-    expect(signature.key).toContain('미기록');
+    expect(actor.kind).toBe('missing');
   });
 
-  test('reports 미기록 when multi-unit receipts name different actors', () => {
+  test('keeps mixed multi-unit executors unrecorded', () => {
     const actor = implActorOf({
       checks: {
         units: [
-          {
-            unit: 'a',
-            kind: 'delegated',
-            actor: 'gpt-5.6-sol',
-            effort: 'high'
-          },
-          { unit: 'b', kind: 'main', actor: 'bead' }
+          { kind: 'delegated', actor: 'sol', effort: 'high' },
+          { kind: 'main', actor: 'bead' }
         ]
       }
     });
 
     expect(actor.kind).toBe('missing');
   });
-
-  test('includes the reviewer triple so reviewer-only differences split groups', () => {
-    const one = attemptSignature(makeAttempt());
-    const other = attemptSignature(
-      makeAttempt({
-        exec_values: {
-          impl_review_model: 'claude-opus-5',
-          impl_review_effort: 'high',
-          impl_review_speed: 'default'
-        }
-      })
-    );
-
-    expect(one.key).not.toBe(other.key);
-    expect(one.key).toContain('리뷰 gpt-5.6-sol/high/default');
-  });
 });
 
-describe('worker/compare-projection preset naming', () => {
-  const preset = {
-    id: 'p1',
-    name: '느린 위임',
-    settings: {
-      orchestration_model: 'claude-opus-5',
-      orchestration_effort: 'high',
-      impl_dispatch: 'delegated',
-      impl_model: 'gpt-5.6-sol',
-      impl_effort: 'high',
-      impl_review_model: 'gpt-5.6-sol',
-      impl_review_effort: 'high',
-      impl_review_speed: 'default'
-    }
-  };
+describe('worker/compare-projection preset inference', () => {
+  test('normalizes model ids and names before matching both axes', () => {
+    const match = presetMatch(makeFacts(), [makePreset()], CATALOG);
 
-  test('names the group after a preset that matches every key it declares', () => {
-    const signature = attemptSignature(makeAttempt());
-
-    expect(signatureName(signature, [preset])).toBe('느린 위임');
+    expect(match).toEqual({
+      preset: { id: 'p1', name: '기본', basis: 'inferred' },
+      candidates: ['기본']
+    });
   });
 
-  test('takes the first stored match when more than one preset matches', () => {
-    const signature = attemptSignature(makeAttempt());
-    const partial = {
-      id: 'p0',
-      name: '리뷰만',
-      settings: { impl_review_model: 'gpt-5.6-sol' }
+  test('prefers a catalog name over a colliding model id', () => {
+    const catalog = {
+      ...CATALOG,
+      runners: {
+        ...CATALOG.runners,
+        legacy: { models: { old: { id: 'sol' } } }
+      }
     };
 
-    expect(signatureName(signature, [partial, preset])).toBe('리뷰만');
+    const match = presetMatch(makeFacts(), [makePreset()], catalog);
+
+    expect(match.preset?.id).toBe('p1');
   });
 
-  test('falls back to the signature string when no preset matches', () => {
-    const signature = attemptSignature(makeAttempt({ model: 'other-model' }));
-
-    expect(signatureName(signature, [preset])).toBe(signature.key);
-  });
-
-  test('never names a preset for an unrecorded implementer', () => {
-    const signature = attemptSignature(makeAttempt({ receipt_check: null }));
-
-    expect(presetMatchesSignature(signature, preset)).toBe(false);
-  });
-
-  test('matches a quick_fix attempt against quick_fix preset values', () => {
-    const signature = attemptSignature(
-      makeAttempt({ exec_values: { route: 'quick_fix' } })
+  test('compares unknown model values literally without a catalog', () => {
+    const match = presetMatch(
+      makeFacts(),
+      [
+        makePreset({
+          orchestration_model: 'claude-opus-5',
+          impl_runtime: 'auto',
+          impl_model: 'gpt-5.6-sol'
+        })
+      ],
+      null
     );
 
-    expect(
-      presetMatchesSignature(signature, {
-        settings: {
-          impl_model: 'terra',
-          quick_fix_impl_model: 'gpt-5.6-sol'
-        }
-      })
-    ).toBe(true);
+    expect(match.preset?.id).toBe('p1');
   });
 
-  test('matches a general attempt against general preset values', () => {
-    const signature = attemptSignature(
-      makeAttempt({ exec_values: { route: 'spec_backed' } })
+  test('uses quick-fix overrides before general values', () => {
+    const preset = makePreset({
+      orchestration_model: 'wrong',
+      orchestration_effort: 'low',
+      impl_runtime: 'claude',
+      impl_model: 'wrong',
+      quick_fix_orchestration_model: 'opus',
+      quick_fix_orchestration_effort: 'high',
+      quick_fix_impl_runtime: 'codex',
+      quick_fix_impl_model: 'sol'
+    });
+
+    const match = presetMatch(
+      makeFacts({ route: 'quick_fix' }),
+      [preset],
+      CATALOG
     );
 
-    expect(
-      presetMatchesSignature(signature, {
-        settings: {
-          impl_model: 'gpt-5.6-sol',
-          quick_fix_impl_model: 'terra'
-        }
-      })
-    ).toBe(true);
+    expect(match.preset?.id).toBe('p1');
   });
 
-  test('falls back to the general preset value on quick_fix attempts', () => {
-    const signature = attemptSignature(
-      makeAttempt({ exec_values: { route: 'quick_fix' } })
+  test('ignores quick-fix overrides on a general route', () => {
+    const match = presetMatch(
+      makeFacts(),
+      [makePreset({ quick_fix_impl_model: 'terra' })],
+      CATALOG
     );
 
-    expect(
-      presetMatchesSignature(signature, {
-        settings: { impl_model: 'gpt-5.6-sol' }
-      })
-    ).toBe(true);
-  });
-});
-
-describe('worker/compare-projection preset naming — every declared key', () => {
-  test('refuses a preset that declares a key the attempt did not record', () => {
-    const signature = attemptSignature(makeAttempt());
-
-    expect(
-      presetMatchesSignature(signature, {
-        settings: {
-          impl_review_model: 'gpt-5.6-sol',
-          // Never pinned by this attempt, so it cannot be shown to have been in
-          // force; naming the group after this preset would say it was.
-          spec_review_model: 'fable'
-        }
-      })
-    ).toBe(false);
+    expect(match.preset?.id).toBe('p1');
   });
 
-  test('compares a declared key against the attempt exec_values snapshot', () => {
-    const signature = attemptSignature(
-      makeAttempt({
-        exec_values: {
-          impl_review_model: 'gpt-5.6-sol',
-          impl_review_effort: 'high',
-          impl_review_speed: 'default',
-          spec_review_model: 'fable'
-        }
-      })
+  test('falls back to general values on a quick-fix route', () => {
+    const match = presetMatch(
+      makeFacts({ route: 'quick_fix' }),
+      [makePreset()],
+      CATALOG
     );
 
-    expect(
-      presetMatchesSignature(signature, {
-        settings: { spec_review_model: 'fable' }
-      })
-    ).toBe(true);
-    expect(
-      presetMatchesSignature(signature, {
-        settings: { spec_review_model: 'codex' }
-      })
-    ).toBe(false);
+    expect(match.preset?.id).toBe('p1');
   });
 
-  test('refuses a delegate model declaration when main actually implemented', () => {
-    const signature = attemptSignature(
-      makeAttempt({
-        receipt_check: {
-          checks: { exec_receipt: { kind: 'main', actor: 'bead' } }
-        },
-        exec_values: { impl_model: 'gpt-5.6-sol' }
-      })
+  test('accepts auto wildcards for delegated implementation keys', () => {
+    const match = presetMatch(
+      makeFacts(),
+      [makePreset({ impl_runtime: 'auto', impl_model: 'auto' })],
+      CATALOG
     );
 
-    expect(
-      presetMatchesSignature(signature, {
-        settings: { impl_dispatch: 'main', impl_model: 'gpt-5.6-sol' }
-      })
-    ).toBe(false);
+    expect(match.preset?.id).toBe('p1');
+  });
+
+  test('rejects a runtime that disagrees with the catalog actor', () => {
+    const match = presetMatch(
+      makeFacts(),
+      [makePreset({ impl_runtime: 'claude' })],
+      CATALOG
+    );
+
+    expect(match).toEqual({ preset: null, candidates: [] });
+  });
+
+  test.each(['main', 'missing'])(
+    'ignores implementation keys for a %s executor',
+    (kind) => {
+      const impl_actor = { kind, model: null, effort: null, label: kind };
+
+      const match = presetMatch(
+        makeFacts({ impl_actor }),
+        [
+          makePreset({
+            impl_runtime: 'wrong',
+            impl_model: 'wrong',
+            impl_review_model: 'unrecorded'
+          })
+        ],
+        CATALOG
+      );
+
+      expect(match.preset?.id).toBe('p1');
+    }
+  );
+
+  test('ignores unrecorded orchestration effort and reviewer settings', () => {
+    const match = presetMatch(
+      makeFacts({ orch_effort: null }),
+      [
+        makePreset({
+          orchestration_effort: 'low',
+          spec_review_model: 'wrong',
+          orchestration_speed: 'fast'
+        })
+      ],
+      CATALOG
+    );
+
+    expect(match.preset?.id).toBe('p1');
+  });
+
+  test('rejects a different recorded orchestration effort', () => {
+    const match = presetMatch(
+      makeFacts(),
+      [makePreset({ orchestration_effort: 'low' })],
+      CATALOG
+    );
+
+    expect(match.preset).toBeNull();
+  });
+
+  test('chooses the unique most specific candidate independent of storage order', () => {
+    const loose = {
+      ...makePreset({ impl_runtime: 'auto', impl_model: 'auto' }),
+      id: 'loose',
+      name: '자동'
+    };
+
+    const match = presetMatch(makeFacts(), [loose, makePreset()], CATALOG);
+
+    expect(match).toEqual({
+      preset: { id: 'p1', name: '기본', basis: 'inferred' },
+      candidates: ['자동', '기본']
+    });
+  });
+
+  test('keeps every matching candidate when top specificity ties', () => {
+    const presets = [
+      makePreset(),
+      {
+        ...makePreset({ impl_review_model: 'other' }),
+        id: 'p2',
+        name: '다른 리뷰어'
+      }
+    ];
+
+    const match = presetMatch(makeFacts(), presets, CATALOG);
+
+    expect(match).toEqual({
+      preset: null,
+      candidates: ['기본', '다른 리뷰어']
+    });
+  });
+
+  test('returns no candidates when orchestration is missing or mismatched', () => {
+    const match = presetMatch(
+      makeFacts({ orch_model: null }),
+      [makePreset()],
+      CATALOG
+    );
+
+    expect(match).toEqual({ preset: null, candidates: [] });
+  });
+
+  test('uses recorded identity and current name despite execution deviations', () => {
+    const model = buildCompareModel({
+      catalog: CATALOG,
+      presets: [makePreset()],
+      workspaces: [
+        makeWorkspace({
+          attempts: [
+            makeAttempt({
+              model: 'other',
+              exec_preset: {
+                id: 'p1',
+                name: '옛 이름',
+                revision: 1,
+                deviated_keys: ['impl_model']
+              }
+            })
+          ]
+        })
+      ]
+    });
+
+    expect(model.rows[0].preset).toEqual({
+      id: 'p1',
+      name: '기본',
+      basis: 'recorded',
+      deviated_keys: ['impl_model']
+    });
+    expect(model.groups[0]).toMatchObject({
+      key: 'preset:p1',
+      name: '기본',
+      badge: 'preset'
+    });
+  });
+
+  test('labels a deleted recorded preset without inferring another identity', () => {
+    const model = buildCompareModel({
+      catalog: CATALOG,
+      presets: [makePreset()],
+      workspaces: [
+        makeWorkspace({
+          attempts: [
+            makeAttempt({
+              exec_preset: {
+                id: 'deleted',
+                name: '삭제된 이름',
+                revision: 1,
+                deviated_keys: []
+              }
+            })
+          ]
+        })
+      ]
+    });
+
+    expect(model.rows[0].preset).toEqual({
+      id: 'deleted',
+      name: '삭제된 이름(삭제됨)',
+      basis: 'recorded',
+      deviated_keys: []
+    });
+  });
+
+  test('carries inferred basis and empty deviation keys on a matched row', () => {
+    const model = buildCompareModel({
+      catalog: CATALOG,
+      presets: [makePreset()],
+      workspaces: [makeWorkspace({ attempts: [makeAttempt()] })]
+    });
+
+    expect(model.rows[0].preset).toEqual({
+      id: 'p1',
+      name: '기본',
+      basis: 'inferred',
+      deviated_keys: []
+    });
+    expect(model.rows[0]).not.toHaveProperty('preset_candidates');
+  });
+
+  test('keeps ambiguous candidate names on unmatched rows', () => {
+    const model = buildCompareModel({
+      catalog: CATALOG,
+      presets: [makePreset(), { ...makePreset(), id: 'p2', name: '둘째' }],
+      workspaces: [makeWorkspace({ attempts: [makeAttempt()] })]
+    });
+
+    expect(model.rows[0].preset).toBeNull();
+    expect(model.rows[0].preset_candidates).toEqual(['기본', '둘째']);
+    expect(model.groups[0].badge).toBe('unmatched');
+  });
+
+  test('disables even recorded matches when the preset store is unreadable', () => {
+    const model = buildCompareModel({
+      warnings: ['preset_store_unreadable'],
+      presets: [makePreset()],
+      workspaces: [
+        makeWorkspace({
+          attempts: [
+            makeAttempt({
+              exec_preset: {
+                id: 'p1',
+                name: '기본',
+                revision: 1,
+                deviated_keys: []
+              }
+            })
+          ]
+        })
+      ]
+    });
+
+    expect(model.rows[0].preset).toBeNull();
+    expect(model.rows[0].preset_candidates).toEqual([]);
+    expect(model.warnings).toEqual(['preset_store_unreadable']);
   });
 });
 
@@ -514,7 +695,7 @@ describe('worker/compare-projection verify source', () => {
     });
 
     expect(model.rows[0].verify).toBe('pass');
-    expect(model.rows[0].verify_source).toBe('merge_verify');
+    expect(model.rows[0]).not.toHaveProperty('verify_source');
   });
 
   test('takes a bench clone verdict from bench_verify', () => {
@@ -529,10 +710,11 @@ describe('worker/compare-projection verify source', () => {
     });
 
     expect(model.rows[0].verify).toBe('fail');
-    expect(model.rows[0].verify_source).toBe('bench_verify');
+    expect(model.bench_rows[0].verify_source).toBe('bench_verify');
+    expect(model.bench_rows[0].verify).toBe('fail');
   });
 
-  test('leaves a quick_fix push with neither source 미상 and out of the sample', () => {
+  test('keeps verification evidence separate from landing evidence', () => {
     const model = buildCompareModel({
       workspaces: [
         makeWorkspace({
@@ -551,9 +733,9 @@ describe('worker/compare-projection verify source', () => {
     });
 
     expect(model.groups).toHaveLength(1);
-    expect(model.groups[0].success_rate).toBe(1);
-    expect(model.groups[0].success_sample).toBe(1);
-    expect(model.groups[0].unknown_count).toBe(1);
+    expect(model.groups[0].landing_rate).toBeNull();
+    expect(model.groups[0].judged).toBe(0);
+    expect(model.groups[0].in_flight).toBe(2);
   });
 
   test('excludes review_session and retired_kind attempts entirely', () => {
@@ -605,7 +787,7 @@ describe('worker/compare-projection retries', () => {
       ]
     });
 
-    expect(model.groups[0].retry_count).toBe(2);
+    expect(model.groups[0].problems.retry).toBe(2);
   });
 });
 
@@ -662,23 +844,24 @@ describe('worker/compare-projection aggregates', () => {
     expect(model.groups[0].cost_usd.median).toBe(1.5);
   });
 
-  test('sorts groups by success rate, then by the cheaper median price', () => {
+  test('sorts landed groups before failed groups', () => {
     const cheap_loser = makeAttempt({
       attempt_id: 'at-lose',
       bead_id: 'UI-9',
       model: 'loser-model',
+      status: 'failed',
       finished_at: 40_000
     });
     const model = buildCompareModel({
       workspaces: [
         makeWorkspace({
-          attempts: [makeAttempt(), cheap_loser],
+          attempts: [makeAttempt({ done_kind: 'no_delta' }), cheap_loser],
           verify_receipts: { 'UI-1': { ok: true }, 'UI-9': { ok: false } }
         })
       ]
     });
 
-    expect(model.groups.map((group) => group.success_rate)).toEqual([1, 0]);
+    expect(model.groups.map((group) => group.landing_rate)).toEqual([1, 0]);
   });
 
   test('keeps partial cost evidence on the comparison median', () => {
@@ -704,7 +887,6 @@ describe('worker/compare-projection aggregates', () => {
     expect(model.rows[0].usage).toMatchObject({ partial: true });
     expect(model.groups[0].cost_usd).toMatchObject({
       median: null,
-      partial: true,
       partial_count: 1
     });
   });
@@ -749,7 +931,6 @@ describe('worker/compare-projection aggregates', () => {
     });
     expect(model.groups[0].cost_usd).toMatchObject({
       median: 1,
-      partial: true,
       partial_count: 1
     });
   });
@@ -962,7 +1143,7 @@ describe('worker/compare-projection filters', () => {
     expect(model.bench_rows[0].bead_id).toBe('UI-1');
   });
 
-  test('filters by workspace, issue type and route', () => {
+  test('filters by workspace and route while ignoring issue type', () => {
     const workspaces = [
       makeWorkspace({
         attempts: [makeAttempt()],
@@ -984,7 +1165,7 @@ describe('worker/compare-projection filters', () => {
     ).toHaveLength(1);
     expect(
       buildCompareModel({ workspaces, filters: { issue_types: ['bug'] } }).rows
-    ).toHaveLength(1);
+    ).toHaveLength(2);
     expect(
       buildCompareModel({ workspaces, filters: { routes: ['full_plan'] } }).rows
     ).toEqual([]);
@@ -1004,5 +1185,1064 @@ describe('worker/compare-projection filters', () => {
     });
 
     expect(model.rows.map((row) => row.attempt_id)).toEqual(['at-new']);
+  });
+});
+
+/**
+ * @param {Record<string, any>[]} attempts
+ * @param {Record<string, any>} [workspace_overrides]
+ * @param {Record<string, any>} [filters]
+ */
+function projectAttempts(attempts, workspace_overrides = {}, filters = {}) {
+  return buildCompareModel({
+    workspaces: [makeWorkspace({ attempts, ...workspace_overrides })],
+    filters
+  });
+}
+
+describe('worker/compare-projection outcomes', () => {
+  /** @type {Record<string, { kind: string, evidence: string|null }>} */
+  const terminal_outcomes = {
+    failed: { kind: 'failed', evidence: null },
+    orphaned: { kind: 'failed', evidence: 'orphaned' },
+    discarded: { kind: 'aborted', evidence: 'discarded' },
+    stopped: { kind: 'aborted', evidence: 'stopped' },
+    parked: { kind: 'parked', evidence: null },
+    retry_wait: { kind: 'superseded', evidence: 'retry_wait' },
+    superseded: { kind: 'superseded', evidence: 'superseded' },
+    waiting: { kind: 'waiting', evidence: null },
+    done: { kind: 'unknown', evidence: null }
+  };
+
+  test.each([...TERMINAL_ATTEMPT_STATUSES])(
+    'classifies terminal status %s with an explicit table entry',
+    (status) => {
+      const model = projectAttempts([makeAttempt({ status })]);
+
+      expect(terminal_outcomes).toHaveProperty(status);
+      expect(model.rows[0].outcome).toEqual(terminal_outcomes[status]);
+    }
+  );
+
+  test.each(['failed', 'orphaned'])(
+    'preserves the cause of a %s attempt',
+    (status) => {
+      const model = projectAttempts([
+        makeAttempt({ status, cause: 'timeout' })
+      ]);
+
+      expect(model.rows[0].outcome).toEqual({
+        kind: 'failed',
+        evidence: 'timeout'
+      });
+    }
+  );
+
+  test('elects the later done attempt and breaks equal finish times by greatest id', () => {
+    const model = projectAttempts(
+      [
+        makeAttempt({ attempt_id: 'a', finished_at: 1 }),
+        makeAttempt({ attempt_id: 'z', finished_at: 2 }),
+        makeAttempt({ attempt_id: 'b', finished_at: 2 })
+      ],
+      {
+        issues: {
+          'UI-1': makeIssue({
+            status: 'closed',
+            impl_review_stats: { round: 2, blocking: 1, minor: 0 }
+          })
+        },
+        verify_receipts: { 'UI-1': { ok: true } }
+      }
+    );
+    const rows = Object.fromEntries(
+      model.rows.map((row) => [row.attempt_id, row])
+    );
+
+    expect(rows.z.outcome).toEqual({ kind: 'landed', evidence: 'closed' });
+    expect(rows.z.problems.review).toBe(true);
+    expect(rows.z.verify).toBe('pass');
+    for (const id of ['a', 'b']) {
+      expect(rows[id].outcome).toEqual({
+        kind: 'superseded',
+        evidence: 'later_done'
+      });
+      expect(rows[id].problems.review).toBe(false);
+      expect(rows[id].review).toBeNull();
+      expect(rows[id].verify).toBeNull();
+    }
+  });
+
+  test.each(['no_delta', 'bench'])(
+    'lands a %s completion through no-change evidence',
+    (done_kind) => {
+      const model = projectAttempts([makeAttempt({ done_kind })]);
+
+      expect(model.rows[0].outcome).toEqual({
+        kind: 'landed',
+        evidence: 'no_change'
+      });
+    }
+  );
+
+  test.each(['refuted: wrong hypothesis', 'no-delta: already present'])(
+    'lands an issue with close reason %s through no-change evidence',
+    (close_reason) => {
+      const model = projectAttempts([makeAttempt()], {
+        issues: { 'UI-1': makeIssue({ close_reason, status: 'closed' }) }
+      });
+
+      expect(model.rows[0].outcome).toEqual({
+        kind: 'landed',
+        evidence: 'no_change'
+      });
+    }
+  );
+
+  test('lands a successful quick-fix push before consulting the issue snapshot', () => {
+    const model = projectAttempts([
+      makeAttempt({ quickfix_landing: { reason: null, head_sha: SHA } })
+    ]);
+
+    expect(model.rows[0].outcome).toEqual({
+      kind: 'landed',
+      evidence: 'push',
+      head_sha: SHA
+    });
+  });
+
+  test('preserves a missing push head as null', () => {
+    const model = projectAttempts([
+      makeAttempt({ quickfix_landing: { reason: null } })
+    ]);
+
+    expect(model.rows[0].outcome).toEqual({
+      kind: 'landed',
+      evidence: 'push',
+      head_sha: null
+    });
+  });
+
+  test.each([{}, { reason: 'rejected' }, { reason: '' }])(
+    'refuses push evidence unless reason is exactly null: %j',
+    (quickfix_landing) => {
+      const model = projectAttempts([makeAttempt({ quickfix_landing })], {
+        issues: { 'UI-1': makeIssue({ status: 'open' }) }
+      });
+
+      expect(model.rows[0].outcome).toEqual({
+        kind: 'in_flight',
+        evidence: null
+      });
+    }
+  );
+
+  test.each([
+    ['closed', { kind: 'landed', evidence: 'closed' }],
+    ['open', { kind: 'in_flight', evidence: 'pr_open' }]
+  ])('includes the collected PR URL for a %s issue', (status, expected) => {
+    const model = projectAttempts([makeAttempt()], {
+      issues: { 'UI-1': makeIssue({ status }) },
+      pr_urls: { 'UI-1': 'https://github.com/example/repo/pull/1' }
+    });
+
+    expect(model.rows[0].outcome).toEqual({
+      ...expected,
+      pr_url: 'https://github.com/example/repo/pull/1'
+    });
+  });
+
+  test('keeps an absent issue unknown even when a PR URL exists', () => {
+    const model = projectAttempts([makeAttempt()], {
+      pr_urls: { 'UI-1': 'https://example.com/pr/1' }
+    });
+
+    expect(model.rows[0].outcome).toEqual({ kind: 'unknown', evidence: null });
+  });
+
+  test('counts only judged outcomes in landing and the specified pending set in flight', () => {
+    const statuses = [...TERMINAL_ATTEMPT_STATUSES];
+    const attempts = statuses.map((status, index) =>
+      makeAttempt({
+        status,
+        attempt_id: `a${index}`,
+        bead_id: `B${index}`,
+        done_kind: 'no_delta'
+      })
+    );
+
+    const model = projectAttempts(attempts);
+
+    expect(model.summary).toMatchObject({
+      n: statuses.length,
+      landed: 1,
+      judged: 5,
+      landing_rate: 0.2,
+      in_flight: 2,
+      problems: { failed: 4, retry: 0, review: 0, human: 1 },
+      problem_count: 5,
+      problem_rate: 5 / statuses.length
+    });
+  });
+});
+
+describe('worker/compare-projection human attribution', () => {
+  test.each([
+    ['inside', 15, 'first'],
+    ['after', 35, 'second'],
+    ['before', 5, 'first'],
+    ['gap', 22, 'first']
+  ])(
+    'attributes bead-level production events in the %s interval',
+    (_name, at, expected_id) => {
+      const model = projectAttempts(
+        [
+          makeAttempt({ attempt_id: 'first', started_at: 10, finished_at: 20 }),
+          makeAttempt({ attempt_id: 'second', started_at: 25, finished_at: 30 })
+        ],
+        {
+          timeline_events: {
+            'UI-1': [
+              {
+                event_id: 'e1',
+                at,
+                bead_id: 'UI-1',
+                kind: 'needs_human',
+                summary: '사람 확인 필요'
+              },
+              {
+                event_id: 'e2',
+                at,
+                bead_id: 'UI-1',
+                kind: 'queue_hold',
+                summary: '큐 보류'
+              }
+            ]
+          }
+        }
+      );
+      const affected = model.rows.filter((row) => row.problems.human);
+
+      expect(affected.map((row) => row.attempt_id)).toEqual([expected_id]);
+      expect(affected[0].problems.evidence.human).toEqual([
+        '사람 확인 필요',
+        '큐 보류'
+      ]);
+    }
+  );
+
+  test('honors an explicit attempt id before timestamp attribution', () => {
+    const model = projectAttempts(
+      [
+        makeAttempt({ attempt_id: 'first', started_at: 10, finished_at: 20 }),
+        makeAttempt({ attempt_id: 'second', started_at: 25, finished_at: 30 })
+      ],
+      {
+        timeline_events: {
+          'UI-1': [
+            {
+              event_id: 'e',
+              bead_id: 'UI-1',
+              kind: 'queue_hold',
+              at: 15,
+              attempt_id: 'second',
+              summary: '보류'
+            }
+          ]
+        }
+      }
+    );
+
+    expect(
+      model.rows.find((row) => row.attempt_id === 'second')?.problems.human
+    ).toBe(true);
+    expect(
+      model.rows.find((row) => row.attempt_id === 'first')?.problems.human
+    ).toBe(false);
+  });
+
+  test('counts only parking summaries from session-ended production events', () => {
+    const model = projectAttempts(
+      [
+        makeAttempt({ attempt_id: 'park' }),
+        makeAttempt({ attempt_id: 'success' })
+      ],
+      {
+        timeline_events: {
+          'UI-1': [
+            {
+              event_id: 'e1',
+              bead_id: 'UI-1',
+              kind: 'session_ended',
+              at: 70_000,
+              attempt_id: 'park',
+              summary: '파킹 · 사용자 확인'
+            },
+            {
+              event_id: 'e2',
+              bead_id: 'UI-1',
+              kind: 'session_ended',
+              at: 70_000,
+              attempt_id: 'success',
+              summary: '성공 · PR #1'
+            }
+          ]
+        }
+      }
+    );
+
+    expect(
+      model.rows
+        .filter((row) => row.problems.human)
+        .map((row) => row.attempt_id)
+    ).toEqual(['park']);
+  });
+
+  test('excludes environment events even with the same attempt id', () => {
+    const model = projectAttempts([makeAttempt()], {
+      timeline_events: {
+        'UI-1': [
+          'provider_hold',
+          'provider_recovered',
+          'account_preempt',
+          'guard_warning'
+        ].map((kind) => ({
+          event_id: kind,
+          bead_id: 'UI-1',
+          kind,
+          at: 20_000,
+          attempt_id: 'at-1',
+          summary: '환경 보류'
+        }))
+      }
+    });
+
+    expect(model.rows[0].problems.human).toBe(false);
+  });
+
+  test.each([
+    { halted_auto_advance: true },
+    { awaiting_user_present: true },
+    { status: 'parked' }
+  ])('uses local human evidence without a timeline: %j', (fields) => {
+    const model = projectAttempts([makeAttempt(fields)]);
+
+    expect(model.rows[0].problems.human).toBe(true);
+    expect(model.rows[0].problems.evidence.human).toEqual([]);
+  });
+
+  test('does not reassign an event from a filtered nonterminal attempt', () => {
+    const model = projectAttempts(
+      [
+        makeAttempt({ attempt_id: 'old', started_at: 10, finished_at: 20 }),
+        makeAttempt({
+          attempt_id: 'active',
+          status: 'running',
+          started_at: 30,
+          finished_at: 40
+        })
+      ],
+      {
+        timeline_events: {
+          'UI-1': [
+            {
+              event_id: 'e',
+              at: 35,
+              bead_id: 'UI-1',
+              kind: 'needs_human',
+              summary: '확인 필요'
+            }
+          ]
+        }
+      }
+    );
+
+    expect(model.rows).toHaveLength(1);
+    expect(model.rows[0].problems.human).toBe(false);
+  });
+
+  test('counts overlapping problem keys once in the problem-session numerator', () => {
+    const model = projectAttempts([
+      makeAttempt({
+        status: 'stopped',
+        resumed_from: 'origin',
+        awaiting_user_present: true
+      })
+    ]);
+
+    expect(model.summary).toMatchObject({
+      problem_count: 1,
+      problem_rate: 1,
+      problems: { failed: 1, retry: 1, review: 0, human: 1 }
+    });
+    expect(model.rows[0].problems.evidence).toMatchObject({
+      failed: 'stopped',
+      retry: 'origin'
+    });
+  });
+
+  test.each([
+    [{ round: 2, blocking: 0, minor: 0 }, true],
+    [{ round: 1, blocking: 1, minor: 0 }, true],
+    [{ round: 1, blocking: 0, minor: 9 }, false]
+  ])(
+    'judges review problems from thresholds: %j',
+    (impl_review_stats, expected) => {
+      const model = projectAttempts([makeAttempt()], {
+        issues: { 'UI-1': makeIssue({ impl_review_stats }) }
+      });
+
+      expect(model.rows[0].problems.review).toBe(expected);
+      expect(model.rows[0].problems.evidence.review).toEqual(impl_review_stats);
+    }
+  );
+});
+
+describe('worker/compare-projection grouping and summary', () => {
+  test.each([
+    ['preset', 'sig:claude-opus-5/high → gpt-5.6-sol/high', 'unmatched'],
+    ['orchestration', 'claude-opus-5/high', 'none'],
+    ['impl_actor', 'gpt-5.6-sol/high', 'none']
+  ])('keys the %s grouping axis', (group_by, key, badge) => {
+    const model = projectAttempts([makeAttempt()], {}, { group_by });
+
+    expect(model.groups[0]).toMatchObject({ key, badge });
+    expect(model.rows[0].composition).toBe(
+      'claude-opus-5/high → gpt-5.6-sol/high'
+    );
+  });
+
+  test.each([
+    [null, '미기록'],
+    [{ checks: { exec_receipt: { kind: 'main', actor: 'bead' } } }, 'main']
+  ])(
+    'groups an absent or main executor without inventing a model: %j',
+    (receipt_check, key) => {
+      const model = projectAttempts(
+        [makeAttempt({ receipt_check })],
+        {},
+        { group_by: 'impl_actor' }
+      );
+
+      expect(model.groups[0].key).toBe(key);
+    }
+  );
+
+  test('keeps missing orchestration axes explicit', () => {
+    const model = projectAttempts(
+      [makeAttempt({ model: null, effort: null })],
+      {},
+      { group_by: 'orchestration' }
+    );
+
+    expect(model.groups[0].key).toBe('미기록/미기록');
+  });
+
+  test('drops reviewer-only differences from composition grouping', () => {
+    const model = projectAttempts([
+      makeAttempt(),
+      makeAttempt({
+        attempt_id: 'two',
+        exec_values: { impl_review_model: 'different' }
+      })
+    ]);
+
+    expect(model.groups).toHaveLength(1);
+    expect(model.groups[0].compositions).toEqual([
+      { composition: model.rows[0].composition, count: 2 }
+    ]);
+  });
+
+  test('reports means, medians and independent numeric samples', () => {
+    const model = projectAttempts([
+      makeAttempt({
+        attempt_id: 'a',
+        bead_id: 'A',
+        started_at: 0,
+        finished_at: 10,
+        usage: { input_tokens: 1, total_cost_usd: 1 }
+      }),
+      makeAttempt({
+        attempt_id: 'b',
+        bead_id: 'B',
+        started_at: 0,
+        finished_at: 20,
+        usage: { input_tokens: 3, total_cost_usd: 9 }
+      }),
+      makeAttempt({
+        attempt_id: 'c',
+        bead_id: 'C',
+        started_at: 0,
+        finished_at: 90
+      }),
+      makeAttempt({
+        attempt_id: 'd',
+        bead_id: 'C',
+        started_at: null,
+        finished_at: 100
+      })
+    ]);
+
+    expect(model.summary.duration_ms).toEqual({
+      mean: 40,
+      median: 20,
+      sample: 3,
+      total: 4
+    });
+    expect(model.summary.cost_usd).toEqual({
+      mean: 5,
+      median: 5,
+      sample: 2,
+      total: 4,
+      partial_count: 0
+    });
+    expect(model.summary.tokens).toEqual({
+      mean: 2,
+      median: 2,
+      sample: 2,
+      total: 4
+    });
+    expect(model.summary.issue_count).toBe(3);
+    expect(model.summary).not.toHaveProperty('best');
+  });
+
+  test('reports empty summaries without numerical guesses', () => {
+    const model = projectAttempts([]);
+
+    expect(model.summary).toMatchObject({
+      n: 0,
+      issue_count: 0,
+      landing_rate: null,
+      problem_rate: null,
+      duration_ms: { mean: null, median: null, sample: 0, total: 0 },
+      cost_usd: {
+        mean: null,
+        median: null,
+        sample: 0,
+        total: 0,
+        partial_count: 0
+      }
+    });
+  });
+
+  test('aggregates composition counts in descending order inside one recorded preset', () => {
+    const exec_preset = {
+      id: 'p1',
+      name: '기록',
+      revision: 1,
+      deviated_keys: []
+    };
+    const model = projectAttempts([
+      makeAttempt({ attempt_id: 'first', model: 'z', exec_preset }),
+      makeAttempt({ attempt_id: 'second', model: 'a', exec_preset }),
+      makeAttempt({ attempt_id: 'third', model: 'z', exec_preset })
+    ]);
+
+    expect(model.groups[0].compositions).toEqual([
+      { composition: 'z/high → gpt-5.6-sol/high', count: 2 },
+      { composition: 'a/high → gpt-5.6-sol/high', count: 1 }
+    ]);
+  });
+
+  test('computes the summary from the filtered rows rather than the whole history', () => {
+    const model = projectAttempts(
+      [
+        makeAttempt({ attempt_id: 'old', finished_at: 10, status: 'failed' }),
+        makeAttempt({
+          attempt_id: 'new',
+          finished_at: 20,
+          done_kind: 'no_delta'
+        })
+      ],
+      {},
+      { since: 15 }
+    );
+
+    expect(model.summary).toMatchObject({
+      n: 1,
+      landed: 1,
+      judged: 1,
+      landing_rate: 1,
+      problem_count: 0,
+      attempt_ids: ['new']
+    });
+  });
+
+  test('counts the same bead id in separate workspaces as separate issues', () => {
+    const model = buildCompareModel({
+      workspaces: [
+        makeWorkspace({ attempts: [makeAttempt()] }),
+        makeWorkspace({ root_dir: '/repo/two', attempts: [makeAttempt()] })
+      ]
+    });
+
+    expect(model.summary.issue_count).toBe(2);
+  });
+
+  test('sorts equal landing rates by mean cost with null values last', () => {
+    const attempts = [
+      ['expensive', 5, 'done'],
+      ['cheap', 1, 'done'],
+      ['missing', null, 'done'],
+      ['unknown', 0, 'waiting']
+    ].map(([model, cost, status]) =>
+      makeAttempt({
+        attempt_id: model,
+        bead_id: model,
+        model,
+        status,
+        done_kind: 'no_delta',
+        usage: cost === null ? null : { input_tokens: 1, total_cost_usd: cost }
+      })
+    );
+
+    const model = projectAttempts(attempts, {}, { group_by: 'orchestration' });
+
+    expect(model.groups.map((group) => group.name)).toEqual([
+      'cheap/high',
+      'expensive/high',
+      'missing/high',
+      'unknown/high'
+    ]);
+  });
+
+  test('marks all measurable best metrics for the sole eligible group', () => {
+    const model = projectAttempts(
+      Array.from({ length: 3 }, (_, index) =>
+        makeAttempt({
+          attempt_id: `a${index}`,
+          bead_id: `B${index}`,
+          done_kind: 'no_delta',
+          usage: { input_tokens: 1, total_cost_usd: 1 }
+        })
+      )
+    );
+
+    expect(model.groups[0].best).toEqual(['landing', 'duration', 'cost']);
+  });
+
+  test.each([2, 3])(
+    'withholds best when n or judged is below three: n=%s',
+    (n) => {
+      const model = projectAttempts(
+        Array.from({ length: n }, (_, index) =>
+          makeAttempt({
+            attempt_id: `a${index}`,
+            bead_id: `B${index}`,
+            status: index === 2 ? 'waiting' : 'done',
+            done_kind: 'no_delta'
+          })
+        )
+      );
+
+      expect(model.groups[0].best).toEqual([]);
+    }
+  );
+
+  test('withholds tied metrics but selects a unique shortest eligible group', () => {
+    const attempts = ['slow', 'fast'].flatMap((name) =>
+      Array.from({ length: 3 }, (_, index) =>
+        makeAttempt({
+          attempt_id: `${name}${index}`,
+          bead_id: `${name}${index}`,
+          model: name,
+          started_at: 0,
+          finished_at: name === 'slow' ? 20 : 10,
+          done_kind: 'no_delta',
+          usage: { input_tokens: 1, total_cost_usd: 1 }
+        })
+      )
+    );
+
+    const model = projectAttempts(attempts, {}, { group_by: 'orchestration' });
+
+    expect(
+      model.groups.find((group) => group.name === 'fast/high')?.best
+    ).toEqual(['duration']);
+    expect(
+      model.groups.find((group) => group.name === 'slow/high')?.best
+    ).toEqual([]);
+  });
+
+  test('removes obsolete main-table fields while preserving bench verification', () => {
+    const model = projectAttempts(
+      [makeAttempt({ bench_verify: { ok: true } })],
+      {},
+      { include_bench: true }
+    );
+
+    for (const field of [
+      'signature',
+      'signature_parts',
+      'verify_source',
+      'attempt',
+      'representative'
+    ]) {
+      expect(model.rows[0]).not.toHaveProperty(field);
+    }
+    for (const field of [
+      'success_rate',
+      'success_sample',
+      'unknown_count',
+      'pass_caret',
+      'failed_count',
+      'retry_count',
+      'blocking',
+      'minor',
+      'round'
+    ]) {
+      expect(model.groups[0]).not.toHaveProperty(field);
+    }
+    expect(model.bench_rows[0].verify).toBe('pass');
+  });
+});
+
+describe('worker/compare-projection collection', () => {
+  test('projects production JSONL event shapes through the timeline reader', () => {
+    const timeline = createBeadTimeline({
+      workspace_root: '/nonexistent-projection-test-root',
+      fs: /** @type {any} */ ({
+        readFileSync: () =>
+          [
+            '{"event_id":"e1","at":15,"bead_id":"UI-1","kind":"needs_human","summary":"확인 필요"}',
+            '{"event_id":"e2","at":35,"bead_id":"UI-1","kind":"queue_hold","summary":"큐 보류"}',
+            '{"event_id":"e3","at":40,"bead_id":"UI-1","kind":"session_ended","attempt_id":"second","summary":"파킹 · 확인"}',
+            '{"event_id":"e4","at":15,"bead_id":"UI-1","kind":"provider_hold","attempt_id":"first","summary":"환경 보류"}'
+          ].join('\n')
+      })
+    });
+
+    const model = projectAttempts(
+      [
+        makeAttempt({ attempt_id: 'first', started_at: 10, finished_at: 20 }),
+        makeAttempt({ attempt_id: 'second', started_at: 25, finished_at: 30 })
+      ],
+      { timeline_events: { 'UI-1': timeline.readTimeline('UI-1') } }
+    );
+    const rows = Object.fromEntries(
+      model.rows.map((row) => [row.attempt_id, row])
+    );
+
+    expect(rows.first.problems.evidence.human).toEqual(['확인 필요']);
+    expect(rows.second.problems.evidence.human).toEqual([
+      '큐 보류',
+      '파킹 · 확인'
+    ]);
+  });
+
+  test('projects close_reason from the workspace issue index', () => {
+    const issues = compareIssueIndex('/repo/one', {
+      peek: () => ({
+        id_index: new Map([
+          [
+            'UI-1',
+            {
+              title: 'closed',
+              status: 'closed',
+              close_reason: 'refuted: reason',
+              metadata: { route: 'quick_fix' }
+            }
+          ],
+          ['UI-2', { title: 'open' }]
+        ])
+      })
+    });
+
+    expect(issues['UI-1']).toMatchObject({
+      status: 'closed',
+      close_reason: 'refuted: reason',
+      route: 'quick_fix'
+    });
+    expect(issues['UI-2'].close_reason).toBeNull();
+  });
+
+  test('reads one timeline per collected bead and filters environment events', () => {
+    const readTimeline = vi.fn(() => [
+      { event_id: 'human', kind: 'needs_human', summary: '확인', at: 1 },
+      { event_id: 'hold', kind: 'queue_hold', summary: '보류', at: 2 },
+      {
+        event_id: 'end',
+        kind: 'session_ended',
+        attempt_id: 'at-1',
+        summary: '파킹 · 확인',
+        at: 3
+      },
+      {
+        event_id: 'provider',
+        kind: 'provider_hold',
+        attempt_id: 'at-1',
+        summary: '환경',
+        at: 4
+      }
+    ]);
+    const queueStore = {
+      snapshot: () => ({
+        attempts: {
+          one: makeAttempt(),
+          two: makeAttempt({ attempt_id: 'two' }),
+          absent: makeAttempt({ bead_id: 'empty' })
+        }
+      }),
+      readAttemptsForBead: (
+        /** @type {string} */ _root,
+        /** @type {string} */ id
+      ) =>
+        id === 'empty'
+          ? []
+          : [makeAttempt(), makeAttempt({ attempt_id: 'two' })]
+    };
+
+    const workspaces = collectCompareWorkspaces({
+      roots: ['/nonexistent-projection-test-root'],
+      queueStore,
+      timeline: () => ({ readTimeline }),
+      peek: () => null
+    });
+
+    expect(readTimeline).toHaveBeenCalledExactlyOnceWith('UI-1');
+    expect(
+      workspaces[0].timeline_events?.['UI-1'].map((event) => event.kind)
+    ).toEqual(['needs_human', 'queue_hold', 'session_ended']);
+    expect(workspaces[0].attempts).toHaveLength(2);
+  });
+
+  test('retains attempts and local human flags when one timeline read throws', () => {
+    const attempt = makeAttempt({ halted_auto_advance: true });
+    const queueStore = {
+      snapshot: () => ({ attempts: { one: attempt } }),
+      readAttemptsForBead: () => [attempt]
+    };
+
+    const workspaces = collectCompareWorkspaces({
+      roots: ['/nonexistent-projection-test-root'],
+      queueStore,
+      peek: () => null,
+      timeline: () => ({
+        readTimeline: () => {
+          throw new Error('unreadable');
+        }
+      })
+    });
+    const model = buildCompareModel({ workspaces });
+
+    expect(model.rows).toHaveLength(1);
+    expect(model.rows[0].problems.human).toBe(true);
+    expect(model.rows[0].problems.evidence.human).toEqual([]);
+  });
+
+  test.each(['missing', 'malformed'])(
+    'uses attempt evidence when a %s timeline yields no events',
+    (mode) => {
+      const timeline = createBeadTimeline({
+        workspace_root: '/nonexistent-projection-test-root',
+        fs: /** @type {any} */ ({
+          readFileSync: () => {
+            if (mode === 'missing') {
+              throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+            }
+            return '{broken line\n';
+          }
+        })
+      });
+      const attempt = makeAttempt({ awaiting_user_present: true });
+
+      const model = projectAttempts([attempt], {
+        timeline_events: { 'UI-1': timeline.readTimeline('UI-1') }
+      });
+
+      expect(model.rows[0].problems.human).toBe(true);
+      expect(model.rows[0].problems.evidence.human).toEqual([]);
+    }
+  );
+
+  test('collects PR URLs across every lane with first-found precedence', () => {
+    const queue = {
+      attempts: { one: makeAttempt() },
+      queue: [{ bead_id: 'UI-1', pr_url: 'queue-url' }],
+      serial_lanes: [
+        {
+          id: 's1',
+          entries: [
+            { bead_id: 'UI-1', pr_url: 'later-url' },
+            { bead_id: 'serial', pr_url: 'serial-url' }
+          ]
+        }
+      ],
+      pr_wait: [{ bead_id: 'wait', pr_url: 'wait-url' }],
+      done: [{ bead_id: 'done', pr_url: 'done-url' }],
+      merge_queue: [{ bead_id: 'merge', pr_url: 'merge-url' }],
+      completion_intents: {
+        'UI-1': { merge_subject: { pr_url: 'intent-later' } },
+        intent: { merge_subject: { pr_url: 'intent-url' } }
+      }
+    };
+
+    const workspaces = collectCompareWorkspaces({
+      roots: ['/nonexistent-projection-test-root'],
+      queueStore: {
+        snapshot: () => queue,
+        readAttemptsForBead: () => [makeAttempt()]
+      },
+      timeline: () => ({ readTimeline: () => [] }),
+      peek: () => null
+    });
+
+    expect(workspaces[0].pr_urls).toEqual({
+      'UI-1': 'queue-url',
+      serial: 'serial-url',
+      wait: 'wait-url',
+      done: 'done-url',
+      merge: 'merge-url',
+      intent: 'intent-url'
+    });
+  });
+
+  test.each(['read', 'parse', 'missing'])(
+    'projects actual preset-store %s results through the coordinator',
+    (failure) => {
+      const tmp_dir = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'bdui-compare-store-')
+      );
+      const file_path = path.join(tmp_dir, 'exec-presets.json');
+      if (failure === 'read') {
+        fs.mkdirSync(file_path);
+      } else if (failure === 'parse') {
+        fs.writeFileSync(file_path, '{broken');
+      }
+      const coordinator = createExecPresetCoordinator({
+        presetStore: createExecPresetStore({ filePath: file_path }),
+        queueStore: createQueueStore()
+      });
+      const runtime_spy = vi
+        .spyOn(worker_runtime, 'getWorkerRuntime')
+        .mockReturnValue(
+          /** @type {any} */ ({ execPresetCoordinator: coordinator })
+        );
+      try {
+        const model = compareSnapshot(
+          {},
+          {
+            workspaces: [
+              makeWorkspace({
+                attempts: [
+                  makeAttempt({
+                    exec_preset: {
+                      id: 'recorded',
+                      name: 'Recorded',
+                      revision: 1,
+                      deviated_keys: []
+                    }
+                  })
+                ]
+              })
+            ],
+            catalog: null,
+            listRuns: () => []
+          }
+        );
+
+        if (failure === 'missing') {
+          expect(model.warnings).toEqual([]);
+          expect(model.rows[0].preset).toMatchObject({
+            id: 'recorded',
+            name: 'Recorded(삭제됨)'
+          });
+        } else {
+          expect(model.warnings).toEqual(['preset_store_unreadable']);
+          expect(model.rows[0].preset).toBeNull();
+          expect(model.rows[0].preset_candidates).toEqual([]);
+        }
+      } finally {
+        runtime_spy.mockRestore();
+        fs.rmSync(tmp_dir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test('reports preset-store read failure in snapshot warnings', () => {
+    const runtime_spy = vi
+      .spyOn(worker_runtime, 'getWorkerRuntime')
+      .mockReturnValue(
+        /** @type {any} */ ({
+          execPresetCoordinator: {
+            snapshot: () => {
+              throw new Error('preset store unreadable');
+            }
+          }
+        })
+      );
+    try {
+      const model = compareSnapshot(
+        {},
+        {
+          workspaces: [makeWorkspace({ attempts: [makeAttempt()] })],
+          catalog: null,
+          listRuns: () => []
+        }
+      );
+
+      expect(model.warnings).toEqual(['preset_store_unreadable']);
+      expect(model.rows[0].preset).toBeNull();
+      expect(model.rows[0].preset_candidates).toEqual([]);
+    } finally {
+      runtime_spy.mockRestore();
+    }
+  });
+
+  test('ignores issue_types during historical preparation as well as row filtering', async () => {
+    const prepareHistorical = vi.fn(async () => null);
+
+    const model = await prepareCompareSnapshot(
+      { issue_types: ['bug'] },
+      {
+        workspaces: [
+          makeWorkspace({
+            attempts: [makeAttempt()],
+            issues: { 'UI-1': makeIssue({ issue_type: 'task' }) }
+          })
+        ],
+        presets: [],
+        catalog: null,
+        listRuns: () => [],
+        observations: /** @type {any} */ ({
+          prepareHistorical,
+          get: () => null
+        })
+      }
+    );
+
+    expect(prepareHistorical).toHaveBeenCalledTimes(1);
+    expect(model.rows).toHaveLength(1);
+  });
+
+  test('keeps the recorded route ahead of a newer workspace route', async () => {
+    const prepareHistorical = vi.fn(async () => null);
+
+    const model = await prepareCompareSnapshot(
+      { routes: ['spec_backed'] },
+      {
+        workspaces: [
+          makeWorkspace({
+            attempts: [
+              makeAttempt({
+                exec_values: { route: 'spec_backed' },
+                route: 'quick_fix'
+              })
+            ],
+            issues: { 'UI-1': makeIssue({ route: 'full_plan' }) }
+          })
+        ],
+        presets: [],
+        catalog: null,
+        listRuns: () => [],
+        observations: /** @type {any} */ ({
+          prepareHistorical,
+          get: () => null
+        })
+      }
+    );
+
+    expect(prepareHistorical).toHaveBeenCalledTimes(1);
+    expect(model.rows[0].route).toBe('spec_backed');
   });
 });

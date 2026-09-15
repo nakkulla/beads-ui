@@ -989,30 +989,70 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
 ## Preset comparison channel (preset-compare §3.5)
 
 - `get-compare` payload:
-  `{ range?, root_dirs?, issue_types?, routes?, include_bench? }` — replies with
-  an envelope of type `compare-snapshot` carrying
-  `{ rows, groups, workspaces, runs, bench_rows }`. A request/response PAIR, not
-  a subscription: the answer is read from the per-bead attempt records of every
-  visible workspace, and nothing a Worker tick changes has to redraw a
-  comparison table. The tab asks on open, on a filter change, and on `새로고침`.
-- Every filter is optional and an unreadable value means "no restriction",
-  except `include_bench`, whose default EXCLUDES bench clone runs (§3.4) so a
-  comparison of real work never silently absorbs synthetic ones. `range` is a
-  `CLOSED_RANGE_OPTIONS` value and bounds the attempt's `finished_at`;
-  `root_dirs` are absolute registry paths.
-- One `rows[]` entry is ONE terminal implementation attempt (`kind` other than
-  `implementation` and a non-terminal status are both out) with the six columns
-  of §3.2 plus its `signature`. `verify` is `'pass' | 'fail' | null`, where
-  `null` is 미상 and is never counted as a success; `review` and a merge
-  candidate `[verify]` verdict are Bead-level and ride the bead's LAST
-  successful attempt alone.
-- One `groups[]` entry is one execution signature —
-  `<orch_model>/<orch_effort> → <impl_actor> · 리뷰 <model>/<effort>/<speed>` —
-  named after the first stored preset that matches it on every key that preset
-  declares, else the signature string. `name` is `미기록` in the implementer
-  position when the attempt preserved no `exec_receipt`. Medians carry their own
-  `{ median, sample, total }` so a column can say `n=3/5`, and `success_rate` is
-  taken over the judged rows only.
+  `{ range?, root_dirs?, routes?, include_bench?, group_by? }` — replies with a
+  `compare-snapshot` envelope carrying
+  `{ summary, groups, rows, workspaces, runs, bench_rows, warnings }`. This
+  request/response pair reads attempts, workspace issue snapshots and one
+  timeline per bead on demand; it does not subscribe or push updates.
+- `range` bounds `finished_at` with a `CLOSED_RANGE_OPTIONS` value (default
+  `30d`); unknown values mean all history. `root_dirs` are absolute registry
+  paths, `routes` restricts routes, and `include_bench` defaults to false.
+  Legacy `issue_types` is accepted and ignored. `group_by` is `preset` (default,
+  also for invalid values), `orchestration`, or `impl_actor`.
+- One `rows[]` entry is one terminal implementation attempt, excluding review
+  sessions and retired kinds. It retains identity, issue, route, status, cause,
+  `verify`, `review`, `usage`, `duration_ms`, `is_retry`, `is_bench`,
+  `started_at` and `finished_at`. It adds:
+  - `outcome: { kind, evidence, head_sha?, pr_url? }`, where kind is
+    `landed|failed|aborted|parked|superseded|waiting|unknown|in_flight`.
+    Failed/orphaned and aborted statuses take precedence; earlier done attempts
+    are superseded. The latest done (finish time, then greatest attempt id)
+    lands through no-change evidence, a successful quick-fix push, or a closed
+    issue. A missing issue is unknown; an otherwise open issue is in flight.
+    Review and merge verification facts attach only to that representative.
+  - `problems: { failed, retry, review, human, evidence }`: four booleans and
+    `evidence: { failed, retry, review, human }`, respectively cause/status,
+    origin attempt id, `{ round, blocking, minor }|null`, and event summaries.
+    Any true key makes a problem session. Review means round ≥ 2 or blocking ≥
+    1; human means attempt-local hold flags, parked status, or attributed human
+    events. Environment hold events do not count.
+  - `preset: { id, name, basis, deviated_keys }|null`; basis is `recorded` or
+    `inferred`. Recorded ids use the current name, or the recorded name plus
+    `(삭제됨)` when deleted. Inference compares route-effective orchestration
+    and delegated executor axes using catalog-normalized model names. Equally
+    specific matches remain null. Unmatched rows additionally carry
+    `preset_candidates: string[]`.
+  - `orchestration: { model, effort }`,
+    `impl_actor: { kind, label, model, effort }`, and
+    `composition: "<model>/<effort> → <impl_actor.label>"` with missing axes
+    labeled `미기록`. Main rows omit `signature`, `signature_parts` and
+    `verify_source`.
+- Groups use `preset:<id>` or `sig:<composition>` keys on the preset axis,
+  `<model>/<effort>` on orchestration, and `main`, executor label, or `미기록`
+  on implementation. Each contains `key`, `name`,
+  `badge: 'preset'|'unmatched'|'none'`, `n`, `issue_count`,
+  `compositions: { composition, count }[]` (count descending), `landed`,
+  `judged`, `in_flight`, `landing_rate`, `problem_count`, `problem_rate`,
+  `problems: { failed, retry, review, human }` (counts), `duration_ms`,
+  `cost_usd`, `tokens`, `best`, and `attempt_ids`. Landing rate is landed /
+  (landed + failed + aborted), null with no judged sample. In-flight count
+  includes in-flight, waiting and parked only. Problem rate is problem sessions
+  / n, null for an empty summary. Numeric aggregates carry
+  `{ mean, median, sample, total }`; absent values do not enter the sample, and
+  empty samples have null mean/median. Cost additionally carries
+  `partial_count`.
+- `summary` aggregates the entire filtered row set with the same statistics (no
+  group identity or `best`). A group with n ≥ 3 and judged ≥ 3 can earn
+  `best: ('landing'|'duration'|'cost')[]` for unique highest landing rate,
+  lowest mean duration or lowest mean cost; ties earn nothing. Groups arrive
+  sorted by descending landing rate (null last), then ascending mean cost (null
+  last). Other sorts are client-owned. The main groups omit the former
+  success-rate, verification-sample, pass-caret, failure/retry-count and
+  review-stat aggregate fields.
+- Missing timeline, receipt or usage evidence fails quiet. An unreadable preset
+  store yields `warnings: ['preset_store_unreadable']`, all presets null and
+  empty candidate lists; a readable store yields `warnings: []`. Projection
+  failure retains the existing error reply and refresh flow.
 - `runs[]` and `bench_rows[]` are the experiment half of the same answer (§4.7).
   `runs` is every visible workspace's run manifests, newest first; `bench_rows`
   is every bench clone row of every visible workspace, deliberately NOT narrowed

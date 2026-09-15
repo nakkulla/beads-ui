@@ -120,6 +120,464 @@ function openForm(root) {
   ).click();
 }
 
+/** @param {Record<string, any>} [overrides] */
+function comparisonGroup(overrides = {}) {
+  return {
+    key: 'preset:p1',
+    name: '프리셋 A',
+    badge: 'preset',
+    n: 4,
+    issue_count: 3,
+    landed: 2,
+    judged: 3,
+    in_flight: 1,
+    landing_rate: 2 / 3,
+    problem_count: 2,
+    problem_rate: 0.5,
+    problems: { failed: 1, retry: 1, review: 0, human: 1 },
+    duration_ms: { mean: 120000, median: 60000, sample: 4, total: 4 },
+    cost_usd: { mean: 2, median: 1, sample: 3, total: 4, partial_count: 1 },
+    compositions: [{ composition: 'astra/high → main 직접', count: 4 }],
+    best: ['landing', 'duration', 'cost'],
+    attempt_ids: ['session-1'],
+    ...overrides
+  };
+}
+
+/** @param {Record<string, any>} [payload] */
+function mountComparison(payload = {}) {
+  const root = document.createElement('div');
+  document.body.appendChild(root);
+  const snapshot = {
+    summary: comparisonGroup(),
+    groups: [comparisonGroup()],
+    rows: [
+      {
+        attempt_id: 'session-1',
+        bead_id: 'UI-one',
+        title: '긴 제목의 세션',
+        outcome: {
+          kind: 'landed',
+          evidence: 'closed',
+          pr_url: 'https://github.com/a/b/pull/291'
+        },
+        verify: 'pass',
+        duration_ms: 60000,
+        finished_at: 1750000000000,
+        usage: { total_cost_usd: 2 },
+        problems: {
+          failed: false,
+          retry: true,
+          review: true,
+          human: true,
+          evidence: {
+            retry: 'original-1',
+            review: { round: 2, blocking: 1, minor: 3 },
+            human: ['승인 대기', '재개']
+          }
+        },
+        preset: { deviated_keys: ['impl_effort'] }
+      }
+    ],
+    workspaces: [{ root_dir: '/repo', name: '저장소 A' }],
+    runs: [],
+    bench_rows: [],
+    warnings: [],
+    ...payload
+  };
+  const transport = vi.fn(async () => ({ payload: snapshot }));
+  const gotoIssue = vi.fn();
+  const view = createCompareView(root, { transport, gotoIssue });
+  return { root, view, transport, gotoIssue, snapshot };
+}
+
+/**
+ * @param {HTMLElement} root
+ * @param {string} label
+ * @param {string} value
+ */
+function changeSelect(root, label, value) {
+  const field = Array.from(root.querySelectorAll('.cmp-filter')).find(
+    (element) =>
+      element.querySelector('.cmp-filter__label')?.textContent === label
+  );
+  const select = /** @type {HTMLSelectElement} */ (
+    field?.querySelector('select')
+  );
+  select.value = value;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+describe('compare group cards', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  test('renders the server metrics and best markers on a group card', async () => {
+    const { root, view } = mountComparison();
+
+    await view.refresh();
+
+    const card = /** @type {HTMLElement} */ (root.querySelector('.cmp-card'));
+    expect(card.querySelector('.cmp-badge')?.textContent).toBe('프리셋');
+    expect(
+      card.querySelector('[data-metric="landing"]')?.textContent
+    ).toContain('67%');
+    expect(
+      card.querySelector('[data-metric="problem"]')?.textContent
+    ).toContain('50%');
+    expect(
+      card.querySelector('[data-metric="duration"]')?.textContent
+    ).toContain('2분');
+    expect(card.querySelector('[data-metric="cost"]')?.textContent).toContain(
+      'n=3/4 · 부분 1'
+    );
+    expect(
+      Array.from(card.querySelectorAll('.is-best')).map((tile) =>
+        tile.getAttribute('data-metric')
+      )
+    ).toEqual(['landing', 'duration', 'cost']);
+    expect(card.querySelectorAll('.cmp-best')).toHaveLength(3);
+    expect(card.querySelector('.cmp-chip.is-zero')?.textContent).toContain(
+      '리뷰 지적 0'
+    );
+    expect(root.querySelector('table')).toBeNull();
+  });
+
+  test('keeps a null landing rate unjudged and without a bar', async () => {
+    const { root, view } = mountComparison({
+      groups: [comparisonGroup({ landing_rate: null, best: [] })]
+    });
+
+    await view.refresh();
+
+    expect(
+      root.querySelector('.cmp-card [data-metric="landing"] .cmp-kpi__value')
+        ?.textContent
+    ).toBe('—');
+    expect(
+      root.querySelector('.cmp-card [data-metric="landing"] .cmp-bar')
+    ).toBeNull();
+    expect(root.querySelector('.cmp-card .is-best')).toBeNull();
+  });
+
+  test('renders all five summary tiles and the selected workspace heading', async () => {
+    const { root, view } = mountComparison();
+
+    await view.refresh();
+    changeSelect(root, '저장소', '/repo');
+    await settle();
+
+    expect(root.querySelectorAll('.cmp-summary > .cmp-kpi')).toHaveLength(5);
+    expect(
+      root
+        .querySelector('.cmp-head__summary')
+        ?.textContent?.replace(/\s+/g, ' ')
+    ).toContain('최근 30일 · 저장소 A · 세션 4건 · 이슈 3건');
+    expect(
+      root.querySelector('.cmp-summary [data-metric="sessions"]')?.textContent
+    ).toContain('이슈 3 · 진행 중 1');
+  });
+
+  test('keeps expanded group keys across refresh and regrouping', async () => {
+    const { root, view } = mountComparison();
+
+    await view.refresh();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-expand')
+    ).click();
+    await view.refresh();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelectorAll('.cmp-group-by button')[1]
+    ).click();
+    await settle();
+
+    expect(root.querySelector('.cmp-card')?.classList.contains('is-open')).toBe(
+      true
+    );
+    expect(
+      root.querySelector('.cmp-expand')?.getAttribute('aria-expanded')
+    ).toBe('true');
+    expect(root.querySelectorAll('.cmp-session')).toHaveLength(1);
+  });
+
+  test.each([
+    ['landing', ['C', 'A', 'B', 'D']],
+    ['problem', ['B', 'C', 'A', 'D']],
+    ['duration', ['B', 'A', 'C', 'D']],
+    ['cost', ['C', 'B', 'A', 'D']]
+  ])('sorts by %s locally with missing values last', async (sort, expected) => {
+    const groups = [
+      comparisonGroup({
+        key: 'A',
+        landing_rate: 0.9,
+        problem_rate: 0.8,
+        duration_ms: { mean: 2 },
+        cost_usd: { mean: 3 }
+      }),
+      comparisonGroup({
+        key: 'B',
+        landing_rate: 0.5,
+        problem_rate: 0.1,
+        duration_ms: { mean: 1 },
+        cost_usd: { mean: 2 }
+      }),
+      comparisonGroup({
+        key: 'C',
+        landing_rate: 0.9,
+        problem_rate: 0.3,
+        duration_ms: { mean: 3 },
+        cost_usd: { mean: 1 }
+      }),
+      comparisonGroup({
+        key: 'D',
+        landing_rate: null,
+        problem_rate: null,
+        duration_ms: { mean: null },
+        cost_usd: { mean: null }
+      })
+    ];
+    const { root, view, transport } = mountComparison({ groups });
+
+    await view.refresh();
+    changeSelect(root, '정렬', sort);
+
+    expect(
+      Array.from(root.querySelectorAll('.cmp-card')).map((card) =>
+        card.getAttribute('data-group-key')
+      )
+    ).toEqual(expected);
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    [1, 'orchestration'],
+    [2, 'impl_actor']
+  ])('requests grouping axis %s as group_by', async (index, group_by) => {
+    const { root, view, transport } = mountComparison();
+
+    await view.refresh();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelectorAll('.cmp-group-by button')[index]
+    ).click();
+    await settle();
+
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.objectContaining({ group_by })
+    );
+    expect(transport.mock.calls[0]).toEqual([
+      'get-compare',
+      {
+        range: '30d',
+        root_dirs: [],
+        routes: [],
+        include_bench: false,
+        group_by: 'preset'
+      }
+    ]);
+    expect(root.querySelectorAll('.cmp-filters select')).toHaveLength(4);
+  });
+
+  test('opens the issue deep link from a session row', async () => {
+    const { root, view, gotoIssue } = mountComparison();
+
+    await view.refresh();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-expand')
+    ).click();
+    const row = /** @type {HTMLAnchorElement} */ (
+      root.querySelector('.cmp-session')
+    );
+    row.click();
+
+    expect(row.getAttribute('href')).toBe('#/compare?issue=UI-one');
+    expect(gotoIssue).toHaveBeenCalledWith('UI-one');
+    expect(row.querySelector('.cmp-session__outcome')?.textContent).toBe(
+      '착지 · PR #291 · verify 통과'
+    );
+    expect(row.querySelector('.cmp-dot--landed')).not.toBeNull();
+  });
+
+  test('renders problem evidence and adjusted pins as session chips', async () => {
+    const { root, view } = mountComparison();
+
+    await view.refresh();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-expand')
+    ).click();
+
+    const chips = Array.from(
+      root.querySelectorAll('.cmp-session__chips .cmp-chip')
+    );
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      '재시도',
+      '리뷰 r2',
+      '개입',
+      '핀 조정'
+    ]);
+    expect(chips.map((chip) => chip.getAttribute('title'))).toEqual([
+      'original-1',
+      '라운드 2 · blocking 1 · minor 3',
+      '승인 대기\n재개',
+      'impl_effort'
+    ]);
+  });
+
+  test('renders the blocking count when a review has no later round', async () => {
+    const { root, view, snapshot } = mountComparison();
+    snapshot.rows[0].problems.evidence.review.round = 1;
+
+    await view.refresh();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-expand')
+    ).click();
+
+    expect(root.querySelector('.cmp-session__chips')?.textContent).toContain(
+      '리뷰 b1'
+    );
+  });
+
+  test('omits the problem chip line for a session with no signals', async () => {
+    const { root, view } = mountComparison({
+      rows: [
+        {
+          attempt_id: 'session-1',
+          bead_id: 'UI-one',
+          outcome: { kind: 'unknown' }
+        }
+      ]
+    });
+
+    await view.refresh();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-expand')
+    ).click();
+
+    expect(root.querySelector('.cmp-session__chips')).toBeNull();
+  });
+
+  test('joins sorted unique unmatched candidates after the composition', async () => {
+    const { root, view } = mountComparison({
+      groups: [
+        comparisonGroup({
+          badge: 'unmatched',
+          attempt_ids: ['x', 'y'],
+          compositions: [
+            { composition: 'A → B', count: 3 },
+            { composition: 'A → C', count: 1 }
+          ]
+        })
+      ],
+      rows: [
+        { attempt_id: 'x', preset_candidates: ['Z', 'A'] },
+        { attempt_id: 'y', preset_candidates: ['A'] }
+      ]
+    });
+
+    await view.refresh();
+
+    expect(root.querySelector('.cmp-badge')?.textContent).toBe('미대조');
+    expect(root.querySelector('.cmp-composition')?.textContent?.trim()).toBe(
+      'A → B 외 1 · 프리셋 미확정 — A·Z 중 판별 불가'
+    );
+    expect(root.querySelector('.cmp-composition')?.getAttribute('title')).toBe(
+      'A → B 3건\nA → C 1건'
+    );
+  });
+
+  test('names an unmatched group with no candidates', async () => {
+    const { root, view } = mountComparison({
+      groups: [comparisonGroup({ badge: 'unmatched' })]
+    });
+
+    await view.refresh();
+
+    expect(root.querySelector('.cmp-composition')?.textContent).toContain(
+      '일치하는 프리셋 없음'
+    );
+  });
+
+  test('omits a badge for model groups', async () => {
+    const { root, view } = mountComparison({
+      groups: [comparisonGroup({ badge: 'none' })]
+    });
+
+    await view.refresh();
+
+    expect(root.querySelector('.cmp-badge')).toBeNull();
+  });
+
+  test('places the known store warning immediately before the grid', async () => {
+    const { root, view } = mountComparison({
+      warnings: ['preset_store_unreadable', 'future_warning']
+    });
+
+    await view.refresh();
+
+    expect(root.querySelectorAll('.cmp-warning')).toHaveLength(1);
+    expect(root.querySelector('.cmp-warning')?.textContent?.trim()).toBe(
+      '프리셋 저장소를 읽지 못해 프리셋 대조를 건너뛰었습니다'
+    );
+    expect(
+      root.querySelector('.cmp-grid')?.previousElementSibling?.className
+    ).toBe('cmp-warning');
+  });
+
+  test('ignores unknown warnings', async () => {
+    const { root, view } = mountComparison({ warnings: ['future_warning'] });
+
+    await view.refresh();
+
+    expect(root.querySelector('.cmp-warning')).toBeNull();
+  });
+
+  test('keeps an empty experiment section collapsed below the cards', async () => {
+    const { root, view } = mountComparison();
+
+    await view.refresh();
+
+    const bench = /** @type {HTMLDetailsElement} */ (
+      root.querySelector('.cmp-bench')
+    );
+    expect(bench.open).toBe(false);
+    expect(bench.querySelector('summary')?.textContent).toBe(
+      '실험 (bench 클론 실행) · 0건'
+    );
+    expect(bench.querySelector('.cmp-bench__new')).not.toBeNull();
+    expect(bench.previousElementSibling?.className).toBe('cmp-legend');
+  });
+
+  test('keeps the form and experiment list inside the details section', async () => {
+    const { root, view } = mountView();
+
+    await view.refresh();
+    openForm(root);
+
+    expect(root.querySelector('.cmp-bench .cmp-form')).not.toBeNull();
+    expect(root.querySelector('.cmp-bench .cmp-runs')).not.toBeNull();
+    expect(root.querySelector('.cmp-bench')?.hasAttribute('open')).toBe(false);
+  });
+
+  test('requests experiment inclusion from the collapsed section checkbox', async () => {
+    const { root, view, transport } = mountComparison();
+
+    await view.refresh();
+    /** @type {HTMLInputElement} */ (
+      root.querySelector('.cmp-bench input[type="checkbox"]')
+    ).click();
+    await settle();
+
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.objectContaining({ include_bench: true })
+    );
+    expect(
+      root.querySelector('.cmp-filters input[type="checkbox"]')
+    ).toBeNull();
+  });
+});
+
 describe('compare view experiment list', () => {
   beforeEach(() => {
     document.body.innerHTML = '';

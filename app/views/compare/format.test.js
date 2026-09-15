@@ -4,15 +4,88 @@ import {
   formatCostMedian,
   formatDuration,
   formatOutcome,
+  formatOutcomeText,
   formatPrice,
   formatRate,
   formatReview,
   formatTokens,
   formatVerify,
+  outcomeDotKind,
   sampleNote
 } from './format.js';
 
 describe('views/compare/format', () => {
+  test.each([
+    [
+      'landed',
+      'closed',
+      { pr_url: 'https://github.com/a/b/pull/291' },
+      '착지 · PR #291'
+    ],
+    [
+      'landed',
+      'closed',
+      { pr_url: 'https://github.com/a/b/pull/bad' },
+      '착지 · PR'
+    ],
+    ['landed', 'closed', {}, '착지'],
+    ['landed', 'push', { head_sha: '4633cda123456' }, '착지 · push 4633cda'],
+    ['landed', 'push', {}, '착지 · push'],
+    ['landed', 'no_change', {}, '착지 · 무변경'],
+    ['failed', 'timeout', {}, '실패 · timeout'],
+    ['failed', null, {}, '실패'],
+    ['aborted', 'discarded', {}, '폐기'],
+    ['aborted', 'stopped', {}, '중지'],
+    ['parked', null, {}, '파킹'],
+    ['waiting', null, {}, '대기'],
+    ['unknown', null, {}, '미상'],
+    ['superseded', 'later_done', {}, '대체됨'],
+    ['in_flight', 'pr_open', {}, '진행 중 · PR open'],
+    ['in_flight', null, {}, '진행 중']
+  ])(
+    'formats %s evidence %s as outcome text',
+    (kind, evidence, extra, expected) => {
+      const row = { outcome: { kind, evidence, ...extra } };
+
+      const text = formatOutcomeText(row);
+
+      expect(text).toBe(expected);
+    }
+  );
+
+  test.each([
+    ['pass', '통과'],
+    ['fail', '실패']
+  ])('appends verify %s after the outcome', (verify, label) => {
+    const row = { outcome: { kind: 'landed', evidence: 'no_change' }, verify };
+
+    const text = formatOutcomeText(row);
+
+    expect(text).toBe(`착지 · 무변경 · verify ${label}`);
+  });
+
+  test('renders a missing outcome as unknown', () => {
+    expect(formatOutcomeText({})).toBe('미상');
+  });
+
+  test.each([
+    ['landed', { review: true }, 'landed'],
+    ['failed', { retry: true }, 'failed'],
+    ['aborted', {}, 'failed'],
+    ['parked', { human: true }, 'problem'],
+    ['waiting', { retry: true }, 'problem'],
+    ['superseded', { failed: true }, 'problem'],
+    ['unknown', { review: true }, 'problem'],
+    ['in_flight', {}, 'muted'],
+    ['superseded', {}, 'muted']
+  ])('colors %s using outcome priority', (kind, problems, expected) => {
+    const row = { outcome: { kind }, problems };
+
+    const dot = outcomeDotKind(row);
+
+    expect(dot).toBe(expected);
+  });
+
   test('coarsens elapsed time to the unit a preset is compared in', () => {
     expect(formatDuration(45_000)).toBe('45초');
     expect(formatDuration(600_000)).toBe('10분');

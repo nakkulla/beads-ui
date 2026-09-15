@@ -1,17 +1,6 @@
 /**
- * Preset comparison projection (preset-compare §3).
- *
- * One row is ONE terminal implementation attempt; one group is one execution
- * SIGNATURE — the orchestration snapshot, the actual implementer the attempt's
- * own `receipt_check` preserved, and the three reviewer keys. The signature is
- * built from what RAN, never from what a Bead currently pins: a later attempt
- * overwrites `exec_receipt` on the Bead, so reading it there would relabel
- * finished history (§3.3).
- *
- * The module splits in two on purpose (§3.5): {@link buildCompareModel} and
- * everything above it are pure and unit-tested, while
- * {@link collectCompareWorkspaces} is the only part that touches the queue
- * store, the record tree and the workspace snapshot.
+ * Compare terminal implementation attempts by preset, orchestration or executor.
+ * buildCompareModel is pure; collection reads workspace-owned evidence on demand.
  *
  * @import { ResolvedCatalog } from './runner-catalog.js'
  */
@@ -20,12 +9,12 @@ import path from 'node:path';
 import { projectAttemptUsage } from '../../app/utils/token-usage.js';
 import { parseExecReceipt, parseReviewStats } from '../workflow-enrich.js';
 import { peekWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
+import { createBeadTimeline } from './bead-timeline.js';
 import {
   benchCellTerminal,
   benchRunBeadIds,
   listBenchManifests
 } from './bench-runs.js';
-import { QUICK_FIX_LANE_MAP } from './exec-enums.js';
 import { visibleWorkspaceRoots } from './foreign-blocker-status.js';
 import { TERMINAL_ATTEMPT_STATUSES } from './queue-store.js';
 import {
@@ -75,7 +64,7 @@ const BENCH_LABEL = 'bench';
 /**
  * @typedef {Object} CompareFilters
  * @property {string[]} root_dirs - Empty means every workspace.
- * @property {string[]} issue_types - Empty means every type.
+ * @property {'preset'|'orchestration'|'impl_actor'} group_by
  * @property {string[]} routes - Empty means every route.
  * @property {number|null} since - Lower bound on `finished_at`, or null.
  * @property {boolean} include_bench
@@ -87,6 +76,7 @@ const BENCH_LABEL = 'bench';
  * @property {string|null} issue_type
  * @property {string|null} route
  * @property {string[]} labels
+ * @property {string|null} [close_reason]
  * @property {string|null} [status] - The bead's own status; a bench cell is
  * only finished once this reads `closed` (§4.6).
  * @property {{ round: number, blocking: number, minor: number, verdict: string, anchor: string }|null} impl_review_stats
@@ -99,6 +89,8 @@ const BENCH_LABEL = 'bench';
  * @property {Array<Record<string, any>>} attempts - Every attempt of every bead
  * this workspace knows, live rows and transferred records alike.
  * @property {Record<string, CompareIssueInput>} [issues]
+ * @property {Record<string, any[]>} [timeline_events]
+ * @property {Record<string, string>} [pr_urls]
  * @property {Record<string, { ok: boolean }|null>} [verify_receipts] - The
  * merge-candidate `[verify]` receipt per bead (§3.2).
  */
@@ -109,21 +101,6 @@ const BENCH_LABEL = 'bench';
  * @property {string|null} model
  * @property {string|null} effort
  * @property {string} label
- */
-
-/**
- * @typedef {Object} CompareSignature
- * @property {string|null} orch_model
- * @property {string|null} orch_effort
- * @property {ImplActor} impl_actor
- * @property {string|null} review_model
- * @property {string|null} review_effort
- * @property {string|null} review_speed
- * @property {string|null} route
- * @property {Record<string, any>} exec_values - The attempt's own pinned
- * settings, kept out of {@link CompareSignature.key} but needed to answer
- * "did this preset describe what ran" on the axes the key does not carry.
- * @property {string} key
  */
 
 /**
@@ -256,145 +233,113 @@ function parseActorEntry(value) {
 }
 
 /**
- * Build the group signature of one attempt (§3.3). The reviewer triple is part
- * of the key: presets that differ only in their reviewer would otherwise share
- * a group and their 리뷰 지적 columns would be averaged together.
+ * Normalize catalog names before ids, preserving unknown model tokens.
  *
- * @param {Record<string, any>} attempt
- * @returns {CompareSignature}
+ * @param {string|null} token
+ * @param {ResolvedCatalog|null} catalog
+ * @returns {string|null}
  */
-export function attemptSignature(attempt) {
-  const exec_values = isRecord(attempt.exec_values) ? attempt.exec_values : {};
-  const orch_model = str(attempt.model);
-  const orch_effort = str(attempt.effort);
-  const impl_actor = implActorOf(attempt.receipt_check);
-  const review_model = str(exec_values.impl_review_model);
-  const review_effort = str(exec_values.impl_review_effort);
-  const review_speed = str(exec_values.impl_review_speed);
-  const route =
-    str(exec_values.route) ??
-    str(attempt.route) ??
-    str(attempt.bead_snapshot?.route);
-  const key =
-    `${orch_model ?? UNRECORDED}/${orch_effort ?? UNRECORDED}` +
-    ` → ${impl_actor.label}` +
-    ` · 리뷰 ${review_model ?? UNRECORDED}/${review_effort ?? UNRECORDED}/${review_speed ?? UNRECORDED}`;
-  return {
-    orch_model,
-    orch_effort,
-    impl_actor,
-    review_model,
-    review_effort,
-    review_speed,
-    route,
-    exec_values,
-    key
-  };
-}
-
-/**
- * Does one stored preset describe what actually ran, on EVERY key it declares
- * (§3.3)?
- *
- * "Every key" is literal. A preset is sparse, so the keys it omits say nothing
- * — but a key it DOES declare and that cannot be checked against the attempt is
- * not a match either, because naming the group after that preset would tell a
- * reader the ignored setting was the one in force. So an unanswerable key is a
- * refusal, and the group keeps its signature string.
- *
- * Three axes are answered by the EXECUTION rather than by the pin, which is the
- * whole point of §3.3: `impl_dispatch`, `impl_model` and `impl_effort` are read
- * off the preserved `exec_receipt`. A `main` executor therefore refuses a
- * preset that declares `impl_model` or `impl_effort` — those describe a
- * delegate that never ran. Every other declared key is compared against the
- * attempt's own `exec_values` snapshot.
- *
- * @param {CompareSignature} signature
- * @param {{ settings?: Record<string, any> }} preset
- * @returns {boolean}
- */
-export function presetMatchesSignature(signature, preset) {
-  const settings = isRecord(preset?.settings) ? preset.settings : null;
-  if (!settings) {
-    return false;
+function modelToken(token, catalog) {
+  if (token === null || catalog === null) {
+    return token;
   }
-  if (signature.impl_actor.kind === 'missing') {
-    // An attempt with no preserved receipt names no executor, so no preset can
-    // be shown to be the one that ran it.
-    return false;
+  const runner = catalog.model_index[token];
+  if (runner) {
+    return `${runner}:${token}`;
   }
-  const delegated = signature.impl_actor.kind === 'delegated';
-  /** @type {Record<string, string|null>} */
-  const executed = {
-    orchestration_model: signature.orch_model,
-    orchestration_effort: signature.orch_effort,
-    impl_review_model: signature.review_model,
-    impl_review_effort: signature.review_effort,
-    impl_review_speed: signature.review_speed,
-    impl_dispatch: delegated ? 'delegated' : 'main'
-  };
-  if (delegated) {
-    executed.impl_model = signature.impl_actor.model;
-    executed.impl_effort = signature.impl_actor.effort;
-  }
-  const exec_values = isRecord(signature.exec_values)
-    ? signature.exec_values
-    : {};
-  let declared = 0;
-  const canonical_keys = new Set(
-    Object.keys(settings).filter((key) => !key.startsWith('quick_fix_'))
-  );
-  for (const [key, lane_key] of Object.entries(QUICK_FIX_LANE_MAP)) {
-    if (Object.hasOwn(settings, lane_key)) {
-      canonical_keys.add(key);
-    }
-  }
-  for (const key of canonical_keys) {
-    const lane_key = QUICK_FIX_LANE_MAP[key];
-    const expected = str(
-      signature.route === 'quick_fix' && lane_key
-        ? (settings[lane_key] ?? settings[key])
-        : settings[key]
-    );
-    if (expected === null) {
-      // A preset entry with no readable value declares nothing.
-      continue;
-    }
-    declared += 1;
-    if (Object.hasOwn(executed, key)) {
-      if (executed[key] !== expected) {
-        return false;
+  for (const [runner_name, entry] of Object.entries(catalog.runners)) {
+    for (const [name, model] of Object.entries(entry.models)) {
+      if (model.id === token) {
+        return `${runner_name}:${name}`;
       }
-      continue;
-    }
-    if (!delegated && (key === 'impl_model' || key === 'impl_effort')) {
-      return false;
-    }
-    if (str(exec_values[key]) !== expected) {
-      return false;
     }
   }
-  return declared > 0;
+  return token;
 }
 
 /**
- * The display name of a signature: the first stored preset (in storage order)
- * that matches it on every key it declares, else the signature string itself.
+ * Infer a preset using only recorded execution axes. Equal top scores remain
+ * ambiguous, while candidates preserve every matching name for the UI.
  *
- * @param {CompareSignature} signature
+ * @param {{ route: string|null, orch_model: string|null, orch_effort: string|null, impl_actor: ImplActor }} attempt_facts
  * @param {Array<{ id?: string, name?: string, settings?: Record<string, any> }>} presets
- * @returns {string}
+ * @param {ResolvedCatalog|null} catalog
+ * @returns {{ preset: { id: string, name: string, basis: 'inferred' }|null, candidates: string[] }}
  */
-export function signatureName(signature, presets) {
-  for (const preset of Array.isArray(presets) ? presets : []) {
-    if (presetMatchesSignature(signature, preset)) {
-      const name = str(preset.name);
-      if (name !== null) {
-        return name;
-      }
+export function presetMatch(attempt_facts, presets, catalog) {
+  /** @type {Array<{ id: string, name: string, score: number }>} */
+  const matches = [];
+  const orch_token = modelToken(attempt_facts.orch_model, catalog);
+  const actor_token = modelToken(attempt_facts.impl_actor.model, catalog);
+  for (const preset of presets) {
+    const settings = isRecord(preset.settings) ? preset.settings : {};
+    /** @param {string} key */
+    const effectiveValue = (key) =>
+      str(
+        attempt_facts.route === 'quick_fix'
+          ? (settings[`quick_fix_${key}`] ?? settings[key])
+          : settings[key]
+      );
+    const id = str(preset.id);
+    const name = str(preset.name);
+    if (
+      id === null ||
+      name === null ||
+      orch_token === null ||
+      modelToken(effectiveValue('orchestration_model'), catalog) !== orch_token
+    ) {
+      continue;
     }
+    let score = 0;
+    if (attempt_facts.orch_effort !== null) {
+      const effort = effectiveValue('orchestration_effort');
+      if (effort !== attempt_facts.orch_effort) {
+        continue;
+      }
+      score += effort === 'auto' ? 0 : 1;
+    }
+    if (attempt_facts.impl_actor.kind === 'delegated') {
+      const runtime = effectiveValue('impl_runtime');
+      const model = effectiveValue('impl_model');
+      const actor_runtime =
+        actor_token !== null && actor_token.includes(':')
+          ? actor_token.split(':')[0]
+          : null;
+      if (
+        (runtime !== 'auto' &&
+          (runtime === null || runtime !== actor_runtime)) ||
+        (model !== 'auto' &&
+          (model === null || modelToken(model, catalog) !== actor_token))
+      ) {
+        continue;
+      }
+      score += (runtime === 'auto' ? 0 : 1) + (model === 'auto' ? 0 : 1);
+    }
+    matches.push({ id, name, score });
   }
-  return signature.key;
+  const highest = Math.max(...matches.map((match) => match.score));
+  const winners = matches.filter((match) => match.score === highest);
+  return {
+    preset:
+      winners.length === 1
+        ? { id: winners[0].id, name: winners[0].name, basis: 'inferred' }
+        : null,
+    candidates: matches.map((match) => match.name)
+  };
+}
+
+/**
+ * @param {Record<string, any>} attempt
+ * @param {CompareIssueInput|null|undefined} issue
+ * @returns {string|null}
+ */
+function attemptRoute(attempt, issue) {
+  return (
+    str(attempt.exec_values?.route) ??
+    str(attempt.route) ??
+    str(attempt.bead_snapshot?.route) ??
+    str(issue?.route)
+  );
 }
 
 /**
@@ -558,7 +503,10 @@ export function normalizeCompareFilters(raw) {
   const input = isRecord(raw) ? raw : {};
   return {
     root_dirs: stringList(input.root_dirs).map((value) => path.resolve(value)),
-    issue_types: stringList(input.issue_types),
+    group_by:
+      input.group_by === 'orchestration' || input.group_by === 'impl_actor'
+        ? input.group_by
+        : 'preset',
     routes: stringList(input.routes),
     since: num(input.since),
     include_bench: input.include_bench === true
@@ -605,10 +553,9 @@ function workspaceRows(workspace, catalog) {
       : null;
     const started_at = num(attempt.started_at);
     const finished_at = num(attempt.finished_at);
-    const signature = attemptSignature({
-      ...attempt,
-      route: issue ? issue.route : attempt.route
-    });
+    const impl_actor = implActorOf(attempt.receipt_check);
+    const model = str(attempt.model);
+    const effort = str(attempt.effort);
     const bench_verify = isRecord(attempt.bench_verify)
       ? attempt.bench_verify
       : null;
@@ -620,7 +567,7 @@ function workspaceRows(workspace, catalog) {
       workspace_name: workspace.name,
       title: issue ? (str(issue.title) ?? '') : '',
       issue_type: issue ? str(issue.issue_type) : null,
-      route: issue ? str(issue.route) : null,
+      route: attemptRoute(attempt, issue),
       started_at,
       finished_at,
       duration_ms:
@@ -641,11 +588,51 @@ function workspaceRows(workspace, catalog) {
       verify_source: bench_verify === null ? null : 'bench_verify',
       review: null,
       usage: attemptUsageSummary(attempt, catalog),
-      signature: signature.key,
-      signature_parts: signature
+      orchestration: { model, effort },
+      impl_actor,
+      composition: `${model ?? UNRECORDED}/${effort ?? UNRECORDED} → ${impl_actor.label}`,
+      attempt,
+      representative: false
     });
   }
   attachBeadLevelFacts(rows, issues, verify_receipts);
+  const human_events = humanEventsByAttempt(workspace);
+  for (const row of rows) {
+    row.outcome = outcomeOf(
+      row,
+      issues[row.bead_id],
+      workspace.pr_urls?.[row.bead_id]
+    );
+    const summaries = human_events.get(row.attempt_id) || [];
+    const review = row.review;
+    row.problems = {
+      failed: ['failed', 'aborted'].includes(row.outcome.kind),
+      retry: row.is_retry,
+      review: review !== null && (review.round >= 2 || review.blocking >= 1),
+      human:
+        row.attempt.halted_auto_advance === true ||
+        row.attempt.awaiting_user_present === true ||
+        row.status === 'parked' ||
+        summaries.length > 0,
+      evidence: {
+        failed: ['failed', 'aborted'].includes(row.outcome.kind)
+          ? row.outcome.evidence
+          : null,
+        retry:
+          str(row.attempt.retry?.origin_attempt_id) ??
+          str(row.attempt.resumed_from),
+        review:
+          review === null
+            ? null
+            : {
+                round: review.round,
+                blocking: review.blocking,
+                minor: review.minor
+              },
+        human: summaries
+      }
+    };
+  }
   return rows;
 }
 
@@ -676,6 +663,7 @@ function attachBeadLevelFacts(rows, issues, verify_receipts) {
     }
   }
   for (const [bead_id, row] of last_success) {
+    row.representative = true;
     const issue = isRecord(issues[bead_id]) ? issues[bead_id] : null;
     const stats =
       issue && isRecord(issue.impl_review_stats)
@@ -722,12 +710,6 @@ function rowPassesFilters(row, filters) {
     }
   }
   if (
-    filters.issue_types.length > 0 &&
-    (row.issue_type === null || !filters.issue_types.includes(row.issue_type))
-  ) {
-    return false;
-  }
-  if (
     filters.routes.length > 0 &&
     (row.route === null || !filters.routes.includes(row.route))
   ) {
@@ -737,52 +719,269 @@ function rowPassesFilters(row, filters) {
 }
 
 /**
- * Aggregate the rows of one signature (§3.4).
+ * @param {Record<string, any>} row
+ * @param {CompareIssueInput|undefined} issue
+ * @param {string|undefined} pr_url
+ * @returns {Record<string, any>}
+ */
+function outcomeOf(row, issue, pr_url) {
+  const status = row.status;
+  if (COMPARE_FAILED_STATUSES.has(status)) {
+    return {
+      kind: 'failed',
+      evidence: row.cause ?? (status === 'orphaned' ? 'orphaned' : null)
+    };
+  }
+  if (status === 'discarded' || status === 'stopped') {
+    return { kind: 'aborted', evidence: status };
+  }
+  if (status === 'parked' || status === 'waiting') {
+    return { kind: status, evidence: null };
+  }
+  if (status === 'retry_wait' || status === 'superseded') {
+    return { kind: 'superseded', evidence: status };
+  }
+  if (!row.representative) {
+    return { kind: 'superseded', evidence: 'later_done' };
+  }
+  if (
+    ['no_delta', 'bench'].includes(row.attempt.done_kind) ||
+    /^(refuted:|no-delta:)/u.test(issue?.close_reason ?? '')
+  ) {
+    return { kind: 'landed', evidence: 'no_change' };
+  }
+  if (
+    isRecord(row.attempt.quickfix_landing) &&
+    row.attempt.quickfix_landing.reason === null
+  ) {
+    return {
+      kind: 'landed',
+      evidence: 'push',
+      head_sha: str(row.attempt.quickfix_landing.head_sha)
+    };
+  }
+  if (issue?.status === 'closed') {
+    return {
+      kind: 'landed',
+      evidence: 'closed',
+      ...(pr_url ? { pr_url } : {})
+    };
+  }
+  if (!issue) {
+    return { kind: 'unknown', evidence: null };
+  }
+  return {
+    kind: 'in_flight',
+    evidence: pr_url ? 'pr_open' : null,
+    ...(pr_url ? { pr_url } : {})
+  };
+}
+
+/**
+ * Attribute bead events before row filtering, including nonterminal attempts.
  *
- * @param {string} key
- * @param {string} name
+ * @param {CompareWorkspaceInput} workspace
+ * @returns {Map<string, string[]>}
+ */
+function humanEventsByAttempt(workspace) {
+  /** @type {Map<string, string[]>} */
+  const out = new Map();
+  for (const [bead_id, events] of Object.entries(
+    workspace.timeline_events || {}
+  )) {
+    const attempts = workspace.attempts.filter(
+      (attempt) =>
+        attempt.bead_id === bead_id &&
+        (attempt.kind ?? 'implementation') === 'implementation'
+    );
+    for (const event of events) {
+      if (
+        !['needs_human', 'queue_hold'].includes(event.kind) &&
+        !(
+          event.kind === 'session_ended' &&
+          str(event.attempt_id) !== null &&
+          typeof event.summary === 'string' &&
+          event.summary.startsWith('파킹 ·')
+        )
+      ) {
+        continue;
+      }
+      let attempt_id = str(event.attempt_id);
+      if (attempt_id === null) {
+        const at = num(event.at);
+        if (at === null) {
+          continue;
+        }
+        const containing = attempts
+          .filter(
+            (attempt) =>
+              num(attempt.started_at) !== null &&
+              num(attempt.finished_at) !== null &&
+              attempt.started_at <= at &&
+              at <= attempt.finished_at
+          )
+          .sort(
+            (left, right) =>
+              right.started_at - left.started_at ||
+              String(right.attempt_id).localeCompare(String(left.attempt_id))
+          );
+        const preceding = attempts
+          .filter(
+            (attempt) =>
+              num(attempt.finished_at) !== null && attempt.finished_at <= at
+          )
+          .sort(
+            (left, right) =>
+              right.finished_at - left.finished_at ||
+              String(right.attempt_id).localeCompare(String(left.attempt_id))
+          );
+        const earliest = attempts
+          .filter((attempt) => num(attempt.started_at) !== null)
+          .sort(
+            (left, right) =>
+              left.started_at - right.started_at ||
+              String(left.attempt_id).localeCompare(String(right.attempt_id))
+          );
+        attempt_id = str(
+          (containing[0] || preceding[0] || earliest[0])?.attempt_id
+        );
+      }
+      const summary = str(event.summary);
+      if (attempt_id !== null && summary !== null) {
+        const list = out.get(attempt_id) || [];
+        list.push(summary);
+        out.set(attempt_id, list);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * @param {Array<number|null|undefined>} values
+ */
+function meanAndMedian(values) {
+  const median = medianOf(values);
+  let sum = 0;
+  for (const value of values) {
+    sum += num(value) ?? 0;
+  }
+  return {
+    ...median,
+    mean: median.sample === 0 ? null : sum / median.sample
+  };
+}
+
+/**
  * @param {Array<Record<string, any>>} rows
  * @returns {Record<string, any>}
  */
-function groupOf(key, name, rows) {
-  const judged = rows.filter(
-    (row) => row.verify === 'pass' || row.verify === 'fail'
-  );
-  const passed = judged.filter(
-    (row) => row.verify === 'pass' && row.status === 'done'
-  );
+function aggregateRows(rows) {
+  const landed = rows.filter((row) => row.outcome.kind === 'landed').length;
+  const judged = rows.filter((row) =>
+    ['landed', 'failed', 'aborted'].includes(row.outcome.kind)
+  ).length;
+  const problem_keys = ['failed', 'retry', 'review', 'human'];
+  const problem_count = rows.filter((row) =>
+    problem_keys.some((key) => row.problems[key])
+  ).length;
+  /** @type {Map<string, number>} */
+  const compositions = new Map();
+  for (const row of rows) {
+    compositions.set(
+      row.composition,
+      (compositions.get(row.composition) || 0) + 1
+    );
+  }
   return {
-    key,
-    name,
     n: rows.length,
-    // Only judged rows are in the denominator: 미상 is not a failure, and
-    // counting it as one would reward a lane that never got verified.
-    success_rate: judged.length === 0 ? null : passed.length / judged.length,
-    success_sample: judged.length,
-    unknown_count: rows.length - judged.length,
-    pass_caret: passCaret(
-      /** @type {any} */ (
-        rows.map((row) => ({
-          bead_id: row.bead_id,
-          verify: row.verify,
-          finished_at: row.finished_at
-        }))
-      )
+    issue_count: new Set(
+      rows.map((row) => JSON.stringify([row.root_dir, row.bead_id]))
+    ).size,
+    compositions: [...compositions]
+      .map(([composition, count]) => ({ composition, count }))
+      .sort(
+        (left, right) =>
+          right.count - left.count ||
+          left.composition.localeCompare(right.composition)
+      ),
+    landed,
+    judged,
+    in_flight: rows.filter((row) =>
+      ['in_flight', 'waiting', 'parked'].includes(row.outcome.kind)
+    ).length,
+    landing_rate: judged === 0 ? null : landed / judged,
+    problem_count,
+    problem_rate: rows.length === 0 ? null : problem_count / rows.length,
+    problems: Object.fromEntries(
+      problem_keys.map((key) => [
+        key,
+        rows.filter((row) => row.problems[key]).length
+      ])
     ),
-    failed_count: rows.filter((row) => row.failed).length,
-    retry_count: rows.filter((row) => row.is_retry).length,
-    duration_ms: medianOf(rows.map((row) => row.duration_ms)),
-    tokens: medianOf(rows.map((row) => row.usage?.tokens ?? null)),
+    duration_ms: meanAndMedian(rows.map((row) => row.duration_ms)),
+    tokens: meanAndMedian(rows.map((row) => row.usage?.tokens ?? null)),
     cost_usd: {
-      ...medianOf(rows.map((row) => row.usage?.total_cost_usd ?? null)),
-      partial: rows.some((row) => row.usage?.partial === true),
+      ...meanAndMedian(rows.map((row) => row.usage?.total_cost_usd ?? null)),
       partial_count: rows.filter((row) => row.usage?.partial === true).length
     },
-    blocking: medianOf(rows.map((row) => row.review?.blocking ?? null)),
-    minor: medianOf(rows.map((row) => row.review?.minor ?? null)),
-    round: medianOf(rows.map((row) => row.review?.round ?? null)),
     attempt_ids: rows.map((row) => row.attempt_id)
   };
+}
+
+/**
+ * @param {Record<string, any>} row
+ * @param {CompareFilters['group_by']} group_by
+ */
+function groupIdentity(row, group_by) {
+  if (group_by === 'orchestration') {
+    const key = `${row.orchestration.model ?? UNRECORDED}/${row.orchestration.effort ?? UNRECORDED}`;
+    return { key, name: key, badge: 'none' };
+  }
+  if (group_by === 'impl_actor') {
+    const key =
+      row.impl_actor.kind === 'main'
+        ? 'main'
+        : row.impl_actor.kind === 'missing'
+          ? UNRECORDED
+          : row.impl_actor.label;
+    return { key, name: key, badge: 'none' };
+  }
+  return row.preset === null
+    ? {
+        key: `sig:${row.composition}`,
+        name: row.composition,
+        badge: 'unmatched'
+      }
+    : {
+        key: `preset:${row.preset.id}`,
+        name: row.preset.name,
+        badge: 'preset'
+      };
+}
+
+/**
+ * @param {Array<Record<string, any>>} groups
+ */
+function markBest(groups) {
+  const eligible = groups.filter((group) => group.n >= 3 && group.judged >= 3);
+  for (const metric of ['landing', 'duration', 'cost']) {
+    /** @param {Record<string, any>} group */
+    const metricValue = (group) =>
+      metric === 'landing'
+        ? group.landing_rate
+        : metric === 'duration'
+          ? group.duration_ms.mean
+          : group.cost_usd.mean;
+    const candidates = eligible.filter((group) => metricValue(group) !== null);
+    const values = candidates.map(metricValue);
+    const best =
+      metric === 'landing' ? Math.max(...values) : Math.min(...values);
+    const winners = candidates.filter((group) => metricValue(group) === best);
+    if (winners.length === 1) {
+      winners[0].best.push(metric);
+    }
+  }
 }
 
 /**
@@ -791,10 +990,10 @@ function groupOf(key, name, rows) {
  * @returns {number}
  */
 function compareGroups(left, right) {
-  const left_rate = num(left.success_rate);
-  const right_rate = num(right.success_rate);
+  const left_rate = num(left.landing_rate);
+  const right_rate = num(right.landing_rate);
   if (left_rate !== right_rate) {
-    // A group with no judged row sorts last: it is not a zero success rate, it
+    // A group with no judged row sorts last: it is not a zero landing rate, it
     // is an unanswered question.
     if (left_rate === null) {
       return 1;
@@ -804,8 +1003,8 @@ function compareGroups(left, right) {
     }
     return right_rate - left_rate;
   }
-  const left_cost = num(left.cost_usd?.median);
-  const right_cost = num(right.cost_usd?.median);
+  const left_cost = num(left.cost_usd?.mean);
+  const right_cost = num(right.cost_usd?.mean);
   if (left_cost !== right_cost) {
     if (left_cost === null) {
       return 1;
@@ -830,16 +1029,19 @@ function sortedRows(rows) {
 }
 
 /**
- * Strip the parsed signature before a row goes on the wire: the wire carries
- * the string the group is keyed by, and one shape on the wire is one thing to
- * keep true.
+ * Strip private evidence and obsolete main-table fields before serialization.
  *
  * @param {Array<Record<string, any>>} rows
+ * @param {boolean} [bench]
  */
-function wireRows(rows) {
+function wireRows(rows, bench = false) {
   return rows.map((row) => {
     const rest = { ...row };
-    delete rest.signature_parts;
+    delete rest.attempt;
+    delete rest.representative;
+    if (!bench) {
+      delete rest.verify_source;
+    }
     return rest;
   });
 }
@@ -853,13 +1055,14 @@ function wireRows(rows) {
  * be narrower (§4.7). It is the same row material either way — one projection,
  * two selections of it, never a second ledger.
  *
- * @param {{ workspaces: CompareWorkspaceInput[], presets?: Array<{ id?: string, name?: string, settings?: Record<string, any> }>, catalog?: ResolvedCatalog|null, filters?: unknown }} input
- * @returns {{ rows: Array<Record<string, any>>, groups: Array<Record<string, any>>, bench_rows: Array<Record<string, any>> }}
+ * @param {{ workspaces: CompareWorkspaceInput[], presets?: Array<{ id?: string, name?: string, settings?: Record<string, any> }>, catalog?: ResolvedCatalog|null, filters?: unknown, warnings?: string[] }} input
+ * @returns {{ rows: Array<Record<string, any>>, groups: Array<Record<string, any>>, bench_rows: Array<Record<string, any>>, summary: Record<string, any>, warnings: string[] }}
  */
 export function buildCompareModel(input) {
   const filters = normalizeCompareFilters(input?.filters);
   const presets = Array.isArray(input?.presets) ? input.presets : [];
   const catalog = input?.catalog ?? null;
+  const warnings = input.warnings || [];
   /** @type {Array<Record<string, any>>} */
   const rows = [];
   /** @type {Array<Record<string, any>>} */
@@ -868,6 +1071,41 @@ export function buildCompareModel(input) {
     ? input.workspaces
     : []) {
     for (const row of workspaceRows(workspace, catalog)) {
+      row.preset = null;
+      row.preset_candidates = [];
+      if (!warnings.includes('preset_store_unreadable')) {
+        const recorded = row.attempt.exec_preset;
+        if (isRecord(recorded) && str(recorded.id) !== null) {
+          const current = presets.find((preset) => preset.id === recorded.id);
+          row.preset = {
+            id: recorded.id,
+            name: current
+              ? current.name
+              : `${str(recorded.name) ?? recorded.id}(삭제됨)`,
+            basis: 'recorded',
+            deviated_keys: stringList(recorded.deviated_keys)
+          };
+        } else {
+          const match = presetMatch(
+            {
+              route: row.route,
+              orch_model: row.orchestration.model,
+              orch_effort: row.orchestration.effort,
+              impl_actor: row.impl_actor
+            },
+            presets,
+            catalog
+          );
+          row.preset =
+            match.preset === null
+              ? null
+              : { ...match.preset, deviated_keys: [] };
+          row.preset_candidates = match.candidates;
+        }
+      }
+      if (row.preset !== null) {
+        delete row.preset_candidates;
+      }
       if (row.is_bench) {
         bench_rows.push(row);
       }
@@ -882,28 +1120,26 @@ export function buildCompareModel(input) {
       left.attempt_id.localeCompare(right.attempt_id)
   );
   /** @type {Map<string, Array<Record<string, any>>>} */
-  const by_signature = new Map();
+  const by_group = new Map();
   for (const row of rows) {
-    const list = by_signature.get(row.signature) || [];
+    const { key } = groupIdentity(row, filters.group_by);
+    const list = by_group.get(key) || [];
     list.push(row);
-    by_signature.set(row.signature, list);
+    by_group.set(key, list);
   }
-  /** @type {Array<Record<string, any>>} */
-  const groups = [];
-  for (const [key, group_rows] of by_signature) {
-    groups.push(
-      groupOf(
-        key,
-        signatureName(group_rows[0].signature_parts, presets),
-        group_rows
-      )
-    );
-  }
+  const groups = [...by_group.values()].map((group_rows) => ({
+    ...groupIdentity(group_rows[0], filters.group_by),
+    ...aggregateRows(group_rows),
+    best: []
+  }));
+  markBest(groups);
   groups.sort(compareGroups);
   return {
     rows: wireRows(rows),
     groups,
-    bench_rows: wireRows(sortedRows(bench_rows))
+    bench_rows: wireRows(sortedRows(bench_rows), true),
+    summary: aggregateRows(rows),
+    warnings
   };
 }
 
@@ -981,6 +1217,7 @@ export function compareIssueIndex(root_dir, seams = {}) {
       route: str(metadata.route),
       labels: stringList(issue.labels),
       status: str(issue.status),
+      close_reason: str(issue.close_reason),
       impl_review_stats: parseReviewStats('impl', metadata.impl_review_stats)
     };
   }
@@ -1172,10 +1409,58 @@ export function compareBenchRuns(workspaces, seams = {}) {
 }
 
 /**
+ * Collect the first PR URL found in queue lane order, then completion intents.
+ *
+ * @param {string} root_dir
+ * @param {any} store
+ * @returns {Record<string, string>}
+ */
+function comparePrUrls(root_dir, store) {
+  /** @type {Record<string, string>} */
+  const out = {};
+  try {
+    const queue = store.snapshot(root_dir);
+    const lanes = [
+      queue.queue,
+      ...(queue.serial_lanes || []).map(
+        (/** @type {any} */ lane) => lane.entries
+      ),
+      queue.pr_wait,
+      queue.done,
+      queue.merge_queue
+    ];
+    for (const lane of lanes) {
+      for (const entry of Array.isArray(lane) ? lane : []) {
+        const bead_id = str(entry.bead_id);
+        const pr_url = str(entry.pr_url);
+        if (
+          bead_id !== null &&
+          pr_url !== null &&
+          !Object.hasOwn(out, bead_id)
+        ) {
+          out[bead_id] = pr_url;
+        }
+      }
+    }
+    for (const [bead_id, intent] of Object.entries(
+      queue.completion_intents || {}
+    )) {
+      const pr_url = str(/** @type {any} */ (intent)?.merge_subject?.pr_url);
+      if (pr_url !== null && !Object.hasOwn(out, bead_id)) {
+        out[bead_id] = pr_url;
+      }
+    }
+  } catch {
+    // An unreadable queue does not discard transferred attempt history.
+  }
+  return out;
+}
+
+/**
  * Read every visible workspace into {@link buildCompareModel}'s input shape.
  * The ONLY impure half of this module.
  *
- * @param {{ roots?: string[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any }} [seams]
+ * @param {{ roots?: string[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, timeline?: (root_dir: string) => { readTimeline: (bead_id: string) => any[] } }} [seams]
  * @returns {CompareWorkspaceInput[]}
  */
 export function collectCompareWorkspaces(seams = {}) {
@@ -1195,10 +1480,36 @@ export function collectCompareWorkspaces(seams = {}) {
         // One unreadable bead must not drop the workspace.
       }
     }
+    /** @type {Record<string, any[]>} */
+    const timeline_events = {};
+    try {
+      const timeline = seams.timeline
+        ? seams.timeline(root_dir)
+        : createBeadTimeline({ workspace_root: root_dir });
+      for (const bead_id of new Set(
+        attempts.map((attempt) => attempt.bead_id)
+      )) {
+        try {
+          timeline_events[bead_id] = timeline
+            .readTimeline(bead_id)
+            .filter((event) =>
+              ['needs_human', 'queue_hold', 'session_ended'].includes(
+                event.kind
+              )
+            );
+        } catch {
+          // Timeline failures affect human evidence only, never the workspace.
+        }
+      }
+    } catch {
+      // A workspace without a readable timeline keeps attempt-local evidence.
+    }
     out.push({
       root_dir,
       name: path.basename(root_dir),
       attempts,
+      timeline_events,
+      pr_urls: comparePrUrls(root_dir, store),
       issues: compareIssueIndex(root_dir, seams),
       verify_receipts: compareVerifyReceipts(root_dir, seams)
     });
@@ -1215,18 +1526,25 @@ export function collectCompareWorkspaces(seams = {}) {
  * `get-compare` the client used to need for its experiment table.
  *
  * @param {unknown} filters
- * @param {{ roots?: string[], workspaces?: CompareWorkspaceInput[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, presets?: any[], catalog?: ResolvedCatalog|null, listRuns?: typeof listBenchManifests }} [seams]
+ * @param {{ roots?: string[], workspaces?: CompareWorkspaceInput[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, timeline?: (root_dir: string) => { readTimeline: (bead_id: string) => any[] }, presets?: any[], catalog?: ResolvedCatalog|null, listRuns?: typeof listBenchManifests }} [seams]
  */
 export function compareSnapshot(filters, seams = {}) {
   /** @type {any[]} */
   let presets = [];
+  /** @type {string[]} */
+  const warnings = [];
   if (Array.isArray(seams.presets)) {
     presets = seams.presets;
   } else {
     try {
-      presets = getWorkerRuntime().execPresetCoordinator.snapshot().presets;
+      const snapshot = getWorkerRuntime().execPresetCoordinator.snapshot();
+      if (snapshot.read_failed || !Array.isArray(snapshot.presets)) {
+        throw new Error('preset_store_unreadable');
+      }
+      presets = snapshot.presets;
     } catch {
       presets = [];
+      warnings.push('preset_store_unreadable');
     }
   }
   /** @type {ResolvedCatalog|null} */
@@ -1241,7 +1559,13 @@ export function compareSnapshot(filters, seams = {}) {
     }
   }
   const workspaces = seams.workspaces || collectCompareWorkspaces(seams);
-  const model = buildCompareModel({ workspaces, presets, catalog, filters });
+  const model = buildCompareModel({
+    workspaces,
+    presets,
+    catalog,
+    filters,
+    warnings
+  });
   return {
     ...model,
     runs: compareBenchRuns(workspaces, {
@@ -1261,7 +1585,7 @@ export function compareSnapshot(filters, seams = {}) {
  * detail and compare requests.
  *
  * @param {unknown} filters - User-selected row restrictions.
- * @param {{ roots?: string[], workspaces?: CompareWorkspaceInput[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, presets?: any[], catalog?: ResolvedCatalog|null, listRuns?: typeof listBenchManifests, observations?: ReturnType<typeof import('./session-observation.js').createWorkerSessionObservationStore> }} [seams]
+ * @param {{ roots?: string[], workspaces?: CompareWorkspaceInput[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, timeline?: (root_dir: string) => { readTimeline: (bead_id: string) => any[] }, presets?: any[], catalog?: ResolvedCatalog|null, listRuns?: typeof listBenchManifests, observations?: ReturnType<typeof import('./session-observation.js').createWorkerSessionObservationStore> }} [seams]
  */
 export async function prepareCompareSnapshot(filters, seams = {}) {
   const workspaces = seams.workspaces || collectCompareWorkspaces(seams);
@@ -1287,12 +1611,8 @@ export async function prepareCompareSnapshot(filters, seams = {}) {
             (normalized.since === null ||
               (Number.isFinite(attempt.finished_at) &&
                 attempt.finished_at >= normalized.since)) &&
-            (normalized.issue_types.length === 0 ||
-              (typeof issue?.issue_type === 'string' &&
-                normalized.issue_types.includes(issue.issue_type))) &&
             (normalized.routes.length === 0 ||
-              (typeof issue?.route === 'string' &&
-                normalized.routes.includes(issue.route)))
+              normalized.routes.includes(attemptRoute(attempt, issue) || ''))
           );
         })
         .map(async (attempt) => {
