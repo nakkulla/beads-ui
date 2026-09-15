@@ -4343,14 +4343,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
   ]) {
     const reasons = reasons_by_subject.get(`${item.root_dir}\u0000${item.id}`);
     if (reasons) {
+      const queued = item.lane === 'queue' || /^s[1-5]$/.test(item.lane);
       item.wait_reasons = reasons.filter(
         (reason) =>
           !['prerequisite', 'prerequisite_foreign'].includes(reason.kind) ||
-          item.lane === 'queue' ||
+          queued ||
           item.run_state === 'waiting'
       );
       if (
-        item.lane === 'queue' &&
+        queued &&
         item.wait_reasons.some((reason) =>
           ['prerequisite', 'prerequisite_foreign'].includes(reason.kind)
         ) &&

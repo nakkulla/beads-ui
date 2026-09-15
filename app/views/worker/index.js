@@ -83,11 +83,13 @@ import {
   toggleRouteFilter
 } from './lane-model.js';
 import {
+  blockedSummaryTemplate,
   discardAbandonCompletionMessage,
   discardAbandonConfirmationMessage,
   discardCompletionMessage,
   discardConfirmationMessage,
   discardProjection,
+  expandWaitSubject,
   graceRemainingMs,
   judgementPopoverOf,
   miniRow,
@@ -3559,7 +3561,17 @@ export function createWorkerView(mount_element, options = {}) {
       >
       <span class="worker-kpi__chip worker-kpi__chip--done"
         >${doneRangeLabel()} 완료 <b>${m.done.length}</b></span
-      >`;
+      >${blockedSummaryTemplate(
+        last_workspaces.map((workspace) => ({
+          root_dir: workspace.root_dir,
+          name: workspace.name,
+          wait_reasons: workspace.wait_reasons
+        })),
+        (root_dir, bead_id) => {
+          expandWaitSubject(m, collapse, root_dir, bead_id);
+          doRender();
+        }
+      )}`;
     // 이 워크스페이스가 어디로 머지되는가 (UI-j6wa §3). 상시 표시 — base는 PR을
     // 여는 순간 되돌리기 어려운 선택이라, 예외가 생겼을 때만 나타나는 표시로는
     // 늦다. 읽지 못한 선언을 `main`으로 그리지는 않는다.
@@ -3952,6 +3964,16 @@ export function createWorkerView(mount_element, options = {}) {
     const parallel_rows = waitingRows(m);
     const root_dir = rootDir();
     return waitBody({
+      external: {
+        rows: m.external_waits
+          .filter((item) => item.recent_complete !== true)
+          .map((item) => miniRow(item)),
+        completed: m.external_waits
+          .filter((item) => item.recent_complete === true)
+          .map((item) => miniRow(item)),
+        count: m.external_waits.filter((item) => item.recent_complete !== true)
+          .length
+      },
       parallel: {
         rows: parallel_rows.map((/** @type {any} */ it, index) =>
           dragRow(it, { kind: 'parallel', root_dir, row_index: index })
@@ -4101,7 +4123,10 @@ export function createWorkerView(mount_element, options = {}) {
             lane: 'queue',
             title: '대기',
             items: waiting,
-            count: waiting.length,
+            count:
+              waiting.length +
+              m.external_waits.filter((item) => item.recent_complete !== true)
+                .length,
             match_count: matchCountOf(waiting),
             collapsible: true,
             collapsed: collapse.isCollapsed('queue'),
@@ -4119,7 +4144,10 @@ export function createWorkerView(mount_element, options = {}) {
           lane: 'queue',
           title: '대기',
           items: waiting,
-          count: waiting.length,
+          count:
+            waiting.length +
+            m.external_waits.filter((item) => item.recent_complete !== true)
+              .length,
           match_count: matchCountOf(waiting),
           collapsible: true,
           collapsed: collapse.isCollapsed('queue'),
@@ -4577,6 +4605,17 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function onClick(ev) {
     const target = /** @type {HTMLElement} */ (ev.target);
+    const external_open = target.closest('[data-external-open]');
+    if (external_open) {
+      openBlocker(
+        external_open.getAttribute('data-external-open') || '',
+        external_open.getAttribute('data-root-dir') || ''
+      );
+      return;
+    }
+    if (target.closest('[data-external-check-now]')) {
+      return;
+    }
     if (target?.closest?.('.provider-resume-dialog__cancel')) {
       closeProviderResumeDialog();
       return;

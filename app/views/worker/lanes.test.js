@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { providerHoldBadgeText } from './gate-labels.js';
 import {
   JUDGEMENT_CHIP_KEYS,
+  blockedSummary,
+  blockedSummaryTemplate,
   candidateCard,
   discardAbandonCompletionMessage,
   discardAbandonConfirmationMessage,
@@ -27,8 +29,10 @@ import {
   routeChipTemplate,
   staleWorkProjection,
   sumAttemptWorkMs,
-  waitBody
+  waitBody,
+  waitReasonLines
 } from './lanes.js';
+import { runningTile } from './running-grid.js';
 
 /** @type {HTMLElement} */
 let mount;
@@ -96,6 +100,459 @@ const USAGE = {
 beforeEach(() => {
   document.body.innerHTML = '<div id="lane"></div>';
   mount = /** @type {HTMLElement} */ (document.getElementById('lane'));
+});
+
+/**
+ * @param {Partial<import('../../protocol.js').WaitReason>} [patch]
+ * @returns {import('../../protocol.js').WaitReason}
+ */
+function waitReason(patch = {}) {
+  return {
+    kind: 'prerequisite',
+    subject: { bead_id: 'A-1', root_dir: '/repo' },
+    headline: 'A-2 완료를 기다림',
+    release: '선행 해제 후 자동 복귀',
+    verdict: 'normal',
+    targets: [{ id: 'A-2', kind: 'issue' }],
+    actions: [],
+    notify_plan: { on_complete: 'none', on_overdue: 'none' },
+    ...patch
+  };
+}
+
+describe('server wait judgment rendering', () => {
+  test('keeps the base-moved resume action with server reason sentences', () => {
+    const reason = waitReason({
+      kind: 'base_moved',
+      headline: '보존 후보의 새 기준 검증 대기',
+      release: '이어하기로 보존 세션 재개',
+      actions: [
+        {
+          op: 'resume',
+          label: '',
+          payload: { attempt_id: 'a', bead_id: 'A-1' }
+        }
+      ]
+    });
+
+    render(
+      runningTile(
+        /** @type {any} */ ({
+          bead_id: 'A-1',
+          attempt_id: 'a',
+          title: '기준 이동',
+          waiting: true,
+          can_resume: true,
+          wait: { cause: 'base_moved', summary: '기존 문장', blockers: [] },
+          wait_reasons: [reason]
+        }),
+        Date.now()
+      ),
+      mount
+    );
+
+    expect(mount.querySelectorAll('.rtile__resume')).toHaveLength(1);
+    expect(mount.querySelector('.rtile__resume')?.textContent).toContain(
+      '이어하기'
+    );
+    expect(mount.textContent).toContain(reason.headline);
+    expect(mount.textContent).not.toContain('기존 문장');
+  });
+
+  test('groups provider and human aliases together without empty groups', () => {
+    const kinds = /** @type {const} */ ([
+      'provider_hold',
+      'queue_hold',
+      'awaiting_user',
+      'stale_work'
+    ]);
+
+    const summary = blockedSummary([
+      {
+        root_dir: '/repo',
+        wait_reasons: kinds.map((kind, index) =>
+          waitReason({
+            kind,
+            subject: { root_dir: '/repo', bead_id: `A-${index}` }
+          })
+        )
+      }
+    ]);
+
+    expect(
+      summary.groups.map((group) => [group.label, group.entries.length])
+    ).toEqual([
+      ['공급자', 2],
+      ['사람', 2]
+    ]);
+  });
+
+  test('does not offer check-now without an observed timestamp', () => {
+    const lines = waitReasonLines(
+      waitReason({
+        kind: 'external_job',
+        actions: [
+          {
+            op: 'monitor_tick_now',
+            label: '',
+            payload: { watch_id: 'watch-1', root_dir: '/repo' }
+          }
+        ]
+      })
+    );
+
+    render(html`${lines.actions}`, mount);
+
+    expect(mount.querySelector('button')).toBeNull();
+  });
+
+  test('reuses the supplied disposition template once', () => {
+    const lines = waitReasonLines(
+      waitReason({
+        kind: 'stale_work',
+        actions: [{ op: 'disposition', label: '', payload: {} }]
+      }),
+      {
+        disposition: html`<button class="existing-disposition">
+          이어하기 / 새로 시작
+        </button>`
+      }
+    );
+
+    render(html`${lines.actions}`, mount);
+
+    expect(mount.querySelectorAll('.existing-disposition')).toHaveLength(1);
+  });
+
+  test('keeps the server verdict after the local reset clock passes', () => {
+    const lines = waitReasonLines(
+      waitReason({ kind: 'provider_hold', resets_at: 100, verdict: 'normal' }),
+      { now: 1_000_000 }
+    );
+
+    render(html`${lines.badge}`, mount);
+
+    expect(mount.querySelector('summary')?.textContent).toContain(
+      '⏳ 정상 대기'
+    );
+    expect(mount.querySelector('summary')?.textContent).not.toContain(
+      '리셋까지'
+    );
+  });
+  test.each([
+    ['normal', '⏳ 정상 대기'],
+    ['overdue', '⚠ 지연 · 확인 지연'],
+    ['action_required', '⛔ 조치 필요 · 확인 지연']
+  ])('renders the %s verdict and server sentences', (verdict, label) => {
+    const lines = waitReasonLines(
+      waitReason({
+        verdict: /** @type {any} */ (verdict),
+        verdict_reason: { code: 'check_overdue', message: '확인 지연' }
+      })
+    );
+
+    render(
+      html`${lines.badge}${lines.body}${lines.actions}${lines.times}`,
+      mount
+    );
+
+    expect(mount.querySelector('summary')?.textContent?.trim()).toBe(label);
+    expect(
+      mount.querySelector('.wait-reason__headline')?.textContent?.trim()
+    ).toBe('A-2 완료를 기다림');
+    expect(
+      mount.querySelector('.wait-reason__release')?.textContent?.trim()
+    ).toBe('선행 해제 후 자동 복귀');
+  });
+
+  test('omits unavailable fragments', () => {
+    const lines = waitReasonLines(/** @type {any} */ ({ actions: [] }));
+
+    render(
+      html`${lines.badge}${lines.body}${lines.actions}${lines.times}`,
+      mount
+    );
+
+    expect(mount.childElementCount).toBe(0);
+    expect(waitReasonLines(null)).toEqual({
+      badge: '',
+      body: '',
+      actions: '',
+      times: ''
+    });
+  });
+
+  test('opens evidence without bubbling a card click', () => {
+    const onClick = vi.fn();
+    const lines = waitReasonLines(
+      waitReason({
+        since: 1_700_000_000_000,
+        next_check_at: 1_700_000_900_000,
+        verdict_reason: {
+          code: 'return_overdue',
+          message: '선행 해제를 확인한 뒤 10분이 지나도 복귀하지 않음'
+        }
+      })
+    );
+    render(html`<div @click=${onClick}>${lines.badge}</div>`, mount);
+
+    /** @type {HTMLElement} */ (mount.querySelector('summary')).click();
+
+    expect(mount.querySelector('details')?.open).toBe(true);
+    expect(onClick).not.toHaveBeenCalled();
+    expect(mount.querySelector('.chip-popover')?.textContent).toContain('10분');
+    expect(mount.querySelector('.chip-popover')?.textContent).toContain(
+      '관측 시작'
+    );
+    expect(mount.querySelector('.chip-popover')?.textContent).toContain(
+      '다음 확인'
+    );
+  });
+
+  test('reuses offered operations and hides unknown actions', () => {
+    const lines = waitReasonLines(
+      waitReason({
+        kind: 'queue_hold',
+        since: 100,
+        actions: [
+          { op: 'resume', label: '', payload: {} },
+          { op: 'probe_now', label: '', payload: { runner: 'codex' } },
+          { op: 'start_now', label: '', payload: { bead_id: 'A-1' } },
+          { op: 'unknown', label: 'unknown', payload: {} }
+        ]
+      })
+    );
+
+    render(html`${lines.actions}`, mount);
+
+    expect(mount.querySelectorAll('button')).toHaveLength(3);
+    expect(
+      mount
+        .querySelector('.worker-mini__provider-probe')
+        ?.getAttribute('data-since')
+    ).toBe('100');
+    expect(mount.querySelector('.worker-mini__hold-resume')).not.toBeNull();
+    expect(mount.querySelector('.worker-mini__start-now')).not.toBeNull();
+  });
+
+  test.each(['queue', 's1'])(
+    'preserves dragging and sequence on prerequisite %s rows',
+    (lane) => {
+      const row = renderRow({
+        id: 'A-1',
+        root_dir: '/repo',
+        lane: /** @type {import('./lanes.js').MiniItem['lane']} */ (lane),
+        draggable: true,
+        done: false,
+        seq: 2,
+        wait_reasons: [waitReason()]
+      });
+
+      expect(row.classList.contains('worker-mini--prerequisite')).toBe(true);
+      expect(row.getAttribute('draggable')).toBe('true');
+      expect(row.getAttribute('data-lane')).toBe(lane);
+      expect(row.getAttribute('data-bead-id')).toBe('A-1');
+      expect(row.querySelector('.worker-mini__seq')?.textContent?.trim()).toBe(
+        '2'
+      );
+      expect(
+        row.querySelector('.wait-reason__headline')?.textContent?.trim()
+      ).toBe('A-2 완료를 기다림');
+    }
+  );
+
+  test.each(['runnable', 'pr_wait', 'done', 'running'])(
+    'excludes %s from prerequisite styling',
+    (lane) => {
+      const row = renderRow({
+        lane: /** @type {import('./lanes.js').MiniItem['lane']} */ (lane),
+        done: lane === 'done',
+        wait_reasons: [waitReason()]
+      });
+
+      expect(row.classList.contains('worker-mini--prerequisite')).toBe(false);
+      expect(row.querySelector('.wait-verdict')).toBeNull();
+    }
+  );
+
+  test.each(['normal', 'overdue', 'action_required'])(
+    'renders external %s context and check coordinates',
+    (verdict) => {
+      const reason = waitReason({
+        kind: 'external_job',
+        verdict: /** @type {any} */ (verdict),
+        verdict_reason: { code: 'job_failed', message: '작업이 실패로 끝남' },
+        actions: [
+          {
+            op: 'monitor_tick_now',
+            label: '',
+            payload: { watch_id: 'watch-1', root_dir: '/repo', since: 123 }
+          }
+        ]
+      });
+
+      renderRow(
+        /** @type {any} */ ({
+          kind: 'external_wait',
+          reason,
+          gate_id: 'G-1',
+          gate_title: '계산',
+          watch_id: 'watch-1',
+          root_dir: '/repo',
+          job_id: '42',
+          ssh_host: 'wallace',
+          monitor_state: '자동 확인 중',
+          monitor_reason: '연결 실패',
+          previous_job_state: '계산 중',
+          stale: true
+        })
+      );
+
+      const button = mount.querySelector('[data-external-check-now]');
+      expect(button?.getAttribute('data-external-check-now')).toBe('watch-1');
+      expect(button?.getAttribute('data-root-dir')).toBe('/repo');
+      expect(button?.getAttribute('data-since')).toBe('123');
+      expect(button?.getAttribute('title')).toContain('항목 전부');
+      expect(
+        mount.querySelector('.external-wait__monitor')?.textContent
+      ).toContain('연결 실패');
+      expect(
+        mount.querySelector('.external-wait__identity')?.textContent
+      ).toContain('wallace');
+      expect(
+        mount.querySelector('.wait-reason__lines')?.nextElementSibling
+          ?.className
+      ).toBe('external-wait__monitor');
+    }
+  );
+
+  test('counts distinct original issues and omits empty groups', () => {
+    const summary = blockedSummary([
+      {
+        root_dir: '/repo',
+        wait_reasons: [
+          waitReason(),
+          waitReason({
+            kind: 'prerequisite_foreign',
+            verdict: 'action_required'
+          }),
+          waitReason({ kind: 'external_job' }),
+          waitReason({
+            subject: { bead_id: 'A-2', root_dir: '/repo' },
+            kind: 'auto_advance_off'
+          })
+        ]
+      }
+    ]);
+
+    expect(summary.count).toBe(2);
+    expect(summary.action_count).toBe(1);
+    expect(
+      summary.groups.map((group) => [group.label, group.entries.length])
+    ).toEqual([
+      ['외부 계산', 1],
+      ['선행', 1],
+      ['수동 출발', 1]
+    ]);
+  });
+
+  test('counts the same ID in different repositories separately', () => {
+    const summary = blockedSummary([
+      { root_dir: '/repo', wait_reasons: [waitReason()] },
+      {
+        root_dir: '/other',
+        wait_reasons: [
+          waitReason({ subject: { root_dir: '/other', bead_id: 'A-1' } })
+        ]
+      }
+    ]);
+
+    expect(summary.count).toBe(2);
+  });
+
+  test('omits a zero summary', () => {
+    render(html`${blockedSummaryTemplate([{ root_dir: '/repo' }])}`, mount);
+
+    expect(mount.querySelector('.wait-summary')).toBeNull();
+  });
+
+  test('scrolls to the matching repository card and highlights it', () => {
+    render(
+      html`${blockedSummaryTemplate([
+          { root_dir: '/repo', wait_reasons: [waitReason()] }
+        ])}
+        <details>
+          <div
+            class="worker-mini"
+            data-root-dir="/other"
+            data-bead-id="A-1"
+          ></div>
+          <div
+            class="worker-mini"
+            data-root-dir="/repo"
+            data-bead-id="A-1"
+          ></div>
+        </details>`,
+      mount
+    );
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-root-dir="/repo"]')
+    );
+    card.scrollIntoView = vi.fn();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.wait-summary__item')
+    ).click();
+
+    expect(card.scrollIntoView).toHaveBeenCalled();
+    expect(card.classList.contains('wait-reason--highlight')).toBe(true);
+    expect(card.closest('details')?.open).toBe(true);
+  });
+
+  test.each(['usage_limit', 'outage'])(
+    'renders server provider judgment for %s without duplicating the probe',
+    (kind) => {
+      const now = 1_700_000_000_000;
+      const reason = waitReason({
+        kind: 'provider_hold',
+        headline:
+          kind === 'usage_limit'
+            ? 'codex alias(business) 5h 한도 초과'
+            : 'codex 공급자 장애',
+        since: now - 1000,
+        ...(kind === 'usage_limit' ? { resets_at: now + 600000 } : {}),
+        actions: [{ op: 'probe_now', label: '', payload: { runner: 'codex' } }]
+      });
+
+      render(
+        runningTile(
+          /** @type {any} */ ({
+            bead_id: 'A-1',
+            root_dir: '/repo',
+            attempt_id: 'a',
+            title: '대기',
+            provider_hold: true,
+            hold: { kind },
+            wait_reasons: [reason]
+          }),
+          now
+        ),
+        mount
+      );
+
+      expect(
+        mount.querySelectorAll('.worker-mini__provider-probe')
+      ).toHaveLength(1);
+      expect(
+        mount.querySelector('.wait-reason__headline')?.textContent?.trim()
+      ).toBe(reason.headline);
+      expect(
+        mount.querySelector('.wait-verdict summary')?.textContent?.trim()
+      ).toBe(
+        kind === 'usage_limit' ? '⏳ 정상 대기 · 리셋까지 10분' : '⏳ 정상 대기'
+      );
+    }
+  );
 });
 
 describe('external job wait rows', () => {

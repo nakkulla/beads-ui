@@ -56,6 +56,7 @@ import {
   discardAbandonConfirmationMessage,
   discardCompletionMessage,
   discardConfirmationMessage,
+  expandWaitSubject,
   judgementPopoverOf,
   miniRow,
   nowPanel,
@@ -1198,6 +1199,7 @@ export function createMonitorView(mount_element, options) {
             runningTile(
               {
                 bead_id: item.id,
+                root_dir: item.root_dir,
                 attempt_id: item.attempt_id || '',
                 title: item.title,
                 runner: item.runner ?? null,
@@ -1211,6 +1213,7 @@ export function createMonitorView(mount_element, options) {
                 kind: item.kind === 'session' ? 'session' : undefined,
                 external_wait_count: item.external_wait_count,
                 external_waits: item.external_waits,
+                wait_reasons: item.wait_reasons,
                 ...(item.kind === 'session'
                   ? {
                       updated_at: item.updated_at,
@@ -1654,6 +1657,11 @@ export function createMonitorView(mount_element, options) {
       return null;
     }
     deck = createRepoDeck(host, {
+      workspaces: () => pipelineStore?.get() || [],
+      revealWaitSubject: (root_dir, bead_id) => {
+        expandWaitSubject(lanes, collapse, root_dir, bead_id);
+        doRender();
+      },
       workspacesState: () =>
         pipelineStore && pipelineStore.getWorkspacesState
           ? pipelineStore.getWorkspacesState()
@@ -2444,6 +2452,9 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (target.closest('.external-wait-summary > summary')) {
+      return;
+    }
+    if (target.closest('[data-external-check-now]')) {
       return;
     }
 

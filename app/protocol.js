@@ -71,7 +71,10 @@
 
 /**
  * Read-only projection of one native gate backed by an external-job watch.
- * The wire shape deliberately excludes producer commands, hosts, and logs.
+ * The wire shape deliberately excludes producer commands and logs. The host
+ * stopped being excluded with UI-n99w §5.1·§7.2, which put `ssh_host` in the
+ * wait sentence and in slot 5 of the row, so the reader can tell WHERE the
+ * job is waiting; `cmd` and `log_path` remain producer-only.
  *
  * @typedef {Object} ExternalWaitObservation
  * @property {'external_wait'} kind
@@ -97,6 +100,13 @@
  * @property {boolean} recovery_needed
  * @property {number} [collected_at]
  * @property {boolean} [stale]
+ * @property {number|null} [interval_seconds] - Watch poll period in seconds.
+ * @property {string|null} [ssh_host] - Host the external job runs on.
+ * @property {number|null} [error_count] - Consecutive observation failures.
+ * @property {{ on_complete?: string|null }|null} [notify] - Observer-side
+ * completion notification plan; absent means the watch predates it.
+ * @property {number|null} [registered_at]
+ * @property {number|null} [terminal_recorded_at]
  */
 
 /**
@@ -143,7 +153,17 @@ const EXTERNAL_WAIT_FIELDS = new Set([
   'completed_at',
   'recovery_needed',
   'collected_at',
-  'stale'
+  'stale',
+  // Judgment materials the attach collector retains from the same watch read
+  // (UI-n99w §5.1). Optional: a fallback row built without a watch file has
+  // none of them, and this Set is an exact allowlist — an unlisted key makes
+  // `isExternalWaitObservation` reject the whole row.
+  'interval_seconds',
+  'ssh_host',
+  'error_count',
+  'notify',
+  'registered_at',
+  'terminal_recorded_at'
 ]);
 
 /**
@@ -206,7 +226,24 @@ export function isExternalWaitObservation(value) {
     (row.collected_at === undefined ||
       (typeof row.collected_at === 'number' &&
         Number.isFinite(row.collected_at))) &&
-    (row.stale === undefined || typeof row.stale === 'boolean')
+    (row.stale === undefined || typeof row.stale === 'boolean') &&
+    ['interval_seconds', 'error_count', 'registered_at'].every(
+      (key) =>
+        row[key] === undefined ||
+        row[key] === null ||
+        (typeof row[key] === 'number' && Number.isFinite(row[key]))
+    ) &&
+    (row.ssh_host === undefined || isNullableString(row.ssh_host)) &&
+    (row.terminal_recorded_at === undefined ||
+      isNullableTime(row.terminal_recorded_at)) &&
+    (row.notify === undefined ||
+      row.notify === null ||
+      (typeof row.notify === 'object' &&
+        !Array.isArray(row.notify) &&
+        isNullableString(
+          /** @type {Record<string, unknown>} */ (row.notify).on_complete ??
+            null
+        )))
   );
 }
 

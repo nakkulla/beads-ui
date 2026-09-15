@@ -44,8 +44,36 @@ describe('protocol', () => {
 
   test('rejects producer-only external wait fields', () => {
     expect(
-      isExternalWaitObservation({ ...external_wait, ssh_host: 'cluster' })
+      isExternalWaitObservation({ ...external_wait, log_path: '/tmp/a.log' })
     ).toBe(false);
+  });
+
+  // The allowlist is exact, so a field the attach collector retains but this
+  // Set does not name drops the WHOLE row and both tabs render no external
+  // wait at all — silently, because every existing test feeds hand-built rows
+  // rather than the collector's own shape (UI-n99w).
+  test('accepts every judgment material the attach collector retains', () => {
+    const collected = {
+      ...external_wait,
+      interval_seconds: 900,
+      ssh_host: 'wallace',
+      error_count: 0,
+      notify: { on_complete: 'discord' },
+      registered_at: 1,
+      terminal_recorded_at: null,
+      collected_at: 3,
+      stale: false
+    };
+
+    const accepted = isExternalWaitObservation(collected);
+
+    expect(accepted).toBe(true);
+  });
+
+  test('rejects a judgment material carrying the wrong type', () => {
+    expect(isExternalWaitObservation({ ...external_wait, ssh_host: 42 })).toBe(
+      false
+    );
   });
 
   test('version and message types', () => {

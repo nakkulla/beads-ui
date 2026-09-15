@@ -50,7 +50,8 @@ import {
   recChipTemplate,
   routeCardTone,
   routeChipTemplate,
-  timesMeta
+  timesMeta,
+  waitReasonLines
 } from './lanes.js';
 import { logPathTemplate } from './log-path.js';
 
@@ -61,6 +62,7 @@ import { logPathTemplate } from './log-path.js';
 /**
  * @typedef {Object} RunningTile
  * @property {string} bead_id
+ * @property {string} [root_dir] - Workspace owning this tile.
  * @property {string} attempt_id
  * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
  * `false`인 타일만 `is-dimmed`로 흐려지고, 검색 중이 아니면 키가 없다.
@@ -100,6 +102,7 @@ import { logPathTemplate } from './log-path.js';
  * 사용자 일시정지와 달리 슬롯 1 판정 뱃지와 슬롯 6 복구 액션을 얻는다.
  * @property {number} [external_wait_count] - Verified open external waits.
  * @property {Array<Record<string, any>>} [external_waits] - Gate summary rows.
+ * @property {import('../../protocol.js').WaitReason[]} [wait_reasons] - Server display judgments.
  * @property {WaitTile|null} [wait] - 선행 대기 타일의 재료. 실패 투영과 따로인
  * 이유는 §5.1에 있다: 실패 팝오버가 묻는 질문에 이 결말이 답할 것이 없다.
  * @property {FailureTile|null} [failure] - Failed-tile decision material. The
@@ -1160,6 +1163,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const wait = waiting ? tile.wait || null : null;
   const hold = provider_hold ? tile.hold || null : null;
   const held = parked || retry_wait || waiting || provider_hold;
+  const wait_lines = (tile.wait_reasons || []).map((reason) =>
+    waitReasonLines(reason, { now })
+  );
   const paused = !!tile.paused;
   // 대기 중인 타일에 시계를 돌리면 멈춰 있는 것이 일하는 것처럼 읽힌다.
   const elapsed =
@@ -1352,14 +1358,18 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
             ? html`<span
                 class="rtile__held-badge"
                 title="막고 있던 선행이 남지 않았습니다 — 다음 pass에서 후보로 돌아갑니다 (슬롯·레인 순서 대기)"
-                >⛓ 복귀 대기</span
+                >${wait_lines.length > 0 ? '🔓' : '⛓'} 복귀 대기</span
               >`
             : html`<span
                 class="rtile__held-badge"
                 title="세션이 선행 미충족으로 착수를 거부했습니다 — 선행이 닫히면 저절로 다시 돕니다"
                 >⛓ 선행 대기</span
               >`
-        : provider_hold && hold
+        : provider_hold &&
+            hold &&
+            !(tile.wait_reasons || []).some(
+              (reason) => reason.kind === 'provider_hold'
+            )
           ? html`<button
               type="button"
               class="rtile__held-badge rtile__provider-hold-badge"
@@ -1378,7 +1388,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         title="이 세션의 target base가 워크스페이스 선언 base와 다릅니다"
         >${base_badge}</span
       >`
-    : ''}${failure_badges}${held_badge}`;
+    : ''}${failure_badges}${held_badge}${wait_lines.map((line) => line.badge)}`;
   // 세션 타일의 수정 시각은 활동 줄이 "갱신 n 전"으로 이미 말한다 (§6) —
   // 같은 사실을 두 줄로 쓰지 않는다.
   const times_el = session ? '' : timesMeta(tile);
@@ -1490,6 +1500,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ? ' rtile--provider-hold'
       : ''}${tile.search_match === false ? ' is-dimmed' : ''}"
     data-bead-id=${tile.bead_id}
+    data-root-dir=${ifDefined(tile.root_dir)}
     data-attempt-id=${tile.attempt_id || ''}
     data-route=${ifDefined(route_tone.route)}
   >
@@ -1503,7 +1514,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         ? html`<span class="rtile__resumed" title=${lineage}>↻</span>`
         : ''}${status_badges}
       <div class="rtile__hd-actions">
-        ${session
+        ${wait_lines.map((line) => line.actions)}${session
           ? html`${typeof tile.started_at === 'number'
                 ? html`<span class="rtile__elapsed">${elapsed}</span>`
                 : ''}${sessionOpenButton(session_current)}<span
@@ -1560,7 +1571,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       </div>
     </div>
     <div class="rtile__title">${tile.title}</div>
-    ${held
+    ${wait_lines.map((line) => line.body)}${held
       ? heldBodyTemplate(
           parked
             ? 'parked'
@@ -1569,7 +1580,13 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
               : waiting
                 ? 'waiting'
                 : 'provider_hold',
-          parked ? park : waiting ? wait : hold,
+          parked
+            ? park
+            : waiting
+              ? wait_lines.length > 0 && wait
+                ? { ...wait, summary: '' }
+                : wait
+              : hold,
           discard_actions,
           waiting ? monitor_relations : external_wait_el,
           parked ? resolve_button : '',
@@ -1651,7 +1668,10 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
             ${failed || paused
               ? ''
               : html`<div class="rtile__accent" aria-hidden="true"></div>`}`}
-    ${failurePopoverTemplate(failure, now)}${providerHoldPopoverTemplate(hold)}
+    ${wait_lines.map((line) => line.times)}${failurePopoverTemplate(
+      failure,
+      now
+    )}${providerHoldPopoverTemplate(hold)}
   </div>`;
 }
 

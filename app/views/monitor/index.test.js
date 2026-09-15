@@ -82,6 +82,58 @@ function state(patch = {}) {
   };
 }
 
+test('uses the same prerequisite judgment in held tiles and the visible-repository summary', () => {
+  const reason = {
+    kind: 'prerequisite',
+    subject: { root_dir: WS_A, bead_id: 'A-1' },
+    headline: '선행 해제 뒤 복귀 대기',
+    release: '재스캔으로 자동 복귀',
+    verdict: 'overdue',
+    verdict_reason: {
+      code: 'return_overdue',
+      message: '선행 해제 후 10분이 지남'
+    },
+    targets: [{ id: 'A-2', kind: 'issue' }],
+    actions: []
+  };
+  const { mount, view } = setup({
+    workspaces: [
+      workspace({
+        attempts: {
+          a: {
+            bead_id: 'A-1',
+            attempt_id: 'a',
+            status: 'waiting',
+            cause: 'prerequisite_unmet',
+            cause_detail: {
+              summary: '선행 대기',
+              blockers: [{ id: 'A-2', status: 'closed' }]
+            },
+            finished_at: NOW - 1000
+          }
+        },
+        bead_blocked_by: { 'A-1': [] },
+        wait_reasons: [reason]
+      })
+    ],
+    workspaces_state: [state()]
+  });
+
+  view.load();
+
+  const tile = mount.querySelector('.rtile[data-bead-id="A-1"]');
+
+  expect(tile?.querySelector('.wait-verdict summary')?.textContent).toContain(
+    '⚠ 지연'
+  );
+  expect(tile?.querySelector('.wait-reason__headline')?.textContent).toContain(
+    reason.headline
+  );
+  expect(mount.querySelector('.wait-summary > summary')?.textContent).toMatch(
+    /막힘 1 · 조치 필요 0/
+  );
+});
+
 /**
  * @param {{ workspaces?: any[], workspaces_state?: any[], cross_lanes?: { revision: number, lanes: Array<Record<string, any>> }|null, now?: () => number, current?: string, switchWorkspace?: (root: string) => Promise<unknown>, transport?: (type: string, payload?: any) => Promise<any>, confirm?: (message: string) => boolean, openDoc?: (doc: any, root_dir?: string) => void }} [input]
  */

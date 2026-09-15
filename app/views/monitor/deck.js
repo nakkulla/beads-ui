@@ -39,6 +39,7 @@ import {
   createExecutionPane,
   paneSectionSegmentTemplate
 } from '../settings-dialog/execution-pane.js';
+import { blockedSummaryTemplate } from '../worker/lanes.js';
 import { iconGear, iconMerge, iconPause, iconPlay } from './icons.js';
 import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
 
@@ -141,6 +142,8 @@ export function deckExecChips(row) {
 /**
  * @typedef {Object} RepoDeckOptions
  * @property {() => Array<Record<string, any>>} workspacesState
+ * @property {() => Array<Record<string, any>>} [workspaces] - Server wait judgments for visible repositories.
+ * @property {(root_dir: string, bead_id: string) => void} [revealWaitSubject]
  * @property {() => Array<Pick<LaneItem, 'usage'>>} [doneItems] - 기간이 이미
  * 걸린 완료 아이템 (합계 줄의 `<기간> 완료 n`과 토큰).
  * @property {() => string} [rangeLabel]
@@ -697,16 +700,30 @@ export function createRepoDeck(mount_element, options) {
     const sum = (/** @type {string} */ key) =>
       list.reduce((acc, row) => acc + countOf(row, key), 0);
     return html`<div class="mon2-deck__bar">
-      <span
+      <div
         class="mon2-deck__total-counts"
         title=${`visible 레포 ${list.length}곳의 합계입니다 — 실행·대기·PR은 지금, 완료는 ${range_label}`}
-        >실행 ${sum('running')} · 대기 ${sum('queue')} · PR
+      >
+        실행 ${sum('running')} · 대기 ${sum('queue')} · PR
         ${sum('pr_wait')}${sum('session_active') > 0
           ? ` · 세션 ${sum('session_active')}`
           : ''}
         · ${range_label} 완료
-        ${Array.isArray(done_items) ? done_items.length : 0}</span
-      >
+        ${Array.isArray(done_items)
+          ? done_items.length
+          : 0}${blockedSummaryTemplate(
+          list.map((row) => ({
+            root_dir: row.root_dir,
+            name: row.name,
+            wait_reasons: (options.workspaces
+              ? options.workspaces()
+              : list
+            ).find((workspace) => workspace.root_dir === row.root_dir)
+              ?.wait_reasons
+          })),
+          options.revealWaitSubject
+        )}
+      </div>
       ${total === null
         ? ''
         : html`<span class="mon2-deck__total-tokens">

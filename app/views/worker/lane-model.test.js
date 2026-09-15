@@ -79,6 +79,76 @@ function state(patch = {}) {
   };
 }
 
+test('attaches prerequisite judgments to the second serial entry without admission', () => {
+  const reason = {
+    kind: 'prerequisite_foreign',
+    subject: { root_dir: WS_A, bead_id: 'A-2' },
+    headline: 'other/B-1 완료 대기',
+    release: '자동 복귀',
+    verdict: 'normal',
+    targets: [{ id: 'B-1', kind: 'issue' }],
+    actions: []
+  };
+
+  const lanes = buildLanes(
+    [
+      workspace({
+        serial_lanes: [
+          { id: 's1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+        ],
+        wait_reasons: [reason]
+      })
+    ],
+    [state()]
+  );
+
+  const second = lanes.queue_groups[0].sublanes.serial[0].items[1];
+  expect(second.id).toBe('A-2');
+  expect(second.seq).toBe(2);
+  expect(second.draggable).toBe(true);
+  expect(second.badges).toContain('⛓ 선행 대기');
+  expect(second.wait_reasons).toEqual([reason]);
+  expect(lanes.queue.map((item) => item.id)).toEqual(['A-1', 'A-2']);
+});
+
+test.each(['runnable', 'pr_wait', 'done', 'running'])(
+  'excludes prerequisite judgments from %s items',
+  (lane) => {
+    const reason = {
+      kind: 'prerequisite',
+      subject: { root_dir: WS_A, bead_id: 'A-1' },
+      headline: '선행 대기',
+      targets: []
+    };
+    const patch =
+      lane === 'running'
+        ? {
+            attempts: {
+              a: {
+                bead_id: 'A-1',
+                attempt_id: 'a',
+                status: 'running',
+                started_at: 100
+              }
+            }
+          }
+        : {
+            [lane]: [{ bead_id: 'A-1', title: 'issue', added_at: Date.now() }]
+          };
+
+    const lanes = buildLanes(
+      [workspace({ ...patch, wait_reasons: [reason] })],
+      [state()],
+      { candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, show_blocked: true } }
+    );
+
+    const items = /** @type {any} */ (lanes)[lane];
+    expect(items).toHaveLength(1);
+    expect(items[0].wait_reasons || []).toEqual([]);
+    expect(items[0].badges || []).not.toContain('⛓ 선행 대기');
+  }
+);
+
 /**
  * @param {string} id
  * @param {Partial<Record<string, any>>} [patch]

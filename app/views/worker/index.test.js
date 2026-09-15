@@ -425,6 +425,118 @@ describe('views/worker', () => {
     expect(label).toBe(null);
   });
 
+  test('renders external waits and counts only open rows in the wait header', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const row = {
+      kind: 'external_wait',
+      root_dir: '/repo',
+      workspace_name: 'repo',
+      gate_id: 'G-1',
+      gate_title: '계산 관측',
+      watch_id: 'a'.repeat(24),
+      gate_open: true,
+      recent_complete: false,
+      job_state: '계산 중',
+      monitor_state: '자동 확인 중',
+      consumer_id: 'A-1',
+      consumer_title: null,
+      job_id: '42',
+      stage: 'active',
+      previous_job_state: null,
+      monitor_reason: null,
+      overdue: false,
+      recovery_needed: false,
+      last_observed_at: 123,
+      next_observation_at: 456,
+      completed_at: null
+    };
+    queueStore.set(
+      queueOf({
+        external_waits: [
+          row,
+          { ...row, gate_id: 'G-2', gate_open: false, recent_complete: true }
+        ]
+      })
+    );
+
+    const view = createWorkerView(mount, {
+      queueStore,
+      getWorkspacePath: () => '/repo',
+      transport: vi.fn()
+    });
+
+    expect(mount.querySelectorAll('.worker-mini--external-wait')).toHaveLength(
+      2
+    );
+    expect(
+      mount.querySelector('.worker-wait__external')?.textContent
+    ).toContain('계산 관측');
+    expect(
+      mount
+        .querySelector('#worker-pane-queue .worker-pane__count')
+        ?.textContent?.trim()
+    ).toBe('1');
+    view.destroy();
+  });
+
+  test('reveals a blocked serial row while preserving its drop coordinates', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const reason = {
+      kind: 'prerequisite',
+      subject: { bead_id: 'A-2', root_dir: '/repo' },
+      headline: 'A-1 완료 대기',
+      release: '선행 해제 후 자동 복귀',
+      verdict: 'action_required',
+      targets: [{ id: 'A-1', kind: 'issue' }],
+      actions: []
+    };
+    queueStore.set(
+      queueOf({
+        serial_lanes: [
+          { id: 's1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+        ],
+        wait_reasons: [reason, { ...reason, kind: 'prerequisite_foreign' }]
+      })
+    );
+    window.localStorage.setItem(
+      'beads-ui.worker.lane-collapsed',
+      JSON.stringify({ lanes: { queue: true }, areas: { serial: true } })
+    );
+    const scroll = vi.fn();
+    const original_scroll = HTMLElement.prototype.scrollIntoView;
+    HTMLElement.prototype.scrollIntoView = scroll;
+    const view = createWorkerView(mount, {
+      queueStore,
+      getWorkspacePath: () => '/repo',
+      transport: vi.fn()
+    });
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.wait-summary__item')
+    ).click();
+
+    const row = mount.querySelector('.worker-mini[data-bead-id="A-2"]');
+    expect(mount.querySelector('.wait-summary > summary')?.textContent).toMatch(
+      /막힘 1 · 조치 필요 1/
+    );
+    expect(row?.classList.contains('worker-mini--prerequisite')).toBe(true);
+    expect(row?.getAttribute('draggable')).toBe('true');
+    expect(row?.querySelector('.worker-mini__seq')?.textContent?.trim()).toBe(
+      '2'
+    );
+    expect(row?.parentElement?.getAttribute('data-row-index')).toBe('1');
+    expect(row?.parentElement?.getAttribute('data-lane-id')).toBe('s1');
+    expect(row?.parentElement?.getAttribute('data-drag-kind')).toBe(
+      'repo-serial'
+    );
+    expect(scroll).toHaveBeenCalled();
+    expect(row?.querySelector('.worker-mini__rowops-remove')).not.toBeNull();
+    view.destroy();
+    HTMLElement.prototype.scrollIntoView = original_scroll;
+  });
+
   test('candidate lane renders Ready/Blocked with spec-missing + blocked reasons', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     presetCandidateFilter({ show_blocked: true });
