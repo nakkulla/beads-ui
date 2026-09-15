@@ -13,6 +13,7 @@ function setupShell() {
     <header>
       <div id="workspace-picker"></div>
       <nav id="top-nav"></nav>
+      <button id="display-settings-btn" type="button">Settings</button>
       <div id="header-loading" hidden></div>
     </header>
     <main id="app"></main>
@@ -22,13 +23,16 @@ function setupShell() {
 }
 
 /**
- * @param {{ workspaces: Array<{ path: string }>, current: string, hidden?: string[] }} shape
+ * @param {{ workspaces: Array<{ path: string }>, current: string, hidden?: string[], list_ready?: Promise<void>, restore_ready?: Promise<void> }} shape
  */
 function makeClient(shape) {
   return {
     send: vi.fn(
       async (/** @type {string} */ type, /** @type {any} */ payload) => {
         if (type === 'list-workspaces') {
+          if (shape.list_ready) {
+            await shape.list_ready;
+          }
           return {
             workspaces: shape.workspaces.map((ws) => ({
               path: ws.path,
@@ -42,6 +46,9 @@ function makeClient(shape) {
           };
         }
         if (type === 'set-workspace') {
+          if (shape.restore_ready) {
+            await shape.restore_ready;
+          }
           return {
             changed: true,
             workspace: {
@@ -69,6 +76,7 @@ async function settle() {
 }
 
 beforeEach(() => {
+  window.location.hash = '';
   window.localStorage.clear();
   delete (/** @type {any} */ (window).__BDUI_BOOTSTRAP__);
 });
@@ -78,6 +86,102 @@ afterEach(() => {
 });
 
 describe('main workspace restore precedence', () => {
+  test.each([
+    [
+      'board',
+      ['ready', 'blocked', 'in-progress', 'resolved', 'deferred', 'closed'],
+      false
+    ],
+    [
+      'worker',
+      ['ready', 'blocked', 'in-progress', 'resolved', 'closed'],
+      false
+    ],
+    [
+      'board',
+      ['ready', 'blocked', 'in-progress', 'resolved', 'deferred', 'closed'],
+      true
+    ],
+    ['worker', ['ready', 'blocked', 'in-progress', 'resolved', 'closed'], true],
+    ['monitor', [], true]
+  ])(
+    'subscribes %s once after restore (lanes=%j, settings=%s)',
+    async (view, lanes, open_settings) => {
+      window.location.hash = `#/${view}`;
+      window.localStorage.setItem('beads-ui.workspace', '/repo-b');
+      /** @type {() => void} */
+      let release_list = () => {};
+      /** @type {() => void} */
+      let release_restore = () => {};
+      const list_ready = new Promise((resolve) => {
+        release_list = () => resolve(undefined);
+      });
+      const restore_ready = new Promise((resolve) => {
+        release_restore = () => resolve(undefined);
+      });
+      CLIENT = makeClient({
+        workspaces: [{ path: '/repo-a' }, { path: '/repo-b' }],
+        current: '/repo-a',
+        list_ready,
+        restore_ready
+      });
+      const root = setupShell();
+
+      bootstrap(root);
+      await settle();
+      if (open_settings) {
+        document.getElementById('display-settings-btn')?.click();
+        await settle();
+        expect(
+          document.getElementById('settings-dialog')?.hasAttribute('open')
+        ).toBe(true);
+      }
+
+      expect(CLIENT.send).toHaveBeenCalledWith('list-workspaces', {});
+      expect(document.getElementById(`${view}-root`)?.hidden).toBe(false);
+      expect(CLIENT.send).not.toHaveBeenCalledWith(
+        'subscribe-list',
+        expect.anything()
+      );
+      expect(CLIENT.send).not.toHaveBeenCalledWith(
+        'subscribe-worker-queue',
+        expect.anything()
+      );
+
+      release_list();
+      await vi.waitFor(() => {
+        expect(CLIENT.send).toHaveBeenCalledWith('set-workspace', {
+          path: '/repo-b'
+        });
+      });
+
+      expect(CLIENT.send).not.toHaveBeenCalledWith(
+        'subscribe-list',
+        expect.anything()
+      );
+      expect(CLIENT.send).not.toHaveBeenCalledWith(
+        'subscribe-worker-queue',
+        expect.anything()
+      );
+
+      release_restore();
+      await settle();
+
+      const list_calls = CLIENT.send.mock.calls.filter(
+        (/** @type {[string, any]} */ [type]) => type === 'subscribe-list'
+      );
+      expect(
+        list_calls.map((/** @type {[string, any]} */ [, payload]) => payload.id)
+      ).toEqual(lanes.map((lane) => `tab:${view}:${lane}`));
+      expect(
+        CLIENT.send.mock.calls.filter(
+          (/** @type {[string, any]} */ [type]) =>
+            type === 'subscribe-worker-queue'
+        )
+      ).toHaveLength(1);
+    }
+  );
+
   test('restores the saved workspace over the configured default', async () => {
     window.localStorage.setItem('beads-ui.workspace', '/repo-b');
     /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
@@ -100,27 +204,40 @@ describe('main workspace restore precedence', () => {
     expect(window.localStorage.getItem('beads-ui.workspace')).toBe('/repo-b');
   });
 
-  test('stays on the configured default when no saved workspace exists', async () => {
-    /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
-      workspace_config: { default_workspace: '/repo-a' }
-    };
+  test.each([null, '/repo-a'])(
+    'subscribes the configured default once with saved workspace %s',
+    async (saved_workspace) => {
+      if (saved_workspace) {
+        window.localStorage.setItem('beads-ui.workspace', saved_workspace);
+      }
+      /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
+        workspace_config: { default_workspace: '/repo-a' }
+      };
 
-    CLIENT = makeClient({
-      workspaces: [{ path: '/repo-a' }, { path: '/repo-b' }],
-      current: '/repo-a'
-    });
+      CLIENT = makeClient({
+        workspaces: [{ path: '/repo-a' }, { path: '/repo-b' }],
+        current: '/repo-a'
+      });
 
-    const root = setupShell();
-    bootstrap(root);
+      const root = setupShell();
+      bootstrap(root);
 
-    await settle();
+      await settle();
 
-    expect(CLIENT.send).not.toHaveBeenCalledWith(
-      'set-workspace',
-      expect.anything()
-    );
-    expect(window.localStorage.getItem('beads-ui.workspace')).toBeNull();
-  });
+      expect(CLIENT.send).not.toHaveBeenCalledWith(
+        'set-workspace',
+        expect.anything()
+      );
+      expect(window.localStorage.getItem('beads-ui.workspace')).toBe(
+        saved_workspace
+      );
+      expect(
+        CLIENT.send.mock.calls.filter(
+          (/** @type {[string, any]} */ [type]) => type === 'subscribe-list'
+        )
+      ).toHaveLength(6);
+    }
+  );
 
   test('removes stale saved workspace hints that are no longer available', async () => {
     window.localStorage.setItem('beads-ui.workspace', '/repo-missing');

@@ -647,6 +647,9 @@ export function bootstrap(root_element) {
     let settings_dialog_open = false;
 
     function syncSubscriptionsToView() {
+      if (!workspace_bootstrap_done) {
+        return;
+      }
       const state = store.getState();
       ensureBoardSubscriptions(state.view === 'board');
       ensureWorkerSubscriptions(state.view === 'worker');
@@ -1927,16 +1930,19 @@ export function bootstrap(root_element) {
           s.view === 'monitor' || s.view === 'compare' || s.view === 'adr'
         );
       }
-      ensureBoardSubscriptions(s.view === 'board');
-      ensureWorkerSubscriptions(s.view === 'worker');
+      // Restore updates must not start lists for the server's default workspace.
+      if (workspace_bootstrap_done) {
+        ensureBoardSubscriptions(s.view === 'board');
+        ensureWorkerSubscriptions(s.view === 'worker');
+        ensureWorkerQueueChannel(
+          s.view === 'board' ||
+            s.view === 'worker' ||
+            settings_dialog_open ||
+            Boolean(s.selected_id)
+        );
+      }
       ensureMonitorPipelineChannel(pipelineChannelWanted(s));
       ensureAdrChannel(s.view === 'adr');
-      ensureWorkerQueueChannel(
-        s.view === 'board' ||
-          s.view === 'worker' ||
-          settings_dialog_open ||
-          Boolean(s.selected_id)
-      );
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();
       }
@@ -1959,6 +1965,7 @@ export function bootstrap(root_element) {
     };
     store.subscribe(onRouteChange);
     onRouteChange(store.getState());
+    void workspace_bootstrap_ready.then(() => onRouteChange(store.getState()));
 
     // UI-order is a shared, tab-independent singleton: subscribe once at startup
     // (not from ensureBoard/WorkerSubscriptions) so it survives tab switches.

@@ -68,13 +68,19 @@ vi.mock('./ws.js', () => {
 describe('push stores integration (board view)', () => {
   test('updates only the matching column on push events (multi-sub isolation)', async () => {
     const client = /** @type {any} */ (createWsClient());
+    const send = vi.spyOn(client, 'send');
+    send.mockClear();
     window.location.hash = '#/board';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
 
     bootstrap(root);
-    // Allow router + subscriptions to wire
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalledWith(
+        'subscribe-list',
+        expect.objectContaining({ id: 'tab:board:ready' })
+      );
+    });
 
     // Initial board: no cards
     expect(document.querySelectorAll('#ready-col .board-card').length).toBe(0);
@@ -139,12 +145,19 @@ describe('push stores integration (board view)', () => {
 
   test('reconnect replay does not duplicate entries', async () => {
     const client = /** @type {any} */ (createWsClient());
+    const send = vi.spyOn(client, 'send');
+    send.mockClear();
     window.location.hash = '#/board';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
 
     bootstrap(root);
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalledWith(
+        'subscribe-list',
+        expect.objectContaining({ id: 'tab:board:ready' })
+      );
+    });
 
     // Initial snapshot
     client._trigger('snapshot', {

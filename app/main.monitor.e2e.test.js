@@ -971,9 +971,10 @@ describe('worker tab direct entry (UI-53es §2)', () => {
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
 
     bootstrap(root);
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(subscribedListIds(client)).toContain('tab:worker:in-progress');
+    });
 
-    expect(subscribedListIds(client)).toContain('tab:worker:in-progress');
     expect(subscribedListIds(client)).toContain('tab:worker:resolved');
     expect(subscribedListIds(client)).toContain('tab:worker:closed');
 
