@@ -11938,6 +11938,156 @@ describe('scheduler closed-queue sweep (UI-m6bg)', () => {
     });
   });
 
+  test('refuses resume while retirement waits for paused settlement (gate-r1)', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    await env.scheduler.pause(WS, attempt_id);
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    const before = env.store.snapshot(WS);
+    const calls_before = [...env.bd.calls];
+
+    const result = await env.scheduler.resume(WS, attempt_id);
+
+    expect(result).toEqual({ ok: false, reason: 'bead_running' });
+    expect(env.store.snapshot(WS)).toEqual(before);
+    expect(env.bd.calls).toEqual(calls_before);
+    expect(env.scheduler.isRunning('S1')).toBe(false);
+    await env.bd.setStatus('S1', 'closed');
+    env.runner.finish('S1', { success: false, reason: 'killed' });
+    await vi.waitFor(() => {
+      expect(env.store.snapshot(WS).done.map((e) => e.bead_id)).toEqual(['S1']);
+    });
+    expect(env.store.snapshot(WS).attempts[attempt_id]).toMatchObject({
+      status: 'stopped',
+      cause: 'bead_closed'
+    });
+  });
+
+  test('refuses a resume that reaches prerecord after retirement starts (gate-r1)', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    await env.scheduler.pause(WS, attempt_id);
+    const before = env.store.snapshot(WS);
+    const readMetadata = env.bd.readMetadata.bind(env.bd);
+    let swept = false;
+    vi.spyOn(env.bd, 'readMetadata').mockImplementation(
+      async (bead_id, key) => {
+        const value = await readMetadata(bead_id, key);
+        if (key === 'impl_entry' && !swept) {
+          swept = true;
+          env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+        }
+        return value;
+      }
+    );
+
+    const result = await env.scheduler.resume(WS, attempt_id);
+
+    expect(swept).toBe(true);
+    expect(result).toEqual({ ok: false, reason: 'bead_running' });
+    expect(env.store.snapshot(WS)).toEqual(before);
+    await env.bd.setStatus('S1', 'closed');
+    env.runner.finish('S1', { success: false, reason: 'killed' });
+    await vi.waitFor(() => {
+      expect(env.store.snapshot(WS).done.map((e) => e.bead_id)).toEqual(['S1']);
+    });
+  });
+
+  test.each(['child', 'stopped'])(
+    'preserves a changed paused leaf after base observation: %s (gate-r1)',
+    async (change) => {
+      /** @type {(value: any) => void} */
+      let settleBase = () => {};
+      const resolve_base = vi.fn(
+        () =>
+          new Promise((resolve) => {
+            settleBase = resolve;
+          })
+      );
+      const env = setup({
+        config: { S1: { status: 'open' } },
+        resolveBase: resolve_base
+      });
+      seedQueue(env.store, ['S1']);
+      seedAttempt(env.store, 'S1', 'att-1', {
+        status: 'paused',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'a'.repeat(40)
+      });
+      const discard = vi.spyOn(env.store, 'discardAttempt');
+      env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+      await vi.waitFor(() => {
+        expect(resolve_base).toHaveBeenCalled();
+      });
+      if (change === 'child') {
+        seedAttempt(env.store, 'S1', 'att-child', {
+          status: 'running',
+          resumed_from: 'att-1'
+        });
+      } else {
+        env.store.updateAttempt(WS, {
+          attempt_id: 'att-1',
+          patch: { status: 'stopped', cause: 'user_stop' }
+        });
+      }
+      const before = env.store.snapshot(WS);
+      const calls_before = [...env.bd.calls];
+
+      settleBase({ ok: true, base: 'main', base_oid: 'a'.repeat(40) });
+      await flush();
+      await flush();
+
+      expect(discard).not.toHaveBeenCalled();
+      expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+      expect(env.store.snapshot(WS)).toEqual(before);
+      expect(env.bd.calls).toEqual(calls_before);
+    }
+  );
+
+  test('dispatches a replaced bead after retrying a failed paused retirement write (gate-r1)', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('S1').emit('session_id', 'sid-1');
+    await env.scheduler.pause(WS, attempt_id);
+    await env.bd.setStatus('S1', 'closed');
+    const discard = vi
+      .spyOn(env.store, 'discardAttempt')
+      .mockImplementationOnce(() => {
+        throw new Error('persist failed');
+      });
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    env.runner.finish('S1', { success: false, reason: 'killed' });
+    await vi.waitFor(() => {
+      expect(discard).toHaveBeenCalledTimes(1);
+    });
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    await vi.waitFor(() => {
+      expect(env.store.snapshot(WS).done.map((e) => e.bead_id)).toEqual(['S1']);
+    });
+    expect(env.scheduler.externalProtectedBeadIds(WS).has('S1')).toBe(false);
+    await env.bd.setStatus('S1', 'open');
+    env.store.place(WS, {
+      bead_id: 'S1',
+      expected_revision: env.store.snapshot(WS).revision
+    });
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['S1', 'S1']);
+    expect(env.store.snapshot(WS).admission.S1?.reason).not.toBe(
+      'stop_cleanup_pending'
+    );
+  });
+
   test('fails a restored paused record on an unexcluded base landing instead of stopping it', async () => {
     const landed = 'c'.repeat(40);
     const env = setup({

@@ -10436,7 +10436,10 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'worktree_missing' };
     }
     // bead_running: a live (or store-recorded running) attempt for the same bead.
-    if (claimed.has(bead_id) && continuation.preclaimed !== true) {
+    if (
+      retiring.has(bead_id) ||
+      (claimed.has(bead_id) && continuation.preclaimed !== true)
+    ) {
       return { ok: false, reason: 'bead_running' };
     }
     for (const a of Object.values(q.attempts || {})) {
@@ -12282,6 +12285,11 @@ export function createScheduler(deps) {
     if (!revalidated.ok) {
       serial_lease.release();
       return revalidated;
+    }
+    // No await separates this retirement fence from the child prerecord.
+    if (retiring.has(bead_id)) {
+      serial_lease.release();
+      return { ok: false, reason: 'bead_running' };
     }
     continuation.expected_revision = revalidated.expected_revision;
     const prior_wf =
@@ -14979,20 +14987,6 @@ export function createScheduler(deps) {
     const pending_done = paused_done.get(attempt_id);
     if (cause !== null && pending_done) {
       await pending_done;
-      const settled = deps.store.snapshot(workspace);
-      const current = settled.attempts[attempt_id];
-      if (!current || current.status !== 'paused') {
-        return Boolean(
-          current && TERMINAL_ATTEMPT_STATUSES.has(current.status)
-        );
-      }
-      if (
-        Object.values(settled.attempts).some(
-          (attempt) => attempt.resumed_from === attempt_id
-        )
-      ) {
-        return false;
-      }
     }
     // The ⏸/■ settlement for the one record that reaches no other observer
     // (UI-8mvc §3, implementation review 2026-08-03): a `paused` attempt whose
@@ -15001,7 +14995,22 @@ export function createScheduler(deps) {
     // the detection layer's only evidence — unobserved. Guarded on the ABSENT
     // handle on purpose: while `pending_done` is held the process may still be
     // writing, and that case settles through its own `done`.
-    if (!pending_done && (await settleBaseDrift(workspace, attempt_id))) {
+    const base_landed =
+      !pending_done && (await settleBaseDrift(workspace, attempt_id));
+    if (cause !== null) {
+      const settled = deps.store.snapshot(workspace);
+      const current = settled.attempts[attempt_id];
+      if (
+        !current ||
+        current.status !== 'paused' ||
+        Object.values(settled.attempts).some(
+          (attempt) => attempt.resumed_from === attempt_id
+        )
+      ) {
+        return false;
+      }
+    }
+    if (base_landed) {
       await failAttempt(
         workspace,
         attempt_id,
@@ -15021,7 +15030,7 @@ export function createScheduler(deps) {
     if (repo.length === 0) {
       log('paused residue cleanup skipped for %s: no repo', attempt_id);
     }
-    if (pending_done) {
+    if (pending_done && cause === null) {
       cleanup_pending.add(rec.bead_id);
     }
     deps.store.discardAttempt(workspace, {
