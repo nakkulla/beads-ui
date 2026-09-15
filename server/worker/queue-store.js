@@ -267,6 +267,7 @@
  * `failed:<tail>`. Carried to the session in the `## 시도 사실` card so it does
  * not re-discover an empty `node_modules` with an `npm ls` round trip. Null
  * when the attempt adopted an existing worktree and nothing was installed.
+ * @property {ExecPresetRecord|null} [exec_preset] - Observed dispatch preset, independent of workflow receipts.
  * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|'bench_close'|null, head_sha: string|null, reason: string|null, resolved_by?: string, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }|null} quickfix_landing -
  * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
  * before the first cleanup step) plus `no_change_close` for either kind of
@@ -505,6 +506,7 @@
  * The per-workspace completion marker for the spec §F migration. Written ONLY
  * after all three destinations read back, and it is what stops the migration
  * from re-running on the next start.
+ * @property {AppliedExecPreset|null} applied_exec_preset - Last fully applied global profile.
  * @property {number} slots - Concurrency cap: how many sessions the scheduler
  * may run at once (worker-phase2 §3). Integer ≥ 1, default 2. `slots = 1` IS
  * the retired serial lane's semantics.
@@ -1939,6 +1941,67 @@ function serialLaneIndex(id) {
 }
 
 /**
+ * @typedef {{ id: string, name: string, revision: number, applied_at: number }} AppliedExecPreset
+ * @typedef {{ id: string, name: string, revision: number, deviated_keys: string[] }} ExecPresetRecord
+ */
+
+/**
+ * @param {unknown} value
+ * @returns {value is { id: string, name: string, revision: number } & Record<string, unknown>}
+ */
+function isPresetIdentity(value) {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    typeof value.name === 'string' &&
+    value.name.length > 0 &&
+    Number.isInteger(value.revision) &&
+    Number(value.revision) >= 0
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {AppliedExecPreset|null}
+ */
+function normalizeAppliedExecPreset(value) {
+  if (
+    !isPresetIdentity(value) ||
+    typeof value.applied_at !== 'number' ||
+    !Number.isFinite(value.applied_at)
+  ) {
+    return null;
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    revision: value.revision,
+    applied_at: value.applied_at
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {ExecPresetRecord|null}
+ */
+function normalizeExecPresetRecord(value) {
+  if (
+    !isPresetIdentity(value) ||
+    !Array.isArray(value.deviated_keys) ||
+    !value.deviated_keys.every((key) => typeof key === 'string')
+  ) {
+    return null;
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    revision: value.revision,
+    deviated_keys: [...value.deviated_keys]
+  };
+}
+
+/**
  * Queue properties this module actively normalizes. Any other top-level field
  * is historical opaque data and must round-trip instead of being deleted by an
  * unrelated queue mutation.
@@ -1949,6 +2012,7 @@ function serialLaneIndex(id) {
 // migration that stops part-way still finds its source on the next start. The
 // migration deletes them itself once its completion marker is written.
 const KNOWN_QUEUE_FIELDS = new Set([
+  'applied_exec_preset',
   'revision',
   'auto_advance',
   'hold',
@@ -2024,6 +2088,7 @@ function emptySerialLanes(count) {
  */
 function emptyQueue() {
   return {
+    applied_exec_preset: null,
     revision: 0,
     auto_advance: false,
     hold: null,
@@ -3086,6 +3151,7 @@ export function makeAttempt(fields) {
         fields.worktree_setup.startsWith('failed:'))
         ? fields.worktree_setup
         : null,
+    exec_preset: normalizeExecPresetRecord(fields.exec_preset),
     quickfix_landing: isRecord(fields.quickfix_landing)
       ? clone(fields.quickfix_landing)
       : null,
@@ -4073,6 +4139,7 @@ function normalizeQueue(raw) {
   if (!isRecord(raw)) {
     return q;
   }
+  q.applied_exec_preset = normalizeAppliedExecPreset(raw.applied_exec_preset);
   for (const [key, value] of Object.entries(raw)) {
     if (!KNOWN_QUEUE_FIELDS.has(key)) {
       q[key] = value;
@@ -8562,7 +8629,7 @@ export function createQueueStore(options = {}) {
      * carries a value the current catalog rejects.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, values: Record<string, string|null> }} input
+     * @param {{ expected_revision: number, values: Record<string, string|null>, applied_exec_preset?: AppliedExecPreset|null }} input
      * @returns {QueueOpResult}
      */
     setOrchestrationDefaults(workspace, input) {
@@ -8602,6 +8669,40 @@ export function createQueueStore(options = {}) {
         for (const [key, value] of Object.entries(normalized)) {
           target[key] = value;
         }
+        if (Object.hasOwn(input, 'applied_exec_preset')) {
+          next.applied_exec_preset = normalizeAppliedExecPreset(
+            input.applied_exec_preset
+          );
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Clear provenance before a non-atomic profile write without spending an empty revision.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number }} input
+     * @returns {QueueOpResult}
+     */
+    clearAppliedExecPreset(workspace, input) {
+      const current = ensureLoaded(workspace);
+      if (current.revision !== input.expected_revision) {
+        return {
+          ok: false,
+          conflict: true,
+          queue: exportQueue(workspace, current)
+        };
+      }
+      if (current.applied_exec_preset === null) {
+        return {
+          ok: true,
+          conflict: false,
+          queue: exportQueue(workspace, current)
+        };
+      }
+      return applyMutation(workspace, input.expected_revision, (next) => {
+        next.applied_exec_preset = null;
         return true;
       });
     },

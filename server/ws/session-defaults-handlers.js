@@ -23,6 +23,7 @@ import {
   normalizeSessionDefaults,
   validateSessionDefaultsPatch
 } from '../session-defaults.js';
+import { getWorkerRuntime } from '../worker/runtime.js';
 import {
   WORKSPACE_ACCOUNTS_KV_KEY,
   mergeWorkspaceAccounts,
@@ -173,7 +174,6 @@ export async function handleSetSessionDefaults(ws, req) {
     return;
   }
   const next = mergeSessionDefaults(before.raw, validated.patch);
-
   const written = await writeKv(ws, target, SESSION_DEFAULTS_KV_KEY, next);
   if (!written.ok) {
     ws.send(
@@ -185,6 +185,44 @@ export async function handleSetSessionDefaults(ws, req) {
   }
 
   const after = await readSessionDefaults(ws, target);
+  try {
+    const runtime = getWorkerRuntime();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const queue = runtime.queueStore.snapshot(target.root);
+      if (
+        !queue.applied_exec_preset ||
+        !runtime.execPresetCoordinator.changesAppliedExecPreset(
+          queue.applied_exec_preset,
+          before.values,
+          // An unreadable readback cannot rule out the requested value change.
+          after.ok ? after.values : normalizeSessionDefaults(next).values
+        )
+      ) {
+        break;
+      }
+      const cleared = runtime.queueStore.clearAppliedExecPreset(target.root, {
+        expected_revision: queue.revision
+      });
+      if (cleared.ok) {
+        break;
+      }
+      if (!cleared.conflict || attempt === 1) {
+        log(
+          'session defaults preset identity clear failed for %s (conflict=%s)',
+          target.root,
+          cleared.conflict
+        );
+        break;
+      }
+    }
+  } catch (err) {
+    log(
+      'session defaults preset identity clear failed for %s: %o',
+      target.root,
+      err
+    );
+  }
+
   if (!after.ok) {
     ws.send(
       JSON.stringify(

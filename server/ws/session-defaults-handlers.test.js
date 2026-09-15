@@ -1,4 +1,13 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createExecPresetStore } from '../exec-preset-store.js';
+import { createExecPresetCoordinator } from '../worker/exec-preset-coordinator.js';
+import {
+  __resetWorkerRuntimeForTest,
+  getWorkerRuntime
+} from '../worker/runtime.js';
 
 const kvGetJsonInWorkspace = vi.fn();
 const kvSetJsonInWorkspace = vi.fn();
@@ -8,6 +17,10 @@ const invalidateSessionDefaults = vi.fn();
 
 const WS_CONN = '/workspace';
 const WS_OTHER = '/other-repo';
+/** @type {string|undefined} */
+let original_state_home;
+/** @type {string} */
+let tmp_state;
 
 vi.mock('../registry-watcher.js', async (importOriginal) => {
   const actual = /** @type {any} */ (await importOriginal());
@@ -71,11 +84,224 @@ function fakeWs() {
 }
 
 beforeEach(() => {
+  original_state_home = process.env.XDG_STATE_HOME;
+  tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-session-preset-'));
+  process.env.XDG_STATE_HOME = tmp_state;
+  __resetWorkerRuntimeForTest();
   kvGetJsonInWorkspace.mockReset();
   kvSetJsonInWorkspace.mockReset();
   kvGetJsonAtRoot.mockReset();
   kvSetJsonAtRoot.mockReset();
   invalidateSessionDefaults.mockReset();
+});
+
+afterEach(() => {
+  __resetWorkerRuntimeForTest();
+  if (original_state_home === undefined) {
+    delete process.env.XDG_STATE_HOME;
+  } else {
+    process.env.XDG_STATE_HOME = original_state_home;
+  }
+  fs.rmSync(tmp_state, { recursive: true, force: true });
+  vi.restoreAllMocks();
+});
+
+describe('session defaults preset identity', () => {
+  function changedDefaultsFixture() {
+    const store = getWorkerRuntime().queueStore;
+    const applied_exec_preset = {
+      id: 'missing',
+      name: 'Profile',
+      revision: 1,
+      applied_at: 10
+    };
+    store.setOrchestrationDefaults(WS_OTHER, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet' },
+      applied_exec_preset
+    });
+    kvGetJsonAtRoot
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, impl_runtime: 'codex' }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, impl_runtime: 'claude' }
+      });
+    kvSetJsonAtRoot.mockResolvedValue({ ok: true });
+    const req = {
+      id: 'set',
+      type: /** @type {const} */ ('set-session-defaults'),
+      payload: { root_dir: WS_OTHER, values: { impl_runtime: 'claude' } }
+    };
+    return { ...fakeWs(), store, req, applied_exec_preset };
+  }
+
+  test('clears identity using the latest revision after the first CAS conflicts', async () => {
+    const { ws, sent, store, req } = changedDefaultsFixture();
+    const clear = store.clearAppliedExecPreset.bind(store);
+    const clearAppliedExecPreset = vi
+      .spyOn(store, 'clearAppliedExecPreset')
+      .mockImplementationOnce((workspace, input) => {
+        store.setOrchestrationDefaults(workspace, {
+          expected_revision: store.snapshot(workspace).revision,
+          values: { orchestration_effort: 'high' }
+        });
+        return clear(workspace, input);
+      });
+
+    await handleSetSessionDefaults(ws, req);
+
+    expect(clearAppliedExecPreset.mock.calls).toEqual([
+      [WS_OTHER, { expected_revision: 1 }],
+      [WS_OTHER, { expected_revision: 2 }]
+    ]);
+    expect(store.snapshot(WS_OTHER).applied_exec_preset).toBeNull();
+    expect(sent.at(-1)).toMatchObject({
+      ok: true,
+      payload: { values: { impl_runtime: 'claude' } }
+    });
+  });
+
+  test.each(['conflict', 'exception'])(
+    'preserves the successful settings response when the retry fails with %s',
+    async (failure) => {
+      const { ws, sent, store, req, applied_exec_preset } =
+        changedDefaultsFixture();
+      const clear = store.clearAppliedExecPreset.bind(store);
+      let calls = 0;
+      const clearAppliedExecPreset = vi
+        .spyOn(store, 'clearAppliedExecPreset')
+        .mockImplementation((workspace, input) => {
+          calls++;
+          if (calls === 2 && failure === 'exception') {
+            throw new Error('queue unavailable');
+          }
+          store.setOrchestrationDefaults(workspace, {
+            expected_revision: store.snapshot(workspace).revision,
+            values: { orchestration_effort: 'high' }
+          });
+          return clear(workspace, input);
+        });
+
+      await handleSetSessionDefaults(ws, req);
+
+      expect(clearAppliedExecPreset).toHaveBeenCalledTimes(2);
+      expect(kvSetJsonAtRoot).toHaveBeenCalledExactlyOnceWith(
+        WS_OTHER,
+        'workflow_session_defaults',
+        { schema: 1, impl_runtime: 'claude' }
+      );
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toMatchObject({
+        ok: true,
+        payload: { values: { impl_runtime: 'claude' } }
+      });
+      expect(store.snapshot(WS_OTHER).applied_exec_preset).toEqual(
+        applied_exec_preset
+      );
+    }
+  );
+
+  test('skips the retry when another writer has already cleared identity', async () => {
+    const { ws, sent, store, req } = changedDefaultsFixture();
+    const clear = store.clearAppliedExecPreset.bind(store);
+    const clearAppliedExecPreset = vi
+      .spyOn(store, 'clearAppliedExecPreset')
+      .mockImplementationOnce((workspace, input) => {
+        clear(workspace, input);
+        return clear(workspace, input);
+      });
+
+    await handleSetSessionDefaults(ws, req);
+
+    expect(clearAppliedExecPreset).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS_OTHER).applied_exec_preset).toBeNull();
+    expect(sent.at(-1).ok).toBe(true);
+  });
+
+  test.each([
+    ['declared', { impl_runtime: 'claude' }, true],
+    ['same', { impl_runtime: 'codex' }, false],
+    ['undeclared', { impl_effort: 'high' }, false],
+    ['cleared', { impl_runtime: null }, true],
+    ['missing', { impl_effort: 'high' }, true],
+    ['unreadable', { impl_effort: 'high' }, true],
+    ['missing-same', { impl_runtime: 'codex' }, false],
+    ['write-failed', { impl_runtime: 'claude' }, false],
+    ['readback-same', { impl_runtime: 'claude' }, false],
+    ['readback-failed', { impl_runtime: 'claude' }, true]
+  ])(
+    'updates identity only for changed owned keys: %s',
+    async (kind, values, clears) => {
+      const runtime = getWorkerRuntime();
+      const created = runtime.execPresetCoordinator.create({
+        expected_revision: 0,
+        name: 'Profile',
+        settings: { impl_runtime: 'codex' }
+      });
+      const applied_exec_preset = {
+        id: created.presets[0].id,
+        name: 'Profile',
+        revision: 1,
+        applied_at: 10
+      };
+      runtime.queueStore.setOrchestrationDefaults(WS_OTHER, {
+        expected_revision: 0,
+        values: { orchestration_model: 'sonnet' },
+        applied_exec_preset
+      });
+      if (kind === 'missing' || kind === 'missing-same') {
+        runtime.execPresetCoordinator.delete({
+          expected_revision: 1,
+          id: applied_exec_preset.id
+        });
+      } else if (kind === 'unreadable') {
+        const presetStore = createExecPresetStore();
+        vi.spyOn(presetStore, 'snapshot').mockImplementation(() => {
+          throw new Error('unreadable');
+        });
+        const coordinator = createExecPresetCoordinator({
+          queueStore: runtime.queueStore,
+          presetStore
+        });
+        vi.spyOn(
+          runtime.execPresetCoordinator,
+          'changesAppliedExecPreset'
+        ).mockImplementation(coordinator.changesAppliedExecPreset);
+      }
+      const before = { schema: 1, impl_runtime: 'codex' };
+      const after =
+        kind === 'readback-same' ? before : { ...before, ...values };
+      kvGetJsonAtRoot
+        .mockResolvedValueOnce({ ok: true, value: before })
+        .mockResolvedValueOnce(
+          kind === 'readback-failed'
+            ? { ok: false, error: 'unreadable' }
+            : { ok: true, value: after }
+        );
+      kvSetJsonAtRoot.mockResolvedValue(
+        kind === 'write-failed'
+          ? { ok: false, error: 'write failed' }
+          : { ok: true }
+      );
+      const { ws, sent } = fakeWs();
+
+      await handleSetSessionDefaults(ws, {
+        id: 'set',
+        type: 'set-session-defaults',
+        payload: { root_dir: WS_OTHER, values }
+      });
+
+      expect(sent.at(-1).ok).toBe(
+        !['write-failed', 'readback-same', 'readback-failed'].includes(kind)
+      );
+      expect(runtime.queueStore.snapshot(WS_OTHER).applied_exec_preset).toEqual(
+        clears ? null : applied_exec_preset
+      );
+    }
+  );
 });
 
 describe('get-session-defaults root_dir (UI-eey2 §9.5)', () => {

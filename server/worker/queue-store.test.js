@@ -2003,6 +2003,132 @@ describe('worker/queue-store retired policy axis (worker-phase2 §2/§9)', () =>
 });
 
 describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
+  const applied_exec_preset = {
+    id: 'p1',
+    name: 'Profile',
+    revision: 3,
+    applied_at: 100
+  };
+
+  test('persists preset identity with orchestration values in one revision', () => {
+    const store = createQueueStore();
+
+    const result = store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet' },
+      applied_exec_preset
+    });
+
+    expect(result.queue.revision).toBe(1);
+    expect(createQueueStore().snapshot(WS)).toMatchObject({
+      applied_exec_preset,
+      orchestration_model: 'sonnet'
+    });
+  });
+
+  test('preserves preset identity when the optional mutation field is omitted', () => {
+    const store = createQueueStore();
+    store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet' },
+      applied_exec_preset
+    });
+
+    const result = store.setOrchestrationDefaults(WS, {
+      expected_revision: 1,
+      values: { orchestration_effort: 'high' }
+    });
+
+    expect(result.queue.applied_exec_preset).toEqual(applied_exec_preset);
+  });
+
+  test('clears preset identity durably', () => {
+    const store = createQueueStore();
+    store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet' },
+      applied_exec_preset
+    });
+
+    const result = store.clearAppliedExecPreset(WS, { expected_revision: 1 });
+
+    expect(result).toMatchObject({
+      ok: true,
+      queue: { revision: 2, applied_exec_preset: null }
+    });
+    expect(createQueueStore().snapshot(WS).applied_exec_preset).toBeNull();
+  });
+
+  test('keeps the revision when preset identity is already null', () => {
+    const store = createQueueStore();
+
+    const result = store.clearAppliedExecPreset(WS, { expected_revision: 0 });
+
+    expect(result).toMatchObject({
+      ok: true,
+      queue: { revision: 0, applied_exec_preset: null }
+    });
+    expect(fs.existsSync(queueFilePath(WS))).toBe(false);
+  });
+
+  test('checks CAS even when preset identity is already null', () => {
+    const store = createQueueStore();
+
+    const result = store.clearAppliedExecPreset(WS, { expected_revision: 2 });
+
+    expect(result).toMatchObject({
+      ok: false,
+      conflict: true,
+      queue: { revision: 0 }
+    });
+  });
+
+  test.each([
+    undefined,
+    null,
+    {},
+    { ...applied_exec_preset, revision: '3' },
+    { ...applied_exec_preset, applied_at: '100' }
+  ])('reads absent or malformed queue identity as null: %j', (value) => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({ applied_exec_preset: value })
+    );
+
+    const queue = createQueueStore().snapshot(WS);
+
+    expect(queue.applied_exec_preset).toBeNull();
+  });
+
+  test.each([
+    undefined,
+    null,
+    {},
+    { id: 'p1', name: 'Profile', revision: 3, deviated_keys: [2] }
+  ])(
+    'reads absent or malformed attempt identity as null: %j',
+    (exec_preset) => {
+      fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+      fs.writeFileSync(
+        queueFilePath(WS),
+        JSON.stringify({
+          attempts: {
+            old: {
+              attempt_id: 'old',
+              bead_id: 'UI-old',
+              status: 'failed',
+              exec_preset
+            }
+          }
+        })
+      );
+
+      const attempt = createQueueStore().snapshot(WS).attempts.old;
+
+      expect(attempt.exec_preset).toBeNull();
+    }
+  );
   test('starts a fresh queue with no orchestration default and no legacy preset fields', () => {
     const store = createQueueStore();
 
@@ -9945,6 +10071,28 @@ describe('worker/queue-store record transfer', () => {
       attempt
     });
   }
+
+  test('preserves preset identity when an attempt moves to permanent history', () => {
+    const { store } = storeWithTimeline();
+    const exec_preset = {
+      id: 'p1',
+      name: 'Profile',
+      revision: 3,
+      deviated_keys: ['impl_runtime']
+    };
+
+    append(store, {
+      attempt_id: 'recorded',
+      bead_id: 'UI-recorded',
+      status: 'discarded',
+      exec_preset
+    });
+
+    expect(store.snapshot(WS).attempts.recorded).toBeUndefined();
+    expect(
+      createQueueStore().readAttemptsForBead(WS, 'UI-recorded')[0].exec_preset
+    ).toEqual(exec_preset);
+  });
 
   test('keeps an undismissed failed attempt in the queue', () => {
     const { store } = storeWithTimeline();
