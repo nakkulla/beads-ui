@@ -3219,12 +3219,14 @@ export function createWorkerView(mount_element, options = {}) {
                   : item.run_state === 'retry_wait'
                     ? '재시도 대기'
                     : item.run_state === 'waiting'
-                      ? item.wait?.cause === 'base_moved'
-                        ? '반영 대기'
-                        : '선행 대기'
+                      ? item.wait?.recovery
+                        ? item.wait.recovery.label || ''
+                        : item.wait?.cause === 'base_moved'
+                          ? '반영 대기'
+                          : '선행 대기'
                       : item.run_state === 'provider_hold'
                         ? '공급자 보류'
-                        : undefined,
+                        : item.status_label,
             can_pause: item.can_pause !== false,
             // 지시 재시작 자격 (UI-qce9 §3.1): 서버 판정을 그대로 싣고, 없으면
             // 키를 만들지 않아 버튼이 나지 않는다 (fail-quiet).

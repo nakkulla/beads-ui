@@ -57,6 +57,40 @@ function decorateWith(operations = {}) {
 }
 
 describe('RepoOperation protocol projection', () => {
+  test('projects the optional recovery ledger onto the operation card', () => {
+    const recovery = {
+      classification: 'local_code_defect',
+      disposition: 'repair',
+      reason: null,
+      code_defect: true,
+      prover: 'deterministic_owned_script_failure',
+      handoff: {
+        key: 'a'.repeat(64),
+        state: 'bead_recorded',
+        handoff_bead_id: 'UI-repair',
+        reserved_at: 10,
+        recorded_at: 20,
+        error: null
+      }
+    };
+
+    const decorated = decorateWith({
+      'op-1': failedDeployOperation({ recovery })
+    });
+
+    expect(
+      /** @type {any[]} */ (decorated.repo_operations)[0].recovery
+    ).toEqual(recovery);
+  });
+
+  test('omits recovery on a legacy operation card', () => {
+    const decorated = decorateWith({ 'op-1': failedDeployOperation() });
+
+    expect(
+      /** @type {any[]} */ (decorated.repo_operations)[0]
+    ).not.toHaveProperty('recovery');
+  });
+
   test('projects operations as an ordered card list', () => {
     const decorated = decorateWith({ 'op-1': failedDeployOperation() });
 
@@ -236,7 +270,7 @@ describe('RepoOperation protocol projection', () => {
       policy.worker_automatic.length,
       policy.resolution_ladder.map((/** @type {any} */ step) => step.id),
       policy.never_automatic.length
-    ]).toEqual([3, 7, ['script_retry'], 8]);
+    ]).toEqual([4, 7, ['script_retry'], 8]);
   });
 
   test('names the dotfiles commit the policy copy is pinned to', () => {
@@ -245,7 +279,7 @@ describe('RepoOperation protocol projection', () => {
     const policy = /** @type {any} */ (decorated.repo_operation_policy);
 
     expect(policy.source_commit).toBe(
-      '3c27264271c86b1bc07bc9eb293881068aca9776'
+      '5cc243221bcf5af59c0831989ebf646f56878e06'
     );
   });
 

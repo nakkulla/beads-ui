@@ -50,6 +50,7 @@ import { RECEIPT_METADATA_KEYS } from './receipt-check.js';
  * }} [deps]
  * @returns {{
  *   setMetadata: (bead_id: string, key: string, value: string) => Promise<void>,
+ *   pinQuickFix: (bead_id: string, receipt: string) => Promise<void>,
  *   comment: (bead_id: string, text: string) => Promise<void>,
  *   unsetMetadata: (bead_id: string, key: string) => Promise<void>,
  *   readMetadata: (bead_id: string, key: string) => Promise<string|null>,
@@ -588,6 +589,32 @@ export function createBdMetadata(deps = {}) {
       if (r.code !== 0) {
         throw new Error(
           `bd update ${bead_id} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
+    },
+
+    /**
+     * Pin the checker receipt and route in the same bd update.
+     *
+     * @param {string} bead_id
+     * @param {string} receipt
+     */
+    async pinQuickFix(bead_id, receipt) {
+      const result = await run(
+        [
+          'update',
+          bead_id,
+          '--set-metadata',
+          'route=quick_fix',
+          '--set-metadata',
+          `quick_fix_review=${receipt}`,
+          '--json'
+        ],
+        opts
+      );
+      if (result.code !== 0) {
+        throw new Error(
+          `bd quick_fix pin ${bead_id} failed (${result.code}): ${(result.stderr || '').trim()}`
         );
       }
     },

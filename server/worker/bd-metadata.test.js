@@ -58,6 +58,39 @@ function createBdMetadata(deps = {}) {
 }
 
 describe('worker/bd-metadata argv contract', () => {
+  test('pins quick fix route and receipt in one JSON update', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '[]', stderr: '' }));
+
+    await createBdMetadata({ run, cwd: '/repo' }).pinQuickFix(
+      'UI-new',
+      'worker@123456abcdef'
+    );
+
+    expect(run).toHaveBeenCalledExactlyOnceWith(
+      [
+        'update',
+        'UI-new',
+        '--set-metadata',
+        'route=quick_fix',
+        '--set-metadata',
+        'quick_fix_review=worker@123456abcdef',
+        '--json'
+      ],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('rejects an unsuccessful quick fix pin', async () => {
+    const run = vi.fn(async () => ({
+      code: 1,
+      stdout: '',
+      stderr: 'unavailable'
+    }));
+
+    await expect(
+      createBdMetadata({ run }).pinQuickFix('UI-new', 'worker@123456abcdef')
+    ).rejects.toThrow('unavailable');
+  });
   test('deletes exact explicit IDs with force and without cascade', async () => {
     const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
 

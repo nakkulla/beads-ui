@@ -13,6 +13,11 @@ import path from 'node:path';
 import { debug } from '../logging.js';
 import { acquireDeployLock } from './deploy-lock.js';
 import { scriptSummary } from './failure-class.js';
+import {
+  classifyOperationRecovery,
+  repairHandoffDescription
+} from './operation-recovery.js';
+import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import { repoOperationPolicySupported } from './repo-operation-policy.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
@@ -36,7 +41,15 @@ import {
   repoOpsSpoolPendingDir,
   repoOpsSpoolProcessedDir
 } from './state-paths.js';
+import {
+  workRecoveryClassification,
+  workRecoveryReady
+} from './work-recovery-policy.js';
 import { createRepoOpsDeployWorktreeManager } from './worktree.js';
+
+/**
+ * @typedef {{ createIssue: (input: { title: string, description: string, type: string, priority: number, metadata: Record<string, string> }) => Promise<string>, addDependency: (from_id: string, to_id: string, type: string) => Promise<void>, issueStatus: (bead_id: string) => Promise<string|null>, readIssue: (bead_id: string) => Promise<{ issue_type: string, description: string, metadata: Record<string, any>, status: string }>, pinQuickFix: (bead_id: string, receipt: string) => Promise<void> }} RepairHandoffAdapter
+ */
 
 const default_log = debug('worker:repo-ops');
 
@@ -88,7 +101,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, policySupported?: () => boolean, notify?: { needsHuman: (input: any) => Promise<void> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), timeline?: { append: (input: any) => unknown }, runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, repairHandoff?: RepairHandoffAdapter, policySupported?: () => boolean, notify?: { needsHuman: (input: any) => Promise<void> }|null, log?: (...args: any[]) => void, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -781,7 +794,313 @@ export function createRepoOperationCoordinator(deps) {
     recordOperationFailure(current, operation_id, failure, evidence.summary);
     await sweepDescendantCoverage(workspace, operation_id);
     transition.reclaim(workspace, operation_id);
+    await recoverAfterLadder(workspace, operation_id);
     return 'failed';
+  }
+
+  /**
+   * Missing retry terminal evidence must never prove deterministic reproduction.
+   * The ladder's preserved first failure remains byte-identical in the ledger.
+   *
+   * @param {string} workspace
+   * @param {{ operation_id: string, blocked_reason?: string }} input
+   */
+  async function settleConsumedRetry(workspace, input) {
+    const operation =
+      deps.store.snapshot(workspace).repo_operations[input.operation_id];
+    const classification = classifyOperationRecovery({
+      operation: {
+        ...operation,
+        state: 'failed',
+        failure: input.blocked_reason
+          ? { ...operation?.failure, code: input.blocked_reason }
+          : { ...operation?.failure, interrupted: true }
+      },
+      policy_supported: policySupported() && workRecoveryReady(),
+      classify: workRecoveryClassification
+    });
+    const result = deps.store.settleConsumedRepoOperationRetry(workspace, {
+      ...input,
+      ...(classification
+        ? {
+            recovery: {
+              ...classification,
+              policy_supported: policySupported() && workRecoveryReady(),
+              prover: null,
+              handoff: null
+            }
+          }
+        : {})
+    });
+    if (result.ok) {
+      await recoverAfterLadder(workspace, input.operation_id);
+    }
+    return result;
+  }
+
+  /**
+   * Replayed history uses the same bead/kind/seq identity as terminal events.
+   *
+   * @param {any} operation
+   * @param {string} kind
+   * @param {string} seq
+   * @param {string} summary
+   */
+  function recordRecoveryEvent(operation, kind, seq, summary) {
+    if (!deps.timeline) {
+      return;
+    }
+    for (const subject of operation.subjects) {
+      deps.timeline.append({ bead_id: subject.bead_id, kind, seq, summary });
+    }
+  }
+
+  /**
+   * Classify a raw failure and reserve ordinary workflow handoff under the
+   * existing repository lock. The repair adapter adopts by metadata before
+   * creating, including when an earlier create lost its response.
+   *
+   * @param {string} workspace
+   * @param {string} operation_id
+   */
+  async function recoverAfterLadder(workspace, operation_id) {
+    let operation =
+      deps.store.snapshot(workspace).repo_operations[operation_id];
+    const supported = policySupported() && workRecoveryReady();
+    const result = classifyOperationRecovery({
+      operation,
+      policy_supported: supported,
+      classify: workRecoveryClassification
+    });
+    if (!result || !operation) {
+      return;
+    }
+    if (
+      !operation.recovery ||
+      operation.recovery.policy_supported === false ||
+      !supported
+    ) {
+      const recorded = deps.store.recordRepoOperationRecovery(workspace, {
+        operation_id,
+        recovery: {
+          classification: result.classification,
+          disposition: result.disposition,
+          reason: result.reason,
+          code_defect: result.code_defect,
+          prover: result.prover,
+          proof_gap: result.proof_gap,
+          ...(result.outcome_uncertain ? { outcome_uncertain: true } : {}),
+          policy_supported: supported,
+          handoff: null
+        }
+      });
+      if (!recorded.ok) {
+        return;
+      }
+      operation = deps.store.snapshot(workspace).repo_operations[operation_id];
+    }
+    const recovery = operation.recovery;
+    if (!recovery) {
+      return;
+    }
+    recordRecoveryEvent(
+      operation,
+      'operation_recovery',
+      operation_id,
+      `복구 분류 — ${recovery.disposition}:${recovery.reason || 'repair'} · ${operation.failure?.code || 'unknown_error'}`
+    );
+    const adapter = deps.repairHandoff;
+    const key = result.handoff_key;
+    if (
+      !supported ||
+      !adapter ||
+      !key ||
+      !recovery.code_defect ||
+      recovery.disposition !== 'repair' ||
+      operation.dismissed ||
+      operation.superseded_by ||
+      !operation.script_path ||
+      operation.subjects[0]?.bead_id === 'manual'
+    ) {
+      return;
+    }
+    let handoff_bead_id = recovery.handoff?.handoff_bead_id || null;
+    let state =
+      recovery.handoff?.state === 'reused'
+        ? /** @type {const} */ ('reused')
+        : /** @type {const} */ ('bead_recorded');
+    try {
+      if (!handoff_bead_id) {
+        const subject_statuses = await Promise.all(
+          operation.subjects.map((subject) =>
+            adapter.issueStatus(subject.bead_id)
+          )
+        );
+        if (
+          subject_statuses.some((status) => status === null) ||
+          subject_statuses.every((status) => status === 'closed')
+        ) {
+          return;
+        }
+        /** @type {string[]} */
+        const closed_handoff_bead_ids = [];
+        for (const other of Object.values(
+          deps.store.snapshot(workspace).repo_operations
+        )) {
+          const handoff = other.recovery?.handoff;
+          if (handoff?.key !== key || !handoff.handoff_bead_id) {
+            continue;
+          }
+          const status = await adapter.issueStatus(handoff.handoff_bead_id);
+          if (status === null) {
+            return;
+          }
+          if (status === 'closed') {
+            closed_handoff_bead_ids.push(handoff.handoff_bead_id);
+          } else {
+            handoff_bead_id = handoff.handoff_bead_id;
+            state = 'reused';
+            break;
+          }
+        }
+        if (!handoff_bead_id) {
+          const reserved = deps.store.reserveRepairHandoff(workspace, {
+            operation_id,
+            key,
+            closed_handoff_bead_ids
+          });
+          if (!reserved.ok) {
+            return;
+          }
+          const kind_label =
+            operation.kind === 'verify'
+              ? '검증'
+              : operation.kind === 'job'
+                ? '잡'
+                : '배포';
+          handoff_bead_id = await adapter.createIssue({
+            title: `머지 후 ${kind_label} 스크립트 결함 수정 — ${path.basename(operation.repo_id)} @ ${operation.target_sha?.slice(0, 7)}`,
+            description: repairHandoffDescription({ operation_id, operation }),
+            type: 'bug',
+            priority: 1,
+            metadata: {
+              worker_created_from: operation.subjects[0].bead_id,
+              repair_of: operation_id,
+              repair_key: key
+            }
+          });
+        }
+        // Persist the returned id before another fallible bd effect. Reconcile
+        // rechecks the idempotent edge even after a crash at this boundary.
+        const recorded = deps.store.recordRepairHandoffBead(workspace, {
+          operation_id,
+          key,
+          handoff_bead_id,
+          state
+        });
+        if (!recorded.ok) {
+          throw new Error('repair_handoff_record_failed');
+        }
+      }
+      if (state === 'bead_recorded' && !recovery.handoff?.placement) {
+        await adapter.addDependency(
+          handoff_bead_id,
+          operation.subjects[0].bead_id,
+          'discovered-from'
+        );
+      }
+      deps.store.recordRepairHandoffBead(workspace, {
+        operation_id,
+        key,
+        handoff_bead_id,
+        state
+      });
+      if (!recovery.handoff?.placement) {
+        let issue = await adapter.readIssue(handoff_bead_id);
+        const judgment = judgeQuickFixHandoff({
+          ...issue,
+          metadata: {
+            route: 'quick_fix',
+            quick_fix_review: issue.metadata.quick_fix_review
+          }
+        });
+        if (
+          !judgment ||
+          judgment.missing.length > 0 ||
+          judgment.digest === null
+        ) {
+          throw new Error(
+            `handoff_unreviewed:${judgment?.missing.join(',') || ''}`
+          );
+        }
+        let receipt = issue.metadata.quick_fix_review;
+        if (
+          issue.metadata.route !== 'quick_fix' ||
+          judgment.state !== 'reviewed'
+        ) {
+          receipt = `worker@${judgment.digest}`;
+          await adapter.pinQuickFix(handoff_bead_id, receipt);
+          issue = await adapter.readIssue(handoff_bead_id);
+        }
+        const readback = judgeQuickFixHandoff(issue);
+        if (
+          issue.metadata.route !== 'quick_fix' ||
+          readback?.state !== 'reviewed' ||
+          readback.missing.length > 0
+        ) {
+          throw new Error('handoff_readback_unreviewed');
+        }
+        receipt = issue.metadata.quick_fix_review;
+        const snapshot = deps.store.snapshot(workspace);
+        const placed =
+          [
+            ...snapshot.queue,
+            ...snapshot.serial_lanes.flatMap((lane) => lane.entries),
+            ...snapshot.pr_wait,
+            ...snapshot.done
+          ].some((entry) => entry.bead_id === handoff_bead_id) ||
+          Object.values(snapshot.attempts).some(
+            (attempt) =>
+              attempt.bead_id === handoff_bead_id &&
+              (attempt.status === 'running' || attempt.status === 'pending')
+          );
+        if (!placed) {
+          const placement = deps.store.place(workspace, {
+            expected_revision: snapshot.revision,
+            bead_id: handoff_bead_id,
+            lane: 'parallel'
+          });
+          if (!placement.ok) {
+            throw new Error('handoff_placement_failed');
+          }
+        }
+        const recorded = deps.store.recordRepairHandoffPlacement(workspace, {
+          operation_id,
+          key,
+          placement: {
+            route: 'quick_fix',
+            receipt,
+            lane: 'parallel',
+            placed_at: now()
+          }
+        });
+        if (!recorded.ok) {
+          throw new Error('handoff_placement_record_failed');
+        }
+      }
+      recordRecoveryEvent(
+        operation,
+        'repair_handoff',
+        key,
+        `수정 인계 — ${handoff_bead_id} (${state === 'reused' ? 'reused' : 'created'}) · 배치 parallel`
+      );
+    } catch (error) {
+      deps.store.recordRepairHandoffError(workspace, {
+        operation_id,
+        key,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   /**
@@ -1145,7 +1464,7 @@ export function createRepoOperationCoordinator(deps) {
     if (input.retry === true) {
       const consumed_key = scriptRetryConsumptionKey(operation);
       if (!consumed_key) {
-        deps.store.settleConsumedRepoOperationRetry(workspace, {
+        await settleConsumedRetry(workspace, {
           operation_id,
           blocked_reason: 'retry_identity_missing'
         });
@@ -1175,7 +1494,7 @@ export function createRepoOperationCoordinator(deps) {
       });
     } catch {
       if (input.retry === true) {
-        deps.store.settleConsumedRepoOperationRetry(workspace, {
+        await settleConsumedRetry(workspace, {
           operation_id
         });
       }
@@ -1183,7 +1502,7 @@ export function createRepoOperationCoordinator(deps) {
     }
     if (!started.ok || !started.process_identity) {
       if (input.retry === true) {
-        deps.store.settleConsumedRepoOperationRetry(workspace, {
+        await settleConsumedRetry(workspace, {
           operation_id
         });
       } else {
@@ -1265,7 +1584,7 @@ export function createRepoOperationCoordinator(deps) {
       if (!rebound.ok || typeof rebound.target_sha !== 'string') {
         const code = rebound.code || 'repo_ops_target_unresolved';
         if (plan.retry === true) {
-          deps.store.settleConsumedRepoOperationRetry(workspace, {
+          await settleConsumedRetry(workspace, {
             operation_id,
             blocked_reason: code
           });
@@ -1302,7 +1621,7 @@ export function createRepoOperationCoordinator(deps) {
       ) {
         const code = 'repo_ops_worktree_unowned';
         if (plan.retry === true) {
-          deps.store.settleConsumedRepoOperationRetry(workspace, {
+          await settleConsumedRetry(workspace, {
             operation_id,
             blocked_reason: code
           });
@@ -1354,7 +1673,7 @@ export function createRepoOperationCoordinator(deps) {
                 ? 'remote_history_not_monotonic'
                 : 'repo_ops_ancestry_check_failed';
             if (plan.retry === true) {
-              deps.store.settleConsumedRepoOperationRetry(workspace, {
+              await settleConsumedRetry(workspace, {
                 operation_id,
                 blocked_reason: code
               });
@@ -1374,7 +1693,7 @@ export function createRepoOperationCoordinator(deps) {
       if (!aligned.ok || typeof aligned.path !== 'string') {
         const code = aligned.code || 'repo_ops_worktree_align_failed';
         if (plan.retry === true) {
-          deps.store.settleConsumedRepoOperationRetry(workspace, {
+          await settleConsumedRetry(workspace, {
             operation_id,
             blocked_reason: code
           });
@@ -1437,7 +1756,7 @@ export function createRepoOperationCoordinator(deps) {
       });
       if (!materialized.ok || typeof materialized.path !== 'string') {
         if (plan.retry === true) {
-          deps.store.settleConsumedRepoOperationRetry(workspace, {
+          await settleConsumedRetry(workspace, {
             operation_id,
             blocked_reason: 'repo_ops_transition_materialize_failed'
           });
@@ -1982,7 +2301,7 @@ export function createRepoOperationCoordinator(deps) {
      */
     async function refuse(code) {
       if (plan.retry === true) {
-        deps.store.settleConsumedRepoOperationRetry(workspace, {
+        await settleConsumedRetry(workspace, {
           operation_id,
           blocked_reason: code
         });
@@ -2395,7 +2714,7 @@ export function createRepoOperationCoordinator(deps) {
           });
     if (!bound.ok || typeof bound.target_sha !== 'string') {
       if (retry) {
-        deps.store.settleConsumedRepoOperationRetry(workspace, {
+        await settleConsumedRetry(workspace, {
           operation_id,
           blocked_reason: bound.code || 'repo_ops_target_unresolved'
         });
@@ -2427,7 +2746,7 @@ export function createRepoOperationCoordinator(deps) {
       declaration.blob_sha !== operation.script_blob_sha
     ) {
       if (retry) {
-        deps.store.settleConsumedRepoOperationRetry(workspace, {
+        await settleConsumedRetry(workspace, {
           operation_id,
           blocked_reason: 'repo_ops_policy_drift'
         });
@@ -2463,7 +2782,7 @@ export function createRepoOperationCoordinator(deps) {
       typeof operation.target_sha !== 'string' ||
       typeof operation.deploy_worktree !== 'string'
     ) {
-      deps.store.settleConsumedRepoOperationRetry(workspace, {
+      await settleConsumedRetry(workspace, {
         operation_id,
         blocked_reason: 'verify_retry_input_missing'
       });
@@ -2484,7 +2803,7 @@ export function createRepoOperationCoordinator(deps) {
       declaration.mode !== operation.script_mode ||
       declaration.blob_sha !== operation.script_blob_sha
     ) {
-      deps.store.settleConsumedRepoOperationRetry(workspace, {
+      await settleConsumedRetry(workspace, {
         operation_id,
         blocked_reason: 'repo_ops_policy_drift'
       });
@@ -2498,7 +2817,7 @@ export function createRepoOperationCoordinator(deps) {
       mode: declaration.mode
     });
     if (!script.ok || typeof script.path !== 'string') {
-      deps.store.settleConsumedRepoOperationRetry(workspace, {
+      await settleConsumedRetry(workspace, {
         operation_id,
         blocked_reason: 'verify_script_materialize_failed'
       });
@@ -2835,6 +3154,10 @@ export function createRepoOperationCoordinator(deps) {
     for (const [operation_id, operation] of Object.entries(
       queue.repo_operations
     )) {
+      if (operation.state === 'failed') {
+        await recoverAfterLadder(workspace, operation_id);
+        continue;
+      }
       if (operation.state === 'retry_pending') {
         const current_queue = deps.store.snapshot(workspace);
         const access = resolutionAccess({
@@ -2842,7 +3165,7 @@ export function createRepoOperationCoordinator(deps) {
           subject: operation
         });
         if (!access.script_retry) {
-          deps.store.settleConsumedRepoOperationRetry(workspace, {
+          await settleConsumedRetry(workspace, {
             operation_id,
             ...(policySupported()
               ? {}
@@ -2851,7 +3174,7 @@ export function createRepoOperationCoordinator(deps) {
           continue;
         }
         if (normalizeScriptRetry(operation).status !== 'unconsumed') {
-          deps.store.settleConsumedRepoOperationRetry(workspace, {
+          await settleConsumedRetry(workspace, {
             operation_id
           });
           continue;
@@ -2885,7 +3208,7 @@ export function createRepoOperationCoordinator(deps) {
           : { state: 'gone' };
         if (state.state === 'gone' || state.state === 'recycled') {
           if (operation.retry?.consumed_key) {
-            deps.store.settleConsumedRepoOperationRetry(workspace, {
+            await settleConsumedRetry(workspace, {
               operation_id
             });
             transition.reclaim(workspace, operation_id);
@@ -2921,7 +3244,7 @@ export function createRepoOperationCoordinator(deps) {
       }
       if (operation.state !== 'queued') continue;
       if (operation.retry?.consumed_key) {
-        deps.store.settleConsumedRepoOperationRetry(workspace, {
+        await settleConsumedRetry(workspace, {
           operation_id
         });
         continue;

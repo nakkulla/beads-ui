@@ -17,9 +17,37 @@
 // lit-html through `lanes.js` and therefore cannot be the shared copy.
 import {
   FAILURE_NEXT_ACTIONS,
-  FAILURE_SENTENCES
+  FAILURE_SENTENCES,
+  RECOVERY_WAIT_LABELS,
+  RECOVERY_WAIT_SENTENCES
 } from '../../utils/failure-sentences.js';
 import { formatElapsed } from './lanes.js';
+
+/**
+ * @param {unknown} reason
+ * @returns {string|null}
+ */
+export function recoveryWaitLabel(reason) {
+  if (typeof reason !== 'string' || !reason) {
+    return null;
+  }
+  return Object.hasOwn(RECOVERY_WAIT_LABELS, reason)
+    ? RECOVERY_WAIT_LABELS[reason]
+    : reason;
+}
+
+/**
+ * @param {unknown} reason
+ * @returns {string|null}
+ */
+export function recoveryWaitSentence(reason) {
+  if (typeof reason !== 'string' || !reason) {
+    return null;
+  }
+  return Object.hasOwn(RECOVERY_WAIT_SENTENCES, reason)
+    ? RECOVERY_WAIT_SENTENCES[reason]
+    : null;
+}
 
 /**
  * Contract token → the human category word.

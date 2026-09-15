@@ -13,6 +13,7 @@ import {
   __registerWorkerAttachmentForTest,
   __resetWorkerAttachmentsForTest,
   createLiveBd,
+  createOperationRepairHandoff,
   createWorkerAttachment,
   initWorkerRuntime,
   resumeWorkerAttempt,
@@ -49,6 +50,150 @@ const merge_queue_capture = vi.hoisted(() => ({
   /** @type {any} */
   deps: null
 }));
+
+describe('operation repair handoff bd adapter', () => {
+  const input = {
+    title: '배포 스크립트 결함 수정',
+    description: '범위와 검증',
+    type: 'bug',
+    priority: 1,
+    metadata: {
+      worker_created_from: 'UI-source',
+      repair_of: 'op-1',
+      repair_key: 'key'
+    }
+  };
+
+  /** @param {Record<string, any>} [patch] */
+  function bdFor(patch = {}) {
+    return {
+      listByMetadataField: vi.fn(async () => []),
+      createTopLevelIssue: vi.fn(async () => 'UI-new'),
+      addDep: vi.fn(async () => {}),
+      listDeps: vi.fn(async () => []),
+      findIssue: vi.fn(async () => ({ status: 'open' })),
+      pinQuickFix: vi.fn(async () => {}),
+      ...patch
+    };
+  }
+
+  test('reads current handoff issue facts for the checker', async () => {
+    const issue = {
+      issue_type: 'bug',
+      description: 'current bytes',
+      metadata: { route: 'quick_fix' },
+      status: 'open'
+    };
+    const bd = bdFor({ findIssue: vi.fn(async () => issue) });
+
+    expect(await createOperationRepairHandoff(bd).readIssue('UI-new')).toEqual(
+      issue
+    );
+    expect(bd.findIssue).toHaveBeenCalledWith('UI-new');
+  });
+
+  test('delegates the route and receipt as one pin', async () => {
+    const bd = bdFor();
+
+    await createOperationRepairHandoff(bd).pinQuickFix(
+      'UI-new',
+      'worker@123456abcdef'
+    );
+
+    expect(bd.pinQuickFix).toHaveBeenCalledExactlyOnceWith(
+      'UI-new',
+      'worker@123456abcdef'
+    );
+  });
+
+  test('adopts a created issue after its first response was lost', async () => {
+    const issues = /** @type {any[]} */ ([]);
+    const bd = bdFor({
+      listByMetadataField: vi.fn(async () => issues),
+      createTopLevelIssue: vi.fn(async () => {
+        issues.push({
+          id: 'UI-created',
+          status: 'open',
+          metadata: input.metadata
+        });
+        throw new Error('response lost');
+      })
+    });
+    const first = createOperationRepairHandoff(bd);
+
+    await expect(first.createIssue(input)).rejects.toThrow('response lost');
+    const adopted = await createOperationRepairHandoff(bd).createIssue(input);
+
+    expect(adopted).toBe('UI-created');
+    expect(bd.createTopLevelIssue).toHaveBeenCalledTimes(1);
+    expect(bd.listByMetadataField).toHaveBeenLastCalledWith(
+      'repair_key',
+      'key'
+    );
+  });
+
+  test('refuses creation when the reuse readback fails', async () => {
+    const bd = bdFor({
+      listByMetadataField: vi.fn(async () => {
+        throw new Error('bd unavailable');
+      })
+    });
+
+    await expect(
+      createOperationRepairHandoff(bd).createIssue(input)
+    ).rejects.toThrow('bd unavailable');
+
+    expect(bd.createTopLevelIssue).not.toHaveBeenCalled();
+  });
+
+  test('creates an ordinary top-level issue when no matching issue exists', async () => {
+    const bd = bdFor();
+
+    await createOperationRepairHandoff(bd).createIssue(input);
+
+    expect(bd.createTopLevelIssue).toHaveBeenCalledWith(input);
+  });
+
+  test('skips a dependency edge already observed on the repair', async () => {
+    const bd = bdFor({
+      listDeps: vi.fn(async () => [
+        { id: 'UI-source', dependency_type: 'discovered-from' }
+      ])
+    });
+
+    await createOperationRepairHandoff(bd).addDependency(
+      'UI-repair',
+      'UI-source',
+      'discovered-from'
+    );
+
+    expect(bd.addDep).not.toHaveBeenCalled();
+  });
+
+  test('adds the missing discovered-from dependency', async () => {
+    const bd = bdFor();
+
+    await createOperationRepairHandoff(bd).addDependency(
+      'UI-repair',
+      'UI-source',
+      'discovered-from'
+    );
+
+    expect(bd.addDep).toHaveBeenCalledWith(
+      'UI-repair',
+      'UI-source',
+      'discovered-from'
+    );
+  });
+
+  test('returns null when the referenced issue no longer exists', async () => {
+    const bd = bdFor({ findIssue: vi.fn(async () => null) });
+
+    expect(
+      await createOperationRepairHandoff(bd).issueStatus('UI-gone')
+    ).toBeNull();
+  });
+});
 
 vi.mock('./merge-queue.js', async (importOriginal) => {
   const actual = /** @type {any} */ (await importOriginal());

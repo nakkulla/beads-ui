@@ -1,3 +1,8 @@
+import {
+  WORK_RECOVERY_RESULT_LINE_PREFIX,
+  recoveryResultLineReasons
+} from '../work-recovery-policy.js';
+
 /**
  * beads-ui-owned unattended preamble (spec §5.4, restructured by UI-rxp3).
  *
@@ -38,7 +43,7 @@ export const UNATTENDED_PREAMBLE = [
   '이 세션은 사람 없이 실행된다. 다음은 규칙이 아니라 환경 사실이다.',
   '',
   '- 사용자는 이 세션과 통신할 수 없다. 질문 도구는 응답자가 없어 영원히 대기한다.',
-  '- hard-stop 조건은 `blocker` 줄을 출력한 뒤 비정상 종료로 표면화하라. 그것이 이 환경에서 사람에게 도달하는 유일한 경로다.',
+  '- 다섯 hard-stop(파괴·비가역 동작, 자격증명, 필수 검증 실패, 안전하지 않은 머지, 정본·소유권 충돌)은 보호 대상 동작의 차단이지 세션 종료 지시가 아니다. 승인 범위 안의 자체 결함(형식·인자·코드·테스트)은 같은 세션에서 원인을 고치고 관련 검증을 다시 돌린 뒤 계속하라. 고칠 수 없는 외부 조건·결과 불명·사람만 내릴 결정만 `blocker` 줄과 결과 줄로 보고하고 종료하라. 그것이 이 환경에서 사람에게 도달하는 유일한 경로다.',
   '- 중간 진행 메시지를 읽는 사람도 없다. 보고는 계약이 정한 경계(`blocker`, 리뷰 판정, 완료 보고)에서만 내고, 단계마다 요약 메시지를 쓰지 않는다.',
   '- 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키 — `impl_dispatch`, `impl_entry`, `plan_approval`, `workflow_mode_source=user` — 는 이 세션이 쓸 수 없다. Worker는 시도 시작 시 이 키들을 스냅샷하고, 시도 중 값이 바뀌면(부재→기록 포함) 머지 게이트가 영수증 위조로 fail-closed한다. 위임 기본 모델이 이 세션의 모델과 같다는 사실은 main 실행 근거가 아니다 — 실행 형태는 dotfiles workflow 계약의 selector가 정한다.',
   '',
@@ -114,7 +119,8 @@ export const FAST_TRACK_DIRECTIVE = [
 ].join('\n');
 
 /**
- * The five result-line forms a Worker session's first nonempty line may take.
+ * The five legacy result-line forms; recoveryDirective adds the sixth only
+ * for a session launched with validated recovery readiness.
  *
  * CANONICAL SOURCE is dotfiles `finishing.md`; this is a copy (harness-reduction
  * spec D1), inlined because the line is the ONE thing the failure classifier
@@ -273,6 +279,22 @@ export const QUICKFIX_LANE_DIRECTIVE = [
   '',
   RESULT_LINE_GRAMMAR
 ].join('\n');
+
+/**
+ * Preserve the legacy directive bytes unless this launch advertises readiness.
+ *
+ * @param {string} directive
+ * @param {boolean} ready
+ */
+function recoveryDirective(directive, ready) {
+  const reasons = ready ? recoveryResultLineReasons() : [];
+  return reasons.length > 0
+    ? directive.replace(
+        '대기 · blocks:<ID>[, …]\n',
+        `대기 · blocks:<ID>[, …]\n${WORK_RECOVERY_RESULT_LINE_PREFIX}<${reasons.join('|')}>\n`
+      )
+    : directive;
+}
 
 /**
  * The guard contract, restructured into three SEVERITY tiers (UI-rxp3) and
@@ -455,7 +477,7 @@ export function defaultTaskPrompt(bead_id) {
  * last because it is the one thing that matters only at the very end of a turn.
  *
  * @param {string} base_prompt - The task prompt for the session.
- * @param {{ runtime?: 'claude'|'codex', fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, quickfix_lane?: boolean, review?: boolean, target_base?: string|null, attempt_facts?: import('../attempt-facts.js').AttemptFacts|null }} [options]
+ * @param {{ runtime?: 'claude'|'codex', fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, quickfix_lane?: boolean, review?: boolean, work_recovery_ready?: boolean, target_base?: string|null, attempt_facts?: import('../attempt-facts.js').AttemptFacts|null }} [options]
  * @returns {{ system_prompt: string, task_prompt: string }}
  */
 export function applyPreamble(base_prompt, options = {}) {
@@ -486,9 +508,19 @@ export function applyPreamble(base_prompt, options = {}) {
     parts.push(FAST_TRACK_DIRECTIVE);
   }
   if (quickfix_lane) {
-    parts.push(QUICKFIX_LANE_DIRECTIVE);
+    parts.push(
+      recoveryDirective(
+        QUICKFIX_LANE_DIRECTIVE,
+        options.work_recovery_ready === true
+      )
+    );
   } else if (pr_submit) {
-    parts.push(PR_SUBMIT_DIRECTIVE);
+    parts.push(
+      recoveryDirective(
+        PR_SUBMIT_DIRECTIVE,
+        options.work_recovery_ready === true
+      )
+    );
     const target_base =
       typeof options.target_base === 'string' ? options.target_base.trim() : '';
     if (target_base.length > 0) {

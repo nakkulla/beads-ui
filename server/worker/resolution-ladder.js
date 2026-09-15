@@ -4,7 +4,8 @@
  * The ladder the pinned artifact declares is ONE step (`script_retry`) since
  * UI-s582 §2: contract membership and limits come from the artifact, and this
  * module only normalizes runtime evidence and decides whether that one step is
- * reachable. Everything after it is a terminal `failed` a human re-runs.
+ * reachable. After it, the raw terminal `failed` remains intact while recovery
+ * classification selects a condition wait or an ordinary workflow repair handoff.
  */
 
 /**

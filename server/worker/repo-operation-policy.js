@@ -49,12 +49,92 @@ export const REPO_OPERATION_POLICY_PROVENANCE_PATH = path.join(
  * @property {string[]} worker_automatic
  * @property {Record<string, unknown>[]} resolution_ladder
  * @property {string} after_ladder
+ * @property {Record<string, any>|null} [after_ladder_recovery]
  * @property {string} manual_human_fix
  * @property {string[]} never_automatic
  */
 
-/** @type {{ policy: RepoOperationPolicy, provenance: RepoOperationPolicyProvenance, digest: string, supported: boolean }|null} */
+/** @type {{ policy: Record<string, any>, provenance: Record<string, any>, digest: string, supported: boolean }|null} */
 let cached = null;
+
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, any>}
+ */
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is string}
+ */
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+/** @param {unknown} value */
+function stringList(value) {
+  return (
+    Array.isArray(value) && value.length > 0 && value.every(nonEmptyString)
+  );
+}
+
+/** @param {unknown} policy */
+function validPolicy(policy) {
+  if (!isRecord(policy)) {
+    return false;
+  }
+  const recovery = policy.after_ladder_recovery;
+  return (
+    stringList(policy.worker_automatic) &&
+    stringList(policy.never_automatic) &&
+    nonEmptyString(policy.after_ladder) &&
+    nonEmptyString(policy.manual_human_fix) &&
+    Array.isArray(policy.resolution_ladder) &&
+    policy.resolution_ladder.length > 0 &&
+    policy.resolution_ladder.every(
+      (entry) =>
+        isRecord(entry) &&
+        nonEmptyString(entry.id) &&
+        nonEmptyString(entry.trigger) &&
+        stringList(entry.consumption_key) &&
+        Number.isInteger(entry.attempts_per_operation_attempt) &&
+        entry.attempts_per_operation_attempt > 0
+    ) &&
+    isRecord(recovery) &&
+    recovery.consumer_schema_required === 4 &&
+    isRecord(recovery.diagnosis) &&
+    stringList(recovery.diagnosis.requires) &&
+    isRecord(recovery.code_defect_handoff) &&
+    nonEmptyString(recovery.code_defect_handoff.requires) &&
+    stringList(recovery.code_defect_handoff.procedure) &&
+    stringList(recovery.code_defect_handoff.reservation_key) &&
+    stringList(recovery.no_speculative_bead)
+  );
+}
+
+/**
+ * @param {unknown} provenance
+ * @param {Buffer} bytes
+ * @param {string} digest
+ */
+function provenanceMatches(provenance, bytes, digest) {
+  const blob = nodeCrypto
+    .createHash('sha1')
+    .update(Buffer.from(`blob ${bytes.length}\0`, 'utf8'))
+    .update(bytes)
+    .digest('hex');
+  return (
+    isRecord(provenance) &&
+    nonEmptyString(provenance.source_repo) &&
+    nonEmptyString(provenance.source_path) &&
+    nonEmptyString(provenance.source_commit) &&
+    provenance.bytes === bytes.length &&
+    provenance.sha256 === digest &&
+    provenance.source_blob_sha === blob
+  );
+}
 
 /**
  * Read and cache the pinned artifact with its provenance. The digest is
@@ -68,18 +148,28 @@ export function loadRepoOperationPolicy(deps = {}) {
   if (cached && !deps.fs) {
     return cached;
   }
-  const bytes = fs.readFileSync(REPO_OPERATION_POLICY_PATH);
-  const digest = nodeCrypto.createHash('sha256').update(bytes).digest('hex');
-  const policy = JSON.parse(bytes.toString('utf8'));
-  const provenance = JSON.parse(
-    fs.readFileSync(REPO_OPERATION_POLICY_PROVENANCE_PATH, 'utf8')
-  );
-  const loaded = {
-    policy,
-    provenance,
-    digest,
-    supported: policy.schema_version === 3
-  };
+  /** @type {NonNullable<typeof cached>} */
+  let loaded;
+  try {
+    const bytes = fs.readFileSync(REPO_OPERATION_POLICY_PATH);
+    const digest = nodeCrypto.createHash('sha256').update(bytes).digest('hex');
+    const policy = JSON.parse(bytes.toString('utf8'));
+    const provenance = JSON.parse(
+      fs.readFileSync(REPO_OPERATION_POLICY_PROVENANCE_PATH, 'utf8')
+    );
+    loaded = {
+      policy: isRecord(policy) ? policy : {},
+      provenance: isRecord(provenance) ? provenance : {},
+      digest,
+      supported:
+        isRecord(policy) &&
+        policy.schema_version === 4 &&
+        validPolicy(policy) &&
+        provenanceMatches(provenance, bytes, digest)
+    };
+  } catch {
+    loaded = { policy: {}, provenance: {}, digest: '', supported: false };
+  }
   if (!deps.fs) {
     cached = loaded;
   }
@@ -89,7 +179,7 @@ export function loadRepoOperationPolicy(deps = {}) {
 /**
  * Whether the pinned artifact has the one schema this consumer understands.
  * Unknown schemas stop only the automatic ladder step; callers keep operation
- * execution alive and settle the failure terminally instead.
+ * execution alive and preserve the raw failure for recovery judgment.
  */
 export function repoOperationPolicySupported() {
   return loadRepoOperationPolicy().supported;
@@ -153,6 +243,9 @@ export function projectRepoOperationPolicy() {
         })
     ),
     after_ladder: policy.after_ladder || '',
+    after_ladder_recovery: policy.after_ladder_recovery
+      ? structuredClone(policy.after_ladder_recovery)
+      : null,
     manual_human_fix: policy.manual_human_fix || '',
     never_automatic: Array.isArray(policy.never_automatic)
       ? [...policy.never_automatic]

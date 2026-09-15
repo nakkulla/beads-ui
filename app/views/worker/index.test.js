@@ -2001,6 +2001,120 @@ describe('views/worker', () => {
   // Worker 어댑터가 Monitor와 같은 키를 실어야 한다 (선행 대기 계층 §5.4,
   // ADR 14): 빠뜨리면 같은 렌더러가 이 타일을 실행 중 타일로 그려 시계와 세션
   // 조작을 준다.
+  test('keeps recovery out of failure ordering and includes it in blocked counts', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          aw: {
+            attempt_id: 'aw',
+            bead_id: 'W1',
+            status: 'waiting',
+            started_at: 20,
+            finished_at: 30,
+            session_id: 'saved',
+            cause: 'session_ended_unresolved',
+            cause_detail: {
+              recovery: {
+                reason: 'unclassified',
+                classification: 'unknown',
+                disposition: 'wait',
+                policy_schema: 1
+              }
+            }
+          },
+          af: {
+            attempt_id: 'af',
+            bead_id: 'F1',
+            status: 'failed',
+            started_at: 40,
+            finished_at: 50,
+            cause: 'runner_exit'
+          },
+          ap: {
+            attempt_id: 'ap',
+            bead_id: 'P1',
+            status: 'parked',
+            started_at: 60,
+            finished_at: 70
+          }
+        },
+        wait_reasons: [
+          {
+            kind: 'recovery',
+            subject: { bead_id: 'W1', root_dir: '/repo' },
+            headline: '확인 대기 · 원인 session_ended_unresolved',
+            release: '원인 확인 뒤 이어하기 또는 폐기',
+            verdict: 'action_required',
+            targets: [],
+            actions: []
+          }
+        ]
+      })
+    );
+
+    const view = createWorkerView(mount, {
+      queueStore,
+      getWorkspacePath: () => '/repo',
+      transport: vi.fn()
+    });
+
+    const tiles = Array.from(mount.querySelectorAll('.worker-rungrid .rtile'));
+    expect(tiles.map((tile) => tile.getAttribute('data-attempt-id'))).toEqual([
+      'af',
+      'ap',
+      'aw'
+    ]);
+    expect(
+      tiles.filter((tile) => tile.classList.contains('rtile--failed'))
+    ).toHaveLength(1);
+    expect(tiles[2].querySelector('.rtile__elapsed')?.textContent).toBe(
+      '확인 대기'
+    );
+    expect(tiles[2].querySelector('.op-btn.rtile__resume')).not.toBeNull();
+    expect(
+      tiles[2].querySelector('.rtile__foot .rtile__discard')
+    ).not.toBeNull();
+    expect(mount.querySelector('.wait-summary')?.textContent).toMatch(
+      /막힘\s*1\s*·\s*조치 필요\s*1/
+    );
+    view.destroy();
+  });
+
+  test('carries the running recovery label through the Worker adapter', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          old: {
+            attempt_id: 'old',
+            bead_id: 'W1',
+            status: 'waiting',
+            started_at: 10,
+            cause_detail: { recovery: { reason: 'verification' } }
+          },
+          live: {
+            attempt_id: 'live',
+            bead_id: 'W1',
+            status: 'running',
+            started_at: 20,
+            resumed_from: 'old'
+          }
+        }
+      })
+    );
+
+    const view = createWorkerView(mount, { queueStore, transport: vi.fn() });
+
+    expect(
+      mount.querySelector('.rtile[data-attempt-id="live"] .rtile__elapsed')
+        ?.textContent
+    ).toBe('복구 중');
+    view.destroy();
+  });
+
   test('renders a waiting attempt as a held tile with the 선행 대기 badge', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
@@ -3152,6 +3266,39 @@ describe('views/worker', () => {
     await flush();
     expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
       attempt_id: 'failed',
+      expected_revision: 7
+    });
+  });
+
+  test('resumes a recovery wait through the existing saved-attempt action', async () => {
+    const transport = vi.fn().mockResolvedValue({});
+    const mount = mountAttemptTiles(
+      {
+        revision: 7,
+        attempts: {
+          recovery: {
+            attempt_id: 'recovery',
+            bead_id: 'WAIT',
+            status: 'waiting',
+            session_id: 'saved',
+            cause: 'session_ended_unresolved',
+            cause_detail: { recovery: { reason: 'verification' } }
+          }
+        }
+      },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile__resume')
+    ).click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
+      attempt_id: 'recovery',
       expected_revision: 7
     });
   });

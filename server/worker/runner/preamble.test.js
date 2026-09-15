@@ -1,4 +1,9 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
+import * as operationPolicy from '../repo-operation-policy.js';
+import {
+  recoveryResultLineReasons,
+  workRecoveryReady
+} from '../work-recovery-policy.js';
 import * as preamble from './preamble.js';
 import {
   CLAUDE_LIFETIME_DIRECTIVE,
@@ -72,6 +77,7 @@ function facts(over = {}) {
  * @type {Array<{ name: string, options: any }>}
  */
 const COMBINATIONS = [
+  { name: 'work recovery ready', options: { work_recovery_ready: true } },
   { name: 'plain', options: {} },
   { name: 'fast_track', options: { fast_track: true } },
   { name: 'base only', options: { target_base: 'ilsun/dev' } },
@@ -153,6 +159,55 @@ const COMBINATIONS = [
     options: { review: true, attempt_facts: facts() }
   }
 ];
+
+test.each([false, true])(
+  'gates both delivery directives on recovery readiness %s',
+  (quickfix_lane) => {
+    const options = { quickfix_lane, pr_submit: !quickfix_lane };
+    const plain = applyPreamble('작업하라', options);
+
+    const ready = applyPreamble('작업하라', {
+      ...options,
+      work_recovery_ready: true
+    });
+
+    const line = `대기 · recovery:<${recoveryResultLineReasons().join('|')}>\n`;
+    expect(ready.system_prompt).toContain(line);
+    expect(ready.system_prompt.replace(line, '')).toBe(plain.system_prompt);
+    expect(plain.system_prompt).toContain(
+      quickfix_lane ? QUICKFIX_LANE_DIRECTIVE : PR_SUBMIT_DIRECTIVE
+    );
+  }
+);
+
+test('keeps legacy result grammar when the operation contract is unsupported', () => {
+  const support = vi
+    .spyOn(operationPolicy, 'repoOperationPolicySupported')
+    .mockReturnValue(false);
+  try {
+    const out = applyPreamble('작업하라', {
+      pr_submit: true,
+      work_recovery_ready: workRecoveryReady()
+    });
+
+    expect(out.system_prompt).toContain(PR_SUBMIT_DIRECTIVE);
+    expect(out.system_prompt).not.toContain('대기 · recovery:');
+  } finally {
+    support.mockRestore();
+  }
+});
+
+test.each([{ review: true }, { disposition: true, pr_submit: false }])(
+  'omits recovery grammar in non-implementation mode %j',
+  (options) => {
+    const out = applyPreamble('작업하라', {
+      ...options,
+      work_recovery_ready: true
+    });
+
+    expect(out.system_prompt).not.toContain('대기 · recovery:');
+  }
+);
 
 describe('runner/preamble channel split (UI-rxp3 §1)', () => {
   test('returns the system prompt and the task prompt as separate fields', () => {
@@ -241,10 +296,18 @@ describe('runner/preamble unattended framing (UI-rxp3 §1)', () => {
     expect(UNATTENDED_PREAMBLE).toContain('환경 사실');
   });
 
-  test('keeps the blocker + abnormal-exit instruction', () => {
+  test('continues authorized correction after a protected action is blocked', () => {
     expect(UNATTENDED_PREAMBLE).toContain('`blocker`');
     expect(UNATTENDED_PREAMBLE).toContain('단계마다 요약 메시지를 쓰지 않는다');
-    expect(UNATTENDED_PREAMBLE).toContain('비정상 종료');
+    expect(UNATTENDED_PREAMBLE).toContain(
+      '보호 대상 동작의 차단이지 세션 종료 지시가 아니다'
+    );
+    expect(UNATTENDED_PREAMBLE).toContain(
+      '같은 세션에서 원인을 고치고 관련 검증을 다시 돌린 뒤 계속하라'
+    );
+    expect(UNATTENDED_PREAMBLE).toContain(
+      '고칠 수 없는 외부 조건·결과 불명·사람만 내릴 결정만'
+    );
   });
 
   test('names the one tool that holds the claude process', () => {

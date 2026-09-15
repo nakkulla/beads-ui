@@ -471,6 +471,51 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `supported:false` with nullable facts; it never changes dispatch or queue
   persistence. Consumers also accept this whole field being absent from an older
   server and show `기본값 확인 불가` instead of reconstructing defaults.
+- An unfinished implementation attempt may settle with `status: 'waiting'` and
+  `cause_detail.recovery: { classification, disposition, reason, policy_schema: 1, no_progress?: { count, key } }`.
+  Its original `cause`, summary, and other failure evidence remain intact. A
+  recovery wait does not imply prerequisite blockers and does not emit
+  `attempt_failed`; its timeline ending is `kind: 'session_ended'` with summary
+  `대기 · recovery:<reason> — <original cause>`. Ordinary queue dispatch is
+  fenced by `recovery_wait`; manual resume preserves the recorded execution
+  selection and any retry origin, consumed count, maximum and exhaustion flag.
+  Ending the queue timer keeps that budget on the attempt; an exhausted record
+  has `retry.exhausted: true` and `retry.next_at: null`. Two identical repeats
+  set reason `no_progress` and refuse provider automatic resume. These fields
+  express waiting intent, not resume authority. The comparison uses cause,
+  classification, normalized summary, head OID, verification result, PR URL and
+  execution preset; incidental timestamps, attempt/run IDs and log SHAs do not
+  reset it. Reconcile can reclassify the latest preserved implementation failure
+  as waiting, with `reclassified_from: 'failed'` and `reclassified_at` inside
+  recovery. Original cause, summary, retry, finish time and `attempt_failed`
+  history remain. Dismissed, completed, discarded, superseded and live lineages,
+  prerequisite/base-moved waits and matching environment failures are excluded.
+  This pass dispatches no session and requires both recovery contracts ready.
+- Worker and Monitor tiles project these records as `run_state: 'waiting'`,
+  without a failure projection or failure count. Their `wait.recovery` contains
+  `{ classification, disposition, reason, no_progress: { count, key }|null, label: string|null, sentence: string|null }`;
+  `wait.cause` retains the original cause and `wait.since` is `finished_at`.
+  Known labels and sentences come from `app/utils/failure-sentences.js`; unknown
+  reasons keep their raw token and no invented sentence. A recorded session with
+  no resume child enables the existing `↻ 이어하기` action; the existing waiting
+  discard action remains available. When resuming is unavailable,
+  `wait.resume_reason` names the missing session or the child that already
+  inherited it, using the existing wait body slot. A running attempt resumed
+  from a recovery record carries `status_label: '복구 중'`.
+- The shared `wait_reasons` model adds kind `recovery` for the latest waiting
+  implementation attempt carrying `cause_detail.recovery`, excluding live,
+  completed and PR-wait subjects. Its headline combines the state, awaited
+  condition, original cause token and any `무진전 N회`; `since` is
+  `finished_at`. Reasons `unclassified`, `reconcile`, `authority` and
+  `no_progress` have verdict `action_required` with code `recovery_confirm` and
+  message `보존된 작업의 원인 확인 또는 이어하기·폐기 결정이 필요함`. Other
+  reasons start `normal` and become `overdue` / `settle_overdue` after two
+  observation intervals. Actions contain `resume` with
+  `{ root_dir, bead_id, attempt_id }` only when the session ID is non-empty.
+  `notify_plan` is `{ on_overdue: 'discord', on_complete: 'none' }`; existing
+  claim-once suppression prevents repeated sends. Recovery subjects appear in
+  blocked summaries, with `action_required` subjects counted once in
+  `조치 필요`.
 - A TERMINAL attempt inside `attempts` may additionally carry the non-persisted
   `impl_actor: { kind: 'delegated'|'main', model: string|null, effort: string|null, label: string }`
   (UI-ys18 §5.1) — the actual implementer the attempt's own preserved
@@ -585,24 +630,67 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   of the PINNED contract copy `generated/contracts/repo-operation-policy.json`
   (an exact byte copy of the dotfiles artifact, with its source commit and
   digest in the sibling provenance file). Shape:
-  `{ schema_version, supported: boolean, source_commit, digest, worker_automatic: string[], resolution_ladder: Record<string,unknown>[], after_ladder: string, manual_human_fix: string, never_automatic: string[] }`.
+  `{ schema_version, supported: boolean, source_commit, digest, worker_automatic: string[], resolution_ladder: Record<string,unknown>[], after_ladder: string, after_ladder_recovery: object|null, manual_human_fix: string, never_automatic: string[] }`.
   The lists and the ladder are the contract vocabulary VERBATIM: membership is
   decided by the contract alone, never by server or client code. A client
   renders each token through a display dictionary and MUST fall back to the raw
   token, so a contract that gains an entry shows up without a client change.
   `supported` is the consumer decoder guard: it is `false` whenever
-  `schema_version` is anything other than `3`. Under schema 3 the ladder holds
-  exactly one AUTOMATIC step (`script_retry`); there is no repair-session step
-  and no user-triggered resolution entry, so `after_ladder` is the terminal
-  `failed` record and the only human path is a manual rerun. `supported: false`
-  stops that automatic step only — the operation still runs and still settles
-  terminally.
+  `schema_version` is anything other than `4`, structure is unusable, or byte
+  count, SHA-256, recomputed Git blob or source provenance does not match.
+  Recovery readiness and automatic handoff require both this policy and the
+  work-recovery policy to validate. Under schema 4 the ladder holds exactly one
+  AUTOMATIC step (`script_retry`); there is no repair-session step and no
+  user-triggered resolution entry. `after_ladder_recovery` is a deep copy of the
+  contract's rules for preserving the raw failed operation and classifying
+  waiting or an ordinary workflow repair handoff; it is `null` when absent.
+  `supported: false` stops that automatic ladder step only.
 - The `worker-queue-snapshot` carries `repo_operations` — the operation cards,
   newest `requested_at` first. Each card:
   `{ operation_id, kind: 'verify'|'deploy', repo_id, target_base, target_sha, target_tree, effective_base_sha, script_path, script_blob_sha, script_mode, state: 'queued'|'running'|'succeeded'|'failed'|'retry_pending', requested_at, started_at, finished_at, elapsed_ms, exit_code, signal, log_path, log_digest, output_tail, subjects, failure, failure_kind, verify_stage, retry: { status, first_fingerprint, first_failure, blocked_reason, absorbed }, source: 'automatic'|'manual', dismissed, superseded_by }`.
   `output_tail` and `failure.detail` are SANITIZED (credential-shaped substrings
-  redacted) and the tail is bounded — the full log stays behind `log_path`.
-  `failure_kind` is a DISPLAY token: it is `verify_script_failure`,
+  redacted) and the tail is bounded — the full log stays behind `log_path`. The
+  optional `repo_operations[*].recovery` field carries
+  `{ classification, disposition, reason, code_defect, prover, proof_gap, policy_supported, handoff }`.
+  `prover` is `deterministic_owned_script_failure` only when the same pinned
+  script failure reproduced after the single retry, its summary announces a
+  script failure, and summary/detail contain no environment or auth pattern.
+  Otherwise it is `null`; reproduced but unproven failures wait for verification
+  with `proof_gap: 'env_or_auth_pattern'|'no_script_failure_line'`. A
+  `policy_supported: false` wait is rejudged from raw evidence when support
+  returns, preserving the handoff and unknown-outcome evidence. Optional
+  `outcome_uncertain: true` preserves a missing retry terminal marker even when
+  the ledger retains the first failure and policy support is unavailable. This
+  prevents that copied first failure from becoming reproduction proof. `handoff`
+  is `null` or
+  `{ key, state: 'reserved'|'bead_recorded'|'reused', handoff_bead_id, reserved_at, recorded_at, error, placement?: { route: 'quick_fix', receipt, lane: 'parallel', placed_at } }`.
+  Missing or malformed recovery evidence renders nothing. Raw operation state,
+  failure, logs, exit, retry and partial effects remain unchanged. A handoff key
+  hashes repository, operation kind, target SHA, script blob/mode and failure
+  fingerprint. An open repair for the same key is reused across operations and
+  restarts; only a confirmed closed repair permits a new reservation on another
+  operation. A returned repair id is retained before dependency writes, and
+  missing responses are reconciled by `repair_key` metadata before creation. The
+  new issue is read back and checked against the quick-fix handoff contract.
+  After the checker passes, one update pins `route=quick_fix` and the
+  `quick_fix_review=worker@<digest>` receipt; a second readback must recompute
+  as reviewed before placement. Existing routed and placed issues are adopted.
+  Errors retain the same reservation for restart; absent placement means the
+  handoff is incomplete. Repair PR creation alone does not complete the original
+  cleanup. Bead history records `kind: 'operation_recovery', seq: operation_id`
+  with `복구 분류 — <disposition>:<reason|repair> · <failure code>` and
+  `kind: 'repair_handoff', seq: handoff.key` with
+  `수정 인계 — <handoff_bead_id> (<reused|created>) · 배치 parallel`. Each
+  subject gets the same replay-safe event identity in its `events.jsonl`; queue
+  state stores no history. The shared `wait_reasons` model adds one `recovery`
+  row for an unfinished subject with an operation handoff:
+  `수정 작업 대기 · <handoff_bead_id> · 원인 <failure code>`, an issue target,
+  and release `수정 Bead의 PR·배포 뒤 [정리 재시도]`. Its verdict is `normal`;
+  the repair issue's own lane judges progress. Operation waits without a handoff
+  use the shared recovery sentences, with `action_required/recovery_confirm` for
+  unclassified or reconciliation reasons. Existing attempt recovery, base-moved
+  and prerequisite rows take precedence, so one subject never gets two recovery
+  rows. `failure_kind` is a DISPLAY token: it is `verify_script_failure`,
   `deploy_script_failure`, `interrupted_without_terminal_exit`, or — for every
   other failure — the raw `failure.code`. There is no `other` token and no
   allowlist behind it, and a client MUST render an unknown token verbatim. A

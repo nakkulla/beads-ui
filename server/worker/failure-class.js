@@ -43,6 +43,7 @@ import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
  * @property {string | null} [bead_status]
  * @property {string | null} [pr_url]
  * @property {string | null} [awaiting_user]
+ * @property {{ classify: (key: string) => { disposition: string, reason: string|null, next?: string|null }|null, resultLineReasons?: () => ReadonlyArray<string> }} [recovery]
  * @property {'waiting'} [tier_hint] - The caller's PROOF that it already
  * observed the four prerequisite-wait conditions (waiting-tier spec §4.2).
  * Without it a `prerequisite_unmet` cause classifies as the fail-quiet default,
@@ -62,6 +63,7 @@ import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
  * @property {string} cause
  * @property {string | null} summary
  * @property {string | null} env_group
+ * @property {{ classification: string, disposition: string, reason: string|null }} [recovery]
  */
 
 /**
@@ -463,6 +465,79 @@ export function classifyFailure(input) {
     }
   }
 
+  // The policy classifies unfinished work; its absence preserves legacy tiers.
+  // A successful park still belongs to the existing user-decision path.
+  if (
+    input.recovery &&
+    !(
+      OUTCOME_REPLACEABLE_CAUSES.has(raw_cause) &&
+      endedWithoutDelivery(input) &&
+      typeof input.awaiting_user === 'string'
+    )
+  ) {
+    const env_group = matchEnvPattern(summary);
+    let key = '';
+    if (
+      raw_cause === 'session_ended_unresolved' ||
+      raw_cause === 'session_ended_unresolved:background_shell'
+    ) {
+      key = 'finished_without_result_line';
+    } else if (raw_cause === 'session_failed:reported_failure') {
+      key = 'past_failure_line';
+    } else if (raw_cause === 'session_hard_stop:environment') {
+      key = 'environment_line';
+    } else if (raw_cause.startsWith('session_failed:')) {
+      key = 'unknown_error';
+    } else if (raw_cause === 'loud_fail_blocker') {
+      key = 'authority_required';
+    } else if (raw_cause === 'session_recovery_wait') {
+      key = 'unknown_error';
+    }
+    const mapped = key ? input.recovery.classify(key) : null;
+    if (
+      mapped &&
+      (mapped.disposition === 'wait' || mapped.disposition === 'reconcile')
+    ) {
+      if (
+        env_group !== null &&
+        (key === 'environment_line' ||
+          (key === 'unknown_error' && raw_cause !== 'session_recovery_wait'))
+      ) {
+        return classification('env', raw_cause, summary, env_group);
+      }
+      let recovery = {
+        classification: key,
+        disposition: mapped.disposition,
+        reason: mapped.reason
+      };
+      if (raw_cause === 'session_recovery_wait') {
+        const detail =
+          /** @type {{ reason_token?: unknown }|null|undefined} */ (
+            input.cause_detail
+          );
+        const token = detail?.reason_token;
+        // The reason vocabulary is INJECTED, never imported: this module is
+        // reachable from the browser bundle through `lane-model.js`, and the
+        // policy module that owns the list reads the pinned contract off disk.
+        // An absent injection leaves the legacy classification untouched.
+        const line_reasons = input.recovery.resultLineReasons
+          ? input.recovery.resultLineReasons()
+          : [];
+        if (typeof token === 'string' && line_reasons.includes(token)) {
+          recovery = {
+            classification: 'session_recovery_wait',
+            disposition: token === 'reconcile' ? 'reconcile' : 'wait',
+            reason: token
+          };
+        }
+      }
+      return {
+        ...classification('waiting', raw_cause, summary, env_group),
+        recovery
+      };
+    }
+  }
+
   // §3.1-§3.2: a session that exited 0 without delivering is judged by its
   // ending, not by the placeholder cause the caller carried in.
   if (
@@ -471,6 +546,21 @@ export function classifyFailure(input) {
   ) {
     if (typeof input.awaiting_user === 'string') {
       return classification('parked', 'session_parked', summary, null);
+    }
+    const recovered = input.recovery?.classify('finished_without_result_line');
+    if (
+      recovered &&
+      (recovered.disposition === 'wait' ||
+        recovered.disposition === 'reconcile')
+    ) {
+      return {
+        ...classification('waiting', 'session_ended_unresolved', summary, null),
+        recovery: {
+          classification: 'finished_without_result_line',
+          disposition: recovered.disposition,
+          reason: recovered.reason
+        }
+      };
     }
     const env_group = matchEnvPattern(summary);
     return classification(

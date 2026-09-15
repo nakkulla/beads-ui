@@ -42,6 +42,56 @@ beforeEach(() => {
 });
 
 describe('worker/queue-store remove', () => {
+  test('retires a live attempt linked only by the legacy issue list', () => {
+    const raw = JSON.parse(
+      fs.readFileSync(
+        new URL(
+          './__fixtures__/legacy-repair-lane-queue.json',
+          import.meta.url
+        ),
+        'utf8'
+      )
+    );
+    const intent = raw.completion_intents['UI-root'];
+    const list_key = Object.keys(intent).find((key) =>
+      key.endsWith('_bead_ids')
+    );
+    expect(list_key).toBeDefined();
+    intent[String(list_key)] = ['UI-linked'];
+    intent.active_op = null;
+    raw.attempts = {
+      linked: {
+        attempt_id: 'linked',
+        bead_id: 'UI-linked',
+        status: 'running',
+        pid: 4242,
+        started_at: 1000
+      },
+      other: {
+        attempt_id: 'other',
+        bead_id: 'UI-other',
+        status: 'running',
+        started_at: 1000
+      }
+    };
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+    const store = createQueueStore();
+
+    const pending = store.pendingRepairLaneRetirements(WS);
+    const result = store.retireRepairLane(WS, {
+      root_bead_id: 'UI-root',
+      at: 5000
+    });
+
+    expect(pending[0].attempt_ids).toEqual(['linked']);
+    expect(result.queue.attempts.linked).toMatchObject({
+      status: 'failed',
+      cause: 'repair_lane_retired',
+      finished_at: 5000
+    });
+    expect(result.queue.attempts.other.status).toBe('running');
+  });
   test.each([false, true])(
     'reports not_found without a revision bump with admission=%s',
     (admission) => {
@@ -11706,6 +11756,251 @@ describe('waiting attempt records (선행 대기 계층 §4.5)', () => {
     });
 
     expect(r.ok).toBe(true);
+  });
+});
+
+describe('worker/queue-store operation recovery handoff', () => {
+  const key = 'a'.repeat(64);
+  const recovery = {
+    classification: 'local_code_defect',
+    disposition: 'repair',
+    reason: null,
+    code_defect: true,
+    prover: 'deterministic_owned_script_failure',
+    handoff: null
+  };
+
+  /**
+   * @param {any} store
+   * @param {string} [operation_id]
+   * @param {boolean} [failed]
+   */
+  function seed(store, operation_id = 'op-a', failed = true) {
+    store.ensureRepoOperation(WS, {
+      operation_id,
+      repo_id: WS,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-source', merged_sha: 'a'.repeat(40) }],
+      effective_base_sha: 'a'.repeat(40),
+      target_base: 'main',
+      target_sha: 'a'.repeat(40),
+      script_mode: '100755',
+      script_blob_sha: 'b'.repeat(40)
+    });
+    if (failed) {
+      store.settleRepoOperation(WS, {
+        operation_id,
+        attempt_id: store.snapshot(WS).repo_operations[operation_id].attempt_id,
+        exit_code: 2,
+        signal: null,
+        failure: {
+          code: 'script_failed',
+          fingerprint: key,
+          interrupted: false,
+          detail: 'original'
+        }
+      });
+      store.recordRepoOperationRecovery(WS, { operation_id, recovery });
+    }
+  }
+
+  test('reserves one key and rejects a competing key', () => {
+    const store = createQueueStore({ now: () => 100 });
+    seed(store);
+
+    const first = store.reserveRepairHandoff(WS, { operation_id: 'op-a', key });
+    const repeat = store.reserveRepairHandoff(WS, {
+      operation_id: 'op-a',
+      key
+    });
+    const other = store.reserveRepairHandoff(WS, {
+      operation_id: 'op-a',
+      key: 'b'.repeat(64)
+    });
+
+    expect([first, repeat, other]).toEqual([
+      { ok: true, existing: false },
+      { ok: true, existing: true },
+      { ok: false, existing: true }
+    ]);
+    expect(
+      store.snapshot(WS).repo_operations['op-a'].recovery?.handoff?.reserved_at
+    ).toBe(100);
+  });
+
+  test('refuses handoff writes on a nonterminal operation', () => {
+    const store = createQueueStore();
+    seed(store, 'queued', false);
+
+    expect(
+      store.recordRepoOperationRecovery(WS, {
+        operation_id: 'queued',
+        recovery
+      }).ok
+    ).toBe(false);
+    expect(
+      store.reserveRepairHandoff(WS, { operation_id: 'queued', key }).ok
+    ).toBe(false);
+    expect(
+      store.recordRepairHandoffBead(WS, {
+        operation_id: 'queued',
+        key,
+        handoff_bead_id: 'UI-repair',
+        state: 'bead_recorded'
+      }).ok
+    ).toBe(false);
+    expect(
+      store.recordRepairHandoffError(WS, {
+        operation_id: 'queued',
+        key,
+        error: 'failed'
+      }).ok
+    ).toBe(false);
+  });
+
+  test('preserves a reservation and error across restart normalization', () => {
+    const store = createQueueStore();
+    seed(store);
+    store.reserveRepairHandoff(WS, { operation_id: 'op-a', key });
+    store.recordRepairHandoffError(WS, {
+      operation_id: 'op-a',
+      key,
+      error: 'bd unavailable'
+    });
+    const before = store.snapshot(WS).repo_operations['op-a'];
+
+    const after = createQueueStore().snapshot(WS).repo_operations['op-a'];
+
+    expect(after).toEqual(before);
+  });
+
+  test('adopts the same repair Bead across two operations', () => {
+    const store = createQueueStore();
+    seed(store);
+    seed(store, 'op-b');
+    store.reserveRepairHandoff(WS, { operation_id: 'op-a', key });
+    store.recordRepairHandoffBead(WS, {
+      operation_id: 'op-a',
+      key,
+      handoff_bead_id: 'UI-repair',
+      state: 'bead_recorded'
+    });
+
+    expect(
+      store.reserveRepairHandoff(WS, { operation_id: 'op-b', key })
+    ).toEqual({ ok: false, existing: true });
+    expect(
+      store.recordRepairHandoffBead(WS, {
+        operation_id: 'op-b',
+        key,
+        handoff_bead_id: 'UI-repair',
+        state: 'reused'
+      }).ok
+    ).toBe(true);
+    expect(
+      createQueueStore().snapshot(WS).repo_operations['op-b'].recovery?.handoff
+    ).toMatchObject({ state: 'reused', handoff_bead_id: 'UI-repair' });
+  });
+
+  test('blocks a competing operation while the same key is only reserved', () => {
+    const store = createQueueStore();
+    seed(store);
+    seed(store, 'op-b');
+    store.reserveRepairHandoff(WS, { operation_id: 'op-a', key });
+
+    expect(
+      store.reserveRepairHandoff(WS, { operation_id: 'op-b', key }).ok
+    ).toBe(false);
+  });
+
+  test('allows a new reservation only after the recorded issue is confirmed closed', () => {
+    const store = createQueueStore();
+    seed(store);
+    seed(store, 'op-b');
+    store.reserveRepairHandoff(WS, { operation_id: 'op-a', key });
+    store.recordRepairHandoffBead(WS, {
+      operation_id: 'op-a',
+      key,
+      handoff_bead_id: 'UI-closed',
+      state: 'bead_recorded'
+    });
+
+    expect(
+      store.reserveRepairHandoff(WS, {
+        operation_id: 'op-b',
+        key,
+        closed_handoff_bead_ids: ['UI-closed']
+      }).ok
+    ).toBe(true);
+  });
+
+  test('preserves raw failure and the handoff when classification is replayed', () => {
+    const store = createQueueStore();
+    seed(store);
+    store.reserveRepairHandoff(WS, { operation_id: 'op-a', key });
+    const before = store.snapshot(WS).repo_operations['op-a'];
+
+    store.recordRepoOperationRecovery(WS, { operation_id: 'op-a', recovery });
+
+    expect(store.snapshot(WS).repo_operations['op-a']).toEqual(before);
+  });
+
+  test('refuses replacing a recorded Bead or recording it under another key', () => {
+    const store = createQueueStore();
+    seed(store);
+    store.reserveRepairHandoff(WS, { operation_id: 'op-a', key });
+    store.recordRepairHandoffBead(WS, {
+      operation_id: 'op-a',
+      key,
+      handoff_bead_id: 'UI-one',
+      state: 'bead_recorded'
+    });
+
+    expect(
+      store.recordRepairHandoffBead(WS, {
+        operation_id: 'op-a',
+        key,
+        handoff_bead_id: 'UI-two',
+        state: 'bead_recorded'
+      }).ok
+    ).toBe(false);
+    expect(
+      store.recordRepairHandoffBead(WS, {
+        operation_id: 'op-a',
+        key: 'b'.repeat(64),
+        handoff_bead_id: 'UI-one',
+        state: 'bead_recorded'
+      }).ok
+    ).toBe(false);
+  });
+
+  test.each([
+    {},
+    { ...recovery, handoff: {} },
+    { ...recovery, code_defect: 'yes' },
+    {
+      ...recovery,
+      handoff: {
+        key,
+        state: 'bead_recorded',
+        handoff_bead_id: null,
+        recorded_at: null,
+        reserved_at: 1,
+        error: null
+      }
+    }
+  ])('drops malformed optional recovery %j', (malformed) => {
+    const store = createQueueStore();
+    seed(store);
+    const file = queueFilePath(WS);
+    const persisted = JSON.parse(fs.readFileSync(file, 'utf8'));
+    persisted.repo_operations['op-a'].recovery = malformed;
+    fs.writeFileSync(file, JSON.stringify(persisted));
+
+    const operation = createQueueStore().snapshot(WS).repo_operations['op-a'];
+
+    expect(operation).not.toHaveProperty('recovery');
+    expect(operation.failure?.detail).toBe('original');
   });
 });
 

@@ -117,7 +117,7 @@ import { logPathTemplate } from './log-path.js';
  * 키 자체가 없어 버튼이 서지 않는다 (fail-quiet).
  * @property {'running'|'paused'|'failed'|'orphaned'|'parked'|'retry_wait'|'waiting'|'provider_hold'} [status] - Raw
  * attempt status, used to distinguish failure from orphan interruption.
- * @property {string} [status_label] - Terminal status label for a failed tile.
+ * @property {string} [status_label] - Current recovery or terminal status label.
  * @property {boolean} [can_pause] - Running attempt whose session id is already
  * captured. Pausing before that would strand an unresumable attempt, so the ⏸
  * button renders disabled until it lands (§2.1).
@@ -213,7 +213,9 @@ import { logPathTemplate } from './log-path.js';
  * @property {Array<{ id: string, rig: string|null, status: string }>} blockers
  * @property {number|null} since - 이 attempt가 대기로 마감된 시각.
  * @property {boolean} [returning]
- * @property {'base_moved'} [cause]
+ * @property {string} [cause]
+ * @property {string|null} [resume_reason] - Why the preserved session cannot resume.
+ * @property {{ classification: string, disposition: string, reason: string, no_progress: { count: number, key: string }|null, label: string|null, sentence: string|null }} [recovery]
  */
 
 /**
@@ -1074,7 +1076,16 @@ function heldBodyTemplate(
     return html`${dependency_chips}
       <div class="rtile__foot">${discard_actions}${retry_now}</div>`;
   }
-  const summary = summaryText(held?.summary);
+  const wait = kind === 'waiting' ? /** @type {WaitTile|null} */ (held) : null;
+  const summary = wait?.recovery
+    ? [
+        wait.recovery.sentence || wait.recovery.label,
+        wait.cause ? `원인 ${failureText(wait.cause)}` : '',
+        wait.resume_reason
+      ]
+        .filter(Boolean)
+        .join(' · ')
+    : summaryText(held?.summary);
   if (kind === 'waiting') {
     return html`${summary
       ? html`<p class="rtile__held-summary">${summary}</p>`
@@ -1148,12 +1159,16 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     !parked &&
     !retry_wait &&
     !waiting;
-  const base_moved_resume_button =
-    waiting && tile.wait?.cause === 'base_moved' && tile.can_resume === true
+  const waiting_resume_button =
+    waiting &&
+    (tile.wait?.cause === 'base_moved' || tile.wait?.recovery) &&
+    tile.can_resume === true
       ? html`<button
           type="button"
           class="op-btn rtile__resume"
-          title="보존한 후보를 같은 세션에서 최신 기준에 다시 반영합니다"
+          title=${tile.wait?.recovery
+            ? '보존한 작업을 기록된 실행 설정으로 같은 단계에서 이어갑니다'
+            : '보존한 후보를 같은 세션에서 최신 기준에 다시 반영합니다'}
           aria-label="이어하기"
         >
           ↻ 이어하기
@@ -1164,7 +1179,23 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const hold = provider_hold ? tile.hold || null : null;
   const held = parked || retry_wait || waiting || provider_hold;
   const wait_lines = (tile.wait_reasons || []).map((reason) =>
-    waitReasonLines(reason, { now })
+    waitReasonLines(
+      wait?.recovery && reason.kind === 'recovery'
+        ? {
+            ...reason,
+            headline: wait.cause
+              ? reason.headline.replace(
+                  `원인 ${wait.cause}`,
+                  `원인 ${failureText(wait.cause)}`
+                )
+              : reason.headline,
+            release: [reason.release, wait.resume_reason]
+              .filter(Boolean)
+              .join(' · ')
+          }
+        : reason,
+      { now }
+    )
   );
   const paused = !!tile.paused;
   // 대기 중인 타일에 시계를 돌리면 멈춰 있는 것이 일하는 것처럼 읽힌다.
@@ -1176,9 +1207,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           : retry_wait
             ? '재시도 대기'
             : waiting
-              ? wait?.cause === 'base_moved'
-                ? '반영 대기'
-                : '선행 대기'
+              ? wait?.recovery
+                ? wait.recovery.label || ''
+                : wait?.cause === 'base_moved'
+                  ? '반영 대기'
+                  : '선행 대기'
               : provider_hold
                 ? '공급자 보류'
                 : tile.status === 'orphaned'
@@ -1186,9 +1219,10 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                   : '실패')
       : paused
         ? '일시정지'
-        : typeof tile.started_at === 'number'
-          ? formatElapsed(now - tile.started_at)
-          : '—';
+        : tile.status_label ||
+          (typeof tile.started_at === 'number'
+            ? formatElapsed(now - tile.started_at)
+            : '—');
   // 오케 칩이 종전 `formatAttemptTuple` 줄을 대신한다 (§4); 워커 칩만 있어도
   // meta 줄은 그려져야 하므로 표시 조건은 두 칩의 존재로 판정한다.
   const exec_chips =
@@ -1348,23 +1382,31 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           >${retryWaitBadgeText(tile.retry)}</span
         >`
       : waiting
-        ? tile.wait?.cause === 'base_moved'
-          ? html`<span
-              class="rtile__held-badge"
-              title="검증된 후보를 보존했습니다 — 같은 세션에서 최신 기준 반영을 이어갑니다"
-              >반영 대기</span
-            >`
-          : tile.wait?.returning
+        ? tile.wait?.recovery
+          ? tile.wait.recovery.label
             ? html`<span
                 class="rtile__held-badge"
-                title="막고 있던 선행이 남지 않았습니다 — 다음 pass에서 후보로 돌아갑니다 (슬롯·레인 순서 대기)"
-                >${wait_lines.length > 0 ? '🔓' : '⛓'} 복귀 대기</span
+                title=${tile.wait.recovery.sentence || ''}
+                >⏳ ${tile.wait.recovery.label}</span
               >`
-            : html`<span
+            : ''
+          : tile.wait?.cause === 'base_moved'
+            ? html`<span
                 class="rtile__held-badge"
-                title="세션이 선행 미충족으로 착수를 거부했습니다 — 선행이 닫히면 저절로 다시 돕니다"
-                >⛓ 선행 대기</span
+                title="검증된 후보를 보존했습니다 — 같은 세션에서 최신 기준 반영을 이어갑니다"
+                >반영 대기</span
               >`
+            : tile.wait?.returning
+              ? html`<span
+                  class="rtile__held-badge"
+                  title="막고 있던 선행이 남지 않았습니다 — 다음 pass에서 후보로 돌아갑니다 (슬롯·레인 순서 대기)"
+                  >${wait_lines.length > 0 ? '🔓' : '⛓'} 복귀 대기</span
+                >`
+              : html`<span
+                  class="rtile__held-badge"
+                  title="세션이 선행 미충족으로 착수를 거부했습니다 — 선행이 닫히면 저절로 다시 돕니다"
+                  >⛓ 선행 대기</span
+                >`
         : provider_hold &&
             hold &&
             !(tile.wait_reasons || []).some(
@@ -1524,7 +1566,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
               >`
           : html`<span class="rtile__elapsed">${elapsed}</span>`}
         ${session || held
-          ? base_moved_resume_button
+          ? waiting_resume_button
           : failed
             ? html`<button
                   type="button"
@@ -1584,7 +1626,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
             ? park
             : waiting
               ? wait_lines.length > 0 && wait
-                ? { ...wait, summary: '' }
+                ? { ...wait, summary: '', recovery: undefined }
                 : wait
               : hold,
           discard_actions,
