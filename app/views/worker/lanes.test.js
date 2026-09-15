@@ -1,5 +1,6 @@
 import { html, render } from 'lit-html';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { providerHoldBadgeText } from './gate-labels.js';
 import {
   JUDGEMENT_CHIP_KEYS,
@@ -309,6 +310,32 @@ describe('server wait judgment rendering', () => {
     );
   });
 
+  test('shows the server return observation clock in the evidence popup', () => {
+    const since = 1_700_000_000_000;
+    const lines = waitReasonLines(
+      waitReason({
+        since,
+        verdict: 'overdue',
+        verdict_reason: {
+          code: 'return_overdue',
+          message: '선행 해제를 확인한 뒤 10분이 지나도 복귀하지 않음'
+        }
+      })
+    );
+
+    render(html`${lines.badge}${lines.times}`, mount);
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.wait-verdict summary')
+    ).click();
+
+    expect(mount.querySelector('.chip-popover')?.textContent).toContain(
+      `관측 시작 ${formatTimestampLocal(since)}`
+    );
+    expect(mount.querySelector('.wait-reason__times')?.textContent).toContain(
+      `마지막 확인 ${formatTimestampLocal(since)}`
+    );
+  });
+
   test('reuses offered operations and hides unknown actions', () => {
     const lines = waitReasonLines(
       waitReason({
@@ -508,6 +535,60 @@ describe('server wait judgment rendering', () => {
     expect(card.classList.contains('wait-reason--highlight')).toBe(true);
     expect(card.closest('details')?.open).toBe(true);
   });
+
+  test.each([false, true])(
+    'navigates an external reason with original card present %s',
+    (has_consumer) => {
+      const reason = waitReason({
+        kind: 'external_job',
+        targets: [{ id: 'G-2', kind: 'gate' }]
+      });
+      render(
+        html`${blockedSummaryTemplate([
+            { root_dir: '/repo', wait_reasons: [reason] }
+          ])}
+          <details>
+            <div
+              class="worker-mini"
+              data-root-dir="/other"
+              data-bead-id="G-2"
+            ></div>
+            <div
+              class="worker-mini"
+              data-root-dir="/repo"
+              data-bead-id="G-1"
+            ></div>
+            <div
+              class="worker-mini"
+              data-root-dir="/repo"
+              data-bead-id="G-2"
+            ></div>
+            ${has_consumer
+              ? html`<div
+                  class="worker-mini"
+                  data-root-dir="/repo"
+                  data-bead-id="A-1"
+                ></div>`
+              : ''}
+          </details>`,
+        mount
+      );
+      const card = /** @type {HTMLElement} */ (
+        mount.querySelector(
+          `[data-root-dir="/repo"][data-bead-id="${has_consumer ? 'A-1' : 'G-2'}"]`
+        )
+      );
+      card.scrollIntoView = vi.fn();
+
+      /** @type {HTMLElement} */ (
+        mount.querySelector('.wait-summary__item')
+      ).click();
+
+      expect(card.scrollIntoView).toHaveBeenCalled();
+      expect(card.classList.contains('wait-reason--highlight')).toBe(true);
+      expect(card.closest('details')?.open).toBe(true);
+    }
+  );
 
   test.each(['usage_limit', 'outage'])(
     'renders server provider judgment for %s without duplicating the probe',

@@ -1,5 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
+import { isExternalWaitObservation } from '../app/protocol.js';
 import { createExternalJobObservations } from './external-job-observations.js';
+import { createWaitObservationCollector } from './worker/attach.js';
+import { judgeWaitReasons } from './worker/wait-judgment.js';
 
 /** @param {Record<string, any>} [gate_patch] */
 function snapshot(gate_patch = {}) {
@@ -93,6 +96,56 @@ function collector(watch_value, options = {}) {
 }
 
 describe('external job observations', () => {
+  // The real observer stores clocks as ISO strings while the wire validator is
+  // an exact-key allowlist with typed fields, so an unnormalized clock drops the
+  // WHOLE row and both tabs silently render no external wait at all. Pin the
+  // producer path, not just the validator (UI-n99w gate-r1 finding 1).
+  test('projects a string-clocked watch into a row the wire accepts', async () => {
+    const { observations } = collector(
+      watch({
+        registered_at: '2026-09-14T19:14:06Z',
+        terminal_recorded_at: '2026-09-15T00:10:00Z',
+        interval_seconds: 900,
+        ssh_host: 'wallace',
+        error_count: 0
+      })
+    );
+
+    await observations.collect([
+      { root_dir: '/repos/project', name: 'project', snapshot: snapshot() }
+    ]);
+    const [row] = observations.get().rows;
+
+    expect(typeof row.registered_at).toBe('number');
+    expect(typeof row.terminal_recorded_at).toBe('number');
+    expect(isExternalWaitObservation(row)).toBe(true);
+  });
+
+  test('keeps the attach collector overlay inside the wire allowlist', async () => {
+    const shared = collector(
+      watch({
+        registered_at: '2026-09-14T19:14:06Z',
+        interval_seconds: 900,
+        ssh_host: 'wallace',
+        error_count: 0,
+        notify: { on_complete: 'discord' }
+      })
+    );
+    const overlay = createWaitObservationCollector({
+      state_root: '/state',
+      now: () => Date.parse('2026-09-15T01:00:00Z'),
+      fs: shared.io,
+      run: shared.run
+    });
+
+    const rows = await overlay.collect([
+      { root_dir: '/repos/project', name: 'project', snapshot: snapshot() }
+    ]);
+
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => isExternalWaitObservation(row))).toBe(true);
+  });
+
   test('orders complete workspace names before consumer identifiers', async () => {
     const { observations } = collector(watch());
 
@@ -301,9 +354,78 @@ describe('external job observations', () => {
     expect(observations.get().rows[0]).toMatchObject({
       job_state: '실행 대기',
       monitor_state: '감시 확인 필요',
-      monitor_reason: '자동 확인 실패'
+      monitor_reason: '자동 확인 실패',
+      service_down: null
     });
   });
+
+  test.each(
+    [
+      { loaded: false },
+      { command_matches: false },
+      { loaded_matches_plist: false },
+      { executable_exists: false }
+    ].flatMap((service) =>
+      [false, true].flatMap((overdue) =>
+        [null, 'ssh timeout'].map((last_error) => ({
+          service,
+          overdue,
+          last_error
+        }))
+      )
+    )
+  )(
+    'preserves confirmed service failure through display context %j',
+    async ({ service, overdue, last_error }) => {
+      const now = Date.parse('2026-09-15T01:00:00Z');
+      const { observations } = collector(
+        watch({
+          last_error,
+          error_count: last_error ? 1 : 0,
+          next_observation_at: overdue ? now - 60_000 : now + 60_000
+        }),
+        {
+          run: async (/** @type {string} */ file) => ({
+            stdout:
+              file === 'git'
+                ? '/repos/project/.git'
+                : JSON.stringify({
+                    ok: true,
+                    schema: 'external-job-monitor-service-v1',
+                    loaded: true,
+                    command_matches: true,
+                    loaded_matches_plist: true,
+                    executable_exists: true,
+                    ...service
+                  })
+          })
+        }
+      );
+
+      await observations.collect([
+        { root_dir: '/repos/project', name: 'project', snapshot: snapshot() }
+      ]);
+      const rows = observations.get().rows;
+      const result = judgeWaitReasons({
+        root_dir: '/repos/project',
+        queue: {},
+        external_waits: rows,
+        now
+      });
+
+      expect(rows[0].service_down).toBe(true);
+      expect(rows[0].monitor_reason.includes('확인 예정 시각도 지남')).toBe(
+        overdue
+      );
+      if (last_error) {
+        expect(rows[0].monitor_reason).toContain('원격 작업 확인 시간 초과');
+      }
+      expect(result.wait_reasons[0]).toMatchObject({
+        verdict: 'action_required',
+        verdict_reason: { code: 'service_down' }
+      });
+    }
+  );
 
   test('keeps valid observations when another watch file is corrupt', async () => {
     const { observations, io } = collector(watch());

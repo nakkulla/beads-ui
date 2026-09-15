@@ -2140,23 +2140,39 @@ export function blockedSummary(workspaces) {
  * @param {Event} event
  * @param {string} root_dir
  * @param {string} bead_id
+ * @param {import('../../protocol.js').WaitReason} reason
  * @param {((root_dir: string, bead_id: string) => void)|undefined} reveal
  */
-function scrollToWaitCard(event, root_dir, bead_id, reveal) {
+function scrollToWaitCard(event, root_dir, bead_id, reason, reveal) {
   event.stopPropagation();
   const source = /** @type {HTMLElement} */ (event.currentTarget);
   const scope = source.closest('.worker-console, .mon') || source.ownerDocument;
-  if (reveal) {
-    reveal(root_dir, bead_id);
+  const target_ids = [
+    bead_id,
+    ...(reason.kind === 'external_job'
+      ? reason.targets
+          .filter((target) => target.kind === 'gate')
+          .map((target) => target.id)
+      : [])
+  ];
+  /** @type {Element|undefined} */
+  let card;
+  for (const target_id of target_ids) {
+    if (reveal) {
+      reveal(root_dir, target_id);
+    }
+    card = Array.from(
+      scope.querySelectorAll('.worker-mini, .rtile, .worker-card')
+    ).find(
+      (entry) =>
+        entry.getAttribute('data-bead-id') === target_id &&
+        entry.closest('[data-root-dir]')?.getAttribute('data-root-dir') ===
+          root_dir
+    );
+    if (card) {
+      break;
+    }
   }
-  const card = Array.from(
-    scope.querySelectorAll('.worker-mini, .rtile, .worker-card')
-  ).find(
-    (entry) =>
-      entry.getAttribute('data-bead-id') === bead_id &&
-      entry.closest('[data-root-dir]')?.getAttribute('data-root-dir') ===
-        root_dir
-  );
   if (!(card instanceof HTMLElement)) {
     return;
   }
@@ -2203,7 +2219,13 @@ export function blockedSummaryTemplate(workspaces, reveal) {
                     type="button"
                     class="wait-summary__item"
                     @click=${(/** @type {Event} */ event) =>
-                      scrollToWaitCard(event, entry.root_dir, entry.id, reveal)}
+                      scrollToWaitCard(
+                        event,
+                        entry.root_dir,
+                        entry.id,
+                        reason,
+                        reveal
+                      )}
                   >
                     ${waitVerdictLabel(reason)} ${entry.name} ${entry.id} —
                     ${reason.headline}
@@ -2229,17 +2251,19 @@ export function expandWaitSubject(model, collapse, root_dir, bead_id) {
     ...model.queue,
     ...model.running,
     ...model.pr_wait,
-    ...model.runnable
+    ...model.runnable,
+    ...model.external_waits
   ].find((entry) => entry.root_dir === root_dir && entry.id === bead_id);
   if (!item) {
     return;
   }
   const serial = /^s[1-5]$/.test(item.lane);
-  const lane = serial
-    ? 'queue'
-    : item.lane === 'runnable'
-      ? 'candidate'
-      : item.lane;
+  const lane =
+    serial || item.lane === 'external_wait'
+      ? 'queue'
+      : item.lane === 'runnable'
+        ? 'candidate'
+        : item.lane;
   if (
     lane === 'queue' ||
     lane === 'running' ||
@@ -2251,7 +2275,11 @@ export function expandWaitSubject(model, collapse, root_dir, bead_id) {
     }
   }
   const area = serial ? 'serial' : 'parallel';
-  if (lane === 'queue' && collapse.isAreaCollapsed(area)) {
+  if (
+    lane === 'queue' &&
+    item.lane !== 'external_wait' &&
+    collapse.isAreaCollapsed(area)
+  ) {
     collapse.toggleArea(area);
   }
 }

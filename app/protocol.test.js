@@ -70,6 +70,7 @@ describe('protocol', () => {
       notify: { on_complete: 'discord' },
       registered_at: 1,
       terminal_recorded_at: null,
+      service_down: true,
       collected_at: 3,
       stale: false
     };
@@ -81,6 +82,25 @@ describe('protocol', () => {
 
   test('rejects a judgment material carrying the wrong type', () => {
     expect(isExternalWaitObservation({ ...external_wait, ssh_host: 42 })).toBe(
+      false
+    );
+  });
+
+  test.each([true, false, null, undefined])(
+    'accepts structured service state %s',
+    (service_down) => {
+      expect(
+        isExternalWaitObservation({ ...external_wait, service_down })
+      ).toBe(true);
+    }
+  );
+
+  test.each([
+    { service_down: 'true' },
+    { registered_at: '2026-09-14T19:14:06Z' },
+    { terminal_recorded_at: '2026-09-15T00:10:00Z' }
+  ])('rejects unnormalized observation material %j', (fields) => {
+    expect(isExternalWaitObservation({ ...external_wait, ...fields })).toBe(
       false
     );
   });

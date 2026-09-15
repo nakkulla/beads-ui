@@ -125,7 +125,7 @@ function validWatch(watch) {
 
 /**
  * @param {Record<string, any>|null} service
- * @returns {{ ok: boolean, reason: string|null }}
+ * @returns {{ ok: boolean, reason: string|null, down?: boolean }}
  */
 function serviceState(service) {
   if (!service) {
@@ -147,20 +147,28 @@ function serviceState(service) {
     };
   }
   if (service.loaded !== true) {
-    return { ok: false, reason: '자동 확인 서비스가 등록되지 않음' };
+    return {
+      ok: false,
+      reason: '자동 확인 서비스가 등록되지 않음',
+      down: true
+    };
   }
   if (
     service.command_matches !== true ||
     service.loaded_matches_plist !== true ||
     service.executable_exists !== true
   ) {
-    return { ok: false, reason: '자동 확인 서비스 명령이 설치본과 다름' };
+    return {
+      ok: false,
+      reason: '자동 확인 서비스 명령이 설치본과 다름',
+      down: true
+    };
   }
   const tick = isRecord(service.last_tick) ? service.last_tick : null;
   if (tick && tick.skipped !== true && Number(tick.exit_code) !== 0) {
-    return { ok: false, reason: '최근 자동 확인 실행 실패' };
+    return { ok: false, reason: '최근 자동 확인 실행 실패', down: false };
   }
-  return { ok: true, reason: null };
+  return { ok: true, reason: null, down: false };
 }
 
 /**
@@ -342,8 +350,11 @@ function projectWatch(
     previous_job_state: job_state.previous_label,
     monitor_state: monitor_state.label,
     monitor_reason: monitor_state.reason,
+    service_down: service_state.down ?? null,
     overdue: monitor_state.overdue,
     last_observed_at: time(watch.last_observed_at),
+    registered_at: time(watch.registered_at),
+    terminal_recorded_at: time(watch.terminal_recorded_at),
     next_observation_at:
       watch.stage === 'complete' || watch.stage === 'stopped'
         ? null

@@ -5,6 +5,80 @@ const NOW = 1_700_000_000_000;
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
 
+test('reveals the external gate from the summary when the wait pane is collapsed', () => {
+  const row = {
+    kind: 'external_wait',
+    root_dir: '/repo',
+    workspace_name: 'repo',
+    gate_id: 'G-1',
+    gate_title: '계산 관측',
+    consumer_id: 'A-1',
+    consumer_title: '분석',
+    watch_id: 'a'.repeat(24),
+    job_id: '42',
+    stage: 'active',
+    gate_open: true,
+    recent_complete: false,
+    job_state: '계산 중',
+    previous_job_state: null,
+    monitor_state: '자동 확인 중',
+    monitor_reason: null,
+    overdue: false,
+    last_observed_at: 123,
+    next_observation_at: 456,
+    completed_at: null,
+    recovery_needed: false
+  };
+  const reason = {
+    kind: 'external_job',
+    subject: { bead_id: 'A-1', root_dir: '/repo' },
+    headline: '계산 종료 대기',
+    release: '관측 후 자동 해제',
+    verdict: 'normal',
+    targets: [{ id: 'G-1', kind: 'gate' }],
+    actions: []
+  };
+  window.localStorage.setItem(
+    'beads-ui.monitor.lane-collapsed',
+    JSON.stringify({ lanes: { queue: true }, areas: {} })
+  );
+  const original_scroll = HTMLElement.prototype.scrollIntoView;
+  const scroll = vi.fn();
+  HTMLElement.prototype.scrollIntoView = scroll;
+  const { mount, view } = setup({
+    workspaces: [
+      workspace({
+        root_dir: '/repo',
+        external_waits: [row],
+        wait_reasons: [reason]
+      })
+    ],
+    workspaces_state: [state({ root_dir: '/repo' })]
+  });
+  view.load();
+  expect(mount.querySelector('.worker-mini[data-bead-id="A-1"]')).toBeNull();
+  expect(mount.querySelector('.worker-mini[data-bead-id="G-1"]')).toBeNull();
+
+  try {
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.wait-summary__item')
+    ).click();
+
+    const gate = mount.querySelector('.worker-mini[data-bead-id="G-1"]');
+    expect(gate?.classList.contains('wait-reason--highlight')).toBe(true);
+    expect(gate?.closest('details')?.open).toBe(true);
+    expect(scroll).toHaveBeenCalled();
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('beads-ui.monitor.lane-collapsed') || '{}'
+      ).lanes.queue
+    ).toBe(false);
+  } finally {
+    view.clear();
+    HTMLElement.prototype.scrollIntoView = original_scroll;
+  }
+});
+
 test.each(['settled', 'still_waiting', 'skipped', 'running', 'error'])(
   'sends external check-now and disables its button until %s arrives',
   async (outcome) => {

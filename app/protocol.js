@@ -93,6 +93,7 @@
  * @property {string|null} previous_job_state
  * @property {string} monitor_state
  * @property {string|null} monitor_reason
+ * @property {boolean|null} [service_down] - Confirmed service registration or command failure; null means unknown.
  * @property {boolean} overdue
  * @property {number|null} last_observed_at
  * @property {number|null} next_observation_at
@@ -147,6 +148,7 @@ const EXTERNAL_WAIT_FIELDS = new Set([
   'previous_job_state',
   'monitor_state',
   'monitor_reason',
+  'service_down',
   'overdue',
   'last_observed_at',
   'next_observation_at',
@@ -227,6 +229,9 @@ export function isExternalWaitObservation(value) {
       (typeof row.collected_at === 'number' &&
         Number.isFinite(row.collected_at))) &&
     (row.stale === undefined || typeof row.stale === 'boolean') &&
+    (row.service_down === undefined ||
+      row.service_down === null ||
+      typeof row.service_down === 'boolean') &&
     ['interval_seconds', 'error_count', 'registered_at'].every(
       (key) =>
         row[key] === undefined ||

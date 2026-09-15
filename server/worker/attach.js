@@ -152,9 +152,7 @@ export function createWaitObservationCollector(options = {}) {
             interval_seconds: watch.interval_seconds,
             ssh_host: watch.ssh_host,
             error_count: watch.error_count,
-            notify: { on_complete: watch.notify?.on_complete },
-            registered_at: watch.registered_at,
-            terminal_recorded_at: watch.terminal_recorded_at
+            notify: { on_complete: watch.notify?.on_complete }
           });
         }
         return raw;

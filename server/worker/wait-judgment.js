@@ -204,6 +204,7 @@ export function judgeWaitReasons(input) {
       row.root_dir !== root_dir ||
       !row.consumer_id ||
       !row.gate_id ||
+      !row.watch_id ||
       row.gate_open !== true ||
       seen_gates.has(row.gate_id)
     ) {
@@ -271,12 +272,7 @@ export function judgeWaitReasons(input) {
     if (row.stage === 'stopped') {
       judge(result, 'action_required', 'monitor_stopped');
     }
-    if (
-      [
-        '자동 확인 서비스가 등록되지 않음',
-        '자동 확인 서비스 명령이 설치본과 다름'
-      ].includes(row.monitor_reason)
-    ) {
+    if (row.service_down === true) {
       judge(result, 'action_required', 'service_down');
     }
     if (row.error_count >= WAIT_THRESHOLDS.observation_errors) {
@@ -373,7 +369,11 @@ export function judgeWaitReasons(input) {
             ? '다른 저장소 선행이 닫히면 자동 복귀'
             : '선행이 닫히면 bd ready 재스캔으로 자동 복귀'
         );
-        addClocks(result, { since: attempt?.finished_at || record?.at });
+        addClocks(result, {
+          since: returning
+            ? return_observed_at[return_key]
+            : attempt?.finished_at || record?.at
+        });
         groups.set(kind, result);
       }
       const rig = line(

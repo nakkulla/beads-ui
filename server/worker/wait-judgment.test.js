@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { isExternalWaitObservation } from '../../app/protocol.js';
 import {
   WAIT_JUDGE_INTERVAL_SECONDS,
   createWaitJudge,
@@ -164,11 +165,7 @@ describe('wait judgment external work', () => {
     [{ recovery_needed: true }, 'job_failed'],
     [{ error_count: 3 }, 'observe_failing'],
     [{ stage: 'stopped' }, 'monitor_stopped'],
-    [{ monitor_reason: '자동 확인 서비스가 등록되지 않음' }, 'service_down'],
-    [
-      { monitor_reason: '자동 확인 서비스 명령이 설치본과 다름' },
-      'service_down'
-    ]
+    [{ service_down: true }, 'service_down']
   ])('prioritizes the confirmed action reason %j', (fields, code) => {
     const row = external({ next_observation_at: NOW - 30 * MINUTE, ...fields });
 
@@ -195,7 +192,9 @@ describe('wait judgment external work', () => {
   test.each([
     { stage: 'complete', gate_open: false },
     { root_dir: '/other' },
-    { consumer_id: null }
+    { consumer_id: null },
+    { watch_id: null },
+    { watch_id: undefined }
   ])('omits a gate without an active local wait %j', (fields) => {
     const result = run({ external_waits: [external(fields)] });
 
@@ -362,6 +361,7 @@ describe('wait judgment prerequisites', () => {
 
     expect(result.wait_reasons[0]).toMatchObject({
       verdict,
+      since: NOW - Number(age),
       ...(verdict === 'overdue'
         ? { verdict_reason: { code: 'return_overdue' } }
         : {})
@@ -377,6 +377,7 @@ describe('wait judgment prerequisites', () => {
     expect(result.observed_at.return_observed_at).toEqual({
       'UI-consumer:a': NOW
     });
+    expect(result.wait_reasons[0].since).toBe(NOW);
   });
 
   test('drops the return clock when prerequisites become unknown', () => {
@@ -843,83 +844,115 @@ describe('wait-judge runtime', () => {
     );
   });
 
-  test('retains watch judgment fields through the existing collector read', async () => {
-    const watch_id = 'a'.repeat(24);
-    const gate = {
-      id: 'UI-gate',
-      issue_type: 'gate',
-      status: 'open',
-      await_id: watch_id,
-      await_type: 'human'
-    };
-    const consumer = {
-      id: 'UI-consumer',
-      title: '계산',
-      status: 'in_progress'
-    };
-    const readFile = vi.fn(async () =>
-      JSON.stringify({
-        schema: 'external-job-monitor-v1',
-        watch_id,
-        repo: ROOT,
-        gate_id: gate.id,
-        consumer: consumer.id,
-        job_id: '42',
-        stage: 'active',
-        observation_state: 'RUNNING',
-        last_observed_at: NOW,
-        next_observation_at: NOW + MINUTE,
-        interval_seconds: 300,
-        ssh_host: 'wallace',
-        error_count: 3,
-        notify: { on_complete: 'discord' }
-      })
-    );
-    const collector = createWaitObservationCollector({
-      state_root: '/state',
-      now: () => NOW,
-      fs: { readdir: async () => [`${watch_id}.json`], readFile },
-      run: async (file) => ({
-        stdout:
-          file === 'git'
-            ? '/repo/.git'
-            : JSON.stringify({
-                ok: true,
-                schema: 'external-job-monitor-service-v1',
-                loaded: true,
-                command_matches: true,
-                loaded_matches_plist: true,
-                executable_exists: true
-              })
-      })
-    });
+  test.each([
+    {
+      notify: { on_complete: 'discord' },
+      error_count: 3,
+      interval_seconds: 300,
+      terminal_recorded_at: '2026-09-15T00:10:00Z'
+    },
+    {
+      notify: null,
+      error_count: 0,
+      interval_seconds: 900,
+      terminal_recorded_at: null
+    }
+  ])(
+    'transmits a collected ISO watch through client validation %j',
+    async (fields) => {
+      const watch_id = 'a'.repeat(24);
+      const gate = {
+        id: 'UI-gate',
+        issue_type: 'gate',
+        status: 'open',
+        await_id: watch_id,
+        await_type: 'human'
+      };
+      const consumer = {
+        id: 'UI-consumer',
+        title: '계산',
+        status: 'in_progress'
+      };
+      const readFile = vi.fn(async () =>
+        JSON.stringify({
+          schema: 'external-job-monitor-v1',
+          watch_id,
+          repo: ROOT,
+          gate_id: gate.id,
+          consumer: consumer.id,
+          job_id: '42',
+          stage: 'active',
+          observation_state: 'RUNNING',
+          last_observed_at: NOW,
+          next_observation_at: NOW + MINUTE,
+          registered_at: '2026-09-14T19:14:06Z',
+          ssh_host: 'wallace',
+          ...fields
+        })
+      );
+      const collector = createWaitObservationCollector({
+        state_root: '/state',
+        now: () => NOW,
+        fs: { readdir: async () => [`${watch_id}.json`], readFile },
+        run: async (file) => ({
+          stdout:
+            file === 'git'
+              ? '/repo/.git'
+              : JSON.stringify({
+                  ok: true,
+                  schema: 'external-job-monitor-service-v1',
+                  loaded: true,
+                  command_matches: true,
+                  loaded_matches_plist: true,
+                  executable_exists: true
+                })
+        })
+      });
 
-    await collector.collect([
-      {
-        root_dir: ROOT,
-        name: 'repo',
-        snapshot: {
-          all: [gate, consumer],
-          id_index: new Map(
-            /** @type {Array<[string, any]>} */ ([
-              [gate.id, gate],
-              [consumer.id, consumer]
-            ])
-          ),
-          blocks_in: new Map([[gate.id, [consumer.id]]])
+      await collector.collect([
+        {
+          root_dir: ROOT,
+          name: 'repo',
+          snapshot: {
+            all: [gate, consumer],
+            id_index: new Map(
+              /** @type {Array<[string, any]>} */ ([
+                [gate.id, gate],
+                [consumer.id, consumer]
+              ])
+            ),
+            blocks_in: new Map([[gate.id, [consumer.id]]])
+          }
         }
-      }
-    ]);
-    const result = run({ external_waits: collector.get().rows })
-      .wait_reasons[0];
+      ]);
+      const transmitted = JSON.parse(JSON.stringify(collector.get().rows));
+      const accepted = transmitted.filter(isExternalWaitObservation);
+      const result = run({ external_waits: accepted }).wait_reasons[0];
 
-    expect(readFile).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({
-      verdict_reason: { code: 'observe_failing' },
-      release:
-        '5분마다 자동 확인 · 종료 확인되면 대기 자동 해제 · 완료 시 Discord 알림'
-    });
-  });
+      expect(readFile).toHaveBeenCalledTimes(1);
+      expect(accepted).toHaveLength(1);
+      expect(accepted[0]).toMatchObject({
+        registered_at: Date.parse('2026-09-14T19:14:06Z'),
+        terminal_recorded_at:
+          fields.terminal_recorded_at === null
+            ? null
+            : Date.parse(fields.terminal_recorded_at),
+        interval_seconds: fields.interval_seconds,
+        ssh_host: 'wallace',
+        error_count: fields.error_count
+      });
+      expect(result).toMatchObject({
+        verdict: fields.error_count === 3 ? 'action_required' : 'normal',
+        release: `${fields.interval_seconds / 60}분마다 자동 확인 · 종료 확인되면 대기 자동 해제${fields.notify ? ' · 완료 시 Discord 알림' : ''}`,
+        actions: [
+          {
+            op: 'monitor_tick_now',
+            payload: { root_dir: ROOT, watch_id, since: NOW }
+          }
+        ]
+      });
+    }
+  );
 
   test('forgets return clocks after stopping the workspace runtime', async () => {
     vi.useFakeTimers();
