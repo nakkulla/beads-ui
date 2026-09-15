@@ -269,41 +269,51 @@ afterEach(() => {
 });
 
 describe('worker attempt route refusal', () => {
-  test('returns the route change without creating a fanout snapshot', async () => {
-    const socket = /** @type {any} */ ({ send: vi.fn() });
-    const route_change = {
-      prior_lane: 'quick_fix',
-      current_route: 'spec_backed'
-    };
-    const resume = vi.fn(async () => ({
-      ok: false,
-      reason: 'route_changed',
-      route_change
-    }));
-    setConnWorkspace(socket, { root_dir: WS, db_path: '/tmp/db' });
-    __registerWorkerAttachmentForTest(
-      WS,
-      /** @type {any} */ ({ scheduler: { resume } })
-    );
-    const store = getWorkerRuntime().queueStore;
-    const revision = store.snapshot(WS).revision;
-    const snapshot = vi.spyOn(store, 'snapshot');
+  test.each([
+    [
+      'route_changed',
+      { prior_lane: 'quick_fix', current_route: 'spec_backed' }
+    ],
+    ['worktree_missing', undefined]
+  ])(
+    'serializes %s without absent route details or fanout',
+    async (reason, route_change) => {
+      const socket = /** @type {any} */ ({ send: vi.fn() });
+      const resume = vi.fn(async () => ({
+        ok: false,
+        reason,
+        route_change
+      }));
+      setConnWorkspace(socket, { root_dir: WS, db_path: '/tmp/db' });
+      __registerWorkerAttachmentForTest(
+        WS,
+        /** @type {any} */ ({ scheduler: { resume } })
+      );
+      const store = getWorkerRuntime().queueStore;
+      const revision = store.snapshot(WS).revision;
+      const snapshot = vi.spyOn(store, 'snapshot');
 
-    await handleWorkerAttemptResume(socket, {
-      id: 'resume-route',
-      type: 'worker-attempt-resume',
-      payload: { attempt_id: 'route-prior', expected_revision: revision }
-    });
+      await handleWorkerAttemptResume(socket, {
+        id: 'resume-route',
+        type: 'worker-attempt-resume',
+        payload: { attempt_id: 'route-prior', expected_revision: revision }
+      });
 
-    expect(JSON.parse(socket.send.mock.calls[0][0]).payload).toMatchObject({
-      resumed: false,
-      reason: 'route_changed',
-      route_change
-    });
-    expect(resume).toHaveBeenCalledOnce();
-    expect(socket.send).toHaveBeenCalledOnce();
-    expect(snapshot).toHaveBeenCalledOnce();
-  });
+      const payload = JSON.parse(socket.send.mock.calls[0][0]).payload;
+      expect(payload).toMatchObject({
+        resumed: false,
+        reason
+      });
+      if (route_change) {
+        expect(payload.route_change).toEqual(route_change);
+      } else {
+        expect(payload).not.toHaveProperty('route_change');
+      }
+      expect(resume).toHaveBeenCalledOnce();
+      expect(socket.send).toHaveBeenCalledOnce();
+      expect(snapshot).toHaveBeenCalledOnce();
+    }
+  );
 });
 
 describe('decorateQueue bead_dependents (UI-8x90 §6.2)', () => {

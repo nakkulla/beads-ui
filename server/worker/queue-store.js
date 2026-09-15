@@ -7190,6 +7190,30 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Persist a continuation diagnostic without settling terminal evidence.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, patch: Partial<Pick<Attempt, 'resume_refused'>> }} input
+     * @returns {QueueOpResult}
+     */
+    recordAttemptDiagnostic(workspace, input) {
+      const { attempt_id, patch } = input;
+      return applyUnconditional(workspace, (next) => {
+        const cur = next.attempts[attempt_id];
+        if (!cur) {
+          return false;
+        }
+        next.attempts[attempt_id] = makeAttempt({
+          ...cur,
+          ...patch,
+          attempt_id,
+          bead_id: cur.bead_id
+        });
+        return true;
+      });
+    },
+
+    /**
      * Merge a patch into an existing attempt record (scheduler-owned, no CAS).
      * Fills runtime fields at dispatch / termination (spec §5.2).
      *

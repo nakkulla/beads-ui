@@ -11980,7 +11980,7 @@ export function createScheduler(deps) {
       const current =
         deps.store.snapshot(workspace).attempts?.[prior.attempt_id];
       if (current?.resume_refused !== resume_refused) {
-        deps.store.updateAttempt(workspace, {
+        deps.store.recordAttemptDiagnostic(workspace, {
           attempt_id: prior.attempt_id,
           patch: { resume_refused }
         });
@@ -12078,6 +12078,7 @@ export function createScheduler(deps) {
       return { ok: false, reason: serial_launch.reason };
     }
     const serial_lease = serial_launch.lease;
+    const receipt_baseline = await captureReceiptBaseline(bead_id);
     const revalidated = await revalidateContinuationForAttempt(
       workspace,
       prior,
@@ -12097,7 +12098,6 @@ export function createScheduler(deps) {
       typeof bead_snapshot.workflow_mode_source === 'string'
         ? bead_snapshot.workflow_mode_source
         : null;
-    const receipt_baseline = await captureReceiptBaseline(bead_id);
     const relaunch_attempt = {
       attempt_id: new_attempt_id,
       bead_id,

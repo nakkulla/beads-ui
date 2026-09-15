@@ -1117,6 +1117,75 @@ describe('scheduler route change refusal', () => {
     expect(resumed).toMatchObject({ ok: true });
   });
 
+  test('refuses a route changed during receipt baseline capture and releases the lease', async () => {
+    const config = { B1: { route: 'spec_backed' } };
+    const env = routeEnv(
+      { config },
+      { quickfix_lane: false, serial_lane_id: 's1' }
+    );
+    env.store.setSerialLaneCount(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      count: 1
+    });
+    const readMetadata = env.bd.readMetadata.bind(env.bd);
+    let flip_route = true;
+    vi.spyOn(env.bd, 'readMetadata').mockImplementation(
+      async (bead_id, key) => {
+        const value = await readMetadata(bead_id, key);
+        if (key === 'impl_entry' && flip_route) {
+          config.B1.route = 'quick_fix';
+          flip_route = false;
+        }
+        return value;
+      }
+    );
+
+    const result = await env.scheduler.resume(WS, 'route-prior');
+
+    expect(flip_route).toBe(false);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'route_changed',
+      route_change: { prior_lane: 'pr', current_route: 'quick_fix' }
+    });
+    expectNoExecution(env);
+    config.B1.route = 'spec_backed';
+    await expect(
+      env.scheduler.resume(WS, 'route-prior')
+    ).resolves.toMatchObject({ ok: true });
+  });
+
+  test('preserves unconsumed receipts and delegation records when recording a refusal', async () => {
+    const env = routeEnv();
+    writeUsageReceipt('route-prior', 'known-receipt');
+    env.store.updateAttempt(WS, { attempt_id: 'route-prior', patch: {} });
+    const receipt_file = writeUsageReceipt('route-prior');
+    const monitor_file = writeDelegationStream('route-prior', [
+      {
+        turn_id: null,
+        recorded_at: '2026-08-18T04:27:00.000Z',
+        event: { type: 'session.started' }
+      }
+    ]);
+    const receipt_bytes = fs.readFileSync(receipt_file);
+    const monitor_bytes = fs.readFileSync(monitor_file);
+    const before = env.store.snapshot(WS).attempts['route-prior'];
+    expect(before.usage_legs).toHaveLength(1);
+    const update = vi.spyOn(env.store, 'updateAttempt');
+
+    const result = await env.scheduler.resume(WS, 'route-prior');
+
+    expect(result.reason).toBe('route_changed');
+    expect(env.store.snapshot(WS).attempts['route-prior']).toEqual({
+      ...before,
+      resume_refused: 'route_changed:quick_fix→spec_backed'
+    });
+    expect(fs.readFileSync(receipt_file)).toEqual(receipt_bytes);
+    expect(fs.readFileSync(monitor_file)).toEqual(monitor_bytes);
+    expect(update).not.toHaveBeenCalled();
+    expectNoExecution(env);
+  });
+
   test('refuses base-moved waiting before proving the preserved candidate', async () => {
     const observeOwnedByBead = vi.fn();
     const resolveBase = vi.fn();
@@ -1244,7 +1313,7 @@ describe('scheduler route change refusal', () => {
     const env = routeEnv();
     await env.scheduler.resume(WS, 'route-prior');
     const before = env.store.snapshot(WS);
-    const update = vi.spyOn(env.store, 'updateAttempt');
+    const update = vi.spyOn(env.store, 'recordAttemptDiagnostic');
 
     await env.scheduler.resume(WS, 'route-prior');
 
@@ -1254,7 +1323,7 @@ describe('scheduler route change refusal', () => {
 
   test('records overlapping duplicate refusals only once', async () => {
     const env = routeEnv();
-    const update = vi.spyOn(env.store, 'updateAttempt');
+    const update = vi.spyOn(env.store, 'recordAttemptDiagnostic');
 
     await Promise.all([
       env.scheduler.resume(WS, 'route-prior'),

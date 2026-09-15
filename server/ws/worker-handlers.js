@@ -5422,7 +5422,7 @@ export async function handleWorkerAttemptResume(ws, req) {
         new_attempt_id: result.attempt_id || null,
         reason: result.ok ? null : result.reason || null,
         continuation_mismatch: result.continuation_mismatch || null,
-        route_change: result.route_change || null,
+        ...(result.route_change ? { route_change: result.route_change } : {}),
         fallback: result.fallback || null
       })
     )
