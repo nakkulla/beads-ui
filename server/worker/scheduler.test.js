@@ -35,6 +35,7 @@ import {
   usageReceiptInboxDir
 } from './state-paths.js';
 import { createUsageStore } from './usage-store.js';
+import * as work_recovery_policy from './work-recovery-policy.js';
 
 // foreign blocker 조회의 양성 경로 seam (UI-d3i1 §12): 기본은 원 구현이고, 한
 // 테스트가 `fn`을 채우면 그 테스트 동안만 그 답을 돌려준다.
@@ -385,6 +386,25 @@ afterEach(() => {
  */
 function flush() {
   return new Promise((r) => setImmediate(r));
+}
+
+/**
+ * @param {any} attempt
+ * @param {string} classification
+ * @param {string} [reason]
+ */
+function expectRecoveryWait(attempt, classification, reason = 'unclassified') {
+  expect(attempt).toMatchObject({
+    status: 'waiting',
+    cause_detail: {
+      recovery: {
+        classification,
+        disposition: 'wait',
+        reason,
+        policy_schema: 1
+      }
+    }
+  });
 }
 
 /**
@@ -928,6 +948,7 @@ function setup(opts) {
       return { code: 1, stdout: '', stderr: '' };
     });
   const scheduler = createScheduler({
+    workRecoveryPolicy: /** @type {any} */ (opts).workRecoveryPolicy,
     store,
     makeRunner: opts.makeRunner || runner.factory,
     accountCatalog: opts.accountCatalog,
@@ -1003,6 +1024,349 @@ function setup(opts) {
   });
   return { store, runner, bd, verify, worktree, scheduler, usage };
 }
+
+describe('scheduler work recovery waits', () => {
+  /** @param {Record<string, any>} [options] */
+  function recoveryEnv(options = {}) {
+    const timeline = { append: vi.fn() };
+    const notify = { attemptFailed: vi.fn() };
+    const env = setup({
+      config: { S1: { status: 'open', model: 'opus', effort: 'high' } },
+      slots: 1,
+      verifyOk: false,
+      timeline,
+      notify,
+      ...options
+    });
+    const comment = vi.fn(async () => {});
+    /** @type {any} */ (env.bd).comment = comment;
+    return { ...env, timeline, notify, comment };
+  }
+
+  /**
+   * @param {ReturnType<typeof recoveryEnv>} env
+   * @param {Partial<import('./runner/session.js').RunnerVerdict>} verdict
+   * @returns {Promise<any>}
+   */
+  async function endSession(env, verdict) {
+    env.runner.finish('S1', verdict);
+    await flush();
+    await flush();
+    const attempts = Object.values(env.store.snapshot(WS).attempts);
+    return attempts[attempts.length - 1];
+  }
+
+  test.each([
+    [
+      'no result line',
+      'work remains',
+      null,
+      'session_ended_unresolved',
+      'finished_without_result_line',
+      'unclassified'
+    ],
+    [
+      'failure line',
+      '실패 · 검증 중단',
+      { kind: 'failure' },
+      'session_failed:reported_failure',
+      'past_failure_line',
+      'unclassified'
+    ],
+    [
+      'provider wait',
+      '대기 · recovery:provider',
+      { kind: 'recovery_wait', reason: 'provider' },
+      'session_recovery_wait',
+      'session_recovery_wait',
+      'provider'
+    ],
+    [
+      'unknown token',
+      '대기 · recovery:invented',
+      { kind: 'recovery_wait', reason: 'invented' },
+      'session_recovery_wait',
+      'unknown_error',
+      'unclassified'
+    ],
+    [
+      'reconciliation',
+      '대기 · recovery:reconcile',
+      { kind: 'recovery_wait', reason: 'reconcile' },
+      'session_recovery_wait',
+      'session_recovery_wait',
+      'reconcile'
+    ]
+  ])(
+    'preserves %s evidence without a failure event',
+    async (_name, summary, terminal_result, cause, classification, reason) => {
+      const env = recoveryEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+
+      const attempt = await endSession(env, {
+        success: true,
+        exit: 0,
+        summary: /** @type {string} */ (summary),
+        terminal_result: /** @type {any} */ (terminal_result)
+      });
+
+      expect(attempt).toMatchObject({
+        status: 'waiting',
+        cause,
+        finished_at: 1000,
+        cause_detail: {
+          summary,
+          recovery: {
+            classification,
+            disposition: reason === 'reconcile' ? 'reconcile' : 'wait',
+            reason,
+            policy_schema: 1
+          }
+        }
+      });
+      expect(attempt.cause_detail).not.toHaveProperty('blockers');
+      if (
+        terminal_result &&
+        typeof terminal_result === 'object' &&
+        'reason' in terminal_result
+      ) {
+        expect(attempt.cause_detail.reason_token).toBe(terminal_result.reason);
+      }
+      expect(env.timeline.append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'session_ended',
+          seq: 'waiting',
+          summary: `대기 · recovery:${reason} — ${cause}`
+        })
+      );
+      expect(
+        env.timeline.append.mock.calls.some(
+          ([event]) => event.kind === 'attempt_failed'
+        )
+      ).toBe(false);
+      expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+      expect(env.comment).not.toHaveBeenCalled();
+      expect(env.bd.statuses.S1).toBe('open');
+    }
+  );
+
+  test('keeps an exhausted env ladder as provider waiting', async () => {
+    const env = recoveryEnv();
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    for (let rung = 0; rung < 3; rung += 1) {
+      env.store.applyQueueHold(WS, {
+        event: {
+          kind: 'env_failure',
+          bead_id: 'S1',
+          attempt_id,
+          cause: 'session_failed:is_error:api',
+          at: 1000,
+          origin_attempt_id: attempt_id
+        },
+        now: 1000
+      });
+    }
+
+    const attempt = await endSession(env, {
+      success: false,
+      reason: 'is_error',
+      exit: 1,
+      summary: 'fetch failed'
+    });
+
+    expect(attempt).toMatchObject({
+      status: 'waiting',
+      cause: 'session_failed:is_error',
+      retry: null,
+      cause_detail: {
+        summary: 'fetch failed',
+        env_pattern: 'api',
+        recovery: {
+          classification: 'transient_retry_exhausted',
+          disposition: 'wait',
+          reason: 'provider',
+          policy_schema: 1
+        }
+      }
+    });
+    expect(env.store.snapshot(WS).lineages).toEqual([]);
+    expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    expect(env.comment).not.toHaveBeenCalled();
+    expect(
+      env.timeline.append.mock.calls.some(
+        ([event]) => event.kind === 'attempt_failed'
+      )
+    ).toBe(false);
+  });
+
+  test('keeps unsupported policy on the legacy failed path', async () => {
+    const env = recoveryEnv({
+      workRecoveryPolicy: {
+        ...work_recovery_policy,
+        workRecoveryPolicySupported: () => false
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    const attempt = await endSession(env, {
+      success: true,
+      exit: 0,
+      summary: 'unfinished'
+    });
+
+    expect(attempt).toMatchObject({
+      status: 'failed',
+      cause: 'session_ended_unresolved',
+      cause_detail: { summary: 'unfinished' }
+    });
+    expect(attempt.cause_detail).not.toHaveProperty('recovery');
+    expect(env.notify.attemptFailed).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    [true, 'spec_backed'],
+    [false, 'spec_backed'],
+    [true, 'quick_fix'],
+    [false, 'quick_fix']
+  ])(
+    'advertises readiness only when supported=%s on route %s',
+    async (supported, route) => {
+      const env = recoveryEnv({
+        config: { S1: { route } },
+        workRecoveryPolicy: {
+          ...work_recovery_policy,
+          workRecoveryPolicySupported: () => supported
+        }
+      });
+      seedQueue(env.store, ['S1']);
+
+      await env.scheduler.tick(WS);
+
+      const settings = env.runner.settingsFor('S1');
+      for (const [name, value] of Object.entries(
+        work_recovery_policy.workRecoveryReadinessEnv()
+      )) {
+        expect(settings.env[name]).toBe(supported ? value : undefined);
+      }
+    }
+  );
+
+  test('fences recovery waits across ordinary and issue-change scans', async () => {
+    const env = recoveryEnv();
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    await endSession(env, { success: true, summary: 'unfinished' });
+
+    await env.scheduler.tick(WS);
+    await env.scheduler.onIssuesChanged(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe('recovery_wait');
+  });
+
+  test('resumes recovery with its recorded session and execution tuple', async () => {
+    const env = recoveryEnv();
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('S1').emit('session_id', 'session-original');
+    const prior = await endSession(env, {
+      success: true,
+      summary: 'unfinished'
+    });
+    env.store.setOrchestrationDefaults(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      values: {
+        orchestration_model: 'sol',
+        orchestration_effort: 'xhigh',
+        orchestration_speed: 'fast'
+      }
+    });
+
+    const result = await env.scheduler.resume(WS, prior.attempt_id);
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.settingsFor('S1')).toMatchObject({
+      resume_session_id: 'session-original',
+      model: prior.model,
+      effort: prior.effort,
+      speed: prior.speed
+    });
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({
+      resumed_from: prior.attempt_id,
+      runner: prior.runner,
+      model: prior.model,
+      effort: prior.effort,
+      speed: prior.speed
+    });
+    expect(await env.scheduler.resume(WS, prior.attempt_id)).toMatchObject({
+      ok: false
+    });
+  });
+
+  test('stops provider auto resume after two identical recovery repeats', async () => {
+    const env = recoveryEnv();
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('S1').emit('session_id', 'session-original');
+    let prior = await endSession(env, {
+      success: false,
+      reason: 'subtype',
+      summary: 'same failure'
+    });
+    for (let count = 1; count <= 2; count += 1) {
+      expect(await env.scheduler.resume(WS, prior.attempt_id)).toMatchObject({
+        ok: true
+      });
+      env.runner.eventsFor('S1').emit('session_id', 'session-original');
+      prior = await endSession(env, {
+        success: false,
+        reason: 'subtype',
+        summary: ' \n same failure \n'
+      });
+      expect(prior.cause_detail.recovery.no_progress.count).toBe(count);
+    }
+
+    const automatic = await env.scheduler.resume(WS, prior.attempt_id, {
+      provider_auto_resume: true
+    });
+
+    expect(prior.cause_detail.recovery).toMatchObject({
+      classification: 'two_no_progress_repeats',
+      disposition: 'wait',
+      reason: 'no_progress',
+      no_progress: { count: 2 }
+    });
+    expect(automatic).toEqual({ ok: false, reason: 'no_progress' });
+    expect((await env.scheduler.resume(WS, prior.attempt_id)).ok).toBe(true);
+  });
+
+  test('resets the repeat comparison when the error changes', async () => {
+    const env = recoveryEnv();
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('S1').emit('session_id', 'session-original');
+    const prior = await endSession(env, {
+      success: false,
+      reason: 'subtype',
+      summary: 'first failure'
+    });
+    await env.scheduler.resume(WS, prior.attempt_id);
+
+    const next = await endSession(env, {
+      success: false,
+      reason: 'subtype',
+      summary: 'different failure'
+    });
+
+    expect(next.cause_detail.recovery).not.toHaveProperty('no_progress');
+  });
+});
 
 describe('scheduler route change refusal', () => {
   /**
@@ -2015,6 +2379,70 @@ describe('scheduler provider hold and recovery', () => {
       { type: 'turn.failed', error: { message: envelope } }
     ];
   }
+
+  test.each(['live', 'persisted'])(
+    'holds the real Codex usage notice through the %s path with no summary',
+    async (source) => {
+      const message =
+        "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 10:33 AM.";
+      const raw = [
+        { type: 'error', message },
+        { type: 'turn.failed', error: { message } }
+      ];
+      const sessionLog = createSessionLog();
+      const env = setup({
+        config: { B1: { model: 'sol' } },
+        verifyOk: false,
+        sessionLog,
+        probePid: () => ({ alive: false, started_at: null })
+      });
+      let attempt_id;
+      if (source === 'live') {
+        seedQueue(env.store, ['B1']);
+        await env.scheduler.tick(WS);
+        attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+      } else {
+        attempt_id = 'persisted-usage';
+        const log_path = beadSessionLogPath(WS, 'B1', attempt_id);
+        fs.mkdirSync(path.dirname(log_path), { recursive: true });
+        fs.writeFileSync(
+          log_path,
+          raw.map((record) => JSON.stringify(record)).join('\n') + '\n'
+        );
+        seedProviderAttempt(env.store, attempt_id, 'B1', {
+          runner: 'codex',
+          model: 'sol',
+          pid: 4242,
+          started_at: 1000,
+          log_path
+        });
+      }
+
+      if (source === 'live') {
+        env.runner.finish('B1', {
+          success: false,
+          reason: 'turn_failed',
+          summary: null,
+          raw,
+          exit: 1
+        });
+        await flush();
+        await flush();
+      } else {
+        await env.scheduler.reconcile(WS);
+      }
+
+      const queue = env.store.snapshot(WS);
+      expect(queue.attempts[attempt_id]).toMatchObject({
+        status: 'paused',
+        cause: 'provider_outage:usage_limit'
+      });
+      expect(queue.provider_hold.codex.targets).toMatchObject([
+        { kind: 'usage_limit', resets_at: null, last_error: message }
+      ]);
+      expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    }
+  );
 
   /**
    * Two codex catalog rows: the active one is hot, the allowed one is idle.
@@ -3837,7 +4265,7 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
     ).toBe(true);
   });
 
-  test('records a no_pr ending as an individual session failure', async () => {
+  test('records a no_pr ending as an unclassified recovery wait', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     /** @type {any} */ (env.verify).verifyPrSubmitted = vi.fn(async () => ({
       ok: false,
@@ -3856,9 +4284,10 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
     // A successful session with nothing delivered and no `awaiting_user` is an
     // individual failure, not a verify verdict (UI-5ym8 §3.2).
     const a = env.store.snapshot(WS).attempts[attempt_id];
-    expect(a.status).toBe('failed');
+    expect(a.status).toBe('waiting');
     expect(a.cause).toBe('session_ended_unresolved');
     expect(env.store.snapshot(WS).pr_wait).toEqual([]);
+    expectRecoveryWait(a, 'finished_without_result_line');
   });
 
   test.each([null, 'spawn codex ENOENT'])(
@@ -3886,11 +4315,12 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
       const snapshot = env.store.snapshot(WS);
       const attempt = snapshot.attempts[attempt_id];
       expect(attempt.cause).toBe('session_ended_unresolved:background_shell');
-      expect(attempt.status).toBe(summary === null ? 'failed' : 'retry_wait');
-      expect(attempt.cause_detail?.summary).toBe(
-        '백그라운드 셸 태스크를 남기고 턴 종료 — 프로세스 종료로 결과 유실: Wait for final required run'
-      );
-      expect(snapshot.hold?.kind ?? null).toBe(summary === null ? null : 'env');
+      expectRecoveryWait(attempt, 'finished_without_result_line');
+      expect(attempt.cause_detail?.summary ?? null).toBe(summary);
+      expect(attempt.cause_detail?.background_shell_at_result).toEqual([
+        'Wait for final required run'
+      ]);
+      expect(snapshot.hold).toBeNull();
     }
   );
 
@@ -3922,7 +4352,7 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
 });
 
 describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker)', () => {
-  test('leaves the queue running and never halts on an individual failure', async () => {
+  test('keeps the queue running after an unclassified recovery wait', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
@@ -3938,12 +4368,16 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
       hold: null,
       attempts: {
         [attempt_id]: {
-          status: 'failed',
+          status: 'waiting',
           dismissed_at: null,
           halted_auto_advance: false
         }
       }
     });
+    expectRecoveryWait(
+      env.store.snapshot(WS).attempts[attempt_id],
+      'unknown_error'
+    );
   });
 
   test('preserves an existing dismissal on a non-moot failure', async () => {
@@ -4018,7 +4452,7 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     });
   });
 
-  test('failed session leaves a banner-ready record without stopping the queue', async () => {
+  test('preserves session failure evidence without stopping the queue', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
@@ -4040,7 +4474,7 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     expect(snap.auto_advance).toBe(true);
     expect(snap.hold).toBe(null);
     // The terminal record carries what the failure banner renders.
-    expect(snap.attempts[String(attempt_id)].status).toBe('failed');
+    expect(snap.attempts[String(attempt_id)].status).toBe('waiting');
     expect(snap.attempts[String(attempt_id)].cause).toBe(
       'session_failed:abnormal_exit'
     );
@@ -4054,6 +4488,7 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
           c.key === 'workflow_mode'
       )
     ).toBe(true);
+    expectRecoveryWait(snap.attempts[String(attempt_id)], 'unknown_error');
   });
 
   test('a blocker failure records the guard reason and matched command', async () => {
@@ -4080,6 +4515,12 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     expect(a.cause_detail).toEqual({
       reason: 'merge_to_base_blocked',
       command: 'gh pr merge 311',
+      recovery: {
+        classification: 'authority_required',
+        disposition: 'wait',
+        reason: 'authority',
+        policy_schema: 1
+      },
       // The guard's own kill message, extracted once (UI-8wpb §6 row 3).
       summary: 'landing on the base branch is never permitted: gh pr merge 311'
     });
@@ -4109,7 +4550,7 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     ).toHaveLength(512);
   });
 
-  test('leaves cause_detail null on a non-blocker failure', async () => {
+  test('records unclassified recovery without inventing blocker details', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
@@ -4119,7 +4560,14 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     await flush();
     await flush();
 
-    expect(env.store.snapshot(WS).attempts[attempt_id].cause_detail).toBeNull();
+    expect(env.store.snapshot(WS).attempts[attempt_id].cause_detail).toEqual({
+      recovery: {
+        classification: 'unknown_error',
+        disposition: 'wait',
+        reason: 'unclassified',
+        policy_schema: 1
+      }
+    });
   });
 
   test('a failure does not block the repo: re-enabling auto_advance dispatches again', async () => {
@@ -8396,7 +8844,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     });
   });
 
-  test('keeps the ordinary failure route when the resolution session fails', async () => {
+  test('preserves the failed resolution session as a recovery wait', async () => {
     const env = extEnv();
     const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
 
@@ -8406,10 +8854,11 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
 
     const q = env.store.snapshot(WS);
     expect(q.attempts[/** @type {string} */ (res.attempt_id)].status).toBe(
-      'failed'
+      'waiting'
     );
     expect(q.pr_wait).toEqual([]);
     expect(q.queue).toEqual([]);
+    expectRecoveryWait(q.attempts[String(res.attempt_id)], 'unknown_error');
   });
 
   test('recovers a restart-surviving resolution attempt as done, not into pr_wait', async () => {
@@ -8548,6 +8997,25 @@ describe('scheduler review-session dispatch (UI-d7fy §5)', () => {
       }
     });
   }
+
+  test('omits recovery readiness from review-mode settings', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedPendingReviewSession(env.store);
+
+    const result = await env.scheduler.dispatchReviewSession(WS, {
+      bead_id: 'B1',
+      attempt_id: 'review:1',
+      prompt: '리뷰 프롬프트',
+      resume_session_id: null
+    });
+
+    expect(result.ok).toBe(true);
+    for (const name of Object.keys(
+      work_recovery_policy.workRecoveryReadinessEnv()
+    )) {
+      expect(env.runner.settingsFor('B1').env).not.toHaveProperty(name);
+    }
+  });
 
   test('restores a missing worktree from the PR head branch', async () => {
     const env = setup({ config: {}, slots: 1 });
@@ -9121,6 +9589,11 @@ describe('scheduler REVISE disposition dispatch (UI-hs11 §3.3)', () => {
     });
 
     expect(env.runner.settingsFor('B1').disposition).toBe('revise_fix');
+    for (const name of Object.keys(
+      work_recovery_policy.workRecoveryReadinessEnv()
+    )) {
+      expect(env.runner.settingsFor('B1').env).not.toHaveProperty(name);
+    }
   });
 
   test('refuses a bead with a running attempt', async () => {
@@ -9870,10 +10343,10 @@ describe('conflict resolution reaches the session guard end-to-end (§1/§6)', (
 
     expect(res.ok).toBe(true);
     expect(kill_impl).not.toHaveBeenCalled();
-    expect(
-      env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)]
-        .cause_detail
-    ).toBeNull();
+    expectRecoveryWait(
+      env.store.snapshot(WS).attempts[String(res.attempt_id)],
+      'unknown_error'
+    );
   });
 });
 
@@ -9920,7 +10393,7 @@ describe('scheduler claim release on close-less termination', () => {
     expect(env.bd.calls.some((c) => c.method === 'setStatus')).toBe(false);
   });
 
-  test('finalizes the failed attempt even when the status read throws', async () => {
+  test('settles recovery waiting even when the status read throws', async () => {
     const env = setup({
       config: { S1: { throwOnReadStatus: true } },
       slots: 1
@@ -9933,7 +10406,11 @@ describe('scheduler claim release on close-less termination', () => {
     await flush();
     await flush();
 
-    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('failed');
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('waiting');
+    expectRecoveryWait(
+      env.store.snapshot(WS).attempts[attempt_id],
+      'unknown_error'
+    );
   });
 
   test('fences the bead when the reopen write throws', async () => {
@@ -9949,8 +10426,12 @@ describe('scheduler claim release on close-less termination', () => {
 
     // The halt is gone (UI-5ym8 §4); what stops the bead relaunching is the
     // candidate fence keyed on its own settled attempt.
-    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('failed');
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('waiting');
     expect(env.scheduler.isRunning('S1')).toBe(false);
+    expectRecoveryWait(
+      env.store.snapshot(WS).attempts[attempt_id],
+      'unknown_error'
+    );
   });
 
   test('releases the claim only after the terminal record landed', async () => {
@@ -9977,7 +10458,11 @@ describe('scheduler claim release on close-less termination', () => {
 
     // A tick raised by a concurrent attempt finishing must already see the
     // settled record, or the fence would not stop it relaunching this bead.
-    expect(status_at_release).toBe('failed');
+    expect(status_at_release).toBe('waiting');
+    expectRecoveryWait(
+      env.store.snapshot(WS).attempts[attempt_id],
+      'unknown_error'
+    );
   });
 
   test('reopens a bead the stopped session left in_progress', async () => {
@@ -10061,7 +10546,7 @@ describe('scheduler claim release on close-less termination', () => {
     await env.scheduler.tick(WS);
 
     expect(env.scheduler.isRunning('S1')).toBe(false);
-    expect(env.store.snapshot(WS).admission.S1.reason).toBe('failed_unhandled');
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe('recovery_wait');
   });
 });
 
@@ -13283,7 +13768,8 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
 
   test.each([
     ['실패 · sync conflict', 'session_failed:reported_failure'],
-    ['환경 · credentials unavailable', 'session_hard_stop:environment']
+    ['환경 · credentials unavailable', 'session_hard_stop:environment'],
+    ['대기 · recovery:provider', 'session_recovery_wait']
   ])(
     'recovers a marked %s result before PR observation',
     async (summary, cause) => {
@@ -13304,6 +13790,17 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
       await env.scheduler.reconcile(WS);
 
       expect(env.store.snapshot(WS).attempts['att-1'].cause).toBe(cause);
+      expect(env.store.snapshot(WS).attempts['att-1']).toMatchObject({
+        status: 'waiting',
+        cause_detail: { summary }
+      });
+      if (cause === 'session_recovery_wait') {
+        expectRecoveryWait(
+          env.store.snapshot(WS).attempts['att-1'],
+          'session_recovery_wait',
+          'provider'
+        );
+      }
       expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
     }
   );
@@ -13437,7 +13934,7 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     await env.scheduler.reconcile(WS);
 
     expect(env.store.snapshot(WS).attempts['att-1']).toMatchObject({
-      status: 'failed',
+      status: 'waiting',
       cause: 'session_failed:reported_failure',
       cause_detail: {
         summary: '실패 · sync conflict',
@@ -13447,6 +13944,10 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(observeFailureFacts).toHaveBeenCalledOnce();
     expect(settle).not.toHaveBeenCalled();
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    expectRecoveryWait(
+      env.store.snapshot(WS).attempts['att-1'],
+      'past_failure_line'
+    );
   });
 
   /**
@@ -13824,11 +14325,15 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
 
     const snapshot = env.store.snapshot(WS);
     expect(snapshot.attempts['att-1']).toMatchObject({
-      status: 'failed',
+      status: 'waiting',
       cause: 'session_ended_unresolved:background_shell',
       cause_detail: {
-        summary:
-          '백그라운드 셸 태스크를 남기고 턴 종료 — 프로세스 종료로 결과 유실: Wait for final required run',
+        recovery: {
+          classification: 'finished_without_result_line',
+          disposition: 'wait',
+          reason: 'unclassified',
+          policy_schema: 1
+        },
         background_shell_at_result: ['Wait for final required run']
       }
     });
@@ -13836,7 +14341,7 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(snapshot.auto_advance).toBe(true);
   });
 
-  test('fails a dead attempt whose PR is missing without stopping the queue', async () => {
+  test('preserves a dead attempt without a PR as recovery waiting', async () => {
     const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
       verifyOk: false
     });
@@ -13849,9 +14354,10 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     // A detached session that delivered nothing is `session_ended_unresolved`
     // (UI-5ym8 §3.2) — an individual failure, so the queue keeps running.
     expect(snap.attempts['att-1'].cause).toBe('session_ended_unresolved');
-    expect(snap.attempts['att-1'].status).toBe('failed');
+    expect(snap.attempts['att-1'].status).toBe('waiting');
     expect(snap.auto_advance).toBe(true);
     expect(snap.hold).toBe(null);
+    expectRecoveryWait(snap.attempts['att-1'], 'finished_without_result_line');
   });
 
   test('fails closed when the PR observation could not be completed', async () => {
@@ -13900,9 +14406,19 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     await env.scheduler.reconcile(WS);
 
     const snap = env.store.snapshot(WS);
-    expect(snap.attempts['att-1'].status).toBe('failed');
+    expectRecoveryWait(
+      snap.attempts['att-1'],
+      'authority_required',
+      'authority'
+    );
     expect(snap.attempts['att-1'].cause).toBe('loud_fail_blocker');
     expect(snap.attempts['att-1'].cause_detail).toEqual({
+      recovery: {
+        classification: 'authority_required',
+        disposition: 'wait',
+        reason: 'authority',
+        policy_schema: 1
+      },
       reason: 'merge_to_base_blocked',
       command: 'git merge main',
       summary: 'landing on the base branch is never permitted: git merge main'
@@ -14227,7 +14743,7 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(env.store.snapshot(WS).attempts['att-1'].usage).toBe(null);
   });
 
-  test('persists the replayed usage on the FAILED disposition branch too', async () => {
+  test('persists replayed usage on a recovery wait', async () => {
     const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
       verifyOk: false
     });
@@ -14238,8 +14754,9 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     await env.scheduler.reconcile(WS);
 
     const attempt = env.store.snapshot(WS).attempts['att-1'];
-    expect(attempt.status).toBe('failed');
+    expect(attempt.status).toBe('waiting');
     expect(attempt.usage).toMatchObject({ input_tokens: 7, replayed: true });
+    expectRecoveryWait(attempt, 'finished_without_result_line');
   });
 
   test('leaves an attempt an active discard operation owns untouched', async () => {
@@ -14472,7 +14989,7 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
     expect(notify.attemptStarted.mock.calls[0][0].kind).toBe('conflict');
   });
 
-  test('pushes attemptFailed with the session cause', async () => {
+  test('preserves the session cause without a failure notification', async () => {
     const notify = makeFakeNotify();
     const env = setup({ config: { S1: {} }, slots: 1, notify });
     seedQueue(env.store, ['S1']);
@@ -14486,16 +15003,19 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
     await flush();
     await flush();
 
-    expect(notify.attemptFailed).toHaveBeenCalledTimes(1);
-    expect(notify.attemptFailed.mock.calls[0][0]).toEqual({
+    expect(notify.attemptFailed).not.toHaveBeenCalled();
+    expectRecoveryWait(
+      env.store.snapshot(WS).attempts['S1-1000-1'],
+      'unknown_error'
+    );
+    expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
       bead_id: 'S1',
       cause: 'session_failed:result_count',
-      repo: '/repo',
-      cause_detail: null
+      repo: '/repo'
     });
   });
 
-  test('carries the blocker cause_detail into the failure push', async () => {
+  test('keeps blocker evidence on the authority wait without a failure push', async () => {
     const notify = makeFakeNotify();
     const env = setup({ config: { S1: {} }, slots: 1, notify });
     seedQueue(env.store, ['S1']);
@@ -14511,10 +15031,17 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
     await flush();
     await flush();
 
-    expect(notify.attemptFailed.mock.calls[0][0].cause).toBe(
-      'loud_fail_blocker'
-    );
-    expect(notify.attemptFailed.mock.calls[0][0].cause_detail).toEqual({
+    const attempt = env.store.snapshot(WS).attempts['S1-1000-1'];
+    expect(notify.attemptFailed).not.toHaveBeenCalled();
+    expectRecoveryWait(attempt, 'authority_required', 'authority');
+    expect(attempt.cause).toBe('loud_fail_blocker');
+    expect(attempt.cause_detail).toEqual({
+      recovery: {
+        classification: 'authority_required',
+        disposition: 'wait',
+        reason: 'authority',
+        policy_schema: 1
+      },
       reason: 'git_merge_guard',
       command: 'git merge main',
       summary: 'the session engine refused this command: git merge main'
@@ -20048,7 +20575,7 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
     expect(snap.auto_advance).toBe(true);
   });
 
-  test('does not park a session that never wrote awaiting_user', async () => {
+  test('waits for classification when a session never wrote awaiting_user', async () => {
     const env = setup({
       config: { S1: {} },
       slots: 1,
@@ -20063,9 +20590,10 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
     await flush();
 
     const attempt = env.store.snapshot(WS).attempts[attempt_id];
-    expect(attempt.status).toBe('failed');
+    expect(attempt.status).toBe('waiting');
     expect(attempt.cause).toBe('session_ended_unresolved');
     expect(attempt.awaiting_user_present).toBe(false);
+    expectRecoveryWait(attempt, 'finished_without_result_line');
   });
 
   /**
@@ -20995,7 +21523,7 @@ describe('scheduler bead timeline (record-timeline-retention §5)', () => {
     ]);
   });
 
-  test('records an individual failure with the classifier summary', async () => {
+  test('records the recovery waiting summary without an attempt_failed event', async () => {
     const timeline = recorder();
     const env = setup({ timeline, config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
@@ -21007,13 +21535,15 @@ describe('scheduler bead timeline (record-timeline-retention §5)', () => {
     await flush();
 
     const failed = ofKind(timeline.events, 'attempt_failed');
-    expect(failed).toHaveLength(1);
-    expect(failed[0]).toMatchObject({
+    expect(failed).toEqual([]);
+    const ended = ofKind(timeline.events, 'session_ended');
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({
       bead_id: 'S1',
       attempt_id,
-      seq: 'failed'
+      seq: 'waiting',
+      summary: '대기 · recovery:unclassified — session_failed:subtype'
     });
-    expect(failed[0].summary).toMatch(/^세션 실패 — /);
   });
 
   test('records a scheduled retry rung rather than an ending', async () => {
@@ -21082,7 +21612,7 @@ describe('scheduler bead timeline (record-timeline-retention §5)', () => {
     expect(attempt.status).toBe('running');
   });
 
-  test('fails an attempt normally when the timeline append fails', async () => {
+  test('settles recovery waiting when the timeline append fails', async () => {
     const env = setup({
       timeline: {
         append: () => ({ ok: false, reason: 'write_failed', detail: 'nope' }),
@@ -21099,7 +21629,11 @@ describe('scheduler bead timeline (record-timeline-retention §5)', () => {
     await flush();
     await flush();
 
-    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('failed');
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('waiting');
+    expectRecoveryWait(
+      env.store.snapshot(WS).attempts[attempt_id],
+      'unknown_error'
+    );
   });
 });
 
@@ -21413,7 +21947,7 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
 
     expect(settle).not.toHaveBeenCalled();
     expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
-      status: 'failed',
+      status: 'waiting',
       cause: 'session_failed:reported_failure',
       cause_detail: {
         summary: '실패 · 동기화 충돌',
@@ -21425,6 +21959,10 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
       bead_id: 'S1',
       target_base: 'release'
     });
+    expectRecoveryWait(
+      env.store.snapshot(WS).attempts['S1-1000-1'],
+      'past_failure_line'
+    );
   });
 
   test('settles the ordinary way when a foreign blocker cannot be read', async () => {
@@ -21610,9 +22148,13 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
     await flush();
 
     expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
-      status: 'failed',
+      status: 'waiting',
       cause: 'session_ended_unresolved'
     });
+    expectRecoveryWait(
+      env.store.snapshot(WS).attempts['S1-1000-1'],
+      'finished_without_result_line'
+    );
   });
 
   test('never judges the wait once a PR is observed', async () => {
@@ -22477,7 +23019,7 @@ describe('scheduler bench cells (preset-compare §4.4·§4.5·§4.6)', () => {
     expect(runVerify).not.toHaveBeenCalled();
   });
 
-  test('closes a terminally failed cell with the run failed reason', async () => {
+  test('preserves an unfinished bench cell as recovery waiting', async () => {
     const env = setup({
       config: benchConfig(),
       slots: 1,
@@ -22491,11 +23033,13 @@ describe('scheduler bench cells (preset-compare §4.4·§4.5·§4.6)', () => {
     await flush();
     await flush();
 
-    expect(env.bd.calls).toContainEqual({
-      method: 'closeWithReason',
-      bead_id: 'S1',
-      value: 'bench:bench-1:failed'
-    });
+    expect(
+      env.bd.calls.filter((call) => call.method === 'closeWithReason')
+    ).toEqual([]);
+    expectRecoveryWait(
+      env.store.snapshot(WS).attempts['S1-1000-1'],
+      'unknown_error'
+    );
   });
 
   test('leaves an ordinary quick_fix failure unclosed', async () => {
@@ -23047,7 +23591,7 @@ describe('↻ 이어하기가 체계적 정지를 함께 푼다 (UI-hhju §3.1)'
     expect(env.store.snapshot(WS).hold).toMatchObject({ kind: 'systemic' });
   });
 
-  test('redispatches another held bead after the lineage ↻', async () => {
+  test('keeps another recovery-wait bead fenced after the lineage ↻', async () => {
     const env = setup({
       config: {
         S1: { ready_follows_status: true },
@@ -23078,8 +23622,9 @@ describe('↻ 이어하기가 체계적 정지를 함께 푼다 (UI-hhju §3.1)'
 
     const snap = env.store.snapshot(WS);
     expect(snap.hold).toBe(null);
-    expect(snap.attempts[held].dismissed_at).toBe(1000);
-    expect(latestAttemptId(env.store, 'S2')).not.toBe(held);
+    expect(snap.attempts[held].dismissed_at).toBeNull();
+    expectRecoveryWait(snap.attempts[held], 'unknown_error');
+    expect(latestAttemptId(env.store, 'S2')).toBe(held);
   });
 
   test('keeps a legacy hold with no halting attempt recorded', async () => {

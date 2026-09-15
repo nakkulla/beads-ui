@@ -1653,13 +1653,15 @@ describe('worker e2e — failure injection settles one bead (UI-5ym8 tiers)', ()
     await scheduler.tick(WS);
     expect(scheduler.isRunning('S1')).toBe(true);
 
+    // UI-3vvi: an unfinished ending is preserved as a recovery WAIT, never
+    // terminalized as `failed`; the raw `session_failed:` cause stays on it.
     await waitFor(() =>
       Object.values(runtime.queueStore.snapshot(WS).attempts).some(
-        (/** @type {any} */ a) => a.bead_id === 'S1' && a.status === 'failed'
+        (/** @type {any} */ a) => a.bead_id === 'S1' && a.status === 'waiting'
       )
     );
 
-    // UI-5ym8 §4: an individual failure never stops the queue — `auto_advance`
+    // UI-5ym8 §4: an individual ending never stops the queue — `auto_advance`
     // is the user's toggle and `queue.hold` stays null. workflow_mode is still
     // reverted and the attempt still carries the decision record.
     expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(true);
@@ -1677,8 +1679,13 @@ describe('worker e2e — failure injection settles one bead (UI-5ym8 tiers)', ()
         (/** @type {any} */ a) => a.bead_id === 'S1'
       )
     );
-    expect(failed.status).toBe('failed');
-    // The record carries what the failed decision tile renders.
+    expect(failed.status).toBe('waiting');
+    expect(failed.cause_detail.recovery).toMatchObject({
+      classification: 'unknown_error',
+      disposition: 'wait',
+      reason: 'unclassified'
+    });
+    // The record carries what the decision tile renders.
     expect(failed.cause).toContain('session_failed:');
     expect(failed.repo).toBe(repo_dir);
 
@@ -1709,11 +1716,12 @@ describe('worker e2e — a session that never delivered fails verification (fail
     await scheduler.tick(WS);
     expect(scheduler.isRunning('S1')).toBe(true);
 
-    // Session succeeds, but the observation is empty → the bead fails and the
-    // queue keeps running; workflow_mode is still reverted.
+    // Session succeeds, but the observation is empty → the bead is preserved
+    // as an unclassified recovery wait (UI-3vvi) and the queue keeps running;
+    // workflow_mode is still reverted.
     await waitFor(() =>
       Object.values(runtime.queueStore.snapshot(WS).attempts).some(
-        (/** @type {any} */ a) => a.bead_id === 'S1' && a.status === 'failed'
+        (/** @type {any} */ a) => a.bead_id === 'S1' && a.status === 'waiting'
       )
     );
     expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(true);
@@ -1724,7 +1732,11 @@ describe('worker e2e — a session that never delivered fails verification (fail
         (/** @type {any} */ a) => a.bead_id === 'S1'
       )
     );
-    expect(attempt.status).toBe('failed');
+    expect(attempt.status).toBe('waiting');
+    expect(attempt.cause_detail.recovery).toMatchObject({
+      classification: 'finished_without_result_line',
+      reason: 'unclassified'
+    });
     expect(attempt.verify_result.ok).toBe(false);
     // A SUCCESSFUL empty observation — not an observation error.
     expect(attempt.verify_result.reason).toBe('no_pr');

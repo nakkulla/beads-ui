@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "work_recovery": {
+    "dispositions": [
+      "repair",
+      "wait",
+      "reconcile",
+      "fatal"
+    ],
+    "wait_reasons": [
+      "provider",
+      "credential",
+      "prerequisite",
+      "authority",
+      "verification",
+      "no_progress",
+      "unclassified"
+    ],
+    "classification": {
+      "local_format_defect": {
+        "disposition": "repair",
+        "next": "correct_same_artifact_and_revalidate"
+      },
+      "local_code_defect": {
+        "disposition": "repair",
+        "next": "fix_smallest_authorized_cause_and_verify"
+      },
+      "verification_failure": {
+        "disposition": "wait",
+        "reason": "verification"
+      },
+      "two_no_progress_repeats": {
+        "disposition": "wait",
+        "reason": "no_progress",
+        "next": "reassess_cause_and_owner"
+      },
+      "transient_retry_exhausted": {
+        "disposition": "wait",
+        "reason": "provider"
+      },
+      "usage_limit": {
+        "disposition": "wait",
+        "reason": "provider"
+      },
+      "credential_missing": {
+        "disposition": "wait",
+        "reason": "credential"
+      },
+      "prerequisite_missing": {
+        "disposition": "wait",
+        "reason": "prerequisite"
+      },
+      "authority_required": {
+        "disposition": "wait",
+        "reason": "authority"
+      },
+      "original_writer_live": {
+        "disposition": "reconcile",
+        "reason": "reconcile"
+      },
+      "unknown_outcome": {
+        "disposition": "reconcile",
+        "reason": "reconcile"
+      },
+      "ownership_uncertain": {
+        "disposition": "reconcile",
+        "reason": "reconcile"
+      },
+      "past_failure_line": {
+        "disposition": "wait",
+        "reason": "unclassified"
+      },
+      "environment_line": {
+        "disposition": "wait",
+        "reason": "unclassified"
+      },
+      "finished_without_result_line": {
+        "disposition": "wait",
+        "reason": "unclassified"
+      },
+      "unknown_error": {
+        "disposition": "wait",
+        "reason": "unclassified"
+      }
+    },
+    "resume_preconditions": [
+      "original_writer_terminated",
+      "actual_effects_confirmed",
+      "same_work_path_and_approval",
+      "existing_execution_selection",
+      "single_consumption_of_same_recovery_reservation"
+    ],
+    "persistence": {
+      "reuse": [
+        "attempt_lineage",
+        "retry_budget",
+        "hold",
+        "resume_reservation",
+        "operation_ledger"
+      ],
+      "current_stage": "derive_from_valid_receipts_and_cursor",
+      "separate_recovery_state_machine": "forbidden",
+      "bead_metadata_copy": "forbidden",
+      "retry_budget_reset": "forbidden"
+    },
+    "fatal": {
+      "automatic_causes": [],
+      "addition_requires": [
+        "proving_check_for_catastrophic_irreversible_outcome",
+        "contract_change"
+      ],
+      "human_decision": "explicit_request_and_evidence_not_auto_resume"
+    },
+    "result_line": "대기 · recovery:<reason>",
+    "result_line_reasons": "wait_reasons_plus_reconcile",
+    "readiness_env": "BDUI_WORK_RECOVERY_SCHEMA",
+    "readiness_value": "1",
+    "worker_emission": "exact_readiness_value_only",
+    "interactive_emission": "no_readiness_required",
+    "readiness_changes": {
+      "approval": false,
+      "review": false,
+      "execution_authority": false,
+      "retry_budget": false
+    },
+    "result_line_evidence": "wait_intent_only",
+    "result_line_proves": {
+      "approval": false,
+      "termination": false,
+      "effect": false,
+      "resume_eligibility": false
+    },
+    "legacy_lines": {
+      "prefixes": [
+        "환경 ·",
+        "실패 ·"
+      ],
+      "semantics": "raw_evidence_not_new_task_failure"
+    },
+    "finished_without_result_line": {
+      "disposition": "wait",
+      "reason": "unclassified"
+    },
+    "unknown_schema": "hold_automatic_resume",
+    "consumer_input": "pinned_projection_with_provenance",
+    "interrupted_rollout": {
+      "readopt_first": [
+        "deploy_operation",
+        "success_marker",
+        "runtime_identity"
+      ],
+      "identity_match": "same_target_sha_across_available_evidence",
+      "outcomes": {
+        "verified_install": "readopt_without_reinstall",
+        "missing_success_marker": "verify_and_record_remaining_marker_only",
+        "unknown_operation_outcome": "reconcile_without_rerun",
+        "identity_mismatch": "reconcile_without_rerun"
+      },
+      "then": "continue_remaining_stages_only",
+      "new_toggle": "forbidden",
+      "new_deployment_job": "forbidden",
+      "inject_readiness_into_existing_session": "forbidden"
+    }
+  }
+}

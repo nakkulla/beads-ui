@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test, vi } from 'vitest';
+import { workRecoveryReadinessEnv } from '../work-recovery-policy.js';
 import {
   WORKER_SETTINGS_OVERRIDE,
   claudeSpec,
@@ -11,6 +12,24 @@ import {
 import { makeFixtureSpawn } from './fixture-spawn.js';
 import { probeGuardMirror } from './guard-mirror.js';
 import { defaultTaskPrompt } from './preamble.js';
+
+test.each([true, false])(
+  'emits recovery grammar only for exact Claude readiness %s',
+  (ready) => {
+    const env = workRecoveryReadinessEnv();
+    const settings = {
+      env: ready
+        ? env
+        : Object.fromEntries(
+            Object.keys(env).map((key) => [key, 'unsupported'])
+          )
+    };
+
+    const built = claudeSpec().buildArgv({ id: 'UI-1' }, '/tmp/ws', settings);
+
+    expect(built.system_prompt?.includes('대기 · recovery:')).toBe(ready);
+  }
+);
 
 const SUCCESS_FIXTURE = fileURLToPath(
   new URL('../__fixtures__/claude-success.jsonl', import.meta.url)

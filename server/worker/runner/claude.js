@@ -15,6 +15,7 @@
  */
 import { resolveCswapPath } from '../../routes/claude-usage.js';
 import { builtinCatalog } from '../runner-catalog.js';
+import { workRecoveryReadinessEnv } from '../work-recovery-policy.js';
 import { probeGuardMirror } from './guard-mirror.js';
 import { applyPreamble, defaultTaskPrompt } from './preamble.js';
 import { classifyProviderOutage } from './provider-outage.js';
@@ -759,7 +760,11 @@ export function claudeSpec(options = {}) {
       // one, so the resumed run sees the current contract, not a frozen copy.
       // The spec's fallback — re-prefixing the contract onto the task prompt on
       // the resume path only — is therefore not applied.
+      const recovery_env = workRecoveryReadinessEnv();
       const { system_prompt, task_prompt } = applyPreamble(promptFor(bead), {
+        work_recovery_ready: Object.entries(recovery_env).some(
+          ([name, value]) => s.env?.[name] === value
+        ),
         runtime: 'claude',
         // Review mode swaps in the read-only review contract; claude has no
         // native read-only sandbox for a Bash-capable session, so the

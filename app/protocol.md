@@ -471,6 +471,15 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `supported:false` with nullable facts; it never changes dispatch or queue
   persistence. Consumers also accept this whole field being absent from an older
   server and show `기본값 확인 불가` instead of reconstructing defaults.
+- An unfinished implementation attempt may settle with `status: 'waiting'` and
+  `cause_detail.recovery: { classification, disposition, reason, policy_schema: 1, no_progress?: { count, key } }`.
+  Its original `cause`, summary, and other failure evidence remain intact. A
+  recovery wait does not imply prerequisite blockers and does not emit
+  `attempt_failed`; its timeline ending is `kind: 'session_ended'` with summary
+  `대기 · recovery:<reason> — <original cause>`. Ordinary queue dispatch is
+  fenced by `recovery_wait`; manual resume preserves the recorded execution
+  selection. Two identical repeats set reason `no_progress` and refuse provider
+  automatic resume. These fields express waiting intent, not resume authority.
 - A TERMINAL attempt inside `attempts` may additionally carry the non-persisted
   `impl_actor: { kind: 'delegated'|'main', model: string|null, effort: string|null, label: string }`
   (UI-ys18 §5.1) — the actual implementer the attempt's own preserved
@@ -585,18 +594,18 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   of the PINNED contract copy `generated/contracts/repo-operation-policy.json`
   (an exact byte copy of the dotfiles artifact, with its source commit and
   digest in the sibling provenance file). Shape:
-  `{ schema_version, supported: boolean, source_commit, digest, worker_automatic: string[], resolution_ladder: Record<string,unknown>[], after_ladder: string, manual_human_fix: string, never_automatic: string[] }`.
+  `{ schema_version, supported: boolean, source_commit, digest, worker_automatic: string[], resolution_ladder: Record<string,unknown>[], after_ladder: string, after_ladder_recovery: object|null, manual_human_fix: string, never_automatic: string[] }`.
   The lists and the ladder are the contract vocabulary VERBATIM: membership is
   decided by the contract alone, never by server or client code. A client
   renders each token through a display dictionary and MUST fall back to the raw
   token, so a contract that gains an entry shows up without a client change.
   `supported` is the consumer decoder guard: it is `false` whenever
-  `schema_version` is anything other than `3`. Under schema 3 the ladder holds
+  `schema_version` is anything other than `4`. Under schema 4 the ladder holds
   exactly one AUTOMATIC step (`script_retry`); there is no repair-session step
-  and no user-triggered resolution entry, so `after_ladder` is the terminal
-  `failed` record and the only human path is a manual rerun. `supported: false`
-  stops that automatic step only — the operation still runs and still settles
-  terminally.
+  and no user-triggered resolution entry. `after_ladder_recovery` is a deep copy
+  of the contract's rules for preserving the raw failed operation and
+  classifying waiting or an ordinary workflow repair handoff; it is `null` when
+  absent. `supported: false` stops that automatic ladder step only.
 - The `worker-queue-snapshot` carries `repo_operations` — the operation cards,
   newest `requested_at` first. Each card:
   `{ operation_id, kind: 'verify'|'deploy', repo_id, target_base, target_sha, target_tree, effective_base_sha, script_path, script_blob_sha, script_mode, state: 'queued'|'running'|'succeeded'|'failed'|'retry_pending', requested_at, started_at, finished_at, elapsed_ms, exit_code, signal, log_path, log_digest, output_tail, subjects, failure, failure_kind, verify_stage, retry: { status, first_fingerprint, first_failure, blocked_reason, absorbed }, source: 'automatic'|'manual', dismissed, superseded_by }`.

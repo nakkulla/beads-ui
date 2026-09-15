@@ -1,3 +1,8 @@
+import {
+  WORK_RECOVERY_RESULT_LINE_PREFIX,
+  recoveryResultLineReasons
+} from '../work-recovery-policy.js';
+
 /**
  * beads-ui-owned unattended preamble (spec §5.4, restructured by UI-rxp3).
  *
@@ -114,7 +119,8 @@ export const FAST_TRACK_DIRECTIVE = [
 ].join('\n');
 
 /**
- * The five result-line forms a Worker session's first nonempty line may take.
+ * The five legacy result-line forms; recoveryDirective adds the sixth only
+ * for a session launched with validated recovery readiness.
  *
  * CANONICAL SOURCE is dotfiles `finishing.md`; this is a copy (harness-reduction
  * spec D1), inlined because the line is the ONE thing the failure classifier
@@ -273,6 +279,22 @@ export const QUICKFIX_LANE_DIRECTIVE = [
   '',
   RESULT_LINE_GRAMMAR
 ].join('\n');
+
+/**
+ * Preserve the legacy directive bytes unless this launch advertises readiness.
+ *
+ * @param {string} directive
+ * @param {boolean} ready
+ */
+function recoveryDirective(directive, ready) {
+  const reasons = ready ? recoveryResultLineReasons() : [];
+  return reasons.length > 0
+    ? directive.replace(
+        '대기 · blocks:<ID>[, …]\n',
+        `대기 · blocks:<ID>[, …]\n${WORK_RECOVERY_RESULT_LINE_PREFIX}<${reasons.join('|')}>\n`
+      )
+    : directive;
+}
 
 /**
  * The guard contract, restructured into three SEVERITY tiers (UI-rxp3) and
@@ -455,7 +477,7 @@ export function defaultTaskPrompt(bead_id) {
  * last because it is the one thing that matters only at the very end of a turn.
  *
  * @param {string} base_prompt - The task prompt for the session.
- * @param {{ runtime?: 'claude'|'codex', fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, quickfix_lane?: boolean, review?: boolean, target_base?: string|null, attempt_facts?: import('../attempt-facts.js').AttemptFacts|null }} [options]
+ * @param {{ runtime?: 'claude'|'codex', fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, quickfix_lane?: boolean, review?: boolean, work_recovery_ready?: boolean, target_base?: string|null, attempt_facts?: import('../attempt-facts.js').AttemptFacts|null }} [options]
  * @returns {{ system_prompt: string, task_prompt: string }}
  */
 export function applyPreamble(base_prompt, options = {}) {
@@ -486,9 +508,19 @@ export function applyPreamble(base_prompt, options = {}) {
     parts.push(FAST_TRACK_DIRECTIVE);
   }
   if (quickfix_lane) {
-    parts.push(QUICKFIX_LANE_DIRECTIVE);
+    parts.push(
+      recoveryDirective(
+        QUICKFIX_LANE_DIRECTIVE,
+        options.work_recovery_ready === true
+      )
+    );
   } else if (pr_submit) {
-    parts.push(PR_SUBMIT_DIRECTIVE);
+    parts.push(
+      recoveryDirective(
+        PR_SUBMIT_DIRECTIVE,
+        options.work_recovery_ready === true
+      )
+    );
     const target_base =
       typeof options.target_base === 'string' ? options.target_base.trim() : '';
     if (target_base.length > 0) {

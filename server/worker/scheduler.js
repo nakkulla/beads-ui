@@ -132,6 +132,7 @@ import {
   codexAccountHomeDir as defaultCodexAccountHomeDir
 } from './state-paths.js';
 import * as default_usage_receipts from './usage-receipts.js';
+import * as default_work_recovery_policy from './work-recovery-policy.js';
 import { publishWorkspaceActivity } from './workspace-activity.js';
 import { branchForBead, readRebaseBranch } from './worktree.js';
 
@@ -569,6 +570,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
 
 /**
  * @typedef {Object} SchedulerDeps
+ * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryPolicySupported'|'workRecoveryClassification'|'workRecoveryReadinessEnv'>} [workRecoveryPolicy]
  * @property {any} store - Queue store (queue-store.js).
  * @property {ReturnType<typeof import('./exec-preset-coordinator.js').createExecPresetCoordinator>} execPresetCoordinator
  * The sole authority for workspace preset resolution. It snapshots the selected
@@ -1174,6 +1176,8 @@ export function createScheduler(deps) {
   const fs = deps.fs || nodeFs;
   const guardHook = deps.guardHook || default_guard_hook;
   const usage_receipts = deps.usageReceipts || default_usage_receipts;
+  const work_recovery_policy =
+    deps.workRecoveryPolicy || default_work_recovery_policy;
   const publishActivity = deps.publishActivity || publishWorkspaceActivity;
   const delegation_monitor =
     deps.delegationMonitor || default_delegation_monitor;
@@ -4924,6 +4928,73 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Compare only the nearest recovery ancestor, keeping its original key after
+   * promotion so another identical ending cannot reset the no-progress budget.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {import('./failure-class.js').FailureClassification} classification
+   * @returns {Record<string, any>}
+   */
+  function recoveryDetail(workspace, attempt_id, classification) {
+    const recovery = { ...classification.recovery, policy_schema: 1 };
+    const key = JSON.stringify({
+      cause: classification.cause,
+      classification: recovery.classification,
+      summary: extractSummary(classification.summary)
+    });
+    const attempts = deps.store.snapshot(workspace).attempts;
+    const current = attempts[attempt_id];
+    /** @type {Set<string>} */
+    const visited = new Set([attempt_id]);
+    let cursor = current;
+    while (
+      cursor &&
+      typeof cursor.resumed_from === 'string' &&
+      !visited.has(cursor.resumed_from)
+    ) {
+      visited.add(cursor.resumed_from);
+      cursor = attempts[cursor.resumed_from];
+      if (!cursor || cursor.bead_id !== current.bead_id) {
+        break;
+      }
+      const prior_recovery = cursor.cause_detail?.recovery;
+      if (!prior_recovery) {
+        continue;
+      }
+      const prior_key =
+        prior_recovery.no_progress?.key ??
+        JSON.stringify({
+          cause: cursor.cause,
+          classification: prior_recovery.classification,
+          summary: extractSummary(cursor.cause_detail.summary)
+        });
+      if (prior_key !== key) {
+        break;
+      }
+      const count = (prior_recovery.no_progress?.count ?? 0) + 1;
+      const promoted =
+        count >= 2
+          ? work_recovery_policy.workRecoveryClassification(
+              'two_no_progress_repeats'
+            )
+          : null;
+      return {
+        ...recovery,
+        ...(promoted
+          ? {
+              classification: promoted.classification,
+              disposition: promoted.disposition,
+              reason: promoted.reason
+            }
+          : {}),
+        no_progress: { count, key }
+      };
+    }
+    return recovery;
+  }
+
+  /**
    * Write ONE classified outcome to its attempt record and to the queue's own
    * stop state (2026-08-28 worker-failure-tiers spec §3). What used to be one
    * behaviour ("mark failed, switch `auto_advance` OFF") is now four:
@@ -5028,6 +5099,50 @@ export function createScheduler(deps) {
     }
 
     if (tier === 'waiting') {
+      if (classification.recovery) {
+        if (
+          classification.cause === 'loud_fail_blocker' &&
+          ['hook_bypass_blocked', 'merge_to_base_blocked'].includes(
+            cause_detail?.reason
+          )
+        ) {
+          deps.store.applyQueueHold(workspace, {
+            event: {
+              kind: 'systemic_failure',
+              bead_id,
+              attempt_id,
+              cause: classification.cause,
+              at
+            },
+            now: at
+          });
+        }
+        const recovery = recoveryDetail(workspace, attempt_id, classification);
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: {
+            status: 'waiting',
+            cause: classification.cause,
+            cause_detail: mergeCauseDetail(
+              cause_detail,
+              classification.summary,
+              { recovery }
+            ),
+            finished_at: at,
+            retry: null
+          }
+        });
+        closeRetryLineage(workspace, bead_id);
+        appendTimeline({
+          bead_id,
+          attempt_id,
+          kind: 'session_ended',
+          seq: 'waiting',
+          summary: `${default_work_recovery_policy.WORK_RECOVERY_RESULT_LINE_PREFIX}${recovery.reason} — ${classification.cause}`,
+          at
+        });
+        return;
+      }
       // The prerequisite wait (waiting-tier spec §4.4). `blockers` is not read
       // off the session's result line: the caller PROVED each id against bd
       // before this tier could be reached (§4.2), and §2 keeps the result line
@@ -5118,39 +5233,75 @@ export function createScheduler(deps) {
       const scheduled = applied.effects.find(
         (/** @type {any} */ effect) => effect.kind === 'retry_scheduled'
       );
-      deps.store.updateAttempt(workspace, {
-        attempt_id,
-        patch: {
-          status: scheduled ? 'retry_wait' : 'failed',
-          cause: classification.cause,
-          cause_detail: mergeCauseDetail(cause_detail, classification.summary, {
-            env_pattern: classification.env_group
-          }),
-          finished_at: at,
-          retry: scheduled
-            ? {
-                cause: key,
-                attempts: scheduled.attempts ?? 1,
-                max: RETRY_MAX,
-                next_at: scheduled.next_at ?? null,
-                origin_attempt_id:
-                  scheduled.origin_attempt_id ?? origin_attempt_id
+      const exhausted =
+        !scheduled && work_recovery_policy.workRecoveryPolicySupported()
+          ? work_recovery_policy.workRecoveryClassification(
+              'transient_retry_exhausted'
+            )
+          : null;
+      if (!exhausted) {
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: {
+            status: scheduled ? 'retry_wait' : 'failed',
+            cause: classification.cause,
+            cause_detail: mergeCauseDetail(
+              cause_detail,
+              classification.summary,
+              {
+                env_pattern: classification.env_group
               }
-            : null
-        }
-      });
+            ),
+            finished_at: at,
+            retry: scheduled
+              ? {
+                  cause: key,
+                  attempts: scheduled.attempts ?? 1,
+                  max: RETRY_MAX,
+                  next_at: scheduled.next_at ?? null,
+                  origin_attempt_id:
+                    scheduled.origin_attempt_id ?? origin_attempt_id
+                }
+              : null
+          }
+        });
+      }
       // The reducer's own terminations: a promoted ladder fails the attempt it
       // promoted on, and an env failure under a standing systemic stop opens no
       // ladder at all.
       for (const effect of /** @type {any[]} */ (applied.effects)) {
-        if (effect.kind === 'attempt_failed' && effect.attempt_id) {
+        if (
+          effect.kind === 'attempt_failed' &&
+          effect.attempt_id &&
+          !(exhausted && effect.attempt_id === attempt_id)
+        ) {
           deps.store.updateAttempt(workspace, {
             attempt_id: effect.attempt_id,
             patch: { status: 'failed', finished_at: at }
           });
         }
       }
-      if (scheduled) {
+      if (exhausted) {
+        settleFailureTier(
+          workspace,
+          attempt_id,
+          bead_id,
+          {
+            ...classification,
+            tier: 'waiting',
+            retry: null,
+            recovery: {
+              classification: exhausted.classification,
+              disposition: exhausted.disposition,
+              reason: exhausted.reason
+            }
+          },
+          mergeCauseDetail(cause_detail, classification.summary, {
+            env_pattern: classification.env_group
+          }),
+          { ...options, at }
+        );
+      } else if (scheduled) {
         // The ladder rung, not an ending: this attempt is `retry_wait` and its
         // ending arrives when the rung is superseded or exhausted.
         appendTimeline({
@@ -5275,6 +5426,13 @@ export function createScheduler(deps) {
       bead_status: options.bead_status ?? null,
       pr_url: options.pr_url ?? null,
       awaiting_user: options.awaiting_user ?? null,
+      ...(work_recovery_policy.workRecoveryPolicySupported()
+        ? {
+            recovery: {
+              classify: work_recovery_policy.workRecoveryClassification
+            }
+          }
+        : {}),
       ...(options.tier_hint ? { tier_hint: options.tier_hint } : {})
     });
     const background_shell_at_result =
@@ -5285,9 +5443,12 @@ export function createScheduler(deps) {
       background_shell_at_result.length > 0
     ) {
       classification.cause = 'session_ended_unresolved:background_shell';
-      classification.summary = extractSummary(
+      const background_summary = extractSummary(
         `${failureTokenSummary(classification.cause)}: ${background_shell_at_result.join('; ')}`
       );
+      classification.summary = classification.recovery
+        ? classification.summary
+        : background_summary;
       cause_detail = mergeCauseDetail(cause_detail, classification.summary, {
         background_shell_at_result
       });
@@ -5815,7 +5976,8 @@ export function createScheduler(deps) {
       // so do not replace it with a later missing-PR or missing-push symptom.
       if (
         verdict.terminal_result?.kind === 'failure' ||
-        verdict.terminal_result?.kind === 'environment'
+        verdict.terminal_result?.kind === 'environment' ||
+        verdict.terminal_result?.kind === 'recovery_wait'
       ) {
         const delivery_observation = await reportedQuickfixFacts(
           workspace,
@@ -5827,10 +5989,17 @@ export function createScheduler(deps) {
           attempt_id,
           bead_id,
           prior,
-          verdict.terminal_result.kind === 'environment'
-            ? 'session_hard_stop:environment'
-            : 'session_failed:reported_failure',
-          delivery_observation ? { delivery_observation } : undefined,
+          verdict.terminal_result.kind === 'recovery_wait'
+            ? 'session_recovery_wait'
+            : verdict.terminal_result.kind === 'environment'
+              ? 'session_hard_stop:environment'
+              : 'session_failed:reported_failure',
+          {
+            ...(delivery_observation ? { delivery_observation } : {}),
+            ...(verdict.terminal_result.kind === 'recovery_wait'
+              ? { reason_token: verdict.terminal_result.reason }
+              : {})
+          },
           { verdict }
         );
         notifyChanged(workspace);
@@ -7825,7 +7994,8 @@ export function createScheduler(deps) {
     }
     if (
       persisted_verdict?.terminal_result?.kind === 'failure' ||
-      persisted_verdict?.terminal_result?.kind === 'environment'
+      persisted_verdict?.terminal_result?.kind === 'environment' ||
+      persisted_verdict?.terminal_result?.kind === 'recovery_wait'
     ) {
       const delivery_observation = await reportedQuickfixFacts(
         workspace,
@@ -7837,10 +8007,17 @@ export function createScheduler(deps) {
         attempt_id,
         bead_id,
         prior,
-        persisted_verdict.terminal_result.kind === 'environment'
-          ? 'session_hard_stop:environment'
-          : 'session_failed:reported_failure',
-        delivery_observation ? { delivery_observation } : undefined,
+        persisted_verdict.terminal_result.kind === 'recovery_wait'
+          ? 'session_recovery_wait'
+          : persisted_verdict.terminal_result.kind === 'environment'
+            ? 'session_hard_stop:environment'
+            : 'session_failed:reported_failure',
+        {
+          ...(delivery_observation ? { delivery_observation } : {}),
+          ...(persisted_verdict.terminal_result.kind === 'recovery_wait'
+            ? { reason_token: persisted_verdict.terminal_result.reason }
+            : {})
+        },
         { verdict: persisted_verdict }
       );
       notifyChanged(workspace);
@@ -8115,6 +8292,9 @@ export function createScheduler(deps) {
         const reconciled_verdict = /** @type {RunnerVerdict} */ ({
           success: true,
           reason: 'reconciled',
+          ...(work_recovery_policy.workRecoveryPolicySupported()
+            ? { summary: persisted_verdict?.summary ?? null }
+            : {}),
           ...(persisted_verdict?.background_shell_at_result
             ? {
                 background_shell_at_result:
@@ -9647,6 +9827,16 @@ export function createScheduler(deps) {
           : {})
       };
     }
+    if (
+      !settings.disposition &&
+      input.launch_kind !== 'review' &&
+      work_recovery_policy.workRecoveryPolicySupported()
+    ) {
+      settings.env = {
+        ...settings.env,
+        ...work_recovery_policy.workRecoveryReadinessEnv()
+      };
+    }
     if (!settings.disposition) {
       settings.env = {
         ...settings.env,
@@ -10385,6 +10575,16 @@ export function createScheduler(deps) {
     const q = deps.store.snapshot(workspace);
     const prior = q.attempts ? q.attempts[attempt_id] : null;
 
+    const recovery_wait =
+      prior?.status === 'waiting' && !!prior.cause_detail?.recovery;
+    if (
+      recovery_wait &&
+      continuation.provider_auto_resume === true &&
+      prior.cause_detail.recovery.no_progress?.count >= 2
+    ) {
+      return { ok: false, reason: 'no_progress' };
+    }
+
     // not_failed: no such attempt, or not in a resumable state.
     // `retry_wait`은 환경 사다리가 새 attempt를 기다리는 rung이라 일반 재개
     // 대상이 아니다. 기록된 세션 승계를 선택한 계보의 자동 환경 재시도만이 그
@@ -10397,6 +10597,7 @@ export function createScheduler(deps) {
       (prior.status !== 'failed' &&
         prior.status !== 'orphaned' &&
         prior.status !== 'paused' &&
+        !recovery_wait &&
         !(prior.status === 'waiting' && prior.cause === 'base_moved') &&
         !(ladder_prior_attempt && prior.status === 'retry_wait'))
     ) {
@@ -10724,6 +10925,8 @@ export function createScheduler(deps) {
       let result;
       if (!prior) {
         result = { ok: false, reason: 'attempt_not_found' };
+      } else if (prior.status === 'waiting' && prior.cause_detail?.recovery) {
+        result = { ok: false, reason: 'recovery_wait' };
       } else if (prior.disposition) {
         result = await dispatchReviseFix(workspace, {
           bead_id: prior.bead_id,
@@ -11721,6 +11924,8 @@ export function createScheduler(deps) {
     const prior_runner_available =
       recorded_prior_runner !== null && RUNNERS.includes(recorded_prior_runner);
     const provider_auto_resume = options.provider_auto_resume === true;
+    const recovery_wait =
+      prior.status === 'waiting' && !!prior.cause_detail?.recovery;
     const strict_preserved = baseMovedLineage(workspace, prior) !== null;
     // `prior_attempt` (UI-qce9 §5): the recorded attempt's session AND its
     // recorded execution tuple, verbatim. It reuses the provider auto-resume's
@@ -11759,7 +11964,7 @@ export function createScheduler(deps) {
       return lane_mismatch;
     }
     const base_resolved =
-      provider_auto_resume || prior_attempt_choice
+      provider_auto_resume || prior_attempt_choice || recovery_wait
         ? {
             ok: /** @type {const} */ (true),
             preset_id: prior.exec_default_preset_id ?? null,
@@ -13790,6 +13995,9 @@ export function createScheduler(deps) {
     }
     if (latest.status === 'waiting' && latest.cause === 'base_moved') {
       return 'base_moved';
+    }
+    if (latest.status === 'waiting' && latest.cause_detail?.recovery) {
+      return 'recovery_wait';
     }
     // `waiting` is deliberately absent (waiting-tier spec §4.5, D3): absence
     // from `bd ready` is that ending's fence, and it lifts itself the moment

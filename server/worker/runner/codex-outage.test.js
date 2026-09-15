@@ -128,6 +128,66 @@ describe('codex provider outage classifier', () => {
     });
   });
 
+  const USAGE_MESSAGE =
+    "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 10:33 AM.";
+  const USAGE_RECORDS = [
+    { type: 'error', message: USAGE_MESSAGE },
+    { type: 'turn.failed', error: { message: USAGE_MESSAGE } }
+  ];
+
+  test.each(
+    [USAGE_RECORDS, [USAGE_RECORDS[0]], [USAGE_RECORDS[1]]].map((raw) => ({
+      raw
+    }))
+  )(
+    'recognizes the real usage notice from structured records $raw',
+    ({ raw }) => {
+      const outage = classifyProviderOutage({ raw, finished_at: FINISHED_AT });
+
+      expect(outage).toEqual({
+        detail: 'usage_limit',
+        scope: 'account',
+        resets_at: null,
+        message: USAGE_MESSAGE
+      });
+    }
+  );
+
+  test('keeps the first structured notice in stream order', () => {
+    const first = `  ${USAGE_MESSAGE.replace("You've", 'YOU’VE')}`;
+
+    const outage = classifyProviderOutage({
+      raw: [{ type: 'error', message: first }, USAGE_RECORDS[1]],
+      finished_at: FINISHED_AT
+    });
+
+    expect(outage?.message).toBe(first.trim());
+    expect(outage?.resets_at).toBeNull();
+  });
+
+  test('ignores the usage notice quoted by an agent', () => {
+    const outage = classifyProviderOutage({
+      raw: [
+        {
+          type: 'item.completed',
+          item: { type: 'agent_message', text: USAGE_MESSAGE }
+        }
+      ]
+    });
+
+    expect(outage).toBeNull();
+  });
+
+  test('ignores the usage notice in stderr alone', () => {
+    const outage = classifyProviderOutage({
+      raw: [],
+      stderr_tail: USAGE_MESSAGE,
+      finished_at: FINISHED_AT
+    });
+
+    expect(outage).toBeNull();
+  });
+
   test('keeps the reset the payload carries', () => {
     const raw = shapedEnvelope(429, 'usage limit reached', {
       error_type: 'usage_limit_reached',

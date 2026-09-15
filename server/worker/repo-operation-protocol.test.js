@@ -236,7 +236,7 @@ describe('RepoOperation protocol projection', () => {
       policy.worker_automatic.length,
       policy.resolution_ladder.map((/** @type {any} */ step) => step.id),
       policy.never_automatic.length
-    ]).toEqual([3, 7, ['script_retry'], 8]);
+    ]).toEqual([4, 7, ['script_retry'], 8]);
   });
 
   test('names the dotfiles commit the policy copy is pinned to', () => {
@@ -245,7 +245,7 @@ describe('RepoOperation protocol projection', () => {
     const policy = /** @type {any} */ (decorated.repo_operation_policy);
 
     expect(policy.source_commit).toBe(
-      '3c27264271c86b1bc07bc9eb293881068aca9776'
+      '5cc243221bcf5af59c0831989ebf646f56878e06'
     );
   });
 

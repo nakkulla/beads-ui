@@ -12,6 +12,7 @@ import {
   matchEnvPattern,
   scriptSummary
 } from './failure-class.js';
+import { workRecoveryClassification } from './work-recovery-policy.js';
 
 /**
  * @param {Object} [overrides]
@@ -20,6 +21,120 @@ import {
 function input(overrides) {
   return { cause: null, cause_detail: null, verdict: null, ...overrides };
 }
+
+describe('work recovery classification', () => {
+  const recovery = { classify: workRecoveryClassification };
+
+  test.each([
+    ['session_ended_unresolved', 'finished_without_result_line'],
+    [
+      'session_ended_unresolved:background_shell',
+      'finished_without_result_line'
+    ],
+    ['session_failed:reported_failure', 'past_failure_line'],
+    ['session_hard_stop:environment', 'environment_line'],
+    ['session_failed:is_error', 'unknown_error'],
+    ['session_failed:subtype', 'unknown_error'],
+    ['session_failed:no_result', 'unknown_error'],
+    ['loud_fail_blocker', 'authority_required']
+  ])('preserves %s as policy-classified waiting', (cause, key) => {
+    const classified = classifyFailure({
+      cause,
+      recovery,
+      verdict: { success: false, summary: 'raw failure' }
+    });
+
+    expect(classified).toMatchObject({
+      tier: 'waiting',
+      cause,
+      summary: 'raw failure',
+      retry: null,
+      recovery: {
+        classification: key,
+        disposition: 'wait',
+        reason: key === 'authority_required' ? 'authority' : 'unclassified'
+      }
+    });
+  });
+
+  test.each([
+    'session_hard_stop:environment',
+    'session_failed:is_error',
+    'session_failed:subtype',
+    'session_failed:no_result'
+  ])('preserves the env ladder for matched %s errors', (cause) => {
+    const classified = classifyFailure({
+      cause,
+      recovery,
+      verdict: { success: false, summary: 'fetch failed' }
+    });
+
+    expect(classified).toMatchObject({ tier: 'env', env_group: 'api' });
+    expect(classified.recovery).toBeUndefined();
+  });
+
+  test.each([
+    'provider',
+    'credential',
+    'prerequisite',
+    'authority',
+    'verification',
+    'no_progress',
+    'unclassified',
+    'reconcile',
+    'invented'
+  ])('classifies declared recovery token %s', (token) => {
+    const classified = classifyFailure({
+      cause: 'session_recovery_wait',
+      recovery,
+      cause_detail: { reason_token: token }
+    });
+
+    expect(classified).toMatchObject({
+      tier: 'waiting',
+      recovery: {
+        classification:
+          token === 'invented' ? 'unknown_error' : 'session_recovery_wait',
+        disposition: token === 'reconcile' ? 'reconcile' : 'wait',
+        reason: token === 'invented' ? 'unclassified' : token
+      }
+    });
+  });
+
+  test.each([
+    'session_ended_unresolved',
+    'session_failed:reported_failure',
+    'loud_fail_blocker',
+    'base_landing_detected',
+    'verify_failed:red',
+    'resume_failed:no_result'
+  ])('preserves legacy behavior without supported recovery for %s', (cause) => {
+    const legacy = classifyFailure({ cause });
+
+    const unsupported = classifyFailure({
+      cause,
+      recovery: { classify: () => null }
+    });
+
+    expect(unsupported).toEqual(legacy);
+  });
+
+  test('keeps a successful user decision park ahead of recovery', () => {
+    const classified = classifyFailure({
+      cause: 'session_ended_unresolved',
+      recovery,
+      verdict: { success: true },
+      awaiting_user: 'design',
+      bead_status: 'open'
+    });
+
+    expect(classified).toMatchObject({
+      tier: 'parked',
+      cause: 'session_parked'
+    });
+    expect(classified.recovery).toBeUndefined();
+  });
+});
 
 describe('worker failure classification table', () => {
   const cases = [

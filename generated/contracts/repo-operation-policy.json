@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "worker_automatic": [
     "owned_deploy_worktree_fetch_detached_alignment_recreate",
     "recovered_pre_execution_fetch_timeout_retry_once",
@@ -27,7 +27,48 @@
       "evidence": "flake_absorption_recorded"
     }
   ],
-  "after_ladder": "terminal_failed_with_recorded_cause_then_user_manual_rerun_only",
+  "after_ladder": "preserve_failed_operation_then_classify_wait_or_workflow_repair_handoff",
+  "after_ladder_recovery": {
+    "consumer_schema_required": 4,
+    "original_operation": "preserve_raw_failed_cause_logs_ledger_and_partial_effects",
+    "issue": "unfinished_until_verified_recovery_and_cleanup",
+    "diagnosis": {
+      "path": "existing_read_only_inquiry",
+      "requires": [
+        "original_execution_terminated",
+        "actual_effects_confirmed"
+      ]
+    },
+    "code_defect_handoff": {
+      "requires": "proven_owned_code_defect",
+      "procedure": [
+        "reuse_probe",
+        "workflow_route",
+        "review",
+        "worker_placement"
+      ],
+      "reservation_key": [
+        "execution_input_identity",
+        "failure_cause"
+      ],
+      "reservation_owner": "existing_operation_ledger",
+      "interruption": "adopt_existing_repair_bead_and_observed_placement",
+      "duplicate_while_in_progress": "forbidden",
+      "cleanup_before_handoff_confirmation": "forbidden",
+      "execution": "ordinary_source_review_pr_deploy",
+      "shared_deploy_worktree_repair": "forbidden",
+      "repair_session_dispatch": "forbidden"
+    },
+    "otherwise": "wait_on_condition",
+    "no_speculative_bead": [
+      "credential",
+      "ownership",
+      "unknown_outcome"
+    ],
+    "click_only_exception": "approved_code_defect_workflow_handoff_only",
+    "receipt_hold": "unchanged_human_only_exits_no_automatic_restoration",
+    "succession": "existing_explicit_replaces_and_verified_success_before_original_cleanup"
+  },
   "manual_human_fix": "absent",
   "never_automatic": [
     "bounded_single_script_retry_exceeded",

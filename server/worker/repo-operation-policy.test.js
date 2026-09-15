@@ -13,9 +13,11 @@ import {
  * copy without re-pinning here (or re-pinning without the approved artifact)
  * fails the contract, which is the whole point of the pin.
  */
-const APPROVED_SOURCE_COMMIT = '3c27264271c86b1bc07bc9eb293881068aca9776';
+const APPROVED_SOURCE_COMMIT = '5cc243221bcf5af59c0831989ebf646f56878e06';
+const APPROVED_BLOB = 'c9fa99fd73437aeb09f1b5dd370ad843de907d51';
+const APPROVED_BYTES = 2809;
 const APPROVED_DIGEST =
-  'e0f5e86724e3f81c6ae4ea538d3a0a0a82e328f400d744163b6a145745e25549';
+  'eb3b6d9feb6c0bde432da6c251e48e5eadda6d970b894236908759fdb3142aab';
 
 /**
  * @param {number} schema_version
@@ -62,6 +64,36 @@ describe('pinned repo-operation policy contract', () => {
     expect(provenance.bytes).toBe(
       nodeFs.readFileSync(REPO_OPERATION_POLICY_PATH).length
     );
+    expect(provenance.bytes).toBe(APPROVED_BYTES);
+  });
+
+  test('proves the approved Git blob from the copied bytes', () => {
+    const bytes = nodeFs.readFileSync(REPO_OPERATION_POLICY_PATH);
+
+    const blob = nodeCrypto
+      .createHash('sha1')
+      .update(`blob ${bytes.length}\0`)
+      .update(bytes)
+      .digest('hex');
+
+    expect(blob).toBe(APPROVED_BLOB);
+    expect(loadRepoOperationPolicy().provenance.source_blob_sha).toBe(blob);
+  });
+
+  test('projects an independent deep copy of after-ladder recovery', () => {
+    const projected = projectRepoOperationPolicy();
+    const original = structuredClone(
+      loadRepoOperationPolicy().policy.after_ladder_recovery
+    );
+
+    projected.after_ladder_recovery?.diagnosis.requires.push('changed');
+
+    expect(loadRepoOperationPolicy().policy.after_ladder_recovery).toEqual(
+      original
+    );
+    expect(projectRepoOperationPolicy().after_ladder_recovery).toEqual(
+      original
+    );
   });
 
   test('names the dotfiles artifact path it was rendered from', () => {
@@ -93,7 +125,7 @@ describe('pinned repo-operation policy contract', () => {
     expect(Object.hasOwn(projected, 'repair_session_packet')).toBe(false);
     expect(Object.hasOwn(projected, 'completion_chain')).toBe(false);
     expect(projected.after_ladder).toBe(
-      'terminal_failed_with_recorded_cause_then_user_manual_rerun_only'
+      'preserve_failed_operation_then_classify_wait_or_workflow_repair_handoff'
     );
   });
 
@@ -162,15 +194,15 @@ describe('pinned repo-operation policy contract', () => {
     expect(classified).toBe('interrupted_without_terminal_exit');
   });
 
-  test('marks schema version 3 supported', () => {
+  test('marks schema version 4 supported', () => {
     const loaded = loadRepoOperationPolicy({
-      fs: /** @type {any} */ (pinnedAt(3))
+      fs: /** @type {any} */ (pinnedAt(4))
     });
 
     expect(loaded.supported).toBe(true);
   });
 
-  test.each([1, 2, 7])(
+  test.each([1, 2, 3, 7])(
     'marks schema version %s unsupported',
     (schema_version) => {
       const loaded = loadRepoOperationPolicy({

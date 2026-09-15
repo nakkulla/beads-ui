@@ -24,6 +24,7 @@
  * @import { RunnerCatalogEntry } from '../runner-catalog.js'
  */
 import { builtinCatalog } from '../runner-catalog.js';
+import { workRecoveryReadinessEnv } from '../work-recovery-policy.js';
 import { classifyProviderOutage } from './codex-outage.js';
 import { applyPreamble, defaultTaskPrompt } from './preamble.js';
 import { runSession } from './session.js';
@@ -475,7 +476,11 @@ export function codexSpec(catalog_entry, options = {}) {
       } else {
         args.push('--dangerously-bypass-approvals-and-sandbox');
       }
+      const recovery_env = workRecoveryReadinessEnv();
       const { system_prompt, task_prompt } = applyPreamble(promptFor(bead), {
+        work_recovery_ready: Object.entries(recovery_env).some(
+          ([name, value]) => s.env?.[name] === value
+        ),
         runtime: 'codex',
         review: s.mode === 'review',
         fast_track: !!s.fast_track,

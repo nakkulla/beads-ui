@@ -49,6 +49,7 @@ export const REPO_OPERATION_POLICY_PROVENANCE_PATH = path.join(
  * @property {string[]} worker_automatic
  * @property {Record<string, unknown>[]} resolution_ladder
  * @property {string} after_ladder
+ * @property {Record<string, any>|null} [after_ladder_recovery]
  * @property {string} manual_human_fix
  * @property {string[]} never_automatic
  */
@@ -78,7 +79,7 @@ export function loadRepoOperationPolicy(deps = {}) {
     policy,
     provenance,
     digest,
-    supported: policy.schema_version === 3
+    supported: policy.schema_version === 4
   };
   if (!deps.fs) {
     cached = loaded;
@@ -89,7 +90,7 @@ export function loadRepoOperationPolicy(deps = {}) {
 /**
  * Whether the pinned artifact has the one schema this consumer understands.
  * Unknown schemas stop only the automatic ladder step; callers keep operation
- * execution alive and settle the failure terminally instead.
+ * execution alive and preserve the raw failure for recovery judgment.
  */
 export function repoOperationPolicySupported() {
   return loadRepoOperationPolicy().supported;
@@ -153,6 +154,9 @@ export function projectRepoOperationPolicy() {
         })
     ),
     after_ladder: policy.after_ladder || '',
+    after_ladder_recovery: policy.after_ladder_recovery
+      ? structuredClone(policy.after_ladder_recovery)
+      : null,
     manual_human_fix: policy.manual_human_fix || '',
     never_automatic: Array.isArray(policy.never_automatic)
       ? [...policy.never_automatic]

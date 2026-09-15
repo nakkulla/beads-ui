@@ -31,6 +31,8 @@ const TRANSPORT_STATUS_RE = /\bunexpected status (\d{3})\b/i;
  */
 const WORKSPACE_CREDITS_RE = /^\s*Your workspace is out of credits\.(?:\s|$)/i;
 
+const USAGE_LIMIT_RE = /^\s*You['’]ve hit your usage limit\./i;
+
 /**
  * An `error.type` that names rate or usage limiting rather than a request
  * defect.
@@ -249,7 +251,7 @@ export function classifyProviderOutage(ctx) {
       ? ctx.finished_at
       : null;
   for (const message of structuredMessages(raw)) {
-    if (WORKSPACE_CREDITS_RE.test(message)) {
+    if (WORKSPACE_CREDITS_RE.test(message) || USAGE_LIMIT_RE.test(message)) {
       return {
         detail: 'usage_limit',
         message: errorDetail(message),
