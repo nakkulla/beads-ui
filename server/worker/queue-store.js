@@ -723,6 +723,7 @@
  * absent when the run left no readable output.
  * @property {{ first_failure: RepoOperation['failure'], first_fingerprint: string|null, first_failed_at: number|null, consumed_key: [string, string, string]|null, absorbed: { first_failure: NonNullable<RepoOperation['failure']>, first_fingerprint: string, at: number }|null, outcome: 'pending'|'consumed'|'not_applicable'|'absorbed', blocked_reason: string|null }|null} retry
  * @property {string|null} superseded_by
+ * @property {RepoOperationRecovery} [recovery]
  * @property {'automatic'|'manual'} source - Who asked for this operation. Every
  * record the Worker creates by itself is `automatic`; `manual` is the 배포 실행
  * click (UI-s582 §3). Legacy records normalize to `automatic`.
@@ -1577,7 +1578,7 @@ const RETIRED_REPAIR_PHASES = new Set(['repairing', 'waiting_repair_pr']);
  * becomes the terminal `stage`.
  * @property {string[]} attempt_ids - Sessions the lane still owns, identified
  * through `active_op`, `repair_operation_id`, `completion_mode`, and
- * `repair_bead_ids` while those keys are still readable.
+ * `handoff_bead_ids` while those keys are still readable.
  * @property {CompletionFailureKey|null} failure_key
  * @property {string|null} log_path
  * @property {string|null} op_id
@@ -1617,8 +1618,8 @@ function planRepairLaneRetirements(parsed) {
       continue;
     }
     const active_op = isRecord(value.active_op) ? value.active_op : null;
-    const repair_bead_ids = Array.isArray(value.repair_bead_ids)
-      ? value.repair_bead_ids.filter((id) => typeof id === 'string')
+    const handoff_bead_ids = Array.isArray(value.handoff_bead_ids)
+      ? value.handoff_bead_ids.filter((id) => typeof id === 'string')
       : [];
     /** @type {Set<string>} */
     const attempt_ids = new Set();
@@ -1635,7 +1636,7 @@ function planRepairLaneRetirements(parsed) {
           (raw_attempt.completion_mode != null ||
             raw_attempt.repair_operation_id != null)) ||
         (typeof raw_attempt.bead_id === 'string' &&
-          repair_bead_ids.includes(raw_attempt.bead_id))
+          handoff_bead_ids.includes(raw_attempt.bead_id))
       ) {
         attempt_ids.add(attempt_id);
       }
@@ -3442,6 +3443,78 @@ function normalizeRepoOperationRetry(value, state, failure) {
 }
 
 /**
+ * @typedef {{ key: string, state: 'reserved'|'bead_recorded'|'reused', handoff_bead_id: string|null, reserved_at: number, recorded_at: number|null, error: string|null }} RepairHandoff
+ * @typedef {{ classification: string, disposition: string, reason: string|null, code_defect: boolean, prover: string|null, handoff: RepairHandoff|null }} RepoOperationRecovery
+ */
+
+/**
+ * Optional recovery evidence fails quiet without affecting raw terminal facts.
+ *
+ * @param {unknown} value
+ * @returns {RepoOperationRecovery|null}
+ */
+function normalizeRepoOperationRecovery(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.classification !== 'string' ||
+    !value.classification ||
+    !['repair', 'wait', 'reconcile', 'fatal'].includes(
+      String(value.disposition)
+    ) ||
+    !(value.reason === null || typeof value.reason === 'string') ||
+    typeof value.code_defect !== 'boolean' ||
+    !(value.prover === null || typeof value.prover === 'string')
+  ) {
+    return null;
+  }
+  const handoff = value.handoff;
+  if (
+    handoff !== null &&
+    (!isRecord(handoff) ||
+      typeof handoff.key !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(handoff.key) ||
+      !['reserved', 'bead_recorded', 'reused'].includes(
+        String(handoff.state)
+      ) ||
+      !(
+        handoff.handoff_bead_id === null ||
+        (typeof handoff.handoff_bead_id === 'string' &&
+          handoff.handoff_bead_id.length > 0)
+      ) ||
+      typeof handoff.reserved_at !== 'number' ||
+      !Number.isFinite(handoff.reserved_at) ||
+      !(
+        handoff.recorded_at === null ||
+        (typeof handoff.recorded_at === 'number' &&
+          Number.isFinite(handoff.recorded_at))
+      ) ||
+      !(handoff.error === null || typeof handoff.error === 'string') ||
+      (handoff.state !== 'reserved' &&
+        (!handoff.handoff_bead_id || handoff.recorded_at === null)))
+  ) {
+    return null;
+  }
+  return {
+    classification: value.classification,
+    disposition: String(value.disposition),
+    reason: value.reason,
+    code_defect: value.code_defect,
+    prover: value.prover,
+    handoff:
+      handoff === null
+        ? null
+        : /** @type {RepairHandoff} */ ({
+            key: handoff.key,
+            state: /** @type {RepairHandoff['state']} */ (handoff.state),
+            handoff_bead_id: handoff.handoff_bead_id,
+            reserved_at: handoff.reserved_at,
+            recorded_at: handoff.recorded_at,
+            error: handoff.error
+          })
+  };
+}
+
+/**
  * @param {unknown} value
  * @returns {RepoOperation|null}
  */
@@ -3493,6 +3566,7 @@ function normalizeRepoOperation(value) {
     : null;
   const failure = normalizeRepoOperationFailure(value.failure);
   const retry = normalizeRepoOperationRetry(value.retry, value.state, failure);
+  const recovery = normalizeRepoOperationRecovery(value.recovery);
   /** @type {string[]} */
   const verify_head_shas = [];
   for (const head_sha of [
@@ -3585,6 +3659,7 @@ function normalizeRepoOperation(value) {
     signal: typeof value.signal === 'string' ? value.signal : null,
     failure: settled_failure,
     retry,
+    ...(recovery ? { recovery } : {}),
     superseded_by:
       typeof value.superseded_by === 'string' ? value.superseded_by : null,
     // Provenance of the request, not a state: only an exact `manual` marks the
@@ -6610,7 +6685,7 @@ export function createQueueStore(options = {}) {
      * rolled back.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, blocked_reason?: string }} input
+     * @param {{ operation_id: string, blocked_reason?: string, recovery?: RepoOperationRecovery }} input
      * @returns {QueueOpResult}
      */
     settleConsumedRepoOperationRetry(workspace, input) {
@@ -6635,6 +6710,12 @@ export function createQueueStore(options = {}) {
         if (typeof input.blocked_reason === 'string') {
           retry.outcome = 'not_applicable';
           retry.blocked_reason = input.blocked_reason;
+        }
+        // Without an atomic classification, a restart could mistake the copied
+        // first failure for proof that the interrupted retry reproduced it.
+        const recovery = normalizeRepoOperationRecovery(input.recovery);
+        if (recovery) {
+          operation.recovery = recovery;
         }
         return true;
       });
@@ -6717,6 +6798,164 @@ export function createQueueStore(options = {}) {
             };
           }
         }
+        return true;
+      });
+    },
+
+    /**
+     * Record only recovery classification; a reservation is owned by its CAS.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, recovery: RepoOperationRecovery }} input
+     */
+    recordRepoOperationRecovery(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        const recovery = normalizeRepoOperationRecovery({
+          ...input.recovery,
+          handoff: null
+        });
+        if (!operation || operation.state !== 'failed' || !recovery) {
+          return false;
+        }
+        operation.recovery = {
+          ...recovery,
+          handoff: operation.recovery?.handoff || null
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Reserve by absence. Closed ids are exact readbacks supplied by the caller;
+     * the store cannot infer external issue status from an old operation.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, key: string, closed_handoff_bead_ids?: string[] }} input
+     */
+    reserveRepairHandoff(workspace, input) {
+      let existing = false;
+      const result = applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        if (
+          !operation ||
+          operation.state !== 'failed' ||
+          !operation.recovery ||
+          !operation.recovery.code_defect ||
+          operation.recovery.disposition !== 'repair' ||
+          !/^[a-f0-9]{64}$/.test(input.key)
+        ) {
+          return false;
+        }
+        if (operation.recovery.handoff) {
+          existing = true;
+          return operation.recovery.handoff.key === input.key;
+        }
+        if (
+          Object.values(next.repo_operations).some((other) => {
+            const handoff = other.recovery?.handoff;
+            return (
+              handoff?.key === input.key &&
+              (!handoff.handoff_bead_id ||
+                !(input.closed_handoff_bead_ids || []).includes(
+                  handoff.handoff_bead_id
+                ))
+            );
+          })
+        ) {
+          existing = true;
+          return false;
+        }
+        operation.recovery.handoff = {
+          key: input.key,
+          state: 'reserved',
+          handoff_bead_id: null,
+          reserved_at: now(),
+          recorded_at: null,
+          error: null
+        };
+        return true;
+      });
+      return { ok: result.ok, existing };
+    },
+
+    /**
+     * Adopt an existing ledger handoff atomically, or record a reserved creation.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, key: string, handoff_bead_id: string, state: 'bead_recorded'|'reused' }} input
+     */
+    recordRepairHandoffBead(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        const recovery = operation?.recovery;
+        if (
+          !operation ||
+          operation.state !== 'failed' ||
+          !recovery ||
+          recovery.disposition !== 'repair' ||
+          !recovery.code_defect ||
+          !input.handoff_bead_id ||
+          !['bead_recorded', 'reused'].includes(input.state)
+        ) {
+          return false;
+        }
+        if (!recovery.handoff && input.state === 'reused') {
+          const source = Object.values(next.repo_operations).find(
+            (other) =>
+              other.recovery?.handoff?.key === input.key &&
+              other.recovery.handoff.handoff_bead_id === input.handoff_bead_id
+          );
+          if (!source) {
+            return false;
+          }
+          recovery.handoff = {
+            key: input.key,
+            state: 'reserved',
+            handoff_bead_id: null,
+            reserved_at: now(),
+            recorded_at: null,
+            error: null
+          };
+        }
+        const handoff = recovery.handoff;
+        if (
+          !handoff ||
+          handoff.key !== input.key ||
+          (handoff.handoff_bead_id &&
+            handoff.handoff_bead_id !== input.handoff_bead_id)
+        ) {
+          return false;
+        }
+        handoff.handoff_bead_id = input.handoff_bead_id;
+        handoff.state = input.state;
+        handoff.recorded_at = handoff.recorded_at ?? now();
+        handoff.error = null;
+        return true;
+      });
+    },
+
+    /**
+     * Keep a reservation, including any returned id, when a bd step fails.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, key: string, error: string }} input
+     */
+    recordRepairHandoffError(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        const handoff = operation?.recovery?.handoff;
+        if (
+          !operation ||
+          operation.state !== 'failed' ||
+          !handoff ||
+          handoff.key !== input.key ||
+          typeof input.error !== 'string'
+        ) {
+          return false;
+        }
+        handoff.state = 'reserved';
+        handoff.error = input.error;
         return true;
       });
     },

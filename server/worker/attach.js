@@ -742,6 +742,57 @@ export function createLiveBd(config) {
 }
 
 /**
+ * Adopt a create whose response was lost before issuing another bd mutation.
+ * Metadata is written by create itself, so it survives a missing ledger id.
+ *
+ * @param {Pick<ReturnType<typeof createBdMetadata>, 'listByMetadataField'|'createTopLevelIssue'|'addDep'|'listDeps'|'findIssue'>} bd
+ * @returns {import('./repo-operation-coordinator.js').RepairHandoffAdapter}
+ */
+export function createOperationRepairHandoff(bd) {
+  return {
+    /** @param {Parameters<import('./repo-operation-coordinator.js').RepairHandoffAdapter['createIssue']>[0]} input */
+    async createIssue(input) {
+      const matches = await bd.listByMetadataField(
+        'repair_key',
+        input.metadata.repair_key
+      );
+      const existing =
+        matches.find(
+          (issue) => issue.metadata?.repair_of === input.metadata.repair_of
+        ) || matches.find((issue) => issue.status !== 'closed');
+      if (existing) {
+        return existing.id;
+      }
+      return bd.createTopLevelIssue(input);
+    },
+    /**
+     * @param {string} from_id
+     * @param {string} to_id
+     * @param {string} type
+     */
+    async addDependency(from_id, to_id, type) {
+      const dependencies = await bd.listDeps(from_id);
+      if (
+        !dependencies.some(
+          (edge) =>
+            (edge.id === to_id && edge.dependency_type === type) ||
+            (edge.issue_id === from_id &&
+              edge.depends_on_id === to_id &&
+              edge.type === type)
+        )
+      ) {
+        await bd.addDep(from_id, to_id, type);
+      }
+    },
+    /** @param {string} bead_id */
+    async issueStatus(bead_id) {
+      const issue = await bd.findIssue(bead_id);
+      return typeof issue?.status === 'string' ? issue.status : null;
+    }
+  };
+}
+
+/**
  * Real PID liveness + start-time probe for the scheduler's reconcile. Aliveness
  * via `kill(pid, 0)`; start time via `ps -o lstart=` (second resolution — the
  * reconcile's tolerance absorbs the coarseness). Fail-safe: any error yields
@@ -1067,6 +1118,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // every other dispatch uses (UI-s582 §3.1) — remote, base and fetched tip
     // in one resolution, so nothing there assumes `origin`.
     resolveBase,
+    repairHandoff: createOperationRepairHandoff(bd),
     gitRun,
     notify,
     autoAdvanceRestore: options.autoAdvanceRestore

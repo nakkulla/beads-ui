@@ -635,8 +635,36 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   newest `requested_at` first. Each card:
   `{ operation_id, kind: 'verify'|'deploy', repo_id, target_base, target_sha, target_tree, effective_base_sha, script_path, script_blob_sha, script_mode, state: 'queued'|'running'|'succeeded'|'failed'|'retry_pending', requested_at, started_at, finished_at, elapsed_ms, exit_code, signal, log_path, log_digest, output_tail, subjects, failure, failure_kind, verify_stage, retry: { status, first_fingerprint, first_failure, blocked_reason, absorbed }, source: 'automatic'|'manual', dismissed, superseded_by }`.
   `output_tail` and `failure.detail` are SANITIZED (credential-shaped substrings
-  redacted) and the tail is bounded — the full log stays behind `log_path`.
-  `failure_kind` is a DISPLAY token: it is `verify_script_failure`,
+  redacted) and the tail is bounded — the full log stays behind `log_path`. The
+  optional `repo_operations[*].recovery` field carries
+  `{ classification, disposition, reason, code_defect, prover, handoff }`.
+  `prover` is `deterministic_owned_script_failure` only when the same pinned
+  script failure reproduced after the single retry, otherwise `null`. `handoff`
+  is `null` or
+  `{ key, state: 'reserved'|'bead_recorded'|'reused', handoff_bead_id, reserved_at, recorded_at, error }`.
+  Missing or malformed recovery evidence renders nothing. Raw operation state,
+  failure, logs, exit, retry and partial effects remain unchanged. A handoff key
+  hashes repository, operation kind, target SHA, script blob/mode and failure
+  fingerprint. An open repair for the same key is reused across operations and
+  restarts; only a confirmed closed repair permits a new reservation on another
+  operation. A returned repair id is retained before dependency writes, and
+  missing responses are reconciled by `repair_key` metadata before creation. The
+  new issue has no route pin or review receipt; ordinary workflow owns routing,
+  review and execution. Repair PR creation alone does not complete the original
+  cleanup. Bead history records `kind: 'operation_recovery', seq: operation_id`
+  with `복구 분류 — <disposition>:<reason|repair> · <failure code>` and
+  `kind: 'repair_handoff', seq: handoff.key` with
+  `수정 인계 — <handoff_bead_id> (<reused|created>)`. Each subject gets the same
+  replay-safe event identity in its `events.jsonl`; queue state stores no
+  history. The shared `wait_reasons` model adds one `recovery` row for an
+  unfinished subject with an operation handoff:
+  `수정 작업 대기 · <handoff_bead_id> · 원인 <failure code>`, an issue target,
+  and release `수정 Bead의 PR·배포 뒤 [정리 재시도]`. Its verdict is `normal`;
+  the repair issue's own lane judges progress. Operation waits without a handoff
+  use the shared recovery sentences, with `action_required/recovery_confirm` for
+  unclassified or reconciliation reasons. Existing attempt recovery, base-moved
+  and prerequisite rows take precedence, so one subject never gets two recovery
+  rows. `failure_kind` is a DISPLAY token: it is `verify_script_failure`,
   `deploy_script_failure`, `interrupted_without_terminal_exit`, or — for every
   other failure — the raw `failure.code`. There is no `other` token and no
   allowlist behind it, and a client MUST render an unknown token verbatim. A

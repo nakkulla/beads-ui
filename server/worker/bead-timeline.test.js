@@ -278,6 +278,8 @@ describe('TIMELINE_KINDS', () => {
       'landing_step',
       'merge_step',
       'operation_failed',
+      'operation_recovery',
+      'repair_handoff',
       'needs_human',
       'user_action',
       'wait_notified',

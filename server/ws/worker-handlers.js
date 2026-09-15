@@ -2862,7 +2862,13 @@ function projectRepoOperations(operations) {
       // A human acknowledged this failed row (UI-q0uy §4.6-2). Projected so the
       // client can drop it from the 해결 필요 tally without inventing its own
       // notion of "handled".
-      dismissed: raw.dismissed ?? null
+      dismissed: raw.dismissed ?? null,
+      // After-ladder recovery evidence (UI-3vvi): classification and the
+      // single repair handoff, verbatim from the ledger; absent on legacy rows
+      // so the client renders nothing (fail-quiet).
+      ...(raw.recovery && typeof raw.recovery === 'object'
+        ? { recovery: structuredClone(raw.recovery) }
+        : {})
     });
   }
   cards.sort(

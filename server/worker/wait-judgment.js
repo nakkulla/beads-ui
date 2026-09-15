@@ -523,6 +523,76 @@ export function judgeWaitReasons(input) {
     }
   }
 
+  for (const operation of Object.values(queue.repo_operations || {})) {
+    const recovery = operation?.recovery;
+    if (
+      operation?.state !== 'failed' ||
+      !recovery ||
+      operation.dismissed ||
+      operation.superseded_by
+    ) {
+      continue;
+    }
+    for (const subject of operation.subjects || []) {
+      const bead_id = subject.bead_id;
+      if (
+        !bead_id ||
+        facts[bead_id]?.status === 'closed' ||
+        (queue.done || []).some(
+          (/** @type {any} */ row) => row.bead_id === bead_id
+        ) ||
+        wait_reasons.some(
+          (row) =>
+            row.subject.bead_id === bead_id &&
+            [
+              'recovery',
+              'base_moved',
+              'prerequisite',
+              'prerequisite_foreign'
+            ].includes(row.kind)
+        )
+      ) {
+        continue;
+      }
+      const handoff = recovery.handoff;
+      const handoff_bead_id = handoff?.handoff_bead_id;
+      if (handoff_bead_id) {
+        const result = reason(
+          'recovery',
+          bead_id,
+          root_dir,
+          `수정 작업 대기 · ${handoff_bead_id} · 원인 ${line(operation.failure?.code)}`,
+          '수정 Bead의 PR·배포 뒤 [정리 재시도]'
+        );
+        result.targets.push({ id: handoff_bead_id, kind: 'issue' });
+        addClocks(result, { since: handoff.recorded_at });
+        wait_reasons.push(result);
+      } else if (['wait', 'reconcile'].includes(recovery.disposition)) {
+        const token = line(recovery.reason);
+        const result = reason(
+          'recovery',
+          bead_id,
+          root_dir,
+          [
+            RECOVERY_WAIT_LABELS[token] || token,
+            RECOVERY_WAIT_SENTENCES[token],
+            operation.failure?.code
+              ? `원인 ${line(operation.failure.code)}`
+              : ''
+          ]
+            .filter(Boolean)
+            .join(' · '),
+          `${RECOVERY_WAIT_LABELS[token] || token} — 조건 확인 뒤 [정리 재시도]`
+        );
+        addClocks(result, { since: operation.finished_at });
+        if (['unclassified', 'reconcile'].includes(token)) {
+          judge(result, 'action_required', 'recovery_confirm');
+        }
+        wait_reasons.push(result);
+      }
+    }
+  }
+
   for (const [runner, hold] of Object.entries(queue.provider_hold || {})) {
     for (const target of hold.targets || []) {
       if (!['usage_limit', 'outage'].includes(target.kind)) {

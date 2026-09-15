@@ -11,7 +11,10 @@ import path from 'node:path';
 // The one shared cause vocabulary (UI-8w4t §4): a dependency-free leaf both
 // this comment and the client card read, so one failure never gets two
 // sentences. `attach.js` already imports `app/utils` the same way.
-import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
+import {
+  FAILURE_SENTENCES,
+  RECOVERY_WAIT_LABELS
+} from '../../app/utils/failure-sentences.js';
 import { scriptSummary } from './failure-class.js';
 import { commentHeading, logRow, summaryRow } from './failure-comment.js';
 import { RESOLUTION_ROUND_CAP, RESOLUTION_WAIT_MS } from './merge-queue.js';
@@ -968,6 +971,14 @@ export function completionFailureComment(
     typeof terminal.op_id === 'string'
       ? queue?.repo_operations?.[terminal.op_id]
       : null;
+  const recovery = operation?.recovery;
+  const handoff_bead_id = recovery?.handoff?.handoff_bead_id;
+  const recovery_reason = recovery?.reason || recovery?.disposition;
+  const next = handoff_bead_id
+    ? `- 다음: 수정 Bead ${handoff_bead_id}의 PR·배포 뒤 [정리 재시도] · 원본 실패 기록은 보존됨`
+    : recovery
+      ? `- 다음: ${RECOVERY_WAIT_LABELS[recovery_reason] || recovery_reason} — 조건 확인 뒤 [정리 재시도]`
+      : '- 다음: [머지] 재클릭 · 설정 카드 배포 실행 · 코드 수정은 새 Bead';
   // 헤딩·요약·로그 세 행은 `failure-comment.js`가 소유한다
   // (record-timeline-retention §9): 세션 실패·파킹 댓글이 같은 형식을 써야
   // 하므로, 형식은 한 곳에 있고 이 함수는 완료 saga 고유의 행만 더한다.
@@ -979,7 +990,10 @@ export function completionFailureComment(
     `- 대상: ${target_sha} (base ${target_base})`,
     logRow(terminal.log_path),
     `- 재시도: ${retryOutcomeText(operation)}`,
-    '- 다음: [머지] 재클릭 · 설정 카드 배포 실행 · 코드 수정은 새 Bead'
+    ...(recovery
+      ? [`- 복구: ${recovery.disposition}:${recovery.reason || 'repair'}`]
+      : []),
+    next
   ].join('\n');
 }
 

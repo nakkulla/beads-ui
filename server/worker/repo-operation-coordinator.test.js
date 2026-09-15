@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createBeadTimeline } from './bead-timeline.js';
 import { createLockManager } from './locks.js';
 import { __resetQueueEventsForTest, onQueueChanged } from './queue-events.js';
 import { createQueueStore } from './queue-store.js';
@@ -14,6 +15,7 @@ import {
   repoOpsSpoolPendingDir,
   repoOpsSpoolProcessedDir
 } from './state-paths.js';
+import * as recoveryPolicy from './work-recovery-policy.js';
 
 const TARGET = 'b'.repeat(40);
 const APPROVED = 'e'.repeat(40);
@@ -106,7 +108,7 @@ function gitWithAncestry(pairs, options = {}) {
 }
 
 /**
- * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, locks?: ReturnType<typeof createLockManager>, policySupported?: () => boolean, notify?: any, timeline?: any, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, resolveBase?: (options?: { force?: boolean }) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
+ * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, locks?: ReturnType<typeof createLockManager>, repairHandoff?: import('./repo-operation-coordinator.js').RepairHandoffAdapter, policySupported?: () => boolean, notify?: any, timeline?: any, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, resolveBase?: (options?: { force?: boolean }) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
  */
 function coordinatorFor(overrides = {}) {
   const store = createQueueStore({
@@ -158,6 +160,7 @@ function coordinatorFor(overrides = {}) {
     verifyCheckout: /** @type {never} */ (overrides.verifyCheckout),
     autoAdvanceRestore: overrides.autoAdvanceRestore,
     policySupported: overrides.policySupported,
+    repairHandoff: overrides.repairHandoff,
     notify: overrides.notify,
     timeline: overrides.timeline,
     now: overrides.now,
@@ -165,6 +168,405 @@ function coordinatorFor(overrides = {}) {
   });
   return { store, coordinator };
 }
+
+describe('repo operation after-ladder recovery', () => {
+  /** @param {Record<string, any>} [patch] */
+  function adapter(patch = {}) {
+    return {
+      createIssue: vi.fn(
+        /** @type {(input: any) => Promise<string>} */ (async () => 'UI-repair')
+      ),
+      addDependency: vi.fn(async () => {}),
+      issueStatus: vi.fn(
+        /** @type {(bead_id: string) => Promise<string|null>} */ (
+          async () => 'open'
+        )
+      ),
+      ...patch
+    };
+  }
+
+  /**
+   * @param {any} store
+   * @param {string} [operation_id]
+   */
+  function seedRunning(store, operation_id = 'op-1') {
+    store.ensureRepoOperation(root, {
+      operation_id,
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [
+        { bead_id: 'UI-source', merged_sha: TARGET },
+        { bead_id: 'UI-second', merged_sha: TARGET }
+      ],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      target_sha: TARGET,
+      script_path: 'repo-ops/script/deploy',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const attempt_id =
+      store.snapshot(root).repo_operations[operation_id].attempt_id;
+    store.startRepoOperation(root, {
+      operation_id,
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'operation.log')
+    });
+    return attempt_id;
+  }
+
+  /**
+   * @param {any} store
+   * @param {string} [operation_id]
+   * @param {Record<string, any>} [patch]
+   */
+  function seedFailed(store, operation_id = 'op-1', patch = {}) {
+    const attempt_id = seedRunning(store, operation_id);
+    const failure = {
+      code: 'script_failed',
+      fingerprint: 'same',
+      detail: 'original',
+      interrupted: false,
+      ...patch
+    };
+    store.deferRepoOperationRetry(root, {
+      operation_id,
+      attempt_id,
+      exit_code: 2,
+      signal: null,
+      failure
+    });
+    store.consumeRepoOperationRetry(root, {
+      operation_id,
+      attempt_id,
+      consumed_key: [attempt_id, TARGET, `${'d'.repeat(40)}:100755`]
+    });
+    store.startRepoOperation(root, {
+      operation_id,
+      attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 2 },
+      log_path: path.join(root, 'operation.log')
+    });
+    store.settleRepoOperation(root, {
+      operation_id,
+      attempt_id,
+      exit_code: 2,
+      signal: null,
+      failure
+    });
+  }
+
+  test('hands a reproduced script failure to one ordinary repair Bead', async () => {
+    const repairHandoff = adapter();
+    const runner = {
+      start: vi.fn(() => ({
+        ok: true,
+        process_identity: { pid: 2, pgid: 2, started_at: 2 },
+        log_path: path.join(root, 'operation.log')
+      })),
+      readMarker: () => ({ exit_code: 2, signal: null }),
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { coordinator, store } = coordinatorFor({ runner, repairHandoff });
+    fs.writeFileSync(path.join(root, 'operation.log'), 'Error: same failure\n');
+    seedRunning(store);
+
+    await coordinator.reconcile(root);
+    expect(repairHandoff.createIssue).not.toHaveBeenCalled();
+    await coordinator.reconcile(root);
+    await coordinator.reconcile(root);
+    await coordinator.reconcile(root);
+
+    expect(repairHandoff.createIssue).toHaveBeenCalledTimes(1);
+    expect(repairHandoff.createIssue.mock.calls[0][0]).toMatchObject({
+      type: 'bug',
+      priority: 1,
+      metadata: { worker_created_from: 'UI-source', repair_of: 'op-1' }
+    });
+    expect(
+      repairHandoff.createIssue.mock.calls[0][0].metadata
+    ).not.toHaveProperty('route');
+    expect(repairHandoff.addDependency).toHaveBeenCalledWith(
+      'UI-repair',
+      'UI-source',
+      'discovered-from'
+    );
+    expect(store.snapshot(root).repo_operations['op-1']).toMatchObject({
+      state: 'failed',
+      recovery: {
+        classification: 'local_code_defect',
+        prover: 'deterministic_owned_script_failure',
+        handoff: { state: 'bead_recorded', handoff_bead_id: 'UI-repair' }
+      }
+    });
+  });
+
+  test('retries a persisted reservation after a failed creation and restart', async () => {
+    const repairHandoff = adapter();
+    repairHandoff.createIssue.mockRejectedValueOnce(
+      new Error('bd unavailable')
+    );
+    const first = coordinatorFor({ repairHandoff });
+    seedFailed(first.store);
+
+    await first.coordinator.reconcile(root);
+    const reserved =
+      first.store.snapshot(root).repo_operations['op-1'].recovery?.handoff;
+    const restarted = coordinatorFor({ repairHandoff });
+    await restarted.coordinator.reconcile(root);
+    await restarted.coordinator.reconcile(root);
+
+    expect(reserved).toMatchObject({
+      state: 'reserved',
+      handoff_bead_id: null,
+      error: 'bd unavailable'
+    });
+    expect(repairHandoff.createIssue).toHaveBeenCalledTimes(2);
+    expect(
+      restarted.store.snapshot(root).repo_operations['op-1'].recovery?.handoff
+    ).toMatchObject({
+      handoff_bead_id: 'UI-repair',
+      error: null,
+      reserved_at: reserved?.reserved_at
+    });
+  });
+
+  test('retains the returned Bead id when dependency creation fails', async () => {
+    const repairHandoff = adapter();
+    repairHandoff.addDependency.mockRejectedValueOnce(
+      new Error('dep unavailable')
+    );
+    const first = coordinatorFor({ repairHandoff });
+    seedFailed(first.store);
+
+    await first.coordinator.reconcile(root);
+    const restarted = coordinatorFor({ repairHandoff });
+    await restarted.coordinator.reconcile(root);
+
+    expect(repairHandoff.createIssue).toHaveBeenCalledTimes(1);
+    expect(repairHandoff.addDependency).toHaveBeenCalledTimes(2);
+    expect(
+      restarted.store.snapshot(root).repo_operations['op-1'].recovery?.handoff
+    ).toMatchObject({ handoff_bead_id: 'UI-repair', error: null });
+  });
+
+  test('reuses an open same-cause repair for another operation', async () => {
+    const repairHandoff = adapter();
+    const { coordinator, store } = coordinatorFor({ repairHandoff });
+    seedFailed(store);
+    await coordinator.reconcile(root);
+    seedFailed(store, 'op-2');
+
+    await coordinator.reconcile(root);
+
+    expect(repairHandoff.createIssue).toHaveBeenCalledTimes(1);
+    expect(
+      store.snapshot(root).repo_operations['op-2'].recovery?.handoff
+    ).toMatchObject({ handoff_bead_id: 'UI-repair', state: 'reused' });
+  });
+
+  test('creates a new repair for another operation after the old repair closes', async () => {
+    const repairHandoff = adapter();
+    const { coordinator, store } = coordinatorFor({ repairHandoff });
+    seedFailed(store);
+    await coordinator.reconcile(root);
+    repairHandoff.issueStatus.mockImplementation(async (bead_id) =>
+      bead_id === 'UI-repair' ? 'closed' : 'open'
+    );
+    repairHandoff.createIssue.mockResolvedValue('UI-new');
+    seedFailed(store, 'op-2');
+
+    await coordinator.reconcile(root);
+
+    expect(repairHandoff.createIssue).toHaveBeenCalledTimes(2);
+    expect(
+      store.snapshot(root).repo_operations['op-2'].recovery?.handoff
+    ).toMatchObject({ handoff_bead_id: 'UI-new', state: 'bead_recorded' });
+  });
+
+  test.each([
+    [{ code: 'repo_ops_worktree_unowned' }, 'ownership_uncertain', 'reconcile'],
+    [{ interrupted: true }, 'unknown_outcome', 'reconcile'],
+    [{ fetch_failure: 'timeout' }, 'unknown_error', 'wait'],
+    [{ code: 'timeout' }, 'unknown_error', 'wait'],
+    [{ code: 'credential_missing' }, 'credential_missing', 'wait']
+  ])(
+    'preserves unsafe evidence %j without a repair Bead',
+    async (failure, classification, disposition) => {
+      const repairHandoff = adapter();
+      const { coordinator, store } = coordinatorFor({ repairHandoff });
+      seedFailed(store, 'op-1', /** @type {Record<string, any>} */ (failure));
+
+      await coordinator.reconcile(root);
+
+      expect(
+        store.snapshot(root).repo_operations['op-1'].recovery
+      ).toMatchObject({
+        classification,
+        disposition,
+        code_defect: false,
+        handoff: null
+      });
+      expect(repairHandoff.createIssue).not.toHaveBeenCalled();
+    }
+  );
+
+  test('classifies unsupported policy as unknown without creating a repair', async () => {
+    const repairHandoff = adapter();
+    const { coordinator, store } = coordinatorFor({
+      repairHandoff,
+      policySupported: () => false
+    });
+    seedFailed(store);
+
+    await coordinator.reconcile(root);
+
+    expect(store.snapshot(root).repo_operations['op-1'].recovery).toMatchObject(
+      { classification: 'unknown_error', code_defect: false }
+    );
+    expect(repairHandoff.createIssue).not.toHaveBeenCalled();
+  });
+
+  test('requires the work-recovery policy as well as the operation policy', async () => {
+    const repairHandoff = adapter();
+    const { coordinator, store } = coordinatorFor({ repairHandoff });
+    seedFailed(store);
+    const support = vi
+      .spyOn(recoveryPolicy, 'workRecoveryPolicySupported')
+      .mockReturnValue(false);
+
+    try {
+      await coordinator.reconcile(root);
+
+      expect(
+        store.snapshot(root).repo_operations['op-1'].recovery?.classification
+      ).toBe('unknown_error');
+      expect(repairHandoff.createIssue).not.toHaveBeenCalled();
+    } finally {
+      support.mockRestore();
+    }
+  });
+
+  test('keeps raw failed fields byte-identical across recovery and handoff', async () => {
+    const { coordinator, store } = coordinatorFor({ repairHandoff: adapter() });
+    seedFailed(store);
+    const before = store.snapshot(root).repo_operations['op-1'];
+
+    await coordinator.reconcile(root);
+    const { recovery, ...after } = store.snapshot(root).repo_operations['op-1'];
+
+    expect(recovery).toBeDefined();
+    expect(JSON.stringify(after)).toBe(JSON.stringify(before));
+  });
+
+  test('replays the same event identity for every subject', async () => {
+    const timeline = { append: vi.fn() };
+    const { coordinator, store } = coordinatorFor({
+      repairHandoff: adapter(),
+      timeline
+    });
+    seedFailed(store);
+
+    await coordinator.reconcile(root);
+    const first = timeline.append.mock.calls.map(([event]) => event);
+    timeline.append.mockClear();
+    await coordinator.reconcile(root);
+
+    expect(timeline.append.mock.calls.map(([event]) => event)).toEqual(first);
+    expect(first.map((event) => [event.bead_id, event.kind])).toEqual([
+      ['UI-source', 'operation_recovery'],
+      ['UI-second', 'operation_recovery'],
+      ['UI-source', 'repair_handoff'],
+      ['UI-second', 'repair_handoff']
+    ]);
+  });
+
+  test('persists recovery events once in the real bead timeline', async () => {
+    const timeline = createBeadTimeline({ workspace_root: root });
+    const { coordinator, store } = coordinatorFor({
+      repairHandoff: adapter(),
+      timeline
+    });
+    seedFailed(store);
+
+    await coordinator.reconcile(root);
+    await coordinator.reconcile(root);
+
+    expect(
+      timeline.readTimeline('UI-source').map((event) => event.kind)
+    ).toEqual(['operation_recovery', 'repair_handoff']);
+  });
+
+  test('preserves unknown retry outcome through a crash after terminal persistence', async () => {
+    const repairHandoff = adapter();
+    const first = coordinatorFor({
+      repairHandoff,
+      runner: {
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'gone' }) }
+      }
+    });
+    seedFailed(first.store);
+    const persisted = JSON.parse(
+      fs.readFileSync(path.join(root, 'queue.json'), 'utf8')
+    );
+    persisted.repo_operations['op-1'].state = 'running';
+    persisted.repo_operations['op-1'].failure = null;
+    fs.writeFileSync(path.join(root, 'queue.json'), JSON.stringify(persisted));
+    const restarted = coordinatorFor({
+      repairHandoff,
+      runner: {
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'gone' }) }
+      }
+    });
+
+    const settle = restarted.store.settleConsumedRepoOperationRetry.bind(
+      restarted.store
+    );
+    vi.spyOn(
+      restarted.store,
+      'settleConsumedRepoOperationRetry'
+    ).mockImplementation((workspace, input) => {
+      const result = settle(workspace, input);
+      if (result.ok) {
+        throw new Error('crash_after_terminal_write');
+      }
+      return result;
+    });
+
+    await expect(restarted.coordinator.reconcile(root)).rejects.toThrow(
+      'crash_after_terminal_write'
+    );
+    await coordinatorFor({ repairHandoff }).coordinator.reconcile(root);
+
+    expect(
+      createQueueStore({
+        filePathFor: () => path.join(root, 'queue.json')
+      }).snapshot(root).repo_operations['op-1'].recovery?.classification
+    ).toBe('unknown_outcome');
+    expect(repairHandoff.createIssue).not.toHaveBeenCalled();
+  });
+
+  test('does not revive an operation whose original subjects are closed', async () => {
+    const repairHandoff = adapter();
+    repairHandoff.issueStatus.mockResolvedValue('closed');
+    const { coordinator, store } = coordinatorFor({ repairHandoff });
+    seedFailed(store);
+
+    await coordinator.reconcile(root);
+
+    expect(repairHandoff.createIssue).not.toHaveBeenCalled();
+    expect(
+      store.snapshot(root).repo_operations['op-1'].recovery?.handoff
+    ).toBeNull();
+  });
+});
 
 describe('repo operation auto-advance restore handoff', () => {
   test('reports around the locked pass and restores after releasing the lock', async () => {
@@ -3944,7 +4346,9 @@ describe('repo-operation bead timeline (record-timeline-retention §5)', () => {
     expect(store.snapshot(root).repo_operations['deploy-1'].state).toBe(
       'failed'
     );
-    expect(timeline.events).toMatchObject([
+    expect(
+      timeline.events.filter((event) => event.kind === 'operation_failed')
+    ).toMatchObject([
       {
         bead_id: 'UI-1',
         kind: 'operation_failed',
@@ -3965,10 +4369,11 @@ describe('repo-operation bead timeline (record-timeline-retention §5)', () => {
       timeline
     );
 
-    expect(timeline.events.map((event) => event.bead_id)).toEqual([
-      'UI-1',
-      'UI-2'
-    ]);
+    expect(
+      timeline.events
+        .filter((event) => event.kind === 'operation_failed')
+        .map((event) => event.bead_id)
+    ).toEqual(['UI-1', 'UI-2']);
   });
 
   test('settles the failure when no timeline is injected', async () => {

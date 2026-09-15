@@ -2505,6 +2505,50 @@ describe('완료 실패 summary 추출 (UI-8wpb §6 row 2)', () => {
 });
 
 describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
+  test('points at the recorded repair while preserving original failure', () => {
+    const comment = completionFailureComment(
+      intent(),
+      {
+        repo_operations: {
+          op: {
+            recovery: {
+              disposition: 'repair',
+              reason: null,
+              handoff: { handoff_bead_id: 'UI-repair' }
+            }
+          }
+        }
+      },
+      { op_id: 'op', reason: 'cleanup_failed' }
+    );
+
+    expect(comment).toContain(
+      '- 다음: 수정 Bead UI-repair의 PR·배포 뒤 [정리 재시도] · 원본 실패 기록은 보존됨'
+    );
+    expect(comment).toContain('- 복구: repair:repair');
+  });
+
+  test.each([
+    ['verification', '조건 대기'],
+    ['reconcile', '확인 대기'],
+    ['new_reason', 'new_reason']
+  ])('names the recovery condition %s', (reason, label) => {
+    const comment = completionFailureComment(
+      intent(),
+      {
+        repo_operations: {
+          op: {
+            recovery: { disposition: 'wait', reason, handoff: null }
+          }
+        }
+      },
+      { op_id: 'op', reason: 'cleanup_failed' }
+    );
+
+    expect(comment).toContain(`- 다음: ${label} — 조건 확인 뒤 [정리 재시도]`);
+    expect(comment).toContain(`- 복구: wait:${reason}`);
+  });
+
   /**
    * @param {Record<string, unknown>} patch
    * @returns {string[]}

@@ -11,6 +11,154 @@ const NOW = new Date(2026, 8, 15, 12, 0).getTime();
 const ROOT = '/repo';
 const MINUTE = 60_000;
 
+describe('operation recovery wait reasons', () => {
+  /** @param {Record<string, any>} [patch] */
+  function operation(patch = {}) {
+    return {
+      state: 'failed',
+      subjects: [{ bead_id: 'UI-consumer' }],
+      finished_at: NOW - MINUTE,
+      failure: { code: 'script_failed' },
+      recovery: {
+        disposition: 'repair',
+        reason: null,
+        handoff: { handoff_bead_id: 'UI-repair', recorded_at: NOW - 30_000 }
+      },
+      ...patch
+    };
+  }
+
+  test('shows the repair reference for a subject waiting on cleanup', () => {
+    const result = run({
+      queue: queue({
+        repo_operations: { op: operation() },
+        pr_wait: [{ bead_id: 'UI-consumer' }]
+      })
+    });
+
+    expect(result.wait_reasons).toContainEqual(
+      expect.objectContaining({
+        kind: 'recovery',
+        headline: '수정 작업 대기 · UI-repair · 원인 script_failed',
+        release: '수정 Bead의 PR·배포 뒤 [정리 재시도]',
+        targets: [{ id: 'UI-repair', kind: 'issue' }],
+        since: NOW - 30_000,
+        verdict: 'normal'
+      })
+    );
+  });
+
+  test.each(['unclassified', 'reconcile'])(
+    'requests confirmation for operation recovery %s',
+    (reason) => {
+      const result = run({
+        queue: queue({
+          repo_operations: {
+            op: operation({
+              recovery: {
+                disposition: reason === 'reconcile' ? 'reconcile' : 'wait',
+                reason,
+                handoff: null
+              }
+            })
+          }
+        })
+      });
+
+      expect(result.wait_reasons).toContainEqual(
+        expect.objectContaining({
+          kind: 'recovery',
+          verdict: 'action_required',
+          verdict_reason: expect.objectContaining({ code: 'recovery_confirm' })
+        })
+      );
+    }
+  );
+
+  test('leaves verification waiting at normal verdict', () => {
+    const result = run({
+      queue: queue({
+        repo_operations: {
+          op: operation({
+            recovery: {
+              disposition: 'wait',
+              reason: 'verification',
+              handoff: null
+            }
+          })
+        }
+      })
+    });
+
+    expect(result.wait_reasons).toContainEqual(
+      expect.objectContaining({ kind: 'recovery', verdict: 'normal' })
+    );
+  });
+
+  test.each([
+    { cause_detail: { recovery: { reason: 'unclassified' } } },
+    { cause: 'base_moved', cause_detail: { candidate_sha: 'a'.repeat(40) } },
+    {
+      cause: 'prerequisite_unmet',
+      cause_detail: { blockers: [{ id: 'UI-blocker', status: 'open' }] }
+    }
+  ])(
+    'keeps the existing attempt reason ahead of operation recovery %j',
+    (patch) => {
+      const result = run({
+        queue: queue({
+          attempts: { a: waiting(patch) },
+          repo_operations: { op: operation() }
+        })
+      });
+
+      expect(
+        result.wait_reasons.filter(
+          (row) => row.subject.bead_id === 'UI-consumer'
+        )
+      ).toHaveLength(1);
+      expect(
+        result.wait_reasons.some((row) =>
+          row.headline.startsWith('수정 작업 대기')
+        )
+      ).toBe(false);
+    }
+  );
+
+  test('shows one recovery row when multiple failed operations share a subject', () => {
+    const result = run({
+      queue: queue({
+        repo_operations: { first: operation(), second: operation() }
+      })
+    });
+
+    expect(
+      result.wait_reasons.filter((row) => row.kind === 'recovery')
+    ).toHaveLength(1);
+  });
+
+  test('omits a closed original Bead', () => {
+    const result = run({
+      queue: queue({ repo_operations: { op: operation() } }),
+      blocker_facts: { 'UI-consumer': { status: 'closed' } }
+    });
+
+    expect(result.wait_reasons).toEqual([]);
+  });
+
+  test.each([
+    { state: 'running' },
+    { recovery: undefined },
+    { dismissed: { at: 1 } },
+    { superseded_by: 'new-op' }
+  ])('omits inactive recovery evidence %j', (patch) => {
+    expect(
+      run({ queue: queue({ repo_operations: { op: operation(patch) } }) })
+        .wait_reasons
+    ).toEqual([]);
+  });
+});
+
 /**
  * @param {Record<string, any>} [overrides]
  * @returns {Record<string, any>}
