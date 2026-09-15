@@ -1805,6 +1805,7 @@ export function bootstrap(root_element) {
       issueStores: sub_issue_stores,
       transport,
       queueStore: worker_queue_store,
+      pipelineStore: monitor_pipeline_store,
       execPresetStore: exec_preset_store,
       sessionLogStore: session_log_store,
       getWorkspacePath: () => store.getState().workspace.current?.path,

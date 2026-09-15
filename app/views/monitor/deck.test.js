@@ -345,7 +345,10 @@ describe('createRepoDeck totals (§4.1)', () => {
   test('adds every repo count and the period completion count', () => {
     const { mount, deck } = setup({
       rows: [
-        state({ counts: { running: 1, pr_wait: 2, queue: 3, runnable: 0 } }),
+        state({
+          counts: { running: 1, pr_wait: 2, queue: 3, runnable: 0 },
+          external_wait_count: 2
+        }),
         state({
           root_dir: WS_B,
           name: 'repo-b',
@@ -359,7 +362,7 @@ describe('createRepoDeck totals (§4.1)', () => {
 
     expect(
       el(mount, '.mon2-deck__total-counts').textContent?.replace(/\s+/g, ' ')
-    ).toContain('실행 3 · 대기 4 · PR 2 · 오늘 완료 2');
+    ).toContain('실행 3 · 대기 6 · PR 2 · 오늘 완료 2');
   });
 
   test('shows one token badge per provider with its own tooltip', () => {

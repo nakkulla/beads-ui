@@ -1347,6 +1347,29 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
   });
 });
 describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
+  test('excludes native gates from runnable and session projections', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [
+          row(),
+          sessionRow(),
+          row({ id: 'UI-gate', issue_type: 'gate' }),
+          sessionRow({ id: 'UI-session-gate', issue_type: 'gate' })
+        ]
+      }),
+      enrichWorkflow: () => ({ route: 'spec_backed' })
+    });
+
+    await warm(cache, WS_A);
+
+    expect(cache.runnableFor(WS_A).map((item) => item.bead_id)).toEqual([
+      'UI-1'
+    ]);
+    expect(cache.sessionActiveFor(WS_A).map((item) => item.bead_id)).toEqual([
+      'UI-2'
+    ]);
+  });
+
   test('projects an in_progress row into session_active instead of runnable', async () => {
     const cache = createRunnableCache({
       requestSnapshot: fakeSnapshot({

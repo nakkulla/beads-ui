@@ -806,6 +806,29 @@ function discardInput() {
 }
 
 describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', () => {
+  test('renders a verified external wait summary for a running consumer', () => {
+    const tile = shape(
+      runningTile(
+        tileInput({
+          external_wait_count: 1,
+          external_waits: [
+            {
+              gate_id: 'Analysis-ph3a',
+              root_dir: '/repo',
+              job_state: '계산 중',
+              monitor_state: '자동 확인 중'
+            }
+          ]
+        }),
+        5000,
+        null
+      )
+    );
+
+    expect(tile).toContain('external-wait-summary');
+    expect(tile).toContain('외부 계산 대기 1건');
+  });
+
   test('renders no repo badge, stepper, activity or delegation line', () => {
     const tile = shape(runningTile(tileInput(), 5000, null));
 
@@ -881,6 +904,49 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
     );
     expect(tile.querySelector('.rtile__hd .rtile__repo')).toBeNull();
     expect(tile.querySelector('.rtile__hd .rtile__lane')).toBeNull();
+  });
+
+  test('keeps external waits in the upper dependency row above released and overlap chips', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(
+        tileInput({
+          external_wait_count: 1,
+          external_waits: [
+            {
+              gate_id: 'Analysis-ph3a',
+              root_dir: '/repo',
+              job_state: '계산 중',
+              monitor_state: '자동 확인 중'
+            }
+          ]
+        }),
+        5000,
+        null,
+        {
+          monitor: /** @type {any} */ ({
+            ...monitor,
+            dependency_chips: {
+              released: [{ id: 'UI-r1', label: '🔓 UI-r1' }],
+              overlaps: monitor.dependency_chips.overlaps
+            }
+          })
+        }
+      ),
+      mount
+    );
+    const primary = mount.querySelector('.worker-deps--primary');
+    const secondary = mount.querySelector('.worker-deps--secondary');
+
+    expect(primary?.querySelector('.external-wait-summary')).not.toBeNull();
+    expect(secondary?.textContent).toContain('🔓 UI-r1');
+    expect(secondary?.querySelector('.worker-dep--overlap')).not.toBeNull();
+    expect(
+      primary && secondary
+        ? primary.compareDocumentPosition(secondary) &
+            Node.DOCUMENT_POSITION_FOLLOWING
+        : 0
+    ).not.toBe(0);
   });
 
   test('draws blocked, 겹침 and scope 없음 chips on the tile (UI-anna §5.3)', () => {

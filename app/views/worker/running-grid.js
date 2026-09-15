@@ -45,6 +45,7 @@ import {
   dependencyChipsTemplate,
   discardReceiptTemplate,
   execChipsTemplate,
+  externalWaitSummaryTemplate,
   priorityBadgeTemplate,
   recChipTemplate,
   routeCardTone,
@@ -97,6 +98,8 @@ import { logPathTemplate } from './log-path.js';
  * 닫히면 보통 후보로 저절로 돌아온다.
  * @property {boolean} [provider_hold] - 공급자 회복을 기다리는 paused leaf.
  * 사용자 일시정지와 달리 슬롯 1 판정 뱃지와 슬롯 6 복구 액션을 얻는다.
+ * @property {number} [external_wait_count] - Verified open external waits.
+ * @property {Array<Record<string, any>>} [external_waits] - Gate summary rows.
  * @property {WaitTile|null} [wait] - 선행 대기 타일의 재료. 실패 투영과 따로인
  * 이유는 §5.1에 있다: 실패 팝오버가 묻는 질문에 이 결말이 답할 것이 없다.
  * @property {FailureTile|null} [failure] - Failed-tile decision material. The
@@ -1020,25 +1023,26 @@ function heldBodyTemplate(
   hold_since = undefined
 ) {
   if (kind === 'provider_hold') {
-    return html`<div class="rtile__foot">
-      <button
-        type="button"
-        class="op-btn rtile__resume"
-        title="같은 세션으로 이어서 진행"
-        aria-label="이어하기"
-      >
-        ↻ 이어하기
-      </button>
-      <button
-        type="button"
-        class="op-btn rtile__resume-alternate"
-        title="러너·모델·계정을 바꾸거나 새 세션으로 이어갑니다"
-        aria-label="다른 방법으로"
-      >
-        ⋯ 다른 방법으로
-      </button>
-      ${discard_actions}
-    </div>`;
+    return html`${dependency_chips}
+      <div class="rtile__foot">
+        <button
+          type="button"
+          class="op-btn rtile__resume"
+          title="같은 세션으로 이어서 진행"
+          aria-label="이어하기"
+        >
+          ↻ 이어하기
+        </button>
+        <button
+          type="button"
+          class="op-btn rtile__resume-alternate"
+          title="러너·모델·계정을 바꾸거나 새 세션으로 이어갑니다"
+          aria-label="다른 방법으로"
+        >
+          ⋯ 다른 방법으로
+        </button>
+        ${discard_actions}
+      </div>`;
   }
   if (kind === 'retry_wait') {
     // 스펙 §5.1: 뱃지 `↻ 재시도 대기 n/3 · HH:MM`이 이미 상태를 말하므로 본문은
@@ -1058,9 +1062,10 @@ function heldBodyTemplate(
           </button>`
         : '';
     if (!discard_actions && !retry_now) {
-      return '';
+      return dependency_chips;
     }
-    return html`<div class="rtile__foot">${discard_actions}${retry_now}</div>`;
+    return html`${dependency_chips}
+      <div class="rtile__foot">${discard_actions}${retry_now}</div>`;
   }
   const summary = summaryText(held?.summary);
   if (kind === 'waiting') {
@@ -1076,7 +1081,7 @@ function heldBodyTemplate(
   const history = historyBlockTemplate(/** @type {FailureTile|null} */ (held));
   return html`${summary
       ? html`<p class="rtile__held-summary">${summary}</p>`
-      : ''}${history}
+      : ''}${history}${dependency_chips}
     <div class="rtile__foot">
       ${discard_failed
         ? html`${discard_actions}${resolve_action}`
@@ -1201,9 +1206,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 문자열이라 줄 판정에 영향이 없다.
   // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 자식 롤업·landing
   // 진행이 모두 슬롯 3이므로 그 뒤에 선다.
-  const monitor_deps = monitor
-    ? dependencyChipsTemplate(monitor.dependency_chips)
-    : '';
+  const external_wait_el = externalWaitSummaryTemplate(tile);
+  const monitor_relations = dependencyChipsTemplate(
+    monitor?.dependency_chips,
+    external_wait_el
+  );
   const monitor_body = monitorTileBody(
     monitor,
     now,
@@ -1560,7 +1567,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 : 'provider_hold',
           parked ? park : waiting ? wait : hold,
           discard_actions,
-          waiting ? monitor_deps : '',
+          waiting ? monitor_relations : external_wait_el,
           parked ? resolve_button : '',
           parked && !!tile.discard?.error,
           tile.hold_since
@@ -1589,7 +1596,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                   >
                 </div>`
               : ''}
-            ${monitor_deps}
+            ${monitor_relations}
             ${session
               ? session_meta
               : monitor_chips ||

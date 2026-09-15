@@ -62,7 +62,15 @@ function isRecord(value) {
 function countOf(row, key) {
   const counts = isRecord(row?.counts) ? row.counts : null;
   const value = counts ? counts[key] : null;
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  const count = typeof value === 'number' && Number.isFinite(value) ? value : 0;
+  if (
+    key === 'queue' &&
+    typeof row?.external_wait_count === 'number' &&
+    Number.isFinite(row.external_wait_count)
+  ) {
+    return count + row.external_wait_count;
+  }
+  return count;
 }
 
 /**

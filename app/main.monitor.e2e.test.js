@@ -474,6 +474,107 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     expect(monitor_root.querySelector('.mon-auto-all')).toBe(null);
   });
 
+  test.each(['queue', 'running'])(
+    'renders external waits with navigable links for a %s consumer',
+    async (consumer_lane) => {
+      const client = /** @type {any} */ (createWsClient());
+      window.location.hash = '#/monitor';
+      document.body.innerHTML = '<main id="app"></main>';
+      const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+      bootstrap(root);
+      await Promise.resolve();
+
+      client._trigger('monitor-pipeline-snapshot', {
+        type: 'monitor-pipeline-snapshot',
+        id: 'tab:monitor:pipeline',
+        workspaces: [
+          {
+            root_dir: '/tmp/ws-a',
+            name: 'ws-a',
+            queue:
+              consumer_lane === 'queue'
+                ? [{ bead_id: 'Analysis-xz9d', added_at: NOW }]
+                : [],
+            pr_wait: [],
+            done: [],
+            attempts:
+              consumer_lane === 'running'
+                ? {
+                    external_consumer: {
+                      attempt_id: 'external_consumer',
+                      bead_id: 'Analysis-xz9d',
+                      status: 'running',
+                      started_at: NOW
+                    }
+                  }
+                : {},
+            bead_titles: { 'Analysis-xz9d': 'microbiome_bile' },
+            pr_observations: {},
+            external_waits: [
+              {
+                kind: 'external_wait',
+                root_dir: '/tmp/ws-a',
+                workspace_name: 'ws-a',
+                gate_id: 'Analysis-ph3a',
+                gate_title: '외부 계산 246416',
+                consumer_id: 'Analysis-xz9d',
+                consumer_title: 'microbiome_bile',
+                watch_id: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+                job_id: '246416',
+                stage: 'active',
+                gate_open: true,
+                recent_complete: false,
+                job_state: '계산 중',
+                previous_job_state: null,
+                monitor_state: '자동 확인 중',
+                monitor_reason: null,
+                overdue: false,
+                last_observed_at: NOW,
+                next_observation_at: NOW + 900_000,
+                completed_at: null,
+                recovery_needed: false
+              }
+            ]
+          }
+        ]
+      });
+      await Promise.resolve();
+
+      const external_row = root.querySelector(
+        '#monitor-queue .worker-mini--external-wait[data-bead-id="Analysis-ph3a"]'
+      );
+      const consumer_summary = root.querySelector(
+        '[data-bead-id="Analysis-xz9d"] details.external-wait-summary'
+      );
+      const gate_link = /** @type {HTMLButtonElement|null} */ (
+        consumer_summary?.querySelector('[data-external-open="Analysis-ph3a"]')
+      );
+      expect(external_row?.textContent).toContain('계산 중');
+      expect(external_row?.querySelector('.op-btn')).toBe(null);
+      expect(consumer_summary?.querySelector('summary')?.textContent).toContain(
+        '외부 계산 대기 1건'
+      );
+      expect(
+        root.querySelector('#monitor-queue .worker-pane__count')?.textContent
+      ).toBe(consumer_lane === 'queue' ? '2' : '1');
+      expect(gate_link?.tagName).toBe('BUTTON');
+      if (consumer_summary instanceof HTMLDetailsElement) {
+        consumer_summary.open = true;
+      }
+
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
+      );
+
+      expect(consumer_summary?.hasAttribute('open')).toBe(false);
+
+      gate_link?.click();
+      await flush();
+
+      expect(window.location.hash).toBe('#/monitor?issue=Analysis-ph3a');
+    }
+  );
+
   test('sends a resolution request from a parked monitor tile', async () => {
     const client = /** @type {any} */ (createWsClient());
     window.location.hash = '#/monitor';

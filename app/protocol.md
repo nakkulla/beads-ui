@@ -150,6 +150,17 @@ plus, since UI-eey2 §9.4, the repo-panel control fields:
 `issue_prefix` comes from that workspace's bd config cache; missing, malformed,
 or temporarily unreadable config is `null`.
 
+Each `workspaces[]` row may also carry `external_waits[]`. These are read-only
+`external_wait` observations with the confirmed repository, gate and consumer
+identity; projected job/monitor labels; `job_id`; `stage`; `gate_open` and
+`recent_complete`; the validated `watch_id`; `last_observed_at`,
+`next_observation_at`, `completed_at`; and bounded `monitor_reason`, `stale`,
+and `collected_at` fields. The wire does not include SSH configuration, remote
+paths or logs, Worker API addresses, process identity, artifact contents, or the
+complete watch document. Older servers omit the array. The corresponding
+`workspaces_state[]` row may carry `external_wait_count` and
+`external_wait_attention_count`.
+
 - `serial_lane_count` and the six orchestration values are that workspace's own
   queue state. A legacy queue with no key reads as one serial lane and null
   orchestration pins — the state such a workspace is actually in.

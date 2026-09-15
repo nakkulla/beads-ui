@@ -1148,7 +1148,18 @@ export function createMonitorView(mount_element, options) {
    * @returns {import('lit-html').TemplateResult}
    */
   function waitBodyTemplate() {
+    const open_external = lanes.external_waits.filter(
+      (item) => item.recent_complete !== true
+    );
+    const complete_external = lanes.external_waits.filter(
+      (item) => item.recent_complete === true
+    );
     return waitBody({
+      external: {
+        rows: open_external.map((item) => miniRow(item)),
+        completed: complete_external.map((item) => miniRow(item)),
+        count: open_external.length
+      },
       parallel: {
         rows: lanes.parallel_rows.map((item, index) =>
           parallelRow(item, index)
@@ -1197,7 +1208,9 @@ export function createMonitorView(mount_element, options) {
                 // 세션 타일 판별자와 route 칩 재료 (UI-yrzu §6·§7.2). Worker
                 // 타일은 `kind`를 싣지 않는다. `updated_at`도 세션 타일만
                 // 받는다 — Worker 타일에 실으면 없던 시각 메타 줄이 생긴다.
-                kind: item.kind,
+                kind: item.kind === 'session' ? 'session' : undefined,
+                external_wait_count: item.external_wait_count,
+                external_waits: item.external_waits,
                 ...(item.kind === 'session'
                   ? {
                       updated_at: item.updated_at,
@@ -1301,6 +1314,9 @@ export function createMonitorView(mount_element, options) {
    * @returns {import('lit-html').TemplateResult}
    */
   function monitorTemplate(now) {
+    const open_external_count = lanes.external_waits.filter(
+      (item) => item.gate_open === true
+    ).length;
     /** @type {Record<string, LaneItem[]>} */
     const by_lane = {
       runnable: lanes.runnable,
@@ -1325,7 +1341,9 @@ export function createMonitorView(mount_element, options) {
               ? runnableBody()
               : undefined
           : meta.lane === 'queue'
-            ? lanes.queue_groups.length > 0 || lanes.parallel_rows.length > 0
+            ? lanes.queue_groups.length > 0 ||
+              lanes.parallel_rows.length > 0 ||
+              lanes.external_waits.length > 0
               ? waitBodyTemplate()
               : undefined
             : meta.lane === 'running'
@@ -1336,13 +1354,17 @@ export function createMonitorView(mount_element, options) {
                   // 사실이 레인마다 다르게 보인다.
                   html`${items.map((item) => miniRow(withOverlaps(item)))}`
                 : undefined;
+      const display_count =
+        meta.lane === 'queue'
+          ? items.length + open_external_count
+          : items.length;
       return paneTemplate({
         id: `monitor-${meta.lane}`,
         lane: meta.pane,
         title: meta.title,
         items,
         // 본문이 행을 소유하는 레인도 헤더 건수는 레인 구성원 수다 (§4.2).
-        count: items.length,
+        count: display_count,
         // 후보는 두 탭 모두 SOURCE pane이다 (§4.1): 이슈의 원천이지 생애 단계가
         // 아니라는 말이 Monitor에서도 같은 뜻이다.
         src: meta.lane === 'runnable',
@@ -1352,7 +1374,7 @@ export function createMonitorView(mount_element, options) {
         collapsible: true,
         collapsed: collapse.isCollapsed(meta.pane),
         controls: meta.lane === 'runnable' ? candidateFilterStrip() : undefined,
-        header_control: laneHeaderControl(meta.lane, items.length)
+        header_control: laneHeaderControl(meta.lane, display_count)
       });
     };
     if (is_mobile) {
@@ -2410,6 +2432,21 @@ export function createMonitorView(mount_element, options) {
       return;
     }
 
+    const external_open = /** @type {HTMLElement|null} */ (
+      target.closest('[data-external-open]')
+    );
+    if (external_open) {
+      ev.preventDefault();
+      openRow(
+        external_open.getAttribute('data-external-open') || '',
+        external_open.getAttribute('data-root-dir') || ''
+      );
+      return;
+    }
+    if (target.closest('.external-wait-summary > summary')) {
+      return;
+    }
+
     // ID 클릭 = 복사 (§11). 상세는 열리지 않는다.
     const id_el = target.closest(
       '.worker-card__id, .worker-mini__id, .rtile__id'
@@ -2638,6 +2675,13 @@ export function createMonitorView(mount_element, options) {
         ? (/** @type {string} */ selector) => target.closest(selector)
         : () => null;
     let changed = false;
+    if (!closest('.external-wait-summary')) {
+      for (const summary of Array.from(
+        console_el.querySelectorAll('details.external-wait-summary[open]')
+      )) {
+        summary.removeAttribute('open');
+      }
+    }
     if (
       open_failure_detail &&
       !closest('.rtile__failure-pop, .rtile__failure-badge')
@@ -2664,10 +2708,18 @@ export function createMonitorView(mount_element, options) {
     if (ev.key !== 'Escape') {
       return;
     }
+    let external_closed = false;
+    for (const summary of Array.from(
+      console_el.querySelectorAll('details.external-wait-summary[open]')
+    )) {
+      summary.removeAttribute('open');
+      external_closed = true;
+    }
     if (
       open_failure_detail === null &&
       open_provider_hold_detail === null &&
-      provider_resume === null
+      provider_resume === null &&
+      !external_closed
     ) {
       return;
     }

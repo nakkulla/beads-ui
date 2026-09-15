@@ -3,7 +3,15 @@ import { runBdJsonProjected as defaultRunBdJsonProjected } from './bd.js';
 import { normalizeIssueList } from './list-adapters.js';
 import { debug } from './logging.js';
 
-const ALL_ARGS = ['list', '--json', '--tree=false', '--all', '--limit', '0'];
+const ALL_ARGS = [
+  'list',
+  '--json',
+  '--tree=false',
+  '--all',
+  '--limit',
+  '0',
+  '--include-gates'
+];
 /**
  * Snapshot stage to the bd command family whose typed projector owns its shape.
  *

@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { MESSAGE_TYPES } from '../app/protocol.js';
+import { createExternalJobObservations } from './external-job-observations.js';
 import { __resetWorkerAttachmentsForTest } from './worker/attach.js';
 import { getWorkerRuntime } from './worker/runtime.js';
 import {
@@ -15,7 +16,8 @@ import {
 import {
   __resetMonitorPipelineForTest,
   buildMonitorPipeline,
-  buildMonitorWorkspacesState
+  buildMonitorWorkspacesState,
+  refreshExternalWaitsForVisible
 } from './ws/monitor-handlers.js';
 import { decorateQueue } from './ws/worker-handlers.js';
 
@@ -100,6 +102,161 @@ afterEach(() => {
 });
 
 describe('ws monitor-pipeline channel (UI-nprg)', () => {
+  test('does no external observation work without subscribers', async () => {
+    const listRoots = vi.fn(() => ['/repo']);
+    const requestSnapshot = vi.fn();
+    const collector = { collect: vi.fn() };
+
+    await refreshExternalWaitsForVisible({
+      subscriberCount: () => 0,
+      listRoots,
+      requestSnapshot,
+      collector
+    });
+
+    expect(listRoots).not.toHaveBeenCalled();
+    expect(requestSnapshot).not.toHaveBeenCalled();
+    expect(collector.collect).not.toHaveBeenCalled();
+  });
+
+  test('shares one snapshot and collector read across concurrent refreshes', async () => {
+    let finish_collection = () => {};
+    const requestSnapshot = vi.fn(async () => ({ ok: true, snapshot: {} }));
+    const collector = {
+      collect: vi.fn(
+        () =>
+          new Promise(
+            (resolve) => (finish_collection = () => resolve(undefined))
+          )
+      )
+    };
+    const options = /** @type {any} */ ({
+      subscriberCount: () => 1,
+      listRoots: () => ['/repo'],
+      requestSnapshot,
+      collector,
+      onPush: vi.fn()
+    });
+
+    const first = refreshExternalWaitsForVisible(options);
+    const second = refreshExternalWaitsForVisible(options);
+    await vi.waitFor(() => {
+      expect(collector.collect).toHaveBeenCalledTimes(1);
+    });
+
+    expect(second).toBe(first);
+    expect(requestSnapshot).toHaveBeenCalledTimes(1);
+    finish_collection();
+    await first;
+  });
+
+  test('skips collection when the last subscriber leaves during snapshot read', async () => {
+    let subscriber_count = 1;
+    let finish_snapshot = () => {};
+    const collector = { collect: vi.fn() };
+    const pending = refreshExternalWaitsForVisible({
+      subscriberCount: () => subscriber_count,
+      listRoots: () => ['/repo'],
+      requestSnapshot: () =>
+        new Promise(
+          (resolve) =>
+            (finish_snapshot = () =>
+              resolve(/** @type {any} */ ({ ok: true, snapshot: {} })))
+        ),
+      collector,
+      onPush: vi.fn()
+    });
+    subscriber_count = 0;
+
+    finish_snapshot();
+    await pending;
+
+    expect(collector.collect).not.toHaveBeenCalled();
+  });
+
+  test('marks a stale coordinator snapshot and clears it after recovery', async () => {
+    const gate = {
+      id: 'UI-gate',
+      title: '외부 계산',
+      issue_type: 'gate',
+      await_id: 'a'.repeat(24),
+      await_type: 'human',
+      status: 'open'
+    };
+    const consumer = { id: 'UI-consumer', title: '분석', status: 'open' };
+    const snapshot = {
+      all: [gate, consumer],
+      id_index: new Map([
+        [gate.id, gate],
+        [consumer.id, consumer]
+      ]),
+      blocks_in: new Map([[gate.id, [consumer.id]]])
+    };
+    const watch = {
+      schema: 'external-job-monitor-v1',
+      watch_id: 'a'.repeat(24),
+      repo: '/repo/.worktrees/job',
+      gate_id: gate.id,
+      consumer: consumer.id,
+      job_id: '42',
+      stage: 'active',
+      observation_state: 'RUNNING',
+      last_observed_at: '2026-09-15T00:54:00Z',
+      next_observation_at: '2026-09-15T01:09:00Z'
+    };
+    const observations = createExternalJobObservations({
+      state_root: '/state',
+      now: () => Date.parse('2026-09-15T01:00:00Z'),
+      fs: {
+        readdir: async () => [`${watch.watch_id}.json`],
+        readFile: async () => JSON.stringify(watch)
+      },
+      run: async (file) =>
+        file === 'bead-job-monitor'
+          ? {
+              stdout: JSON.stringify({
+                ok: true,
+                schema: 'external-job-monitor-service-v1',
+                loaded: true,
+                command_matches: true,
+                loaded_matches_plist: true,
+                executable_exists: true,
+                last_tick: { exit_code: 0, skipped: true }
+              })
+            }
+          : { stdout: '/repo/.git\n' }
+    });
+    let coordinator_stale = true;
+    const options = /** @type {any} */ ({
+      subscriberCount: () => 1,
+      listRoots: () => ['/repo'],
+      requestSnapshot: async () => ({
+        ok: true,
+        snapshot,
+        stale: coordinator_stale,
+        fresh: !coordinator_stale
+      }),
+      collector: observations,
+      onPush: vi.fn()
+    });
+
+    await refreshExternalWaitsForVisible(options);
+    expect(observations.get().rows[0]).toMatchObject({
+      gate_id: gate.id,
+      stale: true,
+      monitor_state: '감시 확인 필요',
+      monitor_reason: '이슈 스냅샷이 오래된 자료임'
+    });
+
+    coordinator_stale = false;
+    await refreshExternalWaitsForVisible(options);
+    expect(observations.get().rows[0]).toMatchObject({
+      gate_id: gate.id,
+      monitor_state: '자동 확인 중'
+    });
+    expect(observations.get().rows[0].stale).toBeUndefined();
+  });
+
   test('carries the three message types in the protocol vocabulary', () => {
     expect(MESSAGE_TYPES).toContain('subscribe-monitor-pipeline');
     expect(MESSAGE_TYPES).toContain('unsubscribe-monitor-pipeline');
@@ -226,7 +383,7 @@ describe('monitor pipeline external PR facts (UI-kyky §6.1)', () => {
       listHidden: () => [],
       runnableFor: () => [],
       sessionActiveFor: () => [],
-      snapshotFor: (key) => decorateQueue(key, raw)
+      snapshotFor: (/** @type {string} */ key) => decorateQueue(key, raw)
     });
 
     expect(/** @type {any} */ (workspaces[0]).pr_wait[0]).toMatchObject({
@@ -236,6 +393,53 @@ describe('monitor pipeline external PR facts (UI-kyky §6.1)', () => {
       repo_slug: 'other/repo',
       pr_url: 'https://github.com/other/repo/pull/12',
       pr_number: 12
+    });
+  });
+});
+
+describe('monitor pipeline external waits (UI-7341)', () => {
+  const WS_EXTERNAL = '/tmp/mon-external';
+  const external_row = {
+    gate_id: 'Analysis-ph3a',
+    gate_open: true,
+    root_dir: WS_EXTERNAL,
+    monitor_state: '감시 확인 필요'
+  };
+
+  test('keeps an otherwise empty workspace and reports its attention count', () => {
+    const raw = { revision: 1, queue: [], pr_wait: [], done: [], attempts: {} };
+    const seams = {
+      listWorkspaces: () => [{ path: WS_EXTERNAL }],
+      listHidden: () => [],
+      runnableFor: () => [],
+      sessionActiveFor: () => [],
+      snapshotFor: (/** @type {string} */ key) => decorateQueue(key, raw)
+    };
+
+    const workspaces = buildMonitorPipeline({
+      ...seams,
+      externalRows: () => ({
+        rows: [external_row],
+        collected_at: 123,
+        stale: false
+      })
+    });
+    const state = buildMonitorWorkspacesState({
+      ...seams,
+      issuePrefixFor: () => null,
+      sessionDefaultsFor: () => ({ values: {}, warnings: [] }),
+      externalRows: () => [external_row]
+    });
+
+    expect(workspaces[0]).toMatchObject({
+      root_dir: WS_EXTERNAL,
+      external_waits: [
+        expect.objectContaining({ gate_id: 'Analysis-ph3a', collected_at: 123 })
+      ]
+    });
+    expect(state[0]).toMatchObject({
+      external_wait_count: 1,
+      external_wait_attention_count: 1
     });
   });
 });

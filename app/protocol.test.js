@@ -4,6 +4,7 @@ import {
   MESSAGE_TYPES,
   decodeReply,
   decodeRequest,
+  isExternalWaitObservation,
   isMessageType,
   isReply,
   isRequest,
@@ -13,6 +14,40 @@ import {
 } from './protocol.js';
 
 describe('protocol', () => {
+  const external_wait = {
+    kind: 'external_wait',
+    root_dir: '/repo',
+    workspace_name: 'repo',
+    gate_id: 'UI-gate',
+    gate_title: '외부 계산',
+    consumer_id: 'UI-consumer',
+    consumer_title: '분석',
+    watch_id: 'a'.repeat(24),
+    job_id: '42',
+    stage: 'active',
+    gate_open: true,
+    recent_complete: false,
+    job_state: '계산 중',
+    previous_job_state: null,
+    monitor_state: '자동 확인 중',
+    monitor_reason: null,
+    overdue: false,
+    last_observed_at: 1,
+    next_observation_at: 2,
+    completed_at: null,
+    recovery_needed: false
+  };
+
+  test('accepts the complete safe external wait projection', () => {
+    expect(isExternalWaitObservation(external_wait)).toBe(true);
+  });
+
+  test('rejects producer-only external wait fields', () => {
+    expect(
+      isExternalWaitObservation({ ...external_wait, ssh_host: 'cluster' })
+    ).toBe(false);
+  });
+
   test('version and message types', () => {
     expect(Array.isArray(MESSAGE_TYPES)).toBe(true);
     expect(MESSAGE_TYPES.length).toBeGreaterThan(3);

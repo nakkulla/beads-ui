@@ -22,6 +22,7 @@ import {
   isImplementationAttempt
 } from '../../app/utils/active-attempts.js';
 import { getConfig } from '../config.js';
+import { createExternalJobObservations } from '../external-job-observations.js';
 import { createPoller } from '../poller.js';
 import {
   SESSION_DEFAULTS_KV_KEY,
@@ -47,6 +48,7 @@ import { onQueueChanged } from '../worker/queue-events.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { scopeCache } from '../worker/scope-cache.js';
+import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { kvGetJsonAtRoot, log, pushSnapshotIfChanged } from './context.js';
 import {
   doneAtByBead,
@@ -95,6 +97,12 @@ let foreign_resolved_unsubscribe = null;
 
 /** @type {{ start: () => void, stop: () => void } | null} */
 let refresh_driver = null;
+
+const external_job_observations = createExternalJobObservations();
+
+/** @type {Promise<void>|null} */
+let external_wait_refresh = null;
+let external_wait_refresh_epoch = 0;
 
 /**
  * Last queue `revision` observed per workspace, for {@link queueRevisionMoved}.
@@ -517,7 +525,14 @@ function prewarmVisibleIssuePrefixes() {
  * @returns {boolean}
  */
 function hasPipeline(snapshot) {
-  const lanes = ['queue', 'pr_wait', 'done', 'runnable', 'session_active'];
+  const lanes = [
+    'queue',
+    'pr_wait',
+    'done',
+    'runnable',
+    'session_active',
+    'external_waits'
+  ];
   for (const lane of lanes) {
     if (Array.isArray(snapshot[lane]) && snapshot[lane].length > 0) {
       return true;
@@ -768,7 +783,8 @@ function beadOverlayFor(
  *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>, options?: RunnableReadOptions) => Array<Record<string, unknown>>,
  *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
  *   titleCache?: () => ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null,
- *   carriedToFor?: (workspace_key: string, parent_ids: Iterable<string>) => Record<string, string[]>
+ *   carriedToFor?: (workspace_key: string, parent_ids: Iterable<string>) => Record<string, string[]>,
+ *   externalRows?: () => { rows: Array<Record<string, any>>, collected_at: number, stale: boolean }
  * }} [options] - Test seams; each defaults to the live server source. The
  * @returns {Array<Record<string, unknown>>}
  */
@@ -797,6 +813,9 @@ export function buildMonitorPipeline(options = {}) {
   /** @type {Array<Record<string, unknown>>} */
   const out = [];
   const cache = titleCache();
+  const external_rows = (
+    options.externalRows || (() => external_job_observations.get())
+  )();
 
   const workspace_roots = visibleWorkspaceRoots(options);
   for (const root_dir of workspace_roots) {
@@ -841,6 +860,13 @@ export function buildMonitorPipeline(options = {}) {
       session_active = [];
     }
     projected.session_active = session_active;
+    projected.external_waits = external_rows.rows
+      .filter((row) => row.root_dir === root_dir)
+      .map((row) => ({
+        ...row,
+        collected_at: external_rows.collected_at,
+        stale: row.stale === true
+      }));
     try {
       projected.bead_overlay = beadOverlayFor(
         root_dir,
@@ -990,7 +1016,8 @@ function laneCountsFor(root_dir, queue, runnableFor, sessionActiveFor) {
  *   sessionDefaultsFor?: (workspace_key: string) => { values: Record<string, string|boolean>, warnings: string[] },
  *   repoHealthFor?: (workspace_key: string) => RepoHealthState,
  *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>, options?: RunnableReadOptions) => Array<Record<string, unknown>>,
- *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>
+ *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
+ *   externalRows?: () => Array<Record<string, any>>
  * }} [options] - Test seams; each defaults to the live server source.
  * @returns {Array<Record<string, unknown>>}
  */
@@ -1040,6 +1067,9 @@ export function buildMonitorWorkspacesState(options = {}) {
 
   /** @type {Array<Record<string, unknown>>} */
   const out = [];
+  const external_rows = (
+    options.externalRows || (() => external_job_observations.get().rows)
+  )();
   for (const root_dir of visibleWorkspaceRoots(options)) {
     /** @type {Record<string, any>} */
     let queue;
@@ -1131,6 +1161,20 @@ export function buildMonitorWorkspacesState(options = {}) {
       // `prewarmSessionDefaults`.
       session_defaults: session_defaults.values,
       session_defaults_warnings: session_defaults.warnings,
+      external_wait_count: external_rows.filter(
+        (row) => row.root_dir === root_dir && row.gate_open === true
+      ).length,
+      external_wait_attention_count: external_rows.filter(
+        (row) =>
+          row.root_dir === root_dir &&
+          row.gate_open === true &&
+          (row.monitor_state === '감시 확인 필요' ||
+            row.monitor_state === '감시 정보 없음' ||
+            row.monitor_state === '감시 등록 확인 필요' ||
+            row.monitor_state === '감시 기록과 대기 상태 확인 필요' ||
+            row.monitor_state === '확인 예정 시각 지남' ||
+            row.monitor_state === '자동 확인 중지')
+      ).length,
       counts: laneCountsFor(root_dir, queue, runnableFor, sessionActiveFor)
     });
   }
@@ -1370,6 +1414,102 @@ function refreshExternalPrsForVisible() {
 }
 
 /**
+ * Refresh external-job observations once for every visible workspace. The
+ * collector joins overlapping calls and schedules one push after the shared
+ * service/watch read completes.
+ *
+ * @param {{
+ *   subscriberCount?: () => number,
+ *   listRoots?: () => string[],
+ *   requestSnapshot?: typeof requestWorkspaceSnapshot,
+ *   collector?: { collect: (workspaces: Array<{ root_dir: string, name: string, snapshot: any, snapshot_stale?: boolean }>) => Promise<unknown> },
+ *   onPush?: () => void
+ * }} [options]
+ * @returns {Promise<void>}
+ */
+export function refreshExternalWaitsForVisible(options = {}) {
+  const subscriberCount = options.subscriberCount || (() => SUBSCRIBERS.size);
+  if (subscriberCount() === 0) {
+    return Promise.resolve();
+  }
+  if (external_wait_refresh !== null) {
+    return external_wait_refresh;
+  }
+  const listRoots = options.listRoots || visibleWorkspaceRoots;
+  const requestSnapshot = options.requestSnapshot || requestWorkspaceSnapshot;
+  const collector = options.collector || external_job_observations;
+  const onPush = options.onPush || schedulePush;
+  const refresh_epoch = external_wait_refresh_epoch;
+  /** @type {Promise<void>} */
+  let pending;
+  pending = Promise.all(
+    listRoots().map(async (root_dir) => {
+      try {
+        const result = await requestSnapshot(
+          root_dir,
+          'monitor-external-waits'
+        );
+        return {
+          root_dir,
+          name: path.basename(root_dir),
+          snapshot: result.ok ? result.snapshot : null,
+          snapshot_stale: result.ok && result.stale === true
+        };
+      } catch (error) {
+        log(
+          'monitor: external wait snapshot failed for %s: %o',
+          root_dir,
+          error
+        );
+        return {
+          root_dir,
+          name: path.basename(root_dir),
+          snapshot: null,
+          snapshot_stale: true
+        };
+      }
+    })
+  )
+    .then(async (workspaces) => {
+      if (
+        refresh_epoch !== external_wait_refresh_epoch ||
+        subscriberCount() === 0
+      ) {
+        return;
+      }
+      const collecting = collector.collect(workspaces);
+      onPush();
+      await collecting;
+      if (
+        refresh_epoch === external_wait_refresh_epoch &&
+        subscriberCount() > 0
+      ) {
+        onPush();
+      }
+    })
+    .catch((error) => {
+      log('monitor: external wait refresh failed: %o', error);
+    })
+    .finally(() => {
+      if (external_wait_refresh === pending) {
+        external_wait_refresh = null;
+      }
+    });
+  external_wait_refresh = pending;
+  return pending;
+}
+
+/** Cancel owned external observation work when nobody can consume it. */
+function cancelExternalWaitRefreshIfIdle() {
+  if (SUBSCRIBERS.size > 0) {
+    return;
+  }
+  external_wait_refresh_epoch += 1;
+  external_wait_refresh = null;
+  external_job_observations.clear();
+}
+
+/**
  * Refill every visible workspace's runnable candidates.
  *
  * Driven by the RAW visible list for the same reason the external-PR seeding is
@@ -1467,6 +1607,7 @@ export function createRunnableRefreshDriver(options = {}) {
     getClientCount: options.subscriberCount || runnableScanSubscriberCount,
     onTick() {
       refillRunnableForVisible(options.refresh, options.listRoots);
+      void refreshExternalWaitsForVisible();
       onRefreshed();
     }
   });
@@ -1562,6 +1703,7 @@ export function ensureRunnableScanWired() {
  */
 export function notifyMonitorRegistryChanged() {
   refreshExternalPrsForVisible();
+  void refreshExternalWaitsForVisible();
   schedulePush();
 }
 
@@ -1571,6 +1713,7 @@ export function notifyMonitorRegistryChanged() {
  */
 export function notifyMonitorVisibilityChanged() {
   refreshExternalPrsForVisible();
+  void refreshExternalWaitsForVisible();
   schedulePush();
 }
 
@@ -1632,6 +1775,7 @@ export function handleSubscribeMonitorPipeline(ws, req) {
     })
   );
   refreshExternalPrsForVisible();
+  void refreshExternalWaitsForVisible();
   // One immediate fill per visible workspace (spec §4): the first tick is a
   // whole poll interval away, and a dashboard that opens empty for 30 seconds
   // reads as "nothing is runnable".
@@ -1655,6 +1799,7 @@ export function handleUnsubscribeMonitorPipeline(ws, req) {
     }
   }
   stopDriverIfIdle();
+  cancelExternalWaitRefreshIfIdle();
   runnableCache().releaseObservationsIfIdle?.();
   ws.send(
     JSON.stringify(makeOk(req, { id: client_id, unsubscribed: removed }))
@@ -1813,6 +1958,7 @@ export function detachMonitorPipeline(ws) {
     }
   }
   stopDriverIfIdle();
+  cancelExternalWaitRefreshIfIdle();
   runnableCache().releaseObservationsIfIdle?.();
 }
 
@@ -1823,6 +1969,8 @@ export function detachMonitorPipeline(ws) {
 export function __resetMonitorPipelineForTest() {
   __resetForeignBlockerCachesForTest();
   SUBSCRIBERS.clear();
+  external_wait_refresh_epoch += 1;
+  external_wait_refresh = null;
   if (push_timer !== null) {
     clearTimeout(push_timer);
     push_timer = null;
@@ -1846,4 +1994,5 @@ export function __resetMonitorPipelineForTest() {
   last_seen_revision.clear();
   session_defaults_cache.clear();
   poll_interval_seconds = null;
+  external_job_observations.clear();
 }

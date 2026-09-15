@@ -6,7 +6,15 @@ import {
 } from './bd-json.js';
 import { createWorkspaceSnapshotCoordinator } from './workspace-snapshot-coordinator.js';
 
-const ALL_ARGS = ['list', '--json', '--tree=false', '--all', '--limit', '0'];
+const ALL_ARGS = [
+  'list',
+  '--json',
+  '--tree=false',
+  '--all',
+  '--limit',
+  '0',
+  '--include-gates'
+];
 const READY_ARGS = ['ready', '--explain', '--limit', '0', '--json'];
 
 /**
@@ -707,6 +715,68 @@ describe('workspace snapshot coordinator', () => {
 });
 
 describe('workspace snapshot blocks indexes (UI-d13v §3.2)', () => {
+  test('keeps two titled gates and both consumer edges in one generation', async () => {
+    const runBdJson = createRunner(
+      successfulGeneration([
+        {
+          id: 'Analysis-consumer-a',
+          title: 'consumer a',
+          dependencies: [
+            {
+              issue_id: 'Analysis-consumer-a',
+              depends_on_id: 'Analysis-gate-a',
+              type: 'blocks'
+            }
+          ]
+        },
+        {
+          id: 'Analysis-consumer-b',
+          title: 'consumer b',
+          dependencies: [
+            {
+              issue_id: 'Analysis-consumer-b',
+              depends_on_id: 'Analysis-gate-b',
+              type: 'blocks'
+            }
+          ]
+        },
+        {
+          id: 'Analysis-gate-a',
+          title: '외부 계산 101',
+          issue_type: 'gate',
+          await_id: 'a'.repeat(24),
+          await_type: 'human',
+          status: 'open'
+        },
+        {
+          id: 'Analysis-gate-b',
+          title: '외부 계산 202',
+          issue_type: 'gate',
+          await_id: 'b'.repeat(24),
+          await_type: 'human',
+          status: 'open'
+        }
+      ])
+    );
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: runBdJson
+    });
+
+    const result = await coordinator.request('cold-subscribe');
+
+    expect(
+      result.ok && result.snapshot.id_index.get('Analysis-gate-a')?.title
+    ).toBe('외부 계산 101');
+    expect(result.ok && [...result.snapshot.blocks_out]).toEqual([
+      ['Analysis-consumer-a', ['Analysis-gate-a']],
+      ['Analysis-consumer-b', ['Analysis-gate-b']]
+    ]);
+    expect(result.ok && [...result.snapshot.blocks_in]).toEqual([
+      ['Analysis-gate-a', ['Analysis-consumer-a']],
+      ['Analysis-gate-b', ['Analysis-consumer-b']]
+    ]);
+  });
+
   test('indexes one blocks edge in both directions', async () => {
     const runBdJson = createRunner(
       successfulGeneration([

@@ -37,6 +37,126 @@
  * @property {ErrorObject} [error] - Present when ok=false.
  */
 
+/**
+ * Read-only projection of one native gate backed by an external-job watch.
+ * The wire shape deliberately excludes producer commands, hosts, and logs.
+ *
+ * @typedef {Object} ExternalWaitObservation
+ * @property {'external_wait'} kind
+ * @property {string} root_dir
+ * @property {string} workspace_name
+ * @property {string} gate_id
+ * @property {string} gate_title
+ * @property {string|null} consumer_id
+ * @property {string|null} consumer_title
+ * @property {string|null} watch_id
+ * @property {string|null} job_id
+ * @property {string|null} stage
+ * @property {boolean} gate_open
+ * @property {boolean} recent_complete
+ * @property {string} job_state
+ * @property {string|null} previous_job_state
+ * @property {string} monitor_state
+ * @property {string|null} monitor_reason
+ * @property {boolean} overdue
+ * @property {number|null} last_observed_at
+ * @property {number|null} next_observation_at
+ * @property {number|null} completed_at
+ * @property {boolean} recovery_needed
+ * @property {number} [collected_at]
+ * @property {boolean} [stale]
+ */
+
+const EXTERNAL_WAIT_FIELDS = new Set([
+  'kind',
+  'root_dir',
+  'workspace_name',
+  'gate_id',
+  'gate_title',
+  'consumer_id',
+  'consumer_title',
+  'watch_id',
+  'job_id',
+  'stage',
+  'gate_open',
+  'recent_complete',
+  'job_state',
+  'previous_job_state',
+  'monitor_state',
+  'monitor_reason',
+  'overdue',
+  'last_observed_at',
+  'next_observation_at',
+  'completed_at',
+  'recovery_needed',
+  'collected_at',
+  'stale'
+]);
+
+/**
+ * @param {unknown} value
+ * @returns {value is string|null}
+ */
+function isNullableString(value) {
+  return value === null || typeof value === 'string';
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is number|null}
+ */
+function isNullableTime(value) {
+  return (
+    value === null || (typeof value === 'number' && Number.isFinite(value))
+  );
+}
+
+/**
+ * Validate the complete safe external-wait wire projection.
+ *
+ * @param {unknown} value
+ * @returns {value is ExternalWaitObservation}
+ */
+export function isExternalWaitObservation(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const row = /** @type {Record<string, unknown>} */ (value);
+  return (
+    Object.keys(row).every((key) => EXTERNAL_WAIT_FIELDS.has(key)) &&
+    row.kind === 'external_wait' &&
+    [
+      'root_dir',
+      'workspace_name',
+      'gate_id',
+      'gate_title',
+      'job_state',
+      'monitor_state'
+    ].every((key) => typeof row[key] === 'string' && row[key].length > 0) &&
+    [
+      'consumer_id',
+      'consumer_title',
+      'job_id',
+      'stage',
+      'previous_job_state',
+      'monitor_reason'
+    ].every((key) => isNullableString(row[key])) &&
+    (row.watch_id === null ||
+      (typeof row.watch_id === 'string' &&
+        /^[a-f0-9]{24}$/.test(row.watch_id))) &&
+    ['gate_open', 'recent_complete', 'overdue', 'recovery_needed'].every(
+      (key) => typeof row[key] === 'boolean'
+    ) &&
+    ['last_observed_at', 'next_observation_at', 'completed_at'].every((key) =>
+      isNullableTime(row[key])
+    ) &&
+    (row.collected_at === undefined ||
+      (typeof row.collected_at === 'number' &&
+        Number.isFinite(row.collected_at))) &&
+    (row.stale === undefined || typeof row.stale === 'boolean')
+  );
+}
+
 /** @type {MessageType[]} */
 export const MESSAGE_TYPES = /** @type {const} */ ([
   'update-status',

@@ -55,6 +55,146 @@ describe('views/detail-panel', () => {
     expect(mount.textContent).toContain('설명 본문');
   });
 
+  test('renders a gate as read-only with verified external monitor context', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const transport = vi.fn();
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      transport,
+      getWorkspacePath: () => '/repo',
+      pipelineStore: {
+        get: () => [
+          {
+            root_dir: '/repo',
+            external_waits: [
+              {
+                gate_id: 'Analysis-ph3a',
+                watch_id: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+                job_state: '계산 중',
+                monitor_state: '자동 확인 중',
+                last_observed_at: Date.parse('2026-09-15T00:54:00Z')
+              }
+            ]
+          }
+        ]
+      },
+      onClose: vi.fn()
+    });
+    issueStores.register('detail:Analysis-ph3a', {
+      type: 'issue-detail',
+      params: { id: 'Analysis-ph3a' }
+    });
+    issueStores.getStore('detail:Analysis-ph3a')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:Analysis-ph3a',
+      revision: 1,
+      issues: /** @type {any} */ ([
+        {
+          id: 'Analysis-ph3a',
+          title: '외부 계산 246416',
+          issue_type: 'gate',
+          status: 'open',
+          description: '자동 외부 작업 대기'
+        }
+      ])
+    });
+
+    panel.load('Analysis-ph3a');
+
+    expect(mount.textContent).toContain('대기 조건');
+    expect(mount.textContent?.replace(/\s+/g, ' ')).toContain(
+      '직접 닫을 필요가 없습니다'
+    );
+    expect(mount.textContent).toContain('계산 중');
+    expect(mount.querySelector('[data-edit="status"]')).toBeNull();
+    expect(mount.querySelector('.detail-overlay__place')).toBeNull();
+    expect(mount.querySelector('.detail-edit-btn')).toBeNull();
+    expect(
+      transport.mock.calls
+        .map((call) => call[0])
+        .filter((type) =>
+          [
+            'update-status',
+            'update-priority',
+            'edit-text',
+            'update-exec-settings',
+            'dep-add',
+            'dep-remove'
+          ].includes(type)
+        )
+    ).toEqual([]);
+  });
+
+  test('refreshes an open gate when a late external observation arrives', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    /** @type {Array<Record<string, any>>} */
+    let pipeline_rows = [{ root_dir: '/repo', external_waits: [] }];
+    let pipeline_listener = () => {};
+    const unsubscribe = vi.fn();
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      getWorkspacePath: () => '/repo',
+      pipelineStore: {
+        get: () => pipeline_rows,
+        subscribe: (listener) => {
+          pipeline_listener = listener;
+          return unsubscribe;
+        }
+      },
+      onClose: vi.fn()
+    });
+    issueStores.register('detail:Analysis-ph3a', {
+      type: 'issue-detail',
+      params: { id: 'Analysis-ph3a' }
+    });
+    issueStores.getStore('detail:Analysis-ph3a')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:Analysis-ph3a',
+      revision: 1,
+      issues: /** @type {any} */ ([
+        {
+          id: 'Analysis-ph3a',
+          title: '외부 계산',
+          issue_type: 'gate',
+          status: 'open'
+        }
+      ])
+    });
+    panel.load('Analysis-ph3a');
+    pipeline_rows = [
+      {
+        root_dir: '/repo',
+        external_waits: [
+          {
+            gate_id: 'Analysis-ph3a',
+            watch_id: 'a'.repeat(24),
+            stage: 'stopped',
+            job_state: '계산 상태 확인 필요',
+            previous_job_state: '이전 관측: 계산 중',
+            monitor_state: '자동 확인 중지',
+            monitor_reason: 'producer stopped',
+            stale: true,
+            next_observation_at: Date.now() + 1_000,
+            completed_at: Date.now(),
+            consumer_id: 'Analysis-xz9d',
+            consumer_title: 'microbiome_bile'
+          }
+        ]
+      }
+    ];
+
+    pipeline_listener();
+
+    expect(mount.textContent).toContain('이전 관측: 계산 중');
+    expect(mount.textContent).toContain('오래된 자료');
+    expect(mount.textContent).toContain('microbiome_bile');
+    expect(mount.textContent).not.toContain('다음 확인');
+    panel.destroy();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
   test('ignores a list subscription change with no selection (UI-hhn9 §5.1)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const registry = createSubscriptionIssueStores();
