@@ -20,6 +20,8 @@
  * @type {Readonly<Record<string, string>>}
  */
 export const FAILURE_SENTENCES = Object.freeze({
+  background_shell:
+    '백그라운드 셸 태스크를 남기고 턴 종료 — 프로세스 종료로 결과 유실',
   repo_ops_worktree_unowned:
     '배포 워크트리가 아직 Worker 소유가 아니어서 스크립트 실행 전에 중단됐습니다.',
   verify_cmd_failed: '머지 후 검증 명령이 실패했습니다.',

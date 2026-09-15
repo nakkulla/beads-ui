@@ -86,6 +86,7 @@ import {
   causeKey,
   classifyFailure,
   extractSummary,
+  failureTokenSummary,
   guardKillMessage
 } from './failure-class.js';
 import { attemptFailureComment } from './failure-comment.js';
@@ -5170,6 +5171,21 @@ export function createScheduler(deps) {
       awaiting_user: options.awaiting_user ?? null,
       ...(options.tier_hint ? { tier_hint: options.tier_hint } : {})
     });
+    const background_shell_at_result =
+      options.verdict?.background_shell_at_result;
+    if (
+      classification.cause === 'session_ended_unresolved' &&
+      Array.isArray(background_shell_at_result) &&
+      background_shell_at_result.length > 0
+    ) {
+      classification.cause = 'session_ended_unresolved:background_shell';
+      classification.summary = extractSummary(
+        `${failureTokenSummary(classification.cause)}: ${background_shell_at_result.join('; ')}`
+      );
+      cause_detail = mergeCauseDetail(cause_detail, classification.summary, {
+        background_shell_at_result
+      });
+    }
     settleFailureTier(
       workspace,
       attempt_id,
@@ -7993,6 +8009,12 @@ export function createScheduler(deps) {
         const reconciled_verdict = /** @type {RunnerVerdict} */ ({
           success: true,
           reason: 'reconciled',
+          ...(persisted_verdict?.background_shell_at_result
+            ? {
+                background_shell_at_result:
+                  persisted_verdict.background_shell_at_result
+              }
+            : {}),
           exit: null,
           blocked: false,
           raw: persisted_raw ?? []

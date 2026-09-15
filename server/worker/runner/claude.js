@@ -594,6 +594,62 @@ function summaryOf(value) {
 }
 
 /**
+ * Preserve unfinished local_bash tasks at the last end_turn result. Shutdown
+ * removes tasks from the live list before reporting them killed, so later list
+ * changes must not erase the result snapshot. Observed completions do clear it.
+ *
+ * @param {any[]} raw
+ * @returns {string[]}
+ */
+function backgroundShellAtResult(raw) {
+  /** @type {Map<string, string>} */
+  let running = new Map();
+  /** @type {Map<string, string>} */
+  let at_result = new Map();
+  for (const event of raw) {
+    if (!event || typeof event !== 'object') {
+      continue;
+    }
+    if (event.type === 'result') {
+      at_result =
+        event.stop_reason === 'end_turn' ? new Map(running) : new Map();
+    } else if (event.type === 'system') {
+      if (
+        event.subtype === 'background_tasks_changed' &&
+        Array.isArray(event.tasks)
+      ) {
+        running = new Map();
+        for (const task of event.tasks) {
+          if (
+            task &&
+            task.task_type === 'local_bash' &&
+            typeof task.task_id === 'string' &&
+            (task.status === undefined || task.status === 'running')
+          ) {
+            running.set(
+              task.task_id,
+              nonEmpty(task.description) || task.task_id
+            );
+          }
+        }
+      } else if (
+        event.subtype === 'task_updated' ||
+        event.subtype === 'task_notification'
+      ) {
+        const status = event.patch?.status ?? event.status;
+        if (['completed', 'failed', 'killed', 'stopped'].includes(status)) {
+          running.delete(event.task_id);
+          if (status === 'completed' || status === 'failed') {
+            at_result.delete(event.task_id);
+          }
+        }
+      }
+    }
+  }
+  return [...at_result.values()];
+}
+
+/**
  * Compute the claude 2-rule success verdict over the LAST `result` event. A
  * headless session may accumulate multiple `result` events (e.g. background
  * task-notification re-entry mid-session); only the final one is judged.
@@ -604,7 +660,7 @@ function summaryOf(value) {
  * a session that ended unresolved is judged on what it said, not on its exit.
  *
  * @param {{ raw: any[], exit: number|null, blocked: boolean }} ctx
- * @returns {{ success: boolean, reason: string, summary: string|null }}
+ * @returns {{ success: boolean, reason: string, summary: string|null, background_shell_at_result?: string[] }}
  */
 function verdict(ctx) {
   const results = ctx.raw.filter((e) => e && e.type === 'result');
@@ -622,7 +678,15 @@ function verdict(ctx) {
   if (r.is_error !== false) {
     return { success: false, reason: 'is_error', summary };
   }
-  return { success: true, reason: 'ok', summary };
+  const background_shell_at_result = backgroundShellAtResult(ctx.raw);
+  return {
+    success: true,
+    reason: 'ok',
+    summary,
+    ...(background_shell_at_result.length > 0
+      ? { background_shell_at_result }
+      : {})
+  };
 }
 
 /**

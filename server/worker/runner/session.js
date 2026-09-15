@@ -78,6 +78,8 @@ const DIRECT_CHILD_KILL_GRACE_MS = 1_000;
  * classifier reads to tell an environment outage from a bead-specific error,
  * and what the attempt tile shows; null when the stream carried none.
  * @property {number|null} exit - Process exit code.
+ * @property {string[]} [background_shell_at_result] - Unfinished local shell
+ * task descriptions at the final turn boundary, when the adapter observes them.
  * @property {{ kind: 'success'|'parked'|'failure'|'environment'|'waiting_blocks'|'base_moved', candidate_sha?: string, base_sha?: string }|null} terminal_result -
  * The canonical business outcome declared by the first non-empty final line.
  * Null preserves the legacy interpretation for unmarked summaries.
@@ -196,7 +198,7 @@ export function terminalResultOf(summary) {
  * @property {(input: { env: Record<string, string|undefined>, cwd: string, fs: typeof import('node:fs') }) => ('verified'|'absent')} [probeGuardMirror] - Probe the spawn environment for a registered PreToolUse guard mirror (guard-hook-bypass-result-judgment §2). Absent member ⇒ `'absent'`, i.e. the current immediate kill.
  * @property {(raw: any) => (string|null)} [extractSessionId] - Return the runner's session identifier from a raw line, else null. The engine emits the FIRST non-null result once on the `session_id` event so the attempt record can persist it for `--resume`/transcript tracking (spec §2).
  * @property {(ctx: { raw: any[], stderr_tail: string|null, finished_at?: number|null, account_row?: { status: string, windows: Array<{ pct: number, resetsAt: string|null }> }|null }) => ({ detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }|null)} [classifyProviderOutage] - Classify runner-specific provider failures without changing the terminal verdict. Optional so existing adapters remain valid.
- * @property {(ctx: { raw: any[], exit: number|null, blocked: boolean }) => { success: boolean, reason: string, summary: string|null }} verdict -
+ * @property {(ctx: { raw: any[], exit: number|null, blocked: boolean }) => { success: boolean, reason: string, summary: string|null, background_shell_at_result?: string[] }} verdict -
  * Judge the closed stream. `summary` is the session's own last sentence
  * (worker-failure-tiers §6) — the runner owns the extraction because only it
  * knows which event carries the report, and the classifier downstream reads one
@@ -867,11 +869,12 @@ export function runSession(spec, bead, workspace, settings, deps) {
         );
       }
       guard_pending = [];
-      const { success, reason, summary } = spec.verdict({
-        raw: raw_events,
-        exit,
-        blocked
-      });
+      const { success, reason, summary, background_shell_at_result } =
+        spec.verdict({
+          raw: raw_events,
+          exit,
+          blocked
+        });
       /** @type {RunnerVerdict} */
       const verdict = {
         success: blocked ? false : success,
@@ -881,6 +884,7 @@ export function runSession(spec, bead, workspace, settings, deps) {
         summary:
           typeof summary === 'string' && summary.length > 0 ? summary : null,
         terminal_result: terminalResultOf(summary),
+        ...(background_shell_at_result ? { background_shell_at_result } : {}),
         exit,
         blocked,
         blocked_detail: blocked ? blocked_detail : null,

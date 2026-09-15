@@ -147,6 +147,7 @@ const SYSTEMIC_BLOCKER_REASONS = new Set([
 const PATTERN_SENSITIVE_CAUSES = new Set([
   'session_failed:is_error',
   'session_ended_unresolved',
+  'session_ended_unresolved:background_shell',
   'session_hard_stop:environment'
 ]);
 
@@ -346,7 +347,10 @@ export function causeKey(cause, env_group) {
   if (typeof cause !== 'string' || cause.length === 0) {
     return UNKNOWN_CAUSE;
   }
-  const head = cause.split(':').slice(0, 2).join(':');
+  const head =
+    cause === 'session_ended_unresolved:background_shell'
+      ? 'session_ended_unresolved'
+      : cause.split(':').slice(0, 2).join(':');
   if (NON_PROMOTING_CAUSES.has(head)) {
     return null;
   }

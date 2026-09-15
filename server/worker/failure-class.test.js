@@ -364,6 +364,43 @@ describe('worker parked classification', () => {
 });
 
 describe('worker failure summary extraction', () => {
+  test('names the unfinished background shell cause', () => {
+    expect(
+      failureTokenSummary('session_ended_unresolved:background_shell')
+    ).toBe('백그라운드 셸 태스크를 남기고 턴 종료 — 프로세스 종료로 결과 유실');
+  });
+
+  test.each([null, 'spawn codex ENOENT'])(
+    'preserves unresolved retry policy for summary %s',
+    (summary) => {
+      const base = classifyFailure(
+        input({
+          cause: 'session_ended_unresolved',
+          verdict: { success: false, summary }
+        })
+      );
+      const detailed = classifyFailure(
+        input({
+          cause: 'session_ended_unresolved:background_shell',
+          verdict: { success: false, summary }
+        })
+      );
+
+      expect({
+        tier: detailed.tier,
+        retry: detailed.retry,
+        env_group: detailed.env_group
+      }).toEqual({
+        tier: base.tier,
+        retry: base.retry,
+        env_group: base.env_group
+      });
+      expect(causeKey(detailed.cause, detailed.env_group)).toBe(
+        causeKey(base.cause, base.env_group)
+      );
+    }
+  );
+
   test('takes the first non-empty line', () => {
     expect(extractSummary('\n\n  first line  \nsecond')).toEqual('first line');
   });

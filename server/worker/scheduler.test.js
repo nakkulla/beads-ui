@@ -406,7 +406,7 @@ function makeFakeRunner() {
     factoryNames,
     /**
      * @param {string} bead_id
-     * @param {Partial<{ success: boolean, reason: string, summary: string|null, terminal_result: any, exit: number | null, blocked: boolean, blocked_detail: { reason: string, command: string|null }|null, events: any[], raw: any[] }>} v
+     * @param {Partial<import('./runner/session.js').RunnerVerdict>} v
      */
     finish(bead_id, v) {
       const rec = byBead.get(bead_id);
@@ -417,6 +417,9 @@ function makeFakeRunner() {
         success: v.success ?? true,
         reason: v.reason ?? 'ok',
         summary: v.summary ?? null,
+        ...(v.background_shell_at_result
+          ? { background_shell_at_result: v.background_shell_at_result }
+          : {}),
         terminal_result: v.terminal_result ?? null,
         exit: v.exit ?? 0,
         blocked: v.blocked ?? false,
@@ -3710,6 +3713,39 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
     expect(a.cause).toBe('session_ended_unresolved');
     expect(env.store.snapshot(WS).pr_wait).toEqual([]);
   });
+
+  test.each([null, 'spawn codex ENOENT'])(
+    'records unfinished shell details while retaining the tier for summary %s',
+    async (summary) => {
+      const env = setup({ config: { S1: {} }, slots: 1 });
+      /** @type {any} */ (env.verify).verifyPrSubmitted = vi.fn(async () => ({
+        ok: false,
+        reason: 'no_pr',
+        bead_status: 'in_progress',
+        awaiting_user: null
+      }));
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+      env.runner.finish('S1', {
+        success: true,
+        summary,
+        background_shell_at_result: ['Wait for final required run']
+      });
+      await flush();
+      await flush();
+
+      const snapshot = env.store.snapshot(WS);
+      const attempt = snapshot.attempts[attempt_id];
+      expect(attempt.cause).toBe('session_ended_unresolved:background_shell');
+      expect(attempt.status).toBe(summary === null ? 'failed' : 'retry_wait');
+      expect(attempt.cause_detail?.summary).toBe(
+        '백그라운드 셸 태스크를 남기고 턴 종료 — 프로세스 종료로 결과 유실: Wait for final required run'
+      );
+      expect(snapshot.hold?.kind ?? null).toBe(summary === null ? null : 'env');
+    }
+  );
 
   test('records a failed observation as an environment retry', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
@@ -12649,6 +12685,63 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
       bead_id: 'UI-1',
       key: 'orchestration_model'
     });
+  });
+
+  test('recovers unfinished shell diagnostics from a detached session log', async () => {
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'UI-1', 'att-1');
+    const raw = [
+      {
+        type: 'system',
+        subtype: 'background_tasks_changed',
+        tasks: [
+          {
+            task_id: 'shell-1',
+            task_type: 'local_bash',
+            description: 'Wait for final required run'
+          }
+        ]
+      },
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        stop_reason: 'end_turn'
+      },
+      { type: 'system', subtype: 'background_tasks_changed', tasks: [] },
+      {
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: 'shell-1',
+        patch: { status: 'killed' }
+      }
+    ];
+    fs.mkdirSync(path.dirname(log_path), { recursive: true });
+    fs.writeFileSync(
+      log_path,
+      raw.map((event) => JSON.stringify(event)).join('\n') + '\n'
+    );
+    const env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      verifyOk: false,
+      sessionLog
+    });
+    seedDetachedAttempt(env.store, { runner: 'claude', log_path });
+    env.store.setAutoAdvance(WS, true);
+
+    await env.scheduler.reconcile(WS);
+
+    const snapshot = env.store.snapshot(WS);
+    expect(snapshot.attempts['att-1']).toMatchObject({
+      status: 'failed',
+      cause: 'session_ended_unresolved:background_shell',
+      cause_detail: {
+        summary:
+          '백그라운드 셸 태스크를 남기고 턴 종료 — 프로세스 종료로 결과 유실: Wait for final required run',
+        background_shell_at_result: ['Wait for final required run']
+      }
+    });
+    expect(snapshot.hold).toBeNull();
+    expect(snapshot.auto_advance).toBe(true);
   });
 
   test('fails a dead attempt whose PR is missing without stopping the queue', async () => {

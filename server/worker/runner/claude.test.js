@@ -482,6 +482,100 @@ describe('runner/claude 2-rule success (judged over the last result)', () => {
   });
 });
 
+describe('runner/claude unfinished background shells', () => {
+  const shell = {
+    task_id: 'shell-1',
+    task_type: 'local_bash',
+    description: 'Wait for final required run'
+  };
+  const result = {
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    stop_reason: 'end_turn'
+  };
+
+  /**
+   * @param {any[]} tasks
+   */
+  function taskList(tasks) {
+    return { type: 'system', subtype: 'background_tasks_changed', tasks };
+  }
+
+  test('carries the result snapshot through shutdown removal and killing', async () => {
+    const raw = [
+      taskList([shell]),
+      result,
+      taskList([]),
+      {
+        type: 'system',
+        subtype: 'task_updated',
+        task_id: shell.task_id,
+        patch: { status: 'killed' }
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: shell.task_id,
+        status: 'stopped'
+      }
+    ];
+    const spawn_impl = makeFixtureSpawn({
+      lines: raw.map((event) => JSON.stringify(event)),
+      exit: 0
+    });
+
+    const verdict = await spawnClaude(BEAD, WS, {}, { spawn_impl }).done;
+
+    expect(verdict.background_shell_at_result).toEqual([shell.description]);
+    expect(verdict.success).toBe(true);
+  });
+
+  test.each([
+    ['no tasks', [result]],
+    [
+      'local agents only',
+      [taskList([{ ...shell, task_type: 'local_agent' }]), result]
+    ],
+    ['tasks removed before result', [taskList([shell]), taskList([]), result]],
+    ['a later clean result', [taskList([shell]), result, taskList([]), result]],
+    [
+      'another stop reason',
+      [taskList([shell]), { ...result, stop_reason: 'max_tokens' }]
+    ],
+    ['no result', [taskList([shell])]],
+    [
+      'malformed task list',
+      [taskList([null, {}, { ...shell, task_id: null }]), result]
+    ]
+  ])('omits shell evidence for %s', (_name, raw) => {
+    const verdict = claudeSpec().verdict({ raw, exit: 0, blocked: false });
+
+    expect(verdict.background_shell_at_result).toBeUndefined();
+  });
+
+  test.each(['completed', 'failed'])(
+    'clears a shell that reports %s after result',
+    (status) => {
+      const raw = [
+        taskList([shell]),
+        result,
+        taskList([]),
+        {
+          type: 'system',
+          subtype: 'task_notification',
+          task_id: shell.task_id,
+          status
+        }
+      ];
+
+      const verdict = claudeSpec().verdict({ raw, exit: 0, blocked: false });
+
+      expect(verdict.background_shell_at_result).toBeUndefined();
+    }
+  );
+});
+
 describe('runner/claude verdict summary (worker-failure-tiers §6)', () => {
   /**
    * @param {Record<string, unknown>} result
