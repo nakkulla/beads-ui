@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import {
+  applyPatch,
+  assembleMonitorPipeline,
+  splitMonitorPipeline
+} from '../../app/data/keyed-patch.js';
 
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
@@ -133,6 +138,24 @@ function fakeWs() {
     },
     snapshots() {
       return frames.filter((f) => f.type === 'monitor-pipeline-snapshot');
+    },
+    pushes() {
+      return frames.filter(
+        (f) =>
+          f.type === 'monitor-pipeline-snapshot' ||
+          f.type === 'monitor-pipeline-patch'
+      );
+    },
+    latest() {
+      /** @type {import('../../app/data/keyed-patch.js').KeyedMap} */
+      let map = new Map();
+      for (const frame of this.pushes()) {
+        map =
+          frame.type === 'monitor-pipeline-snapshot'
+            ? splitMonitorPipeline(frame.payload)
+            : applyPatch(map, frame.payload);
+      }
+      return assembleMonitorPipeline(map);
     }
   };
 }
@@ -196,10 +219,19 @@ describe('monitor-pipeline subscription (UI-nprg)', () => {
     snapshots[WS_A] = { queue: [], pr_wait: [], done: [], revision: 2 };
     refresh_listener?.(WS_A);
     refresh_listener?.(WS_A);
-    vi.advanceTimersByTime(250);
+    vi.advanceTimersByTime(999);
+    expect(ws.pushes()).toHaveLength(1);
+    vi.advanceTimersByTime(1);
 
     // Two events inside one window coalesce into a single extra push.
-    expect(ws.snapshots()).toHaveLength(2);
+    expect(ws.pushes()).toHaveLength(2);
+    expect(ws.pushes()[1]).toMatchObject({
+      type: 'monitor-pipeline-patch',
+      payload: {
+        seq: 2,
+        set: { 'ws-order': [], [`state/${WS_A}`]: { revision: 2 } }
+      }
+    });
   });
 
   // 재push 대부분은 바이트 동일한 본문이다(UI-d509): 봉투 id만 다른 1.5 MB를
@@ -209,11 +241,11 @@ describe('monitor-pipeline subscription (UI-nprg)', () => {
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
 
     refresh_listener?.(WS_A);
-    vi.advanceTimersByTime(250);
+    vi.advanceTimersByTime(1000);
     refresh_listener?.(WS_A);
-    vi.advanceTimersByTime(250);
+    vi.advanceTimersByTime(1000);
 
-    expect(ws.snapshots()).toHaveLength(1);
+    expect(ws.pushes()).toHaveLength(1);
   });
 
   test('pushes a re-subscribe even when the body did not change', () => {
@@ -223,6 +255,25 @@ describe('monitor-pipeline subscription (UI-nprg)', () => {
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
 
     expect(ws.snapshots()).toHaveLength(2);
+    expect(ws.snapshots().map((frame) => frame.payload.seq)).toEqual([1, 1]);
+  });
+
+  test('keeps the baseline when splitting a refresh fails', () => {
+    const ws = fakeWs();
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+    snapshots[WS_A] = { ...snapshots[WS_A], attempts: null };
+
+    refresh_listener?.(WS_A);
+    vi.advanceTimersByTime(1000);
+
+    expect(ws.pushes()).toHaveLength(1);
+    snapshots[WS_A] = { ...snapshots[WS_A], attempts: {}, revision: 2 };
+    refresh_listener?.(WS_A);
+    vi.advanceTimersByTime(1000);
+    expect(ws.pushes()[1]).toMatchObject({
+      type: 'monitor-pipeline-patch',
+      payload: { seq: 2 }
+    });
   });
 
   // ws mutation 핸들러들은 `emitQueueChanged()`를 부르지 않고 `fanout()`만 하므로
@@ -277,9 +328,9 @@ describe('monitor-pipeline subscription (UI-nprg)', () => {
     snapshots[WS_A] = { queue: [], pr_wait: [], done: [], revision: 3 };
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
     emitQueueChanged(WS_A);
-    vi.advanceTimersByTime(250);
+    vi.advanceTimersByTime(1000);
     invalidations = [];
-    const pushed_before = ws.snapshots().length;
+    const pushed_before = ws.pushes().length;
 
     // A heartbeat changes what the lanes show, never the revision.
     snapshots[WS_A] = {
@@ -289,10 +340,10 @@ describe('monitor-pipeline subscription (UI-nprg)', () => {
       revision: 3
     };
     emitQueueChanged(WS_A);
-    vi.advanceTimersByTime(250);
+    vi.advanceTimersByTime(1000);
 
     expect(invalidations).toEqual([]);
-    expect(ws.snapshots().length).toBe(pushed_before + 1);
+    expect(ws.pushes().length).toBe(pushed_before + 1);
   });
 
   test('stops pushing after unsubscribe', () => {
@@ -305,9 +356,9 @@ describe('monitor-pipeline subscription (UI-nprg)', () => {
       payload: { id: 'm1' }
     });
     refresh_listener?.(WS_A);
-    vi.advanceTimersByTime(250);
+    vi.advanceTimersByTime(1000);
 
-    expect(ws.snapshots()).toHaveLength(1);
+    expect(ws.pushes()).toHaveLength(1);
     expect(monitorPipelineSubscriberCount()).toBe(0);
   });
 
@@ -425,25 +476,24 @@ describe('monitor session_defaults cache (UI-eey2 §9.4)', () => {
 
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
     const first = ws.snapshots()[0].payload.workspaces_state[0];
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(1000);
 
     expect(first.session_defaults).toEqual({});
     expect(kv_reads).toEqual([WS_A]);
-    const pushed = ws.snapshots();
-    expect(pushed.length).toBeGreaterThan(1);
-    expect(
-      pushed[pushed.length - 1].payload.workspaces_state[0].session_defaults
-    ).toEqual({ impl_runtime: 'codex' });
+    expect(ws.pushes().length).toBeGreaterThan(1);
+    expect(ws.latest().workspaces_state[0].session_defaults).toEqual({
+      impl_runtime: 'codex'
+    });
   });
 
   test('does not re-read a fresh entry on the next push', async () => {
     const ws = fakeWs();
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(1000);
     kv_reads = [];
 
     refresh_listener?.(WS_A);
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(1000);
 
     expect(kv_reads).toEqual([]);
   });
@@ -453,10 +503,9 @@ describe('monitor session_defaults cache (UI-eey2 §9.4)', () => {
     const ws = fakeWs();
 
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(1000);
 
-    const pushed = ws.snapshots();
-    const state = pushed[pushed.length - 1].payload.workspaces_state[0];
+    const state = ws.latest().workspaces_state[0];
     expect(state.session_defaults).toEqual({});
     expect(state.session_defaults_warnings).toEqual(['db locked']);
   });
@@ -468,11 +517,10 @@ describe('monitor session_defaults cache (UI-eey2 §9.4)', () => {
     });
     const ws = fakeWs();
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
-    await vi.advanceTimersByTimeAsync(250);
-    const filled = ws.snapshots();
-    expect(
-      filled[filled.length - 1].payload.workspaces_state[0].session_defaults
-    ).toEqual({ impl_runtime: 'codex' });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(ws.latest().workspaces_state[0].session_defaults).toEqual({
+      impl_runtime: 'codex'
+    });
     kv_reads = [];
     // Hang every later read so the entry cannot silently refresh itself while
     // the clock advances; the refill stays in flight and the TTL runs out.
@@ -482,23 +530,20 @@ describe('monitor session_defaults cache (UI-eey2 §9.4)', () => {
     // the refill is in flight (spec §9.4 cold/expired ships `{}`).
     await vi.advanceTimersByTimeAsync(5 * 60_000 + 1000);
     refresh_listener?.(WS_A);
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(1000);
 
-    const pushed = ws.snapshots();
-    expect(
-      pushed[pushed.length - 1].payload.workspaces_state[0].session_defaults
-    ).toEqual({});
+    expect(ws.latest().workspaces_state[0].session_defaults).toEqual({});
     expect(kv_reads).toEqual([WS_A]);
   });
 
   test('re-reads the repo an invalidation named', async () => {
     const ws = fakeWs();
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(1000);
     kv_reads = [];
 
     invalidateSessionDefaults(WS_A);
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(1000);
 
     expect(kv_reads).toEqual([WS_A]);
   });

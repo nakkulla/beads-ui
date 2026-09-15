@@ -4,8 +4,8 @@
  * The monitor tab answers ONE question — "worker 탭에 올린 이슈들이 전체 활성
  * 레포에서 어떻게 진행되고 있는가" — so unlike every other channel here this
  * subscription is SERVER-GLOBAL: it is not scoped to the connection's current
- * workspace and survives `set-workspace`. Each push carries a full snapshot of
- * every visible workspace's worker pipeline; there are no partial patches.
+ * workspace and survives `set-workspace`. The first push carries a full snapshot;
+ * subsequent pushes carry only changed keys across visible worker pipelines.
  *
  * The per-workspace payload is built by the worker channel's own
  * {@link decorateQueue}, not by a second assembly path, so both channels ship
@@ -14,8 +14,13 @@
  *
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
+ * @import { KeyedSubscriber } from './push-patch.js'
  */
 import path from 'node:path';
+import {
+  canonicalJson,
+  splitMonitorPipeline
+} from '../../app/data/keyed-patch.js';
 import { makeError, makeOk } from '../../app/protocol.js';
 import {
   activeBeadIds,
@@ -49,7 +54,7 @@ import { runtimeCatalog } from '../worker/runner/index.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { scopeCache } from '../worker/scope-cache.js';
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
-import { kvGetJsonAtRoot, log, pushSnapshotIfChanged } from './context.js';
+import { kvGetJsonAtRoot, log } from './context.js';
 import {
   doneAtByBead,
   laneBeadIds,
@@ -57,6 +62,7 @@ import {
   serialLaneBeadIds,
   sessionExcludedBeadIds
 } from './lane-membership.js';
+import { pushKeyed } from './push-patch.js';
 import {
   decorateQueue,
   fanout,
@@ -74,12 +80,13 @@ import {
  * registry rewrite, a fill fanout — must collapse into a single rebuild rather
  * than one full cross-repo scan per event.
  */
-const PUSH_DEBOUNCE_MS = 250;
+// push-channel-keyed-patch-design §4.3: user-selected one-second latency budget.
+const PUSH_DEBOUNCE_MS = 1000;
 /**
  * Server-global subscriber set. No workspace key: a monitor subscription is one
  * per connection for the whole server.
  *
- * @type {Set<{ ws: WebSocket, client_id: string, last_body?: string }>}
+ * @type {Set<KeyedSubscriber>}
  */
 const SUBSCRIBERS = new Set();
 
@@ -1196,12 +1203,21 @@ function pushNow() {
     log('monitor: pipeline build failed: %o', err);
     return;
   }
-  const body_json = JSON.stringify({
+  const body = {
     workspaces,
     workspaces_state: safeWorkspacesState()
-  });
-  for (const sub of SUBSCRIBERS) {
-    pushSnapshotIfChanged(sub, 'monitor-pipeline-snapshot', body_json);
+  };
+  try {
+    const values = splitMonitorPipeline(body);
+    const canonical = new Map(
+      [...values].map(([key, value]) => [key, canonicalJson(value)])
+    );
+    const keyed = { values, canonical };
+    for (const sub of SUBSCRIBERS) {
+      pushKeyed(sub, 'monitor-pipeline', body, keyed);
+    }
+  } catch (err) {
+    log('monitor: pipeline split failed: %o', err);
   }
 }
 
@@ -1766,14 +1782,19 @@ export function handleSubscribeMonitorPipeline(ws, req) {
   } catch (err) {
     log('monitor: initial pipeline build failed: %o', err);
   }
-  pushSnapshotIfChanged(
-    sub,
-    'monitor-pipeline-snapshot',
-    JSON.stringify({
+  try {
+    const body = {
       workspaces,
       workspaces_state: safeWorkspacesState()
-    })
-  );
+    };
+    const values = splitMonitorPipeline(body);
+    const canonical = new Map(
+      [...values].map(([key, value]) => [key, canonicalJson(value)])
+    );
+    pushKeyed(sub, 'monitor-pipeline', body, { values, canonical });
+  } catch (err) {
+    log('monitor: initial pipeline split failed: %o', err);
+  }
   refreshExternalPrsForVisible();
   void refreshExternalWaitsForVisible();
   // One immediate fill per visible workspace (spec §4): the first tick is a

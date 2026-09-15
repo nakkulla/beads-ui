@@ -9,6 +9,7 @@ import {
 } from '../worker/attach.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { setConnWorkspace } from './context.js';
+import { createKeyedFrameNormalizer } from './keyed-frames-fixture.js';
 import {
   __refreshWorkerAccountCatalogForTest,
   __refreshWorkspaceAccountDefaultsForTest,
@@ -35,13 +36,16 @@ function fakeSocket() {
 }
 
 /**
- * Parse every envelope sent to a fake socket.
+ * Parse every envelope sent to a fake socket, folding keyed patch frames back
+ * into their snapshot form. A fresh normalizer per call keeps this a pure
+ * replay of the recorded calls, so repeated reads never double-apply a patch.
  *
  * @param {any} socket
  */
 function sent(socket) {
+  const normalize = createKeyedFrameNormalizer();
   return socket.send.mock.calls.map((/** @type {any[]} */ call) =>
-    JSON.parse(call[0])
+    JSON.parse(normalize(String(call[0])))
   );
 }
 

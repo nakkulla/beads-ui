@@ -11,6 +11,7 @@ import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
+import { createKeyedFrameNormalizer } from '../ws/keyed-frames-fixture.js';
 
 // `subscribe-worker-queue` triggers the session-lane scan, which would spawn a
 // real `bd`; the same seam ws.worker-queue.test.js uses keeps it inert.
@@ -131,15 +132,18 @@ async function postPlace(body) {
  * @returns {any}
  */
 function fakeSocket() {
-  return {
+  const normalize = createKeyedFrameNormalizer();
+  /** @type {any} */
+  const sock = {
     sent: /** @type {string[]} */ ([]),
     readyState: 1,
     OPEN: 1,
     /** @param {string} msg */
     send(msg) {
-      this.sent.push(String(msg));
+      sock.sent.push(normalize(String(msg)));
     }
   };
+  return sock;
 }
 
 test('rejects a GET without root_dir', async () => {

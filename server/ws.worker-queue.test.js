@@ -23,6 +23,7 @@ import {
   handleMessage
 } from './ws.js';
 import { getConnWorkspace, setConnWorkspace } from './ws/context.js';
+import { createKeyedFrameNormalizer } from './ws/keyed-frames-fixture.js';
 import {
   decorateQueue,
   workerQueueSubscriberCount
@@ -51,15 +52,18 @@ let tmp_state;
  * @returns {{ sent: string[], readyState: number, OPEN: number, send(msg: string): void }}
  */
 function fakeSocket() {
-  return {
+  const normalize = createKeyedFrameNormalizer();
+  /** @type {any} */
+  const sock = {
     sent: /** @type {string[]} */ ([]),
     readyState: 1,
     OPEN: 1,
     /** @param {string} msg */
     send(msg) {
-      this.sent.push(String(msg));
+      sock.sent.push(normalize(String(msg)));
     }
   };
+  return sock;
 }
 
 /**
@@ -3776,7 +3780,13 @@ describe('ws worker-queue subscription addressing', () => {
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
 
     const payload = queueSnapshotPayloads(sock).at(-1);
-    expect(Object.keys(payload)).toEqual(['type', 'id', 'root_dir', 'queue']);
+    expect(Object.keys(payload)).toEqual([
+      'type',
+      'id',
+      'seq',
+      'root_dir',
+      'queue'
+    ]);
   });
 
   test('addresses the subscribe snapshot to the connection workspace', async () => {
