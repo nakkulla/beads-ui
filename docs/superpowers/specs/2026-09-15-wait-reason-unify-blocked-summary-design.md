@@ -89,6 +89,18 @@ scope:
 - 카드 문법: 슬롯 표는 `2026-08-25-card-header-grammar-unify-design.md` §5.1이
   소유하고 UI-7341이 외부 작업 행의 슬롯을 정정했다. 새 라벨·칩·버튼은 그 표를 먼저
   갱신한다(ADR 0014).
+- 진행 중인 UI-3vvi(`2026-09-15-worker-recovery-continuation-design.md`)와 그 선행
+  dotfiles-9z2u는 attempt의 **복구 분류**(`work-recovery-policy.json` schema 1의
+  disposition과 wait reason `provider`·`credential`·`prerequisite`·`authority`·
+  `verification`·`no_progress`·`unclassified`, 종료 줄 `대기 · recovery:<reason>`)를
+  정한다. 이 설계의 `kind`는 **표시용 대기 종류**이며 그 정본을 재정의하지 않는다:
+  이 설계는 이미 있는 held 상태(`parked`·`retry_wait`·`waiting`·`provider_hold`)와
+  큐·관측 재료만 읽고, `recovery:<reason>` 줄은 그 계약이 착지한 뒤 별도 addendum
+  에서 원문 reason을 `recovery` kind로 그대로 소비한다. 지금은 소비하지 않으므로
+  선행이 아니다. UI-3vvi가 자기 복구 상태를 기존 슬롯에 새 배지 없이 표시한다는
+  결정은 그 스펙의 변경 범위에 대한 것이고, 이 설계의 판정 배지(§7.1)는 대기
+  시간·주기에서 파생한 지연 판정이라 같은 대상을 다르게 정하지 않는다. 두 표시가
+  같은 카드에 서면 슬롯 1 배지는 이 설계, 원인·상태 문구는 UI-3vvi가 소유한다.
 
 ## 4. 설계 원칙
 
@@ -326,6 +338,10 @@ sjob의 잡 완료 알림과는 별개(그것은 잡, 이것은 대기 해제)�
   설계의 `settle_overdue` 판정이 그 증상을 드러내지만 원인 수정은 그 Bead가 소유한다.
 - 관찰: `auto_advance=false`인 저장소(Cortex)의 대기 항목은 요약에 `수동 출발 대기`로만
   세고 자동화 토글을 바꾸지 않는다 — 출발 제어는 사용자 결정이다.
+- 관찰: UI-3vvi와 scope 겹침 — 결정 충돌 없음(§3의 관계 조항). `recovery:<reason>`
+  소비는 그 계약 착지 뒤 addendum이며 지금은 선행이 아니다.
+- 관찰: UI-wecw와 `server/ws/connection.js`·`app/protocol.js` scope 겹침 — 결정 충돌
+  없음(경로만 같다).
 - 비목표: 관측기 판정·900초 주기·gate 해제 순서 변경, 이슈 `status`·admission 쓰기,
   gate 닫기 조작, 새 탭, HTTP 큐 API 변경, 해소 알림.
 - 결정: 판정 임계는 설정이 아니라 코드 상수다 — 두 탭과 알림이 같은 값을 읽어야 하고
