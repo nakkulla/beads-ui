@@ -20,7 +20,10 @@ import {
   COMPLETION_RETRY_MAX
 } from './queue-store.js';
 import { RECEIPT_HOLD_RESOLUTION } from './receipt-check.js';
-import { isCleanupResolutionFailure } from './resolution-ladder.js';
+import {
+  cleanupFailureRetryClass,
+  isCleanupResolutionFailure
+} from './resolution-ladder.js';
 
 const OUTPUT_TAIL_MAX = 4_000;
 const REASON_MAX = 500;
@@ -153,20 +156,15 @@ export function migrateStoredNeedsHumanReason(raw) {
 /**
  * Which queue hold — if any — a folded `needs_human` cause earns (UI-5ym8 §7).
  *
- * `verify_red` and `cleanup_failed` are the two that recur on the NEXT bead:
- * post-merge verification and post-merge cleanup run against the shared base
- * and the shared deploy worktree, so a red one stays red until a human acts.
- * The other three are bounded to the saga that produced them and must not stop
- * the queue.
+ * Only `verify_red` recurs against the shared base on the next bead.
+ * Cleanup failures belong to the bead whose worktree and branches remain.
  *
  * @param {unknown} reason
  * @returns {'systemic'|null}
  */
 export function needsHumanHoldKind(reason) {
   const family = foldNeedsHumanReason(reason).split(':', 1)[0];
-  return family === 'verify_red' || family === 'cleanup_failed'
-    ? 'systemic'
-    : null;
+  return family === 'verify_red' ? 'systemic' : null;
 }
 
 /**
@@ -532,10 +530,26 @@ export function decideCompletionAction(input) {
   }
   if (intent.phase === 'cleaning') {
     if (fact.state === 'cleanup_repairable') {
-      // The one automatic step (`script_retry`) is already spent by the time a
-      // cleanup failure reaches here, and the failure card already carries the
-      // cause and the retry outcome. Waiting longer buys nothing, so the saga
-      // stops with the cause a human can act on (UI-8w4t §1).
+      if (cleanupFailureRetryClass(fact.evidence) === 'transient') {
+        const { retry_count, next_retry_at } = fact.evidence;
+        if (Number.isInteger(retry_count) && retry_count >= 3) {
+          return needsHuman(
+            `retry_exhausted:${completionFailureReason(fact)}`,
+            true
+          );
+        }
+        // Legacy or malformed scheduling evidence must not wait forever.
+        if (
+          Number.isInteger(retry_count) &&
+          retry_count >= 0 &&
+          typeof next_retry_at === 'number' &&
+          Number.isFinite(next_retry_at)
+        ) {
+          return typeof input.now === 'number' && input.now >= next_retry_at
+            ? { kind: 'retry_cleanup' }
+            : null;
+        }
+      }
       return needsHuman(completionFailureReason(fact), true);
     }
     if (fact.state === 'cleanup_pending') {
@@ -1334,6 +1348,21 @@ export function createCompletionActionDriver(deps) {
       );
       return;
     }
+    const cleanup_failure = deps.store.snapshot(deps.workspace)
+      .cleanup_failed?.[root_bead_id];
+    if (
+      cleanupFailureRetryClass(cleanup_failure) === 'transient' &&
+      Number.isInteger(cleanup_failure.retry_count) &&
+      cleanup_failure.retry_count < 3
+    ) {
+      const retry_number = cleanup_failure.retry_count + 1;
+      recordTimeline(
+        root_bead_id,
+        'merge_step',
+        `cleanup_retry:${retry_number}`,
+        `머지 후 정리 자동 재시도 ${retry_number}/3`
+      );
+    }
     const result = await deps.prActions.resumeCompletionCleanup(root_bead_id);
     const after = deps.store.snapshot(deps.workspace);
     if (result?.ok === true) {
@@ -1437,11 +1466,7 @@ export function createCompletionActionDriver(deps) {
       comment_at: commented_at === null ? at : commented_at,
       at
     };
-    // A post-merge pipeline failure is a wall every later bead hits too (spec
-    // §3.4/§7): `verify_red` and `cleanup_failed:*` raise the SYSTEMIC hold in
-    // the SAME durable write as the terminal, so the board can never show
-    // `확인 필요` on a queue that is still dispatching. Other families stay
-    // bead-local and pass no event at all.
+    // Only shared-base verification raises a hold in the terminal write.
     const hold_event =
       needsHumanHoldKind(folded) === 'systemic'
         ? {

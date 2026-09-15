@@ -1,7 +1,8 @@
 ---
 id: UI-o5ll
 title: 공급자 보류의 해제는 프로브만이 판정한다 — outage 프로브에는 상한이 없고 사람의 ↻ 지금 프로브는 그 판정을 앞당길 뿐 target을 지우지 않는다
-status: accepted
+status: superseded
+superseded_by: UI-a8rq
 date: 2026-09-10
 summary: "공급자 보류의 해제는 프로브만이 판정한다 — outage 프로브에는 상한이 없고 백오프 상한은 1시간이며, 사람의 `↻ 지금 프로브`는 그 판정을 앞당길 뿐 target을 지우지 않는다. 상한에 걸린 계정 한도 target도 그 조작으로 다시 프로브된다."
 supersedes: [49]

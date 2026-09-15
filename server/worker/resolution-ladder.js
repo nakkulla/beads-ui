@@ -40,6 +40,77 @@ function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** @type {Record<string, Record<string, string[]|null>>} */
+const TRANSIENT_CLEANUP_FAILURES = {
+  branch_cleanup: {
+    worktree_remove_failed: [
+      'observe_failed',
+      'delivered_unobservable',
+      'archive_failed'
+    ],
+    local_branch_delete_failed: ['ref_delete_failed'],
+    remote_branch_delete_failed: null
+  },
+  base_containment: {
+    merge_sha_unobserved: null,
+    base_fetch_failed: null,
+    base_rev_unavailable: null
+  }
+};
+
+/**
+ * Classify only cleanup observations owned by the completion replay lane.
+ * Missing manager evidence never authorizes another worktree removal.
+ *
+ * @param {unknown} failure
+ * @returns {'transient'|'deterministic'|'unowned'}
+ */
+export function cleanupFailureRetryClass(failure) {
+  if (!isRecord(failure)) {
+    return 'deterministic';
+  }
+  const { step, reason, detail } = failure;
+  if (
+    typeof reason === 'string' &&
+    (reason.startsWith('internal_record_failed:') ||
+      [
+        'internal_record_failed',
+        'cleanup_journal_conflict',
+        'cleanup_completion_unrecorded',
+        'cleanup_replay_unavailable'
+      ].includes(reason))
+  ) {
+    return 'unowned';
+  }
+  if (typeof step !== 'string') {
+    return 'deterministic';
+  }
+  if (!Object.hasOwn(TRANSIENT_CLEANUP_FAILURES, step)) {
+    return 'unowned';
+  }
+  const reasons = TRANSIENT_CLEANUP_FAILURES[step];
+  if (typeof reason !== 'string' || !Object.hasOwn(reasons, reason)) {
+    return 'deterministic';
+  }
+  if (detail !== undefined && detail !== null && typeof detail !== 'string') {
+    return 'deterministic';
+  }
+  const manager_reasons = reasons[reason];
+  if (manager_reasons === null) {
+    return 'transient';
+  }
+  const tokens =
+    typeof detail === 'string'
+      ? detail
+          .split(/\s+/)
+          .filter((token) => token.startsWith('manager_reason='))
+      : [];
+  return tokens.length === 1 &&
+    manager_reasons.includes(tokens[0].slice('manager_reason='.length))
+    ? 'transient'
+    : 'deterministic';
+}
+
 /**
  * @param {unknown} value
  * @returns {boolean}

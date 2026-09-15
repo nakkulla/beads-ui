@@ -280,13 +280,17 @@ describe('worker/completion-intent decisions', () => {
       intent: intent({ phase: 'cleaning' }),
       fact: {
         state: 'cleanup_repairable',
-        evidence: { failure_code: 'deploy_script_failure' }
+        evidence: {
+          step: 'branch_cleanup',
+          reason: 'worktree_remove_failed',
+          detail: 'manager_reason=dirty_unique'
+        }
       }
     });
 
     expect(action).toEqual({
       kind: 'needs_human',
-      reason: 'cleanup_failed:deploy_script_failure',
+      reason: 'cleanup_failed:worktree_remove_failed',
       terminal: true
     });
   });
@@ -2667,8 +2671,9 @@ describe('worker/completion-intent needs_human 5종 접기 (UI-5ym8 §7)', () =>
 
   test.each([
     ['verify_red', 'systemic'],
-    ['cleanup_failed:verify_cmd_failed', 'systemic'],
-    ['cleanup_journal_conflict', 'systemic'],
+    ['cleanup_failed:verify_cmd_failed', null],
+    ['cleanup_journal_conflict', null],
+    ['retry_exhausted:cleanup_failed:remote_branch_delete_failed', null],
     ['retry_exhausted:verify_cmd_failed', null],
     ['conflict_unresolved:resolution_round_cap', null],
     ['internal_record_failed:intent_state_invalid', null],
@@ -2676,6 +2681,172 @@ describe('worker/completion-intent needs_human 5종 접기 (UI-5ym8 §7)', () =>
   ])('holds the queue for %s as %s', (reason, kind) => {
     expect(needsHumanHoldKind(reason)).toBe(kind);
   });
+});
+
+describe('cleanup observation retries', () => {
+  test.each([
+    [0, 999, null],
+    [0, 1000, { kind: 'retry_cleanup' }],
+    [2, 1001, { kind: 'retry_cleanup' }],
+    [
+      3,
+      1001,
+      {
+        kind: 'needs_human',
+        reason: 'retry_exhausted:cleanup_failed:remote_branch_delete_failed',
+        terminal: true
+      }
+    ]
+  ])('decides retry count %i at %i', (retry_count, now, expected) => {
+    const action = decideCompletionAction({
+      auto_merge: true,
+      now,
+      intent: intent({ phase: 'cleaning' }),
+      fact: {
+        state: 'cleanup_repairable',
+        evidence: {
+          step: 'branch_cleanup',
+          reason: 'remote_branch_delete_failed',
+          retry_count,
+          next_retry_at: 1000
+        }
+      }
+    });
+
+    expect(action).toEqual(expected);
+  });
+
+  test.each([
+    {
+      step: 'branch_cleanup',
+      reason: 'worktree_remove_failed',
+      detail: 'manager_reason=dirty_unique'
+    },
+    {
+      step: 'repo_operations',
+      reason: 'base_fetch_failed',
+      retryable: true,
+      retry_count: 0,
+      next_retry_at: 1000
+    },
+    { step: 'branch_cleanup', reason: 'remote_branch_delete_failed' }
+  ])('terminalizes non-retryable or unscheduled evidence %j', (evidence) => {
+    const action = decideCompletionAction({
+      auto_merge: true,
+      now: 1000,
+      intent: intent({ phase: 'cleaning' }),
+      fact: { state: 'cleanup_repairable', evidence }
+    });
+
+    expect(action).toEqual({
+      kind: 'needs_human',
+      reason: `cleanup_failed:${evidence.reason}`,
+      terminal: true
+    });
+  });
+
+  test('passes no hold event when terminalizing cleanup failure', async () => {
+    const store = seededCompletionStore();
+    const terminalize = vi.spyOn(store, 'terminalizeCompletionIntent');
+    const driver = actionDriver(store);
+
+    await driver.onAction(
+      'UI-root',
+      {
+        kind: 'needs_human',
+        reason: 'cleanup_failed:worktree_remove_failed',
+        terminal: true
+      },
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    );
+
+    expect(terminalize).toHaveBeenCalledWith(
+      DRIVER_WS,
+      expect.objectContaining({ hold_event: null })
+    );
+    expect(store.snapshot(DRIVER_WS).hold).toBeNull();
+  });
+
+  test.each([false, true])(
+    'records one timeline line for a re-observed cleanup retry round (restart=%s)',
+    async (restart) => {
+      const store = seededCompletionStore();
+      const state_root = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'bdui-cleanup-timeline-')
+      );
+      tmp_dirs.push(state_root);
+      process.env.XDG_STATE_HOME = state_root;
+      const timeline = createBeadTimeline({ workspace_root: DRIVER_WS });
+      store.setCompletionSubject(DRIVER_WS, {
+        root_bead_id: 'UI-root',
+        phase: 'cleaning',
+        subject: { ...intent().subject, merged_sha: 'c'.repeat(40) }
+      });
+      store.recordCleanupFailure(DRIVER_WS, {
+        bead_id: 'UI-root',
+        step: 'branch_cleanup',
+        reason: 'remote_branch_delete_failed',
+        retryable: true,
+        retry_count: 1,
+        next_retry_at: 1
+      });
+      const resume = vi.fn(async () => ({ ok: false }));
+      const driver = actionDriver(store, {
+        timeline,
+        prActions: { resumeCompletionCleanup: resume }
+      });
+
+      for (let i = 0; i < 2; i++) {
+        if (restart) {
+          store.prepareCompletionOp(DRIVER_WS, {
+            root_bead_id: 'UI-root',
+            phase: 'cleaning',
+            op: {
+              op_id: 'cleanup-restart',
+              kind: 'retry_cleanup',
+              failure_key: createCompletionFailureKey({
+                stage: 'branch_cleanup',
+                reason: 'remote_branch_delete_failed',
+                subject_sha: 'c'.repeat(40),
+                base_sha: 'b'.repeat(40),
+                evidence: {}
+              }),
+              attempt_id: null,
+              status: 'prepared'
+            }
+          });
+        }
+        await driver.observe(
+          'UI-root',
+          store.snapshot(DRIVER_WS).completion_intents['UI-root']
+        );
+        await driver.onAction(
+          'UI-root',
+          { kind: restart ? 'reconcile_op' : 'retry_cleanup' },
+          store.snapshot(DRIVER_WS).completion_intents['UI-root']
+        );
+      }
+
+      expect(resume).toHaveBeenCalledTimes(2);
+      expect(
+        timeline
+          .readTimeline('UI-root')
+          .filter((event) => event.kind === 'merge_step')
+      ).toEqual([
+        expect.objectContaining({
+          event_id: 'merge_step:UI-root:cleanup_retry:2',
+          summary: '머지 후 정리 자동 재시도 2/3'
+        })
+      ]);
+      expect(
+        store.snapshot(DRIVER_WS).completion_intents['UI-root']
+      ).toMatchObject({
+        phase: 'cleaning',
+        active_op: null,
+        terminal_reason: null
+      });
+    }
+  );
 });
 
 describe('worker/completion-intent 마이그레이션 토큰 읽기 (UI-5ym8 §7)', () => {

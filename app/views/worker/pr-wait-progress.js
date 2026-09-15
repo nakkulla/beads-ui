@@ -1,3 +1,4 @@
+import { providerClock } from './gate-labels.js';
 import { mergeCardStepView } from './merge-steps.js';
 
 const ACTIVE_OPERATION_STATES = new Set(['queued', 'running', 'retry_pending']);
@@ -203,6 +204,20 @@ export function prWaitProgress(input) {
   if (cleanup_failed) {
     if (cleanup_failed.step === 'repo_operations' && bound_operations[0]) {
       return operationProgress(bound_operations[0], true);
+    }
+    const next_clock =
+      (cleanup_failed.step === 'branch_cleanup' ||
+        cleanup_failed.step === 'base_containment') &&
+      cleanup_failed.retryable === true
+        ? providerClock(cleanup_failed.next_retry_at)
+        : '';
+    const failed_step = CURSOR_STEPS[cleanup_failed.step];
+    if (failed_step && next_clock) {
+      const projected = mergeCardStepView(
+        failed_step.step,
+        `${failed_step.label.replace(/ 중$/, ' 실패')} · 다음 ${next_clock}`
+      );
+      return projected ? { ...projected, active: false, failed: true } : null;
     }
     return null;
   }

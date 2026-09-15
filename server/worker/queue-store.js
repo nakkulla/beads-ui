@@ -535,11 +535,11 @@
  * the ONE non-blocking record (UI-dlim §3.4): the bead was ADMITTED with a
  * stale spec_review receipt, so the badge must not read as a refusal. Every
  * record without the flag is a refusal, exactly as before.
- * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, summary?: string, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, summary?: string, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, next_retry_at?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
- * `resolved`, and nothing retries by itself — so the record that a human must
- * finish the cleanup has to outlive a server restart. `bd_restore` is null when
+ * `resolved`, and transient observations retain their retry budget across a
+ * server restart. `bd_restore` is null when
  * the stop happened BEFORE the parent close (bd was never touched, so `resolved`
  * still holds by itself), `restored` when the close was undone back to
  * `resolved`, and `restore_failed` when even that did not stick — the one case
@@ -1001,6 +1001,7 @@ import {
   QUICK_FIX_ORCHESTRATION_KEYS,
   execSettingEnums
 } from './exec-enums.js';
+import { ALWAYS_SYSTEMIC_CAUSES } from './failure-class.js';
 import { orderLaneByBlocks } from './lane-order.js';
 import {
   RETRY_MAX,
@@ -4258,6 +4259,12 @@ function normalizeQueue(raw) {
           q.cleanup_failed[bead_id].retry_count = Number(value.retry_count);
         }
         if (
+          typeof value.next_retry_at === 'number' &&
+          Number.isFinite(value.next_retry_at)
+        ) {
+          q.cleanup_failed[bead_id].next_retry_at = value.next_retry_at;
+        }
+        if (
           value.fetch_failure === 'timeout' ||
           value.fetch_failure === 'nonzero'
         ) {
@@ -4346,6 +4353,49 @@ function normalizeQueue(raw) {
   q.hold = hold_state.hold;
   q.lineages = hold_state.lineages;
   q.hold_history = hold_state.hold_history;
+  if (
+    q.hold?.kind === 'systemic' &&
+    q.hold.cause.startsWith('cleanup_failed:')
+  ) {
+    const previous_hold = q.hold;
+    /** @type {Map<string, string>} */
+    const latest_causes = new Map();
+    // Attempt insertion order is authoritative even if a clock moved back.
+    for (const attempt of Object.values(q.attempts)) {
+      latest_causes.set(attempt.bead_id, attempt.cause || '');
+    }
+    const remaining = previous_hold.bead_ids.flatMap((bead_id) => {
+      const intent = q.completion_intents[bead_id];
+      const reason = intent?.terminal_reason?.reason;
+      if (
+        intent?.phase === 'needs_human' &&
+        reason?.split(':', 1)[0] === 'verify_red'
+      ) {
+        return [{ bead_id, cause: reason }];
+      }
+      const cause = latest_causes.get(bead_id) || '';
+      return ALWAYS_SYSTEMIC_CAUSES.has(cause) ? [{ bead_id, cause }] : [];
+    });
+    q.hold =
+      remaining.length === 0
+        ? null
+        : {
+            ...previous_hold,
+            bead_ids: remaining.map((entry) => entry.bead_id),
+            cause: remaining[0].cause
+          };
+    log(
+      'normalized cleanup hold %s',
+      JSON.stringify({
+        previous: {
+          cause: previous_hold.cause,
+          since: previous_hold.since,
+          bead_ids: previous_hold.bead_ids
+        },
+        hold: q.hold
+      })
+    );
+  }
   // auto_advance intentionally left false — see load() restart-safety note.
   return q;
 }
@@ -8398,7 +8448,7 @@ export function createQueueStore(options = {}) {
      * output (UI-0x54); omit it when the run left no complete log file.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, summary?: string|null, output_tail?: string|null, log_path?: string|null, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} input
+     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, summary?: string|null, output_tail?: string|null, log_path?: string|null, failure_code?: string, retryable?: boolean, retry_count?: number, next_retry_at?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} input
      * @returns {QueueOpResult}
      */
     recordCleanupFailure(workspace, input) {
@@ -8414,6 +8464,7 @@ export function createQueueStore(options = {}) {
         failure_code,
         retryable,
         retry_count,
+        next_retry_at,
         fetch_failure,
         elapsed_ms
       } = input;
@@ -8461,6 +8512,12 @@ export function createQueueStore(options = {}) {
         }
         if (Number.isInteger(retry_count) && Number(retry_count) >= 0) {
           next.cleanup_failed[bead_id].retry_count = Number(retry_count);
+        }
+        if (
+          typeof next_retry_at === 'number' &&
+          Number.isFinite(next_retry_at)
+        ) {
+          next.cleanup_failed[bead_id].next_retry_at = next_retry_at;
         }
         if (fetch_failure === 'timeout' || fetch_failure === 'nonzero') {
           next.cleanup_failed[bead_id].fetch_failure = fetch_failure;
@@ -10176,7 +10233,7 @@ export function createQueueStore(options = {}) {
      * evidence a restart or human diagnosis still needs.
      *
      * `hold_event` rides the SAME mutation (2026-08-28 worker-failure-tiers
-     * §3.4/§7): a `verify_red` or `cleanup_failed:*` terminal is a wall every
+     * §3.4/§7): a `verify_red` terminal is a wall every
      * later bead hits too, and raising that stop in a second write would leave a
      * crash window in which the board shows `확인 필요` on a queue that is still
      * dispatching. The event is applied only when the terminal itself lands, so
