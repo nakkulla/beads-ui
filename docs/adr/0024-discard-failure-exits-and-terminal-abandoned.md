@@ -1,7 +1,8 @@
 ---
 id: 24
 title: 폐기 실패의 출구는 셋이고 [폐기 포기]는 아카이브 단계 전용 terminal abandoned다
-status: accepted
+status: superseded
+superseded_by: UI-3vvi-2
 date: 2026-09-03
 summary: '사용자 개시 작업 실패의 재진입은 자동 알림 뒤 사람 클릭뿐이라는 0022를 승계하되, 폐기 실패의 출구는 재클릭·[폐기 포기]·[세션에서 해결] 셋으로 닫힌다. [폐기 포기]는 아카이브 단계 실패에서만 runner를 되살리고 bead를 폐기 이전 자리로 돌려놓는 terminal `abandoned`이며, 뒤 phase의 실패와 소유권 판정 불능에서는 허용하지 않는다'
 supersedes: [22]

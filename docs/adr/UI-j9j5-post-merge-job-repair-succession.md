@@ -1,7 +1,8 @@
 ---
 id: UI-j9j5
 title: 수정 잡의 원자적 예약과 실제 성공으로 원래 실패를 완료한다
-status: accepted
+status: superseded
+superseded_by: UI-3vvi-2
 date: 2026-09-15
 summary: "post-merge 잡은 기존 RepoOperation 봉투를 유지하고 명시적 수정 선언의 원자적 예약과 성공 승계로 원래 실패를 완료한다"
 supersedes: [30]
