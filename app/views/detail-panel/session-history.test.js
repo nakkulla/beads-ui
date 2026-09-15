@@ -60,7 +60,7 @@ describe('session-history token usage (UI-d7pw §2.2)', () => {
     );
 
     expect(host.querySelector('.detail-session__role')?.textContent).toContain(
-      'orchestrator'
+      '부모·자식 합계'
     );
     const legs = host.querySelectorAll('.detail-session__leg');
     expect(legs).toHaveLength(2);
@@ -947,7 +947,7 @@ describe('session-history claude subagent rows (UI-2mpn §6.1)', () => {
     const badges = Array.from(
       host.querySelectorAll('.detail-session__usage')
     ).map((node) => node.textContent);
-    expect(badges).toEqual(['Claude τ 10 · 단가 없음', 'Claude τ 1.3k']);
+    expect(badges).toEqual(['Claude τ 1.3k · 단가 없음', 'Claude τ 1.3k']);
   });
 
   test('adds the subagent receipt to the issue Claude heading total', () => {
@@ -1068,7 +1068,9 @@ describe('session-history claude subagent rows (UI-2mpn §6.1)', () => {
 
     expect(
       host.querySelector('.detail-session__usage')?.getAttribute('title')
-    ).toBe('총 219,570\n분해 없음 — 총량만 보고됨');
+    ).toBe(
+      '총 219,570\n분해 없음 — 총량만 보고됨\n단가 없음\nAPI 환산 단가 기준'
+    );
   });
 
   test('hides the usage-only receipt of a tool-typed subagent', () => {
@@ -1472,7 +1474,7 @@ describe('session-history native Codex children (UI-mn5u §6.4)', () => {
     expect(row.textContent).toContain('/root/create_child_note');
   });
 
-  test('explains that child usage is not added to the total', () => {
+  test('explains that legacy child usage is excluded from the total', () => {
     const host = mount(
       sessionHistoryTemplate([codexAttempt({ codex_children: [CHILD] })])
     );
@@ -1482,7 +1484,7 @@ describe('session-history native Codex children (UI-mn5u §6.4)', () => {
         .querySelector('.detail-session__leg--done')
         ?.querySelector('.detail-session__usage')
     );
-    expect(badge.title).toContain('전체 합계에 별도 가산하지 않음');
+    expect(badge.title).toContain('부모·자식 합계 제외');
   });
 
   test('renders an interrupted child without inventing a completion time', () => {
@@ -1509,7 +1511,7 @@ describe('session-history native Codex children (UI-mn5u §6.4)', () => {
     expect(host.textContent).not.toContain('native child');
   });
 
-  test('leaves the attempt headline total unchanged by a child observation', () => {
+  test('does not add a legacy child to the attempt headline total', () => {
     const without = mount(sessionHistoryTemplate([codexAttempt()]));
     const with_child = mount(
       sessionHistoryTemplate([codexAttempt({ codex_children: [CHILD] })])
@@ -1580,12 +1582,16 @@ describe('session-history native Codex children (UI-mn5u §6.4)', () => {
     expect(badge.title).not.toContain('총 ');
   });
 
-  test('adds nothing to the summed attempt usage', () => {
+  test('keeps a legacy native child outside summed attempt usage', () => {
     const summed = sumAttemptUsage(
       [codexAttempt({ codex_children: [CHILD] })],
       'UI-1'
     );
 
-    expect(summed).toEqual(sumAttemptUsage([codexAttempt()], 'UI-1'));
+    expect(summed?.providers.codex?.subtotal).toBe(57_181);
+    expect(summed?.providers.codex).toMatchObject({
+      partial: true,
+      partial_reasons: ['legacy_child_scope']
+    });
   });
 });

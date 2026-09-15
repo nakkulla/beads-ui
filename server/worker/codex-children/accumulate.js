@@ -17,6 +17,10 @@
  *
  * @import { CodexChildSignal, CodexChildUsage } from './rollout.js'
  */
+import {
+  createCodexResponseLedger,
+  registerCodexResponseRecord
+} from './response-ledger.js';
 import { liftCodexChildSignal, rolloutThreadIdentity } from './rollout.js';
 
 /**
@@ -43,6 +47,9 @@ const MAX_CHAIN_DEPTH = 8;
  * @property {number|null} completed_at
  * @property {number|null} last_event_at
  * @property {CodexChildUsage|null} usage
+ * @property {Array<{ scope_id: string, turn_id: string|null, model: string|null, usage: CodexChildUsage, observed_from: number|null, observed_through: number|null, partial?: boolean, partial_reasons?: string[] }>} [usage_segments]
+ * @property {boolean} [usage_partial]
+ * @property {string[]} [usage_partial_reasons]
  */
 
 /**
@@ -78,7 +85,7 @@ function laterOf(left, right) {
 /**
  * Incrementally fold already-linked rollout records.
  *
- * @param {{ root_thread_id: string, attempt_started_at?: number|null, attempt_ended_at?: number|null }} input
+ * @param {{ root_thread_id: string, attempt_started_at?: number|null, attempt_ended_at?: number|null, responseLedger?: ReturnType<typeof createCodexResponseLedger> }} input
  */
 export function createCodexChildAccumulator(input) {
   const root_thread_id = input.root_thread_id;
@@ -92,11 +99,12 @@ export function createCodexChildAccumulator(input) {
     Number.isFinite(input.attempt_ended_at)
       ? input.attempt_ended_at
       : null;
+  const response_ledger = input.responseLedger || createCodexResponseLedger();
   /** @type {Map<string, { parent_thread_id: string|null, agent_path: string|null }>} */
   const identities = new Map();
   /** @type {Map<string, Array<{ launch_id: string|null, agent_key: string|null, agent_path: string|null, model: string|null }>>} */
   const launches_by_parent = new Map();
-  /** @type {Map<string, { row: CodexChildRow, usage_at: number|null, observed: number, terminal: boolean, terminal_at: number|null, last_start_at: number|null }>} */
+  /** @type {Map<string, { row: CodexChildRow, usage_at: number|null, cumulative_usage: CodexChildUsage|null, observed: number, terminal: boolean, terminal_at: number|null, last_start_at: number|null, responses: Map<string, { usage: CodexChildUsage, turn_id: string|null, model: string|null, at: number|null }>, response_conflicts: Set<string> }>} */
   const rows = new Map();
 
   /** @param {string} thread_id */
@@ -148,7 +156,14 @@ export function createCodexChildAccumulator(input) {
     const inside =
       signal.at !== null &&
       (window_start === null || signal.at >= window_start) &&
-      (window_end === null || signal.at <= window_end);
+      (window_end === null || signal.at < window_end);
+    if (signal.kind === 'usage' && inside) {
+      registerCodexResponseRecord(
+        response_ledger,
+        entry.thread_id,
+        entry.record
+      );
+    }
     if (signal.kind === 'spawn' && inside) {
       launchesOf(entry.thread_id).push({
         launch_id: signal.launch_id ?? null,
@@ -201,13 +216,17 @@ export function createCodexChildAccumulator(input) {
           started_at: null,
           completed_at: null,
           last_event_at: null,
-          usage: null
+          usage: null,
+          usage_segments: []
         },
         usage_at: null,
+        cumulative_usage: null,
         observed: 0,
         terminal: false,
         terminal_at: null,
-        last_start_at: null
+        last_start_at: null,
+        responses: new Map(),
+        response_conflicts: new Set()
       };
       rows.set(entry.thread_id, held);
     }
@@ -250,8 +269,20 @@ export function createCodexChildAccumulator(input) {
         signal.at === null ||
         signal.at >= held.usage_at)
     ) {
-      held.row.usage = signal.usage;
-      held.usage_at = signal.at ?? held.usage_at;
+      held.cumulative_usage = signal.cumulative_usage ?? held.cumulative_usage;
+      if (signal.response_id) {
+        if (!held.responses.has(signal.response_id)) {
+          held.responses.set(signal.response_id, {
+            usage: signal.usage,
+            turn_id: signal.turn_id ?? null,
+            model: held.row.model,
+            at: signal.at
+          });
+        }
+      } else if (held.responses.size === 0) {
+        held.row.usage = signal.usage;
+        held.usage_at = signal.at ?? held.usage_at;
+      }
     }
   }
 
@@ -260,12 +291,92 @@ export function createCodexChildAccumulator(input) {
     /** @type {CodexChildRow[]} */
     const out = [...rows.values()]
       .filter((held) => reachesRoot(held.row.thread_id))
-      .map((held) => ({
-        ...held.row,
-        ...(!held.terminal && parent_terminated
-          ? { status: 'interrupted' }
-          : {})
-      }));
+      .map((held) => {
+        const grouped = new Map();
+        for (const [response_id, response] of held.responses) {
+          if (!response_ledger.isValid(response_id)) {
+            continue;
+          }
+          const key = `${response.turn_id || 'unknown'}\0${response.model || 'unknown'}`;
+          let segment = grouped.get(key);
+          if (!segment) {
+            segment = {
+              scope_id: `thread:${held.row.thread_id}:turn:${response.turn_id || 'unknown'}:model:${response.model || 'unknown'}:window:${window_start ?? 'open'}:${window_end ?? 'open'}`,
+              turn_id: response.turn_id,
+              model: response.model,
+              usage: {},
+              observed_from:
+                window_start !== null && response.at !== null
+                  ? Math.max(window_start, response.at)
+                  : response.at,
+              observed_through: response.at
+            };
+            grouped.set(key, segment);
+          }
+          for (const [field, value] of Object.entries(response.usage)) {
+            if (field !== 'total_tokens' && Number.isFinite(value)) {
+              segment.usage[field] = (segment.usage[field] || 0) + value;
+            }
+          }
+          if (response.at !== null) {
+            segment.observed_from =
+              segment.observed_from === null
+                ? response.at
+                : Math.min(segment.observed_from, response.at);
+          }
+          segment.observed_through = laterOf(
+            segment.observed_through,
+            response.at
+          );
+        }
+        const usage_segments = [...grouped.values()];
+        const usage =
+          usage_segments.length > 0
+            ? usage_segments.reduce((total, segment) => {
+                for (const [field, value] of Object.entries(segment.usage)) {
+                  total[field] = (total[field] || 0) + value;
+                }
+                return total;
+              }, {})
+            : held.row.usage;
+        if (
+          usage &&
+          Number.isFinite(usage.input_tokens) &&
+          Number.isFinite(usage.output_tokens)
+        ) {
+          usage.total_tokens = usage.input_tokens + usage.output_tokens;
+        }
+        const partial_reasons = [];
+        if (response_ledger.hasConflictFor(held.row.thread_id)) {
+          partial_reasons.push('response_conflict');
+        }
+        if (held.responses.size > 0 && held.cumulative_usage) {
+          for (const [field, value] of Object.entries(held.cumulative_usage)) {
+            if (
+              field !== 'total_tokens' &&
+              Number.isFinite(value) &&
+              Number(value) > Number(usage?.[field] || 0)
+            ) {
+              partial_reasons.push('cumulative_gap');
+              break;
+            }
+          }
+        }
+        if (!held.terminal && parent_terminated) {
+          partial_reasons.push('child_terminal_unconfirmed');
+        }
+        return {
+          ...held.row,
+          usage,
+          usage_segments,
+          ...(partial_reasons.length > 0
+            ? { usage_partial: true, usage_partial_reasons: partial_reasons }
+            : {}),
+          ...(!held.terminal && parent_terminated
+            ? { status: 'interrupted' }
+            : {})
+        };
+      });
     const taken = new Set();
     for (const row of out.sort(
       (left, right) => (left.started_at || 0) - (right.started_at || 0)
@@ -302,6 +413,7 @@ export function createCodexChildAccumulator(input) {
     snapshot,
     /** @param {string} thread_id - Transcript whose replacement invalidated prior observations. */
     resetThread(thread_id) {
+      response_ledger.resetThread(thread_id);
       identities.delete(thread_id);
       launches_by_parent.delete(thread_id);
       rows.delete(thread_id);
@@ -317,7 +429,8 @@ export function createCodexChildAccumulator(input) {
  *   records: Array<{ thread_id: string, ordinal?: number, record: unknown }>,
  *   attempt_started_at?: number|null,
  *   attempt_ended_at?: number|null,
- *   parent_terminated?: boolean
+ *   parent_terminated?: boolean,
+ *   responseLedger?: ReturnType<typeof createCodexResponseLedger>
  * }} input - `attempt_started_at`/`attempt_ended_at` are the attempt log
  * boundaries: activity outside them belongs to another root turn and never
  * becomes this attempt's row, which is what keeps a REUSED child thread from

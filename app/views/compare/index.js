@@ -394,13 +394,16 @@ export function createCompareView(root, options = {}) {
   }
 
   /**
-   * @param {{ median: number|null, sample: number, total: number }|null|undefined} stat
+   * @param {{ median: number|null, sample: number, total: number, partial?: boolean }|null|undefined} stat
    * @param {(value: number|null|undefined) => string} formatValue
    */
   function medianTemplate(stat, formatValue) {
     const note = sampleNote(stat);
     return html`${formatValue(stat?.median)}
-    ${note ? html`<span class="cmp-note">${note}</span>` : null}`;
+    ${note ? html`<span class="cmp-note">${note}</span>` : null}
+    ${stat?.partial === true
+      ? html`<span class="cmp-note">부분 집계</span>`
+      : null}`;
   }
 
   /** @param {any} row */

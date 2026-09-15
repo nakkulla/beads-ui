@@ -225,6 +225,12 @@ export function benchPresetGroups(run, rows) {
       round: medianStat(group_rows.map((row) => num(row.review?.round))),
       rows: group_rows
     });
+    groups[groups.length - 1].cost_usd.partial = group_rows.some(
+      (row) => row.usage?.partial === true
+    );
+    groups[groups.length - 1].cost_usd.partial_count = group_rows.filter(
+      (row) => row.usage?.partial === true
+    ).length;
   }
   return groups;
 }

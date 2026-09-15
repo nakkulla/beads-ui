@@ -14,7 +14,7 @@ import {
   isClosedRange
 } from '../../app/data/closed-range.js';
 import { makeError } from '../../app/protocol.js';
-import { compareSnapshot } from '../worker/compare-projection.js';
+import { prepareCompareSnapshot } from '../worker/compare-projection.js';
 import { log } from './context.js';
 
 /**
@@ -36,15 +36,15 @@ export function compareRangeSince(value, now = Date.now()) {
 /**
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
- * @param {{ snapshot?: typeof compareSnapshot }} [seams]
+ * @param {{ snapshot?: typeof prepareCompareSnapshot }} [seams]
  */
-export function handleGetCompare(ws, req, seams = {}) {
+export async function handleGetCompare(ws, req, seams = {}) {
   const payload = /** @type {any} */ (req.payload || {});
-  const build = seams.snapshot || compareSnapshot;
+  const build = seams.snapshot || prepareCompareSnapshot;
   /** @type {any} */
   let model;
   try {
-    model = build({
+    model = await build({
       root_dirs: payload.root_dirs,
       issue_types: payload.issue_types,
       routes: payload.routes,

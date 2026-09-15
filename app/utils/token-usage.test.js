@@ -1,10 +1,15 @@
 import { describe, expect, test } from 'vitest';
 import { resolveCatalog } from '../../server/worker/runner-catalog.js';
 import {
+  foldCodexAttemptUsage,
+  foldSessionObservation
+} from '../../server/worker/session-observation.js';
+import {
   formatCost,
   formatUsageTotal,
   formatUsageTotalWithCost,
   mergeUsageProjections,
+  projectAttemptUsage,
   providerUsageBadges,
   providerUsageTooltip,
   sumAttemptUsage,
@@ -12,6 +17,92 @@ import {
 } from './token-usage.js';
 
 describe('views/worker usage formatting (UI-raqh §1)', () => {
+  test('keeps adjacent attempt windows distinct in attempt and Bead totals', () => {
+    const records = [
+      { type: 'session_meta', payload: { id: 'root' } },
+      {
+        timestamp: '2026-09-15T00:00:00.000Z',
+        type: 'turn_context',
+        payload: { turn_id: 't', model: 'astra' }
+      },
+      {
+        timestamp: '2026-09-15T00:00:01.000Z',
+        type: 'token_usage_record',
+        payload: {
+          thread_id: 'root',
+          turn_id: 't',
+          response_id: 'r1',
+          usage: { input_tokens: 10, output_tokens: 1 }
+        }
+      },
+      {
+        timestamp: '2026-09-15T00:00:10.000Z',
+        type: 'token_usage_record',
+        payload: {
+          thread_id: 'root',
+          turn_id: 't',
+          response_id: 'r2',
+          usage: { input_tokens: 20, output_tokens: 2 }
+        }
+      }
+    ];
+    const start = Date.parse('2026-09-15T00:00:00.000Z');
+    const boundary = Date.parse('2026-09-15T00:00:05.000Z');
+    const end = Date.parse('2026-09-15T00:00:15.000Z');
+    const first_segments = foldCodexAttemptUsage(records, start, boundary);
+    const second_segments = foldCodexAttemptUsage(records, boundary, end);
+    const attempts = {
+      first: {
+        attempt_id: 'first',
+        bead_id: 'UI-window',
+        runner: 'codex',
+        usage_segments: first_segments
+      },
+      second: {
+        attempt_id: 'second',
+        bead_id: 'UI-window',
+        runner: 'codex',
+        usage_segments: second_segments
+      }
+    };
+
+    expect(projectAttemptUsage(attempts.first)?.providers.codex?.subtotal).toBe(
+      11
+    );
+    expect(
+      projectAttemptUsage(attempts.second)?.providers.codex?.subtotal
+    ).toBe(22);
+    expect(
+      sumAttemptUsage(attempts, 'UI-window')?.providers.codex?.subtotal
+    ).toBe(33);
+    expect(first_segments[0].scope_id).not.toBe(second_segments[0].scope_id);
+    expect(/** @type {any} */ (second_segments[0]).observed_from).toBe(
+      boundary
+    );
+  });
+
+  test('excludes cumulative turn completions without direct response attribution', () => {
+    const records = [
+      { type: 'session_meta', payload: { id: 'root' } },
+      { type: 'turn_context', payload: { turn_id: 't1', model: 'astra' } },
+      { type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 0 } },
+      { type: 'turn_context', payload: { turn_id: 't2', model: 'astra' } },
+      { type: 'turn.completed', usage: { input_tokens: 30, output_tokens: 0 } }
+    ];
+    const usage_segments = foldCodexAttemptUsage(records, null, null);
+
+    const projection = projectAttemptUsage({
+      attempt_id: 'cumulative',
+      runner: 'codex',
+      usage_segments
+    });
+
+    expect(projection?.roles.orchestrator?.codex?.subtotal).toBe(30);
+    expect(projection?.providers.codex?.subtotal).toBe(0);
+    expect(projection?.providers.codex?.partial_reasons).toContain(
+      'attempt_boundary_unproven'
+    );
+  });
   test('sums input and output into a k-abbreviated total', () => {
     const label = formatUsageTotal({ input_tokens: 8420, output_tokens: 3910 });
 
@@ -867,7 +958,7 @@ describe('total-only legs inside an aggregate tooltip (UI-1vpv)', () => {
     );
 
     expect(tooltip).toBe(
-      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성 + 분해 없는 leg\n총 1,000\n입력 10 · 출력 20 · 캐시읽기 30 · 캐시생성 40 · 분해 없는 leg 900\n단가 없음\nAPI 환산 단가 기준'
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성 + 분해 없는 leg\n총 1,000\n입력 10 · 출력 20 · 캐시읽기 30 · 캐시생성 40 · 분해 없는 leg 900\n단가 없음\n부분 집계 — 모델 미확정\nAPI 환산 단가 기준'
     );
   });
 
@@ -896,7 +987,7 @@ describe('total-only legs inside an aggregate tooltip (UI-1vpv)', () => {
     );
 
     expect(tooltip).toBe(
-      '총 900\n분해 없음 — 총량만 보고됨\n단가 없음\nAPI 환산 단가 기준'
+      '총 900\n분해 없음 — 총량만 보고됨\n단가 없음\n부분 집계 — 모델 미확정\nAPI 환산 단가 기준'
     );
   });
 
@@ -1020,6 +1111,291 @@ describe('leg pricing and partial-cost display (preset-compare §1.3)', () => {
       0.00066 + 0.00016,
       10
     );
+  });
+
+  test('prices a known model on a replayed partial segment', () => {
+    const projected = sumAttemptUsage(
+      {
+        replayed: {
+          attempt_id: 'replayed',
+          bead_id: 'UI-1',
+          runner: 'codex',
+          usage_segments: [
+            {
+              model: 'sol',
+              turn_id: 't1',
+              partial: true,
+              partial_reasons: ['attempt_boundary_unproven'],
+              usage: { input_tokens: 1_000_000, output_tokens: 100_000 }
+            }
+          ]
+        }
+      },
+      'UI-1',
+      catalog
+    );
+
+    expect(projected?.providers.codex).toMatchObject({
+      subtotal: 0,
+      partial: true,
+      partial_reasons: ['attempt_boundary_unproven']
+    });
+    expect(projected?.roles.orchestrator?.codex?.total_cost_usd).toBe(3);
+  });
+
+  test('prices the saved UI-pqel parent shape as a partial astra total', () => {
+    const astra_catalog = resolveCatalog({
+      overrides: {
+        codex: {
+          models: {
+            astra: {
+              price: {
+                input: 10,
+                output: 50,
+                cache_read: 1,
+                cache_write: 12.5
+              }
+            }
+          }
+        }
+      },
+      warn: () => {}
+    });
+
+    const projected = sumAttemptUsage(
+      {
+        saved: {
+          attempt_id: 'saved',
+          bead_id: 'UI-pqel',
+          runner: 'codex',
+          model: 'astra',
+          usage: {
+            input_tokens: 2_442_197,
+            cache_read_input_tokens: 2_339_968,
+            output_tokens: 11_953,
+            replayed: true
+          }
+        }
+      },
+      'UI-pqel',
+      astra_catalog
+    );
+
+    expect(projected?.providers.codex?.total_cost_usd).toBeCloseTo(3.959908, 6);
+    expect(formatCost(projected?.providers.codex)).toBe('$3.96 · 부분 집계');
+  });
+
+  test('adds anonymized parent and child direct segments once', () => {
+    const exact_catalog = resolveCatalog({
+      overrides: {
+        codex: {
+          models: {
+            astra: {
+              price: {
+                input: 10,
+                output: 50,
+                cache_read: 1,
+                cache_write: 12.5
+              }
+            }
+          }
+        }
+      },
+      warn: () => {}
+    });
+    /**
+     * @param {string} thread_id
+     * @param {number} count
+     * @param {{ input: number, cache: number, output: number }} totals
+     */
+    const observe = (thread_id, count, totals) => {
+      /** @type {any[]} */
+      const records = [
+        { type: 'session_meta', payload: { id: thread_id } },
+        {
+          type: 'turn_context',
+          payload: { turn_id: `${thread_id}-turn`, model: 'astra' }
+        }
+      ];
+      for (let index = 0; index < count; index += 1) {
+        const last = index === count - 1;
+        records.push({
+          timestamp: `2026-09-15T00:00:${String(index).padStart(2, '0')}.000Z`,
+          type: 'token_usage_record',
+          payload: {
+            thread_id,
+            turn_id: `${thread_id}-turn`,
+            response_id: `${thread_id}-response-${index}`,
+            usage: {
+              input_tokens: last ? totals.input - (count - 1) : 1,
+              cached_input_tokens: last ? totals.cache : 0,
+              output_tokens: last ? totals.output : 0
+            },
+            thread_token_usage: {
+              input_tokens: totals.input,
+              cached_input_tokens: totals.cache,
+              output_tokens: totals.output
+            }
+          }
+        });
+      }
+      return foldSessionObservation(
+        'codex',
+        records.map((record) => JSON.stringify(record)).join('\n')
+      );
+    };
+    const parent_observed = observe('parent-1', 29, {
+      input: 2_442_197,
+      cache: 2_339_968,
+      output: 11_953
+    });
+    const child_observed = observe('child-1', 3, {
+      input: 86_154,
+      cache: 29_440,
+      output: 1_085
+    });
+    const child = {
+      thread_id: 'child-1',
+      parent_thread_id: 'parent-1',
+      model: 'astra',
+      status: 'done',
+      usage: { input_tokens: 86_154, output_tokens: 1_085 },
+      usage_segments: child_observed.usage_legs.map((segment) => ({
+        ...segment,
+        usage: {
+          input_tokens: segment.usage.input_tokens,
+          cached_input_tokens: segment.usage.cache_read_input_tokens,
+          output_tokens: segment.usage.output_tokens
+        }
+      }))
+    };
+    const projected = sumAttemptUsage(
+      {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'UI-1',
+          runner: 'codex',
+          usage_segments: parent_observed.usage_legs,
+          codex_children: [child, { ...child }],
+          usage_legs: [
+            {
+              receipt_id: 'external-copy',
+              provider: 'codex',
+              role: 'implementation',
+              session_id: 'child-1',
+              scope_id: /** @type {any} */ (child.usage_segments[0]).scope_id,
+              turn_id: 'child-1-turn',
+              model: 'astra',
+              usage: { input_tokens: 86_154, output_tokens: 1_085 }
+            }
+          ]
+        }
+      },
+      'UI-1',
+      exact_catalog
+    );
+
+    expect(projected?.providers.codex?.subtotal).toBe(2_541_389);
+    expect(projected?.roles.orchestrator?.codex?.subtotal).toBe(2_454_150);
+    expect(projected?.roles.subagent?.codex?.subtotal).toBe(87_239);
+    expect(projected?.providers.codex?.total_cost_usd).toBeCloseTo(4.610738, 6);
+  });
+
+  test('includes the parent role subtotal and cost in the card tooltip', () => {
+    const exact_catalog = resolveCatalog({
+      overrides: {
+        codex: {
+          models: { astra: { price: { input: 1, output: 1 } } }
+        }
+      },
+      warn: () => {}
+    });
+    const projection = sumAttemptUsage(
+      {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'UI-parent-tooltip',
+          runner: 'codex',
+          usage_segments: [
+            {
+              scope_id: 'root:t1',
+              model: 'astra',
+              usage: { input_tokens: 10, output_tokens: 1 }
+            }
+          ],
+          codex_children: [
+            {
+              thread_id: 'child',
+              usage_segments: [
+                {
+                  scope_id: 'child:t1',
+                  model: 'astra',
+                  usage: { input_tokens: 20, output_tokens: 2 }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      'UI-parent-tooltip',
+      exact_catalog
+    );
+
+    expect(providerUsageBadges(projection)[0].tooltip).toContain(
+      '부모 직접 τ 11 · $0.000011'
+    );
+  });
+
+  test('drops an ambiguous wider same-turn receipt but includes a disjoint turn', () => {
+    const attempt = {
+      attempt_id: 'a1',
+      bead_id: 'UI-1',
+      runner: 'codex',
+      usage: { input_tokens: 10, output_tokens: 1 },
+      codex_children: [
+        {
+          thread_id: 'child-1',
+          parent_thread_id: 'root',
+          status: 'done',
+          usage_segments: [
+            {
+              scope_id: 'child-1:t1:direct',
+              turn_id: 't1',
+              model: 'sol',
+              usage: { input_tokens: 100, output_tokens: 10 }
+            }
+          ]
+        }
+      ],
+      usage_legs: [
+        {
+          receipt_id: 'wider-same-turn',
+          provider: 'codex',
+          role: 'implementation',
+          session_id: 'child-1',
+          turn_id: 't1',
+          model: 'sol',
+          usage: { input_tokens: 150, output_tokens: 15 }
+        },
+        {
+          receipt_id: 'disjoint-turn',
+          provider: 'codex',
+          role: 'implementation',
+          session_id: 'child-1',
+          turn_id: 't2',
+          model: 'sol',
+          usage: { input_tokens: 20, output_tokens: 2 }
+        }
+      ]
+    };
+
+    const projected = sumAttemptUsage({ a1: attempt }, 'UI-1', catalog);
+
+    expect(projected?.providers.codex?.subtotal).toBe(143);
+    expect(projected?.providers.codex?.partial_reasons).toContain(
+      'native_external_overlap'
+    );
+    expect(projected?.roles.implementation?.codex?.subtotal).toBe(22);
   });
 
   test('leaves a Codex attempt unpriced without a catalog', () => {
@@ -1175,8 +1551,9 @@ describe('leg pricing and partial-cost display (preset-compare §1.3)', () => {
     const merged = mergeUsageProjections([priced, unpriced]);
 
     expect(formatCost(merged?.providers.codex)).toBe(
-      '$3.00 (+1 leg 단가 없음)'
+      '$3.00 (+1 leg 단가 없음) · 부분 집계'
     );
+    expect(merged?.providers.codex?.partial_reasons).toContain('price_unknown');
   });
 
   test('marks each leg with the basis its price came from', () => {

@@ -2319,7 +2319,9 @@ function attemptLegs(attempt, delegation_sessions) {
  * attempt's last session-log line (UI-53es §1), which the monitor row turns
  * into its heartbeat. Both apply to RUNNING attempts only — a terminated one
  * keeps whatever was persisted onto its record. A pure read of the shared
- * stores; the scheduler and the session-log broker are the only writers.
+ * stores. Ended Codex attempts schedule one shared bounded rollout preparation;
+ * its completion wakes the queue subscribers so historical cards gain the same
+ * projection without making snapshot assembly block on disk.
  *
  * @param {Record<string, unknown>} queue
  * @param {string} workspace_key
@@ -2348,6 +2350,31 @@ export function attemptsWithUsage(queue, workspace_key) {
   const out = {};
   for (const [attempt_id, attempt] of Object.entries(attempts)) {
     const running = Boolean(attempt) && attempt.status === 'running';
+    if (!running && attempt?.runner === 'codex') {
+      const pending = observations?.prepareHistorical(workspace_key, attempt);
+      if (pending) {
+        void pending.then(
+          (value) => {
+            if (
+              value &&
+              JSON.stringify({
+                usage: attempt.usage ?? null,
+                usage_segments: attempt.usage_segments ?? [],
+                codex_children: attempt.codex_children ?? []
+              }) !==
+                JSON.stringify({
+                  usage: value.usage ?? null,
+                  usage_segments: value.usage_segments ?? [],
+                  codex_children: value.codex_children ?? []
+                })
+            ) {
+              fanout(workspace_key, queueStore().snapshot(workspace_key));
+            }
+          },
+          (err) => log('historical usage preparation failed: %o', err)
+        );
+      }
+    }
     const live = running && store ? store.get(workspace_key, attempt_id) : null;
     const last_event_at =
       running && session_log && typeof session_log.lastEventAt === 'function'
@@ -2355,14 +2382,17 @@ export function attemptsWithUsage(queue, workspace_key) {
         : null;
     /** @type {any} */
     let projected = stripPrompts(attempt);
-    const prepared = running
-      ? observations?.get(workspace_key, attempt_id)
-      : null;
-    if (prepared?.usage) {
+    const prepared = observations?.get(workspace_key, attempt_id);
+    if (prepared) {
       projected = {
         ...projected,
-        usage: prepared.usage,
-        usage_segments: prepared.usage_segments
+        ...(prepared.usage ? { usage: prepared.usage } : {}),
+        ...(Array.isArray(prepared.usage_segments)
+          ? { usage_segments: prepared.usage_segments }
+          : {}),
+        ...(Array.isArray(prepared.codex_children)
+          ? { codex_children: prepared.codex_children }
+          : {})
       };
     } else if (live) {
       projected = {
@@ -3454,11 +3484,16 @@ onQueueChanged((workspace) => {
  * @param {WebSocket} ws
  */
 export function detachWorkerQueue(ws) {
-  for (const set of SUBSCRIBERS.values()) {
+  for (const [workspace, set] of SUBSCRIBERS) {
     for (const sub of set) {
       if (sub.ws === ws) {
         set.delete(sub);
       }
+    }
+    if (set.size === 0) {
+      getWorkerRuntime().workerSessionObservations.releaseHistorical?.(
+        workspace
+      );
     }
   }
   getWorkerRuntime().runnableCache.releaseObservationsIfIdle?.();
@@ -4157,7 +4192,7 @@ export function handleGetBeadPrompt(ws, req) {
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export function handleGetBeadTimeline(ws, req) {
+export async function handleGetBeadTimeline(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
   const bead_id = typeof p.bead_id === 'string' ? p.bead_id : '';
   if (bead_id.length === 0) {
@@ -4187,12 +4222,22 @@ export function handleGetBeadTimeline(ws, req) {
   // reversing HERE keeps the one ordering decision on the wire instead of in
   // every consumer.
   const events = readBeadTimeline(key, bead_id).slice().reverse();
+  const attempts = transferredAttemptsFor(key, bead_id);
+  const observations = getWorkerRuntime().workerSessionObservations;
+  await Promise.all(
+    attempts.map(async (attempt) => {
+      await observations.prepareHistorical(key, attempt);
+    })
+  );
   ws.send(
     JSON.stringify(
       makeOk(req, {
         bead_id,
         events,
-        attempts: transferredAttemptsFor(key, bead_id)
+        attempts: attempts.map((attempt) => {
+          const prepared = observations.get(key, attempt.attempt_id);
+          return prepared ? { ...attempt, ...prepared } : attempt;
+        })
       })
     )
   );
@@ -4360,6 +4405,13 @@ export function handleUnsubscribeWorkerQueue(ws, req) {
         set.delete(sub);
         removed = true;
       }
+    }
+  }
+  for (const [workspace, set] of SUBSCRIBERS) {
+    if (set.size === 0) {
+      getWorkerRuntime().workerSessionObservations.releaseHistorical?.(
+        workspace
+      );
     }
   }
   getWorkerRuntime().runnableCache.releaseObservationsIfIdle?.();

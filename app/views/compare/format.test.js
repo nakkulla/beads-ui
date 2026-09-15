@@ -35,6 +35,12 @@ describe('views/compare/format', () => {
     );
   });
 
+  test('marks a known partial price', () => {
+    expect(formatPrice({ total_cost_usd: 1.234, partial: true })).toBe(
+      '$1.23 · 부분 집계'
+    );
+  });
+
   test('draws an empty price cell when nothing could be priced', () => {
     expect(formatPrice(null)).toBe(EMPTY_CELL);
     expect(formatPrice({ total_cost_usd: null })).toBe(EMPTY_CELL);

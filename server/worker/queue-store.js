@@ -148,7 +148,7 @@
  * Null on an attempt whose runner reported none and on every record written
  * before the field existed — the display is fail-quiet, so a null simply
  * renders nothing.
- * @property {Array<{ provider?: string, role?: string, turn_id?: string, model?: string|null, usage: Record<string, number>, partial?: boolean, cost_covered?: boolean }>} usage_segments -
+ * @property {Array<{ provider?: string, role?: string, scope_id?: string, turn_id?: string, model?: string|null, usage: Record<string, number>, observed_from?: number|null, observed_through?: number|null, partial?: boolean, partial_reasons?: string[], cost_covered?: boolean }>} usage_segments -
  * Provider/model scopes retained when a cumulative conversation total spans
  * more than one priced model. Unknown residual scopes carry `partial: true`.
  * A model segment covered by a valid reported-cost segment in the same
@@ -163,9 +163,9 @@
  * @property {import('./codex-children/accumulate.js').CodexChildRow[]} codex_children - Normalized Codex NATIVE
  * subagent observations (UI-mn5u §6.2). A UI-owned observation record: it is
  * never workflow metadata, never an execution receipt, and never an input to a
- * gate. Its usage is displayed per child and excluded from this attempt's
- * totals. An attempt written before the field existed normalizes to an empty
- * list, which reads as "not observed", never as zero.
+ * gate. Verified direct `usage_segments` are displayed per child and included
+ * once in this attempt's total. An attempt written before the field existed
+ * normalizes to an empty list, which reads as "not observed", never as zero.
  * @property {string|null} done_kind - 무변경 종결의 종류 (`'refuted'`·
  * `'no_delta'`, quick_fix 착지가 씀) 또는 `'bench'`(preset-compare §4.5-1의
  * `landing=none` 종결); 그 밖의 값은 legacy 머지 축 기록.

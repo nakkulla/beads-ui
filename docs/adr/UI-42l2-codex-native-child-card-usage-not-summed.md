@@ -1,10 +1,11 @@
 ---
 id: UI-42l2
 title: Codex native child의 개별 사용량과 환산 비용은 카드에 표시하고 부모 합계에서는 제외한다
-status: accepted
+status: superseded
 date: 2026-09-11
 summary: "Codex native child의 개별 사용량과 환산 비용은 카드·상세에 표시하고 중복 여부가 미확인된 값은 부모 합계에 더하지 않는다"
 supersedes: [47]
+superseded_by: UI-mscc
 spec: docs/superpowers/specs/2026-09-11-session-card-delegation-usage-cost-parity-design.md
 bead: UI-42l2
 ---

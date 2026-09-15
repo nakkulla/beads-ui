@@ -4,7 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import { normalizeDelegationSessions } from '../delegation-monitor.js';
 import { makeAttempt } from '../queue-store.js';
-import { accumulateCodexChildren } from './accumulate.js';
+import {
+  accumulateCodexChildren,
+  createCodexChildAccumulator
+} from './accumulate.js';
 import { normalizeCodexChildren } from './normalize.js';
 import { observeCodexChildren, readCodexChildRecords } from './reader.js';
 import { normalizeCodexChildUsage, parseRolloutText } from './rollout.js';
@@ -132,7 +135,7 @@ describe('codex-children rollout grammar (UI-mn5u §6.1)', () => {
       ...tagged(CHILD_ID, child)
     ]);
 
-    expect(rows).toEqual([
+    expect(rows).toMatchObject([
       {
         thread_id: CHILD_ID,
         parent_thread_id: ROOT_ID,
@@ -151,7 +154,18 @@ describe('codex-children rollout grammar (UI-mn5u §6.1)', () => {
           output_tokens: 902,
           reasoning_output_tokens: 276,
           total_tokens: 114343
-        }
+        },
+        usage_segments: [
+          {
+            model: 'gpt-5.6-terra',
+            usage: {
+              input_tokens: 113441,
+              cached_input_tokens: 87040,
+              output_tokens: 902,
+              reasoning_output_tokens: 276
+            }
+          }
+        ]
       }
     ]);
   });
@@ -432,6 +446,166 @@ describe('codex-children lifecycle (UI-mn5u §6.2)', () => {
 });
 
 describe('codex-children usage (UI-mn5u §6.4)', () => {
+  test('keeps the original child model when a response repeats', () => {
+    const accumulator = createCodexChildAccumulator({ root_thread_id: 'root' });
+    const response = {
+      type: 'token_usage_record',
+      timestamp: '2026-09-15T00:00:02.000Z',
+      payload: {
+        thread_id: 'child',
+        turn_id: 't1',
+        response_id: 'r1',
+        usage: { input_tokens: 10, output_tokens: 1 }
+      }
+    };
+    const records = [
+      {
+        type: 'session_meta',
+        payload: {
+          id: 'child',
+          parent_thread_id: 'root',
+          thread_source: 'subagent'
+        }
+      },
+      {
+        type: 'turn_context',
+        timestamp: '2026-09-15T00:00:01.000Z',
+        payload: { turn_id: 't1', model: 'astra' }
+      },
+      response,
+      {
+        type: 'turn_context',
+        timestamp: '2026-09-15T00:00:03.000Z',
+        payload: { turn_id: 't1', model: 'sol' }
+      },
+      response
+    ];
+
+    for (const record of records) {
+      accumulator.apply({ thread_id: 'child', record });
+    }
+
+    expect(accumulator.snapshot()[0].usage_segments).toEqual([
+      expect.objectContaining({
+        model: 'astra',
+        usage: { input_tokens: 10, output_tokens: 1 }
+      })
+    ]);
+  });
+
+  test('excludes the first response whose claimed owner differs from its file', () => {
+    const { root, child } = fixtureHalves();
+    const original = accumulateCodexChildren({
+      root_thread_id: ROOT_ID,
+      records: [...tagged(ROOT_ID, root), ...tagged(CHILD_ID, child)],
+      attempt_started_at: ATTEMPT_STARTED_AT,
+      parent_terminated: true
+    });
+    const foreign = clone(child);
+    const response = foreign.find(
+      (/** @type {any} */ record) => record.type === 'token_usage_record'
+    );
+    const excluded_input = response.payload.usage.input_tokens;
+    response.payload.thread_id = 'foreign-thread';
+
+    const rows = accumulateCodexChildren({
+      root_thread_id: ROOT_ID,
+      records: [...tagged(ROOT_ID, root), ...tagged(CHILD_ID, foreign)],
+      attempt_started_at: ATTEMPT_STARTED_AT,
+      parent_terminated: true
+    });
+
+    expect(rows[0].usage?.input_tokens).toBe(
+      Number(original[0]?.usage?.input_tokens) - excluded_input
+    );
+    expect(rows[0].usage_partial_reasons).toContain('response_conflict');
+  });
+
+  test('rebuilds response ownership after a child rollout replacement', () => {
+    const accumulator = createCodexChildAccumulator({
+      root_thread_id: 'root'
+    });
+    const meta = {
+      type: 'session_meta',
+      payload: {
+        id: 'child',
+        parent_thread_id: 'root',
+        thread_source: 'subagent'
+      }
+    };
+    const context = {
+      timestamp: '2026-09-15T00:00:01.000Z',
+      type: 'turn_context',
+      payload: { turn_id: 't1', model: 'astra' }
+    };
+    /** @param {number} input_tokens */
+    const usage = (input_tokens) => ({
+      timestamp: '2026-09-15T00:00:02.000Z',
+      type: 'token_usage_record',
+      payload: {
+        thread_id: 'child',
+        turn_id: 't1',
+        response_id: 'reused-response',
+        usage: { input_tokens, output_tokens: 0 }
+      }
+    });
+    for (const record of [meta, context, usage(10)]) {
+      accumulator.apply({ thread_id: 'child', record });
+    }
+    accumulator.resetThread('child');
+    for (const record of [meta, context, usage(30)]) {
+      accumulator.apply({ thread_id: 'child', record });
+    }
+
+    expect(accumulator.snapshot()[0]).toMatchObject({
+      usage: { input_tokens: 30, output_tokens: 0 }
+    });
+    expect(accumulator.snapshot()[0].usage_partial_reasons).toBeUndefined();
+  });
+
+  test('excludes a response id claimed by both root and child owners', () => {
+    const { root, child } = fixtureHalves();
+    const root_response = root.find(
+      (/** @type {any} */ record) => record.type === 'token_usage_record'
+    );
+    const child_copy = clone(child);
+    const child_response = child_copy.find(
+      (/** @type {any} */ record) => record.type === 'token_usage_record'
+    );
+    child_response.payload.response_id = root_response.payload.response_id;
+
+    const rows = accumulateCodexChildren({
+      root_thread_id: ROOT_ID,
+      records: [...tagged(ROOT_ID, root), ...tagged(CHILD_ID, child_copy)],
+      attempt_started_at: ATTEMPT_STARTED_AT,
+      parent_terminated: true
+    });
+
+    expect(rows[0].usage_partial_reasons).toContain('response_conflict');
+    expect(rows[0].usage?.input_tokens).toBe(94_444);
+  });
+
+  test('marks a cumulative child snapshot larger than its direct responses', () => {
+    const { root, child } = fixtureHalves();
+    const child_copy = clone(child);
+    const last_usage = child_copy
+      .filter(
+        (/** @type {any} */ record) => record.type === 'token_usage_record'
+      )
+      .at(-1);
+    last_usage.payload.thread_token_usage.input_tokens += 1;
+
+    const rows = accumulateCodexChildren({
+      root_thread_id: ROOT_ID,
+      records: [...tagged(ROOT_ID, root), ...tagged(CHILD_ID, child_copy)],
+      attempt_started_at: ATTEMPT_STARTED_AT,
+      parent_terminated: true
+    });
+
+    expect(rows[0].usage?.input_tokens).toBe(113_441);
+    expect(rows[0].usage_partial_reasons).toContain('cumulative_gap');
+  });
+
   test('replaces the cumulative total instead of summing turns', () => {
     const { root, child } = fixtureHalves();
     const totals = child
@@ -507,12 +681,34 @@ describe('codex-children stored field (UI-mn5u §6.3)', () => {
           started_at: 5,
           completed_at: 6,
           last_event_at: 7,
-          usage: { total_tokens: 9 }
+          usage: { total_tokens: 9 },
+          usage_partial: true,
+          usage_partial_reasons: ['child_terminal_unconfirmed'],
+          usage_segments: [
+            {
+              scope_id: 'thread:child:turn:t1:5',
+              turn_id: 't1',
+              model: 'gpt-5.6-terra',
+              usage: { input_tokens: 8, output_tokens: 1 },
+              observed_from: 5,
+              observed_through: 6
+            }
+          ]
         }
       ]
     });
 
     expect(attempt.codex_children[0].usage).toEqual({ total_tokens: 9 });
+    expect(attempt.codex_children[0]).toMatchObject({
+      usage_partial: true,
+      usage_partial_reasons: ['child_terminal_unconfirmed'],
+      usage_segments: [
+        {
+          scope_id: 'thread:child:turn:t1:5',
+          usage: { input_tokens: 8, output_tokens: 1 }
+        }
+      ]
+    });
   });
 
   test('drops a stored row with an unexplained shape', () => {
@@ -536,7 +732,8 @@ describe('codex-children stored field (UI-mn5u §6.3)', () => {
         started_at: null,
         completed_at: null,
         last_event_at: null,
-        usage: null
+        usage: null,
+        usage_segments: []
       }
     ]);
   });
