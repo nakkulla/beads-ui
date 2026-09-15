@@ -7405,7 +7405,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
       mount.querySelector('.rtile[data-bead-id="RD-1"] .worker-usage')
     );
     expect(el.getAttribute('title')).toBe(
-      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 239,430\n입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800\n$0.42\nAPI 환산 단가 기준'
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 239,430\n입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800\n$0.42\nAPI 환산 단가 기준\n부모 직접 τ 239.4k · $0.42'
     );
   });
 

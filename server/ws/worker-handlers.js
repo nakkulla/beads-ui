@@ -2383,11 +2383,13 @@ export function attemptsWithUsage(queue, workspace_key) {
     /** @type {any} */
     let projected = stripPrompts(attempt);
     const prepared = observations?.get(workspace_key, attempt_id);
-    if (prepared?.usage) {
+    if (prepared) {
       projected = {
         ...projected,
-        usage: prepared.usage,
-        usage_segments: prepared.usage_segments,
+        ...(prepared.usage ? { usage: prepared.usage } : {}),
+        ...(Array.isArray(prepared.usage_segments)
+          ? { usage_segments: prepared.usage_segments }
+          : {}),
         ...(Array.isArray(prepared.codex_children)
           ? { codex_children: prepared.codex_children }
           : {})

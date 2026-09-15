@@ -151,9 +151,11 @@ export function formatCost(summary) {
 const PARTIAL_REASON_TEXT = {
   replayed: '서버 재시작 뒤 복구된 범위',
   model_unknown: '모델 미확정',
+  price_unknown: '모델 단가 미확정',
   usage_missing: '사용량 미관측',
   attempt_boundary_unproven: 'attempt 경계 미확정',
   response_conflict: '같은 응답의 사용량 충돌',
+  cumulative_gap: '누적 기록과 직접 관측의 차이',
   child_terminal_unconfirmed: '자식 종료 미확인',
   native_external_overlap: 'native·외부 범위 겹침 미해소',
   legacy_child_scope: '과거 자식의 직접 범위 미확정',
@@ -485,12 +487,20 @@ export function providerUsageBadges(projection) {
       continue;
     }
     const cost = formatCost(summary);
+    const parent = projection.roles?.orchestrator?.[provider];
+    const parent_cost = formatCost(parent);
+    const tooltip = [providerUsageTooltip(provider, summary)];
+    if (parent) {
+      tooltip.push(
+        `부모 직접 ${formatSubtotal(parent.subtotal)}${parent_cost ? ` · ${parent_cost}` : ''}`
+      );
+    }
     badges.push({
       provider,
       label: `${providerName(provider)} ${formatSubtotal(summary.subtotal)}${
         cost ? ` · ${cost}` : ''
       }`,
-      tooltip: providerUsageTooltip(provider, summary)
+      tooltip: tooltip.join('\n')
     });
   }
   return badges;
@@ -613,6 +623,12 @@ function applyLegPrice(leg, catalog) {
   leg.price_basis = price.basis;
   if (price.usd !== null) {
     leg.price_usd = price.usd;
+  }
+  if (catalog && typeof leg.model === 'string' && price.basis === 'none') {
+    leg.partial = true;
+    leg.partial_reasons = [
+      ...new Set([...(leg.partial_reasons || []), 'price_unknown'])
+    ];
   }
 }
 

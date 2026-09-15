@@ -14,6 +14,7 @@ import {
   projectBenchRun,
   signatureName
 } from './compare-projection.js';
+import { resolveCatalog } from './runner-catalog.js';
 
 const SHA = 'a'.repeat(40);
 
@@ -703,6 +704,51 @@ describe('worker/compare-projection aggregates', () => {
     expect(model.rows[0].usage).toMatchObject({ partial: true });
     expect(model.groups[0].cost_usd).toMatchObject({
       median: null,
+      partial: true,
+      partial_count: 1
+    });
+  });
+
+  test('marks a comparison median partial when one known model has no price', () => {
+    const catalog = resolveCatalog({
+      overrides: {
+        codex: {
+          models: { priced: { price: { input: 1, output: 1 } } }
+        }
+      },
+      warn: () => {}
+    });
+    const model = buildCompareModel({
+      catalog,
+      workspaces: [
+        makeWorkspace({
+          attempts: [
+            makeAttempt({
+              runner: 'codex',
+              usage_segments: [
+                {
+                  model: 'priced',
+                  usage: { input_tokens: 1_000_000, output_tokens: 0 }
+                },
+                {
+                  model: 'known-unpriced',
+                  usage: { input_tokens: 10, output_tokens: 0 }
+                }
+              ]
+            })
+          ]
+        })
+      ]
+    });
+
+    expect(model.rows[0].usage).toMatchObject({
+      total_cost_usd: 1,
+      unpriced_leg_count: 1,
+      partial: true,
+      partial_reasons: ['price_unknown']
+    });
+    expect(model.groups[0].cost_usd).toMatchObject({
+      median: 1,
       partial: true,
       partial_count: 1
     });

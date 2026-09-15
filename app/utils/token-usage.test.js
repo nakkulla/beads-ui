@@ -80,6 +80,29 @@ describe('views/worker usage formatting (UI-raqh §1)', () => {
       boundary
     );
   });
+
+  test('excludes cumulative turn completions without direct response attribution', () => {
+    const records = [
+      { type: 'session_meta', payload: { id: 'root' } },
+      { type: 'turn_context', payload: { turn_id: 't1', model: 'astra' } },
+      { type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 0 } },
+      { type: 'turn_context', payload: { turn_id: 't2', model: 'astra' } },
+      { type: 'turn.completed', usage: { input_tokens: 30, output_tokens: 0 } }
+    ];
+    const usage_segments = foldCodexAttemptUsage(records, null, null);
+
+    const projection = projectAttemptUsage({
+      attempt_id: 'cumulative',
+      runner: 'codex',
+      usage_segments
+    });
+
+    expect(projection?.roles.orchestrator?.codex?.subtotal).toBe(30);
+    expect(projection?.providers.codex?.subtotal).toBe(0);
+    expect(projection?.providers.codex?.partial_reasons).toContain(
+      'attempt_boundary_unproven'
+    );
+  });
   test('sums input and output into a k-abbreviated total', () => {
     const label = formatUsageTotal({ input_tokens: 8420, output_tokens: 3910 });
 
@@ -1278,6 +1301,51 @@ describe('leg pricing and partial-cost display (preset-compare §1.3)', () => {
     expect(projected?.providers.codex?.total_cost_usd).toBeCloseTo(4.610738, 6);
   });
 
+  test('includes the parent role subtotal and cost in the card tooltip', () => {
+    const exact_catalog = resolveCatalog({
+      overrides: {
+        codex: {
+          models: { astra: { price: { input: 1, output: 1 } } }
+        }
+      },
+      warn: () => {}
+    });
+    const projection = sumAttemptUsage(
+      {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'UI-parent-tooltip',
+          runner: 'codex',
+          usage_segments: [
+            {
+              scope_id: 'root:t1',
+              model: 'astra',
+              usage: { input_tokens: 10, output_tokens: 1 }
+            }
+          ],
+          codex_children: [
+            {
+              thread_id: 'child',
+              usage_segments: [
+                {
+                  scope_id: 'child:t1',
+                  model: 'astra',
+                  usage: { input_tokens: 20, output_tokens: 2 }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      'UI-parent-tooltip',
+      exact_catalog
+    );
+
+    expect(providerUsageBadges(projection)[0].tooltip).toContain(
+      '부모 직접 τ 11 · $0.000011'
+    );
+  });
+
   test('drops an ambiguous wider same-turn receipt but includes a disjoint turn', () => {
     const attempt = {
       attempt_id: 'a1',
@@ -1483,8 +1551,9 @@ describe('leg pricing and partial-cost display (preset-compare §1.3)', () => {
     const merged = mergeUsageProjections([priced, unpriced]);
 
     expect(formatCost(merged?.providers.codex)).toBe(
-      '$3.00 (+1 leg 단가 없음)'
+      '$3.00 (+1 leg 단가 없음) · 부분 집계'
     );
+    expect(merged?.providers.codex?.partial_reasons).toContain('price_unknown');
   });
 
   test('marks each leg with the basis its price came from', () => {

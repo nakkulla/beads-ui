@@ -147,6 +147,38 @@ describe('worker/session-observation', () => {
     ]);
   });
 
+  test('keeps the original model when a response repeats after a context change', () => {
+    const response = {
+      type: 'token_usage_record',
+      timestamp: '2026-09-15T00:00:01.000Z',
+      payload: {
+        thread_id: 'root',
+        turn_id: 't1',
+        response_id: 'r1',
+        usage: { input_tokens: 10, output_tokens: 1 }
+      }
+    };
+    const records = [
+      { type: 'session_meta', payload: { id: 'root' } },
+      { type: 'turn_context', payload: { turn_id: 't1', model: 'astra' } },
+      response,
+      { type: 'turn_context', payload: { turn_id: 't1', model: 'sol' } },
+      response
+    ];
+
+    const observed = foldSessionObservation(
+      'codex',
+      records.map((record) => JSON.stringify(record)).join('\n')
+    );
+
+    expect(observed.usage_legs).toEqual([
+      expect.objectContaining({
+        model: 'astra',
+        usage: { input_tokens: 10, output_tokens: 1 }
+      })
+    ]);
+  });
+
   test('excludes a conflicting response contribution and preserves its reason', () => {
     const base = {
       timestamp: '2026-09-15T00:00:01.000Z',
@@ -418,7 +450,7 @@ describe('worker/session-observation', () => {
     ]);
   });
 
-  test('uses turn.completed as the authoritative value for its current turn', () => {
+  test('uses turn.completed as a cumulative contrast without direct attribution', () => {
     const rows = [
       { type: 'session_meta', payload: { id: 'root' } },
       { type: 'turn_context', payload: { turn_id: 't1', model: 'model-a' } },
@@ -445,12 +477,43 @@ describe('worker/session-observation', () => {
       `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`
     );
 
-    expect(observed.usage_legs).toHaveLength(1);
-    expect(observed.usage_legs[0].usage).toMatchObject({
+    expect(observed.usage).toMatchObject({
       input_tokens: 12,
       cache_read_input_tokens: 4,
       output_tokens: 2
     });
+    let attributed_input = 0;
+    for (const leg of observed.usage_legs) {
+      attributed_input += Number(leg.usage.input_tokens || 0);
+    }
+    expect(attributed_input).toBe(12);
+  });
+
+  test('keeps the latest cumulative turn completion instead of summing it', () => {
+    const rows = [
+      { type: 'session_meta', payload: { id: 'root' } },
+      { type: 'turn_context', payload: { turn_id: 't1', model: 'astra' } },
+      { type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 0 } },
+      { type: 'turn_context', payload: { turn_id: 't2', model: 'astra' } },
+      { type: 'turn.completed', usage: { input_tokens: 30, output_tokens: 0 } }
+    ];
+
+    const observed = foldSessionObservation(
+      'codex',
+      `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`
+    );
+
+    expect(observed.usage).toMatchObject({
+      input_tokens: 30,
+      output_tokens: 0
+    });
+    expect(observed.usage_legs).toEqual([
+      expect.objectContaining({
+        usage: { input_tokens: 30, output_tokens: 0 },
+        partial: true,
+        partial_reasons: ['attempt_boundary_unproven']
+      })
+    ]);
   });
 
   test('keeps an unknown thread-total residual as an unpriced partial segment', () => {
@@ -718,7 +781,7 @@ describe('worker/session-observation', () => {
     fs.renameSync(replacement, file);
     tail.pump();
 
-    const observed = store.get('/workspace', 'A');
+    const observed = /** @type {any} */ (store.get('/workspace', 'A'));
     expect(observed?.usage_legs).toHaveLength(1);
     expect(observed?.usage_legs[0]).toMatchObject({
       turn_id: 'new',
@@ -921,6 +984,103 @@ describe('worker/session-observation', () => {
     ).toBe(true);
     fs.rmSync(dir, { recursive: true, force: true });
     vi.useRealTimers();
+  });
+
+  test('excludes root and child response conflicts in a direct live publish', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-direct-owner-'));
+    const root_file = path.join(dir, 'rollout-direct-root.jsonl');
+    const child_file = path.join(dir, 'rollout-direct-child.jsonl');
+    /** @param {Record<string, any>} record */
+    const line = (record) => `${JSON.stringify(record)}\n`;
+    fs.writeFileSync(
+      root_file,
+      line({ type: 'session_meta', payload: { id: 'direct-root' } }) +
+        line({
+          type: 'turn_context',
+          payload: { turn_id: 't1', model: 'astra' }
+        }) +
+        line({
+          timestamp: '2026-09-15T00:00:01.000Z',
+          type: 'token_usage_record',
+          payload: {
+            thread_id: 'direct-root',
+            turn_id: 't1',
+            response_id: 'shared-live',
+            usage: { input_tokens: 10, output_tokens: 1 }
+          }
+        }) +
+        line({
+          timestamp: '2026-09-15T00:00:02.000Z',
+          type: 'token_usage_record',
+          payload: {
+            thread_id: 'direct-root',
+            turn_id: 't1',
+            response_id: 'safe-live',
+            usage: { input_tokens: 5, output_tokens: 1 }
+          }
+        })
+    );
+    fs.writeFileSync(
+      child_file,
+      line({
+        type: 'session_meta',
+        payload: {
+          id: 'direct-child',
+          parent_thread_id: 'direct-root',
+          thread_source: 'subagent'
+        }
+      }) +
+        line({
+          type: 'turn_context',
+          payload: { turn_id: 'ct1', model: 'astra' }
+        }) +
+        line({
+          timestamp: '2026-09-15T00:00:01.000Z',
+          type: 'token_usage_record',
+          payload: {
+            thread_id: 'direct-child',
+            turn_id: 'ct1',
+            response_id: 'shared-live',
+            usage: { input_tokens: 10, output_tokens: 1 }
+          }
+        })
+    );
+    const direct_child_mtime = new Date('2026-09-15T00:00:03.000Z');
+    fs.utimesSync(child_file, direct_child_mtime, direct_child_mtime);
+    const store = createSessionObservationStore({
+      createReader: () => ({
+        start() {},
+        stop() {},
+        pump() {},
+        drain() {},
+        offset: () => 0
+      })
+    });
+
+    store.reconcile('/workspace', [
+      {
+        bead_id: 'A',
+        provider: 'codex',
+        session_id: 'direct-root',
+        file: root_file
+      }
+    ]);
+
+    const observed = /** @type {any} */ (store.get('/workspace', 'A'));
+    expect(observed.usage).toMatchObject({ input_tokens: 5, output_tokens: 1 });
+    expect(observed.usage_legs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          usage: { input_tokens: 5, output_tokens: 1 }
+        }),
+        expect.objectContaining({ partial_reasons: ['response_conflict'] })
+      ])
+    );
+    expect(observed.delegations[0].usage_partial_reasons).toContain(
+      'response_conflict'
+    );
+    store.clear();
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   test('applies each direct record once and coalesces append notifications', () => {
@@ -1225,6 +1385,88 @@ describe('worker/session-observation', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  test('merges historical children by thread without erasing missing stored usage', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-worker-merge-'));
+    const dir = path.join(root, '2026', '09', '15');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'rollout-merge-root.jsonl'),
+      `${JSON.stringify({ timestamp: '2026-09-15T00:00:00.000Z', type: 'session_meta', payload: { id: 'merge-root' } })}\n`
+    );
+    const child_file = path.join(dir, 'rollout-observed-child.jsonl');
+    fs.writeFileSync(
+      child_file,
+      `${JSON.stringify({ timestamp: '2026-09-15T00:00:01.000Z', type: 'session_meta', payload: { id: 'observed-child', parent_thread_id: 'merge-root', thread_source: 'subagent' } })}\n${JSON.stringify({ timestamp: '2026-09-15T00:00:02.000Z', type: 'turn_context', payload: { turn_id: 'ct1', model: 'astra' } })}\n${JSON.stringify({ timestamp: '2026-09-15T00:00:03.000Z', type: 'token_usage_record', payload: { thread_id: 'observed-child', turn_id: 'ct1', response_id: 'observed-r1', usage: { input_tokens: 7, output_tokens: 1 } } })}\n`
+    );
+    const child_mtime = new Date('2026-09-15T00:00:04.000Z');
+    fs.utimesSync(child_file, child_mtime, child_mtime);
+    /**
+     * @param {string} thread_id - Child thread.
+     * @param {number} input_tokens - Stored input.
+     */
+    const saved_segment = (thread_id, input_tokens) => ({
+      scope_id: `thread:${thread_id}:saved`,
+      turn_id: 'saved',
+      model: 'astra',
+      usage: { input_tokens, output_tokens: 0 }
+    });
+    const store = createWorkerSessionObservationStore({
+      sessionsRootFor: () => root
+    });
+    const attempt = {
+      attempt_id: 'a-merge',
+      runner: 'codex',
+      session_id: 'merge-root',
+      started_at: Date.parse('2026-09-15T00:00:00.000Z'),
+      finished_at: Date.parse('2026-09-15T00:01:00.000Z'),
+      status: 'done',
+      codex_children: [
+        {
+          thread_id: 'observed-child',
+          usage: { input_tokens: 1, output_tokens: 0 },
+          usage_segments: [saved_segment('observed-child', 1)]
+        },
+        {
+          thread_id: 'missing-child',
+          usage: { input_tokens: 20, output_tokens: 0 },
+          usage_segments: [saved_segment('missing-child', 20)]
+        },
+        { thread_id: 'usage-less-child', usage: null, usage_segments: [] }
+      ]
+    };
+
+    await store.prepareHistorical('/workspace', attempt);
+
+    const children = /** @type {any[]} */ (
+      store.get('/workspace', 'a-merge')?.codex_children || []
+    );
+    expect(
+      children.find(
+        (/** @type {any} */ child) => child.thread_id === 'observed-child'
+      ).usage
+    ).toMatchObject({ input_tokens: 7, output_tokens: 1 });
+    expect(
+      children.find(
+        (/** @type {any} */ child) => child.thread_id === 'missing-child'
+      )
+    ).toMatchObject({
+      usage: { input_tokens: 20, output_tokens: 0 },
+      usage_partial: true,
+      usage_partial_reasons: expect.arrayContaining(['usage_missing'])
+    });
+    expect(
+      children.find(
+        (/** @type {any} */ child) => child.thread_id === 'usage-less-child'
+      )
+    ).toMatchObject({
+      usage: null,
+      usage_partial: true,
+      usage_partial_reasons: expect.arrayContaining(['usage_missing'])
+    });
+    store.clear();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
   test('does not expire a historical value after a live observer takes ownership', async () => {
     vi.useFakeTimers();
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-worker-live-'));
@@ -1358,6 +1600,30 @@ describe('worker/session-observation', () => {
       status: 'done'
     };
 
+    const running = /** @type {any} */ (
+      store.observe('/workspace', {
+        ...attempt,
+        finished_at: null,
+        status: 'running'
+      })
+    );
+    expect(running.usage).toMatchObject({ input_tokens: 5, output_tokens: 1 });
+    expect(running.usage_segments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ partial_reasons: ['response_conflict'] })
+      ])
+    );
+
+    const terminal = /** @type {any} */ (
+      store.observe('/workspace', attempt, { parent_terminated: true })
+    );
+    expect(terminal.usage).toMatchObject({ input_tokens: 5, output_tokens: 1 });
+    expect(terminal.usage_segments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ partial_reasons: ['response_conflict'] })
+      ])
+    );
+    store.delete('/workspace', 'a-owner');
     await store.prepareHistorical('/workspace', attempt);
 
     expect(store.get('/workspace', 'a-owner')?.usage).toMatchObject({

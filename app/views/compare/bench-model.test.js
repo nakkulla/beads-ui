@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'vitest';
+import { attemptUsageSummary } from '../../../server/worker/compare-projection.js';
+import { resolveCatalog } from '../../../server/worker/runner-catalog.js';
 import {
   benchPassCaret,
   benchPresetGroups,
@@ -152,6 +154,42 @@ describe('benchPresetGroups', () => {
       }),
       makeRow('a2')
     ]);
+
+    expect(groups[0].cost_usd).toMatchObject({
+      median: 1,
+      partial: true,
+      partial_count: 1
+    });
+  });
+
+  test('marks a benchmark median partial for a known unpriced model leg', () => {
+    const catalog = resolveCatalog({
+      overrides: {
+        codex: {
+          models: { priced: { price: { input: 1, output: 1 } } }
+        }
+      },
+      warn: () => {}
+    });
+    const usage = attemptUsageSummary(
+      {
+        attempt_id: 'a1',
+        runner: 'codex',
+        usage_segments: [
+          {
+            model: 'priced',
+            usage: { input_tokens: 1_000_000, output_tokens: 0 }
+          },
+          {
+            model: 'known-unpriced',
+            usage: { input_tokens: 10, output_tokens: 0 }
+          }
+        ]
+      },
+      catalog
+    );
+
+    const groups = benchPresetGroups(makeRun(), [makeRow('a1', { usage })]);
 
     expect(groups[0].cost_usd).toMatchObject({
       median: 1,

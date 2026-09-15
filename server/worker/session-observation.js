@@ -14,6 +14,10 @@ import {
   createIncrementalCodexChildObserver,
   readCodexChildRecords
 } from './codex-children/reader.js';
+import {
+  createCodexResponseLedger,
+  registerCodexResponseRecord
+} from './codex-children/response-ledger.js';
 import { normalizeCodexChildUsage } from './codex-children/rollout.js';
 import { codexRolloutFilePath } from './codex-effort-observer.js';
 import { createDelegationStore } from './delegation-store.js';
@@ -62,34 +66,37 @@ export function createWorkerSessionObservationStore(options = {}) {
     if (observed.root_file === null) {
       return null;
     }
-    const conflict_ids = conflictingResponseIds(observed.records);
+    const response_ledger = createCodexResponseLedger();
+    for (const entry of observed.records) {
+      const at =
+        typeof entry.record.timestamp === 'string'
+          ? Date.parse(entry.record.timestamp)
+          : NaN;
+      if (
+        !Number.isFinite(at) ||
+        (Number.isFinite(attempt.started_at) && at < attempt.started_at) ||
+        (Number.isFinite(attempt.finished_at) && at >= attempt.finished_at)
+      ) {
+        continue;
+      }
+      registerCodexResponseRecord(
+        response_ledger,
+        entry.thread_id,
+        entry.record
+      );
+    }
     const root_records = observed.records
       .filter((entry) => entry.thread_id === attempt.session_id)
-      .map((entry) => entry.record)
-      .filter((record) => {
-        const response_id = responseIdOf(record);
-        return response_id === null || !conflict_ids.has(response_id);
-      });
+      .map((entry) => entry.record);
     const usage_segments = /** @type {Array<Record<string, any>>} */ (
       foldCodexAttemptUsage(
         root_records,
         Number.isFinite(attempt.started_at) ? attempt.started_at : null,
-        Number.isFinite(attempt.finished_at) ? attempt.finished_at : null
+        Number.isFinite(attempt.finished_at) ? attempt.finished_at : null,
+        response_ledger,
+        attempt.session_id
       )
     );
-    if (conflict_ids.size > 0) {
-      usage_segments.push({
-        provider: 'codex',
-        role: 'orchestrator',
-        attempt_id: `session:${attempt.session_id}`,
-        scope_id: `thread:${attempt.session_id}:conflict:window:${attempt.started_at ?? 'open'}:${attempt.finished_at ?? 'open'}`,
-        turn_id: 'unattributed',
-        model: null,
-        usage: {},
-        partial: true,
-        partial_reasons: ['response_conflict']
-      });
-    }
     const usage = sumUsage(
       usage_segments.map((/** @type {any} */ leg) => leg.usage)
     );
@@ -98,8 +105,13 @@ export function createWorkerSessionObservationStore(options = {}) {
       records: observed.records,
       attempt_started_at: attempt.started_at ?? null,
       attempt_ended_at: attempt.finished_at ?? null,
-      parent_terminated: true
+      parent_terminated: true,
+      responseLedger: response_ledger
     });
+    const merged_children = mergeHistoricalChildren(
+      Array.isArray(attempt.codex_children) ? attempt.codex_children : [],
+      codex_children
+    );
     return {
       usage:
         usage_segments.length > 0 || !attempt.usage ? usage : attempt.usage,
@@ -108,8 +120,8 @@ export function createWorkerSessionObservationStore(options = {}) {
           ? usage_segments
           : attempt.usage_segments,
       codex_children:
-        codex_children.length > 0 || !Array.isArray(attempt.codex_children)
-          ? codex_children
+        merged_children.length > 0 || !Array.isArray(attempt.codex_children)
+          ? merged_children
           : attempt.codex_children
     };
   }
@@ -175,8 +187,15 @@ export function createWorkerSessionObservationStore(options = {}) {
         if (!snapshot) {
           return null;
         }
-        const current = createCodexAccumulator();
-        const baseline = createCodexAccumulator();
+        const response_ledger = createCodexResponseLedger();
+        const current = createCodexAccumulator(
+          response_ledger,
+          attempt.session_id
+        );
+        const baseline = createCodexAccumulator(
+          response_ledger,
+          attempt.session_id
+        );
         /** @param {Record<string, any>} record */
         const apply = (record) => {
           held.current.apply(record);
@@ -199,6 +218,7 @@ export function createWorkerSessionObservationStore(options = {}) {
           baseline,
           apply,
           boundary_unproven: false,
+          response_ledger,
           reader: null,
           children: createIncrementalCodexChildObserver({
             root_thread_id: attempt.session_id,
@@ -206,6 +226,7 @@ export function createWorkerSessionObservationStore(options = {}) {
             sessions_root,
             started_at: attempt.started_at,
             ended_at: attempt.finished_at,
+            responseLedger: response_ledger,
             createReader: make_reader,
             readSnapshot: read_snapshot
           })
@@ -240,8 +261,15 @@ export function createWorkerSessionObservationStore(options = {}) {
             }
           },
           onReset() {
-            held.current = createCodexAccumulator();
-            held.baseline = createCodexAccumulator();
+            held.response_ledger.resetThread(attempt.session_id);
+            held.current = createCodexAccumulator(
+              held.response_ledger,
+              attempt.session_id
+            );
+            held.baseline = createCodexAccumulator(
+              held.response_ledger,
+              attempt.session_id
+            );
             held.boundary_unproven = false;
             held.children.resetRoot();
           }
@@ -264,6 +292,27 @@ export function createWorkerSessionObservationStore(options = {}) {
       );
       const usage_segments = current.usage_legs.flatMap(
         (/** @type {any} */ leg) => {
+          if (
+            leg.partial === true &&
+            !Object.values(leg.usage || {}).some((value) =>
+              Number.isFinite(value)
+            )
+          ) {
+            return [
+              {
+                ...leg,
+                ...(leg.scope_id
+                  ? {
+                      scope_id: attemptScopeId(
+                        leg.scope_id,
+                        attempt.started_at,
+                        attempt.finished_at
+                      )
+                    }
+                  : {})
+              }
+            ];
+          }
           const old = prior.get(`${leg.turn_id}\0${leg.model}`);
           if (!old) {
             return [
@@ -494,6 +543,81 @@ export function createWorkerSessionObservationStore(options = {}) {
   return api;
 }
 
+/** @param {Record<string, any>|null|undefined} child */
+function childHasDirectUsage(child) {
+  if (
+    Array.isArray(child?.usage_segments) &&
+    child.usage_segments.some((segment) =>
+      Object.values(segment?.usage || {}).some((value) =>
+        Number.isFinite(value)
+      )
+    )
+  ) {
+    return true;
+  }
+  return Object.values(child?.usage || {}).some((value) =>
+    Number.isFinite(value)
+  );
+}
+
+/**
+ * Refresh historical children by thread without erasing stored direct evidence
+ * when one linked rollout disappeared or was truncated before its usage rows.
+ *
+ * @param {Array<Record<string, any>>} saved_children
+ * @param {Array<Record<string, any>>} observed_children
+ */
+function mergeHistoricalChildren(saved_children, observed_children) {
+  const observed_by_thread = new Map(
+    observed_children.map((child) => [child.thread_id, child])
+  );
+  /** @type {Array<Record<string, any>>} */
+  const merged = [];
+  for (const saved of saved_children) {
+    const observed = observed_by_thread.get(saved.thread_id);
+    observed_by_thread.delete(saved.thread_id);
+    if (!observed) {
+      merged.push({
+        ...saved,
+        usage_partial: true,
+        usage_partial_reasons: [
+          ...new Set([
+            ...(Array.isArray(saved.usage_partial_reasons)
+              ? saved.usage_partial_reasons
+              : []),
+            'usage_missing'
+          ])
+        ]
+      });
+      continue;
+    }
+    if (childHasDirectUsage(observed) || !childHasDirectUsage(saved)) {
+      merged.push(observed);
+      continue;
+    }
+    merged.push({
+      ...saved,
+      ...observed,
+      usage: saved.usage,
+      usage_segments: saved.usage_segments,
+      usage_partial: true,
+      usage_partial_reasons: [
+        ...new Set([
+          ...(Array.isArray(saved.usage_partial_reasons)
+            ? saved.usage_partial_reasons
+            : []),
+          ...(Array.isArray(observed.usage_partial_reasons)
+            ? observed.usage_partial_reasons
+            : []),
+          'usage_missing'
+        ])
+      ]
+    });
+  }
+  merged.push(...observed_by_thread.values());
+  return merged;
+}
+
 /** @param {unknown} value */
 function objectOf(value) {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -529,51 +653,6 @@ function codexUsage(raw) {
   };
 }
 
-/** @param {Record<string, any>} record */
-function responseIdOf(record) {
-  const payload = objectOf(record?.payload);
-  return record?.type === 'token_usage_record' &&
-    typeof payload?.response_id === 'string'
-    ? payload.response_id
-    : null;
-}
-
-/**
- * Find response identities claimed by more than one owner or value. The raw
- * identity ledger stays local; callers receive only an empty partial marker.
- *
- * @param {Array<{ thread_id: string, record: Record<string, any> }>} records
- */
-function conflictingResponseIds(records) {
-  /** @type {Map<string, { owner: string, usage: Record<string, number> }>} */
-  const seen = new Map();
-  /** @type {Set<string>} */
-  const conflicts = new Set();
-  for (const entry of records) {
-    const response_id = responseIdOf(entry.record);
-    const payload = objectOf(entry.record?.payload);
-    const usage = codexUsage(payload?.usage);
-    if (!response_id || !usage) {
-      continue;
-    }
-    const owner =
-      typeof payload?.thread_id === 'string'
-        ? payload.thread_id
-        : entry.thread_id;
-    const prior = seen.get(response_id);
-    if (
-      prior &&
-      (prior.owner !== owner ||
-        JSON.stringify(prior.usage) !== JSON.stringify(usage))
-    ) {
-      conflicts.add(response_id);
-    } else if (!prior) {
-      seen.set(response_id, { owner, usage });
-    }
-  }
-  return conflicts;
-}
-
 /** @param {any} message - Claude assistant message. */
 function claudeMessageUsage(message) {
   if (!message?.usage || typeof message.usage !== 'object') {
@@ -600,7 +679,14 @@ function claudeMessageUsage(message) {
     : null;
 }
 
-function createCodexAccumulator() {
+/**
+ * @param {ReturnType<typeof createCodexResponseLedger>} [response_ledger]
+ * @param {string|null} [source_thread_id]
+ */
+function createCodexAccumulator(
+  response_ledger = createCodexResponseLedger(),
+  source_thread_id = null
+) {
   /** @type {string|null} */
   let session_id = null;
   /** @type {string|null} */
@@ -613,8 +699,6 @@ function createCodexAccumulator() {
   const turns = new Map();
   /** @type {Map<string, { usage: Record<string, number>, turn_id: string|null, model: string|null, at: number|null, owner: string|null }>} */
   const responses = new Map();
-  /** @type {Set<string>} */
-  const response_conflicts = new Set();
   /** @type {Record<string, number>|null} */
   let thread_usage = null;
   /** @param {Record<string, any>} record */
@@ -645,6 +729,11 @@ function createCodexAccumulator() {
       return;
     }
     if (record.type === 'token_usage_record' && payload) {
+      const response_id = registerCodexResponseRecord(
+        response_ledger,
+        source_thread_id || session_id || 'unknown',
+        record
+      );
       if (
         session_id &&
         typeof payload.thread_id === 'string' &&
@@ -654,40 +743,25 @@ function createCodexAccumulator() {
       }
       const turn_id =
         typeof payload.turn_id === 'string' ? payload.turn_id : current_turn;
-      const response_id =
-        typeof payload.response_id === 'string' &&
-        payload.response_id.length > 0
-          ? payload.response_id
-          : null;
       const direct_usage = codexUsage(payload.usage);
-      if (response_id && direct_usage) {
+      if (response_id && direct_usage && !responses.has(response_id)) {
         const owner =
           typeof payload.thread_id === 'string'
             ? payload.thread_id
             : session_id;
-        const prior = responses.get(response_id);
-        if (
-          prior &&
-          (JSON.stringify(prior.usage) !== JSON.stringify(direct_usage) ||
-            prior.owner !== owner)
-        ) {
-          responses.delete(response_id);
-          response_conflicts.add(response_id);
-        } else if (!prior && !response_conflicts.has(response_id)) {
-          const at =
-            typeof record.timestamp === 'string'
-              ? Date.parse(record.timestamp)
-              : NaN;
-          responses.set(response_id, {
-            usage: direct_usage,
-            turn_id,
-            model: turn_id
-              ? (turn_models.get(turn_id) ?? current_model)
-              : current_model,
-            at: Number.isFinite(at) ? at : null,
-            owner
-          });
-        }
+        const at =
+          typeof record.timestamp === 'string'
+            ? Date.parse(record.timestamp)
+            : NaN;
+        responses.set(response_id, {
+          usage: direct_usage,
+          turn_id,
+          model: turn_id
+            ? (turn_models.get(turn_id) ?? current_model)
+            : current_model,
+          at: Number.isFinite(at) ? at : null,
+          owner
+        });
       }
       const turn_usage = codexUsage(payload.turn_token_usage ?? payload.usage);
       if (turn_id && turn_usage) {
@@ -703,17 +777,23 @@ function createCodexAccumulator() {
     }
     if (record.type === 'turn.completed') {
       const completed = codexUsage(record.usage);
-      if (current_turn && completed) {
-        turns.set(current_turn, completed);
+      if (completed) {
+        thread_usage = completed;
       }
     }
   }
   function snapshot() {
     /** @type {Array<Record<string, any>>} */
     const usage_legs = [];
-    if (responses.size > 0 || response_conflicts.size > 0) {
+    const has_response_conflict = response_ledger.hasConflictFor(
+      source_thread_id || session_id || 'unknown'
+    );
+    if (responses.size > 0 || has_response_conflict) {
       const grouped = new Map();
-      for (const response of responses.values()) {
+      for (const [response_id, response] of responses) {
+        if (!response_ledger.isValid(response_id)) {
+          continue;
+        }
         const key = `${response.turn_id || 'unknown'}\0${response.model || 'unknown'}`;
         let segment = grouped.get(key);
         if (!segment) {
@@ -747,7 +827,7 @@ function createCodexAccumulator() {
         }
       }
       usage_legs.push(...grouped.values());
-      if (response_conflicts.size > 0) {
+      if (has_response_conflict) {
         usage_legs.push({
           provider: 'codex',
           role: 'orchestrator',
@@ -772,7 +852,7 @@ function createCodexAccumulator() {
         });
       }
     }
-    if (thread_usage && response_conflicts.size === 0) {
+    if (thread_usage && !has_response_conflict) {
       /** @type {Record<string, number>} */
       const summed = {};
       for (const leg of usage_legs) {
@@ -797,12 +877,15 @@ function createCodexAccumulator() {
           model: null,
           usage: responses.size > 0 ? {} : residual,
           partial: true,
-          ...(responses.size > 0 ? { partial_reasons: ['cumulative_gap'] } : {})
+          partial_reasons:
+            responses.size > 0
+              ? ['cumulative_gap']
+              : ['attempt_boundary_unproven']
         });
       }
     }
     const usage =
-      responses.size > 0 || response_conflicts.size > 0
+      responses.size > 0 || has_response_conflict
         ? sumUsage(usage_legs.map((leg) => leg.usage))
         : (thread_usage ?? sumUsage(usage_legs.map((leg) => leg.usage)));
     if (
@@ -831,9 +914,13 @@ function sumUsage(rows) {
   return Object.keys(total).length > 0 ? total : null;
 }
 
-/** @param {Array<Record<string, any>>} records */
-function foldCodex(records) {
-  const accumulator = createCodexAccumulator();
+/**
+ * @param {Array<Record<string, any>>} records
+ * @param {ReturnType<typeof createCodexResponseLedger>} [response_ledger]
+ * @param {string|null} [source_thread_id]
+ */
+function foldCodex(records, response_ledger, source_thread_id) {
+  const accumulator = createCodexAccumulator(response_ledger, source_thread_id);
   for (const record of records) {
     accumulator.apply(record);
   }
@@ -873,7 +960,28 @@ export function observeCodexRootUsage(attempt) {
   const root_records = records
     .filter((entry) => entry.thread_id === attempt.session_id)
     .map((entry) => entry.record);
-  return foldCodexAttemptUsage(root_records, started_at, ended_at);
+  const response_ledger = createCodexResponseLedger();
+  for (const entry of records) {
+    const at =
+      typeof entry.record.timestamp === 'string'
+        ? Date.parse(entry.record.timestamp)
+        : NaN;
+    if (
+      !Number.isFinite(at) ||
+      (started_at !== null && at < started_at) ||
+      (ended_at !== null && at >= ended_at)
+    ) {
+      continue;
+    }
+    registerCodexResponseRecord(response_ledger, entry.thread_id, entry.record);
+  }
+  return foldCodexAttemptUsage(
+    root_records,
+    started_at,
+    ended_at,
+    response_ledger,
+    attempt.session_id
+  );
 }
 
 /**
@@ -882,8 +990,26 @@ export function observeCodexRootUsage(attempt) {
  * @param {Array<Record<string, any>>} records - Root rollout records.
  * @param {number|null} started_at - Attempt start in milliseconds.
  * @param {number|null} ended_at - Attempt end in milliseconds.
+ * @param {ReturnType<typeof createCodexResponseLedger>} [response_ledger] - Shared owner ledger.
+ * @param {string|null} [source_thread_id] - Rollout file owner.
  */
-export function foldCodexAttemptUsage(records, started_at, ended_at) {
+export function foldCodexAttemptUsage(
+  records,
+  started_at,
+  ended_at,
+  response_ledger = createCodexResponseLedger(),
+  source_thread_id = null
+) {
+  const resolved_source_thread_id =
+    source_thread_id ||
+    records
+      .map((record) => objectOf(record.payload))
+      .find(
+        (payload, index) =>
+          records[index]?.type === 'session_meta' &&
+          typeof payload?.id === 'string'
+      )?.id ||
+    null;
   const boundary_unproven = records.some((record) => {
     if (record.type !== 'token_usage_record') {
       return false;
@@ -900,7 +1026,11 @@ export function foldCodexAttemptUsage(records, started_at, ended_at) {
     const at = Date.parse(record.timestamp);
     return !Number.isFinite(at) || at < ended_at;
   });
-  const current = foldCodex(in_window).usage_legs;
+  const current = foldCodex(
+    in_window,
+    response_ledger,
+    resolved_source_thread_id
+  ).usage_legs;
   if (started_at === null) {
     return current.map((leg) => ({
       ...leg,
@@ -922,12 +1052,27 @@ export function foldCodexAttemptUsage(records, started_at, ended_at) {
       }
       const at = Date.parse(record.timestamp);
       return Number.isFinite(at) && at < started_at;
-    })
+    }),
+    response_ledger,
+    resolved_source_thread_id
   ).usage_legs;
   const baseline = new Map(
     before.map((leg) => [`${leg.turn_id}\0${leg.model}`, leg.usage])
   );
   return current.flatMap((leg) => {
+    if (
+      leg.partial === true &&
+      !Object.values(leg.usage || {}).some((value) => Number.isFinite(value))
+    ) {
+      return [
+        {
+          ...leg,
+          ...(leg.scope_id
+            ? { scope_id: attemptScopeId(leg.scope_id, started_at, ended_at) }
+            : {})
+        }
+      ];
+    }
     const prior = baseline.get(`${leg.turn_id}\0${leg.model}`);
     if (!prior) {
       return [
@@ -1023,10 +1168,19 @@ export function foldSessionObservation(provider, text, context = {}) {
  * @param {'claude'|'codex'} provider
  * @param {{ session_id?: string }} [context]
  * @param {() => void} [on_apply]
+ * @param {ReturnType<typeof createCodexResponseLedger>} [response_ledger]
  */
-function createObservationAccumulator(provider, context = {}, on_apply) {
+function createObservationAccumulator(
+  provider,
+  context = {},
+  on_apply,
+  response_ledger = createCodexResponseLedger()
+) {
   if (provider === 'codex') {
-    let codex = createCodexAccumulator();
+    let codex = createCodexAccumulator(
+      response_ledger,
+      context.session_id || null
+    );
     return {
       /** @param {Record<string, any>} record */
       apply(record) {
@@ -1045,7 +1199,13 @@ function createObservationAccumulator(provider, context = {}, on_apply) {
         };
       },
       reset() {
-        codex = createCodexAccumulator();
+        if (context.session_id) {
+          response_ledger.resetThread(context.session_id);
+        }
+        codex = createCodexAccumulator(
+          response_ledger,
+          context.session_id || null
+        );
       }
     };
   }
@@ -1386,6 +1546,7 @@ export function createSessionObservationStore(options = {}) {
           if (!snapshot) {
             continue;
           }
+          const response_ledger = createCodexResponseLedger();
           /** @type {any} */
           const held = {
             file: target.file,
@@ -1394,8 +1555,10 @@ export function createSessionObservationStore(options = {}) {
             accumulator: createObservationAccumulator(
               target.provider,
               { session_id: target.session_id },
-              options.onApply
+              options.onApply,
+              response_ledger
             ),
+            response_ledger,
             delegations: [],
             projection_json: null,
             observation: null,
@@ -1412,6 +1575,7 @@ export function createSessionObservationStore(options = {}) {
               createReader: make_reader,
               readSnapshot: read_snapshot,
               fs: file_system,
+              responseLedger: response_ledger,
               onChange() {
                 held.delegations = held.child_observer.snapshot();
                 publish(held, false);

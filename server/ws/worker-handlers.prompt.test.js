@@ -4,10 +4,13 @@
  */
 import { describe, expect, test, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({
-  /** @type {Record<string, any>} */
-  attempts: {}
-}));
+const state = vi.hoisted(
+  () =>
+    /** @type {{ attempts: Record<string, any>, prepared: any }} */ ({
+      attempts: {},
+      prepared: null
+    })
+);
 
 vi.mock('../worker/runtime.js', () => ({
   getWorkerRuntime: () => ({
@@ -15,7 +18,11 @@ vi.mock('../worker/runtime.js', () => ({
       snapshot: () => ({ revision: 1, attempts: state.attempts })
     },
     usageStore: { get: () => null },
-    sessionLog: { lastEventAt: () => null }
+    sessionLog: { lastEventAt: () => null },
+    workerSessionObservations: {
+      prepareHistorical: () => null,
+      get: () => state.prepared
+    }
   })
 }));
 
@@ -174,6 +181,37 @@ describe('worker-state push prompt stripping (UI-rxp3 §3)', () => {
     );
 
     expect(/** @type {any} */ (out.a1).attempt_id).toBe('a1');
+  });
+
+  test('overlays prepared child usage when parent usage is absent', () => {
+    state.prepared = {
+      usage: null,
+      usage_segments: [
+        { usage: {}, partial: true, partial_reasons: ['usage_missing'] }
+      ],
+      codex_children: [
+        {
+          thread_id: 'child-only',
+          usage: { input_tokens: 7, output_tokens: 1 }
+        }
+      ]
+    };
+
+    const out = attemptsWithUsage(
+      {
+        attempts: {
+          a1: recordedAttempt({ runner: 'codex', usage: null })
+        }
+      },
+      WS
+    );
+
+    expect(/** @type {any} */ (out.a1).usage).toBeNull();
+    expect(/** @type {any} */ (out.a1).usage_segments).toHaveLength(1);
+    expect(/** @type {any} */ (out.a1).codex_children[0].thread_id).toBe(
+      'child-only'
+    );
+    state.prepared = null;
   });
 });
 

@@ -17,6 +17,10 @@
  *
  * @import { CodexChildSignal, CodexChildUsage } from './rollout.js'
  */
+import {
+  createCodexResponseLedger,
+  registerCodexResponseRecord
+} from './response-ledger.js';
 import { liftCodexChildSignal, rolloutThreadIdentity } from './rollout.js';
 
 /**
@@ -81,7 +85,7 @@ function laterOf(left, right) {
 /**
  * Incrementally fold already-linked rollout records.
  *
- * @param {{ root_thread_id: string, attempt_started_at?: number|null, attempt_ended_at?: number|null }} input
+ * @param {{ root_thread_id: string, attempt_started_at?: number|null, attempt_ended_at?: number|null, responseLedger?: ReturnType<typeof createCodexResponseLedger> }} input
  */
 export function createCodexChildAccumulator(input) {
   const root_thread_id = input.root_thread_id;
@@ -95,16 +99,13 @@ export function createCodexChildAccumulator(input) {
     Number.isFinite(input.attempt_ended_at)
       ? input.attempt_ended_at
       : null;
+  const response_ledger = input.responseLedger || createCodexResponseLedger();
   /** @type {Map<string, { parent_thread_id: string|null, agent_path: string|null }>} */
   const identities = new Map();
   /** @type {Map<string, Array<{ launch_id: string|null, agent_key: string|null, agent_path: string|null, model: string|null }>>} */
   const launches_by_parent = new Map();
   /** @type {Map<string, { row: CodexChildRow, usage_at: number|null, cumulative_usage: CodexChildUsage|null, observed: number, terminal: boolean, terminal_at: number|null, last_start_at: number|null, responses: Map<string, { usage: CodexChildUsage, turn_id: string|null, model: string|null, at: number|null }>, response_conflicts: Set<string> }>} */
   const rows = new Map();
-  /** @type {Map<string, { thread_id: string, usage: CodexChildUsage }>} */
-  const response_owners = new Map();
-  /** @type {Set<string>} */
-  const invalid_responses = new Set();
 
   /** @param {string} thread_id */
   function launchesOf(thread_id) {
@@ -156,28 +157,12 @@ export function createCodexChildAccumulator(input) {
       signal.at !== null &&
       (window_start === null || signal.at >= window_start) &&
       (window_end === null || signal.at < window_end);
-    if (
-      signal.kind === 'usage' &&
-      signal.response_id &&
-      signal.usage &&
-      inside
-    ) {
-      const prior = response_owners.get(signal.response_id);
-      if (
-        prior &&
-        (prior.thread_id !== entry.thread_id ||
-          JSON.stringify(prior.usage) !== JSON.stringify(signal.usage))
-      ) {
-        invalid_responses.add(signal.response_id);
-        const prior_held = rows.get(prior.thread_id);
-        prior_held?.responses.delete(signal.response_id);
-        prior_held?.response_conflicts.add(signal.response_id);
-      } else if (!prior) {
-        response_owners.set(signal.response_id, {
-          thread_id: entry.thread_id,
-          usage: signal.usage
-        });
-      }
+    if (signal.kind === 'usage' && inside) {
+      registerCodexResponseRecord(
+        response_ledger,
+        entry.thread_id,
+        entry.record
+      );
     }
     if (signal.kind === 'spawn' && inside) {
       launchesOf(entry.thread_id).push({
@@ -286,20 +271,7 @@ export function createCodexChildAccumulator(input) {
     ) {
       held.cumulative_usage = signal.cumulative_usage ?? held.cumulative_usage;
       if (signal.response_id) {
-        if (invalid_responses.has(signal.response_id)) {
-          held.responses.delete(signal.response_id);
-          held.response_conflicts.add(signal.response_id);
-          return;
-        }
-        const prior = held.responses.get(signal.response_id);
-        if (
-          prior &&
-          (JSON.stringify(prior.usage) !== JSON.stringify(signal.usage) ||
-            signal.thread_id !== entry.thread_id)
-        ) {
-          held.responses.delete(signal.response_id);
-          held.response_conflicts.add(signal.response_id);
-        } else if (!prior && !held.response_conflicts.has(signal.response_id)) {
+        if (!held.responses.has(signal.response_id)) {
           held.responses.set(signal.response_id, {
             usage: signal.usage,
             turn_id: signal.turn_id ?? null,
@@ -321,7 +293,10 @@ export function createCodexChildAccumulator(input) {
       .filter((held) => reachesRoot(held.row.thread_id))
       .map((held) => {
         const grouped = new Map();
-        for (const response of held.responses.values()) {
+        for (const [response_id, response] of held.responses) {
+          if (!response_ledger.isValid(response_id)) {
+            continue;
+          }
           const key = `${response.turn_id || 'unknown'}\0${response.model || 'unknown'}`;
           let segment = grouped.get(key);
           if (!segment) {
@@ -372,7 +347,7 @@ export function createCodexChildAccumulator(input) {
           usage.total_tokens = usage.input_tokens + usage.output_tokens;
         }
         const partial_reasons = [];
-        if (held.response_conflicts.size > 0) {
+        if (response_ledger.hasConflictFor(held.row.thread_id)) {
           partial_reasons.push('response_conflict');
         }
         if (held.responses.size > 0 && held.cumulative_usage) {
@@ -438,6 +413,7 @@ export function createCodexChildAccumulator(input) {
     snapshot,
     /** @param {string} thread_id - Transcript whose replacement invalidated prior observations. */
     resetThread(thread_id) {
+      response_ledger.resetThread(thread_id);
       identities.delete(thread_id);
       launches_by_parent.delete(thread_id);
       rows.delete(thread_id);
@@ -453,7 +429,8 @@ export function createCodexChildAccumulator(input) {
  *   records: Array<{ thread_id: string, ordinal?: number, record: unknown }>,
  *   attempt_started_at?: number|null,
  *   attempt_ended_at?: number|null,
- *   parent_terminated?: boolean
+ *   parent_terminated?: boolean,
+ *   responseLedger?: ReturnType<typeof createCodexResponseLedger>
  * }} input - `attempt_started_at`/`attempt_ended_at` are the attempt log
  * boundaries: activity outside them belongs to another root turn and never
  * becomes this attempt's row, which is what keeps a REUSED child thread from
