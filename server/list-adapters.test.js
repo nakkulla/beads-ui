@@ -385,6 +385,15 @@ describe('list adapters for subscription types', () => {
               status: 'closed',
               closed_at: '2026-08-03T00:00:00.000Z',
               dependencies: []
+            },
+            {
+              id: 'GATE-1',
+              title: 'external job gate',
+              issue_type: 'gate',
+              await_id: 'a'.repeat(24),
+              await_type: 'human',
+              status: 'open',
+              dependencies: []
             }
           ]
         });
@@ -393,12 +402,13 @@ describe('list adapters for subscription types', () => {
         return asProjectedResponse({
           code: 0,
           stdoutJson: {
-            ready: [{ id: 'OPEN-1' }],
+            ready: [{ id: 'OPEN-1' }, { id: 'GATE-1' }],
             blocked: [
               {
                 id: 'OPEN-1',
                 blocked_by: [{ id: 'UPSTREAM-1' }]
-              }
+              },
+              { id: 'GATE-1', blocked_by: [] }
             ]
           }
         });
@@ -407,10 +417,14 @@ describe('list adapters for subscription types', () => {
     });
 
     const options = { cwd: '/workspace-a', workspace_snapshot: true };
-    const [all, ready, blocked] = await Promise.all([
+    const [all, ready, blocked, gate_detail] = await Promise.all([
       fetchListForSubscription({ type: 'all-issues' }, options),
       fetchListForSubscription({ type: 'ready-issues' }, options),
-      fetchListForSubscription({ type: 'blocked-issues' }, options)
+      fetchListForSubscription({ type: 'blocked-issues' }, options),
+      fetchListForSubscription(
+        { type: 'issue-detail', params: { id: 'GATE-1' } },
+        options
+      )
     ]);
 
     expect(
@@ -428,6 +442,13 @@ describe('list adapters for subscription types', () => {
         blocked_info: { blockers: ['UPSTREAM-1'] }
       })
     ]);
+    expect(gate_detail.ok && gate_detail.items[0]).toMatchObject({
+      id: 'GATE-1',
+      title: 'external job gate',
+      issue_type: 'gate',
+      await_id: 'a'.repeat(24),
+      await_type: 'human'
+    });
   });
 
   test('preserves normalized projection parity across all snapshot list specs', async () => {

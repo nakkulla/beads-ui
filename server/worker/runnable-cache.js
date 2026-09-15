@@ -860,6 +860,9 @@ export function createRunnableCache(options = {}) {
       if (!raw || typeof raw !== 'object') {
         continue;
       }
+      if (/** @type {any} */ (raw).issue_type === 'gate') {
+        continue;
+      }
       const row = /** @type {Record<string, unknown>} */ (raw);
       const explained = blockers_by_id?.get(
         typeof row.id === 'string' ? row.id : String(row.id ?? '')

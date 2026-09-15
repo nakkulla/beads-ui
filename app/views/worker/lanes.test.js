@@ -98,6 +98,105 @@ beforeEach(() => {
   mount = /** @type {HTMLElement} */ (document.getElementById('lane'));
 });
 
+describe('external job wait rows', () => {
+  test('renders gate and consumer navigation without worker operations', () => {
+    render(
+      miniRow(
+        /** @type {any} */ ({
+          kind: 'external_wait',
+          id: 'Analysis-ph3a',
+          gate_id: 'Analysis-ph3a',
+          gate_title: '외부 계산 246416',
+          consumer_id: 'Analysis-xz9d',
+          consumer_title: 'microbiome_bile',
+          root_dir: '/repo',
+          workspace_name: 'analysis',
+          job_id: '246416',
+          job_state: '계산 중',
+          monitor_state: '자동 확인 중',
+          last_observed_at: Date.parse('2026-09-15T00:54:00Z'),
+          next_observation_at: Date.parse('2026-09-15T01:09:00Z')
+        })
+      ),
+      mount
+    );
+
+    expect(mount.textContent).toContain('외부 작업');
+    expect(mount.textContent).toContain('계산 중');
+    expect(mount.textContent).toContain('마지막 확인 시도');
+    expect(mount.querySelectorAll('[data-external-open]')).toHaveLength(2);
+    expect(
+      mount.querySelector(
+        '.worker-mini__start-now, .worker-mini__rowops-remove, .rtile__resume'
+      )
+    ).toBeNull();
+  });
+
+  test('renders a gate-only native row without inventing a consumer', () => {
+    render(
+      miniRow(
+        /** @type {any} */ ({
+          kind: 'external_wait',
+          id: 'Analysis-ph3a',
+          gate_id: 'Analysis-ph3a',
+          gate_title: '외부 계산 246416',
+          consumer_id: null,
+          consumer_title: null,
+          root_dir: '/repo',
+          workspace_name: 'analysis',
+          watch_id: null,
+          job_state: '대기 조건',
+          monitor_state: '감시 정보 없음'
+        })
+      ),
+      mount
+    );
+
+    expect(mount.textContent).toContain('대기 조건');
+    expect(mount.querySelectorAll('[data-external-open]')).toHaveLength(1);
+    expect(mount.textContent).not.toContain('원래 이슈');
+  });
+
+  test('places external rows before ordinary waiting areas', () => {
+    render(
+      waitBody(
+        /** @type {any} */ ({
+          external: { rows: [html`<span>외부 행</span>`], count: 1 },
+          parallel: { rows: [], count: 0, collapsed: true },
+          serial: { lanes: [], collapsed: true }
+        })
+      ),
+      mount
+    );
+
+    expect(
+      mount
+        .querySelector('.worker-wait')
+        ?.firstElementChild?.classList.contains('worker-wait__external')
+    ).toBe(true);
+  });
+
+  test('keeps completed-only external history visible', () => {
+    render(
+      waitBody(
+        /** @type {any} */ ({
+          external: {
+            rows: [],
+            completed: [html`<span>종료된 외부 작업</span>`],
+            count: 0
+          },
+          parallel: { rows: [], count: 0, collapsed: true },
+          serial: { lanes: [], collapsed: true }
+        })
+      ),
+      mount
+    );
+
+    expect(mount.textContent).toContain('종료 확인 1');
+    expect(mount.textContent).toContain('종료된 외부 작업');
+  });
+});
+
 describe('merge progress row', () => {
   test('renders the shared fixed position and progress rail', () => {
     const row = renderRow({
@@ -591,6 +690,23 @@ describe('priority badge', () => {
 });
 
 describe('candidate card', () => {
+  test('renders a verified external wait summary in the dependency slot', () => {
+    const row = renderCandidate({
+      external_wait_count: 1,
+      external_waits: [
+        {
+          gate_id: 'Analysis-ph3a',
+          root_dir: '/repo',
+          job_state: '계산 중',
+          monitor_state: '자동 확인 중'
+        }
+      ]
+    });
+
+    expect(row.querySelector('details.external-wait-summary')).not.toBeNull();
+    expect(row.textContent).toContain('외부 계산 대기 1건');
+  });
+
   test('keeps a described quick_fix candidate draggable with an active queue button', () => {
     const card = renderCandidate({});
     const place = /** @type {HTMLButtonElement} */ (

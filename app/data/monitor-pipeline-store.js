@@ -14,6 +14,10 @@
  * group headers control. It defaults to an empty array rather than null because
  * a server that does not send it is simply a repo list with no controls, which
  * renders fine (fail-quiet).
+ *
+ * `external_waits` stays inside its owning workspace row. The store treats it
+ * like every other optional projection and never invents queue membership or
+ * execution state from it.
  */
 
 /**

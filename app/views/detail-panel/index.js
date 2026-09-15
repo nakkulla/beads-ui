@@ -89,6 +89,7 @@ const PRIORITY_OPTIONS = [0, 1, 2, 3, 4];
  * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: (client_id: string) => void) => () => void }} [issueStores]
  * @property {(type: string, payload: unknown) => Promise<unknown>} [transport]
  * @property {{ get: () => any, set?: (queue: any) => void, subscribe?: (fn: () => void) => () => void }} [queueStore] - Client worker-queue store (source of a bead's attempts).
+ * @property {{ get: () => Array<Record<string, any>>|null, subscribe?: (fn: () => void) => () => void }} [pipelineStore] - Current Monitor projection, including external waits.
  * @property {{ get: () => any, set: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [execPresetStore]
  * @property {{ get: (id: string) => { lines: unknown[] } | null, subscribe: (fn: () => void) => () => void }} [sessionLogStore]
  * @property {() => string | null | undefined} [getWorkspacePath]
@@ -121,6 +122,7 @@ export function createDetailPanel(mount_element, options) {
   const transport = options.transport;
   const onNavigate = options.onNavigate;
   const queueStore = options.queueStore;
+  const pipelineStore = options.pipelineStore;
   const execPresetStore = options.execPresetStore;
   const sessionLogStore = options.sessionLogStore;
 
@@ -1322,6 +1324,15 @@ export function createDetailPanel(mount_element, options) {
     // A new/updated attempt should refresh the session-history list.
     unsubscribe_queue = queueStore.subscribe(() => {
       if (current_id) {
+        doRender();
+      }
+    });
+  }
+  /** @type {null | (() => void)} */
+  let unsubscribe_pipeline = null;
+  if (pipelineStore && typeof pipelineStore.subscribe === 'function') {
+    unsubscribe_pipeline = pipelineStore.subscribe(() => {
+      if (current_id && current?.issue_type === 'gate') {
         doRender();
       }
     });
@@ -2728,6 +2739,161 @@ export function createDetailPanel(mount_element, options) {
         ? Math.max(0, Math.min(4, data.priority))
         : '';
     const description = data.description || '';
+    if (data.issue_type === 'gate') {
+      const root_dir = options.getWorkspacePath?.() || '';
+      const workspace = (pipelineStore?.get() || []).find(
+        (/** @type {Record<string, any>} */ entry) =>
+          entry?.root_dir === root_dir
+      );
+      const external_wait = (workspace?.external_waits || []).find(
+        (/** @type {Record<string, any>} */ entry) => entry?.gate_id === id
+      );
+      const verified_external_wait =
+        external_wait && typeof external_wait.watch_id === 'string'
+          ? external_wait
+          : null;
+      const show_next_observation = !!(
+        verified_external_wait?.next_observation_at &&
+        verified_external_wait.stage !== 'stopped' &&
+        verified_external_wait.stage !== 'complete'
+      );
+      const dependencies = Array.isArray(data.dependencies)
+        ? data.dependencies
+        : [];
+      const dependents = Array.isArray(data.dependents) ? data.dependents : [];
+      return html`<div class="detail-overlay" role="dialog" aria-modal="true">
+        <div class="detail-overlay__backdrop" @click=${() => onClose()}></div>
+        <div class="detail-overlay__panel detail-overlay__panel--gate">
+          <div class="detail-overlay__bar">
+            <button
+              type="button"
+              class="detail-overlay__id"
+              title="ID 복사"
+              @click=${onCopyId}
+            >
+              ${id}
+            </button>
+            <span class="detail-gate__badge">대기 조건</span>
+            <button
+              type="button"
+              class="detail-overlay__close"
+              aria-label="닫기"
+              @click=${() => onClose()}
+            >
+              ✕
+            </button>
+          </div>
+          <div class="detail-title-row">
+            <h2 class="detail-overlay__title">${title}</h2>
+          </div>
+          ${verified_external_wait
+            ? html`<section class="detail-gate__monitor">
+                <strong
+                  >외부 작업의 종료를 시스템이 확인합니다. 직접 닫을 필요가
+                  없습니다.</strong
+                >
+                <div>${verified_external_wait.job_state}</div>
+                <div>
+                  ${verified_external_wait.monitor_state}${verified_external_wait.monitor_reason
+                    ? ` · ${verified_external_wait.monitor_reason}`
+                    : ''}
+                  ${verified_external_wait.stale ? ' · 오래된 자료' : ''}
+                </div>
+                ${verified_external_wait.previous_job_state
+                  ? html`<div>
+                      ${verified_external_wait.previous_job_state}
+                    </div>`
+                  : ''}
+                ${verified_external_wait.last_observed_at
+                  ? html`<div>
+                      마지막 확인 시도
+                      ${formatTimestampLocal(
+                        verified_external_wait.last_observed_at
+                      )}
+                    </div>`
+                  : ''}
+                ${show_next_observation
+                  ? html`<div>
+                      다음 확인
+                      ${formatTimestampLocal(
+                        verified_external_wait.next_observation_at
+                      )}
+                    </div>`
+                  : ''}
+                ${verified_external_wait.completed_at
+                  ? html`<div>
+                      종료
+                      ${formatTimestampLocal(
+                        verified_external_wait.completed_at
+                      )}
+                    </div>`
+                  : ''}
+                ${verified_external_wait.consumer_id
+                  ? html`<div>
+                      원래 이슈
+                      <button
+                        type="button"
+                        class="detail-dep detail-dep--link"
+                        @click=${() =>
+                          onNavigate?.(verified_external_wait.consumer_id)}
+                      >
+                        ${verified_external_wait.consumer_id}
+                      </button>
+                      ${verified_external_wait.consumer_title
+                        ? ` · ${verified_external_wait.consumer_title}`
+                        : ''}
+                    </div>`
+                  : ''}
+                <div>
+                  해제 조건 · 등록된 외부 작업의 종료를 확인하고 대기 조건이
+                  닫힘
+                </div>
+              </section>`
+            : html`<section
+                class="detail-gate__monitor detail-gate__monitor--unknown"
+              >
+                자동 감시 연결을 확인할 자료가 없습니다. 아래 대기 조건 원문과
+                관계를 확인하세요.
+              </section>`}
+          <div class="detail-section-label">상태</div>
+          <div class="detail-kv">
+            <span class="detail-kv__k">status</span>
+            <span class="detail-kv__v">${status}</span>
+          </div>
+          ${timesTemplate(data)}
+          <div class="detail-overlay__section-label">설명</div>
+          <div class="detail-overlay__desc">
+            ${description || '(설명 없음)'}
+          </div>
+          ${notesTemplate(data)}
+          ${dependencies.length > 0 || dependents.length > 0
+            ? html`<div class="detail-section-label">의존성</div>
+                <div class="detail-deps">
+                  ${dependencies.map(
+                    (/** @type {Record<string, any>} */ dep) =>
+                      html`<button
+                        type="button"
+                        class="detail-dep detail-dep--link"
+                        @click=${() => onNavigate?.(dep.id)}
+                      >
+                        ⛓ ${dep.id}
+                      </button>`
+                  )}
+                  ${dependents.map(
+                    (/** @type {Record<string, any>} */ dep) =>
+                      html`<button
+                        type="button"
+                        class="detail-dep detail-dep--link"
+                        @click=${() => onNavigate?.(dep.id)}
+                      >
+                        → ${dep.id}
+                      </button>`
+                  )}
+                </div>`
+            : ''}
+        </div>
+      </div>`;
+    }
     // 대기 배치 (§6.2·§6.3): 큐 스냅샷이 없으면(워커 큐를 구독하지 않는 화면)
     // 그리지 않고, 닫힌 bead에도 그리지 않는다 — 넣을 자리가 없는 처분이다.
     const queue_snapshot = queueStore ? queueStore.get() : null;
@@ -2955,6 +3121,10 @@ export function createDetailPanel(mount_element, options) {
       if (unsubscribe_queue) {
         unsubscribe_queue();
         unsubscribe_queue = null;
+      }
+      if (unsubscribe_pipeline) {
+        unsubscribe_pipeline();
+        unsubscribe_pipeline = null;
       }
       if (unsubscribe_presets) {
         unsubscribe_presets();

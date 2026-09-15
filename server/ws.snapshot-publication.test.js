@@ -41,7 +41,15 @@ vi.mock('./workflow-enrich.js', async (importOriginal) => {
   };
 });
 
-const ALL_ARGS = ['list', '--json', '--tree=false', '--all', '--limit', '0'];
+const ALL_ARGS = [
+  'list',
+  '--json',
+  '--tree=false',
+  '--all',
+  '--limit',
+  '0',
+  '--include-gates'
+];
 const READY_ARGS = ['ready', '--explain', '--limit', '0', '--json'];
 
 beforeEach(() => {

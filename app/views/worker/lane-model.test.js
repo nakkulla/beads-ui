@@ -150,6 +150,92 @@ describe('monitor lane exclusive priority (UI-qrfo §8)', () => {
   });
 });
 
+describe('external wait projection', () => {
+  test('keeps external waits outside worker lanes and decorates the consumer', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [{ bead_id: 'A-1', title: 'consumer', admitted: true }],
+          external_waits: [
+            {
+              kind: 'external_wait',
+              root_dir: WS_A,
+              workspace_name: 'repo-a',
+              gate_id: 'A-gate',
+              gate_title: 'external job',
+              consumer_id: 'A-1',
+              consumer_title: 'consumer',
+              watch_id: 'a'.repeat(24),
+              job_id: '42',
+              stage: 'active',
+              gate_open: true,
+              recent_complete: false,
+              job_state: '실행 대기',
+              previous_job_state: null,
+              monitor_state: '자동 확인 중',
+              monitor_reason: null,
+              overdue: false,
+              last_observed_at: 1,
+              next_observation_at: 2,
+              completed_at: null,
+              recovery_needed: false
+            }
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.external_waits).toEqual([
+      expect.objectContaining({ id: 'A-gate', lane: 'external_wait' })
+    ]);
+    expect(lanes.queue).toHaveLength(0);
+    expect(lanes.running).toHaveLength(0);
+    expect(lanes.runnable[0]).toMatchObject({
+      external_wait_count: 1,
+      external_waits: [expect.objectContaining({ gate_id: 'A-gate' })]
+    });
+  });
+
+  test('does not decorate a consumer from an unverified native gate', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [{ bead_id: 'A-1', title: 'consumer', admitted: true }],
+          external_waits: [
+            {
+              kind: 'external_wait',
+              root_dir: WS_A,
+              workspace_name: 'repo-a',
+              gate_id: 'A-gate',
+              gate_title: 'native gate',
+              consumer_id: 'A-1',
+              consumer_title: 'consumer',
+              watch_id: null,
+              job_id: null,
+              stage: null,
+              gate_open: true,
+              recent_complete: false,
+              job_state: '대기 조건',
+              previous_job_state: null,
+              monitor_state: '감시 정보 없음',
+              monitor_reason: null,
+              overdue: false,
+              last_observed_at: null,
+              next_observation_at: null,
+              completed_at: null,
+              recovery_needed: false
+            }
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].external_wait_count).toBeUndefined();
+  });
+});
+
 describe('monitor 실행가능 repo sections (UI-eey2 §5)', () => {
   test('groups candidates per repo in workspaces_state order', () => {
     const lanes = buildLanes(

@@ -302,7 +302,9 @@ function projectWorkspaceSnapshot(spec, snapshot, options) {
   switch (type) {
     case 'all-issues': {
       items = limitSnapshotItems(
-        snapshot.all.filter((item) => item.status !== 'closed'),
+        snapshot.all.filter(
+          (item) => item.status !== 'closed' && item.issue_type !== 'gate'
+        ),
         DEFAULT_LIST_LIMIT
       );
       break;
@@ -425,7 +427,9 @@ function compactDependency(snapshot, id, dependency_type) {
  * @returns {NormalizedIssue[]}
  */
 function projectByStatus(snapshot, status) {
-  return snapshot.all.filter((item) => item.status === status);
+  return snapshot.all.filter(
+    (item) => item.status === status && item.issue_type !== 'gate'
+  );
 }
 
 /**
@@ -451,7 +455,7 @@ function projectReadyIssues(snapshot, root_dir) {
   for (const ready_item of snapshot.ready_explain.ready) {
     const id = String(ready_item.id ?? '');
     const stored = snapshot.id_index.get(id);
-    if (stored) {
+    if (stored && stored.issue_type !== 'gate') {
       items.push(mergeSnapshotIssue(stored, ready_item));
     }
   }
@@ -469,7 +473,7 @@ function projectBlockedIssues(snapshot, root_dir) {
   for (const blocked_item of snapshot.ready_explain.blocked) {
     const id = String(blocked_item.id ?? '');
     const stored = snapshot.id_index.get(id);
-    if (stored) {
+    if (stored && stored.issue_type !== 'gate') {
       dependency_items.push(mergeSnapshotIssue(stored, blocked_item));
     }
   }

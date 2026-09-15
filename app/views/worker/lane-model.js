@@ -20,6 +20,7 @@
  */
 import { RETRY_MAX } from '../../../server/worker/failure-class.js';
 import { priceUsage } from '../../../server/worker/usage-pricing.js';
+import { isExternalWaitObservation } from '../../protocol.js';
 import {
   activeAttemptStates,
   isImplementationAttempt,
@@ -220,7 +221,7 @@ const DONE_KIND_LABELS = {
  *   root_dir: string,
  *   workspace_name: string,
  *   expected_revision: number,
- *   kind?: 'session',
+ *   kind?: 'session'|'external_wait',
  *   non_occupying?: boolean,
  *   attempt_id?: string|null,
  *   run_state?: 'running'|'paused'|'failed'|'parked'|'retry_wait'|'waiting'|'provider_hold',
@@ -266,6 +267,12 @@ const DONE_KIND_LABELS = {
  *   overlap_chips?: OverlapChip[],
  *   scope_state?: 'declared'|'missing',
  *   session_refs?: import('../../../server/worker/session-ref.js').SessionRefView[],
+ *   external_wait_count?: number,
+ *   external_waits?: Array<Record<string, any>>,
+ *   watch_id?: string|null,
+ *   gate_open?: boolean,
+ *   consumer_id?: string|null,
+ *   recent_complete?: boolean,
  *   search_match?: boolean
  * }} LaneItem
  */
@@ -375,6 +382,7 @@ const DONE_KIND_LABELS = {
  * @property {LaneItem[]} running
  * @property {LaneItem[]} pr_wait
  * @property {LaneItem[]} done
+ * @property {LaneItem[]} external_waits - Read-only native-gate observations.
  * @property {LaneItem[]} parallel_rows - 병렬 통합 큐 (UI-e6hw §4.1): 모든
  * visible 레포의 병렬 큐 행을 레포명 → 자기 레포 큐 순서로 이은 평면 목록.
  * @property {Record<string, number>} parallel_raw_length - root_dir → 병렬 큐
@@ -2542,6 +2550,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const queue = [];
   /** @type {LaneItem[]} */
   const done = [];
+  /** @type {LaneItem[]} */
+  const external_waits = [];
   /** @type {Array<{ id: string, root_dir: string, workspace_name: string }>} */
   const all_done_locations = [];
   /** @type {Map<string, LaneItem[]>} */
@@ -2594,6 +2604,25 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
     const root_dir = workspace.root_dir;
     const workspace_name = workspace.name || root_dir;
+    for (const raw_wait of Array.isArray(workspace.external_waits)
+      ? workspace.external_waits
+      : []) {
+      if (!isExternalWaitObservation(raw_wait)) {
+        continue;
+      }
+      external_waits.push({
+        ...raw_wait,
+        kind: 'external_wait',
+        id: raw_wait.gate_id,
+        title: raw_wait.gate_title || raw_wait.gate_id,
+        root_dir,
+        workspace_name,
+        expected_revision: 0,
+        lane: 'external_wait',
+        draggable: false,
+        done: raw_wait.recent_complete === true
+      });
+    }
     const state = state_by_root.get(root_dir);
     const expected_revision =
       state && typeof state.revision === 'number'
@@ -4235,10 +4264,40 @@ export function buildLanes(workspaces, workspaces_state, options) {
     running,
     pr_wait,
     done,
+    external_waits,
     parallel_rows: [],
     parallel_raw_length: Object.fromEntries(raw_queue_length_by_root),
     owner_of: {}
   };
+
+  const open_external_by_consumer = new Map();
+  for (const wait of external_waits) {
+    if (
+      wait.gate_open !== true ||
+      typeof wait.watch_id !== 'string' ||
+      typeof wait.consumer_id !== 'string'
+    ) {
+      continue;
+    }
+    const key = `${wait.root_dir}\u0000${wait.consumer_id}`;
+    const bucket = open_external_by_consumer.get(key) || [];
+    bucket.push(wait);
+    open_external_by_consumer.set(key, bucket);
+  }
+  for (const item of [
+    ...model.queue,
+    ...model.runnable,
+    ...model.running,
+    ...model.pr_wait
+  ]) {
+    const waits = open_external_by_consumer.get(
+      `${item.root_dir}\u0000${item.id}`
+    );
+    if (waits && waits.length > 0) {
+      item.external_wait_count = waits.length;
+      item.external_waits = waits;
+    }
+  }
 
   // 이하는 스냅샷 한 번에만 유효한 표시 파생값이다.
   const locations = buildBlockerLocationMap(model);

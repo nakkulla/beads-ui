@@ -1501,7 +1501,7 @@ export function priorityBadgeTemplate(priority) {
  * @property {boolean} [missing_description] - quick_fix description is absent.
  * @property {'published'|'draft'|'none'|'conflict'|'n/a'} [placement_spec] -
  * Placement spec judgment, when facts exist.
- * @property {'candidate'|'queue'|'running'|'runnable'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5'} lane -
+ * @property {'candidate'|'queue'|'running'|'runnable'|'pr_wait'|'done'|'external_wait'|'s1'|'s2'|'s3'|'s4'|'s5'} lane -
  * Owning lane. `running`/`runnable` exist only for the monitor tab, which mixes
  * every repo into five lanes (UI-qrfo §8); the Worker console never sets them.
  * `s1`..`s5` are the fixed serial waiting lanes (UI-04vo §1).
@@ -1511,6 +1511,7 @@ export function priorityBadgeTemplate(priority) {
  * exactly as before.
  * @property {string} [root_dir] - Owning workspace root; the repo badge's
  * tooltip.
+ * @property {'session'|'external_wait'} [kind] - Special read-only/session row kind.
  * @property {boolean} [done] - Rendered dimmed with no grip.
  * @property {boolean} [is_quick_fix] - Candidate route fallback when workflow
  * enrichment is unavailable.
@@ -1624,6 +1625,9 @@ export function priorityBadgeTemplate(priority) {
  * @property {string[]} [blocked_by] - 지금 이 bead를 막는 선행 ID들. 칩은
  * `dependency_chips.predecessors`가 그리고, 여기 배열은 판정 팝업의 문장이
  * 읽는다.
+ * @property {number} [external_wait_count] - 열린 외부 작업 gate 수.
+ * @property {Array<Record<string, any>>} [external_waits] - `status`와 gate 이동
+ * 대상을 함께 싣는 요약 칩 자료.
  * @property {boolean} [spec_after_blocker] - 선행의 결과가 이 bead의 설계
  * 전제라 spec까지 선행 뒤로 미룬다 (UI-svh6 §4.2). 투영이 `spec-after-blocker`
  * 라벨과 지금의 blocker를 함께 읽어 접은 값이며, 자격·drag·적재 어디에도 들어가지
@@ -1990,6 +1994,9 @@ export function queueRowOps(item, options = {}) {
  * @returns {import('lit-html').TemplateResult}
  */
 export function miniRow(item, options = {}) {
+  if (item.kind === 'external_wait') {
+    return externalWaitRow(item);
+  }
   if (item.lane === 'done' && item.done_layout === 'three_line') {
     return doneThreeLineRow(item);
   }
@@ -2278,6 +2285,7 @@ export function miniRow(item, options = {}) {
   // 가장 바깥 사정이므로 먼저 선다. 팝업은 그 칩이 선 줄이 싣는다 (UI-8x90 §5).
   const gate_open = chipOpen(item, 'gate');
   const gate_el = gateChipTemplate(item.gate, item.id, gate_open);
+  const external_wait_el = externalWaitSummaryTemplate(item);
   const grace_el = graceChipTemplate(item.added_at);
   const receipt_badge_el = receiptBadgeChipTemplate(
     item,
@@ -2310,9 +2318,11 @@ export function miniRow(item, options = {}) {
   const deps_el = dependencyChipsTemplate(
     item.dependency_chips,
     '',
-    gate_el === ''
+    gate_el === '' && external_wait_el === ''
       ? ''
-      : html`${gate_el}${gate_open ? judgementPopover(item) : ''}`,
+      : html`${gate_el}${gate_open
+          ? judgementPopover(item)
+          : ''}${external_wait_el}`,
     grace_el
   );
   const receipt_el = discardReceiptTemplate(item);
@@ -2398,6 +2408,84 @@ export function miniRow(item, options = {}) {
             </div>
             ${deps_el}${chips_el}${receipt_el} ${timesMeta(item)}`}
   </div>`;
+}
+
+/**
+ * Read-only external job/gate observation. Buttons only navigate to existing
+ * issue detail; no Worker operation selector is present.
+ *
+ * @param {MiniItem & Record<string, any>} item
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function externalWaitRow(item) {
+  const last_at = formatTimestampLocal(item.last_observed_at);
+  const next_at = formatTimestampLocal(item.next_observation_at);
+  const completed_at = formatTimestampLocal(item.completed_at);
+  return html`<article
+    class="worker-mini worker-mini--card worker-mini--static worker-mini--external-wait"
+    data-bead-id=${item.id}
+    data-lane="external_wait"
+  >
+    <div class="worker-mini__row1 external-wait__headline">
+      <span class="external-wait__kind"
+        >${item.watch_id ? '외부 작업' : '대기 조건'}</span
+      >
+      <strong class="external-wait__job-state">${item.job_state}</strong>
+    </div>
+    <button
+      type="button"
+      class="external-wait__title-link"
+      data-external-open=${item.gate_id}
+      data-root-dir=${item.root_dir}
+    >
+      <span class="worker-mini__id external-wait__gate"> ${item.gate_id} </span>
+      <span class="worker-mini__title">${item.gate_title}</span>
+    </button>
+    <div class="external-wait__monitor">
+      <span
+        class=${item.monitor_reason || item.overdue
+          ? 'external-wait__attention'
+          : ''}
+        >${item.monitor_state}</span
+      >
+      ${item.monitor_reason ? html`<span>· ${item.monitor_reason}</span>` : ''}
+      ${item.previous_job_state
+        ? html`<span>· ${item.previous_job_state}</span>`
+        : ''}
+      ${item.stale ? html`<span>· 오래된 자료</span>` : ''}
+    </div>
+    ${item.consumer_id
+      ? html`<div class="external-wait__consumer">
+          원래 이슈
+          <button
+            type="button"
+            class="worker-dep worker-dep__open external-wait__consumer-link"
+            data-external-open=${item.consumer_id}
+            data-root-dir=${item.root_dir}
+          >
+            ${item.consumer_id}
+          </button>
+          ${item.consumer_title
+            ? html`<span>· ${item.consumer_title}</span>`
+            : ''}
+        </div>`
+      : ''}
+    <div class="worker-chips external-wait__identity">
+      <span class="worker-mini__repo" title=${item.root_dir}
+        >${item.workspace_name}</span
+      >
+      ${item.job_id
+        ? html`<span class="worker-chip">외부 작업 ${item.job_id}</span>`
+        : ''}
+    </div>
+    ${last_at || next_at || completed_at
+      ? html`<div class="worker-mini__times external-wait__times">
+          ${last_at ? html`<span>마지막 확인 시도 ${last_at}</span>` : ''}
+          ${next_at ? html`<span>다음 확인 ${next_at}</span>` : ''}
+          ${completed_at ? html`<span>종료 ${completed_at}</span>` : ''}
+        </div>`
+      : ''}
+  </article>`;
 }
 
 /**
@@ -2664,6 +2752,44 @@ function chipOpen(item, chip_key) {
 export const AWAITING_USER_REASON_PREFIX = '사용자 리뷰 필요';
 
 /**
+ * Read-only external wait summary shared by every consumer card shape.
+ *
+ * @param {{ external_wait_count?: number, external_waits?: Array<Record<string, any>>, root_dir?: string }} item
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function externalWaitSummaryTemplate(item) {
+  const waits = Array.isArray(item.external_waits) ? item.external_waits : [];
+  if (
+    typeof item.external_wait_count !== 'number' ||
+    item.external_wait_count <= 0 ||
+    waits.length === 0
+  ) {
+    return '';
+  }
+  return html`<details class="external-wait-summary">
+    <summary class="worker-dep worker-dep--blocked">
+      외부 계산 대기 ${item.external_wait_count}건
+    </summary>
+    <div class="external-wait-summary__popover">
+      ${waits.map(
+        (wait) =>
+          html`<div class="external-wait-summary__row">
+            <button
+              type="button"
+              class="worker-dep worker-dep__open"
+              data-external-open=${wait.gate_id}
+              data-root-dir=${wait.root_dir || item.root_dir || ''}
+            >
+              ${wait.gate_id}
+            </button>
+            <span>${wait.job_state} · ${wait.monitor_state}</span>
+          </div>`
+      )}
+    </div>
+  </details>`;
+}
+
+/**
  * One candidate `.worker-card` (spec §2, mockup 변형 B). Richer than
  * {@link miniRow}: a route chip + the Board's route-driven stepper. It keeps
  * miniRow's row contract (`draggable` / `data-bead-id` / `data-lane`), but the
@@ -2728,12 +2854,19 @@ export function candidateCard(item, place_menu = null, options = {}) {
     readiness_judgement,
     readiness_open
   );
+  const external_wait_el = externalWaitSummaryTemplate(item);
   const slot4_el = html`${spec_after_blocker_el}${spec_after_blocker_open
     ? judgementPopover(item)
-    : ''}${readiness_el}${readiness_open ? judgementPopover(item) : ''}`;
+    : ''}${readiness_el}${readiness_open
+    ? judgementPopover(item)
+    : ''}${external_wait_el}`;
   const deps_el = dependencyChipsTemplate(
     item.dependency_chips,
-    spec_after_blocker_el === '' && readiness_el === '' ? '' : slot4_el
+    spec_after_blocker_el === '' &&
+      readiness_el === '' &&
+      external_wait_el === ''
+      ? ''
+      : slot4_el
   );
   // 좌표 칩은 정체성 줄이 아니라 슬롯 5 줄이다 (UI-251y §2·§3.2): 헤더에 서면
   // 폭에 따라 조작 버튼을 다음 줄로 밀어내 사용자가 버튼을 찾는 자리가
@@ -2998,6 +3131,7 @@ export function paneTemplate(pane) {
 
 /**
  * @typedef {Object} WaitBodyModel
+ * @property {{ rows: import('lit-html').TemplateResult[], completed?: import('lit-html').TemplateResult[], count: number }} [external]
  * @property {{ rows: import('lit-html').TemplateResult[], count: number, collapsed: boolean, drop?: WaitDropAttrs }} parallel
  * @property {{ lanes: WaitSerialLane[], collapsed: boolean, extra_panes?: import('lit-html').TemplateResult[], header_control?: import('lit-html').TemplateResult, notice?: import('lit-html').TemplateResult }} serial
  */
@@ -3039,6 +3173,25 @@ export function waitBody(model) {
   const serial = model.serial;
   const parallel_drop = parallel.drop || {};
   return html`<div class="worker-wait">
+    ${model.external &&
+    (model.external.rows.length > 0 ||
+      (model.external.completed?.length || 0) > 0)
+      ? html`<details class="worker-wait__external" open>
+          <summary>
+            외부 작업·대기 조건
+            <span class="worker-wait__area-count">${model.external.count}</span>
+          </summary>
+          <div class="worker-wait__external-body">${model.external.rows}</div>
+          ${model.external.completed && model.external.completed.length > 0
+            ? html`<details class="worker-wait__external-completed">
+                <summary>종료 확인 ${model.external.completed.length}</summary>
+                <div class="worker-wait__external-body">
+                  ${model.external.completed}
+                </div>
+              </details>`
+            : ''}
+        </details>`
+      : ''}
     <section
       class="worker-wait__area worker-wait__area--parallel${parallel.collapsed
         ? ' is-collapsed'

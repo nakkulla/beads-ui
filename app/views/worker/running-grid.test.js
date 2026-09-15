@@ -806,6 +806,29 @@ function discardInput() {
 }
 
 describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', () => {
+  test('renders a verified external wait summary for a running consumer', () => {
+    const tile = shape(
+      runningTile(
+        tileInput({
+          external_wait_count: 1,
+          external_waits: [
+            {
+              gate_id: 'Analysis-ph3a',
+              root_dir: '/repo',
+              job_state: '계산 중',
+              monitor_state: '자동 확인 중'
+            }
+          ]
+        }),
+        5000,
+        null
+      )
+    );
+
+    expect(tile).toContain('external-wait-summary');
+    expect(tile).toContain('외부 계산 대기 1건');
+  });
+
   test('renders no repo badge, stepper, activity or delegation line', () => {
     const tile = shape(runningTile(tileInput(), 5000, null));
 
