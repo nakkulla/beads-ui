@@ -54,6 +54,31 @@ function flush() {
 }
 
 describe('runResumeFlow', () => {
+  test.each([
+    [
+      { prior_lane: 'quick_fix', current_route: 'spec_backed' },
+      ' quick_fix에서 spec_backed로'
+    ],
+    [undefined, '']
+  ])(
+    'explains a route refusal with details %j',
+    async (route_change, change) => {
+      const transport = vi.fn().mockResolvedValue({
+        resumed: false,
+        reason: 'route_changed',
+        route_change
+      });
+
+      const flow = runResumeFlow({ context: { kind: 'session' }, transport });
+      submitInstructions('');
+      await flow;
+
+      expect(document.querySelector('.toast')?.textContent).toBe(
+        `승인된 작업 방식이${change} 바뀌어 이전 세션을 이어갈 수 없습니다. [폐기] 뒤 후보에서 대기열에 다시 배치하면 현재 방식으로 새로 시작됩니다.`
+      );
+    }
+  );
+
   test('leaves transport uncalled when the first dialog is cancelled', async () => {
     const transport = vi.fn();
 

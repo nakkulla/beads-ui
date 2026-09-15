@@ -5463,6 +5463,34 @@ describe('lane model as_given candidate order (UI-4tud §4.3)', () => {
 });
 
 describe('quick_fix 착지 재개 자격 (UI-8h1x §3.3b)', () => {
+  test.each([undefined, 'route_changed:quick_fix→spec_backed'])(
+    'preserves resume eligibility with diagnostic %s',
+    (resume_refused) => {
+      const attempts = {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'failed',
+          session_id: 'sid',
+          cause: 'no_pr',
+          resume_refused
+        }
+      };
+
+      const tile = activeByBead(attempts, new Map()).get('A-1');
+
+      expect(tile?.can_resume).toBe(true);
+      expect(tile?.failure?.resume_eligible).toBe(true);
+      if (resume_refused) {
+        expect(tile?.failure?.resume_refused_sentence).toBe(
+          '승인된 작업 방식이 quick_fix에서 spec_backed로 바뀌어 이전 세션을 이어갈 수 없습니다. [폐기] 뒤 후보에서 대기열에 다시 배치하면 현재 방식으로 새로 시작됩니다.'
+        );
+      } else {
+        expect(tile?.failure).not.toHaveProperty('resume_refused_sentence');
+      }
+    }
+  );
+
   /**
    * One failed quick_fix landing attempt that never recorded a session id.
    *

@@ -41,6 +41,49 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = tmp_state;
 });
 
+describe('worker/queue-store attempt diagnostics', () => {
+  test('persists a refusal without changing the terminal attempt record', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'diagnostic-prior',
+        bead_id: 'UI-diagnostic',
+        status: 'failed',
+        cause: 'no_pr',
+        session_id: 'prior-session'
+      }
+    });
+    const before = store.snapshot(WS).attempts['diagnostic-prior'];
+
+    const result = store.recordAttemptDiagnostic(WS, {
+      attempt_id: 'diagnostic-prior',
+      patch: { resume_refused: 'route_changed:pr→quick_fix' }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(
+      createQueueStore().snapshot(WS).attempts['diagnostic-prior']
+    ).toEqual({
+      ...before,
+      resume_refused: 'route_changed:pr→quick_fix'
+    });
+  });
+
+  test('leaves the queue unchanged when the diagnostic target is absent', () => {
+    const store = createQueueStore();
+    const before = store.snapshot(WS);
+
+    const result = store.recordAttemptDiagnostic(WS, {
+      attempt_id: 'missing',
+      patch: { resume_refused: 'route_changed:pr→quick_fix' }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+});
+
 describe('worker/queue-store provider hold', () => {
   /**
    * Add one provider-scoped attempt record.

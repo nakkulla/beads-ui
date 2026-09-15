@@ -854,6 +854,486 @@ function setup(opts) {
   return { store, runner, bd, verify, worktree, scheduler, usage };
 }
 
+describe('scheduler route change refusal', () => {
+  /**
+   * @param {Record<string, any>} [options]
+   * @param {Record<string, any>} [patch]
+   */
+  function routeEnv(options = {}, patch = {}) {
+    const guard_hook = {
+      install: vi.fn(() => ({ ok: true })),
+      envFor: vi.fn(() => ({})),
+      remove: vi.fn()
+    };
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) => ({
+      code: args.includes('--abbrev-ref') ? 0 : 1,
+      stdout: args.includes('--abbrev-ref') ? 'B1\n' : '',
+      stderr: ''
+    }));
+    const env = setup({
+      config: { B1: { route: 'spec_backed', spec_review: 'codex@abc' } },
+      guardHook: guard_hook,
+      gitRun,
+      ...options
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'route-prior',
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        runner: 'claude',
+        model: 'opus',
+        effort: 'high',
+        session_id: 'sid-route',
+        quickfix_lane: true,
+        cause: 'quickfix_landing_failed:delivery_unproven:push_log_absent',
+        quickfix_landing: {
+          cursor: 'base_containment',
+          reason: 'delivery_unproven:push_log_absent',
+          head_sha: 'a'.repeat(40)
+        },
+        ...patch
+      }
+    });
+    return { ...env, guardHook: guard_hook, gitRun };
+  }
+
+  /** @param {ReturnType<typeof routeEnv>} env */
+  function expectNoExecution(env) {
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual([
+      'route-prior'
+    ]);
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.guardHook.install).not.toHaveBeenCalled();
+    expect(env.guardHook.remove).not.toHaveBeenCalled();
+    expect(env.bd.calls).toEqual([]);
+    expect(env.worktree.restore).not.toHaveBeenCalled();
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.worktree.remove).not.toHaveBeenCalled();
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+    expect(env.gitRun).not.toHaveBeenCalled();
+  }
+
+  test('refuses quick_fix to PR before execution effects', async () => {
+    const env = routeEnv();
+    const before = env.store.snapshot(WS).attempts['route-prior'];
+
+    const result = await env.scheduler.resume(WS, 'route-prior');
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'route_changed',
+      route_change: {
+        prior_lane: 'quick_fix',
+        current_route: 'spec_backed'
+      }
+    });
+    expect(env.store.snapshot(WS).attempts['route-prior']).toEqual({
+      ...before,
+      resume_refused: 'route_changed:quick_fix→spec_backed'
+    });
+    expectNoExecution(env);
+  });
+
+  test('refuses PR to quick_fix before execution effects', async () => {
+    const env = routeEnv(
+      { config: { B1: { route: 'quick_fix', description: '작업' } } },
+      { quickfix_lane: false }
+    );
+
+    const result = await env.scheduler.resume(WS, 'route-prior');
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'route_changed',
+      route_change: {
+        prior_lane: 'pr',
+        current_route: 'quick_fix'
+      }
+    });
+    expectNoExecution(env);
+  });
+
+  test('refuses an instruction restart before inheriting the recorded execution', async () => {
+    const env = routeEnv(
+      {},
+      {
+        status: 'paused',
+        control: { kind: 'pause', phase: 'done' }
+      }
+    );
+
+    const result = await env.scheduler.resume(WS, 'route-prior', {
+      continuation: 'prior_attempt',
+      instructions: '기록부터 확인'
+    });
+
+    expect(result.reason).toBe('route_changed');
+    expectNoExecution(env);
+  });
+
+  test('refuses a disposition relaunch before resolving execution settings', async () => {
+    const env = routeEnv(
+      { config: { B1: { route: 'quick_fix' } } },
+      {
+        quickfix_lane: false
+      }
+    );
+
+    const result = await env.scheduler.dispatchReviseFix(WS, {
+      bead_id: 'B1',
+      attempt_id: 'route-prior',
+      prompt: '스펙 검토'
+    });
+
+    expect(result.reason).toBe('route_changed');
+    expectNoExecution(env);
+  });
+
+  test.each(['resolveConflict', 'dispatchExternalConflict'])(
+    'refuses %s before restoring a missing worktree',
+    async (method) => {
+      const env = routeEnv(
+        {
+          config: { B1: { route: 'quick_fix' } },
+          externalPrs: {
+            B1: { bead_id: 'B1', pr_url: 'https://example.test/pr/1' }
+          },
+          worktree: { exists: vi.fn(() => false) }
+        },
+        { quickfix_lane: false, external_conflict: true }
+      );
+
+      const result =
+        method === 'resolveConflict'
+          ? await env.scheduler.resolveConflict(WS, 'B1', null, {}, 'B1')
+          : await env.scheduler.dispatchExternalConflict(
+              WS,
+              'B1',
+              'main',
+              null,
+              {},
+              'B1'
+            );
+
+      expect(result).toMatchObject({ ok: false, reason: 'route_changed' });
+      expectNoExecution(env);
+    }
+  );
+
+  test('reports snapshot failure before conflict restoration', async () => {
+    const env = routeEnv({
+      config: { B1: { throwOnSnapshotAt: 'all' } },
+      worktree: { exists: vi.fn(() => false) }
+    });
+
+    const result = await env.scheduler.resolveConflict(
+      WS,
+      'B1',
+      null,
+      {},
+      'B1'
+    );
+
+    expect(result).toMatchObject({ ok: false, reason: 'bd_snapshot_failed' });
+    expectNoExecution(env);
+  });
+
+  test.each([
+    'spec_missing',
+    'receipt_missing_or_malformed',
+    'receipt_unreachable'
+  ])('preserves admission refusal %s when lanes match', async (reason) => {
+    const check = vi.fn(async () => ({ ok: false, reason }));
+    const env = routeEnv(
+      { admission: { validate: check } },
+      { quickfix_lane: false }
+    );
+
+    const result = await env.scheduler.resume(WS, 'route-prior');
+
+    expect(result).toEqual({ ok: false, reason });
+    expect(check).toHaveBeenCalledOnce();
+    expect(
+      env.store.snapshot(WS).attempts['route-prior'].resume_refused
+    ).toBeNull();
+    expectNoExecution(env);
+  });
+
+  test.each([
+    'spec_missing',
+    'receipt_missing_or_malformed',
+    'receipt_unreachable'
+  ])('refuses a changed lane before admission %s', async (reason) => {
+    const check = vi.fn(async () => ({ ok: false, reason }));
+    const env = routeEnv({ admission: { validate: check } });
+
+    const result = await env.scheduler.resume(WS, 'route-prior');
+
+    expect(result.reason).toBe('route_changed');
+    expect(check).not.toHaveBeenCalled();
+    expectNoExecution(env);
+  });
+
+  test('refuses a route change during launch revalidation and releases the serial lease', async () => {
+    const config = { B1: { route: 'spec_backed', model: 'sol' } };
+    const env = routeEnv(
+      { config },
+      { quickfix_lane: false, serial_lane_id: 's1' }
+    );
+    env.store.setSerialLaneCount(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      count: 1
+    });
+    const mismatch = await env.scheduler.resume(WS, 'route-prior');
+    expect(mismatch.reason).toBe('runner_mismatch');
+    const snapshotBead = env.bd.snapshotBead.bind(env.bd);
+    let reads = 0;
+    vi.spyOn(env.bd, 'snapshotBead').mockImplementation(async (bead_id) => {
+      reads += 1;
+      if (reads === 2) {
+        config.B1.route = 'quick_fix';
+      }
+      return snapshotBead(bead_id);
+    });
+
+    const result = await env.scheduler.resume(WS, 'route-prior', {
+      continuation: 'fresh_current',
+      decision_token: mismatch.continuation_mismatch.decision_token
+    });
+
+    expect(reads).toBe(2);
+    expect(result.reason).toBe('route_changed');
+    expectNoExecution(env);
+    config.B1.route = 'spec_backed';
+    const next = await env.scheduler.resume(WS, 'route-prior');
+    const resumed = await env.scheduler.resume(WS, 'route-prior', {
+      continuation: 'fresh_current',
+      decision_token: next.continuation_mismatch.decision_token
+    });
+    expect(resumed).toMatchObject({ ok: true });
+  });
+
+  test('refuses a route changed during receipt baseline capture and releases the lease', async () => {
+    const config = { B1: { route: 'spec_backed' } };
+    const env = routeEnv(
+      { config },
+      { quickfix_lane: false, serial_lane_id: 's1' }
+    );
+    env.store.setSerialLaneCount(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      count: 1
+    });
+    const readMetadata = env.bd.readMetadata.bind(env.bd);
+    let flip_route = true;
+    vi.spyOn(env.bd, 'readMetadata').mockImplementation(
+      async (bead_id, key) => {
+        const value = await readMetadata(bead_id, key);
+        if (key === 'impl_entry' && flip_route) {
+          config.B1.route = 'quick_fix';
+          flip_route = false;
+        }
+        return value;
+      }
+    );
+
+    const result = await env.scheduler.resume(WS, 'route-prior');
+
+    expect(flip_route).toBe(false);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'route_changed',
+      route_change: { prior_lane: 'pr', current_route: 'quick_fix' }
+    });
+    expectNoExecution(env);
+    config.B1.route = 'spec_backed';
+    await expect(
+      env.scheduler.resume(WS, 'route-prior')
+    ).resolves.toMatchObject({ ok: true });
+  });
+
+  test('preserves unconsumed receipts and delegation records when recording a refusal', async () => {
+    const env = routeEnv();
+    writeUsageReceipt('route-prior', 'known-receipt');
+    env.store.updateAttempt(WS, { attempt_id: 'route-prior', patch: {} });
+    const receipt_file = writeUsageReceipt('route-prior');
+    const monitor_file = writeDelegationStream('route-prior', [
+      {
+        turn_id: null,
+        recorded_at: '2026-08-18T04:27:00.000Z',
+        event: { type: 'session.started' }
+      }
+    ]);
+    const receipt_bytes = fs.readFileSync(receipt_file);
+    const monitor_bytes = fs.readFileSync(monitor_file);
+    const before = env.store.snapshot(WS).attempts['route-prior'];
+    expect(before.usage_legs).toHaveLength(1);
+    const update = vi.spyOn(env.store, 'updateAttempt');
+
+    const result = await env.scheduler.resume(WS, 'route-prior');
+
+    expect(result.reason).toBe('route_changed');
+    expect(env.store.snapshot(WS).attempts['route-prior']).toEqual({
+      ...before,
+      resume_refused: 'route_changed:quick_fix→spec_backed'
+    });
+    expect(fs.readFileSync(receipt_file)).toEqual(receipt_bytes);
+    expect(fs.readFileSync(monitor_file)).toEqual(monitor_bytes);
+    expect(update).not.toHaveBeenCalled();
+    expectNoExecution(env);
+  });
+
+  test('refuses base-moved waiting before proving the preserved candidate', async () => {
+    const observeOwnedByBead = vi.fn();
+    const resolveBase = vi.fn();
+    const env = routeEnv(
+      { worktree: { observeOwnedByBead }, resolveBase },
+      {
+        status: 'waiting',
+        cause: 'base_moved',
+        cause_detail: { base_sha: 'b'.repeat(40) },
+        quickfix_landing: { reason: 'base_moved', head_sha: 'a'.repeat(40) }
+      }
+    );
+    const before = env.store.snapshot(WS).attempts['route-prior'];
+
+    const result = await env.scheduler.resume(WS, 'route-prior');
+
+    expect(result.reason).toBe('route_changed');
+    expect(observeOwnedByBead).not.toHaveBeenCalled();
+    expect(resolveBase).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['route-prior']).toEqual({
+      ...before,
+      resume_refused: 'route_changed:quick_fix→spec_backed'
+    });
+    expectNoExecution(env);
+  });
+
+  test('retries landed settlement without reading the changed route', async () => {
+    const settle = vi.fn(async () => ({ ok: false, reason: 'bd_read_failed' }));
+    const env = routeEnv(
+      { quickfixLanding: { settle } },
+      {
+        quickfix_landing: { reason: 'bd_read_failed', head_sha: 'a'.repeat(40) }
+      }
+    );
+    const snapshot = vi.spyOn(env.bd, 'snapshotBead');
+
+    const result = await env.scheduler.resume(WS, 'route-prior');
+
+    expect(result.reason).toBe('bd_read_failed');
+    expect(settle).toHaveBeenCalledOnce();
+    expect(snapshot).not.toHaveBeenCalled();
+    expect(
+      env.store.snapshot(WS).attempts['route-prior'].resume_refused
+    ).toBeNull();
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('prioritizes a live writer without recording a route refusal', async () => {
+    const env = routeEnv();
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'live', bead_id: 'B1', status: 'running' }
+    });
+    const before = env.store.snapshot(WS);
+
+    const result = await env.scheduler.resume(WS, 'route-prior');
+
+    expect(result).toEqual({ ok: false, reason: 'bead_running' });
+    expect(env.store.snapshot(WS)).toEqual(before);
+    expect(env.bd.snapshotCounts()).toBe(0);
+  });
+
+  test('preserves existing candidate, remote branch, PR and push evidence', async () => {
+    const effects = {
+      head: 'a'.repeat(40),
+      base: 'b'.repeat(40),
+      branch: 'B1',
+      pr_url: 'https://example.test/pr/1',
+      pushes: [{ new_oid: 'a'.repeat(40) }]
+    };
+    const observeOwnedByBead = vi.fn(async () => ({
+      ok: true,
+      present: true,
+      head_sha: effects.head,
+      branch: effects.branch,
+      ahead: 1
+    }));
+    const external_prs = {
+      B1: { bead_id: 'B1', pr_url: effects.pr_url, head_sha: effects.head }
+    };
+    const push_log = path.join(tmp_state, 'prior-push.json');
+    const transcript = path.join(tmp_state, 'prior-session.jsonl');
+    fs.writeFileSync(push_log, JSON.stringify(effects.pushes));
+    fs.writeFileSync(transcript, 'prior session evidence\n');
+    const env = routeEnv(
+      { worktree: { observeOwnedByBead }, externalPrs: external_prs },
+      {
+        base_oid: effects.base,
+        base_drift: {
+          pinned: effects.base,
+          observed: effects.base,
+          landed: false,
+          pushed: [effects.head]
+        }
+      }
+    );
+    const readPushLog = vi.fn(() => ({
+      ok: true,
+      entries: JSON.parse(fs.readFileSync(push_log, 'utf8'))
+    }));
+    Object.assign(env.guardHook, { readPushLog });
+    const before = env.store.snapshot(WS);
+    const observed_prs = structuredClone(external_prs);
+
+    const result = await env.scheduler.resume(WS, 'route-prior');
+
+    expect(result.reason).toBe('route_changed');
+    expect(env.store.snapshot(WS).attempts['route-prior']).toEqual({
+      ...before.attempts['route-prior'],
+      resume_refused: 'route_changed:quick_fix→spec_backed'
+    });
+    expect(external_prs).toEqual(observed_prs);
+    expect(fs.readFileSync(push_log, 'utf8')).toBe(
+      JSON.stringify(effects.pushes)
+    );
+    expect(fs.readFileSync(transcript, 'utf8')).toBe(
+      'prior session evidence\n'
+    );
+    expect(readPushLog).not.toHaveBeenCalled();
+    expect(observeOwnedByBead).not.toHaveBeenCalled();
+    expectNoExecution(env);
+  });
+
+  test('does not rewrite an identical refusal after a lost response', async () => {
+    const env = routeEnv();
+    await env.scheduler.resume(WS, 'route-prior');
+    const before = env.store.snapshot(WS);
+    const update = vi.spyOn(env.store, 'recordAttemptDiagnostic');
+
+    await env.scheduler.resume(WS, 'route-prior');
+
+    expect(env.store.snapshot(WS)).toEqual(before);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  test('records overlapping duplicate refusals only once', async () => {
+    const env = routeEnv();
+    const update = vi.spyOn(env.store, 'recordAttemptDiagnostic');
+
+    await Promise.all([
+      env.scheduler.resume(WS, 'route-prior'),
+      env.scheduler.resume(WS, 'route-prior')
+    ]);
+
+    expect(update).toHaveBeenCalledOnce();
+  });
+});
+
 describe('scheduler provider hold and recovery', () => {
   /**
    * Persist one running attempt for a direct provider-store transition.
@@ -1598,6 +2078,36 @@ describe('scheduler provider hold and recovery', () => {
       (attempt) => attempt.resumed_from === 'held-1'
     );
     expect(child?.auto_resume_kind).toBe('provider_outage');
+  });
+
+  test('records a changed route after consuming provider recovery pending', async () => {
+    const env = setup({ config: { B1: { route: 'quick_fix' } }, slots: 1 });
+    seedProviderAttempt(env.store, 'held-route', 'B1', {
+      session_id: 'sid-route',
+      quickfix_lane: false
+    });
+    const held = registerProviderHold(env.store, 'held-route', 'outage', null);
+    env.store.recoverProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: null
+    });
+
+    const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+    expect(result.refusals).toEqual(['B1:route_changed']);
+    const queue = env.store.snapshot(WS);
+    expect(queue.auto_resume_pending).toEqual([]);
+    expect(Object.keys(queue.attempts)).toEqual(['held-route']);
+    expect(queue.attempts['held-route']).toMatchObject({
+      status: 'paused',
+      auto_resume_refused: 'route_changed',
+      resume_refused: 'route_changed:pr→quick_fix'
+    });
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.bd.calls).toEqual([]);
   });
 
   // RED 13 (spec §5)
@@ -14238,7 +14748,11 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
       envFor: vi.fn(() => ({ GIT_CONFIG_COUNT: '1' })),
       remove: vi.fn(() => true)
     };
-    const env = setup({ config: {}, slots: 1, guardHook });
+    const env = setup({
+      config: { B1: { route: 'quick_fix' } },
+      slots: 1,
+      guardHook
+    });
     env.store.appendAttempt(WS, {
       expected_revision: env.store.snapshot(WS).revision,
       attempt: { attempt_id: 'quick-anc', bead_id: 'B1' }
@@ -14272,7 +14786,7 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
   });
 
   test('installs and delivers on a spec_backed manual resume', async () => {
-    const env = setup({ config: {}, slots: 1 });
+    const env = setup({ config: { B1: { route: 'spec_backed' } }, slots: 1 });
     env.store.appendAttempt(WS, {
       expected_revision: env.store.snapshot(WS).revision,
       attempt: { attempt_id: 'anc', bead_id: 'B1' }

@@ -236,6 +236,7 @@ import { logPathTemplate } from './log-path.js';
  * @property {{ cursor?: string|null, head_sha?: string|null, reason?: string|null }|null} quickfix_landing
  * @property {boolean} resume_eligible
  * @property {string|null} resume_reason
+ * @property {string} [resume_refused_sentence] - Guidance from a refused resume.
  * @property {'prior_attempt'|null} [continuation_choice] - 이 자식이 시작된 재개
  * 의미 (UI-qce9 §5.3). `prior_attempt`이면 재개 실패 문장이 '새 세션으로 대체'를
  * 말하지 않는다 — 실제로 대체하지 않았기 때문이다.
@@ -434,6 +435,9 @@ const RESUME_LABELS = Object.freeze({
  * @returns {string}
  */
 function failureNextText(failure) {
+  if (failure.resume_refused_sentence) {
+    return failure.resume_refused_sentence;
+  }
   const guidance = failureNextAction(failure.cause);
   if (!guidance) {
     return '';

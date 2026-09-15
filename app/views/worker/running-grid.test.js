@@ -303,6 +303,22 @@ describe('worker failed running tile template', () => {
     expect(text).toContain('아래 [이어하기]로 같은 세션에서');
   });
 
+  test('replaces continuation guidance with the route refusal sentence', () => {
+    const sentence =
+      '승인된 작업 방식이 quick_fix에서 spec_backed로 바뀌어 이전 세션을 이어갈 수 없습니다. [폐기] 뒤 후보에서 대기열에 다시 배치하면 현재 방식으로 새로 시작됩니다.';
+
+    const text = failurePopoverText({
+      cause: 'base_fetch_failed',
+      resume_refused_sentence: sentence
+    });
+
+    expect(text).toContain(sentence);
+    expect(text).not.toContain('아래 [이어하기]로 같은 세션에서');
+    expect(
+      document.querySelector('.rtile__resume')?.hasAttribute('disabled')
+    ).toBe(false);
+  });
+
   test('sends a refused resume to the session record instead of a button', () => {
     const text = failurePopoverText({
       cause: 'cleanup_failed',

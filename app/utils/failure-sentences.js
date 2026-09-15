@@ -174,3 +174,22 @@ export const STALE_WORK_REFUSALS = Object.freeze({
   remote_ref_observe_failed:
     '원격 PR·브랜치 상태를 확인하지 못했습니다. 연결과 접근 권한을 확인한 뒤 다시 선택하세요.'
 });
+
+/**
+ * Resume refusals with actionable guidance; unknown reasons keep their code.
+ *
+ * @type {Readonly<Record<string, (route_change?: { prior_lane: string, current_route: string|null }|null) => string>>}
+ */
+export const RESUME_REFUSALS = Object.freeze({
+  route_changed: routeChangedSentence
+});
+
+/**
+ * @param {{ prior_lane: string, current_route: string|null }|null} [route_change]
+ */
+function routeChangedSentence(route_change) {
+  const change = route_change
+    ? ` ${route_change.prior_lane}에서 ${route_change.current_route}로`
+    : '';
+  return `승인된 작업 방식이${change} 바뀌어 이전 세션을 이어갈 수 없습니다. [폐기] 뒤 후보에서 대기열에 다시 배치하면 현재 방식으로 새로 시작됩니다.`;
+}

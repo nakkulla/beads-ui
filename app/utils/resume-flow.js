@@ -1,4 +1,5 @@
 import { resolveContinuationMismatch } from './continuation-dialog.js';
+import { RESUME_REFUSALS } from './failure-sentences.js';
 import { requestResumeInstructions } from './resume-instructions-dialog.js';
 import { showToast } from './toast.js';
 
@@ -49,7 +50,14 @@ export async function runResumeFlow(options) {
   if (res && res.resumed === false && !res.conflict && res.reason) {
     const refusal_label =
       context?.kind === 'settlement' ? '정리 재시도' : '이어하기';
-    showToast(`${refusal_label} 거부: ${res.reason}`, 'error', 2400);
+    const sentence = RESUME_REFUSALS[res.reason];
+    showToast(
+      sentence
+        ? sentence(res.route_change)
+        : `${refusal_label} 거부: ${res.reason}`,
+      'error',
+      2400
+    );
   }
   return res;
 }

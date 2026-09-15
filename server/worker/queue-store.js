@@ -114,6 +114,7 @@
  * how an attempt was continued after a provider hold: `provider_outage` is the
  * one capped automatic reset resume, `account_switch` is a limit switch child
  * and does not consume that cap.
+ * @property {string|null} resume_refused - Diagnostic from a refused continuation.
  * @property {string|null} auto_resume_refused - Why the recovery resume was
  * turned away (`worktree_missing` and the like). Kept on the attempt because
  * recovery deletes the target the receipt came from before the resume runs.
@@ -2973,6 +2974,11 @@ export function makeAttempt(fields) {
       fields.auto_resume_kind === 'provider_outage' ||
       fields.auto_resume_kind === 'account_switch'
         ? fields.auto_resume_kind
+        : null,
+    resume_refused:
+      typeof fields.resume_refused === 'string' &&
+      fields.resume_refused.length > 0
+        ? fields.resume_refused
         : null,
     auto_resume_refused:
       typeof fields.auto_resume_refused === 'string' &&
@@ -7181,6 +7187,30 @@ export function createQueueStore(options = {}) {
         return true;
       });
       return reason === null ? result : { ...result, reason };
+    },
+
+    /**
+     * Persist a continuation diagnostic without settling terminal evidence.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, patch: Partial<Pick<Attempt, 'resume_refused'>> }} input
+     * @returns {QueueOpResult}
+     */
+    recordAttemptDiagnostic(workspace, input) {
+      const { attempt_id, patch } = input;
+      return applyUnconditional(workspace, (next) => {
+        const cur = next.attempts[attempt_id];
+        if (!cur) {
+          return false;
+        }
+        next.attempts[attempt_id] = makeAttempt({
+          ...cur,
+          ...patch,
+          attempt_id,
+          bead_id: cur.bead_id
+        });
+        return true;
+      });
     },
 
     /**
