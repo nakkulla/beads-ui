@@ -94,6 +94,51 @@ describe('wait notification suppression', () => {
     expect(spawn.calls).toHaveLength(1);
   });
 
+  test.each(['unclassified', 'provider'])(
+    'claims recovery %s once across repeated observations and reload',
+    async (reason) => {
+      const { input, spawn, store } = fixture();
+      const wait_reasons = judgeWaitReasons({
+        root_dir: '/repo',
+        now: 2_000_000,
+        queue: {
+          attempts: {
+            a: {
+              attempt_id: 'a',
+              bead_id: 'UI-a',
+              status: 'waiting',
+              finished_at: 1000,
+              cause: 'session_ended_unresolved',
+              cause_detail: {
+                recovery: {
+                  classification: 'condition',
+                  disposition: 'wait',
+                  reason,
+                  policy_schema: 1
+                }
+              }
+            }
+          }
+        }
+      }).wait_reasons;
+
+      await notifyWaitReasons({ ...input, wait_reasons });
+      await notifyWaitReasons({ ...input, wait_reasons, now: 2000 });
+      await notifyWaitReasons({
+        ...input,
+        wait_reasons,
+        store: createQueueStore(),
+        now: 3000
+      });
+
+      expect(Object.keys(store.snapshot('/repo').wait_notified)).toHaveLength(
+        1
+      );
+      expect(spawn.calls).toHaveLength(1);
+      expect(spawn.last().args[0]).toContain('원인 session_ended_unresolved');
+    }
+  );
+
   test('sends a recurring reason again after disappearance', async () => {
     const { input, spawn } = fixture();
 

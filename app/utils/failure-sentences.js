@@ -76,6 +76,39 @@ export const FAILURE_SENTENCES = Object.freeze({
   repair_lane_retired: '자동 수리 레인이 은퇴해 사람 처리로 넘어왔습니다.'
 });
 
+/** Recovery reason → current waiting state, shared by server and browser. */
+/** @type {Readonly<Record<string, string>>} */
+export const RECOVERY_WAIT_LABELS = Object.freeze({
+  provider: '조건 대기',
+  credential: '조건 대기',
+  prerequisite: '조건 대기',
+  authority: '조건 대기',
+  verification: '조건 대기',
+  no_progress: '조건 대기',
+  unclassified: '확인 대기',
+  reconcile: '확인 대기'
+});
+
+/** Recovery reason → what is awaited and what releases the wait. */
+/** @type {Readonly<Record<string, string>>} */
+export const RECOVERY_WAIT_SENTENCES = Object.freeze({
+  provider:
+    '공급자·사용량 조건 해제를 기다리며, 회복이 확인되면 이어갈 수 있습니다.',
+  credential: '인증 복구를 기다리며, 접근 권한이 확인되면 이어갈 수 있습니다.',
+  prerequisite:
+    '선행 작업의 완료를 기다리며, 선행 조건이 해제되면 이어갈 수 있습니다.',
+  authority:
+    '승인·안전 판단을 기다리며, 필요한 결정이 확인되면 이어갈 수 있습니다.',
+  verification:
+    '검증 오류의 정정을 기다리며, 원인이 고쳐지면 이어갈 수 있습니다.',
+  no_progress:
+    '같은 오류에 진전이 없어 멈췄으며, 원인이 정정되면 이어갈 수 있습니다.',
+  unclassified:
+    '원인과 결과의 확인을 기다리며, 확인 뒤 이어하기 또는 폐기를 결정합니다.',
+  reconcile:
+    '원래 실행과 그 효과의 확인을 기다리며, 확인 뒤 이어하기 또는 폐기를 결정합니다.'
+});
+
 /**
  * Contract token → the sentence that says WHAT TO DO FIRST (UI-kyky §4.2).
  *

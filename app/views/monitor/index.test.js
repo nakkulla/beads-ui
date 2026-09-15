@@ -1202,6 +1202,45 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     });
   });
 
+  test('resumes a recovery wait with its repository and queue revision', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'waiting',
+              cause: 'session_ended_unresolved',
+              cause_detail: { recovery: { reason: 'unclassified' } },
+              started_at: NOW - 100,
+              finished_at: NOW - 50,
+              session_id: 'saved-session'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()],
+      transport: async () => ({ resumed: true })
+    });
+    view.load();
+
+    click(mount, '.rtile__resume');
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await vi.waitFor(() =>
+      expect(
+        sent.filter((call) => call.type === 'worker-attempt-resume')
+      ).toHaveLength(1)
+    );
+
+    expect(sent[0]).toMatchObject({
+      type: 'worker-attempt-resume',
+      payload: { attempt_id: 't1', root_dir: WS_A, expected_revision: 1 }
+    });
+  });
+
   test('resumes a base-moved wait from the shared tile header', async () => {
     const { mount, view, sent } = setup({
       workspaces: [
@@ -1733,6 +1772,91 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
   });
 
   // 선행 대기도 같은 배타 자리를 쓰는 held 타일이다 (선행 대기 계층 §5.4).
+  test('renders recovery with wait actions and includes it in the blocked summary', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'waiting',
+              session_id: 'saved',
+              started_at: NOW - 100,
+              finished_at: NOW - 50,
+              cause: 'session_ended_unresolved',
+              cause_detail: {
+                recovery: {
+                  reason: 'authority',
+                  classification: 'authority',
+                  disposition: 'wait',
+                  policy_schema: 1
+                }
+              }
+            }
+          },
+          wait_reasons: [
+            {
+              kind: 'recovery',
+              subject: { bead_id: 'A-1', root_dir: WS_A },
+              headline: '조건 대기 · 승인 확인 · 원인 session_ended_unresolved',
+              release: '안전 판단 뒤 이어하기',
+              verdict: 'action_required',
+              targets: [],
+              actions: []
+            }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const tile = el(mount, '.rtile[data-attempt-id="t1"]');
+    expect(tile?.querySelector('.rtile__elapsed')?.textContent).toBe(
+      '조건 대기'
+    );
+    expect(tile?.querySelector('.op-btn.rtile__resume')).not.toBeNull();
+    expect(tile?.querySelector('.rtile__foot .rtile__discard')).not.toBeNull();
+    expect(mount.querySelectorAll('.rtile--failed')).toHaveLength(0);
+    expect(mount.querySelector('.wait-summary')?.textContent).toMatch(
+      /막힘\s*1\s*·\s*조치 필요\s*1/
+    );
+  });
+
+  test('carries the running recovery label through the Monitor adapter', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            old: {
+              attempt_id: 'old',
+              bead_id: 'A-1',
+              status: 'waiting',
+              started_at: NOW - 100,
+              cause_detail: { recovery: { reason: 'verification' } }
+            },
+            live: {
+              attempt_id: 'live',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: NOW - 50,
+              resumed_from: 'old'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      el(mount, '.rtile[data-attempt-id="live"] .rtile__elapsed')?.textContent
+    ).toBe('복구 중');
+  });
+
   test('renders a waiting attempt as a held tile with the 선행 대기 badge', () => {
     const { mount, view } = setup({
       workspaces: [

@@ -94,6 +94,170 @@ function provider(target = {}) {
   });
 }
 
+describe('recovery wait judgment', () => {
+  /**
+   * @param {string} reason
+   * @param {Record<string, any>} [patch]
+   * @returns {Record<string, any>}
+   */
+  function recoveryAttempt(reason, patch = {}) {
+    return waiting({
+      started_at: NOW - MINUTE,
+      finished_at: NOW,
+      cause: 'session_ended_unresolved',
+      session_id: 'saved-session',
+      cause_detail: {
+        recovery: {
+          classification: 'condition',
+          disposition: 'wait',
+          reason,
+          policy_schema: 1
+        }
+      },
+      ...patch
+    });
+  }
+
+  test.each(['provider', 'credential', 'prerequisite', 'verification'])(
+    'promotes %s only at the settle threshold',
+    (token) => {
+      const material = queue({ attempts: { a: recoveryAttempt(token) } });
+      const threshold =
+        WAIT_THRESHOLDS.interval_ms * WAIT_THRESHOLDS.settle_cycles;
+
+      const before = run({ queue: material, now: NOW + threshold - 1 })
+        .wait_reasons[0];
+      const after = run({ queue: material, now: NOW + threshold })
+        .wait_reasons[0];
+
+      expect(before).toMatchObject({
+        kind: 'recovery',
+        verdict: 'normal',
+        since: NOW,
+        notify_plan: { on_complete: 'none', on_overdue: 'discord' }
+      });
+      expect(after).toMatchObject({
+        verdict: 'overdue',
+        verdict_reason: { code: 'settle_overdue' }
+      });
+    }
+  );
+
+  test.each(['unclassified', 'reconcile', 'authority', 'no_progress'])(
+    'requests a decision for %s immediately',
+    (token) => {
+      const result = run({
+        queue: queue({ attempts: { a: recoveryAttempt(token) } })
+      });
+
+      expect(result.wait_reasons).toMatchObject([
+        {
+          kind: 'recovery',
+          verdict: 'action_required',
+          verdict_reason: {
+            code: 'recovery_confirm',
+            message: '보존된 작업의 원인 확인 또는 이어하기·폐기 결정이 필요함'
+          }
+        }
+      ]);
+    }
+  );
+
+  test('carries the original cause and no-progress evidence into one reason', () => {
+    const attempt = recoveryAttempt('no_progress');
+    attempt.cause_detail.recovery.no_progress = { count: 2, key: 'same-error' };
+
+    const result = run({
+      queue: queue({ attempts: { a: attempt } })
+    }).wait_reasons;
+
+    expect(result).toHaveLength(1);
+    expect(result[0].headline).toContain('조건 대기 · 같은 오류에 진전이 없어');
+    expect(result[0].headline).toContain(
+      ' · 원인 session_ended_unresolved · 무진전 2회'
+    );
+    expect(result[0].actions).toEqual([
+      {
+        op: 'resume',
+        label: '↻ 이어하기',
+        payload: { root_dir: ROOT, bead_id: 'UI-consumer', attempt_id: 'a' }
+      }
+    ]);
+  });
+
+  test.each(['', null, undefined])(
+    'withholds resume when the session is %s',
+    (session_id) => {
+      const result = run({
+        queue: queue({
+          attempts: { a: recoveryAttempt('credential', { session_id }) }
+        })
+      });
+
+      expect(result.wait_reasons[0].actions).toEqual([]);
+    }
+  );
+
+  test.each(['future_reason', 'constructor'])(
+    'keeps unknown reason %s raw',
+    (token) => {
+      const result = run({
+        queue: queue({ attempts: { a: recoveryAttempt(token) } })
+      }).wait_reasons[0];
+
+      expect(result.headline).toBe(`${token} · 원인 session_ended_unresolved`);
+      expect(result.release).toBe('');
+    }
+  );
+
+  test('does not infer elapsed time from an absent finish clock', () => {
+    const result = run({
+      queue: queue({
+        attempts: { a: recoveryAttempt('provider', { finished_at: undefined }) }
+      }),
+      now: NOW + 100 * MINUTE
+    }).wait_reasons[0];
+
+    expect(result.verdict).toBe('normal');
+    expect(result.since).toBeUndefined();
+  });
+
+  test.each([NOW - 2 * MINUTE, NOW + MINUTE])(
+    'suppresses recovery while a writer is live at %s',
+    (started_at) => {
+      const result = run({
+        queue: queue({
+          attempts: {
+            live: {
+              attempt_id: 'live',
+              bead_id: 'UI-consumer',
+              status: 'running',
+              started_at
+            },
+            a: recoveryAttempt('unclassified')
+          }
+        })
+      });
+
+      expect(result.wait_reasons).toEqual([]);
+    }
+  );
+
+  test.each(['done', 'pr_wait'])(
+    'omits recovery subjects already in %s',
+    (lane) => {
+      const result = run({
+        queue: queue({
+          [lane]: [{ bead_id: 'UI-consumer' }],
+          attempts: { a: recoveryAttempt('unclassified') }
+        })
+      });
+
+      expect(result.wait_reasons).toEqual([]);
+    }
+  );
+});
+
 describe('wait judgment external work', () => {
   test('builds the external headline and release from observed facts', () => {
     const result = run({

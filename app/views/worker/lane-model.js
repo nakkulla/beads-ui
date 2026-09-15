@@ -57,7 +57,11 @@ import {
   detectSerialLaneHeadCycles,
   serialCycleKey
 } from '../monitor/blockers.js';
-import { failureText } from './failure-labels.js';
+import {
+  failureText,
+  recoveryWaitLabel,
+  recoveryWaitSentence
+} from './failure-labels.js';
 import {
   autoSwitchText,
   providerClock,
@@ -226,6 +230,7 @@ const DONE_KIND_LABELS = {
  *   non_occupying?: boolean,
  *   attempt_id?: string|null,
  *   run_state?: 'running'|'paused'|'failed'|'parked'|'retry_wait'|'waiting'|'provider_hold',
+ *   status_label?: string,
  *   can_pause?: boolean,
  *   instructions_restart?: { eligible: boolean, reason: string|null },
  *   can_resume?: boolean,
@@ -601,7 +606,9 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
       // 선행 대기는 `failure` 투영을 쓰지 않는다 (선행 대기 계층 §5.1): 실패
       // 팝오버가 묻는 것 — 실패 코드·착지 단계·재개 행 — 중 이 결말이 답할 수
       // 있는 질문이 하나도 없고, 정산은 시작되지도 않았다.
-      ...(held.run_state === 'waiting' ? { wait: waitProjection(a) } : {}),
+      ...(held.run_state === 'waiting'
+        ? { wait: waitProjection(a, resumed_from_ids.has(a.attempt_id)) }
+        : {}),
       ...(hold ? { hold } : {}),
       ...(retry ? { retry } : {}),
       can_pause: false,
@@ -610,7 +617,7 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
       can_resume:
         held.run_state === 'provider_hold' ||
         (held.run_state === 'waiting' &&
-          a.cause === 'base_moved' &&
+          (a.cause === 'base_moved' || !!a.cause_detail?.recovery) &&
           typeof a.session_id === 'string' &&
           a.session_id.length > 0 &&
           !resumed_from_ids.has(a.attempt_id))
@@ -649,6 +656,10 @@ function liveAttemptFields(a, attempts, run_state, runner_catalog = null) {
         ? a.continuation_mode
         : null,
     status: typeof a.status === 'string' ? a.status : null,
+    ...(run_state === 'running' &&
+    attempts[a.resumed_from]?.cause_detail?.recovery
+      ? { status_label: '복구 중' }
+      : {}),
     usage: sumAttemptUsage(attempts, a.bead_id, runner_catalog)
   };
 }
@@ -939,20 +950,18 @@ function timelineFields(history) {
 }
 
 /**
- * The decision material of an attempt that ended on an UNMET PREREQUISITE
- * (선행 대기 계층 §5.1). Its own projection rather than the failure one because
- * the questions differ: this tile says what the session left behind and which
- * bead it is waiting on, and it has no exits — the blocker closing is what
- * moves it.
+ * Decision material for prerequisite, base-moved and recovery waits. Recovery
+ * retains the original cause without acquiring a failure projection.
  *
  * `blockers` is the server's proven list (§4.4), kept in its `{id, rig, status}`
  * shape so the 4a chip reads the same fact the settlement recorded. Records
  * written without it simply carry none (fail-quiet).
  *
  * @param {any} a
+ * @param {boolean} [resumed] - Whether a child already consumed this session.
  * @returns {import('./running-grid.js').WaitTile}
  */
-function waitProjection(a) {
+function waitProjection(a, resumed = false) {
   const cause_detail =
     a.cause_detail && typeof a.cause_detail === 'object'
       ? a.cause_detail
@@ -960,6 +969,7 @@ function waitProjection(a) {
   const raw = Array.isArray(cause_detail?.blockers)
     ? cause_detail.blockers
     : [];
+  const recovery = cause_detail?.recovery;
   /** @type {Array<{ id: string, rig: string|null, status: string }>} */
   const blockers = [];
   for (const blocker of raw) {
@@ -978,7 +988,29 @@ function waitProjection(a) {
     });
   }
   return {
-    ...(a.cause === 'base_moved' ? { cause: 'base_moved' } : {}),
+    ...(a.cause === 'base_moved' || recovery ? { cause: a.cause } : {}),
+    ...(recovery
+      ? {
+          resume_reason: resumed
+            ? '이미 이어받은 실행이 있어 이어하기 불가'
+            : typeof a.session_id !== 'string' || a.session_id.length === 0
+              ? '보존된 세션 기록이 없어 이어하기 불가'
+              : null,
+          recovery: {
+            classification: recovery.classification,
+            disposition: recovery.disposition,
+            reason: recovery.reason,
+            no_progress: recovery.no_progress
+              ? {
+                  count: recovery.no_progress.count,
+                  key: recovery.no_progress.key
+                }
+              : null,
+            label: recoveryWaitLabel(recovery.reason),
+            sentence: recoveryWaitSentence(recovery.reason)
+          }
+        }
+      : {}),
     summary:
       cause_detail && typeof cause_detail.summary === 'string'
         ? cause_detail.summary
@@ -1515,13 +1547,7 @@ function heldAttemptStates(attempts, done_at_by_bead) {
       .map((attempt) => attempt?.resumed_from)
       .filter((attempt_id) => typeof attempt_id === 'string')
   );
-  /** @type {Map<string, string>} */
-  const last_impl_by_bead = new Map();
-  for (const a of values) {
-    if (a && typeof a.bead_id === 'string' && isImplementationAttempt(a)) {
-      last_impl_by_bead.set(a.bead_id, a.attempt_id);
-    }
-  }
+  const last_impl_by_bead = latestImplementationAttempts(attempts);
   /** @type {Map<string, { attempt: any, run_state: 'parked'|'retry_wait'|'waiting'|'provider_hold' }>} */
   const held = new Map();
   for (const a of values) {
@@ -1532,7 +1558,7 @@ function heldAttemptStates(attempts, done_at_by_bead) {
       a.bead_id.length === 0 ||
       !isImplementationAttempt(a) ||
       (!HELD_STATUSES.has(a.status) && !provider_hold) ||
-      last_impl_by_bead.get(a.bead_id) !== a.attempt_id ||
+      last_impl_by_bead.get(a.bead_id) !== a ||
       typeof a.dismissed_at === 'number' ||
       (provider_hold && resumed_from_ids.has(a.attempt_id))
     ) {
@@ -2990,6 +3016,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
      */
     const blockedByFields = (bead_id, wait) => {
       const decorated = decoratedBlockedBy(bead_id);
+      if (wait?.recovery) {
+        return { ...decorated, wait };
+      }
       const record = admission[bead_id];
       // 선행 대기 admission의 blockers도 같은 재료다 (UI-d3i1 §5.4): attempt가
       // 없는 큐 항목은 `wait`가 없고, 증명된 blocker는 그 record에만 있다.
@@ -3100,6 +3129,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         attempt_id: live.attempt_id,
         run_state: live.run_state,
         status: live.status || undefined,
+        ...(live.status_label ? { status_label: live.status_label } : {}),
         // 실행중 타일의 route 칩 재료 (UI-yrzu §7.2). 그 버드의 항목이 아직
         // 채워지지 않았으면 칩만 생략된다.
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
@@ -3169,7 +3199,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
                 : live.run_state === 'retry_wait'
                   ? ['↻ 재시도 대기']
                   : live.run_state === 'waiting'
-                    ? ['⛓ 선행 대기']
+                    ? live.wait?.recovery
+                      ? live.wait.recovery.label
+                        ? [`⏳ ${live.wait.recovery.label}`]
+                        : []
+                      : ['⛓ 선행 대기']
                     : live.run_state === 'provider_hold'
                       ? ['공급자 보류']
                       : [],

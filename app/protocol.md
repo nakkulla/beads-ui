@@ -480,6 +480,31 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   fenced by `recovery_wait`; manual resume preserves the recorded execution
   selection. Two identical repeats set reason `no_progress` and refuse provider
   automatic resume. These fields express waiting intent, not resume authority.
+- Worker and Monitor tiles project these records as `run_state: 'waiting'`,
+  without a failure projection or failure count. Their `wait.recovery` contains
+  `{ classification, disposition, reason, no_progress: { count, key }|null, label: string|null, sentence: string|null }`;
+  `wait.cause` retains the original cause and `wait.since` is `finished_at`.
+  Known labels and sentences come from `app/utils/failure-sentences.js`; unknown
+  reasons keep their raw token and no invented sentence. A recorded session with
+  no resume child enables the existing `↻ 이어하기` action; the existing waiting
+  discard action remains available. When resuming is unavailable,
+  `wait.resume_reason` names the missing session or the child that already
+  inherited it, using the existing wait body slot. A running attempt resumed
+  from a recovery record carries `status_label: '복구 중'`.
+- The shared `wait_reasons` model adds kind `recovery` for the latest waiting
+  implementation attempt carrying `cause_detail.recovery`, excluding live,
+  completed and PR-wait subjects. Its headline combines the state, awaited
+  condition, original cause token and any `무진전 N회`; `since` is
+  `finished_at`. Reasons `unclassified`, `reconcile`, `authority` and
+  `no_progress` have verdict `action_required` with code `recovery_confirm` and
+  message `보존된 작업의 원인 확인 또는 이어하기·폐기 결정이 필요함`. Other
+  reasons start `normal` and become `overdue` / `settle_overdue` after two
+  observation intervals. Actions contain `resume` with
+  `{ root_dir, bead_id, attempt_id }` only when the session ID is non-empty.
+  `notify_plan` is `{ on_overdue: 'discord', on_complete: 'none' }`; existing
+  claim-once suppression prevents repeated sends. Recovery subjects appear in
+  blocked summaries, with `action_required` subjects counted once in
+  `조치 필요`.
 - A TERMINAL attempt inside `attempts` may additionally carry the non-persisted
   `impl_actor: { kind: 'delegated'|'main', model: string|null, effort: string|null, label: string }`
   (UI-ys18 §5.1) — the actual implementer the attempt's own preserved

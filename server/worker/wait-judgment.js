@@ -1,4 +1,11 @@
-import { latestImplementationAttempts } from '../../app/utils/active-attempts.js';
+import {
+  isImplementationAttempt,
+  latestImplementationAttempts
+} from '../../app/utils/active-attempts.js';
+import {
+  RECOVERY_WAIT_LABELS,
+  RECOVERY_WAIT_SENTENCES
+} from '../../app/utils/failure-sentences.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { USAGE_REARM_CAP } from './provider-health.js';
 
@@ -14,8 +21,8 @@ export const WAIT_THRESHOLDS = Object.freeze({
 });
 
 /**
- * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'base_moved'|'provider_hold'|'queue_hold'|'auto_advance_off'|'awaiting_user'|'retry_wait'|'stale_work'} WaitKind
- * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'return_overdue'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'disposition'} VerdictCode
+ * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'base_moved'|'provider_hold'|'queue_hold'|'auto_advance_off'|'awaiting_user'|'retry_wait'|'stale_work'|'recovery'} WaitKind
+ * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'return_overdue'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'disposition'|'recovery_confirm'} VerdictCode
  * @typedef {{ code: VerdictCode, message: string }} VerdictReason
  * @typedef {Object} WaitReason
  * @property {WaitKind} kind
@@ -59,8 +66,21 @@ const VERDICT_MESSAGES = {
   hold: '큐를 재개하려면 사람의 승인이 필요함',
   retry_stalled: '재시도 시각에서 5분이 지나도 큐가 정지됨',
   decision: '사용자의 답변이 필요함',
-  disposition: '보존 작업을 이어갈지 새로 시작할지 선택이 필요함'
+  disposition: '보존 작업을 이어갈지 새로 시작할지 선택이 필요함',
+  recovery_confirm: '보존된 작업의 원인 확인 또는 이어하기·폐기 결정이 필요함'
 };
+
+/** @type {Readonly<Record<string, string>>} */
+const RECOVERY_RELEASES = Object.freeze({
+  provider: '조건 해제 후 ↻ 이어하기',
+  credential: '인증 복구 확인 후 ↻ 이어하기',
+  prerequisite: '선행 해제 후 ↻ 이어하기',
+  authority: '승인·안전 판단 확인 후 ↻ 이어하기 또는 폐기',
+  verification: '검증 원인 정정 후 ↻ 이어하기',
+  no_progress: '무진전 원인 정정 후 ↻ 이어하기 또는 폐기',
+  unclassified: '원인·실행 결과 확인 뒤 ↻ 이어하기 또는 폐기',
+  reconcile: '원인·실행 결과 확인 뒤 ↻ 이어하기 또는 폐기'
+});
 
 /**
  * Inputs use epoch milliseconds or ISO strings; absent clocks stay absent.
@@ -183,8 +203,8 @@ export function judgeWaitReasons(input) {
       (/** @type {any} */ entry) => entry.bead_id
     )
   );
-  for (const attempt of attempts.values()) {
-    if (attempt.status === 'running') {
+  for (const attempt of Object.values(queue.attempts || {})) {
+    if (isImplementationAttempt(attempt) && attempt.status === 'running') {
       excluded.add(attempt.bead_id);
     }
   }
@@ -290,6 +310,54 @@ export function judgeWaitReasons(input) {
     }
     const attempt = attempts.get(bead_id);
     const record = admission[bead_id];
+    const recovery = attempt?.cause_detail?.recovery;
+    if (attempt?.status === 'waiting' && recovery) {
+      const token = line(recovery.reason);
+      const known = Object.hasOwn(RECOVERY_WAIT_LABELS, token);
+      const count = recovery.no_progress?.count;
+      const result = reason(
+        'recovery',
+        bead_id,
+        root_dir,
+        [
+          known ? RECOVERY_WAIT_LABELS[token] : token,
+          known ? RECOVERY_WAIT_SENTENCES[token] : '',
+          attempt.cause ? `원인 ${line(attempt.cause)}` : '',
+          count >= 1 ? `무진전 ${count}회` : ''
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        known ? RECOVERY_RELEASES[token] : ''
+      );
+      addClocks(result, { since: attempt.finished_at });
+      if (
+        typeof attempt.session_id === 'string' &&
+        attempt.session_id.length > 0
+      ) {
+        result.actions.push({
+          op: 'resume',
+          label: '↻ 이어하기',
+          payload: { root_dir, bead_id, attempt_id: attempt.attempt_id }
+        });
+      }
+      if (
+        ['unclassified', 'reconcile', 'authority', 'no_progress'].includes(
+          token
+        )
+      ) {
+        judge(result, 'action_required', 'recovery_confirm');
+      } else if (
+        elapsed(
+          attempt.finished_at,
+          WAIT_THRESHOLDS.interval_ms * WAIT_THRESHOLDS.settle_cycles,
+          now
+        )
+      ) {
+        judge(result, 'overdue', 'settle_overdue');
+      }
+      wait_reasons.push(result);
+      continue;
+    }
     if (attempt?.status === 'waiting' && attempt.cause === 'base_moved') {
       const sha = line(
         attempt.cause_detail?.candidate_sha || attempt.head_oid

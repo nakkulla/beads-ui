@@ -5,9 +5,54 @@ import {
   failureText,
   isKnownFailure,
   operationFailureText,
+  recoveryWaitLabel,
+  recoveryWaitSentence,
   retryOutcomeText,
   terminationText
 } from './failure-labels.js';
+
+describe('recovery wait vocabulary', () => {
+  test.each([
+    'provider',
+    'credential',
+    'prerequisite',
+    'authority',
+    'verification',
+    'no_progress'
+  ])(
+    'describes %s as a condition wait with its release condition',
+    (reason) => {
+      expect(recoveryWaitLabel(reason)).toBe('조건 대기');
+      expect(recoveryWaitSentence(reason)).toContain('이어갈 수 있습니다.');
+    }
+  );
+
+  test.each(['unclassified', 'reconcile'])(
+    'describes %s as a confirmation wait',
+    (reason) => {
+      expect(recoveryWaitLabel(reason)).toBe('확인 대기');
+      expect(recoveryWaitSentence(reason)).toContain(
+        '확인 뒤 이어하기 또는 폐기'
+      );
+    }
+  );
+
+  test.each(['future_reason', 'constructor', 'toString'])(
+    'preserves unknown token %s without inventing a sentence',
+    (reason) => {
+      expect(recoveryWaitLabel(reason)).toBe(reason);
+      expect(recoveryWaitSentence(reason)).toBeNull();
+    }
+  );
+
+  test.each([null, undefined, '', 42])(
+    'omits absent or invalid recovery material %s',
+    (reason) => {
+      expect(recoveryWaitLabel(reason)).toBeNull();
+      expect(recoveryWaitSentence(reason)).toBeNull();
+    }
+  );
+});
 
 describe('failureCategory', () => {
   test('maps a verify token to 검증 실패', () => {

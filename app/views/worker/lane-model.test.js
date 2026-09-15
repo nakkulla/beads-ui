@@ -2469,6 +2469,160 @@ describe('monitor 대기 attempt 투영 (UI-5ym8 §3.1·§3.3·§6)', () => {
   });
 });
 
+describe('recovery wait projection', () => {
+  /** @param {Record<string, any>} [patch] */
+  function recoveryAttempt(patch = {}) {
+    return {
+      attempt_id: 'recovery',
+      bead_id: 'A-1',
+      status: 'waiting',
+      started_at: 20,
+      finished_at: 30,
+      session_id: 'saved-session',
+      cause: 'session_ended_unresolved',
+      cause_detail: {
+        recovery: {
+          classification: 'unknown',
+          disposition: 'wait',
+          reason: 'unclassified',
+          policy_schema: 1,
+          no_progress: { count: 1, key: 'same-error' }
+        }
+      },
+      ...patch
+    };
+  }
+
+  test('preserves recovery facts separately from failure facts', () => {
+    const projected = activeByBead(
+      { recovery: recoveryAttempt() },
+      new Map()
+    ).get('A-1');
+
+    expect(projected).toMatchObject({
+      run_state: 'waiting',
+      can_resume: true,
+      wait: {
+        cause: 'session_ended_unresolved',
+        since: 30,
+        blockers: [],
+        recovery: {
+          classification: 'unknown',
+          disposition: 'wait',
+          reason: 'unclassified',
+          label: '확인 대기',
+          no_progress: { count: 1, key: 'same-error' }
+        }
+      }
+    });
+    expect(projected.wait.recovery.sentence).toContain('원인과 결과의 확인');
+    expect(projected.failure).toBeUndefined();
+  });
+
+  test.each(['', null, undefined])(
+    'withholds resume without a saved session (%s)',
+    (session_id) => {
+      const projected = activeByBead(
+        { recovery: recoveryAttempt({ session_id }) },
+        new Map()
+      ).get('A-1');
+
+      expect(projected.can_resume).toBe(false);
+      expect(projected.wait.resume_reason).toBe(
+        '보존된 세션 기록이 없어 이어하기 불가'
+      );
+    }
+  );
+
+  test('withholds resume after a child has already inherited the session', () => {
+    const projected = activeByBead(
+      {
+        recovery: recoveryAttempt(),
+        child: {
+          attempt_id: 'child',
+          bead_id: 'A-1',
+          kind: 'review_session',
+          status: 'done',
+          resumed_from: 'recovery'
+        }
+      },
+      new Map()
+    ).get('A-1');
+
+    expect(projected.can_resume).toBe(false);
+    expect(projected.wait.resume_reason).toBe(
+      '이미 이어받은 실행이 있어 이어하기 불가'
+    );
+  });
+
+  test.each([false, true])(
+    'keeps recovery ahead of historical failure regardless of snapshot order (%s)',
+    (reverse) => {
+      const entries = [
+        [
+          'old',
+          {
+            attempt_id: 'old',
+            bead_id: 'A-1',
+            status: 'failed',
+            started_at: 10,
+            finished_at: 15
+          }
+        ],
+        ['recovery', recoveryAttempt()]
+      ];
+      const attempts = Object.fromEntries(
+        reverse ? entries.reverse() : entries
+      );
+
+      const lanes = buildLanes(
+        [workspace({ attempts, bead_blocked_by: { 'A-1': [] } })],
+        [state()]
+      );
+
+      expect(lanes.running).toHaveLength(1);
+      expect(lanes.running[0]).toMatchObject({
+        run_state: 'waiting',
+        badges: ['⏳ 확인 대기'],
+        alert: false,
+        failure: null
+      });
+      expect(lanes.running[0].wait?.returning).not.toBe(true);
+      expect(
+        lanes.running.filter((item) => item.run_state === 'failed')
+      ).toEqual([]);
+      expect(attempts.old.status).toBe('failed');
+    }
+  );
+
+  test('labels the live recovery child with its current work', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            recovery: recoveryAttempt(),
+            child: {
+              attempt_id: 'child',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 40,
+              resumed_from: 'recovery'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running).toHaveLength(1);
+    expect(lanes.running[0]).toMatchObject({
+      run_state: 'running',
+      status_label: '복구 중',
+      alert: false
+    });
+  });
+});
+
 describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
   /**
    * @param {Partial<Record<string, any>>} [patch]

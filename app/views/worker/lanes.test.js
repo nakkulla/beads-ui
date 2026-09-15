@@ -104,8 +104,8 @@ beforeEach(() => {
 });
 
 /**
- * @param {Partial<import('../../protocol.js').WaitReason>} [patch]
- * @returns {import('../../protocol.js').WaitReason}
+ * @param {Partial<import('../../../server/worker/wait-judgment.js').WaitReason>} [patch]
+ * @returns {import('../../../server/worker/wait-judgment.js').WaitReason}
  */
 function waitReason(patch = {}) {
   return {
@@ -122,6 +122,78 @@ function waitReason(patch = {}) {
 }
 
 describe('server wait judgment rendering', () => {
+  test('counts recovery subjects once and exposes their action-required reasons', () => {
+    const reason = waitReason({
+      kind: 'recovery',
+      verdict: 'action_required',
+      targets: []
+    });
+
+    const summary = blockedSummary([
+      { root_dir: '/repo', wait_reasons: [reason, reason] }
+    ]);
+
+    expect(summary.count).toBe(1);
+    expect(summary.action_count).toBe(1);
+    expect(summary.groups.map((group) => group.label)).toEqual(['복구']);
+    expect(summary.groups[0].entries[0].id).toBe('A-1');
+  });
+
+  test('routes recovery resume through the supplied attempt control', () => {
+    const reason = waitReason({
+      kind: 'recovery',
+      actions: [
+        {
+          op: 'resume',
+          label: '↻ 이어하기',
+          payload: { root_dir: '/repo', bead_id: 'A-1', attempt_id: 'a' }
+        }
+      ]
+    });
+
+    render(
+      waitReasonLines(reason, {
+        resume: html`<button class="op-btn rtile__resume">↻ 이어하기</button>`
+      }).actions,
+      mount
+    );
+
+    expect(mount.querySelectorAll('.rtile__resume')).toHaveLength(1);
+    expect(mount.querySelector('.worker-mini__hold-resume')).toBeNull();
+  });
+
+  test('keeps one recovery body when server wait reasons are available', () => {
+    const reason = waitReason({
+      kind: 'recovery',
+      headline: '확인 대기 · 원인과 결과 확인 · 원인 session_ended_unresolved',
+      targets: []
+    });
+
+    render(
+      runningTile(
+        /** @type {any} */ ({
+          bead_id: 'A-1',
+          attempt_id: 'a',
+          title: '복구 작업',
+          waiting: true,
+          wait: {
+            cause: 'session_ended_unresolved',
+            summary: '이전 문장',
+            blockers: [],
+            recovery: { label: '확인 대기', sentence: '원인과 결과 확인' }
+          },
+          wait_reasons: [reason]
+        }),
+        Date.now()
+      ),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__held-summary')).toBeNull();
+    expect(mount.textContent).toContain('원인 세션 종료');
+    expect(mount.textContent).not.toContain('이전 문장');
+  });
+
   test('keeps the base-moved resume action with server reason sentences', () => {
     const reason = waitReason({
       kind: 'base_moved',

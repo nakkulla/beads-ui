@@ -2481,6 +2481,98 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     expect(tile.classList.contains('rtile--failed')).toBe(false);
   });
 
+  test.each([
+    ['provider', '조건 대기'],
+    ['unclassified', '확인 대기']
+  ])(
+    'renders the recovery %s state with the existing resume and discard controls',
+    (reason, label) => {
+      const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+      const sentence = '조건이 해제되면 이어갈 수 있습니다.';
+
+      render(
+        runningGridTemplate([
+          waitTile({
+            status_label: undefined,
+            can_resume: true,
+            wait: {
+              summary: '원래 summary',
+              blockers: [],
+              since: 4000,
+              cause: 'session_ended_unresolved',
+              recovery: { reason, label, sentence, no_progress: null }
+            }
+          })
+        ]),
+        mount
+      );
+
+      expect(mount.querySelector('.rtile__held-badge')?.textContent).toBe(
+        `⏳ ${label}`
+      );
+      expect(
+        mount.querySelector('.rtile__held-badge')?.getAttribute('title')
+      ).toBe(sentence);
+      expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe(label);
+      expect(
+        mount.querySelector('.rtile__held-summary')?.textContent
+      ).toContain(`${sentence} · 원인 세션 종료`);
+      expect(mount.querySelectorAll('.op-btn.rtile__resume')).toHaveLength(1);
+      expect(mount.querySelector('.rtile__resume')?.getAttribute('title')).toBe(
+        '보존한 작업을 기록된 실행 설정으로 같은 단계에서 이어갑니다'
+      );
+      expect(
+        mount.querySelector('.rtile__foot .rtile__discard')
+      ).not.toBeNull();
+      expect(mount.querySelector('.rtile__failure-badge')).toBeNull();
+      expect(mount.querySelector('.rtile__pause')).toBeNull();
+    }
+  );
+
+  test('omits the recovery resume control when the projection refuses it', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        waitTile({
+          status_label: undefined,
+          can_resume: false,
+          wait: {
+            summary: null,
+            blockers: [],
+            recovery: { reason: 'future', label: 'future', sentence: null }
+          }
+        })
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__resume')).toBeNull();
+    expect(mount.querySelector('.rtile__held-summary')?.textContent).toBe(
+      'future'
+    );
+    expect(mount.textContent).not.toContain('선행 대기');
+  });
+
+  test('renders the live recovery status in the existing elapsed slot', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        waitTile({
+          waiting: false,
+          status: 'running',
+          status_label: '복구 중',
+          wait: null
+        })
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe('복구 중');
+    expect(mount.querySelector('.rtile__held-badge')).toBeNull();
+  });
+
   test('badges a returning waiting attempt as 복귀 대기', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 

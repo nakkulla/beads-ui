@@ -2018,7 +2018,7 @@ export function waitReasonLines(reason, options = {}) {
       );
     }
     if (action.op === 'resume') {
-      return reason.kind === 'base_moved'
+      return ['base_moved', 'recovery'].includes(reason.kind)
         ? options.resume || ''
         : holdResumeButtonTemplate(
             item?.gate?.kind === 'systemic'
@@ -2111,7 +2111,8 @@ export function blockedSummary(workspaces) {
     { label: '사람', kinds: ['awaiting_user', 'stale_work'] },
     { label: '수동 출발', kinds: ['auto_advance_off'] },
     { label: '기준 이동', kinds: ['base_moved'] },
-    { label: '재시도', kinds: ['retry_wait'] }
+    { label: '재시도', kinds: ['retry_wait'] },
+    { label: '복구', kinds: ['recovery'] }
   ]
     .map((group) => ({
       label: group.label,
