@@ -127,8 +127,8 @@ REVISE/blocking, 사람 개입)를 모두 합산한다; 성공 판정은 `[verif
 
 한 행이 attempt 하나다. 결과 점(착지 초록 · 실패/폐기 빨강 · 문제 있음 주황 ·
 진행 중/대체됨 회색), `ID 제목`(한 줄 말줄임), 결과 문구(`착지 · PR #291`,
-`착지 · push 4633cda`, `착지 · 무변경`, `실패 · <cause>`, `폐기`, `진행 중 · PR
-open`, `대체됨`), 문제 칩(`실패`·`재시도`·`리뷰 r2`/`리뷰 b1`·`개입`), 시간과
+`착지 · push 4633cda`, `착지 · 무변경`, `실패 · <cause>`, `폐기`, `중지`, `파킹`,
+`대기`, `진행 중 · PR open`, `대체됨`, `미상`), 문제 칩(`실패`·`재시도`·`리뷰 r2`/`리뷰 b1`·`개입`), 시간과
 종료 시각, 비용. `[verify]` 판정이 있으면 결과 문구 뒤에 `· verify 통과/실패`를
 붙인다(보조 표기, 사용자 결정). 행 클릭은 기존 이슈 상세 딥링크
 (`#/compare?issue=<id>`)다.
@@ -166,26 +166,33 @@ open`, `대체됨`), 문제 칩(`실패`·`재시도`·`리뷰 r2`/`리뷰 b1`·
 
 ### 4.2 결과 (`outcome`)
 
-attempt마다 아래 사다리를 위에서부터 적용한다.
+**대표 attempt**: 한 Bead의 `done` attempt 가운데 `finished_at`이 가장 늦은 것,
+같으면 `attempt_id` 문자열이 큰 것 — 현행 `attachBeadLevelFacts`의 규칙 그대로다.
+Bead 단위 사실(착지·리뷰 stats·`[verify]`)은 대표 attempt 하나에만 붙는다.
+
+attempt마다 아래 사다리를 위에서부터 적용한다. 조건 열의 status 집합은
+`TERMINAL_ATTEMPT_STATUSES`(`done`·`failed`·`orphaned`·`stopped`·`discarded`·
+`parked`·`retry_wait`·`superseded`·`waiting`) 전부를 덮으며, 테스트는 그 집합의
+원소마다 결과를 단언해 새 status가 표 없이 추가되면 실패한다.
 
 | 순서 | 조건 | `outcome.kind` | 착지율 표본 |
 | --- | --- | --- | --- |
-| 1 | `status=failed` | `failed` (`evidence: cause`) | 판정 |
-| 2 | `status=discarded` | `discarded` | 판정 |
-| 3 | `status=done`이고 같은 Bead에 더 늦게 끝난 `done` attempt가 있다 | `superseded` | 제외 |
-| 4 | `status=done`이고 `done_kind`가 `no_delta`·`bench`이거나 이슈 `close_reason`이 `refuted:`·`no-delta:`로 시작 | `landed` (`evidence: no_change`) | 판정 |
-| 5 | `status=done`이고 `quickfix_landing`이 있으며 `reason === null` | `landed` (`evidence: push`, `head_sha`) | 판정 |
-| 6 | `status=done`이고 이슈 상태가 `closed` | `landed` (`evidence: closed`, `pr_url` 있으면 함께) | 판정 |
-| 7 | `status=done`이고 이슈가 스냅샷에 없다 | `unknown` | 제외 |
-| 8 | 그 밖의 `status=done` | `in_flight` (`pr_url` 있으면 `PR open`) | 제외 |
+| 1 | `status ∈ {failed, orphaned}` | `failed` (`evidence: cause`; `orphaned`는 `cause`가 없으면 `orphaned`) | 판정 |
+| 2 | `status ∈ {discarded, stopped}` | `aborted` (`evidence: status`) | 판정 |
+| 3 | `status = parked` | `parked` | 제외 |
+| 4 | `status ∈ {retry_wait, superseded}` | `superseded` (`evidence: status`) | 제외 |
+| 5 | `status = waiting` | `waiting` | 제외 |
+| 6 | `status = done`이고 그 Bead의 대표 attempt가 아니다 | `superseded` (`evidence: later_done`) | 제외 |
+| 7 | `status = done`이고 `done_kind`가 `no_delta`·`bench`이거나 이슈 `close_reason`이 `refuted:`·`no-delta:`로 시작 | `landed` (`evidence: no_change`) | 판정 |
+| 8 | `status = done`이고 `quickfix_landing`이 있으며 `reason === null` | `landed` (`evidence: push`, `head_sha`) | 판정 |
+| 9 | `status = done`이고 이슈 상태가 `closed` | `landed` (`evidence: closed`, `pr_url` 있으면 함께) | 판정 |
+| 10 | `status = done`이고 이슈가 스냅샷에 없다 | `unknown` | 제외 |
+| 11 | 그 밖의 `status = done` | `in_flight` (`pr_url` 있으면 `PR open`) | 제외 |
 
-- **착지율** = `landed ÷ (landed + failed + discarded)`. `superseded`·`in_flight`
-  ·`unknown`은 분모에 들어가지 않으며 카드에 `진행 중 k`로 따로 적는다
-  (`superseded`와 `unknown`은 세션 행에서만 보인다).
-- 3의 "더 늦게 끝난"은 `finished_at` 비교다. 한 Bead의 마지막 `done` attempt만
-  Bead 단위 사실(착지·리뷰 stats·`[verify]`)을 물려받는 선행 스펙 §3.2의 규칙을
-  결과에도 그대로 쓴다.
-- 6이 머지 관측을 대신하는 이유: 머지 완료는 큐 `merge_queue`·`done` 항목과
+- **착지율** = `landed ÷ (landed + failed + aborted)`. 카드의 `진행 중 k`는
+  `in_flight + waiting + parked`다. `superseded`·`unknown`은 분모에도 `진행 중`에도
+  들어가지 않고 세션 행에서만 보인다(`대체됨`·`미상`).
+- 9가 머지 관측을 대신하는 이유: 머지 완료는 큐 `merge_queue`·`done` 항목과
   타임라인 요약에 흩어져 있고 Worker와 세션이 모두 닫기 뒤에 이슈를 `closed`로
   만든다(ADR 0006·pr-finish). 이슈 `closed`는 스냅샷 한 곳에서 읽히는 가장
   일관된 착지 증거다. 사람이 PR 없이 닫은 이슈도 `landed`로 세는 것은 이 정의의
@@ -197,11 +204,18 @@ attempt마다 네 불리언과 근거를 둔다. 하나라도 참이면 문제 �
 
 | 키 | 참인 조건 | 근거 필드 |
 | --- | --- | --- |
-| `failed` | `outcome.kind ∈ {failed, discarded}` | `cause` |
+| `failed` | `outcome.kind ∈ {failed, aborted}` | `cause` 또는 `status` |
 | `retry` | `retry.origin_attempt_id` 또는 `resumed_from`이 있다(선행 스펙 `isRetryAttempt`) | 그 ID |
 | `review` | Bead `impl_review_stats`의 `round ≥ 2` 또는 `blocking ≥ 1`. Bead 단위이므로 그 Bead의 마지막 `done` attempt에만 붙는다 | `{ round, blocking, minor }` |
-| `human` | attempt 기록의 `halted_auto_advance`·`awaiting_user_present`가 참이거나, 그 bead 타임라인에서 `attempt_id`가 같은 `needs_human`·`queue_hold` 이벤트가 있거나, `session_ended` 요약이 `파킹 ·`으로 시작 | 이벤트 `summary` 목록 |
+| `human` | attempt 기록의 `halted_auto_advance`·`awaiting_user_present`가 참이거나 `status = parked`이거나, 그 bead 타임라인의 `needs_human`·`queue_hold` 이벤트가 아래 귀속 규칙으로 이 attempt에 귀속되거나, `attempt_id`가 같은 `session_ended` 요약이 `파킹 ·`으로 시작 | 이벤트 `summary` 목록 |
 
+- **타임라인 이벤트 귀속**: `needs_human`(`completion-intent.js`)과 `queue_hold`
+  (`queue-store.js` 보류 기록)는 Bead 단위 이벤트라 `attempt_id`가 없다. 이벤트에
+  `attempt_id`가 있으면 그것을 쓰고, 없으면 그 Bead의 구현 attempt 중
+  `started_at ≤ at ≤ finished_at`인 것, 없으면 `finished_at ≤ at`인 것 중 가장 늦게
+  끝난 것, 그것도 없으면 가장 먼저 시작한 것에 귀속한다. 테스트는 현재 생산
+  형태(`attempt_id` 없는 `needs_human`·`queue_hold`, `attempt_id` 있는
+  `session_ended`·`provider_hold`) 그대로의 줄로 검증한다.
 - `provider_hold`·`provider_recovered`·`account_preempt`·`guard_warning`은 환경
   요인이라 세지 않는다.
 - **문제 세션 비율** = 문제 세션 수 ÷ n. 내역 칩은 각 키의 참 개수다(한 세션이
@@ -218,15 +232,23 @@ attempt마다 네 불리언과 근거를 둔다. 하나라도 참이면 문제 �
    `basis = recorded`. 이름은 현재 프리셋 저장소에서 `id`로 다시 찾고, 삭제된
    프리셋이면 기록된 이름에 `(삭제됨)`을 붙인다. 기록의 `deviated_keys`가 비어
    있지 않으면 세션 행에 `핀 조정` 칩을 단다(그룹은 그대로 그 프리셋).
-2. **추론**: 기록이 없으면 기록된 축으로 현재 프리셋 저장소와 대조한다.
+2. **추론**: 기록이 없으면 기록된 축으로 현재 프리셋 저장소와 대조한다. 대조
+   전에 두 정규화를 거친다.
+   - **route별 유효값**: 프리셋의 비교 대상 값은 attempt의 route가 `quick_fix`면
+     `quick_fix_<key>`가 있을 때 그 값, 아니면 `<key>`다(ADR UI-00lf의 역매핑
+     규칙과 같은 방향). route는 `exec_values.route ?? attempt.route ??
+     bead_snapshot.route`(선행 스펙 `attemptSignature`).
+   - **모델 이름 정규화**: attempt `model`, 실행자 모델, 프리셋의 모델 값을 모두
+     `runner_catalog`의 항목으로 대조해(이름 우선, 실패하면 `id`; 선행 스펙 §1.2와
+     같은 순서) `<runtime>:<name>` 토큰으로 바꾼 뒤 비교한다. `gpt-5.6-sol`과
+     `sol`은 같은 토큰이다. 카탈로그에 없는 값은 원문 그대로 비교한다.
    - 오케스트레이션: attempt `model`·`effort`(511/512 기록). 프리셋의
      `orchestration_model`은 반드시 같아야 하고, `orchestration_effort`는
      attempt `effort`가 있을 때만 비교한다.
    - 구현 실행자: `receipt_check.checks.exec_receipt`(선행 스펙 `implActorOf`).
-     `delegated`면 프리셋의 `impl_runtime`은 실행자 모델이 속한 런타임
-     (`runner_catalog`에서 역매핑; `auto`는 모두 허용)과 같아야 하고 `impl_model`은
-     `auto`이거나 실행자 모델과 같아야 한다. `main`이거나 영수증이 없으면 구현
-     키는 비교하지 않는다.
+     `delegated`면 프리셋의 `impl_runtime`은 실행자 토큰의 런타임(`auto`는 모두
+     허용)과 같아야 하고 `impl_model`은 `auto`이거나 실행자 토큰과 같아야 한다.
+     `main`이거나 영수증이 없으면 구현 키는 비교하지 않는다.
    - 리뷰어·plan/spec 리뷰 키·속도는 비교하지 않는다(기록이 거의 없다).
    - 후보가 하나면 그 프리셋, `basis = inferred`. 둘 이상이면 구체 점수(비교에
      실제로 쓰인 `orchestration_effort`·`impl_runtime`·`impl_model` 중 `auto`가
@@ -280,7 +302,8 @@ ADR로 남지 않았으므로 supersede 없이 이 문서가 새 결정을 적�
   없앤다. `verify`·`review`·`usage`·`duration_ms`·`is_retry`·`is_bench`·
   `finished_at`는 그대로다. `groups[]`는 §4.5의 새 형태로 바뀐다. `runs`·
   `bench_rows`는 선행 스펙 §4.7 그대로이며 실험 표는 기존 `benchPresetGroups`
-  를 계속 쓴다.
+  를 계속 쓴다 — 실험 집계가 스스로 만드는 `success_rate`·`pass_caret`은
+  그대로 남고, 없어지는 것은 본 표 `rows`·`groups`의 서명·성공률 필드뿐이다.
 - `app/protocol.md`의 `get-compare` 절을 이 형태로 다시 쓴다.
 - 서버 모듈 경계: `compare-projection.js`의 순수 부분(`buildCompareModel`)이
   §4 전부를 계산하고, 수집부(`collectCompareWorkspaces`)가 타임라인 읽기를
@@ -291,22 +314,31 @@ ADR로 남지 않았으므로 supersede 없이 이 문서가 새 결정을 적�
 
 앞으로의 attempt가 §4.4의 추론 없이 프리셋을 알도록 두 곳에 기록한다.
 
-1. **적용 시점**: `apply-impl-preset-global`(kv 프로필 + 큐 오케스트레이션 키를
-   한 번에 바꾸는 경로)이 같은 큐 쓰기에 `applied_exec_preset: { id, name,
-   revision, applied_at }`를 워크스페이스 큐 저장소(`queue.json`)에 남긴다.
-   전역 실행 설정을 프리셋 없이 바꾸는 경로 — `update-exec-settings`
-   (`mutation-handlers.js`), `set-session-defaults`
-   (`session-defaults-handlers.js`), `worker-queue-set-orchestration-defaults`
-   (`worker-handlers.js`), 그리고 `impl-preset-update`
-   (`exec-preset-handlers.js`)가 현재 적용된 프리셋 자체를 바꿀 때 — 는 같은
-   쓰기에서 `applied_exec_preset`를 `null`로 지운다. 이슈별 프리셋 적용
-   (`apply-impl-preset`, UI-00lf)은 Bead 핀이지 전역 상태가 아니므로 건드리지
+1. **적용 시점**: `apply-impl-preset-global`(`handleApplyImplPresetGlobal`)은
+   kv 프로필을 먼저 쓰고 그 뒤 큐 오케스트레이션 키를 쓰며 둘은 원자적이지
+   않다. 그래서 순서를 셋으로 고정한다: ① kv 쓰기 **전에** 큐 저장소의
+   `applied_exec_preset`를 `null`로 지우는 큐 쓰기, ② kv 쓰기와 readback, ③ 큐
+   오케스트레이션 키 쓰기(`setOrchestrationDefaults`)와 **같은 큐 쓰기**에
+   `applied_exec_preset: { id, name, revision, applied_at }` 기록. ②나 ③이 실패
+   하면 식별은 `null`로 남아 혼합 설정이 어떤 프리셋으로도 기록되지 않는다.
+   전역 실행 설정을 프리셋 없이 바꾸는 경로는 그 쓰기에서 식별을 지운다 —
+   `set-session-defaults`(`session-defaults-handlers.js`)와
+   `worker-queue-set-orchestration-defaults`(`worker-handlers.js`)는 현재 적용된
+   프리셋이 선언한 키의 값이 실제로 바뀔 때만, `impl-preset-update`
+   (`exec-preset-handlers.js`)는 현재 적용된 프리셋 자체를 바꿀 때. 이슈 단위
+   경로 — `update-exec-settings`(`mutation-handlers.js`, Bead metadata만 편집)와
+   `apply-impl-preset`(UI-00lf Bead 핀) — 는 전역 상태가 아니므로 건드리지
    않는다.
 2. **dispatch 시점**: `prerecordAttempt`가 `exec_preset: { id, name, revision,
-   deviated_keys: string[] } | null`을 durable 필드로 더한다. 값은 큐의
-   `applied_exec_preset`이고, `exec_stamped_keys`(Bead 핀으로 덮인 키) 중 그
-   프리셋이 선언한 키와 값이 다른 것을 `deviated_keys`에 적는다.
-   `applied_exec_preset`이 없으면 `null`이다. `exec_default_preset_id`·
+   deviated_keys: string[] } | null`을 durable 필드로 더한다. 값은 dispatch가
+   읽는 큐 스냅샷의 `applied_exec_preset`이고, `deviated_keys`는 그 Bead의 핀
+   값(`resolveExecSettings`에 넘기는 `bead` 층, `BEAD_PIN_KEYS`) 가운데 프리셋의
+   route별 유효값(§4.4)과 다른 키다 — `exec_stamped_keys`는 `policy.js`가 항상
+   비워 반환하는 정리용 잔재라 쓰지 않으며 의미도 바꾸지 않는다.
+   `applied_exec_preset`이 없으면 `null`이다. **재개**: 이전 attempt의 설정을
+   보존하는 재개(`use_prior`, ADR 0045·0046 경로가 `prior.exec_values`를 잇는
+   곳)는 `prior.exec_preset`을 그대로 승계하고, 현재 설정을 고른 새 실행과
+   override 적용 재개만 현재 큐의 식별을 기록한다. `exec_default_preset_id`·
    `exec_default_preset_revision` 두 잔재 필드는 그대로 두되 더 쓰지 않는다.
 - `queue-store.js`의 attempt typedef와 큐 typedef에 두 필드를 더하고, 없는
   기록은 `null`로 읽는다(과거 파일 호환).
@@ -320,24 +352,32 @@ ADR로 남지 않았으므로 supersede 없이 이 문서가 새 결정을 적�
   으로 묶이고 응답에 `warnings: ['preset_store_unreadable']`를 실어 카드 격자
   위에 한 줄로 보인다.
 - `get-compare` 실패는 현행대로 오류 한 줄과 `새로고침`.
-- 기록(§6)은 fail-closed가 아니다: 적용 시점 기록 실패는 적용 자체를 실패시키지
-  않고(같은 쓰기이므로 원자적이다) dispatch의 `exec_preset`은 읽지 못하면
-  `null`이다.
+- 기록(§6)은 fail-closed가 아니다: 식별 기록은 큐 오케스트레이션 키와 같은 큐
+  쓰기 안에서만 원자적이고 kv 쓰기와는 원자적이지 않으므로 §6.1의 순서가 부분
+  적용을 `null`로 남긴다. dispatch의 `exec_preset`은 읽지 못하면 `null`이다.
 
 ## 8. 테스트
 
-- `compare-projection.test.js`: 결과 사다리 8단계(특히 `superseded`가 같은 Bead의
-  마지막 `done`만 남기는 것, `quickfix_landing.reason === null`, `closed`, 스냅샷
-  부재 `unknown`), 착지율 분모, 문제 신호 넷과 타임라인 부재 fail-quiet, `review`
-  가 마지막 `done`에만 붙는 것, 프리셋 대조(기록 우선·삭제된 프리셋·`deviated_
-  keys`·추론의 `auto` 와일드카드·런타임 역매핑·구체 점수·동률 `null`·후보 없음),
+- `compare-projection.test.js`: 결과 사다리 11단계를 `TERMINAL_ATTEMPT_STATUSES`
+  원소마다 단언(특히 대표 attempt 규칙의 `finished_at` 동률을 `attempt_id`로
+  푸는 것, `quickfix_landing.reason === null`, `closed`, 스냅샷 부재 `unknown`),
+  착지율 분모와 `진행 중` 집합, 문제 신호 넷과 타임라인 부재 fail-quiet,
+  `attempt_id` 없는 `needs_human`·`queue_hold`의 시각 귀속(구간 안·구간 뒤·구간
+  전), `review`가 대표 attempt에만 붙는 것, 프리셋 대조(기록 우선·삭제된 프리셋·
+  `deviated_keys`·route별 유효값 `quick_fix_*`·모델 토큰 정규화 `gpt-5.6-sol`≡
+  `sol`·추론의 `auto` 와일드카드·런타임 역매핑·구체 점수·동률 `null`·후보 없음),
   묶기 축 셋의 키, 평균·중앙값·표본, `partial_count`, `best` 규칙(`n ≥ 3`·동률
   없음), `summary`, 서버 기본 정렬.
 - `compare-handlers.test.js`: `group_by` 정규화와 `issue_types` 무시.
 - `queue-store.test.js`·`scheduler.test.js`·`exec-preset-handlers.test.js`
-  (또는 `exec-preset-apply.test.js`): 전역 적용이 `applied_exec_preset`를 같은
-  쓰기에 남기고, 직접 편집 경로 넷이 지우며, dispatch가 `exec_preset`과
-  `deviated_keys`를 기록하고, 과거 기록은 `null`로 읽히는 것.
+  (또는 `exec-preset-apply.test.js`): 전역 적용이 §6.1의 순서대로 kv 전에 식별을
+  지우고 큐 키 쓰기와 같은 쓰기에 `applied_exec_preset`를 남기며 kv 또는 큐
+  실패 시 `null`로 남는 것, `set-session-defaults`·
+  `worker-queue-set-orchestration-defaults`가 프리셋 선언 키의 값 변경에만 지우고
+  `impl-preset-update`가 적용 중 프리셋 변경에 지우는 것, `update-exec-settings`
+  는 건드리지 않는 것, dispatch가 Bead 핀 값으로 `deviated_keys`를 만드는 것,
+  `use_prior` 재개가 `prior.exec_preset`을 승계하는 것, 과거 기록이 `null`로
+  읽히는 것.
 - `app/views/compare/index.test.js`: 카드 렌더(배지·KPI·칩·최고 표시), 펼침이
   새로고침 뒤 유지, 정렬 select, 묶기 축 변경이 `group_by`로 재요청, 세션 행
   딥링크, 실험 절이 접힌 채 폼·목록을 담는 것, `format.js` 새 포맷터.
