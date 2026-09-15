@@ -1,5 +1,9 @@
-import { describe, expect, test } from 'vitest';
-import { recoveryResultLineReasons } from '../work-recovery-policy.js';
+import { describe, expect, test, vi } from 'vitest';
+import * as operationPolicy from '../repo-operation-policy.js';
+import {
+  recoveryResultLineReasons,
+  workRecoveryReady
+} from '../work-recovery-policy.js';
 import * as preamble from './preamble.js';
 import {
   CLAUDE_LIFETIME_DIRECTIVE,
@@ -176,6 +180,23 @@ test.each([false, true])(
   }
 );
 
+test('keeps legacy result grammar when the operation contract is unsupported', () => {
+  const support = vi
+    .spyOn(operationPolicy, 'repoOperationPolicySupported')
+    .mockReturnValue(false);
+  try {
+    const out = applyPreamble('작업하라', {
+      pr_submit: true,
+      work_recovery_ready: workRecoveryReady()
+    });
+
+    expect(out.system_prompt).toContain(PR_SUBMIT_DIRECTIVE);
+    expect(out.system_prompt).not.toContain('대기 · recovery:');
+  } finally {
+    support.mockRestore();
+  }
+});
+
 test.each([{ review: true }, { disposition: true, pr_submit: false }])(
   'omits recovery grammar in non-implementation mode %j',
   (options) => {
@@ -275,10 +296,18 @@ describe('runner/preamble unattended framing (UI-rxp3 §1)', () => {
     expect(UNATTENDED_PREAMBLE).toContain('환경 사실');
   });
 
-  test('keeps the blocker + abnormal-exit instruction', () => {
+  test('continues authorized correction after a protected action is blocked', () => {
     expect(UNATTENDED_PREAMBLE).toContain('`blocker`');
     expect(UNATTENDED_PREAMBLE).toContain('단계마다 요약 메시지를 쓰지 않는다');
-    expect(UNATTENDED_PREAMBLE).toContain('비정상 종료');
+    expect(UNATTENDED_PREAMBLE).toContain(
+      '보호 대상 동작의 차단이지 세션 종료 지시가 아니다'
+    );
+    expect(UNATTENDED_PREAMBLE).toContain(
+      '같은 세션에서 원인을 고치고 관련 검증을 다시 돌린 뒤 계속하라'
+    );
+    expect(UNATTENDED_PREAMBLE).toContain(
+      '고칠 수 없는 외부 조건·결과 불명·사람만 내릴 결정만'
+    );
   });
 
   test('names the one tool that holds the claude process', () => {

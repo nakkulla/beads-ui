@@ -21,23 +21,86 @@ const APPROVED_DIGEST =
 
 /**
  * @param {number} schema_version
+ * @param {Record<string, any>} [provenance_patch]
+ * @param {Record<string, any>} [policy_patch]
  */
-function pinnedAt(schema_version) {
+function pinnedAt(schema_version, provenance_patch = {}, policy_patch = {}) {
+  const bytes = Buffer.from(
+    JSON.stringify({
+      ...JSON.parse(nodeFs.readFileSync(REPO_OPERATION_POLICY_PATH, 'utf8')),
+      schema_version,
+      ...policy_patch
+    })
+  );
+  const provenance = {
+    source_repo: 'dotfiles',
+    source_commit: 'a'.repeat(40),
+    source_path: 'generated/contracts/repo-operation-policy.json',
+    bytes: bytes.length,
+    sha256: nodeCrypto.createHash('sha256').update(bytes).digest('hex'),
+    source_blob_sha: nodeCrypto
+      .createHash('sha1')
+      .update(`blob ${bytes.length}\0`)
+      .update(bytes)
+      .digest('hex'),
+    ...provenance_patch
+  };
   return {
     readFileSync: (/** @type {any} */ file, /** @type {any} */ encoding) => {
       const value = String(file).endsWith('.provenance.json')
-        ? JSON.stringify({
-            source_commit: 'a'.repeat(40),
-            sha256: '',
-            source_path: 'generated/contracts/repo-operation-policy.json'
-          })
-        : JSON.stringify({ schema_version });
+        ? JSON.stringify(provenance)
+        : bytes.toString('utf8');
       return encoding ? value : Buffer.from(value);
     }
   };
 }
 
 describe('pinned repo-operation policy contract', () => {
+  test.each([
+    { sha256: 'wrong' },
+    { source_blob_sha: '0'.repeat(40) },
+    { bytes: 0 },
+    { source_repo: '' },
+    { source_path: ' ' },
+    { source_commit: '' }
+  ])('rejects mismatched provenance %j', (patch) => {
+    const loaded = loadRepoOperationPolicy({
+      fs: /** @type {any} */ (pinnedAt(4, patch))
+    });
+
+    expect(loaded.supported).toBe(false);
+  });
+
+  test.each([
+    { resolution_ladder: [] },
+    { worker_automatic: [''] },
+    { after_ladder_recovery: null },
+    { after_ladder_recovery: { consumer_schema_required: 4 } }
+  ])('rejects unusable operation structure %j', (patch) => {
+    const loaded = loadRepoOperationPolicy({
+      fs: /** @type {any} */ (pinnedAt(4, {}, patch))
+    });
+
+    expect(loaded.supported).toBe(false);
+  });
+
+  test.each(['read', 'parse'])(
+    'withholds support after a %s failure',
+    (kind) => {
+      const fs = {
+        readFileSync: () => {
+          if (kind === 'read') {
+            throw new Error('missing');
+          }
+          return Buffer.from('{');
+        }
+      };
+
+      expect(
+        loadRepoOperationPolicy({ fs: /** @type {any} */ (fs) }).supported
+      ).toBe(false);
+    }
+  );
   test('matches the approved artifact digest', () => {
     const bytes = nodeFs.readFileSync(REPO_OPERATION_POLICY_PATH);
 

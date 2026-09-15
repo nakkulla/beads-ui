@@ -49,7 +49,10 @@ import { createHash } from 'node:crypto';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
+import {
+  isImplementationAttempt,
+  latestImplementationAttempts
+} from '../../app/utils/active-attempts.js';
 import { laneMismatchOf, laneOfRoute } from '../../app/utils/quickfix-lane.js';
 import { resumeKindOf } from '../../app/utils/quickfix-resume-kind.js';
 import { createTranscriptReducer } from '../../app/utils/transcript-lines.js';
@@ -570,7 +573,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
 
 /**
  * @typedef {Object} SchedulerDeps
- * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryPolicySupported'|'workRecoveryClassification'|'workRecoveryReadinessEnv'>} [workRecoveryPolicy]
+ * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryReady'|'workRecoveryClassification'|'workRecoveryReadinessEnv'>} [workRecoveryPolicy]
  * @property {any} store - Queue store (queue-store.js).
  * @property {ReturnType<typeof import('./exec-preset-coordinator.js').createExecPresetCoordinator>} execPresetCoordinator
  * The sole authority for workspace preset resolution. It snapshots the selected
@@ -4938,13 +4941,14 @@ export function createScheduler(deps) {
    */
   function recoveryDetail(workspace, attempt_id, classification) {
     const recovery = { ...classification.recovery, policy_schema: 1 };
-    const key = JSON.stringify({
-      cause: classification.cause,
-      classification: recovery.classification,
-      summary: extractSummary(classification.summary)
-    });
     const attempts = deps.store.snapshot(workspace).attempts;
     const current = attempts[attempt_id];
+    const key = recoveryProgressKey(
+      current,
+      classification.cause,
+      recovery.classification,
+      classification.summary
+    );
     /** @type {Set<string>} */
     const visited = new Set([attempt_id]);
     let cursor = current;
@@ -4964,11 +4968,12 @@ export function createScheduler(deps) {
       }
       const prior_key =
         prior_recovery.no_progress?.key ??
-        JSON.stringify({
-          cause: cursor.cause,
-          classification: prior_recovery.classification,
-          summary: extractSummary(cursor.cause_detail.summary)
-        });
+        recoveryProgressKey(
+          cursor,
+          cursor.cause,
+          prior_recovery.classification,
+          cursor.cause_detail.summary
+        );
       if (prior_key !== key) {
         break;
       }
@@ -4992,6 +4997,38 @@ export function createScheduler(deps) {
       };
     }
     return recovery;
+  }
+
+  /**
+   * Compare meaningful execution facts without incidental log identities.
+   *
+   * @param {any} attempt
+   * @param {string} cause
+   * @param {string|undefined} classification
+   * @param {unknown} summary
+   */
+  function recoveryProgressKey(attempt, cause, classification, summary) {
+    const summary_norm = (extractSummary(summary) || '')
+      .replace(/\d{4}-\d{2}-\d{2}[T ][\d:.Z+-]*/g, '')
+      .replace(/\d{1,2}:\d{2}(?::\d{2})?(?:\s?[AP]M)?/gi, '')
+      .replace(/[A-Za-z]+-[a-z0-9]+-\d{13}-\d+/g, '')
+      .replace(/\b(?:[a-f0-9]{40}|[a-f0-9]{7})\b/gi, '')
+      .replace(
+        /\brun[_ -]?id\s*[:=#-]?\s*[a-z0-9_-]+\b|\brun(?:\s*[:=#-]\s*|\s+)\d+\b|(?<=\/runs\/)\d+/gi,
+        ''
+      )
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, ' ');
+    return JSON.stringify({
+      cause,
+      classification,
+      summary_norm,
+      head_oid: attempt.head_oid ?? null,
+      verify_ok: attempt.verify_result?.ok ?? null,
+      pr_url: attempt.pr_url ?? null,
+      preset: attempt.exec_default_preset_id ?? null
+    });
   }
 
   /**
@@ -5128,8 +5165,7 @@ export function createScheduler(deps) {
               classification.summary,
               { recovery }
             ),
-            finished_at: at,
-            retry: null
+            finished_at: at
           }
         });
         closeRetryLineage(workspace, bead_id);
@@ -5234,7 +5270,7 @@ export function createScheduler(deps) {
         (/** @type {any} */ effect) => effect.kind === 'retry_scheduled'
       );
       const exhausted =
-        !scheduled && work_recovery_policy.workRecoveryPolicySupported()
+        !scheduled && work_recovery_policy.workRecoveryReady()
           ? work_recovery_policy.workRecoveryClassification(
               'transient_retry_exhausted'
             )
@@ -5282,6 +5318,26 @@ export function createScheduler(deps) {
         }
       }
       if (exhausted) {
+        const existing =
+          deps.store.snapshot(workspace).attempts[attempt_id]?.retry;
+        const lineage = applied.lineages.find(
+          (/** @type {import('./queue-hold.js').RetryLineage} */ entry) =>
+            entry.bead_id === bead_id
+        );
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: {
+            retry: {
+              ...existing,
+              cause: key,
+              origin_attempt_id,
+              attempts: lineage?.attempts ?? existing?.attempts ?? 0,
+              max: existing?.max ?? RETRY_MAX,
+              exhausted: true,
+              next_at: null
+            }
+          }
+        });
         settleFailureTier(
           workspace,
           attempt_id,
@@ -5426,7 +5482,7 @@ export function createScheduler(deps) {
       bead_status: options.bead_status ?? null,
       pr_url: options.pr_url ?? null,
       awaiting_user: options.awaiting_user ?? null,
-      ...(work_recovery_policy.workRecoveryPolicySupported()
+      ...(work_recovery_policy.workRecoveryReady()
         ? {
             recovery: {
               classify: work_recovery_policy.workRecoveryClassification
@@ -8292,7 +8348,7 @@ export function createScheduler(deps) {
         const reconciled_verdict = /** @type {RunnerVerdict} */ ({
           success: true,
           reason: 'reconciled',
-          ...(work_recovery_policy.workRecoveryPolicySupported()
+          ...(work_recovery_policy.workRecoveryReady()
             ? { summary: persisted_verdict?.summary ?? null }
             : {}),
           ...(persisted_verdict?.background_shell_at_result
@@ -8545,9 +8601,92 @@ export function createScheduler(deps) {
           await disposeDeadAttempt(workspace, d.attempt_id, current);
         }
       }
+      reclassifyPreservedFailures(workspace);
       await settleStaleWorkerClaims(workspace);
     } finally {
       reconciling.delete(workspace);
+    }
+  }
+
+  /**
+   * Reclassify only the current unfinished implementation; failed events remain.
+   *
+   * @param {string} workspace
+   */
+  function reclassifyPreservedFailures(workspace) {
+    if (!work_recovery_policy.workRecoveryReady()) {
+      return;
+    }
+    const q = deps.store.snapshot(workspace);
+    for (const attempt of latestImplementationAttempts(q.attempts).values()) {
+      const { attempt_id, bead_id, cause, cause_detail } = attempt;
+      if (
+        attempt.status !== 'failed' ||
+        attempt.dismissed_at != null ||
+        cause_detail?.recovery ||
+        q.done.some((/** @type {any} */ entry) => entry.bead_id === bead_id) ||
+        discardActive(q, { bead_id, attempt_id }) ||
+        claimed.has(bead_id) ||
+        Object.values(q.attempts).some(
+          (sibling) =>
+            sibling.bead_id === bead_id &&
+            (['running', 'pending'].includes(sibling.status) ||
+              running.has(sibling.attempt_id) ||
+              settling.has(sibling.attempt_id))
+        ) ||
+        !(
+          typeof cause === 'string' &&
+          (cause.startsWith('session_failed:') ||
+            [
+              'session_ended_unresolved',
+              'session_ended_unresolved:background_shell',
+              'session_hard_stop:environment',
+              'loud_fail_blocker'
+            ].includes(cause))
+        )
+      ) {
+        continue;
+      }
+      const classification = classifyFailure({
+        cause,
+        cause_detail,
+        verdict: { success: false, summary: cause_detail?.summary ?? null },
+        recovery: { classify: work_recovery_policy.workRecoveryClassification }
+      });
+      if (
+        classification.tier !== 'waiting' ||
+        !classification.recovery ||
+        classification.env_group !== null
+      ) {
+        continue;
+      }
+      const at = now();
+      const updated = deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          status: 'waiting',
+          cause_detail: {
+            ...cause_detail,
+            recovery: {
+              ...classification.recovery,
+              policy_schema: 1,
+              reclassified_from: 'failed',
+              reclassified_at: at
+            }
+          }
+        }
+      });
+      if (updated.ok) {
+        appendTimeline({
+          bead_id,
+          attempt_id,
+          kind: 'session_ended',
+          seq: 'waiting',
+          summary: `${default_work_recovery_policy.WORK_RECOVERY_RESULT_LINE_PREFIX}${classification.recovery.reason} — ${cause} (재분류)`,
+          at
+        });
+        notifyChanged(workspace);
+      }
     }
   }
 
@@ -9830,7 +9969,7 @@ export function createScheduler(deps) {
     if (
       !settings.disposition &&
       input.launch_kind !== 'review' &&
-      work_recovery_policy.workRecoveryPolicySupported()
+      work_recovery_policy.workRecoveryReady()
     ) {
       settings.env = {
         ...settings.env,
@@ -12531,6 +12670,11 @@ export function createScheduler(deps) {
       quickfix_lane,
       bench_run: prior.bench_run ?? null,
       resumed_from: attempt_id,
+      ...(prior.status === 'waiting' &&
+      prior.cause_detail?.recovery &&
+      prior.retry?.origin_attempt_id
+        ? { retry: { ...prior.retry, next_at: null } }
+        : {}),
       auto_resume_kind: options.auto_resume_kind ?? null,
       continuation_mode,
       // The user's resume MEANING, carried onto the child (UI-qce9 §5.3) so the

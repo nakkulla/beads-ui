@@ -4,8 +4,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createBeadTimeline } from './bead-timeline.js';
 import { createLockManager } from './locks.js';
+import { repairHandoffDescription } from './operation-recovery.js';
 import { __resetQueueEventsForTest, onQueueChanged } from './queue-events.js';
 import { createQueueStore } from './queue-store.js';
+import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import {
   __resetRepoOpsDisplayForTest,
@@ -172,9 +174,43 @@ function coordinatorFor(overrides = {}) {
 describe('repo operation after-ladder recovery', () => {
   /** @param {Record<string, any>} [patch] */
   function adapter(patch = {}) {
+    const issue = {
+      issue_type: 'bug',
+      status: 'open',
+      description: repairHandoffDescription({
+        operation_id: 'op-1',
+        operation: {
+          subjects: [{ bead_id: 'UI-source' }],
+          script_path: 'repo-ops/script/deploy',
+          target_sha: TARGET,
+          target_base: 'main',
+          effective_base_sha: TARGET,
+          script_blob_sha: 'd'.repeat(40),
+          script_mode: '100755',
+          exit_code: 2,
+          failure: { code: 'script_failed', summary: 'Error: same failure' }
+        }
+      }),
+      metadata: /** @type {Record<string, string>} */ ({})
+    };
     return {
+      readIssue: vi.fn(async () => structuredClone(issue)),
+      pinQuickFix: vi.fn(
+        async (
+          /** @type {string} */ _bead_id,
+          /** @type {string} */ receipt
+        ) => {
+          issue.metadata = { route: 'quick_fix', quick_fix_review: receipt };
+        }
+      ),
       createIssue: vi.fn(
-        /** @type {(input: any) => Promise<string>} */ (async () => 'UI-repair')
+        /** @type {(input: any) => Promise<string>} */ (
+          async (input) => {
+            issue.description = input.description;
+            issue.metadata = { ...input.metadata };
+            return 'UI-repair';
+          }
+        )
       ),
       addDependency: vi.fn(async () => {}),
       issueStatus: vi.fn(
@@ -227,6 +263,7 @@ describe('repo operation after-ladder recovery', () => {
     const failure = {
       code: 'script_failed',
       fingerprint: 'same',
+      summary: 'npm ERR! Test failed',
       detail: 'original',
       interrupted: false,
       ...patch
@@ -257,6 +294,197 @@ describe('repo operation after-ladder recovery', () => {
       failure
     });
   }
+
+  test('pins a checked issue and places it exactly once', async () => {
+    const repairHandoff = adapter();
+    const { coordinator, store } = coordinatorFor({ repairHandoff });
+    const place = vi.spyOn(store, 'place');
+    seedFailed(store);
+
+    await coordinator.reconcile(root);
+    await coordinator.reconcile(root);
+
+    const issue = await repairHandoff.readIssue();
+    expect(judgeQuickFixHandoff(issue)).toMatchObject({
+      state: 'reviewed',
+      missing: []
+    });
+    expect(issue.metadata.route).toBe('quick_fix');
+    expect(repairHandoff.pinQuickFix).toHaveBeenCalledExactlyOnceWith(
+      'UI-repair',
+      expect.stringMatching(/^worker@[0-9a-f]{12}$/)
+    );
+    expect(place).toHaveBeenCalledTimes(1);
+    expect(
+      store
+        .snapshot(root)
+        .queue.filter((entry) => entry.bead_id === 'UI-repair')
+    ).toHaveLength(1);
+    expect(
+      store.snapshot(root).repo_operations['op-1'].recovery?.handoff?.placement
+    ).toMatchObject({
+      route: 'quick_fix',
+      receipt: issue.metadata.quick_fix_review,
+      lane: 'parallel'
+    });
+  });
+
+  test('keeps an incomplete checker readback visible without pinning or placement', async () => {
+    const repairHandoff = adapter({
+      readIssue: vi.fn(async () => ({
+        issue_type: 'bug',
+        description: '',
+        metadata: {},
+        status: 'open'
+      }))
+    });
+    const { coordinator, store } = coordinatorFor({ repairHandoff });
+    const place = vi.spyOn(store, 'place');
+    seedFailed(store);
+
+    await coordinator.reconcile(root);
+
+    expect(repairHandoff.pinQuickFix).not.toHaveBeenCalled();
+    expect(place).not.toHaveBeenCalled();
+    expect(
+      store.snapshot(root).repo_operations['op-1'].recovery?.handoff
+    ).toMatchObject({
+      state: 'bead_recorded',
+      error: expect.stringContaining('handoff_unreviewed:section:')
+    });
+    expect(
+      store.snapshot(root).repo_operations['op-1'].recovery?.handoff
+    ).not.toHaveProperty('placement');
+  });
+
+  test('continues a recorded unplaced handoff after restart', async () => {
+    const repairHandoff = adapter();
+    repairHandoff.readIssue.mockRejectedValueOnce(
+      new Error('read unavailable')
+    );
+    const first = coordinatorFor({ repairHandoff });
+    seedFailed(first.store);
+    await first.coordinator.reconcile(root);
+    const reserved =
+      first.store.snapshot(root).repo_operations['op-1'].recovery?.handoff;
+    const restarted = coordinatorFor({ repairHandoff });
+    const place = vi.spyOn(restarted.store, 'place');
+
+    await restarted.coordinator.reconcile(root);
+    await restarted.coordinator.reconcile(root);
+
+    expect(reserved).toMatchObject({
+      state: 'bead_recorded',
+      handoff_bead_id: 'UI-repair',
+      error: 'read unavailable'
+    });
+    expect(reserved).not.toHaveProperty('placement');
+    expect(repairHandoff.createIssue).toHaveBeenCalledTimes(1);
+    expect(repairHandoff.pinQuickFix).toHaveBeenCalledTimes(1);
+    expect(place).toHaveBeenCalledTimes(1);
+    expect(
+      restarted.store.snapshot(root).repo_operations['op-1'].recovery?.handoff
+        ?.placement
+    ).toMatchObject({ lane: 'parallel' });
+  });
+
+  test('reuses a reviewed placed issue without another pin or placement', async () => {
+    const repairHandoff = adapter();
+    const { coordinator, store } = coordinatorFor({ repairHandoff });
+    const place = vi.spyOn(store, 'place');
+    seedFailed(store);
+    await coordinator.reconcile(root);
+    seedFailed(store, 'op-2');
+
+    await coordinator.reconcile(root);
+
+    expect(repairHandoff.pinQuickFix).toHaveBeenCalledTimes(1);
+    expect(place).toHaveBeenCalledTimes(1);
+    expect(
+      store.snapshot(root).repo_operations['op-2'].recovery?.handoff
+    ).toMatchObject({
+      state: 'reused',
+      placement: { route: 'quick_fix', lane: 'parallel' }
+    });
+  });
+
+  test('withholds placement when the pinned readback changed', async () => {
+    const repairHandoff = adapter({ pinQuickFix: vi.fn(async () => {}) });
+    const { coordinator, store } = coordinatorFor({ repairHandoff });
+    const place = vi.spyOn(store, 'place');
+    seedFailed(store);
+
+    await coordinator.reconcile(root);
+
+    expect(place).not.toHaveBeenCalled();
+    expect(
+      store.snapshot(root).repo_operations['op-1'].recovery?.handoff?.error
+    ).toBe('handoff_readback_unreviewed');
+  });
+
+  test.each([
+    ['Error: ECONNRESET', 'env_or_auth_pattern'],
+    ['Error: not authenticated', 'env_or_auth_pattern'],
+    ['same failure', 'no_script_failure_line']
+  ])(
+    'keeps reproduced %s waiting with its proof gap',
+    async (summary, proof_gap) => {
+      const repairHandoff = adapter();
+      const { coordinator, store } = coordinatorFor({ repairHandoff });
+      seedFailed(store, 'op-1', { summary });
+
+      await coordinator.reconcile(root);
+
+      expect(
+        store.snapshot(root).repo_operations['op-1'].recovery
+      ).toMatchObject({
+        classification: 'verification_failure',
+        disposition: 'wait',
+        reason: 'verification',
+        prover: null,
+        proof_gap
+      });
+      expect(repairHandoff.createIssue).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([false, true])(
+    'rejudges unsupported policy after restart with interrupted=%s',
+    async (interrupted) => {
+      const repairHandoff = adapter();
+      const first = coordinatorFor({
+        repairHandoff,
+        policySupported: () => false
+      });
+      seedFailed(first.store, 'op-1', { interrupted });
+      await first.coordinator.reconcile(root);
+      expect(
+        first.store.snapshot(root).repo_operations['op-1'].recovery
+      ).toMatchObject({
+        policy_supported: false,
+        classification: 'unknown_error'
+      });
+      const restarted = coordinatorFor({ repairHandoff });
+
+      await restarted.coordinator.reconcile(root);
+
+      expect(
+        restarted.store.snapshot(root).repo_operations['op-1'].recovery
+      ).toMatchObject({
+        policy_supported: true,
+        classification: interrupted ? 'unknown_outcome' : 'local_code_defect'
+      });
+      expect(repairHandoff.createIssue).toHaveBeenCalledTimes(
+        interrupted ? 0 : 1
+      );
+      if (!interrupted) {
+        expect(
+          restarted.store.snapshot(root).repo_operations['op-1'].recovery
+            ?.handoff?.placement
+        ).toMatchObject({ lane: 'parallel' });
+      }
+    }
+  );
 
   test('hands a reproduced script failure to one ordinary repair Bead', async () => {
     const repairHandoff = adapter();
@@ -435,7 +663,7 @@ describe('repo operation after-ladder recovery', () => {
     const { coordinator, store } = coordinatorFor({ repairHandoff });
     seedFailed(store);
     const support = vi
-      .spyOn(recoveryPolicy, 'workRecoveryPolicySupported')
+      .spyOn(recoveryPolicy, 'workRecoveryReady')
       .mockReturnValue(false);
 
     try {
@@ -500,58 +728,65 @@ describe('repo operation after-ladder recovery', () => {
     ).toEqual(['operation_recovery', 'repair_handoff']);
   });
 
-  test('preserves unknown retry outcome through a crash after terminal persistence', async () => {
-    const repairHandoff = adapter();
-    const first = coordinatorFor({
-      repairHandoff,
-      runner: {
-        readMarker: () => null,
-        readLaunchMarker: () => null,
-        processController: { probe: () => ({ state: 'gone' }) }
-      }
-    });
-    seedFailed(first.store);
-    const persisted = JSON.parse(
-      fs.readFileSync(path.join(root, 'queue.json'), 'utf8')
-    );
-    persisted.repo_operations['op-1'].state = 'running';
-    persisted.repo_operations['op-1'].failure = null;
-    fs.writeFileSync(path.join(root, 'queue.json'), JSON.stringify(persisted));
-    const restarted = coordinatorFor({
-      repairHandoff,
-      runner: {
-        readMarker: () => null,
-        readLaunchMarker: () => null,
-        processController: { probe: () => ({ state: 'gone' }) }
-      }
-    });
+  test.each([true, false])(
+    'preserves unknown retry outcome through a crash with policy supported=%s',
+    async (supported) => {
+      const repairHandoff = adapter();
+      const first = coordinatorFor({
+        repairHandoff,
+        runner: {
+          readMarker: () => null,
+          readLaunchMarker: () => null,
+          processController: { probe: () => ({ state: 'gone' }) }
+        }
+      });
+      seedFailed(first.store);
+      const persisted = JSON.parse(
+        fs.readFileSync(path.join(root, 'queue.json'), 'utf8')
+      );
+      persisted.repo_operations['op-1'].state = 'running';
+      persisted.repo_operations['op-1'].failure = null;
+      fs.writeFileSync(
+        path.join(root, 'queue.json'),
+        JSON.stringify(persisted)
+      );
+      const restarted = coordinatorFor({
+        repairHandoff,
+        policySupported: () => supported,
+        runner: {
+          readMarker: () => null,
+          readLaunchMarker: () => null,
+          processController: { probe: () => ({ state: 'gone' }) }
+        }
+      });
 
-    const settle = restarted.store.settleConsumedRepoOperationRetry.bind(
-      restarted.store
-    );
-    vi.spyOn(
-      restarted.store,
-      'settleConsumedRepoOperationRetry'
-    ).mockImplementation((workspace, input) => {
-      const result = settle(workspace, input);
-      if (result.ok) {
-        throw new Error('crash_after_terminal_write');
-      }
-      return result;
-    });
+      const settle = restarted.store.settleConsumedRepoOperationRetry.bind(
+        restarted.store
+      );
+      vi.spyOn(
+        restarted.store,
+        'settleConsumedRepoOperationRetry'
+      ).mockImplementation((workspace, input) => {
+        const result = settle(workspace, input);
+        if (result.ok) {
+          throw new Error('crash_after_terminal_write');
+        }
+        return result;
+      });
 
-    await expect(restarted.coordinator.reconcile(root)).rejects.toThrow(
-      'crash_after_terminal_write'
-    );
-    await coordinatorFor({ repairHandoff }).coordinator.reconcile(root);
+      await expect(restarted.coordinator.reconcile(root)).rejects.toThrow(
+        'crash_after_terminal_write'
+      );
+      await coordinatorFor({ repairHandoff }).coordinator.reconcile(root);
 
-    expect(
-      createQueueStore({
-        filePathFor: () => path.join(root, 'queue.json')
-      }).snapshot(root).repo_operations['op-1'].recovery?.classification
-    ).toBe('unknown_outcome');
-    expect(repairHandoff.createIssue).not.toHaveBeenCalled();
-  });
+      expect(
+        createQueueStore({
+          filePathFor: () => path.join(root, 'queue.json')
+        }).snapshot(root).repo_operations['op-1'].recovery?.classification
+      ).toBe('unknown_outcome');
+      expect(repairHandoff.createIssue).not.toHaveBeenCalled();
+    }
+  );
 
   test('does not revive an operation whose original subjects are closed', async () => {
     const repairHandoff = adapter();

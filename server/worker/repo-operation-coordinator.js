@@ -17,6 +17,7 @@ import {
   classifyOperationRecovery,
   repairHandoffDescription
 } from './operation-recovery.js';
+import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import { repoOperationPolicySupported } from './repo-operation-policy.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
@@ -42,12 +43,12 @@ import {
 } from './state-paths.js';
 import {
   workRecoveryClassification,
-  workRecoveryPolicySupported
+  workRecoveryReady
 } from './work-recovery-policy.js';
 import { createRepoOpsDeployWorktreeManager } from './worktree.js';
 
 /**
- * @typedef {{ createIssue: (input: { title: string, description: string, type: string, priority: number, metadata: Record<string, string> }) => Promise<string>, addDependency: (from_id: string, to_id: string, type: string) => Promise<void>, issueStatus: (bead_id: string) => Promise<string|null> }} RepairHandoffAdapter
+ * @typedef {{ createIssue: (input: { title: string, description: string, type: string, priority: number, metadata: Record<string, string> }) => Promise<string>, addDependency: (from_id: string, to_id: string, type: string) => Promise<void>, issueStatus: (bead_id: string) => Promise<string|null>, readIssue: (bead_id: string) => Promise<{ issue_type: string, description: string, metadata: Record<string, any>, status: string }>, pinQuickFix: (bead_id: string, receipt: string) => Promise<void> }} RepairHandoffAdapter
  */
 
 const default_log = debug('worker:repo-ops');
@@ -815,13 +816,20 @@ export function createRepoOperationCoordinator(deps) {
           ? { ...operation?.failure, code: input.blocked_reason }
           : { ...operation?.failure, interrupted: true }
       },
-      policy_supported: policySupported() && workRecoveryPolicySupported(),
+      policy_supported: policySupported() && workRecoveryReady(),
       classify: workRecoveryClassification
     });
     const result = deps.store.settleConsumedRepoOperationRetry(workspace, {
       ...input,
       ...(classification
-        ? { recovery: { ...classification, prover: null, handoff: null } }
+        ? {
+            recovery: {
+              ...classification,
+              policy_supported: policySupported() && workRecoveryReady(),
+              prover: null,
+              handoff: null
+            }
+          }
         : {})
     });
     if (result.ok) {
@@ -858,7 +866,7 @@ export function createRepoOperationCoordinator(deps) {
   async function recoverAfterLadder(workspace, operation_id) {
     let operation =
       deps.store.snapshot(workspace).repo_operations[operation_id];
-    const supported = policySupported() && workRecoveryPolicySupported();
+    const supported = policySupported() && workRecoveryReady();
     const result = classifyOperationRecovery({
       operation,
       policy_supported: supported,
@@ -867,7 +875,11 @@ export function createRepoOperationCoordinator(deps) {
     if (!result || !operation) {
       return;
     }
-    if (!operation.recovery || !supported) {
+    if (
+      !operation.recovery ||
+      operation.recovery.policy_supported === false ||
+      !supported
+    ) {
       const recorded = deps.store.recordRepoOperationRecovery(workspace, {
         operation_id,
         recovery: {
@@ -875,9 +887,10 @@ export function createRepoOperationCoordinator(deps) {
           disposition: result.disposition,
           reason: result.reason,
           code_defect: result.code_defect,
-          prover: result.code_defect
-            ? 'deterministic_owned_script_failure'
-            : null,
+          prover: result.prover,
+          proof_gap: result.proof_gap,
+          ...(result.outcome_uncertain ? { outcome_uncertain: true } : {}),
+          policy_supported: supported,
           handoff: null
         }
       });
@@ -989,7 +1002,7 @@ export function createRepoOperationCoordinator(deps) {
           throw new Error('repair_handoff_record_failed');
         }
       }
-      if (state === 'bead_recorded') {
+      if (state === 'bead_recorded' && !recovery.handoff?.placement) {
         await adapter.addDependency(
           handoff_bead_id,
           operation.subjects[0].bead_id,
@@ -1002,11 +1015,84 @@ export function createRepoOperationCoordinator(deps) {
         handoff_bead_id,
         state
       });
+      if (!recovery.handoff?.placement) {
+        let issue = await adapter.readIssue(handoff_bead_id);
+        const judgment = judgeQuickFixHandoff({
+          ...issue,
+          metadata: {
+            route: 'quick_fix',
+            quick_fix_review: issue.metadata.quick_fix_review
+          }
+        });
+        if (
+          !judgment ||
+          judgment.missing.length > 0 ||
+          judgment.digest === null
+        ) {
+          throw new Error(
+            `handoff_unreviewed:${judgment?.missing.join(',') || ''}`
+          );
+        }
+        let receipt = issue.metadata.quick_fix_review;
+        if (
+          issue.metadata.route !== 'quick_fix' ||
+          judgment.state !== 'reviewed'
+        ) {
+          receipt = `worker@${judgment.digest}`;
+          await adapter.pinQuickFix(handoff_bead_id, receipt);
+          issue = await adapter.readIssue(handoff_bead_id);
+        }
+        const readback = judgeQuickFixHandoff(issue);
+        if (
+          issue.metadata.route !== 'quick_fix' ||
+          readback?.state !== 'reviewed' ||
+          readback.missing.length > 0
+        ) {
+          throw new Error('handoff_readback_unreviewed');
+        }
+        receipt = issue.metadata.quick_fix_review;
+        const snapshot = deps.store.snapshot(workspace);
+        const placed =
+          [
+            ...snapshot.queue,
+            ...snapshot.serial_lanes.flatMap((lane) => lane.entries),
+            ...snapshot.pr_wait,
+            ...snapshot.done
+          ].some((entry) => entry.bead_id === handoff_bead_id) ||
+          Object.values(snapshot.attempts).some(
+            (attempt) =>
+              attempt.bead_id === handoff_bead_id &&
+              (attempt.status === 'running' || attempt.status === 'pending')
+          );
+        if (!placed) {
+          const placement = deps.store.place(workspace, {
+            expected_revision: snapshot.revision,
+            bead_id: handoff_bead_id,
+            lane: 'parallel'
+          });
+          if (!placement.ok) {
+            throw new Error('handoff_placement_failed');
+          }
+        }
+        const recorded = deps.store.recordRepairHandoffPlacement(workspace, {
+          operation_id,
+          key,
+          placement: {
+            route: 'quick_fix',
+            receipt,
+            lane: 'parallel',
+            placed_at: now()
+          }
+        });
+        if (!recorded.ok) {
+          throw new Error('handoff_placement_record_failed');
+        }
+      }
       recordRecoveryEvent(
         operation,
         'repair_handoff',
         key,
-        `수정 인계 — ${handoff_bead_id} (${state === 'reused' ? 'reused' : 'created'})`
+        `수정 인계 — ${handoff_bead_id} (${state === 'reused' ? 'reused' : 'created'}) · 배치 parallel`
       );
     } catch (error) {
       deps.store.recordRepairHandoffError(workspace, {

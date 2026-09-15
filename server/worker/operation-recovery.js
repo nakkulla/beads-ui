@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ENV_ERROR_PATTERNS, SCRIPT_FAILURE_LINE_RE } from './failure-class.js';
 import { scriptIdentity } from './resolution-ladder.js';
 
 const OWNERSHIP_FAILURES = new Set([
@@ -25,13 +26,17 @@ export function classifyOperationRecovery({
   }
   const failure = operation.failure || {};
   const retry = operation.retry;
-  let key = 'unknown_error';
-  if (!policy_supported || retry?.blocked_reason === 'schema_unsupported') {
-    key = 'unknown_error';
-  } else if (
+  const outcome_uncertain =
     failure.interrupted === true ||
-    failure.code === 'interrupted_without_terminal_exit'
-  ) {
+    failure.code === 'interrupted_without_terminal_exit' ||
+    operation.recovery?.outcome_uncertain === true ||
+    operation.recovery?.classification === 'unknown_outcome';
+  let key = 'unknown_error';
+  /** @type {string|null} */
+  let proof_gap = null;
+  if (!policy_supported) {
+    key = 'unknown_error';
+  } else if (outcome_uncertain) {
     key = 'unknown_outcome';
   } else if (OWNERSHIP_FAILURES.has(failure.code)) {
     key = 'ownership_uncertain';
@@ -47,7 +52,21 @@ export function classifyOperationRecovery({
     scriptIdentity(operation) !== null &&
     typeof operation.target_sha === 'string'
   ) {
-    key = 'local_code_defect';
+    const summary = typeof failure.summary === 'string' ? failure.summary : '';
+    const detail = typeof failure.detail === 'string' ? failure.detail : '';
+    const env_or_auth = [summary, detail].some(
+      (text) =>
+        ENV_ERROR_PATTERNS.some(({ re }) => re.test(text)) ||
+        /not authenticated|login|permission denied|EACCES|401|403|credential|token expired/i.test(
+          text
+        )
+    );
+    proof_gap = env_or_auth
+      ? 'env_or_auth_pattern'
+      : SCRIPT_FAILURE_LINE_RE.test(summary.trim())
+        ? null
+        : 'no_script_failure_line';
+    key = proof_gap === null ? 'local_code_defect' : 'verification_failure';
   } else if (
     failure.code === 'script_failed' &&
     (retry?.outcome === 'not_applicable' ||
@@ -70,6 +89,9 @@ export function classifyOperationRecovery({
     disposition: classification.disposition,
     reason: classification.reason,
     code_defect,
+    prover: code_defect ? 'deterministic_owned_script_failure' : null,
+    proof_gap,
+    ...(outcome_uncertain ? { outcome_uncertain: true } : {}),
     handoff_key: code_defect
       ? createHash('sha256')
           .update(

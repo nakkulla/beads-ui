@@ -26,7 +26,7 @@ function operation(patch = {}) {
     failure: {
       code: 'script_failed',
       fingerprint: 'same',
-      summary: 'deterministic error'
+      summary: 'npm ERR! Test failed'
     },
     retry: { outcome: 'consumed', first_failure: { fingerprint: 'same' } },
     ...patch
@@ -131,13 +131,38 @@ describe('operation recovery classification', () => {
     ).toBe('unknown_error');
   });
 
-  test('holds a recorded unsupported retry policy', () => {
+  test('rejudges raw evidence after retry policy support returns', () => {
     expect(
       classify({
         retry: { ...operation().retry, blocked_reason: 'schema_unsupported' }
       })?.classification
-    ).toBe('unknown_error');
+    ).toBe('local_code_defect');
   });
+
+  test.each([
+    ['Error: ECONNRESET', '', 'env_or_auth_pattern'],
+    ['Error: not authenticated', '', 'env_or_auth_pattern'],
+    ['npm ERR! Test failed', 'permission denied', 'env_or_auth_pattern'],
+    ['npm ERR! Test failed', 'fetch failed', 'env_or_auth_pattern'],
+    ['same exit code', '', 'no_script_failure_line']
+  ])(
+    'withholds code proof for reproduced output %s %s',
+    (summary, detail, proof_gap) => {
+      const result = classify({
+        failure: { ...operation().failure, summary, detail }
+      });
+
+      expect(result).toMatchObject({
+        classification: 'verification_failure',
+        disposition: 'wait',
+        reason: 'verification',
+        code_defect: false,
+        prover: null,
+        proof_gap,
+        handoff_key: null
+      });
+    }
+  );
 
   test('waits for verification when the retry is inapplicable', () => {
     expect(
@@ -227,7 +252,7 @@ describe('repair handoff description', () => {
       'base main',
       'exit 2',
       'script_failed',
-      'deterministic error',
+      'npm ERR! Test failed',
       '/logs/op.log'
     ]) {
       expect(description).toContain(value);

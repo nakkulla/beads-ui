@@ -745,11 +745,31 @@ export function createLiveBd(config) {
  * Adopt a create whose response was lost before issuing another bd mutation.
  * Metadata is written by create itself, so it survives a missing ledger id.
  *
- * @param {Pick<ReturnType<typeof createBdMetadata>, 'listByMetadataField'|'createTopLevelIssue'|'addDep'|'listDeps'|'findIssue'>} bd
+ * @param {Pick<ReturnType<typeof createBdMetadata>, 'listByMetadataField'|'createTopLevelIssue'|'addDep'|'listDeps'|'findIssue'|'pinQuickFix'>} bd
  * @returns {import('./repo-operation-coordinator.js').RepairHandoffAdapter}
  */
 export function createOperationRepairHandoff(bd) {
   return {
+    /** @param {string} bead_id */
+    async readIssue(bead_id) {
+      const issue = await bd.findIssue(bead_id);
+      if (!issue) {
+        throw new Error(`handoff_issue_missing:${bead_id}`);
+      }
+      return {
+        issue_type: issue.issue_type,
+        description: issue.description,
+        metadata: issue.metadata || {},
+        status: issue.status
+      };
+    },
+    /**
+     * @param {string} bead_id
+     * @param {string} receipt
+     */
+    async pinQuickFix(bead_id, receipt) {
+      await bd.pinQuickFix(bead_id, receipt);
+    },
     /** @param {Parameters<import('./repo-operation-coordinator.js').RepairHandoffAdapter['createIssue']>[0]} input */
     async createIssue(input) {
       const matches = await bd.listByMetadataField(

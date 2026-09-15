@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { describe, expect, test, vi } from 'vitest';
+import * as operationPolicy from './repo-operation-policy.js';
 import {
   WORK_RECOVERY_POLICY_PATH,
   WORK_RECOVERY_POLICY_PROVENANCE_PATH,
@@ -8,7 +9,8 @@ import {
   recoveryResultLineReasons,
   workRecoveryClassification,
   workRecoveryPolicySupported,
-  workRecoveryReadinessEnv
+  workRecoveryReadinessEnv,
+  workRecoveryReady
 } from './work-recovery-policy.js';
 
 const APPROVED_SOURCE_COMMIT = '5cc243221bcf5af59c0831989ebf646f56878e06';
@@ -48,6 +50,18 @@ function fixture(artifact_patch = {}, provenance_patch = {}) {
 }
 
 describe('pinned work-recovery policy', () => {
+  test('withholds shared readiness when the operation contract is unsupported', () => {
+    const support = vi
+      .spyOn(operationPolicy, 'repoOperationPolicySupported')
+      .mockReturnValue(false);
+    try {
+      expect(workRecoveryPolicySupported()).toBe(true);
+      expect(workRecoveryReady()).toBe(false);
+      expect(workRecoveryReadinessEnv()).toEqual({});
+    } finally {
+      support.mockRestore();
+    }
+  });
   test('proves the approved byte copy and provenance', () => {
     const bytes = fs.readFileSync(WORK_RECOVERY_POLICY_PATH);
     const provenance = JSON.parse(

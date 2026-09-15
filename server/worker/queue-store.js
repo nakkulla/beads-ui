@@ -71,6 +71,7 @@
  * @property {{ reason: 'transcript_missing', session_id: string }|null} resume_fallback - One-shot fresh substitute marker.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
+ * @property {string|null} [pr_url] - Observed PR identity when preserved on this attempt.
  * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], pushed?: string[], artifact_pushed?: string[], inherited?: string[], skipped?: string, error?: string }|null} base_drift -
  * The POST-HOC base observation (UI-8mvc §3, rebuilt UI-1xcd §4), written at
  * every termination path: the pinned `base_oid`, the remote tip re-resolved
@@ -132,7 +133,7 @@
  * durable true-to-false auto-advance transition. LEGACY: the failure tiers of
  * the 2026-08-28 spec never write it; it is what limits the "unhandled
  * failure" judgment to the records the old regime halted on (§4).
- * @property {{ cause: string, attempts: number, max: number, next_at: number|null, origin_attempt_id: string|null }|null} retry -
+ * @property {{ cause: string, attempts: number, max: number, next_at: number|null, origin_attempt_id: string|null, exhausted?: boolean }|null} retry -
  * The env retry ladder this attempt sits on (spec §3.3/§6). `origin_attempt_id`
  * names the FIRST attempt of the lineage, so a bead's retries read as one
  * chain. Null on every attempt that is not part of a ladder.
@@ -1578,7 +1579,7 @@ const RETIRED_REPAIR_PHASES = new Set(['repairing', 'waiting_repair_pr']);
  * becomes the terminal `stage`.
  * @property {string[]} attempt_ids - Sessions the lane still owns, identified
  * through `active_op`, `repair_operation_id`, `completion_mode`, and
- * `handoff_bead_ids` while those keys are still readable.
+ * `repair_bead_ids` while those keys are still readable.
  * @property {CompletionFailureKey|null} failure_key
  * @property {string|null} log_path
  * @property {string|null} op_id
@@ -1618,8 +1619,8 @@ function planRepairLaneRetirements(parsed) {
       continue;
     }
     const active_op = isRecord(value.active_op) ? value.active_op : null;
-    const handoff_bead_ids = Array.isArray(value.handoff_bead_ids)
-      ? value.handoff_bead_ids.filter((id) => typeof id === 'string')
+    const repair_bead_ids = Array.isArray(value.repair_bead_ids)
+      ? value.repair_bead_ids.filter((id) => typeof id === 'string')
       : [];
     /** @type {Set<string>} */
     const attempt_ids = new Set();
@@ -1636,7 +1637,7 @@ function planRepairLaneRetirements(parsed) {
           (raw_attempt.completion_mode != null ||
             raw_attempt.repair_operation_id != null)) ||
         (typeof raw_attempt.bead_id === 'string' &&
-          handoff_bead_ids.includes(raw_attempt.bead_id))
+          repair_bead_ids.includes(raw_attempt.bead_id))
       ) {
         attempt_ids.add(attempt_id);
       }
@@ -2956,6 +2957,9 @@ function normalizeAttemptRetry(value) {
   }
   return {
     cause: value.cause,
+    ...(typeof value.exhausted === 'boolean'
+      ? { exhausted: value.exhausted }
+      : {}),
     attempts:
       typeof value.attempts === 'number' && Number.isFinite(value.attempts)
         ? value.attempts
@@ -3030,6 +3034,9 @@ export function makeAttempt(fields) {
         : null,
     exit: fields.exit ?? null,
     verify_result: fields.verify_result ?? null,
+    ...(typeof fields.pr_url === 'string' || fields.pr_url === null
+      ? { pr_url: fields.pr_url }
+      : {}),
     base_drift: isRecord(fields.base_drift)
       ? /** @type {Attempt['base_drift']} */ (fields.base_drift)
       : null,
@@ -3443,8 +3450,9 @@ function normalizeRepoOperationRetry(value, state, failure) {
 }
 
 /**
- * @typedef {{ key: string, state: 'reserved'|'bead_recorded'|'reused', handoff_bead_id: string|null, reserved_at: number, recorded_at: number|null, error: string|null }} RepairHandoff
- * @typedef {{ classification: string, disposition: string, reason: string|null, code_defect: boolean, prover: string|null, handoff: RepairHandoff|null }} RepoOperationRecovery
+ * @typedef {{ route: 'quick_fix', receipt: string, lane: 'parallel', placed_at: number }} RepairHandoffPlacement
+ * @typedef {{ key: string, state: 'reserved'|'bead_recorded'|'reused', handoff_bead_id: string|null, reserved_at: number, recorded_at: number|null, error: string|null, placement?: RepairHandoffPlacement }} RepairHandoff
+ * @typedef {{ classification: string, disposition: string, reason: string|null, code_defect: boolean, prover: string|null, proof_gap?: string|null, policy_supported?: boolean, outcome_uncertain?: boolean, handoff: RepairHandoff|null }} RepoOperationRecovery
  */
 
 /**
@@ -3500,6 +3508,13 @@ function normalizeRepoOperationRecovery(value) {
     reason: value.reason,
     code_defect: value.code_defect,
     prover: value.prover,
+    ...(typeof value.policy_supported === 'boolean'
+      ? { policy_supported: value.policy_supported }
+      : {}),
+    ...(value.outcome_uncertain === true ? { outcome_uncertain: true } : {}),
+    ...(value.proof_gap === null || typeof value.proof_gap === 'string'
+      ? { proof_gap: value.proof_gap }
+      : {}),
     handoff:
       handoff === null
         ? null
@@ -3509,7 +3524,18 @@ function normalizeRepoOperationRecovery(value) {
             handoff_bead_id: handoff.handoff_bead_id,
             reserved_at: handoff.reserved_at,
             recorded_at: handoff.recorded_at,
-            error: handoff.error
+            error: handoff.error,
+            ...(isRecord(handoff.placement) &&
+            handoff.placement.route === 'quick_fix' &&
+            handoff.placement.lane === 'parallel' &&
+            typeof handoff.placement.receipt === 'string' &&
+            /^[A-Za-z0-9_-]{1,32}@[0-9a-f]{12}$/.test(
+              handoff.placement.receipt
+            ) &&
+            typeof handoff.placement.placed_at === 'number' &&
+            Number.isFinite(handoff.placement.placed_at)
+              ? { placement: { ...handoff.placement } }
+              : {})
           })
   };
 }
@@ -5823,6 +5849,25 @@ export function createQueueStore(options = {}) {
    */
   function applyHoldEvent(workspace, next, event, at) {
     const before = next.hold;
+    if (event.kind === 'env_failure') {
+      const retry = next.attempts[event.attempt_id]?.retry;
+      if (
+        retry?.origin_attempt_id &&
+        retry.cause === event.cause &&
+        retry.origin_attempt_id === event.origin_attempt_id &&
+        !next.lineages.some((lineage) => lineage.bead_id === event.bead_id)
+      ) {
+        // An ended timer is absent from the queue; its consumed budget remains
+        // on the resumed attempt and must seed the same reducer lineage.
+        next.lineages.push({
+          bead_id: event.bead_id,
+          origin_attempt_id: retry.origin_attempt_id,
+          cause: retry.cause,
+          attempts: retry.attempts,
+          next_at: null
+        });
+      }
+    }
     const outcome = reduceQueueHold(
       {
         hold: next.hold,
@@ -6954,8 +6999,39 @@ export function createQueueStore(options = {}) {
         ) {
           return false;
         }
-        handoff.state = 'reserved';
         handoff.error = input.error;
+        return true;
+      });
+    },
+
+    /**
+     * Confirm the observed placement only for the reserved issue identity.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, key: string, placement: RepairHandoffPlacement }} input
+     */
+    recordRepairHandoffPlacement(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        const handoff = operation?.recovery?.handoff;
+        if (
+          !operation ||
+          operation.state !== 'failed' ||
+          !handoff ||
+          handoff.key !== input.key ||
+          !['bead_recorded', 'reused'].includes(handoff.state)
+        ) {
+          return false;
+        }
+        const normalized = normalizeRepoOperationRecovery({
+          ...operation.recovery,
+          handoff: { ...handoff, placement: input.placement }
+        });
+        if (!normalized?.handoff?.placement) {
+          return false;
+        }
+        handoff.placement = handoff.placement || normalized.handoff.placement;
+        handoff.error = null;
         return true;
       });
     },

@@ -72,9 +72,39 @@ describe('operation repair handoff bd adapter', () => {
       addDep: vi.fn(async () => {}),
       listDeps: vi.fn(async () => []),
       findIssue: vi.fn(async () => ({ status: 'open' })),
+      pinQuickFix: vi.fn(async () => {}),
       ...patch
     };
   }
+
+  test('reads current handoff issue facts for the checker', async () => {
+    const issue = {
+      issue_type: 'bug',
+      description: 'current bytes',
+      metadata: { route: 'quick_fix' },
+      status: 'open'
+    };
+    const bd = bdFor({ findIssue: vi.fn(async () => issue) });
+
+    expect(await createOperationRepairHandoff(bd).readIssue('UI-new')).toEqual(
+      issue
+    );
+    expect(bd.findIssue).toHaveBeenCalledWith('UI-new');
+  });
+
+  test('delegates the route and receipt as one pin', async () => {
+    const bd = bdFor();
+
+    await createOperationRepairHandoff(bd).pinQuickFix(
+      'UI-new',
+      'worker@123456abcdef'
+    );
+
+    expect(bd.pinQuickFix).toHaveBeenCalledExactlyOnceWith(
+      'UI-new',
+      'worker@123456abcdef'
+    );
+  });
 
   test('adopts a created issue after its first response was lost', async () => {
     const issues = /** @type {any[]} */ ([]);

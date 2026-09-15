@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { buildLanes } from '../../app/views/worker/lane-model.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { writeBenchManifest } from './bench-runs.js';
@@ -14,6 +15,7 @@ import { install as guardHookInstall } from './guard-hook.js';
 import { resolveExecSettings } from './policy.js';
 import { RETRY_DELAYS_MS } from './queue-hold.js';
 import { TERMINAL_ATTEMPT_STATUSES, createQueueStore } from './queue-store.js';
+import * as operationPolicy from './repo-operation-policy.js';
 import { claudeSpec } from './runner/claude.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
@@ -1180,7 +1182,13 @@ describe('scheduler work recovery waits', () => {
     expect(attempt).toMatchObject({
       status: 'waiting',
       cause: 'session_failed:is_error',
-      retry: null,
+      retry: {
+        origin_attempt_id: attempt_id,
+        attempts: 4,
+        max: 3,
+        exhausted: true,
+        next_at: null
+      },
       cause_detail: {
         summary: 'fetch failed',
         env_pattern: 'api',
@@ -1206,7 +1214,7 @@ describe('scheduler work recovery waits', () => {
     const env = recoveryEnv({
       workRecoveryPolicy: {
         ...work_recovery_policy,
-        workRecoveryPolicySupported: () => false
+        workRecoveryReady: () => false
       }
     });
     seedQueue(env.store, ['S1']);
@@ -1227,6 +1235,201 @@ describe('scheduler work recovery waits', () => {
     expect(env.notify.attemptFailed).toHaveBeenCalledOnce();
   });
 
+  test('reclassifies the preserved latest usage failure without replaying its failed event', async () => {
+    const env = recoveryEnv();
+    const cause = 'session_failed:is_error';
+    const summary = "You've hit your usage limit. Try again at 10:33 AM.";
+    const retry = {
+      origin_attempt_id: 'origin',
+      attempts: 2,
+      max: 3,
+      next_at: null,
+      cause
+    };
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'past',
+        bead_id: 'S1',
+        status: 'failed',
+        cause,
+        cause_detail: { summary },
+        started_at: 10,
+        finished_at: 20,
+        retry
+      }
+    });
+    const failed_event = {
+      bead_id: 'S1',
+      attempt_id: 'past',
+      kind: 'attempt_failed',
+      seq: cause,
+      summary,
+      at: 20
+    };
+    env.timeline.append(failed_event);
+
+    await env.scheduler.reconcile(WS);
+    await env.scheduler.reconcile(WS);
+
+    const queue = env.store.snapshot(WS);
+    expect(queue.attempts.past).toMatchObject({
+      status: 'waiting',
+      cause,
+      finished_at: 20,
+      retry,
+      cause_detail: {
+        summary,
+        recovery: {
+          classification: 'unknown_error',
+          reason: 'unclassified',
+          policy_schema: 1,
+          reclassified_from: 'failed',
+          reclassified_at: 1000
+        }
+      }
+    });
+    expect(
+      env.timeline.append.mock.calls.filter(
+        ([event]) => event.kind === 'attempt_failed'
+      )
+    ).toEqual([[failed_event]]);
+    expect(
+      env.timeline.append.mock.calls.filter(
+        ([event]) => event.kind === 'session_ended'
+      )
+    ).toMatchObject([
+      [
+        {
+          seq: 'waiting',
+          summary: `대기 · recovery:unclassified — ${cause} (재분류)`
+        }
+      ]
+    ]);
+    const lanes = buildLanes(
+      [{ ...queue, root_dir: WS, bead_blocked_by: { S1: [] } }],
+      [{ root_dir: WS }]
+    );
+    expect(lanes.running.filter((item) => item.run_state === 'failed')).toEqual(
+      []
+    );
+    expect(lanes.running).toMatchObject([{ id: 'S1', run_state: 'waiting' }]);
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test.each([
+    'dismissed',
+    'newer',
+    'live_sibling',
+    'unsupported',
+    'env',
+    'parked',
+    'base_moved',
+    'prerequisite',
+    'superseded'
+  ])('preserves a past failure excluded by %s', async (exclusion) => {
+    const env = recoveryEnv({
+      workRecoveryPolicy: {
+        ...work_recovery_policy,
+        workRecoveryReady: () => exclusion !== 'unsupported'
+      }
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'past',
+        bead_id: 'S1',
+        status:
+          exclusion === 'parked' || exclusion === 'superseded'
+            ? exclusion
+            : 'failed',
+        cause:
+          exclusion === 'base_moved'
+            ? 'base_moved'
+            : exclusion === 'prerequisite'
+              ? 'prerequisite_unmet'
+              : 'session_failed:is_error',
+        cause_detail: {
+          summary: exclusion === 'env' ? 'ECONNRESET' : 'usage limit'
+        },
+        started_at: 10,
+        finished_at: 20,
+        ...(exclusion === 'dismissed' ? { dismissed_at: 30 } : {})
+      }
+    });
+    if (exclusion === 'newer' || exclusion === 'live_sibling') {
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'sibling',
+          bead_id: 'S1',
+          status: exclusion === 'live_sibling' ? 'pending' : 'superseded',
+          started_at: exclusion === 'live_sibling' ? 5 : 30
+        }
+      });
+    }
+    const before = env.store.snapshot(WS).attempts.past;
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.store.snapshot(WS).attempts.past).toEqual(before);
+  });
+
+  test('keeps the exhausted env budget when a recovery wait resumes', async () => {
+    const env = recoveryEnv();
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('S1').emit('session_id', 'session-original');
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    for (let rung = 0; rung < 3; rung += 1) {
+      env.store.applyQueueHold(WS, {
+        event: {
+          kind: 'env_failure',
+          bead_id: 'S1',
+          attempt_id,
+          cause: 'session_failed:is_error:api',
+          at: 1000,
+          origin_attempt_id: attempt_id
+        },
+        now: 1000
+      });
+    }
+    const prior = await endSession(env, {
+      success: false,
+      reason: 'is_error',
+      summary: 'fetch failed'
+    });
+    const resumed = await env.scheduler.resume(WS, prior.attempt_id);
+    expect(resumed.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[String(resumed.attempt_id)].retry
+    ).toEqual(prior.retry);
+
+    const next = await endSession(env, {
+      success: false,
+      reason: 'is_error',
+      summary: 'fetch failed'
+    });
+
+    expect(next).toMatchObject({
+      status: 'waiting',
+      retry: {
+        origin_attempt_id: attempt_id,
+        max: 3,
+        exhausted: true,
+        next_at: null
+      },
+      cause_detail: {
+        recovery: { classification: 'transient_retry_exhausted' }
+      }
+    });
+    expect(next.retry.attempts).toBeGreaterThanOrEqual(prior.retry.attempts);
+    expect(env.store.snapshot(WS).lineages).toEqual([]);
+    expect(
+      createQueueStore().snapshot(WS).attempts[next.attempt_id].retry
+    ).toEqual(next.retry);
+  });
+
   test.each([
     [true, 'spec_backed'],
     [false, 'spec_backed'],
@@ -1239,7 +1442,7 @@ describe('scheduler work recovery waits', () => {
         config: { S1: { route } },
         workRecoveryPolicy: {
           ...work_recovery_policy,
-          workRecoveryPolicySupported: () => supported
+          workRecoveryReady: () => supported
         }
       });
       seedQueue(env.store, ['S1']);
@@ -1254,6 +1457,24 @@ describe('scheduler work recovery waits', () => {
       }
     }
   );
+
+  test('withholds session readiness when only the operation policy is unsupported', async () => {
+    const support = vi
+      .spyOn(operationPolicy, 'repoOperationPolicySupported')
+      .mockReturnValue(false);
+    const env = recoveryEnv();
+    seedQueue(env.store, ['S1']);
+    try {
+      await env.scheduler.tick(WS);
+
+      expect(work_recovery_policy.workRecoveryPolicySupported()).toBe(true);
+      expect(env.runner.settingsFor('S1').env).not.toHaveProperty(
+        'BDUI_WORK_RECOVERY_SCHEMA'
+      );
+    } finally {
+      support.mockRestore();
+    }
+  });
 
   test('fences recovery waits across ordinary and issue-change scans', async () => {
     const env = recoveryEnv();
@@ -1366,6 +1587,57 @@ describe('scheduler work recovery waits', () => {
 
     expect(next.cause_detail.recovery).not.toHaveProperty('no_progress');
   });
+
+  test.each(['clock', 'head', 'verify', 'pr', 'preset'])(
+    'compares recovery progress across a changed %s',
+    async (change) => {
+      const env = recoveryEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.runner.eventsFor('S1').emit('session_id', 'session-original');
+      const prior = await endSession(env, {
+        success: false,
+        reason: 'subtype',
+        summary: 'same failure at 10:33 AM'
+      });
+      const resumed = await env.scheduler.resume(WS, prior.attempt_id);
+      expect(resumed.ok).toBe(true);
+      /** @type {Record<string, Partial<import('./queue-store.js').Attempt>>} */
+      const patches = {
+        clock: {},
+        head: { head_oid: 'f'.repeat(40) },
+        verify: {
+          verify_result: {
+            ok: true,
+            exit: 0,
+            duration_ms: 1,
+            head_sha: 'f'.repeat(40)
+          }
+        },
+        pr: { pr_url: 'https://example.test/pr/1' },
+        preset: { exec_default_preset_id: 'changed-preset' }
+      };
+      env.store.updateAttempt(WS, {
+        attempt_id: String(resumed.attempt_id),
+        patch: patches[change]
+      });
+
+      const next = await endSession(env, {
+        success: false,
+        reason: 'subtype',
+        summary:
+          change === 'clock'
+            ? 'same failure at 11:44 AM'
+            : 'same failure at 10:33 AM'
+      });
+
+      if (change === 'clock') {
+        expect(next.cause_detail.recovery.no_progress.count).toBe(1);
+      } else {
+        expect(next.cause_detail.recovery).not.toHaveProperty('no_progress');
+      }
+    }
+  );
 });
 
 describe('scheduler route change refusal', () => {

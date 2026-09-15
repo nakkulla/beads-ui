@@ -2,6 +2,7 @@ import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { repoOperationPolicySupported } from './repo-operation-policy.js';
 
 const CONTRACTS_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -193,6 +194,11 @@ export function workRecoveryPolicySupported() {
   return loadWorkRecoveryPolicy().supported;
 }
 
+/** Enable recovery only after both pinned contracts validate. */
+export function workRecoveryReady() {
+  return workRecoveryPolicySupported() && repoOperationPolicySupported();
+}
+
 /**
  * @param {string} key
  * @returns {WorkRecoveryClassification|null}
@@ -234,7 +240,7 @@ export function recoveryResultLineReasons() {
  */
 export function workRecoveryReadinessEnv() {
   const loaded = loadWorkRecoveryPolicy();
-  return loaded.supported && loaded.policy
+  return workRecoveryReady() && loaded.policy
     ? { [loaded.policy.readiness_env]: loaded.policy.readiness_value }
     : {};
 }

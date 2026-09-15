@@ -40,7 +40,8 @@ ADR UI-j9j5는 post-merge 잡의 명시적 `replaces` 선언과 원자적 예약
    얻는다. 분류는 핀된 두 계약이 모두 검증된 경우에만 정본 키로 하고, 미지원 schema는
    `unknown_error` 대기로 보존하며 어떤 자동 인계도 시작하지 않는다.
 2. **소유 코드 결함의 자동 증명은 한 가지다.** 같은 `target_sha`·script blob·mode에서
-   `script_failed`가 재시도 뒤 같은 fingerprint(exit·log digest)로 재현된 경우만
+   `script_failed`가 재시도 뒤 같은 fingerprint(exit·log digest)로 재현되고,
+   스크립트 자체 실패 줄이 있으며 요약·상세에 환경·인증 오류 패턴이 없는 경우만
    `local_code_defect`(disposition `repair`)이며 prover는
    `deterministic_owned_script_failure`다. 중단(`interrupted`)·결과 불명은
    `unknown_outcome`, worktree 소유권·ancestry·정렬·bootstrap·수동 대상 부재는
@@ -57,9 +58,13 @@ ADR UI-j9j5는 post-merge 잡의 명시적 `replaces` 선언과 원자적 예약
 4. **생성되는 수정 Bead는 일반 workflow의 입구다.** `type:bug`·P1, 설명은 quick_fix
    handoff 계약의 네 절(`출처/배경`·`기대 효과`·`영향 surface와 경계`·`검증 bundle`)과
    `## scope`, `baseline_red` 줄을 갖추고 metadata는 `worker_created_from`·`repair_of`·
-   `repair_key`만 쓴다. route·승인·리뷰 영수증은 쓰지 않는다 — 계약의
-   `route_pin_last` 순서상 라우팅·검토·배치는 일반 workflow(라우터 세션과 Worker
-   admission)가 맡는다. 원래 Bead에는 `discovered-from` 의존을 한 번만 건다.
+   `repair_key`를 생성 시 쓴다. 설명을 재조회해 정본 checker의 절·scope·baseline_red
+   검사를 통과한 뒤 `route=quick_fix`와 `quick_fix_review=worker@<digest>`를 한 번의
+   bd update로 기록한다. 재조회한 설명·영수증이 `reviewed`이고 route가 일치해야
+   기존 Worker의 parallel 대기열에 배치하고 원장에 placement를 남긴다. 이미
+   검토·배치된 수정 Bead는 재사용하며, 실패·응답 유실은 같은 예약으로 이어간다.
+   배치 확인 전 인계는 미완료이며 사용자 승인 키는 쓰지 않는다. 원래 Bead에는
+   `discovered-from` 의존을 한 번만 건다.
 5. **수정 PR 생성만으로 원래 작업을 완료시키지 않는다.** 원래 operation의 완료는
    기존 `descendant_success_covers_ancestor_rows` 승계·explicit `replaces`의 검증된
    성공·`[정리 재시도]`로만 이어진다. 완료 실패 댓글과 공용 wait_reasons는 수정 Bead
@@ -113,7 +118,7 @@ ADR UI-j9j5는 post-merge 잡의 명시적 `replaces` 선언과 원자적 예약
   원인은 하나의 수정 Bead로 모인다. 원본 실패·로그·부분 효과는 감사 가능하게 남는다.
 - 어려워지는 것: 원장은 `recovery.handoff`의 예약·재사용·닫힘 확인 규칙을 계속
   지켜야 하며, 새 failure code를 추가하는 코드는 `operation-recovery.js`의 분류표를
-  함께 정해야 한다. 수정 Bead의 route·리뷰는 라우터가 맡으므로 후보 레인에 미라우팅
-  Bead가 보이는 것이 정상이다.
+  함께 정해야 한다. 수정 Bead의 checker·영수증 재조회·배치가 확인되기 전에는
+  인계 오류와 미완료 상태를 보존하고 다음 재조정에서 이어가야 한다.
 - 배제되는 것: 자동 수리 세션, 원장 덮어쓰기, 결과 불명·소유권 불명·인증 실패에서의
   Bead 생성, 수정 PR 생성만으로의 원래 정리 완료, 사람 전용 출구의 변경.

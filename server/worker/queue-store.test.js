@@ -42,6 +42,56 @@ beforeEach(() => {
 });
 
 describe('worker/queue-store remove', () => {
+  test('retires a live attempt linked only by the legacy issue list', () => {
+    const raw = JSON.parse(
+      fs.readFileSync(
+        new URL(
+          './__fixtures__/legacy-repair-lane-queue.json',
+          import.meta.url
+        ),
+        'utf8'
+      )
+    );
+    const intent = raw.completion_intents['UI-root'];
+    const list_key = Object.keys(intent).find((key) =>
+      key.endsWith('_bead_ids')
+    );
+    expect(list_key).toBeDefined();
+    intent[String(list_key)] = ['UI-linked'];
+    intent.active_op = null;
+    raw.attempts = {
+      linked: {
+        attempt_id: 'linked',
+        bead_id: 'UI-linked',
+        status: 'running',
+        pid: 4242,
+        started_at: 1000
+      },
+      other: {
+        attempt_id: 'other',
+        bead_id: 'UI-other',
+        status: 'running',
+        started_at: 1000
+      }
+    };
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+    const store = createQueueStore();
+
+    const pending = store.pendingRepairLaneRetirements(WS);
+    const result = store.retireRepairLane(WS, {
+      root_bead_id: 'UI-root',
+      at: 5000
+    });
+
+    expect(pending[0].attempt_ids).toEqual(['linked']);
+    expect(result.queue.attempts.linked).toMatchObject({
+      status: 'failed',
+      cause: 'repair_lane_retired',
+      finished_at: 5000
+    });
+    expect(result.queue.attempts.other.status).toBe('running');
+  });
   test.each([false, true])(
     'reports not_found without a revision bump with admission=%s',
     (admission) => {
