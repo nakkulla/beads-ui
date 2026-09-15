@@ -1,7 +1,8 @@
 ---
 id: 13
 title: 세션 기본값의 source of truth를 dotfiles kv로 이관
-status: accepted
+status: superseded
+superseded_by: UI-wecw
 date: 2026-08-16
 summary: '워크스페이스 세션 기본값은 dotfiles가 소유한 bd kv workflow_session_defaults 하나이고 beads-ui workspace 레이어는 소유권을 반납했다'
 spec: docs/superpowers/specs/2026-08-16-unified-settings-session-defaults-design.md

@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""Verify deployed WS resolution and its queue without changing configuration."""
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import socket
+import ssl
+import struct
+import subprocess
+import sys
+import time
+from urllib.parse import urlencode, urlsplit
+from urllib.request import HTTPRedirectHandler, build_opener
+
+
+def command(argv, cwd=None, snapshot=None):
+    return subprocess.run(
+        argv, cwd=cwd, input=None if snapshot is None else json.dumps(snapshot),
+        capture_output=True, text=True, timeout=12,
+    )
+
+
+def git(*args):
+    result = command(['git'] + list(args))
+    if result.returncode:
+        raise ValueError('git identity lookup failed')
+    return result.stdout.strip()
+
+
+def durable_root(cwd):
+    common = Path(git('-C', str(cwd), 'rev-parse', '--path-format=absolute', '--git-common-dir'))
+    if not common.is_absolute() or common.name != '.git' or not common.is_dir():
+        raise ValueError('durable root is ambiguous')
+    root = common.parent.resolve()
+    if Path(git('-C', str(root), 'rev-parse', '--show-toplevel')).resolve() != root:
+        raise ValueError('durable root identity mismatch')
+    return root
+
+
+def snapshot_at(root):
+    result = command(['bd', 'kv', 'get', 'workflow_session_defaults', '--json'], cwd=root)
+    record = json.loads(result.stdout)
+    # BD_JSON_ENVELOPE=1 wraps the record under `data`; a bare record carries
+    # `found` at the top level even when it names its own schema_version.
+    if isinstance(record, dict) and 'data' in record and 'found' not in record:
+        record = record.get('data')
+    if not isinstance(record, dict) or type(record.get('found')) is not bool:
+        raise ValueError('workspace_unavailable: invalid bd envelope')
+    if record['found'] is False and result.returncode in (0, 1):
+        return {}, record
+    if result.returncode or not isinstance(record.get('value'), str) or not record['value']:
+        raise ValueError('workspace_unavailable: empty or unreadable value')
+    snapshot = json.loads(record['value'])
+    if not isinstance(snapshot, dict):
+        raise ValueError('workspace_unavailable: value is not an object')
+    return snapshot, record
+
+
+def helper(cli, argv, snapshot=None):
+    result = command([cli] + argv + ['--json'], snapshot=snapshot)
+    body = json.loads(result.stdout)
+    if result.returncode or body.get('schema') != 1:
+        raise ValueError(body.get('error', {}).get('code', 'helper_unavailable'))
+    return body
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def http_get(url, decode=False):
+    with build_opener(NoRedirect).open(url, timeout=10) as response:
+        if response.status != 200:
+            raise ValueError('HTTP response is not 200')
+        return json.load(response) if decode else None
+
+
+def ws_defaults(health_url, root):
+    """One RFC6455 request, bounded frames, ping/close and fragmented text."""
+    url = urlsplit(health_url)
+    if url.scheme not in ('http', 'https') or not url.hostname:
+        raise ValueError('invalid health origin')
+    port = url.port or (443 if url.scheme == 'https' else 80)
+    connection = socket.create_connection((url.hostname, port), timeout=10)
+    if url.scheme == 'https':
+        connection = ssl.create_default_context().wrap_socket(connection, server_hostname=url.hostname)
+    deadline = time.monotonic() + 10
+    key = base64.b64encode(os.urandom(16)).decode('ascii')
+    stream = connection.makefile('rb')
+
+    def read_exact(size):
+        connection.settimeout(max(0.001, deadline - time.monotonic()))
+        data = stream.read(size)
+        if len(data) != size or time.monotonic() > deadline:
+            raise ValueError('WS response ended or timed out')
+        return data
+
+    def send_frame(opcode, data):
+        mask = os.urandom(4)
+        size = len(data)
+        prefix = bytes([0x80 | opcode, 0x80 | size]) if size < 126 else bytes([0x80 | opcode, 0xfe]) + struct.pack('!H', size)
+        connection.sendall(prefix + mask + bytes(value ^ mask[index % 4] for index, value in enumerate(data)))
+
+    try:
+        request = (
+            'GET /ws HTTP/1.1\r\nHost: ' + url.netloc + '\r\n'
+            'Upgrade: websocket\r\nConnection: Upgrade\r\n'
+            'Origin: ' + url.scheme + '://' + url.netloc + '\r\n'
+            'Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ' + key + '\r\n\r\n'
+        )
+        connection.sendall(request.encode('ascii'))
+        status = stream.readline(8192)
+        headers = {}
+        for _ in range(64):
+            line = stream.readline(8192)
+            if line == b'\r\n':
+                break
+            name, value = line.decode('ascii').split(':', 1)
+            headers[name.lower()] = value.strip()
+        else:
+            raise ValueError('WS upgrade headers exceed limit')
+        accept = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode('ascii')).digest()).decode('ascii')
+        if status.split()[1] != b'101' or headers.get('sec-websocket-accept') != accept:
+            raise ValueError('WS upgrade failed')
+        request_id = 'worker-url-post-merge'
+        send_frame(1, json.dumps({'id': request_id, 'type': 'get-session-defaults', 'payload': {'root_dir': str(root)}}).encode())
+        fragments = bytearray()
+        while time.monotonic() < deadline:
+            first, second = read_exact(2)
+            opcode, size = first & 15, second & 127
+            if size == 126:
+                size = struct.unpack('!H', read_exact(2))[0]
+            elif size == 127:
+                size = struct.unpack('!Q', read_exact(8))[0]
+            if second & 128 or first & 112 or size + len(fragments) > 1024 * 1024:
+                raise ValueError('invalid or oversized WS frame')
+            data = read_exact(size)
+            if opcode == 8:
+                raise ValueError('WS closed before reply')
+            if opcode == 9:
+                send_frame(10, data)
+                continue
+            if opcode == 10:
+                continue
+            if opcode not in (0, 1):
+                raise ValueError('unexpected WS frame')
+            fragments.extend(data)
+            if first & 128:
+                reply = json.loads(fragments.decode('utf-8'))
+                fragments.clear()
+                if reply.get('id') == request_id:
+                    if reply.get('ok') is not True:
+                        raise ValueError('WS get-session-defaults: ' + reply.get('error', {}).get('code', 'failed'))
+                    applied = reply.get('payload', {}).get('worker_url')
+                    if applied is None:
+                        raise ValueError('WS reply carries no worker_url (server predates UI-wecw)')
+                    return applied
+        raise ValueError('WS reply timed out')
+    finally:
+        try:
+            send_frame(8, struct.pack('!H', 1000))
+        except OSError:
+            pass
+        stream.close()
+        connection.close()
+
+
+def main():
+    root = durable_root(Path.cwd())
+    target = os.environ['REPO_OPS_TARGET_SHA']
+    if git('rev-parse', 'HEAD') != target:
+        raise ValueError('job merge SHA mismatch')
+    print(json.dumps({'merge_sha': target, 'root': str(root)}))
+    cli = shutil.which('worker-url')
+    if cli is None:
+        cli = next((str(path) for path in (Path.home() / 'bin/worker-url', Path.home() / '.local/bin/worker-url') if path.is_file() and os.access(path, os.X_OK)), None)
+    if cli is None:
+        raise ValueError('helper_unavailable: installed worker-url missing')
+    health_url = os.environ.get('BDUI_DEPLOY_HEALTH_URL')
+    if not health_url:
+        host = os.environ.get('BDUI_HOST')
+        if not host and shutil.which('ts-ip'):
+            result = command(['ts-ip'])
+            host = result.stdout.strip() if result.returncode == 0 else None
+        host = host or '127.0.0.1'
+        health_url = 'http://' + host + ':3000/healthz'
+    health = http_get(health_url, decode=True)
+    runtime = health.get('runtime', {})
+    if runtime.get('source_sha') != target:
+        raise ValueError('health source SHA mismatch')
+    # source_repo is the deploy worktree; its common Git directory identifies
+    # the registered durable root, not the transient worktree path.
+    source_repo = runtime.get('source_repo')
+    if not source_repo or durable_root(source_repo) != root:
+        raise ValueError('health source repository mismatch')
+    print(json.dumps({'health': 'passed', 'source_repo': source_repo}))
+    snapshot, before = snapshot_at(root)
+    common_before = helper(cli, ['common', 'get'])['common']
+    applied = ws_defaults(health_url, root)
+    _, after = snapshot_at(root)
+    common_after = helper(cli, ['common', 'get'])['common']
+    if before != after or common_before['revision'] != common_after['revision']:
+        raise ValueError('changed during verification')
+    resolved = helper(cli, ['resolve', '--root', str(root), '--workspace-json-stdin'], snapshot)
+    if resolved['common']['revision'] != common_after['revision']:
+        raise ValueError('changed during verification')
+    if resolved['common']['state'] not in ('configured', 'unset'):
+        raise ValueError('common_' + resolved['common']['state'])
+    if applied.get('status') != 'ok':
+        raise ValueError(applied.get('error', {}).get('code', 'WS worker_url unavailable'))
+    for key in ('effective_url', 'source'):
+        if applied[key] != resolved[key]:
+            raise ValueError('WS resolver mismatch: ' + key)
+    if applied['common']['state'] != resolved['common']['state']:
+        raise ValueError('WS resolver mismatch: common state')
+    if not applied['common']['revision'] == resolved['common']['revision'] == common_after['revision']:
+        raise ValueError('WS resolver mismatch: common revision')
+    print(json.dumps({'resolution': 'passed', 'effective_url': applied['effective_url'], 'source': applied['source']}))
+    if applied['effective_url'] is None:
+        if applied['source'] != 'unset':
+            raise ValueError('invalid unset result')
+        print(json.dumps({'queue': 'skipped', 'reason': 'unset'}))
+    else:
+        http_get(applied['effective_url'] + '/api/worker/queue?' + urlencode({'root_dir': str(root)}))
+        print(json.dumps({'queue': 'passed', 'status': 200}))
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except Exception as error:
+        print(json.dumps({'result': 'failed', 'cause': str(error)}), file=sys.stderr)
+        sys.exit(1)

@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| UI-wecw | [Beads UI는 저장소 defaults와 공통 Worker 주소 적용값을 분리하며 공통 주소 조회·쓰기는 dotfiles 소유 CLI를 소비한다 — defaults 어휘·검증의 dotfiles 소유권과 fail-quiet 읽기·strict 쓰기는 0013을 승계한다](UI-wecw-worker-url-stored-vs-effective-split-common-via-dotfiles-cli.md) | 2026-09-16 | Beads UI는 저장소 defaults와 공통 Worker 주소 적용값을 분리하며 공통 주소 조회·쓰기는 dotfiles 소유 CLI를 소비한다 |
 | UI-tqqp | [bd closed·deferred Bead는 모든 대기 레인에서 자동으로 물러나고 leaf paused attempt는 Bead 종료가 우선해 stopped로 종결된다](UI-tqqp-closed-deferred-beads-auto-retire-from-waiting-lanes.md) | 2026-09-16 | bd closed·deferred Bead 는 병렬·직렬 대기 레인에서 자동 제거되고 leaf paused attempt 는 Bead 종료가 우선해 stopped 로 종결되며 버릴 수 있는 워크트리만 정리한다 |
 | UI-3vvi-2 | [머지 후 결함은 일반 workflow 수정 Bead로 자동 인계하되 기존 원장·원자적 예약·원본 실패 보존과 검증된 수정 성공 후 최종 정리를 유지한다](UI-3vvi-2-post-merge-defect-workflow-repair-handoff.md) | 2026-09-16 | 머지 후 결함은 일반 workflow 수정 Bead로 자동 인계하되 기존 원장·원자적 예약·원본 실패 보존과 검증된 수정 성공 후 최종 정리를 유지한다 |
 | UI-3vvi | [Worker는 원시 실패를 보존하면서 정본 복구 분류와 동일 계보의 단일 예약으로 미완료 단계만 수정·대기·재개한다](UI-3vvi-preserve-raw-failure-recovery-wait-single-reservation.md) | 2026-09-16 | Worker는 원시 실패를 보존하면서 정본 복구 분류와 동일 계보의 단일 예약으로 미완료 단계만 수정·대기·재개한다 |
@@ -40,7 +41,6 @@
 | 0014 | [레인과 카드는 단일 buildLanes 계약과 공유 슬롯 표로 조립한다](0014-single-build-lanes-contract-and-shared-slot-table.md) | 2026-08-27 | Worker와 Monitor는 워크스페이스 N개를 받는 하나의 buildLanes로 레인을 만들고 카드의 줄 순서와 새 요소의 자리는 공유 슬롯 표가 정한다 |
 | 0009 | [병렬성 분석 기능 전면 제거와 수동 배포 실행](0009-parallelism-analysis-removal.md) | 2026-08-27 | 병렬성 분석 기능은 코드·테스트·프로토콜까지 제거하고 수동 [배포 실행] 버튼만 두며 script_retry는 토글 없이 상시다 |
 | 0015 | [30분은 queue-yield deadline이고 충돌 해소 fence는 슬롯 기반이다](0015-queue-yield-deadline-and-slot-based-conflict-fence.md) | 2026-08-19 | 30분은 실패 타임아웃이 아니라 머지 큐 턴을 양보하는 시점이며 충돌 해소 디스패치는 수동 권한 면제와 슬롯 여유로 판정한다 |
-| 0013 | [세션 기본값의 source of truth를 dotfiles kv로 이관](0013-session-defaults-owned-by-dotfiles-kv.md) | 2026-08-16 | 워크스페이스 세션 기본값은 dotfiles가 소유한 bd kv workflow_session_defaults 하나이고 beads-ui workspace 레이어는 소유권을 반납했다 |
 | 0011 | [auto_merge와 auto_advance는 별개의 스위치](0011-auto-merge-and-auto-advance-independent-toggles.md) | 2026-08-13 | 세션 자동 진행과 자동 머지를 한 스위치로 접지 않는다 — 자동화 클릭만 두 값을 원자적으로 맞추고 자동 머지는 그 뒤 독립 토글로 남는다 |
 | 0010 | [배포 실행은 Worker generic execution, 저장소 지식은 repo-ops 스크립트](0010-repo-operation-execution-ownership-split.md) | 2026-08-13 | Worker는 배포를 durable operation journal·전용 워크트리·프로세스 실행으로만 다루고, 저장소별 적용과 확인은 repo-ops [deploy] 스크립트가 소유한다 |
 | 0003 | [머지 자격 판정에서 GitHub checks·Actions를 입력에서 제거](0003-no-ci-merge-eligibility.md) | 2026-08-13 | 머지 자격은 저장소 안에서 관측되는 입력(PR/base/head identity·mergeability·리뷰 영수증·실행 영수증·[verify])만으로 판정하고 GitHub checks는 보지 않는다 |
@@ -56,6 +56,7 @@
 | 0002 | [Per‑Subscription Stores and Full‑Issue Push (Breaking)](0002-per-subscription-stores-and-full-issue-push.md) | superseded | [0044](0044-subscription-store-notifies-content-change-with-source.md) |
 | 0004 | [impl_review 신선도를 exact-head 대신 ancestry로 판정](0004-impl-review-ancestry-freshness.md) | superseded | [0031](0031-impl-review-ancestry-and-hold-exit.md) |
 | 0005 | [자동 AI 수리 레인 폐기와 needs_human 종단](0005-no-auto-repair-lane.md) | superseded | [0022](0022-needs-human-auto-notify-click-driven-reentry.md) |
+| 0013 | [세션 기본값의 source of truth를 dotfiles kv로 이관](0013-session-defaults-owned-by-dotfiles-kv.md) | superseded | [UI-wecw](UI-wecw-worker-url-stored-vs-effective-split-common-via-dotfiles-cli.md) |
 | 0016 | [큐 정지 권한은 systemic 실패 계층만 갖는다](0016-queue-hold-only-on-systemic-failure.md) | superseded | [0048](0048-resume-click-releases-systemic-hold.md) |
 | 0017 | [awaiting_user를 남기고 정상 종료한 세션 결말은 parked이며 자동 재디스패치하지 않는다](0017-parked-session-outcome-no-auto-redispatch.md) | superseded | [0036](0036-parked-exit-is-inquiry-session-only.md) |
 | 0018 | [quick_fix 착지 재개는 정산 커서가 아니라 실패 사유로 판정한다](0018-quickfix-landing-resume-judged-by-failure-reason.md) | superseded | [0042](0042-quickfix-resume-by-reason-settlement-button-is-cleanup-retry.md) |

@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { projectedResponse } from '../__fixtures__/bd-json/projected.js';
 
+vi.mock('../worker-url.js', () => ({
+  resolveWorkerUrl: vi.fn().mockResolvedValue({
+    status: 'unavailable',
+    error: { code: 'helper_unavailable' }
+  }),
+  commonSet: vi.fn()
+}));
+
 // Capture the argv passed to the bd runner.
 const runBdInWorkspace = vi.fn();
 const runBdJsonProjectedInWorkspace = vi.fn();

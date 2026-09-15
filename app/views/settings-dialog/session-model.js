@@ -759,3 +759,53 @@ export function buildOrchestrationPatch(baseline, draft) {
   }
   return patch;
 }
+/**
+ * Keep the edit-start revision until explicit adoption or a successful save.
+ *
+ * @param {{ value: string, revision: string|null, dirty: boolean }} draft
+ * @param {{ value: string|null, revision: string|null }|null} common
+ * @param {boolean} [force]
+ */
+export function adoptWorkerCommon(draft, common, force = false) {
+  if (draft.dirty && !force) {
+    return draft;
+  }
+  return {
+    value: common?.value ?? '',
+    revision: common?.revision ?? null,
+    dirty: false
+  };
+}
+
+/** @param {any} worker_url */
+export function workerUrlMessage(worker_url) {
+  if (!worker_url) {
+    return '적용 주소를 확인할 수 없습니다 (서버 갱신 필요)';
+  }
+  if (worker_url.status !== 'ok') {
+    return worker_url.error?.code === 'workspace_unavailable'
+      ? '적용 주소를 확인할 수 없습니다 (저장소 설정 읽기 오류)'
+      : '적용 주소를 확인할 수 없습니다 (주소 도우미 설치/실행 필요)';
+  }
+  /** @type {Record<string, string>} */
+  const labels = {
+    workspace: '이 저장소의 예외',
+    common: '공통 기본값',
+    unset: '미설정'
+  };
+  return `${worker_url.effective_url ?? ''} · ${labels[worker_url.source]}`;
+}
+/** @param {any} warning */
+export function workerUrlWarning(warning) {
+  const code = typeof warning === 'string' ? warning : warning?.code;
+  switch (code) {
+    case 'workspace_invalid':
+      return '저장소 예외 주소의 형식이 잘못되어 건너뛰었습니다';
+    case 'common_invalid':
+      return '공통 설정 형식이 잘못되어 공통값을 사용하지 않습니다';
+    case 'common_unavailable':
+      return '공통 설정을 읽지 못해 공통값을 사용하지 않습니다';
+    default:
+      return '주소 설정 경고가 있습니다';
+  }
+}
