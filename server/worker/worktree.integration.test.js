@@ -2457,20 +2457,27 @@ describe('worker/worktree dispatch-time dependency install (spec D3)', () => {
     expect(fs.existsSync(path.join(archive_path, 'commits.bundle'))).toBe(true);
   });
 
-  test('removeCompleted preserves a squash source with an undelivered mode', async () => {
-    const wt = createWorktreeManager({ locks: createLockManager() });
+  test('removeCompleted removes a squash source whose base moved after branching', async () => {
+    const wt = createWorktreeManager({
+      locks: createLockManager(),
+      createBranchArchive: () => ({ ok: true })
+    });
+    commit(repo, 'shared.txt', 'original');
     const base = headOf(repo);
     const created = await wt.add({ repo, bead_id: 'UI-complete', base });
-    const branch_file = path.join(created.path, 'script.sh');
-    fs.writeFileSync(branch_file, 'echo delivered\n');
-    fs.chmodSync(branch_file, 0o755);
-    git(['add', 'script.sh'], created.path);
-    git(['commit', '-q', '-m', 'executable source'], created.path);
+    fs.writeFileSync(path.join(created.path, 'shared.txt'), 'branch change\n');
+    git(['add', 'shared.txt'], created.path);
+    git(['commit', '-q', '-m', 'branch change'], created.path);
     const branch_head = headOf(created.path);
-    fs.writeFileSync(path.join(repo, 'script.sh'), 'echo delivered\n');
-    fs.chmodSync(path.join(repo, 'script.sh'), 0o644);
-    git(['add', 'script.sh'], repo);
-    git(['commit', '-q', '-m', 'non-executable delivery'], repo);
+    fs.writeFileSync(path.join(repo, 'shared.txt'), 'base change\n');
+    git(['add', 'shared.txt'], repo);
+    git(['commit', '-q', '-m', 'base moved on the same path'], repo);
+    fs.writeFileSync(
+      path.join(repo, 'shared.txt'),
+      'base change\nbranch change\n'
+    );
+    git(['add', 'shared.txt'], repo);
+    git(['commit', '-q', '-m', 'squash delivery'], repo);
 
     const result = await wt.removeCompleted({
       repo,
@@ -2481,11 +2488,12 @@ describe('worker/worktree dispatch-time dependency install (spec D3)', () => {
     });
 
     expect(result).toMatchObject({
-      ok: false,
-      reason: 'delivery_not_contained'
+      ok: true,
+      worktree_removed: true,
+      branch_removed: true
     });
-    expect(fs.existsSync(created.path)).toBe(true);
-    expect(headOf(repo, 'UI-complete')).toBe(branch_head);
+    expect(fs.existsSync(created.path)).toBe(false);
+    expect(() => headOf(repo, 'UI-complete')).toThrow();
   });
 
   test('removeCompleted resumes after only the worktree was removed', async () => {

@@ -1188,9 +1188,11 @@ export function createWorktreeManager(deps) {
 
     /**
      * Remove a delivered worktree and its local branch under one topology
-     * lock. The delivered tree is the content authority: commit ancestry is a
-     * shortcut only, while squash/non-ancestor histories are compared path by
-     * path including modes and archived before their ref is deleted.
+     * lock. The caller's merge evidence plus the branch head matching the
+     * recorded identity is the delivery proof: a squash/non-ancestor history
+     * is archived before its ref is deleted, never compared path by path
+     * against the delivered tree — after a base move that comparison always
+     * differs and only ever produced a false refusal (UI-m55x).
      *
      * @param {{ repo: string, branch: string, expected_path: string, expected_head: string, delivered_sha: string }} input
      * @returns {Promise<{ ok: boolean, removed: boolean, reason: string|null, worktree_removed: boolean, branch_removed: boolean }>}
@@ -1331,44 +1333,6 @@ export function createWorktreeManager(deps) {
             !/^[0-9a-f]{40,64}$/i.test(archive_base)
           ) {
             return result(false, 'observe_failed');
-          }
-          const changed = await run(
-            [
-              'diff',
-              '--name-only',
-              '-z',
-              '--no-renames',
-              archive_base,
-              branch_head,
-              '--'
-            ],
-            { cwd: input.repo }
-          );
-          if (
-            changed.code !== 0 ||
-            (changed.stdout.length > 0 && !changed.stdout.endsWith('\0'))
-          ) {
-            return result(false, 'observe_failed');
-          }
-          for (const relative_path of changed.stdout
-            .split('\0')
-            .filter(Boolean)) {
-            const [branch_state, delivered_state] = await Promise.all([
-              treePathState(run, input.repo, branch_head, relative_path),
-              treePathState(run, input.repo, input.delivered_sha, relative_path)
-            ]);
-            if (!branch_state.ok || !delivered_state.ok) {
-              return result(false, 'observe_failed');
-            }
-            if (
-              branch_state.state?.mode === '160000' ||
-              delivered_state.state?.mode === '160000'
-            ) {
-              return result(false, 'unsupported_object');
-            }
-            if (!samePathState(branch_state.state, delivered_state.state)) {
-              return result(false, 'delivery_not_contained');
-            }
           }
         }
 
