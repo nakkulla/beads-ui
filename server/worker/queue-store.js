@@ -7156,8 +7156,20 @@ export function createQueueStore(options = {}) {
      */
     remove(workspace, input) {
       const { expected_revision, bead_id } = input;
-      return applyMutation(workspace, expected_revision, (next) => {
+      let not_found = false;
+      const result = applyMutation(workspace, expected_revision, (next) => {
         if (hasActiveDiscardOperation(next, bead_id)) {
+          return false;
+        }
+        if (
+          ![
+            ...next.queue,
+            ...next.serial_lanes.flatMap((lane) => lane.entries),
+            ...next.pr_wait,
+            ...next.done
+          ].some((entry) => entry.bead_id === bead_id)
+        ) {
+          not_found = true;
           return false;
         }
         removeFromLanes(next, bead_id);
@@ -7168,6 +7180,7 @@ export function createQueueStore(options = {}) {
         delete next.cleanup_failed[bead_id];
         return true;
       });
+      return not_found ? { ...result, reason: 'not_found' } : result;
     },
 
     /**
@@ -8158,7 +8171,7 @@ export function createQueueStore(options = {}) {
      * Scheduler-owned (no CAS), like the other lifecycle transitions.
      *
      * @param {string} workspace
-     * @param {{ attempt_id: string, bead_id: string, patch: Partial<Attempt> }} input
+     * @param {{ attempt_id: string, bead_id: string, patch: Partial<Attempt>, preserve_waiting?: boolean }} input
      * @returns {QueueOpResult}
      */
     discardAttempt(workspace, input) {
@@ -8177,8 +8190,11 @@ export function createQueueStore(options = {}) {
             bead_id: cur.bead_id
           })
         );
-        removeFromLanes(next, bead_id);
-        delete next.admission[bead_id];
+        // Automatic retirement re-reads bd after disposal before releasing the seat.
+        if (!input.preserve_waiting) {
+          removeFromLanes(next, bead_id);
+          delete next.admission[bead_id];
+        }
         return true;
       });
       consumeTerminalReceipts(result, prepared.files, prepared.drain);

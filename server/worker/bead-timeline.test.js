@@ -51,6 +51,19 @@ afterEach(() => {
 });
 
 describe('bead-timeline append', () => {
+  test('accepts the queue_removed kind', () => {
+    const timeline = createBeadTimeline({ workspace_root: WS });
+
+    const result = timeline.append(
+      dispatchEvent({ kind: 'queue_removed', attempt_id: undefined })
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      event: { kind: 'queue_removed' }
+    });
+  });
+
   test('composes event_id from kind, attempt and caller sequence', () => {
     const timeline = createBeadTimeline({ workspace_root: WS });
 
@@ -250,7 +263,7 @@ describe('bead-timeline readTimeline', () => {
 });
 
 describe('TIMELINE_KINDS', () => {
-  test('carries exactly the sixteen kinds of the event table', () => {
+  test('carries exactly the seventeen kinds of the event table', () => {
     expect([...TIMELINE_KINDS]).toEqual([
       'dispatched',
       'guard_warning',
@@ -267,7 +280,8 @@ describe('TIMELINE_KINDS', () => {
       'operation_failed',
       'needs_human',
       'user_action',
-      'wait_notified'
+      'wait_notified',
+      'queue_removed'
     ]);
   });
 });

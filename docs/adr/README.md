@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| UI-tqqp | [bd closed·deferred Bead는 모든 대기 레인에서 자동으로 물러나고 leaf paused attempt는 Bead 종료가 우선해 stopped로 종결된다](UI-tqqp-closed-deferred-beads-auto-retire-from-waiting-lanes.md) | 2026-09-16 | bd closed·deferred Bead 는 병렬·직렬 대기 레인에서 자동 제거되고 leaf paused attempt 는 Bead 종료가 우선해 stopped 로 종결되며 버릴 수 있는 워크트리만 정리한다 |
 | UI-wc67 | [연결 레인을 폐기하고 저장소별 대기열에서 확인된 선행 대기만 건너뛴다](UI-wc67-retire-connected-lanes-use-repository-queues.md) | 2026-09-15 | 연결 레인은 폐기하고 저장소별 병렬·직렬 대기열과 blocks 의존만 사용하며 직렬 레인은 확인된 선행 대기 항목을 건너뛰되 한 번에 하나만 실행한다 |
 | UI-mscc | [부모와 자식의 직접 사용량을 중복 없이 합산하고 불완전한 범위는 부분 집계로 표시한다](UI-mscc-parent-child-direct-usage-total.md) | 2026-09-15 | 부모와 자식의 검증된 직접 사용량을 중복 없이 합산하고 미확정 범위는 부분 집계로 표시한다 |
 | UI-lmqu-2 | [기준 이동은 보존 세션 이어하기이고 기계 정산은 정리 재시도다](UI-lmqu-2-base-moved-session-resume.md) | 2026-09-15 | quick_fix 재개는 종료 사유로 session과 settlement를 구분하며 base_moved는 보존 세션 이어하기이고 기계 정산은 정리 재시도다 |

@@ -14,6 +14,7 @@ import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
 import { placeBeadInQueue } from '../worker/queue-place.js';
+import { removeBeadFromQueue } from '../worker/queue-remove.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 
 /**
@@ -254,4 +255,50 @@ export async function workerQueuePlaceHandler(req, res) {
     index: outcome.index,
     revision: outcome.queue.revision
   });
+}
+
+/**
+ * POST /api/worker/queue/remove with required root_dir, bead_id and revision.
+ *
+ * @param {Request} req
+ * @param {Response} res
+ */
+export function workerQueueRemoveHandler(req, res) {
+  res.set('Cache-Control', 'no-store');
+  const body = /** @type {any} */ (req.body || {});
+  const workspace_key = workspaceKeyOf(body.root_dir);
+  if (
+    workspace_key === null ||
+    typeof body.bead_id !== 'string' ||
+    body.bead_id.length === 0 ||
+    !Number.isInteger(body.expected_revision)
+  ) {
+    res.status(400).json({ ok: false, error: 'bad_request' });
+    return;
+  }
+  const result = removeBeadFromQueue(workspace_key, {
+    bead_id: body.bead_id,
+    expected_revision: body.expected_revision
+  });
+  if (result.ok) {
+    res
+      .status(200)
+      .json({ ok: true, applied: true, revision: result.queue.revision });
+    return;
+  }
+  res.status(200).json(
+    result.conflict
+      ? {
+          ok: true,
+          applied: false,
+          conflict: true,
+          revision: result.queue.revision
+        }
+      : {
+          ok: true,
+          applied: false,
+          conflict: false,
+          reason: result.reason || 'rejected'
+        }
+  );
 }

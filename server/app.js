@@ -16,7 +16,8 @@ import { docHandler } from './routes/doc.js';
 import { repoOpsScriptHandler } from './routes/repo-ops-script.js';
 import {
   workerQueueGetHandler,
-  workerQueuePlaceHandler
+  workerQueuePlaceHandler,
+  workerQueueRemoveHandler
 } from './routes/worker-queue.js';
 
 /**
@@ -106,6 +107,7 @@ export function createApp(config) {
   // that has no browser (UI-1gpj §3).
   app.get('/api/worker/queue', workerQueueGetHandler);
   app.post('/api/worker/queue/place', workerQueuePlaceHandler);
+  app.post('/api/worker/queue/remove', workerQueueRemoveHandler);
 
   // Switch the active account of one provider from the usage card.
   app.post('/api/claude-account/switch', claudeAccountSwitchHandler);
