@@ -120,6 +120,67 @@ export function createDetailPanel(mount_element, options) {
   const issueStores = options.issueStores;
   const onClose = options.onClose;
   const transport = options.transport;
+
+  /** @type {Set<string>} */
+  const external_checks = new Set();
+
+  /** Keep replacement buttons disabled when a snapshot redraws the view. */
+  function syncExternalChecks() {
+    for (const button of Array.from(
+      mount_element.querySelectorAll('[data-external-check-now]')
+    )) {
+      const element = /** @type {HTMLButtonElement} */ (button);
+      element.disabled = external_checks.has(element.dataset.rootDir || '');
+    }
+  }
+
+  /** @param {HTMLButtonElement} button */
+  async function checkExternalWaitNow(button) {
+    const root_dir = button.dataset.rootDir || '';
+    const watch_id = button.dataset.externalCheckNow || '';
+    const since = Number(button.dataset.since);
+    if (
+      !transport ||
+      !root_dir ||
+      !watch_id ||
+      !button.dataset.since ||
+      !Number.isFinite(since) ||
+      external_checks.has(root_dir)
+    ) {
+      return;
+    }
+    external_checks.add(root_dir);
+    syncExternalChecks();
+    try {
+      const res = /** @type {any} */ (
+        await transport('worker-external-wait-check-now', {
+          root_dir,
+          watch_id,
+          since
+        })
+      );
+
+      const summaries = {
+        settled: '대기 조건이 해제되었습니다',
+        still_waiting: '확인했습니다 — 아직 대기 중입니다',
+        skipped: '이미 실행 중',
+        running: '관측기가 계속 실행 중입니다',
+        error: '관측기 실행에 실패했습니다'
+      };
+      const outcome = /** @type {keyof typeof summaries} */ (res?.outcome);
+      showToast(
+        res?.summary || summaries[outcome] || summaries.error,
+        res?.ok === false || outcome === 'error' ? 'error' : 'success',
+        4000
+      );
+    } catch {
+      showToast('관측기 실행 요청에 실패했습니다', 'error', 4000);
+    } finally {
+      external_checks.delete(root_dir);
+      syncExternalChecks();
+      doRender();
+    }
+  }
   const onNavigate = options.onNavigate;
   const queueStore = options.queueStore;
   const pipelineStore = options.pipelineStore;
@@ -2797,7 +2858,20 @@ export function createDetailPanel(mount_element, options) {
       return html`<div class="detail-overlay" role="dialog" aria-modal="true">
         <div class="detail-overlay__backdrop" @click=${() => onClose()}></div>
         <div class="detail-overlay__panel detail-overlay__panel--gate">
-          <div class="detail-overlay__bar">
+          <div
+            class="detail-overlay__bar"
+            @click=${(/** @type {Event} */ event) => {
+              const button = /** @type {HTMLButtonElement|null} */ (
+                event.target instanceof Element
+                  ? event.target.closest('[data-external-check-now]')
+                  : null
+              );
+              if (button) {
+                event.stopPropagation();
+                void checkExternalWaitNow(button);
+              }
+            }}
+          >
             <button
               type="button"
               class="detail-overlay__id"
@@ -3107,6 +3181,7 @@ export function createDetailPanel(mount_element, options) {
 
   function doRender() {
     render(template(), mount_element);
+    syncExternalChecks();
   }
 
   return {

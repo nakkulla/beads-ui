@@ -257,9 +257,16 @@ export function createWaitJudge(deps) {
   let epoch = 0;
   let rerun = false;
 
-  /** @param {WaitWorkspace} [workspace] */
-  function refresh(workspace) {
+  /**
+   * @param {WaitWorkspace} [workspace]
+   * @param {boolean} [after_in_flight] - Collect again after an older read completes.
+   * @returns {Promise<void>}
+   */
+  function refresh(workspace, after_in_flight = false) {
     if (in_flight) {
+      if (after_in_flight) {
+        return in_flight.then(() => refresh(workspace));
+      }
       return in_flight;
     }
     const run_epoch = epoch;
@@ -3247,6 +3254,140 @@ export async function probeProviderNow(workspace_root, input) {
   return { ok: true, armed: fired.armed };
 }
 
+/** @typedef {{ ok: boolean, outcome: 'settled'|'still_waiting'|'skipped'|'running'|'error', summary: string }} ExternalWaitCheckResult */
+
+/**
+ * Run the installed monitor once; the deadline releases the reply, not the process.
+ *
+ * @param {{ spawn?: typeof spawn, readState?: typeof workerWaitState, refresh?: typeof refreshWorkerWaitReasons }} [deps]
+ */
+export function createExternalWaitCheckNow(deps = {}) {
+  const spawnMonitor = deps.spawn || spawn;
+  const readState = deps.readState || workerWaitState;
+  const refresh = deps.refresh || refreshWorkerWaitReasons;
+  /** @type {Set<string>} */
+  const in_flight = new Set();
+
+  /**
+   * @param {string} workspace_root
+   * @param {{ watch_id: string, since: number }} input
+   * @returns {Promise<ExternalWaitCheckResult>}
+   */
+  return async function checkNow(workspace_root, input) {
+    const key = keyFor(workspace_root);
+    const before = readState(key).external_waits.find(
+      (row) => row.root_dir === key && row.watch_id === input.watch_id
+    );
+    if (!before || before.last_observed_at !== input.since) {
+      return {
+        ok: false,
+        outcome: 'skipped',
+        summary: '관측 상태가 바뀌었습니다 — 다시 확인하세요'
+      };
+    }
+    if (in_flight.has(key)) {
+      return { ok: false, outcome: 'skipped', summary: '이미 실행 중' };
+    }
+    in_flight.add(key);
+    const before_stage = before.stage;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        resolve({
+          ok: true,
+          outcome: 'running',
+          summary: '관측기가 계속 실행 중입니다'
+        });
+      }, 360_000);
+      let stdout = '';
+      let stderr = '';
+      let finished = false;
+
+      /** @param {Error|null} error */
+      async function finish(error) {
+        if (finished) {
+          return;
+        }
+        finished = true;
+        /** @type {ExternalWaitCheckResult} */
+        let result;
+        try {
+          await refresh(key);
+          if (error) {
+            throw error;
+          }
+          const receipt = JSON.parse(stdout);
+          if (receipt.skipped === true) {
+            result = { ok: true, outcome: 'skipped', summary: '이미 실행 중' };
+          } else {
+            if (
+              !Number.isInteger(receipt.summary?.completed) ||
+              receipt.summary.completed < 0
+            ) {
+              throw new Error('관측기 응답 형식이 올바르지 않습니다');
+            }
+            const after = readState(key).external_waits.find(
+              (row) => row.root_dir === key && row.watch_id === input.watch_id
+            );
+            const settled =
+              receipt.summary.completed > 0 &&
+              before_stage !== 'complete' &&
+              after?.stage === 'complete';
+            result = {
+              ok: true,
+              outcome: settled ? 'settled' : 'still_waiting',
+              summary: settled
+                ? '대기 조건이 해제되었습니다'
+                : '확인했습니다 — 아직 대기 중입니다'
+            };
+          }
+        } catch (err) {
+          result = {
+            ok: false,
+            outcome: 'error',
+            summary:
+              stderr.split(/\r?\n/, 1)[0] ||
+              String(err instanceof Error ? err.message : err).split(
+                /\r?\n/,
+                1
+              )[0]
+          };
+        } finally {
+          clearTimeout(timer);
+          in_flight.delete(key);
+        }
+        resolve(result);
+      }
+
+      try {
+        const child = spawnMonitor('bead-job-monitor', ['tick'], {
+          cwd: key,
+          shell: false,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+        child.stdout?.on('data', (chunk) => {
+          stdout += chunk.toString();
+        });
+        child.stderr?.on('data', (chunk) => {
+          stderr += chunk.toString();
+        });
+        child.once('error', (error) => {
+          void finish(error);
+        });
+        child.once('close', (code) => {
+          void finish(
+            code === 0 ? null : new Error(`관측기 종료 코드: ${code}`)
+          );
+        });
+      } catch (err) {
+        void finish(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  };
+}
+
+export const checkWorkerExternalWaitNow = createExternalWaitCheckNow();
+
 /**
  * Acknowledge one FAILED RepoOperation row (UI-q0uy §4.6-2). The row stays
  * failed and auditable; only the 해결 필요 tally and its action buttons drop it.
@@ -3534,7 +3675,7 @@ export async function refreshWorkerWaitReasons(workspace_root) {
   if (!att?.waitJudge) {
     return false;
   }
-  await att.waitJudge.refresh();
+  await att.waitJudge.refresh(undefined, true);
   return true;
 }
 

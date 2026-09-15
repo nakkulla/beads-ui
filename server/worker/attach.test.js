@@ -107,6 +107,77 @@ vi.mock('../watcher.js', async (importOriginal) => {
 
 const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
 
+describe('external wait check-now attachment seams', () => {
+  test('allows independent workspaces to run concurrently', async () => {
+    const children = [0, 1].map(() =>
+      Object.assign(new EventEmitter(), {
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter()
+      })
+    );
+    const spawnMonitor = vi
+      .fn()
+      .mockReturnValueOnce(children[0])
+      .mockReturnValueOnce(children[1]);
+    const checkNow = attachModule.createExternalWaitCheckNow({
+      spawn: /** @type {any} */ (spawnMonitor),
+      readState: (root_dir) => ({
+        wait_reasons: [],
+        external_waits: [
+          { root_dir, watch_id: 'watch', last_observed_at: 1, stage: 'active' }
+        ]
+      }),
+      refresh: vi.fn(async () => true)
+    });
+
+    const first = checkNow('/repo-a', { watch_id: 'watch', since: 1 });
+    const second = checkNow('/repo-b', { watch_id: 'watch', since: 1 });
+    for (const child of children) {
+      child.stdout.emit('data', '{"summary":{"completed":0}}');
+      child.emit('close', 0);
+    }
+    const results = await Promise.all([first, second]);
+
+    expect(spawnMonitor).toHaveBeenCalledTimes(2);
+    expect(results.map((result) => result.outcome)).toEqual([
+      'still_waiting',
+      'still_waiting'
+    ]);
+  });
+
+  test('collects again after an older judgment finishes', async () => {
+    /** @type {() => void} */
+    let finishOldRead = () => {};
+    const old_read = new Promise((resolve) => {
+      finishOldRead = () => resolve(undefined);
+    });
+    const collect = vi.fn().mockReturnValueOnce(old_read).mockResolvedValue([]);
+    const onChanged = vi.fn();
+    const judge = attachModule.createWaitJudge(
+      /** @type {any} */ ({
+        workspace: '/repo',
+        repo: '/repo',
+        collector: { collect, get: () => ({ rows: [], collected_at: 1 }) },
+        store: { snapshot: () => ({}), claimWaitNotifications: () => [] },
+        notifier: {},
+        requestSnapshot: async () => ({ ok: true, snapshot: {} }),
+        readFacts: async () => ({}),
+        onChanged
+      })
+    );
+    const old_judgment = judge.refresh();
+    await Promise.resolve();
+
+    const fresh_judgment = judge.refresh(undefined, true);
+    finishOldRead();
+    await Promise.all([old_judgment, fresh_judgment]);
+
+    expect(collect).toHaveBeenCalledTimes(2);
+    expect(onChanged).toHaveBeenCalledTimes(2);
+    judge.stop();
+  });
+});
+
 /**
  * A resolved-base stub for `createLiveBd` (worker-base-scope-alignment §1): the
  * resolver is the ONLY source of a snapshot's base now, so every snapshot test

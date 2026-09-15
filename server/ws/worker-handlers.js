@@ -26,6 +26,7 @@
  * @import { RequestEnvelope } from '../../app/protocol.js'
  * @import { KeyedSubscriber } from './push-patch.js'
  */
+import { randomUUID } from 'node:crypto';
 import nodeFs from 'node:fs';
 import { canonicalJson, splitWorkerQueue } from '../../app/data/keyed-patch.js';
 import { makeError, makeOk } from '../../app/protocol.js';
@@ -43,6 +44,7 @@ import { createAccountCatalog } from '../worker/account-catalog.js';
 import {
   abandonWorkerDiscard,
   backupFreshWorkerStaleWork,
+  checkWorkerExternalWaitNow,
   continueWorkerStaleWork,
   discardWorkerBead,
   dismissWorkerRepoOperation,
@@ -5006,6 +5008,81 @@ export async function handleWorkerProviderProbeNow(ws, req) {
     result = { ok: false, reason: 'provider_probe_failed' };
   }
   replyQueueHold(ws, req, key, result);
+}
+
+/**
+ * Handle `worker-external-wait-check-now` using the row's observation clock.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerExternalWaitCheckNow(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (
+    typeof p.root_dir !== 'string' ||
+    !p.root_dir ||
+    typeof p.watch_id !== 'string' ||
+    !p.watch_id ||
+    typeof p.since !== 'number' ||
+    !Number.isFinite(p.since)
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { root_dir, watch_id, since }'
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const watch = workerWaitState(key).external_waits.find(
+    (row) => row.root_dir === key && row.watch_id === p.watch_id
+  );
+  if (watch?.consumer_id) {
+    try {
+      queueStore().recordTimelineEvent(key, {
+        bead_id: watch.consumer_id,
+        kind: 'user_action',
+        seq: `external-check-now:${randomUUID()}`,
+        summary: '[지금 확인] 클릭'
+      });
+    } catch (err) {
+      log('external check-now timeline failed for %s: %o', key, err);
+    }
+  }
+  /** @type {import('../worker/attach.js').ExternalWaitCheckResult} */
+  let result;
+  try {
+    result = await checkWorkerExternalWaitNow(key, {
+      watch_id: p.watch_id,
+      since: p.since
+    });
+  } catch (err) {
+    result = {
+      ok: false,
+      outcome: 'error',
+      summary: String(err instanceof Error ? err.message : err).split(
+        /\r?\n/,
+        1
+      )[0]
+    };
+  }
+  // The completed wait-judge refresh emits the single queue fanout, even after
+  // a `running` reply. Refused clicks have no changed observation to publish.
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        ...result,
+        queue: decorateQueue(key, queueStore().snapshot(key))
+      })
+    )
+  );
 }
 
 /**

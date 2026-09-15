@@ -1636,6 +1636,68 @@ const WORKER_CLIENT_IDS = [
  * @returns {{ load: () => void, pause: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
+  /** @type {Set<string>} */
+  const external_checks = new Set();
+
+  /** Keep replacement buttons disabled when a snapshot redraws the view. */
+  function syncExternalChecks() {
+    for (const button of Array.from(
+      mount_element.querySelectorAll('[data-external-check-now]')
+    )) {
+      const element = /** @type {HTMLButtonElement} */ (button);
+      element.disabled = external_checks.has(element.dataset.rootDir || '');
+    }
+  }
+
+  /** @param {HTMLButtonElement} button */
+  async function checkExternalWaitNow(button) {
+    const root_dir = button.dataset.rootDir || '';
+    const watch_id = button.dataset.externalCheckNow || '';
+    const since = Number(button.dataset.since);
+    if (
+      !transport ||
+      !root_dir ||
+      !watch_id ||
+      !button.dataset.since ||
+      !Number.isFinite(since) ||
+      external_checks.has(root_dir)
+    ) {
+      return;
+    }
+    external_checks.add(root_dir);
+    syncExternalChecks();
+    try {
+      const res = /** @type {any} */ (
+        await transport('worker-external-wait-check-now', {
+          root_dir,
+          watch_id,
+          since
+        })
+      );
+      if (rootDir() === root_dir) {
+        adopt(res);
+      }
+      const summaries = {
+        settled: '대기 조건이 해제되었습니다',
+        still_waiting: '확인했습니다 — 아직 대기 중입니다',
+        skipped: '이미 실행 중',
+        running: '관측기가 계속 실행 중입니다',
+        error: '관측기 실행에 실패했습니다'
+      };
+      const outcome = /** @type {keyof typeof summaries} */ (res?.outcome);
+      showToast(
+        res?.summary || summaries[outcome] || summaries.error,
+        res?.ok === false || outcome === 'error' ? 'error' : 'success',
+        4000
+      );
+    } catch {
+      showToast('관측기 실행 요청에 실패했습니다', 'error', 4000);
+    } finally {
+      external_checks.delete(root_dir);
+      syncExternalChecks();
+      doRender();
+    }
+  }
   const {
     transport,
     issueStores,
@@ -4252,6 +4314,7 @@ export function createWorkerView(mount_element, options = {}) {
     refreshOverlapFacts(m);
     render(topTemplate(m), top_el);
     render(lanesTemplate(m), lanes_el);
+    syncExternalChecks();
     showProviderResumeDialog(lanes_el);
   }
 
@@ -4613,7 +4676,12 @@ export function createWorkerView(mount_element, options = {}) {
       );
       return;
     }
-    if (target.closest('[data-external-check-now]')) {
+    const external_check = /** @type {HTMLButtonElement|null} */ (
+      target.closest('[data-external-check-now]')
+    );
+    if (external_check) {
+      ev.preventDefault();
+      void checkExternalWaitNow(external_check);
       return;
     }
     if (target?.closest?.('.provider-resume-dialog__cancel')) {

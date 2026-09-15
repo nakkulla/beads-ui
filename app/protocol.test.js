@@ -14,6 +14,15 @@ import {
 } from './protocol.js';
 
 describe('protocol', () => {
+  test('accepts the external wait check-now request', () => {
+    const payload = { root_dir: '/repo', watch_id: 'watch-1', since: 123 };
+
+    const request = makeRequest('worker-external-wait-check-now', payload);
+
+    expect(isRequest(request)).toBe(true);
+    expect(MESSAGE_TYPES).toContain('worker-external-wait-check-now');
+    expect(request.payload).toEqual(payload);
+  });
   const external_wait = {
     kind: 'external_wait',
     root_dir: '/repo',
