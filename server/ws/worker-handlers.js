@@ -94,6 +94,7 @@ import { sanitizeOutput } from '../worker/output-sanitize.js';
 import { OUTAGE_BACKOFF_MS } from '../worker/provider-health.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { placeBeadInQueue } from '../worker/queue-place.js';
+import { removeBeadFromQueue } from '../worker/queue-remove.js';
 import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
   COMPLETION_RETRY_MAX,
@@ -4457,8 +4458,9 @@ export function handleUnsubscribeWorkerQueue(ws, req) {
  * @param {RequestEnvelope} req
  * @param {string} workspace_key
  * @param {import('../worker/queue-store.js').QueueOpResult} result
+ * @param {boolean} [notify] - False when the shared body already fanned out.
  */
-function replyMutation(ws, req, workspace_key, result) {
+function replyMutation(ws, req, workspace_key, result, notify = true) {
   ws.send(
     JSON.stringify(
       makeOk(req, {
@@ -4468,7 +4470,7 @@ function replyMutation(ws, req, workspace_key, result) {
       })
     )
   );
-  if (result.ok) {
+  if (result.ok && notify) {
     fanout(workspace_key, /** @type {any} */ (result.queue));
   }
 }
@@ -6650,9 +6652,9 @@ export function handleWorkerQueueRemove(ws, req) {
   if (key === null) {
     return;
   }
-  const result = queueStore().remove(key, {
+  const result = removeBeadFromQueue(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id
   });
-  replyMutation(ws, req, key, result);
+  replyMutation(ws, req, key, result, false);
 }

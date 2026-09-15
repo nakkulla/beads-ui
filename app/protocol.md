@@ -755,6 +755,42 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
 Every queue mutation replies `{ applied, conflict, queue }`; a stale
 `expected_revision` yields `conflict:true` + the current queue for re-sync.
 
+### HTTP 세션 API
+
+등록된 워크스페이스의 절대 경로 `root_dir`로 대기열을 읽고 배치·제거한다. POST
+본문은 JSON이다. 변경 요청은 GET에서 읽은 정수 `expected_revision`을 필수로
+보내며, 그 사이 큐 버전이 바뀌면 새 스냅샷을 읽어 다시 판단한다. 응답은
+`Cache-Control: no-store`이며 CORS 헤더는 제공하지 않는다.
+
+| 요청                                             | 입력                                                      | 성공 응답 (HTTP 200)                                                          |
+| ------------------------------------------------ | --------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `GET /api/worker/queue?root_dir=<absolute-path>` | 필수 쿼리 `root_dir`                                      | `{ ok:true, revision, serial_lane_count, lanes, running, pr_wait, attempts }` |
+| `POST /api/worker/queue/place`                   | `{ root_dir, bead_id, expected_revision, lane?, index? }` | `{ ok:true, applied:true, lane, index, revision }`                            |
+| `POST /api/worker/queue/remove`                  | `{ root_dir, bead_id, expected_revision }`                | `{ ok:true, applied:true, revision }`                                         |
+
+`lanes`는 병렬 레인부터 직렬 레인 순으로 나열한 `{ id, entries }[]`다.
+`running`과 `pr_wait`는 `{ bead_id, serial_lane_id }[]`이며 병렬·기존 기록의
+레인 값은 `null`이다. `attempts`는 현재 큐가 보유한 구현 시도의
+`{ attempt_id, bead_id, status, kind }[]`다. 완료 레인 `done`은 GET에 포함하지
+않는다.
+
+배치의 `lane`은 생략하면 `parallel`이며, `parallel` 또는 `s1`부터 `s5`까지
+허용한다. 선택한 직렬 레인이 실제 설정 범위를 벗어나면 거부한다. `index`는
+선택적 정수이고 생략하면 꼬리에 배치한다. 응답의 `lane`·`index`는 의존성 순서
+보정 후 실제 자리다. 제거는 병렬·직렬 대기 레인과 `pr_wait`·`done`에 적용하며,
+실행 중인 프로세스를 정지하지 않는다.
+
+| 상황                                       | HTTP 상태 | 응답                                                             |
+| ------------------------------------------ | --------- | ---------------------------------------------------------------- |
+| 필수 필드 누락·형식 오류·미등록 `root_dir` | 400       | `{ ok:false, error:'bad_request' }`                              |
+| 큐 버전 불일치                             | 200       | `{ ok:true, applied:false, conflict:true, revision }`            |
+| 활성 폐기 작업 등으로 변경 거부            | 200       | `{ ok:true, applied:false, conflict:false, reason:'rejected' }`  |
+| 제거할 Bead가 어느 레인에도 없음           | 200       | `{ ok:true, applied:false, conflict:false, reason:'not_found' }` |
+| 배치의 실행 자격 검사 거부                 | 200       | `{ ok:true, applied:false, conflict:false, admission_reason }`   |
+
+없는 항목의 제거는 큐 버전을 바꾸지 않는다. 적용된 배치·제거는 웹소켓 구독자에게
+갱신된 스냅샷을 알리고 다음 대기 항목의 실행 판단을 요청한다.
+
 ## Session-log (transcript) channel (spec §5.6)
 
 Streams a per-attempt raw runner event stream to the transcript viewer.

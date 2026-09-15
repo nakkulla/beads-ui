@@ -41,6 +41,78 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = tmp_state;
 });
 
+describe('worker/queue-store remove', () => {
+  test.each([false, true])(
+    'reports not_found without a revision bump with admission=%s',
+    (admission) => {
+      const store = createQueueStore();
+      if (admission) {
+        store.recordAdmission(WS, {
+          bead_id: 'missing',
+          reason: 'not_ready:deferred'
+        });
+      }
+      const before = store.snapshot(WS);
+
+      const result = store.remove(WS, {
+        bead_id: 'missing',
+        expected_revision: before.revision
+      });
+
+      expect(result).toMatchObject({
+        ok: false,
+        conflict: false,
+        reason: 'not_found'
+      });
+      expect(store.snapshot(WS)).toEqual(before);
+    }
+  );
+
+  test('removes a pr_wait row', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'a1', bead_id: 'B1' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'B1',
+      attempt_id: 'a1',
+      patch: { status: 'done' }
+    });
+
+    const result = store.remove(WS, {
+      bead_id: 'B1',
+      expected_revision: store.snapshot(WS).revision
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.pr_wait).toEqual([]);
+  });
+
+  test('refuses removal under an active discard', () => {
+    const store = createQueueStore();
+    store.place(WS, { bead_id: 'B1', expected_revision: 0 });
+    store.createDiscardOperation(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      operation: {
+        operation_id: 'd1',
+        bead_id: 'B1',
+        source_snapshot: { repo: '/repo', branch: 'B1' }
+      }
+    });
+    const before = store.snapshot(WS);
+
+    const result = store.remove(WS, {
+      bead_id: 'B1',
+      expected_revision: before.revision
+    });
+
+    expect(result).toMatchObject({ ok: false, conflict: false });
+    expect(result.reason).not.toBe('not_found');
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+});
+
 describe('worker/queue-store attempt diagnostics', () => {
   test('persists a refusal without changing the terminal attempt record', () => {
     const store = createQueueStore();

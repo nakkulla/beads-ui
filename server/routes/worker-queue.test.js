@@ -129,6 +129,96 @@ async function postPlace(body) {
 }
 
 /**
+ * @param {Record<string, unknown>} body
+ */
+async function postRemove(body) {
+  const response = await fetch(`${base_url}/api/worker/queue/remove`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  return {
+    status: response.status,
+    body: await response.json().catch(() => null),
+    cache_control: response.headers.get('cache-control'),
+    cors: response.headers.get('access-control-allow-origin')
+  };
+}
+
+test.each([
+  ['without expected_revision', { bead_id: 'UI-a' }],
+  ['without bead_id', { expected_revision: 0 }],
+  [
+    'with an unregistered root_dir',
+    {
+      root_dir: '/tmp/unregistered-remove',
+      bead_id: 'UI-a',
+      expected_revision: 0
+    }
+  ],
+  [
+    'with a fractional expected_revision',
+    { bead_id: 'UI-a', expected_revision: 0.5 }
+  ]
+])('rejects a remove %s', async (_name, fields) => {
+  const { status, body } = await postRemove({ root_dir: workspace, ...fields });
+
+  expect(status).toBe(400);
+  expect(body).toEqual({ ok: false, error: 'bad_request' });
+});
+
+test('reports conflict on a stale remove revision', async () => {
+  seedQueueFile({ revision: 7, queue: [{ bead_id: 'UI-a' }] });
+
+  const { status, body } = await postRemove({
+    root_dir: workspace,
+    bead_id: 'UI-a',
+    expected_revision: 6
+  });
+
+  expect(status).toBe(200);
+  expect(body).toEqual({
+    ok: true,
+    applied: false,
+    conflict: true,
+    revision: 7
+  });
+});
+
+test('removes a waiting bead and reports the new revision', async () => {
+  seedQueueFile({ revision: 7, queue: [{ bead_id: 'UI-a' }] });
+
+  const { status, body, cache_control, cors } = await postRemove({
+    root_dir: workspace,
+    bead_id: 'UI-a',
+    expected_revision: 7
+  });
+
+  expect(status).toBe(200);
+  expect(body).toEqual({ ok: true, applied: true, revision: 8 });
+  expect(cache_control).toBe('no-store');
+  expect(cors).toBeNull();
+  expect(getWorkerRuntime().queueStore.snapshot(workspace).queue).toEqual([]);
+});
+
+test('reports not_found for an absent bead', async () => {
+  const { status, body } = await postRemove({
+    root_dir: workspace,
+    bead_id: 'UI-absent',
+    expected_revision: 0
+  });
+
+  expect(status).toBe(200);
+  expect(body).toEqual({
+    ok: true,
+    applied: false,
+    conflict: false,
+    reason: 'not_found'
+  });
+  expect(getWorkerRuntime().queueStore.snapshot(workspace).revision).toBe(0);
+});
+
+/**
  * @returns {any}
  */
 function fakeSocket() {

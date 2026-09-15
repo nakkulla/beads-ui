@@ -59,7 +59,8 @@ export const TIMELINE_KINDS = Object.freeze(
     'operation_failed',
     'needs_human',
     'user_action',
-    'wait_notified'
+    'wait_notified',
+    'queue_removed'
   ])
 );
 

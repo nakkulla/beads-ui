@@ -443,6 +443,27 @@ describe('ws worker-queue channel', () => {
     expect(snaps.at(-1).revision).toBe(2);
   });
 
+  test('reports an absent bead remove as unapplied', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    await send(sock, 'm1', 'worker-queue-remove', {
+      bead_id: 'missing',
+      expected_revision: 0
+    });
+
+    const reply = sock.sent
+      .map((/** @type {string} */ raw) => JSON.parse(raw))
+      .find((/** @type {any} */ message) => message.id === 'm1');
+    expect(reply.payload).toMatchObject({
+      applied: false,
+      conflict: false,
+      queue: { revision: 0 }
+    });
+    expect(queueSnapshots(sock)).toEqual([]);
+  });
+
   test('two subscribers both receive the fanout snapshot', async () => {
     const a = fakeSocket();
     const b = fakeSocket();

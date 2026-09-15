@@ -1457,6 +1457,8 @@ export function createScheduler(deps) {
    * @type {Map<string, Promise<RunnerVerdict>>}
    */
   const paused_done = new Map();
+  /** @type {Set<string>} */
+  const retiring = new Set();
   /**
    * Workspaces with a reconcile pass in flight. A pass can spend seconds inside
    * `gh`, so the periodic timer would otherwise stack overlapping passes that
@@ -3804,21 +3806,7 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Dispose of a bead whose bd status is terminal instead of badging it. A bead
-   * closed outside the worker (a manual PR merge) can never become
-   * dispatchable, so the badge would repeat on every tick forever. Only `closed`
-   * qualifies — `resolved`/`in_progress` are states work can still move out of,
-   * and their badge is the information.
-   *
-   * A queue-lane member goes to DONE, not out of the lanes (UI-m6bg §결함 1):
-   * the candidate lane is synthesized as `ready − (queue ∪ pr_wait ∪ done)`, so
-   * a dropped `closed` bead — never `ready` — simply vanished from the screen
-   * instead of reading as finished work. A member of any other lane (`pr_wait`)
-   * keeps the old drop disposition; that is out of this spec's scope.
-   *
-   * `moveToDone` does NOT clear the `admission` record `dropFromQueue` deleted.
-   * The spec accepts the residue: a bead sent to done has its admission
-   * re-evaluated on the next queue placement.
+   * Retire waiting work using the same disposition as the poller sweep.
    *
    * @param {string} workspace
    * @param {string} bead_id
@@ -3826,21 +3814,122 @@ export function createScheduler(deps) {
    * @returns {boolean} True when the bead is terminal (caller skips the badge).
    */
   function dequeueIfClosed(workspace, bead_id, snap) {
-    if (snap.status !== 'closed') {
+    if (snap.status !== 'closed' && snap.status !== 'deferred') {
       return false;
     }
-    const in_queue = deps.store
-      .snapshot(workspace)
-      .queue.some(
-        (/** @type {{ bead_id: string }} */ e) => e.bead_id === bead_id
-      );
-    const result = in_queue
-      ? deps.store.moveToDone(workspace, { bead_id })
-      : deps.store.dropFromQueue(workspace, { bead_id });
-    if (result && result.ok) {
+    if (retireWaitingBead(workspace, bead_id, snap.status)) {
       notifyChanged(workspace);
     }
     return true;
+  }
+
+  /**
+   * Release a waiting seat and its lineage using a fresh synchronous revision.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} status
+   * @param {{ seq?: number, paused_attempt_ids?: string[] }} [context]
+   * @returns {boolean} True when the waiting row was retired.
+   */
+  function retireWaitingBead(workspace, bead_id, status, context = {}) {
+    const q = /** @type {import('./queue-store.js').Queue} */ (
+      deps.store.snapshot(workspace)
+    );
+    const waiting = [
+      ...q.queue,
+      ...q.serial_lanes.flatMap((lane) => lane.entries)
+    ];
+    if (
+      (status !== 'closed' && status !== 'deferred') ||
+      !waiting.some((entry) => entry.bead_id === bead_id) ||
+      activeBeadIdsFrom(q, { leaf_paused: false }).has(bead_id)
+    ) {
+      return false;
+    }
+    if (leafPausedBeads(q).has(bead_id)) {
+      retiring.add(bead_id);
+      void retirePausedBead(
+        workspace,
+        bead_id,
+        status,
+        context.seq ?? q.revision
+      );
+      return false;
+    }
+    const result =
+      status === 'closed'
+        ? deps.store.moveToDone(workspace, { bead_id })
+        : deps.store.remove(workspace, {
+            bead_id,
+            expected_revision: q.revision
+          });
+    if (result.ok) {
+      appendTimeline({
+        bead_id,
+        kind: 'queue_removed',
+        seq: context.seq ?? q.revision,
+        summary: `대기열에서 제거 — bd ${status}`,
+        detail: [`bead_${status}`, ...(context.paused_attempt_ids || [])].join(
+          ' '
+        )
+      });
+    }
+    return result.ok;
+  }
+
+  /**
+   * Settle paused leaves before re-reading bd and releasing their waiting seat.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} status
+   * @param {number} seq
+   */
+  async function retirePausedBead(workspace, bead_id, status, seq) {
+    /** @type {string[]} */
+    const paused_attempt_ids = [];
+    try {
+      const attempts = Object.values(deps.store.snapshot(workspace).attempts);
+      const ancestors = new Set(
+        attempts.map((attempt) => attempt.resumed_from)
+      );
+      for (const attempt of attempts) {
+        if (
+          attempt.bead_id !== bead_id ||
+          attempt.status !== 'paused' ||
+          ancestors.has(attempt.attempt_id)
+        ) {
+          continue;
+        }
+        if (
+          await disposePausedRecord(workspace, attempt.attempt_id, {
+            cause: `bead_${status}`
+          })
+        ) {
+          paused_attempt_ids.push(attempt.attempt_id);
+        }
+      }
+      const current_status = await deps.bd.readStatus(bead_id);
+      if (leafPausedBeads(deps.store.snapshot(workspace)).has(bead_id)) {
+        return;
+      }
+      retiring.delete(bead_id);
+      if (
+        (current_status === 'closed' || current_status === 'deferred') &&
+        retireWaitingBead(workspace, bead_id, current_status, {
+          seq,
+          paused_attempt_ids
+        })
+      ) {
+        notifyChanged(workspace);
+        await tick(workspace);
+      }
+    } catch (err) {
+      log('paused queue retirement failed for %s: %o', bead_id, err);
+    } finally {
+      retiring.delete(bead_id);
+    }
   }
 
   /**
@@ -3859,11 +3948,12 @@ export function createScheduler(deps) {
    *   - any non-terminal attempt.
    *
    * @param {{ attempts?: Record<string, any>, discard_operations?: Record<string, any> }} q - Queue snapshot.
+   * @param {{ leaf_paused?: boolean }} [options]
    * @returns {Set<string>}
    */
-  function activeBeadIdsFrom(q) {
+  function activeBeadIdsFrom(q, options = {}) {
     /** @type {Set<string>} */
-    const out = new Set(claimed);
+    const out = new Set([...claimed, ...retiring]);
     for (const operation of Object.values(q.discard_operations || {})) {
       const discard = /** @type {any} */ (operation);
       if (
@@ -3876,8 +3966,10 @@ export function createScheduler(deps) {
     for (const bead_id of dispatch_refused) {
       out.add(bead_id);
     }
-    for (const bead_id of leafPausedBeads(q)) {
-      out.add(bead_id);
+    if (options.leaf_paused !== false) {
+      for (const bead_id of leafPausedBeads(q)) {
+        out.add(bead_id);
+      }
     }
     const attempts = Object.values(q.attempts || {});
     const resumed_from = new Set(
@@ -3893,7 +3985,10 @@ export function createScheduler(deps) {
       if (TERMINAL_ATTEMPT_STATUSES.has(a.status)) {
         continue;
       }
-      if (a.status === 'paused' && resumed_from.has(a.attempt_id)) {
+      if (
+        a.status === 'paused' &&
+        (options.leaf_paused === false || resumed_from.has(a.attempt_id))
+      ) {
         continue;
       }
       out.add(a.bead_id);
@@ -4024,13 +4119,18 @@ export function createScheduler(deps) {
     if (!statuses || typeof statuses !== 'object') {
       return;
     }
-    const q = deps.store.snapshot(workspace);
+    const q = /** @type {import('./queue-store.js').Queue} */ (
+      deps.store.snapshot(workspace)
+    );
     // The same union {@link externalProtectedBeadIds} builds on, WITHOUT the
     // `cleanup_pending` fence — see that function for why the two differ.
-    const active = activeBeadIdsFrom(q);
+    const active = activeBeadIdsFrom(q, { leaf_paused: false });
     let moved = false;
     try {
-      for (const entry of q.queue) {
+      for (const entry of [
+        ...q.queue,
+        ...q.serial_lanes.flatMap((lane) => lane.entries)
+      ]) {
         const bead_id = entry && entry.bead_id;
         if (typeof bead_id !== 'string' || bead_id.length === 0) {
           continue;
@@ -4038,14 +4138,20 @@ export function createScheduler(deps) {
         // `resolved` is deliberately NOT swept: PR Delivery is done but the
         // merge is not, and the external overlay is drawing that bead in the
         // PR-wait lane. Same judgment {@link dequeueIfClosed} makes.
-        if (statuses[bead_id] !== 'closed') {
+        if (
+          statuses[bead_id] !== 'closed' &&
+          statuses[bead_id] !== 'deferred'
+        ) {
           continue;
         }
         if (active.has(bead_id)) {
           continue;
         }
-        const result = deps.store.moveToDone(workspace, { bead_id });
-        if (result && result.ok) {
+        if (
+          retireWaitingBead(workspace, bead_id, statuses[bead_id], {
+            seq: q.revision
+          })
+        ) {
           moved = true;
         }
       }
@@ -8411,10 +8517,10 @@ export function createScheduler(deps) {
       }
       if (!snap.ready || snap.blocked) {
         reservation?.release();
+        claimed.delete(bead_id);
         if (!dequeueIfClosed(workspace, bead_id, snap)) {
           await recordNotReady(workspace, bead_id, snap);
         }
-        claimed.delete(bead_id);
         return;
       }
       if (isWorkerIneligible(snap.labels)) {
@@ -10330,7 +10436,10 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'worktree_missing' };
     }
     // bead_running: a live (or store-recorded running) attempt for the same bead.
-    if (claimed.has(bead_id) && continuation.preclaimed !== true) {
+    if (
+      retiring.has(bead_id) ||
+      (claimed.has(bead_id) && continuation.preclaimed !== true)
+    ) {
       return { ok: false, reason: 'bead_running' };
     }
     for (const a of Object.values(q.attempts || {})) {
@@ -12176,6 +12285,11 @@ export function createScheduler(deps) {
     if (!revalidated.ok) {
       serial_lease.release();
       return revalidated;
+    }
+    // No await separates this retirement fence from the child prerecord.
+    if (retiring.has(bead_id)) {
+      serial_lease.release();
+      return { ok: false, reason: 'bead_running' };
     }
     continuation.expected_revision = revalidated.expected_revision;
     const prior_wf =
@@ -14838,6 +14952,19 @@ export function createScheduler(deps) {
       await tick(workspace);
       return true;
     }
+    return disposePausedRecord(workspace, attempt_id, { cause: null });
+  }
+
+  /**
+   * Share paused stop settlement with automatic queue retirement. A sweep waits
+   * for the process inline and preserves the seat until its final bd read.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {{ cause: string|null }} options
+   * @returns {Promise<boolean>} True when the paused leaf was settled.
+   */
+  async function disposePausedRecord(workspace, attempt_id, { cause }) {
     // No live process: a paused attempt discarded from its tile. Stamps were
     // already reverted at pause time.
     const snap = deps.store.snapshot(workspace);
@@ -14858,6 +14985,9 @@ export function createScheduler(deps) {
     // that promise is still held, the discard owes the same wait a live stop
     // does — otherwise the residue check races a process that is still writing.
     const pending_done = paused_done.get(attempt_id);
+    if (cause !== null && pending_done) {
+      await pending_done;
+    }
     // The ⏸/■ settlement for the one record that reaches no other observer
     // (UI-8mvc §3, implementation review 2026-08-03): a `paused` attempt whose
     // `onSessionDone` died with the previous server is not `running`, so
@@ -14865,7 +14995,22 @@ export function createScheduler(deps) {
     // the detection layer's only evidence — unobserved. Guarded on the ABSENT
     // handle on purpose: while `pending_done` is held the process may still be
     // writing, and that case settles through its own `done`.
-    if (!pending_done && (await settleBaseDrift(workspace, attempt_id))) {
+    const base_landed =
+      !pending_done && (await settleBaseDrift(workspace, attempt_id));
+    if (cause !== null) {
+      const settled = deps.store.snapshot(workspace);
+      const current = settled.attempts[attempt_id];
+      if (
+        !current ||
+        current.status !== 'paused' ||
+        Object.values(settled.attempts).some(
+          (attempt) => attempt.resumed_from === attempt_id
+        )
+      ) {
+        return false;
+      }
+    }
+    if (base_landed) {
       await failAttempt(
         workspace,
         attempt_id,
@@ -14882,13 +15027,17 @@ export function createScheduler(deps) {
     paused_done.delete(attempt_id);
     const repo = typeof rec.repo === 'string' ? rec.repo : '';
     const base = attemptBase(workspace, attempt_id);
-    if (pending_done) {
+    if (repo.length === 0) {
+      log('paused residue cleanup skipped for %s: no repo', attempt_id);
+    }
+    if (pending_done && cause === null) {
       cleanup_pending.add(rec.bead_id);
     }
     deps.store.discardAttempt(workspace, {
       attempt_id,
       bead_id: rec.bead_id,
-      patch: { status: 'stopped', cause: null, finished_at: now() }
+      patch: { status: 'stopped', cause, finished_at: now() },
+      preserve_waiting: cause !== null
     });
     // The one termination that reaches neither `onSessionDone` nor
     // `disposeDeadAttempt`: a `paused` record discarded after a restart, whose
@@ -14901,7 +15050,9 @@ export function createScheduler(deps) {
       removeGuardHook(workspace, attempt_id);
     }
     await releaseBeadClaim(rec.bead_id, { workspace, attempt_id });
-    if (pending_done) {
+    if (pending_done && cause !== null) {
+      await finishStopCleanup(workspace, repo, rec.bead_id, base);
+    } else if (pending_done) {
       // Detached exactly like the live path: stop() must answer its ws caller
       // even when the paused process ignores the signal.
       pending_done.then(
