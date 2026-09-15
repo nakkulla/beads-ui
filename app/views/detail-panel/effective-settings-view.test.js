@@ -155,7 +155,6 @@ function renderCard(model_overrides = {}, handler_overrides = {}) {
         presets: [{ id: 'p1', name: '메인 구현', compatible: true }],
         preset_id: '',
         preset_busy: false,
-        skipped_orchestration_keys: [],
         ...model_overrides
       }),
       /** @type {any} */ ({
@@ -253,12 +252,14 @@ describe('effective-settings card preset head (UI-7yh2 §3.7-3.9)', () => {
     expect(mount.querySelector('.detail-effective__foot')).toBe(null);
   });
 
-  test('carries the corrected fourteen-key count as the select title', () => {
+  test('describes all 17 pin keys in the select title', () => {
     const mount = renderCard();
 
     const select = mount.querySelector('[data-impl-preset-select]');
 
-    expect(select?.getAttribute('title')).toBe('세션 키 14개를 핀으로 기록');
+    expect(select?.getAttribute('title')).toBe(
+      '오케스트레이션 3키와 세션 14키를 핀으로 기록'
+    );
   });
 
   test('does not toggle the details when the preset select changes', () => {

@@ -2,7 +2,7 @@
  * Server-global IMPLEMENTATION-preset WebSocket channel (spec §C.6).
  *
  * A preset carries the full execution profile and has exactly two apply paths:
- * its 14 Bead-pin-compatible session keys go onto ONE Bead's metadata, while a
+ * its 17 pin keys go onto ONE Bead's metadata, while a
  * global apply replaces the general and quick_fix workspace profiles.
  * The retired 12-key family — `exec-preset-*`, `apply-exec-preset`,
  * `worker-queue-set-default-exec-preset` — is gone from the protocol, so a
@@ -18,7 +18,7 @@ import {
   normalizeSessionDefaults
 } from '../session-defaults.js';
 import {
-  BEAD_APPLY_KEYS,
+  BEAD_PIN_KEYS,
   ORCHESTRATION_KEYS,
   PRESET_KV_KEYS,
   QUICK_FIX_LANE_MAP,
@@ -26,7 +26,8 @@ import {
   implPresetEnums,
   inferImplRuntime,
   validateImplPresetSettings,
-  validateImplSettings
+  validateImplSettings,
+  validateOrchestrationPin
 } from '../worker/exec-enums.js';
 import {
   __resetWorkerRuntimeForTest,
@@ -66,7 +67,7 @@ function queueStore() {
 }
 
 /**
- * Build one `bd update` argv that pins every session-default key on a Bead.
+ * Build one `bd update` argv that replaces all 17 preset pin keys on a Bead.
  * A key the preset omits is explicitly UNSET rather than left behind: applying
  * a preset must leave the Bead describing that preset and nothing else.
  *
@@ -76,7 +77,7 @@ function queueStore() {
  */
 export function buildApplyImplPresetArgs(issue_id, settings) {
   const args = ['update', issue_id];
-  for (const key of BEAD_APPLY_KEYS) {
+  for (const key of BEAD_PIN_KEYS) {
     if (Object.hasOwn(settings, key)) {
       args.push('--set-metadata', `${key}=${settings[key]}`);
     } else {
@@ -292,10 +293,22 @@ function resolvePresetForApply(ws, req, preset_id, expected_revision) {
 function presetSettingsForIssue(settings, route) {
   /** @type {Record<string, string>} */
   const projected = {};
-  for (const key of BEAD_APPLY_KEYS) {
+  for (const key of BEAD_PIN_KEYS) {
     if (typeof settings[key] === 'string') {
       projected[key] = settings[key];
     }
+  }
+  if (route === 'quick_fix') {
+    for (const key of ORCHESTRATION_KEYS) {
+      const value = settings[QUICK_FIX_LANE_MAP[key]] ?? settings[key];
+      if (typeof value === 'string') {
+        projected[key] = value;
+      }
+    }
+  }
+  const orchestration = validateOrchestrationPin(projected);
+  if (!orchestration.ok) {
+    return orchestration;
   }
   if (route !== 'quick_fix') {
     return { ok: true, settings: projected };
@@ -336,7 +349,7 @@ function presetSettingsForIssue(settings, route) {
 }
 
 /**
- * Apply path 1 — pin one preset's 14 session keys onto ONE Bead's metadata.
+ * Apply path 1 — pin one preset's 17 pin keys onto ONE Bead's metadata.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -481,11 +494,7 @@ export async function handleApplyImplPreset(ws, req) {
         applied: true,
         conflict: false,
         revision: resolved.revision,
-        issue: shown.data,
-        skipped_orchestration_keys: [
-          ...ORCHESTRATION_KEYS,
-          ...QUICK_FIX_ORCHESTRATION_KEYS
-        ]
+        issue: shown.data
       })
     )
   );

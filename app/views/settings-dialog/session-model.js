@@ -144,6 +144,9 @@ export const ORCHESTRATION_KEYS = [
   'orchestration_speed'
 ];
 
+/** The 17 per-Bead preset pin keys; mirrors server BEAD_PIN_KEYS. */
+export const BEAD_PIN_KEYS = [...ORCHESTRATION_KEYS, ...BEAD_APPLY_KEYS];
+
 /** Route-scoped queue keys used only for quick_fix dispatches. */
 export const QUICK_FIX_ORCHESTRATION_KEYS = [
   'quick_fix_orchestration_model',

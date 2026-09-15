@@ -282,7 +282,6 @@ function rowTemplate(row, view) {
  *   presets: any[],
  *   preset_id: string,
  *   preset_busy: boolean,
- *   skipped_orchestration_keys?: string[]
  * }} model
  * @param {{
  *   onToggle: (open: boolean) => void,
@@ -397,7 +396,7 @@ export function effectiveSettingsCardTemplate(model, handlers) {
         <select
           data-impl-preset-select
           aria-label="실행 프리셋"
-          title="세션 키 14개를 핀으로 기록"
+          title="오케스트레이션 3키와 세션 14키를 핀으로 기록"
           .value=${live(model.preset_id)}
           ?disabled=${model.preset_busy}
           @click=${(/** @type {Event} */ event) => event.stopPropagation()}
@@ -434,11 +433,6 @@ export function effectiveSettingsCardTemplate(model, handlers) {
         >
           이 이슈에 적용
         </button>
-        ${(model.skipped_orchestration_keys || []).length > 0
-          ? html`<span class="detail-effective__hint" data-preset-skip-notice
-              >오케스트레이션 3키는 Bead에 핀할 수 없어 건너뜀</span
-            >`
-          : ''}
       </span>
     </summary>
     ${model.expanded

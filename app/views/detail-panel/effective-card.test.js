@@ -1077,7 +1077,7 @@ describe('effective-settings card', () => {
     panel.destroy();
   });
 
-  test('applies fifteen session keys and reports skipped orchestration keys', async () => {
+  test('renders orchestration pins from the applied preset readback', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi.fn(async (/** @type {string} */ type) => {
       if (type === 'get-session-defaults') {
@@ -1093,6 +1093,9 @@ describe('effective-settings card', () => {
             metadata: {
               route: 'full_plan',
               workflow_mode: 'fast_track',
+              orchestration_model: 'sol',
+              orchestration_effort: 'medium',
+              orchestration_speed: 'default',
               spec_review_model: 'codex',
               spec_review_effort: 'xhigh',
               spec_review_speed: 'fast',
@@ -1108,12 +1111,7 @@ describe('effective-settings card', () => {
               impl_effort: 'medium',
               impl_speed: 'default'
             }
-          },
-          skipped_orchestration_keys: [
-            'orchestration_model',
-            'orchestration_effort',
-            'orchestration_speed'
-          ]
+          }
         };
       }
       return [];
@@ -1159,11 +1157,8 @@ describe('effective-settings card', () => {
       expected_revision: 4
     });
     expect(
-      mount.querySelector('[data-preset-skip-notice]')?.textContent
-    ).toContain('오케스트레이션 3키는 Bead에 핀할 수 없어 건너뜀');
-    expect(
       mount.querySelectorAll('.detail-effective__row [data-source="pin"]')
-    ).toHaveLength(15);
+    ).toHaveLength(18);
     panel.destroy();
   });
 

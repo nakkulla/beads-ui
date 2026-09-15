@@ -1,7 +1,8 @@
 ---
 id: UI-7yh2
 title: 실행 프리셋은 quick_fix 키를 함께 담는 25키 프로파일이고 적용 한 번이 일반·quick_fix 키를 교체하며 workflow_mode는 프리셋 밖이다 — auto·inherit·probe 부재·폴스루·비원자성·capability gating은 UI-s8qn을 승계한다
-status: accepted
+status: superseded
+superseded_by: UI-00lf
 date: 2026-09-10
 summary: "실행 프리셋은 quick_fix 오케스트레이션·구현 키를 함께 담는 25키 워크스페이스 프로파일이고 적용 한 번이 kv·큐의 일반·quick_fix 키를 교체하며 프리셋에 없는 quick_fix 키는 unset되어 일반 프로파일로 폴스루한다; workflow_mode는 프리셋과 이슈 핀 밖의 세션 기본값이고 이슈별 적용은 route=quick_fix면 quick_fix 값을 역매핑해 핀한다; auto|claude|codex 어휘·auto의 provider 비유도·inherit 비호환·구 서버 probe 부재·quick_fix 키의 일반 키 폴스루·kv 먼저 큐 나중의 비원자성·quick_fix_orchestration_model 키 존재의 capability gating은 UI-s8qn에서 승계한다"
 supersedes: [UI-s8qn]

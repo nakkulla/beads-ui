@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createExecPresetStore } from '../../data/exec-preset-store.js';
 import { createSessionLogStore } from '../../data/session-log-store.js';
 import { createSubscriptionIssueStores } from '../../data/subscription-issue-stores.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
@@ -11,6 +12,63 @@ describe('views/detail-panel', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  test('shows one success sentence after applying an execution preset', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const execPresetStore = createExecPresetStore();
+    execPresetStore.set({
+      revision: 1,
+      presets: [{ id: 'p1', name: '프리셋', settings: {}, compatible: true }]
+    });
+    const issue = {
+      id: 'UI-1',
+      title: '프리셋 적용',
+      status: 'open',
+      metadata: {}
+    };
+    const transport = vi.fn(async (/** @type {string} */ type) => {
+      if (type === 'apply-impl-preset') {
+        return { applied: true, conflict: false, revision: 1, issue };
+      }
+      return { values: {}, warnings: [] };
+    });
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      execPresetStore,
+      transport,
+      onClose: vi.fn()
+    });
+    issueStores.register('detail:UI-1', {
+      type: 'issue-detail',
+      params: { id: 'UI-1' }
+    });
+    issueStores.getStore('detail:UI-1')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-1',
+      revision: 1,
+      issues: /** @type {any} */ ([issue])
+    });
+    panel.load('UI-1');
+    await Promise.resolve();
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-impl-preset-select]')
+    );
+    select.value = 'p1';
+    select.dispatchEvent(new Event('change'));
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-apply-impl-preset]')
+    ).click();
+    await vi.waitFor(() => {
+      expect(document.querySelector('.toast')?.textContent).toBe(
+        '실행 프리셋을 적용했습니다.'
+      );
+    });
+
+    expect(document.querySelectorAll('.toast')).toHaveLength(1);
+    panel.destroy();
   });
 
   test('renders id / title / status from the detail snapshot store', () => {
