@@ -405,6 +405,7 @@ export function bootstrap(root_element) {
         // array rather than derived from it. A server that omits it leaves the
         // store's empty default in place.
         monitor_pipeline_store.set(p.workspaces, p.workspaces_state, p.seq);
+        monitor_pipeline_recovering = false;
       } catch {
         // ignore
       }
@@ -412,12 +413,13 @@ export function bootstrap(root_element) {
 
     client.on('monitor-pipeline-patch', (payload) => {
       const p = /** @type {any} */ (payload);
-      if (!p) {
+      if (!p || monitor_pipeline_recovering) {
         return;
       }
       if (!monitor_pipeline_store.applyPatch(p)) {
         log('monitor-pipeline patch sequence mismatch; resubscribing');
         clearMonitorPipelineChannel();
+        monitor_pipeline_recovering = true;
         ensureMonitorPipelineChannel(true);
       }
     });
@@ -877,6 +879,7 @@ export function bootstrap(root_element) {
     const worker_unsubs = new Map();
     /** @type {(() => Promise<unknown>) | null} */
     let worker_queue_unsub = null;
+    let worker_queue_recovering = false;
 
     /**
      * @param {boolean} active
@@ -958,18 +961,25 @@ export function bootstrap(root_element) {
       if (worker_queue_unsub) {
         return;
       }
+      const recovering = worker_queue_recovering;
+      const unsubscribe = () =>
+        tracked_send('unsubscribe-worker-queue', {
+          id: WORKER_QUEUE_CLIENT_ID
+        });
+      worker_queue_unsub = unsubscribe;
       void tracked_send('subscribe-worker-queue', {
         id: WORKER_QUEUE_CLIENT_ID
       }).catch((err) => {
         log('subscribe-worker-queue failed: %o', err);
+        if (recovering && worker_queue_unsub === unsubscribe) {
+          worker_queue_unsub = null;
+          showFatalFromError(err, 'worker');
+        }
       });
-      worker_queue_unsub = () =>
-        tracked_send('unsubscribe-worker-queue', {
-          id: WORKER_QUEUE_CLIENT_ID
-        });
     }
 
     function clearWorkerQueueChannel() {
+      worker_queue_recovering = false;
       if (worker_queue_unsub) {
         void worker_queue_unsub().catch(() => {});
         worker_queue_unsub = null;
@@ -979,6 +989,7 @@ export function bootstrap(root_element) {
     // --- Monitor pipeline channel lifecycle (UI-nprg) ---
     /** @type {(() => Promise<unknown>) | null} */
     let monitor_pipeline_unsub = null;
+    let monitor_pipeline_recovering = false;
 
     /**
      * Does anything on screen need the aggregated pipeline right now?
@@ -1011,18 +1022,25 @@ export function bootstrap(root_element) {
       if (monitor_pipeline_unsub) {
         return;
       }
+      const recovering = monitor_pipeline_recovering;
+      const unsubscribe = () =>
+        tracked_send('unsubscribe-monitor-pipeline', {
+          id: MONITOR_PIPELINE_CLIENT_ID
+        });
+      monitor_pipeline_unsub = unsubscribe;
       void tracked_send('subscribe-monitor-pipeline', {
         id: MONITOR_PIPELINE_CLIENT_ID
       }).catch((err) => {
         log('subscribe-monitor-pipeline failed: %o', err);
+        if (recovering && monitor_pipeline_unsub === unsubscribe) {
+          monitor_pipeline_unsub = null;
+          showFatalFromError(err, 'monitor');
+        }
       });
-      monitor_pipeline_unsub = () =>
-        tracked_send('unsubscribe-monitor-pipeline', {
-          id: MONITOR_PIPELINE_CLIENT_ID
-        });
     }
 
     function clearMonitorPipelineChannel() {
+      monitor_pipeline_recovering = false;
       if (monitor_pipeline_unsub) {
         void monitor_pipeline_unsub().catch(() => {});
         monitor_pipeline_unsub = null;
@@ -1178,7 +1196,9 @@ export function bootstrap(root_element) {
       exec_presets_unsub = null;
       exec_preset_store.clear();
       worker_queue_unsub = null;
+      worker_queue_recovering = false;
       monitor_pipeline_unsub = null;
+      monitor_pipeline_recovering = false;
       adr_unsub = null;
       board_unsubs.clear();
       worker_unsubs.clear();
@@ -1575,6 +1595,7 @@ export function bootstrap(root_element) {
       }
       try {
         worker_queue_store.setSnapshot(p);
+        worker_queue_recovering = false;
       } catch {
         // ignore
       }
@@ -1582,7 +1603,7 @@ export function bootstrap(root_element) {
 
     client.on('worker-queue-patch', (payload) => {
       const p = /** @type {any} */ (payload);
-      if (!p) {
+      if (!p || worker_queue_recovering) {
         return;
       }
       const current_path = store.getState().workspace.current?.path;
@@ -1597,6 +1618,7 @@ export function bootstrap(root_element) {
       if (!worker_queue_store.applyPatch(p)) {
         log('worker-queue patch sequence mismatch; resubscribing');
         clearWorkerQueueChannel();
+        worker_queue_recovering = true;
         ensureWorkerQueueChannel(true);
       }
     });

@@ -315,6 +315,64 @@ describe('worker-queue keyed patches', () => {
     expect(CLIENT.sent).not.toContain('subscribe-worker-queue');
   });
 
+  test('waits for a recovery snapshot across repeated mismatched patches', async () => {
+    CLIENT = makeClient({ current: '/repo-a' });
+    bootstrap(setupShell());
+    await settle();
+    CLIENT.trigger('worker-queue-snapshot', queueSnapshotFor('/repo-a'));
+    CLIENT.sent.length = 0;
+
+    for (const seq of [3, 4, 5]) {
+      CLIENT.trigger('worker-queue-patch', {
+        root_dir: '/repo-a',
+        seq,
+        set: {},
+        unset: []
+      });
+      await settle();
+    }
+
+    expect(
+      CLIENT.sent.filter((/** @type {string} */ type) =>
+        type.endsWith('worker-queue')
+      )
+    ).toEqual(['unsubscribe-worker-queue', 'subscribe-worker-queue']);
+    expect(waitingRowCount()).toBe(0);
+  });
+
+  test('shows a fatal error and releases a rejected recovery subscription', async () => {
+    CLIENT = makeClient({ current: '/repo-a' });
+    bootstrap(setupShell());
+    await settle();
+    CLIENT.trigger('worker-queue-snapshot', queueSnapshotFor('/repo-a'));
+    CLIENT.send
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error('worker recovery rejected'));
+
+    CLIENT.trigger('worker-queue-patch', {
+      root_dir: '/repo-a',
+      seq: 3,
+      set: {},
+      unset: []
+    });
+    await settle();
+
+    expect(document.querySelector('#fatal-error-dialog[open]')).not.toBeNull();
+    expect(document.querySelector('#fatal-error-title')?.textContent).toBe(
+      'Failed to load worker'
+    );
+    expect(document.querySelector('#fatal-error-message')?.textContent).toBe(
+      'worker recovery rejected'
+    );
+
+    CLIENT.sent.length = 0;
+    window.location.hash = '#/adr';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await settle();
+
+    expect(CLIENT.sent).not.toContain('unsubscribe-worker-queue');
+  });
+
   test.each([1, 3])(
     'resubscribes once after mismatched seq %i and renders recovered patches',
     async (seq) => {

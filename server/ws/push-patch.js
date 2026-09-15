@@ -52,6 +52,10 @@ export function pushKeyed(sub, channel, body, keyed) {
         ...(channel === 'worker-queue' ? { root_dir: body.root_dir } : {})
       };
   try {
+    if (sub.ws.readyState !== sub.ws.OPEN) {
+      log('push %s socket not open id=%s', type, sub.client_id);
+      return false;
+    }
     sub.ws.send(
       JSON.stringify({ id: `evt-${Date.now()}`, ok: true, type, payload })
     );

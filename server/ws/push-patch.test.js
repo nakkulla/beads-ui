@@ -13,6 +13,8 @@ function fixture() {
   /** @type {any[]} */
   const frames = [];
   const socket = {
+    readyState: 1,
+    OPEN: 1,
     fail: false,
     /** @param {string} raw */
     send(raw) {
@@ -121,6 +123,38 @@ describe('pushKeyed', () => {
       set: { 'queue/revision': 2 }
     });
   });
+
+  test.each([0, 2, 3])(
+    'preserves an unsent snapshot when socket state is %i',
+    (ready_state) => {
+      const { sub, socket, frames } = fixture();
+      socket.readyState = ready_state;
+
+      const sent = pushQueue(sub, { revision: 1 });
+
+      expect(sent).toBe(false);
+      expect(frames).toEqual([]);
+      expect(sub.seq).toBeUndefined();
+      expect(sub.last).toBeUndefined();
+    }
+  );
+
+  test.each([0, 2, 3])(
+    'preserves the patch baseline when socket state is %i',
+    (ready_state) => {
+      const { sub, socket, frames } = fixture();
+      pushQueue(sub, { revision: 1 });
+      const baseline = sub.last;
+      socket.readyState = ready_state;
+
+      const sent = pushQueue(sub, { revision: 2 });
+
+      expect(sent).toBe(false);
+      expect(frames).toHaveLength(1);
+      expect(sub.seq).toBe(1);
+      expect(sub.last).toBe(baseline);
+    }
+  );
 
   test('shares prepared maps without sharing subscriber sequences', () => {
     const first = fixture();

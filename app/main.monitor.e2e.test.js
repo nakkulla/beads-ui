@@ -896,6 +896,55 @@ describe('monitor keyed patch lifecycle', () => {
     expect(sentTypes(client)).not.toContain('subscribe-monitor-pipeline');
   });
 
+  test('waits for a recovery snapshot across repeated mismatched patches', async () => {
+    const { client, store } = await mountMonitor();
+    client._trigger('monitor-pipeline-snapshot', snapshot(1));
+    client._clearSent();
+
+    for (const seq of [3, 4, 5]) {
+      client._trigger('monitor-pipeline-patch', { seq, set: {}, unset: [] });
+      await flush();
+    }
+
+    expect(
+      sentTypes(client).filter((type) => type.endsWith('monitor-pipeline'))
+    ).toEqual(['unsubscribe-monitor-pipeline', 'subscribe-monitor-pipeline']);
+    expect(store.get()).toBeNull();
+  });
+
+  test('shows a fatal error and releases a rejected recovery subscription', async () => {
+    const listener_spy = vi.spyOn(window, 'addEventListener');
+    const { client } = await mountMonitor();
+    const hash_listener = /** @type {EventListener} */ (
+      listener_spy.mock.calls.find(([type]) => type === 'hashchange')?.[1]
+    );
+    listener_spy.mockRestore();
+    client._trigger('monitor-pipeline-snapshot', snapshot(1));
+    client._failOnce(
+      'subscribe-monitor-pipeline',
+      new Error('monitor recovery rejected')
+    );
+
+    client._trigger('monitor-pipeline-patch', { seq: 3, set: {}, unset: [] });
+    await flush();
+
+    expect(document.querySelector('#fatal-error-dialog[open]')).not.toBeNull();
+    expect(document.querySelector('#fatal-error-title')?.textContent).toBe(
+      'Failed to load monitor'
+    );
+    expect(document.querySelector('#fatal-error-message')?.textContent).toBe(
+      'monitor recovery rejected'
+    );
+
+    client._clearSent();
+    // Other tests leave routers alive; drive only this bootstrap's listener.
+    window.history.replaceState(null, '', '#/adr');
+    hash_listener(new HashChangeEvent('hashchange'));
+    await flush();
+
+    expect(sentTypes(client)).not.toContain('unsubscribe-monitor-pipeline');
+  });
+
   test.each([1, 3])(
     'resubscribes once after mismatched seq %i and accepts recovery',
     async (seq) => {
