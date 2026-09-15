@@ -10120,7 +10120,7 @@ export function createScheduler(deps) {
    *
    * @param {string} bead_id
    * @param {string|null} prior_status
-   * @param {{ prior_attempt_id: string, cause: string, exec_receipt: string|null, impl_review: string|null, remote: string, branch: string }|null} [facts]
+   * @param {{ prior_attempt_id: string, cause: string, exec_receipt: string|null, impl_review: string|null, remote: string, branch: string, account_usage: string[] }|null} [facts]
    * @returns {string}
    */
   function resumePrompt(bead_id, prior_status, facts = null) {
@@ -10131,6 +10131,7 @@ export function createScheduler(deps) {
     const ancestor = facts
       ? [
           `이전 attempt ${facts.prior_attempt_id}는 ${facts.cause}로 끝났다(exec_receipt=${facts.exec_receipt ?? '없음'}, impl_review=${facts.impl_review ?? '없음'}).`,
+          ...facts.account_usage,
           `\`git fetch ${facts.remote} ${facts.branch}\` 뒤 \`git log HEAD..${facts.remote}/${facts.branch} --oneline\`으로 원격이 앞서 있으면 \`git merge --ff-only\`로 맞춘 뒤 남은 단계만 한다.`,
           '`workflow_mode=fast_track`은 이미 기록됐다.'
         ]
@@ -10151,7 +10152,7 @@ export function createScheduler(deps) {
    *
    * @param {any} prior - The prior attempt record.
    * @param {string} bead_id
-   * @returns {Promise<{ prior_attempt_id: string, cause: string, exec_receipt: string|null, impl_review: string|null, remote: string, branch: string }|null>}
+   * @returns {Promise<{ prior_attempt_id: string, cause: string, exec_receipt: string|null, impl_review: string|null, remote: string, branch: string, account_usage: string[] }|null>}
    */
   async function resumeAncestorFacts(prior, bead_id) {
     if (!prior || typeof prior.attempt_id !== 'string') {
@@ -10174,6 +10175,61 @@ export function createScheduler(deps) {
         return null;
       }
     };
+    /**
+     * Read current catalog facts without inferring provider availability.
+     *
+     * @param {'Codex'|'Claude'} runner
+     * @returns {Promise<string|null>}
+     */
+    const readAccountUsage = async (runner) => {
+      const list =
+        runner === 'Codex'
+          ? deps.accountCatalog?.listCodex
+          : deps.accountCatalog?.listClaude;
+      if (typeof list !== 'function') {
+        return null;
+      }
+      try {
+        const listed = await list.call(deps.accountCatalog);
+        if (
+          !listed?.ok ||
+          typeof listed.active_key !== 'string' ||
+          !listed.active_key ||
+          !Array.isArray(listed.accounts)
+        ) {
+          return null;
+        }
+        const active = listed.accounts.filter(
+          (/** @type {any} */ account) => account.key === listed.active_key
+        );
+        if (active.length !== 1 || !Array.isArray(active[0].windows)) {
+          return null;
+        }
+        const account = active[0];
+        const windows = account.windows
+          .filter(
+            (/** @type {any} */ window) =>
+              typeof window.key === 'string' &&
+              window.key.length > 0 &&
+              Number.isFinite(window.pct)
+          )
+          .map((/** @type {any} */ window) => `${window.key}=${window.pct}%`);
+        if (windows.length === 0) {
+          return null;
+        }
+        const identity =
+          typeof account.email === 'string' && account.email.length > 0
+            ? account.email
+            : account.key.slice(0, 8);
+        return `재개 시점 계정 카탈로그: ${runner} 활성 계정 ${identity}, 사용률 ${windows.join(', ')}.`;
+      } catch {
+        return null;
+      }
+    };
+    const account_usage = await Promise.all([
+      readAccountUsage('Codex'),
+      readAccountUsage('Claude')
+    ]);
     /** @type {string|null} */
     let remote = null;
     if (typeof deps.resolveBase === 'function') {
@@ -10193,7 +10249,8 @@ export function createScheduler(deps) {
       exec_receipt: await readKey('exec_receipt'),
       impl_review: await readKey('impl_review'),
       remote: remote ?? 'origin',
-      branch: branchForBead(bead_id)
+      branch: branchForBead(bead_id),
+      account_usage: account_usage.filter((line) => line !== null)
     };
   }
 

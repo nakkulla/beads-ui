@@ -16,7 +16,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead \`resolved\`와 \`pr_url\`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.
 
-마지막 줄은 결과 줄 하나다.
+종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
 성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
@@ -84,7 +84,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead \`resolved\`와 \`pr_url\`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.
 
-마지막 줄은 결과 줄 하나다.
+종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
 성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
@@ -400,7 +400,7 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 
 저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead \`resolved\`와 \`pr_url\`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.
 
-마지막 줄은 결과 줄 하나다.
+종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
 성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
@@ -577,7 +577,7 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 
 저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead \`resolved\`와 \`pr_url\`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.
 
-마지막 줄은 결과 줄 하나다.
+종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
 성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
@@ -681,7 +681,7 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 - 배포 실행·배포 증거·bead \`closed\`·worktree/브랜치 정리는 Worker가 소유한다. 수행하지 마라. worktree와 브랜치를 보존한 채 \`resolved\`에서 멈춰라.
 - 이 레인의 canonical 문구는 dotfiles \`docs/contracts/workflow-contract.md\`가 소유한다. 여기서 복제하지 말고 그 계약을 따르라.
 
-마지막 줄은 결과 줄 하나다.
+종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
 성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
@@ -767,7 +767,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead \`resolved\`와 \`pr_url\`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.
 
-마지막 줄은 결과 줄 하나다.
+종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
 성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
@@ -835,7 +835,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead \`resolved\`와 \`pr_url\`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.
 
-마지막 줄은 결과 줄 하나다.
+종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
 성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
@@ -895,7 +895,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 저장소가 요구하는 검증과 리뷰를 마친 뒤 PR을 생성하고 bead \`resolved\`와 \`pr_url\`을 기록한 후 종료하라. 세션에서 머지하지 마라. 머지는 큐가 소유한다.
 
-마지막 줄은 결과 줄 하나다.
+종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
 성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
@@ -960,7 +960,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 - 배포 실행·배포 증거·bead \`closed\`·worktree/브랜치 정리는 Worker가 소유한다. 수행하지 마라. worktree와 브랜치를 보존한 채 \`resolved\`에서 멈춰라.
 - 이 레인의 canonical 문구는 dotfiles \`docs/contracts/workflow-contract.md\`가 소유한다. 여기서 복제하지 말고 그 계약을 따르라.
 
-마지막 줄은 결과 줄 하나다.
+종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
 성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>

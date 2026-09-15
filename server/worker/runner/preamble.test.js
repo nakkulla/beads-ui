@@ -291,6 +291,17 @@ describe('runner/preamble unattended framing (UI-rxp3 §1)', () => {
 });
 
 describe('runner/preamble PR-submit directive (worker-phase2 §1)', () => {
+  test.each([PR_SUBMIT_DIRECTIVE, QUICKFIX_LANE_DIRECTIVE])(
+    'places the terminal result on the first line of the final message',
+    (directive) => {
+      expect(directive).toContain('종료 메시지의 첫 줄은 결과 줄 하나다.');
+      expect(directive).not.toContain('마지막 줄은 결과 줄 하나다.');
+      expect(directive).toContain(
+        '이 문법의 정본은 dotfiles `finishing.md`이고 위는 사본이다.'
+      );
+    }
+  );
+
   test('injects the PR-submit directive with no options at all', () => {
     expect(applyPreamble('작업하라').system_prompt).toContain(
       PR_SUBMIT_DIRECTIVE

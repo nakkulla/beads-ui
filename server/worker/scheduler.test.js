@@ -6691,6 +6691,130 @@ describe('scheduler resume (spec §1)', () => {
     );
   });
 
+  test('includes both active account usage facts when resuming after a limit reset', async () => {
+    const env = setup({
+      config: {},
+      slots: 1,
+      accountCatalog: {
+        listCodex: vi.fn(async () => ({
+          ok: true,
+          active_key: 'codex-active',
+          accounts: [
+            {
+              key: 'codex-old',
+              email: 'old@example.com',
+              windows: [{ key: '7d', pct: 100 }]
+            },
+            {
+              key: 'codex-active',
+              email: 'codex@example.com',
+              windows: [
+                { key: '5h', pct: 0 },
+                { key: '7d', pct: 0 }
+              ]
+            }
+          ]
+        })),
+        listClaude: vi.fn(async () => ({
+          ok: true,
+          active_key: 'claude-active',
+          accounts: [
+            {
+              key: 'claude-active',
+              email: 'claude@example.com',
+              windows: [{ key: '5h', pct: 12.5 }]
+            }
+          ]
+        }))
+      }
+    });
+    seedAttempt(
+      env.store,
+      'f1',
+      resumablePrior({ cause: 'session_ended_unresolved' })
+    );
+
+    const result = await env.scheduler.resume(WS, 'f1');
+
+    expect(result.ok).toBe(true);
+    const prompt = env.runner.spawnedBead('B1').prompt;
+    expect(prompt).toContain(
+      '재개 시점 계정 카탈로그: Codex 활성 계정 codex@example.com, 사용률 5h=0%, 7d=0%.'
+    );
+    expect(prompt).toContain(
+      '재개 시점 계정 카탈로그: Claude 활성 계정 claude@example.com, 사용률 5h=12.5%.'
+    );
+    expect(prompt).not.toContain('old@example.com');
+  });
+
+  test.each([
+    { name: 'unavailable', listed: { ok: false, reason: 'unavailable' } },
+    { name: 'empty', listed: { ok: true, active_key: null, accounts: [] } },
+    {
+      name: 'missing active row',
+      listed: {
+        ok: true,
+        active_key: 'missing',
+        accounts: [{ key: 'other', windows: [{ key: '5h', pct: 100 }] }]
+      }
+    },
+    {
+      name: 'missing usage',
+      listed: {
+        ok: true,
+        active_key: 'active',
+        accounts: [{ key: 'active', email: 'active@example.com' }]
+      }
+    },
+    {
+      name: 'unknown usage',
+      listed: {
+        ok: true,
+        active_key: 'active',
+        accounts: [{ key: 'active', windows: [{ key: '5h', pct: null }] }]
+      }
+    },
+    { name: 'throws', listed: null }
+  ])(
+    'omits $name catalog facts without blocking resume',
+    async ({ listed }) => {
+      const env = setup({
+        config: {},
+        slots: 1,
+        accountCatalog: {
+          listCodex: vi.fn(async () => {
+            if (listed === null) {
+              throw new Error('catalog unavailable');
+            }
+            return listed;
+          }),
+          listClaude: vi.fn(async () => ({
+            ok: true,
+            active_key: 'abcdefgh-private-key',
+            accounts: [
+              {
+                key: 'abcdefgh-private-key',
+                email: '',
+                windows: [{ key: '7d', pct: 10 }]
+              }
+            ]
+          }))
+        }
+      });
+      seedAttempt(env.store, 'f1', resumablePrior());
+
+      const result = await env.scheduler.resume(WS, 'f1');
+
+      expect(result.ok).toBe(true);
+      const prompt = env.runner.spawnedBead('B1').prompt;
+      expect(prompt).not.toContain('Codex 활성 계정');
+      expect(prompt).toContain(
+        '재개 시점 계정 카탈로그: Claude 활성 계정 abcdefgh, 사용률 7d=10%.'
+      );
+      expect(prompt).not.toContain('private-key');
+    }
+  );
+
   test('refuses worktree_missing when the bead worktree is gone', async () => {
     const env = setup({ config: {}, slots: 1 });
     env.worktree.exists.mockReturnValue(false);

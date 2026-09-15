@@ -114,7 +114,7 @@ export const FAST_TRACK_DIRECTIVE = [
 ].join('\n');
 
 /**
- * The five result-line forms a Worker session's last line may take.
+ * The five result-line forms a Worker session's first nonempty line may take.
  *
  * CANONICAL SOURCE is dotfiles `finishing.md`; this is a copy (harness-reduction
  * spec D1), inlined because the line is the ONE thing the failure classifier
@@ -125,7 +125,7 @@ export const FAST_TRACK_DIRECTIVE = [
  * @type {string}
  */
 const RESULT_LINE_GRAMMAR = [
-  '마지막 줄은 결과 줄 하나다.',
+  '종료 메시지의 첫 줄은 결과 줄 하나다.',
   '',
   '```',
   '성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>',
