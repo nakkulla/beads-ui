@@ -12657,6 +12657,7 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
   });
 
   test('renders a session report once with its closed completion time', async () => {
+    window.localStorage.setItem('bdui.worker.done-range', '7d');
     const now = Date.now();
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:closed', [
@@ -12697,6 +12698,7 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
   });
 
   test('shows the claim-to-close elapsed time on a session row', async () => {
+    window.localStorage.setItem('bdui.worker.done-range', '7d');
     const now = Date.now();
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:closed', [
@@ -12727,6 +12729,7 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
   });
 
   test('omits the work chip when the session row has no started_at', async () => {
+    window.localStorage.setItem('bdui.worker.done-range', '7d');
     const now = Date.now();
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:closed', [
@@ -12743,10 +12746,12 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
     const mount = renderDone(queueOf(), stores, sessionReportTransport());
     await flush();
 
+    const row = mount.querySelector(
+      '.worker-mini[data-bead-id="SESSION-UNTIMED"]'
+    );
+    expect(row).not.toBe(null);
     expect(
-      mount.querySelector(
-        '.worker-mini[data-bead-id="SESSION-UNTIMED"] .worker-mini__work'
-      )
+      /** @type {HTMLElement} */ (row).querySelector('.worker-mini__work')
     ).toBe(null);
   });
 
@@ -12808,6 +12813,7 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
   });
 
   test('keeps the worker done row when a session report duplicates its bead', async () => {
+    window.localStorage.setItem('bdui.worker.done-range', '7d');
     const now = Date.now();
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:closed', [
@@ -12910,6 +12916,7 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
   });
 
   test('orders worker and session completion rows by their shared completion time', async () => {
+    window.localStorage.setItem('bdui.worker.done-range', '7d');
     const now = Date.now();
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:closed', [
