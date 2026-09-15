@@ -21,6 +21,7 @@ vi.mock('../worker/runtime.js', () => ({
     sessionLog: { lastEventAt: () => null },
     workerSessionObservations: {
       prepareHistorical: () => null,
+      pruneHistorical: () => {},
       get: () => state.prepared
     }
   })

@@ -140,10 +140,16 @@ surface without a local fs event.
 ## Monitor pipeline channel (UI-2gi1)
 
 `subscribe-monitor-pipeline` / `unsubscribe-monitor-pipeline` reuse the existing
-server-global monitor channel; this change adds fields to its snapshot and does
-not add a WebSocket op. `monitor-pipeline-snapshot` carries
-`{ workspaces, workspaces_state }`. Every visible workspace has a
-`workspaces_state` row:
+server-global monitor channel. The first push is `monitor-pipeline-snapshot`:
+`{ type, id, seq: 1, workspaces, workspaces_state }`. Subsequent changes arrive
+as `monitor-pipeline-patch`:
+`{ type, id, seq, set: Record<string, unknown>, unset: string[] }`. The sequence
+is continuous (the first patch has `seq: 2`); unchanged content sends no frame.
+A sequence gap or regression clears the client store and resubscribes once for a
+fresh snapshot. Key splitting and assembly are defined in
+[`app/data/keyed-patch.js`](./data/keyed-patch.js).
+
+Every visible workspace has a `workspaces_state` row:
 `{ root_dir, name, issue_prefix: string|null, auto_advance, auto_merge, slots, revision, runner_catalog }`
 plus, since UI-eey2 §9.4, the repo-panel control fields:
 `{ serial_lane_count, orchestration_model, orchestration_effort, orchestration_speed, quick_fix_orchestration_model, quick_fix_orchestration_effort, quick_fix_orchestration_speed, execution_defaults, session_defaults, session_defaults_warnings, counts }`.
@@ -310,12 +316,21 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
 `done`. Nothing merges without a human `[머지]` click.
 
 - `subscribe-worker-queue` / `unsubscribe-worker-queue` payload: `{ id }`.
+- The first push is a snapshot (`seq: 1`); subsequent changes are
+  `worker-queue-patch`:
+  `{ type, id, seq, root_dir, set: Record<string, unknown>, unset: string[] }`.
+  `seq` is continuous, starting at 2 for the first patch; unchanged content
+  sends no frame. A sequence gap or regression clears the client store and
+  resubscribes once for a fresh snapshot. Key rules are defined in
+  [`app/data/keyed-patch.js`](./data/keyed-patch.js). Mutation reply queues
+  overlay keys without resetting the subscription sequence; replies with an
+  older queue `revision` are discarded.
 - `worker-queue-snapshot` (push) payload:
-  `{ type: 'worker-queue-snapshot', id, root_dir, queue }` — `root_dir` is the
-  workspace this snapshot describes (envelope addressing, not part of `queue`),
-  so a client that already repointed to another workspace can drop a snapshot
-  from a subscription the server has not torn down yet; the rest is the full
-  queue (`revision`, `auto_advance`, `slots`, `serial_lanes[]`,
+  `{ type: 'worker-queue-snapshot', id, seq, root_dir, queue }` — `root_dir` is
+  the workspace this snapshot describes (envelope addressing, not part of
+  `queue`), so a client that already repointed to another workspace can drop a
+  snapshot from a subscription the server has not torn down yet; the rest is the
+  full queue (`revision`, `auto_advance`, `slots`, `serial_lanes[]`,
   `serial_lane_count`, `queue[]`, `pr_wait[]`, `done[]`, `attempts`,
   `admission`, `cleanup_failed`, `exec_defaults`) — an `admission` record is
   `{ reason, at, stale?, stale_work?, blockers? }`, where `blockers` is

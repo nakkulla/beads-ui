@@ -100,7 +100,13 @@ function fakeWs() {
       frames.push(JSON.parse(raw));
     },
     snapshots() {
-      return frames.filter((f) => f.type === 'monitor-pipeline-snapshot');
+      // One push is one frame: the first is the whole snapshot and the rest are
+      // keyed patches (UI-defk §4.2). Both count as a push on this channel.
+      return frames.filter(
+        (f) =>
+          f.type === 'monitor-pipeline-snapshot' ||
+          f.type === 'monitor-pipeline-patch'
+      );
     }
   };
 }
@@ -155,7 +161,7 @@ describe('monitor runnable refresh driver (UI-qrfo §4)', () => {
     // Something moved between ticks; an identical body would be deduplicated.
     queue_revision = 2;
     vi.advanceTimersByTime(30_000);
-    vi.advanceTimersByTime(250);
+    vi.advanceTimersByTime(1000);
 
     expect(ws.snapshots().length).toBe(before + 1);
   });
@@ -180,7 +186,7 @@ describe('monitor runnable refresh driver (UI-qrfo §4)', () => {
   test('clears the timer when the last subscriber leaves', () => {
     const ws = fakeWs();
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
-    vi.advanceTimersByTime(250);
+    vi.advanceTimersByTime(1000);
 
     handleUnsubscribeMonitorPipeline(
       /** @type {any} */ (ws),
@@ -251,7 +257,7 @@ describe('monitor runnable refresh driver gating (UI-qrfo §4)', () => {
     const ws = fakeWs();
 
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
-    vi.advanceTimersByTime(250);
+    vi.advanceTimersByTime(1000);
 
     expect(vi.getTimerCount()).toBe(0);
   });

@@ -14,6 +14,7 @@ import {
   attachWsServer,
   handleMessage
 } from './ws.js';
+import { createKeyedFrameNormalizer } from './ws/keyed-frames-fixture.js';
 import { decorateQueue } from './ws/worker-handlers.js';
 
 // Only `runBdJsonProjected` is faked — the title cache's fill is the single
@@ -52,15 +53,18 @@ let tmp_state;
  * @returns {{ sent: string[], readyState: number, OPEN: number, send(msg: string): void }}
  */
 function fakeSocket() {
-  return {
+  const normalize = createKeyedFrameNormalizer();
+  /** @type {any} */
+  const sock = {
     sent: /** @type {string[]} */ ([]),
     readyState: 1,
     OPEN: 1,
     /** @param {string} msg */
     send(msg) {
-      this.sent.push(String(msg));
+      sock.sent.push(normalize(String(msg)));
     }
   };
+  return sock;
 }
 
 /**

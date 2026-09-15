@@ -2,10 +2,8 @@
  * WebSocket handlers for the Worker queue channel (spec §5.1).
  *
  * A `worker-queue` subscription is per-workspace: on subscribe the client
- * receives a snapshot of the queue; on any queue mutation the whole queue is
- * pushed as a fresh snapshot to every subscriber of that workspace. This reuses
- * the same server-push envelope machinery as issue lists ({@link pushSnapshotIfChanged})
- * so Worker data and issue data flow through one unified push protocol.
+ * receives a snapshot of the queue; subsequent mutations push only changed
+ * keys to every subscriber of that workspace through {@link pushKeyed}.
  *
  * Concurrency: every mutation carries an `expected_revision`; the queue store
  * runs a revision CAS so a stale client's drag cannot clobber a newer ordering.
@@ -26,8 +24,10 @@
  *
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
+ * @import { KeyedSubscriber } from './push-patch.js'
  */
 import nodeFs from 'node:fs';
+import { canonicalJson, splitWorkerQueue } from '../../app/data/keyed-patch.js';
 import { makeError, makeOk } from '../../app/protocol.js';
 import {
   activeAttemptStates,
@@ -143,10 +143,10 @@ import {
   getConnWorkspace,
   kvGetJsonAtRoot,
   log,
-  pushSnapshotIfChanged,
   runBdJsonProjectedInWorkspace
 } from './context.js';
 import { laneBeadIds, sessionExcludedBeadIds } from './lane-membership.js';
+import { pushKeyed } from './push-patch.js';
 import { trimQueueProjection } from './snapshot-retention.js';
 import { targetWorkspaceOf } from './workspace-target.js';
 
@@ -206,7 +206,7 @@ function recordUserAction(workspace, bead_id, action, summary) {
  * the set of `{ ws, client_id }` pairs currently subscribed to that workspace's
  * queue.
  *
- * @type {Map<string, Set<{ ws: WebSocket, client_id: string, last_body?: string }>>}
+ * @type {Map<string, Set<KeyedSubscriber>>}
  */
 const SUBSCRIBERS = new Map();
 
@@ -567,7 +567,7 @@ function mutationWorkspaceOf(ws, req) {
 
 /**
  * @param {string} key
- * @returns {Set<{ ws: WebSocket, client_id: string }>}
+ * @returns {Set<KeyedSubscriber>}
  */
 function subscribersFor(key) {
   let set = SUBSCRIBERS.get(key);
@@ -2357,12 +2357,12 @@ export function attemptsWithUsage(queue, workspace_key) {
           (value) => {
             if (
               value &&
-              JSON.stringify({
+              canonicalJson({
                 usage: attempt.usage ?? null,
                 usage_segments: attempt.usage_segments ?? [],
                 codex_children: attempt.codex_children ?? []
               }) !==
-                JSON.stringify({
+                canonicalJson({
                   usage: value.usage ?? null,
                   usage_segments: value.usage_segments ?? [],
                   codex_children: value.codex_children ?? []
@@ -2468,6 +2468,7 @@ export function attemptsWithUsage(queue, workspace_key) {
     }
     out[attempt_id] = projected;
   }
+  observations?.pruneHistorical(workspace_key, new Set(Object.keys(attempts)));
   return out;
 }
 
@@ -3451,12 +3452,21 @@ export function onWorkerSnapshotRefresh(listener) {
  * @param {Record<string, unknown>} queue
  */
 export function fanout(workspace_key, queue) {
-  const body_json = JSON.stringify({
-    root_dir: workspace_key,
-    queue: decorateQueue(workspace_key, queue)
-  });
-  for (const sub of subscribersFor(workspace_key)) {
-    pushSnapshotIfChanged(sub, 'worker-queue-snapshot', body_json);
+  try {
+    const body = {
+      root_dir: workspace_key,
+      queue: decorateQueue(workspace_key, queue)
+    };
+    const values = splitWorkerQueue(body);
+    const canonical = new Map(
+      [...values].map(([key, value]) => [key, canonicalJson(value)])
+    );
+    const keyed = { values, canonical };
+    for (const sub of subscribersFor(workspace_key)) {
+      pushKeyed(sub, 'worker-queue', body, keyed);
+    }
+  } catch (err) {
+    log('worker: queue split failed for %s: %o', workspace_key, err);
   }
   for (const listener of SNAPSHOT_REFRESH_LISTENERS) {
     try {
@@ -4342,18 +4352,28 @@ export function handleSubscribeWorkerQueue(ws, req) {
     return;
   }
   const key = workspaceKeyOf(ws);
+  for (const existing of subscribersFor(key)) {
+    if (existing.ws === ws && existing.client_id === client_id) {
+      subscribersFor(key).delete(existing);
+    }
+  }
   const sub = { ws, client_id };
   subscribersFor(key).add(sub);
   log('subscribe-worker-queue %s ws=%s', client_id, key);
   ws.send(JSON.stringify(makeOk(req, { id: client_id })));
-  pushSnapshotIfChanged(
-    sub,
-    'worker-queue-snapshot',
-    JSON.stringify({
+  try {
+    const body = {
       root_dir: key,
       queue: decorateQueue(key, queueStore().snapshot(key))
-    })
-  );
+    };
+    const values = splitWorkerQueue(body);
+    const canonical = new Map(
+      [...values].map(([key, value]) => [key, canonicalJson(value)])
+    );
+    pushKeyed(sub, 'worker-queue', body, { values, canonical });
+  } catch (err) {
+    log('worker: initial queue split failed for %s: %o', key, err);
+  }
   // 세션 레인의 "on subscribe" 스캔 (UI-0a2m): 스냅샷의 `session_active`는
   // fill 없는 peek이므로, 콜드 캐시를 채우는 트리거는 구독이 소유한다. 완료는
   // 모니터 모듈이 배선한 `setOnFilled`가 이 워크스페이스의 스냅샷 재전송으로

@@ -83,6 +83,7 @@
     "app/utils/carryover-index.js",
     "app/views/worker/blocker-ids.js",
     "app/data/closed-range.js",
+    "app/data/keyed-patch.js",
     "bin",
     "server",
     "CHANGES.md",

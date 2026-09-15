@@ -215,6 +215,35 @@ describe('worker-queue snapshot workspace guard', () => {
 });
 
 describe('worker-queue resubscribe after reconnect', () => {
+  test('restarts patch sequencing from the reconnected snapshot', async () => {
+    CLIENT = makeClient({ current: '/repo-a' });
+    bootstrap(setupShell());
+    await settle();
+    CLIENT.trigger('worker-queue-snapshot', {
+      ...queueSnapshotFor('/repo-a'),
+      seq: 7
+    });
+
+    CLIENT.emitConn('reconnecting');
+    CLIENT.emitConn('open');
+    await settle();
+    CLIENT.trigger('worker-queue-snapshot', {
+      ...queueSnapshotFor('/repo-a'),
+      seq: 1
+    });
+    CLIENT.sent.length = 0;
+    CLIENT.trigger('worker-queue-patch', {
+      root_dir: '/repo-a',
+      seq: 2,
+      set: { 'queue/queue': [] },
+      unset: []
+    });
+    await settle();
+
+    expect(waitingRowCount()).toBe(0);
+    expect(CLIENT.sent).not.toContain('subscribe-worker-queue');
+  });
+
   test('subscribes the worker queue again on the new socket', async () => {
     CLIENT = makeClient({ current: '/repo-a' });
     bootstrap(setupShell());
@@ -243,4 +272,144 @@ describe('worker-queue resubscribe after reconnect', () => {
     expect(restore_at).toBeGreaterThanOrEqual(0);
     expect(subscribe_at).toBeGreaterThan(restore_at);
   });
+});
+
+describe('worker-queue keyed patches', () => {
+  test.each(['/repo-a', null])(
+    'renders a patch with workspace selection %s',
+    async (current) => {
+      CLIENT = makeClient({ current });
+      bootstrap(setupShell());
+      await settle();
+      CLIENT.trigger('worker-queue-snapshot', queueSnapshotFor('/repo-a'));
+      await settle();
+
+      CLIENT.trigger('worker-queue-patch', {
+        root_dir: '/repo-a',
+        seq: 2,
+        set: { 'queue/queue': [{ bead_id: 'W1' }, { bead_id: 'W2' }] },
+        unset: []
+      });
+      await settle();
+
+      expect(waitingRowCount()).toBe(2);
+    }
+  );
+
+  test('drops another workspace patch before checking its sequence', async () => {
+    CLIENT = makeClient({ current: '/repo-a' });
+    bootstrap(setupShell());
+    await settle();
+    CLIENT.trigger('worker-queue-snapshot', queueSnapshotFor('/repo-a'));
+    CLIENT.sent.length = 0;
+
+    CLIENT.trigger('worker-queue-patch', {
+      root_dir: '/repo-b',
+      seq: 9,
+      set: { 'queue/queue': [] },
+      unset: []
+    });
+    await settle();
+
+    expect(waitingRowCount()).toBe(1);
+    expect(CLIENT.sent).not.toContain('subscribe-worker-queue');
+  });
+
+  test('waits for a recovery snapshot across repeated mismatched patches', async () => {
+    CLIENT = makeClient({ current: '/repo-a' });
+    bootstrap(setupShell());
+    await settle();
+    CLIENT.trigger('worker-queue-snapshot', queueSnapshotFor('/repo-a'));
+    CLIENT.sent.length = 0;
+
+    for (const seq of [3, 4, 5]) {
+      CLIENT.trigger('worker-queue-patch', {
+        root_dir: '/repo-a',
+        seq,
+        set: {},
+        unset: []
+      });
+      await settle();
+    }
+
+    expect(
+      CLIENT.sent.filter((/** @type {string} */ type) =>
+        type.endsWith('worker-queue')
+      )
+    ).toEqual(['unsubscribe-worker-queue', 'subscribe-worker-queue']);
+    expect(waitingRowCount()).toBe(0);
+  });
+
+  test('shows a fatal error and releases a rejected recovery subscription', async () => {
+    CLIENT = makeClient({ current: '/repo-a' });
+    bootstrap(setupShell());
+    await settle();
+    CLIENT.trigger('worker-queue-snapshot', queueSnapshotFor('/repo-a'));
+    CLIENT.send
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error('worker recovery rejected'));
+
+    CLIENT.trigger('worker-queue-patch', {
+      root_dir: '/repo-a',
+      seq: 3,
+      set: {},
+      unset: []
+    });
+    await settle();
+
+    expect(document.querySelector('#fatal-error-dialog[open]')).not.toBeNull();
+    expect(document.querySelector('#fatal-error-title')?.textContent).toBe(
+      'Failed to load worker'
+    );
+    expect(document.querySelector('#fatal-error-message')?.textContent).toBe(
+      'worker recovery rejected'
+    );
+
+    CLIENT.sent.length = 0;
+    window.location.hash = '#/adr';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await settle();
+
+    expect(CLIENT.sent).not.toContain('unsubscribe-worker-queue');
+  });
+
+  test.each([1, 3])(
+    'resubscribes once after mismatched seq %i and renders recovered patches',
+    async (seq) => {
+      CLIENT = makeClient({ current: '/repo-a' });
+      bootstrap(setupShell());
+      await settle();
+      CLIENT.trigger('worker-queue-snapshot', queueSnapshotFor('/repo-a'));
+      await settle();
+      CLIENT.sent.length = 0;
+
+      CLIENT.trigger('worker-queue-patch', {
+        root_dir: '/repo-a',
+        seq,
+        set: {},
+        unset: []
+      });
+      await settle();
+      const cleared_count = waitingRowCount();
+      CLIENT.trigger('worker-queue-snapshot', {
+        ...queueSnapshotFor('/repo-a'),
+        seq: 1
+      });
+      CLIENT.trigger('worker-queue-patch', {
+        root_dir: '/repo-a',
+        seq: 2,
+        set: { 'queue/queue': [{ bead_id: 'W1' }, { bead_id: 'W2' }] },
+        unset: []
+      });
+      await settle();
+
+      expect(cleared_count).toBe(0);
+      expect(
+        CLIENT.sent.filter((/** @type {string} */ type) =>
+          type.endsWith('worker-queue')
+        )
+      ).toEqual(['unsubscribe-worker-queue', 'subscribe-worker-queue']);
+      expect(waitingRowCount()).toBe(2);
+    }
+  );
 });

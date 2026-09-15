@@ -1,9 +1,8 @@
 /**
  * Client-side holder for the aggregated monitor pipeline snapshot (UI-nprg).
  *
- * The server pushes every visible workspace's worker pipeline as one
- * `monitor-pipeline-snapshot` event; the payload is total state (last snapshot
- * wins), so — like the worker queue store — this keeps no per-id bookkeeping.
+ * The first push establishes keyed state and a sequence; later patches update
+ * those keys. Both assembled arrays retain their identity until content changes.
  *
  * `null` means "nothing received yet", which the monitor renders as its empty
  * state; an empty array means "the server looked and every repo was idle".
@@ -19,15 +18,27 @@
  * like every other optional projection and never invents queue membership or
  * execution state from it.
  */
+import {
+  applyPatch as applyKeyedPatch,
+  assembleMonitorPipeline,
+  canonicalJson,
+  splitMonitorPipeline
+} from './keyed-patch.js';
 
 /**
- * @returns {{ get: () => Array<Record<string, any>>|null, getWorkspacesState: () => Array<Record<string, any>>, set: (list: Array<Record<string, any>>|null, state?: Array<Record<string, any>>|null) => void, clear: () => void, subscribe: (fn: () => void) => () => void }}
+ * @returns {{ get: () => Array<Record<string, any>>|null, getWorkspacesState: () => Array<Record<string, any>>, set: (list: Array<Record<string, any>>|null, state?: Array<Record<string, any>>|null, seq?: number) => void, applyPatch: (patch: import('./keyed-patch.js').KeyedPatch & { seq: number }) => boolean, clear: () => void, subscribe: (fn: () => void) => () => void }}
  */
 export function createMonitorPipelineStore() {
+  /** @type {import('./keyed-patch.js').KeyedMap} */
+  let keyed = new Map();
+  /** @type {number|null} */
+  let last_seq = null;
   /** @type {Array<Record<string, any>>|null} */
   let workspaces = null;
   /** @type {Array<Record<string, any>>} */
   let workspaces_state = [];
+  let list_canonical = canonicalJson(workspaces);
+  let state_canonical = canonicalJson(workspaces_state);
   /** @type {Set<() => void>} */
   const listeners = new Set();
 
@@ -41,6 +52,34 @@ export function createMonitorPipelineStore() {
     }
   }
 
+  /**
+   * @param {Array<Record<string, any>>|null} list
+   * @param {Array<Record<string, any>>} state
+   */
+  function adopt(list, state) {
+    const next_list_canonical = canonicalJson(list);
+    const next_state_canonical = canonicalJson(state);
+    const list_changed = list_canonical !== next_list_canonical;
+    const state_changed = state_canonical !== next_state_canonical;
+    if (list_changed) {
+      workspaces = list;
+      list_canonical = next_list_canonical;
+    }
+    if (state_changed) {
+      workspaces_state = state;
+      state_canonical = next_state_canonical;
+    }
+    if (list_changed || state_changed) {
+      emit();
+    }
+  }
+
+  function clear() {
+    keyed = new Map();
+    last_seq = null;
+    adopt(null, []);
+  }
+
   return {
     get() {
       return workspaces;
@@ -51,17 +90,33 @@ export function createMonitorPipelineStore() {
     /**
      * @param {Array<Record<string, any>>|null} list
      * @param {Array<Record<string, any>>|null} [state]
+     * @param {number} [seq]
      */
-    set(list, state) {
-      workspaces = Array.isArray(list) ? list : null;
-      workspaces_state = Array.isArray(state) ? state : [];
-      emit();
+    set(list, state, seq = 1) {
+      keyed = splitMonitorPipeline({
+        workspaces: Array.isArray(list) ? list : [],
+        workspaces_state: Array.isArray(state) ? state : []
+      });
+      last_seq = seq;
+      const body = assembleMonitorPipeline(keyed);
+      adopt(
+        Array.isArray(list) ? body.workspaces : null,
+        body.workspaces_state
+      );
     },
-    clear() {
-      workspaces = null;
-      workspaces_state = [];
-      emit();
+    /** @param {import('./keyed-patch.js').KeyedPatch & { seq: number }} patch */
+    applyPatch(patch) {
+      if (last_seq === null || patch.seq !== last_seq + 1) {
+        clear();
+        return false;
+      }
+      keyed = applyKeyedPatch(keyed, patch);
+      last_seq = patch.seq;
+      const body = assembleMonitorPipeline(keyed);
+      adopt(body.workspaces, body.workspaces_state);
+      return true;
     },
+    clear,
     /** @param {() => void} fn */
     subscribe(fn) {
       listeners.add(fn);

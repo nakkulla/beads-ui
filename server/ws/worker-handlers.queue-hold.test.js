@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createKeyedFrameNormalizer } from './keyed-frames-fixture.js';
 
 const state = vi.hoisted(() => ({
   /** @type {Array<{ fn: string, workspace: string, input: any }>} */
@@ -93,15 +94,18 @@ let inquiry_calls;
  * @returns {any}
  */
 function fakeSocket() {
-  return {
+  const normalize = createKeyedFrameNormalizer();
+  /** @type {any} */
+  const sock = {
     sent: /** @type {string[]} */ ([]),
     readyState: 1,
     OPEN: 1,
     /** @param {string} msg */
     send(msg) {
-      this.sent.push(String(msg));
+      sock.sent.push(normalize(String(msg)));
     }
   };
+  return sock;
 }
 
 /**

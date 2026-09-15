@@ -434,7 +434,9 @@ export function createWorkerSessionObservationStore(options = {}) {
         .then((value) => {
           if (
             global_generation !== clear_generation ||
-            generation !== (workspace_generations.get(resolved_workspace) || 0)
+            generation !==
+              (workspace_generations.get(resolved_workspace) || 0) ||
+            historical_preparations.get(key) !== preparation
           ) {
             return null;
           }
@@ -446,15 +448,16 @@ export function createWorkerSessionObservationStore(options = {}) {
             historical_keys.add(key);
             values.set(key, { ...(values.get(key) || {}), ...value });
           }
+          if (Number.isFinite(attempt.finished_at)) {
+            return value;
+          }
           const timer = setTimeout(
             () => {
               if (historical_expiry.get(key) !== timer) {
                 return;
               }
-              historical_completed.delete(key);
-              historical_keys.delete(key);
               if (!observers.has(key)) {
-                values.delete(key);
+                historical_completed.delete(key);
               }
               historical_expiry.delete(key);
             },
@@ -473,6 +476,37 @@ export function createWorkerSessionObservationStore(options = {}) {
         });
       historical_preparations.set(key, preparation);
       return preparation;
+    },
+    /**
+     * Release historical entries that have left this workspace's queue.
+     *
+     * @param {string} workspace - Workspace root.
+     * @param {Set<string>} live_attempt_ids - Attempts still in the queue.
+     */
+    pruneHistorical(workspace, live_attempt_ids) {
+      const prefix = `${path.resolve(workspace)}\0`;
+      const keys = new Set([
+        ...historical_keys,
+        ...historical_completed,
+        ...historical_expiry.keys(),
+        ...historical_preparations.keys(),
+        ...values.keys()
+      ]);
+      for (const key of keys) {
+        if (
+          !key.startsWith(prefix) ||
+          live_attempt_ids.has(key.slice(prefix.length)) ||
+          observers.has(key)
+        ) {
+          continue;
+        }
+        historical_keys.delete(key);
+        historical_completed.delete(key);
+        historical_preparations.delete(key);
+        clearTimeout(historical_expiry.get(key));
+        historical_expiry.delete(key);
+        values.delete(key);
+      }
     },
     /** @param {string} workspace - Workspace whose last card subscriber left. */
     releaseHistorical(workspace) {

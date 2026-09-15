@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createIncrementalCodexChildObserver } from './codex-children/reader.js';
 import { createTailReader } from './runner/tail-reader.js';
 import { createSessionMonitors } from './session-monitor.js';
@@ -17,6 +17,169 @@ const FIXTURE = new URL(
   './__fixtures__/codex-native-child-rollout.jsonl',
   import.meta.url
 );
+
+describe('historical observation retention', () => {
+  /** @type {string} */
+  let root;
+  /** @type {ReturnType<typeof createWorkerSessionObservationStore>} */
+  let store;
+  const sessionsRootFor = vi.fn(() => root);
+  const attempt = {
+    attempt_id: 'history',
+    runner: 'codex',
+    session_id: 'history-session',
+    status: 'paused',
+    started_at: Date.parse('2026-09-15T00:00:00Z')
+  };
+  const ended = {
+    ...attempt,
+    status: 'done',
+    finished_at: Date.parse('2026-09-15T00:01:00Z')
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    sessionsRootFor.mockClear();
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-history-retention-'));
+    const dir = path.join(root, '2026', '09', '15');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'rollout-history-session.jsonl'),
+      `${JSON.stringify({ timestamp: '2026-09-15T00:00:01Z', type: 'turn_context', payload: { turn_id: 't1', model: 'astra' } })}\n${JSON.stringify({ timestamp: '2026-09-15T00:00:02Z', type: 'token_usage_record', payload: { thread_id: 'history-session', turn_id: 't1', response_id: 'r1', usage: { input_tokens: 40, output_tokens: 4 } } })}\n`
+    );
+    store = createWorkerSessionObservationStore({
+      sessionsRootFor,
+      historicalTtlMs: 10,
+      createReader: () => ({
+        start() {},
+        pump() {},
+        drain() {},
+        stop() {},
+        offset: () => 0
+      })
+    });
+  });
+
+  afterEach(() => {
+    store.clear();
+    vi.useRealTimers();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  test('retains ended observations without rereading after the TTL', async () => {
+    const value = await store.prepareHistorical('/workspace', ended);
+
+    await vi.advanceTimersByTimeAsync(100);
+    const retry = store.prepareHistorical('/workspace', ended);
+    await retry;
+
+    expect(value?.usage).toMatchObject({ input_tokens: 40 });
+    expect(store.get('/workspace', ended.attempt_id)).toEqual(value);
+    expect(retry).toBeNull();
+    expect(sessionsRootFor).toHaveBeenCalledTimes(1);
+  });
+
+  test('retains a missing ended rollout without rereading after the TTL', async () => {
+    const missing = { ...ended, session_id: 'missing-session' };
+    await store.prepareHistorical('/workspace', missing);
+
+    await vi.advanceTimersByTimeAsync(100);
+    const retry = store.prepareHistorical('/workspace', missing);
+    await retry;
+
+    expect(store.get('/workspace', missing.attempt_id)).toBeNull();
+    expect(retry).toBeNull();
+    expect(sessionsRootFor).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps the last paused observation while allowing a TTL refresh', async () => {
+    const value = await store.prepareHistorical('/workspace', attempt);
+
+    await vi.advanceTimersByTimeAsync(11);
+    const retained = store.get('/workspace', attempt.attempt_id);
+    const retry = store.prepareHistorical('/workspace', attempt);
+    await retry;
+
+    expect(retained).toEqual(value);
+    expect(retry).not.toBeNull();
+    expect(sessionsRootFor).toHaveBeenCalledTimes(2);
+  });
+
+  test('retries a missing paused rollout after the TTL', async () => {
+    const missing = { ...attempt, session_id: 'missing-session' };
+    await store.prepareHistorical('/workspace', missing);
+
+    await vi.advanceTimersByTimeAsync(11);
+    const retry = store.prepareHistorical('/workspace', missing);
+    await retry;
+
+    expect(retry).not.toBeNull();
+    expect(sessionsRootFor).toHaveBeenCalledTimes(2);
+  });
+
+  test('bounds retained values across repeated queue transfers', async () => {
+    for (let index = 0; index < 5; index += 1) {
+      const current = { ...ended, attempt_id: `history-${index}` };
+      await store.prepareHistorical('/workspace', current);
+
+      store.pruneHistorical('/workspace', new Set([current.attempt_id]));
+
+      for (let old = 0; old < index; old += 1) {
+        expect(store.get('/workspace', `history-${old}`)).toBeNull();
+      }
+      expect(store.get('/workspace', current.attempt_id)).not.toBeNull();
+    }
+  });
+
+  test('prunes missing results so a removed attempt can be prepared again', async () => {
+    const missing = { ...ended, session_id: 'missing-session' };
+    await store.prepareHistorical('/workspace', missing);
+
+    store.pruneHistorical('/workspace', new Set());
+    const retry = store.prepareHistorical('/workspace', missing);
+    await retry;
+
+    expect(retry).not.toBeNull();
+    expect(sessionsRootFor).toHaveBeenCalledTimes(2);
+  });
+
+  test('prunes paused values retained past their TTL', async () => {
+    await store.prepareHistorical('/workspace', attempt);
+    await vi.advanceTimersByTimeAsync(11);
+
+    store.pruneHistorical('/workspace', new Set());
+
+    expect(store.get('/workspace', attempt.attempt_id)).toBeNull();
+  });
+
+  test('preserves another workspace with the same path prefix', async () => {
+    await store.prepareHistorical('/workspace-other', ended);
+
+    store.pruneHistorical('/workspace', new Set());
+
+    expect(store.get('/workspace-other', ended.attempt_id)).not.toBeNull();
+    expect(store.prepareHistorical('/workspace-other', ended)).toBeNull();
+  });
+
+  test('preserves a value held by a live observer during pruning', () => {
+    store.observe('/workspace', { ...attempt, status: 'running' });
+    const value = store.get('/workspace', attempt.attempt_id);
+
+    store.pruneHistorical('/workspace', new Set());
+
+    expect(value).not.toBeNull();
+    expect(store.get('/workspace', attempt.attempt_id)).toBe(value);
+  });
+
+  test('prevents a pending preparation from restoring a pruned attempt', async () => {
+    const pending = store.prepareHistorical('/workspace', ended);
+
+    store.pruneHistorical('/workspace', new Set());
+    await pending;
+
+    expect(store.get('/workspace', ended.attempt_id)).toBeNull();
+  });
+});
 
 describe('worker/session-observation', () => {
   test('discovers incremental child files after midnight without rereading the root', () => {

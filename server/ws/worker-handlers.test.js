@@ -26,7 +26,12 @@ import {
   requestWorkspaceSnapshot
 } from '../workspace-snapshot-runtime.js';
 import { setConnWorkspace } from './context.js';
-import { decorateQueue, handleWorkerAttemptResume } from './worker-handlers.js';
+import {
+  attemptsWithUsage,
+  decorateQueue,
+  handleWorkerAttemptResume,
+  onWorkerSnapshotRefresh
+} from './worker-handlers.js';
 
 vi.mock('../bd.js', async (importOriginal) => {
   /** @type {any} */
@@ -229,6 +234,71 @@ function mockSessionRows(rows) {
     'sessionActivePeek'
   ).mockReturnValue(/** @type {any} */ (rows));
 }
+
+describe('historical usage projection', () => {
+  test.each([false, true])(
+    'fans out only changed historical values (changed=%s)',
+    async (changed) => {
+      const runtime = getWorkerRuntime();
+      const attempt = {
+        attempt_id: 'history',
+        runner: 'codex',
+        status: 'done',
+        usage: { input_tokens: 40, output_tokens: 4 },
+        usage_segments: [
+          { model: 'astra', usage: { input_tokens: 40, output_tokens: 4 } }
+        ],
+        codex_children: [
+          { thread_id: 'child', usage: { input_tokens: 2, output_tokens: 1 } }
+        ]
+      };
+      const queue = { attempts: { history: attempt } };
+      const pending = Promise.resolve({
+        usage: { output_tokens: changed ? 5 : 4, input_tokens: 40 },
+        usage_segments: [
+          { usage: { output_tokens: 4, input_tokens: 40 }, model: 'astra' }
+        ],
+        codex_children: [
+          { usage: { output_tokens: 1, input_tokens: 2 }, thread_id: 'child' }
+        ]
+      });
+      vi.spyOn(runtime.workerSessionObservations, 'prepareHistorical')
+        .mockReturnValue(null)
+        .mockReturnValueOnce(pending);
+      vi.spyOn(runtime.queueStore, 'snapshot').mockReturnValue(
+        /** @type {any} */ (queue)
+      );
+      const listener = vi.fn();
+      const unsubscribe = onWorkerSnapshotRefresh(listener);
+
+      try {
+        attemptsWithUsage(queue, WS);
+        await pending;
+
+        expect(listener).toHaveBeenCalledTimes(changed ? 1 : 0);
+      } finally {
+        unsubscribe();
+      }
+    }
+  );
+
+  test.each([['history'], []])(
+    'prunes historical observations using current queue ids (%j)',
+    (...ids) => {
+      const prune = vi.spyOn(
+        getWorkerRuntime().workerSessionObservations,
+        'pruneHistorical'
+      );
+      const attempts = Object.fromEntries(
+        ids.map((id) => [id, { attempt_id: id, status: 'done' }])
+      );
+
+      attemptsWithUsage({ attempts }, WS);
+
+      expect(prune).toHaveBeenCalledWith(WS, new Set(ids));
+    }
+  );
+});
 
 beforeEach(() => {
   original_home = process.env.HOME;

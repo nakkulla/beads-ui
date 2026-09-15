@@ -381,8 +381,7 @@ export function bootstrap(root_element) {
       }
     });
 
-    // ADR 채널(UI-8uz7 §6)의 push. 모니터 파이프라인과 같이 서버 전역이고 부분
-    // 패치가 없어서 스냅샷을 통째로 교체한다.
+    // ADR 채널(UI-8uz7 §6)의 push. 서버 전역이며 스냅샷을 통째로 교체한다.
     client.on('adr-snapshot', (payload) => {
       const p = /** @type {any} */ (payload);
       if (!p || !Array.isArray(p.workspaces)) {
@@ -405,9 +404,23 @@ export function bootstrap(root_element) {
         // the ones with an empty pipeline, so it is kept ALONGSIDE the heavy
         // array rather than derived from it. A server that omits it leaves the
         // store's empty default in place.
-        monitor_pipeline_store.set(p.workspaces, p.workspaces_state);
+        monitor_pipeline_store.set(p.workspaces, p.workspaces_state, p.seq);
+        monitor_pipeline_recovering = false;
       } catch {
         // ignore
+      }
+    });
+
+    client.on('monitor-pipeline-patch', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (!p || monitor_pipeline_recovering) {
+        return;
+      }
+      if (!monitor_pipeline_store.applyPatch(p)) {
+        log('monitor-pipeline patch sequence mismatch; resubscribing');
+        clearMonitorPipelineChannel();
+        monitor_pipeline_recovering = true;
+        ensureMonitorPipelineChannel(true);
       }
     });
 
@@ -866,6 +879,7 @@ export function bootstrap(root_element) {
     const worker_unsubs = new Map();
     /** @type {(() => Promise<unknown>) | null} */
     let worker_queue_unsub = null;
+    let worker_queue_recovering = false;
 
     /**
      * @param {boolean} active
@@ -947,18 +961,25 @@ export function bootstrap(root_element) {
       if (worker_queue_unsub) {
         return;
       }
+      const recovering = worker_queue_recovering;
+      const unsubscribe = () =>
+        tracked_send('unsubscribe-worker-queue', {
+          id: WORKER_QUEUE_CLIENT_ID
+        });
+      worker_queue_unsub = unsubscribe;
       void tracked_send('subscribe-worker-queue', {
         id: WORKER_QUEUE_CLIENT_ID
       }).catch((err) => {
         log('subscribe-worker-queue failed: %o', err);
+        if (recovering && worker_queue_unsub === unsubscribe) {
+          worker_queue_unsub = null;
+          showFatalFromError(err, 'worker');
+        }
       });
-      worker_queue_unsub = () =>
-        tracked_send('unsubscribe-worker-queue', {
-          id: WORKER_QUEUE_CLIENT_ID
-        });
     }
 
     function clearWorkerQueueChannel() {
+      worker_queue_recovering = false;
       if (worker_queue_unsub) {
         void worker_queue_unsub().catch(() => {});
         worker_queue_unsub = null;
@@ -968,6 +989,7 @@ export function bootstrap(root_element) {
     // --- Monitor pipeline channel lifecycle (UI-nprg) ---
     /** @type {(() => Promise<unknown>) | null} */
     let monitor_pipeline_unsub = null;
+    let monitor_pipeline_recovering = false;
 
     /**
      * Does anything on screen need the aggregated pipeline right now?
@@ -1000,18 +1022,25 @@ export function bootstrap(root_element) {
       if (monitor_pipeline_unsub) {
         return;
       }
+      const recovering = monitor_pipeline_recovering;
+      const unsubscribe = () =>
+        tracked_send('unsubscribe-monitor-pipeline', {
+          id: MONITOR_PIPELINE_CLIENT_ID
+        });
+      monitor_pipeline_unsub = unsubscribe;
       void tracked_send('subscribe-monitor-pipeline', {
         id: MONITOR_PIPELINE_CLIENT_ID
       }).catch((err) => {
         log('subscribe-monitor-pipeline failed: %o', err);
+        if (recovering && monitor_pipeline_unsub === unsubscribe) {
+          monitor_pipeline_unsub = null;
+          showFatalFromError(err, 'monitor');
+        }
       });
-      monitor_pipeline_unsub = () =>
-        tracked_send('unsubscribe-monitor-pipeline', {
-          id: MONITOR_PIPELINE_CLIENT_ID
-        });
     }
 
     function clearMonitorPipelineChannel() {
+      monitor_pipeline_recovering = false;
       if (monitor_pipeline_unsub) {
         void monitor_pipeline_unsub().catch(() => {});
         monitor_pipeline_unsub = null;
@@ -1167,7 +1196,9 @@ export function bootstrap(root_element) {
       exec_presets_unsub = null;
       exec_preset_store.clear();
       worker_queue_unsub = null;
+      worker_queue_recovering = false;
       monitor_pipeline_unsub = null;
+      monitor_pipeline_recovering = false;
       adr_unsub = null;
       board_unsubs.clear();
       worker_unsubs.clear();
@@ -1563,9 +1594,32 @@ export function bootstrap(root_element) {
         return;
       }
       try {
-        worker_queue_store.set(p.queue);
+        worker_queue_store.setSnapshot(p);
+        worker_queue_recovering = false;
       } catch {
         // ignore
+      }
+    });
+
+    client.on('worker-queue-patch', (payload) => {
+      const p = /** @type {any} */ (payload);
+      if (!p || worker_queue_recovering) {
+        return;
+      }
+      const current_path = store.getState().workspace.current?.path;
+      if (
+        typeof current_path === 'string' &&
+        current_path.length > 0 &&
+        p.root_dir !== current_path
+      ) {
+        log('dropping worker-queue patch for %s', String(p.root_dir));
+        return;
+      }
+      if (!worker_queue_store.applyPatch(p)) {
+        log('worker-queue patch sequence mismatch; resubscribing');
+        clearWorkerQueueChannel();
+        worker_queue_recovering = true;
+        ensureWorkerQueueChannel(true);
       }
     });
 
