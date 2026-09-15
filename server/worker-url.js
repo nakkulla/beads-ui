@@ -35,7 +35,10 @@ function validCommon(common) {
     common !== null &&
     typeof common === 'object' &&
     nullableString(common.value) &&
-    nullableString(common.revision) &&
+    (common.revision === null ||
+      common.revision === 'missing' ||
+      (typeof common.revision === 'string' &&
+        /^[0-9a-f]{64}$/.test(common.revision))) &&
     ['configured', 'unset', 'invalid', 'unavailable'].includes(common.state)
   );
 }

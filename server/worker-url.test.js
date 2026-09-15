@@ -463,6 +463,9 @@ describe('worker URL adapter', () => {
     { workspace_override: false },
     { common: { ...COMMON, state: 'broken' } },
     { common: { ...COMMON, revision: 2 } },
+    { common: { ...COMMON, revision: '' } },
+    { common: { ...COMMON, revision: 'abc' } },
+    { common: { ...COMMON, revision: 'A'.repeat(64) } },
     { common: { ...COMMON, value: false } },
     { warnings: {} }
   ])('rejects malformed schema or vocabulary %j', async (patch) => {
@@ -490,6 +493,18 @@ describe('worker URL adapter', () => {
         error: { code: 'helper_unavailable' }
       });
       expect(run).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test.each([null, 'missing', '0123456789abcdef'.repeat(4)])(
+    'accepts a contract revision %s',
+    async (revision) => {
+      const common = { ...COMMON, revision };
+      const run = successfulRun({ ...RESOLVED, common });
+
+      const result = await resolveWorkerUrl(INPUT, run);
+
+      expect(result).toMatchObject({ status: 'ok', common });
     }
   );
 
@@ -623,6 +638,14 @@ else:
         applied = {'status': 'unavailable', 'error': {'code': 'helper_unavailable'}}
     if case == 'common-invalid':
         common['state'] = 'invalid'
+    if case in ('ws-common-state', 'ws-common-revision'):
+        resolved.update(effective_url='http://exception:3000', source='workspace')
+        applied.update(resolved)
+        applied['common'] = dict(common)
+        if case == 'ws-common-state':
+            applied['common']['state'] = 'unavailable'
+        else:
+            applied['common']['revision'] = 'different'
     calls = []
     g['durable_root'] = lambda cwd: root
     g['git'] = lambda *args: 'a' * 40
@@ -658,6 +681,8 @@ describe('read-only post-merge verification job', () => {
     ['changed-snapshot', 'changed during verification'],
     ['changed-common', 'changed during verification'],
     ['mismatch', 'WS resolver mismatch: source'],
+    ['ws-common-state', 'WS resolver mismatch: common state'],
+    ['ws-common-revision', 'WS resolver mismatch: common revision'],
     ['wrong-sha', 'health source SHA mismatch'],
     ['helper-unavailable', 'helper_unavailable'],
     ['common-invalid', 'common_invalid']

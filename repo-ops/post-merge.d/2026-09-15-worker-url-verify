@@ -215,6 +215,10 @@ def main():
     for key in ('effective_url', 'source'):
         if applied[key] != resolved[key]:
             raise ValueError('WS resolver mismatch: ' + key)
+    if applied['common']['state'] != resolved['common']['state']:
+        raise ValueError('WS resolver mismatch: common state')
+    if not applied['common']['revision'] == resolved['common']['revision'] == common_after['revision']:
+        raise ValueError('WS resolver mismatch: common revision')
     print(json.dumps({'resolution': 'passed', 'effective_url': applied['effective_url'], 'source': applied['source']}))
     if applied['effective_url'] is None:
         if applied['source'] != 'unset':

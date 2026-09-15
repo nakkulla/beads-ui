@@ -358,7 +358,10 @@ export async function handleSetWorkerUrlCommon(ws, req) {
     );
     return;
   }
-  const read = await readSessionDefaults(ws, target);
+  const read = await readSessionDefaults(ws, {
+    root: target.root,
+    explicit: true
+  });
   ws.send(
     JSON.stringify(
       makeOk(req, {

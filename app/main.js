@@ -1638,7 +1638,8 @@ export function bootstrap(root_element) {
       'apply-impl-preset',
       'apply-impl-preset-global',
       'get-session-defaults',
-      'set-session-defaults'
+      'set-session-defaults',
+      'set-worker-url-common'
     ]);
 
     /**

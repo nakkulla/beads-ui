@@ -207,6 +207,12 @@ export function createExecutionPane(mount_element, binding) {
    * @type {Record<string, true>}
    */
   let session_text_invalid = {};
+  /**
+   * Explicit deletions of stored values omitted by normalization.
+   *
+   * @type {Set<string>}
+   */
+  const session_deletions = new Set();
   /** @type {string[]} */
   let session_warnings = [];
   let session_loading = false;
@@ -641,14 +647,27 @@ export function createExecutionPane(mount_element, binding) {
         return;
       }
       adoptWorkerUrl(res.worker_url);
+      if (initial) {
+        common_draft = adoptWorkerCommon(
+          common_draft,
+          worker_url?.common ?? null,
+          true
+        );
+        common_invalid = false;
+        common_saving = false;
+      }
       if (
-        !worker_only &&
-        Object.keys(buildSessionDefaultsPatch(session_baseline, session_draft))
-          .length === 0 &&
-        Object.keys(session_text_draft).length === 0
+        initial ||
+        (!worker_only &&
+          session_deletions.size === 0 &&
+          Object.keys(
+            buildSessionDefaultsPatch(session_baseline, session_draft)
+          ).length === 0 &&
+          Object.keys(session_text_draft).length === 0)
       ) {
         session_baseline = adoptSessionDefaultValues(res.values);
         session_draft = { ...session_baseline };
+        session_text_draft = {};
         session_text_invalid = {};
       }
       if (!worker_only) {
@@ -717,7 +736,13 @@ export function createExecutionPane(mount_element, binding) {
    * later edit always diffs against the baseline its predecessor established.
    */
   function queueSessionSave() {
-    session_save_chain = session_save_chain.then(() => saveSessionDefaults());
+    const request_generation = generation;
+    const request_root = root_dir;
+    session_save_chain = session_save_chain.then(() => {
+      if (isCurrent(request_generation, request_root)) {
+        return saveSessionDefaults();
+      }
+    });
   }
 
   /** Save the session-tab diff. On failure the draft is KEPT (spec §F). */
@@ -725,6 +750,10 @@ export function createExecutionPane(mount_element, binding) {
     const request_generation = generation;
     const request_root = root_dir;
     const patch = buildSessionDefaultsPatch(session_baseline, session_draft);
+    const sent_deletions = new Set(session_deletions);
+    for (const key of sent_deletions) {
+      patch[key] = null;
+    }
     if (Object.keys(patch).length === 0) {
       return;
     }
@@ -742,6 +771,9 @@ export function createExecutionPane(mount_element, binding) {
       adoptWorkerUrl(res.worker_url);
       session_baseline = adoptSessionDefaultValues(res?.values);
       session_draft = reconcileSessionDraft(sent, session_baseline);
+      for (const key of sent_deletions) {
+        session_deletions.delete(key);
+      }
       // `session_text_draft` deliberately survives: this save may belong to an
       // unrelated key, and the text box's own commit already cleared its entry
       // on the way in. Dropping it here would silently discard text the user
@@ -985,8 +1017,15 @@ export function createExecutionPane(mount_element, binding) {
     delete session_text_invalid[key];
     if (raw.length === 0) {
       delete session_draft[key];
+      if (
+        !Object.hasOwn(session_baseline, key) &&
+        session_warnings.includes(`invalid_value:${key}`)
+      ) {
+        session_deletions.add(key);
+      }
     } else {
       session_draft[key] = raw;
+      session_deletions.delete(key);
     }
     doRender();
     queueSessionSave();
@@ -2806,6 +2845,13 @@ export function createExecutionPane(mount_element, binding) {
     load() {
       ++generation;
       common_saving = false;
+      common_invalid = false;
+      common_draft = { value: '', revision: null, dirty: false };
+      worker_url = null;
+      session_baseline = {};
+      session_draft = {};
+      session_deletions.clear();
+      session_warnings = [];
       window.addEventListener('focus', onWindowFocus);
       worker_draft = {};
       orchestration_runtime = null;

@@ -2207,3 +2207,230 @@ describe('common Worker address form', () => {
     ).toBe('true');
   });
 });
+describe('integrated Worker address repairs', () => {
+  test('resets a reused connection pane before editing another workspace', async () => {
+    let response = workerResponse();
+    let reject_save = true;
+    const { root, pane, calls } = mount({
+      section: 'session',
+      transport: async (
+        /** @type {string} */ type,
+        /** @type {any} */ payload
+      ) => {
+        if (type === 'set-session-defaults') {
+          if (reject_save) {
+            throw new Error('write failed');
+          }
+          return { ...response, values: payload.values };
+        }
+        return response;
+      }
+    });
+    await pane.load();
+    const exception = /** @type {HTMLInputElement} */ (
+      el(root, '[data-key="bdui_url"]')
+    );
+    exception.value = 'http://old-draft:3000';
+    exception.dispatchEvent(new Event('change'));
+    await finishRefresh();
+    typeCommon(root, 'http://old-common-draft:3000');
+    response = workerResponse('http://new-common:3000', 'new-revision');
+    reject_save = false;
+
+    await pane.load();
+    el(root, 'button[data-mode="fast_track"]').click();
+    await finishRefresh();
+    el(root, '[data-worker-common-save]').click();
+    await finishRefresh();
+
+    expect(payloadsOf(calls, 'set-session-defaults')[1]).toEqual({
+      values: { workflow_mode: 'fast_track' }
+    });
+    expect(payloadsOf(calls, 'set-worker-url-common')).toEqual([
+      { value: 'http://new-common:3000', expected_revision: 'new-revision' }
+    ]);
+    expect(pane.sessionDraft()).not.toHaveProperty('bdui_url');
+  });
+
+  test('keeps the new workspace empty when its initial read fails', async () => {
+    let fail = false;
+    const { pane } = mount({
+      section: 'session',
+      transport: async () => {
+        if (fail) {
+          throw new Error('read failed');
+        }
+        return { ...workerResponse(), values: { bdui_url: 'http://old:3000' } };
+      }
+    });
+    await pane.load();
+    fail = true;
+
+    await pane.load();
+
+    expect(pane.sessionDraft()).toEqual({});
+  });
+
+  test('drops queued saves from the previous load generation', async () => {
+    /** @type {(value: any) => void} */
+    let release = () => {};
+    const { root, pane, calls } = mount({
+      section: 'session',
+      transport: async (/** @type {string} */ type) =>
+        type === 'set-session-defaults'
+          ? await new Promise((resolve) => {
+              release = resolve;
+            })
+          : workerResponse()
+    });
+    await pane.load();
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, '[data-key="bdui_url"]')
+    );
+    input.value = 'http://old:3000';
+    input.dispatchEvent(new Event('change'));
+    await finishRefresh();
+    el(root, 'button[data-mode="fast_track"]').click();
+
+    await pane.load();
+    release({ ...workerResponse(), values: { bdui_url: 'http://old:3000' } });
+    await finishRefresh();
+
+    expect(payloadsOf(calls, 'set-session-defaults')).toHaveLength(1);
+    expect(pane.sessionDraft()).toEqual({});
+  });
+
+  test.each([false, true])(
+    'retains invalid-value deletion only while save fails: %s',
+    async (fail_first) => {
+      let writes = 0;
+      const { root, pane, calls } = mount({
+        section: 'session',
+        transport: async (
+          /** @type {string} */ type,
+          /** @type {any} */ payload
+        ) => {
+          if (type === 'set-session-defaults') {
+            if (++writes === 1 && fail_first) {
+              throw new Error('write failed');
+            }
+            return {
+              ...workerResponse(),
+              values: payload.values.workflow_mode
+                ? { workflow_mode: payload.values.workflow_mode }
+                : {}
+            };
+          }
+          return { ...workerResponse(), warnings: ['invalid_value:bdui_url'] };
+        }
+      });
+      await pane.load();
+
+      const input = /** @type {HTMLInputElement} */ (
+        el(root, '[data-key="bdui_url"]')
+      );
+      input.value = '';
+      input.dispatchEvent(new Event('change'));
+      await finishRefresh();
+      el(root, 'button[data-mode="fast_track"]').click();
+      await finishRefresh();
+
+      const saves = payloadsOf(calls, 'set-session-defaults');
+      expect(saves[0].values).toEqual({ bdui_url: null });
+      expect(saves[1].values).toEqual({
+        workflow_mode: 'fast_track',
+        ...(fail_first ? { bdui_url: null } : {})
+      });
+    }
+  );
+
+  test('replaces an outstanding invalid-value deletion with a valid address edit', async () => {
+    const { root, pane, calls } = mount({
+      section: 'session',
+      transport: async (/** @type {string} */ type) => {
+        if (type === 'set-session-defaults') {
+          throw new Error('write failed');
+        }
+        return { ...workerResponse(), warnings: ['invalid_value:bdui_url'] };
+      }
+    });
+    await pane.load();
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, '[data-key="bdui_url"]')
+    );
+    input.dispatchEvent(new Event('change'));
+    await finishRefresh();
+
+    input.value = 'http://fixed:3000';
+    input.dispatchEvent(new Event('change'));
+    await finishRefresh();
+
+    expect(payloadsOf(calls, 'set-session-defaults')[1].values).toEqual({
+      bdui_url: 'http://fixed:3000'
+    });
+  });
+
+  test('propagates a common revision conflict through the monitor transport', async () => {
+    /** @type {any} */
+    let monitor_transport;
+    const client = {
+      send: vi.fn(async (/** @type {string} */ type) => {
+        if (type === 'set-worker-url-common') {
+          throw { code: 'revision_conflict' };
+        }
+        if (type === 'list-workspaces') {
+          return { workspaces: [], current: null };
+        }
+        return workerResponse();
+      }),
+      on: () => () => {},
+      onConnection: () => () => {},
+      close: () => {},
+      getState: () => 'open'
+    };
+    vi.doMock('../../ws.js', () => ({ createWsClient: () => client }));
+    vi.doMock('../monitor/index.js', async () => {
+      const actual = await vi.importActual('../monitor/index.js');
+      return {
+        ...actual,
+        createMonitorView: (
+          /** @type {HTMLElement} */ _root,
+          /** @type {any} */ options
+        ) => {
+          monitor_transport = options.transport;
+          return { load() {}, pause() {} };
+        }
+      };
+    });
+    try {
+      const { bootstrap } = await import('../../main.js');
+      const shell = document.createElement('main');
+      document.body.appendChild(shell);
+      bootstrap(shell);
+      await finishRefresh();
+      expect(monitor_transport).toBeTypeOf('function');
+      const { root, pane, notify } = mount({
+        root_dir: REPO_B,
+        section: 'session',
+        transport: monitor_transport
+      });
+      await pane.load();
+      typeCommon(root, 'http://draft:3000');
+
+      el(root, '[data-worker-common-save]').click();
+      await finishRefresh();
+
+      expect(notify).toHaveBeenCalledWith(
+        '다른 창에서 변경됨 — 새로고침 후 다시 시도'
+      );
+      expect(
+        client.send.mock.calls.filter(
+          ([type]) => type === 'set-worker-url-common'
+        )
+      ).toHaveLength(1);
+    } finally {
+      vi.doUnmock('../../ws.js');
+      vi.doUnmock('../monitor/index.js');
+    }
+  });
+});

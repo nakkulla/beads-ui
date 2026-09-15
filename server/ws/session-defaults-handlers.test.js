@@ -950,6 +950,27 @@ describe('Worker URL session defaults', () => {
     expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
   });
 
+  test('pins the follow-up read to the original connection root during common save', async () => {
+    const { ws, sent } = fakeWs();
+    vi.mocked(commonSet).mockImplementationOnce(async () => {
+      ws.workspace = { root_dir: WS_OTHER };
+      return { status: 'ok', common: COMMON };
+    });
+
+    await handleSetWorkerUrlCommon(ws, commonRequest({ root_dir: undefined }));
+
+    expect(sent[0].ok).toBe(true);
+    expect(kvGetJsonAtRoot).toHaveBeenCalledExactlyOnceWith(
+      WS_CONN,
+      'workflow_session_defaults'
+    );
+    expect(kvGetJsonInWorkspace).not.toHaveBeenCalled();
+    expect(resolveWorkerUrl).toHaveBeenCalledExactlyOnceWith({
+      root: WS_CONN,
+      workspace: {}
+    });
+  });
+
   test.each([
     { value: '' },
     { value: false },
