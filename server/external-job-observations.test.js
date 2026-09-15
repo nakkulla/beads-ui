@@ -93,6 +93,20 @@ function collector(watch_value, options = {}) {
 }
 
 describe('external job observations', () => {
+  test('orders complete workspace names before consumer identifiers', async () => {
+    const { observations } = collector(watch());
+
+    await observations.collect([
+      { root_dir: '/repos/project-copy', name: 'aa', snapshot: snapshot() },
+      { root_dir: '/repos/project', name: 'a', snapshot: snapshot() }
+    ]);
+
+    expect(observations.get().rows.map((row) => row.workspace_name)).toEqual([
+      'a',
+      'aa'
+    ]);
+  });
+
   test('maps a worktree watch through the actual git common directory', async () => {
     const { observations, run } = collector(watch());
 
@@ -178,8 +192,28 @@ describe('external job observations', () => {
       job_state: '계산 상태 확인 필요',
       previous_job_state: '이전 관측: 실행 대기',
       monitor_state: '감시 확인 필요',
-      monitor_reason: 'ssh timeout'
+      monitor_reason: '원격 작업 확인 시간 초과'
     });
+  });
+
+  test('redacts a command-bearing timeout from the serialized wire row', async () => {
+    const secret_host = 'private-cluster.internal';
+    const secret_command = `ssh -o BatchMode=yes ${secret_host} squeue --job 246416`;
+    const { observations } = collector(
+      watch({
+        last_error: `TimeoutExpired: Command '${secret_command}' timed out after 45 seconds`
+      })
+    );
+
+    await observations.collect([
+      { root_dir: '/repos/project', name: 'project', snapshot: snapshot() }
+    ]);
+    const wire = JSON.stringify(observations.get().rows);
+
+    expect(wire).toContain('원격 작업 확인 시간 초과');
+    expect(wire).not.toContain(secret_host);
+    expect(wire).not.toContain(secret_command);
+    expect(wire).not.toContain('BatchMode');
   });
 
   test('marks an overdue active observation without calling the job failed', async () => {
@@ -267,7 +301,7 @@ describe('external job observations', () => {
     expect(observations.get().rows[0]).toMatchObject({
       job_state: '실행 대기',
       monitor_state: '감시 확인 필요',
-      monitor_reason: 'launchctl read failed'
+      monitor_reason: '자동 확인 실패'
     });
   });
 

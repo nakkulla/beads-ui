@@ -1206,11 +1206,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 문자열이라 줄 판정에 영향이 없다.
   // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 자식 롤업·landing
   // 진행이 모두 슬롯 3이므로 그 뒤에 선다.
-  const monitor_deps = monitor
-    ? dependencyChipsTemplate(monitor.dependency_chips)
-    : '';
   const external_wait_el = externalWaitSummaryTemplate(tile);
-  const monitor_relations = html`${monitor_deps}${external_wait_el}`;
+  const monitor_relations = dependencyChipsTemplate(
+    monitor?.dependency_chips,
+    external_wait_el
+  );
   const monitor_body = monitorTileBody(
     monitor,
     now,

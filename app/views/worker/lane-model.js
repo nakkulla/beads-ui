@@ -270,6 +270,7 @@ const DONE_KIND_LABELS = {
  *   external_wait_count?: number,
  *   external_waits?: Array<Record<string, any>>,
  *   watch_id?: string|null,
+ *   gate_id?: string,
  *   gate_open?: boolean,
  *   consumer_id?: string|null,
  *   recent_complete?: boolean,
@@ -4250,6 +4251,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
       raw_queue_length: raw_queue_length_by_root.get(source.root_dir) || 0
     });
   }
+  external_waits.sort(
+    (a, b) =>
+      a.workspace_name.localeCompare(b.workspace_name) ||
+      (a.consumer_id || '').localeCompare(b.consumer_id || '') ||
+      (a.gate_id || '').localeCompare(b.gate_id || '')
+  );
 
   /** @type {LaneModel} */
   const model = {

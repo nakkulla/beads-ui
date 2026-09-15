@@ -88,6 +88,37 @@ function runnable(id, patch = {}) {
 }
 
 /**
+ * @param {Partial<Record<string, any>>} [patch]
+ * @returns {Record<string, any>}
+ */
+function externalWait(patch = {}) {
+  return {
+    kind: 'external_wait',
+    root_dir: WS_A,
+    workspace_name: 'repo-a',
+    gate_id: 'A-gate',
+    gate_title: 'external job',
+    consumer_id: 'A-1',
+    consumer_title: 'consumer',
+    watch_id: 'a'.repeat(24),
+    job_id: '42',
+    stage: 'active',
+    gate_open: true,
+    recent_complete: false,
+    job_state: '실행 대기',
+    previous_job_state: null,
+    monitor_state: '자동 확인 중',
+    monitor_reason: null,
+    overdue: false,
+    last_observed_at: 1,
+    next_observation_at: 2,
+    completed_at: null,
+    recovery_needed: false,
+    ...patch
+  };
+}
+
+/**
  * @param {string} [action_id]
  * @returns {Record<string, any>}
  */
@@ -233,6 +264,81 @@ describe('external wait projection', () => {
     );
 
     expect(lanes.runnable[0].external_wait_count).toBeUndefined();
+  });
+
+  test('sorts unified external waits independently of workspace registration order', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          root_dir: '/repo-z',
+          name: 'z-repo',
+          external_waits: [
+            externalWait({
+              root_dir: '/repo-z',
+              workspace_name: 'z-repo',
+              gate_id: 'Z-gate',
+              consumer_id: 'Z-consumer'
+            })
+          ]
+        }),
+        workspace({
+          root_dir: '/repo-a',
+          name: 'a-repo',
+          external_waits: [
+            externalWait({
+              root_dir: '/repo-a',
+              workspace_name: 'a-repo',
+              gate_id: 'A-gate-0',
+              consumer_id: 'A-consumer-a',
+              watch_id: 'b'.repeat(24)
+            }),
+            externalWait({
+              root_dir: '/repo-a',
+              workspace_name: 'a-repo',
+              gate_id: 'A-gate-2',
+              consumer_id: 'A-consumer-z'
+            }),
+            externalWait({
+              root_dir: '/repo-a',
+              workspace_name: 'a-repo',
+              gate_id: 'A-gate-1',
+              consumer_id: 'A-consumer-a'
+            })
+          ]
+        })
+      ],
+      []
+    );
+
+    expect(lanes.external_waits.map((row) => row.gate_id)).toEqual([
+      'A-gate-0',
+      'A-gate-1',
+      'A-gate-2',
+      'Z-gate'
+    ]);
+  });
+
+  test('compares the whole workspace name before consumer and gate keys', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          root_dir: '/repo-aa',
+          name: 'aa',
+          external_waits: [externalWait({ consumer_id: 'a', gate_id: 'a' })]
+        }),
+        workspace({
+          root_dir: '/repo-a',
+          name: 'a',
+          external_waits: [externalWait({ consumer_id: 'z', gate_id: 'z' })]
+        })
+      ],
+      []
+    );
+
+    expect(lanes.external_waits.map((row) => row.workspace_name)).toEqual([
+      'a',
+      'aa'
+    ]);
   });
 });
 

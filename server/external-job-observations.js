@@ -49,7 +49,41 @@ function time(value) {
  */
 function shortError(value) {
   const value_text = text(value);
-  return value_text === null ? null : value_text.slice(0, 240);
+  if (value_text === null) {
+    return null;
+  }
+  const known = new Set([
+    'monitoring stopped explicitly; remote job unchanged',
+    'origin execution has not reached a terminal attempt/process identity',
+    'remote response missing squeue marker',
+    'remote response missing scontrol marker',
+    'remote response missing log marker',
+    'remote response has invalid return code',
+    'squeue query failed',
+    'scheduler identity mismatch',
+    'scontrol identity mismatch',
+    'scheduler execution identity mismatch',
+    'terminal evidence is incomplete',
+    'empty queue has no matching final sjob completion',
+    'ssh observation failed',
+    'terminal note readback failed',
+    'gate identity changed before settlement',
+    'gate was closed without this observation evidence',
+    'gate close readback failed'
+  ]);
+  if (known.has(value_text)) {
+    return value_text;
+  }
+  if (/TimeoutExpired|timed out|timeout/i.test(value_text)) {
+    return '원격 작업 확인 시간 초과';
+  }
+  if (/\bssh\b/i.test(value_text)) {
+    return '원격 작업 연결 실패';
+  }
+  if (/invalid json/i.test(value_text)) {
+    return '감시 응답 형식 오류';
+  }
+  return '자동 확인 실패';
 }
 
 /**
@@ -252,12 +286,11 @@ function monitorState(watch, gate_open, service, now) {
  * @returns {Record<string, any>[]}
  */
 function sortRows(values) {
-  return values.sort((a, b) =>
-    [a.workspace_name, a.consumer_id || '', a.gate_id]
-      .join('\u0000')
-      .localeCompare(
-        [b.workspace_name, b.consumer_id || '', b.gate_id].join('\u0000')
-      )
+  return values.sort(
+    (a, b) =>
+      a.workspace_name.localeCompare(b.workspace_name) ||
+      (a.consumer_id || '').localeCompare(b.consumer_id || '') ||
+      a.gate_id.localeCompare(b.gate_id)
   );
 }
 
@@ -390,10 +423,28 @@ function staleRow(row, reason) {
 }
 
 /**
+ * @param {Array<{ root_dir: string, snapshot_stale?: boolean }>} workspaces
+ * @param {Record<string, any>[]} values
+ * @returns {Record<string, any>[]}
+ */
+function markStaleSnapshots(workspaces, values) {
+  const stale_roots = new Set(
+    workspaces
+      .filter((workspace) => workspace.snapshot_stale === true)
+      .map((workspace) => workspace.root_dir)
+  );
+  return values.map((row) =>
+    stale_roots.has(row.root_dir)
+      ? staleRow(row, '이슈 스냅샷이 오래된 자료임')
+      : row
+  );
+}
+
+/**
  * Reconcile cached watch facts against the current native gate snapshot when
  * watch files cannot be read. Native close/edge changes remain authoritative.
  *
- * @param {Array<{ root_dir: string, name: string, snapshot: any }>} workspaces
+ * @param {Array<{ root_dir: string, name: string, snapshot: any, snapshot_stale?: boolean }>} workspaces
  * @param {Record<string, any>[]} prior_rows
  * @param {string} reason
  * @param {number} now
@@ -534,7 +585,7 @@ export function createExternalJobObservations(options = {}) {
   let active_abort = null;
 
   /**
-   * @param {Array<{ root_dir: string, name: string, snapshot: any }>} workspaces
+   * @param {Array<{ root_dir: string, name: string, snapshot: any, snapshot_stale?: boolean }>} workspaces
    */
   function collect(workspaces) {
     if (in_flight !== null) {
@@ -590,7 +641,7 @@ export function createExternalJobObservations(options = {}) {
   }
 
   /**
-   * @param {Array<{ root_dir: string, name: string, snapshot: any }>} workspaces
+   * @param {Array<{ root_dir: string, name: string, snapshot: any, snapshot_stale?: boolean }>} workspaces
    * @param {AbortSignal} signal
    */
   async function collectNow(workspaces, signal) {
@@ -627,7 +678,7 @@ export function createExternalJobObservations(options = {}) {
             .filter((row) => unavailable_roots.has(row.root_dir))
             .map((row) => staleRow(row, '이슈 스냅샷을 읽을 수 없음'))
         );
-        return sortRows(projected);
+        return sortRows(markStaleSnapshots(workspaces, projected));
       }
       if (collected_at > 0) {
         return reconcileStaleRows(
@@ -637,14 +688,19 @@ export function createExternalJobObservations(options = {}) {
           now()
         );
       }
-      return openGateRows(
-        workspaces,
-        [],
-        service,
-        now(),
-        new Map(),
-        new Map(),
-        '감시 기록 디렉터리를 읽을 수 없음'
+      return sortRows(
+        markStaleSnapshots(
+          workspaces,
+          openGateRows(
+            workspaces,
+            [],
+            service,
+            now(),
+            new Map(),
+            new Map(),
+            '감시 기록 디렉터리를 읽을 수 없음'
+          )
+        )
       );
     }
     let watch_read_error = false;
@@ -722,7 +778,7 @@ export function createExternalJobObservations(options = {}) {
         .filter((row) => unavailable_roots.has(row.root_dir))
         .map((row) => staleRow(row, '이슈 스냅샷을 읽을 수 없음'))
     );
-    return sortRows(projected);
+    return sortRows(markStaleSnapshots(workspaces, projected));
   }
 
   return {

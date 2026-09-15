@@ -1422,7 +1422,7 @@ function refreshExternalPrsForVisible() {
  *   subscriberCount?: () => number,
  *   listRoots?: () => string[],
  *   requestSnapshot?: typeof requestWorkspaceSnapshot,
- *   collector?: { collect: (workspaces: Array<{ root_dir: string, name: string, snapshot: any }>) => Promise<unknown> },
+ *   collector?: { collect: (workspaces: Array<{ root_dir: string, name: string, snapshot: any, snapshot_stale?: boolean }>) => Promise<unknown> },
  *   onPush?: () => void
  * }} [options]
  * @returns {Promise<void>}
@@ -1452,7 +1452,8 @@ export function refreshExternalWaitsForVisible(options = {}) {
         return {
           root_dir,
           name: path.basename(root_dir),
-          snapshot: result.ok ? result.snapshot : null
+          snapshot: result.ok ? result.snapshot : null,
+          snapshot_stale: result.ok && result.stale === true
         };
       } catch (error) {
         log(
@@ -1460,7 +1461,12 @@ export function refreshExternalWaitsForVisible(options = {}) {
           root_dir,
           error
         );
-        return { root_dir, name: path.basename(root_dir), snapshot: null };
+        return {
+          root_dir,
+          name: path.basename(root_dir),
+          snapshot: null,
+          snapshot_stale: true
+        };
       }
     })
   )

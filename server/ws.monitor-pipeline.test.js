@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { MESSAGE_TYPES } from '../app/protocol.js';
+import { createExternalJobObservations } from './external-job-observations.js';
 import { __resetWorkerAttachmentsForTest } from './worker/attach.js';
 import { getWorkerRuntime } from './worker/runtime.js';
 import {
@@ -171,6 +172,89 @@ describe('ws monitor-pipeline channel (UI-nprg)', () => {
     await pending;
 
     expect(collector.collect).not.toHaveBeenCalled();
+  });
+
+  test('marks a stale coordinator snapshot and clears it after recovery', async () => {
+    const gate = {
+      id: 'UI-gate',
+      title: '외부 계산',
+      issue_type: 'gate',
+      await_id: 'a'.repeat(24),
+      await_type: 'human',
+      status: 'open'
+    };
+    const consumer = { id: 'UI-consumer', title: '분석', status: 'open' };
+    const snapshot = {
+      all: [gate, consumer],
+      id_index: new Map([
+        [gate.id, gate],
+        [consumer.id, consumer]
+      ]),
+      blocks_in: new Map([[gate.id, [consumer.id]]])
+    };
+    const watch = {
+      schema: 'external-job-monitor-v1',
+      watch_id: 'a'.repeat(24),
+      repo: '/repo/.worktrees/job',
+      gate_id: gate.id,
+      consumer: consumer.id,
+      job_id: '42',
+      stage: 'active',
+      observation_state: 'RUNNING',
+      last_observed_at: '2026-09-15T00:54:00Z',
+      next_observation_at: '2026-09-15T01:09:00Z'
+    };
+    const observations = createExternalJobObservations({
+      state_root: '/state',
+      now: () => Date.parse('2026-09-15T01:00:00Z'),
+      fs: {
+        readdir: async () => [`${watch.watch_id}.json`],
+        readFile: async () => JSON.stringify(watch)
+      },
+      run: async (file) =>
+        file === 'bead-job-monitor'
+          ? {
+              stdout: JSON.stringify({
+                ok: true,
+                schema: 'external-job-monitor-service-v1',
+                loaded: true,
+                command_matches: true,
+                loaded_matches_plist: true,
+                executable_exists: true,
+                last_tick: { exit_code: 0, skipped: true }
+              })
+            }
+          : { stdout: '/repo/.git\n' }
+    });
+    let coordinator_stale = true;
+    const options = /** @type {any} */ ({
+      subscriberCount: () => 1,
+      listRoots: () => ['/repo'],
+      requestSnapshot: async () => ({
+        ok: true,
+        snapshot,
+        stale: coordinator_stale,
+        fresh: !coordinator_stale
+      }),
+      collector: observations,
+      onPush: vi.fn()
+    });
+
+    await refreshExternalWaitsForVisible(options);
+    expect(observations.get().rows[0]).toMatchObject({
+      gate_id: gate.id,
+      stale: true,
+      monitor_state: '감시 확인 필요',
+      monitor_reason: '이슈 스냅샷이 오래된 자료임'
+    });
+
+    coordinator_stale = false;
+    await refreshExternalWaitsForVisible(options);
+    expect(observations.get().rows[0]).toMatchObject({
+      gate_id: gate.id,
+      monitor_state: '자동 확인 중'
+    });
+    expect(observations.get().rows[0].stale).toBeUndefined();
   });
 
   test('carries the three message types in the protocol vocabulary', () => {
