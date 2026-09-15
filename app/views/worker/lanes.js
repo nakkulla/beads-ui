@@ -1486,7 +1486,7 @@ export function priorityBadgeTemplate(priority) {
  * @typedef {Object} MiniItem
  * @property {string} id - Bead id.
  * @property {string} title - Bead title (falls back to id).
- * @property {string} [reason] - Candidate reason chip (missing_description /
+ * @property {string|import('../../protocol.js').WaitReason} [reason] - Candidate reason chip or external wait judgment (missing_description /
  * spec 없음 / 🔒 target).
  * @property {boolean} draggable - Whether this row can be dragged. 후보 카드는
  * 언제나 `false`다 (UI-d13v §6): 후보 레인은 드래그 소스도 드롭 대상도 아니고,
@@ -1626,6 +1626,7 @@ export function priorityBadgeTemplate(priority) {
  * `dependency_chips.predecessors`가 그리고, 여기 배열은 판정 팝업의 문장이
  * 읽는다.
  * @property {number} [external_wait_count] - 열린 외부 작업 gate 수.
+ * @property {import('../../protocol.js').WaitReason[]} [wait_reasons] - Server display judgments for this issue.
  * @property {Array<Record<string, any>>} [external_waits] - `status`와 gate 이동
  * 대상을 함께 싣는 요약 칩 자료.
  * @property {boolean} [spec_after_blocker] - 선행의 결과가 이 bead의 설계

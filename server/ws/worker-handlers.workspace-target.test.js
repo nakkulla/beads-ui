@@ -43,6 +43,10 @@ vi.mock('../worker/attach.js', () => {
     return typeof result === 'function' ? result() : result;
   };
   return {
+    // Empty wait judgment (UI-n99w §6.3). Not routed through `rec` because
+    // decorateQueue calls it on every projection, which would swamp the
+    // workspace-targeting assertions this file makes on attach_calls.
+    workerWaitState: () => ({ wait_reasons: [], external_waits: [] }),
     checkWorkerQueueAdmission: rec(() => Promise.resolve({ ok: true })),
     discardWorkerPr: rec(() => Promise.resolve({ ok: true })),
     enqueueWorkerManualMerge: rec(() =>

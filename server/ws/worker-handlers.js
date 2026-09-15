@@ -68,6 +68,7 @@ import {
   workerMergeQueueState,
   workerRepoId,
   workerSlots,
+  workerWaitState,
   workerWorktreeExists
 } from '../worker/attach.js';
 import { implActorOf } from '../worker/compare-projection.js';
@@ -3141,6 +3142,7 @@ function attemptsWithInstructionsRestart(projected, raw_attempts) {
  * @returns {Record<string, unknown>}
  */
 export function decorateQueue(workspace_key, raw_queue) {
+  const wait_state = workerWaitState(workspace_key);
   // Overlaid FIRST so every decoration below — observations, activity, titles —
   // sees the external rows without knowing they exist (UI-7agi §2).
   const overlaid = withExternalPrWait(workspace_key, raw_queue);
@@ -3386,6 +3388,12 @@ export function decorateQueue(workspace_key, raw_queue) {
     // wait-reason chip and lane topological corrections read from this, and
     // CLOSED cross-rig blockers are already gone from it (UI-u6zf §3.2).
     bead_blocked_by,
+    external_waits: wait_state.external_waits.filter(
+      (row) => row.root_dir === workspace_key
+    ),
+    wait_reasons: wait_state.wait_reasons.filter(
+      (reason) => reason.subject.root_dir === workspace_key
+    ),
     // Owning workspace of live or persisted waiting cross-rig blockers, so an
     // open or released chip can open the blocker in the rig that holds it. Its
     // own key keeps the same partiality contract as `bead_titles`/`bead_times`:

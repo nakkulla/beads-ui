@@ -20,7 +20,11 @@
  * @property {string} id
  * @property {number} seq
  * @property {string} root_dir
- * @property {Record<string, unknown>} queue
+ * @property {WorkerQueueSnapshot} queue
+ */
+
+/**
+ * @typedef {Record<string, unknown> & { external_waits?: ExternalWaitObservation[], wait_reasons?: WaitReason[] }} WorkerQueueSnapshot
  */
 
 /**
@@ -93,6 +97,27 @@
  * @property {boolean} recovery_needed
  * @property {number} [collected_at]
  * @property {boolean} [stale]
+ */
+
+/**
+ * Server-owned display judgment; consumers never recompute verdicts.
+ *
+ * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'base_moved'|'provider_hold'|'queue_hold'|'auto_advance_off'|'awaiting_user'|'retry_wait'|'stale_work'} WaitKind
+ * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'return_overdue'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'disposition'} VerdictCode
+ * @typedef {{ code: VerdictCode, message: string }} VerdictReason
+ * @typedef {Object} WaitReason
+ * @property {WaitKind} kind
+ * @property {{ bead_id: string, root_dir: string }} subject
+ * @property {string} headline
+ * @property {string} release
+ * @property {number} [since]
+ * @property {number} [next_check_at]
+ * @property {number} [resets_at]
+ * @property {'normal'|'overdue'|'action_required'} verdict
+ * @property {VerdictReason} [verdict_reason]
+ * @property {Array<{ id: string, rig?: string, status?: string, kind: 'gate'|'issue' }>} targets
+ * @property {Array<{ op: string, label: string, payload: Record<string, any> }>} actions
+ * @property {{ on_complete: 'discord'|'none', on_overdue: 'discord'|'none' }} notify_plan
  */
 
 const EXTERNAL_WAIT_FIELDS = new Set([

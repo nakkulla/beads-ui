@@ -2625,6 +2625,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
     const root_dir = workspace.root_dir;
     const workspace_name = workspace.name || root_dir;
+    const wait_reasons = Array.isArray(workspace.wait_reasons)
+      ? workspace.wait_reasons.filter(
+          (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
+            reason.subject.root_dir === root_dir
+        )
+      : [];
     for (const raw_wait of Array.isArray(workspace.external_waits)
       ? workspace.external_waits
       : []) {
@@ -2633,6 +2639,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }
       external_waits.push({
         ...raw_wait,
+        reason: wait_reasons.find(
+          (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
+            reason.kind === 'external_job' &&
+            reason.targets.some((target) => target.id === raw_wait.gate_id)
+        ),
         kind: 'external_wait',
         id: raw_wait.gate_id,
         title: raw_wait.gate_title || raw_wait.gate_id,
@@ -4298,6 +4309,19 @@ export function buildLanes(workspaces, workspaces_state, options) {
   };
 
   const open_external_by_consumer = new Map();
+  /** @type {Map<string, import('../../protocol.js').WaitReason[]>} */
+  const reasons_by_subject = new Map();
+  for (const workspace of list) {
+    for (const reason of workspace.wait_reasons || []) {
+      if (reason.subject.root_dir !== workspace.root_dir) {
+        continue;
+      }
+      const key = `${reason.subject.root_dir}\u0000${reason.subject.bead_id}`;
+      const reasons = reasons_by_subject.get(key) || [];
+      reasons.push(reason);
+      reasons_by_subject.set(key, reasons);
+    }
+  }
   for (const wait of external_waits) {
     if (
       wait.gate_open !== true ||
@@ -4317,6 +4341,24 @@ export function buildLanes(workspaces, workspaces_state, options) {
     ...model.running,
     ...model.pr_wait
   ]) {
+    const reasons = reasons_by_subject.get(`${item.root_dir}\u0000${item.id}`);
+    if (reasons) {
+      item.wait_reasons = reasons.filter(
+        (reason) =>
+          !['prerequisite', 'prerequisite_foreign'].includes(reason.kind) ||
+          item.lane === 'queue' ||
+          item.run_state === 'waiting'
+      );
+      if (
+        item.lane === 'queue' &&
+        item.wait_reasons.some((reason) =>
+          ['prerequisite', 'prerequisite_foreign'].includes(reason.kind)
+        ) &&
+        !item.badges?.includes('⛓ 선행 대기')
+      ) {
+        item.badges = [...(item.badges || []), '⛓ 선행 대기'];
+      }
+    }
     const waits = open_external_by_consumer.get(
       `${item.root_dir}\u0000${item.id}`
     );

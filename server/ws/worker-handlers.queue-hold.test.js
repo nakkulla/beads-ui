@@ -30,6 +30,9 @@ vi.mock('../registry-watcher.js', async (importOriginal) => {
 });
 
 vi.mock('../worker/attach.js', () => ({
+  // Empty wait judgment (UI-n99w §6.3): these cases are about hold projection,
+  // so decorateQueue attaches no external_waits or wait_reasons here.
+  workerWaitState: () => ({ wait_reasons: [], external_waits: [] }),
   backupFreshWorkerStaleWork: () => Promise.resolve({ ok: true }),
   checkWorkerQueueAdmission: () => Promise.resolve({ ok: true }),
   continueWorkerStaleWork: () => Promise.resolve({ ok: true }),
