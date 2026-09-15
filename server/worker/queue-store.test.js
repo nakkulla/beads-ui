@@ -3840,6 +3840,166 @@ describe('worker/queue-store — 외부 머지 durable 승격 (UI-exua §3.2)', 
   });
 });
 
+describe('cleanup retry load normalization', () => {
+  test.each([123456, undefined, null, '123456', false, {}, Infinity, NaN])(
+    'loads only finite numeric retry time %j',
+    (next_retry_at) => {
+      const store = createQueueStore();
+      store.recordCleanupFailure(WS, {
+        bead_id: 'UI-1',
+        step: 'branch_cleanup',
+        reason: 'remote_branch_delete_failed',
+        next_retry_at: 123456
+      });
+      const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+      raw.cleanup_failed['UI-1'].next_retry_at = next_retry_at;
+      fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+      const loaded = createQueueStore().load(WS).cleanup_failed['UI-1'];
+
+      expect(loaded.next_retry_at).toBe(
+        typeof next_retry_at === 'number' && Number.isFinite(next_retry_at)
+          ? next_retry_at
+          : undefined
+      );
+    }
+  );
+
+  /** @param {Record<string, any>} [patch] */
+  function loadLegacyHold(patch = {}) {
+    const store = createQueueStore();
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-cleanup',
+      step: 'branch_cleanup',
+      reason: 'worktree_remove_failed'
+    });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    Object.assign(raw, {
+      hold: {
+        kind: 'systemic',
+        cause: 'cleanup_failed:worktree_remove_failed',
+        since: 17,
+        bead_ids: ['UI-cleanup'],
+        halted_by_attempt_id: 'old-attempt'
+      },
+      ...patch
+    });
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+    return createQueueStore().load(WS);
+  }
+
+  test('removes a cleanup-only systemic hold without writing history', () => {
+    const queue = loadLegacyHold();
+
+    expect(queue.hold).toBeNull();
+    expect(queue.hold_history).toEqual([]);
+  });
+
+  test('retains only a merged verification hold and its original resume identity', () => {
+    const queue = loadLegacyHold({
+      hold: {
+        kind: 'systemic',
+        cause: 'cleanup_failed:worktree_remove_failed',
+        since: 17,
+        bead_ids: ['UI-cleanup', 'UI-verify'],
+        halted_by_attempt_id: 'old-attempt'
+      },
+      completion_intents: {
+        'UI-verify': {
+          root_bead_id: 'UI-verify',
+          target_base: 'main',
+          phase: 'needs_human',
+          subject: {
+            role: 'root',
+            bead_id: 'UI-verify',
+            pr_url: 'https://github.com/o/r/pull/1',
+            head_sha: 'a'.repeat(40),
+            base_sha: 'b'.repeat(40),
+            merged_sha: 'a'.repeat(40)
+          },
+          active_op: null,
+          terminal_reason: {
+            reason: 'verify_red:regression',
+            stage: 'verify',
+            failure_key: null,
+            at: 1
+          }
+        }
+      }
+    });
+
+    expect(queue.hold).toEqual({
+      kind: 'systemic',
+      cause: 'verify_red:regression',
+      since: 17,
+      bead_ids: ['UI-verify'],
+      halted_by_attempt_id: 'old-attempt'
+    });
+    expect(queue.hold_history).toEqual([]);
+  });
+
+  test('uses the latest inserted attempt even when timestamps move backwards', () => {
+    const queue = loadLegacyHold({
+      hold: {
+        kind: 'systemic',
+        cause: 'cleanup_failed:x',
+        since: 17,
+        bead_ids: ['UI-cleanup', 'UI-base'],
+        halted_by_attempt_id: 'old-attempt'
+      },
+      attempts: {
+        old: {
+          attempt_id: 'old',
+          bead_id: 'UI-cleanup',
+          cause: 'verify_red',
+          started_at: 100
+        },
+        newer: {
+          attempt_id: 'newer',
+          bead_id: 'UI-cleanup',
+          cause: 'cleanup_failed:x',
+          started_at: 1
+        },
+        base: {
+          attempt_id: 'base',
+          bead_id: 'UI-base',
+          cause: 'base_landing_detected',
+          started_at: 2
+        }
+      }
+    });
+
+    expect(queue.hold).toEqual({
+      kind: 'systemic',
+      cause: 'base_landing_detected',
+      since: 17,
+      bead_ids: ['UI-base'],
+      halted_by_attempt_id: 'old-attempt'
+    });
+  });
+
+  test.each([
+    {
+      kind: 'env',
+      cause: 'cleanup_failed:x',
+      since: 17,
+      bead_ids: [],
+      halted_by_attempt_id: null
+    },
+    {
+      kind: 'systemic',
+      cause: 'verify_red',
+      since: 17,
+      bead_ids: ['UI-verify'],
+      halted_by_attempt_id: 'old-attempt'
+    }
+  ])('preserves unrelated hold %j', (hold) => {
+    const queue = loadLegacyHold({ hold });
+
+    expect(queue.hold).toEqual(hold);
+  });
+});
+
 describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', () => {
   /**
    * @param {any} store

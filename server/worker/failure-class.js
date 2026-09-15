@@ -126,16 +126,15 @@ const ALWAYS_ENV_CAUSES = new Set([
 const ALWAYS_ENV_PREFIXES = ['spawn_failed'];
 
 /** Causes that stop the queue on first sight (spec §3.4). */
-const ALWAYS_SYSTEMIC_CAUSES = new Set([
+export const ALWAYS_SYSTEMIC_CAUSES = new Set([
   'base_landing_detected',
   'gh_unavailable',
   'bd_unreachable',
-  'verify_red',
-  'cleanup_failed'
+  'verify_red'
 ]);
 
-/** Cause prefixes that stop the queue on first sight. */
-const ALWAYS_SYSTEMIC_PREFIXES = ['cleanup_failed'];
+/** Cause prefixes that stop the queue on first sight. @type {string[]} */
+const ALWAYS_SYSTEMIC_PREFIXES = [];
 
 /** `loud_fail_blocker` reasons that are a breached prevention layer (§3.4). */
 const SYSTEMIC_BLOCKER_REASONS = new Set([

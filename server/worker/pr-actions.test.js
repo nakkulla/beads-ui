@@ -20,6 +20,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createActivityStore } from './activity-store.js';
+import {
+  createCompletionActionDriver,
+  decideCompletionAction
+} from './completion-intent.js';
 import { createPrActions } from './pr-actions.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createPrPoller } from './pr-poller.js';
@@ -1687,6 +1691,241 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
   });
 });
 
+describe('post-merge cleanup retry records', () => {
+  test.each([false, true])(
+    'runs the coordinator through the bounded cleanup retry sequence (recovers=%s)',
+    async (recovers) => {
+      const failure = { ok: false, removed: false, reason: 'observe_failed' };
+      const h = makeActions({ removeByBranchResult: failure });
+      await h.actions.merge(BEAD);
+      const subject = {
+        role: /** @type {const} */ ('root'),
+        bead_id: BEAD,
+        pr_url: 'https://github.com/o/r/pull/304',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: 'c'.repeat(40)
+      };
+      h.store.enqueueCompletionIntent(WS, {
+        root_bead_id: BEAD,
+        source_attempt_id: 'a1',
+        target_base: 'main',
+        subject
+      });
+      h.store.setCompletionSubject(WS, {
+        root_bead_id: BEAD,
+        phase: 'cleaning',
+        subject
+      });
+      const driver = createCompletionActionDriver({
+        workspace: WS,
+        store: h.store,
+        prActions: h.actions
+      });
+
+      for (let round = 0; round < 3; round++) {
+        const queue = h.store.snapshot(WS);
+        const intent = queue.completion_intents[BEAD];
+        const fact = await driver.observe(BEAD, intent);
+        const action = decideCompletionAction({
+          auto_merge: true,
+          intent,
+          fact,
+          now: queue.cleanup_failed[BEAD].next_retry_at
+        });
+        expect(action).toEqual({ kind: 'retry_cleanup' });
+        if (!action) {
+          throw new Error('cleanup retry action missing');
+        }
+        failure.ok = recovers && round === 2;
+        await driver.onAction(BEAD, action, intent);
+      }
+      const after = h.store.snapshot(WS);
+      const fact = await driver.observe(BEAD, after.completion_intents[BEAD]);
+      const action = decideCompletionAction({
+        auto_merge: true,
+        intent: after.completion_intents[BEAD],
+        fact,
+        now: 1_000_000
+      });
+
+      expect(h.worktree.removeCompleted).toHaveBeenCalledTimes(4);
+      if (recovers) {
+        expect(after.completion_intents[BEAD]).toMatchObject({
+          phase: 'completed',
+          terminal_reason: null
+        });
+        expect(after.cleanup_failed[BEAD]).toBeUndefined();
+        expect(action).toBeNull();
+      } else {
+        expect(action).toEqual({
+          kind: 'needs_human',
+          reason: 'retry_exhausted:cleanup_failed:worktree_remove_failed',
+          terminal: true
+        });
+      }
+      expect(after.hold).toBeNull();
+    }
+  );
+
+  test('ignores a repository operation retry budget when recording a base failure', async () => {
+    const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+    h.store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'repo_operations',
+      reason: 'script_failed',
+      retryable: true,
+      retry_count: 2
+    });
+
+    await h.actions.retryCleanup(BEAD);
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'base_containment',
+      retry_count: 0,
+      next_retry_at: 61_000
+    });
+  });
+
+  test('persists consecutive observation failures with bounded retry deadlines', async () => {
+    const h = makeActions({
+      removeByBranchResult: {
+        ok: false,
+        removed: false,
+        reason: 'observe_failed'
+      }
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'branch_cleanup',
+      retryable: true,
+      retry_count: 0,
+      next_retry_at: 61_000
+    });
+
+    await h.actions.retryCleanup(BEAD);
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      retry_count: 1,
+      next_retry_at: 301_000
+    });
+    await h.actions.retryCleanup(BEAD);
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      retry_count: 2,
+      next_retry_at: 901_000
+    });
+    await h.actions.retryCleanup(BEAD);
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      retryable: true,
+      retry_count: 3
+    });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).not.toHaveProperty(
+      'next_retry_at'
+    );
+  });
+
+  test('records a base observation failure with the first retry deadline', async () => {
+    const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'base_containment',
+      reason: 'base_fetch_failed',
+      retryable: true,
+      retry_count: 0,
+      next_retry_at: 61_000
+    });
+  });
+
+  test('drops the retry deadline when an observation failure becomes deterministic', async () => {
+    const failure = { ok: false, removed: false, reason: 'observe_failed' };
+    const h = makeActions({ removeByBranchResult: failure });
+    await h.actions.merge(BEAD);
+    failure.reason = 'dirty_unique';
+
+    await h.actions.retryCleanup(BEAD);
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      retryable: false,
+      retry_count: 1
+    });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).not.toHaveProperty(
+      'next_retry_at'
+    );
+  });
+
+  test('restarts the retry count after a deterministic failure', async () => {
+    const failure = { ok: false, removed: false, reason: 'dirty_unique' };
+    const h = makeActions({ removeByBranchResult: failure });
+    await h.actions.merge(BEAD);
+    failure.reason = 'observe_failed';
+
+    await h.actions.retryCleanup(BEAD);
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      retryable: true,
+      retry_count: 0,
+      next_retry_at: 61_000
+    });
+  });
+
+  test('finishes remaining cleanup after a human removes the blocked worktree', async () => {
+    const h = makeActions();
+    h.worktree.removeCompleted.mockResolvedValueOnce({
+      ok: false,
+      removed: false,
+      reason: 'dirty_unique'
+    });
+    await h.actions.merge(BEAD);
+    h.worktree.removeCompleted.mockResolvedValueOnce({
+      ok: true,
+      removed: false,
+      reason: null
+    });
+    h.store.enqueueCompletionIntent(WS, {
+      root_bead_id: BEAD,
+      source_attempt_id: 'a1',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: BEAD,
+        pr_url: 'https://github.com/o/r/pull/304',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: 'c'.repeat(40)
+      }
+    });
+    h.store.prepareCompletionOp(WS, {
+      root_bead_id: BEAD,
+      phase: 'cleaning',
+      op: {
+        op_id: 'cleanup-manual-removal',
+        kind: 'retry_cleanup',
+        failure_key: {
+          stage: 'branch_cleanup',
+          reason: 'worktree_remove_failed',
+          subject_sha: 'c'.repeat(40),
+          base_sha: BASE_SHA,
+          result_digest: 'e'.repeat(64)
+        },
+        attempt_id: null,
+        status: 'prepared'
+      }
+    });
+
+    const result = await h.actions.resumeCompletionCleanup(BEAD);
+
+    expect(result.ok).toBe(true);
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+    expect(h.store.snapshot(WS).done).toContainEqual(
+      expect.objectContaining({ bead_id: BEAD })
+    );
+    expect(h.calls).toContain('git:push origin');
+  });
+});
+
 describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
   test('leaves bd untouched when the branch cleanup fails — it now runs BEFORE the close', async () => {
     const h = makeActions({
@@ -2616,6 +2855,11 @@ describe('worker/pr-actions — RepoOperation cleanup lane', () => {
       fetch_failure: 'timeout',
       elapsed_ms: 60_123
     });
+    for (const key of ['retryable', 'retry_count', 'next_retry_at']) {
+      expect(env.store.snapshot(WS).cleanup_failed[BEAD]).not.toHaveProperty(
+        key
+      );
+    }
   });
 });
 
@@ -6122,11 +6366,19 @@ describe('post-merge cleanup — the post-merge job step (UI-i60a §1–§3)', (
 describe('cleanup stop notification (UI-jw27 §2)', () => {
   test('announces a base containment stop with its cause and PR', async () => {
     const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+    h.store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'base_containment',
+      reason: 'base_fetch_failed',
+      retryable: true,
+      retry_count: 2
+    });
 
     await h.actions.merge(BEAD);
 
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'base_containment'
+      step: 'base_containment',
+      retry_count: 3
     });
     expect(h.human_notices).toEqual([
       expect.objectContaining({
@@ -6137,6 +6389,18 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
         repo: REPO
       })
     ]);
+  });
+
+  test('announces nothing while a base containment retry is scheduled', async () => {
+    const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.human_notices).toEqual([]);
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      retry_count: 0,
+      next_retry_at: 61_000
+    });
   });
 
   test('sends nothing when the store refuses the failure record', async () => {
@@ -6160,11 +6424,21 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
         reason: 'ref_delete_failed'
       }
     });
-
     await h.actions.merge(BEAD);
+    h.store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'branch_cleanup',
+      reason: 'local_branch_delete_failed',
+      detail: 'manager_reason=ref_delete_failed',
+      retryable: true,
+      retry_count: 2
+    });
+
+    await h.actions.retryCleanup(BEAD);
 
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'branch_cleanup'
+      step: 'branch_cleanup',
+      retry_count: 3
     });
     expect(h.human_notices).toEqual([
       expect.objectContaining({
@@ -6172,6 +6446,24 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
         reason: 'local_branch_delete_failed'
       })
     ]);
+  });
+
+  test('announces nothing while a branch cleanup retry is scheduled', async () => {
+    const h = makeActions({
+      removeByBranchResult: {
+        ok: false,
+        removed: false,
+        reason: 'ref_delete_failed'
+      }
+    });
+
+    await h.actions.merge(BEAD);
+
+    expect(h.human_notices).toEqual([]);
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      retry_count: 0,
+      next_retry_at: 61_000
+    });
   });
 
   test('announces a parent close stop', async () => {
@@ -6195,6 +6487,13 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
 
   test('completes the merge normally when the notifier throws', async () => {
     const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
+    h.store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'base_containment',
+      reason: 'base_fetch_failed',
+      retryable: true,
+      retry_count: 2
+    });
     h.notify.needsHuman.mockImplementation(() => {
       throw new Error('notifier broken');
     });

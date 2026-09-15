@@ -34,10 +34,9 @@
  *
  * It is deliberately NOT an unconditional immediate `bd close`. A step that
  * fails STOPS the sequence, leaves the bead `resolved` in `pr_wait`, records a
- * DURABLE `merged_cleanup_failed` (queue.json — see the queue store), raises a
- * banner, and never retries by itself. Returning the situation to a human is
- * the designed outcome: the merge already happened and cannot be undone, so
- * guessing at the remainder is strictly worse than reporting it.
+ * DURABLE `merged_cleanup_failed` (queue.json — see the queue store). The
+ * completion coordinator retries transient branch/base observations with a
+ * bounded budget; deterministic failures need a human to remove the cause.
  *
  * A MERGE IS NOT A DELIVERY: closure waits for the repo-declared RepoOperation
  * lane to reach a terminal success on the exact merged SHA.
@@ -63,6 +62,7 @@ import {
   receiptGateState,
   receiptLineageForAttempt
 } from './receipt-check.js';
+import { cleanupFailureRetryClass } from './resolution-ladder.js';
 import { branchForBead } from './worktree.js';
 
 const log = debug('worker:pr-actions');
@@ -2908,7 +2908,12 @@ export function createPrActions(deps) {
         base_sync: null
       };
     }
-    if (prior_failure) {
+    // The observation retry budget survives until success or the next failure.
+    if (
+      prior_failure &&
+      prior_failure.step !== 'branch_cleanup' &&
+      prior_failure.step !== 'base_containment'
+    ) {
       deps.store.clearCleanupFailure(workspace, bead_id);
     }
     // Resume is decided BY NAME, never by an offset into the half: a record
@@ -3370,9 +3375,8 @@ export function createPrActions(deps) {
   }
 
   /**
-   * Record a cleanup stop durably and hand the bead back to a human: it stays
-   * in `pr_wait`, bd is left `resolved`, the banner renders off the record, and
-   * NOTHING retries on its own.
+   * Record a cleanup stop durably in `pr_wait`, leaving bd `resolved`.
+   * Owned observation failures carry the coordinator's retry schedule.
    *
    * When the stop happened AT the parent close, the bead is FIRST put back to
    * `resolved` (with a readback) — otherwise "bd stays `resolved`" would
@@ -3438,6 +3442,24 @@ export function createPrActions(deps) {
       failureTokenSummary(reason);
     const q = deps.store.snapshot(workspace);
     if (inPrWait(q, bead_id)) {
+      /** @type {{ retryable?: boolean, retry_count?: number, next_retry_at?: number }} */
+      const cleanup_retry = {};
+      if (step === 'branch_cleanup' || step === 'base_containment') {
+        const previous = q.cleanup_failed[bead_id];
+        cleanup_retry.retryable =
+          cleanupFailureRetryClass({ step, reason, detail }) === 'transient';
+        const retry_count =
+          (previous?.step === 'branch_cleanup' ||
+            previous?.step === 'base_containment') &&
+          previous.retryable === true
+            ? (previous.retry_count ?? 0) + 1
+            : 0;
+        cleanup_retry.retry_count = retry_count;
+        if (cleanup_retry.retryable && retry_count < 3) {
+          cleanup_retry.next_retry_at =
+            (deps.now || Date.now)() + [60_000, 300_000, 900_000][retry_count];
+        }
+      }
       const written = deps.store.recordCleanupFailure(workspace, {
         bead_id,
         step,
@@ -3447,12 +3469,13 @@ export function createPrActions(deps) {
         summary,
         output_tail,
         log_path,
-        ...failure_evidence
+        ...failure_evidence,
+        ...cleanup_retry
       });
       // No record, no push (UI-jw27 §2): an external row never wrote one here,
       // and a write the store REFUSED on its own validation left none either,
       // so there is nothing for this announcement to be about.
-      if (written.ok) {
+      if (written.ok && cleanup_retry.next_retry_at === undefined) {
         announceCleanupStop(q, bead_id, step, reason, summary);
       }
     }

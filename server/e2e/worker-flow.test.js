@@ -24,6 +24,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { providerClock } from '../../app/views/worker/gate-labels.js';
+import { buildLanes } from '../../app/views/worker/lane-model.js';
+import { prWaitProgress } from '../../app/views/worker/pr-wait-progress.js';
 import { validateAdmission } from '../worker/admission.js';
 import {
   createCompletionActionDriver,
@@ -417,6 +420,123 @@ afterEach(() => {
 });
 
 describe('worker e2e — full success flow', () => {
+  test('dispatches another bead without a stop chip after cleanup terminalization', async () => {
+    const { runtime, scheduler } = buildSystem({
+      fixture: 'claude-success.jsonl',
+      config: { S1: { runner: 'claude' } },
+      slots: 1
+    });
+    const store = runtime.queueStore;
+    const base_sha = (
+      await gitRun(['rev-parse', 'main'], { cwd: repo_dir })
+    ).stdout.trim();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'cleanup-attempt',
+        bead_id: 'M1',
+        repo: repo_dir,
+        target_base: 'main',
+        base_oid: base_sha,
+        status: 'done'
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'M1',
+      attempt_id: 'cleanup-attempt',
+      patch: {}
+    });
+    const subject = {
+      role: /** @type {const} */ ('root'),
+      bead_id: 'M1',
+      pr_url: 'https://github.com/o/r/pull/1',
+      head_sha: base_sha,
+      base_sha,
+      merged_sha: base_sha
+    };
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'M1',
+      source_attempt_id: 'cleanup-attempt',
+      target_base: 'main',
+      subject
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'M1',
+      phase: 'cleaning',
+      subject
+    });
+    store.recordCleanupFailure(WS, {
+      bead_id: 'M1',
+      step: 'branch_cleanup',
+      reason: 'worktree_remove_failed',
+      detail: 'manager_reason=dirty_unique'
+    });
+    const driver = createCompletionActionDriver({
+      workspace: WS,
+      store,
+      prActions: { completionGate: vi.fn() }
+    });
+    const intent = store.snapshot(WS).completion_intents.M1;
+    const fact = await driver.observe('M1', intent);
+    const action = decideCompletionAction({ auto_merge: true, intent, fact });
+    if (!action) {
+      throw new Error('cleanup terminal action missing');
+    }
+
+    await driver.onAction('M1', action, intent);
+    seedQueue(store, ['S1']);
+    const queue = store.snapshot(WS);
+    const lanes = buildLanes([{ root_dir: repo_dir, ...queue }]);
+    await scheduler.tick(WS);
+
+    expect(queue.completion_intents.M1).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: { reason: 'cleanup_failed:worktree_remove_failed' }
+    });
+    expect(queue.hold).toBeNull();
+    const next_row = lanes.queue.find((row) => row.id === 'S1');
+    expect(next_row).toBeDefined();
+    expect(next_row?.gate).toBeUndefined();
+    expect(scheduler.isRunning('S1')).toBe(true);
+  });
+
+  test('projects the recorded cleanup retry time into the existing progress label', () => {
+    const next_retry_at = 1_800_000_000_000;
+
+    const progress = prWaitProgress({
+      bead_id: 'M1',
+      cleanup_cursor: 'branch_cleanup',
+      cleanup_failed: {
+        step: 'branch_cleanup',
+        reason: 'remote_branch_delete_failed',
+        retryable: true,
+        next_retry_at
+      }
+    });
+
+    expect(progress).toMatchObject({
+      step: 'branch',
+      label: `브랜치 정리 실패 · 다음 ${providerClock(next_retry_at)}`,
+      failed: true
+    });
+  });
+
+  test.each([undefined, null, '123', NaN])(
+    'omits cleanup retry wording without a usable timestamp %j',
+    (next_retry_at) => {
+      expect(
+        prWaitProgress({
+          bead_id: 'M1',
+          cleanup_failed: {
+            step: 'branch_cleanup',
+            retryable: true,
+            next_retry_at
+          }
+        })
+      ).toBeNull();
+    }
+  );
+
   test('enqueue → dispatch → PR observation → pr_wait → next dispatch', async () => {
     // Success is now what the SERVER observes: an open PR on the bead's branch
     // (worker-phase2 §1). The session's own bd bookkeeping is irrelevant — the

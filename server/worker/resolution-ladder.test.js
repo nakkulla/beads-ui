@@ -1,11 +1,172 @@
 import { describe, expect, test } from 'vitest';
 import { classifyRepoOperationFailure } from './repo-operation-policy.js';
 import {
+  cleanupFailureRetryClass,
+  cleanupRetryParked,
+  cleanupRetryWaitUntil,
   normalizeScriptRetry,
   resolutionAccess,
   scriptIdentity,
   scriptRetryConsumptionKey
 } from './resolution-ladder.js';
+
+describe('cleanup retry scheduling', () => {
+  const failure = {
+    step: 'base_containment',
+    reason: 'base_fetch_failed',
+    retry_count: 0,
+    next_retry_at: 1000
+  };
+
+  test.each([
+    [{}, 1000],
+    [{ retry_count: 2 }, 1000],
+    [{ retry_count: 3 }, null],
+    [{ retry_count: -1 }, null],
+    [{ retry_count: 0.5 }, null],
+    [{ retry_count: undefined }, null],
+    [{ next_retry_at: undefined }, null],
+    [{ next_retry_at: NaN }, null],
+    [{ next_retry_at: Infinity }, null],
+    [{ next_retry_at: '1000' }, null],
+    [{ step: 'repo_operations' }, null],
+    [{ reason: 'base_unresolved' }, null]
+  ])('reads the retry deadline with patch %j', (patch, expected) => {
+    expect(cleanupRetryWaitUntil({ ...failure, ...patch })).toBe(expected);
+  });
+
+  test.each([
+    ['cleaning', null, 999, true],
+    ['cleaning', null, 1000, false],
+    ['cleaning', null, 1001, false],
+    ['cleaning', { kind: 'retry_cleanup' }, 999, false],
+    ['merging', null, 999, false]
+  ])(
+    'parks phase %s with operation %j at %i',
+    (phase, active_op, now, expected) => {
+      const queue = {
+        completion_intents: { 'UI-root': { phase, active_op } },
+        cleanup_failed: { 'UI-root': failure }
+      };
+
+      expect(cleanupRetryParked(queue, 'UI-root', now)).toBe(expected);
+    }
+  );
+
+  test.each([
+    { retry_count: 3 },
+    { next_retry_at: undefined },
+    { next_retry_at: NaN }
+  ])('keeps unschedulable cleanup at the head for patch %j', (patch) => {
+    const queue = {
+      completion_intents: { 'UI-root': { phase: 'cleaning', active_op: null } },
+      cleanup_failed: { 'UI-root': { ...failure, ...patch } }
+    };
+
+    expect(cleanupRetryParked(queue, 'UI-root', 999)).toBe(false);
+  });
+
+  test.each([
+    null,
+    {},
+    { completion_intents: { 'UI-root': { phase: 'cleaning' } } }
+  ])('keeps missing retry evidence unparked for queue %j', (queue) => {
+    expect(cleanupRetryParked(queue, 'UI-root', 999)).toBe(false);
+  });
+});
+
+describe('cleanup failure retry classification', () => {
+  test.each([
+    ['branch_cleanup', 'worktree_remove_failed', 'observe_failed'],
+    ['branch_cleanup', 'worktree_remove_failed', 'delivered_unobservable'],
+    ['branch_cleanup', 'worktree_remove_failed', 'archive_failed'],
+    ['branch_cleanup', 'local_branch_delete_failed', 'ref_delete_failed'],
+    ['branch_cleanup', 'remote_branch_delete_failed', null],
+    ['base_containment', 'merge_sha_unobserved', null],
+    ['base_containment', 'base_fetch_failed', null],
+    ['base_containment', 'base_rev_unavailable', null]
+  ])('retries %s %s with manager %s', (step, reason, manager_reason) => {
+    const failure = {
+      step,
+      reason,
+      detail: manager_reason
+        ? `manager_reason=${manager_reason} worktree_removed=false branch_removed=false`
+        : null
+    };
+
+    const result = cleanupFailureRetryClass(failure);
+
+    expect(result).toBe('transient');
+  });
+
+  test.each([
+    'dirty_unique',
+    'untracked_present',
+    'special_file',
+    'identity_changed',
+    'ownership_changed',
+    'foreign_worktree',
+    'path_present',
+    'identity_invalid',
+    'archive_unavailable'
+  ])('preserves manager refusal %s', (manager_reason) => {
+    const failure = {
+      step: 'branch_cleanup',
+      reason: 'worktree_remove_failed',
+      detail: `manager_reason=${manager_reason} worktree_removed=false branch_removed=false`
+    };
+
+    expect(cleanupFailureRetryClass(failure)).toBe('deterministic');
+  });
+
+  test.each([
+    undefined,
+    null,
+    42,
+    {},
+    '',
+    'manager_reason=',
+    'prefix_manager_reason=observe_failed',
+    'manager_reason=observe_failed!',
+    'manager_reason=observe_failed manager_reason=dirty_unique'
+  ])('rejects malformed manager evidence %j', (detail) => {
+    expect(
+      cleanupFailureRetryClass({
+        step: 'branch_cleanup',
+        reason: 'worktree_remove_failed',
+        detail
+      })
+    ).toBe('deterministic');
+  });
+
+  test.each([
+    'cleanup_journal_conflict',
+    'cleanup_completion_unrecorded',
+    'cleanup_replay_unavailable',
+    'internal_record_failed:write'
+  ])('leaves journal failure %s with its owner', (reason) => {
+    expect(cleanupFailureRetryClass({ step: 'branch_cleanup', reason })).toBe(
+      'unowned'
+    );
+  });
+
+  test('leaves repository operations with the script retry owner', () => {
+    expect(
+      cleanupFailureRetryClass({
+        step: 'repo_operations',
+        reason: 'base_fetch_failed',
+        retryable: true
+      })
+    ).toBe('unowned');
+  });
+
+  test.each([undefined, null, [], 42, {}])(
+    'fails closed on unreadable record %j',
+    (failure) => {
+      expect(cleanupFailureRetryClass(failure)).toBe('deterministic');
+    }
+  );
+});
 
 /**
  * @param {Record<string, any>} [patch]

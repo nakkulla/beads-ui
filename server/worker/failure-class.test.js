@@ -44,8 +44,8 @@ describe('worker failure classification table', () => {
     ['gh_unavailable', 'systemic'],
     ['bd_unreachable', 'systemic'],
     ['verify_red', 'systemic'],
-    ['cleanup_failed', 'systemic'],
-    ['cleanup_failed:deploy_script', 'systemic']
+    ['cleanup_failed', 'individual'],
+    ['cleanup_failed:deploy_script', 'individual']
   ];
 
   for (const [cause, tier] of cases) {
@@ -555,7 +555,7 @@ describe('worker landing failure summary', () => {
     const result = classifyFailure(input({ cause: 'cleanup_failed:branch' }));
 
     expect({ tier: result.tier, summary: result.summary }).toEqual({
-      tier: 'systemic',
+      tier: 'individual',
       summary: '머지 후 정리가 끝나지 못했습니다. (branch)'
     });
   });

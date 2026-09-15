@@ -40,6 +40,7 @@
  * @import { MergeClickResult } from './pr-actions.js'
  */
 import { failureTokenSummary } from './failure-class.js';
+import { cleanupRetryParked } from './resolution-ladder.js';
 
 /**
  * How many conflict-resolution rounds ONE queue item may consume (spec §2).
@@ -314,6 +315,7 @@ export function createMergeQueue(deps) {
       lane.find(
         (/** @type {any} */ entry) =>
           entry.resolution?.state !== 'yielded' &&
+          !cleanupRetryParked(q, entry.bead_id, now()) &&
           // A gate hold does NOT stop the drain (UI-d7fy §3.3): the item keeps
           // its slot and its authority, and everything behind it keeps
           // merging. It is skipped for the REST OF THIS PASS only — the set is
