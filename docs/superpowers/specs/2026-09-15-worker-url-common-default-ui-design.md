@@ -107,7 +107,7 @@ GET은 원본 kv snapshot을 한 번 읽고 그 객체로 resolve한다. `kvGetJ
 - 전제: ADR 0013 — defaults 어휘와 검증의 정의자는 dotfiles이고 UI는 소비자라는 조항을 승계한다. 모든 기본값이 단일 kv에 저장된다는 조항은 아래 후보로 교체한다.
 - 전제: ADR 0012 — UI registry는 좁은 계약 subset을 명시하고 런타임에 dotfiles 계약 YAML을 읽지 않는다. 서버 helper 결과 필드 검증과 cross-repo fixture 검증으로 따른다.
 - 전제: ADR 0039 — 설치된 checker/도구를 비동기 JSON 프로세스로 소비하고 정본 규칙을 서버에 중복 구현하지 않는 경계를 따른다. 주소 helper는 설정 요청에만 쓰며 board/queue hot path에 추가하지 않는다.
-- 전제: ADR UI-j9j5 — post-merge 잡은 merge tree에서 발견하고 deploy 이후 기존 실행 봉투·원장으로 실제 성공을 증명한다.
-- 전제: ADR UI-7yh2 — 프리셋은 정의된 25키 프로파일이고 주소는 프리셋 키 밖에 둔다.
+- 전제: ADR UI-3vvi-2 — post-merge 잡은 merge tree에서 발견하고 deploy 이후 기존 실행 봉투·원장으로 실제 성공을 증명한다(UI-j9j5 승계).
+- 전제: ADR UI-00lf — 프리셋은 정의된 25키 프로파일이고 주소는 프리셋 키 밖에 둔다(UI-7yh2 승계).
 - 전제: ADR dotfiles/0064 — continuation의 큐 근거와 무권한 부작용 경계는 유지하며 주소 조회 조항 교체는 dotfiles-48gg가 소유한다.
 - 저장소 defaults의 저장값과 공통 주소 적용값을 분리하고 공통 편집은 dotfiles CLI로 위임한다. 되돌리기 어려움: WS와 폼 baseline·공통 저장 인터페이스를 함께 변경해야 한다. 맥락 없으면 놀라움: 입력이 비었는데 실제 주소가 있으며 공통 변경이 현재 예외에는 영향을 주지 않는다. 실제 대안: values에 상속값을 섞으면 자동 예외 저장과 삭제 검증 오류를 만들고 UI 별도 저장소는 정본을 둘로 나누므로 배제한다. `summary`: "Beads UI는 저장소 defaults와 공통 Worker 주소 적용값을 분리하며 공통 주소 조회·쓰기는 dotfiles 소유 CLI를 소비한다" → ADR, supersede 0013
