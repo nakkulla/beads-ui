@@ -1237,6 +1237,46 @@ describe('buildMonitorWorkspacesState (UI-qrfo §4)', () => {
     });
   });
 
+  test('carries the stored per-runner limit policy verbatim (UI-8ncz §5)', () => {
+    const provider_limit_policy = {
+      claude: { mode: 'switch', accounts: ['a@example.com'], preempt_pct: 80 },
+      codex: { mode: 'wait', accounts: [], preempt_pct: null }
+    };
+
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: { [WS_A]: snapshot({ provider_limit_policy }) }
+    });
+
+    expect(out[0].provider_limit_policy).toEqual(provider_limit_policy);
+  });
+
+  test('leaves the other row fields unchanged beside the limit policy', () => {
+    const queues = {
+      [WS_A]: snapshot({
+        revision: 7,
+        auto_advance: true,
+        auto_merge: true,
+        slots: 3,
+        provider_limit_policy: {
+          claude: { mode: 'wait', accounts: [], preempt_pct: null },
+          codex: { mode: 'wait', accounts: [], preempt_pct: null }
+        }
+      })
+    };
+
+    const out = buildState({ workspaces: [WS_A], queues });
+
+    expect(out[0]).toMatchObject({
+      root_dir: WS_A,
+      name: 'repo-a',
+      revision: 7,
+      auto_advance: true,
+      auto_merge: true,
+      slots: 3
+    });
+  });
+
   test('excludes a hidden workspace', () => {
     const out = buildState({ workspaces: [WS_A, WS_B], hidden: [WS_B] });
 

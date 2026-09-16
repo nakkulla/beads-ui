@@ -1127,6 +1127,11 @@ export function buildMonitorWorkspacesState(options = {}) {
       auto_merge: queue.auto_merge === true,
       slots: typeof queue.slots === 'number' ? queue.slots : 1,
       revision: typeof queue.revision === 'number' ? queue.revision : 0,
+      // The queue always derives this (`normalizeQueue`), so the row carries it
+      // verbatim: the monitor `⚙` pane draws the STORED limit policy instead of
+      // the default, and the 계정 일괄 적용 절 reads its copy source here
+      // (UI-8ncz §5).
+      provider_limit_policy: queue.provider_limit_policy,
       runner_catalog,
       // A legacy queue with no key is in the state the default describes: one
       // serial lane. It is read the same way the Worker snapshot reads it, so a

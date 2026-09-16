@@ -152,7 +152,7 @@ fresh snapshot. Key splitting and assembly are defined in
 Every visible workspace has a `workspaces_state` row:
 `{ root_dir, name, issue_prefix: string|null, auto_advance, auto_merge, slots, revision, runner_catalog }`
 plus, since UI-eey2 §9.4, the repo-panel control fields:
-`{ serial_lane_count, orchestration_model, orchestration_effort, orchestration_speed, quick_fix_orchestration_model, quick_fix_orchestration_effort, quick_fix_orchestration_speed, execution_defaults, session_defaults, session_defaults_warnings, counts }`.
+`{ serial_lane_count, orchestration_model, orchestration_effort, orchestration_speed, quick_fix_orchestration_model, quick_fix_orchestration_effort, quick_fix_orchestration_speed, execution_defaults, session_defaults, session_defaults_warnings, counts, provider_limit_policy }`.
 `issue_prefix` comes from that workspace's bd config cache; missing, malformed,
 or temporarily unreadable config is `null`.
 
@@ -176,6 +176,11 @@ complete watch document. Older servers omit the array. The corresponding
   execution pane probes the key to tell a new server from one that predates the
   lane. The workspace's own orchestration display row keeps showing the general
   triple.
+- `provider_limit_policy: { claude, codex }` is that workspace's stored
+  per-runner limit policy (`{ mode, accounts, preempt_pct }`), carried verbatim
+  from the queue so a repo panel opened from the monitor draws the stored policy
+  rather than the default, and so the bulk 계정 적용 section can read its copy
+  source (UI-8ncz §5).
 - `execution_defaults` is the same read-only projection the worker snapshot
   carries (see below), repeated here so a repo panel can resolve chips for a
   workspace it holds no worker subscription to.

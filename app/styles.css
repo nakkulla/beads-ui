@@ -7200,6 +7200,115 @@ html[data-theme='dark'] {
   break-inside: avoid;
 }
 
+/* `여러 저장소에 적용` 절 (UI-8ncz §3): 패널 머리와 pane 몸체 사이 한 칸.
+   pane 몸체와 같은 좌우 여백을 쓰되 경계선으로 몸체와 갈라, 이 줄의 조작이
+   열린 저장소 하나가 아니라 선택한 여러 저장소에 간다는 것을 눈으로 나눈다. */
+.mon2-deck__bulk {
+  padding: var(--sp-6) var(--sp-10);
+  border-bottom: 1px solid var(--border-panel);
+  font-size: var(--fs-chip);
+  color: var(--text-secondary);
+}
+
+.mon2-deck__bulk[hidden] {
+  display: none;
+}
+
+.mon2-deck__bulk-hd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
+  min-width: 0;
+}
+
+.mon2-deck__bulk-label {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+}
+
+.mon2-deck__bulk-copy,
+.mon2-deck__bulk-source {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mon2-deck__bulk-source {
+  margin-top: var(--sp-3);
+  color: var(--text-dim);
+}
+
+.mon2-deck__bulk-preset {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.mon2-deck__bulk-targets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3) var(--sp-8);
+  margin: var(--sp-6) 0 0;
+  padding: 0;
+  border: none;
+  min-width: 0;
+}
+
+.mon2-deck__bulk-targets legend {
+  padding: 0;
+  color: var(--text-dim);
+}
+
+.mon2-deck__bulk-repo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  cursor: pointer;
+}
+
+.mon2-deck__bulk-repo:has(input:disabled) {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.mon2-deck__bulk-results {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3) var(--sp-8);
+  margin-top: var(--sp-6);
+  padding-top: var(--sp-6);
+  border-top: 1px solid var(--border-panel);
+  min-width: 0;
+}
+
+.mon2-deck__bulk-result {
+  overflow-wrap: anywhere;
+}
+
+.mon2-deck__bulk-result.is-applied {
+  color: var(--accent-success);
+}
+
+.mon2-deck__bulk-result.is-partial {
+  color: var(--accent-warn);
+}
+
+.mon2-deck__bulk-result.is-failed {
+  color: var(--accent-danger);
+}
+
+.mon2-deck__bulk-result.is-skipped {
+  color: var(--text-dim);
+}
+
+.mon2-deck__bulk-retry {
+  flex: 0 0 auto;
+}
+
 /* 포커스 필터 (§4.2): 숨기지 않고 흐린다 — 다른 레포에서 지금 무엇이 도는지는
    흐려도 보여야 한다. 타일은 제어 표면이라 덜 흐리게 둔다. */
 .mon.has-focus .mon2-sec:not(.is-focus),
@@ -7767,6 +7876,35 @@ html[data-theme='dark'] {
   .mon2-deck__panel-body .settings-dialog__row {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  /* 일괄 적용 절 (UI-8ncz §3.1): select와 버튼이 두 줄로 내려오고 체크박스는
+     줄바꿈한다 — 이 폭에서 가로 넘침이 있으면 대상 목록을 다 읽지 못한다. */
+  .mon2-deck__bulk {
+    padding: var(--sp-6);
+  }
+
+  .mon2-deck__bulk-hd {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--sp-3);
+    min-width: 0;
+  }
+
+  .mon2-deck__bulk-preset,
+  .mon2-deck__bulk-apply {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .mon2-deck__bulk-targets,
+  .mon2-deck__bulk-results {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .mon2-deck__bulk-retry {
+    width: 100%;
   }
 }
 

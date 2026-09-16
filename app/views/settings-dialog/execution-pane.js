@@ -2884,6 +2884,20 @@ export function createExecutionPane(mount_element, binding) {
     },
     /** Test/inspection seam: the draft this pane would save. */
     sessionDraft: () => ({ ...session_draft }),
+    /**
+     * Read-only seam the monitor's 계정 일괄 적용 절 copies FROM (UI-8ncz §4.2).
+     * Only server-confirmed values leave this pane: `values` is the baseline,
+     * never `account_draft`, so a half-typed edit is never copied into another
+     * repo. `pending` is true while the draft differs from that baseline — the
+     * section disables its button until the save is confirmed.
+     *
+     * @returns {{ state: string, values: Record<string, string>, pending: boolean }}
+     */
+    accountSettings: () => ({
+      state: account_layer.state,
+      values: { ...account_baseline },
+      pending: Object.keys(accountPatch()).length > 0
+    }),
     destroy() {
       destroyed = true;
       ++generation;

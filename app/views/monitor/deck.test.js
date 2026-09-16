@@ -79,7 +79,7 @@ function state(patch = {}) {
 const active = [];
 
 /**
- * @param {{ rows?: any[], done?: any[], transport?: (type: string, payload: any) => any }} [input]
+ * @param {{ rows?: any[], done?: any[], presets?: any, transport?: (type: string, payload: any) => any }} [input]
  */
 function setup(input = {}) {
   document.body.innerHTML = '<div id="d"></div>';
@@ -100,7 +100,9 @@ function setup(input = {}) {
     doneItems: () => input.done || [],
     rangeLabel: () => '오늘',
     transport,
-    implPresetStore: { get: () => ({ revision: 1, presets: [] }) },
+    implPresetStore: {
+      get: () => input.presets || { revision: 1, presets: [] }
+    },
     gotoWorkerTab,
     onFocusChange
   });
@@ -1031,5 +1033,522 @@ describe('repo health header group (UI-y9hl U2)', () => {
     expect(row_rule.slice(0, row_rule.indexOf('}'))).toContain(
       'flex-wrap: wrap'
     );
+  });
+});
+
+describe('createRepoDeck 여러 저장소에 적용 절 (UI-8ncz §3)', () => {
+  const POLICY = {
+    claude: { mode: 'switch', accounts: ['a@example.com'], preempt_pct: 80 },
+    codex: { mode: 'wait', accounts: [], preempt_pct: null }
+  };
+
+  /**
+   * A row the bulk section can plan against: automation on, the quick_fix key
+   * present, and the stored limit policy carried.
+   *
+   * @param {Partial<Record<string, any>>} [patch]
+   * @returns {Record<string, any>}
+   */
+  function bulkRow(patch = {}) {
+    return state({
+      auto_advance: true,
+      quick_fix_orchestration_model: null,
+      quick_fix_orchestration_effort: null,
+      quick_fix_orchestration_speed: null,
+      provider_limit_policy: POLICY,
+      counts: { running: 1, pr_wait: 0, queue: 0, runnable: 0 },
+      ...patch
+    });
+  }
+
+  const PRESETS = {
+    revision: 9,
+    presets: [{ id: 'p1', name: '위임', compatible: true }]
+  };
+
+  /**
+   * @param {{ transport?: (type: string, payload: any) => any, rows?: any[], presets?: any }} [input]
+   */
+  function bulkSetup(input = {}) {
+    return setup({
+      rows: input.rows || [
+        bulkRow(),
+        bulkRow({ root_dir: WS_B, name: 'repo-b', revision: 5 })
+      ],
+      presets: input.presets || PRESETS,
+      transport: input.transport
+    });
+  }
+
+  /** A response every op in this section accepts as a clean success. */
+  const OK = {
+    applied: true,
+    conflict: false,
+    queue_applied: true,
+    state: 'usable',
+    values: {},
+    warnings: [],
+    queue: { revision: 11 }
+  };
+
+  /**
+   * Open the `⚙` of `root_dir` and let the pane settle.
+   *
+   * @param {ReturnType<typeof setup>} harness
+   * @param {string} [root_dir]
+   */
+  async function openGear(harness, root_dir = WS_A) {
+    harness.deck.render();
+    click(
+      harness.mount,
+      `.mon2-deck__tile[data-root-dir="${root_dir}"] .mon2-deck__gear`
+    );
+    await settle();
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} preset_id
+   */
+  function choosePreset(mount, preset_id) {
+    const select = /** @type {HTMLSelectElement} */ (
+      el(mount, '[data-bulk-preset]')
+    );
+    select.value = preset_id;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string[]}
+   */
+  function resultTexts(mount) {
+    return Array.from(
+      mount.querySelectorAll('.mon2-deck__bulk-result'),
+      (node) => node.textContent?.trim() || ''
+    );
+  }
+
+  /**
+   * @param {Array<[string, any]>} calls
+   * @param {string} type
+   * @returns {Array<any>}
+   */
+  function payloadsOf(calls, type) {
+    return calls
+      .filter(([name]) => name === type)
+      .map(([, payload]) => payload);
+  }
+
+  test('draws the preset section on the 워커 segment', async () => {
+    const harness = bulkSetup();
+
+    await openGear(harness);
+
+    expect(harness.mount.querySelector('[data-bulk-preset]')).not.toBe(null);
+    expect(harness.mount.querySelector('[data-bulk-source]')).toBe(null);
+  });
+
+  test('draws the account section on the 계정 segment', async () => {
+    const harness = bulkSetup();
+    await openGear(harness);
+
+    click(harness.mount, '[data-pane-section="account"]');
+    await settle();
+
+    expect(harness.mount.querySelector('[data-bulk-source]')).not.toBe(null);
+    expect(harness.mount.querySelector('[data-bulk-preset]')).toBe(null);
+  });
+
+  test('draws no section on the 세션 segment', async () => {
+    const harness = bulkSetup();
+    await openGear(harness);
+
+    click(harness.mount, '[data-pane-section="session"]');
+    await settle();
+
+    expect(harness.mount.querySelector('.mon2-deck__bulk-hd')).toBe(null);
+    expect(
+      /** @type {HTMLElement} */ (el(harness.mount, '.mon2-deck__bulk')).hidden
+    ).toBe(true);
+  });
+
+  test('names the repository checkboxes inside a labelled fieldset', async () => {
+    const harness = bulkSetup();
+
+    await openGear(harness);
+
+    const fieldset = el(harness.mount, 'fieldset.mon2-deck__bulk-targets');
+    expect(fieldset.querySelector('legend')?.textContent).toBe('적용 대상');
+    expect(
+      Array.from(fieldset.querySelectorAll('input[data-bulk-repo]'), (node) =>
+        node.getAttribute('data-bulk-repo')
+      )
+    ).toEqual([WS_A, WS_B]);
+  });
+
+  test('selects the repositories whose automation is on', async () => {
+    const harness = bulkSetup({
+      rows: [
+        bulkRow(),
+        bulkRow({ root_dir: WS_B, name: 'repo-b', auto_advance: false })
+      ]
+    });
+
+    await openGear(harness);
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        el(harness.mount, `input[data-bulk-repo="${WS_A}"]`)
+      ).checked
+    ).toBe(true);
+    expect(
+      /** @type {HTMLInputElement} */ (
+        el(harness.mount, `input[data-bulk-repo="${WS_B}"]`)
+      ).checked
+    ).toBe(false);
+  });
+
+  test('keeps the selection across a segment switch', async () => {
+    const harness = bulkSetup();
+    await openGear(harness);
+    const box = /** @type {HTMLInputElement} */ (
+      el(harness.mount, `input[data-bulk-repo="${WS_B}"]`)
+    );
+    box.checked = false;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+
+    click(harness.mount, '[data-pane-section="account"]');
+    await settle();
+    click(harness.mount, '[data-pane-section="worker"]');
+    await settle();
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        el(harness.mount, `input[data-bulk-repo="${WS_B}"]`)
+      ).checked
+    ).toBe(false);
+  });
+
+  test('disables the source repository checkbox on the account section', async () => {
+    const harness = bulkSetup({ transport: async () => OK });
+    await openGear(harness);
+
+    click(harness.mount, '[data-pane-section="account"]');
+    await settle();
+
+    const box = /** @type {HTMLInputElement} */ (
+      el(harness.mount, `input[data-bulk-repo="${WS_A}"]`)
+    );
+    expect(box.disabled).toBe(true);
+    expect(box.closest('label')?.getAttribute('title')).toBe(
+      '복사 원본 저장소'
+    );
+    expect(box.closest('label')?.textContent).toContain('(원본)');
+  });
+
+  test('sends one preset request per selected repository', async () => {
+    const harness = bulkSetup({ transport: async () => OK });
+    await openGear(harness);
+
+    choosePreset(harness.mount, 'p1');
+    click(harness.mount, '[data-bulk-apply="worker"]');
+    await settle();
+    await settle();
+
+    expect(
+      payloadsOf(harness.calls, 'apply-impl-preset-global').map(
+        (payload) => payload.root_dir
+      )
+    ).toEqual([WS_A, WS_B]);
+  });
+
+  test('phrases each repository result on its own line', async () => {
+    const harness = bulkSetup({
+      transport: async (
+        /** @type {string} */ type,
+        /** @type {any} */ payload
+      ) =>
+        type === 'apply-impl-preset-global' && payload.root_dir === WS_B
+          ? { ...OK, queue_applied: false }
+          : OK
+    });
+    await openGear(harness);
+
+    choosePreset(harness.mount, 'p1');
+    click(harness.mount, '[data-bulk-apply="worker"]');
+    await settle();
+    await settle();
+    await settle();
+
+    expect(resultTexts(harness.mount)).toEqual([
+      '✓ repo-a 적용됨',
+      '⚠ repo-b 부분 적용 — 오케스트레이션 값 미적용'
+    ]);
+  });
+
+  test('narrows the selection to the failed and partial repositories', async () => {
+    const harness = bulkSetup({
+      transport: async (
+        /** @type {string} */ type,
+        /** @type {any} */ payload
+      ) =>
+        type === 'apply-impl-preset-global' && payload.root_dir === WS_B
+          ? { ...OK, applied: false, queue_applied: false }
+          : OK
+    });
+    await openGear(harness);
+    choosePreset(harness.mount, 'p1');
+    click(harness.mount, '[data-bulk-apply="worker"]');
+    await settle();
+    await settle();
+    await settle();
+
+    click(harness.mount, '[data-bulk-retry="worker"]');
+    await settle();
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        el(harness.mount, `input[data-bulk-repo="${WS_A}"]`)
+      ).checked
+    ).toBe(false);
+    expect(
+      /** @type {HTMLInputElement} */ (
+        el(harness.mount, `input[data-bulk-repo="${WS_B}"]`)
+      ).checked
+    ).toBe(true);
+  });
+
+  test('clears the previous results when a new run starts', async () => {
+    /** @type {Array<() => void>} */
+    const gates = [];
+    let gated = false;
+    const harness = bulkSetup({
+      transport: async (/** @type {string} */ type) => {
+        if (type === 'apply-impl-preset-global' && gated) {
+          await new Promise((resolve) => gates.push(() => resolve(undefined)));
+        }
+        return OK;
+      }
+    });
+    await openGear(harness);
+    choosePreset(harness.mount, 'p1');
+    click(harness.mount, '[data-bulk-apply="worker"]');
+    await settle();
+    await settle();
+    await settle();
+    gated = true;
+
+    click(harness.mount, '[data-bulk-apply="worker"]');
+    await settle();
+
+    expect(resultTexts(harness.mount)).toEqual([]);
+    for (const open of gates.splice(0)) {
+      open();
+    }
+    await settle();
+  });
+
+  test('counts the progress on the button while a run is in flight', async () => {
+    /** @type {Array<() => void>} */
+    const gates = [];
+    const harness = bulkSetup({
+      transport: async (/** @type {string} */ type) => {
+        if (type !== 'apply-impl-preset-global') {
+          return OK;
+        }
+        await new Promise((resolve) => gates.push(() => resolve(undefined)));
+        return OK;
+      }
+    });
+    await openGear(harness);
+    choosePreset(harness.mount, 'p1');
+
+    click(harness.mount, '[data-bulk-apply="worker"]');
+    await settle();
+
+    const button = /** @type {HTMLButtonElement} */ (
+      el(harness.mount, '[data-bulk-apply="worker"]')
+    );
+    expect(button.textContent?.trim()).toBe('적용 중 0/2');
+    expect(button.disabled).toBe(true);
+    expect(
+      /** @type {HTMLSelectElement} */ (el(harness.mount, '[data-bulk-preset]'))
+        .disabled
+    ).toBe(true);
+    expect(
+      /** @type {HTMLInputElement} */ (
+        el(harness.mount, `input[data-bulk-repo="${WS_A}"]`)
+      ).disabled
+    ).toBe(true);
+    for (const open of gates.splice(0)) {
+      open();
+    }
+    await settle();
+  });
+
+  test('stops the remaining preset requests when the segment changes', async () => {
+    /** @type {Array<() => void>} */
+    const gates = [];
+    const harness = bulkSetup({
+      transport: async (/** @type {string} */ type) => {
+        if (type !== 'apply-impl-preset-global') {
+          return OK;
+        }
+        await new Promise((resolve) => gates.push(() => resolve(undefined)));
+        return OK;
+      }
+    });
+    await openGear(harness);
+    choosePreset(harness.mount, 'p1');
+    click(harness.mount, '[data-bulk-apply="worker"]');
+    await settle();
+
+    click(harness.mount, '[data-pane-section="session"]');
+    gates.shift()?.();
+    await settle();
+    await settle();
+
+    expect(payloadsOf(harness.calls, 'apply-impl-preset-global')).toHaveLength(
+      1
+    );
+  });
+
+  test('stops the remaining preset requests when the panel closes', async () => {
+    /** @type {Array<() => void>} */
+    const gates = [];
+    const harness = bulkSetup({
+      transport: async (/** @type {string} */ type) => {
+        if (type !== 'apply-impl-preset-global') {
+          return OK;
+        }
+        await new Promise((resolve) => gates.push(() => resolve(undefined)));
+        return OK;
+      }
+    });
+    await openGear(harness);
+    choosePreset(harness.mount, 'p1');
+    click(harness.mount, '[data-bulk-apply="worker"]');
+    await settle();
+
+    click(harness.mount, '.mon2-deck__panel-close');
+    gates.shift()?.();
+    await settle();
+    await settle();
+
+    expect(payloadsOf(harness.calls, 'apply-impl-preset-global')).toHaveLength(
+      1
+    );
+  });
+
+  test('stops the remaining preset requests when another gear opens', async () => {
+    /** @type {Array<() => void>} */
+    const gates = [];
+    const harness = bulkSetup({
+      transport: async (/** @type {string} */ type) => {
+        if (type !== 'apply-impl-preset-global') {
+          return OK;
+        }
+        await new Promise((resolve) => gates.push(() => resolve(undefined)));
+        return OK;
+      }
+    });
+    await openGear(harness);
+    choosePreset(harness.mount, 'p1');
+    click(harness.mount, '[data-bulk-apply="worker"]');
+    await settle();
+
+    click(
+      harness.mount,
+      `.mon2-deck__tile[data-root-dir="${WS_B}"] .mon2-deck__gear`
+    );
+    gates.shift()?.();
+    await settle();
+    await settle();
+
+    expect(payloadsOf(harness.calls, 'apply-impl-preset-global')).toHaveLength(
+      1
+    );
+  });
+
+  test('reloads the open pane once after a preset run that targeted it', async () => {
+    const harness = bulkSetup({ transport: async () => OK });
+    await openGear(harness);
+    const before = payloadsOf(harness.calls, 'get-session-defaults').length;
+
+    choosePreset(harness.mount, 'p1');
+    click(harness.mount, '[data-bulk-apply="worker"]');
+    await settle();
+    await settle();
+    await settle();
+
+    expect(payloadsOf(harness.calls, 'get-session-defaults')).toHaveLength(
+      before + 1
+    );
+  });
+
+  test('never reloads the pane after an account run', async () => {
+    const harness = bulkSetup({ transport: async () => OK });
+    await openGear(harness);
+    click(harness.mount, '[data-pane-section="account"]');
+    await settle();
+    const before = payloadsOf(harness.calls, 'get-session-defaults').length;
+
+    click(harness.mount, '[data-bulk-apply="account"]');
+    await settle();
+    await settle();
+    await settle();
+
+    expect(payloadsOf(harness.calls, 'get-session-defaults')).toHaveLength(
+      before
+    );
+  });
+
+  test('keeps each section results while the other section runs', async () => {
+    const harness = bulkSetup({ transport: async () => OK });
+    await openGear(harness);
+    choosePreset(harness.mount, 'p1');
+    click(harness.mount, '[data-bulk-apply="worker"]');
+    await settle();
+    await settle();
+    await settle();
+
+    click(harness.mount, '[data-pane-section="account"]');
+    await settle();
+    click(harness.mount, '[data-bulk-apply="account"]');
+    await settle();
+    await settle();
+    await settle();
+    click(harness.mount, '[data-pane-section="worker"]');
+    await settle();
+
+    expect(resultTexts(harness.mount)).toEqual([
+      '✓ repo-a 적용됨',
+      '✓ repo-b 적용됨'
+    ]);
+  });
+});
+
+describe('여러 저장소에 적용 절 narrow width (UI-8ncz §3.1)', () => {
+  test('stacks the head and wraps the checkboxes below 640px', () => {
+    const css = readFileSync(
+      path.resolve(process.cwd(), 'app/styles.css'),
+      'utf8'
+    );
+    const head_rule = css.slice(css.indexOf('.mon2-deck__bulk-hd {'));
+    const targets_rule = css.slice(css.indexOf('.mon2-deck__bulk-targets {'));
+    const narrow_head = css.slice(
+      css.lastIndexOf('.mon2-deck__bulk-hd {'),
+      css.indexOf('.mon2-deck__bulk-preset,')
+    );
+
+    expect(head_rule.slice(0, head_rule.indexOf('}'))).toContain(
+      'flex-wrap: wrap'
+    );
+    expect(targets_rule.slice(0, targets_rule.indexOf('}'))).toContain(
+      'flex-wrap: wrap'
+    );
+    expect(narrow_head).toContain('flex-direction: column');
+    expect(narrow_head).toContain('min-width: 0');
   });
 });
