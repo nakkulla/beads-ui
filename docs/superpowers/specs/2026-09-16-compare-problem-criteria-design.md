@@ -81,7 +81,7 @@ class="cmp-criteria">`를 둔다. `<summary class="op-btn">`의 문구는 `문�
 | --- | --- | --- |
 | 1 | `실패·폐기` | 없음 |
 | 2 | `재시도·재개` | `☐ 환경 요인 포함` |
-| 3 | `리뷰 지적` | `라운드 ≥ [2]` `blocking ≥ [1]` `minor ≥ [ ]`(빈칸 = 안 봄) |
+| 3 | `리뷰 지적` | `라운드 ≥ [2]` `blocking ≥ [1]` `minor ≥ [ ]` — 세 칸 모두 빈칸 = 안 봄(`null`) |
 | 4 | `사람 개입` | `☐ 환경 이벤트 포함` |
 | 5 | `verify 실패` | 없음 |
 | 6 | `시간 초과` | `중앙값 × [3]` |
@@ -90,8 +90,9 @@ class="cmp-criteria">`를 둔다. `<summary class="op-btn">`의 문구는 `문�
 | 끝 | `[기본값으로]` 버튼(`.op-btn`) | 기본값이면 비활성 |
 
 - 체크박스를 끄면 그 줄의 보조 조작은 비활성(값은 유지)이다.
-- 숫자 입력은 `<input type="number">`이며 `change`에서 §4.1 허용 범위로 자른
-  뒤 저장·재요청한다. 체크박스·토글도 `change`마다 저장·재요청한다. 재요청은 기존
+- 숫자 입력은 `<input type="number">`이며 `change`에서 빈 값은 먼저 `null`로
+  바꾸고(리뷰 임계값 세 칸에서만 유효; 배수 칸의 빈 값은 기본값으로 되돌린다), 그
+  밖의 값은 §4.1 허용 범위로 자른 뒤 저장·재요청한다. 체크박스·토글도 `change`마다 저장·재요청한다. 재요청은 기존
   `fetchSnapshot`이고 `request_seq`가 늦은 응답을 버린다.
 - `[기본값으로]`는 저장값을 지우고 재요청한다.
 - 패널 안 조작은 `<details>`를 닫지 않는다(`<summary>` 클릭만 닫는다).
@@ -113,7 +114,8 @@ class="cmp-criteria">`를 둔다. `<summary class="op-btn">`의 문구는 `문�
   - `verify 실패`
   - `시간 > 중앙값 42분 ×3`(중앙값은 `formatDuration`) / 표본 부족이면
     `시간 초과(표본 5건 미만으로 비활성)`
-  - `비용 > 중앙값 $2.10 ×3`(중앙값은 `formatCostMedian`) / 표본 부족이면
+  - `비용 > 중앙값 $2.10 ×3`(중앙값은 `formatCostMedian`; 기준선 표본에 부분
+    집계가 있으면 ` · 부분 집계 표본 k건`을 덧붙인다) / 표본 부족이면
     `비용 초과(표본 5건 미만으로 비활성)`
   - `핀 조정`
   켜진 기준이 하나도 없으면 `문제 세션 = 기준 없음(문제율 —)`.
@@ -128,8 +130,8 @@ class="cmp-criteria">`를 둔다. `<summary class="op-btn">`의 문구는 `문�
 | `retry` | `재시도` / 환경 재시도가 포함되어 참이면 `재시도(환경)` | `<origin attempt id> · <종류: env 사다리 <cause> / 자동 재개 <auto_resume_kind> / 재개>` |
 | `review` | 기존 `리뷰 r2`·`리뷰 b1`에 `리뷰 m3`(minor로만 걸렸을 때) 추가 | 기존 |
 | `verify` | `verify 실패` | `merge_verify` → `머지 후보 [verify] 실패`, `bench_verify` → `bench 검증 실패` |
-| `duration` | `시간 ×3.4`(값 ÷ 중앙값, 소수 1자리) | `<formatDuration(값)> · 중앙값 <formatDuration(기준)> × <factor>` |
-| `cost` | `비용 ×4.1` | `<formatPrice> · 중앙값 <formatCostMedian(기준)> × <factor>`; 부분 집계면 ` · 부분` |
+| `duration` | `시간 ×3.4`(값 ÷ 중앙값, 소수 1자리); 중앙값이 0이면 배수 없이 `시간 초과` | `<formatDuration(값)> · 중앙값 <formatDuration(기준)> × <factor>` |
+| `cost` | `비용 ×4.1`; 중앙값이 0이면 배수 없이 `비용 초과` | `<formatPrice> · 중앙값 <formatCostMedian(기준)> × <factor>`; 행이 부분 집계면 ` · 부분`; 기준선 표본에 부분 집계가 있으면 ` · 기준선 부분 집계 k건 포함` |
 | `pin` | 기존 `핀 조정` 칩은 `preset.deviated_keys`가 있으면 기준과 무관하게 계속 그린다(정보 칩) | 기존 |
 
 ### 3.4 모바일 (≤640px)
@@ -171,11 +173,21 @@ PROBLEM_CRITERIA_LIMITS = {
 PROBLEM_BASELINE_MIN_SAMPLE = 5
 ```
 
-`normalizeProblemCriteria(raw)`는 어떤 입력이든 **완전한** 기준 객체를 돌려준다:
-`raw`가 객체가 아니면 기본값; 알 수 없는 키는 버린다; `on`·`include_env`·
-`include_env_events`는 `=== true`일 때만 참; 정수 임계값은 유한한 정수가 아니거나 범위 밖이면 그 필드의 기본값
-(`minor_min`은 `null`도 유효); `factor`는 유한수가 아니거나 범위 밖이면 기본값.
-`review`의 세 임계값이 모두 `null`이면 `review.on`은 `false`로 정규화한다.
+`normalizeProblemCriteria(raw)`는 어떤 입력이든 **완전한** 기준 객체를 돌려주며,
+"부재·잘못된 타입 → 기본값"과 "유효한 값 → 보존"을 필드마다 구분한다.
+
+- `raw`가 객체가 아니면 전체 기본값. 알 수 없는 키(기준 키·필드 키 모두)는
+  버린다. 기준 키가 없거나 객체가 아니면 그 기준은 기본값 전체다.
+- 불리언 필드(`on`·`include_env`·`include_env_events`): 값이 `true` 또는 `false`면
+  그대로 보존하고, 부재나 다른 타입이면 그 필드의 기본값이다. 따라서 `{}`와
+  `{ cost: { factor: 4 } }`는 기본으로 켜진 기준을 끄지 않는다.
+- 리뷰 임계값(`round_min`·`blocking_min`·`minor_min`): 세 필드 모두 **명시적
+  `null`**이 유효값(안 봄)이다. 유한한 정수이고 범위 안이면 보존, `null`이면
+  `null`, 부재나 그 밖의 값(비정수·범위 밖·문자열)이면 그 필드의 기본값이다.
+  세 임계값이 모두 `null`이면 `review.on`은 `false`로 정규화한다.
+- `factor`: 유한수이고 범위 안이면 보존, 그 밖이면 기본값(`null`도 기본값으로
+  읽는다 — 배수에 "안 봄"은 없다).
+
 `isDefaultProblemCriteria(criteria)`는 정규화 결과와 기본값의 깊은 동등이다.
 
 ### 4.2 판정 규칙
@@ -189,7 +201,7 @@ PROBLEM_BASELINE_MIN_SAMPLE = 5
 | `retry` | `is_retry`이고 (`include_env`이거나 `retry_kind !== 'env_ladder' && retry_kind !== 'auto_resume'`) | `{ origin, kind, cause, env }` — `origin`은 origin/resumed_from attempt id, `kind`는 §4.3의 `retry_kind`, `cause`는 env 사다리의 `retry.cause` 또는 `auto_resume_kind`, `env`는 §4.3 판정 |
 | `review` | 대표 attempt의 `review`가 있고 (`round_min !== null && round ≥ round_min`) 또는 (`blocking_min !== null && blocking ≥ blocking_min`) 또는 (`minor_min !== null && minor ≥ minor_min`) | 기존 `{ round, blocking, minor }` |
 | `human` | 기존 attempt 지역 플래그(`halted_auto_advance`·`awaiting_user_present`·`status = parked`) 또는 귀속된 이벤트 요약이 하나 이상 — 귀속 대상 이벤트 집합은 §4.3의 H, `include_env_events`면 H ∪ E | 요약 문자열 목록(기존) |
-| `verify` | `row.verify === 'fail'` | `verify_source`(`merge_verify`·`bench_verify`) |
+| `verify` | `row.verify === 'fail'` | `verify_source`(`merge_verify`·`bench_verify`) — 판정 시점에 행의 `verify_source`를 evidence로 복사하며, `wireRows`가 본 표 행의 최상위 `verify_source`를 지우는 것은 그대로다 |
 | `duration` | 기준선 활성이고 `duration_ms !== null`이고 `duration_ms > baseline.duration_ms.median × factor` | `{ value_ms, baseline_ms, factor }` |
 | `cost` | 기준선 활성이고 `usage?.total_cost_usd`가 수이고 `> baseline.cost_usd.median × factor` — `usage.partial`이어도 하한이 이미 넘으면 참 | `{ value_usd, baseline_usd, factor, partial }` |
 | `pin` | `preset?.deviated_keys.length > 0` | `deviated_keys` |
@@ -227,7 +239,15 @@ PROBLEM_BASELINE_MIN_SAMPLE = 5
     E로 옮겨 가는 것은 이 문서의 정정이다. 두 접두는 `queue-store.js`가 같은 줄에서
     쓰는 저장소 내부 계약이며 테스트는 생산 형태 그대로의 줄로 검증한다.
   - 귀속 규칙(attempt_id 우선, 없으면 구간 안 → 구간 뒤 → 가장 먼저 시작)은 선행
-    스펙 §4.3 그대로 E에도 적용한다.
+    스펙 §4.3 그대로 E에도 적용한다. 단 **E에 한해 한 단계를 더한다**: 공급자
+    보류는 `holdAttempt`(`scheduler.js`)가 보류된 attempt를 `paused`로 저장하고 그
+    `attempt_id`에 `provider_hold`를 기록하는데, `paused`는 종단 status가 아니라
+    `workspaceRows`가 행을 만들지 않는다. 그래서 E 이벤트의 `attempt_id`가 행이 아닌
+    attempt를 가리키면 그 Bead의 구현 attempt 가운데 `resumed_from`이 그 id인 자식을
+    찾고, 자식도 행이 아니면 같은 방식으로 더 내려가, 처음 만나는 행(완료된 재개)
+    하나에 귀속한다. 자식이 둘 이상이면 `started_at`이 가장 이른 것(같으면
+    `attempt_id` 문자열이 작은 것)을 따른다. 행에 닿지 못하면 버린다(fail-quiet).
+    H 이벤트의 귀속은 바꾸지 않는다.
 - 수집부(`collectCompareWorkspaces`)는 타임라인을 읽을 때 H ∪ E의 종류를 모두
   남긴다(현행은 세 종류만). bead당 파일 하나를 `get-compare` 때만 읽는 규칙은
   그대로다.
@@ -239,9 +259,14 @@ PROBLEM_BASELINE_MIN_SAMPLE = 5
   human: string[], env: string[] }`)까지만 만든다. `problems`는 여기서 만들지 않는다.
 - `buildCompareModel`이 필터를 적용한 뒤 **기준선**을 만든다:
   `baselines = { duration_ms: { median, sample, active }, cost_usd: { median,
-  sample, active } }`. 중앙값은 필터 결과 `rows` 전체에 대해 기존 `medianOf`로,
-  `active = sample ≥ PROBLEM_BASELINE_MIN_SAMPLE`이다. 비용 표본은
-  `usage.total_cost_usd`가 수인 행이다(부분 집계 포함, ADR UI-mscc와 같은 값).
+  sample, active, partial_count } }`. 중앙값은 필터 결과 `rows` 전체에 대해 기존
+  `medianOf`로, `active = sample ≥ PROBLEM_BASELINE_MIN_SAMPLE`이다(표본 수만
+  본다 — 중앙값이 0이어도 활성이며 판정식은 그대로 `값 > 0 × factor`, 표시는
+  §3.3). 비용 표본은 `usage.total_cost_usd`가 수인 행이다(부분 집계 포함, ADR
+  UI-mscc와 같은 값). `partial_count`는 그 표본 중 `usage.partial`인 행의 수이며,
+  기준선의 불완전성을 행 자신의 `partial`과 별개로 범례(§3.2)와 칩 title(§3.3)에
+  드러내는 근거다 — ADR UI-mscc의 "부분 집계 표시는 카드부터 비교 중앙값까지
+  유지"를 기준선에도 적용한 것이다.
 - 그 다음 `judgeProblems(row, criteria, baselines)`(순수 함수, export)를 `rows`와
   `bench_rows`의 모든 행에 같은 기준·같은 기준선으로 적용한다. `bench_rows`는
   필터를 받지 않지만(선행 스펙 §4.7) 기준선은 본 표의 것을 쓴다 — 실험 행은
@@ -305,10 +330,14 @@ PROBLEM_BASELINE_MIN_SAMPLE = 5
 
 ## 8. 테스트
 
-- `app/utils/compare-problem-criteria.test.js`: 비객체·빈 객체 → 기본값; 알 수
-  없는 키 제거; `on`은 `true`만 참; 임계값 범위 밖·비정수·문자열 → 필드 기본값;
-  `minor_min: null` 유효; 세 임계값 모두 `null` → `review.on === false`; `factor`
-  경계(1.5·10) 포함과 밖; `isDefaultProblemCriteria`의 참·거짓.
+- `app/utils/compare-problem-criteria.test.js`: 비객체·빈 객체 → 기본값 전체;
+  알 수 없는 기준 키·필드 키 제거; **부분 객체 보존** — `{ cost: { factor: 4 } }`는
+  `cost.factor`만 바뀌고 나머지 기준의 `on`은 기본값 그대로, `{ failed: { on:
+  false } }`는 `false`가 보존됨; 불리언 필드에 문자열·숫자 → 기본값; 리뷰 임계값
+  세 필드 각각 명시적 `null` 보존·부재 → 기본값 복원의 구분; 범위 밖·비정수·
+  문자열 → 필드 기본값; 세 임계값 모두 `null` → `review.on === false`; `factor`
+  경계(1.5·10) 포함과 밖, `factor: null` → 기본값; `isDefaultProblemCriteria`의
+  참·거짓.
 - `compare-projection.test.js`:
   - `retryKindOf`: `retry.origin_attempt_id` → `env_ladder`; `resumed_from` +
     `auto_resume_kind` 두 값 → `auto_resume`; `resumed_from`만 → `resume`; 둘 다
@@ -320,15 +349,23 @@ PROBLEM_BASELINE_MIN_SAMPLE = 5
   - `human`: `queue_hold` `시스템 보류:`는 기본 H, `환경 보류:`는 기본 제외·
     `include_env_events`면 포함; `provider_hold`·`provider_recovered`·
     `account_preempt`는 기본 제외·토글 포함; `guard_warning`은 토글에도 제외;
-    `attempt_id` 없는 E 이벤트의 시각 귀속(구간 안·구간 뒤·구간 전); 기존 지역
-    플래그 케이스 유지.
+    `attempt_id` 없는 E 이벤트의 시각 귀속(구간 안·구간 뒤·구간 전); **`paused`
+    선조 귀속** — 생산 형태 그대로의 `paused` attempt(`cause:
+    provider_outage:...`)와 그 id를 가리키는 `provider_hold` 이벤트, `resumed_from`
+    으로 이어진 `done` 자식으로, 토글 꺼짐이면 거짓·켜짐이면 자식 행에 참이고
+    evidence에 그 요약이 실리는 것; 두 단계 재개(`paused` → `paused` → `done`)와
+    행에 닿지 못하는 경우(버림); H 이벤트는 `paused` 선조 귀속을 받지 않는 것;
+    기존 지역 플래그 케이스 유지.
   - `verify`: `merge_verify` 실패·`bench_verify` 실패 → 참, `pass`·`null` → 거짓,
     evidence가 source.
   - `duration`·`cost`: 표본 5 미만 → 전부 `false`·해당 `baselines` 항목의
     `active === false`;
-    표본 5 이상에서 `median × factor` 경계(같으면 거짓, 초과면 참); `factor` 변경
-    반영; 비용은 `partial`이어도 판정; 필터가 바뀌면 기준선이 필터 결과로 바뀌는
-    것; `bench_rows`가 본 표 기준선을 쓰는 것.
+    표본 5 이상에서 `median × factor` 경계(같으면 거짓, 초과면 참); 중앙값 0인
+    표본 5건에서 양수 행이 참이고 `active === true`인 것; `factor` 변경 반영;
+    비용은 `partial`이어도 판정; `baselines.cost_usd.partial_count`가 부분 집계
+    표본 수와 같고 행 자신은 완전한데 기준선 표본만 부분인 경우에도 실리는 것;
+    필터가 바뀌면 기준선이 필터 결과로 바뀌는 것; `bench_rows`가 본 표 기준선을
+    쓰는 것.
   - `pin`: 기본 꺼짐에서 거짓, 켜면 `deviated_keys` 비어 있지 않을 때 참.
   - 꺼진 기준은 어떤 행에서도 거짓이고 건수 0; 켜진 기준이 없으면
     `problem_rate === null`; 겹치는 키는 문제 세션 분자에 한 번(기존 테스트 확장).
@@ -344,6 +381,10 @@ PROBLEM_BASELINE_MIN_SAMPLE = 5
   없이 재요청하는 것, `is_default === false`에서 `문제 기준 ●`과 `기준 조정됨`,
   꺼진 기준의 카드 칩이 사라지는 것, 범례가 켜진 기준·표본 부족 문구를 조립하는
   것, 세션 행의 `재시도(환경)`·`verify 실패`·`시간 ×n`·`비용 ×n` 칩과 title,
+  중앙값 0에서 배수 없는 `시간 초과`·`비용 초과` 칩, 기준선 `partial_count > 0`에서
+  범례의 `부분 집계 표본 k건`과 칩 title의 `기준선 부분 집계 k건 포함`, 리뷰
+  임계값 칸을 비우면 `null`로 저장되는 것, 패널 안 조작과 응답 뒤에도 `<details>`가
+  열린 채 유지되는 것, 요청 실패 뒤 팝오버가 마지막 유효 기준을 그대로 보이는 것,
   localStorage 읽기 실패에서 기본값으로 동작하는 것(`getItem`이 throw).
 - 모바일은 Pre-Handoff에서 headless Chrome 스크린샷(390px iframe)으로 §3.4 배치를
   눈으로 확인한다.
@@ -379,8 +420,17 @@ PROBLEM_BASELINE_MIN_SAMPLE = 5
   되돌릴 수 있는 표시 정의"로 둔 것과 같은 지위다. 되돌리기 어려움: 성립 안 함.
   맥락 없이 놀라움: 성립(재시도가 왜 안 세어지는지) — 그러나 범례가 매 화면에
   적는다. 실제 트레이드오프: 성립 안 함(토글로 양쪽 다 본다) → ADR 아님
-- 시간·비용 초과의 기준선은 필터 결과 전체 중앙값의 배수이고 표본 5건 미만이면
-  비활성이다 — 표시 정의이며 팝오버에서 바꿀 수 있다 → ADR 아님
+- 시간·비용 초과의 기준선 정책 — 기준 집합은 필터 결과 전체(그룹 아님), 통계는
+  중앙값, 최소 표본은 5건 — 은 고정이고 팝오버에서 바뀌는 것은 배수만이다.
+  되돌리기 어려움: 성립 안 함(응답의 `baselines`로만 드러나는 계산 규칙이며 저장
+  형식·기록·프로토콜 op에 남지 않는다; 그룹 중앙값이나 절대값으로 바꾸면 과거
+  화면과 숫자가 달라지지만 기록은 그대로다). 맥락 없이 놀라움: 성립(같은 세션이
+  필터를 바꾸면 초과 판정이 바뀐다; 프리셋 하나만 필터하면 그 프리셋 안에서만
+  비교된다) — 범례가 매 화면에 기준선 값을 적어 맥락을 준다. 실제 트레이드오프:
+  성립(전체 중앙값은 일관되게 느린 프리셋을 잡지만 필터에 따라 움직이고, 절대값은
+  안정적이지만 저장소·작업 규모를 사용자가 맞춰야 한다 — 사용자 결정 2026-09-16).
+  놀라움·트레이드오프 둘은 성립하지만 되돌리기 어려움이 성립하지 않고 결과가
+  화면에만 남으므로 → ADR 아님
 
 ## 경계·후속
 
