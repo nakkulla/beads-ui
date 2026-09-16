@@ -1,7 +1,8 @@
 ---
 id: UI-8gem
 title: 대기 카드의 상태는 슬롯 1 배지 하나가 말하고 큐 단위 사유는 게이트 칩으로만 선다
-status: accepted
+status: superseded
+superseded_by: UI-3pu9
 date: 2026-09-16
 summary: '대기 카드의 상태는 슬롯 1 배지 하나가 종류와 판정을 함께 말하고, 큐 단위 사유는 4a 게이트 칩으로만 서며 막힘 집계는 이슈 단위 사유만 센다'
 spec: docs/superpowers/specs/2026-09-16-wait-surface-density-vocabulary-design.md

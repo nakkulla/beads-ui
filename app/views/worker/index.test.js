@@ -17031,9 +17031,11 @@ describe('유예 행의 1초 타이머 (UI-q1tg §3.3)', () => {
 
   /**
    * @param {number} added_at
+   * @param {boolean} [auto_advance] - 자동 진행이 꺼진 큐는 유예 칩을 그리지
+   * 않으므로 타이머 조건도 달라진다 (UI-3pu9 §4.3).
    * @returns {{ view: any, intervals: any[] }}
    */
-  function mountWithGraceRow(added_at) {
+  function mountWithGraceRow(added_at, auto_advance = true) {
     const set_spy = vi.spyOn(window, 'setInterval');
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
@@ -17042,7 +17044,9 @@ describe('유예 행의 1초 타이머 (UI-q1tg §3.3)', () => {
       queueStore,
       transport: vi.fn()
     });
-    queueStore.set(queueOf({ queue: [{ bead_id: 'W-1', added_at }] }));
+    queueStore.set(
+      queueOf({ auto_advance, queue: [{ bead_id: 'W-1', added_at }] })
+    );
     return {
       view,
       intervals: set_spy.mock.calls.filter((call) => call[1] === 1000)
@@ -17056,6 +17060,15 @@ describe('유예 행의 1초 타이머 (UI-q1tg §3.3)', () => {
     view.destroy();
 
     expect(intervals).toHaveLength(1);
+  });
+
+  test('starts no timer for a grace row whose queue does not auto-advance (UI-3pu9 §4.3)', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const { view, intervals } = mountWithGraceRow(NOW - 5_000, false);
+    view.destroy();
+
+    expect(intervals).toHaveLength(0);
   });
 
   test('starts no timer when no row is inside its grace', () => {
@@ -17216,7 +17229,8 @@ describe('views/worker 숨김과 lifecycle (UI-hhn9 §6)', () => {
   });
 
   // A grace row is the material the 1초 표시 타이머 needs, so an empty queue
-  // would leave `pause()` with nothing to stop (§6/§8).
+  // would leave `pause()` with nothing to stop (§6/§8). 자동 진행이 켜진 큐라야
+  // 그 재료가 산다 (UI-3pu9 §4.3).
   test('repeated pause and load do not stack display timers', () => {
     const NOW = 1_700_000_000_000;
     vi.spyOn(Date, 'now').mockReturnValue(NOW);
@@ -17243,7 +17257,10 @@ describe('views/worker 숨김과 lifecycle (UI-hhn9 §6)', () => {
       transport: vi.fn()
     });
     queueStore.set(
-      queueOf({ queue: [{ bead_id: 'W-1', added_at: NOW - 5_000 }] })
+      queueOf({
+        auto_advance: true,
+        queue: [{ bead_id: 'W-1', added_at: NOW - 5_000 }]
+      })
     );
 
     expect(mount.hidden).toBe(false);

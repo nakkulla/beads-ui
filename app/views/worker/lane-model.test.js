@@ -111,46 +111,55 @@ test('attaches prerequisite judgments to the second serial entry without admissi
   expect(lanes.queue.map((item) => item.id)).toEqual(['A-1', 'A-2']);
 });
 
-test('gates a manual-start row with the 수동 출발 chip (UI-8gem §7.2)', () => {
-  const reason = {
-    kind: 'auto_advance_off',
-    subject: { root_dir: WS_A, bead_id: 'A-1' },
-    headline: '자동 진행 꺼짐 · 대기 1건 출발 안 함',
-    release: '[지금 시작] 또는 자동화 켜기',
-    verdict: 'normal',
-    targets: [],
-    actions: []
-  };
-
+test('marks a waiting row manual_only without a gate when auto_advance is off (UI-3pu9 §4.1)', () => {
   const lanes = buildLanes(
-    [workspace({ queue: [{ bead_id: 'A-1' }], wait_reasons: [reason] })],
-    [state()]
+    [workspace({ queue: [{ bead_id: 'A-1' }] })],
+    [state({ auto_advance: false })]
   );
 
   const item = lanes.queue[0];
-  expect(item.gate?.kind).toBe('auto_advance_off');
-  expect(item.gate?.label).toBe('⏸ 수동 출발');
-  expect(item.gate?.lines).toEqual([
-    '자동 진행이 꺼져 있어 큐가 스스로 출발하지 않습니다 · [지금 시작]으로 이 행만, 툴바 ▶ 자동화로 큐 전체를 출발'
-  ]);
+  expect(item.manual_only).toBe(true);
+  expect(item.gate).toBeUndefined();
 });
 
-test('lets a queue hold outrank the 수동 출발 chip (UI-8gem §7.2)', () => {
-  const reason = {
-    kind: 'auto_advance_off',
-    subject: { root_dir: WS_A, bead_id: 'A-1' },
-    headline: '자동 진행 꺼짐 · 대기 1건 출발 안 함',
-    release: '[지금 시작] 또는 자동화 켜기',
-    verdict: 'normal',
-    targets: [],
-    actions: []
-  };
+test('marks serial waiting rows manual_only as well (UI-3pu9 §4.1)', () => {
+  const lanes = buildLanes(
+    [
+      workspace({
+        serial_lanes: [
+          { id: 's1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+        ]
+      })
+    ],
+    [state({ auto_advance: false })]
+  );
 
+  expect(lanes.queue.map((item) => item.manual_only)).toEqual([true, true]);
+});
+
+test('leaves manual_only false when auto_advance is on (UI-3pu9 §4.1)', () => {
+  const lanes = buildLanes(
+    [workspace({ queue: [{ bead_id: 'A-1' }] })],
+    [state({ auto_advance: true })]
+  );
+
+  expect(lanes.queue[0].manual_only).toBe(false);
+});
+
+test('leaves manual_only false when auto_advance is absent (UI-3pu9 §4.1)', () => {
+  const lanes = buildLanes(
+    [workspace({ queue: [{ bead_id: 'A-1' }] })],
+    [state({ auto_advance: undefined })]
+  );
+
+  expect(lanes.queue[0].manual_only).toBe(false);
+});
+
+test('keeps the queue hold gate while auto_advance is off (UI-3pu9 §4.2)', () => {
   const lanes = buildLanes(
     [
       workspace({
         queue: [{ bead_id: 'A-1' }],
-        wait_reasons: [reason],
         hold: {
           kind: 'systemic',
           cause: 'verify_failed',
@@ -159,10 +168,11 @@ test('lets a queue hold outrank the 수동 출발 chip (UI-8gem §7.2)', () => {
         }
       })
     ],
-    [state()]
+    [state({ auto_advance: false })]
   );
 
   expect(lanes.queue[0].gate?.kind).toBe('systemic');
+  expect(lanes.queue[0].manual_only).toBe(true);
 });
 
 test.each(['runnable', 'pr_wait', 'done', 'running'])(

@@ -81,7 +81,6 @@ import {
   releasedChip,
   resolvedBlockerChip
 } from './queue-blockers.js';
-import { WAIT_KINDS } from './wait-vocabulary.js';
 
 /**
  * @import { DependencyChip, DependencyChips, MiniItem } from './lanes.js'
@@ -1242,9 +1241,9 @@ function retryProjection(attempt) {
  * The waiting row's 게이트 재료 (UI-01wh §3.1) — 표시 전용 파생값.
  *
  * @typedef {Object} LaneGate
- * @property {'systemic'|'env'|'provider_outage'|'provider_usage'|'auto_advance_off'} kind -
+ * @property {'systemic'|'env'|'provider_outage'|'provider_usage'} kind -
  * 무엇이 이 행을 막고 있는가 — systemic·env는 큐 정지, provider_* 둘은 공급자
- * 보류, `auto_advance_off`는 자동 진행이 꺼져 큐가 스스로 출발하지 않는 것이다.
+ * 보류다. 자동 진행 꺼짐은 게이트가 아니다 (UI-3pu9 §4.1).
  * @property {string} label - 슬롯 4a 칩에 그대로 그려지는 한 줄.
  * @property {string} title - hover 툴팁이자 사유 팝업 본문의 첫 줄.
  * @property {number|null} since - systemic·env는 `queue.hold.since`, provider는
@@ -1258,29 +1257,6 @@ function retryProjection(attempt) {
  * @property {string[]} lines - `chip-popover`가 그대로 그리는 문장들이고 마지막
  * 항목은 언제나 출구 안내다.
  */
-
-/**
- * The `⏸ 수동 출발` gate (UI-8gem §7.2). 자동 진행이 꺼진 사실은 큐의 사정이라
- * 배지·본문·시각·막힘 집계를 만들지 않고 4a 칩 하나로만 선다. 큐 정지·공급자
- * 보류 게이트가 이미 서 있으면 그것이 더 바깥 사정이라 이 칩은 만들지 않는다.
- *
- * @returns {LaneGate}
- */
-function autoAdvanceOffGate() {
-  const row = WAIT_KINDS.find((entry) => entry.id === 'auto_advance_off');
-  return {
-    kind: 'auto_advance_off',
-    label: `${row ? `${row.glyph} ${row.label}` : '⏸ 수동 출발'}`,
-    title: row ? row.when : '자동 진행이 꺼져 있어 큐가 스스로 출발하지 않음',
-    since: null,
-    next_at: null,
-    runner: null,
-    probe_ready: false,
-    lines: [
-      '자동 진행이 꺼져 있어 큐가 스스로 출발하지 않습니다 · [지금 시작]으로 이 행만, 툴바 ▶ 자동화로 큐 전체를 출발'
-    ]
-  };
-}
 
 /** 환경 실패 사다리의 재시도 상한 (`failure-class.js`) — 팝업의 `n/3` 분모다. */
 const GATE_RETRY_MAX = RETRY_MAX;
@@ -4308,6 +4284,19 @@ export function buildLanes(workspaces, workspaces_state, options) {
           runner_catalog: w && w.runner_catalog
         }));
 
+  // 자동 진행이 꺼진 저장소 (UI-3pu9 §4.1): 워크스페이스 상태가 `auto_advance`를
+  // 정확히 `false`로 말할 때만 담는다. 값이 없거나 읽지 못하면 담지 않아 대기 행이
+  // 지금처럼 그려진다 (fail-quiet).
+  /** @type {Set<string>} */
+  const manual_only_roots = new Set();
+  for (const source of group_sources) {
+    if (source && typeof source.root_dir === 'string') {
+      if (source.auto_advance === false) {
+        manual_only_roots.add(source.root_dir);
+      }
+    }
+  }
+
   /** @type {Set<string>} */
   const roots_with_candidates = new Set(runnable.map((item) => item.root_dir));
 
@@ -4416,6 +4405,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
     owner_of: {}
   };
 
+  // 대기 행만 `manual_only`를 진다 (UI-3pu9 §4.1) — `model.queue`는 병렬 행과
+  // 직렬 레인 행 전부다. 유예 칩과 유예로 서는 `[지금 시작]`이 이 값을 읽는다.
+  for (const item of model.queue) {
+    item.manual_only = manual_only_roots.has(item.root_dir);
+  }
+
   const open_external_by_consumer = new Map();
   /** @type {Map<string, import('../../protocol.js').WaitReason[]>} */
   const reasons_by_subject = new Map();
@@ -4458,15 +4453,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
           queued ||
           item.run_state === 'waiting'
       );
-      // 슬롯 1 배지는 `waitStatusBadge` 하나다 (UI-8gem §6.2) — 여기서 문자열
-      // 배지를 더하면 같은 사실이 두 번 선다.
-      if (
-        queued &&
-        !item.gate &&
-        item.wait_reasons.some((reason) => reason.kind === 'auto_advance_off')
-      ) {
-        item.gate = autoAdvanceOffGate();
-      }
     }
     const waits = open_external_by_consumer.get(
       `${item.root_dir}\u0000${item.id}`

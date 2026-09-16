@@ -1605,6 +1605,10 @@ export function priorityBadgeTemplate(priority) {
  * @property {import('./lane-model.js').LaneGate} [gate] - 이 행의 자동 디스패치를
  * 막고 있는 게이트 (UI-01wh §3.1). 슬롯 4a 게이트 칩과 `▶ 재개`·`[지금 시작]`의
  * 유일한 재료이고, 막혀 있지 않으면 필드 자체가 없다 (fail-quiet).
+ * @property {boolean} [manual_only] - 이 대기 행의 저장소가 자동 진행을 꺼 두었다
+ * (UI-3pu9 §4.1). `true`면 유예 칩과 유예로 서는 `[지금 시작]`을 그리지 않는다 —
+ * 스케줄러가 자동 출발을 하지 않아 "남은 시간 동안 미뤄진다"가 사실이 아니다.
+ * 대기 행이 아니거나 워크스페이스 상태를 읽지 못하면 `false`다.
  * @property {boolean} [ghost] - Serial-lane occupancy row (UI-04vo §4): the
  * lineage holding the lane, drawn dimmed and never draggable.
  * @property {number} [seq] - 1-based execution order number in a serial lane.
@@ -1826,12 +1830,19 @@ export function gateChipTemplate(gate, bead_id, open, queue_verdict = null) {
  * `prerequisite_unmet`과 같은 이유다 — 거절이 아니라 곧 스스로 풀리는 진단이므로
  * danger 스타일을 타서는 안 된다. 남은 초가 0 이하면 그리지 않는다.
  *
- * @param {number|null|undefined} added_at
+ * 자동 진행이 꺼진 저장소의 행(`manual_only === true`)에는 그리지 않는다
+ * (UI-3pu9 §4.2): 스케줄러가 자동 출발 자체를 하지 않으므로 "남은 시간 동안
+ * 자동 실행이 미뤄집니다"가 사실이 아니다.
+ *
+ * @param {{ added_at?: number|null, manual_only?: boolean }|null|undefined} item
  * @param {number} [now]
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function graceChipTemplate(added_at, now = Date.now()) {
-  const remaining_ms = graceRemainingMs(added_at, now);
+export function graceChipTemplate(item, now = Date.now()) {
+  if (!item || item.manual_only === true) {
+    return '';
+  }
+  const remaining_ms = graceRemainingMs(item.added_at, now);
   if (remaining_ms <= 0) {
     return '';
   }
@@ -1852,21 +1863,20 @@ export function graceChipTemplate(added_at, now = Date.now()) {
  * 게이트로 설 때는 이 행 하나가 큐 정지·공급자 보류를 무시하고 지금 도는
  * 결정이므로 title이 그것을 말한다. 둘 다 아니면 그리지 않는다 (fail-quiet).
  *
+ * 자동 진행이 꺼진 저장소의 행(`manual_only === true`)에서는 유예 조건이
+ * 성립하지 않는다 (UI-3pu9 §4.2). 게이트 조건은 그대로라 공급자 보류·큐 정지에
+ * 막힌 행은 자동 진행이 꺼져 있어도 버튼을 유지한다.
+ *
  * 직렬 레인은 순서대로 쌓이므로 (직렬 레인 순서 고정 스펙 §6.2·§8.3) 선두가
  * 아닌 직렬 행에는 어느 생성 경로에서도 버튼이 서지 않는다 — 눌러도 후보 수집이
  * `serial_lane_not_head`로 거절할 자리다. 순번을 모르면 지우지 않는다
  * (fail-closed). 유예 칩·게이트 칩 자체는 그대로 그린다.
  *
- * @param {{ id: string, added_at?: number, lane?: string, queue_index?: number, gate?: import('./lane-model.js').LaneGate }} item
+ * @param {{ id: string, added_at?: number, lane?: string, queue_index?: number, manual_only?: boolean, gate?: import('./lane-model.js').LaneGate }} item
  * @param {number} [now]
- * @param {boolean} [requested] - A server action explicitly offers immediate start.
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function startNowButtonTemplate(
-  item,
-  now = Date.now(),
-  requested = false
-) {
+export function startNowButtonTemplate(item, now = Date.now()) {
   if (
     typeof item.lane === 'string' &&
     /^s[1-5]$/.test(item.lane) &&
@@ -1876,7 +1886,9 @@ export function startNowButtonTemplate(
     return '';
   }
   const gated = !!item.gate;
-  if (graceRemainingMs(item.added_at, now) <= 0 && !gated && !requested) {
+  const in_grace =
+    item.manual_only !== true && graceRemainingMs(item.added_at, now) > 0;
+  if (!in_grace && !gated) {
     return '';
   }
   return html`<button
@@ -2347,13 +2359,6 @@ export function waitReasonLines(reason, options = {}) {
                 }
           );
     }
-    if (action.op === 'start_now' && payload.bead_id) {
-      return startNowButtonTemplate(
-        item || { id: payload.bead_id },
-        options.now,
-        true
-      );
-    }
     return action.op === 'disposition' ? options.disposition || '' : '';
   });
   return {
@@ -2398,8 +2403,6 @@ export function blockedSummary(workspaces) {
   const subjects = new Map();
   /** @type {Set<string>} */
   const queue_hold_subjects = new Set();
-  /** @type {Set<string>} */
-  const manual_start_subjects = new Set();
   for (const workspace of workspaces) {
     for (const reason of workspace.wait_reasons || []) {
       if (reason.subject.root_dir !== workspace.root_dir) {
@@ -2408,12 +2411,9 @@ export function blockedSummary(workspaces) {
       // 큐 사유는 이슈의 사정이 아니므로 `막힘 N`에 들어가지 않고 팝오버 마지막
       // 줄로만 센다 (§8).
       if (waitScopeOf(reason.kind) === 'queue') {
-        const subject = `${workspace.root_dir}/${reason.subject.bead_id}`;
-        if (reason.kind === 'queue_hold') {
-          queue_hold_subjects.add(subject);
-        } else {
-          manual_start_subjects.add(subject);
-        }
+        queue_hold_subjects.add(
+          `${workspace.root_dir}/${reason.subject.bead_id}`
+        );
         continue;
       }
       const key = `${workspace.root_dir}\u0000${reason.subject.bead_id}`;
@@ -2456,11 +2456,9 @@ export function blockedSummary(workspaces) {
     ).length,
     groups,
     // 큐 사정은 건수만 남는다 (§8): 항목 행이 없으므로 카드로 데려갈 곳도 없다.
+    // 자동 진행 꺼짐은 여기 서지 않는다 (UI-3pu9 §4.2) — 비면 줄 자체가 없다.
     queue_line: [
-      queue_hold_subjects.size > 0 ? `정지 ${queue_hold_subjects.size}` : '',
-      manual_start_subjects.size > 0
-        ? `수동 출발 ${manual_start_subjects.size}`
-        : ''
+      queue_hold_subjects.size > 0 ? `정지 ${queue_hold_subjects.size}` : ''
     ].filter(Boolean)
   };
 }
@@ -2765,9 +2763,9 @@ export function queueRowOps(item, options = {}) {
       'probe_now'
     )
       ? ''
-      : providerProbeButtonTemplate(item)}${offered.has('start_now')
-      ? ''
-      : startNowButtonTemplate(item)}${wait_actions}${options.nudgeable === true
+      : providerProbeButtonTemplate(item)}${startNowButtonTemplate(
+      item
+    )}${wait_actions}${options.nudgeable === true
       ? html`<button
             type="button"
             class="op-btn op-btn--icon worker-mini__rowops-up"
@@ -3139,7 +3137,7 @@ export function miniRow(item, options = {}) {
     queueHoldVerdictOf(item)
   );
   const external_wait_el = externalWaitSummaryTemplate(item);
-  const grace_el = graceChipTemplate(item.added_at);
+  const grace_el = graceChipTemplate(item);
   const receipt_badge_el = receiptBadgeChipTemplate(
     item,
     chipOpen(item, 'receipt')

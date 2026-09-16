@@ -1,7 +1,8 @@
 ---
 id: UI-cmx3
 title: 직렬 레인은 선두만 실행 후보이고 선행 대기 우회 예외는 없다
-status: accepted
+status: superseded
+superseded_by: UI-3pu9
 date: 2026-09-16
 summary: '직렬 레인은 선두만 실행 후보이고 선두가 실행 불가면 사유와 무관하게 레인이 기다리며 선행 대기 우회 예외는 없다'
 supersedes: ["UI-wc67", "UI-lmqu"]

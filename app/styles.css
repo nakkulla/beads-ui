@@ -7449,8 +7449,7 @@ html[data-theme='dark'] {
 /* 공급자 장애는 프로브가 스스로 푸는 상태다 (UI-8gem §5.2 정정) — 경고색을
    들지 않고 `⏳` 톤 그대로 선다. 경고색은 서버 판정이 지연·조치를 말할 때만
    `--gate-overdue`·`--gate-action`으로 붙는다. */
-.worker-dep--gate-provider_outage,
-.worker-dep--gate-auto_advance_off {
+.worker-dep--gate-provider_outage {
   border-color: var(--border-chip);
   color: var(--text-dim);
 }

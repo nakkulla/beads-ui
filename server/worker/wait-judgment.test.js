@@ -904,40 +904,6 @@ describe('wait judgment holds and manual waits', () => {
     });
   });
 
-  test('counts pending entries for manual start without marking action-required', () => {
-    const result = run({
-      queue: queue({
-        auto_advance: false,
-        queue: [{ bead_id: 'UI-a' }, { bead_id: 'UI-b' }]
-      })
-    });
-
-    expect(result.wait_reasons).toMatchObject([
-      {
-        kind: 'auto_advance_off',
-        headline: '자동 진행 꺼짐 · 대기 2건 출발 안 함',
-        verdict: 'normal'
-      },
-      {
-        kind: 'auto_advance_off',
-        headline: '자동 진행 꺼짐 · 대기 2건 출발 안 함',
-        verdict: 'normal'
-      }
-    ]);
-  });
-
-  test('omits manual-start reasons while an attempt runs', () => {
-    const result = run({
-      queue: queue({
-        auto_advance: false,
-        queue: [{ bead_id: 'UI-b' }],
-        attempts: { a: waiting({ status: 'running' }) }
-      })
-    });
-
-    expect(result.wait_reasons).toEqual([]);
-  });
-
   test('builds the user-decision reason from a parked attempt', () => {
     const result = run({
       queue: queue({
@@ -1334,8 +1300,8 @@ describe('externalJobHeadline', () => {
   });
 });
 
-describe('auto_advance_off targets', () => {
-  test('includes parallel entries and serial heads but excludes serial non-head entries', () => {
+describe('auto-advance-off queues (UI-3pu9 §3)', () => {
+  test('emits no reason for idle parallel entries and serial lanes', () => {
     const result = run({
       queue: queue({
         auto_advance: false,
@@ -1351,21 +1317,11 @@ describe('auto_advance_off targets', () => {
         ]
       })
     });
-    const manual = result.wait_reasons.filter(
-      (row) => row.kind === 'auto_advance_off'
-    );
 
-    expect(manual.map((row) => row.subject.bead_id)).toEqual([
-      'UI-parallel',
-      'UI-serial-head'
-    ]);
-    expect(manual.map((row) => row.headline)).toEqual([
-      '자동 진행 꺼짐 · 대기 2건 출발 안 함',
-      '자동 진행 꺼짐 · 대기 2건 출발 안 함'
-    ]);
+    expect(result.wait_reasons).toEqual([]);
   });
 
-  test('skips a subject that already waits for another reason', () => {
+  test('emits no start_now action anywhere', () => {
     const result = run({
       queue: queue({
         auto_advance: false,
@@ -1373,39 +1329,49 @@ describe('auto_advance_off targets', () => {
       }),
       bead_blocked_by: { 'UI-consumer': ['UI-blocker'] }
     });
-    const manual = result.wait_reasons.filter(
-      (row) => row.kind === 'auto_advance_off'
-    );
 
-    expect(manual.map((row) => row.subject.bead_id)).toEqual(['UI-idle']);
+    expect(
+      result.wait_reasons.flatMap((row) =>
+        row.actions.map((action) => action.op)
+      )
+    ).toEqual([]);
   });
 
-  test('counts only the subjects that receive the manual-start reason', () => {
+  test('keeps the queue hold reason', () => {
+    const result = run({
+      queue: queue({
+        auto_advance: false,
+        hold: { kind: 'systemic', cause: 'disk_full', bead_ids: ['UI-idle'] }
+      })
+    });
+
+    expect(result.wait_reasons).toMatchObject([
+      { kind: 'queue_hold', subject: { bead_id: 'UI-idle' } }
+    ]);
+  });
+
+  test('keeps the provider hold reason', () => {
+    const result = run({
+      queue: { ...provider(), auto_advance: false }
+    });
+
+    expect(result.wait_reasons.map((row) => row.kind)).toEqual([
+      'provider_hold'
+    ]);
+  });
+
+  test('keeps the prerequisite reason', () => {
     const result = run({
       queue: queue({
         auto_advance: false,
         queue: [{ bead_id: 'UI-consumer' }, { bead_id: 'UI-idle' }]
       }),
-      bead_blocked_by: { 'UI-consumer': ['UI-blocker'] }
-    });
-    const manual = result.wait_reasons.find(
-      (row) => row.kind === 'auto_advance_off'
-    );
-
-    expect(manual?.headline).toBe('자동 진행 꺼짐 · 대기 1건 출발 안 함');
-  });
-
-  test('keeps the start_now action on the narrowed target', () => {
-    const result = run({
-      queue: queue({ auto_advance: false, queue: [{ bead_id: 'UI-idle' }] })
+      bead_blocked_by: { 'UI-consumer': ['UI-blocker'] },
+      blocker_facts: { 'UI-blocker': { title: '선행 작업', status: 'open' } }
     });
 
-    expect(result.wait_reasons[0].actions).toEqual([
-      {
-        op: 'start_now',
-        label: '[지금 시작]',
-        payload: { root_dir: ROOT, bead_id: 'UI-idle' }
-      }
+    expect(result.wait_reasons).toMatchObject([
+      { kind: 'prerequisite', subject: { bead_id: 'UI-consumer' } }
     ]);
   });
 });

@@ -186,16 +186,6 @@ export const WAIT_KINDS = Object.freeze(
       action: '↻ 지금 재시도'
     },
     {
-      id: 'auto_advance_off',
-      kind: 'auto_advance_off',
-      scope: 'queue',
-      glyph: '⏸',
-      label: '수동 출발',
-      when: '자동 진행이 꺼져 있어 큐가 스스로 출발하지 않음',
-      release: '[지금 시작] 또는 툴바 ▶ 자동화',
-      action: '[지금 시작]'
-    },
-    {
       id: 'gate-provider_usage',
       kind: 'gate',
       condition: 'provider_usage',
@@ -221,7 +211,7 @@ export const WAIT_KINDS = Object.freeze(
 );
 
 /** @type {ReadonlySet<string>} */
-const QUEUE_KINDS = new Set(['queue_hold', 'auto_advance_off']);
+const QUEUE_KINDS = new Set(['queue_hold']);
 
 /**
  * Which surface owns a WaitReason kind (§10.3): the card badge or the queue
@@ -460,6 +450,6 @@ export const SUMMARY_CHIPS = Object.freeze([
     prefix: '막힘',
     label: '막힘 N',
     meaning:
-      'scope=bead 사유가 하나라도 있는 원래 이슈 수 — external_job은 원래 이슈로 한 번만 세고, 보류된 attempt의 provider_hold는 포함하며, 큐 사유(queue_hold·auto_advance_off)는 세지 않는다'
+      'scope=bead 사유가 하나라도 있는 원래 이슈 수 — external_job은 원래 이슈로 한 번만 세고, 보류된 attempt의 provider_hold는 포함하며, 큐 사유(queue_hold)는 세지 않는다'
   })
 ]);
