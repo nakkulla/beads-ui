@@ -4403,9 +4403,17 @@ function normalizeQueue(raw) {
     }
   }
   // A queue.json written before Phase 5 simply has no key → empty map, which
-  // reads as "no bead is awaiting a cleanup fix" (worker-phase2 §6).
+  // reads as "no bead is awaiting a cleanup fix" (worker-phase2 §6). A record
+  // for a `done` member is an orphan (UI-a9ky): the cleanup that moved the
+  // bead there already succeeded, and a concurrent second cleanup path wrote
+  // its `not_in_pr_wait` refusal as a failure. The lane, not the record, tells
+  // the truth, so the orphan is dropped on load rather than shown as 해결 필요.
+  const done_ids = new Set(q.done.map((e) => e.bead_id));
   if (isRecord(raw.cleanup_failed)) {
     for (const [bead_id, value] of Object.entries(raw.cleanup_failed)) {
+      if (done_ids.has(bead_id)) {
+        continue;
+      }
       if (isRecord(value) && typeof value.reason === 'string') {
         q.cleanup_failed[bead_id] = {
           step: typeof value.step === 'string' ? value.step : '',
@@ -4766,16 +4774,29 @@ function hasActiveDiscardOperation(q, bead_id) {
  * @param {boolean} external
  */
 function enqueueMember(q, bead_id, external) {
-  const in_other_lane =
+  if (inNonPrWaitLane(q, bead_id)) {
+    return false;
+  }
+  return external || q.pr_wait.some((e) => e.bead_id === bead_id);
+}
+
+/**
+ * Whether a bead sits in `queue`, a serial lane, or `done` — every lane other
+ * than `pr_wait`. Membership there excludes the states that only a `pr_wait`
+ * member (or a lane-less external row) can be in: a merge turn and a
+ * post-merge cleanup failure.
+ *
+ * @param {Queue} q
+ * @param {string} bead_id
+ */
+function inNonPrWaitLane(q, bead_id) {
+  return (
     q.queue.some((e) => e.bead_id === bead_id) ||
     q.serial_lanes.some((lane) =>
       lane.entries.some((e) => e.bead_id === bead_id)
     ) ||
-    q.done.some((e) => e.bead_id === bead_id);
-  if (in_other_lane) {
-    return false;
-  }
-  return external || q.pr_wait.some((e) => e.bead_id === bead_id);
+    q.done.some((e) => e.bead_id === bead_id)
+  );
 }
 
 /**
@@ -8917,6 +8938,15 @@ export function createQueueStore(options = {}) {
           (retry_count !== undefined &&
             (!Number.isInteger(retry_count) || Number(retry_count) < 0))
         ) {
+          return false;
+        }
+        // `cleanup_failed` describes a `pr_wait` member (or an external row,
+        // which has no durable lane at all — the same bypass `enqueueMember`
+        // keeps). A bead sitting in `queue`, a serial lane, or `done` has no
+        // post-merge cleanup to have failed: the write is refused so a second
+        // concurrent cleanup path cannot leave an orphan behind a bead that
+        // already finished (UI-a9ky).
+        if (inNonPrWaitLane(next, bead_id)) {
           return false;
         }
         const diagnosis = next.cleanup_failed[bead_id]?.diagnosis;

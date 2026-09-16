@@ -1871,6 +1871,9 @@ export function bootstrap(root_element) {
       adrStore: adr_store,
       gotoIssue: (id) => router.gotoIssue(id),
       getWorkspacePath: () => store.getState().workspace.current?.path,
+      // ADR 스냅샷은 서버 전역이라 프로젝트 전환으로는 다시 오지 않는다 — 기본
+      // 필터가 전환을 따라가려면 앱 상태 변경을 직접 들어야 한다(UI-a9ky).
+      subscribeWorkspace: (fn) => store.subscribe(() => fn()),
       switchWorkspace: (root_dir) => handleWorkspaceChange(root_dir),
       openDoc
     });

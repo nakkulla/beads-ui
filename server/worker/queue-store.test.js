@@ -4283,6 +4283,87 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     });
   });
 
+  test('refuses a cleanup failure for a bead already in done', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.moveToDone(WS, { bead_id: 'UI-1' });
+    const before = store.snapshot(WS).revision;
+
+    const result = store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'repo_operations',
+      reason: 'not_in_pr_wait'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(before);
+    expect(store.snapshot(WS).cleanup_failed['UI-1']).toBeUndefined();
+  });
+
+  test('refuses a cleanup failure for a bead still waiting in the queue', () => {
+    const store = createQueueStore();
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-waiting',
+      lane: 'parallel'
+    });
+
+    const result = store.recordCleanupFailure(WS, {
+      bead_id: 'UI-waiting',
+      step: 'child_sweep',
+      reason: 'child_close_failed'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).cleanup_failed['UI-waiting']).toBeUndefined();
+  });
+
+  test('records a cleanup failure for a lane-less external row', () => {
+    const store = createQueueStore();
+
+    const result = store.recordCleanupFailure(WS, {
+      bead_id: 'UI-ext',
+      step: 'repo_operations',
+      reason: 'external_deployment_promote_failed'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).cleanup_failed['UI-ext']).toMatchObject({
+      reason: 'external_deployment_promote_failed'
+    });
+  });
+
+  test('drops an orphan cleanup failure of a done member on load', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        done: [{ bead_id: 'X-1', added_at: 1 }],
+        pr_wait: [{ bead_id: 'X-2', added_at: 1 }],
+        cleanup_failed: {
+          'X-1': {
+            step: 'repo_operations',
+            reason: 'not_in_pr_wait',
+            bd_restore: null,
+            at: 2,
+            detail: null
+          },
+          'X-2': {
+            step: 'branch_cleanup',
+            reason: 'worktree_remove_failed',
+            bd_restore: null,
+            at: 3,
+            detail: null
+          }
+        }
+      })
+    );
+
+    const loaded = createQueueStore().snapshot(WS);
+
+    expect(Object.keys(loaded.cleanup_failed)).toEqual(['X-2']);
+  });
+
   test('keeps a cleanup failure summary across a reload', () => {
     const store = createQueueStore();
     seedPrWait(store);
@@ -12848,8 +12929,19 @@ describe('worker/queue-store discard abandonment', () => {
       bead_id: 'UI-abandon',
       reason: 'worktree_stale_work'
     });
+    // A cleanup failure describes a `pr_wait` member, so the preserved record
+    // belongs to a merged bead rather than the waiting one (UI-a9ky).
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'a-merged', bead_id: 'UI-merged' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-merged',
+      attempt_id: 'a-merged',
+      patch: { status: 'done' }
+    });
     store.recordCleanupFailure(WS, {
-      bead_id: 'UI-abandon',
+      bead_id: 'UI-merged',
       step: 'child_sweep',
       reason: 'child_close_failed'
     });

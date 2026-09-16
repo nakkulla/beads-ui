@@ -105,6 +105,113 @@ describe('views/adr toolbar', () => {
     expect(button.getAttribute('aria-pressed')).toBe('true');
   });
 
+  test('opens on the current workspace with the other repositories filtered out', () => {
+    const { root } = mount(
+      [
+        workspace({ current: [adr(1)] }),
+        workspace({ root_dir: '/repo/b', name: 'b', current: [adr(2)] })
+      ],
+      { getWorkspacePath: () => '/repo/b' }
+    );
+
+    expect(texts(root, '.adr-ws h2')).toEqual(['b']);
+    expect(
+      root
+        .querySelector('.adr-filter[data-repo="/repo/b"]')
+        ?.getAttribute('aria-pressed')
+    ).toBe('true');
+  });
+
+  /**
+   * Mount with a workspace subscription and NO snapshot re-push: the ADR
+   * snapshot is server-global, so a project switch never resends it.
+   */
+  function mountFollowing() {
+    const state = { current: '/repo/a' };
+    /** @type {(() => void)[]} */
+    const listeners = [];
+    const workspaces = [
+      workspace({ current: [adr(1)] }),
+      workspace({ root_dir: '/repo/b', name: 'b', current: [adr(2)] })
+    ];
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+    const view = createAdrView(root, {
+      adrStore: { get: () => ({ workspaces }), subscribe: () => () => {} },
+      getWorkspacePath: () => state.current,
+      subscribeWorkspace: (fn) => {
+        listeners.push(fn);
+        return () => {
+          listeners.splice(listeners.indexOf(fn), 1);
+        };
+      }
+    });
+    return {
+      root,
+      view,
+      listeners,
+      /** @param {string} path */
+      switchTo(path) {
+        state.current = path;
+        listeners.forEach((fn) => fn());
+      }
+    };
+  }
+
+  test('follows a workspace switch without a new snapshot until a filter is pressed', () => {
+    const { root, switchTo } = mountFollowing();
+
+    switchTo('/repo/b');
+
+    expect(texts(root, '.adr-ws h2')).toEqual(['b']);
+    expect(
+      root
+        .querySelector('.adr-filter[data-repo="/repo/b"]')
+        ?.getAttribute('aria-pressed')
+    ).toBe('true');
+  });
+
+  test('keeps the pressed 전체 filter across a workspace switch', () => {
+    const { root, switchTo } = mountFollowing();
+    /** @type {HTMLElement} */ (
+      root.querySelector('.adr-filter:not([data-repo])')
+    ).click();
+
+    switchTo('/repo/b');
+
+    expect(texts(root, '.adr-ws h2')).toEqual(['a', 'b']);
+  });
+
+  test('ignores app-state changes that leave the workspace alone', () => {
+    const { root, listeners } = mountFollowing();
+    const before = root.innerHTML;
+    /** @type {HTMLInputElement} */ (root.querySelector('.adr-search')).value =
+      'x';
+
+    listeners.forEach((fn) => fn());
+
+    expect(root.innerHTML).toBe(before);
+    expect(
+      /** @type {HTMLInputElement} */ (root.querySelector('.adr-search')).value
+    ).toBe('x');
+  });
+
+  test('stops listening to the workspace on destroy', () => {
+    const { view, listeners } = mountFollowing();
+
+    view.destroy();
+
+    expect(listeners).toEqual([]);
+  });
+
+  test('shows every repository when the current workspace is not in the snapshot', () => {
+    const { root } = mount([workspace({ current: [adr(1)] })], {
+      getWorkspacePath: () => '/repo/other'
+    });
+
+    expect(texts(root, '.adr-ws h2')).toEqual(['a']);
+  });
+
   test('searches number, title, summary, spec and bead', () => {
     const { root } = mount([
       workspace({
@@ -663,6 +770,35 @@ describe('views/adr links', () => {
 
     expect(switchWorkspace).not.toHaveBeenCalled();
     expect(gotoIssue).toHaveBeenCalledWith('UI-1');
+  });
+});
+
+describe('views/adr inspect section', () => {
+  test('folds the checker signal sections into a closed 점검 details', () => {
+    const { root } = mount([
+      workspace({
+        current: [adr(1)],
+        index_drift: { ok: false, detail: 'drift' },
+        cross_citations: [
+          { file: 'docs/x.md', line: 1, repo: 'b', adr: 2, target: null }
+        ]
+      })
+    ]);
+
+    const inspect = /** @type {HTMLDetailsElement} */ (
+      root.querySelector('.adr-inspect')
+    );
+    expect(inspect.open).toBe(false);
+    expect(texts(root, '.adr-inspect > summary')).toEqual(['점검']);
+    expect(inspect.querySelector('.adr-sec--drift')).not.toBeNull();
+    expect(inspect.querySelector('.adr-sec--cross')).not.toBeNull();
+    expect(root.querySelector('.adr-ws > .adr-sec')).toBeNull();
+  });
+
+  test('draws no 점검 area for a repository without an ADR directory', () => {
+    const { root } = mount([workspace({ adr_dir_missing: true })]);
+
+    expect(root.querySelector('.adr-inspect')).toBeNull();
   });
 });
 

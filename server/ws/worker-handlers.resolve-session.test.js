@@ -111,9 +111,16 @@ beforeEach(() => {
       return launch_result;
     }
   };
-  runtime.queueStore.place(WS, {
+  // A cleanup stop describes a `pr_wait` member (UI-a9ky), so the row sits
+  // there rather than in the waiting lane.
+  runtime.queueStore.appendAttempt(WS, {
     expected_revision: revision(),
-    bead_id: BEAD
+    attempt: { attempt_id: 'a-jw27', bead_id: BEAD }
+  });
+  runtime.queueStore.moveToPrWait(WS, {
+    bead_id: BEAD,
+    attempt_id: 'a-jw27',
+    patch: { status: 'done' }
   });
 });
 

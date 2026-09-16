@@ -88,6 +88,9 @@ const CANDIDATE_OTHER_KINDS = ['adr_status'];
  * @property {{ get: () => ({ workspaces: AdrWorkspaceView[] }|null), subscribe?: (fn: () => void) => () => void }} [adrStore]
  * @property {(id: string) => void} [gotoIssue]
  * @property {() => (string|undefined)} [getWorkspacePath]
+ * @property {(fn: () => void) => () => void} [subscribeWorkspace] - notifies
+ * on app-state changes so the default filter can follow a workspace switch
+ * without a new ADR snapshot (the server pushes `adr-snapshot` only on change)
  * @property {(root_dir: string) => Promise<unknown>|unknown} [switchWorkspace]
  * @property {(doc: import('../board/stepper.js').StepperDoc, root_dir?: string) => void} [openDoc]
  */
@@ -285,13 +288,34 @@ export function createAdrView(root, options = {}) {
   const adrStore = options.adrStore;
   const gotoIssue = options.gotoIssue;
   const getWorkspacePath = options.getWorkspacePath;
+  const subscribeWorkspace = options.subscribeWorkspace;
   const switchWorkspace = options.switchWorkspace;
   const openDoc = options.openDoc;
 
-  /** @type {{ repo: string, query: string, stale_first: boolean }} */
-  const ui = { repo: '', query: '', stale_first: true };
+  // 저장소 필터는 현재 워크스페이스를 기본으로 열고, 사용자가 필터를 누르기
+  // 전까지는 워크스페이스 전환을 따라간다(UI-a9ky). `repo_pinned`는 그 클릭
+  // 여부다 — '전체'를 누른 것도 pinned 이다.
+  /** @type {{ repo: string, repo_pinned: boolean, query: string, stale_first: boolean }} */
+  const ui = {
+    repo: currentWorkspaceRepo(),
+    repo_pinned: false,
+    query: '',
+    stale_first: true
+  };
   /** @type {(() => void) | null} */
   let unsubscribe = null;
+  /** @type {(() => void) | null} */
+  let unsubscribe_workspace = null;
+
+  /**
+   * The current workspace root, or '' (전체) when none is known.
+   *
+   * @returns {string}
+   */
+  function currentWorkspaceRepo() {
+    const current = getWorkspacePath ? getWorkspacePath() : undefined;
+    return typeof current === 'string' ? current : '';
+  }
 
   /**
    * @returns {AdrWorkspaceView[]}
@@ -694,6 +718,23 @@ export function createAdrView(root, options = {}) {
   }
 
   /**
+   * Fold the checker signal sections (drift·citation·candidate·cross) into a
+   * closed 점검 details: 데이터와 계산은 각 절이 그대로 소유하고, 여기서는
+   * 표시 순서만 결정 표·이력 뒤로 내린다(UI-a9ky).
+   *
+   * @param {AdrWorkspaceView} ws
+   */
+  function inspectSection(ws) {
+    return html`
+      <details class="adr-inspect">
+        <summary>점검</summary>
+        ${driftSection(ws)} ${citationSection(ws)} ${candidateSection(ws)}
+        ${crossSection(ws)}
+      </details>
+    `;
+  }
+
+  /**
    * @param {AdrWorkspaceView} ws
    * @param {AdrWorkspaceView[]} all
    */
@@ -708,10 +749,7 @@ export function createAdrView(root, options = {}) {
             : html``}
         </header>
         ${countChips(ws)} ${currentTable(ws, all)} ${historySection(ws)}
-        ${missing ? html`` : driftSection(ws)}
-        ${missing ? html`` : citationSection(ws)}
-        ${missing ? html`` : candidateSection(ws)}
-        ${missing ? html`` : crossSection(ws)}
+        ${missing ? html`` : inspectSection(ws)}
       </section>
     `;
   }
@@ -731,6 +769,7 @@ export function createAdrView(root, options = {}) {
             aria-pressed=${ui.repo === '' ? 'true' : 'false'}
             @click=${() => {
               ui.repo = '';
+              ui.repo_pinned = true;
               doRender();
             }}
           >
@@ -745,6 +784,7 @@ export function createAdrView(root, options = {}) {
                 aria-pressed=${ui.repo === ws.root_dir ? 'true' : 'false'}
                 @click=${() => {
                   ui.repo = ws.root_dir;
+                  ui.repo_pinned = true;
                   doRender();
                 }}
               >
@@ -781,9 +821,15 @@ export function createAdrView(root, options = {}) {
 
   function template() {
     const workspaces = snapshot();
-    const shown = ui.repo
-      ? workspaces.filter((ws) => ws.root_dir === ui.repo)
-      : workspaces;
+    if (!ui.repo_pinned) {
+      ui.repo = currentWorkspaceRepo();
+    }
+    // 스냅샷에 없는 워크스페이스(아직 계산 전)는 빈 화면 대신 전체를 보인다.
+    const known = workspaces.some((ws) => ws.root_dir === ui.repo);
+    const shown =
+      ui.repo && known
+        ? workspaces.filter((ws) => ws.root_dir === ui.repo)
+        : workspaces;
     return html`
       ${toolbar(workspaces)}
       <div class="adr-body">
@@ -800,12 +846,29 @@ export function createAdrView(root, options = {}) {
   if (adrStore && typeof adrStore.subscribe === 'function') {
     unsubscribe = adrStore.subscribe(() => doRender());
   }
+  if (typeof subscribeWorkspace === 'function') {
+    // 앱 상태는 선택·필터마다 바뀌므로 워크스페이스 경로가 실제로 달라졌을 때만
+    // 다시 그린다. pinned 필터는 template()이 그대로 지킨다.
+    let seen_repo = currentWorkspaceRepo();
+    unsubscribe_workspace = subscribeWorkspace(() => {
+      const next = currentWorkspaceRepo();
+      if (next === seen_repo) {
+        return;
+      }
+      seen_repo = next;
+      doRender();
+    });
+  }
 
   return {
     destroy() {
       if (unsubscribe) {
         unsubscribe();
         unsubscribe = null;
+      }
+      if (unsubscribe_workspace) {
+        unsubscribe_workspace();
+        unsubscribe_workspace = null;
       }
       render(html``, root);
     }

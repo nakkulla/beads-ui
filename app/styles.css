@@ -8406,6 +8406,23 @@ button.detail-session__leg:focus-visible {
   }
 }
 
+/* 넓은 화면(>1400px)에서는 두 그룹이 한 줄에 서므로 KPI 칩(완료 토큰 누적)이
+   길어지면 flex-shrink가 조작 그룹을 먼저 압축해 버튼 글자가 두 줄로 꺾이고
+   입력이 라벨 아래로 떨어진다(UI-a9ky). 조작 그룹은 줄어들지 않고, 줄바꿈이
+   허용된 KPI 그룹이 대신 접힌다. */
+@media (min-width: 1401px) {
+  .worker-ctrl__ops {
+    flex-shrink: 0;
+  }
+
+  /* 라벨(동시 실행·직렬 레인)은 Chrome이 조작 그룹의 max-content를 공백 폭만큼
+     작게 잡아 입력이 라벨 아래로 떨어진다 — nowrap이 라벨을 한 줄로 고정한다. */
+  .worker-play,
+  .worker-tgl {
+    white-space: nowrap;
+  }
+}
+
 /* ---------- Worker responsive (<=640px): single-column lanes + grid ---------- */
 @media (max-width: 640px) {
   /* App shell header: wrap instead of forcing title+picker+tabs+actions onto one
@@ -10850,6 +10867,17 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 
 .adr-history > summary,
 .adr-pending > summary {
+  cursor: pointer;
+}
+
+/* 체커 신호 절을 접어 두는 점검 영역(UI-a9ky). 결정 표·이력 뒤에 서고, 펼치면
+   각 절이 원래 간격으로 이어진다. */
+.adr-inspect {
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+.adr-inspect > summary {
   cursor: pointer;
 }
 
