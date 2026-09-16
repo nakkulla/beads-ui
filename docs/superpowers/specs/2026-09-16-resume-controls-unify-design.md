@@ -12,6 +12,7 @@ scope:
   - app/views/worker/lane-model.test.js
   - app/views/monitor/index.js
   - app/views/monitor/index.test.js
+  - app/views/detail-panel/index.test.js
   - app/styles.css
   - app/protocol.md
   - server/ws/worker-handlers.js
@@ -48,9 +49,12 @@ scope:
   같은 `worker-attempt-resume`을 보낸다. 지침 입력 기능 자체는 중복이다.
 - 두 긴 버튼의 남은 차이는 UI-qce9(ADR 0045)의 정책이다: 지침을 필수로 받고
   `continuation=prior_attempt`로 기록된 세션·모델·effort·speed·계정을 그대로
-  잇는다. `▶ 재개`는 `auto`로 보내 현재 설정을 적용할 수 있고 기록이 없으면
-  `continuation_mismatch` 대화(`app/utils/continuation-dialog.js`)로 새 세션
-  대체를 묻는다.
+  잇는다. `▶ 재개`는 `auto`로 보내 현재 설정을 적용할 수 있다. 서버
+  (`server/worker/scheduler.js` `resolveContinuationForAttempt`)는 기록된 러너와
+  현재 러너가 다를 때만 `continuation_mismatch` 대화
+  (`app/utils/continuation-dialog.js`)를 요구하고, 세션 ID가 없으면
+  `no_session_id`로 거부하며, 세션 ID는 있으나 transcript가 없으면 자동으로 새
+  세션으로 대체한다(`resume_fallback`).
 - `지시와 함께 재시작`은 `worker-attempt-pause`(`require_durable: true`) 뒤
   `worker-attempt-resume`(`prior_attempt`)을 한 다이얼로그에서 묶는 두 요청
   흐름(`runRestartWithInstructionsFlow`)이다. 서버는 이 자격을
@@ -59,8 +63,10 @@ scope:
   `attemptsWithInstructionsRestart`).
 - Worker 탭과 Monitor 탭은 같은 `runningTile` 렌더러와 같은 흐름 모듈을 쓴다(ADR
   0014). 대기 행의 `▶ 재개`(`worker-mini__hold-resume`, 큐 정지 해제)와 상세
-  세션 이력의 `⧉ 재개`(명령 복사)는 이름만 같은 다른 조작이며 이 설계의 대상이
-  아니다.
+  세션 이력의 `⧉ 재개 명령`(명령 복사)은 이름만 같은 다른 조작이며 이 설계의
+  대상이 아니다. 상세 세션 이력의 실제 `↻ 이어하기`(`detail-session__resume`,
+  `app/views/detail-panel/index.js`)는 `runResumeFlow`로 같은 다이얼로그를
+  연다.
 
 ## 2. 검토한 접근과 선택
 
@@ -85,9 +91,11 @@ scope:
   제거한다. `▶ 재개`의 툴팁은 "같은 세션으로 이어서 재개 — 바로 재개하거나 지시를
   입력할 수 있음"으로 바꾼다.
 - 실패 타일·`provider_hold` 타일의 `↻ 이어하기`·`↻ 정리 재시도`·`⋯ 다른 방법으로`,
-  대기 행의 `▶ 재개`·`[지금 시작]`, 상세 세션 이력의 버튼은 자리와 동작을 바꾸지
-  않는다. 실패 타일의 두 버튼은 §4의 다이얼로그를 그대로 공유하므로 두 갈래
-  모양을 함께 얻는다.
+  대기 행의 `▶ 재개`·`[지금 시작]`, 상세 세션 이력의 버튼은 자리를 바꾸지 않는다.
+  실패 타일의 두 버튼과 상세 세션 이력의 `↻ 이어하기`는 §4의 다이얼로그를 그대로
+  공유하므로 두 갈래 모양을 함께 얻는다. 그 화면들의 코드는 바꾸지 않되,
+  다이얼로그를 직접 조작하는 테스트(`app/views/detail-panel/index.test.js`)는
+  입력 갈래를 고르도록 갱신한다.
 - Monitor 탭은 같은 `runningTile`을 그리므로 같은 결과다. Monitor의
   `restartAttemptWithInstructions`와 두 클릭 분기(`rtile__restart-instructions`·
   `rtile__resume-instructions`)를 제거한다.
@@ -157,9 +165,11 @@ scope:
   예외 조항까지 번지는 별개 정리이며 이번 요청(UI 단순화)의 필요조건이 아니다.
   UI 진입점이 없는 서버 정책으로 남고, 그 사실을 ADR 대체문과 `protocol.md`의
   `prior_attempt` 설명에 한 문장으로 적는다.
-- 두 갈래 모두 `continuation` 없이 보내는 기존 `auto` 경로다. 기록이 없으면 기존
-  `continuation_mismatch` 대화가 열리고, 지침은 `runResumeFlow`의 base payload에
-  실려 재전송·충돌 재시도·`refresh`에서 보존된다(기존 규칙).
+- 두 갈래 모두 `continuation` 없이 보내는 기존 `auto` 경로다. 서버의 세 갈래도
+  그대로다: 기록된 러너와 현재 러너가 다르면 기존 `continuation_mismatch` 대화가
+  열리고, 세션 ID 부재는 `no_session_id`로 거부되며, transcript 부재는 서버가
+  자동으로 새 세션으로 대체한다. 지침은 `runResumeFlow`의 base payload에 실려
+  재전송·충돌 재시도·`refresh`에서 보존된다(기존 규칙).
 
 ## 6. 정본 반영
 
@@ -193,12 +203,12 @@ RED-GREEN 전용 seam은 승인하지 않는다. 아래 행위 검증과 저장�
 | 다이얼로그 상태 | A에서 첫 버튼 클릭은 `''`, 둘째 클릭은 B 전환·textarea 포커스·`aria-expanded=true`; B에서 빈 입력은 확인 비활성, 입력 후 확인·`Ctrl+Enter`는 trim 문자열; `Esc`·취소는 두 상태 모두 `null`; `kind` 두 값의 라벨이 표와 일치 |
 | 흐름 | `runResumeFlow`가 `''`에서 `instructions` 키 없이, 문자열에서 같은 값을 첫 전송·충돌 재시도·mismatch 재전송 모두에 싣는다(기존 테스트 유지); `runRestartWithInstructionsFlow` export 부재 |
 | 타일 렌더 | 실행 타일에 `rtile__restart-instructions` 없음, 일시정지 타일에 `rtile__resume-instructions` 없음, `⏸`·`▶ 재개`·`▤ 세션`·폐기는 그대로; `instructions_restart`가 실린 옛 스냅샷에도 버튼이 없음 |
-| 화면 배선 | Worker·Monitor에서 `▶ 재개` 클릭이 다이얼로그를 열고 A 첫 버튼이 `worker-attempt-resume`을 `continuation`·`instructions` 없이 1회 보냄; 제거한 두 클래스 클릭은 아무 전송도 없음 |
+| 화면 배선 | Worker·Monitor의 `▶ 재개`와 상세 세션 이력의 `↻ 이어하기` 클릭이 다이얼로그를 열고 A 첫 버튼이 `worker-attempt-resume`을 `continuation`·`instructions` 없이 1회 보냄; B 갈래는 입력한 지침을 실음; 제거한 두 클래스 클릭은 아무 전송도 없음 |
 | 투영 | `lane-model`이 `instructions_restart`를 통과시키지 않음; 서버 스냅샷에 그 필드가 없음; `prior_attempt` resume과 `require_durable` pause는 기존 서버 테스트 그대로 통과 |
 | 문서 | 카드 문법 §5.1·2026-08-19 스펙·`protocol.md` 정정이 들어 있음 |
 
 기존 테스트를 갱신한다: resume-instructions-dialog, resume-flow, running-grid,
-worker/index, monitor/index, lane-model, ws.worker-queue. 인도 전 Node engines
+worker/index, monitor/index, detail-panel/index, lane-model, ws.worker-queue. 인도 전 Node engines
 확인, 자체 의존성 설치 후 `npm run tsc`, `npm run lint`, 변경 파일 Prettier,
 `npx vitest run --reporter=dot`(120초 상한)를 수행한다. `npm run build` 뒤 실제
 브라우저에서 일시정지 타일 `▶ 재개` → 바로 이어하기와 지시 입력 후 이어하기,
@@ -218,17 +228,32 @@ worker/index, monitor/index, lane-model, ws.worker-queue. 인도 전 Node engine
   ▶ 재개 둘이며 지시는 재개 다이얼로그의 선택 갈래로 auto 정책과 함께 전달한다;
   실행 중 지시 재시작과 prior_attempt의 UI 진입점은 제거하고 durable pause·
   prior_attempt 서버 계약은 UI 진입점 없이 유지한다" → ADR, supersede 0045
-- 두 갈래 다이얼로그의 상태·라벨·포커스 규칙: 되돌림 비용 낮음, 배경 없이 의외
-  아님, 실재 대안 있음. 검증 가능한 UI 설계이므로 별도 ADR로 만들지
-  않는다 → ADR 아님
+- 두 갈래 다이얼로그의 상태·라벨·포커스 규칙: 되돌림 비용 낮음(클라이언트
+  다이얼로그 모듈 하나와 그 테스트 안의 값이며 저장 형식·프로토콜에 남지 않음),
+  배경 없이 의외 아님(화면의 두 버튼이 그대로 설명이고 반환 계약은 기존과 같음),
+  실재 대안 있음(타일 분할 버튼·항상 펼친 textarea). 검증 가능한 UI 설계이므로
+  별도 ADR로 만들지 않는다 → ADR 아님
 
-대체 ADR에는 ADR 0045의 살아 있는 조항을 재기록한다: `require_durable` pause가
-자격 검사 뒤 durable control과 부모 정산 체인 완료 후에 답하는 것,
-`prior_attempt` 재개가 기록된 tuple·계정을 승계하고 `exec_override`를 거부하며
-transcript 부재 시 fresh를 dispatch하지 않는 것, 자식의
-`continuation_choice='prior_attempt'` 기록과 ADR 0046의 예외 조항. 실행 타일·paused
-타일의 두 버튼과 paused 행의 `지시와 함께 이어하기` 진입점 조항은 이 설계로
-대체한다.
+대체 ADR에는 ADR 0045의 살아 있는 서버 조항을 전부 재기록한다: `require_durable`
+pause가 시그널 전 자격 검사(일반 구현 attempt·세션 ID·프로세스 신원·완전한 실행
+기록·활성 provider의 명시적 계정 ID)를 거쳐 durable control과 부모의 전체 정산
+체인이 끝난 뒤에만 답하고 `paused_done`이 그 체인을 가리키는 것; `prior_attempt`
+재개가 기록된 runner·model·effort·speed·`exec_values`·프리셋·계정을 승계하고
+미기록을 현재 기본값으로 채우지 않으며 `exec_override`를 `bad_request`로 거부하는
+것; decision token 대신 source digest가 기록 tuple 전체를 결속하고 launch 직전
+재검증이 변경을 잡는 것; 기록된 provider·계정을 현재 환경에서 쓸 수 없으면 다른
+계정·provider로 전환하지 않고 거부하는 것; 자식의
+`continuation_choice='prior_attempt'` 기록, transcript 사전 부재
+`prior_session_unavailable`·실행 후 부재 `resume_failed:transcript_missing`에서
+fresh를 dispatch하지 않는 것, 자동 provider 재개가 같은 선택·세션·tuple을 유지할
+때만 허용되고 계정 전환이 필요한 재개는 `prior_attempt_locked`로 거부되는 것; pause
+뒤 연결 끊김은 paused로 남고 자동 재시작 의도를 저장하지 않는 것; 사용자 요청으로
+pause된 원 attempt를 실패·provider 장애·retry 소진으로 세지 않는 것; 일반
+`이어하기`의 `auto`·`prior_session`·`fresh_current`와 transcript 부재 시 fresh 대체가
+그대로인 것; ADR 0046의 예외 조항. 이 설계가 대체하는 것은 UI 조항 둘이다 — 실행
+타일의 `지시와 함께 재시작`과 durable pause가 끝난 paused 타일의 `지시와 함께
+이어하기` 버튼, 그리고 "paused 행의 `지시와 함께 이어하기`가 같은 선택으로
+재개한다"는 재진입 문장.
 
 ## 경계·후속
 
