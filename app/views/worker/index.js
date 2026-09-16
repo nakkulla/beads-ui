@@ -4225,12 +4225,16 @@ export function createWorkerView(mount_element, options = {}) {
    * 1초마다 다시 그려야 한다. 유예 행이 사라지면 그 자리에서 해제하므로 상시
    * 타이머가 되지 않는다.
    *
+   * 자동 진행이 꺼진 저장소의 행은 유예 칩을 그리지 않으므로 (UI-3pu9 §4.3)
+   * 세지 않는다 — 보이지 않는 칩 때문에 타이머가 돌면 안 된다.
+   *
    * @param {LaneModel} m
    */
   function syncGraceTimer(m) {
     const now = Date.now();
     const has_grace = m.queue.some(
-      (item) => graceRemainingMs(item.added_at, now) > 0
+      (item) =>
+        item.manual_only !== true && graceRemainingMs(item.added_at, now) > 0
     );
     if (!has_grace) {
       stopGraceTimer();

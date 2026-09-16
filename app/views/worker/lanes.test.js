@@ -417,7 +417,6 @@ describe('server wait judgment rendering', () => {
         actions: [
           { op: 'resume', label: '', payload: {} },
           { op: 'probe_now', label: '', payload: { runner: 'codex' } },
-          { op: 'start_now', label: '', payload: { bead_id: 'A-1' } },
           { op: 'unknown', label: 'unknown', payload: {} }
         ]
       })
@@ -425,14 +424,13 @@ describe('server wait judgment rendering', () => {
 
     render(html`${lines.actions}`, mount);
 
-    expect(mount.querySelectorAll('button')).toHaveLength(3);
+    expect(mount.querySelectorAll('button')).toHaveLength(2);
     expect(
       mount
         .querySelector('.worker-mini__provider-probe')
         ?.getAttribute('data-since')
     ).toBe('100');
     expect(mount.querySelector('.worker-mini__hold-resume')).not.toBeNull();
-    expect(mount.querySelector('.worker-mini__start-now')).not.toBeNull();
   });
 
   test.each(['queue', 's1'])(
@@ -536,7 +534,7 @@ describe('server wait judgment rendering', () => {
           waitReason({ kind: 'external_job' }),
           waitReason({
             subject: { bead_id: 'A-2', root_dir: '/repo' },
-            kind: 'auto_advance_off'
+            kind: 'queue_hold'
           })
         ]
       }
@@ -544,7 +542,7 @@ describe('server wait judgment rendering', () => {
 
     expect(summary.count).toBe(1);
     expect(summary.action_count).toBe(1);
-    expect(summary.queue_line).toEqual(['수동 출발 1']);
+    expect(summary.queue_line).toEqual(['정지 1']);
     expect(
       summary.groups.map((group) => [group.label, group.entries.length])
     ).toEqual([
@@ -711,7 +709,7 @@ describe('카드당 대기 상태 배지 하나 (UI-8gem §6)', () => {
       done: false,
       wait_reasons: [
         waitReason({ kind: 'prerequisite' }),
-        waitReason({ kind: 'auto_advance_off', headline: '자동 진행 꺼짐' })
+        waitReason({ kind: 'queue_hold', headline: '큐 정지' })
       ]
     });
 
@@ -822,10 +820,6 @@ describe('요약 칩 묶음 (UI-8gem §8)', () => {
           waitReason({
             kind: 'queue_hold',
             subject: { bead_id: 'A-2', root_dir: '/repo' }
-          }),
-          waitReason({
-            kind: 'auto_advance_off',
-            subject: { bead_id: 'A-3', root_dir: '/repo' }
           })
         ]
       }
@@ -833,7 +827,23 @@ describe('요약 칩 묶음 (UI-8gem §8)', () => {
 
     expect(summary.count).toBe(1);
     expect(summary.groups.map((group) => group.label)).toEqual(['공급자']);
-    expect(summary.queue_line).toEqual(['정지 1', '수동 출발 1']);
+    expect(summary.queue_line).toEqual(['정지 1']);
+  });
+
+  test('leaves the queue line empty without a queue-scope reason (UI-3pu9 §4.2)', () => {
+    const summary = blockedSummary([
+      {
+        root_dir: '/repo',
+        wait_reasons: [
+          waitReason({
+            kind: 'prerequisite',
+            subject: { bead_id: 'A-1', root_dir: '/repo' }
+          })
+        ]
+      }
+    ]);
+
+    expect(summary.queue_line).toEqual([]);
   });
 
   test('draws the four shared chips with the short period label', () => {
@@ -943,7 +953,7 @@ describe('요약 칩 묶음 (UI-8gem §8)', () => {
           wait_reasons: [
             waitReason(),
             waitReason({
-              kind: 'auto_advance_off',
+              kind: 'queue_hold',
               subject: { bead_id: 'A-9', root_dir: '/repo' }
             })
           ]
@@ -953,7 +963,7 @@ describe('요약 칩 묶음 (UI-8gem §8)', () => {
     );
 
     expect(mount.querySelector('.wait-summary__queue')?.textContent).toContain(
-      '큐: 수동 출발 1'
+      '큐: 정지 1'
     );
   });
 
@@ -6008,6 +6018,49 @@ describe('대기 진입 유예 (UI-q1tg §3.3)', () => {
         ?.getAttribute('data-bead-id')
     ).toBe('UI-g1');
   });
+
+  test('draws neither chip nor button on a manual_only row still in grace (UI-3pu9 §4.2)', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const row = renderWaitingRow({ added_at: NOW - 5_000, manual_only: true });
+
+    expect([
+      row.querySelector('.worker-dep--grace'),
+      row.querySelector('.worker-mini__start-now')
+    ]).toEqual([null, null]);
+  });
+
+  test('keeps the start-now button on a gated manual_only row (UI-3pu9 §4.2)', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const row = renderWaitingRow({
+      manual_only: true,
+      gate: /** @type {any} */ ({
+        kind: 'provider_outage',
+        label: '⏳ 공급자 장애',
+        title: '러너 전체가 공급자 장애로 보류',
+        since: NOW - 60_000,
+        next_at: null,
+        runner: 'codex',
+        probe_ready: true,
+        lines: ['출구: 다음 프로브']
+      })
+    });
+
+    expect(row.querySelector('.worker-mini__start-now')).not.toBeNull();
+    expect(row.querySelector('.worker-dep--grace')).toBeNull();
+  });
+
+  test('keeps both on a grace row whose repo still auto-advances (UI-3pu9 §4.2)', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+
+    const row = renderWaitingRow({ added_at: NOW - 5_000, manual_only: false });
+
+    expect(row.querySelector('.worker-dep--grace')?.textContent).toContain(
+      '⏳ 15초'
+    );
+    expect(row.querySelector('.worker-mini__start-now')).not.toBeNull();
+  });
 });
 
 // 게이트 칩과 게이트 조작 (UI-01wh §3.2·§3.3). 막힌 대기 행이 정지·보류를 말하는
@@ -6212,12 +6265,6 @@ describe('직렬 레인 선두 조건의 [지금 시작] (직렬 레인 순서 �
       row({ gate: { kind: 'systemic', since: NOW } }),
       NOW
     );
-
-    expect(template).toBe('');
-  });
-
-  test('withholds the button from a requested non-head serial row', () => {
-    const template = startNowButtonTemplate(row(), NOW, true);
 
     expect(template).toBe('');
   });

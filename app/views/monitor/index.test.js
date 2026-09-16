@@ -3842,3 +3842,42 @@ describe('monitor blocked waiting row resume (UI-01wh §3.6)', () => {
     ]);
   });
 });
+
+describe('monitor 자동 진행 꺼짐 대기 행 (UI-3pu9 §4.2)', () => {
+  test('draws no gate chip, grace chip or start-now button', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({ queue: [{ bead_id: 'A-1', added_at: Date.now() }] })
+      ],
+      workspaces_state: [state({ auto_advance: false })]
+    });
+
+    view.load();
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="A-1"]')
+    );
+
+    expect([
+      row.querySelector('.worker-dep--gate'),
+      row.querySelector('.worker-dep--grace'),
+      row.querySelector('.worker-mini__start-now')
+    ]).toEqual([null, null, null]);
+  });
+
+  test('keeps the grace chip and start-now button when the repo auto-advances', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({ queue: [{ bead_id: 'A-1', added_at: Date.now() }] })
+      ],
+      workspaces_state: [state({ auto_advance: true })]
+    });
+
+    view.load();
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="A-1"]')
+    );
+
+    expect(row.querySelector('.worker-dep--grace')).not.toBeNull();
+    expect(row.querySelector('.worker-mini__start-now')).not.toBeNull();
+  });
+});

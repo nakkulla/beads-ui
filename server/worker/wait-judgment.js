@@ -20,7 +20,7 @@ export const WAIT_THRESHOLDS = Object.freeze({
 });
 
 /**
- * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'base_moved'|'provider_hold'|'queue_hold'|'auto_advance_off'|'awaiting_user'|'retry_wait'|'stale_work'|'recovery'} WaitKind
+ * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'base_moved'|'provider_hold'|'queue_hold'|'awaiting_user'|'retry_wait'|'stale_work'|'recovery'} WaitKind
  * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'disposition'|'recovery_confirm'} VerdictCode
  * @typedef {{ code: VerdictCode, message: string }} VerdictReason
  * @typedef {Object} WaitReason
@@ -743,42 +743,8 @@ export function judgeWaitReasons(input) {
       wait_reasons.push(result);
     }
   }
-  if (
-    queue.auto_advance === false &&
-    ![...attempts.values()].some((a) => a.status === 'running')
-  ) {
-    const stopped = new Set(wait_reasons.map((row) => row.subject.bead_id));
-    const serial_entry_ids = new Set(
-      (queue.serial_lanes || []).flatMap((/** @type {any} */ lane) =>
-        (lane.entries || []).map((/** @type {any} */ entry) => entry.bead_id)
-      )
-    );
-    const serial_head_ids = new Set(
-      (queue.serial_lanes || [])
-        .map((/** @type {any} */ lane) => lane.entries?.[0]?.bead_id)
-        .filter((/** @type {any} */ id) => typeof id === 'string')
-    );
-    const idle_ids = pending_ids.filter(
-      (bead_id) =>
-        !stopped.has(bead_id) &&
-        (!serial_entry_ids.has(bead_id) || serial_head_ids.has(bead_id))
-    );
-    for (const bead_id of idle_ids) {
-      const result = reason(
-        'auto_advance_off',
-        bead_id,
-        root_dir,
-        `자동 진행 꺼짐 · 대기 ${idle_ids.length}건 출발 안 함`,
-        '[지금 시작] 또는 자동화 켜기'
-      );
-      result.actions.push({
-        op: 'start_now',
-        label: '[지금 시작]',
-        payload: { root_dir, bead_id }
-      });
-      wait_reasons.push(result);
-    }
-  }
+  // 자동 진행 꺼짐(`queue.auto_advance === false`)은 사유를 내지 않는다
+  // (UI-3pu9 §3): 저장소 자동화 토글이 이미 말하는 사실이고, 읽는 화면이 없다.
   return {
     wait_reasons,
     observed_at: { settle_observed_at }

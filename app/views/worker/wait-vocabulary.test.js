@@ -34,7 +34,6 @@ describe('wait vocabulary table', () => {
       'provider_hold-outage',
       'queue_hold-systemic',
       'queue_hold-env',
-      'auto_advance_off',
       'gate-provider_usage',
       'gate-provider_outage'
     ]);
@@ -70,12 +69,9 @@ describe('wait vocabulary table', () => {
 });
 
 describe('waitScopeOf', () => {
-  test.each(['queue_hold', 'auto_advance_off'])(
-    'treats %s as a queue fact',
-    (kind) => {
-      expect(waitScopeOf(kind)).toBe('queue');
-    }
-  );
+  test('treats queue_hold as the only queue fact (UI-3pu9 §4.4)', () => {
+    expect(waitScopeOf('queue_hold')).toBe('queue');
+  });
 
   test.each(['prerequisite', 'provider_hold', 'external_job', 'recovery'])(
     'treats %s as an issue fact',
@@ -188,7 +184,7 @@ describe('representativeWaitReason', () => {
   test('ignores external work and queue facts', () => {
     const chosen = representativeWaitReason([
       { kind: 'external_job', verdict: 'action_required' },
-      { kind: 'auto_advance_off', verdict: 'normal' },
+      { kind: 'queue_hold', verdict: 'normal' },
       { kind: 'base_moved', verdict: 'normal' }
     ]);
 
@@ -233,7 +229,7 @@ describe('relation and summary chips', () => {
   test('states the blocked aggregation rule on the summary chip', () => {
     const blocked = SUMMARY_CHIPS.find((row) => row.id === 'blocked');
 
-    expect(blocked?.meaning).toContain('queue_hold·auto_advance_off');
+    expect(blocked?.meaning).toContain('큐 사유(queue_hold)');
   });
 
   test('names the four summary chips', () => {

@@ -69,15 +69,31 @@ describe('help dialog legend', () => {
     expect(counts).toEqual(WAIT_KINDS.map(() => 1));
   });
 
-  test('puts the 수동 출발 chip in the gate section only', () => {
+  test('draws only queue-scope rows in the gate section (UI-3pu9 §4.4)', () => {
     const { element } = mount();
 
-    const sections = element.querySelectorAll('.help-dialog__section');
-    const badge_section = /** @type {HTMLElement} */ (sections[1]);
-    const gate_section = /** @type {HTMLElement} */ (sections[2]);
+    const gate_section = /** @type {HTMLElement} */ (
+      element.querySelectorAll('.help-dialog__section')[2]
+    );
+    const ids = Array.from(gate_section.querySelectorAll('tbody tr')).map(
+      (tr) => tr.id
+    );
 
-    expect(gate_section.textContent).toContain('⏸ 수동 출발');
-    expect(badge_section.textContent).not.toContain('⏸ 수동 출발');
+    expect(ids).toEqual(
+      WAIT_KINDS.filter((row) => row.scope === 'queue').map(
+        (row) => `help-${row.id}`
+      )
+    );
+  });
+
+  test('omits the manual-start gate row from the legend (UI-3pu9 §4.4)', () => {
+    const { element } = mount();
+
+    const gate_section = /** @type {HTMLElement} */ (
+      element.querySelectorAll('.help-dialog__section')[2]
+    );
+
+    expect(gate_section.textContent).not.toContain('⏸');
   });
 
   test('highlights the anchored row on open', () => {

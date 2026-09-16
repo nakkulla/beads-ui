@@ -1,7 +1,8 @@
 ---
 id: UI-cmx3-2
 title: 선행 대기 attempt가 있는 bead는 held 타일이 아니라 대기 행이 대표한다
-status: accepted
+status: superseded
+superseded_by: UI-3pu9
 date: 2026-09-16
 summary: 'prerequisite_unmet waiting attempt가 있는 bead는 held 타일이 아니라 대기 행이 대표하고 실행 중 그리드는 실행·사람 조작 대기만 담는다'
 spec: docs/superpowers/specs/2026-09-16-serial-lane-stack-waiting-row-demotion-design.md
