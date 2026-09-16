@@ -44,7 +44,8 @@ describe('ws/compare-handlers', () => {
           root_dirs: ['/repo/one'],
           issue_types: ['bug'],
           routes: ['quick_fix'],
-          include_bench: true
+          include_bench: true,
+          problem_criteria: { failed: { on: false } }
         }
       }),
       { snapshot: /** @type {any} */ (snapshot) }
@@ -55,7 +56,23 @@ describe('ws/compare-handlers', () => {
     expect(passed).not.toHaveProperty('issue_types');
     expect(passed.group_by).toBe('preset');
     expect(passed.include_bench).toBe(true);
+    expect(passed.problem_criteria).toEqual({ failed: { on: false } });
     expect(typeof passed.since).toBe('number');
+  });
+
+  test('forwards undefined when problem criteria are omitted', async () => {
+    const ws = makeSocket();
+    const snapshot = vi.fn(() => ({}));
+
+    await handleGetCompare(
+      /** @type {any} */ (ws),
+      /** @type {any} */ ({ id: 'criteria', payload: {} }),
+      { snapshot: /** @type {any} */ (snapshot) }
+    );
+
+    expect(
+      /** @type {any} */ (snapshot.mock.calls)[0][0].problem_criteria
+    ).toBeUndefined();
   });
 
   test.each([

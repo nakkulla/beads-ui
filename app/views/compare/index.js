@@ -14,7 +14,15 @@
  * 기간·저장소 필터를 좁혀도 고른 실험의 셀이 사라지지 않는다.
  */
 import { html, render } from 'lit-html';
+import { live } from 'lit-html/directives/live.js';
 import { CLOSED_RANGE_OPTIONS } from '../../data/closed-range.js';
+import {
+  DEFAULT_PROBLEM_CRITERIA,
+  PROBLEM_CRITERIA_LIMITS,
+  PROBLEM_KEYS,
+  PROBLEM_LABELS,
+  normalizeProblemCriteria
+} from '../../utils/compare-problem-criteria.js';
 import { debug } from '../../utils/logging.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { costTooltipLines } from '../../utils/token-usage.js';
@@ -32,7 +40,9 @@ import { benchPresetGroups, benchProgress } from './bench-model.js';
 import {
   EMPTY_CELL,
   formatCostMedian,
+  formatCriteriaLegend,
   formatDuration,
+  formatFactorChip,
   formatOutcome,
   formatOutcomeText,
   formatPrice,
@@ -51,6 +61,47 @@ import {
  * @type {string}
  */
 const DEFAULT_RANGE = '30d';
+const PROBLEM_CRITERIA_STORAGE_KEY = 'bdui.compare.problem_criteria';
+
+/**
+ * @returns {Record<string, any>|null}
+ */
+function loadProblemCriteria() {
+  try {
+    const raw = localStorage.getItem(PROBLEM_CRITERIA_STORAGE_KEY);
+    if (raw === null) {
+      return null;
+    }
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed
+      : {};
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {Record<string, any>} criteria
+ */
+function saveProblemCriteria(criteria) {
+  try {
+    localStorage.setItem(
+      PROBLEM_CRITERIA_STORAGE_KEY,
+      JSON.stringify(criteria)
+    );
+  } catch {
+    // Storage is optional; the active request still carries the chosen value.
+  }
+}
+
+function clearProblemCriteria() {
+  try {
+    localStorage.removeItem(PROBLEM_CRITERIA_STORAGE_KEY);
+  } catch {
+    // Storage is optional; the next request still returns server defaults.
+  }
+}
 
 /**
  * @typedef {Object} CompareViewOptions
@@ -78,14 +129,27 @@ export function createCompareView(root, options = {}) {
     route: '',
     include_bench: false
   };
-  /** @type {{ rows: any[], groups: any[], summary: any, warnings: string[], workspaces: Array<{ root_dir: string, name: string }> }} */
+  /** @type {{ rows: any[], groups: any[], summary: any, warnings: string[], workspaces: Array<{ root_dir: string, name: string }>, criteria: any }} */
   let model = {
     rows: [],
     groups: [],
     summary: null,
     warnings: [],
-    workspaces: []
+    workspaces: [],
+    criteria: {
+      effective: DEFAULT_PROBLEM_CRITERIA,
+      is_default: true,
+      baselines: {
+        duration_ms: { median: null, sample: 0, active: false },
+        cost_usd: { median: null, sample: 0, active: false, partial_count: 0 }
+      }
+    }
   };
+  let saved_criteria = loadProblemCriteria();
+  // Once this view has chosen criteria, its own choice is the base for the next
+  // edit; a reset chooses the defaults even before the reply lands.
+  let criteria_touched = false;
+  let criteria_open = false;
   let group_by = 'preset';
   let sort = 'landing';
   /** @type {Set<string>} */
@@ -141,13 +205,15 @@ export function createCompareView(root, options = {}) {
     error = null;
     doRender();
     try {
-      const reply = await transport('get-compare', {
+      const request = {
         range: filters.range,
         root_dirs: filters.root_dir ? [filters.root_dir] : [],
         routes: filters.route ? [filters.route] : [],
         include_bench: filters.include_bench,
-        group_by
-      });
+        group_by,
+        ...(saved_criteria === null ? {} : { problem_criteria: saved_criteria })
+      };
+      const reply = await transport('get-compare', request);
       if (seq !== request_seq) {
         return;
       }
@@ -157,6 +223,7 @@ export function createCompareView(root, options = {}) {
         warnings: Array.isArray(payload?.warnings) ? payload.warnings : [],
         rows: Array.isArray(payload?.rows) ? payload.rows : [],
         groups: Array.isArray(payload?.groups) ? payload.groups : [],
+        criteria: payload?.criteria ?? model.criteria,
         workspaces: Array.isArray(payload?.workspaces)
           ? payload.workspaces
           : model.workspaces
@@ -308,6 +375,207 @@ export function createCompareView(root, options = {}) {
     `;
   }
 
+  /**
+   * @param {string} key
+   * @param {string} field
+   * @param {unknown} value
+   */
+  function changeCriterion(key, field, value) {
+    // Accumulate on the pending choice, not on the last response: two changes
+    // made before a reply must not let the second one revert the first.
+    const next = normalizeProblemCriteria(
+      criteria_touched ? saved_criteria : model.criteria.effective
+    );
+    next[key][field] = value;
+    saved_criteria = normalizeProblemCriteria(next);
+    criteria_touched = true;
+    saveProblemCriteria(saved_criteria);
+    void fetchSnapshot();
+  }
+
+  /**
+   * @param {'round_min'|'blocking_min'|'minor_min'} field
+   * @param {string} raw
+   */
+  function changeReviewThreshold(field, raw) {
+    if (raw === '') {
+      changeCriterion('review', field, null);
+      return;
+    }
+    const limits = PROBLEM_CRITERIA_LIMITS[field];
+    const value = Math.min(limits.max, Math.max(limits.min, Number(raw)));
+    changeCriterion('review', field, Math.round(value));
+  }
+
+  /**
+   * @param {'duration'|'cost'} key
+   * @param {string} raw
+   */
+  function changeFactor(key, raw) {
+    const limits = PROBLEM_CRITERIA_LIMITS.factor;
+    const fallback = DEFAULT_PROBLEM_CRITERIA[key].factor;
+    const parsed = raw === '' ? fallback : Number(raw);
+    changeCriterion(
+      key,
+      'factor',
+      Math.min(limits.max, Math.max(limits.min, parsed))
+    );
+  }
+
+  function criteriaTemplate() {
+    const criteria = model.criteria.effective;
+    /**
+     * @param {string} key - Criterion key.
+     * @param {string} label - Visible label.
+     * @param {unknown} controls - Optional auxiliary controls.
+     */
+    const row = (key, label, controls = null) => html`
+      <div class="cmp-criteria__row">
+        <label class="cmp-criteria__main">
+          <input
+            type="checkbox"
+            .checked=${live(criteria[key].on)}
+            @change=${(/** @type {Event} */ ev) =>
+              changeCriterion(
+                key,
+                'on',
+                /** @type {HTMLInputElement} */ (ev.currentTarget).checked
+              )}
+          />
+          ${label}
+        </label>
+        ${controls}
+      </div>
+    `;
+    /** @param {'round_min'|'blocking_min'|'minor_min'} field */
+    const reviewInput = (field) => {
+      const limits = PROBLEM_CRITERIA_LIMITS[field];
+      return html`<input
+        class="cmp-criteria__number"
+        type="number"
+        min=${limits.min}
+        max=${limits.max}
+        step="1"
+        .value=${live(
+          criteria.review[field] === null ? '' : String(criteria.review[field])
+        )}
+        ?disabled=${!criteria.review.on}
+        @change=${(/** @type {Event} */ ev) =>
+          changeReviewThreshold(
+            field,
+            /** @type {HTMLInputElement} */ (ev.currentTarget).value
+          )}
+      />`;
+    };
+    /** @param {'duration'|'cost'} key */
+    const factorInput = (key) =>
+      html`<input
+        class="cmp-criteria__number"
+        type="number"
+        min=${PROBLEM_CRITERIA_LIMITS.factor.min}
+        max=${PROBLEM_CRITERIA_LIMITS.factor.max}
+        step="0.1"
+        .value=${live(String(criteria[key].factor))}
+        ?disabled=${!criteria[key].on}
+        @change=${(/** @type {Event} */ ev) =>
+          changeFactor(
+            key,
+            /** @type {HTMLInputElement} */ (ev.currentTarget).value
+          )}
+      />`;
+    return html`<details
+      class="cmp-criteria"
+      ?open=${criteria_open}
+      @toggle=${(/** @type {Event} */ ev) => {
+        criteria_open = /** @type {HTMLDetailsElement} */ (ev.currentTarget)
+          .open;
+      }}
+    >
+      <summary class="op-btn">
+        문제
+        기준${model.criteria.is_default
+          ? ''
+          : html` <span class="cmp-criteria__dot">●</span>`}
+      </summary>
+      <div class="cmp-criteria__panel">
+        ${row('failed', '실패·폐기')}
+        ${row(
+          'retry',
+          '재시도·재개',
+          html`<label class="cmp-criteria__aux">
+            <input
+              type="checkbox"
+              .checked=${live(criteria.retry.include_env)}
+              ?disabled=${!criteria.retry.on}
+              @change=${(/** @type {Event} */ ev) =>
+                changeCriterion(
+                  'retry',
+                  'include_env',
+                  /** @type {HTMLInputElement} */ (ev.currentTarget).checked
+                )}
+            />
+            환경 요인 포함
+          </label>`
+        )}
+        ${row(
+          'review',
+          '리뷰 지적',
+          html`<span class="cmp-criteria__aux cmp-criteria__thresholds">
+            라운드 ≥ ${reviewInput('round_min')} blocking ≥
+            ${reviewInput('blocking_min')} minor ≥ ${reviewInput('minor_min')}
+          </span>`
+        )}
+        ${row(
+          'human',
+          '사람 개입',
+          html`<label class="cmp-criteria__aux">
+            <input
+              type="checkbox"
+              .checked=${live(criteria.human.include_env_events)}
+              ?disabled=${!criteria.human.on}
+              @change=${(/** @type {Event} */ ev) =>
+                changeCriterion(
+                  'human',
+                  'include_env_events',
+                  /** @type {HTMLInputElement} */ (ev.currentTarget).checked
+                )}
+            />
+            환경 이벤트 포함
+          </label>`
+        )}
+        ${row('verify', 'verify 실패')}
+        ${row(
+          'duration',
+          '시간 초과',
+          html`<span class="cmp-criteria__aux"
+            >중앙값 × ${factorInput('duration')}</span
+          >`
+        )}
+        ${row(
+          'cost',
+          '비용 초과',
+          html`<span class="cmp-criteria__aux"
+            >중앙값 × ${factorInput('cost')}</span
+          >`
+        )}
+        ${row('pin', '핀 조정')}
+        <button
+          type="button"
+          class="op-btn cmp-criteria__reset"
+          ?disabled=${model.criteria.is_default}
+          @click=${() => {
+            saved_criteria = null;
+            criteria_touched = true;
+            clearProblemCriteria();
+            void fetchSnapshot();
+          }}
+        >
+          기본값으로
+        </button>
+      </div>
+    </details>`;
+  }
+
   function filtersTemplate() {
     const workspace_choices = [
       { value: '', label: '전체 저장소' },
@@ -380,6 +648,7 @@ export function createCompareView(root, options = {}) {
             }
           )}
         </div>
+        ${criteriaTemplate()}
         <button
           type="button"
           class="op-btn cmp-refresh"
@@ -506,16 +775,11 @@ export function createCompareView(root, options = {}) {
         : null}
       <div class="cmp-kpis">${metricsTemplate(group)}</div>
       <div class="cmp-problems">
-        ${[
-          ['failed', '실패·폐기'],
-          ['retry', '재시도'],
-          ['review', '리뷰 지적'],
-          ['human', '사람 개입']
-        ].map(
-          ([key, label]) =>
+        ${PROBLEM_KEYS.filter((key) => model.criteria.effective[key]?.on).map(
+          (key) =>
             html`<span
               class="cmp-chip ${group.problems?.[key] ? '' : 'is-zero'}"
-              >${label} ${group.problems?.[key] ?? 0}</span
+              >${PROBLEM_LABELS[key]} ${group.problems?.[key] ?? 0}</span
             >`
         )}
       </div>
@@ -540,15 +804,35 @@ export function createCompareView(root, options = {}) {
     const problems = row.problems;
     const evidence = problems?.evidence;
     const review = evidence?.review;
+    const review_criteria = model.criteria.effective.review;
     const review_label =
-      review?.round >= 2
+      review_criteria.round_min !== null &&
+      review?.round >= review_criteria.round_min
         ? `리뷰 r${review.round}`
-        : review?.blocking >= 1
+        : review_criteria.blocking_min !== null &&
+            review?.blocking >= review_criteria.blocking_min
           ? `리뷰 b${review.blocking}`
-          : '리뷰';
+          : review_criteria.minor_min !== null &&
+              review?.minor >= review_criteria.minor_min
+            ? `리뷰 m${review.minor}`
+            : '리뷰';
+    const retry = evidence?.retry;
+    const retry_kind =
+      retry?.kind === 'env_ladder'
+        ? `env 사다리${retry.cause ? ` ${retry.cause}` : ''}`
+        : retry?.kind === 'auto_resume'
+          ? `자동 재개${retry.cause ? ` ${retry.cause}` : ''}`
+          : '재개';
+    const duration = evidence?.duration;
+    const cost = evidence?.cost;
+    const baseline_partial = model.criteria.baselines.cost_usd.partial_count;
     const chips = [
       { show: problems?.failed, label: '실패', title: evidence?.failed || '' },
-      { show: problems?.retry, label: '재시도', title: evidence?.retry || '' },
+      {
+        show: problems?.retry,
+        label: retry?.env ? '재시도(환경)' : '재시도',
+        title: retry ? `${retry.origin} · ${retry_kind}` : ''
+      },
       {
         show: problems?.review,
         label: review_label,
@@ -560,6 +844,30 @@ export function createCompareView(root, options = {}) {
         show: problems?.human,
         label: '개입',
         title: (evidence?.human || []).join('\n')
+      },
+      {
+        show: problems?.verify,
+        label: 'verify 실패',
+        title:
+          evidence?.verify === 'merge_verify'
+            ? '머지 후보 [verify] 실패'
+            : evidence?.verify === 'bench_verify'
+              ? 'bench 검증 실패'
+              : ''
+      },
+      {
+        show: problems?.duration,
+        label: `시간${formatFactorChip(duration?.value_ms, duration?.baseline_ms) ? ` ${formatFactorChip(duration?.value_ms, duration?.baseline_ms)}` : ' 초과'}`,
+        title: duration
+          ? `${formatDuration(duration.value_ms)} · 중앙값 ${formatDuration(duration.baseline_ms)} × ${duration.factor}`
+          : ''
+      },
+      {
+        show: problems?.cost,
+        label: `비용${formatFactorChip(cost?.value_usd, cost?.baseline_usd) ? ` ${formatFactorChip(cost?.value_usd, cost?.baseline_usd)}` : ' 초과'}`,
+        title: cost
+          ? `${formatPrice({ total_cost_usd: cost.value_usd })} · 중앙값 ${formatCostMedian(cost.baseline_usd)} × ${cost.factor}${cost.partial ? ' · 부분' : ''}${baseline_partial > 0 ? ` · 기준선 부분 집계 ${baseline_partial}건 포함` : ''}`
+          : ''
       },
       {
         show: row.preset?.deviated_keys?.length > 0,
@@ -631,7 +939,7 @@ export function createCompareView(root, options = {}) {
    * @param {string} metric
    * @param {string} label
    * @param {string} value
-   * @param {string} note
+   * @param {unknown} note
    * @param {string[]} best
    * @param {number|null} [rate]
    */
@@ -683,7 +991,10 @@ export function createCompareView(root, options = {}) {
         'problem',
         '문제 세션',
         formatRate(group.problem_rate),
-        `${group.problem_count}/${group.n}`,
+        html`${group.problem_count}/${group.n}${summary &&
+        !model.criteria.is_default
+          ? html`<span class="cmp-note">· 기준 조정됨</span>`
+          : null}`,
         best,
         summary ? null : group.problem_rate
       )}
@@ -1180,10 +1491,10 @@ export function createCompareView(root, options = {}) {
           : null}
         ${bodyTemplate()}
         <p class="cmp-legend">
-          착지율 = 착지(PR 머지·quick_fix push·무변경 close 관측) ÷ 판정된
-          세션(착지·실패·폐기). 문제 세션 = 실패·폐기, 재시도·재개, 리뷰
-          REVISE/blocking, 사람 개입 중 하나라도 있는 세션. 평균은 값이 있는
-          세션만(n 표기), 비용은 API 환산 단가 기준.
+          ${formatCriteriaLegend(
+            model.criteria.effective,
+            model.criteria.baselines
+          )}
         </p>
         ${benchTemplate()}
       </div>

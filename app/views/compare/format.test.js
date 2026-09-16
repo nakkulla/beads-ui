@@ -2,7 +2,9 @@ import { describe, expect, test } from 'vitest';
 import {
   EMPTY_CELL,
   formatCostMedian,
+  formatCriteriaLegend,
   formatDuration,
+  formatFactorChip,
   formatOutcome,
   formatOutcomeText,
   formatPrice,
@@ -15,6 +17,40 @@ import {
 } from './format.js';
 
 describe('views/compare/format', () => {
+  test('formats ratios and leaves zero baselines without a factor', () => {
+    expect(formatFactorChip(41, 10)).toBe('×4.1');
+    expect(formatFactorChip(1, 0)).toBe('');
+  });
+
+  test('describes enabled criteria and inactive baselines', () => {
+    const criteria = {
+      failed: { on: true },
+      retry: { on: true, include_env: false },
+      review: {
+        on: true,
+        round_min: 2,
+        blocking_min: 1,
+        minor_min: null
+      },
+      human: { on: false, include_env_events: false },
+      verify: { on: false },
+      duration: { on: true, factor: 3 },
+      cost: { on: true, factor: 3 },
+      pin: { on: false }
+    };
+    const baselines = {
+      duration_ms: { median: null, sample: 4, active: false },
+      cost_usd: { median: 2.1, sample: 5, active: true, partial_count: 2 }
+    };
+
+    const legend = formatCriteriaLegend(criteria, baselines);
+
+    expect(legend).toContain('재시도·재개(환경 제외)');
+    expect(legend).toContain('리뷰 r≥2 또는 b≥1');
+    expect(legend).toContain('시간 초과(표본 5건 미만으로 비활성)');
+    expect(legend).toContain('비용 > 중앙값 $2.10 ×3 · 부분 집계 표본 2건');
+  });
+
   test.each([
     [
       'landed',

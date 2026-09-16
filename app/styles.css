@@ -10556,6 +10556,83 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   margin-left: auto;
 }
 
+.cmp-criteria {
+  position: relative;
+}
+
+.cmp-criteria > summary {
+  display: inline-flex;
+  align-items: center;
+  list-style: none;
+  cursor: pointer;
+}
+
+.cmp-criteria > summary::-webkit-details-marker {
+  display: none;
+}
+
+.cmp-criteria__dot {
+  color: var(--accent-warn);
+}
+
+.cmp-criteria__panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + var(--sp-4));
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  width: 320px;
+  padding: var(--sp-10);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-8);
+  background: var(--bg-panel);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--fg) 18%, transparent);
+}
+
+.cmp-criteria__row {
+  display: grid;
+  grid-template-columns: minmax(7em, auto) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-primary);
+  font-size: var(--fs-small);
+}
+
+.cmp-criteria__main,
+.cmp-criteria__aux,
+.cmp-criteria__thresholds {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.cmp-criteria__thresholds {
+  flex-wrap: wrap;
+}
+
+.cmp-criteria__number {
+  width: 5ch;
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: var(--bg-input, var(--bg-card));
+  color: var(--text-primary);
+  font: inherit;
+  /* A 4ch~5ch box has no room for the spinner and its own value at once. */
+  appearance: textfield;
+}
+
+.cmp-criteria__number::-webkit-outer-spin-button,
+.cmp-criteria__number::-webkit-inner-spin-button {
+  margin: 0;
+  appearance: none;
+}
+
+.cmp-criteria__reset {
+  align-self: flex-end;
+}
+
 .cmp-summary {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -10813,6 +10890,52 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
+  }
+
+  .cmp-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* An open criteria panel makes column 1 tall; 새로고침 stays beside the
+       summary rather than floating to that column's middle. */
+    align-items: start;
+    width: 100%;
+  }
+
+  .cmp-group-by,
+  .cmp-filters {
+    grid-column: 1 / -1;
+  }
+
+  .cmp-criteria,
+  .cmp-refresh {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .cmp-criteria > summary,
+  .cmp-refresh {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .cmp-criteria__panel {
+    position: static;
+    box-sizing: border-box;
+    width: calc(200% + var(--sp-8));
+    margin-top: var(--sp-4);
+  }
+
+  .cmp-criteria__row {
+    grid-template-columns: 1fr;
+    gap: var(--sp-3);
+  }
+
+  .cmp-criteria__aux {
+    padding-left: var(--sp-16);
+  }
+
+  .cmp-criteria__number {
+    width: 4ch;
   }
 
   .cmp-filters .cmp-filter {

@@ -1132,11 +1132,13 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
 ## Preset comparison channel (preset-compare §3.5)
 
 - `get-compare` payload:
-  `{ range?, root_dirs?, routes?, include_bench?, group_by? }` — replies with a
-  `compare-snapshot` envelope carrying
-  `{ summary, groups, rows, workspaces, runs, bench_rows, warnings }`. This
-  request/response pair reads attempts, workspace issue snapshots and one
-  timeline per bead on demand; it does not subscribe or push updates.
+  `{ range?, root_dirs?, routes?, include_bench?, group_by?, problem_criteria? }`
+  — replies with a `compare-snapshot` envelope carrying
+  `{ summary, groups, rows, workspaces, runs, bench_rows, warnings, criteria }`.
+  `problem_criteria` may be a partial object; malformed or absent values are
+  normalized to server defaults without a `bad_request`. This request/response
+  pair reads attempts, workspace issue snapshots and one timeline per bead on
+  demand; it does not subscribe or push updates.
 - `range` bounds `finished_at` with a `CLOSED_RANGE_OPTIONS` value (default
   `30d`); unknown values mean all history. `root_dirs` are absolute registry
   paths, `routes` restricts routes, and `include_bench` defaults to false.
@@ -1153,12 +1155,14 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
     lands through no-change evidence, a successful quick-fix push, or a closed
     issue. A missing issue is unknown; an otherwise open issue is in flight.
     Review and merge verification facts attach only to that representative.
-  - `problems: { failed, retry, review, human, evidence }`: four booleans and
-    `evidence: { failed, retry, review, human }`, respectively cause/status,
-    origin attempt id, `{ round, blocking, minor }|null`, and event summaries.
-    Any true key makes a problem session. Review means round ≥ 2 or blocking ≥
-    1; human means attempt-local hold flags, parked status, or attributed human
-    events. Environment hold events do not count.
+  - `retry_kind: 'env_ladder'|'auto_resume'|'resume'|null` and
+    `problems: { failed, retry, review, human, verify, duration, cost, pin, evidence }`.
+    The eight booleans are judged only by the normalized request criteria.
+    Evidence carries the outcome cause/status, retry origin/kind/cause, review
+    counts, selected event summaries, verify source, duration/cost value and
+    baseline, and deviated preset keys. Any true key makes one problem session.
+    Environment retries and events are excluded by default and included only by
+    their toggles.
   - `preset: { id, name, basis, deviated_keys }|null`; basis is `recorded` or
     `inferred`. Recorded ids use the current name, or the recorded name plus
     `(삭제됨)` when deleted. Inference compares route-effective orchestration
@@ -1176,14 +1180,14 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
   `badge: 'preset'|'unmatched'|'none'`, `n`, `issue_count`,
   `compositions: { composition, count }[]` (count descending), `landed`,
   `judged`, `in_flight`, `landing_rate`, `problem_count`, `problem_rate`,
-  `problems: { failed, retry, review, human }` (counts), `duration_ms`,
-  `cost_usd`, `tokens`, `best`, and `attempt_ids`. Landing rate is landed /
-  (landed + failed + aborted), null with no judged sample. In-flight count
-  includes in-flight, waiting and parked only. Problem rate is problem sessions
-  / n, null for an empty summary. Numeric aggregates carry
-  `{ mean, median, sample, total }`; absent values do not enter the sample, and
-  empty samples have null mean/median. Cost additionally carries
-  `partial_count`.
+  `problems: { failed, retry, review, human, verify, duration, cost, pin }`
+  (counts), `duration_ms`, `cost_usd`, `tokens`, `best`, and `attempt_ids`.
+  Landing rate is landed / (landed + failed + aborted), null with no judged
+  sample. In-flight count includes in-flight, waiting and parked only. Problem
+  rate is problem sessions / n, null for an empty summary or when every
+  criterion is off. Numeric aggregates carry `{ mean, median, sample, total }`;
+  absent values do not enter the sample, and empty samples have null
+  mean/median. Cost additionally carries `partial_count`.
 - `summary` aggregates the entire filtered row set with the same statistics (no
   group identity or `best`). A group with n ≥ 3 and judged ≥ 3 can earn
   `best: ('landing'|'duration'|'cost')[]` for unique highest landing rate,
@@ -1196,6 +1200,11 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
   store yields `warnings: ['preset_store_unreadable']`, all presets null and
   empty candidate lists; a readable store yields `warnings: []`. Projection
   failure retains the existing error reply and refresh flow.
+- `criteria` is `{ effective, is_default, baselines }`. `effective` is the full
+  normalized criteria used by the projection. `baselines` is
+  `{ duration_ms: { median, sample, active }, cost_usd: { median, sample, active, partial_count } }`;
+  both medians use the filtered main rows and become active at five
+  value-bearing rows. Bench rows use those same baselines.
 - `runs[]` and `bench_rows[]` are the experiment half of the same answer (§4.7).
   `runs` is every visible workspace's run manifests, newest first; `bench_rows`
   is every bench clone row of every visible workspace, deliberately NOT narrowed
