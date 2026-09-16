@@ -39,6 +39,7 @@ import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { RESUME_REFUSALS } from '../../utils/failure-sentences.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
 import { recSettings } from '../../utils/rec-settings.js';
+import { formatClockLocal } from '../../utils/relative-time.js';
 import { overlapPrefixes } from '../../utils/scope-overlap.js';
 import {
   SUM_FIELDS,
@@ -62,11 +63,7 @@ import {
   recoveryWaitLabel,
   recoveryWaitSentence
 } from './failure-labels.js';
-import {
-  autoSwitchText,
-  providerClock,
-  providerHoldBadgeText
-} from './gate-labels.js';
+import { autoSwitchText, providerHoldBadgeText } from './gate-labels.js';
 import {
   discardProjection,
   quickFixLanded,
@@ -1300,7 +1297,7 @@ function queueHoldGate(hold, lineages) {
   }
   const cause = failureText(hold.cause) || String(hold.cause || '');
   const since = typeof hold.since === 'number' ? hold.since : null;
-  const since_clock = providerClock(since);
+  const since_clock = formatClockLocal(since);
   /** @type {string[]} */
   const head = [cause, ...(since_clock ? [`시작 ${since_clock}`] : [])];
   if (hold.kind === 'systemic') {
@@ -1337,7 +1334,7 @@ function queueHoldGate(hold, lineages) {
     )
     .sort((/** @type {number} */ a, /** @type {number} */ b) => a - b);
   const next_at = scheduled.length > 0 ? scheduled[0] : null;
-  const next_clock = providerClock(next_at);
+  const next_clock = formatClockLocal(next_at);
   return {
     kind: 'env',
     label: next_clock
@@ -1357,7 +1354,7 @@ function queueHoldGate(hold, lineages) {
         .map((/** @type {any} */ row) => {
           const attempts =
             typeof row.attempts === 'number' ? row.attempts : GATE_RETRY_MAX;
-          const clock = providerClock(row.next_at);
+          const clock = formatClockLocal(row.next_at);
           return `${row.bead_id} · 재시도 ${attempts}/${GATE_RETRY_MAX} · ${
             clock ? `다음 ${clock}` : '재시도 실행 중'
           }`;
@@ -1438,11 +1435,11 @@ function providerGate(runner, account, provider_hold, account_catalog) {
         ? target.detail
         : null;
   const when = outage
-    ? providerClock(target.next_probe_at)
-    : providerClock(target.resets_at);
+    ? formatClockLocal(target.next_probe_at)
+    : formatClockLocal(target.resets_at);
   const auto_switch = autoSwitchText(target.auto_switch);
   // 보류가 선 시각은 러너 단위 레코드의 것이다 — target별 시각은 따로 없다.
-  const since_clock = providerClock(entry.since);
+  const since_clock = formatClockLocal(entry.since);
   // `account:null`인 usage_limit은 프로브를 예약하지 않으므로 (공급자 스펙 §6 F3)
   // 자동 해제가 없다 — 출구 문장이 그 사실 하나로 갈린다.
   const probeless = !outage && target_account === null;

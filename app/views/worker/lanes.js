@@ -41,6 +41,7 @@ import { QUEUE_GRACE_MS, routeChipValue } from './lane-model.js';
 import { logPathTemplate } from './log-path.js';
 import { placementTitle } from './placement.js';
 import {
+  SUMMARY_CHIPS,
   WAIT_KINDS,
   representativeWaitReason,
   waitBadgeText,
@@ -2077,7 +2078,7 @@ export function waitStatusBadge(material) {
   if (material.reason) {
     const forced_row = waitKindRow(material.reason);
     return forced_row
-      ? waitBadgeTemplate(forced_row, material.reason, [], null, now, '')
+      ? waitBadgeTemplate(forced_row, material.reason, [], null, now)
       : '';
   }
   const held_row_id = heldRowId(material);
@@ -2112,11 +2113,41 @@ export function waitStatusBadge(material) {
     reasons.filter((entry) => entry !== reason),
     material.hold || null,
     now,
-    material.label ||
-      (badge_row.dynamic_label === true
-        ? material.held?.recovery?.label || ''
-        : badge_row.label)
+    {
+      label:
+        material.label ||
+        (badge_row.dynamic_label === true
+          ? material.held?.recovery?.label || badge_row.label
+          : badge_row.label),
+      // 판정 없는 복구 타일의 해제 조건은 타일이 아는 문장이다 — 표의 일반 문장은
+      // 그 다음이다.
+      release:
+        badge_row.dynamic_label === true
+          ? material.held?.recovery?.sentence || ''
+          : ''
+    }
   );
+}
+
+/**
+ * The external-work guidance sentences UI-7341 drew in the card body — now
+ * popup lines (§7.3), under the same verdict conditions.
+ *
+ * @param {import('../../protocol.js').WaitReason} reason
+ * @returns {string[]}
+ */
+function externalGuidanceLines(reason) {
+  if (reason.kind !== 'external_job') {
+    return [];
+  }
+  return [
+    reason.verdict === 'overdue'
+      ? '[지금 확인]으로 관측기를 지금 실행하거나 관측기 상태를 점검하세요'
+      : '',
+    reason.verdict_reason?.code === 'job_failed'
+      ? '원래 이슈가 재개되면 복구 판단이 필요합니다'
+      : ''
+  ].filter(Boolean);
 }
 
 /**
@@ -2129,11 +2160,12 @@ export function waitStatusBadge(material) {
  * bead-scope reasons this card carries, one popup line each.
  * @param {Record<string, any>|null} hold - `HoldTile` for provider holds.
  * @param {number} now
- * @param {string} [label_override] - `recovery` hands its dynamic label in.
+ * @param {{ label?: string, release?: string }} [overrides] - `recovery` hands
+ * its dynamic label and the tile's release sentence in.
  * @returns {import('lit-html').TemplateResult|''}
  */
-function waitBadgeTemplate(row, reason, others, hold, now, label_override) {
-  const label = label_override || row.label;
+function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
+  const label = overrides.label || row.label;
   if (!label) {
     return '';
   }
@@ -2151,9 +2183,7 @@ function waitBadgeTemplate(row, reason, others, hold, now, label_override) {
       if (!other_row) {
         return '';
       }
-      const other_label =
-        other_row.dynamic_label === true ? '' : other_row.label;
-      return `${[other_row.glyph, other_label].filter(Boolean).join(' ')} — ${entry.headline}`;
+      return `${[other_row.glyph, other_row.label].filter(Boolean).join(' ')} — ${entry.headline}`;
     })
     .filter(Boolean);
   // 공급자 보류의 상세는 배지에서 팝업으로 내려왔다 (§5.2 정정) — 종전 별도
@@ -2193,11 +2223,12 @@ function waitBadgeTemplate(row, reason, others, hold, now, label_override) {
           ? `리셋 ${formatClockLocal(reason.resets_at, now)}`
           : '',
         ...provider_lines,
+        ...externalGuidanceLines(reason),
         ...(other_lines.length > 0
           ? [`다른 사유 ${other_lines.length}`, ...other_lines]
           : [])
       ].filter(Boolean)
-    : [row.release, ...provider_lines].filter(Boolean);
+    : [overrides.release || row.release, ...provider_lines].filter(Boolean);
   return html`<details class="wait-verdict" @click=${stopWaitClick}>
     <summary
       class="worker-mini__badge"
@@ -2492,7 +2523,7 @@ export function blockedSummaryTemplate(workspaces, reveal) {
   }
   return html`<details class="wait-summary" @click=${stopWaitClick}>
     <summary class="worker-kpi__chip">
-      막힘
+      ${summaryChipPrefix('blocked')}
       ${summary.count}${summary.action_count > 0
         ? html` ·
             <span class="wait-summary__action"
@@ -2537,6 +2568,18 @@ export function blockedSummaryTemplate(workspaces, reveal) {
 }
 
 /**
+ * The word a summary chip draws before its count — the vocabulary table owns
+ * it (§5), so the legend and the real chip cannot drift apart.
+ *
+ * @param {string} id - A `SUMMARY_CHIPS` row id.
+ * @returns {string}
+ */
+function summaryChipPrefix(id) {
+  const row = SUMMARY_CHIPS.find((entry) => entry.id === id);
+  return row ? row.prefix : '';
+}
+
+/**
  * The four summary chips both tabs draw (§8). Worker keeps its `base` chip and
  * Monitor its `세션 N` after them, so the shared part is exactly the part that
  * answers the same question on both screens. `막힘` draws only when something
@@ -2555,16 +2598,17 @@ export function blockedSummaryTemplate(workspaces, reveal) {
  */
 export function summaryChipsTemplate(options) {
   const short = options.range_short || options.range_label;
+  const done_prefix = summaryChipPrefix('done');
   return html`<span class="worker-kpi__chip worker-kpi__chip--running"
-      >실행 <b>${options.running}</b></span
+      >${summaryChipPrefix('running')} <b>${options.running}</b></span
     ><span
       class="worker-kpi__chip worker-kpi__chip--pr"
       title="PR 머지를 기다리는 이슈"
-      >PR <b>${options.pr_wait}</b></span
+      >${summaryChipPrefix('pr_wait')} <b>${options.pr_wait}</b></span
     ><span
       class="worker-kpi__chip worker-kpi__chip--done"
-      title=${`${options.range_label} 완료`}
-      >${short} 완료 <b>${options.done}</b></span
+      title=${`${options.range_label} ${done_prefix}`}
+      >${short} ${done_prefix} <b>${options.done}</b></span
     >${blockedSummaryTemplate(
       options.workspaces,
       options.reveal

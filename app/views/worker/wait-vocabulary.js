@@ -21,7 +21,8 @@
  * @property {WaitScope} scope
  * @property {string} glyph
  * @property {string} label
- * @property {boolean} [dynamic_label] - The tile supplies `recovery.label`.
+ * @property {boolean} [dynamic_label] - The tile's `recovery.label` overrides
+ * `label`, which is the fallback for rows and the summary.
  * @property {string} when
  * @property {string} release
  * @property {string} action
@@ -145,10 +146,11 @@ export const WAIT_KINDS = Object.freeze(
       kind: 'recovery',
       scope: 'bead',
       glyph: '⏳',
-      label: '',
+      label: '복구 대기',
       dynamic_label: true,
       when: '복구 분류된 보존 작업이 확인을 기다림',
-      release: '<RECOVERY_RELEASES[reason]>',
+      release:
+        '복구 분류별 해제 조건은 서버 사유가 말함 · 수정 Bead 착지 또는 사람 확인 뒤 재개',
       action: '↻ 이어하기·폐기'
     },
     {
@@ -443,26 +445,33 @@ export const RELATION_CHIPS = Object.freeze(
 /**
  * Summary chips shared by the Worker KPI line and the Monitor total line (§8).
  *
- * @type {ReadonlyArray<{ id: string, label: string, meaning: string }>}
+ * `prefix` is the word the real chip draws before its count; `label` is the
+ * legend form.
+ *
+ * @type {ReadonlyArray<{ id: string, prefix: string, label: string, meaning: string }>}
  */
 export const SUMMARY_CHIPS = Object.freeze([
   Object.freeze({
     id: 'running',
+    prefix: '실행',
     label: '실행 N',
     meaning: '지금 실행 중인 attempt 수'
   }),
   Object.freeze({
     id: 'pr_wait',
+    prefix: 'PR',
     label: 'PR N',
     meaning: 'PR 머지를 기다리는 이슈 수 (긴 형식 PR 대기)'
   }),
   Object.freeze({
     id: 'done',
+    prefix: '완료',
     label: '<range> 완료 N',
     meaning: '고른 범위 안에서 닫힌 이슈 수'
   }),
   Object.freeze({
     id: 'blocked',
+    prefix: '막힘',
     label: '막힘 N',
     meaning:
       'scope=bead 사유가 하나라도 있는 원래 이슈 수 — external_job은 원래 이슈로 한 번만 세고, 보류된 attempt의 provider_hold는 포함하며, 큐 사유(queue_hold·auto_advance_off)는 세지 않는다'

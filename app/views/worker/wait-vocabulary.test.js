@@ -52,12 +52,13 @@ describe('wait vocabulary table', () => {
     expect(complete).toBe(true);
   });
 
-  test('leaves the label empty only for the dynamic recovery row', () => {
-    const empty = WAIT_KINDS.filter((row) => row.label.length === 0);
+  test('marks only the recovery row as tile-labelled with a fallback label', () => {
+    const dynamic = WAIT_KINDS.filter((row) => row.dynamic_label === true);
 
-    expect(empty.map((row) => [row.id, row.dynamic_label])).toEqual([
-      ['recovery', true]
+    expect(dynamic.map((row) => [row.id, row.label])).toEqual([
+      ['recovery', '복구 대기']
     ]);
+    expect(WAIT_KINDS.every((row) => row.label.length > 0)).toBe(true);
   });
 
   test('writes the overdue glyph as one codepoint without a variation selector', () => {

@@ -6480,6 +6480,30 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
     ]);
   });
 
+  test('dates a retry scheduled on another day in the gate label', () => {
+    const tomorrow = new Date(2026, 8, 17, 9, 5).getTime();
+    const lanes = buildLanes(
+      [
+        workspace({
+          hold: { kind: 'env', cause: 'verify_cmd_spawn_error', since: 100 },
+          lineages: [
+            {
+              bead_id: 'A-8',
+              origin_attempt_id: 't1',
+              cause: 'x',
+              next_at: tomorrow,
+              attempts: 2
+            }
+          ],
+          queue: [{ bead_id: 'A-1' }]
+        })
+      ],
+      [gateState()]
+    );
+
+    expect(lanes.queue[0].gate?.label).toBe('↻ 환경 보류 · 다음 9/17 09:05');
+  });
+
   test('says the retry is running when no lineage has a next_at', () => {
     const lanes = buildLanes(
       [

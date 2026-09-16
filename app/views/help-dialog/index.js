@@ -33,18 +33,13 @@ export const HELP_SECTIONS = Object.freeze([
 const SAMPLE_KIND_ID = 'prerequisite';
 
 /**
- * `dynamic_label` 행은 타일이 라벨을 공급하므로 배지 예시에 자리표시자를
- * 그린다 — 없는 값을 추정해 채우지 않는다.
+ * `WaitKindRow` 하나의 배지 예시 — 판정 없는 형태(`<글리프> <라벨>`)다.
  *
  * @param {WaitKindRow} row
  * @returns {string}
  */
 function exampleBadgeText(row) {
-  return waitBadgeText(
-    row,
-    null,
-    row.dynamic_label ? { label: '<종류 라벨>' } : {}
-  );
+  return waitBadgeText(row, null);
 }
 
 /**
@@ -237,9 +232,11 @@ export function installHelpAnchorDelegation(root, dialog) {
     const anchor = anchor_element.getAttribute('data-help-anchor') || '';
     dialog.open(anchor ? { anchor } : {});
   };
-  root.addEventListener('click', onClick);
+  // 배지 `<details>`는 카드 열림을 막으려고 클릭 전파를 끊는다 — 버블 단계의
+  // 위임에는 닿지 않으므로 캡처 단계에서 받는다.
+  root.addEventListener('click', onClick, true);
   return () => {
-    root.removeEventListener('click', onClick);
+    root.removeEventListener('click', onClick, true);
   };
 }
 

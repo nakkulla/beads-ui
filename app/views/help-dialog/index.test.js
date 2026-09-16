@@ -1,4 +1,6 @@
+import { render } from 'lit-html';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { waitStatusBadge } from '../worker/lanes.js';
 import { WAIT_KINDS } from '../worker/wait-vocabulary.js';
 import { createHelpDialog, installHelpAnchorDelegation } from './index.js';
 
@@ -109,6 +111,46 @@ describe('help dialog legend', () => {
     expect(
       root
         .querySelector('#help-retry_wait')
+        ?.classList.contains('help-dialog__row--highlight')
+    ).toBe(true);
+  });
+
+  test('opens from the real badge popup whose details stops click propagation', () => {
+    const api = createHelpDialog(root, { anchorRoot: document });
+    dialog = api;
+    const card = document.createElement('div');
+    root.appendChild(card);
+    render(
+      waitStatusBadge({
+        wait_reasons: [
+          {
+            kind: 'prerequisite',
+            subject: { bead_id: 'A-1', root_dir: '/repo' },
+            headline: 'A-2 완료를 기다림',
+            release: '선행 해제 후 자동 복귀',
+            verdict: 'normal',
+            targets: [],
+            actions: [],
+            notify_plan: { on_complete: 'none', on_overdue: 'none' }
+          }
+        ]
+      }),
+      card
+    );
+    const details = /** @type {HTMLDetailsElement} */ (
+      card.querySelector('details.wait-verdict')
+    );
+    details.open = true;
+
+    /** @type {HTMLButtonElement} */ (
+      card.querySelector('[data-help-anchor="prerequisite"]')
+    ).click();
+
+    expect(details.open).toBe(false);
+    expect(api.isOpen()).toBe(true);
+    expect(
+      root
+        .querySelector('#help-prerequisite')
         ?.classList.contains('help-dialog__row--highlight')
     ).toBe(true);
   });

@@ -36,6 +36,7 @@ import {
   waitReasonLines
 } from './lanes.js';
 import { runningTile } from './running-grid.js';
+import { SUMMARY_CHIPS } from './wait-vocabulary.js';
 
 /** @type {HTMLElement} */
 let mount;
@@ -855,6 +856,82 @@ describe('요약 칩 묶음 (UI-8gem §8)', () => {
     expect(
       mount.querySelector('.worker-kpi__chip--done')?.getAttribute('title')
     ).toBe('최근 7일 완료');
+  });
+
+  test('reads the chip words from the summary vocabulary table', () => {
+    render(
+      summaryChipsTemplate({
+        running: 0,
+        pr_wait: 0,
+        done: 0,
+        range_label: '오늘',
+        range_short: '오늘',
+        workspaces: [{ root_dir: '/repo', wait_reasons: [waitReason()] }]
+      }),
+      mount
+    );
+
+    const words = Array.from(mount.querySelectorAll('.worker-kpi__chip')).map(
+      (chip) => (chip.textContent || '').replace(/\s+/g, ' ').trim()
+    );
+    expect(
+      SUMMARY_CHIPS.every((row) =>
+        words.some((word) => word.includes(row.prefix))
+      )
+    ).toBe(true);
+  });
+
+  test('badges a recovery reason on a plain row with the table fallback label', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      wait_reasons: [
+        waitReason({
+          kind: 'recovery',
+          headline: '수정 작업 대기 · UI-repair · 원인 script_failed'
+        })
+      ]
+    });
+
+    expect(
+      row.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe('⏳ 복구 대기');
+  });
+
+  test('moves the external guidance sentences into the badge popup', () => {
+    render(
+      miniRow(
+        /** @type {any} */ ({
+          kind: 'external_wait',
+          id: 'G-1',
+          gate_id: 'G-1',
+          gate_title: '외부 작업 1 관측',
+          consumer_id: 'C-1',
+          root_dir: '/repo',
+          workspace_name: 'repo',
+          watch_id: 'w1',
+          job_id: '1',
+          job_state: '실패',
+          monitor_state: '감시 확인 필요',
+          reason: waitReason({
+            kind: 'external_job',
+            subject: { bead_id: 'C-1', root_dir: '/repo' },
+            verdict: 'overdue',
+            verdict_reason: { code: 'job_failed', message: '작업 실패' },
+            targets: [{ id: 'G-1', kind: 'gate' }]
+          })
+        })
+      ),
+      mount
+    );
+
+    const popup =
+      mount.querySelector('.wait-verdict .chip-popover')?.textContent || '';
+    expect(popup).toContain(
+      '[지금 확인]으로 관측기를 지금 실행하거나 관측기 상태를 점검하세요'
+    );
+    expect(popup).toContain('원래 이슈가 재개되면 복구 판단이 필요합니다');
+    expect(mount.querySelector('.wait-reason__guidance')).toBeNull();
   });
 
   test('names the queue counts on the last popover line', () => {
