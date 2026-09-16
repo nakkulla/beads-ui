@@ -1,9 +1,16 @@
 import { html, render } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
+import {
+  isImplementationAttempt,
+  latestImplementationAttempts
+} from '../../utils/active-attempts.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
-import { formatTimestampLocal } from '../../utils/relative-time.js';
+import {
+  coerceTimestampMs,
+  formatTimestampLocal
+} from '../../utils/relative-time.js';
 import { runResumeFlow } from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
@@ -22,7 +29,11 @@ import {
   ORCHESTRATION_KEYS,
   QUICK_FIX_ORCHESTRATION_KEYS
 } from '../settings-dialog/session-model.js';
-import { placeMenuList, waitReasonLines } from '../worker/lanes.js';
+import {
+  formatElapsed,
+  placeMenuList,
+  waitReasonLines
+} from '../worker/lanes.js';
 import {
   candidatePlacement,
   placeLaneLabel,
@@ -2261,6 +2272,138 @@ export function createDetailPanel(mount_element, options) {
   }
 
   /**
+   * Material for the 선행 대기 참고 줄 (UI-cmx3 §7). 조건이 거짓이면 `null`이고 줄 자체가
+   * 그려지지 않는다. 재료는 `queueStore` 스냅샷(`attempts`·`admission`·
+   * `bead_blocked_by`)과 이슈 구독의 `dependencies` 간선뿐이라 새 조회가 없다.
+   *
+   * @param {any} data
+   * @returns {{ t0: number|null, t1: number|null, elapsed_ms: number|null }|null}
+   */
+  function prerequisiteWaitRef(data) {
+    if (!current_id) {
+      return null;
+    }
+    const q = queueStore ? queueStore.get() : null;
+    const attempts =
+      q && q.attempts && typeof q.attempts === 'object' ? q.attempts : {};
+    for (const entry of Object.values(attempts)) {
+      const attempt = /** @type {any} */ (entry);
+      if (
+        attempt &&
+        attempt.bead_id === current_id &&
+        isImplementationAttempt(attempt) &&
+        (attempt.status === 'running' || attempt.status === 'paused')
+      ) {
+        return null;
+      }
+    }
+    const latest = latestImplementationAttempts(attempts).get(current_id);
+    const waiting =
+      latest &&
+      latest.status === 'waiting' &&
+      latest.cause === 'prerequisite_unmet'
+        ? latest
+        : null;
+    const admission_record =
+      q && q.admission && typeof q.admission === 'object'
+        ? q.admission[current_id]
+        : null;
+    const admission =
+      admission_record && admission_record.reason === 'prerequisite_unmet'
+        ? admission_record
+        : null;
+    if (!waiting && !admission) {
+      return null;
+    }
+    const t0 = coerceTimestampMs(
+      waiting ? waiting.finished_at : admission ? admission.at : null
+    );
+    /** @type {string[]} */
+    const frozen = [];
+    const raw_blockers = waiting
+      ? waiting.cause_detail && Array.isArray(waiting.cause_detail.blockers)
+        ? waiting.cause_detail.blockers
+        : []
+      : admission && Array.isArray(admission.blockers)
+        ? admission.blockers
+        : [];
+    for (const blocker of raw_blockers) {
+      const id = blocker && typeof blocker === 'object' ? blocker.id : blocker;
+      if (typeof id === 'string' && id.length > 0) {
+        frozen.push(id);
+      }
+    }
+    // 해제 판정의 재료는 큐 스냅샷의 `bead_blocked_by`다. 키가 없으면 (재시작
+    // 직후 등) 아무것도 해제됐다고 주장하지 않는다 (fail-quiet, §10).
+    const blocked_map =
+      q && q.bead_blocked_by && typeof q.bead_blocked_by === 'object'
+        ? q.bead_blocked_by
+        : null;
+    /** @type {number|null} */
+    let t1 = null;
+    if (blocked_map && Object.hasOwn(blocked_map, current_id)) {
+      const open = Array.isArray(blocked_map[current_id])
+        ? blocked_map[current_id]
+        : [];
+      const deps = Array.isArray(data.dependencies) ? data.dependencies : [];
+      for (const edge of deps) {
+        const id = edgeId(edge);
+        if (
+          edgeType(edge) !== 'blocks' ||
+          !frozen.includes(id) ||
+          open.includes(id)
+        ) {
+          continue;
+        }
+        const closed_at = coerceTimestampMs(
+          edge && typeof edge === 'object' ? edge.closed_at : null
+        );
+        if (closed_at !== null && (t1 === null || closed_at > t1)) {
+          t1 = closed_at;
+        }
+      }
+    }
+    const since = t1 ?? t0;
+    const elapsed_ms = since === null ? null : Math.max(0, Date.now() - since);
+    if (t0 === null && t1 === null) {
+      return null;
+    }
+    return { t0, t1, elapsed_ms };
+  }
+
+  /**
+   * One reference line under the dependency chips — 재료가 없는 조각은 빼고
+   * (fail-quiet), 판정 글리프·색·임계·툴팁·클릭은 없다 (UI-cmx3 §7).
+   *
+   * @param {any} data
+   */
+  function prerequisiteRefTemplate(data) {
+    const ref = prerequisiteWaitRef(data);
+    if (!ref) {
+      return '';
+    }
+    /** @type {string[]} */
+    const parts = [];
+    if (ref.t0 !== null) {
+      parts.push(`선행 대기 시작 ${formatTimestampLocal(ref.t0)}`);
+    }
+    if (ref.t1 !== null) {
+      parts.push(`해제 ${formatTimestampLocal(ref.t1)}`);
+    }
+    if (ref.elapsed_ms !== null) {
+      parts.push(
+        ref.t1 !== null
+          ? `해제 후 ${formatElapsed(ref.elapsed_ms)}`
+          : `${formatElapsed(ref.elapsed_ms)} 경과`
+      );
+    }
+    if (parts.length === 0) {
+      return '';
+    }
+    return html`<div class="detail-dep__ref">${parts.join(' · ')}</div>`;
+  }
+
+  /**
    * The 의존성 절 (UI-lx45 §4). 선행(`dependencies` 중 `blocks`)·후행
    * (`dependents` 중 `blocks`)·나머지(`dependencies` 중 그 외)를 한 절에 두고,
    * 종류는 글리프(UI-8x90 §3)와 색 티어로 구분한다. 편집은 선행 한 방향뿐이다.
@@ -2354,6 +2497,7 @@ export function createDetailPanel(mount_element, options) {
                   : ''}`
             )}
           </div>`}
+      ${prerequisiteRefTemplate(data)}
       ${model === null
         ? html`<div class="detail-empty">후보를 불러올 수 없음</div>`
         : depAddTemplate(shown, direct_id)}

@@ -3042,6 +3042,12 @@ html[data-theme='dark'] {
   gap: var(--sp-4);
 }
 
+.detail-dep__ref {
+  margin-top: var(--sp-6);
+  font-size: var(--fs-chip);
+  color: var(--text-dim);
+}
+
 .worker-kpi {
   display: flex;
   flex-wrap: wrap;

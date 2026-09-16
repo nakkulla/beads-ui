@@ -2394,6 +2394,196 @@ describe('views/detail-panel dependency edge types', () => {
   });
 });
 
+describe('views/detail-panel 선행 대기 참고 줄 (UI-cmx3 §7)', () => {
+  const HOUR_MS = 3_600_000;
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {unknown[]} dependencies
+   * @param {Record<string, any>} queue
+   * @returns {HTMLElement}
+   */
+  function mountWithQueue(dependencies, queue) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: {},
+        admission: {},
+        ...queue
+      })
+    );
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      queueStore,
+      onClose: vi.fn(),
+      onNavigate: vi.fn()
+    });
+
+    issueStores.register('detail:UI-1', {
+      type: 'issue-detail',
+      params: { id: 'UI-1' }
+    });
+    issueStores.getStore('detail:UI-1')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-1',
+      revision: 1,
+      issues: /** @type {any} */ ([{ id: 'UI-1', title: 't', dependencies }])
+    });
+
+    panel.load('UI-1');
+    return mount;
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string}
+   */
+  function refText(mount) {
+    return String(
+      mount.querySelector('.detail-dep__ref')?.textContent || ''
+    ).trim();
+  }
+
+  /**
+   * @param {number} finished_at
+   * @returns {Record<string, any>}
+   */
+  function waitingAttempt(finished_at) {
+    return {
+      'UI-1-1': {
+        attempt_id: 'UI-1-1',
+        bead_id: 'UI-1',
+        status: 'waiting',
+        cause: 'prerequisite_unmet',
+        started_at: finished_at - 1000,
+        finished_at,
+        cause_detail: { blockers: [{ id: 'UI-0', rig: null, status: 'open' }] }
+      }
+    };
+  }
+
+  test('names the wait start, the release and the time since release', () => {
+    const now = Date.now();
+    const mount = mountWithQueue(
+      [
+        {
+          id: 'UI-0',
+          dependency_type: 'blocks',
+          status: 'closed',
+          closed_at: now - HOUR_MS
+        }
+      ],
+      {
+        attempts: waitingAttempt(now - 3 * HOUR_MS),
+        bead_blocked_by: { 'UI-1': [] }
+      }
+    );
+
+    const text = refText(mount);
+
+    expect(text).toContain('선행 대기 시작');
+    expect(text).toContain('해제 ');
+    expect(text).toMatch(/해제 후 1시간 0분$/);
+  });
+
+  test('omits the release piece when the released edge carries no closed_at', () => {
+    const now = Date.now();
+    const mount = mountWithQueue(
+      [{ id: 'UI-0', dependency_type: 'blocks', status: 'closed' }],
+      {
+        attempts: waitingAttempt(now - 2 * HOUR_MS),
+        bead_blocked_by: { 'UI-1': [] }
+      }
+    );
+
+    const text = refText(mount);
+
+    expect(text).not.toContain('해제 후');
+    expect(text).toMatch(/^선행 대기 시작 .+ · 2시간 0분 경과$/);
+  });
+
+  test('omits the release piece while the frozen blocker still blocks', () => {
+    const now = Date.now();
+    const mount = mountWithQueue(
+      [
+        {
+          id: 'UI-0',
+          dependency_type: 'blocks',
+          status: 'closed',
+          closed_at: now - HOUR_MS
+        }
+      ],
+      {
+        attempts: waitingAttempt(now - 2 * HOUR_MS),
+        bead_blocked_by: { 'UI-1': ['UI-0'] }
+      }
+    );
+
+    expect(refText(mount)).toMatch(/^선행 대기 시작 .+ · 2시간 0분 경과$/);
+  });
+
+  test('reads the admission record time when no attempt was recorded', () => {
+    const now = Date.now();
+    const mount = mountWithQueue(
+      [{ id: 'UI-0', dependency_type: 'blocks', status: 'open' }],
+      {
+        admission: {
+          'UI-1': {
+            reason: 'prerequisite_unmet',
+            at: now - 4 * HOUR_MS,
+            blockers: [{ id: 'UI-0', rig: null, status: 'open' }]
+          }
+        },
+        bead_blocked_by: { 'UI-1': ['UI-0'] }
+      }
+    );
+
+    expect(refText(mount)).toMatch(/^선행 대기 시작 .+ · 4시간 0분 경과$/);
+  });
+
+  test('draws no line while an implementation attempt is running', () => {
+    const now = Date.now();
+    const attempts = waitingAttempt(now - 2 * HOUR_MS);
+    attempts['UI-1-2'] = {
+      attempt_id: 'UI-1-2',
+      bead_id: 'UI-1',
+      status: 'running',
+      started_at: now - 60_000
+    };
+    const mount = mountWithQueue(
+      [
+        {
+          id: 'UI-0',
+          dependency_type: 'blocks',
+          status: 'closed',
+          closed_at: now - HOUR_MS
+        }
+      ],
+      { attempts, bead_blocked_by: { 'UI-1': [] } }
+    );
+
+    expect(mount.querySelector('.detail-dep__ref')).toBeNull();
+  });
+
+  test('draws no line without a prerequisite wait record', () => {
+    const mount = mountWithQueue(
+      [{ id: 'UI-0', dependency_type: 'blocks', status: 'open' }],
+      { bead_blocked_by: { 'UI-1': ['UI-0'] } }
+    );
+
+    expect(mount.querySelector('.detail-dep__ref')).toBeNull();
+  });
+});
+
 describe('views/detail-panel comments wiring (UI-ucq6 §변경 3)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
