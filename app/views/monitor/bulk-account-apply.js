@@ -1,10 +1,10 @@
 /**
- * 모니터 `⚙` 패널의 `여러 저장소에 적용` — 계정 절의 계획과 실행 (UI-8ncz §4.2).
+ * 여러 저장소 설정 창의 `계정` 탭 — 일괄 편집 폼의 계획과 실행 (UI-nu43 §4.2).
  *
- * 열린 저장소의 계정 구역 값을 원본으로 삼아 선택한 다른 저장소에 그대로
- * 복사한다. 저장소마다 `set-workspace-accounts` → claude 한도 정책 → codex 한도
- * 정책을 이 순서로 보낸다. 계정 쓰기가 실패하면 정책은 보내지 않는다 — 계정이
- * 안 옮겨졌는데 허용 목록만 옮기지 않는다.
+ * 폼은 바꾼 필드만 담는 `edit`를 넘긴다. 저장소마다 실행 계정 값이 있을 때만
+ * `set-workspace-accounts`를, 러너 patch가 있을 때만 그 러너의 한도 정책 요청을
+ * 이 순서로 보낸다. 계정 쓰기가 실패하면 그 저장소의 정책 요청은 보내지 않는다 —
+ * 계정이 안 옮겨졌는데 허용 목록만 옮기지 않는다. 서버 op는 그대로다.
  */
 import { formatBulkResult, messageOf } from './bulk-preset-apply.js';
 
@@ -16,9 +16,21 @@ export { formatBulkResult, messageOf };
 
 /**
  * @typedef {Object} LimitPatch
- * @property {string} mode
+ * @property {'wait'|'switch'} mode
  * @property {string[]} accounts
  * @property {number|null} preempt_pct
+ */
+
+/**
+ * @typedef {'claude_account'|'codex_account'} AccountValueKey
+ */
+
+/**
+ * @typedef {Object} BulkAccountEdit
+ * @property {Partial<Record<AccountValueKey, string|null>>} values - 바꾼 실행
+ * 계정 키만 (changed keys). `null`은 "기본값 사용"(키 삭제)이다.
+ * @property {{ claude?: Partial<LimitPatch>, codex?: Partial<LimitPatch> }} patches -
+ * 러너별로 바꾼 한도 정책 필드만 (per runner).
  */
 
 /**
@@ -26,8 +38,8 @@ export { formatBulkResult, messageOf };
  * @property {string} root_dir
  * @property {string} name
  * @property {number} revision - 첫 정책 요청의 `expected_revision`.
- * @property {Record<string, string|null>} values - `set-workspace-accounts` body.
- * @property {{ claude: LimitPatch, codex: LimitPatch }} patches
+ * @property {Partial<Record<AccountValueKey, string|null>>} values - `set-workspace-accounts` body.
+ * @property {{ claude?: Partial<LimitPatch>, codex?: Partial<LimitPatch> }} patches
  */
 
 /**
@@ -36,8 +48,11 @@ export { formatBulkResult, messageOf };
  * @property {string|null} disabled_reason
  */
 
-/** 복사하는 실행 계정 kv 키 — pane의 `ACCOUNT_ROW_KEYS`와 같은 두 키다. */
-export const ACCOUNT_VALUE_KEYS = ['claude_account', 'codex_account'];
+/** 폼이 쓸 수 있는 실행 계정 kv 키 — pane의 `ACCOUNT_ROW_KEYS`와 같은 두 키다. */
+export const ACCOUNT_VALUE_KEYS = /** @type {const} */ ([
+  'claude_account',
+  'codex_account'
+]);
 
 /**
  * Request order — claude 먼저, codex 나중. 두 번째 요청은 첫 응답이 실어 온
@@ -47,11 +62,17 @@ export const ACCOUNT_VALUE_KEYS = ['claude_account', 'codex_account'];
  */
 export const LIMIT_RUNNERS = ['claude', 'codex'];
 
+/** 한도 정책 patch가 실을 수 있는 필드. */
+const LIMIT_PATCH_KEYS = ['mode', 'accounts', 'preempt_pct'];
+
 /** 계정 kv op. */
 export const ACCOUNTS_OP = 'set-workspace-accounts';
 
 /** 러너별 한도 정책 op. */
 export const LIMIT_POLICY_OP = 'worker-provider-limit-policy-set';
+
+/** Disabled reason: 선제 전환 기준이 범위 밖일 때. */
+export const PREEMPT_RANGE_REASON = '선제 전환 기준은 1–99 정수입니다';
 
 /**
  * @param {unknown} value
@@ -87,114 +108,174 @@ function isSelected(selected_roots, root_dir) {
 }
 
 /**
- * Normalization은 pane `limitPolicyOf`와 같은 규칙을 쓴다: 모드 enum 밖은
- * `switch`, 허용 목록은 공백 없는 문자열만, 임계는 1–99 정수 외 `null`.
+ * Whether a preemptive threshold is one the server accepts: `null` (off) or an
+ * integer 1–99.
  *
- * @param {unknown} raw
- * @returns {LimitPatch}
+ * @param {unknown} value
+ * @returns {boolean}
  */
-export function normalizeLimitPatch(raw) {
-  const source = isRecord(raw) ? raw : null;
-  const accounts = Array.isArray(source?.accounts)
-    ? source.accounts.filter(
-        (/** @type {unknown} */ key) =>
-          typeof key === 'string' && key.length > 0 && !/\s/.test(key)
-      )
-    : [];
-  const pct = source?.preempt_pct;
-  return {
-    mode: source?.mode === 'wait' ? 'wait' : 'switch',
-    accounts,
-    preempt_pct:
-      typeof pct === 'number' && Number.isInteger(pct) && pct >= 1 && pct <= 99
-        ? pct
-        : null
-  };
+export function isValidPreemptPct(value) {
+  return (
+    value === null ||
+    (typeof value === 'number' &&
+      Number.isInteger(value) &&
+      value >= 1 &&
+      value <= 99)
+  );
 }
 
 /**
- * Copy source의 두 kv 키를 그대로 싣는다 — 카탈로그 라벨은 덱이 붙인다. 원본에
- * 없는 키는 `null`("기본값 사용")이다.
+ * The changed fields of one runner patch, with the allow list reduced to
+ * whitespace-free strings. `null` when the runner changes nothing.
  *
- * @param {{ values?: Record<string, string> }|null} source_accounts
- * @returns {Record<string, string|null>}
+ * @param {unknown} raw
+ * @returns {Partial<LimitPatch>|null}
  */
-export function accountValuesOf(source_accounts) {
-  /** @type {Record<string, string|null>} */
+function changedPatch(raw) {
+  if (!isRecord(raw)) {
+    return null;
+  }
+  /** @type {Partial<LimitPatch>} */
+  const patch = {};
+  if (raw.mode === 'wait' || raw.mode === 'switch') {
+    patch.mode = raw.mode;
+  }
+  if (Array.isArray(raw.accounts)) {
+    patch.accounts = raw.accounts.filter(
+      (/** @type {unknown} */ key) =>
+        typeof key === 'string' && key.length > 0 && !/\s/.test(key)
+    );
+  }
+  if (Object.hasOwn(raw, 'preempt_pct')) {
+    patch.preempt_pct = raw.preempt_pct;
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+/**
+ * The changed account keys of an edit. Only the two known keys pass, and only
+ * with a non-empty string or `null`.
+ *
+ * @param {unknown} raw
+ * @returns {Partial<Record<AccountValueKey, string|null>>}
+ */
+function changedValues(raw) {
+  /** @type {Partial<Record<AccountValueKey, string|null>>} */
   const values = {};
-  const source = isRecord(source_accounts?.values)
-    ? source_accounts.values
-    : {};
+  if (!isRecord(raw)) {
+    return values;
+  }
   for (const key of ACCOUNT_VALUE_KEYS) {
-    const value = source[key];
-    values[key] = typeof value === 'string' && value.length > 0 ? value : null;
+    if (!Object.hasOwn(raw, key)) {
+      continue;
+    }
+    const value = raw[key];
+    if (value === null || (typeof value === 'string' && value.length > 0)) {
+      values[key] = value;
+    }
   }
   return values;
 }
 
 /**
- * Plan — 대상 목록과 비활성 사유를 계산한다. 복사 원본 저장소는 대상이 아니고
- * 선택 수에도 세지 않는다 (§3.2).
+ * Count of changed fields (§3.4 `바꿀 항목 k개`). 러너별 필드는 따로 센다.
+ *
+ * @param {BulkAccountEdit|null|undefined} edit
+ * @returns {number}
+ */
+export function countEditFields(edit) {
+  let count = Object.keys(changedValues(edit?.values)).length;
+  for (const runner of LIMIT_RUNNERS) {
+    const patch = changedPatch(edit?.patches?.[runner]);
+    if (patch) {
+      count += LIMIT_PATCH_KEYS.filter((key) =>
+        Object.hasOwn(patch, key)
+      ).length;
+    }
+  }
+  return count;
+}
+
+/**
+ * Build the target list and disabled reason — 대상은 선택한 행 전부다.
  *
  * @param {Object} input
- * @param {Array<Record<string, any>>} input.rows - 보이는 저장소를 덱 타일
+ * @param {Array<Record<string, any>>} input.rows - 보이는 저장소를 모니터 행
  * 순서대로, `adopted`를 덮은 상태로.
  * @param {Iterable<string>|Set<string>} input.selected_roots
- * @param {string} input.source_root - 지금 `⚙`이 열려 있어 값을 복사해 갈
- * 저장소의 `root_dir`.
- * @param {{ state: string, values: Record<string, string>, pending: boolean }|null} input.source_accounts
- * @param {unknown} input.source_policy - 원본 행의 `provider_limit_policy`.
+ * @param {BulkAccountEdit} input.edit
  * @param {boolean} [input.running]
  * @returns {BulkAccountPlan}
  */
 export function planBulkAccountApply({
   rows,
   selected_roots,
-  source_root,
-  source_accounts,
-  source_policy,
+  edit,
   running = false
 }) {
-  const values = accountValuesOf(source_accounts);
-  const patches = {
-    claude: normalizeLimitPatch(
-      isRecord(source_policy) ? source_policy.claude : null
-    ),
-    codex: normalizeLimitPatch(
-      isRecord(source_policy) ? source_policy.codex : null
-    )
-  };
-  const targets = (Array.isArray(rows) ? rows : [])
-    .filter(
-      (row) =>
-        isRecord(row) &&
-        String(row.root_dir) !== source_root &&
-        isSelected(selected_roots, String(row.root_dir))
-    )
-    .map((row) => ({
-      root_dir: String(row.root_dir),
-      name: typeof row.name === 'string' ? row.name : String(row.root_dir),
-      revision: typeof row.revision === 'number' ? row.revision : 0,
-      values: { ...values },
-      patches: {
-        claude: { ...patches.claude, accounts: [...patches.claude.accounts] },
-        codex: { ...patches.codex, accounts: [...patches.codex.accounts] }
-      }
-    }));
+  const values = changedValues(edit?.values);
+  /** @type {{ claude?: Partial<LimitPatch>, codex?: Partial<LimitPatch> }} */
+  const patches = {};
+  for (const runner of LIMIT_RUNNERS) {
+    const patch = changedPatch(edit?.patches?.[runner]);
+    if (patch) {
+      patches[runner] = patch;
+    }
+  }
+  const selected_rows = (Array.isArray(rows) ? rows : []).filter(
+    (row) => isRecord(row) && isSelected(selected_roots, String(row.root_dir))
+  );
+  const targets = selected_rows.map((row) => ({
+    root_dir: String(row.root_dir),
+    name: typeof row.name === 'string' ? row.name : String(row.root_dir),
+    revision: typeof row.revision === 'number' ? row.revision : 0,
+    values: { ...values },
+    patches: copyPatches(patches)
+  }));
+  const touches_policy = Object.keys(patches).length > 0;
+  const preempt_invalid = LIMIT_RUNNERS.some((runner) => {
+    const patch = patches[runner];
+    return (
+      !!patch &&
+      Object.hasOwn(patch, 'preempt_pct') &&
+      !isValidPreemptPct(patch.preempt_pct)
+    );
+  });
   /** @type {string|null} */
   let disabled_reason = null;
   if (running === true) {
     disabled_reason = '적용 중입니다';
   } else if (targets.length === 0) {
     disabled_reason = '적용할 저장소를 고르세요';
-  } else if (source_accounts?.state === 'unusable') {
-    disabled_reason = '이 저장소의 실행 계정 기본값을 해석할 수 없습니다';
-  } else if (!isRecord(source_policy)) {
+  } else if (countEditFields({ values, patches }) === 0) {
+    disabled_reason = '바꿀 항목을 고르세요';
+  } else if (preempt_invalid) {
+    disabled_reason = PREEMPT_RANGE_REASON;
+  } else if (
+    touches_policy &&
+    !selected_rows.some((row) => Object.hasOwn(row, 'provider_limit_policy'))
+  ) {
     disabled_reason = '서버가 한도 정책을 싣지 않습니다';
-  } else if (source_accounts?.pending === true) {
-    disabled_reason = '저장 확인을 기다리는 중';
   }
   return { targets, disabled_reason };
+}
+
+/**
+ * @param {{ claude?: Partial<LimitPatch>, codex?: Partial<LimitPatch> }} patches
+ * @returns {{ claude?: Partial<LimitPatch>, codex?: Partial<LimitPatch> }}
+ */
+function copyPatches(patches) {
+  /** @type {{ claude?: Partial<LimitPatch>, codex?: Partial<LimitPatch> }} */
+  const copy = {};
+  for (const runner of LIMIT_RUNNERS) {
+    const patch = patches[runner];
+    if (patch) {
+      copy[runner] = Array.isArray(patch.accounts)
+        ? { ...patch, accounts: [...patch.accounts] }
+        : { ...patch };
+    }
+  }
+  return copy;
 }
 
 /**
@@ -218,13 +299,13 @@ function adoptQueue(adopt, root_dir, res) {
  * @param {Object} input
  * @param {string} input.root_dir
  * @param {'claude'|'codex'} input.runner
- * @param {LimitPatch} input.patch
+ * @param {Partial<LimitPatch>} input.patch
  * @param {number} input.revision
  * @param {(type: string, payload: Record<string, unknown>) => Promise<any>} input.send
  * @param {(root_dir: string, queue: any) => void} input.adopt
  * @param {(() => boolean)|undefined} input.isCancelled
- * @returns {Promise<{ applied: boolean, revision: number }|null>} `null`
- * when cancelled after the first response, whose queue is still adopted.
+ * @returns {Promise<{ applied: boolean, revision: number }>} Cancelled after
+ * the first response, the retry is not sent and that response is judged.
  */
 async function applyLimitPolicy({
   root_dir,
@@ -243,10 +324,12 @@ async function applyLimitPolicy({
     expected_revision: current
   });
   current = adoptQueue(adopt, root_dir, res) ?? current;
-  if (isCancelled?.() === true) {
-    return null;
-  }
-  if (!isError(res) && isRecord(res) && res.conflict === true) {
+  if (
+    isCancelled?.() !== true &&
+    !isError(res) &&
+    isRecord(res) &&
+    res.conflict === true
+  ) {
     res = await send(LIMIT_POLICY_OP, {
       root_dir,
       runner,
@@ -262,8 +345,8 @@ async function applyLimitPolicy({
 }
 
 /**
- * Sequential 복사 — 선택한 저장소마다 원본의 계정 설정을 옮긴다. 저장소 사이에
- * 공유되는 revision이 없으므로 하나가 실패해도 다음 대상으로 항상 계속한다.
+ * Sequential 적용 — 선택한 저장소마다 폼의 변경을 쓴다. 저장소 사이에 공유되는
+ * revision이 없으므로 하나가 실패해도 다음 대상으로 항상 계속한다.
  *
  * @param {Object} input
  * @param {BulkAccountTarget[]} input.targets
@@ -288,9 +371,6 @@ export async function runBulkAccountApply({
       return results;
     }
     const result = await applyOne(target, send, adopt, isCancelled);
-    if (result === null) {
-      return results;
-    }
     results.push(result);
     onProgress?.({ done: results.length, total, results });
   }
@@ -298,76 +378,96 @@ export async function runBulkAccountApply({
 }
 
 /**
- * Three requests for 한 저장소와 그 판정 (§4.2 4). 계정 쓰기가 실패하면
- * `failed`이고 정책 요청은 0회다. 요청 사이에 취소되면 `null` — 이미 받은
- * 응답은 채택만 하고 그 저장소의 판정은 남기지 않는다 (§4).
+ * The account step of one 저장소. `null` when it succeeded, else the failure
+ * sentence.
+ *
+ * @param {BulkAccountTarget} target
+ * @param {(type: string, payload: Record<string, unknown>) => Promise<any>} send
+ * @returns {Promise<string|null>}
+ */
+async function applyAccounts(target, send) {
+  try {
+    const res = await send(ACCOUNTS_OP, {
+      root_dir: target.root_dir,
+      values: { ...target.values }
+    });
+    if (isError(res) || !isRecord(res)) {
+      return isRecord(res) ? messageOf(res) : '요청이 처리되지 않았습니다';
+    }
+    if (res.state === 'unusable') {
+      return '실행 계정 기본값이 해석되지 않습니다';
+    }
+    return null;
+  } catch (err) {
+    return messageOf(err);
+  }
+}
+
+/**
+ * Requests for 한 저장소와 그 판정 (§4.2). 보낸 요청이 모두 성공하면
+ * `applied`, 하나도 성공하지 못하면 `failed`, 일부만이면 `partial`이다. 요청
+ * 사이에 취소되면 남은 요청은 보내지 않고 미적용으로 센다 — 그 저장소가
+ * 쓰였는지는 호출자의 패널 재읽기가 알아야 한다.
  *
  * @param {BulkAccountTarget} target
  * @param {(type: string, payload: Record<string, unknown>) => Promise<any>} send
  * @param {(root_dir: string, queue: any) => void} adopt
  * @param {(() => boolean)|undefined} isCancelled
- * @returns {Promise<BulkResult|null>}
+ * @returns {Promise<BulkResult>}
  */
 async function applyOne(target, send, adopt, isCancelled) {
   const base = { root_dir: target.root_dir, name: target.name };
-  try {
-    const res = await send(ACCOUNTS_OP, {
-      root_dir: target.root_dir,
-      values: target.values
-    });
-    if (isCancelled?.() === true) {
-      return null;
-    }
-    if (isError(res) || !isRecord(res)) {
-      return {
-        ...base,
-        state: 'failed',
-        detail: isRecord(res) ? messageOf(res) : '요청이 처리되지 않았습니다'
-      };
-    }
-    if (res.state === 'unusable') {
-      return {
-        ...base,
-        state: 'failed',
-        detail: '실행 계정 기본값이 해석되지 않습니다'
-      };
-    }
-  } catch (err) {
-    return { ...base, state: 'failed', detail: messageOf(err) };
-  }
+  let sent = 0;
+  let succeeded = 0;
+  let unsent = 0;
   /** @type {string[]} */
-  const failed_runners = [];
+  const failed_parts = [];
+  if (Object.keys(target.values).length > 0) {
+    sent += 1;
+    const failure = await applyAccounts(target, send);
+    if (failure !== null) {
+      // 계정이 안 옮겨졌는데 허용 목록만 옮기지 않는다 — 정책 요청 0회.
+      return { ...base, state: 'failed', detail: failure };
+    }
+    succeeded += 1;
+  }
   let revision = target.revision;
   for (const runner of LIMIT_RUNNERS) {
+    const patch = target.patches[runner];
+    if (!patch) {
+      continue;
+    }
+    if (isCancelled?.() === true) {
+      unsent += 1;
+      failed_parts.push(`${runner} 한도 정책`);
+      continue;
+    }
+    sent += 1;
     try {
       const outcome = await applyLimitPolicy({
         root_dir: target.root_dir,
         runner,
-        patch: target.patches[runner],
+        patch,
         revision,
         send,
         adopt,
         isCancelled
       });
-      if (outcome === null) {
-        return null;
-      }
       revision = outcome.revision;
-      if (!outcome.applied) {
-        failed_runners.push(runner);
+      if (outcome.applied) {
+        succeeded += 1;
+      } else {
+        failed_parts.push(`${runner} 한도 정책`);
       }
     } catch {
-      failed_runners.push(runner);
-    }
-    if (isCancelled?.() === true) {
-      return null;
+      failed_parts.push(`${runner} 한도 정책`);
     }
   }
-  return failed_runners.length === 0
-    ? { ...base, state: 'applied', detail: '' }
-    : {
-        ...base,
-        state: 'partial',
-        detail: `${failed_runners.join('·')} 한도 정책 미적용`
-      };
+  if (succeeded === sent && unsent === 0) {
+    return { ...base, state: 'applied', detail: '' };
+  }
+  const detail = `${failed_parts.join('·')} 미적용`;
+  return succeeded === 0
+    ? { ...base, state: 'failed', detail }
+    : { ...base, state: 'partial', detail };
 }

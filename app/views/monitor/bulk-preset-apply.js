@@ -1,10 +1,12 @@
 /**
- * 모니터 `⚙` 패널의 `여러 저장소에 적용` — 프리셋 절의 계획과 실행 (UI-8ncz §4.1).
+ * 여러 저장소 설정 창의 `워커` 탭 — 프리셋 일괄 적용의 계획과 실행
+ * (UI-8ncz §4.1, 진입점은 UI-nu43 §3.3).
  *
  * 서버에는 다중 저장소 op가 없다. 이 모듈은 선택한 저장소마다 기존 단일 저장소
  * op `apply-impl-preset-global`을 **순차**로 한 번씩 보내고 저장소별 결과를
  * 모은다. 병렬로 보내면 서버의 kv 쓰기와 모니터 재빌드가 뒤섞이고 revision
- * 충돌을 뒤늦게 발견한다. 렌더·전송·채택은 덱이 소유하고 이 모듈은 순수하다.
+ * 충돌을 뒤늦게 발견한다. 렌더·전송·채택은 일괄 pane이 소유하고 이 모듈은
+ * 순수하다.
  */
 
 /**
@@ -40,7 +42,7 @@ function isRecord(value) {
 }
 
 /**
- * Membership test — `Set`과 배열을 모두 받는다. 덱은 `Set`을 들고 테스트는
+ * Membership test — `Set`과 배열을 모두 받는다. 일괄 pane은 `Set`을 들고 테스트는
  * 배열이 읽기 쉽다.
  *
  * @param {Iterable<string>|Set<string>} selected_roots
@@ -91,7 +93,7 @@ export function supportsQuickFixLane(rows) {
  * 덮은 최신 행이어야 한다: `expected_queue_revision`이 거기서 나온다.
  *
  * @param {Object} input
- * @param {Array<Record<string, any>>} input.rows - 보이는 저장소를 덱 타일
+ * @param {Array<Record<string, any>>} input.rows - 보이는 저장소를 모니터 행
  * 순서대로, `adopted`를 덮은 상태로.
  * @param {Iterable<string>|Set<string>} input.selected_roots
  * @param {{ revision: number, presets: Array<Record<string, any>> }|null} input.preset_state
@@ -217,8 +219,8 @@ export function retryRootsOf(results) {
 /**
  * Sequential 적용 — 선택한 저장소마다 프리셋을 한 번씩 보낸다.
  *
- * 응답 `queue`는 성공·실패와 무관하게 즉시 `adopt`한다 — 덱 타일의 칩과 다음
- * 대상의 revision이 최신이 된다. `queue_applied:false`면 응답 revision으로 같은
+ * 응답 `queue`는 성공·실패와 무관하게 즉시 `adopt`한다 — 그 저장소의 다음
+ * 계획이 읽는 revision이 최신이 된다. `queue_applied:false`면 응답 revision으로 같은
  * 저장소를 **한 번만** 다시 보내고, 프리셋 revision 충돌(`conflict:true`)이면
  * 남은 대상을 `skipped`로 두고 멈춘다 — 바뀐 프리셋을 다시 읽은 뒤 사용자가
  * 다시 적용해야 한다.
@@ -261,8 +263,10 @@ export async function runBulkApply({
     try {
       let res = await send(PRESET_APPLY_OP, { ...target.payload });
       adoptQueue(adopt, target.root_dir, res);
-      // 취소 뒤에는 이미 보낸 응답을 채택만 하고 재시도도 보내지 않는다 (§4).
+      // 취소 뒤에는 재시도를 보내지 않는다 (§4). 이미 받은 응답의 판정은 남겨
+      // 그 저장소가 쓰였는지를 호출자가 알게 한다.
       if (isCancelled?.() === true) {
+        results.push(judgePresetResponse(target, res));
         return results;
       }
       if (!isError(res) && isRecord(res) && res.queue_applied === false) {
@@ -295,7 +299,7 @@ export async function runBulkApply({
 }
 
 /**
- * Hand the 권위 있는 queue를 덱에 넘긴다. 실패 응답도 최신 revision을 싣고
+ * Hand the 권위 있는 queue를 일괄 pane에 넘긴다. 실패 응답도 최신 revision을 싣고
  * 오므로 성공 여부를 보지 않는다.
  *
  * @param {(root_dir: string, queue: any) => void} adopt

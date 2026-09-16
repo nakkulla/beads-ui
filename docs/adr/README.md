@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| UI-nu43 | [모니터 탭의 헤더 설정은 여러 저장소 일괄 적용 창이고 레포 카드 설정은 그 저장소만 편집한다](UI-nu43-monitor-header-settings-bulk-mode.md) | 2026-09-17 | 모니터 탭의 헤더 설정은 연결 저장소를 편집하지 않는 여러 저장소 일괄 적용 창(워커 프리셋·계정 일괄 편집 폼)이고, 레포 카드 설정은 그 저장소만 편집한다 |
 | UI-wecw | [Beads UI는 저장소 defaults와 공통 Worker 주소 적용값을 분리하며 공통 주소 조회·쓰기는 dotfiles 소유 CLI를 소비한다 — defaults 어휘·검증의 dotfiles 소유권과 fail-quiet 읽기·strict 쓰기는 0013을 승계한다](UI-wecw-worker-url-stored-vs-effective-split-common-via-dotfiles-cli.md) | 2026-09-16 | Beads UI는 저장소 defaults와 공통 Worker 주소 적용값을 분리하며 공통 주소 조회·쓰기는 dotfiles 소유 CLI를 소비한다 |
 | UI-tqqp | [bd closed·deferred Bead는 모든 대기 레인에서 자동으로 물러나고 leaf paused attempt는 Bead 종료가 우선해 stopped로 종결된다](UI-tqqp-closed-deferred-beads-auto-retire-from-waiting-lanes.md) | 2026-09-16 | bd closed·deferred Bead 는 병렬·직렬 대기 레인에서 자동 제거되고 leaf paused attempt 는 Bead 종료가 우선해 stopped 로 종결되며 버릴 수 있는 워크트리만 정리한다 |
 | UI-cmx3-2 | [선행 대기 attempt가 있는 bead는 held 타일이 아니라 대기 행이 대표한다](UI-cmx3-2-prerequisite-waiting-attempt-represented-by-waiting-row.md) | 2026-09-16 | prerequisite_unmet waiting attempt가 있는 bead는 held 타일이 아니라 대기 행이 대표하고 실행 중 그리드는 실행·사람 조작 대기만 담는다 |

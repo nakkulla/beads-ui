@@ -13,11 +13,18 @@
  * moves between the execution tabs' bodies so the state machine survives a tab
  * switch.
  *
+ * Opened with `{ scope: 'monitor' }` (the header ⚙ on the monitor tab) the
+ * dialog is in bulk mode (UI-nu43 §3.1): the rail carries only `워커`·`계정`,
+ * the execution pane is never created, and `createBulkPane` edits the repos
+ * ticked in its own target list instead of the connected workspace. The mode
+ * is fixed from `open` until the dialog closes.
+ *
  * @typedef {import('lit-html').TemplateResult} TemplateResult
  * @typedef {import('../../utils/label-policy.js').DisplayPolicy} DisplayPolicy
  */
 import { html, render } from 'lit-html';
 import { showToast } from '../../utils/toast.js';
+import { createBulkPane } from './bulk-pane.js';
 import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import { createExecutionPane } from './execution-pane.js';
 
@@ -28,6 +35,21 @@ export const SETTINGS_TABS = [
   { id: 'account', label: '계정', glyph: '◎' },
   { id: 'display', label: '표시', glyph: '◫' }
 ];
+
+/** The bulk mode's tabs, in display order. */
+export const BULK_SETTINGS_TABS = SETTINGS_TABS.filter(
+  (tab) => tab.id === 'worker' || tab.id === 'account'
+);
+
+/** Bulk-mode pane heading shared by both tabs. */
+const BULK_TITLE = '여러 저장소 설정';
+
+/** Bulk-mode one-line subtitle per tab. */
+const BULK_TAB_SUB = {
+  worker: '선택한 저장소에 실행 프리셋을 적용합니다.',
+  account:
+    '선택한 저장소의 실행 계정과 한도 대응을 바꿉니다. 바꾸지 않은 항목은 저장소마다 그대로 둡니다.'
+};
 
 /** Tabs the shared execution pane draws, by its own section ids. */
 const EXECUTION_TABS = ['worker', 'session', 'account'];
@@ -59,7 +81,10 @@ const TAB_COPY = {
  *   implPresetStore?: { get: () => any, subscribe?: (fn: () => void) => () => void },
  *   labelOptions: () => string[],
  *   notify?: (message: string) => void,
- *   onOpenChange?: (open: boolean) => void
+ *   onOpenChange?: (open: boolean) => void,
+ *   monitorRows?: () => Array<Record<string, any>>,
+ *   subscribeMonitorRows?: (fn: () => void) => () => void,
+ *   onBulkApplied?: (root_dirs: string[]) => void
  * }} options
  */
 export function createSettingsDialog(mount_element, options) {
@@ -80,6 +105,15 @@ export function createSettingsDialog(mount_element, options) {
   let active_tab = 'worker';
   let is_open = false;
   let prefix_draft = '';
+  /** `'monitor'` = bulk mode; fixed from `open` until close. */
+  /** @type {'single'|'monitor'} */
+  let scope = 'single';
+
+  /** @type {ReturnType<typeof createBulkPane>|null} */
+  let bulk_pane = null;
+  /** The bulk pane's own host, re-parented like {@link pane_host}. */
+  const bulk_host = document.createElement('div');
+  bulk_host.className = 'settings-dialog__pane-host';
 
   /** @type {ReturnType<typeof createExecutionPane>|null} */
   let execution_pane = null;
@@ -154,6 +188,59 @@ export function createSettingsDialog(mount_element, options) {
       slot.appendChild(pane_host);
     }
     ensureExecutionPane()?.render(active_tab);
+  }
+
+  /**
+   * The bulk mode's pane: one heading for both tabs and an empty body slot the
+   * bulk pane's host is appended into (`mountBulkHost`).
+   *
+   * @returns {TemplateResult}
+   */
+  function bulkPaneSection() {
+    const sub = /** @type {any} */ (BULK_TAB_SUB)[active_tab] || '';
+    return html`
+      <section
+        class="settings-dialog__pane settings-dialog__pane--active"
+        role="tabpanel"
+        id=${`settings-pane-${active_tab}`}
+        aria-label=${BULK_TITLE}
+      >
+        <header class="settings-dialog__pane-head">
+          <h2>${BULK_TITLE}</h2>
+        </header>
+        <p class="settings-dialog__pane-sub">${sub}</p>
+        <div class="settings-dialog__pane-body" data-pane="bulk"></div>
+      </section>
+    `;
+  }
+
+  /** Move the bulk host into the body and draw the active tab. */
+  function mountBulkHost() {
+    const slot = /** @type {HTMLElement|null} */ (
+      dialog.querySelector('[data-pane="bulk"]')
+    );
+    if (!slot) {
+      return;
+    }
+    if (bulk_host.parentElement !== slot) {
+      slot.appendChild(bulk_host);
+    }
+    if (!bulk_pane) {
+      bulk_pane = createBulkPane(bulk_host, {
+        transport,
+        rows: () => options.monitorRows?.() ?? [],
+        subscribeRows: options.subscribeMonitorRows,
+        implPresetStore: options.implPresetStore,
+        onBulkApplied: (root_dirs) => options.onBulkApplied?.(root_dirs)
+      });
+    }
+    bulk_pane.render(/** @type {'worker'|'account'} */ (active_tab));
+  }
+
+  function destroyBulkPane() {
+    bulk_pane?.destroy();
+    bulk_pane = null;
+    bulk_host.remove();
   }
 
   /**
@@ -275,7 +362,16 @@ export function createSettingsDialog(mount_element, options) {
     onPolicyPatch(() => ({ chips: { [chip]: desired } }));
   }
 
+  /** @returns {TemplateResult} */
+  function panesTemplate() {
+    if (scope === 'monitor') {
+      return bulkPaneSection();
+    }
+    return active_tab === 'display' ? displayPane() : executionPaneSection();
+  }
+
   function doRender() {
+    const tabs = scope === 'monitor' ? BULK_SETTINGS_TABS : SETTINGS_TABS;
     render(
       html`
         <div class="settings-dialog__container">
@@ -285,7 +381,7 @@ export function createSettingsDialog(mount_element, options) {
             aria-orientation="vertical"
           >
             <div class="settings-dialog__rail-title">설정</div>
-            ${SETTINGS_TABS.map(
+            ${tabs.map(
               (tab) =>
                 html`<button
                   type="button"
@@ -309,14 +405,16 @@ export function createSettingsDialog(mount_element, options) {
               닫기
             </button>
           </nav>
-          <div class="settings-dialog__panes">
-            ${active_tab === 'display' ? displayPane() : executionPaneSection()}
-          </div>
+          <div class="settings-dialog__panes">${panesTemplate()}</div>
         </div>
       `,
       dialog
     );
-    mountExecutionHost();
+    if (scope === 'monitor') {
+      mountBulkHost();
+    } else {
+      mountExecutionHost();
+    }
   }
 
   /** @param {string} tab_id */
@@ -327,6 +425,11 @@ export function createSettingsDialog(mount_element, options) {
 
   const onDialogClose = () => {
     is_open = false;
+    // `cancel` fires while the dialog is still open, and a queued `close` may
+    // land after a reopen — only a dialog that is really shut drops its pane.
+    if (!dialog.open) {
+      destroyBulkPane();
+    }
     options.onOpenChange?.(false);
   };
   dialog.addEventListener('close', onDialogClose);
@@ -355,33 +458,40 @@ export function createSettingsDialog(mount_element, options) {
     unsubscribe_presets = options.implPresetStore.subscribe(() => {
       if (is_open) {
         execution_pane?.render();
+        bulk_pane?.render();
       }
     });
   }
 
   /**
    * Open the dialog on one rail tab. An id the rail does not carry opens the
-   * default `워커` tab rather than an empty pane.
+   * default `워커` tab rather than an empty pane. `scope: 'monitor'` opens the
+   * bulk mode, which never binds or loads the connected workspace.
    *
    * @param {string} [tab_id]
+   * @param {{ scope?: 'monitor' }} [open_options]
    */
-  function open(tab_id = 'worker') {
+  function open(tab_id = 'worker', open_options = {}) {
     if (is_open) {
       return;
     }
     is_open = true;
+    scope = open_options.scope === 'monitor' ? 'monitor' : 'single';
     options.onOpenChange?.(true);
-    active_tab = SETTINGS_TABS.some((tab) => tab.id === tab_id)
-      ? tab_id
-      : 'worker';
+    const tabs = scope === 'monitor' ? BULK_SETTINGS_TABS : SETTINGS_TABS;
+    active_tab = tabs.some((tab) => tab.id === tab_id) ? tab_id : 'worker';
     prefix_draft = '';
+    // A bulk pane is per open: its selection and form start fresh each time.
+    destroyBulkPane();
     doRender();
     if (typeof dialog.showModal === 'function') {
       dialog.showModal();
     } else {
       dialog.setAttribute('open', '');
     }
-    void ensureExecutionPane()?.load();
+    if (scope === 'single') {
+      void ensureExecutionPane()?.load();
+    }
   }
 
   function close() {
@@ -389,6 +499,7 @@ export function createSettingsDialog(mount_element, options) {
       return;
     }
     is_open = false;
+    destroyBulkPane();
     options.onOpenChange?.(false);
     if (typeof dialog.close === 'function') {
       dialog.close();
@@ -417,6 +528,7 @@ export function createSettingsDialog(mount_element, options) {
       }
       execution_pane?.destroy();
       execution_pane = null;
+      destroyBulkPane();
       dialog.remove();
     }
   };

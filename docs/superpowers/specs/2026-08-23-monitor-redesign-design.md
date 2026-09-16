@@ -194,6 +194,13 @@ scope:
 > 서버 op는 그대로다. 모니터 행은 `provider_limit_policy`를 싣는다(§9 행 필드
 > 추가). 이 절은 모니터 `⚙` 전용이고 설정 다이얼로그에는 없다.
 
+> 정정(UI-nu43). 레포 카드 `⚙` 패널에는 일괄 절이 없고 그 저장소만 편집한다
+> (머리의 `[워커|세션|계정]` 세그먼트와 pane 몸체만 둔다). 여러 저장소 적용은
+> 모니터 탭에서 연 헤더 ⚙의 일괄 모드(`워커`·`계정` 두 탭,
+> `app/views/settings-dialog/bulk-pane.js`)가 맡는다. 일괄 실행이 끝나면 결과가
+> 적용됨·부분 적용인 저장소 중 패널이 열린 저장소의 pane을 덱
+> `reloadPanel`이 다시 읽는다. 모니터 행의 `provider_limit_policy` 투영은 유지한다.
+
 ## 5. 실행가능 레인
 
 - 소스: `workspaces[].runnable[]`(§9.1로 `workflow`·`exec_pins` 재료 추가).

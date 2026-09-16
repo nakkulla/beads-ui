@@ -2792,6 +2792,15 @@ export function createMonitorView(mount_element, options) {
     pause() {
       stopTick();
     },
+    /**
+     * Forward a finished bulk run to the deck (UI-nu43 §4.3): the open `⚙`
+     * pane re-reads its repo when that repo was written to.
+     *
+     * @param {Iterable<string>} root_dirs
+     */
+    reloadPanel(root_dirs) {
+      void deck?.reloadPanel(root_dirs);
+    },
     clear() {
       stopTick();
       lane_drag.detach();

@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createDisplayPolicyStore } from '../../data/display-policy-store.js';
-import { SETTINGS_TABS, createSettingsDialog } from './index.js';
+import {
+  BULK_SETTINGS_TABS,
+  SETTINGS_TABS,
+  createSettingsDialog
+} from './index.js';
 
 /** @returns {import('../../utils/label-policy.js').DisplayPolicy} */
 function makePolicy() {
@@ -89,7 +93,7 @@ const EXECUTION_DEFAULTS = {
 };
 
 /**
- * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any }} [options]
+ * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>> }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -133,7 +137,8 @@ function mount(options = {}) {
       get: () => options.presets || { revision: 1, presets: [] }
     },
     labelOptions: () => ['worker-serial'],
-    notify
+    notify,
+    monitorRows: () => options.monitorRows || []
   });
   return { root, dialog, transport, notify, policy_store };
 }
@@ -230,6 +235,113 @@ describe('createSettingsDialog tabs', () => {
       'quick_fix',
       '워커 시스템 프롬프트'
     ]);
+  });
+});
+
+describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
+  const MONITOR_ROWS = [
+    {
+      root_dir: '/tmp/example/repo-a',
+      name: 'repo-a',
+      revision: 1,
+      auto_advance: true,
+      quick_fix_orchestration_model: null
+    }
+  ];
+
+  /**
+   * @param {any} transport
+   * @returns {string[]}
+   */
+  function requestTypes(transport) {
+    return transport.mock.calls.map((/** @type {any[]} */ call) => call[0]);
+  }
+
+  test('draws only the 워커 and 계정 tabs when opened from the monitor', async () => {
+    const { root, dialog } = mount({ monitorRows: MONITOR_ROWS });
+
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    const tabs = Array.from(root.querySelectorAll('[role="tab"]')).map((tab) =>
+      tab.textContent?.replace(/\s+/g, ' ').trim()
+    );
+    expect(tabs).toEqual(['◆ 워커', '◎ 계정']);
+    expect(BULK_SETTINGS_TABS.map((tab) => tab.id)).toEqual([
+      'worker',
+      'account'
+    ]);
+    dialog.destroy();
+  });
+
+  test('sends no connected workspace read in bulk mode', async () => {
+    const { root, dialog, transport } = mount({ monitorRows: MONITOR_ROWS });
+
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    expect(requestTypes(transport)).toEqual([]);
+    expect(root.querySelector('[data-quick-fix-group]')).toBe(null);
+    expect(root.querySelector('[data-pane="bulk"] [data-bulk-repo]')).not.toBe(
+      null
+    );
+    dialog.destroy();
+  });
+
+  test('titles both bulk tabs as 여러 저장소 설정 with their own subtitle', async () => {
+    const { root, dialog } = mount({ monitorRows: MONITOR_ROWS });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+    const worker = {
+      title: root.querySelector('.settings-dialog__pane-head h2')?.textContent,
+      sub: root.querySelector('.settings-dialog__pane-sub')?.textContent
+    };
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-tab="account"]')
+    ).click();
+    await settle();
+
+    expect(worker).toEqual({
+      title: '여러 저장소 설정',
+      sub: '선택한 저장소에 실행 프리셋을 적용합니다.'
+    });
+    expect(
+      root.querySelector('.settings-dialog__pane-head h2')?.textContent
+    ).toBe('여러 저장소 설정');
+    expect(root.querySelector('.settings-dialog__pane-sub')?.textContent).toBe(
+      '선택한 저장소의 실행 계정과 한도 대응을 바꿉니다. 바꾸지 않은 항목은 저장소마다 그대로 둡니다.'
+    );
+    expect(root.querySelector('[data-bulk-count]')).not.toBe(null);
+    dialog.destroy();
+  });
+
+  test('keeps the four tabs and the connected workspace reads when opened without a scope', async () => {
+    const { root, dialog, transport } = mount({ monitorRows: MONITOR_ROWS });
+
+    dialog.open();
+    await settle();
+
+    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(4);
+    expect(requestTypes(transport)).toEqual(
+      expect.arrayContaining(['get-session-defaults', 'get-workspace-accounts'])
+    );
+    expect(root.querySelector('[data-bulk-repo]')).toBe(null);
+    dialog.destroy();
+  });
+
+  test('returns to the single mode after a bulk open is closed', async () => {
+    const { root, dialog } = mount({ monitorRows: MONITOR_ROWS });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+    dialog.close();
+
+    dialog.open();
+    await settle();
+
+    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(4);
+    expect(root.querySelector('[data-quick-fix-group]')).not.toBe(null);
+    dialog.destroy();
   });
 });
 
