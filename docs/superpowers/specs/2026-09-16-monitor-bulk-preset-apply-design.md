@@ -209,8 +209,7 @@ pane의 `계정` 구역(`accountSection`)은 두 층을 편집하며, 둘 다 �
   조건과 `title`: 선택 저장소 0곳; 원본 계정 층이 `unusable`(`이 저장소의 실행
   계정 기본값을 해석할 수 없습니다`); 원본 행에 `provider_limit_policy` 키가
   없음(`서버가 한도 정책을 싣지 않습니다`); pane의 계정 저장이 아직 서버 확인
-  전(`account_draft`가 `account_baseline`과 다름 → `저장 확인을 기다리는 중`);
-  실행 중.
+  전(`accountSettings().pending` → `저장 확인을 기다리는 중`); 실행 중.
 - **결과 줄**은 §3.1과 같은 네 상태 문구를 쓴다. 부분 적용 문구는 `⚠ <name> 부분
   적용 — <runner> 한도 정책 미적용`(둘 다면 `claude·codex`). 재적용 버튼·이전
   결과 제거·반응형 규칙은 §3.1과 같다.
@@ -259,10 +258,12 @@ pane의 `계정` 구역(`accountSection`)은 두 층을 편집하며, 둘 다 �
 
 ### 4.2 계정 설정 — `app/views/monitor/bulk-account-apply.js`
 
-- pane은 원본 노출 seam `accountSettings()`를 얻는다: `{ state, values }`로
-  `account_layer.state`와 서버가 확인한 `account_baseline`을 복사해 돌려준다
-  (`sessionDraft()`와 같은 성격의 읽기 전용 seam). 한도 정책 원본은 덱이
-  `queueFor(panel_root).provider_limit_policy`에서 읽는다.
+- pane은 원본 노출 seam `accountSettings()`를 얻는다: `{ state, values,
+  pending }`으로 `account_layer.state`, 서버가 확인한 `account_baseline`의 복사,
+  그리고 `account_draft`가 baseline과 다른지(`pending`, 저장 확인 대기)를
+  돌려준다(`sessionDraft()`와 같은 성격의 읽기 전용 seam). draft 값 자체는
+  노출하지 않는다. 한도 정책 원본은 덱이 `queueFor(panel_root).
+  provider_limit_policy`에서 읽는다.
 - `planBulkAccountApply({ rows, selected_roots, source_root, source_accounts,
   source_policy })` → 저장소별 대상 목록(덱 행 순서, 원본 저장소 제외)과 비활성
   사유. 대상마다 `values = { claude_account: <string|null>, codex_account:
@@ -330,7 +331,7 @@ RED-GREEN 전용 seam은 승인하지 않는다. 아래 행위 검증과 저장�
 | 계정 계획 | 원본 저장소가 대상에서 빠지고 체크박스가 비활성; `values`가 두 키를 항상 싣고 원본에 없는 키는 `null`; `patch`가 러너마다 `mode`·`accounts`·`preempt_pct` 셋을 정규화해 실음; 0곳·원본 `unusable`·행에 `provider_limit_policy` 키 없음·저장 확인 전·실행 중이면 비활성과 사유 |
 | 계정 순차 실행·판정 | 저장소마다 `set-workspace-accounts` → claude 정책 → codex 정책 순서로 요청; 계정 쓰기 실패면 정책 요청 0회이고 `failed`; 정책 `conflict:true`에서 응답 revision으로 1회 재시도; 정책 하나가 마지막에 `applied:false`면 `partial`이고 문구에 러너 이름; 모두 성공이면 `applied`; 어느 경우에도 다음 저장소 계속 |
 | 세그먼트 연동 | `워커`에서 프리셋 절, `계정`에서 계정 절, `세션`에서 절 없음; 세그먼트 전환에 선택 집합 유지·절별 결과 유지; 전환이 진행 중 실행의 남은 대상 요청 0회 |
-| pane seam | `accountSettings()`가 서버 확인 baseline만 돌려주고 draft를 노출하지 않음; 모니터 `⚙`에서 행의 `provider_limit_policy`를 `limitPolicyOf`가 그림 |
+| pane seam | `accountSettings()`가 서버 확인 baseline과 `pending` 플래그를 돌려주고 draft 값은 노출하지 않음; draft가 baseline과 다르면 `pending:true`, 저장 확인 뒤 `false`; 모니터 `⚙`에서 행의 `provider_limit_policy`를 `limitPolicyOf`가 그림 |
 | 서버 투영 | `buildMonitorWorkspacesState` 행이 큐의 `provider_limit_policy`를 그대로 싣음; 다른 필드 불변 |
 | 결과 표시 | 저장소별 네 상태 문구; 실패·부분 적용이 있을 때만 재적용 버튼이 그 집합을 선택; 새 실행 시작에 이전 결과 제거; 실행 중 입력 비활성·`적용 중 k/n` |
 | 패널 수명 | 닫기·다른 `⚙` 열기 뒤 남은 대상 요청 0회; 프리셋 절에서 열린 저장소가 대상이면 완료 후 `pane.load()` 1회, 계정 절에서는 0회 |
