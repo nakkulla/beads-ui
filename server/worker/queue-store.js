@@ -646,6 +646,7 @@
  * @property {number} rearm_count
  * @property {string[]} attempt_ids
  * @property {'none'|'cap'|'unconfigured'|'disabled'|null} [auto_switch]
+ * @property {number} [disarm_notified_at]
  * @property {number|null} [next_probe_at] - When the prober next touches this
  * target. Durable rather than timer-local because the held tile shows it: an
  * in-memory deadline reads as absent for every viewer after a restart.
@@ -4138,6 +4139,10 @@ function normalizeProviderTarget(value) {
       value.auto_switch === 'disabled'
         ? value.auto_switch
         : null,
+    ...(typeof value.disarm_notified_at === 'number' &&
+    Number.isFinite(value.disarm_notified_at)
+      ? { disarm_notified_at: value.disarm_notified_at }
+      : {}),
     next_probe_at:
       typeof value.next_probe_at === 'number' &&
       Number.isFinite(value.next_probe_at)
@@ -7961,6 +7966,12 @@ export function createQueueStore(options = {}) {
           Number(input.patch.rearm_count) >= 0
         ) {
           target.rearm_count = Number(input.patch.rearm_count);
+        }
+        if (
+          typeof input.patch.disarm_notified_at === 'number' &&
+          Number.isFinite(input.patch.disarm_notified_at)
+        ) {
+          target.disarm_notified_at = input.patch.disarm_notified_at;
         }
         if (
           input.patch.next_probe_at === null ||

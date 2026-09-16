@@ -818,7 +818,8 @@ describe('wait judgment holds and manual waits', () => {
     const result = run({ queue: provider({ rearm_count: 3 }) }).wait_reasons[0];
 
     expect(result).toMatchObject({
-      release: '자동 재개 꺼짐 · ↻ 지금 프로브 필요',
+      release:
+        '자동 재개 꺼짐 · 서버 재시작 시 1회 자동 프로브 · ↻ 지금 프로브 필요',
       verdict: 'normal'
     });
   });

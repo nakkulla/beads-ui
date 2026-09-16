@@ -24,7 +24,7 @@ export const USAGE_REARM_CAP = 3;
 const HOLD_AGE_CAP_MS = 24 * 60 * 60 * 1000;
 
 /**
- * @typedef {{ kind: 'outage'|'usage_limit', model: string, account: string|null, detail: string, last_error: string, resets_at: number|null, rearm_count: number, attempt_ids: string[], auto_switch?: 'none'|'cap'|'disabled'|null }} ProviderTarget
+ * @typedef {{ kind: 'outage'|'usage_limit', model: string, account: string|null, detail: string, last_error: string, resets_at: number|null, rearm_count: number, attempt_ids: string[], auto_switch?: 'none'|'cap'|'disabled'|null, disarm_notified_at?: number }} ProviderTarget
  */
 
 /**
@@ -396,8 +396,19 @@ export function createProviderHealth(deps) {
    */
   async function disarmTarget(workspace, runner, generation, target, reason) {
     const marker = `auto_resume_disarmed:${reason}`;
-    if (target.last_error === marker) {
+    const notified =
+      typeof target.disarm_notified_at === 'number' &&
+      Number.isFinite(target.disarm_notified_at);
+    if (target.last_error === marker && notified) {
       return;
+    }
+    /** @type {Partial<ProviderTarget>} */
+    const patch = {};
+    if (target.last_error !== marker) {
+      patch.last_error = marker;
+    }
+    if (!notified) {
+      patch.disarm_notified_at = now();
     }
     const saved = deps.store.updateProviderTarget(workspace, {
       runner,
@@ -405,9 +416,9 @@ export function createProviderHealth(deps) {
       kind: target.kind,
       model: target.model,
       account: target.account,
-      patch: { last_error: marker }
+      patch
     });
-    if (!saved.ok) {
+    if (!saved.ok || notified) {
       return;
     }
     const queue = saved.queue;
@@ -711,6 +722,45 @@ export function createProviderHealth(deps) {
   }
 
   /**
+   * Probe capped usage-limit targets once when a workspace starts.
+   *
+   * @param {string} workspace
+   */
+  function probeCapped(workspace) {
+    const queue = deps.store.snapshot(workspace);
+    for (const [runner, hold] of Object.entries(queue.provider_hold)) {
+      for (const target of hold.targets) {
+        if (
+          target.kind !== 'usage_limit' ||
+          target.account === null ||
+          (target.rearm_count < USAGE_REARM_CAP &&
+            now() - hold.since < HOLD_AGE_CAP_MS)
+        ) {
+          continue;
+        }
+        const key = targetKey(workspace, runner, hold.generation, target);
+        if (in_flight.has(key)) {
+          continue;
+        }
+        const entry = timers.get(key);
+        const failures = entry?.failures || 0;
+        if (entry) {
+          clearTimeoutImpl(entry.timer);
+          timers.delete(key);
+        }
+        void runTarget(
+          workspace,
+          runner,
+          hold.generation,
+          hold.since,
+          target,
+          failures
+        );
+      }
+    }
+  }
+
+  /**
    * Reconcile timers against the current durable hold set.
    *
    * @param {string} workspace
@@ -756,6 +806,7 @@ export function createProviderHealth(deps) {
       deps.store.discardStaleAutoResumePending(workspace);
       await deps.onPending(workspace);
       sync(workspace);
+      probeCapped(workspace);
     },
 
     /**

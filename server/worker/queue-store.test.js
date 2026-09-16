@@ -325,6 +325,29 @@ describe('worker/queue-store provider hold', () => {
     });
   });
 
+  test('persists a disarmed notification timestamp across a cold load', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-1');
+    const held = holdProviderAttempt(store, 'att-1');
+
+    const updated = store.updateProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com',
+      patch: { disarm_notified_at: 1234 }
+    });
+    const restored = createQueueStore().snapshot(WS);
+
+    expect(updated.queue.provider_hold.claude.targets[0]).toMatchObject({
+      disarm_notified_at: 1234
+    });
+    expect(restored.provider_hold.claude.targets[0]).toMatchObject({
+      disarm_notified_at: 1234
+    });
+  });
+
   // RED 1 (spec §5)
   test('migrates a disabled legacy auto-switch flag to both wait modes', () => {
     fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });

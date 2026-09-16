@@ -369,26 +369,76 @@ describe('provider health probe', () => {
     expect(target.attempt_ids).toEqual(['att-1']);
   });
 
-  // 보존 21 (spec §5)
-  test('leaves a rearm-capped usage target and sends one disarmed notification', async () => {
+  test('probes a rearm-capped usage target once at startup', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
-    const env = setup(
-      store,
-      timers,
-      makeSpawn({ is_error: false, result: 'ok' }, 0)
+    const spawnImpl = makeSpawn(
+      {
+        type: 'result',
+        is_error: true,
+        api_error_status: 429,
+        result: "You've hit your session limit · resets 6pm (Asia/Seoul)"
+      },
+      1
     );
+    const env = setup(store, timers, spawnImpl);
     seedHold(store, 'usage_limit', 'held@example.com', { rearm_count: 3 });
 
     await env.health.start(WS);
     await flush();
-    env.health.stop(WS);
+
+    expect(timers.next()).toBeUndefined();
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).provider_hold.claude.targets[0].rearm_count).toBe(
+      4
+    );
+    expect(env.notify.providerAutoResumeDisarmed).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps the disarmed notification durable across a cold restart', async () => {
+    const first_store = createQueueStore({ now: () => NOW });
+    const first_timers = makeTimers();
+    const probe_result = {
+      type: 'result',
+      is_error: true,
+      api_error_status: 429,
+      result: "You've hit your session limit · resets 6pm (Asia/Seoul)"
+    };
+    const first = setup(first_store, first_timers, makeSpawn(probe_result, 1));
+    seedHold(first_store, 'usage_limit', 'held@example.com', {
+      rearm_count: 3
+    });
+    await first.health.start(WS);
+    await flush();
+    first.health.stop(WS);
+
+    const restarted_store = createQueueStore({ now: () => NOW });
+    const restarted_timers = makeTimers();
+    const restarted_spawn = makeSpawn(probe_result, 1);
+    const restarted = setup(restarted_store, restarted_timers, restarted_spawn);
+
+    await restarted.health.start(WS);
+    await flush();
+
+    expect(
+      first.notify.providerAutoResumeDisarmed.mock.calls.length +
+        restarted.notify.providerAutoResumeDisarmed.mock.calls.length
+    ).toBe(1);
+    expect(restarted_spawn).toHaveBeenCalledTimes(1);
+  });
+
+  test('recovers a rearm-capped usage target after a startup probe', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn({ is_error: false, result: 'ok' }, 0);
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'usage_limit', 'held@example.com', { rearm_count: 3 });
+
     await env.health.start(WS);
     await flush();
 
-    expect(timers.next()).toBeUndefined();
-    expect(store.snapshot(WS).provider_hold.claude.targets).toHaveLength(1);
-    expect(env.notify.providerAutoResumeDisarmed).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).provider_hold).toEqual({});
+    expect(env.notify.providerRecovered).toHaveBeenCalledTimes(1);
   });
 
   // RED 1 (spec §5)
@@ -412,8 +462,7 @@ describe('provider health probe', () => {
     expect(store.snapshot(WS).provider_hold.claude.targets).toHaveLength(1);
   });
 
-  // 보존 20 (spec §5)
-  test('leaves an aged usage-limit target and sends one disarmed notification', async () => {
+  test('probes an aged usage-limit target once at startup', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
     const spawnImpl = makeSpawn({ is_error: false, result: 'ok' }, 0);
@@ -426,12 +475,58 @@ describe('provider health probe', () => {
     await flush();
 
     expect(timers.next()).toBeUndefined();
-    expect(spawnImpl).not.toHaveBeenCalled();
-    expect(store.snapshot(WS).provider_hold.claude.targets).toHaveLength(1);
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).provider_hold).toEqual({});
     expect(env.notify.providerAutoResumeDisarmed).toHaveBeenCalledTimes(1);
     expect(env.notify.providerAutoResumeDisarmed).toHaveBeenCalledWith(
       expect.objectContaining({ reason: 'hold_age_cap' })
     );
+  });
+
+  test('does not probe a capped target during a standalone sync', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn({ is_error: false, result: 'ok' }, 0);
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'usage_limit', 'held@example.com', { rearm_count: 3 });
+
+    env.health.sync(WS);
+    await flush();
+
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).provider_hold.claude.targets).toHaveLength(1);
+  });
+
+  test('keeps the revision stable for an unchanged disarmed target', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ is_error: false, result: 'ok' }, 0)
+    );
+    seedHold(store, 'usage_limit', 'held@example.com', { rearm_count: 3 });
+    env.health.sync(WS);
+    await flush();
+    const revision = store.snapshot(WS).revision;
+
+    env.health.sync(WS);
+    await flush();
+
+    expect(store.snapshot(WS).revision).toBe(revision);
+  });
+
+  test('skips a capped target whose probe is already in flight', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeHangingSpawn();
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'usage_limit', 'held@example.com', { rearm_count: 3 });
+    env.health.probeNow(WS, 'claude');
+
+    await env.health.start(WS);
+
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
   });
 
   test('keeps probing a young outage target', async () => {
@@ -605,7 +700,7 @@ describe('provider health probe', () => {
     const spawnImpl = makeSpawn({ is_error: false, result: 'ok' }, 0);
     const env = setup(store, timers, spawnImpl);
     seedHold(store, 'usage_limit', 'held@example.com', { rearm_count: 3 });
-    await env.health.start(WS);
+    env.health.sync(WS);
     await flush();
 
     const result = env.health.probeNow(WS, 'claude');
