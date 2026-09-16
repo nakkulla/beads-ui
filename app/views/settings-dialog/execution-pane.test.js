@@ -97,7 +97,7 @@ function queueRow(patch = {}) {
 }
 
 /**
- * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string|boolean>, transport?: any, presets?: any, section?: string, onAccountSettingsChange?: () => void }} [options]
+ * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string|boolean>, transport?: any, presets?: any, section?: string }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -123,8 +123,7 @@ function mount(options = {}) {
     notify,
     onQueueAdopt: (queue) => {
       queue_state = queue;
-    },
-    onAccountSettingsChange: options.onAccountSettingsChange
+    }
   });
   mounted_panes.push(pane);
   if (options.section) {
@@ -1483,156 +1482,6 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
     const banner = el(root, '[data-account-warning]');
     expect(banner.textContent).toContain('unknown_key:stray');
     expect(banner.textContent).not.toContain('디스패치가 거부됩니다');
-  });
-
-  test('exposes the confirmed baseline and no pending save (UI-8ncz §4.2)', async () => {
-    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
-    const { pane } = mount({
-      section: 'account',
-      transport: async () => ({
-        state: 'usable',
-        values: { claude_account: 'repo@example.com' },
-        warnings: []
-      })
-    });
-
-    await pane.load();
-
-    expect(pane.accountSettings()).toEqual({
-      state: 'usable',
-      values: { claude_account: 'repo@example.com' },
-      labels: { claude_account: 'repo@example.com (team)', codex_account: '' },
-      pending: false
-    });
-  });
-
-  test('reports pending until the first account read of this open settles', async () => {
-    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
-    /** @type {() => void} */
-    let release = () => {};
-    const { pane } = mount({
-      section: 'account',
-      transport: async (/** @type {string} */ type) => {
-        if (type === 'get-workspace-accounts') {
-          await new Promise((resolve) => {
-            release = () => resolve(undefined);
-          });
-          return { state: 'usable', values: {}, warnings: [] };
-        }
-        return { state: 'absent', values: {}, warnings: [] };
-      }
-    });
-
-    const loading = pane.load();
-    await settle();
-    const before = pane.accountSettings().pending;
-    release();
-    await loading;
-
-    expect(before).toBe(true);
-    expect(pane.accountSettings().pending).toBe(false);
-  });
-
-  test('labels a stored account the catalog does not carry by its bare key', async () => {
-    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
-    const { pane } = mount({
-      section: 'account',
-      transport: async () => ({
-        state: 'usable',
-        values: { codex_account: 'unknown-key' },
-        warnings: []
-      })
-    });
-
-    await pane.load();
-
-    expect(pane.accountSettings().labels).toEqual({
-      claude_account: '',
-      codex_account: 'unknown-key'
-    });
-  });
-
-  test('notifies the binding when the account baseline or draft changes', async () => {
-    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
-    const onAccountSettingsChange = vi.fn();
-    const { root, pane } = mount({
-      section: 'account',
-      onAccountSettingsChange,
-      transport: async (
-        /** @type {string} */ type,
-        /** @type {any} */ payload
-      ) =>
-        type === 'set-workspace-accounts'
-          ? { state: 'usable', values: { ...payload.values }, warnings: [] }
-          : { state: 'absent', values: {}, warnings: [] }
-    });
-    await pane.load();
-    const after_load = onAccountSettingsChange.mock.calls.length;
-
-    const select = accountSelect(root, 'claude_account');
-    select.value = 'repo@example.com';
-    select.dispatchEvent(new Event('change'));
-    await settle();
-
-    expect(after_load).toBeGreaterThan(0);
-    expect(onAccountSettingsChange.mock.calls.length).toBeGreaterThan(
-      after_load
-    );
-  });
-
-  test('marks a save still in flight as pending without leaking the draft', async () => {
-    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
-    /** @type {() => void} */
-    let release = () => {};
-    const { root, pane } = mount({
-      section: 'account',
-      transport: async (/** @type {string} */ type) => {
-        if (type === 'set-workspace-accounts') {
-          await new Promise((resolve) => {
-            release = () => resolve(undefined);
-          });
-          return { state: 'usable', values: {}, warnings: [] };
-        }
-        return { state: 'absent', values: {}, warnings: [] };
-      }
-    });
-    await pane.load();
-
-    const select = accountSelect(root, 'claude_account');
-    select.value = 'repo@example.com';
-    select.dispatchEvent(new Event('change'));
-    await settle();
-
-    expect(pane.accountSettings().pending).toBe(true);
-    expect(pane.accountSettings().values).toEqual({});
-    release();
-  });
-
-  test('clears the pending flag once the server confirms the save', async () => {
-    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
-    const { root, pane } = mount({
-      section: 'account',
-      transport: async (
-        /** @type {string} */ type,
-        /** @type {any} */ payload
-      ) =>
-        type === 'set-workspace-accounts'
-          ? { state: 'usable', values: { ...payload.values }, warnings: [] }
-          : { state: 'absent', values: {}, warnings: [] }
-    });
-    await pane.load();
-
-    const select = accountSelect(root, 'claude_account');
-    select.value = 'repo@example.com';
-    select.dispatchEvent(new Event('change'));
-    await settle();
-
-    expect(pane.accountSettings()).toEqual({
-      state: 'usable',
-      values: { claude_account: 'repo@example.com' },
-      labels: { claude_account: 'repo@example.com (team)', codex_account: '' },
-      pending: false
-    });
   });
 
   test('shows no banner for a clean layer', async () => {

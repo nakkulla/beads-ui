@@ -1700,6 +1700,13 @@ export function bootstrap(root_element) {
       queueStore: worker_queue_store,
       implPresetStore: exec_preset_store,
       transport: (type, payload) => tracked_send(type, payload),
+      // 모니터 탭에서 연 헤더 ⚙의 일괄 모드는 보이는 저장소 행을 대상으로 쓴다
+      // (UI-nu43 §4.1). 실행이 끝나면 열린 레포 카드 pane을 다시 읽게 한다.
+      monitorRows: () => monitor_pipeline_store.getWorkspacesState(),
+      subscribeMonitorRows: (fn) => monitor_pipeline_store.subscribe(fn),
+      onBulkApplied: (root_dirs) => {
+        monitor_view.reloadPanel(root_dirs);
+      },
       onOpenChange: (open) => {
         const was_open = settings_dialog_open;
         settings_dialog_open = open;
@@ -1740,7 +1747,15 @@ export function bootstrap(root_element) {
       if (btn_settings) {
         btn_settings.setAttribute('aria-label', '설정');
         btn_settings.setAttribute('title', '설정');
-        btn_settings.addEventListener('click', () => settings_dialog.open());
+        // 모니터 탭의 헤더 ⚙는 연결 저장소가 아니라 보이는 여러 저장소의 일괄
+        // 설정 창이다 (UI-nu43 §3.1). 다른 탭은 연결 저장소 하나의 창이다.
+        btn_settings.addEventListener('click', () => {
+          if (store.getState().view === 'monitor') {
+            settings_dialog.open(undefined, { scope: 'monitor' });
+          } else {
+            settings_dialog.open();
+          }
+        });
       }
     } catch {
       // ignore missing header

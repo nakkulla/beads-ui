@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
+  countEditFields,
   formatBulkResult,
   planBulkAccountApply,
   runBulkAccountApply
@@ -19,171 +20,147 @@ function row(overrides) {
   };
 }
 
-const source_accounts = {
-  state: 'usable',
-  values: { claude_account: 'work-claude' },
-  pending: false
-};
+const rows = [row({ root_dir: '/repo/a' }), row({ root_dir: '/repo/b' })];
 
-const source_policy = {
-  claude: { mode: 'switch', accounts: ['acct-a'], preempt_pct: 50 },
-  codex: { mode: 'wait', accounts: ['acct-b'], preempt_pct: 10 }
-};
+/**
+ * @param {Partial<import('./bulk-account-apply.js').BulkAccountEdit>} [patch]
+ * @returns {import('./bulk-account-apply.js').BulkAccountEdit}
+ */
+function edit(patch = {}) {
+  return { values: {}, patches: {}, ...patch };
+}
 
 describe('planBulkAccountApply', () => {
-  test('drops the source repo from targets even when selected', () => {
-    const rows = [row({ root_dir: '/repo/src' }), row({ root_dir: '/repo/b' })];
-
+  test('targets every selected row in row order', () => {
     const plan = planBulkAccountApply({
       rows,
-      selected_roots: new Set(['/repo/src', '/repo/b']),
-      source_root: '/repo/src',
-      source_accounts,
-      source_policy
+      selected_roots: new Set(['/repo/b', '/repo/a']),
+      edit: edit({ values: { claude_account: 'work' } })
     });
 
-    expect(plan.targets.map((target) => target.root_dir)).toEqual(['/repo/b']);
+    expect(plan.targets.map((target) => target.root_dir)).toEqual([
+      '/repo/a',
+      '/repo/b'
+    ]);
   });
 
-  test('carries both value keys with null for a key the source lacks', () => {
-    const rows = [row({ root_dir: '/repo/b' })];
-
+  test('carries only the changed account keys', () => {
     const plan = planBulkAccountApply({
       rows,
-      selected_roots: new Set(['/repo/b']),
-      source_root: '/repo/src',
-      source_accounts,
-      source_policy
+      selected_roots: ['/repo/a'],
+      edit: edit({ values: { claude_account: null } })
     });
 
-    expect(plan.targets[0].values).toEqual({
-      claude_account: 'work-claude',
-      codex_account: null
-    });
+    expect(plan.targets[0].values).toEqual({ claude_account: null });
+    expect(plan.targets[0].patches).toEqual({});
   });
 
-  test('normalizes a mode outside the enum to switch', () => {
-    const rows = [row({ root_dir: '/repo/b' })];
-
+  test('carries only the changed fields of a runner patch', () => {
     const plan = planBulkAccountApply({
       rows,
-      selected_roots: new Set(['/repo/b']),
-      source_root: '/repo/src',
-      source_accounts,
-      source_policy: {
-        claude: { mode: 'nonsense', accounts: [], preempt_pct: null },
-        codex: {}
-      }
+      selected_roots: ['/repo/a'],
+      edit: edit({ patches: { codex: { accounts: [] } } })
     });
 
-    expect(plan.targets[0].patches.claude.mode).toBe('switch');
+    expect(plan.targets[0].patches).toEqual({ codex: { accounts: [] } });
   });
 
   test('drops non-string and whitespace-containing account entries', () => {
-    const rows = [row({ root_dir: '/repo/b' })];
-
     const plan = planBulkAccountApply({
       rows,
-      selected_roots: new Set(['/repo/b']),
-      source_root: '/repo/src',
-      source_accounts,
-      source_policy: {
-        claude: {
-          mode: 'switch',
-          accounts: ['ok-acct', 42, 'bad acct', null],
-          preempt_pct: null
-        },
-        codex: {}
-      }
+      selected_roots: ['/repo/a'],
+      edit: edit({
+        patches: {
+          claude: {
+            accounts: /** @type {any} */ (['ok', 'has space', 3, ''])
+          }
+        }
+      })
     });
 
-    expect(plan.targets[0].patches.claude.accounts).toEqual(['ok-acct']);
+    expect(plan.targets[0].patches.claude?.accounts).toEqual(['ok']);
   });
 
-  test('normalizes a preempt_pct outside 1-99 integer to null', () => {
-    const rows = [row({ root_dir: '/repo/b' })];
+  test('counts runner fields separately', () => {
+    const count = countEditFields(
+      edit({
+        values: { codex_account: 'k' },
+        patches: {
+          claude: { mode: 'wait', preempt_pct: null },
+          codex: { mode: 'wait' }
+        }
+      })
+    );
 
-    const plan = planBulkAccountApply({
-      rows,
-      selected_roots: new Set(['/repo/b']),
-      source_root: '/repo/src',
-      source_accounts,
-      source_policy: {
-        claude: { mode: 'switch', accounts: [], preempt_pct: 150 },
-        codex: {}
-      }
-    });
-
-    expect(plan.targets[0].patches.claude.preempt_pct).toBeNull();
+    expect(count).toBe(4);
   });
 
   test('disables when zero targets are selected', () => {
-    const rows = [row({ root_dir: '/repo/b' })];
-
     const plan = planBulkAccountApply({
       rows,
       selected_roots: new Set(),
-      source_root: '/repo/src',
-      source_accounts,
-      source_policy
+      edit: edit({ values: { claude_account: 'work' } })
     });
 
     expect(plan.disabled_reason).toBe('적용할 저장소를 고르세요');
   });
 
-  test('disables when the source account state is unusable', () => {
-    const rows = [row({ root_dir: '/repo/b' })];
-
+  test('disables when the edit changes nothing', () => {
     const plan = planBulkAccountApply({
       rows,
-      selected_roots: new Set(['/repo/b']),
-      source_root: '/repo/src',
-      source_accounts: { state: 'unusable', values: {}, pending: false },
-      source_policy
+      selected_roots: ['/repo/a'],
+      edit: edit()
     });
 
-    expect(plan.disabled_reason).toBe(
-      '이 저장소의 실행 계정 기본값을 해석할 수 없습니다'
-    );
+    expect(plan.disabled_reason).toBe('바꿀 항목을 고르세요');
   });
 
-  test('disables when the source policy is missing', () => {
-    const rows = [row({ root_dir: '/repo/b' })];
+  test('disables when the preemptive threshold is outside 1-99 integer', () => {
+    const reasons = [0, 100, 50.5].map(
+      (preempt_pct) =>
+        planBulkAccountApply({
+          rows,
+          selected_roots: ['/repo/a'],
+          edit: edit({ patches: { claude: { preempt_pct } } })
+        }).disabled_reason
+    );
+
+    expect(reasons).toEqual([
+      '선제 전환 기준은 1–99 정수입니다',
+      '선제 전환 기준은 1–99 정수입니다',
+      '선제 전환 기준은 1–99 정수입니다'
+    ]);
+  });
+
+  test('disables a policy change when no selected row carries the policy key', () => {
+    const old_rows = [{ root_dir: '/repo/a', name: 'a', revision: 1 }];
 
     const plan = planBulkAccountApply({
-      rows,
-      selected_roots: new Set(['/repo/b']),
-      source_root: '/repo/src',
-      source_accounts,
-      source_policy: null
+      rows: old_rows,
+      selected_roots: ['/repo/a'],
+      edit: edit({ patches: { claude: { mode: 'wait' } } })
     });
 
     expect(plan.disabled_reason).toBe('서버가 한도 정책을 싣지 않습니다');
   });
 
-  test('disables while the source accounts draft is pending', () => {
-    const rows = [row({ root_dir: '/repo/b' })];
+  test('allows an account-only change on a server without the policy key', () => {
+    const old_rows = [{ root_dir: '/repo/a', name: 'a', revision: 1 }];
 
     const plan = planBulkAccountApply({
-      rows,
-      selected_roots: new Set(['/repo/b']),
-      source_root: '/repo/src',
-      source_accounts: { ...source_accounts, pending: true },
-      source_policy
+      rows: old_rows,
+      selected_roots: ['/repo/a'],
+      edit: edit({ values: { claude_account: 'work' } })
     });
 
-    expect(plan.disabled_reason).toBe('저장 확인을 기다리는 중');
+    expect(plan.disabled_reason).toBe(null);
   });
 
   test('disables while a run is already in progress', () => {
-    const rows = [row({ root_dir: '/repo/b' })];
-
     const plan = planBulkAccountApply({
       rows,
-      selected_roots: new Set(['/repo/b']),
-      source_root: '/repo/src',
-      source_accounts,
-      source_policy,
+      selected_roots: ['/repo/a'],
+      edit: edit({ values: { claude_account: 'work' } }),
       running: true
     });
 
@@ -194,22 +171,24 @@ describe('planBulkAccountApply', () => {
 /**
  * @param {string} root_dir
  * @param {string} name
+ * @param {Partial<import('./bulk-account-apply.js').BulkAccountTarget>} [patch]
  * @returns {import('./bulk-account-apply.js').BulkAccountTarget}
  */
-function target(root_dir, name) {
+function target(root_dir, name, patch = {}) {
   return {
     root_dir,
     name,
     revision: 1,
-    values: { claude_account: 'work-claude', codex_account: null },
+    values: { claude_account: 'work-claude' },
     patches: {
       claude: { mode: 'switch', accounts: ['acct-a'], preempt_pct: 50 },
-      codex: { mode: 'wait', accounts: ['acct-b'], preempt_pct: 10 }
-    }
+      codex: { mode: 'wait' }
+    },
+    ...patch
   };
 }
 
-const applied_account_response = { applied: true };
+const applied_account_response = { state: 'usable', values: {} };
 const applied_policy_response = { applied: true, queue: { revision: 2 } };
 
 describe('runBulkAccountApply', () => {
@@ -334,7 +313,103 @@ describe('runBulkAccountApply', () => {
     });
 
     expect(results[0].state).toBe('partial');
-    expect(results[0].detail).toContain('claude');
+    expect(results[0].detail).toBe('claude 한도 정책 미적용');
+  });
+
+  test('joins every failing part of a partial result with a middle dot', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce(applied_account_response)
+      .mockResolvedValueOnce({ error: 'bad' })
+      .mockRejectedValueOnce(new Error('down'));
+
+    const results = await runBulkAccountApply({
+      targets: [target('/repo/a', 'a')],
+      send,
+      adopt: vi.fn()
+    });
+
+    expect(formatBulkResult(results[0]).text).toBe(
+      'a 부분 적용 — claude 한도 정책·codex 한도 정책 미적용'
+    );
+  });
+
+  test('skips the account request when the edit carries no account value', async () => {
+    const send = vi.fn().mockResolvedValue(applied_policy_response);
+
+    await runBulkAccountApply({
+      targets: [target('/repo/a', 'a', { values: {} })],
+      send,
+      adopt: vi.fn()
+    });
+
+    expect(send.mock.calls.map((call) => call[0])).toEqual([
+      'worker-provider-limit-policy-set',
+      'worker-provider-limit-policy-set'
+    ]);
+  });
+
+  test('skips the policy request of a runner without a patch', async () => {
+    const send = vi.fn().mockResolvedValue(applied_account_response);
+
+    const results = await runBulkAccountApply({
+      targets: [target('/repo/a', 'a', { patches: {} })],
+      send,
+      adopt: vi.fn()
+    });
+
+    expect(send.mock.calls).toEqual([
+      [
+        'set-workspace-accounts',
+        { root_dir: '/repo/a', values: { claude_account: 'work-claude' } }
+      ]
+    ]);
+    expect(results[0].state).toBe('applied');
+  });
+
+  test('sends only the codex policy with the row revision when claude has no patch', async () => {
+    const send = vi.fn().mockResolvedValue(applied_policy_response);
+
+    await runBulkAccountApply({
+      targets: [
+        target('/repo/a', 'a', {
+          values: {},
+          revision: 7,
+          patches: { codex: { accounts: [] } }
+        })
+      ],
+      send,
+      adopt: vi.fn()
+    });
+
+    expect(send.mock.calls).toEqual([
+      [
+        'worker-provider-limit-policy-set',
+        {
+          root_dir: '/repo/a',
+          runner: 'codex',
+          patch: { accounts: [] },
+          expected_revision: 7
+        }
+      ]
+    ]);
+  });
+
+  test('marks failed when no sent policy request succeeds', async () => {
+    const send = vi.fn().mockResolvedValue({ applied: false });
+
+    const results = await runBulkAccountApply({
+      targets: [target('/repo/a', 'a', { values: {} })],
+      send,
+      adopt: vi.fn()
+    });
+
+    expect(results[0]).toEqual({
+      root_dir: '/repo/a',
+      name: 'a',
+      state: 'failed',
+      detail: 'claude 한도 정책·codex 한도 정책 미적용'
+    });
   });
 
   test('marks applied when all three requests succeed', async () => {
