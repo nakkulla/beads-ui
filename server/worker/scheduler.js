@@ -801,6 +801,25 @@ function waitingLaneOf(q, bead_id) {
 }
 
 /**
+ * Check whether a bead is either outside a serial lane or at its head.
+ *
+ * @param {{ serial_lanes?: Array<{ id: string, entries: Array<{ bead_id: string }> }> }} q
+ * @param {string} bead_id
+ * @returns {{ ok: true, lane_id: string|null }|{ ok: false, reason: string }}
+ */
+function serialHeadOf(q, bead_id) {
+  const lane_id = waitingLaneOf(q, bead_id);
+  if (lane_id === null) {
+    return { ok: true, lane_id: null };
+  }
+  const lane = (q.serial_lanes || []).find((entry) => entry.id === lane_id);
+  if (lane?.entries[0]?.bead_id === bead_id) {
+    return { ok: true, lane_id };
+  }
+  return { ok: false, reason: 'serial_lane_not_head' };
+}
+
+/**
  * The beads a `[지금 시작]` click named, with the moment it was clicked (§3.3).
  * In memory on purpose: this spec READS `added_at` and never writes it, so the
  * skip leaves no durable residue, and a restart simply lets the grace stand
@@ -1346,7 +1365,7 @@ export function createScheduler(deps) {
   /** Beads currently claimed (dispatching or running) — prevents double launch. @type {Set<string>} */
   const claimed = new Set();
   /**
-   * @typedef {{ bead_id: string, lineage_id: string, serial_lane_id: string|null, continuation?: boolean, bypassed_before?: string[] }} LaneLaunchInput
+   * @typedef {{ bead_id: string, lineage_id: string, serial_lane_id: string|null, continuation?: boolean }} LaneLaunchInput
    */
   /**
    * @typedef {{
@@ -4757,17 +4776,7 @@ export function createScheduler(deps) {
         (/** @type {{ bead_id: string }} */ entry) =>
           entry.bead_id === input.bead_id
       );
-      const prefix = entries
-        .slice(0, bead_index)
-        .map((/** @type {{ bead_id: string }} */ entry) => entry.bead_id);
-      if (
-        bead_index < 0 ||
-        prefix.length !== (input.bypassed_before || []).length ||
-        prefix.some(
-          (/** @type {string} */ id, /** @type {number} */ prefix_index) =>
-            id !== input.bypassed_before?.[prefix_index]
-        )
-      ) {
+      if (bead_index !== 0) {
         return 'serial_lane_not_head';
       }
     }
@@ -6547,136 +6556,6 @@ export function createScheduler(deps) {
     }
     recordSkipReason(workspace, bead_id, notReadyReason(snap));
     return false;
-  }
-
-  /**
-   * Whether local scheduler state makes a serial predecessor ineligible for a
-   * prerequisite-only bypass.
-   *
-   * @param {string} workspace
-   * @param {any} q
-   * @param {{ bead_id: string, added_at?: number }} predecessor
-   */
-  function serialBypassLocallyBlocked(workspace, q, predecessor) {
-    return (
-      cleanup_pending.has(predecessor.bead_id) ||
-      claimed.has(predecessor.bead_id) ||
-      dispatch_refused.has(predecessor.bead_id) ||
-      leafPausedBeads(q).has(predecessor.bead_id) ||
-      ['pending', 'running'].includes(
-        latestImplementationAttempt(q, predecessor.bead_id)?.status || ''
-      ) ||
-      graceRemainingMs(workspace, predecessor, now()) > 0 ||
-      settledAttemptFence(q, predecessor.bead_id) !== null
-    );
-  }
-
-  /**
-   * Freshly verify every serial predecessor that a launch would bypass.
-   *
-   * @param {string} workspace
-   * @param {string} bead_id
-   * @returns {Promise<{ ok: true, ids: string[], lane_id: string|null }|{ ok: false, reason: string }>}
-   */
-  async function verifySerialBypass(workspace, bead_id) {
-    const q = deps.store.snapshot(workspace);
-    const lane_id = waitingLaneOf(q, bead_id);
-    if (lane_id === null) {
-      return { ok: true, ids: [], lane_id: null };
-    }
-    const lane = q.serial_lanes.find(
-      (/** @type {{ id: string }} */ entry) => entry.id === lane_id
-    );
-    const index =
-      lane?.entries.findIndex(
-        (/** @type {{ bead_id: string }} */ entry) => entry.bead_id === bead_id
-      ) ?? -1;
-    if (!lane || index < 0) {
-      return { ok: false, reason: 'serial_lane_not_head' };
-    }
-    /** @type {string[]} */
-    const ids = [];
-    for (const predecessor of lane.entries.slice(0, index)) {
-      if (serialBypassLocallyBlocked(workspace, q, predecessor)) {
-        return { ok: false, reason: 'serial_lane_not_head' };
-      }
-      /** @type {BeadSnapshot} */
-      let snap;
-      try {
-        snap = await deps.bd.snapshotBead(predecessor.bead_id);
-      } catch {
-        recordSkipReason(workspace, predecessor.bead_id, 'bd_snapshot_failed');
-        return { ok: false, reason: 'serial_lane_not_head' };
-      }
-      if (snap.ready && !snap.blocked) {
-        return { ok: false, reason: 'serial_lane_not_head' };
-      }
-      if (
-        isWorkerIneligible(snap.labels) ||
-        Object.hasOwn(snap, 'awaiting_user')
-      ) {
-        return { ok: false, reason: 'serial_lane_not_head' };
-      }
-      if (!(await recordNotReady(workspace, predecessor.bead_id, snap))) {
-        return { ok: false, reason: 'serial_lane_not_head' };
-      }
-      ids.push(predecessor.bead_id);
-    }
-    // A later predecessor read may reveal that an earlier prerequisite changed
-    // meanwhile. Confirm the prefix again in reverse so no newer observation
-    // made during the forward pass is ignored.
-    for (const predecessor of [...lane.entries.slice(0, index)].reverse()) {
-      /** @type {BeadSnapshot} */
-      let snap;
-      try {
-        snap = await deps.bd.snapshotBead(predecessor.bead_id);
-      } catch {
-        return { ok: false, reason: 'serial_lane_not_head' };
-      }
-      const blockers = await prerequisiteBlockersOf(
-        workspace,
-        predecessor.bead_id,
-        snap
-      );
-      if (
-        (snap.ready && !snap.blocked) ||
-        isWorkerIneligible(snap.labels) ||
-        Object.hasOwn(snap, 'awaiting_user') ||
-        blockers === null ||
-        blockers.length === 0
-      ) {
-        return { ok: false, reason: 'serial_lane_not_head' };
-      }
-    }
-    // Queue state is synchronous within this turn. Refresh it after the async
-    // prerequisite probes so a newly paused/settled prefix or a reorder is
-    // part of the reservation input that follows immediately.
-    const final_q = deps.store.snapshot(workspace);
-    const final_lane_id = waitingLaneOf(final_q, bead_id);
-    const final_lane = final_q.serial_lanes.find(
-      (/** @type {{ id: string }} */ entry) => entry.id === final_lane_id
-    );
-    const final_index =
-      final_lane?.entries.findIndex(
-        (/** @type {{ bead_id: string }} */ entry) => entry.bead_id === bead_id
-      ) ?? -1;
-    const final_prefix = final_lane?.entries.slice(0, final_index) || [];
-    if (
-      final_lane_id !== lane_id ||
-      final_index < 0 ||
-      final_prefix.length !== ids.length ||
-      final_prefix.some(
-        (
-          /** @type {{ bead_id: string, added_at?: number }} */ predecessor,
-          /** @type {number} */ prefix_index
-        ) =>
-          predecessor.bead_id !== ids[prefix_index] ||
-          serialBypassLocallyBlocked(workspace, final_q, predecessor)
-      )
-    ) {
-      return { ok: false, reason: 'serial_lane_not_head' };
-    }
-    return { ok: true, ids, lane_id: final_lane_id };
   }
 
   /**
@@ -8856,18 +8735,17 @@ export function createScheduler(deps) {
       // `serial_lane_id` snapshot must match the lane the launch actually
       // consumed.
       const dispatch_snapshot = deps.store.snapshot(workspace);
-      const bypass = await verifySerialBypass(workspace, bead_id);
-      if (!bypass.ok) {
+      const serial_head = serialHeadOf(dispatch_snapshot, bead_id);
+      if (!serial_head.ok) {
         reservation?.release();
-        refuseDispatch(workspace, bead_id, bypass.reason);
+        refuseDispatch(workspace, bead_id, serial_head.reason);
         return;
       }
-      let serial_lane_id = bypass.lane_id;
+      let serial_lane_id = serial_head.lane_id;
       const lane_input = {
         bead_id,
         lineage_id: bead_id,
-        serial_lane_id: bypass.lane_id,
-        bypassed_before: bypass.ids
+        serial_lane_id: serial_head.lane_id
       };
       const serial_launch = reservation
         ? reservation.revalidate(lane_input)
@@ -9293,30 +9171,29 @@ export function createScheduler(deps) {
         recordSkipReason(workspace, bead_id, 'bd_snapshot_failed');
         return;
       }
-      const final_bypass = await verifySerialBypass(workspace, bead_id);
+      const final_head = serialHeadOf(deps.store.snapshot(workspace), bead_id);
       if (
-        !final_bypass.ok ||
+        !final_head.ok ||
         !final_snap.ready ||
         final_snap.blocked ||
         isWorkerIneligible(final_snap.labels)
       ) {
         await abortPreparedLaunch(
-          final_bypass.ok ? 'serial_lane_not_head' : final_bypass.reason
+          final_head.ok ? 'serial_lane_not_head' : final_head.reason
         );
         return;
       }
       const final_launch = reservation.revalidate({
         bead_id,
         lineage_id: bead_id,
-        serial_lane_id: final_bypass.lane_id,
-        bypassed_before: final_bypass.ids
+        serial_lane_id: final_head.lane_id
       });
       if (!final_launch.ok) {
         await abortPreparedLaunch(final_launch.reason);
         return;
       }
       reservation = final_launch.lease;
-      serial_lane_id = final_bypass.lane_id;
+      serial_lane_id = final_head.lane_id;
 
       // DURABLE pre-record before the FIRST metadata write. It carries the whole
       // effective 15-key snapshot and exact cleanup provenance.
@@ -14416,20 +14293,22 @@ export function createScheduler(deps) {
     let q = deps.store.snapshot(workspace);
     const at = now();
     const explicit_only = q.auto_advance !== true || q.hold !== null;
-    const explicit_serial = new Map();
+    const explicit_serial = new Set();
     for (const lane of q.serial_lanes || []) {
-      let index = -1;
       for (
         let candidate_index = 0;
         candidate_index < lane.entries.length;
         candidate_index += 1
       ) {
-        if (isStartNowEntry(workspace, lane.entries[candidate_index], at)) {
-          index = candidate_index;
+        const entry = lane.entries[candidate_index];
+        if (!isStartNowEntry(workspace, entry, at)) {
+          continue;
         }
-      }
-      if (index >= 0) {
-        explicit_serial.set(lane.id, index);
+        if (candidate_index === 0) {
+          explicit_serial.add(lane.id);
+        } else if (!dispatch_refused.has(entry.bead_id)) {
+          refuseDispatch(workspace, entry.bead_id, 'serial_lane_not_head');
+        }
       }
     }
     if (
@@ -14444,7 +14323,7 @@ export function createScheduler(deps) {
     const paused_beads = leafPausedBeads(q);
     const active_beads = activeBeadIdsFrom(q);
 
-    /** @type {Array<{ bead_id: string, snap: BeadSnapshot, bypassed_before: string[] }>} */
+    /** @type {Array<{ bead_id: string, snap: BeadSnapshot }>} */
     const to_dispatch = [];
 
     // Occupancy is `claimed`, NOT `running`: a dispatch that has taken its claim
@@ -14460,9 +14339,8 @@ export function createScheduler(deps) {
     // what the cap limits, so a bead in both sets is never counted twice.
     const occupied = occupiedBeadIds(q);
     let free = slotsOf(q) - occupied.size;
-    // Parallel entries keep their ordinary order. An unoccupied serial lane is
-    // scanned in order until the first runnable row; only verified prerequisite
-    // waits may be bypassed.
+    // Parallel entries keep their ordinary order. An unoccupied serial lane
+    // contributes only its head; any head refusal stops that lane for the pass.
     const lane_occupancy = activeLaneLineages(q);
     /** @type {Array<{ bead_id: string, serial_lane_id: string|null, grace_left: number, explicit_target: boolean }>} */
     const candidates = q.queue
@@ -14480,8 +14358,7 @@ export function createScheduler(deps) {
       if (lane.entries.length === 0) {
         continue;
       }
-      const explicit_index = explicit_serial.get(lane.id);
-      if (explicit_only && explicit_index === undefined) {
+      if (explicit_only && !explicit_serial.has(lane.id)) {
         continue;
       }
       if (
@@ -14489,21 +14366,15 @@ export function createScheduler(deps) {
       ) {
         continue;
       }
-      const entries = explicit_only
-        ? lane.entries.slice(0, /** @type {number} */ (explicit_index) + 1)
-        : lane.entries;
-      for (const entry of entries) {
-        candidates.push({
-          bead_id: entry.bead_id,
-          serial_lane_id: lane.id,
-          grace_left: graceRemainingMs(workspace, entry, at),
-          explicit_target: isStartNowEntry(workspace, entry, at)
-        });
-      }
+      const entry = lane.entries[0];
+      candidates.push({
+        bead_id: entry.bead_id,
+        serial_lane_id: lane.id,
+        grace_left: graceRemainingMs(workspace, entry, at),
+        explicit_target: isStartNowEntry(workspace, entry, at)
+      });
     }
     const stopped_serial_lanes = new Set();
-    /** @type {Map<string, string[]>} */
-    const bypassed_by_lane = new Map();
     for (const entry of candidates) {
       if (free <= 0) {
         break;
@@ -14576,17 +14447,7 @@ export function createScheduler(deps) {
           continue;
         }
         if (!dequeueIfClosed(workspace, entry.bead_id, snap)) {
-          const prerequisite_wait = await recordNotReady(
-            workspace,
-            entry.bead_id,
-            snap
-          );
-          if (lane_id !== null && prerequisite_wait) {
-            const bypassed = bypassed_by_lane.get(lane_id) || [];
-            bypassed.push(entry.bead_id);
-            bypassed_by_lane.set(lane_id, bypassed);
-            continue;
-          }
+          await recordNotReady(workspace, entry.bead_id, snap);
         }
         stopSerialLane();
         continue;
@@ -14609,9 +14470,7 @@ export function createScheduler(deps) {
       }
       to_dispatch.push({
         bead_id: entry.bead_id,
-        snap,
-        bypassed_before:
-          lane_id === null ? [] : [...(bypassed_by_lane.get(lane_id) || [])]
+        snap
       });
       stopSerialLane();
       free -= 1;
@@ -14655,8 +14514,7 @@ export function createScheduler(deps) {
       const reservation = acquireLaneLaunch(workspace, {
         bead_id: d.bead_id,
         lineage_id: d.bead_id,
-        serial_lane_id: waitingLaneOf(live_snapshot, d.bead_id),
-        bypassed_before: d.bypassed_before
+        serial_lane_id: waitingLaneOf(live_snapshot, d.bead_id)
       });
       if (!reservation.ok) {
         continue;
