@@ -13,6 +13,7 @@ scope:
   - app/views/monitor/index.js
   - app/views/help-dialog/
   - app/utils/relative-time.js
+  - app/data/closed-range.js
   - app/index.html
   - app/main.js
   - app/styles.css
@@ -74,10 +75,12 @@ UI-n99w(`2026-09-15-wait-reason-unify-blocked-summary-design.md`, PR #296)가 �
 3. **범례는 도움말 버튼.** 칩·배지의 뜻과 등장 조건은 앱 상단 도움말 버튼이 여는
    범례 다이얼로그에 둔다("그냥 도움말 버튼에 넣어놓는게 어때?").
 
-세션이 정한 것(사용자 확인 없이 진행, 이 스펙이 근거): 큐 단위 사유는 기존 4a
-게이트 칩 하나로만 서고 막힘 집계에서 빠진다(§6); 외부 작업 행은 상태 하나·문장
-하나이고 원래 이슈는 `→ <ID>` 칩이다(§7); 요약 칩은 줄바꿈되는 칩 묶음과 모바일
-짧은 라벨이다(§8); 시각은 슬롯 7 짧은 형식이다(§9).
+세션이 정한 것(사용자 확인 없이 진행, 이 스펙이 근거): 큐 단위 사유(자동 진행
+꺼짐·큐 정지·큐 행의 공급자 게이트)는 기존 4a 게이트 칩 하나로만 서고 막힘
+집계에서 빠지며, 보류된 attempt의 공급자 보류는 그 이슈의 사정이라 배지·집계에
+남는다(§7); 외부 작업 행은 상태 하나·문장 하나이고 원래 이슈는 `→ <ID>` 칩이다
+(§7.3); 요약 칩은 줄바꿈되는 칩 묶음과 모바일 짧은 라벨이다(§8); 시각은 슬롯 7
+짧은 형식이다(§9).
 
 ## 3. 검증된 전제
 
@@ -99,7 +102,13 @@ UI-n99w(`2026-09-15-wait-reason-unify-blocked-summary-design.md`, PR #296)가 �
   probe_ready}`를 `gateChipTemplate`(`lanes.js` 1769)이 4a 줄 맨 앞에 그리고 클릭은
   사유 팝업이다(UI-01wh §3.2). 종류는 `systemic`(`⛔ 정지 · <사유>`)·`env`
   (`↻ 환경 보류`)·`provider_usage`(`⏳ 한도 대기`)·`provider_outage`(`⚠️ 공급자 장애`).
-  held 타일의 공급자 보류 배지는 `providerHoldBadgeText`(`gate-labels.js` 38)가 만든다.
+  큐 행의 공급자 게이트는 서버 `wait_reasons`가 아니라 클라이언트 `providerGate`
+  (`lane-model.js` 1359)가 `queue.provider_hold`에서 만들며, `outage`는 러너 전체에,
+  `usage_limit`는 target에 계정이 있으면 **그 계정을 쓰는 행에만** 건다. 서버의
+  `provider_hold` WaitReason은 `attempt.status === 'provider_hold'`인 **보류된
+  attempt**에만 난다(`wait-judgment.js` 605–613) — 즉 `kind=provider_hold`는 언제나
+  이슈(attempt) 단위 사유다. held 타일의 공급자 보류 배지는
+  `providerHoldBadgeText`(`gate-labels.js` 38)가 만든다.
 - ADR UI-a8rq가 승계한 "상단 배너는 없고 정지·보류의 사실은 막힌 카드에 산다"
   (ADR 0049 계보)는 유효하다. 이 설계는 배너를 만들지 않는다.
 - 카드 슬롯 표는 `2026-08-25-card-header-grammar-unify-design.md` §5.1이 소유하고
@@ -107,9 +116,9 @@ UI-n99w(`2026-09-15-wait-reason-unify-blocked-summary-design.md`, PR #296)가 �
   `2026-08-28-chip-grammar-unify-design.md` §3이고 `→ <ID>`는 "내가 막는 후속(내가
   먼저 가야 풀리는 이슈)"이다. 판정 칩 클릭은 `chipPopoverTemplate`
   (`app/views/chip-popover.js`)의 카드 안 팝업이다(칩 문법 §4.5).
-- 상단 nav의 유일한 다이얼로그는 `#display-settings-btn`(`⚙`)이 여는 통합 설정
-  `<dialog>`(`app/views/settings-dialog/index.js`, `app/main.js` 1693)다. 도움말
-  표면은 없다.
+- 상단 nav의 다이얼로그 버튼은 `#display-settings-btn`(`⚙`, 통합 설정
+  `<dialog>` — `app/views/settings-dialog/index.js`, `app/main.js` 1693)과
+  `#new-issue-btn`(새 이슈 다이얼로그) 둘이다. 도움말·범례 표면은 없다.
 - 요약 줄: Worker는 `.worker-kpi__chip` 세 개 + `blockedSummaryTemplate`
   (`worker/index.js` 3620–3640), Monitor는 `totalTemplate`(`monitor/deck.js` 694)의
   nowrap span + 같은 `blockedSummaryTemplate` + 토큰·비용 칩 `.mon2-deck__tok`.
@@ -121,7 +130,8 @@ UI-n99w(`2026-09-15-wait-reason-unify-blocked-summary-design.md`, PR #296)가 �
 - **카드 하나, 상태 하나.** 슬롯 1의 대기 상태 배지는 카드당 하나이고 종류 라벨과
   판정 글리프를 함께 말한다.
 - **큐의 사실은 큐의 칩에.** 이슈가 아니라 큐·러너의 사정(자동 진행 꺼짐·큐 정지·
-  공급자 보류)은 4a 게이트 칩 하나로만 서고 배지·문장·막힘 집계를 만들지 않는다.
+  큐 행의 공급자 게이트)은 4a 게이트 칩 하나로만 서고 배지·문장·막힘 집계를 만들지
+  않는다. 보류된 attempt의 공급자 보류는 그 이슈의 사정이므로 이 원칙 밖이다.
 - **정적 지식은 카드 밖.** "선행이 닫히면 자동 복귀"처럼 화면마다 같은 문장은
   범례와 팝업이 말하고 카드는 지금 이 카드에만 참인 한 줄만 말한다.
 - **어휘는 한 곳.** 배지·게이트 칩·요약 칩·범례·툴팁이 `wait-vocabulary.js` 표
@@ -137,17 +147,27 @@ UI-n99w(`2026-09-15-wait-reason-unify-blocked-summary-design.md`, PR #296)가 �
 
 | verdict | 글리프 | 뜻 | 배지 형태 |
 | --- | --- | --- | --- |
-| `normal` | 종류 글리프 그대로 | 예상대로 기다리는 중 · 스스로 풀린다 | `<종류 글리프> <라벨>` |
+| `normal` | 종류 글리프 그대로 | 지연·조치 판정이 없다 — 예상 범위 안에서 기다리는 중 | `<종류 글리프> <라벨>` |
 | `overdue` | `⚠` | 예상 시각·주기를 넘겼다 · 사람이 봐야 할 수 있다 | `⚠ <라벨> · 지연[ <n>분]` |
 | `action_required` | `⛔` | 스스로 풀리지 않는다 · 사람의 조치가 필요하다 | `⛔ <라벨> · 조치 필요` |
 
+판정과 해제 방법은 다른 축이다: `normal`은 "판정에 걸린 것이 없다"는 뜻이지 "스스로
+풀린다"는 뜻이 아니다 — 무엇이 풀어 주는지는 종류 표의 "풀리는 조건" 열이 말하며,
+`base_moved`처럼 사람의 `↻ 이어하기`로만 풀리는 정상 대기도 있다. 서버 판정
+(`wait_reasons`)이 없는 held 카드는 `normal`로 추정하지 않는다: 종류 글리프와 라벨만
+그리고 판정 문구·판정 근거를 붙이지 않는다(§4 fail-quiet, §6.2).
 `정상 대기`라는 문구는 폐기한다. `⚠`는 U+26A0 하나로 통일한다(`⚠️` VS16 없음).
 `<n>분`은 `since`가 있을 때만 붙이며 클라이언트가 `now - since`로 계산한다.
 
 ### 5.2 종류 표
 
 `scope`는 `bead`(이 이슈의 사정 — 슬롯 1 배지)와 `queue`(큐·러너의 사정 — 4a
-게이트 칩)로 나뉜다. 라벨은 기존 문구를 유지하고 새 것만 더한다.
+게이트 칩)로 나뉘고 `kind`가 정한다: 서버 WaitReason 가운데 `queue_hold`·
+`auto_advance_off`만 `queue`이고 `provider_hold`를 포함한 나머지는 전부 `bead`다
+(`provider_hold` WaitReason은 보류된 attempt에만 나므로, §3). 큐 행의 공급자 게이트는
+WaitReason이 아니라 클라이언트 `LaneGate`이며 표에서는 `gate-*` 행으로 따로 둔다.
+표의 각 행은 고유한 `id`를 가진다(아래 목록). 라벨은 기존 문구를 유지하고 새 것만
+더한다.
 
 | kind (조건) | scope | 글리프 | 라벨 | 언제 뜨나 | 풀리는 조건(범례·팝업 문장) | 조작 |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -160,12 +180,21 @@ UI-n99w(`2026-09-15-wait-reason-unify-blocked-summary-design.md`, PR #296)가 �
 | `retry_wait` | bead | `↻` | `재시도 대기` (기존 `retryWaitBadgeText` 문구) | 환경성 실패의 자동 재시도 예약 | 예약 시각에 자동 재시도 | `↻ 지금 재시도` |
 | `stale_work` | bead | `⛔` | `처분 대기` | 보존된 작업을 이어갈지 새로 시작할지 결정이 필요 | 처분 버튼으로 선택 | 처분 버튼 |
 | `recovery` | bead | `⏳` | `<recovery.label>` (기존) | 복구 분류된 보존 작업이 확인을 기다림 | `<RECOVERY_RELEASES[reason]>` | `↻ 이어하기`·폐기 |
-| `provider_hold` (held 타일, `usage_limit`) | bead | `⏳` | `한도 대기` | 이 attempt가 계정 한도로 멈춤 | 리셋 뒤 자동 프로브 · 자동 재개 소진이면 `↻ 지금 프로브` | `↻ 지금 프로브` |
-| `provider_hold` (held 타일, `outage`) | bead | `⏳` | `공급자 장애` | 이 attempt가 공급자 장애로 멈춤 | 다음 프로브 시각에 자동 프로브(상한 없음) | `↻ 지금 프로브` |
-| `provider_hold` (큐 행) | queue | `⏳` | `한도 대기` / `공급자 장애` | 러너 전체가 보류라 이 행이 출발하지 못함 | 위와 같음 | `↻ 지금 프로브` |
+| `provider_hold` (보류된 attempt, `usage_limit`) | bead | `⏳` | `한도 대기` | 이 attempt가 계정 한도로 멈춤 | 리셋 뒤 자동 프로브 · 자동 재개 소진이면 `↻ 지금 프로브` | `↻ 지금 프로브` |
+| `provider_hold` (보류된 attempt, `outage`) | bead | `⏳` | `공급자 장애` | 이 attempt가 공급자 장애로 멈춤 | 다음 프로브 시각에 자동 프로브(상한 없음) | `↻ 지금 프로브` |
 | `queue_hold` (`systemic`) | queue | `⛔` | `정지 · <사유>` | 큐가 체계적 실패로 멈춤 | `▶ 재개`(사람 승인) | `▶ 재개` |
 | `queue_hold` (`env`) | queue | `↻` | `환경 보류` | 환경 오류로 큐가 일시 정지, 자동 재시도 예약 | `<t>`에 자동 재시도 · 성공하면 해제 | `↻ 지금 재시도` |
 | `auto_advance_off` | queue | `⏸` | `수동 출발` | 자동 진행이 꺼져 있어 큐가 스스로 출발하지 않음 | `[지금 시작]` 또는 툴바 `▶ 자동화` | `[지금 시작]` |
+| gate `provider_usage` (큐 행 LaneGate) | queue | `⏳` | `한도 대기` | 러너의 계정 한도 보류 — target에 계정이 있으면 그 계정을 쓰는 행에만, 없으면 러너의 모든 행에 | 리셋 뒤 자동 프로브 · 소진이면 `↻ 지금 프로브` | `↻ 지금 프로브` |
+| gate `provider_outage` (큐 행 LaneGate) | queue | `⏳` | `공급자 장애` | 러너 전체가 공급자 장애로 보류라 이 행이 출발하지 못함 | 다음 프로브 시각에 자동 프로브 | `↻ 지금 프로브` |
+
+행 `id`(범례 anchor·테스트 키): `prerequisite` · `prerequisite-returning` ·
+`prerequisite_foreign` · `external_job` · `base_moved` · `awaiting_user` ·
+`retry_wait` · `stale_work` · `recovery` · `provider_hold-usage_limit` ·
+`provider_hold-outage` · `queue_hold-systemic` · `queue_hold-env` ·
+`auto_advance_off` · `gate-provider_usage` · `gate-provider_outage`. `queue_hold`
+WaitReason과 `gate-*` LaneGate가 같은 칩(`⛔ 정지`·`↻ 환경 보류`)을 말할 때 범례
+행은 `queue_hold-*` 하나다.
 
 정정 두 가지: 공급자 장애의 정상 글리프는 `⚠️`에서 `⏳`로 바뀐다 — 프로브가
 스스로 푸는 상태이므로 지연·조치 글리프를 정상 상태에 쓰지 않는다(UI-01wh §3.2의
@@ -192,9 +221,10 @@ UI-n99w(`2026-09-15-wait-reason-unify-blocked-summary-design.md`, PR #296)가 �
 ### 6.2 슬롯 1 — 배지 하나 (`waitStatusBadge(card)`)
 
 - 재료: 카드의 held 종류(`parked`·`retry_wait`·`waiting {cause, returning, recovery}`·
-  `provider_hold`)와 대표 사유. held 종류가 있으면 라벨은 held 종류의 라벨, 판정은
-  같은 종류의 대표 사유 verdict(없으면 `normal`). held 종류가 없는 큐 행은 대표
-  사유의 라벨·verdict다.
+  `provider_hold`)와 대표 사유. held 종류가 있으면 라벨은 held 종류의 라벨이고,
+  판정은 같은 종류의 대표 사유 verdict다. 같은 종류의 사유가 없으면(서버 판정 부재,
+  재시작 직후 등) 종류 글리프와 라벨만 그리고 판정 문구를 붙이지 않는다 — `normal`로
+  추정하지 않는다(§5.1). held 종류가 없는 큐 행은 대표 사유의 라벨·verdict다.
 - 형태는 §5.1이다: `🔓 복귀 대기` / `⚠ 복귀 대기 · 지연 12분` / `⛔ 선행 대기 · 조치
   필요` / `⏳ 외부 계산` / `⛔ 세션 대기 · 조치 필요` / `⏳ 한도 대기`.
 - `running-grid.js`의 `held_badge`와 `wait_lines[].badge`, `lanes.js` `miniRow`의
@@ -207,7 +237,8 @@ UI-n99w(`2026-09-15-wait-reason-unify-blocked-summary-design.md`, PR #296)가 �
   `verdict_reason.message`(정상이면 생략) · `release` · `관측 시작 <t>` · `다음 확인
   <t>` · `리셋 <t>` · 공급자 보류 상세(리셋·계정·`자동 재개 <n>회`·`수동 조치`) ·
   `다른 사유 <k>`(각 `<글리프> <라벨> — <headline>`) · 링크 `범례 보기`(§11,
-  `data-help-anchor=<kind>`).
+  `data-help-anchor=<행 id>`). 판정이 없는 held 카드의 팝업은 제목이 `대기 종류`이고
+  본문은 어휘 표의 풀리는 조건과 `범례 보기`뿐이다.
 - `title` 툴팁은 어휘 표의 "언제 뜨나" 문장이다.
 
 ### 6.3 슬롯 3 — headline 한 줄
@@ -228,13 +259,16 @@ UI-n99w(`2026-09-15-wait-reason-unify-blocked-summary-design.md`, PR #296)가 �
 
 ## 7. 큐 단위 사유는 게이트 칩 하나
 
-### 7.1 `queue_hold`·`provider_hold`(큐 행)
+### 7.1 `queue_hold` 사유와 큐 행의 공급자 게이트
 
-기존 게이트 칩이 유일한 표시다. `wait_reasons`의 같은 종류 사유는 배지·본문·시각을
-만들지 않고 두 가지만 더한다: verdict가 `overdue`·`action_required`면 칩에
+기존 게이트 칩이 유일한 표시다. `queue_hold` WaitReason은 배지·본문·시각을 만들지
+않고 두 가지만 더한다: verdict가 `overdue`·`action_required`면 칩에
 `.worker-dep--gate-overdue`/`--gate-action` 수식자(경고색)를 얹고, 칩 팝업 본문
-첫 줄에 `verdict_reason.message`를 넣는다. `[지금 시작]`·`▶ 재개`·`↻ 지금 프로브`
-의 표시 조건은 UI-01wh·UI-o5ll 그대로다.
+첫 줄에 `verdict_reason.message`를 넣는다. 큐 행의 공급자 게이트(`provider_usage`·
+`provider_outage` LaneGate)는 WaitReason이 없으므로 현행 칩·팝업 그대로이며 라벨만
+어휘 표를 읽는다(`⚠️ 공급자 장애` → `⏳ 공급자 장애`). `[지금 시작]`·`▶ 재개`·
+`↻ 지금 프로브`의 표시 조건은 UI-01wh·UI-o5ll 그대로다. 보류된 attempt의
+`provider_hold` 사유는 held 타일의 슬롯 1 배지다(§6.2) — 이 절의 대상이 아니다.
 
 ### 7.2 `auto_advance_off` → `⏸ 수동 출발` 칩
 
@@ -259,14 +293,26 @@ ops · hamilton
 확인 23:03 · 다음 11:55
 ```
 
-- 슬롯 1 정체성: 배지(§6.2 형태, 종류 `외부 계산`) + gate ID. `외부 계산`/`외부 작업`
-  /`대기 조건` 종류 라벨과 `<strong>` 작업 상태는 1번 줄에서 빠진다. 감시 기록이
-  없는 gate(`reason` 없음)는 배지 대신 `대기 조건` 라벨을 그대로 둔다(UI-7341 §4.1).
+- 행은 세 가지다. 서버 `external_job` 사유는 열린 gate에만 나므로(`wait-judgment.js`
+  222–233) `reason` 부재는 감시 기록 부재와 다르다 — 감시 기록 유무는 `watch_id`로
+  가른다.
+  - (a) `watch_id` 없음: 슬롯 1은 `대기 조건 · 감시 정보 없음` 라벨(UI-7341 §4.1
+    그대로, 배지 없음), 슬롯 3은 gate 본문 요약이 있으면 그것.
+  - (b) `watch_id` 있고 `reason` 있음(열린 gate): 슬롯 1 배지(§6.2 형태, 종류 `외부
+    계산`) + gate ID. `외부 계산`/`외부 작업` 종류 라벨과 `<strong>` 작업 상태는
+    1번 줄에서 빠진다.
+  - (c) `watch_id` 있고 `reason` 없음(gate가 닫힌 종료 확인 묶음의 행, 또는 판정
+    부재): 슬롯 1은 배지 없이 라벨 `외부 계산 · <monitor_state>`(예 `외부 계산 ·
+    감시 종료`) + gate ID. 종료 확인 묶음(7일)과 그 접기·개수 규칙은 UI-7341 §4.1
+    그대로다.
 - 슬롯 2: gate 제목 링크(현행).
-- 슬롯 3 한 줄: `[<ssh_host>] [작업 <job_id>] · <작업 상태 문구>` 뒤에 감시 문제가
-  있을 때만 ` · <monitor_reason>`(없으면 `monitor_state`가 `자동 확인 중`이 아닐 때
-  그 문구). 이 줄이 서버 `external_job` headline이다(§10.1). `previous_job_state`·
-  `stale`은 그 뒤 ` · 이전 관측: <상태>` / ` · 오래된 자료`로 붙는다.
+- 슬롯 3 한 줄은 (b)·(c) 모두 클라이언트가 관측 필드로 조립한다(`externalWaitLine
+  (item)`): `[<ssh_host>] [작업 <job_id>] · <job_state>` 뒤에 `monitor_reason`이 있으면
+  ` · <monitor_reason>`, 없고 `monitor_state`가 `자동 확인 중`이 아니면
+  ` · <monitor_state>`; `previous_job_state`·`stale`은 그 뒤 ` · 이전 관측: <상태>` /
+  ` · 오래된 자료`. 서버 `external_job` headline(§10.1)은 같은 규칙으로 조립한 같은
+  문장이며 요약 팝오버·알림이 읽는다. 사유가 있어도 카드 본문은 이 조립을 쓰므로
+  두 문장이 어긋나면 클라이언트 조립이 이긴다.
 - 안내문(`[지금 확인]으로 …`, `원래 이슈가 재개되면 …`)과 release(`15분마다 자동
   확인 …`)는 배지 팝업이다.
 - 4a: `→ <consumer_id>`(툴팁 `원래 이슈 · <consumer_title>` — 이 gate가 풀리면
@@ -289,11 +335,13 @@ ops · hamilton
   때 같은 칩 안에 ` · ⛔ M`으로 경고색). Worker의 `base <branch>` 칩과 Monitor의
   `세션 N`(N>0)은 그 뒤에 그대로 선다.
 - 라벨은 `PR 대기`→`PR`, `최근 7일 완료`→`7일 완료`(범위 라벨의 짧은 형식은
-  `closed-range.js` `DONE_RANGE_OPTIONS`에 `short` 필드를 더한다: `오늘`·`7일`·`30일`
-  등). 툴팁이 긴 형식을 유지한다.
+  `app/data/closed-range.js` `DONE_RANGE_OPTIONS`의 두 항목에 `short` 필드를 더한다:
+  `today`→`오늘`, `7d`→`7일`. 완료 범위 자체는 넓히지 않는다). 툴팁이 긴 형식을
+  유지한다.
 - `막힘 N`은 `scope=bead` 사유가 하나라도 있는 원래 이슈 수다(`external_job`은 원래
-  이슈로 한 번). `queue` 사유는 N에 넣지 않고 팝오버 마지막 줄 `큐: 정지 a · 공급자
-  보류 b · 수동 출발 c`로만 센다(항목 행 없음). 팝오버 그룹은 `외부 계산 · 선행 ·
+  이슈로 한 번, 보류된 attempt의 `provider_hold`는 포함). `queue` 사유(`queue_hold`·
+  `auto_advance_off`)는 N에 넣지 않고 팝오버 마지막 줄 `큐: 정지 a · 수동 출발 c`로만
+  센다(항목 행 없음). 팝오버 그룹은 `외부 계산 · 선행 · 공급자(보류된 attempt) ·
   사람(세션·처분) · 복구 · 기준 이동 · 재시도`, 각 행은 `<배지> <저장소> <ID> —
   <headline>`이고 클릭은 기존 `scrollToWaitCard`.
 - CSS: `.worker-kpi--ribbon`의 `flex-wrap: nowrap`을 `wrap`으로 바꾸고,
@@ -320,7 +368,7 @@ ops · hamilton
 | `prerequisite`/`_foreign`, 열린 선행 1건 | `<[rig/]ID> "<제목 24자>" 완료를 기다림 (<status>)` |
 | 열린 선행 2건 이상 | `선행 <k>건 완료를 기다림 (<status별 수: open 1 · in_progress 1>)` |
 | returning | `선행 <k>건 해제됨 · 복귀 재스캔을 기다림` |
-| `external_job` | `[<ssh_host>] [작업 <job_id>] · <job_state>` + (`monitor_reason` 있으면 ` · <monitor_reason>`, 없고 `monitor_state`가 `자동 확인 중`이 아니면 ` · <monitor_state>`) |
+| `external_job` | §7.3 슬롯 3과 같은 조립: `[<ssh_host>] [작업 <job_id>] · <job_state>` + (`monitor_reason` 있으면 ` · <monitor_reason>`, 없고 `monitor_state`가 `자동 확인 중`이 아니면 ` · <monitor_state>`) — 요약 팝오버·알림용 |
 | `auto_advance_off` | `자동 진행 꺼짐 · 대기 <N>건 출발 안 함` (칩 팝업용, 카드 본문 아님) |
 | 그 외 | 현행 유지 |
 
@@ -337,8 +385,9 @@ ops · hamilton
 ### 10.3 바뀌지 않는 것
 
 임계·verdict 코드·알림(`waitOverdue`·`waitActionRequired`)·중복 억제 키·
-`[지금 확인]` op·타이머·스냅샷 필드. `protocol.js`의 `WaitReason` typedef는 그대로이고
-`scope`는 클라이언트 어휘 표가 `kind`에서 정한다.
+`[지금 확인]` op·타이머·스냅샷 필드·`provider_hold` 사유의 대상(보류된 attempt만).
+`protocol.js`의 `WaitReason` typedef는 그대로이고 `scope`는 클라이언트 어휘 표가
+`kind`에서 정한다(§5.2: `queue_hold`·`auto_advance_off`만 `queue`).
 
 ## 11. 도움말 범례 (`app/views/help-dialog/index.js`, 신설)
 
@@ -351,14 +400,17 @@ ops · hamilton
   1. **판정 글리프** — §5.1 세 줄, 각각 실제 배지 마크업으로 예시.
   2. **대기 상태 배지** — §5.2의 `scope=bead` 행: 배지 예시 · 언제 뜨나 · 풀리는
      조건 · 내가 할 수 있는 조작.
-  3. **게이트 칩** — `scope=queue` 행, 같은 열.
+  3. **게이트 칩** — `scope=queue` 행(`queue_hold-*`·`auto_advance_off`·`gate-*`),
+     같은 열.
   4. **관계 칩과 요약 칩** — §5.3 `RELATION_CHIPS`와 요약 칩 네 개의 뜻(`막힘 N`의
      집계 정의 포함).
-- 각 행은 `id="help-<kind>"`를 가지며 배지 팝업의 `범례 보기`가
-  `open({ anchor: kind })`로 그 행에 스크롤·강조한다.
-- 범례는 표를 읽어 그리므로 어휘가 바뀌면 함께 바뀐다. 테스트는 표의 모든 `kind`가
-  범례에 한 번씩 나타나고, 렌더러가 만드는 배지 라벨 접두가 표의 라벨과 같음을
-  고정한다.
+- 각 행은 어휘 표 행의 고유 `id`로 `id="help-<행 id>"`를 가진다(예
+  `help-prerequisite-returning`, `help-provider_hold-usage_limit`). 배지 팝업의 `범례
+  보기`는 그 카드가 그린 행의 `id`를 `data-help-anchor`에 실어 `open({ anchor })`로
+  그 행에 스크롤·강조한다.
+- 범례는 표를 읽어 그리므로 어휘가 바뀌면 함께 바뀐다. 테스트는 표의 행 `id`가
+  모두 유일하고 각 행이 범례에 정확히 한 번 나타나며, 렌더러가 만드는 배지·칩 라벨
+  접두가 표의 라벨과 같음을 고정한다.
 
 ## 12. 카드 문법·칩 문법 스펙 정정 (ADR 0014)
 
@@ -397,17 +449,21 @@ unit B는 A의 headline 형태를 읽으므로 A가 먼저 착지하거나 같�
 
 - 단위: `wait-judgment.test.js` — 선행 1건/2건/returning headline, `external_job`
   headline의 `monitor_reason` 우선, `auto_advance_off`가 다른 사유가 있는 subject에
-  나지 않음. `wait-vocabulary.test.js` — 모든 `kind`가 라벨·scope·글리프를 갖고
-  verdict 세 형태를 만든다. `running-grid.test.js`·`lanes.test.js` — 선행 대기 타일과
-  큐 행에 `.wait-verdict` 배지가 정확히 하나, `⏳ 정상 대기`·`release` 문자열 부재,
-  held 타일에 경과 라벨 부재, 대표 사유 우선순위(`action_required` 선행 + `normal`
-  외부 계산 → `⛔ 선행 대기 · 조치 필요`), 팝업에 release·다른 사유·`범례 보기`,
-  `⏸ 수동 출발` 칩이 게이트 없는 행에만·팝업 문구, 외부 작업 행이 §7.3의 여섯 줄
-  구조(자기 `⛓` 칩 부재·`→ <consumer>` 존재·슬롯 3 한 줄), 원래 이슈 카드의 `⛔ 외부
-  계산 1건 · 조치 필요`. `deck.test.js`·`worker/index.test.js` — 요약 칩 네 개, `막힘`
-  집계가 `auto_advance_off`·`queue_hold`·`provider_hold`를 세지 않음, 팝오버 `큐:` 줄,
-  `PR`·`7일 완료` 라벨, 토큰 칩 짧은 형식 마크업. `help-dialog.test.js` — 네 절·
-  anchor 스크롤·`?` 키. `relative-time.test.js` — 같은 날/다른 날 형식.
+  나지 않음. `wait-vocabulary.test.js` — 모든 행이 유일한 `id`·라벨·scope·글리프를
+  갖고 verdict 세 형태를 만들며 `queue_hold`·`auto_advance_off`만 `queue`다.
+  `running-grid.test.js`·`lanes.test.js` — 선행 대기 타일과 큐 행에 `.wait-verdict`
+  배지가 정확히 하나, `⏳ 정상 대기`·`release` 문자열 부재, `wait_reasons` 없는 held
+  타일이 종류 라벨만 그리고 판정 문구가 없음, held 타일에 경과 라벨 부재, 대표 사유
+  우선순위(`action_required` `prerequisite_foreign` + `normal` `prerequisite` →
+  `⛔ 선행 대기 · 조치 필요`), 팝업에 release·다른 사유·`범례 보기`(`data-help-anchor`가 행 `id`),
+  `⏸ 수동 출발` 칩이 게이트 없는 행에만·팝업 문구, 외부 작업 행 세 가지(§7.3 (a)
+  감시 정보 없는 gate·(b) 열린 gate 여섯 줄 구조 — 자기 `⛓` 칩 부재·`→ <consumer>`
+  존재·슬롯 3 한 줄·(c) 종료 확인 행의 `외부 계산 · 감시 종료` 라벨과 `종료 <t>`),
+  원래 이슈 카드의 `⛔ 외부 계산 1건 · 조치 필요`. `deck.test.js`·`worker/index.test.js`
+  — 요약 칩 네 개, `막힘` 집계가 `auto_advance_off`·`queue_hold`를 세지 않고 보류된
+  attempt의 `provider_hold`는 세며 팝오버에 `공급자` 그룹과 `큐:` 줄, `PR`·`7일 완료`
+  라벨, 토큰 칩 짧은 형식 마크업. `help-dialog.test.js` — 네 절·anchor 스크롤·`?`
+  키. `relative-time.test.js` — 같은 날/다른 날 형식.
 - 브라우저 QA 1280px/390px: Monitor(전 저장소)와 Worker(microbiome_bile·ops)에서
   선행 대기 타일이 7줄 이내(배지+조작 · 제목 · headline · 4a · 4b · foot · 시각),
   외부 작업 행이 §7.3 구조, 390px에서 요약 칩이 잘리지 않고 줄바꿈되며 토큰 칩이
@@ -446,8 +502,8 @@ unit B는 A의 headline 형태를 읽으므로 A가 먼저 착지하거나 같�
   산다; `처분 대기` 배지는 그 행에 선다.
 - 전제: ADR 0012 — dotfiles 계약의 확인된 필드만 소비하고 부재 시 표시를 생략한다.
 - 후보 1: 카드의 대기 상태는 슬롯 1 배지 하나가 종류 라벨과 판정 글리프로 말하고,
-  큐 단위 사유(자동 진행 꺼짐·큐 정지·공급자 보류)는 4a 게이트 칩으로만 서며 막힘
-  집계에서 빠진다.
+  큐 단위 사유(자동 진행 꺼짐·큐 정지·큐 행의 공급자 게이트)는 4a 게이트 칩으로만
+  서며 막힘 집계에서 빠진다.
   - 되돌리기 어려움: 두 탭의 세 렌더러·요약 집계·범례·테스트가 "배지 하나 + 대표
     사유"에 묶이고, 서버 `auto_advance_off`의 대상 집합이 좁아져 알림·집계도 그
     집합을 따른다.
