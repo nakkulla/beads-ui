@@ -10,6 +10,7 @@ scope:
   - app/views/settings-dialog/execution-pane.test.js
   - app/views/monitor/deck.js
   - app/views/monitor/deck.test.js
+  - app/views/monitor/index.js
   - app/views/monitor/adopted-queue.js
   - app/views/monitor/bulk-preset-apply.js
   - app/views/monitor/bulk-preset-apply.test.js
@@ -176,12 +177,17 @@ Codex 한도 대응
   지운다. pane의 단일 저장소 편집은 그대로다.
 - 모니터 행의 `provider_limit_policy` 투영은 유지한다. pane `limitPolicyOf`가 이
   값으로 저장된 정책을 그린다(UI-8ncz §1.2 결함 수정분).
+- 헤더 일괄 창이 떠 있어도 뒤의 레포 카드 패널은 열린 채 남을 수 있다. 일괄 실행이
+  끝나면 결과가 `applied` 또는 `partial`인 저장소 중 지금 패널이 열려 있는 저장소의
+  pane을 다시 읽는다(`pane.load()`). 프리셋은 세션 기본값 kv를, 계정 폼은 실행 계정
+  kv를 바꾸므로 두 탭 모두 해당한다. 한도 정책은 행 투영이 따라잡으면 렌더만으로
+  갱신된다. 현행 덱의 "프리셋 적용 뒤 열린 pane 재읽기"를 이 경로로 옮기는 것이다.
 
 ## 4. 모듈과 흐름
 
 ### 4.1 `app/views/settings-dialog/bulk-pane.js` (신설)
 
-`createBulkPane(host, { transport, rows, subscribeRows, implPresetStore })` →
+`createBulkPane(host, { transport, rows, subscribeRows, implPresetStore, onBulkApplied })` →
 `{ render(section: 'worker'|'account'), destroy() }`.
 
 - `rows()`는 모니터 파이프라인 스토어의 `workspaces_state`다. 다이얼로그가
@@ -230,6 +236,10 @@ Codex 한도 대응
   없어지므로 지운다(UI-8ncz가 계정 복사 원본용으로 더한 것).
 - `onOpenChange` 통지는 두 모드에서 같다. 닫힐 때 Worker의 세션 기본값을 다시
   읽는다(현행).
+- 일괄 pane은 실행이 끝날 때 `onBulkApplied(root_dirs)`(결과가 `applied`·`partial`인
+  저장소)를 부른다. 다이얼로그 옵션으로 받아 `main.js`가 모니터 뷰에 넘기고, 모니터
+  뷰(`app/views/monitor/index.js`)는 덱의 새 메서드 `reloadPanel(root_dirs)`를
+  부른다. 덱은 `panel_root`가 그 집합에 있을 때만 `pane.load()` 뒤 다시 그린다.
 
 ### 4.4 서버·프로토콜
 
@@ -271,6 +281,10 @@ Codex 한도 대응
   - 계정 실패 시 정책 요청이 0회다.
   - 구 서버 비활성 사유를 확인한다.
   - 원본 복사 테스트는 지운다.
+- `app/views/monitor/deck.test.js`: 패널이 열린 저장소를 담은 `reloadPanel`은 그
+  pane의 설정 읽기 요청을 다시 보내고, 다른 저장소만 담으면 보내지 않는다.
+- `app/views/settings-dialog/bulk-pane.test.js`(추가): 실행이 끝나면
+  `onBulkApplied`가 `applied`·`partial` 저장소만 담아 한 번 불린다.
 - `app/views/monitor/deck.test.js`: ⚙ 패널에 `.mon2-deck__bulk`와 `적용 대상`
   fieldset이 없고 세그먼트·pane 몸체는 그대로다.
 - `app/views/settings-dialog/execution-pane.test.js`: `accountSettings` 관련
