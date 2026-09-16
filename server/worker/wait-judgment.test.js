@@ -545,6 +545,35 @@ describe('wait judgment prerequisites', () => {
     ]);
   });
 
+  test('uses the held attempt finish time as the prerequisite start', () => {
+    const finished_at = NOW - 12 * MINUTE;
+    const result = run({
+      queue: queue({ ...serial, attempts: { a: waiting({ finished_at }) } }),
+      bead_blocked_by: { 'UI-consumer': ['UI-blocker'] }
+    });
+
+    expect(result.wait_reasons[0].since).toBe(finished_at);
+  });
+
+  test('uses the admission record time as the prerequisite start', () => {
+    const admitted_at = NOW - 12 * MINUTE;
+    const result = run({
+      queue: queue({
+        ...serial,
+        admission: {
+          'UI-consumer': {
+            at: admitted_at,
+            blockers: ['UI-blocker'],
+            reason: 'prerequisite_unmet'
+          }
+        }
+      }),
+      bead_blocked_by: { 'UI-consumer': ['UI-blocker'] }
+    });
+
+    expect(result.wait_reasons[0].since).toBe(admitted_at);
+  });
+
   test.each([{}, { 'UI-consumer': [] }])(
     'does not invent prerequisites from %j',
     (bead_blocked_by) => {
@@ -636,73 +665,6 @@ describe('wait judgment prerequisites', () => {
     expect(result.wait_reasons[0].verdict_reason?.code).toBe(
       'blocker_needs_human'
     );
-  });
-
-  test.each([
-    [
-      'missing key',
-      {},
-      { return_observed_at: { 'UI-consumer:a': NOW - 60 * MINUTE } }
-    ],
-    [
-      'missing clock',
-      { 'UI-consumer': [] },
-      { return_observed_at: { 'UI-consumer:a': null } }
-    ],
-    ['restart', { 'UI-consumer': [] }, {}]
-  ])(
-    'does not claim return overdue with %s',
-    (_name, bead_blocked_by, observed_at) => {
-      const result = run({
-        queue: queue({ attempts: { a: waiting() } }),
-        bead_blocked_by,
-        observed_at
-      });
-
-      expect(result.wait_reasons[0].verdict).toBe('normal');
-    }
-  );
-
-  test.each([
-    [10 * MINUTE - 1, 'normal'],
-    [10 * MINUTE, 'overdue']
-  ])('checks return at elapsed %i', (age, verdict) => {
-    const result = run({
-      queue: queue({ attempts: { a: waiting() } }),
-      bead_blocked_by: { 'UI-consumer': [] },
-      observed_at: {
-        return_observed_at: { 'UI-consumer:a': NOW - Number(age) }
-      }
-    });
-
-    expect(result.wait_reasons[0]).toMatchObject({
-      verdict,
-      since: NOW - Number(age),
-      ...(verdict === 'overdue'
-        ? { verdict_reason: { code: 'return_overdue' } }
-        : {})
-    });
-  });
-
-  test('starts the return clock at the first proven empty list', () => {
-    const result = run({
-      queue: queue({ attempts: { a: waiting() } }),
-      bead_blocked_by: { 'UI-consumer': [] }
-    });
-
-    expect(result.observed_at.return_observed_at).toEqual({
-      'UI-consumer:a': NOW
-    });
-    expect(result.wait_reasons[0].since).toBe(NOW);
-  });
-
-  test('drops the return clock when prerequisites become unknown', () => {
-    const result = run({
-      queue: queue({ attempts: { a: waiting() } }),
-      observed_at: { return_observed_at: { 'UI-consumer:a': NOW - MINUTE } }
-    });
-
-    expect(result.observed_at.return_observed_at).toEqual({});
   });
 
   test('keeps base movement separate even when a frozen blockers list exists', () => {
@@ -1027,7 +989,7 @@ describe('wait judgment holds and manual waits', () => {
     const input = {
       queue: queue({ attempts: { a: waiting() } }),
       bead_blocked_by: { 'UI-consumer': [] },
-      observed_at: { return_observed_at: {} },
+      observed_at: { settle_observed_at: {} },
       external_waits: [external({ stage: 'terminal_recorded' })]
     };
     const before = structuredClone(input);
@@ -1269,25 +1231,6 @@ describe('wait-judge runtime', () => {
       });
     }
   );
-
-  test('forgets return clocks after stopping the workspace runtime', async () => {
-    vi.useFakeTimers();
-    let now = NOW;
-    const harness = runtime({
-      now: () => now,
-      readFacts: async () => ({ bead_blocked_by: { 'UI-consumer': [] } })
-    });
-    harness.material.attempts.a = waiting();
-    await harness.instance.refresh();
-    now += 10 * MINUTE;
-    await harness.instance.refresh();
-    expect(harness.instance.get().wait_reasons[0].verdict).toBe('overdue');
-
-    harness.instance.stop();
-    await harness.instance.refresh();
-
-    expect(harness.instance.get().wait_reasons[0].verdict).toBe('normal');
-  });
 });
 
 describe('wait judgment headline composition', () => {
@@ -1336,15 +1279,13 @@ describe('wait judgment headline composition', () => {
     expect(result.wait_reasons[0].headline).toBe('선행 2건 완료를 기다림');
   });
 
-  test('reports the released count while a held attempt returns', () => {
+  test('omits a prerequisite reason after frozen blockers resolve', () => {
     const result = run({
       queue: queue({ attempts: { a: waiting() } }),
       bead_blocked_by: { 'UI-consumer': [] }
     });
 
-    expect(result.wait_reasons[0].headline).toBe(
-      '선행 1건 해제됨 · 복귀 재스캔을 기다림'
-    );
+    expect(result.wait_reasons).toEqual([]);
   });
 });
 
@@ -1379,6 +1320,36 @@ describe('externalJobHeadline', () => {
 });
 
 describe('auto_advance_off targets', () => {
+  test('includes parallel entries and serial heads but excludes serial non-head entries', () => {
+    const result = run({
+      queue: queue({
+        auto_advance: false,
+        queue: [{ bead_id: 'UI-parallel' }],
+        serial_lanes: [
+          {
+            id: 's1',
+            entries: [
+              { bead_id: 'UI-serial-head' },
+              { bead_id: 'UI-serial-tail' }
+            ]
+          }
+        ]
+      })
+    });
+    const manual = result.wait_reasons.filter(
+      (row) => row.kind === 'auto_advance_off'
+    );
+
+    expect(manual.map((row) => row.subject.bead_id)).toEqual([
+      'UI-parallel',
+      'UI-serial-head'
+    ]);
+    expect(manual.map((row) => row.headline)).toEqual([
+      '자동 진행 꺼짐 · 대기 2건 출발 안 함',
+      '자동 진행 꺼짐 · 대기 2건 출발 안 함'
+    ]);
+  });
+
   test('skips a subject that already waits for another reason', () => {
     const result = run({
       queue: queue({
