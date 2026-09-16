@@ -122,7 +122,7 @@ PROSTATE 리그의 quick_fix `PROSTATE-u53`(오케스트레이션 codex `astra`)
 ### 3.3 프론트 — 기록 우선, 자체 판정은 예측 (`app/views/worker/lane-model.js`)
 
 - `autoSkipReason`은 `reason === 'provider_gate'`에 `''`를 돌려준다. 큐 행의 공급자
-  게이트는 ADR UI-8gem대로 슬롯 4a 게이트 칩 한 층에만 서고 배지·본문·집계에는
+  게이트는 ADR UI-3pu9(UI-8gem 승계 조항)대로 슬롯 4a 게이트 칩 한 층에만 서고 배지·본문·집계에는
   들지 않는다.
 - 큐 행 게이트 부착 루프에서 공급자 게이트의 재료를 고르는 순서를 둔다.
   1. 그 Bead의 admission 기록이 `provider_gate`이고 `gate.runner`의 `provider_hold`가
@@ -269,7 +269,7 @@ Pre-Handoff Validation 묶음(`npm run tsc`, `npm run lint`, prettier, `npx vite
   (09-09 스펙 §8 관찰)는 그대로 둔다 — 이 설계는 상수와 `next_probe_at` 계산을 바꾸지
   않는다.
 - `wait-judgment.js`의 `provider_hold` 대기 사유를 attempt 없는 큐 행에 붙이지 않는다
-  — UI-8gem이 큐 행의 공급자 게이트를 칩 한 층으로 정했다.
+  — UI-3pu9(UI-8gem 승계 조항)가 큐 행의 공급자 게이트를 칩 한 층으로 정했다.
 - 상한 뒤 주기적 자동 프로브, `usage_limit` 상한 상수(3회·24시간) 변경, `account:null`
   target(§6 F3)의 프로브.
 - 저장소 설정 카드의 codex 기본 계정 안내 문구. 사다리가 활성 로그인까지 타면 미설정
@@ -291,7 +291,7 @@ Pre-Handoff Validation 묶음(`npm run tsc`, `npm run lint`, prettier, `npx vite
 
 ## 결정 (ADR 후보)
 
-- 전제: ADR UI-8gem — 큐 행의 공급자 게이트는 슬롯 4a 게이트 칩 한 층에만 선다. 이
+- 전제: ADR UI-3pu9 — UI-8gem에서 승계한 조항대로 큐 행의 공급자 게이트는 슬롯 4a 게이트 칩 한 층에만 선다. 이
   설계는 서버 기록을 그 칩의 재료로만 쓰고 배지·집계를 만들지 않는다.
 - 전제: ADR 0052 — 한도 전환은 허용 집합 안에서 attempt 단위로 일어난다. 이 설계는
   게이트의 계정 해석만 다루고 전환 후보·정책을 건드리지 않는다.
