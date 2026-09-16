@@ -160,6 +160,9 @@ function isRecord(value) {
  * @property {(queue: any) => void} [onQueueAdopt] - Where an authoritative queue
  * snapshot from a mutation response goes. The dialog writes it back into the
  * shared queue store; the monitor deck adopts it for the tile it belongs to.
+ * @property {() => void} [onAccountSettingsChange] - Fired whenever what
+ * `accountSettings()` returns may have changed (account read, draft edit, save
+ * confirmation), so the monitor's 계정 일괄 적용 절 redraws its source line.
  */
 
 /**
@@ -250,6 +253,13 @@ export function createExecutionPane(mount_element, binding) {
    * @type {Promise<void>}
    */
   let account_save_chain = Promise.resolve();
+  /**
+   * Whether the first `get-workspace-accounts` READ of this open has settled.
+   * Until then the baseline is unconfirmed, so `accountSettings()` reports
+   * `pending:true` — copying an unread layer would write two `null` keys over
+   * another repo's stored defaults (UI-8ncz impl review r1 #1).
+   */
+  let account_loaded = false;
   /**
    * The same serialization for the session-defaults writes, and for the same
    * two reasons. The second one bites hardest on a checkbox: check-then-uncheck
@@ -820,7 +830,9 @@ export function createExecutionPane(mount_element, binding) {
     account_baseline = { ...account_layer.values };
     if (reset_draft) {
       account_draft = { ...account_baseline };
+      account_loaded = true;
     }
+    binding.onAccountSettingsChange?.();
   }
 
   /** Read the repo's exec account defaults. */
@@ -840,6 +852,8 @@ export function createExecutionPane(mount_element, binding) {
       };
       account_baseline = {};
       account_draft = {};
+      account_loaded = true;
+      binding.onAccountSettingsChange?.();
       notify(
         `실행 계정 기본값을 읽지 못했습니다: ${err instanceof Error ? err.message : String(err)}`
       );
@@ -894,6 +908,8 @@ export function createExecutionPane(mount_element, binding) {
       return;
     }
     account_catalog = { claude, codex };
+    // 카탈로그가 뒤늦게 오면 `accountSettings().labels`가 바뀐다.
+    binding.onAccountSettingsChange?.();
     doRender();
   }
 
@@ -957,6 +973,7 @@ export function createExecutionPane(mount_element, binding) {
       account_draft[key] = value;
     }
     doRender();
+    binding.onAccountSettingsChange?.();
     account_save_chain = account_save_chain.then(() => saveWorkspaceAccounts());
   }
 
@@ -1941,6 +1958,33 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
+   * Label of one stored account value, as the `실행 계정` select would show it:
+   * the catalog row's `claudeLabel`/`codexLabel` when the key is known, the
+   * bare key otherwise, and `''` when the layer stores nothing for that key.
+   *
+   * @param {'claude'|'codex'} provider_key
+   * @param {Record<string, string>} values
+   * @returns {string}
+   */
+  function accountValueLabel(provider_key, values) {
+    const key = `${provider_key}_account`;
+    const value = values[key];
+    if (typeof value !== 'string' || value.length === 0) {
+      return '';
+    }
+    const provider = account_catalog[provider_key];
+    const row = provider?.accounts.find(
+      (/** @type {any} */ entry) => entry.key === value
+    );
+    if (!isRecord(row)) {
+      return value;
+    }
+    return provider_key === 'claude'
+      ? claudeLabel(/** @type {any} */ (row))
+      : codexLabel(/** @type {any} */ (row));
+  }
+
+  /**
    * One repo-scoped account row. A stored value the list does not carry stays
    * as its own option, so an unreadable list never silently drops a selection.
    *
@@ -2844,6 +2888,7 @@ export function createExecutionPane(mount_element, binding) {
     /** Reset the per-open drafts and read the bound repo's kv layers. */
     load() {
       ++generation;
+      account_loaded = false;
       common_saving = false;
       common_invalid = false;
       common_draft = { value: '', revision: null, dirty: false };
@@ -2884,6 +2929,27 @@ export function createExecutionPane(mount_element, binding) {
     },
     /** Test/inspection seam: the draft this pane would save. */
     sessionDraft: () => ({ ...session_draft }),
+    /**
+     * Read-only seam the monitor's 계정 일괄 적용 절 copies FROM (UI-8ncz §4.2).
+     * Only server-confirmed values leave this pane: `values` is the baseline,
+     * never `account_draft`, so a half-typed edit is never copied into another
+     * repo. `pending` is true before the first read of this open settles and
+     * while the draft differs from that baseline — the section disables its
+     * button until the server has confirmed what would be copied. `labels`
+     * name each baseline value the way this pane's selects do (catalog
+     * `claudeLabel`/`codexLabel`, the bare key when the catalog lacks it).
+     *
+     * @returns {{ state: string, values: Record<string, string>, labels: Record<string, string>, pending: boolean }}
+     */
+    accountSettings: () => ({
+      state: account_layer.state,
+      values: { ...account_baseline },
+      labels: {
+        claude_account: accountValueLabel('claude', account_baseline),
+        codex_account: accountValueLabel('codex', account_baseline)
+      },
+      pending: !account_loaded || Object.keys(accountPatch()).length > 0
+    }),
     destroy() {
       destroyed = true;
       ++generation;

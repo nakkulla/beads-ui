@@ -27,6 +27,7 @@
  * 있는 것처럼 말하는 것보다 침묵이 낫다.
  */
 import { html, render } from 'lit-html';
+import { live } from 'lit-html/directives/live.js';
 import {
   formatImplReviewChip,
   formatOrchestrationChip,
@@ -40,6 +41,17 @@ import {
   paneSectionSegmentTemplate
 } from '../settings-dialog/execution-pane.js';
 import { summaryChipsTemplate, tokenChipTemplate } from '../worker/lanes.js';
+import {
+  planBulkAccountApply,
+  runBulkAccountApply
+} from './bulk-account-apply.js';
+import {
+  defaultSelectedRoots,
+  formatBulkResult,
+  planBulkApply,
+  retryRootsOf,
+  runBulkApply
+} from './bulk-preset-apply.js';
 import { iconGear, iconMerge, iconPause, iconPlay } from './icons.js';
 import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
 
@@ -190,9 +202,14 @@ export function createRepoDeck(mount_element, options) {
   panel_close.setAttribute('aria-label', '실행 설정 닫기');
   panel_close.textContent = '✕';
   panel_head.append(panel_title, panel_seg, panel_close);
+  // 여러 저장소에 적용 절 (UI-8ncz §3). pane의 DOM 안이 아니라 머리와 몸체
+  // 사이에 덱이 직접 그리는 lit 호스트 하나다 — pane은 열린 저장소 한 곳의
+  // 편집기이고 이 절은 여러 저장소의 조작이라 소유자가 다르다.
+  const panel_bulk = document.createElement('div');
+  panel_bulk.className = 'mon2-deck__bulk';
   const panel_body = document.createElement('div');
   panel_body.className = 'mon2-deck__panel-body';
-  panel_el.append(panel_head, panel_body);
+  panel_el.append(panel_head, panel_bulk, panel_body);
   mount_element.appendChild(panel_el);
 
   /** @type {string|null} */
@@ -206,6 +223,33 @@ export function createRepoDeck(mount_element, options) {
   /** mutation 응답이 실어 온 권위 있는 queue (레포별). */
   /** @type {Map<string, any>} */
   const adopted = new Map();
+
+  /**
+   * 일괄 적용 절이 고른 저장소. 두 절이 공유하고 패널이 열려 있는 동안만
+   * 유지한다 — 기억하지 않는다 (§3.1).
+   *
+   * @type {Set<string>}
+   */
+  const bulk_selected = new Set();
+  /** 절 자체의 프리셋 선택. pane의 프리셋 바와 상태를 공유하지 않는다. */
+  let bulk_preset_choice = '';
+  /**
+   * Last run of each 절, 따로 유지한다 — 세그먼트를 바꿔도 남는다 (§3).
+   *
+   * @type {{ worker: import('./bulk-preset-apply.js').BulkResult[]|null, account: import('./bulk-preset-apply.js').BulkResult[]|null }}
+   */
+  let bulk_results = { worker: null, account: null };
+  /**
+   * 진행 중인 실행. `null`이면 절의 입력이 모두 활성이다.
+   *
+   * @type {{ done: number, total: number }|null}
+   */
+  let bulk_running = null;
+  /**
+   * 실행 취소 토큰. 패널을 닫거나 다른 `⚙`을 열거나 세그먼트를 바꾸면 값을
+   * 올려 남은 대상을 보내지 않게 한다 (§4).
+   */
+  let bulk_token = 0;
 
   /** @returns {Array<Record<string, any>>} */
   function rows() {
@@ -307,17 +351,398 @@ export function createRepoDeck(mount_element, options) {
     setFocus(focus_root === root_dir ? null : root_dir);
   }
 
+  /**
+   * End a run in flight. 이미 보낸 요청의 응답은 그대로 `adopt`되고 남은
+   * 대상은 전송되지 않는다.
+   */
+  function cancelBulkRun() {
+    bulk_token += 1;
+    bulk_running = null;
+  }
+
+  /**
+   * Fresh 절 상태 — 패널을 열 때 세운다. 기본 선택은 `auto_advance`가 켜진
+   * 저장소이고 (§3.1) 선택은 패널 밖으로 기억되지 않는다.
+   */
+  function resetBulkState() {
+    cancelBulkRun();
+    bulk_selected.clear();
+    for (const root_dir of defaultSelectedRoots(rows())) {
+      bulk_selected.add(root_dir);
+    }
+    bulk_preset_choice = '';
+    bulk_results = { worker: null, account: null };
+  }
+
+  /** @returns {{ revision: number, presets: Array<Record<string, any>> }|null} */
+  function presetState() {
+    const state = options.implPresetStore?.get();
+    return isRecord(state) && Array.isArray(state.presets)
+      ? /** @type {any} */ (state)
+      : null;
+  }
+
+  /**
+   * `adopted`를 덮은 최신 행들, 덱 행 순서 그대로. 일괄 계획은 이 목록으로만
+   * revision을 읽는다.
+   *
+   * @returns {Array<Record<string, any>>}
+   */
+  function mergedRows() {
+    return rows().map((row) => queueFor(row.root_dir));
+  }
+
+  /** Rows가 사라진 저장소는 선택에서도 뺀다 (§3.1). */
+  function reconcileBulkSelection() {
+    const visible = new Set(rows().map((row) => row.root_dir));
+    for (const root_dir of [...bulk_selected]) {
+      if (!visible.has(root_dir)) {
+        bulk_selected.delete(root_dir);
+      }
+    }
+  }
+
+  /** @returns {import('./bulk-preset-apply.js').BulkPlan} */
+  function presetPlan() {
+    return planBulkApply({
+      rows: mergedRows(),
+      selected_roots: bulk_selected,
+      preset_state: presetState(),
+      preset_id: bulk_preset_choice,
+      running: bulk_running !== null
+    });
+  }
+
+  /** @returns {import('./bulk-account-apply.js').BulkAccountPlan} */
+  function accountPlan() {
+    const source = pane?.accountSettings() || null;
+    return planBulkAccountApply({
+      rows: mergedRows(),
+      selected_roots: bulk_selected,
+      source_root: panel_root || '',
+      source_accounts: source,
+      source_policy: panel_root
+        ? queueFor(panel_root)?.provider_limit_policy
+        : null,
+      running: bulk_running !== null
+    });
+  }
+
+  /**
+   * Run one 절. 계획과 실행은 모듈이 소유하고 덱은 전송·채택·렌더만 넘긴다.
+   *
+   * @param {'worker'|'account'} section
+   */
+  async function startBulkRun(section) {
+    const transport = options.transport;
+    const plan = section === 'worker' ? presetPlan() : accountPlan();
+    if (!transport || plan.disabled_reason !== null) {
+      return;
+    }
+    cancelBulkRun();
+    const token = bulk_token;
+    const targets = plan.targets;
+    bulk_results = { ...bulk_results, [section]: null };
+    bulk_running = { done: 0, total: targets.length };
+    doRender();
+    const input = {
+      targets: /** @type {any} */ (targets),
+      send: (/** @type {string} */ type, /** @type {any} */ payload) =>
+        transport(/** @type {any} */ (type), payload),
+      adopt: (/** @type {string} */ root_dir, /** @type {any} */ queue) => {
+        adopted.set(root_dir, queue);
+      },
+      onProgress: (/** @type {any} */ progress) => {
+        if (token !== bulk_token) {
+          return;
+        }
+        bulk_running = { done: progress.done, total: progress.total };
+        bulk_results = { ...bulk_results, [section]: [...progress.results] };
+        doRender();
+      },
+      isCancelled: () => token !== bulk_token
+    };
+    const results =
+      section === 'worker'
+        ? await runBulkApply(input)
+        : await runBulkAccountApply(input);
+    if (token !== bulk_token) {
+      return;
+    }
+    bulk_running = null;
+    bulk_results = { ...bulk_results, [section]: results };
+    doRender();
+    // 세션 기본값 baseline은 pane이 들고 있으므로 열린 저장소가 대상이었으면
+    // 다시 읽는다. 계정 절의 원본 저장소는 대상이 아니라 부르지 않는다 (§4.2).
+    if (
+      section === 'worker' &&
+      panel_root !== null &&
+      targets.some((target) => target.root_dir === panel_root)
+    ) {
+      void pane?.load();
+    }
+  }
+
+  /**
+   * @param {string} root_dir
+   * @param {boolean} checked
+   */
+  function onBulkRepoToggle(root_dir, checked) {
+    if (checked) {
+      bulk_selected.add(root_dir);
+    } else {
+      bulk_selected.delete(root_dir);
+    }
+    doRender();
+  }
+
+  /**
+   * @param {'worker'|'account'} section
+   */
+  function onBulkRetry(section) {
+    const results = bulk_results[section];
+    if (!results) {
+      return;
+    }
+    const retry_roots = retryRootsOf(results);
+    bulk_selected.clear();
+    for (const root_dir of retry_roots) {
+      bulk_selected.add(root_dir);
+    }
+    doRender();
+  }
+
+  /**
+   * Checkbox list of 적용 대상. 계정 절에서는 열린 저장소가 복사 원본이라
+   * 체크할 수 없다.
+   *
+   * @param {string|null} source_root
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function bulkTargetsTemplate(source_root) {
+    return html`<fieldset class="mon2-deck__bulk-targets">
+      <legend>적용 대상</legend>
+      ${rows().map((row) => {
+        const is_source = source_root !== null && row.root_dir === source_root;
+        return html`<label
+          class="mon2-deck__bulk-repo"
+          title=${is_source ? '복사 원본 저장소' : row.root_dir}
+        >
+          <input
+            type="checkbox"
+            data-bulk-repo=${row.root_dir}
+            .checked=${live(bulk_selected.has(row.root_dir) && !is_source)}
+            ?disabled=${is_source || bulk_running !== null}
+            @change=${(/** @type {Event} */ ev) =>
+              onBulkRepoToggle(
+                row.root_dir,
+                /** @type {HTMLInputElement} */ (ev.target).checked
+              )}
+          />
+          <span>${is_source ? `${row.name}(원본)` : row.name}</span>
+        </label>`;
+      })}
+    </fieldset>`;
+  }
+
+  /**
+   * Primary 버튼 — 라벨이 대상 수를 말하고 비활성 사유는 `title`이 말한다.
+   *
+   * @param {'worker'|'account'} section
+   * @param {import('./bulk-preset-apply.js').BulkPlan|import('./bulk-account-apply.js').BulkAccountPlan} plan
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function bulkApplyButtonTemplate(section, plan) {
+    const running = bulk_running !== null;
+    return html`<button
+      type="button"
+      class="op-btn op-btn--primary mon2-deck__bulk-apply"
+      data-bulk-apply=${section}
+      title=${plan.disabled_reason || ''}
+      ?disabled=${plan.disabled_reason !== null}
+      @click=${() => void startBulkRun(section)}
+    >
+      ${running && bulk_running
+        ? `적용 중 ${bulk_running.done}/${bulk_running.total}`
+        : `선택 ${plan.targets.length}곳에 적용`}
+    </button>`;
+  }
+
+  /**
+   * One line per 저장소 — 재료(실행 결과)가 없으면 그리지 않는다.
+   *
+   * @param {'worker'|'account'} section
+   * @returns {import('lit-html').TemplateResult|''}
+   */
+  function bulkResultsTemplate(section) {
+    const results = bulk_results[section];
+    if (!results || results.length === 0) {
+      return '';
+    }
+    const retryable = retryRootsOf(results).length > 0;
+    return html`<div class="mon2-deck__bulk-results" data-bulk-results>
+      ${results.map((result) => {
+        const line = formatBulkResult(result);
+        return html`<span
+          class=${`mon2-deck__bulk-result is-${result.state}`}
+          data-bulk-result=${result.root_dir}
+          >${line.icon} ${line.text}</span
+        >`;
+      })}
+      ${retryable
+        ? html`<button
+            type="button"
+            class="op-btn mon2-deck__bulk-retry"
+            data-bulk-retry=${section}
+            ?disabled=${bulk_running !== null}
+            @click=${() => onBulkRetry(section)}
+          >
+            실패·부분 적용 저장소만 다시 적용
+          </button>`
+        : ''}
+    </div>`;
+  }
+
+  /**
+   * Preset 절 (§3.1). 목록은 pane과 같은 `implPresetStore`를 읽되 선택 상태는
+   * 공유하지 않는다.
+   *
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function bulkPresetTemplate() {
+    const state = presetState();
+    const plan = presetPlan();
+    return html`<div class="mon2-deck__bulk-hd">
+        <span class="mon2-deck__bulk-label">여러 저장소에 적용</span>
+        <select
+          class="mon2-deck__bulk-preset"
+          aria-label="여러 저장소에 적용할 실행 프리셋"
+          data-bulk-preset
+          ?disabled=${bulk_running !== null}
+          @change=${(/** @type {Event} */ ev) => {
+            bulk_preset_choice = String(
+              /** @type {HTMLSelectElement} */ (ev.target).value
+            );
+            doRender();
+          }}
+        >
+          <option value="" ?selected=${bulk_preset_choice === ''}>
+            실행 프리셋…
+          </option>
+          ${(state?.presets || []).map(
+            (preset) =>
+              html`<option
+                value=${preset.id}
+                ?selected=${preset.id === bulk_preset_choice}
+                ?disabled=${preset.compatible === false}
+                title=${preset.compatible === false
+                  ? preset.incompatibility_reason || ''
+                  : ''}
+              >
+                ${preset.name}
+              </option>`
+          )}
+        </select>
+        ${bulkApplyButtonTemplate('worker', plan)}
+      </div>
+      ${bulkTargetsTemplate(null)} ${bulkResultsTemplate('worker')}`;
+  }
+
+  /**
+   * One runner의 한도 정책을 원본 요약 줄의 한 조각으로 적는다.
+   *
+   * @param {string} label
+   * @param {any} policy
+   * @returns {string}
+   */
+  function limitSummary(label, policy) {
+    const mode = policy?.mode === 'wait' ? 'wait' : 'switch';
+    const accounts = Array.isArray(policy?.accounts) ? policy.accounts : [];
+    const pct = policy?.preempt_pct;
+    const head = mode === 'wait' ? '기다림' : `전환(${accounts.length}계정)`;
+    const preempt =
+      typeof pct === 'number' && Number.isInteger(pct) && pct >= 1 && pct <= 99
+        ? ` · 선제 ${pct}%`
+        : '';
+    return `${label} ${head}${preempt}`;
+  }
+
+  /**
+   * Account 절 (§3.2). 복사 원본은 열린 저장소이고 요약 줄이 지금 복사될 값을
+   * 말한다.
+   *
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function bulkAccountTemplate() {
+    const plan = accountPlan();
+    const source = pane?.accountSettings() || null;
+    const policy = panel_root
+      ? queueFor(panel_root)?.provider_limit_policy
+      : null;
+    /** @type {string[]} */
+    const parts = [];
+    for (const [key, label] of /** @type {Array<[string, string]>} */ ([
+      ['claude_account', 'Claude'],
+      ['codex_account', 'Codex']
+    ])) {
+      // pane의 select와 같은 라벨(카탈로그 `claudeLabel`/`codexLabel`), 카탈로그에
+      // 없는 값은 키 그대로 — pane이 계산해 `labels`로 준다 (§3.2).
+      const shown = source?.labels?.[key];
+      parts.push(
+        `${label} ${typeof shown === 'string' && shown.length > 0 ? shown : '기본값'}`
+      );
+    }
+    if (isRecord(policy)) {
+      parts.push(
+        `한도 ${limitSummary('Claude', policy.claude)}`,
+        limitSummary('Codex', policy.codex)
+      );
+    }
+    return html`<div class="mon2-deck__bulk-hd">
+        <span class="mon2-deck__bulk-label">여러 저장소에 적용</span>
+        <span class="mon2-deck__bulk-copy"
+          >${rowOf(panel_root || '')?.name || ''}의 계정 설정을 복사</span
+        >
+        ${bulkApplyButtonTemplate('account', plan)}
+      </div>
+      <div class="mon2-deck__bulk-source" data-bulk-source>
+        ${parts.join(' · ')}
+      </div>
+      ${bulkTargetsTemplate(panel_root)} ${bulkResultsTemplate('account')}`;
+  }
+
+  /**
+   * Which 절을 그릴지는 세그먼트가 정한다 — `세션`에는 재료가 없어 아무것도
+   * 그리지 않는다.
+   */
+  function renderBulkSection() {
+    if (panel_root === null || panel_section === 'session') {
+      render(html``, panel_bulk);
+      panel_bulk.hidden = true;
+      return;
+    }
+    panel_bulk.hidden = false;
+    render(
+      panel_section === 'worker' ? bulkPresetTemplate() : bulkAccountTemplate(),
+      panel_bulk
+    );
+  }
+
   /** @param {string} root_dir */
   function openPanel(root_dir) {
     if (panel_root === root_dir) {
       closePanel();
       return;
     }
+    // 다른 `⚙`을 여는 것은 진행 중 실행을 끝낸다 (§4) — 새 절 상태를 세우기
+    // 전에 남은 대상의 전송을 먼저 막는다.
+    cancelBulkRun();
     destroyPane();
     panel_root = root_dir;
     const row = rowOf(root_dir);
     panel_title.textContent = `${row?.name || root_dir} 실행 설정`;
     panel_section = 'worker';
+    resetBulkState();
     renderPanelSegment();
     panel_el.hidden = false;
     pane = createExecutionPane(panel_body, {
@@ -329,9 +754,22 @@ export function createRepoDeck(mount_element, options) {
       onQueueAdopt: (queue) => {
         adopted.set(root_dir, queue);
         doRender();
+      },
+      // 계정 읽기·편집·저장 확인이 절의 원본 요약과 비활성 상태를 바꾼다
+      // (§3.2) — 다음 스냅샷 렌더를 기다리지 않고 바로 다시 그린다.
+      onAccountSettingsChange: () => {
+        if (panel_root === root_dir) {
+          renderBulkSection();
+        }
       }
     });
-    void pane.load();
+    // 계정 절의 원본은 pane이 서버 확인 뒤 들고 있는 baseline이라, 첫 load가
+    // 끝난 뒤 절을 한 번 더 그린다 (§3.2).
+    void pane.load().then(() => {
+      if (panel_root === root_dir) {
+        renderBulkSection();
+      }
+    });
     doRender();
   }
 
@@ -353,7 +791,11 @@ export function createRepoDeck(mount_element, options) {
    */
   function selectPanelSection(section) {
     panel_section = section;
+    // 세그먼트 전환은 진행 중 실행을 끝낸다 (§4) — 선택 집합과 절별 결과는
+    // 그대로 둔다.
+    cancelBulkRun();
     renderPanelSegment();
+    renderBulkSection();
     pane?.render(section);
   }
 
@@ -361,11 +803,15 @@ export function createRepoDeck(mount_element, options) {
    * @param {boolean} [silent] - `true`면 다시 그리지 않는다 (렌더 안에서 부를 때).
    */
   function closePanel(silent) {
+    // 패널을 닫으면 진행 중 실행은 남은 대상을 보내지 않고 끝난다 (§4).
+    cancelBulkRun();
     destroyPane();
     panel_root = null;
     panel_el.hidden = true;
     panel_title.textContent = '';
     render(html``, panel_seg);
+    render(html``, panel_bulk);
+    panel_bulk.hidden = true;
     if (silent !== true) {
       doRender();
     }
@@ -780,6 +1226,10 @@ export function createRepoDeck(mount_element, options) {
       closePanel(true);
     }
     render(deckTemplate(), deck_el);
+    // 행이 사라지면 선택에서도 빠지고 (§3.1) 절은 최신 행·`adopted` revision으로
+    // 다시 그린다.
+    reconcileBulkSelection();
+    renderBulkSection();
     pane?.render();
   }
 

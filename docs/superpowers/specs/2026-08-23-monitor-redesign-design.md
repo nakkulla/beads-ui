@@ -184,6 +184,16 @@ scope:
   같은 저장소`를 쓴다. 한 번에 한 레포만 연다 — 다른 `⚙`을 누르면 기존 pane을
   `destroy()`하고 새 binding으로 다시 마운트한다.
 
+> 정정(UI-8ncz). `⚙` 패널의 머리와 pane 몸체 사이에 `여러 저장소에 적용` 절이
+> 선다. 절은 덱이 그리고 세그먼트를 따른다 — `워커`에서는 프리셋 select·적용
+> 버튼(`bulk-preset-apply.js`), `계정`에서는 열린 저장소의 계정 설정을 복사하는
+> 적용 버튼(`bulk-account-apply.js`); 보이는 저장소 체크박스(기본 선택: 자동화
+> 켜짐)는 두 절이 공유하고 저장소별 결과를 담는다. 적용은 클라이언트가
+> 저장소마다 기존 단일 저장소 op(`apply-impl-preset-global` ·
+> `set-workspace-accounts` · `worker-provider-limit-policy-set`)를 순차 호출하며
+> 서버 op는 그대로다. 모니터 행은 `provider_limit_policy`를 싣는다(§9 행 필드
+> 추가). 이 절은 모니터 `⚙` 전용이고 설정 다이얼로그에는 없다.
+
 ## 5. 실행가능 레인
 
 - 소스: `workspaces[].runnable[]`(§9.1로 `workflow`·`exec_pins` 재료 추가).
@@ -405,6 +415,10 @@ runner_catalog }`에 더한다:
 `serial_lane_count, auto_repair, orchestration_model, orchestration_effort,
 orchestration_speed, execution_defaults, session_defaults: Record<string,string>,
 session_defaults_warnings: string[], counts: { running, pr_wait, queue, runnable }`.
+- `provider_limit_policy: { claude, codex }`(각 `{ mode, accounts, preempt_pct }`)를
+  큐에서 그대로 싣는다(UI-8ncz §5). `normalizeQueue`가 항상 파생하므로 키는
+  언제나 있다. 소비자는 모니터 `⚙` pane의 `limitPolicyOf`(저장된 값을 그린다)와
+  계정 일괄 적용 절의 원본 읽기다.
 - `session_defaults`는 `server/session-defaults.js` 읽기를 레포별로 캐시
   (`set-session-defaults` 성공 시 그 레포만 무효화, 그 외 5분 TTL). 읽기 실패는
   `{}` + warning. **읽기는 비동기이고 `workspaces_state` 생성은 동기이므로**
