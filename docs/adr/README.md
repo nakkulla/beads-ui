@@ -7,13 +7,13 @@
 | --- | --- | --- | --- |
 | UI-wecw | [Beads UI는 저장소 defaults와 공통 Worker 주소 적용값을 분리하며 공통 주소 조회·쓰기는 dotfiles 소유 CLI를 소비한다 — defaults 어휘·검증의 dotfiles 소유권과 fail-quiet 읽기·strict 쓰기는 0013을 승계한다](UI-wecw-worker-url-stored-vs-effective-split-common-via-dotfiles-cli.md) | 2026-09-16 | Beads UI는 저장소 defaults와 공통 Worker 주소 적용값을 분리하며 공통 주소 조회·쓰기는 dotfiles 소유 CLI를 소비한다 |
 | UI-tqqp | [bd closed·deferred Bead는 모든 대기 레인에서 자동으로 물러나고 leaf paused attempt는 Bead 종료가 우선해 stopped로 종결된다](UI-tqqp-closed-deferred-beads-auto-retire-from-waiting-lanes.md) | 2026-09-16 | bd closed·deferred Bead 는 병렬·직렬 대기 레인에서 자동 제거되고 leaf paused attempt 는 Bead 종료가 우선해 stopped 로 종결되며 버릴 수 있는 워크트리만 정리한다 |
+| UI-cmx3-2 | [선행 대기 attempt가 있는 bead는 held 타일이 아니라 대기 행이 대표한다](UI-cmx3-2-prerequisite-waiting-attempt-represented-by-waiting-row.md) | 2026-09-16 | prerequisite_unmet waiting attempt가 있는 bead는 held 타일이 아니라 대기 행이 대표하고 실행 중 그리드는 실행·사람 조작 대기만 담는다 |
+| UI-cmx3 | [직렬 레인은 선두만 실행 후보이고 선행 대기 우회 예외는 없다](UI-cmx3-serial-lane-head-only-no-prerequisite-bypass.md) | 2026-09-16 | 직렬 레인은 선두만 실행 후보이고 선두가 실행 불가면 사유와 무관하게 레인이 기다리며 선행 대기 우회 예외는 없다 |
 | UI-8gem | [대기 카드의 상태는 슬롯 1 배지 하나가 말하고 큐 단위 사유는 게이트 칩으로만 선다](UI-8gem-one-wait-badge-queue-reasons-as-gate-chip.md) | 2026-09-16 | 대기 카드의 상태는 슬롯 1 배지 하나가 종류와 판정을 함께 말하고, 큐 단위 사유는 4a 게이트 칩으로만 서며 막힘 집계는 이슈 단위 사유만 센다 |
 | UI-3vvi-2 | [머지 후 결함은 일반 workflow 수정 Bead로 자동 인계하되 기존 원장·원자적 예약·원본 실패 보존과 검증된 수정 성공 후 최종 정리를 유지한다](UI-3vvi-2-post-merge-defect-workflow-repair-handoff.md) | 2026-09-16 | 머지 후 결함은 일반 workflow 수정 Bead로 자동 인계하되 기존 원장·원자적 예약·원본 실패 보존과 검증된 수정 성공 후 최종 정리를 유지한다 |
 | UI-3vvi | [Worker는 원시 실패를 보존하면서 정본 복구 분류와 동일 계보의 단일 예약으로 미완료 단계만 수정·대기·재개한다](UI-3vvi-preserve-raw-failure-recovery-wait-single-reservation.md) | 2026-09-16 | Worker는 원시 실패를 보존하면서 정본 복구 분류와 동일 계보의 단일 예약으로 미완료 단계만 수정·대기·재개한다 |
-| UI-wc67 | [연결 레인을 폐기하고 저장소별 대기열에서 확인된 선행 대기만 건너뛴다](UI-wc67-retire-connected-lanes-use-repository-queues.md) | 2026-09-15 | 연결 레인은 폐기하고 저장소별 병렬·직렬 대기열과 blocks 의존만 사용하며 직렬 레인은 확인된 선행 대기 항목을 건너뛰되 한 번에 하나만 실행한다 |
 | UI-mscc | [부모와 자식의 직접 사용량을 중복 없이 합산하고 불완전한 범위는 부분 집계로 표시한다](UI-mscc-parent-child-direct-usage-total.md) | 2026-09-15 | 부모와 자식의 검증된 직접 사용량을 중복 없이 합산하고 미확정 범위는 부분 집계로 표시한다 |
 | UI-lmqu-2 | [기준 이동은 보존 세션 이어하기이고 기계 정산은 정리 재시도다](UI-lmqu-2-base-moved-session-resume.md) | 2026-09-15 | quick_fix 재개는 종료 사유로 session과 settlement를 구분하며 base_moved는 보존 세션 이어하기이고 기계 정산은 정리 재시도다 |
-| UI-lmqu | [대기 사유에 따라 선행 자동 복귀와 보존 후보 이어하기를 구분한다](UI-lmqu-waiting-by-cause-preserved-candidate.md) | 2026-09-15 | waiting은 선행 대기와 기준 이동 대기를 구분하며 선행은 bd ready로 자동 복귀하고 기준 이동은 보존 후보를 기존 세션에서 이어간다 |
 | UI-kq54 | [Worker 실행 레인은 매 launch에서 현재 route로만 유도하고 기록된 레인과 다른 재개는 거절한다](UI-kq54-route-changed-relaunch-refusal.md) | 2026-09-15 | Worker 실행 레인은 매 launch에서 현재 route로만 유도하고 기록된 레인과 다른 재개는 세션 없이 route_changed로 거절하며 사유 기반 정산 재실행만 기록된 레인으로 마친다 |
 | UI-j10d | [완료 행은 실행 사실과 워커 생성 출처를 함께 표시한다](UI-j10d-done-row-worker-creation-provenance.md) | 2026-09-15 | 완료 행은 마지막 구현 실행 사실과 명시적 워커 생성 출처를 슬롯 5에 함께 표시한다 |
 | UI-a8rq | [머지 후 정리 실패는 큐를 세우지 않고 그 Bead에 머물며 관측형 실패는 코디네이터가 자동으로 다시 돌린다](UI-a8rq-cleanup-failure-stays-on-bead-transient-auto-retry.md) | 2026-09-15 | 머지 후 정리 실패는 큐를 세우지 않고 그 Bead에 머물며, 관측형 실패는 코디네이터가 자동으로 다시 돌리고 결정형 실패만 사람이 처분한다 |
@@ -80,3 +80,5 @@
 | UI-s8qn | [impl_runtime은 auto\|claude\|codex이고 auto는 provider를 유도하지 않으며 inherit은 이관 없이 제거된다 — 레인 무관 프리셋·두 레인 적용은 0032를 승계한다](UI-s8qn-impl-runtime-auto-derives-no-provider-inherit-retired-lane-apply.md) | superseded | [UI-7yh2](UI-7yh2-preset-carries-quick-fix-25-keys-single-apply-workflow-mode-outside.md) |
 | UI-42l2 | [Codex native child의 개별 사용량과 환산 비용은 카드에 표시하고 부모 합계에서는 제외한다](UI-42l2-codex-native-child-card-usage-not-summed.md) | superseded | [UI-mscc](UI-mscc-parent-child-direct-usage-total.md) |
 | UI-j9j5 | [수정 잡의 원자적 예약과 실제 성공으로 원래 실패를 완료한다](UI-j9j5-post-merge-job-repair-succession.md) | superseded | [UI-3vvi-2](UI-3vvi-2-post-merge-defect-workflow-repair-handoff.md) |
+| UI-lmqu | [대기 사유에 따라 선행 자동 복귀와 보존 후보 이어하기를 구분한다](UI-lmqu-waiting-by-cause-preserved-candidate.md) | superseded | [UI-cmx3](UI-cmx3-serial-lane-head-only-no-prerequisite-bypass.md) |
+| UI-wc67 | [연결 레인을 폐기하고 저장소별 대기열에서 확인된 선행 대기만 건너뛴다](UI-wc67-retire-connected-lanes-use-repository-queues.md) | superseded | [UI-cmx3](UI-cmx3-serial-lane-head-only-no-prerequisite-bypass.md) |

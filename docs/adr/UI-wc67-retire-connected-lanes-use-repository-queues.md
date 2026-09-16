@@ -1,7 +1,8 @@
 ---
 id: UI-wc67
 title: 연결 레인을 폐기하고 저장소별 대기열에서 확인된 선행 대기만 건너뛴다
-status: accepted
+status: superseded
+superseded_by: UI-cmx3
 date: 2026-09-15
 summary: "연결 레인은 폐기하고 저장소별 병렬·직렬 대기열과 blocks 의존만 사용하며 직렬 레인은 확인된 선행 대기 항목을 건너뛰되 한 번에 하나만 실행한다"
 supersedes: [41]
