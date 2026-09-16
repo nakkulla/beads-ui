@@ -14,15 +14,17 @@ scope:
 ## 1. 문제 (2026-09-17 관측, origin/main `df42f7b`)
 
 사용자가 공유 서버 모바일(390px) 워커 탭 스크린샷 3장으로 제기했다. 큐 파일 실측으로
-원인을 확정했다. 아래 인용한 `path:line`은 관측 시점 `df42f7b`의 것이고, 이 스펙이 착지한
-base `de79018`에서도 네 개의 `app/styles.css` 인용(6078·6093·6175·8419)을 포함해 전부 같은
-줄을 가리킨다. 그 사이 착지한 UI-7rga(#307)가 `app/styles.css`에 28줄을 더했지만 비교 탭
-구역이라 이 스펙이 읽는 규칙을 밀지 않았다.
+원인을 확정했다. 아래 인용한 `path:line`은 현재 base `dbfd902`에서 확인한 것이다. 관측
+시점은 `df42f7b`였고 스펙이 처음 착지한 base는 `de79018`이었는데, 그 사이 착지한
+UI-7rga(#307)는 `app/styles.css` 비교 탭 구역에만 28줄을 더해 네 개의 `app/styles.css`
+인용(6078·6093·6175·8419)을 밀지 않았다. 그 뒤 착지한 UI-1l3a(#308, `dbfd902`)가
+`app/views/worker/lane-model.js`에서 190줄을 더하고 22줄을 지워 그 파일의 세 인용만 각각
+1727·3737·3917로 옮겼고(재검토에서 갱신), 나머지 파일의 인용은 지금도 같은 줄을 가리킨다.
 
 **같은 사실을 두 번 말한다.** Analysis-1u8o 카드에 `⛓ 선행 대기`가 두 번 선다. 실측한
 큐의 admission은 `{reason: "prerequisite_unmet", blockers: [{id: "Analysis-c312",
 status: "open"}]}`이고, 이 한 기록에서 두 렌더가 각자 배지를 만든다.
-`lane-model.js:1627` `admissionBadge`가 문자열 `⛓ 선행 대기`를 만들어 사유 줄
+`lane-model.js:1727` `admissionBadge`가 문자열 `⛓ 선행 대기`를 만들어 사유 줄
 (`.worker-mini__reason`, `flex: 1 0 100%`)로 보내고, `lanes.js:2841`
 `waitStatusBadge`가 서버 `wait_reasons`의 같은 사실로 판정 배지를 또 만든다.
 PROSTATE-67r에 배지가 하나뿐인 것은 규칙이 달라서가 아니라 그 bead에 admission 기록이
@@ -115,7 +117,7 @@ PROSTATE-67r에 배지가 하나뿐인 것은 규칙이 달라서가 아니라 �
 - `app/utils/relative-time.js`에는 경과 시간을 "N시간째"로 적는 함수가 없다.
   `formatRelativeTime`은 "N시간 전", `formatClockLocal`은 `HH:MM`이다.
 - `lane_states[].corrections`의 소비처는 둘이다. `worker/index.js`의
-  `waitingFacts`/`waitingRowOf`가 `🔗 … (blocks 자동)` 배지를 만들고, `lane-model.js:3772`가
+  `waitingFacts`/`waitingRowOf`가 `🔗 … (blocks 자동)` 배지를 만들고, `lane-model.js:3917`가
   레인 모델에 `corrections` **개수**를 투영한다. §4.3이 없애는 것은 배지 쪽 하나이고 개수
   투영은 건드리지 않는다.
 - `.worker-mini__head`는 `flex-wrap: wrap`이고(`styles.css:6093`), 카드 변형의 사유는 그
@@ -127,15 +129,16 @@ PROSTATE-67r에 배지가 하나뿐인 것은 규칙이 달라서가 아니라 �
 ### 4.1 admission 배지에서 선행 갈래를 걷는다
 
 `admissionBadge`의 `prerequisite_unmet` 갈래는 `⛓ 선행 대기`를 반환하는 대신 빈
-문자열을 반환한다. 이미 `grace_period`와 `serial_lane_not_head`가 같은 모양으로 서 있고,
-"이 사유는 뱃지를 만들지 않는다" 목록에 한 줄이 느는 것이다.
+문자열을 반환한다. 이미 `grace_period`·`serial_lane_not_head`·`provider_gate` 셋이 같은
+모양으로 서 있고, "이 사유는 뱃지를 만들지 않는다" 목록에 한 줄이 느는 것이다
+(`provider_gate` 갈래는 UI-1l3a가 `dbfd902`로 착지시켰다 — §11).
 
 빈 문자열이어야 하고 갈래 삭제여서는 안 된다. 갈래를 지우면 함수 끝의
 `` return `⛔ ${reason}` ``로 떨어져 `⛔ prerequisite_unmet`이 뜬다.
 
 `waitingItem`의 `prerequisites_released` 분기(열린 선행이 비면 `reason`을 빈 문자열로
 덮는 갈래)도 함께 지운다. 그 분기는 admission 사유가 `prerequisite_unmet`일 때만 성립하므로
-(`lane-model.js:3592`) 다른 사유를 덮을 일은 애초에 없었다. 지우는 이유는 그 사유가 이제
+(`lane-model.js:3737`) 다른 사유를 덮을 일은 애초에 없었다. 지우는 이유는 그 사유가 이제
 언제나 빈 문자열이 되어 이 분기가 덮을 것이 남지 않는 죽은 코드이기 때문이다.
 
 ### 4.2 선행 대기는 headline을 싣지 않는다
@@ -157,7 +160,7 @@ blocker별 상태(`open`/`blocked`)는 `targets[].status`에 이미 실려 있�
 
 `worker/index.js`의 `` `🔗 ${correction} 뒤 (blocks 자동)` `` 배지와, 그 값을 모으는
 `waitingFacts`의 `correction_after` 맵을 함께 지운다. 서버의
-`lane_states[].corrections` 필드와 `lane-model.js:3772`의 개수 투영은 그대로 두고 배지 소비만
+`lane_states[].corrections` 필드와 `lane-model.js:3917`의 개수 투영은 그대로 두고 배지 소비만
 멈춘다. 순번 툴팁으로 옮기지 않는다 — 자동 정렬의 시점은 카드가 답하는 질문이 아니다.
 
 ## 5. 시각 줄은 종류가 자기 낱말을 고른다
@@ -402,10 +405,12 @@ gap: var(--sp-4)`를 준다. 라벨과 입력이 한 줄에 서고 알약이 두
   층만 다루고 실행 자격은 건드리지 않는다.
 - `worker-queue-start-now`·유예 칩·`manual_only`는 UI-3pu9가 방금 정리했으므로 손대지
   않는다.
-- 관찰: UI-1l3a의 스펙(`2026-09-17-provider-gate-verdict-coherence-design.md` §3.3)이 같은
-  `admissionBadge`에 `provider_gate → ''` 갈래를 더한다. §4.1의 `prerequisite_unmet → ''`와
-  형태가 같고 의미는 독립이라 전제 의존이 아니다. 나중에 착지하는 쪽이 같은 함수에서
-  rebase하면 된다 — 두 갈래를 한쪽이 삼키지 않게만 본다.
+- 관찰: UI-1l3a(`2026-09-17-provider-gate-verdict-coherence-design.md` §3.3)가 먼저
+  착지해(`dbfd902`) 같은 `admissionBadge`에 `provider_gate → ''` 갈래를 이미 세웠다.
+  §4.1의 `prerequisite_unmet → ''`는 그 옆에 같은 형태로 서는 별개 갈래이고 의미는
+  독립이라 전제 의존이 아니다 — 두 갈래를 한쪽이 삼키지 않게만 본다. 그 착지가 더한
+  `providerGateFromRecord`·`providerGateOf` 경로와 어휘 표 두 행의 해제 문구는 이 스펙이
+  건드리지 않는다.
 - 후속 Bead 후보 없음. 이 스펙의 여덟 항목이 한 사람의 한 벌이다.
 
 ## 12. 결정 (ADR 후보)
