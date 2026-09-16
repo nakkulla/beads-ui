@@ -282,6 +282,15 @@ export function createExecutionPane(mount_element, binding) {
    */
   let limit_accounts_pending = { claude: null, codex: null };
   /**
+   * Raw text of a runner's preemptive-threshold box the user is still typing.
+   * Written on every keystroke for the same reason as `session_text_draft`:
+   * the monitor re-renders this pane every second, and `live()` would reset
+   * the box to the stored value before `change` fires.
+   *
+   * @type {{ claude: string|null, codex: string|null }}
+   */
+  let limit_preempt_draft = { claude: null, codex: null };
+  /**
    * One save chain per runner, so a mode/threshold write cannot overtake the
    * allow-list write it was clicked after.
    *
@@ -1313,13 +1322,23 @@ export function createExecutionPane(mount_element, binding) {
   function onLimitPreemptPctChange(runner, raw) {
     const value = Number.parseInt(raw, 10);
     if (!Number.isInteger(value) || value < 1 || value > 99) {
+      limit_preempt_draft[runner] = null;
       doRender();
       return;
     }
     if (limitPolicyOf(runner).preempt_pct === value) {
+      limit_preempt_draft[runner] = null;
       return;
     }
-    queueLimitSave(runner, { preempt_pct: value });
+    // 저장 응답이 오기 전 재렌더가 옛 값을 잠깐 그리지 않도록 초안은 저장이
+    // 끝난 뒤에 걷는다 — 그 사이 새로 친 값이 있으면 그것을 남긴다.
+    limit_preempt_draft[runner] = raw;
+    queueLimitSave(runner, { preempt_pct: value }, () => {
+      if (limit_preempt_draft[runner] === raw) {
+        limit_preempt_draft[runner] = null;
+        doRender();
+      }
+    });
   }
 
   /**
@@ -2179,7 +2198,15 @@ export function createExecutionPane(mount_element, binding) {
             step="1"
             aria-label=${`${label} 선제 전환 임계`}
             data-limit-preempt-pct=${runner}
-            .value=${live(String(policy.preempt_pct ?? DEFAULT_PREEMPT_PCT))}
+            .value=${live(
+              limit_preempt_draft[runner] ??
+                String(policy.preempt_pct ?? DEFAULT_PREEMPT_PCT)
+            )}
+            @input=${(/** @type {Event} */ ev) => {
+              limit_preempt_draft[runner] = String(
+                /** @type {HTMLInputElement} */ (ev.target).value
+              );
+            }}
             @change=${(/** @type {Event} */ ev) =>
               onLimitPreemptPctChange(
                 runner,

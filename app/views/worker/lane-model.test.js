@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import {
   CANDIDATE_FILTER_DEFAULT,
   MIN_SLOTS,
@@ -6610,6 +6610,8 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
   });
 
   test('dates a retry scheduled on another day in the gate label', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 16, 12, 0));
     const tomorrow = new Date(2026, 8, 17, 9, 5).getTime();
     const lanes = buildLanes(
       [
@@ -6629,6 +6631,8 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
       ],
       [gateState()]
     );
+
+    vi.useRealTimers();
 
     expect(lanes.queue[0].gate?.label).toBe('↻ 환경 보류 · 다음 9/17 09:05');
   });

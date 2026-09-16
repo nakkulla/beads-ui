@@ -1946,6 +1946,59 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
     ]);
   });
 
+  // 모니터는 1초마다 pane을 다시 그린다 — 입력 중인 값이 저장값으로 되돌아가면 안 된다.
+  test('keeps the typed preempt threshold across a re-render', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane } = mount({
+      section: 'account',
+      queue: queueRow({
+        provider_limit_policy: {
+          claude: { mode: 'switch', accounts: [], preempt_pct: null },
+          codex: { mode: 'switch', accounts: [], preempt_pct: null }
+        }
+      })
+    });
+    await pane.load();
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, '[data-limit-preempt-pct="claude"]')
+    );
+
+    input.value = '6';
+    input.dispatchEvent(new Event('input'));
+    pane.render();
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        el(root, '[data-limit-preempt-pct="claude"]')
+      ).value
+    ).toBe('6');
+  });
+
+  test('snaps an out-of-range preempt threshold back to the stored value', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane, calls } = mount({
+      section: 'account',
+      queue: queueRow({
+        provider_limit_policy: {
+          claude: { mode: 'switch', accounts: [], preempt_pct: 70 },
+          codex: { mode: 'switch', accounts: [], preempt_pct: null }
+        }
+      })
+    });
+    await pane.load();
+    const input = /** @type {HTMLInputElement} */ (
+      el(root, '[data-limit-preempt-pct="claude"]')
+    );
+
+    input.value = '150';
+    input.dispatchEvent(new Event('input'));
+    input.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(input.value).toBe('70');
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([]);
+  });
+
   // RED 25 — 목록에 없는 저장 key도 선택을 잃지 않는다 (§3.5, §6.1 규칙 재사용).
   test('keeps a stored key the catalog does not carry as a checked item', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
