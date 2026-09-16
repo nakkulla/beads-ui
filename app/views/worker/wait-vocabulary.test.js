@@ -50,6 +50,33 @@ describe('wait vocabulary table', () => {
     expect(complete).toBe(true);
   });
 
+  test('offers the restart probe as a release of the usage limit hold', () => {
+    const row = WAIT_KINDS.find(
+      (entry) => entry.id === 'provider_hold-usage_limit'
+    );
+
+    expect(row?.release).toBe(
+      '리셋 뒤 자동 프로브 · 소진이면 서버 재시작 시 1회 자동 프로브 또는 ↻ 지금 프로브'
+    );
+  });
+
+  test('counts the unresolved account row into the usage gate condition', () => {
+    const row = WAIT_KINDS.find((entry) => entry.id === 'gate-provider_usage');
+
+    expect(row?.when).toBe(
+      '러너의 계정 한도 보류 — target에 계정이 있으면 그 계정을 쓰는 행과 계정을 해석할 수 없는 행에, 없으면 러너의 모든 행에'
+    );
+  });
+
+  test('matches the usage gate release to the usage limit hold release', () => {
+    const gate = WAIT_KINDS.find((entry) => entry.id === 'gate-provider_usage');
+    const hold = WAIT_KINDS.find(
+      (entry) => entry.id === 'provider_hold-usage_limit'
+    );
+
+    expect(gate?.release).toBe(hold?.release);
+  });
+
   test('marks only the recovery row as tile-labelled with a fallback label', () => {
     const dynamic = WAIT_KINDS.filter((row) => row.dynamic_label === true);
 

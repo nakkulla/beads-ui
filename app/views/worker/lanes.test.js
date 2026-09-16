@@ -6220,6 +6220,34 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
     expect(labels).toEqual(['지금 시작', '✕']);
   });
 
+  // 서버 기록으로 선 게이트도 같은 `item.gate` 재료다 (UI-1l3a §3.3) — 직렬 선두
+  // 행의 두 출구가 함께 서는지가 그 기록의 값어치다.
+  test('offers both exits on the serial head row of a recorded provider gate', () => {
+    const ops = renderOps({
+      lane: 's1',
+      queue_index: 0,
+      gate: gate({
+        kind: 'provider_usage',
+        label: '⏳ 한도 대기 13:00 · 업무',
+        title: '⏳ 한도 대기 13:00 · 업무',
+        since: 4242,
+        runner: 'claude',
+        probe_ready: true,
+        lines: [
+          '⏳ 한도 대기 13:00 · 업무',
+          '계정: 미해석 — 핀·저장소 기본·활성 로그인 어디에도 claude 계정이 없음',
+          '출구: [지금 시작](이 행만, 게이트 무시) — target은 프로브 성공 시 자동 해제'
+        ]
+      })
+    });
+
+    const labels = Array.from(
+      /** @type {HTMLElement} */ (ops).querySelectorAll('button')
+    ).map((button) => button.textContent?.trim());
+
+    expect(labels).toEqual(['↻ 지금 프로브', '지금 시작', '✕']);
+  });
+
   test('draws neither gate operation on an ungated row past its grace', () => {
     const ops = renderOps({ added_at: 1 });
 

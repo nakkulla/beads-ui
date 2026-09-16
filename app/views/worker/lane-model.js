@@ -1380,6 +1380,25 @@ function providerGate(runner, account, provider_hold, account_catalog) {
   if (!target) {
     return null;
   }
+  return providerGateOf(runner, entry, target, account_catalog);
+}
+
+/**
+ * Compose one provider gate from the hold entry and the ONE target standing
+ * against this row. 두 재료 경로(자체 판정 `providerGate`와 서버 기록
+ * `providerGateFromRecord`)가 같은 문장을 말하도록 라벨·팝업 줄을 한 자리에서
+ * 만든다 — 칩 라벨은 타일 배지와 같은 `providerHoldBadgeText`다.
+ *
+ * @param {string} runner - `provider_hold`의 키이자 프로브 op의 인자다.
+ * @param {Record<string, any>} entry - `provider_hold[runner]` 레코드.
+ * @param {any} target - 이 행을 막는 하나, kind는 outage 또는 usage_limit이다.
+ * @param {Record<string, any>} account_catalog
+ * @param {string[]} [extra_lines] - 출구 문장 바로 앞에 덧붙는 lines 항목들.
+ * @returns {LaneGate}
+ */
+function providerGateOf(runner, entry, target, account_catalog, extra_lines) {
+  const targets = Array.isArray(entry.targets) ? entry.targets : [];
+  const outage = target.kind === 'outage';
   const target_account =
     typeof target.account === 'string' ? target.account : null;
   const alias = accountAliasOf(target_account, account_catalog);
@@ -1454,11 +1473,91 @@ function providerGate(runner, account, provider_hold, account_catalog) {
       ...(last_error ? [last_error] : []),
       ...(when ? [`${outage ? '다음 프로브' : '리셋'} ${when}`] : []),
       ...(auto_switch ? [auto_switch] : []),
+      ...(Array.isArray(extra_lines) ? extra_lines : []),
       probeless
         ? '출구: [지금 시작](이 행만, 게이트 무시) — 이 target은 프로브가 없고, 묶인 attempt의 ↻ 이어하기가 지운다(§6 F3)'
         : '출구: [지금 시작](이 행만, 게이트 무시) — target은 프로브 성공 시 자동 해제'
     ]
   };
+}
+
+/**
+ * The provider gate the SERVER already decided for this row (§3.3). The
+ * admission record beats the front-end prediction: the dispatch pass read the
+ * same three-layer ladder and actually turned this row away, so a disagreement
+ * (catalog failure, lookup lag) is the prediction being wrong.
+ *
+ * `null` when there is no such record, when that runner's hold is gone, or when
+ * the record no longer describes this row — the caller then predicts with
+ * `providerGate`.
+ *
+ * @param {Record<string, any>} record - 이 bead의 admission 기록, 없으면 빈 객체.
+ * @param {string|null} runner - 이 행이 지금 해석하는 러너, 못 도출하면 null.
+ * @param {string|null} account - 이 행이 지금 해석하는 계정, 없으면 null.
+ * @param {Record<string, any>} provider_hold
+ * @param {Record<string, any>} account_catalog
+ * @returns {LaneGate|null}
+ */
+function providerGateFromRecord(
+  record,
+  runner,
+  account,
+  provider_hold,
+  account_catalog
+) {
+  if (runner === null || objectOf(record).reason !== 'provider_gate') {
+    return null;
+  }
+  const gate = objectOf(objectOf(record).gate);
+  const outage = gate.kind === 'outage';
+  // 기록은 자기 러너의 행에만 유효하다: 러너를 바꾼 뒤 자동 진행이 꺼져 서버가
+  // 다시 판정하지 못한 행에 옛 러너의 칩을 달면 없는 사실을 말하는 것이 된다.
+  if (gate.runner !== runner || (!outage && gate.kind !== 'usage_limit')) {
+    return null;
+  }
+  const unresolved = gate.unresolved === true;
+  const gate_account = typeof gate.account === 'string' ? gate.account : null;
+  // `outage`는 계정과 무관하게 러너 전체를 막으므로 언제나 유효하다.
+  // `usage_limit`은 계정별이라 "이 행이 지금 해석하는 계정이 기록과 같다"가
+  // 유효 조건이고, 미해석 기록은 지금도 미해석이어야 유효하다.
+  const stands = outage
+    ? true
+    : unresolved
+      ? account === null
+      : gate_account !== null && account === gate_account;
+  if (!stands) {
+    return null;
+  }
+  const entry = objectOf(objectOf(provider_hold)[runner]);
+  const targets = Array.isArray(entry.targets) ? entry.targets : [];
+  const target = targets.find((/** @type {any} */ candidate) => {
+    if (!candidate) {
+      return false;
+    }
+    if (outage) {
+      return candidate.kind === 'outage';
+    }
+    return (
+      candidate.kind === 'usage_limit' &&
+      (unresolved || candidate.account === gate_account)
+    );
+  });
+  // hold가 이미 풀렸거나 그 target이 사라진 기록은 그릴 재료가 없다 (fail-quiet,
+  // 서버 정리와 겹치는 방어다).
+  if (!target) {
+    return null;
+  }
+  return providerGateOf(
+    runner,
+    entry,
+    target,
+    account_catalog,
+    unresolved
+      ? [
+          `계정: 미해석 — 핀·저장소 기본·활성 로그인 어디에도 ${runner} 계정이 없음`
+        ]
+      : []
+  );
 }
 
 /**
@@ -1613,6 +1712,12 @@ function admissionBadge(admission, bead_id) {
   // 스펙 §8.3): 행의 순번이 이미 말하는 사실이라 `⛔ serial_lane_not_head` 원문을
   // 그리면 순번을 두 번 말하는 것이 된다.
   if (reason === 'serial_lane_not_head') {
+    return '';
+  }
+  // 공급자 게이트 거절은 슬롯 4a 게이트 칩 한 층에만 선다 (UI-1l3a §3.3, ADR
+  // UI-3pu9의 UI-8gem 승계 조항): 같은 사실을 배지로 한 번 더 말하면 행이 두 번
+  // 막힌 것처럼 읽히고, 출구(`↻ 지금 프로브`·`[지금 시작]`)는 칩이 소유한다.
+  if (reason === 'provider_gate') {
     return '';
   }
   // 선행 대기는 스케줄러가 증명한 진단이지 상태 복사가 아니므로 (UI-d3i1 §5.4)
@@ -2644,7 +2749,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 막힌 대기 행을 판정할 저장소별 재료 (UI-01wh §3.1). 행 투영이 끝난 뒤
   // 한 번에 얹는다 — 러너·계정 해석에 오버레이 metadata가 필요하고 그것은
   // 이 루프보다 뒤에서 채워진다.
-  /** @type {Map<string, { hold: any, lineages: any[], provider_hold: Record<string, any>, account_catalog: Record<string, any>, workspace_account_defaults: Record<string, any> }>} */
+  /** @type {Map<string, { hold: any, lineages: any[], provider_hold: Record<string, any>, account_catalog: Record<string, any>, workspace_account_defaults: Record<string, any>, admission: Record<string, any> }>} */
   const gate_input_by_root = new Map();
   // 선언 scope 사실 (UI-qm12 §5.2). 겹침은 레포 안에서만 정의되므로 레포별로
   // 모으고, 실행가능 항목의 scope는 큐 장식이 아니라 자기 행이 싣고 온다.
@@ -2871,7 +2976,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
       lineages: Array.isArray(workspace.lineages) ? workspace.lineages : [],
       provider_hold: objectOf(workspace.provider_hold),
       account_catalog: objectOf(workspace.account_catalog),
-      workspace_account_defaults: objectOf(workspace.workspace_account_defaults)
+      workspace_account_defaults: objectOf(
+        workspace.workspace_account_defaults
+      ),
+      // 서버가 남긴 공급자 게이트 판정의 자리다 (UI-1l3a §3.3) — 게이트 부착은
+      // 이 루프보다 뒤에서 도므로 재료를 여기서 같이 실어 보낸다.
+      admission
     });
     const queue_lane = Array.isArray(workspace.queue) ? workspace.queue : [];
     const serial_lanes = (
@@ -4190,20 +4300,32 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const runner = rows
       ? resolvedRunnerOf(rows, state.runner_catalog ?? null)
       : null;
-    const provider_gate =
+    const account =
       runner === null
         ? null
-        : providerGate(
+        : resolvedAccountOf(
+            metadata,
             runner,
-            resolvedAccountOf(
-              metadata,
-              runner,
-              gate_input.account_catalog,
-              gate_input.workspace_account_defaults
-            ),
-            gate_input.provider_hold,
-            gate_input.account_catalog
+            gate_input.account_catalog,
+            gate_input.workspace_account_defaults
           );
+    // 서버 판정이 기록으로 남아 있으면 그것이 재료다 (UI-1l3a §3.3). 자체 판정은
+    // 서버 pass가 아직 돌지 않은 행(방금 앉은 행, 자동 진행이 꺼진 저장소)의
+    // 예측일 뿐이므로 뒤로 간다.
+    const provider_gate =
+      providerGateFromRecord(
+        objectOf(gate_input.admission[item.id]),
+        runner,
+        account,
+        gate_input.provider_hold,
+        gate_input.account_catalog
+      ) ||
+      providerGate(
+        runner,
+        account,
+        gate_input.provider_hold,
+        gate_input.account_catalog
+      );
     // 둘 다 서면 칩은 큐 게이트 하나이고 공급자 사유는 그 팝업의 마지막 줄로
     // 붙는다 (공급자 스펙 §6 "둘 다 서 있으면 둘 다 막는다") — 칩은 행당 하나다.
     const gate = queue_gate
