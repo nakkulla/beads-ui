@@ -525,6 +525,7 @@ export async function __refreshWorkspaceAccountDefaultsForTest(workspace_key) {
  * @property {true} [stale]
  * @property {PublicStaleWork} [stale_work]
  * @property {PublicAdmissionBlocker[]} [blockers]
+ * @property {{ runner: string, kind: 'outage'|'usage_limit', account: string|null, unresolved: boolean }} [gate]
  */
 
 /**
@@ -736,6 +737,13 @@ function publicAdmissions(value) {
             blockers: /** @type {PublicAdmissionBlocker[]} */ (
               admission.blockers
             )
+          }
+        : {}),
+      ...(admission.gate &&
+      typeof admission.gate === 'object' &&
+      !Array.isArray(admission.gate)
+        ? {
+            gate: /** @type {PublicAdmission['gate']} */ (admission.gate)
           }
         : {})
     };

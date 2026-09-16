@@ -2153,8 +2153,15 @@ describe('scheduler provider hold and recovery', () => {
    * @param {string} attempt_id
    * @param {'outage'|'usage_limit'} kind
    * @param {string|null} account
+   * @param {'claude'|'codex'} [runner]
    */
-  function registerProviderHold(queue_store, attempt_id, kind, account) {
+  function registerProviderHold(
+    queue_store,
+    attempt_id,
+    kind,
+    account,
+    runner = 'claude'
+  ) {
     const result = queue_store.holdProviderAttempt(WS, {
       attempt_id,
       patch: {
@@ -2162,10 +2169,10 @@ describe('scheduler provider hold and recovery', () => {
         cause: `provider_outage:${kind}`,
         finished_at: 1000
       },
-      runner: 'claude',
+      runner,
       target: {
         kind,
-        model: 'opus',
+        model: runner === 'claude' ? 'opus' : 'sol',
         account,
         detail: kind,
         last_error: kind,
@@ -2494,7 +2501,7 @@ describe('scheduler provider hold and recovery', () => {
       slots: 2
     });
     seedProviderAttempt(env.store, 'held-1', 'H1');
-    registerProviderHold(env.store, 'held-1', 'outage', null);
+    registerProviderHold(env.store, 'held-1', 'outage', 'held@example.com');
     seedQueue(env.store, ['C1', 'X1']);
 
     await env.scheduler.tick(WS);
@@ -2505,6 +2512,197 @@ describe('scheduler provider hold and recovery', () => {
       'C1',
       'X1'
     ]);
+    expect(env.store.snapshot(WS).admission.C1).toMatchObject({
+      reason: 'provider_gate',
+      gate: {
+        runner: 'claude',
+        kind: 'outage',
+        account: 'held@example.com',
+        unresolved: false
+      }
+    });
+  });
+
+  test('uses the active Codex account when no pin or repo default exists', async () => {
+    const env = setup({
+      config: { X1: { model: 'sol' } },
+      slots: 1,
+      accountCatalog: {
+        listCodex: vi.fn(async () => ({
+          ok: true,
+          accounts: [],
+          active_key: 'active-codex'
+        }))
+      }
+    });
+    seedProviderAttempt(env.store, 'held-codex', 'H1', {
+      runner: 'codex',
+      model: 'sol'
+    });
+    registerProviderHold(
+      env.store,
+      'held-codex',
+      'usage_limit',
+      'held-codex',
+      'codex'
+    );
+    seedQueue(env.store, ['X1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['X1']);
+    expect(env.store.snapshot(WS).admission.X1).toBeUndefined();
+  });
+
+  test('records a resolved Codex usage-limit gate', async () => {
+    const env = setup({
+      config: { X1: { model: 'sol' } },
+      slots: 1,
+      accountCatalog: {
+        listCodex: vi.fn(async () => ({
+          ok: true,
+          accounts: [],
+          active_key: 'held-codex'
+        }))
+      }
+    });
+    seedProviderAttempt(env.store, 'held-codex', 'H1', {
+      runner: 'codex',
+      model: 'sol'
+    });
+    registerProviderHold(
+      env.store,
+      'held-codex',
+      'usage_limit',
+      'held-codex',
+      'codex'
+    );
+    seedQueue(env.store, ['X1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).admission.X1).toMatchObject({
+      reason: 'provider_gate',
+      gate: {
+        runner: 'codex',
+        kind: 'usage_limit',
+        account: 'held-codex',
+        unresolved: false
+      }
+    });
+  });
+
+  test.each([
+    ['has no active account', async () => ({ ok: true, accounts: [] })],
+    [
+      'cannot read the catalog',
+      async () => {
+        throw new Error('offline');
+      }
+    ]
+  ])('fails closed when Codex %s', async (_name, listCodex) => {
+    const env = setup({
+      config: { X1: { model: 'sol' } },
+      slots: 1,
+      accountCatalog: { listCodex: vi.fn(listCodex) }
+    });
+    seedProviderAttempt(env.store, 'held-codex', 'H1', {
+      runner: 'codex',
+      model: 'sol'
+    });
+    registerProviderHold(
+      env.store,
+      'held-codex',
+      'usage_limit',
+      'held-codex',
+      'codex'
+    );
+    seedQueue(env.store, ['X1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).admission.X1).toMatchObject({
+      reason: 'provider_gate',
+      gate: {
+        runner: 'codex',
+        kind: 'usage_limit',
+        account: null,
+        unresolved: true
+      }
+    });
+  });
+
+  test('keeps the revision stable for an unchanged provider gate', async () => {
+    const env = setup({
+      config: { X1: { model: 'sol' } },
+      slots: 1,
+      accountCatalog: {
+        listCodex: vi.fn(async () => ({
+          ok: true,
+          accounts: [],
+          active_key: 'held-codex'
+        }))
+      }
+    });
+    seedProviderAttempt(env.store, 'held-codex', 'H1', {
+      runner: 'codex',
+      model: 'sol'
+    });
+    registerProviderHold(
+      env.store,
+      'held-codex',
+      'usage_limit',
+      'held-codex',
+      'codex'
+    );
+    seedQueue(env.store, ['X1']);
+    await env.scheduler.tick(WS);
+    const revision = env.store.snapshot(WS).revision;
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).revision).toBe(revision);
+  });
+
+  test('launches after recovery without retaining the provider gate record', async () => {
+    const env = setup({
+      config: { X1: { model: 'sol' } },
+      slots: 1,
+      accountCatalog: {
+        listCodex: vi.fn(async () => ({
+          ok: true,
+          accounts: [],
+          active_key: 'held-codex'
+        }))
+      }
+    });
+    seedProviderAttempt(env.store, 'held-codex', 'H1', {
+      runner: 'codex',
+      model: 'sol'
+    });
+    const held = registerProviderHold(
+      env.store,
+      'held-codex',
+      'usage_limit',
+      'held-codex',
+      'codex'
+    );
+    seedQueue(env.store, ['X1']);
+    await env.scheduler.tick(WS);
+    env.store.recoverProviderTarget(WS, {
+      runner: 'codex',
+      generation: held.generation,
+      kind: 'usage_limit',
+      model: 'sol',
+      account: 'held-codex'
+    });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['X1']);
+    expect(env.store.snapshot(WS).admission.X1).toBeUndefined();
   });
 
   test('blocks only the resolved account for a usage-limit target', async () => {
@@ -2562,6 +2760,15 @@ describe('scheduler provider hold and recovery', () => {
 
     expect(env.runner.spawnOrder).toEqual([]);
     expect(env.store.snapshot(WS).attempts.C1).toBeUndefined();
+    expect(env.store.snapshot(WS).admission.C1).toMatchObject({
+      reason: 'provider_gate',
+      gate: {
+        runner: 'claude',
+        kind: 'usage_limit',
+        account: null,
+        unresolved: true
+      }
+    });
   });
 
   test('reconciles a persisted 529 as provider hold before PR observation', async () => {
