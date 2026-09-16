@@ -93,3 +93,17 @@ describe('normalizeDoneRange', () => {
     expect(DONE_RANGE_OPTIONS.map((o) => o.value)).toEqual(['today', '7d']);
   });
 });
+
+describe('DONE_RANGE_OPTIONS short labels', () => {
+  test('carries the narrow-viewport label for both ranges', () => {
+    const shorts = DONE_RANGE_OPTIONS.map((option) => [
+      option.value,
+      option.short
+    ]);
+
+    expect(shorts).toEqual([
+      ['today', '오늘'],
+      ['7d', '7일']
+    ]);
+  });
+});

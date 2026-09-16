@@ -99,3 +99,28 @@ export function formatRelativeTime(timestamp_value, now_ms) {
   const years = Math.floor(days / 365);
   return `${years}년 전`;
 }
+
+/**
+ * Format a timestamp as the short LOCAL clock the wait surface uses (UI-8gem
+ * §9): `HH:MM` inside the same calendar day as `now`, `M/D HH:MM` otherwise.
+ * Unparseable input draws nothing (fail-quiet).
+ *
+ * @param {number | string | null | undefined} timestamp_value
+ * @param {number} [now_ms]
+ * @returns {string}
+ */
+export function formatClockLocal(timestamp_value, now_ms) {
+  const event_ms = coerceTimestampMs(timestamp_value);
+  if (event_ms === null) {
+    return '';
+  }
+  const d = new Date(event_ms);
+  const reference = new Date(typeof now_ms === 'number' ? now_ms : Date.now());
+  const pad = (/** @type {number} */ n) => String(n).padStart(2, '0');
+  const clock = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const same_day =
+    d.getFullYear() === reference.getFullYear() &&
+    d.getMonth() === reference.getMonth() &&
+    d.getDate() === reference.getDate();
+  return same_day ? clock : `${d.getMonth() + 1}/${d.getDate()} ${clock}`;
+}

@@ -440,13 +440,6 @@ export function createMonitorView(mount_element, options) {
   /** @type {string|null} */
   let open_failure_detail = null;
   /**
-   * 공급자 보류 상세 팝오버가 열린 attempt (UI-jr8v §10). Worker 탭과 같은
-   * 열림 규칙이다 — 뱃지 클릭이 토글하고 바깥 클릭·Escape가 닫는다.
-   *
-   * @type {string|null}
-   */
-  let open_provider_hold_detail = null;
-  /**
    * 열려 있는 `⋯ 다른 방법으로` 복구 선택기 (UI-jr8v §10). 모니터는 여러 레포를
    * 한 화면에 모으므로 draft만으로는 어느 큐에 보낼지 알 수 없다 — 카드의
    * `root_dir`을 함께 든다.
@@ -473,6 +466,17 @@ export function createMonitorView(mount_element, options) {
   function doneRangeLabel() {
     const opt = DONE_RANGE_OPTIONS.find((o) => o.value === done_range);
     return opt ? opt.label : '';
+  }
+
+  /**
+   * The narrow-viewport form of the same period (UI-8gem §8) — the long form
+   * stays in the chip `title`.
+   *
+   * @returns {string}
+   */
+  function doneRangeShort() {
+    const opt = DONE_RANGE_OPTIONS.find((o) => o.value === done_range);
+    return opt ? opt.short : '';
   }
 
   // lit-html은 렌더 호스트의 자식을 통째로 소유하므로, 드로어는 렌더 대상
@@ -1304,12 +1308,7 @@ export function createMonitorView(mount_element, options) {
                 // 이미 실어 온 두 값을 여기서 버리면 보류 attempt가 모니터에서만
                 // 실행 중 타일 — 도는 시계와 ⏸ — 로 보인다.
                 provider_hold: item.run_state === 'provider_hold',
-                hold: item.hold
-                  ? {
-                      ...item.hold,
-                      open: open_provider_hold_detail === item.attempt_id
-                    }
-                  : null,
+                hold: item.hold || null,
                 retry: item.retry || null,
                 // 환경 보류의 `↻ 지금 재시도` CAS 재료 (UI-01wh §3.3) — 같은
                 // 렌더러가 두 탭에서 같은 foot을 그린다.
@@ -1734,6 +1733,7 @@ export function createMonitorView(mount_element, options) {
           : [],
       doneItems: () => lanes.done,
       rangeLabel: doneRangeLabel,
+      rangeShort: doneRangeShort,
       transport,
       implPresetStore: options.execPresetStore,
       gotoWorkerTab,
@@ -2255,12 +2255,6 @@ export function createMonitorView(mount_element, options) {
       doRender();
       return;
     }
-    if (cls.contains('rtile__provider-hold-badge')) {
-      open_provider_hold_detail =
-        open_provider_hold_detail === attempt_id ? null : attempt_id;
-      doRender();
-      return;
-    }
     if (cls.contains('rtile__attempt-copy')) {
       const value = button.getAttribute('data-attempt-id') || '';
       if (value) {
@@ -2774,13 +2768,6 @@ export function createMonitorView(mount_element, options) {
       open_failure_detail = null;
       changed = true;
     }
-    if (
-      open_provider_hold_detail &&
-      !closest('.rtile__provider-hold-pop, .rtile__provider-hold-badge')
-    ) {
-      open_provider_hold_detail = null;
-      changed = true;
-    }
     if (changed) {
       doRender();
     }
@@ -2802,14 +2789,12 @@ export function createMonitorView(mount_element, options) {
     }
     if (
       open_failure_detail === null &&
-      open_provider_hold_detail === null &&
       provider_resume === null &&
       !external_closed
     ) {
       return;
     }
     open_failure_detail = null;
-    open_provider_hold_detail = null;
     provider_resume = null;
     doRender();
   }

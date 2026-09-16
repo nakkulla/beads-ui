@@ -41,11 +41,14 @@ export const CLOSED_RANGE_OPTIONS = [
  * keeps its own `30d`/`all` (its data comes from a `closed-issues`
  * subscription, not from the retained snapshot).
  *
- * @type {ReadonlyArray<{ value: DoneRange, label: string }>}
+ * `short` is the narrow-viewport summary-chip label (UI-8gem §8); `label` stays
+ * the long form the dropdown and the chip `title` keep.
+ *
+ * @type {ReadonlyArray<{ value: DoneRange, label: string, short: string }>}
  */
 export const DONE_RANGE_OPTIONS = [
-  { value: 'today', label: '오늘' },
-  { value: '7d', label: '최근 7일' }
+  { value: 'today', label: '오늘', short: '오늘' },
+  { value: '7d', label: '최근 7일', short: '7일' }
 ];
 
 /**

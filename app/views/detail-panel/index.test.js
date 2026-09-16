@@ -283,7 +283,7 @@ describe('views/detail-panel', () => {
       panel.load(id);
 
       expect(mount.querySelector('.wait-verdict')?.textContent).toContain(
-        '⚠ 해제 지연'
+        '⚠ 외부 계산 · 지연'
       );
       expect(mount.textContent).toContain(reason.headline);
       if (issue_type === 'gate') {

@@ -21,6 +21,7 @@ import {
   recTooltip
 } from '../../utils/rec-settings.js';
 import {
+  formatClockLocal,
   formatRelativeTime,
   formatTimestampLocal
 } from '../../utils/relative-time.js';
@@ -31,9 +32,21 @@ import {
 } from '../../utils/token-usage.js';
 import { stepperTemplate } from '../board/stepper.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
+import {
+  autoResumeText,
+  autoSwitchText,
+  providerClock
+} from './gate-labels.js';
 import { QUEUE_GRACE_MS, routeChipValue } from './lane-model.js';
 import { logPathTemplate } from './log-path.js';
 import { placementTitle } from './placement.js';
+import {
+  WAIT_KINDS,
+  representativeWaitReason,
+  waitBadgeText,
+  waitKindRow,
+  waitScopeOf
+} from './wait-vocabulary.js';
 
 /**
  * @param {unknown} sha
@@ -1755,6 +1768,22 @@ export function graceRemainingMs(added_at, now) {
 }
 
 /**
+ * The `queue_hold` verdict this row's gate chip must wear (§7.1), or `null`
+ * when the queue reason is absent or normal.
+ *
+ * @param {Record<string, any>} item
+ * @returns {'overdue'|'action_required'|null}
+ */
+function queueHoldVerdictOf(item) {
+  const reason = (item.wait_reasons || []).find(
+    (/** @type {import('../../protocol.js').WaitReason} */ entry) =>
+      entry.kind === 'queue_hold' &&
+      (entry.verdict === 'overdue' || entry.verdict === 'action_required')
+  );
+  return reason ? reason.verdict : null;
+}
+
+/**
  * The 게이트 칩 — 슬롯 4a 판정 칩 (UI-01wh §3.2). 줄 맨 앞에 선다: "왜 못 가나"의
  * 가장 바깥 사정이 큐 전체의 사정이기 때문이다. 클릭은 사유 팝업이고 칩은 상태를
  * 쓰지 않는다 (칩 문법 §4.5). 재료가 없으면 그리지 않는다 (fail-quiet).
@@ -1764,15 +1793,23 @@ export function graceRemainingMs(added_at, now) {
  * @param {string} bead_id - 이 행의 이슈 ID. 팝업 열림 키의 한 축이고 클릭
  * 핸들러가 `closest('[data-bead-id]')`로 읽는 좌표다.
  * @param {boolean} open
+ * @param {'overdue'|'action_required'|null} [queue_verdict] - `queue_hold`
+ * 사유의 판정, 있으면 칩이 경고색을 든다 (§7.1).
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function gateChipTemplate(gate, bead_id, open) {
+export function gateChipTemplate(gate, bead_id, open, queue_verdict = null) {
   if (!gate) {
     return '';
   }
+  const verdict_class =
+    queue_verdict === 'action_required'
+      ? ' worker-dep--gate-action'
+      : queue_verdict === 'overdue'
+        ? ' worker-dep--gate-overdue'
+        : '';
   return html`<button
     type="button"
-    class="worker-dep worker-dep--gate worker-dep--gate-${gate.kind} judgement-chip"
+    class="worker-dep worker-dep--gate worker-dep--gate-${gate.kind}${verdict_class} judgement-chip"
     data-chip-key="gate"
     data-bead-id=${bead_id}
     aria-expanded=${open ? 'true' : 'false'}
@@ -1920,24 +1957,261 @@ export function providerProbeButtonTemplate(item) {
 }
 
 /**
- * Display the server verdict without interpreting its thresholds.
+ * Display the server verdict in the §5.1 shape — kind label plus verdict
+ * glyph — without interpreting the server's thresholds. The vocabulary table
+ * owns every word, so the 상세 패널 dependency section and the 막힘 popover read
+ * the same badge the card draws.
  *
  * @param {import('../../protocol.js').WaitReason} reason
+ * @param {{ now?: number, label?: string }} [clocks]
  * @returns {string}
  */
-export function waitVerdictLabel(reason) {
-  const label = {
-    normal: '⏳ 정상 대기',
-    overdue:
-      reason.kind === 'external_job' &&
-      reason.verdict_reason?.code === 'settle_overdue'
-        ? '⚠ 해제 지연'
-        : '⚠ 지연',
-    action_required: '⛔ 조치 필요'
-  }[reason.verdict];
-  return label
-    ? `${label}${reason.verdict !== 'normal' && reason.verdict_reason?.message ? ` · ${reason.verdict_reason.message}` : ''}`
-    : '';
+export function waitVerdictLabel(reason, clocks = {}) {
+  const row = waitKindRow(reason);
+  return waitBadgeText(row, reason.verdict, {
+    since: reason.since,
+    now: clocks.now,
+    ...(clocks.label ? { label: clocks.label } : {})
+  });
+}
+
+/**
+ * The `범례 보기` link every wait popup ends with (§6.2). The click handler is
+ * global (`[data-help-anchor]` delegation) so the card never owns the dialog.
+ *
+ * @param {string} anchor_id - The vocabulary row `id` this card drew.
+ * @returns {import('lit-html').TemplateResult}
+ */
+function legendLinkTemplate(anchor_id) {
+  return html`<button
+    type="button"
+    class="wait-verdict__legend"
+    data-help-anchor=${anchor_id}
+  >
+    범례 보기
+  </button>`;
+}
+
+/**
+ * The wait badge's popup body (§6.2). It mirrors `chipPopoverTemplate` markup
+ * so both popups share one stylesheet, and adds the legend link as the last
+ * row — a plain string list cannot carry a button.
+ *
+ * @param {string} title
+ * @param {string[]} lines
+ * @param {string} anchor_id
+ * @returns {import('lit-html').TemplateResult}
+ */
+function waitPopoverTemplate(title, lines, anchor_id) {
+  return html`<div class="chip-popover" role="dialog" aria-label=${title}>
+    <div class="chip-popover__title">${title}</div>
+    <ul class="chip-popover__lines">
+      ${lines.map((line) => html`<li>${line}</li>`)}
+      <li>${legendLinkTemplate(anchor_id)}</li>
+    </ul>
+  </div>`;
+}
+
+/**
+ * @typedef {Object} WaitBadgeMaterial
+ * @property {'parked'|'retry_wait'|'waiting'|'provider_hold'|null} [held_kind] -
+ * The held projection kind of a running tile; queue rows pass nothing.
+ * @property {{ cause?: string|null, returning?: boolean, recovery?: { label?: string|null, sentence?: string|null }|null }|null} [held]
+ * @property {Record<string, any>|null} [hold] - `HoldTile` for `provider_hold`.
+ * @property {import('../../protocol.js').WaitReason[]} [wait_reasons]
+ * @property {import('../../protocol.js').WaitReason|null} [reason] - An
+ * explicit reason that bypasses the representative rule (외부 작업 행).
+ * @property {string} [label] - A label the card knows better than the table
+ * (`retry_wait`의 회차·예약 시각).
+ * @property {number} [now]
+ */
+
+/**
+ * Map one held projection onto its vocabulary row id (§6.2). `null` means the
+ * tile carries no held kind, so the representative reason decides.
+ *
+ * @param {WaitBadgeMaterial} material
+ * @returns {string|null}
+ */
+function heldRowId(material) {
+  const kind = material.held_kind || null;
+  if (kind === 'parked') {
+    return 'awaiting_user';
+  }
+  if (kind === 'retry_wait') {
+    return 'retry_wait';
+  }
+  if (kind === 'provider_hold') {
+    return material.hold?.kind === 'outage'
+      ? 'provider_hold-outage'
+      : 'provider_hold-usage_limit';
+  }
+  if (kind !== 'waiting') {
+    return null;
+  }
+  const wait = material.held || null;
+  if (wait?.recovery) {
+    return 'recovery';
+  }
+  if (wait?.cause === 'base_moved') {
+    return 'base_moved';
+  }
+  return wait?.returning === true ? 'prerequisite-returning' : 'prerequisite';
+}
+
+/**
+ * The ONE slot-1 wait badge of a card (§6.2). The kind label comes from the
+ * held projection when there is one, and the verdict from the reason of that
+ * same kind — a missing reason draws the kind alone, because absence is not
+ * `normal` (§5.1 fail-quiet). No material draws nothing.
+ *
+ * @param {WaitBadgeMaterial} material
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function waitStatusBadge(material) {
+  const now = typeof material.now === 'number' ? material.now : Date.now();
+  const reasons = (material.wait_reasons || []).filter(
+    (reason) => waitScopeOf(reason.kind) === 'bead'
+  );
+  // 외부 작업 행은 자기 gate 사유를 직접 건네므로 대표 사유 규칙 밖이다 (§7.3).
+  if (material.reason) {
+    const forced_row = waitKindRow(material.reason);
+    return forced_row
+      ? waitBadgeTemplate(forced_row, material.reason, [], null, now, '')
+      : '';
+  }
+  const held_row_id = heldRowId(material);
+  const held_row = held_row_id
+    ? WAIT_KINDS.find((entry) => entry.id === held_row_id) || null
+    : null;
+  /** @type {import('../../protocol.js').WaitReason|null} */
+  let reason = null;
+  /** @type {import('./wait-vocabulary.js').WaitKindRow|null} */
+  let badge_row = held_row;
+  if (held_row) {
+    const same_kind = reasons.filter((entry) =>
+      held_row.kind === 'prerequisite'
+        ? ['prerequisite', 'prerequisite_foreign'].includes(entry.kind)
+        : entry.kind === held_row.kind
+    );
+    reason = /** @type {import('../../protocol.js').WaitReason|null} */ (
+      representativeWaitReason(same_kind)
+    );
+  } else {
+    reason = /** @type {import('../../protocol.js').WaitReason|null} */ (
+      representativeWaitReason(reasons)
+    );
+    badge_row = waitKindRow(reason);
+  }
+  if (!badge_row) {
+    return '';
+  }
+  return waitBadgeTemplate(
+    badge_row,
+    reason,
+    reasons.filter((entry) => entry !== reason),
+    material.hold || null,
+    now,
+    material.label ||
+      (badge_row.dynamic_label === true
+        ? material.held?.recovery?.label || ''
+        : badge_row.label)
+  );
+}
+
+/**
+ * Draw one `.wait-verdict` badge and its popup from an already chosen row.
+ *
+ * @param {import('./wait-vocabulary.js').WaitKindRow} row
+ * @param {import('../../protocol.js').WaitReason|null} reason - The verdict
+ * source; `null` draws the kind alone with the 대기 종류 popup (§6.2).
+ * @param {import('../../protocol.js').WaitReason[]} others - The other
+ * bead-scope reasons this card carries, one popup line each.
+ * @param {Record<string, any>|null} hold - `HoldTile` for provider holds.
+ * @param {number} now
+ * @param {string} [label_override] - `recovery` hands its dynamic label in.
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function waitBadgeTemplate(row, reason, others, hold, now, label_override) {
+  const label = label_override || row.label;
+  if (!label) {
+    return '';
+  }
+  const text = waitBadgeText(row, reason ? reason.verdict : null, {
+    since: reason?.since,
+    now,
+    label
+  });
+  if (!text) {
+    return '';
+  }
+  const other_lines = others
+    .map((entry) => {
+      const other_row = waitKindRow(entry);
+      if (!other_row) {
+        return '';
+      }
+      const other_label =
+        other_row.dynamic_label === true ? '' : other_row.label;
+      return `${[other_row.glyph, other_label].filter(Boolean).join(' ')} — ${entry.headline}`;
+    })
+    .filter(Boolean);
+  // 공급자 보류의 상세는 배지에서 팝업으로 내려왔다 (§5.2 정정) — 종전 별도
+  // 팝오버가 싣던 사실을 하나도 잃지 않는다.
+  const provider_lines =
+    row.kind === 'provider_hold' && hold
+      ? [
+          '작업 실패 아님',
+          typeof hold.summary === 'string' ? hold.summary : '',
+          typeof hold.message === 'string' ? hold.message : '',
+          [
+            hold.target?.model,
+            hold.target?.account_alias || hold.target?.account
+          ]
+            .filter((value) => typeof value === 'string' && value.length > 0)
+            .join(' · '),
+          providerClock(hold.resets_at)
+            ? `리셋 ${formatClockLocal(hold.resets_at, now)}`
+            : '',
+          providerClock(hold.next_probe_at)
+            ? `다음 프로브 ${formatClockLocal(hold.next_probe_at, now)}`
+            : '',
+          autoResumeText(hold.auto_resume),
+          autoSwitchText(hold.auto_switch),
+          typeof hold.log_path === 'string' ? hold.log_path : ''
+        ].filter(Boolean)
+      : [];
+  const lines = reason
+    ? [
+        reason.verdict === 'normal' ? '' : reason.verdict_reason?.message || '',
+        reason.release || row.release,
+        reason.since ? `관측 시작 ${formatClockLocal(reason.since, now)}` : '',
+        reason.next_check_at
+          ? `다음 확인 ${formatClockLocal(reason.next_check_at, now)}`
+          : '',
+        reason.resets_at
+          ? `리셋 ${formatClockLocal(reason.resets_at, now)}`
+          : '',
+        ...provider_lines,
+        ...(other_lines.length > 0
+          ? [`다른 사유 ${other_lines.length}`, ...other_lines]
+          : [])
+      ].filter(Boolean)
+    : [row.release, ...provider_lines].filter(Boolean);
+  return html`<details class="wait-verdict" @click=${stopWaitClick}>
+    <summary
+      class="worker-mini__badge"
+      data-verdict=${ifDefined(reason ? reason.verdict : undefined)}
+      title=${row.when}
+    >
+      ${text}
+    </summary>
+    ${waitPopoverTemplate(
+      reason ? '대기 판정 근거' : '대기 종류',
+      /** @type {string[]} */ (lines),
+      row.id
+    )}
+  </details>`;
 }
 
 /**
@@ -1960,14 +2234,15 @@ export function waitReasonLines(reason, options = {}) {
   if (!reason) {
     return { badge: '', body: '', actions: '', times: '' };
   }
-  const label = waitVerdictLabel(reason);
-  const since = formatTimestampLocal(reason.since);
-  const next = formatTimestampLocal(reason.next_check_at);
-  const reset = formatTimestampLocal(reason.resets_at);
+  const now_ms = options.now ?? Date.now();
+  const label = waitVerdictLabel(reason, { now: now_ms });
+  const since = formatClockLocal(reason.since, now_ms);
+  const next = formatClockLocal(reason.next_check_at, now_ms);
+  const reset = formatClockLocal(reason.resets_at, now_ms);
   const observed =
     options.last_observed_at === undefined
       ? since
-      : formatTimestampLocal(options.last_observed_at);
+      : formatClockLocal(options.last_observed_at, now_ms);
   const countdown =
     reason.kind === 'provider_hold' &&
     reason.verdict === 'normal' &&
@@ -2049,29 +2324,19 @@ export function waitReasonLines(reason, options = {}) {
           })}
         </details>`
       : '',
-    body:
-      reason.headline || reason.release
-        ? html`<div class="wait-reason__lines">
-            ${reason.headline
-              ? html`<div class="wait-reason__headline">
-                  ${reason.headline}
-                </div>`
-              : ''}
-            ${reason.release
-              ? html`<div class="wait-reason__release">${reason.release}</div>`
-              : ''}
-          </div>`
-        : '',
+    // 슬롯 3은 headline 한 줄이다 (§6.3): `release`와 안내문은 배지 팝업이 싣는다.
+    body: reason.headline
+      ? html`<div class="wait-reason__lines">
+          <div class="wait-reason__headline">${reason.headline}</div>
+        </div>`
+      : '',
     actions: actions.some((action) => action !== '') ? html`${actions}` : '',
     times:
       reset || observed || next
         ? html`<div class="worker-mini__times wait-reason__times">
             ${reset
               ? `리셋 ${reset}`
-              : [
-                  observed ? `마지막 확인 ${observed}` : '',
-                  next ? `다음 ${next}` : ''
-                ]
+              : [observed ? `확인 ${observed}` : '', next ? `다음 ${next}` : '']
                   .filter(Boolean)
                   .join(' · ')}
           </div>`
@@ -2087,9 +2352,24 @@ export function waitReasonLines(reason, options = {}) {
 export function blockedSummary(workspaces) {
   /** @type {Map<string, { root_dir: string, id: string, name: string, reasons: import('../../protocol.js').WaitReason[] }>} */
   const subjects = new Map();
+  /** @type {Set<string>} */
+  const queue_hold_subjects = new Set();
+  /** @type {Set<string>} */
+  const manual_start_subjects = new Set();
   for (const workspace of workspaces) {
     for (const reason of workspace.wait_reasons || []) {
       if (reason.subject.root_dir !== workspace.root_dir) {
+        continue;
+      }
+      // 큐 사유는 이슈의 사정이 아니므로 `막힘 N`에 들어가지 않고 팝오버 마지막
+      // 줄로만 센다 (§8).
+      if (waitScopeOf(reason.kind) === 'queue') {
+        const subject = `${workspace.root_dir}/${reason.subject.bead_id}`;
+        if (reason.kind === 'queue_hold') {
+          queue_hold_subjects.add(subject);
+        } else {
+          manual_start_subjects.add(subject);
+        }
         continue;
       }
       const key = `${workspace.root_dir}\u0000${reason.subject.bead_id}`;
@@ -2107,12 +2387,11 @@ export function blockedSummary(workspaces) {
   const groups = [
     { label: '외부 계산', kinds: ['external_job'] },
     { label: '선행', kinds: ['prerequisite', 'prerequisite_foreign'] },
-    { label: '공급자', kinds: ['provider_hold', 'queue_hold'] },
+    { label: '공급자', kinds: ['provider_hold'] },
     { label: '사람', kinds: ['awaiting_user', 'stale_work'] },
-    { label: '수동 출발', kinds: ['auto_advance_off'] },
+    { label: '복구', kinds: ['recovery'] },
     { label: '기준 이동', kinds: ['base_moved'] },
-    { label: '재시도', kinds: ['retry_wait'] },
-    { label: '복구', kinds: ['recovery'] }
+    { label: '재시도', kinds: ['retry_wait'] }
   ]
     .map((group) => ({
       label: group.label,
@@ -2131,7 +2410,14 @@ export function blockedSummary(workspaces) {
     action_count: entries.filter((entry) =>
       entry.reasons.some((reason) => reason.verdict === 'action_required')
     ).length,
-    groups
+    groups,
+    // 큐 사정은 건수만 남는다 (§8): 항목 행이 없으므로 카드로 데려갈 곳도 없다.
+    queue_line: [
+      queue_hold_subjects.size > 0 ? `정지 ${queue_hold_subjects.size}` : '',
+      manual_start_subjects.size > 0
+        ? `수동 출발 ${manual_start_subjects.size}`
+        : ''
+    ].filter(Boolean)
   };
 }
 
@@ -2206,7 +2492,13 @@ export function blockedSummaryTemplate(workspaces, reveal) {
   }
   return html`<details class="wait-summary" @click=${stopWaitClick}>
     <summary class="worker-kpi__chip">
-      막힘 ${summary.count} · 조치 필요 ${summary.action_count}
+      막힘
+      ${summary.count}${summary.action_count > 0
+        ? html` ·
+            <span class="wait-summary__action"
+              >⛔ ${summary.action_count}</span
+            >`
+        : ''}
     </summary>
     <div class="wait-summary__popover" role="dialog" aria-label="막힘 요약">
       ${summary.groups.map(
@@ -2235,8 +2527,87 @@ export function blockedSummaryTemplate(workspaces, reveal) {
             )}
           </section>`
       )}
+      ${summary.queue_line.length > 0
+        ? html`<div class="wait-summary__queue">
+            큐: ${summary.queue_line.join(' · ')}
+          </div>`
+        : ''}
     </div>
   </details>`;
+}
+
+/**
+ * The four summary chips both tabs draw (§8). Worker keeps its `base` chip and
+ * Monitor its `세션 N` after them, so the shared part is exactly the part that
+ * answers the same question on both screens. `막힘` draws only when something
+ * is blocked (fail-quiet), and the long range label stays in the `title`.
+ *
+ * @param {Object} options
+ * @param {number} options.running
+ * @param {number} options.pr_wait
+ * @param {number} options.done
+ * @param {string} options.range_label - The long form (`최근 7일`).
+ * @param {string} options.range_short - The chip form (`7일`).
+ * @param {Parameters<typeof blockedSummary>[0]} options.workspaces
+ * @param {(root_dir: string, bead_id: string) => void} [options.reveal]
+ * @param {number} [options.session] - 세션 N, drawn only above zero.
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function summaryChipsTemplate(options) {
+  const short = options.range_short || options.range_label;
+  return html`<span class="worker-kpi__chip worker-kpi__chip--running"
+      >실행 <b>${options.running}</b></span
+    ><span
+      class="worker-kpi__chip worker-kpi__chip--pr"
+      title="PR 머지를 기다리는 이슈"
+      >PR <b>${options.pr_wait}</b></span
+    ><span
+      class="worker-kpi__chip worker-kpi__chip--done"
+      title=${`${options.range_label} 완료`}
+      >${short} 완료 <b>${options.done}</b></span
+    >${blockedSummaryTemplate(
+      options.workspaces,
+      options.reveal
+    )}${typeof options.session === 'number' && options.session > 0
+      ? html`<span class="worker-kpi__chip worker-kpi__chip--session"
+          >세션 <b>${options.session}</b></span
+        >`
+      : ''}`;
+}
+
+/**
+ * Split one token/cost badge label into the wide and narrow forms (§8). The
+ * narrow form keeps the provider and the money; a label without a parseable
+ * cost stays whole, because dropping half of an unknown shape says less than
+ * repeating it.
+ *
+ * @param {string} label
+ * @returns {string}
+ */
+export function tokenChipShortText(label) {
+  const text = typeof label === 'string' ? label : '';
+  const cost = text.match(/\$[\d.,]+/);
+  if (!cost) {
+    return text;
+  }
+  const provider = text.split(' ')[0] || '';
+  const partial = text.includes('부분') ? ' · 부분' : '';
+  return `${provider} ${cost[0]}${partial}`;
+}
+
+/**
+ * The two-form token/cost chip body (§8): the media query shows exactly one.
+ *
+ * @param {string} label - The wide form, shown above 640px.
+ * @param {string} [narrow_source] - The label the short form is derived from;
+ * the wide form itself when the caller has no narrower source.
+ * @returns {import('lit-html').TemplateResult}
+ */
+export function tokenChipTemplate(label, narrow_source) {
+  return html`<span class="tok__full">${label}</span
+    ><span class="tok__short"
+      >${tokenChipShortText(narrow_source || label)}</span
+    >`;
 }
 
 /**
@@ -2410,9 +2781,16 @@ export function miniRow(item, options = {}) {
     wait_reasons.some((reason) =>
       ['prerequisite', 'prerequisite_foreign'].includes(reason.kind)
     );
-  const wait_lines = wait_reasons.map((reason) =>
-    waitReasonLines(reason, { item })
-  );
+  // 카드당 상태 배지 하나, 본문 한 줄, 시각 한 줄 (§6). 나머지 사유는 배지
+  // 팝업의 `다른 사유` 목록에 남는다.
+  const wait_badge = waitStatusBadge({ wait_reasons });
+  const representative = representativeWaitReason(wait_reasons);
+  const wait_lines = representative
+    ? waitReasonLines(
+        /** @type {import('../../protocol.js').WaitReason} */ (representative),
+        { item }
+      )
+    : { badge: '', body: '', actions: '', times: '' };
   const badges = Array.isArray(item.badges) ? item.badges : [];
   const provider_badges = providerUsageBadges(item.usage);
   const usage_label = formatUsageTotalWithCost(item.usage);
@@ -2697,7 +3075,12 @@ export function miniRow(item, options = {}) {
   // 게이트 칩은 4a 줄 맨 앞이다 (UI-01wh §3.2) — 유예 칩과 같은 질문에 답하지만
   // 가장 바깥 사정이므로 먼저 선다. 팝업은 그 칩이 선 줄이 싣는다 (UI-8x90 §5).
   const gate_open = chipOpen(item, 'gate');
-  const gate_el = gateChipTemplate(item.gate, item.id, gate_open);
+  const gate_el = gateChipTemplate(
+    item.gate,
+    item.id,
+    gate_open,
+    queueHoldVerdictOf(item)
+  );
   const external_wait_el = externalWaitSummaryTemplate(item);
   const grace_el = graceChipTemplate(item.added_at);
   const receipt_badge_el = receiptBadgeChipTemplate(
@@ -2803,14 +3186,10 @@ export function miniRow(item, options = {}) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${reason_el}${wait_lines.map(
-                (line) => line.badge
-              )}${actions_el}
+              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${reason_el}${wait_badge}${actions_el}
             </div>
             <div class="worker-mini__body">${title_el}${stale_details}</div>
-            ${wait_lines.map(
-              (line) => line.body
-            )}${deps_el}${chips_el}${has_foot
+            ${wait_lines.body}${deps_el}${chips_el}${has_foot
               ? html`<div class="worker-mini__foot">
                   ${merge_step_el}
                   <span class="worker-mini__actions"
@@ -2819,20 +3198,14 @@ export function miniRow(item, options = {}) {
                   ${discardReceiptTemplate(item)}
                 </div>`
               : ''}
-            ${wait_lines.map((line) => line.times)}${timesMeta(item)}`
+            ${wait_lines.times}${timesMeta(item)}`
         : // 한 줄 변형은 본문을 `__line`으로 감싸고 메타 줄을 형제로 붙인다
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${foreign_repo_el}${badge_els}${reason_el}${wait_lines.map(
-                (line) => line.badge
-              )}${merge_step_el}${merge_el}${cancel_el}${discard_actions_el}${actions_el}
+              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${foreign_repo_el}${badge_els}${reason_el}${wait_badge}${merge_step_el}${merge_el}${cancel_el}${discard_actions_el}${actions_el}
             </div>
-            ${wait_lines.map(
-              (line) => line.body
-            )}${deps_el}${chips_el}${receipt_el}${wait_lines.map(
-              (line) => line.times
-            )}
+            ${wait_lines.body}${deps_el}${chips_el}${receipt_el}${wait_lines.times}
             ${timesMeta(item)}`}
   </div>`;
 }
@@ -2846,10 +3219,20 @@ export function miniRow(item, options = {}) {
  */
 export function externalWaitRow(item) {
   const reason = typeof item.reason === 'object' ? item.reason : null;
-  const lines = waitReasonLines(reason);
-  const last_at = formatTimestampLocal(item.last_observed_at);
-  const next_at = formatTimestampLocal(item.next_observation_at);
-  const completed_at = formatTimestampLocal(item.completed_at);
+  const now = Date.now();
+  const lines = waitReasonLines(reason, { now });
+  const watched = typeof item.watch_id === 'string' && item.watch_id.length > 0;
+  const last_at = formatClockLocal(item.last_observed_at, now);
+  const next_at = formatClockLocal(item.next_observation_at, now);
+  const completed_at = formatClockLocal(item.completed_at, now);
+  // 슬롯 1은 세 갈래다 (§7.3): 감시 기록이 없으면 라벨만, 열린 gate는 배지,
+  // 종료 확인 묶음의 행은 감시 상태를 라벨로 말한다.
+  const badge = watched && reason ? waitStatusBadge({ reason, now }) : '';
+  const label = watched
+    ? reason
+      ? ''
+      : `외부 계산 · ${item.monitor_state || '감시 기록'}`
+    : '대기 조건 · 감시 정보 없음';
   return html`<article
     class="worker-mini worker-mini--card worker-mini--static worker-mini--external-wait"
     data-bead-id=${item.id}
@@ -2857,15 +3240,12 @@ export function externalWaitRow(item) {
     data-lane="external_wait"
   >
     <div class="worker-mini__row1 external-wait__headline">
-      ${lines.badge}${reason ? html`<span>${item.gate_id} ·</span>` : ''}
-      <span class="external-wait__kind"
-        >${item.watch_id
-          ? reason
-            ? '외부 계산'
-            : '외부 작업'
-          : '대기 조건'}</span
+      ${badge}${label
+        ? html`<span class="external-wait__kind">${label}</span>`
+        : ''}
+      <span class="worker-mini__id external-wait__gate-id"
+        >${item.gate_id}</span
       >
-      <strong class="external-wait__job-state">${item.job_state}</strong>
       ${lines.actions}
     </div>
     <button
@@ -2877,85 +3257,74 @@ export function externalWaitRow(item) {
       <span class="worker-mini__id external-wait__gate"> ${item.gate_id} </span>
       <span class="worker-mini__title">${item.gate_title}</span>
     </button>
-    ${lines.body}
-    <div class="external-wait__monitor">
-      <span
-        class=${item.monitor_reason || item.overdue
-          ? 'external-wait__attention'
-          : ''}
-        >${item.monitor_state}</span
-      >
-      ${item.monitor_reason ? html`<span>· ${item.monitor_reason}</span>` : ''}
-      ${item.previous_job_state
-        ? html`<span>· ${item.previous_job_state}</span>`
-        : ''}
-      ${item.stale ? html`<span>· 오래된 자료</span>` : ''}
-    </div>
-    ${reason?.verdict === 'overdue'
-      ? html`<div class="wait-reason__guidance">
-          [지금 확인]으로 관측기를 지금 실행하거나 관측기 상태를 점검하세요
+    ${watched
+      ? html`<div class="wait-reason__lines">
+          <div class="wait-reason__headline">${externalWaitLine(item)}</div>
         </div>`
-      : ''}
-    ${reason?.verdict_reason?.code === 'job_failed'
-      ? html`<div class="wait-reason__guidance">
-          원래 이슈가 재개되면 복구 판단이 필요합니다
-        </div>`
-      : ''}
-    ${reason
+      : lines.body}
+    ${item.consumer_id
       ? html`<div class="worker-deps worker-deps--primary">
           <button
             type="button"
             class="worker-dep worker-dep__open"
-            data-external-open=${item.gate_id}
-            data-root-dir=${item.root_dir}
-          >
-            ⛓ ${item.gate_id}
-          </button>
-        </div>`
-      : ''}
-    ${item.consumer_id
-      ? html`<div class="external-wait__consumer">
-          원래 이슈
-          <button
-            type="button"
-            class="worker-dep worker-dep__open external-wait__consumer-link"
             data-external-open=${item.consumer_id}
             data-root-dir=${item.root_dir}
+            title=${`원래 이슈${item.consumer_title ? ` · ${item.consumer_title}` : ''}`}
           >
-            ${item.consumer_id}
+            → ${item.consumer_id}
           </button>
-          ${item.consumer_title
-            ? html`<span>· ${item.consumer_title}</span>`
-            : ''}
         </div>`
       : ''}
     <div class="worker-chips external-wait__identity">
       <span class="worker-mini__repo" title=${item.root_dir}
         >${item.workspace_name}</span
       >
-      ${item.job_id
-        ? html`<span class="worker-chip"
-            >${reason ? '작업' : '외부 작업'} ${item.job_id}</span
-          >`
-        : ''}
-      ${reason && item.ssh_host
+      ${item.ssh_host
         ? html`<span class="worker-chip">${item.ssh_host}</span>`
         : ''}
     </div>
     ${last_at || next_at || completed_at
       ? html`<div class="worker-mini__times external-wait__times">
-          ${last_at
-            ? html`<span
-                >${reason ? '마지막 확인' : '마지막 확인 시도'} ${last_at}</span
-              >`
-            : ''}
-          ${next_at
-            ? html`<span>${reason ? '· 다음' : '다음 확인'} ${next_at}</span>`
-            : ''}
-          ${completed_at ? html`<span>종료 ${completed_at}</span>` : ''}
+          ${completed_at
+            ? html`<span>종료 ${completed_at}</span>`
+            : html`${last_at ? html`<span>확인 ${last_at}</span>` : ''}${next_at
+                ? html`<span>· 다음 ${next_at}</span>`
+                : ''}`}
         </div>`
       : ''}
   </article>`;
+}
+
+/**
+ * The external-work row's one body line (§7.3). Host, job number and job state
+ * first, then whatever the monitor last said about it — the server builds the
+ * same sentence for its `external_job` headline, and where the two differ this
+ * assembly wins because it reads the observation the row itself carries.
+ *
+ * @param {Record<string, any>} item
+ * @returns {string}
+ */
+export function externalWaitLine(item) {
+  const head = [
+    typeof item.ssh_host === 'string' ? item.ssh_host : '',
+    item.job_id ? `작업 ${item.job_id}` : ''
+  ]
+    .filter(Boolean)
+    .join(' ');
+  const monitor_state =
+    typeof item.monitor_state === 'string' ? item.monitor_state : '';
+  const parts = [
+    head,
+    typeof item.job_state === 'string' ? item.job_state : '',
+    item.monitor_reason
+      ? item.monitor_reason
+      : monitor_state && monitor_state !== '자동 확인 중'
+        ? monitor_state
+        : '',
+    item.previous_job_state ? `이전 관측: ${item.previous_job_state}` : '',
+    item.stale ? '오래된 자료' : ''
+  ].filter(Boolean);
+  return parts.join(' · ');
 }
 
 /**
@@ -3106,7 +3475,17 @@ export function judgementPopoverContent(item, chip_key) {
     if (!gate) {
       return null;
     }
-    return { title: '자동 디스패치가 막혀 있다', lines: gate.lines };
+    // `queue_hold` 사유는 칩만 얹고 사라지므로 (§7.1) 그 판정 문장이 팝업의 첫
+    // 줄이다 — 배지도 본문도 만들지 않는 사유의 유일한 자리다.
+    const queue_hold = (item.wait_reasons || []).find(
+      (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
+        reason.kind === 'queue_hold' && reason.verdict !== 'normal'
+    );
+    const message = queue_hold?.verdict_reason?.message || '';
+    return {
+      title: '자동 디스패치가 막혀 있다',
+      lines: message ? [message, ...gate.lines] : gate.lines
+    };
   }
   if (chip_key === 'readiness') {
     const judgement = readinessJudgement(item);
@@ -3224,7 +3603,7 @@ export const AWAITING_USER_REASON_PREFIX = '사용자 리뷰 필요';
 /**
  * Read-only external wait summary shared by every consumer card shape.
  *
- * @param {{ external_wait_count?: number, external_waits?: Array<Record<string, any>>, root_dir?: string }} item
+ * @param {{ external_wait_count?: number, external_waits?: Array<Record<string, any>>, root_dir?: string, wait_reasons?: import('../../protocol.js').WaitReason[] }} item
  * @returns {import('lit-html').TemplateResult|''}
  */
 export function externalWaitSummaryTemplate(item) {
@@ -3236,9 +3615,35 @@ export function externalWaitSummaryTemplate(item) {
   ) {
     return '';
   }
+  // 글리프는 이 이슈가 기다리는 열린 gate 사유 중 최악 판정이다 (§7.3) — 원래
+  // 이슈 카드에서 `external_job`을 말하는 유일한 자리다.
+  const reasons = (item.wait_reasons || []).filter(
+    (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
+      reason.kind === 'external_job'
+  );
+  const verdict = reasons.some(
+    (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
+      reason.verdict === 'action_required'
+  )
+    ? 'action_required'
+    : reasons.some(
+          (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
+            reason.verdict === 'overdue'
+        )
+      ? 'overdue'
+      : reasons.length > 0
+        ? 'normal'
+        : null;
+  const row = WAIT_KINDS.find((entry) => entry.id === 'external_job') || null;
+  const label = waitBadgeText(row, verdict, {
+    label: `외부 계산 ${item.external_wait_count}건`
+  });
   return html`<details class="external-wait-summary">
-    <summary class="worker-dep worker-dep--blocked">
-      외부 계산 대기 ${item.external_wait_count}건
+    <summary
+      class="worker-dep worker-dep--blocked"
+      data-verdict=${ifDefined(verdict || undefined)}
+    >
+      ${label || `외부 계산 ${item.external_wait_count}건`}
     </summary>
     <div class="external-wait-summary__popover">
       ${waits.map(
@@ -3252,7 +3657,7 @@ export function externalWaitSummaryTemplate(item) {
             >
               ${wait.gate_id}
             </button>
-            <span>${wait.job_state} · ${wait.monitor_state}</span>
+            <span>${externalWaitLine(wait)}</span>
           </div>`
       )}
     </div>

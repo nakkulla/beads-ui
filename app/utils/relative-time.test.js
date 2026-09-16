@@ -96,3 +96,29 @@ describe('utils/relative-time formatTimestampLocal', () => {
     expect(formatTimestampLocal('not-a-date')).toBe('');
   });
 });
+
+describe('formatClockLocal', () => {
+  test('draws only the clock inside the same local day', async () => {
+    const { formatClockLocal } = await import('./relative-time.js');
+    const now = new Date(2026, 8, 16, 23, 30).getTime();
+
+    const text = formatClockLocal(new Date(2026, 8, 16, 9, 5).getTime(), now);
+
+    expect(text).toBe('09:05');
+  });
+
+  test('prefixes the month and day on another local day', async () => {
+    const { formatClockLocal } = await import('./relative-time.js');
+    const now = new Date(2026, 8, 16, 0, 10).getTime();
+
+    const text = formatClockLocal(new Date(2026, 8, 15, 23, 3).getTime(), now);
+
+    expect(text).toBe('9/15 23:03');
+  });
+
+  test('returns empty for unparseable input', async () => {
+    const { formatClockLocal } = await import('./relative-time.js');
+
+    expect(formatClockLocal('not-a-date', Date.now())).toBe('');
+  });
+});

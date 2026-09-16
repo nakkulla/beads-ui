@@ -689,7 +689,7 @@ describe('views/worker', () => {
 
     const row = mount.querySelector('.worker-mini[data-bead-id="A-2"]');
     expect(mount.querySelector('.wait-summary > summary')?.textContent).toMatch(
-      /막힘 1 · 조치 필요 1/
+      /막힘\s*1\s*·\s*⛔\s*1/
     );
     expect(row?.classList.contains('worker-mini--prerequisite')).toBe(true);
     expect(row?.getAttribute('draggable')).toBe('true');
@@ -2069,15 +2069,16 @@ describe('views/worker', () => {
     expect(
       tiles.filter((tile) => tile.classList.contains('rtile--failed'))
     ).toHaveLength(1);
-    expect(tiles[2].querySelector('.rtile__elapsed')?.textContent).toBe(
-      '확인 대기'
-    );
+    expect(tiles[2].querySelector('.rtile__elapsed')).toBeNull();
+    expect(
+      tiles[2].querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe('⛔ 확인 대기 · 조치 필요');
     expect(tiles[2].querySelector('.op-btn.rtile__resume')).not.toBeNull();
     expect(
       tiles[2].querySelector('.rtile__foot .rtile__discard')
     ).not.toBeNull();
     expect(mount.querySelector('.wait-summary')?.textContent).toMatch(
-      /막힘\s*1\s*·\s*조치 필요\s*1/
+      /막힘\s*1\s*·\s*⛔\s*1/
     );
     view.destroy();
   });
@@ -2150,12 +2151,10 @@ describe('views/worker', () => {
     const tile = /** @type {HTMLElement} */ (
       mount.querySelector('.rtile[data-attempt-id="aw"]')
     );
-    expect(tile.querySelector('.rtile__held-badge')?.textContent).toBe(
-      '⛓ 선행 대기'
-    );
-    expect(tile.querySelector('.rtile__elapsed')?.textContent).toBe(
-      '선행 대기'
-    );
+    expect(
+      tile.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe('⛓ 선행 대기');
+    expect(tile.querySelector('.rtile__elapsed')).toBeNull();
     expect(tile.querySelector('.rtile__held-summary')?.textContent).toBe(
       '선행 미충족으로 착수하지 않았습니다'
     );
@@ -2844,11 +2843,11 @@ describe('views/worker', () => {
     });
 
     mount
-      .querySelector('.rtile__provider-hold-badge')
+      .querySelector('.wait-verdict summary')
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(
-      mount.querySelector('.rtile__provider-hold-pop')?.textContent
+      mount.querySelector('.wait-verdict .chip-popover')?.textContent
     ).toContain('작업 실패 아님');
   });
 
@@ -3142,9 +3141,9 @@ describe('views/worker', () => {
     const tile = /** @type {HTMLElement} */ (
       mount.querySelector('.rtile[data-attempt-id="parked"]')
     );
-    expect(tile.querySelector('.rtile__held-badge')?.textContent).toBe(
-      '⏸ 세션 대기'
-    );
+    expect(
+      tile.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe('⏸ 세션 대기');
     expect(tile.querySelector('.rtile__held-summary')?.textContent).toContain(
       'REVISE 판정'
     );
@@ -3213,7 +3212,9 @@ describe('views/worker', () => {
     const tile = /** @type {HTMLElement} */ (
       mount.querySelector('.rtile[data-attempt-id="waiting"]')
     );
-    expect(tile.querySelector('.rtile__held-badge')?.textContent).toBe(
+    expect(
+      tile.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe(
       `↻ 재시도 대기 1/3 · ${new Date(next_at).toLocaleTimeString('ko-KR', {
         hour: '2-digit',
         minute: '2-digit'
@@ -9831,7 +9832,7 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
 
     // base 칩은 UI-j6wa §3에서 상시 표시가 되었다 — 선언을 읽지 못한
     // 픽스처에서는 `base ?`로 선다.
-    expect(chips).toEqual(['실행 1', 'PR 대기 1', '오늘 완료 1', 'base ?']);
+    expect(chips).toEqual(['실행 1', 'PR 1', '오늘 완료 1', 'base ?']);
   });
 
   test('sums the completed sessions token usage into one chip', () => {
@@ -9857,7 +9858,9 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
     });
 
     expect(
-      mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
+      mount
+        .querySelector('.worker-kpi__chip--tokens .tok__full')
+        ?.textContent?.trim()
     ).toBe('오늘 완료 · 누적 Claude τ 2.0k · 단가 없음');
   });
 
@@ -9900,7 +9903,9 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
     });
 
     expect(
-      mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
+      mount
+        .querySelector('.worker-kpi__chip--tokens .tok__full')
+        ?.textContent?.trim()
     ).toBe('오늘 완료 · 누적 Claude τ 5.3M · 단가 없음');
     expect(
       mount.querySelector('.worker-kpi__chip--tokens')?.getAttribute('title')
@@ -9927,7 +9932,7 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
     const mount = mountKpi(queue);
 
     const chip = mount
-      .querySelector('.worker-kpi__chip--tokens')
+      .querySelector('.worker-kpi__chip--tokens .tok__full')
       ?.textContent?.trim();
     const badge = mount
       .querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
@@ -9968,7 +9973,9 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
     });
 
     expect(
-      mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
+      mount
+        .querySelector('.worker-kpi__chip--tokens .tok__full')
+        ?.textContent?.trim()
     ).toBe('오늘 완료 · 누적 Claude τ 2.0k · $3.75');
   });
 
@@ -9999,7 +10006,9 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
     });
 
     expect(
-      mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
+      mount
+        .querySelector('.worker-kpi__chip--tokens .tok__full')
+        ?.textContent?.trim()
     ).toBe(
       '오늘 완료 · 누적 Claude τ 2.0k · $1.50 (+1 leg 단가 없음) · 부분 집계'
     );
@@ -10323,7 +10332,7 @@ describe('mobile ribbon (UI-58y2)', () => {
       Array.from(ribbon.querySelectorAll('.worker-kpi__chip')).map((el) =>
         (el.textContent || '').replace(/\s+/g, ' ').trim()
       )
-    ).toEqual(['실행 0', 'PR 대기 1', '오늘 완료 1']);
+    ).toEqual(['실행 0', 'PR 1', '오늘 완료 1']);
   });
 
   test('keeps the slot stepper and settings out of the ribbon', () => {
@@ -10385,7 +10394,9 @@ describe('token KPI zero handling (UI-58y2)', () => {
     });
 
     expect(
-      mount.querySelector('.worker-kpi__chip--tokens')?.textContent?.trim()
+      mount
+        .querySelector('.worker-kpi__chip--tokens .tok__full')
+        ?.textContent?.trim()
     ).toBe('오늘 완료 · 누적 Claude τ 0 · 단가 없음');
   });
 });

@@ -16,7 +16,7 @@ describe('provider hold badge text (UI-01wh §3.2)', () => {
       next_probe_at: 3000
     });
 
-    expect(text).toBe(`⚠️ 공급자 장애 · 다음 프로브 ${clock}`);
+    expect(text).toBe(`⏳ 공급자 장애 · 다음 프로브 ${clock}`);
   });
 
   test('formats the usage badge with an account alias', () => {

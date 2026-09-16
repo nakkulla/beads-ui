@@ -106,9 +106,63 @@ test('attaches prerequisite judgments to the second serial entry without admissi
   expect(second.id).toBe('A-2');
   expect(second.seq).toBe(2);
   expect(second.draggable).toBe(true);
-  expect(second.badges).toContain('⛓ 선행 대기');
+  expect(second.badges).not.toContain('⛓ 선행 대기');
   expect(second.wait_reasons).toEqual([reason]);
   expect(lanes.queue.map((item) => item.id)).toEqual(['A-1', 'A-2']);
+});
+
+test('gates a manual-start row with the 수동 출발 chip (UI-8gem §7.2)', () => {
+  const reason = {
+    kind: 'auto_advance_off',
+    subject: { root_dir: WS_A, bead_id: 'A-1' },
+    headline: '자동 진행 꺼짐 · 대기 1건 출발 안 함',
+    release: '[지금 시작] 또는 자동화 켜기',
+    verdict: 'normal',
+    targets: [],
+    actions: []
+  };
+
+  const lanes = buildLanes(
+    [workspace({ queue: [{ bead_id: 'A-1' }], wait_reasons: [reason] })],
+    [state()]
+  );
+
+  const item = lanes.queue[0];
+  expect(item.gate?.kind).toBe('auto_advance_off');
+  expect(item.gate?.label).toBe('⏸ 수동 출발');
+  expect(item.gate?.lines).toEqual([
+    '자동 진행이 꺼져 있어 큐가 스스로 출발하지 않습니다 · [지금 시작]으로 이 행만, 툴바 ▶ 자동화로 큐 전체를 출발'
+  ]);
+});
+
+test('lets a queue hold outrank the 수동 출발 chip (UI-8gem §7.2)', () => {
+  const reason = {
+    kind: 'auto_advance_off',
+    subject: { root_dir: WS_A, bead_id: 'A-1' },
+    headline: '자동 진행 꺼짐 · 대기 1건 출발 안 함',
+    release: '[지금 시작] 또는 자동화 켜기',
+    verdict: 'normal',
+    targets: [],
+    actions: []
+  };
+
+  const lanes = buildLanes(
+    [
+      workspace({
+        queue: [{ bead_id: 'A-1' }],
+        wait_reasons: [reason],
+        hold: {
+          kind: 'systemic',
+          cause: 'verify_failed',
+          since: 10,
+          bead_ids: ['A-1']
+        }
+      })
+    ],
+    [state()]
+  );
+
+  expect(lanes.queue[0].gate?.kind).toBe('systemic');
 });
 
 test.each(['runnable', 'pr_wait', 'done', 'running'])(
@@ -6769,7 +6823,7 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
     const gate = lanes.queue[0].gate;
     expect([
       gate?.kind,
-      gate?.lines.at(-1)?.startsWith('공급자: ⚠️ 공급자 장애')
+      gate?.lines.at(-1)?.startsWith('공급자: ⏳ 공급자 장애')
     ]).toEqual(['systemic', true]);
   });
 

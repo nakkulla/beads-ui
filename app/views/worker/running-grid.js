@@ -35,12 +35,6 @@ import {
   failureText
 } from './failure-labels.js';
 import {
-  autoResumeText,
-  autoSwitchText,
-  providerClock,
-  providerHoldBadgeText
-} from './gate-labels.js';
-import {
   creationSourceChipsTemplate,
   dependencyChipsTemplate,
   discardReceiptTemplate,
@@ -51,9 +45,11 @@ import {
   routeCardTone,
   routeChipTemplate,
   timesMeta,
-  waitReasonLines
+  waitReasonLines,
+  waitStatusBadge
 } from './lanes.js';
 import { logPathTemplate } from './log-path.js';
+import { representativeWaitReason } from './wait-vocabulary.js';
 
 /**
  * @import { SessionRefView } from '../../../server/worker/session-ref.js'
@@ -670,78 +666,6 @@ function failurePopoverTemplate(failure, now) {
 }
 
 /**
- * Provider-hold detail in the same decision-popover frame as failures.
- *
- * @param {HoldTile|null} hold
- * @returns {import('lit-html').TemplateResult|''}
- */
-function providerHoldPopoverTemplate(hold) {
-  if (!hold || hold.open !== true) {
-    return '';
-  }
-  const target = [
-    hold.target?.model,
-    hold.target?.account_alias || hold.target?.account
-  ]
-    .filter((value) => typeof value === 'string' && value.length > 0)
-    .join(' · ');
-  const reset = providerClock(hold.resets_at);
-  const auto_resume = autoResumeText(hold.auto_resume);
-  const auto_switch = autoSwitchText(hold.auto_switch);
-  return html`<div
-    class="rtile__failure-pop rtile__provider-hold-pop"
-    role="dialog"
-    aria-label="공급자 보류 상세"
-  >
-    <strong class="rtile__provider-hold-note">작업 실패 아님</strong>
-    <dl class="rtile__failure-kv">
-      ${hold.summary
-        ? html`<div>
-            <dt>보고</dt>
-            <dd>${hold.summary}</dd>
-          </div>`
-        : ''}
-      ${hold.message
-        ? html`<div>
-            <dt>원문</dt>
-            <dd>${hold.message}</dd>
-          </div>`
-        : ''}
-      ${target
-        ? html`<div>
-            <dt>타깃</dt>
-            <dd>${target}</dd>
-          </div>`
-        : ''}
-      ${reset
-        ? html`<div>
-            <dt>리셋</dt>
-            <dd>${reset}</dd>
-          </div>`
-        : ''}
-      ${auto_resume
-        ? html`<div>
-            <dt>자동 재개</dt>
-            <dd>${auto_resume}</dd>
-          </div>`
-        : ''}
-      ${auto_switch
-        ? html`<div>
-            <dt>계정 전환</dt>
-            <dd>${auto_switch}</dd>
-          </div>`
-        : ''}
-      ${hold.log_path
-        ? html`<div>
-            <dt>로그</dt>
-            <dd>${logPathTemplate(hold.log_path)}</dd>
-          </div>`
-        : ''}
-    </dl>
-  </div>`;
-}
-
-/**
  * @typedef {Object} MonitorTileOverlay
  * @property {string} [repo] - Owning workspace name; the badge is a coordinate
  * on the monitor and clicking it goes to that repo's Worker tab (UI-eey2 §7).
@@ -1178,45 +1102,48 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const wait = waiting ? tile.wait || null : null;
   const hold = provider_hold ? tile.hold || null : null;
   const held = parked || retry_wait || waiting || provider_hold;
-  const wait_lines = (tile.wait_reasons || []).map((reason) =>
-    waitReasonLines(
-      wait?.recovery && reason.kind === 'recovery'
-        ? {
-            ...reason,
-            headline: wait.cause
-              ? reason.headline.replace(
-                  `원인 ${wait.cause}`,
-                  `원인 ${failureText(wait.cause)}`
-                )
-              : reason.headline,
-            release: [reason.release, wait.resume_reason]
-              .filter(Boolean)
-              .join(' · ')
-          }
-        : reason,
-      { now }
-    )
+  // 복구 대기의 사유 문장은 타일이 아는 원인·재개 사유로 읽히게 다듬는다 —
+  // 서버 문장을 자르지 않고 토큰만 바꾼다.
+  const decorateWaitReason = (
+    /** @type {import('../../protocol.js').WaitReason} */ reason
+  ) =>
+    wait?.recovery && reason.kind === 'recovery'
+      ? {
+          ...reason,
+          headline: wait.cause
+            ? reason.headline.replace(
+                `원인 ${wait.cause}`,
+                `원인 ${failureText(wait.cause)}`
+              )
+            : reason.headline,
+          release: [reason.release, wait.resume_reason]
+            .filter(Boolean)
+            .join(' · ')
+        }
+      : reason;
+  const wait_reasons = (tile.wait_reasons || []).map(decorateWaitReason);
+  // 조작은 사유 전부에서 모으고 (§6.2), 배지·본문·시각은 카드당 하나다 (§6).
+  const wait_lines = wait_reasons.map((reason) =>
+    waitReasonLines(reason, { now })
   );
+  const wait_representative = representativeWaitReason(wait_reasons);
+  const wait_body_lines = wait_representative
+    ? waitReasonLines(
+        /** @type {import('../../protocol.js').WaitReason} */ (
+          wait_representative
+        ),
+        { now }
+      )
+    : { badge: '', body: '', actions: '', times: '' };
   const paused = !!tile.paused;
   // 대기 중인 타일에 시계를 돌리면 멈춰 있는 것이 일하는 것처럼 읽힌다.
+  // held 타일의 경과/상태 라벨은 그리지 않는다 (§6.2) — 슬롯 1 배지가 이미 그
+  // 종류와 판정을 말한다. 실패 타일의 `실패`·`중단됨`은 그대로다.
   const elapsed =
     failed || held
-      ? tile.status_label ||
-        (parked
-          ? '세션 대기'
-          : retry_wait
-            ? '재시도 대기'
-            : waiting
-              ? wait?.recovery
-                ? wait.recovery.label || ''
-                : wait?.cause === 'base_moved'
-                  ? '반영 대기'
-                  : '선행 대기'
-              : provider_hold
-                ? '공급자 보류'
-                : tile.status === 'orphaned'
-                  ? '중단됨'
-                  : '실패')
+      ? held
+        ? ''
+        : tile.status_label || (tile.status === 'orphaned' ? '중단됨' : '실패')
       : paused
         ? '일시정지'
         : tile.status_label ||
@@ -1369,59 +1296,25 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     : '';
   // 판정 칩 슬롯은 하나다 (카드 문법 §5.1): 실패 뱃지가 서는 그 자리에 파킹과
   // backoff·선행·공급자 대기가 선다. 다섯은 배타적이라 폭이 늘지 않는다.
-  const held_badge = parked
-    ? html`<span
-        class="rtile__held-badge"
-        title="세션이 사용자 결정을 기다리며 정상 종료했습니다 — 큐는 계속 갑니다"
-        >⏸ 세션 대기</span
-      >`
-    : retry_wait
-      ? html`<span
-          class="rtile__held-badge"
-          title="환경성 실패의 자동 재시도를 기다립니다 — 사람이 할 일은 없습니다"
-          >${retryWaitBadgeText(tile.retry)}</span
-        >`
-      : waiting
-        ? tile.wait?.recovery
-          ? tile.wait.recovery.label
-            ? html`<span
-                class="rtile__held-badge"
-                title=${tile.wait.recovery.sentence || ''}
-                >⏳ ${tile.wait.recovery.label}</span
-              >`
-            : ''
-          : tile.wait?.cause === 'base_moved'
-            ? html`<span
-                class="rtile__held-badge"
-                title="검증된 후보를 보존했습니다 — 같은 세션에서 최신 기준 반영을 이어갑니다"
-                >반영 대기</span
-              >`
-            : tile.wait?.returning
-              ? html`<span
-                  class="rtile__held-badge"
-                  title="막고 있던 선행이 남지 않았습니다 — 다음 pass에서 후보로 돌아갑니다 (슬롯·레인 순서 대기)"
-                  >${wait_lines.length > 0 ? '🔓' : '⛓'} 복귀 대기</span
-                >`
-              : html`<span
-                  class="rtile__held-badge"
-                  title="세션이 선행 미충족으로 착수를 거부했습니다 — 선행이 닫히면 저절로 다시 돕니다"
-                  >⛓ 선행 대기</span
-                >`
-        : provider_hold &&
-            hold &&
-            !(tile.wait_reasons || []).some(
-              (reason) => reason.kind === 'provider_hold'
-            )
-          ? html`<button
-              type="button"
-              class="rtile__held-badge rtile__provider-hold-badge"
-              data-attempt-id=${tile.attempt_id}
-              aria-expanded=${hold.open === true ? 'true' : 'false'}
-              aria-label="공급자 보류 상세"
-            >
-              ${providerHoldBadgeText(hold)}
-            </button>`
-          : '';
+  const wait_status_badge = waitStatusBadge({
+    held_kind: parked
+      ? 'parked'
+      : retry_wait
+        ? 'retry_wait'
+        : waiting
+          ? 'waiting'
+          : provider_hold
+            ? 'provider_hold'
+            : null,
+    held: wait,
+    hold,
+    wait_reasons,
+    now,
+    // 재시도 대기 라벨은 회차와 예약 시각까지 말한다 (§5.2 "기존 문구").
+    ...(retry_wait
+      ? { label: retryWaitBadgeText(tile.retry).replace('↻ ', '') }
+      : {})
+  });
   const status_badges = html`${conflict_badge
     ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
     : ''}${base_badge
@@ -1430,7 +1323,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         title="이 세션의 target base가 워크스페이스 선언 base와 다릅니다"
         >${base_badge}</span
       >`
-    : ''}${failure_badges}${held_badge}${wait_lines.map((line) => line.badge)}`;
+    : ''}${failure_badges}${wait_status_badge}`;
   // 세션 타일의 수정 시각은 활동 줄이 "갱신 n 전"으로 이미 말한다 (§6) —
   // 같은 사실을 두 줄로 쓰지 않는다.
   const times_el = session ? '' : timesMeta(tile);
@@ -1564,7 +1457,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 title="Worker가 아닌 세션이 in_progress로 잡은 이슈"
                 >세션</span
               >`
-          : html`<span class="rtile__elapsed">${elapsed}</span>`}
+          : elapsed
+            ? html`<span class="rtile__elapsed">${elapsed}</span>`
+            : ''}
         ${session || held
           ? waiting_resume_button
           : failed
@@ -1613,7 +1508,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       </div>
     </div>
     <div class="rtile__title">${tile.title}</div>
-    ${wait_lines.map((line) => line.body)}${held
+    ${wait_body_lines.body}${held
       ? heldBodyTemplate(
           parked
             ? 'parked'
@@ -1625,7 +1520,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           parked
             ? park
             : waiting
-              ? wait_lines.length > 0 && wait
+              ? wait_reasons.length > 0 && wait
                 ? { ...wait, summary: '', recovery: undefined }
                 : wait
               : hold,
@@ -1710,10 +1605,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
             ${failed || paused
               ? ''
               : html`<div class="rtile__accent" aria-hidden="true"></div>`}`}
-    ${wait_lines.map((line) => line.times)}${failurePopoverTemplate(
-      failure,
-      now
-    )}${providerHoldPopoverTemplate(hold)}
+    ${wait_body_lines.times}${failurePopoverTemplate(failure, now)}
   </div>`;
 }
 
