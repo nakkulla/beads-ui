@@ -2557,16 +2557,18 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} bead_id
    * @param {string} reason
-   * @param {{ stale_work?: StaleWorkAdmission, blockers?: PrerequisiteBlocker[] }} [extra]
+   * @param {{ stale_work?: StaleWorkAdmission, blockers?: PrerequisiteBlocker[], gate?: { runner: string, kind: 'outage'|'usage_limit', account: string|null, unresolved: boolean } }} [extra]
    */
   function recordSkipReason(workspace, bead_id, reason, extra) {
     const stale_work = extra?.stale_work;
     const blockers = extra?.blockers;
+    const gate = extra?.gate;
     const result = deps.store.recordAdmission(workspace, {
       bead_id,
       reason,
       ...(stale_work ? { stale_work } : {}),
-      ...(blockers ? { blockers } : {})
+      ...(blockers ? { blockers } : {}),
+      ...(gate ? { gate } : {})
     });
     if (result && result.ok) {
       notifyChanged(workspace);
@@ -3104,47 +3106,87 @@ export function createScheduler(deps) {
   /**
    * Decide the provider gate for one fully resolved launch candidate.
    *
+   * @typedef {{ held: false } | { held: true, runner: string, kind: 'outage'|'usage_limit', account: string|null, unresolved: boolean }} ProviderGateVerdict
    * @param {string} workspace
    * @param {string} runner
    * @param {{ claude: string|null, codex: string|null }} accounts
-   * @returns {Promise<boolean>}
+   * @returns {Promise<ProviderGateVerdict>}
    */
   async function providerDispatchHeld(workspace, runner, accounts) {
     const hold = deps.store.snapshot(workspace).provider_hold?.[runner];
     if (!hold || !Array.isArray(hold.targets) || hold.targets.length === 0) {
-      return false;
+      return { held: false };
     }
     deps.providerHealth?.sync(workspace);
     /** @type {Array<{ kind: string, account: string|null }>} */
     const targets = hold.targets;
-    if (targets.some((target) => target.kind === 'outage')) {
-      return true;
+    const outage = targets.find((target) => target.kind === 'outage');
+    if (outage) {
+      return {
+        held: true,
+        runner,
+        kind: 'outage',
+        account: outage.account,
+        unresolved: false
+      };
     }
     const usage_targets = targets.filter(
       (target) => target.kind === 'usage_limit'
     );
     if (usage_targets.some((target) => target.account === null)) {
-      return true;
+      return {
+        held: true,
+        runner,
+        kind: 'usage_limit',
+        account: null,
+        unresolved: true
+      };
     }
-    let account = runner === 'claude' ? accounts.claude : accounts.codex;
-    if (runner === 'claude' && account === null) {
-      if (!deps.accountCatalog?.activeClaude) {
-        return true;
-      }
+    /** @type {string|null} */
+    let account =
+      runner === 'claude'
+        ? accounts.claude
+        : runner === 'codex'
+          ? accounts.codex
+          : null;
+    if (account === null) {
       try {
-        const active = await deps.accountCatalog.activeClaude();
-        if (!active.ok || typeof active.account.email !== 'string') {
-          return true;
+        if (runner === 'claude' && deps.accountCatalog?.activeClaude) {
+          const active = await deps.accountCatalog.activeClaude();
+          account =
+            active.ok && typeof active.account?.email === 'string'
+              ? active.account.email
+              : null;
+        } else if (runner === 'codex' && deps.accountCatalog?.listCodex) {
+          const listed = await deps.accountCatalog.listCodex();
+          account =
+            listed.ok && typeof listed.active_key === 'string'
+              ? listed.active_key
+              : null;
         }
-        account = active.account.email;
       } catch {
-        return true;
+        account = null;
       }
     }
-    return (
-      account === null ||
-      usage_targets.some((target) => target.account === account)
-    );
+    if (account === null) {
+      return {
+        held: true,
+        runner,
+        kind: 'usage_limit',
+        account: null,
+        unresolved: true
+      };
+    }
+    if (usage_targets.some((target) => target.account === account)) {
+      return {
+        held: true,
+        runner,
+        kind: 'usage_limit',
+        account,
+        unresolved: false
+      };
+    }
+    return { held: false };
   }
 
   /**
@@ -8818,14 +8860,19 @@ export function createScheduler(deps) {
       // The timeline entry belongs to the LAUNCH, not to this decision: a row
       // the gate below turns away is rescheduled, and recording here would
       // append one unexecuted switch per scheduling pass.
-      if (
-        !start_now_bypass &&
-        (await providerDispatchHeld(
-          workspace,
-          runner_name,
-          resolved_exec.accounts
-        ))
-      ) {
+      /** @type {ProviderGateVerdict} */
+      const provider_gate = start_now_bypass
+        ? { held: false }
+        : await providerDispatchHeld(
+            workspace,
+            runner_name,
+            resolved_exec.accounts
+          );
+      if (provider_gate.held) {
+        const { runner, kind, account, unresolved } = provider_gate;
+        recordSkipReason(workspace, bead_id, 'provider_gate', {
+          gate: { runner, kind, account, unresolved }
+        });
         reservation.release();
         claimed.delete(bead_id);
         return;

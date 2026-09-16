@@ -474,12 +474,20 @@
  * @property {string} status
  */
 /**
+ * @typedef {Object} ProviderGateAdmission
+ * @property {string} runner
+ * @property {'outage'|'usage_limit'} kind
+ * @property {string|null} account
+ * @property {boolean} unresolved
+ */
+/**
  * @typedef {Object} AdmissionRecord
  * @property {string} reason
  * @property {number} at
  * @property {true} [stale]
  * @property {StaleWorkAdmission} [stale_work]
  * @property {AdmissionBlocker[]} [blockers]
+ * @property {ProviderGateAdmission} [gate]
  */
 /**
  * @typedef {Object} Queue
@@ -638,6 +646,7 @@
  * @property {number} rearm_count
  * @property {string[]} attempt_ids
  * @property {'none'|'cap'|'unconfigured'|'disabled'|null} [auto_switch]
+ * @property {number} [disarm_notified_at]
  * @property {number|null} [next_probe_at] - When the prober next touches this
  * target. Durable rather than timer-local because the held tile shows it: an
  * in-memory deadline reads as absent for every viewer after a restart.
@@ -1832,6 +1841,31 @@ function normalizeAdmissionBlockers(value) {
     });
   }
   return blockers;
+}
+
+/**
+ * Preserve a complete provider-gate verdict or drop the field atomically.
+ *
+ * @param {unknown} value
+ * @returns {ProviderGateAdmission|null}
+ */
+function normalizeAdmissionGate(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.runner !== 'string' ||
+    value.runner.length === 0 ||
+    (value.kind !== 'outage' && value.kind !== 'usage_limit') ||
+    !(typeof value.account === 'string' || value.account === null) ||
+    typeof value.unresolved !== 'boolean'
+  ) {
+    return null;
+  }
+  return {
+    runner: value.runner,
+    kind: value.kind,
+    account: value.account,
+    unresolved: value.unresolved
+  };
 }
 
 /**
@@ -4105,6 +4139,10 @@ function normalizeProviderTarget(value) {
       value.auto_switch === 'disabled'
         ? value.auto_switch
         : null,
+    ...(typeof value.disarm_notified_at === 'number' &&
+    Number.isFinite(value.disarm_notified_at)
+      ? { disarm_notified_at: value.disarm_notified_at }
+      : {}),
     next_probe_at:
       typeof value.next_probe_at === 'number' &&
       Number.isFinite(value.next_probe_at)
@@ -4398,6 +4436,10 @@ function normalizeQueue(raw) {
         const blockers = normalizeAdmissionBlockers(value.blockers);
         if (blockers !== null) {
           q.admission[bead_id].blockers = blockers;
+        }
+        const gate = normalizeAdmissionGate(value.gate);
+        if (gate !== null) {
+          q.admission[bead_id].gate = gate;
         }
       }
     }
@@ -7926,6 +7968,12 @@ export function createQueueStore(options = {}) {
           target.rearm_count = Number(input.patch.rearm_count);
         }
         if (
+          typeof input.patch.disarm_notified_at === 'number' &&
+          Number.isFinite(input.patch.disarm_notified_at)
+        ) {
+          target.disarm_notified_at = input.patch.disarm_notified_at;
+        }
+        if (
           input.patch.next_probe_at === null ||
           (typeof input.patch.next_probe_at === 'number' &&
             Number.isFinite(input.patch.next_probe_at))
@@ -7967,6 +8015,14 @@ export function createQueueStore(options = {}) {
         const [target] = hold.targets.splice(index, 1);
         if (hold.targets.length === 0) {
           delete next.provider_hold[input.runner];
+          for (const [bead_id, admission] of Object.entries(next.admission)) {
+            if (
+              admission.reason === 'provider_gate' &&
+              admission.gate?.runner === input.runner
+            ) {
+              delete next.admission[bead_id];
+            }
+          }
         }
         const resumed_ids = new Set(
           Object.values(next.attempts)
@@ -9145,7 +9201,7 @@ export function createQueueStore(options = {}) {
      * same-record no-op guard, so a stale flag flipping is a real change.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, reason: string, stale?: boolean, stale_work?: unknown, blockers?: unknown }} input
+     * @param {{ bead_id: string, reason: string, stale?: boolean, stale_work?: unknown, blockers?: unknown, gate?: unknown }} input
      * @returns {QueueOpResult}
      */
     recordAdmission(workspace, input) {
@@ -9153,6 +9209,7 @@ export function createQueueStore(options = {}) {
       const stale = input.stale === true;
       const stale_work = normalizeStaleWork(input.stale_work);
       const blockers = normalizeAdmissionBlockers(input.blockers);
+      const gate = normalizeAdmissionGate(input.gate);
       return applyUnconditional(workspace, (next) => {
         if (
           typeof bead_id !== 'string' ||
@@ -9169,7 +9226,8 @@ export function createQueueStore(options = {}) {
           (prior.stale === true) === stale &&
           JSON.stringify(prior.stale_work ?? null) ===
             JSON.stringify(stale_work) &&
-          JSON.stringify(prior.blockers ?? null) === JSON.stringify(blockers)
+          JSON.stringify(prior.blockers ?? null) === JSON.stringify(blockers) &&
+          JSON.stringify(prior.gate ?? null) === JSON.stringify(gate)
         ) {
           return false;
         }
@@ -9178,7 +9236,8 @@ export function createQueueStore(options = {}) {
           at: now(),
           ...(stale ? { stale: true } : {}),
           ...(stale_work === null ? {} : { stale_work }),
-          ...(blockers === null ? {} : { blockers })
+          ...(blockers === null ? {} : { blockers }),
+          ...(gate === null ? {} : { gate })
         };
         return true;
       });

@@ -667,7 +667,7 @@ export function judgeWaitReasons(input) {
         const release = outage
           ? `${next_at === undefined ? '' : `${localClock(next_at)}에 `}자동 프로브 (상한 없음, ADR UI-o5ll)`
           : disarmed || exhausted
-            ? '자동 재개 꺼짐 · ↻ 지금 프로브 필요'
+            ? '자동 재개 꺼짐 · 서버 재시작 시 1회 자동 프로브 · ↻ 지금 프로브 필요'
             : `리셋 ${resets_at === undefined ? '미상' : localClock(resets_at)} 뒤 자동 프로브${Number.isInteger(target.rearm_count) ? ` (자동 재개 ${Math.max(0, USAGE_REARM_CAP - target.rearm_count)}회)` : ''}`;
         const result = reason(
           'provider_hold',

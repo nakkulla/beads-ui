@@ -325,6 +325,29 @@ describe('worker/queue-store provider hold', () => {
     });
   });
 
+  test('persists a disarmed notification timestamp across a cold load', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-1');
+    const held = holdProviderAttempt(store, 'att-1');
+
+    const updated = store.updateProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com',
+      patch: { disarm_notified_at: 1234 }
+    });
+    const restored = createQueueStore().snapshot(WS);
+
+    expect(updated.queue.provider_hold.claude.targets[0]).toMatchObject({
+      disarm_notified_at: 1234
+    });
+    expect(restored.provider_hold.claude.targets[0]).toMatchObject({
+      disarm_notified_at: 1234
+    });
+  });
+
   // RED 1 (spec §5)
   test('migrates a disabled legacy auto-switch flag to both wait modes', () => {
     fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
@@ -734,6 +757,50 @@ describe('worker/queue-store provider hold', () => {
         kind: 'provider_outage'
       }
     ]);
+  });
+
+  test('clears only matching provider-gate admissions with the last target', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-1');
+    const held = holdProviderAttempt(store, 'att-1');
+    store.recordAdmission(WS, {
+      bead_id: 'UI-claude',
+      reason: 'provider_gate',
+      gate: {
+        runner: 'claude',
+        kind: 'outage',
+        account: 'held@example.com',
+        unresolved: false
+      }
+    });
+    store.recordAdmission(WS, {
+      bead_id: 'UI-codex',
+      reason: 'provider_gate',
+      gate: {
+        runner: 'codex',
+        kind: 'usage_limit',
+        account: 'codex-key',
+        unresolved: false
+      }
+    });
+    store.recordAdmission(WS, {
+      bead_id: 'UI-other',
+      reason: 'receipt_unreachable'
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const recovered = store.recoverProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com'
+    });
+
+    expect(recovered.queue.revision).toBe(revision + 1);
+    expect(recovered.queue.admission['UI-claude']).toBeUndefined();
+    expect(recovered.queue.admission['UI-codex']).toBeDefined();
+    expect(recovered.queue.admission['UI-other']).toBeDefined();
   });
 
   test('disarms a lineage that already consumed automatic recovery', () => {
@@ -5228,6 +5295,79 @@ describe('worker/queue-store skip-reason recording', () => {
     });
 
     expect(store.snapshot(WS).admission['UI-1'].blockers).toEqual(blockers);
+  });
+
+  test('stores and reloads a provider-gate verdict', () => {
+    const store = createQueueStore();
+    const gate = {
+      runner: 'codex',
+      kind: /** @type {const} */ ('usage_limit'),
+      account: 'codex-key',
+      unresolved: false
+    };
+
+    store.recordAdmission(WS, {
+      bead_id: 'UI-gate',
+      reason: 'provider_gate',
+      gate
+    });
+    const reloaded = createQueueStore().load(WS);
+
+    expect(reloaded.admission['UI-gate'].gate).toEqual(gate);
+  });
+
+  test('no-ops an unchanged provider-gate verdict', () => {
+    const store = createQueueStore();
+    const input = {
+      bead_id: 'UI-gate',
+      reason: 'provider_gate',
+      gate: {
+        runner: 'codex',
+        kind: 'usage_limit',
+        account: 'codex-key',
+        unresolved: false
+      }
+    };
+    store.recordAdmission(WS, input);
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.recordAdmission(WS, structuredClone(input));
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(revision);
+  });
+
+  test('updates a changed provider-gate verdict', () => {
+    const store = createQueueStore();
+    store.recordAdmission(WS, {
+      bead_id: 'UI-gate',
+      reason: 'provider_gate',
+      gate: {
+        runner: 'codex',
+        kind: 'usage_limit',
+        account: 'codex-key',
+        unresolved: false
+      }
+    });
+
+    const result = store.recordAdmission(WS, {
+      bead_id: 'UI-gate',
+      reason: 'provider_gate',
+      gate: {
+        runner: 'codex',
+        kind: 'usage_limit',
+        account: null,
+        unresolved: true
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.admission['UI-gate'].gate).toEqual({
+      runner: 'codex',
+      kind: 'usage_limit',
+      account: null,
+      unresolved: true
+    });
   });
 
   test('drops the blocker field when one element is malformed', () => {

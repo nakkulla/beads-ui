@@ -7108,4 +7108,207 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
       undefined
     ]);
   });
+
+  // 서버 판정이 기록으로 오면 그것이 칩의 재료이고 자체 판정은 예측으로 내려간다
+  // (UI-1l3a §3.3). 두 층이 어긋나는 행이 이 블록의 주제다.
+  describe('서버 기록으로 선 공급자 게이트 (UI-1l3a §3.3)', () => {
+    const LIMIT_HOLD = {
+      claude: {
+        since: 4242,
+        generation: 1,
+        targets: [
+          {
+            kind: 'usage_limit',
+            model: 'sonnet',
+            account: 'a@example.com',
+            resets_at: 7000
+          }
+        ]
+      }
+    };
+
+    /**
+     * @param {Partial<Record<string, any>>} [patch]
+     * @returns {Record<string, any>}
+     */
+    function admission(patch = {}) {
+      return {
+        'A-1': {
+          reason: 'provider_gate',
+          at: 5000,
+          gate: {
+            runner: 'claude',
+            kind: 'usage_limit',
+            account: null,
+            unresolved: true,
+            ...patch
+          }
+        }
+      };
+    }
+
+    test('draws the recorded gate as a chip without a slot 1 badge', () => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            queue: [{ bead_id: 'A-1' }],
+            bead_overlay: overlays(['A-1']),
+            provider_hold: LIMIT_HOLD,
+            admission: admission()
+          })
+        ],
+        [gateState()]
+      );
+
+      expect([lanes.queue[0].reason, lanes.queue[0].gate?.kind]).toEqual([
+        '',
+        'provider_usage'
+      ]);
+    });
+
+    test('keeps the recorded gate where the row resolves no account of its own', () => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            queue: [{ bead_id: 'A-1' }],
+            bead_overlay: overlays(['A-1']),
+            provider_hold: LIMIT_HOLD,
+            admission: admission()
+          })
+        ],
+        [gateState()]
+      );
+
+      const gate = lanes.queue[0].gate;
+      expect([
+        gate?.probe_ready,
+        gate?.lines.some((line) => line.startsWith('계정: 미해석'))
+      ]).toEqual([true, true]);
+    });
+
+    test('draws the recorded outage gate on a target that kept its account', () => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            queue: [{ bead_id: 'A-1' }],
+            bead_overlay: overlays(['A-1']),
+            provider_hold: {
+              claude: {
+                since: 1,
+                generation: 1,
+                targets: [
+                  {
+                    kind: 'outage',
+                    model: 'sonnet',
+                    account: 'a@example.com',
+                    next_probe_at: 9000
+                  }
+                ]
+              }
+            },
+            admission: admission({
+              kind: 'outage',
+              account: 'a@example.com',
+              unresolved: false
+            })
+          })
+        ],
+        [gateState()]
+      );
+
+      expect([
+        lanes.queue[0].gate?.kind,
+        lanes.queue[0].gate?.lines.some((line) =>
+          line.startsWith('계정: 미해석')
+        )
+      ]).toEqual(['provider_outage', false]);
+    });
+
+    test('drops the recorded gate once that runner hold is gone', () => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            queue: [{ bead_id: 'A-1' }],
+            bead_overlay: overlays(['A-1']),
+            provider_hold: {},
+            admission: admission()
+          })
+        ],
+        [gateState()]
+      );
+
+      expect(lanes.queue[0].gate).toBeUndefined();
+    });
+
+    test('keeps an unresolved record the front-end catalog alone contradicts', () => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            queue: [{ bead_id: 'A-1' }],
+            bead_overlay: overlays(['A-1']),
+            account_catalog: {
+              claude: [
+                { email: 'a@example.com', alias: '업무', active: false },
+                { email: 'b@example.com', alias: '개인', active: true }
+              ]
+            },
+            provider_hold: LIMIT_HOLD,
+            admission: admission()
+          })
+        ],
+        [gateState()]
+      );
+
+      expect(lanes.queue[0].gate?.kind).toBe('provider_usage');
+    });
+
+    test('ignores an unresolved record once the repo declares a default account', () => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            queue: [{ bead_id: 'A-1' }],
+            bead_overlay: overlays(['A-1']),
+            workspace_account_defaults: { claude_account: 'b@example.com' },
+            account_catalog: {
+              claude: [
+                { email: 'a@example.com', alias: '업무', active: false },
+                { email: 'b@example.com', alias: '개인', active: false }
+              ]
+            },
+            provider_hold: LIMIT_HOLD,
+            admission: admission()
+          })
+        ],
+        [gateState()]
+      );
+
+      expect(lanes.queue[0].gate).toBeUndefined();
+    });
+
+    test('ignores a recorded gate whose account the row no longer resolves', () => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            queue: [{ bead_id: 'A-1' }],
+            bead_overlay: overlays(['A-1']),
+            workspace_account_defaults: { claude_account: 'b@example.com' },
+            account_catalog: {
+              claude: [
+                { email: 'a@example.com', alias: '업무', active: false },
+                { email: 'b@example.com', alias: '개인', active: false }
+              ]
+            },
+            provider_hold: LIMIT_HOLD,
+            admission: admission({
+              account: 'a@example.com',
+              unresolved: false
+            })
+          })
+        ],
+        [gateState()]
+      );
+
+      expect(lanes.queue[0].gate).toBeUndefined();
+    });
+  });
 });

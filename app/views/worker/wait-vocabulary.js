@@ -149,7 +149,8 @@ export const WAIT_KINDS = Object.freeze(
       glyph: '⏳',
       label: '한도 대기',
       when: '이 attempt가 계정 한도로 멈춤',
-      release: '리셋 뒤 자동 프로브 · 자동 재개 소진이면 ↻ 지금 프로브',
+      release:
+        '리셋 뒤 자동 프로브 · 소진이면 서버 재시작 시 1회 자동 프로브 또는 ↻ 지금 프로브',
       action: '↻ 지금 프로브'
     },
     {
@@ -192,8 +193,9 @@ export const WAIT_KINDS = Object.freeze(
       scope: 'queue',
       glyph: '⏳',
       label: '한도 대기',
-      when: '러너의 계정 한도 보류 — target에 계정이 있으면 그 계정을 쓰는 행에만, 없으면 러너의 모든 행에',
-      release: '리셋 뒤 자동 프로브 · 소진이면 ↻ 지금 프로브',
+      when: '러너의 계정 한도 보류 — target에 계정이 있으면 그 계정을 쓰는 행과 계정을 해석할 수 없는 행에, 없으면 러너의 모든 행에',
+      release:
+        '리셋 뒤 자동 프로브 · 소진이면 서버 재시작 시 1회 자동 프로브 또는 ↻ 지금 프로브',
       action: '↻ 지금 프로브'
     },
     {

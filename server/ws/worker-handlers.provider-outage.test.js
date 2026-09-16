@@ -160,6 +160,41 @@ describe('worker provider limit policy handler', () => {
 });
 
 describe('worker provider queue projection', () => {
+  test('projects provider-gate admissions without changing other records', () => {
+    const raw = {
+      ...getWorkerRuntime().queueStore.snapshot(WS),
+      admission: {
+        'UI-gate': {
+          reason: 'provider_gate',
+          at: 1000,
+          gate: {
+            runner: 'codex',
+            kind: 'usage_limit',
+            account: 'codex-key',
+            unresolved: false
+          }
+        },
+        'UI-other': { reason: 'receipt_unreachable', at: 2000 }
+      }
+    };
+
+    const projected = decorateQueue(WS, raw);
+
+    expect(/** @type {any} */ (projected).admission).toEqual({
+      'UI-gate': {
+        reason: 'provider_gate',
+        at: 1000,
+        gate: {
+          runner: 'codex',
+          kind: 'usage_limit',
+          account: 'codex-key',
+          unresolved: false
+        }
+      },
+      'UI-other': { reason: 'receipt_unreachable', at: 2000 }
+    });
+  });
+
   test('refreshes Claude accounts after a queue subscription', async () => {
     const socket = fakeSocket();
     setConnWorkspace(socket, { root_dir: WS, db_path: '/tmp/db' });
