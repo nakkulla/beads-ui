@@ -57,8 +57,9 @@ pane의 프리셋 바 `[프리셋 선택] [적용]`은 그 저장소에만 `appl
 
 1. **클라이언트가 선택한 저장소마다 기존 op를 순차 호출하고 저장소별 결과를 패널
    안에 모아 보인다**를 선택한다. 서버·프로토콜을 바꾸지 않고, 저장소별 revision은
-   모니터 행이 이미 알고 있으며, 충돌 1회 재시도도 pane과 같은 규칙을 그대로
-   쓴다.
+   모니터 행이 이미 알고 있으며, 큐 쪽 1회 재시도도 pane의 규칙(저장소를 지정한
+   적용에서 `queue_applied:false`면 충돌 여부와 무관하게 응답 revision으로 한 번
+   재시도)을 그대로 쓴다.
 2. 서버에 `apply-impl-preset-workspaces` 같은 다중 저장소 op를 두면 요청·푸시가
    한 번이지만, 200줄 안팎의 기존 핸들러에서 적용 핵심을 함수로 뽑는 서버
    리팩터링과 프로토콜 문서 갱신이 필요하다. 부분 실패 보고 형식도 새로 정해야
@@ -107,8 +108,8 @@ pane의 프리셋 바 `[프리셋 선택] [적용]`은 그 저장소에만 `appl
   실행이 시작되면 이전 결과 줄은 지운다.
 - 폭 640px 이하에서는 프리셋 select와 버튼이 두 줄로, 체크박스는 줄바꿈된다.
   가로 넘침이 없어야 한다. 색·서체는 `.settings-dialog__*`·`.op-btn` 토큰이고 새
-  색은 없다. 이 패널은 카드가 아니므로 ADR 0014 슬롯 표의 대상이 아니다(UI-eey2
-  ADR 후보 판정과 같다).
+  색은 없다. 이 패널은 카드가 아니므로 ADR 0014 슬롯 표(워커·모니터 카드)의 대상이
+  아니다.
 
 ## 4. 적용 흐름
 
@@ -125,10 +126,18 @@ pane의 프리셋 바 `[프리셋 선택] [적용]`은 그 저장소에만 `appl
   1. 응답 `queue`가 있으면 즉시 `adopt(root_dir, queue)`한다 — 성공·실패 무관.
      덱 타일의 칩과 다음 대상의 revision이 최신이 된다.
   2. `applied:true`·`queue_applied:true` → `applied`.
-  3. `queue_applied:false`이고 `queue_conflict:true` → 응답 `queue.revision`으로
-     같은 저장소를 **한 번** 다시 보낸다(pane §12와 같은 1회 재시도). 재시도도
-     `queue_applied:false`면 `partial`.
-  4. `queue_applied:false`이고 충돌이 아니면 `partial`(kv만 반영).
+  3. `queue_applied:false`(충돌 여부 무관)이면 응답 `queue.revision`으로 같은
+     저장소를 **한 번** 다시 보낸다 — pane `onApplyPresetGlobally`가 저장소를
+     지정했을 때 하는 것과 같은 1회 재시도다. 서버는 kv를 쓰기 전 큐
+     CAS(`clearAppliedExecPreset`)가 충돌하면 `applied:false, queue_applied:false,
+     queue_conflict:true`로 아무것도 쓰지 않은 채 답하고, kv를 쓴 뒤 큐 쓰기가
+     실패하면 `applied:true, queue_applied:false`로 답하므로 이 단계의 첫 응답은
+     `applied` 값이 갈린다.
+  4. 재시도까지 끝난 **마지막 응답**으로 판정한다: `applied:true`·
+     `queue_applied:true` → `applied`; `applied:true`·`queue_applied:false` →
+     `partial`(kv만 반영); `applied:false`·`conflict:false` → `failed: 큐가 방금
+     변경되었습니다`(아무것도 쓰지 않음). `partial`은 kv 반영이 응답으로 확인된
+     경우에만 쓴다.
   5. `applied:false`·`conflict:true`(프리셋 revision 충돌) → 이 저장소는 `failed:
      프리셋이 방금 변경되었습니다`, **남은 대상은 모두 `skipped`**로 두고 실행을
      멈춘다. 바뀐 프리셋을 다시 읽은 뒤 사용자가 다시 적용한다.
@@ -169,7 +178,7 @@ RED-GREEN 전용 seam은 승인하지 않는다. 아래 행위 검증과 저장�
 | --- | --- |
 | 계획 | 기본 선택 = `auto_advance:true` 행; 열린 저장소가 자동화 꺼짐이면 미선택 상태로 목록에 있음; payload가 덱 행 순서·저장소별 `revision`(`adopted` 우선)·프리셋 `revision`을 실음; 프리셋 미선택·0곳·비호환·구 서버·실행 중이면 비활성과 사유 |
 | 순차 실행 | 대상 n곳에 요청이 순서대로 1회씩; 각 응답 `queue`가 `adopt`로 전달; 성공은 `applied` |
-| 큐 충돌 | `queue_conflict:true`에서 응답 revision으로 같은 저장소 1회 재시도, 두 번째도 실패면 `partial`; 충돌 아닌 `queue_applied:false`는 재시도 없이 `partial` |
+| 큐 재시도·판정 | `queue_applied:false`(충돌 여부 무관)에서 응답 revision으로 같은 저장소 1회 재시도, 추가 요청 없음; 마지막 응답이 `applied:true`·`queue_applied:false`면 `partial`, `applied:false`·`queue_conflict:true`(kv 쓰기 전 CAS 충돌)가 두 번이면 `failed`이고 `partial`이 아님 |
 | 프리셋 충돌 | `conflict:true`에서 그 저장소 `failed`, 이후 대상 `skipped`, 추가 요청 0회 |
 | 예외 | 전송 예외·오류 응답은 그 저장소만 `failed`, 다음 대상 계속 |
 | 결과 표시 | 저장소별 네 상태 문구; 실패·부분 적용이 있을 때만 재적용 버튼이 그 집합을 선택; 새 실행 시작에 이전 결과 제거; 실행 중 입력 비활성·`적용 중 k/n` |
