@@ -355,6 +355,18 @@ pin(cswap)을 쓴 attempt의 장애를 기본 계정 프로브 성공이 잘못 
   부재 = `true`)을 둔다. §8.3의 자동 계정 전환 토글이며 `auto_merge`처럼 load 시
   유지된다.
 
+**정정(UI-1l3a).** 위 디스패치 게이트가 쓰는 계정 해석 사다리 세 층(bead pin →
+workspace 기본값 → 카탈로그 활성 계정)은 **러너 무관**이다 — claude는
+`activeClaude()`의 `account.email`, codex는 `listCodex()`의 `active_key`가 셋째
+층이다. 이 절이 셋째 층을 claude에만 적은 것은 codex 기본 계정이 없는 저장소를
+영구히 막는 결함이었다
+(`2026-09-17-provider-gate-verdict-coherence-design.md` §3.1). 세 층이 모두 비거나
+카탈로그 조회가 실패하면 위에 적힌 대로 fail-closed로 막되, 그 거절은 더 이상
+조용하지 않다: `dispatch()`가 `provider_gate` admission 기록(`gate`에
+`runner`·`kind`·`account`·`unresolved`)을 남기고 화면 스냅샷까지 투영하며, 막힌
+대기 행의 4a 게이트 칩은 그 기록을 프론트 자체 판정보다 먼저 재료로 쓴다(같은
+스펙 §3.2·§3.3).
+
 ## §7 헬스 프로버 — 실경로 저가 ping
 
 신규 모듈 `server/worker/provider-health.js`.
@@ -417,6 +429,15 @@ attempt를 게이트 밖으로 내보낼 뿐 target을 판정하지 않으므로
 반대 방향 전이도 생겼다 — `account`가 있는 `outage` target의 프로브 분류가
 `usage_limit`이면 그 target은 계정 단위 게이트로 강등된다(같은 항목의 kind만
 바뀌고 `rearm_count`와 hold의 `since`는 보존된다).
+
+**정정(UI-1l3a).** 상한으로 자동 프로브가 멎은 `usage_limit` target은 **서버
+재시작 시 한 번** 다시 프로브된다 — `provider-health.js`의 `start()`가 `sync()`
+뒤에 `probeCapped()`를 한 번 부르고, 실패하면 `rearm_count`가 오른 뒤 다시 멎는다
+(`2026-09-17-provider-gate-verdict-coherence-design.md` §3.4). 판정자는 여전히
+프로브이고 주기적 자동 프로브는 두지 않으므로, 그 외 시각의 출구는 위 정정이 정한
+`↻ 지금 프로브` 그대로다. disarm 알림은 durable `disarm_notified_at`이 target당 한
+번으로 묶는다 — `last_error` 마커 비교는 재시작 로드에서 필드가 떨어져 알림이
+재시작마다 반복됐다.
 
 ### §7.5 회복 시 (target 단위, 재시작 안전 순서 — codex spec 리뷰 F4)
 
