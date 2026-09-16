@@ -3619,6 +3619,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const parked = revise_parked[bead_id];
       const projected_discard = discardProjection(discard_operations, bead_id);
       const discard = projected_discard.operation ? projected_discard : null;
+      // 선행이 전부 해제된 행에는 `⛓ 선행 대기` 문구가 서지 않는다 (§5.2, 수용
+      // 기준 4). 옛 거절 기록은 이력이고 현재 열린 선행은 서버의
+      // `bead_blocked_by`가 말한다 — 키가 없으면 모름이므로 현행 표시를 지킨다.
+      const open_prerequisites = Object.hasOwn(bead_blocked_by, bead_id)
+        ? bead_blocked_by[bead_id]
+        : null;
+      const prerequisites_released =
+        objectOf(admission[bead_id]).reason === 'prerequisite_unmet' &&
+        open_prerequisites !== null &&
+        (!Array.isArray(open_prerequisites) || open_prerequisites.length === 0);
       /** @type {LaneItem} */
       const item = {
         ...base(bead_id),
@@ -3634,7 +3644,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
         // 데스크톱의 유일한 적재 수단이 드래그다 (§6) — 대기 행은 끌 수 있다.
         draggable: !discard,
         discard: discard || undefined,
-        reason: admissionBadge(admission, bead_id),
+        reason: prerequisites_released
+          ? ''
+          : admissionBadge(admission, bead_id),
         seq: queue_index + 1,
         queue_position: queue_index + 1,
         queue_index,

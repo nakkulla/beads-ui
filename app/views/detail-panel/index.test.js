@@ -2574,6 +2574,31 @@ describe('views/detail-panel 선행 대기 참고 줄 (UI-cmx3 §7)', () => {
     expect(mount.querySelector('.detail-dep__ref')).toBeNull();
   });
 
+  test('keeps the line when the only paused attempt was already resumed', () => {
+    const now = Date.now();
+    const attempts = waitingAttempt(now - 2 * HOUR_MS);
+    attempts['UI-1-0'] = {
+      attempt_id: 'UI-1-0',
+      bead_id: 'UI-1',
+      status: 'paused',
+      started_at: now - 5 * HOUR_MS
+    };
+    attempts['UI-1-1'].resumed_from = 'UI-1-0';
+    const mount = mountWithQueue(
+      [
+        {
+          id: 'UI-0',
+          dependency_type: 'blocks',
+          status: 'closed',
+          closed_at: now - HOUR_MS
+        }
+      ],
+      { attempts, bead_blocked_by: { 'UI-1': [] } }
+    );
+
+    expect(refText(mount)).toMatch(/해제 후 1시간 0분$/);
+  });
+
   test('draws no line without a prerequisite wait record', () => {
     const mount = mountWithQueue(
       [{ id: 'UI-0', dependency_type: 'blocks', status: 'open' }],

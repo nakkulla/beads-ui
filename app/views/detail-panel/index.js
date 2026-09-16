@@ -2286,13 +2286,23 @@ export function createDetailPanel(mount_element, options) {
     const q = queueStore ? queueStore.get() : null;
     const attempts =
       q && q.attempts && typeof q.attempts === 'object' ? q.attempts : {};
+    // 이미 재개된 일시정지는 현재 실행이 아니라 이력이다: 재개 attempt가
+    // `resumed_from`으로 가리키는 부모는 `paused`로 보존되므로 (`active-attempts.js`와
+    // 같은 규칙) 여기서 제외하지 않으면 옛 일시정지 하나가 참고 줄을 영구히 지운다.
+    const resumed_from_ids = new Set(
+      Object.values(attempts)
+        .map((entry) => /** @type {any} */ (entry)?.resumed_from)
+        .filter((attempt_id) => typeof attempt_id === 'string')
+    );
     for (const entry of Object.values(attempts)) {
       const attempt = /** @type {any} */ (entry);
       if (
         attempt &&
         attempt.bead_id === current_id &&
         isImplementationAttempt(attempt) &&
-        (attempt.status === 'running' || attempt.status === 'paused')
+        (attempt.status === 'running' ||
+          (attempt.status === 'paused' &&
+            !resumed_from_ids.has(attempt.attempt_id)))
       ) {
         return null;
       }

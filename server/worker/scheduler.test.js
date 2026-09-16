@@ -19359,6 +19359,28 @@ describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () =
     );
   });
 
+  test('keeps a refused non-head request from running once it becomes head', async () => {
+    const env = setup({
+      config: {
+        A: {},
+        B: {}
+      },
+      slots: 2
+    });
+    seedLanes(env.store, { s1: ['A', 'B'] });
+    env.store.setAutoAdvance(WS, false);
+    requestStartNow(WS, 'B', Date.now());
+
+    await env.scheduler.tick(WS);
+    env.store.remove(WS, {
+      bead_id: 'A',
+      expected_revision: env.store.snapshot(WS).revision
+    });
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
   test('rechecks a parallel row moved behind a serial prerequisite during preparation', async () => {
     /** @type {(value: any) => void} */
     let finishBase = () => {};

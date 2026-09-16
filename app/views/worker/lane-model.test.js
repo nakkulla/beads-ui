@@ -5025,6 +5025,30 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
     ).toEqual(['B-2']);
   });
 
+  test('drops the chain badge when the open prerequisite list is empty', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_blocked_by: { 'A-1': [] },
+          admission: {
+            'A-1': {
+              reason: 'prerequisite_unmet',
+              at: 1,
+              blockers: [{ id: 'A-7', rig: null, status: 'open' }]
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].reason).toBe('');
+    expect(
+      lanes.queue[0].dependency_chips?.released?.map((chip) => chip.id)
+    ).toEqual(['A-7']);
+  });
+
   test('draws no badge for a serial lane head refusal', () => {
     const lanes = buildLanes(
       [

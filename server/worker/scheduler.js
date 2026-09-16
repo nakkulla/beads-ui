@@ -898,6 +898,23 @@ function startNowRequestedAt(workspace, bead_id, at) {
 }
 
 /**
+ * Drop one `[지금 시작]` request once a pass has answered it (§8.1·§8.3). A
+ * refused request must not stay as latent run authority: without this the next
+ * external `tick()` inside the grace would launch the same bead with no fresh
+ * click.
+ *
+ * @param {string} workspace
+ * @param {string} bead_id
+ */
+function consumeStartNowRequest(workspace, bead_id) {
+  const by_bead = start_now_requests.get(startNowKey(workspace));
+  if (!by_bead) {
+    return;
+  }
+  by_bead.delete(bead_id);
+}
+
+/**
  * Does a live `[지금 시작]` click name this waiting entry?
  *
  * @param {string} workspace
@@ -14306,8 +14323,11 @@ export function createScheduler(deps) {
         }
         if (candidate_index === 0) {
           explicit_serial.add(lane.id);
-        } else if (!dispatch_refused.has(entry.bead_id)) {
-          refuseDispatch(workspace, entry.bead_id, 'serial_lane_not_head');
+        } else {
+          if (!dispatch_refused.has(entry.bead_id)) {
+            refuseDispatch(workspace, entry.bead_id, 'serial_lane_not_head');
+          }
+          consumeStartNowRequest(workspace, entry.bead_id);
         }
       }
     }
