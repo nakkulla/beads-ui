@@ -9330,6 +9330,7 @@ button.detail-session__leg:focus-visible {
   align-items: center;
   flex-wrap: wrap;
   min-width: 0;
+  max-width: 100%;
 }
 
 .settings-dialog__check {
@@ -9348,6 +9349,14 @@ button.detail-session__leg:focus-visible {
   background: var(--bg-drawer);
   color: var(--text-primary);
   font-size: var(--fs-small);
+}
+
+/* 옵션 문구(`현재 로그인(<email> · <plan>)`)가 길면 select의 고유 폭이 좁은 패널을
+   넘는다 — 폭을 부모에 묶고 문구는 select 안에서 잘리게 한다. */
+.settings-dialog__controls select {
+  min-width: 0;
+  max-width: 100%;
+  text-overflow: ellipsis;
 }
 
 .settings-dialog__text {
