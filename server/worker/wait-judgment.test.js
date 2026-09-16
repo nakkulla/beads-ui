@@ -315,6 +315,21 @@ describe('recovery wait judgment', () => {
     }
   );
 
+  test('omits the internal recovery cause from the headline', () => {
+    const attempt = recoveryAttempt('verification', {
+      cause: 'session_recovery_wait'
+    });
+    attempt.cause_detail.recovery.no_progress = { count: 2, key: 'same-error' };
+
+    const result = run({
+      queue: queue({ attempts: { a: attempt } })
+    }).wait_reasons[0];
+
+    expect(result.headline).toBe(
+      '조건 대기 · 검증 오류의 정정을 기다리며, 원인이 고쳐지면 이어갈 수 있습니다. · 무진전 2회'
+    );
+  });
+
   test('carries the original cause and no-progress evidence into one reason', () => {
     const attempt = recoveryAttempt('no_progress');
     attempt.cause_detail.recovery.no_progress = { count: 2, key: 'same-error' };

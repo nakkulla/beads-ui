@@ -362,7 +362,9 @@ export function judgeWaitReasons(input) {
         [
           known ? RECOVERY_WAIT_LABELS[token] : token,
           known ? RECOVERY_WAIT_SENTENCES[token] : '',
-          attempt.cause ? `원인 ${line(attempt.cause)}` : '',
+          attempt.cause && attempt.cause !== 'session_recovery_wait'
+            ? `원인 ${line(attempt.cause)}`
+            : '',
           count >= 1 ? `무진전 ${count}회` : ''
         ]
           .filter(Boolean)
