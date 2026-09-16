@@ -7240,6 +7240,51 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
       expect(lanes.queue[0].gate).toBeUndefined();
     });
 
+    test('keeps an unresolved record the front-end catalog alone contradicts', () => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            queue: [{ bead_id: 'A-1' }],
+            bead_overlay: overlays(['A-1']),
+            account_catalog: {
+              claude: [
+                { email: 'a@example.com', alias: '업무', active: false },
+                { email: 'b@example.com', alias: '개인', active: true }
+              ]
+            },
+            provider_hold: LIMIT_HOLD,
+            admission: admission()
+          })
+        ],
+        [gateState()]
+      );
+
+      expect(lanes.queue[0].gate?.kind).toBe('provider_usage');
+    });
+
+    test('ignores an unresolved record once the repo declares a default account', () => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            queue: [{ bead_id: 'A-1' }],
+            bead_overlay: overlays(['A-1']),
+            workspace_account_defaults: { claude_account: 'b@example.com' },
+            account_catalog: {
+              claude: [
+                { email: 'a@example.com', alias: '업무', active: false },
+                { email: 'b@example.com', alias: '개인', active: false }
+              ]
+            },
+            provider_hold: LIMIT_HOLD,
+            admission: admission()
+          })
+        ],
+        [gateState()]
+      );
+
+      expect(lanes.queue[0].gate).toBeUndefined();
+    });
+
     test('ignores a recorded gate whose account the row no longer resolves', () => {
       const lanes = buildLanes(
         [

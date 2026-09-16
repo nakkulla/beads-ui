@@ -1494,6 +1494,7 @@ function providerGateOf(runner, entry, target, account_catalog, extra_lines) {
  * @param {Record<string, any>} record - 이 bead의 admission 기록, 없으면 빈 객체.
  * @param {string|null} runner - 이 행이 지금 해석하는 러너, 못 도출하면 null.
  * @param {string|null} account - 이 행이 지금 해석하는 계정, 없으면 null.
+ * @param {string|null} declared - 핀·저장소 기본이 정한 계정, 둘 다 없으면 null.
  * @param {Record<string, any>} provider_hold
  * @param {Record<string, any>} account_catalog
  * @returns {LaneGate|null}
@@ -1502,6 +1503,7 @@ function providerGateFromRecord(
   record,
   runner,
   account,
+  declared,
   provider_hold,
   account_catalog
 ) {
@@ -1519,11 +1521,19 @@ function providerGateFromRecord(
   const gate_account = typeof gate.account === 'string' ? gate.account : null;
   // `outage`는 계정과 무관하게 러너 전체를 막으므로 언제나 유효하다.
   // `usage_limit`은 계정별이라 "이 행이 지금 해석하는 계정이 기록과 같다"가
-  // 유효 조건이고, 미해석 기록은 지금도 미해석이어야 유효하다.
+  // 유효 조건이다.
+  //
+  // 미해석 기록의 유효 조건은 `resolvedAccountOf`가 아니라 **선언 두 층**이
+  // 비어 있는가다 (impl review r1). 서버가 미해석을 기록하는 이유에는 카탈로그
+  // 조회 실패가 있고, 그때 프론트 스냅샷에는 활성 계정이 그대로 남아 두 층이
+  // 어긋난다 — 해석값으로 판정하면 서버가 막은 행에서 칩과 두 출구가 모두
+  // 사라진다(§2가 금지하는 상태). 선언 두 층은 서버와 프론트가 같은 스냅샷 값을
+  // 읽으므로 거기서 어긋나야 비로소 진짜 설정 변경이고, 활성 로그인 층만으로
+  // 설명되는 차이는 조회 시차라서 §3.3대로 기록이 이긴다.
   const stands = outage
     ? true
     : unresolved
-      ? account === null
+      ? declared === null
       : gate_account !== null && account === gate_account;
   if (!stands) {
     return null;
@@ -1554,10 +1564,42 @@ function providerGateFromRecord(
     account_catalog,
     unresolved
       ? [
-          `계정: 미해석 — 핀·저장소 기본·활성 로그인 어디에도 ${runner} 계정이 없음`
+          // 카탈로그 조회 실패로도 미해석이 되므로 "계정이 없다"고 단정하지
+          // 않는다 — 서버가 정하지 못했다는 사실만 말한다 (impl review r1).
+          `계정: 미해석 — 서버가 핀·저장소 기본·활성 로그인 어디에서도 ${runner} 계정을 정하지 못함`
         ]
       : []
   );
+}
+
+/**
+ * The account this row DECLARES — the two layers a person wrote down: the bead
+ * pin, then the repo default. `null` when neither says anything, which is the
+ * state where the third layer (the machine's active login) decides.
+ *
+ * Kept apart from {@link resolvedAccountOf} because the two layers are the
+ * deterministic ones: the server reads the same snapshot values, so a
+ * disagreement HERE is a real settings change, while a disagreement that only
+ * the catalog layer can explain is a stale or failed lookup on one side.
+ *
+ * @param {Record<string, any>} metadata
+ * @param {string} runner
+ * @param {Record<string, any>} [workspace_defaults]
+ * @returns {string|null}
+ */
+function declaredAccountOf(metadata, runner, workspace_defaults) {
+  const pin = metadata[`${runner}_account`];
+  if (typeof pin === 'string' && pin.length > 0) {
+    return pin;
+  }
+  // 저장소 기본 계정은 핀과 같은 값 공간이다 (`workspace-accounts.js` — Claude는
+  // 이메일, Codex는 durable key). 서버가 못 읽었거나 선언이 없으면 이 층은
+  // 스냅샷에 실리지 않고, 판정은 예전처럼 활성 계정으로 떨어진다.
+  const workspace_default = objectOf(workspace_defaults)[`${runner}_account`];
+  if (typeof workspace_default === 'string' && workspace_default.length > 0) {
+    return workspace_default;
+  }
+  return null;
 }
 
 /**
@@ -1582,16 +1624,9 @@ function resolvedAccountOf(
   account_catalog,
   workspace_defaults
 ) {
-  const pin = metadata[`${runner}_account`];
-  if (typeof pin === 'string' && pin.length > 0) {
-    return pin;
-  }
-  // 저장소 기본 계정은 핀과 같은 값 공간이다 (`workspace-accounts.js` — Claude는
-  // 이메일, Codex는 durable key). 서버가 못 읽었거나 선언이 없으면 이 층은
-  // 스냅샷에 실리지 않고, 판정은 예전처럼 활성 계정으로 떨어진다.
-  const workspace_default = objectOf(workspace_defaults)[`${runner}_account`];
-  if (typeof workspace_default === 'string' && workspace_default.length > 0) {
-    return workspace_default;
+  const declared = declaredAccountOf(metadata, runner, workspace_defaults);
+  if (declared !== null) {
+    return declared;
   }
   const rows = objectOf(account_catalog)[runner];
   if (!Array.isArray(rows)) {
@@ -4309,6 +4344,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
             gate_input.account_catalog,
             gate_input.workspace_account_defaults
           );
+    // 선언 두 층만 따로 본다 (impl review r1): 서버 기록의 미해석 판정이 아직
+    // 유효한지는 활성 로그인 층을 뺀 이 값으로 가른다.
+    const declared =
+      runner === null
+        ? null
+        : declaredAccountOf(
+            metadata,
+            runner,
+            gate_input.workspace_account_defaults
+          );
     // 서버 판정이 기록으로 남아 있으면 그것이 재료다 (UI-1l3a §3.3). 자체 판정은
     // 서버 pass가 아직 돌지 않은 행(방금 앉은 행, 자동 진행이 꺼진 저장소)의
     // 예측일 뿐이므로 뒤로 간다.
@@ -4317,6 +4362,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         objectOf(gate_input.admission[item.id]),
         runner,
         account,
+        declared,
         gate_input.provider_hold,
         gate_input.account_catalog
       ) ||

@@ -6235,7 +6235,7 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
         probe_ready: true,
         lines: [
           '⏳ 한도 대기 13:00 · 업무',
-          '계정: 미해석 — 핀·저장소 기본·활성 로그인 어디에도 claude 계정이 없음',
+          '계정: 미해석 — 서버가 핀·저장소 기본·활성 로그인 어디에서도 claude 계정을 정하지 못함',
           '출구: [지금 시작](이 행만, 게이트 무시) — target은 프로브 성공 시 자동 해제'
         ]
       })
