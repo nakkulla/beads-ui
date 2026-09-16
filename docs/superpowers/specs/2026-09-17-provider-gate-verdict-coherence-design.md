@@ -3,6 +3,8 @@ scope:
   - server/worker/scheduler.js
   - server/worker/provider-health.js
   - server/worker/queue-store.js
+  - server/worker/wait-judgment.js
+  - server/ws/worker-handlers.js
   - app/views/worker/lane-model.js
   - app/views/worker/lanes.js
   - app/views/worker/wait-vocabulary.js
@@ -74,7 +76,10 @@ PROSTATE 리그의 quick_fix `PROSTATE-u53`(오케스트레이션 codex `astra`)
  *      account: string|null, unresolved: boolean }} ProviderGateVerdict */
 ```
 
-- `outage` target이 있으면 `{ held:true, kind:'outage', account:null, unresolved:false }`.
+- `outage` target이 있으면 `{ held:true, kind:'outage', account:<그 target의 account>, unresolved:false }`
+  — `outage` target은 계정을 보존한 채 등록되므로(`holdAttempt`의 target 등록,
+  `classified.account`) 첫 `outage` target의 `account`를 그대로 싣는다. 게이트 판정
+  자체는 종전대로 계정과 무관하게 러너 전체를 막는다.
 - `usage_limit`에서 계정 해석은 러너 무관 세 층이다: `accounts[runner]`(핀 또는
   저장소 기본, `resolveDispatchSettings`가 이미 합친 값) → 카탈로그 활성 계정.
   활성 계정은 claude가 `activeClaude().account.email`, codex가
@@ -91,7 +96,13 @@ PROSTATE 리그의 quick_fix `PROSTATE-u53`(오케스트레이션 codex `astra`)
 
 `dispatch()`의 게이트 분기는 판정이 `held`면 예약을 풀기 전에
 `recordSkipReason(workspace, bead_id, 'provider_gate', { gate })`를 부른다. `gate`는
-판정 객체에서 `runner`·`kind`·`account`·`unresolved`만 담는다. `refuseDispatch`는
+판정 객체에서 `runner`·`kind`·`account`·`unresolved`만 담는다. `recordSkipReason`의
+`extra`는 지금 `stale_work`·`blockers`만 `recordAdmission`으로 넘기므로 `gate`도 같은
+방식으로 넘기도록 넓힌다. 화면용 스냅샷을 만드는
+`server/ws/worker-handlers.js publicAdmissions`도 `reason`·`at`·`stale`·`stale_work`·
+`blockers`만 투영하므로 `gate`를 그대로 투영하는 분기를 더한다(`PublicAdmission`
+자료형에 선택 필드 `gate` 추가). 이 두 경로가 없으면 서버 판정은 큐 파일에만 남고
+화면에는 닿지 않는다. `refuseDispatch`는
 쓰지 않는다 — `dispatch_refused`에 넣으면 외부 tick까지 후보에서 빠지는데, 이 행은
 보류가 풀리는 즉시 흘러야 하므로 매 pass 후보로 남는 것이 맞다. 매 pass의 기록은
 `recordAdmission`의 같은-기록 no-op 가드가 흡수하므로 revision과 fanout이 뛰지
@@ -121,14 +132,23 @@ PROSTATE 리그의 quick_fix `PROSTATE-u53`(오케스트레이션 codex `astra`)
 
 ### 3.3 프론트 — 기록 우선, 자체 판정은 예측 (`app/views/worker/lane-model.js`)
 
-- `autoSkipReason`은 `reason === 'provider_gate'`에 `''`를 돌려준다. 큐 행의 공급자
+- 슬롯 1 배지를 만드는 `admissionBadge`(admission 기록의 `reason`을 `⛔ <reason>`으로
+  그리는 함수)는 `reason === 'provider_gate'`에 `''`를 돌려준다(`autoSkipReason`은
+  자동 머지 제외 사유를 읽는 다른 함수이므로 건드리지 않는다). 큐 행의 공급자
   게이트는 ADR UI-3pu9(UI-8gem 승계 조항)대로 슬롯 4a 게이트 칩 한 층에만 서고 배지·본문·집계에는
   들지 않는다.
 - 큐 행 게이트 부착 루프에서 공급자 게이트의 재료를 고르는 순서를 둔다.
   1. 그 Bead의 admission 기록이 `provider_gate`이고 `gate.runner`의 `provider_hold`가
-     스냅샷에 **아직 서 있으면**, 기록으로 칩을 만든다(`providerGateFromRecord`).
-     target은 `gate.kind`와 `gate.account`로 찾고, `unresolved`면 그 러너의
-     `usage_limit` target 가운데 첫 항목을 재료로 쓴다. 칩 라벨은 종전
+     스냅샷에 **아직 서 있고**, 기록이 **지금도 유효하면**, 기록으로 칩을 만든다
+     (`providerGateFromRecord`). 유효 조건은 "행이 지금 해석되는 계정이 기록과 같다"이다:
+     `gate.unresolved`가 false면 `resolvedAccountOf(...)`(핀 → 저장소 기본 → 활성
+     로그인)의 값이 `gate.account`와 같아야 하고, `gate.unresolved`가 true면 지금도
+     `resolvedAccountOf`가 `null`이어야 한다. `outage` 기록은 계정과 무관하게 유효하다.
+     조건이 깨진 기록(핀·저장소 기본 계정·러너를 바꾼 뒤 자동 진행이 꺼져 서버가 다시
+     판정하지 못한 경우)은 무시하고 2로 떨어진다. target은 `gate.kind === 'outage'`면
+     그 러너의 첫 `outage` target(계정 무관), `usage_limit`이면 `gate.account`와 같은
+     `usage_limit` target, `unresolved`면 그 러너의 `usage_limit` target 가운데 첫 항목을
+     재료로 쓴다. 칩 라벨은 종전
      `providerHoldBadgeText`의 것이고, 팝업 줄에 `계정: 미해석 — 핀·저장소 기본·활성
      로그인 어디에도 <runner> 계정이 없음` 한 줄이 더 붙는다(`unresolved`일 때만).
      `probe_ready`·`since`·`runner`·`next_at`은 기존 `providerGate`와 같은 규칙이다.
@@ -157,12 +177,17 @@ PROSTATE 리그의 quick_fix `PROSTATE-u53`(오케스트레이션 codex `astra`)
   `disarmTarget`한다.
 - **알림은 target당 한 번이다.** `disarmTarget`은 `last_error` 마커 비교 대신 durable
   `disarm_notified_at`(number)를 본다: 없으면 알림을 보내고 patch로 기록하며, 있으면
-  마커만 갱신하고 알림은 건너뛴다. `updateProviderTarget`의 허용 patch 키에
-  `disarm_notified_at`을 더한다. 재시작마다 같은 target으로 알림이 반복되는 것을
-  막는다. 성공해 target이 지워지면 필드도 함께 사라진다.
+  마커만 갱신하고 알림은 건너뛴다. `updateProviderTarget`의 허용 patch 키와
+  `normalizeProviderTarget`(디스크에서 큐를 읽을 때 target 필드를 화이트리스트로
+  복원하는 함수)의 보존 필드에 **둘 다** `disarm_notified_at`을 더한다 — patch만
+  허용하면 재시작 로드에서 필드가 떨어져 재시작마다 알림이 반복된다. 성공해 target이
+  지워지면 필드도 함께 사라진다.
 - `next_probe_at`은 건드리지 않는다. 상한 target의 화면 값은 종전대로
-  `publicProviderHolds`가 `null`로 계산하고, 칩 문구는 `자동 재개 꺼짐 · ↻ 지금 프로브
-  필요`에 `재시작 시 1회 자동 프로브`를 덧붙인다(3.5).
+  `publicProviderHolds`가 `null`로 계산한다. 상한 target의 해제 문구는
+  `server/worker/wait-judgment.js`의 `provider_hold` 사유가 만든다(`disarmed || exhausted`
+  분기의 `자동 재개 꺼짐 · ↻ 지금 프로브 필요`) — 화면은 이 서버 문구를 어휘 표보다
+  우선하므로 그 문자열을 `자동 재개 꺼짐 · 서버 재시작 시 1회 자동 프로브 · ↻ 지금
+  프로브 필요`로 바꾸고, 어휘 표(3.5)는 범례용으로 같은 뜻을 적는다.
 
 ### 3.5 어휘 (`app/views/worker/wait-vocabulary.js`)
 
@@ -171,6 +196,8 @@ PROSTATE 리그의 quick_fix `PROSTATE-u53`(오케스트레이션 codex `astra`)
   `release`: "리셋 뒤 자동 프로브 · 소진이면 서버 재시작 시 1회 자동 프로브 또는
   ↻ 지금 프로브".
 - `provider_hold-usage_limit` 행 `release`도 같은 문장으로 맞춘다.
+- 어휘 표는 범례와 서버 문구가 없을 때의 폴백이다. 실제 카드 문구는 3.4의
+  `wait-judgment.js` 문자열이 만든다.
 - 새 kind·새 슬롯·새 칩은 없다(ADR 0014). 범례는 표를 읽으므로 따로 고치지 않는다.
 
 ### 3.6 정본 반영
@@ -217,22 +244,35 @@ PROSTATE 리그의 quick_fix `PROSTATE-u53`(오케스트레이션 codex `astra`)
   - `recordAdmission`이 `gate`를 저장하고 같은 `gate`는 no-op, 다른 `gate`는 갱신이다.
   - `recoverProviderTarget`으로 러너 항목이 지워지면 그 러너의 `provider_gate` 기록이
     같은 mutation에서 지워지고 다른 러너·다른 사유의 기록은 남는다.
-  - `updateProviderTarget`이 `disarm_notified_at`을 받는다.
+  - `updateProviderTarget`이 `disarm_notified_at`을 받고, 디스크에 저장한 큐를 **새
+    store 객체**로 다시 읽어도(`normalizeProviderTarget`) 그 값이 남는다.
+- `server/ws/worker-handlers.js` 테스트(`worker-handlers.provider-outage.test.js`):
+  `publicAdmissions`가 `provider_gate` 기록의 `gate` 객체를 그대로 투영하고 다른 기록의
+  모양은 바뀌지 않는다.
+- `server/worker/wait-judgment.test.js`: 상한(`auto_resume_disarmed:*`) target의
+  `provider_hold` 사유 해제 문구가 `서버 재시작 시 1회 자동 프로브`를 담는다.
 - `server/worker/provider-health.test.js`:
   - `start()`가 상한(`rearm_count:3`) target을 한 번 프로브한다(spawn 1회); 실패면
-    `rearm_count`가 4가 되고 타이머는 무장되지 않으며 알림은 첫 disarm 때 한 번만 온다
-    (`start` → `stop` → `start` 두 번 반복해도 `providerAutoResumeDisarmed` 1회).
+    `rearm_count`가 4가 되고 타이머는 무장되지 않으며 알림은 첫 disarm 때 한 번만 온다.
+    재시작은 같은 store 객체의 `start → stop → start`가 아니라 **디스크 큐를 새
+    `createQueueStore`로 다시 읽은 뒤 `start()`**로 재현한다 — 그래도
+    `providerAutoResumeDisarmed`는 총 1회다.
   - 성공이면 target이 지워지고 `providerRecovered`가 온다.
   - 24시간 상한 target도 `start()`에서 한 번 프로브된다.
   - `sync()` 단독 호출은 상한 target을 프로브하지 않는다.
   - `in_flight`인 target은 건너뛴다.
   - 기존 "leaves a rearm-capped usage target…" 두 테스트는 위 기대로 바꾼다.
 - `app/views/worker/lane-model.test.js`:
-  - admission `provider_gate` 기록은 배지를 만들지 않는다(`autoSkipReason` `''`).
+  - admission `provider_gate` 기록은 슬롯 1 배지를 만들지 않고(`admissionBadge`가
+    `''`), 그 행에 칩은 하나만 선다.
   - 기록이 있고 hold가 서 있으면 자체 판정이 칩을 못 그리는 조건(활성 계정 없음)에서도
     `gate.kind === 'provider_usage'`·`probe_ready === true`·팝업에 `계정: 미해석` 줄이
     있다.
+  - `gate.kind:'outage'` 기록은 target `account`가 있어도(계정을 보존한 장애 target)
+    `provider_outage` 칩을 그린다.
   - 기록이 있어도 그 러너의 hold가 없으면 칩이 없다.
+  - 기록의 `gate.account`가 A인데 저장소 기본 계정을 B로 바꾼 스냅샷(자동 진행 꺼짐,
+    hold는 A로 남음)에서는 기록을 무시하고 자체 판정으로 떨어져 칩이 없다.
   - 기록이 없으면 종전 자체 판정 테스트가 그대로 통과한다.
 - `app/views/worker/lanes.test.js`: 기록으로 선 게이트의 직렬 선두 행에 `↻ 지금 프로브`
   와 `[지금 시작]`이 둘 다 있다.
@@ -257,10 +297,12 @@ Pre-Handoff Validation 묶음(`npm run tsc`, `npm run lint`, prettier, `npx vite
 
 ## 6. 구현 unit 후보 (advisory)
 
-- `server-gate`: 3.1·3.2 — `scheduler.js providerDispatchHeld`·dispatch 분기,
-  `queue-store.js AdmissionRecord.gate`·`recoverProviderTarget` 정리.
-- `restart-probe`: 3.4 — `provider-health.js probeCapped`·`disarm_notified_at`.
-- `front-chip`: 3.3·3.5 — `lane-model.js providerGateFromRecord`·`autoSkipReason`,
+- `server-gate`: 3.1·3.2 — `scheduler.js providerDispatchHeld`·dispatch 분기·
+  `recordSkipReason`, `queue-store.js AdmissionRecord.gate`·`recoverProviderTarget` 정리,
+  `worker-handlers.js publicAdmissions`.
+- `restart-probe`: 3.4 — `provider-health.js probeCapped`·`disarm_notified_at`
+  (`queue-store.js normalizeProviderTarget` 포함), `wait-judgment.js` 해제 문구.
+- `front-chip`: 3.3·3.5 — `lane-model.js providerGateFromRecord`·`admissionBadge`,
   `wait-vocabulary.js`.
 
 ## 7. 비목표
