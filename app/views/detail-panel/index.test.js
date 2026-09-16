@@ -2044,12 +2044,16 @@ describe('views/detail-panel', () => {
     /** @type {HTMLButtonElement} */ (
       mount.querySelector('.detail-session__resume[data-attempt-id="kid"]')
     ).click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelectorAll('.resume-instructions-dialog button')[1]
+    ).click();
     const textarea = /** @type {HTMLTextAreaElement} */ (
       document.querySelector('.resume-instructions-dialog textarea')
     );
     textarea.value = '  테스트부터 실행  ';
+    textarea.dispatchEvent(new Event('input'));
     /** @type {HTMLButtonElement} */ (
-      document.querySelector('.resume-instructions-dialog button')
+      document.querySelector('.resume-instructions-dialog .op-btn--primary')
     ).click();
     await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
     /** @type {HTMLButtonElement} */ (

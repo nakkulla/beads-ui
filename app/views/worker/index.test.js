@@ -3394,12 +3394,16 @@ describe('views/worker', () => {
     /** @type {HTMLButtonElement} */ (
       mount.querySelector('.rtile[data-attempt-id="failed"] .rtile__resume')
     ).click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelectorAll('.resume-instructions-dialog button')[1]
+    ).click();
     const textarea = /** @type {HTMLTextAreaElement} */ (
       document.querySelector('.resume-instructions-dialog textarea')
     );
     textarea.value = '  로그부터 확인  ';
+    textarea.dispatchEvent(new Event('input'));
     /** @type {HTMLButtonElement} */ (
-      document.querySelector('.resume-instructions-dialog button')
+      document.querySelector('.resume-instructions-dialog .op-btn--primary')
     ).click();
     await flush();
     expect(transport).toHaveBeenCalledTimes(2);
@@ -3747,7 +3751,7 @@ describe('views/worker', () => {
     });
   });
 
-  test('tile 지시와 함께 재시작 pauses durably then resumes with prior_attempt', async () => {
+  test('draws no restart-instructions button for an old instructions_restart snapshot', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -3767,88 +3771,47 @@ describe('views/worker', () => {
         }
       })
     );
-    const transport = vi
-      .fn()
-      .mockResolvedValueOnce({
-        attempt_id: 'live',
-        paused: true,
-        phase: 'done'
-      })
-      .mockResolvedValueOnce({ resumed: true });
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
-      transport
+      transport: vi.fn()
     });
-
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector(
-        '.rtile[data-attempt-id="live"] .rtile__restart-instructions'
-      )
-    ).click();
-    const textarea = /** @type {HTMLTextAreaElement} */ (
-      document.querySelector('.resume-instructions-dialog textarea')
-    );
-    textarea.value = '테스트부터 고쳐라';
-    textarea.dispatchEvent(new Event('input'));
-    /** @type {HTMLButtonElement} */ (
-      document.querySelector('.resume-instructions-dialog .op-btn--primary')
-    ).click();
     await flush();
 
-    expect(transport).toHaveBeenNthCalledWith(1, 'worker-attempt-pause', {
-      attempt_id: 'live',
-      require_durable: true
-    });
-    expect(transport).toHaveBeenNthCalledWith(2, 'worker-attempt-resume', {
-      attempt_id: 'live',
-      expected_revision: 7,
-      continuation: 'prior_attempt',
-      instructions: '테스트부터 고쳐라'
-    });
+    expect(mount.querySelector('.rtile__restart-instructions')).toBeNull();
   });
 
-  test('adopts a conflict reply queue so the restart retry carries its revision', async () => {
+  test('carries the typed instructions from the paused tile resume dialog', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
-    const base = queueOf({
-      revision: 7,
-      auto_advance: true,
-      queue: [{ bead_id: 'S1', added_at: 0 }],
-      attempts: {
-        live: {
-          attempt_id: 'live',
-          bead_id: 'S1',
-          status: 'running',
-          session_id: 'sid-1',
-          started_at: Date.now(),
-          instructions_restart: { eligible: true, reason: null }
+    queueStore.set(
+      queueOf({
+        revision: 5,
+        auto_advance: true,
+        queue: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          live: {
+            attempt_id: 'live',
+            bead_id: 'S1',
+            status: 'paused',
+            session_id: 'sid-1'
+          }
         }
-      }
-    });
-    queueStore.set(base);
-    const transport = vi
-      .fn()
-      .mockResolvedValueOnce({
-        attempt_id: 'live',
-        paused: true,
-        phase: 'done'
       })
-      .mockResolvedValueOnce({
-        conflict: true,
-        queue: { ...base, revision: 9 }
-      })
-      .mockResolvedValueOnce({ resumed: true });
+    );
+    const transport = vi.fn().mockResolvedValue({ resumed: true });
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
       transport
     });
+    await flush();
 
     /** @type {HTMLButtonElement} */ (
-      mount.querySelector(
-        '.rtile[data-attempt-id="live"] .rtile__restart-instructions'
-      )
+      mount.querySelector('.rtile[data-attempt-id="live"] .rtile__resume')
+    ).click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelectorAll('.resume-instructions-dialog button')[1]
     ).click();
     const textarea = /** @type {HTMLTextAreaElement} */ (
       document.querySelector('.resume-instructions-dialog textarea')
@@ -3860,10 +3823,9 @@ describe('views/worker', () => {
     ).click();
     await flush();
 
-    expect(transport).toHaveBeenNthCalledWith(3, 'worker-attempt-resume', {
+    expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
       attempt_id: 'live',
-      expected_revision: 9,
-      continuation: 'prior_attempt',
+      expected_revision: 5,
       instructions: '테스트부터 고쳐라'
     });
   });

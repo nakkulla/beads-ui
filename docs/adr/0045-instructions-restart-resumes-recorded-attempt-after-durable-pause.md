@@ -1,7 +1,8 @@
 ---
 id: 45
 title: 구현 세션의 지시 재시작은 durable pause 뒤 기록된 세션과 설정으로 재개하며 새 세션으로 대체하지 않는다
-status: accepted
+status: superseded
+superseded_by: UI-6icf
 date: 2026-09-08
 summary: "구현 세션의 지시 재시작은 기존 durable pause 뒤 기록된 세션과 설정으로 재개하며, pause 뒤 연결 끊김은 paused로 남기고 transcript 부재 시 새 세션으로 대체하지 않는다"
 spec: docs/superpowers/specs/2026-09-08-running-session-instructions-restart-design.md

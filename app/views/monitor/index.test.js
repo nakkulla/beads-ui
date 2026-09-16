@@ -1283,8 +1283,8 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     });
   });
 
-  test('restarts with instructions from the tile it was clicked on', async () => {
-    const { mount, view, sent } = setup({
+  test('draws no restart-instructions button for an old instructions_restart snapshot', async () => {
+    const { mount, view } = setup({
       workspaces: [
         workspace({
           attempts: {
@@ -1300,11 +1300,73 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
         })
       ],
       workspaces_state: [state()],
-      transport: async () => ({ paused: true, resumed: true })
+      transport: async () => ({ resumed: true })
     });
 
     view.load();
-    click(mount, '.rtile__restart-instructions');
+    await vi.waitFor(() =>
+      expect(mount.querySelector('.rtile')).not.toBeNull()
+    );
+
+    expect(mount.querySelector('.rtile__restart-instructions')).toBeNull();
+  });
+
+  test('resumes a paused tile immediately without continuation or instructions', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'paused',
+              started_at: NOW - 100,
+              session_id: 's'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()],
+      transport: async () => ({ resumed: true })
+    });
+
+    view.load();
+    click(mount, '.rtile__resume');
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await vi.waitFor(() => expect(sent.length).toBe(1));
+
+    expect(sent[0]).toEqual({
+      type: 'worker-attempt-resume',
+      payload: { attempt_id: 't1', root_dir: WS_A, expected_revision: 1 }
+    });
+  });
+
+  test('carries the typed instructions from the paused tile resume dialog', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'paused',
+              started_at: NOW - 100,
+              session_id: 's'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()],
+      transport: async () => ({ resumed: true })
+    });
+
+    view.load();
+    click(mount, '.rtile__resume');
+    /** @type {HTMLButtonElement} */ (
+      document.querySelectorAll('.resume-instructions-dialog button')[1]
+    ).click();
     const textarea = /** @type {HTMLTextAreaElement} */ (
       document.querySelector('.resume-instructions-dialog textarea')
     );
@@ -1313,21 +1375,17 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     /** @type {HTMLButtonElement} */ (
       document.querySelector('.resume-instructions-dialog .op-btn--primary')
     ).click();
-    await vi.waitFor(() => expect(sent.length).toBe(2));
+    await vi.waitFor(() => expect(sent.length).toBe(1));
 
-    expect(sent[0]).toEqual({
-      type: 'worker-attempt-pause',
-      payload: { attempt_id: 't1', require_durable: true, root_dir: WS_A }
-    });
-    expect(sent[1]).toMatchObject({
+    expect(sent[0]).toMatchObject({
       type: 'worker-attempt-resume',
       payload: {
         attempt_id: 't1',
-        continuation: 'prior_attempt',
         instructions: '이어서 고쳐라',
         root_dir: WS_A
       }
     });
+    expect(sent[0].payload).not.toHaveProperty('continuation');
   });
 
   test('re-reads the revision for each resume send and never retries twice', async () => {

@@ -594,7 +594,7 @@ describe('ws worker-queue channel', () => {
     expect(refused.payload.reason).toBe('no_session_id');
   });
 
-  test('decorateQueue marks running and paused attempts with instructions_restart', () => {
+  test('decorateQueue leaves no instructions_restart on any attempt', () => {
     const exec_values = Object.fromEntries(
       EXEC_SETTING_KEYS.map((key) => [key, null])
     );
@@ -623,41 +623,22 @@ describe('ws worker-queue channel', () => {
         cleanup_failed: {},
         attempts: {
           live: attempt({ attempt_id: 'live', status: 'running' }),
-          'no-account': attempt({
-            attempt_id: 'no-account',
-            status: 'running',
-            claude_account: null
-          }),
           settled: attempt({
             attempt_id: 'settled',
             status: 'paused',
             control: { kind: 'pause', phase: 'done', requested_at: 1 }
           }),
-          gone: attempt({ attempt_id: 'gone', status: 'failed' }),
-          review: attempt({
-            attempt_id: 'review',
-            status: 'running',
-            kind: 'review'
-          })
+          gone: attempt({ attempt_id: 'gone', status: 'failed' })
         }
       })
     );
 
-    expect(snapshot.attempts.live.instructions_restart).toEqual({
-      eligible: true,
-      reason: null
-    });
-    expect(snapshot.attempts['no-account'].instructions_restart).toEqual({
-      eligible: false,
-      reason: '실행 계정이 기록되지 않아 같은 계정으로 재시작할 수 없습니다.'
-    });
-    expect(snapshot.attempts.settled.instructions_restart).toEqual({
-      eligible: true,
-      reason: null
-    });
-    expect(snapshot.attempts.gone).not.toHaveProperty('instructions_restart');
-    // 스펙 §2: 리뷰·해소·처분·정리 행에는 버튼 자리 자체가 없다.
-    expect(snapshot.attempts.review).not.toHaveProperty('instructions_restart');
+    expect(
+      Object.values(snapshot.attempts).every(
+        (/** @type {any} */ row) =>
+          !Object.prototype.hasOwnProperty.call(row, 'instructions_restart')
+      )
+    ).toBe(true);
   });
 
   test('worker-attempt-pause forwards require_durable and rejects a non-boolean', async () => {

@@ -532,12 +532,6 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   the same thing an older server sends; consumers fail-quiet on the absence by
   omitting the 완료 행's worker chip rather than falling back to current
   settings.
-- A `running` or `paused` attempt inside `attempts` carries the non-persisted
-  `instructions_restart` `{ eligible, reason }` (UI-qce9 §5): whether the
-  `지시와 함께 재시작` / `지시와 함께 이어하기` entry point is open for that
-  record, and the Korean sentence the disabled button shows when it is not. The
-  server computes it from the UNTRIMMED record with the same predicate the pause
-  guard uses; consumers fail-quiet on its absence by rendering no button.
 - A RUNNING attempt inside `attempts` additionally carries the non-persisted
   `last_event_at` (epoch ms) — when the server last saw a session-log line for
   that attempt (UI-53es §1). It is what the monitor row's live heartbeat reads;
@@ -784,7 +778,8 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `decision_token` (it is a fixed policy, not a provider choice), refuses
   `exec_override` with `bad_request`, never falls back to a fresh session when
   the transcript is gone, and refuses with `prior_session_unavailable` when the
-  recorded runner/account cannot run here.
+  recorded runner/account cannot run here. It has no UI entry point since
+  UI-6icf; the dialog's two branches both send the ordinary `auto` path.
 - `worker-merge-queue-add` payload:
   `{ bead_id, expected_revision, continuation?, decision_token? }` — the
   `[머지]` click (UI-5v7d §3). It QUEUES rather than merges: the durable

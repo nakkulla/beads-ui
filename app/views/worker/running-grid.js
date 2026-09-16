@@ -119,10 +119,6 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * button renders disabled until it lands (§2.1).
  * @property {boolean} [can_resume] - A held attempt whose recorded session is
  * available for the shared resume action.
- * @property {{ eligible: boolean, reason: string|null }} [instructions_restart] -
- * 서버가 판정한 지시 재시작 자격 (UI-qce9 §5). 키가 없으면 버튼을 그리지 않고,
- * `eligible:false`면 비활성 버튼과 `reason` 툴팁이다 — 사실 자체는 참이므로
- * 버튼을 지우지 않는다.
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4.1).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4.1).
  * @property {import('../../utils/child-rollup.js').ChildRollup|null} [rollup] -
@@ -1386,37 +1382,6 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const discard_actions = abandon_button
     ? html`${discard_button}${abandon_button}`
     : discard_button;
-  // 지시 재시작·지시 이어하기 (UI-qce9 §3.1). 자리는 슬롯 1 오른쪽 조작
-  // 묶음이고, `⏸`·`▶ 재개`와 같은 `.op-btn`이다 — 새 색도, 중간 칩 줄도 만들지
-  // 않는다. 서버가 자격을 싣지 않은 타일에는 버튼 자체가 없다 (fail-quiet).
-  const restart_entry = tile.instructions_restart || null;
-  const restart_eligible = restart_entry?.eligible === true;
-  const instructions_restart_button = restart_entry
-    ? html`<button
-        type="button"
-        class="op-btn rtile__restart-instructions"
-        ?disabled=${!restart_eligible}
-        title=${restart_eligible
-          ? '실행을 중단한 뒤 지시를 담아 같은 세션 기록으로 재시작'
-          : restart_entry.reason || '지시와 함께 재시작 불가'}
-        aria-label="지시와 함께 재시작"
-      >
-        지시와 함께 재시작
-      </button>`
-    : '';
-  const instructions_resume_button = restart_entry
-    ? html`<button
-        type="button"
-        class="op-btn rtile__resume-instructions"
-        ?disabled=${!restart_eligible}
-        title=${restart_eligible
-          ? '지시를 담아 같은 세션 기록과 실행 설정으로 이어하기'
-          : restart_entry.reason || '지시와 함께 이어하기 불가'}
-        aria-label="지시와 함께 이어하기"
-      >
-        지시와 함께 이어하기
-      </button>`
-    : '';
   // 작업 종류 분류 (UI-kyky §3.1). 실행 타일은 배경을 켜지 않는다 — '실행 중'
   // 자체가 §3.1이 우선한다고 정한 상태 표현이라 이 그리드의 어떤 타일도 중립이
   // 아니다. `data-route`는 칩과 같은 분류를 실어 두 표면이 어긋나지 않게 한다.
@@ -1484,25 +1449,25 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                   ▤ 세션
                 </button>
                 ${paused
-                  ? html`${instructions_resume_button}<button
-                        type="button"
-                        class="op-btn rtile__resume"
-                        title="같은 세션으로 이어서 재개 (현재 실행 설정을 적용할 수 있음)"
-                        aria-label="재개"
-                      >
-                        ▶ 재개
-                      </button>`
-                  : html`${instructions_restart_button}<button
-                        type="button"
-                        class="rtile__pause"
-                        ?disabled=${tile.can_pause === false}
-                        title=${tile.can_pause === false
-                          ? '세션 ID 기록 전 — 일시정지 불가'
-                          : '일시정지 (같은 세션으로 재개 가능)'}
-                        aria-label="일시정지"
-                      >
-                        ⏸
-                      </button>`}
+                  ? html`<button
+                      type="button"
+                      class="op-btn rtile__resume"
+                      title="같은 세션으로 이어서 재개 — 바로 재개하거나 지시를 입력할 수 있음"
+                      aria-label="재개"
+                    >
+                      ▶ 재개
+                    </button>`
+                  : html`<button
+                      type="button"
+                      class="rtile__pause"
+                      ?disabled=${tile.can_pause === false}
+                      title=${tile.can_pause === false
+                        ? '세션 ID 기록 전 — 일시정지 불가'
+                        : '일시정지 (같은 세션으로 재개 가능)'}
+                      aria-label="일시정지"
+                    >
+                      ⏸
+                    </button>`}
                 ${discard_actions}`}${parked ? '' : resolve_button}
       </div>
     </div>
