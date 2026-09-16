@@ -23,7 +23,6 @@ describe('wait vocabulary table', () => {
 
     expect(ids).toEqual([
       'prerequisite',
-      'prerequisite-returning',
       'prerequisite_foreign',
       'external_job',
       'base_moved',
@@ -87,10 +86,13 @@ describe('waitScopeOf', () => {
 });
 
 describe('waitKindRow', () => {
-  test('maps a returning prerequisite to the return row', () => {
-    const row = waitKindRow({ kind: 'prerequisite' }, { returning: true });
+  test('maps a prerequisite to the one prerequisite row', () => {
+    const row = waitKindRow(
+      { kind: 'prerequisite' },
+      /** @type {any} */ ({ returning: true })
+    );
 
-    expect(row?.id).toBe('prerequisite-returning');
+    expect(row?.id).toBe('prerequisite');
   });
 
   test('infers an outage hold from the headline when no hold kind is given', () => {

@@ -571,6 +571,17 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
     ) {
       continue;
     }
+    // 선행을 기다리는 attempt는 실행 흔적이 아니라 큐 순서 정보다 (직렬 레인
+    // 순서 고정 스펙 §5.1): 세션은 착수하지 않고 끝났으므로 실행 중 그리드가
+    // 아니라 그 bead의 대기 행(병렬 큐·직렬 레인 entry)이 대표한다. 재료는
+    // `cause` 하나이고, `base_moved`·recovery·미상은 타일 조작(이어하기·폐기)이
+    // 있으므로 현행 타일이다 (fail-closed).
+    if (
+      held.run_state === 'waiting' &&
+      held.attempt?.cause === 'prerequisite_unmet'
+    ) {
+      continue;
+    }
     const a = held.attempt;
     const discard = discardProjection(input.discard_operations, bead_id, {
       attempt_id: a.attempt_id
@@ -1627,6 +1638,12 @@ function admissionBadge(admission, bead_id) {
   // 레코드가 아니라 `added_at`이므로, 만료된 레코드가 남아도 행에 `0초`가 서지
   // 않는다.
   if (reason === 'grace_period') {
+    return '';
+  }
+  // 직렬 레인 선두가 아니라는 거절도 뱃지를 만들지 않는다 (직렬 레인 순서 고정
+  // 스펙 §8.3): 행의 순번이 이미 말하는 사실이라 `⛔ serial_lane_not_head` 원문을
+  // 그리면 순번을 두 번 말하는 것이 된다.
+  if (reason === 'serial_lane_not_head') {
     return '';
   }
   // 선행 대기는 스케줄러가 증명한 진단이지 상태 복사가 아니므로 (UI-d3i1 §5.4)
@@ -3032,11 +3049,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
      * 키가 있으면 그 목록이 열린 선행을 소유하고, attempt의 동결 목록에서 빠진
      * ID는 해제 칩 재료로 따로 보존한다. 키가 없을 때만 동결 목록을 합친다.
      *
+     * 강등된 선행 대기 행(스펙 §5.3)은 타일이 없으므로 `wait` 대신 그 bead의
+     * 마지막 구현 attempt에서 뽑은 동결 목록을 `frozen_blockers`로 받는다 —
+     * 판정식은 타일과 같다.
+     *
      * @param {string} bead_id
      * @param {import('./running-grid.js').WaitTile|null|undefined} wait
+     * @param {Array<{ id: string }>|null} [frozen_blockers]
      * @returns {{ blocked_by?: string[], wait?: import('./running-grid.js').WaitTile }}
      */
-    const blockedByFields = (bead_id, wait) => {
+    const blockedByFields = (bead_id, wait, frozen_blockers = null) => {
       const decorated = decoratedBlockedBy(bead_id);
       if (wait?.recovery) {
         return { ...decorated, wait };
@@ -3050,28 +3072,35 @@ export function buildLanes(workspaces, workspaces_state, options) {
         Array.isArray(record.blockers)
           ? record.blockers
           : [];
-      const frozen = (wait?.blockers || [])
-        .map((blocker) => blocker.id)
-        .filter((id) => typeof id === 'string' && id.length > 0);
-      if (wait && Object.hasOwn(bead_blocked_by, bead_id)) {
+      const frozen = (wait?.blockers || frozen_blockers || [])
+        .map((/** @type {any} */ blocker) => blocker.id)
+        .filter(
+          (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+        );
+      const proven_ids = proven
+        .map((/** @type {any} */ blocker) => blocker.id)
+        .filter(
+          (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+        );
+      if (Object.hasOwn(bead_blocked_by, bead_id)) {
         const open = decorated.blocked_by || [];
-        const resolved = frozen.filter((id) => !open.includes(id));
+        // attempt가 없는 admission 행에서는 증명된 blocker가 동결 목록의 자리를
+        // 대신한다 (스펙 §5.3).
+        const held_frozen = frozen.length > 0 ? frozen : proven_ids;
+        const resolved = held_frozen.filter(
+          (/** @type {string} */ id) => !open.includes(id)
+        );
         if (resolved.length > 0) {
           resolved_blockers_by_key.set(`${root_dir}\u0000${bead_id}`, resolved);
         }
         return {
           blocked_by: open,
-          wait: { ...wait, returning: open.length === 0 }
+          ...(wait ? { wait } : {})
         };
       }
-      const waited = [
-        ...frozen,
-        ...proven.map((/** @type {any} */ blocker) => blocker.id)
-      ].filter((id) => typeof id === 'string' && id.length > 0);
+      const waited = [...frozen, ...proven_ids];
       if (waited.length === 0) {
-        return wait
-          ? { ...decorated, wait: { ...wait, returning: false } }
-          : decorated;
+        return wait ? { ...decorated, wait } : decorated;
       }
       /** @type {string[]} */
       const merged = [...(decorated.blocked_by || [])];
@@ -3082,9 +3111,28 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }
       return {
         blocked_by: merged,
-        ...(wait ? { wait: { ...wait, returning: false } } : {})
+        ...(wait ? { wait } : {})
       };
     };
+
+    // 강등된 선행 대기 행의 동결 선행 (스펙 §5.3): 타일이 없어진 자리에서 4b
+    // `🔓` 칩의 재료가 되는 것은 그 attempt가 판정 시점에 증명한 목록 하나다.
+    /** @type {Map<string, Array<{ id: string }>>} */
+    const prerequisite_wait_blockers = new Map();
+    for (const [bead_id, held] of heldAttemptStates(
+      attempts,
+      done_at_by_bead
+    )) {
+      if (
+        held.run_state === 'waiting' &&
+        held.attempt?.cause === 'prerequisite_unmet'
+      ) {
+        prerequisite_wait_blockers.set(
+          bead_id,
+          waitProjection(held.attempt).blockers
+        );
+      }
+    }
 
     /** @type {Set<string>} */
     const claimed = new Set();
@@ -3601,7 +3649,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
             : 'notes의 REVISE finding을 스펙에 반영하는 처분 세션을 띄웁니다'
           : ''
       };
-      const decorated = blockedByFields(bead_id, null);
+      const decorated = blockedByFields(
+        bead_id,
+        null,
+        prerequisite_wait_blockers.get(bead_id) || null
+      );
       if (Object.hasOwn(decorated, 'blocked_by')) {
         item.blocked_by = decorated.blocked_by;
       }

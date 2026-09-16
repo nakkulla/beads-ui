@@ -29,11 +29,13 @@ import {
   reviewSessionRowState,
   routeChipTemplate,
   staleWorkProjection,
+  startNowButtonTemplate,
   sumAttemptWorkMs,
   summaryChipsTemplate,
   tokenChipTemplate,
   waitBody,
-  waitReasonLines
+  waitReasonLines,
+  waitStatusBadge
 } from './lanes.js';
 import { runningTile } from './running-grid.js';
 import { SUMMARY_CHIPS } from './wait-vocabulary.js';
@@ -362,8 +364,8 @@ describe('server wait judgment rendering', () => {
         since: 1_700_000_000_000,
         next_check_at: 1_700_000_900_000,
         verdict_reason: {
-          code: 'return_overdue',
-          message: '선행 해제를 확인한 뒤 10분이 지나도 복귀하지 않음'
+          code: 'settle_overdue',
+          message: '종료 확인 후 두 주기가 지나도 대기가 해제되지 않음'
         }
       })
     );
@@ -373,7 +375,6 @@ describe('server wait judgment rendering', () => {
 
     expect(mount.querySelector('details')?.open).toBe(true);
     expect(onClick).not.toHaveBeenCalled();
-    expect(mount.querySelector('.chip-popover')?.textContent).toContain('10분');
     expect(mount.querySelector('.chip-popover')?.textContent).toContain(
       '관측 시작'
     );
@@ -382,15 +383,15 @@ describe('server wait judgment rendering', () => {
     );
   });
 
-  test('shows the server return observation clock in the evidence popup', () => {
+  test('shows the server observation clock in the evidence popup', () => {
     const since = 1_700_000_000_000;
     const lines = waitReasonLines(
       waitReason({
         since,
         verdict: 'overdue',
         verdict_reason: {
-          code: 'return_overdue',
-          message: '선행 해제를 확인한 뒤 10분이 지나도 복귀하지 않음'
+          code: 'settle_overdue',
+          message: '종료 확인 후 두 주기가 지나도 대기가 해제되지 않음'
         }
       })
     );
@@ -6186,5 +6187,89 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
       title: '자동 디스패치가 막혀 있다',
       lines: ['loud_fail_blocker', '출구: 이 행의 ▶ 재개(큐 전체)']
     });
+  });
+});
+
+describe('직렬 레인 선두 조건의 [지금 시작] (직렬 레인 순서 고정 §6.2)', () => {
+  const NOW = 1_700_000_000_000;
+
+  /**
+   * @param {Partial<Record<string, any>>} [patch]
+   * @returns {{ id: string, added_at?: number, lane?: string, queue_index?: number, gate?: any }}
+   */
+  function row(patch = {}) {
+    return { id: 'UI-1', lane: 's1', queue_index: 1, ...patch };
+  }
+
+  test('withholds the button from a grace-pending non-head serial row', () => {
+    const template = startNowButtonTemplate(row({ added_at: NOW }), NOW);
+
+    expect(template).toBe('');
+  });
+
+  test('withholds the button from a gated non-head serial row', () => {
+    const template = startNowButtonTemplate(
+      row({ gate: { kind: 'systemic', since: NOW } }),
+      NOW
+    );
+
+    expect(template).toBe('');
+  });
+
+  test('withholds the button from a requested non-head serial row', () => {
+    const template = startNowButtonTemplate(row(), NOW, true);
+
+    expect(template).toBe('');
+  });
+
+  test('keeps the button on the serial lane head', () => {
+    render(
+      startNowButtonTemplate(row({ queue_index: 0, added_at: NOW }), NOW),
+      mount
+    );
+
+    expect(mount.querySelector('.worker-mini__start-now')).not.toBeNull();
+  });
+
+  test('keeps the button on a parallel queue row', () => {
+    render(
+      startNowButtonTemplate(
+        row({ lane: 'queue', queue_index: 3, added_at: NOW }),
+        NOW
+      ),
+      mount
+    );
+
+    expect(mount.querySelector('.worker-mini__start-now')).not.toBeNull();
+  });
+});
+
+describe('선행 대기 held 타일의 어휘 행 (직렬 레인 순서 고정 §5.4)', () => {
+  test('badges a held prerequisite wait as 선행 대기', () => {
+    render(
+      waitStatusBadge({
+        held_kind: 'waiting',
+        held: { cause: 'prerequisite_unmet' }
+      }),
+      mount
+    );
+
+    expect(
+      mount.querySelector('.worker-mini__badge')?.textContent?.trim()
+    ).toBe('⛓ 선행 대기');
+  });
+
+  test('keeps the same badge when every blocker is already released', () => {
+    render(
+      waitStatusBadge({
+        held_kind: 'waiting',
+        held: /** @type {any} */ ({ cause: 'prerequisite_unmet', blockers: [] })
+      }),
+      mount
+    );
+
+    expect(
+      mount.querySelector('.worker-mini__badge')?.textContent?.trim()
+    ).toBe('⛓ 선행 대기');
   });
 });
