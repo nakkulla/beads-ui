@@ -14,6 +14,7 @@
  * 기간·저장소 필터를 좁혀도 고른 실험의 셀이 사라지지 않는다.
  */
 import { html, render } from 'lit-html';
+import { live } from 'lit-html/directives/live.js';
 import { CLOSED_RANGE_OPTIONS } from '../../data/closed-range.js';
 import {
   DEFAULT_PROBLEM_CRITERIA,
@@ -145,6 +146,9 @@ export function createCompareView(root, options = {}) {
     }
   };
   let saved_criteria = loadProblemCriteria();
+  // Once this view has chosen criteria, its own choice is the base for the next
+  // edit; a reset chooses the defaults even before the reply lands.
+  let criteria_touched = false;
   let criteria_open = false;
   let group_by = 'preset';
   let sort = 'landing';
@@ -377,9 +381,14 @@ export function createCompareView(root, options = {}) {
    * @param {unknown} value
    */
   function changeCriterion(key, field, value) {
-    const next = JSON.parse(JSON.stringify(model.criteria.effective));
+    // Accumulate on the pending choice, not on the last response: two changes
+    // made before a reply must not let the second one revert the first.
+    const next = normalizeProblemCriteria(
+      criteria_touched ? saved_criteria : model.criteria.effective
+    );
     next[key][field] = value;
     saved_criteria = normalizeProblemCriteria(next);
+    criteria_touched = true;
     saveProblemCriteria(saved_criteria);
     void fetchSnapshot();
   }
@@ -425,7 +434,7 @@ export function createCompareView(root, options = {}) {
         <label class="cmp-criteria__main">
           <input
             type="checkbox"
-            .checked=${criteria[key].on}
+            .checked=${live(criteria[key].on)}
             @change=${(/** @type {Event} */ ev) =>
               changeCriterion(
                 key,
@@ -447,7 +456,9 @@ export function createCompareView(root, options = {}) {
         min=${limits.min}
         max=${limits.max}
         step="1"
-        .value=${criteria.review[field] ?? ''}
+        .value=${live(
+          criteria.review[field] === null ? '' : String(criteria.review[field])
+        )}
         ?disabled=${!criteria.review.on}
         @change=${(/** @type {Event} */ ev) =>
           changeReviewThreshold(
@@ -464,7 +475,7 @@ export function createCompareView(root, options = {}) {
         min=${PROBLEM_CRITERIA_LIMITS.factor.min}
         max=${PROBLEM_CRITERIA_LIMITS.factor.max}
         step="0.1"
-        .value=${criteria[key].factor}
+        .value=${live(String(criteria[key].factor))}
         ?disabled=${!criteria[key].on}
         @change=${(/** @type {Event} */ ev) =>
           changeFactor(
@@ -494,7 +505,7 @@ export function createCompareView(root, options = {}) {
           html`<label class="cmp-criteria__aux">
             <input
               type="checkbox"
-              .checked=${criteria.retry.include_env}
+              .checked=${live(criteria.retry.include_env)}
               ?disabled=${!criteria.retry.on}
               @change=${(/** @type {Event} */ ev) =>
                 changeCriterion(
@@ -520,7 +531,7 @@ export function createCompareView(root, options = {}) {
           html`<label class="cmp-criteria__aux">
             <input
               type="checkbox"
-              .checked=${criteria.human.include_env_events}
+              .checked=${live(criteria.human.include_env_events)}
               ?disabled=${!criteria.human.on}
               @change=${(/** @type {Event} */ ev) =>
                 changeCriterion(
@@ -554,6 +565,7 @@ export function createCompareView(root, options = {}) {
           ?disabled=${model.criteria.is_default}
           @click=${() => {
             saved_criteria = null;
+            criteria_touched = true;
             clearProblemCriteria();
             void fetchSnapshot();
           }}

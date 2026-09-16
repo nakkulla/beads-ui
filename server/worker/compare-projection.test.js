@@ -921,6 +921,152 @@ describe('worker/compare-projection configurable problems', () => {
     expect(model.summary.problem_rate).toBeNull();
   });
 
+  test('keeps relative criteria false below the minimum sample', () => {
+    const attempts = [0, 1, 2, 3].map((index) =>
+      makeAttempt({
+        attempt_id: `at-${index}`,
+        bead_id: `UI-${index}`,
+        started_at: 0,
+        finished_at: index === 3 ? 90_000 : 1000
+      })
+    );
+    const model = projectAttempts(attempts);
+
+    expect(model.criteria.baselines.duration_ms.active).toBe(false);
+    expect(model.criteria.baselines.cost_usd.active).toBe(false);
+    expect(
+      model.rows.every(
+        (row) => row.problems.duration === false && row.problems.cost === false
+      )
+    ).toBe(true);
+  });
+
+  test('stays active on a zero median and judges any positive row', () => {
+    const attempts = [0, 1, 2, 3, 4].map((index) =>
+      makeAttempt({
+        attempt_id: `at-${index}`,
+        bead_id: `UI-${index}`,
+        started_at: 0,
+        finished_at: index === 4 ? 5000 : 0
+      })
+    );
+    const model = projectAttempts(attempts);
+
+    expect(model.criteria.baselines.duration_ms).toMatchObject({
+      median: 0,
+      active: true
+    });
+    expect(
+      model.rows.find((row) => row.attempt_id === 'at-4')?.problems.duration
+    ).toBe(true);
+  });
+
+  test('follows the factor a request asks for', () => {
+    const attempts = [0, 1, 2, 3, 4].map((index) =>
+      makeAttempt({
+        attempt_id: `at-${index}`,
+        bead_id: `UI-${index}`,
+        started_at: 0,
+        finished_at: index === 4 ? 5000 : 1000
+      })
+    );
+    const tight = projectAttempts(
+      attempts,
+      {},
+      {
+        problem_criteria: { duration: { factor: 3 } }
+      }
+    );
+    const loose = projectAttempts(
+      attempts,
+      {},
+      {
+        problem_criteria: { duration: { factor: 6 } }
+      }
+    );
+
+    expect(
+      tight.rows.find((row) => row.attempt_id === 'at-4')?.problems.duration
+    ).toBe(true);
+    expect(
+      loose.rows.find((row) => row.attempt_id === 'at-4')?.problems.duration
+    ).toBe(false);
+  });
+
+  test('keeps the cost boundary strict and judges a partial row too', () => {
+    const catalog = resolveCatalog({
+      overrides: {
+        codex: { models: { priced: { price: { input: 1, output: 1 } } } }
+      },
+      warn: () => {}
+    });
+    /**
+     * @param {number} index - Row ordinal.
+     * @param {number} dollars - Priced leg cost in USD.
+     * @param {boolean} partial - Adds an unpriced leg when true.
+     */
+    const costRow = (index, dollars, partial) =>
+      makeAttempt({
+        attempt_id: `at-${index}`,
+        bead_id: `UI-${index}`,
+        runner: 'codex',
+        usage_segments: [
+          { model: 'priced', usage: { input_tokens: dollars * 1_000_000 } },
+          ...(partial
+            ? [{ model: 'known-unpriced', usage: { input_tokens: 10 } }]
+            : [])
+        ]
+      });
+    /**
+     * @param {number} last_cost - Cost of the fifth row in USD.
+     * @param {boolean} partial - Makes that row partial when true.
+     */
+    const project = (last_cost, partial) =>
+      buildCompareModel({
+        catalog,
+        workspaces: [
+          makeWorkspace({
+            attempts: [
+              ...[0, 1, 2, 3].map((index) => costRow(index, 1, false)),
+              costRow(4, last_cost, partial)
+            ]
+          })
+        ]
+      });
+    const at_boundary = project(3, false);
+    const above = project(4, true);
+
+    expect(
+      at_boundary.rows.find((row) => row.attempt_id === 'at-4')?.problems.cost
+    ).toBe(false);
+    const above_row = above.rows.find((row) => row.attempt_id === 'at-4');
+    expect(above_row?.problems.cost).toBe(true);
+    expect(above_row?.problems.evidence.cost.partial).toBe(true);
+  });
+
+  test('excludes an auto resume until the environment toggle is on', () => {
+    const attempt = makeAttempt({
+      resumed_from: 'origin',
+      auto_resume_kind: 'provider_outage'
+    });
+    const excluded = projectAttempts([attempt]);
+    const included = projectAttempts(
+      [attempt],
+      {},
+      {
+        problem_criteria: { retry: { include_env: true } }
+      }
+    );
+
+    expect(excluded.rows[0].problems.retry).toBe(false);
+    expect(included.rows[0].problems.evidence.retry).toEqual({
+      origin: 'origin',
+      kind: 'auto_resume',
+      cause: 'provider_outage',
+      env: true
+    });
+  });
+
   test('keeps verify false for a passing or missing receipt', () => {
     const passing = projectAttempts([makeAttempt()], {
       issues: { 'UI-1': makeIssue() },
@@ -1891,6 +2037,74 @@ describe('worker/compare-projection human attribution', () => {
 
     expect(model.rows.map((row) => row.attempt_id)).toEqual(['done']);
     expect(model.rows[0].problems.evidence.human).toEqual(['공급자 보류']);
+  });
+
+  test('attributes an environment event without an attempt id by time', () => {
+    const model = projectAttempts(
+      [
+        makeAttempt({
+          attempt_id: 'first',
+          started_at: 0,
+          finished_at: 10_000
+        }),
+        makeAttempt({
+          attempt_id: 'second',
+          bead_id: 'UI-1',
+          started_at: 20_000,
+          finished_at: 30_000
+        })
+      ],
+      {
+        timeline_events: {
+          'UI-1': [
+            {
+              event_id: 'hold',
+              bead_id: 'UI-1',
+              kind: 'provider_hold',
+              at: 5000,
+              summary: '공급자 보류'
+            }
+          ]
+        }
+      },
+      { problem_criteria: { human: { include_env_events: true } } }
+    );
+
+    expect(
+      model.rows
+        .filter((row) => row.problems.human)
+        .map((row) => row.attempt_id)
+    ).toEqual(['first']);
+  });
+
+  test('keeps a human event off the paused ancestor walk', () => {
+    const model = projectAttempts(
+      [
+        makeAttempt({ attempt_id: 'hold-1', status: 'paused' }),
+        makeAttempt({
+          attempt_id: 'done',
+          resumed_from: 'hold-1',
+          started_at: 62_000,
+          finished_at: 70_000
+        })
+      ],
+      {
+        timeline_events: {
+          'UI-1': [
+            {
+              event_id: 'need',
+              bead_id: 'UI-1',
+              kind: 'needs_human',
+              attempt_id: 'hold-1',
+              summary: '사람 확인 필요'
+            }
+          ]
+        }
+      }
+    );
+
+    expect(model.rows.map((row) => row.attempt_id)).toEqual(['done']);
+    expect(model.rows[0].problems.human).toBe(false);
   });
 
   test('drops an environment event whose lineage reaches no row', () => {

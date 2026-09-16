@@ -398,6 +398,159 @@ describe('compare group cards', () => {
     get_item.mockRestore();
   });
 
+  test('accumulates two changes made before a reply arrives', async () => {
+    const { root, view, transport } = mountComparison();
+    await view.refresh();
+    /** @type {HTMLElement} */ (
+      root.querySelector('.cmp-criteria summary')
+    ).click();
+    const failed = /** @type {HTMLInputElement} */ (
+      root.querySelector('.cmp-criteria__row input')
+    );
+    const factor = /** @type {HTMLInputElement} */ (
+      root.querySelectorAll('.cmp-criteria__number')[3]
+    );
+
+    failed.click();
+    factor.value = '5';
+    factor.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.objectContaining({
+        problem_criteria: expect.objectContaining({
+          failed: { on: false },
+          duration: { on: true, factor: 5 }
+        })
+      })
+    );
+  });
+
+  test('edits from the defaults when a change follows an unanswered reset', async () => {
+    localStorage.setItem(
+      'bdui.compare.problem_criteria',
+      JSON.stringify({ failed: { on: false }, verify: { on: false } })
+    );
+    const effective = structuredClone(DEFAULT_PROBLEM_CRITERIA);
+    effective.failed.on = false;
+    effective.verify.on = false;
+    const { root, view, transport } = mountComparison({
+      criteria: {
+        effective,
+        is_default: false,
+        baselines: {
+          duration_ms: { median: 60000, sample: 5, active: true },
+          cost_usd: { median: 1, sample: 5, active: true, partial_count: 0 }
+        }
+      }
+    });
+    await view.refresh();
+    /** @type {HTMLElement} */ (
+      root.querySelector('.cmp-criteria summary')
+    ).click();
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-criteria__reset')
+    ).click();
+    const factor = /** @type {HTMLInputElement} */ (
+      root.querySelectorAll('.cmp-criteria__number')[3]
+    );
+    factor.value = '5';
+    factor.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.objectContaining({
+        problem_criteria: expect.objectContaining({
+          failed: { on: true },
+          verify: { on: true },
+          duration: { on: true, factor: 5 }
+        })
+      })
+    );
+  });
+
+  test('restores an emptied factor input from the effective criteria', async () => {
+    const { root, view } = mountComparison();
+    await view.refresh();
+    /** @type {HTMLElement} */ (
+      root.querySelector('.cmp-criteria summary')
+    ).click();
+    const factor = /** @type {HTMLInputElement} */ (
+      root.querySelectorAll('.cmp-criteria__number')[3]
+    );
+
+    factor.value = '';
+    factor.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+
+    expect(factor.value).toBe('3');
+  });
+
+  test('restores a checkbox from the effective criteria after a failed request', async () => {
+    const { root, view, transport } = mountComparison();
+    await view.refresh();
+    /** @type {HTMLElement} */ (
+      root.querySelector('.cmp-criteria summary')
+    ).click();
+    const failed = /** @type {HTMLInputElement} */ (
+      root.querySelector('.cmp-criteria__row input')
+    );
+    transport.mockRejectedValueOnce(new Error('끊김'));
+
+    failed.click();
+    await settle();
+
+    expect(failed.checked).toBe(true);
+  });
+
+  test('drops the factor from a chip when the baseline median is zero', async () => {
+    const row = {
+      ...mountComparison().snapshot.rows[0],
+      problems: {
+        failed: false,
+        retry: false,
+        review: false,
+        human: false,
+        verify: false,
+        duration: true,
+        cost: true,
+        pin: false,
+        evidence: {
+          duration: { value_ms: 5000, baseline_ms: 0, factor: 3 },
+          cost: { value_usd: 2, baseline_usd: 0, factor: 3, partial: false }
+        }
+      },
+      preset: { deviated_keys: [] }
+    };
+    const { root, view } = mountComparison({
+      rows: [row],
+      criteria: {
+        effective: DEFAULT_PROBLEM_CRITERIA,
+        is_default: true,
+        baselines: {
+          duration_ms: { median: 0, sample: 5, active: true },
+          cost_usd: { median: 0, sample: 5, active: true, partial_count: 0 }
+        }
+      }
+    });
+    await view.refresh();
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-expand')
+    ).click();
+    const chips = Array.from(
+      root.querySelectorAll('.cmp-session__chips .cmp-chip')
+    );
+
+    expect(chips.map((chip) => chip.textContent?.trim())).toEqual([
+      '시간 초과',
+      '비용 초과'
+    ]);
+  });
+
   test('keeps the last effective criteria after a failed request', async () => {
     const effective = structuredClone(DEFAULT_PROBLEM_CRITERIA);
     effective.cost.factor = 5;
