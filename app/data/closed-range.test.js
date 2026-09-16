@@ -1,10 +1,13 @@
 import { describe, expect, test } from 'vitest';
 import {
   CLOSED_RANGE_OPTIONS,
+  COMPARE_RANGE_OPTIONS,
   DEFAULT_CLOSED_RANGE,
   DONE_RANGE_OPTIONS,
   closedRangeSince,
+  compareRangeSince,
   isClosedRange,
+  localDayStartMs,
   normalizeDoneRange
 } from './closed-range.js';
 
@@ -65,6 +68,57 @@ describe('isClosedRange and constants', () => {
       'all'
     ]);
   });
+});
+
+describe('comparison ranges', () => {
+  test('lists the seven comparison options in display order', () => {
+    expect(COMPARE_RANGE_OPTIONS.map((option) => option.value)).toEqual([
+      'today',
+      '2d',
+      '3d',
+      '7d',
+      '30d',
+      'all',
+      'custom'
+    ]);
+  });
+
+  test('keeps short and custom ranges out of the Board vocabulary', () => {
+    const values = CLOSED_RANGE_OPTIONS.map((option) => option.value);
+
+    expect(values).not.toContain('2d');
+    expect(values).not.toContain('3d');
+    expect(values).not.toContain('custom');
+  });
+
+  test.each([
+    ['2d', 2],
+    ['3d', 3]
+  ])('subtracts %s from the comparison lower bound', (range, days) => {
+    const now = 1_700_000_000_000;
+
+    expect(compareRangeSince(range, now)).toBe(now - days * DAY_MS);
+  });
+
+  test.each(['all', 'custom', 'unknown'])(
+    'leaves %s without a comparison lower bound',
+    (range) => {
+      expect(compareRangeSince(range, 1_700_000_000_000)).toBeNull();
+    }
+  );
+
+  test('converts a date string to local midnight', () => {
+    const expected = new Date(2026, 8, 17, 0, 0, 0, 0).getTime();
+
+    expect(localDayStartMs('2026-09-17')).toBe(expected);
+  });
+
+  test.each(['', '2026/09/17', '2026-02-30'])(
+    'rejects invalid date value %s',
+    (value) => {
+      expect(localDayStartMs(value)).toBeNull();
+    }
+  );
 });
 
 describe('normalizeDoneRange', () => {

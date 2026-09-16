@@ -58,6 +58,58 @@ describe('ws/compare-handlers', () => {
     expect(passed.include_bench).toBe(true);
     expect(passed.problem_criteria).toEqual({ failed: { on: false } });
     expect(typeof passed.since).toBe('number');
+    expect(passed.until).toBeNull();
+  });
+
+  test('forwards both custom boundaries to the projection', async () => {
+    const ws = makeSocket();
+    const snapshot = vi.fn(() => ({}));
+
+    await handleGetCompare(
+      /** @type {any} */ (ws),
+      /** @type {any} */ ({
+        id: 'custom-bounds',
+        payload: { range: 'custom', since: 100, until: 200 }
+      }),
+      { snapshot: /** @type {any} */ (snapshot) }
+    );
+
+    expect(snapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ since: 100, until: 200 })
+    );
+  });
+
+  test('uses null boundaries for an unbounded custom request', async () => {
+    const ws = makeSocket();
+    const snapshot = vi.fn(() => ({}));
+
+    await handleGetCompare(
+      /** @type {any} */ (ws),
+      /** @type {any} */ ({ id: 'custom-open', payload: { range: 'custom' } }),
+      { snapshot: /** @type {any} */ (snapshot) }
+    );
+
+    expect(snapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ since: null, until: null })
+    );
+  });
+
+  test('ignores carried custom boundaries for a preset request', async () => {
+    const ws = makeSocket();
+    const snapshot = vi.fn(() => ({}));
+
+    await handleGetCompare(
+      /** @type {any} */ (ws),
+      /** @type {any} */ ({
+        id: 'preset-bounds',
+        payload: { range: '7d', since: 100, until: 200 }
+      }),
+      { snapshot: /** @type {any} */ (snapshot) }
+    );
+
+    const passed = /** @type {any} */ (snapshot.mock.calls[0])[0];
+    expect(passed.since).not.toBe(100);
+    expect(passed.until).toBeNull();
   });
 
   test('forwards undefined when problem criteria are omitted', async () => {
@@ -111,6 +163,7 @@ describe('ws/compare-handlers', () => {
     const passed = /** @type {any} */ (snapshot.mock.calls[0])[0];
     expect(passed.since).toBeGreaterThanOrEqual(before);
     expect(passed.since).toBeLessThanOrEqual(Date.now() - 30 * 864e5);
+    expect(passed.until).toBeNull();
   });
 
   test('answers a projection failure with an error reply', async () => {

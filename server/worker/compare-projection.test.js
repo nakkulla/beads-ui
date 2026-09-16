@@ -1591,6 +1591,64 @@ describe('worker/compare-projection filters', () => {
 
     expect(model.rows.map((row) => row.attempt_id)).toEqual(['at-new']);
   });
+
+  test('excludes a row exactly at the upper bound', () => {
+    const model = projectAttempts(
+      [makeAttempt({ finished_at: 100 })],
+      {},
+      { until: 100 }
+    );
+
+    expect(model.rows).toEqual([]);
+  });
+
+  test('keeps a row immediately before the upper bound', () => {
+    const model = projectAttempts(
+      [makeAttempt({ finished_at: 99 })],
+      {},
+      { until: 100 }
+    );
+
+    expect(model.rows).toHaveLength(1);
+  });
+
+  test('filters with an upper bound and no lower bound', () => {
+    const model = projectAttempts(
+      [
+        makeAttempt({ attempt_id: 'inside', finished_at: 99 }),
+        makeAttempt({ attempt_id: 'outside', finished_at: 101 })
+      ],
+      {},
+      { until: 100 }
+    );
+
+    expect(model.rows.map((row) => row.attempt_id)).toEqual(['inside']);
+  });
+
+  test('excludes a row without finished_at when only an upper bound is set', () => {
+    const model = projectAttempts(
+      [makeAttempt({ finished_at: null })],
+      {},
+      { until: 100 }
+    );
+
+    expect(model.rows).toEqual([]);
+  });
+
+  test('keeps bench rows when an upper bound excludes the main table', () => {
+    const workspace = makeWorkspace({
+      attempts: [makeAttempt({ finished_at: 200 })],
+      issues: { 'UI-1': makeIssue({ labels: ['bench'] }) }
+    });
+
+    const model = buildCompareModel({
+      workspaces: [workspace],
+      filters: { until: 100 }
+    });
+
+    expect(model.rows).toEqual([]);
+    expect(model.bench_rows).toHaveLength(1);
+  });
 });
 
 /**

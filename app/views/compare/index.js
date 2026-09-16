@@ -15,7 +15,11 @@
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
-import { CLOSED_RANGE_OPTIONS } from '../../data/closed-range.js';
+import {
+  COMPARE_RANGE_OPTIONS,
+  isCompareRange,
+  localDayStartMs
+} from '../../data/closed-range.js';
 import {
   DEFAULT_PROBLEM_CRITERIA,
   PROBLEM_CRITERIA_LIMITS,
@@ -61,7 +65,31 @@ import {
  * @type {string}
  */
 const DEFAULT_RANGE = '30d';
+const RANGE_STORAGE_KEY = 'bdui.compare.range';
 const PROBLEM_CRITERIA_STORAGE_KEY = 'bdui.compare.problem_criteria';
+
+/**
+ * @returns {string}
+ */
+function loadCompareRange() {
+  try {
+    const raw = localStorage.getItem(RANGE_STORAGE_KEY);
+    return isCompareRange(raw) && raw !== 'custom' ? raw : DEFAULT_RANGE;
+  } catch {
+    return DEFAULT_RANGE;
+  }
+}
+
+/**
+ * @param {string} range
+ */
+function saveCompareRange(range) {
+  try {
+    localStorage.setItem(RANGE_STORAGE_KEY, range);
+  } catch {
+    // Storage is optional; the active view still keeps the chosen value.
+  }
+}
 
 /**
  * @returns {Record<string, any>|null}
@@ -122,9 +150,11 @@ export function createCompareView(root, options = {}) {
   const execPresetStore = options.execPresetStore;
   const sourceCandidates = options.sourceCandidates;
 
-  /** @type {{ range: string, root_dir: string, route: string, include_bench: boolean }} */
+  /** @type {{ range: string, start_date: string, end_date: string, root_dir: string, route: string, include_bench: boolean }} */
   const filters = {
-    range: DEFAULT_RANGE,
+    range: loadCompareRange(),
+    start_date: '',
+    end_date: '',
     root_dir: '',
     route: '',
     include_bench: false
@@ -159,6 +189,36 @@ export function createCompareView(root, options = {}) {
   let error = null;
   let loaded_once = false;
   let request_seq = 0;
+
+  /**
+   * @returns {string|null}
+   */
+  function customRangeError() {
+    if (
+      filters.range === 'custom' &&
+      filters.start_date !== '' &&
+      filters.end_date !== '' &&
+      filters.start_date > filters.end_date
+    ) {
+      return '시작일이 종료일보다 늦습니다';
+    }
+    return null;
+  }
+
+  /**
+   * @returns {{ since: number|null, until: number|null }}
+   */
+  function customRangeBounds() {
+    const since = localDayStartMs(filters.start_date);
+    const end_start = localDayStartMs(filters.end_date);
+    if (end_start === null) {
+      return { since, until: null };
+    }
+    const until_date = new Date(end_start);
+    until_date.setDate(until_date.getDate() + 1);
+    until_date.setHours(0, 0, 0, 0);
+    return { since, until: until_date.getTime() };
+  }
 
   /**
    * 실험(§4.7) 상태. `runs`와 `rows` 모두 같은 `compare-snapshot` 응답에서
@@ -197,6 +257,12 @@ export function createCompareView(root, options = {}) {
    * 표가 새 표를 덮어쓸 수 있다.
    */
   async function fetchSnapshot() {
+    if (customRangeError() !== null) {
+      request_seq += 1;
+      loading = false;
+      doRender();
+      return;
+    }
     if (!transport) {
       return;
     }
@@ -211,7 +277,10 @@ export function createCompareView(root, options = {}) {
         routes: filters.route ? [filters.route] : [],
         include_bench: filters.include_bench,
         group_by,
-        ...(saved_criteria === null ? {} : { problem_criteria: saved_criteria })
+        ...(saved_criteria === null
+          ? {}
+          : { problem_criteria: saved_criteria }),
+        ...(filters.range === 'custom' ? customRangeBounds() : {})
       };
       const reply = await transport('get-compare', request);
       if (seq !== request_seq) {
@@ -332,6 +401,26 @@ export function createCompareView(root, options = {}) {
    */
   function onFilterChange(key, value) {
     /** @type {any} */ (filters)[key] = value;
+    void fetchSnapshot();
+  }
+
+  /**
+   * @param {string} value
+   */
+  function onRangeChange(value) {
+    filters.range = value;
+    if (isCompareRange(value) && value !== 'custom') {
+      saveCompareRange(value);
+    }
+    void fetchSnapshot();
+  }
+
+  /**
+   * @param {'start_date'|'end_date'} key
+   * @param {string} value
+   */
+  function onCustomDateChange(key, value) {
+    filters[key] = value;
     void fetchSnapshot();
   }
 
@@ -610,12 +699,44 @@ export function createCompareView(root, options = {}) {
           ${selectTemplate(
             '기간',
             filters.range,
-            CLOSED_RANGE_OPTIONS.map((option) => ({
+            COMPARE_RANGE_OPTIONS.map((option) => ({
               value: option.value,
               label: option.label
             })),
-            (next) => onFilterChange('range', next)
+            onRangeChange
           )}
+          ${filters.range === 'custom'
+            ? html`<div class="cmp-filter cmp-filter--dates">
+                <input
+                  type="date"
+                  class="cmp-filter__date"
+                  aria-label="시작일"
+                  .value=${filters.start_date}
+                  @change=${(/** @type {Event} */ ev) =>
+                    onCustomDateChange(
+                      'start_date',
+                      /** @type {HTMLInputElement} */ (ev.target).value
+                    )}
+                />
+                <span aria-hidden="true">~</span>
+                <input
+                  type="date"
+                  class="cmp-filter__date"
+                  aria-label="종료일"
+                  .value=${filters.end_date}
+                  @change=${(/** @type {Event} */ ev) =>
+                    onCustomDateChange(
+                      'end_date',
+                      /** @type {HTMLInputElement} */ (ev.target).value
+                    )}
+                />
+                ${customRangeError() === null
+                  ? null
+                  : html`<span class="cmp-filter__error" role="alert"
+                      >${customRangeError()}</span
+                    >`}
+              </div>`
+            : null}
           ${selectTemplate(
             '저장소',
             filters.root_dir,
@@ -1455,8 +1576,16 @@ export function createCompareView(root, options = {}) {
   function template() {
     const summary = model.summary;
     const range_label =
-      CLOSED_RANGE_OPTIONS.find((option) => option.value === filters.range)
-        ?.label || filters.range;
+      filters.range !== 'custom'
+        ? COMPARE_RANGE_OPTIONS.find((option) => option.value === filters.range)
+            ?.label || filters.range
+        : filters.start_date !== '' && filters.end_date !== ''
+          ? `${filters.start_date} ~ ${filters.end_date}`
+          : filters.start_date !== ''
+            ? `${filters.start_date} 이후`
+            : filters.end_date !== ''
+              ? `${filters.end_date}까지`
+              : '전체 기간';
     const workspace_label = filters.root_dir
       ? model.workspaces.find(
           (workspace) => workspace.root_dir === filters.root_dir

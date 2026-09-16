@@ -10232,6 +10232,29 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   padding: 2px var(--sp-4);
 }
 
+.cmp-filter--dates {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+}
+
+.cmp-filter__date {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-small);
+  padding: 2px var(--sp-4);
+}
+
+.cmp-filter__error {
+  grid-column: 1 / -1;
+  color: var(--accent-danger);
+}
+
 .cmp-table {
   width: 100%;
   border-collapse: collapse;
@@ -10942,6 +10965,11 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     min-width: 0;
+  }
+
+  .cmp-filters .cmp-filter--dates {
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   }
 
   .cmp-filter__select {

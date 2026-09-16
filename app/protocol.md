@@ -1132,18 +1132,22 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
 ## Preset comparison channel (preset-compare §3.5)
 
 - `get-compare` payload:
-  `{ range?, root_dirs?, routes?, include_bench?, group_by?, problem_criteria? }`
+  `{ range?, since?, until?, root_dirs?, routes?, include_bench?, group_by?, problem_criteria? }`
   — replies with a `compare-snapshot` envelope carrying
   `{ summary, groups, rows, workspaces, runs, bench_rows, warnings, criteria }`.
   `problem_criteria` may be a partial object; malformed or absent values are
   normalized to server defaults without a `bad_request`. This request/response
   pair reads attempts, workspace issue snapshots and one timeline per bead on
   demand; it does not subscribe or push updates.
-- `range` bounds `finished_at` with a `CLOSED_RANGE_OPTIONS` value (default
-  `30d`); unknown values mean all history. `root_dirs` are absolute registry
-  paths, `routes` restricts routes, and `include_bench` defaults to false.
-  Legacy `issue_types` is accepted and ignored. `group_by` is `preset` (default,
-  also for invalid values), `orchestration`, or `impl_actor`.
+- `range` bounds `finished_at` with a `COMPARE_RANGE_OPTIONS` value (default
+  `30d`); unknown values mean all history. With `custom`, `since` is an
+  inclusive lower bound and `until` is an exclusive upper bound in epoch ms; an
+  absent or non-finite boundary is unrestricted. The client converts chosen
+  dates at local midnight and sends the midnight after the end date as `until`.
+  Preset ranges ignore carried `since` and `until` values. `root_dirs` are
+  absolute registry paths, `routes` restricts routes, and `include_bench`
+  defaults to false. Legacy `issue_types` is accepted and ignored. `group_by` is
+  `preset` (default, also for invalid values), `orchestration`, or `impl_actor`.
 - One `rows[]` entry is one terminal implementation attempt, excluding review
   sessions and retired kinds. It retains identity, issue, route, status, cause,
   `verify`, `review`, `usage`, `duration_ms`, `is_retry`, `is_bench`,
