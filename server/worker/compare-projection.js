@@ -73,6 +73,7 @@ const BENCH_LABEL = 'bench';
  * @property {'preset'|'orchestration'|'impl_actor'} group_by
  * @property {string[]} routes - Empty means every route.
  * @property {number|null} since - Lower bound on `finished_at`, or null.
+ * @property {number|null} until - Exclusive upper bound on `finished_at`, or null.
  * @property {boolean} include_bench
  * @property {ReturnType<typeof normalizeProblemCriteria>} problem_criteria
  */
@@ -534,6 +535,7 @@ export function normalizeCompareFilters(raw) {
         : 'preset',
     routes: stringList(input.routes),
     since: num(input.since),
+    until: num(input.until),
     include_bench: input.include_bench === true,
     problem_criteria: normalizeProblemCriteria(input.problem_criteria)
   };
@@ -707,7 +709,12 @@ function rowPassesFilters(row, filters) {
     return false;
   }
   if (filters.since !== null) {
-    if (row.finished_at === null || row.finished_at < filters.since) {
+    if (!Number.isFinite(row.finished_at) || row.finished_at < filters.since) {
+      return false;
+    }
+  }
+  if (filters.until !== null) {
+    if (!Number.isFinite(row.finished_at) || row.finished_at >= filters.until) {
       return false;
     }
   }
@@ -1806,6 +1813,9 @@ export async function prepareCompareSnapshot(filters, seams = {}) {
             (normalized.since === null ||
               (Number.isFinite(attempt.finished_at) &&
                 attempt.finished_at >= normalized.since)) &&
+            (normalized.until === null ||
+              (Number.isFinite(attempt.finished_at) &&
+                attempt.finished_at < normalized.until)) &&
             (normalized.routes.length === 0 ||
               normalized.routes.includes(attemptRoute(attempt, issue) || ''))
           );

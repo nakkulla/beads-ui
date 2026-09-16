@@ -227,10 +227,172 @@ function changeSelect(root, label, value) {
   select.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+/**
+ * @param {HTMLElement} root
+ * @param {'시작일'|'종료일'} label
+ * @param {string} value
+ */
+function changeDate(root, label, value) {
+  const input = /** @type {HTMLInputElement} */ (
+    root.querySelector(`.cmp-filter__date[aria-label="${label}"]`)
+  );
+  input.value = value;
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 describe('compare group cards', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
     localStorage.clear();
+  });
+
+  test('renders the short and custom comparison periods', () => {
+    const { root } = mountComparison();
+    const period = Array.from(root.querySelectorAll('.cmp-filter')).find(
+      (element) =>
+        element.querySelector('.cmp-filter__label')?.textContent === '기간'
+    );
+    const labels = Array.from(period?.querySelectorAll('option') ?? []).map(
+      (option) => option.textContent?.trim()
+    );
+
+    expect(labels).toEqual([
+      '오늘',
+      '최근 2일',
+      '최근 3일',
+      '최근 7일',
+      '최근 30일',
+      '전체',
+      '직접 지정'
+    ]);
+  });
+
+  test('renders two date inputs for a custom period', async () => {
+    const { root } = mountComparison();
+
+    changeSelect(root, '기간', 'custom');
+    await settle();
+
+    expect(root.querySelectorAll('.cmp-filter__date')).toHaveLength(2);
+    expect(root.querySelector('[aria-label="시작일"]')).not.toBeNull();
+    expect(root.querySelector('[aria-label="종료일"]')).not.toBeNull();
+  });
+
+  test('omits date inputs for a preset period', () => {
+    const { root } = mountComparison();
+
+    expect(root.querySelector('.cmp-filter__date')).toBeNull();
+  });
+
+  test('keeps the previous table and skips a reversed custom request', async () => {
+    const { root, view, transport } = mountComparison();
+    await view.refresh();
+    changeSelect(root, '기간', 'custom');
+    await settle();
+    changeDate(root, '시작일', '2026-09-10');
+    await settle();
+    const calls_before_error = transport.mock.calls.length;
+
+    changeDate(root, '종료일', '2026-09-01');
+    await settle();
+
+    expect(transport).toHaveBeenCalledTimes(calls_before_error);
+    expect(root.querySelector('.cmp-filter__error')?.textContent).toContain(
+      '시작일이 종료일보다 늦습니다'
+    );
+    expect(root.querySelector('.cmp-card')).not.toBeNull();
+  });
+
+  test('sends valid custom dates as epoch boundaries', async () => {
+    const { root, view, transport } = mountComparison();
+    await view.refresh();
+    changeSelect(root, '기간', 'custom');
+    await settle();
+    changeDate(root, '시작일', '2026-09-01');
+    await settle();
+
+    changeDate(root, '종료일', '2026-09-10');
+    await settle();
+
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.objectContaining({
+        range: 'custom',
+        since: new Date(2026, 8, 1, 0, 0, 0, 0).getTime(),
+        until: new Date(2026, 8, 11, 0, 0, 0, 0).getTime()
+      })
+    );
+  });
+
+  test('uses the next local midnight as the exclusive end boundary', async () => {
+    const { root, view, transport } = mountComparison();
+    await view.refresh();
+    changeSelect(root, '기간', 'custom');
+    await settle();
+
+    changeDate(root, '종료일', '2026-09-10');
+    await settle();
+
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.objectContaining({
+        since: null,
+        until: new Date(2026, 8, 11, 0, 0, 0, 0).getTime()
+      })
+    );
+  });
+
+  test.each([
+    ['2026-09-01', '2026-09-10', '2026-09-01 ~ 2026-09-10'],
+    ['2026-09-01', '', '2026-09-01 이후'],
+    ['', '2026-09-10', '2026-09-10까지'],
+    ['', '', '전체 기간']
+  ])(
+    'summarizes custom dates %s to %s',
+    async (start_date, end_date, expected) => {
+      const { root, view } = mountComparison();
+      await view.refresh();
+      changeSelect(root, '기간', 'custom');
+      await settle();
+      if (start_date !== '') {
+        changeDate(root, '시작일', start_date);
+        await settle();
+      }
+      if (end_date !== '') {
+        changeDate(root, '종료일', end_date);
+        await settle();
+      }
+
+      expect(
+        root
+          .querySelector('.cmp-head__summary')
+          ?.textContent?.replace(/\s+/gu, ' ')
+      ).toContain(expected);
+    }
+  );
+
+  test('restores a stored comparison preset', async () => {
+    localStorage.setItem('bdui.compare.range', '2d');
+    const { view, transport } = mountComparison();
+
+    await view.refresh();
+
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.objectContaining({ range: '2d' })
+    );
+  });
+
+  test('falls back to thirty days for a stored custom period', async () => {
+    localStorage.setItem('bdui.compare.range', 'custom');
+    const { view, transport } = mountComparison();
+
+    await view.refresh();
+
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.objectContaining({ range: '30d' })
+    );
   });
 
   test('renders effective criteria and marks a customized response', async () => {

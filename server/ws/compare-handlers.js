@@ -9,28 +9,34 @@
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
-import {
-  closedRangeSince,
-  isClosedRange
-} from '../../app/data/closed-range.js';
+import { compareRangeSince } from '../../app/data/closed-range.js';
 import { makeError } from '../../app/protocol.js';
 import { prepareCompareSnapshot } from '../worker/compare-projection.js';
 import { log } from './context.js';
 
+export { compareRangeSince };
+
 /**
- * Resolve the period filter into the epoch-ms lower bound the projection
- * compares `finished_at` against. An unknown value keeps the whole history
- * rather than silently narrowing it.
- *
  * @param {unknown} value
- * @param {number} [now]
  * @returns {number|null}
  */
-export function compareRangeSince(value, now = Date.now()) {
-  if (!isClosedRange(value)) {
-    return null;
+function num(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Resolve inclusive `since` and exclusive `until` comparison bounds.
+ *
+ * @param {Record<string, any>} payload
+ * @param {number} [now]
+ * @returns {{ since: number|null, until: number|null }}
+ */
+export function compareRangeBounds(payload, now = Date.now()) {
+  const range = payload.range ?? '30d';
+  if (range === 'custom') {
+    return { since: num(payload.since), until: num(payload.until) };
   }
-  return closedRangeSince(value, now) ?? null;
+  return { since: compareRangeSince(range, now), until: null };
 }
 
 /**
@@ -41,6 +47,7 @@ export function compareRangeSince(value, now = Date.now()) {
 export async function handleGetCompare(ws, req, seams = {}) {
   const payload = /** @type {any} */ (req.payload || {});
   const build = seams.snapshot || prepareCompareSnapshot;
+  const bounds = compareRangeBounds(payload);
   /** @type {any} */
   let model;
   try {
@@ -54,7 +61,8 @@ export async function handleGetCompare(ws, req, seams = {}) {
       routes: payload.routes,
       include_bench: payload.include_bench,
       problem_criteria: payload.problem_criteria,
-      since: compareRangeSince(payload.range ?? '30d')
+      since: bounds.since,
+      until: bounds.until
     });
   } catch (err) {
     log('compare snapshot failed: %o', err);
