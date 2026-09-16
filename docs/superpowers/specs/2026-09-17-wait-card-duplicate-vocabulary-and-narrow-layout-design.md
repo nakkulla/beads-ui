@@ -14,7 +14,10 @@ scope:
 ## 1. 문제 (2026-09-17 관측, origin/main `df42f7b`)
 
 사용자가 공유 서버 모바일(390px) 워커 탭 스크린샷 3장으로 제기했다. 큐 파일 실측으로
-원인을 확정했다.
+원인을 확정했다. 아래 인용한 `path:line`은 관측 시점 `df42f7b`의 것이고, 이 스펙이 착지한
+base `de79018`에서도 네 개의 `app/styles.css` 인용(6078·6093·6175·8419)을 포함해 전부 같은
+줄을 가리킨다. 그 사이 착지한 UI-7rga(#307)가 `app/styles.css`에 28줄을 더했지만 비교 탭
+구역이라 이 스펙이 읽는 규칙을 밀지 않았다.
 
 **같은 사실을 두 번 말한다.** Analysis-1u8o 카드에 `⛓ 선행 대기`가 두 번 선다. 실측한
 큐의 admission은 `{reason: "prerequisite_unmet", blockers: [{id: "Analysis-c312",
@@ -36,9 +39,15 @@ PROSTATE-67r에 배지가 하나뿐인 것은 규칙이 달라서가 아니라 �
 
 **시각 줄의 라벨이 값과 다르다.** `lanes.js:2383`이 `확인 <t>`를 그린다. 그 값은
 `options.last_observed_at`이 없을 때 `reason.since`로 떨어지고, 그 인자를 넘기는 호출부는
-상세 패널뿐이다(`detail-panel/index.js:3001`). 워커·모니터의 모든 행과 타일은 따라서
-"대기가 시작된 시각"을 "확인"이라고 적는다. 둘째 조각 `다음 <t>`도 종류마다 다른 일을
-가리킨다: 외부 작업은 다음 관측, 공급자 보류는 다음 프로브, 재시도 대기는 다음 재시도다.
+상세 패널뿐이다(`detail-panel/index.js:3001`). 공통 함수 `waitReasonLines`의 시각 줄을 쓰는
+모든 행과 타일은 따라서 "대기가 시작된 시각"을 "확인"이라고 적는다. 둘째 조각 `다음 <t>`도
+종류마다 다른 일을 가리킨다: 외부 작업은 다음 관측, 공급자 보류는 다음 프로브, 재시도 대기는
+다음 재시도다.
+
+예외가 하나 있다. 외부 작업 gate 행(`externalWaitRow`)은 공통 시각 줄을 쓰지 않고
+`item.last_observed_at`을 직접 읽어 자기 줄을 그린다(`lanes.js:3280`). 그 행의 `확인`은 실제
+마지막 관측 시각이라 지금도 맞다. 틀린 것은 그 gate를 기다리는 **원래 이슈 카드**에 붙는
+`external_job` 사유의 시각 줄이다.
 
 **막힘 집계가 막힌 행을 빠뜨린다.** prostate 큐 실측에서 직렬 레인 s1은
 `[PROSTATE-u53, PROSTATE-67r, PROSTATE-6rh]`이고 셋 다 `open`이며, admission에는
@@ -76,11 +85,17 @@ PROSTATE-67r에 배지가 하나뿐인 것은 규칙이 달라서가 아니라 �
 ## 3. 검증된 전제
 
 - `WaitReason`의 시각 칸은 `since`·`next_check_at`·`resets_at` 셋뿐이고
-  (`wait-judgment.js` `addClocks`), `since`의 뜻은 모든 종류에서 "이 대기가 시작된
-  시각"이다: 외부 작업은 `registered_at`, 선행 대기는 `attempt.finished_at ??
-  record.at`, 공급자 보류는 `hold.since`, 재시도 대기와 반영 대기·복구는
-  `attempt.finished_at`/`operation.finished_at`. `next_check_at`을 싣는 종류는 외부
-  작업·공급자 보류·재시도 대기 셋이고 `resets_at`은 한도 보류만 싣는다.
+  (`wait-judgment.js` `addClocks`), `since`의 뜻은 모든 종류에서 "지금 세고 있는 이 기다림이
+  시작된 시각"이다: 선행 대기는 `attempt.finished_at ?? record.at`, 공급자 보류는
+  `hold.since`, 재시도 대기와 반영 대기·복구는 `attempt.finished_at`/`operation.finished_at`.
+  외부 작업만 두 단계다 — 관측 중에는 `registered_at`이고, 작업이 끝나 정산을 기다리는
+  단계(`stage`가 `terminal_recorded`·`gate_noted`)에서는 `wait-judgment.js:318`이 그 값을
+  정산 대기 시작 시각으로 덮는다. 두 단계 모두 "이 기다림이 시작된 시각"이므로 경과 낱말은
+  그대로 성립하고, 사람이 읽는 경과가 단계 전환에서 한 번 줄어드는 것이 의도한 동작이다.
+- `next_check_at`을 싣는 종류는 외부 작업·공급자 보류·재시도 대기에 더해 환경성
+  `queue_hold`(`wait-judgment.js:729`)까지 넷이다. `queue_hold`는 큐 단위 사유라 UI-3pu9대로
+  슬롯 4a 게이트 칩 한 층에만 서고 배지·본문·시각 줄을 만들지 않으므로 §5의 시각 줄 규칙
+  밖이다. `resets_at`은 한도 보류만 싣는다.
 - 배지 팝업은 이미 `관측 시작 <t>`를 evidence 줄로 싣는다(`lanes.js` `waitReasonLines`
   의 `evidence`). 시각 줄을 지워도 값은 남는다.
 - `admissionBadge`가 `⛓ 선행 대기`를 만드는 조건은
@@ -99,8 +114,13 @@ PROSTATE-67r에 배지가 하나뿐인 것은 규칙이 달라서가 아니라 �
   (`board/index.js:669`·`729`·`763`).
 - `app/utils/relative-time.js`에는 경과 시간을 "N시간째"로 적는 함수가 없다.
   `formatRelativeTime`은 "N시간 전", `formatClockLocal`은 `HH:MM`이다.
-- `lane_states[].corrections`는 서버가 내는 계약 필드이고, 소비처는
-  `worker/index.js`의 `waitingFacts`/`waitingRowOf` 하나뿐이다.
+- `lane_states[].corrections`의 소비처는 둘이다. `worker/index.js`의
+  `waitingFacts`/`waitingRowOf`가 `🔗 … (blocks 자동)` 배지를 만들고, `lane-model.js:3772`가
+  레인 모델에 `corrections` **개수**를 투영한다. §4.3이 없애는 것은 배지 쪽 하나이고 개수
+  투영은 건드리지 않는다.
+- `.worker-mini__head`는 `flex-wrap: wrap`이고(`styles.css:6093`), 카드 변형의 사유는 그
+  머리 줄 안에서 `flex: 1 0 100%`로 한 줄을 통째 쓴다(`styles.css:6175`). 소스 순서상 사유
+  뒤에 오는 조작 묶음은 그래서 사유가 있는 행에서 다음 줄로 밀린다.
 
 ## 4. 선행 대기를 말하는 층을 하나로 줄인다
 
@@ -114,8 +134,9 @@ PROSTATE-67r에 배지가 하나뿐인 것은 규칙이 달라서가 아니라 �
 `` return `⛔ ${reason}` ``로 떨어져 `⛔ prerequisite_unmet`이 뜬다.
 
 `waitingItem`의 `prerequisites_released` 분기(열린 선행이 비면 `reason`을 빈 문자열로
-덮는 갈래)도 함께 지운다. 그 분기가 막으려던 잔상이 §4.1로 사라지므로 남으면 선행과
-무관한 다른 사유(`♻️ stale→재리뷰`, `⛔ …`)까지 덮는 부작용만 남는다.
+덮는 갈래)도 함께 지운다. 그 분기는 admission 사유가 `prerequisite_unmet`일 때만 성립하므로
+(`lane-model.js:3592`) 다른 사유를 덮을 일은 애초에 없었다. 지우는 이유는 그 사유가 이제
+언제나 빈 문자열이 되어 이 분기가 덮을 것이 남지 않는 죽은 코드이기 때문이다.
 
 ### 4.2 선행 대기는 headline을 싣지 않는다
 
@@ -136,8 +157,8 @@ blocker별 상태(`open`/`blocked`)는 `targets[].status`에 이미 실려 있�
 
 `worker/index.js`의 `` `🔗 ${correction} 뒤 (blocks 자동)` `` 배지와, 그 값을 모으는
 `waitingFacts`의 `correction_after` 맵을 함께 지운다. 서버의
-`lane_states[].corrections` 필드는 그대로 두고 소비만 멈춘다. 순번 툴팁으로 옮기지
-않는다 — 자동 정렬의 시점은 카드가 답하는 질문이 아니다.
+`lane_states[].corrections` 필드와 `lane-model.js:3772`의 개수 투영은 그대로 두고 배지 소비만
+멈춘다. 순번 툴팁으로 옮기지 않는다 — 자동 정렬의 시점은 카드가 답하는 질문이 아니다.
 
 ## 5. 시각 줄은 종류가 자기 낱말을 고른다
 
@@ -152,6 +173,9 @@ blocker별 상태(`open`/`blocked`)는 `targets[].status`에 이미 실려 있�
 
 렌더 쪽 매핑이 아니라 표여야 한다. 도움말 범례가 같은 표를 읽으므로(UI-8gem이 세운
 구조) 낱말이 한 곳에만 있어야 범례와 카드가 갈라지지 않는다.
+
+아래 표는 공통 `waitReasonLines`가 그리는 시각 줄에만 적용된다. 외부 작업 gate 행은 자기
+렌더러를 쓰므로 §5.3이 따로 정한다.
 
 | 대기 종류 | `elapsed_word` | `next_word` |
 | --- | --- | --- |
@@ -197,7 +221,24 @@ blocker별 상태(`open`/`blocked`)는 `targets[].status`에 이미 실려 있�
 | 공급자 한도 | `리셋 14:00` | `40분째 보류 · 리셋 14:00` |
 | 재시도 대기 | `확인 08:12 · 다음 08:27` | `9분째 대기 · 다음 재시도 08:27` |
 
-### 5.3 팝업 낱말도 맞춘다
+위 표는 공통 `waitReasonLines`의 시각 줄을 쓰는 표면에 적용된다. 외부 작업 예시가 붙는 곳은
+그 gate를 기다리는 원래 이슈 카드다.
+
+### 5.3 외부 작업 gate 행도 같은 낱말을 쓴다
+
+`externalWaitRow`는 공통 시각 줄을 쓰지 않고 `item.last_observed_at`·
+`item.next_observation_at`·`item.completed_at`으로 자기 줄을 그린다. 그 값들은 지금도 뜻이
+맞으므로 값은 바꾸지 않고 낱말만 맞춘다.
+
+- 감시 중인 행: `확인 <HH:MM>[ · 다음 확인 <HH:MM>]`. 앞 조각의 `확인`은 여기서는 실제
+  마지막 관측 시각이라 그대로 두고, 뒤 조각만 `다음`에서 `다음 확인`으로 바꾼다.
+- 종료 확인 묶음의 행(gate가 닫혀 `completed_at`이 있는 행): `종료 <HH:MM>`. 지금 그대로다.
+- 감시 기록이 없는 행: 시각 줄이 없다. 지금 그대로다.
+
+이 행은 `elapsed_word`를 쓰지 않는다. 경과를 세는 기준이 사유의 `since`가 아니라 관측기의
+주기이고, 그 행이 답하는 질문은 "얼마나 기다렸나"가 아니라 "관측기가 살아 있나"다.
+
+### 5.4 팝업 낱말도 맞춘다
 
 배지 팝업 evidence의 `관측 시작 <t>`를 `대기 시작 <t>`로 바꾼다. 같은 값을 카드와 팝업이
 다른 말로 부르면 이번에 고치는 이유가 그대로 남는다. `다음 확인 <t>`·`리셋 <t>` 줄은
@@ -224,17 +265,29 @@ PROSTATE-67r을 얻어 `⛓ 선행 대기` 배지를 세운다.
 ### 6.2 막힘 집계는 간접 선행을 세지 않는다
 
 `blockedSummary`는 어떤 이슈의 열린 선행이 **전부** 같은 워크스페이스의 다른 막힌 대기
-행이면 그 이슈를 세지 않고 팝오버 목록에도 넣지 않는다. 카드 배지는 그대로 선다.
+행이고 그 이슈가 **어떤 순환에도 속하지 않으면**, 그 이슈를 세지 않고 팝오버 목록에도 넣지
+않는다. 카드 배지는 그대로 선다. 두 조건의 정확한 형태는 아래에 있다.
 
 근거는 그 숫자가 답하는 질문이다. `막힘 N`은 "지금 손댈 곳이 몇 군데인가"다. 선행이
 그 자신 막혀 있는 이슈는 상류를 풀면 함께 풀리므로 손댈 곳이 아니고, 상류 행이 이미
 그 막힘을 대표한다.
 
 판정 재료는 이미 있다. `blockedSummary`가 받는 `wait_reasons` 집합에서 선행 사유의
-`subject.bead_id` 전체가 "막힌 행"의 집합이고, 각 사유의 `targets`가 그 이슈의 열린
-선행이다. 한 사유의 `targets`가 전부 그 집합 안에 있으면 그 사유의 subject를 세지
-않는다. 다른 저장소 선행(`prerequisite_foreign`)은 그 집합에 들어올 수 없으므로 언제나
-셈에 남는다.
+`subject.bead_id` 전체가 "막힌 행"의 집합 `B`이고, 각 사유의 `targets` 중 `kind === 'issue'`
+인 것이 그 이슈의 열린 선행이다. `B`의 원소 `X`에서 `X`의 열린 선행 가운데 `B`에 속한 것으로
+간선을 그으면 방향 그래프가 된다.
+
+제외 조건은 두 가지를 함께 만족할 때다.
+
+1. `X`의 열린 선행이 **전부** `B` 안에 있다.
+2. `X`가 **어떤 순환에도 속하지 않는다**.
+
+두 번째 조건이 없으면 서로를 기다리는 A↔B에서 둘 다 제외되어 막힘이 0이 되고, 실제로 사람이
+손대야 할 유일한 곳이 화면에서 사라진다. 순환은 상류가 없으므로 그 자체가 손댈 곳이다 —
+순환에 속한 행은 전부 센다. 판정은 그래프 순회 한 번(방문 중 스택에 있으면 순환)으로 끝난다.
+
+다른 저장소 선행(`prerequisite_foreign`)은 `B`에 들어올 수 없으므로 그 사유는 언제나 셈에
+남는다.
 
 관측 대조: prostate에서 PROSTATE-67r의 선행 PROSTATE-u53은 막힌 행이 아니므로 67r을
 세고, PROSTATE-6rh의 선행 PROSTATE-67r은 막힌 행이므로 6rh를 세지 않는다. 결과는
@@ -251,10 +304,19 @@ PROSTATE-67r을 얻어 `⛓ 선행 대기` 배지를 세운다.
 카드)에 `|| options.card === true`를 더하는 한 줄이다. 두 탭이 자기 `is_mobile`을
 넘긴다. 데스크톱은 지금의 한 줄 변형 그대로다.
 
-카드 변형에서 머리 줄은
-`grip · seq · id · priority · pr · foreign · badges · reason · wait_badge · actions`,
-본문은 제목이다. 조작 묶음은 머리 줄의 `margin-left: auto` 자리에 고정되므로 접힌
-줄로 떨어지지 않는다.
+머리 줄의 순서를 바꾼다. 지금 카드 변형의 머리는
+`grip · seq · id · priority · pr · foreign · badges · reason · wait_badge · actions`인데, 사유가
+`flex: 1 0 100%`로 한 줄을 통째 쓰므로 그 뒤의 조작이 다음 줄로 밀린다. 새 순서는
+`grip · seq · id · priority · pr · foreign · badges · wait_badge · actions · reason`이다. 머리가
+정보 영역과 조작 영역으로 갈리고, 사유는 그 아래 자기 줄을 그대로 쓴다.
+
+바뀌는 것은 `.worker-mini__head` 안의 순서 하나다. 슬롯 표가 정한 "조작은 1번 줄 오른쪽 끝"은
+지켜지고, 사유가 긴 admission 문장을 안전하게 접는 기존 규칙(`styles.css:6175`)도 그대로다.
+PR 대기·REVISE 파킹·처분 카드도 같은 머리를 쓰므로 순서 변경이 그 세 변형에 함께 적용된다 —
+세 변형 모두 조작이 사유 뒤로 밀리던 같은 문제를 갖고 있었다.
+
+검증은 사유가 **있는** 행으로 한다. 390px에서 `♻️ stale→재리뷰`를 진 PROSTATE-6rh 같은 행이
+머리 줄에 `✕`를 유지하는지 본다. 사유가 없는 행만 보면 이 finding이 다시 숨는다.
 
 ### 7.2 대기 행 조작 아이콘
 
@@ -305,17 +367,24 @@ gap: var(--sp-4)`를 준다. 라벨과 입력이 한 줄에 서고 알약이 두
   `선행 <ID>` 조립을 쓴다.
 - `lane-model.test.js`: `prerequisite_unmet` admission이 있는 대기 항목의 `reason`이 빈
   문자열이다. 선행이 전부 닫힌 admission 기록이 남아 있어도 `⛔ prerequisite_unmet`이
-  뜨지 않는다. `(blocks 자동)` 배지가 더는 만들어지지 않는다.
+  뜨지 않는다. 레인 모델의 `corrections` 개수 투영은 그대로다.
+- `worker/index.test.js`: `(blocks 자동)` 배지가 더는 만들어지지 않는다. 그 배지는 레인
+  모델이 아니라 이 모듈이 만들므로 검증 자리도 여기다.
 - `wait-judgment.test.js`: 선행과 무관한 admission 기록(`spec_review_stale`)을 가진
   대기 항목이 `blocked_by`에서 선행 사유를 얻는다. `prerequisite` 사유의 `headline`이
-  빈 문자열이다. 실행 중 attempt가 있는 bead는 여전히 `held` 갈래로만 판정된다.
+  빈 문자열이다. 실행 중(`running`) 구현 attempt를 가진 bead는 전과 같이 선행 사유를
+  얻지 않는다. `waiting` attempt와 blocker 배열을 가진 bead는 전과 같이 `held` 갈래로
+  판정된다. 외부 작업 사유의 `since`가 정산 단계에서 덮이는 기존 동작이 유지된다.
 - `wait-vocabulary.test.js`: 두 새 칸이 모든 행에 정의되어 있고 선행 두 종류는 비어
   있다. 범례가 그 칸을 읽는다.
 - 막힘 집계: 선행이 막힌 행인 이슈가 집계와 팝오버에서 빠지고 카드 배지는 남는다.
-  다른 저장소 선행은 빠지지 않는다.
+  다른 저장소 선행은 빠지지 않는다. 서로를 기다리는 A↔B 순환에서는 둘 다 세어 막힘이
+  0이 되지 않는다. 세 행 순환과 순환에 매달린 꼬리 행도 회귀 사례로 둔다.
 - `relative-time` 단위 테스트: 분·시간·일 경계와 미래 시각.
 - 좁은 화면: `is_mobile`이 참일 때 대기 행이 `.worker-mini--card`를 얻고 거짓일 때
-  `.worker-mini__line`을 얻는다.
+  `.worker-mini__line`을 얻는다. 사유가 있는 카드 변형에서 조작 묶음이 사유보다 앞선다.
+- `lanes.test.js` 외부 작업 gate 행: 감시 중인 행의 둘째 조각이 `다음 확인 <HH:MM>`이고,
+  종료 확인 묶음 행은 `종료 <HH:MM>`, 감시 기록이 없는 행은 시각 줄이 없다.
 - `styles.*.test.js` 계열: `.worker-tgl`의 `white-space`가 미디어 쿼리 밖에 있고
   `.op-btn--ghost`가 테두리를 갖지 않는다.
 - 캡처 검증: 390px iframe 래퍼로 워커 탭 대기 레인과 막힘 팝오버를 찍어 카드 접힘과
@@ -363,7 +432,8 @@ gap: var(--sp-4)`를 준다. 라벨과 입력이 한 줄에 서고 알약이 두
   - `summary`: "선행 대기는 서버 판정 한 층만 말하고 클라이언트 admission 투영은 선행
     사유에 배지도 문장도 만들지 않는다" → ADR
 - 후보 2: `막힘 N`은 지금 손댈 곳의 수다. 열린 선행이 전부 같은 워크스페이스의 다른
-  막힌 행인 이슈는 집계와 요약 목록에서 빠지고 카드 배지만 얻는다.
+  막힌 행이면서 어떤 순환에도 속하지 않는 이슈는 집계와 요약 목록에서 빠지고 카드 배지만
+  얻는다. 순환에 속한 행은 상류가 없으므로 전부 센다.
   - 되돌리기 어려움: 집계·요약 팝오버·알림이 같은 술어를 공유하게 되고, 무관한
     admission 기록이 선행 사유를 막지 않게 넓힌 §6.1과 짝이라 한쪽만 되돌리면
     숫자가 뛴다.
@@ -371,8 +441,8 @@ gap: var(--sp-4)`를 준다. 라벨과 입력이 한 줄에 서고 알약이 두
     누락으로 읽힌다.
   - 실제 절충: 막힌 이슈의 총수를 한눈에 보지 못한다. 대신 숫자가 사람이 지금 처리할
     수 있는 건수와 일치하고, 직렬 레인이 길어져도 숫자가 레인 길이만큼 부풀지 않는다.
-  - `summary`: "막힘 집계는 지금 손댈 곳의 수이며 열린 선행이 전부 다른 막힌 행인
-    이슈는 집계에서 빠지고 카드 배지만 얻는다" → ADR, supersede UI-3pu9
+  - `summary`: "막힘 집계는 지금 손댈 곳의 수이며 열린 선행이 전부 다른 막힌 행이고 순환에
+    속하지 않는 이슈는 집계에서 빠지고 카드 배지만 얻는다" → ADR, supersede UI-3pu9
 - 후보 3: 대기 시각 줄의 낱말은 어휘 표가 종류별로 소유하고 재료가 없는 조각은 그리지
   않는다.
   - 되돌리기 쉬움: 표에 칸 둘을 더하고 조립 함수 하나를 고치는 일이며 계약 필드는
