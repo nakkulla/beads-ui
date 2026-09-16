@@ -216,6 +216,7 @@ export function createCompareView(root, options = {}) {
     }
     const until_date = new Date(end_start);
     until_date.setDate(until_date.getDate() + 1);
+    until_date.setHours(0, 0, 0, 0);
     return { since, until: until_date.getTime() };
   }
 

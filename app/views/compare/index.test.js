@@ -1,3 +1,4 @@
+import process from 'node:process';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { DEFAULT_PROBLEM_CRITERIA } from '../../utils/compare-problem-criteria.js';
 import { createCompareView } from './index.js';
@@ -340,6 +341,33 @@ describe('compare group cards', () => {
         until: new Date(2026, 8, 11, 0, 0, 0, 0).getTime()
       })
     );
+  });
+
+  test('resets the exclusive end boundary after a midnight DST transition', async () => {
+    const original_tz = process.env.TZ;
+    process.env.TZ = 'America/Santiago';
+    try {
+      const { root, view, transport } = mountComparison();
+      await view.refresh();
+      changeSelect(root, '기간', 'custom');
+      await settle();
+
+      changeDate(root, '종료일', '2026-09-06');
+      await settle();
+
+      expect(transport).toHaveBeenLastCalledWith(
+        'get-compare',
+        expect.objectContaining({
+          until: new Date(2026, 8, 7, 0, 0, 0, 0).getTime()
+        })
+      );
+    } finally {
+      if (original_tz === undefined) {
+        delete process.env.TZ;
+      } else {
+        process.env.TZ = original_tz;
+      }
+    }
   });
 
   test.each([
