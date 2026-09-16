@@ -10,9 +10,11 @@ scope:
   - app/views/worker/lanes.js
   - app/views/worker/lanes.test.js
   - app/views/worker/index.js
+  - app/views/worker/index.test.js
   - app/views/monitor/index.js
   - app/views/monitor/index.test.js
   - app/views/help-dialog/
+  - app/styles.css
   - docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md
   - docs/superpowers/specs/2026-09-16-wait-surface-density-vocabulary-design.md
   - docs/adr/
@@ -113,6 +115,8 @@ scope:
   `queueRowOps`의 `offered.has('start_now')` 분기는 발행처가 없어지므로 지운다.
 - `blockedSummary`의 `manual_start_subjects`와 `수동 출발 N` 항목을 지운다. `queue_line`은
   `정지 a`만 남고, 비면 팝오버에 줄이 서지 않는다.
+- `app/styles.css`의 게이트 칩 규칙에서 `.worker-dep--gate-auto_advance_off` 선택자만
+  지운다. 같은 규칙의 `.worker-dep--gate-provider_outage`는 그대로 둔다.
 
 ### 4.3 유예 타이머 (`app/views/worker/index.js`, `app/views/monitor/index.js`)
 
@@ -165,6 +169,9 @@ scope:
 - `app/views/worker/wait-vocabulary.test.js`, `app/views/help-dialog/index.test.js`:
   어휘 표와 범례에 `auto_advance_off`와 `⏸ 수동 출발`이 없다. `QUEUE_KINDS`에
   해당하는 범위 판정이 `queue_hold`만 `queue`로 본다.
+- `app/views/worker/index.test.js`: `유예 행의 1초 타이머` describe의 기존 기대(타이머
+  생성)는 자동 진행이 켜진 큐로 바꾸고, 자동 진행이 꺼진 큐의 유예 행에서는 1초
+  타이머가 생기지 않는다는 테스트를 더한다.
 - `app/views/monitor/index.test.js`: Monitor 대기 행이 자동 진행이 꺼진 저장소에서
   `⏸ 수동 출발`·`[지금 시작]`을 그리지 않는다.
 - 저장소 전체: `rg -n "auto_advance_off|수동 출발" app server`는 0건이다. ADR과 스펙
@@ -188,7 +195,8 @@ scope:
   있다(선두 행에만 버튼 유지, 칩만 제거, 서버 사유 유지). `summary`: "자동 진행
   꺼짐은 대기 카드·요약에 표시하지 않고 저장소 자동화 토글만 말한다 — 서버는
   auto_advance_off 사유를 내지 않고, 자동 진행이 꺼진 저장소의 대기 행에는 유예
-  칩과 [지금 시작]이 없다" → ADR, supersede UI-8gem·UI-cmx3·UI-cmx3-2
+  칩과 유예·자동 진행 꺼짐으로 서는 [지금 시작]이 없으며 공급자 보류·큐 정지
+  게이트의 [지금 시작]은 남는다" → ADR, supersede UI-8gem·UI-cmx3·UI-cmx3-2
 
 대체 ADR에는 세 ADR에서 살아 있는 조항을 전부 다시 적는다. UI-8gem에서는 슬롯 1
 배지 하나와 대표 사유 규칙, `queue_hold`·큐 행 공급자 게이트가 4a 게이트 칩으로만
