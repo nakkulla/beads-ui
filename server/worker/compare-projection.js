@@ -6,6 +6,12 @@
  */
 import node_fs from 'node:fs';
 import path from 'node:path';
+import {
+  PROBLEM_BASELINE_MIN_SAMPLE,
+  PROBLEM_KEYS,
+  isDefaultProblemCriteria,
+  normalizeProblemCriteria
+} from '../../app/utils/compare-problem-criteria.js';
 import { projectAttemptUsage } from '../../app/utils/token-usage.js';
 import { parseExecReceipt, parseReviewStats } from '../workflow-enrich.js';
 import { peekWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
@@ -68,6 +74,7 @@ const BENCH_LABEL = 'bench';
  * @property {string[]} routes - Empty means every route.
  * @property {number|null} since - Lower bound on `finished_at`, or null.
  * @property {boolean} include_bench
+ * @property {ReturnType<typeof normalizeProblemCriteria>} problem_criteria
  */
 
 /**
@@ -351,10 +358,28 @@ function attemptRoute(attempt, issue) {
  * @returns {boolean}
  */
 export function isRetryAttempt(attempt) {
+  return retryKindOf(attempt) !== null;
+}
+
+/**
+ * Classify retry lineage without assigning policy to it.
+ *
+ * @param {Record<string, any>} attempt
+ * @returns {'env_ladder'|'auto_resume'|'resume'|null}
+ */
+export function retryKindOf(attempt) {
   const retry = isRecord(attempt.retry) ? attempt.retry : null;
-  return (
-    str(retry?.origin_attempt_id) !== null || str(attempt.resumed_from) !== null
-  );
+  if (str(retry?.origin_attempt_id) !== null) {
+    return 'env_ladder';
+  }
+  if (str(attempt.resumed_from) === null) {
+    return null;
+  }
+  return ['provider_outage', 'account_switch'].includes(
+    str(attempt.auto_resume_kind) ?? ''
+  )
+    ? 'auto_resume'
+    : 'resume';
 }
 
 /**
@@ -509,7 +534,8 @@ export function normalizeCompareFilters(raw) {
         : 'preset',
     routes: stringList(input.routes),
     since: num(input.since),
-    include_bench: input.include_bench === true
+    include_bench: input.include_bench === true,
+    problem_criteria: normalizeProblemCriteria(input.problem_criteria)
   };
 }
 
@@ -578,6 +604,7 @@ function workspaceRows(workspace, catalog) {
       cause: str(attempt.cause),
       failed: COMPARE_FAILED_STATUSES.has(status),
       is_retry: isRetryAttempt(attempt),
+      retry_kind: retryKindOf(attempt),
       is_bench: labels.includes(BENCH_LABEL) || bench_verify !== null,
       verify:
         bench_verify === null
@@ -603,34 +630,9 @@ function workspaceRows(workspace, catalog) {
       issues[row.bead_id],
       workspace.pr_urls?.[row.bead_id]
     );
-    const summaries = human_events.get(row.attempt_id) || [];
-    const review = row.review;
-    row.problems = {
-      failed: ['failed', 'aborted'].includes(row.outcome.kind),
-      retry: row.is_retry,
-      review: review !== null && (review.round >= 2 || review.blocking >= 1),
-      human:
-        row.attempt.halted_auto_advance === true ||
-        row.attempt.awaiting_user_present === true ||
-        row.status === 'parked' ||
-        summaries.length > 0,
-      evidence: {
-        failed: ['failed', 'aborted'].includes(row.outcome.kind)
-          ? row.outcome.evidence
-          : null,
-        retry:
-          str(row.attempt.retry?.origin_attempt_id) ??
-          str(row.attempt.resumed_from),
-        review:
-          review === null
-            ? null
-            : {
-                round: review.round,
-                blocking: review.blocking,
-                minor: review.minor
-              },
-        human: summaries
-      }
+    row.human_summaries = human_events.get(row.attempt_id) || {
+      human: [],
+      env: []
     };
   }
   return rows;
@@ -781,10 +783,10 @@ function outcomeOf(row, issue, pr_url) {
  * Attribute bead events before row filtering, including nonterminal attempts.
  *
  * @param {CompareWorkspaceInput} workspace
- * @returns {Map<string, string[]>}
+ * @returns {Map<string, { human: string[], env: string[] }>}
  */
 function humanEventsByAttempt(workspace) {
-  /** @type {Map<string, string[]>} */
+  /** @type {Map<string, { human: string[], env: string[] }>} */
   const out = new Map();
   for (const [bead_id, events] of Object.entries(
     workspace.timeline_events || {}
@@ -794,16 +796,28 @@ function humanEventsByAttempt(workspace) {
         attempt.bead_id === bead_id &&
         (attempt.kind ?? 'implementation') === 'implementation'
     );
-    for (const event of events) {
-      if (
-        !['needs_human', 'queue_hold'].includes(event.kind) &&
-        !(
-          event.kind === 'session_ended' &&
-          str(event.attempt_id) !== null &&
-          typeof event.summary === 'string' &&
-          event.summary.startsWith('파킹 ·')
+    const row_ids = new Set(
+      attempts
+        .filter((attempt) =>
+          COMPARE_TERMINAL_STATUSES.has(str(attempt.status) ?? '')
         )
-      ) {
+        .map((attempt) => str(attempt.attempt_id))
+        .filter((attempt_id) => attempt_id !== null)
+    );
+    for (const event of events) {
+      const summary = str(event.summary);
+      const is_human =
+        event.kind === 'needs_human' ||
+        (event.kind === 'queue_hold' && summary?.startsWith('시스템 보류:')) ||
+        (event.kind === 'session_ended' &&
+          str(event.attempt_id) !== null &&
+          summary?.startsWith('파킹 ·'));
+      const is_env =
+        ['provider_hold', 'provider_recovered', 'account_preempt'].includes(
+          event.kind
+        ) ||
+        (event.kind === 'queue_hold' && summary?.startsWith('환경 보류:'));
+      if (!is_human && !is_env) {
         continue;
       }
       let attempt_id = str(event.attempt_id);
@@ -846,15 +860,174 @@ function humanEventsByAttempt(workspace) {
           (containing[0] || preceding[0] || earliest[0])?.attempt_id
         );
       }
-      const summary = str(event.summary);
+      if (is_env && attempt_id !== null && !row_ids.has(attempt_id)) {
+        const visited = new Set();
+        /** @type {string|null} */
+        let current_id = attempt_id;
+        while (current_id !== null && !row_ids.has(current_id)) {
+          if (visited.has(current_id)) {
+            current_id = null;
+            break;
+          }
+          visited.add(current_id);
+          const child = attempts
+            .filter((attempt) => str(attempt.resumed_from) === current_id)
+            .sort(
+              (left, right) =>
+                (num(left.started_at) ?? Infinity) -
+                  (num(right.started_at) ?? Infinity) ||
+                String(left.attempt_id).localeCompare(String(right.attempt_id))
+            )[0];
+          current_id = str(child?.attempt_id);
+        }
+        attempt_id = current_id;
+      }
       if (attempt_id !== null && summary !== null) {
-        const list = out.get(attempt_id) || [];
-        list.push(summary);
-        out.set(attempt_id, list);
+        const lists = out.get(attempt_id) || { human: [], env: [] };
+        lists[is_env ? 'env' : 'human'].push(summary);
+        out.set(attempt_id, lists);
       }
     }
   }
   return out;
+}
+
+/**
+ * Compute filter-wide baselines used by both real and bench rows.
+ *
+ * @param {Array<Record<string, any>>} rows
+ */
+function problemBaselines(rows) {
+  const duration = medianOf(rows.map((row) => row.duration_ms));
+  const cost = medianOf(rows.map((row) => row.usage?.total_cost_usd ?? null));
+  return {
+    duration_ms: {
+      median: duration.median,
+      sample: duration.sample,
+      active: duration.sample >= PROBLEM_BASELINE_MIN_SAMPLE
+    },
+    cost_usd: {
+      median: cost.median,
+      sample: cost.sample,
+      active: cost.sample >= PROBLEM_BASELINE_MIN_SAMPLE,
+      partial_count: rows.filter(
+        (row) =>
+          num(row.usage?.total_cost_usd) !== null && row.usage?.partial === true
+      ).length
+    }
+  };
+}
+
+/**
+ * Judge one row against normalized criteria and the filter-wide baselines.
+ *
+ * @param {Record<string, any>} row
+ * @param {ReturnType<typeof normalizeProblemCriteria>} criteria
+ * @param {ReturnType<typeof problemBaselines>} baselines
+ * @returns {Record<string, any>}
+ */
+export function judgeProblems(row, criteria, baselines) {
+  const review = row.review;
+  const retry_kind = row.retry_kind;
+  const retry_env = ['env_ladder', 'auto_resume'].includes(retry_kind);
+  const retry_origin =
+    str(row.attempt?.retry?.origin_attempt_id) ??
+    str(row.attempt?.resumed_from);
+  const human_summaries = row.human_summaries || { human: [], env: [] };
+  const selected_human = criteria.human.include_env_events
+    ? [...human_summaries.human, ...human_summaries.env]
+    : human_summaries.human;
+  const local_human =
+    row.attempt?.halted_auto_advance === true ||
+    row.attempt?.awaiting_user_present === true ||
+    row.status === 'parked';
+  const failed =
+    criteria.failed.on && ['failed', 'aborted'].includes(row.outcome.kind);
+  const retry =
+    criteria.retry.on &&
+    row.is_retry &&
+    (criteria.retry.include_env || !retry_env);
+  const review_problem =
+    criteria.review.on &&
+    review !== null &&
+    ((criteria.review.round_min !== null &&
+      review.round >= criteria.review.round_min) ||
+      (criteria.review.blocking_min !== null &&
+        review.blocking >= criteria.review.blocking_min) ||
+      (criteria.review.minor_min !== null &&
+        review.minor >= criteria.review.minor_min));
+  const human = criteria.human.on && (local_human || selected_human.length > 0);
+  const verify = criteria.verify.on && row.verify === 'fail';
+  const duration_value = num(row.duration_ms);
+  const duration_baseline = num(baselines.duration_ms.median);
+  const duration =
+    criteria.duration.on &&
+    baselines.duration_ms.active &&
+    duration_value !== null &&
+    duration_baseline !== null &&
+    duration_value > duration_baseline * criteria.duration.factor;
+  const cost_value = num(row.usage?.total_cost_usd);
+  const cost_baseline = num(baselines.cost_usd.median);
+  const cost =
+    criteria.cost.on &&
+    baselines.cost_usd.active &&
+    cost_value !== null &&
+    cost_baseline !== null &&
+    cost_value > cost_baseline * criteria.cost.factor;
+  const deviated_keys = stringList(row.preset?.deviated_keys);
+  const pin = criteria.pin.on && deviated_keys.length > 0;
+  return {
+    failed,
+    retry,
+    review: review_problem,
+    human,
+    verify,
+    duration,
+    cost,
+    pin,
+    evidence: {
+      failed: failed ? row.outcome.evidence : null,
+      retry: retry
+        ? {
+            origin: retry_origin,
+            kind: retry_kind,
+            cause:
+              retry_kind === 'env_ladder'
+                ? str(row.attempt?.retry?.cause)
+                : retry_kind === 'auto_resume'
+                  ? str(row.attempt?.auto_resume_kind)
+                  : null,
+            env: retry_env
+          }
+        : null,
+      review:
+        review === null
+          ? null
+          : {
+              round: review.round,
+              blocking: review.blocking,
+              minor: review.minor
+            },
+      human: selected_human,
+      verify: verify ? row.verify_source : null,
+      duration: duration
+        ? {
+            value_ms: duration_value,
+            baseline_ms: duration_baseline,
+            factor: criteria.duration.factor
+          }
+        : null,
+      cost: cost
+        ? {
+            value_usd: cost_value,
+            baseline_usd: cost_baseline,
+            factor: criteria.cost.factor,
+            partial: row.usage?.partial === true
+          }
+        : null,
+      pin: pin ? deviated_keys : null
+    }
+  };
 }
 
 /**
@@ -874,17 +1047,20 @@ function meanAndMedian(values) {
 
 /**
  * @param {Array<Record<string, any>>} rows
+ * @param {ReturnType<typeof normalizeProblemCriteria>} criteria
  * @returns {Record<string, any>}
  */
-function aggregateRows(rows) {
+function aggregateRows(rows, criteria) {
   const landed = rows.filter((row) => row.outcome.kind === 'landed').length;
   const judged = rows.filter((row) =>
     ['landed', 'failed', 'aborted'].includes(row.outcome.kind)
   ).length;
-  const problem_keys = ['failed', 'retry', 'review', 'human'];
   const problem_count = rows.filter((row) =>
-    problem_keys.some((key) => row.problems[key])
+    PROBLEM_KEYS.some((key) => row.problems[key])
   ).length;
+  const has_enabled_criteria = PROBLEM_KEYS.some(
+    (key) => criteria[key].on === true
+  );
   /** @type {Map<string, number>} */
   const compositions = new Map();
   for (const row of rows) {
@@ -912,9 +1088,12 @@ function aggregateRows(rows) {
     ).length,
     landing_rate: judged === 0 ? null : landed / judged,
     problem_count,
-    problem_rate: rows.length === 0 ? null : problem_count / rows.length,
+    problem_rate:
+      rows.length === 0 || !has_enabled_criteria
+        ? null
+        : problem_count / rows.length,
     problems: Object.fromEntries(
-      problem_keys.map((key) => [
+      PROBLEM_KEYS.map((key) => [
         key,
         rows.filter((row) => row.problems[key]).length
       ])
@@ -1038,6 +1217,7 @@ function wireRows(rows, bench = false) {
   return rows.map((row) => {
     const rest = { ...row };
     delete rest.attempt;
+    delete rest.human_summaries;
     delete rest.representative;
     if (!bench) {
       delete rest.verify_source;
@@ -1056,10 +1236,11 @@ function wireRows(rows, bench = false) {
  * two selections of it, never a second ledger.
  *
  * @param {{ workspaces: CompareWorkspaceInput[], presets?: Array<{ id?: string, name?: string, settings?: Record<string, any> }>, catalog?: ResolvedCatalog|null, filters?: unknown, warnings?: string[] }} input
- * @returns {{ rows: Array<Record<string, any>>, groups: Array<Record<string, any>>, bench_rows: Array<Record<string, any>>, summary: Record<string, any>, warnings: string[] }}
+ * @returns {{ rows: Array<Record<string, any>>, groups: Array<Record<string, any>>, bench_rows: Array<Record<string, any>>, summary: Record<string, any>, warnings: string[], criteria: Record<string, any> }}
  */
 export function buildCompareModel(input) {
   const filters = normalizeCompareFilters(input?.filters);
+  const criteria = filters.problem_criteria;
   const presets = Array.isArray(input?.presets) ? input.presets : [];
   const catalog = input?.catalog ?? null;
   const warnings = input.warnings || [];
@@ -1119,6 +1300,10 @@ export function buildCompareModel(input) {
       (right.finished_at ?? 0) - (left.finished_at ?? 0) ||
       left.attempt_id.localeCompare(right.attempt_id)
   );
+  const baselines = problemBaselines(rows);
+  for (const row of [...rows, ...bench_rows]) {
+    row.problems = judgeProblems(row, criteria, baselines);
+  }
   /** @type {Map<string, Array<Record<string, any>>>} */
   const by_group = new Map();
   for (const row of rows) {
@@ -1129,7 +1314,7 @@ export function buildCompareModel(input) {
   }
   const groups = [...by_group.values()].map((group_rows) => ({
     ...groupIdentity(group_rows[0], filters.group_by),
-    ...aggregateRows(group_rows),
+    ...aggregateRows(group_rows, criteria),
     best: []
   }));
   markBest(groups);
@@ -1138,8 +1323,13 @@ export function buildCompareModel(input) {
     rows: wireRows(rows),
     groups,
     bench_rows: wireRows(sortedRows(bench_rows), true),
-    summary: aggregateRows(rows),
-    warnings
+    summary: aggregateRows(rows, criteria),
+    warnings,
+    criteria: {
+      effective: criteria,
+      is_default: isDefaultProblemCriteria(criteria),
+      baselines
+    }
   };
 }
 
@@ -1493,9 +1683,14 @@ export function collectCompareWorkspaces(seams = {}) {
           timeline_events[bead_id] = timeline
             .readTimeline(bead_id)
             .filter((event) =>
-              ['needs_human', 'queue_hold', 'session_ended'].includes(
-                event.kind
-              )
+              [
+                'needs_human',
+                'queue_hold',
+                'session_ended',
+                'provider_hold',
+                'provider_recovered',
+                'account_preempt'
+              ].includes(event.kind)
             );
         } catch {
           // Timeline failures affect human evidence only, never the workspace.

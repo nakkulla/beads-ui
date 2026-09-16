@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { DEFAULT_PROBLEM_CRITERIA } from '../../utils/compare-problem-criteria.js';
 import { createCompareView } from './index.js';
 
 /** Let every pending microtask and timer-0 callback run. */
@@ -171,7 +172,12 @@ function mountComparison(payload = {}) {
           review: true,
           human: true,
           evidence: {
-            retry: 'original-1',
+            retry: {
+              origin: 'original-1',
+              kind: 'resume',
+              cause: null,
+              env: false
+            },
             review: { round: 2, blocking: 1, minor: 3 },
             human: ['승인 대기', '재개']
           }
@@ -183,6 +189,19 @@ function mountComparison(payload = {}) {
     runs: [],
     bench_rows: [],
     warnings: [],
+    criteria: {
+      effective: DEFAULT_PROBLEM_CRITERIA,
+      is_default: true,
+      baselines: {
+        duration_ms: { median: 60000, sample: 5, active: true },
+        cost_usd: {
+          median: 1,
+          sample: 5,
+          active: true,
+          partial_count: 0
+        }
+      }
+    },
     ...payload
   };
   const transport = vi.fn(async () => ({ payload: snapshot }));
@@ -211,6 +230,264 @@ function changeSelect(root, label, value) {
 describe('compare group cards', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
+    localStorage.clear();
+  });
+
+  test('renders effective criteria and marks a customized response', async () => {
+    const effective = structuredClone(DEFAULT_PROBLEM_CRITERIA);
+    effective.failed.on = false;
+    const { root, view } = mountComparison({
+      criteria: {
+        effective,
+        is_default: false,
+        baselines: {
+          duration_ms: { median: 60000, sample: 5, active: true },
+          cost_usd: { median: 1, sample: 5, active: true, partial_count: 0 }
+        }
+      }
+    });
+
+    await view.refresh();
+    /** @type {HTMLElement} */ (
+      root.querySelector('.cmp-criteria summary')
+    ).click();
+
+    expect(
+      root
+        .querySelector('.cmp-criteria summary')
+        ?.textContent?.replace(/\s+/gu, ' ')
+        .trim()
+    ).toBe('문제 기준 ●');
+    expect(
+      /** @type {HTMLInputElement} */ (
+        root.querySelector('.cmp-criteria__row input')
+      ).checked
+    ).toBe(false);
+    expect(
+      root.querySelector('[data-metric="problem"]')?.textContent
+    ).toContain('기준 조정됨');
+    expect(root.querySelector('.cmp-problems')?.textContent).not.toContain(
+      '실패·폐기'
+    );
+  });
+
+  test('stores a checkbox change and sends criteria on the next request', async () => {
+    const { root, view, transport } = mountComparison();
+    await view.refresh();
+    /** @type {HTMLElement} */ (
+      root.querySelector('.cmp-criteria summary')
+    ).click();
+    const failed = /** @type {HTMLInputElement} */ (
+      root.querySelector('.cmp-criteria__row input')
+    );
+
+    failed.click();
+    await settle();
+
+    expect(
+      JSON.parse(localStorage.getItem('bdui.compare.problem_criteria') ?? '{}')
+        .failed.on
+    ).toBe(false);
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.objectContaining({
+        problem_criteria: expect.objectContaining({ failed: { on: false } })
+      })
+    );
+    expect(
+      /** @type {HTMLDetailsElement} */ (root.querySelector('.cmp-criteria'))
+        .open
+    ).toBe(true);
+  });
+
+  test('clamps a factor before storing and requesting', async () => {
+    const { root, view, transport } = mountComparison();
+    await view.refresh();
+    /** @type {HTMLElement} */ (
+      root.querySelector('.cmp-criteria summary')
+    ).click();
+    const inputs = root.querySelectorAll('.cmp-criteria__number');
+    const duration = /** @type {HTMLInputElement} */ (inputs[3]);
+
+    duration.value = '20';
+    duration.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.objectContaining({
+        problem_criteria: expect.objectContaining({
+          duration: { on: true, factor: 10 }
+        })
+      })
+    );
+  });
+
+  test('stores an emptied review threshold as null', async () => {
+    const { root, view, transport } = mountComparison();
+    await view.refresh();
+    /** @type {HTMLElement} */ (
+      root.querySelector('.cmp-criteria summary')
+    ).click();
+    const round = /** @type {HTMLInputElement} */ (
+      root.querySelector('.cmp-criteria__number')
+    );
+
+    round.value = '';
+    round.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.objectContaining({
+        problem_criteria: expect.objectContaining({
+          review: expect.objectContaining({ round_min: null })
+        })
+      })
+    );
+  });
+
+  test('removes storage and omits criteria when resetting', async () => {
+    localStorage.setItem(
+      'bdui.compare.problem_criteria',
+      JSON.stringify({ failed: { on: false } })
+    );
+    const effective = structuredClone(DEFAULT_PROBLEM_CRITERIA);
+    effective.failed.on = false;
+    const { root, view, transport } = mountComparison({
+      criteria: {
+        effective,
+        is_default: false,
+        baselines: {
+          duration_ms: { median: null, sample: 0, active: false },
+          cost_usd: { median: null, sample: 0, active: false, partial_count: 0 }
+        }
+      }
+    });
+    await view.refresh();
+    /** @type {HTMLElement} */ (
+      root.querySelector('.cmp-criteria summary')
+    ).click();
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-criteria__reset')
+    ).click();
+    await settle();
+
+    expect(localStorage.getItem('bdui.compare.problem_criteria')).toBeNull();
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.not.objectContaining({ problem_criteria: expect.anything() })
+    );
+  });
+
+  test('falls back to defaults when localStorage reading throws', async () => {
+    const get_item = vi
+      .spyOn(Storage.prototype, 'getItem')
+      .mockImplementationOnce(() => {
+        throw new Error('blocked');
+      });
+
+    const { view, transport } = mountComparison();
+    await view.refresh();
+
+    expect(transport).toHaveBeenLastCalledWith(
+      'get-compare',
+      expect.not.objectContaining({ problem_criteria: expect.anything() })
+    );
+    get_item.mockRestore();
+  });
+
+  test('keeps the last effective criteria after a failed request', async () => {
+    const effective = structuredClone(DEFAULT_PROBLEM_CRITERIA);
+    effective.cost.factor = 5;
+    const { root, view, transport } = mountComparison({
+      criteria: {
+        effective,
+        is_default: false,
+        baselines: {
+          duration_ms: { median: 60000, sample: 5, active: true },
+          cost_usd: { median: 1, sample: 5, active: true, partial_count: 0 }
+        }
+      }
+    });
+    await view.refresh();
+    /** @type {HTMLElement} */ (
+      root.querySelector('.cmp-criteria summary')
+    ).click();
+    transport.mockRejectedValueOnce(new Error('끊김'));
+
+    await view.refresh();
+
+    expect(root.querySelector('.cmp-error')).not.toBeNull();
+    expect(
+      Array.from(root.querySelectorAll('.cmp-criteria__number')).map(
+        (input) => /** @type {HTMLInputElement} */ (input).value
+      )
+    ).toContain('5');
+  });
+
+  test('renders environmental retry and verify, duration, and cost chips', async () => {
+    const row = {
+      ...mountComparison().snapshot.rows[0],
+      problems: {
+        failed: false,
+        retry: true,
+        review: false,
+        human: false,
+        verify: true,
+        duration: true,
+        cost: true,
+        pin: false,
+        evidence: {
+          retry: {
+            origin: 'origin',
+            kind: 'env_ladder',
+            cause: 'capacity',
+            env: true
+          },
+          verify: 'merge_verify',
+          duration: { value_ms: 240000, baseline_ms: 60000, factor: 3 },
+          cost: {
+            value_usd: 4.1,
+            baseline_usd: 1,
+            factor: 3,
+            partial: true
+          }
+        }
+      },
+      preset: { deviated_keys: [] }
+    };
+    const { root, view } = mountComparison({
+      rows: [row],
+      criteria: {
+        effective: DEFAULT_PROBLEM_CRITERIA,
+        is_default: true,
+        baselines: {
+          duration_ms: { median: 60000, sample: 5, active: true },
+          cost_usd: { median: 1, sample: 5, active: true, partial_count: 2 }
+        }
+      }
+    });
+    await view.refresh();
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-expand')
+    ).click();
+    const chips = Array.from(
+      root.querySelectorAll('.cmp-session__chips .cmp-chip')
+    );
+
+    expect(chips.map((chip) => chip.textContent?.trim())).toEqual([
+      '재시도(환경)',
+      'verify 실패',
+      '시간 ×4.0',
+      '비용 ×4.1'
+    ]);
+    expect(chips[2].getAttribute('title')).toBe('4분 · 중앙값 1분 × 3');
+    expect(chips[3].getAttribute('title')).toContain(
+      '부분 · 기준선 부분 집계 2건 포함'
+    );
   });
 
   test('renders the server metrics and best markers on a group card', async () => {
@@ -417,7 +694,7 @@ describe('compare group cards', () => {
       '핀 조정'
     ]);
     expect(chips.map((chip) => chip.getAttribute('title'))).toEqual([
-      'original-1',
+      'original-1 · 재개',
       '라운드 2 · blocking 1 · minor 3',
       '승인 대기\n재개',
       'impl_effort'
@@ -581,6 +858,7 @@ describe('compare group cards', () => {
 describe('compare view experiment list', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
+    localStorage.clear();
   });
 
   test('lists an experiment with its progress fraction', async () => {
@@ -707,6 +985,7 @@ describe('compare view experiment list', () => {
 describe('compare view new-experiment form', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
+    localStorage.clear();
   });
 
   test('offers an eligible quick_fix source', async () => {

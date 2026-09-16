@@ -81,6 +81,7 @@
     "app/utils/transcript-lines.js",
     "app/utils/execution-defaults.js",
     "app/utils/carryover-index.js",
+    "app/utils/compare-problem-criteria.js",
     "app/views/worker/blocker-ids.js",
     "app/data/closed-range.js",
     "app/data/keyed-patch.js",

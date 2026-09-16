@@ -53,6 +53,7 @@ export async function handleGetCompare(ws, req, seams = {}) {
           : 'preset',
       routes: payload.routes,
       include_bench: payload.include_bench,
+      problem_criteria: payload.problem_criteria,
       since: compareRangeSince(payload.range ?? '30d')
     });
   } catch (err) {

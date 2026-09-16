@@ -2,6 +2,7 @@
  * Display formatting for the comparison table (preset-compare §3.6). Kept apart
  * from the view so every cell rule is testable without a DOM.
  */
+import { PROBLEM_KEYS } from '../../utils/compare-problem-criteria.js';
 import { formatCost } from '../../utils/token-usage.js';
 
 /** The cell text of a column whose row carries no material (§3.2). */
@@ -88,6 +89,69 @@ export function formatCostMedian(median) {
 }
 
 /**
+ * Format a row-to-baseline ratio for problem chips.
+ *
+ * @param {unknown} value
+ * @param {unknown} baseline
+ * @returns {string}
+ */
+export function formatFactorChip(value, baseline) {
+  const numerator = num(value);
+  const denominator = num(baseline);
+  if (numerator === null || denominator === null || denominator === 0) {
+    return '';
+  }
+  return `×${(numerator / denominator).toFixed(1)}`;
+}
+
+/**
+ * Describe exactly the criteria and baselines used by the server projection.
+ *
+ * @param {Record<string, any>} effective
+ * @param {Record<string, any>} baselines
+ * @returns {string}
+ */
+export function formatCriteriaLegend(effective, baselines) {
+  /** @type {Record<string, string>} */
+  const labels = {
+    failed: '실패·폐기',
+    retry: `재시도·재개(환경 ${effective.retry?.include_env ? '포함' : '제외'})`,
+    review: '',
+    human: `사람 개입(환경 이벤트 ${effective.human?.include_env_events ? '포함' : '제외'})`,
+    verify: 'verify 실패',
+    duration: '',
+    cost: '',
+    pin: '핀 조정'
+  };
+  const review_parts = [
+    effective.review?.round_min === null
+      ? null
+      : `r≥${effective.review?.round_min}`,
+    effective.review?.blocking_min === null
+      ? null
+      : `b≥${effective.review?.blocking_min}`,
+    effective.review?.minor_min === null
+      ? null
+      : `m≥${effective.review?.minor_min}`
+  ].filter(Boolean);
+  labels.review = `리뷰 ${review_parts.join(' 또는 ')}`;
+  labels.duration = baselines.duration_ms?.active
+    ? `시간 > 중앙값 ${formatDuration(baselines.duration_ms.median)} ×${effective.duration?.factor}`
+    : '시간 초과(표본 5건 미만으로 비활성)';
+  labels.cost = baselines.cost_usd?.active
+    ? `비용 > 중앙값 ${formatCostMedian(baselines.cost_usd.median)} ×${effective.cost?.factor}${baselines.cost_usd.partial_count > 0 ? ` · 부분 집계 표본 ${baselines.cost_usd.partial_count}건` : ''}`
+    : '비용 초과(표본 5건 미만으로 비활성)';
+  const enabled = PROBLEM_KEYS.filter((key) => effective[key]?.on).map(
+    (key) => labels[key]
+  );
+  const problem_sentence =
+    enabled.length === 0
+      ? '문제 세션 = 기준 없음(문제율 —).'
+      : `문제 세션 = 다음 중 하나라도 해당: ${enabled.join(' · ')}.`;
+  return `착지율 = 착지(PR 머지·quick_fix push·무변경 close 관측) ÷ 판정된 세션(착지·실패·폐기). ${problem_sentence} 평균은 값이 있는 세션만(n 표기), 비용은 API 환산 단가 기준.`;
+}
+
+/**
  * The `n=3/5` suffix a median carries when some rows had nothing to contribute
  * (§3.4). A column every row answered needs no suffix.
  *
@@ -160,9 +224,7 @@ export function outcomeDotKind(row) {
   if (kind === 'failed' || kind === 'aborted') {
     return 'failed';
   }
-  return ['failed', 'retry', 'review', 'human'].some(
-    (key) => row.problems?.[key] === true
-  )
+  return PROBLEM_KEYS.some((key) => row.problems?.[key] === true)
     ? 'problem'
     : 'muted';
 }
