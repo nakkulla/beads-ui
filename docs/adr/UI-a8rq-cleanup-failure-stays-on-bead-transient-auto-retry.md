@@ -1,7 +1,8 @@
 ---
 id: UI-a8rq
 title: 머지 후 정리 실패는 큐를 세우지 않고 그 Bead에 머물며 관측형 실패는 코디네이터가 자동으로 다시 돌린다
-status: accepted
+status: superseded
+superseded_by: UI-1l3a
 date: 2026-09-15
 summary: "머지 후 정리 실패는 큐를 세우지 않고 그 Bead에 머물며, 관측형 실패는 코디네이터가 자동으로 다시 돌리고 결정형 실패만 사람이 처분한다"
 supersedes: [UI-o5ll]
