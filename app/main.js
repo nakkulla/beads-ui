@@ -27,6 +27,7 @@ import { createCompareView } from './views/compare/index.js';
 import { createDetailPanel } from './views/detail-panel/index.js';
 import { createMdViewer } from './views/detail-panel/md-viewer.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
+import { createHelpDialog } from './views/help-dialog/index.js';
 import { depCandidateModel } from './views/monitor/dep-candidates.js';
 import {
   MONITOR_PIPELINE_KEY,
@@ -1745,6 +1746,22 @@ export function bootstrap(root_element) {
       // ignore missing header
     }
 
+    // 도움말 범례 (§11). 카드의 `범례 보기` 링크는 이 다이얼로그를 소유하지
+    // 않고 `[data-help-anchor]` 위임으로만 연다.
+    const help_dialog = createHelpDialog(root_element, {
+      anchorRoot: document
+    });
+    try {
+      const btn_help = /** @type {HTMLButtonElement|null} */ (
+        document.getElementById('help-btn')
+      );
+      if (btn_help) {
+        btn_help.addEventListener('click', () => help_dialog.open());
+      }
+    } catch {
+      // ignore missing header
+    }
+
     // One md viewer for the whole shell: the detail panel's Artifacts rows and
     // every stepper spec/plan cell open the SAME overlay, so two documents can
     // never stack on top of each other (spec §4).
@@ -2052,6 +2069,14 @@ export function bootstrap(root_element) {
         if (!is_editable) {
           ev.preventDefault();
           new_issue_dialog.open();
+        }
+      }
+      // `?`는 도움말 범례를 연다 (§11). 다른 다이얼로그가 떠 있으면 그 위에
+      // 쌓지 않는다.
+      if (!is_modifier && ev.key === '?' && !is_editable) {
+        if (!document.querySelector('dialog[open]')) {
+          ev.preventDefault();
+          help_dialog.open();
         }
       }
     });

@@ -2897,6 +2897,11 @@ export function createDetailPanel(mount_element, options) {
           ${wait_reason
             ? html`<section class="detail-gate__monitor">
                 ${wait_lines.body}
+                ${wait_reason.release
+                  ? html`<div class="wait-reason__release">
+                      ${wait_reason.release}
+                    </div>`
+                  : ''}
                 ${verified_external_wait
                   ? html`<div>
                       ${[

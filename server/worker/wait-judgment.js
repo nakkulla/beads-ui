@@ -173,6 +173,58 @@ function addClocks(result, clocks) {
 }
 
 /**
+ * Compose the single external-job sentence from observed fields (UI-8gem
+ * §7.3·§10.1). `monitor_reason` wins over `monitor_state`, and the idle
+ * `자동 확인 중` state says nothing the row does not already say.
+ *
+ * @param {Record<string, any>|null|undefined} row
+ * @returns {string}
+ */
+export function externalJobHeadline(row) {
+  const job = [line(row?.ssh_host), row?.job_id ? `작업 ${row.job_id}` : '']
+    .filter(Boolean)
+    .join(' ');
+  const monitor_reason = line(row?.monitor_reason);
+  const monitor_state = line(row?.monitor_state);
+  const tail =
+    monitor_reason ||
+    (monitor_state && monitor_state !== '자동 확인 중' ? monitor_state : '');
+  return [job, line(row?.job_state), tail].filter(Boolean).join(' · ');
+}
+
+/**
+ * Compose one prerequisite group headline from its collected targets (§10.1).
+ * One open blocker names it; several are counted by status.
+ *
+ * @param {Array<{ name: string, status: string }>} items
+ * @param {boolean} returning
+ * @returns {string}
+ */
+function prerequisiteHeadline(items, returning) {
+  if (items.length === 0) {
+    return '';
+  }
+  if (returning) {
+    return `선행 ${items.length}건 해제됨 · 복귀 재스캔을 기다림`;
+  }
+  if (items.length === 1) {
+    const [only] = items;
+    return `${only.name} 완료를 기다림${only.status ? ` (${only.status})` : ''}`;
+  }
+  /** @type {Map<string, number>} */
+  const counts = new Map();
+  for (const item of items) {
+    if (item.status) {
+      counts.set(item.status, (counts.get(item.status) || 0) + 1);
+    }
+  }
+  const detail = [...counts]
+    .map(([status, count]) => `${status} ${count}`)
+    .join(' · ');
+  return `선행 ${items.length}건 완료를 기다림${detail ? ` (${detail})` : ''}`;
+}
+
+/**
  * Pure workspace wait projection. No queue mutation, I/O or wall-clock reads.
  *
  * @param {WaitJudgmentInput} input
@@ -235,15 +287,11 @@ export function judgeWaitReasons(input) {
       typeof row.interval_seconds === 'number' && row.interval_seconds > 0
         ? row.interval_seconds * 1000
         : WAIT_THRESHOLDS.interval_ms;
-    const title = line(row.consumer_title).slice(0, 40) || row.consumer_id;
-    const job = [line(row.ssh_host), row.job_id ? `작업 ${row.job_id}` : '']
-      .filter(Boolean)
-      .join(' ');
     const result = reason(
       'external_job',
       row.consumer_id,
       root_dir,
-      `${title}가 ${job ? `${job} ` : ''}종료를 기다림${row.job_state ? ` · ${line(row.job_state)}` : ''}`,
+      externalJobHeadline(row),
       `${interval / 60_000}분마다 자동 확인 · 종료 확인되면 대기 자동 해제`
     );
     if (row.notify?.on_complete === 'discord') {
@@ -409,6 +457,8 @@ export function judgeWaitReasons(input) {
     }
     /** @type {Map<WaitKind, WaitReason>} */
     const groups = new Map();
+    /** @type {Map<WaitKind, Array<{ name: string, status: string }>>} */
+    const group_items = new Map();
     for (const [id, blocker] of blockers) {
       const foreign_fact = foreign[id];
       const self_rig = queue.rig || bead_id.slice(0, bead_id.lastIndexOf('-'));
@@ -443,16 +493,14 @@ export function judgeWaitReasons(input) {
             : attempt?.finished_at || record?.at
         });
         groups.set(kind, result);
+        group_items.set(kind, []);
       }
       const rig = line(
         foreign_fact?.rig || blocker.rig || (is_foreign ? blocker_rig : '')
       );
-      const title = line(current.title || blocker.title).slice(0, 40);
+      const title = line(current.title || blocker.title).slice(0, 24);
       const name = `${is_foreign && rig ? `${rig}/` : ''}${id}${title ? ` "${title}"` : ''}`;
-      const headline = returning
-        ? `${name} 선행 해제 · 자동 복귀를 기다림`
-        : `${name} 완료를 기다림${status ? ` (${status})` : ''}`;
-      result.headline += `${result.headline ? ' · ' : ''}${headline}`;
+      group_items.get(kind)?.push({ name, status });
       result.targets.push({
         id,
         kind: 'issue',
@@ -473,6 +521,12 @@ export function judgeWaitReasons(input) {
       ) {
         judge(result, 'overdue', 'return_overdue');
       }
+    }
+    for (const [kind, result] of groups) {
+      result.headline = prerequisiteHeadline(
+        group_items.get(kind) || [],
+        returning
+      );
     }
     wait_reasons.push(...groups.values());
     if (attempt?.status === 'parked' && !attempt.parked_resumed_at) {
@@ -722,12 +776,14 @@ export function judgeWaitReasons(input) {
     queue.auto_advance === false &&
     ![...attempts.values()].some((a) => a.status === 'running')
   ) {
-    for (const bead_id of pending_ids) {
+    const stopped = new Set(wait_reasons.map((row) => row.subject.bead_id));
+    const idle_ids = pending_ids.filter((bead_id) => !stopped.has(bead_id));
+    for (const bead_id of idle_ids) {
       const result = reason(
         'auto_advance_off',
         bead_id,
         root_dir,
-        `자동 진행 꺼짐 · 대기 ${pending_ids.length}건 출발 안 함`,
+        `자동 진행 꺼짐 · 대기 ${idle_ids.length}건 출발 안 함`,
         '[지금 시작] 또는 자동화 켜기'
       );
       result.actions.push({

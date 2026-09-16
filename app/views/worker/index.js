@@ -83,7 +83,6 @@ import {
   toggleRouteFilter
 } from './lane-model.js';
 import {
-  blockedSummaryTemplate,
   discardAbandonCompletionMessage,
   discardAbandonConfirmationMessage,
   discardCompletionMessage,
@@ -100,6 +99,8 @@ import {
   repoOpsStripTemplate,
   reviewSessionRowState,
   staleWorkProjection,
+  summaryChipsTemplate,
+  tokenChipTemplate,
   waitBody
 } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
@@ -1736,8 +1737,6 @@ export function createWorkerView(mount_element, options = {}) {
   let place_menu_bead_id = null;
   /** @type {string|null} */
   let open_failure_detail = null;
-  /** @type {string|null} */
-  let open_provider_hold_detail = null;
   /** @type {ProviderResumeDraft|null} */
   let provider_resume_draft = null;
   /**
@@ -1791,6 +1790,16 @@ export function createWorkerView(mount_element, options = {}) {
   function doneRangeLabel() {
     const opt = DONE_RANGE_OPTIONS.find((o) => o.value === done_range);
     return opt ? opt.label : '오늘';
+  }
+  /**
+   * The narrow-viewport form of the same period (UI-8gem §8) — the long form
+   * stays in each chip's `title`.
+   *
+   * @returns {string}
+   */
+  function doneRangeShort() {
+    const opt = DONE_RANGE_OPTIONS.find((o) => o.value === done_range);
+    return opt ? opt.short : '오늘';
   }
   /**
    * Lane·area 접힘 상태 (UI-5ksp §4.4), 뷰 생성 시 복원된다. 저장 키는 모바일
@@ -3203,12 +3212,7 @@ export function createWorkerView(mount_element, options = {}) {
             waiting: item.run_state === 'waiting',
             wait: item.wait || null,
             provider_hold: item.run_state === 'provider_hold',
-            hold: item.hold
-              ? {
-                  ...item.hold,
-                  open: open_provider_hold_detail === item.attempt_id
-                }
-              : null,
+            hold: item.hold || null,
             status_label:
               item.run_state === 'failed'
                 ? item.status === 'orphaned'
@@ -3617,25 +3621,22 @@ export function createWorkerView(mount_element, options = {}) {
       : '';
     // 세 카운트는 데스크톱 KPI 줄과 모바일 리본이 함께 쓴다 — 같은 수를 두 번
     // 정의하지 않기 위해 템플릿 하나로 둔다.
-    const counts = html`<span class="worker-kpi__chip worker-kpi__chip--running"
-        >실행 <b>${group.live_count}</b></span
-      >
-      <span class="worker-kpi__chip worker-kpi__chip--pr"
-        >PR 대기 <b>${prWaitRows(m).length}</b></span
-      >
-      <span class="worker-kpi__chip worker-kpi__chip--done"
-        >${doneRangeLabel()} 완료 <b>${m.done.length}</b></span
-      >${blockedSummaryTemplate(
-        last_workspaces.map((workspace) => ({
-          root_dir: workspace.root_dir,
-          name: workspace.name,
-          wait_reasons: workspace.wait_reasons
-        })),
-        (root_dir, bead_id) => {
-          expandWaitSubject(m, collapse, root_dir, bead_id);
-          doRender();
-        }
-      )}`;
+    const counts = summaryChipsTemplate({
+      running: group.live_count,
+      pr_wait: prWaitRows(m).length,
+      done: m.done.length,
+      range_label: doneRangeLabel(),
+      range_short: doneRangeShort(),
+      workspaces: last_workspaces.map((workspace) => ({
+        root_dir: workspace.root_dir,
+        name: workspace.name,
+        wait_reasons: workspace.wait_reasons
+      })),
+      reveal: (root_dir, bead_id) => {
+        expandWaitSubject(m, collapse, root_dir, bead_id);
+        doRender();
+      }
+    });
     // 이 워크스페이스가 어디로 머지되는가 (UI-j6wa §3). 상시 표시 — base는 PR을
     // 여는 순간 되돌리기 어려운 선택이라, 예외가 생겼을 때만 나타나는 표시로는
     // 늦다. 읽지 못한 선언을 `main`으로 그리지는 않는다.
@@ -3726,7 +3727,10 @@ export function createWorkerView(mount_element, options = {}) {
               html`<span
                 class="worker-kpi__chip worker-kpi__chip--tokens"
                 title=${badge.tooltip}
-                >${doneRangeLabel()} 완료 · 누적 ${badge.label}</span
+                >${tokenChipTemplate(
+                  `${doneRangeLabel()} 완료 · 누적 ${badge.label}`,
+                  badge.label
+                )}</span
               >`
           )}
           <span class="worker-kpi__next worker-stat"
@@ -5109,16 +5113,6 @@ export function createWorkerView(mount_element, options = {}) {
       doRender();
       return;
     }
-    const provider_hold_badge = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.rtile__provider-hold-badge')
-    );
-    if (provider_hold_badge) {
-      const attempt_id = provider_hold_badge.dataset.attemptId || '';
-      open_provider_hold_detail =
-        open_provider_hold_detail === attempt_id ? null : attempt_id;
-      doRender();
-      return;
-    }
     const attempt_copy = /** @type {HTMLElement|null} */ (
       target?.closest?.('.rtile__attempt-copy')
     );
@@ -5429,13 +5423,6 @@ export function createWorkerView(mount_element, options = {}) {
       open_failure_detail = null;
       changed = true;
     }
-    if (
-      open_provider_hold_detail &&
-      !closest('.rtile__provider-hold-pop, .rtile__provider-hold-badge')
-    ) {
-      open_provider_hold_detail = null;
-      changed = true;
-    }
     if (changed) {
       doRender();
     }
@@ -5448,15 +5435,10 @@ export function createWorkerView(mount_element, options = {}) {
     if (ev.key !== 'Escape') {
       return;
     }
-    if (
-      open_failure_detail === null &&
-      open_provider_hold_detail === null &&
-      provider_resume_draft === null
-    ) {
+    if (open_failure_detail === null && provider_resume_draft === null) {
       return;
     }
     open_failure_detail = null;
-    open_provider_hold_detail = null;
     provider_resume_draft = null;
     doRender();
   }

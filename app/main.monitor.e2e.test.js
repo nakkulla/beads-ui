@@ -552,7 +552,7 @@ describe('monitor tab direct entry (UI-nprg)', () => {
       expect(external_row?.textContent).toContain('계산 중');
       expect(external_row?.querySelector('.op-btn')).toBe(null);
       expect(consumer_summary?.querySelector('summary')?.textContent).toContain(
-        '외부 계산 대기 1건'
+        '⏳ 외부 계산 1건'
       );
       expect(
         root.querySelector('#monitor-queue .worker-pane__count')?.textContent

@@ -842,7 +842,7 @@ describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', 
     );
 
     expect(tile).toContain('external-wait-summary');
-    expect(tile).toContain('외부 계산 대기 1건');
+    expect(tile).toContain('⏳ 외부 계산 1건');
   });
 
   test('renders no repo badge, stepper, activity or delegation line', () => {
@@ -2084,7 +2084,9 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
 
     const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
     expect(
-      tile.querySelector('.rtile__hd .rtile__held-badge')?.textContent
+      tile
+        .querySelector('.rtile__hd .wait-verdict summary')
+        ?.textContent?.trim()
     ).toBe('⏸ 세션 대기');
     expect(tile.classList.contains('rtile--parked')).toBe(true);
     expect(tile.classList.contains('rtile--failed')).toBe(false);
@@ -2198,7 +2200,9 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
     );
 
     const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
-    expect(tile.querySelector('.rtile__held-badge')?.textContent).toBe(
+    expect(
+      tile.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe(
       `↻ 재시도 대기 2/3 · ${new Date(next_at).toLocaleTimeString('ko-KR', {
         hour: '2-digit',
         minute: '2-digit'
@@ -2270,9 +2274,9 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
       mount
     );
 
-    expect(mount.querySelector('.rtile__held-badge')?.textContent).toBe(
-      '↻ 재시도 대기'
-    );
+    expect(
+      mount.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe('↻ 재시도 대기');
   });
 });
 
@@ -2348,7 +2352,7 @@ describe('worker 공급자 보류 타일', () => {
     );
 
     const popover = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile__provider-hold-pop')
+      mount.querySelector('.wait-verdict .chip-popover')
     );
 
     expect(popover.textContent).toContain('작업 실패 아님');
@@ -2378,7 +2382,7 @@ describe('worker 공급자 보류 타일', () => {
     );
 
     const popover = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile__provider-hold-pop')
+      mount.querySelector('.wait-verdict .chip-popover')
     );
 
     expect(popover.textContent).toContain('허용 계정 중 사용 가능한 계정 없음');
@@ -2403,7 +2407,7 @@ describe('worker 공급자 보류 타일', () => {
     );
 
     const popover = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile__provider-hold-pop')
+      mount.querySelector('.wait-verdict .chip-popover')
     );
 
     expect(popover.textContent).toContain('계정 전환 안 함 · 기다림 모드');
@@ -2476,7 +2480,9 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
 
     const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
     expect(
-      tile.querySelector('.rtile__hd .rtile__held-badge')?.textContent
+      tile
+        .querySelector('.rtile__hd .wait-verdict summary')
+        ?.textContent?.trim()
     ).toBe('⛓ 선행 대기');
     expect(tile.classList.contains('rtile--failed')).toBe(false);
   });
@@ -2507,13 +2513,10 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
         mount
       );
 
-      expect(mount.querySelector('.rtile__held-badge')?.textContent).toBe(
-        `⏳ ${label}`
-      );
       expect(
-        mount.querySelector('.rtile__held-badge')?.getAttribute('title')
-      ).toBe(sentence);
-      expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe(label);
+        mount.querySelector('.wait-verdict summary')?.textContent?.trim()
+      ).toBe(`⏳ ${label}`);
+      expect(mount.querySelector('.rtile__elapsed')).toBeNull();
       expect(
         mount.querySelector('.rtile__held-summary')?.textContent
       ).toContain(`${sentence} · 원인 세션 종료`);
@@ -2583,21 +2586,64 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
       mount
     );
 
-    const badge = mount.querySelector('.rtile__held-badge');
-    expect(badge?.textContent).toBe('⛓ 복귀 대기');
+    const badge = mount.querySelector('.wait-verdict summary');
+    expect(badge?.textContent?.trim()).toBe('🔓 복귀 대기');
     expect(badge?.getAttribute('title')).toBe(
-      '막고 있던 선행이 남지 않았습니다 — 다음 pass에서 후보로 돌아갑니다 (슬롯·레인 순서 대기)'
+      '막던 선행이 남지 않아 다음 pass의 후보 복귀를 기다림'
     );
   });
 
-  test('labels the status instead of running a clock', () => {
+  test('draws the kind alone when the server judged nothing', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(runningGridTemplate([waitTile()]), mount);
 
-    expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe(
-      '선행 대기'
+    const badge = mount.querySelector('.wait-verdict summary');
+    expect(mount.querySelectorAll('.wait-verdict')).toHaveLength(1);
+    expect(badge?.textContent?.trim()).toBe('⛓ 선행 대기');
+    expect(badge?.hasAttribute('data-verdict')).toBe(false);
+    expect(
+      mount.querySelector('.wait-verdict .chip-popover')?.textContent
+    ).toContain('선행이 닫히면 bd ready 재스캔으로 자동 복귀');
+    expect(mount.textContent).not.toContain('정상 대기');
+  });
+
+  test('keeps one badge when the server judged the same prerequisite', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        waitTile({
+          wait_reasons: [
+            {
+              kind: 'prerequisite',
+              subject: { bead_id: 'UI-w1', root_dir: '/repo' },
+              headline: 'Analysis-2zly 완료를 기다림',
+              release: '선행 해제 후 자동 복귀',
+              verdict: 'overdue',
+              since: 4000,
+              targets: [{ id: 'Analysis-2zly', kind: 'issue' }],
+              actions: [],
+              verdict_reason: { code: 'check_overdue', message: '확인 지연' }
+            }
+          ]
+        })
+      ]),
+      mount
     );
+
+    const badge = mount.querySelector('.wait-verdict summary');
+    expect(mount.querySelectorAll('.wait-verdict')).toHaveLength(1);
+    expect(badge?.getAttribute('data-verdict')).toBe('overdue');
+    expect(mount.querySelector('.wait-reason__release')).toBeNull();
+  });
+
+  test('drops the elapsed label a held tile no longer needs', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(runningGridTemplate([waitTile()]), mount);
+
+    expect(mount.querySelector('.rtile__elapsed')).toBeNull();
   });
 
   test('uses the existing badge and operation slots for a base-moved wait', () => {
@@ -2614,12 +2660,10 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
       mount
     );
 
-    expect(mount.querySelector('.rtile__held-badge')?.textContent).toBe(
-      '반영 대기'
-    );
-    expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe(
-      '반영 대기'
-    );
+    expect(
+      mount.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe('반영 대기');
+    expect(mount.querySelector('.rtile__elapsed')).toBeNull();
     expect(mount.querySelectorAll('.rtile__resume')).toHaveLength(1);
     expect(mount.querySelector('.rtile__resume')?.classList).toContain(
       'op-btn'

@@ -177,7 +177,7 @@ test('counts wait subjects only in visible repositories using pipeline judgments
   expect(
     mount.querySelector('.mon2-deck__total-counts .wait-summary > summary')
       ?.textContent
-  ).toMatch(/막힘 1 · 조치 필요 1/);
+  ).toMatch(/막힘\s*1\s*·\s*⛔\s*1/);
   expect(mount.querySelector('.wait-summary__popover')?.textContent).toContain(
     '선행 1'
   );
@@ -421,7 +421,7 @@ describe('createRepoDeck totals (§4.1)', () => {
 
     expect(
       el(mount, '.mon2-deck__total-counts').textContent?.replace(/\s+/g, ' ')
-    ).toContain('실행 3 · 대기 6 · PR 2 · 오늘 완료 2');
+    ).toContain('실행 3PR 2오늘 완료 2');
   });
 
   test('shows one token badge per provider with its own tooltip', () => {
@@ -446,7 +446,10 @@ describe('createRepoDeck totals (§4.1)', () => {
       'claude',
       'codex'
     ]);
-    expect(badges[0].textContent?.replace(/\s+/g, ' ').trim()).toBe(
+    expect(
+      badges[0].querySelector('.tok__full')?.textContent?.replace(/\s+/g, ' ')
+    ).toBe('Claude τ 1.0k');
+    expect(badges[0].querySelector('.tok__short')?.textContent).toBe(
       'Claude τ 1.0k'
     );
   });
@@ -458,7 +461,9 @@ describe('createRepoDeck totals (§4.1)', () => {
 
     deck.render();
 
-    expect(el(mount, '.mon2-deck__tok').textContent?.trim()).toBe('τ 1.0k');
+    expect(el(mount, '.mon2-deck__tok .tok__full').textContent?.trim()).toBe(
+      'τ 1.0k'
+    );
   });
 
   test('draws no master automation toggle', () => {
@@ -805,7 +810,7 @@ describe('createRepoDeck 세션 counts (UI-yrzu §8)', () => {
     );
     expect(
       el(mount, '.mon2-deck__total-counts').textContent?.replace(/\s+/g, ' ')
-    ).toContain('실행 1 · 대기 2 · PR 0 · 세션 3 · 오늘 완료 0');
+    ).toContain('실행 1PR 0오늘 완료 0세션 3');
   });
 
   test('omits the session count for an older server that sends no key', () => {

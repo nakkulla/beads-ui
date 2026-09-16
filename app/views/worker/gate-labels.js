@@ -49,7 +49,9 @@ export function providerHoldBadgeText(hold) {
     return `⏳ 한도 대기 ${reset}${account ? ` · ${account}` : ''}${manual}`;
   }
   const next = providerClock(hold.next_probe_at);
-  return `⚠️ 공급자 장애${next ? ` · 다음 프로브 ${next}` : ''}${manual}`;
+  // 정상 글리프는 `⏳`다 (UI-8gem §5.2 정정): 프로브가 스스로 푸는 상태에
+  // 지연·조치 글리프를 쓰지 않는다.
+  return `⏳ 공급자 장애${next ? ` · 다음 프로브 ${next}` : ''}${manual}`;
 }
 
 /**

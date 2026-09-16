@@ -2955,18 +2955,54 @@ html[data-theme='dark'] {
   margin-inline-start: var(--sp-6);
 }
 
-.mon2-deck__total-counts:has(.wait-summary) {
-  white-space: normal;
-}
-
 .wait-verdict > summary::-webkit-details-marker,
 .wait-summary > summary::-webkit-details-marker {
   display: none;
 }
 
 .wait-verdict [data-verdict='overdue'],
-.wait-verdict [data-verdict='action_required'] {
+.wait-verdict [data-verdict='action_required'],
+.external-wait-summary [data-verdict='overdue'],
+.external-wait-summary [data-verdict='action_required'],
+.wait-summary__action {
   color: var(--accent-warn);
+}
+
+/* 슬롯 7 시각 줄은 실행 타일에서도 행과 같은 캡션 크기·저채도다 (UI-8gem §9). */
+.rtile .wait-reason__times {
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+.wait-verdict__legend {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.wait-summary__queue {
+  margin-top: var(--sp-6);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+/* 토큰·비용 칩은 두 형식을 그리고 미디어 쿼리가 하나만 보인다 (UI-8gem §8). */
+.tok__short {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .tok__full {
+    display: none;
+  }
+
+  .tok__short {
+    display: inline;
+  }
 }
 
 .wait-summary__popover {
@@ -6902,8 +6938,12 @@ html[data-theme='dark'] {
   font-size: var(--fs-caption);
 }
 
+/* 합계 줄은 칩 묶음이다 (UI-8gem §8) — 390px에서 잘리는 대신 줄바꿈한다. */
 .mon2-deck__total-counts {
-  white-space: nowrap;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-4) var(--sp-6);
 }
 
 .mon2-deck__total-tokens {
@@ -7400,9 +7440,23 @@ html[data-theme='dark'] {
   color: var(--accent-danger);
 }
 
-.worker-dep--gate-provider_outage {
+/* 공급자 장애는 프로브가 스스로 푸는 상태다 (UI-8gem §5.2 정정) — 경고색을
+   들지 않고 `⏳` 톤 그대로 선다. 경고색은 서버 판정이 지연·조치를 말할 때만
+   `--gate-overdue`·`--gate-action`으로 붙는다. */
+.worker-dep--gate-provider_outage,
+.worker-dep--gate-auto_advance_off {
+  border-color: var(--border-chip);
+  color: var(--text-dim);
+}
+
+.worker-dep--gate-overdue {
   border-color: var(--border-warn);
   color: var(--accent-warn);
+}
+
+.worker-dep--gate-action {
+  border-color: var(--accent-danger);
+  color: var(--accent-danger);
 }
 
 /* 판정 불가 — 색으로 경고하지 않는다. 겹치지 않는다는 뜻이 아니라 모른다는 뜻이다. */
@@ -8415,7 +8469,7 @@ button.detail-session__leg:focus-visible {
   }
 
   .worker-kpi--ribbon {
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     margin-left: auto;
   }
 
@@ -10997,5 +11051,137 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 
   .external-wait__headline .worker-mini__title {
     flex-basis: 100%;
+  }
+}
+
+/* ============================================================================
+   도움말 범례 다이얼로그 (UI-8gem §11) — 껍데기는 통합 설정 다이얼로그와 같고,
+   본문만 어휘 표를 그대로 읽어 그리는 표들이다. 640px 이하는 전체 화면·세로
+   스크롤.
+   ========================================================================== */
+.help-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-panel);
+  border-radius: var(--r-10);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+
+.help-dialog[open] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.help-dialog__head {
+  display: flex;
+  gap: var(--sp-10);
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--sp-10) var(--sp-12);
+  border-bottom: 1px solid var(--border-panel);
+}
+
+.help-dialog__title {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
+.help-dialog__close {
+  padding: var(--sp-4) var(--sp-10);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: var(--bg-drawer);
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+
+.help-dialog__body {
+  display: grid;
+  gap: var(--sp-16);
+  padding: var(--sp-12);
+  overflow-y: auto;
+}
+
+.help-dialog__section h2 {
+  margin: 0 0 var(--sp-6);
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+  font-weight: 600;
+}
+
+.help-dialog__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-caption);
+  text-align: left;
+}
+
+.help-dialog__table + .help-dialog__table {
+  margin-top: var(--sp-10);
+}
+
+.help-dialog__table th {
+  padding: var(--sp-4) var(--sp-6);
+  border-bottom: 1px solid var(--border-panel);
+  color: var(--text-dim);
+  font-weight: 500;
+}
+
+.help-dialog__table td {
+  padding: var(--sp-6);
+  border-bottom: 1px solid var(--border-card);
+  color: var(--text-secondary);
+  vertical-align: top;
+}
+
+.help-dialog__example {
+  white-space: nowrap;
+}
+
+.help-dialog__row--highlight {
+  outline: 2px solid var(--accent-warn);
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .help-dialog {
+    width: 100vw;
+    max-height: 100dvh;
+    height: 100dvh;
+    margin: 0;
+    border-radius: 0;
+  }
+
+  /* 좁은 폭에서는 표를 세로로 쌓는다 — 네 열을 390px에 넣으면 배지가 글자
+     단위로 꺾인다. 배지 예시는 한 줄로 두고 설명 셀이 그 아래 이어진다. */
+  .help-dialog__table thead {
+    display: none;
+  }
+
+  .help-dialog__table,
+  .help-dialog__table tbody,
+  .help-dialog__table tr,
+  .help-dialog__table td {
+    display: block;
+    width: 100%;
+  }
+
+  .help-dialog__table tr {
+    padding-block: var(--sp-4);
+    border-bottom: 1px solid var(--border-card);
+  }
+
+  .help-dialog__table td {
+    padding: var(--sp-2) var(--sp-4);
+    border-bottom: 0;
+  }
+
+  .help-dialog__example {
+    white-space: nowrap;
   }
 }

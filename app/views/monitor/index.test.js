@@ -297,13 +297,13 @@ test('uses the same prerequisite judgment in held tiles and the visible-reposito
   const tile = mount.querySelector('.rtile[data-bead-id="A-1"]');
 
   expect(tile?.querySelector('.wait-verdict summary')?.textContent).toContain(
-    '⚠ 지연'
+    '⚠ 복귀 대기 · 지연'
   );
   expect(tile?.querySelector('.wait-reason__headline')?.textContent).toContain(
     reason.headline
   );
   expect(mount.querySelector('.wait-summary > summary')?.textContent).toMatch(
-    /막힘 1 · 조치 필요 0/
+    /막힘\s*1/
   );
 });
 
@@ -1686,15 +1686,13 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     view.load();
 
     const tile = el(mount, '.rtile[data-attempt-id="t1"]');
-    expect(tile?.querySelector('.rtile__held-badge')?.textContent).toBe(
-      '⏸ 세션 대기'
-    );
+    expect(
+      tile?.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe('⏸ 세션 대기');
     expect(tile?.querySelector('.rtile__held-summary')?.textContent).toBe(
       '사용자 결정 대기'
     );
-    expect(tile?.querySelector('.rtile__elapsed')?.textContent).toBe(
-      '세션 대기'
-    );
+    expect(tile?.querySelector('.rtile__elapsed')).toBeNull();
     expect(tile?.querySelector('.rtile__pause')).toBeNull();
     expect(tile?.querySelector('.rtile__session')).toBeNull();
   });
@@ -1765,9 +1763,9 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     view.load();
 
     const tile = el(mount, '.rtile[data-attempt-id="t1"]');
-    expect(tile?.querySelector('.rtile__held-badge')?.textContent).toBe(
-      '↻ 재시도 대기 2/3'
-    );
+    expect(
+      tile?.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe('↻ 재시도 대기 2/3');
     expect(tile?.querySelector('.rtile__resolve')).toBeNull();
   });
 
@@ -1814,14 +1812,15 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     view.load();
 
     const tile = el(mount, '.rtile[data-attempt-id="t1"]');
-    expect(tile?.querySelector('.rtile__elapsed')?.textContent).toBe(
-      '조건 대기'
-    );
+    expect(tile?.querySelector('.rtile__elapsed')).toBeNull();
+    expect(
+      tile?.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toContain('조건 대기');
     expect(tile?.querySelector('.op-btn.rtile__resume')).not.toBeNull();
     expect(tile?.querySelector('.rtile__foot .rtile__discard')).not.toBeNull();
     expect(mount.querySelectorAll('.rtile--failed')).toHaveLength(0);
     expect(mount.querySelector('.wait-summary')?.textContent).toMatch(
-      /막힘\s*1\s*·\s*조치 필요\s*1/
+      /막힘\s*1\s*·\s*⛔\s*1/
     );
   });
 
@@ -1884,12 +1883,10 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     view.load();
 
     const tile = el(mount, '.rtile[data-attempt-id="t1"]');
-    expect(tile?.querySelector('.rtile__held-badge')?.textContent).toBe(
-      '⛓ 선행 대기'
-    );
-    expect(tile?.querySelector('.rtile__elapsed')?.textContent).toBe(
-      '선행 대기'
-    );
+    expect(
+      tile?.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe('⛓ 선행 대기');
+    expect(tile?.querySelector('.rtile__elapsed')).toBeNull();
     expect(tile?.querySelector('.rtile__held-summary')?.textContent).toBe(
       '선행 미충족으로 착수하지 않았습니다'
     );
@@ -2371,7 +2368,7 @@ describe('views/monitor 공급자 보류 타일 (UI-jr8v §10, UI-fdjk)', () => 
 
     const tile = el(mount, '#monitor-running .rtile[data-attempt-id="t1"]');
     expect(tile.classList.contains('rtile--provider-hold')).toBe(true);
-    expect(tile.querySelector('.rtile__provider-hold-badge')).not.toBeNull();
+    expect(tile.querySelector('.wait-verdict summary')).not.toBeNull();
     expect(tile.querySelector('.rtile__pause')).toBeNull();
   });
 
@@ -2379,21 +2376,11 @@ describe('views/monitor 공급자 보류 타일 (UI-jr8v §10, UI-fdjk)', () => 
     const { mount, view } = held();
 
     view.load();
-    click(mount, '.rtile__provider-hold-badge');
+    click(mount, '.wait-verdict summary');
 
     expect(
-      mount.querySelector('.rtile__provider-hold-pop')?.textContent
+      mount.querySelector('.wait-verdict .chip-popover')?.textContent
     ).toContain('작업 실패 아님');
-  });
-
-  test('closes the popover on Escape', () => {
-    const { mount, view } = held();
-
-    view.load();
-    click(mount, '.rtile__provider-hold-badge');
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
-
-    expect(mount.querySelector('.rtile__provider-hold-pop')).toBeNull();
   });
 
   test('opens the alternate selector from the tile action foot', () => {

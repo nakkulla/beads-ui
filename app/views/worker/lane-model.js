@@ -39,6 +39,7 @@ import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { RESUME_REFUSALS } from '../../utils/failure-sentences.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
 import { recSettings } from '../../utils/rec-settings.js';
+import { formatClockLocal } from '../../utils/relative-time.js';
 import { overlapPrefixes } from '../../utils/scope-overlap.js';
 import {
   SUM_FIELDS,
@@ -62,11 +63,7 @@ import {
   recoveryWaitLabel,
   recoveryWaitSentence
 } from './failure-labels.js';
-import {
-  autoSwitchText,
-  providerClock,
-  providerHoldBadgeText
-} from './gate-labels.js';
+import { autoSwitchText, providerHoldBadgeText } from './gate-labels.js';
 import {
   discardProjection,
   quickFixLanded,
@@ -84,6 +81,7 @@ import {
   releasedChip,
   resolvedBlockerChip
 } from './queue-blockers.js';
+import { WAIT_KINDS } from './wait-vocabulary.js';
 
 /**
  * @import { DependencyChip, DependencyChips, MiniItem } from './lanes.js'
@@ -1240,8 +1238,9 @@ function retryProjection(attempt) {
  * The waiting row's 게이트 재료 (UI-01wh §3.1) — 표시 전용 파생값.
  *
  * @typedef {Object} LaneGate
- * @property {'systemic'|'env'|'provider_outage'|'provider_usage'} kind - 무엇이
- * 이 행을 막고 있는가 — systemic·env는 큐 정지, provider_* 둘은 공급자 보류다.
+ * @property {'systemic'|'env'|'provider_outage'|'provider_usage'|'auto_advance_off'} kind -
+ * 무엇이 이 행을 막고 있는가 — systemic·env는 큐 정지, provider_* 둘은 공급자
+ * 보류, `auto_advance_off`는 자동 진행이 꺼져 큐가 스스로 출발하지 않는 것이다.
  * @property {string} label - 슬롯 4a 칩에 그대로 그려지는 한 줄.
  * @property {string} title - hover 툴팁이자 사유 팝업 본문의 첫 줄.
  * @property {number|null} since - systemic·env는 `queue.hold.since`, provider는
@@ -1255,6 +1254,29 @@ function retryProjection(attempt) {
  * @property {string[]} lines - `chip-popover`가 그대로 그리는 문장들이고 마지막
  * 항목은 언제나 출구 안내다.
  */
+
+/**
+ * The `⏸ 수동 출발` gate (UI-8gem §7.2). 자동 진행이 꺼진 사실은 큐의 사정이라
+ * 배지·본문·시각·막힘 집계를 만들지 않고 4a 칩 하나로만 선다. 큐 정지·공급자
+ * 보류 게이트가 이미 서 있으면 그것이 더 바깥 사정이라 이 칩은 만들지 않는다.
+ *
+ * @returns {LaneGate}
+ */
+function autoAdvanceOffGate() {
+  const row = WAIT_KINDS.find((entry) => entry.id === 'auto_advance_off');
+  return {
+    kind: 'auto_advance_off',
+    label: `${row ? `${row.glyph} ${row.label}` : '⏸ 수동 출발'}`,
+    title: row ? row.when : '자동 진행이 꺼져 있어 큐가 스스로 출발하지 않음',
+    since: null,
+    next_at: null,
+    runner: null,
+    probe_ready: false,
+    lines: [
+      '자동 진행이 꺼져 있어 큐가 스스로 출발하지 않습니다 · [지금 시작]으로 이 행만, 툴바 ▶ 자동화로 큐 전체를 출발'
+    ]
+  };
+}
 
 /** 환경 실패 사다리의 재시도 상한 (`failure-class.js`) — 팝업의 `n/3` 분모다. */
 const GATE_RETRY_MAX = RETRY_MAX;
@@ -1275,7 +1297,7 @@ function queueHoldGate(hold, lineages) {
   }
   const cause = failureText(hold.cause) || String(hold.cause || '');
   const since = typeof hold.since === 'number' ? hold.since : null;
-  const since_clock = providerClock(since);
+  const since_clock = formatClockLocal(since);
   /** @type {string[]} */
   const head = [cause, ...(since_clock ? [`시작 ${since_clock}`] : [])];
   if (hold.kind === 'systemic') {
@@ -1312,7 +1334,7 @@ function queueHoldGate(hold, lineages) {
     )
     .sort((/** @type {number} */ a, /** @type {number} */ b) => a - b);
   const next_at = scheduled.length > 0 ? scheduled[0] : null;
-  const next_clock = providerClock(next_at);
+  const next_clock = formatClockLocal(next_at);
   return {
     kind: 'env',
     label: next_clock
@@ -1332,7 +1354,7 @@ function queueHoldGate(hold, lineages) {
         .map((/** @type {any} */ row) => {
           const attempts =
             typeof row.attempts === 'number' ? row.attempts : GATE_RETRY_MAX;
-          const clock = providerClock(row.next_at);
+          const clock = formatClockLocal(row.next_at);
           return `${row.bead_id} · 재시도 ${attempts}/${GATE_RETRY_MAX} · ${
             clock ? `다음 ${clock}` : '재시도 실행 중'
           }`;
@@ -1413,11 +1435,11 @@ function providerGate(runner, account, provider_hold, account_catalog) {
         ? target.detail
         : null;
   const when = outage
-    ? providerClock(target.next_probe_at)
-    : providerClock(target.resets_at);
+    ? formatClockLocal(target.next_probe_at)
+    : formatClockLocal(target.resets_at);
   const auto_switch = autoSwitchText(target.auto_switch);
   // 보류가 선 시각은 러너 단위 레코드의 것이다 — target별 시각은 따로 없다.
-  const since_clock = providerClock(entry.since);
+  const since_clock = formatClockLocal(entry.since);
   // `account:null`인 usage_limit은 프로브를 예약하지 않으므로 (공급자 스펙 §6 F3)
   // 자동 해제가 없다 — 출구 문장이 그 사실 하나로 갈린다.
   const probeless = !outage && target_account === null;
@@ -4384,14 +4406,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
           queued ||
           item.run_state === 'waiting'
       );
+      // 슬롯 1 배지는 `waitStatusBadge` 하나다 (UI-8gem §6.2) — 여기서 문자열
+      // 배지를 더하면 같은 사실이 두 번 선다.
       if (
         queued &&
-        item.wait_reasons.some((reason) =>
-          ['prerequisite', 'prerequisite_foreign'].includes(reason.kind)
-        ) &&
-        !item.badges?.includes('⛓ 선행 대기')
+        !item.gate &&
+        item.wait_reasons.some((reason) => reason.kind === 'auto_advance_off')
       ) {
-        item.badges = [...(item.badges || []), '⛓ 선행 대기'];
+        item.gate = autoAdvanceOffGate();
       }
     }
     const waits = open_external_by_consumer.get(

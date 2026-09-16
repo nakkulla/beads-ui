@@ -39,7 +39,7 @@ import {
   createExecutionPane,
   paneSectionSegmentTemplate
 } from '../settings-dialog/execution-pane.js';
-import { blockedSummaryTemplate } from '../worker/lanes.js';
+import { summaryChipsTemplate, tokenChipTemplate } from '../worker/lanes.js';
 import { iconGear, iconMerge, iconPause, iconPlay } from './icons.js';
 import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
 
@@ -147,6 +147,7 @@ export function deckExecChips(row) {
  * @property {() => Array<Pick<LaneItem, 'usage'>>} [doneItems] - 기간이 이미
  * 걸린 완료 아이템 (합계 줄의 `<기간> 완료 n`과 토큰).
  * @property {() => string} [rangeLabel]
+ * @property {() => string} [rangeShort] - 좁은 폭의 짧은 기간 라벨 (UI-8gem §8).
  * @property {(type: any, payload?: unknown) => Promise<any>} [transport]
  * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [implPresetStore]
  * @property {(message: string) => void} [notify]
@@ -699,20 +700,19 @@ export function createRepoDeck(mount_element, options) {
     );
     const sum = (/** @type {string} */ key) =>
       list.reduce((acc, row) => acc + countOf(row, key), 0);
+    const range_short = options.rangeShort ? options.rangeShort() : range_label;
     return html`<div class="mon2-deck__bar">
       <div
         class="mon2-deck__total-counts"
-        title=${`visible 레포 ${list.length}곳의 합계입니다 — 실행·대기·PR은 지금, 완료는 ${range_label}`}
+        title=${`visible 레포 ${list.length}곳의 합계입니다 — 실행·PR은 지금, 완료는 ${range_label}`}
       >
-        실행 ${sum('running')} · 대기 ${sum('queue')} · PR
-        ${sum('pr_wait')}${sum('session_active') > 0
-          ? ` · 세션 ${sum('session_active')}`
-          : ''}
-        · ${range_label} 완료
-        ${Array.isArray(done_items)
-          ? done_items.length
-          : 0}${blockedSummaryTemplate(
-          list.map((row) => ({
+        ${summaryChipsTemplate({
+          running: sum('running'),
+          pr_wait: sum('pr_wait'),
+          done: Array.isArray(done_items) ? done_items.length : 0,
+          range_label,
+          range_short,
+          workspaces: list.map((row) => ({
             root_dir: row.root_dir,
             name: row.name,
             wait_reasons: (options.workspaces
@@ -721,8 +721,11 @@ export function createRepoDeck(mount_element, options) {
             ).find((workspace) => workspace.root_dir === row.root_dir)
               ?.wait_reasons
           })),
-          options.revealWaitSubject
-        )}
+          ...(options.revealWaitSubject
+            ? { reveal: options.revealWaitSubject }
+            : {}),
+          session: sum('session_active')
+        })}
       </div>
       ${total === null
         ? ''
@@ -731,7 +734,7 @@ export function createRepoDeck(mount_element, options) {
               ? html`<span
                   class="mon2-deck__tok"
                   title=${tokenTotalTooltip(range_label)}
-                  >${total}</span
+                  >${tokenChipTemplate(total)}</span
                 >`
               : total.map(
                   (badge) =>
@@ -739,7 +742,7 @@ export function createRepoDeck(mount_element, options) {
                       class="mon2-deck__tok"
                       data-provider=${badge.provider}
                       title=${badge.tooltip}
-                      >${badge.label}</span
+                      >${tokenChipTemplate(badge.label)}</span
                     >`
                 )}
           </span>`}

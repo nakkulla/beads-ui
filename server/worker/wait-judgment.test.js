@@ -5,7 +5,11 @@ import {
   createWaitJudge,
   createWaitObservationCollector
 } from './attach.js';
-import { WAIT_THRESHOLDS, judgeWaitReasons } from './wait-judgment.js';
+import {
+  WAIT_THRESHOLDS,
+  externalJobHeadline,
+  judgeWaitReasons
+} from './wait-judgment.js';
 
 const NOW = new Date(2026, 8, 15, 12, 0).getTime();
 const ROOT = '/repo';
@@ -414,7 +418,7 @@ describe('wait judgment external work', () => {
 
     expect(result.wait_reasons[0]).toMatchObject({
       kind: 'external_job',
-      headline: '계산가 wallace 작업 246428 종료를 기다림 · 계산 중',
+      headline: 'wallace 작업 246428 · 계산 중',
       release: '15분마다 자동 확인 · 종료 확인되면 대기 자동 해제',
       verdict: 'normal',
       targets: [{ id: 'UI-gate', kind: 'gate' }]
@@ -1283,5 +1287,139 @@ describe('wait-judge runtime', () => {
     await harness.instance.refresh();
 
     expect(harness.instance.get().wait_reasons[0].verdict).toBe('normal');
+  });
+});
+
+describe('wait judgment headline composition', () => {
+  const serial = queue({
+    serial_lanes: [{ id: 's1', entries: [{ bead_id: 'UI-consumer' }] }]
+  });
+
+  test('names the single open blocker with its truncated title and status', () => {
+    const result = run({
+      queue: serial,
+      bead_blocked_by: { 'UI-consumer': ['UI-blocker'] },
+      blocker_facts: {
+        'UI-blocker': {
+          title: '가나다라마바사아자차카타파하가나다라마바사아자차카타파하',
+          status: 'open'
+        }
+      }
+    });
+
+    expect(result.wait_reasons[0].headline).toBe(
+      'UI-blocker "가나다라마바사아자차카타파하가나다라마바사아자차" 완료를 기다림 (open)'
+    );
+  });
+
+  test('counts blockers by status once two are open', () => {
+    const result = run({
+      queue: serial,
+      bead_blocked_by: { 'UI-consumer': ['UI-blocker', 'UI-second'] },
+      blocker_facts: {
+        'UI-blocker': { status: 'open' },
+        'UI-second': { status: 'in_progress' }
+      }
+    });
+
+    expect(result.wait_reasons[0].headline).toBe(
+      '선행 2건 완료를 기다림 (open 1 · in_progress 1)'
+    );
+  });
+
+  test('omits the status parenthetical when no blocker carries a status', () => {
+    const result = run({
+      queue: serial,
+      bead_blocked_by: { 'UI-consumer': ['UI-blocker', 'UI-second'] }
+    });
+
+    expect(result.wait_reasons[0].headline).toBe('선행 2건 완료를 기다림');
+  });
+
+  test('reports the released count while a held attempt returns', () => {
+    const result = run({
+      queue: queue({ attempts: { a: waiting() } }),
+      bead_blocked_by: { 'UI-consumer': [] }
+    });
+
+    expect(result.wait_reasons[0].headline).toBe(
+      '선행 1건 해제됨 · 복귀 재스캔을 기다림'
+    );
+  });
+});
+
+describe('externalJobHeadline', () => {
+  test('prefers the monitor reason over the monitor state', () => {
+    const row = external({
+      job_state: '종료 확인 · 결과 검증 필요',
+      monitor_state: '감시 확인 필요',
+      monitor_reason: '자동 확인 3회 연속 실패',
+      ssh_host: 'hamilton',
+      job_id: '803565'
+    });
+
+    expect(externalJobHeadline(row)).toBe(
+      'hamilton 작업 803565 · 종료 확인 · 결과 검증 필요 · 자동 확인 3회 연속 실패'
+    );
+  });
+
+  test('falls back to the monitor state when no reason is recorded', () => {
+    const row = external({ monitor_state: '감시 종료', monitor_reason: null });
+
+    expect(externalJobHeadline(row)).toBe(
+      'wallace 작업 246428 · 계산 중 · 감시 종료'
+    );
+  });
+
+  test('drops the idle monitor state', () => {
+    const row = external({ monitor_state: '자동 확인 중' });
+
+    expect(externalJobHeadline(row)).toBe('wallace 작업 246428 · 계산 중');
+  });
+});
+
+describe('auto_advance_off targets', () => {
+  test('skips a subject that already waits for another reason', () => {
+    const result = run({
+      queue: queue({
+        auto_advance: false,
+        queue: [{ bead_id: 'UI-consumer' }, { bead_id: 'UI-idle' }]
+      }),
+      bead_blocked_by: { 'UI-consumer': ['UI-blocker'] }
+    });
+    const manual = result.wait_reasons.filter(
+      (row) => row.kind === 'auto_advance_off'
+    );
+
+    expect(manual.map((row) => row.subject.bead_id)).toEqual(['UI-idle']);
+  });
+
+  test('counts only the subjects that receive the manual-start reason', () => {
+    const result = run({
+      queue: queue({
+        auto_advance: false,
+        queue: [{ bead_id: 'UI-consumer' }, { bead_id: 'UI-idle' }]
+      }),
+      bead_blocked_by: { 'UI-consumer': ['UI-blocker'] }
+    });
+    const manual = result.wait_reasons.find(
+      (row) => row.kind === 'auto_advance_off'
+    );
+
+    expect(manual?.headline).toBe('자동 진행 꺼짐 · 대기 1건 출발 안 함');
+  });
+
+  test('keeps the start_now action on the narrowed target', () => {
+    const result = run({
+      queue: queue({ auto_advance: false, queue: [{ bead_id: 'UI-idle' }] })
+    });
+
+    expect(result.wait_reasons[0].actions).toEqual([
+      {
+        op: 'start_now',
+        label: '[지금 시작]',
+        payload: { root_dir: ROOT, bead_id: 'UI-idle' }
+      }
+    ]);
   });
 });
