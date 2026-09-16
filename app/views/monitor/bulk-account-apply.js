@@ -222,7 +222,9 @@ function adoptQueue(adopt, root_dir, res) {
  * @param {number} input.revision
  * @param {(type: string, payload: Record<string, unknown>) => Promise<any>} input.send
  * @param {(root_dir: string, queue: any) => void} input.adopt
- * @returns {Promise<{ applied: boolean, revision: number }>}
+ * @param {(() => boolean)|undefined} input.isCancelled
+ * @returns {Promise<{ applied: boolean, revision: number }|null>} `null`
+ * when cancelled after the first response, whose queue is still adopted.
  */
 async function applyLimitPolicy({
   root_dir,
@@ -230,7 +232,8 @@ async function applyLimitPolicy({
   patch,
   revision,
   send,
-  adopt
+  adopt,
+  isCancelled
 }) {
   let current = revision;
   let res = await send(LIMIT_POLICY_OP, {
@@ -240,6 +243,9 @@ async function applyLimitPolicy({
     expected_revision: current
   });
   current = adoptQueue(adopt, root_dir, res) ?? current;
+  if (isCancelled?.() === true) {
+    return null;
+  }
   if (!isError(res) && isRecord(res) && res.conflict === true) {
     res = await send(LIMIT_POLICY_OP, {
       root_dir,
@@ -281,7 +287,11 @@ export async function runBulkAccountApply({
     if (isCancelled?.() === true) {
       return results;
     }
-    results.push(await applyOne(target, send, adopt));
+    const result = await applyOne(target, send, adopt, isCancelled);
+    if (result === null) {
+      return results;
+    }
+    results.push(result);
     onProgress?.({ done: results.length, total, results });
   }
   return results;
@@ -289,20 +299,25 @@ export async function runBulkAccountApply({
 
 /**
  * Three requests for 한 저장소와 그 판정 (§4.2 4). 계정 쓰기가 실패하면
- * `failed`이고 정책 요청은 0회다.
+ * `failed`이고 정책 요청은 0회다. 요청 사이에 취소되면 `null` — 이미 받은
+ * 응답은 채택만 하고 그 저장소의 판정은 남기지 않는다 (§4).
  *
  * @param {BulkAccountTarget} target
  * @param {(type: string, payload: Record<string, unknown>) => Promise<any>} send
  * @param {(root_dir: string, queue: any) => void} adopt
- * @returns {Promise<BulkResult>}
+ * @param {(() => boolean)|undefined} isCancelled
+ * @returns {Promise<BulkResult|null>}
  */
-async function applyOne(target, send, adopt) {
+async function applyOne(target, send, adopt, isCancelled) {
   const base = { root_dir: target.root_dir, name: target.name };
   try {
     const res = await send(ACCOUNTS_OP, {
       root_dir: target.root_dir,
       values: target.values
     });
+    if (isCancelled?.() === true) {
+      return null;
+    }
     if (isError(res) || !isRecord(res)) {
       return {
         ...base,
@@ -331,14 +346,21 @@ async function applyOne(target, send, adopt) {
         patch: target.patches[runner],
         revision,
         send,
-        adopt
+        adopt,
+        isCancelled
       });
+      if (outcome === null) {
+        return null;
+      }
       revision = outcome.revision;
       if (!outcome.applied) {
         failed_runners.push(runner);
       }
     } catch {
       failed_runners.push(runner);
+    }
+    if (isCancelled?.() === true) {
+      return null;
     }
   }
   return failed_runners.length === 0

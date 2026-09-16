@@ -392,6 +392,50 @@ describe('runBulkAccountApply', () => {
       send.mock.calls.every((call) => call[1].root_dir === '/repo/a')
     ).toBe(true);
   });
+
+  test('stops the policy requests of the current repo once cancelled after the account write', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValue({ applied: true, state: 'usable', values: {} });
+    const targets = [target('/repo/a', 'a')];
+    let cancelled = false;
+    send.mockImplementation(async () => {
+      cancelled = true;
+      return { applied: true, state: 'usable', values: {} };
+    });
+
+    const results = await runBulkAccountApply({
+      targets,
+      send,
+      adopt: vi.fn(),
+      isCancelled: () => cancelled
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(results).toEqual([]);
+  });
+
+  test('adopts the queue of a policy response received right before cancelling', async () => {
+    const adopt = vi.fn();
+    let cancelled = false;
+    const send = vi.fn(async (/** @type {string} */ type) => {
+      if (type === 'worker-provider-limit-policy-set') {
+        cancelled = true;
+        return { applied: false, conflict: true, queue: { revision: 9 } };
+      }
+      return { state: 'usable', values: {} };
+    });
+
+    await runBulkAccountApply({
+      targets: [target('/repo/a', 'a')],
+      send,
+      adopt,
+      isCancelled: () => cancelled
+    });
+
+    expect(adopt).toHaveBeenCalledWith('/repo/a', { revision: 9 });
+    expect(send).toHaveBeenCalledTimes(2);
+  });
 });
 
 test('formatBulkResult is re-exported for the account section to reuse phrasing', () => {

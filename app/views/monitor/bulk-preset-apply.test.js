@@ -341,6 +341,26 @@ describe('runBulkApply', () => {
 
     expect(send).toHaveBeenCalledTimes(1);
   });
+
+  test('skips the queue retry when cancelled after the first response', async () => {
+    const adopt = vi.fn();
+    let cancelled = false;
+    const send = vi.fn(async () => {
+      cancelled = true;
+      return { applied: true, queue_applied: false, queue: { revision: 4 } };
+    });
+
+    const results = await runBulkApply({
+      targets: [target('/repo/a', 'a', 1)],
+      send,
+      adopt,
+      isCancelled: () => cancelled
+    });
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(adopt).toHaveBeenCalledWith('/repo/a', { revision: 4 });
+    expect(results).toEqual([]);
+  });
 });
 
 describe('formatBulkResult', () => {

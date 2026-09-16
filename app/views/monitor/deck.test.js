@@ -1230,6 +1230,145 @@ describe('createRepoDeck 여러 저장소에 적용 절 (UI-8ncz §3)', () => {
     ).toBe(false);
   });
 
+  test('keeps the chosen preset selected on the select after a segment round trip', async () => {
+    const harness = bulkSetup();
+    await openGear(harness);
+    choosePreset(harness.mount, 'p1');
+    await settle();
+
+    click(harness.mount, '[data-pane-section="account"]');
+    await settle();
+    click(harness.mount, '[data-pane-section="worker"]');
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      el(harness.mount, '[data-bulk-preset]')
+    );
+    expect(select.value).toBe('p1');
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        el(harness.mount, '[data-bulk-apply="worker"]')
+      ).textContent?.trim()
+    ).toBe('선택 2곳에 적용');
+  });
+
+  test('disables the account apply button until the source account read settles', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const harness = bulkSetup({
+      transport: async (/** @type {string} */ type) => {
+        if (type === 'get-workspace-accounts') {
+          await new Promise((resolve) => {
+            release = () => resolve(undefined);
+          });
+          return { state: 'usable', values: {}, warnings: [] };
+        }
+        return OK;
+      }
+    });
+    await openGear(harness);
+    click(harness.mount, '[data-pane-section="account"]');
+    await settle();
+    const button = /** @type {HTMLButtonElement} */ (
+      el(harness.mount, '[data-bulk-apply="account"]')
+    );
+    const before = { disabled: button.disabled, title: button.title };
+
+    release();
+    await settle();
+    await settle();
+
+    expect(before).toEqual({
+      disabled: true,
+      title: '저장 확인을 기다리는 중'
+    });
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        el(harness.mount, '[data-bulk-apply="account"]')
+      ).disabled
+    ).toBe(false);
+  });
+
+  test('names the source accounts with the catalog label in the summary line', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (/** @type {string} */ url) => ({
+        ok: true,
+        json: async () =>
+          url.includes('claude')
+            ? {
+                accounts: [
+                  {
+                    key: 'a@example.com',
+                    email: 'a@example.com',
+                    alias: 'team',
+                    active: true,
+                    status: 'ok'
+                  }
+                ]
+              }
+            : { accounts: [] }
+      }))
+    );
+    try {
+      const harness = bulkSetup({
+        transport: async (/** @type {string} */ type) =>
+          type === 'get-workspace-accounts'
+            ? {
+                state: 'usable',
+                values: { claude_account: 'a@example.com' },
+                warnings: []
+              }
+            : OK
+      });
+      await openGear(harness);
+
+      click(harness.mount, '[data-pane-section="account"]');
+      await settle();
+
+      expect(el(harness.mount, '[data-bulk-source]').textContent).toContain(
+        'Claude a@example.com (team)'
+      );
+      expect(el(harness.mount, '[data-bulk-source]').textContent).toContain(
+        'Codex 기본값'
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('redraws the summary line when the pane confirms an account save', async () => {
+    const harness = bulkSetup({
+      transport: async (
+        /** @type {string} */ type,
+        /** @type {any} */ payload
+      ) =>
+        type === 'set-workspace-accounts'
+          ? { state: 'usable', values: { ...payload.values }, warnings: [] }
+          : type === 'get-workspace-accounts'
+            ? { state: 'usable', values: {}, warnings: [] }
+            : OK
+    });
+    await openGear(harness);
+    click(harness.mount, '[data-pane-section="account"]');
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      el(harness.mount, 'select[data-account-key="claude_account"]')
+    );
+    const option = document.createElement('option');
+    option.value = 'new@example.com';
+    select.appendChild(option);
+    select.value = 'new@example.com';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+    await settle();
+
+    expect(el(harness.mount, '[data-bulk-source]').textContent).toContain(
+      'Claude new@example.com'
+    );
+  });
+
   test('disables the source repository checkbox on the account section', async () => {
     const harness = bulkSetup({ transport: async () => OK });
     await openGear(harness);

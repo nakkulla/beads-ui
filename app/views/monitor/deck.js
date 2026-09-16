@@ -619,7 +619,6 @@ export function createRepoDeck(mount_element, options) {
           aria-label="여러 저장소에 적용할 실행 프리셋"
           data-bulk-preset
           ?disabled=${bulk_running !== null}
-          .value=${live(bulk_preset_choice)}
           @change=${(/** @type {Event} */ ev) => {
             bulk_preset_choice = String(
               /** @type {HTMLSelectElement} */ (ev.target).value
@@ -627,11 +626,14 @@ export function createRepoDeck(mount_element, options) {
             doRender();
           }}
         >
-          <option value="">실행 프리셋…</option>
+          <option value="" ?selected=${bulk_preset_choice === ''}>
+            실행 프리셋…
+          </option>
           ${(state?.presets || []).map(
             (preset) =>
               html`<option
                 value=${preset.id}
+                ?selected=${preset.id === bulk_preset_choice}
                 ?disabled=${preset.compatible === false}
                 title=${preset.compatible === false
                   ? preset.incompatibility_reason || ''
@@ -683,9 +685,11 @@ export function createRepoDeck(mount_element, options) {
       ['claude_account', 'Claude'],
       ['codex_account', 'Codex']
     ])) {
-      const value = source?.values?.[key];
+      // pane의 select와 같은 라벨(카탈로그 `claudeLabel`/`codexLabel`), 카탈로그에
+      // 없는 값은 키 그대로 — pane이 계산해 `labels`로 준다 (§3.2).
+      const shown = source?.labels?.[key];
       parts.push(
-        `${label} ${typeof value === 'string' && value.length > 0 ? value : '기본값'}`
+        `${label} ${typeof shown === 'string' && shown.length > 0 ? shown : '기본값'}`
       );
     }
     if (isRecord(policy)) {
@@ -750,6 +754,13 @@ export function createRepoDeck(mount_element, options) {
       onQueueAdopt: (queue) => {
         adopted.set(root_dir, queue);
         doRender();
+      },
+      // 계정 읽기·편집·저장 확인이 절의 원본 요약과 비활성 상태를 바꾼다
+      // (§3.2) — 다음 스냅샷 렌더를 기다리지 않고 바로 다시 그린다.
+      onAccountSettingsChange: () => {
+        if (panel_root === root_dir) {
+          renderBulkSection();
+        }
       }
     });
     // 계정 절의 원본은 pane이 서버 확인 뒤 들고 있는 baseline이라, 첫 load가

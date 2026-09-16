@@ -261,6 +261,10 @@ export async function runBulkApply({
     try {
       let res = await send(PRESET_APPLY_OP, { ...target.payload });
       adoptQueue(adopt, target.root_dir, res);
+      // 취소 뒤에는 이미 보낸 응답을 채택만 하고 재시도도 보내지 않는다 (§4).
+      if (isCancelled?.() === true) {
+        return results;
+      }
       if (!isError(res) && isRecord(res) && res.queue_applied === false) {
         const fresh =
           isRecord(res.queue) && typeof res.queue.revision === 'number'
