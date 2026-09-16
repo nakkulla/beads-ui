@@ -826,6 +826,72 @@ describe('list adapters for subscription types', () => {
     ).toBe(false);
   });
 
+  test('carries closed_at on hydrated issue-detail edges', async () => {
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (command_family, args) => {
+      if (args[0] === 'version') {
+        return supportedVersion();
+      }
+      if (args[0] === 'list') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: [
+            {
+              id: 'UI-2',
+              title: 'detail',
+              status: 'open',
+              dependencies: [
+                { depends_on_id: 'UI-1', type: 'blocks' },
+                { depends_on_id: 'UI-9', type: 'blocks' },
+                { depends_on_id: 'foreign-X', type: 'blocks' }
+              ]
+            },
+            {
+              id: 'UI-1',
+              title: 'closed blocker',
+              status: 'closed',
+              closed_at: 1757900000000,
+              dependencies: []
+            },
+            {
+              id: 'UI-9',
+              title: 'open blocker',
+              status: 'open',
+              dependencies: []
+            }
+          ]
+        });
+      }
+      return asProjectedResponse({
+        code: 0,
+        stdoutJson: { ready: [], blocked: [] }
+      });
+    });
+
+    const result = await fetchListForSubscription(
+      { type: 'issue-detail', params: { id: 'UI-2' } },
+      { cwd: '/workspace-detail-closed-at', workspace_snapshot: true }
+    );
+
+    expect(result.ok && result.items[0].dependencies).toEqual([
+      expect.objectContaining({
+        id: 'UI-1',
+        dependency_type: 'blocks',
+        title: 'closed blocker',
+        status: 'closed',
+        closed_at: 1757900000000
+      }),
+      expect.objectContaining({
+        id: 'UI-9',
+        dependency_type: 'blocks',
+        status: 'open',
+        closed_at: null
+      }),
+      { id: 'foreign-X', dependency_type: 'blocks', title: '' }
+    ]);
+  });
+
   test('returns not_found for an issue absent from the snapshot', async () => {
     /** @type {import('vitest').Mock} */ (
       runBdJsonProjected

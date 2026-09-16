@@ -208,7 +208,6 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * @property {string|null} summary
  * @property {Array<{ id: string, rig: string|null, status: string }>} blockers
  * @property {number|null} since - 이 attempt가 대기로 마감된 시각.
- * @property {boolean} [returning]
  * @property {string} [cause]
  * @property {string|null} [resume_reason] - Why the preserved session cannot resume.
  * @property {{ classification: string, disposition: string, reason: string, no_progress: { count: number, key: string }|null, label: string|null, sentence: string|null }} [recovery]

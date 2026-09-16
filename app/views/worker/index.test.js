@@ -2131,7 +2131,6 @@ describe('views/worker', () => {
             model: 'opus',
             started_at: Date.now() - 5000,
             finished_at: Date.now() - 1000,
-            cause: 'prerequisite_unmet',
             cause_detail: {
               summary: '선행 미충족으로 착수하지 않았습니다',
               blockers: [{ id: 'W9', rig: null, status: 'open' }],
@@ -2179,7 +2178,6 @@ describe('views/worker', () => {
             model: 'opus',
             started_at: Date.now() - 5000,
             finished_at: Date.now() - 1000,
-            cause: 'prerequisite_unmet',
             cause_detail: {
               summary: '선행 미충족으로 착수하지 않았습니다',
               blockers: [{ id: 'W9', rig: null, status: 'open' }],

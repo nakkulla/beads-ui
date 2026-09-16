@@ -2576,21 +2576,13 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     expect(mount.querySelector('.rtile__held-badge')).toBeNull();
   });
 
-  test('badges a returning waiting attempt as 복귀 대기', () => {
+  test('badges a waiting attempt of unknown cause as 선행 대기', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
-    render(
-      runningGridTemplate([
-        waitTile({ wait: { ...waitTile().wait, returning: true } })
-      ]),
-      mount
-    );
+    render(runningGridTemplate([waitTile()]), mount);
 
     const badge = mount.querySelector('.wait-verdict summary');
-    expect(badge?.textContent?.trim()).toBe('🔓 복귀 대기');
-    expect(badge?.getAttribute('title')).toBe(
-      '막던 선행이 남지 않아 다음 pass의 후보 복귀를 기다림'
-    );
+    expect(badge?.textContent?.trim()).toBe('⛓ 선행 대기');
   });
 
   test('draws the kind alone when the server judged nothing', () => {

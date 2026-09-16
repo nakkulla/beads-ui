@@ -197,7 +197,7 @@ export function resolvedBlockerChip(owner_id, id, workspace_name, root_dir) {
     label,
     title: blockerTitle(
       label,
-      '해제 — 더 이상 이 이슈를 막지 않는다 · 복귀 대기',
+      '해제 — 더 이상 이 이슈를 막지 않는다',
       foreign,
       workspace_name
     ),

@@ -27,7 +27,6 @@
  * @property {string} release
  * @property {string} action
  * @typedef {Object} WaitKindContext
- * @property {boolean} [returning]
  * @property {'usage_limit'|'outage'} [hold_kind]
  * @property {'env'|'systemic'} [queue_hold_kind]
  */
@@ -66,17 +65,6 @@ export const WAIT_KINDS = Object.freeze(
       label: '선행 대기',
       when: '선행 이슈가 열려 있어 착수하지 못함',
       release: '선행이 닫히면 bd ready 재스캔으로 자동 복귀',
-      action: ''
-    },
-    {
-      id: 'prerequisite-returning',
-      kind: 'prerequisite',
-      condition: 'targets 전부 해제',
-      scope: 'bead',
-      glyph: '🔓',
-      label: '복귀 대기',
-      when: '막던 선행이 남지 않아 다음 pass의 후보 복귀를 기다림',
-      release: '다음 재스캔에서 후보로 돌아감 · 10분 넘으면 지연',
       action: ''
     },
     {
@@ -262,9 +250,7 @@ export function waitKindRow(reason, context = {}) {
   const headline = typeof reason?.headline === 'string' ? reason.headline : '';
   /** @type {string} */
   let id = kind;
-  if (kind === 'prerequisite' && context.returning === true) {
-    id = 'prerequisite-returning';
-  } else if (kind === 'provider_hold') {
+  if (kind === 'provider_hold') {
     const hold_kind =
       context.hold_kind ||
       (headline.includes('공급자 장애') ? 'outage' : 'usage_limit');

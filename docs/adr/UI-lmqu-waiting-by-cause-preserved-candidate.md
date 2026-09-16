@@ -1,7 +1,8 @@
 ---
 id: UI-lmqu
 title: 대기 사유에 따라 선행 자동 복귀와 보존 후보 이어하기를 구분한다
-status: accepted
+status: superseded
+superseded_by: UI-cmx3
 date: 2026-09-15
 summary: 'waiting은 선행 대기와 기준 이동 대기를 구분하며 선행은 bd ready로 자동 복귀하고 기준 이동은 보존 후보를 기존 세션에서 이어간다'
 supersedes: [28]

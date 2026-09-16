@@ -417,7 +417,8 @@ function compactDependency(snapshot, id, dependency_type) {
     issue_type: issue.issue_type,
     priority: issue.priority,
     created_at: issue.created_at,
-    updated_at: issue.updated_at
+    updated_at: issue.updated_at,
+    closed_at: issue.closed_at ?? null
   };
 }
 

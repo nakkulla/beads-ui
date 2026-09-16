@@ -19259,10 +19259,12 @@ describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () =
   test('dispatches the serial head after it turns ready', async () => {
     /** @type {any} */
     const config = {
-      A: { ready: false, blocked: true, status: 'open' }
+      A: { ready: false, blocked: true, status: 'open' },
+      B: {},
+      C: {}
     };
-    const env = setup({ config, slots: 2 });
-    seedLanes(env.store, { s1: ['A'] });
+    const env = setup({ config, slots: 3 });
+    seedLanes(env.store, { s1: ['A', 'B', 'C'] });
 
     await env.scheduler.tick(WS);
     expect(env.runner.spawnOrder).toEqual([]);
@@ -19274,7 +19276,7 @@ describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () =
     expect(env.runner.spawnOrder).toEqual(['A']);
   });
 
-  test('bypasses only a freshly proven prerequisite wait', async () => {
+  test('keeps later entries behind a proven prerequisite wait', async () => {
     const env = setup({
       config: {
         A: {
@@ -19284,150 +19286,21 @@ describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () =
           dependencies: [{ dependency_type: 'blocks', id: 'X' }]
         },
         X: { status: 'in_progress' },
-        B: {}
+        B: {},
+        C: {}
       },
-      slots: 2
+      slots: 3
     });
-    seedLanes(env.store, { s1: ['A', 'B'] });
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual(['B']);
-    expect(env.store.snapshot(WS).admission.A?.reason).toBe(
-      'prerequisite_unmet'
-    );
-  });
-
-  test('reads active prefix state from the queue snapshot without misaddressing the store', async () => {
-    const env = setup({
-      config: {
-        A: {
-          ready: false,
-          blocked: true,
-          status: 'open',
-          dependencies: [{ dependency_type: 'blocks', id: 'X' }]
-        },
-        X: { status: 'in_progress' },
-        B: {}
-      },
-      slots: 2
-    });
-    seedLanes(env.store, { s1: ['A', 'B'] });
-    const snapshot = env.store.snapshot.bind(env.store);
-    vi.spyOn(env.store, 'snapshot').mockImplementation((workspace) => {
-      expect(workspace).toBe(WS);
-      return snapshot(workspace);
-    });
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual(['B']);
-  });
-
-  test('bypasses a genuine prerequisite-waiting latest attempt', async () => {
-    const env = setup({
-      config: {
-        A: {
-          ready: false,
-          blocked: true,
-          status: 'open',
-          dependencies: [{ dependency_type: 'blocks', id: 'X' }]
-        },
-        X: { status: 'in_progress' },
-        B: {}
-      },
-      slots: 2
-    });
-    seedLanes(env.store, { s1: ['A', 'B'] });
-    env.store.appendAttempt(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      attempt: { attempt_id: 'waiting-A', bead_id: 'A', status: 'waiting' }
-    });
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual(['B']);
-  });
-
-  test('does not bypass a prefix with awaiting_user metadata present', async () => {
-    const env = setup({
-      config: {
-        A: {
-          ready: false,
-          blocked: true,
-          awaiting_user: '',
-          dependencies: [{ dependency_type: 'blocks', id: 'X' }]
-        },
-        X: { status: 'in_progress' },
-        B: {}
-      },
-      slots: 2
-    });
-    seedLanes(env.store, { s1: ['A', 'B'] });
+    seedLanes(env.store, { s1: ['A', 'B', 'C'] });
 
     await env.scheduler.tick(WS);
 
     expect(env.runner.spawnOrder).toEqual([]);
-    expect(env.store.snapshot(WS).admission.A?.reason).toBe('awaiting_user');
-  });
-
-  test('ignores obsolete paused and dismissed parked ancestors of the prefix', async () => {
-    const env = setup({
-      config: {
-        A: {
-          ready: false,
-          blocked: true,
-          status: 'open',
-          dependencies: [{ dependency_type: 'blocks', id: 'X' }]
-        },
-        X: { status: 'in_progress' },
-        B: {}
-      },
-      slots: 2
-    });
-    seedLanes(env.store, { s1: ['A', 'B'] });
-    let revision = env.store.snapshot(WS).revision;
-    revision = env.store.appendAttempt(WS, {
-      expected_revision: revision,
-      attempt: { attempt_id: 'paused-A', bead_id: 'A', status: 'paused' }
-    }).queue.revision;
-    env.store.appendAttempt(WS, {
-      expected_revision: revision,
-      attempt: {
-        attempt_id: 'parked-A',
-        bead_id: 'A',
-        status: 'parked',
-        resumed_from: 'paused-A',
-        dismissed_at: 1
-      }
-    });
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual(['B']);
-  });
-
-  test('keeps one occupant after bypassing a prerequisite wait', async () => {
-    const env = setup({
-      config: {
-        A: {
-          ready: false,
-          blocked: true,
-          status: 'open',
-          dependencies: [{ dependency_type: 'blocks', id: 'X' }]
-        },
-        X: { status: 'in_progress' },
-        B: {}
-      },
-      slots: 2
-    });
-    seedLanes(env.store, { s1: ['A', 'B'] });
-    await env.scheduler.tick(WS);
-
-    env.bd.statuses.X = 'closed';
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual(['B']);
+    expect(env.store.snapshot(WS).admission.A?.reason).toBe(
+      'prerequisite_unmet'
+    );
+    expect(env.store.snapshot(WS).admission.B).toBeUndefined();
+    expect(env.store.snapshot(WS).admission.C).toBeUndefined();
   });
 
   test('pauses behind an unverified not-ready head', async () => {
@@ -19446,150 +19319,64 @@ describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () =
     expect(env.store.snapshot(WS).admission.A?.reason).toBe('not_ready:open');
   });
 
-  test('does not bypass a prerequisite wait that also carries a defer', async () => {
+  test('refuses a non-head start-now request while auto advance dispatches the head', async () => {
     const env = setup({
       config: {
-        A: {
-          ready: false,
-          blocked: true,
-          status: 'open',
-          defer: 'tomorrow',
-          dependencies: [{ dependency_type: 'blocks', id: 'X' }]
-        },
-        X: { status: 'in_progress' },
+        A: {},
         B: {}
       },
       slots: 2
     });
     seedLanes(env.store, { s1: ['A', 'B'] });
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual([]);
-    expect(env.store.snapshot(WS).admission.A?.reason).toBe('not_ready:open');
-  });
-
-  test('starts only the named serial target behind a proven prerequisite', async () => {
-    const env = setup({
-      config: {
-        A: {
-          ready: false,
-          blocked: true,
-          status: 'open',
-          dependencies: [{ dependency_type: 'blocks', id: 'X' }]
-        },
-        X: { status: 'in_progress' },
-        B: {},
-        C: {}
-      },
-      slots: 3
-    });
-    seedLanes(env.store, { s1: ['A', 'B'], parallel: ['C'] });
-    env.store.setAutoAdvance(WS, false);
     requestStartNow(WS, 'B', Date.now());
 
     await env.scheduler.tick(WS);
 
-    expect(env.runner.spawnOrder).toEqual(['B']);
+    expect(env.runner.spawnOrder).toEqual(['A']);
+    expect(env.store.snapshot(WS).admission.B?.reason).toBe(
+      'serial_lane_not_head'
+    );
   });
 
-  test('starts the later named target after an earlier named prerequisite wait', async () => {
+  test('refuses a non-head start-now request while auto advance is off', async () => {
     const env = setup({
       config: {
-        A: {
-          ready: false,
-          blocked: true,
-          status: 'open',
-          dependencies: [{ dependency_type: 'blocks', id: 'X' }]
-        },
-        X: { status: 'in_progress' },
+        A: {},
         B: {}
       },
       slots: 2
     });
     seedLanes(env.store, { s1: ['A', 'B'] });
     env.store.setAutoAdvance(WS, false);
-    requestStartNow(WS, 'A', Date.now());
     requestStartNow(WS, 'B', Date.now());
 
     await env.scheduler.tick(WS);
 
-    expect(env.runner.spawnOrder).toEqual(['B']);
-  });
-
-  test('stops a bypass when its prerequisite becomes ready during preparation', async () => {
-    /** @type {(value: any) => void} */
-    let finishBase = () => {};
-    let baseStarted = false;
-    const config = {
-      A: {
-        ready: false,
-        blocked: true,
-        status: 'open',
-        dependencies: [{ dependency_type: 'blocks', id: 'X' }]
-      },
-      X: { status: 'in_progress' },
-      B: {}
-    };
-    const env = setup({
-      config,
-      slots: 2,
-      resolveBase: () => {
-        baseStarted = true;
-        return new Promise((resolve) => (finishBase = resolve));
-      }
-    });
-    seedLanes(env.store, { s1: ['A', 'B'] });
-
-    const tick = env.scheduler.tick(WS);
-    await vi.waitFor(() => expect(baseStarted).toBe(true));
-    env.bd.statuses.X = 'closed';
-    finishBase({
-      ok: true,
-      base: 'main',
-      base_oid: 'a'.repeat(40),
-      remote: 'origin'
-    });
-    await tick;
-
     expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).admission.A).toBeUndefined();
+    expect(env.store.snapshot(WS).admission.B?.reason).toBe(
+      'serial_lane_not_head'
+    );
   });
 
-  test('stops a bypass when its prerequisite wait gains a defer during preparation', async () => {
-    /** @type {(value: any) => void} */
-    let finishBase = () => {};
-    let baseStarted = false;
-    /** @type {Record<string, any>} */
-    const config = {
-      A: {
-        ready: false,
-        blocked: true,
-        status: 'open',
-        dependencies: [{ dependency_type: 'blocks', id: 'X' }]
-      },
-      X: { status: 'in_progress' },
-      B: {}
-    };
+  test('keeps a refused non-head request from running once it becomes head', async () => {
     const env = setup({
-      config,
-      slots: 2,
-      resolveBase: () => {
-        baseStarted = true;
-        return new Promise((resolve) => (finishBase = resolve));
-      }
+      config: {
+        A: {},
+        B: {}
+      },
+      slots: 2
     });
     seedLanes(env.store, { s1: ['A', 'B'] });
+    env.store.setAutoAdvance(WS, false);
+    requestStartNow(WS, 'B', Date.now());
 
-    const tick = env.scheduler.tick(WS);
-    await vi.waitFor(() => expect(baseStarted).toBe(true));
-    config.A.defer = 'tomorrow';
-    finishBase({
-      ok: true,
-      base: 'main',
-      base_oid: 'a'.repeat(40),
-      remote: 'origin'
+    await env.scheduler.tick(WS);
+    env.store.remove(WS, {
+      bead_id: 'A',
+      expected_revision: env.store.snapshot(WS).revision
     });
-    await tick;
+    await env.scheduler.tick(WS);
 
     expect(env.runner.spawnOrder).toEqual([]);
   });
@@ -19626,7 +19413,6 @@ describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () =
       lane: 's1',
       index: 1
     });
-    env.bd.statuses.X = 'closed';
     finishBase({
       ok: true,
       base: 'main',
@@ -19636,82 +19422,38 @@ describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () =
     await tick;
 
     expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).admission.B?.reason).toBe(
+      'serial_lane_not_head'
+    );
   });
 
-  test('binds the final reservation to a lane move during the target snapshot', async () => {
-    /** @type {() => void} */
-    let finishSnapshot = () => {};
-    let snapshotStarted = false;
+  test('aborts a prepared head moved behind another entry during the target snapshot', async () => {
+    /** @type {ReturnType<typeof setup>} */
+    let env;
     const config = {
-      A: {},
+      A: { ready: false, blocked: true, status: 'open' },
       B: {
         onSnapshot: (/** @type {number} */ nth) => {
-          if (nth !== 3) {
-            return undefined;
+          if (nth === 3) {
+            env.store.place(WS, {
+              expected_revision: env.store.snapshot(WS).revision,
+              bead_id: 'B',
+              lane: 's1',
+              index: 1
+            });
           }
-          snapshotStarted = true;
-          return new Promise((resolve) => {
-            finishSnapshot = () => resolve(undefined);
-          });
         }
       }
     };
-    const env = setup({ config, slots: 2 });
-    seedLanes(env.store, { s1: ['A'], parallel: ['B'] });
-    env.store.appendAttempt(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      attempt: {
-        attempt_id: 'occupied-s1',
-        bead_id: 'X',
-        status: 'failed',
-        serial_lane_id: 's1'
-      }
-    });
-
-    const tick = env.scheduler.tick(WS);
-    await vi.waitFor(() => expect(snapshotStarted).toBe(true));
-    env.store.place(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      bead_id: 'B',
-      lane: 's1',
-      index: 1
-    });
-    finishSnapshot();
-    await tick;
-
-    expect(env.runner.spawnOrder).toEqual([]);
-  });
-
-  test('rechecks an earlier prerequisite after observing a later prefix', async () => {
-    const config = {
-      A: {
-        ready: false,
-        blocked: true,
-        status: 'open',
-        dependencies: [{ dependency_type: 'blocks', id: 'X' }]
-      },
-      X: { status: 'in_progress' },
-      C: {
-        ready: false,
-        blocked: true,
-        status: 'open',
-        dependencies: [{ dependency_type: 'blocks', id: 'Y' }],
-        onSnapshot: (/** @type {number} */ nth) => {
-          if (nth >= 2) {
-            config.A.ready = true;
-            config.A.blocked = false;
-          }
-        }
-      },
-      Y: { status: 'in_progress' },
-      B: {}
-    };
-    const env = setup({ config, slots: 3 });
-    seedLanes(env.store, { s1: ['A', 'C', 'B'] });
+    env = setup({ config, slots: 2 });
+    seedLanes(env.store, { s1: ['B', 'A'] });
 
     await env.scheduler.tick(WS);
 
-    expect(env.runner.spawnOrder).toEqual(['A']);
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).admission.B?.reason).toBe(
+      'serial_lane_not_head'
+    );
   });
 });
 

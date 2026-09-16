@@ -255,23 +255,20 @@ function state(patch = {}) {
   };
 }
 
-test('uses the same prerequisite judgment in held tiles and the visible-repository summary', () => {
+test('demotes a prerequisite wait to its queue row and keeps the summary', () => {
   const reason = {
     kind: 'prerequisite',
     subject: { root_dir: WS_A, bead_id: 'A-1' },
-    headline: '선행 해제 뒤 복귀 대기',
+    headline: 'A-2 완료를 기다림',
     release: '재스캔으로 자동 복귀',
-    verdict: 'overdue',
-    verdict_reason: {
-      code: 'return_overdue',
-      message: '선행 해제 후 10분이 지남'
-    },
+    verdict: 'normal',
     targets: [{ id: 'A-2', kind: 'issue' }],
     actions: []
   };
   const { mount, view } = setup({
     workspaces: [
       workspace({
+        queue: [{ bead_id: 'A-1' }],
         attempts: {
           a: {
             bead_id: 'A-1',
@@ -294,16 +291,12 @@ test('uses the same prerequisite judgment in held tiles and the visible-reposito
 
   view.load();
 
-  const tile = mount.querySelector('.rtile[data-bead-id="A-1"]');
-
-  expect(tile?.querySelector('.wait-verdict summary')?.textContent).toContain(
-    '⚠ 복귀 대기 · 지연'
-  );
-  expect(tile?.querySelector('.wait-reason__headline')?.textContent).toContain(
-    reason.headline
-  );
+  expect(mount.querySelector('.rtile[data-bead-id="A-1"]')).toBeNull();
+  expect(
+    mount.querySelector('.worker-mini[data-bead-id="A-1"]')
+  ).not.toBeNull();
   expect(mount.querySelector('.wait-summary > summary')?.textContent).toMatch(
-    /막힘\s*1/
+    /\ub9c9\ud798\s*1/
   );
 });
 
@@ -1867,7 +1860,6 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
               status: 'waiting',
               started_at: NOW - 100,
               finished_at: NOW - 50,
-              cause: 'prerequisite_unmet',
               cause_detail: {
                 summary: '선행 미충족으로 착수하지 않았습니다',
                 blockers: [{ id: 'A-9', rig: null, status: 'open' }],
@@ -1905,7 +1897,6 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
               status: 'waiting',
               started_at: NOW - 100,
               finished_at: NOW - 50,
-              cause: 'prerequisite_unmet',
               cause_detail: {
                 summary: '선행 미충족으로 착수하지 않았습니다',
                 blockers: [{ id: 'A-9', rig: null, status: 'open' }],

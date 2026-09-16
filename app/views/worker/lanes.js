@@ -1852,7 +1852,12 @@ export function graceChipTemplate(added_at, now = Date.now()) {
  * 게이트로 설 때는 이 행 하나가 큐 정지·공급자 보류를 무시하고 지금 도는
  * 결정이므로 title이 그것을 말한다. 둘 다 아니면 그리지 않는다 (fail-quiet).
  *
- * @param {{ id: string, added_at?: number, gate?: import('./lane-model.js').LaneGate }} item
+ * 직렬 레인은 순서대로 쌓이므로 (직렬 레인 순서 고정 스펙 §6.2·§8.3) 선두가
+ * 아닌 직렬 행에는 어느 생성 경로에서도 버튼이 서지 않는다 — 눌러도 후보 수집이
+ * `serial_lane_not_head`로 거절할 자리다. 순번을 모르면 지우지 않는다
+ * (fail-closed). 유예 칩·게이트 칩 자체는 그대로 그린다.
+ *
+ * @param {{ id: string, added_at?: number, lane?: string, queue_index?: number, gate?: import('./lane-model.js').LaneGate }} item
  * @param {number} [now]
  * @param {boolean} [requested] - A server action explicitly offers immediate start.
  * @returns {import('lit-html').TemplateResult|''}
@@ -1862,6 +1867,14 @@ export function startNowButtonTemplate(
   now = Date.now(),
   requested = false
 ) {
+  if (
+    typeof item.lane === 'string' &&
+    /^s[1-5]$/.test(item.lane) &&
+    typeof item.queue_index === 'number' &&
+    item.queue_index > 0
+  ) {
+    return '';
+  }
   const gated = !!item.gate;
   if (graceRemainingMs(item.added_at, now) <= 0 && !gated && !requested) {
     return '';
@@ -2017,7 +2030,7 @@ function waitPopoverTemplate(title, lines, anchor_id) {
  * @typedef {Object} WaitBadgeMaterial
  * @property {'parked'|'retry_wait'|'waiting'|'provider_hold'|null} [held_kind] -
  * The held projection kind of a running tile; queue rows pass nothing.
- * @property {{ cause?: string|null, returning?: boolean, recovery?: { label?: string|null, sentence?: string|null }|null }|null} [held]
+ * @property {{ cause?: string|null, recovery?: { label?: string|null, sentence?: string|null }|null }|null} [held]
  * @property {Record<string, any>|null} [hold] - `HoldTile` for `provider_hold`.
  * @property {import('../../protocol.js').WaitReason[]} [wait_reasons]
  * @property {import('../../protocol.js').WaitReason|null} [reason] - An
@@ -2057,7 +2070,7 @@ function heldRowId(material) {
   if (wait?.cause === 'base_moved') {
     return 'base_moved';
   }
-  return wait?.returning === true ? 'prerequisite-returning' : 'prerequisite';
+  return 'prerequisite';
 }
 
 /**

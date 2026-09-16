@@ -15,14 +15,13 @@ export const WAIT_THRESHOLDS = Object.freeze({
   check_cycles: 1,
   settle_cycles: 2,
   observation_errors: 3,
-  return_ms: 10 * 60_000,
   grace_ms: 5 * 60_000,
   unknown_reset_ms: 6 * 60 * 60_000
 });
 
 /**
  * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'base_moved'|'provider_hold'|'queue_hold'|'auto_advance_off'|'awaiting_user'|'retry_wait'|'stale_work'|'recovery'} WaitKind
- * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'return_overdue'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'disposition'|'recovery_confirm'} VerdictCode
+ * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'disposition'|'recovery_confirm'} VerdictCode
  * @typedef {{ code: VerdictCode, message: string }} VerdictReason
  * @typedef {Object} WaitReason
  * @property {WaitKind} kind
@@ -37,7 +36,7 @@ export const WAIT_THRESHOLDS = Object.freeze({
  * @property {Array<{ id: string, rig?: string, status?: string, kind: 'gate'|'issue' }>} targets
  * @property {Array<{ op: string, label: string, payload: Record<string, any> }>} actions
  * @property {{ on_complete: 'discord'|'none', on_overdue: 'discord'|'none' }} notify_plan
- * @typedef {{ return_observed_at?: Record<string, number>, settle_observed_at?: Record<string, number> }} ObservationTimes
+ * @typedef {{ settle_observed_at?: Record<string, number> }} ObservationTimes
  * @typedef {Object} WaitJudgmentInput
  * @property {string} root_dir
  * @property {Record<string, any>} queue
@@ -58,7 +57,6 @@ const VERDICT_MESSAGES = {
   observe_failing: '자동 확인이 연속 3회 이상 실패함',
   service_down: '자동 확인 서비스가 등록되지 않았거나 설치된 명령과 다름',
   monitor_stopped: '외부 작업 감시가 중단됨',
-  return_overdue: '선행 해제를 확인한 뒤 10분이 지나도 복귀하지 않음',
   blocker_needs_human: '열린 선행에 사람의 조치가 필요함',
   reset_passed: '한도 리셋 후 5분이 지나도 보류가 유지됨',
   probe_needed: '자동 재개가 꺼져 지금 프로브가 필요함',
@@ -197,15 +195,11 @@ export function externalJobHeadline(row) {
  * One open blocker names it; several are counted by status.
  *
  * @param {Array<{ name: string, status: string }>} items
- * @param {boolean} returning
  * @returns {string}
  */
-function prerequisiteHeadline(items, returning) {
+function prerequisiteHeadline(items) {
   if (items.length === 0) {
     return '';
-  }
-  if (returning) {
-    return `선행 ${items.length}건 해제됨 · 복귀 재스캔을 기다림`;
   }
   if (items.length === 1) {
     const [only] = items;
@@ -234,8 +228,6 @@ export function judgeWaitReasons(input) {
   const { root_dir, queue, now } = input;
   /** @type {WaitReason[]} */
   const wait_reasons = [];
-  /** @type {Record<string, number>} */
-  const return_observed_at = {};
   /** @type {Record<string, number>} */
   const settle_observed_at = {};
   const prior = input.observed_at || {};
@@ -445,16 +437,6 @@ export function judgeWaitReasons(input) {
         blockers.set(blocker.id, { ...blockers.get(blocker.id), ...blocker });
       }
     }
-    const returning =
-      held &&
-      Object.hasOwn(blocked_by, bead_id) &&
-      Array.isArray(blocked_by[bead_id]) &&
-      blocked_by[bead_id].length === 0;
-    const return_key = `${bead_id}:${attempt?.attempt_id || ''}`;
-    const prior_return = timestamp(prior.return_observed_at?.[return_key]);
-    if (returning) {
-      return_observed_at[return_key] = prior_return ?? now;
-    }
     /** @type {Map<WaitKind, WaitReason>} */
     const groups = new Map();
     /** @type {Map<WaitKind, Array<{ name: string, status: string }>>} */
@@ -468,11 +450,10 @@ export function judgeWaitReasons(input) {
       const current = is_foreign ? foreign_fact || {} : facts[id] || blocker;
       const status = line(current.status);
       const open =
-        !returning &&
         status !== 'closed' &&
         (!Array.isArray(blocked_by[bead_id]) ||
           blocked_by[bead_id].includes(id));
-      if (!open && !returning) {
+      if (!open) {
         continue;
       }
       const kind = is_foreign ? 'prerequisite_foreign' : 'prerequisite';
@@ -488,9 +469,7 @@ export function judgeWaitReasons(input) {
             : '선행이 닫히면 bd ready 재스캔으로 자동 복귀'
         );
         addClocks(result, {
-          since: returning
-            ? return_observed_at[return_key]
-            : attempt?.finished_at || record?.at
+          since: attempt?.finished_at || record?.at
         });
         groups.set(kind, result);
         group_items.set(kind, []);
@@ -514,19 +493,9 @@ export function judgeWaitReasons(input) {
       ) {
         judge(result, 'action_required', 'blocker_needs_human');
       }
-      if (
-        returning &&
-        prior_return !== undefined &&
-        elapsed(prior_return, WAIT_THRESHOLDS.return_ms, now)
-      ) {
-        judge(result, 'overdue', 'return_overdue');
-      }
     }
     for (const [kind, result] of groups) {
-      result.headline = prerequisiteHeadline(
-        group_items.get(kind) || [],
-        returning
-      );
+      result.headline = prerequisiteHeadline(group_items.get(kind) || []);
     }
     wait_reasons.push(...groups.values());
     if (attempt?.status === 'parked' && !attempt.parked_resumed_at) {
@@ -777,7 +746,21 @@ export function judgeWaitReasons(input) {
     ![...attempts.values()].some((a) => a.status === 'running')
   ) {
     const stopped = new Set(wait_reasons.map((row) => row.subject.bead_id));
-    const idle_ids = pending_ids.filter((bead_id) => !stopped.has(bead_id));
+    const serial_entry_ids = new Set(
+      (queue.serial_lanes || []).flatMap((/** @type {any} */ lane) =>
+        (lane.entries || []).map((/** @type {any} */ entry) => entry.bead_id)
+      )
+    );
+    const serial_head_ids = new Set(
+      (queue.serial_lanes || [])
+        .map((/** @type {any} */ lane) => lane.entries?.[0]?.bead_id)
+        .filter((/** @type {any} */ id) => typeof id === 'string')
+    );
+    const idle_ids = pending_ids.filter(
+      (bead_id) =>
+        !stopped.has(bead_id) &&
+        (!serial_entry_ids.has(bead_id) || serial_head_ids.has(bead_id))
+    );
     for (const bead_id of idle_ids) {
       const result = reason(
         'auto_advance_off',
@@ -796,6 +779,6 @@ export function judgeWaitReasons(input) {
   }
   return {
     wait_reasons,
-    observed_at: { return_observed_at, settle_observed_at }
+    observed_at: { settle_observed_at }
   };
 }

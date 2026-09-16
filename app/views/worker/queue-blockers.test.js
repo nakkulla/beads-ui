@@ -313,9 +313,7 @@ describe('resolvedBlockerChip (UI-yue8 §6.1)', () => {
   test('prefixes the tooltip with the full label', () => {
     const chip = resolvedBlockerChip('A-2', 'A-1');
 
-    expect(chip.title).toBe(
-      '🔓 A-1 — 해제 — 더 이상 이 이슈를 막지 않는다 · 복귀 대기'
-    );
+    expect(chip.title).toBe('🔓 A-1 — 해제 — 더 이상 이 이슈를 막지 않는다');
   });
 
   test('opens a foreign release when its owner root is known', () => {

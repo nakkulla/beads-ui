@@ -415,6 +415,18 @@ held 카드는 종류 글리프와 라벨만 그린다 — 부재를 `정상`으
 호스트만 싣고 작업 번호·상태는 슬롯 3이 말한다. 슬롯 7 시각은 `formatClockLocal`
 짧은 형식(`HH:MM`·`M/D HH:MM`)이다.
 
+**정정(UI-cmx3).** 슬롯 1 held 판정 뱃지 목록에서 `복귀 대기`를 뺀다
+(`⛓ 선행 대기`·`반영 대기`·`⏸ 세션 대기`·`↻ 재시도 대기`는 그대로).
+`waiting/prerequisite_unmet` attempt는 held 타일이 아니라 자기 레인의 **대기 행**이
+대표하므로(ADR 0038의 확장,
+`docs/superpowers/specs/2026-09-16-serial-lane-stack-waiting-row-demotion-design.md`
+§5) 그 뱃지가 설 타일 자체가 없다. 슬롯 4b `🔓 <ID>`의 각주 "선행 대기 타일의
+해제된 선행(복귀 대기)도 이 칩"은 이제 "선행 대기 기록
+(`waiting/prerequisite_unmet` attempt 또는 `prerequisite_unmet` admission)이 있는
+**대기 행**의 해제된 동결 선행도 이 칩 — UI-d13v §5.3 '후보 행만'의 예외"로 읽는다.
+정정(UI-yue8)·정정(UI-8gem) 문단의 `복귀 대기` 언급은 이력으로 남고 이 정정이 그
+뒤를 잇는다.
+
 ### 5.2 `AGENTS.md`에 남길 규칙
 
 - 워커·모니터 카드(`candidateCard` · `miniRow` · `runningTile`)의 줄 순서는 §2
