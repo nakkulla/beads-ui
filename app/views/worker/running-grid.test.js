@@ -3299,71 +3299,44 @@ describe('지시 재시작 조작 (UI-qce9 §3.1)', () => {
     return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
   }
 
-  test('renders no restart button without the server verdict', () => {
-    const tile = tileEl({});
-
-    expect(tile.querySelector('.rtile__restart-instructions')).toBeNull();
-  });
-
-  test('puts the restart button in the slot-1 action group before ⏸', () => {
+  test('renders no restart button even with the old server verdict', () => {
     const tile = tileEl({
       instructions_restart: { eligible: true, reason: null }
     });
 
-    const actions = /** @type {HTMLElement} */ (
-      tile.querySelector('.rtile__hd-actions')
-    );
-    const buttons = Array.from(actions.querySelectorAll('button')).map(
-      (button) => button.className
-    );
-    const restart = /** @type {HTMLButtonElement} */ (
-      actions.querySelector('.rtile__restart-instructions')
-    );
-    expect(restart.textContent?.trim()).toBe('지시와 함께 재시작');
-    expect(restart.disabled).toBe(false);
-    expect(restart.classList.contains('op-btn')).toBe(true);
-    expect(buttons.indexOf('op-btn rtile__restart-instructions')).toBeLessThan(
-      buttons.indexOf('rtile__pause')
-    );
+    expect(tile.querySelector('.rtile__restart-instructions')).toBeNull();
   });
 
-  test('disables the restart button with the server reason as its tooltip', () => {
-    const tile = tileEl({
-      instructions_restart: {
-        eligible: false,
-        reason: '실행 계정이 기록되지 않아 같은 계정으로 재시작할 수 없습니다.'
-      }
-    });
-
-    const restart = /** @type {HTMLButtonElement} */ (
-      tile.querySelector('.rtile__restart-instructions')
-    );
-
-    expect(restart.disabled).toBe(true);
-    expect(restart.title).toBe(
-      '실행 계정이 기록되지 않아 같은 계정으로 재시작할 수 없습니다.'
-    );
-  });
-
-  test('offers 지시와 함께 이어하기 beside ▶ 재개 on a paused tile', () => {
+  test('renders no resume-instructions button on a paused tile', () => {
     const tile = tileEl({
       paused: true,
       instructions_restart: { eligible: true, reason: null }
     });
 
-    const resume_instructions = /** @type {HTMLButtonElement} */ (
-      tile.querySelector('.rtile__resume-instructions')
-    );
+    expect(tile.querySelector('.rtile__resume-instructions')).toBeNull();
+  });
+
+  test('keeps ▶ 재개 alone on a paused tile with the two-branch tooltip', () => {
+    const tile = tileEl({ paused: true });
+
     const resume = /** @type {HTMLButtonElement} */ (
       tile.querySelector('.rtile__resume')
     );
 
-    expect(resume_instructions.textContent?.trim()).toBe(
-      '지시와 함께 이어하기'
-    );
     expect(resume.title).toBe(
-      '같은 세션으로 이어서 재개 (현재 실행 설정을 적용할 수 있음)'
+      '같은 세션으로 이어서 재개 — 바로 재개하거나 지시를 입력할 수 있음'
     );
+  });
+
+  test('keeps ⏸ and ▤ 세션 in the slot-1 action group of a running tile', () => {
+    const tile = tileEl({});
+
+    const actions = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__hd-actions')
+    );
+
+    expect(actions.querySelector('.rtile__pause')).not.toBeNull();
+    expect(actions.querySelector('.rtile__session')).not.toBeNull();
   });
 
   test('says no fresh session was started for a prior_attempt resume failure', () => {

@@ -9087,6 +9087,12 @@ button.detail-session__leg:focus-visible {
   font-size: var(--fs-small);
 }
 
+/* A 상태의 갈래 버튼 줄 (UI-6icf §4). 라벨이 길어 좁은 화면에서는 줄바꿈으로
+   흘려보낸다 — 가로 넘침 대신 두 줄이 맞다. */
+.resume-instructions-dialog__choices {
+  flex-wrap: wrap;
+}
+
 .resume-instructions-dialog textarea {
   box-sizing: border-box;
   width: 100%;

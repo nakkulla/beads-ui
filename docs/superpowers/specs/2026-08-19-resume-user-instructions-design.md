@@ -153,3 +153,5 @@ SHA·프로세스 경로·포트·HTTP 응답 판독까지 그 operation의 term
 선택으로 같은 기록과 실행 설정을 이어간다. 일반 이어하기의 auto·provider
 선택·fresh 동작은 그대로다. prior_attempt만 transcript 부재에서 자동 fresh를
 허용하지 않는다.
+
+**정정(UI-6icf).** 지시 다이얼로그는 `[바로 이어하기]`·`[지시 입력 후 이어하기]` 두 갈래이며 둘 다 일반 이어하기의 auto 정책을 쓴다. 실행 중 지시 진입점과 prior_attempt의 UI 진입점은 제거했고 서버 계약은 남아 있다.

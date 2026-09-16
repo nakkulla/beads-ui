@@ -85,7 +85,6 @@ import {
   onForeignBlockerResolved,
   ownerRootsForBlockerIds
 } from '../worker/foreign-blocker-status.js';
-import { instructionsRestartEligibility } from '../worker/instructions-restart.js';
 import {
   evaluateMergeGate,
   observedReviewReceiptState
@@ -3072,54 +3071,6 @@ function attemptsWithImplActor(attempts) {
 }
 
 /**
- * The instructions-restart entry point's per-attempt verdict (UI-qce9 §5·§9.1),
- * folded onto every `running` and `paused` attempt as a NON-persisted field.
- *
- * Computed from the UNTRIMMED record on purpose: the wire projection strips
- * fields this judgment reads, and a client that recomputed it from the trimmed
- * payload would disable the button on records the server would accept. The
- * judgment itself is the same pure predicate the pause guard uses — one
- * predicate, so the tooltip and the refusal cannot disagree.
- *
- * @param {Record<string, any>} projected - The attempts already on the wire.
- * @param {unknown} raw_attempts - The untrimmed records they came from.
- * @returns {Record<string, any>}
- */
-function attemptsWithInstructionsRestart(projected, raw_attempts) {
-  const raw =
-    raw_attempts &&
-    typeof raw_attempts === 'object' &&
-    !Array.isArray(raw_attempts)
-      ? /** @type {Record<string, any>} */ (raw_attempts)
-      : {};
-  /** @type {Record<string, any>} */
-  const out = {};
-  for (const [attempt_id, attempt] of Object.entries(projected)) {
-    const record = raw[attempt_id] ?? attempt;
-    const status = record?.status;
-    if (status !== 'running' && status !== 'paused') {
-      out[attempt_id] = attempt;
-      continue;
-    }
-    const verdict = instructionsRestartEligibility(record);
-    if (verdict.code === 'not_implementation') {
-      // 스펙 §2: 리뷰·해소·처분·정리 행에는 버튼 자체를 두지 않는다. 이유를
-      // 붙이면 화면이 비활성 버튼을 그리므로 필드를 아예 싣지 않는다.
-      out[attempt_id] = attempt;
-      continue;
-    }
-    out[attempt_id] = {
-      ...attempt,
-      instructions_restart: {
-        eligible: verdict.eligible,
-        reason: verdict.reason
-      }
-    };
-  }
-  return out;
-}
-
-/**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
  *   - the pinned repository-operation declaration used by the merge gate,
  *   - `slots` (the live concurrency cap from the attachment), so the tab can
@@ -3338,10 +3289,7 @@ export function decorateQueue(workspace_key, raw_queue) {
     declared_base,
     // Attempts carry the LIVE usage tally while they run (UI-raqh §1); the
     // persisted `Attempt.usage` stands on its own once they end.
-    attempts: attemptsWithInstructionsRestart(
-      attemptsWithUsage(queue, workspace_key),
-      overlaid.attempts
-    ),
+    attempts: attemptsWithUsage(queue, workspace_key),
     // `repo_ops` is the pinned declaration consumed by verify and deploy, plus
     // the canonical `repo_id` the attachment resolves it against.
     workspace_info: {
