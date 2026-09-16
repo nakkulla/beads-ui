@@ -473,6 +473,31 @@ describe('createBulkPane worker tab (UI-nu43 §3.3)', () => {
     expect(onBulkApplied).toHaveBeenCalledTimes(1);
     expect(onBulkApplied).toHaveBeenCalledWith([WS_A, WS_B]);
   });
+
+  test('reports a repository written right before the pane is destroyed', async () => {
+    const onBulkApplied = vi.fn();
+    /** @type {(value: any) => void} */
+    let resolve_first = () => {};
+    const { host, pane } = setup({
+      onBulkApplied,
+      transport: (type, payload) =>
+        payload.root_dir === WS_A
+          ? new Promise((resolve) => {
+              resolve_first = resolve;
+            })
+          : OK
+    });
+    pane.render('worker');
+    choose(host, '[data-bulk-preset]', 'p1');
+    click(host, '[data-bulk-apply="worker"]');
+    await settle();
+
+    pane.destroy();
+    resolve_first(OK);
+    await settle();
+
+    expect(onBulkApplied).toHaveBeenCalledWith([WS_A]);
+  });
 });
 
 describe('createBulkPane account tab (UI-nu43 §3.4)', () => {

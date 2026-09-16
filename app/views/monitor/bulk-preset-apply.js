@@ -263,8 +263,10 @@ export async function runBulkApply({
     try {
       let res = await send(PRESET_APPLY_OP, { ...target.payload });
       adoptQueue(adopt, target.root_dir, res);
-      // 취소 뒤에는 이미 보낸 응답을 채택만 하고 재시도도 보내지 않는다 (§4).
+      // 취소 뒤에는 재시도를 보내지 않는다 (§4). 이미 받은 응답의 판정은 남겨
+      // 그 저장소가 쓰였는지를 호출자가 알게 한다.
       if (isCancelled?.() === true) {
+        results.push(judgePresetResponse(target, res));
         return results;
       }
       if (!isError(res) && isRecord(res) && res.queue_applied === false) {

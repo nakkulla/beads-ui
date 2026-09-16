@@ -479,7 +479,7 @@ describe('runBulkAccountApply', () => {
       return { applied: true, state: 'usable', values: {} };
     });
 
-    const results = await runBulkAccountApply({
+    await runBulkAccountApply({
       targets,
       send,
       adopt: vi.fn(),
@@ -487,7 +487,30 @@ describe('runBulkAccountApply', () => {
     });
 
     expect(send).toHaveBeenCalledTimes(1);
-    expect(results).toEqual([]);
+  });
+
+  test('keeps the verdict of a repo whose account write landed before cancelling', async () => {
+    let cancelled = false;
+    const send = vi.fn(async () => {
+      cancelled = true;
+      return applied_account_response;
+    });
+
+    const results = await runBulkAccountApply({
+      targets: [target('/repo/a', 'a')],
+      send,
+      adopt: vi.fn(),
+      isCancelled: () => cancelled
+    });
+
+    expect(results).toEqual([
+      {
+        root_dir: '/repo/a',
+        name: 'a',
+        state: 'partial',
+        detail: 'claude 한도 정책·codex 한도 정책 미적용'
+      }
+    ]);
   });
 
   test('adopts the queue of a policy response received right before cancelling', async () => {

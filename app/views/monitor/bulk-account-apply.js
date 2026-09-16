@@ -304,8 +304,8 @@ function adoptQueue(adopt, root_dir, res) {
  * @param {(type: string, payload: Record<string, unknown>) => Promise<any>} input.send
  * @param {(root_dir: string, queue: any) => void} input.adopt
  * @param {(() => boolean)|undefined} input.isCancelled
- * @returns {Promise<{ applied: boolean, revision: number }|null>} `null`
- * when cancelled after the first response, whose queue is still adopted.
+ * @returns {Promise<{ applied: boolean, revision: number }>} Cancelled after
+ * the first response, the retry is not sent and that response is judged.
  */
 async function applyLimitPolicy({
   root_dir,
@@ -324,10 +324,12 @@ async function applyLimitPolicy({
     expected_revision: current
   });
   current = adoptQueue(adopt, root_dir, res) ?? current;
-  if (isCancelled?.() === true) {
-    return null;
-  }
-  if (!isError(res) && isRecord(res) && res.conflict === true) {
+  if (
+    isCancelled?.() !== true &&
+    !isError(res) &&
+    isRecord(res) &&
+    res.conflict === true
+  ) {
     res = await send(LIMIT_POLICY_OP, {
       root_dir,
       runner,
@@ -369,9 +371,6 @@ export async function runBulkAccountApply({
       return results;
     }
     const result = await applyOne(target, send, adopt, isCancelled);
-    if (result === null) {
-      return results;
-    }
     results.push(result);
     onProgress?.({ done: results.length, total, results });
   }
@@ -407,26 +406,25 @@ async function applyAccounts(target, send) {
 /**
  * Requests for 한 저장소와 그 판정 (§4.2). 보낸 요청이 모두 성공하면
  * `applied`, 하나도 성공하지 못하면 `failed`, 일부만이면 `partial`이다. 요청
- * 사이에 취소되면 `null` — 이미 받은 응답은 채택만 하고 판정은 남기지 않는다.
+ * 사이에 취소되면 남은 요청은 보내지 않고 미적용으로 센다 — 그 저장소가
+ * 쓰였는지는 호출자의 패널 재읽기가 알아야 한다.
  *
  * @param {BulkAccountTarget} target
  * @param {(type: string, payload: Record<string, unknown>) => Promise<any>} send
  * @param {(root_dir: string, queue: any) => void} adopt
  * @param {(() => boolean)|undefined} isCancelled
- * @returns {Promise<BulkResult|null>}
+ * @returns {Promise<BulkResult>}
  */
 async function applyOne(target, send, adopt, isCancelled) {
   const base = { root_dir: target.root_dir, name: target.name };
   let sent = 0;
   let succeeded = 0;
+  let unsent = 0;
   /** @type {string[]} */
   const failed_parts = [];
   if (Object.keys(target.values).length > 0) {
     sent += 1;
     const failure = await applyAccounts(target, send);
-    if (isCancelled?.() === true) {
-      return null;
-    }
     if (failure !== null) {
       // 계정이 안 옮겨졌는데 허용 목록만 옮기지 않는다 — 정책 요청 0회.
       return { ...base, state: 'failed', detail: failure };
@@ -437,6 +435,11 @@ async function applyOne(target, send, adopt, isCancelled) {
   for (const runner of LIMIT_RUNNERS) {
     const patch = target.patches[runner];
     if (!patch) {
+      continue;
+    }
+    if (isCancelled?.() === true) {
+      unsent += 1;
+      failed_parts.push(`${runner} 한도 정책`);
       continue;
     }
     sent += 1;
@@ -450,9 +453,6 @@ async function applyOne(target, send, adopt, isCancelled) {
         adopt,
         isCancelled
       });
-      if (outcome === null) {
-        return null;
-      }
       revision = outcome.revision;
       if (outcome.applied) {
         succeeded += 1;
@@ -462,11 +462,8 @@ async function applyOne(target, send, adopt, isCancelled) {
     } catch {
       failed_parts.push(`${runner} 한도 정책`);
     }
-    if (isCancelled?.() === true) {
-      return null;
-    }
   }
-  if (succeeded === sent) {
+  if (succeeded === sent && unsent === 0) {
     return { ...base, state: 'applied', detail: '' };
   }
   const detail = `${failed_parts.join('·')} 미적용`;

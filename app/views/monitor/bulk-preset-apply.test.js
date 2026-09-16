@@ -359,7 +359,7 @@ describe('runBulkApply', () => {
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(adopt).toHaveBeenCalledWith('/repo/a', { revision: 4 });
-    expect(results).toEqual([]);
+    expect(results.map((result) => result.state)).toEqual(['partial']);
   });
 });
 
