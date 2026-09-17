@@ -22,6 +22,7 @@ import {
 } from '../../utils/rec-settings.js';
 import {
   formatClockLocal,
+  formatElapsedSince,
   formatRelativeTime,
   formatTimestampLocal
 } from '../../utils/relative-time.js';
@@ -2240,7 +2241,7 @@ function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
     ? [
         reason.verdict === 'normal' ? '' : reason.verdict_reason?.message || '',
         reason.release || row.release,
-        reason.since ? `관측 시작 ${formatClockLocal(reason.since, now)}` : '',
+        reason.since ? `대기 시작 ${formatClockLocal(reason.since, now)}` : '',
         reason.next_check_at
           ? `다음 확인 ${formatClockLocal(reason.next_check_at, now)}`
           : '',
@@ -2280,6 +2281,35 @@ function stopWaitClick(event) {
 }
 
 /**
+ * The 시각 줄 text (UI-0bvr §5.2): `<경과> <elapsed_word>[ · <다음 조각>]`.
+ * 낱말은 어휘 표가 종류별로 소유하므로 범례와 카드가 갈라지지 않고, 재료가 없는
+ * 조각은 그리지 않는다 (fail-quiet) — 두 조각이 다 비면 줄 자체가 서지 않는다.
+ *
+ * @param {import('../../protocol.js').WaitReason} reason
+ * @param {number} now_ms
+ * @returns {string}
+ */
+function waitTimesText(reason, now_ms) {
+  const row = waitKindRow(reason);
+  if (!row) {
+    return '';
+  }
+  const elapsed = row.elapsed_word
+    ? formatElapsedSince(reason.since, now_ms)
+    : '';
+  const reset = formatClockLocal(reason.resets_at, now_ms);
+  const next = row.next_word
+    ? formatClockLocal(reason.next_check_at, now_ms)
+    : '';
+  return [
+    elapsed ? `${elapsed} ${row.elapsed_word}` : '',
+    reset ? `리셋 ${reset}` : next ? `${row.next_word} ${next}` : ''
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/**
  * Separate WaitReason fragments by the shared card slots. Existing operations
  * need their original projection; missing operation material stays absent.
  *
@@ -2308,10 +2338,24 @@ export function waitReasonLines(reason, options = {}) {
       : '';
   const evidence = [
     reason.verdict_reason?.message,
-    since ? `관측 시작 ${since}` : '',
+    since ? `대기 시작 ${since}` : '',
     next ? `다음 확인 ${next}` : '',
     reset ? `리셋 ${reset}` : ''
   ].filter(Boolean);
+  // 상세 패널만 `last_observed_at`을 넘긴다 (§11): 그 화면의 `확인`은 실제 마지막
+  // 관측 시각이라 종류별 낱말 규칙(§5.2) 밖이다.
+  const observed_line = options.last_observed_at !== undefined;
+  const times_text = observed_line
+    ? reset
+      ? `리셋 ${reset}`
+      : [observed ? `확인 ${observed}` : '', next ? `다음 ${next}` : '']
+          .filter(Boolean)
+          .join(' · ')
+    : waitTimesText(reason, now_ms);
+  const times_title =
+    !observed_line && reason.since
+      ? `대기 시작 ${formatTimestampLocal(reason.since)}`
+      : '';
   const item = options.item;
   const actions = (reason.actions || []).map((action) => {
     const payload = action.payload;
@@ -2380,17 +2424,167 @@ export function waitReasonLines(reason, options = {}) {
         </div>`
       : '',
     actions: actions.some((action) => action !== '') ? html`${actions}` : '',
-    times:
-      reset || observed || next
-        ? html`<div class="worker-mini__times wait-reason__times">
-            ${reset
-              ? `리셋 ${reset}`
-              : [observed ? `확인 ${observed}` : '', next ? `다음 ${next}` : '']
-                  .filter(Boolean)
-                  .join(' · ')}
-          </div>`
-        : ''
+    times: times_text
+      ? html`<div
+          class="worker-mini__times wait-reason__times"
+          title=${times_title}
+        >
+          ${times_text}
+        </div>`
+      : ''
   };
+}
+
+/** 선행 대기의 두 종류. 막힘 집계의 간접 선행 규칙이 읽는다 (UI-0bvr §6.2). */
+const PREREQUISITE_KINDS = Object.freeze([
+  'prerequisite',
+  'prerequisite_foreign'
+]);
+
+/**
+ * The nodes of a directed graph that sit on at least one cycle, in one
+ * traversal (Tarjan): a strongly connected component larger than one node is a
+ * cycle, and so is a self edge. `low`가 자기 `index`와 같아지는 자리에서 스택에
+ * 남은 구간이 그 component다.
+ *
+ * @param {Map<string, string[]>} graph
+ * @returns {Set<string>}
+ */
+function cyclicNodes(graph) {
+  const nodes = [...graph.keys()];
+  /** @type {Map<string, number>} */
+  const id_of = new Map();
+  nodes.forEach((node, id) => id_of.set(node, id));
+  /** @type {number[][]} */
+  const edges = nodes.map(() => []);
+  nodes.forEach((node, id) => {
+    for (const next of graph.get(node) || []) {
+      const target = id_of.get(next);
+      if (target !== undefined) {
+        edges[id].push(target);
+      }
+    }
+  });
+  const index = nodes.map(() => -1);
+  const low = nodes.map(() => 0);
+  const on_stack = nodes.map(() => false);
+  /** @type {number[]} */
+  const stack = [];
+  /** @type {Set<string>} */
+  const cyclic = new Set();
+  let next_index = 0;
+  const enter = (/** @type {number} */ node) => {
+    index[node] = next_index;
+    low[node] = next_index;
+    next_index += 1;
+    stack.push(node);
+    on_stack[node] = true;
+  };
+  for (let root = 0; root < nodes.length; root++) {
+    if (index[root] >= 0) {
+      continue;
+    }
+    enter(root);
+    /** @type {Array<{ node: number, edge: number }>} */
+    const frames = [{ node: root, edge: 0 }];
+    while (frames.length > 0) {
+      const frame = frames[frames.length - 1];
+      if (frame.edge < edges[frame.node].length) {
+        const next = edges[frame.node][frame.edge];
+        frame.edge += 1;
+        if (next === frame.node) {
+          cyclic.add(nodes[next]);
+        } else if (index[next] < 0) {
+          enter(next);
+          frames.push({ node: next, edge: 0 });
+        } else if (on_stack[next]) {
+          low[frame.node] = Math.min(low[frame.node], index[next]);
+        }
+        continue;
+      }
+      frames.pop();
+      if (frames.length > 0) {
+        const parent = frames[frames.length - 1].node;
+        low[parent] = Math.min(low[parent], low[frame.node]);
+      }
+      if (low[frame.node] !== index[frame.node]) {
+        continue;
+      }
+      /** @type {number[]} */
+      const component = [];
+      for (;;) {
+        const member = stack.pop();
+        if (member === undefined) {
+          break;
+        }
+        on_stack[member] = false;
+        component.push(member);
+        if (member === frame.node) {
+          break;
+        }
+      }
+      if (component.length > 1) {
+        for (const member of component) {
+          cyclic.add(nodes[member]);
+        }
+      }
+    }
+  }
+  return cyclic;
+}
+
+/**
+ * The subjects an upstream row already represents (UI-0bvr §6.2). `막힘 N`이
+ * 답하는 질문은 "지금 손댈 곳이 몇 군데인가"이므로, 열린 선행이 **전부** 같은
+ * 워크스페이스의 다른 막힌 행이고 **어떤 순환에도 속하지 않는** 이슈는 집계와
+ * 요약 목록에서 빠진다 — 상류를 풀면 함께 풀리고 그 상류 행이 이미 같은 막힘을
+ * 대표한다. 순환은 상류가 없어 그 자체가 손댈 곳이므로 순환에 속한 행은 전부
+ * 남는다. 다른 저장소 선행은 이 집합에 들어올 수 없어 그 사유는 언제나 셈에
+ * 남는다.
+ *
+ * @param {Map<string, { root_dir: string, reasons: import('../../protocol.js').WaitReason[] }>} subjects
+ * @returns {Set<string>}
+ */
+function upstreamCoveredSubjects(subjects) {
+  /** @type {Map<string, string[]>} */
+  const open_prerequisites = new Map();
+  for (const [key, entry] of subjects) {
+    const prerequisites = entry.reasons.filter((reason) =>
+      PREREQUISITE_KINDS.includes(reason.kind)
+    );
+    if (prerequisites.length === 0) {
+      continue;
+    }
+    open_prerequisites.set(
+      key,
+      prerequisites.flatMap((reason) =>
+        (reason.targets || [])
+          .filter((target) => target.kind === 'issue')
+          .map((target) => `${entry.root_dir}\u0000${target.id}`)
+      )
+    );
+  }
+  /** @type {Map<string, string[]>} */
+  const graph = new Map();
+  for (const [key, targets] of open_prerequisites) {
+    graph.set(
+      key,
+      targets.filter((target) => open_prerequisites.has(target))
+    );
+  }
+  const cyclic = cyclicNodes(graph);
+  /** @type {Set<string>} */
+  const covered = new Set();
+  for (const [key, targets] of open_prerequisites) {
+    if (
+      targets.length > 0 &&
+      !cyclic.has(key) &&
+      targets.every((target) => open_prerequisites.has(target))
+    ) {
+      covered.add(key);
+    }
+  }
+  return covered;
 }
 
 /**
@@ -2427,7 +2621,10 @@ export function blockedSummary(workspaces) {
       subjects.set(key, entry);
     }
   }
-  const entries = [...subjects.values()];
+  const covered = upstreamCoveredSubjects(subjects);
+  const entries = [...subjects]
+    .filter(([key]) => !covered.has(key))
+    .map(([, entry]) => entry);
   const groups = [
     { label: '외부 계산', kinds: ['external_job'] },
     { label: '선행', kinds: ['prerequisite', 'prerequisite_foreign'] },
@@ -2464,6 +2661,66 @@ export function blockedSummary(workspaces) {
 }
 
 /**
+ * The `<dialog>` a 막힘 요약 chip owns — its sibling inside `.wait-summary`.
+ *
+ * @param {EventTarget|null} node
+ * @returns {HTMLDialogElement|null}
+ */
+function waitSummaryDialogOf(node) {
+  const source = node instanceof Element ? node.closest('.wait-summary') : null;
+  return /** @type {HTMLDialogElement|null} */ (
+    source ? source.querySelector('dialog.wait-summary__dialog') : null
+  );
+}
+
+/**
+ * Open the 막힘 요약 in the browser's top layer (§8). `showModal`이 없는
+ * 런타임(jsdom)에서는 보드 탭 팝업과 같은 `open` 속성 갈래로 떨어진다.
+ *
+ * @param {Event} event
+ */
+function openWaitSummary(event) {
+  event.stopPropagation();
+  const dialog = waitSummaryDialogOf(event.currentTarget);
+  if (!dialog || dialog.open) {
+    return;
+  }
+  if (typeof dialog.showModal === 'function') {
+    dialog.showModal();
+  } else {
+    dialog.setAttribute('open', '');
+  }
+}
+
+/**
+ * @param {HTMLDialogElement|null} dialog
+ */
+function closeWaitSummary(dialog) {
+  if (!dialog) {
+    return;
+  }
+  if (typeof dialog.close === 'function') {
+    dialog.close();
+  } else {
+    dialog.removeAttribute('open');
+  }
+}
+
+/**
+ * ESC(`cancel`)와 배경 클릭이 이 다이얼로그의 닫기다 (§8). 배경 판정은 보드 탭과
+ * 같다 — 이벤트 target이 dialog 자신일 때만 배경이고, 안에서 올라온 클릭은 닫지
+ * 않는다.
+ *
+ * @param {Event} event
+ */
+function dismissWaitSummary(event) {
+  if (event.type === 'click' && event.target !== event.currentTarget) {
+    return;
+  }
+  closeWaitSummary(/** @type {HTMLDialogElement} */ (event.currentTarget));
+}
+
+/**
  * Reveal and highlight the exact workspace card without changing queue order.
  *
  * @param {Event} event
@@ -2476,6 +2733,8 @@ function scrollToWaitCard(event, root_dir, bead_id, reason, reveal) {
   event.stopPropagation();
   const source = /** @type {HTMLElement} */ (event.currentTarget);
   const scope = source.closest('.worker-console, .mon') || source.ownerDocument;
+  // 모달은 포커스를 가두므로 카드로 데려가기 전에 먼저 닫는다 (§8).
+  closeWaitSummary(waitSummaryDialogOf(source));
   const target_ids = [
     bead_id,
     ...(reason.kind === 'external_job'
@@ -2515,10 +2774,28 @@ function scrollToWaitCard(event, root_dir, bead_id, reason, reveal) {
   card.setAttribute('tabindex', '-1');
   card.focus({ preventScroll: true });
   setTimeout(() => card.classList.remove('wait-reason--highlight'), 2000);
-  const popup = source.closest('details');
-  if (popup) {
-    popup.open = false;
+}
+
+/**
+ * One 요약 팝오버 항목 줄의 사유 문장 (§4.2). `headline`이 있으면 그것이고, 선행
+ * 대기처럼 비어 있으면 그 사유의 이슈 target으로 조립한다 — 첫 ID 하나와, 둘
+ * 이상이면 남은 수. 재료가 없으면 빈 문자열이다 (fail-quiet).
+ *
+ * @param {import('../../protocol.js').WaitReason} reason
+ * @returns {string}
+ */
+function waitSummaryItemLine(reason) {
+  if (reason.headline) {
+    return reason.headline;
   }
+  const targets = (reason.targets || []).filter(
+    (target) => target.kind === 'issue'
+  );
+  if (targets.length === 0) {
+    return '';
+  }
+  const rest = targets.length - 1;
+  return `선행 ${targets[0].id}${rest > 0 ? ` 외 ${rest}` : ''}`;
 }
 
 /**
@@ -2532,8 +2809,13 @@ export function blockedSummaryTemplate(workspaces, reveal) {
   if (summary.count === 0) {
     return '';
   }
-  return html`<details class="wait-summary" @click=${stopWaitClick}>
-    <summary class="worker-kpi__chip">
+  return html`<span class="wait-summary" @click=${stopWaitClick}>
+    <button
+      type="button"
+      class="worker-kpi__chip"
+      aria-haspopup="dialog"
+      @click=${openWaitSummary}
+    >
       ${summaryChipPrefix('blocked')}
       ${summary.count}${summary.action_count > 0
         ? html` ·
@@ -2541,41 +2823,48 @@ export function blockedSummaryTemplate(workspaces, reveal) {
               >⛔ ${summary.action_count}</span
             >`
         : ''}
-    </summary>
-    <div class="wait-summary__popover" role="dialog" aria-label="막힘 요약">
-      ${summary.groups.map(
-        (group) =>
-          html`<section>
-            <strong>${group.label} ${group.entries.length}</strong>
-            ${group.entries.map((entry) =>
-              entry.reasons.map(
-                (reason) =>
-                  html`<button
-                    type="button"
-                    class="wait-summary__item"
-                    @click=${(/** @type {Event} */ event) =>
-                      scrollToWaitCard(
-                        event,
-                        entry.root_dir,
-                        entry.id,
-                        reason,
-                        reveal
-                      )}
-                  >
-                    ${waitVerdictLabel(reason)} ${entry.name} ${entry.id} —
-                    ${reason.headline}
-                  </button>`
-              )
-            )}
-          </section>`
-      )}
-      ${summary.queue_line.length > 0
-        ? html`<div class="wait-summary__queue">
-            큐: ${summary.queue_line.join(' · ')}
-          </div>`
-        : ''}
-    </div>
-  </details>`;
+    </button>
+    <dialog
+      class="wait-summary__dialog"
+      aria-label="막힘 요약"
+      @click=${dismissWaitSummary}
+      @cancel=${dismissWaitSummary}
+    >
+      <div class="wait-summary__popover">
+        ${summary.groups.map(
+          (group) =>
+            html`<section>
+              <strong>${group.label} ${group.entries.length}</strong>
+              ${group.entries.map((entry) =>
+                entry.reasons.map(
+                  (reason) =>
+                    html`<button
+                      type="button"
+                      class="wait-summary__item"
+                      @click=${(/** @type {Event} */ event) =>
+                        scrollToWaitCard(
+                          event,
+                          entry.root_dir,
+                          entry.id,
+                          reason,
+                          reveal
+                        )}
+                    >
+                      ${waitVerdictLabel(reason)} ${entry.name} ${entry.id} —
+                      ${waitSummaryItemLine(reason)}
+                    </button>`
+                )
+              )}
+            </section>`
+        )}
+        ${summary.queue_line.length > 0
+          ? html`<div class="wait-summary__queue">
+              큐: ${summary.queue_line.join(' · ')}
+            </div>`
+          : ''}
+      </div>
+    </dialog>
+  </span>`;
 }
 
 /**
@@ -2768,7 +3057,7 @@ export function queueRowOps(item, options = {}) {
     )}${wait_actions}${options.nudgeable === true
       ? html`<button
             type="button"
-            class="op-btn op-btn--icon worker-mini__rowops-up"
+            class="op-btn op-btn--icon op-btn--ghost worker-mini__rowops-up"
             data-bead-id=${item.id}
             title="같은 레포 안에서 한 칸 위로"
             aria-label="한 칸 위로"
@@ -2777,7 +3066,7 @@ export function queueRowOps(item, options = {}) {
           </button>
           <button
             type="button"
-            class="op-btn op-btn--icon worker-mini__rowops-down"
+            class="op-btn op-btn--icon op-btn--ghost worker-mini__rowops-down"
             data-bead-id=${item.id}
             title="같은 레포 안에서 한 칸 아래로"
             aria-label="한 칸 아래로"
@@ -2787,7 +3076,7 @@ export function queueRowOps(item, options = {}) {
       : ''}
     <button
       type="button"
-      class="op-btn op-btn--icon worker-mini__rowops-remove"
+      class="op-btn op-btn--icon op-btn--ghost worker-mini__rowops-remove"
       data-action="queue-remove"
       data-bead-id=${item.id}
       title="대기에서 빼기"
@@ -2796,6 +3085,45 @@ export function queueRowOps(item, options = {}) {
       ✕
     </button>
   </span>`;
+}
+
+/**
+ * Slot 4a 선행 칩의 `title`에 blocker 상태를 싣는다 (UI-0bvr §4.2). 선행 대기
+ * 사유가 headline을 버렸으므로 `open`·`blocked` 구분을 말하는 자리가 이 툴팁이고,
+ * 재료는 그 사유의 `targets[].status`다. 상태를 모르는 blocker의 문장은 그대로다
+ * (fail-quiet).
+ *
+ * @param {DependencyChips|null|undefined} chips
+ * @param {import('../../protocol.js').WaitReason[]} wait_reasons
+ * @returns {DependencyChips|null|undefined}
+ */
+function chipsWithBlockerStatus(chips, wait_reasons) {
+  const predecessors = chips?.predecessors;
+  if (!Array.isArray(predecessors) || predecessors.length === 0) {
+    return chips;
+  }
+  /** @type {Map<string, string>} */
+  const status_of = new Map();
+  for (const reason of wait_reasons) {
+    if (!PREREQUISITE_KINDS.includes(reason.kind)) {
+      continue;
+    }
+    for (const target of reason.targets || []) {
+      if (target.kind === 'issue' && target.status) {
+        status_of.set(target.id, target.status);
+      }
+    }
+  }
+  if (status_of.size === 0) {
+    return chips;
+  }
+  return {
+    ...chips,
+    predecessors: predecessors.map((chip) => {
+      const status = status_of.get(chip.id);
+      return status ? { ...chip, title: `${chip.title} · ${status}` } : chip;
+    })
+  };
 }
 
 /**
@@ -2813,8 +3141,12 @@ export function queueRowOps(item, options = {}) {
  * 표(UI-251y §5.1)의 "조작은 1번 줄 오른쪽 끝" 규칙을 그대로 따른다. 넘기지
  * 않으면 렌더가 그대로다.
  *
+ * `options.card` (UI-0bvr §7.1)는 호출 탭의 `is_mobile`이다: 좁은 화면(≤640px)의
+ * 대기 행은 한 줄 변형이 서너 줄로 접히므로 카드 변형을 쓴다. 데스크톱 밀도는
+ * 그대로다.
+ *
  * @param {MiniItem} item
- * @param {{ actions?: import('lit-html').TemplateResult }} [options]
+ * @param {{ actions?: import('lit-html').TemplateResult, card?: boolean }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function miniRow(item, options = {}) {
@@ -2854,7 +3186,8 @@ export function miniRow(item, options = {}) {
     item.lane === 'pr_wait' ||
     !!item.revise_action ||
     !!item.stale_work ||
-    item.discard?.abandon.action === true;
+    item.discard?.abandon.action === true ||
+    options.card === true;
   // 완료 행은 2줄이다 (UI-rkly §3): 제목이 가로 전체를 쓰는 1줄과, 나머지 사실을
   // 전부 받는 2줄. 한 줄에 usage까지 실으면 제목이 먼저 잘린다.
   const two_line = item.lane === 'done' && !card;
@@ -3167,7 +3500,7 @@ export function miniRow(item, options = {}) {
   // 줄 안에 서고, 자리는 줄의 끝이다 (§3.2 순서: 게이트 → 선행 → 후속 →
   // 유예). 게이트 칩은 같은 줄의 맨 앞이고 그 팝업은 칩 바로 뒤에 붙는다.
   const deps_el = dependencyChipsTemplate(
-    item.dependency_chips,
+    chipsWithBlockerStatus(item.dependency_chips, wait_reasons),
     '',
     gate_el === '' && external_wait_el === ''
       ? ''
@@ -3240,8 +3573,11 @@ export function miniRow(item, options = {}) {
             ${timesMeta(item)}
           </div>`
       : card
-        ? html`<div class="worker-mini__head">
-              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${reason_el}${wait_badge}${actions_el}
+        ? // 사유는 머리 줄의 **끝**이다 (UI-0bvr §7.1): `flex: 1 0 100%`로 한 줄을
+          // 통째 쓰므로 그 앞에 서야 조작이 다음 줄로 밀리지 않는다. 슬롯 표의
+          // "조작은 1번 줄 오른쪽 끝"은 그래서 좁은 화면에서도 지켜진다.
+          html`<div class="worker-mini__head">
+              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${wait_badge}${actions_el}${reason_el}
             </div>
             <div class="worker-mini__body">${title_el}${stale_details}</div>
             ${wait_lines.body}${deps_el}${chips_el}${has_foot
@@ -3343,7 +3679,7 @@ export function externalWaitRow(item) {
           ${completed_at
             ? html`<span>종료 ${completed_at}</span>`
             : html`${last_at ? html`<span>확인 ${last_at}</span>` : ''}${next_at
-                ? html`<span>· 다음 ${next_at}</span>`
+                ? html`<span>· 다음 확인 ${next_at}</span>`
                 : ''}`}
         </div>`
       : ''}

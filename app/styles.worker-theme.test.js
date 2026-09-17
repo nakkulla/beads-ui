@@ -516,6 +516,38 @@ describe('worker console styles', () => {
     expect(hidden_group).not.toContain('rowops-remove');
   });
 
+  test('keeps the toolbar labels on one line at every width (UI-0bvr §7.3)', () => {
+    const play =
+      workerBlock.match(/(?:^|\n)\.worker-play\s*{([^}]*)}/)?.[1] || '';
+    const toggle =
+      workerBlock.match(/(?:^|\n)\.worker-tgl\s*{([^}]*)}/)?.[1] || '';
+
+    expect(play).toContain('white-space: nowrap');
+    expect(toggle).toContain('white-space: nowrap');
+  });
+
+  test('lays the toolbar toggle label and its input on one row', () => {
+    const toggle =
+      workerBlock.match(/(?:^|\n)\.worker-tgl\s*{([^}]*)}/)?.[1] || '';
+
+    expect(toggle).toContain('display: inline-flex');
+    expect(toggle).toContain('align-items: center');
+  });
+
+  test('drops the visible box from the ghost operation button (UI-0bvr §7.2)', () => {
+    const ghost = CSS.match(/(?:^|\n)\.op-btn--ghost\s*{([^}]*)}/)?.[1] || '';
+
+    expect(ghost).toContain('border-color: transparent');
+  });
+
+  test('keeps the coarse-pointer target size of the ghost icon button', () => {
+    const icon_sizes = coarsePointerBlocks()
+      .map((block) => block.match(/\.op-btn--icon\s*{([^}]*)}/)?.[1] || '')
+      .filter(Boolean);
+
+    expect(icon_sizes.join('')).toContain('min-width: 32px');
+  });
+
   test('keeps running tile metadata readable when it has a long token', () => {
     const chipRule =
       workerBlock.match(/(?:^|\n)\.exec-chip\s*{([^}]*)}/)?.[1] || '';

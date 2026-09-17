@@ -1077,7 +1077,9 @@ export function createMonitorView(mount_element, options) {
       data-queue-index=${String(item.queue_index ?? 0)}
     >
       ${miniRow(withOverlaps(item), {
-        actions: queueRowOps(item, { nudgeable: true })
+        actions: queueRowOps(item, { nudgeable: true }),
+        // 좁은 화면의 대기 행은 카드 변형이다 (UI-0bvr §7.1).
+        card: is_mobile
       })}
     </div>`;
   }
@@ -1100,7 +1102,10 @@ export function createMonitorView(mount_element, options) {
       data-row-index=${row_index}
       data-queue-index=${String(item.queue_index ?? 0)}
     >
-      ${miniRow(withOverlaps(item), { actions: queueRowOps(item) })}
+      ${miniRow(withOverlaps(item), {
+        actions: queueRowOps(item),
+        card: is_mobile
+      })}
     </div>`;
   }
 

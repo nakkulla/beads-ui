@@ -69,6 +69,24 @@ describe('help dialog legend', () => {
     expect(counts).toEqual(WAIT_KINDS.map(() => 1));
   });
 
+  test('reads the times-line words out of the vocabulary table (UI-0bvr §5.1)', () => {
+    const { element } = mount();
+
+    const cell = element.querySelector('#help-retry_wait .help-dialog__times');
+
+    expect(cell?.textContent?.trim()).toBe('<경과> 대기 · 다음 재시도 <HH:MM>');
+  });
+
+  test('empties the times-line cell of a kind without those words', () => {
+    const { element } = mount();
+
+    const cell = element.querySelector(
+      '#help-prerequisite .help-dialog__times'
+    );
+
+    expect(cell?.textContent?.trim()).toBe('—');
+  });
+
   test('draws only queue-scope rows in the gate section (UI-3pu9 §4.4)', () => {
     const { element } = mount();
 

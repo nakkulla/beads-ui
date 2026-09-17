@@ -1,6 +1,9 @@
 import { html, render } from 'lit-html';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { formatClockLocal } from '../../utils/relative-time.js';
+import {
+  formatClockLocal,
+  formatTimestampLocal
+} from '../../utils/relative-time.js';
 import { providerHoldBadgeText } from './gate-labels.js';
 import {
   JUDGEMENT_CHIP_KEYS,
@@ -102,6 +105,10 @@ const USAGE = {
   total_tokens: 1500,
   cost_usd: 0.42
 };
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const NOW = new Date(2026, 8, 17, 12, 0).getTime();
 
 beforeEach(() => {
   document.body.innerHTML = '<div id="lane"></div>';
@@ -376,14 +383,14 @@ describe('server wait judgment rendering', () => {
     expect(mount.querySelector('details')?.open).toBe(true);
     expect(onClick).not.toHaveBeenCalled();
     expect(mount.querySelector('.chip-popover')?.textContent).toContain(
-      '관측 시작'
+      '대기 시작'
     );
     expect(mount.querySelector('.chip-popover')?.textContent).toContain(
       '다음 확인'
     );
   });
 
-  test('shows the server observation clock in the evidence popup', () => {
+  test('names the wait start in the evidence popup (UI-0bvr §5.4)', () => {
     const since = 1_700_000_000_000;
     const lines = waitReasonLines(
       waitReason({
@@ -402,11 +409,69 @@ describe('server wait judgment rendering', () => {
     ).click();
 
     expect(mount.querySelector('.chip-popover')?.textContent).toContain(
-      `관측 시작 ${formatClockLocal(since)}`
+      `대기 시작 ${formatClockLocal(since)}`
     );
-    expect(mount.querySelector('.wait-reason__times')?.textContent).toContain(
-      `확인 ${formatClockLocal(since)}`
+  });
+
+  test('draws no times line for a prerequisite wait (UI-0bvr §5.1)', () => {
+    const lines = waitReasonLines(
+      waitReason({ since: 1_700_000_000_000, next_check_at: 1_700_000_900_000 })
     );
+
+    render(html`${lines.times}`, mount);
+
+    expect(mount.querySelector('.wait-reason__times')).toBeNull();
+  });
+
+  test.each([
+    [
+      'external_job',
+      { since: NOW - 3 * HOUR, next_check_at: NOW + 20 * MINUTE },
+      `3시간째 대기 · 다음 확인 ${formatClockLocal(NOW + 20 * MINUTE, NOW)}`
+    ],
+    [
+      'provider_hold',
+      { since: NOW - 40 * MINUTE, resets_at: NOW + 2 * HOUR },
+      `40분째 보류 · 리셋 ${formatClockLocal(NOW + 2 * HOUR, NOW)}`
+    ],
+    [
+      'retry_wait',
+      { since: NOW - 9 * MINUTE, next_check_at: NOW + 6 * MINUTE },
+      `9분째 대기 · 다음 재시도 ${formatClockLocal(NOW + 6 * MINUTE, NOW)}`
+    ]
+  ])(
+    'writes the %s times line in the vocabulary words',
+    (kind, clocks, text) => {
+      const lines = waitReasonLines(
+        waitReason({
+          kind: /** @type {any} */ (kind),
+          headline: '',
+          targets: [],
+          ...clocks
+        }),
+        { now: NOW }
+      );
+
+      render(html`${lines.times}`, mount);
+
+      expect(
+        mount.querySelector('.wait-reason__times')?.textContent?.trim()
+      ).toBe(text);
+    }
+  );
+
+  test('titles the times line with the absolute wait start', () => {
+    const since = NOW - 3 * HOUR;
+    const lines = waitReasonLines(
+      waitReason({ kind: 'retry_wait', headline: '', targets: [], since }),
+      { now: NOW }
+    );
+
+    render(html`${lines.times}`, mount);
+
+    expect(
+      mount.querySelector('.wait-reason__times')?.getAttribute('title')
+    ).toBe(`대기 시작 ${formatTimestampLocal(since)}`);
   });
 
   test('reuses offered operations and hides unknown actions', () => {
@@ -6346,5 +6411,323 @@ describe('선행 대기 held 타일의 어휘 행 (직렬 레인 순서 고정 �
     expect(
       mount.querySelector('.worker-mini__badge')?.textContent?.trim()
     ).toBe('⛓ 선행 대기');
+  });
+});
+
+describe('대기 카드 표면 정리 2차 (UI-0bvr)', () => {
+  /**
+   * @param {Partial<import('./lanes.js').MiniItem>} item
+   * @param {{ actions?: import('lit-html').TemplateResult, card?: boolean }} [options]
+   * @returns {HTMLElement}
+   */
+  function renderQueueRow(item, options = {}) {
+    render(
+      miniRow(
+        /** @type {any} */ ({
+          id: 'A-1',
+          title: '대기 행',
+          lane: 'queue',
+          draggable: true,
+          root_dir: '/repo',
+          ...item
+        }),
+        options
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.worker-mini'));
+  }
+
+  /**
+   * One server prerequisite reason with an empty headline, as UI-0bvr §4.2
+   * leaves it.
+   *
+   * @param {string} bead_id
+   * @param {string[]} blockers
+   * @returns {import('../../../server/worker/wait-judgment.js').WaitReason}
+   */
+  function prerequisiteOf(bead_id, blockers) {
+    return waitReason({
+      headline: '',
+      subject: { bead_id, root_dir: '/repo' },
+      targets: blockers.map((id) => ({ id, kind: 'issue' }))
+    });
+  }
+
+  test('says 선행 대기 once on a row carrying only that reason', () => {
+    const row = renderQueueRow({
+      reason: '',
+      wait_reasons: [prerequisiteOf('A-1', ['A-2'])]
+    });
+
+    const said = (row.textContent || '').match(/선행 대기/g) || [];
+
+    expect(said).toHaveLength(1);
+  });
+
+  test('draws no times line on a prerequisite waiting row', () => {
+    const row = renderQueueRow({
+      wait_reasons: [
+        { ...prerequisiteOf('A-1', ['A-2']), since: NOW - 2 * HOUR }
+      ]
+    });
+
+    expect(row.querySelector('.wait-reason__times')).toBeNull();
+  });
+
+  test('carries the blocker status on the slot 4a prerequisite chip', () => {
+    const row = renderQueueRow({
+      dependency_chips: {
+        predecessors: [{ id: 'A-2', label: '⛓ A-2', title: '⛓ A-2 — 선행' }]
+      },
+      wait_reasons: [
+        waitReason({
+          headline: '',
+          targets: [{ id: 'A-2', kind: 'issue', status: 'blocked' }]
+        })
+      ]
+    });
+
+    expect(
+      row.querySelector('.worker-dep--pred')?.getAttribute('title')
+    ).toContain('· blocked');
+  });
+
+  test('assembles the summary item line from the prerequisite targets', () => {
+    render(
+      blockedSummaryTemplate([
+        { root_dir: '/repo', wait_reasons: [prerequisiteOf('A-1', ['A-2'])] }
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.wait-summary__item')?.textContent).toContain(
+      '선행 A-2'
+    );
+  });
+
+  test('counts the prerequisites after the first in the item line', () => {
+    render(
+      blockedSummaryTemplate([
+        {
+          root_dir: '/repo',
+          wait_reasons: [prerequisiteOf('A-1', ['A-2', 'A-3'])]
+        }
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.wait-summary__item')?.textContent).toContain(
+      '선행 A-2 외 1'
+    );
+  });
+
+  test('drops an issue whose every prerequisite is another blocked row', () => {
+    const summary = blockedSummary([
+      {
+        root_dir: '/repo',
+        wait_reasons: [
+          prerequisiteOf('A-1', ['A-9']),
+          prerequisiteOf('A-2', ['A-1'])
+        ]
+      }
+    ]);
+
+    expect(summary.groups[0].entries.map((entry) => entry.id)).toEqual(['A-1']);
+  });
+
+  test('keeps a foreign prerequisite in the blocked count', () => {
+    const summary = blockedSummary([
+      {
+        root_dir: '/repo',
+        wait_reasons: [
+          prerequisiteOf('A-1', ['A-9']),
+          waitReason({
+            kind: 'prerequisite_foreign',
+            headline: '',
+            subject: { bead_id: 'A-2', root_dir: '/repo' },
+            targets: [{ id: 'OTHER-1', kind: 'issue' }]
+          })
+        ]
+      }
+    ]);
+
+    expect(summary.count).toBe(2);
+  });
+
+  test('counts both rows of a two-row wait cycle', () => {
+    const summary = blockedSummary([
+      {
+        root_dir: '/repo',
+        wait_reasons: [
+          prerequisiteOf('A-1', ['A-2']),
+          prerequisiteOf('A-2', ['A-1'])
+        ]
+      }
+    ]);
+
+    expect(summary.count).toBe(2);
+  });
+
+  test('counts every row of a three-row wait cycle', () => {
+    const summary = blockedSummary([
+      {
+        root_dir: '/repo',
+        wait_reasons: [
+          prerequisiteOf('A-1', ['A-2']),
+          prerequisiteOf('A-2', ['A-3']),
+          prerequisiteOf('A-3', ['A-1'])
+        ]
+      }
+    ]);
+
+    expect(summary.count).toBe(3);
+  });
+
+  test('drops a tail row hanging off a wait cycle', () => {
+    const summary = blockedSummary([
+      {
+        root_dir: '/repo',
+        wait_reasons: [
+          prerequisiteOf('A-1', ['A-2']),
+          prerequisiteOf('A-2', ['A-1']),
+          prerequisiteOf('A-3', ['A-1'])
+        ]
+      }
+    ]);
+
+    expect(summary.groups[0].entries.map((entry) => entry.id)).toEqual([
+      'A-1',
+      'A-2'
+    ]);
+  });
+
+  test('opens the blocked summary as a top-layer dialog (UI-0bvr §8)', () => {
+    render(
+      blockedSummaryTemplate([
+        { root_dir: '/repo', wait_reasons: [prerequisiteOf('A-1', ['A-2'])] }
+      ]),
+      mount
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.wait-summary > .worker-kpi__chip')
+    ).click();
+
+    expect(
+      mount.querySelector('dialog.wait-summary__dialog')?.hasAttribute('open')
+    ).toBe(true);
+  });
+
+  test('closes the blocked summary dialog when an item navigates', () => {
+    render(
+      html`${blockedSummaryTemplate([
+          { root_dir: '/repo', wait_reasons: [prerequisiteOf('A-1', ['A-2'])] }
+        ])}
+        <div
+          class="worker-mini"
+          data-root-dir="/repo"
+          data-bead-id="A-1"
+        ></div>`,
+      mount
+    );
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini')
+    );
+    card.scrollIntoView = vi.fn();
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.wait-summary > .worker-kpi__chip')
+    ).click();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.wait-summary__item')
+    ).click();
+
+    expect(
+      mount.querySelector('dialog.wait-summary__dialog')?.hasAttribute('open')
+    ).toBe(false);
+  });
+
+  test('gives the waiting row the card variant on a narrow screen', () => {
+    const row = renderQueueRow({}, { card: true });
+
+    expect(row.classList.contains('worker-mini--card')).toBe(true);
+  });
+
+  test('keeps the one-line variant at the desktop width', () => {
+    const row = renderQueueRow({}, { card: false });
+
+    expect(row.querySelector('.worker-mini__line')).not.toBeNull();
+  });
+
+  test('places the row operations before the reason in the card head', () => {
+    const row = renderQueueRow(
+      { reason: '♻️ stale→재리뷰' },
+      {
+        card: true,
+        actions: /** @type {any} */ (
+          queueRowOps(/** @type {any} */ ({ id: 'A-1', draggable: true }))
+        )
+      }
+    );
+    const head = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__head')
+    );
+    const children = Array.from(head.children);
+
+    expect(
+      children.findIndex((node) =>
+        node.classList.contains('worker-mini__rowops')
+      )
+    ).toBeLessThan(
+      children.findIndex((node) =>
+        node.classList.contains('worker-mini__reason')
+      )
+    );
+  });
+
+  test('names the next observation on a watched external row', () => {
+    const next_at = Date.parse('2026-09-15T02:55:00Z');
+    render(
+      miniRow(
+        /** @type {any} */ ({
+          kind: 'external_wait',
+          id: 'G-1',
+          gate_id: 'G-1',
+          gate_title: '외부 계산 246416',
+          root_dir: '/repo',
+          workspace_name: 'analysis',
+          watch_id: 'watch-1',
+          job_state: '계산 중',
+          last_observed_at: next_at - HOUR,
+          next_observation_at: next_at
+        })
+      ),
+      mount
+    );
+
+    expect(mount.querySelector('.external-wait__times')?.textContent).toContain(
+      `다음 확인 ${formatClockLocal(next_at)}`
+    );
+  });
+
+  test('draws no times line on an unwatched external row', () => {
+    render(
+      miniRow(
+        /** @type {any} */ ({
+          kind: 'external_wait',
+          id: 'G-1',
+          gate_id: 'G-1',
+          gate_title: '외부 계산 246416',
+          root_dir: '/repo',
+          workspace_name: 'analysis',
+          watch_id: null,
+          job_state: '대기 조건'
+        })
+      ),
+      mount
+    );
+
+    expect(mount.querySelector('.external-wait__times')).toBeNull();
   });
 });

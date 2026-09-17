@@ -818,6 +818,28 @@ describe('monitor 대기 repo sections (UI-eey2 §6)', () => {
     expect(serial[1].empty).toBe(true);
   });
 
+  test('keeps projecting the serial lane correction count (UI-0bvr §4.3)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+          ],
+          lane_states: {
+            s1: {
+              occupied_by: [],
+              order: ['A-1', 'A-2'],
+              corrections: [{ bead_id: 'A-2', after: 'A-1' }]
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue_groups[0].sublanes.serial[0].corrections).toBe(1);
+  });
+
   test('projects lane occupants with the running item title and state badge', () => {
     const lanes = buildLanes(
       [
@@ -4931,7 +4953,7 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
     expect(lanes.runnable[0].reason).toBe('⛔ not_ready');
   });
 
-  test('renders a proven prerequisite wait as a chain badge, not a refusal', () => {
+  test('leaves a prerequisite admission without a row reason (UI-0bvr §4.1)', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -4948,21 +4970,22 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
       [state()]
     );
 
-    expect(lanes.queue[0].reason).toBe('⛓ 선행 대기');
+    expect(lanes.queue[0].reason).toBe('');
   });
 
-  test('falls back to the refusal badge when the wait carries no blockers', () => {
+  test('draws no refusal badge for a prerequisite record without blockers', () => {
     const lanes = buildLanes(
       [
         workspace({
           queue: [{ bead_id: 'A-1' }],
+          bead_blocked_by: { 'A-1': [] },
           admission: { 'A-1': { reason: 'prerequisite_unmet', at: 1 } }
         })
       ],
       [state()]
     );
 
-    expect(lanes.queue[0].reason).toBe('⛔ prerequisite_unmet');
+    expect(lanes.queue[0].reason).toBe('');
   });
 
   test('keeps only the open admission blockers on the queue row chips', () => {

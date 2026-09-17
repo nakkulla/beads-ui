@@ -43,8 +43,25 @@ function exampleBadgeText(row) {
 }
 
 /**
- * `WaitKindRow` 한 줄을 네 열로 그린다: 배지 예시 · 언제 뜨나 · 풀리는 조건 ·
- * 조작. 재료가 없는 조작 열은 `—`로 비운다.
+ * The 시각 줄 shape of one kind — 낱말은 어휘 표의 두 칸이 소유하므로 범례가 그
+ * 칸을 읽는다 (UI-0bvr §5.1). 칸이 비면 그 조각이 없고, 둘 다 비면 줄 자체가
+ * 없다.
+ *
+ * @param {WaitKindRow} row
+ * @returns {string}
+ */
+function exampleTimesText(row) {
+  return [
+    row.elapsed_word ? `<경과> ${row.elapsed_word}` : '',
+    row.next_word ? `${row.next_word} <HH:MM>` : ''
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/**
+ * `WaitKindRow` 한 줄을 다섯 열로 그린다: 배지 예시 · 언제 뜨나 · 풀리는 조건 ·
+ * 시각 줄 · 조작. 재료가 없는 열은 `—`로 비운다.
  *
  * @param {WaitKindRow} row
  * @param {'badge'|'gate'} shape - `badge`는 카드 배지 마크업, `gate`는 큐 칩 마크업.
@@ -61,12 +78,14 @@ function kindRowTemplate(row, shape) {
     <td class="help-dialog__example">${example}</td>
     <td>${row.when}</td>
     <td>${row.release}</td>
+    <td class="help-dialog__times">${exampleTimesText(row) || '—'}</td>
     <td>${row.action || '—'}</td>
   </tr>`;
 }
 
 /**
- * `thead` 한 줄 — 네 열 이름은 §11이 정한 순서다.
+ * `thead` 한 줄 — 열 이름은 §11이 정한 순서이고 `시각 줄`은 UI-0bvr §5.1이
+ * 더했다.
  *
  * @returns {TemplateResult}
  */
@@ -76,6 +95,7 @@ function kindHeadTemplate() {
       <th scope="col">배지 예시</th>
       <th scope="col">언제 뜨나</th>
       <th scope="col">풀리는 조건</th>
+      <th scope="col">시각 줄</th>
       <th scope="col">조작</th>
     </tr>
   </thead>`;

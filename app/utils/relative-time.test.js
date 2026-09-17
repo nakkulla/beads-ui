@@ -122,3 +122,30 @@ describe('formatClockLocal', () => {
     expect(formatClockLocal('not-a-date', Date.now())).toBe('');
   });
 });
+
+describe('formatElapsedSince', () => {
+  const NOW = new Date(2026, 8, 17, 12, 0).getTime();
+
+  test.each([
+    [59 * 60_000, '59분째'],
+    [60 * 60_000, '1시간째'],
+    [47 * 3_600_000, '47시간째'],
+    [48 * 3_600_000, '2일째']
+  ])('writes an age of %i ms as %s', async (age, text) => {
+    const { formatElapsedSince } = await import('./relative-time.js');
+
+    expect(formatElapsedSince(NOW - Number(age), NOW)).toBe(text);
+  });
+
+  test('returns empty for a future timestamp', async () => {
+    const { formatElapsedSince } = await import('./relative-time.js');
+
+    expect(formatElapsedSince(NOW + 60_000, NOW)).toBe('');
+  });
+
+  test('returns empty for a missing timestamp', async () => {
+    const { formatElapsedSince } = await import('./relative-time.js');
+
+    expect(formatElapsedSince(null, NOW)).toBe('');
+  });
+});

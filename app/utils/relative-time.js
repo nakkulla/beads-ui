@@ -101,6 +101,35 @@ export function formatRelativeTime(timestamp_value, now_ms) {
 }
 
 /**
+ * Format how long a wait has been running, as the 시각 줄 경과 조각 (UI-0bvr
+ * §5.2): `<n>분째` under an hour, `<n>시간째` under two days, `<n>일째` beyond.
+ * The kind's word (`대기`·`보류`) is appended by the caller from the vocabulary
+ * table. A missing or future timestamp draws nothing (fail-quiet).
+ *
+ * @param {number | string | null | undefined} timestamp_value
+ * @param {number} [now_ms]
+ * @returns {string}
+ */
+export function formatElapsedSince(timestamp_value, now_ms) {
+  const event_ms = coerceTimestampMs(timestamp_value);
+  if (event_ms === null) {
+    return '';
+  }
+  const reference_ms = typeof now_ms === 'number' ? now_ms : Date.now();
+  const diff_ms = reference_ms - event_ms;
+  if (diff_ms < 0) {
+    return '';
+  }
+  if (diff_ms < 3_600_000) {
+    return `${Math.floor(diff_ms / 60_000)}분째`;
+  }
+  if (diff_ms < 172_800_000) {
+    return `${Math.floor(diff_ms / 3_600_000)}시간째`;
+  }
+  return `${Math.floor(diff_ms / 86_400_000)}일째`;
+}
+
+/**
  * Format a timestamp as the short LOCAL clock the wait surface uses (UI-8gem
  * §9): `HH:MM` inside the same calendar day as `now`, `M/D HH:MM` otherwise.
  * Unparseable input draws nothing (fail-quiet).

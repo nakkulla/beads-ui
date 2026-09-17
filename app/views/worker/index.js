@@ -3001,33 +3001,13 @@ export function createWorkerView(mount_element, options = {}) {
 
   /**
    * What a 대기·직렬 row reads from the snapshot on top of the lane model
-   * (§4.4). 레인 모델은 두 탭이 공유하는 값만 싣고, stale 점유 처분·`blocks` 자동 정정
-   * 배지는 워커 탭 대기 행만의 조작·표시다.
+   * (§4.4). 레인 모델은 두 탭이 공유하는 값만 싣고, stale 점유 처분은 워커 탭 대기
+   * 행만의 조작이다.
    *
-   * @returns {{ admission: Record<string, any>, correction_after: Map<string, string> }}
+   * @returns {{ admission: Record<string, any> }}
    */
   function waitingFacts() {
-    const q = currentQueue();
-    /** @type {Map<string, string>} */
-    const correction_after = new Map();
-    for (const state of Object.values(objectOf(q.lane_states))) {
-      const corrections = Array.isArray(/** @type {any} */ (state)?.corrections)
-        ? /** @type {any} */ (state).corrections
-        : [];
-      for (const correction of corrections) {
-        if (
-          correction &&
-          typeof correction.bead_id === 'string' &&
-          typeof correction.after === 'string'
-        ) {
-          correction_after.set(correction.bead_id, correction.after);
-        }
-      }
-    }
-    return {
-      admission: objectOf(q.admission),
-      correction_after
-    };
+    return { admission: objectOf(currentQueue().admission) };
   }
 
   /**
@@ -3046,15 +3026,11 @@ export function createWorkerView(mount_element, options = {}) {
       facts.admission[item.id] || null,
       !!item.discard || stale_work_pending.has(item.id)
     );
-    const correction = facts.correction_after.get(item.id);
     return {
       ...row,
       draggable: row.draggable === true && !stale_work,
       stale_work,
       reason: stale_work ? '' : row.reason,
-      badges: correction
-        ? [`🔗 ${correction} 뒤 (blocks 자동)`, ...(row.badges || [])]
-        : row.badges,
       // 처분 세션 요청의 in-flight 창 (UI-hs11 §3.5) — 두 번째 클릭을 막는다.
       revise_enabled:
         row.revise_enabled === true && !revise_pending.has(item.id)
@@ -3961,7 +3937,9 @@ export function createWorkerView(mount_element, options = {}) {
             resolve_pending.has(item.id)
           )
         },
-        { actions: queueRowOps(item) }
+        // 좁은 화면의 대기 행은 카드 변형이다 (UI-0bvr §7.1) — 한 줄 변형은
+        // 390px에서 서너 줄로 접히고 조작 묶음이 자기 줄로 떨어진다.
+        { actions: queueRowOps(item), card: is_mobile }
       )}
     </div>`;
   }

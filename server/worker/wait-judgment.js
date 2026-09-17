@@ -191,34 +191,6 @@ export function externalJobHeadline(row) {
 }
 
 /**
- * Compose one prerequisite group headline from its collected targets (§10.1).
- * One open blocker names it; several are counted by status.
- *
- * @param {Array<{ name: string, status: string }>} items
- * @returns {string}
- */
-function prerequisiteHeadline(items) {
-  if (items.length === 0) {
-    return '';
-  }
-  if (items.length === 1) {
-    const [only] = items;
-    return `${only.name} 완료를 기다림${only.status ? ` (${only.status})` : ''}`;
-  }
-  /** @type {Map<string, number>} */
-  const counts = new Map();
-  for (const item of items) {
-    if (item.status) {
-      counts.set(item.status, (counts.get(item.status) || 0) + 1);
-    }
-  }
-  const detail = [...counts]
-    .map(([status, count]) => `${status} ${count}`)
-    .join(' · ');
-  return `선행 ${items.length}건 완료를 기다림${detail ? ` (${detail})` : ''}`;
-}
-
-/**
  * Pure workspace wait projection. No queue mutation, I/O or wall-clock reads.
  *
  * @param {WaitJudgmentInput} input
@@ -427,10 +399,18 @@ export function judgeWaitReasons(input) {
       Array.isArray(attempt.cause_detail?.blockers);
     const admitted =
       record?.reason === 'prerequisite_unmet' && Array.isArray(record.blockers);
-    const bare = !attempt && !record && pending_ids.includes(bead_id);
-    const sources = [
+    const recorded = [
       ...(held ? attempt.cause_detail.blockers : []),
-      ...(admitted ? record.blockers : []),
+      ...(admitted ? record.blockers : [])
+    ];
+    // 선행과 무관한 admission 기록은 선행 사유를 막지 않는다 (UI-0bvr §6.1):
+    // attempt도 admission도 blocker를 싣지 않았으면 `blocked_by`를 읽는다.
+    // `!attempt`는 남는다 — 실행 이력이 있는 bead의 대기 사유는 그 attempt의
+    // `cause_detail`이 소유하고 그 경로는 `held`가 이미 판정한다.
+    const bare =
+      !attempt && recorded.length === 0 && pending_ids.includes(bead_id);
+    const sources = [
+      ...recorded,
       ...(bare && Array.isArray(blocked_by[bead_id]) ? blocked_by[bead_id] : [])
     ];
     for (const source of sources) {
@@ -441,8 +421,6 @@ export function judgeWaitReasons(input) {
     }
     /** @type {Map<WaitKind, WaitReason>} */
     const groups = new Map();
-    /** @type {Map<WaitKind, Array<{ name: string, status: string }>>} */
-    const group_items = new Map();
     for (const [id, blocker] of blockers) {
       const foreign_fact = foreign[id];
       const self_rig = queue.rig || bead_id.slice(0, bead_id.lastIndexOf('-'));
@@ -461,6 +439,9 @@ export function judgeWaitReasons(input) {
       const kind = is_foreign ? 'prerequisite_foreign' : 'prerequisite';
       let result = groups.get(kind);
       if (!result) {
+        // 선행 대기는 headline을 싣지 않는다 (UI-0bvr §4.2): 슬롯 1 배지와 4a
+        // 칩이 이미 말하는 사실이라 본문 줄이 되풀이가 된다. 빈 문자열이면
+        // 카드가 본문을 그리지 않는다 (fail-quiet).
         result = reason(
           kind,
           bead_id,
@@ -474,14 +455,10 @@ export function judgeWaitReasons(input) {
           since: attempt?.finished_at || record?.at
         });
         groups.set(kind, result);
-        group_items.set(kind, []);
       }
       const rig = line(
         foreign_fact?.rig || blocker.rig || (is_foreign ? blocker_rig : '')
       );
-      const title = line(current.title || blocker.title).slice(0, 24);
-      const name = `${is_foreign && rig ? `${rig}/` : ''}${id}${title ? ` "${title}"` : ''}`;
-      group_items.get(kind)?.push({ name, status });
       result.targets.push({
         id,
         kind: 'issue',
@@ -495,9 +472,6 @@ export function judgeWaitReasons(input) {
       ) {
         judge(result, 'action_required', 'blocker_needs_human');
       }
-    }
-    for (const [kind, result] of groups) {
-      result.headline = prerequisiteHeadline(group_items.get(kind) || []);
     }
     wait_reasons.push(...groups.values());
     if (attempt?.status === 'parked' && !attempt.parked_resumed_at) {

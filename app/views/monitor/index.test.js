@@ -295,9 +295,9 @@ test('demotes a prerequisite wait to its queue row and keeps the summary', () =>
   expect(
     mount.querySelector('.worker-mini[data-bead-id="A-1"]')
   ).not.toBeNull();
-  expect(mount.querySelector('.wait-summary > summary')?.textContent).toMatch(
-    /\ub9c9\ud798\s*1/
-  );
+  expect(
+    mount.querySelector('.wait-summary > .worker-kpi__chip')?.textContent
+  ).toMatch(/\ub9c9\ud798\s*1/);
 });
 
 /**
