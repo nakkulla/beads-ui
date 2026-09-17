@@ -50,6 +50,39 @@ describe('wait vocabulary table', () => {
     expect(complete).toBe(true);
   });
 
+  test('defines both times-line words on every row (UI-0bvr §5.1)', () => {
+    const defined = WAIT_KINDS.every(
+      (row) =>
+        typeof row.elapsed_word === 'string' &&
+        typeof row.next_word === 'string'
+    );
+
+    expect(defined).toBe(true);
+  });
+
+  test('leaves both times-line words empty for the two prerequisite rows', () => {
+    const rows = WAIT_KINDS.filter((row) =>
+      ['prerequisite', 'prerequisite_foreign'].includes(row.id)
+    );
+
+    expect(rows.map((row) => [row.elapsed_word, row.next_word])).toEqual([
+      ['', ''],
+      ['', '']
+    ]);
+  });
+
+  test('names the times-line words of the clock-carrying kinds', () => {
+    const words = ['external_job', 'retry_wait', 'provider_hold-usage_limit']
+      .map((id) => WAIT_KINDS.find((row) => row.id === id))
+      .map((row) => [row?.elapsed_word, row?.next_word]);
+
+    expect(words).toEqual([
+      ['대기', '다음 확인'],
+      ['대기', '다음 재시도'],
+      ['보류', '다음 프로브']
+    ]);
+  });
+
   test('offers the restart probe as a release of the usage limit hold', () => {
     const row = WAIT_KINDS.find(
       (entry) => entry.id === 'provider_hold-usage_limit'

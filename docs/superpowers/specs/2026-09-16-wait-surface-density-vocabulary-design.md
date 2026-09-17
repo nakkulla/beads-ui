@@ -359,6 +359,14 @@ ops · hamilton
 `timesMeta`와 상세 패널은 바꾸지 않는다. `.rtile .wait-reason__times`는
 `.worker-mini__times`와 같은 캡션 크기·저채도다.
 
+**승계(UI-0bvr).** 슬롯 7 시각 줄의 정의는
+`2026-09-17-wait-card-duplicate-vocabulary-and-narrow-layout-design.md` §5가
+대체한다. 낱말은 렌더가 아니라 어휘 표의 `elapsed_word`·`next_word` 두 칸이
+소유하고, 줄은 `<경과> <elapsed_word>[ · <next_word> <HH:MM>]`이며 `resets_at`이
+있으면 뒤 조각이 `리셋 <HH:MM>`이다. 선행 대기 두 종류는 두 칸이 모두 비어 줄
+자체가 서지 않고 그 시작 시각은 배지 팝업의 `대기 시작 <t>`가 싣는다.
+`formatClockLocal` 형식과 이 절의 나머지 규칙은 그대로다.
+
 ## 10. 서버 (`server/worker/wait-judgment.js`)
 
 ### 10.1 headline 규칙

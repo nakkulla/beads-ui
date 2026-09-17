@@ -26,6 +26,10 @@
  * @property {string} when
  * @property {string} release
  * @property {string} action
+ * @property {string} elapsed_word - 시각 줄 경과 조각의 낱말 (`5시간째 <낱말>`).
+ * 비면 경과 조각을 그리지 않는다 (§5.1).
+ * @property {string} next_word - 시각 줄 `next_check_at` 조각의 낱말
+ * (`<낱말> 11:55`). 비면 다음 조각을 그리지 않는다.
  * @typedef {Object} WaitKindContext
  * @property {'usage_limit'|'outage'} [hold_kind]
  * @property {'env'|'systemic'} [queue_hold_kind]
@@ -65,7 +69,11 @@ export const WAIT_KINDS = Object.freeze(
       label: '선행 대기',
       when: '선행 이슈가 열려 있어 착수하지 못함',
       release: '선행이 닫히면 bd ready 재스캔으로 자동 복귀',
-      action: ''
+      action: '',
+      // 선행 대기는 시각 줄을 그리지 않는다 (§5.1): 슬롯 1 배지와 4a 칩이 이미
+      // 말하는 사정이고 시작 시각은 배지 팝업이 싣는다.
+      elapsed_word: '',
+      next_word: ''
     },
     {
       id: 'prerequisite_foreign',
@@ -75,7 +83,9 @@ export const WAIT_KINDS = Object.freeze(
       label: '선행 대기',
       when: '다른 저장소의 선행이 열려 있음(칩 색·툴팁으로 rig 구분)',
       release: '다른 저장소 선행이 닫히면 자동 복귀',
-      action: ''
+      action: '',
+      elapsed_word: '',
+      next_word: ''
     },
     {
       id: 'external_job',
@@ -87,7 +97,9 @@ export const WAIT_KINDS = Object.freeze(
       when: '외부 호스트의 작업 종료를 관측기가 확인하는 중',
       release:
         '<interval>분마다 자동 확인 · 종료 확인되면 대기 자동 해제 (· 완료 시 Discord 알림)',
-      action: '[지금 확인]'
+      action: '[지금 확인]',
+      elapsed_word: '대기',
+      next_word: '다음 확인'
     },
     {
       id: 'base_moved',
@@ -97,7 +109,9 @@ export const WAIT_KINDS = Object.freeze(
       label: '반영 대기',
       when: '검증된 후보를 보존하고 새 base 재검증을 기다림',
       release: '↻ 이어하기로 보존 세션 재개',
-      action: '↻ 이어하기'
+      action: '↻ 이어하기',
+      elapsed_word: '대기',
+      next_word: ''
     },
     {
       id: 'awaiting_user',
@@ -107,7 +121,9 @@ export const WAIT_KINDS = Object.freeze(
       label: '세션 대기',
       when: '세션이 사용자 답변을 기다리며 파킹됨',
       release: '문의 세션에서 답하면 해제',
-      action: '[세션에서 해결]'
+      action: '[세션에서 해결]',
+      elapsed_word: '대기',
+      next_word: ''
     },
     {
       id: 'retry_wait',
@@ -117,7 +133,9 @@ export const WAIT_KINDS = Object.freeze(
       label: '재시도 대기',
       when: '환경성 실패의 자동 재시도 예약',
       release: '예약 시각에 자동 재시도',
-      action: '↻ 지금 재시도'
+      action: '↻ 지금 재시도',
+      elapsed_word: '대기',
+      next_word: '다음 재시도'
     },
     {
       id: 'stale_work',
@@ -127,7 +145,11 @@ export const WAIT_KINDS = Object.freeze(
       label: '처분 대기',
       when: '보존된 작업을 이어갈지 새로 시작할지 결정이 필요',
       release: '처분 버튼으로 선택',
-      action: '처분 버튼'
+      action: '처분 버튼',
+      // `since`를 싣지 않는 종류라 지금은 그려지지 않는다 (fail-quiet). 칸을 비워
+      // 두면 재료가 생겼을 때 낱말을 렌더가 다시 고르게 된다.
+      elapsed_word: '대기',
+      next_word: ''
     },
     {
       id: 'recovery',
@@ -139,7 +161,9 @@ export const WAIT_KINDS = Object.freeze(
       when: '복구 분류된 보존 작업이 확인을 기다림',
       release:
         '복구 분류별 해제 조건은 서버 사유가 말함 · 수정 Bead 착지 또는 사람 확인 뒤 재개',
-      action: '↻ 이어하기·폐기'
+      action: '↻ 이어하기·폐기',
+      elapsed_word: '대기',
+      next_word: ''
     },
     {
       id: 'provider_hold-usage_limit',
@@ -151,7 +175,9 @@ export const WAIT_KINDS = Object.freeze(
       when: '이 attempt가 계정 한도로 멈춤',
       release:
         '리셋 뒤 자동 프로브 · 소진이면 서버 재시작 시 1회 자동 프로브 또는 ↻ 지금 프로브',
-      action: '↻ 지금 프로브'
+      action: '↻ 지금 프로브',
+      elapsed_word: '보류',
+      next_word: '다음 프로브'
     },
     {
       id: 'provider_hold-outage',
@@ -162,7 +188,9 @@ export const WAIT_KINDS = Object.freeze(
       label: '공급자 장애',
       when: '이 attempt가 공급자 장애로 멈춤',
       release: '다음 프로브 시각에 자동 프로브(상한 없음)',
-      action: '↻ 지금 프로브'
+      action: '↻ 지금 프로브',
+      elapsed_word: '보류',
+      next_word: '다음 프로브'
     },
     {
       id: 'queue_hold-systemic',
@@ -173,7 +201,11 @@ export const WAIT_KINDS = Object.freeze(
       label: '정지',
       when: '큐가 체계적 실패로 멈춤',
       release: '▶ 재개(사람 승인)',
-      action: '▶ 재개'
+      action: '▶ 재개',
+      // 큐 단위 사유와 게이트 칩은 공통 시각 줄을 그리지 않는다 (§5.1) — 배지도
+      // 본문도 없는 한 층짜리 칩이라 두 칸이 비어 있다.
+      elapsed_word: '',
+      next_word: ''
     },
     {
       id: 'queue_hold-env',
@@ -184,7 +216,9 @@ export const WAIT_KINDS = Object.freeze(
       label: '환경 보류',
       when: '환경 오류로 큐가 일시 정지, 자동 재시도 예약',
       release: '<t>에 자동 재시도 · 성공하면 해제',
-      action: '↻ 지금 재시도'
+      action: '↻ 지금 재시도',
+      elapsed_word: '',
+      next_word: ''
     },
     {
       id: 'gate-provider_usage',
@@ -196,7 +230,9 @@ export const WAIT_KINDS = Object.freeze(
       when: '러너의 계정 한도 보류 — target에 계정이 있으면 그 계정을 쓰는 행과 계정을 해석할 수 없는 행에, 없으면 러너의 모든 행에',
       release:
         '리셋 뒤 자동 프로브 · 소진이면 서버 재시작 시 1회 자동 프로브 또는 ↻ 지금 프로브',
-      action: '↻ 지금 프로브'
+      action: '↻ 지금 프로브',
+      elapsed_word: '',
+      next_word: ''
     },
     {
       id: 'gate-provider_outage',
@@ -207,7 +243,9 @@ export const WAIT_KINDS = Object.freeze(
       label: '공급자 장애',
       when: '러너 전체가 공급자 장애로 보류라 이 행이 출발하지 못함',
       release: '다음 프로브 시각에 자동 프로브',
-      action: '↻ 지금 프로브'
+      action: '↻ 지금 프로브',
+      elapsed_word: '',
+      next_word: ''
     }
   ])
 );

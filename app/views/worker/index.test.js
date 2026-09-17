@@ -688,9 +688,9 @@ describe('views/worker', () => {
     ).click();
 
     const row = mount.querySelector('.worker-mini[data-bead-id="A-2"]');
-    expect(mount.querySelector('.wait-summary > summary')?.textContent).toMatch(
-      /막힘\s*1\s*·\s*⛔\s*1/
-    );
+    expect(
+      mount.querySelector('.wait-summary > .worker-kpi__chip')?.textContent
+    ).toMatch(/막힘\s*1\s*·\s*⛔\s*1/);
     expect(row?.classList.contains('worker-mini--prerequisite')).toBe(true);
     expect(row?.getAttribute('draggable')).toBe('true');
     expect(row?.querySelector('.worker-mini__seq')?.textContent?.trim()).toBe(
@@ -13603,7 +13603,13 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
     );
   });
 
-  test('renders correction chip and cycle warning from lane_states', () => {
+  /**
+   * A serial lane whose second row the scheduler reordered, plus a lane the
+   * server flagged as a cycle. Both facts live in `lane_states`.
+   *
+   * @returns {HTMLElement}
+   */
+  function mountCorrectedLanes() {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     createWorkerView(mount, {
@@ -13635,14 +13641,26 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
         }
       })
     );
+    return mount;
+  }
+
+  test('omits the blocks 자동 badge from a corrected row (UI-0bvr §4.3)', () => {
+    const mount = mountCorrectedLanes();
 
     const row_b = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="B"]')
     );
-    expect(row_b.textContent).toContain('🔗 A 뒤');
+
+    expect(row_b.textContent).not.toContain('blocks 자동');
+  });
+
+  test('renders the cycle warning from lane_states', () => {
+    const mount = mountCorrectedLanes();
+
     const s2 = /** @type {HTMLElement} */ (
       mount.querySelector('#worker-pane-lane-s2')?.closest('.worker-wait__lane')
     );
+
     expect(s2.textContent).toContain('순환');
   });
 

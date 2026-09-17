@@ -236,7 +236,7 @@ describe('worker console styles', () => {
     const baseWorkerCss = CSS.slice(markerIndex, responsiveMarker);
     const reasonRule =
       baseWorkerCss.match(
-        /#worker-root \.worker-mini--card \.worker-mini__head > \.worker-mini__reason\s*{([^}]*)}/
+        /\.worker-mini--card \.worker-mini__head > \.worker-mini__reason\s*{([^}]*)}/
       )?.[1] || '';
 
     expect(responsiveMarker).toBeGreaterThan(markerIndex);
@@ -246,6 +246,24 @@ describe('worker console styles', () => {
     expect(reasonRule).toContain('margin-left: 0');
     expect(reasonRule).toContain('white-space: normal');
     expect(reasonRule).toContain('overflow-wrap: anywhere');
+  });
+
+  test('gives the monitor root the same card-head reason rule (UI-0bvr §7.1)', () => {
+    const responsiveMarker = CSS.indexOf(
+      '/* ---------- Worker responsive (<=640px)'
+    );
+    const baseWorkerCss = CSS.slice(markerIndex, responsiveMarker);
+    const selector_list =
+      baseWorkerCss.match(
+        /([^{}]*\.worker-mini--card \.worker-mini__head > \.worker-mini__reason)\s*{/
+      )?.[1] || '';
+
+    expect(selector_list).toContain(
+      '#worker-root .worker-mini--card .worker-mini__head > .worker-mini__reason'
+    );
+    expect(selector_list).toContain(
+      '.mon .worker-mini--card .worker-mini__head > .worker-mini__reason'
+    );
   });
 
   test('wraps every standard mini-row sibling in narrow lanes', () => {
@@ -514,6 +532,38 @@ describe('worker console styles', () => {
     expect(rule).toContain('display: inline-flex');
     expect(hidden_group).toContain('display: none');
     expect(hidden_group).not.toContain('rowops-remove');
+  });
+
+  test('keeps the toolbar labels on one line at every width (UI-0bvr §7.3)', () => {
+    const play =
+      workerBlock.match(/(?:^|\n)\.worker-play\s*{([^}]*)}/)?.[1] || '';
+    const toggle =
+      workerBlock.match(/(?:^|\n)\.worker-tgl\s*{([^}]*)}/)?.[1] || '';
+
+    expect(play).toContain('white-space: nowrap');
+    expect(toggle).toContain('white-space: nowrap');
+  });
+
+  test('lays the toolbar toggle label and its input on one row', () => {
+    const toggle =
+      workerBlock.match(/(?:^|\n)\.worker-tgl\s*{([^}]*)}/)?.[1] || '';
+
+    expect(toggle).toContain('display: inline-flex');
+    expect(toggle).toContain('align-items: center');
+  });
+
+  test('drops the visible box from the ghost operation button (UI-0bvr §7.2)', () => {
+    const ghost = CSS.match(/(?:^|\n)\.op-btn--ghost\s*{([^}]*)}/)?.[1] || '';
+
+    expect(ghost).toContain('border-color: transparent');
+  });
+
+  test('keeps the coarse-pointer target size of the ghost icon button', () => {
+    const icon_sizes = coarsePointerBlocks()
+      .map((block) => block.match(/\.op-btn--icon\s*{([^}]*)}/)?.[1] || '')
+      .filter(Boolean);
+
+    expect(icon_sizes.join('')).toContain('min-width: 32px');
   });
 
   test('keeps running tile metadata readable when it has a long token', () => {

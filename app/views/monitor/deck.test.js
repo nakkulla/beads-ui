@@ -177,8 +177,9 @@ test('counts wait subjects only in visible repositories using pipeline judgments
   deck.render();
 
   expect(
-    mount.querySelector('.mon2-deck__total-counts .wait-summary > summary')
-      ?.textContent
+    mount.querySelector(
+      '.mon2-deck__total-counts .wait-summary > .worker-kpi__chip'
+    )?.textContent
   ).toMatch(/막힘\s*1\s*·\s*⛔\s*1/);
   expect(mount.querySelector('.wait-summary__popover')?.textContent).toContain(
     '선행 1'

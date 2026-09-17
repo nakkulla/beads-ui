@@ -438,6 +438,19 @@ held 카드는 종류 글리프와 라벨만 그린다 — 부재를 `정상`으
 `↻ 지금 프로브`·`[지금 시작]`은 자동 진행이 꺼져 있어도 유지한다. 근거는
 `2026-09-16-auto-advance-off-quiet-cards-design.md` §4가 소유한다.
 
+**정정(UI-0bvr).** 대기 행은 좁은 화면(≤640px)에서 카드 변형
+(`.worker-mini--card`)을 쓴다 — 데스크톱은 한 줄 변형 그대로다. 카드 변형 머리 줄의
+순서는 `grip · 순번 · ID · 우선순위 · PR · 외부 PR · 상태 뱃지 · 대기 판정 배지 ·
+조작 · reason`이다. reason이 머리 줄 안에서 한 줄을 통째 쓰므로 그 뒤에 선 조작은
+다음 줄로 밀렸고, 순서를 바꾸면 "조작은 1번 줄 오른쪽 끝"이 좁은 화면에서도
+지켜진다 — reason은 그 아래 자기 줄을 그대로 쓴다. 같은 머리를 쓰는 PR 대기·
+REVISE 파킹·처분 카드에도 함께 적용된다. 그리고 슬롯 1 정체성의 admission 사유
+(reason) 목록에서 `prerequisite_unmet`이 빠진다: 선행 대기는 서버 사유가 낸 대기
+판정 배지 한 층만 말하고 클라이언트 admission 투영은 그 사유에 배지도 문장도
+만들지 않는다. 근거는
+`2026-09-17-wait-card-duplicate-vocabulary-and-narrow-layout-design.md`
+§4.1·§7.1이 소유한다.
+
 ### 5.2 `AGENTS.md`에 남길 규칙
 
 - 워커·모니터 카드(`candidateCard` · `miniRow` · `runningTile`)의 줄 순서는 §2

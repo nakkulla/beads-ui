@@ -1755,16 +1755,12 @@ function admissionBadge(admission, bead_id) {
   if (reason === 'provider_gate') {
     return '';
   }
-  // 선행 대기는 스케줄러가 증명한 진단이지 상태 복사가 아니므로 (UI-d3i1 §5.4)
-  // `⛔` 접두를 쓰지 않는다 — 그래야 candidateCard의 danger 스타일을 타지 않고,
-  // 무엇을 기다리는지는 같은 record의 blockers가 슬롯 4a 칩으로 말한다.
-  // blockers가 없으면 근거가 없으므로 현행 문자열로 떨어진다 (fail-quiet).
-  if (
-    reason === 'prerequisite_unmet' &&
-    Array.isArray(record.blockers) &&
-    record.blockers.length > 0
-  ) {
-    return '⛓ 선행 대기';
+  // 선행 대기도 뱃지를 만들지 않는다 (UI-0bvr §4.1): 같은 admission 기록을
+  // 서버의 `prerequisite` 사유가 이미 읽어 슬롯 1 대기 판정 배지를 세우므로, 이
+  // 투영까지 그리면 한 카드가 같은 사실을 두 번 말한다. 빈 문자열이어야 하고
+  // 갈래 삭제여서는 안 된다 — 지우면 아래 `⛔ prerequisite_unmet`으로 떨어진다.
+  if (reason === 'prerequisite_unmet') {
+    return '';
   }
   const sep = reason.indexOf(':');
   if (sep > 0 && sep < reason.length - 1) {
@@ -3728,16 +3724,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const parked = revise_parked[bead_id];
       const projected_discard = discardProjection(discard_operations, bead_id);
       const discard = projected_discard.operation ? projected_discard : null;
-      // 선행이 전부 해제된 행에는 `⛓ 선행 대기` 문구가 서지 않는다 (§5.2, 수용
-      // 기준 4). 옛 거절 기록은 이력이고 현재 열린 선행은 서버의
-      // `bead_blocked_by`가 말한다 — 키가 없으면 모름이므로 현행 표시를 지킨다.
-      const open_prerequisites = Object.hasOwn(bead_blocked_by, bead_id)
-        ? bead_blocked_by[bead_id]
-        : null;
-      const prerequisites_released =
-        objectOf(admission[bead_id]).reason === 'prerequisite_unmet' &&
-        open_prerequisites !== null &&
-        (!Array.isArray(open_prerequisites) || open_prerequisites.length === 0);
       /** @type {LaneItem} */
       const item = {
         ...base(bead_id),
@@ -3753,9 +3739,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         // 데스크톱의 유일한 적재 수단이 드래그다 (§6) — 대기 행은 끌 수 있다.
         draggable: !discard,
         discard: discard || undefined,
-        reason: prerequisites_released
-          ? ''
-          : admissionBadge(admission, bead_id),
+        reason: admissionBadge(admission, bead_id),
         seq: queue_index + 1,
         queue_position: queue_index + 1,
         queue_index,

@@ -480,6 +480,15 @@ describe('wait judgment external work', () => {
     });
   });
 
+  test('overwrites the external wait start once settlement begins', () => {
+    const terminal_recorded_at = NOW - 5 * MINUTE;
+    const row = external({ stage: 'terminal_recorded', terminal_recorded_at });
+
+    const result = run({ external_waits: [row] }).wait_reasons[0];
+
+    expect(result.since).toBe(terminal_recorded_at);
+  });
+
   test('uses the watch interval for the settlement threshold', () => {
     const row = external({
       stage: 'gate_noted',
@@ -554,9 +563,49 @@ describe('wait judgment prerequisites', () => {
       {
         kind: 'prerequisite',
         subject: { bead_id: 'UI-consumer' },
-        headline: 'UI-blocker "선행 작업" 완료를 기다림 (open)',
+        headline: '',
         release: '선행이 닫히면 bd ready 재스캔으로 자동 복귀'
       }
+    ]);
+  });
+
+  test('reads blocked_by past an admission record about something else', () => {
+    const result = run({
+      queue: queue({
+        ...serial,
+        admission: {
+          'UI-consumer': { reason: 'spec_review_stale', stale: true }
+        }
+      }),
+      bead_blocked_by: { 'UI-consumer': ['UI-blocker'] },
+      blocker_facts: { 'UI-blocker': { status: 'open' } }
+    });
+
+    expect(result.wait_reasons).toMatchObject([
+      { kind: 'prerequisite', subject: { bead_id: 'UI-consumer' } }
+    ]);
+  });
+
+  test('leaves a running implementation attempt without a prerequisite reason', () => {
+    const result = run({
+      queue: queue({
+        ...serial,
+        attempts: { a: waiting({ status: 'running', cause_detail: {} }) }
+      }),
+      bead_blocked_by: { 'UI-consumer': ['UI-blocker'] }
+    });
+
+    expect(result.wait_reasons).toEqual([]);
+  });
+
+  test('judges a waiting attempt with blockers through the held branch', () => {
+    const result = run({
+      queue: queue({ ...serial, attempts: { a: waiting() } }),
+      bead_blocked_by: { 'UI-consumer': ['UI-blocker', 'UI-extra'] }
+    });
+
+    expect(result.wait_reasons[0].targets).toEqual([
+      { id: 'UI-blocker', kind: 'issue', status: 'open' }
     ]);
   });
 
@@ -665,7 +714,7 @@ describe('wait judgment prerequisites', () => {
     expect(result).toMatchObject({
       kind: 'prerequisite_foreign',
       verdict: 'normal',
-      headline: 'OTHER/OTHER-a 완료를 기다림',
+      headline: '',
       release: '다른 저장소 선행이 닫히면 자동 복귀'
     });
   });
@@ -1215,29 +1264,24 @@ describe('wait-judge runtime', () => {
   );
 });
 
-describe('wait judgment headline composition', () => {
+describe('wait judgment prerequisite headline (UI-0bvr §4.2)', () => {
   const serial = queue({
     serial_lanes: [{ id: 's1', entries: [{ bead_id: 'UI-consumer' }] }]
   });
 
-  test('names the single open blocker with its truncated title and status', () => {
+  test('leaves the prerequisite headline empty', () => {
     const result = run({
       queue: serial,
       bead_blocked_by: { 'UI-consumer': ['UI-blocker'] },
       blocker_facts: {
-        'UI-blocker': {
-          title: '가나다라마바사아자차카타파하가나다라마바사아자차카타파하',
-          status: 'open'
-        }
+        'UI-blocker': { title: '선행 작업', status: 'open' }
       }
     });
 
-    expect(result.wait_reasons[0].headline).toBe(
-      'UI-blocker "가나다라마바사아자차카타파하가나다라마바사아자차" 완료를 기다림 (open)'
-    );
+    expect(result.wait_reasons[0].headline).toBe('');
   });
 
-  test('counts blockers by status once two are open', () => {
+  test('carries each open blocker status on the reason targets', () => {
     const result = run({
       queue: serial,
       bead_blocked_by: { 'UI-consumer': ['UI-blocker', 'UI-second'] },
@@ -1247,18 +1291,10 @@ describe('wait judgment headline composition', () => {
       }
     });
 
-    expect(result.wait_reasons[0].headline).toBe(
-      '선행 2건 완료를 기다림 (open 1 · in_progress 1)'
-    );
-  });
-
-  test('omits the status parenthetical when no blocker carries a status', () => {
-    const result = run({
-      queue: serial,
-      bead_blocked_by: { 'UI-consumer': ['UI-blocker', 'UI-second'] }
-    });
-
-    expect(result.wait_reasons[0].headline).toBe('선행 2건 완료를 기다림');
+    expect(result.wait_reasons[0].targets).toEqual([
+      { id: 'UI-blocker', kind: 'issue', status: 'open' },
+      { id: 'UI-second', kind: 'issue', status: 'in_progress' }
+    ]);
   });
 
   test('omits a prerequisite reason after frozen blockers resolve', () => {
