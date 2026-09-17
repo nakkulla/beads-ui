@@ -6214,8 +6214,10 @@ html[data-theme='dark'] {
 }
 
 /* PR/revise 카드의 머리도 같은 사유를 담지만 `__line`이 아니다. 긴 중단 사유는
-   PR·뱃지와 폭을 다투지 않고 머리의 다음 줄 전체를 쓴다. */
-#worker-root .worker-mini--card .worker-mini__head > .worker-mini__reason {
+   PR·뱃지와 폭을 다투지 않고 머리의 다음 줄 전체를 쓴다. 카드 변형은 두 탭이
+   같은 `miniRow`로 그리므로 모니터 루트(`.mon`)도 같이 덮는다 (UI-0bvr §7.1). */
+#worker-root .worker-mini--card .worker-mini__head > .worker-mini__reason,
+.mon .worker-mini--card .worker-mini__head > .worker-mini__reason {
   flex: 1 0 100%;
   min-width: 0;
   max-width: 100%;

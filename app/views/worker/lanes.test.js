@@ -6536,6 +6536,69 @@ describe('대기 카드 표면 정리 2차 (UI-0bvr)', () => {
     expect(summary.groups[0].entries.map((entry) => entry.id)).toEqual(['A-1']);
   });
 
+  /**
+   * A-2 waits on A-1, which is itself a blocked row, and A-2 also waits on a
+   * person — the mixed-reason case of §6.2 where only the prerequisite is
+   * represented upstream.
+   *
+   * @param {Partial<import('../../../server/worker/wait-judgment.js').WaitReason>} [prerequisite_patch]
+   * @returns {Array<{ root_dir: string, wait_reasons: import('../../../server/worker/wait-judgment.js').WaitReason[] }>}
+   */
+  function mixedReasonWorkspaces(prerequisite_patch = {}) {
+    return [
+      {
+        root_dir: '/repo',
+        wait_reasons: [
+          prerequisiteOf('A-1', ['A-9']),
+          waitReason({
+            headline: '',
+            subject: { bead_id: 'A-2', root_dir: '/repo' },
+            targets: [{ id: 'A-1', kind: 'issue' }],
+            ...prerequisite_patch
+          }),
+          waitReason({
+            kind: 'awaiting_user',
+            headline: '사람 확인을 기다림',
+            subject: { bead_id: 'A-2', root_dir: '/repo' },
+            targets: []
+          })
+        ]
+      }
+    ];
+  }
+
+  test('counts an upstream-covered issue that still carries another reason', () => {
+    const summary = blockedSummary(mixedReasonWorkspaces());
+
+    expect(summary.count).toBe(2);
+  });
+
+  test('lists an upstream-covered issue under its remaining kind', () => {
+    const summary = blockedSummary(mixedReasonWorkspaces());
+
+    const people = summary.groups.find((group) => group.label === '사람');
+
+    expect(people?.entries.map((entry) => entry.id)).toEqual(['A-2']);
+  });
+
+  test('drops only the covered prerequisite from the 선행 group', () => {
+    const summary = blockedSummary(mixedReasonWorkspaces());
+
+    const prerequisites = summary.groups.find(
+      (group) => group.label === '선행'
+    );
+
+    expect(prerequisites?.entries.map((entry) => entry.id)).toEqual(['A-1']);
+  });
+
+  test('leaves a covered action-required prerequisite out of the action count', () => {
+    const summary = blockedSummary(
+      mixedReasonWorkspaces({ verdict: 'action_required' })
+    );
+
+    expect(summary.action_count).toBe(0);
+  });
+
   test('keeps a foreign prerequisite in the blocked count', () => {
     const summary = blockedSummary([
       {

@@ -236,7 +236,7 @@ describe('worker console styles', () => {
     const baseWorkerCss = CSS.slice(markerIndex, responsiveMarker);
     const reasonRule =
       baseWorkerCss.match(
-        /#worker-root \.worker-mini--card \.worker-mini__head > \.worker-mini__reason\s*{([^}]*)}/
+        /\.worker-mini--card \.worker-mini__head > \.worker-mini__reason\s*{([^}]*)}/
       )?.[1] || '';
 
     expect(responsiveMarker).toBeGreaterThan(markerIndex);
@@ -246,6 +246,24 @@ describe('worker console styles', () => {
     expect(reasonRule).toContain('margin-left: 0');
     expect(reasonRule).toContain('white-space: normal');
     expect(reasonRule).toContain('overflow-wrap: anywhere');
+  });
+
+  test('gives the monitor root the same card-head reason rule (UI-0bvr §7.1)', () => {
+    const responsiveMarker = CSS.indexOf(
+      '/* ---------- Worker responsive (<=640px)'
+    );
+    const baseWorkerCss = CSS.slice(markerIndex, responsiveMarker);
+    const selector_list =
+      baseWorkerCss.match(
+        /([^{}]*\.worker-mini--card \.worker-mini__head > \.worker-mini__reason)\s*{/
+      )?.[1] || '';
+
+    expect(selector_list).toContain(
+      '#worker-root .worker-mini--card .worker-mini__head > .worker-mini__reason'
+    );
+    expect(selector_list).toContain(
+      '.mon .worker-mini--card .worker-mini__head > .worker-mini__reason'
+    );
   });
 
   test('wraps every standard mini-row sibling in narrow lanes', () => {

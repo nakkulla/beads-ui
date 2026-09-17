@@ -2536,11 +2536,12 @@ function cyclicNodes(graph) {
 /**
  * The subjects an upstream row already represents (UI-0bvr §6.2). `막힘 N`이
  * 답하는 질문은 "지금 손댈 곳이 몇 군데인가"이므로, 열린 선행이 **전부** 같은
- * 워크스페이스의 다른 막힌 행이고 **어떤 순환에도 속하지 않는** 이슈는 집계와
- * 요약 목록에서 빠진다 — 상류를 풀면 함께 풀리고 그 상류 행이 이미 같은 막힘을
- * 대표한다. 순환은 상류가 없어 그 자체가 손댈 곳이므로 순환에 속한 행은 전부
- * 남는다. 다른 저장소 선행은 이 집합에 들어올 수 없어 그 사유는 언제나 셈에
- * 남는다.
+ * 워크스페이스의 다른 막힌 행이고 **어떤 순환에도 속하지 않는** 이슈는 그 선행
+ * 사유를 집계와 요약 목록에서 잃는다 — 상류를 풀면 함께 풀리고 그 상류 행이 이미
+ * 같은 막힘을 대표한다. 대표되는 것은 선행 사유뿐이라 다른 종류의 사유가 남은
+ * 이슈는 그 사유로 계속 센다. 순환은 상류가 없어 그 자체가 손댈 곳이므로 순환에
+ * 속한 행은 전부 남는다. 다른 저장소 선행은 이 집합에 들어올 수 없어 그 사유는
+ * 언제나 셈에 남는다.
  *
  * @param {Map<string, { root_dir: string, reasons: import('../../protocol.js').WaitReason[] }>} subjects
  * @returns {Set<string>}
@@ -2622,9 +2623,21 @@ export function blockedSummary(workspaces) {
     }
   }
   const covered = upstreamCoveredSubjects(subjects);
+  // 상류 행이 대표하는 것은 그 이슈의 선행 사유뿐이다 (§6.2). 선행 사유만 떨구고
+  // 다른 종류가 남은 이슈는 건수와 그 그룹에 그대로 서며, `action_count`도 남은
+  // 사유로만 판정한다 — 떨궈진 선행이 조치 필요였다고 세어지지 않는다.
   const entries = [...subjects]
-    .filter(([key]) => !covered.has(key))
-    .map(([, entry]) => entry);
+    .map(([key, entry]) =>
+      covered.has(key)
+        ? {
+            ...entry,
+            reasons: entry.reasons.filter(
+              (reason) => !PREREQUISITE_KINDS.includes(reason.kind)
+            )
+          }
+        : entry
+    )
+    .filter((entry) => entry.reasons.length > 0);
   const groups = [
     { label: '외부 계산', kinds: ['external_job'] },
     { label: '선행', kinds: ['prerequisite', 'prerequisite_foreign'] },
