@@ -44,9 +44,15 @@
  * @import { Queue } from './queue-store.js'
  * @import { PrDetail } from './gh.js'
  */
+import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
+import { workflowScriptDir } from './attempt-facts.js';
 import { discardOperationActive } from './discard-phase.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
 import { failureTokenSummary, scriptSummary } from './failure-class.js';
@@ -297,12 +303,11 @@ function postMergeJobOperationMatches(
 }
 
 /**
- * What step 1 of the cleanup actually did to the LOCAL checkout. `fast_forwarded`
- * = fetched AND moved the local base branch; the `fetch_only:*` set = fetched,
- * local checkout deliberately untouched (see {@link syncBase} for why that is
- * sufficient rather than degraded).
+ * What step 1 did to the LOCAL checkout. The installed workflow helper owns
+ * base-sync decisions; its result and reason pass through to the cleanup log.
+ * Historical outcomes remain readable in persisted cleanup records.
  *
- * @typedef {'fast_forwarded'|'fetch_only:not_on_base'|'fetch_only:dirty'|'fetch_only:diverged'} BaseSyncOutcome
+ * @typedef {`base_sync:${string}:${string}`|'fast_forwarded'|'fetch_only:not_on_base'|'fetch_only:dirty'|'fetch_only:diverged'} BaseSyncOutcome
  */
 
 /**
@@ -552,6 +557,8 @@ function authoritativeMergeSha(pr) {
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
+ *   runBaseSync?: (file: string, args: string[], options: { cwd: string, encoding: 'utf8' }) => Promise<{ stdout: string }>,
+ *   homeDir?: string,
  *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, tick: (workspace: string) => Promise<void> },
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
@@ -567,6 +574,8 @@ function authoritativeMergeSha(pr) {
 export function createPrActions(deps) {
   const workspace = deps.workspace;
   const repo = deps.repo;
+  const runBaseSync = deps.runBaseSync || promisify(execFile);
+  const home_dir = deps.homeDir || os.homedir();
   const probeAncestry = createAncestryProbe({ gitRun: deps.gitRun, repo });
   const sleep =
     deps.sleep ||
@@ -1466,35 +1475,10 @@ export function createPrActions(deps) {
   /**
    * Step 1 — base 동기화, with an EXPLICIT outcome (§6).
    *
-   * Fetches the base from `origin` — which is what every later step reads — and
-   * fast-forwards the LOCAL base branch only when doing so cannot touch user
-   * work: the checkout must already be on that branch and be clean. A dirty or
-   * differently-checked-out repo is left completely alone.
-   *
-   * WHY FETCH-ONLY IS SUFFICIENT, not a degraded outcome: nothing downstream
-   * reads the local checkout. The post-merge verification (step 2) runs in its
-   * own DETACHED worktree pinned to the sha this function returns — the fetched
-   * `origin/<base>` — so its verdict is identical whether or not the local
-   * branch was moved. The fast-forward is a convenience for the human who will
-   * next sit in that checkout, and preserving their unrelated work outranks it.
-   * That is also why a dirty/other-branch checkout is NOT a cleanup failure:
-   * making it one would block cleanup during the repo's normal working state
-   * while buying no verification strength.
-   *
-   * The two outcomes are still reported apart rather than both as a bare
-   * success — "I moved your base branch" and "I left your checkout untouched"
-   * are different facts about the user's repo, and the cleanup record/log names
-   * which one happened.
-   *
-   * A checkout on a clean base branch that cannot fast-forward is divergence,
-   * and it reports as `fetch_only:diverged` for the SAME reason the two cases
-   * above do: the local branch is never forced, and nothing downstream reads
-   * it. Divergence used to end the cleanup, which made one stray local commit
-   * on the base branch — an artifact landed through a detached publication
-   * candidate leaves exactly that — block every later cleanup in the repository
-   * while buying no verification strength. The real containment gate is the
-   * caller's `merge-base --is-ancestor <merge_sha> <fetched sha>` check on the
-   * sha returned here, and it is untouched by any of these outcomes.
+   * Fetches and pins the base for downstream containment and deployment. On
+   * the base branch, the installed workflow helper owns lossless local sync,
+   * including dirty checkouts. Its outcome never blocks cleanup: downstream
+   * operations use the fetched SHA, independently of the local checkout.
    *
    * @param {string} target_base
    * @param {string|null} [candidate_sha] - Already fetched candidate. When
@@ -1540,28 +1524,66 @@ export function createPrActions(deps) {
           outcome: /** @type {BaseSyncOutcome} */ ('fetch_only:not_on_base')
         };
       }
-      const status = await deps.gitRun(['status', '--porcelain'], {
-        cwd: repo
-      });
-      if (status.code !== 0 || status.stdout.trim().length > 0) {
-        return {
-          ok: /** @type {const} */ (true),
-          sha,
-          outcome: /** @type {BaseSyncOutcome} */ ('fetch_only:dirty')
-        };
-      }
-      const ff = await deps.gitRun(['merge', '--ff-only', sha], { cwd: repo });
-      if (ff.code !== 0) {
-        return {
-          ok: /** @type {const} */ (true),
-          sha,
-          outcome: /** @type {BaseSyncOutcome} */ ('fetch_only:diverged')
-        };
+      /** @type {BaseSyncOutcome} */
+      let outcome = 'base_sync:failed:script_missing';
+      try {
+        const script = ['claude', 'codex']
+          .map((runner) =>
+            path.join(
+              workflowScriptDir(home_dir, runner),
+              'sync-target-base-checkout.py'
+            )
+          )
+          .find((file) => existsSync(file));
+        if (script) {
+          const synced = await runBaseSync(
+            'python3',
+            [
+              script,
+              '--repo',
+              repo,
+              '--remote',
+              'origin',
+              '--base',
+              target_base,
+              '--target-sha',
+              sha
+            ],
+            { cwd: repo, encoding: 'utf8' }
+          );
+          const report = JSON.parse(synced.stdout);
+          outcome =
+            report !== null &&
+            typeof report.result === 'string' &&
+            report.result.length > 0 &&
+            typeof report.reason === 'string' &&
+            report.reason.length > 0
+              ? `base_sync:${report.result}:${report.reason}`
+              : 'base_sync:failed:invalid_response';
+        }
+      } catch (error) {
+        const code = /** @type {NodeJS.ErrnoException} */ (error).code;
+        outcome = `base_sync:failed:${error instanceof SyntaxError ? 'invalid_json' : code || 'script_error'}`;
+        try {
+          const report = JSON.parse(
+            /** @type {{ stdout: string }} */ (error).stdout
+          );
+          if (
+            report !== null &&
+            report.result === 'failed' &&
+            typeof report.reason === 'string' &&
+            report.reason.length > 0
+          ) {
+            outcome = `base_sync:failed:${report.reason}`;
+          }
+        } catch {
+          // Keep the execution error when no valid failure report was emitted.
+        }
       }
       return {
         ok: /** @type {const} */ (true),
         sha,
-        outcome: /** @type {BaseSyncOutcome} */ ('fast_forwarded')
+        outcome
       };
     });
   }

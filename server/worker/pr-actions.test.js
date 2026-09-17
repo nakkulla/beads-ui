@@ -20,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createActivityStore } from './activity-store.js';
+import { workflowScriptDir } from './attempt-facts.js';
 import {
   createCompletionActionDriver,
   decideCompletionAction
@@ -142,6 +143,10 @@ function seedStore(options = {}) {
  *   gitBranch?: string,
  *   gitStatus?: string,
  *   gitHead?: string,
+ *   baseSyncOutput?: string,
+ *   baseSyncError?: Error,
+ *   baseSyncInstalled?: boolean,
+ *   baseSyncRunner?: string,
  *   children?: Record<string, { id: string, status: string, parent_child_dep?: boolean }[]>,
  *   bdIssues?: Record<string, Record<string, any>>,
  *   bdDeps?: { from: string, to: string, type: string }[],
@@ -613,6 +618,26 @@ function makeActions(options = {}) {
     return { ...r, exit: r.ok ? 0 : 1 };
   });
 
+  const sync_script = path.join(
+    workflowScriptDir(tmp_state, options.baseSyncRunner),
+    'sync-target-base-checkout.py'
+  );
+  if (options.baseSyncInstalled !== false) {
+    fs.mkdirSync(path.dirname(sync_script), { recursive: true });
+    fs.writeFileSync(sync_script, '');
+  }
+  const runBaseSync = vi.fn(async () => {
+    calls.push('base-sync:run');
+    if (options.baseSyncError) {
+      throw options.baseSyncError;
+    }
+    return {
+      stdout:
+        options.baseSyncOutput ??
+        JSON.stringify({ result: 'synced', reason: 'fast_forwarded' })
+    };
+  });
+
   const actions = createPrActions({
     workspace: WS,
     // Distinct from `workspace` only where a test needs to prove which of the two
@@ -653,6 +678,8 @@ function makeActions(options = {}) {
     },
     worktree,
     gitRun,
+    runBaseSync,
+    homeDir: tmp_state,
     scheduler,
     // The repo declaration resolver (worker-base-scope-alignment §5). Default:
     // an undeclared repo, i.e. `main` — the same base every fixture PR here is
@@ -702,6 +729,8 @@ function makeActions(options = {}) {
     worktree,
     gitRun,
     git_argv,
+    runBaseSync,
+    sync_script,
     external_drop,
     scheduler,
     resolveVerify,
@@ -2006,63 +2035,179 @@ describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
 });
 
 describe('post-merge cleanup — what step 1 did to the LOCAL checkout', () => {
-  /** Checkout sitting on a clean base branch that cannot fast-forward. */
-  function divergedCheckout() {
-    return makeActions({
+  test.each([
+    ['preserved', 'dirty_conflict'],
+    ['synced', 'rebased_and_pushed'],
+    ['failed', 'sync_failure']
+  ])('reports %s:%s without stopping cleanup', async (result, reason) => {
+    const h = makeActions({
       gitBranch: 'main',
-      gitStatus: '',
-      gitResult: (args) => (args[0] === 'merge' ? 1 : null)
+      baseSyncOutput: JSON.stringify({ result, reason })
     });
-  }
-
-  test('reports a diverged local base without stopping the cleanup', async () => {
-    const h = divergedCheckout();
 
     const r = await h.actions.merge(BEAD);
 
-    expect(r.base_sync).toBe('fetch_only:diverged');
-    expect(r.cleanup_step).not.toBe('base_containment');
+    expect(r).toMatchObject({
+      ok: true,
+      base_sync: `base_sync:${result}:${reason}`
+    });
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
   });
 
-  test('leaves a diverged local base branch exactly where it was', async () => {
-    const h = divergedCheckout();
+  test('delegates local checkout changes to the installed helper', async () => {
+    const h = makeActions({ gitBranch: 'main' });
 
     await h.actions.merge(BEAD);
 
     expect(
-      h.git_argv.filter((args) => args[0] === 'reset' || args[0] === 'rebase')
-    ).toEqual([]);
-    expect(
-      h.git_argv.filter(
-        (args) => args[0] === 'merge' && !args.includes('--ff-only')
+      h.git_argv.filter((args) =>
+        ['status', 'merge', 'reset', 'rebase'].includes(args[0])
       )
     ).toEqual([]);
+    expect(h.runBaseSync).toHaveBeenCalledExactlyOnceWith(
+      'python3',
+      [
+        h.sync_script,
+        '--repo',
+        REPO,
+        '--remote',
+        'origin',
+        '--base',
+        'main',
+        '--target-sha',
+        BASE_SHA
+      ],
+      { cwd: REPO, encoding: 'utf8' }
+    );
   });
 
-  test('reports a dirty checkout the cleanup deliberately left alone', async () => {
-    const h = makeActions({ gitBranch: 'main', gitStatus: ' M app/x.js\n' });
+  test('syncs a dirty checkout while preserving the fetched containment SHA', async () => {
+    const h = makeActions({
+      gitBranch: 'main',
+      gitStatus: ' M app/x.js\n',
+      baseSyncOutput: JSON.stringify({
+        result: 'synced',
+        reason: 'fast_forwarded_with_exact_overlay',
+        target_sha: 'e'.repeat(40)
+      })
+    });
 
     const r = await h.actions.merge(BEAD);
 
-    expect(r.base_sync).toBe('fetch_only:dirty');
+    expect(r).toMatchObject({
+      ok: true,
+      base_sync: 'base_sync:synced:fast_forwarded_with_exact_overlay'
+    });
+    expect(h.git_argv).toContainEqual([
+      'merge-base',
+      '--is-ancestor',
+      'c'.repeat(40),
+      BASE_SHA
+    ]);
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
   });
 
-  test('reports a fast-forwarded base branch when the checkout allows it', async () => {
-    const h = makeActions({ gitBranch: 'main', gitStatus: '' });
+  test('uses a Codex-only workflow installation', async () => {
+    const h = makeActions({ gitBranch: 'main', baseSyncRunner: 'codex' });
 
     const r = await h.actions.merge(BEAD);
 
-    expect(r.base_sync).toBe('fast_forwarded');
+    expect(r.base_sync).toBe('base_sync:synced:fast_forwarded');
+    expect(h.runBaseSync).toHaveBeenCalledWith(
+      'python3',
+      expect.arrayContaining([h.sync_script]),
+      expect.any(Object)
+    );
   });
+
+  test('leaves a different branch untouched without invoking the helper', async () => {
+    const h = makeActions({ gitBranch: 'feature' });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: true, base_sync: 'fetch_only:not_on_base' });
+    expect(h.runBaseSync).not.toHaveBeenCalled();
+  });
+
+  test('records a missing script without failing cleanup', async () => {
+    const h = makeActions({ gitBranch: 'main', baseSyncInstalled: false });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({
+      ok: true,
+      base_sync: 'base_sync:failed:script_missing'
+    });
+    expect(h.runBaseSync).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [Object.assign(new Error('nonzero exit'), { code: 1 }), '1'],
+    [
+      Object.assign(new Error('sync failed'), {
+        code: 1,
+        stdout: '{"result":"failed","reason":"projectmgr_unavailable"}'
+      }),
+      'projectmgr_unavailable'
+    ],
+    [
+      Object.assign(new Error('broken output'), {
+        code: 1,
+        stdout: 'not json'
+      }),
+      '1'
+    ],
+    [
+      Object.assign(new Error('inconsistent output'), {
+        code: 1,
+        stdout: '{"result":"synced","reason":"fast_forwarded"}'
+      }),
+      '1'
+    ],
+    [
+      Object.assign(new Error('python unavailable'), { code: 'ENOENT' }),
+      'ENOENT'
+    ],
+    [new Error('execution failed'), 'script_error']
+  ])(
+    'records an execution failure without failing cleanup: %s',
+    async (error, reason) => {
+      const h = makeActions({ gitBranch: 'main', baseSyncError: error });
+
+      const r = await h.actions.merge(BEAD);
+
+      expect(r).toMatchObject({
+        ok: true,
+        base_sync: `base_sync:failed:${reason}`
+      });
+      expect(h.runBaseSync).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  test.each([
+    ['not json', 'invalid_json'],
+    ['null', 'invalid_response'],
+    ['{}', 'invalid_response'],
+    ['{"result":"synced","reason":7}', 'invalid_response']
+  ])(
+    'records invalid helper output without failing cleanup: %s',
+    async (stdout, reason) => {
+      const h = makeActions({ gitBranch: 'main', baseSyncOutput: stdout });
+
+      const r = await h.actions.merge(BEAD);
+
+      expect(r).toMatchObject({
+        ok: true,
+        base_sync: `base_sync:failed:${reason}`
+      });
+    }
+  );
 
   test('still stops when the fetched base does not contain the merge', async () => {
     const h = makeActions({
       gitBranch: 'main',
       gitStatus: '',
-      gitResult: (args) =>
-        args[0] === 'merge' ? 1 : args[0] === 'merge-base' ? 1 : null
+      gitResult: (args) => (args[0] === 'merge-base' ? 1 : null)
     });
 
     const r = await h.actions.merge(BEAD);
@@ -2170,20 +2315,22 @@ describe('post-merge cleanup — the worktree is FOUND, not named (UI-u7hh)', ()
 
 describe('post-merge cleanup — ref operations hold the topology lock (§8)', () => {
   test('runs the base sync under the lock, and the branch deletes under a lock taken after the worktree removal', async () => {
-    const h = makeActions();
+    const h = makeActions({ gitBranch: 'main' });
 
     await h.actions.merge(BEAD);
     const ordered = h.calls.filter(
       (c) =>
         c.startsWith('lock:') ||
+        c === 'base-sync:run' ||
         c === 'git:fetch --no-tags' ||
         c === 'wt:removeCompleted' ||
         c === 'git:push origin'
     );
     expect(ordered).toEqual([
-      // Base sync: fetch inside the lock.
+      // Fetch and the single helper invocation share the topology lock.
       'lock:acquire',
       'git:fetch --no-tags',
+      'base-sync:run',
       'lock:release',
       // Local worktree and ref cleanup is one manager lock; the second visible
       // hold here is only the existing remote branch ownership cleanup.
