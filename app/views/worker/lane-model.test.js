@@ -1,4 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
+import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
+import { normalizeCandidateSort } from './candidate-sort.js';
 import {
   CANDIDATE_FILTER_DEFAULT,
   MIN_SLOTS,
@@ -9,6 +11,7 @@ import {
   routeChipValue,
   validTime
 } from './lane-model.js';
+import { createWorkspaceAdapter } from './workspace-adapter.js';
 
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
@@ -605,7 +608,7 @@ describe('monitor candidate readiness filter and sort (UI-ff10 §5·§7)', () =>
     expect(not_ready.runnable_hidden.readiness).toBe(2);
   });
 
-  test('counts a compound-filtered row once, in the blocked count', () => {
+  test('excludes compound-filtered rows from individual hidden counts', () => {
     const lanes = buildLanes([repo], [state()], {
       candidate_filter: {
         show_blocked: false,
@@ -614,10 +617,10 @@ describe('monitor candidate readiness filter and sort (UI-ff10 §5·§7)', () =>
       }
     });
 
-    // A-1은 blocked이면서 ready다 — Monitor는 앞 단계인 blocked가 가져간다.
+    // A-1 stays hidden when only one filter is relaxed.
     expect(lanes.runnable.map((r) => r.id)).toEqual(['A-2']);
     expect(lanes.runnable_hidden).toEqual({
-      blocked: 1,
+      blocked: 0,
       readiness: 1,
       route: 0
     });
@@ -629,8 +632,7 @@ describe('monitor candidate readiness filter and sort (UI-ff10 §5·§7)', () =>
         show_blocked: false,
         readiness: 'not_ready',
         routes: []
-      },
-      candidate_hidden_counts: 'per_control'
+      }
     });
 
     // 한쪽만 풀어도 A-1은 그대로 숨는다 — 어느 배지도 그것을 세지 않는다.
@@ -644,16 +646,14 @@ describe('monitor candidate readiness filter and sort (UI-ff10 §5·§7)', () =>
 
   test('counts each control alone under per_control when only one filters', () => {
     const blocked_only = buildLanes([repo], [state()], {
-      candidate_filter: { show_blocked: false, readiness: 'all', routes: [] },
-      candidate_hidden_counts: 'per_control'
+      candidate_filter: { show_blocked: false, readiness: 'all', routes: [] }
     });
     const readiness_only = buildLanes([repo], [state()], {
       candidate_filter: {
         show_blocked: true,
         readiness: 'not_ready',
         routes: []
-      },
-      candidate_hidden_counts: 'per_control'
+      }
     });
 
     expect(blocked_only.runnable_hidden).toEqual({
@@ -1837,19 +1837,27 @@ describe('monitor exec chips (UI-eey2 §5)', () => {
     }
   };
 
-  test('draws no chip when the row carries no execution pin', () => {
+  test('draws both effective settings chips without execution pins', () => {
     const lanes = buildLanes(
       [workspace({ runnable: [runnable('A-1', { exec_pins: {} })] })],
       [
         state({
-          execution_defaults,
+          execution_defaults: {
+            ...execution_defaults,
+            session: ROUTED_EXECUTION_DEFAULTS.session
+          },
           runner_catalog: { runtimes: {} },
           session_defaults: {}
         })
       ]
     );
 
-    expect(lanes.runnable[0].exec_chips).toBeUndefined();
+    expect(lanes.runnable[0].exec_chips?.orchestration).toMatchObject({
+      pinned: false
+    });
+    expect(lanes.runnable[0].exec_chips?.worker).toMatchObject({
+      pinned: false
+    });
   });
 
   test('omits the chip row entirely when the repo defaults are unknown', () => {
@@ -4380,6 +4388,136 @@ const ROUTED_EXECUTION_DEFAULTS = {
 
 const MERGE_SHA = 'a'.repeat(40);
 
+describe('candidate facts parity', () => {
+  test.each(['defaults', 'one pin', 'released predecessor'])(
+    'projects identical card materials from both sources: %s',
+    (scenario) => {
+      const now = Date.now();
+      const exec_pins =
+        scenario === 'one pin' ? { orchestration_model: 'opus' } : {};
+      const release_info =
+        scenario === 'released predecessor'
+          ? {
+              released_by: [
+                { id: 'A-9', closed_at: now - 86400000, foreign: false }
+              ],
+              last_released_at: now - 86400000
+            }
+          : undefined;
+      const metadata = {
+        route: 'spec_backed',
+        spec_review: `codex@${'a'.repeat(40)}`,
+        awaiting_user: 'spec_review_stale',
+        session_preferred_reason: 'user_feedback_loop',
+        ...exec_pins
+      };
+      const issue = {
+        id: 'A-1',
+        title: 'same bead',
+        status: 'open',
+        description: 'body',
+        spec_id: 'docs/a.md',
+        labels: ['session-preferred', 'spec-after-blocker'],
+        metadata,
+        blocked_info: { blockers: ['A-2'] },
+        release_info,
+        dependents_info: { count: 1, ids: ['A-3'] }
+      };
+      const queue_store = createWorkerQueueStore();
+      queue_store.set(/** @type {any} */ (workspace()));
+      const adapter = createWorkspaceAdapter({
+        queueStore: queue_store,
+        issueStores: {
+          snapshotFor: (/** @type {string} */ key) =>
+            key === 'tab:worker:blocked' ? [issue] : []
+        },
+        getWorkspacePath: () => WS_A
+      });
+      const input = adapter.read({
+        candidate_sort: normalizeCandidateSort(null)
+      });
+      const states = [
+        state({
+          execution_defaults: ROUTED_EXECUTION_DEFAULTS,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {}
+        })
+      ];
+      const server_row = runnable('A-1', {
+        title: issue.title,
+        route: 'spec_backed',
+        spec_state: 'published',
+        has_description: true,
+        awaiting_user: true,
+        awaiting_user_reason: '사용자 리뷰 필요: spec_review_stale',
+        worker_ineligible: false,
+        session_preferred_reason: 'user_feedback_loop',
+        spec_after_blocker: true,
+        blocked: true,
+        blocked_by: ['A-2'],
+        labels: issue.labels,
+        published: true,
+        exec_pins,
+        release_info,
+        dependents_info: issue.dependents_info
+      });
+
+      const observed = buildLanes(input.workspaces, states).runnable[0];
+      const server = buildLanes([workspace({ runnable: [server_row] })], states)
+        .runnable[0];
+
+      for (const key of [
+        'queue_placeable',
+        'route_ok',
+        'placement_spec',
+        'session_preferred',
+        'session_preferred_reason',
+        'spec_after_blocker',
+        'reason',
+        'exec_chips',
+        'dependency_chips'
+      ]) {
+        expect(/** @type {any} */ (observed)[key], key).toEqual(
+          /** @type {any} */ (server)[key]
+        );
+      }
+      expect(observed.reason).toBe('사용자 리뷰 필요: spec_review_stale');
+      expect(observed.reason).not.toContain('대기 큐에 넣을 수 없습니다');
+      expect(observed.exec_chips?.orchestration?.pinned).toBe(
+        scenario === 'one pin'
+      );
+      expect(observed.exec_chips?.worker?.pinned).toBe(false);
+      if (scenario === 'one pin') {
+        expect(observed.exec_chips?.orchestration?.title).toContain(
+          '이슈 핀 — 레포 기본값과 다름'
+        );
+        expect(observed.exec_chips?.worker?.title).not.toContain(
+          '이슈 핀 — 레포 기본값과 다름'
+        );
+      }
+      if (release_info) {
+        expect(observed.dependency_chips?.released?.[0].label).toContain('🔓');
+      }
+      adapter.destroy();
+    }
+  );
+
+  test('marks a stale waiting admission separately from its reason', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          admission: { 'A-1': { stale: true, reason: 'spec_review_stale' } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].rereview_required).toBe(true);
+    expect(lanes.queue[0].reason).toBe('');
+  });
+});
+
 describe('lane model worker group values (UI-4tud §4.3)', () => {
   test('counts running attempts against the repo slot cap', () => {
     const lanes = buildLanes(
@@ -4823,7 +4961,20 @@ describe('lane model session done rows (UI-4tud §4.3)', () => {
 describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
   test('places an eligible observation row without making it draggable', () => {
     const lanes = buildLanes(
-      [workspace({ runnable: [runnable('A-1', { eligible: true })] })],
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', {
+              observation: true,
+              route: 'spec_backed',
+              spec_state: 'published',
+              has_description: true,
+              awaiting_user: false,
+              worker_ineligible: false
+            })
+          ]
+        })
+      ],
       [state()]
     );
 
@@ -4838,7 +4989,14 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
       [
         workspace({
           runnable: [
-            runnable('A-1', { eligible: true, worker_ineligible: true })
+            runnable('A-1', {
+              observation: true,
+              route: 'spec_backed',
+              spec_state: 'published',
+              has_description: true,
+              awaiting_user: false,
+              worker_ineligible: true
+            })
           ]
         })
       ],
@@ -4850,7 +5008,20 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
 
   test('refuses placement for an ineligible observation row', () => {
     const lanes = buildLanes(
-      [workspace({ runnable: [runnable('A-1', { eligible: false })] })],
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', {
+              observation: true,
+              route: 'spec_backed',
+              spec_state: 'draft',
+              has_description: true,
+              awaiting_user: false,
+              worker_ineligible: false
+            })
+          ]
+        })
+      ],
       [state()]
     );
 
@@ -4906,11 +5077,7 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
       lanes.runnable[0].draggable,
       lanes.runnable[0].queue_placeable,
       lanes.runnable[0].reason
-    ]).toEqual([
-      false,
-      false,
-      'spec이 발행되지 않아 대기 큐에 넣을 수 없습니다'
-    ]);
+    ]).toEqual([false, false, '']);
   });
 
   test('keeps a legacy server row draggable and placeable', () => {
@@ -4925,18 +5092,18 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
     ]).toEqual([true, true]);
   });
 
-  test('joins the row reason before the admission badge', () => {
+  test('joins the blocked observation before the admission badge', () => {
     const lanes = buildLanes(
       [
         workspace({
-          runnable: [runnable('A-1', { reason: 'spec 없음' })],
+          runnable: [runnable('A-1', { blocked_without_ids: true })],
           admission: { 'A-1': { reason: 'not_ready:A-9', at: 1 } }
         })
       ],
       [state()]
     );
 
-    expect(lanes.runnable[0].reason).toBe('spec 없음 · ⛔ not_ready (A-9)');
+    expect(lanes.runnable[0].reason).toBe('🔒 blocked · ⛔ not_ready (A-9)');
   });
 
   test('keeps the admission badge alone when the row carries no reason', () => {
@@ -5091,7 +5258,8 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
       [state()]
     );
 
-    expect(lanes.runnable[0].reason).toBe('♻️ stale→재리뷰');
+    expect(lanes.runnable[0].rereview_required).toBe(true);
+    expect(lanes.runnable[0].reason).toBe('');
   });
 
   test('carries the session-preferred advisory onto the candidate row', () => {
@@ -5100,7 +5268,6 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
         workspace({
           runnable: [
             runnable('A-1', {
-              session_preferred: true,
               session_preferred_reason: 'user_feedback_loop'
             })
           ]
@@ -6197,12 +6364,10 @@ describe('candidate route filter (UI-q1tg §3.2)', () => {
 
   /**
    * @param {string[]} routes
-   * @param {'sequential'|'per_control'} [counts]
    */
-  const filtered = (routes, counts = 'sequential') =>
+  const filtered = (routes) =>
     buildLanes([repo()], [state()], {
-      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, routes },
-      candidate_hidden_counts: counts
+      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, routes }
     });
 
   test('shows every candidate when no route is selected', () => {
@@ -6242,7 +6407,7 @@ describe('candidate route filter (UI-q1tg §3.2)', () => {
   });
 
   test('counts a route-hidden row per control under per_control', () => {
-    const lanes = filtered(['spec_backed'], 'per_control');
+    const lanes = filtered(['spec_backed']);
 
     expect(lanes.runnable_hidden).toEqual({
       blocked: 0,

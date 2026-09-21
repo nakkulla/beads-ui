@@ -12,6 +12,7 @@
  */
 import { resolveSpecEvidence } from '../../../server/spec-id.js';
 import { createListSelectors } from '../../data/list-selectors.js';
+import { awaitingUserReason } from '../../utils/awaiting-user-reason.js';
 import { buildCarryoverIndex } from '../../utils/carryover-index.js';
 import { buildChildrenIndex, rollupFor } from '../../utils/child-rollup.js';
 import { debug } from '../../utils/logging.js';
@@ -26,7 +27,6 @@ import {
   normalizeCandidateSort
 } from './candidate-sort.js';
 import { MIN_SLOTS } from './lane-model.js';
-import { AWAITING_USER_REASON_PREFIX } from './lanes.js';
 import { candidatePlacement } from './placement.js';
 
 const log = debug('views:worker:adapter');
@@ -42,12 +42,6 @@ const IN_PROGRESS_KEY = 'tab:worker:in-progress';
 /** Resolved children (worker-card-exec-chips §3.3), for the rollup alone. */
 const RESOLVED_KEY = 'tab:worker:resolved';
 const CLOSED_KEY = 'tab:worker:closed';
-
-/**
- * 선행 id를 하나도 모르는 blocked 후보가 다는 잠금 문장 (UI-anna §2 결정 4). id를
- * 아는 후보는 `⛓ blocked: <id>` 칩이 같은 사실을 적으므로 이 문장을 달지 않는다.
- */
-const BLOCKED_WITHOUT_IDS = '🔒 blocked';
 
 /**
  * 아직 스냅샷이 도착하지 않은 워크스페이스의 큐 (§6). 후보 레인의 원천은 Board
@@ -99,23 +93,6 @@ export function isPhaseChild(issue) {
   const has_parent =
     typeof raw === 'string' ? raw.length > 0 : !!(raw && raw.id);
   return has_parent || /\.\d+$/.test((issue && issue.id) || '');
-}
-
-/**
- * `awaiting_user` 파킹이 후보 행에 다는 사유 파트 (UI-dqg9 §2.2).
- *
- * @param {unknown} metadata
- * @returns {string}
- */
-function awaitingUserReason(metadata) {
-  const value =
-    metadata && typeof metadata === 'object'
-      ? /** @type {Record<string, unknown>} */ (metadata).awaiting_user
-      : undefined;
-  const text = typeof value === 'string' ? value.trim() : '';
-  return text.length > 0
-    ? `${AWAITING_USER_REASON_PREFIX}: ${text}`
-    : AWAITING_USER_REASON_PREFIX;
 }
 
 /**
@@ -385,7 +362,9 @@ export function createWorkspaceAdapter(options = {}) {
       const spec = resolveSpecEvidence(it);
       const has_spec = spec.evidence === 'published';
       const route =
-        (typeof it.workflow?.route === 'string' && it.workflow.route) ||
+        (it.workflow?.route_source === 'explicit' &&
+          typeof it.workflow.route === 'string' &&
+          it.workflow.route) ||
         (it.metadata && typeof it.metadata.route === 'string'
           ? it.metadata.route
           : '');
@@ -402,25 +381,7 @@ export function createWorkspaceAdapter(options = {}) {
             );
       const is_blocked = blocked_ids.has(it.id);
       const blocker_ids = is_blocked ? blockerIdsOf(it) : [];
-      /** @type {string[]} */
-      const parts = [];
-      // 잠금 파트만 어댑터가 앞에 붙인다 (§6.1): blocked는 배치 자격이 아니라
-      // 후보 행이 덧붙이는 관측 사실이다.
-      if (is_blocked && blocker_ids.length === 0) {
-        parts.push(BLOCKED_WITHOUT_IDS);
-      }
-      if (placement.awaiting_user) {
-        parts.push(awaitingUserReason(/** @type {any} */ (it).metadata));
-      }
-      if (placement.missing_description) {
-        parts.push('missing_description');
-      } else if (placement.spec === 'conflict') {
-        parts.push('spec_id_conflict');
-      } else if (placement.spec === 'none') {
-        parts.push('spec 없음');
-      } else if (placement.spec === 'draft') {
-        parts.push('spec 미발행(draft)');
-      }
+      const awaiting_user_reason = awaitingUserReason(it.metadata);
       const scope_entry = bead_scope[it.id];
       return {
         bead_id: it.id,
@@ -453,19 +414,15 @@ export function createWorkspaceAdapter(options = {}) {
         ...(scope_entry && Array.isArray(scope_entry.scope)
           ? { scope: scope_entry.scope }
           : {}),
-        // 자격·사유는 관측 행을 싣는 이 어댑터만 실어 보낸다 (§4.1). 자격
-        // 판정 자체의 소유자는 `placement.js` 하나다 (UI-6g3t §6.1).
-        eligible: placement.placeable,
-        // 준비 필요 판정 칩의 재료 (UI-ff10 §6.1). 이미 만든 `placement`를 그대로
-        // 실어 보낸다 — 카드가 `reason` 문자열을 되읽어 판정을 재구성하면 사유
-        // 문구가 바뀌는 순간 칩이 조용히 어긋난다.
-        route_ok: placement.route_ok,
+        observation: true,
+        spec_state: placement.spec,
+        has_description: !placement.missing_description,
         awaiting_user: placement.awaiting_user,
-        missing_description: placement.missing_description,
-        placement_spec: placement.spec,
-        reason: parts.join(' · '),
+        ...(awaiting_user_reason ? { awaiting_user_reason } : {}),
+        ...(is_blocked && blocker_ids.length === 0
+          ? { blocked_without_ids: true }
+          : {}),
         worker_ineligible,
-        session_preferred: session_preferred_reason.length > 0,
         session_preferred_reason,
         // 예외 라벨 `spec-after-blocker` (UI-svh6 §4.2). 계약이 이 라벨을
         // `effective_only_while: dependency_unsatisfied`로 두므로 판정은 라벨과

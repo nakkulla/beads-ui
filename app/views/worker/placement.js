@@ -24,12 +24,24 @@ import { runningLaneBeadIds } from './lane-model.js';
  */
 
 /**
- * @typedef {Object} PlacementFacts
+ * @typedef {Object} CandidateFacts
  * @property {string} route
- * @property {'published'|'draft'|'none'|'conflict'|'n/a'} spec
+ * @property {'published'|'draft'|'none'|'conflict'|'n/a'} spec_state
  * @property {boolean} has_description
  * @property {boolean} awaiting_user
+ * @property {string} [awaiting_user_reason]
+ * @property {object} [release_info]
+ * @property {object} [dependents_info]
+ * @property {Record<string, string>} exec_pins
  * @property {boolean} worker_ineligible
+ * @property {string} session_preferred_reason
+ * @property {boolean} spec_after_blocker
+ * @property {true} [observation]
+ * @property {true} [blocked_without_ids]
+ */
+
+/**
+ * @typedef {Pick<CandidateFacts, 'route'|'has_description'|'awaiting_user'|'worker_ineligible'> & { spec: CandidateFacts['spec_state'] }} PlacementFacts
  */
 
 /**

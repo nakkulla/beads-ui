@@ -1014,7 +1014,6 @@ export function createMonitorView(mount_element, options) {
     return itemShell(
       item,
       html`${candidateCard(withOverlaps(item), placeMenuFor(item), {
-        exec_chips_mode: 'pinned_only',
         onOpenDoc: openDoc
           ? (/** @type {Event} */ _ev, /** @type {any} */ doc) =>
               openDoc(doc, item.root_dir)

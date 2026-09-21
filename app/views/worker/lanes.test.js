@@ -3538,7 +3538,7 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
     expect(card).not.toContain('worker-card__foot--actions-only');
   });
 
-  test('marks exec chips as an issue pin in pinned_only mode', () => {
+  test('marks only the pinned execution axis', () => {
     const card = shape(
       candidateCard(
         /** @type {any} */ ({
@@ -3547,17 +3547,20 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
           lane: 'candidate',
           draggable: true,
           exec_chips: {
-            orchestration: { text: 'codex', title: 'orch' },
-            worker: null
+            orchestration: {
+              text: 'codex',
+              title: 'orch\n이슈 핀 — 레포 기본값과 다름',
+              pinned: true
+            },
+            worker: { text: '메인', title: 'worker', pinned: false }
           }
-        }),
-        null,
-        { exec_chips_mode: 'pinned_only' }
+        })
       )
     );
 
     expect(card).toContain('exec-chip--pin');
     expect(card).toContain('이슈 핀 — 레포 기본값과 다름');
+    expect(card).not.toContain('exec-chip--worker exec-chip--pin');
   });
 
   test('draws the blocked chip', () => {
