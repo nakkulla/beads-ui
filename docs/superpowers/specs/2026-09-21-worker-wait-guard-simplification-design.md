@@ -77,16 +77,16 @@ Bead: UI-a5l2 · route: spec_backed · 2026-09-21
 | 라벨 | 글리프 | 접히는 서버 종류 | 판정 |
 | --- | --- | --- | --- |
 | 선행 대기 | ⛓ | `prerequisite`, `prerequisite_foreign` | `normal`; 선행이 `blocked`·`deferred`·worker-ineligible이면 `action_required`(`blocker_needs_human`) |
-| 공급자 보류 | ⏳ | `provider_hold`(usage_limit·outage·429), 큐 행의 provider 게이트 | UI-inge·2026-09-09 보류 해제 설계의 현행 판정(`reset_passed`·`probe_stalled`·`probe_needed`) 그대로 |
+| 공급자 보류 | ⏳ | `provider_hold`(usage_limit·outage·429), 큐 행의 provider 게이트 | ADR UI-inge·2026-09-09 보류 해제 설계의 현행 판정(`reset_passed`·`probe_stalled`; `probe_needed`는 UI-inge가 상한과 함께 없앴다) 그대로 |
 | 재시도 대기 | ↻ | `retry_wait`(그 Bead의 env 사다리 예약) | `normal`; 예약 시각 + `grace_ms` 경과면 `overdue`(`retry_stalled`) |
 | 세션이 멈춤 | ⏸ | `awaiting_user`, `recovery`(`authority`·`verification`·`no_progress`·`reconcile`, 세션이 선언한 `unclassified`, 선행 목록 없는 `prerequisite`) | 항상 `action_required`(`decision`) |
 
-- `external_job`은 UI-z437(외부 대기 재설계, in_progress)이 소유한다. 이 스펙은 그
+- `external_job`은 UI-z437(외부 대기 재설계, ADR UI-z437로 착지)이 소유한다. 이 스펙은 그
   종류의 라벨·판정·버튼을 바꾸지 않고, 4행 표 아래 z437이 정한 행 하나를 그대로 둔다.
 - 판정은 `normal`·`overdue`·`action_required` 세 값이 남지만, `overdue`는 다음 확인
   시각이 있는 종류(공급자 보류·재시도 대기·외부 작업)에만 난다. `세션이 멈춤`은
   기다려서 풀리는 것이 아니므로 `settle_overdue`를 만들지 않는다.
-- 배지 모양은 UI-3pu9가 승계한 규칙 그대로다: `<글리프> <라벨>`, `⚠ <라벨> · 지연[ n분]`,
+- 배지 모양은 UI-z437이 UI-8gem에서 승계한 규칙 그대로다: `<글리프> <라벨>`, `⚠ <라벨> · 지연[ n분]`,
   `⛔ <라벨> · 조치 필요`. 대표 사유 순서는 `awaiting_user`/`recovery`(=세션이 멈춤) >
   `provider_hold` > `prerequisite_foreign` > `prerequisite` > `retry_wait`다.
 - `세션이 멈춤` 카드 본문(슬롯 3)은 세션이 남긴 문장 한 줄이다: 파킹은 `awaiting_user`
@@ -102,9 +102,11 @@ Bead: UI-a5l2 · route: spec_backed · 2026-09-21
 **분류.** `failure-class.js classifyFailure`에서 정본 복구 정책 키
 `finished_without_result_line`·`past_failure_line`·`environment_line`·`unknown_error`로
 떨어지는 종료는 `env` 티어로 분류한다. `matchEnvPattern`이 그룹을 찾으면 그 그룹
-(`api`·`runtime`·`provider_capacity`, UI-inge가 더하는 `credential`)을 그대로 쓰고,
+(`api`·`runtime`·`provider_capacity`)을 그대로 쓰고,
 어떤 패턴도 맞지 않을 때만 그룹 `unknown`을 붙인다. `unknown`은 `ENV_ERROR_PATTERNS`에
 넣지 않는다 — 패턴 부재와 "정책이 `unclassified`를 줄 키"라는 두 사실이 그룹을 정한다.
+인증 실패(`credential`)는 ADR UI-inge대로 러너 어댑터의 공급자 분류가 먼저 잡아 계정
+단위 공급자 보류가 되므로 이 사다리에 오지 않는다.
 기존 `RETRY_DELAYS_MS`(2·5·15분)와 `RETRY_MAX`(3)를 그대로 쓴다.
 `session_failed:turn_failed`도 이 경로를 탄다(현재는 정책 부재 시 `individual`).
 
@@ -169,9 +171,9 @@ Bead를 닫지 않고, 재시도 예산 리셋도 하지 않으며(`retry_budget
 
 ### 3.4 잔재 자동 처분 — `처분 대기`를 없앤다
 
-디스패치가 `worktree_stale_work` admission을 기록하던 세 지점(`scheduler.js` 2827·
-9071·9093 부근)은 admission을 기록하는 대신 같은 자리에서 처분을 실행한다. 현행
-`staleWorkAction`(`scheduler.js:2837`)과 `discardCoordinator.backupFresh`
+디스패치가 `worktree_stale_work` admission을 기록하던 세 지점(`scheduler.js` 2899·
+9451·9473 부근)은 admission을 기록하는 대신 같은 자리에서 처분을 실행한다. 현행
+`staleWorkAction`(`scheduler.js:2909`)과 `discardCoordinator.backupFresh`
 (`discard-coordinator.js:2277`)는 저장된 admission·`action_id`·revision을 필수로 검사하므로
 그대로 부를 수 없다. 새 내부 계약 `disposeStaleResidue(workspace, bead_id, observation,
 resume_attempt, cut_base)`가 관측 직후 손에 있는 **검증된 잔재 identity**
@@ -206,10 +208,10 @@ admission 조회 대신 그 identity를 받는 내부 함수로 나뉜다(`disca
 ### 3.5 큐 정지와 정리 실패 — 큐 단위 보류를 없앤다
 
 - **큐 보류는 종류를 불문하고 사라진다.** `runPass`는 `q.hold !== null`이면 다른 Bead의
-  자동 출발까지 막으므로(`scheduler.js:14359` `explicit_only`), `env` 보류를 남겨도 사용자
-  결정 2를 위반한다. 따라서 `applyQueueHold` 호출 전부 — `systemic_failure` 세 곳(5214
-  `loud_fail_blocker`, 5469 systemic 티어, 12706 relaunch의 `base_landing_detected`)과
-  `env_failure`(5326) — 를 제거하고, `queue-hold.js`의 보류 리듀서(승격 규칙 포함)와
+  자동 출발까지 막으므로(`scheduler.js:15348` `explicit_only`), `env` 보류를 남겨도 사용자
+  결정 2를 위반한다. 따라서 `applyQueueHold` 호출 전부 — `systemic_failure` 세 곳(5421
+  `loud_fail_blocker`, 5679 systemic 티어, 13691 relaunch의 `base_landing_detected`)과
+  `env_failure`(5536) — 를 제거하고, `queue-hold.js`의 보류 리듀서(승격 규칙 포함)와
   `queue.hold`·`hold_history` 필드, WS op `worker-queue-hold-resume`·
   `worker-queue-hold-retry-now`, 4a 게이트 칩 `⛔ 정지`·`↻ 환경 보류`, `WaitKind
   'queue_hold'`를 없앤다. `explicit_only`는 `q.auto_advance !== true`만 본다. 재시도
@@ -276,7 +278,7 @@ admission 조회 대신 그 identity를 받는 내부 함수로 나뉜다(`disca
 
 `verify_red`는 머지 게이트의 워크스페이스 `verify_cmd`(`verify-cmd.js runVerifyCmd`)가
 **실행된 뒤 0이 아닌 코드로 끝난** 결과(`reason: 'verify_cmd_failed'`)를 `factFromGate`
-(`completion-intent.js:1891`)가 분류한 것이다. 실행 불가와 timeout은 별도 코드
+(`completion-intent.js:1853`)가 분류한 것이다. 실행 불가와 timeout은 별도 코드
 `verify_cmd_spawn_error`·`verify_cmd_timeout`이다. 따라서 `verify_cmd_failed`는 repo-ops
 `[verify]` 스크립트 red와 같은 **코드 질문**이며 처분도 같다:
 
@@ -327,7 +329,7 @@ repo-ops `[verify]` red는 g0lk 그대로이고, 머지 뒤 배포·검증 op �
   추가.
 - `wait-vocabulary.js`: `WAIT_KINDS` 4행 + z437 행, `REPRESENTATIVE_KIND_ORDER` 축소,
   `RECOVERY_WAIT_LABELS` 제거. `gate-labels.js`의 `자동 재개 소진 · 수동 조치 필요`는
-  UI-inge가 상한을 없애면 재료가 사라지므로 그 착지 뒤 제거한다(먼저 착지하면 남겨 둔다).
+  UI-inge가 상한을 없애 재료가 사라졌으므로(착지 d9ccb52) 함께 제거한다.
 - `failure-sentences.js`: `RECOVERY_WAIT_SENTENCES`는 팝업 해제 조건으로 유지, 라벨 제거.
 - `queue.json` 1회 이행(로드 시, `queue-store.js` 정규화): `admission[bead].reason:
   'worktree_stale_work'` 항목 삭제(다음 디스패치 패스가 §3.4 처분); `hold`·`hold_history`
@@ -364,7 +366,7 @@ repo-ops `[verify]` red는 g0lk 그대로이고, 머지 뒤 배포·검증 op �
 `vitest` 단위 테스트(각 한 동작):
 
 1. `failure-class`: 정책이 `unclassified`를 주는 네 키가 `env_group === null`이면 `env`
-   티어·그룹 `unknown`으로, 패턴이 맞으면(예: `credential`·`api`) 그 그룹으로 분류된다;
+   티어·그룹 `unknown`으로, 패턴이 맞으면(예: `api`·`runtime`) 그 그룹으로 분류된다;
    `session_failed:turn_failed`도 같다; `systemic` 티어를 내는 입력이 없다.
 2. `scheduler` 재시도 선택: 세션 기록이 있는 실패는 `resume`(같은 러너·모델·effort·
    계정), 없는 실패는 실행 설정을 승계한 `dispatch`로 재시도되고, 보존 커밋이 없어도
@@ -445,11 +447,12 @@ repo-ops `[verify]` red는 g0lk 그대로이고, 머지 뒤 배포·검증 op �
   `<기록 세션>`·`<구현 워크트리>`·`<target_base 체크아웃>`, 절차 3단계, 금지 3항)을 추가하고
   설치 사본을 배포한다. UI-a5l2가 그 Bead에 foreign `blocks` 의존을 건다(블록 바이트가
   `direction-inquiry.js` 다이제스트의 전제). 라우터 hand-off에서 생성·연결한다.
-- 관찰: UI-inge — `failure-class.js ENV_ERROR_PATTERNS`에 `credential` 그룹을 더한다. 이
-  스펙의 §3.2는 패턴이 맞는 그룹을 보존하고 패턴 부재에만 `unknown`을 붙이므로 그 분류는
-  같은 종료 경로에서 그대로 살아남는다. 먼저 착지한 쪽 위에서 다른 쪽이 rebase한다. UI-inge도
-  ADR UI-1l3a의 다른 조항(usage_limit 상한)을 supersede 지명하므로, 먼저 착지한 쪽의 후계
-  ADR id로 이 스펙의 전제·supersede 인용을 재검토 때 갱신한다.
+- 관찰: UI-inge — d9ccb52로 먼저 착지했고 ADR UI-inge가 UI-1l3a·0052·UI-6icf를 승계했다.
+  `credential`은 `ENV_ERROR_PATTERNS`가 아니라 러너 어댑터의 공급자 분류 그룹으로 들어가
+  계정 단위 공급자 보류가 되므로 §3.2의 env 사다리와 겹치지 않는다. 이 스펙의 전제·supersede
+  인용은 2026-09-21 재검토(correction)에서 후계 ADR UI-inge로 갱신했다. 같은 재검토에서
+  UI-z437(ADR UI-z437, UI-3pu9·0034 승계) 착지를 반영해 후보 2의 supersede 대상도
+  UI-3pu9에서 UI-z437로 옮겼다.
 - 관찰: UI-z437 — `wait-judgment.js`의 `external_job` 행을 재정의한다. 이 스펙은 그 행을
   건드리지 않으며 4행 표는 z437 행과 나란히 선다.
 - 관찰: UI-pw2g — 대기 행 줄 배치. 슬롯은 그 설계를 따르고 이 스펙은 라벨 어휘만 바꾼다.
@@ -473,10 +476,11 @@ repo-ops `[verify]` red는 g0lk 그대로이고, 머지 뒤 배포·검증 op �
   "`verify_cmd_failed → verify_red` terminal은 유지한다" 조항만 후보 3이 뒤집는다.
 - 전제: ADR UI-lmqu-2 — `base_moved`는 보존 세션 이어하기다. 재개 경로는 유지하고,
   "별도 사다리·재시도 예산·자동 재디스패치 없음" 조항만 후보 2가 뒤집는다.
-- 전제: ADR UI-1l3a — 공급자 게이트 판정은 서버가 러너 무관 사다리로 내리고 `provider_gate`
-  admission 기록으로 공개하며, 보류 해제는 프로브만이 판정한다. 공급자 보류 행과 그
-  판정은 바꾸지 않는다. 이 ADR이 UI-a8rq에서 승계한 "큐 정지 권한은 `verify_red`와 기존
-  systemic 원인에만 남고 `▶ 재개`는 체계적 정지의 사람 승인이다" 조항만 후보 1이 뒤집는다.
+- 전제: ADR UI-inge(UI-1l3a 승계) — 공급자 게이트 판정은 서버가 러너 무관 사다리로 내리고
+  `provider_gate` admission 기록으로 공개하며, 보류 해제는 프로브만이 판정하고, 인증 실패는
+  계정 단위 공급자 보류다. 공급자 보류 행과 그 판정은 바꾸지 않는다. 이 ADR이
+  UI-1l3a·UI-a8rq에서 승계한 "큐 정지 권한은 `verify_red`와 기존 systemic 원인에만 남고
+  `▶ 재개`는 체계적 정지의 사람 승인이다" 조항만 후보 1이 뒤집는다.
 - 후보 1: 가드는 실행 전 거부와 사후 착지 감지로만 강제하고 세션을 죽이거나 큐를 세우지
   않는다.
   - 되돌리기 어려움: 있음 — `loud_fail_blocker`의 systemic 의미, `GUARD_EFFECTS`의 kill,
@@ -487,7 +491,7 @@ repo-ops `[verify]` red는 g0lk 그대로이고, 머지 뒤 배포·검증 op �
     0건이던 실제 훼손을 이유로 8건의 세션 kill과 2건의 큐 정지를 없앤다.
   - `summary`: "Worker 가드는 Claude·Codex 세션의 실행 전 거부 훅과 pre-push 예방, 사후
     base 착지 감지로만 강제하며 텍스트 판정으로 세션을 죽이지 않고, 큐 단위 보류는
-    어떤 종류도 만들지 않으며, 뚫린 착지는 그 Bead의 개별 실패다" → ADR, supersede 0007 · UI-1l3a
+    어떤 종류도 만들지 않으며, 뚫린 착지는 그 Bead의 개별 실패다" → ADR, supersede 0007 · UI-inge
 - 후보 2: 사람 결정이 필요한 곳에서만 멈춘다 — 대기 어휘 4종, 알 수 없는 실패는 같은
   세션 재시도 사다리 뒤 실패 타일, 복구 대기의 출구는 문의 세션, 잔재는 자동 처분.
   - 되돌리기 어려움: 있음 — `WaitKind`·verdict 코드·WS op·admission 기록이 사라지고,
@@ -500,7 +504,7 @@ repo-ops `[verify]` red는 g0lk 그대로이고, 머지 뒤 배포·검증 op �
     정책이 unclassified를 주는 종료는 같은 세션 재시도 사다리를 탄 뒤 실패 타일이 되며,
     세션이 선언한 복구 대기와 base 반복 이동의 출구는 파킹과 같은 문의 세션이고,
     base_moved는 보존 세션을 자동 재개하며, 잔재 워크트리는 이어가기·백업 후 새로
-    시작으로 자동 처분한다" → ADR, supersede UI-3vvi · UI-3pu9 · 0038 · UI-lmqu-2
+    시작으로 자동 처분한다" → ADR, supersede UI-3vvi · UI-z437 · 0038 · UI-lmqu-2
 - 후보 3: 머지 게이트의 `verify_cmd` red와 머지 후 정리 실패는 종단·알림 없이 그 Bead에
   머문다.
   - 되돌리기 어려움: 있음 — `verify_red` terminal 가족과 정리 단계 Discord 알림 경로가
