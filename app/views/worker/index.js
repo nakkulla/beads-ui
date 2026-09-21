@@ -1677,7 +1677,7 @@ const WORKER_CLIENT_IDS = [
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../board/stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void, onNewIssue?: () => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void, onNewIssue?: () => void }} [options]
  * @returns {{ load: () => void, pause: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -1756,11 +1756,10 @@ export function createWorkerView(mount_element, options = {}) {
     onDoneRangeChange,
     onNewIssue
   } = options;
-  // Worker 탭은 ui-order를 읽지 않는다 (UI-d13v §6): 후보 순서는 정렬 체인과
-  // 그 뒤의 의존 인접화 패스가 정하고 (UI-q1y7 §2) 수동 rank는 Board 탭만 쓴다.
-  // 그래서 selectors도 order 인자 없이 만든다.
+  // 후보 순서는 정렬 체인과 그 뒤의 의존 인접화 패스가 정한다 (UI-d13v §6,
+  // UI-q1y7 §2) — 수동 rank 채널은 Board 탭과 함께 사라졌다 (UI-p7s2 §7.2).
   const selectors = issueStores
-    ? createListSelectors(issueStores, undefined, {
+    ? createListSelectors(issueStores, {
         client_ids: WORKER_CLIENT_IDS
       })
     : null;
@@ -5493,7 +5492,7 @@ export function createWorkerView(mount_element, options = {}) {
     // 뒤에 두면 어느 쪽을 눌러도 부모 이슈가 열려 버린다. Board와 달리 여기서는
     // 템플릿에 핸들러를 주지 않고 DOM에 실린 id로 위임 처리한다.
     const rollup_toggle = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.rtile .board-card__roll-toggle')
+      target?.closest?.('.rtile .worker-card__roll-toggle')
     );
     if (rollup_toggle) {
       const parent_id = rollup_toggle.dataset.rollParent;
@@ -5508,7 +5507,7 @@ export function createWorkerView(mount_element, options = {}) {
       return;
     }
     const rollup_child = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.rtile .board-card__roll-child')
+      target?.closest?.('.rtile .worker-card__roll-child')
     );
     if (rollup_child) {
       const child_id = rollup_child.dataset.childId;

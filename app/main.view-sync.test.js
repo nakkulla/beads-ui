@@ -30,14 +30,11 @@ describe('initial view sync on reload', () => {
     bootstrap(root);
     await Promise.resolve();
 
-    const boardRoot = /** @type {HTMLElement} */ (
-      document.getElementById('board-root')
-    );
     const workerRoot = /** @type {HTMLElement} */ (
       document.getElementById('worker-root')
     );
 
-    expect(boardRoot.hidden).toBe(true);
+    expect(document.getElementById('board-root')).toBeNull();
     expect(workerRoot.hidden).toBe(false);
   });
 });

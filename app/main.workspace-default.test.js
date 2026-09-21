@@ -88,19 +88,9 @@ afterEach(() => {
 describe('main workspace restore precedence', () => {
   test.each([
     [
-      'board',
-      ['ready', 'blocked', 'in-progress', 'resolved', 'deferred', 'closed'],
-      false
-    ],
-    [
       'worker',
       ['ready', 'blocked', 'in-progress', 'resolved', 'closed', 'deferred'],
       false
-    ],
-    [
-      'board',
-      ['ready', 'blocked', 'in-progress', 'resolved', 'deferred', 'closed'],
-      true
     ],
     [
       'worker',
@@ -190,6 +180,13 @@ describe('main workspace restore precedence', () => {
             type === 'subscribe-worker-queue'
         )
       ).toHaveLength(1);
+      // Board가 퇴역했으므로 어떤 진입에서도 `tab:board:*` 구독이 서지 않는다
+      // (UI-p7s2 §7.1·§8).
+      expect(
+        list_calls.filter((/** @type {[string, any]} */ [, payload]) =>
+          String(payload.id).startsWith('tab:board:')
+        )
+      ).toEqual([]);
     }
   );
 

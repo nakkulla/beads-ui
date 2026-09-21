@@ -20,9 +20,6 @@ function stripComments(css) {
 
 const CSS = readFileSync(path.resolve(process.cwd(), 'app/styles.css'), 'utf8');
 const RULES = stripComments(CSS);
-const BASE_RULES = stripComments(
-  readFileSync(path.resolve(process.cwd(), 'app/styles/base.css'), 'utf8')
-);
 
 /**
  * Body of the first rule whose selector matches, or an empty string.
@@ -63,10 +60,7 @@ describe('document scroll layout', () => {
   });
 
   test('stops the route shells from clipping their overflow', () => {
-    const shells = ruleBody(
-      RULES,
-      /#board-root\.route\.board,\n#worker-root\.route\.worker\s*{([^}]*)}/
-    );
+    const shells = ruleBody(RULES, /#worker-root\.route\.worker\s*{([^}]*)}/);
 
     expect(shells).not.toMatch(/\n\s*height:/);
     expect(shells).not.toMatch(/overflow:\s*hidden/);
@@ -92,12 +86,6 @@ describe('document scroll layout', () => {
 
     expect(root).toMatch(/--app-header-h:/);
     expect(root).toMatch(/--lane-max-h:[^;]*var\(--app-header-h\)/);
-  });
-
-  test('binds the board column cap to the same lane token', () => {
-    const column = ruleBody(BASE_RULES, /(?:^|\n)\.board-column\s*{([^}]*)}/);
-
-    expect(column).toMatch(/max-height:[^;]*var\(--lane-max-h\)/);
   });
 
   test('releases the lane cap where lanes stack into one column', () => {

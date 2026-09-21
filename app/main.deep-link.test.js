@@ -40,7 +40,7 @@ vi.mock('./ws.js', () => {
 });
 
 describe('deep link on initial load (UI-44)', () => {
-  test('opens the detail overlay showing the deep-linked id and redirects to #/board', async () => {
+  test('redirects the legacy issue hash to the worker parent selection', async () => {
     window.location.hash = '#/issue/UI-2';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
@@ -52,15 +52,14 @@ describe('deep link on initial load (UI-44)', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    // Legacy #/issue/<id> normalizes to the canonical board hash.
-    expect(window.location.hash).toBe('#/board?issue=UI-2');
+    // Legacy #/issue/<id> normalizes to the canonical worker hash.
+    expect(window.location.hash).toBe('#/worker?issue=UI-2');
 
-    // The shared detail overlay is visible and shows the raw id.
+    // The worker deep link selects a parent instead of opening the shared
+    // detail overlay (UI-p7s2 §7.1).
     const detail = /** @type {HTMLElement} */ (
       document.getElementById('detail-panel')
     );
-    expect(detail.hidden).toBe(false);
-    const idEl = detail.querySelector('.detail-overlay__id');
-    expect(idEl && idEl.textContent && idEl.textContent.trim()).toBe('UI-2');
+    expect(detail.hidden).toBe(true);
   });
 });

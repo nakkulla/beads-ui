@@ -4,6 +4,7 @@ import { createStore } from './state.js';
 
 describe('router', () => {
   test('parseHash extracts id', () => {
+    expect(parseHash('#/worker?issue=UI-5')).toBe('UI-5');
     expect(parseHash('#/board?issue=UI-5')).toBe('UI-5');
     expect(parseHash('#/issue/UI-5')).toBe('UI-5');
     expect(parseHash('#/anything')).toBeNull();
@@ -17,12 +18,60 @@ describe('router', () => {
 
     window.location.hash = '#/issue/UI-10';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
-    expect(store.getState().selected_id).toBe('UI-10');
-    // Legacy single-issue hash normalizes to the canonical board form.
-    expect(window.location.hash).toBe('#/board?issue=UI-10');
+    // Worker owns the repo view, so its deep link selects a parent rather than
+    // opening the global detail overlay (UI-p7s2 §7.1).
+    expect(store.getState().selected_id).toBeNull();
+    expect(store.getState().worker.selected_parent_id).toBe('UI-10');
+    // Legacy single-issue hash normalizes to the canonical worker form.
+    expect(window.location.hash).toBe('#/worker?issue=UI-10');
 
     router.gotoIssue('UI-11');
-    expect(window.location.hash).toBe('#/board?issue=UI-11');
+    expect(window.location.hash).toBe('#/worker?issue=UI-11');
+    router.stop();
+  });
+
+  test('normalizes the retired board hash to worker, keeping the issue param', () => {
+    document.body.innerHTML = '<div></div>';
+    const store = createStore();
+    const router = createHashRouter(store);
+    router.start();
+
+    window.location.hash = '#/board?issue=UI-p7s2';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+    expect(store.getState().view).toBe('worker');
+    expect(store.getState().worker.selected_parent_id).toBe('UI-p7s2');
+    expect(window.location.hash).toBe('#/worker?issue=UI-p7s2');
+    router.stop();
+  });
+
+  test('normalizes a bare board hash to worker', () => {
+    document.body.innerHTML = '<div></div>';
+    const store = createStore();
+    const router = createHashRouter(store);
+    router.start();
+
+    window.location.hash = '#/board';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+    expect(store.getState().view).toBe('worker');
+    expect(window.location.hash).toBe('#/worker');
+    router.stop();
+  });
+
+  test('normalizes the legacy issues and epics hashes to worker', () => {
+    document.body.innerHTML = '<div></div>';
+    const store = createStore();
+    const router = createHashRouter(store);
+    router.start();
+
+    window.location.hash = '#/issues';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    expect(window.location.hash).toBe('#/worker');
+
+    window.location.hash = '#/epics';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    expect(window.location.hash).toBe('#/worker');
     router.stop();
   });
 
@@ -42,14 +91,16 @@ describe('router', () => {
     router.stop();
   });
 
-  test('parseView resolves worker and defaults everything else to board', () => {
+  test('parseView resolves worker and defaults everything else to worker', () => {
     expect(parseView('#/worker')).toBe('worker');
-    expect(parseView('#/board')).toBe('board');
-    // Legacy tab hashes collapse to board.
-    expect(parseView('#/issues')).toBe('board');
-    expect(parseView('#/epics')).toBe('board');
-    expect(parseView('')).toBe('board');
-    expect(parseView('#/unknown')).toBe('board');
+    // The retired Board hash and the legacy tab hashes collapse to worker.
+    expect(parseView('#/board')).toBe('worker');
+    expect(parseView('#/board?issue=UI-5')).toBe('worker');
+    expect(parseView('#/issue/UI-5')).toBe('worker');
+    expect(parseView('#/issues')).toBe('worker');
+    expect(parseView('#/epics')).toBe('worker');
+    expect(parseView('')).toBe('worker');
+    expect(parseView('#/unknown')).toBe('worker');
   });
 
   test('parseView resolves the fourth tab compare', () => {

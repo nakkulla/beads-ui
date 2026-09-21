@@ -167,11 +167,11 @@ function basenameOf(root_dir) {
 export function createWorkspaceAdapter(options = {}) {
   const { queueStore, issueStores, transport, getWorkspacePath, onInvalidate } =
     options;
-  // Worker 탭은 ui-order를 읽지 않는다 (UI-d13v §6): 후보 순서는 정렬 체인이
-  // 정하고 수동 rank는 Board 탭만 쓴다.
-  // 이 어댑터가 그리는 다섯 열의 구독만 소비한다 (UI-hhn9 §5.1).
+  // 후보 순서는 정렬 체인이 정한다 (UI-d13v §6) — 수동 rank 채널은 Board 탭과
+  // 함께 사라졌다 (UI-p7s2 §7.2).
+  // 이 어댑터가 그리는 열들의 구독만 소비한다 (UI-hhn9 §5.1).
   const selectors = issueStores
-    ? createListSelectors(issueStores, undefined, {
+    ? createListSelectors(issueStores, {
         client_ids: [
           READY_KEY,
           BLOCKED_KEY,

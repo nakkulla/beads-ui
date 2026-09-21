@@ -18,8 +18,8 @@ import {
   providerUsageBadges,
   sumAttemptUsage
 } from '../../utils/token-usage.js';
-import { formatExecReceipt } from '../board/card.js';
 import { createChipPopover } from '../chip-popover.js';
+import { formatExecReceipt } from '../exec-format.js';
 import {
   depCandidates as depCandidatesOf,
   filterDepCandidates,

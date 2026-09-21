@@ -21,13 +21,13 @@ import {
   providerUsageBadges,
   usageTooltip
 } from '../../utils/token-usage.js';
+import { childRollupTemplate } from '../child-rollup.js';
+import { chipPopoverTemplate } from '../chip-popover.js';
 import {
   childExecChips,
   execReceiptActor,
   formatExecReceipt
-} from '../board/card.js';
-import { childRollupTemplate } from '../child-rollup.js';
-import { chipPopoverTemplate } from '../chip-popover.js';
+} from '../exec-format.js';
 import {
   failureCategory,
   failureNextAction,

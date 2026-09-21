@@ -4177,8 +4177,9 @@ describe('views/worker', () => {
     });
 
     expect(
-      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll-current')
-        ?.textContent
+      mount.querySelector(
+        '.rtile[data-bead-id="S1"] .worker-card__roll-current'
+      )?.textContent
     ).toContain('T2: 서버 배선');
   });
 
@@ -4206,10 +4207,12 @@ describe('views/worker', () => {
     });
 
     expect(
-      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll')
+      mount.querySelector('.rtile[data-bead-id="S1"] .worker-card__roll')
     ).toBeNull();
     expect(
-      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll-current')
+      mount.querySelector(
+        '.rtile[data-bead-id="S1"] .worker-card__roll-current'
+      )
     ).toBeNull();
   });
 
@@ -14270,7 +14273,7 @@ describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', ()
     });
 
     expect(
-      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll-toggle')
+      mount.querySelector('.rtile[data-bead-id="S1"] .worker-card__roll-toggle')
         ?.textContent
     ).toContain('children 1/2');
   });
@@ -14303,13 +14306,13 @@ describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', ()
     });
 
     /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll-toggle')
+      mount.querySelector('.rtile[data-bead-id="S1"] .worker-card__roll-toggle')
     ).click();
 
     expect(gotoIssue).not.toHaveBeenCalled();
     expect(
       mount.querySelectorAll(
-        '.rtile[data-bead-id="S1"] .board-card__roll-child'
+        '.rtile[data-bead-id="S1"] .worker-card__roll-child'
       )
     ).toHaveLength(1);
   });
@@ -14341,11 +14344,11 @@ describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', ()
       gotoIssue
     });
     /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll-toggle')
+      mount.querySelector('.rtile[data-bead-id="S1"] .worker-card__roll-toggle')
     ).click();
 
     /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll-child')
+      mount.querySelector('.rtile[data-bead-id="S1"] .worker-card__roll-child')
     ).click();
 
     expect(gotoIssue).toHaveBeenCalledWith('S1.1');

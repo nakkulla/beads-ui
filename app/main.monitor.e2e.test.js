@@ -269,7 +269,7 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     );
     select.value = '/tmp/ws-b';
     select.dispatchEvent(new Event('change', { bubbles: true }));
-    window.location.hash = '#/board';
+    window.location.hash = '#/worker';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     finish({
       changed: true,
@@ -277,10 +277,10 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     });
     await flush();
 
-    expect(window.location.hash).toBe('#/board');
+    expect(window.location.hash).toBe('#/worker');
   });
 
-  test('preserves Board then Monitor navigation while a picker switch is pending', async () => {
+  test('preserves Worker then Monitor navigation while a picker switch is pending', async () => {
     const client = /** @type {any} */ (createWsClient());
     client._reply('list-workspaces', {
       workspaces: [
@@ -307,7 +307,7 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     );
     select.value = '/tmp/ws-b';
     select.dispatchEvent(new Event('change', { bubbles: true }));
-    window.location.hash = '#/board';
+    window.location.hash = '#/worker';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     window.location.hash = '#/monitor';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
@@ -712,7 +712,7 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     await flush();
     client._clearSent();
 
-    window.location.hash = '#/board';
+    window.location.hash = '#/worker';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     await flush();
 
@@ -1055,23 +1055,23 @@ describe('subscription lifecycle after a reconnect', () => {
     expect(sentTypes(client)).toContain('subscribe-monitor-pipeline');
   });
 
-  test('re-sends the Board column subscriptions too', async () => {
+  test('re-sends the Worker column subscriptions too', async () => {
     const client = /** @type {any} */ (createWsClient());
-    window.location.hash = '#/board';
+    window.location.hash = '#/worker';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
 
     bootstrap(root);
     await flush();
 
-    expect(subscribedListIds(client)).toContain('tab:board:in-progress');
+    expect(subscribedListIds(client)).toContain('tab:worker:in-progress');
 
     client._clearSent();
     client._emitConn('reconnecting');
     client._emitConn('open');
     await flush();
 
-    expect(subscribedListIds(client)).toContain('tab:board:in-progress');
+    expect(subscribedListIds(client)).toContain('tab:worker:in-progress');
   });
 
   test('restores the Worker closed subscription after reconnect', async () => {
@@ -1116,40 +1116,22 @@ describe('subscription lifecycle after a reconnect', () => {
   // 재진입이 "구독 있음"으로 착각해 영구히 건너뛴다.
   test('re-subscribes after leaving and re-entering a tab mid-request', async () => {
     const client = /** @type {any} */ (createWsClient());
-    window.location.hash = '#/board';
+    window.location.hash = '#/worker';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
 
     bootstrap(root);
     // 구독 요청은 나갔지만 아직 resolve되지 않은 시점에 탭을 떠난다.
+    window.location.hash = '#/monitor';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await Promise.resolve();
+    await Promise.resolve();
+
     window.location.hash = '#/worker';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
-    await Promise.resolve();
-    await Promise.resolve();
-
-    window.location.hash = '#/board';
-    window.dispatchEvent(new HashChangeEvent('hashchange'));
     await flush();
 
-    client._trigger('snapshot', {
-      type: 'snapshot',
-      id: 'tab:board:in-progress',
-      revision: 1,
-      issues: [
-        {
-          id: 'UI-back',
-          title: '재진입',
-          status: 'in_progress',
-          updated_at: Date.now()
-        }
-      ]
-    });
-    await flush();
-
-    expect(subscribedListIds(client)).toContain('tab:board:in-progress');
-    expect(
-      document.querySelector('#board-root [data-issue-id="UI-back"]')
-    ).not.toBe(null);
+    expect(subscribedListIds(client)).toContain('tab:worker:in-progress');
   });
 });
 
@@ -1206,16 +1188,16 @@ describe('worker tab direct entry (UI-53es §2)', () => {
       '#worker-root .rtile[data-bead-id="UI-run"]'
     );
     expect(
-      tile?.querySelector('.board-card__roll-current')?.textContent
+      tile?.querySelector('.worker-card__roll-current')?.textContent
     ).toContain('T2: 서버 배선');
     expect(tile?.querySelector('.rtile__child')).toBe(null);
   });
 });
 
 describe('상세가 여는 집계 채널 생명주기 (UI-lx45 §3.2)', () => {
-  test('subscribes the pipeline when a detail opens on the board tab', async () => {
+  test('subscribes the pipeline when a detail opens off the monitor tab', async () => {
     const client = /** @type {any} */ (createWsClient());
-    window.location.hash = '#/board';
+    window.location.hash = '#/compare';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
 
@@ -1223,7 +1205,7 @@ describe('상세가 여는 집계 채널 생명주기 (UI-lx45 §3.2)', () => {
     await flush();
     client._clearSent();
 
-    window.location.hash = '#/board?issue=UI-1';
+    window.location.hash = '#/compare?issue=UI-1';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     await flush();
 
@@ -1232,7 +1214,7 @@ describe('상세가 여는 집계 채널 생명주기 (UI-lx45 §3.2)', () => {
 
   test('unsubscribes the pipeline when the detail closes off the monitor tab', async () => {
     const client = /** @type {any} */ (createWsClient());
-    window.location.hash = '#/board?issue=UI-1';
+    window.location.hash = '#/compare?issue=UI-1';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
 
@@ -1240,7 +1222,7 @@ describe('상세가 여는 집계 채널 생명주기 (UI-lx45 §3.2)', () => {
     await flush();
     client._clearSent();
 
-    window.location.hash = '#/board';
+    window.location.hash = '#/compare';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     await flush();
 

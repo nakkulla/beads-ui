@@ -2,7 +2,7 @@
  * Shared child-rollup markup (spec §3.2).
  *
  * Board 카드와 Worker 실행 타일이 같은 사실을 서로 다른 마크업으로 그리면 두
- * 화면의 "children N/M"이 다른 것처럼 보인다. `board-card__roll*` 클래스명은
+ * 화면의 "children N/M"이 다른 것처럼 보인다. `worker-card__roll*` 클래스명은
  * Board 시절 이름 그대로 두고(전역 CSS가 이미 그 이름을 쓴다) 마크업만 공유한다.
  */
 import { html } from 'lit-html';
@@ -38,15 +38,15 @@ import { cmpChildOrder } from '../data/sort.js';
 export function statusDotClass(status) {
   switch (status) {
     case 'in_progress':
-      return 'board-card__dot board-card__dot--progress';
+      return 'worker-card__dot worker-card__dot--progress';
     case 'resolved':
-      return 'board-card__dot board-card__dot--resolved';
+      return 'worker-card__dot worker-card__dot--resolved';
     case 'closed':
-      return 'board-card__dot board-card__dot--closed';
+      return 'worker-card__dot worker-card__dot--closed';
     case 'blocked':
-      return 'board-card__dot board-card__dot--blocked';
+      return 'worker-card__dot worker-card__dot--blocked';
     default:
-      return 'board-card__dot';
+      return 'worker-card__dot';
   }
 }
 
@@ -66,7 +66,7 @@ export function statusDotClass(status) {
 function toggleTemplate(parent_id, count, total, expanded, onToggle) {
   return html`<button
     type="button"
-    class="board-card__roll-toggle"
+    class="worker-card__roll-toggle"
     data-roll-parent=${parent_id}
     aria-expanded=${expanded ? 'true' : 'false'}
     @click=${onToggle}
@@ -89,15 +89,17 @@ function toggleTemplate(parent_id, count, total, expanded, onToggle) {
 function childTemplate(child, ord, chips, onChildClick) {
   return html`<button
     type="button"
-    class="board-card__roll-child"
+    class="worker-card__roll-child"
     data-child-id=${child.id}
     @click=${onChildClick
       ? (/** @type {Event} */ ev) => onChildClick(ev, child.id)
       : undefined}
   >
     <span class=${statusDotClass(child.status)}>●</span>
-    <span class="board-card__roll-child-ord">${ord}</span>
-    <span class="board-card__roll-child-title">${child.title || child.id}</span>
+    <span class="worker-card__roll-child-ord">${ord}</span>
+    <span class="worker-card__roll-child-title"
+      >${child.title || child.id}</span
+    >
     ${chips}
   </button>`;
 }
@@ -125,8 +127,8 @@ export function childRollupTemplate(rollup, opts) {
   const children = Array.isArray(rollup.children) ? rollup.children : [];
   const ordered = total > 0 ? children.slice().sort(cmpChildOrder) : children;
   return html`
-    <div class="board-card__roll">
-      <div class="board-card__roll-meta">
+    <div class="worker-card__roll">
+      <div class="worker-card__roll-meta">
         ${total > 0
           ? toggleTemplate(
               opts.parent_id,
@@ -135,19 +137,19 @@ export function childRollupTemplate(rollup, opts) {
               expanded,
               opts.onToggle
             )
-          : html`<span class="board-card__roll-none">${empty_label}</span>`}
+          : html`<span class="worker-card__roll-none">${empty_label}</span>`}
         ${trailing}
       </div>
       ${total > 0 && rollup.current
-        ? html`<div class="board-card__roll-current">
+        ? html`<div class="worker-card__roll-current">
             └
-            <span class="board-card__cur-child"
+            <span class="worker-card__cur-child"
               >● ${rollup.current.title || rollup.current.id}</span
             >
           </div>`
         : ''}
       ${expanded && total > 0
-        ? html`<div class="board-card__roll-list">
+        ? html`<div class="worker-card__roll-list">
             ${ordered.map((c, i) =>
               childTemplate(
                 c,

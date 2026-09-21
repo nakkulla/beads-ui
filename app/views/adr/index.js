@@ -92,7 +92,7 @@ const CANDIDATE_OTHER_KINDS = ['adr_status'];
  * on app-state changes so the default filter can follow a workspace switch
  * without a new ADR snapshot (the server pushes `adr-snapshot` only on change)
  * @property {(root_dir: string) => Promise<unknown>|unknown} [switchWorkspace]
- * @property {(doc: import('../board/stepper.js').StepperDoc, root_dir?: string) => void} [openDoc]
+ * @property {(doc: import('../stepper.js').StepperDoc, root_dir?: string) => void} [openDoc]
  */
 
 /** Every candidate kind the dotfiles §7 contract names. */

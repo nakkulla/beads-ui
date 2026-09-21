@@ -82,7 +82,6 @@
   --space-8: 16px;
   --space-9: 18px;
   --space-10: 20px;
-  --board-column-min-width: 300px;
 
   --label-has-fg: #16a34a;
   --label-has-border: color-mix(in srgb, #16a34a 35%, transparent);
@@ -890,38 +889,14 @@ a {
   min-height: 0; /* allow children to scroll */
 }
 
-/* Board route: 컬럼은 가로로만 넘치고, 세로는 문서가 받는다. */
-.route {
-  &.board {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-
-    .panel__body {
-      flex: 1;
-      min-height: 0;
-      overflow-x: auto; /* scroll columns horizontal */
-    }
-  }
-}
-
 /* 라우트 셸은 더 이상 뷰포트 높이를 고정하지도 넘치는 내용을 잘라내지도 않는다.
    `overflow: hidden`을 남기면 문서 스크롤이 살아나도 내용이 잘려 보이지 않고,
    그 안의 sticky 헤더도 잘린 상자를 기준으로 삼아 어긋난다. */
-#board-root.route.board,
 #worker-root.route.worker {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
-}
-
-#board-root > .panel__body {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-height: 0;
-  overflow-x: auto;
 }
 
 .panel {
@@ -1955,14 +1930,6 @@ input.inline-edit:focus {
 .epic-row:hover {
   background: color-mix(in srgb, var(--control-bg) 55%, transparent);
 }
-
-/* Board view styles — the legacy .board-root grid rule was removed (UX v3):
-   it loaded after styles/base.css and overrode the control-tower 5/6-track
-   layout contract at equal specificity. base.css owns .board-root now. */
-/* Legacy .board-column / .board-card / toolbar rules were removed (UX v3):
-   this sheet loads after styles/base.css, so the shared class names silently
-   overrode the control-tower board's token-based styles. base.css owns all
-   board-* classes now; the old Board view they styled no longer exists. */
 
 .date-cell {
   font-size: 11px;
@@ -4796,7 +4763,7 @@ html[data-theme='dark'] {
 }
 
 /* 타일 안에서 rollup은 카드의 footer가 아니라 그냥 한 줄이다. */
-.rtile .board-card__roll {
+.rtile .worker-card__roll {
   border-top: none;
   margin-top: var(--sp-4);
   padding-top: 0;
@@ -6818,7 +6785,7 @@ html[data-theme='dark'] {
   text-decoration: underline;
 }
 
-/* 우선순위 배지 — Board 카드의 `.board-card__pri`와 같은 문장(`P<n>`)·같은 톤을
+/* 우선순위 배지 — 퇴역한 Board 카드의 `.board-card__pri`와 같은 문장(`P<n>`)·같은 톤을
    쓴다. 같은 사실이 두 탭에서 다른 모양이면 한쪽은 다시 확인해야 하기 때문이다.
    후보 카드 · mini 행 · 실행 타일이 한 클래스를 공유한다. */
 .worker-pri {
@@ -8919,70 +8886,6 @@ button.detail-session__leg:focus-visible {
     word-break: keep-all;
     line-height: 1.25;
   }
-}
-
-/* --- board Deferred popup (2026-08-05-board-deferred-popup §4) --- */
-.deferred-popup {
-  width: min(720px, calc(100vw - 32px));
-  max-height: 80vh;
-  padding: 0;
-  border-radius: var(--r-6);
-  border: 1px solid var(--border-panel);
-  background: var(--bg-panel);
-  color: var(--text-primary);
-  overflow: hidden;
-}
-
-.deferred-popup::backdrop {
-  background: color-mix(in srgb, #000 45%, transparent);
-  backdrop-filter: blur(1px);
-}
-
-.deferred-popup__container {
-  display: flex;
-  flex-direction: column;
-  max-height: 80vh;
-}
-
-.deferred-popup__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--sp-10) var(--sp-12);
-  border-bottom: 1px solid var(--border-panel);
-}
-
-.deferred-popup__title {
-  color: var(--text-title);
-  font-size: var(--fs-body);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.deferred-popup__close {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  font-size: var(--fs-body);
-  cursor: pointer;
-}
-
-.deferred-popup__close:focus-visible {
-  outline: 2px solid var(--stage-plan-on);
-  outline-offset: 1px;
-}
-
-.deferred-popup__body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-8);
-  padding: var(--sp-12);
-  overflow-y: auto;
-}
-
-.deferred-popup__empty {
-  color: var(--text-dim);
-  font-size: var(--fs-body);
 }
 
 /* Prompt inspection (UI-rxp3 §4/§5): the shared block used by the ⚙ dialog's
