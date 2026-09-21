@@ -3610,6 +3610,119 @@ describe('scheduler provider hold and recovery', () => {
     expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-live');
   });
 
+  test('restores existing Bead metadata after a locked account-switch child exits', async () => {
+    const metadata = {
+      orchestration_model: 'sonnet',
+      orchestration_effort: 'low',
+      impl_model: 'sonnet'
+    };
+    const env = preemptEnv({
+      B1: { claude_account: 'hot@example.com', metadata }
+    });
+    allowSwitchAccounts(env.store, 'claude', ['cool@example.com']);
+    seedProviderAttempt(env.store, 'locked-held', 'B1', {
+      session_id: 'sid-locked',
+      effort: 'high',
+      speed: 'default',
+      base_oid: 'base-B1',
+      target_base: 'main',
+      claude_account: 'hot@example.com',
+      exec_values: resumableExecValues(),
+      continuation_choice: 'prior_attempt'
+    });
+
+    await env.scheduler.holdAttempt(WS, 'locked-held', 'B1', null, {
+      account: 'hot@example.com',
+      outage: {
+        detail: 'usage_limit',
+        message: "You've hit your limit",
+        scope: 'account',
+        resets_at: null
+      }
+    });
+    const child = Object.values(env.store.snapshot(WS).attempts).find(
+      (/** @type {any} */ attempt) => attempt.resumed_from === 'locked-held'
+    );
+    env.runner.finish('B1', { success: true });
+    await flush();
+    const restored = Object.fromEntries(
+      await Promise.all(
+        Object.keys(metadata).map(async (key) => [
+          key,
+          await env.bd.readMetadata('B1', key)
+        ])
+      )
+    );
+
+    expect(child).toMatchObject({
+      continuation_choice: 'prior_attempt',
+      claude_account: 'cool@example.com',
+      exec_stamped_keys: expect.arrayContaining(Object.keys(metadata)),
+      exec_restore_values: metadata
+    });
+    expect(restored).toEqual(metadata);
+  });
+
+  test('switches a locked session after its usage-limit termination fully settles', async () => {
+    const env = preemptEnv({ B1: { claude_account: 'hot@example.com' } });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('B1').emit('session_id', 'sid-limit');
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { continuation_choice: 'prior_attempt' }
+    });
+    allowSwitchAccounts(env.store, 'claude', ['cool@example.com']);
+    const consume = vi.spyOn(env.store, 'consumeAutoResumePending');
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          is_error: true,
+          result: "You've hit your limit"
+        }
+      ]
+    });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    const child = Object.values(queue.attempts).find(
+      (/** @type {any} */ attempt) => attempt.resumed_from === attempt_id
+    );
+    expect(child).toMatchObject({
+      continuation_choice: 'prior_attempt',
+      claude_account: 'cool@example.com',
+      account_sources: { claude: 'outage_switch' }
+    });
+    expect(queue.attempts[attempt_id].auto_resume_refused).toBeNull();
+    expect(queue.auto_resume_pending).toEqual([]);
+    expect(consume).toHaveBeenCalledTimes(1);
+    expect(env.runner.spawnOrder).toEqual(['B1', 'B1']);
+    expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-limit');
+  });
+
+  test('excludes hot review sessions from live account switching', async () => {
+    const env = await livePreemptEnv();
+    env.store.updateAttempt(WS, {
+      attempt_id: env.attempt_id,
+      patch: { kind: 'review_session' }
+    });
+
+    await env.scheduler.livePreemptPass(WS);
+
+    expect(env.processController.terminate).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts[env.attempt_id]).toMatchObject({
+      status: 'running',
+      kind: 'review_session',
+      live_preempt_last_skip: null
+    });
+    expect(env.store.snapshot(WS).auto_resume_pending).toEqual([]);
+  });
+
   test('switches held pinned accounts below the threshold before the provider gate', async () => {
     const append = vi.fn();
     const env = preemptEnv(

@@ -3193,6 +3193,7 @@ export function createScheduler(deps) {
       const runner = current_attempt.runner;
       if (
         current_attempt.status !== 'running' ||
+        current_attempt.kind === 'review_session' ||
         current_attempt.control ||
         live_preempt_in_flight.has(attempt_id) ||
         (runner !== 'claude' && runner !== 'codex')
@@ -6624,6 +6625,16 @@ export function createScheduler(deps) {
         'external_job'
       ) {
         notifyChanged(workspace);
+      }
+      if (
+        !paused_done.has(attempt_id) &&
+        deps.store
+          .snapshot(workspace)
+          .auto_resume_pending.some(
+            (/** @type {any} */ pending) => pending.attempt_id === attempt_id
+          )
+      ) {
+        await consumeProviderAutoResume(workspace);
       }
     }
   }
@@ -11972,6 +11983,14 @@ export function createScheduler(deps) {
         } else {
           result = await resume(workspace, pending.attempt_id, options);
         }
+        if (
+          !result.ok &&
+          result.reason === 'bead_running' &&
+          (settling.has(pending.attempt_id) ||
+            paused_done.has(pending.attempt_id))
+        ) {
+          continue;
+        }
         deps.store.consumeAutoResumePending(workspace, pending);
         consumed = true;
         if (result.ok && prior) {
@@ -13251,10 +13270,10 @@ export function createScheduler(deps) {
         runner_mismatch
       };
     }
-    const candidate_stamped_keys = override_result.applied
-      ? []
-      : use_prior
-        ? EXEC_SETTING_KEYS
+    const candidate_stamped_keys = use_prior
+      ? EXEC_SETTING_KEYS
+      : override_result.applied
+        ? []
         : resolved.exec.stamped_keys;
     const restore_capture = await captureExecRestoreValues(
       bead_id,
