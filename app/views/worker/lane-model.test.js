@@ -1837,7 +1837,7 @@ describe('monitor exec chips (UI-eey2 §5)', () => {
     }
   };
 
-  test('draws both effective settings chips without execution pins', () => {
+  test('draws unpinned default chips for an observed empty exec_pins object', () => {
     const lanes = buildLanes(
       [workspace({ runnable: [runnable('A-1', { exec_pins: {} })] })],
       [
@@ -1858,6 +1858,24 @@ describe('monitor exec chips (UI-eey2 §5)', () => {
     expect(lanes.runnable[0].exec_chips?.worker).toMatchObject({
       pinned: false
     });
+  });
+
+  test('omits candidate exec chips when exec_pins is unobserved', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1')] })],
+      [
+        state({
+          execution_defaults: {
+            ...execution_defaults,
+            session: ROUTED_EXECUTION_DEFAULTS.session
+          },
+          runner_catalog: { runtimes: {} },
+          session_defaults: {}
+        })
+      ]
+    );
+
+    expect(lanes.runnable[0]).not.toHaveProperty('exec_chips');
   });
 
   test('omits the chip row entirely when the repo defaults are unknown', () => {
@@ -4389,118 +4407,126 @@ const ROUTED_EXECUTION_DEFAULTS = {
 const MERGE_SHA = 'a'.repeat(40);
 
 describe('candidate facts parity', () => {
-  test.each(['defaults', 'one pin', 'released predecessor'])(
-    'projects identical card materials from both sources: %s',
-    (scenario) => {
-      const now = Date.now();
-      const exec_pins =
-        scenario === 'one pin' ? { orchestration_model: 'opus' } : {};
-      const release_info =
-        scenario === 'released predecessor'
-          ? {
-              released_by: [
-                { id: 'A-9', closed_at: now - 86400000, foreign: false }
-              ],
-              last_released_at: now - 86400000
-            }
-          : undefined;
-      const metadata = {
-        route: 'spec_backed',
-        spec_review: `codex@${'a'.repeat(40)}`,
-        awaiting_user: 'spec_review_stale',
-        session_preferred_reason: 'user_feedback_loop',
-        ...exec_pins
-      };
-      const issue = {
-        id: 'A-1',
-        title: 'same bead',
-        status: 'open',
-        description: 'body',
-        spec_id: 'docs/a.md',
-        labels: ['session-preferred', 'spec-after-blocker'],
-        metadata,
-        blocked_info: { blockers: ['A-2'] },
-        release_info,
-        dependents_info: { count: 1, ids: ['A-3'] }
-      };
-      const queue_store = createWorkerQueueStore();
-      queue_store.set(/** @type {any} */ (workspace()));
-      const adapter = createWorkspaceAdapter({
-        queueStore: queue_store,
-        issueStores: {
-          snapshotFor: (/** @type {string} */ key) =>
-            key === 'tab:worker:blocked' ? [issue] : []
-        },
-        getWorkspacePath: () => WS_A
-      });
-      const input = adapter.read({
-        candidate_sort: normalizeCandidateSort(null)
-      });
-      const states = [
-        state({
-          execution_defaults: ROUTED_EXECUTION_DEFAULTS,
-          runner_catalog: { runtimes: {} },
-          session_defaults: {}
-        })
-      ];
-      const server_row = runnable('A-1', {
-        title: issue.title,
-        route: 'spec_backed',
-        spec_state: 'published',
-        has_description: true,
-        awaiting_user: true,
-        awaiting_user_reason: '사용자 리뷰 필요: spec_review_stale',
-        worker_ineligible: false,
-        session_preferred_reason: 'user_feedback_loop',
-        spec_after_blocker: true,
-        blocked: true,
-        blocked_by: ['A-2'],
-        labels: issue.labels,
-        published: true,
-        exec_pins,
-        release_info,
-        dependents_info: issue.dependents_info
-      });
+  test.each([
+    'defaults',
+    'one pin',
+    'released predecessor',
+    'blocked without ids'
+  ])('projects identical card materials from both sources: %s', (scenario) => {
+    const now = Date.now();
+    const blocked_without_ids = scenario === 'blocked without ids';
+    const blocked_by = blocked_without_ids ? [] : ['A-2'];
+    const exec_pins =
+      scenario === 'one pin' ? { orchestration_model: 'opus' } : {};
+    const release_info =
+      scenario === 'released predecessor'
+        ? {
+            released_by: [
+              { id: 'A-9', closed_at: now - 86400000, foreign: false }
+            ],
+            last_released_at: now - 86400000
+          }
+        : undefined;
+    const metadata = {
+      route: 'spec_backed',
+      spec_review: `codex@${'a'.repeat(40)}`,
+      ...(blocked_without_ids ? {} : { awaiting_user: 'spec_review_stale' }),
+      session_preferred_reason: 'user_feedback_loop',
+      ...exec_pins
+    };
+    const issue = {
+      id: 'A-1',
+      title: 'same bead',
+      status: 'open',
+      description: 'body',
+      spec_id: 'docs/a.md',
+      labels: ['session-preferred', 'spec-after-blocker'],
+      metadata,
+      blocked_info: { blockers: blocked_by },
+      release_info,
+      dependents_info: { count: 1, ids: ['A-3'] }
+    };
+    const queue_store = createWorkerQueueStore();
+    queue_store.set(/** @type {any} */ (workspace()));
+    const adapter = createWorkspaceAdapter({
+      queueStore: queue_store,
+      issueStores: {
+        snapshotFor: (/** @type {string} */ key) =>
+          key === 'tab:worker:blocked' ? [issue] : []
+      },
+      getWorkspacePath: () => WS_A
+    });
+    const input = adapter.read({
+      candidate_sort: normalizeCandidateSort(null)
+    });
+    const states = [
+      state({
+        execution_defaults: ROUTED_EXECUTION_DEFAULTS,
+        runner_catalog: { runtimes: {} },
+        session_defaults: {}
+      })
+    ];
+    const server_row = runnable('A-1', {
+      title: issue.title,
+      route: 'spec_backed',
+      spec_state: 'published',
+      has_description: true,
+      awaiting_user: !blocked_without_ids,
+      ...(blocked_without_ids
+        ? { blocked_without_ids: true }
+        : { awaiting_user_reason: '사용자 리뷰 필요: spec_review_stale' }),
+      worker_ineligible: false,
+      session_preferred_reason: 'user_feedback_loop',
+      spec_after_blocker: !blocked_without_ids,
+      blocked: true,
+      blocked_by,
+      labels: issue.labels,
+      published: true,
+      exec_pins,
+      release_info,
+      dependents_info: issue.dependents_info
+    });
 
-      const observed = buildLanes(input.workspaces, states).runnable[0];
-      const server = buildLanes([workspace({ runnable: [server_row] })], states)
-        .runnable[0];
+    const observed = buildLanes(input.workspaces, states).runnable[0];
+    const server = buildLanes([workspace({ runnable: [server_row] })], states)
+      .runnable[0];
 
-      for (const key of [
-        'queue_placeable',
-        'route_ok',
-        'placement_spec',
-        'session_preferred',
-        'session_preferred_reason',
-        'spec_after_blocker',
-        'reason',
-        'exec_chips',
-        'dependency_chips'
-      ]) {
-        expect(/** @type {any} */ (observed)[key], key).toEqual(
-          /** @type {any} */ (server)[key]
-        );
-      }
-      expect(observed.reason).toBe('사용자 리뷰 필요: spec_review_stale');
-      expect(observed.reason).not.toContain('대기 큐에 넣을 수 없습니다');
-      expect(observed.exec_chips?.orchestration?.pinned).toBe(
-        scenario === 'one pin'
+    for (const key of [
+      'queue_placeable',
+      'route_ok',
+      'placement_spec',
+      'session_preferred',
+      'session_preferred_reason',
+      'spec_after_blocker',
+      'reason',
+      'exec_chips',
+      'dependency_chips'
+    ]) {
+      expect(/** @type {any} */ (observed)[key], key).toEqual(
+        /** @type {any} */ (server)[key]
       );
-      expect(observed.exec_chips?.worker?.pinned).toBe(false);
-      if (scenario === 'one pin') {
-        expect(observed.exec_chips?.orchestration?.title).toContain(
-          '이슈 핀 — 레포 기본값과 다름'
-        );
-        expect(observed.exec_chips?.worker?.title).not.toContain(
-          '이슈 핀 — 레포 기본값과 다름'
-        );
-      }
-      if (release_info) {
-        expect(observed.dependency_chips?.released?.[0].label).toContain('🔓');
-      }
-      adapter.destroy();
     }
-  );
+    expect(observed.reason).toBe(
+      blocked_without_ids ? '🔒 blocked' : '사용자 리뷰 필요: spec_review_stale'
+    );
+    expect(observed.reason).not.toContain('대기 큐에 넣을 수 없습니다');
+    expect(observed.exec_chips?.orchestration?.pinned).toBe(
+      scenario === 'one pin'
+    );
+    expect(observed.exec_chips?.worker?.pinned).toBe(false);
+    if (scenario === 'one pin') {
+      expect(observed.exec_chips?.orchestration?.title).toContain(
+        '이슈 핀 — 레포 기본값과 다름'
+      );
+      expect(observed.exec_chips?.worker?.title).not.toContain(
+        '이슈 핀 — 레포 기본값과 다름'
+      );
+    }
+    if (release_info) {
+      expect(observed.dependency_chips?.released?.[0].label).toContain('🔓');
+    }
+    adapter.destroy();
+  });
 
   test('marks a stale waiting admission separately from its reason', () => {
     const lanes = buildLanes(

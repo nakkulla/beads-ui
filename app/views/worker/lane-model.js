@@ -3657,11 +3657,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const parked = revise_parked[bead_id];
       const projected_discard = discardProjection(discard_operations, bead_id);
       const discard = projected_discard.operation ? projected_discard : null;
-      const exec_chips = execChipsFor(
-        objectOf(state),
-        entry.exec_pins,
-        objectOf(bead_workflow[bead_id]).route || null
-      );
+      const exec_chips =
+        Object.hasOwn(entry, 'exec_pins') &&
+        entry.exec_pins &&
+        typeof entry.exec_pins === 'object'
+          ? execChipsFor(
+              objectOf(state),
+              entry.exec_pins,
+              objectOf(bead_workflow[bead_id]).route || null
+            )
+          : null;
       /** @type {LaneItem} */
       const item = {
         ...base(bead_id),
@@ -3888,7 +3893,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const route =
         (workflow && typeof workflow.route === 'string' && workflow.route) ||
         (typeof entry.route === 'string' ? entry.route : null);
-      const exec_chips = execChipsFor(objectOf(state), entry.exec_pins, route);
+      const exec_chips =
+        Object.hasOwn(entry, 'exec_pins') &&
+        entry.exec_pins &&
+        typeof entry.exec_pins === 'object'
+          ? execChipsFor(objectOf(state), entry.exec_pins, route)
+          : null;
       // 복잡 판정 (UI-sbum §4): 추천은 `rec`, 권위 키는 `exec_pins`로 따로
       // 오므로 판정 유틸에 둘을 나눠 넘긴다. Worker 카드와 같은 칩·같은 툴팁이고
       // 클릭은 없다.

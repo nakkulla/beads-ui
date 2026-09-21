@@ -167,6 +167,7 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * @property {'approved'|'authored'|'review_incomplete'|'none'} plan_state
  * @property {boolean} blocked - Membership in `ready_explain.blocked`.
  * @property {string[]} blocked_by - Direct `blocks` blocker ids.
+ * @property {true} [blocked_without_ids] - A blocked candidate has no known blocker ids.
  * @property {string[]} labels - Labels carried for display.
  * @property {number|string|null} created_at
  * @property {number|string|null} updated_at
@@ -492,6 +493,9 @@ function qualify(row, blocked_by, context) {
         : planState(meta, route),
     blocked: blocked_by !== null,
     blocked_by: blocked_by || [],
+    ...(blocked_by !== null && blocked_by.length === 0
+      ? { blocked_without_ids: true }
+      : {}),
     labels: workerLabels(row.labels),
     created_at: stampOf(row.created_at),
     updated_at: stampOf(row.updated_at),

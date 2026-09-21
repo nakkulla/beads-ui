@@ -14161,7 +14161,7 @@ describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', ()
     ).toBe('codex · auto · low');
   });
 
-  test('draws effective default chips for a bead that is in no subscribed column', async () => {
+  test('omits the chips for a bead that is in no subscribed column', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { send } = sessionDefaultsTransport({});
     const queueStore = createWorkerQueueStore();
@@ -14184,11 +14184,7 @@ describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', ()
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="GONE-1"]')
     );
-    expect(
-      row.querySelector('.worker-chips .exec-chip--orch .exec-chip__k')
-        ?.textContent
-    ).toBe('오케');
-    expect(row.querySelector('.exec-chip--pin')).toBeNull();
+    expect(row.querySelector('.worker-chips .exec-chip')).toBeNull();
   });
 
   test('gives a serial-lane ghost row no exec chips', async () => {

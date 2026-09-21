@@ -207,7 +207,8 @@ default.
 Runnable rows inside `workspaces[].runnable` additionally carry
 `blocked: boolean` and `blocked_by: string[]`. They are display-only projections
 of the shared `ready_explain` snapshot. A legacy snapshot without that source
-uses `false` / `[]` and does not remove the candidate.
+uses `false` / `[]` and does not remove the candidate. Blocked candidates with
+no known blocker IDs also carry `blocked_without_ids: true`.
 
 Candidate placement facts are `route`, `spec_state`, `has_description`,
 `awaiting_user`, and `worker_ineligible`. Display observations also carry

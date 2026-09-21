@@ -556,7 +556,24 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     expect(out.map((item) => item.published)).toEqual([false]);
   });
 
-  test('projects blocked membership and direct blocker ids from ready explain', async () => {
+  test('marks a blocked candidate without known blocker ids', async () => {
+    const requestSnapshot = vi.fn(async () =>
+      snapshotOk([row()], {
+        ready_explain: { ready: [], blocked: [{ id: 'UI-1', blocked_by: [] }] }
+      })
+    );
+    const cache = createRunnableCache({ requestSnapshot });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0]).toMatchObject({
+      blocked: true,
+      blocked_by: [],
+      blocked_without_ids: true
+    });
+  });
+
+  test('projects blocked membership and direct blocker ids without the id-less marker', async () => {
     const requestSnapshot = vi.fn(async () =>
       snapshotOk([row()], {
         ready_explain: {
@@ -580,6 +597,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
       blocked: true,
       blocked_by: ['UI-2', 'EXT-3']
     });
+    expect(out[0]).not.toHaveProperty('blocked_without_ids');
   });
 
   test('falls back to embedded blocks edges when the explain row carries no ids', async () => {
