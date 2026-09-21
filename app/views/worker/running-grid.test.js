@@ -1870,13 +1870,8 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
   });
 });
 
-describe('복잡 chip on the running tile (UI-sbum §3)', () => {
-  /** @type {import('../../utils/rec-settings.js').RecSettings} */
-  const REC = {
-    reasons: ['verification_by_judgment'],
-    rec: { orchestration_model: 'fable' },
-    state: 'diverged'
-  };
+describe('복잡 chip on the running tile (UI-7nhi §3)', () => {
+  const REASON = 'verification_by_judgment';
 
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
@@ -1907,17 +1902,17 @@ describe('복잡 chip on the running tile (UI-sbum §3)', () => {
   }
 
   test('draws the chip in the attempt tile meta line', () => {
-    const tile = renderTile({ rec: REC });
+    const tile = renderTile({ complex_reason: REASON });
 
     const chip = /** @type {HTMLElement} */ (
-      tile.querySelector('.rtile__meta .worker-card__rec')
+      tile.querySelector('.rtile__meta .worker-card__complex')
     );
 
     expect(chip.textContent?.trim()).toBe('복잡');
     expect(chip.title).toBe(
-      '복잡한 작업으로 판정됨\n사유: 테스트가 못 잡고 리뷰어의 추론으로만 검증할 수 있다\n상태: 추천과 다름'
+      '복잡한 작업으로 판정됨\n사유: 테스트가 못 잡고 리뷰어의 추론으로만 검증할 수 있다'
     );
-    expect(chip.dataset.state).toBe('diverged');
+    expect(chip.dataset.state).toBeUndefined();
   });
 
   test('draws the chip in the session tile meta line', () => {
@@ -1926,41 +1921,49 @@ describe('복잡 chip on the running tile (UI-sbum §3)', () => {
       attempt_id: null,
       runner: null,
       model: null,
-      rec: REC
+      complex_reason: REASON
     });
 
-    expect(tile.querySelector('.rtile__meta .worker-card__rec')).not.toBeNull();
+    expect(
+      tile.querySelector('.rtile__meta .worker-card__complex')
+    ).not.toBeNull();
   });
 
-  test('omits the chip when the bead has no recommendation', () => {
-    const tile = renderTile({ rec: null });
+  test('omits the chip when the bead carries no 복잡 판정', () => {
+    const tile = renderTile({});
 
-    expect(tile.querySelector('.worker-card__rec')).toBeNull();
+    expect(tile.querySelector('.worker-card__complex')).toBeNull();
+  });
+
+  test('omits the chip when the reason string is empty', () => {
+    const tile = renderTile({ complex_reason: '' });
+
+    expect(tile.querySelector('.worker-card__complex')).toBeNull();
   });
 
   test('turns the tile chip into a 판정 button as well (UI-8x90 §4.5)', () => {
-    const tile = renderTile({ rec: REC });
+    const tile = renderTile({ complex_reason: REASON });
 
     const chip = /** @type {HTMLElement} */ (
-      tile.querySelector('.worker-card__rec')
+      tile.querySelector('.worker-card__complex')
     );
 
     expect(chip.tagName).toBe('BUTTON');
-    expect(chip.dataset.chipKey).toBe('rec');
+    expect(chip.dataset.chipKey).toBe('complex');
   });
 
   test('draws the 사유 popup inside the tile meta line', () => {
     const tile = renderTile({
-      rec: REC,
+      complex_reason: REASON,
       chip_popover: {
-        chip_key: 'rec',
+        chip_key: 'complex',
         content: { title: '복잡한 작업으로 판정됨', lines: ['한 줄'] }
       }
     });
 
     expect(tile.querySelector('.rtile__meta .chip-popover')).not.toBeNull();
     expect(
-      tile.querySelector('.worker-card__rec')?.getAttribute('aria-expanded')
+      tile.querySelector('.worker-card__complex')?.getAttribute('aria-expanded')
     ).toBe('true');
   });
 });

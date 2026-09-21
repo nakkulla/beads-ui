@@ -418,9 +418,8 @@ export function createWorkspaceAdapter(options = {}) {
             ? it.worker_created_from_root_dir
             : undefined,
         exec_pins: execPinsOf(objectOf(it.metadata)),
-        // 복잡 판정은 `bead_overlay`의 metadata가 덧씌운다 (§4.1) — 후보는 언제나
-        // 구독 집합 안이므로 그쪽이 더 온전한 원천이다.
-        rec: null,
+        // 복잡 판정은 `bead_overlay`의 라벨·metadata가 싣는다 (§4.1, UI-7nhi §3)
+        // — 후보는 언제나 구독 집합 안이므로 그쪽이 더 온전한 원천이다.
         // 겹침 판정의 선언 scope (UI-qm12 §5.2). 후보 bead의 scope도 서버가 같은
         // 스냅샷에 실어 준다 — 값 없음/읽기 실패는 필드를 만들지 않는다.
         ...(scope_entry && Array.isArray(scope_entry.scope)
@@ -491,7 +490,6 @@ export function createWorkspaceAdapter(options = {}) {
         status: it.status,
         workflow: it.workflow || null,
         exec_pins: execPinsOf(objectOf(it.metadata)),
-        rec: null,
         observation: true,
         deferred: true,
         release_info: it.release_info,

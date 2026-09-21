@@ -74,6 +74,7 @@
     "app/utils/active-attempts.js",
     "app/utils/awaiting-user-reason.js",
     "app/utils/session-preferred.js",
+    "app/utils/complex-judgement.js",
     "app/utils/spec-after-blocker.js",
     "app/utils/token-usage.js",
     "app/utils/failure-sentences.js",

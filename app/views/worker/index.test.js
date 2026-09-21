@@ -14551,11 +14551,11 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
         status: 'open',
         created_at: 100,
         spec_id: 'S',
+        labels: ['complex'],
         metadata: {
           route: 'spec_backed',
           spec_review: RECEIPT,
-          rec_orchestration_model: 'fable',
-          rec_reason: 'invariant_reasoning'
+          complex_reason: 'invariant_reasoning'
         }
       }
     ]);
@@ -14573,7 +14573,7 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
    * @param {HTMLElement} mount
    * @returns {HTMLElement}
    */
-  function recChip(mount) {
+  function complexChip(mount) {
     return /** @type {HTMLElement} */ (
       mount.querySelector('.worker-card[data-bead-id="REC-1"] .judgement-chip')
     );
@@ -14582,7 +14582,9 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
   test('opens the 사유 popup on a judgement chip click', () => {
     const mount = mountJudgement();
 
-    recChip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    complexChip(mount).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
 
     expect(mount.querySelector('.chip-popover')?.getAttribute('role')).toBe(
       'dialog'
@@ -14592,7 +14594,9 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
   test('names the 사유 sentence in the popup body (UI-8x90 §4.6)', () => {
     const mount = mountJudgement();
 
-    recChip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    complexChip(mount).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
 
     expect(mount.querySelector('.chip-popover')?.textContent).toContain(
       '정합성이 상태기계·동시성·불변식 추론에 달려 있다'
@@ -14603,23 +14607,31 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
     const gotoIssue = vi.fn();
     const mount = mountJudgement({ gotoIssue });
 
-    recChip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    complexChip(mount).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
 
     expect(gotoIssue).not.toHaveBeenCalled();
   });
 
   test('closes the popup on a second click of the same chip', () => {
     const mount = mountJudgement();
-    recChip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    complexChip(mount).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
 
-    recChip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    complexChip(mount).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
 
     expect(mount.querySelector('.chip-popover')).toBeNull();
   });
 
   test('closes the popup on Escape', () => {
     const mount = mountJudgement();
-    recChip(mount).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    complexChip(mount).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 
@@ -15699,19 +15711,17 @@ describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
   });
 });
 
-describe('복잡 chip projection on the worker tab (UI-sbum §3)', () => {
-  const REC_META = {
+describe('복잡 chip projection on the worker tab (UI-7nhi §3)', () => {
+  const COMPLEX_META = {
     spec_review: RECEIPT,
-    rec_orchestration_model: 'fable',
-    rec_impl_runtime: 'claude',
-    rec_reason: 'hard_diagnosis'
+    complex_reason: 'hard_diagnosis'
   };
 
   /**
-   * Ready feed carrying one recommended candidate (`REC`) beside a plain one,
-   * so the absence case is asserted against the same render.
+   * Ready feed carrying one 복잡 candidate (`REC`) beside a plain one, so the
+   * absence case is asserted against the same render.
    *
-   * @param {Partial<any>} [over] - Overrides merged into the recommended issue.
+   * @param {Partial<any>} [over] - Overrides merged into the 복잡 issue.
    */
   function seedRec(over = {}) {
     const stores = createTestIssueStores();
@@ -15722,7 +15732,8 @@ describe('복잡 chip projection on the worker tab (UI-sbum §3)', () => {
         status: 'open',
         created_at: 100,
         spec_id: 'S',
-        metadata: REC_META,
+        labels: ['complex'],
+        metadata: COMPLEX_META,
         ...over
       },
       {
@@ -15757,48 +15768,62 @@ describe('복잡 chip projection on the worker tab (UI-sbum §3)', () => {
     window.localStorage.clear();
   });
 
-  test('draws the chip on the candidate card of a recommended bead', () => {
+  test('draws the chip on the candidate card of a 복잡 bead', () => {
     const mount = mountRec(seedRec());
 
     const chip = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-card[data-bead-id="REC"] .worker-card__rec')
+      mount.querySelector(
+        '.worker-card[data-bead-id="REC"] .worker-card__complex'
+      )
     );
 
     expect(chip.textContent?.trim()).toBe('복잡');
     expect(chip.title).toContain(
       '사유: 원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다'
     );
-    expect(chip.dataset.state).toBe('unapplied');
+    expect(chip.dataset.chipKey).toBe('complex');
   });
 
-  test('omits the chip on a candidate with no recommendation', () => {
+  test('omits the chip on a candidate with no 복잡 판정', () => {
     const mount = mountRec(seedRec());
 
     expect(
       mount.querySelector(
-        '.worker-card[data-bead-id="PLAIN"] .worker-card__rec'
+        '.worker-card[data-bead-id="PLAIN"] .worker-card__complex'
       )
     ).toBeNull();
   });
 
-  test('reads the applied state from the bead own authority keys', () => {
-    const mount = mountRec(
-      seedRec({
-        metadata: {
-          ...REC_META,
-          orchestration_model: 'fable',
-          impl_runtime: 'claude'
-        }
-      })
-    );
+  test('omits the chip on a bead carrying the reason without the label', () => {
+    const mount = mountRec(seedRec({ labels: [] }));
+
+    expect(
+      mount.querySelector(
+        '.worker-card[data-bead-id="REC"] .worker-card__complex'
+      )
+    ).toBeNull();
+  });
+
+  test('omits the chip on a bead carrying the label without a reason', () => {
+    const mount = mountRec(seedRec({ metadata: { spec_review: RECEIPT } }));
+
+    expect(
+      mount.querySelector(
+        '.worker-card[data-bead-id="REC"] .worker-card__complex'
+      )
+    ).toBeNull();
+  });
+
+  test('leaves no state attribute on the projected chip', () => {
+    const mount = mountRec(seedRec());
 
     expect(
       /** @type {HTMLElement} */ (
         mount.querySelector(
-          '.worker-card[data-bead-id="REC"] .worker-card__rec'
+          '.worker-card[data-bead-id="REC"] .worker-card__complex'
         )
       ).dataset.state
-    ).toBe('applied');
+    ).toBeUndefined();
   });
 
   test('draws the chip on the waiting row of the same bead', () => {
@@ -15809,7 +15834,7 @@ describe('복잡 chip projection on the worker tab (UI-sbum §3)', () => {
 
     expect(
       mount.querySelector(
-        '#worker-pane-queue .worker-mini[data-bead-id="REC"] .worker-card__rec'
+        '#worker-pane-queue .worker-mini[data-bead-id="REC"] .worker-card__complex'
       )
     ).not.toBeNull();
   });
@@ -15826,7 +15851,7 @@ describe('복잡 chip projection on the worker tab (UI-sbum §3)', () => {
       )
     );
     expect(row).not.toBeNull();
-    expect(row.querySelector('.worker-card__rec')).toBeNull();
+    expect(row.querySelector('.worker-card__complex')).toBeNull();
   });
 
   test('draws the chip on the running attempt tile of the same bead', () => {
@@ -15849,15 +15874,17 @@ describe('복잡 chip projection on the worker tab (UI-sbum §3)', () => {
     );
 
     expect(
-      mount.querySelector('.rtile[data-bead-id="REC"] .worker-card__rec')
+      mount.querySelector('.rtile[data-bead-id="REC"] .worker-card__complex')
     ).not.toBeNull();
   });
 
-  test('renders a recommended bead whose metadata is missing without throwing', () => {
+  test('renders a 복잡 bead whose metadata is missing without throwing', () => {
     const mount = mountRec(seedRec({ metadata: undefined, spec_id: 'S' }));
 
     expect(
-      mount.querySelector('.worker-card[data-bead-id="REC"] .worker-card__rec')
+      mount.querySelector(
+        '.worker-card[data-bead-id="REC"] .worker-card__complex'
+      )
     ).toBeNull();
   });
 });

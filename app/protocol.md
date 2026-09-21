@@ -253,13 +253,12 @@ absent or ambiguous owner leaves the source chip inactive. Worker `bead_overlay`
 preserves both fields across all five issue columns so waiting, running,
 PR-wait, and done rows do not depend on the candidate row being present.
 
-Runnable rows also carry `rec: Record<string, string>|null` (UI-sbum §2) — the
-workflow's RECOMMENDED execution settings under their original `rec_*` key names
-(`rec_orchestration_model`, optional `rec_impl_runtime`, optional `rec_reason`),
-enum-checked by the server and `null` when `rec_orchestration_model` is absent
-or outside its enum. It is display-only: the worker never reads it, and it stays
-OUT of `exec_pins`, which means "the pins the worker applies" — a recommendation
-is not one until a person applies it.
+Runnable rows also carry `complex_reason?: string` (UI-7nhi §2) — the workflow
+contract's 복잡 판정 signals joined by `+`, judged by the server from label
+`complex` together with metadata `complex_reason` and filtered to the contract
+enum. The key is absent whenever either half is missing or no signal survives.
+It is display-only: the worker never reads it, and it stays OUT of `exec_pins`,
+which means "the pins the worker applies" — a judgement is not a pin.
 
 Runnable rows carry `plan_path: string|null` and, on a scope-cache hit only,
 `scope: string[]` (UI-qm12 §4.4). `scope` is read from the SAME artifact set as

@@ -27,6 +27,7 @@ import {
   reviewSessionAttemptStates
 } from '../../utils/active-attempts.js';
 import { isForeignBlocker } from '../../utils/blocker-scope.js';
+import { complexReason } from '../../utils/complex-judgement.js';
 import {
   formatAttemptOrchestrationChip,
   formatImplActorChip,
@@ -37,7 +38,6 @@ import {
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { RESUME_REFUSALS } from '../../utils/failure-sentences.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
-import { recSettings } from '../../utils/rec-settings.js';
 import { formatClockLocal } from '../../utils/relative-time.js';
 import { overlapPrefixes } from '../../utils/scope-overlap.js';
 import {
@@ -2869,8 +2869,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
             : undefined
       }))
     );
-    // 이슈 필드 오버레이 (§4.1): `{ priority?, from_id?, metadata?, route?,
-    // rollup? }`. 키가 없는 bead는 스냅샷 장식만으로 그린다.
+    // 이슈 필드 오버레이 (§4.1): `{ priority?, from_id?, metadata?, labels?,
+    // route?, rollup? }`. `labels`는 다섯 열 모두에서 실리고 복잡 판정이
+    // `metadata`와 함께 읽는다 (UI-p7s2 §6, UI-7nhi §3). 키가 없는 bead는
+    // 스냅샷 장식만으로 그린다.
     for (const [bead_id, entry] of Object.entries(
       objectOf(workspace.bead_overlay)
     )) {
@@ -3890,10 +3892,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
         typeof entry.exec_pins === 'object'
           ? execChipsFor(objectOf(state), entry.exec_pins, route)
           : null;
-      // 복잡 판정 (UI-sbum §4): 추천은 `rec`, 권위 키는 `exec_pins`로 따로
-      // 오므로 판정 유틸에 둘을 나눠 넘긴다. Worker 카드와 같은 칩·같은 툴팁이고
-      // 클릭은 없다.
-      const rec = recSettings(entry.rec, entry.exec_pins);
+      // 복잡 판정 (UI-7nhi §3): 서버가 라벨과 사유를 이미 합쳐 `complex_reason`
+      // 문자열 하나로 보내므로 레인은 옮기기만 한다. Worker 카드와 같은 칩·같은
+      // 툴팁이다.
+      const complex_reason =
+        typeof entry.complex_reason === 'string' ? entry.complex_reason : '';
       if (Array.isArray(entry.blocked_by) && entry.blocked_by.length > 0) {
         blocked_by_map.set(
           bead_id,
@@ -4021,7 +4024,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
           workflow || (route ? { route, chips: { route } } : null)
         ),
         ...(exec_chips ? { exec_chips } : {}),
-        ...(rec ? { rec } : {}),
+        ...(complex_reason.length > 0 ? { complex_reason } : {}),
         blocked: entry.blocked === true,
         ...(Array.isArray(entry.blocked_by)
           ? {
@@ -4279,7 +4282,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
         continue;
       }
       const metadata = objectOf(overlay.metadata);
-      item.rec = recSettings(metadata);
+      // 복잡 판정 (UI-7nhi §3): 라벨과 사유를 함께 읽는다 — 어느 한쪽만 있는
+      // 부착은 무효라 칩이 서지 않는다 (fail-quiet).
+      const complex_reason = complexReason(overlay.labels, metadata);
+      if (complex_reason.length > 0) {
+        item.complex_reason = complex_reason;
+      }
       if (item.lane.startsWith('s') || item.lane === 'queue') {
         const chips = execChipsFor(
           objectOf(state_by_root.get(item.root_dir)),

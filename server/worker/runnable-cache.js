@@ -31,6 +31,7 @@
 import path from 'node:path';
 import { awaitingUserReason } from '../../app/utils/awaiting-user-reason.js';
 import { buildCarryoverIndex } from '../../app/utils/carryover-index.js';
+import { complexReason } from '../../app/utils/complex-judgement.js';
 import { sessionPreferredReason } from '../../app/utils/session-preferred.js';
 import { specAfterBlockerActive } from '../../app/utils/spec-after-blocker.js';
 import {
@@ -55,12 +56,7 @@ import {
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
 import { parseDescriptionScope } from './artifact-scope.js';
-import {
-  ACCOUNT_KEYS,
-  IMPL_PRESET_KEYS,
-  REC_SIGNALS,
-  REC_VALUES
-} from './exec-enums.js';
+import { ACCOUNT_KEYS, IMPL_PRESET_KEYS } from './exec-enums.js';
 import { WORKFLOW_ROUTES } from './routes.js';
 import { createSessionObservationStore } from './session-observation.js';
 import {
@@ -176,13 +172,12 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * @property {Record<string, string>} exec_pins - Only the bead's EXECUTION
  * metadata pins, so the card can resolve its orchestration/worker chips without
  * the whole backlog's metadata riding the wire.
- * @property {Record<string, string>|null} rec - The workflow's RECOMMENDED
- * execution settings (UI-sbum §2), under their original `rec_*` key names so the
- * client reads them with no translation. `null` when `rec_orchestration_model`
- * is absent or outside its enum — the presence of that key IS the 복잡 판정.
- * Kept apart from `exec_pins`: a pin is what the worker applies, a
- * recommendation is what a human may choose to apply, and the worker never
- * reads this field.
+ * @property {string} [complex_reason] - The contract's 복잡 판정 signals joined
+ * by `+` (UI-7nhi §2), judged by the server from label `complex` plus metadata
+ * `complex_reason`. Absent when either half is missing or no signal survives the
+ * enum — fail-quiet, like `spec_after_blocker`. Kept apart from `exec_pins`: a
+ * pin is what the worker applies, a judgement is display only, and the worker
+ * never reads this field.
  */
 
 /**
@@ -238,9 +233,9 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * The metadata keys an execution chip may be resolved from: the full-profile
  * preset axes (session keys AND the orchestration keys) plus the two account
  * pins. Anything else in `metadata` stays off the wire. The orchestration keys
- * ride along because the monitor lane compares `rec` against these pins
- * (UI-sbum §1 `authority`): without `orchestration_model` here an applied
- * recommendation would read as unapplied on that surface.
+ * ride along because the monitor lane resolves its execution chips from these
+ * pins: without `orchestration_model` here a pinned card would read as unpinned
+ * on that surface.
  *
  * @type {ReadonlyArray<string>}
  */
@@ -264,48 +259,6 @@ function execPinsOf(meta) {
     }
   }
   return pins;
-}
-
-/**
- * Project the RECOMMENDED execution settings of one row's metadata (UI-sbum
- * §2). Enum-checked here as well as on the client, because this is the only
- * copy the monitor lane ever sees — the rest of `metadata` stays off the wire.
- *
- * `rec_reason` is filtered to the contract's signal enum and rejoined, so an
- * unknown token never reaches a tooltip; a value with no surviving signal drops
- * the key rather than shipping an empty string.
- *
- * @param {Record<string, unknown>} meta
- * @returns {Record<string, string>|null}
- */
-function recOf(meta) {
-  const model = meta.rec_orchestration_model;
-  if (
-    typeof model !== 'string' ||
-    !REC_VALUES.rec_orchestration_model.includes(model)
-  ) {
-    return null;
-  }
-  /** @type {Record<string, string>} */
-  const rec = { rec_orchestration_model: model };
-  const runtime = meta.rec_impl_runtime;
-  if (
-    typeof runtime === 'string' &&
-    REC_VALUES.rec_impl_runtime.includes(runtime)
-  ) {
-    rec.rec_impl_runtime = runtime;
-  }
-  const reason = meta.rec_reason;
-  if (typeof reason === 'string') {
-    const signals = reason
-      .split('+')
-      .map((token) => token.trim())
-      .filter((token) => REC_SIGNALS.includes(token));
-    if (signals.length > 0) {
-      rec.rec_reason = signals.join('+');
-    }
-  }
-  return rec;
 }
 
 /**
@@ -465,6 +418,7 @@ function qualify(row, blocked_by, context) {
   // quick_fix 행에서 admission 의미상 비어 있으므로, "이 bead에 발행된 spec이
   // 있는가"를 묻는 소비자가 그것을 읽으면 안 된다.
   const published = evidence.evidence === 'published';
+  const complex_reason = complexReason(row.labels, meta);
   /** @type {RunnableItem} */
   const item = {
     bead_id,
@@ -501,7 +455,7 @@ function qualify(row, blocked_by, context) {
     updated_at: stampOf(row.updated_at),
     workflow: null,
     exec_pins: execPinsOf(meta),
-    rec: recOf(meta)
+    ...(complex_reason ? { complex_reason } : {})
   };
   if (scope_spec_id.length === 0) {
     item.description_scope = parseDescriptionScope(row.description);

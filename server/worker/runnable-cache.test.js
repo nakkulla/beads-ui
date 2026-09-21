@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { recSettings } from '../../app/utils/rec-settings.js';
 import {
   createDecorationContext,
   dependentsInfoFor,
@@ -379,8 +378,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         created_at: null,
         updated_at: null,
         workflow: { route: 'spec_backed' },
-        exec_pins: {},
-        rec: null
+        exec_pins: {}
       }
     ]);
   });
@@ -1326,16 +1324,15 @@ describe('runnable cache workflow + exec_pins (UI-eey2 §9.1)', () => {
   });
 });
 
-describe('runnable cache rec projection (UI-sbum §2)', () => {
-  test('projects the recommended keys under their original names', async () => {
+describe('runnable cache 복잡 판정 projection (UI-7nhi §2)', () => {
+  test('projects the joined signals when label and reason agree', async () => {
     const cache = createRunnableCache({
       requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
+            labels: ['complex'],
             metadata: {
-              rec_orchestration_model: 'fable',
-              rec_impl_runtime: 'claude',
-              rec_reason: 'hard_diagnosis+invariant_reasoning'
+              complex_reason: 'hard_diagnosis+invariant_reasoning'
             }
           })
         ]
@@ -1345,48 +1342,45 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
 
     const out = await warm(cache, WS_A);
 
-    expect(out[0].rec).toEqual({
-      rec_orchestration_model: 'fable',
-      rec_impl_runtime: 'claude',
-      rec_reason: 'hard_diagnosis+invariant_reasoning'
-    });
+    expect(out[0].complex_reason).toBe('hard_diagnosis+invariant_reasoning');
   });
 
-  test('carries a null rec when no orchestration model is recommended', async () => {
+  test('omits the key when the label is absent', async () => {
     const cache = createRunnableCache({
       requestSnapshot: fakeSnapshot({
-        [WS_A]: [row({ metadata: { rec_impl_runtime: 'claude' } })]
+        [WS_A]: [row({ metadata: { complex_reason: 'hard_diagnosis' } })]
       }),
       enrichWorkflow: () => null
     });
 
     const out = await warm(cache, WS_A);
 
-    expect(out[0].rec).toBeNull();
+    expect(Object.hasOwn(out[0], 'complex_reason')).toBe(false);
   });
 
-  test('carries a null rec when the recommended model is outside the enum', async () => {
+  test('omits the key when no signal survives the enum', async () => {
     const cache = createRunnableCache({
       requestSnapshot: fakeSnapshot({
-        [WS_A]: [row({ metadata: { rec_orchestration_model: 'opus' } })]
+        [WS_A]: [
+          row({ labels: ['complex'], metadata: { complex_reason: 'made_up' } })
+        ]
       }),
       enrichWorkflow: () => null
     });
 
     const out = await warm(cache, WS_A);
 
-    expect(out[0].rec).toBeNull();
+    expect(Object.hasOwn(out[0], 'complex_reason')).toBe(false);
   });
 
-  test('drops a recommended runtime and reason tokens outside the enum', async () => {
+  test('drops reason tokens outside the enum', async () => {
     const cache = createRunnableCache({
       requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
+            labels: ['complex'],
             metadata: {
-              rec_orchestration_model: 'fable',
-              rec_impl_runtime: 'codex',
-              rec_reason: 'verification_by_judgment+made_up'
+              complex_reason: 'verification_by_judgment+made_up'
             }
           })
         ]
@@ -1396,22 +1390,18 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
 
     const out = await warm(cache, WS_A);
 
-    expect(out[0].rec).toEqual({
-      rec_orchestration_model: 'fable',
-      rec_reason: 'verification_by_judgment'
-    });
+    expect(out[0].complex_reason).toBe('verification_by_judgment');
   });
 
-  test('keeps every rec_* key out of exec_pins', async () => {
+  test('keeps the judgement key out of exec_pins', async () => {
     const cache = createRunnableCache({
       requestSnapshot: fakeSnapshot({
         [WS_A]: [
           row({
+            labels: ['complex'],
             metadata: {
-              impl_runtime: 'codex',
-              rec_orchestration_model: 'fable',
-              rec_impl_runtime: 'claude',
-              rec_reason: 'claude_bound'
+              complex_reason: 'hard_diagnosis',
+              orchestration_model: 'fable'
             }
           })
         ]
@@ -1421,36 +1411,7 @@ describe('runnable cache rec projection (UI-sbum §2)', () => {
 
     const out = await warm(cache, WS_A);
 
-    expect(out[0].exec_pins).toEqual({ impl_runtime: 'codex' });
-    for (const key of Object.keys(out[0].exec_pins)) {
-      expect(key.startsWith('rec_')).toBe(false);
-    }
-  });
-
-  test('carries the orchestration pins so the monitor can judge applied', async () => {
-    const cache = createRunnableCache({
-      requestSnapshot: fakeSnapshot({
-        [WS_A]: [
-          row({
-            metadata: {
-              orchestration_model: 'fable',
-              impl_runtime: 'claude',
-              rec_orchestration_model: 'fable',
-              rec_impl_runtime: 'claude'
-            }
-          })
-        ]
-      }),
-      enrichWorkflow: () => null
-    });
-
-    const out = await warm(cache, WS_A);
-
-    expect(out[0].exec_pins).toEqual({
-      orchestration_model: 'fable',
-      impl_runtime: 'claude'
-    });
-    expect(recSettings(out[0].rec, out[0].exec_pins)?.state).toBe('applied');
+    expect(Object.keys(out[0].exec_pins)).not.toContain('complex_reason');
   });
 });
 describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {

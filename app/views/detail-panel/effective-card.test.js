@@ -82,12 +82,13 @@ const BASE_ISSUE = {
 
 /**
  * @param {HTMLElement} mount
- * @param {{ metadata?: Record<string, unknown>, session_defaults?: Record<string, string>, queue?: Record<string, unknown>, presets?: any, transport?: any, workflow?: Record<string, unknown> }} [options]
+ * @param {{ metadata?: Record<string, unknown>, labels?: string[], session_defaults?: Record<string, string>, queue?: Record<string, unknown>, presets?: any, transport?: any, workflow?: Record<string, unknown> }} [options]
  */
 function seed(mount, options = {}) {
   const issue = {
     ...BASE_ISSUE,
     metadata: options.metadata || {},
+    ...(options.labels ? { labels: options.labels } : {}),
     ...(options.workflow ? { workflow: options.workflow } : {})
   };
   const issueStores = createSubscriptionIssueStores();
@@ -1377,15 +1378,14 @@ describe('effective-settings card', () => {
   });
 });
 
-describe('detail header 복잡 chip (UI-8x90 §5.1)', () => {
-  const REC_META = {
-    rec_orchestration_model: 'fable',
-    rec_impl_runtime: 'claude',
-    rec_reason: 'hard_diagnosis+invariant_reasoning'
+describe('detail header 복잡 chip (UI-8x90 §5.1, UI-7nhi §4)', () => {
+  const COMPLEX_META = {
+    complex_reason: 'hard_diagnosis+invariant_reasoning'
   };
+  const COMPLEX_LABELS = ['complex'];
 
   /** The two mutations the removed 즉시 적용 path used to send. */
-  const REC_MUTATIONS = ['update-exec-settings', 'update-impl-target'];
+  const EXEC_MUTATIONS = ['update-exec-settings', 'update-impl-target'];
 
   /**
    * @param {{ mock: { calls: any[][] } }} transport
@@ -1394,13 +1394,13 @@ describe('detail header 복잡 chip (UI-8x90 §5.1)', () => {
   function mutationsOf(transport) {
     return transport.mock.calls
       .map((call) => String(call[0]))
-      .filter((type) => REC_MUTATIONS.includes(type));
+      .filter((type) => EXEC_MUTATIONS.includes(type));
   }
 
   /** @param {HTMLElement} mount */
-  function recChip(mount) {
+  function complexChip(mount) {
     return /** @type {HTMLButtonElement|null} */ (
-      mount.querySelector('.detail-summary__chip--rec')
+      mount.querySelector('.detail-summary__chip--complex')
     );
   }
 
@@ -1421,7 +1421,7 @@ describe('detail header 복잡 chip (UI-8x90 §5.1)', () => {
             type === 'update-exec-settings' ||
             type === 'update-impl-target'
           ) {
-            return [{ ...BASE_ISSUE, metadata }];
+            return [{ ...BASE_ISSUE, labels: COMPLEX_LABELS, metadata }];
           }
           return [];
         }
@@ -1431,67 +1431,69 @@ describe('detail header 복잡 chip (UI-8x90 §5.1)', () => {
 
   test('draws the chip with the shared tooltip and no model name', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const { panel } = seed(mount, { metadata: REC_META });
+    const { panel } = seed(mount, {
+      metadata: COMPLEX_META,
+      labels: COMPLEX_LABELS
+    });
     await settle();
 
-    const chip = /** @type {HTMLButtonElement} */ (recChip(mount));
+    const chip = /** @type {HTMLButtonElement} */ (complexChip(mount));
 
     expect(chip.textContent?.trim()).toBe('복잡');
     expect(chip.title).toBe(
-      '복잡한 작업으로 판정됨\n사유: 원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다 · 정합성이 상태기계·동시성·불변식 추론에 달려 있다\n상태: 미적용'
+      '복잡한 작업으로 판정됨\n사유: 원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다 · 정합성이 상태기계·동시성·불변식 추론에 달려 있다'
     );
     expect(chip.title).not.toContain('fable');
-    expect(chip.dataset.state).toBe('unapplied');
+    expect(chip.dataset.state).toBeUndefined();
     expect(chip.disabled).toBe(false);
     panel.destroy();
   });
 
-  test('keeps the chip clickable once the recommendation is already applied', async () => {
+  test('keeps the chip clickable beside a manually pinned execution setting', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount, {
-      metadata: {
-        ...REC_META,
-        orchestration_model: 'fable',
-        impl_runtime: 'claude'
-      }
+      metadata: { ...COMPLEX_META, orchestration_model: 'fable' },
+      labels: COMPLEX_LABELS
     });
     await settle();
 
-    const chip = /** @type {HTMLButtonElement} */ (recChip(mount));
+    const chip = /** @type {HTMLButtonElement} */ (complexChip(mount));
 
-    expect(chip.dataset.state).toBe('applied');
+    expect(chip.dataset.state).toBeUndefined();
     expect(chip.disabled).toBe(false);
     panel.destroy();
   });
 
-  test('marks the chip diverged when the manual setting differs', async () => {
+  test('omits the chip for a bead carrying the label without a reason', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const { panel } = seed(mount, {
-      metadata: { ...REC_META, orchestration_model: 'opus' }
-    });
+    const { panel } = seed(mount, { metadata: {}, labels: COMPLEX_LABELS });
     await settle();
 
-    expect(recChip(mount)?.dataset.state).toBe('diverged');
+    expect(complexChip(mount)).toBe(null);
     panel.destroy();
   });
 
-  test('omits the chip for a bead with no recommendation', async () => {
+  test('omits the chip for a bead carrying the reason without the label', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const { panel } = seed(mount, { metadata: { rec_impl_runtime: 'claude' } });
+    const { panel } = seed(mount, { metadata: COMPLEX_META });
     await settle();
 
-    expect(recChip(mount)).toBe(null);
+    expect(complexChip(mount)).toBe(null);
     panel.destroy();
   });
 
   test('writes no metadata when the chip is clicked', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const confirmed = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    const transport = readbackTransport({ ...REC_META });
-    const { panel } = seed(mount, { metadata: REC_META, transport });
+    const transport = readbackTransport({ ...COMPLEX_META });
+    const { panel } = seed(mount, {
+      metadata: COMPLEX_META,
+      labels: COMPLEX_LABELS,
+      transport
+    });
     await settle();
 
-    /** @type {HTMLButtonElement} */ (recChip(mount)).click();
+    /** @type {HTMLButtonElement} */ (complexChip(mount)).click();
     await settle();
     await settle();
 
@@ -1502,10 +1504,13 @@ describe('detail header 복잡 chip (UI-8x90 §5.1)', () => {
 
   test('opens the 사유 팝업 in the panel on a chip click', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const { panel } = seed(mount, { metadata: REC_META });
+    const { panel } = seed(mount, {
+      metadata: COMPLEX_META,
+      labels: COMPLEX_LABELS
+    });
     await settle();
 
-    /** @type {HTMLButtonElement} */ (recChip(mount)).click();
+    /** @type {HTMLButtonElement} */ (complexChip(mount)).click();
 
     expect(mount.querySelector('.chip-popover')?.textContent).toContain(
       '적용은 이슈 상세의 실행 설정 편집기에서'

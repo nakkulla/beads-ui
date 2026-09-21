@@ -54,7 +54,7 @@
       "metadata": {
         "route": "quick_fix"
       },
-      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## 참고\n- baseline_red: command=npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## 참고\n- baseline_red: command=npm test | base=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | exit=1\n\n## scope\n- server/worker/quick-fix-handoff.js"
     },
     "expect": {
       "state": "unreviewed",
@@ -68,7 +68,7 @@
       "metadata": {
         "route": "quick_fix"
       },
-      "description": "## 검증 bundle\n출처/배경 — 관측 한 줄\n- baseline_red: command=npm test\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## scope\n- server/worker/quick-fix-handoff.js"
+      "description": "## 검증 bundle\n출처/배경 — 관측 한 줄\n- baseline_red: command=npm test | base=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | exit=1\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## scope\n- server/worker/quick-fix-handoff.js"
     },
     "expect": {
       "state": "unreviewed",
@@ -82,7 +82,7 @@
       "metadata": {
         "route": "quick_fix"
       },
-      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## scope\n- server/worker/quick-fix-handoff.js\n\n## 검증 bundle\n- baseline_red: command=npm test"
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## scope\n- server/worker/quick-fix-handoff.js\n\n## 검증 bundle\n- baseline_red: command=npm test | base=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | exit=1"
     },
     "expect": {
       "state": "unreviewed",
@@ -96,7 +96,7 @@
       "metadata": {
         "route": "quick_fix"
       },
-      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## 검증 bundle\n- baseline_red: command=npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## 검증 bundle\n- baseline_red: command=npm test | base=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | exit=1\n\n## scope\n- server/worker/quick-fix-handoff.js"
     },
     "expect": {
       "state": "unreviewed",
@@ -110,7 +110,7 @@
       "metadata": {
         "route": "quick_fix"
       },
-      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n### 명령\n- baseline_red: command=npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n### 명령\n- baseline_red: command=npm test | base=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | exit=1\n\n## scope\n- server/worker/quick-fix-handoff.js"
     },
     "expect": {
       "state": "unreviewed",

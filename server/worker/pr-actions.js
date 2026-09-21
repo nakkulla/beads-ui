@@ -1889,7 +1889,7 @@ export function createPrActions(deps) {
       plan_path,
       plan_task_anchor,
       // A PROVISIONAL route pin: the succession spec still goes through the
-      // spec gate, and the machine writes no `rec_*` judgement key.
+      // spec gate, and the machine writes no complex judgement.
       route: 'spec_backed'
     };
     const notes_line = `carryover: sweep_backstop — ${parent_id}/${child.id}`;

@@ -14,12 +14,12 @@
  */
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
-import { buildOptionView } from '../../utils/execution-defaults.js';
 import {
-  REC_LABEL,
-  recSettings,
-  recTooltip
-} from '../../utils/rec-settings.js';
+  COMPLEX_CHIP_LABEL,
+  complexReason,
+  complexTooltip
+} from '../../utils/complex-judgement.js';
+import { buildOptionView } from '../../utils/execution-defaults.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
 import { formatExecReceipt, formatPlannedExecution } from '../exec-format.js';
 import {
@@ -738,13 +738,18 @@ export function summaryHeaderTemplate(data, handlers = {}) {
   // field; naming it the same way here keeps one PR from reading as two.
   const pr_number = workflow.chips?.pr?.number;
   const pr_label = typeof pr_number === 'number' ? `PR #${pr_number}` : 'PR';
-  // 추천과 권위 키가 같은 bag에 있으므로 분리 인자를 쓰지 않는다 (UI-sbum §1).
-  const rec = recSettings(metadata);
-  const rec_open = rec !== null && handlers.isChipOpen?.('rec') === true;
-  // 카드와 같은 문장을 쓴다 (§4.5). `judgementPopoverContent`가 `rec` 하나만
-  // 읽으므로 레인 항목 전체를 지어내지 않는다.
-  const rec_popover = rec_open
-    ? judgementPopoverContent(/** @type {any} */ ({ rec }), 'rec')
+  // 라벨과 사유를 함께 읽는다 (UI-7nhi §4) — 이슈 레코드에 `labels`가 없으면
+  // 칩도 없다 (fail-quiet).
+  const reason = complexReason(data?.labels, metadata);
+  const complex_open =
+    reason.length > 0 && handlers.isChipOpen?.('complex') === true;
+  // 카드와 같은 문장을 쓴다 (§4.5). `judgementPopoverContent`가 `complex_reason`
+  // 하나만 읽으므로 레인 항목 전체를 지어내지 않는다.
+  const complex_popover = complex_open
+    ? judgementPopoverContent(
+        /** @type {any} */ ({ complex_reason: reason }),
+        'complex'
+      )
     : null;
   return html`<section class="detail-summary" data-seam="detail-summary">
     <div class="detail-summary__chips">
@@ -791,21 +796,20 @@ export function summaryHeaderTemplate(data, handlers = {}) {
               : ''}</span
           >`
         : ''}
-      ${rec
+      ${reason.length > 0
         ? html`<button
             type="button"
-            class="detail-summary__chip detail-summary__chip--rec judgement-chip"
-            data-chip-key="rec"
-            data-state=${rec.state}
-            aria-expanded=${rec_open ? 'true' : 'false'}
-            title=${recTooltip(rec)}
-            @click=${() => handlers.onChipToggle?.('rec')}
+            class="detail-summary__chip detail-summary__chip--complex judgement-chip"
+            data-chip-key="complex"
+            aria-expanded=${complex_open ? 'true' : 'false'}
+            title=${complexTooltip(reason)}
+            @click=${() => handlers.onChipToggle?.('complex')}
           >
-            ${REC_LABEL}
+            ${COMPLEX_CHIP_LABEL}
           </button>`
         : ''}
     </div>
-    ${rec_popover ? chipPopoverTemplate(rec_popover) : ''}
+    ${complex_popover ? chipPopoverTemplate(complex_popover) : ''}
     <div
       class="detail-summary__gates"
       role="group"
