@@ -20,8 +20,8 @@ export const WAIT_THRESHOLDS = Object.freeze({
 });
 
 /**
- * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'base_moved'|'provider_hold'|'awaiting_user'|'retry_wait'|'stale_work'|'recovery'} WaitKind
- * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'disposition'|'recovery_confirm'|'resume_failed'|'wait_key_missing'|'wait_record_missing'} VerdictCode
+ * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'base_moved'|'provider_hold'|'awaiting_user'|'retry_wait'|'recovery'} WaitKind
+ * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'recovery_confirm'|'resume_failed'|'wait_key_missing'|'wait_record_missing'} VerdictCode
  * @typedef {{ code: VerdictCode, message: string }} VerdictReason
  * @typedef {Object} WaitReason
  * @property {WaitKind} kind
@@ -69,7 +69,6 @@ const VERDICT_MESSAGES = {
   hold: '큐를 재개하려면 사람의 승인이 필요함',
   retry_stalled: '재시도 시각에서 5분이 지나도 큐가 정지됨',
   decision: '사용자의 답변이 필요함',
-  disposition: '보존 작업을 이어갈지 새로 시작할지 선택이 필요함',
   recovery_confirm: '보존된 작업의 원인 확인 또는 이어하기·폐기 결정이 필요함'
 };
 
@@ -569,25 +568,6 @@ export function judgeWaitReasons(input) {
         next_at === undefined ? '' : `${localClock(next_at)}에 자동 재시도`
       );
       addClocks(result, { since: attempt.finished_at, next_check_at: next_at });
-      wait_reasons.push(result);
-    }
-    if (
-      record?.reason === 'worktree_stale_work' &&
-      record.stale_work?.action_id
-    ) {
-      const result = reason(
-        'stale_work',
-        bead_id,
-        root_dir,
-        '보존 작업 처분 대기',
-        '이어하기 / 새로 시작 선택'
-      );
-      result.actions.push({
-        op: 'disposition',
-        label: '이어하기 / 새로 시작',
-        payload: { root_dir, bead_id, action_id: record.stale_work.action_id }
-      });
-      judge(result, 'action_required', 'disposition');
       wait_reasons.push(result);
     }
   }

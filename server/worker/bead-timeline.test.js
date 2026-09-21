@@ -280,6 +280,7 @@ describe('TIMELINE_KINDS', () => {
   test('carries exactly the kinds of the event table', () => {
     expect([...TIMELINE_KINDS]).toEqual([
       'dispatched',
+      'stale_work_auto',
       'guard_warning',
       'guard_denied',
       'session_ended',

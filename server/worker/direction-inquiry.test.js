@@ -3,10 +3,12 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   GENERIC_INQUIRY_PROMPT,
   IMPL_CONFLICT_INQUIRY_PROMPT,
+  RECOVERY_INQUIRY_PROMPT,
   STALE_INQUIRY_PROMPT,
   createDirectionInquiry,
   fillGenericPrompt,
   fillImplConflictPrompt,
+  fillRecoveryPrompt,
   fillStalePrompt,
   inquiryWrapper,
   parseParkNotes,
@@ -232,6 +234,45 @@ function parkedInput(over = {}) {
 }
 
 describe('direction-inquiry prompt constant', () => {
+  test('pins the recovery block digest', () => {
+    const digest = createHash('sha256')
+      .update(RECOVERY_INQUIRY_PROMPT)
+      .digest('hex');
+
+    expect(digest).toBe(
+      'f128ae5890fc1d9020af901d888fd749496231c2fd9a045834c79ad3a8a7f330'
+    );
+  });
+
+  test('fills recovery slots from the first blocker line', () => {
+    const prompt = fillRecoveryPrompt({
+      bead_id: BEAD,
+      reason: 'authority',
+      summary: 'blocker: 승인 필요\nignored',
+      session_id: 'session-123',
+      worktree: '/repo/.worktrees/UI-7uid',
+      checkout: '/repo'
+    });
+
+    expect(prompt).toContain('recovery:authority');
+    expect(prompt).toContain('- blocker: 승인 필요\n');
+    expect(prompt).toContain('- 기록 세션: session-123\n');
+    expect(prompt).toContain('- 구현 워크트리: /repo/.worktrees/UI-7uid\n');
+    expect(prompt).toContain('- target_base 체크아웃: /repo\n');
+    expect(prompt).not.toContain('ignored');
+  });
+
+  test('fills an absent recovery blocker explicitly', () => {
+    const prompt = fillRecoveryPrompt({
+      bead_id: BEAD,
+      reason: 'reconcile',
+      session_id: null,
+      worktree: '/worktree',
+      checkout: '/repo'
+    });
+
+    expect(prompt).toContain('- blocker: (없음)\n');
+  });
   test('pins all dotfiles fenced blocks byte for byte', () => {
     const digests = [
       STALE_INQUIRY_PROMPT,
@@ -453,6 +494,52 @@ describe('direction-inquiry prompt filling', () => {
 });
 
 describe('direction-inquiry launch', () => {
+  test('forks a recovery inquiry in the implementation worktree', async () => {
+    const tmux = makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] });
+    const { inquiry, awaitingUser } = makeInquiry({
+      tmux,
+      readAttempt: async () => ({
+        repo: '/repo',
+        runner: 'claude',
+        session_id: 'recovery-session',
+        cause_detail: { summary: 'blocker: 승인 필요' }
+      }),
+      sessionRefOptions: {
+        home_dir: '/home',
+        fs: sessionFs(['recovery-session'])
+      }
+    });
+
+    const outcome = await inquiry.onParkedAttempt(
+      parkedInput({ awaiting_user: null, recovery: { reason: 'authority' } })
+    );
+
+    expect(outcome).toMatchObject({
+      session: 'launched',
+      mode: 'fork',
+      session_id: 'recovery-session'
+    });
+    const wrapper = tmux.calls
+      .find((args) => args[0] === 'new-window')
+      ?.join(' ');
+    expect(wrapper).toContain('/repo/.worktrees/UI-7uid');
+    expect(wrapper).toContain('recovery:authority');
+    expect(awaitingUser).not.toHaveBeenCalled();
+  });
+
+  test('reports a disabled recovery inquiry for the wait notification', async () => {
+    const { inquiry, awaitingUser } = makeInquiry({ enabled: false });
+
+    const outcome = await inquiry.onParkedAttempt(
+      parkedInput({ awaiting_user: null, recovery: { reason: 'verification' } })
+    );
+
+    expect(outcome).toMatchObject({
+      session: 'not_launched',
+      reason: 'disabled'
+    });
+    expect(awaitingUser).not.toHaveBeenCalled();
+  });
   test('launches the implementation-conflict branch', async () => {
     const tmux = makeTmux({
       panes: [['bdui-inquiry', '%1', '', '0']],

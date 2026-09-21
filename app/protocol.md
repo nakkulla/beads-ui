@@ -335,7 +335,7 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   full queue (`revision`, `auto_advance`, `slots`, `serial_lanes[]`,
   `serial_lane_count`, `queue[]`, `pr_wait[]`, `done[]`, `attempts`,
   `admission`, `cleanup_failed`, `exec_defaults`) — an `admission` record is
-  `{ reason, at, stale?, stale_work?, blockers? }`, where `blockers` is
+  `{ reason, at, stale?, blockers? }`, where `blockers` is
   `Array<{ id, rig: string|null, status }>` carried ONLY by the
   `prerequisite_unmet` reason: the unmet `blocks` prerequisites the scheduler
   proved, same-rig (`rig: null`) and foreign alike (UI-d3i1 §5.1). A malformed
@@ -476,14 +476,23 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `supported:false` with nullable facts; it never changes dispatch or queue
   persistence. Consumers also accept this whole field being absent from an older
   server and show `기본값 확인 불가` instead of reconstructing defaults.
+- Preserved worktree or branch residue is disposed of during dispatch: resume a
+  matching attempt, otherwise adopt the owned worktree, otherwise verify a
+  backup in `discard-backups` and dispatch fresh work in the same tick. A
+  changed backup identity or unknown observation is reobserved once. Unresolved
+  residue and backup failure leave an individual `status: 'failed'`,
+  `cause: 'stale_work_unresolved'` attempt. No admission or manual residue
+  WebSocket operation is exposed. Legacy residue admissions are dropped on load.
+  Successful dispositions emit `stale_work_auto` timeline events with summary
+  `잔재 자동 처분 · <resume|continue|backup_fresh> · <cause>`; `detail` contains
+  the backup path when applicable. They send no notification.
 - An unfinished implementation attempt may settle with `status: 'waiting'` and
   `cause_detail.recovery: { classification, disposition, reason, policy_schema: 1, no_progress?: { count, key } }`.
   Its original `cause`, summary, and other failure evidence remain intact. A
   recovery wait does not imply prerequisite blockers and does not emit
   `attempt_failed`; its timeline ending is `kind: 'session_ended'` with summary
   `대기 · recovery:<reason> — <original cause>`. Ordinary queue dispatch is
-  fenced by `recovery_wait`; manual resume preserves the recorded execution
-  selection and any retry origin, consumed count, maximum and exhaustion flag.
+  fenced by `recovery_wait`; the interactive inquiry owns its disposition.
   `retry.migrated: 'unclassified_wait'` marks a policy-classified legacy wait
   loaded as `failed` with `retry.attempts: 0`; declared session recovery waits
   remain waiting. This migration starts no retry and sends no notification.
@@ -503,32 +512,25 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   recovery. Original cause, summary, retry, finish time and `attempt_failed`
   history remain. Dismissed, completed, discarded, superseded and live lineages,
   prerequisite/base-moved waits and matching environment failures are excluded.
-  This pass dispatches no session and requires both recovery contracts ready.
-- Worker and Monitor tiles project these records as `run_state: 'waiting'`,
-  without a failure projection or failure count. Their `wait.recovery` contains
-  `{ classification, disposition, reason, no_progress: { count, key }|null, label: string|null, sentence: string|null }`;
-  `wait.cause` retains the original cause and `wait.since` is `finished_at`.
-  Known labels and sentences come from `app/utils/failure-sentences.js`; unknown
-  reasons keep their raw token and no invented sentence. A recorded session with
-  no resume child enables the existing `↻ 이어하기` action; the existing waiting
-  discard action remains available. When resuming is unavailable,
-  `wait.resume_reason` names the missing session or the child that already
-  inherited it, using the existing wait body slot. A running attempt resumed
-  from a recovery record carries `status_label: '복구 중'`.
-- The shared `wait_reasons` model adds kind `recovery` for the latest waiting
-  implementation attempt carrying `cause_detail.recovery`, excluding live,
-  completed and PR-wait subjects. Its headline combines the state, awaited
-  condition, original cause token and any `무진전 N회`; `since` is
-  `finished_at`. Reasons `unclassified`, `reconcile`, `authority` and
-  `no_progress` have verdict `action_required` with code `recovery_confirm` and
-  message `보존된 작업의 원인 확인 또는 이어하기·폐기 결정이 필요함`. Other
-  reasons start `normal` and become `overdue` / `settle_overdue` after two
-  observation intervals. Actions contain `resume` with
-  `{ root_dir, bead_id, attempt_id }` only when the session ID is non-empty.
-  `notify_plan` is `{ on_overdue: 'discord', on_complete: 'none' }`; existing
-  claim-once suppression prevents repeated sends. Recovery subjects appear in
+  This pass requires both recovery contracts ready and launches the same inquiry
+  for a newly reclassified stalled recovery.
+- Recovery waits requiring a decision use `worker-resolve-in-session` to select
+  the live inquiry pane or fork the recorded session; discard remains available.
+  `worker-attempt-resume` refuses a recovery wait with
+  `reason: 'recovery_requires_inquiry'`.
+- Automatic inquiries use the parking launch gate and one-pane-per-Bead guard.
+  The shared predicate selects `authority`, `verification`, `no_progress`,
+  `reconcile`, session-declared `unclassified` (classification
+  `session_recovery_wait`), and `prerequisite` with an empty blocks list. The
+  attempt's `cause_detail.inquiry` stores the launch outcome. The existing
+  `waitActionRequired` notification uses the `(bead, recovery, decision)` key
+  and appends `질의 세션: launched · fork <sid8>` or
+  `질의 세션: not_launched · <reason>`; inquiry failure permits a click retry.
+  Recovery subjects appear in
+
   blocked summaries, with `action_required` subjects counted once in
   `조치 필요`.
+
 - A TERMINAL attempt inside `attempts` may additionally carry the non-persisted
   `impl_actor: { kind: 'delegated'|'main'|'mixed', model: string|null, effort: string|null, label: string, parts?: { unit, label }[] }`
   (UI-ys18 §5.1) — the actual implementer the attempt's own preserved

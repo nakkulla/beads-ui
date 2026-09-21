@@ -4510,6 +4510,9 @@ function normalizeQueue(raw) {
   // on load without error (worker-phase2 §9).
   if (isRecord(raw.admission)) {
     for (const [bead_id, value] of Object.entries(raw.admission)) {
+      if (isRecord(value) && value.reason === 'worktree_stale_work') {
+        continue;
+      }
       if (isRecord(value) && typeof value.reason === 'string') {
         q.admission[bead_id] = {
           reason: value.reason,

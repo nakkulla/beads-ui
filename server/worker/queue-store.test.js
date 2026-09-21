@@ -5505,7 +5505,7 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
 });
 
 describe('worker/queue-store skip-reason recording', () => {
-  test('normalizes and reloads an optional stale-work admission', () => {
+  test('drops legacy stale-work admission on load', () => {
     const store = createQueueStore();
     const stale_work = {
       schema: 1,
@@ -5542,7 +5542,7 @@ describe('worker/queue-store skip-reason recording', () => {
     });
     const reloaded = createQueueStore().load(WS);
 
-    expect(reloaded.admission['UI-1'].stale_work).toEqual(stale_work);
+    expect(reloaded.admission['UI-1']).toBeUndefined();
   });
 
   test('defaults a legacy stale-work residue to worktree', () => {

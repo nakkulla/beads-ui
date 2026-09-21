@@ -1261,6 +1261,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // every other runtime singleton: its duplicate guard is a tmux pane marker,
     // which is one truth for the whole machine.
     directionInquiry: runtime.directionInquiry,
+    backupFreshResidue: (identity, input) =>
+      discardCoordinator.backupFreshResidue(identity, input),
     // The external-row evidence the attempt-less conflict dispatch stands on
     // (UI-w0hi §1) — the SAME registry the poller refreshes and the merge click
     // reads, so a dispatch can never disagree with the row that was clicked.
@@ -3768,44 +3770,6 @@ export async function abandonWorkerDiscard(workspace_root, input) {
     return { ok: false, reason: 'operation_not_found' };
   }
   return att.discardCoordinator.abandon(input.operation_id);
-}
-
-/**
- * @param {string} workspace_root
- * @param {{ bead_id: string, action_id: string, expected_revision: number }} input
- */
-export async function continueWorkerStaleWork(workspace_root, input) {
-  const key = keyFor(workspace_root);
-  const att = ATTACHMENTS.get(key);
-  if (!att || typeof att.scheduler?.staleWorkContinue !== 'function') {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  return att.scheduler.staleWorkContinue(key, input);
-}
-
-/**
- * @param {string} workspace_root
- * @param {{ bead_id: string, action_id: string, expected_revision: number }} input
- */
-export async function backupFreshWorkerStaleWork(workspace_root, input) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  if (!att || typeof att.discardCoordinator?.backupFresh !== 'function') {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  return att.discardCoordinator.backupFresh(input);
-}
-
-/**
- * @param {string} workspace_root
- * @param {{ bead_id: string, action_id: string, expected_revision: number }} input
- */
-export async function recheckWorkerStaleWork(workspace_root, input) {
-  const key = keyFor(workspace_root);
-  const att = ATTACHMENTS.get(key);
-  if (!att || typeof att.scheduler?.staleWorkRecheck !== 'function') {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  return att.scheduler.staleWorkRecheck(key, input);
 }
 
 /**

@@ -22,9 +22,7 @@ vi.mock('../registry-watcher.js', async (importOriginal) => {
 vi.mock('../worker/attach.js', () => ({
   // Keep unrelated wait rows out of the parked-tile contract.
   workerWaitState: () => ({ wait_reasons: [], external_waits: [] }),
-  backupFreshWorkerStaleWork: () => Promise.resolve({ ok: true }),
   checkWorkerQueueAdmission: () => Promise.resolve({ ok: true }),
-  continueWorkerStaleWork: () => Promise.resolve({ ok: true }),
   discardWorkerBead: () => Promise.resolve({ ok: true }),
   dismissWorkerRepoOperation: () => Promise.resolve({ ok: true }),
   enqueueWorkerManualMerge: () =>
@@ -34,7 +32,6 @@ vi.mock('../worker/attach.js', () => ({
   observeWorkerPrs: () => Promise.resolve(),
   pauseWorkerAttempt: () => Promise.resolve({ ok: true }),
   readBeadTimeline: () => [],
-  recheckWorkerStaleWork: () => Promise.resolve({ ok: true }),
   reconcileWorkerRepoOperations: () => Promise.resolve(),
   refreshWorkerExternalPrs: () => Promise.resolve(false),
   resumeWorkerAttempt: () => Promise.resolve({ ok: true }),
@@ -152,6 +149,67 @@ afterEach(() => {
 });
 
 describe('parked tile resolution (UI-gjp2 §3.3)', () => {
+  test('routes a stalled recovery click to its inquiry pane', async () => {
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'recovery',
+        bead_id: 'UI-1',
+        status: 'waiting',
+        repo: '/repo',
+        cause_detail: {
+          recovery: {
+            reason: 'authority',
+            classification: 'session_recovery_wait'
+          }
+        }
+      }
+    });
+
+    const { reply } = await dispatch(
+      handlers.handleWorkerResolveInSession,
+      'worker-resolve-in-session',
+      { bead_id: 'UI-1', expected_revision: store.snapshot(WS).revision }
+    );
+
+    expect(inquiry_calls).toEqual([
+      expect.objectContaining({
+        awaiting_user: null,
+        recovery: {
+          reason: 'authority',
+          classification: 'session_recovery_wait'
+        }
+      })
+    ]);
+    expect(reply.payload.session).toBe('already_running');
+  });
+
+  test('refuses Worker resume requests for recovery attempts', async () => {
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'recovery',
+        bead_id: 'UI-1',
+        status: 'waiting',
+        repo: '/repo',
+        cause_detail: { recovery: { reason: 'authority' } }
+      }
+    });
+
+    const { reply } = await dispatch(
+      handlers.handleWorkerAttemptResume,
+      'worker-attempt-resume',
+      { attempt_id: 'recovery', expected_revision: store.snapshot(WS).revision }
+    );
+
+    expect(reply.payload).toMatchObject({
+      resumed: false,
+      reason: 'recovery_requires_inquiry'
+    });
+    expect(inquiry_calls).toEqual([]);
+  });
   test('routes the parked tile click to worker-resolve-in-session', async () => {
     const store = getWorkerRuntime().queueStore;
     store.appendAttempt(WS, {

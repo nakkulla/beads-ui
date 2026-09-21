@@ -80,7 +80,7 @@ describe('decorateQueue prerequisite-wait admission (UI-d3i1 §5.1)', () => {
 });
 
 describe('decorateQueue stale-work residue capability', () => {
-  test('projects branch residue without server-only identity', () => {
+  test('omits retired branch residue diagnostics', () => {
     const out = /** @type {any} */ (
       decorateQueue(
         WS,
@@ -121,17 +121,10 @@ describe('decorateQueue stale-work residue capability', () => {
       )
     );
 
-    expect(out.admission['UI-1'].stale_work).toMatchObject({
-      residue: 'branch',
-      can_resume: false,
-      can_continue: false,
-      can_backup_fresh: true,
-      can_recheck: true
-    });
-    expect(out.admission['UI-1'].stale_work).not.toHaveProperty('identity');
+    expect(out.admission['UI-1']).not.toHaveProperty('stale_work');
   });
 
-  test('defaults legacy residue projection to worktree', () => {
+  test('omits legacy residue diagnostics', () => {
     const out = /** @type {any} */ (
       decorateQueue(
         WS,
@@ -164,6 +157,6 @@ describe('decorateQueue stale-work residue capability', () => {
       )
     );
 
-    expect(out.admission['UI-1'].stale_work.residue).toBe('worktree');
+    expect(out.admission['UI-1']).not.toHaveProperty('stale_work');
   });
 });

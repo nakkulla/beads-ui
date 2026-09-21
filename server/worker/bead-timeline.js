@@ -31,7 +31,7 @@ import { beadTimelinePath } from './state-paths.js';
 const log = debug('worker:bead-timeline');
 
 /**
- * @typedef {'dispatched'|'guard_warning'|'guard_denied'|'session_ended'|'attempt_failed'|'attempt_retry'|'queue_hold'|'queue_resume'|'provider_hold'|'provider_recovered'|'landing_step'|'merge_step'|'operation_failed'|'operation_recovery'|'repair_handoff'|'needs_human'|'user_action'} TimelineKind
+ * @typedef {'dispatched'|'stale_work_auto'|'guard_warning'|'guard_denied'|'session_ended'|'attempt_failed'|'attempt_retry'|'queue_hold'|'queue_resume'|'provider_hold'|'provider_recovered'|'landing_step'|'merge_step'|'operation_failed'|'operation_recovery'|'repair_handoff'|'needs_human'|'user_action'} TimelineKind
  */
 
 /**
@@ -45,6 +45,7 @@ const log = debug('worker:bead-timeline');
 export const TIMELINE_KINDS = Object.freeze(
   new Set([
     'dispatched',
+    'stale_work_auto',
     'guard_warning',
     'guard_denied',
     'session_ended',

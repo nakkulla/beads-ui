@@ -106,6 +106,52 @@ describe('wait notification suppression', () => {
     expect(spawn.calls).toHaveLength(1);
   });
 
+  test.each([
+    [
+      { session: 'launched', mode: 'fork', session_id: '1234567890' },
+      'launched · fork 12345678'
+    ],
+    [
+      { session: 'not_launched', reason: 'tmux_unavailable' },
+      'not_launched · tmux_unavailable'
+    ]
+  ])(
+    'adds a recovery inquiry outcome to one decision notification: %j',
+    async (inquiry, line) => {
+      const { input, store, spawn } = fixture();
+      store.appendAttempt('/repo', {
+        expected_revision: store.snapshot('/repo').revision,
+        attempt: {
+          attempt_id: 'recovery',
+          bead_id: 'UI-a',
+          status: 'waiting',
+          finished_at: 1000,
+          cause_detail: {
+            recovery: {
+              reason: 'verification',
+              classification: 'session_recovery_wait'
+            },
+            inquiry
+          }
+        }
+      });
+      input.wait_reasons = judgeWaitReasons({
+        root_dir: '/repo',
+        queue: store.snapshot('/repo'),
+        now: 1000
+      }).wait_reasons;
+
+      await notifyWaitReasons(input);
+      await notifyWaitReasons(input);
+
+      expect(spawn.calls).toHaveLength(1);
+      expect(messageOf(spawn.last())).toContain(`\n질의 세션: ${line}`);
+      expect(store.snapshot('/repo').wait_notified).toHaveProperty(
+        '["UI-a","recovery","decision"]'
+      );
+    }
+  );
+
   test('notifies external completion once across overdue scans and reload', async () => {
     const { input, store, spawn, recordTimelineEvent } = fixture();
     const record = /** @type {any} */ ({

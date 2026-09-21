@@ -949,7 +949,7 @@ describe('wait judgment holds and manual waits', () => {
     });
   });
 
-  test('builds the stale-work disposition reason', () => {
+  test('omits legacy stale-work disposition reasons', () => {
     const result = run({
       queue: queue({
         queue: [{ bead_id: 'UI-consumer' }],
@@ -962,12 +962,7 @@ describe('wait judgment holds and manual waits', () => {
       })
     });
 
-    expect(result.wait_reasons[0]).toMatchObject({
-      kind: 'stale_work',
-      headline: '보존 작업 처분 대기',
-      release: '이어하기 / 새로 시작 선택',
-      verdict_reason: { code: 'disposition' }
-    });
+    expect(result.wait_reasons).toEqual([]);
   });
 
   test('leaves all input material unchanged', () => {

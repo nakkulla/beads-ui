@@ -31,6 +31,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { debug } from '../logging.js';
+import { isSessionStalledRecovery } from './session-stall.js';
 
 const default_log = debug('worker:notify');
 
@@ -98,7 +99,7 @@ const TITLE_MAX = 60;
  */
 
 /**
- * @typedef {{ bead_id: string, kind: string, headline: string, verdict_reason: import('./wait-judgment.js').VerdictReason, repo: string }} WaitNotificationInput
+ * @typedef {{ bead_id: string, kind: string, headline: string, verdict_reason: import('./wait-judgment.js').VerdictReason, repo: string, inquiry?: any }} WaitNotificationInput
  */
 
 /**
@@ -108,9 +109,36 @@ const TITLE_MAX = 60;
  * @param {{ workspace: string, repo: string, wait_reasons: import('./wait-judgment.js').WaitReason[], now: number, store: Pick<ReturnType<typeof import('./queue-store.js').createQueueStore>, 'claimWaitNotifications'|'recordTimelineEvent'> & Partial<Pick<ReturnType<typeof import('./queue-store.js').createQueueStore>, 'snapshot'>>, notifier: Pick<ReturnType<typeof createNotifier>, 'waitOverdue'|'waitActionRequired'> }} input
  */
 export async function notifyWaitReasons(input) {
+  const queue = input.store.snapshot?.(input.workspace);
+  /** @type {Map<string, any>} */
+  const inquiries = new Map();
   /** @type {Map<string, import('./wait-judgment.js').WaitReason & { verdict_reason: import('./wait-judgment.js').VerdictReason }>} */
   const by_key = new Map();
-  for (const item of input.wait_reasons) {
+  for (let item of input.wait_reasons) {
+    if (item.kind === 'recovery') {
+      const attempt = Object.values(queue?.attempts || {})
+        .reverse()
+        .find(
+          (entry) =>
+            entry.bead_id === item.subject.bead_id && entry.status === 'waiting'
+        );
+      const detail = /** @type {any} */ (attempt?.cause_detail);
+      if (isSessionStalledRecovery(detail?.recovery, detail?.blockers || [])) {
+        if (!detail.inquiry) {
+          continue;
+        }
+        inquiries.set(item.subject.bead_id, detail.inquiry);
+        item = {
+          ...item,
+          headline: '세션이 멈춤',
+          verdict: 'action_required',
+          verdict_reason: {
+            code: 'decision',
+            message: '문의 세션에서 처분 결정이 필요함'
+          }
+        };
+      }
+    }
     if (
       item.verdict !== 'normal' &&
       item.verdict_reason &&
@@ -144,7 +172,10 @@ export async function notifyWaitReasons(input) {
       kind: item.kind,
       headline: item.headline,
       verdict_reason: item.verdict_reason,
-      repo: input.repo
+      repo: input.repo,
+      ...(inquiries.has(item.subject.bead_id)
+        ? { inquiry: inquiries.get(item.subject.bead_id) }
+        : {})
     };
     const sent =
       item.verdict === 'action_required'
@@ -469,7 +500,10 @@ export function createNotifier(deps) {
         .filter(Boolean)
         .join(' ');
       const message = `⚠ ${subject} 지연 · ${input.headline} · ${input.verdict_reason.message}`;
-      return send(cmd, message.replace(/\s+/g, ' ').trim());
+      const inquiry = input.inquiry
+        ? `\n질의 세션: ${inquirySessionLine(input.inquiry)}`
+        : '';
+      return send(cmd, message.replace(/\s+/g, ' ').trim() + inquiry);
     } catch (err) {
       log('wait notification failed: %o', err);
       return false;
