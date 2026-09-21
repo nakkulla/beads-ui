@@ -1,17 +1,6 @@
 /**
- * The split `MERGE_RE` fail-closed guards (worker-phase2 §1/§13), migrated from
- * the retired merge-lock guard suite: the gate is the ATTEMPT's mode, not a lock.
- *
- * The EFFECT is the violation's `kind`, not its reason
- * (guard-enforcement-layer-replacement §4):
- *
- *   - `gh pr merge` / hook bypass  → killed on EVERY attempt.
- *   - a base push                  → warned about, session continues.
- *   - `git merge origin/main`      → warned about on EVERY attempt (UI-1xcd
- *                                    §1/§3); the attempt's mode no longer
- *                                    decides, because the command touches
- *                                    nothing remote.
- *   - a disposition session        → base push and hook bypass do not apply.
+ * Command observations warn without killing the session. Verified one-shot
+ * hook bypasses retain their deferred tool-result judgment.
  */
 import os from 'node:os';
 import path from 'node:path';
@@ -683,12 +672,12 @@ describe('runner/session deferred hook-bypass verdict (§3)', () => {
     expect(verdict.blocked).toBe(false);
     expect(
       events.filter((e) => e.kind === 'guard_pending').map((e) => e.op)
-    ).toEqual([]);
-    expect(events.some((e) => e.guard_warning)).toBe(true);
+    ).toEqual(['add', 'clear']);
+    expect(events.some((e) => e.guard_warning)).toBe(false);
   });
 
-  test('warns for once the tool_result proves the command ran', async () => {
-    const { verdict, kill_impl } = await runLines(
+  test('warns once the tool_result proves the command ran', async () => {
+    const { verdict, kill_impl, events } = await runLines(
       [
         bashToolLineWithId(ONE_SHOT, 'toolu_1'),
         toolResultLine('toolu_1', { content: '3 files changed' })
@@ -697,6 +686,11 @@ describe('runner/session deferred hook-bypass verdict (§3)', () => {
     );
 
     expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+    expect(
+      events.filter((e) => e.kind === 'guard_pending').map((e) => e.op)
+    ).toEqual(['add', 'clear']);
+    expect(events.filter((e) => e.guard_warning)).toHaveLength(1);
     expect(verdict.events.find((e) => e.guard_warning)?.guard_warning).toEqual({
       reason: 'hook_bypass_blocked',
       command: ONE_SHOT
@@ -732,7 +726,7 @@ describe('runner/session deferred hook-bypass verdict (§3)', () => {
     expect(handle.guard_mirror).toBe('absent');
   });
 
-  test('keeps the warning when another tool call reports back', async () => {
+  test('records an unresolved warning when only another tool call reports back', async () => {
     const { kill_impl, events } = await runLines(
       [
         bashToolLineWithId(ONE_SHOT, 'toolu_1'),
@@ -744,13 +738,13 @@ describe('runner/session deferred hook-bypass verdict (§3)', () => {
     expect(kill_impl).not.toHaveBeenCalled();
     expect(
       events.filter((e) => e.kind === 'guard_pending').map((e) => e.op)
-    ).toEqual([]);
+    ).toEqual(['add', 'clear']);
     expect(events.filter((e) => e.guard_warning).map((e) => e.reason)).toEqual([
-      'hook_bypass_blocked'
+      'hook_bypass_unresolved'
     ]);
   });
 
-  test('keeps the warning when the session ends', async () => {
+  test('records an unresolved warning when the session ends without a result', async () => {
     const { verdict, kill_impl, events } = await runLines(
       [
         bashToolLineWithId(ONE_SHOT, 'toolu_1'),
@@ -763,7 +757,7 @@ describe('runner/session deferred hook-bypass verdict (§3)', () => {
     expect(verdict.blocked).toBe(false);
     expect(
       events.filter((e) => e.guard_warning).map((e) => e.guard_warning)
-    ).toEqual([{ reason: 'hook_bypass_blocked', command: ONE_SHOT }]);
+    ).toEqual([{ reason: 'hook_bypass_unresolved', command: ONE_SHOT }]);
   });
 
   test('warns for a one-shot relocation at once on an unverified session', async () => {

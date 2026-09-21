@@ -699,8 +699,9 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   state stores no history. The shared `wait_reasons` model adds one `recovery`
   row for an unfinished subject with an operation handoff:
   `수정 작업 대기 · <handoff_bead_id> · 원인 <failure code>`, an issue target,
-  and release `수정 Bead의 PR·배포 뒤 [정리 재시도]`. Recovery rows use
-  `action_required/decision`. Operation waits without a handoff use the first
+  and release `수정 Bead의 PR·배포 뒤 [정리 재시도]`. Handoff rows remain
+  `normal`, with no decision verdict or session actions. Operation waits without
+  a handoff use `action_required/decision` and session actions, with the first
   failure summary line, falling back to the recovery sentence or reason token.
   Existing attempt recovery and prerequisite rows take precedence, so one
   subject never gets two recovery rows. `failure_kind` is a DISPLAY token: it is

@@ -5364,10 +5364,7 @@ export function createScheduler(deps) {
           }
         });
         closeRetryLineage(workspace, bead_id);
-        if (
-          !cause_detail?.blockers_unavailable &&
-          isSessionStalledRecovery(recovery, cause_detail?.blockers || [])
-        ) {
+        if (isSessionStalledRecovery(recovery, cause_detail?.blockers || [])) {
           fireDirectionInquiry(
             workspace,
             attempt_id,
@@ -5654,9 +5651,17 @@ export function createScheduler(deps) {
           }));
         cause_detail = { ...cause_detail, blockers };
       } catch {
-        // Unknown prerequisites cannot prove the empty-list inquiry condition.
+        // An unavailable blocks list needs inquiry rather than an automatic wait.
         cause_detail = { ...cause_detail, blockers_unavailable: true };
       }
+    }
+    if (
+      classification.recovery?.reason === 'prerequisite' &&
+      !cause_detail?.blockers_unavailable &&
+      cause_detail?.blockers?.length > 0
+    ) {
+      classification.cause = 'prerequisite_unmet';
+      delete classification.recovery;
     }
     const background_shell_at_result =
       options.verdict?.background_shell_at_result;
@@ -9037,6 +9042,10 @@ export function createScheduler(deps) {
     // The env ladder this dispatch continues (spec §3.3), stamped onto the new
     // attempt so the tile can say "자동 재시도 2/3" without walking history.
     const retry_context = options.retry || null;
+    const retry_options = {
+      retry: options.retry,
+      retry_source: options.retry_source
+    };
     try {
       // RE-READ authoritative ready/blocked/deps/exec-settings at dispatch.
       // A disagreement with the scan pass is a real TOCTOU stop, so it is
@@ -9283,7 +9292,9 @@ export function createScheduler(deps) {
           actionable,
           null,
           cut_base,
-          true
+          true,
+          undefined,
+          retry_options
         );
       }
       if (stale_context) {
@@ -9355,7 +9366,10 @@ export function createScheduler(deps) {
               bead_id,
               residue,
               resume_attempt,
-              cut_base
+              cut_base,
+              false,
+              undefined,
+              retry_options
             );
             return;
           }
@@ -9383,7 +9397,10 @@ export function createScheduler(deps) {
             bead_id,
             residue,
             null,
-            cut_base
+            cut_base,
+            false,
+            undefined,
+            retry_options
           );
           return;
         }
@@ -9803,7 +9820,7 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Persist an individual failure without changing the residue or notifying.
+   * Persist and announce an individual failure without changing the residue.
    *
    * @param {string} workspace
    * @param {string} bead_id
@@ -9829,6 +9846,12 @@ export function createScheduler(deps) {
     });
     if (recorded) {
       deps.store.clearAdmission(workspace, bead_id);
+      notifyLifecycle('attemptFailed', {
+        bead_id,
+        cause: 'stale_work_unresolved',
+        repo: snap.repo,
+        cause_detail: { summary: reason, residue }
+      });
       appendTimeline({
         bead_id,
         attempt_id,
@@ -9861,6 +9884,7 @@ export function createScheduler(deps) {
    * @param {string} cut_base
    * @param {boolean} [rechecked]
    * @param {(residue: StaleResidue|null) => Promise<void>} [continue_dispatch] - Preserve an external-wait reservation and completion prompt.
+   * @param {{ retry?: any, retry_source?: any }} [retry_options]
    */
   async function disposeStaleResidue(
     workspace,
@@ -9869,7 +9893,8 @@ export function createScheduler(deps) {
     resume_attempt,
     cut_base,
     rechecked = false,
-    continue_dispatch
+    continue_dispatch,
+    retry_options = {}
   ) {
     claimed.add(bead_id);
     const snap = await deps.bd.snapshotBead(bead_id);
@@ -9886,7 +9911,8 @@ export function createScheduler(deps) {
         failure = owner_reason;
       } else if (residue.can_resume && resume_attempt) {
         const result = await resume(workspace, resume_attempt.attempt_id, {
-          preclaimed: true
+          preclaimed: true,
+          ...(retry_options.retry ? { retry: retry_options.retry } : {})
         });
         if (result.ok) {
           recordStaleDisposition(bead_id, residue, 'resume');
@@ -9918,6 +9944,7 @@ export function createScheduler(deps) {
         }
         recordStaleDisposition(bead_id, residue, 'continue');
         await dispatch(workspace, bead_id, null, {
+          ...retry_options,
           stale_work: residue,
           stale_rechecked: pass > 0
         });
@@ -9952,7 +9979,7 @@ export function createScheduler(deps) {
             }
             claimed.delete(bead_id);
           } else {
-            await dispatch(workspace, bead_id);
+            await dispatch(workspace, bead_id, null, retry_options);
           }
           return { ok: true };
         }
@@ -10004,7 +10031,7 @@ export function createScheduler(deps) {
           }
           claimed.delete(bead_id);
         } else {
-          await dispatch(workspace, bead_id);
+          await dispatch(workspace, bead_id, null, retry_options);
         }
         return { ok: true };
       }

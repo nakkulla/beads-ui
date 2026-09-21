@@ -43,9 +43,11 @@ describe('operation recovery wait reasons', () => {
         release: '수정 Bead의 PR·배포 뒤 [정리 재시도]',
         targets: [{ id: 'UI-repair', kind: 'issue' }],
         since: NOW - 30_000,
-        verdict: 'action_required'
+        verdict: 'normal',
+        actions: []
       })
     );
+    expect(result.wait_reasons[0].verdict_reason).toBeUndefined();
   });
 
   test.each(['unclassified', 'reconcile'])(
@@ -754,6 +756,37 @@ describe('wait judgment prerequisites', () => {
 
     expect(result.wait_reasons).toEqual([]);
   });
+
+  test.each([
+    [WAIT_THRESHOLDS.grace_ms - 1, 'normal'],
+    [WAIT_THRESHOLDS.grace_ms, 'overdue']
+  ])(
+    'projects a scheduled base movement at age %i as %s retry wait',
+    (age, verdict) => {
+      const material = queue({
+        attempts: {
+          a: waiting({
+            cause: 'base_moved',
+            cause_detail: { blockers: [] },
+            retry: { cause: 'base_moved', next_at: NOW }
+          })
+        }
+      });
+
+      const result = run({ queue: material, now: NOW + Number(age) });
+
+      expect(result.wait_reasons).toMatchObject([
+        {
+          kind: 'retry_wait',
+          next_check_at: NOW,
+          verdict,
+          ...(verdict === 'overdue'
+            ? { verdict_reason: { code: 'retry_stalled' } }
+            : {})
+        }
+      ]);
+    }
+  );
 
   test('ignores an older waiting attempt after a newer run starts', () => {
     const result = run({

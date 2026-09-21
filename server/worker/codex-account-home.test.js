@@ -96,7 +96,7 @@ test.each([false, true])(
       enabled: false
     });
     expect(config.hooks.state[`${hooks_path}:pre_tool_use:1:0`]).toEqual({
-      trusted_hash: codexHookHash('PreToolUse', hooks.hooks.PreToolUse[1]),
+      trusted_hash: codexHookHash('pre_tool_use', hooks.hooks.PreToolUse[1]),
       enabled: true
     });
     expect((await fs.lstat(hooks_path)).isSymbolicLink()).toBe(false);
@@ -117,11 +117,29 @@ test.each([false, true])(
   }
 );
 
+test('matches the Codex v0.155.1 trusted hook fingerprint', () => {
+  const group = {
+    hooks: [
+      {
+        type: 'command',
+        command: '$HOME/.codex/hooks/codex-impl-entry-guard-hook.sh',
+        timeout: 10
+      }
+    ]
+  };
+
+  const actual = codexHookHash('pre_tool_use', group);
+
+  expect(actual).toBe(
+    'sha256:6d92c9d6a6eb6c7896cfe580a6188d5e29f1720fd9e5cf4a4870c950d766b92a'
+  );
+});
+
 test('fingerprints normalized handlers and sorted JSON keys', () => {
   const canonical =
-    '{"event_name":"PreToolUse","hooks":[{"async":false,"command":"guard","timeout":600,"type":"command"},{"additionalContextLimit":42,"async":true,"command":"second","statusMessage":"checking","timeout":1,"type":"command"}],"matcher":"Bash"}';
+    '{"event_name":"pre_tool_use","hooks":[{"async":false,"command":"guard","timeout":600,"type":"command"},{"additionalContextLimit":42,"async":true,"command":"second","statusMessage":"checking","timeout":1,"type":"command"}],"matcher":"Bash"}';
 
-  const actual = codexHookHash('PreToolUse', {
+  const actual = codexHookHash('pre_tool_use', {
     matcher: 'Bash',
     hooks: [
       { command: 'guard', additionalContextLimit: 2500 },

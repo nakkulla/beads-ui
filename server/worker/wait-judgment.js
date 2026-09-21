@@ -530,7 +530,12 @@ export function judgeWaitReasons(input) {
         wait_reasons.push(result);
       }
     }
-    if (attempt?.status === 'retry_wait') {
+    if (
+      attempt?.status === 'retry_wait' ||
+      (attempt?.status === 'waiting' &&
+        attempt.cause === 'base_moved' &&
+        timestamp(attempt.retry?.next_at) !== undefined)
+    ) {
       const next_at = timestamp(attempt.retry?.next_at);
       const result = reason(
         'retry_wait',
@@ -587,8 +592,6 @@ export function judgeWaitReasons(input) {
         );
         result.targets.push({ id: handoff_bead_id, kind: 'issue' });
         addClocks(result, { since: handoff.recorded_at });
-        judge(result, 'action_required', 'decision');
-        sessionActions(result);
         wait_reasons.push(result);
       } else if (['wait', 'reconcile'].includes(recovery.disposition)) {
         const token = line(recovery.reason);

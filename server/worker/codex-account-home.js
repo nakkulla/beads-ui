@@ -118,7 +118,7 @@ export async function prepareCodexGuardHome(input) {
     states[
       `${path.join(home_dir, 'hooks.json')}:pre_tool_use:${group_index}:0`
     ] = {
-      trusted_hash: codexHookHash('PreToolUse', hook_group),
+      trusted_hash: codexHookHash('pre_tool_use', hook_group),
       enabled: true
     };
     const state_text = Object.entries(states)

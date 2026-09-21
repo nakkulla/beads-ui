@@ -1126,15 +1126,19 @@ describe('scheduler work recovery waits', () => {
     expect(attempt.status).toBe('retry_wait');
   });
 
-  test('keeps prerequisite recovery with a blocks edge out of inquiry sessions', async () => {
+  test('returns a declared prerequisite wait through the ready rescan after its blocker closes', async () => {
     const onParkedAttempt = vi.fn();
     const config = {
-      S1: { dependencies: [{ id: 'S2', dependency_type: 'blocks' }] },
+      S1: {
+        ready: true,
+        dependencies: [{ id: 'S2', dependency_type: 'blocks' }]
+      },
       S2: { status: 'open' }
     };
     const env = recoveryEnv({ config, directionInquiry: { onParkedAttempt } });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
+    config.S1.ready = false;
 
     const attempt = await endSession(env, {
       success: true,
@@ -1143,8 +1147,55 @@ describe('scheduler work recovery waits', () => {
     });
 
     expect(attempt.cause_detail.blockers).toMatchObject([{ id: 'S2' }]);
+    expect(attempt).toMatchObject({
+      status: 'waiting',
+      cause: 'prerequisite_unmet'
+    });
+    expect(attempt.cause_detail.recovery).toBeUndefined();
     expect(onParkedAttempt).not.toHaveBeenCalled();
+    config.S2.status = 'closed';
+    config.S1.ready = true;
+
+    const result = await env.scheduler.rescanWaiting(WS);
+
+    expect(result).toEqual({ checked: 1, returned: 1 });
+    expect(env.scheduler.isRunning('S1')).toBe(true);
   });
+
+  test.each(['missing', 'failed'])(
+    'launches an inquiry when prerequisite lookup is %s',
+    async (lookup) => {
+      const onParkedAttempt = vi.fn(async () => ({
+        session: 'not_launched',
+        reason: 'disabled'
+      }));
+      const env = recoveryEnv({ directionInquiry: { onParkedAttempt } });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      if (lookup === 'missing') {
+        delete (/** @type {any} */ (env.bd).readIssue);
+      } else {
+        vi.spyOn(env.bd, 'readIssue').mockRejectedValue(
+          new Error('unavailable')
+        );
+      }
+
+      const attempt = await endSession(env, {
+        success: true,
+        summary: 'blocker: 선행 확인 필요',
+        terminal_result: { kind: 'recovery_wait', reason: 'prerequisite' }
+      });
+
+      expect(attempt).toMatchObject({
+        status: 'waiting',
+        cause_detail: {
+          blockers_unavailable: true,
+          recovery: { reason: 'prerequisite' }
+        }
+      });
+      expect(onParkedAttempt).toHaveBeenCalledOnce();
+    }
+  );
 
   /** @param {Record<string, any>} [options] */
   function recoveryEnv(options = {}) {
@@ -12271,10 +12322,12 @@ describe('scheduler worktree residue hygiene', () => {
    */
   function residueEnv(overrides = {}) {
     const append = vi.fn();
+    const notify = { attemptFailed: vi.fn() };
     const env = setup({
       config: { S1: {}, S2: {} },
       slots: 1,
       timeline: { append },
+      notify,
       resolveBase: async () => ({
         ok: true,
         base: 'main',
@@ -12283,7 +12336,7 @@ describe('scheduler worktree residue hygiene', () => {
       ...overrides
     });
     seedQueue(env.store, ['S1']);
-    return { ...env, append };
+    return { ...env, append, notify };
   }
 
   test('adopts unique work without recording an admission', async () => {
@@ -12302,6 +12355,7 @@ describe('scheduler worktree residue hygiene', () => {
     });
     expect(env.worktree.add).not.toHaveBeenCalled();
     expect(env.runner.cwdFor('S1')).toBe('/wt/S1');
+    expect(env.notify.attemptFailed).not.toHaveBeenCalled();
     expect(env.append).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'stale_work_auto',
@@ -12397,6 +12451,28 @@ describe('scheduler worktree residue hygiene', () => {
       cause: 'stale_work_unresolved'
     });
     expect(env.worktree.remove).not.toHaveBeenCalled();
+    expect(env.notify.attemptFailed).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        bead_id: 'S1',
+        cause: 'stale_work_unresolved',
+        repo: '/repo'
+      })
+    );
+  });
+
+  test('does not notify an unresolved residue failure that could not be recorded', async () => {
+    const env = residueEnv();
+    env.worktree.removeIfDiscardable.mockResolvedValue(
+      uniqueStaleObservation({ state: 'unknown', cause: 'observe_failed' })
+    );
+    vi.spyOn(env.store, 'appendAttempt').mockImplementation(() => {
+      throw new Error('write failed');
+    });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.notify.attemptFailed).not.toHaveBeenCalled();
   });
 
   test('retries unresolved residue without requiring a recorded session', async () => {
@@ -12523,6 +12599,12 @@ describe('scheduler worktree residue hygiene', () => {
       cause: 'stale_work_unresolved',
       cause_detail: { summary: 'archive_failed' }
     });
+    expect(env.notify.attemptFailed).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        cause: 'stale_work_unresolved',
+        cause_detail: expect.objectContaining({ summary: 'archive_failed' })
+      })
+    );
   });
 
   test('records a failure after observation throws twice', async () => {
@@ -20848,14 +20930,21 @@ describe('quick_fix self-review dispatch block (UI-r7or §6)', () => {
 });
 
 describe('automatic session retry selection', () => {
-  test.each([
-    ['claude', 'sonnet', 'low', true],
-    ['claude', 'sonnet', 'low', false],
-    ['codex', 'sol', 'xhigh', true],
-    ['codex', 'sol', 'xhigh', false]
-  ])(
-    'retains the %s %s %s settings with a local session=%s',
-    async (runner_name, model, effort, has_session) => {
+  test.each(
+    [
+      ['claude', 'sonnet', 'low', true],
+      ['claude', 'sonnet', 'low', false],
+      ['codex', 'sol', 'xhigh', true],
+      ['codex', 'sol', 'xhigh', false]
+    ].flatMap((tuple) =>
+      (tuple[3]
+        ? ['none']
+        : ['none', 'continue', 'backup', 'reobserve', 'changed_identity']
+      ).map((residue) => [...tuple, residue])
+    )
+  )(
+    'retains the %s %s %s settings with a local session=%s through %s residue',
+    async (runner_name, model, effort, has_session, residue) => {
       vi.useFakeTimers({ toFake: ['setTimeout'] });
       try {
         let clock = 1000;
@@ -20872,7 +20961,18 @@ describe('automatic session retry selection', () => {
           config,
           slots: 1,
           now: () => clock,
-          ...accountDeps()
+          ...accountDeps(),
+          ...{
+            backupFreshResidue: vi.fn(async () => ({
+              ok: true,
+              backup_path: '/backup'
+            }))
+          },
+          resolveBase: async () => ({
+            ok: true,
+            base: 'main',
+            base_oid: 'b'.repeat(40)
+          })
         });
         seedQueue(env.store, ['S1']);
         await env.scheduler.tick(WS);
@@ -20888,6 +20988,51 @@ describe('automatic session retry selection', () => {
         });
         await flush();
         await flush();
+        const observation = {
+          ok: false,
+          state: 'unique',
+          cause: 'dirty_unique',
+          owned: true,
+          identity: {
+            worktree_realpath: '/wt/S1',
+            branch: 'S1',
+            head_sha: 'a'.repeat(40),
+            base_oid: 'b'.repeat(40),
+            status_digest: 'c'.repeat(64)
+          },
+          summary: {
+            staged_count: 1,
+            unstaged_count: 0,
+            untracked_count: 0,
+            branch_ahead: 0,
+            head_ahead: 0
+          }
+        };
+        if (residue === 'continue') {
+          env.worktree.removeIfDiscardable.mockResolvedValue(observation);
+        } else if (residue === 'backup') {
+          env.worktree.removeIfDiscardable.mockResolvedValueOnce({
+            ...observation,
+            identity: {
+              ...observation.identity,
+              worktree_realpath: null,
+              head_sha: null,
+              branch_head_sha: 'a'.repeat(40)
+            }
+          });
+        } else if (residue === 'reobserve') {
+          env.worktree.removeIfDiscardable.mockResolvedValueOnce({
+            ...observation,
+            state: 'unknown'
+          });
+        } else if (residue === 'changed_identity') {
+          env.worktree.removeIfDiscardable
+            .mockResolvedValueOnce(observation)
+            .mockResolvedValue({
+              ...observation,
+              identity: { ...observation.identity, head_sha: 'd'.repeat(40) }
+            });
+        }
         config.S1.model = runner_name === 'claude' ? 'sol' : 'sonnet';
         config.S1.effort = 'medium';
         config.S1.claude_account = 'changed@example.com';

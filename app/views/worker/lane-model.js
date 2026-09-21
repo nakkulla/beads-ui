@@ -1744,7 +1744,14 @@ function heldAttemptStates(attempts, done_at_by_bead) {
     }
     held.set(a.bead_id, {
       attempt: a,
-      run_state: provider_hold ? 'provider_hold' : a.status
+      run_state: provider_hold
+        ? 'provider_hold'
+        : a.status === 'waiting' &&
+            a.cause === 'base_moved' &&
+            !a.cause_detail?.recovery &&
+            typeof a.retry?.next_at === 'number'
+          ? 'retry_wait'
+          : a.status
     });
   }
   return held;

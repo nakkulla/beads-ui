@@ -2751,6 +2751,27 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
     expect(lanes.running.map((item) => item.id)).toEqual(['A-1']);
   });
 
+  test('projects scheduled base movement as a retry tile without a prerequisite badge', () => {
+    const attempts = waitingAttempt({
+      cause: 'base_moved',
+      cause_detail: { blockers: [] },
+      retry: { cause: 'base_moved', attempts: 1, max: 3, next_at: 120_020 },
+      quickfix_landing: { reason: 'base_moved', head_sha: 'd'.repeat(40) }
+    });
+
+    const lanes = buildLanes([queuedWorkspace({ attempts })], [state()]);
+
+    expect(lanes.running).toMatchObject([
+      {
+        id: 'A-1',
+        run_state: 'retry_wait',
+        badges: ['↻ 재시도 대기'],
+        retry: { next_at: 120_020 }
+      }
+    ]);
+    expect(lanes.running[0].wait).toBeNull();
+  });
+
   test('keeps a recovery wait on its running tile', () => {
     const attempts = waitingAttempt({ cause: 'session_ended_unresolved' });
     attempts.t1.cause_detail.recovery = {
