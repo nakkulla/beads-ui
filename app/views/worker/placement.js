@@ -35,6 +35,8 @@ import { runningLaneBeadIds } from './lane-model.js';
  * @property {Record<string, string>} exec_pins
  * @property {boolean} worker_ineligible
  * @property {string} session_preferred_reason
+ * @property {string} [complex_reason] - 서버가 라벨 `complex`와 metadata에서
+ * 판정해 더하는 키 (UI-7nhi §2). 표시 전용이라 배치 판정에 쓰지 않는다.
  * @property {boolean} spec_after_blocker
  * @property {true} [observation]
  * @property {true} [blocked_without_ids]

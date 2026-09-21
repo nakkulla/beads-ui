@@ -4823,80 +4823,86 @@ describe('nowPanel (UI-5ksp §4.7)', () => {
   });
 });
 
-describe('복잡 chip on the worker lane surfaces (UI-sbum §3)', () => {
-  /** @type {import('../../utils/rec-settings.js').RecSettings} */
-  const REC = {
-    reasons: ['hard_diagnosis', 'claude_bound'],
-    rec: { orchestration_model: 'fable', impl_runtime: 'claude' },
-    state: 'unapplied'
-  };
-  const REC_TITLE =
-    '복잡한 작업으로 판정됨\n사유: 원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다 · Claude 세션 자산·의미론에 강하게 묶여 있다\n상태: 미적용';
+describe('복잡 chip on the worker lane surfaces (UI-7nhi §3)', () => {
+  const REASON = 'hard_diagnosis+invariant_reasoning';
+  const COMPLEX_TITLE =
+    '복잡한 작업으로 판정됨\n사유: 원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다 · 정합성이 상태기계·동시성·불변식 추론에 달려 있다';
 
   test('draws the chip on a waiting row with the shared tooltip', () => {
-    const row = renderRow({ lane: 'queue', done: false, rec: REC });
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      complex_reason: REASON
+    });
 
     const chip = /** @type {HTMLElement} */ (
-      row.querySelector('.worker-card__rec')
+      row.querySelector('.worker-card__complex')
     );
 
     expect(chip.textContent?.trim()).toBe('복잡');
-    expect(chip.title).toBe(REC_TITLE);
+    expect(chip.title).toBe(COMPLEX_TITLE);
   });
 
   test('draws the chip on a candidate card with the same tooltip', () => {
-    const card = renderCandidate({ rec: REC });
+    const card = renderCandidate({ complex_reason: REASON });
 
     const chip = /** @type {HTMLElement} */ (
-      card.querySelector('.worker-card__rec')
+      card.querySelector('.worker-card__complex')
     );
 
     expect(chip.textContent?.trim()).toBe('복잡');
-    expect(chip.title).toBe(REC_TITLE);
+    expect(chip.title).toBe(COMPLEX_TITLE);
   });
 
-  test('carries the recommendation state as a data attribute', () => {
-    const states = ['unapplied', 'applied', 'diverged'].map((state) => {
-      const card = renderCandidate({
-        rec: { ...REC, state: /** @type {any} */ (state) }
-      });
-      return /** @type {HTMLElement} */ (
-        card.querySelector('.worker-card__rec')
-      ).dataset.state;
+  test('leaves no state attribute on the chip', () => {
+    const card = renderCandidate({ complex_reason: REASON });
+
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__complex')
+    );
+
+    expect(chip.dataset.state).toBeUndefined();
+  });
+
+  test('omits the chip when the bead carries no 복잡 판정', () => {
+    const row = renderRow({ lane: 'queue', done: false });
+    const card = renderCandidate({});
+
+    expect(row.querySelector('.worker-card__complex')).toBeNull();
+    expect(card.querySelector('.worker-card__complex')).toBeNull();
+  });
+
+  test('omits the chip when the reason string is empty', () => {
+    const card = renderCandidate({ complex_reason: '' });
+
+    expect(card.querySelector('.worker-card__complex')).toBeNull();
+  });
+
+  test('draws the chip line for a row whose only chip is the 복잡 판정', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      complex_reason: REASON
     });
-
-    expect(states).toEqual(['unapplied', 'applied', 'diverged']);
-  });
-
-  test('omits the chip when the bead has no recommendation', () => {
-    const row = renderRow({ lane: 'queue', done: false, rec: null });
-    const card = renderCandidate({ rec: null });
-
-    expect(row.querySelector('.worker-card__rec')).toBeNull();
-    expect(card.querySelector('.worker-card__rec')).toBeNull();
-  });
-
-  test('draws the chip line for a row whose only chip is the recommendation', () => {
-    const row = renderRow({ lane: 'queue', done: false, rec: REC });
 
     expect(row.querySelector('.worker-chips')).not.toBeNull();
   });
 
   test('turns the chip into a 판정 button that opens a 사유 popup', () => {
-    const card = renderCandidate({ rec: REC });
+    const card = renderCandidate({ complex_reason: REASON });
     const chip = /** @type {HTMLElement} */ (
-      card.querySelector('.worker-card__rec')
+      card.querySelector('.worker-card__complex')
     );
 
     expect(chip.tagName).toBe('BUTTON');
     expect(chip.classList.contains('judgement-chip')).toBe(true);
-    expect(chip.dataset.chipKey).toBe('rec');
+    expect(chip.dataset.chipKey).toBe('complex');
     expect(chip.getAttribute('aria-expanded')).toBe('false');
   });
 
   test('keeps the 세션 권장 chip beside it on the same candidate', () => {
     const card = renderCandidate({
-      rec: REC,
+      complex_reason: REASON,
       session_preferred: true,
       session_preferred_reason: 'external_roundtrip'
     });
@@ -4904,17 +4910,12 @@ describe('복잡 chip on the worker lane surfaces (UI-sbum §3)', () => {
     expect(
       card.querySelector('.worker-card__session-preferred')
     ).not.toBeNull();
-    expect(card.querySelector('.worker-card__rec')).not.toBeNull();
+    expect(card.querySelector('.worker-card__complex')).not.toBeNull();
   });
 });
 
 describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
-  /** @type {import('../../utils/rec-settings.js').RecSettings} */
-  const REC = {
-    reasons: ['verification_by_judgment'],
-    rec: { orchestration_model: 'fable' },
-    state: 'diverged'
-  };
+  const REASON = 'verification_by_judgment';
 
   const QFR = /** @type {any} */ ({
     route: 'quick_fix',
@@ -4971,9 +4972,9 @@ describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
 
   test('draws the popup under the identity line of a candidate card', () => {
     const card = renderCandidate({
-      rec: REC,
+      complex_reason: REASON,
       chip_popover: {
-        chip_key: 'rec',
+        chip_key: 'complex',
         content: { title: '복잡한 작업으로 판정됨', lines: ['한 줄'] }
       }
     });
@@ -4983,7 +4984,7 @@ describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
 
     expect(popover.getAttribute('role')).toBe('dialog');
     expect(
-      card.querySelector('.worker-card__rec')?.getAttribute('aria-expanded')
+      card.querySelector('.worker-card__complex')?.getAttribute('aria-expanded')
     ).toBe('true');
   });
 
@@ -4991,9 +4992,9 @@ describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
     const row = renderRow({
       lane: 'queue',
       done: false,
-      rec: REC,
+      complex_reason: REASON,
       chip_popover: {
-        chip_key: 'rec',
+        chip_key: 'complex',
         content: { title: '복잡한 작업으로 판정됨', lines: ['한 줄'] }
       }
     });
@@ -5003,24 +5004,19 @@ describe('판정 칩과 사유 팝업 (UI-8x90 §4.5)', () => {
 });
 
 describe('judgementPopoverContent (UI-8x90 §4.5)', () => {
-  test('names the 복잡 사유 sentences and the state', () => {
+  test('names the 복잡 사유 sentences without a state line', () => {
     const content = judgementPopoverContent(
       /** @type {any} */ ({
         id: 'UI-a',
-        rec: {
-          reasons: ['verification_by_judgment'],
-          rec: { orchestration_model: 'fable' },
-          state: 'diverged'
-        }
+        complex_reason: 'verification_by_judgment'
       }),
-      'rec'
+      'complex'
     );
 
     expect(content).toEqual({
       title: '복잡한 작업으로 판정됨',
       lines: [
         '테스트가 못 잡고 리뷰어의 추론으로만 검증할 수 있다',
-        '상태: 추천과 다름',
         '적용은 이슈 상세의 실행 설정 편집기에서'
       ]
     });
@@ -5117,7 +5113,7 @@ describe('judgementPopoverContent (UI-8x90 §4.5)', () => {
 
   test('answers null when the chip has no material', () => {
     expect(
-      judgementPopoverContent(/** @type {any} */ ({ id: 'UI-a' }), 'rec')
+      judgementPopoverContent(/** @type {any} */ ({ id: 'UI-a' }), 'complex')
     ).toBeNull();
   });
 

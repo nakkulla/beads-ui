@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'vitest';
-import { REC_REASONS } from '../../app/utils/rec-settings.js';
 import {
   IMPL_RUNTIMES as CLIENT_IMPL_RUNTIMES,
   QUICK_FIX_KV_KEYS as CLIENT_QUICK_FIX_KV_KEYS,
@@ -25,8 +24,6 @@ import {
   QUICK_FIX_KV_KEYS,
   QUICK_FIX_LANE_MAP,
   QUICK_FIX_ORCHESTRATION_KEYS,
-  REC_SIGNALS,
-  REC_VALUES,
   REVIEW_EFFORTS,
   REVIEW_SPEEDS,
   REVIEW_STEP_MODELS,
@@ -837,31 +834,6 @@ describe('workspace kv mirror across the two runtimes', () => {
       );
 
     expect(disagreements).toEqual([]);
-  });
-});
-
-describe('worker/exec-enums rec vocabularies (UI-sbum §2)', () => {
-  test('matches the client rec_reason enum exactly', () => {
-    expect(REC_SIGNALS).toEqual(REC_REASONS);
-  });
-
-  test('allows exactly one recommended value per key', () => {
-    expect(REC_VALUES).toEqual({
-      rec_orchestration_model: ['fable'],
-      rec_impl_runtime: ['claude']
-    });
-  });
-
-  test('keeps the recommendation keys out of every resolved key list', () => {
-    for (const key of Object.keys(REC_VALUES)) {
-      expect(BEAD_APPLY_KEYS).not.toContain(key);
-      expect(WORKSPACE_KV_KEYS).not.toContain(key);
-      expect(IMPL_PRESET_KEYS).not.toContain(key);
-      expect(EXEC_SETTING_KEYS).not.toContain(key);
-      expect(
-        Object.keys(execSettingEnums(resolveCatalog({ warn: () => {} })))
-      ).not.toContain(key);
-    }
   });
 });
 

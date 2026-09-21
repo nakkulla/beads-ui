@@ -13,28 +13,21 @@ import {
   summaryHeaderTemplate
 } from './effective-settings-view.js';
 
-const REC_META = {
-  rec_orchestration_model: 'fable',
-  rec_impl_runtime: 'claude',
-  rec_reason: 'hard_diagnosis+invariant_reasoning'
-};
-
-const APPLIED_META = {
-  ...REC_META,
-  orchestration_model: 'fable',
-  impl_runtime: 'claude'
+const COMPLEX_META = {
+  complex_reason: 'hard_diagnosis+invariant_reasoning'
 };
 
 /**
  * @param {Record<string, unknown>} metadata
  * @param {any} [handlers]
+ * @param {string[]} [labels]
  * @returns {HTMLElement}
  */
-function renderHeader(metadata, handlers = {}) {
+function renderHeader(metadata, handlers = {}, labels = ['complex']) {
   const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
   render(
     summaryHeaderTemplate(
-      { id: 'UI-1', status: 'open', metadata },
+      { id: 'UI-1', status: 'open', metadata, labels },
       /** @type {any} */ (handlers)
     ),
     mount
@@ -46,9 +39,9 @@ function renderHeader(metadata, handlers = {}) {
  * @param {HTMLElement} mount
  * @returns {HTMLButtonElement|null}
  */
-function recChip(mount) {
+function complexChip(mount) {
   return /** @type {HTMLButtonElement|null} */ (
-    mount.querySelector('.detail-summary__chip--rec')
+    mount.querySelector('.detail-summary__chip--complex')
   );
 }
 
@@ -56,38 +49,48 @@ beforeEach(() => {
   document.body.innerHTML = '<div id="m"></div>';
 });
 
-describe('detail header 복잡 chip (UI-8x90 §5.1)', () => {
+describe('detail header 복잡 chip (UI-8x90 §5.1, UI-7nhi §4)', () => {
   test('draws the chip as a judgement chip button', () => {
-    const mount = renderHeader(REC_META);
+    const mount = renderHeader(COMPLEX_META);
 
-    const chip = /** @type {HTMLButtonElement} */ (recChip(mount));
+    const chip = /** @type {HTMLButtonElement} */ (complexChip(mount));
 
     expect(chip.tagName).toBe('BUTTON');
     expect(chip.classList.contains('judgement-chip')).toBe(true);
-    expect(chip.dataset.chipKey).toBe('rec');
+    expect(chip.dataset.chipKey).toBe('complex');
   });
 
-  test('leaves the chip enabled once the recommendation is applied', () => {
-    const mount = renderHeader(APPLIED_META);
+  test('leaves the chip enabled and carries no state attribute', () => {
+    const mount = renderHeader(COMPLEX_META);
 
-    const chip = /** @type {HTMLButtonElement} */ (recChip(mount));
+    const chip = /** @type {HTMLButtonElement} */ (complexChip(mount));
 
-    expect(chip.dataset.state).toBe('applied');
+    expect(chip.dataset.state).toBeUndefined();
     expect(chip.disabled).toBe(false);
   });
 
-  test('asks the view to toggle the rec popup on click', () => {
+  test('names the 복잡 판정 in the chip tooltip without a 상태 line', () => {
+    const mount = renderHeader(COMPLEX_META);
+
+    const chip = /** @type {HTMLButtonElement} */ (complexChip(mount));
+
+    expect(chip.title).toBe(
+      '복잡한 작업으로 판정됨\n사유: 원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다 · 정합성이 상태기계·동시성·불변식 추론에 달려 있다'
+    );
+  });
+
+  test('asks the view to toggle the complex popup on click', () => {
     const onChipToggle = vi.fn();
-    const mount = renderHeader(REC_META, { onChipToggle });
+    const mount = renderHeader(COMPLEX_META, { onChipToggle });
 
-    /** @type {HTMLButtonElement} */ (recChip(mount)).click();
+    /** @type {HTMLButtonElement} */ (complexChip(mount)).click();
 
-    expect(onChipToggle).toHaveBeenCalledWith('rec');
+    expect(onChipToggle).toHaveBeenCalledWith('complex');
   });
 
   test('opens the 사유 팝업 under the chips line while the chip is open', () => {
-    const mount = renderHeader(REC_META, {
-      isChipOpen: (/** @type {string} */ key) => key === 'rec'
+    const mount = renderHeader(COMPLEX_META, {
+      isChipOpen: (/** @type {string} */ key) => key === 'complex'
     });
 
     const popover = /** @type {HTMLElement} */ (
@@ -104,35 +107,36 @@ describe('detail header 복잡 chip (UI-8x90 §5.1)', () => {
   });
 
   test('marks the open chip with aria-expanded', () => {
-    const mount = renderHeader(REC_META, {
-      isChipOpen: (/** @type {string} */ key) => key === 'rec'
+    const mount = renderHeader(COMPLEX_META, {
+      isChipOpen: (/** @type {string} */ key) => key === 'complex'
     });
 
-    expect(recChip(mount)?.getAttribute('aria-expanded')).toBe('true');
+    expect(complexChip(mount)?.getAttribute('aria-expanded')).toBe('true');
   });
 
   test('draws no popup while no chip is open', () => {
-    const mount = renderHeader(REC_META);
+    const mount = renderHeader(COMPLEX_META);
 
     expect(mount.querySelector('.chip-popover')).toBe(null);
-    expect(recChip(mount)?.getAttribute('aria-expanded')).toBe('false');
+    expect(complexChip(mount)?.getAttribute('aria-expanded')).toBe('false');
   });
 
-  test('keeps the three recommendation states on the chip', () => {
-    const states = [
-      recChip(renderHeader(REC_META))?.dataset.state,
-      recChip(renderHeader(APPLIED_META))?.dataset.state,
-      recChip(renderHeader({ ...REC_META, orchestration_model: 'opus' }))
-        ?.dataset.state
-    ];
+  test('omits the chip for a bead carrying the reason without the label', () => {
+    const mount = renderHeader(COMPLEX_META, {}, []);
 
-    expect(states).toEqual(['unapplied', 'applied', 'diverged']);
+    expect(complexChip(mount)).toBe(null);
   });
 
-  test('omits the chip for a bead with no recommendation', () => {
-    const mount = renderHeader({ rec_impl_runtime: 'claude' });
+  test('omits the chip for a bead carrying the label without a reason', () => {
+    const mount = renderHeader({});
 
-    expect(recChip(mount)).toBe(null);
+    expect(complexChip(mount)).toBe(null);
+  });
+
+  test('omits the chip for an issue record with no labels field', () => {
+    const mount = renderHeader(COMPLEX_META, {}, /** @type {any} */ (null));
+
+    expect(complexChip(mount)).toBe(null);
   });
 });
 

@@ -4158,19 +4158,14 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
   });
 });
 
-describe('monitor runnable rec projection (UI-sbum §4)', () => {
-  test('reads the recommendation against the row exec pins', () => {
+describe('monitor runnable complex_reason projection (UI-7nhi §3)', () => {
+  test('carries the server judgement onto the runnable item', () => {
     const lanes = buildLanes(
       [
         workspace({
           runnable: [
             runnable('A-1', {
-              rec: {
-                rec_orchestration_model: 'fable',
-                rec_impl_runtime: 'claude',
-                rec_reason: 'hard_diagnosis'
-              },
-              exec_pins: { orchestration_model: 'opus' }
+              complex_reason: 'hard_diagnosis+invariant_reasoning'
             })
           ]
         })
@@ -4178,47 +4173,42 @@ describe('monitor runnable rec projection (UI-sbum §4)', () => {
       [state()]
     );
 
-    expect(lanes.runnable[0].rec).toEqual({
-      reasons: ['hard_diagnosis'],
-      rec: { orchestration_model: 'fable', impl_runtime: 'claude' },
-      state: 'diverged'
-    });
+    expect(lanes.runnable[0].complex_reason).toBe(
+      'hard_diagnosis+invariant_reasoning'
+    );
   });
 
-  test('reads applied when the pins already carry the whole recommendation', () => {
+  test('leaves the field off a row whose judgement is an empty string', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1', { complex_reason: '' })] })],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].complex_reason).toBeUndefined();
+  });
+
+  test('leaves the field off a row carrying a non-string judgement', () => {
     const lanes = buildLanes(
       [
         workspace({
           runnable: [
-            runnable('A-1', {
-              rec: { rec_orchestration_model: 'fable' },
-              exec_pins: { orchestration_model: 'fable' }
-            })
+            runnable('A-1', { complex_reason: /** @type {any} */ (7) })
           ]
         })
       ],
       [state()]
     );
 
-    expect(lanes.runnable[0].rec?.state).toBe('applied');
+    expect(lanes.runnable[0].complex_reason).toBeUndefined();
   });
 
-  test('leaves the field off a row with no recommendation', () => {
-    const lanes = buildLanes(
-      [workspace({ runnable: [runnable('A-1', { rec: null })] })],
-      [state()]
-    );
-
-    expect(lanes.runnable[0].rec).toBeUndefined();
-  });
-
-  test('leaves the field off a legacy row from a server that sends no rec', () => {
+  test('leaves the field off a legacy row from a server that sends no judgement', () => {
     const lanes = buildLanes(
       [workspace({ runnable: [runnable('A-1')] })],
       [state()]
     );
 
-    expect(lanes.runnable[0].rec).toBeUndefined();
+    expect(lanes.runnable[0].complex_reason).toBeUndefined();
   });
 });
 
@@ -5680,17 +5670,15 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
     ]);
   });
 
-  test('derives the rec chip from the overlay metadata', () => {
+  test('derives the 복잡 chip from the overlay labels and metadata', () => {
     const lanes = buildLanes(
       [
         workspace({
           queue: [{ bead_id: 'A-2' }],
           bead_overlay: {
             'A-2': {
-              metadata: {
-                rec_orchestration_model: 'fable',
-                rec_reason: 'cross_file'
-              }
+              labels: ['complex'],
+              metadata: { complex_reason: 'hard_diagnosis' }
             }
           }
         })
@@ -5698,7 +5686,37 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
       [state()]
     );
 
-    expect(lanes.queue[0].rec?.rec).toEqual({ orchestration_model: 'fable' });
+    expect(lanes.queue[0].complex_reason).toBe('hard_diagnosis');
+  });
+
+  test('leaves the 복잡 chip off an overlay carrying the reason without the label', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: {
+            'A-2': { metadata: { complex_reason: 'hard_diagnosis' } }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].complex_reason).toBeUndefined();
+  });
+
+  test('leaves the 복잡 chip off an overlay carrying the label without a reason', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: { 'A-2': { labels: ['complex'], metadata: {} } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].complex_reason).toBeUndefined();
   });
 
   test('derives the waiting row exec chips from the overlay metadata', () => {

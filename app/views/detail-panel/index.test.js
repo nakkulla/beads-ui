@@ -3722,15 +3722,11 @@ describe('views/detail-panel 의존성 절 편집기 (UI-lx45 §4)', () => {
   });
 });
 
-describe('views/detail-panel 헤더 복잡 chip (UI-8x90 §5.1)', () => {
-  const REC_META = {
-    rec_orchestration_model: 'fable',
-    rec_impl_runtime: 'claude',
-    rec_reason: 'hard_diagnosis'
-  };
+describe('views/detail-panel 헤더 복잡 chip (UI-8x90 §5.1, UI-7nhi §4)', () => {
+  const COMPLEX_META = { complex_reason: 'hard_diagnosis' };
 
   /** The two mutations the removed 즉시 적용 path used to send. */
-  const REC_MUTATIONS = ['update-exec-settings', 'update-impl-target'];
+  const EXEC_MUTATIONS = ['update-exec-settings', 'update-impl-target'];
 
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
@@ -3758,38 +3754,40 @@ describe('views/detail-panel 헤더 복잡 chip (UI-8x90 §5.1)', () => {
       type: 'snapshot',
       id: 'detail:UI-1',
       revision: 1,
-      issues: /** @type {any} */ ([{ id: 'UI-1', title: 't', metadata }])
+      issues: /** @type {any} */ ([
+        { id: 'UI-1', title: 't', labels: ['complex'], metadata }
+      ])
     });
     panel.load('UI-1');
     return { mount, panel, transport };
   }
 
   /** @param {HTMLElement} mount */
-  function recChip(mount) {
+  function complexChip(mount) {
     return /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.detail-summary__chip--rec')
+      mount.querySelector('.detail-summary__chip--complex')
     );
   }
 
   test('writes no metadata when the chip is clicked', async () => {
-    const { mount, panel, transport } = recPanel(REC_META);
+    const { mount, panel, transport } = recPanel(COMPLEX_META);
 
-    recChip(mount).click();
+    complexChip(mount).click();
     await Promise.resolve();
     await Promise.resolve();
 
     expect(
       transport.mock.calls
         .map((call) => String(call[0]))
-        .filter((type) => REC_MUTATIONS.includes(type))
+        .filter((type) => EXEC_MUTATIONS.includes(type))
     ).toEqual([]);
     panel.destroy();
   });
 
   test('opens the 사유 팝업 on the chip click', () => {
-    const { mount, panel } = recPanel(REC_META);
+    const { mount, panel } = recPanel(COMPLEX_META);
 
-    recChip(mount).click();
+    complexChip(mount).click();
 
     expect(mount.querySelector('.chip-popover')?.textContent).toContain(
       '복잡한 작업으로 판정됨'
@@ -3798,10 +3796,10 @@ describe('views/detail-panel 헤더 복잡 chip (UI-8x90 §5.1)', () => {
   });
 
   test('closes the 사유 팝업 on a second click of the same chip', () => {
-    const { mount, panel } = recPanel(REC_META);
+    const { mount, panel } = recPanel(COMPLEX_META);
 
-    recChip(mount).click();
-    recChip(mount).click();
+    complexChip(mount).click();
+    complexChip(mount).click();
 
     expect(mount.querySelector('.chip-popover')).toBe(null);
     panel.destroy();

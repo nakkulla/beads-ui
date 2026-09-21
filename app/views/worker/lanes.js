@@ -16,11 +16,10 @@ import { ifDefined } from 'lit-html/directives/if-defined.js';
 import { discardOperationActive } from '../../../server/worker/discard-phase.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import {
-  REC_LABEL,
-  REC_STATE_TEXT,
-  recReasonSentences,
-  recTooltip
-} from '../../utils/rec-settings.js';
+  COMPLEX_CHIP_LABEL,
+  complexReasonSentences,
+  complexTooltip
+} from '../../utils/complex-judgement.js';
 import {
   formatClockLocal,
   formatElapsedSince,
@@ -1236,33 +1235,32 @@ export function creationSourceChipsTemplate(item, options = {}) {
 }
 
 /**
- * `복잡` chip (UI-sbum §3): the workflow judged this bead complex enough to
- * recommend a different execution setting. 클릭은 어디서나 사유 팝업이고, 적용은
- * 실행 설정 편집기에서 사용자가 수동으로 한다 (UI-8x90 §4.5) — 카드 위의 칩은
- * 상태를 쓰지 않는다.
+ * `복잡` chip (UI-7nhi §3): the workflow contract judged this bead complex,
+ * carried by label `complex` + metadata `complex_reason`. 클릭은 어디서나 사유
+ * 팝업이고, 적용은 실행 설정 편집기에서 사용자가 수동으로 한다 (UI-8x90 §4.5)
+ * — 카드 위의 칩은 상태를 쓰지 않는다.
  *
- * One chip, never a model or runtime name: the recommendation's WHY and whether
- * it is applied live in the tooltip, which every surface shares so one judgement
- * never reads two ways.
+ * One chip, never a model or runtime name: the judgement's WHY lives in the
+ * tooltip, which every surface shares so one judgement never reads two ways.
  *
- * @param {import('../../utils/rec-settings.js').RecSettings|null|undefined} rec
+ * @param {string|null|undefined} reason - `complex_reason` signals joined by
+ * `+`. Empty or absent means no judgement and no chip (fail-quiet).
  * @param {boolean} [open] - 사유 팝업이 지금 이 카드에서 이 칩 아래에 펼쳐져
  * 있는지. `aria-expanded`가 되는 값이다.
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function recChipTemplate(rec, open = false) {
-  if (!rec) {
+export function complexChipTemplate(reason, open = false) {
+  if (typeof reason !== 'string' || reason.length === 0) {
     return '';
   }
   return html`<button
     type="button"
-    class="ctl-chip ctl-chip--label judgement-chip worker-card__rec"
-    data-chip-key="rec"
-    data-state=${rec.state}
+    class="ctl-chip ctl-chip--label judgement-chip worker-card__complex"
+    data-chip-key="complex"
     aria-expanded=${open ? 'true' : 'false'}
-    title=${recTooltip(rec)}
+    title=${complexTooltip(reason)}
   >
-    ${REC_LABEL}
+    ${COMPLEX_CHIP_LABEL}
   </button>`;
 }
 
@@ -1557,10 +1555,10 @@ export function priorityBadgeTemplate(priority) {
  * 전제라 spec까지 선행 뒤로 미룬다 (UI-svh6 §4.2). 투영이 `spec-after-blocker`
  * 라벨과 지금의 blocker를 함께 읽어 접은 값이며, 자격·drag·적재 어디에도 들어가지
  * 않는다.
- * @property {import('../../utils/rec-settings.js').RecSettings|null} [rec] -
- * 복잡 판정 (UI-sbum §3): 워크플로가 이 bead에 다른 실행 설정을 추천했다는 사실
- * 하나. 표시 전용이고 자격·drag·적재 어디에도 들어가지 않는다. `null`/생략은
- * 추천 없음이다.
+ * @property {string} [complex_reason] -
+ * 복잡 판정 (UI-7nhi §3): 라벨 `complex`와 metadata `complex_reason`이 함께
+ * 성립할 때의 신호 문자열이다. 표시 전용이고 자격·drag·적재 어디에도 들어가지
+ * 않는다. 생략·`''`는 판정 없음이다.
  * @property {{ codes: string[] }} [receipt_badge] - 실행 영수증 회계 잔여
  * (UI-h6t1 §4.3): dotfiles 계약이 `badge` 등급으로 확정한 코드들이다. 머지
  * 판정을 바꾸지 않으므로 슬롯 5 판정 칩 하나로만 선다. 코드가 없으면 필드도
@@ -3281,7 +3279,10 @@ export function miniRow(item, options = {}) {
   // 판정은 그 줄의 재료 전부로 한다 — 좌표·exec만 세면 usage만 있는 행에서
   // 지금 보이는 정보가 사라진다. 재료가 하나도 없으면 줄 자체를 그리지 않는다
   // (빈 div는 행에 여백만 남긴다).
-  const rec_el = recChipTemplate(item.rec, chipOpen(item, 'rec'));
+  const complex_el = complexChipTemplate(
+    item.complex_reason,
+    chipOpen(item, 'complex')
+  );
   // 영수증 회계 잔여도 슬롯 5다 (UI-h6t1 §4.1): 같은 줄의 `exec_receipt`·실패
   // 로그 경로와 짝이라 "그 실행이 어디서 무엇으로 일어났고 그 기록이 얼마나
   // 성립하는지"를 한 줄이 답한다.
@@ -3305,13 +3306,13 @@ export function miniRow(item, options = {}) {
     route_el ||
     from_el ||
     has_exec_chips ||
-    rec_el ||
+    complex_el ||
     receipt_badge_el ||
     usage_el ||
     log_path_el ||
     external.chips
       ? html`<div class="worker-chips">
-          ${repo_el}${route_el}${from_el}${exec_chips_el}${rec_el}${receipt_badge_el}${usage_el}${log_path_el}${external.chips}${gate_open
+          ${repo_el}${route_el}${from_el}${exec_chips_el}${complex_el}${receipt_badge_el}${usage_el}${log_path_el}${external.chips}${gate_open
             ? ''
             : judgementPopover(item)}
         </div>`
@@ -3617,7 +3618,7 @@ const SESSION_PREFERRED_TOOLTIP = {
  * The 판정 칩 keys (UI-8x90 §4.5, UI-svh6 §4.3). `data-chip-key` carries them
  * into the DOM so one click handler per tab covers every surface.
  *
- * @typedef {'rec'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'|'readiness'} JudgementChipKey
+ * @typedef {'complex'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'|'readiness'} JudgementChipKey
  */
 
 /**
@@ -3630,17 +3631,15 @@ const SESSION_PREFERRED_TOOLTIP = {
  * @returns {import('../chip-popover.js').ChipPopoverContent|null}
  */
 export function judgementPopoverContent(item, chip_key) {
-  if (chip_key === 'rec') {
-    const rec = item.rec;
-    if (!rec) {
+  if (chip_key === 'complex') {
+    const reason = item.complex_reason;
+    if (typeof reason !== 'string' || reason.length === 0) {
       return null;
     }
-    const state_text = REC_STATE_TEXT[rec.state] || '';
     return {
       title: '복잡한 작업으로 판정됨',
       lines: [
-        ...recReasonSentences(rec),
-        ...(state_text.length > 0 ? [`상태: ${state_text}`] : []),
+        ...complexReasonSentences(reason),
         '적용은 이슈 상세의 실행 설정 편집기에서'
       ]
     };
@@ -3745,7 +3744,7 @@ export function judgementPopoverContent(item, chip_key) {
  */
 export const JUDGEMENT_CHIP_KEYS = [
   'gate',
-  'rec',
+  'complex',
   'receipt',
   'session_preferred',
   'ineligible',
@@ -3962,9 +3961,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
             >
               세션 권장
             </button>`
-          : ''}${recChipTemplate(
-        item.rec,
-        chipOpen(item, 'rec')
+          : ''}${complexChipTemplate(
+        item.complex_reason,
+        chipOpen(item, 'complex')
       )}${quickFixReviewChipTemplate(workflow, chipOpen(item, 'qfr'))}
       ${spec_after_blocker_open || readiness_open
         ? ''

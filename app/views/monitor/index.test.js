@@ -3067,10 +3067,7 @@ describe('monitor 판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
             {
               bead_id: 'A-1',
               title: '복잡 후보',
-              rec: {
-                rec_orchestration_model: 'fable',
-                rec_reason: 'invariant_reasoning'
-              }
+              complex_reason: 'invariant_reasoning'
             }
           ]
         })

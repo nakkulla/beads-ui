@@ -6876,7 +6876,7 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
-/* 실행 영수증 회계 잔여 칩 (UI-h6t1 §4.4): 색은 `.worker-card__rec`와 같이
+/* 실행 영수증 회계 잔여 칩 (UI-h6t1 §4.4): 색은 `.worker-card__complex`와 같이
    `ctl-chip--label`이 소유하는 중립 톤이고 여기서는 레이아웃만 고정한다. alert
    색을 쓰지 않는 이유는 등급 그 자체다 — 계약이 badge를 "행동을 바꾸지 않는
    회계 잔여"로 못박았으므로 이 칩이 요구하는 처분은 없다. */
@@ -9882,7 +9882,7 @@ button.detail-session__leg:focus-visible {
 /* 상세 헤더의 복잡 chip (UI-8x90 §5.1): 클릭하면 사유 팝업이 열리는 판정 칩이라
    `button`이지만, receipt chip과 같은 크기·같은 줄에 서야 하므로 브라우저 기본
    버튼 모양과 `.judgement-chip`의 카드용 크기를 여기서 되돌린다. */
-.detail-summary__chip--rec {
+.detail-summary__chip--complex {
   background: none;
   font: inherit;
   font-size: var(--fs-chip);
@@ -9890,14 +9890,6 @@ button.detail-session__leg:focus-visible {
   color: var(--chip-ft);
   border-color: var(--border-ft);
   cursor: pointer;
-}
-
-.detail-summary__chip--rec[data-state='applied'] {
-  background: var(--border-ft);
-}
-
-.detail-summary__chip--rec[data-state='diverged'] {
-  border-style: dashed;
 }
 
 .detail-summary__chip-effort {

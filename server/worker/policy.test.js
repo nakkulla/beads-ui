@@ -627,31 +627,31 @@ describe('worker/policy default catalog = runtime catalog (impl review finding 1
   });
 });
 
-describe('worker/policy rec_* invariance (UI-sbum §6)', () => {
-  test('resolves identical settings with and without the recommendation keys', () => {
+describe('worker/policy 복잡 판정 invariance (UI-7nhi §6)', () => {
+  test('resolves identical settings with and without the 복잡 judgement keys', () => {
     const bead = {
       orchestration_model: 'sonnet',
       impl_runtime: 'codex'
     };
 
-    const without_rec = resolveExecSettings({ bead, defaults: {} });
-    const with_rec = resolveExecSettings({
+    const without_judgement = resolveExecSettings({ bead, defaults: {} });
+    const with_judgement = resolveExecSettings({
       bead: /** @type {any} */ ({
         ...bead,
-        rec: { rec_orchestration_model: 'fable' },
-        rec_orchestration_model: 'fable',
-        rec_impl_runtime: 'claude',
-        rec_reason: 'hard_diagnosis+invariant_reasoning'
+        labels: ['complex'],
+        complex_reason: 'hard_diagnosis+invariant_reasoning',
+        rec_impl_runtime: 'claude'
       }),
       defaults: {}
     });
 
-    expect(with_rec).toEqual(without_rec);
-    expect(/** @type {any} */ (with_rec).rec).toBe(undefined);
-    expect(/** @type {any} */ (with_rec).rec_orchestration_model).toBe(
+    expect(with_judgement).toEqual(without_judgement);
+    expect(/** @type {any} */ (with_judgement).complex_reason).toBe(undefined);
+    expect(/** @type {any} */ (with_judgement).rec_impl_runtime).toBe(
       undefined
     );
-    expect(with_rec.stamped_keys).not.toContain('rec_orchestration_model');
+    expect(with_judgement.stamped_keys).not.toContain('complex_reason');
+    expect(with_judgement.stamped_keys).not.toContain('rec_impl_runtime');
   });
 });
 

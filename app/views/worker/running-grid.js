@@ -35,13 +35,13 @@ import {
   failureText
 } from './failure-labels.js';
 import {
+  complexChipTemplate,
   creationSourceChipsTemplate,
   dependencyChipsTemplate,
   discardReceiptTemplate,
   execChipsTemplate,
   externalWaitCardParts,
   priorityBadgeTemplate,
-  recChipTemplate,
   routeCardTone,
   routeChipTemplate,
   timesMeta,
@@ -150,8 +150,9 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * 응답을 기다리는 중이라 버튼이 잠긴다.
  * @property {string} [resolve_title] - hover 문구: 이 클릭이 무엇을 띄우는지.
  * 없으면 렌더러의 기본 문장이 대신 선다.
- * @property {import('../../utils/rec-settings.js').RecSettings|null} [rec] -
- * 복잡 판정 (UI-sbum §3), 레인 행·후보 카드와 같은 칩·같은 툴팁. 표시 전용이다.
+ * @property {string} [complex_reason] -
+ * 복잡 판정 (UI-7nhi §3), 레인 행·후보 카드와 같은 칩·같은 툴팁. 라벨 `complex`와
+ * `complex_reason`이 함께 성립할 때의 신호 문자열이고 표시 전용이다.
  * @property {{ at?: number|null, kind?: string, text?: string, tool?: string }|null} [last_activity] -
  * 이 attempt의 마지막 비-thinking 전사 한 줄 (UI-4tud §4.3). 타일이 직접 싣는다 —
  * 조립이 타일 밖 `Map`으로 같은 재료를 두 번 나르지 않는다.
@@ -1150,9 +1151,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 끼면 좁은 타일에서 조작 버튼이 통째로 다음 줄로 밀린다 (UI-251y §2).
   const route_chip = routeChipTemplate(tile.workflow);
   const source_chips = creationSourceChipsTemplate(tile);
-  const rec_chip = recChipTemplate(
-    tile.rec,
-    tile.chip_popover?.chip_key === 'rec'
+  const complex_chip = complexChipTemplate(
+    tile.complex_reason,
+    tile.chip_popover?.chip_key === 'complex'
   );
   const chip_popover = tile.chip_popover
     ? chipPopoverTemplate(tile.chip_popover.content)
@@ -1184,7 +1185,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     source_chips ||
     session_ref_chip ||
     session_receipt_chip ||
-    rec_chip ||
+    complex_chip ||
     provider_badges.length > 0 ||
     usage_label ||
     external.chips
@@ -1194,10 +1195,10 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           source_chips ||
           session_ref_chip ||
           session_receipt_chip ||
-          rec_chip ||
+          complex_chip ||
           external.chips
             ? html`<div class="rtile__facts">
-                ${monitor_chips}${route_chip}${source_chips}${session_ref_chip}${session_receipt_chip}${rec_chip}${external.chips}
+                ${monitor_chips}${route_chip}${source_chips}${session_ref_chip}${session_receipt_chip}${complex_chip}${external.chips}
               </div>`
             : ''}${provider_badges.length > 0 || usage_label
             ? html`<div class="rtile__usage">
@@ -1480,7 +1481,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                   route_chip ||
                   source_chips ||
                   exec_chips ||
-                  rec_chip ||
+                  complex_chip ||
                   provider_badges.length > 0 ||
                   usage_label ||
                   external.chips
@@ -1489,12 +1490,12 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                     route_chip ||
                     source_chips ||
                     exec_chips ||
-                    rec_chip ||
+                    complex_chip ||
                     external.chips
                       ? html`<div class="rtile__facts">
                           ${monitor_chips}${route_chip}${source_chips}${execChipsTemplate(
                             tile.exec_chips
-                          )}${rec_chip}${external.chips}
+                          )}${complex_chip}${external.chips}
                         </div>`
                       : ''}
                     ${provider_badges.length > 0 || usage_label
