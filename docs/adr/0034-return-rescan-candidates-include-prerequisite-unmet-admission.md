@@ -1,12 +1,13 @@
 ---
 id: 34
 title: 복귀 재스캔 후보는 waiting attempt와 prerequisite_unmet admission 큐 항목이다
-status: accepted
+status: superseded
 date: 2026-09-03
 summary: "Worker의 복귀 트리거는 이벤트 구독이며 재스캔 후보는 waiting attempt와 `prerequisite_unmet` admission 큐 항목이다 — 판정은 요청 rig의 `bd ready` 한 번, 복귀는 `tickPass`, not-ready에는 쓰지 않고 ready에서만 그 admission을 지운다"
 supersedes: [23]
 spec: docs/superpowers/specs/2026-09-03-cross-repo-queue-prerequisite-wait-design.md
 bead: UI-d3i1
+superseded_by: UI-z437
 ---
 
 # 복귀 재스캔 후보는 waiting attempt와 prerequisite_unmet admission 큐 항목이다

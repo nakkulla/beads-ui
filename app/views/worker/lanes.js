@@ -14,6 +14,7 @@
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
 import { discardOperationActive } from '../../../server/worker/discard-phase.js';
+import { copyToClipboard } from '../../utils/clipboard.js';
 import {
   REC_LABEL,
   REC_STATE_TEXT,
@@ -26,6 +27,7 @@ import {
   formatRelativeTime,
   formatTimestampLocal
 } from '../../utils/relative-time.js';
+import { showToast } from '../../utils/toast.js';
 import {
   formatUsageTotalWithCost,
   providerUsageBadges,
@@ -1523,7 +1525,7 @@ export function priorityBadgeTemplate(priority) {
  * @property {boolean} [missing_description] - quick_fix description is absent.
  * @property {'published'|'draft'|'none'|'conflict'|'n/a'} [placement_spec] -
  * Placement spec judgment, when facts exist.
- * @property {'candidate'|'queue'|'running'|'runnable'|'pr_wait'|'done'|'external_wait'|'s1'|'s2'|'s3'|'s4'|'s5'} lane -
+ * @property {'candidate'|'queue'|'running'|'runnable'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5'} lane -
  * Owning lane. `running`/`runnable` exist only for the monitor tab, which mixes
  * every repo into five lanes (UI-qrfo §8); the Worker console never sets them.
  * `s1`..`s5` are the fixed serial waiting lanes (UI-04vo §1).
@@ -1533,7 +1535,7 @@ export function priorityBadgeTemplate(priority) {
  * exactly as before.
  * @property {string} [root_dir] - Owning workspace root; the repo badge's
  * tooltip.
- * @property {'session'|'external_wait'} [kind] - Special read-only/session row kind.
+ * @property {'session'} [kind] - Session row kind.
  * @property {boolean} [done] - Rendered dimmed with no grip.
  * @property {boolean} [is_quick_fix] - Candidate route fallback when workflow
  * enrichment is unavailable.
@@ -1651,9 +1653,8 @@ export function priorityBadgeTemplate(priority) {
  * @property {string[]} [blocked_by] - 지금 이 bead를 막는 선행 ID들. 칩은
  * `dependency_chips.predecessors`가 그리고, 여기 배열은 판정 팝업의 문장이
  * 읽는다.
- * @property {number} [external_wait_count] - 열린 외부 작업 gate 수.
+ * @property {import('../../protocol.js').ExternalWaitObservation} [external_wait] - Consumer wait record.
  * @property {import('../../protocol.js').WaitReason[]} [wait_reasons] - Server display judgments for this issue.
- * @property {Array<Record<string, any>>} [external_waits] - `status`와 gate 이동
  * 대상을 함께 싣는 요약 칩 자료.
  * @property {boolean} [spec_after_blocker] - 선행의 결과가 이 bead의 설계
  * 전제라 spec까지 선행 뒤로 미룬다 (UI-svh6 §4.2). 투영이 `spec-after-blocker`
@@ -2115,7 +2116,7 @@ export function waitStatusBadge(material) {
   const reasons = (material.wait_reasons || []).filter(
     (reason) => waitScopeOf(reason.kind) === 'bead'
   );
-  // 외부 작업 행은 자기 gate 사유를 직접 건네므로 대표 사유 규칙 밖이다 (§7.3).
+  // 외부 작업은 소비자 Bead의 record 사유를 직접 건네므로 대표 사유 규칙 밖이다.
   if (material.reason) {
     const forced_row = waitKindRow(material.reason);
     return forced_row
@@ -2329,14 +2330,18 @@ function waitTimesText(reason, now_ms) {
  * need their original projection; missing operation material stays absent.
  *
  * @param {import('../../protocol.js').WaitReason|null|undefined} reason
- * @param {{ item?: MiniItem, resume?: import('lit-html').TemplateResult|'', disposition?: import('lit-html').TemplateResult|'', now?: number, last_observed_at?: number|null }} [options]
+ * @param {{ item?: MiniItem, external_wait?: import('../../protocol.js').ExternalWaitObservation, resume?: import('lit-html').TemplateResult|'', disposition?: import('lit-html').TemplateResult|'', now?: number, last_observed_at?: number|null }} [options]
  */
 export function waitReasonLines(reason, options = {}) {
   if (!reason) {
     return { badge: '', body: '', actions: '', times: '' };
   }
   const now_ms = options.now ?? Date.now();
-  const label = waitVerdictLabel(reason, { now: now_ms });
+  const external = reason.kind === 'external_job';
+  const record = options.external_wait || options.item?.external_wait;
+  const label = external
+    ? externalWaitBadgeText(reason, record)
+    : waitVerdictLabel(reason, { now: now_ms });
   const since = formatClockLocal(reason.since, now_ms);
   const next = formatClockLocal(reason.next_check_at, now_ms);
   const reset = formatClockLocal(reason.resets_at, now_ms);
@@ -2360,13 +2365,16 @@ export function waitReasonLines(reason, options = {}) {
   // 상세 패널만 `last_observed_at`을 넘긴다 (§11): 그 화면의 `확인`은 실제 마지막
   // 관측 시각이라 종류별 낱말 규칙(§5.2) 밖이다.
   const observed_line = options.last_observed_at !== undefined;
-  const times_text = observed_line
-    ? reset
-      ? `리셋 ${reset}`
-      : [observed ? `확인 ${observed}` : '', next ? `다음 ${next}` : '']
-          .filter(Boolean)
-          .join(' · ')
-    : waitTimesText(reason, now_ms);
+  const times_text =
+    external && record
+      ? externalWaitTimes(record, now_ms)
+      : observed_line
+        ? reset
+          ? `리셋 ${reset}`
+          : [observed ? `확인 ${observed}` : '', next ? `다음 ${next}` : '']
+              .filter(Boolean)
+              .join(' · ')
+        : waitTimesText(reason, now_ms);
   const times_title =
     !observed_line && reason.since
       ? `대기 시작 ${formatTimestampLocal(reason.since)}`
@@ -2375,21 +2383,24 @@ export function waitReasonLines(reason, options = {}) {
   const actions = (reason.actions || []).map((action) => {
     const payload = action.payload;
     if (
-      action.op === 'monitor_tick_now' &&
-      payload.watch_id &&
-      payload.root_dir &&
-      typeof payload.since === 'number' &&
-      Number.isFinite(payload.since)
+      [
+        'external_wait_check',
+        'external_wait_stop',
+        'external_wait_resume'
+      ].includes(action.op) &&
+      payload.wait_id &&
+      payload.root_dir
     ) {
       return html`<button
         type="button"
-        class="op-btn external-wait__check-now"
-        data-external-check-now=${payload.watch_id}
+        class="op-btn external-wait__action"
+        data-external-wait-op=${action.op}
+        data-wait-id=${payload.wait_id}
         data-root-dir=${payload.root_dir}
-        data-since=${ifDefined(payload.since)}
-        title="관측기를 지금 한 번 실행합니다 — 이 호스트의 확인 시각이 된 항목 전부가 처리됩니다"
+        data-mode=${ifDefined(payload.mode)}
+        data-bead-id=${ifDefined(payload.bead_id)}
       >
-        지금 확인
+        ${action.label.replace(/^\[|\]$/g, '')}
       </button>`;
     }
     if (action.op === 'probe_now') {
@@ -2433,11 +2444,29 @@ export function waitReasonLines(reason, options = {}) {
         </details>`
       : '',
     // 슬롯 3은 headline 한 줄이다 (§6.3): `release`와 안내문은 배지 팝업이 싣는다.
-    body: reason.headline
-      ? html`<div class="wait-reason__lines">
-          <div class="wait-reason__headline">${reason.headline}</div>
-        </div>`
-      : '',
+    body:
+      reason.headline || (external && (reason.release || reason.error))
+        ? html`<div class="wait-reason__lines">
+            ${reason.headline
+              ? html`<div class="wait-reason__headline">
+                  ${external && record?.jobs.length === 1
+                    ? reason.headline.replace(/ · 경과 .*$/, '') +
+                      externalElapsed(
+                        record.jobs[0].submitted_at,
+                        record.completion?.completed_at,
+                        now_ms
+                      )
+                    : reason.headline}
+                </div>`
+              : ''}
+            ${external && reason.release
+              ? html`<div class="wait-reason__release">${reason.release}</div>`
+              : ''}
+            ${external && reason.error
+              ? html`<div class="wait-reason__error">${reason.error}</div>`
+              : ''}
+          </div>`
+        : '',
     actions: actions.some((action) => action !== '') ? html`${actions}` : '',
     times: times_text
       ? html`<div
@@ -2654,7 +2683,7 @@ export function blockedSummary(workspaces) {
     )
     .filter((entry) => entry.reasons.length > 0);
   const groups = [
-    { label: '외부 계산', kinds: ['external_job'] },
+    { label: '외부 작업', kinds: ['external_job'] },
     { label: '선행', kinds: ['prerequisite', 'prerequisite_foreign'] },
     { label: '공급자', kinds: ['provider_hold'] },
     { label: '사람', kinds: ['awaiting_user', 'stale_work'] },
@@ -2763,14 +2792,7 @@ function scrollToWaitCard(event, root_dir, bead_id, reason, reveal) {
   const scope = source.closest('.worker-console, .mon') || source.ownerDocument;
   // 모달은 포커스를 가두므로 카드로 데려가기 전에 먼저 닫는다 (§8).
   closeWaitSummary(waitSummaryDialogOf(source));
-  const target_ids = [
-    bead_id,
-    ...(reason.kind === 'external_job'
-      ? reason.targets
-          .filter((target) => target.kind === 'gate')
-          .map((target) => target.id)
-      : [])
-  ];
+  const target_ids = [bead_id];
   /** @type {Element|undefined} */
   let card;
   for (const target_id of target_ids) {
@@ -2996,18 +3018,17 @@ export function expandWaitSubject(model, collapse, root_dir, bead_id) {
     ...model.running,
     ...model.pr_wait,
     ...model.runnable,
-    ...model.external_waits
+    ...model.done
   ].find((entry) => entry.root_dir === root_dir && entry.id === bead_id);
   if (!item) {
     return;
   }
   const serial = /^s[1-5]$/.test(item.lane);
-  const lane =
-    serial || item.lane === 'external_wait'
-      ? 'queue'
-      : item.lane === 'runnable'
-        ? 'candidate'
-        : item.lane;
+  const lane = serial
+    ? 'queue'
+    : item.lane === 'runnable'
+      ? 'candidate'
+      : item.lane;
   if (
     lane === 'queue' ||
     lane === 'running' ||
@@ -3019,11 +3040,7 @@ export function expandWaitSubject(model, collapse, root_dir, bead_id) {
     }
   }
   const area = serial ? 'serial' : 'parallel';
-  if (
-    lane === 'queue' &&
-    item.lane !== 'external_wait' &&
-    collapse.isAreaCollapsed(area)
-  ) {
+  if (lane === 'queue' && collapse.isAreaCollapsed(area)) {
     collapse.toggleArea(area);
   }
 }
@@ -3062,7 +3079,7 @@ export function queueRowOps(item, options = {}) {
         {
           ...reason,
           actions: reason.actions.filter((action) => {
-            const key = `${action.op}:${action.payload.watch_id || action.payload.runner || ''}`;
+            const key = `${action.op}:${action.payload.wait_id || action.payload.runner || ''}:${action.payload.mode || ''}`;
             if (action_keys.has(key)) {
               return false;
             }
@@ -3178,10 +3195,11 @@ function chipsWithBlockerStatus(chips, wait_reasons) {
  * @returns {import('lit-html').TemplateResult}
  */
 export function miniRow(item, options = {}) {
-  if (item.kind === 'external_wait') {
-    return externalWaitRow(item);
-  }
-  if (item.lane === 'done' && item.done_layout === 'three_line') {
+  if (
+    item.lane === 'done' &&
+    item.done_layout === 'three_line' &&
+    !item.external_wait
+  ) {
     return doneThreeLineRow(item);
   }
   const draggable = item.draggable && !item.done;
@@ -3198,20 +3216,26 @@ export function miniRow(item, options = {}) {
     );
   // 카드당 상태 배지 하나, 본문 한 줄, 시각 한 줄 (§6). 나머지 사유는 배지
   // 팝업의 `다른 사유` 목록에 남는다.
-  const wait_badge = waitStatusBadge({ wait_reasons });
+  const external = externalWaitCardParts(item);
+  const wait_badge = external.badge || waitStatusBadge({ wait_reasons });
   const representative = representativeWaitReason(wait_reasons);
-  const wait_lines = representative
-    ? waitReasonLines(
-        /** @type {import('../../protocol.js').WaitReason} */ (representative),
-        { item }
-      )
-    : { badge: '', body: '', actions: '', times: '' };
+  const wait_lines = external.badge
+    ? external
+    : representative
+      ? waitReasonLines(
+          /** @type {import('../../protocol.js').WaitReason} */ (
+            representative
+          ),
+          { item }
+        )
+      : { badge: '', body: '', actions: '', times: '' };
   const badges = Array.isArray(item.badges) ? item.badges : [];
   const usage_options = { scope: undefined, direct_session: false };
   const provider_badges = providerUsageBadges(item.usage, usage_options);
   const usage_label = formatUsageTotalWithCost(item.usage);
   const merging = item.merge_step || null;
   const card =
+    !!item.external_wait ||
     item.lane === 'pr_wait' ||
     !!item.revise_action ||
     !!item.stale_work ||
@@ -3512,7 +3536,6 @@ export function miniRow(item, options = {}) {
     gate_open,
     queueHoldVerdictOf(item)
   );
-  const external_wait_el = externalWaitSummaryTemplate(item);
   const grace_el = graceChipTemplate(item);
   const receipt_badge_el = receiptBadgeChipTemplate(
     item,
@@ -3532,9 +3555,10 @@ export function miniRow(item, options = {}) {
     rec_el ||
     receipt_badge_el ||
     usage_el ||
-    log_path_el
+    log_path_el ||
+    external.chips
       ? html`<div class="worker-chips">
-          ${repo_el}${route_el}${from_el}${exec_chips_el}${rec_el}${receipt_badge_el}${usage_el}${log_path_el}${gate_open
+          ${repo_el}${route_el}${from_el}${exec_chips_el}${rec_el}${receipt_badge_el}${usage_el}${log_path_el}${external.chips}${gate_open
             ? ''
             : judgementPopover(item)}
         </div>`
@@ -3545,15 +3569,13 @@ export function miniRow(item, options = {}) {
   const deps_el = dependencyChipsTemplate(
     chipsWithBlockerStatus(item.dependency_chips, wait_reasons),
     '',
-    gate_el === '' && external_wait_el === ''
+    gate_el === ''
       ? ''
-      : html`${gate_el}${gate_open
-          ? judgementPopover(item)
-          : ''}${external_wait_el}`,
+      : html`${gate_el}${gate_open ? judgementPopover(item) : ''}`,
     grace_el
   );
   const receipt_el = discardReceiptTemplate(item);
-  const actions_el = options.actions ? options.actions : '';
+  const actions_el = options.actions ? options.actions : external.actions;
   const has_foot = !!(
     merging ||
     item.merge_action ||
@@ -3647,120 +3669,128 @@ export function miniRow(item, options = {}) {
 }
 
 /**
- * Read-only external job/gate observation. Buttons only navigate to existing
- * issue detail; no Worker operation selector is present.
+ * Consumer-card slots shared by candidates, queue rows and running tiles.
  *
- * @param {MiniItem & Record<string, any>} item
- * @returns {import('lit-html').TemplateResult}
+ * @param {{external_wait?: import('../../protocol.js').ExternalWaitObservation, wait_reasons?: import('../../protocol.js').WaitReason[]}} item
+ * @param {number} [now]
  */
-export function externalWaitRow(item) {
-  const reason = typeof item.reason === 'object' ? item.reason : null;
-  const now = Date.now();
-  const lines = waitReasonLines(reason, { now });
-  const watched = typeof item.watch_id === 'string' && item.watch_id.length > 0;
-  const last_at = formatClockLocal(item.last_observed_at, now);
-  const next_at = formatClockLocal(item.next_observation_at, now);
-  const completed_at = formatClockLocal(item.completed_at, now);
-  // 슬롯 1은 세 갈래다 (§7.3): 감시 기록이 없으면 라벨만, 열린 gate는 배지,
-  // 종료 확인 묶음의 행은 감시 상태를 라벨로 말한다.
-  const badge = watched && reason ? waitStatusBadge({ reason, now }) : '';
-  const label = watched
-    ? reason
-      ? ''
-      : `외부 계산 · ${item.monitor_state || '감시 기록'}`
-    : '대기 조건 · 감시 정보 없음';
-  return html`<article
-    class="worker-mini worker-mini--card worker-mini--static worker-mini--external-wait"
-    data-bead-id=${item.id}
-    data-root-dir=${item.root_dir}
-    data-lane="external_wait"
-  >
-    <div class="worker-mini__row1 external-wait__headline">
-      ${badge}${label
-        ? html`<span class="external-wait__kind">${label}</span>`
-        : ''}
-      <span class="worker-mini__id external-wait__gate-id"
-        >${item.gate_id}</span
-      >
-      ${lines.actions}
-    </div>
-    <button
-      type="button"
-      class="external-wait__title-link"
-      data-external-open=${item.gate_id}
-      data-root-dir=${item.root_dir}
-    >
-      <span class="worker-mini__id external-wait__gate"> ${item.gate_id} </span>
-      <span class="worker-mini__title">${item.gate_title}</span>
-    </button>
-    ${watched
-      ? html`<div class="wait-reason__lines">
-          <div class="wait-reason__headline">${externalWaitLine(item)}</div>
-        </div>`
-      : lines.body}
-    ${item.consumer_id
-      ? html`<div class="worker-deps worker-deps--primary">
-          <button
-            type="button"
-            class="worker-dep worker-dep__open"
-            data-external-open=${item.consumer_id}
-            data-root-dir=${item.root_dir}
-            title=${`원래 이슈${item.consumer_title ? ` · ${item.consumer_title}` : ''}`}
-          >
-            → ${item.consumer_id}
-          </button>
-        </div>`
-      : ''}
-    <div class="worker-chips external-wait__identity">
-      <span class="worker-mini__repo" title=${item.root_dir}
-        >${item.workspace_name}</span
-      >
-      ${item.ssh_host
-        ? html`<span class="worker-chip">${item.ssh_host}</span>`
-        : ''}
-    </div>
-    ${last_at || next_at || completed_at
-      ? html`<div class="worker-mini__times external-wait__times">
-          ${completed_at
-            ? html`<span>종료 ${completed_at}</span>`
-            : html`${last_at ? html`<span>확인 ${last_at}</span>` : ''}${next_at
-                ? html`<span>· 다음 확인 ${next_at}</span>`
-                : ''}`}
-        </div>`
-      : ''}
-  </article>`;
+export function externalWaitCardParts(item, now = Date.now()) {
+  const record = item.external_wait;
+  const reason = (item.wait_reasons || []).find(
+    (entry) => entry.kind === 'external_job'
+  );
+  const lines = waitReasonLines(reason, { now, external_wait: record });
+  const jobs = record?.jobs || [];
+  const chips =
+    jobs.length > 0
+      ? html`${jobs.map(
+          (job) => html`
+            ${job.ssh_host
+              ? html`<span class="worker-chip">ssh ${job.ssh_host}</span>`
+              : ''}
+            ${externalCopyChip(
+              String(job.job_id ?? job.pid),
+              String(job.job_id ?? job.pid)
+            )}
+            ${job.log_path
+              ? externalCopyChip(`log ${job.log_path}`, job.log_path)
+              : ''}
+          `
+        )}`
+      : '';
+  return { ...lines, chips };
 }
 
 /**
- * The external-work row's one body line (§7.3). Host, job number and job state
- * first, then whatever the monitor last said about it — the server builds the
- * same sentence for its `external_job` headline, and where the two differ this
- * assembly wins because it reads the observation the row itself carries.
- *
- * @param {Record<string, any>} item
- * @returns {string}
+ * @param {string} label
+ * @param {string} value
  */
-export function externalWaitLine(item) {
-  const head = [
-    typeof item.ssh_host === 'string' ? item.ssh_host : '',
-    item.job_id ? `작업 ${item.job_id}` : ''
+function externalCopyChip(label, value) {
+  return html`<button
+    type="button"
+    class="ctl-chip"
+    title="클릭하면 복사"
+    @click=${async (/** @type {Event} */ event) => {
+      event.stopPropagation();
+      const copied = await copyToClipboard(value);
+      showToast(
+        copied ? '복사됨' : '복사 실패',
+        copied ? 'success' : 'error',
+        1200
+      );
+    }}
+  >
+    ${label}
+  </button>`;
+}
+
+/**
+ * @param {import('../../protocol.js').WaitReason} reason
+ * @param {import('../../protocol.js').ExternalWaitObservation|undefined} record
+ */
+function externalWaitBadgeText(reason, record) {
+  if (reason.verdict === 'action_required') {
+    return `⛔ 조치 필요 · ${reason.verdict_reason?.message || '상태 확인 필요'}`;
+  }
+  if (reason.verdict === 'overdue') {
+    return `⚠ 지연 · ${reason.verdict_reason?.message || '관찰 지연'}`;
+  }
+  if (record?.stage === 'completing') {
+    return record.owner_kind === 'session'
+      ? '✅ 완료 · 이어하기 대기'
+      : '↻ 재개 중';
+  }
+  return '⏳ 외부 작업';
+}
+
+/**
+ * @param {import('../../protocol.js').ExternalWaitObservation} record
+ * @param {number} now
+ */
+function externalWaitTimes(record, now) {
+  if (record.completion) {
+    return `완료 ${formatClockLocal(Date.parse(record.completion.completed_at), now)}`;
+  }
+  const submitted = record.jobs
+    .map((job) => Date.parse(job.submitted_at))
+    .filter(Number.isFinite);
+  const observed = record.jobs
+    .map((job) => Date.parse(job.observed_at || ''))
+    .filter(Number.isFinite);
+  const next = formatClockLocal(Date.parse(record.next_observation_at), now);
+  return [
+    submitted.length
+      ? `제출 ${formatClockLocal(Math.min(...submitted), now)}`
+      : '',
+    observed.length
+      ? `마지막 확인 ${formatClockLocal(Math.max(...observed), now)}`
+      : '',
+    next ? `다음 ${next}` : ''
   ]
     .filter(Boolean)
-    .join(' ');
-  const monitor_state =
-    typeof item.monitor_state === 'string' ? item.monitor_state : '';
-  const parts = [
-    head,
-    typeof item.job_state === 'string' ? item.job_state : '',
-    item.monitor_reason
-      ? item.monitor_reason
-      : monitor_state && monitor_state !== '자동 확인 중'
-        ? monitor_state
-        : '',
-    item.previous_job_state ? `이전 관측: ${item.previous_job_state}` : '',
-    item.stale ? '오래된 자료' : ''
-  ].filter(Boolean);
-  return parts.join(' · ');
+    .join(' · ');
+}
+
+/**
+ * @param {string} submitted_at
+ * @param {string|undefined} completed_at
+ * @param {number} now
+ */
+function externalElapsed(submitted_at, completed_at, now) {
+  const start = Date.parse(submitted_at);
+  const word = WAIT_KINDS.find(
+    (row) => row.kind === 'external_job'
+  )?.elapsed_word;
+  if (!Number.isFinite(start) || !word) {
+    return '';
+  }
+  const minutes = Math.max(
+    0,
+    Math.floor(
+      ((completed_at ? Date.parse(completed_at) : now) - start) / 60000
+    )
+  );
+  return ` · ${word} ${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`;
 }
 
 /**
@@ -4037,70 +4067,6 @@ function chipOpen(item, chip_key) {
 export { AWAITING_USER_REASON_PREFIX } from '../../utils/awaiting-user-reason.js';
 
 /**
- * Read-only external wait summary shared by every consumer card shape.
- *
- * @param {{ external_wait_count?: number, external_waits?: Array<Record<string, any>>, root_dir?: string, wait_reasons?: import('../../protocol.js').WaitReason[] }} item
- * @returns {import('lit-html').TemplateResult|''}
- */
-export function externalWaitSummaryTemplate(item) {
-  const waits = Array.isArray(item.external_waits) ? item.external_waits : [];
-  if (
-    typeof item.external_wait_count !== 'number' ||
-    item.external_wait_count <= 0 ||
-    waits.length === 0
-  ) {
-    return '';
-  }
-  // 글리프는 이 이슈가 기다리는 열린 gate 사유 중 최악 판정이다 (§7.3) — 원래
-  // 이슈 카드에서 `external_job`을 말하는 유일한 자리다.
-  const reasons = (item.wait_reasons || []).filter(
-    (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
-      reason.kind === 'external_job'
-  );
-  const verdict = reasons.some(
-    (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
-      reason.verdict === 'action_required'
-  )
-    ? 'action_required'
-    : reasons.some(
-          (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
-            reason.verdict === 'overdue'
-        )
-      ? 'overdue'
-      : reasons.length > 0
-        ? 'normal'
-        : null;
-  const row = WAIT_KINDS.find((entry) => entry.id === 'external_job') || null;
-  const label = waitBadgeText(row, verdict, {
-    label: `외부 계산 ${item.external_wait_count}건`
-  });
-  return html`<details class="external-wait-summary">
-    <summary
-      class="worker-dep worker-dep--blocked"
-      data-verdict=${ifDefined(verdict || undefined)}
-    >
-      ${label || `외부 계산 ${item.external_wait_count}건`}
-    </summary>
-    <div class="external-wait-summary__popover">
-      ${waits.map(
-        (wait) =>
-          html`<div class="external-wait-summary__row">
-            <button
-              type="button"
-              class="worker-dep worker-dep__open"
-              data-external-open=${wait.gate_id}
-              data-root-dir=${wait.root_dir || item.root_dir || ''}
-            >
-              ${wait.gate_id}
-            </button>
-            <span>${externalWaitLine(wait)}</span>
-          </div>`
-      )}
-    </div>
-  </details>`;
-}
-
-/**
  * One candidate `.worker-card` (spec §2, mockup 변형 B). Richer than
  * {@link miniRow}: a route chip + the Board's route-driven stepper. It keeps
  * miniRow's row contract (`draggable` / `data-bead-id` / `data-lane`), but the
@@ -4168,19 +4134,13 @@ export function candidateCard(item, place_menu = null, options = {}) {
   const readiness_el = is_deferred
     ? ''
     : readinessChipTemplate(readiness_judgement, readiness_open);
-  const external_wait_el = externalWaitSummaryTemplate(item);
+  const external = externalWaitCardParts(item);
   const slot4_el = html`${spec_after_blocker_el}${spec_after_blocker_open
     ? judgementPopover(item)
-    : ''}${readiness_el}${readiness_open
-    ? judgementPopover(item)
-    : ''}${external_wait_el}`;
+    : ''}${readiness_el}${readiness_open ? judgementPopover(item) : ''}`;
   const deps_el = dependencyChipsTemplate(
     item.dependency_chips,
-    spec_after_blocker_el === '' &&
-      readiness_el === '' &&
-      external_wait_el === ''
-      ? ''
-      : slot4_el
+    spec_after_blocker_el === '' && readiness_el === '' ? '' : slot4_el
   );
   // 좌표 칩은 정체성 줄이 아니라 슬롯 5 줄이다 (UI-251y §2·§3.2): 헤더에 서면
   // 폭에 따라 조작 버튼을 다음 줄로 밀어내 사용자가 버튼을 찾는 자리가
@@ -4264,17 +4224,25 @@ export function candidateCard(item, place_menu = null, options = {}) {
         item.rec,
         chipOpen(item, 'rec')
       )}${quickFixReviewChipTemplate(workflow, chipOpen(item, 'qfr'))}
-      ${spec_after_blocker_open || readiness_open ? '' : judgementPopover(item)}
+      ${spec_after_blocker_open || readiness_open
+        ? ''
+        : judgementPopover(item)}${external.badge}${external.actions
+        ? html`<span class="worker-card__head-actions"
+            >${external.actions}</span
+          >`
+        : ''}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow
       ? stepperTemplate(workflow, item.status, {
           onOpenDoc: options.onOpenDoc
         })
-      : ''}${deps_el}
-    ${repo_el || route_el || from_el || has_exec_chips
+      : ''}${external.body}${deps_el}
+    ${repo_el || route_el || from_el || has_exec_chips || external.chips
       ? html`<div class="worker-chips">
-          ${repo_el}${route_el}${from_el}${execChipsTemplate(item.exec_chips)}
+          ${repo_el}${route_el}${from_el}${execChipsTemplate(
+            item.exec_chips
+          )}${external.chips}
         </div>`
       : ''}
     ${is_deferred
@@ -4330,7 +4298,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
                   ↴ 대기로
                 </button>`}
         </div>`}
-    ${timesMeta(item)}
+    ${external.times}${timesMeta(item)}
   </div>`;
 }
 

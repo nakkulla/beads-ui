@@ -80,7 +80,7 @@ const DIRECT_CHILD_KILL_GRACE_MS = 1_000;
  * @property {number|null} exit - Process exit code.
  * @property {string[]} [background_shell_at_result] - Unfinished local shell
  * task descriptions at the final turn boundary, when the adapter observes them.
- * @property {{ kind: 'success'|'parked'|'failure'|'environment'|'waiting_blocks'|'base_moved'|'recovery_wait', candidate_sha?: string, base_sha?: string, reason?: string }|null} terminal_result -
+ * @property {{ kind: 'success'|'parked'|'failure'|'environment'|'waiting_blocks'|'waiting_external'|'base_moved'|'recovery_wait', candidate_sha?: string, base_sha?: string, reason?: string, wait_id?: string }|null} terminal_result -
  * The canonical business outcome declared by the first non-empty final line.
  * Null preserves the legacy interpretation for unmarked summaries.
  * @property {boolean} blocked - True when fail-closed fired (question/approval).
@@ -124,6 +124,10 @@ export function terminalResultOf(summary) {
   }
   if (/^대기 · blocks:\S(?:.*\S)?$/.test(line)) {
     return { kind: 'waiting_blocks' };
+  }
+  const external = /^대기 · external:(w-[0-9a-f]{12})$/.exec(line);
+  if (external) {
+    return { kind: 'waiting_external', wait_id: external[1] };
   }
   const recovery = /^대기 · recovery:([a-z_]+)$/.exec(line);
   if (recovery) {

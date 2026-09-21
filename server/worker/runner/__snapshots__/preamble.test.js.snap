@@ -24,6 +24,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 실패 · <원인>
 환경 · <오류 문장 원문>
 대기 · blocks:<ID>[, …]
+대기 · external:<wait_id>
 \`\`\`
 
 이 문법의 정본은 dotfiles \`finishing.md\`이고 위는 사본이다.
@@ -92,6 +93,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 실패 · <원인>
 환경 · <오류 문장 원문>
 대기 · blocks:<ID>[, …]
+대기 · external:<wait_id>
 \`\`\`
 
 이 문법의 정본은 dotfiles \`finishing.md\`이고 위는 사본이다.
@@ -408,6 +410,7 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 실패 · <원인>
 환경 · <오류 문장 원문>
 대기 · blocks:<ID>[, …]
+대기 · external:<wait_id>
 \`\`\`
 
 이 문법의 정본은 dotfiles \`finishing.md\`이고 위는 사본이다.
@@ -585,6 +588,7 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 실패 · <원인>
 환경 · <오류 문장 원문>
 대기 · blocks:<ID>[, …]
+대기 · external:<wait_id>
 \`\`\`
 
 이 문법의 정본은 dotfiles \`finishing.md\`이고 위는 사본이다.
@@ -689,6 +693,7 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 실패 · <원인>
 환경 · <오류 문장 원문>
 대기 · blocks:<ID>[, …]
+대기 · external:<wait_id>
 \`\`\`
 
 이 문법의 정본은 dotfiles \`finishing.md\`이고 위는 사본이다.
@@ -775,6 +780,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 실패 · <원인>
 환경 · <오류 문장 원문>
 대기 · blocks:<ID>[, …]
+대기 · external:<wait_id>
 \`\`\`
 
 이 문법의 정본은 dotfiles \`finishing.md\`이고 위는 사본이다.
@@ -843,6 +849,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 실패 · <원인>
 환경 · <오류 문장 원문>
 대기 · blocks:<ID>[, …]
+대기 · external:<wait_id>
 \`\`\`
 
 이 문법의 정본은 dotfiles \`finishing.md\`이고 위는 사본이다.
@@ -903,6 +910,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 실패 · <원인>
 환경 · <오류 문장 원문>
 대기 · blocks:<ID>[, …]
+대기 · external:<wait_id>
 \`\`\`
 
 이 문법의 정본은 dotfiles \`finishing.md\`이고 위는 사본이다.
@@ -968,6 +976,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 실패 · <원인>
 환경 · <오류 문장 원문>
 대기 · blocks:<ID>[, …]
+대기 · external:<wait_id>
 \`\`\`
 
 이 문법의 정본은 dotfiles \`finishing.md\`이고 위는 사본이다.
@@ -1027,6 +1036,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 실패 · <원인>
 환경 · <오류 문장 원문>
 대기 · blocks:<ID>[, …]
+대기 · external:<wait_id>
 대기 · recovery:<provider|credential|prerequisite|authority|verification|no_progress|unclassified|reconcile>
 \`\`\`
 

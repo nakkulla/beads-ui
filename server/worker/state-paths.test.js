@@ -15,6 +15,7 @@ import {
   discardBackupDir,
   discardBackupRootDir,
   execPresetsFilePath,
+  externalWaitFilePath,
   guardHookDir,
   recordMigrationMarkerPath,
   retentionPolicyPath,
@@ -25,6 +26,12 @@ import {
 } from './state-paths.js';
 
 const WS = '/tmp/example-workspace/project-a';
+
+test('places external waits beside the workspace queue', () => {
+  const file = externalWaitFilePath(WS);
+
+  expect(file).toBe(path.join(workspaceStateDir(WS), 'external-wait.json'));
+});
 
 /** @type {string | undefined} */
 let saved_xdg;

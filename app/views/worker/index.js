@@ -1704,63 +1704,52 @@ const WORKER_CLIENT_IDS = [
  */
 export function createWorkerView(mount_element, options = {}) {
   /** @type {Set<string>} */
-  const external_checks = new Set();
+  const external_actions = new Set();
 
-  /** Keep replacement buttons disabled when a snapshot redraws the view. */
+  /** Keep replacement buttons disabled while an operation is pending. */
   function syncExternalChecks() {
     for (const button of Array.from(
-      mount_element.querySelectorAll('[data-external-check-now]')
+      mount_element.querySelectorAll('[data-external-wait-op]')
     )) {
       const element = /** @type {HTMLButtonElement} */ (button);
-      element.disabled = external_checks.has(element.dataset.rootDir || '');
+      element.disabled = external_actions.has(
+        `${element.dataset.rootDir}:${element.dataset.waitId}`
+      );
     }
   }
 
   /** @param {HTMLButtonElement} button */
-  async function checkExternalWaitNow(button) {
+  async function applyExternalWaitAction(button) {
     const root_dir = button.dataset.rootDir || '';
-    const watch_id = button.dataset.externalCheckNow || '';
-    const since = Number(button.dataset.since);
-    if (
-      !transport ||
-      !root_dir ||
-      !watch_id ||
-      !button.dataset.since ||
-      !Number.isFinite(since) ||
-      external_checks.has(root_dir)
-    ) {
+    const wait_id = button.dataset.waitId || '';
+    const op = button.dataset.externalWaitOp || '';
+    const key = `${root_dir}:${wait_id}`;
+    if (!transport || !root_dir || !wait_id || external_actions.has(key)) {
       return;
     }
-    external_checks.add(root_dir);
+    external_actions.add(key);
     syncExternalChecks();
     try {
-      const res = /** @type {any} */ (
-        await transport('worker-external-wait-check-now', {
-          root_dir,
-          watch_id,
-          since
-        })
-      );
+      const res = await transport(op, {
+        root_dir,
+        wait_id,
+        ...(button.dataset.mode ? { mode: button.dataset.mode } : {}),
+        ...(button.dataset.beadId ? { bead_id: button.dataset.beadId } : {})
+      });
       if (rootDir() === root_dir) {
         adopt(res);
       }
-      const summaries = {
-        settled: '대기 조건이 해제되었습니다',
-        still_waiting: '확인했습니다 — 아직 대기 중입니다',
-        skipped: '이미 실행 중',
-        running: '관측기가 계속 실행 중입니다',
-        error: '관측기 실행에 실패했습니다'
-      };
-      const outcome = /** @type {keyof typeof summaries} */ (res?.outcome);
       showToast(
-        res?.summary || summaries[outcome] || summaries.error,
-        res?.ok === false || outcome === 'error' ? 'error' : 'success',
+        res?.ok === false
+          ? '외부 작업 요청에 실패했습니다'
+          : '외부 작업 상태를 갱신했습니다',
+        res?.ok === false ? 'error' : 'success',
         4000
       );
     } catch {
-      showToast('관측기 실행 요청에 실패했습니다', 'error', 4000);
+      showToast('외부 작업 요청에 실패했습니다', 'error', 4000);
     } finally {
-      external_checks.delete(root_dir);
+      external_actions.delete(key);
       syncExternalChecks();
       doRender();
     }
@@ -4230,16 +4219,6 @@ export function createWorkerView(mount_element, options = {}) {
     const parallel_rows = waitingRows(m);
     const root_dir = rootDir();
     return waitBody({
-      external: {
-        rows: m.external_waits
-          .filter((item) => item.recent_complete !== true)
-          .map((item) => miniRow(item)),
-        completed: m.external_waits
-          .filter((item) => item.recent_complete === true)
-          .map((item) => miniRow(item)),
-        count: m.external_waits.filter((item) => item.recent_complete !== true)
-          .length
-      },
       parallel: {
         rows: parallel_rows.map((/** @type {any} */ it, index) =>
           dragRow(it, { kind: 'parallel', root_dir, row_index: index })
@@ -4390,10 +4369,7 @@ export function createWorkerView(mount_element, options = {}) {
             lane: 'queue',
             title: '대기',
             items: waiting,
-            count:
-              waiting.length +
-              m.external_waits.filter((item) => item.recent_complete !== true)
-                .length,
+            count: waiting.length,
             match_count: matchCountOf(waiting),
             collapsible: true,
             collapsed: collapse.isCollapsed('queue'),
@@ -4411,10 +4387,7 @@ export function createWorkerView(mount_element, options = {}) {
           lane: 'queue',
           title: '대기',
           items: waiting,
-          count:
-            waiting.length +
-            m.external_waits.filter((item) => item.recent_complete !== true)
-              .length,
+          count: waiting.length,
           match_count: matchCountOf(waiting),
           collapsible: true,
           collapsed: collapse.isCollapsed('queue'),
@@ -4926,11 +4899,11 @@ export function createWorkerView(mount_element, options = {}) {
       return;
     }
     const external_check = /** @type {HTMLButtonElement|null} */ (
-      target.closest('[data-external-check-now]')
+      target.closest('[data-external-wait-op]')
     );
     if (external_check) {
       ev.preventDefault();
-      void checkExternalWaitNow(external_check);
+      void applyExternalWaitAction(external_check);
       return;
     }
     if (target?.closest?.('.provider-resume-dialog__cancel')) {

@@ -812,6 +812,12 @@ describe('worker failure cause keys', () => {
   test('excludes a base-moved wait from promotion comparison', () => {
     expect(causeKey('base_moved')).toBeNull();
   });
+
+  test('excludes an external job wait from promotion comparison', () => {
+    const result = causeKey('external_job');
+
+    expect(result).toBeNull();
+  });
 });
 
 describe('worker session summary readers', () => {

@@ -1,6 +1,30 @@
 import { expect, test } from 'vitest';
 import { terminalResultOf } from './session.js';
 
+test('parses the external wait identifier from the first result line', () => {
+  const wait_id = 'w-012345abcdef';
+
+  const result = terminalResultOf(
+    `\n  대기 · external:${wait_id}\nmore evidence`
+  );
+
+  expect(result).toEqual({ kind: 'waiting_external', wait_id });
+});
+
+test.each([
+  '',
+  'w-012345abcde',
+  'w-012345abcdef0',
+  'w-012345abcdeg',
+  'w-012345ABCDEF',
+  '012345abcdef',
+  'w-012345abcdef extra'
+])('rejects a malformed external wait identifier %j', (wait_id) => {
+  const result = terminalResultOf(`대기 · external:${wait_id}`);
+
+  expect(result).toBeNull();
+});
+
 test.each([
   'provider',
   'unclassified',

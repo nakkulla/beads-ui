@@ -20,6 +20,9 @@
  * @type {Readonly<Record<string, string>>}
  */
 export const FAILURE_SENTENCES = Object.freeze({
+  external_job: '외부 작업을 기다리며 세션과 워크트리를 보존했습니다.',
+  external_wait_unproven:
+    '이 실행에 연결된 외부 대기 기록을 확인하지 못했습니다.',
   background_shell:
     '백그라운드 셸 태스크를 남기고 턴 종료 — 프로세스 종료로 결과 유실',
   repo_ops_worktree_unowned:
