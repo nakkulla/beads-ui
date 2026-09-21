@@ -1033,13 +1033,13 @@ describe('요약 칩 묶음 (UI-8gem §8)', () => {
   });
 
   test('draws both token chip forms from one label', () => {
-    render(tokenChipTemplate('Claude τ 2.0k · $1.50 · 부분 집계'), mount);
+    render(tokenChipTemplate('Claude τ 2.0k · ≈$1.50'), mount);
 
     expect(mount.querySelector('.tok__full')?.textContent).toBe(
-      'Claude τ 2.0k · $1.50 · 부분 집계'
+      'Claude τ 2.0k · ≈$1.50'
     );
     expect(mount.querySelector('.tok__short')?.textContent).toBe(
-      'Claude $1.50 · 부분'
+      'Claude ≈$1.50'
     );
   });
 });
@@ -5115,6 +5115,58 @@ describe('후보 카드 배치 자격 (UI-d13v §6)', () => {
 });
 
 describe('miniRow row actions (UI-5ksp §4.6)', () => {
+  test.each([
+    ['queue', false, '.worker-mini__line'],
+    ['queue', true, '.worker-mini__head'],
+    ['done', false, '.worker-mini__row1']
+  ])(
+    'keeps queue operations last in the %s layout with card=%s',
+    (lane, card, selector) => {
+      const item = {
+        id: 'UI-ops',
+        title: '대기 조작 위치',
+        lane,
+        draggable: true,
+        reason: '관측 사유'
+      };
+
+      render(
+        miniRow(/** @type {any} */ (item), {
+          card,
+          actions: queueRowOps(/** @type {any} */ (item), { nudgeable: true })
+        }),
+        mount
+      );
+
+      expect(mount.querySelector(selector)?.lastElementChild?.className).toBe(
+        'worker-mini__rowops'
+      );
+    }
+  );
+
+  test.each(['mini', 'candidate'])(
+    'renders re-review as an identity badge on %s',
+    (kind) => {
+      const item = /** @type {any} */ ({
+        id: 'UI-review',
+        title: '재리뷰',
+        lane: 'queue',
+        rereview_required: true
+      });
+      const prefix = kind === 'mini' ? 'worker-mini' : 'worker-card';
+
+      render(
+        kind === 'mini' ? miniRow(item, { card: true }) : candidateCard(item),
+        mount
+      );
+
+      expect(
+        mount.querySelector(`.${prefix}__head .${prefix}__badge--rereview`)
+          ?.textContent
+      ).toBe('♻ 재리뷰 필요');
+      expect(mount.querySelector(`.${prefix}__reason`)).toBeNull();
+    }
+  );
   /**
    * @param {Record<string, any>} item
    * @param {Record<string, any>} [options]
@@ -6726,9 +6778,9 @@ describe('대기 카드 표면 정리 2차 (UI-0bvr)', () => {
     expect(row.querySelector('.worker-mini__line')).not.toBeNull();
   });
 
-  test('places the row operations before the reason in the card head', () => {
+  test('keeps row operations last in the head and moves the reason below it', () => {
     const row = renderQueueRow(
-      { reason: '♻️ stale→재리뷰' },
+      { reason: '⛔ spec_missing_at_base' },
       {
         card: true,
         actions: /** @type {any} */ (
@@ -6739,16 +6791,12 @@ describe('대기 카드 표면 정리 2차 (UI-0bvr)', () => {
     const head = /** @type {HTMLElement} */ (
       row.querySelector('.worker-mini__head')
     );
-    const children = Array.from(head.children);
 
-    expect(
-      children.findIndex((node) =>
-        node.classList.contains('worker-mini__rowops')
-      )
-    ).toBeLessThan(
-      children.findIndex((node) =>
-        node.classList.contains('worker-mini__reason')
-      )
+    expect(head.lastElementChild?.className).toBe('worker-mini__rowops');
+    expect(head.querySelector('.worker-mini__reason')).toBeNull();
+    expect(head.nextElementSibling?.className).toBe('worker-mini__reason-line');
+    expect(head.nextElementSibling?.textContent).toContain(
+      '⛔ spec_missing_at_base'
     );
   });
 

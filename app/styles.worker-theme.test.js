@@ -206,87 +206,79 @@ describe('worker console styles', () => {
     expect(kvRule).toContain('width: auto');
   });
 
-  test('moves a mini-row admission reason below its ID and title at every width', () => {
+  test('keeps the one-line row on one line and lets the reason yield', () => {
     const responsiveMarker = CSS.indexOf(
       '/* ---------- Worker responsive (<=640px)'
     );
     const baseWorkerCss = CSS.slice(markerIndex, responsiveMarker);
     const lineRule =
-      baseWorkerCss.match(
-        /#worker-root \.worker-mini__line:has\(> \.worker-mini__reason\)\s*{([^}]*)}/
-      )?.[1] || '';
+      baseWorkerCss.match(/(?:^|\n)\.worker-mini__line\s*{([^}]*)}/)?.[1] || '';
     const reasonRule =
       baseWorkerCss.match(
-        /#worker-root \.worker-mini__line > \.worker-mini__reason\s*{([^}]*)}/
+        /(?:^|\n)\.worker-mini__line > \.worker-mini__reason\s*{([^}]*)}/
       )?.[1] || '';
 
     expect(responsiveMarker).toBeGreaterThan(markerIndex);
-    expect(lineRule).toContain('flex-wrap: wrap');
-    expect(reasonRule).toContain('flex: 1 0 100%');
-    expect(reasonRule).toContain('margin-left: 0');
+    expect(lineRule).toContain('flex-wrap: nowrap');
     expect(reasonRule).toContain('min-width: 0');
-    expect(reasonRule).toContain('white-space: normal');
-    expect(reasonRule).toContain('overflow-wrap: anywhere');
+    expect(reasonRule).toContain('text-overflow: ellipsis');
   });
 
-  test('moves a card-head admission reason below PR links and badges', () => {
+  test('moves the card reason out of the head into its own line', () => {
     const responsiveMarker = CSS.indexOf(
       '/* ---------- Worker responsive (<=640px)'
     );
     const baseWorkerCss = CSS.slice(markerIndex, responsiveMarker);
     const reasonRule =
       baseWorkerCss.match(
-        /\.worker-mini--card \.worker-mini__head > \.worker-mini__reason\s*{([^}]*)}/
+        /(?:^|\n)\.worker-mini__reason-line\s*{([^}]*)}/
       )?.[1] || '';
+    const headRule =
+      baseWorkerCss.match(/(?:^|\n)\.worker-mini__head\s*{([^}]*)}/)?.[1] || '';
 
     expect(responsiveMarker).toBeGreaterThan(markerIndex);
-    expect(reasonRule).toContain('flex: 1 0 100%');
     expect(reasonRule).toContain('min-width: 0');
-    expect(reasonRule).toContain('max-width: 100%');
-    expect(reasonRule).toContain('margin-left: 0');
-    expect(reasonRule).toContain('white-space: normal');
     expect(reasonRule).toContain('overflow-wrap: anywhere');
+    expect(headRule).toContain('flex-wrap: nowrap');
+    expect(headRule).toContain('min-height: 28px');
   });
 
-  test('gives the monitor root the same card-head reason rule (UI-0bvr §7.1)', () => {
+  test('shares the card reason line across Worker and Monitor roots', () => {
     const responsiveMarker = CSS.indexOf(
       '/* ---------- Worker responsive (<=640px)'
     );
     const baseWorkerCss = CSS.slice(markerIndex, responsiveMarker);
     const selector_list =
-      baseWorkerCss.match(
-        /([^{}]*\.worker-mini--card \.worker-mini__head > \.worker-mini__reason)\s*{/
-      )?.[1] || '';
+      baseWorkerCss.match(/([^{}]*\.worker-mini__reason-line)\s*{/)?.[1] || '';
 
-    expect(selector_list).toContain(
-      '#worker-root .worker-mini--card .worker-mini__head > .worker-mini__reason'
-    );
-    expect(selector_list).toContain(
-      '.mon .worker-mini--card .worker-mini__head > .worker-mini__reason'
-    );
+    expect(selector_list.trim()).toBe('.worker-mini__reason-line');
   });
 
-  test('wraps every standard mini-row sibling in narrow lanes', () => {
+  test('keeps standard mini-row siblings on one line in narrow lanes', () => {
     const lineRule =
       workerBlock.match(/(?:^|\n)\.worker-mini__line\s*{([^}]*)}/)?.[1] || '';
 
-    expect(lineRule).toContain('flex-wrap: wrap');
+    expect(lineRule).toContain('flex-wrap: nowrap');
+    expect(lineRule).toContain('min-width: 0');
   });
 
-  test('keeps long mini-row badges readable in a narrow lane', () => {
+  test('ellipsizes long mini-row badges in a narrow lane', () => {
     const badgeRule =
-      workerBlock.match(/(?:^|\n)\.worker-mini__badge\s*{([^}]*)}/)?.[1] || '';
+      workerBlock.match(
+        /(?:^|\n)\.worker-mini__badge,\s*\.worker-card__badge\s*{([^}]*)}/
+      )?.[1] || '';
 
     expect(badgeRule).toContain('min-width: 0');
     expect(badgeRule).toContain('max-width: 100%');
-    expect(badgeRule).toContain('overflow-wrap: anywhere');
+    expect(badgeRule).toContain('text-overflow: ellipsis');
   });
 
-  test('wraps candidate card header items in narrow lanes', () => {
+  test('keeps candidate card headers on one line in narrow lanes', () => {
     const headRule =
       workerBlock.match(/(?:^|\n)\.worker-card__head\s*{([^}]*)}/)?.[1] || '';
 
-    expect(headRule).toContain('flex-wrap: wrap');
+    expect(headRule).toContain('flex-wrap: nowrap');
+    expect(headRule).toContain('min-height: 28px');
     expect(headRule).toContain('min-width: 0');
   });
 
@@ -332,11 +324,12 @@ describe('worker console styles', () => {
     expect(reasonRule).toContain('overflow-wrap: anywhere');
   });
 
-  test('wraps running tile header controls in narrow lanes', () => {
+  test('keeps running tile headers on one line in narrow lanes', () => {
     const headerRule =
       workerBlock.match(/(?:^|\n)\.rtile__hd\s*{([^}]*)}/)?.[1] || '';
 
-    expect(headerRule).toContain('flex-wrap: wrap');
+    expect(headerRule).toContain('flex-wrap: nowrap');
+    expect(headerRule).toContain('min-height: 28px');
     expect(headerRule).toContain('min-width: 0');
   });
 
@@ -348,12 +341,19 @@ describe('worker console styles', () => {
     expect(actionsRule).toContain('flex: 0 0 auto');
   });
 
-  test('wraps running tile metadata in narrow lanes', () => {
+  test('stacks running tile facts and usage as two metadata lines', () => {
     const metaRule =
       workerBlock.match(/(?:^|\n)\.rtile__meta\s*{([^}]*)}/)?.[1] || '';
 
-    expect(metaRule).toContain('flex-wrap: wrap');
+    const rowRule =
+      workerBlock.match(
+        /(?:^|\n)\.rtile__facts,\s*\.rtile__usage\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(metaRule).toContain('flex-direction: column');
     expect(metaRule).toContain('min-width: 0');
+    expect(rowRule).toContain('display: flex');
+    expect(rowRule).toContain('min-width: 0');
   });
 
   test('wraps the shared coordinate chip row in narrow lanes', () => {

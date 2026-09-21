@@ -1697,7 +1697,8 @@ function doneThreeLineRow(item) {
   // 오케 → 워커를 붙이므로 줄 수는 늘지 않는다 (UI-q1tg §3.4). 일반 출처 칩은
   // 빠지고, Worker 생성 그룹은 생성 사실을 설명하기 위해 남는다 (UI-j10d §4).
   const badges = Array.isArray(item.badges) ? item.badges : [];
-  const provider_badges = providerUsageBadges(item.usage);
+  const usage_options = { scope: undefined, direct_session: false };
+  const provider_badges = providerUsageBadges(item.usage, usage_options);
   const usage_label = formatUsageTotalWithCost(item.usage);
   const done_at_label = formatRelativeTime(item.done_at);
   return html`<div
@@ -1750,7 +1751,9 @@ function doneThreeLineRow(item) {
               >`
           )
         : usage_label
-          ? html`<span class="worker-usage" title=${usageTooltip(item.usage)}
+          ? html`<span
+              class="worker-usage"
+              title=${usageTooltip(item.usage, usage_options)}
               >${usage_label}</span
             >`
           : ''}
@@ -2950,7 +2953,7 @@ export function summaryChipsTemplate(options) {
  */
 export function tokenChipShortText(label) {
   const text = typeof label === 'string' ? label : '';
-  const cost = text.match(/\$[\d.,]+/);
+  const cost = text.match(/≈?\$[\d.,]+/);
   if (!cost) {
     return text;
   }
@@ -3199,7 +3202,8 @@ export function miniRow(item, options = {}) {
       )
     : { badge: '', body: '', actions: '', times: '' };
   const badges = Array.isArray(item.badges) ? item.badges : [];
-  const provider_badges = providerUsageBadges(item.usage);
+  const usage_options = { scope: undefined, direct_session: false };
+  const provider_badges = providerUsageBadges(item.usage, usage_options);
   const usage_label = formatUsageTotalWithCost(item.usage);
   const merging = item.merge_step || null;
   const card =
@@ -3276,9 +3280,23 @@ export function miniRow(item, options = {}) {
           >${b}</span
         >`
   );
+  if (item.rereview_required === true) {
+    badge_els.push(
+      html`<span
+        class="worker-mini__badge worker-mini__badge--rereview"
+        title="stale 판정 — 디스패치가 세션 내 재리뷰를 요구합니다. 실행은 admit됐고 거절이 아닙니다"
+        >♻ 재리뷰 필요</span
+      >`
+    );
+  }
   const reason_el =
     typeof item.reason === 'string' && item.reason
-      ? html`<span class="worker-mini__reason">${item.reason}</span>`
+      ? html`<span
+          class="worker-mini__reason${item.reason.startsWith('⛔')
+            ? ' worker-mini__reason--danger'
+            : ''}"
+          >${item.reason}</span
+        >`
       : '';
   const usage_el =
     provider_badges.length > 0
@@ -3289,7 +3307,9 @@ export function miniRow(item, options = {}) {
             >`
         )
       : usage_label
-        ? html`<span class="worker-usage" title=${usageTooltip(item.usage)}
+        ? html`<span
+            class="worker-usage"
+            title=${usageTooltip(item.usage, usage_options)}
             >${usage_label}</span
           >`
         : '';
@@ -3591,12 +3611,12 @@ export function miniRow(item, options = {}) {
             ${timesMeta(item)}
           </div>`
       : card
-        ? // 사유는 머리 줄의 **끝**이다 (UI-0bvr §7.1): `flex: 1 0 100%`로 한 줄을
-          // 통째 쓰므로 그 앞에 서야 조작이 다음 줄로 밀리지 않는다. 슬롯 표의
-          // "조작은 1번 줄 오른쪽 끝"은 그래서 좁은 화면에서도 지켜진다.
-          html`<div class="worker-mini__head">
-              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${wait_badge}${actions_el}${reason_el}
+        ? html`<div class="worker-mini__head">
+              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${wait_badge}${actions_el}
             </div>
+            ${reason_el
+              ? html`<div class="worker-mini__reason-line">${reason_el}</div>`
+              : ''}
             <div class="worker-mini__body">${title_el}${stale_details}</div>
             ${wait_lines.body}${deps_el}${chips_el}${has_foot
               ? html`<div class="worker-mini__foot">
@@ -4189,7 +4209,13 @@ export function candidateCard(item, place_menu = null, options = {}) {
         ? html`<span class="worker-card__grip" aria-hidden="true">⠿</span>`
         : ''}
       <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span
-      >${priorityBadgeTemplate(item.priority)}
+      >${priorityBadgeTemplate(item.priority)}${item.rereview_required === true
+        ? html`<span
+            class="worker-card__badge worker-card__badge--rereview"
+            title="stale 판정 — 디스패치가 세션 내 재리뷰를 요구합니다. 실행은 admit됐고 거절이 아닙니다"
+            >♻ 재리뷰 필요</span
+          >`
+        : ''}
       ${worker_ineligible
         ? html`<button
             type="button"
