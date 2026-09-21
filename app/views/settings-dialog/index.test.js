@@ -304,13 +304,13 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
 
     expect(worker).toEqual({
       title: '여러 저장소 설정',
-      sub: '선택한 저장소에 실행 프리셋을 적용합니다.'
+      sub: '선택한 저장소에 실행 프로필 한 벌을 적용합니다. 프리셋을 고르면 아래 폼이 그 값으로 채워집니다.'
     });
     expect(
       root.querySelector('.settings-dialog__pane-head h2')?.textContent
     ).toBe('여러 저장소 설정');
     expect(root.querySelector('.settings-dialog__pane-sub')?.textContent).toBe(
-      '선택한 저장소의 실행 계정과 한도 대응을 바꿉니다. 바꾸지 않은 항목은 저장소마다 그대로 둡니다.'
+      '선택한 저장소의 실행 계정과 한도 대응을 화면의 값 그대로 씁니다.'
     );
     expect(root.querySelector('[data-bulk-count]')).not.toBe(null);
     dialog.destroy();

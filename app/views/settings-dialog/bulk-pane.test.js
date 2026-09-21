@@ -13,6 +13,59 @@ const PRESETS = {
   presets: [{ id: 'p1', name: '위임', compatible: true }]
 };
 
+const CATALOG = {
+  runners: {
+    claude: { models: { opus: { id: 'opus', efforts: ['low', 'high'] } } },
+    codex: {
+      models: {
+        sol: {
+          id: 'gpt-5.6-sol',
+          efforts: ['medium'],
+          orchestration_efforts: ['medium', 'ultra'],
+          speed_tiers: ['default', 'fast']
+        }
+      }
+    }
+  },
+  model_index: { opus: 'claude', sol: 'codex' }
+};
+
+const EXECUTION_DEFAULTS = {
+  supported: true,
+  schema_version: 1,
+  session: {
+    workflow_mode_default: 'standard',
+    review: {
+      default: 'codex',
+      reviewers: {
+        codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+        fable: { model: 'fable', effort: 'high' }
+      }
+    },
+    plan_review: { standard_recommended: 'codex', fast_track_default: 'fable' },
+    implementation: {
+      default: {
+        dispatch: 'delegated',
+        runtime: 'codex',
+        model: 'sol',
+        model_id: 'gpt-5.6-sol',
+        effort: 'auto',
+        speed: 'default'
+      },
+      route_defaults: { quick_fix: { dispatch: 'main' } },
+      model_catalog: { codex: { sol: 'gpt-5.6-sol' } },
+      effort_by_transport: {}
+    }
+  },
+  orchestration: {
+    runtime: 'claude',
+    model: 'opus',
+    model_id: 'opus',
+    effort: null,
+    speed: 'default'
+  }
+};
+
 const CLAUDE_ROWS = {
   accounts: [
     {
@@ -62,6 +115,8 @@ function row(patch = {}) {
     revision: 1,
     auto_advance: true,
     quick_fix_orchestration_model: null,
+    runner_catalog: CATALOG,
+    execution_defaults: EXECUTION_DEFAULTS,
     provider_limit_policy: {
       claude: { mode: 'switch', accounts: [], preempt_pct: null },
       codex: { mode: 'switch', accounts: [], preempt_pct: null }
@@ -74,7 +129,7 @@ function row(patch = {}) {
 const mounted = [];
 
 /**
- * @param {{ rows?: any[], transport?: (type: string, payload: any) => any, onBulkApplied?: (root_dirs: string[]) => void }} [input]
+ * @param {{ rows?: any[], presets?: any, transport?: (type: string, payload: any) => any, onBulkApplied?: (root_dirs: string[]) => void }} [input]
  */
 function setup(input = {}) {
   const host = document.createElement('div');
@@ -100,7 +155,7 @@ function setup(input = {}) {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    implPresetStore: { get: () => PRESETS },
+    implPresetStore: { get: () => input.presets || PRESETS },
     onBulkApplied: input.onBulkApplied
   });
   mounted.push(pane);
@@ -294,9 +349,57 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
 
     expect(el(host, `[data-bulk-repo="${WS_A}"]`).checked).toBe(true);
   });
+
+  test('warns on both tabs that the visible values are the ones written', () => {
+    const { host, pane } = setup();
+    pane.render('worker');
+    const worker_banner = el(host, '[data-bulk-banner]').textContent.trim();
+
+    pane.render('account');
+
+    expect(worker_banner).toBe(
+      '화면에 보이는 값이 그대로 쓰입니다 — 손대지 않은 행도 함께 적용됩니다.'
+    );
+    expect(el(host, '[data-bulk-banner]').textContent.trim()).toBe(
+      worker_banner
+    );
+  });
+
+  test('disables the apply button once no repository is ticked', () => {
+    const { host, pane } = setup({ rows: [row()] });
+    pane.render('worker');
+
+    tick(host, `[data-bulk-repo="${WS_A}"]`, false);
+
+    const button = el(host, '[data-bulk-apply="worker"]');
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe('적용할 저장소를 고르세요');
+  });
 });
 
-describe('createBulkPane worker tab (UI-nu43 §3.3)', () => {
+describe('createBulkPane worker tab (UI-628r §3.2)', () => {
+  test('draws the four execution profile groups', () => {
+    const { host, pane } = setup();
+
+    pane.render('worker');
+
+    expect(
+      Array.from(host.querySelectorAll('[data-bulk-group]'), (node) =>
+        node.getAttribute('data-bulk-group')
+      )
+    ).toEqual(['orchestration', 'impl', 'review', 'quick_fix']);
+  });
+
+  test('counts the targets and the editable keys in the footer', () => {
+    const { host, pane } = setup();
+
+    pane.render('worker');
+
+    expect(el(host, '[data-bulk-count]').textContent.replace(/\s+/g, ' ')).toBe(
+      '저장소 2곳에 24개 항목'
+    );
+  });
+
   test('sends one preset request per selected repository in order', async () => {
     const { host, pane, calls } = setup();
     pane.render('worker');
@@ -319,6 +422,45 @@ describe('createBulkPane worker tab (UI-nu43 §3.3)', () => {
         root_dir: WS_B
       }
     ]);
+  });
+
+  test('sends the kv write then the queue write once a row is edited', async () => {
+    const { host, pane, calls } = setup({ rows: [row()] });
+    pane.render('worker');
+
+    choose(host, '[data-bulk-key="impl_review_model"]', 'fable');
+    click(host, '[data-bulk-apply="worker"]');
+    await settle();
+
+    expect(calls.map(([type]) => type)).toEqual([
+      'set-session-defaults',
+      'worker-queue-set-orchestration-defaults'
+    ]);
+    expect(payloadsOf(calls, 'set-session-defaults')[0].values).toMatchObject({
+      impl_review_model: 'fable',
+      impl_model: null
+    });
+  });
+
+  test('fills the form rows from the chosen preset', () => {
+    const { host, pane } = setup({
+      presets: {
+        revision: 9,
+        presets: [
+          {
+            id: 'p1',
+            name: '위임',
+            compatible: true,
+            settings: { impl_runtime: 'codex', impl_model: 'sol' }
+          }
+        ]
+      }
+    });
+    pane.render('worker');
+
+    choose(host, '[data-bulk-preset]', 'p1');
+
+    expect(el(host, '[data-bulk-key="impl_model"]').value).toBe('sol');
   });
 
   test('draws one result line per repository', async () => {
@@ -382,6 +524,7 @@ describe('createBulkPane worker tab (UI-nu43 §3.3)', () => {
     expect(button.disabled).toBe(true);
     expect(el(host, '[data-bulk-preset]').disabled).toBe(true);
     expect(el(host, `[data-bulk-repo="${WS_A}"]`).disabled).toBe(true);
+    expect(el(host, '[data-bulk-key="impl_model"]').disabled).toBe(true);
     for (const open of gates.splice(0)) {
       open();
     }
@@ -445,6 +588,17 @@ describe('createBulkPane worker tab (UI-nu43 §3.3)', () => {
     expect(host.querySelectorAll('[data-bulk-result]')).toHaveLength(2);
   });
 
+  test('keeps the form values across a tab switch', async () => {
+    const { host, pane } = setup();
+    pane.render('worker');
+    choose(host, '[data-bulk-key="impl_review_model"]', 'fable');
+
+    pane.render('account');
+    pane.render('worker');
+
+    expect(el(host, '[data-bulk-key="impl_review_model"]').value).toBe('fable');
+  });
+
   test('reports only the applied and partial repositories once a run ends', async () => {
     const onBulkApplied = vi.fn();
     const { host, pane } = setup({
@@ -500,19 +654,46 @@ describe('createBulkPane worker tab (UI-nu43 §3.3)', () => {
   });
 });
 
-describe('createBulkPane account tab (UI-nu43 §3.4)', () => {
-  test('disables the button with zero changes on an untouched form', async () => {
+describe('createBulkPane account tab (UI-628r §3.3)', () => {
+  test('offers no 변경 안 함 anywhere on the tab', async () => {
     const { host, pane } = setup();
 
     pane.render('account');
     await settle();
 
-    expect(el(host, '[data-bulk-count]').textContent.trim()).toBe(
-      '바꿀 항목 0개'
+    expect(host.textContent).not.toContain('변경 안 함');
+    expect(host.textContent).not.toContain('바꾸기');
+  });
+
+  test('starts the account selects on the default option', async () => {
+    const { host, pane } = setup();
+
+    pane.render('account');
+    await settle();
+
+    expect(el(host, '[data-bulk-account="claude_account"]').value).toBe(
+      '__bulk_use_default__'
     );
-    expect(accountButton(host).disabled).toBe(true);
-    expect(accountButton(host).title).toBe('바꿀 항목을 고르세요');
-    expect(el(host, '[data-bulk-account="claude_account"]').value).toBe('');
+  });
+
+  test('enables the apply button on an untouched form', async () => {
+    const { host, pane } = setup();
+
+    pane.render('account');
+    await settle();
+
+    expect(accountButton(host).disabled).toBe(false);
+  });
+
+  test('sizes the footer by the target count rather than the edits', async () => {
+    const { host, pane } = setup();
+
+    pane.render('account');
+    await settle();
+
+    expect(el(host, '[data-bulk-count]').textContent.replace(/\s+/g, ' ')).toBe(
+      '저장소 2곳에 계정 2개 · 한도 정책 2벌'
+    );
   });
 
   test('names catalog accounts with the pane labels', async () => {
@@ -527,14 +708,13 @@ describe('createBulkPane account tab (UI-nu43 §3.4)', () => {
         (/** @type {HTMLOptionElement} */ option) => option.textContent?.trim()
       )
     ).toEqual([
-      '변경 안 함',
       '기본값 사용 — 현재 로그인(a@example.com)',
       'a@example.com (team)',
       'b@example.com'
     ]);
   });
 
-  test('offers only the first two options when the catalog is unreadable', async () => {
+  test('blocks the apply with a reason line when the catalog is unreadable', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({ ok: false, json: async () => ({}) }))
@@ -544,15 +724,31 @@ describe('createBulkPane account tab (UI-nu43 §3.4)', () => {
     pane.render('account');
     await settle();
 
-    expect(
-      Array.from(
-        el(host, '[data-bulk-account="codex_account"]').options,
-        (/** @type {HTMLOptionElement} */ option) => option.textContent?.trim()
-      )
-    ).toEqual(['변경 안 함', '기본값 사용 — 현재 로그인(확인 불가)']);
+    expect(accountButton(host).disabled).toBe(true);
+    expect(accountButton(host).title).toBe(
+      '계정 목록을 읽지 못해 적용할 수 없습니다'
+    );
+    expect(el(host, '[data-bulk-reason]').textContent.trim()).toBe(
+      '계정 목록을 읽지 못해 적용할 수 없습니다'
+    );
   });
 
-  test('writes only the changed Claude account with no policy request', async () => {
+  test('sends nothing while the catalog is unreadable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false, json: async () => ({}) }))
+    );
+    const { host, pane, calls } = setup();
+    pane.render('account');
+    await settle();
+
+    click(host, '[data-bulk-apply="account"]');
+    await settle();
+
+    expect(calls).toEqual([]);
+  });
+
+  test('writes the account and both limit policies for each repository', async () => {
     const { host, pane, calls } = setup();
     pane.render('account');
     await settle();
@@ -563,48 +759,47 @@ describe('createBulkPane account tab (UI-nu43 §3.4)', () => {
 
     expect(calls.map(([type]) => type)).toEqual([
       'set-workspace-accounts',
-      'set-workspace-accounts'
-    ]);
-    expect(payloadsOf(calls, 'set-workspace-accounts')).toEqual([
-      { root_dir: WS_A, values: { claude_account: 'b@example.com' } },
-      { root_dir: WS_B, values: { claude_account: 'b@example.com' } }
+      'worker-provider-limit-policy-set',
+      'worker-provider-limit-policy-set',
+      'set-workspace-accounts',
+      'worker-provider-limit-policy-set',
+      'worker-provider-limit-policy-set'
     ]);
   });
 
-  test('sends the default option as null', async () => {
+  test('sends the default option as null for both runners', async () => {
     const { host, pane, calls } = setup({ rows: [row()] });
     pane.render('account');
     await settle();
 
-    choose(host, '[data-bulk-account="codex_account"]', '__bulk_use_default__');
     click(host, '[data-bulk-apply="account"]');
     await settle();
 
     expect(payloadsOf(calls, 'set-workspace-accounts')).toEqual([
-      { root_dir: WS_A, values: { codex_account: null } }
-    ]);
-  });
-
-  test('sends an empty allow list when 바꾸기 is on with nothing chosen', async () => {
-    const { host, pane, calls } = setup({ rows: [row()] });
-    pane.render('account');
-    await settle();
-
-    tick(host, '[data-bulk-limit-accounts-toggle="codex"]', true);
-    click(host, '[data-bulk-apply="account"]');
-    await settle();
-
-    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([
       {
         root_dir: WS_A,
-        runner: 'codex',
-        patch: { accounts: [] },
-        expected_revision: 1
+        values: { claude_account: null, codex_account: null }
       }
     ]);
   });
 
-  test('omits the accounts key while 바꾸기 stays off', async () => {
+  test('sends the empty allow list the boxes show', async () => {
+    const { host, pane, calls } = setup({ rows: [row()] });
+    pane.render('account');
+    await settle();
+
+    click(host, '[data-bulk-apply="account"]');
+    await settle();
+
+    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')[1]).toEqual({
+      root_dir: WS_A,
+      runner: 'codex',
+      patch: { mode: 'switch', accounts: [], preempt_pct: null },
+      expected_revision: 11
+    });
+  });
+
+  test('sends the mode the segment shows', async () => {
     const { host, pane, calls } = setup({ rows: [row()] });
     pane.render('account');
     await settle();
@@ -616,22 +811,16 @@ describe('createBulkPane account tab (UI-nu43 §3.4)', () => {
     click(host, '[data-bulk-apply="account"]');
     await settle();
 
-    expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toEqual([
-      {
-        root_dir: WS_A,
-        runner: 'claude',
-        patch: { mode: 'wait' },
-        expected_revision: 1
-      }
-    ]);
+    expect(
+      payloadsOf(calls, 'worker-provider-limit-policy-set')[0].patch
+    ).toEqual({ mode: 'wait', accounts: [], preempt_pct: null });
   });
 
-  test('sends the chosen allow accounts once 바꾸기 is on', async () => {
+  test('sends the ticked allow accounts', async () => {
     const { host, pane, calls } = setup({ rows: [row()] });
     pane.render('account');
     await settle();
 
-    tick(host, '[data-bulk-limit-accounts-toggle="claude"]', true);
     tick(
       host,
       '[data-runner="claude"][data-bulk-limit-account="b@example.com"]',
@@ -641,11 +830,11 @@ describe('createBulkPane account tab (UI-nu43 §3.4)', () => {
     await settle();
 
     expect(
-      payloadsOf(calls, 'worker-provider-limit-policy-set')[0].patch
-    ).toEqual({ accounts: ['b@example.com'] });
+      payloadsOf(calls, 'worker-provider-limit-policy-set')[0].patch.accounts
+    ).toEqual(['b@example.com']);
   });
 
-  test('keeps the allow account boxes disabled while 바꾸기 is off', async () => {
+  test('keeps the allow account boxes editable', async () => {
     const { host, pane } = setup();
 
     pane.render('account');
@@ -656,7 +845,7 @@ describe('createBulkPane account tab (UI-nu43 §3.4)', () => {
         host,
         '[data-runner="claude"][data-bulk-limit-account="a@example.com"]'
       ).disabled
-    ).toBe(true);
+    ).toBe(false);
   });
 
   test('disables the button for a threshold of 0, 100 or a fraction', async () => {
@@ -693,8 +882,8 @@ describe('createBulkPane account tab (UI-nu43 §3.4)', () => {
     await settle();
 
     expect(
-      payloadsOf(calls, 'worker-provider-limit-policy-set')[0].patch
-    ).toEqual({ preempt_pct: 65 });
+      payloadsOf(calls, 'worker-provider-limit-policy-set')[1].patch.preempt_pct
+    ).toBe(65);
   });
 
   test('keeps a typed threshold across a row subscription redraw', async () => {
@@ -709,26 +898,6 @@ describe('createBulkPane account tab (UI-nu43 §3.4)', () => {
     expect(el(host, '[data-bulk-preempt-pct="claude"]').value).toBe('4');
   });
 
-  test('counts runner fields separately in the change count', async () => {
-    const { host, pane } = setup();
-    pane.render('account');
-    await settle();
-
-    click(
-      host,
-      '[data-bulk-limit-mode-runner="claude"] [data-bulk-limit-mode="switch"]'
-    );
-    click(
-      host,
-      '[data-bulk-limit-mode-runner="codex"] [data-bulk-limit-mode="wait"]'
-    );
-    choose(host, '[data-bulk-preempt="codex"]', 'off');
-
-    expect(el(host, '[data-bulk-count]').textContent.trim()).toBe(
-      '바꿀 항목 3개'
-    );
-  });
-
   test('keeps the form values after a run', async () => {
     const { host, pane } = setup();
     pane.render('account');
@@ -740,9 +909,6 @@ describe('createBulkPane account tab (UI-nu43 §3.4)', () => {
 
     expect(el(host, '[data-bulk-account="claude_account"]').value).toBe(
       'b@example.com'
-    );
-    expect(el(host, '[data-bulk-count]').textContent.trim()).toBe(
-      '바꿀 항목 1개'
     );
   });
 });

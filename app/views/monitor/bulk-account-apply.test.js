@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
-  countEditFields,
+  CATALOG_REASON,
   formatBulkResult,
   planBulkAccountApply,
   runBulkAccountApply
@@ -30,12 +30,22 @@ function edit(patch = {}) {
   return { values: {}, patches: {}, ...patch };
 }
 
+/** The 계정 탭 form as it stands untouched: every field carried (§2.4). */
+const UNTOUCHED = edit({
+  values: { claude_account: null, codex_account: null },
+  patches: {
+    claude: { mode: 'switch', accounts: [], preempt_pct: null },
+    codex: { mode: 'switch', accounts: [], preempt_pct: null }
+  }
+});
+
 describe('planBulkAccountApply', () => {
   test('targets every selected row in row order', () => {
     const plan = planBulkAccountApply({
       rows,
       selected_roots: new Set(['/repo/b', '/repo/a']),
-      edit: edit({ values: { claude_account: 'work' } })
+      edit: edit({ values: { claude_account: 'work' } }),
+      catalog_ready: true
     });
 
     expect(plan.targets.map((target) => target.root_dir)).toEqual([
@@ -44,25 +54,92 @@ describe('planBulkAccountApply', () => {
     ]);
   });
 
-  test('carries only the changed account keys', () => {
+  test('plans all three writes from an untouched form', () => {
     const plan = planBulkAccountApply({
-      rows,
+      rows: [row({ root_dir: '/repo/a' })],
       selected_roots: ['/repo/a'],
-      edit: edit({ values: { claude_account: null } })
+      edit: UNTOUCHED,
+      catalog_ready: true
     });
 
-    expect(plan.targets[0].values).toEqual({ claude_account: null });
-    expect(plan.targets[0].patches).toEqual({});
+    expect(plan.disabled_reason).toBe(null);
+    expect(plan.targets[0].values).toEqual({
+      claude_account: null,
+      codex_account: null
+    });
+    expect(Object.keys(plan.targets[0].patches)).toEqual(['claude', 'codex']);
   });
 
-  test('carries only the changed fields of a runner patch', () => {
+  test('carries 기본값 사용 as a null account value', () => {
     const plan = planBulkAccountApply({
       rows,
       selected_roots: ['/repo/a'],
-      edit: edit({ patches: { codex: { accounts: [] } } })
+      edit: edit({ values: { claude_account: null, codex_account: 'k' } }),
+      catalog_ready: true
     });
 
-    expect(plan.targets[0].patches).toEqual({ codex: { accounts: [] } });
+    expect(plan.targets[0].values).toEqual({
+      claude_account: null,
+      codex_account: 'k'
+    });
+  });
+
+  test('carries 끔 as a null preemptive threshold', () => {
+    const plan = planBulkAccountApply({
+      rows,
+      selected_roots: ['/repo/a'],
+      edit: edit({
+        patches: { codex: { mode: 'switch', preempt_pct: null } }
+      }),
+      catalog_ready: true
+    });
+
+    expect(plan.targets[0].patches.codex).toEqual({
+      mode: 'switch',
+      preempt_pct: null
+    });
+  });
+
+  test('carries the allow list exactly as the boxes show it', () => {
+    const plan = planBulkAccountApply({
+      rows,
+      selected_roots: ['/repo/a'],
+      edit: edit({
+        patches: { claude: { accounts: ['a@example.com', 'b@example.com'] } }
+      }),
+      catalog_ready: true
+    });
+
+    expect(plan.targets[0].patches.claude?.accounts).toEqual([
+      'a@example.com',
+      'b@example.com'
+    ]);
+  });
+
+  test('plans nothing while one runner account catalog is missing', () => {
+    const plan = planBulkAccountApply({
+      rows,
+      selected_roots: ['/repo/a'],
+      edit: UNTOUCHED,
+      catalog_ready: false
+    });
+
+    expect(plan.targets).toEqual([]);
+    expect(plan.disabled_reason).toBe(CATALOG_REASON);
+  });
+
+  test('sends nothing when the catalog-gated plan is run', async () => {
+    const send = vi.fn();
+    const plan = planBulkAccountApply({
+      rows,
+      selected_roots: ['/repo/a'],
+      edit: UNTOUCHED,
+      catalog_ready: false
+    });
+
+    await runBulkAccountApply({ targets: plan.targets, send, adopt: vi.fn() });
+
+    expect(send).not.toHaveBeenCalled();
   });
 
   test('drops non-string and whitespace-containing account entries', () => {
@@ -75,44 +152,22 @@ describe('planBulkAccountApply', () => {
             accounts: /** @type {any} */ (['ok', 'has space', 3, ''])
           }
         }
-      })
+      }),
+      catalog_ready: true
     });
 
     expect(plan.targets[0].patches.claude?.accounts).toEqual(['ok']);
-  });
-
-  test('counts runner fields separately', () => {
-    const count = countEditFields(
-      edit({
-        values: { codex_account: 'k' },
-        patches: {
-          claude: { mode: 'wait', preempt_pct: null },
-          codex: { mode: 'wait' }
-        }
-      })
-    );
-
-    expect(count).toBe(4);
   });
 
   test('disables when zero targets are selected', () => {
     const plan = planBulkAccountApply({
       rows,
       selected_roots: new Set(),
-      edit: edit({ values: { claude_account: 'work' } })
+      edit: edit({ values: { claude_account: 'work' } }),
+      catalog_ready: true
     });
 
     expect(plan.disabled_reason).toBe('적용할 저장소를 고르세요');
-  });
-
-  test('disables when the edit changes nothing', () => {
-    const plan = planBulkAccountApply({
-      rows,
-      selected_roots: ['/repo/a'],
-      edit: edit()
-    });
-
-    expect(plan.disabled_reason).toBe('바꿀 항목을 고르세요');
   });
 
   test('disables when the preemptive threshold is outside 1-99 integer', () => {
@@ -121,7 +176,8 @@ describe('planBulkAccountApply', () => {
         planBulkAccountApply({
           rows,
           selected_roots: ['/repo/a'],
-          edit: edit({ patches: { claude: { preempt_pct } } })
+          edit: edit({ patches: { claude: { preempt_pct } } }),
+          catalog_ready: true
         }).disabled_reason
     );
 
@@ -138,7 +194,8 @@ describe('planBulkAccountApply', () => {
     const plan = planBulkAccountApply({
       rows: old_rows,
       selected_roots: ['/repo/a'],
-      edit: edit({ patches: { claude: { mode: 'wait' } } })
+      edit: edit({ patches: { claude: { mode: 'wait' } } }),
+      catalog_ready: true
     });
 
     expect(plan.disabled_reason).toBe('서버가 한도 정책을 싣지 않습니다');
@@ -150,7 +207,8 @@ describe('planBulkAccountApply', () => {
     const plan = planBulkAccountApply({
       rows: old_rows,
       selected_roots: ['/repo/a'],
-      edit: edit({ values: { claude_account: 'work' } })
+      edit: edit({ values: { claude_account: 'work' } }),
+      catalog_ready: true
     });
 
     expect(plan.disabled_reason).toBe(null);
@@ -161,7 +219,8 @@ describe('planBulkAccountApply', () => {
       rows,
       selected_roots: ['/repo/a'],
       edit: edit({ values: { claude_account: 'work' } }),
-      running: true
+      running: true,
+      catalog_ready: true
     });
 
     expect(plan.disabled_reason).toBe('적용 중입니다');

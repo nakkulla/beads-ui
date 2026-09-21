@@ -1,7 +1,8 @@
 ---
 id: UI-nu43
 title: 모니터 탭의 헤더 설정은 여러 저장소 일괄 적용 창이고 레포 카드 설정은 그 저장소만 편집한다
-status: accepted
+status: superseded
+superseded_by: UI-628r
 date: 2026-09-17
 summary: "모니터 탭의 헤더 설정은 연결 저장소를 편집하지 않는 여러 저장소 일괄 적용 창(워커 프리셋·계정 일괄 편집 폼)이고, 레포 카드 설정은 그 저장소만 편집한다"
 spec: docs/superpowers/specs/2026-09-17-monitor-header-settings-bulk-mode-design.md
