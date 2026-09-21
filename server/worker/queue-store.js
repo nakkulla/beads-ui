@@ -875,7 +875,7 @@
  * @property {number} at - Epoch ms of the disposition.
  */
 /**
- * @typedef {'gating'|'merging'|'cleaning'|'waiting_metadata'|'reviewing'|'retrying'|'paused'|'needs_human'|'completed'} CompletionPhase
+ * @typedef {'gating'|'holding'|'merging'|'cleaning'|'waiting_metadata'|'reviewing'|'retrying'|'paused'|'needs_human'|'completed'} CompletionPhase
  */
 /**
  * @typedef {Object} CompletionSubject
@@ -967,11 +967,25 @@
  * @property {CompletionAutoResolutionOp} op
  */
 /**
+ * @typedef {Object} CompletionHold
+ * @property {'pre_merge_hold'} class
+ * @property {'verify_failure'} cause
+ * @property {string} reason
+ * @property {string|null} summary
+ * @property {string|null} operation_id
+ * @property {string|null} log_path
+ * @property {string|null} head_sha
+ * @property {string|null} base_sha
+ * @property {number} at
+ * @property {number|null} comment_at
+ */
+/**
  * @typedef {Object} CompletionIntent
  * @property {string} target_base
  * @property {CompletionPhase} phase
  * @property {CompletionSubject} subject
  * @property {CompletionOperation|null} active_op
+ * @property {CompletionHold|null} hold
  * @property {CompletionTerminal|null} terminal_reason
  * @property {CompletionAutoResolution|null} auto_resolution
  * @property {CompletionAutoResolution|null} paused_resolution - The resolution
@@ -1063,6 +1077,7 @@ export const MIN_SLOTS = 1;
 /** @type {CompletionPhase[]} */
 const COMPLETION_PHASES = [
   'gating',
+  'holding',
   'merging',
   'cleaning',
   'waiting_metadata',
@@ -1489,6 +1504,7 @@ function invalidCompletionIntent(root_bead_id, value) {
     active_op: null,
     auto_resolution: null,
     paused_resolution: null,
+    hold: null,
     terminal_reason: {
       reason: 'intent_state_invalid',
       stage: 'state',
@@ -1557,9 +1573,37 @@ function normalizeCompletionIntent(root_bead_id, value) {
     active_op,
     auto_resolution,
     paused_resolution,
+    hold: normalizeCompletionHold(value.hold),
     terminal_reason
   };
   return resumed_terminal ? { ...normalized, resumed_terminal } : normalized;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {CompletionHold|null}
+ */
+function normalizeCompletionHold(value) {
+  if (!isRecord(value)) {
+    return null;
+  }
+  return {
+    class: 'pre_merge_hold',
+    cause: 'verify_failure',
+    reason: typeof value.reason === 'string' ? value.reason : '',
+    summary: typeof value.summary === 'string' ? value.summary : null,
+    operation_id:
+      typeof value.operation_id === 'string' ? value.operation_id : null,
+    log_path: typeof value.log_path === 'string' ? value.log_path : null,
+    head_sha: typeof value.head_sha === 'string' ? value.head_sha : null,
+    base_sha: typeof value.base_sha === 'string' ? value.base_sha : null,
+    at:
+      typeof value.at === 'number' && Number.isFinite(value.at) ? value.at : 0,
+    comment_at:
+      typeof value.comment_at === 'number' && Number.isFinite(value.comment_at)
+        ? value.comment_at
+        : null
+  };
 }
 
 /* UI-8w4t legacy-read:begin — the ONE region allowed to name the retired
@@ -10587,6 +10631,8 @@ export function createQueueStore(options = {}) {
      * Refresh the merge subject after an operation has settled. The subject
      * normalizer pins it to the root Bead, so the refresh can only ever carry
      * new SHAs for the root PR — never an unrelated Bead.
+     * Preserve the head-keyed handoff claim across base or URL changes so a
+     * repeated verify failure cannot notify again for that head (spec §4.4).
      *
      * @param {string} workspace
      * @param {{ root_bead_id: string, phase: CompletionPhase, subject: CompletionSubject }} input
@@ -10618,6 +10664,12 @@ export function createQueueStore(options = {}) {
           return false;
         }
         intent.subject = normalized_subject;
+        if (
+          intent.hold === null ||
+          intent.hold.head_sha !== normalized_subject.head_sha
+        ) {
+          intent.hold = null;
+        }
         return true;
       });
     },
@@ -10748,6 +10800,40 @@ export function createQueueStore(options = {}) {
           return false;
         }
         applyCompletionPhase(intent, 'paused');
+        next.merge_queue = next.merge_queue.filter(
+          (entry) => entry.bead_id !== root_bead_id
+        );
+        return true;
+      });
+    },
+
+    /**
+     * Release the queue position while preserving a per-head hold claim.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, hold: CompletionHold }} input
+     * @returns {QueueOpResult}
+     */
+    holdCompletionIntent(workspace, input) {
+      const { root_bead_id, hold } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const normalized = normalizeCompletionHold(hold);
+        if (
+          !intent ||
+          !normalized ||
+          intent.active_op !== null ||
+          (intent.phase !== 'gating' && intent.phase !== 'holding')
+        ) {
+          return false;
+        }
+        if (!applyCompletionPhase(intent, 'holding')) {
+          return false;
+        }
+        if (intent.hold && intent.hold.head_sha === normalized.head_sha) {
+          normalized.comment_at = intent.hold.comment_at;
+        }
+        intent.hold = normalized;
         next.merge_queue = next.merge_queue.filter(
           (entry) => entry.bead_id !== root_bead_id
         );
@@ -10971,7 +11057,10 @@ export function createQueueStore(options = {}) {
               }
               if (
                 existing_intent.phase === 'needs_human' ||
-                existing_intent.phase === 'completed'
+                existing_intent.phase === 'completed' ||
+                (existing_intent.phase === 'holding' &&
+                  existing_intent.hold?.head_sha ===
+                    entry.completion.subject.head_sha)
               ) {
                 continue;
               }

@@ -25,6 +25,7 @@
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
+import { PRE_MERGE_HOLD_NOTIFY_LABEL } from './completion-intent.js';
 import { discardOperationActive } from './discard-phase.js';
 import { qualifySessionFork, recordedSessionProvider } from './session-ref.js';
 import {
@@ -95,6 +96,7 @@ const COMPLETION_DEFAULT_CLASS = '완료 중단';
  * @property {string} reason
  * @property {string|null} stage
  * @property {string|null} detail
+ * @property {'fix_commit_push'} [exit]
  */
 
 /**
@@ -114,6 +116,19 @@ const COMPLETION_DEFAULT_CLASS = '완료 중단';
  */
 export function resolveFailureContext(queue, bead_id) {
   const intent = queue?.completion_intents?.[bead_id];
+  if (intent?.phase === 'holding' && intent.hold) {
+    const hold = intent.hold;
+    return {
+      failure_class: PRE_MERGE_HOLD_NOTIFY_LABEL,
+      reason: hold.reason,
+      stage: 'verify',
+      detail:
+        [hold.summary, hold.log_path && `로그 ${hold.log_path}`]
+          .filter(Boolean)
+          .join(' · ') || null,
+      exit: 'fix_commit_push'
+    };
+  }
   if (intent && intent.phase === 'needs_human') {
     const terminal = intent.terminal_reason || null;
     const stage =
@@ -209,10 +224,13 @@ export function resolveFailureContext(queue, bead_id) {
  */
 export function buildResolvePrompt(input) {
   const lines = [];
+  const holding = input.failure.exit === 'fix_commit_push';
   lines.push(
-    input.fallback_reason === null
-      ? `이 세션이 맡았던 Bead ${input.bead_id}의 작업이 terminal 실패로 멈춰 사람 확인이 필요합니다.`
-      : `Bead ${input.bead_id}의 작업이 terminal 실패로 멈춰 사람 확인이 필요합니다. 기록된 세션을 이어받지 못했습니다(${input.fallback_reason}) — 계보는 \`bd show ${input.bead_id} --json\`의 notes와 댓글에서 읽으세요.`
+    holding
+      ? `이 세션이 맡았던 Bead ${input.bead_id}의 PR이 머지 전 검증에 실패해 보류 중입니다. 수정 커밋을 같은 브랜치에 push하면 Worker가 자동으로 재검증·머지합니다.${input.fallback_reason === null ? '' : ` 기록된 세션을 이어받지 못했습니다(${input.fallback_reason}) — 계보는 \`bd show ${input.bead_id} --json\`의 notes와 댓글에서 읽으세요.`}`
+      : input.fallback_reason === null
+        ? `이 세션이 맡았던 Bead ${input.bead_id}의 작업이 terminal 실패로 멈춰 사람 확인이 필요합니다.`
+        : `Bead ${input.bead_id}의 작업이 terminal 실패로 멈춰 사람 확인이 필요합니다. 기록된 세션을 이어받지 못했습니다(${input.fallback_reason}) — 계보는 \`bd show ${input.bead_id} --json\`의 notes와 댓글에서 읽으세요.`
   );
   lines.push(`- 클래스: ${input.failure.failure_class}`);
   lines.push(`- 원인 코드: ${input.failure.reason}`);
@@ -229,12 +247,17 @@ export function buildResolvePrompt(input) {
     '1. 원인 코드와 로그를 읽고 무엇이 막혔는지 한 문단으로 확정한다.'
   );
   lines.push(
-    '2. 고칠 수 있는 원인이면 고치고, 사용자에게 Worker 화면의 [정리 재시도]로 재개하라고 알린다.'
+    holding
+      ? '2. 고칠 수 있는 원인이면 고쳐서 같은 브랜치에 push한다 — 재검증과 머지는 Worker가 자동으로 잇는다.'
+      : '2. 고칠 수 있는 원인이면 고치고, 사용자에게 Worker 화면의 [정리 재시도]로 재개하라고 알린다.'
   );
   lines.push(
     '3. 판단이 필요하면 `AskUserQuestion`을 부른다 — 이 세션은 Discord로 중계된다.'
   );
   lines.push('4. 확인한 것과 바꾼 것을 Bead notes에 남긴다.');
+  lines.push(
+    '이 세션은 Worker attempt를 이어받은 승계 세션이다 — workflow `Attempt continuation`대로 `impl_entry`·`plan_approval`을 쓰지 않고 `workflow_mode=fast_track`으로 잇는다.'
+  );
   lines.push('');
   lines.push(
     '금지: 머지·폐기 실행 · Worker 큐 상태 직접 편집 · 실패 기록 삭제.'

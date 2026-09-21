@@ -156,6 +156,42 @@ function makeLauncher(input = {}) {
 }
 
 describe('resolveFailureContext (UI-jw27 §4)', () => {
+  test('reads a holding intent as a fix-commit exit', () => {
+    const queue = {
+      completion_intents: {
+        [BEAD]: {
+          phase: 'holding',
+          hold: {
+            reason: 'script_failed',
+            summary: 'build failed',
+            log_path: '/logs/verify.log'
+          }
+        }
+      }
+    };
+
+    const context = resolveFailureContext(queue, BEAD);
+
+    expect(context).toEqual({
+      failure_class: '머지 전 검증 실패',
+      reason: 'script_failed',
+      stage: 'verify',
+      detail: 'build failed · 로그 /logs/verify.log',
+      exit: 'fix_commit_push'
+    });
+  });
+
+  test('omits absent holding detail', () => {
+    const queue = {
+      completion_intents: {
+        [BEAD]: { phase: 'holding', hold: { reason: 'script_failed' } }
+      }
+    };
+
+    const context = resolveFailureContext(queue, BEAD);
+
+    expect(context?.detail).toBeNull();
+  });
   test('reads a needs_human completion terminal as its stage class', () => {
     const queue = {
       completion_intents: {
@@ -325,6 +361,56 @@ describe('resolveFailureContext (UI-jw27 §4)', () => {
 });
 
 describe('buildResolvePrompt (UI-jw27 §4)', () => {
+  test.each([null, 'no_session_ref'])(
+    'explains the held PR exit with fallback %s',
+    (fallback_reason) => {
+      const failure = {
+        ...FAILURE,
+        exit: /** @type {const} */ ('fix_commit_push')
+      };
+
+      const prompt = buildResolvePrompt({
+        bead_id: BEAD,
+        failure,
+        checkout: REPO,
+        fallback_reason
+      });
+
+      expect(prompt).toContain(
+        `이 세션이 맡았던 Bead ${BEAD}의 PR이 머지 전 검증에 실패해 보류 중입니다. 수정 커밋을 같은 브랜치에 push하면 Worker가 자동으로 재검증·머지합니다.`
+      );
+      expect(prompt).toContain(
+        '2. 고칠 수 있는 원인이면 고쳐서 같은 브랜치에 push한다 — 재검증과 머지는 Worker가 자동으로 잇는다.'
+      );
+      expect(prompt).toContain(
+        '금지: 머지·폐기 실행 · Worker 큐 상태 직접 편집 · 실패 기록 삭제.'
+      );
+      if (fallback_reason) {
+        expect(prompt).toContain(`bd show ${BEAD} --json`);
+      }
+    }
+  );
+
+  test.each([undefined, 'fix_commit_push'])(
+    'includes attempt-continuation guidance for exit %s',
+    (exit) => {
+      const failure = {
+        ...FAILURE,
+        exit: /** @type {'fix_commit_push'|undefined} */ (exit)
+      };
+
+      const prompt = buildResolvePrompt({
+        bead_id: BEAD,
+        failure,
+        checkout: REPO,
+        fallback_reason: null
+      });
+
+      expect(prompt).toContain(
+        '이 세션은 Worker attempt를 이어받은 승계 세션이다 — workflow `Attempt continuation`대로 `impl_entry`·`plan_approval`을 쓰지 않고 `workflow_mode=fast_track`으로 잇는다.'
+      );
+    }
+  );
   test('states the class, cause code and bead id', () => {
     const prompt = buildResolvePrompt({
       bead_id: BEAD,

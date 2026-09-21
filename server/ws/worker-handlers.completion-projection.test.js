@@ -96,11 +96,12 @@ describe('completion_status phase projection (UI-hk74 §4)', () => {
     );
   });
 
-  test('names exactly the nine surviving phases', () => {
+  test('names exactly the ten surviving phases', () => {
     const phases = durableCompletionPhases();
 
     expect(phases).toEqual([
       'gating',
+      'holding',
       'merging',
       'cleaning',
       'waiting_metadata',
@@ -123,6 +124,7 @@ describe('completion_status phase projection (UI-hk74 §4)', () => {
       'failure_reason',
       'failure_stage',
       'head_sha',
+      'hold',
       'log_path',
       'merged_sha',
       'phase',
