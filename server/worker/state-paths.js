@@ -104,6 +104,14 @@ export function queueFilePath(workspace_root) {
 }
 
 /**
+ * @param {string} workspace_root
+ * @returns {string} Per-workspace external wait ledger path.
+ */
+export function externalWaitFilePath(workspace_root) {
+  return path.join(workspaceStateDir(workspace_root), 'external-wait.json');
+}
+
+/**
  * Absolute path to a workspace's manual UI-order persistence file. Lives in the
  * SAME state dir as the queue file so both survive `git clean`, branch switches,
  * and worktree churn (spec §2 / §5.1).
