@@ -2980,9 +2980,10 @@ function chipsWithBlockerStatus(chips, wait_reasons) {
  * 대기 행은 폭과 무관하게 카드 변형 하나다 (UI-pw2g §3.1). 종전 한 줄 변형은
  * ID·제목·PR·뱃지·reason·usage·조작을 한 줄에 실어 제목이 몇 글자만 남았고, 그
  * 전환 판정이 뷰포트 폭(`options.card`)이라 레인이 컬럼으로 나뉜 넓은 화면에서는
- * 영영 걸리지 않았다. 남은 두 변형은 완료 레인의 것이다 — `doneThreeLineRow`와
- * `two_line`. 세 변형 모두 같은 `.worker-mini` 껍데기를 쓰므로 드래그 계약
- * (`data-bead-id`/`data-lane`)과 머지 진행 시각화는 변형과 무관하게 유지된다.
+ * 영영 걸리지 않았다. 남은 두 변형은 완료 레인의 것이고 둘 다 제목이 자기 줄을
+ * 갖는다 (UI-fi5o §2) — `doneThreeLineRow`와 `done_row`. 세 변형 모두 같은
+ * `.worker-mini` 껍데기를 쓰므로 드래그 계약 (`data-bead-id`/`data-lane`)과 머지
+ * 진행 시각화는 변형과 무관하게 유지된다.
  *
  * `options.actions` (UI-5ksp §4.6)는 행 1번 줄 조작 슬롯 끝에 서는 호출 측
  * 조각이다 (Monitor의 ⛓ ↑ ↓ ✕). 행 밖 별도 줄이던 자리를 옮긴 것이므로 슬롯
@@ -3033,18 +3034,20 @@ export function miniRow(item, options = {}) {
   const provider_badges = providerUsageBadges(item.usage, usage_options);
   const usage_label = formatUsageTotalWithCost(item.usage);
   const merging = item.merge_step || null;
-  // 완료 행은 2줄이다 (UI-rkly §3): 제목이 가로 전체를 쓰는 1줄과, 나머지 사실을
-  // 전부 받는 2줄. 한 줄에 usage까지 실으면 제목이 먼저 잘린다. 완료 행이라도
-  // 외부 작업·REVISE 파킹·포기 조작을 실으면 그 재료가 2줄에 담기지 않는다.
-  const two_line =
+  // 완료 행은 3줄이다 (UI-fi5o §2): 정체성·조작 1줄, 제목이 가로 전체를 쓰는
+  // 2줄, 나머지 사실을 전부 받는 3줄. 제목이 ID와 같은 줄에 있으면 좁은 폭에서
+  // 제목만 접히면서 ID가 세로 가운데에 떠 어느 bead인지 먼저 읽히지 않는다.
+  // 완료 행이라도 외부 작업·REVISE 파킹·포기 조작을 실으면 그 재료가 이 세 줄에
+  // 담기지 않는다.
+  const done_row =
     item.lane === 'done' &&
     !item.external_wait &&
     !item.revise_action &&
     item.discard?.abandon.action !== true;
   // 대기 행은 폭과 무관하게 카드 변형 하나다 (UI-pw2g §3.1) — 남은 한 갈래가
-  // 완료 레인의 2줄이므로 나머지 전부가 카드다.
-  const card = !two_line;
-  const done_at_label = two_line ? formatRelativeTime(item.done_at) : '';
+  // 완료 레인의 3줄 행이므로 나머지 전부가 카드다.
+  const card = !done_row;
+  const done_at_label = done_row ? formatRelativeTime(item.done_at) : '';
   // 장식 핸들이다: 드래그는 행 전체(`.worker-mini[draggable="true"]`)에서
   // 시작하고, 인터랙티브 자식 제외는 드래그 컨트롤러가 판정한다.
   const grip = draggable
@@ -3364,12 +3367,13 @@ export function miniRow(item, options = {}) {
     data-lane=${item.lane}
     data-route=${ifDefined(route_tone.route)}
   >
-    ${two_line
+    ${done_row
       ? html`<div class="worker-mini__row1">
-            ${repo_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${title_el}${actions_el}
+            ${repo_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${actions_el}
           </div>
+          <div class="worker-mini__row2">${title_el}</div>
           ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
-          <div class="worker-mini__row2">
+          <div class="worker-mini__row3">
             ${route_el}${from_el}${exec_chips_el}${usage_el}${done_at_label
               ? html`<span
                   class="worker-mini__done-at"

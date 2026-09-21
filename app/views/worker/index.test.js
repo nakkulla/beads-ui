@@ -12945,7 +12945,7 @@ describe('레인 행 생성·수정 시각 (UI-d7pw §4)', () => {
     ).not.toBe(null);
   });
 
-  test('renders a done row as two lines carrying the completion time', () => {
+  test('renders a done row whose last line carries the completion time', () => {
     window.localStorage.setItem('bdui.worker.done-range', 'all');
     const now = Date.now();
 
@@ -12961,7 +12961,7 @@ describe('레인 행 생성·수정 시각 (UI-d7pw §4)', () => {
     );
     expect(row.querySelector('.worker-mini__row1 .worker-usage')).toBe(null);
     expect(
-      row.querySelector('.worker-mini__row2 .worker-mini__done-at')?.textContent
+      row.querySelector('.worker-mini__row3 .worker-mini__done-at')?.textContent
     ).toContain('2시간 전');
   });
 

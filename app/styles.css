@@ -4751,7 +4751,7 @@ html[data-theme='dark'] {
    그 칩에서만 무효가 된다. 세 칩이 자기 규칙으로 그 한계를 들고 있었다 —
    `.worker-usage`의 `nowrap`, 레포 배지의 `12ch`, 세션 정체 칩의 `18ch`.
 
-   담는 줄로 한정하는 것이 이 규칙의 요점이다. 완료 레인 2줄·3줄 변형은 같은
+   담는 줄로 한정하는 것이 이 규칙의 요점이다. 완료 레인의 두 3줄 변형은 같은
    칩을 `.worker-mini__row1`~`__row3`에 **직접** 담고 `.worker-chips` 래퍼를 쓰지
    않으므로(스펙 §4.3이 그 변형의 밀도를 그대로 두라고 한다) 여기 걸리지 않고,
    머리줄의 칩도 마찬가지다. `margin-left: auto`는 건드리지 않는다 — 대기 행
@@ -6037,30 +6037,31 @@ html[data-theme='dark'] {
   font-size: var(--fs-chip);
 }
 
-/* 완료 레인 2줄 행 (UI-rkly §3). 1줄은 제목에 가로를 다 내주고, 2줄이 나머지
-   사실을 전부 받는다 — 완료된 일의 제목이 잘리는 것이 여기서 가장 비싼 손실이다. */
+/* 완료 레인 3줄 행 (UI-fi5o §2). 1줄은 정체성과 조작, 2줄은 제목 전용, 3줄이
+   나머지 사실을 전부 받는다 — 제목이 ID와 한 줄을 나눠 쓰면 좁은 폭에서 제목만
+   접히면서 ID가 세로 가운데로 밀려, 어느 bead인지가 먼저 읽히지 않는다. */
 .worker-mini:has(> .worker-mini__row1) {
   flex-direction: column;
   align-items: stretch;
   gap: var(--sp-3);
 }
 
+/* 제목이 내려간 뒤 이 줄에 남는 것은 전부 칩·링크·버튼이다 — 줄을 넘길지언정
+   잘리지 않는다 (UI-pw2g §3.2와 같은 판정). */
 .worker-mini__row1 {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2);
   min-height: 28px;
   min-width: 0;
 }
 
-/* 첫 줄의 조작 자리를 유지하도록 제목이 남는 폭을 쓴다. */
-.worker-mini__row1 .worker-mini__title {
-  flex: 1 1 auto;
+.worker-mini__row2 {
   min-width: 0;
 }
 
-.worker-mini__row2 {
+.worker-mini__row3 {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -6077,7 +6078,7 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
-.worker-mini__row2 .worker-mini__meta {
+.worker-mini__row3 .worker-mini__meta {
   margin-left: auto;
 }
 
@@ -7737,7 +7738,8 @@ html[data-theme='dark'] {
   color: var(--layer-pin);
 }
 
-/* 완료 3줄 행 (§8): 레포 배지가 붙는 순간 2줄 변형에서 제목이 먼저 잘린다. */
+/* 모니터 완료 행 (§8). 줄 구성은 워커 완료 행과 같고(UI-fi5o §2), 이 변형만
+   더 낮은 밀도(저채도 좌표 줄·작은 제목)로 여러 저장소를 한 화면에 담는다. */
 .worker-mini--three-line {
   display: flex;
   flex-direction: column;
