@@ -13,7 +13,7 @@
  * 여기서도 그대로다. `bench_rows`는 서버가 필터와 무관하게 싣기 때문에 본 표의
  * 기간·저장소 필터를 좁혀도 고른 실험의 셀이 사라지지 않는다.
  */
-import { html, render } from 'lit-html';
+import { html, nothing, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import {
   COMPARE_RANGE_OPTIONS,
@@ -129,6 +129,33 @@ function clearProblemCriteria() {
   } catch {
     // Storage is optional; the next request still returns server defaults.
   }
+}
+
+/**
+ * `row.composition` 하나로 서는 세션 행의 구성 줄 (UI-obl0 §2.4). 문자열은 서버가 지은 값 그대로이며
+ * 클라이언트에서 다시 조립하지 않는다 — 재료가 없으면 줄을 그리지 않는다.
+ * `mixed`일 때만 `parts`의 유닛별 실행자가 title로 붙는다.
+ *
+ * @param {any} row
+ */
+function compositionLineTemplate(row) {
+  const composition =
+    typeof row.composition === 'string' ? row.composition : '';
+  if (composition === '') {
+    return nothing;
+  }
+  const parts =
+    row.impl_actor?.kind === 'mixed' && Array.isArray(row.impl_actor.parts)
+      ? row.impl_actor.parts
+      : [];
+  const title = parts
+    .map((/** @type {any} */ part) => `${part.unit}: ${part.label}`)
+    .join('\n');
+  return html`<span
+    class="cmp-session__composition"
+    title=${title === '' ? nothing : title}
+    >${composition}</span
+  >`;
 }
 
 /**
@@ -1023,6 +1050,7 @@ export function createCompareView(root, options = {}) {
         ><span class="cmp-issue-id">${row.bead_id}</span>${row.title ||
         ''}</span
       >
+      ${compositionLineTemplate(row)}
       <span class="cmp-session__outcome">${formatOutcomeText(row)}</span>
       ${chips.length > 0
         ? html`<span class="cmp-session__chips"

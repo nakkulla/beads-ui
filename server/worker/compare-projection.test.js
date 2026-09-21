@@ -110,6 +110,27 @@ const CATALOG = {
   model_index: { opus: 'claude', sol: 'codex', terra: 'codex' }
 };
 
+/**
+ * A multi-unit receipt whose units name the given actors in order, each at
+ * effort `high` so only the actor axis splits.
+ *
+ * @param {string[]} actors
+ * @returns {Record<string, any>}
+ */
+function mixedReceipt(actors) {
+  return {
+    checks: {
+      units: actors.map((actor, index) => ({
+        unit: `u${index + 1}`,
+        kind: 'delegated',
+        actor,
+        effort: 'high',
+        sha: SHA
+      }))
+    }
+  };
+}
+
 /** @param {Record<string, any>} [settings] */
 function makePreset(settings = {}) {
   return {
@@ -175,12 +196,87 @@ describe('worker/compare-projection executor', () => {
     expect(actor.kind).toBe('missing');
   });
 
-  test('keeps mixed multi-unit executors unrecorded', () => {
+  test('keeps agreeing multi-unit executors as one delegated actor', () => {
     const actor = implActorOf({
       checks: {
         units: [
-          { kind: 'delegated', actor: 'sol', effort: 'high' },
-          { kind: 'main', actor: 'bead' }
+          { unit: 'u1', kind: 'delegated', actor: 'sol', effort: 'high' },
+          { unit: 'u2', kind: 'delegated', actor: 'sol', effort: 'high' }
+        ]
+      }
+    });
+
+    expect(actor).toEqual({
+      kind: 'delegated',
+      model: 'sol',
+      effort: 'high',
+      label: 'sol/high'
+    });
+  });
+
+  test('names a main and delegated split as two-kind mixed', () => {
+    const actor = implActorOf({
+      checks: {
+        units: [
+          { unit: 'u1', kind: 'delegated', actor: 'sol', effort: 'high' },
+          { unit: 'u2', kind: 'main', actor: 'bead' }
+        ]
+      }
+    });
+
+    expect(actor).toEqual({
+      kind: 'mixed',
+      model: null,
+      effort: null,
+      label: '혼합 2종',
+      parts: [
+        { unit: 'u1', label: 'sol/high' },
+        { unit: 'u2', label: 'main' }
+      ]
+    });
+  });
+
+  test('keeps the shared model when only effort splits', () => {
+    const actor = implActorOf({
+      checks: {
+        units: [
+          { unit: 'u1', kind: 'delegated', actor: 'sol', effort: 'high' },
+          { unit: 'u2', kind: 'delegated', actor: 'sol', effort: 'xhigh' },
+          { unit: 'u3', kind: 'delegated', actor: 'sol', effort: 'high' }
+        ]
+      }
+    });
+
+    expect(actor).toMatchObject({
+      kind: 'mixed',
+      model: 'sol',
+      effort: null,
+      label: 'sol/혼합'
+    });
+  });
+
+  test('counts distinct unit executors when models split', () => {
+    const actor = implActorOf({
+      checks: {
+        units: [
+          { unit: 'u1', kind: 'delegated', actor: 'sol', effort: 'high' },
+          { unit: 'u2', kind: 'delegated', actor: 'terra', effort: 'medium' },
+          { unit: 'u3', kind: 'delegated', actor: 'opus', effort: 'default' },
+          { unit: 'u4', kind: 'delegated', actor: 'opus', effort: 'default' }
+        ]
+      }
+    });
+
+    expect(actor.label).toBe('혼합 3종');
+    expect(actor.parts).toHaveLength(4);
+  });
+
+  test('keeps a malformed unit unrecorded rather than mixed', () => {
+    const actor = implActorOf({
+      checks: {
+        units: [
+          { unit: 'u1', kind: 'delegated', actor: 'sol', effort: 'high' },
+          { unit: 'u2', malformed: true }
         ]
       }
     });
@@ -2333,6 +2429,52 @@ describe('worker/compare-projection grouping and summary', () => {
       expect(model.groups[0].key).toBe(key);
     }
   );
+
+  test('splits mixed rows whose unit compositions differ', () => {
+    const model = projectAttempts(
+      [
+        makeAttempt({
+          attempt_id: 'at-1',
+          receipt_check: mixedReceipt(['sol', 'terra'])
+        }),
+        makeAttempt({
+          attempt_id: 'at-2',
+          receipt_check: mixedReceipt(['sol', 'opus'])
+        })
+      ],
+      {},
+      { group_by: 'impl_actor' }
+    );
+
+    expect(model.groups.map((group) => group.key).sort()).toEqual([
+      'mixed:opus/high+sol/high',
+      'mixed:sol/high+terra/high'
+    ]);
+  });
+
+  test('joins mixed rows sharing one unit composition', () => {
+    const model = projectAttempts(
+      [
+        makeAttempt({
+          attempt_id: 'at-1',
+          receipt_check: mixedReceipt(['sol', 'terra'])
+        }),
+        makeAttempt({
+          attempt_id: 'at-2',
+          receipt_check: mixedReceipt(['terra', 'sol'])
+        })
+      ],
+      {},
+      { group_by: 'impl_actor' }
+    );
+
+    expect(model.groups).toHaveLength(1);
+    expect(model.groups[0]).toMatchObject({
+      key: 'mixed:sol/high+terra/high',
+      name: '혼합 2종',
+      n: 2
+    });
+  });
 
   test('keeps missing orchestration axes explicit', () => {
     const model = projectAttempts(

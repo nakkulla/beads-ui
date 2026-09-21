@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   formatAttemptOrchestrationChip,
+  formatImplActorChip,
   formatImplReviewChip,
   formatOrchestrationChip,
   formatWorkerChip
@@ -331,5 +332,33 @@ describe('formatImplReviewChip', () => {
     expect(
       formatImplReviewChip(/** @type {any} */ ({ impl_review_model: 'codex' }))
     ).toBeNull();
+  });
+});
+
+describe('formatImplActorChip', () => {
+  test('stands a mixed actor on its label with per-unit tooltip lines', () => {
+    const chip = formatImplActorChip({
+      kind: 'mixed',
+      model: null,
+      effort: null,
+      label: '혼합 2종',
+      parts: [
+        { unit: 'u1', label: 'sol/high' },
+        { unit: 'u2', label: 'main' }
+      ]
+    });
+
+    expect(chip?.text).toBe('혼합 2종');
+    expect(chip?.title).toBe(
+      '워커(구현 위임) — 이 attempt의 보존 영수증에 기록된 실제 구현 주체\nu1: sol/high\nu2: main'
+    );
+  });
+
+  test('omits the chip for an unknown kind', () => {
+    const chip = formatImplActorChip(
+      /** @type {any} */ ({ kind: 'future', label: '무엇' })
+    );
+
+    expect(chip).toBeNull();
   });
 });
