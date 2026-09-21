@@ -768,6 +768,23 @@ export function createBulkPane(host, options) {
     doRender();
   }
 
+  /**
+   * Take every visible repository into the selection, or drop them all. The
+   * rows on screen are the whole vocabulary: `reconcileRows` has already
+   * dropped anything that left them, so clearing the set is exact.
+   *
+   * @param {boolean} checked
+   */
+  function onAllToggle(checked) {
+    selected.clear();
+    if (checked) {
+      for (const row of rows()) {
+        selected.add(String(row.root_dir));
+      }
+    }
+    doRender();
+  }
+
   /** Narrow the selection to the failed and partial repos of this tab. */
   function onRetry() {
     const list = results[section];
@@ -789,8 +806,23 @@ export function createBulkPane(host, options) {
         ${ROWS_LOADING}
       </p>`;
     }
+    const chosen = list.filter((row) =>
+      selected.has(String(row.root_dir))
+    ).length;
     return html`<fieldset class="settings-dialog__bulk-targets">
       <legend>적용 대상</legend>
+      <label class="settings-dialog__bulk-repo settings-dialog__bulk-repo--all">
+        <input
+          type="checkbox"
+          data-bulk-all
+          .checked=${live(chosen === list.length)}
+          .indeterminate=${live(chosen > 0 && chosen < list.length)}
+          ?disabled=${running !== null}
+          @change=${(/** @type {Event} */ ev) =>
+            onAllToggle(/** @type {HTMLInputElement} */ (ev.target).checked)}
+        />
+        <span>전체</span>
+      </label>
       ${list.map(
         (row) =>
           html`<label class="settings-dialog__bulk-repo" title=${row.root_dir}>

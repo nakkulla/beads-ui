@@ -9633,6 +9633,10 @@ button.detail-session__leg:focus-visible {
   cursor: default;
 }
 
+.settings-dialog__bulk-repo--all {
+  font-weight: 600;
+}
+
 .settings-dialog__bulk-hd {
   display: flex;
   flex-wrap: wrap;

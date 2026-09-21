@@ -369,6 +369,74 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
     );
   });
 
+  test('takes every visible repository from the 전체 box', () => {
+    const { host, pane } = setup({
+      rows: [
+        row(),
+        row({ root_dir: WS_B, name: 'repo-b', auto_advance: false })
+      ]
+    });
+    pane.render('worker');
+
+    tick(host, '[data-bulk-all]', true);
+
+    expect(el(host, `[data-bulk-repo="${WS_A}"]`).checked).toBe(true);
+    expect(el(host, `[data-bulk-repo="${WS_B}"]`).checked).toBe(true);
+  });
+
+  test('drops every repository when 전체 is unticked', () => {
+    const { host, pane } = setup();
+    pane.render('worker');
+
+    tick(host, '[data-bulk-all]', false);
+
+    expect(el(host, `[data-bulk-repo="${WS_A}"]`).checked).toBe(false);
+    expect(el(host, `[data-bulk-repo="${WS_B}"]`).checked).toBe(false);
+  });
+
+  test('checks 전체 while every repository stands selected', () => {
+    const { host, pane } = setup();
+
+    pane.render('worker');
+
+    expect(el(host, '[data-bulk-all]').checked).toBe(true);
+    expect(el(host, '[data-bulk-all]').indeterminate).toBe(false);
+  });
+
+  test('marks 전체 indeterminate while only some repositories are selected', () => {
+    const { host, pane } = setup();
+    pane.render('worker');
+
+    tick(host, `[data-bulk-repo="${WS_B}"]`, false);
+
+    expect(el(host, '[data-bulk-all]').checked).toBe(false);
+    expect(el(host, '[data-bulk-all]').indeterminate).toBe(true);
+  });
+
+  test('leaves 전체 unchecked while no repository is selected', () => {
+    const { host, pane } = setup({
+      rows: [row({ auto_advance: false })]
+    });
+
+    pane.render('worker');
+
+    expect(el(host, '[data-bulk-all]').checked).toBe(false);
+    expect(el(host, '[data-bulk-all]').indeterminate).toBe(false);
+  });
+
+  test('draws 전체 ahead of the repositories inside the fieldset', () => {
+    const { host, pane } = setup();
+
+    pane.render('worker');
+
+    const boxes = el(
+      host,
+      'fieldset.settings-dialog__bulk-targets'
+    ).querySelectorAll('input[type="checkbox"]');
+    expect(boxes[0].hasAttribute('data-bulk-all')).toBe(true);
+    expect(boxes.length).toBe(3);
+  });
+
   test('disables the apply button once no repository is ticked', () => {
     const { host, pane } = setup({ rows: [row()] });
     pane.render('worker');
@@ -528,6 +596,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
     expect(button.disabled).toBe(true);
     expect(el(host, '[data-bulk-preset]').disabled).toBe(true);
     expect(el(host, `[data-bulk-repo="${WS_A}"]`).disabled).toBe(true);
+    expect(el(host, '[data-bulk-all]').disabled).toBe(true);
     expect(el(host, '[data-bulk-key="impl_model"]').disabled).toBe(true);
     for (const open of gates.splice(0)) {
       open();
