@@ -4,6 +4,7 @@ import {
   formatClockLocal,
   formatTimestampLocal
 } from '../../utils/relative-time.js';
+import { chipPopoverTemplate } from '../chip-popover.js';
 import { providerHoldBadgeText } from './gate-labels.js';
 import {
   JUDGEMENT_CHIP_KEYS,
@@ -1049,11 +1050,11 @@ describe('done lane row', () => {
     expect(row.classList.contains('worker-mini--done')).toBe(true);
   });
 
-  test('leaves a queue row as a single line', () => {
+  test('draws a queue row as the card variant', () => {
     const row = renderRow({ lane: 'queue', done: false, draggable: true });
 
     expect(row.querySelector('.worker-mini__row1')).toBeNull();
-    expect(row.querySelector('.worker-mini__line')).not.toBeNull();
+    expect(row.querySelector('.worker-mini__head')).not.toBeNull();
   });
 });
 
@@ -2423,7 +2424,7 @@ describe('exec chip placement', () => {
     return Array.from(el.children, (child) => child.className);
   }
 
-  test('puts the waiting one-line row exec chips after the line', () => {
+  test('puts the waiting row exec chips after the title line', () => {
     const row = renderRow({
       lane: 'queue',
       done: false,
@@ -2432,7 +2433,7 @@ describe('exec chip placement', () => {
 
     const markers = childMarkers(row);
     expect(markers.indexOf('worker-chips')).toBe(
-      markers.indexOf('worker-mini__line') + 1
+      markers.indexOf('worker-mini__body') + 1
     );
     expect(row.querySelectorAll('.worker-chips .exec-chip')).toHaveLength(2);
   });
@@ -2538,7 +2539,7 @@ describe('카드 배치 문법 (UI-251y §2)', () => {
     return Array.from(el.children, (child) => child.className);
   }
 
-  test('keeps every coordinate chip out of the one-line identity row', () => {
+  test('keeps every coordinate chip out of the waiting identity row', () => {
     const row = renderRow({
       lane: 'queue',
       done: false,
@@ -2546,7 +2547,7 @@ describe('카드 배치 문법 (UI-251y §2)', () => {
       ...COORD
     });
     const line = /** @type {HTMLElement} */ (
-      row.querySelector('.worker-mini__line')
+      row.querySelector('.worker-mini__head')
     );
 
     expect(line.querySelector('.worker-mini__repo')).toBeNull();
@@ -2572,7 +2573,7 @@ describe('카드 배치 문법 (UI-251y §2)', () => {
     expect(head.querySelector('.worker-usage')).toBeNull();
   });
 
-  test('orders the one-line coordinate row repo, route, from, exec then usage', () => {
+  test('orders the waiting coordinate row repo, route, from, exec then usage', () => {
     const row = renderRow({
       lane: 'queue',
       done: false,
@@ -2949,11 +2950,11 @@ describe('worker templates are unchanged without the monitor options', () => {
       )
     );
 
-    expect(row).toContain('<div class="worker-mini__line">');
+    expect(row).toContain('<div class="worker-mini__head">');
     expect(row).not.toContain('worker-deps');
     expect(row).not.toContain('exec-chip--pin');
     expect(row).toMatchInlineSnapshot(
-      `"<div class="worker-mini" data-bead-id="UI-a1" data-lane="queue" draggable="true" style=""> <div class="worker-mini__line"> <span aria-hidden="true" class="worker-mini__grip">⠿</span><span aria-hidden="true" class="worker-mini__seq">2</span><span class="worker-mini__id" title="클릭하면 ID 복사">UI-a1</span><span class="worker-mini__title">대기 행</span><span class="worker-mini__badge" title="">b</span> </div> <div class="worker-chips"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div>  </div>"`
+      `"<div class="worker-mini worker-mini--card" data-bead-id="UI-a1" data-lane="queue" draggable="true" style=""> <div class="worker-mini__head"> <span aria-hidden="true" class="worker-mini__grip">⠿</span><span aria-hidden="true" class="worker-mini__seq">2</span><span class="worker-mini__id" title="클릭하면 ID 복사">UI-a1</span><span class="worker-mini__badge" title="">b</span> </div>  <div class="worker-mini__body"><span class="worker-mini__title">대기 행</span></div> <div class="worker-chips"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div>  </div>"`
     );
   });
 
@@ -3655,7 +3656,7 @@ describe('waiting row route chip (UI-yrzu §7.2)', () => {
     expect(
       row.querySelector('.worker-chips .ctl-chip--route')?.textContent
     ).toBe('spec_backed');
-    expect(row.querySelector('.worker-mini__line .ctl-chip--route')).toBeNull();
+    expect(row.querySelector('.worker-mini__head .ctl-chip--route')).toBeNull();
   });
 
   test('draws the chip on a PR 대기 card variant', () => {
@@ -4683,33 +4684,28 @@ describe('후보 카드 배치 자격 (UI-d13v §6)', () => {
 
 describe('miniRow row actions (UI-5ksp §4.6)', () => {
   test.each([
-    ['queue', false, '.worker-mini__line'],
-    ['queue', true, '.worker-mini__head'],
-    ['done', false, '.worker-mini__row1']
-  ])(
-    'keeps queue operations last in the %s layout with card=%s',
-    (lane, card, selector) => {
-      const item = {
-        id: 'UI-ops',
-        title: '대기 조작 위치',
-        lane,
-        draggable: true,
-        reason: '관측 사유'
-      };
+    ['queue', '.worker-mini__head'],
+    ['done', '.worker-mini__row1']
+  ])('keeps queue operations last in the %s layout', (lane, selector) => {
+    const item = {
+      id: 'UI-ops',
+      title: '대기 조작 위치',
+      lane,
+      draggable: true,
+      reason: '관측 사유'
+    };
 
-      render(
-        miniRow(/** @type {any} */ (item), {
-          card,
-          actions: queueRowOps(/** @type {any} */ (item), { nudgeable: true })
-        }),
-        mount
-      );
+    render(
+      miniRow(/** @type {any} */ (item), {
+        actions: queueRowOps(/** @type {any} */ (item), { nudgeable: true })
+      }),
+      mount
+    );
 
-      expect(mount.querySelector(selector)?.lastElementChild?.className).toBe(
-        'worker-mini__rowops'
-      );
-    }
-  );
+    expect(mount.querySelector(selector)?.lastElementChild?.className).toBe(
+      'worker-mini__rowops'
+    );
+  });
 
   test.each(['mini', 'candidate'])(
     'renders re-review as an identity badge on %s',
@@ -4722,10 +4718,7 @@ describe('miniRow row actions (UI-5ksp §4.6)', () => {
       });
       const prefix = kind === 'mini' ? 'worker-mini' : 'worker-card';
 
-      render(
-        kind === 'mini' ? miniRow(item, { card: true }) : candidateCard(item),
-        mount
-      );
+      render(kind === 'mini' ? miniRow(item) : candidateCard(item), mount);
 
       expect(
         mount.querySelector(`.${prefix}__head .${prefix}__badge--rereview`)
@@ -4747,14 +4740,14 @@ describe('miniRow row actions (UI-5ksp §4.6)', () => {
     return /** @type {HTMLElement} */ (mount.querySelector('.worker-mini'));
   }
 
-  test('appends the actions to the end of a one-line row', () => {
+  test('appends the actions to the head of a waiting row', () => {
     const row = renderWithActions(
       { id: 'UI-r1', title: '대기 행', lane: 'queue', draggable: true },
       { actions: html`<span class="worker-mini__rowops">⛓</span>` }
     );
 
     const line = /** @type {HTMLElement} */ (
-      row.querySelector('.worker-mini__line')
+      row.querySelector('.worker-mini__head')
     );
 
     expect(line.lastElementChild?.className).toBe('worker-mini__rowops');
@@ -5656,7 +5649,7 @@ describe('대기 진입 유예 (UI-q1tg §3.3)', () => {
     const row = renderWaitingRow({ added_at: NOW - 5_000 });
 
     expect(
-      row.querySelector('.worker-mini__line .worker-mini__rowops .op-btn')
+      row.querySelector('.worker-mini__head .worker-mini__rowops .op-btn')
         ?.textContent
     ).toContain('지금 시작');
   });
@@ -5769,6 +5762,21 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
     };
   }
 
+  /** The server-recorded usage gate that carries every probe material (UI-1l3a §3.3). */
+  const RECORDED_USAGE_GATE = gate({
+    kind: 'provider_usage',
+    label: '⏳ 공급자 보류 13:00',
+    title: '⏳ 공급자 보류 13:00',
+    since: 4242,
+    runner: 'claude',
+    probe_ready: true,
+    lines: [
+      '⏳ 공급자 보류 13:00',
+      'sonnet · 업무',
+      '출구: [지금 시작](이 행만, 게이트 무시) — target은 프로브 성공 시 자동 해제'
+    ]
+  });
+
   /**
    * @param {any} item
    * @returns {HTMLElement|null}
@@ -5833,7 +5841,7 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
         kind: 'provider_outage',
         label: '⏳ 공급자 보류 · 다음 프로브 12:30'
       }),
-      gate({ kind: 'provider_usage', label: '⏳ 공급자 보류 13:00 · 업무' })
+      gate({ kind: 'provider_usage', label: '⏳ 공급자 보류 13:00' })
     ].map((value) => {
       const row = renderQueueRow({ gate: value });
       const chip = /** @type {HTMLElement} */ (
@@ -5847,7 +5855,7 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
 
     expect(kinds).toEqual([
       [true, '⏳ 공급자 보류 · 다음 프로브 12:30'],
-      [true, '⏳ 공급자 보류 13:00 · 업무']
+      [true, '⏳ 공급자 보류 13:00']
     ]);
   });
 
@@ -5888,32 +5896,47 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
     expect(labels).toEqual(['지금 시작', '✕']);
   });
 
-  // 서버 기록으로 선 게이트도 같은 `item.gate` 재료다 (UI-1l3a §3.3) — 직렬 선두
-  // 행의 두 출구가 함께 서는지가 그 기록의 값어치다.
-  test('offers both exits on the serial head row of a recorded provider gate', () => {
+  // 서버 기록으로 선 게이트도 같은 `item.gate` 재료다 (UI-1l3a §3.3). `↻ 지금
+  // 프로브`는 이 슬롯을 떠나 게이트 칩 팝업으로 갔다 (UI-pw2g §3.4).
+  test('leaves only 지금 시작 in the slot-1 ops of a recorded provider gate', () => {
     const ops = renderOps({
       lane: 's1',
       queue_index: 0,
-      gate: gate({
-        kind: 'provider_usage',
-        label: '⏳ 공급자 보류 13:00 · 업무',
-        title: '⏳ 공급자 보류 13:00 · 업무',
-        since: 4242,
-        runner: 'claude',
-        probe_ready: true,
-        lines: [
-          '⏳ 공급자 보류 13:00 · 업무',
-          '계정: 미해석 — 서버가 핀·저장소 기본·활성 로그인 어디에서도 claude 계정을 정하지 못함',
-          '출구: [지금 시작](이 행만, 게이트 무시) — target은 프로브 성공 시 자동 해제'
-        ]
-      })
+      gate: RECORDED_USAGE_GATE
     });
 
     const labels = Array.from(
       /** @type {HTMLElement} */ (ops).querySelectorAll('button')
     ).map((button) => button.textContent?.trim());
 
-    expect(labels).toEqual(['↻ 지금 프로브', '지금 시작', '✕']);
+    expect(labels).toEqual(['지금 시작', '✕']);
+  });
+
+  test('puts ↻ 지금 프로브 in the exit line of the gate chip popup', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({ id: 'UI-q1', gate: RECORDED_USAGE_GATE }),
+      'gate'
+    );
+    render(chipPopoverTemplate(/** @type {any} */ (content)), mount);
+
+    const exit = /** @type {HTMLElement} */ (
+      mount.querySelector('.chip-popover__exit .worker-mini__provider-probe')
+    );
+    expect(exit.textContent?.trim()).toBe('↻ 지금 프로브');
+    expect([exit.dataset.runner, exit.dataset.since]).toEqual([
+      'claude',
+      '4242'
+    ]);
+  });
+
+  test('draws no exit line when the gate carries no probe material', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({ id: 'UI-q1', gate: gate() }),
+      'gate'
+    );
+    render(chipPopoverTemplate(/** @type {any} */ (content)), mount);
+
+    expect(mount.querySelector('.chip-popover__exit')).toBeNull();
   });
 
   test('draws neither gate operation on an ungated row past its grace', () => {
@@ -6316,23 +6339,27 @@ describe('대기 카드 표면 정리 2차 (UI-0bvr)', () => {
     ).toBe(false);
   });
 
-  test('gives the waiting row the card variant on a narrow screen', () => {
-    const row = renderQueueRow({}, { card: true });
+  test('gives the waiting row the card variant at every width', () => {
+    const row = renderQueueRow({}, {});
 
     expect(row.classList.contains('worker-mini--card')).toBe(true);
   });
 
-  test('keeps the one-line variant at the desktop width', () => {
-    const row = renderQueueRow({}, { card: false });
+  test('gives the waiting row title a line of its own', () => {
+    const row = renderQueueRow({}, {});
 
-    expect(row.querySelector('.worker-mini__line')).not.toBeNull();
+    expect(
+      row.querySelector('.worker-mini__body > .worker-mini__title')
+    ).not.toBeNull();
+    expect(
+      row.querySelector('.worker-mini__head .worker-mini__title')
+    ).toBeNull();
   });
 
   test('keeps row operations last in the head and moves the reason below it', () => {
     const row = renderQueueRow(
       { reason: '⛔ spec_missing_at_base' },
       {
-        card: true,
         actions: /** @type {any} */ (
           queueRowOps(/** @type {any} */ ({ id: 'A-1', draggable: true }))
         )

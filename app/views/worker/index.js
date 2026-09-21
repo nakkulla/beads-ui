@@ -4090,9 +4090,7 @@ export function createWorkerView(mount_element, options = {}) {
             resolve_pending.has(item.id)
           )
         },
-        // 좁은 화면의 대기 행은 카드 변형이다 (UI-0bvr §7.1) — 한 줄 변형은
-        // 390px에서 서너 줄로 접히고 조작 묶음이 자기 줄로 떨어진다.
-        { actions: queueRowOps(item), card: is_mobile }
+        { actions: queueRowOps(item) }
       )}
     </div>`;
   }
@@ -4869,6 +4867,20 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return;
     }
+    // `↻ 지금 프로브`는 게이트 칩 팝업 안의 출구다 (UI-pw2g §3.4) — 아래 팝업
+    // 조기 반환보다 먼저 잡지 않으면 팝업 안의 클릭으로 삼켜져 아무 일도 하지
+    // 않는다. 재료는 버튼이 실은 `data-runner`/`data-since`이고 큐 정지의
+    // `since`와 섞이지 않는다 (UI-o5ll §3.4).
+    const probe = /** @type {HTMLElement|null} */ (
+      target?.closest?.('[data-action="provider-probe-now"]')
+    );
+    if (probe) {
+      void probeProviderNow(
+        probe.dataset.runner || '',
+        Number(probe.dataset.since)
+      );
+      return;
+    }
     // 팝업 내부의 나머지 클릭은 카드 클릭(상세 열기)으로 흐르지 않는다.
     if (target?.closest?.('.chip-popover')) {
       return;
@@ -4907,18 +4919,6 @@ export function createWorkerView(mount_element, options = {}) {
       if (bead_id) {
         void resolveInSession(bead_id);
       }
-      return;
-    }
-    // `↻ 지금 프로브`도 같은 자리의 출구다 (UI-o5ll §3.4). 재료는 버튼이 실은
-    // `data-runner`/`data-since`이고 큐 정지의 `since`와 섞이지 않는다.
-    const probe = /** @type {HTMLElement|null} */ (
-      target?.closest?.('[data-action="provider-probe-now"]')
-    );
-    if (probe) {
-      void probeProviderNow(
-        probe.dataset.runner || '',
-        Number(probe.dataset.since)
-      );
       return;
     }
     if (target?.closest?.('.worker-play')) {

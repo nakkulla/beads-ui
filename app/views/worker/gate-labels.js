@@ -44,8 +44,9 @@ export function providerHoldBadgeText(hold) {
     if (!reset) {
       return `⏳ 공급자 보류 · 리셋 미상`;
     }
-    const account = hold.target?.account_alias || hold.target?.account || '';
-    return `⏳ 공급자 보류 ${reset}${account ? ` · ${account}` : ''}`;
+    // 계정은 칩에서 빠지고 팝업에만 남는다 (UI-pw2g §3.3): 별명 없는 계정은
+    // 이메일 전체가 들어와 칩 하나가 줄을 혼자 차지했다. `hold.target`은 그대로다.
+    return `⏳ 공급자 보류 ${reset}`;
   }
   const next = providerClock(hold.next_probe_at);
   // 정상 글리프는 `⏳`다 (UI-8gem §5.2 정정): 프로브가 스스로 푸는 상태에

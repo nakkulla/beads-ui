@@ -206,22 +206,10 @@ describe('worker console styles', () => {
     expect(kvRule).toContain('width: auto');
   });
 
-  test('keeps the one-line row on one line and lets the reason yield', () => {
-    const responsiveMarker = CSS.indexOf(
-      '/* ---------- Worker responsive (<=640px)'
-    );
-    const baseWorkerCss = CSS.slice(markerIndex, responsiveMarker);
-    const lineRule =
-      baseWorkerCss.match(/(?:^|\n)\.worker-mini__line\s*{([^}]*)}/)?.[1] || '';
-    const reasonRule =
-      baseWorkerCss.match(
-        /(?:^|\n)\.worker-mini__line > \.worker-mini__reason\s*{([^}]*)}/
-      )?.[1] || '';
-
-    expect(responsiveMarker).toBeGreaterThan(markerIndex);
-    expect(lineRule).toContain('flex-wrap: nowrap');
-    expect(reasonRule).toContain('min-width: 0');
-    expect(reasonRule).toContain('text-overflow: ellipsis');
+  // 대기 행의 한 줄 변형은 사라졌다 (UI-pw2g §3.1) — 남은 규칙은 그 변형이 없는
+  // 행에 죽은 선택자로 남는다.
+  test('retires every one-line row rule with the variant', () => {
+    expect(CSS).not.toContain('.worker-mini__line');
   });
 
   test('moves the card reason out of the head into its own line', () => {
@@ -254,14 +242,6 @@ describe('worker console styles', () => {
     expect(selector_list.trim()).toBe('.worker-mini__reason-line');
   });
 
-  test('keeps standard mini-row siblings on one line in narrow lanes', () => {
-    const lineRule =
-      workerBlock.match(/(?:^|\n)\.worker-mini__line\s*{([^}]*)}/)?.[1] || '';
-
-    expect(lineRule).toContain('flex-wrap: nowrap');
-    expect(lineRule).toContain('min-width: 0');
-  });
-
   test('ellipsizes long mini-row badges in a narrow lane', () => {
     const badgeRule =
       workerBlock.match(
@@ -290,7 +270,6 @@ describe('worker console styles', () => {
     const declarations = summaryRule?.[2] || '';
 
     for (const selector of [
-      '.worker-mini__line',
       '.worker-mini__head',
       '.worker-mini__row1',
       '.worker-card__head',
@@ -376,6 +355,38 @@ describe('worker console styles', () => {
     expect(metaRule).toContain('min-width: 0');
     expect(rowRule).toContain('display: flex');
     expect(rowRule).toContain('min-width: 0');
+  });
+
+  // 실행 중 타일의 칩 줄도 줄을 넘긴다 (UI-pw2g §3.2): 담는 줄이 wrap하고 자식은
+  // 말줄임을 갖지 않아야 `오케 claude · fable · l…`이 나오지 않는다.
+  test('wraps the running tile fact and usage lines instead of clipping them', () => {
+    const rowRule =
+      workerBlock.match(
+        /(?:^|\n)\.rtile__facts,\s*\.rtile__usage\s*{([^}]*)}/
+      )?.[1] || '';
+    const childRule =
+      workerBlock.match(
+        /(?:^|\n)\.rtile__facts > \*,\s*\.rtile__usage > \*\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(rowRule).toContain('flex-wrap: wrap');
+    expect(childRule).toContain('flex: 0 1 auto');
+    expect(childRule).toContain('overflow-wrap: anywhere');
+    expect(childRule).not.toContain('white-space: nowrap');
+    expect(workerBlock).not.toContain('.rtile__facts > :not(.chip-popover)');
+  });
+
+  // 게이트 칩이 22글자에서 잘리던 자리다 (UI-pw2g §3.2).
+  test('lets a wide dependency chip wrap instead of ellipsizing at 22ch', () => {
+    const depRule =
+      workerBlock.match(/(?:^|\n)\.worker-dep\s*{([^}]*)}/)?.[1] || '';
+    const openRule =
+      workerBlock.match(/(?:^|\n)\.worker-dep__open\s*{([^}]*)}/)?.[1] || '';
+
+    expect(depRule).toContain('max-width: 100%');
+    expect(depRule).toContain('overflow-wrap: anywhere');
+    expect(depRule).not.toContain('text-overflow: ellipsis');
+    expect(openRule).not.toContain('text-overflow: ellipsis');
   });
 
   test('wraps the shared coordinate chip row in narrow lanes', () => {
@@ -588,7 +599,9 @@ describe('worker console styles', () => {
     expect(icon_sizes.join('')).toContain('min-width: 32px');
   });
 
-  test('keeps running tile metadata readable when it has a long token', () => {
+  // 칩은 제자리에서 압축되지 않고 줄을 넘긴다 (UI-pw2g §3.2): `1 1 auto`와
+  // 말줄임이 함께 있으면 좁은 줄에서 값이 글자를 잃는다.
+  test('wraps a long running tile metadata token instead of clipping it', () => {
     const chipRule =
       workerBlock.match(/(?:^|\n)\.exec-chip\s*{([^}]*)}/)?.[1] || '';
     const valueRule =
@@ -596,8 +609,9 @@ describe('worker console styles', () => {
 
     expect(chipRule).toContain('min-width: 0');
     expect(chipRule).toContain('max-width: 100%');
-    expect(valueRule).toContain('white-space: nowrap');
-    expect(valueRule).toContain('text-overflow: ellipsis');
+    expect(valueRule).toContain('flex: 0 1 auto');
+    expect(valueRule).toContain('overflow-wrap: anywhere');
+    expect(valueRule).not.toContain('text-overflow: ellipsis');
   });
 });
 

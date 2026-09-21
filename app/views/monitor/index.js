@@ -1065,9 +1065,7 @@ export function createMonitorView(mount_element, options) {
       data-queue-index=${String(item.queue_index ?? 0)}
     >
       ${miniRow(withOverlaps(item), {
-        actions: queueRowOps(item, { nudgeable: true }),
-        // 좁은 화면의 대기 행은 카드 변형이다 (UI-0bvr §7.1).
-        card: is_mobile
+        actions: queueRowOps(item, { nudgeable: true })
       })}
     </div>`;
   }
@@ -1091,8 +1089,7 @@ export function createMonitorView(mount_element, options) {
       data-queue-index=${String(item.queue_index ?? 0)}
     >
       ${miniRow(withOverlaps(item), {
-        actions: queueRowOps(item),
-        card: is_mobile
+        actions: queueRowOps(item)
       })}
     </div>`;
   }
@@ -2488,12 +2485,15 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     const bead_id = row.getAttribute('data-bead-id') || '';
+    // 버튼 분기는 아래 팝업 조기 반환보다 앞이다 (UI-pw2g §3.4): 게이트 칩 팝업
+    // 안의 출구 `↻ 지금 프로브`가 그 반환에 먼저 걸리면 아무 일도 하지 않는다.
     const button = /** @type {HTMLElement|null} */ (target.closest('button'));
     if (button) {
       ev.preventDefault();
       runRowAction(button, bead_id);
       return;
     }
+    // 팝업 내부의 나머지 클릭은 카드 클릭(상세 열기)으로 흐르지 않는다.
     if (target.closest('.rtile__failure-pop, .chip-popover')) {
       return;
     }

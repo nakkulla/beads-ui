@@ -6890,6 +6890,42 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
     ]);
   });
 
+  // 계정은 칩을 떠나 팝업에만 남는다 (UI-pw2g §3.3): 칩은 리셋 시각까지고 어느
+  // 계정의 보류인지는 그 칩이 여는 팝업이 계속 말한다.
+  test('keeps the account out of the usage gate label but inside its popup lines', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_overlay: {
+            'A-1': { metadata: { claude_account: 'a@example.com' } }
+          },
+          account_catalog: {
+            claude: [{ email: 'a@example.com', alias: '업무', active: true }]
+          },
+          provider_hold: {
+            claude: {
+              since: 1,
+              generation: 1,
+              targets: [
+                {
+                  kind: 'usage_limit',
+                  model: 'sonnet',
+                  account: 'a@example.com',
+                  resets_at: 7000
+                }
+              ]
+            }
+          }
+        })
+      ],
+      [gateState()]
+    );
+
+    expect(lanes.queue[0].gate?.label).not.toContain('업무');
+    expect(lanes.queue[0].gate?.lines).toContain('sonnet · 업무');
+  });
+
   test('draws no usage gate when the row account cannot be resolved', () => {
     const lanes = buildLanes(
       [
