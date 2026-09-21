@@ -530,14 +530,19 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   blocked summaries, with `action_required` subjects counted once in
   `조치 필요`.
 - A TERMINAL attempt inside `attempts` may additionally carry the non-persisted
-  `impl_actor: { kind: 'delegated'|'main', model: string|null, effort: string|null, label: string }`
+  `impl_actor: { kind: 'delegated'|'main'|'mixed', model: string|null, effort: string|null, label: string, parts?: { unit, label }[] }`
   (UI-ys18 §5.1) — the actual implementer the attempt's own preserved
   `exec_receipt` names, derived on the server by the preset-comparison parser
   before the internal-field trimming removes `receipt_check`. It is a SNAPSHOT
   of what RAN: a later pin, preset or global-default change never rewrites it,
-  and the wire never carries `receipt_check` itself. An unreadable, corrupt,
-  absent or disagreeing multi-unit receipt produces NO field at all, which is
-  the same thing an older server sends; consumers fail-quiet on the absence by
+  and the wire never carries `receipt_check` itself. A multi-unit receipt whose
+  units name DIFFERENT executors yields `kind: 'mixed'` (UI-obl0 §2.2), whose
+  `label` is `<actor>/혼합` when every unit is delegated to the same actor and
+  only effort differs, otherwise `혼합 <n>종` with n the count of DISTINCT unit
+  executor labels; `parts` lists `{ unit, label }` per unit in receipt order and
+  is present only on `mixed`. Only an unreadable, corrupt or absent receipt — or
+  one with a unit that fails to parse — produces NO field at all, which is the
+  same thing an older server sends; consumers fail-quiet on the absence by
   omitting the 완료 행's worker chip rather than falling back to current
   settings.
 - A RUNNING attempt inside `attempts` additionally carries the non-persisted
@@ -1182,13 +1187,16 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
     specific matches remain null. Unmatched rows additionally carry
     `preset_candidates: string[]`.
   - `orchestration: { model, effort }`,
-    `impl_actor: { kind, label, model, effort }`, and
-    `composition: "<model>/<effort> → <impl_actor.label>"` with missing axes
-    labeled `미기록`. Main rows omit `signature`, `signature_parts` and
-    `verify_source`.
+    `impl_actor: { kind, label, model, effort, parts? }` with `kind` one of
+    `delegated`, `main`, `missing` or `mixed` and `parts` present only on
+    `mixed`, and `composition: "<model>/<effort> → <impl_actor.label>"` with
+    missing axes labeled `미기록`. Main rows omit `signature`, `signature_parts`
+    and `verify_source`.
 - Groups use `preset:<id>` or `sig:<composition>` keys on the preset axis,
-  `<model>/<effort>` on orchestration, and `main`, executor label, or `미기록`
-  on implementation. Each contains `key`, `name`,
+  `<model>/<effort>` on orchestration, and `main`, executor label, `미기록`, or
+  `mixed:<distinct unit executor labels sorted and joined with +>` on
+  implementation — the mixed group's `name` is the mixed label, so two cards can
+  share a name while their keys differ. Each contains `key`, `name`,
   `badge: 'preset'|'unmatched'|'none'`, `n`, `issue_count`,
   `compositions: { composition, count }[]` (count descending), `landed`,
   `judged`, `in_flight`, `landing_rate`, `problem_count`, `problem_rate`,

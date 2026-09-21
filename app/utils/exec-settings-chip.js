@@ -317,9 +317,11 @@ export function formatImplReviewChip(rows) {
  * 기본값·프리셋은 실행 뒤에도 계속 움직이므로 과거 실행 주체를 말할 수 없다.
  *
  * `delegated`는 기록된 모델과 effort를, `main`은 직접 구현 표현을 쓴다.
+ * 유닛 실행자가 갈린 `mixed`는 서버가 지은 라벨(`<actor>/혼합` 또는 `혼합 n종`)로 서고
+ * 툴팁이 `parts`의 유닛별 실행자를 적는다 (UI-obl0 §2.5).
  * `missing`과 필드 부재(옛 서버)는 `null`이고 그때 칩은 서지 않는다.
  *
- * @param {{ kind?: unknown, model?: unknown, effort?: unknown }|null|undefined} impl_actor
+ * @param {{ kind?: unknown, model?: unknown, effort?: unknown, label?: unknown, parts?: unknown }|null|undefined} impl_actor
  * @returns {ExecChip|null}
  */
 export function formatImplActorChip(impl_actor) {
@@ -332,6 +334,24 @@ export function formatImplActorChip(impl_actor) {
       title: joinLines([
         '워커(구현 위임) — 이 attempt의 보존 영수증에 기록된 실제 구현 주체',
         '구현: 컨트롤러 직접(main)'
+      ])
+    };
+  }
+  if (impl_actor.kind === 'mixed') {
+    const label = typeof impl_actor.label === 'string' ? impl_actor.label : '';
+    if (label === '') {
+      return null;
+    }
+    const parts = Array.isArray(impl_actor.parts) ? impl_actor.parts : [];
+    return {
+      text: label,
+      title: joinLines([
+        '워커(구현 위임) — 이 attempt의 보존 영수증에 기록된 실제 구현 주체',
+        ...parts.map((part) =>
+          typeof part === 'object' && part !== null
+            ? `${part.unit}: ${part.label}`
+            : null
+        )
       ])
     };
   }

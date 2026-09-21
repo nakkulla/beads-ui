@@ -463,6 +463,37 @@ describe('views/adr signals', () => {
 
     expect(texts(root, '.adr-row__mid')).toEqual(['ADR dotfiles-60u8']);
   });
+
+  test('keeps the summary and signal beside the title and shortens the spec path', () => {
+    const { root } = mount([
+      workspace({
+        current: [
+          adr(12, {
+            spec: 'docs/superpowers/specs/2026-09-21-table-design.md'
+          })
+        ],
+        citations_stale: [
+          {
+            kind: 'retired',
+            file: 'AGENTS.md',
+            line: 3,
+            adr: 12,
+            detail: 'x'
+          }
+        ]
+      })
+    ]);
+    expect(texts(root, '.adr-table--current .adr-title__top')).toEqual([
+      '결정 12 인용 stale 1'
+    ]);
+    expect(texts(root, '.adr-table--current .adr-title__summary')).toEqual([
+      'summary 12'
+    ]);
+    expect(texts(root, '.adr-table--current .adr-spec')).toEqual([
+      '2026-09-21-table-design.md'
+    ]);
+    expect(root.querySelector('.adr-table--current .adr-summary')).toBeNull();
+  });
 });
 
 describe('views/adr candidate section', () => {
@@ -653,7 +684,7 @@ describe('views/adr cross citations', () => {
 });
 
 describe('views/adr legacy-only regression', () => {
-  test('renders a numeric-only workspace with the pre-change markup', () => {
+  test('renders a numeric-only workspace with the compact current row', () => {
     const { root } = mount([
       workspace({
         current: [
@@ -686,7 +717,7 @@ describe('views/adr legacy-only regression', () => {
       root.querySelector('.adr-history tbody')
     );
     expect(markup(current)).toMatchInlineSnapshot(
-      `"<tr data-adr="24"> <td class="adr-num">24</td> <td> <span class="adr-doc adr-doc--plain">결정 24</span> </td> <td class="adr-date">2026-09-03</td> <td class="adr-summary">summary 24</td> <td></td> <td> </td> <td class="adr-signals"> <span class="adr-chip adr-chip--signal">인용 stale 1</span> </td> </tr> <tr data-adr="30"> <td class="adr-num">30</td> <td> <span class="adr-doc adr-doc--plain">결정 30</span> </td> <td class="adr-date">2026-09-01</td> <td class="adr-summary">summary 30</td> <td></td> <td> </td> <td class="adr-signals"> </td> </tr>"`
+      `"<tr data-adr="24"> <td class="adr-num">24</td> <td class="adr-title"> <div class="adr-title__top"> <span class="adr-doc adr-doc--plain">결정 24</span> <span class="adr-signals"> <span class="adr-chip adr-chip--signal">인용 stale 1</span> </span> </div> <span class="adr-title__summary">summary 24</span> </td> <td class="adr-date">2026-09-03</td> <td class="adr-spec"> </td> <td> </td> </tr> <tr data-adr="30"> <td class="adr-num">30</td> <td class="adr-title"> <div class="adr-title__top"> <span class="adr-doc adr-doc--plain">결정 30</span> <span class="adr-signals"> </span> </div> <span class="adr-title__summary">summary 30</span> </td> <td class="adr-date">2026-09-01</td> <td class="adr-spec"> </td> <td> </td> </tr>"`
     );
     expect(markup(history)).toMatchInlineSnapshot(
       `"<tr data-adr="9"> <td class="adr-num">9</td> <td>결정 9</td> <td class="adr-status">superseded</td> <td class="adr-superseded"> → 24 </td> </tr>"`

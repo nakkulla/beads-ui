@@ -1327,13 +1327,18 @@ export function bootstrap(root_element) {
     let workspace_picker_observed_view = null;
 
     /**
-     * Switch a project selected from Monitor and open that project's Worker.
+     * Switch a project selected from a cross-workspace view and open that
+     * project's Worker.
      *
      * @param {string} workspace_path
      */
     async function handleWorkspacePickerChange(workspace_path) {
       const request = ++workspace_picker_request;
-      const started_on_monitor = store.getState().view === 'monitor';
+      const started_view = store.getState().view;
+      const opens_worker =
+        started_view === 'monitor' ||
+        started_view === 'compare' ||
+        started_view === 'adr';
       const view_revision = workspace_picker_view_revision;
       const switched = await handleWorkspaceChange(
         workspace_path,
@@ -1342,10 +1347,10 @@ export function bootstrap(root_element) {
       const state = store.getState();
       if (
         switched &&
-        started_on_monitor &&
+        opens_worker &&
         request === workspace_picker_request &&
         view_revision === workspace_picker_view_revision &&
-        state.view === 'monitor' &&
+        state.view === started_view &&
         state.workspace.current?.path === workspace_path
       ) {
         router.gotoView('worker');

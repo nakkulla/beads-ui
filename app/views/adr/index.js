@@ -400,17 +400,15 @@ export function createAdrView(root, options = {}) {
       return compareAdrDesc(a.adr, b.adr);
     });
     return html`
-      <div class="adr-tablewrap">
+      <div class="adr-tablewrap adr-tablewrap--current">
         <table class="adr-table adr-table--current">
           <thead>
             <tr>
               <th>번호</th>
               <th>제목</th>
               <th>날짜</th>
-              <th>summary</th>
               <th>spec</th>
               <th>bead</th>
-              <th>신호</th>
             </tr>
           </thead>
           <tbody>
@@ -418,26 +416,40 @@ export function createAdrView(root, options = {}) {
               ({ adr, chips }) => html`
                 <tr data-adr=${String(adr.id)}>
                   <td class="adr-num">${adr.id}</td>
-                  <td>
-                    ${docCell(
-                      `docs/adr/${adr.file}`,
-                      ws.root_dir,
-                      adr.title || adr.file
-                    )}
+                  <td class="adr-title">
+                    <div class="adr-title__top">
+                      ${docCell(
+                        `docs/adr/${adr.file}`,
+                        ws.root_dir,
+                        adr.title || adr.file
+                      )}
+                      <span class="adr-signals">
+                        ${chips.map(
+                          (chip) =>
+                            html`<span class="adr-chip adr-chip--signal"
+                              >${chip.text}</span
+                            >`
+                        )}
+                      </span>
+                    </div>
+                    ${adr.summary
+                      ? html`<span class="adr-title__summary"
+                          >${adr.summary}</span
+                        >`
+                      : html``}
                   </td>
                   <td class="adr-date">${adr.date || ''}</td>
-                  <td class="adr-summary">${adr.summary || ''}</td>
-                  <td>${adr.spec ? docCell(adr.spec, ws.root_dir) : html``}</td>
+                  <td class="adr-spec">
+                    ${adr.spec
+                      ? docCell(
+                          adr.spec,
+                          ws.root_dir,
+                          adr.spec.split('/').pop() || adr.spec
+                        )
+                      : html``}
+                  </td>
                   <td>
                     ${adr.bead ? beadCell(adr.bead, ws.root_dir) : html``}
-                  </td>
-                  <td class="adr-signals">
-                    ${chips.map(
-                      (chip) =>
-                        html`<span class="adr-chip adr-chip--signal"
-                          >${chip.text}</span
-                        >`
-                    )}
                   </td>
                 </tr>
               `

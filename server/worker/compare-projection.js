@@ -105,10 +105,12 @@ const BENCH_LABEL = 'bench';
 
 /**
  * @typedef {Object} ImplActor
- * @property {'delegated'|'main'|'missing'} kind
+ * @property {'delegated'|'main'|'missing'|'mixed'} kind
  * @property {string|null} model
  * @property {string|null} effort
  * @property {string} label
+ * @property {Array<{ unit: string, label: string }>} [parts] - Per-unit
+ * executors in receipt order, present only on `mixed` (UI-obl0 §2.2).
  */
 
 /**
@@ -164,10 +166,12 @@ function stringList(value) {
  * legacy record that stored the raw receipt STRING is parsed here instead, so
  * both generations answer the same question.
  *
- * A multi-unit receipt (`checks.units`) resolves only when every unit names the
- * same executor — a plan whose units ran on different actors has no single
- * implementation axis, and inventing one would merge two executors into a row
- * that compares neither.
+ * A multi-unit receipt (`checks.units`) whose units all name the same executor
+ * resolves to that executor. Units that name DIFFERENT executors resolve to
+ * `mixed` instead (UI-obl0 §2.1) — the split is a fact about the attempt, not a
+ * gap in the record, so it carries a label naming only the split axis plus
+ * per-unit `parts`. `missing` stays reserved for a receipt that cannot be read:
+ * absent, corrupt, or a unit that fails to parse.
  *
  * @param {Record<string, any>|null|undefined} receipt_check
  * @returns {ImplActor}
@@ -191,22 +195,63 @@ export function implActorOf(receipt_check) {
   if (!Array.isArray(checks.units) || checks.units.length === 0) {
     return missing;
   }
-  /** @type {ImplActor|null} */
-  let agreed = null;
+  /** @type {ImplActor[]} */
+  const unit_actors = [];
+  /** @type {Array<{ unit: string, label: string }>} */
+  const parts = [];
   for (const unit of checks.units) {
     const unit_actor = parseActorEntry(unit);
     if (!unit_actor) {
       return missing;
     }
-    if (agreed === null) {
-      agreed = unit_actor;
-      continue;
-    }
-    if (agreed.label !== unit_actor.label) {
-      return missing;
-    }
+    unit_actors.push(unit_actor);
+    parts.push({
+      unit: (isRecord(unit) ? str(unit.unit) : null) ?? '',
+      label: unit_actor.label
+    });
   }
-  return agreed ?? missing;
+  const first = unit_actors[0];
+  if (!first) {
+    return missing;
+  }
+  if (unit_actors.every((actor) => actor.label === first.label)) {
+    return first;
+  }
+  return mixedActor(unit_actors, parts);
+}
+
+/**
+ * Build the `mixed` actor whose label names only the axis that split — the
+ * shared model when just effort differs, otherwise a count of distinct unit
+ * executors (UI-obl0 §2.2).
+ *
+ * @param {ImplActor[]} unit_actors
+ * @param {Array<{ unit: string, label: string }>} parts
+ * @returns {ImplActor}
+ */
+function mixedActor(unit_actors, parts) {
+  const models = new Set(unit_actors.map((actor) => actor.model));
+  const effort_only =
+    unit_actors.every((actor) => actor.kind === 'delegated') &&
+    models.size === 1;
+  if (effort_only) {
+    const model = unit_actors[0].model;
+    return {
+      kind: 'mixed',
+      model,
+      effort: null,
+      label: `${model}/혼합`,
+      parts
+    };
+  }
+  const distinct = new Set(parts.map((part) => part.label));
+  return {
+    kind: 'mixed',
+    model: null,
+    effort: null,
+    label: `혼합 ${distinct.size}종`,
+    parts
+  };
 }
 
 /**
@@ -1125,6 +1170,22 @@ function groupIdentity(row, group_by) {
     return { key, name: key, badge: 'none' };
   }
   if (group_by === 'impl_actor') {
+    if (row.impl_actor.kind === 'mixed') {
+      // `혼합 n종` repeats across different compositions, so the key carries the
+      // composition signature while the card keeps the short label (§2.3).
+      const labels = [
+        ...new Set(
+          (row.impl_actor.parts || []).map(
+            (/** @type {{ label: string }} */ part) => part.label
+          )
+        )
+      ].sort();
+      return {
+        key: `mixed:${labels.join('+')}`,
+        name: row.impl_actor.label,
+        badge: 'none'
+      };
+    }
     const key =
       row.impl_actor.kind === 'main'
         ? 'main'

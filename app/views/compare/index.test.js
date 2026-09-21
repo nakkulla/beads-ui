@@ -1077,6 +1077,80 @@ describe('compare group cards', () => {
     expect(root.querySelector('.cmp-session__chips')).toBeNull();
   });
 
+  test('writes the server composition on the session row', async () => {
+    const { root, view } = mountComparison({
+      rows: [
+        {
+          attempt_id: 'session-1',
+          bead_id: 'UI-one',
+          outcome: { kind: 'unknown' },
+          composition: 'claude-opus-5/high → sol/high'
+        }
+      ]
+    });
+
+    await view.refresh();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-expand')
+    ).click();
+
+    expect(
+      root.querySelector('.cmp-session__composition')?.textContent
+    ).toContain('claude-opus-5/high → sol/high');
+  });
+
+  test('omits the session composition line when the string is empty', async () => {
+    const { root, view } = mountComparison({
+      rows: [
+        {
+          attempt_id: 'session-1',
+          bead_id: 'UI-one',
+          outcome: { kind: 'unknown' },
+          composition: ''
+        }
+      ]
+    });
+
+    await view.refresh();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-expand')
+    ).click();
+
+    expect(root.querySelector('.cmp-session__composition')).toBeNull();
+  });
+
+  test('titles a mixed session composition with its per-unit executors', async () => {
+    const { root, view } = mountComparison({
+      rows: [
+        {
+          attempt_id: 'session-1',
+          bead_id: 'UI-one',
+          outcome: { kind: 'unknown' },
+          composition: 'claude-opus-5/high → 혼합 2종',
+          impl_actor: {
+            kind: 'mixed',
+            label: '혼합 2종',
+            model: null,
+            effort: null,
+            parts: [
+              { unit: 'u1', label: 'sol/high' },
+              { unit: 'u2', label: 'main' }
+            ]
+          }
+        }
+      ]
+    });
+
+    await view.refresh();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-expand')
+    ).click();
+
+    expect(
+      root.querySelector('.cmp-session__composition')?.getAttribute('title')
+    ).toBe('u1: sol/high\nu2: main');
+  });
+
   test('joins sorted unique unmatched candidates after the composition', async () => {
     const { root, view } = mountComparison({
       groups: [

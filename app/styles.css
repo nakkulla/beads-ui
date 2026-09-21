@@ -10989,9 +10989,11 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   grid-template-columns:
     10px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr)
     minmax(0, 1fr) minmax(0, 0.6fr);
-  grid-template-areas: 'dot title outcome chips time cost';
+  grid-template-areas:
+    'dot title outcome chips time cost'
+    'dot composition outcome chips time cost';
   align-items: center;
-  gap: var(--sp-6) var(--sp-10);
+  gap: var(--sp-2) var(--sp-10);
   padding: var(--sp-8) 0;
   border-bottom: 1px solid var(--border-card);
   color: var(--text-primary);
@@ -11033,6 +11035,14 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.cmp-session__composition {
+  grid-area: composition;
+  min-width: 0;
+  color: var(--text-muted);
+  font: var(--fs-small) var(--font-mono);
+  overflow-wrap: anywhere;
 }
 
 .cmp-session__outcome {
@@ -11173,7 +11183,11 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 
   .cmp-session {
     grid-template-columns: 10px minmax(0, 1fr) minmax(0, 105px);
-    grid-template-areas: 'dot title cost' 'dot outcome time' 'dot chips chips';
+    grid-template-areas:
+      'dot title cost'
+      'dot outcome time'
+      'dot chips chips'
+      'dot composition composition';
     row-gap: var(--sp-2);
   }
 
@@ -11307,6 +11321,11 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   overflow-x: auto;
 }
 
+.adr-tablewrap--current {
+  max-height: max(24rem, calc(100dvh - var(--app-header-h) - 12rem));
+  overflow: auto;
+}
+
 .adr-table {
   width: 100%;
   border-collapse: collapse;
@@ -11320,6 +11339,13 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   font-weight: 400;
   text-align: left;
   white-space: nowrap;
+}
+
+.adr-table--current thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-panel);
 }
 
 .adr-table td {
@@ -11336,16 +11362,45 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   color: var(--text-muted);
 }
 
-.adr-summary {
-  min-width: 18rem;
+.adr-table--current tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--bg-card) 52%, transparent);
+}
+
+.adr-table--current tbody tr:hover {
+  background: color-mix(in srgb, var(--bg-card) 82%, var(--bg-panel));
+}
+
+.adr-title {
+  min-width: 22rem;
+}
+
+.adr-title__top {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.adr-title__summary {
+  display: block;
+  max-width: 42rem;
+  margin-top: var(--sp-2);
+  overflow: hidden;
   color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adr-spec {
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .adr-signals {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-3);
-  border-bottom: none;
+  gap: var(--sp-2);
 }
 
 .adr-doc--plain {
