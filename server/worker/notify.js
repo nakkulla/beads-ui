@@ -55,6 +55,7 @@ const TITLE = {
   awaiting_user: `${SENDER} ⏸️ 파킹`,
   provider_hold: `${SENDER} ⏳ 공급자 보류`,
   provider_recovered: `${SENDER} ✅ 공급자 회복`,
+  provider_live_preempt: `${SENDER} 🔀 실행 중 계정 전환`,
   provider_disarmed: `${SENDER} 🚨 자동 재개 중단`,
   // One transition for every user-initiated terminal failure (UI-jw27 §1). The
   // kinds are told apart by the body's `클래스:` line rather than by their own
@@ -285,6 +286,7 @@ function headline(transition, bead_id, bead_title) {
  *   providerHoldEntered: (input: { bead_id: string, runner: string, kind: string, detail: string, summary: string, account?: string|null, resets_at?: number|null, auto_switch?: 'none'|'cap'|'unconfigured'|'disabled'|null, repo?: string|null }) => Promise<void>,
  *   providerRecovered: (input: { bead_id: string, runner: string, duration_ms: number, resumed_beads?: string[], refusal?: string|null, switched_from?: string|null, switched_to?: string|null, repo?: string|null }) => Promise<void>,
  *   providerAutoResumeDisarmed: (input: { bead_id: string, runner: string, reason: string, repo?: string|null }) => Promise<void>,
+ *   providerLivePreempt: (input: { bead_id: string, runner: string, from: string, to: string, window: string, pct: number, repo?: string|null }) => Promise<void>,
  *   needsHuman: (input: NeedsHumanInput) => Promise<void>,
  *   hold: (input: NeedsHumanInput) => Promise<void>,
  *   waitOverdue: (input: WaitNotificationInput) => Promise<boolean>,
@@ -754,7 +756,33 @@ export function createNotifier(deps) {
       }
     },
 
+    async providerLivePreempt(input) {
+      try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return;
+        }
+        const bead_title = await lookupTitle(input.bead_id);
+        const lines = [
+          headline(TITLE.provider_live_preempt, input.bead_id, bead_title),
+          `공급자: ${input.runner}`,
+          `계정 전환: ${input.from} → ${input.to}`,
+          `사용량: ${input.window} ${input.pct}%`
+        ];
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        send(cmd, lines.join('\n'));
+      } catch (err) {
+        log('providerLivePreempt failed: %o', err);
+      }
+    },
+
     async providerAutoResumeDisarmed(input) {
+      if (input.reason !== 'auto_resume_cap') {
+        return;
+      }
       try {
         const cmd = resolveCmd();
         if (!cmd) {

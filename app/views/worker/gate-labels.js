@@ -76,9 +76,7 @@ export function autoResumeText(value) {
 /**
  * Say why a limit hold stayed on its own account (UI-13o1 §3.4). The candidate
  * set is the user's per-runner allow list, so `none` says the list ran out
- * rather than the machine did. `cap` is retired vocabulary kept readable for
- * old queue files: the receipt no longer stores it, and `auto_resume` already
- * says what it used to say.
+ * rather than the machine did. Retired cap markers render no text.
  *
  * @param {HoldTile['auto_switch']|undefined} value
  * @returns {string}

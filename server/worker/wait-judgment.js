@@ -8,7 +8,6 @@ import {
 } from '../../app/utils/failure-sentences.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { OBSERVATION } from './external-wait/contract.js';
-import { USAGE_REARM_CAP } from './provider-health.js';
 
 /** All display/notification thresholds live here (UI-n99w §5.2). */
 export const WAIT_THRESHOLDS = Object.freeze({
@@ -695,14 +694,7 @@ export function judgeWaitReasons(input) {
         const window = line(
           target.window || account?.window || limited_window?.key
         );
-        const disarmed = line(target.last_error).startsWith(
-          'auto_resume_disarmed:'
-        );
-        const exhausted =
-          Number.isInteger(target.rearm_count) &&
-          target.rearm_count >= USAGE_REARM_CAP;
         const resets_at = timestamp(target.resets_at);
-        const hold_since = timestamp(hold.since);
         const next_at = timestamp(target.next_probe_at);
         const headline = outage
           ? `${runner} 공급자 장애${target.detail ? ` · ${line(target.detail)}` : ''}`
@@ -711,9 +703,7 @@ export function judgeWaitReasons(input) {
               .join(' ');
         const release = outage
           ? `${next_at === undefined ? '' : `${localClock(next_at)}에 `}자동 프로브 (상한 없음, ADR UI-o5ll)`
-          : disarmed || exhausted
-            ? '자동 재개 꺼짐 · 서버 재시작 시 1회 자동 프로브 · ↻ 지금 프로브 필요'
-            : `리셋 ${resets_at === undefined ? '미상' : localClock(resets_at)} 뒤 자동 프로브${Number.isInteger(target.rearm_count) ? ` (자동 재개 ${Math.max(0, USAGE_REARM_CAP - target.rearm_count)}회)` : ''}`;
+          : `리셋 ${resets_at === undefined ? '미상' : localClock(resets_at)} 뒤 자동 프로브 (상한 없음)`;
         const result = reason(
           'provider_hold',
           bead_id,
@@ -736,16 +726,6 @@ export function judgeWaitReasons(input) {
         }
         if (!outage && elapsed(resets_at, WAIT_THRESHOLDS.grace_ms, now)) {
           judge(result, 'overdue', 'reset_passed');
-        }
-        if (
-          !outage &&
-          disarmed &&
-          (elapsed(resets_at, 0, now) ||
-            (resets_at === undefined &&
-              hold_since !== undefined &&
-              now - hold_since > WAIT_THRESHOLDS.unknown_reset_ms))
-        ) {
-          judge(result, 'action_required', 'probe_needed');
         }
         wait_reasons.push(result);
       }

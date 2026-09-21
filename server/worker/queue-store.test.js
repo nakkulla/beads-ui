@@ -33,6 +33,152 @@ import { ensureUsageReceiptInbox } from './usage-receipts.js';
 let tmp_state;
 const WS = '/tmp/example-workspace/project-a';
 
+describe('live account preemption persistence', () => {
+  test('persists pause intent and recovery receipt in one revision across restart', () => {
+    const store = createQueueStore({ now: () => 100 });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'live',
+        bead_id: 'B1',
+        runner: 'claude',
+        status: 'running'
+      }
+    });
+    const revision = store.snapshot(WS).revision;
+    const intent = {
+      reason: 'account_preempt',
+      from: 'old',
+      to: 'new',
+      window: '5h',
+      pct: 90
+    };
+
+    const result = store.requestAttemptControl(
+      WS,
+      /** @type {any} */ ({ attempt_id: 'live', kind: 'pause', intent })
+    );
+
+    expect(result.queue.revision).toBe(revision + 1);
+    const restored = createQueueStore().load(WS);
+    expect(restored.attempts.live.control).toMatchObject({ intent });
+    expect(restored.auto_resume_pending).toEqual([
+      {
+        attempt_id: 'live',
+        generation: 0,
+        account: 'new',
+        kind: 'account_switch',
+        origin: 'live_preempt',
+        switched_from: 'old'
+      }
+    ]);
+  });
+
+  test('keeps live preemption receipts independent of hold generations', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        attempts: {
+          live: {
+            attempt_id: 'live',
+            bead_id: 'B1',
+            runner: 'claude',
+            status: 'running'
+          }
+        },
+        provider_hold: {
+          claude: {
+            since: 1,
+            generation: 5,
+            targets: [
+              {
+                kind: 'outage',
+                model: 'opus',
+                account: 'old',
+                attempt_ids: ['live']
+              }
+            ]
+          }
+        },
+        auto_resume_pending: [
+          {
+            attempt_id: 'live',
+            generation: 0,
+            account: 'new',
+            kind: 'account_switch',
+            origin: 'live_preempt',
+            switched_from: 'old'
+          },
+          {
+            attempt_id: 'invalid',
+            generation: 0,
+            account: 'new',
+            kind: 'account_switch'
+          }
+        ]
+      })
+    );
+    const store = createQueueStore();
+
+    store.discardStaleAutoResumePending(WS);
+
+    expect(store.snapshot(WS).auto_resume_pending).toEqual([
+      {
+        attempt_id: 'live',
+        generation: 0,
+        account: 'new',
+        kind: 'account_switch',
+        origin: 'live_preempt',
+        switched_from: 'old'
+      }
+    ]);
+  });
+
+  test('normalizes live switch provenance and drops withdrawn target caps', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        attempts: {
+          live: {
+            attempt_id: 'live',
+            bead_id: 'B1',
+            account_sources: { claude: 'live_switch', codex: null }
+          }
+        },
+        provider_hold: {
+          claude: {
+            since: 1,
+            generation: 5,
+            targets: [
+              {
+                kind: 'usage_limit',
+                model: 'opus',
+                account: 'old',
+                attempt_ids: ['live'],
+                auto_switch: 'cap',
+                disarm_notified_at: 1
+              }
+            ]
+          }
+        }
+      })
+    );
+
+    const restored = createQueueStore().load(WS);
+
+    expect(restored.attempts.live.account_sources).toEqual({
+      claude: 'live_switch',
+      codex: null
+    });
+    expect(restored.provider_hold.claude.targets[0].auto_switch).toBeNull();
+    expect(restored.provider_hold.claude.targets[0]).not.toHaveProperty(
+      'disarm_notified_at'
+    );
+  });
+});
+
 /** The dispatch head every resolution binding in this file is taken on. */
 const RESOLUTION_DISPATCH_HEAD = 'd'.repeat(40);
 
@@ -325,7 +471,7 @@ describe('worker/queue-store provider hold', () => {
     });
   });
 
-  test('persists a disarmed notification timestamp across a cold load', () => {
+  test('ignores retired disarm timestamps on update and cold load', () => {
     const store = createQueueStore();
     seedProviderAttempt(store, 'att-1');
     const held = holdProviderAttempt(store, 'att-1');
@@ -336,16 +482,16 @@ describe('worker/queue-store provider hold', () => {
       kind: 'outage',
       model: 'opus',
       account: 'held@example.com',
-      patch: { disarm_notified_at: 1234 }
+      patch: /** @type {any} */ ({ disarm_notified_at: 1234 })
     });
     const restored = createQueueStore().snapshot(WS);
 
-    expect(updated.queue.provider_hold.claude.targets[0]).toMatchObject({
-      disarm_notified_at: 1234
-    });
-    expect(restored.provider_hold.claude.targets[0]).toMatchObject({
-      disarm_notified_at: 1234
-    });
+    expect(updated.queue.provider_hold.claude.targets[0]).not.toHaveProperty(
+      'disarm_notified_at'
+    );
+    expect(restored.provider_hold.claude.targets[0]).not.toHaveProperty(
+      'disarm_notified_at'
+    );
   });
 
   // RED 1 (spec §5)
@@ -10734,6 +10880,39 @@ describe('worker/queue-store record transfer', () => {
     expect(fs.existsSync(attemptRecordPath(WS, 'UI-retry', 'a-retry'))).toBe(
       false
     );
+  });
+
+  test('removes transferred attempts from provider targets and drops empty usage holds', () => {
+    const { store } = storeWithTimeline();
+    append(store, {
+      attempt_id: 'held',
+      bead_id: 'B1',
+      status: 'running',
+      runner: 'claude'
+    });
+    store.holdProviderAttempt(WS, {
+      attempt_id: 'held',
+      runner: 'claude',
+      patch: { status: 'paused' },
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account: 'old',
+        detail: 'usage_limit',
+        last_error: '',
+        resets_at: null,
+        rearm_count: 12,
+        attempt_ids: ['held']
+      }
+    });
+
+    store.updateAttempt(WS, {
+      attempt_id: 'held',
+      patch: { status: 'discarded', finished_at: 500 }
+    });
+
+    expect(store.snapshot(WS).attempts.held).toBeUndefined();
+    expect(store.snapshot(WS).provider_hold).toEqual({});
   });
 
   test('transfers a failed attempt once it is dismissed', () => {

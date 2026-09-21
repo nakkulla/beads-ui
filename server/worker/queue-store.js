@@ -50,7 +50,7 @@
  * @property {number|null} pid - OS process id of the runner.
  * @property {{ pid: number, pgid: number, started_at: number }|null} process_identity -
  * Verified detached process-group identity used for restart-safe control.
- * @property {{ kind: 'pause', phase: 'requested'|'signaled'|'terminated'|'done'|'failed', requested_at: number, last_error: string|null }|null} control -
+ * @property {{ kind: 'pause', phase: 'requested'|'signaled'|'terminated'|'done'|'failed', requested_at: number, last_error: string|null, intent?: AccountPreemptIntent }|null} control -
  * Durable pause intent and monotonic recovery phase.
  * @property {string|null} runner - Runner adapter (claude/codex/ccx).
  * @property {string|null} session_id - Runner session identifier (claude
@@ -68,6 +68,7 @@
  * launch, or null when no Codex pin was applied.
  * @property {{ claude: AccountSourceValue, codex: AccountSourceValue }|null} account_sources - Provenance of the applied account pins.
  * @property {string|null} account_switched_from - Account key replaced by an outage or preemptive switch.
+ * @property {{ at: number, reason: 'no_candidate'|'no_row' }|null} live_preempt_last_skip - Latest live switch without a usable destination.
  * @property {{ reason: 'transcript_missing', session_id: string }|null} resume_fallback - One-shot fresh substitute marker.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
@@ -627,7 +628,10 @@
  * run once and never again.
  */
 /**
- * @typedef {'bead'|'workspace_default'|'outage_switch'|'preempt_switch'|null} AccountSourceValue
+ * @typedef {'bead'|'workspace_default'|'outage_switch'|'preempt_switch'|'live_switch'|null} AccountSourceValue
+ */
+/**
+ * @typedef {{ reason: 'account_preempt', from: string, to: string, window: string, pct: number }} AccountPreemptIntent
  */
 /**
  * @typedef {Object} ProviderLimitPolicy
@@ -645,8 +649,7 @@
  * @property {number|null} resets_at
  * @property {number} rearm_count
  * @property {string[]} attempt_ids
- * @property {'none'|'cap'|'unconfigured'|'disabled'|null} [auto_switch]
- * @property {number} [disarm_notified_at]
+ * @property {'none'|'unconfigured'|'disabled'|null} [auto_switch]
  * @property {number|null} [next_probe_at] - When the prober next touches this
  * target. Durable rather than timer-local because the held tile shows it: an
  * in-memory deadline reads as absent for every viewer after a restart.
@@ -663,6 +666,8 @@
  * @property {number} generation
  * @property {string|null} account
  * @property {'provider_outage'|'account_switch'} kind
+ * @property {'live_preempt'} [origin]
+ * @property {string} [switched_from]
  */
 /**
  * @typedef {Object} RepoOperationMigrationResult
@@ -2860,6 +2865,15 @@ function normalizeAttemptControl(value) {
       value.phase
     ),
     requested_at,
+    ...(isRecord(value.intent) &&
+    value.intent.reason === 'account_preempt' &&
+    typeof value.intent.from === 'string' &&
+    typeof value.intent.to === 'string' &&
+    typeof value.intent.window === 'string' &&
+    typeof value.intent.pct === 'number' &&
+    Number.isFinite(value.intent.pct)
+      ? { intent: /** @type {AccountPreemptIntent} */ ({ ...value.intent }) }
+      : {}),
     last_error:
       typeof value.last_error === 'string' && value.last_error.length > 0
         ? value.last_error
@@ -3100,6 +3114,13 @@ export function makeAttempt(fields) {
     account_switched_from:
       typeof fields.account_switched_from === 'string'
         ? fields.account_switched_from
+        : null,
+    live_preempt_last_skip:
+      isRecord(fields.live_preempt_last_skip) &&
+      typeof fields.live_preempt_last_skip.at === 'number' &&
+      Number.isFinite(fields.live_preempt_last_skip.at) &&
+      ['no_candidate', 'no_row'].includes(fields.live_preempt_last_skip.reason)
+        ? { ...fields.live_preempt_last_skip }
         : null,
     resume_fallback:
       isRecord(fields.resume_fallback) &&
@@ -4048,7 +4069,8 @@ const ACCOUNT_SOURCE_VALUES = new Set([
   'bead',
   'workspace_default',
   'outage_switch',
-  'preempt_switch'
+  'preempt_switch',
+  'live_switch'
 ]);
 
 /**
@@ -4178,15 +4200,10 @@ function normalizeProviderTarget(value) {
       : [],
     auto_switch:
       value.auto_switch === 'none' ||
-      value.auto_switch === 'cap' ||
       value.auto_switch === 'unconfigured' ||
       value.auto_switch === 'disabled'
         ? value.auto_switch
         : null,
-    ...(typeof value.disarm_notified_at === 'number' &&
-    Number.isFinite(value.disarm_notified_at)
-      ? { disarm_notified_at: value.disarm_notified_at }
-      : {}),
     next_probe_at:
       typeof value.next_probe_at === 'number' &&
       Number.isFinite(value.next_probe_at)
@@ -4275,7 +4292,7 @@ function normalizeAutoResumePending(value) {
       !isRecord(entry) ||
       typeof entry.attempt_id !== 'string' ||
       !Number.isInteger(entry.generation) ||
-      Number(entry.generation) < 1 ||
+      Number(entry.generation) < (entry.origin === 'live_preempt' ? 0 : 1) ||
       (entry.account !== null && typeof entry.account !== 'string') ||
       (entry.kind !== 'provider_outage' && entry.kind !== 'account_switch')
     ) {
@@ -4288,7 +4305,13 @@ function normalizeAutoResumePending(value) {
         attempt_id: entry.attempt_id,
         generation: Number(entry.generation),
         account: entry.account,
-        kind: entry.kind
+        kind: entry.kind,
+        ...(entry.origin === 'live_preempt'
+          ? { origin: /** @type {const} */ ('live_preempt') }
+          : {}),
+        ...(typeof entry.switched_from === 'string'
+          ? { switched_from: entry.switched_from }
+          : {})
       });
     }
   }
@@ -5806,6 +5829,20 @@ export function createQueueStore(options = {}) {
         continue;
       }
       delete next.attempts[attempt.attempt_id];
+      for (const [runner, hold] of Object.entries(next.provider_hold)) {
+        for (const target of hold.targets) {
+          target.attempt_ids = target.attempt_ids.filter(
+            (id) => id !== attempt.attempt_id
+          );
+        }
+        hold.targets = hold.targets.filter(
+          (target) =>
+            target.kind !== 'usage_limit' || target.attempt_ids.length > 0
+        );
+        if (hold.targets.length === 0) {
+          delete next.provider_hold[runner];
+        }
+      }
     }
   }
 
@@ -8012,12 +8049,6 @@ export function createQueueStore(options = {}) {
           target.rearm_count = Number(input.patch.rearm_count);
         }
         if (
-          typeof input.patch.disarm_notified_at === 'number' &&
-          Number.isFinite(input.patch.disarm_notified_at)
-        ) {
-          target.disarm_notified_at = input.patch.disarm_notified_at;
-        }
-        if (
           input.patch.next_probe_at === null ||
           (typeof input.patch.next_probe_at === 'number' &&
             Number.isFinite(input.patch.next_probe_at))
@@ -8150,6 +8181,9 @@ export function createQueueStore(options = {}) {
       const result = applyUnconditional(workspace, (next) => {
         const before = next.auto_resume_pending.length;
         next.auto_resume_pending = next.auto_resume_pending.filter((entry) => {
+          if (entry.origin === 'live_preempt') {
+            return true;
+          }
           const runner = next.attempts[entry.attempt_id]?.runner;
           const hold = runner ? next.provider_hold[runner] : null;
           const keep = !hold || hold.generation === entry.generation;
@@ -8203,7 +8237,7 @@ export function createQueueStore(options = {}) {
      * Persist a pause request before any signal is attempted.
      *
      * @param {string} workspace
-     * @param {{ attempt_id: string, kind: 'pause' }} input
+     * @param {{ attempt_id: string, kind: 'pause', intent?: AccountPreemptIntent }} input
      * @returns {QueueOpResult}
      */
     requestAttemptControl(workspace, input) {
@@ -8234,9 +8268,20 @@ export function createQueueStore(options = {}) {
             kind: 'pause',
             phase: 'requested',
             requested_at: now(),
-            last_error: null
+            last_error: null,
+            ...(input.intent ? { intent: input.intent } : {})
           }
         });
+        if (input.intent?.reason === 'account_preempt') {
+          next.auto_resume_pending.push({
+            attempt_id,
+            generation: 0,
+            account: input.intent.to,
+            kind: 'account_switch',
+            origin: 'live_preempt',
+            switched_from: input.intent.from
+          });
+        }
         return true;
       });
       return reason === null ? result : { ...result, reason };
@@ -8309,11 +8354,28 @@ export function createQueueStore(options = {}) {
         // 않는다 (UI-qce9 F3): `base_landing_detected` 같은 안전 위반을 사용자
         // pause 성공으로 지우면 안 된다. control은 그대로 `done`까지 전진한다.
         const settled_failed = cur.status === 'failed';
+        const intent = cur.control.intent;
+        const preempt = intent?.reason === 'account_preempt';
         next.attempts[attempt_id] = makeAttempt({
           ...cur,
           ...(patch || {}),
           status: settled_failed ? cur.status : 'paused',
-          cause: settled_failed ? cur.cause : null,
+          cause: settled_failed
+            ? cur.cause
+            : preempt
+              ? `account_preempt:${intent.window}`
+              : null,
+          ...(preempt && !settled_failed
+            ? {
+                cause_detail: {
+                  kind: 'account_preempt',
+                  from: intent.from,
+                  to: intent.to,
+                  window: intent.window,
+                  pct: intent.pct
+                }
+              }
+            : {}),
           finished_at,
           control: { ...cur.control, phase: 'done', last_error: null }
         });

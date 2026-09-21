@@ -33,7 +33,7 @@ scope:
 2. **선제 전환은 선택이고 임계 퍼센트는 사용자가 정한다.** 켜면 한도에 걸리기
    전에, 현재 계정의 사용량 창이 임계를 넘으면 디스패치 시점에 미리 바꾼다.
 3. **전환 범위는 attempt 단위 launch-only를 유지한다.** 워크스페이스 기본 계정·Bead
-   pin·세션 계정은 건드리지 않는다(§8.3·§9 override 범위 그대로).
+   pin 값은 쓰지 않는다(launch-only, §8.3·§9 override 범위 그대로).
 4. **codex 러너도 같은 정책으로 전환한다.** Worker는 계정별 `CODEX_HOME` 미러로
    spawn하므로 전역 활성 계정을 바꾸지 않아도 attempt 단위 전환이 성립한다.
 5. **한도 시 동작은 러너별 `기다림 | 자동 전환` 모드다.** 계정 전환으로 태어난
@@ -193,6 +193,11 @@ target이 아니라 계정 단위 target이 되어 전환·프로브 대상이 �
 변경은 그 동작을 유지한다(기존 주석의 "행별 usage 없음" 문구는 이 사실로 고친다).
 
 ### 3.3 선제 전환 — 디스패치 시점, 상속된 계정에만
+
+> 정정(2026-09-21): 대상은 상속 계정에 한정되지 않고 Bead pin도 포함한다.
+> 계정이 `usage_limit` 보류 대상이면 창 값과 무관하게 전환하며, 후보의 모든 창은
+> `preempt_pct` 미만이어야 한다. 아래의 pin 보호와 상속 계정 한정 문구는 철회한다.
+> 정본: `docs/superpowers/specs/2026-09-21-account-auto-switch-never-stalls-design.md` §3.1·§3.2.
 
 디스패치 루프에서 `resolveDispatchSettings` 성공 뒤, `providerDispatchHeld` 전에
 `applyPreemptSwitch(workspace, runner_name, resolved_exec)`를 넣는다.
@@ -361,8 +366,8 @@ target이 아니라 계정 단위 target이 되어 전환·프로브 대상이 �
 27. `classified.account === null`인 한도 hold는 여전히 전환하지 않는다.
 28. 후보가 이미 다른 target의 계정이면 여전히 `'none'`이다.
 29. `[지금 시작]` bypass는 선제 전환·게이트와 무관하게 그 행을 디스패치한다.
-30. `source:'bead'`인 계정은 창이 임계 이상이어도 바뀌지 않는다(현재는 선제 전환이
-    없어 통과하며, 구현 뒤에도 pin 보호를 고정한다).
+30. `source:'bead'`인 계정도 창이 임계 이상이면 launch 계정이 바뀐다. Bead pin
+    값은 쓰지 않는다(2026-09-21 정정, 위 §3.3 각주).
 31. `preempt_pct:null`이면 창이 100%여도 바뀌지 않는다(같은 이유의 보존 항목).
 
 ### 절차

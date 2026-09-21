@@ -121,7 +121,11 @@ import {
   receiptLineageForAttempt,
   receiptProbeError
 } from './receipt-check.js';
-import { liftDelegation } from './runner/claude.js';
+import {
+  acquireClaudeLaunch,
+  liftDelegation,
+  observeClaudeLaunch
+} from './runner/claude.js';
 import { RUNNERS, adapterSpec, runtimeCatalog } from './runner/index.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
 import { terminalResultOf } from './runner/session.js';
@@ -150,6 +154,9 @@ const WAITING_RESCAN_MAX_WAIT_MS = 30_000;
  * 워크스페이스 실행 프로파일의 키가 아니라 고정 상수다(결정 8, ADR 0032).
  */
 export const QUEUE_GRACE_MS = 20_000;
+export const LIVE_PREEMPT_POLL_MS = 60_000;
+/** @type {Set<string>} */
+const resume_in_flight = new Set();
 const AUTO_SWITCH_5H_MAX_PCT = 80;
 const AUTO_SWITCH_7D_MAX_PCT = 90;
 const RESUME_HANDOFF_MAX_CHARS = 4_000;
@@ -590,6 +597,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * not one of §5.2's four `unusable` cases, and no repo default can be stored
  * without it either.
  * @property {(runner_name: string) => { name: string, spawn: (bead: any, workspace: string, settings: any) => RunnerHandle }} makeRunner
+ * @property {typeof acquireClaudeLaunch} [acquireClaudeLaunch]
  * @property {{ resolveClaude: (email: string) => Promise<any>, resolveCodex: (key: string) => Promise<any>, readClaude?: (email: string) => Promise<any>, activeClaude?: () => Promise<any>, listClaude?: () => Promise<any>, listCodex?: () => Promise<any> }} [accountCatalog]
  * @property {() => string|null} [resolveCswapPath]
  * @property {typeof defaultPrepareCodexAccountHome} [prepareCodexAccountHome]
@@ -722,6 +730,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   awaitingUser?: (i: any) => void,
  *   providerHoldEntered?: (i: any) => void,
  *   providerRecovered?: (i: any) => void,
+ *   providerLivePreempt?: (i: any) => void,
  *   prWaitEntered: (i: any) => void
  * }} [notify]
  * Outward attempt-lifecycle push (UI-2yoq, notify.js). Optional: absent wiring
@@ -1189,12 +1198,15 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   pause: (workspace: string, attempt_id: string, options?: { require_durable?: boolean }) => Promise<{ ok: boolean, reason?: string }>,
  *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh' }) => Promise<{ ok: true, attempt_id: string }|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
+ *   livePreemptPass: (workspace: string) => Promise<void>,
+ *   preemptRunningAttempt: (workspace: string, attempt_id: string, switch_to: { from: string, to: string, window: string, pct: number }) => Promise<{ ok: boolean, reason?: string }>,
+ *   holdAttempt: (workspace: string, attempt_id: string, bead_id: string, prior: string|null, classified: { outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null }) => Promise<void>,
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
- *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, resume_runner?: 'claude'|'codex'|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
@@ -1538,7 +1550,7 @@ export function createScheduler(deps) {
    * contract; this guard exists so a broken injected fake still cannot turn a
    * notification into a queue-transition failure.
    *
-   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'} event
+   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerLivePreempt'} event
    * @param {any} input
    */
   function notifyLifecycle(event, input) {
@@ -1619,13 +1631,15 @@ export function createScheduler(deps) {
    * @param {string} runner
    * @param {string|null} current_account
    * @param {string[]} allowed
+   * @param {{ max_pct?: number }} [options]
    * @returns {Promise<string|null>}
    */
   async function selectProviderSwitchAccount(
     workspace,
     runner,
     current_account,
-    allowed
+    allowed,
+    options = {}
   ) {
     const list =
       runner === 'codex'
@@ -1677,6 +1691,12 @@ export function createScheduler(deps) {
           // through the "every other window" rule rather than dropping out.
           return windows.every((/** @type {any} */ window) => {
             if (typeof window?.pct !== 'number') {
+              return false;
+            }
+            if (
+              options.max_pct !== undefined &&
+              window.pct >= options.max_pct
+            ) {
               return false;
             }
             return window.key === '5h'
@@ -2131,6 +2151,12 @@ export function createScheduler(deps) {
   /** @type {Map<string, ReturnType<typeof setInterval>>} */
   const receipt_poll_timers = new Map();
   /** @type {Map<string, ReturnType<typeof setInterval>>} */
+  const live_preempt_timers = new Map();
+  /** @type {Map<string, string>} */
+  const receipt_poll_workspaces = new Map();
+  /** @type {Set<string>} */
+  const live_preempt_in_flight = new Set();
+  /** @type {Map<string, ReturnType<typeof setInterval>>} */
   const delegation_poll_timers = new Map();
   /**
    * @type {Map<string, {
@@ -2227,12 +2253,50 @@ export function createScheduler(deps) {
       timer.unref();
     }
     receipt_poll_timers.set(attempt_id, timer);
+    receipt_poll_workspaces.set(attempt_id, workspace);
+    startLivePreemptPolling(workspace);
+  }
+
+  /** @param {string} workspace */
+  function startLivePreemptPolling(workspace) {
+    if (live_preempt_timers.has(workspace)) {
+      return;
+    }
+    const timer = setInterval(() => {
+      const attempts = Object.values(deps.store.snapshot(workspace).attempts);
+      if (
+        !attempts.some(
+          (/** @type {any} */ attempt) => attempt.status === 'running'
+        )
+      ) {
+        clearInterval(timer);
+        live_preempt_timers.delete(workspace);
+        return;
+      }
+      void livePreemptPass(workspace).catch((err) =>
+        log('live preempt failed for %s: %o', workspace, err)
+      );
+    }, LIVE_PREEMPT_POLL_MS);
+    timer.unref?.();
+    live_preempt_timers.set(workspace, timer);
   }
 
   /**
    * @param {string} attempt_id
    */
   function clearUsageReceiptPolling(attempt_id) {
+    const workspace = receipt_poll_workspaces.get(attempt_id);
+    receipt_poll_workspaces.delete(attempt_id);
+    if (
+      workspace &&
+      ![...receipt_poll_workspaces.values()].includes(workspace) &&
+      !Object.entries(deps.store.snapshot(workspace).attempts).some(
+        ([id, attempt]) => id !== attempt_id && attempt.status === 'running'
+      )
+    ) {
+      clearInterval(live_preempt_timers.get(workspace));
+      live_preempt_timers.delete(workspace);
+    }
     const timer = receipt_poll_timers.get(attempt_id);
     if (timer) {
       clearInterval(timer);
@@ -3017,14 +3081,13 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Move an INHERITED launch account off a window that already crossed the
-   * user's threshold, before the limit itself arrives (spec §3.3). A bead pin
-   * is never touched, and no candidate is a no-op rather than a refusal.
+   * Move a launch account off a crossed window or usage hold without writing
+   * the Bead's account pin.
    *
    * @param {string} workspace
    * @param {string} runner
    * @param {{ accounts: { claude: string|null, codex: string|null }, account_sources: AccountSources }} resolved
-   * @returns {Promise<{ from: string, to: string, window: string, pct: number }|null>}
+   * @returns {Promise<{ from: string, to: string, window: string, pct: number, held?: boolean }|null>}
    */
   async function applyPreemptSwitch(workspace, runner, resolved) {
     if (runner !== 'claude' && runner !== 'codex') {
@@ -3036,10 +3099,6 @@ export function createScheduler(deps) {
       policy.preempt_pct === null ||
       policy.accounts.length === 0
     ) {
-      return null;
-    }
-    const source = resolved.account_sources[runner];
-    if (source !== null && source !== 'workspace_default') {
       return null;
     }
     const list =
@@ -3074,14 +3133,22 @@ export function createScheduler(deps) {
         typeof window?.pct === 'number' &&
         window.pct >= /** @type {number} */ (policy.preempt_pct)
     );
-    if (!crossed) {
+    const held =
+      deps.store
+        .snapshot(workspace)
+        .provider_hold?.[
+          runner
+        ]?.targets?.some((/** @type {any} */ target) => target.kind === 'usage_limit' && target.account === current) ===
+      true;
+    if (!crossed && !held) {
       return null;
     }
     const candidate = await selectProviderSwitchAccount(
       workspace,
       runner,
       current,
-      policy.accounts
+      policy.accounts,
+      { max_pct: policy.preempt_pct }
     );
     if (candidate === null) {
       return null;
@@ -3093,7 +3160,8 @@ export function createScheduler(deps) {
     if (
       fresh.mode !== 'switch' ||
       fresh.preempt_pct === null ||
-      crossed.pct < fresh.preempt_pct ||
+      fresh.preempt_pct !== policy.preempt_pct ||
+      (!held && crossed.pct < fresh.preempt_pct) ||
       !fresh.accounts.includes(candidate)
     ) {
       return null;
@@ -3106,9 +3174,139 @@ export function createScheduler(deps) {
     return {
       from: current,
       to: candidate,
-      window: typeof crossed.key === 'string' ? crossed.key : 'usage',
-      pct: crossed.pct
+      window: typeof crossed?.key === 'string' ? crossed.key : 'usage',
+      pct: crossed?.pct ?? 0,
+      held
     };
+  }
+
+  /**
+   * Reevaluate every running attempt against its account's current windows.
+   *
+   * @param {string} workspace
+   */
+  async function livePreemptPass(workspace) {
+    for (const [attempt_id, attempt] of Object.entries(
+      deps.store.snapshot(workspace).attempts
+    )) {
+      const current_attempt = /** @type {any} */ (attempt);
+      const runner = current_attempt.runner;
+      if (
+        current_attempt.status !== 'running' ||
+        current_attempt.kind === 'review_session' ||
+        current_attempt.control ||
+        live_preempt_in_flight.has(attempt_id) ||
+        (runner !== 'claude' && runner !== 'codex')
+      ) {
+        continue;
+      }
+      const policy = providerLimitPolicyOf(workspace, runner);
+      if (
+        policy.mode !== 'switch' ||
+        policy.preempt_pct === null ||
+        policy.accounts.length === 0
+      ) {
+        continue;
+      }
+      live_preempt_in_flight.add(attempt_id);
+      try {
+        const list =
+          runner === 'codex'
+            ? deps.accountCatalog?.listCodex
+            : deps.accountCatalog?.listClaude;
+        let listed = null;
+        try {
+          listed =
+            typeof list === 'function'
+              ? await list.call(deps.accountCatalog)
+              : null;
+        } catch {
+          // An unavailable catalog is no evidence for stopping a session.
+        }
+        const from =
+          activeAccountOf(current_attempt) ?? listed?.active_key ?? null;
+        const row = listed?.ok
+          ? listed.accounts?.find((/** @type {any} */ row) => row.key === from)
+          : null;
+        const crossed = row?.windows?.find(
+          (/** @type {any} */ window) =>
+            typeof window.pct === 'number' &&
+            window.pct >= /** @type {number} */ (policy.preempt_pct)
+        );
+        const to = crossed
+          ? await selectProviderSwitchAccount(
+              workspace,
+              runner,
+              from,
+              policy.accounts,
+              { max_pct: policy.preempt_pct }
+            )
+          : null;
+        if (!row || (crossed && !to)) {
+          deps.store.updateAttempt(workspace, {
+            attempt_id,
+            patch: {
+              live_preempt_last_skip: {
+                at: now(),
+                reason: row ? 'no_candidate' : 'no_row'
+              }
+            }
+          });
+          notifyChanged(workspace);
+          continue;
+        }
+        const fresh = providerLimitPolicyOf(workspace, runner);
+        if (
+          !crossed ||
+          !to ||
+          typeof from !== 'string' ||
+          fresh.mode !== 'switch' ||
+          fresh.preempt_pct !== policy.preempt_pct ||
+          !fresh.accounts.includes(to)
+        ) {
+          continue;
+        }
+        await preemptRunningAttempt(workspace, attempt_id, {
+          from,
+          to,
+          window: crossed.key || 'usage',
+          pct: crossed.pct
+        });
+      } finally {
+        live_preempt_in_flight.delete(attempt_id);
+      }
+    }
+  }
+
+  /**
+   * Persist both sides of a live switch before sending a signal.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {{ from: string, to: string, window: string, pct: number }} switch_to
+   */
+  async function preemptRunningAttempt(workspace, attempt_id, switch_to) {
+    const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
+    if (
+      !attempt ||
+      attempt.status !== 'running' ||
+      !attempt.session_id ||
+      attempt.control
+    ) {
+      return { ok: false, reason: 'not_resumable' };
+    }
+    const requested = deps.store.requestAttemptControl(workspace, {
+      attempt_id,
+      kind: 'pause',
+      intent: { reason: 'account_preempt', ...switch_to }
+    });
+    if (!requested.ok) {
+      return {
+        ok: false,
+        reason: requested.reason || 'control_persist_failed'
+      };
+    }
+    return pauseDurably(workspace, attempt_id);
   }
 
   /**
@@ -5668,6 +5866,17 @@ export function createScheduler(deps) {
     if (!attempt || typeof attempt.runner !== 'string') {
       return;
     }
+    if (
+      attempt.status === 'paused' &&
+      attempt.cause?.startsWith('provider_outage:') &&
+      deps.store
+        .snapshot(workspace)
+        .provider_hold?.[
+          attempt.runner
+        ]?.targets?.some((/** @type {any} */ target) => target.attempt_ids.includes(attempt_id))
+    ) {
+      return;
+    }
     const outage = classified.outage;
     const summary = (extractSummary(outage.message) || outage.message).slice(
       0,
@@ -5688,6 +5897,17 @@ export function createScheduler(deps) {
             policy.accounts
           )
         : null;
+    const current = deps.store.snapshot(workspace);
+    const held_attempt = current.attempts[attempt_id];
+    if (
+      held_attempt?.status === 'paused' &&
+      held_attempt.cause?.startsWith('provider_outage:') &&
+      current.provider_hold?.[attempt.runner]?.targets?.some(
+        (/** @type {any} */ target) => target.attempt_ids.includes(attempt_id)
+      )
+    ) {
+      return;
+    }
     const saved = deps.store.holdProviderAttempt(workspace, {
       attempt_id,
       patch: {
@@ -6405,6 +6625,16 @@ export function createScheduler(deps) {
         'external_job'
       ) {
         notifyChanged(workspace);
+      }
+      if (
+        !paused_done.has(attempt_id) &&
+        deps.store
+          .snapshot(workspace)
+          .auto_resume_pending.some(
+            (/** @type {any} */ pending) => pending.attempt_id === attempt_id
+          )
+      ) {
+        await consumeProviderAutoResume(workspace);
       }
     }
   }
@@ -9928,7 +10158,8 @@ export function createScheduler(deps) {
    *   speed: string,
    *   accounts: { claude: string|null, codex: string|null },
    *   account_sources?: AccountSources,
-   *   preempt?: { from: string, to: string, window: string, pct: number },
+   *   preempt?: { from: string, to: string, window: string, pct: number, held?: boolean },
+   *   auto_resume_origin?: 'live_preempt',
    *   prior_wf: string|null,
    *   stamped_keys: string[],
    *   wt_path: string,
@@ -10160,9 +10391,19 @@ export function createScheduler(deps) {
 
     /** @type {RunnerHandle} */
     let handle;
+    const release_launch =
+      runner_name === 'claude' && settings.claude_account
+        ? await (deps.acquireClaudeLaunch || acquireClaudeLaunch)(
+            settings.claude_account
+          )
+        : null;
     try {
       handle = runner.spawn(spawnBead, wt_path, settings);
+      if (release_launch) {
+        observeClaudeLaunch(handle, release_launch);
+      }
     } catch (error) {
+      release_launch?.();
       let spawn_failure = 'spawn_failed';
       const launch_error = /** @type {any} */ (error);
       if (launch_error?.cleanup instanceof Promise) {
@@ -10243,16 +10484,18 @@ export function createScheduler(deps) {
       speed
     );
 
-    notifyLifecycle('attemptStarted', {
-      bead_id,
-      title: input.title ?? null,
-      runner: runner_name,
-      model,
-      effort,
-      speed,
-      repo,
-      kind: input.launch_kind ?? 'dispatch'
-    });
+    if (input.auto_resume_origin !== 'live_preempt') {
+      notifyLifecycle('attemptStarted', {
+        bead_id,
+        title: input.title ?? null,
+        runner: runner_name,
+        model,
+        effort,
+        speed,
+        repo,
+        kind: input.launch_kind ?? 'dispatch'
+      });
+    }
 
     // The bead's permanent history (record-timeline-retention §5). Recorded at
     // the ONE point every launch shape passes through — first dispatch, stale
@@ -10281,7 +10524,7 @@ export function createScheduler(deps) {
         attempt_id,
         kind: 'account_preempt',
         seq: 'preempt',
-        summary: `${runner_name} 선제 전환 ${input.preempt.from} → ${input.preempt.to} (${input.preempt.window} ${input.preempt.pct}%)`
+        summary: `${runner_name} 선제 전환 ${input.preempt.from} → ${input.preempt.to} (${input.preempt.held ? '보류 중' : `${input.preempt.window} ${input.preempt.pct}%`})`
       });
     }
 
@@ -11336,7 +11579,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, route_change?: { prior_lane: string, current_route: string|null }, fallback?: string|null }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
@@ -11534,6 +11777,7 @@ export function createScheduler(deps) {
       decision_token: continuation.decision_token,
       provider_auto_resume: continuation.provider_auto_resume === true,
       auto_resume_kind: continuation.auto_resume_kind,
+      auto_resume_origin: continuation.auto_resume_origin,
       exec_override: continuation.exec_override,
       account_switched_from: continuation.account_switched_from,
       resume_fallback: continuation.resume_fallback,
@@ -11661,133 +11905,159 @@ export function createScheduler(deps) {
     const resumed_beads = [];
     /** @type {string[]} */
     const refusals = [];
+    let consumed = false;
     for (const pending of snapshot.auto_resume_pending || []) {
-      const prior = deps.store.snapshot(workspace).attempts[pending.attempt_id];
-      const hold = prior?.runner
-        ? snapshot.provider_hold?.[prior.runner] || null
-        : null;
-      const source_target = hold?.targets?.find((/** @type {any} */ target) =>
-        target.attempt_ids?.includes(pending.attempt_id)
-      );
-      const switched_from =
-        pending.kind === 'account_switch'
-          ? source_target?.account ||
-            (prior?.runner === 'codex'
-              ? prior?.codex_account
-              : prior?.claude_account) ||
-            null
-          : null;
-      // A switch child does NOT consume the §8.1 automatic-resume cap
-      // (spec §3.2 decision 5): the cap counts reset resumes only, so the two
-      // continuations are stamped apart.
-      /** @type {'provider_outage'|'account_switch'} */
-      const resume_kind =
-        pending.kind === 'account_switch'
-          ? 'account_switch'
-          : 'provider_outage';
-      // §5.3 recovery resumes on the SAME provider with the approved account,
-      // so the override key follows the held attempt's runner.
-      const account_override_key =
-        prior?.runner === 'codex' ? 'codex_account' : 'claude_account';
-      /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
-      let result;
-      if (!prior) {
-        result = { ok: false, reason: 'attempt_not_found' };
-      } else if (prior.status === 'waiting' && prior.cause_detail?.recovery) {
-        result = { ok: false, reason: 'recovery_wait' };
-      } else if (prior.disposition) {
-        result = await dispatchReviseFix(workspace, {
-          bead_id: prior.bead_id,
-          attempt_id: pending.attempt_id,
-          prompt: prior.disposition_prompt || '',
-          prior_receipt: prior.disposition_receipt ?? null,
-          continuation: 'auto',
-          provider_auto_resume: true,
-          auto_resume_kind: resume_kind,
-          ...(pending.account !== null
-            ? {
-                exec_override: { [account_override_key]: pending.account },
-                ...(switched_from
-                  ? { account_switched_from: switched_from }
-                  : {})
-              }
-            : {})
-        });
-      } else if (prior.continuation_choice === 'prior_attempt') {
-        // §5.3: the automatic recovery keeps the recorded session, tuple and
-        // account. An account SWITCH is exactly what this choice forbids, so
-        // the switch is refused with its reason rather than performed.
-        result =
-          pending.account !== null && pending.account !== activeAccountOf(prior)
-            ? { ok: false, reason: 'prior_attempt_locked' }
-            : await resume(workspace, pending.attempt_id, {
-                continuation: 'prior_attempt',
-                provider_auto_resume: true,
-                auto_resume_kind: resume_kind
-              });
-      } else {
-        result = await resume(workspace, pending.attempt_id, {
-          continuation: 'auto',
-          provider_auto_resume: true,
-          auto_resume_kind: resume_kind,
-          ...(pending.account !== null
-            ? {
-                exec_override: { [account_override_key]: pending.account },
-                ...(switched_from
-                  ? { account_switched_from: switched_from }
-                  : {})
-              }
-            : {})
-        });
+      const current = deps.store.snapshot(workspace);
+      const prior = current.attempts[pending.attempt_id];
+      const live_preempt = pending.origin === 'live_preempt';
+      if (
+        resume_in_flight.has(pending.attempt_id) ||
+        !current.auto_resume_pending.some(
+          (/** @type {any} */ entry) =>
+            entry.attempt_id === pending.attempt_id &&
+            entry.generation === pending.generation
+        ) ||
+        (live_preempt &&
+          (prior?.status !== 'paused' ||
+            !prior.cause?.startsWith('account_preempt:')))
+      ) {
+        continue;
       }
-      deps.store.consumeAutoResumePending(workspace, pending);
-      if (result.ok && prior) {
-        resumed_beads.push(prior.bead_id);
-        if (
-          pending.kind === 'account_switch' &&
+      resume_in_flight.add(pending.attempt_id);
+      try {
+        const hold = prior?.runner
+          ? current.provider_hold?.[prior.runner]
+          : null;
+        const source_target = hold?.targets?.find((/** @type {any} */ target) =>
+          target.attempt_ids.includes(pending.attempt_id)
+        );
+        const switched_from =
+          pending.kind === 'account_switch'
+            ? pending.switched_from ||
+              source_target?.account ||
+              activeAccountOf(prior) ||
+              null
+            : prior?.account_switched_from || null;
+        /** @type {'provider_outage'|'account_switch'} */
+        const resume_kind =
+          pending.kind === 'account_switch'
+            ? 'account_switch'
+            : 'provider_outage';
+        const account_override_key =
+          prior?.runner === 'codex' ? 'codex_account' : 'claude_account';
+        const locked = prior?.continuation_choice === 'prior_attempt';
+        const options = {
+          continuation: /** @type {'auto'|'prior_attempt'} */ (
+            locked ? 'prior_attempt' : 'auto'
+          ),
+          provider_auto_resume: true,
+          auto_resume_kind: resume_kind,
+          auto_resume_origin: pending.origin,
+          ...(pending.account !== null &&
+          (!locked || resume_kind === 'account_switch')
+            ? { exec_override: { [account_override_key]: pending.account } }
+            : {}),
+          ...(switched_from ? { account_switched_from: switched_from } : {})
+        };
+        /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
+        let result;
+        if (!prior) {
+          result = { ok: false, reason: 'attempt_not_found' };
+        } else if (prior.status === 'waiting' && prior.cause_detail?.recovery) {
+          result = { ok: false, reason: 'recovery_wait' };
+        } else if (
+          locked &&
+          resume_kind !== 'account_switch' &&
           pending.account !== null &&
-          switched_from !== null
+          pending.account !== activeAccountOf(prior)
         ) {
-          appendTimeline(
-            /** @type {any} */ ({
+          result = { ok: false, reason: 'prior_attempt_locked' };
+        } else if (prior.disposition) {
+          result = await dispatchReviseFix(workspace, {
+            bead_id: prior.bead_id,
+            attempt_id: pending.attempt_id,
+            prompt: prior.disposition_prompt || '',
+            prior_receipt: prior.disposition_receipt ?? null,
+            ...options
+          });
+        } else {
+          result = await resume(workspace, pending.attempt_id, options);
+        }
+        if (
+          !result.ok &&
+          result.reason === 'bead_running' &&
+          (settling.has(pending.attempt_id) ||
+            paused_done.has(pending.attempt_id))
+        ) {
+          continue;
+        }
+        deps.store.consumeAutoResumePending(workspace, pending);
+        consumed = true;
+        if (result.ok && prior) {
+          resumed_beads.push(prior.bead_id);
+          if (live_preempt) {
+            const intent = prior.control?.intent;
+            appendTimeline({
               bead_id: prior.bead_id,
               attempt_id: result.attempt_id || prior.attempt_id,
-              kind: 'provider_recovered',
-              seq: pending.generation,
-              summary: `${prior.runner || 'claude'} 계정 전환 회복`,
-              account: pending.account
-            })
-          );
-          notifyLifecycle('providerRecovered', {
-            bead_id: prior.bead_id,
-            runner: prior.runner || 'claude',
-            duration_ms: Math.max(0, now() - (hold?.since || now())),
-            resumed_beads: [prior.bead_id],
-            refusal: null,
-            switched_from,
-            switched_to: pending.account,
-            repo: prior.repo
+              kind: 'account_live_preempt',
+              seq: 'live_preempt',
+              summary: `${prior.runner} 실행 중 선제 전환 ${switched_from} → ${pending.account} (${intent.window} ${intent.pct}%)`
+            });
+            notifyLifecycle('providerLivePreempt', {
+              bead_id: prior.bead_id,
+              runner: prior.runner,
+              from: switched_from,
+              to: pending.account,
+              window: intent.window,
+              pct: intent.pct,
+              repo: prior.repo
+            });
+          } else if (
+            pending.kind === 'account_switch' &&
+            pending.account !== null &&
+            switched_from !== null
+          ) {
+            appendTimeline(
+              /** @type {any} */ ({
+                bead_id: prior.bead_id,
+                attempt_id: result.attempt_id || prior.attempt_id,
+                kind: 'provider_recovered',
+                seq: pending.generation,
+                summary: `${prior.runner || 'claude'} 계정 전환 회복`,
+                account: pending.account
+              })
+            );
+            notifyLifecycle('providerRecovered', {
+              bead_id: prior.bead_id,
+              runner: prior.runner || 'claude',
+              duration_ms: Math.max(0, now() - (hold?.since || now())),
+              resumed_beads: [prior.bead_id],
+              refusal: null,
+              switched_from,
+              switched_to: pending.account,
+              repo: prior.repo
+            });
+          }
+        } else if (prior) {
+          const reason = result.reason || 'resume_refused';
+          refusals.push(`${prior.bead_id}:${reason}`);
+          deps.store.updateAttempt(workspace, {
+            attempt_id: pending.attempt_id,
+            patch: { auto_resume_refused: reason }
           });
+          log(
+            'provider auto resume refused for %s/%s: %s',
+            prior.bead_id,
+            pending.attempt_id,
+            reason
+          );
         }
-      } else if (prior) {
-        const reason = result.reason || 'resume_refused';
-        refusals.push(`${prior.bead_id}:${reason}`);
-        // The held tile reports the refusal, and recovery already removed the
-        // target this receipt came from, so the reason lives on the attempt —
-        // the only record that outlives the gate it was held by.
-        deps.store.updateAttempt(workspace, {
-          attempt_id: pending.attempt_id,
-          patch: { auto_resume_refused: reason }
-        });
-        log(
-          'provider auto resume refused for %s/%s: %s',
-          prior.bead_id,
-          pending.attempt_id,
-          reason
-        );
+      } finally {
+        resume_in_flight.delete(pending.attempt_id);
       }
     }
-    if (snapshot.auto_resume_pending?.length > 0) {
+    if (consumed) {
       notifyChanged(workspace);
     }
     return { resumed_beads, refusals };
@@ -12700,7 +12970,18 @@ export function createScheduler(deps) {
     // record-derived tuple rather than resolving current settings, because
     // "same settings" is the whole request.
     const prior_attempt_choice = options.continuation === 'prior_attempt';
-    if (prior_attempt_choice && options.exec_override !== undefined) {
+    const account_switch =
+      provider_auto_resume && options.auto_resume_kind === 'account_switch';
+    const account_only_override =
+      options.exec_override &&
+      Object.keys(options.exec_override).every(
+        (key) => key === `${recorded_prior_runner}_account`
+      );
+    if (
+      prior_attempt_choice &&
+      options.exec_override !== undefined &&
+      !(account_switch && account_only_override)
+    ) {
       return { ok: false, reason: 'bad_request' };
     }
     if (prior_attempt_choice) {
@@ -12775,12 +13056,15 @@ export function createScheduler(deps) {
       return override_result;
     }
     const resolved = override_result.resolved;
-    if (typeof options.account_switched_from === 'string') {
+    if (account_switch && typeof options.account_switched_from === 'string') {
       // The switched runner's OWN key, so a codex switch no longer rewrites the
       // claude provenance (spec §3.2).
       resolved.account_sources = {
         ...resolved.account_sources,
-        [resolved.exec.runner === 'codex' ? 'codex' : 'claude']: 'outage_switch'
+        [resolved.exec.runner === 'codex' ? 'codex' : 'claude']:
+          options.auto_resume_origin === 'live_preempt'
+            ? 'live_switch'
+            : 'outage_switch'
       };
     }
     const prior_runner = recorded_prior_runner ?? resolved.exec.runner;
@@ -12909,7 +13193,7 @@ export function createScheduler(deps) {
       (decision === 'prior_session' ||
         decision === 'prior_attempt' ||
         provider_auto_resume) &&
-      !override_result.applied;
+      (!override_result.applied || (account_switch && account_only_override));
     const internal_fresh_fallback =
       provider_auto_resume &&
       options.resume_fallback?.reason === 'transcript_missing';
@@ -12986,10 +13270,10 @@ export function createScheduler(deps) {
         runner_mismatch
       };
     }
-    const candidate_stamped_keys = override_result.applied
-      ? []
-      : use_prior
-        ? EXEC_SETTING_KEYS
+    const candidate_stamped_keys = use_prior
+      ? EXEC_SETTING_KEYS
+      : override_result.applied
+        ? []
         : resolved.exec.stamped_keys;
     const restore_capture = await captureExecRestoreValues(
       bead_id,
@@ -13547,6 +13831,7 @@ export function createScheduler(deps) {
       stamped_keys,
       wt_path,
       attempt_facts: relaunch_facts,
+      auto_resume_origin: options.auto_resume_origin,
       launch_kind: options.disposition
         ? 'disposition'
         : options.conflict_resolution
@@ -13740,7 +14025,7 @@ export function createScheduler(deps) {
    * Cap-exempt like every other human-click dispatch.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviseFix(workspace, input) {
@@ -13800,6 +14085,7 @@ export function createScheduler(deps) {
       decision_token: input.decision_token,
       provider_auto_resume: input.provider_auto_resume === true,
       auto_resume_kind: input.auto_resume_kind,
+      auto_resume_origin: input.auto_resume_origin,
       exec_override: input.exec_override,
       account_switched_from: input.account_switched_from,
       resume_fallback: input.resume_fallback
@@ -15591,6 +15877,13 @@ export function createScheduler(deps) {
     if (latest?.status !== 'paused') {
       return { ok: false, reason: latest?.cause || 'pause_not_confirmed' };
     }
+    if (latest.control?.intent?.reason === 'account_preempt') {
+      const settlement = paused_done.get(attempt_id);
+      if (settlement) {
+        await settlement;
+      }
+      await consumeProviderAutoResume(workspace);
+    }
     return { ok: true };
   }
 
@@ -15705,6 +15998,13 @@ export function createScheduler(deps) {
    */
   async function recoverControls(workspace) {
     const snapshot = deps.store.snapshot(workspace);
+    if (
+      Object.values(snapshot.attempts).some(
+        (/** @type {any} */ attempt) => attempt.status === 'running'
+      )
+    ) {
+      startLivePreemptPolling(workspace);
+    }
     const discard_attempts = new Set(
       Object.values(snapshot.discard_operations || {})
         .filter(discardOperationActive)
@@ -16112,6 +16412,9 @@ export function createScheduler(deps) {
     resumeExternalWait,
     settleExternalWaitReservations,
     consumeProviderAutoResume,
+    livePreemptPass,
+    preemptRunningAttempt,
+    holdAttempt,
     resolveConflict,
     dispatchExternalConflict,
     queueConflictBlocked,

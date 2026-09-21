@@ -51,6 +51,63 @@ describe('views/detail-panel/exec-accounts', () => {
     document.body.innerHTML = '<div id="m"></div>';
   });
 
+  test.each([
+    'live_switch',
+    'preempt_switch',
+    'outage_switch',
+    'bead',
+    'workspace_default',
+    null
+  ])(
+    'shows automatic account provenance only for the latest switched attempt: %s',
+    (source) => {
+      const mount = document.getElementById('m');
+      const reasons = {
+        live_switch: '실행 중 선제 전환',
+        preempt_switch: '디스패치 시 선제 전환',
+        outage_switch: '한도 도달 뒤 전환'
+      };
+      const attempts = source
+        ? [
+            {
+              started_at: Date.now() - 120_000,
+              claude_account: 'new',
+              account_switched_from: 'old',
+              account_sources: { claude: source }
+            },
+            {
+              started_at: Date.now() - 240_000,
+              claude_account: 'stale',
+              account_switched_from: 'old',
+              account_sources: { claude: 'live_switch' }
+            }
+          ]
+        : [];
+
+      render(
+        execAccountsTemplate(
+          /** @type {any} */ ({
+            md: { claude_account: 'old' },
+            catalog: {},
+            worker_attempts: attempts,
+            handlers: { onExecChange: vi.fn() }
+          })
+        ),
+        /** @type {HTMLElement} */ (mount)
+      );
+
+      const note = mount?.querySelector('.detail-kv__note');
+      const reason = reasons[/** @type {keyof typeof reasons} */ (source)];
+      if (reason) {
+        expect(note?.textContent?.replace(/\s+/g, ' ').trim()).toContain(
+          `자동 적용: new ← old · ${reason} · 2분 전`
+        );
+      } else {
+        expect(note).toBeNull();
+      }
+    }
+  );
+
   test('renders provider accounts and active-login defaults', () => {
     const mount = mountTemplate(
       {},

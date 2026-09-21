@@ -1,7 +1,8 @@
 ---
 id: UI-1l3a
 title: 공급자 게이트의 판정은 서버가 러너 무관 사다리로 내리고 기록으로 공개하며 상한 target은 재시작 시 한 번 프로브된다
-status: accepted
+status: superseded
+superseded_by: UI-inge
 date: 2026-09-17
 summary: "공급자 게이트의 판정은 서버가 러너 무관 세 층 사다리로 내리고 provider_gate admission 기록으로 공개하며 화면은 그 기록을 4a 칩의 재료로 우선 쓴다 — 계정 미해석은 fail-closed로 막되 칩에 보이고, 상한으로 멎은 usage_limit target은 서버 재시작 시 한 번 자동 프로브된다"
 supersedes: [UI-a8rq]

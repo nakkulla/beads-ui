@@ -1,7 +1,8 @@
 ---
 id: UI-6icf
 title: 세션 재개 조작은 ⏸와 ▶ 재개 둘이며 지시는 재개 다이얼로그의 선택 갈래로 받는다 — durable pause·prior_attempt 서버 계약은 UI 진입점 없이 유지한다
-status: accepted
+status: superseded
+superseded_by: UI-inge
 date: 2026-09-16
 summary: '세션 재개 조작은 ⏸와 ▶ 재개 둘이며 지시는 재개 다이얼로그의 선택 갈래로 auto 정책과 함께 전달한다; 실행 중 지시 재시작과 prior_attempt의 UI 진입점은 제거하고 durable pause· prior_attempt 서버 계약은 UI 진입점 없이 유지한다'
 supersedes: [45]

@@ -3103,6 +3103,7 @@ export function createDetailPanel(mount_element, options) {
           )}
           ${execAccountsTemplate({
             md: effective.metadata,
+            worker_attempts,
             catalog: exec_account_catalog,
             workspace_defaults: workspace_accounts,
             handlers: {

@@ -51,6 +51,20 @@ afterEach(() => {
 });
 
 describe('bead-timeline append', () => {
+  test('persists the live account preempt event kind', () => {
+    const timeline = createBeadTimeline({ workspace_root: WS });
+
+    const result = timeline.append(
+      dispatchEvent({ kind: 'account_live_preempt' })
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      event: { kind: 'account_live_preempt' }
+    });
+    expect(timeline.readTimeline(BEAD)[0].kind).toBe('account_live_preempt');
+  });
+
   test('accepts the queue_removed kind', () => {
     const timeline = createBeadTimeline({ workspace_root: WS });
 
@@ -263,7 +277,7 @@ describe('bead-timeline readTimeline', () => {
 });
 
 describe('TIMELINE_KINDS', () => {
-  test('carries exactly the seventeen kinds of the event table', () => {
+  test('carries exactly the kinds of the event table', () => {
     expect([...TIMELINE_KINDS]).toEqual([
       'dispatched',
       'guard_warning',
@@ -275,6 +289,7 @@ describe('TIMELINE_KINDS', () => {
       'provider_hold',
       'provider_recovered',
       'account_preempt',
+      'account_live_preempt',
       'landing_step',
       'merge_step',
       'operation_failed',

@@ -17,6 +17,23 @@ function resultEvent(overrides = {}) {
 }
 
 describe('runner/provider-outage result classification', () => {
+  test.each([
+    'Failed to authenticate: OAuth session expired and could not be refreshed',
+    'invalid_grant',
+    '401 Unauthorized: Missing bearer'
+  ])('holds credential failures on the account: %s', (message) => {
+    const raw = [resultEvent({ result: message })];
+
+    const result = classifyProviderOutage({ raw, stderr_tail: null });
+
+    expect(result).toEqual({
+      detail: 'credential',
+      scope: 'account',
+      resets_at: null,
+      message
+    });
+  });
+
   test('classifies the observed 529 result as overloaded', () => {
     const raw = [
       resultEvent({

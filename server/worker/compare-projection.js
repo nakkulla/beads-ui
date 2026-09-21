@@ -865,9 +865,12 @@ function humanEventsByAttempt(workspace) {
           str(event.attempt_id) !== null &&
           summary?.startsWith('파킹 ·'));
       const is_env =
-        ['provider_hold', 'provider_recovered', 'account_preempt'].includes(
-          event.kind
-        ) ||
+        [
+          'provider_hold',
+          'provider_recovered',
+          'account_preempt',
+          'account_live_preempt'
+        ].includes(event.kind) ||
         (event.kind === 'queue_hold' && summary?.startsWith('환경 보류:'));
       if (!is_human && !is_env) {
         continue;
@@ -1757,7 +1760,8 @@ export function collectCompareWorkspaces(seams = {}) {
                 'session_ended',
                 'provider_hold',
                 'provider_recovered',
-                'account_preempt'
+                'account_preempt',
+                'account_live_preempt'
               ].includes(event.kind)
             );
         } catch {

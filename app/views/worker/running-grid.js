@@ -179,6 +179,8 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * switch; `cap` is retired vocabulary that old queue files may still carry.
  * @property {number} [resets_at]
  * @property {number} [next_probe_at]
+ * @property {number} [live_preempt_skipped_at] - When the last live preempt
+ * pass found no switch candidate for this attempt (UI-inge §3.6).
  * @property {string} [log_path]
  * @property {boolean} [open]
  */

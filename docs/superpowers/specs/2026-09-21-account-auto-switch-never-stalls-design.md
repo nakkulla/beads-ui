@@ -503,8 +503,9 @@ timeline과 디스코드 알림으로 확인하고 되돌린다.
   `prior_attempt`의 서버 계약은 UI 진입점 없이 유지한다. 이 스펙은 조작과 계약을
   그대로 두고 "`prior_attempt` 자동 회복은 기록된 계정을 지킨다(계정 전환 거부)"
   조항만 자동 전환 모드의 `account_switch` 영수증에 한해 뒤집는다(§3.1 3).
-- 전제: ADR UI-o5ll(승계 UI-a8rq → UI-1l3a) — 공급자 보류의 해제는 프로브만이
-  판정한다. 이 스펙은 그 원칙을 usage_limit·credential target에도 그대로 적용한다.
+- 전제: ADR UI-1l3a(UI-o5ll → UI-a8rq에서 승계한 원칙) — 공급자 보류의 해제는
+  프로브만이 판정한다. 이 스펙은 그 원칙을 usage_limit·credential target에도 그대로
+  적용한다.
 - **자동 전환 모드에서는 계정 한도가 자동화를 세우지 않는다 — 실행 중 attempt도
   임계에서 정지·전환·재개하고, 핀·기본 계정이 보류 중이거나 임계 이상이면
   디스패치에서 덮어 전환하며, `prior_attempt` 계정 잠금도 이 전환에는 양보하고,

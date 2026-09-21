@@ -1,4 +1,11 @@
 import { html } from 'lit-html';
+import { formatRelativeTime } from '../../utils/relative-time.js';
+
+const SWITCH_REASONS = {
+  outage_switch: '한도 도달 뒤 전환',
+  preempt_switch: '디스패치 시 선제 전환',
+  live_switch: '실행 중 선제 전환'
+};
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
@@ -139,7 +146,7 @@ function workspaceDefaultOf(layer, key) {
 }
 
 /**
- * @param {{ key: string, title: string, provider_key: 'claude'|'codex', provider: ExecAccountProviderCatalog|null, selected: string, workspace_default: string|null, handlers: ExecAccountHandlers, hint?: string }} model
+ * @param {{ key: string, title: string, provider_key: 'claude'|'codex', provider: ExecAccountProviderCatalog|null, selected: string, workspace_default: string|null, handlers: ExecAccountHandlers, hint?: string, attempt?: any }} model
  * @returns {TemplateResult}
  */
 function accountRow(model) {
@@ -147,6 +154,21 @@ function accountRow(model) {
   const known = Boolean(
     model.provider?.accounts.some((account) => account.key === model.selected)
   );
+  const attempt = model.attempt;
+  const reason =
+    SWITCH_REASONS[
+      /** @type {keyof typeof SWITCH_REASONS} */ (
+        attempt?.account_sources?.[model.provider_key]
+      )
+    ];
+  const applied = attempt?.[model.key];
+  const from = attempt?.account_switched_from;
+  const relative_time = formatRelativeTime(attempt?.started_at);
+  /** @param {string} key */
+  const labelFor = (key) => {
+    const account = model.provider?.accounts.find((row) => row.key === key);
+    return account ? formatter(account) : key;
+  };
   return html`<div class="detail-kv" data-exec-account-row=${model.key}>
     <span class="detail-kv__k">${model.title}</span>
     <span class="detail-kv__vgroup">
@@ -184,6 +206,15 @@ function accountRow(model) {
             </option>`
         ) || ''}
       </select>
+      ${reason &&
+      typeof applied === 'string' &&
+      typeof from === 'string' &&
+      relative_time
+        ? html`<small class="detail-kv__note"
+            >자동 적용: ${labelFor(applied)} ← ${labelFor(from)} · ${reason} ·
+            ${relative_time}</small
+          >`
+        : ''}
       ${model.hint
         ? html`<small class="detail-effective__hint">${model.hint}</small>`
         : ''}
@@ -200,19 +231,28 @@ function accountRow(model) {
  * The two per-issue account pins. These remain separate from the shared
  * execution-setting key model because accounts are machine-local identities.
  *
- * @param {{ md: Record<string, any>, catalog: ExecAccountCatalog, workspace_defaults?: WorkspaceAccountsLayer|null, handlers: ExecAccountHandlers }} input
+ * @param {{ md: Record<string, any>, catalog: ExecAccountCatalog, workspace_defaults?: WorkspaceAccountsLayer|null, worker_attempts?: any[], handlers: ExecAccountHandlers }} input
  * @returns {TemplateResult}
  */
 export function execAccountsTemplate({
   md,
   catalog,
   workspace_defaults = null,
+  worker_attempts = [],
   handlers
 }) {
   const claude_selected =
     typeof md.claude_account === 'string' ? md.claude_account : '';
   const codex_selected =
     typeof md.codex_account === 'string' ? md.codex_account : '';
+  const attempt = worker_attempts.reduce(
+    (latest, current) =>
+      typeof current?.started_at === 'number' &&
+      (!latest || current.started_at > latest.started_at)
+        ? current
+        : latest,
+    null
+  );
   return html`<section class="exec-accounts" data-exec-accounts>
     <div class="detail-section-label">실행 계정</div>
     <div class="exec-settings-core">
@@ -220,6 +260,7 @@ export function execAccountsTemplate({
         key: 'claude_account',
         title: 'Claude 계정',
         provider_key: 'claude',
+        attempt,
         provider: providerCatalog(catalog, 'claude'),
         selected: claude_selected,
         workspace_default: workspaceDefaultOf(
@@ -233,6 +274,7 @@ export function execAccountsTemplate({
         key: 'codex_account',
         title: 'Codex 계정',
         provider_key: 'codex',
+        attempt,
         provider: providerCatalog(catalog, 'codex'),
         selected: codex_selected,
         workspace_default: workspaceDefaultOf(

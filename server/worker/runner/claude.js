@@ -21,6 +21,76 @@ import { applyPreamble, defaultTaskPrompt } from './preamble.js';
 import { classifyProviderOutage } from './provider-outage.js';
 import { runSession } from './session.js';
 
+const LAUNCH_SPACING_MS = 3_000;
+const LAUNCH_WAIT_CAP_MS = 30_000;
+/** @type {Map<string, Promise<void>>} */
+const launch_locks = new Map();
+
+/**
+ * Reserve this account's next bootstrap window, also used by health probes.
+ * The caller releases on init or exit; a stuck predecessor delays at most 30s.
+ *
+ * @param {string} account
+ * @returns {Promise<() => void>}
+ */
+export async function acquireClaudeLaunch(account) {
+  const prior = launch_locks.get(account);
+  /** @type {() => void} */
+  let unlock = () => {};
+  const lock = new Promise(
+    /** @param {(value?: void) => void} resolve */ (resolve) => {
+      unlock = () => resolve();
+    }
+  );
+  launch_locks.set(account, lock);
+  if (prior) {
+    /** @type {ReturnType<typeof setTimeout>|undefined} */
+    let timeout;
+    await Promise.race([
+      prior,
+      new Promise((resolve) => {
+        timeout = setTimeout(resolve, LAUNCH_WAIT_CAP_MS);
+      })
+    ]);
+    clearTimeout(timeout);
+  }
+  let released = false;
+  return () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    const timer = setTimeout(() => {
+      unlock();
+      if (launch_locks.get(account) === lock) {
+        launch_locks.delete(account);
+      }
+    }, LAUNCH_SPACING_MS);
+    timer.unref?.();
+  };
+}
+
+/**
+ * Release a reserved launch window on init or process exit.
+ *
+ * @param {RunnerHandle} handle
+ * @param {() => void} release
+ */
+export function observeClaudeLaunch(handle, release) {
+  const onRaw = (/** @type {any} */ raw) => {
+    if (raw?.type === 'system' && raw.subtype === 'init') {
+      release();
+      handle.events.off('raw', onRaw);
+    }
+  };
+  handle.events.on('raw', onRaw);
+  const onDone = () => {
+    release();
+    handle.events.off('raw', onRaw);
+  };
+  handle.done.then(onDone, onDone);
+}
+
 /**
  * Interactive question / approval tool names that must fail closed in
  * unattended mode. The canonical Claude Code interactive tool is
