@@ -23,6 +23,7 @@
 // direction `completion-intent.js` already takes: the map is pure data shared
 // by both runtimes, so reading it here keeps this module pure.
 import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
+import { EXTERNAL_WAIT_CAUSE } from './external-wait/contract.js';
 
 /**
  * @typedef {'parked' | 'waiting' | 'individual' | 'env' | 'systemic'} FailureTier
@@ -167,7 +168,11 @@ const GROUP_KEYED_CAUSES = new Set([
  * A `prerequisite_unmet` ending is a terminal WAIT, not a failure: two of them
  * in a row say the blocker is still open, never that the environment is.
  */
-const NON_PROMOTING_CAUSES = new Set(['prerequisite_unmet', 'base_moved']);
+const NON_PROMOTING_CAUSES = new Set([
+  'prerequisite_unmet',
+  'base_moved',
+  EXTERNAL_WAIT_CAUSE
+]);
 
 /** Bead statuses that mean the work landed, so a successful end is not parked. */
 const SETTLED_BEAD_STATUSES = new Set(['resolved', 'closed']);

@@ -1,3 +1,4 @@
+import { RESULT_LINE_PREFIX } from '../external-wait/contract.js';
 import {
   WORK_RECOVERY_RESULT_LINE_PREFIX,
   recoveryResultLineReasons
@@ -119,7 +120,7 @@ export const FAST_TRACK_DIRECTIVE = [
 ].join('\n');
 
 /**
- * The five legacy result-line forms; recoveryDirective adds the sixth only
+ * The standard result-line forms; recoveryDirective adds a recovery wait only
  * for a session launched with validated recovery readiness.
  *
  * CANONICAL SOURCE is dotfiles `finishing.md`; this is a copy (harness-reduction
@@ -139,6 +140,7 @@ const RESULT_LINE_GRAMMAR = [
   '실패 · <원인>',
   '환경 · <오류 문장 원문>',
   '대기 · blocks:<ID>[, …]',
+  `${RESULT_LINE_PREFIX}<wait_id>`,
   '```',
   '',
   '이 문법의 정본은 dotfiles `finishing.md`이고 위는 사본이다.'
@@ -290,8 +292,8 @@ function recoveryDirective(directive, ready) {
   const reasons = ready ? recoveryResultLineReasons() : [];
   return reasons.length > 0
     ? directive.replace(
-        '대기 · blocks:<ID>[, …]\n',
-        `대기 · blocks:<ID>[, …]\n${WORK_RECOVERY_RESULT_LINE_PREFIX}<${reasons.join('|')}>\n`
+        `${RESULT_LINE_PREFIX}<wait_id>\n`,
+        `${RESULT_LINE_PREFIX}<wait_id>\n${WORK_RECOVERY_RESULT_LINE_PREFIX}<${reasons.join('|')}>\n`
       )
     : directive;
 }

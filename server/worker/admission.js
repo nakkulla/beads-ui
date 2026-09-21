@@ -53,6 +53,7 @@
  */
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { parseArtifactScope, parseNameOnlyLog } from './artifact-scope.js';
+import { EXTERNAL_WAIT_KEY } from './external-wait/contract.js';
 import { WORKFLOW_ROUTES } from './routes.js';
 
 /**
@@ -79,7 +80,7 @@ const PLAN_APPROVAL_RE = /^user@([0-9a-fA-F]{40})$/;
  * base there is nothing for this validator to ask git about
  * (worker-base-scope-alignment §1).
  *
- * @typedef {'worker_ineligible'|'awaiting_user'|'bd_snapshot_failed'|'gh_unavailable'|'invalid_route'|'missing_description'|'spec_id_conflict'|'spec_missing'|`spec_missing_at_base:${string}`|`base_unresolved:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
+ * @typedef {'worker_ineligible'|'awaiting_user'|'external_wait'|'bd_snapshot_failed'|'gh_unavailable'|'invalid_route'|'missing_description'|'spec_id_conflict'|'spec_missing'|`spec_missing_at_base:${string}`|`base_unresolved:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
  */
 
 /**
@@ -128,12 +129,16 @@ const PLAN_APPROVAL_RE = /^user@([0-9a-fA-F]{40})$/;
  * SHA is useless to a human deciding whether the repo's base branch is wrong.
  * Defaults to `base` when absent.
  *
+ * `allow_external_wait_resume` skips only the external-wait presence check.
+ * The caller must prove a matching completed record before opting in.
+ *
  * @param {{
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   ghAvailable?: () => Promise<boolean>,
  *   repo: string,
  *   base: string,
  *   base_label?: string,
+ *   allow_external_wait_resume?: boolean,
  *   bead: {
  *     route?: string|null,
  *     description?: string|null,
@@ -163,6 +168,14 @@ export async function validateAdmission(input) {
   // 보지 않고 presence 하나로 fail-closed 거부한다.
   if (bead && Object.hasOwn(bead, 'awaiting_user')) {
     return { ok: false, reason: 'awaiting_user' };
+  }
+
+  if (
+    bead &&
+    Object.hasOwn(bead, EXTERNAL_WAIT_KEY) &&
+    input.allow_external_wait_resume !== true
+  ) {
+    return { ok: false, reason: 'external_wait' };
   }
 
   if (typeof ghAvailable === 'function') {
