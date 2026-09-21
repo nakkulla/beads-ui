@@ -1411,6 +1411,7 @@ describe('worker/queue-store', () => {
       active_op: null,
       auto_resolution: null,
       paused_resolution: null,
+      hold: null,
       terminal_reason: null
     });
   });
@@ -1719,6 +1720,211 @@ describe('worker/queue-store', () => {
     expect(result.queue.revision).toBe(revision + 1);
     expect(result.queue.completion_intents['UI-root'].phase).toBe('paused');
     expect(result.queue.merge_queue).toEqual([]);
+  });
+
+  /** @type {import('./queue-store.js').CompletionHold} */
+  const verify_hold = {
+    class: 'pre_merge_hold',
+    cause: 'verify_failure',
+    reason: 'script_failed',
+    summary: 'build failed',
+    operation_id: 'verify-one',
+    log_path: '/logs/verify-one.log',
+    head_sha: 'a'.repeat(40),
+    base_sha: 'b'.repeat(40),
+    at: 10,
+    comment_at: 10
+  };
+
+  test('removes a held intent from the runnable queue', () => {
+    const store = storeWithCompletionIntent();
+
+    const result = store.holdCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      hold: verify_hold
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'holding',
+      hold: verify_hold,
+      auto_resolution: null
+    });
+    expect(result.queue.merge_queue).toEqual([]);
+  });
+
+  test.each(['merging', 'cleaning', 'paused', 'needs_human', 'completed'])(
+    'refuses a hold from phase %s',
+    (phase) => {
+      const store = storeWithCompletionIntent();
+      const raw = store.snapshot(WS);
+      raw.completion_intents['UI-root'].phase = /** @type {any} */ (phase);
+      if (phase === 'needs_human') {
+        raw.completion_intents['UI-root'].terminal_reason = {
+          reason: 'verify_red',
+          stage: 'verify',
+          evidence: null,
+          failure_key: null,
+          log_path: null,
+          op_id: null,
+          comment_at: null,
+          at: 1
+        };
+      }
+      fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+      const restarted = createQueueStore();
+
+      const result = restarted.holdCompletionIntent(WS, {
+        root_bead_id: 'UI-root',
+        hold: verify_hold
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.queue.completion_intents['UI-root'].phase).toBe(phase);
+    }
+  );
+
+  test('refuses to hold an intent with an active operation', () => {
+    const store = storeWithCompletionIntent();
+    store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'gating',
+      op: {
+        op_id: 'merge-one',
+        kind: 'merge_subject',
+        failure_key: {
+          stage: 'merge',
+          reason: 'ready',
+          subject_sha: 'a'.repeat(40),
+          base_sha: 'b'.repeat(40),
+          result_digest: 'c'.repeat(64)
+        },
+        attempt_id: null,
+        status: 'prepared'
+      }
+    });
+
+    const result = store.holdCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      hold: verify_hold
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.queue.completion_intents['UI-root'].active_op).not.toBeNull();
+  });
+
+  test('preserves the comment claim while updating a same-head hold', () => {
+    const store = storeWithCompletionIntent();
+    store.holdCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      hold: verify_hold
+    });
+
+    const result = store.holdCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      hold: {
+        ...verify_hold,
+        reason: 'timeout',
+        operation_id: 'verify-two',
+        at: 20,
+        comment_at: 20
+      }
+    });
+
+    expect(result.queue.completion_intents['UI-root'].hold).toMatchObject({
+      reason: 'timeout',
+      operation_id: 'verify-two',
+      at: 20,
+      comment_at: 10
+    });
+  });
+
+  test('replaces the comment claim for a new held head', () => {
+    const store = storeWithCompletionIntent();
+    store.holdCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      hold: verify_hold
+    });
+
+    const result = store.holdCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      hold: { ...verify_hold, head_sha: 'c'.repeat(40), at: 20, comment_at: 20 }
+    });
+
+    expect(result.queue.completion_intents['UI-root'].hold).toMatchObject({
+      head_sha: 'c'.repeat(40),
+      comment_at: 20
+    });
+  });
+
+  test('preserves the hold through snapshot normalization', () => {
+    const store = storeWithCompletionIntent();
+    store.holdCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      hold: verify_hold
+    });
+
+    const restored = createQueueStore().snapshot(WS);
+
+    expect(restored.completion_intents['UI-root']).toMatchObject({
+      phase: 'holding',
+      hold: verify_hold
+    });
+  });
+
+  test.each([undefined, null, 'invalid', []])(
+    'normalizes a non-object hold %j to null',
+    (hold) => {
+      const store = storeWithCompletionIntent();
+      const raw = store.snapshot(WS);
+      raw.completion_intents['UI-root'].hold = /** @type {any} */ (hold);
+      fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+      const restored = createQueueStore().snapshot(WS);
+
+      expect(restored.completion_intents['UI-root']).toMatchObject({
+        phase: 'gating',
+        hold: null
+      });
+    }
+  );
+
+  test.each([
+    ['a', 0],
+    ['c', 1]
+  ])('enrolls held head %s with %i runnable entries', (head, count) => {
+    const store = storeWithCompletionIntent();
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    store.holdCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      hold: verify_hold
+    });
+    const before = store.snapshot(WS);
+
+    const result = store.enqueueMergeAuto(WS, {
+      entries: [
+        {
+          bead_id: 'UI-root',
+          external: false,
+          head_sha: String(head).repeat(40),
+          completion: {
+            source_attempt_id: 'att-UI-root',
+            target_base: 'main',
+            subject: {
+              ...before.completion_intents['UI-root'].subject,
+              head_sha: String(head).repeat(40)
+            }
+          }
+        }
+      ]
+    });
+
+    expect(result.queue.merge_queue).toHaveLength(Number(count));
+    expect(result.queue.auto_merge_skips).toEqual(before.auto_merge_skips);
+    expect(result.queue.completion_intents['UI-root'].phase).toBe('holding');
   });
 
   test.each([

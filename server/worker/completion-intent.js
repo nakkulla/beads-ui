@@ -353,7 +353,7 @@ export function classifyCompletionFailure(reason) {
 }
 
 /**
- * @typedef {'green'|'conflict'|'verify_red'|'cleanup_repairable'|'cleanup_pending'|'completed'|'stale'|'undecidable'|'waiting'} CompletionFactState
+ * @typedef {'green'|'conflict'|'verify_hold'|'verify_red'|'cleanup_repairable'|'cleanup_pending'|'completed'|'stale'|'undecidable'|'waiting'} CompletionFactState
  */
 /**
  * @typedef {{ state: CompletionFactState, reason?: string }} CompletionFact
@@ -368,7 +368,7 @@ export function classifyCompletionFailure(reason) {
  * `receipt_unbacked`/`review_receipt_missing` are exactly how the surviving
  * metadata-watch and automatic-review lanes are entered.
  *
- * @typedef {{ kind: 'gate'|'enter_cleanup'|'resume_intent'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'resume_metadata_check'|'retry_failed_op'|'pause'|'needs_human'|'complete', reason?: string, terminal?: boolean }} CompletionAction
+ * @typedef {{ kind: 'gate'|'hold'|'enter_cleanup'|'resume_intent'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'resume_metadata_check'|'retry_failed_op'|'pause'|'needs_human'|'complete', fact?: ObservedCompletionFact, reason?: string, terminal?: boolean }} CompletionAction
  */
 
 /**
@@ -561,7 +561,7 @@ export function decideCompletionAction(input) {
   if (intent.phase === 'merging') {
     return { kind: 'merge_subject' };
   }
-  if (intent.phase !== 'gating') {
+  if (intent.phase !== 'gating' && intent.phase !== 'holding') {
     return needsHuman('intent_state_invalid');
   }
   if (fact.state === 'cleanup_repairable' || fact.state === 'cleanup_pending') {
@@ -569,6 +569,16 @@ export function decideCompletionAction(input) {
   }
   if (fact.state === 'green' || fact.state === 'conflict') {
     return { kind: 'merge_subject' };
+  }
+  if (fact.state === 'verify_hold') {
+    // A held head is observed again only when a row for it is back in the
+    // merge queue (a `[머지]` re-click, spec §4.5). The `hold` action is
+    // idempotent for the same head — the store refreshes the record and drops
+    // the row, and the driver emits no second handoff — so returning it here
+    // is what keeps a held row from parking at the queue head and halting
+    // every later PR (spec §4.1, r1 blocking 1). Returning `null` would leave
+    // that row in place as `completion_waiting:holding`.
+    return { kind: 'hold', fact };
   }
   if (fact.state === 'verify_red') {
     // Post-merge verification red is a code question, and code questions go
@@ -819,6 +829,10 @@ const NEEDS_HUMAN_NOTIFY_CLASSES = Object.freeze({
   merge_gate: '머지 게이트 보류'
 });
 
+// Copied byte-for-byte from dotfiles docs/contracts/workflow-state.yaml
+// `failure_classes.pre_merge_hold.notify_label` (pre-merge verify hold §6.2).
+export const PRE_MERGE_HOLD_NOTIFY_LABEL = '머지 전 검증 실패';
+
 /**
  * Internal stage token → the three public stage words the comment format fixes
  * (UI-8w4t §4). The internal tokens are coordinates of THIS server's saga
@@ -998,6 +1012,33 @@ export function completionFailureComment(
 }
 
 /**
+ * Describe the held verify failure using the shared comment row grammar.
+ *
+ * @param {any} intent
+ * @param {any} queue
+ * @param {import('./queue-store.js').CompletionHold} hold
+ * @returns {string}
+ */
+export function completionHoldComment(intent, queue, hold) {
+  const sentence =
+    completionFailureSentence(hold.reason) || '머지 전 검증이 실패했습니다.';
+  const operation =
+    hold.operation_id === null
+      ? null
+      : queue.repo_operations?.[hold.operation_id];
+  const summary = hold.summary ?? operation?.failure?.summary ?? null;
+  return [
+    commentHeading('완료 보류 기록'),
+    '- 단계: verify',
+    `- 원인: ${hold.reason}${sentence ? ` — ${sentence}` : ''}`,
+    ...summaryRow(summary),
+    `- 대상: ${hold.head_sha || intent.subject.head_sha} (base ${hold.base_sha || intent.subject.base_sha})`,
+    ...(hold.log_path ? [logRow(hold.log_path)] : []),
+    '- 다음: 수정 커밋을 같은 브랜치에 push → 자동 재검증·머지 · 또는 [세션에서 해결]'
+  ].join('\n');
+}
+
+/**
  * The stable identity of one completion operation. The retired repair round
  * survives ONLY as the `null` placeholder in the digest input: the surviving
  * kinds always passed `null`, so keeping the key keeps every operation id a
@@ -1040,7 +1081,7 @@ function operationIdentity(root_bead_id, kind, failure_key) {
  *   notifyChanged?: (workspace: string) => void,
  *   kickMerge?: () => Promise<unknown>|unknown,
  *   repo?: string,
- *   notify?: { needsHuman: (input: any) => Promise<void> }|null,
+ *   notify?: { needsHuman: (input: any) => Promise<void>, hold?: (input: any) => Promise<void> }|null,
  *   now?: () => number,
  *   log?: (...args: any[]) => void
  * }} deps
@@ -1651,11 +1692,21 @@ export function createCompletionActionDriver(deps) {
    * already extracted by the caller from the evidence this terminal settled on.
    */
   function postFailureComment(root_bead_id, intent, queue, terminal, summary) {
+    postCompletionComment(
+      root_bead_id,
+      completionFailureComment(intent, queue, terminal, summary)
+    );
+  }
+
+  /**
+   * @param {string} root_bead_id
+   * @param {string} text
+   */
+  function postCompletionComment(root_bead_id, text) {
     if (typeof deps.bd?.comment !== 'function') {
       return;
     }
     const comment = deps.bd.comment;
-    const text = completionFailureComment(intent, queue, terminal, summary);
     comment_chain = comment_chain
       .then(() => comment(root_bead_id, text))
       .then(
@@ -1817,6 +1868,26 @@ export function createCompletionActionDriver(deps) {
       return { state: 'conflict', gated };
     }
     const reason = verdict.reason;
+    if (
+      verdict.tier === 'verify' &&
+      verdict.gate_badge === '검증 실패' &&
+      reason !== 'verify_cmd_failed'
+    ) {
+      const verify = gated.evidence?.verify;
+      return {
+        state: 'verify_hold',
+        failure_key: createCompletionFailureKey({
+          stage: 'verify',
+          reason,
+          subject_sha: gated.subject.head_sha,
+          base_sha: gated.base_sha,
+          evidence: { output_tail: verify?.output_tail }
+        }),
+        evidence: verify,
+        op_id: operationIdFromLogPath(verify?.log_path),
+        gated
+      };
+    }
     if (reason === 'verify_cmd_failed') {
       const verify = gated.evidence?.verify;
       const failure_key = createCompletionFailureKey({
@@ -2244,7 +2315,72 @@ export function createCompletionActionDriver(deps) {
    * @param {any} intent
    */
   async function onAction(root_bead_id, action, intent) {
-    const fact = facts.get(root_bead_id) || { state: 'waiting' };
+    const fact = action.fact || facts.get(root_bead_id) || { state: 'waiting' };
+    if (action.kind === 'hold') {
+      const queue = deps.store.snapshot(deps.workspace);
+      const current = queue.completion_intents[root_bead_id];
+      const head_sha = fact.gated.subject.head_sha;
+      const first_hold = !current.hold || current.hold.head_sha !== head_sha;
+      const at = now();
+      const operation_id = fact.op_id ?? null;
+      const hold = {
+        class: /** @type {const} */ ('pre_merge_hold'),
+        cause: /** @type {const} */ ('verify_failure'),
+        reason: fact.failure_key.reason,
+        summary:
+          (operation_id === null
+            ? null
+            : queue.repo_operations?.[operation_id]?.failure?.summary) ??
+          completionFailureSummary(fact.evidence),
+        operation_id,
+        log_path: fact.evidence?.log_path ?? null,
+        head_sha,
+        base_sha: fact.gated.base_sha,
+        at,
+        comment_at: first_hold ? at : current.hold.comment_at
+      };
+      const written = deps.store.holdCompletionIntent(deps.workspace, {
+        root_bead_id,
+        hold
+      });
+      if (!written.ok) {
+        return;
+      }
+      notify();
+      if (!first_hold) {
+        return;
+      }
+      recordTimeline(
+        root_bead_id,
+        'merge_step',
+        `hold:${head_sha}`,
+        `머지 보류 — 검증 실패 · ${hold.reason}`
+      );
+      postCompletionComment(
+        root_bead_id,
+        completionHoldComment(current, queue, hold)
+      );
+      if (typeof failure_notify?.hold === 'function') {
+        try {
+          Promise.resolve(
+            failure_notify.hold({
+              bead_id: root_bead_id,
+              failure_class: PRE_MERGE_HOLD_NOTIFY_LABEL,
+              reason: hold.reason,
+              reason_detail: hold.summary,
+              next_action: '수정 커밋 push(자동 재검증) 또는 [세션에서 해결]',
+              pr_url: current.subject.pr_url,
+              repo: deps.repo ?? null
+            })
+          ).catch((err) =>
+            log('hold notify failed for %s: %o', root_bead_id, err)
+          );
+        } catch (err) {
+          log('hold notify failed for %s: %o', root_bead_id, err);
+        }
+      }
+      return;
+    }
     if (action.kind === 'reconcile_op') {
       const current = deps.store.snapshot(deps.workspace).completion_intents?.[
         root_bead_id

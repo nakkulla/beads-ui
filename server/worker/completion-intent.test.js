@@ -20,12 +20,461 @@ import {
   migrateStoredNeedsHumanReason,
   needsHumanHoldKind
 } from './completion-intent.js';
+import { createMergeQueue } from './merge-queue.js';
 import { createQueueStore } from './queue-store.js';
 import { EXEC_RECEIPT_MERGE_GATE } from './receipt-check.js';
 
 const DRIVER_WS = '/repo';
 /** @type {string[]} */
 const tmp_dirs = [];
+
+/**
+ * @param {Record<string, any>} [patch]
+ */
+function holdGate(patch = {}) {
+  return redGate({
+    verdict: {
+      enabled: false,
+      tier: 'verify',
+      gate_badge: '검증 실패',
+      reason: 'script_failed'
+    },
+    evidence: {
+      verify: { output_tail: 'build failed', log_path: '/logs/verify-one.log' }
+    },
+    ...patch
+  });
+}
+
+/**
+ * @param {Record<string, any>} [overrides]
+ */
+function holdHarness(overrides = {}) {
+  const store = seededCompletionStore();
+  const comment = vi.fn(commentSpy());
+  const hold = vi.fn(async () => {});
+  const append = vi.fn();
+  const completionGate = vi.fn(async () => holdGate());
+  const driver = actionDriver(store, {
+    prActions: { completionGate },
+    bd: { comment },
+    notify: { hold, needsHuman: vi.fn(async () => {}) },
+    timeline: { append },
+    now: () => 100,
+    ...overrides
+  });
+  return { store, driver, comment, hold, append, completionGate };
+}
+
+/**
+ * @param {ReturnType<typeof createQueueStore>} store
+ * @param {ReturnType<typeof createCompletionActionDriver>} driver
+ * @param {string} [root]
+ */
+async function driveOnce(store, driver, root = 'UI-root') {
+  const current = store.snapshot(DRIVER_WS).completion_intents[root];
+  const fact = await driver.observe(root, current);
+  const action = decideCompletionAction({
+    auto_merge: true,
+    intent: current,
+    fact
+  });
+  if (action) {
+    await driver.onAction(root, action, current);
+  }
+  await driver.commentsIdle();
+  return { fact, action };
+}
+
+describe('completion verify hold', () => {
+  test('classifies the repo-ops failure at the verify stage', async () => {
+    const { store, driver } = holdHarness();
+
+    const fact = await driver.observe(
+      'UI-root',
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    );
+
+    expect(fact).toMatchObject({
+      state: 'verify_hold',
+      failure_key: { stage: 'verify', reason: 'script_failed' },
+      op_id: 'verify-one'
+    });
+  });
+
+  test('holds a failed head and publishes its one handoff', async () => {
+    const { store, driver, comment, hold, append } = holdHarness();
+
+    const { action } = await driveOnce(store, driver);
+
+    expect(action?.kind).toBe('hold');
+    expect(store.snapshot(DRIVER_WS)).toMatchObject({
+      merge_queue: [],
+      completion_intents: {
+        'UI-root': {
+          phase: 'holding',
+          hold: {
+            class: 'pre_merge_hold',
+            cause: 'verify_failure',
+            reason: 'script_failed',
+            operation_id: 'verify-one',
+            head_sha: 'a'.repeat(40),
+            at: 100,
+            comment_at: 100
+          }
+        }
+      }
+    });
+    expect(append).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        kind: 'merge_step',
+        seq: `hold:${'a'.repeat(40)}`,
+        summary: '머지 보류 — 검증 실패 · script_failed'
+      })
+    );
+    expect(comment).toHaveBeenCalledTimes(1);
+    expect(comment.mock.calls[0][1]).toContain('## 🤖 완료 보류 기록');
+    expect(comment.mock.calls[0][1]).toContain(
+      '- 원인: script_failed — 머지 전 검증이 실패했습니다.'
+    );
+    expect(comment.mock.calls[0][1]).toContain(
+      `- 대상: ${'a'.repeat(40)} (base ${'b'.repeat(40)})`
+    );
+    expect(comment.mock.calls[0][1]).toContain(
+      '- 다음: 수정 커밋을 같은 브랜치에 push → 자동 재검증·머지 · 또는 [세션에서 해결]'
+    );
+    expect(hold).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        failure_class: '머지 전 검증 실패',
+        next_action: '수정 커밋 push(자동 재검증) 또는 [세션에서 해결]'
+      })
+    );
+  });
+
+  test('silences re-observation of the same failed head', async () => {
+    const { store, driver, comment, hold, append } = holdHarness();
+    await driveOnce(store, driver);
+    comment.mockClear();
+    hold.mockClear();
+    append.mockClear();
+
+    const { action } = await driveOnce(store, driver);
+
+    expect(action?.kind).toBe('hold');
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({ phase: 'holding', hold: { comment_at: 100 } });
+    expect(comment).not.toHaveBeenCalled();
+    expect(hold).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  test('drops a manually re-queued held head without a second handoff', async () => {
+    const { store, driver, comment, hold, append } = holdHarness();
+    await driveOnce(store, driver);
+    comment.mockClear();
+    hold.mockClear();
+    append.mockClear();
+    const before = store.snapshot(DRIVER_WS);
+    const requeued = store.enqueueMergeManual(DRIVER_WS, {
+      expected_revision: before.revision,
+      entries: [
+        { bead_id: 'UI-root', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ]
+    });
+    expect(requeued.ok).toBe(true);
+    expect(
+      store.snapshot(DRIVER_WS).merge_queue.some((e) => e.bead_id === 'UI-root')
+    ).toBe(true);
+
+    await driveOnce(store, driver);
+
+    expect(store.snapshot(DRIVER_WS)).toMatchObject({
+      merge_queue: [],
+      completion_intents: { 'UI-root': { phase: 'holding' } }
+    });
+    expect(comment).not.toHaveBeenCalled();
+    expect(hold).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['script_failed', 'verify-two'],
+    ['timeout', 'verify-one'],
+    ['timeout', 'verify-two']
+  ])(
+    'refreshes same-head reason %s and operation %s without repeating the handoff',
+    async (reason, operation_id) => {
+      const { store, driver, comment, hold, append, completionGate } =
+        holdHarness();
+      await driveOnce(store, driver);
+      comment.mockClear();
+      hold.mockClear();
+      append.mockClear();
+      completionGate.mockResolvedValue(
+        holdGate({
+          verdict: {
+            enabled: false,
+            tier: 'verify',
+            gate_badge: '검증 실패',
+            reason
+          },
+          evidence: {
+            verify: {
+              output_tail: 'timed out',
+              log_path: `/logs/${operation_id}.log`
+            }
+          }
+        })
+      );
+
+      await driveOnce(store, driver);
+
+      expect(
+        store.snapshot(DRIVER_WS).completion_intents['UI-root'].hold
+      ).toMatchObject({
+        reason,
+        operation_id,
+        log_path: `/logs/${operation_id}.log`,
+        summary: 'timed out',
+        comment_at: 100
+      });
+      expect(comment).not.toHaveBeenCalled();
+      expect(hold).not.toHaveBeenCalled();
+      expect(append).not.toHaveBeenCalled();
+    }
+  );
+
+  test('repins a new head and clears its previous hold', async () => {
+    const { store, driver, completionGate } = holdHarness();
+    await driveOnce(store, driver);
+    completionGate.mockResolvedValue(
+      holdGate({ subject: { ...intent().subject, head_sha: 'c'.repeat(40) } })
+    );
+
+    const result = await driveOnce(store, driver);
+
+    expect(result.fact.state).toBe('stale');
+    expect(result.action).toEqual({ kind: 'gate' });
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'gating',
+      hold: null,
+      subject: { head_sha: 'c'.repeat(40) }
+    });
+  });
+
+  test('prefers the operation ledger summary for the held failure', async () => {
+    const { store, driver, comment, hold } = holdHarness();
+    const snapshot = store.snapshot.bind(store);
+    vi.spyOn(store, 'snapshot').mockImplementation((workspace) => ({
+      ...snapshot(workspace),
+      repo_operations: /** @type {any} */ ({
+        'verify-one': {
+          failure: { summary: 'repo-ops verify: npm run build failed' }
+        }
+      })
+    }));
+
+    await driveOnce(store, driver);
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root'].hold?.summary
+    ).toBe('repo-ops verify: npm run build failed');
+    expect(comment.mock.calls[0][1]).toContain(
+      '- 요약: repo-ops verify: npm run build failed'
+    );
+    expect(hold).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason_detail: 'repo-ops verify: npm run build failed'
+      })
+    );
+  });
+
+  test.each(['green', 'conflict'])(
+    'merges a held head after observing %s',
+    (state) => {
+      const current = intent({ phase: 'holding' });
+
+      const action = decideCompletionAction({
+        auto_merge: true,
+        intent: current,
+        fact: { state: /** @type {any} */ (state) }
+      });
+
+      expect(action).toEqual({ kind: 'merge_subject' });
+    }
+  );
+
+  test('terminalizes forged approval from a held head', async () => {
+    const { store, driver, completionGate } = holdHarness();
+    await driveOnce(store, driver);
+    completionGate.mockResolvedValue(
+      holdGate({
+        verdict: {
+          enabled: false,
+          tier: 'receipt',
+          reason: 'receipt_unbacked:approval_forged'
+        }
+      })
+    );
+
+    await driveOnce(store, driver);
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: { reason: 'receipt_unresolvable:approval_forged' }
+    });
+  });
+
+  test('silences a persisted hold after a store and driver restart', async () => {
+    const { store, driver } = holdHarness();
+    await driveOnce(store, driver);
+    const snapshot = store.snapshot(DRIVER_WS);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-hold-restart-'));
+    tmp_dirs.push(dir);
+    const file = path.join(dir, 'queue.json');
+    fs.writeFileSync(file, JSON.stringify(snapshot));
+    const restarted_store = createQueueStore({ filePathFor: () => file });
+    const comment = vi.fn(commentSpy());
+    const hold = vi.fn(async () => {});
+    const append = vi.fn();
+    const restarted = actionDriver(restarted_store, {
+      prActions: { completionGate: async () => holdGate() },
+      bd: { comment },
+      notify: { hold, needsHuman: vi.fn(async () => {}) },
+      timeline: { append }
+    });
+
+    const { action } = await driveOnce(restarted_store, restarted);
+
+    expect(action?.kind).toBe('hold');
+    expect(
+      restarted_store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({ phase: 'holding', hold: { comment_at: 100 } });
+    expect(comment).not.toHaveBeenCalled();
+    expect(hold).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  test('keys timeline lines by head even when operations repeat or are absent', async () => {
+    const { store, driver, append, comment, hold, completionGate } =
+      holdHarness();
+    await driveOnce(store, driver);
+    for (const [head, log_path] of [
+      ['c', '/logs/verify-one.log'],
+      ['d', null]
+    ]) {
+      completionGate.mockResolvedValue(
+        holdGate({
+          subject: { ...intent().subject, head_sha: String(head).repeat(40) },
+          evidence: { verify: { log_path } }
+        })
+      );
+      await driveOnce(store, driver);
+      await driveOnce(store, driver);
+    }
+
+    const events = append.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.seq.startsWith('hold:'));
+
+    expect(events.map((event) => event.seq)).toEqual(
+      ['a', 'c', 'd'].map((head) => `hold:${head.repeat(40)}`)
+    );
+    expect(comment).toHaveBeenCalledTimes(3);
+    expect(hold).toHaveBeenCalledTimes(3);
+  });
+
+  test('lets a green PR merge between two failed heads without halting', async () => {
+    const { store, comment, hold, append } = holdHarness();
+    for (const root of ['UI-B', 'UI-C']) {
+      store.appendAttempt(DRIVER_WS, {
+        expected_revision: store.snapshot(DRIVER_WS).revision,
+        attempt: {
+          attempt_id: root,
+          bead_id: root,
+          repo: DRIVER_WS,
+          target_base: 'main',
+          base_oid: 'b'.repeat(40),
+          runner: 'claude'
+        }
+      });
+      store.moveToPrWait(DRIVER_WS, {
+        bead_id: root,
+        attempt_id: root,
+        patch: { status: 'done', finished_at: 1 }
+      });
+      store.enqueueCompletionIntent(DRIVER_WS, {
+        root_bead_id: root,
+        source_attempt_id: root,
+        target_base: 'main',
+        subject: { ...intent().subject, bead_id: root }
+      });
+    }
+    const merged = vi.fn(async (root) => {
+      store.moveToDone(DRIVER_WS, { bead_id: root });
+      return {
+        ok: true,
+        action: /** @type {const} */ ('merged'),
+        reason: null
+      };
+    });
+    const driver = actionDriver(store, {
+      prActions: {
+        completionGate: async (/** @type {string} */ root) =>
+          holdGate({
+            subject: { ...intent().subject, bead_id: root },
+            ...(root === 'UI-B'
+              ? { verdict: { enabled: true, tier: 'ready' } }
+              : {})
+          })
+      },
+      bd: { comment },
+      notify: { hold, needsHuman: vi.fn(async () => {}) },
+      timeline: { append }
+    });
+    const merge_queue = createMergeQueue({
+      workspace: DRIVER_WS,
+      store,
+      merge: merged,
+      observePr: async () => ({ state: 'MERGED' }),
+      onCompletionResult: driver.onMergeResult
+    });
+    const coordinator = createCompletionIntentCoordinator({
+      workspace: DRIVER_WS,
+      store,
+      observe: driver.observe,
+      onAction: driver.onAction
+    });
+
+    await coordinator.reconcile();
+    await coordinator.reconcile();
+    await merge_queue.kick();
+    await coordinator.reconcile();
+    await driver.commentsIdle();
+
+    await merge_queue.kick();
+
+    expect(merged).toHaveBeenCalledTimes(1);
+    expect(merged.mock.calls[0][0]).toBe('UI-B');
+    expect(store.snapshot(DRIVER_WS).merge_queue).toEqual([]);
+    expect(store.snapshot(DRIVER_WS).completion_intents['UI-C'].phase).toBe(
+      'holding'
+    );
+    expect(comment).toHaveBeenCalledTimes(2);
+    expect(hold).toHaveBeenCalledTimes(2);
+    expect(merge_queue.state()).toMatchObject({
+      active: null,
+      failures: {},
+      waiting: null
+    });
+    expect(store.snapshot(DRIVER_WS).hold).toBeNull();
+  });
+});
 
 /**
  * @param {Record<string, unknown>} [patch]
