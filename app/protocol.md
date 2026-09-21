@@ -390,6 +390,9 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   14 makes `buildLanes` the only assembler of a card — a renderer that fetched
   its own rows would be a second assembly path for the same tile. The WHOLE
   timeline is a different question, answered by `get-bead-timeline`.
+- Timeline kind `guard_denied` records a tool command refused before execution,
+  with `runner`, `reason`, and `command`. The session continues. Hook failures
+  remain `guard_warning` (`guard_hook_error` or `codex_hook_not_loaded`).
 - `bead_workflow: Record<bead_id, WorkflowSummary|null>` (UI-eey2 §9.2) is the
   stepper projection for the beads a LANE renders: `queue` ∪
   `serial_lanes[].entries` ∪ RUNNING attempts ∪ `pr_wait`. `done` is excluded —

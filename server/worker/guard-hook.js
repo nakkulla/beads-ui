@@ -21,11 +21,12 @@
  * "tolerated" by an allowlist; it is structurally out of scope.
  *
  * Known limitation, kept deliberately: `git push --no-verify` skips the hook
- * (measured — the remote base really moves). The text guard's `hook_bypass` kill
- * covers the attempt; the hook does not pretend to.
+ * (measured — the remote base really moves). PreToolUse refuses that command;
+ * the independent landing check detects any push that still reaches the base.
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { debug } from '../logging.js';
 import { guardHookDir } from './state-paths.js';
 
@@ -58,6 +59,84 @@ const PUSH_LOG_NAME = 'pushes.jsonl';
  */
 export function pushLogPath(workspace, attempt_id) {
   return path.join(guardHookDir(workspace, attempt_id), PUSH_LOG_NAME);
+}
+
+/**
+ * @param {string} workspace
+ * @param {string} attempt_id
+ */
+export function preToolHookPath(workspace, attempt_id) {
+  return path.join(guardHookDir(workspace, attempt_id), 'pre-tool-use');
+}
+
+/**
+ * @param {string} workspace
+ * @param {string} attempt_id
+ */
+export function guardEventLogPath(workspace, attempt_id) {
+  return path.join(guardHookDir(workspace, attempt_id), 'guard-events.jsonl');
+}
+
+/**
+ * @param {string} hook_path
+ * @param {'claude'|'codex'} runner
+ */
+export function preToolHookGroup(hook_path, runner) {
+  return {
+    matcher: 'Bash',
+    hooks: [
+      {
+        type: 'command',
+        command: `${shellLiteral(hook_path)} ${runner}`,
+        timeout: 10
+      }
+    ]
+  };
+}
+
+/**
+ * Install only the tool hook; disposition sessions keep their pre-push policy.
+ * The shell catches Node startup/import failures as well as script errors.
+ *
+ * @param {{ workspace: string, attempt_id: string, repo: string, target_base: string }} input
+ * @param {{ fs?: typeof import('node:fs') }} [options]
+ */
+export function installPreToolHook(input, options = {}) {
+  const fs = options.fs || nodeFs;
+  const hook_path = preToolHookPath(input.workspace, input.attempt_id);
+  const event_log = guardEventLogPath(input.workspace, input.attempt_id);
+  const module_path = fileURLToPath(
+    new URL('./runner/guard-pre-tool.js', import.meta.url)
+  );
+  const command = [
+    process.execPath,
+    module_path,
+    input.repo,
+    input.target_base,
+    event_log
+  ]
+    .map(shellLiteral)
+    .join(' ');
+  try {
+    fs.mkdirSync(path.dirname(hook_path), { recursive: true });
+    fs.writeFileSync(
+      hook_path,
+      `#!/bin/sh
+${command} "$1"
+if [ "$?" -ne 0 ]; then
+  printf '{"kind":"guard_warning","reason":"guard_hook_error","command":null,"runner":"%s"}\\n' "$1" >> ${shellLiteral(event_log)} 2>/dev/null || :
+fi
+exit 0
+`,
+      { mode: HOOK_MODE }
+    );
+    fs.chmodSync(hook_path, HOOK_MODE);
+    fs.writeFileSync(event_log, '', { flag: 'a' });
+    return { ok: true, hook_path };
+  } catch (error) {
+    log('tool hook install failed for %s: %o', input.attempt_id, error);
+    return { ok: false, hook_path };
+  }
 }
 
 /**
@@ -510,6 +589,7 @@ export function install(input, options = {}) {
     remove(input, options);
     return { ok: false, reason: 'guard_hook_push_log_failed' };
   }
+  installPreToolHook(input, options);
   return { ok: true, dir, hook_path };
 }
 

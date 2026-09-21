@@ -679,14 +679,14 @@ describe('command-guard fallback splits the two landing shapes', () => {
     return `${cmd} "`;
   }
 
-  test('kills an unparseable `gh pr merge`', () => {
+  test('detects an unparseable `gh pr merge`', () => {
     const broken = unparseable('gh pr merge 311');
 
     expect(tokenize(broken)).toBeNull();
     const violation = findMergeViolation(broken, ON_MAIN);
 
     expect(violation?.kind).toBe('gh_pr_merge');
-    expect(guardEffect(violation)).toBe('kill');
+    expect(guardEffect(violation)).toBe('warn');
   });
 
   test('only warns on an unparseable base push', () => {
@@ -699,7 +699,7 @@ describe('command-guard fallback splits the two landing shapes', () => {
     expect(guardEffect(violation)).toBe('warn');
   });
 
-  test('kills the `gh pr merge` half of an unparseable command that has both', () => {
+  test('detects the `gh pr merge` half of an unparseable command that has both', () => {
     const broken = unparseable('git push origin main && gh pr merge 311');
 
     const violation = findMergeViolation(broken, ON_MAIN);
@@ -867,21 +867,21 @@ describe('command-guard effect table', () => {
     expect(guardEffect(violation)).toBe('warn');
   });
 
-  test('kills `gh pr merge`, which no other layer covers', () => {
+  test('detects `gh pr merge`, which no other layer covers', () => {
     const violation = findMergeViolation('gh pr merge 311', ON_MAIN);
 
     expect(violation?.kind).toBe('gh_pr_merge');
-    expect(guardEffect(violation)).toBe('kill');
+    expect(guardEffect(violation)).toBe('warn');
   });
 
-  test('kills a hook-disabling command', () => {
+  test('detects a hook-disabling command', () => {
     const violation = findMergeViolation(
       'git push --no-verify origin UI-1',
       ON_MAIN
     );
 
     expect(violation?.kind).toBe('hook_bypass');
-    expect(guardEffect(violation)).toBe('kill');
+    expect(guardEffect(violation)).toBe('warn');
   });
 
   // The 2026-08-04 `dotfiles-v05o` incident ($11.67): a legitimate base sync
@@ -896,17 +896,17 @@ describe('command-guard effect table', () => {
     expect(guardEffect(violation)).toBe('warn');
   });
 
-  test('kills an unknown kind, so a new kind fails closed', () => {
+  test('warns for an unknown kind', () => {
     const effect = guardEffect(
       /** @type {any} */ ({ kind: 'something_new', command: 'x' })
     );
 
-    expect(effect).toBe('kill');
+    expect(effect).toBe('warn');
   });
 });
 
 describe('command-guard hook-bypass detection', () => {
-  test('kills `git push --no-verify`', () => {
+  test('detects `git push --no-verify`', () => {
     const violation = findMergeViolation(
       'git push --no-verify origin UI-1',
       ON_MAIN
@@ -919,7 +919,7 @@ describe('command-guard hook-bypass detection', () => {
     });
   });
 
-  test('kills `git -c core.hooksPath=`', () => {
+  test('detects `git -c core.hooksPath=`', () => {
     const violation = findMergeViolation(
       'git -c core.hooksPath=/dev/null push origin UI-1',
       ON_MAIN
@@ -928,7 +928,7 @@ describe('command-guard hook-bypass detection', () => {
     expect(violation?.reason).toBe('hook_bypass_blocked');
   });
 
-  test('kills `git config core.hooksPath`', () => {
+  test('detects `git config core.hooksPath`', () => {
     const violation = findMergeViolation(
       'git config --global core.hooksPath /tmp/empty-hooks',
       ON_MAIN
@@ -937,7 +937,7 @@ describe('command-guard hook-bypass detection', () => {
     expect(violation?.reason).toBe('hook_bypass_blocked');
   });
 
-  test('kills a GIT_CONFIG_* assignment prefix', () => {
+  test('detects a GIT_CONFIG_* assignment prefix', () => {
     const violation = findMergeViolation(
       'GIT_CONFIG_COUNT=0 git push origin UI-1',
       ON_MAIN
@@ -946,7 +946,7 @@ describe('command-guard hook-bypass detection', () => {
     expect(violation?.reason).toBe('hook_bypass_blocked');
   });
 
-  test('kills a GIT_CONFIG_KEY_/VALUE_ redefinition', () => {
+  test('detects a GIT_CONFIG_KEY_/VALUE_ redefinition', () => {
     const violation = findMergeViolation(
       'GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/x git push origin UI-1',
       ON_MAIN
@@ -955,7 +955,7 @@ describe('command-guard hook-bypass detection', () => {
     expect(violation?.reason).toBe('hook_bypass_blocked');
   });
 
-  test('kills a bare GIT_CONFIG_COUNT assignment, which needs no command', () => {
+  test('detects a bare GIT_CONFIG_COUNT assignment, which needs no command', () => {
     const violation = findMergeViolation(
       'GIT_CONFIG_COUNT=0; git push origin UI-1',
       ON_MAIN
@@ -964,7 +964,7 @@ describe('command-guard hook-bypass detection', () => {
     expect(violation?.reason).toBe('hook_bypass_blocked');
   });
 
-  test('kills the hooks-path override behind the env wrapper', () => {
+  test('detects the hooks-path override behind the env wrapper', () => {
     const violation = findMergeViolation(
       'env GIT_CONFIG_COUNT=0 git push origin UI-1',
       ON_MAIN
@@ -973,7 +973,7 @@ describe('command-guard hook-bypass detection', () => {
     expect(violation?.reason).toBe('hook_bypass_blocked');
   });
 
-  test('kills a hook bypass inside a `bash -c` payload', () => {
+  test('detects a hook bypass inside a `bash -c` payload', () => {
     const violation = findMergeViolation(
       'bash -c "git push --no-verify origin UI-1"',
       ON_MAIN
@@ -1008,7 +1008,7 @@ describe('command-guard hook-bypass detection', () => {
     ).toBeNull();
   });
 
-  test('kills a hook bypass ahead of a base push, the stricter effect', () => {
+  test('detects a hook bypass ahead of a base push, the stricter effect', () => {
     const violation = findMergeViolation(
       'git push --no-verify origin main',
       ON_MAIN
@@ -1054,13 +1054,13 @@ describe('command-guard excludes a hooks-path READ from the bypass', () => {
     ).toBeNull();
   });
 
-  test('kills the implicit WRITE, which is the same shape plus a value', () => {
+  test('detects the implicit WRITE, which is the same shape plus a value', () => {
     expect(
       findMergeViolation('git config core.hooksPath /tmp/x', ON_MAIN)?.kind
     ).toBe('hook_bypass');
   });
 
-  test('kills the modern write subcommands', () => {
+  test('detects the modern write subcommands', () => {
     expect(
       findMergeViolation('git config set core.hooksPath /tmp/x', ON_MAIN)?.kind
     ).toBe('hook_bypass');
@@ -1069,7 +1069,7 @@ describe('command-guard excludes a hooks-path READ from the bypass', () => {
     ).toBe('hook_bypass');
   });
 
-  test('kills the legacy write flags, whose key looks like a lone read', () => {
+  test('detects the legacy write flags, whose key looks like a lone read', () => {
     expect(
       findMergeViolation('git config --unset core.hooksPath', ON_MAIN)?.kind
     ).toBe('hook_bypass');
@@ -1087,7 +1087,7 @@ describe('command-guard excludes a hooks-path READ from the bypass', () => {
   // An option's OPERAND must never be read as the operation word: `--comment`
   // takes a value, so `get` here is the comment, not a read subcommand
   // (implementation review 2026-08-04).
-  test('kills a write whose option operand impersonates a read subcommand', () => {
+  test('detects a write whose option operand impersonates a read subcommand', () => {
     expect(
       findMergeViolation(
         'git config --comment get core.hooksPath /tmp/x',
@@ -1096,7 +1096,7 @@ describe('command-guard excludes a hooks-path READ from the bypass', () => {
     ).toBe('hook_bypass');
   });
 
-  test('kills a write behind an UNKNOWN option, which fails closed', () => {
+  test('detects a write behind an UNKNOWN option, which fails closed', () => {
     expect(
       findMergeViolation(
         'git config --future-flag get core.hooksPath /tmp/x',
@@ -1167,7 +1167,7 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
     }
   });
 
-  test('kills a `-c` relocation on a subcommand outside the enumeration', () => {
+  test('detects a `-c` relocation on a subcommand outside the enumeration', () => {
     for (const rest of [
       'commit -m x',
       'push origin UI-1',
@@ -1182,7 +1182,7 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
     }
   });
 
-  test('kills a `-c` relocation carrying no subcommand at all', () => {
+  test('detects a `-c` relocation carrying no subcommand at all', () => {
     const violation = findMergeViolation(
       'git -c core.hooksPath=/dev/null',
       ON_MAIN
@@ -1200,20 +1200,20 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
 
   // The 2026-08-06 shape: `go test` spawns child git, which inherits the
   // assignment, so condition (a) fails.
-  test('kills a hooks-path GIT_CONFIG_* prefix on a non-git command', () => {
+  test('detects a hooks-path GIT_CONFIG_* prefix on a non-git command', () => {
     const cmd =
       'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0= go test ./...';
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills a hooks-path assignment that decorates no command', () => {
+  test('detects a hooks-path assignment that decorates no command', () => {
     const cmd = 'GIT_CONFIG_KEY_0=core.hooksPath; git status --short';
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills a relocation whose `-c` also names another config key', () => {
+  test('detects a relocation whose `-c` also names another config key', () => {
     const cmd =
       'git -c core.hooksPath=/dev/null -c core.fsmonitor=/tmp/watch status';
 
@@ -1224,14 +1224,14 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
   // from an environment variable. Condition (b) is stated over the relocation,
   // not over one flag, so reading only `-c` would leave this exempt — and
   // `core.fsmonitor` runs during `status` and inherits the relocation.
-  test('kills a relocation whose `--config-env` names another config key', () => {
+  test('detects a relocation whose `--config-env` names another config key', () => {
     const cmd =
       'git --config-env=core.fsmonitor=WATCH -c core.hooksPath=/dev/null status';
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills the separate `--config-env` form naming another config key', () => {
+  test('detects the separate `--config-env` form naming another config key', () => {
     const cmd =
       'git --config-env core.fsmonitor=WATCH -c core.hooksPath=/dev/null status';
 
@@ -1241,19 +1241,19 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
   // Seam 1 (spec §1) — `--config-env` is `-c`'s other spelling on the same
   // config layer, so naming `core.hooksPath` through it raises the same
   // relocation and faces the same four exemption conditions.
-  test('kills an attached `--config-env` hooks-path relocation on `push`', () => {
+  test('detects an attached `--config-env` hooks-path relocation on `push`', () => {
     const cmd = 'git --config-env=core.hooksPath=HP push origin UI-1';
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills the separate `--config-env` hooks-path relocation on `push`', () => {
+  test('detects the separate `--config-env` hooks-path relocation on `push`', () => {
     const cmd = 'git --config-env core.hooksPath=HP push origin UI-1';
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills a `--config-env` relocation carrying no subcommand at all', () => {
+  test('detects a `--config-env` relocation carrying no subcommand at all', () => {
     const cmd = 'git --config-env=core.hooksPath=HP';
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
@@ -1262,7 +1262,7 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
   // Control E — the guard reads the SHAPE, never the value. `NOPE` naming an
   // unset variable makes git die with `fatal: missing environment variable`,
   // and the verdict is unchanged by that.
-  test('kills a `--config-env` relocation whose env variable is unset', () => {
+  test('detects a `--config-env` relocation whose env variable is unset', () => {
     const cmd = 'git --config-env=core.hooksPath=NOPE push origin UI-1';
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
@@ -1295,31 +1295,31 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
   // `GIT_CONFIG_PARAMETERS`, so writing it by hand sits on the same layer as
   // the attempt hook. The value is git's sq-quote list, which the guard does
   // not parse, so the prefix has NO exemption on any subcommand.
-  test('kills a `GIT_CONFIG_PARAMETERS` prefix on `git push`', () => {
+  test('detects a `GIT_CONFIG_PARAMETERS` prefix on `git push`', () => {
     const cmd = `GIT_CONFIG_PARAMETERS="'core.hooksPath'='/dev/null'" git push origin UI-1`;
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills a `GIT_CONFIG_PARAMETERS` prefix on an enumerated subcommand', () => {
+  test('detects a `GIT_CONFIG_PARAMETERS` prefix on an enumerated subcommand', () => {
     const cmd = `GIT_CONFIG_PARAMETERS="'core.hooksPath'='/dev/null'" git status`;
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills a `GIT_CONFIG_PARAMETERS` prefix on a non-git command', () => {
+  test('detects a `GIT_CONFIG_PARAMETERS` prefix on a non-git command', () => {
     const cmd = `GIT_CONFIG_PARAMETERS="'core.hooksPath'='/dev/null'" go test ./...`;
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills a bare `GIT_CONFIG_PARAMETERS` assignment decorating no command', () => {
+  test('detects a bare `GIT_CONFIG_PARAMETERS` assignment decorating no command', () => {
     const cmd = `GIT_CONFIG_PARAMETERS="'core.hooksPath'='/dev/null'"`;
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills a `GIT_CONFIG_PARAMETERS` prefix naming an unrelated key', () => {
+  test('detects a `GIT_CONFIG_PARAMETERS` prefix naming an unrelated key', () => {
     const cmd = `GIT_CONFIG_PARAMETERS="'user.name'='x'" git status`;
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
@@ -1328,7 +1328,7 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
   // Seam 4 (spec §2.1) — an EXPORTED assignment is not a prefix, it is the
   // builtin's argument, so the persistent shape used to reach the parsing path
   // untouched. The name decides; the value and the option flags do not.
-  test('kills an exported `GIT_CONFIG_*` assignment', () => {
+  test('detects an exported `GIT_CONFIG_*` assignment', () => {
     for (const cmd of [
       'export GIT_CONFIG_COUNT=0',
       `export GIT_CONFIG_PARAMETERS="'core.hooksPath'='/dev/null'"`,
@@ -1360,7 +1360,7 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
     ).toBeNull();
   });
 
-  test('kills a GIT_CONFIG_KEY_* prefix naming a key other than the hooks path', () => {
+  test('detects a GIT_CONFIG_KEY_* prefix naming a key other than the hooks path', () => {
     const cmd =
       'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=/tmp/x git status';
 
@@ -1372,20 +1372,20 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
   // lowered `GIT_CONFIG_COUNT` drops the attempt's own hooks-path entry — so the
   // command can inject a helper and shed the guard at once while every token in
   // it is a `GIT_CONFIG_*` one.
-  test('kills a relocation prefix writing a VALUE with no KEY of its own', () => {
+  test('detects a relocation prefix writing a VALUE with no KEY of its own', () => {
     const cmd = 'GIT_CONFIG_COUNT=1 GIT_CONFIG_VALUE_0=/tmp/helper git status';
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills a prefix whose VALUE index has no matching hooks-path KEY', () => {
+  test('detects a prefix whose VALUE index has no matching hooks-path KEY', () => {
     const cmd =
       'GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=.git/hooks GIT_CONFIG_VALUE_1=/tmp/helper git status';
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills a relocation whose prefix carries another assignment', () => {
+  test('detects a relocation whose prefix carries another assignment', () => {
     const cmd =
       'GIT_EXTERNAL_DIFF=/tmp/x GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=.git/hooks git status';
 
@@ -1398,7 +1398,7 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
     expect(findMergeViolation(cmd, ON_MAIN)).toBeNull();
   });
 
-  test('kills `cat-file` options that run a configured driver', () => {
+  test('detects `cat-file` options that run a configured driver', () => {
     for (const option of ['--filters', '--textconv']) {
       expect(
         findMergeViolation(
@@ -1411,7 +1411,7 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
 
   // Arm composition: the exemption says the relocation SHAPE is not a
   // violation, and hands the same command to the `config` arm unchanged.
-  test('kills a relocation whose `config` writes the hooks path', () => {
+  test('detects a relocation whose `config` writes the hooks path', () => {
     const cmd = 'git -c core.hooksPath=X config core.hooksPath /tmp/y';
 
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
@@ -1425,7 +1425,7 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
 
   // Control D — the child-push counterexample in `-c` shape: an enumerated
   // subcommand cannot save a command that hands git's own config a pusher.
-  test('kills a `-c` helper that would push from inside the command', () => {
+  test('detects a `-c` helper that would push from inside the command', () => {
     const cmd =
       'git -c core.hooksPath=/dev/null -c diff.external="sh -c \'git push origin HEAD:main\'" diff';
 
@@ -1434,7 +1434,7 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
 
   // Control E — the same counterexample in env-prefix shape, on a subcommand
   // that IS enumerated.
-  test('kills an env-prefix helper that would push from inside the command', () => {
+  test('detects an env-prefix helper that would push from inside the command', () => {
     const cmd =
       'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0="sh -c \'git push origin HEAD:main\'" git status';
 
@@ -1443,7 +1443,7 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
 
   // The fallback stays stricter than the parsing path on purpose (spec §4):
   // where command boundaries cannot be trusted, an exemption must not win.
-  test('kills an exempt shape the tokenizer refused', () => {
+  test('detects an exempt shape the tokenizer refused', () => {
     const cmd = 'f() { :; }; git -c core.hooksPath=.git/hooks status --short';
 
     expect(tokenize(cmd)).toBeNull();
@@ -1453,7 +1453,7 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
   // Control D — the fallback already catches `--config-env` by textual
   // accident: its `<key>=<envvar>` syntax puts `core.hooksPath=` in the text.
   // Pinned here so a git syntax change that breaks the accident is visible.
-  test('kills a `--config-env` relocation the tokenizer refused', () => {
+  test('detects a `--config-env` relocation the tokenizer refused', () => {
     const cmd =
       'f() { :; }; git --config-env=core.hooksPath=HP push origin UI-1';
 
@@ -1464,7 +1464,7 @@ describe('command-guard excludes a ONE-SHOT hooks-path relocation', () => {
   // Seam 3 (spec §3) — the quotes inside git's sq-quote list keep
   // `core.hooksPath` away from the `=`, so the fallback needs the variable
   // NAME in its `GIT_CONFIG_*` alternative.
-  test('kills a `GIT_CONFIG_PARAMETERS` prefix the tokenizer refused', () => {
+  test('detects a `GIT_CONFIG_PARAMETERS` prefix the tokenizer refused', () => {
     const cmd = `f() { :; }; GIT_CONFIG_PARAMETERS="'core.hooksPath'='/dev/null'" git push origin UI-1`;
 
     expect(tokenize(cmd)).toBeNull();
@@ -1495,7 +1495,7 @@ describe('command-guard fallback keeps kill above the read exemption', () => {
     expect(findMergeViolation(cmd, ON_MAIN)).toBeNull();
   });
 
-  test('kills when a real bypass rides along with the read', () => {
+  test('detects when a real bypass rides along with the read', () => {
     const cmd = unparseable(
       'git config --get core.hooksPath; git push --no-verify origin HEAD:main'
     );
@@ -1504,7 +1504,7 @@ describe('command-guard fallback keeps kill above the read exemption', () => {
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills when a `-c` relocation rides along with the read', () => {
+  test('detects when a `-c` relocation rides along with the read', () => {
     const cmd = unparseable(
       'git config --get core.hooksPath; git -c core.hooksPath=/tmp/x push origin UI-1'
     );
@@ -1512,7 +1512,7 @@ describe('command-guard fallback keeps kill above the read exemption', () => {
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills when a GIT_CONFIG_* injection rides along with the read', () => {
+  test('detects when a GIT_CONFIG_* injection rides along with the read', () => {
     const cmd = unparseable(
       'git config --get core.hooksPath; GIT_CONFIG_COUNT=0 git push origin UI-1'
     );
@@ -1520,7 +1520,7 @@ describe('command-guard fallback keeps kill above the read exemption', () => {
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills a second `git config` segment that WRITES the key', () => {
+  test('detects a second `git config` segment that WRITES the key', () => {
     const cmd = unparseable(
       'git config --get core.hooksPath && git config core.hooksPath /tmp/x'
     );
@@ -1531,7 +1531,7 @@ describe('command-guard fallback keeps kill above the read exemption', () => {
   // The read that shadowed a later write: an earlier `git config` naming a
   // DIFFERENT key used to swallow the hooks-path match belonging to the command
   // after it (implementation review 2026-08-04).
-  test('kills a write hidden behind an unrelated earlier `git config`', () => {
+  test('detects a write hidden behind an unrelated earlier `git config`', () => {
     const cmd =
       'git config --get foo; git config core.hooksPath /tmp/x; f() { :; }';
 
@@ -1539,7 +1539,7 @@ describe('command-guard fallback keeps kill above the read exemption', () => {
     expect(findMergeViolation(cmd, ON_MAIN)?.kind).toBe('hook_bypass');
   });
 
-  test('kills a write hidden behind an unrelated earlier read of the key', () => {
+  test('detects a write hidden behind an unrelated earlier read of the key', () => {
     const cmd =
       'git config --get core.hooksPath; git config --global core.hooksPath /tmp/x; f() { :; }';
 
@@ -1548,38 +1548,38 @@ describe('command-guard fallback keeps kill above the read exemption', () => {
 });
 
 describe('command-guard keeps `gh pr merge` kill on every shape', () => {
-  test('kills a merge aimed at ANOTHER repository', () => {
+  test('detects a merge aimed at ANOTHER repository', () => {
     const violation = findMergeViolation(
       'gh pr merge 12 --repo nakkulla/other --squash',
       ON_MAIN
     );
 
     expect(violation?.kind).toBe('gh_pr_merge');
-    expect(guardEffect(violation)).toBe('kill');
+    expect(guardEffect(violation)).toBe('warn');
   });
 
-  test('kills `gh pr merge` on a disposition session too', () => {
+  test('detects `gh pr merge` on a disposition session too', () => {
     const violation = findMergeViolation('gh pr merge 311', {
       ...ON_MAIN,
       disposition: true
     });
 
-    expect(guardEffect(violation)).toBe('kill');
+    expect(guardEffect(violation)).toBe('warn');
   });
 
   // gh takes its flags interspersed: both forms below are accepted by gh 2.x
   // and both merge, so a fixed argv[1]/argv[2] test would let a real merge run.
-  test('kills a merge whose repo override sits BEFORE the subcommand', () => {
+  test('detects a merge whose repo override sits BEFORE the subcommand', () => {
     const violation = findMergeViolation(
       'gh pr --repo nakkulla/other merge 12',
       ON_MAIN
     );
 
     expect(violation?.kind).toBe('gh_pr_merge');
-    expect(guardEffect(violation)).toBe('kill');
+    expect(guardEffect(violation)).toBe('warn');
   });
 
-  test('kills a merge whose `-R` override sits ahead of `pr`', () => {
+  test('detects a merge whose `-R` override sits ahead of `pr`', () => {
     const violation = findMergeViolation(
       'gh -R nakkulla/other pr merge 12',
       ON_MAIN
@@ -1588,7 +1588,7 @@ describe('command-guard keeps `gh pr merge` kill on every shape', () => {
     expect(violation?.kind).toBe('gh_pr_merge');
   });
 
-  test('kills a merge with an attached `--repo=` override', () => {
+  test('detects a merge with an attached `--repo=` override', () => {
     expect(
       findMergeViolation('gh pr --repo=nakkulla/other merge 12', ON_MAIN)?.kind
     ).toBe('gh_pr_merge');
@@ -1607,17 +1607,17 @@ describe('command-guard fallback catches a hook bypass the tokenizer refused', (
   // the fallback's entire purpose — and the fallback must never be MORE
   // permissive than the argv path, so a bypass there stays a kill instead of
   // being demoted to the base-push warning.
-  test('kills `--no-verify` hidden behind a function definition', () => {
+  test('detects `--no-verify` hidden behind a function definition', () => {
     const violation = findMergeViolation(
       'f() { :; }; git push --no-verify origin HEAD:main',
       ON_MAIN
     );
 
     expect(violation?.kind).toBe('hook_bypass');
-    expect(guardEffect(violation)).toBe('kill');
+    expect(guardEffect(violation)).toBe('warn');
   });
 
-  test('kills a relocated hooks path behind a function definition', () => {
+  test('detects a relocated hooks path behind a function definition', () => {
     expect(
       findMergeViolation(
         'f() { :; }; git -c core.hooksPath=/tmp/x push origin UI-1',
@@ -1632,7 +1632,7 @@ describe('command-guard fallback catches a hook bypass the tokenizer refused', (
     ).toBe('hook_bypass');
   });
 
-  test('kills a GIT_CONFIG_* redefinition behind a function definition', () => {
+  test('detects a GIT_CONFIG_* redefinition behind a function definition', () => {
     expect(
       findMergeViolation(
         'f() { :; }; GIT_CONFIG_COUNT=0 git push origin UI-1',
@@ -1756,7 +1756,7 @@ describe('command-guard permits reviewed quick_fix lane base pushes', () => {
     const violation = findMergeViolation('gh pr merge 311', QUICKFIX_LANE);
 
     expect(violation?.kind).toBe('gh_pr_merge');
-    expect(guardEffect(violation)).toBe('kill');
+    expect(guardEffect(violation)).toBe('warn');
   });
 
   test('still kills every hook-bypass shape', () => {
@@ -1770,7 +1770,7 @@ describe('command-guard permits reviewed quick_fix lane base pushes', () => {
       const violation = findMergeViolation(cmd, QUICKFIX_LANE);
 
       expect(violation?.kind).toBe('hook_bypass');
-      expect(guardEffect(violation)).toBe('kill');
+      expect(guardEffect(violation)).toBe('warn');
     }
   });
 

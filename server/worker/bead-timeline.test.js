@@ -281,6 +281,7 @@ describe('TIMELINE_KINDS', () => {
     expect([...TIMELINE_KINDS]).toEqual([
       'dispatched',
       'guard_warning',
+      'guard_denied',
       'session_ended',
       'attempt_failed',
       'attempt_retry',

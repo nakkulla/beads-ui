@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { workRecoveryReadinessEnv } from '../work-recovery-policy.js';
 import { codexSpec, spawnCodex } from './codex.js';
 import { makeFixtureSpawn } from './fixture-spawn.js';
@@ -546,7 +546,7 @@ describe('runner/codex event normalization', () => {
     });
   });
 
-  test('drops reasoning, turn.started and thread.started', () => {
+  test('drops reasoning and turn.started', () => {
     const spec = codexSpec();
 
     expect(
@@ -556,9 +556,18 @@ describe('runner/codex event normalization', () => {
       })
     ).toBeNull();
     expect(spec.normalize({ type: 'turn.started' })).toBeNull();
-    expect(
-      spec.normalize({ type: 'thread.started', thread_id: 'x' })
-    ).toBeNull();
+  });
+
+  test('warns when the start event supplies no hook loading evidence', () => {
+    const event = codexSpec().normalize({
+      type: 'thread.started',
+      thread_id: 'x'
+    });
+
+    expect(event).toMatchObject({
+      kind: 'error',
+      guard_warning: { reason: 'codex_hook_not_loaded', command: null }
+    });
   });
 });
 
@@ -824,6 +833,30 @@ describe('runner/codex verdict summary (worker-failure-tiers §6)', () => {
 });
 
 describe('runner/codex fixture replay through the session engine', () => {
+  test.each(['gh pr merge 42', 'git push --no-verify origin feature'])(
+    'records a command warning without signaling: %s',
+    async (command) => {
+      const spawn_impl = makeFixtureSpawn({
+        lines: [
+          JSON.stringify({
+            type: 'item.started',
+            item: { id: 'cmd-1', type: 'command_execution', command }
+          }),
+          JSON.stringify({ type: 'turn.completed' })
+        ]
+      });
+      const kill_impl = vi.fn();
+
+      const verdict = await spawnCodex(BEAD, WS, {}, { spawn_impl, kill_impl })
+        .done;
+
+      expect(verdict.success).toBe(true);
+      expect(
+        verdict.events.some((event) => event.guard_warning?.command === command)
+      ).toBe(true);
+      expect(kill_impl).not.toHaveBeenCalled();
+    }
+  );
   test('replays the success fixture to an ok verdict', async () => {
     const spawn_impl = makeFixtureSpawn({ file: SUCCESS_FIXTURE, exit: 0 });
 
@@ -890,7 +923,9 @@ describe('runner/codex fixture replay through the session engine', () => {
     ).done;
 
     expect(v.success).toBe(true);
-    expect(v.events.filter((e) => e.kind === 'error')).toHaveLength(1);
+    expect(
+      v.events.filter((e) => e.kind === 'error' && !e.guard_warning)
+    ).toHaveLength(1);
   });
 
   test('forwards the routing env to the codex command', async () => {

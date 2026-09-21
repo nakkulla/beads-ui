@@ -960,6 +960,9 @@ function setup(opts) {
     kvGet: opts.kvGet,
     resolveCswapPath: opts.resolveCswapPath,
     prepareCodexAccountHome: opts.prepareCodexAccountHome,
+    prepareCodexGuardHome:
+      /** @type {any} */ (opts).prepareCodexGuardHome ||
+      (async ({ base_home }) => ({ ok: true, home_dir: base_home })),
     codexAccountHomeDir: opts.codexAccountHomeDir,
     codexRoot: opts.codexRoot,
     homeDir: opts.homeDir,
@@ -6690,6 +6693,37 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
 });
 
 describe('scheduler launch account pins', () => {
+  test.each([null, 'codex-key'])(
+    'delivers a private guard HOME to Codex (account=%s)',
+    async (account) => {
+      const prepareCodexGuardHome = vi.fn(async () => ({
+        ok: true,
+        home_dir: '/attempt/codex-home'
+      }));
+      const env = setup({
+        config: {
+          B1: {
+            model: 'sol',
+            ...(account ? { codex_account: account } : {})
+          }
+        },
+        ...accountDeps(),
+        ...{ prepareCodexGuardHome }
+      });
+      seedQueue(env.store, ['B1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(prepareCodexGuardHome).toHaveBeenCalledWith({
+        base_home: account ? '/state/codex-homes/codex-key' : '/codex-root',
+        parent_dir: guardHookDir(WS, 'B1-1000-1'),
+        hook_path: path.join(guardHookDir(WS, 'B1-1000-1'), 'pre-tool-use')
+      });
+      expect(env.runner.settingsFor('B1').env.CODEX_HOME).toBe(
+        '/attempt/codex-home'
+      );
+    }
+  );
   test('applies one dispatch snapshot and records both account pins', async () => {
     const deps = accountDeps();
     const env = setup({
@@ -11349,11 +11383,11 @@ describe('conflict resolution reaches the session guard end-to-end (§1/§6)', (
     expect(kill_impl).not.toHaveBeenCalled();
   });
 
-  test('still kills the SAME resolution attempt for gh pr merge', async () => {
+  test('keeps the resolution attempt alive after observing gh pr merge', async () => {
     const { res, kill_impl } = await resolveAndRun('gh pr merge 304 --squash');
 
     expect(res.ok).toBe(true);
-    expect(kill_impl).toHaveBeenCalledWith(-7100, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
   });
 
   // The base-push judgment survives the trip but no longer kills: the effect is
@@ -11365,12 +11399,12 @@ describe('conflict resolution reaches the session guard end-to-end (§1/§6)', (
     expect(kill_impl).not.toHaveBeenCalled();
   });
 
-  test('kills the SAME resolution attempt for a hook bypass', async () => {
+  test('keeps the resolution attempt alive after observing a hook bypass', async () => {
     const { kill_impl } = await resolveAndRun(
       'git push --no-verify origin HEAD:B1'
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-7100, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
   });
 
   // Publishing the base IS the disposition's job. The scheduler carries the
@@ -18042,7 +18076,9 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
   });
 
   test('fails the attempt when its recorded base push is on the moved base', async () => {
+    const attemptFailed = vi.fn();
     const env = setup({
+      notify: { attemptFailed },
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase(),
@@ -18060,6 +18096,7 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     const attempt = q.attempts['S1-1000-1'];
     expect(attempt.status).toBe('failed');
     expect(attempt.cause).toBe('base_landing_detected');
+    expect(attemptFailed).toHaveBeenCalledTimes(1);
     expect(attempt.cause_detail).toEqual({
       reason: 'base_landing_detected',
       command: null
@@ -18569,8 +18606,10 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     expect(q).not.toHaveProperty('hold');
   });
 
-  test('raises the systemic hold when a RELAUNCH detects the landing', async () => {
+  test('notifies once when a relaunch detects the landing', async () => {
+    const attemptFailed = vi.fn();
     const env = setup({
+      notify: { attemptFailed },
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase(),
@@ -18592,11 +18631,14 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     });
     expect(env.store.snapshot(WS)).not.toHaveProperty('hold');
 
+    attemptFailed.mockClear();
+
     const res = await env.scheduler.resume(WS, 'S1-1000-1');
 
     // UI-5ym8 §3.4: the relaunch writes its own `failed` record, so the stop
     // has to be raised there too — it used to leave the queue running.
     expect(res).toMatchObject({ ok: false, reason: 'base_landing_detected' });
+    expect(attemptFailed).toHaveBeenCalledTimes(1);
     expect(env.store.snapshot(WS)).not.toHaveProperty('hold');
   });
 
@@ -18753,8 +18795,48 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
   });
 
-  test('observes the base of a restart-restored paused attempt discarded by ■', async () => {
+  test('fails a discarded base landing and sends one notification across retries', async () => {
+    const attemptFailed = vi.fn();
     const env = setup({
+      config: { S1: {} },
+      notify: { attemptFailed },
+      resolveBase: movedBase(),
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook: guardHookWith({ 'att-discard': [pushedToBase(LANDED)] })
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-discard', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-discard',
+      patch: {
+        status: 'paused',
+        repo: '/repo',
+        base_oid: 'base-S1',
+        target_base: 'main'
+      }
+    });
+
+    const first = await env.scheduler.finalizeDiscardAttempt(WS, 'att-discard');
+    const repeated = await env.scheduler.finalizeDiscardAttempt(
+      WS,
+      'att-discard'
+    );
+
+    expect(first).toEqual({ ok: false, reason: 'base_landing_detected' });
+    expect(repeated).toEqual(first);
+    expect(env.store.snapshot(WS).attempts['att-discard']).toMatchObject({
+      status: 'failed',
+      cause: 'base_landing_detected'
+    });
+    expect(attemptFailed).toHaveBeenCalledTimes(1);
+  });
+
+  test('observes the base of a restart-restored paused attempt discarded by ■', async () => {
+    const attemptFailed = vi.fn();
+    const env = setup({
+      notify: { attemptFailed },
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase(),
@@ -18784,6 +18866,7 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     expect(discarded).toBe(true);
     const attempt = env.store.snapshot(WS).attempts['att-paused'];
     expect(attempt.cause).toBe('base_landing_detected');
+    expect(attemptFailed).toHaveBeenCalledTimes(1);
     expect(attempt.base_drift).toEqual({
       pinned: 'base-S1',
       observed: MOVED,

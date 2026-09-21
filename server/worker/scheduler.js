@@ -77,7 +77,8 @@ import {
 } from './claude-effort-observer.js';
 import {
   codexAccountAuthFile,
-  prepareCodexAccountHome as defaultPrepareCodexAccountHome
+  prepareCodexAccountHome as defaultPrepareCodexAccountHome,
+  prepareCodexGuardHome
 } from './codex-account-home.js';
 import { observeCodexEffort as defaultObserveCodexEffort } from './codex-effort-observer.js';
 import * as default_delegation_monitor from './delegation-monitor.js';
@@ -126,6 +127,7 @@ import {
   liftDelegation,
   observeClaudeLaunch
 } from './runner/claude.js';
+import { monitorGuardEvents } from './runner/guard-events.js';
 import { RUNNERS, adapterSpec, runtimeCatalog } from './runner/index.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
 import { terminalResultOf } from './runner/session.js';
@@ -601,6 +603,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {{ resolveClaude: (email: string) => Promise<any>, resolveCodex: (key: string) => Promise<any>, readClaude?: (email: string) => Promise<any>, activeClaude?: () => Promise<any>, listClaude?: () => Promise<any>, listCodex?: () => Promise<any> }} [accountCatalog]
  * @property {() => string|null} [resolveCswapPath]
  * @property {typeof defaultPrepareCodexAccountHome} [prepareCodexAccountHome]
+ * @property {typeof prepareCodexGuardHome} [prepareCodexGuardHome]
  * @property {(key: string) => string} [codexAccountHomeDir]
  * @property {string} [codexRoot]
  * @property {string} [homeDir]
@@ -5679,6 +5682,12 @@ export function createScheduler(deps) {
     cause_detail,
     options = {}
   ) {
+    if (cause === 'base_landing_detected') {
+      const current = deps.store.snapshot(workspace).attempts[attempt_id];
+      if (current?.status === 'failed' && current.cause === cause) {
+        return;
+      }
+    }
     const at = now();
     const classification =
       cause === 'external_job' && options.tier_hint === 'waiting'
@@ -10316,6 +10325,40 @@ export function createScheduler(deps) {
     if (account_settings.env) {
       settings.env = { ...(settings.env || {}), ...account_settings.env };
     }
+    settings.guard_hook_path = default_guard_hook.preToolHookPath(
+      workspace,
+      attempt_id
+    );
+    if (settings.disposition) {
+      default_guard_hook.installPreToolHook({
+        workspace,
+        attempt_id,
+        repo,
+        target_base
+      });
+    }
+    if (runner_name === 'codex') {
+      const base_home =
+        settings.env?.CODEX_HOME ||
+        deps.codexRoot ||
+        process.env.CODEX_HOME ||
+        path.join(deps.homeDir || os.homedir(), '.codex');
+      const prepared = await (
+        deps.prepareCodexGuardHome || prepareCodexGuardHome
+      )({
+        base_home,
+        parent_dir: path.dirname(settings.guard_hook_path),
+        hook_path: settings.guard_hook_path
+      });
+      if (prepared.ok) {
+        settings.env = { ...settings.env, CODEX_HOME: prepared.home_dir };
+      } else {
+        recordGuardWarning(workspace, attempt_id, {
+          reason: prepared.reason,
+          command: null
+        });
+      }
+    }
 
     /** @type {RunnerHandle} */
     let handle;
@@ -10347,6 +10390,18 @@ export function createScheduler(deps) {
       await finalizeLaunchRefusal(input, spawn_failure, false);
       return { ok: false, reason: spawn_failure };
     }
+
+    const guard_events = monitorGuardEvents({
+      workspace,
+      attempt_id,
+      store: deps.store,
+      sessionLog: deps.sessionLog,
+      timeline: deps.timeline
+    });
+    handle.done.then(
+      () => guard_events.stop(),
+      () => guard_events.stop()
+    );
 
     // What the spawn actually sent (UI-rxp3 §3), lifted off the handle rather
     // than rebuilt here — ONE assembly feeds both the argv and this record, so
@@ -15892,6 +15947,17 @@ export function createScheduler(deps) {
     }
     deps.sessionMonitors?.stop(workspace, attempt_id);
     if (await settleBaseDrift(workspace, attempt_id)) {
+      if (attempt.cause !== 'base_landing_detected') {
+        await failAttempt(
+          workspace,
+          attempt_id,
+          attempt.bead_id,
+          attempt.workflow_mode_prior ?? null,
+          'base_landing_detected',
+          { reason: 'base_landing_detected', command: null }
+        );
+        notifyChanged(workspace);
+      }
       return { ok: false, reason: 'base_landing_detected' };
     }
     const updated = deps.store.updateAttempt(workspace, {

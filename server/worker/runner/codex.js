@@ -191,6 +191,18 @@ function normalize(raw) {
   if (!raw || typeof raw !== 'object') {
     return null;
   }
+  // The observed exec JSONL thread.started event contains only thread_id.
+  // Neither it nor the documented hook output proves startup loading. Keep
+  // this diagnostic until a CLI version supplies verifiable loading evidence.
+  if (raw.type === 'thread.started') {
+    return {
+      kind: 'error',
+      reason: 'codex_hook_not_loaded',
+      message: 'Codex 시작 이벤트에서 가드 훅 로드를 확인할 수 없습니다.',
+      guard_warning: { reason: 'codex_hook_not_loaded', command: null },
+      raw
+    };
+  }
   if (raw.type === 'item.started') {
     const item = itemOf(raw);
     if (item && item.type === 'command_execution') {

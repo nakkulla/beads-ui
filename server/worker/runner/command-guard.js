@@ -235,30 +235,85 @@ export const BASE_INTO_BRANCH_RE = /git\s+merge(?!-(?:base|tree|file)\b)/i;
  * @property {string|null} target_base - The repo's declared base. Null ⇒ the
  * legacy `main|master` name match stands (fail-closed, and no regression for a
  * caller that plumbs no base).
+ * @property {boolean} [pre_tool_use] - Restrict bypass refusal to command lines with writes.
+ * @property {boolean} [has_write] - A git write or PR merge in the same command line.
  */
 
 /**
- * The effect table. One question decides a row (UI-1xcd §1): does the command
- * change REMOTE state irreversibly, or tear down the layer that prevents that?
+ * Observed commands are diagnostic evidence. PreToolUse refuses writes before
+ * execution; pre-push and the independent base-ref check enforce landing.
  *
- *   - `gh_pr_merge` — the remote base moves at once and no pre-push hook is on
- *     that path. Kill.
- *   - `hook_bypass` — changes nothing by itself, but the next push then really
- *     does move the remote base (measured, UI-8mvc). Kill.
- *   - `base_merge` — a local branch pointer moves and `git reset` undoes it.
- *     The remote never hears about it, and the 2026-08-04 kill cost a session
- *     $11.67 for a legitimate base sync. Warn.
- *   - `git_push_base` — the pre-push hook refuses the push itself, so the text
- *     judgment (which has to infer a cwd) is evidence only. Warn.
- *
- * @type {Record<MergeViolationKind, 'warn'|'kill'>}
+ * @type {Record<MergeViolationKind, 'warn'>}
  */
 const GUARD_EFFECTS = {
   git_push_base: 'warn',
-  gh_pr_merge: 'kill',
-  hook_bypass: 'kill',
+  gh_pr_merge: 'warn',
+  hook_bypass: 'warn',
   base_merge: 'warn'
 };
+
+const GIT_WRITE_COMMANDS = new Set([
+  'push',
+  'commit',
+  'merge',
+  'rebase',
+  'tag'
+]);
+
+/**
+ * Find writes through the same shell tokenizer and wrappers as the guard.
+ * Quoted prose and data heredocs are not executable commands.
+ *
+ * @param {string} src
+ * @param {number} [depth]
+ * @returns {boolean}
+ */
+function containsWrite(src, depth = 0) {
+  const parsed = depth <= MAX_DEPTH ? tokenize(src) : null;
+  if (!parsed) {
+    return (
+      /\bgit\s+(?:(?:-[^\s]+)(?:\s+[^\s]+)?\s+)*(?:push|commit|merge|rebase|tag)\b/i.test(
+        src
+      ) || GH_PR_MERGE_RE.test(src)
+    );
+  }
+  for (const cmd of parsed.commands) {
+    const argv = normalizeArgv(cmd.words);
+    if (argv.length === 0) {
+      continue;
+    }
+    const name = basename(argv[0]).toLowerCase();
+    if (isGhPrMerge(argv)) {
+      return true;
+    }
+    if (name === 'git') {
+      let i = 1;
+      while (i < argv.length && argv[i].startsWith('-')) {
+        i += GIT_VALUE_OPTIONS.has(argv[i]) ? 2 : 1;
+      }
+      if (GIT_WRITE_COMMANDS.has(argv[i])) {
+        return true;
+      }
+    }
+    if (name === 'eval' && containsWrite(argv.slice(1).join(' '), depth + 1)) {
+      return true;
+    }
+    if (INTERPRETERS.has(name)) {
+      for (let i = 1; i + 1 < argv.length; i += 1) {
+        if (
+          /^-[a-z]*c$/.test(argv[i]) &&
+          containsWrite(argv[i + 1], depth + 1)
+        ) {
+          return true;
+        }
+      }
+      if (cmd.heredocs.some((doc) => containsWrite(doc.body, depth + 1))) {
+        return true;
+      }
+    }
+  }
+  return parsed.nested.some((inner) => containsWrite(inner, depth + 1));
+}
 
 /**
  * What a violation does to the session. Shared by the live runner
@@ -266,12 +321,20 @@ const GUARD_EFFECTS = {
  * restart cannot change a verdict's consequence.
  *
  * @param {MergeViolation|null} violation
- * @returns {'warn'|'kill'} `'kill'` for anything unrecognized (fail-closed).
+ * @returns {'warn'} Observations never terminate a session.
  */
 export function guardEffect(violation) {
-  return violation && GUARD_EFFECTS[violation.kind] === 'warn'
-    ? 'warn'
-    : 'kill';
+  return violation ? GUARD_EFFECTS[violation.kind] || 'warn' : 'warn';
+}
+
+/**
+ * Keep denial candidates ahead of advisory findings during command scanning.
+ * This priority is independent of the observation-only session effect.
+ *
+ * @param {MergeViolation} violation
+ */
+function isAdvisory(violation) {
+  return violation.kind === 'base_merge' || violation.kind === 'git_push_base';
 }
 
 /**
@@ -1883,7 +1946,7 @@ function isHookBypass(argv, prefix) {
   // Arms 1 and 2 FIRST (§1): a command that carries both a one-shot relocation
   // and an irreversible remote move is the persistent verdict, not the
   // deferrable one.
-  if (subcommand === 'push') {
+  if (GIT_WRITE_COMMANDS.has(subcommand)) {
     // Everything after `--` is a refspec, not an option.
     const options = args.slice(
       0,
@@ -2079,7 +2142,10 @@ function fallbackViolation(src, ctx) {
   // sitting in the same unparseable blob (UI-1xcd §2).
   if (
     !ctx.disposition &&
-    (HOOK_BYPASS_STRICT_RE.test(src) || fallbackConfigBypass(src))
+    (!ctx.pre_tool_use || ctx.has_write) &&
+    (HOOK_BYPASS_STRICT_RE.test(src) ||
+      fallbackConfigBypass(src) ||
+      (ctx.pre_tool_use && /--no-verify\b/.test(src)))
   ) {
     return {
       kind: 'hook_bypass',
@@ -2143,7 +2209,14 @@ function checkSimpleCommand(cmd, ctx, depth, siblings, index) {
    * @type {MergeViolation|null}
    */
   let deferred = null;
-  if (!ctx.disposition && hook_bypass.bypass) {
+  const inline_override = argv.some((word) =>
+    /^core\.hookspath=|^-(?:c|-config-env=)core\.hookspath=/i.test(word)
+  );
+  if (
+    !ctx.disposition &&
+    (!ctx.pre_tool_use || ctx.has_write) &&
+    (hook_bypass.bypass || (ctx.pre_tool_use && inline_override))
+  ) {
     /** @type {MergeViolation} */
     const violation = {
       kind: 'hook_bypass',
@@ -2175,7 +2248,7 @@ function checkSimpleCommand(cmd, ctx, depth, siblings, index) {
       deferred = withWarnings(deferred, violation.warnings || []);
       return null;
     }
-    if (guardEffect(violation) === 'warn') {
+    if (isAdvisory(violation)) {
       deferred = withWarnings(deferred, [violation]);
       return null;
     }
@@ -2313,7 +2386,7 @@ function scanCommand(src, ctx, depth) {
     if (!violation) {
       return null;
     }
-    if (guardEffect(violation) === 'warn') {
+    if (isAdvisory(violation)) {
       if (!warned) {
         warned = violation;
       }
@@ -2364,7 +2437,7 @@ function scanCommand(src, ctx, depth) {
  *
  * @param {string} cmd - The command the session asked to run.
  * @param {{ disposition?: boolean, quickfix_lane?: boolean, repo?: string|null,
- * target_base?: string|null }} [options] - The attempt's judgment subject.
+ * target_base?: string|null, pre_tool_use?: boolean }} [options] - The attempt's judgment subject.
  * `disposition` true drops the base-push and hook-bypass judgments, whose
  * subject that session IS (guard-enforcement-layer-replacement §4).
  * `quickfix_lane` true drops only the base-push judgment because reviewed
@@ -2383,6 +2456,8 @@ function scanCommand(src, ctx, depth) {
 export function findMergeViolation(cmd, options) {
   /** @type {GuardContext} */
   const ctx = {
+    pre_tool_use: options?.pre_tool_use === true,
+    has_write: options?.pre_tool_use === true && containsWrite(cmd),
     disposition: options?.disposition === true,
     base_push_allowed:
       options?.disposition === true || options?.quickfix_lane === true,

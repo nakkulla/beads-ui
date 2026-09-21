@@ -26,6 +26,7 @@ import {
   guardEffect,
   guardWarningMessage
 } from './runner/command-guard.js';
+import { monitorGuardEvents } from './runner/guard-events.js';
 import { resolveGuardPending } from './runner/guard-mirror.js';
 import { adapterSpec } from './runner/index.js';
 import { createTailReader } from './runner/tail-reader.js';
@@ -91,6 +92,8 @@ export function createSessionMonitors(deps) {
    * @type {Map<string, { workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, codex: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, guard_mirror: 'verified'|'absent'|null, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[], terminated: boolean, reader: ReturnType<typeof createTailReader> }>}
    */
   const monitors = new Map();
+  /** @type {Map<string, ReturnType<typeof monitorGuardEvents>>} */
+  const guard_readers = new Map();
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
   const usage_timers = new Map();
   const observeChildren =
@@ -562,11 +565,10 @@ export function createSessionMonitors(deps) {
    * and drawer replay own that range.
    *
    * @param {{ workspace: string, attempt_id: string, killed: boolean, guard_pending: import('./runner/guard-mirror.js').GuardPendingEntry[] }} entry
-   * @param {any} attempt
    * @param {string} file
    * @param {number} boundary
    */
-  function backfillGuardPending(entry, attempt, file, boundary) {
+  function backfillGuardPending(entry, file, boundary) {
     const offsets = entry.guard_pending.map((held) =>
       typeof held.log_offset === 'number' ? held.log_offset : 0
     );
@@ -612,16 +614,15 @@ export function createSessionMonitors(deps) {
         if (!resolution.executed) {
           continue;
         }
-        // Signal only while the process is still ours; a session that already
-        // ended is §4's case, settled at stop().
-        if (pidStillOurs(attempt)) {
-          guardKill(entry, {
+        recordGuardWarning(
+          entry,
+          {
+            kind: 'hook_bypass',
             reason: 'hook_bypass_blocked',
-            command: resolution.entry.command,
-            confirmed_by: 'tool_result'
-          });
-          return;
-        }
+            command: resolution.entry.command
+          },
+          obj
+        );
       }
     }
   }
@@ -661,24 +662,24 @@ export function createSessionMonitors(deps) {
     } catch (err) {
       log('guard-pending settle stat failed for %s: %o', entry.attempt_id, err);
     }
-    backfillGuardPending(entry, attempt, file, size);
+    backfillGuardPending(entry, file, size);
     settleGuardPending(entry);
   }
 
   /**
-   * Fail-closed stop of an orphan session: record the blocker evidence FIRST,
+   * Fail-closed stop for an interactive question: record blocker evidence FIRST,
    * then signal.
    *
    * The order is the contract (UI-o2yt §3.3). A killed session leaves no verdict
    * behind — the reconcile pass judges it by `gh` observation, and an already
    * pushed PR would otherwise read as success for a session that was killed for
-   * a guard violation. The durable evidence is what lets `disposeDeadAttempt`
+   * a question. The durable evidence is what lets `disposeDeadAttempt`
    * fail it anyway, so it must exist before the process can die.
    *
    * @param {{ workspace: string, attempt_id: string, killed: boolean }} entry
-   * @param {{ reason: string, command: string|null, confirmed_by?: 'tool_result' }} detail
+   * @param {{ reason: string, command: null }} detail
    */
-  function guardKill(entry, detail) {
+  function questionKill(entry, detail) {
     if (entry.killed) {
       return;
     }
@@ -690,19 +691,11 @@ export function createSessionMonitors(deps) {
           guard_kill: {
             reason: detail.reason,
             command: detail.command,
-            at: now(),
-            // Present only for a verdict that waited for execution evidence
-            // (guard-hook-bypass-result-judgment §3).
-            ...(detail.confirmed_by === 'tool_result'
-              ? { confirmed_by: /** @type {const} */ ('tool_result') }
-              : {})
+            at: now()
           },
           cause_detail: {
             reason: detail.reason,
-            command: detail.command,
-            ...(detail.confirmed_by === 'tool_result'
-              ? { confirmed_by: /** @type {const} */ ('tool_result') }
-              : {})
+            command: detail.command
           }
         }
       });
@@ -813,11 +806,10 @@ export function createSessionMonitors(deps) {
 
     const question_reason = entry.spec.detectQuestion(obj);
     if (question_reason) {
-      guardKill(entry, { reason: question_reason, command: null });
+      questionKill(entry, { reason: question_reason, command: null });
       return;
     }
-    // The terminal line of the stream: §4's session termination, and the only
-    // thing that turns a still-held verdict into a warning rather than a kill.
+    // Terminal lines settle any remaining held verdicts as unresolved warnings.
     if (obj && obj.type === 'result') {
       entry.terminated = true;
     }
@@ -830,12 +822,15 @@ export function createSessionMonitors(deps) {
         // The mirror refused it — nothing ran, so nothing is recorded.
         continue;
       }
-      guardKill(entry, {
-        reason: 'hook_bypass_blocked',
-        command: resolution.entry.command,
-        confirmed_by: 'tool_result'
-      });
-      return;
+      recordGuardWarning(
+        entry,
+        {
+          kind: 'hook_bypass',
+          reason: 'hook_bypass_blocked',
+          command: resolution.entry.command
+        },
+        obj
+      );
     }
 
     if (typeof entry.spec.extractShellCommand === 'function') {
@@ -848,16 +843,11 @@ export function createSessionMonitors(deps) {
             target_base: entry.target_base
           })
         : null;
-      // guardEffect() is the SAME function the live runner (session.js) judges
-      // by, so a restart cannot demote a kill to a warning or the reverse
-      // (guard-enforcement-layer-replacement §Phase 2).
-      // A deferred arm 3 may travel with warnings from the same string (§1).
+      // Live and reattached observations use the same warning-only effect.
       for (const carried of violation?.warnings || []) {
         recordGuardWarning(entry, carried, obj);
       }
-      if (violation && guardEffect(violation) === 'warn') {
-        recordGuardWarning(entry, violation, obj);
-      } else if (
+      if (
         violation &&
         violation.deferrable === true &&
         entry.guard_mirror === 'verified' &&
@@ -872,11 +862,9 @@ export function createSessionMonitors(deps) {
           at: now(),
           log_offset: typeof end_offset === 'number' ? end_offset : null
         });
-      } else if (violation) {
-        guardKill(entry, {
-          reason: violation.reason,
-          command: violation.command
-        });
+      }
+      if (violation && guardEffect(violation) === 'warn') {
+        recordGuardWarning(entry, violation, obj);
       }
     }
   }
@@ -907,6 +895,13 @@ export function createSessionMonitors(deps) {
         return false;
       }
       if (!pidStillOurs(attempt)) {
+        monitorGuardEvents({
+          workspace,
+          attempt_id: attempt.attempt_id,
+          store: deps.store,
+          sessionLog: deps.sessionLog,
+          fs
+        }).stop();
         settleDeadPending(workspace, attempt, options);
         return false;
       }
@@ -955,7 +950,6 @@ export function createSessionMonitors(deps) {
         // Before the tail, and over the range the tail will NOT read (§3).
         backfillGuardPending(
           entry,
-          attempt,
           log_file,
           typeof options.start_offset === 'number' ? options.start_offset : 0
         );
@@ -981,6 +975,17 @@ export function createSessionMonitors(deps) {
         }
       });
       monitors.set(key, entry);
+      guard_readers.set(
+        key,
+        monitorGuardEvents({
+          workspace,
+          attempt_id,
+          store: deps.store,
+          sessionLog: deps.sessionLog,
+          fs,
+          poll_ms: deps.poll_ms
+        })
+      );
       entry.reader.start();
       // Independent of the parent stream, and for a NEW launch as much as a
       // re-attach: the children are observed from files Codex writes itself.
@@ -1015,6 +1020,8 @@ export function createSessionMonitors(deps) {
         return false;
       }
       monitors.delete(key);
+      guard_readers.get(key)?.stop();
+      guard_readers.delete(key);
       try {
         deps.workerSessionObservations?.drain(workspace, attempt_id);
         const attempt = attemptOf(workspace, attempt_id);
