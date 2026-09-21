@@ -470,12 +470,17 @@ export function createWorkspaceAdapter(options = {}) {
         (it.metadata && typeof it.metadata.route === 'string'
           ? it.metadata.route
           : '');
+      // 의존 칩의 재료는 후보 행과 같다 (§3.2 "의존 칩은 그대로") — 선행 ID와
+      // 서버의 해제·후속 장식을 그대로 옮긴다. 자격 판정만 없다.
+      const blocker_ids = blockerIdsOf(it);
       rows.push({
         bead_id: it.id,
         title: it.title || it.id,
         route,
         spec_id: spec.conflict ? '' : spec.path,
         published: spec.evidence === 'published',
+        blocked: blocker_ids.length > 0,
+        blocked_by: blocker_ids,
         labels: Array.isArray(it.labels) ? it.labels : [],
         ...(typeof it.issue_type === 'string' && it.issue_type.length > 0
           ? { issue_type: it.issue_type }
@@ -488,7 +493,9 @@ export function createWorkspaceAdapter(options = {}) {
         exec_pins: execPinsOf(objectOf(it.metadata)),
         rec: null,
         observation: true,
-        deferred: true
+        deferred: true,
+        release_info: it.release_info,
+        dependents_info: it.dependents_info
       });
     }
     rows.sort(
@@ -690,6 +697,9 @@ export function createWorkspaceAdapter(options = {}) {
         done_at: closed_at,
         created_at: issue.created_at,
         updated_at: issue.updated_at,
+        // route 칩의 재료 (§5 "ID·제목·route 칩·완료 시각·의존 칩"). 닫힌 열은
+        // 오버레이에 route를 싣지 않으므로 행이 서버 workflow를 직접 옮긴다.
+        workflow: issue.workflow || null,
         ...issue_fields
       });
       const has_comments =
@@ -756,6 +766,7 @@ export function createWorkspaceAdapter(options = {}) {
         done_at: closed_at,
         created_at: issue.created_at,
         updated_at: issue.updated_at,
+        workflow: issue.workflow || null,
         ...issue_fields
       });
     }

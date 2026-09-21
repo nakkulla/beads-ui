@@ -1553,9 +1553,9 @@ export function bootstrap(root_element) {
     }
 
     // Worker console (the repo tab): candidate lanes + Serial/Parallel queue.
-    // NOTE: the Worker route zeroes `selected_id` (its `?issue=` deep link means
-    // "select a parent"), so opening the shared detail overlay from Worker (ⓘ /
-    // candidate click) must set the selection directly instead of routing.
+    // NOTE: opening the shared detail overlay from Worker (ⓘ / candidate click)
+    // sets the selection directly instead of routing, so the hash stays put; a
+    // Worker `?issue=` deep link opens the same overlay (UI-p7s2 §7.1).
     const worker_view = createWorkerView(worker_root, {
       transport,
       issueStores: sub_issue_stores,
@@ -1676,8 +1676,8 @@ export function bootstrap(root_element) {
       },
       onNavigate: (id, root_dir) => {
         const goto = () => {
-          // On the Worker view the router zeroes `selected_id`; keep the overlay
-          // navigation working there by setting the selection directly.
+          // On the Worker view the overlay is opened by direct selection (the
+          // hash stays put); other views route through the hash.
           if (store.getState().view === 'worker') {
             store.setState({ selected_id: id });
           } else {

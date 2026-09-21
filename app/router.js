@@ -72,8 +72,11 @@ export function createHashRouter(store) {
 
     // Set state synchronously so deep links resolve without a hashchange hop.
     log('hash change → view=%s id=%s', view, id);
+    // A Worker `?issue=` deep link opens the shared detail overlay like every
+    // other view (UI-p7s2 §7.1): the retired Board was the only surface that
+    // opened it from `#/issue/<id>`, so the normalized Worker hash must too.
     store.setState({
-      selected_id: view === 'worker' ? null : id,
+      selected_id: id,
       view,
       worker: {
         selected_parent_id: view === 'worker' ? id : null
@@ -117,7 +120,7 @@ export function createHashRouter(store) {
         window.location.hash = next;
       } else {
         store.setState({
-          selected_id: view === 'worker' ? null : id,
+          selected_id: id,
           view,
           worker: {
             selected_parent_id: view === 'worker' ? id : null

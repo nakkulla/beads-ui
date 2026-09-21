@@ -3518,6 +3518,10 @@ export function createWorkerView(mount_element, options = {}) {
           ...(item?.search_match === undefined
             ? {}
             : { search_match: item.search_match }),
+          // 우선순위·타입·라벨 필터의 흐림도 같은 이유로 옮긴다 (UI-p7s2 §6).
+          ...(item?.filter_match === undefined
+            ? {}
+            : { filter_match: item.filter_match }),
           workflow: bead_workflow[e.bead_id] || null,
           priority: item?.priority,
           from_id: item?.from_id,
@@ -3916,9 +3920,11 @@ export function createWorkerView(mount_element, options = {}) {
   function labelOptions(m) {
     /** @type {Set<string>} */
     const labels = new Set();
+    // 보류도 필터 **이전** 집합에서 모은다 — 필터 뒤 목록에서 모으면 보류에만
+    // 있는 라벨 A를 고른 순간 B 옵션이 사라져 다중 선택이 성립하지 않는다.
     for (const item of [
       ...m.runnable_all,
-      ...m.deferred,
+      ...m.deferred_all,
       ...m.queue,
       ...m.running,
       ...m.pr_wait,
@@ -4877,12 +4883,6 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function onClick(ev) {
     const target = /** @type {HTMLElement} */ (ev.target);
-    // 라벨 팝오버는 자기 상자 밖의 클릭 하나로 닫힌다 (UI-p7s2 §6). 닫기만 하고
-    // 그 클릭 자체는 원래 갈 곳으로 계속 흐른다 — 팝오버를 닫으려고 누른 것이
-    // 아니라 다른 조작을 누른 것이기 때문이다.
-    if (label_filter_open && !target?.closest?.('.worker-filter__labels')) {
-      label_filter_open = false;
-    }
     // `+ 새 이슈` (UI-p7s2 §4): 툴바 조작이므로 어떤 행 처리보다 먼저다.
     if (target?.closest?.('.worker-new-issue')) {
       onNewIssue?.();
@@ -5644,6 +5644,12 @@ export function createWorkerView(mount_element, options = {}) {
       !closest('.rtile__failure-pop, .rtile__failure-badge')
     ) {
       open_failure_detail = null;
+      changed = true;
+    }
+    // 라벨 팝오버도 자기 상자 밖의 클릭 하나로 닫힌다 (UI-p7s2 §6) — 문서 어디를
+    // 눌러도 닫히고, 그 클릭 자체는 원래 갈 곳으로 계속 흐른다.
+    if (label_filter_open && !closest('.worker-filter__labels')) {
+      label_filter_open = false;
       changed = true;
     }
     if (changed) {

@@ -567,7 +567,7 @@ function expandDoneLane() {
  * Preseed the candidate display filter (UI-ki09). blocked rows are hidden by
  * default, so a test about blocked candidates asks for them explicitly.
  *
- * @param {Partial<{ show_blocked: boolean, readiness: 'all'|'ready'|'not_ready' }>} over
+ * @param {Partial<{ show_blocked: boolean, readiness: 'all'|'ready'|'not_ready', routes: string[], priorities: number[], type: string, labels: string[] }>} over
  */
 function presetCandidateFilter(over) {
   window.localStorage.setItem(
@@ -17532,6 +17532,55 @@ describe('보류 선반·새 이슈·필터 줄 (UI-p7s2 §3·§4·§6)', () => 
     ).map((el) => /** @type {HTMLElement} */ (el).dataset.label);
 
     expect(labels).toContain('release');
+  });
+
+  test('keeps every shelf label selectable while one shelf label is chosen', () => {
+    presetCandidateFilter({ labels: ['alpha'] });
+    const mount = mountShelf([
+      { id: 'DF-1', title: '보류 A', status: 'deferred', labels: ['alpha'] },
+      { id: 'DF-2', title: '보류 B', status: 'deferred', labels: ['beta'] }
+    ]);
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-filter__labels-btn')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const labels = Array.from(
+      mount.querySelectorAll('.worker-filter__label-check')
+    ).map((el) => /** @type {HTMLElement} */ (el).dataset.label);
+
+    expect(labels).toEqual(expect.arrayContaining(['alpha', 'beta']));
+  });
+
+  test('closes the label popover on a click outside the worker mount', () => {
+    const mount = mountShelf([]);
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-filter__labels-btn')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.worker-filter__labels-pop')).toBe(null);
+  });
+
+  test('dims a PR-wait row the label filter excludes', () => {
+    presetCandidateFilter({ labels: ['no-such-label'] });
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf({ pr_wait: [{ bead_id: 'RD-1', added_at: 1 }] }));
+    const stores = seedCandidates();
+    // 오버레이가 이 bead의 라벨을 알아야 판정이 선다 — 부재는 일치다.
+    seed(stores, 'tab:worker:in-progress', [{ id: 'RD-1', labels: ['other'] }]);
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(
+      mount
+        .querySelector('#worker-pane-pr-wait .worker-mini[data-bead-id="RD-1"]')
+        ?.classList.contains('is-dimmed')
+    ).toBe(true);
   });
 
   test('stores a toggled priority chip in the filter state', () => {

@@ -40,7 +40,7 @@ vi.mock('./ws.js', () => {
 });
 
 describe('deep link on initial load (UI-44)', () => {
-  test('redirects the legacy issue hash to the worker parent selection', async () => {
+  test('redirects the legacy issue hash to worker and opens the detail overlay', async () => {
     window.location.hash = '#/issue/UI-2';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
@@ -55,11 +55,11 @@ describe('deep link on initial load (UI-44)', () => {
     // Legacy #/issue/<id> normalizes to the canonical worker hash.
     expect(window.location.hash).toBe('#/worker?issue=UI-2');
 
-    // The worker deep link selects a parent instead of opening the shared
-    // detail overlay (UI-p7s2 §7.1).
+    // The normalized worker deep link opens the shared detail overlay on
+    // the linked issue (UI-p7s2 §7.1).
     const detail = /** @type {HTMLElement} */ (
       document.getElementById('detail-panel')
     );
-    expect(detail.hidden).toBe(true);
+    expect(detail.hidden).toBe(false);
   });
 });

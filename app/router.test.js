@@ -18,9 +18,9 @@ describe('router', () => {
 
     window.location.hash = '#/issue/UI-10';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
-    // Worker owns the repo view, so its deep link selects a parent rather than
-    // opening the global detail overlay (UI-p7s2 §7.1).
-    expect(store.getState().selected_id).toBeNull();
+    // The normalized Worker deep link opens the shared detail overlay
+    // (UI-p7s2 §7.1) and also records the worker parent selection.
+    expect(store.getState().selected_id).toBe('UI-10');
     expect(store.getState().worker.selected_parent_id).toBe('UI-10');
     // Legacy single-issue hash normalizes to the canonical worker form.
     expect(window.location.hash).toBe('#/worker?issue=UI-10');
@@ -75,7 +75,7 @@ describe('router', () => {
     router.stop();
   });
 
-  test('worker hash updates worker selection without opening global detail state', () => {
+  test('worker hash opens the detail overlay on the issue parameter', () => {
     document.body.innerHTML = '<div></div>';
     const store = createStore();
     const router = createHashRouter(store);
@@ -85,7 +85,7 @@ describe('router', () => {
     window.dispatchEvent(new HashChangeEvent('hashchange'));
 
     expect(store.getState().view).toBe('worker');
-    expect(store.getState().selected_id).toBeNull();
+    expect(store.getState().selected_id).toBe('UI-62lm');
     expect(store.getState().worker.selected_parent_id).toBe('UI-62lm');
 
     router.stop();
@@ -115,6 +115,8 @@ describe('router', () => {
 
   test('gotoView and gotoIssue round trip the adr view through the hash', () => {
     document.body.innerHTML = '<div></div>';
+    // 앞 테스트의 issue 해시가 남아 있으면 그 선택이 adr 해시에 실린다.
+    window.location.hash = '';
     const store = createStore();
     const router = createHashRouter(store);
     router.start();

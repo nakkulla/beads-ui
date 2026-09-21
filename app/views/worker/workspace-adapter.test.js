@@ -982,6 +982,48 @@ describe('worker workspace adapter', () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
+  test('carries the server workflow onto a 닫힘 행 for its route chip', () => {
+    const stores = createTestIssueStores();
+    const closed_at = Date.now();
+    seed(stores, 'tab:worker:closed', [
+      {
+        id: 'ROUTED',
+        title: 'route 있음',
+        closed_at,
+        comment_count: 0,
+        workflow: { route: 'quick_fix', chips: { route: 'quick_fix' } }
+      }
+    ]);
+    const adapter = adapterOf({ stores, transport: vi.fn(async () => []) });
+
+    const rows = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .session_done;
+
+    expect(rows[0].workflow?.route).toBe('quick_fix');
+  });
+
+  test('carries blocker ids and dependency decorations onto a deferred row', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:deferred', [
+      {
+        id: 'HELD',
+        title: '보류',
+        updated_at: 5,
+        dependencies: [{ id: 'PRE-1', dependency_type: 'blocks' }],
+        release_info: { released_by: [] },
+        dependents_info: { dependents: [] }
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .deferred[0];
+
+    expect(row.blocked_by).toEqual(['PRE-1']);
+    expect(row.release_info).toEqual({ released_by: [] });
+    expect(row.dependents_info).toEqual({ dependents: [] });
+  });
+
   test('stands an old worker-lane report as a 닫힘 행 without the session badge', async () => {
     const stores = createTestIssueStores();
     const closed_at = Date.now();

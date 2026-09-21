@@ -509,6 +509,9 @@ const DONE_KIND_LABELS = {
  * 수다. 세는 대상은 후보 레인과 보류 선반이다(UI-p7s2 §6) — 다른 레인은
  * 숨기지 않고 흐린다. 필터 바가 이 수를 자기 조작 옆에 적어 좁힌
  * 대가를 드러낸다.
+ * @property {LaneItem[]} deferred_all - 필터 이전의 보류 선반 목록 (UI-p7s2 §6).
+ * 라벨 옵션은 여기서 모은다 — 필터 뒤 목록에서 모으면 고른 라벨이 나머지 옵션을
+ * 지운다.
  * @property {LaneItem[]} deferred - 보류 선반의 관측 행 (UI-p7s2 §3). 후보와
  * 같은 우선순위·타입·라벨 필터·검색을 받고 그 숨김 개수에 들되 준비도·route
  * 필터에는 들어가지 않고, 정렬은 어댑터가 정한 `updated_at` 내림차순 그대로다. 모니터 스냅샷에는 재료가
@@ -4318,6 +4321,25 @@ export function buildLanes(workspaces, workspaces_state, options) {
         entry.exec_pins && typeof entry.exec_pins === 'object'
           ? execChipsFor(objectOf(state), entry.exec_pins, deferred_route)
           : null;
+      // 의존 칩은 후보와 같은 재료·같은 부착 경로다 (§3.2) — 선행 ID는 blocked
+      // 칩 조립이 읽는 지도에 넣고, 해제·후속 재료는 후보 행과 같이 싣는다.
+      const deferred_blocked_by = Array.isArray(entry.blocked_by)
+        ? entry.blocked_by.filter(
+            (/** @type {unknown} */ id) =>
+              typeof id === 'string' && id.length > 0
+          )
+        : null;
+      if (deferred_blocked_by && deferred_blocked_by.length > 0) {
+        blocked_by_map.set(bead_id, deferred_blocked_by);
+      }
+      const deferred_released = releasedChipsFor(
+        bead_id,
+        entry.release_info,
+        now
+      )?.map((chip) => ({
+        ...chip,
+        ...openTarget({ id: bead_id, root_dir }, chip.id)
+      }));
       deferred.push({
         ...base(bead_id),
         title: entry.title || titles[bead_id] || bead_id,
@@ -4333,6 +4355,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
         deferred: true,
         // 자격을 묻지 않는 선반이다 — 준비도 칩도 `[↴ 대기로]`도 서지 않는다.
         queue_placeable: false,
+        ...(deferred_blocked_by ? { blocked_by: deferred_blocked_by } : {}),
+        ...(deferred_released
+          ? { dependency_chips: { released: deferred_released } }
+          : {}),
+        ...(entry.dependents_info && typeof entry.dependents_info === 'object'
+          ? { dependents_info: entry.dependents_info }
+          : {}),
         labels: Array.isArray(entry.labels) ? entry.labels : [],
         ...(typeof entry.issue_type === 'string' && entry.issue_type.length > 0
           ? { issue_type: entry.issue_type }
@@ -4749,6 +4778,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       label: 0
     },
     deferred,
+    deferred_all: deferred.slice(),
     runnable_sections: [],
     runnable_flat:
       candidate_sort === 'updated_flat' || candidate_sort === 'as_given',
@@ -4799,6 +4829,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   for (const item of [
     ...model.queue,
     ...model.runnable,
+    ...model.deferred,
     ...model.running,
     ...model.pr_wait
   ]) {
@@ -4840,6 +4871,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   for (const item of [
     ...model.queue,
     ...model.runnable,
+    ...model.deferred,
     ...model.running,
     ...model.pr_wait
   ]) {
@@ -4869,6 +4901,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   for (const item of [
     ...model.queue,
     ...model.runnable,
+    ...model.deferred,
     ...model.running,
     ...model.pr_wait
   ]) {

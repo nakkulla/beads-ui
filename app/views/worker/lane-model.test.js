@@ -7621,6 +7621,37 @@ describe('보류 선반과 세 필터 축 (UI-p7s2 §3·§6)', () => {
     expect(lanes.runnable_hidden.type).toBe(2);
   });
 
+  test('attaches a predecessor chip to a deferred row from its blocker ids', () => {
+    const lanes = buildLanes(
+      [
+        shelfWorkspace({
+          deferred: [
+            {
+              bead_id: 'A-9',
+              title: 'held one',
+              updated_at: 10,
+              blocked_by: ['A-1']
+            }
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.deferred[0].dependency_chips?.predecessors?.[0].label).toBe(
+      '⛓ A-1'
+    );
+  });
+
+  test('keeps a filtered-out deferred row in deferred_all', () => {
+    const lanes = buildLanes([shelfWorkspace()], [state()], {
+      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, type: 'bug' }
+    });
+
+    expect(lanes.deferred).toEqual([]);
+    expect(lanes.deferred_all.map((r) => r.id)).toEqual(['A-9']);
+  });
+
   test('counts a type-hidden deferred row under the type control', () => {
     const lanes = buildLanes([shelfWorkspace()], [state()], {
       candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, type: 'bug' }
