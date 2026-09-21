@@ -1,7 +1,8 @@
 ---
 id: UI-628r
 title: 여러 저장소 설정은 프리셋을 시작점으로 한 실행 프로필 편집면이고 계정은 명시 선택이다
-status: accepted
+status: superseded
+superseded_by: UI-e1ta
 date: 2026-09-21
 summary: "모니터 탭의 여러 저장소 설정은 현재 값을 보여주지 않고 프리셋을 시작점으로 한 벌을 만들어 쓰는 편집면이며, 두 탭 어디에도 변경 안 함이 없고 적용은 화면의 값 전부를 쓴다"
 supersedes: [UI-nu43]
