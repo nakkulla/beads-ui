@@ -72,7 +72,11 @@ import { readPushLog } from './guard-hook.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
 import { createMergeQueue } from './merge-queue.js';
-import { createNotifier, notifyWaitReasons } from './notify.js';
+import {
+  createNotifier,
+  notifyExternalWaitCompleted,
+  notifyWaitReasons
+} from './notify.js';
 import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
@@ -734,6 +738,9 @@ export function createLiveBd(config) {
         bench_base: typeof md.bench_base === 'string' ? md.bench_base : null,
         landing: typeof md.landing === 'string' ? md.landing : null,
         ...awaiting_user_entry,
+        ...(Object.hasOwn(md, 'external_wait')
+          ? { external_wait: md.external_wait }
+          : {}),
         deps: blocks_blockers,
         blocked_by: blocks_blockers
       };
@@ -1017,8 +1024,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     /**
      * @param {import('./scheduler.js').BeadSnapshot} snap
      * @param {string} [base]
+     * @param {{ allow_external_wait_resume?: boolean }} [resume_options]
      */
-    validate(snap, base) {
+    validate(snap, base, resume_options = {}) {
       // An unresolvable declaration is refused BEFORE any git probe: the base is
       // what every later check is asked about, so there is nothing to ask
       // (worker-base-scope-alignment §1 — no fallback).
@@ -1029,6 +1037,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         });
       }
       return validateAdmission({
+        allow_external_wait_resume:
+          resume_options.allow_external_wait_resume === true,
         gitRun,
         ghAvailable,
         repo: snap.repo,
@@ -1055,6 +1065,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           // admission에 도달하지 못한다.
           ...(Object.hasOwn(snap, 'awaiting_user')
             ? { awaiting_user: snap.awaiting_user }
+            : {}),
+          ...(Object.hasOwn(snap, 'external_wait')
+            ? { external_wait: snap.external_wait }
             : {})
         }
       });
@@ -1245,6 +1258,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
 
   const scheduler = createScheduler({
     store: runtime.queueStore,
+    externalWait: runtime.externalWaitStore,
     // The workspace's ONE bead-history writer (record-timeline-retention §5) —
     // the same instance the queue store was registered with above, never a
     // second one.
@@ -1359,6 +1373,14 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     ...(processController ? { processController } : {}),
     sessionMonitors,
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
+  });
+
+  const stopExternalWaitHooks = bindExternalWaitHooks({
+    runtime,
+    workspace: keyFor(workspace_root),
+    repo,
+    scheduler,
+    notifier: notify
   });
 
   providerHealth =
@@ -2329,6 +2351,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   return {
     runtime,
     scheduler,
+    stopExternalWaitHooks,
     waitJudge,
     reconciler,
     prPoller,
@@ -2372,6 +2395,119 @@ export function createWorkerAttachment(workspace_root, options = {}) {
  * @type {Map<string, ReturnType<typeof createWorkerAttachment>>}
  */
 const ATTACHMENTS = new Map();
+
+/** @type {WeakMap<object, Map<string, { onCompletion: (record: import('./external-wait/store.js').WaitRecord) => Promise<void>, resume: import('./external-wait/service.js').ResumeHook, stop: () => void }>>} */
+const EXTERNAL_WAIT_HOOKS = new WeakMap();
+
+/**
+ * Route singleton runtime hooks to their workspace. Queue changes after the
+ * scheduler's settlement finally block are the attempt-termination signal.
+ *
+ * @param {{ runtime: Pick<import('./runtime.js').WorkerRuntime, 'setExternalWaitHooks'|'queueStore'>, workspace: string, repo: string, scheduler: Pick<ReturnType<typeof createScheduler>, 'resumeExternalWait'>, notifier: Pick<ReturnType<typeof createNotifier>, 'externalWaitCompleted'> }} input
+ */
+export function bindExternalWaitHooks({
+  runtime,
+  workspace,
+  repo,
+  scheduler,
+  notifier
+}) {
+  let bindings = EXTERNAL_WAIT_HOOKS.get(runtime);
+  if (!bindings) {
+    bindings = new Map();
+    EXTERNAL_WAIT_HOOKS.set(runtime, bindings);
+  }
+  bindings.get(workspace)?.stop();
+  /** @type {Map<string, () => void>} */
+  const subscriptions = new Map();
+  const binding = {
+    /** @param {import('./external-wait/store.js').WaitRecord} record */
+    async onCompletion(record) {
+      if (record.owner.kind === 'session') {
+        await notifyExternalWaitCompleted({
+          workspace,
+          repo,
+          record,
+          store: runtime.queueStore,
+          notifier
+        });
+        return;
+      }
+      if (subscriptions.has(record.wait_id)) {
+        return;
+      }
+      let busy = false;
+      let rerun = false;
+      const retry = async () => {
+        if (busy) {
+          rerun = true;
+          return;
+        }
+        busy = true;
+        try {
+          const result = await scheduler.resumeExternalWait(
+            workspace,
+            record.wait_id,
+            { mode: 'fork' }
+          );
+          if (result.ok || result.reason !== 'origin_running') {
+            subscriptions.get(record.wait_id)?.();
+            subscriptions.delete(record.wait_id);
+          }
+        } finally {
+          busy = false;
+          if (rerun && subscriptions.has(record.wait_id)) {
+            rerun = false;
+            void retry().catch((err) =>
+              log('external wait retry failed: %o', err)
+            );
+          }
+        }
+      };
+      subscriptions.set(
+        record.wait_id,
+        onQueueChanged((changed) => {
+          if (changed === workspace) {
+            void retry().catch((err) =>
+              log('external wait retry failed: %o', err)
+            );
+          }
+        })
+      );
+      await retry();
+    },
+    /**
+     * @param {string} ws
+     * @param {string} wait_id
+     * @param {'fork'|'fresh'} mode
+     */
+    resume(ws, wait_id, mode) {
+      return scheduler.resumeExternalWait(ws, wait_id, { mode });
+    },
+    stop() {
+      for (const unsubscribe of subscriptions.values()) {
+        unsubscribe();
+      }
+      subscriptions.clear();
+    }
+  };
+  bindings.set(workspace, binding);
+  const by_workspace = bindings;
+  runtime.setExternalWaitHooks({
+    onCompletion: async (ws, record) => {
+      await by_workspace.get(ws)?.onCompletion(record);
+    },
+    resume: (ws, wait_id, mode) =>
+      by_workspace.get(ws)?.resume(ws, wait_id, mode) ||
+      Promise.resolve({ ok: false, reason: 'workspace_not_attached' })
+  });
+  return () => {
+    binding.stop();
+    if (by_workspace.get(workspace) === binding) {
+      by_workspace.delete(workspace);
+    }
+  };
+}
 
 /**
  * One fail-closed startup sequence per attachment. The promise remains in the
@@ -3963,6 +4099,7 @@ export function __setUnattachedAdmissionCheckForTest(reader) {
  */
 export function __resetWorkerAttachmentsForTest() {
   for (const att of ATTACHMENTS.values()) {
+    att.stopExternalWaitHooks?.();
     att.waitJudge?.stop();
     try {
       att.prPoller?.stop();

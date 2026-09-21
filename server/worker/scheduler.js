@@ -44,6 +44,7 @@
  * @import { Attempt } from './queue-store.js'
  * @import { RunnerHandle, RunnerVerdict } from './runner/session.js'
  * @import { WorktreeObservation, WorktreeSummary } from './worktree.js'
+ * @import { WaitRecord } from './external-wait/store.js'
  */
 import { createHash } from 'node:crypto';
 import nodeFs from 'node:fs';
@@ -551,6 +552,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * Carried by PRESENCE, not value: the key exists only while a user decision is
  * outstanding, so `snapshotBead` omits the property entirely when the bead
  * carries no parking and admission refuses on `Object.hasOwn` alone.
+ * @property {unknown} [external_wait] - Presence blocks ordinary admission.
  * @property {unknown} [session_ref] - Raw `session_ref` contract value naming
  * the interactive sessions that worked this bead (UI-p206 §5.1). The fork
  * qualification's only input; same presence rule, so a malformed value reaches
@@ -575,6 +577,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @typedef {Object} SchedulerDeps
  * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryReady'|'workRecoveryClassification'|'workRecoveryReadinessEnv'|'recoveryResultLineReasons'>} [workRecoveryPolicy]
  * @property {any} store - Queue store (queue-store.js).
+ * @property {Pick<ReturnType<typeof import('./external-wait/store.js').createExternalWaitStore>, 'findByBead'|'get'|'update'|'list'>} [externalWait]
  * @property {ReturnType<typeof import('./exec-preset-coordinator.js').createExecPresetCoordinator>} execPresetCoordinator
  * The sole authority for workspace preset resolution. It snapshots the selected
  * preset before launch state changes, so the scheduler never reads mutable
@@ -641,7 +644,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * the cut and the attempt's recorded `target_base` come from a base read at
  * dispatch time rather than one captured earlier. Absent wiring falls back to
  * the snapshot's own resolution.
- * @property {{ validate: (snap: BeadSnapshot, base?: string) => Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha?: string, delta_shas?: string[], changed_paths?: string[], plan?: { receipt_sha: string, delta_shas: string[], changed_paths: string[] } } }> }} [admission]
+ * @property {{ validate: (snap: BeadSnapshot, base?: string, options?: { allow_external_wait_resume?: boolean }) => Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha?: string, delta_shas?: string[], changed_paths?: string[], plan?: { receipt_sha: string, delta_shas: string[], changed_paths: string[] } } }> }} [admission]
  * Auto-run admission validator (worker-autorun-policy §1). When present, the
  * tick candidate scan AND the dispatch re-check (against the pinned worktree
  * base_oid) both gate on it; refusals are recorded in `Queue.admission`. An
@@ -1184,6 +1187,8 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   stopReviewSessionProcess: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string, options?: { require_durable?: boolean }) => Promise<{ ok: boolean, reason?: string }>,
+ *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh' }) => Promise<{ ok: true, attempt_id: string }|{ ok: false, reason: string }>,
+ *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
  *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
@@ -1231,6 +1236,8 @@ export function createScheduler(deps) {
   let attempt_seq = 0;
   const makeAttemptId =
     deps.makeAttemptId || ((bead_id) => `${bead_id}-${now()}-${++attempt_seq}`);
+  /** @type {Set<string>} */
+  const external_wait_resumes = new Set();
 
   /**
    * Append one event to the bead's permanent history (record-timeline-retention
@@ -2662,7 +2669,8 @@ export function createScheduler(deps) {
         isImplementationAttempt(attempt) &&
         (attempt.status === 'failed' ||
           attempt.status === 'orphaned' ||
-          attempt.status === 'paused') &&
+          attempt.status === 'paused' ||
+          (attempt.status === 'waiting' && attempt.cause === 'external_job')) &&
         attempt.cleanup_diagnosis !== true &&
         typeof attempt.session_id === 'string' &&
         attempt.session_id.length > 0 &&
@@ -4330,9 +4338,10 @@ export function createScheduler(deps) {
    *
    * @param {BeadSnapshot} snap
    * @param {string} [base]
+   * @param {{ allow_external_wait_resume?: boolean }} [options]
    * @returns {Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha?: string, delta_shas?: string[], changed_paths?: string[], plan?: { receipt_sha: string, delta_shas: string[], changed_paths: string[] } } }>}
    */
-  async function checkAdmission(snap, base) {
+  async function checkAdmission(snap, base, options = {}) {
     if (isWorkerIneligible(snap.labels)) {
       return { ok: false, reason: 'worker_ineligible' };
     }
@@ -4340,7 +4349,7 @@ export function createScheduler(deps) {
       return { ok: true };
     }
     try {
-      return await deps.admission.validate(snap, base);
+      return await deps.admission.validate(snap, base, options);
     } catch {
       return { ok: false, reason: 'git_error' };
     }
@@ -5272,6 +5281,7 @@ export function createScheduler(deps) {
             summary: classification.summary,
             blockers,
             bead_status: options.bead_status ?? null,
+            ...(classification.cause === 'external_job' ? cause_detail : {}),
             ...(base_moved
               ? {
                   candidate_sha: moved_detail?.candidate_sha,
@@ -5309,7 +5319,9 @@ export function createScheduler(deps) {
         seq: 'waiting',
         summary: base_moved
           ? `대기 · base_moved:${moved_detail?.candidate_sha}:${moved_detail?.base_sha}`
-          : `대기 · blocks:${blockers.map((blocker) => blocker.id).join(', ')}`,
+          : classification.cause === 'external_job'
+            ? `대기 · external:${cause_detail?.wait_id}`
+            : `대기 · blocks:${blockers.map((blocker) => blocker.id).join(', ')}`,
         at
       });
       return;
@@ -5530,8 +5542,7 @@ export function createScheduler(deps) {
    * `verdict`/`bead_status`/`pr_url`/`awaiting_user` are the classifier's
    * inputs (§3.1): without them a successful-but-undelivered ending cannot be
    * told apart from a park, so only the paths that HAVE them pass them.
-   * `tier_hint` is the prerequisite-wait proof (waiting-tier spec §4.3) and
-   * only {@link judgePrerequisiteWait} may carry it.
+   * `tier_hint` is carried only by the server's proven wait judgments.
    */
   async function failAttempt(
     workspace,
@@ -5543,23 +5554,33 @@ export function createScheduler(deps) {
     options = {}
   ) {
     const at = now();
-    const classification = classifyFailure({
-      cause: cause ?? null,
-      cause_detail: cause_detail ?? null,
-      verdict: options.verdict ?? null,
-      bead_status: options.bead_status ?? null,
-      pr_url: options.pr_url ?? null,
-      awaiting_user: options.awaiting_user ?? null,
-      ...(work_recovery_policy.workRecoveryReady()
+    const classification =
+      cause === 'external_job' && options.tier_hint === 'waiting'
         ? {
-            recovery: {
-              classify: work_recovery_policy.workRecoveryClassification,
-              resultLineReasons: work_recovery_policy.recoveryResultLineReasons
-            }
+            tier: /** @type {const} */ ('waiting'),
+            cause,
+            summary: failureTokenSummary(cause),
+            retry: null,
+            env_group: null
           }
-        : {}),
-      ...(options.tier_hint ? { tier_hint: options.tier_hint } : {})
-    });
+        : classifyFailure({
+            cause: cause ?? null,
+            cause_detail: cause_detail ?? null,
+            verdict: options.verdict ?? null,
+            bead_status: options.bead_status ?? null,
+            pr_url: options.pr_url ?? null,
+            awaiting_user: options.awaiting_user ?? null,
+            ...(work_recovery_policy.workRecoveryReady()
+              ? {
+                  recovery: {
+                    classify: work_recovery_policy.workRecoveryClassification,
+                    resultLineReasons:
+                      work_recovery_policy.recoveryResultLineReasons
+                  }
+                }
+              : {}),
+            ...(options.tier_hint ? { tier_hint: options.tier_hint } : {})
+          });
     const background_shell_at_result =
       options.verdict?.background_shell_at_result;
     if (
@@ -6002,6 +6023,13 @@ export function createScheduler(deps) {
         return;
       }
 
+      // The server record owns external waits, including exits without a result line.
+      if (
+        await judgeExternalWait(workspace, attempt_id, bead_id, prior, verdict)
+      ) {
+        return;
+      }
+
       if (!verdict.success) {
         if (!verdict.blocked) {
           const outage = await providerOutageFor(
@@ -6049,6 +6077,7 @@ export function createScheduler(deps) {
           if (
             !fallback_used &&
             !strict_preserved &&
+            !failed_record.forked_from_session_id &&
             source_session_id &&
             failed_record.continuation_choice !== 'prior_attempt'
           ) {
@@ -6371,6 +6400,12 @@ export function createScheduler(deps) {
       // next attempt writes under a new id, so a leftover tree cannot pollute a
       // later judgment (UI-8mvc §5).
       removeGuardHook(workspace, attempt_id);
+      if (
+        deps.store.snapshot(workspace).attempts[attempt_id]?.cause ===
+        'external_job'
+      ) {
+        notifyChanged(workspace);
+      }
     }
   }
 
@@ -6615,6 +6650,79 @@ export function createScheduler(deps) {
     }
     recordSkipReason(workspace, bead_id, notReadyReason(snap));
     return false;
+  }
+
+  /**
+   * Prove external ownership from the server store, independently of session text.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {RunnerVerdict} _verdict
+   * @returns {WaitRecord|null}
+   */
+  function proveExternalWait(workspace, attempt_id, bead_id, _verdict) {
+    void _verdict;
+    const record = deps.externalWait?.findByBead(workspace, bead_id);
+    return record &&
+      record.bead_id === bead_id &&
+      ['detached', 'completing'].includes(record.stage) &&
+      record.owner.kind === 'worker' &&
+      record.owner.attempt_id === attempt_id
+      ? record
+      : null;
+  }
+
+  /**
+   * Settle before every prerequisite/landing judgment, even on a failed process.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {string|null} prior
+   * @param {RunnerVerdict} verdict
+   */
+  async function judgeExternalWait(
+    workspace,
+    attempt_id,
+    bead_id,
+    prior,
+    verdict
+  ) {
+    const record = proveExternalWait(workspace, attempt_id, bead_id, verdict);
+    if (!record && verdict.terminal_result?.kind !== 'waiting_external') {
+      return false;
+    }
+    await recordReceiptCheck(workspace, attempt_id, bead_id);
+    await failAttempt(
+      workspace,
+      attempt_id,
+      bead_id,
+      prior,
+      record ? 'external_job' : 'external_wait_unproven',
+      record
+        ? {
+            wait_id: record.wait_id,
+            jobs: record.jobs.map((job) => ({
+              adapter: job.adapter,
+              ...(job.adapter === 'slurm'
+                ? { job_id: job.job_id }
+                : { pid: job.pid }),
+              state: job.state,
+              ...(job.terminal
+                ? { terminal: { exit_code: job.terminal.exit_code } }
+                : {})
+            }))
+          }
+        : { wait_id: verdict.terminal_result?.wait_id },
+      {
+        verdict,
+        ...(record ? { tier_hint: /** @type {const} */ ('waiting') } : {})
+      }
+    );
+    notifyChanged(workspace);
+    await tick(workspace);
+    return true;
   }
 
   /**
@@ -7783,6 +7891,12 @@ export function createScheduler(deps) {
     } finally {
       settling.delete(attempt_id);
       removeGuardHook(workspace, attempt_id);
+      if (
+        deps.store.snapshot(workspace).attempts[attempt_id]?.cause ===
+        'external_job'
+      ) {
+        notifyChanged(workspace);
+      }
     }
   }
 
@@ -7911,6 +8025,27 @@ export function createScheduler(deps) {
     }
     const persisted_raw = persistedSessionRaw(workspace, attempt_id, attempt);
     const persisted_verdict = persistedRunnerVerdict(attempt, persisted_raw);
+    if (
+      await judgeExternalWait(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        persisted_verdict || {
+          success: false,
+          reason: 'reconciled',
+          summary: null,
+          terminal_result: null,
+          exit: null,
+          blocked: false,
+          blocked_detail: null,
+          events: [],
+          raw: []
+        }
+      )
+    ) {
+      return;
+    }
     const outage =
       persisted_raw === null
         ? null
@@ -8542,6 +8677,7 @@ export function createScheduler(deps) {
       }
       reclassifyPreservedFailures(workspace);
       await settleStaleWorkerClaims(workspace);
+      await settleExternalWaitReservations(workspace);
     } finally {
       reconciling.delete(workspace);
     }
@@ -9659,13 +9795,19 @@ export function createScheduler(deps) {
     claimed.add(input.bead_id);
     let release_action_claim = true;
     try {
+      const resume_candidates = resumableResidueAttempts(
+        workspace,
+        input.bead_id,
+        snap.repo
+      );
       /** @type {WorktreeObservation} */
       let observation;
       try {
         observation = await deps.worktree.removeIfDiscardable({
           repo: snap.repo,
           bead_id: input.bead_id,
-          base: cut_base
+          base: cut_base,
+          ...(resume_candidates.length > 0 ? { preserve: true } : {})
         });
       } catch {
         return { ok: false, reason: 'git_error' };
@@ -9680,11 +9822,6 @@ export function createScheduler(deps) {
         await tick(workspace);
         return { ok: true, state: observation.state };
       }
-      const resume_candidates = resumableResidueAttempts(
-        workspace,
-        input.bead_id,
-        snap.repo
-      );
       const resume_attempt = matchingResidueAttempt(
         observation,
         input.bead_id,
@@ -10632,6 +10769,472 @@ export function createScheduler(deps) {
       branch: branchForBead(bead_id),
       account_usage: account_usage.filter((line) => line !== null)
     };
+  }
+
+  /**
+   * Give the resumed session observations, without claiming artifact correctness.
+   *
+   * @param {WaitRecord} record
+   */
+  function externalWaitCompletionPrompt(record) {
+    const lines = ['## 외부 작업 완료'];
+    for (const job of record.jobs) {
+      const terminal = job.terminal;
+      lines.push(
+        `${job.adapter === 'slurm' ? job.job_id : job.pid} · ${job.state} · exit_code=${terminal?.exit_code ?? 'unknown'} · evidence=${terminal?.evidence || 'unknown'}`
+      );
+      for (const result of terminal?.expected_results || []) {
+        lines.push(
+          `${result.path} exists=${result.exists} size=${result.size} mtime=${result.mtime}`
+        );
+      }
+      lines.push(
+        `recovery_needed=${terminal?.recovery_needed ?? true} · log=${job.log_path}`
+      );
+    }
+    lines.push(
+      `completion.digest=${record.completion?.digest}`,
+      `recovery_needed=${record.completion?.recovery_needed}`,
+      '관찰 완료는 구현 완료가 아니다 — 아티팩트의 의미 검증·복구·커밋·완료는 이 세션이 한다'
+    );
+    return lines.join('\n');
+  }
+
+  /**
+   * Clear only the reservation; keep the wait key and a retryable diagnostic.
+   *
+   * @param {string} workspace
+   * @param {string} wait_id
+   * @param {'fork'|'fresh'} mode
+   * @param {string} error
+   */
+  function externalWaitResumeError(workspace, wait_id, mode, error) {
+    deps.externalWait?.update(workspace, wait_id, (record) => {
+      record.resume = {
+        mode,
+        attempt_id: null,
+        reserved_at: null,
+        launched_at: null,
+        session_id: null,
+        error
+      };
+    });
+    notifyChanged(workspace);
+    return { ok: /** @type {const} */ (false), reason: error };
+  }
+
+  /**
+   * Persist launch evidence before removing the admission fence. A failed
+   * readback leaves the reservation recoverable on the next reconcile.
+   *
+   * @param {string} workspace
+   * @param {WaitRecord} record
+   */
+  async function settleExternalWaitLaunch(workspace, record) {
+    const store = deps.externalWait;
+    if (!store || !record.resume?.attempt_id) {
+      return;
+    }
+    const attempt =
+      deps.store.snapshot(workspace).attempts[record.resume.attempt_id];
+    store.update(workspace, record.wait_id, (current) => {
+      if (current.resume) {
+        current.resume.launched_at ||= new Date(now()).toISOString();
+        current.resume.session_id =
+          attempt?.session_id ?? current.resume.session_id;
+      }
+    });
+    await deps.bd.unsetMetadata(record.bead_id, 'external_wait');
+    if (
+      (await deps.bd.readMetadata(record.bead_id, 'external_wait')) !== null
+    ) {
+      throw new Error('external_wait_unset_failed');
+    }
+    store.update(workspace, record.wait_id, (current) => {
+      current.stage = 'resumed';
+    });
+    notifyChanged(workspace);
+  }
+
+  /**
+   * Recover the four reservation/queue combinations without guessing from completion.
+   *
+   * @param {string} workspace
+   */
+  async function settleExternalWaitReservations(workspace) {
+    const store = deps.externalWait;
+    if (!store) {
+      return;
+    }
+    for (const record of store.list(workspace)) {
+      if (
+        record.stage !== 'completing' ||
+        !record.resume?.attempt_id ||
+        external_wait_resumes.has(JSON.stringify([workspace, record.wait_id]))
+      ) {
+        continue;
+      }
+      if (
+        record.resume.launched_at ||
+        deps.store.snapshot(workspace).attempts[record.resume.attempt_id]
+      ) {
+        await settleExternalWaitLaunch(workspace, record);
+      } else {
+        const mode = record.resume.mode;
+        store.update(workspace, record.wait_id, (current) => {
+          current.resume = null;
+        });
+        await resumeExternalWait(workspace, record.wait_id, { mode });
+      }
+    }
+  }
+
+  /**
+   * Reserve exactly one continuation of a completed wait. Only this entry may
+   * bypass the external_wait admission key, after proving the record's owner.
+   *
+   * @param {string} workspace
+   * @param {string} wait_id
+   * @param {{ mode: 'fork'|'fresh' }} options
+   * @returns {Promise<{ ok: true, attempt_id: string }|{ ok: false, reason: string }>}
+   */
+  async function resumeExternalWait(workspace, wait_id, { mode }) {
+    const store = deps.externalWait;
+    const key = JSON.stringify([workspace, wait_id]);
+    if (!store || (mode !== 'fork' && mode !== 'fresh')) {
+      return { ok: false, reason: 'bad_request' };
+    }
+    if (external_wait_resumes.has(key)) {
+      return { ok: false, reason: 'resume_in_progress' };
+    }
+    external_wait_resumes.add(key);
+    try {
+      const record = store.get(workspace, wait_id);
+      if (!record || record.stage !== 'completing' || !record.completion) {
+        return { ok: false, reason: 'resume_not_allowed' };
+      }
+      if (record.resume?.attempt_id) {
+        return { ok: false, reason: 'resume_reserved' };
+      }
+      const q = deps.store.snapshot(workspace);
+      const prior =
+        record.owner.kind === 'worker'
+          ? q.attempts[record.owner.attempt_id]
+          : null;
+      if (record.owner.kind === 'worker') {
+        if (
+          running.has(record.owner.attempt_id) ||
+          settling.has(record.owner.attempt_id) ||
+          prior?.status === 'running'
+        ) {
+          return { ok: false, reason: 'origin_running' };
+        }
+        if (
+          !prior ||
+          prior.bead_id !== record.bead_id ||
+          prior.attempt_id !== record.owner.attempt_id ||
+          prior.status !== 'waiting' ||
+          prior.cause !== 'external_job'
+        ) {
+          return { ok: false, reason: 'origin_not_waiting' };
+        }
+      }
+      const bead_id = record.bead_id;
+      if (
+        claimed.has(bead_id) ||
+        retiring.has(bead_id) ||
+        Object.values(q.attempts).some(
+          (/** @type {any} */ attempt) =>
+            attempt.bead_id === bead_id && attempt.status === 'running'
+        )
+      ) {
+        return { ok: false, reason: 'bead_running' };
+      }
+      if (discardActive(q, { bead_id, attempt_id: prior?.attempt_id })) {
+        return { ok: false, reason: 'discard_in_progress' };
+      }
+      const snap = await deps.bd.snapshotBead(bead_id);
+      if (snap.status !== 'open' || Object.hasOwn(snap, 'awaiting_user')) {
+        const error = `bead_${Object.hasOwn(snap, 'awaiting_user') ? 'awaiting_user' : snap.status}`;
+        externalWaitResumeError(workspace, wait_id, mode, error);
+        await deps.bd.unsetMetadata(bead_id, 'external_wait');
+        if ((await deps.bd.readMetadata(bead_id, 'external_wait')) !== null) {
+          throw new Error('external_wait_unset_failed');
+        }
+        store.update(workspace, wait_id, (current) => {
+          current.stage = 'stopped';
+        });
+        return { ok: false, reason: error };
+      }
+      const admission = await checkAdmission(
+        snap,
+        prior?.base_oid || undefined,
+        { allow_external_wait_resume: true }
+      );
+      if (!admission.ok) {
+        return externalWaitResumeError(
+          workspace,
+          wait_id,
+          mode,
+          admission.reason || 'git_error'
+        );
+      }
+      const attempt_id = makeAttemptId(bead_id);
+      store.update(workspace, wait_id, (current) => {
+        current.resume = {
+          mode,
+          attempt_id,
+          reserved_at: new Date(now()).toISOString(),
+          launched_at: null,
+          session_id: null,
+          error: null
+        };
+      });
+      const completion_prompt = externalWaitCompletionPrompt(record);
+      let result;
+      if (prior) {
+        if (mode === 'fork') {
+          const reason = !prior.session_id
+            ? 'no_session_id'
+            : !transcriptPresent(prior.runner, prior.session_id, prior)
+              ? 'transcript_missing'
+              : !fs.existsSync(record.worktree) ||
+                  (deps.worktree.exists &&
+                    !deps.worktree.exists(snap.repo, bead_id))
+                ? 'worktree_missing'
+                : null;
+          if (reason) {
+            return externalWaitResumeError(workspace, wait_id, mode, reason);
+          }
+        }
+        const prompt =
+          mode === 'fork'
+            ? resumePrompt(
+                bead_id,
+                prior.status,
+                await resumeAncestorFacts(prior, bead_id)
+              )
+            : defaultTaskPrompt(bead_id);
+        result = await relaunchFromAttempt(workspace, prior, {
+          attempt_id,
+          continuation: mode === 'fork' ? 'auto' : 'fresh_current',
+          resume: mode === 'fork',
+          fork_session: mode === 'fork',
+          external_wait_resume: true,
+          bead_snapshot: snap,
+          cwd:
+            mode === 'fresh' && !fs.existsSync(record.worktree)
+              ? snap.repo
+              : record.worktree,
+          prompt: `${prompt}\n\n${completion_prompt}`
+        });
+      } else {
+        result = await launchExternalWaitSession(
+          workspace,
+          record,
+          snap,
+          attempt_id,
+          mode,
+          completion_prompt
+        );
+      }
+      if (!result.ok) {
+        return externalWaitResumeError(
+          workspace,
+          wait_id,
+          mode,
+          result.reason || 'spawn_failed'
+        );
+      }
+      if (!deps.store.snapshot(workspace).attempts[attempt_id]) {
+        throw new Error('attempt_readback_failed');
+      }
+      await settleExternalWaitLaunch(
+        workspace,
+        /** @type {WaitRecord} */ (store.get(workspace, wait_id))
+      );
+      return { ok: true, attempt_id };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      // Preserve any reservation after an uncertain launch; reconcile owns it.
+      store.update(workspace, wait_id, (record) => {
+        if (record.resume) {
+          record.resume.error = reason;
+        }
+      });
+      return { ok: false, reason };
+    } finally {
+      external_wait_resumes.delete(key);
+    }
+  }
+
+  /**
+   * Claim a user-owned wait and open its first Worker attempt.
+   *
+   * @param {string} workspace
+   * @param {WaitRecord} record
+   * @param {BeadSnapshot} snap
+   * @param {string} attempt_id
+   * @param {'fork'|'fresh'} mode
+   * @param {string} completion_prompt
+   */
+  async function launchExternalWaitSession(
+    workspace,
+    record,
+    snap,
+    attempt_id,
+    mode,
+    completion_prompt
+  ) {
+    const qualified =
+      mode === 'fork'
+        ? qualifySessionFork({ session_ref: snap.session_ref }, null, {
+            home_dir: deps.homeDir
+          })
+        : null;
+    if (qualified && !qualified.ok) {
+      return { ok: false, reason: qualified.reason };
+    }
+    if (mode === 'fork' && !fs.existsSync(record.worktree)) {
+      return { ok: false, reason: 'worktree_missing' };
+    }
+    const resolved = resolveDispatchSettings(
+      workspace,
+      snap,
+      await readWorkspaceAccountsLayer(workspace)
+    );
+    if (!resolved.ok) {
+      return resolved;
+    }
+    if (resolved.exec.invalid_reason) {
+      return { ok: false, reason: resolved.exec.invalid_reason };
+    }
+    const runner_name = qualified?.ok
+      ? qualified.provider
+      : resolved.exec.runner;
+    if (runner_name !== resolved.exec.runner) {
+      return { ok: false, reason: 'provider_mismatch' };
+    }
+    const provider = await providerDispatchHeld(
+      workspace,
+      runner_name,
+      resolved.accounts
+    );
+    if (provider.held) {
+      return { ok: false, reason: 'provider_held' };
+    }
+    const bead_id = record.bead_id;
+    const repo = snap.repo;
+    const target_base = snap.target_base;
+    const prior_wf = snap.workflow_mode ?? null;
+    const stamped_keys = resolved.exec.stamped_keys;
+    const restore = await captureExecRestoreValues(bead_id, stamped_keys);
+    if (!restore.ok) {
+      return { ok: false, reason: 'exec_restore_capture_failed' };
+    }
+    const receipt_baseline = await captureReceiptBaseline(bead_id);
+    const serial_launch = acquireLaneLaunch(workspace, {
+      bead_id,
+      lineage_id: bead_id,
+      serial_lane_id: null
+    });
+    if (!serial_launch.ok) {
+      return { ok: false, reason: serial_launch.reason };
+    }
+    const quickfix_lane = laneOfRoute(snap.route) === 'quick_fix';
+    const resume_session_id = qualified?.ok ? qualified.session_id : null;
+    try {
+      if (
+        !installGuardHook({
+          workspace,
+          attempt_id,
+          repo,
+          target_base,
+          mode: quickfix_lane ? 'record' : 'guard'
+        })
+      ) {
+        return { ok: false, reason: 'guard_hook_install_failed' };
+      }
+      if (
+        !prerecordAttempt(workspace, {
+          attempt_id,
+          bead_id,
+          repo,
+          target_base,
+          base_oid: null,
+          runner: runner_name,
+          model: resolved.exec.orchestration_model ?? null,
+          effort: resolved.exec.orchestration_effort ?? null,
+          speed: resolved.exec.orchestration_speed ?? 'default',
+          claude_account: resolved.accounts.claude,
+          codex_account: resolved.accounts.codex,
+          account_sources: resolved.account_sources,
+          workflow_mode_prior: prior_wf,
+          workflow_mode_source_prior: snap.workflow_mode_source ?? null,
+          exec_values: execValuesFor(resolved.exec),
+          exec_stamped_keys: stamped_keys,
+          exec_restore_values: restore.values,
+          exec_preset: resolved.exec_preset ?? null,
+          receipt_baseline,
+          quickfix_lane,
+          forked_from_session_id: resume_session_id,
+          continuation_mode: resume_session_id ? 'session' : 'fresh',
+          worker_claim: 'pending',
+          status: 'running',
+          started_at: null,
+          pid: null
+        })
+      ) {
+        removeGuardHook(workspace, attempt_id);
+        return { ok: false, reason: 'attempt_prerecord_failed' };
+      }
+      serial_launch.lease.handoff();
+    } finally {
+      serial_launch.lease.release();
+    }
+    claimed.add(bead_id);
+    const launch_input = {
+      workspace,
+      attempt_id,
+      bead_id,
+      repo,
+      target_base,
+      base_oid: null,
+      runner_name,
+      model: resolved.exec.orchestration_model ?? null,
+      effort: resolved.exec.orchestration_effort ?? null,
+      speed: resolved.exec.orchestration_speed ?? 'default',
+      accounts: resolved.accounts,
+      account_sources: resolved.account_sources,
+      prior_wf,
+      stamped_keys,
+      wt_path: record.worktree,
+      launch_kind: /** @type {const} */ ('resume'),
+      resume_session_id,
+      ...(resume_session_id ? { fork_session: true } : {}),
+      verify_worktree: true,
+      quickfix_lane,
+      spawnBead: {
+        id: bead_id,
+        prompt: `${mode === 'fork' ? resumePrompt(bead_id, null) : defaultTaskPrompt(bead_id)}\n\n${completion_prompt}`
+      }
+    };
+    const claim = await claimBeadForDispatch(workspace, bead_id, attempt_id);
+    const stamped = claim.claimed
+      ? await stampWorkerWorkflowMode(bead_id)
+      : { ok: false };
+    if (!claim.claimed || !stamped.ok) {
+      const reason = claim.claimed
+        ? 'workflow_mode_record_failed'
+        : 'bead_claim_failed';
+      await finalizeLaunchRefusal(launch_input, reason, true);
+      return { ok: false, reason };
+    }
+    const launched = await launchSession(launch_input);
+    if (!launched.ok && launched.reason === 'worktree_missing') {
+      await finalizeLaunchRefusal(launch_input, launched.reason, true);
+    }
+    return launched;
   }
 
   /**
@@ -12212,6 +12815,7 @@ export function createScheduler(deps) {
       decision !== 'prior_attempt' &&
       !override_cross_runner &&
       !explicit_fresh_current &&
+      !(options.external_wait_resume === true && options.resume === false) &&
       !matchesDecisionToken(options.decision_token, decision_token)
     ) {
       return {
@@ -12339,6 +12943,9 @@ export function createScheduler(deps) {
       typeof prior.session_id === 'string' &&
       !transcriptPresent(runner_name, prior.session_id, prior)
     ) {
+      if (options.fork_session === true) {
+        return { ok: false, reason: 'transcript_missing' };
+      }
       // §5.3: `prior_attempt` never substitutes a fresh session — the refusal
       // is the answer, and the paused parent stays where the user left it.
       if (prior_attempt_choice || strict_preserved) {
@@ -12447,6 +13054,16 @@ export function createScheduler(deps) {
     if (!continuation.ok) {
       return continuation;
     }
+    if (options.external_wait_resume === true) {
+      const provider = await providerDispatchHeld(
+        workspace,
+        continuation.runner_name,
+        continuation.accounts
+      );
+      if (provider.held) {
+        return { ok: false, reason: 'provider_held' };
+      }
+    }
     return relaunchResolvedAttempt(workspace, prior, options, continuation);
   }
 
@@ -12540,7 +13157,7 @@ export function createScheduler(deps) {
       resume_fallback,
       handoff_instructions
     } = continuation;
-    const new_attempt_id = makeAttemptId(bead_id);
+    const new_attempt_id = options.attempt_id || makeAttemptId(bead_id);
     // A prompt that must name the attempt it runs under (the resolver receipt,
     // UI-hm55) is handed in as a factory, because the id is minted only here.
     const base_prompt =
@@ -12615,6 +13232,9 @@ export function createScheduler(deps) {
       quickfix_lane,
       bench_run: prior.bench_run ?? null,
       resumed_from: attempt_id,
+      ...(options.fork_session === true
+        ? { forked_from_session_id: prior.session_id }
+        : {}),
       ...(prior.status === 'waiting' &&
       prior.cause_detail?.recovery &&
       prior.retry?.origin_attempt_id
@@ -12857,6 +13477,7 @@ export function createScheduler(deps) {
       },
       verify_worktree: true,
       resume_session_id,
+      ...(options.fork_session === true ? { fork_session: true } : {}),
       disposition: options.disposition ?? null,
       quickfix_lane
     };
@@ -13357,6 +13978,7 @@ export function createScheduler(deps) {
    * @returns {Promise<{ checked: number, returned: number }>}
    */
   async function runWaitingRescan(workspace) {
+    // ADR 0034: external_job returns on completion, never through the ready rescan.
     if (typeof deps.bd.readyBeadIds !== 'function') {
       return { checked: 0, returned: 0 };
     }
@@ -15406,6 +16028,8 @@ export function createScheduler(deps) {
     stopReviewSessionProcess,
     pause,
     resume,
+    resumeExternalWait,
+    settleExternalWaitReservations,
     consumeProviderAutoResume,
     resolveConflict,
     dispatchExternalConflict,

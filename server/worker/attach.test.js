@@ -12,6 +12,7 @@ import {
   RECONCILE_INTERVAL_SECONDS,
   __registerWorkerAttachmentForTest,
   __resetWorkerAttachmentsForTest,
+  bindExternalWaitHooks,
   createLiveBd,
   createOperationRepairHandoff,
   createWorkerAttachment,
@@ -28,6 +29,7 @@ import {
   pushLogPath as guardPushLogPath,
   install as installGuardHook
 } from './guard-hook.js';
+import { emitQueueChanged } from './queue-events.js';
 import { createQueueStore } from './queue-store.js';
 import { recordRepoOpsDisplay } from './repo-ops-display.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
@@ -50,6 +52,119 @@ const merge_queue_capture = vi.hoisted(() => ({
   /** @type {any} */
   deps: null
 }));
+
+describe('external wait hook wiring', () => {
+  /** @type {Array<() => void>} */
+  const stops = [];
+  afterEach(() => {
+    for (const stop of stops.splice(0)) {
+      stop();
+    }
+  });
+
+  /** @param {string} [workspace] */
+  function hooksFixture(workspace = '/repo') {
+    /** @type {any} */
+    let hooks;
+    const runtime = /** @type {any} */ ({
+      setExternalWaitHooks: (/** @type {any} */ value) => {
+        hooks = value;
+      },
+      queueStore: {
+        snapshot: () => ({ wait_notified: {} }),
+        claimWaitNotifications: (
+          /** @type {string} */ _ws,
+          /** @type {string[]} */ keys
+        ) => keys,
+        recordTimelineEvent: vi.fn()
+      }
+    });
+    const scheduler = {
+      resumeExternalWait: vi.fn(async () => ({
+        ok: false,
+        reason: 'origin_running'
+      }))
+    };
+    const notifier = { externalWaitCompleted: vi.fn(async () => true) };
+    stops.push(
+      bindExternalWaitHooks({
+        runtime,
+        workspace,
+        repo: workspace,
+        scheduler: /** @type {any} */ (scheduler),
+        notifier
+      })
+    );
+    return { runtime, scheduler, notifier, hooks: () => hooks };
+  }
+
+  test('retries one subscription after origin settlement and then unsubscribes', async () => {
+    const env = hooksFixture();
+    const record = {
+      wait_id: 'w-0123456789ab',
+      bead_id: 'B1',
+      owner: { kind: 'worker', attempt_id: 'origin' }
+    };
+
+    await env.hooks().onCompletion('/repo', record);
+    await env.hooks().onCompletion('/repo', record);
+    env.scheduler.resumeExternalWait.mockResolvedValue(
+      /** @type {any} */ ({ ok: true, attempt_id: 'child' })
+    );
+    emitQueueChanged('/other');
+    emitQueueChanged('/repo');
+    await vi.waitFor(() =>
+      expect(env.scheduler.resumeExternalWait).toHaveBeenCalledTimes(2)
+    );
+    emitQueueChanged('/repo');
+
+    expect(env.scheduler.resumeExternalWait).toHaveBeenCalledTimes(2);
+    expect(env.scheduler.resumeExternalWait).toHaveBeenLastCalledWith(
+      '/repo',
+      record.wait_id,
+      { mode: 'fork' }
+    );
+  });
+
+  test('notifies session-owned completion without starting a session', async () => {
+    const env = hooksFixture();
+
+    await env.hooks().onCompletion('/repo', {
+      wait_id: 'w-0123456789ab',
+      bead_id: 'B1',
+      owner: { kind: 'session' },
+      jobs: [{ adapter: 'process', pid: 123, state: 'COMPLETED' }]
+    });
+
+    expect(env.notifier.externalWaitCompleted).toHaveBeenCalledOnce();
+    expect(env.scheduler.resumeExternalWait).not.toHaveBeenCalled();
+  });
+
+  test('routes manual resume to the matching workspace after another attaches', async () => {
+    const env = hooksFixture();
+    const other = {
+      resumeExternalWait: vi.fn(async () => ({ ok: true, attempt_id: 'other' }))
+    };
+    stops.push(
+      bindExternalWaitHooks({
+        runtime: env.runtime,
+        workspace: '/other',
+        repo: '/other',
+        scheduler: /** @type {any} */ (other),
+        notifier: env.notifier
+      })
+    );
+
+    await env.hooks().resume('/repo', 'w-0123456789ab', 'fresh');
+
+    expect(env.scheduler.resumeExternalWait).toHaveBeenCalledWith(
+      '/repo',
+      'w-0123456789ab',
+      { mode: 'fresh' }
+    );
+    expect(other.resumeExternalWait).not.toHaveBeenCalled();
+  });
+});
 
 describe('operation repair handoff bd adapter', () => {
   const input = {
@@ -2205,6 +2320,35 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.labels).toEqual(['worker-ineligible', 'frontend']);
   });
 
+  test.each([undefined, null, 'w-0123456789ab'])(
+    'preserves external_wait presence in snapshots (%s)',
+    async (value) => {
+      const runJson = vi.fn(async (/** @type {string[]} */ args) =>
+        args[0] === 'show'
+          ? {
+              code: 0,
+              stdoutJson: {
+                id: 'UI-1',
+                status: 'open',
+                metadata: value === undefined ? {} : { external_wait: value }
+              }
+            }
+          : { code: 0, stdoutJson: [{ id: 'UI-1' }] }
+      );
+      const bd = createLiveBd({
+        cwd: '/ws',
+        repo: '/repo',
+        resolveBase: okBase('main'),
+        runJson: asProjected(runJson)
+      });
+
+      const snap = await bd.snapshotBead('UI-1');
+
+      expect(Object.hasOwn(snap, 'external_wait')).toBe(value !== undefined);
+      expect(snap.external_wait).toBe(value);
+    }
+  );
+
   test('snapshotBead carries awaiting_user only when the key exists', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {
@@ -2991,6 +3135,43 @@ describe('worker/attach target base resolution wiring (worker-base-scope-alignme
 
     expect(result).toEqual({ ok: false, reason: 'awaiting_user' });
   });
+
+  test.each([false, true])(
+    'passes the explicit external wait exception to admission (%s)',
+    async (allow_external_wait_resume) => {
+      const att = attach({
+        bd: fakeBd(),
+        gh: { checkAvailability: async () => ({ state: 'ok' }) },
+        gitRun: async (/** @type {string[]} */ args) => ({
+          code: 0,
+          stdout:
+            args[0] === 'show' ? '---\nscope:\n  - server/worker/\n---\n' : '',
+          stderr: ''
+        })
+      });
+
+      const result = await att.admission.validate(
+        /** @type {any} */ ({
+          repo: '/repo',
+          target_base: 'main',
+          base_oid: 'a'.repeat(40),
+          base_unresolved: null,
+          route: 'spec_backed',
+          spec_id: 'docs/spec.md',
+          spec_review: `codex@${'b'.repeat(40)}`,
+          external_wait: 'w-0123456789ab'
+        }),
+        undefined,
+        { allow_external_wait_resume }
+      );
+
+      expect(result).toEqual(
+        allow_external_wait_resume
+          ? { ok: true }
+          : { ok: false, reason: 'external_wait' }
+      );
+    }
+  );
 
   test('leaves admission unrefused when the snapshot has no awaiting_user key', async () => {
     const att = attach({

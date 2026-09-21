@@ -103,7 +103,7 @@ const TITLE_MAX = 60;
  * Claim current abnormal reasons before sending; a disappearing key rearms it.
  * The store owns only suppression state; the timeline owns notification history.
  *
- * @param {{ workspace: string, repo: string, wait_reasons: import('./wait-judgment.js').WaitReason[], now: number, store: Pick<ReturnType<typeof import('./queue-store.js').createQueueStore>, 'claimWaitNotifications'|'recordTimelineEvent'>, notifier: Pick<ReturnType<typeof createNotifier>, 'waitOverdue'|'waitActionRequired'> }} input
+ * @param {{ workspace: string, repo: string, wait_reasons: import('./wait-judgment.js').WaitReason[], now: number, store: Pick<ReturnType<typeof import('./queue-store.js').createQueueStore>, 'claimWaitNotifications'|'recordTimelineEvent'> & Partial<Pick<ReturnType<typeof import('./queue-store.js').createQueueStore>, 'snapshot'>>, notifier: Pick<ReturnType<typeof createNotifier>, 'waitOverdue'|'waitActionRequired'> }} input
  */
 export async function notifyWaitReasons(input) {
   /** @type {Map<string, import('./wait-judgment.js').WaitReason & { verdict_reason: import('./wait-judgment.js').VerdictReason }>} */
@@ -124,7 +124,12 @@ export async function notifyWaitReasons(input) {
   }
   const claimed = input.store.claimWaitNotifications(
     input.workspace,
-    [...by_key.keys()],
+    [
+      ...by_key.keys(),
+      ...Object.keys(
+        input.store.snapshot?.(input.workspace).wait_notified || {}
+      ).filter((key) => key.startsWith('external_wait:'))
+    ],
     input.now
   );
   for (const key of claimed) {
@@ -153,6 +158,45 @@ export async function notifyWaitReasons(input) {
         detail: `${item.kind}:${item.verdict_reason.code}`
       });
     }
+  }
+}
+
+/**
+ * Completion is a one-shot event, unlike a rearmable overdue judgment.
+ * Preserve the other producer's active keys when claiming this event.
+ *
+ * @param {{ workspace: string, repo: string, record: import('./external-wait/store.js').WaitRecord, store: Pick<ReturnType<typeof import('./queue-store.js').createQueueStore>, 'snapshot'|'claimWaitNotifications'|'recordTimelineEvent'>, notifier: Pick<ReturnType<typeof createNotifier>, 'externalWaitCompleted'>, now?: number }} input
+ */
+export async function notifyExternalWaitCompleted(input) {
+  const { workspace, record, store } = input;
+  const at = input.now ?? Date.now();
+  const key = `external_wait:${record.wait_id}:complete`;
+  const keys = Object.keys(store.snapshot(workspace).wait_notified || {});
+  if (
+    !store.claimWaitNotifications(workspace, [...keys, key], at).includes(key)
+  ) {
+    return;
+  }
+  const headline = record.jobs
+    .map(
+      (job) => `${job.adapter === 'slurm' ? job.job_id : job.pid} ${job.state}`
+    )
+    .join(' · ');
+  if (
+    await input.notifier.externalWaitCompleted({
+      bead_id: record.bead_id,
+      headline,
+      repo: input.repo
+    })
+  ) {
+    store.recordTimelineEvent(workspace, {
+      bead_id: record.bead_id,
+      kind: 'wait_notified',
+      seq: key,
+      at,
+      summary: `외부 작업 완료 · ${headline}`,
+      detail: record.wait_id
+    });
   }
 }
 
@@ -242,6 +286,7 @@ function headline(transition, bead_id, bead_title) {
  *   providerAutoResumeDisarmed: (input: { bead_id: string, runner: string, reason: string, repo?: string|null }) => Promise<void>,
  *   needsHuman: (input: NeedsHumanInput) => Promise<void>,
  *   waitOverdue: (input: WaitNotificationInput) => Promise<boolean>,
+ *   externalWaitCompleted: (input: Pick<WaitNotificationInput, 'bead_id'|'headline'|'repo'>) => Promise<boolean>,
  *   waitActionRequired: (input: WaitNotificationInput) => Promise<boolean>
  * }}
  */
@@ -430,6 +475,23 @@ export function createNotifier(deps) {
   return {
     waitOverdue: sendWait,
     waitActionRequired: sendWait,
+    async externalWaitCompleted(input) {
+      try {
+        const cmd = resolveCmd();
+        if (!cmd) {
+          return false;
+        }
+        return send(
+          cmd,
+          `✅ 외부 작업 완료 · ${input.bead_id} · ${input.headline}`
+            .replace(/\s+/g, ' ')
+            .trim()
+        );
+      } catch (err) {
+        log('external wait completion notification failed: %o', err);
+        return false;
+      }
+    },
     async attemptStarted(input) {
       try {
         // Config FIRST, before any lookup: notifications being off has to stay
