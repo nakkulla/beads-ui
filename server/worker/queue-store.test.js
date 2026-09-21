@@ -1872,6 +1872,50 @@ describe('worker/queue-store', () => {
     });
   });
 
+  test('preserves the hold when repinning only the base', () => {
+    const store = storeWithCompletionIntent();
+    store.holdCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      hold: verify_hold
+    });
+    const subject = store.snapshot(WS).completion_intents['UI-root'].subject;
+
+    const result = store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'gating',
+      subject: { ...subject, base_sha: 'c'.repeat(40) }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'gating',
+      subject: { head_sha: verify_hold.head_sha, base_sha: 'c'.repeat(40) },
+      hold: verify_hold
+    });
+  });
+
+  test('clears the hold when repinning a new head', () => {
+    const store = storeWithCompletionIntent();
+    store.holdCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      hold: verify_hold
+    });
+    const subject = store.snapshot(WS).completion_intents['UI-root'].subject;
+
+    const result = store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'gating',
+      subject: { ...subject, head_sha: 'c'.repeat(40) }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'gating',
+      subject: { head_sha: 'c'.repeat(40) },
+      hold: null
+    });
+  });
+
   test.each([undefined, null, 'invalid', []])(
     'normalizes a non-object hold %j to null',
     (hold) => {

@@ -10631,6 +10631,8 @@ export function createQueueStore(options = {}) {
      * Refresh the merge subject after an operation has settled. The subject
      * normalizer pins it to the root Bead, so the refresh can only ever carry
      * new SHAs for the root PR — never an unrelated Bead.
+     * Preserve the head-keyed handoff claim across base or URL changes so a
+     * repeated verify failure cannot notify again for that head (spec §4.4).
      *
      * @param {string} workspace
      * @param {{ root_bead_id: string, phase: CompletionPhase, subject: CompletionSubject }} input
@@ -10662,7 +10664,12 @@ export function createQueueStore(options = {}) {
           return false;
         }
         intent.subject = normalized_subject;
-        intent.hold = null;
+        if (
+          intent.hold === null ||
+          intent.hold.head_sha !== normalized_subject.head_sha
+        ) {
+          intent.hold = null;
+        }
         return true;
       });
     },

@@ -265,6 +265,62 @@ describe('completion verify hold', () => {
     });
   });
 
+  test('preserves one hold handoff when the base changes under the same head', async () => {
+    const now = vi.fn(() => 100);
+    const { store, driver, completionGate, comment, hold, append } =
+      holdHarness({ now });
+    await driveOnce(store, driver);
+    const before = store.snapshot(DRIVER_WS);
+    const previous_hold = before.completion_intents['UI-root'].hold;
+    const subject = {
+      ...before.completion_intents['UI-root'].subject,
+      base_sha: 'c'.repeat(40)
+    };
+    completionGate.mockResolvedValue(
+      holdGate({ subject, base_sha: subject.base_sha })
+    );
+    now.mockReturnValue(200);
+
+    const requeued = store.enqueueMergeManual(DRIVER_WS, {
+      expected_revision: before.revision,
+      entries: [
+        { bead_id: 'UI-root', head_sha: subject.head_sha, target_base: 'main' }
+      ]
+    });
+    const regated = await driveOnce(store, driver);
+    const repinned = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    const held_again = await driveOnce(store, driver);
+    const after = store.snapshot(DRIVER_WS);
+
+    expect(requeued.ok).toBe(true);
+    expect(regated.fact.state).toBe('stale');
+    expect(regated.action).toEqual({ kind: 'gate' });
+    expect(repinned).toMatchObject({
+      phase: 'gating',
+      subject,
+      hold: previous_hold
+    });
+    expect(held_again.fact.state).toBe('verify_hold');
+    expect(held_again.action?.kind).toBe('hold');
+    expect(after.completion_intents['UI-root']).toMatchObject({
+      phase: 'holding',
+      hold: {
+        head_sha: subject.head_sha,
+        base_sha: subject.base_sha,
+        at: 200,
+        comment_at: 100
+      }
+    });
+    expect(after.merge_queue).toEqual([]);
+    expect(comment).toHaveBeenCalledTimes(1);
+    expect(hold).toHaveBeenCalledTimes(1);
+    const hold_events = append.mock.calls.filter(
+      ([event]) =>
+        event.kind === 'merge_step' && event.seq === `hold:${subject.head_sha}`
+    );
+    expect(hold_events).toHaveLength(1);
+  });
+
   test('prefers the operation ledger summary for the held failure', async () => {
     const { store, driver, comment, hold } = holdHarness();
     const snapshot = store.snapshot.bind(store);
