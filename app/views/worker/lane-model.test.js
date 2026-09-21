@@ -619,7 +619,7 @@ describe('monitor candidate readiness filter and sort (UI-ff10 §5·§7)', () =>
 
     // A-1 stays hidden when only one filter is relaxed.
     expect(lanes.runnable.map((r) => r.id)).toEqual(['A-2']);
-    expect(lanes.runnable_hidden).toEqual({
+    expect(lanes.runnable_hidden).toMatchObject({
       blocked: 0,
       readiness: 1,
       route: 0
@@ -637,7 +637,7 @@ describe('monitor candidate readiness filter and sort (UI-ff10 §5·§7)', () =>
 
     // 한쪽만 풀어도 A-1은 그대로 숨는다 — 어느 배지도 그것을 세지 않는다.
     expect(lanes.runnable.map((r) => r.id)).toEqual(['A-2']);
-    expect(lanes.runnable_hidden).toEqual({
+    expect(lanes.runnable_hidden).toMatchObject({
       blocked: 0,
       readiness: 1,
       route: 0
@@ -656,12 +656,12 @@ describe('monitor candidate readiness filter and sort (UI-ff10 §5·§7)', () =>
       }
     });
 
-    expect(blocked_only.runnable_hidden).toEqual({
+    expect(blocked_only.runnable_hidden).toMatchObject({
       blocked: 1,
       readiness: 0,
       route: 0
     });
-    expect(readiness_only.runnable_hidden).toEqual({
+    expect(readiness_only.runnable_hidden).toMatchObject({
       blocked: 0,
       readiness: 2,
       route: 0
@@ -6435,7 +6435,7 @@ describe('candidate route filter (UI-q1tg §3.2)', () => {
   test('counts a route-hidden row per control under per_control', () => {
     const lanes = filtered(['spec_backed']);
 
-    expect(lanes.runnable_hidden).toEqual({
+    expect(lanes.runnable_hidden).toMatchObject({
       blocked: 0,
       readiness: 0,
       route: 4
@@ -7524,5 +7524,226 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
 
       expect(lanes.queue[0].gate).toBeUndefined();
     });
+  });
+});
+
+describe('보류 선반과 세 필터 축 (UI-p7s2 §3·§6)', () => {
+  /**
+   * @param {Partial<Record<string, any>>} [patch]
+   * @returns {Record<string, any>}
+   */
+  function shelfWorkspace(patch = {}) {
+    return workspace({
+      runnable: [
+        {
+          bead_id: 'A-1',
+          title: 'candidate one',
+          priority: 1,
+          issue_type: 'bug',
+          labels: ['infra'],
+          queue_placeable: true
+        }
+      ],
+      deferred: [
+        {
+          bead_id: 'A-9',
+          title: 'held one',
+          priority: 3,
+          issue_type: 'chore',
+          labels: ['later'],
+          updated_at: 10
+        }
+      ],
+      ...patch
+    });
+  }
+
+  test('keeps a deferred row out of the candidate lane', () => {
+    const lanes = buildLanes([shelfWorkspace()], [state()]);
+
+    expect(lanes.runnable.map((r) => r.id)).toEqual(['A-1']);
+    expect(lanes.deferred.map((r) => r.id)).toEqual(['A-9']);
+  });
+
+  test('leaves a deferred row untouched by the readiness filter', () => {
+    const lanes = buildLanes([shelfWorkspace()], [state()], {
+      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, readiness: 'ready' }
+    });
+
+    expect(lanes.deferred.map((r) => r.id)).toEqual(['A-9']);
+    expect(lanes.runnable_hidden.readiness).toBe(0);
+  });
+
+  test('leaves a deferred row untouched by the route filter', () => {
+    const lanes = buildLanes([shelfWorkspace()], [state()], {
+      candidate_filter: {
+        ...CANDIDATE_FILTER_DEFAULT,
+        routes: ['quick_fix']
+      }
+    });
+
+    expect(lanes.deferred.map((r) => r.id)).toEqual(['A-9']);
+  });
+
+  test('hides a deferred row the type filter excludes', () => {
+    const lanes = buildLanes([shelfWorkspace()], [state()], {
+      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, type: 'bug' }
+    });
+
+    expect(lanes.deferred).toEqual([]);
+  });
+
+  test('dims a deferred row the search query does not match', () => {
+    const lanes = buildLanes([shelfWorkspace()], [state()], {
+      search: 'candidate'
+    });
+
+    expect(lanes.deferred[0].search_match).toBe(false);
+  });
+
+  test('counts priority-hidden candidate and deferred rows under the priority control', () => {
+    const lanes = buildLanes([shelfWorkspace()], [state()], {
+      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, priorities: [0] }
+    });
+
+    expect(lanes.runnable).toEqual([]);
+    expect(lanes.deferred).toEqual([]);
+    expect(lanes.runnable_hidden.priority).toBe(2);
+  });
+
+  test('counts type-hidden candidate and deferred rows under the type control', () => {
+    const lanes = buildLanes([shelfWorkspace()], [state()], {
+      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, type: 'feature' }
+    });
+
+    expect(lanes.runnable).toEqual([]);
+    expect(lanes.deferred).toEqual([]);
+    expect(lanes.runnable_hidden.type).toBe(2);
+  });
+
+  test('counts a type-hidden deferred row under the type control', () => {
+    const lanes = buildLanes([shelfWorkspace()], [state()], {
+      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, type: 'bug' }
+    });
+
+    expect(lanes.deferred).toEqual([]);
+    expect(lanes.runnable_hidden.type).toBe(1);
+  });
+
+  test('hides an unlabeled candidate when a label filter is on', () => {
+    const lanes = buildLanes(
+      [
+        shelfWorkspace({
+          runnable: [{ bead_id: 'A-1', labels: [], queue_placeable: true }],
+          deferred: []
+        })
+      ],
+      [state()],
+      { candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, labels: ['ops'] } }
+    );
+
+    expect(lanes.runnable).toEqual([]);
+    expect(lanes.runnable_hidden.label).toBe(1);
+  });
+
+  test('dims a queue row whose overlay confirms it has no labels', () => {
+    const lanes = buildLanes(
+      [
+        shelfWorkspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: { 'A-2': { labels: [] } }
+        })
+      ],
+      [state()],
+      { candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, labels: ['ops'] } }
+    );
+
+    expect(lanes.queue[0].filter_match).toBe(false);
+  });
+
+  test('keeps a queue row without label facts matched by the label filter', () => {
+    const lanes = buildLanes(
+      [shelfWorkspace({ queue: [{ bead_id: 'A-2' }] })],
+      [state()],
+      { candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, labels: ['ops'] } }
+    );
+
+    expect(lanes.queue[0].filter_match).toBe(true);
+  });
+
+  test('counts label-hidden candidate and deferred rows under the label control', () => {
+    const lanes = buildLanes([shelfWorkspace()], [state()], {
+      candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, labels: ['ops'] }
+    });
+
+    expect(lanes.runnable).toEqual([]);
+    expect(lanes.deferred).toEqual([]);
+    expect(lanes.runnable_hidden.label).toBe(2);
+  });
+
+  test('dims rather than hides a queue row the label filter excludes', () => {
+    const lanes = buildLanes(
+      [
+        shelfWorkspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: { 'A-2': { labels: ['infra'] } }
+        })
+      ],
+      [state()],
+      { candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, labels: ['ops'] } }
+    );
+
+    expect(lanes.queue.map((r) => r.id)).toEqual(['A-2']);
+    expect(lanes.queue[0].filter_match).toBe(false);
+  });
+
+  test('dims a done row the label filter excludes', () => {
+    const lanes = buildLanes(
+      [
+        shelfWorkspace({
+          done: [{ bead_id: 'A-3', added_at: 5 }],
+          bead_overlay: { 'A-3': { labels: ['infra'] } }
+        })
+      ],
+      [state()],
+      { candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, labels: ['ops'] } }
+    );
+
+    expect(lanes.done.map((r) => r.id)).toEqual(['A-3']);
+    expect(lanes.done[0].filter_match).toBe(false);
+  });
+
+  test('treats a queue row with no issue_type as matching the type filter', () => {
+    const lanes = buildLanes(
+      [shelfWorkspace({ queue: [{ bead_id: 'A-2' }] })],
+      [state()],
+      { candidate_filter: { ...CANDIDATE_FILTER_DEFAULT, type: 'bug' } }
+    );
+
+    expect(lanes.queue[0].filter_match).toBe(true);
+  });
+
+  test('attaches no filter verdict when the three axes are untouched', () => {
+    const lanes = buildLanes(
+      [shelfWorkspace({ queue: [{ bead_id: 'A-2' }] })],
+      [state()]
+    );
+
+    expect(lanes.queue[0].filter_match).toBe(undefined);
+  });
+
+  test('reads issue_type and labels for a queue row from the overlay', () => {
+    const lanes = buildLanes(
+      [
+        shelfWorkspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_overlay: { 'A-2': { issue_type: 'epic', labels: ['ops'] } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].issue_type).toBe('epic');
+    expect(lanes.queue[0].labels).toEqual(['ops']);
   });
 });

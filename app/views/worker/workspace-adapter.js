@@ -42,6 +42,11 @@ const IN_PROGRESS_KEY = 'tab:worker:in-progress';
 /** Resolved children (worker-card-exec-chips §3.3), for the rollup alone. */
 const RESOLVED_KEY = 'tab:worker:resolved';
 const CLOSED_KEY = 'tab:worker:closed';
+/**
+ * 보류 선반의 원천 (UI-p7s2 §3.1). 후보 레인과 달리 자격을 묻지 않으므로 이 열은
+ * `runnable`에 섞이지 않고 `deferred`로만 실린다.
+ */
+const DEFERRED_KEY = 'tab:worker:deferred';
 
 /**
  * 아직 스냅샷이 도착하지 않은 워크스페이스의 큐 (§6). 후보 레인의 원천은 Board
@@ -172,7 +177,8 @@ export function createWorkspaceAdapter(options = {}) {
           BLOCKED_KEY,
           IN_PROGRESS_KEY,
           RESOLVED_KEY,
-          CLOSED_KEY
+          CLOSED_KEY,
+          DEFERRED_KEY
         ]
       })
     : null;
@@ -298,7 +304,7 @@ export function createWorkspaceAdapter(options = {}) {
 
   /**
    * @param {string} key
-   * @param {'ready'|'blocked'|'in_progress'|'resolved'|'closed'} status
+   * @param {'ready'|'blocked'|'in_progress'|'resolved'|'closed'|'deferred'} status
    * @returns {any[]}
    */
   function column(key, status) {
@@ -393,6 +399,12 @@ export function createWorkspaceAdapter(options = {}) {
         blocked: is_blocked,
         blocked_by: blocker_ids,
         labels: Array.isArray(it.labels) ? it.labels : [],
+        // 타입·우선순위 필터가 읽는 bd 원본 필드 (UI-p7s2 §6). 값이 없으면 키를
+        // 만들지 않는다 — 판정할 재료가 없는 행은 일치로 본다 (fail-quiet).
+        ...(typeof it.issue_type === 'string' && it.issue_type.length > 0
+          ? { issue_type: it.issue_type }
+          : {}),
+        ...(typeof it.priority === 'number' ? { priority: it.priority } : {}),
         created_at: it.created_at,
         updated_at: it.updated_at,
         status: it.status,
@@ -433,6 +445,59 @@ export function createWorkspaceAdapter(options = {}) {
         dependents_info: it.dependents_info
       };
     });
+  }
+
+  /**
+   * The 보류 선반 observation rows (UI-p7s2 §3.1). 후보 행과 같은 사실 키를 싣되 자격
+   * 판정은 하나도 하지 않는다 — `route`·`spec_state`는 칩 재료로만 쓰이고,
+   * 정렬은 `updated_at` 내림차순 고정이다(선반이라 정렬 선택지가 없다).
+   *
+   * @param {any[]} deferred
+   * @returns {any[]}
+   */
+  function deferredRows(deferred) {
+    /** @type {any[]} */
+    const rows = [];
+    for (const it of deferred) {
+      if (!it || typeof it.id !== 'string' || isPhaseChild(it)) {
+        continue;
+      }
+      const spec = resolveSpecEvidence(it);
+      const route =
+        (it.workflow?.route_source === 'explicit' &&
+          typeof it.workflow.route === 'string' &&
+          it.workflow.route) ||
+        (it.metadata && typeof it.metadata.route === 'string'
+          ? it.metadata.route
+          : '');
+      rows.push({
+        bead_id: it.id,
+        title: it.title || it.id,
+        route,
+        spec_id: spec.conflict ? '' : spec.path,
+        published: spec.evidence === 'published',
+        labels: Array.isArray(it.labels) ? it.labels : [],
+        ...(typeof it.issue_type === 'string' && it.issue_type.length > 0
+          ? { issue_type: it.issue_type }
+          : {}),
+        ...(typeof it.priority === 'number' ? { priority: it.priority } : {}),
+        created_at: it.created_at,
+        updated_at: it.updated_at,
+        status: it.status,
+        workflow: it.workflow || null,
+        exec_pins: execPinsOf(objectOf(it.metadata)),
+        rec: null,
+        observation: true,
+        deferred: true
+      });
+    }
+    rows.sort(
+      (a, b) =>
+        (coerceTimestampMs(b.updated_at) ?? 0) -
+          (coerceTimestampMs(a.updated_at) ?? 0) ||
+        a.bead_id.localeCompare(b.bead_id)
+    );
+    return rows;
   }
 
   /**
@@ -485,6 +550,22 @@ export function createWorkspaceAdapter(options = {}) {
       }
       if (typeof issue.from_id === 'string' && !('from_id' in entry)) {
         entry.from_id = issue.from_id;
+      }
+      // 타입·라벨 필터의 재료 (UI-p7s2 §6). 서버 큐 스냅샷에서 오는 대기·실행
+      // 중·PR 대기·완료 행에는 이 두 필드가 없으므로 오버레이가 유일한 원천이다.
+      // 값이 없는 이슈는 키를 만들지 않는다 (fail-quiet).
+      if (
+        typeof issue.issue_type === 'string' &&
+        issue.issue_type.length > 0 &&
+        !('issue_type' in entry)
+      ) {
+        entry.issue_type = issue.issue_type;
+      }
+      // 빈 배열도 싣는다 — "라벨 없음"은 확인된 사실이고 배열 부재만 모름이다.
+      if (Array.isArray(issue.labels) && !('labels' in entry)) {
+        entry.labels = issue.labels.filter(
+          (/** @type {unknown} */ label) => typeof label === 'string'
+        );
       }
       const worker_created_from = objectOf(issue.workflow).worker_created_from;
       if (
@@ -542,10 +623,16 @@ export function createWorkspaceAdapter(options = {}) {
   }
 
   /**
-   * The 세션이 끝낸 일 rows (§4.2). Closed live store에서 Worker `done`에 없는 이슈 중
-   * 댓글이 있는 것을 `get-comments`로 한 번 조회해, 세션 lane 보고서가 있으면
-   * 완료 행을 만든다. 조회는 비동기이므로 캐시 miss는 이 렌더에서 행을 만들지
-   * 않고, 끝나면 `onInvalidate()`가 재렌더를 부른다.
+   * The 완료 레인 merge rule (UI-p7s2 §5): 서버 스냅샷의 Worker 완료 행 `q.done`에
+   * **없는** 닫힌 이슈를 전부 완료 레인에 싣고, `get-comments` 조회로 **분류만**
+   * 한다.
+   *
+   * - 세션 lane 완료 보고서가 확인되면 종전과 같은 세션 완료 행 — 세션 배지와
+   *   `작업` 시간이 붙는다.
+   * - 그 밖(댓글 없음·보고서가 세션 lane이 아님·조회 실패·조회 대기 중)은 닫힘
+   *   행이다: 배지도 `작업`도 없다. 출처를 모르는 행에 세션 배지를 붙이지 않는
+   *   다는 것이 이 행의 규칙이다. 조회가 끝나 세션 보고서로 판명되면
+   *   `invalidate()` 재렌더가 세션 완료 행으로 바꾼다.
    *
    * @param {any} q
    * @param {any[]} closed
@@ -568,10 +655,48 @@ export function createWorkspaceAdapter(options = {}) {
         typeof issue.id !== 'string' ||
         worker_done_ids.has(issue.id) ||
         closed_at === null ||
-        (done_since !== undefined && closed_at < done_since) ||
-        typeof issue.comment_count !== 'number' ||
-        issue.comment_count <= 0
+        (done_since !== undefined && closed_at < done_since)
       ) {
+        continue;
+      }
+      // 필터가 읽는 원본 필드는 두 변형이 같이 싣는다 (UI-p7s2 §6).
+      const issue_fields = {
+        labels: Array.isArray(issue.labels) ? issue.labels : [],
+        ...(typeof issue.issue_type === 'string' && issue.issue_type.length > 0
+          ? { issue_type: issue.issue_type }
+          : {}),
+        ...(typeof issue.priority === 'number'
+          ? { priority: issue.priority }
+          : {})
+      };
+      /**
+       * One 닫힘 행 whose origin is unknown (§5). 세션 배지도 `작업` 시간도 없다.
+       *
+       * @returns {any}
+       */
+      const closedRow = () => ({
+        id: issue.id,
+        title: issue.title || issue.id,
+        reason: '',
+        draggable: false,
+        done: true,
+        lane: 'done',
+        selectable: false,
+        selected: false,
+        badges: [],
+        alert: false,
+        usage: null,
+        work_ms: null,
+        done_at: closed_at,
+        created_at: issue.created_at,
+        updated_at: issue.updated_at,
+        ...issue_fields
+      });
+      const has_comments =
+        typeof issue.comment_count === 'number' && issue.comment_count > 0;
+      if (!has_comments) {
+        // 댓글이 0이면 조회할 것이 없다 — 바로 닫힘 행이다.
+        rows.push(closedRow());
         continue;
       }
       const identity = `${root_dir}\0${issue.id}\0${String(
@@ -602,6 +727,9 @@ export function createWorkspaceAdapter(options = {}) {
           });
       }
       if (cached !== 'session') {
+        // 보고서가 세션 lane이 아니거나 아직 판정이 없다 — 지금은 닫힘 행이고,
+        // 조회가 세션 보고서로 끝나면 재렌더가 이 행을 세션 완료 행으로 바꾼다.
+        rows.push(closedRow());
         continue;
       }
       // 세션 작업 행의 "작업" 시간은 bead가 in_progress를 잡은 순간부터 닫힌
@@ -627,7 +755,8 @@ export function createWorkspaceAdapter(options = {}) {
         work_kind: 'session',
         done_at: closed_at,
         created_at: issue.created_at,
-        updated_at: issue.updated_at
+        updated_at: issue.updated_at,
+        ...issue_fields
       });
     }
     return rows;
@@ -653,6 +782,7 @@ export function createWorkspaceAdapter(options = {}) {
       const in_progress = column(IN_PROGRESS_KEY, 'in_progress');
       const resolved = column(RESOLVED_KEY, 'resolved');
       const closed = column(CLOSED_KEY, 'closed');
+      const deferred = column(DEFERRED_KEY, 'deferred');
       return {
         workspaces: [
           {
@@ -675,6 +805,7 @@ export function createWorkspaceAdapter(options = {}) {
               blocked,
               view_state ? view_state.candidate_sort : undefined
             ),
+            deferred: deferredRows(deferred),
             session_done: sessionDoneRows(q, closed, root_dir, done_since),
             bead_overlay: beadOverlay([
               ready,

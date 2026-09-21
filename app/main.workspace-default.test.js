@@ -94,7 +94,7 @@ describe('main workspace restore precedence', () => {
     ],
     [
       'worker',
-      ['ready', 'blocked', 'in-progress', 'resolved', 'closed'],
+      ['ready', 'blocked', 'in-progress', 'resolved', 'closed', 'deferred'],
       false
     ],
     [
@@ -102,7 +102,11 @@ describe('main workspace restore precedence', () => {
       ['ready', 'blocked', 'in-progress', 'resolved', 'deferred', 'closed'],
       true
     ],
-    ['worker', ['ready', 'blocked', 'in-progress', 'resolved', 'closed'], true],
+    [
+      'worker',
+      ['ready', 'blocked', 'in-progress', 'resolved', 'closed', 'deferred'],
+      true
+    ],
     ['monitor', [], true]
   ])(
     'subscribes %s once after restore (lanes=%j, settings=%s)',
@@ -173,6 +177,13 @@ describe('main workspace restore precedence', () => {
       expect(
         list_calls.map((/** @type {[string, any]} */ [, payload]) => payload.id)
       ).toEqual(lanes.map((lane) => `tab:${view}:${lane}`));
+      // 구독 종류도 같은 순서로 선다 — 보류 선반의 `deferred-issues`가 워커 탭
+      // 구독에 실제로 들어 있는지는 id가 아니라 이 줄이 말한다 (UI-p7s2 §3.1).
+      expect(
+        list_calls.map(
+          (/** @type {[string, any]} */ [, payload]) => payload.type
+        )
+      ).toEqual(lanes.map((lane) => `${lane}-issues`));
       expect(
         CLIENT.send.mock.calls.filter(
           (/** @type {[string, any]} */ [type]) =>

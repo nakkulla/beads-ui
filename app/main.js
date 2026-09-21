@@ -116,7 +116,10 @@ const WORKER_SUBS = [
   ['tab:worker:blocked', 'blocked-issues'],
   ['tab:worker:in-progress', 'in-progress-issues'],
   ['tab:worker:resolved', 'resolved-issues'],
-  ['tab:worker:closed', 'closed-issues']
+  ['tab:worker:closed', 'closed-issues'],
+  // 보류 선반의 재료 (UI-p7s2 §3.1). Board가 퇴역하면 이 구독의 유일한 소비자가
+  // 워커 탭이고, 탭이 활성일 때만 사는 생명주기는 다른 다섯과 같다.
+  ['tab:worker:deferred', 'deferred-issues']
 ];
 
 /** Worker-owned client id for session-completed closed issues. */
@@ -1835,6 +1838,9 @@ export function bootstrap(root_element) {
       // 모니터에 넘기는 것과 같은 함수다.
       switchWorkspace: (root_dir) => handleWorkspaceChange(root_dir),
       openDoc,
+      // Board 필터 바가 쓰던 것과 같은 콜백 (UI-p7s2 §4) — 툴바 버튼과
+      // `Cmd/Ctrl+N` 단축키가 한 다이얼로그를 연다.
+      onNewIssue: () => new_issue_dialog.open(),
       doneRange: worker_done_range,
       onDoneRangeChange: (range) => {
         void setWorkerDoneRange(range);

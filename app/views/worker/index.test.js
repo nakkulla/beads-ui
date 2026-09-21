@@ -7691,7 +7691,14 @@ describe('candidate display filter — view (UI-ki09)', () => {
         window.localStorage.getItem('beads-ui.worker.candidate-filter') ||
           'null'
       )
-    ).toEqual({ show_blocked: true, readiness: 'ready', routes: [] });
+    ).toEqual({
+      show_blocked: true,
+      readiness: 'ready',
+      routes: [],
+      priorities: [],
+      type: '',
+      labels: []
+    });
   });
 
   test('restores a stored filter when the view is created', () => {
@@ -12758,7 +12765,7 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
     ).toBe(null);
   });
 
-  test('excludes worker, plain, and malformed closed comments', async () => {
+  test('stands worker, plain, and malformed closed issues as 닫힘 rows', async () => {
     const now = Date.now();
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:closed', [
@@ -12812,7 +12819,15 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
     const mount = renderDone(queueOf(), stores, transport);
     await flush();
 
-    expect(doneIds(mount)).toEqual([]);
+    expect(doneIds(mount).sort()).toEqual([
+      'MALFORMED',
+      'PLAIN',
+      'WORKER-REPORT'
+    ]);
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="WORKER-REPORT"]')
+        ?.textContent
+    ).not.toContain('세션 작업');
   });
 
   test('keeps the worker done row when a session report duplicates its bead', async () => {
@@ -12899,7 +12914,11 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
     await flush();
 
     expect(transport).toHaveBeenCalledTimes(1);
-    expect(doneIds(mount)).toEqual([]);
+    expect(doneIds(mount)).toEqual(['RETRY-SESSION']);
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="RETRY-SESSION"]')
+        ?.textContent
+    ).not.toContain('세션 작업');
 
     queueStore.set(queueOf({ revision: 2 }));
     await flush();
@@ -12916,6 +12935,10 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
 
     expect(transport).toHaveBeenCalledTimes(2);
     expect(doneIds(mount)).toEqual(['RETRY-SESSION']);
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="RETRY-SESSION"]')
+        ?.textContent
+    ).toContain('세션 작업');
   });
 
   test('orders worker and session completion rows by their shared completion time', async () => {
@@ -16885,14 +16908,17 @@ describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
     return mount;
   }
 
-  test('places the search input last in the toolbar ops group', () => {
+  test('places the search input just before the new-issue button', () => {
     const mount = mountWithQueue();
 
     const ops = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-ctrl__ops')
     );
 
-    expect(ops.lastElementChild?.className).toBe('worker-search');
+    expect(
+      /** @type {HTMLElement} */ (ops.lastElementChild?.previousElementSibling)
+        ?.className
+    ).toBe('worker-search');
   });
 
   test('dims candidate cards the query does not match', () => {
@@ -17229,7 +17255,10 @@ describe('worker 후보 route 필터 (UI-q1tg §3.2)', () => {
     ).toEqual({
       show_blocked: false,
       readiness: 'all',
-      routes: ['spec_backed']
+      routes: ['spec_backed'],
+      priorities: [],
+      type: '',
+      labels: []
     });
   });
 
@@ -17347,5 +17376,190 @@ describe('views/worker 숨김과 lifecycle (UI-hhn9 §6)', () => {
     expect(types).toContain('input');
     expect(types).toContain('keydown');
     removed.mockRestore();
+  });
+});
+
+describe('보류 선반·새 이슈·필터 줄 (UI-p7s2 §3·§4·§6)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {any[]} deferred_issues
+   * @param {Record<string, any>} [view_options]
+   * @returns {HTMLElement}
+   */
+  function mountShelf(deferred_issues, view_options = {}) {
+    const stores = seedCandidates();
+    seed(stores, 'tab:worker:deferred', deferred_issues);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn(),
+      ...view_options
+    });
+    return mount;
+  }
+
+  test('draws no 보류 section when nothing is deferred', () => {
+    const mount = mountShelf([]);
+
+    expect(mount.querySelector('.worker-deferred')).toBe(null);
+  });
+
+  test('summarizes the shelf with its filtered count', () => {
+    const mount = mountShelf([
+      { id: 'DF-1', title: '보류 하나', status: 'deferred', updated_at: 2 },
+      { id: 'DF-2', title: '보류 둘', status: 'deferred', updated_at: 1 }
+    ]);
+
+    expect(
+      mount.querySelector('.worker-deferred__summary')?.textContent?.trim()
+    ).toBe('보류 2');
+  });
+
+  test('keeps the shelf collapsed without a stored preference', () => {
+    const mount = mountShelf([
+      { id: 'DF-1', title: '보류 하나', status: 'deferred', updated_at: 2 }
+    ]);
+
+    expect(
+      /** @type {HTMLDetailsElement} */ (
+        mount.querySelector('.worker-deferred')
+      ).open
+    ).toBe(false);
+  });
+
+  test('restores an open shelf from localStorage', () => {
+    window.localStorage.setItem('bdui.worker.deferred-open', '1');
+
+    const mount = mountShelf([
+      { id: 'DF-1', title: '보류 하나', status: 'deferred', updated_at: 2 }
+    ]);
+
+    expect(
+      /** @type {HTMLDetailsElement} */ (
+        mount.querySelector('.worker-deferred')
+      ).open
+    ).toBe(true);
+  });
+
+  test('stores the shelf open state when the summary is clicked', () => {
+    const mount = mountShelf([
+      { id: 'DF-1', title: '보류 하나', status: 'deferred', updated_at: 2 }
+    ]);
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-deferred__summary')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(window.localStorage.getItem('bdui.worker.deferred-open')).toBe('1');
+  });
+
+  test('draws deferred cards without the place button', () => {
+    window.localStorage.setItem('bdui.worker.deferred-open', '1');
+
+    const mount = mountShelf([
+      { id: 'DF-1', title: '보류 하나', status: 'deferred', updated_at: 2 }
+    ]);
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card--deferred')
+    );
+    expect(card.dataset.beadId).toBe('DF-1');
+    expect(card.querySelector('.worker-card__place')).toBe(null);
+  });
+
+  test('calls onNewIssue when the toolbar button is clicked', () => {
+    const onNewIssue = vi.fn();
+    const mount = mountShelf([], { onNewIssue });
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-new-issue')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(onNewIssue).toHaveBeenCalledTimes(1);
+  });
+
+  test('offers four periods in the done-range select', () => {
+    window.localStorage.setItem(
+      'beads-ui.worker.lane-collapsed',
+      JSON.stringify({ lanes: { done: false }, areas: {} })
+    );
+
+    const mount = mountShelf([]);
+
+    const values = Array.from(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('.worker-done-range')
+      ).options
+    ).map((option) => option.value);
+
+    expect(values).toEqual(['today', '7d', '30d', 'all']);
+  });
+
+  test('lists a done row label in the label filter popover', async () => {
+    const stores = seedCandidates();
+    const closed_at = Date.now();
+    seed(stores, 'tab:worker:closed', [
+      {
+        id: 'CL-1',
+        title: '닫힌 이슈',
+        status: 'closed',
+        closed_at,
+        updated_at: closed_at,
+        comment_count: 0,
+        labels: ['release']
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-filter__labels-btn')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    const labels = Array.from(
+      mount.querySelectorAll('.worker-filter__label-check')
+    ).map((el) => /** @type {HTMLElement} */ (el).dataset.label);
+
+    expect(labels).toContain('release');
+  });
+
+  test('stores a toggled priority chip in the filter state', () => {
+    const mount = mountShelf([]);
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-filter__priority[data-priority="1"]')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('beads-ui.worker.candidate-filter') ||
+          'null'
+      ).priorities
+    ).toEqual([1]);
+  });
+
+  test('narrows the candidates to the selected type', () => {
+    const mount = mountShelf([]);
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.worker-filter__type')
+    );
+
+    select.value = 'bug';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('beads-ui.worker.candidate-filter') ||
+          'null'
+      ).type
+    ).toBe('bug');
   });
 });

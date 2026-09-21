@@ -184,7 +184,130 @@ export function toggleRouteFilter(routes, value) {
 }
 
 /**
- * @typedef {{ show_blocked: boolean, readiness: 'all'|'ready'|'not_ready', routes: string[] }} CandidateFilter
+ * The five 우선순위 필터 chips (UI-p7s2 §6). 다중 선택이고 빈 배열이 "전체"다.
+ *
+ * @type {ReadonlyArray<{ value: number, label: string }>}
+ */
+export const PRIORITY_FILTER_OPTIONS = [
+  { value: 0, label: 'P0' },
+  { value: 1, label: 'P1' },
+  { value: 2, label: 'P2' },
+  { value: 3, label: 'P3' },
+  { value: 4, label: 'P4' }
+];
+
+/**
+ * The 타입 필터 vocabulary (UI-p7s2 §6). Board 필터 바가 쓰던 다섯 값 그대로이고, 빈
+ * 문자열이 "전체"다.
+ *
+ * @type {ReadonlyArray<{ value: string, label: string }>}
+ */
+export const TYPE_FILTER_OPTIONS = [
+  { value: '', label: '타입' },
+  { value: 'bug', label: 'bug' },
+  { value: 'feature', label: 'feature' },
+  { value: 'task', label: 'task' },
+  { value: 'epic', label: 'epic' },
+  { value: 'chore', label: 'chore' }
+];
+
+/**
+ * Normalize the stored 우선순위 필터 down to the contract's values (UI-p7s2 §6). route
+ * 필터와 같은 규칙이다 — 모르는 값은 그 값만 버리고 중복은 접는다.
+ *
+ * @param {unknown} value
+ * @returns {number[]}
+ */
+export function normalizePriorityFilter(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  /** @type {Set<number>} */
+  const allowed = new Set(
+    PRIORITY_FILTER_OPTIONS.map((option) => option.value)
+  );
+  /** @type {number[]} */
+  const priorities = [];
+  for (const entry of value) {
+    if (
+      typeof entry === 'number' &&
+      allowed.has(entry) &&
+      !priorities.includes(entry)
+    ) {
+      priorities.push(entry);
+    }
+  }
+  return priorities;
+}
+
+/**
+ * Result of toggling one 우선순위 chip (UI-p7s2 §6). route 칩과 같은 토글 규칙이다.
+ *
+ * @param {number[]} priorities
+ * @param {number} value
+ * @returns {number[]}
+ */
+export function togglePriorityFilter(priorities, value) {
+  const current = normalizePriorityFilter(priorities);
+  return current.includes(value)
+    ? current.filter((entry) => entry !== value)
+    : normalizePriorityFilter([...current, value]);
+}
+
+/**
+ * The stored 타입 필터. 어휘 밖의 값은 "전체"로 접는다 (UI-p7s2 §6).
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function normalizeTypeFilter(value) {
+  return typeof value === 'string' &&
+    TYPE_FILTER_OPTIONS.some((option) => option.value === value)
+    ? value
+    : '';
+}
+
+/**
+ * The stored 라벨 필터. 문자열이 아닌 항목만 버리고 중복은 접는다 — 라벨은 열린
+ * 어휘라 "모르는 값"이라는 판정 자체가 없다 (UI-p7s2 §6).
+ *
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+export function normalizeLabelFilter(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  /** @type {string[]} */
+  const labels = [];
+  for (const entry of value) {
+    if (
+      typeof entry === 'string' &&
+      entry.length > 0 &&
+      !labels.includes(entry)
+    ) {
+      labels.push(entry);
+    }
+  }
+  return labels;
+}
+
+/**
+ * Result of toggling one 라벨 checkbox (UI-p7s2 §6).
+ *
+ * @param {string[]} labels
+ * @param {string} value
+ * @returns {string[]}
+ */
+export function toggleLabelFilter(labels, value) {
+  const current = normalizeLabelFilter(labels);
+  return current.includes(value)
+    ? current.filter((entry) => entry !== value)
+    : normalizeLabelFilter([...current, value]);
+}
+
+/**
+ * @typedef {{ show_blocked: boolean, readiness: 'all'|'ready'|'not_ready', routes: string[], priorities?: number[], type?: string, labels?: string[] }} CandidateFilter
  */
 
 /**
@@ -198,7 +321,11 @@ export const CANDIDATE_FILTER_DEFAULT = {
   readiness: 'all',
   // 빈 배열은 "전체"다 (§3.2): route 필터를 한 번도 만지지 않은 사용자에게 이
   // 축은 아무것도 감추지 않는다.
-  routes: []
+  routes: [],
+  // 우선순위·타입·라벨 세 축도 같은 규칙이다 (UI-p7s2 §6).
+  priorities: [],
+  type: '',
+  labels: []
 };
 
 /**
@@ -276,7 +403,10 @@ const DONE_KIND_LABELS = {
  *   gate_open?: boolean,
  *   consumer_id?: string|null,
  *   recent_complete?: boolean,
- *   search_match?: boolean
+ *   search_match?: boolean,
+ *   issue_type?: string,
+ *   deferred?: boolean,
+ *   filter_match?: boolean
  * }} LaneItem
  */
 
@@ -295,6 +425,8 @@ const DONE_KIND_LABELS = {
  * @property {string} badge
  * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
  * 점유 ghost 행도 직렬 레인의 항목이므로 다른 레인 항목과 같은 판정을 받는다.
+ * @property {boolean} [filter_match] - 우선순위·타입·라벨 필터와의 일치
+ * (UI-p7s2 §6). 같은 이유로 ghost 행도 같은 판정을 받는다.
  */
 
 /**
@@ -371,10 +503,16 @@ const DONE_KIND_LABELS = {
  * @property {LaneItem[]} runnable_all - Filter 이전의 실행가능 목록. 의존성
  * 패널의 후보 모집단은 여기서 나온다 (UI-j92s §6.1): 필터는 보기를 좁힐 뿐
  * 의존을 걸 수 있는 이슈를 줄이지 않는다.
- * @property {{ blocked: number, readiness: number, route: number }} runnable_hidden -
+ * @property {{ blocked: number, readiness: number, route: number, priority: number, type: number, label: number }} runnable_hidden -
  * `blocked`는 blocked 토글이, `readiness`는 준비도 필터가, `route`는 route
- * 필터가 각각 걸러 낸 카드 수다. 필터 바가 이 수를 자기 토글 옆에 적어 좁힌
+ * 필터가, `priority`·`type`·`label`은 UI-p7s2 §6의 세 축이 각각 걸러 낸 카드
+ * 수다. 세는 대상은 후보 레인과 보류 선반이다(UI-p7s2 §6) — 다른 레인은
+ * 숨기지 않고 흐린다. 필터 바가 이 수를 자기 조작 옆에 적어 좁힌
  * 대가를 드러낸다.
+ * @property {LaneItem[]} deferred - 보류 선반의 관측 행 (UI-p7s2 §3). 후보와
+ * 같은 우선순위·타입·라벨 필터·검색을 받고 그 숨김 개수에 들되 준비도·route
+ * 필터에는 들어가지 않고, 정렬은 어댑터가 정한 `updated_at` 내림차순 그대로다. 모니터 스냅샷에는 재료가
+ * 없으므로 빈 배열이다 (fail-quiet).
  * @property {MonitorRunnableSection[]} runnable_sections - `updated_flat`에서는
  * 빈 배열이다 (섹션 자체를 만들지 않는다).
  * @property {boolean} runnable_flat
@@ -2573,10 +2711,59 @@ function searchMatcher(query) {
  * @param {(item: LaneItem) => boolean} matches
  */
 function tagSearchMatches(model, matches) {
+  const { buckets, occupant_buckets } = laneItemBuckets(model);
+  for (const bucket of buckets) {
+    for (const item of bucket) {
+      item.search_match = matches(item);
+    }
+  }
+  for (const bucket of occupant_buckets) {
+    for (const occupant of bucket) {
+      occupant.search_match = matches(
+        /** @type {LaneItem} */ (/** @type {unknown} */ (occupant))
+      );
+    }
+  }
+}
+
+/**
+ * Tag every lane item with the 우선순위·타입·라벨 필터 verdict (UI-p7s2 §6).
+ * 후보·보류는 이미 숨김으로 걸러졌으므로 여기서 받는 값은 언제나 `true`이고,
+ * 실제로 읽히는 것은 대기·실행 중·PR 대기·완료 행의 `false`다 — 그 레인들은
+ * 숨기면 직렬 순번과 슬롯 점유가 어긋나므로 검색어와 같은 흐림을 쓴다.
+ *
+ * @param {LaneModel} model
+ * @param {(item: LaneItem) => boolean} matches
+ */
+function tagFilterMatches(model, matches) {
+  const { buckets, occupant_buckets } = laneItemBuckets(model);
+  for (const bucket of buckets) {
+    for (const item of bucket) {
+      item.filter_match = matches(item);
+    }
+  }
+  for (const bucket of occupant_buckets) {
+    for (const occupant of bucket) {
+      occupant.filter_match = matches(
+        /** @type {LaneItem} */ (/** @type {unknown} */ (occupant))
+      );
+    }
+  }
+}
+
+/**
+ * Every rendered lane item of one model, grouped so a per-item verdict
+ * (`search_match`·`filter_match`) reaches the copies that actually get drawn.
+ *
+ * @param {LaneModel} model
+ * @returns {{ buckets: LaneItem[][], occupant_buckets: MonitorOccupant[][] }}
+ */
+function laneItemBuckets(model) {
   /** @type {LaneItem[][]} */
   const buckets = [
     model.runnable,
     model.runnable_all,
+    model.deferred,
     model.queue,
     model.running,
     model.pr_wait,
@@ -2597,18 +2784,7 @@ function tagSearchMatches(model, matches) {
       occupant_buckets.push(lane.occupants);
     }
   }
-  for (const bucket of buckets) {
-    for (const item of bucket) {
-      item.search_match = matches(item);
-    }
-  }
-  for (const bucket of occupant_buckets) {
-    for (const occupant of bucket) {
-      occupant.search_match = matches(
-        /** @type {LaneItem} */ (/** @type {unknown} */ (occupant))
-      );
-    }
-  }
+  return { buckets, occupant_buckets };
 }
 
 /**
@@ -2666,6 +2842,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
   /** @type {Map<string, string>} */
   /** @type {LaneItem[]} */
   const runnable = [];
+  /** @type {LaneItem[]} */
+  const deferred = [];
   /** @type {LaneItem[]} */
   const running = [];
   /** @type {LaneItem[]} */
@@ -4012,6 +4190,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
         updated_at: entry.updated_at ?? undefined,
         status: typeof entry.status === 'string' ? entry.status : undefined,
         labels: Array.isArray(entry.labels) ? entry.labels : [],
+        // 타입·우선순위 필터의 재료 (UI-p7s2 §6). 어댑터 행이 bd 원본 필드를
+        // 실어 오므로 레인은 옮기기만 한다 — 없으면 키를 만들지 않는다.
+        ...(typeof entry.issue_type === 'string' && entry.issue_type.length > 0
+          ? { issue_type: entry.issue_type }
+          : {}),
+        ...(typeof entry.priority === 'number'
+          ? { priority: entry.priority }
+          : {}),
         spec_id: typeof entry.spec_id === 'string' ? entry.spec_id : '',
         // 발행 판정은 서버 투영이 소유한다 (UI-vb7u §3) — 레인은 재계산하지
         // 않고 그 필드만 읽는다.
@@ -4106,6 +4292,68 @@ export function buildLanes(workspaces, workspaces_state, options) {
         done: true
       });
     }
+
+    // 보류 선반 (UI-p7s2 §3.1). `claimed`를 읽지도 쓰지도 않는다 — deferred
+    // bead는 어느 레인의 구성원도 아니고, 후보 레인의 배제 판정과도 무관하다.
+    // 정렬은 어댑터가 이미 `updated_at` 내림차순으로 정했다.
+    for (const entry of Array.isArray(workspace.deferred)
+      ? workspace.deferred
+      : []) {
+      const bead_id = entry && entry.bead_id;
+      if (typeof bead_id !== 'string' || bead_id.length === 0) {
+        continue;
+      }
+      const deferred_workflow =
+        entry.workflow && typeof entry.workflow === 'object'
+          ? entry.workflow
+          : null;
+      const deferred_route =
+        (deferred_workflow &&
+          typeof deferred_workflow.route === 'string' &&
+          deferred_workflow.route) ||
+        (typeof entry.route === 'string' && entry.route.length > 0
+          ? entry.route
+          : null);
+      const deferred_exec_chips =
+        entry.exec_pins && typeof entry.exec_pins === 'object'
+          ? execChipsFor(objectOf(state), entry.exec_pins, deferred_route)
+          : null;
+      deferred.push({
+        ...base(bead_id),
+        title: entry.title || titles[bead_id] || bead_id,
+        // 보류 카드는 후보 카드와 같은 렌더러를 쓰므로 레인 토큰도 후보의 것이다
+        // (ADR 0014) — 변형은 `variant: 'deferred'` 하나뿐이다.
+        lane: 'candidate',
+        reason: '',
+        draggable: false,
+        done: false,
+        badges: [],
+        alert: false,
+        usage: null,
+        deferred: true,
+        // 자격을 묻지 않는 선반이다 — 준비도 칩도 `[↴ 대기로]`도 서지 않는다.
+        queue_placeable: false,
+        labels: Array.isArray(entry.labels) ? entry.labels : [],
+        ...(typeof entry.issue_type === 'string' && entry.issue_type.length > 0
+          ? { issue_type: entry.issue_type }
+          : {}),
+        ...(typeof entry.priority === 'number'
+          ? { priority: entry.priority }
+          : {}),
+        ...(entry.created_at ? { created_at: entry.created_at } : {}),
+        ...(entry.updated_at ? { updated_at: entry.updated_at } : {}),
+        status: typeof entry.status === 'string' ? entry.status : undefined,
+        spec_id: typeof entry.spec_id === 'string' ? entry.spec_id : '',
+        published: entry.published === true,
+        workflow: /** @type {any} */ (
+          deferred_workflow ||
+            (deferred_route
+              ? { route: deferred_route, chips: { route: deferred_route } }
+              : null)
+        ),
+        ...(deferred_exec_chips ? { exec_chips: deferred_exec_chips } : {})
+      });
+    }
   }
 
   // Board live store가 아는 이슈 필드를 모든 레인 행에 덧씌운다 (§4.1) — 지금
@@ -4114,6 +4362,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   if (overlay_by_key.size > 0) {
     for (const item of [
       ...runnable,
+      ...deferred,
       ...queue,
       ...running,
       ...pr_wait,
@@ -4125,6 +4374,20 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }
       if (typeof overlay.priority === 'number') {
         item.priority = overlay.priority;
+      }
+      // 타입·라벨 필터의 재료 (UI-p7s2 §6). 자기 재료를 이미 싣고 온 행(후보·
+      // 보류·닫힘)은 덮지 않는다 — 오버레이는 서버 큐 스냅샷에서 온 행의 빈
+      // 자리를 메우는 원천이다.
+      if (
+        typeof overlay.issue_type === 'string' &&
+        overlay.issue_type.length > 0 &&
+        typeof item.issue_type !== 'string'
+      ) {
+        item.issue_type = overlay.issue_type;
+      }
+      // 빈 배열도 옮긴다 — "라벨 없음"이 확인된 사실이고, 배열 부재만 모름이다.
+      if (Array.isArray(overlay.labels) && !Array.isArray(item.labels)) {
+        item.labels = overlay.labels;
       }
       if (typeof overlay.from_id === 'string' && overlay.from_id.length > 0) {
         item.from_id = overlay.from_id;
@@ -4477,7 +4740,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const model = {
     runnable,
     runnable_all: runnable,
-    runnable_hidden: { blocked: 0, readiness: 0, route: 0 },
+    runnable_hidden: {
+      blocked: 0,
+      readiness: 0,
+      route: 0,
+      priority: 0,
+      type: 0,
+      label: 0
+    },
+    deferred,
     runnable_sections: [],
     runnable_flat:
       candidate_sort === 'updated_flat' || candidate_sort === 'as_given',
@@ -4721,6 +4992,45 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const routePass = (item) =>
     filter_routes.length === 0 ||
     filter_routes.includes(routeFilterValueOf(item));
+  // 우선순위·타입·라벨 세 축 (UI-p7s2 §6). **판정할 필드가 없는 행은 일치로
+  // 본다** — 서버 큐 스냅샷에서 온 행은 오버레이가 닿지 않으면 그 필드를 아예
+  // 모르고, 모름을 불일치로 읽으면 대기 레인이 통째로 흐려진다 (fail-quiet).
+  const filter_priorities = normalizePriorityFilter(
+    candidate_filter.priorities
+  );
+  const filter_type = normalizeTypeFilter(candidate_filter.type);
+  const filter_labels = normalizeLabelFilter(candidate_filter.labels);
+  /** @param {LaneItem} item */
+  const priorityPass = (item) =>
+    filter_priorities.length === 0 ||
+    typeof item.priority !== 'number' ||
+    filter_priorities.includes(item.priority);
+  /** @param {LaneItem} item */
+  const typePass = (item) =>
+    filter_type === '' ||
+    typeof item.issue_type !== 'string' ||
+    item.issue_type.length === 0 ||
+    item.issue_type === filter_type;
+  /** @param {LaneItem} item */
+  // 라벨은 배열의 **부재**만 모름이다 — 빈 배열은 bd가 확인한 "라벨 없음"이고
+  // Board와 같이 라벨 필터에 걸린다.
+  const labelPass = (item) =>
+    filter_labels.length === 0 ||
+    !Array.isArray(item.labels) ||
+    filter_labels.some((label) => item.labels?.includes(label));
+  /**
+   * The three axes folded into one verdict. 후보·보류에서는 숨김의 일부이고, 나머지
+   * 레인에서는 `filter_match`(흐림)의 값이다.
+   *
+   * @param {LaneItem} item
+   * @returns {boolean}
+   */
+  const fieldFiltersPass = (item) =>
+    priorityPass(item) && typePass(item) && labelPass(item);
+  const field_filters_active =
+    filter_priorities.length > 0 ||
+    filter_type !== '' ||
+    filter_labels.length > 0;
   {
     // Worker 규칙 (UI-ki09 `applyCandidateFilter`): 한 조작이 감춘 수는 "그
     // 조작만 풀면 나타날 행"이다. 두 필터에 **모두** 걸린 행은 어느 수에도
@@ -4731,16 +5041,34 @@ export function buildLanes(workspaces, workspaces_state, options) {
     let hidden_blocked = 0;
     let hidden_readiness = 0;
     let hidden_route = 0;
+    let hidden_priority = 0;
+    let hidden_type = 0;
+    let hidden_label = 0;
     for (const item of visible) {
       const by_blocked = blockedPass(item);
       const by_readiness = readinessPass(item);
       const by_route = routePass(item);
-      if (by_blocked && by_readiness && by_route) {
+      const by_priority = priorityPass(item);
+      const by_type = typePass(item);
+      const by_label = labelPass(item);
+      if (
+        by_blocked &&
+        by_readiness &&
+        by_route &&
+        by_priority &&
+        by_type &&
+        by_label
+      ) {
         kept.push(item);
         continue;
       }
       const hidden_by =
-        (by_blocked ? 0 : 1) + (by_readiness ? 0 : 1) + (by_route ? 0 : 1);
+        (by_blocked ? 0 : 1) +
+        (by_readiness ? 0 : 1) +
+        (by_route ? 0 : 1) +
+        (by_priority ? 0 : 1) +
+        (by_type ? 0 : 1) +
+        (by_label ? 0 : 1);
       if (hidden_by > 1) {
         continue;
       }
@@ -4748,15 +5076,50 @@ export function buildLanes(workspaces, workspaces_state, options) {
         hidden_blocked += 1;
       } else if (!by_readiness) {
         hidden_readiness += 1;
-      } else {
+      } else if (!by_route) {
         hidden_route += 1;
+      } else if (!by_priority) {
+        hidden_priority += 1;
+      } else if (!by_type) {
+        hidden_type += 1;
+      } else {
+        hidden_label += 1;
       }
     }
     visible = kept;
+    // 보류 선반은 준비도·route·blocked를 묻지 않고 세 축만 받는다 (§3.1) — 숨김
+    // 개수는 후보와 같은 per_control 산식으로 같은 세 수에 더한다 (§6).
+    /** @type {LaneItem[]} */
+    const kept_deferred = [];
+    for (const item of deferred) {
+      const by_priority = priorityPass(item);
+      const by_type = typePass(item);
+      const by_label = labelPass(item);
+      if (by_priority && by_type && by_label) {
+        kept_deferred.push(item);
+        continue;
+      }
+      const hidden_by =
+        (by_priority ? 0 : 1) + (by_type ? 0 : 1) + (by_label ? 0 : 1);
+      if (hidden_by > 1) {
+        continue;
+      }
+      if (!by_priority) {
+        hidden_priority += 1;
+      } else if (!by_type) {
+        hidden_type += 1;
+      } else {
+        hidden_label += 1;
+      }
+    }
+    model.deferred = kept_deferred;
     model.runnable_hidden = {
       blocked: hidden_blocked,
       readiness: hidden_readiness,
-      route: hidden_route
+      route: hidden_route,
+      priority: hidden_priority,
+      type: hidden_type,
+      label: hidden_label
     };
   }
 
@@ -4846,6 +5209,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const matchesSearch = searchMatcher(options ? options.search : undefined);
   if (matchesSearch) {
     tagSearchMatches(model, matchesSearch);
+  }
+  // 필터 흐림도 같은 자리다 (UI-p7s2 §6): 세 축을 하나도 쓰지 않으면 키를 아예
+  // 달지 않으므로 필터를 만지지 않은 화면과 Monitor 탭의 렌더는 그대로다.
+  if (field_filters_active) {
+    tagFilterMatches(model, fieldFiltersPass);
   }
 
   return model;

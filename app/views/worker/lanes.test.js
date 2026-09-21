@@ -3473,6 +3473,44 @@ describe('worker templates are unchanged without the monitor options', () => {
     );
   });
 
+  test('omits the place button from a deferred-variant card', () => {
+    const card = shape(
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'UI-d1',
+          title: '보류 카드',
+          lane: 'candidate',
+          draggable: false,
+          queue_placeable: false
+        }),
+        null,
+        { variant: 'deferred' }
+      )
+    );
+
+    expect(card).toContain('worker-card--deferred');
+    expect(card).not.toContain('↴ 대기로');
+  });
+
+  test('omits the readiness chip from a deferred-variant card', () => {
+    const card = shape(
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'UI-d2',
+          title: '보류 카드',
+          lane: 'candidate',
+          draggable: false,
+          queue_placeable: false,
+          blocked: true
+        }),
+        null,
+        { variant: 'deferred' }
+      )
+    );
+
+    expect(card).not.toContain('data-chip-key="readiness"');
+  });
+
   test('renders the same DOM whether the options object is omitted or empty', () => {
     const item = /** @type {any} */ ({
       id: 'UI-a4',

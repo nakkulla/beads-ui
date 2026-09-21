@@ -6187,6 +6187,75 @@ html[data-theme='dark'] {
   color: var(--text-dim);
 }
 
+/* 우선순위 묶음 (UI-p7s2 §6): route 묶음과 같은 치수다 — 세 묶음이 같은
+   `.worker-filter__chip` 토큰을 쓰므로 간격이 다르면 한 줄 안에서 여러 문법이
+   사는 것으로 읽힌다. */
+.worker-filter__priorities {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+/* 라벨 조작은 버튼 하나 + 그 아래 열리는 체크 목록이다. 팝오버는 필터 줄이
+   높이를 얻지 않도록 흐름에서 빼고, 기준 상자가 이 래퍼다. */
+.worker-filter__labels {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.worker-filter__labels-pop {
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + var(--sp-4));
+  left: 0;
+  display: flex;
+  max-height: 240px;
+  flex-direction: column;
+  gap: var(--sp-2);
+  overflow-y: auto;
+  padding: var(--sp-6);
+}
+
+.worker-filter__label-option {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+}
+
+/* 보류 선반 (UI-p7s2 §3.2): 후보 카드 목록 뒤에 서는 접힌 구역. 기본은 접힘이고
+   펼쳐도 후보 레인의 일부로 읽히도록 카드와 같은 간격을 쓴다. */
+.worker-deferred {
+  margin-top: var(--sp-6);
+  border-top: 1px solid var(--border-panel);
+  padding-top: var(--sp-6);
+}
+
+.worker-deferred__summary {
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: var(--fs-chip);
+}
+
+.worker-deferred__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  margin-top: var(--sp-6);
+}
+
+/* 보류 카드: route tint도 준비도 칩도 없는 선반 행이다. 실행 불가 카드와 달리
+   "지금 못 간다"가 아니라 "지금 안 한다"이므로 경고 음영이 아니라 전체 감쇠 하나로
+   말한다. */
+.worker-card--deferred {
+  border-color: var(--border-panel);
+  opacity: 0.7;
+}
+
 .worker-pane__empty {
   padding: var(--sp-8);
   color: var(--text-dim);

@@ -130,12 +130,12 @@ describe('normalizeDoneRange', () => {
     expect(normalizeDoneRange('7d')).toBe('7d');
   });
 
-  test("widens a stored '30d' to '7d'", () => {
-    expect(normalizeDoneRange('30d')).toBe('7d');
+  test("keeps a stored '30d' (UI-p7s2 §5)", () => {
+    expect(normalizeDoneRange('30d')).toBe('30d');
   });
 
-  test("widens a stored 'all' to '7d'", () => {
-    expect(normalizeDoneRange('all')).toBe('7d');
+  test("keeps a stored 'all' (UI-p7s2 §5)", () => {
+    expect(normalizeDoneRange('all')).toBe('all');
   });
 
   test("reads an unknown or absent value as '7d'", () => {
@@ -143,13 +143,18 @@ describe('normalizeDoneRange', () => {
     expect(normalizeDoneRange(null)).toBe('7d');
   });
 
-  test('done options offer exactly the two supported periods in order', () => {
-    expect(DONE_RANGE_OPTIONS.map((o) => o.value)).toEqual(['today', '7d']);
+  test('done options offer the four closed-range periods in order', () => {
+    expect(DONE_RANGE_OPTIONS.map((o) => o.value)).toEqual([
+      'today',
+      '7d',
+      '30d',
+      'all'
+    ]);
   });
 });
 
 describe('DONE_RANGE_OPTIONS short labels', () => {
-  test('carries the narrow-viewport label for both ranges', () => {
+  test('carries the narrow-viewport label for every range', () => {
     const shorts = DONE_RANGE_OPTIONS.map((option) => [
       option.value,
       option.short
@@ -157,7 +162,9 @@ describe('DONE_RANGE_OPTIONS short labels', () => {
 
     expect(shorts).toEqual([
       ['today', '오늘'],
-      ['7d', '7일']
+      ['7d', '7일'],
+      ['30d', '30일'],
+      ['all', '전체']
     ]);
   });
 });
