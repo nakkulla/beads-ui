@@ -55,7 +55,7 @@ Board가 지금 가진 것과 워커 탭의 현황은 다음과 같다.
 
 **deferred — 선택: 후보 레인 아래의 접힌 "보류" 구역(§3).** 대안 (a) Board의 모달 팝업 이식: 팝업은 열어야 보이고 워커 탭엔 여는 자리(Board 필터 바)가 없다. 대안 (b) 여섯 번째 레인: 화면 폭을 항상 나눠 갖는데 deferred는 가끔 들여다보는 선반이다(Board 스펙의 판단과 같다). 접힌 구역은 후보 레인 안에서 "지금 안 하는 것"으로 읽히고 개수만 상시 보인다.
 
-**완료 기간 — 선택: 워커 완료 레인의 어휘를 `CLOSED_RANGE_OPTIONS`로 넓히고 구독 `since`를 그대로 넘긴다(§5).** 대안 서버 스냅샷 보존 확대는 Worker 완료 행(attempt 기록)의 보존 창을 늘리는 서버 변경이라 범위가 크다. 세션 완료 행은 이미 `closed-issues` 구독 `since`로 오므로 어휘만 넓히면 된다.
+**완료 기간 — 선택: 워커 완료 레인의 어휘를 `CLOSED_RANGE_OPTIONS`로 넓히고, 닫힌 이슈를 보고서 유무와 무관하게 완료 레인에 합친다(§5).** 어휘만 넓히는 것으로는 부족하다: 지금 `workspace-adapter.js sessionDoneRows()`는 `closed-issues` 구독 행 중 댓글이 있고 `get-comments`로 `lane === 'session'` 완료 보고서가 확인된 이슈만 완료 행으로 만들므로, 보고서 없는 닫힌 이슈와 스냅샷 보존 창 밖의 옛 Worker 완료 이슈는 기간을 넓혀도 계속 빠진다. 대안 서버 스냅샷 보존 확대는 Worker 완료 행(attempt 기록)의 보존 창을 늘리는 서버 변경이라 범위가 크고, 보고서 없는 닫힌 이슈는 그래도 빠진다. 선택안은 클라이언트 합치기 규칙 하나로 두 누락을 함께 없앤다.
 
 **필터 — 선택: 기존 `worker-filter` 줄에 세 축을 더하고 `CANDIDATE_FILTER_KEY` 객체를 확장한다(§6).** Board의 `<select>`와 라벨 팝오버 형태를 워커의 칩·팝오버 문법에 맞춘다.
 
@@ -87,7 +87,11 @@ Board가 지금 가진 것과 워커 탭의 현황은 다음과 같다.
 
 - `app/data/closed-range.js`: `DONE_RANGE_OPTIONS`를 `CLOSED_RANGE_OPTIONS`와 같은 네 값(`today`·`7d`·`30d`·`all`)으로 넓히고 `short` 라벨(`오늘`·`7일`·`30일`·`전체`)을 유지한다. `DoneRange` typedef는 `ClosedRange`의 별칭이 되고 `normalizeDoneRange`는 `isClosedRange`로 검증해 알 수 없는 값만 `7d`로 접는다(저장값 `30d`/`all`을 더 이상 좁히지 않는다).
 - `main.js workerClosedSpec()`은 `closedRangeSince(worker_done_range)`를 이미 넘기므로 `all`은 `since` 없는 구독, `30d`는 30일 전 `since`가 된다. 변경 없음.
-- 완료 레인의 Worker 완료 행(attempt 기록)은 서버 스냅샷 보존 창 안의 것만 온다. 창 밖의 닫힌 Bead는 `closed-issues` 구독으로만 오므로 실행 사실 칩 없는 세션 완료 행으로 선다 — 기존 fail-quiet 규칙(재료 없는 칩은 그리지 않는다) 그대로이며 각주를 달지 않는다.
+- **완료 레인 합치기 규칙.** 완료 레인은 (a) 서버 스냅샷의 Worker 완료 행(`q.done`, attempt 기록, 보존 창 안)과 (b) `closed-issues` 구독의 닫힌 이슈 중 (a)에 없는 것의 합집합이다. 중복 제거는 `root_dir` 안 이슈 `id` 기준이고 (a)가 이긴다. (b)의 각 행은 `sessionDoneRows()`의 기존 `get-comments` 조회로 **분류만** 한다:
+  - 세션 완료 보고서(`lane === 'session'`)가 확인되면 지금과 같은 **세션 완료 행** — 세션 배지, `작업` 시간(in_progress 시작~닫힘), 슬롯 5 실행 사실.
+  - 그 밖(댓글 없음, 보고서가 세션 lane이 아님, 조회 실패, 조회 대기 중)은 **닫힘 행** — `done: true`, 세션 배지 없음, `작업` 시간 없음, 실행 사실 칩 없음. ID·제목·route 칩·`완료 <시각>`(`closed_at`)·의존 칩만 선다. 출처를 모르는 행에 세션 배지를 붙이지 않는다는 것이 이 행의 규칙이다. 조회가 끝나 세션 보고서로 판명되면 기존 `invalidate()` 재렌더로 세션 완료 행으로 바뀐다.
+  - `comment_count`가 0이면 조회 없이 바로 닫힘 행이다(지금은 이 행을 통째로 건너뛴다).
+- 보존 창 밖의 옛 Worker 완료 이슈는 (b)로만 오고 그 보고서는 `lane === 'worker'`이므로 닫힘 행으로 선다. 각주는 달지 않는다.
 - Board Closed 칸의 `CLOSED_RANGE_KEY`·`CLOSED_CLIENT_ID` 저장값은 §7과 함께 사라진다.
 
 ## 6. 우선순위·타입·라벨 필터
@@ -100,8 +104,9 @@ Board가 지금 가진 것과 워커 탭의 현황은 다음과 같다.
 | 타입 | `<select class="worker-sort">` `타입 / bug / feature / task / epic / chore` | `type: string` | `type === '' \|\| item.issue_type === type` |
 | 라벨 | `라벨 ▾` 버튼 + 팝오버 체크 목록(기존 `chip-popover` 문법) — 옵션은 후보·보류 행 라벨의 합집합, 표시 정책과 무관하게 전부 | `labels: string[]` | `labels.length === 0 \|\| labels.some(l => item.labels.includes(l))` |
 
-- `lane-model.js`의 `CandidateFilter`가 세 키를 얻고, 후보와 보류(§3) 양쪽에 적용된다. 숨김 개수는 `per_control` 산식(UI-mfm1 §3.1)으로 `hidden.priority`·`hidden.type`·`hidden.label`을 더하고, 각 조작 옆에 `숨김 N`을 지금 문법대로 보인다.
-- 후보 행이 `issue_type`·`priority`를 싣는지 확인한다: 어댑터 행은 `bd` 원본 필드를 보존하므로 `issue_type`을 그대로 옮기고, 서버 `RunnableItem`에는 `issue_type`을 더한다(모니터도 같은 필터를 쓸 수 있게 재료를 맞춘다; 모니터 필터 조작 추가 자체는 비목표).
+- **적용 범위는 Board와 같이 모든 레인이다.** Board는 세 필터를 다섯 칸 전부에 적용했으므로(`board/index.js` 필터 적용은 칸을 가리지 않는다) 워커에서도 후보·보류·대기(병렬·직렬)·실행 중·PR 대기·완료 전부에 적용한다. 다만 표현은 레인 성격을 따른다: 후보·보류는 **숨김**(기존 준비도·route 필터와 같은 `per_control` 산식으로 `hidden.priority`·`hidden.type`·`hidden.label`을 세고 각 조작 옆에 `숨김 N`), 대기·실행 중·PR 대기·완료는 검색어와 같은 **흐림**(`search_match`와 같은 자리에 `filter_match: false` → `is-dimmed`) — 대기 행을 숨기면 직렬 순번과 큐 위치가 화면에서 어긋나고 실행 중 타일을 숨기면 슬롯 점유가 보이지 않기 때문이다. `lane-model.js`의 `CandidateFilter`가 세 키를 얻고 `buildLanes`가 모든 레인 항목에 같은 판정을 적용한다.
+- **재료.** 어댑터 행(후보·보류·세션 완료·닫힘)은 `bd` 원본 필드의 `issue_type`·`priority`·`labels`를 그대로 옮긴다. 대기·실행 중·PR 대기·Worker 완료 행은 서버 큐 스냅샷에서 오므로 워커 탭의 `bead_overlay`(`lane-model.js` "이슈 필드 오버레이" `{ priority?, from_id?, metadata?, route?, rollup? }`)에 `issue_type?`·`labels?`를 더해 얻는다 — 오버레이 원천은 워커 탭이 이미 구독하는 in-progress·resolved·closed 컬럼이다. 판정할 필드가 없는 행은 **일치로** 본다(숨기거나 흐리지 않는다, fail-quiet). 서버 `RunnableItem`은 바꾸지 않는다(모니터 필터는 비목표).
+- **라벨 옵션.** 팝오버 목록은 워커 탭이 지금 그리는 모든 레인 행(후보·보류·대기·실행 중·PR 대기·완료)의 라벨 합집합이고 표시 정책과 무관하게 전부 보인다.
 - 정규화: 저장값이 배열·문자열이 아니거나 모르는 값이면 그 값만 버린다(기존 route 필터의 규칙과 같다).
 
 ## 7. Board 퇴역
@@ -136,9 +141,10 @@ Board가 지금 가진 것과 워커 탭의 현황은 다음과 같다.
 - `app/router.test.js`: `#/board`·`#/board?issue=X`·`#/issue/X`·`#/issues`·`#/epics`·빈 해시·모르는 해시가 모두 `worker`로 가고 `issue` 파라미터가 보존된다.
 - `app/views/nav.test.js`: 탭 목록에 Board가 없고 기본 활성이 worker다.
 - `app/views/worker/workspace-adapter.test.js`: `tab:worker:deferred` 행이 `deferred`로 나오고 `runnable`에 없다.
-- `app/views/worker/lane-model.test.js`: `deferred`는 준비도·route 필터·숨김 개수에 들지 않고 검색·우선순위·타입·라벨 필터에는 든다; 세 필터의 `per_control` 숨김 개수.
+- `app/views/worker/lane-model.test.js`: `deferred`는 준비도·route 필터·숨김 개수에 들지 않고 검색·우선순위·타입·라벨 필터에는 든다; 세 필터의 `per_control` 숨김 개수; 라벨 필터가 대기·실행 중·PR 대기·완료 행에 `filter_match: false`를 싣고 숨기지 않는다; `issue_type`이 없는 대기 행은 타입 필터에 일치로 남는다; 오버레이의 `issue_type`·`labels`가 대기 행에 실린다.
+- `app/views/worker/workspace-adapter.test.js`(완료): 댓글 0개인 닫힌 이슈가 닫힘 행으로 선다(세션 배지·`작업` 없음); 보고서 `lane === 'worker'`인 옛 닫힌 이슈가 닫힘 행으로 선다; 같은 id가 `q.done`에 있으면 닫힘 행을 만들지 않는다; 세션 보고서가 확인되면 세션 완료 행이다.
 - `app/views/worker/lanes.test.js`: `variant: 'deferred'` 카드에 `[↴ 대기로]`·준비도 칩이 없다.
-- `app/views/worker/index.test.js`: 보류 구역이 0개면 없고, N개면 `보류 N` summary·접힘 기본·localStorage 열림 복원; `+ 새 이슈` 클릭이 `onNewIssue`를 부른다; 완료 기간 셀렉트에 네 값.
+- `app/views/worker/index.test.js`: 보류 구역이 0개면 없고, N개면 `보류 N` summary·접힘 기본·localStorage 열림 복원; `+ 새 이슈` 클릭이 `onNewIssue`를 부른다; 완료 기간 셀렉트에 네 값; 라벨 팝오버 목록이 완료 행의 라벨을 포함한다.
 - `app/data/closed-range.test.js`: `normalizeDoneRange('30d') === '30d'`, `('all') === 'all'`, 모르는 값 → `7d`.
 - `app/main.worker-queue-sync.test.js` 또는 새 e2e: 워커 탭 진입 시 구독 6개(`deferred-issues` 포함), Board 구독 없음.
 - 저장소 규칙: `app/views/board/`가 사라진 뒤 `grep -rn "views/board" app server --include='*.js'`가 0건.
@@ -149,7 +155,7 @@ Board가 지금 가진 것과 워커 탭의 현황은 다음과 같다.
 
 - 드래그로 상태 변경, 카드 키보드 탐색(사용자 결정으로 제외).
 - 모니터 탭의 보류 구역(서버 스냅샷에 deferred 행이 없다 — 필요해지면 `runnable-cache`에 deferred 집합을 더하는 별도 작업).
-- 모니터 탭의 우선순위·타입·라벨 필터 조작(재료만 맞춘다).
+- 모니터 탭의 우선순위·타입·라벨 필터(조작도 서버 재료도 더하지 않는다).
 - 새 이슈 다이얼로그 자체의 변경.
 - Worker 완료 행 보존 창 확대.
 
