@@ -49,8 +49,9 @@ scope:
 
 비교 탭 세션 행(`app/views/compare/index.js`의 `attemptRowTemplate`)은 점·제목·결과
 문구·문제 칩·시간·비용만 그리고 **실행 구성은 한 글자도 보이지 않는다**. 재료는 이미
-클라이언트에 있다 — `wireRows`는 `attempt`·`human_summaries`·`representative`만
-떼어내므로 `orchestration`·`impl_actor`·`composition`이 그대로 실려 온다.
+클라이언트에 있다 — `wireRows`가 떼어내는 것은 `attempt`·`human_summaries`·
+`representative`와, 일반 비교 행에 한해 `verify_source`뿐이라
+`orchestration`·`impl_actor`·`composition`은 그대로 실려 온다.
 
 ## 2. 결정
 
@@ -93,7 +94,9 @@ scope:
 - 이름: 2.2의 라벨.
 
 `main`·`missing`·`delegated`의 키와 이름은 바뀌지 않는다. 이름이 같은 `혼합 n종`
-카드가 둘 이상 설 수 있으며, 그 카드들의 구성 줄 툴팁이 서로를 가른다(2.4).
+카드가 둘 이상 설 수 있다. 그룹 카드 머리의 구성 줄은 같은 라벨을 쓰므로 그 둘을
+가르지 못하며, 구분은 카드를 펼친 뒤 세션 행의 구성 줄 툴팁이 한다(2.4). 그룹 카드
+쪽 툴팁은 바꾸지 않는다.
 
 ### 2.4 비교 탭 세션 행에 구성 줄을 둔다
 
@@ -115,9 +118,9 @@ scope:
 
 `formatImplActorChip`은 `mixed`에서 `text = impl_actor.label`인 칩을 돌려주고,
 툴팁에 기존 첫 줄(`워커(구현 위임) — 이 attempt의 보존 영수증에 기록된 실제 구현
-주체`) 아래로 `parts`를 `<unit>: <label>` 한 줄씩 잇는다. 칩이 서는 자리는 기존 4b
-워커 칩 슬롯 그대로이며 새 슬롯·새 줄은 만들지 않는다(ADR 0014). `missing`과 필드
-부재는 지금처럼 `null`이라 칩이 서지 않는다.
+주체`) 아래로 `parts`를 `<unit>: <label>` 한 줄씩 잇는다. 칩이 서는 자리는 슬롯 5의
+기존 워커 exec 칩 그대로이며 새 슬롯·새 줄은 만들지 않는다(ADR 0014, 카드 문법 스펙
+§5.1). `missing`과 필드 부재는 지금처럼 `null`이라 칩이 서지 않는다.
 
 ### 2.6 프리셋 역추론은 바꾸지 않는다
 
@@ -191,8 +194,8 @@ attempt·workflow 상태 어휘를 늘리지 않는다(ADR 0012). `app/protocol.
 
 - 전제: ADR 0012 — 기존 workflow 영수증을 소비할 뿐 새 metadata 키·상태 어휘를
   만들지 않고, 전송 전용 파생 필드로만 표현한다.
-- 전제: ADR 0014 — 완료 타일의 워커 칩은 기존 4b 슬롯을 그대로 쓰고 새 슬롯을
-  만들지 않는다.
+- 전제: ADR 0014 — 완료 타일의 워커 칩은 슬롯 5의 기존 exec 칩 자리를 그대로 쓰고
+  새 슬롯을 만들지 않는다.
 - 전제: ADR UI-j10d — 완료 행은 그 완료를 만든 attempt의 실행 사실을 말하며 현재
   핀·전역 기본값으로 대체하지 않는다.
 - 유닛이 엇갈린 실행을 `missing`에서 떼어내 `mixed`로 드러낸다: 되돌리기 어려움
