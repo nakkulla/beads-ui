@@ -1,7 +1,8 @@
 ---
 id: 52
 title: Worker 한도 자동 전환은 사용자가 러너별로 고른 허용 계정 집합 안에서만 attempt 단위로 일어나고 자동 재개 cap을 소비하지 않는다
-status: accepted
+status: superseded
+superseded_by: UI-inge
 date: 2026-09-09
 summary: "Worker 한도 자동 전환은 사용자가 러너별로 고른 허용 계정 집합 안에서만 attempt 단위로 일어나고 자동 재개 cap을 소비하지 않으며, 선제 전환은 사용자 임계 이상의 상속 계정에만 적용되고 Bead pin은 덮지 않는다."
 spec: docs/superpowers/specs/2026-09-09-usage-limit-account-switch-policy-design.md
