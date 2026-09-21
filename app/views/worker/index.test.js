@@ -3,6 +3,7 @@ import { createSessionLogStore } from '../../data/session-log-store.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
+import { failureSentence } from './failure-labels.js';
 import {
   activityBadge,
   autoResolutionBadge,
@@ -593,6 +594,20 @@ describe('views/worker', () => {
     const label = mergeWaitingText('completion_waiting:future_phase');
 
     expect(label).toBe(null);
+  });
+
+  test('names a holding completion wait', () => {
+    const label = mergeWaitingText('completion_waiting:holding');
+
+    expect(label).toBe('검증 실패 — 수정 push 대기');
+  });
+
+  test('explains the pre_merge_hold failure class', () => {
+    const sentence = failureSentence('pre_merge_hold');
+
+    expect(sentence).toBe(
+      '머지 전 검증이 실패했습니다 — 수정 커밋을 push하면 자동으로 다시 검증합니다.'
+    );
   });
 
   test('renders external waits and counts only open rows in the wait header', () => {
@@ -6791,6 +6806,161 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     );
 
     expect(mount.querySelector('.worker-mini__resolve')).not.toBeNull();
+  });
+
+  /**
+   * @param {Record<string, any>} [over]
+   */
+  function holdingCompletion(over = {}) {
+    return {
+      root_bead_id: 'RD-1',
+      phase: 'holding',
+      subject_role: 'root',
+      subject_bead_id: 'RD-1',
+      active_attempt_id: null,
+      failure_stage: 'verify',
+      failure_reason: 'script_failed',
+      terminal_reason: null,
+      head_sha: 'head-sha',
+      base_sha: 'base-sha',
+      log_path: '/state/verify.log',
+      hold: {
+        cause: 'verify_failure',
+        reason: 'script_failed',
+        summary: 'npm run build exited 1',
+        operation_id: 'verify-1',
+        log_path: '/state/verify.log',
+        head_sha: 'head-sha',
+        at: 1
+      },
+      ...over
+    };
+  }
+
+  test('alerts the held row with its push-wait badge', () => {
+    const { mount } = mountWith(
+      queueWithGate(RED, {
+        completion_status: { 'RD-1': holdingCompletion() }
+      })
+    );
+
+    const badge = mount.querySelector('.worker-mini__badge--alert');
+
+    expect(badge?.textContent).toBe('검증 실패 — 수정 push 대기');
+  });
+
+  test('offers 세션에서 해결 on a holding row', () => {
+    const { mount } = mountWith(
+      queueWithGate(RED, {
+        completion_status: { 'RD-1': holdingCompletion() }
+      })
+    );
+
+    const button = mount.querySelector('.worker-mini__resolve');
+
+    expect(button?.textContent?.trim()).toBe('세션에서 해결');
+  });
+
+  test('preserves the verify gate merge action while holding', () => {
+    const { mount, queueStore } = mountWith(
+      queueWithGate(RED, {
+        completion_status: { 'RD-1': holdingCompletion({ phase: 'gating' }) }
+      })
+    );
+    const gating_button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    const gating_state = [gating_button.textContent, gating_button.disabled];
+
+    queueStore.set(
+      queueWithGate(RED, {
+        completion_status: { 'RD-1': holdingCompletion() }
+      })
+    );
+    const holding_button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+
+    expect([holding_button.textContent, holding_button.disabled]).toEqual(
+      gating_state
+    );
+  });
+
+  test('leaves an otherwise enabled merge unlocked while holding', () => {
+    const { mount } = mountWith(
+      queueWithGate(GREEN, {
+        completion_status: { 'RD-1': holdingCompletion() }
+      })
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+
+    expect(button.disabled).toBe(false);
+  });
+
+  test('leaves queue cancellation unlocked while holding', () => {
+    const { mount } = mountWith(
+      queueWithGate(RED, {
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        completion_status: { 'RD-1': holdingCompletion() }
+      })
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge-cancel')
+    );
+
+    expect(button.disabled).toBe(false);
+  });
+
+  test('explains the hold with ordered evidence and one log path', () => {
+    const { mount } = mountWith(
+      queueWithGate(RED, {
+        completion_status: { 'RD-1': holdingCompletion() }
+      })
+    );
+
+    const title =
+      mount
+        .querySelector('.worker-mini__badge--alert')
+        ?.getAttribute('title') || '';
+
+    expect(title).toContain(
+      [
+        failureSentence('script_failed') || '머지 전 검증이 실패했습니다.',
+        'npm run build exited 1',
+        '로그 /state/verify.log',
+        '수정 커밋을 push하면 자동으로 다시 검증합니다'
+      ].join('\n')
+    );
+    expect(title.split('/state/verify.log')).toHaveLength(2);
+    expect(title).toContain('head head-sha');
+    expect(title).toContain('base base-sha');
+    expect(title).toContain('verify · script_failed');
+  });
+
+  test('explains a legacy holding snapshot without hold evidence', () => {
+    const { mount } = mountWith(
+      queueWithGate(RED, {
+        completion_status: { 'RD-1': holdingCompletion({ hold: undefined }) }
+      })
+    );
+
+    const title = mount
+      .querySelector('.worker-mini__badge--alert')
+      ?.getAttribute('title');
+
+    expect(title).toContain('머지 전 검증이 실패했습니다.');
+  });
+
+  test('keeps the verify gate badge on an unenrolled row', () => {
+    const { mount } = mountWith(queueWithGate(RED));
+
+    const badge = mount.querySelector('.worker-mini__badge--alert');
+
+    expect(badge?.textContent).toBe('검증 실패');
   });
 
   test('offers 세션에서 해결 on a failed discard row', () => {

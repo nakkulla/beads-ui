@@ -28,18 +28,25 @@ import { providerClock } from '../../app/views/worker/gate-labels.js';
 import { buildLanes } from '../../app/views/worker/lane-model.js';
 import { prWaitProgress } from '../../app/views/worker/pr-wait-progress.js';
 import { validateAdmission } from '../worker/admission.js';
+import { createAutoMerge } from '../worker/auto-merge.js';
 import {
   createCompletionActionDriver,
   createCompletionIntentCoordinator,
   decideCompletionAction
 } from '../worker/completion-intent.js';
+import {
+  evaluateMergeGate,
+  observedReviewReceiptState
+} from '../worker/merge-gate.js';
 import { createMergeQueue } from '../worker/merge-queue.js';
 import { createPrActions } from '../worker/pr-actions.js';
 import { createPrObservationStore } from '../worker/pr-observations.js';
+import { createPrPoller } from '../worker/pr-poller.js';
 import { createQuickfixLanding } from '../worker/quickfix-landing.js';
+import { repoOpsVerifyReceiptState } from '../worker/repo-ops-display.js';
 import { makeFixtureSpawn } from '../worker/runner/fixture-spawn.js';
 import { createRunner } from '../worker/runner/index.js';
-import { createWorkerRuntime } from '../worker/runtime.js';
+import { createWorkerRuntime, getWorkerRuntime } from '../worker/runtime.js';
 import { QUEUE_GRACE_MS, createScheduler } from '../worker/scheduler.js';
 import { createVerifier } from '../worker/verify.js';
 
@@ -1025,6 +1032,181 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
 });
 
 describe('worker e2e — completion intent post-merge recovery', () => {
+  test('automatically holds a verify failure and merges its corrected head', async () => {
+    const runtime = getWorkerRuntime();
+    const store = runtime.queueStore;
+    const bead_id = 'UI-held';
+    const base_sha = 'b'.repeat(40);
+    let head_sha = 'a'.repeat(40);
+    const pr_url = 'https://github.com/o/r/pull/19';
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'held-initial',
+        bead_id,
+        repo: repo_dir,
+        target_base: 'main',
+        base_oid: base_sha,
+        runner: 'claude'
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id,
+      attempt_id: 'held-initial',
+      patch: {
+        status: 'done',
+        finished_at: 1,
+        verify_result: { ok: true, reason: 'ok', pr_url, pr_number: 19 }
+      }
+    });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    const ensureVerify = vi.fn(async (/** @type {any} */ candidate) => ({
+      ok: true,
+      operation_id: `verify-${candidate.head_sha}`,
+      timeout_ms: 1000
+    }));
+    const poller = createPrPoller({
+      workspace: WS,
+      repo: repo_dir,
+      store,
+      observations: runtime.prObservations,
+      getSubscriberCount: () => 0,
+      gh: {
+        prDetail: async () => ({
+          state: 'ok',
+          data: {
+            number: 19,
+            url: pr_url,
+            state: 'OPEN',
+            mergeable: 'MERGEABLE',
+            merge_state_status: 'CLEAN',
+            head_ref: bead_id,
+            base_ref: 'main',
+            head_sha
+          }
+        })
+      },
+      readIssue: async () => ({ metadata: { route: 'quick_fix' } }),
+      resolveBase: async () =>
+        /** @type {any} */ ({ ok: true, base: 'main', base_oid: base_sha }),
+      repoOperations: {
+        hasConfig: async () => ({
+          ok: true,
+          present: true,
+          verify_script_path: 'repo-ops/script/verify'
+        }),
+        ensureVerify,
+        waitForTerminal: async (_id, options) => ({
+          state: options.head_sha.startsWith('a') ? 'failed' : 'succeeded',
+          ok: !options.head_sha.startsWith('a'),
+          reason: options.head_sha.startsWith('a') ? 'script_failed' : 'ok',
+          head_sha: options.head_sha,
+          effective_base_sha: base_sha,
+          output_tail: 'build failed',
+          log_path: `/logs/verify-${options.head_sha}.log`
+        }),
+        verifyReceipt: () => null
+      }
+    });
+    const policy = {
+      declaration_state: /** @type {const} */ ('present'),
+      base_sha
+    };
+    const enroller = createAutoMerge({
+      workspace: WS,
+      store,
+      verifyState: () => policy
+    });
+    const comment = vi.fn(async () => {});
+    const hold = vi.fn(async () => {});
+    const driver = createCompletionActionDriver({
+      workspace: WS,
+      store,
+      bd: { comment },
+      notify: { hold, needsHuman: vi.fn(async () => {}) },
+      prActions: {
+        completionGate: async () => {
+          const observed = runtime.prObservations.get(WS, bead_id);
+          return {
+            ok: true,
+            target_base: 'main',
+            base_sha,
+            subject: {
+              role: 'root',
+              bead_id,
+              pr_url,
+              head_sha: observed?.pr?.head_sha,
+              base_sha,
+              merged_sha: null
+            },
+            evidence: { verify: observed?.verify },
+            verdict: evaluateMergeGate(observed, {
+              review_receipt_state: observedReviewReceiptState(observed),
+              verify_receipt_state: repoOpsVerifyReceiptState(
+                policy,
+                observed?.verify
+              )
+            })
+          };
+        }
+      }
+    });
+    const coordinator = createCompletionIntentCoordinator({
+      workspace: WS,
+      store,
+      observe: driver.observe,
+      onAction: driver.onAction
+    });
+    const merge = vi.fn(async () => {
+      store.moveToDone(WS, { bead_id });
+      return {
+        ok: true,
+        action: /** @type {const} */ ('merged'),
+        reason: null
+      };
+    });
+    const merge_queue = createMergeQueue({
+      workspace: WS,
+      store,
+      merge,
+      observePr: async () => ({ state: 'MERGED' }),
+      onCompletionResult: driver.onMergeResult
+    });
+
+    await poller.tick();
+    enroller.enroll();
+    await coordinator.reconcile();
+    await driver.commentsIdle();
+    const held = store.snapshot(WS);
+    head_sha = 'c'.repeat(40);
+    await poller.tick();
+    enroller.enroll();
+    await coordinator.reconcile();
+    const released = store.snapshot(WS);
+    await coordinator.reconcile();
+    await merge_queue.kick();
+    await driver.commentsIdle();
+
+    expect(held.completion_intents[bead_id].phase).toBe('holding');
+    expect(held.merge_queue).toEqual([]);
+    expect(released.completion_intents[bead_id]).toMatchObject({
+      phase: 'gating',
+      hold: null,
+      subject: { head_sha }
+    });
+    expect(
+      ensureVerify.mock.calls.map(([candidate]) => candidate.head_sha)
+    ).toEqual(['a'.repeat(40), 'c'.repeat(40)]);
+    expect(comment).toHaveBeenCalledTimes(1);
+    expect(hold).toHaveBeenCalledTimes(1);
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).completion_intents[bead_id].phase).toBe(
+      'completed'
+    );
+  });
   test('yields a long resolver, merges the next PR, then prioritizes the late root', async () => {
     const root_bead_id = 'R-long';
     const next_bead_id = 'R-clean';

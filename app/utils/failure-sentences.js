@@ -57,6 +57,9 @@ export const FAILURE_SENTENCES = Object.freeze({
   // 문장이 있으면 자연히 그쪽에 자리를 내준다. 즉 여기 5종은 "세부를 아직
   // 모르는 카드"의 바닥이지 세부를 가리는 덮개가 아니다.
   verify_red: '머지 후 검증이 실패했습니다.',
+  // Consumer copy of the contract failure_classes.pre_merge_hold class name.
+  pre_merge_hold:
+    '머지 전 검증이 실패했습니다 — 수정 커밋을 push하면 자동으로 다시 검증합니다.',
   cleanup_failed: '머지 후 정리가 끝나지 못했습니다.',
   retry_exhausted: '자동 재시도를 모두 쓰고도 같은 실패가 이어졌습니다.',
   conflict_unresolved: '충돌 해소가 끝나지 못했습니다.',

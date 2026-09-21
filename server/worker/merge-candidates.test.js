@@ -202,6 +202,43 @@ describe('worker/merge-candidates — overlaidPrWait', () => {
 
 /** @type {Array<[string, 'empty'|'ok', null|'fail', string|null]>} */
 describe('worker/merge-candidates — completion repair intake', () => {
+  test.each(['missing', 'sha_stale', 'receipt_stale'])(
+    'excludes a verify %s waiting row',
+    (kind) => {
+      const runtime = getWorkerRuntime();
+      const bead_id = `UI-pending-${kind}`;
+      runtime.prObservations.record(WS, bead_id, {
+        pr: {
+          number: 1,
+          url: 'https://github.com/o/r/pull/1',
+          state: 'OPEN',
+          mergeable: 'MERGEABLE',
+          merge_state_status: 'CLEAN',
+          head_ref: bead_id,
+          head_sha: 'a'.repeat(40),
+          base_ref: 'main'
+        },
+        review_receipt: { state: 'current', head_sha: 'a'.repeat(40) }
+      });
+      if (kind !== 'missing') {
+        runtime.prObservations.recordVerify(WS, bead_id, {
+          effective_base_sha: (kind === 'receipt_stale' ? 'c' : 'b').repeat(40),
+          head_sha: (kind === 'sha_stale' ? 'd' : 'a').repeat(40),
+          ok: false,
+          reason: 'script_failed',
+          at: 1
+        });
+      }
+
+      const result = mergeQueueCandidates(
+        WS,
+        { pr_wait: [{ bead_id }], attempts: {}, cleanup_failed: {} },
+        verifyPolicy('present')
+      );
+
+      expect(result).toEqual([]);
+    }
+  );
   test('excludes a merged external row until cleanup has failed', () => {
     getWorkerRuntime().prObservations.record(WS, 'EXT-1', {
       pr: {
@@ -260,78 +297,84 @@ describe('worker/merge-candidates — completion repair intake', () => {
     expect(result).toEqual([{ bead_id: 'EXT-1', external: true }]);
   });
 
-  test('includes a worker-owned repairable verify failure', () => {
-    const runtime = getWorkerRuntime();
-    runtime.prObservations.record(WS, 'UI-1', {
-      pr: {
-        number: 1,
-        url: 'https://github.com/o/r/pull/1',
-        state: 'OPEN',
-        mergeable: 'MERGEABLE',
-        merge_state_status: 'CLEAN',
-        head_ref: 'UI-1',
+  test.each(['verify_cmd_failed', 'script_failed'])(
+    'enrolls a worker-owned %s verify failure',
+    (reason) => {
+      const runtime = getWorkerRuntime();
+      runtime.prObservations.record(WS, 'UI-1', {
+        pr: {
+          number: 1,
+          url: 'https://github.com/o/r/pull/1',
+          state: 'OPEN',
+          mergeable: 'MERGEABLE',
+          merge_state_status: 'CLEAN',
+          head_ref: 'UI-1',
+          head_sha: 'a'.repeat(40),
+          base_ref: 'main'
+        },
+        review_receipt: { state: 'current', head_sha: 'a'.repeat(40) }
+      });
+      runtime.prObservations.recordVerify(WS, 'UI-1', {
+        effective_base_sha: 'b'.repeat(40),
         head_sha: 'a'.repeat(40),
-        base_ref: 'main'
-      },
-      review_receipt: { state: 'current', head_sha: 'a'.repeat(40) }
-    });
-    runtime.prObservations.recordVerify(WS, 'UI-1', {
-      effective_base_sha: 'b'.repeat(40),
-      head_sha: 'a'.repeat(40),
-      ok: false,
-      reason: 'verify_cmd_failed',
-      at: 1
-    });
+        ok: false,
+        reason,
+        at: 1
+      });
 
-    const result = mergeQueueCandidates(
-      WS,
-      {
-        pr_wait: [{ bead_id: 'UI-1' }],
-        attempts: {},
-        cleanup_failed: {}
-      },
-      verifyPolicy('present')
-    );
-
-    expect(result).toEqual([
-      { bead_id: 'UI-1', external: false, repairable: true }
-    ]);
-  });
-
-  test('does not auto-repair an external red row', () => {
-    const runtime = getWorkerRuntime();
-    runtime.prObservations.record(WS, 'EXT-1', {
-      pr: {
-        number: 2,
-        url: 'https://github.com/o/r/pull/2',
-        state: 'OPEN',
-        mergeable: 'MERGEABLE',
-        merge_state_status: 'CLEAN',
-        head_ref: 'EXT-1',
-        head_sha: 'b'.repeat(40),
-        base_ref: 'main'
-      },
-      review_receipt: { state: 'current', head_sha: 'b'.repeat(40) }
-    });
-    runtime.prObservations.recordVerify(WS, 'EXT-1', {
-      head_sha: 'b'.repeat(40),
-      ok: false,
-      reason: 'verify_cmd_failed',
-      at: 1
-    });
-
-    expect(
-      mergeQueueCandidates(
+      const result = mergeQueueCandidates(
         WS,
         {
-          pr_wait: [{ bead_id: 'EXT-1', external: true }],
+          pr_wait: [{ bead_id: 'UI-1' }],
           attempts: {},
           cleanup_failed: {}
         },
         verifyPolicy('present')
-      )
-    ).toEqual([]);
-  });
+      );
+
+      expect(result).toEqual([
+        { bead_id: 'UI-1', external: false, repairable: true }
+      ]);
+    }
+  );
+
+  test.each(['verify_cmd_failed', 'script_failed'])(
+    'excludes an external %s failure',
+    (reason) => {
+      const runtime = getWorkerRuntime();
+      runtime.prObservations.record(WS, 'EXT-1', {
+        pr: {
+          number: 2,
+          url: 'https://github.com/o/r/pull/2',
+          state: 'OPEN',
+          mergeable: 'MERGEABLE',
+          merge_state_status: 'CLEAN',
+          head_ref: 'EXT-1',
+          head_sha: 'b'.repeat(40),
+          base_ref: 'main'
+        },
+        review_receipt: { state: 'current', head_sha: 'b'.repeat(40) }
+      });
+      runtime.prObservations.recordVerify(WS, 'EXT-1', {
+        head_sha: 'b'.repeat(40),
+        ok: false,
+        reason,
+        at: 1
+      });
+
+      expect(
+        mergeQueueCandidates(
+          WS,
+          {
+            pr_wait: [{ bead_id: 'EXT-1', external: true }],
+            attempts: {},
+            cleanup_failed: {}
+          },
+          verifyPolicy('present')
+        )
+      ).toEqual([]);
+    }
+  );
 
   test('includes a worker-owned repairable post-merge verify failure', () => {
     const runtime = getWorkerRuntime();

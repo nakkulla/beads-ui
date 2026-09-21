@@ -60,7 +60,8 @@ const TITLE = {
   // kinds are told apart by the body's `클래스:` line rather than by their own
   // titles: a push preview that says only which of five internal write paths
   // failed would not tell the reader anything the class line does not.
-  needs_human: `${SENDER} 🚨 사람 필요`
+  needs_human: `${SENDER} 🚨 사람 필요`,
+  hold: `${SENDER} ⏸️ 머지 보류`
 };
 
 /**
@@ -241,6 +242,7 @@ function headline(transition, bead_id, bead_title) {
  *   providerRecovered: (input: { bead_id: string, runner: string, duration_ms: number, resumed_beads?: string[], refusal?: string|null, switched_from?: string|null, switched_to?: string|null, repo?: string|null }) => Promise<void>,
  *   providerAutoResumeDisarmed: (input: { bead_id: string, runner: string, reason: string, repo?: string|null }) => Promise<void>,
  *   needsHuman: (input: NeedsHumanInput) => Promise<void>,
+ *   hold: (input: NeedsHumanInput) => Promise<void>,
  *   waitOverdue: (input: WaitNotificationInput) => Promise<boolean>,
  *   waitActionRequired: (input: WaitNotificationInput) => Promise<boolean>
  * }}
@@ -424,6 +426,48 @@ export function createNotifier(deps) {
     } catch (err) {
       log('wait notification failed: %o', err);
       return false;
+    }
+  }
+
+  /**
+   * Share failure rows while keeping the transition in the headline.
+   *
+   * @param {NeedsHumanInput} input
+   * @param {string} title
+   */
+  async function sendFailure(input, title) {
+    try {
+      const cmd = resolveCmd();
+      if (!cmd) {
+        return;
+      }
+      const bead_title =
+        text(input.title) ?? (await lookupTitle(input.bead_id));
+      const lines = [headline(title, input.bead_id, bead_title)];
+      const failure_class = text(input.failure_class);
+      if (failure_class) {
+        lines.push(`클래스: ${failure_class}`);
+      }
+      const reason = text(input.reason);
+      if (reason) {
+        const detail = firstLine(input.reason_detail);
+        lines.push(`사유: ${reason}${detail ? ` — ${detail}` : ''}`);
+      }
+      const next_action = text(input.next_action);
+      if (next_action) {
+        lines.push(`다음: ${next_action}`);
+      }
+      const pr_url = text(input.pr_url);
+      if (pr_url) {
+        lines.push(pr_url);
+      }
+      const repo = repoLabel(input.repo);
+      if (repo) {
+        lines.push(`리포: ${repo}`);
+      }
+      send(cmd, lines.join('\n'));
+    } catch (err) {
+      log('failure notification failed: %o', err);
     }
   }
 
@@ -724,41 +768,10 @@ export function createNotifier(deps) {
     // the four durable terminal WRITES, so a re-observation pass that finds an
     // existing record sends nothing and a restart cannot produce a burst.
     async needsHuman(input) {
-      try {
-        const cmd = resolveCmd();
-        if (!cmd) {
-          return;
-        }
-        const bead_title =
-          text(input.title) ?? (await lookupTitle(input.bead_id));
-        const lines = [headline(TITLE.needs_human, input.bead_id, bead_title)];
-        const failure_class = text(input.failure_class);
-        if (failure_class) {
-          lines.push(`클래스: ${failure_class}`);
-        }
-        const reason = text(input.reason);
-        if (reason) {
-          const detail = firstLine(input.reason_detail);
-          lines.push(`사유: ${reason}${detail ? ` — ${detail}` : ''}`);
-        }
-        // Supplied by the caller, never derived here: which buttons the failing
-        // row actually draws is the call site's knowledge (§2).
-        const next_action = text(input.next_action);
-        if (next_action) {
-          lines.push(`다음: ${next_action}`);
-        }
-        const pr_url = text(input.pr_url);
-        if (pr_url) {
-          lines.push(pr_url);
-        }
-        const repo = repoLabel(input.repo);
-        if (repo) {
-          lines.push(`리포: ${repo}`);
-        }
-        send(cmd, lines.join('\n'));
-      } catch (err) {
-        log('needsHuman failed: %o', err);
-      }
+      await sendFailure(input, TITLE.needs_human);
+    },
+    async hold(input) {
+      await sendFailure(input, TITLE.hold);
     }
   };
 }

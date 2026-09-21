@@ -237,7 +237,7 @@ export function mergeQueueCandidates(workspace_key, queue, verify_policy) {
     const merged_tier = gate.tier === 'merged';
     const repairable =
       !external &&
-      ((gate.tier === 'verify' && gate.reason === 'verify_cmd_failed') ||
+      ((gate.tier === 'verify' && gate.gate_badge === '검증 실패') ||
         (merged_tier && isCleanupResolutionFailure(cleanup_failed[bead_id])));
     // An EXTERNAL conflict vetoes even a green gate, exactly as the row does
     // (UI-7agi §5): the click-time branch order puts DIRTY before the gate, so
