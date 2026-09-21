@@ -267,6 +267,10 @@ const TICK_MS = 1_000;
  * @property {(id: string) => void} gotoIssue
  * @property {{ get: () => Array<Record<string, any>>|null, getWorkspacesState?: () => Array<Record<string, any>>, subscribe?: (fn: () => void) => () => void }} [pipelineStore]
  * @property {any} [execPresetStore]
+ * @property {(root_dir: string) => void} [openRepoSettings] - 레포 카드 `⚙`가
+ * 여는 설정 다이얼로그 (UI-e1ta §7).
+ * @property {() => void} [closeRepoSettings]
+ * @property {() => string|null} [repoSettingsRoot]
  * @property {any} [sessionLogStore] - 실행중 타일의 `▤ 세션` 드로어가 읽는 라인
  * 스토어 (Worker 탭과 같은 것).
  * @property {{ gotoView: (view: 'worker'|'monitor'|'compare'|'adr') => void }} [router] -
@@ -1690,6 +1694,9 @@ export function createMonitorView(mount_element, options) {
       transport,
       implPresetStore: options.execPresetStore,
       gotoWorkerTab,
+      openSettings: (root_dir) => options.openRepoSettings?.(root_dir),
+      closeSettings: () => options.closeRepoSettings?.(),
+      settingsRoot: () => options.repoSettingsRoot?.() ?? null,
       onFocusChange: (root_dir) => {
         focus_root = root_dir;
         applyFocusClasses();
@@ -2689,15 +2696,6 @@ export function createMonitorView(mount_element, options) {
     },
     pause() {
       stopTick();
-    },
-    /**
-     * Forward a finished bulk run to the deck (UI-nu43 §4.3): the open `⚙`
-     * pane re-reads its repo when that repo was written to.
-     *
-     * @param {Iterable<string>} root_dirs
-     */
-    reloadPanel(root_dirs) {
-      void deck?.reloadPanel(root_dirs);
     },
     clear() {
       stopTick();

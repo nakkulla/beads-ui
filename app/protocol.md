@@ -136,7 +136,9 @@ fresh snapshot. Key splitting and assembly are defined in
 Every visible workspace has a `workspaces_state` row:
 `{ root_dir, name, issue_prefix: string|null, auto_advance, auto_merge, slots, revision, runner_catalog }`
 plus, since UI-eey2 §9.4, the repo-panel control fields:
-`{ serial_lane_count, orchestration_model, orchestration_effort, orchestration_speed, quick_fix_orchestration_model, quick_fix_orchestration_effort, quick_fix_orchestration_speed, execution_defaults, session_defaults, session_defaults_warnings, counts, provider_limit_policy }`.
+`{ serial_lane_count, orchestration_model, orchestration_effort, orchestration_speed, quick_fix_orchestration_model, quick_fix_orchestration_effort, quick_fix_orchestration_speed, execution_defaults, session_defaults, session_defaults_warnings, counts, provider_limit_policy }`
+and, since UI-e1ta §8, the observation fields
+`{ session_defaults_state, workspace_accounts?, applied_exec_preset }`.
 `issue_prefix` comes from that workspace's bd config cache; missing, malformed,
 or temporarily unreadable config is `null`.
 
@@ -180,6 +182,24 @@ already-projected `external_job` reason is `overdue` or `action_required`).
   schedules the next push — exactly the `issue_prefix` contract. A successful
   `set-session-defaults` or `apply-impl-preset-global` invalidates the repo it
   wrote and re-pushes.
+- `session_defaults_state: 'ready'|'pending'` is that layer's LOOKUP state, not
+  its content. `ready` means the empty `session_defaults` above is a confirmed
+  absence; `pending` means the cache was cold or expired and the fill will
+  re-push. A client that reads settings out of this row must not treat a
+  `pending` layer as an absence — that would turn an unread setting into a
+  deletion request (UI-e1ta §3, §8). Older servers omit the key; a client that
+  sees no key reads the values as-is rather than inventing `pending`.
+- `workspace_accounts: { state: 'absent'|'usable'|'unusable', values, warnings }`
+  is that repo's `bd kv workspace_exec_accounts` layer, normalized exactly as
+  `get-workspace-accounts` does. The key is ABSENT on a repo whose read has not
+  landed yet — `absent` is a read result, not the cold state — and the fill
+  schedules the next push. `unusable` means the layer could not be read or
+  parsed, which is not the same fact as having no repo default.
+- `applied_exec_preset: { id, name, revision, applied_at }|null` is the queue's
+  own record of the last fully applied global execution profile, carried
+  verbatim like `provider_limit_policy`. The record's identity is its `id`; the
+  stored `name` is a copy from apply time and may name a preset that has since
+  been renamed or deleted.
 - `counts: { running, pr_wait, queue, runnable, session_active }` counts each
   bead in EXACTLY ONE lane, on the client's exclusive lane priority (`running` >
   `session_active` > `pr_wait` > `queue` ∪ serial lanes > `runnable`).

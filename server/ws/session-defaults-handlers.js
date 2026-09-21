@@ -40,7 +40,10 @@ import {
   log,
   readbackFailureDetail
 } from './context.js';
-import { invalidateSessionDefaults } from './monitor-handlers.js';
+import {
+  invalidateSessionDefaults,
+  invalidateWorkspaceAccounts
+} from './monitor-handlers.js';
 import { targetWorkspaceOf } from './workspace-target.js';
 
 /**
@@ -520,9 +523,10 @@ export async function handleSetWorkspaceAccounts(ws, req) {
       return;
     }
   }
-  // No `invalidateSessionDefaults` here: the monitor's per-repo cache holds
-  // `workflow_session_defaults` only, so dropping it on an account write would
-  // buy a re-read of an untouched key.
+  // The monitor row projects this layer too (UI-e1ta §8): drop its cached
+  // copy so the bulk window observes the account just written instead of the
+  // one the TTL still holds. `workflow_session_defaults` is untouched here.
+  invalidateWorkspaceAccounts(target.root);
   ws.send(
     JSON.stringify(
       makeOk(req, {

@@ -6,13 +6,17 @@
  * execution pane. It never edits the connected workspace: every write names a
  * `root_dir` the user ticked in the shared `적용 대상` fieldset.
  *
- * Neither tab shows what a repo currently holds. Both are edit surfaces for ONE
- * set of values that `[적용]` writes to every ticked repo, so there is no
- * `변경 안 함` anywhere and the banner says as much (UI-628r §2.3–§2.4).
+ * Every tab shows what the ticked repos currently hold (UI-e1ta §3): each row
+ * starts from `bulk-observation.js`'s reading of them, and a row whose repos
+ * disagree — or whose layer one repo has not read yet — stands on nothing and
+ * stays out of the apply until the user touches it. A row that DOES stand on a
+ * value is written untouched, which is UI-628r's contract unchanged.
  *
- * - `워커` is the 24-key execution profile form (`bulk-worker-form.js`); a
- *   preset fills it and the apply takes one of two paths
+ * - `워커` is the 25-row execution profile form (`bulk-worker-form.js`) with its
+ *   own preset bar; a preset fills it and the apply takes one of two paths
  *   (`bulk-preset-apply.js`).
+ * - `세션` is the three interactive-session rows, written per repo with
+ *   `set-session-defaults` (§5).
  * - `계정` is the execution accounts and limit policy form, applied whole
  *   (`bulk-account-apply.js`).
  *
@@ -35,6 +39,7 @@ import {
 import {
   defaultSelectedRoots,
   formatBulkResult,
+  messageOf,
   planBulkApply,
   retryRootsOf,
   runBulkApply
@@ -44,7 +49,19 @@ import {
   accountRowLabel,
   loadAccountCatalog
 } from './account-catalog.js';
-import { BULK_FORM_KEYS, createBulkWorkerForm } from './bulk-worker-form.js';
+import {
+  appliedPresetProjected,
+  observationBadge,
+  observeAppliedPreset,
+  observeKey,
+  observeSet
+} from './bulk-observation.js';
+import {
+  BULK_FORM_KEYS,
+  BULK_FORM_ROW_KEYS,
+  createBulkWorkerForm
+} from './bulk-worker-form.js';
+import { WORKFLOW_MODES } from './session-model.js';
 
 /** Select value for `기본값 사용` (sent as `null`). */
 const USE_DEFAULT = '__bulk_use_default__';
@@ -52,13 +69,21 @@ const USE_DEFAULT = '__bulk_use_default__';
 const DEFAULT_PREEMPT_PCT = '80';
 /** Loading copy while the monitor rows have not arrived. */
 const ROWS_LOADING = '저장소 목록을 불러오는 중입니다';
-/** The one-line warning both tabs carry under `적용 대상` (§3.1). */
+/** The sentinel a `갈림 — 유지`·`미확인 — 유지` option carries (§3). */
+const HOLD = '__bulk_hold__';
+/** What that option is called, by the observation that put it there. */
+const HOLD_LABEL = { mixed: '갈림 — 유지', pending: '미확인 — 유지' };
+/** The one-line contract every tab carries under `적용 대상` (§3.2). */
 const APPLY_BANNER =
-  '화면에 보이는 값이 그대로 쓰입니다 — 손대지 않은 행도 함께 적용됩니다.';
-/** Hint next to the preset select (§3.2). */
-const PRESET_HINT = `고르면 아래 ${BULK_FORM_KEYS.length}행이 그 프리셋 값으로 채워집니다`;
+  '화면에 값이 선 행은 손대지 않아도 그대로 쓰입니다 — 갈림·미확인으로 남은 행만 저장소별 현재 값을 유지합니다.';
+/** Hint next to the preset select (§4.1). */
+const PRESET_HINT = `고르면 아래 ${BULK_FORM_ROW_KEYS.length}행이 그 프리셋 값으로 채워집니다`;
 /** Copy for a runner whose account list could not be read. */
 const CATALOG_MISSING = '계정 목록을 불러올 수 없습니다';
+/** What the read-only `적용된 프리셋` line says for an id nothing names (§4.1). */
+const DELETED_PRESET = '삭제된 프리셋';
+/** What that line says for a repo with no record at all. */
+const NO_APPLIED_PRESET = '없음';
 
 /** @type {ReadonlyArray<'claude'|'codex'>} */
 const RUNNERS = ['claude', 'codex'];
@@ -68,6 +93,33 @@ const ACCOUNT_FIELDS = [
   ['claude_account', 'Claude', 'claude'],
   ['codex_account', 'Codex', 'codex']
 ];
+
+/**
+ * The three rows the `세션` tab draws (§5). `base_sync_accept_local_commits` is
+ * a contract `bool` whose stored `false` and absence are the same fact, so it
+ * carries two values instead of a `기본값 사용` (§5).
+ *
+ * @type {ReadonlyArray<{ key: string, label: string, kind: 'select'|'text', choices: string[], choice_labels?: Record<string, string> }>}
+ */
+const SESSION_ROWS = [
+  {
+    key: 'workflow_mode',
+    label: '모드',
+    kind: 'select',
+    choices: [...WORKFLOW_MODES]
+  },
+  { key: 'bdui_url', label: 'Worker 주소', kind: 'text', choices: [] },
+  {
+    key: 'base_sync_accept_local_commits',
+    label: 'base 동기화',
+    kind: 'select',
+    choices: ['true'],
+    choice_labels: { '': '끔', true: '켬' }
+  }
+];
+
+/** The op every 세션 row is written with; one call per repo (§5). */
+const SESSION_DEFAULTS_OP = 'set-session-defaults';
 
 /**
  * @typedef {Object} RunnerForm
@@ -118,7 +170,7 @@ function freshRunnerForm() {
  * @param {BulkPaneOptions} options
  */
 export function createBulkPane(host, options) {
-  /** @type {'worker'|'account'} */
+  /** @type {'worker'|'session'|'account'} */
   let section = 'worker';
   let destroyed = false;
 
@@ -132,12 +184,26 @@ export function createBulkPane(host, options) {
   let selection_seeded = false;
 
   let preset_choice = '';
+  /** The preset name box, written on every keystroke like the single window. */
+  let preset_name_draft = '';
+  /** The last preset save/delete refusal, shown beside the bar (§9). */
+  /** @type {string} */
+  let preset_error = '';
 
-  /** @type {{ worker: BulkResult[]|null, account: BulkResult[]|null }} */
-  let results = { worker: null, account: null };
-  /** @type {{ section: 'worker'|'account', done: number, total: number }|null} */
+  /** @type {{ worker: BulkResult[]|null, session: BulkResult[]|null, account: BulkResult[]|null }} */
+  let results = { worker: null, session: null, account: null };
+  /** @type {{ section: 'worker'|'session'|'account', done: number, total: number }|null} */
   let running = null;
   let run_token = 0;
+
+  /**
+   * Which account-tab and session-tab fields the user has touched. Keyed by
+   * the row's own id (`claude_account`, `claude.mode`, `workflow_mode`, …) so
+   * one set answers for every control shape (§3.1).
+   *
+   * @type {Set<string>}
+   */
+  const edited = new Set();
 
   /** @type {Record<'claude_account'|'codex_account', string>} */
   const account_values = {
@@ -149,6 +215,9 @@ export function createBulkPane(host, options) {
     claude: freshRunnerForm(),
     codex: freshRunnerForm()
   };
+  /** The 세션 tab's three rows, as the screen holds them. */
+  /** @type {Record<string, string>} */
+  const session_values = {};
 
   /** @type {AccountCatalog|null} */
   let catalog = null;
@@ -183,8 +252,168 @@ export function createBulkPane(host, options) {
       const chosen = selectedRows();
       return chosen.length > 0 ? chosen : mergedRows();
     },
+    // 관측은 고른 저장소만 본다 — 안 고른 저장소의 값은 이 회차의 사실이 아니다.
+    selectedRows: () => selectedRows(),
     onChange: () => doRender()
   });
+
+  /**
+   * Observe one account-layer key across the ticked repos (§6).
+   *
+   * @param {'claude_account'|'codex_account'} key
+   * @returns {import('./bulk-observation.js').Observation}
+   */
+  function observeAccount(key) {
+    return observeKey(selectedRows(), key, 'workspace_accounts');
+  }
+
+  /**
+   * One repo's stored limit policy for a runner, or `null` when the row does
+   * not carry the projection at all.
+   *
+   * @param {Record<string, any>} row
+   * @param {'claude'|'codex'} runner
+   * @returns {Record<string, any>|null}
+   */
+  function policyOf(row, runner) {
+    const policy = isRecord(row.provider_limit_policy)
+      ? row.provider_limit_policy[runner]
+      : null;
+    return isRecord(policy) ? policy : null;
+  }
+
+  /**
+   * Observe one scalar field of a runner's stored limit policy. The policy
+   * rides on the monitor row itself, so it has no lookup state (§3).
+   *
+   * @param {'claude'|'codex'} runner
+   * @param {'mode'|'preempt'} field
+   * @returns {import('./bulk-observation.js').Observation}
+   */
+  function observeLimitField(runner, field) {
+    const projected = selectedRows().map((row) => {
+      const policy = policyOf(row, runner);
+      /** @type {string|null} */
+      let value = null;
+      if (policy && field === 'mode') {
+        value = typeof policy.mode === 'string' ? policy.mode : null;
+      } else if (policy) {
+        value =
+          typeof policy.preempt_pct === 'number'
+            ? String(policy.preempt_pct)
+            : 'off';
+      }
+      return { ...row, __limit_field: value };
+    });
+    return observeKey(projected, '__limit_field', 'queue');
+  }
+
+  /**
+   * Observe one runner's allow SET. Two repos agree only when the members
+   * match exactly (§6).
+   *
+   * @param {'claude'|'codex'} runner
+   */
+  function observeLimitAccounts(runner) {
+    return observeSet(selectedRows(), (row) => {
+      const policy = policyOf(row, runner);
+      return policy && Array.isArray(policy.accounts)
+        ? policy.accounts.filter(
+            (/** @type {unknown} */ key) => typeof key === 'string'
+          )
+        : [];
+    });
+  }
+
+  /**
+   * Observe one 세션 row. All three live in the session-defaults layer, so a
+   * repo that has not read that layer makes the row `미확인` (§5).
+   *
+   * @param {string} key
+   * @returns {import('./bulk-observation.js').Observation}
+   */
+  function observeSession(key) {
+    return observeKey(selectedRows(), key, 'session_defaults');
+  }
+
+  /**
+   * Whether a field stands on a hold rather than a value.
+   *
+   * @param {string} id - The field's own edit id.
+   * @param {{ state: string }} observation
+   * @returns {'mixed'|'pending'|null}
+   */
+  function holdOf(id, observation) {
+    return edited.has(id) ? null : holdOptionOf(observation);
+  }
+
+  /**
+   * Whether the control OFFERS the hold option. An edited control keeps
+   * offering it — re-picking it is how the user withdraws the edit (§3.1) — so
+   * this reads the observation alone.
+   *
+   * @param {{ state: string }} observation
+   * @returns {'mixed'|'pending'|null}
+   */
+  function holdOptionOf(observation) {
+    return observation.state === 'mixed' || observation.state === 'pending'
+      ? /** @type {'mixed'|'pending'} */ (observation.state)
+      : null;
+  }
+
+  /**
+   * Re-read every account-tab and session-tab row the user has not touched
+   * (§3.1). A run in flight freezes the recomputation (§9).
+   */
+  function observeForms() {
+    if (running !== null) {
+      return;
+    }
+    worker_form.observe(false);
+    for (const [key] of ACCOUNT_FIELDS) {
+      if (edited.has(key)) {
+        continue;
+      }
+      const observation = observeAccount(key);
+      account_values[key] =
+        observation.state === 'same' && observation.value !== null
+          ? observation.value
+          : USE_DEFAULT;
+    }
+    for (const runner of RUNNERS) {
+      const form = runner_forms[runner];
+      if (!edited.has(`${runner}.mode`)) {
+        const mode = observeLimitField(runner, 'mode');
+        form.mode =
+          mode.state === 'same' && mode.value === 'wait' ? 'wait' : 'switch';
+      }
+      if (!edited.has(`${runner}.accounts`)) {
+        const accounts = observeLimitAccounts(runner);
+        form.accounts = accounts.state === 'same' ? [...accounts.value] : [];
+      }
+      if (!edited.has(`${runner}.preempt`)) {
+        const preempt = observeLimitField(runner, 'preempt');
+        const numeric =
+          preempt.state === 'same' && preempt.value !== null
+            ? preempt.value
+            : null;
+        form.preempt = numeric !== null && numeric !== 'off' ? 'pct' : 'off';
+        form.pct_text =
+          numeric !== null && numeric !== 'off' ? numeric : DEFAULT_PREEMPT_PCT;
+      }
+    }
+    for (const row of SESSION_ROWS) {
+      if (edited.has(row.key)) {
+        continue;
+      }
+      const observation = observeSession(row.key);
+      if (observation.state === 'same' && observation.value !== null) {
+        session_values[row.key] = observation.value;
+      } else {
+        delete session_values[row.key];
+      }
+    }
+  }
 
   /** Seed the default selection once and drop repos that left the rows. */
   function reconcileRows() {
@@ -236,8 +465,10 @@ export function createBulkPane(host, options) {
   }
 
   /**
-   * The form as a `BulkAccountEdit`. Every field is carried: this tab has no
-   * `변경 안 함`, so the screen's values are what gets written (§2.4).
+   * The form as a `BulkAccountEdit`. Every field that STANDS ON A VALUE is
+   * carried; a field still holding `갈림`이나 `미확인` is omitted, which leaves
+   * each repo's own value alone (§3.2). The edit type is already partial, so
+   * omission needs no new wire shape.
    *
    * @returns {import('../monitor/bulk-account-apply.js').BulkAccountEdit}
    */
@@ -245,24 +476,51 @@ export function createBulkPane(host, options) {
     /** @type {import('../monitor/bulk-account-apply.js').BulkAccountEdit} */
     const edit = { values: {}, patches: {} };
     for (const [key] of ACCOUNT_FIELDS) {
+      if (holdOf(key, observeAccount(key)) !== null) {
+        continue;
+      }
       const value = account_values[key];
       edit.values[key] = value === USE_DEFAULT ? null : value;
     }
     for (const runner of RUNNERS) {
       const form = runner_forms[runner];
       const text = form.pct_text.trim();
-      edit.patches[runner] = {
-        mode: form.mode,
-        accounts: [...form.accounts],
-        preempt_pct:
+      /** @type {Partial<import('../monitor/bulk-account-apply.js').LimitPatch>} */
+      const patch = {};
+      if (
+        holdOf(`${runner}.mode`, observeLimitField(runner, 'mode')) === null
+      ) {
+        patch.mode = form.mode;
+      }
+      if (holdOf(`${runner}.accounts`, observeLimitAccounts(runner)) === null) {
+        patch.accounts = [...form.accounts];
+      }
+      if (!preemptHeld(runner)) {
+        patch.preempt_pct =
           form.preempt === 'off'
             ? null
             : /^-?\d+(\.\d+)?$/.test(text)
               ? Number(text)
-              : NaN
-      };
+              : NaN;
+      }
+      if (Object.keys(patch).length > 0) {
+        edit.patches[runner] = patch;
+      }
     }
     return edit;
+  }
+
+  /**
+   * Whether this runner's preemptive threshold is still on a hold. The number
+   * box follows the select, so a held select sends no `preempt_pct` (§6).
+   *
+   * @param {'claude'|'codex'} runner
+   * @returns {boolean}
+   */
+  function preemptHeld(runner) {
+    return (
+      holdOf(`${runner}.preempt`, observeLimitField(runner, 'preempt')) !== null
+    );
   }
 
   /** @returns {import('../monitor/bulk-preset-apply.js').BulkPlan} */
@@ -294,6 +552,121 @@ export function createBulkPane(host, options) {
     });
   }
 
+  /**
+   * The 세션 tab's payload: the rows that stand on a value, `기본값 사용` rows
+   * included as `null` deletions (§5). `base_sync_accept_local_commits` is a
+   * contract `bool`, so its two screen values are `true` and the deletion.
+   *
+   * @returns {Record<string, string|boolean|null>}
+   */
+  function sessionValues() {
+    /** @type {Record<string, string|boolean|null>} */
+    const out = {};
+    for (const row of SESSION_ROWS) {
+      if (holdOf(row.key, observeSession(row.key)) !== null) {
+        continue;
+      }
+      const value = session_values[row.key];
+      const present = typeof value === 'string' && value.length > 0;
+      if (row.key === 'base_sync_accept_local_commits') {
+        out[row.key] = present ? true : null;
+        continue;
+      }
+      out[row.key] = present ? value : null;
+    }
+    return out;
+  }
+
+  /**
+   * The 세션 tab's plan, in the same shape the two other tabs' plans carry so
+   * one apply button template serves all three.
+   *
+   * @returns {{ targets: Array<Record<string, any>>, disabled_reason: string|null }}
+   */
+  function sessionPlan() {
+    const values = sessionValues();
+    const targets = selectedRows().map((row) => ({
+      root_dir: String(row.root_dir),
+      name: typeof row.name === 'string' ? row.name : String(row.root_dir),
+      values
+    }));
+    /** @type {string|null} */
+    let disabled_reason = null;
+    if (running !== null) {
+      disabled_reason = '적용 중입니다';
+    } else if (targets.length === 0) {
+      disabled_reason = '적용할 저장소를 고르세요';
+    }
+    return { targets, disabled_reason };
+  }
+
+  /**
+   * Write the 세션 rows to each ticked repo, one call at a time — the same
+   * sequential contract the two other tabs run under (§5).
+   *
+   * @param {{ targets: Array<Record<string, any>>, send: (type: string, payload: any) => Promise<any>, onProgress: (progress: { done: number, total: number, results: BulkResult[] }) => void, isCancelled: () => boolean }} input
+   * @returns {Promise<BulkResult[]>}
+   */
+  async function runBulkSessionApply(input) {
+    /** @type {BulkResult[]} */
+    const out = [];
+    for (const target of input.targets) {
+      if (input.isCancelled()) {
+        break;
+      }
+      /** @type {BulkResult} */
+      let result;
+      if (Object.keys(target.values).length === 0) {
+        out.push({
+          root_dir: target.root_dir,
+          name: target.name,
+          state: 'skipped',
+          detail: '값이 선 행이 없습니다'
+        });
+        input.onProgress({
+          done: out.length,
+          total: input.targets.length,
+          results: out
+        });
+        continue;
+      }
+      try {
+        const res = await input.send(SESSION_DEFAULTS_OP, {
+          values: target.values,
+          root_dir: target.root_dir
+        });
+        result =
+          isRecord(res) && res.error === undefined
+            ? {
+                root_dir: target.root_dir,
+                name: target.name,
+                state: 'applied',
+                detail: ''
+              }
+            : {
+                root_dir: target.root_dir,
+                name: target.name,
+                state: 'failed',
+                detail: messageOf(res)
+              };
+      } catch (err) {
+        result = {
+          root_dir: target.root_dir,
+          name: target.name,
+          state: 'failed',
+          detail: messageOf(err)
+        };
+      }
+      out.push(result);
+      input.onProgress({
+        done: out.length,
+        total: input.targets.length,
+        results: out
+      });
+    }
+    return out;
+  }
+
   /** Stop a run in flight: the remaining targets are not sent. */
   function cancelRun() {
     run_token += 1;
@@ -301,12 +674,25 @@ export function createBulkPane(host, options) {
   }
 
   /**
+   * The plan of one tab.
+   *
+   * @param {'worker'|'session'|'account'} run_section
+   * @returns {{ targets: Array<any>, disabled_reason: string|null }}
+   */
+  function planOf(run_section) {
+    if (run_section === 'worker') {
+      return presetPlan();
+    }
+    return run_section === 'session' ? sessionPlan() : accountPlan();
+  }
+
+  /**
    * Run the active tab's plan.
    *
-   * @param {'worker'|'account'} run_section
+   * @param {'worker'|'session'|'account'} run_section
    */
   async function startRun(run_section) {
-    const plan = run_section === 'worker' ? presetPlan() : accountPlan();
+    const plan = planOf(run_section);
     if (plan.disabled_reason !== null || rows().length === 0) {
       return;
     }
@@ -339,10 +725,20 @@ export function createBulkPane(host, options) {
       },
       isCancelled: () => destroyed || token !== run_token
     };
-    const outcome =
-      run_section === 'worker'
-        ? await runBulkApply(input)
-        : await runBulkAccountApply(input);
+    /** @type {BulkResult[]} */
+    let outcome;
+    if (run_section === 'worker') {
+      outcome = await runBulkApply(input);
+    } else if (run_section === 'session') {
+      outcome = await runBulkSessionApply({
+        targets: /** @type {any} */ (targets),
+        send: input.send,
+        onProgress: input.onProgress,
+        isCancelled: input.isCancelled
+      });
+    } else {
+      outcome = await runBulkAccountApply(input);
+    }
     if (token === run_token && !destroyed) {
       running = null;
       results = { ...results, [run_section]: outcome };
@@ -416,7 +812,40 @@ export function createBulkPane(host, options) {
   }
 
   /**
-   * @param {'worker'|'account'} run_section
+   * The badge one observed row carries, or nothing when it stands on its own
+   * value with nothing to explain (§3).
+   *
+   * @param {string} id - The row's edit id.
+   * @param {import('./bulk-observation.js').Observation|{ state: string, value: any, per_repo: any[], pending_count?: number }} observation
+   * @param {(value: string|null) => string} [labelOf]
+   * @returns {TemplateResult|''}
+   */
+  function badgeTemplate(id, observation, labelOf) {
+    if (edited.has(id)) {
+      return html`<span
+        class="settings-dialog__obs settings-dialog__obs--edited"
+        data-bulk-badge=${id}
+        >편집됨</span
+      >`;
+    }
+    const badge = observationBadge(
+      /** @type {any} */ ({ pending_count: 0, ...observation }),
+      labelOf
+    );
+    if (!badge) {
+      return '';
+    }
+    return html`<span
+      class=${`settings-dialog__obs settings-dialog__obs--${badge.state}`}
+      data-bulk-badge=${id}
+      data-bulk-observation=${badge.state}
+      title=${badge.title}
+      >${badge.text}</span
+    >`;
+  }
+
+  /**
+   * @param {'worker'|'session'|'account'} run_section
    * @param {{ targets: unknown[], disabled_reason: string|null }} plan
    * @returns {TemplateResult}
    */
@@ -483,49 +912,353 @@ export function createBulkPane(host, options) {
     doRender();
   }
 
+  /**
+   * Save the screen's 25 rows as a preset: create when nothing is selected,
+   * overwrite the selected one otherwise. Same three ops and the same
+   * `expected_revision` race judgement as the single-repo window (§4.1).
+   */
+  async function onSavePreset() {
+    const state = presetState();
+    if (!state) {
+      return;
+    }
+    const settings = worker_form.presetSettings();
+    const selected = (state.presets || []).find(
+      (/** @type {any} */ preset) => preset.id === preset_choice
+    );
+    const name = preset_name_draft.trim() || (selected ? selected.name : '');
+    if (!name) {
+      return;
+    }
+    try {
+      const res = selected
+        ? await options.transport('impl-preset-update', {
+            expected_revision: state.revision,
+            id: selected.id,
+            name,
+            settings
+          })
+        : await options.transport('impl-preset-create', {
+            expected_revision: state.revision,
+            name,
+            settings
+          });
+      if (isRecord(res) && res.applied === true) {
+        preset_name_draft = '';
+        if (!selected && Array.isArray(res.presets)) {
+          const created = res.presets.find(
+            (/** @type {any} */ preset) => preset && preset.name === name
+          );
+          preset_choice = created ? created.id : preset_choice;
+        }
+      } else {
+        preset_error = '프리셋 저장 실패: 다른 곳에서 방금 변경되었습니다';
+      }
+    } catch (err) {
+      preset_error = `프리셋 저장 실패: ${messageOf(err)}`;
+    }
+    doRender();
+  }
+
+  /** Delete the selected preset; nothing else is touched (§4.1). */
+  async function onDeletePreset() {
+    const state = presetState();
+    if (!state || preset_choice.length === 0) {
+      return;
+    }
+    try {
+      const res = await options.transport('impl-preset-delete', {
+        expected_revision: state.revision,
+        id: preset_choice
+      });
+      if (isRecord(res) && res.applied === true) {
+        preset_choice = '';
+      } else {
+        preset_error = '프리셋 삭제 실패: 다른 곳에서 방금 변경되었습니다';
+      }
+    } catch (err) {
+      preset_error = `프리셋 삭제 실패: ${messageOf(err)}`;
+    }
+    doRender();
+  }
+
+  /**
+   * The read-only `적용된 프리셋` line (§4.1). The record's identity is its
+   * `id`, and the NAME is looked up in the preset list the window already
+   * holds — the stored `name` is a copy from apply time and lies after a
+   * rename. An id nothing names is `삭제된 프리셋`, never an invented name.
+   *
+   * @returns {TemplateResult|''}
+   */
+  function appliedPresetTemplate() {
+    const chosen = selectedRows();
+    if (!appliedPresetProjected(chosen)) {
+      return '';
+    }
+    const observation = observeAppliedPreset(chosen);
+    const presets = presetState()?.presets || [];
+    /** @param {string|null} id */
+    const nameOf = (id) => {
+      if (id === null) {
+        return NO_APPLIED_PRESET;
+      }
+      const found = presets.find(
+        (/** @type {any} */ preset) => preset && preset.id === id
+      );
+      return found ? String(found.name) : DELETED_PRESET;
+    };
+    const badge = observationBadge(observation, nameOf);
+    return html`<div class="settings-dialog__row" data-bulk-applied-preset>
+      <span class="settings-dialog__row-label">적용된 프리셋</span>
+      <span class="settings-dialog__controls">
+        <span data-bulk-applied-preset-value
+          >${nameOf(
+            observation.state === 'same' ? observation.value : null
+          )}</span
+        >
+        ${badge
+          ? html`<span
+              class=${`settings-dialog__obs settings-dialog__obs--${badge.state}`}
+              data-bulk-observation=${badge.state}
+              title=${badge.title}
+              >${badge.text}</span
+            >`
+          : ''}
+      </span>
+    </div>`;
+  }
+
+  /** @returns {TemplateResult} */
+  function presetBarTemplate() {
+    const state = presetState();
+    const holds = worker_form.holdCounts();
+    const unsettled = holds.mixed + holds.pending;
+    const save_title =
+      unsettled > 0
+        ? `값이 서지 않은 ${unsettled}행을 먼저 정하세요`
+        : preset_choice
+          ? '현재 화면의 25행을 이 프리셋에 저장합니다'
+          : '현재 화면의 25행을 새 프리셋으로 저장합니다';
+    return html`<div
+      class="settings-dialog__bulk-hd settings-dialog__preset-bar"
+    >
+      <select
+        class="settings-dialog__bulk-preset"
+        aria-label="적용할 실행 프리셋"
+        data-bulk-preset
+        ?disabled=${running !== null}
+        @change=${(/** @type {Event} */ ev) =>
+          onPresetChoice(
+            String(/** @type {HTMLSelectElement} */ (ev.target).value)
+          )}
+      >
+        <option value="" ?selected=${preset_choice === ''}>실행 프리셋…</option>
+        ${(state?.presets || []).map(
+          (preset) =>
+            html`<option
+              value=${preset.id}
+              ?selected=${preset.id === preset_choice}
+              ?disabled=${preset.compatible === false}
+              title=${preset.compatible === false
+                ? preset.incompatibility_reason || ''
+                : ''}
+            >
+              ${preset.name}
+            </option>`
+        )}
+      </select>
+      <input
+        type="text"
+        class="settings-dialog__preset-name"
+        aria-label="프리셋 이름"
+        data-bulk-preset-name
+        placeholder=${preset_choice ? '이름 (비우면 유지)' : '새 프리셋 이름'}
+        .value=${live(preset_name_draft)}
+        ?disabled=${running !== null}
+        @input=${(/** @type {Event} */ ev) => {
+          preset_name_draft = String(
+            /** @type {HTMLInputElement} */ (ev.target).value
+          );
+        }}
+      />
+      <button
+        type="button"
+        class="op-btn"
+        data-bulk-preset-save
+        title=${save_title}
+        ?disabled=${running !== null || unsettled > 0}
+        @click=${() => void onSavePreset()}
+      >
+        ${preset_choice ? '현재 설정으로 덮어쓰기' : '새 프리셋 저장'}
+      </button>
+      <button
+        type="button"
+        class="op-btn"
+        data-bulk-preset-delete
+        ?disabled=${running !== null || preset_choice.length === 0}
+        @click=${() => void onDeletePreset()}
+      >
+        삭제
+      </button>
+      <span class="settings-dialog__hint" data-bulk-preset-hint
+        >${PRESET_HINT}</span
+      >
+      ${preset_error
+        ? html`<span class="settings-dialog__bulk-reason" data-bulk-preset-error
+            >${preset_error}</span
+          >`
+        : ''}
+    </div>`;
+  }
+
+  /**
+   * The footer line: how many rows drop out this round and how many are
+   * actually written (§3.2).
+   *
+   * @param {number} total
+   * @param {{ mixed: number, pending: number }} holds
+   * @returns {string}
+   */
+  function footerCount(total, holds) {
+    const repos = selectedRows().length;
+    const parts = [];
+    if (holds.mixed > 0) {
+      parts.push(`갈림 ${holds.mixed}행`);
+    }
+    if (holds.pending > 0) {
+      parts.push(`미확인 ${holds.pending}행`);
+    }
+    const applied = total - holds.mixed - holds.pending;
+    return parts.length > 0
+      ? `${parts.join(' · ')}은 적용에서 빠집니다 · 나머지 ${applied}행을 저장소 ${repos}곳에 씁니다`
+      : `${applied}행을 저장소 ${repos}곳에 씁니다`;
+  }
+
   /** @returns {TemplateResult} */
   function workerTemplate() {
-    const state = presetState();
     const plan = presetPlan();
-    return html`<div class="settings-dialog__bulk-hd">
-        <select
-          class="settings-dialog__bulk-preset"
-          aria-label="적용할 실행 프리셋"
-          data-bulk-preset
-          ?disabled=${running !== null}
-          @change=${(/** @type {Event} */ ev) =>
-            onPresetChoice(
-              String(/** @type {HTMLSelectElement} */ (ev.target).value)
-            )}
-        >
-          <option value="" ?selected=${preset_choice === ''}>
-            실행 프리셋…
-          </option>
-          ${(state?.presets || []).map(
-            (preset) =>
-              html`<option
-                value=${preset.id}
-                ?selected=${preset.id === preset_choice}
-                ?disabled=${preset.compatible === false}
-                title=${preset.compatible === false
-                  ? preset.incompatibility_reason || ''
-                  : ''}
-              >
-                ${preset.name}
-              </option>`
-          )}
-        </select>
-        <span class="settings-dialog__hint" data-bulk-preset-hint
-          >${PRESET_HINT}</span
-        >
-      </div>
+    const holds = worker_form.holdCounts();
+    return html`${presetBarTemplate()} ${appliedPresetTemplate()}
       ${worker_form.template(running !== null)}
       <div class="settings-dialog__bulk-hd settings-dialog__bulk-foot">
         <span class="settings-dialog__bulk-count" data-bulk-count
-          >저장소 ${selectedRows().length}곳에 ${BULK_FORM_KEYS.length}개
-          항목</span
+          >${footerCount(BULK_FORM_KEYS.length, holds)}</span
         >
         ${applyButtonTemplate('worker', plan)}
+      </div>`;
+  }
+
+  /**
+   * One 세션 row (§5). The control shape follows the row's own kind, and the
+   * hold option sits on top of the choices exactly as the worker form's does.
+   *
+   * @param {{ key: string, label: string, kind: 'select'|'text', choices: string[], choice_labels?: Record<string, string> }} row
+   * @returns {TemplateResult}
+   */
+  function sessionRowTemplate(row) {
+    const observation = observeSession(row.key);
+    const hold = holdOf(row.key, observation);
+    const hold_option = holdOptionOf(observation);
+    const value = session_values[row.key] ?? '';
+    const disabled = running !== null;
+    /** @param {string} next */
+    const onPick = (next) => {
+      if (next === HOLD) {
+        edited.delete(row.key);
+      } else {
+        edited.add(row.key);
+        if (next.length > 0) {
+          session_values[row.key] = next;
+        } else {
+          delete session_values[row.key];
+        }
+      }
+      doRender();
+    };
+    const control =
+      row.kind === 'text'
+        ? html`<input
+            type="text"
+            class="settings-dialog__text"
+            aria-label=${row.label}
+            data-bulk-session=${row.key}
+            placeholder=${hold === null
+              ? 'http://호스트:3000'
+              : HOLD_LABEL[hold]}
+            .value=${live(hold === null ? value : '')}
+            ?disabled=${disabled}
+            @input=${(/** @type {Event} */ ev) =>
+              onPick(String(/** @type {HTMLInputElement} */ (ev.target).value))}
+          />`
+        : html`<select
+            aria-label=${row.label}
+            data-bulk-session=${row.key}
+            ?disabled=${disabled}
+            @change=${(/** @type {Event} */ ev) =>
+              onPick(
+                String(/** @type {HTMLSelectElement} */ (ev.target).value)
+              )}
+          >
+            ${hold_option === null
+              ? ''
+              : html`<option value=${HOLD} ?selected=${hold !== null}>
+                  ${HOLD_LABEL[hold_option]}
+                </option>`}
+            <option value="" ?selected=${hold === null && value === ''}>
+              ${row.choice_labels?.[''] ?? '기본값 사용'}
+            </option>
+            ${row.choices.map(
+              (choice) =>
+                html`<option
+                  value=${choice}
+                  ?selected=${hold === null && value === choice}
+                >
+                  ${row.choice_labels?.[choice] ?? choice}
+                </option>`
+            )}
+          </select>`;
+    return html`<div class="settings-dialog__row">
+      <span class="settings-dialog__row-label">${row.label}</span>
+      <span class="settings-dialog__controls">
+        ${control}
+        ${hold_option !== null && row.kind === 'text'
+          ? html`<button
+              type="button"
+              class="op-btn"
+              data-bulk-session-release=${row.key}
+              ?disabled=${disabled}
+              @click=${() => onPick(HOLD)}
+            >
+              ↩ 관측으로 되돌리기
+            </button>`
+          : ''}
+        ${badgeTemplate(row.key, observation)}
+      </span>
+    </div>`;
+  }
+
+  /** @returns {TemplateResult} */
+  function sessionTemplate() {
+    const plan = sessionPlan();
+    let mixed = 0;
+    let pending = 0;
+    for (const row of SESSION_ROWS) {
+      const hold = holdOf(row.key, observeSession(row.key));
+      if (hold === 'mixed') {
+        mixed += 1;
+      } else if (hold === 'pending') {
+        pending += 1;
+      }
+    }
+    return html`<div class="settings-dialog__group" data-bulk-group="session">
+        <div class="settings-dialog__group-title">대화형 세션</div>
+        ${SESSION_ROWS.map((row) => sessionRowTemplate(row))}
+      </div>
+      <div class="settings-dialog__bulk-hd settings-dialog__bulk-foot">
+        <span class="settings-dialog__bulk-count" data-bulk-count
+          >${footerCount(SESSION_ROWS.length, { mixed, pending })}</span
+        >
+        ${applyButtonTemplate('session', plan)}
       </div>`;
   }
 
@@ -537,7 +1270,33 @@ export function createBulkPane(host, options) {
    */
   function accountSelectTemplate(key, label, provider_key) {
     const provider = catalog ? catalog[provider_key] : null;
-    const value = account_values[key];
+    const observation = observeAccount(key);
+    const hold = holdOf(key, observation);
+    const hold_option = holdOptionOf(observation);
+    const value = hold === null ? account_values[key] : HOLD;
+    // A stored account the catalog does not carry keeps its own option, so the
+    // select never looks like `기본값 사용` while the apply still writes the
+    // hidden value (execution-pane `accountRow` does the same).
+    const orphan_value =
+      value !== HOLD &&
+      value !== USE_DEFAULT &&
+      typeof value === 'string' &&
+      value.length > 0 &&
+      !(provider?.accounts || []).some(
+        (/** @type {any} */ entry) => entry.key === value
+      )
+        ? value
+        : null;
+    /** @param {string|null} stored */
+    const nameOf = (stored) => {
+      if (stored === null) {
+        return '기본값 사용';
+      }
+      const row = (provider?.accounts || []).find(
+        (/** @type {any} */ entry) => entry.key === stored
+      );
+      return row ? accountRowLabel(provider_key, row) : stored;
+    };
     return html`<span class="settings-dialog__bulk-field">
       <span class="settings-dialog__row-label">${label}</span>
       <select
@@ -545,15 +1304,31 @@ export function createBulkPane(host, options) {
         data-bulk-account=${key}
         ?disabled=${running !== null || !provider}
         @change=${(/** @type {Event} */ ev) => {
-          account_values[key] = String(
+          const next = String(
             /** @type {HTMLSelectElement} */ (ev.target).value
           );
+          if (next === HOLD) {
+            edited.delete(key);
+          } else {
+            edited.add(key);
+            account_values[key] = next;
+          }
           doRender();
         }}
       >
+        ${hold_option === null
+          ? ''
+          : html`<option value=${HOLD} ?selected=${hold !== null}>
+              ${HOLD_LABEL[hold_option]}
+            </option>`}
         <option value=${USE_DEFAULT} ?selected=${value === USE_DEFAULT}>
           ${accountDefaultLabel(provider_key, provider)}
         </option>
+        ${orphan_value === null
+          ? ''
+          : html`<option value=${orphan_value} selected>
+              ${`${orphan_value} (목록에 없음)`}
+            </option>`}
         ${(provider?.accounts || []).map(
           (/** @type {any} */ row) =>
             html`<option value=${row.key} ?selected=${row.key === value}>
@@ -561,6 +1336,7 @@ export function createBulkPane(host, options) {
             </option>`
         )}
       </select>
+      ${badgeTemplate(key, observation, nameOf)}
     </span>`;
   }
 
@@ -573,6 +1349,45 @@ export function createBulkPane(host, options) {
     const form = runner_forms[runner];
     const provider = catalog ? catalog[runner] : null;
     const disabled = running !== null;
+    const mode_observation = observeLimitField(runner, 'mode');
+    const mode_hold = holdOf(`${runner}.mode`, mode_observation);
+    const accounts_observation = observeLimitAccounts(runner);
+    const accounts_hold = holdOf(`${runner}.accounts`, accounts_observation);
+    const preempt_observation = observeLimitField(runner, 'preempt');
+    const preempt_hold = holdOf(`${runner}.preempt`, preempt_observation);
+    const mode_hold_option = holdOptionOf(mode_observation);
+    const preempt_hold_option = holdOptionOf(preempt_observation);
+    const catalog_keys = (provider?.accounts || []).map(
+      (/** @type {any} */ entry) => String(entry.key)
+    );
+    // Members the catalog does not carry still belong to the allow set, so they
+    // get their own checkbox and keep their place in the written order — the
+    // screen and the request say the same thing (execution-pane `limitPolicyBlock`).
+    const orphans =
+      accounts_hold === null
+        ? form.accounts.filter((key) => !catalog_keys.includes(key))
+        : [];
+    const account_order = [...catalog_keys, ...orphans];
+    /**
+     * Toggle one allow-set member. Pressing any box means the SCREEN's set is
+     * now the runner's set (ADR UI-a5l2), so a hold counts from empty.
+     *
+     * @param {string} account_key
+     * @param {boolean} checked
+     */
+    const toggleAccount = (account_key, checked) => {
+      edited.add(`${runner}.accounts`);
+      const keys = new Set(accounts_hold === null ? form.accounts : []);
+      if (checked) {
+        keys.add(account_key);
+      } else {
+        keys.delete(account_key);
+      }
+      form.accounts = [...new Set([...account_order, account_key])].filter(
+        (key) => keys.has(key)
+      );
+      doRender();
+    };
     /** @type {Array<['wait'|'switch', string]>} */
     const modes = [
       ['wait', '기다림'],
@@ -589,14 +1404,31 @@ export function createBulkPane(host, options) {
             aria-label=${`${label} 대응 방식`}
             data-bulk-limit-mode-runner=${runner}
           >
+            ${mode_hold_option === null
+              ? ''
+              : html`<button
+                  type="button"
+                  data-bulk-limit-mode=${HOLD}
+                  aria-pressed=${String(mode_hold !== null)}
+                  ?disabled=${disabled}
+                  @click=${() => {
+                    edited.delete(`${runner}.mode`);
+                    doRender();
+                  }}
+                >
+                  ${HOLD_LABEL[mode_hold_option]}
+                </button>`}
             ${modes.map(
               ([mode, text]) =>
                 html`<button
                   type="button"
                   data-bulk-limit-mode=${mode}
-                  aria-pressed=${String(form.mode === mode)}
+                  aria-pressed=${String(
+                    mode_hold === null && form.mode === mode
+                  )}
                   ?disabled=${disabled}
                   @click=${() => {
+                    edited.add(`${runner}.mode`);
                     form.mode = mode;
                     doRender();
                   }}
@@ -605,6 +1437,7 @@ export function createBulkPane(host, options) {
                 </button>`
             )}
           </span>
+          ${badgeTemplate(`${runner}.mode`, mode_observation)}
         </span>
       </div>
       <div class="settings-dialog__row">
@@ -617,24 +1450,35 @@ export function createBulkPane(host, options) {
                   type="checkbox"
                   data-bulk-limit-account=${row.key}
                   data-runner=${runner}
-                  .checked=${live(form.accounts.includes(row.key))}
+                  .checked=${live(
+                    accounts_hold === null && form.accounts.includes(row.key)
+                  )}
                   ?disabled=${disabled}
-                  @change=${(/** @type {Event} */ ev) => {
-                    const checked = /** @type {HTMLInputElement} */ (ev.target)
-                      .checked;
-                    const keys = new Set(form.accounts);
-                    if (checked) {
-                      keys.add(row.key);
-                    } else {
-                      keys.delete(row.key);
-                    }
-                    form.accounts = (provider?.accounts || [])
-                      .map((/** @type {any} */ entry) => entry.key)
-                      .filter((/** @type {string} */ key) => keys.has(key));
-                    doRender();
-                  }}
+                  @change=${(/** @type {Event} */ ev) =>
+                    toggleAccount(
+                      row.key,
+                      /** @type {HTMLInputElement} */ (ev.target).checked
+                    )}
                 />
                 ${accountRowLabel(runner, row)}
+              </label>`
+          )}
+          ${orphans.map(
+            (key) =>
+              html`<label class="settings-dialog__check">
+                <input
+                  type="checkbox"
+                  data-bulk-limit-account=${key}
+                  data-runner=${runner}
+                  .checked=${live(true)}
+                  ?disabled=${disabled}
+                  @change=${(/** @type {Event} */ ev) =>
+                    toggleAccount(
+                      key,
+                      /** @type {HTMLInputElement} */ (ev.target).checked
+                    )}
+                />
+                ${`${key} (목록에 없음)`}
               </label>`
           )}
           ${provider
@@ -642,6 +1486,21 @@ export function createBulkPane(host, options) {
             : html`<span class="settings-dialog__hint"
                 >${CATALOG_MISSING}</span
               >`}
+          ${edited.has(`${runner}.accounts`)
+            ? html`<button
+                type="button"
+                class="op-btn"
+                data-bulk-limit-accounts-release=${runner}
+                ?disabled=${disabled}
+                @click=${() => {
+                  edited.delete(`${runner}.accounts`);
+                  doRender();
+                }}
+              >
+                ↩ 갈림으로 되돌리기
+              </button>`
+            : ''}
+          ${badgeTemplate(`${runner}.accounts`, accounts_observation)}
         </span>
       </div>
       <div class="settings-dialog__row">
@@ -652,14 +1511,33 @@ export function createBulkPane(host, options) {
             data-bulk-preempt=${runner}
             ?disabled=${disabled}
             @change=${(/** @type {Event} */ ev) => {
-              form.preempt = /** @type {'off'|'pct'} */ (
-                String(/** @type {HTMLSelectElement} */ (ev.target).value)
+              const next = String(
+                /** @type {HTMLSelectElement} */ (ev.target).value
               );
+              if (next === HOLD) {
+                edited.delete(`${runner}.preempt`);
+              } else {
+                edited.add(`${runner}.preempt`);
+                form.preempt = /** @type {'off'|'pct'} */ (next);
+              }
               doRender();
             }}
           >
-            <option value="off" ?selected=${form.preempt === 'off'}>끔</option>
-            <option value="pct" ?selected=${form.preempt === 'pct'}>
+            ${preempt_hold_option === null
+              ? ''
+              : html`<option value=${HOLD} ?selected=${preempt_hold !== null}>
+                  ${HOLD_LABEL[preempt_hold_option]}
+                </option>`}
+            <option
+              value="off"
+              ?selected=${preempt_hold === null && form.preempt === 'off'}
+            >
+              끔
+            </option>
+            <option
+              value="pct"
+              ?selected=${preempt_hold === null && form.preempt === 'pct'}
+            >
               사용량 기준
             </option>
           </select>
@@ -673,13 +1551,17 @@ export function createBulkPane(host, options) {
             aria-label=${`${label} 선제 전환 기준(%)`}
             data-bulk-preempt-pct=${runner}
             .value=${live(form.pct_text)}
-            ?disabled=${disabled || form.preempt !== 'pct'}
+            ?disabled=${disabled ||
+            preempt_hold !== null ||
+            form.preempt !== 'pct'}
             @input=${(/** @type {Event} */ ev) => {
+              edited.add(`${runner}.preempt`);
               form.pct_text = /** @type {HTMLInputElement} */ (ev.target).value;
               doRender();
             }}
           />
           <span class="settings-dialog__hint">% 이상이면 미리 전환</span>
+          ${badgeTemplate(`${runner}.preempt`, preempt_observation)}
         </span>
       </div>
     </div>`;
@@ -705,11 +1587,50 @@ export function createBulkPane(host, options) {
           </p>`}
       <div class="settings-dialog__bulk-hd settings-dialog__bulk-foot">
         <span class="settings-dialog__bulk-count" data-bulk-count
-          >저장소 ${selectedRows().length}곳에 계정 ${ACCOUNT_FIELDS.length}개 ·
-          한도 정책 ${RUNNERS.length}벌</span
+          >${footerCount(ACCOUNT_FIELDS.length + RUNNERS.length * 3, {
+            mixed: accountHoldCounts().mixed,
+            pending: accountHoldCounts().pending
+          })}</span
         >
         ${applyButtonTemplate('account', plan)}
       </div>`;
+  }
+
+  /**
+   * How many of the account tab's eight rows are still on a hold (§3.2).
+   *
+   * @returns {{ mixed: number, pending: number }}
+   */
+  function accountHoldCounts() {
+    let mixed = 0;
+    let pending = 0;
+    /** @type {Array<[string, { state: string }]>} */
+    const rows_of = [];
+    for (const [key] of ACCOUNT_FIELDS) {
+      rows_of.push([key, observeAccount(key)]);
+    }
+    for (const runner of RUNNERS) {
+      rows_of.push([`${runner}.mode`, observeLimitField(runner, 'mode')]);
+      rows_of.push([`${runner}.accounts`, observeLimitAccounts(runner)]);
+      rows_of.push([`${runner}.preempt`, observeLimitField(runner, 'preempt')]);
+    }
+    for (const [id, observation] of rows_of) {
+      const hold = holdOf(id, observation);
+      if (hold === 'mixed') {
+        mixed += 1;
+      } else if (hold === 'pending') {
+        pending += 1;
+      }
+    }
+    return { mixed, pending };
+  }
+
+  /** @returns {TemplateResult} */
+  function sectionTemplate() {
+    if (section === 'worker') {
+      return workerTemplate();
+    }
+    return section === 'session' ? sessionTemplate() : accountTemplate();
   }
 
   function doRender() {
@@ -717,12 +1638,12 @@ export function createBulkPane(host, options) {
       return;
     }
     reconcileRows();
+    observeForms();
     render(
       html`<div class="settings-dialog__bulk" data-bulk-section=${section}>
         ${targetsTemplate()}
         <p class="settings-dialog__banner" data-bulk-banner>${APPLY_BANNER}</p>
-        ${section === 'worker' ? workerTemplate() : accountTemplate()}
-        ${resultsTemplate()}
+        ${sectionTemplate()} ${resultsTemplate()}
       </div>`,
       host
     );
@@ -746,10 +1667,13 @@ export function createBulkPane(host, options) {
      * Draw one tab. Switching to the other tab stops a run in flight; called
      * with nothing it redraws the tab on screen.
      *
-     * @param {'worker'|'account'} [next]
+     * @param {'worker'|'session'|'account'} [next]
      */
     render(next) {
-      if ((next === 'worker' || next === 'account') && next !== section) {
+      if (
+        (next === 'worker' || next === 'session' || next === 'account') &&
+        next !== section
+      ) {
         if (running !== null) {
           cancelRun();
         }

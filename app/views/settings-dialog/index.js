@@ -36,10 +36,17 @@ export const SETTINGS_TABS = [
   { id: 'display', label: '표시', glyph: '◫' }
 ];
 
-/** The bulk mode's tabs, in display order. */
+/**
+ * The tabs of the two monitor-tab modes, in display order. `표시` is a
+ * workspace-global policy, so it stays on the connected-workspace window
+ * (UI-e1ta §5, §7).
+ */
 export const BULK_SETTINGS_TABS = SETTINGS_TABS.filter(
-  (tab) => tab.id === 'worker' || tab.id === 'account'
+  (tab) => tab.id !== 'display'
 );
+
+/** One repo's window carries the same three tabs (§7). */
+export const REPO_SETTINGS_TABS = BULK_SETTINGS_TABS;
 
 /** Bulk-mode pane heading shared by both tabs. */
 const BULK_TITLE = '여러 저장소 설정';
@@ -47,8 +54,9 @@ const BULK_TITLE = '여러 저장소 설정';
 /** Bulk-mode one-line subtitle per tab. */
 const BULK_TAB_SUB = {
   worker:
-    '선택한 저장소에 실행 프로필 한 벌을 적용합니다. 프리셋을 고르면 아래 폼이 그 값으로 채워집니다.',
-  account: '선택한 저장소의 실행 계정과 한도 대응을 화면의 값 그대로 씁니다.'
+    '선택한 저장소의 현재 실행 프로필을 읽어 세웁니다. 프리셋을 고르면 25행이 그 값으로 채워집니다.',
+  session: '선택한 저장소의 대화형 세션 값을 읽어 세웁니다.',
+  account: '선택한 저장소의 실행 계정과 한도 대응을 읽어 세웁니다.'
 };
 
 /** Tabs the shared execution pane draws, by its own section ids. */
@@ -105,9 +113,19 @@ export function createSettingsDialog(mount_element, options) {
   let active_tab = 'worker';
   let is_open = false;
   let prefix_draft = '';
-  /** `'monitor'` = bulk mode; fixed from `open` until close. */
-  /** @type {'single'|'monitor'} */
+  /**
+   * `'monitor'` = bulk mode, `'repo'` = ONE monitor repo (UI-e1ta §7); fixed
+   * from `open` until close.
+   *
+   * @type {'single'|'monitor'|'repo'}
+   */
   let scope = 'single';
+  /** The repo `scope: 'repo'` is bound to. */
+  /** @type {string|null} */
+  let repo_root_dir = null;
+  /** The adopted queue for the repo-scoped pane; newer than the monitor row. */
+  /** @type {any} */
+  let repo_queue = null;
 
   /** @type {ReturnType<typeof createBulkPane>|null} */
   let bulk_pane = null;
@@ -135,15 +153,41 @@ export function createSettingsDialog(mount_element, options) {
     if (execution_pane) {
       return execution_pane;
     }
+    // `scope: 'repo'` binds the SAME pane to one monitor repo instead of the
+    // connected workspace; its queue is that repo's monitor row, laid over by
+    // whatever a mutation response adopts (§7).
+    const bound_root = scope === 'repo' ? repo_root_dir : null;
     execution_pane = createExecutionPane(pane_host, {
-      root_dir: null,
-      queue: () => options.queueStore?.get() ?? null,
+      root_dir: bound_root,
+      queue: () =>
+        bound_root === null
+          ? (options.queueStore?.get() ?? null)
+          : (repo_queue ??
+            (options.monitorRows?.() || []).find(
+              (row) => row && row.root_dir === bound_root
+            ) ??
+            null),
       transport,
       implPresetStore: options.implPresetStore,
       notify,
-      onQueueAdopt: (queue) => options.queueStore?.set?.(queue)
+      onQueueAdopt: (queue) => {
+        if (bound_root === null) {
+          options.queueStore?.set?.(queue);
+          return;
+        }
+        repo_queue = queue;
+      }
     });
     return execution_pane;
+  }
+
+  /** This window's title: the repo's own name in `scope: 'repo'` (§7). */
+  function repoTitle() {
+    const row = (options.monitorRows?.() || []).find(
+      (entry) => entry && entry.root_dir === repo_root_dir
+    );
+    const name = row && typeof row.name === 'string' ? row.name : repo_root_dir;
+    return `${name} 실행 설정`;
   }
 
   /**
@@ -154,15 +198,16 @@ export function createSettingsDialog(mount_element, options) {
    */
   function executionPaneSection() {
     const copy = /** @type {any} */ (TAB_COPY)[active_tab];
+    const title = scope === 'repo' ? repoTitle() : copy.title;
     return html`
       <section
         class="settings-dialog__pane settings-dialog__pane--active"
         role="tabpanel"
         id=${`settings-pane-${active_tab}`}
-        aria-label=${copy.title}
+        aria-label=${title}
       >
         <header class="settings-dialog__pane-head">
-          <h2>${copy.title}</h2>
+          <h2>${title}</h2>
         </header>
         <p class="settings-dialog__pane-sub">${copy.sub}</p>
         <div class="settings-dialog__pane-body" data-pane="execution"></div>
@@ -234,7 +279,7 @@ export function createSettingsDialog(mount_element, options) {
         onBulkApplied: (root_dirs) => options.onBulkApplied?.(root_dirs)
       });
     }
-    bulk_pane.render(/** @type {'worker'|'account'} */ (active_tab));
+    bulk_pane.render(/** @type {'worker'|'session'|'account'} */ (active_tab));
   }
 
   function destroyBulkPane() {
@@ -362,6 +407,19 @@ export function createSettingsDialog(mount_element, options) {
     onPolicyPatch(() => ({ chips: { [chip]: desired } }));
   }
 
+  /**
+   * The rail this scope carries. Both monitor-tab scopes drop `표시`, which is
+   * a workspace-global policy rather than a repo's setting (§7).
+   *
+   * @returns {Array<{ id: string, label: string, glyph: string }>}
+   */
+  function tabsForScope() {
+    if (scope === 'monitor') {
+      return BULK_SETTINGS_TABS;
+    }
+    return scope === 'repo' ? REPO_SETTINGS_TABS : SETTINGS_TABS;
+  }
+
   /** @returns {TemplateResult} */
   function panesTemplate() {
     if (scope === 'monitor') {
@@ -371,7 +429,7 @@ export function createSettingsDialog(mount_element, options) {
   }
 
   function doRender() {
-    const tabs = scope === 'monitor' ? BULK_SETTINGS_TABS : SETTINGS_TABS;
+    const tabs = tabsForScope();
     render(
       html`
         <div class="settings-dialog__container">
@@ -469,16 +527,32 @@ export function createSettingsDialog(mount_element, options) {
    * bulk mode, which never binds or loads the connected workspace.
    *
    * @param {string} [tab_id]
-   * @param {{ scope?: 'monitor' }} [open_options]
+   * @param {{ scope?: 'monitor'|'repo', root_dir?: string }} [open_options]
    */
   function open(tab_id = 'worker', open_options = {}) {
     if (is_open) {
       return;
     }
     is_open = true;
-    scope = open_options.scope === 'monitor' ? 'monitor' : 'single';
+    if (open_options.scope === 'monitor') {
+      scope = 'monitor';
+    } else if (
+      open_options.scope === 'repo' &&
+      typeof open_options.root_dir === 'string' &&
+      open_options.root_dir.length > 0
+    ) {
+      scope = 'repo';
+    } else {
+      scope = 'single';
+    }
+    repo_root_dir = scope === 'repo' ? String(open_options.root_dir) : null;
+    repo_queue = null;
+    // The pane is bound to ONE root_dir at creation, so a scope change needs a
+    // new pane rather than a re-render.
+    execution_pane?.destroy();
+    execution_pane = null;
     options.onOpenChange?.(true);
-    const tabs = scope === 'monitor' ? BULK_SETTINGS_TABS : SETTINGS_TABS;
+    const tabs = tabsForScope();
     active_tab = tabs.some((tab) => tab.id === tab_id) ? tab_id : 'worker';
     prefix_draft = '';
     // A bulk pane is per open: its selection and form start fresh each time.
@@ -489,7 +563,7 @@ export function createSettingsDialog(mount_element, options) {
     } else {
       dialog.setAttribute('open', '');
     }
-    if (scope === 'single') {
+    if (scope !== 'monitor') {
       void ensureExecutionPane()?.load();
     }
   }
@@ -511,6 +585,14 @@ export function createSettingsDialog(mount_element, options) {
   return {
     open,
     close,
+    /**
+     * Which repo the window is bound to right now, or `null`. The deck reads
+     * it to toggle its own `⚙` and to close the window when that repo leaves
+     * the list (§7).
+     *
+     * @returns {string|null}
+     */
+    repoRoot: () => (is_open && scope === 'repo' ? repo_root_dir : null),
     /** Test/inspection seam: the draft the dialog would save. */
     sessionDraft: () => execution_pane?.sessionDraft() ?? {},
     destroy() {

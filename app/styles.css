@@ -7318,55 +7318,6 @@ html[data-theme='dark'] {
   color: var(--accent-success);
 }
 
-/* `⚙` 실행 설정 패널 (§4.4): 데크 바로 아래 인라인. 한 번에 한 레포만 연다. */
-.mon2-deck__panel {
-  border: 1px solid var(--border-card);
-  border-radius: var(--r-8);
-  background: var(--bg-panel);
-}
-
-.mon2-deck__panel[hidden] {
-  display: none;
-}
-
-.mon2-deck__panel-hd {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-6);
-  padding: var(--sp-6) var(--sp-10);
-  border-bottom: 1px solid var(--border-panel);
-  color: var(--text-secondary);
-  font-size: var(--fs-chip);
-}
-
-.mon2-deck__panel-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mon2-deck__panel-seg {
-  flex: 0 0 auto;
-}
-
-.mon2-deck__panel-close {
-  flex: 0 0 auto;
-  border: none;
-  background: transparent;
-  color: var(--text-dim);
-  cursor: pointer;
-}
-
-.mon2-deck__panel-body {
-  padding: var(--sp-8) var(--sp-10);
-}
-
-.mon2-deck__panel-body .settings-dialog__group {
-  break-inside: avoid;
-}
-
 /* 포커스 필터 (§4.2): 숨기지 않고 흐린다 — 다른 레포에서 지금 무엇이 도는지는
    흐려도 보여야 한다. 타일은 제어 표면이라 덜 흐리게 둔다. */
 .mon.has-focus .mon2-sec:not(.is-focus),
@@ -7961,15 +7912,6 @@ html[data-theme='dark'] {
     flex: 1 1 auto;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
-  }
-
-  .mon2-deck__panel-body {
-    padding: var(--sp-6);
-  }
-
-  .mon2-deck__panel-body .settings-dialog__row {
-    flex-direction: column;
-    align-items: flex-start;
   }
 }
 
@@ -9297,6 +9239,26 @@ button.detail-session__leg:focus-visible {
   margin: 0 0 var(--sp-8);
   color: var(--text-dim);
   font-size: var(--fs-chip);
+}
+
+/* 관측 배지 (UI-e1ta §3): 행이 지금 무엇을 읽었는지만 말한다 — 조작이 아니다.
+   값이 서지 않은 두 상태(갈림·미확인)만 색을 쓴다. */
+.settings-dialog__obs {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.settings-dialog__obs--mixed,
+.settings-dialog__obs--pending {
+  color: var(--accent-warn);
+}
+
+.settings-dialog__obs--edited {
+  color: var(--accent-success);
 }
 
 .settings-dialog__row {

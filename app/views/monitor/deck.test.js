@@ -95,7 +95,18 @@ function setup(input = {}) {
   );
   const gotoWorkerTab = vi.fn();
   const onFocusChange = vi.fn();
+  /** @type {string|null} */
+  let settings_root = null;
+  const openSettings = vi.fn((/** @type {string} */ root_dir) => {
+    settings_root = root_dir;
+  });
+  const closeSettings = vi.fn(() => {
+    settings_root = null;
+  });
   const deck = createRepoDeck(mount, {
+    openSettings,
+    closeSettings,
+    settingsRoot: () => settings_root,
     workspacesState: () => rows,
     doneItems: () => input.done || [],
     rangeLabel: () => '오늘',
@@ -114,6 +125,9 @@ function setup(input = {}) {
     transport,
     gotoWorkerTab,
     onFocusChange,
+    openSettings,
+    closeSettings,
+    settingsRoot: () => settings_root,
     setRows: (/** @type {any[]} */ next) => {
       rows = next;
     }
@@ -647,7 +661,7 @@ describe('createRepoDeck focus filter (§4.2)', () => {
   });
 });
 
-describe('createRepoDeck settings panel (§4.4)', () => {
+describe('createRepoDeck 레포 설정 진입 (UI-e1ta §7)', () => {
   /** @returns {ReturnType<typeof setup>} */
   function twoActive() {
     return setup({
@@ -663,82 +677,59 @@ describe('createRepoDeck settings panel (§4.4)', () => {
     });
   }
 
-  test('mounts the shared execution pane bound to that repo', async () => {
-    const { mount, deck, calls } = twoActive();
+  test('opens the settings dialog on the clicked repository', () => {
+    const { mount, deck, openSettings } = twoActive();
 
     deck.render();
     click(mount, `.mon2-deck__tile[data-root-dir="${WS_B}"] .mon2-deck__gear`);
-    await settle();
 
-    expect(el(mount, '.mon2-deck__panel-title').textContent).toContain(
-      'repo-b 실행 설정'
+    expect(openSettings).toHaveBeenCalledWith(WS_B);
+  });
+
+  test('builds no inline panel inside the deck', () => {
+    const { mount, deck } = twoActive();
+
+    deck.render();
+    click(mount, `.mon2-deck__tile[data-root-dir="${WS_B}"] .mon2-deck__gear`);
+
+    expect(mount.querySelector('.mon2-deck__panel')).toBe(null);
+    expect(mount.querySelector('[data-pane-section="worker"]')).toBe(null);
+  });
+
+  test('marks the gear as a dialog trigger rather than an expander', () => {
+    const { mount, deck } = twoActive();
+
+    deck.render();
+    const gear = el(
+      mount,
+      `.mon2-deck__tile[data-root-dir="${WS_B}"] .mon2-deck__gear`
     );
-    expect(
-      el(mount, '.mon2-deck__panel-body [data-quick-fix-group]')
-    ).toBeTruthy();
-    expect(calls).toContainEqual(['get-session-defaults', { root_dir: WS_B }]);
+
+    expect(gear.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(gear.hasAttribute('aria-expanded')).toBe(false);
   });
 
-  test('opens the panel on the 워커 section', async () => {
-    const { mount, deck } = twoActive();
+  test('closes the dialog when the same gear is pressed again', () => {
+    const { mount, deck, closeSettings } = twoActive();
 
     deck.render();
     click(mount, `.mon2-deck__tile[data-root-dir="${WS_B}"] .mon2-deck__gear`);
-    await settle();
+    click(mount, `.mon2-deck__tile[data-root-dir="${WS_B}"] .mon2-deck__gear`);
 
-    expect(
-      el(mount, '[data-pane-section="worker"]').getAttribute('aria-pressed')
-    ).toBe('true');
+    expect(closeSettings).toHaveBeenCalledTimes(1);
   });
 
-  test('switches the panel body when a section button is clicked', async () => {
-    const { mount, deck } = twoActive();
+  test('closes the dialog when the open repository leaves the list', () => {
+    const { mount, deck, closeSettings, setRows } = twoActive();
 
     deck.render();
     click(mount, `.mon2-deck__tile[data-root-dir="${WS_B}"] .mon2-deck__gear`);
-    await settle();
-    click(mount, '[data-pane-section="account"]');
-    await settle();
-
-    expect(
-      el(mount, '.mon2-deck__panel-body [data-exec-accounts-group]')
-    ).toBeTruthy();
-    expect(
-      mount.querySelector('.mon2-deck__panel-body [data-quick-fix-group]')
-    ).toBe(null);
-  });
-
-  test('replaces the pane when another repo gear is clicked', async () => {
-    const { mount, deck, calls } = twoActive();
-
+    setRows([
+      state({ counts: { running: 1, pr_wait: 0, queue: 0, runnable: 0 } })
+    ]);
     deck.render();
-    click(mount, `.mon2-deck__tile[data-root-dir="${WS_B}"] .mon2-deck__gear`);
-    await settle();
-    click(mount, `.mon2-deck__tile[data-root-dir="${WS_A}"] .mon2-deck__gear`);
-    await settle();
 
-    expect(deck.panelRoot()).toBe(WS_A);
-    expect(el(mount, '.mon2-deck__panel-title').textContent).toContain(
-      'repo-a 실행 설정'
-    );
-    expect(
-      calls.filter(([type]) => type === 'get-session-defaults')
-    ).toHaveLength(2);
-  });
-
-  test('closes and destroys the pane from the ✕', async () => {
-    const { mount, deck } = twoActive();
-
-    deck.render();
-    click(mount, `.mon2-deck__tile[data-root-dir="${WS_A}"] .mon2-deck__gear`);
-    await settle();
-    click(mount, '.mon2-deck__panel-close');
-
-    expect(deck.panelRoot()).toBe(null);
-    expect(el(mount, '.mon2-deck__panel-body')?.children).toHaveLength(0);
-    expect(
-      /** @type {HTMLElement} */ (el(mount, '.mon2-deck__panel')).hidden
-    ).toBe(true);
+    expect(closeSettings).toHaveBeenCalled();
   });
 
   test('destroy empties the mount and stops listening for Escape', async () => {
@@ -1034,69 +1025,5 @@ describe('repo health header group (UI-y9hl U2)', () => {
     expect(row_rule.slice(0, row_rule.indexOf('}'))).toContain(
       'flex-wrap: wrap'
     );
-  });
-});
-
-describe('createRepoDeck settings panel without a bulk section (UI-nu43 §3.5)', () => {
-  /** @returns {ReturnType<typeof setup>} */
-  function twoRepos() {
-    return setup({
-      rows: [
-        state({ auto_advance: true }),
-        state({ root_dir: WS_B, name: 'repo-b', auto_advance: true })
-      ]
-    });
-  }
-
-  /**
-   * @param {Array<[string, any]>} calls
-   * @returns {number}
-   */
-  function sessionReads(calls) {
-    return calls.filter(([type]) => type === 'get-session-defaults').length;
-  }
-
-  test('draws only the head segment and the pane body in the panel', async () => {
-    const { mount, deck } = twoRepos();
-
-    deck.render();
-    click(mount, `.mon2-deck__tile[data-root-dir="${WS_A}"] .mon2-deck__gear`);
-    await settle();
-
-    const panel = el(mount, '.mon2-deck__panel');
-    expect(panel.querySelector('.mon2-deck__bulk')).toBe(null);
-    expect(panel.querySelector('fieldset')).toBe(null);
-    expect(panel.textContent).not.toContain('적용 대상');
-    expect(panel.querySelector('[data-pane-section="worker"]')).not.toBe(null);
-    expect(
-      panel.querySelector('.mon2-deck__panel-body [data-quick-fix-group]')
-    ).not.toBe(null);
-  });
-
-  test('re-reads the open pane when reloadPanel names its repository', async () => {
-    const { mount, deck, calls } = twoRepos();
-    deck.render();
-    click(mount, `.mon2-deck__tile[data-root-dir="${WS_A}"] .mon2-deck__gear`);
-    await settle();
-    const before = sessionReads(calls);
-
-    await deck.reloadPanel([WS_B, WS_A]);
-
-    expect(sessionReads(calls)).toBe(before + 1);
-    expect(
-      calls.filter(([type]) => type === 'get-session-defaults').at(-1)
-    ).toEqual(['get-session-defaults', { root_dir: WS_A }]);
-  });
-
-  test('leaves the open pane alone when reloadPanel names only other repositories', async () => {
-    const { mount, deck, calls } = twoRepos();
-    deck.render();
-    click(mount, `.mon2-deck__tile[data-root-dir="${WS_A}"] .mon2-deck__gear`);
-    await settle();
-    const before = calls.length;
-
-    await deck.reloadPanel([WS_B]);
-
-    expect(calls).toHaveLength(before);
   });
 });

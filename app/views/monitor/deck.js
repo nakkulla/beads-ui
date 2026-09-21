@@ -35,10 +35,6 @@ import {
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
 import { modelRunnerOf } from '../detail-panel/exec-settings.js';
-import {
-  createExecutionPane,
-  paneSectionSegmentTemplate
-} from '../settings-dialog/execution-pane.js';
 import { summaryChipsTemplate, tokenChipTemplate } from '../worker/lanes.js';
 import { pruneAdopted as dropCaughtUp, mergeQueue } from './adopted-queue.js';
 import { iconGear, iconMerge, iconPause, iconPlay } from './icons.js';
@@ -134,6 +130,12 @@ export function deckExecChips(row) {
  * `switchWorkspace` 후 Worker 탭으로 넘어가는 경로 (§11).
  * @property {(root_dir: string|null) => void} [onFocusChange] - Focus filter
  * change notice. 흐림 클래스는 모니터 뷰가 소유한다.
+ * @property {(root_dir: string) => void} [openSettings] - 그 저장소로 설정
+ * 다이얼로그를 여는 경로 (UI-e1ta §7).
+ * @property {() => void} [closeSettings] - 열려 있는 창을 닫는 경로; toggle과
+ * 행 소멸이 함께 쓴다.
+ * @property {() => string|null} [settingsRoot] - 지금 창이 묶인 root_dir, 또는
+ * null.
  */
 
 /**
@@ -146,44 +148,14 @@ export function createRepoDeck(mount_element, options) {
   const notify =
     options.notify || ((message) => showToast(message, 'error', 4000));
 
-  // lit이 소유하는 렌더 호스트와, 설정 pane이 사는 패널을 분리한다 — pane의
-  // DOM은 데크가 다시 그려질 때마다 날아가면 안 된다.
+  // lit이 소유하는 렌더 호스트. 레포 `⚙`는 헤더 `⚙`와 같은 설정 다이얼로그를
+  // 그 저장소 단일 모드로 열므로 (UI-e1ta §7) 덱 안에는 패널 껍데기가 없다.
   const deck_el = document.createElement('div');
   deck_el.className = 'mon2-deck__main';
   mount_element.appendChild(deck_el);
 
-  const panel_el = document.createElement('div');
-  panel_el.className = 'mon2-deck__panel';
-  panel_el.hidden = true;
-  const panel_head = document.createElement('div');
-  panel_head.className = 'mon2-deck__panel-hd';
-  const panel_title = document.createElement('span');
-  panel_title.className = 'mon2-deck__panel-title';
-  // 패널 머리의 `[워커|세션|계정]` 세그먼트. 템플릿은 execution-pane이 export하고
-  // 이 자리는 lit 호스트로만 쓴다 — 다이얼로그 레일과 두 벌이 되지 않게 한다.
-  const panel_seg = document.createElement('span');
-  panel_seg.className = 'mon2-deck__panel-seg';
-  const panel_close = document.createElement('button');
-  panel_close.type = 'button';
-  panel_close.className = 'mon2-deck__panel-close';
-  panel_close.setAttribute('aria-label', '실행 설정 닫기');
-  panel_close.textContent = '✕';
-  panel_head.append(panel_title, panel_seg, panel_close);
-  // 여러 저장소 적용은 모니터 탭 헤더 ⚙의 일괄 모드가 맡는다 (UI-nu43 §3.5) —
-  // 이 패널은 머리와 그 저장소 하나의 pane 몸체만 가진다.
-  const panel_body = document.createElement('div');
-  panel_body.className = 'mon2-deck__panel-body';
-  panel_el.append(panel_head, panel_body);
-  mount_element.appendChild(panel_el);
-
   /** @type {string|null} */
   let focus_root = null;
-  /** @type {string|null} */
-  let panel_root = null;
-  /** @type {ReturnType<typeof createExecutionPane>|null} */
-  let pane = null;
-  /** 패널이 지금 그리는 pane 구역 (`worker` start). */
-  let panel_section = 'worker';
   /** mutation 응답이 실어 온 권위 있는 queue (레포별). */
   /** @type {Map<string, any>} */
   const adopted = new Map();
@@ -278,94 +250,31 @@ export function createRepoDeck(mount_element, options) {
     setFocus(focus_root === root_dir ? null : root_dir);
   }
 
-  /** @param {string} root_dir */
-  function openPanel(root_dir) {
-    if (panel_root === root_dir) {
-      closePanel();
-      return;
+  /**
+   * Which repo the settings dialog is showing right now — the dialog owns that
+   * fact, the deck only reads it to mark its own `⚙` (UI-e1ta §7).
+   *
+   * @returns {string|null}
+   */
+  function openRoot() {
+    const root = options.settingsRoot ? options.settingsRoot() : null;
+    return typeof root === 'string' && root.length > 0 ? root : null;
+  }
+
+  /**
+   * Open the settings dialog on this repo, or close it when it is already
+   * showing this repo (§7).
+   *
+   * @param {string} root_dir
+   */
+  function toggleSettings(root_dir) {
+    if (openRoot() === root_dir) {
+      options.closeSettings?.();
+    } else {
+      options.openSettings?.(root_dir);
     }
-    destroyPane();
-    panel_root = root_dir;
-    const row = rowOf(root_dir);
-    panel_title.textContent = `${row?.name || root_dir} 실행 설정`;
-    panel_section = 'worker';
-    renderPanelSegment();
-    panel_el.hidden = false;
-    pane = createExecutionPane(panel_body, {
-      root_dir,
-      queue: () => queueFor(root_dir),
-      transport: /** @type {any} */ (options.transport),
-      implPresetStore: options.implPresetStore,
-      notify,
-      onQueueAdopt: (queue) => {
-        adopted.set(root_dir, queue);
-        doRender();
-      }
-    });
-    void pane.load();
     doRender();
   }
-
-  function destroyPane() {
-    pane?.destroy();
-    pane = null;
-  }
-
-  /** Draw the panel's section segment against the section now on screen. */
-  function renderPanelSegment() {
-    render(
-      paneSectionSegmentTemplate(panel_section, selectPanelSection),
-      panel_seg
-    );
-  }
-
-  /**
-   * @param {string} section - One of the pane's own section ids.
-   */
-  function selectPanelSection(section) {
-    panel_section = section;
-    renderPanelSegment();
-    pane?.render(section);
-  }
-
-  /**
-   * @param {boolean} [silent] - `true`면 다시 그리지 않는다 (렌더 안에서 부를 때).
-   */
-  function closePanel(silent) {
-    destroyPane();
-    panel_root = null;
-    panel_el.hidden = true;
-    panel_title.textContent = '';
-    render(html``, panel_seg);
-    if (silent !== true) {
-      doRender();
-    }
-  }
-
-  /**
-   * Re-read the open pane after a bulk run wrote to its repo (UI-nu43 §3.5).
-   * 프리셋은 세션 기본값 kv를, 계정 폼은 실행 계정 kv를 바꾸므로 열린 pane의
-   * baseline을 다시 읽는다. 다른 저장소만 담겼으면 아무것도 하지 않는다.
-   *
-   * @param {Iterable<string>} root_dirs
-   */
-  async function reloadPanel(root_dirs) {
-    if (panel_root === null || !pane) {
-      return;
-    }
-    const root_dir = panel_root;
-    if (!new Set(root_dirs).has(root_dir)) {
-      return;
-    }
-    const current = pane;
-    await current.load();
-    if (panel_root === root_dir && pane === current) {
-      doRender();
-    }
-  }
-
-  const onPanelClose = () => closePanel();
-  panel_close.addEventListener('click', onPanelClose);
 
   /**
    * @param {KeyboardEvent} ev
@@ -434,9 +343,9 @@ export function createRepoDeck(mount_element, options) {
       </button>
       <button
         type="button"
-        class=${`mon2-deck__op mon2-deck__gear${panel_root === row.root_dir ? ' is-on' : ''}`}
+        class=${`mon2-deck__op mon2-deck__gear${openRoot() === row.root_dir ? ' is-on' : ''}`}
         data-act="gear"
-        aria-expanded=${panel_root === row.root_dir ? 'true' : 'false'}
+        aria-haspopup="dialog"
         aria-label=${`${row.name} 실행 설정`}
         title="이 레포의 실행 설정"
       >
@@ -769,11 +678,12 @@ export function createRepoDeck(mount_element, options) {
   function doRender() {
     pruneAdopted();
     reconcileFocus();
-    if (panel_root !== null && !rowOf(panel_root)) {
-      closePanel(true);
+    // 열린 저장소 행이 목록에서 사라지면 그 창은 말할 대상이 없다 (§7).
+    const open_root = openRoot();
+    if (open_root !== null && !rowOf(open_root)) {
+      options.closeSettings?.();
     }
     render(deckTemplate(), deck_el);
-    pane?.render();
   }
 
   /**
@@ -809,7 +719,7 @@ export function createRepoDeck(mount_element, options) {
       return;
     }
     if (action === 'gear') {
-      openPanel(root_dir);
+      toggleSettings(root_dir);
       return;
     }
     toggleFocus(root_dir);
@@ -843,15 +753,10 @@ export function createRepoDeck(mount_element, options) {
     render: doRender,
     /** @returns {string|null} */
     focusRoot: () => focus_root,
-    /** Test seam: which repo's `⚙` panel is open. */
-    panelRoot: () => panel_root,
-    reloadPanel,
     destroy() {
       document.removeEventListener('keydown', onDocumentKeydown);
       deck_el.removeEventListener('click', onClick);
       deck_el.removeEventListener('keydown', /** @type {any} */ (onKeydown));
-      panel_close.removeEventListener('click', onPanelClose);
-      destroyPane();
       render(html``, deck_el);
       mount_element.replaceChildren();
     }

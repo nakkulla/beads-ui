@@ -1357,6 +1357,40 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
     ]);
   });
 
+  test('names an account the same way in the select and the allow list', async () => {
+    const with_windows = {
+      accounts: [
+        {
+          key: 'repo@example.com',
+          email: 'repo@example.com',
+          active: true,
+          status: 'ok',
+          windows: [
+            { key: '5h', pct: 62 },
+            { key: '7d', pct: 41 }
+          ]
+        }
+      ]
+    };
+    stubAccountFetch({ claude: with_windows, codex: CODEX_ROWS });
+    const { root, pane } = mount({ section: 'account' });
+
+    await pane.load();
+
+    const allow_box = /** @type {HTMLElement} */ (
+      root.querySelector(
+        '[data-limit-runner="claude"][data-limit-account="repo@example.com"]'
+      )
+    );
+    const allow_label = /** @type {HTMLElement} */ (allow_box.parentElement);
+    expect(labels(accountSelect(root, 'claude_account'))).toContain(
+      'repo@example.com (5h 62% · 7d 41%)'
+    );
+    expect(allow_label.textContent?.trim()).toBe(
+      'repo@example.com (5h 62% · 7d 41%)'
+    );
+  });
+
   test('reads the layer without a root_dir key when unbound', async () => {
     const { pane, calls } = mount({ section: 'account' });
 

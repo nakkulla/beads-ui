@@ -31,10 +31,10 @@ import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
-import { claudeLabel, codexLabel } from '../detail-panel/exec-accounts.js';
 import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
 import {
   accountDefaultLabel,
+  accountRowLabel,
   loadAccountCatalog as readAccountCatalog
 } from './account-catalog.js';
 import {
@@ -1919,7 +1919,6 @@ export function createExecutionPane(mount_element, binding) {
     const selected = Object.hasOwn(account_draft, key)
       ? account_draft[key]
       : UNSET;
-    const formatter = provider_key === 'claude' ? claudeLabel : codexLabel;
     const known = Boolean(
       provider?.accounts.some((/** @type {any} */ row) => row.key === selected)
     );
@@ -1946,7 +1945,7 @@ export function createExecutionPane(mount_element, binding) {
           ${provider?.accounts.map(
             (/** @type {any} */ row) =>
               html`<option value=${row.key} ?selected=${row.key === selected}>
-                ${formatter(row)}
+                ${accountRowLabel(provider_key, row)}
               </option>`
           ) || ''}
         </select>
@@ -1957,30 +1956,6 @@ export function createExecutionPane(mount_element, binding) {
             >`}
       </span>
     </div>`;
-  }
-
-  /**
-   * Name one catalog row's usage windows so the allow list is picked with the
-   * same numbers the switch decision reads. A row without windows gets no
-   * suffix (fail-quiet).
-   *
-   * @param {any} row
-   * @returns {string}
-   */
-  function usageWindowSuffix(row) {
-    const windows = Array.isArray(row?.windows) ? row.windows : [];
-    const parts = windows
-      .filter(
-        (/** @type {any} */ window) =>
-          isRecord(window) &&
-          typeof window.key === 'string' &&
-          typeof window.pct === 'number'
-      )
-      .map(
-        (/** @type {any} */ window) =>
-          `${window.key} ${Math.round(window.pct)}%`
-      );
-    return parts.length > 0 ? ` (${parts.join(' · ')})` : '';
   }
 
   /**
@@ -1995,7 +1970,6 @@ export function createExecutionPane(mount_element, binding) {
   function limitPolicyBlock(runner, label) {
     const policy = limitPolicyOf(runner);
     const provider = account_catalog[runner];
-    const formatter = runner === 'claude' ? claudeLabel : codexLabel;
     const rows = provider ? provider.accounts : [];
     const known = new Set(rows.map((/** @type {any} */ row) => row.key));
     const orphans = policy.accounts.filter((key) => !known.has(key));
@@ -2046,7 +2020,7 @@ export function createExecutionPane(mount_element, binding) {
                       /** @type {HTMLInputElement} */ (ev.target).checked
                     )}
                 />
-                ${`${formatter(row)}${usageWindowSuffix(row)}`}
+                ${accountRowLabel(runner, row)}
               </label>`
           )}
           ${orphans.map(

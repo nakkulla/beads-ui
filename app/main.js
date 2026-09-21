@@ -1454,12 +1454,10 @@ export function bootstrap(root_element) {
       implPresetStore: exec_preset_store,
       transport: (type, payload) => tracked_send(type, payload),
       // 모니터 탭에서 연 헤더 ⚙의 일괄 모드는 보이는 저장소 행을 대상으로 쓴다
-      // (UI-nu43 §4.1). 실행이 끝나면 열린 레포 카드 pane을 다시 읽게 한다.
+      // (UI-nu43 §4.1). 레포 카드 ⚙도 같은 창을 `scope: 'repo'`로 열므로 일괄
+      // 적용 뒤 열린 패널을 다시 읽던 경로는 없다 (UI-e1ta §7).
       monitorRows: () => monitor_pipeline_store.getWorkspacesState(),
       subscribeMonitorRows: (fn) => monitor_pipeline_store.subscribe(fn),
-      onBulkApplied: (root_dirs) => {
-        monitor_view.reloadPanel(root_dirs);
-      },
       onOpenChange: (open) => {
         const was_open = settings_dialog_open;
         settings_dialog_open = open;
@@ -1582,6 +1580,10 @@ export function bootstrap(root_element) {
     // the workspace its card belongs to. A card from another repo switches the
     // workspace through the picker's own path before opening the issue.
     const monitor_view = createMonitorView(monitor_root, {
+      openRepoSettings: (root_dir) =>
+        settings_dialog.open(undefined, { scope: 'repo', root_dir }),
+      closeRepoSettings: () => settings_dialog.close(),
+      repoSettingsRoot: () => settings_dialog.repoRoot(),
       transport,
       pipelineStore: monitor_pipeline_store,
       execPresetStore: exec_preset_store,
