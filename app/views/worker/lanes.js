@@ -33,8 +33,8 @@ import {
   providerUsageBadges,
   usageTooltip
 } from '../../utils/token-usage.js';
-import { stepperTemplate } from '../board/stepper.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
+import { stepperTemplate } from '../stepper.js';
 import {
   autoResumeText,
   autoSwitchText,
@@ -1596,7 +1596,7 @@ export function priorityBadgeTemplate(priority) {
  * The merge's current step, when one is running (UI-raqh §4).
  * @property {string} [merge_title] - Tooltip: what the click is based on, or
  * why it is refused.
- * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string, exec_receipt?: import('../board/card.js').ExecReceipt|null }, quick_fix_review?: { state: 'reviewed'|'stale'|'unreviewed'|'unknown', missing: string[], digest: string|null } }) | null} [workflow] - Server-enriched workflow. 실행가능 카드는 stepper와 route
+ * @property {(import('../stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string, exec_receipt?: import('../exec-format.js').ExecReceipt|null }, quick_fix_review?: { state: 'reviewed'|'stale'|'unreviewed'|'unknown', missing: string[], digest: string|null } }) | null} [workflow] - Server-enriched workflow. 실행가능 카드는 stepper와 route
  * 칩을, 대기·PR 대기 행은 route 칩을 여기서 얻는다 (UI-yrzu §7.2).
  * `quick_fix_review`는 서버가 route pin이 `quick_fix`일 때만 붙이는 판정이며
  * (UI-r7or §4) 클라이언트는 읽어 그리기만 한다. 완료 행은 싣지 않는다.
@@ -1680,6 +1680,11 @@ export function priorityBadgeTemplate(priority) {
  * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
  * `false`인 행만 `is-dimmed`로 흐려지고, 검색 중이 아니면 키 자체가 없어 지금
  * 그대로 그려진다 (fail-quiet). 숨김이 아니므로 순번·좌표·건수는 그대로다.
+ * @property {boolean} [filter_match] - 우선순위·타입·라벨 필터와의 일치
+ * (UI-p7s2 §6). 검색과 같은 자리·같은 흐림이다: 대기 행을 숨기면 직렬 순번과
+ * 큐 위치가 어긋나므로 이 레인들은 숨기지 않는다.
+ * @property {string} [issue_type] - bd `issue_type` (타입 필터의 재료).
+ * @property {boolean} [deferred] - 보류 선반의 행 (UI-p7s2 §3).
  */
 
 /**
@@ -3600,7 +3605,9 @@ export function miniRow(item, options = {}) {
       ? ' worker-mini--prerequisite'
       : ''}${route_tone.tinted
       ? ' worker-mini--route-bg'
-      : ''}${item.search_match === false ? ' is-dimmed' : ''}"
+      : ''}${item.search_match === false || item.filter_match === false
+      ? ' is-dimmed'
+      : ''}"
     style=${merging ? `--progress: ${merging.percent}%` : ''}
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
@@ -4072,22 +4079,32 @@ export { AWAITING_USER_REASON_PREFIX } from '../../utils/awaiting-user-reason.js
  * (UI-lx45 §5): UI-j92s가 그 자리에 두었던 `⛓ 의존성` 버튼은 편집이 이슈 상세
  * `의존성` 절로 옮겨 가며 사라졌다.
  *
+ * `options.variant: 'deferred'`는 보류 선반의 변형이다 (UI-p7s2 §3.2, ADR 0014):
+ * 같은 슬롯 표를 쓰되 (1) foot의 `[↴ 대기로]`와 place 메뉴를 그리지 않고,
+ * (2) 슬롯 4a 준비도 칩을 그리지 않으며 — 자격을 묻지 않는 선반이다 —,
+ * (3) route tint 대신 `worker-card--deferred` 하나를 준다.
+ *
  * @param {MiniItem} item
  * @param {PlaceMenu|null} [place_menu]
- * @param {{ onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} [options]
+ * @param {{ onOpenDoc?: import('../stepper.js').OpenDocHandler, variant?: 'deferred' }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function candidateCard(item, place_menu = null, options = {}) {
+  const is_deferred = options.variant === 'deferred';
   // Observation-only rows (UI-8881) are refused here as well as by the
   // projection, so the card cannot become placeable through a caller that
   // forgot the conjunction.
   const worker_ineligible = item.worker_ineligible === true;
-  const draggable = item.draggable && !item.done && !worker_ineligible;
+  const draggable =
+    !is_deferred && item.draggable && !item.done && !worker_ineligible;
   // 배치 자격은 드래그와 갈라졌다 (UI-d13v §6): 후보 카드는 드래그 소스가 아니게
   // 됐지만 대기 적재는 남으므로, 그 자격을 `draggable`에서 읽으면 주 경로가 통째로
   // 사라진다. 메뉴 열림과 `[대기로 ↴]`는 둘 다 이 값 하나를 읽는다.
   const queue_placeable =
-    item.queue_placeable === true && !item.done && !worker_ineligible;
+    !is_deferred &&
+    item.queue_placeable === true &&
+    !item.done &&
+    !worker_ineligible;
   const menu_open =
     queue_placeable && place_menu && place_menu.bead_id === item.id;
   // 계약상 `worker-ineligible`과 상호배타이므로 머리줄의 같은 자리 하나를 나눠
@@ -4112,11 +4129,11 @@ export function candidateCard(item, place_menu = null, options = {}) {
     spec_after_blocker_open
   );
   const readiness_judgement = readinessJudgement(item);
-  const readiness_open = chipOpen(item, 'readiness');
-  const readiness_el = readinessChipTemplate(
-    readiness_judgement,
-    readiness_open
-  );
+  // 보류 선반은 자격을 묻지 않으므로 슬롯 4a의 준비도 칩이 서지 않는다 (§3.2).
+  const readiness_open = !is_deferred && chipOpen(item, 'readiness');
+  const readiness_el = is_deferred
+    ? ''
+    : readinessChipTemplate(readiness_judgement, readiness_open);
   const external = externalWaitCardParts(item);
   const slot4_el = html`${spec_after_blocker_el}${spec_after_blocker_open
     ? judgementPopover(item)
@@ -4144,11 +4161,16 @@ export function candidateCard(item, place_menu = null, options = {}) {
   // 말하고 stepper에만 opacity를 걸므로, 여기서 root opacity를 겹쳐 걸면 그
   // stepper가 0.65 × 0.65로 두 번 흐려진다.
   const blocked_or_not_ready =
+    !is_deferred &&
     !worker_ineligible &&
     (item.blocked === true || item.queue_placeable === false);
   // 작업 종류 배경 (UI-kyky §3.1). `worker-ineligible` 카드는 이미 자기 배경으로
-  // "지금은 못 간다"를 말하므로 중립이 아니다.
-  const route_tone = routeCardTone(workflow, !worker_ineligible);
+  // "지금은 못 간다"를 말하므로 중립이 아니고, 보류 카드는 tint 없이
+  // `worker-card--deferred` 하나로 선반임을 말한다 (§3.2).
+  const route_tone = routeCardTone(
+    workflow,
+    !worker_ineligible && !is_deferred
+  );
   return html`<div
     class="worker-card${draggable
       ? ''
@@ -4156,8 +4178,8 @@ export function candidateCard(item, place_menu = null, options = {}) {
       ? ' worker-card--ineligible'
       : ''}${blocked_or_not_ready
       ? ' worker-card--blocked'
-      : ''}${route_tone.tinted
-      ? ' worker-card--route-bg'
+      : ''}${route_tone.tinted ? ' worker-card--route-bg' : ''}${is_deferred
+      ? ' worker-card--deferred'
       : ''}${item.search_match === false ? ' is-dimmed' : ''}"
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
@@ -4223,53 +4245,59 @@ export function candidateCard(item, place_menu = null, options = {}) {
           )}${external.chips}
         </div>`
       : ''}
-    <div
-      class="worker-card__foot${item.reason
-        ? ''
-        : ' worker-card__foot--actions-only'}"
-    >
-      ${menu_open
-        ? html`<div class="worker-card__place-menu">
-            ${placeMenuList(place_menu.lanes, item.id)}
-            <button
-              type="button"
-              class="op-btn op-btn--icon worker-card__place-cancel"
-              data-bead-id=${item.id}
-              title="레인 선택 취소"
-              aria-label="레인 선택 취소"
-            >
-              ✕
-            </button>
+    ${is_deferred
+      ? item.reason
+        ? html`<div class="worker-card__foot">
+            <span class="worker-card__reason">${item.reason}</span>
           </div>`
-        : html`${item.reason
-              ? html`<span
-                  class="worker-card__reason${danger
-                    ? ' worker-card__reason--danger'
-                    : ''}"
-                  >${item.reason}</span
-                >`
-              : ''}
-            <!-- 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 후보 레인에서 대기로 가는
+        : ''
+      : html`<div
+          class="worker-card__foot${item.reason
+            ? ''
+            : ' worker-card__foot--actions-only'}"
+        >
+          ${menu_open
+            ? html`<div class="worker-card__place-menu">
+                ${placeMenuList(place_menu.lanes, item.id)}
+                <button
+                  type="button"
+                  class="op-btn op-btn--icon worker-card__place-cancel"
+                  data-bead-id=${item.id}
+                  title="레인 선택 취소"
+                  aria-label="레인 선택 취소"
+                >
+                  ✕
+                </button>
+              </div>`
+            : html`${item.reason
+                  ? html`<span
+                      class="worker-card__reason${danger
+                        ? ' worker-card__reason--danger'
+                        : ''}"
+                      >${item.reason}</span
+                    >`
+                  : ''}
+                <!-- 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 후보 레인에서 대기로 가는
                  유일한 경로다 (UI-d13v §6). queue_placeable 하나가 준비도
                  세그먼트와 같은 자격을 말하며, blocked 자체는 막지 않는다.
                  포인터 종류로 감추지 않는다: 드래그라는 대체 경로가 없다. -->
-            <button
-              type="button"
-              class="op-btn op-btn--primary worker-card__place"
-              data-bead-id=${item.id}
-              ?disabled=${!queue_placeable}
-              title=${placementTitle({
-                placeable: queue_placeable,
-                route_ok: item.route_ok,
-                worker_ineligible,
-                awaiting_user,
-                missing_description,
-                spec: item.placement_spec
-              })}
-            >
-              ↴ 대기로
-            </button>`}
-    </div>
+                <button
+                  type="button"
+                  class="op-btn op-btn--primary worker-card__place"
+                  data-bead-id=${item.id}
+                  ?disabled=${!queue_placeable}
+                  title=${placementTitle({
+                    placeable: queue_placeable,
+                    route_ok: item.route_ok,
+                    worker_ineligible,
+                    awaiting_user,
+                    missing_description,
+                    spec: item.placement_spec
+                  })}
+                >
+                  ↴ 대기로
+                </button>`}
+        </div>`}
     ${external.times}${timesMeta(item)}
   </div>`;
 }
@@ -4297,7 +4325,11 @@ export function candidateCard(item, place_menu = null, options = {}) {
  * `match_count`는 워커 탭 검색이 켜져 있을 때만 실리는 「일치 n」이다 (UI-6g3t
  * §7): `worker-pane__count` 뒤에 덧붙고, 키가 없으면 헤더는 지금 그대로다.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, match_count?: number, place_menu?: PlaceMenu|null, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} pane
+ * `footer`는 본문 맨 아래, 행 목록 **뒤**에 서는 한 조각이다 (UI-p7s2 §3.2의
+ * 보류 선반). 헤더 건수는 `items`만 세므로 이 조각의 내용은 pane 건수에 들지
+ * 않고, 재료가 없으면 호출 측이 키를 넘기지 않아 아무것도 그려지지 않는다.
+ *
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, footer?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, match_count?: number, place_menu?: PlaceMenu|null, onOpenDoc?: import('../stepper.js').OpenDocHandler }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -4360,7 +4392,7 @@ export function paneTemplate(pane) {
                           onOpenDoc: pane.onOpenDoc
                         })
                       : miniRow(it)
-                  )}
+                  )}${pane.footer ? pane.footer : ''}
           </div>`}
   </section>`;
 }

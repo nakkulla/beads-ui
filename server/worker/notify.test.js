@@ -994,6 +994,32 @@ describe('worker/notify awaiting_user transition (UI-7uid §3.5)', () => {
 });
 
 describe('worker/notify needs_human transition', () => {
+  test('sends hold rows with the merge hold headline', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.hold({
+      bead_id: 'UI-1',
+      title: '검증 보류',
+      failure_class: '머지 전 검증 실패',
+      reason: 'script_failed',
+      reason_detail: 'build failed',
+      next_action: '수정 커밋 push(자동 재검증) 또는 [세션에서 해결]',
+      pr_url: 'https://github.com/o/r/pull/7',
+      repo: '/repos/beads-ui'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      [
+        '🤖 ⏸️ 머지 보류 — UI-1 검증 보류',
+        '클래스: 머지 전 검증 실패',
+        '사유: script_failed — build failed',
+        '다음: 수정 커밋 push(자동 재검증) 또는 [세션에서 해결]',
+        'https://github.com/o/r/pull/7',
+        '리포: beads-ui'
+      ].join('\n')
+    );
+  });
   test('sends the class, cause, next action, PR and repo in one body', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });

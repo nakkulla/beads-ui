@@ -112,20 +112,8 @@ export function externalWaitFilePath(workspace_root) {
 }
 
 /**
- * Absolute path to a workspace's manual UI-order persistence file. Lives in the
- * SAME state dir as the queue file so both survive `git clean`, branch switches,
- * and worktree churn (spec §2 / §5.1).
- *
- * @param {string} workspace_root - Workspace root (relative or absolute).
- * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/ui-order.json`.
- */
-export function uiOrderFilePath(workspace_root) {
-  return path.join(workspaceStateDir(workspace_root), 'ui-order.json');
-}
-
-/**
  * Absolute path to a workspace's label/metadata display-policy file. Shares the
- * per-workspace state dir with the queue/ui-order files so the display policy
+ * per-workspace state dir with the queue file so the display policy
  * survives `git clean`, branch switches, and worktree churn.
  *
  * @param {string} workspace_root - Workspace root (relative or absolute).
@@ -137,7 +125,7 @@ export function displayPolicyFilePath(workspace_root) {
 
 /**
  * Absolute path to the SERVER-GLOBAL visible-workspaces state file. Unlike the
- * per-workspace queue/ui-order files this is a single file for the whole server
+ * per-workspace queue file this is a single file for the whole server
  * (spec §6): the hidden-workspace set is global, not scoped to one workspace, so
  * it lives directly under the `bdui` state root rather than in a `<slug>/` dir.
  *

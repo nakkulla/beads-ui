@@ -31,7 +31,7 @@ function settle() {
 
 describe('ADR channel lifecycle (UI-8uz7 §7)', () => {
   test('subscribes on tab entry and unsubscribes on leaving', async () => {
-    window.location.hash = '#/board';
+    window.location.hash = '#/worker';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
     bootstrap(root);
@@ -42,7 +42,7 @@ describe('ADR channel lifecycle (UI-8uz7 §7)', () => {
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     await settle();
     const after_entry = sent.slice();
-    window.location.hash = '#/board';
+    window.location.hash = '#/worker';
     window.dispatchEvent(new HashChangeEvent('hashchange'));
     await settle();
 
@@ -62,10 +62,10 @@ describe('ADR channel lifecycle (UI-8uz7 §7)', () => {
     const adr_root = /** @type {HTMLElement} */ (
       document.getElementById('adr-root')
     );
-    const board_root = /** @type {HTMLElement} */ (
-      document.getElementById('board-root')
+    const worker_root = /** @type {HTMLElement} */ (
+      document.getElementById('worker-root')
     );
     expect(adr_root.hidden).toBe(false);
-    expect(board_root.hidden).toBe(true);
+    expect(worker_root.hidden).toBe(true);
   });
 });

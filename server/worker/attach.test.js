@@ -1722,6 +1722,7 @@ describe('worker/attach construction + live loop (F1)', () => {
       active_op: null,
       auto_resolution: null,
       paused_resolution: null,
+      hold: null,
       terminal_reason: {
         reason: 'repair_lane_retired',
         stage: 'repairing',

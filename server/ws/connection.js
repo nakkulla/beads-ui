@@ -76,12 +76,6 @@ import {
   handleUnsubscribeList
 } from './subscription-handlers.js';
 import {
-  detachUiOrder,
-  handleSubscribeUiOrder,
-  handleUiOrderSet,
-  handleUnsubscribeUiOrder
-} from './ui-order-handlers.js';
-import {
   detachWorkerQueue,
   handleGetAttemptPrompt,
   handleGetBeadPrompt,
@@ -297,7 +291,6 @@ export function attachWsServer(http_server, options = {}) {
         detachWorkerQueue(ws);
         detachMonitorPipeline(ws);
         detachAdr(ws);
-        detachUiOrder(ws);
         detachDisplayPolicy(ws);
         detachImplPresets(ws);
       } catch {
@@ -656,15 +649,6 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-revise-approve':
       await handleWorkerReviseApprove(ws, req);
-      return;
-    case 'subscribe-ui-order':
-      handleSubscribeUiOrder(ws, req);
-      return;
-    case 'unsubscribe-ui-order':
-      handleUnsubscribeUiOrder(ws, req);
-      return;
-    case 'ui-order-set':
-      handleUiOrderSet(ws, req);
       return;
     case 'subscribe-display-policy':
       handleSubscribeDisplayPolicy(ws, req);

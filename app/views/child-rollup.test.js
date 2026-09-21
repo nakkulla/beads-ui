@@ -44,23 +44,23 @@ function mountRollup(rollup, opts) {
 describe('views/child-rollup statusDotClass', () => {
   test('maps a status to its dot modifier', () => {
     expect(statusDotClass('in_progress')).toBe(
-      'board-card__dot board-card__dot--progress'
+      'worker-card__dot worker-card__dot--progress'
     );
     expect(statusDotClass('resolved')).toBe(
-      'board-card__dot board-card__dot--resolved'
+      'worker-card__dot worker-card__dot--resolved'
     );
     expect(statusDotClass('closed')).toBe(
-      'board-card__dot board-card__dot--closed'
+      'worker-card__dot worker-card__dot--closed'
     );
     expect(statusDotClass('blocked')).toBe(
-      'board-card__dot board-card__dot--blocked'
+      'worker-card__dot worker-card__dot--blocked'
     );
   });
 
   test('falls back to the bare dot for an unknown status', () => {
     const result = statusDotClass('open');
 
-    expect(result).toBe('board-card__dot');
+    expect(result).toBe('worker-card__dot');
   });
 });
 
@@ -72,17 +72,17 @@ describe('views/child-rollup childRollupTemplate', () => {
   test('renders the children N/M toggle collapsed by default', () => {
     const m = mountRollup(makeRollup(), { parent_id: 'UI-0' });
 
-    const toggle = m.querySelector('.board-card__roll-toggle');
+    const toggle = m.querySelector('.worker-card__roll-toggle');
     expect(toggle?.textContent?.trim()).toBe('children 1/2 ▾');
     expect(toggle?.getAttribute('aria-expanded')).toBe('false');
-    expect(m.querySelector('.board-card__roll-list')).toBe(null);
+    expect(m.querySelector('.worker-card__roll-list')).toBe(null);
   });
 
   test('renders the child list when expanded', () => {
     const m = mountRollup(makeRollup(), { parent_id: 'UI-0', expanded: true });
 
-    const rows = m.querySelectorAll('.board-card__roll-child');
-    expect(m.querySelector('.board-card__roll-toggle')?.textContent).toContain(
+    const rows = m.querySelectorAll('.worker-card__roll-child');
+    expect(m.querySelector('.worker-card__roll-toggle')?.textContent).toContain(
       '▴'
     );
     expect(
@@ -101,7 +101,7 @@ describe('views/child-rollup childRollupTemplate', () => {
     const m = mountRollup(rollup, { parent_id: 'UI-0', expanded: true });
 
     const ords = Array.from(
-      m.querySelectorAll('.board-card__roll-child-title')
+      m.querySelectorAll('.worker-card__roll-child-title')
     ).map((n) => n.textContent);
     expect(ords).toEqual(['first', 'second']);
   });
@@ -113,7 +113,7 @@ describe('views/child-rollup childRollupTemplate', () => {
 
     const m = mountRollup(rollup, { parent_id: 'UI-0' });
 
-    expect(m.querySelector('.board-card__cur-child')?.textContent).toContain(
+    expect(m.querySelector('.worker-card__cur-child')?.textContent).toContain(
       'second'
     );
   });
@@ -121,7 +121,7 @@ describe('views/child-rollup childRollupTemplate', () => {
   test('omits the current child one-liner when there is none', () => {
     const m = mountRollup(makeRollup(), { parent_id: 'UI-0' });
 
-    expect(m.querySelector('.board-card__roll-current')).toBe(null);
+    expect(m.querySelector('.worker-card__roll-current')).toBe(null);
   });
 
   test('renders the empty label when total is 0 and a label is given', () => {
@@ -132,7 +132,7 @@ describe('views/child-rollup childRollupTemplate', () => {
       empty_label: 'children 없음'
     });
 
-    expect(m.querySelector('.board-card__roll-none')?.textContent).toBe(
+    expect(m.querySelector('.worker-card__roll-none')?.textContent).toBe(
       'children 없음'
     );
   });
@@ -151,7 +151,7 @@ describe('views/child-rollup childRollupTemplate', () => {
       trailing: html`<span class="tail">t</span>`
     });
 
-    expect(m.querySelector('.board-card__roll-meta .tail')).not.toBe(null);
+    expect(m.querySelector('.worker-card__roll-meta .tail')).not.toBe(null);
   });
 
   test('carries data-roll-parent and data-child-id without handlers', () => {
@@ -159,11 +159,11 @@ describe('views/child-rollup childRollupTemplate', () => {
 
     expect(
       m
-        .querySelector('.board-card__roll-toggle')
+        .querySelector('.worker-card__roll-toggle')
         ?.getAttribute('data-roll-parent')
     ).toBe('UI-0');
     expect(
-      m.querySelector('.board-card__roll-child')?.getAttribute('data-child-id')
+      m.querySelector('.worker-card__roll-child')?.getAttribute('data-child-id')
     ).toBe('UI-1');
   });
 
@@ -172,7 +172,7 @@ describe('views/child-rollup childRollupTemplate', () => {
 
     const m = mountRollup(makeRollup(), { parent_id: 'UI-0', onToggle });
     /** @type {HTMLElement} */ (
-      m.querySelector('.board-card__roll-toggle')
+      m.querySelector('.worker-card__roll-toggle')
     ).click();
 
     expect(onToggle).toHaveBeenCalledTimes(1);
@@ -187,7 +187,7 @@ describe('views/child-rollup childRollupTemplate', () => {
       onChildClick
     });
     /** @type {HTMLElement} */ (
-      m.querySelector('.board-card__roll-child')
+      m.querySelector('.worker-card__roll-child')
     ).click();
 
     expect(onChildClick).toHaveBeenCalledWith(expect.any(Event), 'UI-1');
@@ -197,12 +197,12 @@ describe('views/child-rollup childRollupTemplate', () => {
     const m = mountRollup(makeRollup(), { parent_id: 'UI-0', expanded: true });
 
     const toggle_click = /** @type {any} */ (
-      m.querySelector('.board-card__roll-toggle')
+      m.querySelector('.worker-card__roll-toggle')
     ).onclick;
     expect(toggle_click).toBe(null);
     expect(() => {
       /** @type {HTMLElement} */ (
-        m.querySelector('.board-card__roll-child')
+        m.querySelector('.worker-card__roll-child')
       ).click();
     }).not.toThrow();
   });
@@ -218,7 +218,7 @@ describe('views/child-rollup childRollupTemplate', () => {
     });
 
     expect(
-      Array.from(m.querySelectorAll('.board-card__roll-child .chip'))
+      Array.from(m.querySelectorAll('.worker-card__roll-child .chip'))
     ).toHaveLength(2);
   });
 
@@ -229,6 +229,6 @@ describe('views/child-rollup childRollupTemplate', () => {
       childChips: () => null
     });
 
-    expect(m.querySelector('.board-card__roll-child .chip')).toBe(null);
+    expect(m.querySelector('.worker-card__roll-child .chip')).toBe(null);
   });
 });

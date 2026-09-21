@@ -269,11 +269,11 @@ const TICK_MS = 1_000;
  * @property {any} [execPresetStore]
  * @property {any} [sessionLogStore] - 실행중 타일의 `▤ 세션` 드로어가 읽는 라인
  * 스토어 (Worker 탭과 같은 것).
- * @property {{ gotoView: (view: 'board'|'worker'|'monitor') => void }} [router] -
+ * @property {{ gotoView: (view: 'worker'|'monitor'|'compare'|'adr') => void }} [router] -
  * 레포 배지·섹션 `Worker ↗` 클릭이 Worker 탭으로 넘어가는 경로.
  * @property {(type: string, payload?: unknown) => Promise<any>} [transport]
  * @property {() => string|undefined} [getWorkspacePath]
- * @property {(doc: import('../board/stepper.js').StepperDoc, root_dir?: string) => void} [openDoc] -
+ * @property {(doc: import('../stepper.js').StepperDoc, root_dir?: string) => void} [openDoc] -
  * 후보 카드 stepper 셀이 여는 md 뷰어. 카드의 `root_dir`를 함께 넘겨 그 레포의
  * 문서를 읽는다 (spec §5).
  * @property {(root_dir: string) => Promise<unknown>} [switchWorkspace]

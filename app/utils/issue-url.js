@@ -1,16 +1,14 @@
 /**
- * Build a canonical issue hash that retains the active view.
+ * Build a canonical issue hash that retains the active view. An unknown view
+ * falls back to worker, the single repo-scoped tab (UI-p7s2 §7.1).
  *
- * @param {'board'|'worker'|'monitor'|'compare'|'adr'} view
+ * @param {'worker'|'monitor'|'compare'|'adr'} view
  * @param {string} id
  */
 export function issueHashFor(view, id) {
   const v =
-    view === 'worker' ||
-    view === 'monitor' ||
-    view === 'compare' ||
-    view === 'adr'
+    view === 'monitor' || view === 'compare' || view === 'adr'
       ? view
-      : 'board';
+      : 'worker';
   return `#/${v}?issue=${encodeURIComponent(id)}`;
 }

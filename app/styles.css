@@ -82,7 +82,6 @@
   --space-8: 16px;
   --space-9: 18px;
   --space-10: 20px;
-  --board-column-min-width: 300px;
 
   --label-has-fg: #16a34a;
   --label-has-border: color-mix(in srgb, #16a34a 35%, transparent);
@@ -890,38 +889,14 @@ a {
   min-height: 0; /* allow children to scroll */
 }
 
-/* Board route: 컬럼은 가로로만 넘치고, 세로는 문서가 받는다. */
-.route {
-  &.board {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-
-    .panel__body {
-      flex: 1;
-      min-height: 0;
-      overflow-x: auto; /* scroll columns horizontal */
-    }
-  }
-}
-
 /* 라우트 셸은 더 이상 뷰포트 높이를 고정하지도 넘치는 내용을 잘라내지도 않는다.
    `overflow: hidden`을 남기면 문서 스크롤이 살아나도 내용이 잘려 보이지 않고,
    그 안의 sticky 헤더도 잘린 상자를 기준으로 삼아 어긋난다. */
-#board-root.route.board,
 #worker-root.route.worker {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
-}
-
-#board-root > .panel__body {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-height: 0;
-  overflow-x: auto;
 }
 
 .panel {
@@ -1955,14 +1930,6 @@ input.inline-edit:focus {
 .epic-row:hover {
   background: color-mix(in srgb, var(--control-bg) 55%, transparent);
 }
-
-/* Board view styles — the legacy .board-root grid rule was removed (UX v3):
-   it loaded after styles/base.css and overrode the control-tower 5/6-track
-   layout contract at equal specificity. base.css owns .board-root now. */
-/* Legacy .board-column / .board-card / toolbar rules were removed (UX v3):
-   this sheet loads after styles/base.css, so the shared class names silently
-   overrode the control-tower board's token-based styles. base.css owns all
-   board-* classes now; the old Board view they styled no longer exists. */
 
 .date-cell {
   font-size: 11px;
@@ -4796,7 +4763,7 @@ html[data-theme='dark'] {
 }
 
 /* 타일 안에서 rollup은 카드의 footer가 아니라 그냥 한 줄이다. */
-.rtile .board-card__roll {
+.rtile .worker-card__roll {
   border-top: none;
   margin-top: var(--sp-4);
   padding-top: 0;
@@ -6187,6 +6154,75 @@ html[data-theme='dark'] {
   color: var(--text-dim);
 }
 
+/* 우선순위 묶음 (UI-p7s2 §6): route 묶음과 같은 치수다 — 세 묶음이 같은
+   `.worker-filter__chip` 토큰을 쓰므로 간격이 다르면 한 줄 안에서 여러 문법이
+   사는 것으로 읽힌다. */
+.worker-filter__priorities {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+/* 라벨 조작은 버튼 하나 + 그 아래 열리는 체크 목록이다. 팝오버는 필터 줄이
+   높이를 얻지 않도록 흐름에서 빼고, 기준 상자가 이 래퍼다. */
+.worker-filter__labels {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.worker-filter__labels-pop {
+  position: absolute;
+  z-index: 3;
+  top: calc(100% + var(--sp-4));
+  left: 0;
+  display: flex;
+  max-height: 240px;
+  flex-direction: column;
+  gap: var(--sp-2);
+  overflow-y: auto;
+  padding: var(--sp-6);
+}
+
+.worker-filter__label-option {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+}
+
+/* 보류 선반 (UI-p7s2 §3.2): 후보 카드 목록 뒤에 서는 접힌 구역. 기본은 접힘이고
+   펼쳐도 후보 레인의 일부로 읽히도록 카드와 같은 간격을 쓴다. */
+.worker-deferred {
+  margin-top: var(--sp-6);
+  border-top: 1px solid var(--border-panel);
+  padding-top: var(--sp-6);
+}
+
+.worker-deferred__summary {
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: var(--fs-chip);
+}
+
+.worker-deferred__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  margin-top: var(--sp-6);
+}
+
+/* 보류 카드: route tint도 준비도 칩도 없는 선반 행이다. 실행 불가 카드와 달리
+   "지금 못 간다"가 아니라 "지금 안 한다"이므로 경고 음영이 아니라 전체 감쇠 하나로
+   말한다. */
+.worker-card--deferred {
+  border-color: var(--border-panel);
+  opacity: 0.7;
+}
+
 .worker-pane__empty {
   padding: var(--sp-8);
   color: var(--text-dim);
@@ -6749,7 +6785,7 @@ html[data-theme='dark'] {
   text-decoration: underline;
 }
 
-/* 우선순위 배지 — Board 카드의 `.board-card__pri`와 같은 문장(`P<n>`)·같은 톤을
+/* 우선순위 배지 — 퇴역한 Board 카드의 `.board-card__pri`와 같은 문장(`P<n>`)·같은 톤을
    쓴다. 같은 사실이 두 탭에서 다른 모양이면 한쪽은 다시 확인해야 하기 때문이다.
    후보 카드 · mini 행 · 실행 타일이 한 클래스를 공유한다. */
 .worker-pri {
@@ -8680,7 +8716,10 @@ button.detail-session__leg:focus-visible {
     gap: var(--sp-6);
   }
 
+  /* 조작 묶음은 접는다 — 슬롯·검색 뒤의 `+`(UI-p7s2 §4)가 리본 폭을 넘치면
+     잘리지 않고 다음 줄로 내려간다. */
   .worker-ctrl__ops {
+    flex-wrap: wrap;
     gap: var(--sp-6);
   }
 
@@ -8850,70 +8889,6 @@ button.detail-session__leg:focus-visible {
     word-break: keep-all;
     line-height: 1.25;
   }
-}
-
-/* --- board Deferred popup (2026-08-05-board-deferred-popup §4) --- */
-.deferred-popup {
-  width: min(720px, calc(100vw - 32px));
-  max-height: 80vh;
-  padding: 0;
-  border-radius: var(--r-6);
-  border: 1px solid var(--border-panel);
-  background: var(--bg-panel);
-  color: var(--text-primary);
-  overflow: hidden;
-}
-
-.deferred-popup::backdrop {
-  background: color-mix(in srgb, #000 45%, transparent);
-  backdrop-filter: blur(1px);
-}
-
-.deferred-popup__container {
-  display: flex;
-  flex-direction: column;
-  max-height: 80vh;
-}
-
-.deferred-popup__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--sp-10) var(--sp-12);
-  border-bottom: 1px solid var(--border-panel);
-}
-
-.deferred-popup__title {
-  color: var(--text-title);
-  font-size: var(--fs-body);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.deferred-popup__close {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  font-size: var(--fs-body);
-  cursor: pointer;
-}
-
-.deferred-popup__close:focus-visible {
-  outline: 2px solid var(--stage-plan-on);
-  outline-offset: 1px;
-}
-
-.deferred-popup__body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-8);
-  padding: var(--sp-12);
-  overflow-y: auto;
-}
-
-.deferred-popup__empty {
-  color: var(--text-dim);
-  font-size: var(--fs-body);
 }
 
 /* Prompt inspection (UI-rxp3 §4/§5): the shared block used by the ⚙ dialog's

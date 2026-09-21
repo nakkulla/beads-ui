@@ -33,6 +33,7 @@ import {
   decorateQueue,
   handleWorkerAttemptResume,
   handleWorkerQueueSetOrchestrationDefaults,
+  handleWorkerResolveInSession,
   onWorkerSnapshotRefresh
 } from './worker-handlers.js';
 
@@ -414,6 +415,147 @@ describe('queue defaults preset identity', () => {
       );
     }
   );
+});
+
+/**
+ * @param {Record<string, any>} [patch]
+ * @returns {Record<string, any>}
+ */
+function heldQueue(patch = {}) {
+  return {
+    ...laneQueue(),
+    completion_intents: {
+      'UI-3': {
+        target_base: 'main',
+        phase: 'holding',
+        subject: {
+          role: 'root',
+          bead_id: 'UI-3',
+          head_sha: 'a'.repeat(40),
+          base_sha: 'b'.repeat(40),
+          merged_sha: null
+        },
+        hold: {
+          cause: 'verify_failure',
+          reason: 'script_failed',
+          summary: 'build failed',
+          operation_id: 'verify-one',
+          log_path: '/logs/verify.log',
+          head_sha: 'a'.repeat(40),
+          at: 100
+        },
+        ...patch
+      }
+    }
+  };
+}
+
+describe('completion hold projection', () => {
+  test('projects bounded hold evidence only while holding', () => {
+    const queue = heldQueue();
+    queue.completion_intents['UI-3'].hold = {
+      cause: 'c'.repeat(300),
+      reason: 'r'.repeat(600),
+      summary: 's'.repeat(5000),
+      operation_id: 'o'.repeat(300),
+      log_path: 'p'.repeat(1100),
+      head_sha: 'a'.repeat(70),
+      at: 100
+    };
+
+    const out = /** @type {any} */ (decorateQueue(WS, queue));
+
+    expect(out.completion_status['UI-3']).toMatchObject({
+      phase: 'holding',
+      failure_stage: 'verify',
+      failure_reason: 'r'.repeat(500),
+      log_path: 'p'.repeat(1000),
+      hold: {
+        cause: 'c'.repeat(200),
+        reason: 'r'.repeat(500),
+        summary: 's'.repeat(4000),
+        operation_id: 'o'.repeat(200),
+        log_path: 'p'.repeat(1000),
+        head_sha: 'a'.repeat(64),
+        at: 100
+      }
+    });
+  });
+
+  test('projects terminal evidence over a leftover hold', () => {
+    const queue = heldQueue({
+      phase: 'needs_human',
+      terminal_reason: {
+        reason: 'receipt_unresolvable:approval_forged',
+        stage: 'merge_gate',
+        evidence: 'forged approval',
+        log_path: '/logs/terminal.log'
+      }
+    });
+
+    const out = /** @type {any} */ (decorateQueue(WS, queue));
+
+    expect(out.completion_status['UI-3']).toMatchObject({
+      phase: 'needs_human',
+      hold: null,
+      failure_stage: 'merge_gate',
+      failure_reason: 'receipt_unresolvable:approval_forged',
+      log_path: '/logs/terminal.log'
+    });
+  });
+
+  test('omits the hold from legacy intent projection', () => {
+    const queue = heldQueue({ phase: 'gating', hold: undefined });
+
+    const out = /** @type {any} */ (decorateQueue(WS, queue));
+
+    expect(out.completion_status['UI-3']).toMatchObject({
+      phase: 'gating',
+      hold: null
+    });
+  });
+
+  test('launches a resolution session for a holding row', async () => {
+    const runtime = getWorkerRuntime();
+    const queue = heldQueue();
+    vi.spyOn(runtime.queueStore, 'snapshot').mockReturnValue(
+      /** @type {any} */ (queue)
+    );
+    const resolve = vi
+      .spyOn(runtime.resolveSession, 'resolve')
+      .mockResolvedValue(
+        /** @type {any} */ ({
+          launched: true,
+          session: 'launched',
+          mode: 'fork',
+          reason: null
+        })
+      );
+    const socket = /** @type {any} */ ({ send: vi.fn() });
+    setConnWorkspace(socket, { root_dir: WS, db_path: '/tmp/db' });
+
+    await handleWorkerResolveInSession(socket, {
+      id: 'resolve-hold',
+      type: 'worker-resolve-in-session',
+      payload: { bead_id: 'UI-3', expected_revision: queue.revision }
+    });
+
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        bead_id: 'UI-3',
+        failure: {
+          failure_class: '머지 전 검증 실패',
+          reason: 'script_failed',
+          stage: 'verify',
+          detail: 'build failed · 로그 /logs/verify.log',
+          exit: 'fix_commit_push'
+        }
+      })
+    );
+    expect(JSON.parse(socket.send.mock.calls[0][0]).payload.launched).toBe(
+      true
+    );
+  });
 });
 
 describe('worker attempt route refusal', () => {

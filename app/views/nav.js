@@ -6,18 +6,20 @@ import { debug } from '../utils/logging.js';
  */
 
 /**
- * The views the header can address. Every OTHER state value renders as Board,
- * which is what an unknown hash resolves to.
+ * The views the header can address. Every OTHER state value renders as Worker,
+ * which is what an unknown hash resolves to (UI-p7s2 §7.1).
  *
  * @type {ReadonlyArray<ViewName>}
  */
-const NAV_VIEWS = ['board', 'worker', 'monitor', 'compare', 'adr'];
+const NAV_VIEWS = ['worker', 'monitor', 'compare', 'adr'];
 
 /**
  * Render the header navigation split by scope: the global mount gets the
- * cross-repo Monitor, 비교 and ADR links, the repo mount gets the Board / Worker
- * tabs that belong to the selected workspace. 비교 is global because the
- * presets it compares are a server-global store (preset-compare §3.1).
+ * cross-repo Monitor, 비교 and ADR links, the repo mount gets the Worker tab
+ * that belongs to the selected workspace. 비교 is global because the presets it
+ * compares are a server-global store (preset-compare §3.1). The repo mount
+ * stays a tab group with one tab: it is the click path back from a global tab
+ * to the selected repo (UI-p7s2 §7.1).
  *
  * @param {{ global_element: HTMLElement | null, repo_element: HTMLElement | null }} mounts
  * @param {{ getState: () => any, subscribe: (fn: (s: any) => void) => () => void }} store
@@ -51,7 +53,7 @@ export function createTopNav(mounts, store, router) {
    */
   function activeView() {
     const s = store.getState();
-    return NAV_VIEWS.includes(s.view) ? s.view : 'board';
+    return NAV_VIEWS.includes(s.view) ? s.view : 'worker';
   }
 
   function globalTemplate() {
@@ -92,12 +94,6 @@ export function createTopNav(mounts, store, router) {
     const active = activeView();
     return html`
       <div class="ctl-tabs">
-        <a
-          href="#/board"
-          class="ctl-tab ${active === 'board' ? 'is-active' : ''}"
-          @click=${onClick('board')}
-          >Board</a
-        >
         <a
           href="#/worker"
           class="ctl-tab ${active === 'worker' ? 'is-active' : ''}"

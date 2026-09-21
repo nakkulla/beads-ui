@@ -36,7 +36,7 @@ function stage(fill, glyph = null, stale = false) {
 
 const NONE = stage('none');
 
-describe('views/board/stepper', () => {
+describe('views/stepper', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
   });
@@ -422,7 +422,7 @@ describe('views/board/stepper', () => {
   });
 });
 
-describe('views/board/stepper doc cells (UI-ajkn §3)', () => {
+describe('views/stepper doc cells (UI-ajkn §3)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
   });

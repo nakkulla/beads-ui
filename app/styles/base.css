@@ -3,7 +3,7 @@
  *
  * Loaded AFTER tokens.css and BEFORE the legacy styles.css. Every color here
  * resolves through a token from tokens.css — no raw hex. New views use new
- * class names (ctl-*, board-*, detail-overlay-*) so they never collide with
+ * class names (ctl-*, worker-*, detail-overlay-*) so they never collide with
  * the legacy stylesheet, which stays until a later phase removes it.
  */
 
@@ -214,7 +214,7 @@ body {
 }
 
 /* Repo scope capsule: everything bound to the selected workspace lives inside
-   this border — picker, manage, git pull, Board, Worker. */
+   this border — picker, manage, git pull, Worker. */
 .repo-scope {
   display: inline-flex;
   align-items: stretch;
@@ -332,128 +332,6 @@ body {
   .repo-scope {
     transition: none;
   }
-}
-
-/* --- board view --- */
-.board-view {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: var(--sp-10);
-  padding: var(--sp-10);
-  background: var(--bg-app);
-}
-
-/* filter bar */
-.board-filter {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-8);
-  align-items: center;
-  padding: var(--sp-8) var(--sp-10);
-  background: var(--bg-panel);
-  border: 1px solid var(--border-panel);
-  border-radius: var(--r-10);
-}
-
-.board-filter__search {
-  flex: 1 1 200px;
-  min-width: 140px;
-  padding: var(--sp-6) var(--sp-8);
-  background: var(--bg-card);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: var(--fs-body-lg);
-}
-
-.board-filter__select {
-  padding: var(--sp-5) var(--sp-8);
-  background: var(--bg-card);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
-  color: var(--text-primary);
-  font-family: var(--font-sans);
-  font-size: var(--fs-body);
-}
-
-.board-filter__spacer {
-  flex: 1 1 auto;
-}
-
-/* Label multi-select: a pressed-state trigger plus an anchored popover. */
-.board-filter__labels {
-  position: relative;
-}
-
-.board-filter__label-btn {
-  padding: var(--sp-5) var(--sp-10);
-  border-radius: var(--r-6);
-  border: 1px solid var(--border-chip);
-  background: var(--bg-card);
-  color: var(--text-muted);
-  font-family: var(--font-sans);
-  font-size: var(--fs-body);
-  cursor: pointer;
-}
-
-.board-filter__label-btn:hover {
-  color: var(--text-primary);
-  border-color: var(--border-route);
-}
-
-.board-filter__label-btn.is-on {
-  color: var(--chip-route);
-  border-color: var(--border-route);
-  background: var(--bg-panel);
-}
-
-.board-filter__label-menu {
-  position: absolute;
-  z-index: 20;
-  top: calc(100% + var(--sp-4));
-  left: 0;
-  min-width: 200px;
-  max-height: 320px;
-  overflow-y: auto;
-  padding: var(--sp-6);
-  border-radius: var(--r-6);
-  border: 1px solid var(--border-panel);
-  background: var(--bg-panel);
-}
-
-.board-filter__label-row {
-  display: flex;
-  gap: var(--sp-6);
-  align-items: center;
-  padding: var(--sp-4) var(--sp-6);
-  color: var(--text-primary);
-  font-size: var(--fs-body);
-  cursor: pointer;
-}
-
-.board-filter__label-row:hover {
-  background: var(--bg-card);
-}
-
-.board-filter__label-empty {
-  padding: var(--sp-6);
-  color: var(--text-dim);
-  font-size: var(--fs-body);
-}
-
-.board-filter__label-clear {
-  width: 100%;
-  margin-top: var(--sp-4);
-  padding: var(--sp-4);
-  border-radius: var(--r-6);
-  border: 1px solid var(--border-chip);
-  background: none;
-  color: var(--text-muted);
-  font-family: var(--font-sans);
-  font-size: var(--fs-body);
-  cursor: pointer;
 }
 
 /* Display-settings dialog: label pills, hidden-prefix rules, chip toggles. */
@@ -593,251 +471,8 @@ body {
   cursor: pointer;
 }
 
-/* Deferred column toggle (UX v3 spec §2): count-bearing pressed-state pill */
-.board-filter__deferred {
-  padding: var(--sp-5) var(--sp-10);
-  border-radius: var(--r-6);
-  border: 1px solid var(--border-chip);
-  background: var(--bg-card);
-  color: var(--text-muted);
-  font-family: var(--font-sans);
-  font-size: var(--fs-body);
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-}
-
-.board-filter__deferred:hover {
-  color: var(--text-primary);
-  border-color: var(--border-route);
-}
-
-.board-filter__deferred.is-on {
-  color: var(--accent-warn);
-  border-color: var(--border-warn);
-  background: var(--bg-panel);
-}
-
-.board-filter__new {
-  padding: var(--sp-6) var(--sp-12);
-  border-radius: var(--r-6);
-  border: 1px solid var(--accent-success);
-  background: var(--accent-success);
-  color: var(--bg-app);
-  font-weight: 600;
-  font-size: var(--fs-body);
-  cursor: pointer;
-}
-
-/* 5-column grid: 4 equal columns + collapsed Closed strip (auto) */
-.board-root {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(260px, 1fr)) auto;
-  gap: var(--sp-10);
-  align-items: start;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-/* Worker 관제탑 어휘 이식 (UI-rkly §1): 레인 페인과 같은 서페이스·보더·반경.
-   컬럼 상단 2px 스파인은 컬럼별 규칙이 덮어쓰므로 여기서는 자리만 만든다. */
-.board-column {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  /* 컬럼 높이 상한: Worker 레인과 같은 어휘이자 같은 값이다 — 컬럼은 여기까지만
-     자라고 넘치는 카드는 `.board-column__body`의 `overflow-y: auto`가 받는다. */
-  max-height: var(--lane-max-h);
-  background: var(--bg-panel);
-  border: 1px solid var(--border-panel);
-  border-top: 2px solid var(--text-dim);
-  border-radius: var(--r-8);
-}
-
-.board-column__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-6);
-  padding: var(--sp-8) var(--sp-10);
-  border-bottom: 1px solid var(--border-panel);
-}
-
-.board-column__title {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-6);
-}
-
-.board-column__title-text {
-  font-size: var(--fs-chip);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-/* status dot before each column title: the header eyebrow encodes the same
-   status color language the cards use (frontend-design: structure carries
-   information, not decoration) */
-.board-column__title-text::before {
-  content: '●';
-  margin-right: var(--sp-5);
-  font-size: var(--fs-label-tiny);
-  color: var(--text-dim);
-}
-
-/* 컬럼→토큰 매핑 (UI-rkly §1 표). Worker 5단계 색과 Board 6컬럼은 일대일이
-   아니라서 표가 계약이다: 스파인·헤더 점·카운트가 컬럼당 한 색을 공유한다. */
-#blocked-col {
-  border-top: 2px solid var(--accent-warn);
-}
-#blocked-col .board-column__title-text::before,
-#blocked-col .board-column__count {
-  color: var(--accent-warn);
-}
-
-#ready-col {
-  border-top: 2px solid var(--stage-plan-on);
-}
-#ready-col .board-column__title-text::before,
-#ready-col .board-column__count {
-  color: var(--stage-plan-on);
-}
-
-/* 실행 중 컬럼만 서페이스로 목소리를 높인다 — 관제 화면에서 시선이 가야 할
-   곳은 한 군데뿐이다 (Worker 실행 타일과 같은 `--bg-tile-run`). */
-#in-progress-col {
-  border-top: 2px solid var(--stage-impl-on);
-  background: var(--bg-tile-run);
-}
-#in-progress-col .board-column__title-text::before,
-#in-progress-col .board-column__count {
-  color: var(--stage-impl-on);
-}
-
-#resolved-col {
-  border-top: 2px solid var(--stage-merge-on);
-}
-#resolved-col .board-column__title-text::before,
-#resolved-col .board-column__count {
-  color: var(--stage-merge-on);
-}
-
-#closed-col {
-  border-top: 2px solid var(--stage-merge-dim);
-}
-#closed-col .board-column__title-text::before,
-#closed-col .board-column__count {
-  color: var(--stage-merge-dim);
-}
-
-.board-column__count {
-  min-width: 18px;
-  padding: 0 var(--sp-6);
-  border-radius: var(--r-10);
-  background: var(--bg-app);
-  color: var(--text-dim);
-  font-size: var(--fs-chip);
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-}
-
-.board-column__body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-8);
-  padding: var(--sp-8);
-  overflow-y: auto;
-  min-height: 60px;
-}
-
-.board-column--drag-over {
-  border-color: var(--accent-success);
-  box-shadow: var(--ring-selected);
-}
-
-/* Closed is a collapsed strip (spec §3.2): its auto track must not balloon to
-   its content width and dwarf the active columns. */
-.board-column--closed {
-  max-width: 360px;
-  min-width: 240px;
-}
-
-/* Closed column period dropdown */
-.board-column__closed-range {
-  font-size: var(--fs-chip);
-  color: var(--text-dim);
-  background: var(--bg-card);
-  border: 1px solid var(--border-card);
-  border-radius: var(--r-8);
-  padding: var(--sp-2) var(--sp-5);
-  cursor: pointer;
-}
-
-/* --- board card v1 (Worker 타일 문법과 통일: UI-rkly §1) --- */
-.board-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-card);
-  border-radius: var(--r-7);
-  padding: var(--sp-8) var(--sp-9);
-  cursor: pointer;
-  transition:
-    border-color 120ms ease,
-    background-color 120ms ease;
-}
-
-.board-card:hover {
-  border-color: var(--border-chip);
-  background: var(--bg-panel);
-}
-
-.board-card:focus-visible {
-  outline: 2px solid var(--stage-plan-on);
-  outline-offset: 1px;
-}
-
-.board-card--dragging {
-  opacity: 0.5;
-}
-
-.board-card__head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-6);
-}
-
-.board-card__id {
-  font-family: var(--font-mono);
-  font-size: var(--fs-body);
-  color: var(--text-id-mono);
-  cursor: pointer;
-  border: none;
-  background: none;
-  padding: 0;
-  border-bottom: 1px dotted var(--text-id-mono);
-}
-
-.board-card__pri {
-  font-size: var(--fs-chip);
-  color: var(--accent-warn);
-}
-
-.board-card__title {
-  font-size: var(--fs-title-sm);
-  color: var(--text-title);
-  font-weight: 500;
-  line-height: 1.35;
-  margin: var(--sp-4) 0 var(--sp-8);
-}
-
-/* --- board card: workflow chips --- */
-.board-card__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-4);
-  margin-bottom: var(--sp-8);
-}
-
-/* --- board card: route-driven stepper (board-card-final.html) --- */
+/* --- route-driven stepper (board-card-final.html 유산; UI-p7s2 §7.3에서
+   `views/stepper.js`로 공유 이동) --- */
 .stp {
   display: flex;
   gap: var(--sp-4);
@@ -964,8 +599,8 @@ body {
   }
 }
 
-/* --- board card: child rollup + elapsed footer --- */
-.board-card__roll {
+/* --- worker card / running tile: child rollup footer --- */
+.worker-card__roll {
   font-size: var(--fs-small);
   color: var(--text-muted);
   border-top: 1px dashed var(--border-empty-fill);
@@ -973,14 +608,14 @@ body {
   margin-top: var(--sp-8);
 }
 
-.board-card__roll-meta {
+.worker-card__roll-meta {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: var(--sp-6);
 }
 
-.board-card__roll-toggle {
+.worker-card__roll-toggle {
   border: none;
   background: none;
   padding: 0;
@@ -990,31 +625,31 @@ body {
   cursor: pointer;
 }
 
-.board-card__roll-toggle:hover {
+.worker-card__roll-toggle:hover {
   color: var(--text-primary);
 }
 
-.board-card__roll-none {
+.worker-card__roll-none {
   color: var(--text-dim);
 }
 
-.board-card__roll-current {
+.worker-card__roll-current {
   margin-top: var(--sp-4);
   color: var(--text-dim);
 }
 
-.board-card__cur-child {
+.worker-card__cur-child {
   color: var(--accent-child);
 }
 
-.board-card__roll-list {
+.worker-card__roll-list {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
   margin-top: var(--sp-5);
 }
 
-.board-card__roll-child {
+.worker-card__roll-child {
   display: flex;
   align-items: center;
   gap: var(--sp-5);
@@ -1028,7 +663,7 @@ body {
   cursor: pointer;
 }
 
-.board-card__roll-child-ord {
+.worker-card__roll-child-ord {
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
   min-width: 1.25em;
@@ -1036,7 +671,7 @@ body {
   flex: 0 0 auto;
 }
 
-.board-card__roll-child-title {
+.worker-card__roll-child-title {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -1044,50 +679,28 @@ body {
   white-space: nowrap;
 }
 
-.board-card__roll-child-chips {
+.worker-card__roll-child-chips {
   display: inline-flex;
   flex: 0 0 auto;
   gap: var(--sp-3);
   white-space: nowrap;
 }
 
-.board-card__dot {
+.worker-card__dot {
   color: var(--text-dim);
   font-size: var(--fs-chip);
 }
-.board-card__dot--progress {
+.worker-card__dot--progress {
   color: var(--accent-child);
 }
-.board-card__dot--resolved {
+.worker-card__dot--resolved {
   color: var(--accent-success);
 }
-.board-card__dot--closed {
+.worker-card__dot--closed {
   color: var(--text-dim);
 }
-.board-card__dot--blocked {
+.worker-card__dot--blocked {
   color: var(--accent-danger);
-}
-
-/* created/updated meta (UX v3 spec §1): two relative times, local tooltip */
-.board-card__times {
-  display: inline-flex;
-  align-items: baseline;
-  gap: var(--sp-4);
-  color: var(--text-dim);
-  font-size: var(--fs-caption);
-  white-space: nowrap;
-}
-
-.board-card__time {
-  cursor: default;
-}
-
-.board-card__time-sep {
-  color: var(--text-gripline);
-}
-
-.board-card__extras {
-  margin-top: var(--sp-6);
 }
 
 /* --- detail overlay (minimal; Phase 8 expands) --- */
@@ -1939,35 +1552,14 @@ select.detail-kv__v:disabled {
 }
 
 /* --- shared focus visibility (frontend-design quality floor) --- */
-.board-filter__search:focus-visible,
-.board-filter__select:focus-visible,
-.board-filter__deferred:focus-visible,
-.board-filter__new:focus-visible,
-.board-card__id:focus-visible,
-.board-card__roll-toggle:focus-visible,
-.board-card__roll-child:focus-visible,
-.board-column__closed-range:focus-visible {
+.worker-card__roll-toggle:focus-visible,
+.worker-card__roll-child:focus-visible {
   outline: 2px solid var(--stage-plan-on);
   outline-offset: 1px;
 }
 
-/* --- reduced motion: drop micro-transitions (frontend-design quality floor) --- */
-@media (prefers-reduced-motion: reduce) {
-  .board-card {
-    transition: none;
-  }
-}
-
 /* --- mobile: columns stack vertically (no horizontal scroll) --- */
 @media (max-width: 640px) {
-  .board-root {
-    grid-template-columns: 1fr;
-  }
-
-  .board-column {
-    max-height: none;
-  }
-
   /* detail panel + md viewer go fullscreen on mobile */
   .detail-overlay {
     align-items: stretch;

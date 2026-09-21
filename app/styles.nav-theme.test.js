@@ -19,7 +19,7 @@ const APP_CSS = readFileSync(
 );
 
 const NAV_START = BASE_CSS.indexOf('/* --- nav (');
-const NAV_END = BASE_CSS.indexOf('/* --- board view --- */');
+const NAV_END = BASE_CSS.indexOf('/* Display-settings dialog:');
 const NAV = BASE_CSS.slice(NAV_START, NAV_END);
 
 /**
@@ -33,7 +33,7 @@ function ruleBody(selector) {
 }
 
 describe('header scope nav styles', () => {
-  test('the nav block exists ahead of the board block', () => {
+  test('the nav block exists ahead of the display-settings block', () => {
     expect(NAV_START).toBeGreaterThan(0);
     expect(NAV_END).toBeGreaterThan(NAV_START);
   });

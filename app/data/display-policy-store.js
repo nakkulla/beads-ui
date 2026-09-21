@@ -4,7 +4,7 @@
  * The server pushes the whole policy as a `display-policy-snapshot` event and
  * also returns the authoritative policy in every `display-policy-set` reply;
  * both paths land here via {@link set}. Mirrors
- * {@link import('./ui-order-store.js').createUiOrderStore} — the policy is
+ * {@link import('./worker-queue-store.js').createWorkerQueueStore} — the policy is
  * total-state (last snapshot wins), so there is no per-key bookkeeping.
  *
  * The cache starts `null` (no snapshot yet). Consumers must treat that as

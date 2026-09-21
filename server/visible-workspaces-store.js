@@ -3,7 +3,7 @@
  * user has hidden from the picker (spec §6).
  *
  * A HIDDEN set (not a visible set) is persisted so a newly discovered workspace
- * defaults to visible. Unlike the per-workspace queue/ui-order stores this is a
+ * defaults to visible. Unlike the per-workspace queue store this is a
  * single file for the whole server — one hidden set applies to every connected
  * client — so it needs no CAS: every mutation is a single-key add/remove toggle
  * that the process serializes in-memory.

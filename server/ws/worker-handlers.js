@@ -2545,6 +2545,7 @@ function delegationStoreOrNull() {
  */
 const COMPLETION_PHASES = new Set([
   'gating',
+  'holding',
   'merging',
   'cleaning',
   ...Object.values(COMPLETION_AUTO_RESOLUTION_PHASE),
@@ -2654,6 +2655,7 @@ function completionStatusFor(workspace_key, queue) {
         evidence: 'completion_intent_malformed',
         log_path: null,
         terminal_reason: 'intent_state_invalid',
+        hold: null,
         auto_resolution: null
       };
       continue;
@@ -2703,6 +2705,27 @@ function completionStatusFor(workspace_key, queue) {
         log_path = boundedCompletionText(observed?.verify?.log_path, 1000);
       }
     }
+    const raw_hold =
+      value.phase === 'holding' &&
+      value.hold &&
+      typeof value.hold === 'object' &&
+      !Array.isArray(value.hold)
+        ? value.hold
+        : null;
+    const hold = raw_hold
+      ? {
+          cause: boundedCompletionText(raw_hold.cause, 200),
+          reason: boundedCompletionText(raw_hold.reason, 500),
+          summary: boundedCompletionText(raw_hold.summary),
+          operation_id: boundedCompletionText(raw_hold.operation_id, 200),
+          log_path: boundedCompletionText(raw_hold.log_path, 1000),
+          head_sha: boundedCompletionText(raw_hold.head_sha, 64),
+          at:
+            typeof raw_hold.at === 'number' && Number.isFinite(raw_hold.at)
+              ? raw_hold.at
+              : null
+        }
+      : null;
     statuses[root_bead_id] = {
       root_bead_id,
       phase: value.phase,
@@ -2713,15 +2736,20 @@ function completionStatusFor(workspace_key, queue) {
       merged_sha: boundedCompletionText(subject.merged_sha, 64),
       active_attempt_id: boundedCompletionText(active_op?.attempt_id, 200),
       failure_stage:
-        boundedCompletionText(failure_key?.stage, 200) ||
-        boundedCompletionText(terminal?.stage, 200) ||
-        boundedCompletionText(cleanup?.step, 200),
+        value.phase === 'holding'
+          ? 'verify'
+          : boundedCompletionText(failure_key?.stage, 200) ||
+            boundedCompletionText(terminal?.stage, 200) ||
+            boundedCompletionText(cleanup?.step, 200),
       failure_reason:
-        boundedCompletionText(failure_key?.reason, 500) ||
-        boundedCompletionText(terminal?.reason, 500) ||
-        boundedCompletionText(cleanup?.reason, 500),
+        value.phase === 'holding'
+          ? (hold?.reason ?? null)
+          : boundedCompletionText(failure_key?.reason, 500) ||
+            boundedCompletionText(terminal?.reason, 500) ||
+            boundedCompletionText(cleanup?.reason, 500),
       evidence,
-      log_path,
+      log_path: value.phase === 'holding' ? (hold?.log_path ?? null) : log_path,
+      hold,
       terminal_reason: boundedCompletionText(terminal?.reason, 500),
       auto_resolution: projectAutoResolution(value.auto_resolution)
     };

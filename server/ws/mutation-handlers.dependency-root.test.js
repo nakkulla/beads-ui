@@ -27,10 +27,6 @@ vi.mock('./refresh.js', () => ({
   triggerMutationRefreshOnce: state.refreshConnection
 }));
 
-vi.mock('./ui-order-handlers.js', () => ({
-  pruneUiOrderForClose: vi.fn()
-}));
-
 vi.mock('./worker-handlers.js', () => ({
   recalibrateSerialLaneAfterDepAdd: state.recalibrate
 }));

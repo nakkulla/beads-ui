@@ -45,40 +45,38 @@ export const COMPARE_RANGE_OPTIONS = [
 ];
 
 /**
- * The 완료 레인's period vocabulary (UI-qbbg §5) — a strict subset of
- * {@link ClosedRange}, because the WS snapshot now carries at most seven days
- * of done rows and a period the data cannot answer would draw an empty lane
- * that looks like a loss.
+ * The 완료 레인's period vocabulary (UI-p7s2 §5) — now the SAME four values as
+ * {@link ClosedRange}. The lane used to stop at `7d` because its only source
+ * was the retained worker snapshot; it now merges the `closed-issues`
+ * subscription on top of that snapshot, so `30d`/`all` have data to answer with.
  *
- * @typedef {'today'|'7d'} DoneRange
+ * @typedef {ClosedRange} DoneRange
  */
 
 /**
- * Ordered period options for the 완료 레인 dropdown. Deliberately NOT
- * {@link CLOSED_RANGE_OPTIONS}, which the Board Closed column owns and which
- * keeps its own `30d`/`all` (its data comes from a `closed-issues`
- * subscription, not from the retained snapshot).
- *
- * `short` is the narrow-viewport summary-chip label (UI-8gem §8); `label` stays
- * the long form the dropdown and the chip `title` keep.
+ * Ordered period options for the 완료 레인 dropdown. Same four values as
+ * {@link CLOSED_RANGE_OPTIONS}, plus the narrow-viewport `short` label
+ * (UI-8gem §8); `label` stays the long form the dropdown and the chip `title`
+ * keep.
  *
  * @type {ReadonlyArray<{ value: DoneRange, label: string, short: string }>}
  */
 export const DONE_RANGE_OPTIONS = [
   { value: 'today', label: '오늘', short: '오늘' },
-  { value: '7d', label: '최근 7일', short: '7일' }
+  { value: '7d', label: '최근 7일', short: '7일' },
+  { value: '30d', label: '최근 30일', short: '30일' },
+  { value: 'all', label: '전체', short: '전체' }
 ];
 
 /**
- * Read any stored 완료 레인 period as one of the two supported ones. A stored
- * `30d`/`all` widens to `7d` on READ only — it is not written back, so the
- * value stays whatever the person last chose.
+ * Read any stored 완료 레인 period. Only a value outside the vocabulary folds
+ * to `7d` — a stored `30d`/`all` is now kept as chosen (UI-p7s2 §5).
  *
  * @param {unknown} value
  * @returns {DoneRange}
  */
 export function normalizeDoneRange(value) {
-  return value === 'today' ? 'today' : '7d';
+  return isClosedRange(value) ? value : '7d';
 }
 
 /**

@@ -601,12 +601,12 @@ describe('worker failed running tile template', () => {
     const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
 
     expect(
-      tile.querySelector('.board-card__roll-toggle')?.textContent
+      tile.querySelector('.worker-card__roll-toggle')?.textContent
     ).toContain('children 1/3');
     expect(
-      tile.querySelector('.board-card__roll-current')?.textContent
+      tile.querySelector('.worker-card__roll-current')?.textContent
     ).toContain('T2: 서버 배선');
-    expect(tile.querySelector('.board-card__roll-list')).toBeNull();
+    expect(tile.querySelector('.worker-card__roll-list')).toBeNull();
     expect(tile.querySelector('.rtile__child')).toBeNull();
   });
 
@@ -637,7 +637,7 @@ describe('worker failed running tile template', () => {
       mount
     );
 
-    const rows = mount.querySelectorAll('.board-card__roll-child');
+    const rows = mount.querySelectorAll('.worker-card__roll-child');
 
     expect(rows).toHaveLength(2);
     expect(
@@ -666,7 +666,7 @@ describe('worker failed running tile template', () => {
       mount
     );
 
-    expect(mount.querySelector('.board-card__roll')).toBeNull();
+    expect(mount.querySelector('.worker-card__roll')).toBeNull();
     expect(mount.querySelector('.rtile__child')).toBeNull();
   });
 
@@ -1467,11 +1467,16 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
   });
 
   test('draws the paused resolution badge in the header too', () => {
-    const tile = renderTile({ conflict_resolution: true, paused: true });
+    const tile = renderTile({
+      conflict_resolution: true,
+      paused: true,
+      status_label: '복구 중'
+    });
 
     expect(
       tile.querySelector('.rtile__hd .worker-mini__badge')?.textContent
     ).toBe('충돌 해소 일시정지');
+    expect(tile.querySelector('.rtile__elapsed')?.textContent).toBe('일시정지');
   });
 
   test('draws the base exception badge in the header, not the meta row', () => {
@@ -1526,7 +1531,7 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
 
     const deps = order.indexOf('worker-deps worker-deps--secondary');
     expect(deps).toBeGreaterThan(order.indexOf('rtile__activity'));
-    expect(deps).toBeGreaterThan(order.indexOf('board-card__roll'));
+    expect(deps).toBeGreaterThan(order.indexOf('worker-card__roll'));
     expect(deps).toBeGreaterThan(order.indexOf('rtile__landing'));
     expect(deps).toBeLessThan(order.indexOf('rtile__meta'));
   });
@@ -2604,22 +2609,29 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     expect(mount.textContent).not.toContain('선행 대기');
   });
 
-  test('renders the live recovery status in the existing elapsed slot', () => {
+  test.each([
+    [1000, '복구 중 · 13m 20s'],
+    [undefined, '복구 중 · —']
+  ])('renders live recovery with started_at=%s', (started_at, expected) => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(
-      runningGridTemplate([
-        waitTile({
-          waiting: false,
-          status: 'running',
-          status_label: '복구 중',
-          wait: null
-        })
-      ]),
+      runningGridTemplate(
+        [
+          waitTile({
+            waiting: false,
+            status: 'running',
+            status_label: '복구 중',
+            started_at,
+            wait: null
+          })
+        ],
+        801000
+      ),
       mount
     );
 
-    expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe('복구 중');
+    expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe(expected);
     expect(mount.querySelector('.rtile__held-badge')).toBeNull();
   });
 
