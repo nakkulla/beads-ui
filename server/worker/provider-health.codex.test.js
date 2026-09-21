@@ -201,13 +201,17 @@ describe('codex provider health probe', () => {
     expect(result.outage).toBeNull();
   });
 
-  test('reads a captured 401 failure as a general failure without an outage', async () => {
+  test('reads a captured 401 failure as an account-scoped credential outage', async () => {
     const env = setup(makeSpawn(fixture('codex-turn-failed-401.jsonl'), 1));
 
     const result = await env.health.probeTarget(WS, 'codex', codexTarget(null));
 
     expect(result.ok).toBe(false);
-    expect(result.outage).toBeNull();
+    expect(result.outage).toMatchObject({
+      detail: 'credential',
+      scope: 'account',
+      resets_at: null
+    });
   });
 
   test('classifies a structured 503 turn failure as a persisting outage', async () => {

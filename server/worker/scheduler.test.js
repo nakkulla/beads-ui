@@ -953,6 +953,7 @@ function setup(opts) {
     workRecoveryPolicy: /** @type {any} */ (opts).workRecoveryPolicy,
     store,
     makeRunner: opts.makeRunner || runner.factory,
+    acquireClaudeLaunch: async () => () => {},
     accountCatalog: opts.accountCatalog,
     providerHealth: opts.providerHealth,
     // Absent by default: an unwired kv channel leaves the repo account layer
@@ -3315,6 +3316,520 @@ describe('scheduler provider hold and recovery', () => {
     });
   }
 
+  /** @param {Record<string, any>} [extra] */
+  async function livePreemptEnv(extra = {}) {
+    /** @type {any} */
+    let env;
+    const processController = {
+      terminate: vi.fn(async () => {
+        env.runner.finish('B1', { success: false, reason: 'killed' });
+        await flush();
+        return { ok: true, state: 'gone' };
+      }),
+      probe: vi.fn(() => ({ state: 'gone' }))
+    };
+    const notify = {
+      providerLivePreempt: vi.fn(),
+      providerRecovered: vi.fn(),
+      attemptStarted: vi.fn()
+    };
+    const append = vi.fn();
+    env = preemptEnv(
+      { B1: { claude_account: 'hot@example.com' } },
+      { processController, notify, timeline: { append }, ...extra }
+    );
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('B1').emit('session_id', 'sid-live');
+    allowSwitchAccounts(env.store, 'claude', ['cool@example.com'], {
+      preempt_pct: 80
+    });
+    notify.attemptStarted.mockClear();
+    append.mockClear();
+    return { ...env, processController, notify, append, attempt_id };
+  }
+
+  test('preempts a live session once and resumes on the chosen account with one notification', async () => {
+    const env = await livePreemptEnv();
+
+    await Promise.all([
+      env.scheduler.livePreemptPass(WS),
+      env.scheduler.livePreemptPass(WS)
+    ]);
+
+    expect(env.processController.terminate).toHaveBeenCalledTimes(1);
+    expect(env.store.snapshot(WS).attempts[env.attempt_id]).toMatchObject({
+      status: 'paused',
+      cause: 'account_preempt:5h',
+      cause_detail: {
+        from: 'hot@example.com',
+        to: 'cool@example.com',
+        window: '5h',
+        pct: 85
+      }
+    });
+    const child = Object.values(env.store.snapshot(WS).attempts).find(
+      (/** @type {any} */ a) => a.resumed_from === env.attempt_id
+    );
+    expect(child).toMatchObject({
+      claude_account: 'cool@example.com',
+      account_sources: { claude: 'live_switch' },
+      account_switched_from: 'hot@example.com',
+      auto_resume_kind: 'account_switch'
+    });
+    expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-live');
+    expect(env.notify.providerLivePreempt).toHaveBeenCalledTimes(1);
+    expect(env.notify.providerRecovered).not.toHaveBeenCalled();
+    expect(env.notify.attemptStarted).not.toHaveBeenCalled();
+    expect(
+      env.append.mock.calls.filter(
+        (/** @type {any[]} */ [event]) => event.kind === 'account_live_preempt'
+      )
+    ).toHaveLength(1);
+    expect(
+      env.append.mock.calls.filter(
+        (/** @type {any[]} */ [event]) => event.kind === 'provider_recovered'
+      )
+    ).toHaveLength(0);
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
+  test('keeps the workspace poll while a recovered attempt still runs', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      const env = await livePreemptEnv();
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'recovered-live',
+          bead_id: 'B2',
+          status: 'running',
+          runner: 'claude',
+          claude_account: 'missing@example.com',
+          session_id: 'sid-recovered'
+        }
+      });
+      await env.scheduler.recoverControls(WS);
+
+      await env.scheduler.stop(WS, env.attempt_id);
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(
+        env.store.snapshot(WS).attempts['recovered-live'].live_preempt_last_skip
+      ).toMatchObject({ reason: 'no_row' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('persists both halves of the live switch before signaling in one revision', async () => {
+    const env = await livePreemptEnv();
+    const revision = env.store.snapshot(WS).revision;
+    env.processController.terminate.mockImplementationOnce(async () => {
+      const queue = env.store.snapshot(WS);
+      expect(queue.revision).toBe(revision + 1);
+      expect(queue.attempts[env.attempt_id].control.intent).toMatchObject({
+        reason: 'account_preempt',
+        to: 'cool@example.com'
+      });
+      expect(queue.auto_resume_pending).toEqual([
+        {
+          attempt_id: env.attempt_id,
+          generation: 0,
+          account: 'cool@example.com',
+          kind: 'account_switch',
+          origin: 'live_preempt',
+          switched_from: 'hot@example.com'
+        }
+      ]);
+      env.runner.finish('B1', { success: false, reason: 'killed' });
+      await flush();
+      return { ok: true, state: 'gone' };
+    });
+
+    const result = await env.scheduler.preemptRunningAttempt(
+      WS,
+      env.attempt_id,
+      { from: 'hot@example.com', to: 'cool@example.com', window: '5h', pct: 85 }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(env.processController.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  test('switches a running Codex session using its own account override', async () => {
+    const rows = [
+      { key: 'old', status: 'ok', windows: [{ key: '300m', pct: 90 }] },
+      { key: 'new', status: 'ok', windows: [{ key: '300m', pct: 10 }] }
+    ];
+    /** @type {any} */
+    let env;
+    const processController = {
+      terminate: vi.fn(async () => {
+        env.runner.finish('B1', { success: false, reason: 'killed' });
+        await flush();
+        return { ok: true, state: 'gone' };
+      }),
+      probe: vi.fn(() => ({ state: 'gone' }))
+    };
+    env = setup({
+      config: { B1: { model: 'sol', codex_account: 'old' } },
+      processController,
+      ...accountDeps({
+        accountCatalog: {
+          ...accountDeps().accountCatalog,
+          listCodex: async () => ({
+            ok: true,
+            active_key: 'old',
+            accounts: rows
+          })
+        }
+      })
+    });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('B1').emit('session_id', 'sid-codex');
+    allowSwitchAccounts(env.store, 'codex', ['new'], { preempt_pct: 80 });
+
+    await env.scheduler.livePreemptPass(WS);
+
+    const child = Object.values(env.store.snapshot(WS).attempts).find(
+      (/** @type {any} */ attempt) => attempt.resumed_from
+    );
+    expect(child).toMatchObject({
+      runner: 'codex',
+      codex_account: 'new',
+      account_sources: { claude: null, codex: 'live_switch' },
+      account_switched_from: 'old'
+    });
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      resume_session_id: 'sid-codex',
+      env: { CODEX_HOME: '/state/codex-homes/new' }
+    });
+  });
+
+  test.each([{ mode: 'wait' }, { preempt_pct: null }, { accounts: [] }])(
+    'skips live switching for policy %j',
+    async (patch) => {
+      const env = await livePreemptEnv();
+      env.store.setProviderLimitPolicy(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        runner: 'claude',
+        patch
+      });
+
+      await env.scheduler.livePreemptPass(WS);
+
+      expect(env.processController.terminate).not.toHaveBeenCalled();
+      expect(
+        env.store.snapshot(WS).attempts[env.attempt_id].live_preempt_last_skip
+      ).toBeNull();
+    }
+  );
+
+  test.each(['no_candidate', 'no_row'])(
+    'records %s without stopping the live attempt',
+    async (reason) => {
+      const env = await livePreemptEnv();
+      if (reason === 'no_row') {
+        env.store.updateAttempt(WS, {
+          attempt_id: env.attempt_id,
+          patch: { claude_account: 'missing' }
+        });
+      } else {
+        allowSwitchAccounts(env.store, 'claude', ['absent'], {
+          preempt_pct: 80
+        });
+      }
+
+      await env.scheduler.livePreemptPass(WS);
+
+      expect(env.processController.terminate).not.toHaveBeenCalled();
+      expect(
+        env.store.snapshot(WS).attempts[env.attempt_id].live_preempt_last_skip
+      ).toEqual({ at: 1000, reason });
+    }
+  );
+
+  test('rejects live candidates at the threshold to prevent account ping pong', async () => {
+    const env = await livePreemptEnv();
+    allowSwitchAccounts(env.store, 'claude', ['cool@example.com'], {
+      preempt_pct: 5
+    });
+
+    await env.scheduler.livePreemptPass(WS);
+
+    expect(env.processController.terminate).not.toHaveBeenCalled();
+    expect(
+      env.store.snapshot(WS).attempts[env.attempt_id].live_preempt_last_skip
+        ?.reason
+    ).toBe('no_candidate');
+  });
+
+  test('leaves a live receipt pending until the pause settles', async () => {
+    const env = await livePreemptEnv();
+    env.store.requestAttemptControl(WS, {
+      attempt_id: env.attempt_id,
+      kind: 'pause',
+      intent: {
+        reason: 'account_preempt',
+        from: 'hot@example.com',
+        to: 'cool@example.com',
+        window: '5h',
+        pct: 85
+      }
+    });
+    const revision = env.store.snapshot(WS).revision;
+
+    await env.scheduler.consumeProviderAutoResume(WS);
+
+    expect(env.store.snapshot(WS).auto_resume_pending).toHaveLength(1);
+    expect(env.store.snapshot(WS).revision).toBe(revision);
+    expect(env.runner.spawnOrder).toEqual(['B1']);
+  });
+
+  test('keeps the prior attempt session and tuple while switching its locked account', async () => {
+    const env = await livePreemptEnv();
+    env.store.updateAttempt(WS, {
+      attempt_id: env.attempt_id,
+      patch: { continuation_choice: 'prior_attempt' }
+    });
+
+    await env.scheduler.livePreemptPass(WS);
+
+    const child = Object.values(env.store.snapshot(WS).attempts).find(
+      (/** @type {any} */ a) => a.resumed_from === env.attempt_id
+    );
+    expect(child).toMatchObject({
+      continuation_choice: 'prior_attempt',
+      claude_account: 'cool@example.com',
+      model: 'opus',
+      effort: 'high'
+    });
+    expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-live');
+  });
+
+  test('switches held pinned accounts below the threshold before the provider gate', async () => {
+    const append = vi.fn();
+    const env = preemptEnv(
+      { B1: { claude_account: 'hot@example.com' } },
+      { timeline: { append } }
+    );
+    allowSwitchAccounts(env.store, 'claude', ['cool@example.com'], {
+      preempt_pct: 90
+    });
+    seedProviderAttempt(env.store, 'held', 'H1');
+    registerProviderHold(env.store, 'held', 'usage_limit', 'hot@example.com');
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.settingsFor('B1').claude_account).toBe(
+      'cool@example.com'
+    );
+    expect(append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'account_preempt',
+        summary: 'claude 선제 전환 hot@example.com → cool@example.com (보류 중)'
+      })
+    );
+  });
+
+  test('makes a repeated provider hold a no-op without notifications or receipt writes', async () => {
+    const notify = { providerHoldEntered: vi.fn() };
+    const append = vi.fn();
+    const env = setup({ config: { B1: {} }, notify, timeline: { append } });
+    seedProviderAttempt(env.store, 'held', 'B1');
+    const classified = {
+      account: 'old',
+      outage: {
+        detail: 'credential',
+        message: 'invalid_grant',
+        scope: /** @type {const} */ ('account'),
+        resets_at: null
+      }
+    };
+    await env.scheduler.holdAttempt(WS, 'held', 'B1', null, classified);
+    const revision = env.store.snapshot(WS).revision;
+    const consume = vi.spyOn(env.store, 'consumeAutoResumePending');
+
+    await env.scheduler.holdAttempt(WS, 'held', 'B1', null, classified);
+
+    expect(env.store.snapshot(WS).revision).toBe(revision);
+    expect(notify.providerHoldEntered).toHaveBeenCalledTimes(1);
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  test.each(['auto', 'prior_attempt'])(
+    'consumes a switch receipt once with concurrent consumers and continuation %s',
+    async (continuation_choice) => {
+      const env = setup({ config: { B1: {} }, ...accountDeps() });
+      allowSwitchAccounts(env.store, 'claude', ['new@example.com']);
+      seedProviderAttempt(env.store, 'held', 'B1', {
+        session_id: 'sid-same',
+        effort: 'high',
+        speed: 'default',
+        base_oid: 'base-B1',
+        target_base: 'main',
+        claude_account: 'old@example.com',
+        exec_values: resumableExecValues(),
+        continuation_choice:
+          continuation_choice === 'prior_attempt' ? 'prior_attempt' : null
+      });
+      env.store.holdProviderAttempt(WS, {
+        attempt_id: 'held',
+        runner: 'claude',
+        patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+        target: {
+          kind: 'usage_limit',
+          model: 'opus',
+          account: 'old@example.com',
+          detail: 'usage_limit',
+          last_error: '',
+          resets_at: null,
+          rearm_count: 0,
+          attempt_ids: []
+        },
+        auto_switch: { candidate_account: 'new@example.com' }
+      });
+
+      await Promise.all([
+        env.scheduler.consumeProviderAutoResume(WS),
+        env.scheduler.consumeProviderAutoResume(WS)
+      ]);
+
+      expect(env.runner.spawnOrder).toEqual(['B1']);
+      expect(env.runner.settingsFor('B1')).toMatchObject({
+        resume_session_id: 'sid-same',
+        claude_account: 'new@example.com',
+        model: 'opus',
+        effort: 'high'
+      });
+      expect(env.store.snapshot(WS).auto_resume_pending).toEqual([]);
+    }
+  );
+
+  test('records bead_running when another attempt owns the switch receipt bead', async () => {
+    const env = await livePreemptEnv();
+    seedProviderAttempt(env.store, 'held-old', 'B1', {
+      session_id: 'sid-old',
+      claude_account: 'hot@example.com',
+      exec_values: resumableExecValues()
+    });
+    env.store.holdProviderAttempt(WS, {
+      attempt_id: 'held-old',
+      runner: 'claude',
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account: 'hot@example.com',
+        detail: 'usage_limit',
+        last_error: '',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      auto_switch: { candidate_account: 'cool@example.com' }
+    });
+
+    const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+    expect(result.refusals).toEqual(['B1:bead_running']);
+    expect(
+      env.store.snapshot(WS).attempts['held-old'].auto_resume_refused
+    ).toBe('bead_running');
+    expect(env.runner.spawnOrder).toEqual(['B1']);
+  });
+
+  test.each(['claude', 'codex'])(
+    'holds %s credential errors without stopping the queue and recovers the same session',
+    async (runner) => {
+      const account_key =
+        runner === 'claude' ? 'claude_account' : 'codex_account';
+      const env = setup({
+        config: {
+          B1: {
+            model: runner === 'claude' ? 'opus' : 'sol',
+            [account_key]: 'held@example.com'
+          }
+        },
+        ...accountDeps({
+          accountCatalog: {
+            ...accountDeps().accountCatalog,
+            readClaude: vi.fn(async (email) => ({
+              ok: true,
+              account: { email, status: 'ok', windows: [] }
+            }))
+          }
+        })
+      });
+      seedQueue(env.store, ['B1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+      env.runner.eventsFor('B1').emit('session_id', 'sid-credential');
+      env.store.updateAttempt(WS, {
+        attempt_id,
+        patch: {
+          account_switched_from: 'original',
+          account_sources: {
+            claude: runner === 'claude' ? 'outage_switch' : null,
+            codex: runner === 'codex' ? 'outage_switch' : null
+          }
+        }
+      });
+      const message =
+        runner === 'claude'
+          ? 'Failed to authenticate: OAuth session expired and could not be refreshed'
+          : 'unexpected status 401 Unauthorized: Missing bearer or basic authentication in header';
+
+      env.runner.finish('B1', {
+        success: false,
+        reason: 'is_error',
+        raw:
+          runner === 'claude'
+            ? [{ type: 'result', is_error: true, result: message }]
+            : [{ type: 'turn.failed', error: { message } }]
+      });
+      await flush();
+
+      const held = env.store.snapshot(WS);
+      expect(held.attempts[attempt_id]).toMatchObject({
+        status: 'paused',
+        cause: 'provider_outage:credential'
+      });
+      expect(held.hold).toBeNull();
+      expect(held.provider_hold[runner].targets[0]).toMatchObject({
+        kind: 'outage',
+        detail: 'credential',
+        account: 'held@example.com'
+      });
+
+      env.store.recoverProviderTarget(WS, {
+        runner,
+        generation: held.provider_hold[runner].generation,
+        kind: 'outage',
+        model: runner === 'claude' ? 'opus' : 'sol',
+        account: 'held@example.com'
+      });
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      const child = Object.values(env.store.snapshot(WS).attempts).find(
+        (attempt) => attempt.resumed_from === attempt_id
+      );
+      expect(child).toMatchObject({
+        [account_key]: 'held@example.com',
+        account_switched_from: 'original',
+        auto_resume_kind: 'provider_outage'
+      });
+      expect(env.runner.settingsFor('B1').resume_session_id).toBe(
+        'sid-credential'
+      );
+    }
+  );
+
   // RED 14 (spec §5)
   test('moves an inherited account off a window past the preempt threshold', async () => {
     const append = vi.fn();
@@ -3425,7 +3940,7 @@ describe('scheduler provider hold and recovery', () => {
   });
 
   // 보존 검증 30 (spec §5)
-  test('leaves a bead-pinned account on its own hot window', async () => {
+  test('switches a bead-pinned account off its hot window without writing the pin', async () => {
     const env = preemptEnv({ B1: { claude_account: 'hot@example.com' } });
     allowSwitchAccounts(env.store, 'claude', ['cool@example.com'], {
       preempt_pct: 80
@@ -3435,9 +3950,14 @@ describe('scheduler provider hold and recovery', () => {
     await env.scheduler.tick(WS);
 
     expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
-      claude_account: 'hot@example.com',
-      account_sources: { claude: 'bead', codex: null }
+      claude_account: 'cool@example.com',
+      account_sources: { claude: 'preempt_switch', codex: null }
     });
+    expect(
+      env.bd.calls.filter(
+        (/** @type {any} */ call) => call.key === 'claude_account'
+      )
+    ).toEqual([]);
   });
 
   // 보존 검증 31 (spec §5)

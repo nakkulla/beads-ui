@@ -179,6 +179,7 @@ function setup(store, timers, spawnImpl, overrides = {}) {
     tick,
     repo: '/repo',
     spawnImpl,
+    acquireClaudeLaunch: async () => () => {},
     resolveCswapPath: () => '/bin/cswap',
     catalog: {
       model_index: { opus: 'claude', sonnet: 'claude' },
@@ -202,6 +203,31 @@ function setup(store, timers, spawnImpl, overrides = {}) {
 }
 
 describe('provider health probe', () => {
+  test('retains the lineage auto resume cap notification after a successful probe', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ is_error: false, result: 'ok' }, 0)
+    );
+    seedHold(store, 'usage_limit', 'held@example.com', { resets_at: NOW });
+    store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { auto_resume_kind: 'provider_outage' }
+    });
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect(env.notify.providerAutoResumeDisarmed).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'auto_resume_cap' })
+    );
+    expect(store.snapshot(WS).auto_resume_pending).toEqual([]);
+    expect(store.snapshot(WS).provider_hold).toEqual({});
+  });
+
   test('uses the catalog model and held Claude account route', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
@@ -369,7 +395,7 @@ describe('provider health probe', () => {
     expect(target.attempt_ids).toEqual(['att-1']);
   });
 
-  test('probes a rearm-capped usage target once at startup', async () => {
+  test('rearms usage targets beyond three resets without a disarmed notification', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
     const spawnImpl = makeSpawn(
@@ -385,17 +411,19 @@ describe('provider health probe', () => {
     seedHold(store, 'usage_limit', 'held@example.com', { rearm_count: 3 });
 
     await env.health.start(WS);
+    expect(timers.next()?.delay).toBe(900_000);
+    timers.fireNext();
     await flush();
 
-    expect(timers.next()).toBeUndefined();
+    expect(timers.next()).toBeDefined();
     expect(spawnImpl).toHaveBeenCalledTimes(1);
     expect(store.snapshot(WS).provider_hold.claude.targets[0].rearm_count).toBe(
       4
     );
-    expect(env.notify.providerAutoResumeDisarmed).toHaveBeenCalledTimes(1);
+    expect(env.notify.providerAutoResumeDisarmed).not.toHaveBeenCalled();
   });
 
-  test('keeps the disarmed notification durable across a cold restart', async () => {
+  test('restores usage probing across a cold restart without disarming', async () => {
     const first_store = createQueueStore({ now: () => NOW });
     const first_timers = makeTimers();
     const probe_result = {
@@ -423,11 +451,12 @@ describe('provider health probe', () => {
     expect(
       first.notify.providerAutoResumeDisarmed.mock.calls.length +
         restarted.notify.providerAutoResumeDisarmed.mock.calls.length
-    ).toBe(1);
-    expect(restarted_spawn).toHaveBeenCalledTimes(1);
+    ).toBe(0);
+    expect(restarted_spawn).not.toHaveBeenCalled();
+    expect(restarted_timers.next()?.delay).toBe(900_000);
   });
 
-  test('recovers a rearm-capped usage target after a startup probe', async () => {
+  test('recovers a repeatedly rearmed usage target at the scheduled probe', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
     const spawnImpl = makeSpawn({ is_error: false, result: 'ok' }, 0);
@@ -435,6 +464,7 @@ describe('provider health probe', () => {
     seedHold(store, 'usage_limit', 'held@example.com', { rearm_count: 3 });
 
     await env.health.start(WS);
+    timers.fireNext();
     await flush();
 
     expect(store.snapshot(WS).provider_hold).toEqual({});
@@ -462,28 +492,26 @@ describe('provider health probe', () => {
     expect(store.snapshot(WS).provider_hold.claude.targets).toHaveLength(1);
   });
 
-  test('probes an aged usage-limit target once at startup', async () => {
+  test('arms an aged usage target at reset plus sixty seconds', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
     const spawnImpl = makeSpawn({ is_error: false, result: 'ok' }, 0);
     const env = setup(store, timers, spawnImpl, {
-      now: () => NOW + 24 * 60 * 60 * 1000
+      now: () => NOW + 25 * 60 * 60 * 1000
     });
-    seedHold(store, 'usage_limit', 'held@example.com');
+    seedHold(store, 'usage_limit', 'held@example.com', {
+      resets_at: NOW + 26 * 60 * 60 * 1000
+    });
 
     await env.health.start(WS);
     await flush();
 
-    expect(timers.next()).toBeUndefined();
-    expect(spawnImpl).toHaveBeenCalledTimes(1);
-    expect(store.snapshot(WS).provider_hold).toEqual({});
-    expect(env.notify.providerAutoResumeDisarmed).toHaveBeenCalledTimes(1);
-    expect(env.notify.providerAutoResumeDisarmed).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'hold_age_cap' })
-    );
+    expect(timers.next()?.delay).toBe(3_660_000);
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(env.notify.providerAutoResumeDisarmed).not.toHaveBeenCalled();
   });
 
-  test('does not probe a capped target during a standalone sync', async () => {
+  test('schedules a repeatedly rearmed target during a standalone sync', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
     const spawnImpl = makeSpawn({ is_error: false, result: 'ok' }, 0);
@@ -494,10 +522,11 @@ describe('provider health probe', () => {
     await flush();
 
     expect(spawnImpl).not.toHaveBeenCalled();
+    expect(timers.next()?.delay).toBe(900_000);
     expect(store.snapshot(WS).provider_hold.claude.targets).toHaveLength(1);
   });
 
-  test('keeps the revision stable for an unchanged disarmed target', async () => {
+  test('keeps the revision stable for an already scheduled usage target', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
     const env = setup(
@@ -516,7 +545,7 @@ describe('provider health probe', () => {
     expect(store.snapshot(WS).revision).toBe(revision);
   });
 
-  test('skips a capped target whose probe is already in flight', async () => {
+  test('skips a repeatedly rearmed target whose probe is already in flight', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
     const spawnImpl = makeHangingSpawn();

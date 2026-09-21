@@ -11,6 +11,7 @@ import {
   codexAccountAuthFile,
   prepareCodexAccountHome as defaultPrepareCodexAccountHome
 } from './codex-account-home.js';
+import { acquireClaudeLaunch } from './runner/claude.js';
 import { adapterSpec, runtimeCatalog } from './runner/index.js';
 import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths.js';
 
@@ -20,11 +21,9 @@ const OUTAGE_BACKOFF_MS = Object.freeze([
 ]);
 const USAGE_FALLBACK_MS = 900_000;
 const USAGE_RESET_GRACE_MS = 60_000;
-export const USAGE_REARM_CAP = 3;
-const HOLD_AGE_CAP_MS = 24 * 60 * 60 * 1000;
 
 /**
- * @typedef {{ kind: 'outage'|'usage_limit', model: string, account: string|null, detail: string, last_error: string, resets_at: number|null, rearm_count: number, attempt_ids: string[], auto_switch?: 'none'|'cap'|'disabled'|null, disarm_notified_at?: number }} ProviderTarget
+ * @typedef {{ kind: 'outage'|'usage_limit', model: string, account: string|null, detail: string, last_error: string, resets_at: number|null, rearm_count: number, attempt_ids: string[], auto_switch?: 'none'|'unconfigured'|'disabled'|null }} ProviderTarget
  */
 
 /**
@@ -196,6 +195,7 @@ function decodeCodexProbe(stdout) {
  *   tick: (workspace: string) => Promise<any>|any,
  *   repo?: string,
  *   spawnImpl?: (command: string, args: string[], options: any) => any,
+ *   acquireClaudeLaunch?: typeof acquireClaudeLaunch,
  *   resolveCswapPath?: () => string|null,
  *   prepareCodexAccountHome?: typeof defaultPrepareCodexAccountHome,
  *   codexAccountHomeDir?: (key: string) => string,
@@ -320,6 +320,12 @@ export function createProviderHealth(deps) {
     if (!argv) {
       return { ok: false, outage: null, error: 'probe_route_unavailable' };
     }
+    const release =
+      runner === 'claude' && target.account !== null
+        ? await (deps.acquireClaudeLaunch || acquireClaudeLaunch)(
+            target.account
+          )
+        : () => {};
     const result = await runProbeProcess(
       spawnImpl,
       argv.command,
@@ -328,7 +334,7 @@ export function createProviderHealth(deps) {
       argv.env,
       setTimeoutImpl,
       clearTimeoutImpl
-    );
+    ).finally(release);
     const classifier = adapterSpec(runner, { catalog }).classifyProviderOutage;
     if (runner === 'codex') {
       const decoded = decodeCodexProbe(result.stdout);
@@ -386,56 +392,6 @@ export function createProviderHealth(deps) {
   }
 
   /**
-   * Notify once and leave a capped target durable for manual recovery.
-   *
-   * @param {string} workspace
-   * @param {string} runner
-   * @param {number} generation
-   * @param {ProviderTarget} target
-   * @param {string} reason
-   */
-  async function disarmTarget(workspace, runner, generation, target, reason) {
-    const marker = `auto_resume_disarmed:${reason}`;
-    const notified =
-      typeof target.disarm_notified_at === 'number' &&
-      Number.isFinite(target.disarm_notified_at);
-    if (target.last_error === marker && notified) {
-      return;
-    }
-    /** @type {Partial<ProviderTarget>} */
-    const patch = {};
-    if (target.last_error !== marker) {
-      patch.last_error = marker;
-    }
-    if (!notified) {
-      patch.disarm_notified_at = now();
-    }
-    const saved = deps.store.updateProviderTarget(workspace, {
-      runner,
-      generation,
-      kind: target.kind,
-      model: target.model,
-      account: target.account,
-      patch
-    });
-    if (!saved.ok || notified) {
-      return;
-    }
-    const queue = saved.queue;
-    for (const attempt_id of target.attempt_ids) {
-      const attempt = queue.attempts[attempt_id];
-      if (attempt) {
-        void deps.notify.providerAutoResumeDisarmed({
-          bead_id: attempt.bead_id,
-          runner,
-          reason,
-          repo: deps.repo
-        });
-      }
-    }
-  }
-
-  /**
    * Schedule a target only when its exact durable generation still exists.
    *
    * @param {string} workspace
@@ -458,23 +414,6 @@ export function createProviderHealth(deps) {
     }
     const key = targetKey(workspace, runner, generation, target);
     if (timers.has(key) || in_flight.has(key)) {
-      return;
-    }
-    // Both caps are usage-limit only (release spec §3.1): an outage probe has
-    // no cap, because the probe is the ONLY judge of recovery and stopping it
-    // walls the runner off forever. UI-k96h's age cap on outage is withdrawn.
-    const rearm_capped =
-      target.kind === 'usage_limit' && target.rearm_count >= USAGE_REARM_CAP;
-    const age_capped =
-      target.kind === 'usage_limit' && now() - since >= HOLD_AGE_CAP_MS;
-    if (rearm_capped || age_capped) {
-      void disarmTarget(
-        workspace,
-        runner,
-        generation,
-        target,
-        rearm_capped ? 'rearm_cap' : 'hold_age_cap'
-      );
       return;
     }
     const delay =
@@ -606,7 +545,7 @@ export function createProviderHealth(deps) {
     // The mirror of the usage-limit promotion below (release spec §3.2): when
     // the classifier now reads a standing outage as a usage limit, the target
     // follows it down to an account-scoped gate. `rearm_count` and the hold's
-    // `since` are untouched — the 24h clock still runs from first hold. An
+    // `since` are untouched and remain display observations. An
     // `account === null` target is NOT demoted: it would become a target that
     // neither probes nor auto-resumes (outage spec §6 F3).
     if (
@@ -675,8 +614,7 @@ export function createProviderHealth(deps) {
    * Pull one runner's recovery probes forward to now (`↻ 지금 프로브`, release
    * spec §3.3). Every eligible target of that runner is fired immediately, its
    * armed timer dropped first; a target whose probe is already running is
-   * skipped. A target capped out of automatic probing still fires — the cap
-   * stops the schedule, not a person's request. `failures` is carried over so
+   * skipped. `failures` is carried over so
    * repeated clicks cannot reset the backoff into a probe storm.
    *
    * Nothing is awaited: a probe runs up to 120s and the caller only learns that
@@ -719,45 +657,6 @@ export function createProviderHealth(deps) {
       );
     }
     return { armed, eligible };
-  }
-
-  /**
-   * Probe capped usage-limit targets once when a workspace starts.
-   *
-   * @param {string} workspace
-   */
-  function probeCapped(workspace) {
-    const queue = deps.store.snapshot(workspace);
-    for (const [runner, hold] of Object.entries(queue.provider_hold)) {
-      for (const target of hold.targets) {
-        if (
-          target.kind !== 'usage_limit' ||
-          target.account === null ||
-          (target.rearm_count < USAGE_REARM_CAP &&
-            now() - hold.since < HOLD_AGE_CAP_MS)
-        ) {
-          continue;
-        }
-        const key = targetKey(workspace, runner, hold.generation, target);
-        if (in_flight.has(key)) {
-          continue;
-        }
-        const entry = timers.get(key);
-        const failures = entry?.failures || 0;
-        if (entry) {
-          clearTimeoutImpl(entry.timer);
-          timers.delete(key);
-        }
-        void runTarget(
-          workspace,
-          runner,
-          hold.generation,
-          hold.since,
-          target,
-          failures
-        );
-      }
-    }
   }
 
   /**
@@ -806,7 +705,6 @@ export function createProviderHealth(deps) {
       deps.store.discardStaleAutoResumePending(workspace);
       await deps.onPending(workspace);
       sync(workspace);
-      probeCapped(workspace);
     },
 
     /**

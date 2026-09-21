@@ -14,6 +14,21 @@ const FINISHED_AT = Date.parse('2026-09-08T09:00:00Z');
 const WORKSPACE_CREDITS_MESSAGE =
   'Your workspace is out of credits. Ask your workspace owner to refill in order to continue.';
 
+test('holds the observed Codex credential failure on the account', () => {
+  const message =
+    'unexpected status 401 Unauthorized: Missing bearer or basic authentication in header';
+  const raw = [{ type: 'turn.failed', error: { message } }];
+
+  const result = classifyProviderOutage({ raw });
+
+  expect(result).toEqual({
+    detail: 'credential',
+    scope: 'account',
+    resets_at: null,
+    message
+  });
+});
+
 /**
  * Read one captured `codex exec --json` stream as parsed events.
  *
@@ -67,7 +82,7 @@ describe('codex provider outage classifier', () => {
     expect(outage).toBeNull();
   });
 
-  test('returns null for the captured 401 authentication failure', () => {
+  test('classifies the captured 401 authentication failure as credential', () => {
     const raw = fixtureEvents('codex-turn-failed-401.jsonl');
 
     const outage = classifyProviderOutage({
@@ -76,7 +91,11 @@ describe('codex provider outage classifier', () => {
       finished_at: FINISHED_AT
     });
 
-    expect(outage).toBeNull();
+    expect(outage).toMatchObject({
+      detail: 'credential',
+      scope: 'account',
+      resets_at: null
+    });
   });
 
   test('returns null for a healthy stream', () => {

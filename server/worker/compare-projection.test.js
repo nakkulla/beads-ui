@@ -2064,6 +2064,7 @@ describe('worker/compare-projection human attribution', () => {
           'provider_hold',
           'provider_recovered',
           'account_preempt',
+          'account_live_preempt',
           'guard_warning'
         ].map((kind) => ({
           event_id: kind,
@@ -2079,34 +2080,36 @@ describe('worker/compare-projection human attribution', () => {
     expect(model.rows[0].problems.human).toBe(false);
   });
 
-  test.each(['provider_hold', 'provider_recovered', 'account_preempt'])(
-    'includes %s only with environment events enabled',
-    (kind) => {
-      const workspace = {
-        timeline_events: {
-          'UI-1': [
-            {
-              event_id: kind,
-              bead_id: 'UI-1',
-              kind,
-              at: 20_000,
-              attempt_id: 'at-1',
-              summary: `환경 이벤트: ${kind}`
-            }
-          ]
-        }
-      };
-      const excluded = projectAttempts([makeAttempt()], workspace);
-      const included = projectAttempts([makeAttempt()], workspace, {
-        problem_criteria: { human: { include_env_events: true } }
-      });
+  test.each([
+    'provider_hold',
+    'provider_recovered',
+    'account_preempt',
+    'account_live_preempt'
+  ])('includes %s only with environment events enabled', (kind) => {
+    const workspace = {
+      timeline_events: {
+        'UI-1': [
+          {
+            event_id: kind,
+            bead_id: 'UI-1',
+            kind,
+            at: 20_000,
+            attempt_id: 'at-1',
+            summary: `환경 이벤트: ${kind}`
+          }
+        ]
+      }
+    };
+    const excluded = projectAttempts([makeAttempt()], workspace);
+    const included = projectAttempts([makeAttempt()], workspace, {
+      problem_criteria: { human: { include_env_events: true } }
+    });
 
-      expect(excluded.rows[0].problems.human).toBe(false);
-      expect(included.rows[0].problems.evidence.human).toEqual([
-        `환경 이벤트: ${kind}`
-      ]);
-    }
-  );
+    expect(excluded.rows[0].problems.human).toBe(false);
+    expect(included.rows[0].problems.evidence.human).toEqual([
+      `환경 이벤트: ${kind}`
+    ]);
+  });
 
   test('splits a queue hold by its summary prefix', () => {
     const workspace = {

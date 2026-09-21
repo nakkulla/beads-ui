@@ -792,7 +792,7 @@ describe('wait judgment holds and manual waits', () => {
     const result = run({ queue: provider({ resets_at: at }) }).wait_reasons[0];
 
     expect(result).toMatchObject({
-      release: `리셋 ${clock} 뒤 자동 프로브 (자동 재개 3회)`,
+      release: `리셋 ${clock} 뒤 자동 프로브 (상한 없음)`,
       resets_at: at,
       since: NOW - MINUTE
     });
@@ -830,37 +830,15 @@ describe('wait judgment holds and manual waits', () => {
     });
   });
 
-  test.each([
-    [1, 'normal'],
-    [0, 'action_required']
-  ])(
-    'waits until the reset before requiring a probe %i',
-    (remaining, verdict) => {
-      const result = run({
-        queue: provider({
-          resets_at: NOW + Number(remaining),
-          last_error: 'auto_resume_disarmed:rearm_cap'
-        })
-      }).wait_reasons[0];
+  test('keeps a usage hold normal after its reset with a retired disarm marker', () => {
+    const result = run({
+      queue: provider({
+        resets_at: NOW,
+        last_error: 'auto_resume_disarmed:rearm_cap'
+      })
+    }).wait_reasons[0];
 
-      expect(result.verdict).toBe(verdict);
-    }
-  );
-
-  test.each([
-    [6 * 60 * MINUTE - 1, 'normal'],
-    [6 * 60 * MINUTE, 'normal'],
-    [6 * 60 * MINUTE + 1, 'action_required']
-  ])('checks the unknown-reset boundary %i', (age, verdict) => {
-    const material = provider({
-      resets_at: null,
-      last_error: 'auto_resume_disarmed:hold_age_cap'
-    });
-    material.provider_hold.codex.since = NOW - Number(age);
-
-    const result = run({ queue: material }).wait_reasons[0];
-
-    expect(result.verdict).toBe(verdict);
+    expect(result.verdict).toBe('normal');
   });
 
   test('uses catalog identity and plan in a usage limit headline', () => {
@@ -882,12 +860,11 @@ describe('wait judgment holds and manual waits', () => {
     expect(result.wait_reasons[0].headline).toBe('codex abcdefgh 한도 초과');
   });
 
-  test('shows exhausted automatic resumes without changing the reset verdict', () => {
+  test('keeps automatic probing beyond three rearms', () => {
     const result = run({ queue: provider({ rearm_count: 3 }) }).wait_reasons[0];
 
     expect(result).toMatchObject({
-      release:
-        '자동 재개 꺼짐 · 서버 재시작 시 1회 자동 프로브 · ↻ 지금 프로브 필요',
+      release: expect.stringMatching(/^리셋 .* 뒤 자동 프로브 \(상한 없음\)$/),
       verdict: 'normal'
     });
   });

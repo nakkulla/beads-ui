@@ -1214,6 +1214,25 @@ describe('worker/notify provider transitions', () => {
     );
   });
 
+  test('reports a live account switch with its window and percentage', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.providerLivePreempt({
+      bead_id: 'UI-1',
+      runner: 'claude',
+      from: 'old',
+      to: 'new',
+      window: '5h',
+      pct: 90,
+      repo: '/r/proj'
+    });
+
+    expect(messageOf(spawn.last())).toContain('🔀 실행 중 계정 전환');
+    expect(messageOf(spawn.last())).toContain('계정 전환: old → new');
+    expect(messageOf(spawn.last())).toContain('사용량: 5h 90%');
+  });
+
   test('points a disarmed provider hold at manual resume', async () => {
     const spawn = makeFakeSpawn();
     const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });

@@ -1796,6 +1796,19 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
   });
 
   // 모니터는 1초마다 pane을 다시 그린다 — 입력 중인 값이 저장값으로 되돌아가면 안 된다.
+  test('explains live switching and usage delays beside the preempt threshold', async () => {
+    const { root, pane } = mount({ section: 'account' });
+
+    await pane.load();
+
+    expect(el(root, '[data-limit-preempt-row="claude"]').textContent).toContain(
+      '실행 중인 세션도 이 값에서 전환합니다'
+    );
+    expect(el(root, '[data-limit-preempt-row="claude"]').textContent).toContain(
+      '사용량 반영은 최대 몇 분 지연될 수 있습니다'
+    );
+  });
+
   test('keeps the typed preempt threshold across a re-render', async () => {
     stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
     const { root, pane } = mount({

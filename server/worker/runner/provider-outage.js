@@ -11,6 +11,9 @@ import { errorDetail } from '../error-detail.js';
 export const LIMIT_RE =
   /\bhit your (?:session|usage|weekly|daily|monthly)?\s*limit\b|\busage limit\b|\blimit reached\b|\bout of (?:extra )?usage\b|\brequires usage credits\b/i;
 
+export const CREDENTIAL_RE =
+  /Failed to authenticate|OAuth session expired|could not be refreshed|invalid_grant|401 Unauthorized|Missing bearer/i;
+
 /** @type {RegExp} */
 const API_529_RE = /\bAPI Error: 529\b/i;
 /** @type {RegExp} */
@@ -130,6 +133,13 @@ function outageMatch(detail, scope, line) {
  */
 function classifyLines(lines, structured_status, allow_limit) {
   const first_line = lines[0] ?? null;
+  const credential_line = matchingLine(lines, CREDENTIAL_RE);
+  if (
+    credential_line !== null &&
+    (structured_status === null || structured_status === 401)
+  ) {
+    return outageMatch('credential', 'account', credential_line);
+  }
   if (structured_status !== null) {
     if (structured_status === 529) {
       return outageMatch('overloaded_529', 'provider', first_line);

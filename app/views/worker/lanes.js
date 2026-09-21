@@ -2250,6 +2250,9 @@ function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
             : '',
           autoResumeText(hold.auto_resume),
           autoSwitchText(hold.auto_switch),
+          typeof hold.live_preempt_skipped_at === 'number'
+            ? `전환 후보 없음 · ${formatRelativeTime(hold.live_preempt_skipped_at)}`
+            : '',
           typeof hold.log_path === 'string' ? hold.log_path : ''
         ].filter(Boolean)
       : [];

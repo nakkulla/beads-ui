@@ -2234,6 +2234,15 @@ describe('monitor 공급자 보류 attempt 투영', () => {
     expect(map.get('A-1')?.hold?.auto_resume).toBe('disarmed');
   });
 
+  test('carries the last live preempt skip into the hold tile', () => {
+    const attempts = providerAttempt();
+    attempts.t1.live_preempt_last_skip = { at: 4000, reason: 'no_candidate' };
+
+    const map = activeByBead(attempts, new Map());
+
+    expect(map.get('A-1')?.hold?.live_preempt_skipped_at).toBe(4000);
+  });
+
   test('keeps the manual-action verdict after the recovered target is removed', () => {
     const attempts = providerAttempt();
     attempts.t1.auto_resume_kind = 'provider_outage';

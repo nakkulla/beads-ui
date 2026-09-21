@@ -1348,6 +1348,9 @@ function providerHoldProjection(attempt, input) {
       ? { auto_switch: target.auto_switch }
       : {}),
     ...(next_probe_at === null ? {} : { next_probe_at }),
+    ...(typeof attempt.live_preempt_last_skip?.at === 'number'
+      ? { live_preempt_skipped_at: attempt.live_preempt_last_skip.at }
+      : {}),
     ...(history.log_path ? { log_path: history.log_path } : {})
   };
 }

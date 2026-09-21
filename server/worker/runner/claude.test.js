@@ -1,12 +1,15 @@
+import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test, vi } from 'vitest';
 import { workRecoveryReadinessEnv } from '../work-recovery-policy.js';
 import {
   WORKER_SETTINGS_OVERRIDE,
+  acquireClaudeLaunch,
   claudeSpec,
   liftDelegation,
   liftUsage,
+  observeClaudeLaunch,
   spawnClaude
 } from './claude.js';
 import { makeFixtureSpawn } from './fixture-spawn.js';
@@ -34,6 +37,89 @@ test.each([true, false])(
 const SUCCESS_FIXTURE = fileURLToPath(
   new URL('../__fixtures__/claude-success.jsonl', import.meta.url)
 );
+
+describe('Claude account launch spacing', () => {
+  /** @param {string} account */
+  function launches(account) {
+    const events = new EventEmitter();
+    let finish = () => {};
+    const done = new Promise((resolve) => {
+      finish = () => resolve({});
+    });
+    const launch = vi.fn(() => /** @type {any} */ ({ events, done }));
+    return {
+      events,
+      finish,
+      launch,
+      start: async () => {
+        const release = await acquireClaudeLaunch(account);
+        observeClaudeLaunch(launch(), release);
+      }
+    };
+  }
+
+  test('waits for init and three seconds before the next same account launch', async () => {
+    vi.useFakeTimers();
+    try {
+      const first = launches('init-account');
+      const second = launches('init-account');
+      await first.start();
+      const waiting = second.start();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(second.launch).not.toHaveBeenCalled();
+
+      first.events.emit('raw', { type: 'system', subtype: 'init' });
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(second.launch).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await waiting;
+
+      expect(second.launch).toHaveBeenCalledTimes(1);
+      second.finish();
+      await vi.runAllTimersAsync();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('launches different accounts without waiting', async () => {
+    vi.useFakeTimers();
+    try {
+      const first = launches('parallel-a');
+      const second = launches('parallel-b');
+
+      await Promise.all([first.start(), second.start()]);
+
+      expect(first.launch).toHaveBeenCalledTimes(1);
+      expect(second.launch).toHaveBeenCalledTimes(1);
+      first.finish();
+      second.finish();
+      await vi.runAllTimersAsync();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('proceeds after thirty seconds when the prior process has no init', async () => {
+    vi.useFakeTimers();
+    try {
+      const first = launches('timeout-account');
+      const second = launches('timeout-account');
+      await first.start();
+
+      const waiting = second.start();
+      await vi.advanceTimersByTimeAsync(30_000);
+      await waiting;
+
+      expect(second.launch).toHaveBeenCalledTimes(1);
+      first.finish();
+      second.finish();
+      await vi.runAllTimersAsync();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 const TOOLS_FIXTURE = fileURLToPath(
   new URL('../__fixtures__/claude-tools.jsonl', import.meta.url)
 );

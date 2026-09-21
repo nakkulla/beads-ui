@@ -9,12 +9,11 @@
  * `agent_message` that merely quotes "429" is model text, never worker state,
  * and an `item.completed` error item is a warning the turn survived.
  *
- * Auth (401/403), request (400) and local execution failures stay general
- * failures: holding the whole provider on them would park a queue on a problem
- * only this attempt has. Claude's 529 reading is not ported — codex has no
- * observed counterpart.
+ * Credential wording creates an account-scoped hold. Other request and local
+ * execution failures stay general failures. Claude's 529 reading is not ported.
  */
 import { errorDetail } from '../error-detail.js';
+import { CREDENTIAL_RE } from './provider-outage.js';
 
 /**
  * Codex's own reconnect/transport line, the one non-JSON shape that still
@@ -251,6 +250,14 @@ export function classifyProviderOutage(ctx) {
       ? ctx.finished_at
       : null;
   for (const message of structuredMessages(raw)) {
+    if (CREDENTIAL_RE.test(message)) {
+      return {
+        detail: 'credential',
+        message: errorDetail(message),
+        scope: 'account',
+        resets_at: null
+      };
+    }
     if (WORKSPACE_CREDITS_RE.test(message) || USAGE_LIMIT_RE.test(message)) {
       return {
         detail: 'usage_limit',

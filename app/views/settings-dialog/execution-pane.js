@@ -2115,7 +2115,10 @@ export function createExecutionPane(mount_element, binding) {
                 String(/** @type {HTMLInputElement} */ (ev.target).value)
               )}
           />
-          <span class="settings-dialog__hint">% 이상이면 미리 전환</span>
+          <span class="settings-dialog__hint"
+            >% 이상이면 미리 전환 · 실행 중인 세션도 이 값에서 전환합니다 ·
+            사용량 반영은 최대 몇 분 지연될 수 있습니다</span
+          >
         </span>
       </div>`;
   }
