@@ -147,6 +147,12 @@ export const ORCHESTRATION_KEYS = [
 /** The 17 per-Bead preset pin keys; mirrors server BEAD_PIN_KEYS. */
 export const BEAD_PIN_KEYS = [...ORCHESTRATION_KEYS, ...BEAD_APPLY_KEYS];
 
+/**
+ * Bead metadata key naming which preset the pins came from; mirrors server
+ * `APPLIED_EXEC_PRESET_KEY`. It is not one of the 17 pin keys.
+ */
+export const APPLIED_EXEC_PRESET_KEY = 'applied_exec_preset';
+
 /** Route-scoped queue keys used only for quick_fix dispatches. */
 export const QUICK_FIX_ORCHESTRATION_KEYS = [
   'quick_fix_orchestration_model',
@@ -154,7 +160,11 @@ export const QUICK_FIX_ORCHESTRATION_KEYS = [
   'quick_fix_orchestration_speed'
 ];
 
-/** Lane-neutral preset fields mapped onto quick_fix storage keys. */
+/**
+ * Lane-neutral preset fields mapped onto quick_fix storage keys.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
 export const QUICK_FIX_LANE_MAP = Object.freeze({
   orchestration_model: 'quick_fix_orchestration_model',
   orchestration_effort: 'quick_fix_orchestration_effort',

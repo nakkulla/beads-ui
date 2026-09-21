@@ -246,6 +246,14 @@ export const ORCHESTRATION_KEYS = [
 /** The 17 keys replaced when a user applies a preset to one Bead. */
 export const BEAD_PIN_KEYS = [...ORCHESTRATION_KEYS, ...BEAD_APPLY_KEYS];
 
+/**
+ * Bead metadata key naming WHICH preset the 17 pins came from. Deliberately
+ * outside `BEAD_PIN_KEYS`: those carry values, this one carries origin, and
+ * only `apply-impl-preset` writes it. beads-ui owns this key — dotfiles
+ * contracts never read it (spec UI-xq3h §7).
+ */
+export const APPLIED_EXEC_PRESET_KEY = 'applied_exec_preset';
+
 /** Route-scoped queue keys used only for quick_fix dispatches. */
 export const QUICK_FIX_ORCHESTRATION_KEYS = [
   'quick_fix_orchestration_model',
