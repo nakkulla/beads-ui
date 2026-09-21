@@ -117,6 +117,10 @@ function row(patch = {}) {
     quick_fix_orchestration_model: null,
     runner_catalog: CATALOG,
     execution_defaults: EXECUTION_DEFAULTS,
+    session_defaults: {},
+    session_defaults_state: 'ready',
+    workspace_accounts: { state: 'absent', values: {}, warnings: [] },
+    applied_exec_preset: null,
     provider_limit_policy: {
       claude: { mode: 'switch', accounts: [], preempt_pct: null },
       codex: { mode: 'switch', accounts: [], preempt_pct: null }
@@ -358,7 +362,7 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
     pane.render('account');
 
     expect(worker_banner).toBe(
-      '화면에 보이는 값이 그대로 쓰입니다 — 손대지 않은 행도 함께 적용됩니다.'
+      '화면에 값이 선 행은 손대지 않아도 그대로 쓰입니다 — 갈림·미확인으로 남은 행만 저장소별 현재 값을 유지합니다.'
     );
     expect(el(host, '[data-bulk-banner]').textContent.trim()).toBe(
       worker_banner
@@ -390,13 +394,13 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
     ).toEqual(['orchestration', 'impl', 'review', 'quick_fix']);
   });
 
-  test('counts the targets and the editable keys in the footer', () => {
+  test('counts the rows this round writes in the footer', () => {
     const { host, pane } = setup();
 
     pane.render('worker');
 
     expect(el(host, '[data-bulk-count]').textContent.replace(/\s+/g, ' ')).toBe(
-      '저장소 2곳에 24개 항목'
+      '24행을 저장소 2곳에 씁니다'
     );
   });
 
@@ -685,14 +689,14 @@ describe('createBulkPane account tab (UI-628r §3.3)', () => {
     expect(accountButton(host).disabled).toBe(false);
   });
 
-  test('sizes the footer by the target count rather than the edits', async () => {
+  test('counts the account rows this round writes in the footer', async () => {
     const { host, pane } = setup();
 
     pane.render('account');
     await settle();
 
     expect(el(host, '[data-bulk-count]').textContent.replace(/\s+/g, ' ')).toBe(
-      '저장소 2곳에 계정 2개 · 한도 정책 2벌'
+      '8행을 저장소 2곳에 씁니다'
     );
   });
 
@@ -933,5 +937,302 @@ describe('bulk pane narrow width (UI-nu43 §3.2)', () => {
     expect(narrow_head).toContain('flex-direction: column');
     expect(narrow_head).toContain('width: 100%');
     expect(css).not.toContain('.mon2-deck__bulk');
+  });
+});
+
+describe('createBulkPane 관측 (UI-e1ta §3)', () => {
+  test('stands each row on the value the ticked repositories hold', () => {
+    const { host, pane } = setup({
+      rows: [
+        row({ session_defaults: { impl_effort: 'high' } }),
+        row({
+          root_dir: WS_B,
+          name: 'repo-b',
+          session_defaults: { impl_effort: 'high' }
+        })
+      ]
+    });
+
+    pane.render('worker');
+
+    expect(el(host, '[data-bulk-key="impl_effort"]').value).toBe('high');
+    expect(
+      el(host, '[data-bulk-badge="impl_effort"]').getAttribute(
+        'data-bulk-observation'
+      )
+    ).toBe('same');
+  });
+
+  test('keeps a split row out of the apply payload', async () => {
+    const { host, pane, calls } = setup({
+      rows: [
+        row({ session_defaults: { impl_effort: 'high' } }),
+        row({
+          root_dir: WS_B,
+          name: 'repo-b',
+          session_defaults: { impl_effort: 'low' }
+        })
+      ]
+    });
+    pane.render('worker');
+
+    click(host, '[data-bulk-apply="worker"]');
+    await settle();
+
+    const kv = payloadsOf(calls, 'set-session-defaults')[0].values;
+    expect(Object.hasOwn(kv, 'impl_effort')).toBe(false);
+    expect(Object.hasOwn(kv, 'impl_model')).toBe(true);
+  });
+
+  test('keeps an unread layer out of the apply payload', async () => {
+    const { host, pane, calls } = setup({
+      rows: [
+        row({ session_defaults: { impl_effort: 'high' } }),
+        row({
+          root_dir: WS_B,
+          name: 'repo-b',
+          session_defaults: {},
+          session_defaults_state: 'pending'
+        })
+      ]
+    });
+    pane.render('worker');
+
+    click(host, '[data-bulk-apply="worker"]');
+    await settle();
+
+    expect(payloadsOf(calls, 'set-session-defaults')[0].values).toEqual({});
+  });
+
+  test('keeps an edited row while recomputing the untouched ones', () => {
+    const { host, pane } = setup({
+      rows: [
+        row({ session_defaults: { impl_effort: 'high' } }),
+        row({
+          root_dir: WS_B,
+          name: 'repo-b',
+          session_defaults: { impl_effort: 'high', impl_review_model: 'fable' }
+        })
+      ]
+    });
+    pane.render('worker');
+    choose(host, '[data-bulk-key="impl_effort"]', 'low');
+
+    tick(host, `[data-bulk-repo="${WS_B}"]`, false);
+
+    expect(el(host, '[data-bulk-key="impl_effort"]').value).toBe('low');
+    expect(el(host, '[data-bulk-key="impl_review_model"]').value).toBe('');
+  });
+
+  test('puts a row back on its observation when the hold option is rechosen', () => {
+    const { host, pane } = setup({
+      rows: [
+        row({ session_defaults: { impl_effort: 'high' } }),
+        row({
+          root_dir: WS_B,
+          name: 'repo-b',
+          session_defaults: { impl_effort: 'low' }
+        })
+      ]
+    });
+    pane.render('worker');
+    choose(host, '[data-bulk-key="impl_effort"]', 'low');
+
+    choose(host, '[data-bulk-key="impl_effort"]', '__bulk_hold__');
+
+    expect(
+      el(host, '[data-bulk-badge="impl_effort"]').getAttribute(
+        'data-bulk-observation'
+      )
+    ).toBe('mixed');
+  });
+
+  test('locks only the preset save while a row stands on nothing', () => {
+    const { host, pane } = setup({
+      rows: [
+        row({ session_defaults: { impl_effort: 'high' } }),
+        row({
+          root_dir: WS_B,
+          name: 'repo-b',
+          session_defaults: { impl_effort: 'low' }
+        })
+      ]
+    });
+
+    pane.render('worker');
+
+    expect(el(host, '[data-bulk-preset-save]').disabled).toBe(true);
+    expect(el(host, '[data-bulk-preset-save]').title).toBe(
+      '값이 서지 않은 1행을 먼저 정하세요'
+    );
+    expect(el(host, '[data-bulk-apply="worker"]').disabled).toBe(false);
+  });
+});
+
+describe('createBulkPane 세션 탭 (UI-e1ta §5)', () => {
+  test('stands the three rows on what the repositories hold', () => {
+    const { host, pane } = setup({
+      rows: [
+        row({ session_defaults: { workflow_mode: 'fast_track' } }),
+        row({
+          root_dir: WS_B,
+          name: 'repo-b',
+          session_defaults: { workflow_mode: 'fast_track' }
+        })
+      ]
+    });
+
+    pane.render('session');
+
+    expect(el(host, '[data-bulk-session="workflow_mode"]').value).toBe(
+      'fast_track'
+    );
+    expect(el(host, '[data-bulk-session="bdui_url"]')).not.toBe(null);
+    expect(
+      el(host, '[data-bulk-session="base_sync_accept_local_commits"]')
+    ).not.toBe(null);
+  });
+
+  test('writes the session rows once per repository', async () => {
+    const { host, pane, calls } = setup();
+    pane.render('session');
+
+    choose(host, '[data-bulk-session="workflow_mode"]', 'standard');
+    click(host, '[data-bulk-apply="session"]');
+    await settle();
+
+    expect(payloadsOf(calls, 'set-session-defaults')).toEqual([
+      {
+        root_dir: WS_A,
+        values: {
+          workflow_mode: 'standard',
+          bdui_url: null,
+          base_sync_accept_local_commits: null
+        }
+      },
+      {
+        root_dir: WS_B,
+        values: {
+          workflow_mode: 'standard',
+          bdui_url: null,
+          base_sync_accept_local_commits: null
+        }
+      }
+    ]);
+  });
+});
+
+describe('createBulkPane 계정 탭 관측 (UI-e1ta §6)', () => {
+  /** @returns {any[]} */
+  function splitAllowRows() {
+    return [
+      row({
+        provider_limit_policy: {
+          claude: {
+            mode: 'switch',
+            accounts: ['a@example.com'],
+            preempt_pct: null
+          },
+          codex: { mode: 'switch', accounts: [], preempt_pct: null }
+        }
+      }),
+      row({
+        root_dir: WS_B,
+        name: 'repo-b',
+        provider_limit_policy: {
+          claude: { mode: 'switch', accounts: [], preempt_pct: null },
+          codex: { mode: 'switch', accounts: [], preempt_pct: null }
+        }
+      })
+    ];
+  }
+
+  test('empties a split allow list and badges it', async () => {
+    const { host, pane } = setup({ rows: splitAllowRows() });
+
+    pane.render('account');
+    await settle();
+
+    expect(
+      el(
+        host,
+        '[data-bulk-limit-account="a@example.com"][data-runner="claude"]'
+      ).checked
+    ).toBe(false);
+    expect(
+      el(host, '[data-bulk-badge="claude.accounts"]').getAttribute(
+        'data-bulk-observation'
+      )
+    ).toBe('mixed');
+  });
+
+  test('returns a touched allow list to its observation', async () => {
+    const { host, pane } = setup({ rows: splitAllowRows() });
+    pane.render('account');
+    await settle();
+    tick(
+      host,
+      '[data-bulk-limit-account="b@example.com"][data-runner="claude"]',
+      true
+    );
+
+    click(host, '[data-bulk-limit-accounts-release="claude"]');
+
+    expect(
+      el(host, '[data-bulk-badge="claude.accounts"]').getAttribute(
+        'data-bulk-observation'
+      )
+    ).toBe('mixed');
+  });
+});
+
+describe('createBulkPane 적용된 프리셋 (UI-e1ta §4.1)', () => {
+  test('names the record by its id from the current preset list', () => {
+    const applied = { id: 'p1', name: '옛 이름', revision: 1, applied_at: 9 };
+    const { host, pane } = setup({
+      rows: [
+        row({ applied_exec_preset: applied }),
+        row({
+          root_dir: WS_B,
+          name: 'repo-b',
+          applied_exec_preset: { ...applied, applied_at: 11 }
+        })
+      ]
+    });
+
+    pane.render('worker');
+
+    expect(
+      el(host, '[data-bulk-applied-preset-value]').textContent.trim()
+    ).toBe('위임');
+  });
+
+  test('says 삭제된 프리셋 for an id the list no longer names', () => {
+    const { host, pane } = setup({
+      rows: [
+        row({ applied_exec_preset: { id: 'gone' } }),
+        row({
+          root_dir: WS_B,
+          name: 'repo-b',
+          applied_exec_preset: { id: 'gone' }
+        })
+      ]
+    });
+
+    pane.render('worker');
+
+    expect(
+      el(host, '[data-bulk-applied-preset-value]').textContent.trim()
+    ).toBe('삭제된 프리셋');
+  });
+
+  test('draws no line at all when the projection omits the record', () => {
+    const plain = row();
+    delete plain.applied_exec_preset;
+    const { host, pane } = setup({ rows: [plain] });
+
+    pane.render('worker');
+
+    expect(el(host, '[data-bulk-applied-preset]')).toBe(null);
   });
 });

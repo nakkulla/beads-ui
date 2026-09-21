@@ -238,6 +238,55 @@ describe('createSettingsDialog tabs', () => {
   });
 });
 
+describe('createSettingsDialog repo scope (UI-e1ta §7)', () => {
+  const REPO_ROWS = [
+    {
+      root_dir: '/tmp/example/repo-b',
+      name: 'repo-b',
+      revision: 4,
+      runner_catalog: CATALOG,
+      execution_defaults: EXECUTION_DEFAULTS,
+      quick_fix_orchestration_model: null
+    }
+  ];
+
+  test('draws the three execution tabs titled after that repository', async () => {
+    const { root, dialog } = mount({ monitorRows: REPO_ROWS });
+
+    dialog.open(undefined, {
+      scope: 'repo',
+      root_dir: '/tmp/example/repo-b'
+    });
+    await settle();
+
+    const tabs = Array.from(root.querySelectorAll('[role="tab"]')).map((tab) =>
+      tab.textContent?.replace(/\s+/g, ' ').trim()
+    );
+    expect(tabs).toEqual(['◆ 워커', '◇ 세션', '◎ 계정']);
+    expect(
+      root.querySelector('.settings-dialog__pane-head h2')?.textContent
+    ).toBe('repo-b 실행 설정');
+    dialog.destroy();
+  });
+
+  test('binds the execution pane to that repository', async () => {
+    const { dialog, transport } = mount({ monitorRows: REPO_ROWS });
+
+    dialog.open(undefined, {
+      scope: 'repo',
+      root_dir: '/tmp/example/repo-b'
+    });
+    await settle();
+
+    expect(transport.mock.calls).toContainEqual([
+      'get-session-defaults',
+      { root_dir: '/tmp/example/repo-b' }
+    ]);
+    expect(dialog.repoRoot()).toBe('/tmp/example/repo-b');
+    dialog.destroy();
+  });
+});
+
 describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
   const MONITOR_ROWS = [
     {
@@ -257,7 +306,7 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
     return transport.mock.calls.map((/** @type {any[]} */ call) => call[0]);
   }
 
-  test('draws only the 워커 and 계정 tabs when opened from the monitor', async () => {
+  test('draws the 워커·세션·계정 tabs when opened from the monitor', async () => {
     const { root, dialog } = mount({ monitorRows: MONITOR_ROWS });
 
     dialog.open(undefined, { scope: 'monitor' });
@@ -266,9 +315,10 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
     const tabs = Array.from(root.querySelectorAll('[role="tab"]')).map((tab) =>
       tab.textContent?.replace(/\s+/g, ' ').trim()
     );
-    expect(tabs).toEqual(['◆ 워커', '◎ 계정']);
+    expect(tabs).toEqual(['◆ 워커', '◇ 세션', '◎ 계정']);
     expect(BULK_SETTINGS_TABS.map((tab) => tab.id)).toEqual([
       'worker',
+      'session',
       'account'
     ]);
     dialog.destroy();
@@ -304,13 +354,13 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
 
     expect(worker).toEqual({
       title: '여러 저장소 설정',
-      sub: '선택한 저장소에 실행 프로필 한 벌을 적용합니다. 프리셋을 고르면 아래 폼이 그 값으로 채워집니다.'
+      sub: '선택한 저장소의 현재 실행 프로필을 읽어 세웁니다. 프리셋을 고르면 25행이 그 값으로 채워집니다.'
     });
     expect(
       root.querySelector('.settings-dialog__pane-head h2')?.textContent
     ).toBe('여러 저장소 설정');
     expect(root.querySelector('.settings-dialog__pane-sub')?.textContent).toBe(
-      '선택한 저장소의 실행 계정과 한도 대응을 화면의 값 그대로 씁니다.'
+      '선택한 저장소의 실행 계정과 한도 대응을 읽어 세웁니다.'
     );
     expect(root.querySelector('[data-bulk-count]')).not.toBe(null);
     dialog.destroy();

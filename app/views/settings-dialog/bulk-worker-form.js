@@ -1,11 +1,15 @@
 /**
- * 여러 저장소 설정 창 `워커` 탭의 실행 프로필 폼 (UI-628r §4.1).
+ * 여러 저장소 설정 창 `워커` 탭의 실행 프로필 폼 (UI-e1ta §3–§4, 편집면은
+ * UI-628r §4.1).
  *
- * The bulk window is NOT a view of any repo's current settings: this form owns
- * one sparse value map of its own, starts every row at `기본값 사용`, lets a
- * preset fill it, and `[적용]` writes the whole map to each ticked repo
- * (UI-628r §2.3). No repo's stored values are ever read into it, so nothing
- * here needs a baseline or a per-repo draft.
+ * The bulk window IS a view of the ticked repos' current settings (UI-e1ta §3):
+ * every row starts from `bulk-observation.js`'s reading of those repos. A row
+ * whose repos agree stands on that value, a row nobody has set stands on
+ * `기본값 사용`, and a row whose repos disagree — or whose layer one repo has
+ * not read yet — stands on nothing at all and stays out of the apply payload
+ * until the user touches it.
+ *
+ * A touched row is `편집됨` and no later observation overwrites it (§3.1).
  *
  * Option lists, narrowing and row visibility are NOT re-derived here. Each one
  * is a `session-model.js` export the single-repo `워커` 탭 calls with the same
@@ -20,6 +24,11 @@ import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { supportsQuickFixLane } from '../monitor/bulk-preset-apply.js';
+import {
+  observationApplies,
+  observationBadge,
+  observeKey
+} from './bulk-observation.js';
 import {
   AUTO_LITERAL,
   IMPL_DISPATCHES,
@@ -47,6 +56,18 @@ import {
 /** The `기본값 사용` sentinel every select carries as its first option. */
 const UNSET = '';
 
+/**
+ * The sentinel the `갈림 — 유지`·`미확인 — 유지` option carries (UI-e1ta §3).
+ * It is not a value: picking it puts the row back on its observation.
+ */
+export const HOLD = '__bulk_hold__';
+
+/** What the hold option is called, by the observation that put it there. */
+const HOLD_LABEL = { mixed: '갈림 — 유지', pending: '미확인 — 유지' };
+
+/** The badge the preset-only row carries instead of an observation (§4). */
+const PRESET_ONLY_BADGE = '프리셋에만 담김 · 저장소에는 안 씀';
+
 /** A workspace quick_fix runtime is concrete; `inherit` has no controller. */
 const QUICK_FIX_IMPL_RUNTIMES = ['claude', 'codex'];
 
@@ -73,6 +94,29 @@ export const BULK_FORM_KEYS = IMPL_PRESET_KEYS.filter(
 );
 
 /**
+ * The twenty-five rows this form DRAWS: the observed 24 plus `impl_dispatch`,
+ * which exists only so a preset can carry it (UI-e1ta §4). That key has no
+ * workspace-global storage (ADR 0012), so it is never observed and never goes
+ * into an apply payload.
+ */
+export const BULK_FORM_ROW_KEYS = IMPL_PRESET_KEYS;
+
+/**
+ * Which layer a row is observed from. The 18 preset kv keys come from the
+ * session-defaults layer and the 6 orchestration keys ride on the monitor row
+ * itself; `impl_dispatch` comes from nowhere.
+ *
+ * @param {string} key
+ * @returns {import('./bulk-observation.js').ObservationLayer|null}
+ */
+function layerOf(key) {
+  if (PRESET_KV_KEYS.includes(key)) {
+    return 'session_defaults';
+  }
+  return BULK_FORM_QUEUE_KEYS.includes(key) ? 'queue' : null;
+}
+
+/**
  * @param {unknown} value
  * @returns {value is Record<string, any>}
  */
@@ -97,6 +141,8 @@ function storedValue(value) {
  * reads its catalog from, selected repos first.
  * @property {(row: Record<string, any>) => Record<string, any>} [queueOf] - How
  * to read one row's queue surface; the row itself by default.
+ * @property {() => Array<Record<string, any>>} [selectedRows] - The ticked
+ * repos, which is what the rows are OBSERVED from; `rows` by default.
  * @property {() => void} [onChange] - Called after every edit so the pane
  * redraws.
  */
@@ -107,9 +153,22 @@ function storedValue(value) {
  *
  * @param {BulkWorkerFormOptions} options
  */
-export function createBulkWorkerForm({ rows, queueOf, onChange }) {
+export function createBulkWorkerForm({
+  rows,
+  queueOf,
+  selectedRows,
+  onChange
+}) {
   /** @type {Record<string, string>} */
   const values = {};
+
+  /** Keys the user has touched; no observation overwrites these (§3.1). */
+  /** @type {Set<string>} */
+  const edited = new Set();
+
+  /** The last observation per key, `null` for a key nothing observes. */
+  /** @type {Record<string, import('./bulk-observation.js').Observation|null>} */
+  const observations = {};
 
   /** The UI-only orchestration provider axis; `null` = derive it. */
   /** @type {string|null} */
@@ -126,6 +185,91 @@ export function createBulkWorkerForm({ rows, queueOf, onChange }) {
   function rowList() {
     const list = typeof rows === 'function' ? rows() : [];
     return Array.isArray(list) ? list.filter((row) => isRecord(row)) : [];
+  }
+
+  /**
+   * The ticked repos, which is what every row is observed from. With nothing
+   * ticked there is nothing to observe, not "every repo".
+   *
+   * @returns {Array<Record<string, any>>}
+   */
+  function observedRows() {
+    const list =
+      typeof selectedRows === 'function' ? selectedRows() : rowList();
+    return Array.isArray(list) ? list.filter((row) => isRecord(row)) : [];
+  }
+
+  /**
+   * Re-read every row that the user has NOT touched (§3.1). Called on a target
+   * change and on a new snapshot; a run in flight freezes it (§9).
+   *
+   * @param {boolean} [frozen] - `true` while a run is in flight.
+   */
+  function observe(frozen = false) {
+    if (frozen === true) {
+      return;
+    }
+    const list = observedRows();
+    for (const key of BULK_FORM_ROW_KEYS) {
+      const layer = layerOf(key);
+      if (layer === null) {
+        observations[key] = null;
+        continue;
+      }
+      const observation = observeKey(list, key, layer);
+      observations[key] = observation;
+      if (edited.has(key)) {
+        continue;
+      }
+      writeValue(key, observation.state === 'same' ? observation.value : null);
+    }
+  }
+
+  /**
+   * The observation a row stands on, or `null` when nothing observes it.
+   *
+   * @param {string} key
+   * @returns {import('./bulk-observation.js').Observation|null}
+   */
+  function observationOf(key) {
+    return observations[key] ?? null;
+  }
+
+  /**
+   * Whether this row is standing on a hold rather than a value — the state
+   * that keeps it out of the apply payload (§3.2).
+   *
+   * @param {string} key
+   * @returns {'mixed'|'pending'|null}
+   */
+  function holdStateOf(key) {
+    return edited.has(key) ? null : holdOptionOf(key);
+  }
+
+  /**
+   * Whether the row OFFERS the hold option. An edited row keeps offering it —
+   * re-picking it is how the user withdraws the edit (§3.1) — so this ignores
+   * the edit and reads the observation alone.
+   *
+   * @param {string} key
+   * @returns {'mixed'|'pending'|null}
+   */
+  function holdOptionOf(key) {
+    const observation = observationOf(key);
+    if (!observation || observationApplies(observation)) {
+      return null;
+    }
+    return /** @type {'mixed'|'pending'} */ (observation.state);
+  }
+
+  /**
+   * Which of the 24 applied keys carry a value this round. `impl_dispatch` is
+   * absent by construction — it is not in {@link BULK_FORM_KEYS}.
+   *
+   * @returns {string[]}
+   */
+  function appliedKeys() {
+    return BULK_FORM_KEYS.filter((key) => holdStateOf(key) === null);
   }
 
   /**
@@ -277,7 +421,7 @@ export function createBulkWorkerForm({ rows, queueOf, onChange }) {
 
   /**
    * @param {string} key
-   * @param {string|undefined} value
+   * @param {string|null|undefined} value
    */
   function writeValue(key, value) {
     if (typeof value === 'string' && value.length > 0) {
@@ -288,12 +432,34 @@ export function createBulkWorkerForm({ rows, queueOf, onChange }) {
   }
 
   /**
+   * Put one row back on its observation: the `갈림 — 유지` option is a
+   * withdrawal of the edit, not a value (§3.1).
+   *
+   * @param {string} key
+   */
+  function releaseEdit(key) {
+    edited.delete(key);
+    const observation = observationOf(key);
+    writeValue(
+      key,
+      observation && observation.state === 'same' ? observation.value : null
+    );
+    pruneHiddenSpeeds();
+    notifyChange();
+  }
+
+  /**
    * Edit one ordinary row.
    *
    * @param {string} key
    * @param {string} value
    */
   function onValueChange(key, value) {
+    if (value === HOLD) {
+      releaseEdit(key);
+      return;
+    }
+    edited.add(key);
     writeValue(key, value === UNSET ? undefined : value);
     pruneHiddenSpeeds();
     notifyChange();
@@ -307,6 +473,13 @@ export function createBulkWorkerForm({ rows, queueOf, onChange }) {
    * @param {string} value
    */
   function onImplTargetChange(key, value) {
+    if (value === HOLD) {
+      releaseEdit(key);
+      return;
+    }
+    for (const coupled of ['impl_runtime', 'impl_model', 'impl_effort']) {
+      edited.add(coupled);
+    }
     const next = value === UNSET ? undefined : value;
     const narrowed = narrowImplTarget(
       {
@@ -337,6 +510,8 @@ export function createBulkWorkerForm({ rows, queueOf, onChange }) {
     if (model && !orchestrationModelOptions(catalog, runtime).includes(model)) {
       delete values.orchestration_model;
       delete values.orchestration_effort;
+      edited.add('orchestration_model');
+      edited.add('orchestration_effort');
       model = undefined;
     }
     const effort = values.orchestration_effort;
@@ -349,6 +524,7 @@ export function createBulkWorkerForm({ rows, queueOf, onChange }) {
       ).includes(effort)
     ) {
       delete values.orchestration_effort;
+      edited.add('orchestration_effort');
     }
     pruneHiddenSpeeds();
     notifyChange();
@@ -358,12 +534,17 @@ export function createBulkWorkerForm({ rows, queueOf, onChange }) {
    * Fill the whole form from one preset: the keys it names take its values and
    * the keys it leaves empty go back to `기본값 사용` (UI-628r §2.2).
    *
+   * All 25 rows become `편집됨`, `갈림`과 `미확인` included: picking a preset is
+   * the user naming one whole profile, so those rows now stand on its value and
+   * go into the apply (UI-e1ta §3.1).
+   *
    * @param {Record<string, any>|null|undefined} settings
    */
   function applyPreset(settings) {
     const source = isRecord(settings) ? settings : {};
-    for (const key of BULK_FORM_KEYS) {
+    for (const key of BULK_FORM_ROW_KEYS) {
       writeValue(key, storedValue(source[key]) ?? undefined);
+      edited.add(key);
     }
     // The provider axis follows the preset's own orchestration model.
     runtime_pick = null;
@@ -379,23 +560,28 @@ export function createBulkWorkerForm({ rows, queueOf, onChange }) {
    */
   function equalsPreset(settings) {
     const source = isRecord(settings) ? settings : {};
-    return BULK_FORM_KEYS.every(
+    return BULK_FORM_ROW_KEYS.every(
       (key) => storedValue(source[key]) === storedValue(values[key])
     );
   }
 
   /**
-   * One `{ key: value|null }` map over a key list. EVERY key is present: a row
-   * left at `기본값 사용` is a deletion request, not an omission.
+   * One `{ key: value|null }` map over a key list. Every key that STANDS ON A
+   * VALUE is present — a row left at `기본값 사용` is a deletion request, not an
+   * omission — and a row still holding `갈림`이나 `미확인` is absent, which is
+   * what leaves each repo's own value alone (§3.2).
    *
    * @param {ReadonlyArray<string>} keys
    * @returns {Record<string, string|null>}
    */
   function mapOf(keys) {
+    const applied = new Set(appliedKeys());
     /** @type {Record<string, string|null>} */
     const out = {};
     for (const key of keys) {
-      out[key] = storedValue(values[key]);
+      if (applied.has(key)) {
+        out[key] = storedValue(values[key]);
+      }
     }
     return out;
   }
@@ -410,7 +596,9 @@ export function createBulkWorkerForm({ rows, queueOf, onChange }) {
    * @returns {TemplateResult}
    */
   function selectControl(key, label, choices, onSelect, disabled, route) {
-    const selected = values[key] ?? UNSET;
+    const hold = holdStateOf(key);
+    const hold_option = holdOptionOf(key);
+    const selected = hold === null ? (values[key] ?? UNSET) : HOLD;
     const view = buildExecutionOptionView(
       key,
       choices,
@@ -424,32 +612,74 @@ export function createBulkWorkerForm({ rows, queueOf, onChange }) {
     const full_value =
       selected === UNSET ? view.full_value : chosen?.full_value;
     return html`<select
-      class=${selected === UNSET ? 'settings-dialog__unset' : ''}
-      data-bulk-key=${key}
-      aria-label=${label}
-      title=${full_value || ''}
-      ?disabled=${disabled || (route !== 'quick_fix' && view.disabled)}
-      .value=${live(String(selected))}
-      @change=${(/** @type {Event} */ ev) =>
-        onSelect(
-          key,
-          String(/** @type {HTMLSelectElement} */ (ev.target).value)
-        )}
-    >
-      <option value=${UNSET} ?selected=${selected === UNSET}>
-        ${view.unset_label}
-      </option>
-      ${view.options.map(
-        (option) =>
-          html`<option
-            value=${option.value}
-            title=${option.full_value || ''}
-            ?selected=${option.value === selected}
-          >
-            ${option.label}
-          </option>`
-      )}
-    </select>`;
+        class=${selected === UNSET ? 'settings-dialog__unset' : ''}
+        data-bulk-key=${key}
+        aria-label=${label}
+        title=${full_value || ''}
+        ?disabled=${disabled || (route !== 'quick_fix' && view.disabled)}
+        .value=${live(String(selected))}
+        @change=${(/** @type {Event} */ ev) =>
+          onSelect(
+            key,
+            String(/** @type {HTMLSelectElement} */ (ev.target).value)
+          )}
+      >
+        ${hold_option === null
+          ? ''
+          : html`<option value=${HOLD} ?selected=${hold !== null}>
+              ${HOLD_LABEL[hold_option]}
+            </option>`}
+        <option value=${UNSET} ?selected=${selected === UNSET}>
+          ${view.unset_label}
+        </option>
+        ${view.options.map(
+          (option) =>
+            html`<option
+              value=${option.value}
+              title=${option.full_value || ''}
+              ?selected=${option.value === selected}
+            >
+              ${option.label}
+            </option>`
+        )}</select
+      >${observationBadgeTemplate(key)}`;
+  }
+
+  /**
+   * The badge that says what the ticked repos hold for this row (§3). A row
+   * nothing observes — `impl_dispatch` — says so instead, and a single ticked
+   * repo gets no badge because there is nothing to compare.
+   *
+   * @param {string} key
+   * @returns {TemplateResult|''}
+   */
+  function observationBadgeTemplate(key) {
+    if (key === 'impl_dispatch') {
+      return html`<span
+        class="settings-dialog__obs settings-dialog__obs--note"
+        data-bulk-badge=${key}
+        >${PRESET_ONLY_BADGE}</span
+      >`;
+    }
+    if (edited.has(key)) {
+      return html`<span
+        class="settings-dialog__obs settings-dialog__obs--edited"
+        data-bulk-badge=${key}
+        >편집됨</span
+      >`;
+    }
+    const observation = observationOf(key);
+    const badge = observation ? observationBadge(observation) : null;
+    if (!badge) {
+      return '';
+    }
+    return html`<span
+      class=${`settings-dialog__obs settings-dialog__obs--${badge.state}`}
+      data-bulk-badge=${key}
+      data-bulk-observation=${badge.state}
+      title=${badge.title}
+      >${badge.text}</span
+    >`;
   }
 
   /**
@@ -610,8 +840,9 @@ export function createBulkWorkerForm({ rows, queueOf, onChange }) {
    */
   function implGroup(visibility, disabled) {
     const catalog = catalogOf();
-    // No 실행 방식 row: `impl_dispatch` has no workspace-global storage, so
-    // this layer never offers it (UI-628r §2.1).
+    // `impl_dispatch` HAS a row here even though no workspace layer stores it
+    // (ADR 0012): the row exists so a preset saved from this window carries the
+    // key, and it never joins an apply payload (UI-e1ta §4).
     const runtime = values.impl_runtime;
     const model = values.impl_model;
     return html`<div class="settings-dialog__group" data-bulk-group="impl">
@@ -621,6 +852,13 @@ export function createBulkWorkerForm({ rows, queueOf, onChange }) {
           >이슈 핀이 있으면 핀이 우선합니다</span
         >
       </div>
+      ${selectRow(
+        'impl_dispatch',
+        'Bead 실행 방식',
+        IMPL_DISPATCHES,
+        onValueChange,
+        disabled
+      )}
       ${selectRow(
         'impl_runtime',
         '위임 대상',
@@ -808,6 +1046,47 @@ export function createBulkWorkerForm({ rows, queueOf, onChange }) {
   return {
     applyPreset,
     equalsPreset,
+    observe,
+    observationOf,
+    holdStateOf,
+
+    /**
+     * How many of the 24 applied rows are still standing on a hold, split by
+     * which hold it is — what the footer line counts (§3.2).
+     *
+     * @returns {{ mixed: number, pending: number }}
+     */
+    holdCounts() {
+      let mixed = 0;
+      let pending = 0;
+      for (const key of BULK_FORM_KEYS) {
+        const hold = holdStateOf(key);
+        if (hold === 'mixed') {
+          mixed += 1;
+        } else if (hold === 'pending') {
+          pending += 1;
+        }
+      }
+      return { mixed, pending };
+    },
+
+    /**
+     * The sparse 25-key profile a preset save stores — the screen as it
+     * stands, `기본값 사용` rows omitted (§4.1).
+     *
+     * @returns {Record<string, string>}
+     */
+    presetSettings() {
+      /** @type {Record<string, string>} */
+      const out = {};
+      for (const key of BULK_FORM_ROW_KEYS) {
+        const value = storedValue(values[key]);
+        if (value !== null) {
+          out[key] = value;
+        }
+      }
+      return out;
+    },
 
     /**
      * The eighteen kv keys, every one present (UI-628r §4.1).

@@ -138,7 +138,8 @@ describe('createBulkWorkerForm preset fill (UI-628r §2.2)', () => {
     expect(form.values()).toEqual({
       impl_runtime: 'codex',
       impl_model: 'sol',
-      orchestration_model: 'opus'
+      orchestration_model: 'opus',
+      impl_dispatch: 'main'
     });
   });
 
@@ -188,6 +189,27 @@ describe('createBulkWorkerForm payloads (UI-628r §4.1)', () => {
       quick_fix_orchestration_effort: null,
       quick_fix_orchestration_speed: null
     });
+  });
+});
+
+describe('createBulkWorkerForm rows (UI-e1ta §4)', () => {
+  test('draws the preset-only Bead 실행 방식 row among the twenty-five', () => {
+    const { host } = mount();
+
+    expect(el(host, '[data-bulk-key="impl_dispatch"]')).not.toBe(null);
+    expect(
+      el(host, '[data-bulk-badge="impl_dispatch"]').textContent.trim()
+    ).toBe('프리셋에만 담김 · 저장소에는 안 씀');
+  });
+
+  test('keeps Bead 실행 방식 out of both apply payloads', () => {
+    const { host, form } = mount();
+
+    choose(host, 'impl_dispatch', 'main');
+
+    expect(Object.hasOwn(form.kvValues(), 'impl_dispatch')).toBe(false);
+    expect(Object.hasOwn(form.queueValues(), 'impl_dispatch')).toBe(false);
+    expect(form.presetSettings().impl_dispatch).toBe('main');
   });
 });
 

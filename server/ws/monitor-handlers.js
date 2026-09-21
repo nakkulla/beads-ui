@@ -52,6 +52,10 @@ import { onQueueChanged } from '../worker/queue-events.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { scopeCache } from '../worker/scope-cache.js';
+import {
+  WORKSPACE_ACCOUNTS_KV_KEY,
+  normalizeWorkspaceAccounts
+} from '../workspace-accounts.js';
 import { kvGetJsonAtRoot, log } from './context.js';
 import {
   doneAtByBead,
@@ -140,8 +144,12 @@ const session_defaults_cache = new Map();
  * Synchronous cache-hit projection used by `buildMonitorWorkspacesState()`.
  * A miss is the empty layer, which is exactly what an absent kv key means.
  *
+ * `state` tells the two apart for a client that READS this layer: only `ready`
+ * says the empty layer is a confirmed absence rather than a cold or expired
+ * cache still on its way (UI-e1ta §8).
+ *
  * @param {string} root_dir
- * @returns {{ values: Record<string, string|boolean>, warnings: string[] }}
+ * @returns {{ values: Record<string, string|boolean>, warnings: string[], state: 'ready'|'pending' }}
  */
 function cachedSessionDefaultsFor(root_dir) {
   const hit = session_defaults_cache.get(path.resolve(root_dir));
@@ -149,16 +157,20 @@ function cachedSessionDefaultsFor(root_dir) {
   // is about to replace would show execution settings the repo no longer has,
   // and the empty layer is exactly what an absent kv key means anyway.
   return hit && hit.expires_at > Date.now()
-    ? { values: hit.values, warnings: hit.warnings }
-    : { values: {}, warnings: [] };
+    ? { values: hit.values, warnings: hit.warnings, state: 'ready' }
+    : { values: {}, warnings: [], state: 'pending' };
 }
 
 /**
  * Start at most one async `bd kv get` per workspace.
  *
  * @param {string} root_dir
+ * @param {{ kvGet?: typeof kvGetJsonAtRoot }} [prewarm_options] - Test seam for
+ * the kv read; the live reader by default.
+ * @returns {Promise<void>}
  */
-function prewarmSessionDefaults(root_dir) {
+export async function prewarmSessionDefaults(root_dir, prewarm_options = {}) {
+  const kvGet = prewarm_options.kvGet || kvGetJsonAtRoot;
   const key = path.resolve(root_dir);
   const current = session_defaults_cache.get(key);
   if (
@@ -173,7 +185,7 @@ function prewarmSessionDefaults(root_dir) {
     expires_at: current?.expires_at || 0,
     in_flight: true
   });
-  void kvGetJsonAtRoot(key, SESSION_DEFAULTS_KV_KEY)
+  await kvGet(key, SESSION_DEFAULTS_KV_KEY)
     .then((read) => {
       if (!read.ok) {
         session_defaults_cache.set(key, {
@@ -206,6 +218,94 @@ function prewarmSessionDefaults(root_dir) {
       log('monitor: session defaults lookup failed for %s: %o', key, err);
       schedulePush();
     });
+}
+
+/**
+ * Drop every cached session-defaults layer. Test-only, like the prefix cache
+ * reset.
+ */
+export function __resetSessionDefaultsCacheForTest() {
+  session_defaults_cache.clear();
+}
+
+/**
+ * Process-local workspace execution-account layer per workspace (UI-e1ta §8).
+ *
+ * Same async-prewarm boundary as {@link prewarmSessionDefaults}: the read is
+ * `bd kv get` while `workspaces_state` is built synchronously, so a repo that
+ * has not been read yet carries NO field at all and the fill schedules the push
+ * that carries the real one. An absent field and a read `absent` layer are
+ * different facts, which is why a cold entry is an omission rather than an
+ * empty layer.
+ *
+ * @type {Map<string, { layer: { state: 'absent'|'usable'|'unusable', values: Record<string, string>, warnings: string[] }|null, expires_at: number, in_flight: boolean }>}
+ */
+const workspace_accounts_cache = new Map();
+
+/**
+ * Synchronous cache-hit projection used by `buildMonitorWorkspacesState()`.
+ * A miss is `null`, which the row omits rather than ships as an empty layer.
+ *
+ * @param {string} root_dir
+ * @returns {{ state: 'absent'|'usable'|'unusable', values: Record<string, string>, warnings: string[] }|null}
+ */
+function cachedWorkspaceAccountsFor(root_dir) {
+  const hit = workspace_accounts_cache.get(path.resolve(root_dir));
+  return hit && hit.expires_at > Date.now() ? hit.layer : null;
+}
+
+/**
+ * Start at most one async `bd kv get workspace_exec_accounts` per workspace.
+ *
+ * @param {string} root_dir
+ * @param {{ kvGet?: typeof kvGetJsonAtRoot }} [prewarm_options] - Test seam for
+ * the kv read; the live reader by default.
+ * @returns {Promise<void>}
+ */
+export async function prewarmWorkspaceAccounts(root_dir, prewarm_options = {}) {
+  const key = path.resolve(root_dir);
+  const current = workspace_accounts_cache.get(key);
+  if (
+    current?.in_flight === true ||
+    (current && current.expires_at > Date.now())
+  ) {
+    return;
+  }
+  const kvGet = prewarm_options.kvGet || kvGetJsonAtRoot;
+  workspace_accounts_cache.set(key, {
+    layer: current?.layer ?? null,
+    expires_at: current?.expires_at || 0,
+    in_flight: true
+  });
+  try {
+    const read = await kvGet(key, WORKSPACE_ACCOUNTS_KV_KEY);
+    // A bd FAILURE is the only thing that is not a read: `normalizeWorkspaceAccounts`
+    // turns it into the `unusable` layer, which is what `get-workspace-accounts`
+    // would report to the one user who can fix it.
+    workspace_accounts_cache.set(key, {
+      layer: normalizeWorkspaceAccounts(read),
+      expires_at:
+        Date.now() +
+        (read.ok ? SESSION_DEFAULTS_TTL_MS : SESSION_DEFAULTS_RETRY_MS),
+      in_flight: false
+    });
+  } catch (err) {
+    workspace_accounts_cache.set(key, {
+      layer: { state: 'unusable', values: {}, warnings: ['kv_read_failed'] },
+      expires_at: Date.now() + SESSION_DEFAULTS_RETRY_MS,
+      in_flight: false
+    });
+    log('monitor: workspace accounts lookup failed for %s: %o', key, err);
+  }
+  schedulePush();
+}
+
+/**
+ * Drop every cached workspace-account layer. Test-only, like the prefix cache
+ * reset.
+ */
+export function __resetWorkspaceAccountsCacheForTest() {
+  workspace_accounts_cache.clear();
 }
 
 /**
@@ -502,7 +602,8 @@ export function invalidateSessionDefaults(root_dir) {
 function prewarmVisibleIssuePrefixes() {
   for (const root_dir of visibleWorkspaceRoots()) {
     prewarmIssuePrefix(root_dir);
-    prewarmSessionDefaults(root_dir);
+    void prewarmSessionDefaults(root_dir);
+    void prewarmWorkspaceAccounts(root_dir);
     void prewarmRepoHealth(root_dir);
   }
 }
@@ -1004,7 +1105,8 @@ function laneCountsFor(root_dir, queue, runnableFor, sessionActiveFor) {
  *   snapshotFor?: (workspace_key: string) => Record<string, unknown>,
  *   runnerCatalog?: () => Record<string, unknown>,
  *   issuePrefixFor?: (workspace_key: string) => string|null,
- *   sessionDefaultsFor?: (workspace_key: string) => { values: Record<string, string|boolean>, warnings: string[] },
+ *   sessionDefaultsFor?: (workspace_key: string) => { values: Record<string, string|boolean>, warnings: string[], state?: 'ready'|'pending' },
+ *   workspaceAccountsFor?: (workspace_key: string) => { state: 'absent'|'usable'|'unusable', values: Record<string, string>, warnings: string[] }|null,
  *   repoHealthFor?: (workspace_key: string) => RepoHealthState,
  *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>, options?: RunnableReadOptions) => Array<Record<string, unknown>>,
  *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
@@ -1019,6 +1121,8 @@ export function buildMonitorWorkspacesState(options = {}) {
   const issuePrefixFor = options.issuePrefixFor || cachedIssuePrefixFor;
   const sessionDefaultsFor =
     options.sessionDefaultsFor || cachedSessionDefaultsFor;
+  const workspaceAccountsFor =
+    options.workspaceAccountsFor || cachedWorkspaceAccountsFor;
   const repoHealthFor = options.repoHealthFor || cachedRepoHealthFor;
   const runnableFor =
     options.runnableFor ||
@@ -1078,16 +1182,24 @@ export function buildMonitorWorkspacesState(options = {}) {
     } catch {
       issue_prefix = null;
     }
-    /** @type {{ values: Record<string, string|boolean>, warnings: string[] }} */
-    let session_defaults = { values: {}, warnings: [] };
+    /** @type {{ values: Record<string, string|boolean>, warnings: string[], state: 'ready'|'pending' }} */
+    let session_defaults = { values: {}, warnings: [], state: 'pending' };
     try {
       const read = sessionDefaultsFor(root_dir);
       session_defaults = {
         values: read?.values || {},
-        warnings: Array.isArray(read?.warnings) ? read.warnings : []
+        warnings: Array.isArray(read?.warnings) ? read.warnings : [],
+        state: read?.state === 'ready' ? 'ready' : 'pending'
       };
     } catch {
-      session_defaults = { values: {}, warnings: [] };
+      session_defaults = { values: {}, warnings: [], state: 'pending' };
+    }
+    /** @type {{ state: 'absent'|'usable'|'unusable', values: Record<string, string>, warnings: string[] }|null} */
+    let workspace_accounts = null;
+    try {
+      workspace_accounts = workspaceAccountsFor(root_dir) || null;
+    } catch {
+      workspace_accounts = null;
     }
     /** @type {RepoHealthState} */
     let repo_health;
@@ -1153,6 +1265,19 @@ export function buildMonitorWorkspacesState(options = {}) {
       // `prewarmSessionDefaults`.
       session_defaults: session_defaults.values,
       session_defaults_warnings: session_defaults.warnings,
+      // The one field that tells `조회 전` from `확인된 부재`: the empty layer
+      // above is shipped for both, so a client that READS settings out of this
+      // row would otherwise turn a cold cache into a deletion request
+      // (UI-e1ta §8).
+      session_defaults_state: session_defaults.state,
+      // Same prewarm boundary, but a repo that has not been read yet omits the
+      // key entirely — `absent` is a read RESULT, not the cold state.
+      ...(workspace_accounts === null
+        ? {}
+        : { workspace_accounts: workspace_accounts }),
+      // The queue's own record of the last fully applied global profile,
+      // carried verbatim like `provider_limit_policy`.
+      applied_exec_preset: queue.applied_exec_preset ?? null,
       external_wait_count: (queue.external_waits || []).filter(
         (/** @type {any} */ row) =>
           ['hold', 'detached', 'completing'].includes(row.stage)
@@ -1896,5 +2021,6 @@ export function __resetMonitorPipelineForTest() {
   }
   last_seen_revision.clear();
   session_defaults_cache.clear();
+  workspace_accounts_cache.clear();
   poll_interval_seconds = null;
 }

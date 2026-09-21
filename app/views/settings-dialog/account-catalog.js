@@ -72,14 +72,43 @@ export async function loadAccountCatalog() {
 }
 
 /**
- * The label a catalog row shows in an account select.
+ * Name one catalog row's usage windows so an account is picked with the same
+ * numbers the top usage meter and the switch decision read (UI-e1ta §6.1). A
+ * row with no `windows`, or a window whose `pct` is not a number, loses only
+ * the percentage — the account line itself stays (fail-quiet).
+ *
+ * @param {any} row
+ * @returns {string}
+ */
+export function usageWindowSuffix(row) {
+  const windows = Array.isArray(row?.windows) ? row.windows : [];
+  const parts = windows
+    .filter(
+      (/** @type {any} */ window) =>
+        isRecord(window) &&
+        typeof window.key === 'string' &&
+        window.key.length > 0 &&
+        typeof window.pct === 'number' &&
+        Number.isFinite(window.pct)
+    )
+    .map(
+      (/** @type {any} */ window) => `${window.key} ${Math.round(window.pct)}%`
+    );
+  return parts.length > 0 ? ` (${parts.join(' · ')})` : '';
+}
+
+/**
+ * The label a catalog row shows in an account select. Both settings windows
+ * call this one formatter, so the bulk window and the single-repo window name
+ * an account — and its usage — identically (§6.1).
  *
  * @param {'claude'|'codex'} provider_key
  * @param {any} row
  * @returns {string}
  */
 export function accountRowLabel(provider_key, row) {
-  return provider_key === 'claude' ? claudeLabel(row) : codexLabel(row);
+  const base = provider_key === 'claude' ? claudeLabel(row) : codexLabel(row);
+  return `${base}${usageWindowSuffix(row)}`;
 }
 
 /**

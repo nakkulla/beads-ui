@@ -9,9 +9,13 @@ import { createTitleCache } from '../worker/title-cache.js';
 import { emitMonitorPipelineSnapshot } from './context.js';
 import {
   __resetRepoHealthCacheForTest,
+  __resetSessionDefaultsCacheForTest,
+  __resetWorkspaceAccountsCacheForTest,
   buildMonitorPipeline,
   buildMonitorWorkspacesState,
   prewarmRepoHealth,
+  prewarmSessionDefaults,
+  prewarmWorkspaceAccounts,
   projectRepoHealth
 } from './monitor-handlers.js';
 
@@ -2163,5 +2167,112 @@ describe('repo health kv projection (UI-y9hl U2)', () => {
 
     expect(/** @type {any} */ (out[0].repo_health).state).toBe('unknown');
     __resetRepoHealthCacheForTest();
+  });
+});
+
+describe('workspaces_state observation projection (UI-e1ta §8)', () => {
+  /**
+   * Build one row through the LIVE caches, so the lookup states under test are
+   * the real ones rather than a seam's answer.
+   *
+   * @returns {Record<string, any>}
+   */
+  function liveRow() {
+    return buildMonitorWorkspacesState({
+      listWorkspaces: () => [{ path: WS_A }],
+      listHidden: () => [],
+      snapshotFor: () => snapshot(),
+      issuePrefixFor: () => null,
+      runnableFor: () => [],
+      sessionActiveFor: () => []
+    })[0];
+  }
+
+  afterEach(() => {
+    __resetSessionDefaultsCacheForTest();
+    __resetWorkspaceAccountsCacheForTest();
+  });
+
+  test('marks a cold session defaults cache as pending', () => {
+    __resetSessionDefaultsCacheForTest();
+
+    const row = liveRow();
+
+    expect(row.session_defaults_state).toBe('pending');
+    expect(row.session_defaults).toEqual({});
+  });
+
+  test('marks a filled session defaults cache as ready', async () => {
+    __resetSessionDefaultsCacheForTest();
+
+    await prewarmSessionDefaults(WS_A, {
+      kvGet: async () => ({ ok: true, value: { impl_effort: 'high' } })
+    });
+    const row = liveRow();
+
+    expect(row.session_defaults_state).toBe('ready');
+    expect(row.session_defaults).toEqual({ impl_effort: 'high' });
+  });
+
+  test('omits the account layer until its read lands', () => {
+    __resetWorkspaceAccountsCacheForTest();
+
+    const row = liveRow();
+
+    expect(Object.hasOwn(row, 'workspace_accounts')).toBe(false);
+  });
+
+  test('carries the read account layer with its state', async () => {
+    __resetWorkspaceAccountsCacheForTest();
+
+    await prewarmWorkspaceAccounts(WS_A, {
+      kvGet: async () => ({
+        ok: true,
+        value: { claude_account: 'work@example.com' }
+      })
+    });
+    const row = liveRow();
+
+    expect(row.workspace_accounts).toEqual({
+      state: 'usable',
+      values: { claude_account: 'work@example.com' },
+      warnings: []
+    });
+  });
+
+  test('reads a failed account lookup as an unusable layer', async () => {
+    __resetWorkspaceAccountsCacheForTest();
+
+    await prewarmWorkspaceAccounts(WS_A, {
+      kvGet: async () => ({ ok: false, error: 'bd kv get failed' })
+    });
+    const row = liveRow();
+
+    expect(/** @type {any} */ (row.workspace_accounts).state).toBe('unusable');
+  });
+
+  test('carries the queue applied preset record verbatim', () => {
+    const applied = {
+      id: 'p1',
+      name: '페이블 기본',
+      revision: 2,
+      applied_at: 17
+    };
+
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: { [WS_A]: snapshot({ applied_exec_preset: applied }) }
+    });
+
+    expect(out[0].applied_exec_preset).toEqual(applied);
+  });
+
+  test('carries a null applied preset when the queue holds none', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: { [WS_A]: snapshot() }
+    });
+
+    expect(out[0].applied_exec_preset).toBe(null);
   });
 });
