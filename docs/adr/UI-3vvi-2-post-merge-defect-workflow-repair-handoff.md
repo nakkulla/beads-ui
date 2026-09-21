@@ -1,7 +1,8 @@
 ---
 id: UI-3vvi-2
 title: 머지 후 결함은 일반 workflow 수정 Bead로 자동 인계하되 기존 원장·원자적 예약·원본 실패 보존과 검증된 수정 성공 후 최종 정리를 유지한다
-status: accepted
+status: superseded
+superseded_by: UI-a5l2-3
 date: 2026-09-16
 summary: "머지 후 결함은 일반 workflow 수정 Bead로 자동 인계하되 기존 원장·원자적 예약·원본 실패 보존과 검증된 수정 성공 후 최종 정리를 유지한다"
 supersedes: ["UI-j9j5", 24]

@@ -1,7 +1,8 @@
 ---
 id: UI-g0lk
 title: 머지 전 검증 실패는 completion intent의 비종단 holding 보류다
-status: accepted
+status: superseded
+superseded_by: UI-a5l2-3
 date: 2026-09-21
 summary: "머지 전 검증 실패는 completion intent의 비종단 holding 보류로 보이게 남기고, 수정 push가 자동으로 풀며 [세션에서 해결]이 사람 출구다 — terminal 종단·baseline 위조 판정·[머지] 의미는 바꾸지 않는다"
 spec: docs/superpowers/specs/2026-09-21-pre-merge-verify-hold-visible-exit-design.md

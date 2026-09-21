@@ -1,7 +1,8 @@
 ---
 id: 38
 title: 처분 대기 admission이 화면 대표를 정한다 — 대기 행이 held 타일·점유 ghost를 이긴다
-status: accepted
+status: superseded
+superseded_by: UI-a5l2-2
 date: 2026-09-04
 summary: "처분 대기 admission이 선 bead는 held 타일·점유 ghost가 아니라 대기 행이 대표하고 stale-work 처분 조작은 대기 행에만 산다"
 spec: docs/superpowers/specs/2026-09-04-waiting-tile-stale-disposition-reach-design.md

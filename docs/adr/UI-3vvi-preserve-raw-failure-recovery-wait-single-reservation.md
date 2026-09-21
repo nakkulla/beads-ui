@@ -1,7 +1,8 @@
 ---
 id: UI-3vvi
 title: Worker는 원시 실패를 보존하면서 정본 복구 분류와 동일 계보의 단일 예약으로 미완료 단계만 수정·대기·재개한다
-status: accepted
+status: superseded
+superseded_by: UI-a5l2-2
 date: 2026-09-16
 summary: "Worker는 원시 실패를 보존하면서 정본 복구 분류와 동일 계보의 단일 예약으로 미완료 단계만 수정·대기·재개한다"
 spec: docs/superpowers/specs/2026-09-15-worker-recovery-continuation-design.md

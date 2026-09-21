@@ -1,7 +1,8 @@
 ---
 id: UI-inge
 title: 자동 전환 모드에서는 계정 한도가 자동화를 세우지 않는다 — 실행 중 선제 전환·핀 덮기·usage_limit 상한 제거·credential 계정 보류
-status: accepted
+status: superseded
+superseded_by: UI-a5l2
 date: 2026-09-21
 summary: "자동 전환 모드에서는 계정 한도가 자동화를 세우지 않는다 — 실행 중 attempt도 preempt_pct에서 정지해 허용 계정으로 같은 세션을 재개하고, 핀·기본 계정이 보류 중이거나 임계 이상이면 디스패치에서 launch-only로 덮어 전환하며 prior_attempt 계정 잠금도 이 전환에는 양보하고, usage_limit 보류의 자동 프로브에는 24시간·재무장 상한이 없으며, 인증 실패는 계정 단위 공급자 보류로 프로브가 회복을 판정한다."
 supersedes: [52, UI-1l3a, UI-6icf]
