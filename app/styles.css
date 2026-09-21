@@ -4746,6 +4746,34 @@ html[data-theme='dark'] {
   min-width: 0;
 }
 
+:is(
+    .worker-mini__line,
+    .worker-mini__head,
+    .worker-mini__row1,
+    .worker-card__head,
+    .rtile__hd
+  )
+  :is(.wait-verdict, .external-wait-summary) {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+:is(
+    .worker-mini__line,
+    .worker-mini__head,
+    .worker-mini__row1,
+    .worker-card__head,
+    .rtile__hd
+  )
+  :is(.wait-verdict, .external-wait-summary)
+  > summary {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 :is(.worker-card, .worker-mini, .rtile)
   :is(.wait-reason__lines, .wait-reason__times) {
   color: var(--text-muted);

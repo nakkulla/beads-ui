@@ -282,6 +282,28 @@ describe('worker console styles', () => {
     expect(headRule).toContain('min-width: 0');
   });
 
+  test('ellipsizes wait summaries within every card header without wrapping', () => {
+    const summaryRule = CSS.match(
+      /:is\(([^)]*)\)\s*:is\(\.wait-verdict,\s*\.external-wait-summary\)\s*>\s*summary\s*{([^}]*)}/
+    );
+    const selectors = summaryRule?.[1] || '';
+    const declarations = summaryRule?.[2] || '';
+
+    for (const selector of [
+      '.worker-mini__line',
+      '.worker-mini__head',
+      '.worker-mini__row1',
+      '.worker-card__head',
+      '.rtile__hd'
+    ]) {
+      expect(selectors).toContain(selector);
+    }
+    expect(declarations).toContain('display: block');
+    expect(declarations).toContain('white-space: nowrap');
+    expect(declarations).toContain('overflow: hidden');
+    expect(declarations).toContain('text-overflow: ellipsis');
+  });
+
   test('wraps candidate card footer items in narrow lanes', () => {
     const footRule =
       workerBlock.match(/(?:^|\n)\.worker-card__foot\s*{([^}]*)}/)?.[1] || '';
