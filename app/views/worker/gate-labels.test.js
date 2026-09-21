@@ -19,7 +19,9 @@ describe('provider hold badge text (UI-01wh §3.2)', () => {
     expect(text).toBe(`⏳ 공급자 보류 · 다음 프로브 ${clock}`);
   });
 
-  test('formats the usage badge with an account alias', () => {
+  // 계정은 칩을 떠나 팝업에만 남는다 (UI-pw2g §3.3): 별명 없는 계정은 이메일
+  // 전체가 들어와 칩 하나가 담는 줄을 혼자 차지했다.
+  test('formats the usage badge with the reset clock and no account', () => {
     const clock = new Date(4000).toLocaleTimeString('ko-KR', {
       hour: '2-digit',
       minute: '2-digit'
@@ -32,7 +34,23 @@ describe('provider hold badge text (UI-01wh §3.2)', () => {
       target: { account: 'one@example.com', account_alias: '업무' }
     });
 
-    expect(text).toBe(`⏳ 공급자 보류 ${clock} · 업무`);
+    expect(text).toBe(`⏳ 공급자 보류 ${clock}`);
+  });
+
+  test('leaves the plain account out of the usage badge too', () => {
+    const clock = new Date(4000).toLocaleTimeString('ko-KR', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    const text = providerHoldBadgeText({
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      resets_at: 4000,
+      target: { account: 'nakkulla@example.com' }
+    });
+
+    expect(text).toBe(`⏳ 공급자 보류 ${clock}`);
   });
 
   test('ignores a retired auto-resume cap when formatting an unknown reset', () => {

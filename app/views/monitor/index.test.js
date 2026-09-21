@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { providerProbeRefusalText } from '../worker/lanes.js';
 import { createMonitorView } from './index.js';
 
 const NOW = 1_700_000_000_000;
@@ -3260,7 +3261,7 @@ describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
     ).toBe(false);
   });
 
-  test('puts the wait row ops inside the row first line', () => {
+  test('puts the wait row ops inside the row head line', () => {
     const { mount, view } = setup({
       workspaces: [workspace({ queue: [{ bead_id: 'A-1' }] })],
       workspaces_state: [state()]
@@ -3269,7 +3270,7 @@ describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
     view.load();
 
     const ops = el(mount, '.worker-mini__rowops');
-    expect(ops.closest('.worker-mini__line')).not.toBeNull();
+    expect(ops.closest('.worker-mini__head')).not.toBeNull();
     expect(
       Array.from(ops.querySelectorAll('button')).map((b) =>
         (b.textContent || '').trim()
@@ -3716,5 +3717,107 @@ describe('monitor 자동 진행 꺼짐 대기 행 (UI-3pu9 §4.2)', () => {
 
     expect(row.querySelector('.worker-dep--grace')).not.toBeNull();
     expect(row.querySelector('.worker-mini__start-now')).not.toBeNull();
+  });
+});
+
+// `↻ 지금 프로브`의 자리는 슬롯 4a 게이트 칩의 팝업이다 (UI-pw2g §3.4). 두 탭이
+// 같은 렌더러를 쓰므로 Monitor의 클릭 경로도 그 팝업을 통과해야 한다.
+describe('monitor 공급자 보류 출구 (UI-pw2g §3.4)', () => {
+  const OUTAGE_HOLD = {
+    claude: {
+      since: 4242,
+      generation: 1,
+      targets: [
+        { kind: 'outage', model: 'sonnet', account: null, next_probe_at: 9000 }
+      ]
+    }
+  };
+
+  /**
+   * @param {((type: string, payload: any) => Promise<any>)} [transport] - The
+   * server stub behind the probe op, `undefined` for the default null reply.
+   * @returns {{ mount: HTMLElement, view: any, sent: Array<{ type: string, payload: any }> }}
+   */
+  function gatedRow(transport) {
+    const parts = setup({
+      transport,
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1', added_at: 1 }],
+          provider_hold: OUTAGE_HOLD,
+          bead_overlay: { 'A-1': { metadata: {} } }
+        })
+      ],
+      workspaces_state: [
+        state({
+          auto_advance: true,
+          execution_defaults: {
+            supported: true,
+            schema_version: 1,
+            source_commit: 'abc',
+            digest: 'd',
+            session: { impl_runtime: 'claude' },
+            orchestration: {
+              runtime: 'claude',
+              model: 'sonnet',
+              model_id: 'claude-sonnet',
+              effort: null,
+              speed: null
+            }
+          },
+          runner_catalog: {
+            runners: {
+              claude: {
+                command: 'claude',
+                models: { sonnet: { id: 'claude-sonnet' } }
+              }
+            }
+          },
+          session_defaults: {}
+        })
+      ]
+    });
+    parts.view.load();
+    return parts;
+  }
+
+  test('sends the probe when it is clicked inside the gate chip popup', async () => {
+    const { mount, sent } = gatedRow();
+
+    click(mount, '.worker-mini[data-bead-id="A-1"] .worker-dep--gate');
+    click(mount, '.chip-popover .worker-mini__provider-probe');
+    await vi.waitFor(() => expect(sent.length).toBe(1));
+
+    expect(sent[0]).toMatchObject({
+      type: 'worker-provider-probe-now',
+      payload: { runner: 'claude', since: 4242, root_dir: WS_A }
+    });
+  });
+
+  // 거부 결과는 팝업 안이 아니라 토스트다 (UI-pw2g §3.4) — 두 탭이 같은
+  // `providerProbeRefusalText` 문장을 쓴다.
+  test('toasts the refusal when the popup probe is turned away', async () => {
+    const { mount } = gatedRow(async () => ({
+      ok: false,
+      reason: 'hold_changed'
+    }));
+
+    click(mount, '.worker-mini[data-bead-id="A-1"] .worker-dep--gate');
+    click(mount, '.chip-popover .worker-mini__provider-probe');
+    await vi.waitFor(() =>
+      expect(document.querySelector('.toast')).not.toBeNull()
+    );
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      `지금 프로브 거부: ${providerProbeRefusalText('hold_changed')}`
+    );
+  });
+
+  test('keeps the probe out of the wait row operation slot', () => {
+    const { mount } = gatedRow();
+
+    expect(
+      mount.querySelector('.worker-mini__rowops .worker-mini__provider-probe')
+    ).toBeNull();
   });
 });

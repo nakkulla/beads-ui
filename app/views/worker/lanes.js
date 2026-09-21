@@ -1815,11 +1815,14 @@ export function providerProbeRefusalText(reason) {
 }
 
 /**
- * `↻ 지금 프로브` — 공급자 보류에 막힌 대기 행의 조작 (UI-o5ll §3.4). 클릭은
+ * `↻ 지금 프로브` — 공급자 보류의 출구 (UI-o5ll §3.4). 클릭은
  * 그 러너의 회복 프로브를 지금 발화시키고 target은 지우지 않는다 — 판정자는
  * 여전히 프로브다. 재료(`since`·`runner`·`probe_ready`)가 하나라도 없으면 그리지
- * 않는다 (fail-quiet). 막힌 행 전부에 그린다 — `▶ 재개`와 같은 근거이고 중복
- * 클릭은 서버의 in-flight 술어가 흡수한다.
+ * 않는다 (fail-quiet). 중복 클릭은 서버의 in-flight 술어가 흡수한다.
+ *
+ * 대기 행에서 이 버튼이 사는 자리는 슬롯 1 조작이 아니라 슬롯 4a 게이트 칩이
+ * 여는 팝업의 출구 줄이다 (UI-pw2g §3.4). 실행 중 타일은 게이트 칩이 없으므로
+ * `wait_reasons`의 `probe_now` 조작을 그대로 머리줄에 싣는다.
  *
  * @param {{ gate?: Pick<import('./lane-model.js').LaneGate, 'kind'|'since'|'runner'|'probe_ready'> }} item
  * @returns {import('lit-html').TemplateResult|''}
@@ -2874,8 +2877,6 @@ export function queueRowOps(item, options = {}) {
     return undefined;
   }
   /** @type {Set<string>} */
-  const offered = new Set();
-  /** @type {Set<string>} */
   const action_keys = new Set();
   const wait_actions = (item.wait_reasons || []).map(
     (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
@@ -2883,12 +2884,16 @@ export function queueRowOps(item, options = {}) {
         {
           ...reason,
           actions: reason.actions.filter((action) => {
+            // `probe_now`는 이 슬롯을 떠났다 (UI-pw2g §3.4): 대기 행의 출구는 슬롯
+            // 4a 게이트 칩 팝업이고, 여기 남기면 같은 조작이 두 자리에 선다.
+            if (action.op === 'probe_now') {
+              return false;
+            }
             const key = `${action.op}:${action.payload.wait_id || action.payload.runner || ''}:${action.payload.mode || ''}`;
             if (action_keys.has(key)) {
               return false;
             }
             action_keys.add(key);
-            offered.add(action.op);
             return true;
           })
         },
@@ -2897,11 +2902,7 @@ export function queueRowOps(item, options = {}) {
   );
   // 순서는 넓은 것(큐 전체) → 좁은 것(이 행) → 자리 조작 → 빼기다 (UI-01wh §3.3).
   return html`<span class="worker-mini__rowops">
-    ${offered.has('probe_now')
-      ? ''
-      : providerProbeButtonTemplate(item)}${startNowButtonTemplate(
-      item
-    )}${wait_actions}${options.nudgeable === true
+    ${startNowButtonTemplate(item)}${wait_actions}${options.nudgeable === true
       ? html`<button
             type="button"
             class="op-btn op-btn--icon op-btn--ghost worker-mini__rowops-up"
@@ -2976,11 +2977,11 @@ function chipsWithBlockerStatus(chips, wait_reasons) {
 /**
  * One `.mini` row.
  *
- * PR 대기 레인과 REVISE 파킹 행만 다단 카드로 그린다 (UI-k59y §1, UI-yp64 §3):
- * 한 줄에 ID·제목·PR·뱃지·reason·usage·행동 버튼을 전부 실으면 제목이 몇 글자만
- * 남기 때문이다. 파킹 행은 부속 요소 수가 PR 대기와 사실상 같다. 부속 요소가
- * 적은 나머지 대기/완료 행은 한 줄 그대로 둔다 — 거기서는 카드화가 과하다.
- * 두 변형 모두 같은 `.worker-mini` 껍데기를 쓰므로 드래그 계약
+ * 대기 행은 폭과 무관하게 카드 변형 하나다 (UI-pw2g §3.1). 종전 한 줄 변형은
+ * ID·제목·PR·뱃지·reason·usage·조작을 한 줄에 실어 제목이 몇 글자만 남았고, 그
+ * 전환 판정이 뷰포트 폭(`options.card`)이라 레인이 컬럼으로 나뉜 넓은 화면에서는
+ * 영영 걸리지 않았다. 남은 두 변형은 완료 레인의 것이다 — `doneThreeLineRow`와
+ * `two_line`. 세 변형 모두 같은 `.worker-mini` 껍데기를 쓰므로 드래그 계약
  * (`data-bead-id`/`data-lane`)과 머지 진행 시각화는 변형과 무관하게 유지된다.
  *
  * `options.actions` (UI-5ksp §4.6)는 행 1번 줄 조작 슬롯 끝에 서는 호출 측
@@ -2988,12 +2989,8 @@ function chipsWithBlockerStatus(chips, wait_reasons) {
  * 표(UI-251y §5.1)의 "조작은 1번 줄 오른쪽 끝" 규칙을 그대로 따른다. 넘기지
  * 않으면 렌더가 그대로다.
  *
- * `options.card` (UI-0bvr §7.1)는 호출 탭의 `is_mobile`이다: 좁은 화면(≤640px)의
- * 대기 행은 한 줄 변형이 서너 줄로 접히므로 카드 변형을 쓴다. 데스크톱 밀도는
- * 그대로다.
- *
  * @param {MiniItem} item
- * @param {{ actions?: import('lit-html').TemplateResult, card?: boolean }} [options]
+ * @param {{ actions?: import('lit-html').TemplateResult }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function miniRow(item, options = {}) {
@@ -3036,15 +3033,17 @@ export function miniRow(item, options = {}) {
   const provider_badges = providerUsageBadges(item.usage, usage_options);
   const usage_label = formatUsageTotalWithCost(item.usage);
   const merging = item.merge_step || null;
-  const card =
-    !!item.external_wait ||
-    item.lane === 'pr_wait' ||
-    !!item.revise_action ||
-    item.discard?.abandon.action === true ||
-    options.card === true;
   // 완료 행은 2줄이다 (UI-rkly §3): 제목이 가로 전체를 쓰는 1줄과, 나머지 사실을
-  // 전부 받는 2줄. 한 줄에 usage까지 실으면 제목이 먼저 잘린다.
-  const two_line = item.lane === 'done' && !card;
+  // 전부 받는 2줄. 한 줄에 usage까지 실으면 제목이 먼저 잘린다. 완료 행이라도
+  // 외부 작업·REVISE 파킹·포기 조작을 실으면 그 재료가 2줄에 담기지 않는다.
+  const two_line =
+    item.lane === 'done' &&
+    !item.external_wait &&
+    !item.revise_action &&
+    item.discard?.abandon.action !== true;
+  // 대기 행은 폭과 무관하게 카드 변형 하나다 (UI-pw2g §3.1) — 남은 한 갈래가
+  // 완료 레인의 2줄이므로 나머지 전부가 카드다.
+  const card = !two_line;
   const done_at_label = two_line ? formatRelativeTime(item.done_at) : '';
   // 장식 핸들이다: 드래그는 행 전체(`.worker-mini[draggable="true"]`)에서
   // 시작하고, 인터랙티브 자식 제외는 드래그 컨트롤러가 판정한다.
@@ -3325,7 +3324,6 @@ export function miniRow(item, options = {}) {
       : html`${gate_el}${gate_open ? judgementPopover(item) : ''}`,
     grace_el
   );
-  const receipt_el = discardReceiptTemplate(item);
   const actions_el = options.actions ? options.actions : external.actions;
   const has_foot = !!(
     merging ||
@@ -3390,32 +3388,23 @@ export function miniRow(item, options = {}) {
             >
             ${timesMeta(item)}
           </div>`
-      : card
-        ? html`<div class="worker-mini__head">
-              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${wait_badge}${actions_el}
-            </div>
-            ${reason_el
-              ? html`<div class="worker-mini__reason-line">${reason_el}</div>`
-              : ''}
-            <div class="worker-mini__body">${title_el}</div>
-            ${wait_lines.body}${deps_el}${chips_el}${has_foot
-              ? html`<div class="worker-mini__foot">
-                  ${merge_step_el}
-                  <span class="worker-mini__actions"
-                    >${merge_el}${cancel_el}${discard_actions_el}${revise_els}</span
-                  >
-                  ${discardReceiptTemplate(item)}
-                </div>`
-              : ''}
-            ${wait_lines.times}${timesMeta(item)}`
-        : // 한 줄 변형은 본문을 `__line`으로 감싸고 메타 줄을 형제로 붙인다
-          // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
-          // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
-          html`<div class="worker-mini__line">
-              ${grip}${seq_el}${id_el}${pri_el}${title_el}${pr_el}${foreign_repo_el}${badge_els}${reason_el}${wait_badge}${merge_step_el}${merge_el}${cancel_el}${discard_actions_el}${actions_el}
-            </div>
-            ${wait_lines.body}${deps_el}${chips_el}${receipt_el}${wait_lines.times}
-            ${timesMeta(item)}`}
+      : html`<div class="worker-mini__head">
+            ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${wait_badge}${actions_el}
+          </div>
+          ${reason_el
+            ? html`<div class="worker-mini__reason-line">${reason_el}</div>`
+            : ''}
+          <div class="worker-mini__body">${title_el}</div>
+          ${wait_lines.body}${deps_el}${chips_el}${has_foot
+            ? html`<div class="worker-mini__foot">
+                ${merge_step_el}
+                <span class="worker-mini__actions"
+                  >${merge_el}${cancel_el}${discard_actions_el}${revise_els}</span
+                >
+                ${discardReceiptTemplate(item)}
+              </div>`
+            : ''}
+          ${wait_lines.times}${timesMeta(item)}`}
   </div>`;
 }
 
@@ -3692,9 +3681,14 @@ export function judgementPopoverContent(item, chip_key) {
     if (!gate) {
       return null;
     }
+    // 출구 `↻ 지금 프로브`는 이 팝업 안이다 (UI-pw2g §3.4) — 보류의 사실을 말하는
+    // 칩과 그 판정을 앞당기는 조작이 한자리에 모인다. 재료가 없으면 빈 문자열이라
+    // 출구 줄 자체가 없다 (fail-quiet).
+    const probe = providerProbeButtonTemplate(item);
     return {
       title: '자동 디스패치가 막혀 있다',
-      lines: gate.lines
+      lines: gate.lines,
+      ...(probe === '' ? {} : { exit: probe })
     };
   }
   if (chip_key === 'readiness') {

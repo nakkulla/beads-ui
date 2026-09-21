@@ -15,6 +15,7 @@ import {
   prStatusBadge,
   receiptWarningCodes
 } from './index.js';
+import { providerProbeRefusalText } from './lanes.js';
 
 /** A format-valid spec review receipt (`<reviewer>@<40-hex>`), which the
  * evidence predicate requires before a spec counts as PUBLISHED (UI-vb7u §2). */
@@ -2352,8 +2353,9 @@ describe('views/worker', () => {
     }
   };
 
-  // RED 18 (spec §5)
-  test('sends the runner and hold since when 지금 프로브 is clicked', async () => {
+  // RED 18 (spec §5). 버튼은 게이트 칩 팝업 안으로 옮겼다 (UI-pw2g §3.4) — 클릭이
+  // `.chip-popover` 조기 반환에 삼켜지지 않는 것이 이 검증의 주제다.
+  test('sends the runner and hold since when 지금 프로브 is clicked in the gate popup', async () => {
     const transport = vi.fn().mockResolvedValue({ ok: true });
     const mount = mountProviderGated(
       {
@@ -2364,7 +2366,10 @@ describe('views/worker', () => {
     );
 
     mount
-      .querySelector('.worker-mini__provider-probe')
+      .querySelector('.worker-dep--gate')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    mount
+      .querySelector('.chip-popover .worker-mini__provider-probe')
       ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await flush();
 
@@ -2374,8 +2379,46 @@ describe('views/worker', () => {
     });
   });
 
-  // RED 19 (spec §5)
-  test('draws 지금 프로브 only on a probe-ready row', () => {
+  // 거부 결과는 팝업 안이 아니라 토스트다 (UI-pw2g §3.4): 클릭 뒤 팝업이 닫히는
+  // 경우가 있어 팝업 안 표시는 결과를 놓친다.
+  test('toasts the refusal when the popup probe is turned away', async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValue({ ok: false, reason: 'probe_in_flight' });
+    const mount = mountProviderGated(
+      {
+        queue: [{ bead_id: 'P-1', added_at: 1 }],
+        provider_hold: CLAUDE_OUTAGE_HOLD
+      },
+      transport
+    );
+
+    mount
+      .querySelector('.worker-dep--gate')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    mount
+      .querySelector('.chip-popover .worker-mini__provider-probe')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      `지금 프로브 거부: ${providerProbeRefusalText('probe_in_flight')}`
+    );
+  });
+
+  test('keeps 지금 프로브 out of the waiting row operation slot', () => {
+    const mount = mountProviderGated({
+      queue: [{ bead_id: 'P-1', added_at: 1 }],
+      provider_hold: CLAUDE_OUTAGE_HOLD
+    });
+
+    expect(
+      mount.querySelector('.worker-mini__rowops .worker-mini__provider-probe')
+    ).toBeNull();
+  });
+
+  // RED 19 (spec §5). 자리는 그 행 게이트 칩의 팝업이다 (UI-pw2g §3.4).
+  test('draws 지금 프로브 only in the popup of a probe-ready row', () => {
     const mount = mountProviderGated({
       queue: [
         { bead_id: 'P-1', added_at: 1 },
@@ -2397,15 +2440,25 @@ describe('views/worker', () => {
         }
       }
     });
+    /**
+     * @param {string} bead_id
+     * @returns {Element|null} The probe button inside that row's open popup.
+     */
+    function probeInPopup(bead_id) {
+      mount
+        .querySelector(
+          `.worker-mini[data-bead-id="${bead_id}"] .worker-dep--gate`
+        )
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      return mount.querySelector(
+        `.worker-mini[data-bead-id="${bead_id}"] .chip-popover .worker-mini__provider-probe`
+      );
+    }
 
-    expect([
-      mount.querySelector(
-        '.worker-mini[data-bead-id="P-1"] .worker-mini__provider-probe'
-      ),
-      mount.querySelector(
-        '.worker-mini[data-bead-id="P-2"] .worker-mini__provider-probe'
-      )
-    ]).toEqual([expect.any(HTMLElement), null]);
+    expect([probeInPopup('P-1'), probeInPopup('P-2')]).toEqual([
+      expect.any(HTMLElement),
+      null
+    ]);
   });
 
   test('opens and closes the gate reason popup from the chip', () => {
@@ -5030,12 +5083,14 @@ describe('worker view — REVISE 파킹 처분 카드 (UI-hs11 §3.5)', () => {
     );
   });
 
-  test('keeps an unparked queued row on the single-line variant', () => {
+  // 카드 변형은 이제 모든 대기 행의 것이다 (UI-pw2g §3.1) — 파킹 행을 가르는 것은
+  // 변형이 아니라 처분 재료를 실은 foot 줄이고, 재료가 없으면 그리지 않는다.
+  test('draws no card foot on an unparked queued row', () => {
     const { mount } = mountWith(
       queueOf({ queue: [{ bead_id: 'RD-1', added_at: 1 }] })
     );
 
-    expect(rowOf(mount).classList.contains('worker-mini--card')).toBe(false);
+    expect(rowOf(mount).querySelector('.worker-mini__foot')).toBe(null);
   });
 
   test('carries the findings summary as the fix button tooltip', () => {
@@ -12871,9 +12926,9 @@ describe('레인 행 생성·수정 시각 (UI-d7pw §4)', () => {
     expect(meta?.textContent).not.toContain('생성');
   });
 
-  // 완료 행은 UI-rkly §3에서 2줄 계약으로 바뀌었으므로, 한 줄 변형이 남아 있는
-  // 대기 행으로 이 구조를 검증한다 (완료 2줄은 `lanes.test.js`가 덮는다).
-  test('wraps the single-line row body so the meta line is a sibling', () => {
+  // 대기 행은 폭과 무관하게 카드 변형 하나다 (UI-pw2g §3.1): 머리줄은 행의 직계
+  // 자식이고 메타 줄은 그 형제다 (완료 2줄은 `lanes.test.js`가 덮는다).
+  test('wraps the waiting row head so the meta line is a sibling', () => {
     const now = Date.now();
 
     const mount = renderTimes(
@@ -12885,7 +12940,7 @@ describe('레인 행 생성·수정 시각 (UI-d7pw §4)', () => {
 
     expect(
       mount.querySelector(
-        '.worker-mini[data-bead-id="QN-1"] > .worker-mini__line'
+        '.worker-mini[data-bead-id="QN-1"] > .worker-mini__head'
       )
     ).not.toBe(null);
   });
