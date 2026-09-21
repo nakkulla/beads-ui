@@ -273,6 +273,43 @@ function continuationDigest(value) {
 }
 
 /**
+ * Bind the source session and, for prior_attempt, its full recorded tuple.
+ *
+ * @param {any} prior
+ * @param {string|null} fallback_runner
+ * @param {boolean} prior_attempt_choice
+ */
+function continuationSourceDigest(
+  prior,
+  fallback_runner,
+  prior_attempt_choice
+) {
+  const source = {
+    runner:
+      typeof prior.runner === 'string' && prior.runner.length > 0
+        ? prior.runner
+        : fallback_runner,
+    session_id: prior.session_id ?? null,
+    exec_values: prior.exec_values ?? null,
+    resumed_from: prior.resumed_from ?? null
+  };
+  return continuationDigest(
+    prior_attempt_choice
+      ? {
+          ...source,
+          model: prior.model ?? null,
+          effort: prior.effort ?? null,
+          speed: prior.speed ?? 'default',
+          accounts: {
+            claude: prior.claude_account ?? null,
+            codex: prior.codex_account ?? null
+          }
+        }
+      : source
+  );
+}
+
+/**
  * Require the exact small server-issued token shape. This is deliberately not
  * a generic deep-equality helper: unknown keys and coerced values must never
  * make a stale continuation look current.
@@ -13091,31 +13128,10 @@ export function createScheduler(deps) {
     }
     const decision_token = {
       source_attempt_id: prior.attempt_id,
-      source_attempt_digest: continuationDigest(
-        // `prior_attempt` promises the recorded TUPLE, not just the recorded
-        // session (§5.2), so its source digest binds every value the child
-        // inherits — a preset or account edit under the dialog is caught by the
-        // launch-time revalidation instead of silently changing what runs.
+      source_attempt_digest: continuationSourceDigest(
+        prior,
+        resolved.exec.runner,
         prior_attempt_choice
-          ? {
-              runner: prior_runner,
-              session_id: prior.session_id ?? null,
-              exec_values: prior.exec_values ?? null,
-              resumed_from: prior.resumed_from ?? null,
-              model: prior.model ?? null,
-              effort: prior.effort ?? null,
-              speed: prior.speed ?? 'default',
-              accounts: {
-                claude: prior.claude_account ?? null,
-                codex: prior.codex_account ?? null
-              }
-            }
-          : {
-              runner: prior_runner,
-              session_id: prior.session_id ?? null,
-              exec_values: prior.exec_values ?? null,
-              resumed_from: prior.resumed_from ?? null
-            }
       ),
       observed_queue_revision: deps.store.snapshot(workspace).revision,
       preset_id: resolved.preset_id,
@@ -13367,8 +13383,9 @@ export function createScheduler(deps) {
 
   /**
    * Re-read every token input after restore-value capture. This is the final
-   * async preflight before the guard hook, so a changed source, queue revision,
-   * Bead value, or preset cannot cross into a state-changing relaunch.
+   * async preflight before the guard hook, so a changed source, Bead value, or
+   * preset cannot cross into a state-changing relaunch. Queue revision is the
+   * child prerecord's CAS fence, not part of the settings identity.
    *
    * @param {string} workspace
    * @param {any} prior
@@ -13394,8 +13411,27 @@ export function createScheduler(deps) {
     if (!latest.ok) {
       return latest;
     }
+    const current_prior =
+      deps.store.snapshot(workspace).attempts?.[prior.attempt_id];
+    if (!current_prior) {
+      return { ok: false, reason: 'continuation_source_stale' };
+    }
+    // The resolver awaits external reads while holding a source snapshot.
+    // Its later queue revision cannot prove that source stayed unchanged.
     if (
-      !matchesDecisionToken(continuation.decision_token, latest.decision_token)
+      continuationSourceDigest(current_prior, null, true) !==
+        continuationSourceDigest(live_prior, null, true) ||
+      (current_prior.exec_default_preset_id ?? null) !==
+        (live_prior.exec_default_preset_id ?? null) ||
+      (current_prior.exec_default_preset_revision ?? null) !==
+        (live_prior.exec_default_preset_revision ?? null) ||
+      !matchesDecisionToken(
+        {
+          ...continuation.decision_token,
+          observed_queue_revision: latest.decision_token.observed_queue_revision
+        },
+        latest.decision_token
+      )
     ) {
       return { ok: false, reason: 'continuation_settings_changed' };
     }
