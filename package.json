@@ -72,6 +72,7 @@
     "app/protocol.js",
     "app/utils/worker-eligibility.js",
     "app/utils/active-attempts.js",
+    "app/utils/awaiting-user-reason.js",
     "app/utils/session-preferred.js",
     "app/utils/spec-after-blocker.js",
     "app/utils/token-usage.js",

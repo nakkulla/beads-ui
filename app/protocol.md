@@ -207,12 +207,21 @@ default.
 Runnable rows inside `workspaces[].runnable` additionally carry
 `blocked: boolean` and `blocked_by: string[]`. They are display-only projections
 of the shared `ready_explain` snapshot. A legacy snapshot without that source
-uses `false` / `[]` and does not remove the candidate.
+uses `false` / `[]` and does not remove the candidate. Blocked candidates with
+no known blocker IDs also carry `blocked_without_ids: true`.
+
+Candidate placement facts are `route`, `spec_state`, `has_description`,
+`awaiting_user`, and `worker_ineligible`. Display observations also carry
+`session_preferred_reason` (empty when absent or worker-ineligible),
+`spec_after_blocker` (true only with an unsatisfied blocker), and optional
+`awaiting_user_reason` (formatted from the complete metadata object). Optional
+`release_info` and `dependents_info` use the same snapshot decoration functions
+as Ready/Blocked lists. These fields do not change admission or scheduling.
 
 The `session-preferred` label is ADVISORY and, unlike `worker-ineligible`, never
 removes a row from the runnable verdict — `qualify()` in
-`server/worker/runnable-cache.js` does not read it. It is valid only when the
-paired `session_preferred_reason` metadata is inside the contract enum
+`server/worker/runnable-cache.js` reads it only for display. It is valid only
+when the paired `session_preferred_reason` metadata is inside the contract enum
 (`external_roundtrip`, `user_feedback_loop`), and it loses to
 `worker-ineligible` in display: a row carrying both draws the
 `worker-ineligible` treatment only (UI-49mc §5).

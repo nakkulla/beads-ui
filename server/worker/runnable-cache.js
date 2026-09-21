@@ -29,11 +29,19 @@
  * @import { WorkflowProbeContext } from '../workflow-enrich.js'
  */
 import path from 'node:path';
+import { awaitingUserReason } from '../../app/utils/awaiting-user-reason.js';
 import { buildCarryoverIndex } from '../../app/utils/carryover-index.js';
+import { sessionPreferredReason } from '../../app/utils/session-preferred.js';
+import { specAfterBlockerActive } from '../../app/utils/spec-after-blocker.js';
 import {
   isWorkerIneligible,
   workerLabels
 } from '../../app/utils/worker-eligibility.js';
+import {
+  createDecorationContext,
+  dependentsInfoFor,
+  releaseInfoFor
+} from '../list-adapters.js';
 import { debug } from '../logging.js';
 import { resolveSpecEvidence, resolveSpecId } from '../spec-id.js';
 import {
@@ -120,6 +128,11 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * @property {'published'|'draft'|'none'|'conflict'|'n/a'} spec_state
  * @property {boolean} has_description
  * @property {boolean} awaiting_user
+ * @property {string} [awaiting_user_reason]
+ * @property {string} session_preferred_reason
+ * @property {boolean} spec_after_blocker
+ * @property {import('../list-adapters.js').ReleaseInfo} [release_info]
+ * @property {import('../list-adapters.js').DependentsInfo} [dependents_info]
  * @property {boolean} worker_ineligible
  * @property {string} spec_id - The native-first resolved spec path. ADMISSION
  * semantics: a quick_fix row carries `''` even when a spec resolves, because a
@@ -154,6 +167,7 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * @property {'approved'|'authored'|'review_incomplete'|'none'} plan_state
  * @property {boolean} blocked - Membership in `ready_explain.blocked`.
  * @property {string[]} blocked_by - Direct `blocks` blocker ids.
+ * @property {true} [blocked_without_ids] - A blocked candidate has no known blocker ids.
  * @property {string[]} labels - Labels carried for display.
  * @property {number|string|null} created_at
  * @property {number|string|null} updated_at
@@ -396,9 +410,10 @@ function planState(meta, route) {
  *
  * @param {Record<string, unknown>} row
  * @param {string[]|null} blocked_by - Null means no `ready_explain` source.
+ * @param {import('../list-adapters.js').DecorationContext} context
  * @returns {RunnableItem|null}
  */
-function qualify(row, blocked_by = null) {
+function qualify(row, blocked_by, context) {
   const bead_id = typeof row.id === 'string' ? row.id : '';
   if (bead_id.length === 0) {
     return null;
@@ -423,6 +438,9 @@ function qualify(row, blocked_by = null) {
     typeof row.description === 'string' && row.description.trim().length > 0;
   const awaiting_user = Object.hasOwn(meta, 'awaiting_user');
   const worker_ineligible = isWorkerIneligible(row.labels);
+  const awaiting_user_reason = awaitingUserReason(meta);
+  const release_info = releaseInfoFor(bead_id, context);
+  const dependents_info = dependentsInfoFor(bead_id, context);
   const admitted =
     RUNNABLE_ROUTES.has(route) &&
     !worker_ineligible &&
@@ -456,6 +474,13 @@ function qualify(row, blocked_by = null) {
     spec_state,
     has_description,
     awaiting_user,
+    ...(awaiting_user_reason ? { awaiting_user_reason } : {}),
+    session_preferred_reason: worker_ineligible
+      ? ''
+      : sessionPreferredReason(row.labels, meta),
+    spec_after_blocker: specAfterBlockerActive(row.labels, blocked_by || []),
+    ...(release_info ? { release_info } : {}),
+    ...(dependents_info ? { dependents_info } : {}),
     worker_ineligible,
     spec_id,
     published,
@@ -468,6 +493,9 @@ function qualify(row, blocked_by = null) {
         : planState(meta, route),
     blocked: blocked_by !== null,
     blocked_by: blocked_by || [],
+    ...(blocked_by !== null && blocked_by.length === 0
+      ? { blocked_without_ids: true }
+      : {}),
     labels: workerLabels(row.labels),
     created_at: stampOf(row.created_at),
     updated_at: stampOf(row.updated_at),
@@ -856,6 +884,12 @@ export function createRunnableCache(options = {}) {
     const session_active = [];
     /** @type {Array<{ row: Record<string, unknown>, item: RunnableItem|SessionActiveItem }>} */
     const projected = [];
+    const decoration_context = createDecorationContext(
+      /** @type {import('../workspace-snapshot-coordinator.js').WorkspaceSnapshot} */ (
+        snapshot
+      ),
+      root
+    );
     for (const raw of rows) {
       if (!raw || typeof raw !== 'object') {
         continue;
@@ -875,7 +909,7 @@ export function createRunnableCache(options = {}) {
           : explained.length > 0
             ? explained
             : embeddedBlockerIds(row);
-      const item = qualify(row, blocked_by);
+      const item = qualify(row, blocked_by, decoration_context);
       if (item) {
         items.push(item);
         projected.push({ row, item });

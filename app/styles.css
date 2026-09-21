@@ -2995,7 +2995,7 @@ html[data-theme='dark'] {
 /* 슬롯 7 시각 줄은 실행 타일에서도 행과 같은 캡션 크기·저채도다 (UI-8gem §9). */
 .rtile .wait-reason__times {
   color: var(--text-muted);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-small);
 }
 
 .wait-verdict__legend {
@@ -4210,7 +4210,7 @@ html[data-theme='dark'] {
 .worker-rungrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
-  gap: var(--sp-6);
+  gap: var(--sp-3);
   min-height: 60px;
   max-height: min(46vh, 100%);
   margin-bottom: var(--sp-10);
@@ -4229,8 +4229,8 @@ html[data-theme='dark'] {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-4);
-  padding: var(--sp-8) var(--sp-9);
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border-tile-run);
   border-radius: var(--r-7);
   background: var(--bg-tile-run);
@@ -4245,9 +4245,10 @@ html[data-theme='dark'] {
 
 .rtile__hd {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-height: 28px;
   align-items: center;
-  gap: var(--sp-6);
+  gap: var(--sp-2);
   min-width: 0;
 }
 
@@ -4261,17 +4262,16 @@ html[data-theme='dark'] {
 }
 
 .rtile__id {
+  flex: none;
   min-width: 0;
   max-width: 100%;
   font-family: var(--font-mono);
-  font-size: var(--fs-chip-lg);
+  font-size: var(--fs-chip);
   color: var(--text-id-mono);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
-/* 경과시간과 조작 버튼은 한 덩어리로 헤더 오른쪽에 붙는다: 타일이 좁아
-   줄바꿈이 일어나도 [▤ 세션]·[⏸]·[폐기]가 쪼개지거나 왼쪽으로 떨어지지
-   않고, 통째로 다음 줄 오른쪽에 그대로 남는다. */
+/* 정체성이 좁아져도 조작 묶음은 머리줄 오른쪽 끝에 남는다. */
 .rtile__hd-actions {
   display: flex;
   align-items: center;
@@ -4281,7 +4281,8 @@ html[data-theme='dark'] {
 }
 
 .rtile__elapsed {
-  font-size: var(--fs-chip-lg);
+  white-space: nowrap;
+  font-size: var(--fs-small);
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
 }
@@ -4423,14 +4424,17 @@ html[data-theme='dark'] {
 
 .rtile__failure-badge,
 .rtile__auto-halted {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 1px var(--sp-4);
   border: 1px solid color-mix(in srgb, var(--accent-danger) 45%, transparent);
-  border-radius: var(--r-5);
+  border-radius: var(--r-3);
   background: color-mix(in srgb, var(--accent-danger) 8%, transparent);
   color: var(--accent-danger);
   font: inherit;
-  font-size: var(--fs-caption);
+  font-size: var(--fs-chip);
   line-height: 1.35;
   white-space: nowrap;
 }
@@ -4462,20 +4466,23 @@ html[data-theme='dark'] {
 }
 
 .rtile__held-badge {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 1px var(--sp-4);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
+  border-radius: var(--r-3);
   background: transparent;
   color: var(--text-muted);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-chip);
   line-height: 1.35;
   white-space: nowrap;
 }
 
 .rtile__provider-hold-badge {
   font: inherit;
-  font-size: var(--fs-caption);
+  font-size: var(--fs-chip);
   cursor: pointer;
 }
 
@@ -4512,7 +4519,7 @@ html[data-theme='dark'] {
   display: flex;
   gap: var(--sp-6);
   color: var(--text-secondary);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-small);
   line-height: 1.35;
 }
 
@@ -4530,7 +4537,7 @@ html[data-theme='dark'] {
 .rtile__history-log {
   margin: var(--sp-4) 0 0;
   color: var(--text-muted);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-small);
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -4617,7 +4624,7 @@ html[data-theme='dark'] {
 .rtile__failure-landed {
   margin: 0;
   color: var(--accent-warn);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-small);
 }
 
 @media (max-width: 640px) {
@@ -4637,20 +4644,40 @@ html[data-theme='dark'] {
 }
 
 .rtile__title {
-  font-size: var(--fs-body-sm);
-  color: var(--text-primary);
+  font-size: var(--fs-body);
+  color: var(--text-title);
   overflow-wrap: anywhere;
 }
 
 .rtile__meta {
   position: relative;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-6);
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-2);
   min-width: 0;
-  font-size: var(--fs-chip-lg);
-  color: var(--text-dim);
+  font-size: var(--fs-small);
+  color: var(--text-muted);
+}
+
+.rtile__facts,
+.rtile__usage {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
+.rtile__facts > *,
+.rtile__usage > * {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.rtile__facts > :not(.chip-popover),
+.rtile__usage > .worker-usage {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* --- 실행 설정 칩 (worker-card-exec-chips §4) --- */
@@ -4696,7 +4723,76 @@ html[data-theme='dark'] {
 }
 
 .worker-card .worker-chips {
-  margin-top: var(--sp-4);
+  margin-top: 0;
+}
+
+:is(
+    .worker-card__head,
+    .worker-mini__head,
+    .worker-mini__line,
+    .worker-mini__row1,
+    .rtile__hd
+  )
+  > .ctl-chip {
+  min-width: 0;
+  font-size: var(--fs-chip);
+  border-radius: var(--r-3);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+:is(.worker-card, .worker-mini, .rtile) .wait-verdict {
+  min-width: 0;
+}
+
+:is(
+    .worker-mini__line,
+    .worker-mini__head,
+    .worker-mini__row1,
+    .worker-card__head,
+    .rtile__hd
+  )
+  :is(.wait-verdict, .external-wait-summary) {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+:is(
+    .worker-mini__line,
+    .worker-mini__head,
+    .worker-mini__row1,
+    .worker-card__head,
+    .rtile__hd
+  )
+  :is(.wait-verdict, .external-wait-summary)
+  > summary {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:is(.worker-card, .worker-mini, .rtile)
+  :is(.wait-reason__lines, .wait-reason__times) {
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+}
+
+:is(.worker-card, .worker-mini, .rtile)
+  :is(.worker-chips, .worker-deps, .rtile__meta)
+  :is(
+    .ctl-chip,
+    .worker-dep,
+    .exec-chip,
+    .worker-usage,
+    .worker-card__repo,
+    .worker-mini__repo,
+    .rtile__lane
+  ) {
+  font-size: var(--fs-chip);
+  border-radius: var(--r-4);
 }
 
 /* 타일 안에서 rollup은 카드의 footer가 아니라 그냥 한 줄이다. */
@@ -4707,15 +4803,15 @@ html[data-theme='dark'] {
 }
 
 .rtile__meta .worker-usage {
-  margin-left: auto;
-  font-size: var(--fs-chip-lg);
+  margin-left: 0;
+  font-size: var(--fs-chip);
 }
 
 /* 살아있음만 말하는 비의미적 액센트 (UI-58y2): 진행률이 아니므로 폭이 변하지
    않는다 — 스냅샷에 페이즈·퍼센트가 없는 이상 진행 바는 거짓말이 된다. */
 .rtile__accent {
   height: 2px;
-  margin: var(--sp-2) calc(-1 * var(--sp-9)) calc(-1 * var(--sp-8));
+  margin: var(--sp-2) calc(-1 * var(--sp-4)) calc(-1 * var(--sp-3));
   border-radius: 0 0 var(--r-7) var(--r-7);
   background: linear-gradient(
     90deg,
@@ -5973,9 +6069,9 @@ html[data-theme='dark'] {
    감싸고 메타를 형제로 두며, 껍데기만 column으로 뒤집는다. */
 .worker-mini__line {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: var(--sp-6);
+  gap: var(--sp-2);
   min-width: 0;
 }
 
@@ -5995,18 +6091,16 @@ html[data-theme='dark'] {
 
 .worker-mini__row1 {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--sp-6);
-  row-gap: var(--sp-3);
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 28px;
   min-width: 0;
 }
 
-/* 제목은 폭을 다투지 않고 언제나 자기 줄을 갖는다: basis 100%가 곧 줄바꿈이라
-   좁은 화면에서 ID·우선순위 옆으로 눌려 잘릴 일이 없다. `min-width: 0`은 내려간
-   줄에서 다시 shrink를 허용하므로 320px 폭에서도 넘치지 않는다. */
+/* 첫 줄의 조작 자리를 유지하도록 제목이 남는 폭을 쓴다. */
 .worker-mini__row1 .worker-mini__title {
-  flex: 1 1 100%;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -6016,7 +6110,7 @@ html[data-theme='dark'] {
   align-items: center;
   gap: var(--sp-6);
   color: var(--text-muted);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-small);
 }
 
 .worker-mini__done-at {
@@ -6036,13 +6130,13 @@ html[data-theme='dark'] {
   flex-wrap: wrap;
   gap: var(--sp-4);
   color: var(--text-muted);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-small);
   white-space: nowrap;
 }
 
 .worker-card__foot ~ .worker-mini__meta,
 .worker-card .worker-mini__meta {
-  margin-top: var(--sp-4);
+  margin-top: 0;
 }
 
 .rtile .worker-mini__meta {
@@ -6105,10 +6199,10 @@ html[data-theme='dark'] {
   /* 제목이 여러 줄이 될 수 있으므로(UI-k59y §2) 가운데가 아니라 첫 줄에
      맞춘다 — 3줄짜리 제목 옆에서 ID가 허공에 뜨는 것을 막는다. */
   align-items: flex-start;
-  gap: var(--sp-6);
-  margin-bottom: var(--sp-5);
-  padding: var(--sp-5) var(--sp-8);
-  border: 1px solid var(--border-card);
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border-chip);
   border-radius: var(--r-6);
   background: var(--bg-card);
   font-size: var(--fs-small);
@@ -6116,25 +6210,25 @@ html[data-theme='dark'] {
 }
 
 /* PR 대기 다단 카드 (UI-k59y §1): 부속 요소가 가장 많은 레인이라 한 줄에
-   욱여넣으면 제목이 먼저 희생된다. 머리(ID·PR·뱃지·reason) / 제목 / 꼬리
+   욱여넣으면 제목이 먼저 희생된다. 머리(ID·PR·뱃지·조작) / 사유 / 제목 / 꼬리
    (usage·진행·행동)로 나눠 각 줄이 자기 폭을 갖는다. */
 .worker-mini--card {
   flex-direction: column;
   align-items: stretch;
-  gap: var(--sp-4);
-  padding: var(--sp-7) var(--sp-8);
+  gap: var(--sp-2);
 }
 
 .worker-mini__head,
 .worker-mini__foot {
   display: flex;
   align-items: center;
-  gap: var(--sp-6);
+  gap: var(--sp-2);
   min-width: 0;
 }
 
 .worker-mini__head {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-height: 28px;
 }
 
 /* 좁은 컬럼 방어 (UI-yp64 §3): foot만 접어서는 단일 자식인 actions span 안의
@@ -6174,7 +6268,7 @@ html[data-theme='dark'] {
 /* 제목이 줄바꿈을 얻은 뒤(UI-k59y §2) 한 줄 행의 shrink 대상이 ID로 옮겨붙는다
    — ID는 4글자짜리 식별자라 한 글자도 접히면 안 된다. */
 .worker-mini__id {
-  flex: 0 0 auto;
+  flex: none;
   color: var(--text-id-mono);
   font-family: var(--font-mono);
   font-size: var(--fs-chip);
@@ -6187,43 +6281,39 @@ html[data-theme='dark'] {
 .worker-mini__title {
   flex: 1 1 auto;
   min-width: 0;
-  color: var(--text-primary);
-  font-size: var(--fs-small);
+  color: var(--text-title);
+  font-size: var(--fs-body);
   overflow-wrap: anywhere;
 }
 
 .worker-mini__reason {
   margin-left: auto;
-  color: var(--accent-warn);
-  font-size: var(--fs-caption);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
   white-space: nowrap;
 }
 
-/* 대기 행의 사유는 제목과 경쟁하지 않는다. 사유가 있을 때만 줄을 접고, 그
-   사유가 둘째 줄 전체를 써서 긴 admission reason도 안전하게 읽는다. */
-#worker-root .worker-mini__line:has(> .worker-mini__reason) {
-  flex-wrap: wrap;
+.worker-mini__line > .worker-mini__title,
+.worker-mini__line > .worker-mini__reason {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-#worker-root .worker-mini__line > .worker-mini__reason {
-  flex: 1 0 100%;
+.worker-mini__reason-line {
   min-width: 0;
-  margin-left: 0;
-  white-space: normal;
+  color: var(--text-muted);
+  font-size: var(--fs-small);
   overflow-wrap: anywhere;
 }
 
-/* PR/revise 카드의 머리도 같은 사유를 담지만 `__line`이 아니다. 긴 중단 사유는
-   PR·뱃지와 폭을 다투지 않고 머리의 다음 줄 전체를 쓴다. 카드 변형은 두 탭이
-   같은 `miniRow`로 그리므로 모니터 루트(`.mon`)도 같이 덮는다 (UI-0bvr §7.1). */
-#worker-root .worker-mini--card .worker-mini__head > .worker-mini__reason,
-.mon .worker-mini--card .worker-mini__head > .worker-mini__reason {
-  flex: 1 0 100%;
-  min-width: 0;
-  max-width: 100%;
-  margin-left: 0;
+.worker-mini__reason-line .worker-mini__reason {
   white-space: normal;
-  overflow-wrap: anywhere;
+}
+
+.worker-mini__reason--danger {
+  color: var(--accent-danger);
 }
 
 /* PR-wait row surface (worker-phase2 §4/§5): the PR is a LINK, never a button
@@ -6254,15 +6344,26 @@ html[data-theme='dark'] {
   text-overflow: ellipsis;
 }
 
-.worker-mini__badge {
+.worker-mini__badge,
+.worker-card__badge {
+  flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
   padding: 0 var(--sp-4);
-  border: 1px solid var(--border-card);
-  border-radius: var(--r-6);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-3);
   color: var(--text-secondary);
-  font-size: var(--fs-caption);
-  overflow-wrap: anywhere;
+  font-size: var(--fs-chip);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.worker-mini__badge--rereview,
+.worker-card__badge--rereview {
+  color: var(--accent-warn);
+  border-color: var(--border-warn);
+  background: transparent;
 }
 
 .worker-mini__badge--alert {
@@ -6549,7 +6650,7 @@ html[data-theme='dark'] {
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-chip);
   white-space: nowrap;
   text-decoration: underline;
   cursor: pointer;
@@ -6592,11 +6693,11 @@ html[data-theme='dark'] {
 .worker-card {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-5);
+  gap: var(--sp-2);
   min-width: 0;
-  margin-bottom: var(--sp-5);
-  padding: var(--sp-7) var(--sp-9);
-  border: 1px solid var(--border-card);
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border-chip);
   border-radius: var(--r-7);
   background: var(--bg-card);
   cursor: pointer;
@@ -6605,15 +6706,17 @@ html[data-theme='dark'] {
 .worker-card__head {
   position: relative;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-height: 28px;
   align-items: center;
-  gap: var(--sp-6);
+  gap: var(--sp-2);
   min-width: 0;
 }
 
 /* 슬롯 1 조작 (UI-5ksp §4.6): ⛓ 의존성 버튼은 1번 줄 오른쪽 끝이다. foot으로
    내려가면 coarse pointer 전용 접기 규칙에 함께 삼켜진다. */
 .worker-card__head-actions {
+  flex: none;
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
@@ -6626,7 +6729,7 @@ html[data-theme='dark'] {
 }
 
 .worker-card__id {
-  flex: 0 0 auto;
+  flex: none;
   color: var(--text-id-mono);
   font-family: var(--font-mono);
   font-size: var(--fs-chip);
@@ -6650,7 +6753,7 @@ html[data-theme='dark'] {
    쓴다. 같은 사실이 두 탭에서 다른 모양이면 한쪽은 다시 확인해야 하기 때문이다.
    후보 카드 · mini 행 · 실행 타일이 한 클래스를 공유한다. */
 .worker-pri {
-  flex: 0 0 auto;
+  flex: none;
   color: var(--accent-warn);
   font-size: var(--fs-chip);
   font-weight: 600;
@@ -6662,7 +6765,7 @@ html[data-theme='dark'] {
    않는다. 선행 글리프를 쓰지 않는 이유는 아래 `.worker-card__ineligible`이
    `⛔`를 걷어낸 것과 같다: 같은 폭 예산에 칩을 하나 더 넣는 일이다. */
 .worker-card__qfr {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   white-space: nowrap;
 }
 
@@ -6677,8 +6780,8 @@ html[data-theme='dark'] {
 }
 
 .worker-card__title {
-  color: var(--text-primary);
-  font-size: var(--fs-small);
+  color: var(--text-title);
+  font-size: var(--fs-body);
   overflow-wrap: anywhere;
 }
 
@@ -6700,8 +6803,8 @@ html[data-theme='dark'] {
   flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
-  color: var(--accent-warn);
-  font-size: var(--fs-caption);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
   overflow-wrap: anywhere;
 }
 
@@ -6806,7 +6909,7 @@ html[data-theme='dark'] {
 .worker-card__place-group {
   padding: var(--sp-3) var(--sp-2) 0;
   color: var(--text-dim);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-small);
 }
 
 .worker-card__place-lane {
@@ -6936,7 +7039,7 @@ html[data-theme='dark'] {
    게이지(좌측 레일·하단 진행선)와 선택 링은 테두리색과 별개라 그대로 남는다. */
 .worker-mini:not(.worker-mini--merging):hover,
 .worker-card:hover {
-  border-color: var(--border-chip);
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--border-chip));
 }
 
 .worker-mini--merging:hover,
@@ -7318,17 +7421,22 @@ html[data-theme='dark'] {
 .mon2-sec__body {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-4);
+  gap: var(--sp-3);
 }
 
 .mon2-flat {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-4);
+  gap: var(--sp-3);
 }
 
 .mon2-item {
   position: relative;
+  padding: 0;
+}
+
+.mon2-item > :is(.worker-card, .worker-mini) {
+  margin-bottom: 0;
 }
 
 /* 점유자 id는 원래 자형을 지킨다 — 레인 헤더의 uppercase가 `UI-yrzu`를
@@ -7374,6 +7482,27 @@ html[data-theme='dark'] {
   gap: var(--sp-3);
   justify-content: flex-end;
   margin-left: auto;
+  flex: none;
+  opacity: 0.55;
+}
+
+.worker-mini:hover .worker-mini__rowops,
+.worker-mini:focus-within .worker-mini__rowops {
+  opacity: 1;
+}
+
+@media (pointer: coarse), (max-width: 500px) {
+  .worker-mini__rowops {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 500px) {
+  .worker-card__foot > .worker-card__place {
+    width: 100%;
+    margin-left: 0;
+    justify-content: center;
+  }
 }
 
 /* 자리 옮기기만 드래그의 coarse pointer 보완재다 — 의존성 버튼은 화면 폭과
@@ -7598,7 +7727,7 @@ html[data-theme='dark'] {
   flex-wrap: wrap;
   gap: var(--sp-5);
   color: var(--text-dim);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-small);
 }
 
 .worker-mini--three-line .worker-mini__row2 {
@@ -7617,7 +7746,7 @@ html[data-theme='dark'] {
   border: 1px solid var(--border-chip);
   border-radius: var(--r-5);
   color: var(--text-muted);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-chip);
 }
 
 /* route 칩 일관 표시 (UI-yrzu §7.3). 전역 `.ctl-chip--route`(styles/base.css)를
@@ -7697,12 +7826,16 @@ html[data-theme='dark'] {
 }
 
 .rtile__session-badge {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   padding: 0 var(--sp-4);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
+  border-radius: var(--r-3);
   color: var(--text-muted);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 세션 타일의 활동 줄은 전사가 아니라 bead 갱신 시각이다 — 초록 점이 주장하는
@@ -7717,7 +7850,7 @@ html[data-theme='dark'] {
   gap: var(--sp-4);
   min-width: 0;
   color: var(--text-muted);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-small);
 }
 
 .rtile__activity-dot {
@@ -7755,7 +7888,7 @@ html[data-theme='dark'] {
   border: 1px solid var(--border-chip);
   border-radius: var(--r-5);
   color: var(--text-muted);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-small);
 }
 
 .rtile__leg--live {
@@ -7776,7 +7909,7 @@ html[data-theme='dark'] {
   margin: var(--sp-4) 0 0;
   padding-left: var(--sp-16);
   color: var(--text-muted);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-small);
 }
 
 /* 모바일 (§3): Worker와 같은 세로 스택. 관제 우선 순서는 이제 DOM이 소유한다

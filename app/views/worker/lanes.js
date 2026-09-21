@@ -793,12 +793,12 @@ export function staleWorkProjection(admission, locked = false) {
  * The prefix label lives here rather than in the formatter: the formatter owns
  * the settings text, the template owns how that text is introduced.
  *
- * `pin` marks the pair as an ISSUE PIN that differs from the repo default
- * (UI-eey2 §5): the monitor draws a card's exec chips only in that case, so the
- * chip must say why it is the one chip on the card. Omitted — every Worker
- * call — renders exactly as before.
- *
- * @param {import('../../utils/exec-settings-chip.js').ExecChips|null|undefined} chips
+ * @typedef {import('../../utils/exec-settings-chip.js').ExecChip & { pinned?: boolean }} LaneExecChip
+ * @typedef {{ orchestration: LaneExecChip|null, worker: LaneExecChip|null }} LaneExecChips
+ */
+
+/**
+ * @param {LaneExecChips|null|undefined} chips
  * @param {{ pin?: boolean }} [options]
  * @returns {import('lit-html').TemplateResult|''}
  */
@@ -806,18 +806,25 @@ export function execChipsTemplate(chips, options = {}) {
   if (!chips || (!chips.orchestration && !chips.worker)) {
     return '';
   }
-  const pin = options.pin === true ? ' exec-chip--pin' : '';
+  const orchestration_pin =
+    chips.orchestration?.pinned === true || options.pin === true
+      ? ' exec-chip--pin'
+      : '';
+  const worker_pin =
+    chips.worker?.pinned === true || options.pin === true
+      ? ' exec-chip--pin'
+      : '';
   const note = options.pin === true ? '\n이슈 핀 — 레포 기본값과 다름' : '';
   return html`${chips.orchestration
     ? html`<span
-        class="exec-chip exec-chip--orch${pin}"
+        class="exec-chip exec-chip--orch${orchestration_pin}"
         title=${`${chips.orchestration.title}${note}`}
         ><span class="exec-chip__k">오케</span
         ><span class="exec-chip__v">${chips.orchestration.text}</span></span
       >`
     : ''}${chips.worker
     ? html`<span
-        class="exec-chip exec-chip--worker${pin}"
+        class="exec-chip exec-chip--worker${worker_pin}"
         title=${`${chips.worker.title}${note}`}
         ><span class="exec-chip__k">워커</span
         ><span class="exec-chip__v">${chips.worker.text}</span></span
@@ -1613,11 +1620,11 @@ export function priorityBadgeTemplate(priority) {
  * @property {boolean} [ghost] - Serial-lane occupancy row (UI-04vo §4): the
  * lineage holding the lane, drawn dimmed and never draggable.
  * @property {number} [seq] - 1-based execution order number in a serial lane.
- * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} [exec_chips] -
+ * @property {boolean} [rereview_required] - An admitted stale receipt needs re-review.
+ * @property {LaneExecChips|null} [exec_chips] -
  * 실행 설정 칩 (worker-card-exec-chips §2.2): 대기 행과 후보 카드가 "이 설정으로
- * 돌아간다"를 적재 전에 미리 보여 준다. PR 대기 행은 싣지 않는다. 완료 행이 싣는
- * 같은 이름의 칩은 시제가 다르다 (UI-q1tg §3.4) — "돌아갈 설정"이 아니라 그
- * 완료를 만든 마지막 구현 attempt가 기록한 값이다.
+ * 돌아간다"를 적재 전에 미리 보여 준다. PR 대기 행은 싣지 않는다. 완료 행은
+ * 시제가 다르다 (UI-q1tg §3.4 / UI-j10d): 마지막 구현 attempt의 기록을 표시한다.
  * @property {DependencyChips|null} [dependency_chips] - 슬롯 4 두 줄의 의존·
  * 정보 칩 (UI-eey2 §5.1, 두 줄은 UI-8x90 §4.1).
  * @property {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null} [chip_popover] -
@@ -1690,7 +1697,8 @@ function doneThreeLineRow(item) {
   // 오케 → 워커를 붙이므로 줄 수는 늘지 않는다 (UI-q1tg §3.4). 일반 출처 칩은
   // 빠지고, Worker 생성 그룹은 생성 사실을 설명하기 위해 남는다 (UI-j10d §4).
   const badges = Array.isArray(item.badges) ? item.badges : [];
-  const provider_badges = providerUsageBadges(item.usage);
+  const usage_options = { scope: undefined, direct_session: false };
+  const provider_badges = providerUsageBadges(item.usage, usage_options);
   const usage_label = formatUsageTotalWithCost(item.usage);
   const done_at_label = formatRelativeTime(item.done_at);
   return html`<div
@@ -1743,7 +1751,9 @@ function doneThreeLineRow(item) {
               >`
           )
         : usage_label
-          ? html`<span class="worker-usage" title=${usageTooltip(item.usage)}
+          ? html`<span
+              class="worker-usage"
+              title=${usageTooltip(item.usage, usage_options)}
               >${usage_label}</span
             >`
           : ''}
@@ -2943,7 +2953,7 @@ export function summaryChipsTemplate(options) {
  */
 export function tokenChipShortText(label) {
   const text = typeof label === 'string' ? label : '';
-  const cost = text.match(/\$[\d.,]+/);
+  const cost = text.match(/≈?\$[\d.,]+/);
   if (!cost) {
     return text;
   }
@@ -3192,7 +3202,8 @@ export function miniRow(item, options = {}) {
       )
     : { badge: '', body: '', actions: '', times: '' };
   const badges = Array.isArray(item.badges) ? item.badges : [];
-  const provider_badges = providerUsageBadges(item.usage);
+  const usage_options = { scope: undefined, direct_session: false };
+  const provider_badges = providerUsageBadges(item.usage, usage_options);
   const usage_label = formatUsageTotalWithCost(item.usage);
   const merging = item.merge_step || null;
   const card =
@@ -3269,9 +3280,23 @@ export function miniRow(item, options = {}) {
           >${b}</span
         >`
   );
+  if (item.rereview_required === true) {
+    badge_els.push(
+      html`<span
+        class="worker-mini__badge worker-mini__badge--rereview"
+        title="stale 판정 — 디스패치가 세션 내 재리뷰를 요구합니다. 실행은 admit됐고 거절이 아닙니다"
+        >♻ 재리뷰 필요</span
+      >`
+    );
+  }
   const reason_el =
     typeof item.reason === 'string' && item.reason
-      ? html`<span class="worker-mini__reason">${item.reason}</span>`
+      ? html`<span
+          class="worker-mini__reason${item.reason.startsWith('⛔')
+            ? ' worker-mini__reason--danger'
+            : ''}"
+          >${item.reason}</span
+        >`
       : '';
   const usage_el =
     provider_badges.length > 0
@@ -3282,7 +3307,9 @@ export function miniRow(item, options = {}) {
             >`
         )
       : usage_label
-        ? html`<span class="worker-usage" title=${usageTooltip(item.usage)}
+        ? html`<span
+            class="worker-usage"
+            title=${usageTooltip(item.usage, usage_options)}
             >${usage_label}</span
           >`
         : '';
@@ -3451,10 +3478,8 @@ export function miniRow(item, options = {}) {
           승인하고 진행
         </button>`
     : '';
-  // 실행 설정 칩은 대기 행과 완료 행이 얻는다: PR 대기 행만 빠진다 — 이미 실행이
-  // 끝났고 돌아갈 설정도 없다. 완료 행의 같은 칩은 시제가 다르다 (UI-q1tg §3.4):
-  // 그 완료를 만든 마지막 구현 attempt가 기록한 값이고, 자리는 2줄 변형의 2번째
-  // 줄(슬롯 5)이다.
+  // Waiting rows show effective settings; done rows show the last implementation
+  // attempt's recorded facts in slot 5 (UI-q1tg §3.4 / UI-j10d).
   const has_exec_chips = !!(
     item.lane !== 'pr_wait' &&
     item.exec_chips &&
@@ -3586,12 +3611,12 @@ export function miniRow(item, options = {}) {
             ${timesMeta(item)}
           </div>`
       : card
-        ? // 사유는 머리 줄의 **끝**이다 (UI-0bvr §7.1): `flex: 1 0 100%`로 한 줄을
-          // 통째 쓰므로 그 앞에 서야 조작이 다음 줄로 밀리지 않는다. 슬롯 표의
-          // "조작은 1번 줄 오른쪽 끝"은 그래서 좁은 화면에서도 지켜진다.
-          html`<div class="worker-mini__head">
-              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${wait_badge}${actions_el}${reason_el}
+        ? html`<div class="worker-mini__head">
+              ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${wait_badge}${actions_el}
             </div>
+            ${reason_el
+              ? html`<div class="worker-mini__reason-line">${reason_el}</div>`
+              : ''}
             <div class="worker-mini__body">${title_el}${stale_details}</div>
             ${wait_lines.body}${deps_el}${chips_el}${has_foot
               ? html`<div class="worker-mini__foot">
@@ -4002,7 +4027,7 @@ function chipOpen(item, chip_key) {
  *
  * @type {string}
  */
-export const AWAITING_USER_REASON_PREFIX = '사용자 리뷰 필요';
+export { AWAITING_USER_REASON_PREFIX } from '../../utils/awaiting-user-reason.js';
 
 /**
  * Read-only external wait summary shared by every consumer card shape.
@@ -4077,20 +4102,13 @@ export function externalWaitSummaryTemplate(item) {
  * `workflow` (inactive workspace) renders without the chip/stepper and never
  * throws.
  *
- * `exec_chips_mode` (UI-eey2 §5) says what this card's exec chips MEAN.
- * `always` — the Worker console's contract, unchanged — draws the resolved
- * settings. `pinned_only` says the caller has already filtered them down to the
- * issue pins that differ from the repo default, so they are drawn in the pin
- * colour with the pin tooltip; the card never decides that itself, because only
- * the caller knows the repo's defaults.
- *
  * 슬롯 1 조작(`.worker-card__head-actions`)은 지금 재료가 없어 그리지 않는다
  * (UI-lx45 §5): UI-j92s가 그 자리에 두었던 `⛓ 의존성` 버튼은 편집이 이슈 상세
  * `의존성` 절로 옮겨 가며 사라졌다.
  *
  * @param {MiniItem} item
  * @param {PlaceMenu|null} [place_menu]
- * @param {{ exec_chips_mode?: 'always'|'pinned_only', onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} [options]
+ * @param {{ onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function candidateCard(item, place_menu = null, options = {}) {
@@ -4191,7 +4209,13 @@ export function candidateCard(item, place_menu = null, options = {}) {
         ? html`<span class="worker-card__grip" aria-hidden="true">⠿</span>`
         : ''}
       <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span
-      >${priorityBadgeTemplate(item.priority)}
+      >${priorityBadgeTemplate(item.priority)}${item.rereview_required === true
+        ? html`<span
+            class="worker-card__badge worker-card__badge--rereview"
+            title="stale 판정 — 디스패치가 세션 내 재리뷰를 요구합니다. 실행은 admit됐고 거절이 아닙니다"
+            >♻ 재리뷰 필요</span
+          >`
+        : ''}
       ${worker_ineligible
         ? html`<button
             type="button"
@@ -4228,9 +4252,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
       : ''}${deps_el}
     ${repo_el || route_el || from_el || has_exec_chips
       ? html`<div class="worker-chips">
-          ${repo_el}${route_el}${from_el}${execChipsTemplate(item.exec_chips, {
-            pin: options.exec_chips_mode === 'pinned_only'
-          })}
+          ${repo_el}${route_el}${from_el}${execChipsTemplate(item.exec_chips)}
         </div>`
       : ''}
     <div

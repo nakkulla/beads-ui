@@ -1069,7 +1069,7 @@ describe('session-history claude subagent rows (UI-2mpn §6.1)', () => {
     expect(
       host.querySelector('.detail-session__usage')?.getAttribute('title')
     ).toBe(
-      '총 219,570\n분해 없음 — 총량만 보고됨\n단가 없음\nAPI 환산 단가 기준'
+      '총 219,570\n분해 없음 — 총량만 보고됨\n환산: USD · Standard · short context · 5분 cache write 기준\n단가 없는 leg 1개'
     );
   });
 

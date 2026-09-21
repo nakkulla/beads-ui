@@ -2887,7 +2887,7 @@ describe('views/monitor 세션 타일 (UI-yrzu §6·§9)', () => {
     expect(tile.classList.contains('rtile--session')).toBe(true);
     expect(tile.getAttribute('data-bead-id')).toBe('A-7');
     expect(tile.querySelector('.rtile__session-badge')?.textContent).toBe(
-      '세션'
+      '직접 세션'
     );
     expect(tile.querySelector('.ctl-chip--route')?.textContent).toBe(
       'spec_backed'

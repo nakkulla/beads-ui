@@ -158,7 +158,7 @@ const ELIGIBILITY_TABLE = [
 
 describe('worker placement', () => {
   for (const row of ELIGIBILITY_TABLE) {
-    test(`agrees with the adapter eligibility for ${row.name}`, () => {
+    test(`agrees with the adapter facts for ${row.name}`, () => {
       const queue = queueOf();
 
       const placement = candidatePlacement(row.issue, queue);
@@ -166,7 +166,13 @@ describe('worker placement', () => {
 
       expect(placement.placeable).toBe(row.placeable);
       expect(placement.spec).toBe(row.spec);
-      expect(adapter_row.eligible).toBe(placement.placeable);
+      expect(adapter_row.observation).toBe(true);
+      expect(adapter_row.spec_state).toBe(placement.spec);
+      expect(adapter_row.has_description).toBe(!placement.missing_description);
+      expect(adapter_row.awaiting_user).toBe(placement.awaiting_user);
+      expect(adapter_row.worker_ineligible).toBe(placement.worker_ineligible);
+      expect(adapter_row).not.toHaveProperty('eligible');
+      expect(adapter_row).not.toHaveProperty('reason');
     });
   }
 

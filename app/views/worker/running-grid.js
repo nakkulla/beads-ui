@@ -1152,7 +1152,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ? tile.exec_chips
       : null;
   const lineage = formatContinuationLineage(tile);
-  const provider_badges = providerUsageBadges(tile.usage);
+  const usage_options = {
+    scope: { has_native_usage, has_included_native_usage },
+    direct_session
+  };
+  const provider_badges = providerUsageBadges(tile.usage, usage_options);
   const usage_label = formatUsageTotalWithCost(tile.usage);
   // Same badge style the lane rows use — a resolution session is a different
   // KIND of run, not a louder one.
@@ -1239,37 +1243,33 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     provider_badges.length > 0 ||
     usage_label
       ? html`<div class="rtile__meta">
-          ${monitor_chips}${route_chip}${source_chips}${session_ref_chip}${session_receipt_chip}${rec_chip}${provider_badges.length >
-          0
-            ? provider_badges.map(
-                (badge) =>
-                  html`<span class="worker-usage" title=${badge.tooltip}
-                    >${badge.label}</span
-                  >`
-              )
-            : usage_label
-              ? html`<span
-                  class="worker-usage"
-                  title=${usageTooltip(tile.usage)}
-                  >${usage_label}</span
-                >`
-              : ''}${chip_popover}
-          ${direct_session && tile.usage
-            ? html`<span class="rtile__usage-scope"
-                >현재 대화 기준 · 워크스페이스 합계 제외</span
-              >`
-            : ''}${has_native_usage
-            ? html`<span class="rtile__usage-scope"
-                >${has_included_native_usage
-                  ? '부모·자식 합계'
-                  : '자식 사용량 · 부모 합계 제외'}</span
-              >`
-            : ''}${tile.usage
-            ? html`<span class="rtile__usage-scope"
-                >USD 환산 · Standard · short context · 5분 cache write
-                기준</span
-              >`
-            : ''}
+          ${monitor_chips ||
+          route_chip ||
+          source_chips ||
+          session_ref_chip ||
+          session_receipt_chip ||
+          rec_chip
+            ? html`<div class="rtile__facts">
+                ${monitor_chips}${route_chip}${source_chips}${session_ref_chip}${session_receipt_chip}${rec_chip}
+              </div>`
+            : ''}${provider_badges.length > 0 || usage_label
+            ? html`<div class="rtile__usage">
+                ${provider_badges.length > 0
+                  ? provider_badges.map(
+                      (badge) =>
+                        html`<span class="worker-usage" title=${badge.tooltip}
+                          >${badge.label}</span
+                        >`
+                    )
+                  : usage_label
+                    ? html`<span
+                        class="worker-usage"
+                        title=${usageTooltip(tile.usage, usage_options)}
+                        >${usage_label}</span
+                      >`
+                    : ''}
+              </div>`
+            : ''}${chip_popover}
         </div>`
       : '';
   // 상태 뱃지는 슬롯 1이다 (UI-251y §3.1): 다른 카드가 이미 정체성 줄에서
@@ -1411,16 +1411,18 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       <span class="rtile__id" title="클릭하면 ID 복사">${tile.bead_id}</span>
       ${priorityBadgeTemplate(tile.priority)}${lineage
         ? html`<span class="rtile__resumed" title=${lineage}>↻</span>`
+        : ''}${session
+        ? html`<span
+            class="rtile__session-badge"
+            title="Worker가 아닌 세션이 in_progress로 잡은 이슈"
+            >직접 세션</span
+          >`
         : ''}${status_badges}
       <div class="rtile__hd-actions">
         ${wait_lines.map((line) => line.actions)}${session
           ? html`${typeof tile.started_at === 'number'
-                ? html`<span class="rtile__elapsed">${elapsed}</span>`
-                : ''}${sessionOpenButton(session_current)}<span
-                class="rtile__session-badge"
-                title="Worker가 아닌 세션이 in_progress로 잡은 이슈"
-                >세션</span
-              >`
+              ? html`<span class="rtile__elapsed">${elapsed}</span>`
+              : ''}${sessionOpenButton(session_current)}`
           : elapsed
             ? html`<span class="rtile__elapsed">${elapsed}</span>`
             : ''}
@@ -1529,37 +1531,40 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                   provider_badges.length > 0 ||
                   usage_label
                 ? html`<div class="rtile__meta">
-                    ${monitor_chips}${route_chip}${source_chips}${execChipsTemplate(
-                      tile.exec_chips
-                    )}${rec_chip}
-                    ${provider_badges.length > 0
-                      ? provider_badges.map(
-                          (badge) =>
-                            html`<span
-                              class="worker-usage"
-                              title=${badge.tooltip}
-                              >${badge.label}</span
-                            >`
-                        )
-                      : usage_label
-                        ? html`<span
-                            class="worker-usage"
-                            title=${usageTooltip(tile.usage)}
-                            >${usage_label}</span
-                          >`
-                        : ''}${chip_popover}
-                    ${has_native_usage
-                      ? html`<span class="rtile__usage-scope"
-                          >${has_included_native_usage
-                            ? '부모·자식 합계'
-                            : '자식 사용량 · 부모 합계 제외'}</span
-                        >`
-                      : ''}${tile.usage
-                      ? html`<span class="rtile__usage-scope"
-                          >USD 환산 · Standard · short context · 5분 cache write
-                          기준</span
-                        >`
+                    ${monitor_chips ||
+                    route_chip ||
+                    source_chips ||
+                    exec_chips ||
+                    rec_chip
+                      ? html`<div class="rtile__facts">
+                          ${monitor_chips}${route_chip}${source_chips}${execChipsTemplate(
+                            tile.exec_chips
+                          )}${rec_chip}
+                        </div>`
                       : ''}
+                    ${provider_badges.length > 0 || usage_label
+                      ? html`<div class="rtile__usage">
+                          ${provider_badges.length > 0
+                            ? provider_badges.map(
+                                (badge) =>
+                                  html`<span
+                                    class="worker-usage"
+                                    title=${badge.tooltip}
+                                    >${badge.label}</span
+                                  >`
+                              )
+                            : usage_label
+                              ? html`<span
+                                  class="worker-usage"
+                                  title=${usageTooltip(
+                                    tile.usage,
+                                    usage_options
+                                  )}
+                                  >${usage_label}</span
+                                >`
+                              : ''}
+                        </div>`
+                      : ''}${chip_popover}
                   </div>`
                 : ''}
             ${discardReceiptTemplate(tile)} ${times_el}
