@@ -690,7 +690,7 @@ describe('repo operation after-ladder recovery', () => {
     expect(JSON.stringify(after)).toBe(JSON.stringify(before));
   });
 
-  test('replays the same event identity for every subject', async () => {
+  test('appends recovery and handoff events once for every subject', async () => {
     const timeline = { append: vi.fn() };
     const { coordinator, store } = coordinatorFor({
       repairHandoff: adapter(),
@@ -703,13 +703,49 @@ describe('repo operation after-ladder recovery', () => {
     timeline.append.mockClear();
     await coordinator.reconcile(root);
 
-    expect(timeline.append.mock.calls.map(([event]) => event)).toEqual(first);
     expect(first.map((event) => [event.bead_id, event.kind])).toEqual([
       ['UI-source', 'operation_recovery'],
       ['UI-second', 'operation_recovery'],
       ['UI-source', 'repair_handoff'],
       ['UI-second', 'repair_handoff']
     ]);
+    // Reconcile re-enters every failed operation each pass; the timeline file
+    // is append-only, so an unchanged classification writes no second line.
+    expect(timeline.append).not.toHaveBeenCalled();
+  });
+
+  test('appends a recovery event again when the classification changes', async () => {
+    const timeline = { append: vi.fn() };
+    const { coordinator, store } = coordinatorFor({
+      repairHandoff: adapter(),
+      timeline
+    });
+    seedFailed(store);
+    const support = vi
+      .spyOn(recoveryPolicy, 'workRecoveryReady')
+      .mockReturnValue(false);
+
+    try {
+      await coordinator.reconcile(root);
+      const unsupported = timeline.append.mock.calls.map(([event]) => event);
+      timeline.append.mockClear();
+      support.mockReturnValue(true);
+      await coordinator.reconcile(root);
+      const supported = timeline.append.mock.calls.map(([event]) => event);
+
+      expect(unsupported.map((event) => event.kind)).toEqual([
+        'operation_recovery',
+        'operation_recovery'
+      ]);
+      expect(
+        supported
+          .filter((event) => event.kind === 'operation_recovery')
+          .map((event) => event.bead_id)
+      ).toEqual(['UI-source', 'UI-second']);
+      expect(supported[0].summary).not.toBe(unsupported[0].summary);
+    } finally {
+      support.mockRestore();
+    }
   });
 
   test('persists recovery events once in the real bead timeline', async () => {

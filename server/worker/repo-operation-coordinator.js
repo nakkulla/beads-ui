@@ -856,6 +856,23 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * Whether the stored recovery classification differs from the one a
+   * previous pass left, i.e. whether the timeline owes a new line.
+   *
+   * @param {{ classification?: string, disposition?: string, reason?: string|null, policy_supported?: boolean }|null} previous
+   * @param {{ classification?: string, disposition?: string, reason?: string|null, policy_supported?: boolean }} current
+   */
+  function recoveryClassificationChanged(previous, current) {
+    return (
+      previous === null ||
+      previous.classification !== current.classification ||
+      previous.disposition !== current.disposition ||
+      previous.reason !== current.reason ||
+      previous.policy_supported !== current.policy_supported
+    );
+  }
+
+  /**
    * Classify a raw failure and reserve ordinary workflow handoff under the
    * existing repository lock. The repair adapter adopts by metadata before
    * creating, including when an earlier create lost its response.
@@ -875,11 +892,8 @@ export function createRepoOperationCoordinator(deps) {
     if (!result || !operation) {
       return;
     }
-    if (
-      !operation.recovery ||
-      operation.recovery.policy_supported === false ||
-      !supported
-    ) {
+    const previous = operation.recovery ?? null;
+    if (!previous || previous.policy_supported === false || !supported) {
       const recorded = deps.store.recordRepoOperationRecovery(workspace, {
         operation_id,
         recovery: {
@@ -903,12 +917,18 @@ export function createRepoOperationCoordinator(deps) {
     if (!recovery) {
       return;
     }
-    recordRecoveryEvent(
-      operation,
-      'operation_recovery',
-      operation_id,
-      `복구 분류 — ${recovery.disposition}:${recovery.reason || 'repair'} · ${operation.failure?.code || 'unknown_error'}`
-    );
+    // Reconcile re-enters here for every failed operation on every pass and
+    // the timeline file is append-only (the reader dedupes by event_id, the
+    // file does not), so a line is written only when the classification moved.
+    if (recoveryClassificationChanged(previous, recovery)) {
+      recordRecoveryEvent(
+        operation,
+        'operation_recovery',
+        operation_id,
+        `복구 분류 — ${recovery.disposition}:${recovery.reason || 'repair'} · ${operation.failure?.code || 'unknown_error'}`
+      );
+    }
+    const placed_before = !!recovery.handoff?.placement;
     const adapter = deps.repairHandoff;
     const key = result.handoff_key;
     if (
@@ -1088,12 +1108,14 @@ export function createRepoOperationCoordinator(deps) {
           throw new Error('handoff_placement_record_failed');
         }
       }
-      recordRecoveryEvent(
-        operation,
-        'repair_handoff',
-        key,
-        `수정 인계 — ${handoff_bead_id} (${state === 'reused' ? 'reused' : 'created'}) · 배치 parallel`
-      );
+      if (!placed_before) {
+        recordRecoveryEvent(
+          operation,
+          'repair_handoff',
+          key,
+          `수정 인계 — ${handoff_bead_id} (${state === 'reused' ? 'reused' : 'created'}) · 배치 parallel`
+        );
+      }
     } catch (error) {
       deps.store.recordRepairHandoffError(workspace, {
         operation_id,
