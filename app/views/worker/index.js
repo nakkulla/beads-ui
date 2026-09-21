@@ -501,6 +501,8 @@ export function mergeWaitingText(reason) {
   switch (phase) {
     case 'gating':
       return '머지 조건 확인 중';
+    case 'holding':
+      return '검증 실패 — 수정 push 대기';
     case 'merging':
       return '머지 중';
     case 'cleaning':
@@ -543,7 +545,7 @@ function resolutionView(resolution) {
 
 /**
  * Completion phases that leave the row's own buttons clickable: the two that
- * are already settled for a person, plus the three UI-hk74 §4 phases the
+ * are already settled for a person, the pre-merge hold, plus the three UI-hk74 §4 phases the
  * coordinator resolves on its own without owning the merge effect.
  *
  * @type {Set<string>}
@@ -551,6 +553,7 @@ function resolutionView(resolution) {
 const UNLOCKED_COMPLETION_PHASES = new Set([
   'paused',
   'needs_human',
+  'holding',
   'waiting_metadata',
   'reviewing',
   'retrying'
@@ -718,6 +721,9 @@ function completionView(completion, auto_resolution = null) {
     case 'gating':
       badge = '머지 조건 확인 중';
       break;
+    case 'holding':
+      badge = '검증 실패 — 수정 push 대기';
+      break;
     case 'merging':
       badge = '머지 중';
       break;
@@ -748,6 +754,19 @@ function completionView(completion, auto_resolution = null) {
 
   /** @type {string[]} */
   const details = [badge];
+  const hold = completion.phase === 'holding' ? completion.hold : null;
+  if (completion.phase === 'holding') {
+    details.push(
+      failureSentence(hold?.reason) || '머지 전 검증이 실패했습니다.'
+    );
+    if (hold?.summary) {
+      details.push(hold.summary);
+    }
+    if (hold?.log_path) {
+      details.push(`로그 ${hold.log_path}`);
+    }
+    details.push('수정 커밋을 push하면 자동으로 다시 검증합니다');
+  }
   if (completion.head_sha) {
     details.push(`head ${completion.head_sha}`);
   }
@@ -789,14 +808,14 @@ function completionView(completion, auto_resolution = null) {
   if (completion.evidence) {
     details.push(completion.evidence);
   }
-  if (completion.log_path) {
+  if (completion.log_path && completion.log_path !== hold?.log_path) {
     details.push(completion.log_path);
   }
 
   return {
     badge,
     title: details.join('\n'),
-    alert: completion.phase === 'needs_human',
+    alert: completion.phase === 'needs_human' || completion.phase === 'holding',
     // [머지] 클릭은 세 자동 해소 phase에서도 살아 있어야 한다 (§9): 수동
     // authority가 자동 해소보다 우선하고, 그 클릭이 `auto_resolution`을 비우는
     // 유일한 경로다. 잠기는 것은 되돌릴 수 없는 진행 중 단계뿐이다.
@@ -1363,11 +1382,14 @@ function prWaitRow(
   });
   const discard_blocks_merge = !!discard.operation;
   // [세션에서 해결]의 재료 (UI-jw27 §4): 이 행이 사람이 직접 이어받아야 하는
-  // terminal 실패인가. 답하는 사실은 셋뿐이다 — 멈춘 머지 후 정리, needs_human
-  // 종단, 실패한 폐기 작업. 셋 다 아니면 버튼을 그리지 않는다 (fail-quiet):
+  // 실패 또는 보류인가 (UI-g0lk §5.1). 재료는 넷이다 — 멈춘 머지 후 정리,
+  // needs_human 종단, holding 보류, 실패한 폐기 작업. 없으면 그리지 않는다:
   // 실패가 아닌 행에서 이 클릭은 무엇을 해결하라고 말할지가 없다.
   const resolve_action =
-    !!cleanup_failed || completion?.phase === 'needs_human' || !!discard.error;
+    !!cleanup_failed ||
+    completion?.phase === 'needs_human' ||
+    completion?.phase === 'holding' ||
+    !!discard.error;
   // The queue will act on this row without a click (UI-kxhf): it is queued and
   // nothing terminal or choice-bound stands in the way.
   const auto_pending =
