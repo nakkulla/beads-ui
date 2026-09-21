@@ -20,6 +20,7 @@ const kvSetJsonInWorkspace = vi.fn();
 const kvGetJsonAtRoot = vi.fn();
 const kvSetJsonAtRoot = vi.fn();
 const invalidateSessionDefaults = vi.fn();
+const invalidateWorkspaceAccounts = vi.fn();
 
 const WS_CONN = '/workspace';
 const WS_OTHER = '/other-repo';
@@ -63,7 +64,9 @@ vi.mock('./context.js', () => ({
 
 vi.mock('./monitor-handlers.js', () => ({
   invalidateSessionDefaults: (/** @type {string} */ root) =>
-    invalidateSessionDefaults(root)
+    invalidateSessionDefaults(root),
+  invalidateWorkspaceAccounts: (/** @type {string} */ root) =>
+    invalidateWorkspaceAccounts(root)
 }));
 
 const {
@@ -107,6 +110,7 @@ beforeEach(() => {
   kvGetJsonAtRoot.mockReset();
   kvSetJsonAtRoot.mockReset();
   invalidateSessionDefaults.mockReset();
+  invalidateWorkspaceAccounts.mockReset();
 });
 
 afterEach(() => {
@@ -642,6 +646,41 @@ describe('set-workspace-accounts (UI-d3cb §4)', () => {
     ].map((call) => call[1]);
     expect(keys_touched).not.toContain('workflow_session_defaults');
     expect(invalidateSessionDefaults).not.toHaveBeenCalled();
+  });
+
+  test('drops the monitor cached account layer after a successful write', async () => {
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: undefined })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, codex_account: 'k' }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const { ws } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { values: { codex_account: 'k' } }
+    });
+
+    expect(invalidateWorkspaceAccounts).toHaveBeenCalledWith(WS_CONN);
+  });
+
+  test('keeps the monitor cached account layer when the readback mismatches', async () => {
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: undefined })
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const { ws } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { values: { codex_account: 'k' } }
+    });
+
+    expect(invalidateWorkspaceAccounts).not.toHaveBeenCalled();
   });
 
   test('refuses an out-of-vocabulary key before touching bd', async () => {

@@ -301,6 +301,24 @@ export async function prewarmWorkspaceAccounts(root_dir, prewarm_options = {}) {
 }
 
 /**
+ * Drop one workspace's cached account layer and re-push (UI-e1ta §8, §9).
+ *
+ * Called by `set-workspace-accounts` on success: the writer already knows the
+ * value moved, so waiting out the TTL would leave the bulk window observing the
+ * account the user just replaced. The next build omits the field until the
+ * refill lands, which the client reads as `pending`, never as an absence.
+ *
+ * @param {string} root_dir
+ */
+export function invalidateWorkspaceAccounts(root_dir) {
+  if (typeof root_dir !== 'string' || root_dir.length === 0) {
+    return;
+  }
+  workspace_accounts_cache.delete(path.resolve(root_dir));
+  schedulePush();
+}
+
+/**
  * Drop every cached workspace-account layer. Test-only, like the prefix cache
  * reset.
  */

@@ -13,6 +13,7 @@ import {
   __resetWorkspaceAccountsCacheForTest,
   buildMonitorPipeline,
   buildMonitorWorkspacesState,
+  invalidateWorkspaceAccounts,
   prewarmRepoHealth,
   prewarmSessionDefaults,
   prewarmWorkspaceAccounts,
@@ -2238,6 +2239,18 @@ describe('workspaces_state observation projection (UI-e1ta §8)', () => {
       values: { claude_account: 'work@example.com' },
       warnings: []
     });
+  });
+
+  test('omits the account layer again once its cache is invalidated', async () => {
+    __resetWorkspaceAccountsCacheForTest();
+    await prewarmWorkspaceAccounts(WS_A, {
+      kvGet: async () => ({ ok: true, value: { codex_account: 'k' } })
+    });
+
+    invalidateWorkspaceAccounts(WS_A);
+    const row = liveRow();
+
+    expect(Object.hasOwn(row, 'workspace_accounts')).toBe(false);
   });
 
   test('reads a failed account lookup as an unusable layer', async () => {
