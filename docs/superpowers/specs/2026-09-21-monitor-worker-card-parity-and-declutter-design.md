@@ -12,6 +12,8 @@ scope:
   - app/styles.css
   - app/styles/tokens.css
   - server/worker/runnable-cache.js
+  - server/list-adapters.js
+  - app/utils/awaiting-user-reason.js
   - docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md
 ---
 
@@ -36,6 +38,8 @@ scope:
 | 카드 본문 `.worker-card__reason` | `spec 없음` · `spec 미발행(draft)` · `missing_description` 같은 조각 | `spec이 발행되지 않아 대기 큐에 넣을 수 없습니다`(실측 8장) · `route가 정해지지 않아 대기 큐에 넣을 수 없습니다`(2장) 같은 문장 |
 | 슬롯 4a 준비도 칩(`readinessJudgement`) | `스펙 미발행`·`라우팅 필요` 칩이 **같은 사실을 한 번 더** 말함 | 같음 |
 | `세션 권장` 칩 재료 | 어댑터가 `sessionPreferredReason(labels, metadata)`로 계산 | 서버 행에 `session_preferred_reason` 키 없음 → 칩이 설 수 없음 |
+| 실행 설정 칩(`오케`/`워커`) | `overlayExecChips()`가 `bead_overlay` metadata로 유효값 칩을 항상 만듦 | `pinnedExecChips()`가 `exec_pins`가 있을 때만 만듦 → 기본값 Bead는 칩 없음 |
+| 슬롯 4b 해제 칩 `🔓 <ID>` | 서버 ready/blocked 리스트 장식 `release_info`를 어댑터가 전달 | 서버 `qualify()` 행에 `release_info` 없음 → 칩 없음 |
 | 숨김 개수 산식 | `candidate_hidden_counts: 'per_control'` | 기본값 `'sequential'` |
 
 즉 사용자가 본 "모니터에만 있는 칩"은 코드상 존재할 수 없고(2026-09-21 실측 두 탭 모두 `worker-card__session-preferred` 0개; `session-preferred` 라벨 Bead는 UI-1dtr 하나뿐이고 `deferred`라 어느 탭에도 없음), 실제 차이는 위 표의 사유 문장·중복 칩·산식이다. 반대로 직접 세션이 잡은 실행 타일에는 `▤ 세션` 버튼(조작) 바로 옆에 `세션` 배지(정체성)가 서서 같은 글자가 두 번 보인다 — 워커 탭에 직접 세션 타일이 없을 때만 "모니터에만 있는" 것으로 읽힌다.
@@ -66,13 +70,16 @@ scope:
 | `spec_state` | `'n/a'\|'published'\|'draft'\|'none'\|'conflict'` | `placement.spec` 값을 이 이름으로 | 기존 |
 | `has_description` | boolean | `!placement.missing_description` | 기존 |
 | `awaiting_user` | boolean | 기존 | 기존 |
-| `awaiting_user_reason` | string | `awaitingUserReason(metadata)` 결과(값 없으면 키 없음) | `meta.awaiting_user` 값에 같은 함수를 적용해 실음(함수는 `app/utils/`로 옮겨 서버도 import) |
+| `awaiting_user_reason` | string | `awaitingUserReason(metadata)` 결과(값 없으면 키 없음) | 같은 함수에 같은 metadata **객체**(`meta`)를 넘겨 실음 — 함수를 `app/utils/awaiting-user-reason.js`로 옮겨 서버가 import한다. 값 문자열 하나를 넘기는 것이 아니라 객체를 넘기므로 두 원천의 사유 문장이 글자까지 같다 |
+| `release_info` | object | 기존(서버 ready/blocked 리스트 장식 그대로 전달) | **추가**: `server/list-adapters.js`의 `releaseInfoFor(id, context)`를 같은 컨텍스트로 호출해 실음(둘이 같은 함수를 쓰도록 export하거나 `server/list-decorations.js`로 옮긴다) |
+| `dependents_info` | object | 기존 | **추가**: 위와 같은 방식으로 `dependents_info` 장식을 실음 |
+| `exec_pins` | object | 기존 `execPinsOf(metadata)` | 기존 `execPinsOf(meta)` |
 | `worker_ineligible` | boolean | 기존 | 기존 |
 | `session_preferred_reason` | string | 기존 계산 그대로(`worker_ineligible`이면 빈 문자열) | **추가**: `worker_ineligible ? '' : sessionPreferredReason(row.labels, meta)` — `app/utils/session-preferred.js`는 서버가 이미 import하는 파일이다 |
 | `spec_after_blocker` | boolean | 기존 | **추가**: `specAfterBlockerActive(row.labels, blocked_by)` (`app/utils/spec-after-blocker.js`) |
 | `observation` | `true` | **추가**: 어댑터 행임을 말하는 유일한 표지 | 없음 |
 
-어댑터는 `eligible`·`route_ok`·`missing_description`·`placement_spec`·`session_preferred`(boolean)·조각 `reason`을 **더 이상 싣지 않는다**. `blocked`·`blocked_by`·`labels`·`release_info`·`dependents_info`·`scope`·`exec_pins`·`rec`·`worker_created_from`·`worker_created_from_root_dir`·시각은 그대로다.
+어댑터는 `eligible`·`route_ok`·`missing_description`·`placement_spec`·`session_preferred`(boolean)·조각 `reason`을 **더 이상 싣지 않는다**. `blocked`·`blocked_by`·`labels`·`scope`·`rec`·`worker_created_from`·`worker_created_from_root_dir`·시각은 그대로다. 서버 행은 위 표의 **추가** 칸(`session_preferred_reason`·`spec_after_blocker`·`awaiting_user_reason`·`release_info`·`dependents_info`)을 얻어, 후보 카드의 슬롯 4b 해제 칩(`🔓 <ID>`)과 후속 칩이 모니터에서도 워커와 같은 재료로 선다.
 
 `lane-model.js`의 후보 조립은 한 경로가 된다.
 
@@ -104,6 +111,14 @@ dotfiles 계약(`workflow-state.yaml labels.scheduling.session-preferred`)은 `c
 - `placementTitle`의 문장은 `[↴ 대기로]` 버튼 title·준비도 칩 title·이슈 상세 place 버튼 title에만 남는다(변경 없음).
 
 결과: 워커·모니터 두 탭의 후보 카드가 같은 재료·같은 칩·같은 본문을 얻는다. "spec이 발행되지 않아 대기 큐에 넣을 수 없습니다"는 카드 본문에서 사라지고 툴팁에만 남는다.
+
+### 3.4 실행 설정 칩 — 한 빌더, 항상 유효값
+
+지금은 워커 어댑터 행이 `bead_overlay`의 metadata로 `overlayExecChips()`(`lane-model.js`)를 돌려 기본값만 쓰는 후보에도 `오케`/`워커` 칩을 만들고, 모니터 행은 `exec_pins`가 있을 때만 `pinnedExecChips()`가 칩을 만든다. 같은 Bead가 한 탭에는 칩 두 개, 다른 탭에는 칩 없음으로 선다. 두 빌더를 하나로 합친다.
+
+- `execChipsFor(state, exec_pins, route)` 하나가 두 원천 모두의 후보·대기·완료 행에 쓰인다. 입력은 행의 `exec_pins`(두 원천 모두 `execPinsOf(metadata)`)와 `state`(`execution_defaults`·`runner_catalog`·`session_defaults`)뿐이고, `resolveExecutionSettings({ pin: exec_pins, global, execution_defaults, runner_catalog, route })`로 **유효값**을 구해 `오케`·`워커` 칩을 항상 만든다(재료 `state`가 없으면 `null`, fail-quiet). 축마다 값이 핀에서 왔는지(`pinned: true`)를 함께 돌려주고, 카드는 그 축의 칩에 `exec-chip--pin`과 툴팁 `이슈 핀 — 레포 기본값과 다름`을 붙인다.
+- `candidateCard`의 `options.exec_chips_mode`와 모니터의 `'pinned_only'` 호출은 지운다. 칩의 뜻은 두 탭에서 같다: "이 Bead가 지금 돌면 쓰일 값"이고 핀 표시는 축 단위다.
+- `overlayExecChips`·`pinnedExecChips`·`execRows`는 `execChipsFor` 안으로 접는다. 실행 타일(`runningTile`)의 exec 칩은 attempt 기록에서 오므로 그대로다.
 
 ## 4. 사용량 각주와 미가격 leg — 툴팁으로
 
@@ -171,10 +186,10 @@ dotfiles 계약(`workflow-state.yaml labels.scheduling.session-preferred`)은 `c
 
 ## 7. 검증과 완료 기준
 
-- `app/views/worker/lane-model.test.js`: (1) 어댑터 사실 행과 서버 사실 행에 같은 `facts`를 주면 후보 항목의 `queue_placeable`·`route_ok`·`placement_spec`·`session_preferred`·`spec_after_blocker`·`reason`이 같다; (2) `placementTitle` 문장이 어느 원천의 `reason`에도 없다; (3) `stale` admission이 `rereview_required: true`를 싣고 `reason`에 `stale`이 없다; (4) `candidate_hidden_counts` 옵션 없이도 `per_control` 산식이다.
+- `app/views/worker/lane-model.test.js`: (1) **같은 Bead 하나**를 어댑터 경로(관측 행 + `bead_overlay`)와 서버 사실 경로(runnable 행)로 각각 조립하면 후보 항목의 `queue_placeable`·`route_ok`·`placement_spec`·`session_preferred`·`spec_after_blocker`·`reason`·`awaiting_user_reason` 문장·`exec_chips`(라벨·`pinned` 축·툴팁)·`dependency_chips`(`🔓` 해제 칩 포함)가 깊은 비교로 같다 — 기본값만 쓰는 Bead(핀 없음)와 축 하나가 핀된 Bead, 최근 7일 안에 선행이 닫힌 Bead 세 사례; (2) `placementTitle` 문장이 어느 원천의 `reason`에도 없다; (3) `stale` admission이 `rereview_required: true`를 싣고 `reason`에 `stale`이 없다; (4) `candidate_hidden_counts` 옵션 없이도 `per_control` 산식이다.
 - `app/views/worker/workspace-adapter.test.js`: 후보 행에 `eligible`·`reason` 조각 키가 없고 `observation: true`·`spec_state`·`awaiting_user_reason`이 있다.
-- `server/worker/runnable-cache.test.js`: `session-preferred` 라벨 + enum 사유 metadata → `session_preferred_reason`; `worker-ineligible` 동반 시 빈 문자열; `spec-after-blocker` + blocked → `spec_after_blocker: true`.
-- `app/views/worker/lanes.test.js`: 모니터 옵션(`exec_chips_mode: 'pinned_only'`)과 워커 옵션으로 같은 항목을 그린 `candidateCard`가 같은 칩 집합을 가진다; `rowops`가 세 레이아웃 모두 첫 줄의 마지막 자식이다; `rereview_required`가 배지로 서고 `.worker-mini__reason`에 없다.
+- `server/worker/runnable-cache.test.js`: `session-preferred` 라벨 + enum 사유 metadata → `session_preferred_reason`; `worker-ineligible` 동반 시 빈 문자열; `spec-after-blocker` + blocked → `spec_after_blocker: true`; `awaiting_user` metadata 객체 → `awaiting_user_reason`이 어댑터 테스트의 같은 입력과 같은 문자열; 7일 안에 닫힌 선행이 있는 행 → `release_info`, 후속이 있는 행 → `dependents_info`가 리스트 어댑터의 같은 입력 결과와 같다.
+- `app/views/worker/lanes.test.js`: `candidateCard`에 `exec_chips_mode` 옵션이 없고, 핀 없는 항목에도 `오케`·`워커` 칩이 서며 핀된 축에만 `exec-chip--pin`이 붙는다; `rowops`가 세 레이아웃 모두 첫 줄의 마지막 자식이다; `rereview_required`가 배지로 서고 `.worker-mini__reason`에 없다.
 - `app/views/worker/running-grid.test.js`: `.rtile__usage-scope`가 없다; 사용량 배지 title에 `집계:`·`환산:` 줄이 있다; 직접 세션 타일에 `직접 세션` 배지가 정체성 쪽에 하나, `▤ 세션` 버튼이 하나다.
 - `app/utils/token-usage.test.js`: `formatCostCompact`·`costDetailLines` 표; `formatCost` 기존 케이스 불변.
 - `app/main.monitor.e2e.test.js`: 모니터 후보 카드 본문에 `대기 큐에 넣을 수 없습니다`가 없다.
@@ -200,7 +215,7 @@ dotfiles 계약(`workflow-state.yaml labels.scheduling.session-preferred`)은 `c
 
 ## 구현 unit 후보
 
-- unit-01 재료·사유·서버 행: `server/worker/runnable-cache.js` · `app/views/worker/workspace-adapter.js` · `app/views/worker/placement.js` · `app/views/worker/lane-model.js` · `app/protocol.md` (§3)
+- unit-01 재료·사유·서버 행·실행 설정 칩: `server/worker/runnable-cache.js` · `server/list-adapters.js` · `app/utils/awaiting-user-reason.js` · `app/views/worker/workspace-adapter.js` · `app/views/worker/placement.js` · `app/views/worker/lane-model.js` · `app/protocol.md` (§3)
 - unit-02 슬롯·툴팁·시각: `app/views/worker/lanes.js` · `app/views/worker/running-grid.js` · `app/utils/token-usage.js` · `app/views/worker/index.js` · `app/views/monitor/index.js` · `app/styles.css` · 카드 헤더 문법 스펙 §5.1 (§4–§6)
 
 ## 결정 (ADR 후보)
@@ -210,5 +225,5 @@ dotfiles 계약(`workflow-state.yaml labels.scheduling.session-preferred`)은 `c
 - 전제: ADR UI-mscc — 부모·자식 직접 사용량 합산과 불완전 범위의 부분 집계 표시; §4는 그 표시를 `≈`와 툴팁 줄로 옮길 뿐 뒤집지 않는다.
 - 전제: ADR UI-42l2-2 — 직접 세션 카드는 현재 대화 전체 사용량이며 워크스페이스 합계에 가산하지 않는다; §4.1의 `집계: 현재 대화 기준 · 워크스페이스 합계 제외` 툴팁 줄이 그 표시다.
 - 후보 행의 판정 재료를 두 원천이 같은 사실 키로 싣고 `lane-model` 한 경로가 접으며 배치 불가 사유는 준비도 칩 하나가 말한다. 되돌리기 어려움: 서버 `RunnableItem`·프로토콜·어댑터 행 형태가 함께 바뀌고 `eligible` 판정 키가 사라진다. 맥락 필요: 왜 어댑터가 판정을 싣던 관행을 버렸는지(한쪽에만 실리는 키가 생길 때마다 두 탭이 어긋난 이력)가 코드만으로 드러나지 않는다. 실제 절충: 어댑터가 로컬 스냅샷으로 알던 `location`(이미 레인에 있음) 판정은 후보 제외에만 쓰고 카드 사유로는 쓰지 않는다. `summary`: "Worker와 Monitor의 후보 행은 같은 사실 키를 싣고 lane-model 한 경로가 자격을 접으며 배치 불가 사유는 슬롯 4a 준비도 칩 하나가 말한다" → ADR
-- 사용량 각주·미가격 leg 수의 툴팁 이동과 `≈` 표지. 되돌리기 쉬움: 표시 위치 변경이고 집계 규칙은 그대로다. 맥락은 UI-mscc·UI-42l2-2가 이미 담는다 → ADR 아님
-- `✕`·재리뷰·직접 세션 배지의 슬롯 배정. 슬롯 표 갱신이 정본이고 되돌리기 쉽다 → ADR 아님
+- 사용량 각주·미가격 leg 수의 툴팁 이동과 `≈` 표지. 되돌리기 쉬움: 표시 위치 변경이고 집계 규칙·데이터는 그대로라 span을 되살리면 끝난다. 맥락 필요 낮음: 집계 범위와 단가 기준의 뜻은 UI-mscc·UI-42l2-2가 이미 담고, 이 스펙은 그 표시를 어디에 두는지만 정한다. 실제 절충: 한눈에 보이던 집계 범위가 hover 뒤로 숨는 대신 카드가 두 줄 짧아진다 — 절충은 있으나 되돌리기 쉽고 맥락이 이미 기록돼 세 조건을 다 채우지 않는다 → ADR 아님
+- `✕`·재리뷰·직접 세션 배지의 슬롯 배정. 되돌리기 쉬움: 템플릿 자리와 CSS만 바뀐다. 맥락 필요 낮음: 카드 헤더 문법 스펙 §5.1 표가 자리의 근거를 이미 적고 ADR 0014가 그 표를 정본으로 지정한다. 실제 절충: 카드 변형의 사유가 머리줄을 떠나 한 줄을 더 쓰지만, 조작 자리가 고정되는 이득이 크고 표가 그 절충을 기록한다 — 세 조건 중 되돌리기 어려움과 맥락 필요가 없다 → ADR 아님
