@@ -29,7 +29,7 @@ import { priceUsage } from '../../server/worker/usage-pricing.js';
  * receipt carries (UI-1663 §5.3): that leg has a total and no breakdown at all,
  * and the two shapes never occur together in one record.
  *
- * @typedef {{ input_tokens?: number, output_tokens?: number, cache_read_input_tokens?: number, cache_creation_input_tokens?: number, reasoning_output_tokens?: number, total_tokens?: number, total_cost_usd?: number, replayed?: boolean }} UsageRecord
+ * @typedef {{ input_tokens?: number, output_tokens?: number, cache_read_input_tokens?: number, cache_creation_input_tokens?: number, reasoning_output_tokens?: number, total_tokens?: number, total_cost_usd?: number, replayed?: boolean, partial?: boolean, partial_reasons?: string[], unpriced_leg_count?: number, cost_estimated?: boolean }} UsageRecord
  */
 
 /**
@@ -99,7 +99,13 @@ const ESTIMATED_COST_NOTE = '총량만 보고된 leg 포함 — 입력 단가로
  *
  * @type {string}
  */
-const API_RATE_NOTE = 'API 환산 단가 기준';
+const API_RATE_NOTE =
+  '환산: USD · Standard · short context · 5분 cache write 기준';
+
+/**
+ * @typedef {{ has_native_usage?: boolean, has_included_native_usage?: boolean }} UsageScope
+ * @typedef {{ scope?: UsageScope, direct_session?: boolean, lines?: string[], summary?: ProviderUsageSummary, parent_line?: string }} UsageTooltipOptions
+ */
 
 /**
  * The per-leg basis marker (preset-compare §1.3). `reported` is unmarked: a
@@ -147,6 +153,26 @@ export function formatCost(summary) {
   return summary.partial === true ? `${priced} · 부분 집계` : priced;
 }
 
+/**
+ * Compact cost for cards and KPI labels; details remain in the tooltip.
+ *
+ * @param {UsageRecord|null|undefined} summary
+ * @returns {string|null}
+ */
+export function formatCostCompact(summary) {
+  if (!summary) {
+    return null;
+  }
+  const unpriced = numeric(summary.unpriced_leg_count) > 0;
+  if (
+    typeof summary.total_cost_usd !== 'number' ||
+    !Number.isFinite(summary.total_cost_usd)
+  ) {
+    return unpriced ? '단가 없음' : null;
+  }
+  return `${summary.partial === true || unpriced ? '≈' : ''}${formatUsd(summary.total_cost_usd)}`;
+}
+
 /** @type {Record<string, string>} */
 const PARTIAL_REASON_TEXT = {
   replayed: '서버 재시작 뒤 복구된 범위',
@@ -161,6 +187,31 @@ const PARTIAL_REASON_TEXT = {
   legacy_child_scope: '과거 자식의 직접 범위 미확정',
   usage_incomplete: '관측 범위 불완전'
 };
+
+/**
+ * @param {UsageRecord|null|undefined} summary
+ * @returns {string[]}
+ */
+export function costDetailLines(summary) {
+  if (!summary) {
+    return [];
+  }
+  /** @type {string[]} */
+  const lines = [];
+  const unpriced = numeric(summary.unpriced_leg_count);
+  if (unpriced > 0) {
+    lines.push(`단가 없는 leg ${unpriced}개`);
+  }
+  if (summary.partial === true) {
+    const reasons = (summary.partial_reasons || [])
+      .map((reason) => PARTIAL_REASON_TEXT[reason] || reason)
+      .filter(Boolean);
+    lines.push(
+      `부분 집계 — ${reasons.length ? reasons.join(' · ') : '미확정 범위 제외'}`
+    );
+  }
+  return lines;
+}
 
 /**
  * The tooltip lines behind a cost: the figure, the estimate caveat when one
@@ -399,9 +450,10 @@ function formatSubtotal(subtotal) {
  *
  * @param {UsageProvider} provider
  * @param {ProviderUsageSummary} summary
+ * @param {UsageTooltipOptions} [options]
  * @returns {string}
  */
-export function providerUsageTooltip(provider, summary) {
+export function providerUsageTooltip(provider, summary, options = {}) {
   const usage = summary.breakdown || {};
   const total_only = numeric(summary.total_only_subtotal);
   if (isTotalOnly(usage) || (total_only > 0 && !hasBreakdownFields(usage))) {
@@ -410,13 +462,13 @@ export function providerUsageTooltip(provider, summary) {
     // not exist instead of being shown an invented one.
     const total_only_lines = [
       `총 ${summary.subtotal.toLocaleString('en-US')}`,
-      TOTAL_ONLY_NOTE,
-      ...costTooltipLines(summary)
+      TOTAL_ONLY_NOTE
     ];
-    if (summary.replayed) {
-      total_only_lines.push(REPLAYED_NOTE);
-    }
-    return total_only_lines.join('\n');
+    return usageTooltip(usage, {
+      ...options,
+      lines: total_only_lines,
+      summary
+    });
   }
   const details = [
     `입력 ${numeric(usage.input_tokens).toLocaleString('en-US')}`,
@@ -456,11 +508,7 @@ export function providerUsageTooltip(provider, summary) {
     `총 ${summary.subtotal.toLocaleString('en-US')}`,
     details.join(' · ')
   ];
-  lines.push(...costTooltipLines(summary));
-  if (summary.replayed) {
-    lines.push(REPLAYED_NOTE);
-  }
-  return lines.join('\n');
+  return usageTooltip(usage, { ...options, lines, summary });
 }
 
 /**
@@ -468,9 +516,10 @@ export function providerUsageTooltip(provider, summary) {
  * returned entries deliberately omit a cross-provider total.
  *
  * @param {UsageProjection|UsageRecord|null|undefined} projection
+ * @param {UsageTooltipOptions} [options]
  * @returns {Array<{ provider: UsageProvider, label: string, tooltip: string }>}
  */
-export function providerUsageBadges(projection) {
+export function providerUsageBadges(projection, options = {}) {
   /** @type {Array<{ provider: UsageProvider, label: string, tooltip: string }>} */
   const badges = [];
   if (
@@ -486,21 +535,21 @@ export function providerUsageBadges(projection) {
     if (!summary) {
       continue;
     }
-    const cost = formatCost(summary);
+    const cost = formatCostCompact(summary);
     const parent = projection.roles?.orchestrator?.[provider];
     const parent_cost = formatCost(parent);
-    const tooltip = [providerUsageTooltip(provider, summary)];
-    if (parent) {
-      tooltip.push(
-        `부모 직접 ${formatSubtotal(parent.subtotal)}${parent_cost ? ` · ${parent_cost}` : ''}`
-      );
-    }
+    const tooltip = providerUsageTooltip(provider, summary, {
+      ...options,
+      parent_line: parent
+        ? `부모 직접 ${formatSubtotal(parent.subtotal)}${parent_cost ? ` · ${parent_cost}` : ''}`
+        : ''
+    });
     badges.push({
       provider,
       label: `${providerName(provider)} ${formatSubtotal(summary.subtotal)}${
         cost ? ` · ${cost}` : ''
       }`,
-      tooltip: tooltip.join('\n')
+      tooltip
     });
   }
   return badges;
@@ -795,19 +844,18 @@ export function formatUsageTotalWithCost(usage) {
   if (!label) {
     return null;
   }
-  const cost = usage?.total_cost_usd;
-  return typeof cost === 'number' && Number.isFinite(cost)
-    ? `${label} · ${formatUsd(cost)}`
-    : label;
+  const cost = formatCostCompact(usage);
+  return cost ? `${label} · ${cost}` : label;
 }
 
 /**
  * The hover breakdown behind the badge.
  *
  * @param {UsageRecord|null|undefined} usage
+ * @param {UsageTooltipOptions} [options]
  * @returns {string}
  */
-export function usageTooltip(usage) {
+export function usageTooltip(usage, options = {}) {
   if (!usage || typeof usage !== 'object') {
     return '';
   }
@@ -817,20 +865,38 @@ export function usageTooltip(usage) {
     `캐시읽기 ${numeric(usage.cache_read_input_tokens).toLocaleString('en-US')}`,
     `캐시생성 ${numeric(usage.cache_creation_input_tokens).toLocaleString('en-US')}`
   ];
-  if (
-    typeof usage.total_cost_usd === 'number' &&
-    Number.isFinite(usage.total_cost_usd)
-  ) {
-    parts.push(formatUsd(usage.total_cost_usd));
-  }
   // The headline first, then the breakdown that explains it (UI-tq13 §3): the
   // badge shows an abbreviated `14.1M`, and the reader who hovers is the one who
   // wants the exact number the abbreviation came from.
-  const lines = [
-    `총 ${sumTokens(usage).toLocaleString('en-US')}`,
-    parts.join(' · ')
-  ];
-  if (usage.replayed) {
+  const summary = options.summary || usage;
+  const cost = formatCostCompact(summary);
+  if (!options.lines && cost && cost !== '단가 없음') {
+    parts.push(cost);
+  }
+  const lines = options.lines
+    ? [...options.lines]
+    : [`총 ${sumTokens(usage).toLocaleString('en-US')}`, parts.join(' · ')];
+  if (options.lines && cost && cost !== '단가 없음') {
+    lines.push(cost);
+  }
+  if (options.direct_session === true) {
+    lines.push('집계: 현재 대화 기준 · 워크스페이스 합계 제외');
+  } else if (options.scope?.has_native_usage === true) {
+    lines.push(
+      options.scope.has_included_native_usage === true
+        ? '집계: 부모·자식 합계'
+        : '집계: 자식 사용량 · 부모 합계 제외'
+    );
+  }
+  lines.push(API_RATE_NOTE);
+  if (summary.cost_estimated === true) {
+    lines.push(ESTIMATED_COST_NOTE);
+  }
+  lines.push(...costDetailLines(summary));
+  if (options.parent_line) {
+    lines.push(options.parent_line);
+  }
+  if (summary.replayed) {
     lines.push(REPLAYED_NOTE);
   }
   return lines.join('\n');

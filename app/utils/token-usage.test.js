@@ -5,7 +5,9 @@ import {
   foldSessionObservation
 } from '../../server/worker/session-observation.js';
 import {
+  costDetailLines,
   formatCost,
+  formatCostCompact,
   formatUsageTotal,
   formatUsageTotalWithCost,
   mergeUsageProjections,
@@ -17,6 +19,123 @@ import {
 } from './token-usage.js';
 
 describe('views/worker usage formatting (UI-raqh §1)', () => {
+  test.each([
+    [{ total_cost_usd: 6.1 }, '$6.10'],
+    [{ total_cost_usd: 6.1, partial: true }, '≈$6.10'],
+    [{ total_cost_usd: 6.1, unpriced_leg_count: 2 }, '≈$6.10'],
+    [{ total_cost_usd: 0 }, '$0.00'],
+    [{ unpriced_leg_count: 2 }, '단가 없음'],
+    [{ total_cost_usd: NaN, unpriced_leg_count: 1 }, '단가 없음'],
+    [{ partial: true }, null],
+    [null, null],
+    [undefined, null]
+  ])('formats compact cost for %j', (summary, expected) => {
+    const label = formatCostCompact(summary);
+
+    expect(label).toBe(expected);
+  });
+
+  test.each([
+    [null, []],
+    [{ total_cost_usd: 6.1 }, []],
+    [{ unpriced_leg_count: 2 }, ['단가 없는 leg 2개']],
+    [{ partial: true }, ['부분 집계 — 미확정 범위 제외']],
+    [
+      {
+        partial: true,
+        unpriced_leg_count: 1,
+        partial_reasons: ['model_unknown', 'usage_missing']
+      },
+      ['단가 없는 leg 1개', '부분 집계 — 모델 미확정 · 사용량 미관측']
+    ]
+  ])('explains incomplete cost for %j', (summary, expected) => {
+    const lines = costDetailLines(summary);
+
+    expect(lines).toEqual(expected);
+  });
+
+  test.each([
+    [{}, []],
+    [{ scope: { has_native_usage: false } }, []],
+    [
+      { scope: { has_native_usage: true } },
+      ['집계: 자식 사용량 · 부모 합계 제외']
+    ],
+    [
+      { scope: { has_native_usage: true, has_included_native_usage: true } },
+      ['집계: 부모·자식 합계']
+    ],
+    [
+      {
+        direct_session: true,
+        scope: { has_native_usage: true, has_included_native_usage: true }
+      },
+      ['집계: 현재 대화 기준 · 워크스페이스 합계 제외']
+    ]
+  ])('emits only the evidenced usage scope for %j', (options, expected) => {
+    const lines = usageTooltip({ input_tokens: 10 }, options).split('\n');
+
+    expect(lines.filter((line) => line.startsWith('집계:'))).toEqual(expected);
+  });
+
+  test('orders raw usage details, scope, rate and partial recovery notes', () => {
+    const usage = {
+      input_tokens: 10,
+      total_cost_usd: 6.1,
+      partial: true,
+      unpriced_leg_count: 1,
+      replayed: true
+    };
+
+    const lines = usageTooltip(usage, { direct_session: true }).split('\n');
+
+    expect(lines).toEqual([
+      '총 10',
+      '입력 10 · 출력 0 · 캐시읽기 0 · 캐시생성 0 · ≈$6.10',
+      '집계: 현재 대화 기준 · 워크스페이스 합계 제외',
+      '환산: USD · Standard · short context · 5분 cache write 기준',
+      '단가 없는 leg 1개',
+      '부분 집계 — 미확정 범위 제외',
+      '서버 재시작 복구 — 부분 집계'
+    ]);
+  });
+
+  test('orders provider scope and pricing notes before parent and recovery details', () => {
+    const projection = {
+      providers: {
+        claude: {
+          subtotal: 10,
+          breakdown: { input_tokens: 10 },
+          total_cost_usd: 6.1,
+          partial: true,
+          unpriced_leg_count: 1,
+          replayed: true
+        }
+      },
+      roles: {
+        orchestrator: {
+          claude: { subtotal: 5, breakdown: { input_tokens: 5 }, legs: [] }
+        }
+      }
+    };
+
+    const [badge] = providerUsageBadges(projection, {
+      scope: { has_native_usage: true, has_included_native_usage: true }
+    });
+
+    expect(badge.tooltip.split('\n')).toEqual([
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성',
+      '총 10',
+      '입력 10 · 출력 0 · 캐시읽기 0 · 캐시생성 0',
+      '≈$6.10',
+      '집계: 부모·자식 합계',
+      '환산: USD · Standard · short context · 5분 cache write 기준',
+      '단가 없는 leg 1개',
+      '부분 집계 — 미확정 범위 제외',
+      '부모 직접 τ 5',
+      '서버 재시작 복구 — 부분 집계'
+    ]);
+  });
   test('keeps adjacent attempt windows distinct in attempt and Bead totals', () => {
     const records = [
       { type: 'session_meta', payload: { id: 'root' } },
@@ -195,14 +314,16 @@ describe('views/worker usage formatting (UI-raqh §1)', () => {
     });
 
     expect(title).toBe(
-      '총 239,430\n입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800 · $0.42'
+      '총 239,430\n입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800 · $0.42\n환산: USD · Standard · short context · 5분 cache write 기준'
     );
   });
 
   test('omits the cost from the tooltip when none was reported', () => {
     const title = usageTooltip({ input_tokens: 10, output_tokens: 5 });
 
-    expect(title).toBe('총 15\n입력 10 · 출력 5 · 캐시읽기 0 · 캐시생성 0');
+    expect(title).toBe(
+      '총 15\n입력 10 · 출력 5 · 캐시읽기 0 · 캐시생성 0\n환산: USD · Standard · short context · 5분 cache write 기준'
+    );
   });
 
   test('labels a restart-recovered tally as partial (UI-ediw)', () => {
@@ -213,7 +334,7 @@ describe('views/worker usage formatting (UI-raqh §1)', () => {
     });
 
     expect(title).toBe(
-      '총 15\n입력 10 · 출력 5 · 캐시읽기 0 · 캐시생성 0\n서버 재시작 복구 — 부분 집계'
+      '총 15\n입력 10 · 출력 5 · 캐시읽기 0 · 캐시생성 0\n환산: USD · Standard · short context · 5분 cache write 기준\n서버 재시작 복구 — 부분 집계'
     );
   });
 
@@ -846,7 +967,9 @@ describe('total-only subagent legs (UI-1663 §6.1)', () => {
       breakdown: { total_tokens: 219570 }
     });
 
-    expect(tooltip).toBe('총 219,570\n분해 없음 — 총량만 보고됨');
+    expect(tooltip).toBe(
+      '총 219,570\n분해 없음 — 총량만 보고됨\n환산: USD · Standard · short context · 5분 cache write 기준'
+    );
   });
 
   test('omits the zeroed fields and the formula from a total-only tooltip', () => {
@@ -866,7 +989,7 @@ describe('total-only subagent legs (UI-1663 §6.1)', () => {
     });
 
     expect(tooltip).toBe(
-      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 10\n입력 1 · 출력 2 · 캐시읽기 3 · 캐시생성 4'
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 10\n입력 1 · 출력 2 · 캐시읽기 3 · 캐시생성 4\n환산: USD · Standard · short context · 5분 cache write 기준'
     );
   });
 });
@@ -958,7 +1081,7 @@ describe('total-only legs inside an aggregate tooltip (UI-1vpv)', () => {
     );
 
     expect(tooltip).toBe(
-      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성 + 분해 없는 leg\n총 1,000\n입력 10 · 출력 20 · 캐시읽기 30 · 캐시생성 40 · 분해 없는 leg 900\n단가 없음\n부분 집계 — 모델 미확정\nAPI 환산 단가 기준'
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성 + 분해 없는 leg\n총 1,000\n입력 10 · 출력 20 · 캐시읽기 30 · 캐시생성 40 · 분해 없는 leg 900\n환산: USD · Standard · short context · 5분 cache write 기준\n단가 없는 leg 2개\n부분 집계 — 모델 미확정'
     );
   });
 
@@ -987,7 +1110,7 @@ describe('total-only legs inside an aggregate tooltip (UI-1vpv)', () => {
     );
 
     expect(tooltip).toBe(
-      '총 900\n분해 없음 — 총량만 보고됨\n단가 없음\n부분 집계 — 모델 미확정\nAPI 환산 단가 기준'
+      '총 900\n분해 없음 — 총량만 보고됨\n환산: USD · Standard · short context · 5분 cache write 기준\n단가 없는 leg 1개\n부분 집계 — 모델 미확정'
     );
   });
 
@@ -998,7 +1121,7 @@ describe('total-only legs inside an aggregate tooltip (UI-1vpv)', () => {
     });
 
     expect(tooltip).toBe(
-      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 100\n입력 10 · 출력 20 · 캐시읽기 30 · 캐시생성 40'
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 100\n입력 10 · 출력 20 · 캐시읽기 30 · 캐시생성 40\n환산: USD · Standard · short context · 5분 cache write 기준'
     );
   });
 
@@ -1474,7 +1597,7 @@ describe('leg pricing and partial-cost display (preset-compare §1.3)', () => {
     expect(formatCost({ unpriced_leg_count: 3 })).toBe('단가 없음');
   });
 
-  test('appends the unpriced count to the provider badge label', () => {
+  test('marks the partial provider cost and keeps the unpriced count in its tooltip', () => {
     const attempts = {
       a1: {
         attempt_id: 'a1',
@@ -1498,7 +1621,8 @@ describe('leg pricing and partial-cost display (preset-compare §1.3)', () => {
       sumAttemptUsage(attempts, 'UI-1', catalog)
     );
 
-    expect(badges[0].label).toContain('$3.00 (+1 leg 단가 없음)');
+    expect(badges[0].label).toContain('≈$3.00');
+    expect(badges[0].tooltip).toContain('단가 없는 leg 1개');
   });
 
   test('notes the input-rate estimate in the tooltip', () => {
@@ -1529,7 +1653,9 @@ describe('leg pricing and partial-cost display (preset-compare §1.3)', () => {
     expect(badges[0].tooltip).toContain(
       '총량만 보고된 leg 포함 — 입력 단가로 추정'
     );
-    expect(badges[0].tooltip).toContain('API 환산 단가 기준');
+    expect(badges[0].tooltip).toContain(
+      '환산: USD · Standard · short context · 5분 cache write 기준'
+    );
   });
 
   test('carries the unpriced count through a merge', () => {

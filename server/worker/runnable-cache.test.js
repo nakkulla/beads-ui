@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { recSettings } from '../../app/utils/rec-settings.js';
-import { normalizeIssueList } from '../list-adapters.js';
+import {
+  createDecorationContext,
+  dependentsInfoFor,
+  normalizeIssueList,
+  releaseInfoFor
+} from '../list-adapters.js';
 import { ADMISSIBLE_ROUTES } from './admission.js';
 import {
   __resetQueueEventsForTest,
@@ -247,6 +252,88 @@ beforeEach(() => {
 });
 
 describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
+  test.each([false, true])(
+    'projects the session advisory with ineligible=%s',
+    async (ineligible) => {
+      const cache = createRunnableCache({
+        requestSnapshot: fakeSnapshot({
+          [WS_A]: [
+            row({
+              labels: [
+                'session-preferred',
+                ...(ineligible ? ['worker-ineligible'] : [])
+              ],
+              metadata: { session_preferred_reason: 'user_feedback_loop' }
+            })
+          ]
+        })
+      });
+
+      const out = await warmExpanded(cache, WS_A);
+
+      expect(out[0].session_preferred_reason).toBe(
+        ineligible ? '' : 'user_feedback_loop'
+      );
+    }
+  );
+
+  test('projects spec-after-blocker while a dependency remains open', async () => {
+    const snapshot = snapshotOk([row({ labels: ['spec-after-blocker'] })], {
+      ready_explain: { blocked: [{ id: 'UI-1', blocked_by: ['UI-2'] }] }
+    });
+    const cache = createRunnableCache({
+      requestSnapshot: vi.fn(async () => snapshot)
+    });
+
+    const out = await warmExpanded(cache, WS_A);
+
+    expect(out[0].spec_after_blocker).toBe(true);
+  });
+
+  test('formats awaiting metadata exactly like the workspace adapter', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [row({ metadata: { awaiting_user: 'spec_review_stale' } })]
+      })
+    });
+
+    const out = await warmExpanded(cache, WS_A);
+
+    expect(out[0].awaiting_user_reason).toBe(
+      '사용자 리뷰 필요: spec_review_stale'
+    );
+  });
+
+  test('shares release and dependent decorations with list projections', async () => {
+    const closed_at = Date.now() - 86400000;
+    const rows = [
+      row(),
+      row({ id: 'UI-2', status: 'closed', closed_at }),
+      row({ id: 'UI-3' })
+    ];
+    const reply = snapshotOk(rows);
+    const snapshot = Object.assign(reply.snapshot, {
+      id_index: new Map(rows.map((item) => [item.id, item])),
+      blocks_out: new Map([['UI-1', ['UI-2']]]),
+      blocks_in: new Map([['UI-1', ['UI-3']]])
+    });
+    const context = createDecorationContext(
+      /** @type {any} */ (snapshot),
+      WS_A
+    );
+    const cache = createRunnableCache({
+      requestSnapshot: vi.fn(async () => reply)
+    });
+
+    const out = await warmExpanded(cache, WS_A);
+
+    expect(out[0].release_info).toEqual(releaseInfoFor('UI-1', context));
+    expect(out[0].release_info?.released_by).toEqual([
+      { id: 'UI-2', closed_at, foreign: false }
+    ]);
+    expect(out[0].dependents_info).toEqual(dependentsInfoFor('UI-1', context));
+    expect(out[0].dependents_info?.ids).toContain('UI-3');
+  });
   test('projects open runnable candidates from a shared workspace snapshot', async () => {
     const requestSnapshot = vi.fn(async () => snapshotOk([row()]));
     const cache = createRunnableCache({ requestSnapshot });
@@ -277,6 +364,8 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         spec_state: 'published',
         has_description: false,
         awaiting_user: false,
+        session_preferred_reason: '',
+        spec_after_blocker: false,
         worker_ineligible: false,
         spec_id: 'docs/specs/thing.md',
         published: true,
@@ -467,7 +556,24 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     expect(out.map((item) => item.published)).toEqual([false]);
   });
 
-  test('projects blocked membership and direct blocker ids from ready explain', async () => {
+  test('marks a blocked candidate without known blocker ids', async () => {
+    const requestSnapshot = vi.fn(async () =>
+      snapshotOk([row()], {
+        ready_explain: { ready: [], blocked: [{ id: 'UI-1', blocked_by: [] }] }
+      })
+    );
+    const cache = createRunnableCache({ requestSnapshot });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0]).toMatchObject({
+      blocked: true,
+      blocked_by: [],
+      blocked_without_ids: true
+    });
+  });
+
+  test('projects blocked membership and direct blocker ids without the id-less marker', async () => {
     const requestSnapshot = vi.fn(async () =>
       snapshotOk([row()], {
         ready_explain: {
@@ -491,6 +597,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
       blocked: true,
       blocked_by: ['UI-2', 'EXT-3']
     });
+    expect(out[0]).not.toHaveProperty('blocked_without_ids');
   });
 
   test('falls back to embedded blocks edges when the explain row carries no ids', async () => {

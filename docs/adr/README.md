@@ -6,6 +6,7 @@
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
 | UI-obl0 | [유닛 실행자가 엇갈린 attempt는 미기록이 아니라 혼합이다](UI-obl0-mixed-unit-impl-actor.md) | 2026-09-21 | 유닛 실행자가 엇갈린 attempt는 미기록이 아니라 갈린 축만 말하는 혼합으로 표시하고 미기록은 영수증 부재·손상에만 남긴다 |
+| UI-mfm1 | [Worker와 Monitor의 후보 행은 같은 사실 키를 싣고 lane-model 한 경로가 자격을 접는다](UI-mfm1-candidate-facts-single-placement-path.md) | 2026-09-21 | Worker와 Monitor의 후보 행은 같은 사실 키를 싣고 lane-model 한 경로가 자격을 접으며 배치 불가 사유는 슬롯 4a 준비도 칩 하나가 말한다 |
 | UI-g0lk | [머지 전 검증 실패는 completion intent의 비종단 holding 보류다](UI-g0lk-pre-merge-verify-failure-is-visible-holding-phase.md) | 2026-09-21 | 머지 전 검증 실패는 completion intent의 비종단 holding 보류로 보이게 남기고, 수정 push가 자동으로 풀며 [세션에서 해결]이 사람 출구다 — terminal 종단·baseline 위조 판정·[머지] 의미는 바꾸지 않는다 |
 | UI-628r | [여러 저장소 설정은 프리셋을 시작점으로 한 실행 프로필 편집면이고 계정은 명시 선택이다](UI-628r-bulk-settings-edit-surface-explicit-accounts.md) | 2026-09-21 | 모니터 탭의 여러 저장소 설정은 현재 값을 보여주지 않고 프리셋을 시작점으로 한 벌을 만들어 쓰는 편집면이며, 두 탭 어디에도 변경 안 함이 없고 적용은 화면의 값 전부를 쓴다 |
 | UI-3pu9 | [자동 진행 꺼짐은 대기 카드·요약에 표시하지 않고 저장소 자동화 토글만 말한다](UI-3pu9-auto-advance-off-quiet-wait-cards.md) | 2026-09-17 | 자동 진행 꺼짐은 대기 카드·요약에 표시하지 않고 저장소 자동화 토글만 말한다 — 서버는 auto_advance_off 사유를 내지 않고, 자동 진행이 꺼진 저장소의 대기 행에는 유예 칩과 유예·자동 진행 꺼짐으로 서는 [지금 시작]이 없으며 공급자 보류·큐 정지 게이트의 [지금 시작]은 남는다 |

@@ -774,6 +774,7 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     expect(card).not.toBeNull();
     expect(card.getAttribute('draggable')).toBe('false');
     expect(place.disabled).toBe(true);
+    expect(card.textContent).not.toContain('대기 큐에 넣을 수 없습니다');
   });
 });
 

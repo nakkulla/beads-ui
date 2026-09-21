@@ -71,7 +71,7 @@ import {
   sumAttemptWorkMs
 } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
-import { placementFromFacts, placementTitle } from './placement.js';
+import { placementFromFacts } from './placement.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
 // 칩의 모양은 두 탭이 공유한다 (UI-anna §5.1): 워커 투영도 같은 함수를 불러
 // 같은 라벨·같은 툴팁 문장 틀을 낸다.
@@ -1733,7 +1733,7 @@ function admissionBadge(admission, bead_id) {
   // 거절 표시를 달아서는 안 되고, 디스패치가 세션에 요구하는 세션 내 재리뷰를
   // 알릴 뿐이다.
   if (record.stale === true) {
-    return '♻️ stale→재리뷰';
+    return '';
   }
   const reason = typeof record.reason === 'string' ? record.reason : '';
   // 유예는 거절이 아니라 곧 스스로 풀리는 진단이므로 `⛔` danger 뱃지를 달지
@@ -1826,77 +1826,77 @@ function receiptBadgeCodesOf(summary) {
 }
 
 /**
- * The 실행가능 card's exec chips (UI-eey2 §5): drawn ONLY when the issue pin
- * resolves to something different from the repo's own default, because the repo
- * default is what the deck tile says and repeating it on every card is noise.
- *
- * Resolving twice — once with the pin, once without — is the only honest way to
- * ask "does this pin change anything": the pin's presence alone does not, since
- * a pin may store exactly the repo value.
+ * Resolve effective candidate and waiting-row settings with per-axis pin marks.
  *
  * @param {Record<string, any>} state - The repo's `workspaces_state` row.
  * @param {Record<string, string>|null|undefined} exec_pins
  * @param {string|null} route
- * @returns {import('../../utils/exec-settings-chip.js').ExecChips|null}
+ * @returns {import('./lanes.js').LaneExecChips|null}
  */
-function pinnedExecChips(state, exec_pins, route) {
-  const pins = objectOf(exec_pins);
-  if (Object.keys(pins).length === 0) {
-    return null;
-  }
+function execChipsFor(state, exec_pins, route) {
   const execution_defaults = state.execution_defaults;
   const runner_catalog = state.runner_catalog;
-  const session_defaults = state.session_defaults;
-  // 구버전 서버: 기본값을 알 수 없으면 "다르다"를 판정할 수 없다 — 칩 줄 자체를
-  // 생략한다 (스펙 §12).
-  if (!execution_defaults || !runner_catalog || !session_defaults) {
+  const session_defaults = execGlobalValues(state);
+  if (!execution_defaults || !runner_catalog) {
     return null;
   }
   /**
-   * @param {Record<string, unknown>|null} pin
+   * @param {string|null} controller_runtime
    */
-  const resolve = (pin) =>
+  const resolve = (controller_runtime) =>
     resolveExecutionSettings({
-      pin,
+      pin: exec_pins,
       global: session_defaults,
       execution_defaults,
       runner_catalog,
-      route
+      route,
+      controller_runtime
     });
-  /** @type {any} */
-  let pinned;
-  /** @type {any} */
-  let base;
+  /** @type {Record<string, import('../../utils/execution-defaults.js').ExecutionValue>} */
+  let rows;
+  /** @type {string|null} */
+  let controller_runtime;
   try {
-    pinned = resolve(pins);
-    base = resolve(null);
+    rows = resolve(null);
+    controller_runtime = modelRunnerOf(
+      runner_catalog,
+      rows.orchestration_model.value ?? ''
+    );
+    if (controller_runtime !== null) {
+      rows = resolve(controller_runtime);
+    }
   } catch {
     return null;
   }
-  const orchestration = formatOrDrop(
-    formatOrchestrationChip(pinned, runner_catalog),
-    formatOrchestrationChip(base, runner_catalog)
-  );
-  const worker = formatOrDrop(
-    formatWorkerChip(pinned, null),
-    formatWorkerChip(base, null)
-  );
+  /**
+   * @param {import('../../utils/exec-settings-chip.js').ExecChip|null} chip
+   * @param {string[]} keys
+   * @returns {import('./lanes.js').LaneExecChip|null}
+   */
+  const markPin = (chip, keys) => {
+    if (!chip) {
+      return null;
+    }
+    const pinned = keys.some((key) => rows[key].source === 'pin');
+    return {
+      ...chip,
+      pinned,
+      title: chip.title + (pinned ? '\n이슈 핀 — 레포 기본값과 다름' : '')
+    };
+  };
+  const orchestration = markPin(formatOrchestrationChip(rows, runner_catalog), [
+    'orchestration_model',
+    'orchestration_effort',
+    'orchestration_speed'
+  ]);
+  const worker = markPin(formatWorkerChip(rows, controller_runtime), [
+    'impl_dispatch',
+    'impl_runtime',
+    'impl_model',
+    'impl_effort',
+    'impl_speed'
+  ]);
   return orchestration || worker ? { orchestration, worker } : null;
-}
-
-/**
- * @param {import('../../utils/exec-settings-chip.js').ExecChip|null} pinned
- * @param {import('../../utils/exec-settings-chip.js').ExecChip|null} base
- * @returns {import('../../utils/exec-settings-chip.js').ExecChip|null}
- */
-function formatOrDrop(pinned, base) {
-  if (!pinned) {
-    return null;
-  }
-  if (base && base.text === pinned.text) {
-    return null;
-  }
-  return pinned;
 }
 
 /**
@@ -2017,69 +2017,6 @@ function execGlobalValues(state) {
 }
 
 /**
- * The 대기 행·후보 카드 exec chips of a bead whose issue `metadata` the caller
- * knows: "what this bead WOULD run with" (Worker `beadExecChips`). Resolved
- * twice on purpose — the controller runtime comes out of the orchestration
- * model, which only the first resolution knows, and it is in turn an input to
- * `impl_runtime: inherit`.
- *
- * @param {Record<string, any>} state - The repo's `workspaces_state` row.
- * @param {Record<string, any>} metadata - The bead's issue metadata.
- * @param {unknown} enriched_route - Server-enriched `workflow.route`, if known.
- * @returns {import('../../utils/exec-settings-chip.js').ExecChips|null}
- */
-function overlayExecChips(state, metadata, enriched_route) {
-  const runner_catalog = state.runner_catalog ?? null;
-  const probe = execRows(state, metadata, enriched_route, null);
-  if (!probe) {
-    return null;
-  }
-  const ctl = modelRunnerOf(
-    runner_catalog,
-    probe.orchestration_model.value ?? ''
-  );
-  const rows =
-    ctl === null
-      ? probe
-      : execRows(state, metadata, enriched_route, ctl) || probe;
-  const orchestration = formatOrchestrationChip(rows, runner_catalog);
-  const worker = formatWorkerChip(rows, ctl);
-  return orchestration || worker ? { orchestration, worker } : null;
-}
-
-/**
- * One bead's resolved execution settings, the way the issue detail's
- * effective-settings card resolves them (Worker `execRowsFor`). `route`는 서버
- * 장식(`enriched_route`)이 먼저이고 핀 metadata가 다음이다 — `impl_dispatch`의
- * route 기본값(`quick_fix → main`)이 Board 카드와 같은 답을 하도록.
- *
- * @param {Record<string, any>} state - The repo's `workspaces_state` row.
- * @param {Record<string, any>} metadata - The bead's issue metadata.
- * @param {unknown} enriched_route - Server-enriched `workflow.route`, if known.
- * @param {string|null} controller_runtime
- * @returns {Record<string, import('../../utils/execution-defaults.js').ExecutionValue>|null}
- */
-function execRows(state, metadata, enriched_route, controller_runtime) {
-  const route = isWorkflowRoute(enriched_route)
-    ? enriched_route
-    : isWorkflowRoute(metadata.route)
-      ? metadata.route
-      : null;
-  try {
-    return resolveExecutionSettings({
-      pin: metadata,
-      global: execGlobalValues(state),
-      execution_defaults: state.execution_defaults ?? null,
-      runner_catalog: state.runner_catalog ?? null,
-      route,
-      controller_runtime
-    });
-  } catch {
-    return null;
-  }
-}
-
-/**
  * The 실행 중 타일의 worker(구현 위임) 칩 (Worker `attemptExecChips`,
  * worker-card-exec-chips §2.2). 그 attempt가 **기록한** runner가
  * `impl_runtime: inherit`이 따를 controller이므로, 후보·대기 행처럼
@@ -2096,27 +2033,32 @@ function attemptWorkerChip(state, overlay, controller_runtime) {
   if (!overlay || !Object.hasOwn(overlay, 'metadata')) {
     return null;
   }
-  return formatWorkerChip(
-    execRows(
-      state,
-      objectOf(overlay.metadata),
-      overlay.route,
+  const metadata = objectOf(overlay.metadata);
+  try {
+    return formatWorkerChip(
+      resolveExecutionSettings({
+        pin: metadata,
+        global: execGlobalValues(state),
+        execution_defaults: state.execution_defaults ?? null,
+        runner_catalog: state.runner_catalog ?? null,
+        route: isWorkflowRoute(overlay.route)
+          ? overlay.route
+          : isWorkflowRoute(metadata.route)
+            ? metadata.route
+            : null,
+        controller_runtime
+      }),
       controller_runtime
-    ),
-    controller_runtime
-  );
+    );
+  } catch {
+    return null;
+  }
 }
 
 /**
- * The 완료 행's 오케/워커 칩 (UI-q1tg §3.4, UI-ys18 §5.2). 재료는 그 완료를 만든
- * **마지막 구현 attempt의 기록**이지 핀이 아니다: 핀은 실행 이후에 바뀌고,
- * Worker 탭에는 완료 bead의 핀이 애초에 실리지 않는다.
+ * Display the last implementation attempt's recorded execution facts (UI-j10d).
  *
- * 오케는 그 attempt의 runner·model·effort·speed 기록이고, 워커는 서버가 보존
- * 영수증에서 해석해 실어 준 `impl_actor` 하나다 — 현재 overlay metadata를
- * 대체 재료로 쓰지 않는다. 재료가 없으면 그 칩만 서지 않는다 (fail-quiet).
- *
- * @param {any} attempt - 그 bead의 마지막 구현 attempt.
+ * @param {any} attempt
  * @returns {import('../../utils/exec-settings-chip.js').ExecChips|null}
  */
 function attemptExecChips(attempt) {
@@ -2674,9 +2616,7 @@ function tagSearchMatches(model, matches) {
  *
  * `options.candidate_sort: 'as_given'`은 정렬을 이미 끝낸 호출자(Worker
  * 어댑터)의 값이다 (UI-4tud §4.3): 입력 순서를 그대로 두고 섹션도 만들지 않는다.
- * `options.candidate_hidden_counts: 'per_control'`은 후보 필터가 감춘 수를 Worker
- * 규칙으로 센다 (UI-4tud §4.3): 두 필터에 모두 걸린 행은 어느 수에도 들어가지
- * 않는다. 기본값 `'sequential'`은 현행 Monitor 규칙이다.
+ * Hidden counts name rows revealed by relaxing exactly one filter.
  *
  * `options.search`는 워커 탭의 이슈 검색어다 (UI-6g3t §7). 값이 있으면 모든 레인
  * 항목에 `search_match`가 실리고, 없거나 공백뿐이면 키 자체가 붙지 않는다 —
@@ -2688,7 +2628,7 @@ function tagSearchMatches(model, matches) {
  *
  * @param {Array<Record<string, any>>|null|undefined} workspaces
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state]
- * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', candidate_hidden_counts?: 'sequential'|'per_control', groups?: 'nonempty'|'all', search?: string }} [options]
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', groups?: 'nonempty'|'all', search?: string }} [options]
  * @returns {LaneModel}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
@@ -2712,13 +2652,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
           )
         : 'repo_spec';
   const groups_mode = options && options.groups === 'all' ? 'all' : 'nonempty';
-  // 후보 필터가 감춘 수를 세는 규칙 (§4.3). 두 탭의 뜻이 달라 하나로 합칠 수
-  // 없다: Monitor는 순차(앞 필터가 겹친 행을 가져간다), Worker는 조작별(두
-  // 필터에 모두 걸린 행은 어느 수에도 없다).
-  const hidden_counts =
-    options && options.candidate_hidden_counts === 'per_control'
-      ? 'per_control'
-      : 'sequential';
   // 해제 칩의 7일 창 기준 시각 (UI-d13v §5.3). 모델 조립당 한 번만 읽어 같은
   // 렌더 안의 모든 카드가 같은 창을 본다.
   const now = Date.now();
@@ -3724,6 +3657,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const parked = revise_parked[bead_id];
       const projected_discard = discardProjection(discard_operations, bead_id);
       const discard = projected_discard.operation ? projected_discard : null;
+      const exec_chips =
+        Object.hasOwn(entry, 'exec_pins') &&
+        entry.exec_pins &&
+        typeof entry.exec_pins === 'object'
+          ? execChipsFor(
+              objectOf(state),
+              entry.exec_pins,
+              objectOf(bead_workflow[bead_id]).route || null
+            )
+          : null;
       /** @type {LaneItem} */
       const item = {
         ...base(bead_id),
@@ -3737,9 +3680,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
         // 멤버에게 `bead_workflow`를 실어 준다 — 없으면 칩만 생략된다.
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
         // 데스크톱의 유일한 적재 수단이 드래그다 (§6) — 대기 행은 끌 수 있다.
+        ...(exec_chips ? { exec_chips } : {}),
         draggable: !discard,
         discard: discard || undefined,
         reason: admissionBadge(admission, bead_id),
+        ...(admission[bead_id]?.stale === true
+          ? { rereview_required: true }
+          : {}),
         seq: queue_index + 1,
         queue_position: queue_index + 1,
         queue_index,
@@ -3946,11 +3893,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const route =
         (workflow && typeof workflow.route === 'string' && workflow.route) ||
         (typeof entry.route === 'string' ? entry.route : null);
-      const exec_chips = pinnedExecChips(
-        objectOf(state),
-        entry.exec_pins,
-        route
-      );
+      const exec_chips =
+        Object.hasOwn(entry, 'exec_pins') &&
+        entry.exec_pins &&
+        typeof entry.exec_pins === 'object'
+          ? execChipsFor(objectOf(state), entry.exec_pins, route)
+          : null;
       // 복잡 판정 (UI-sbum §4): 추천은 `rec`, 권위 키는 `exec_pins`로 따로
       // 오므로 판정 유틸에 둘을 나눠 넘긴다. Worker 카드와 같은 칩·같은 툴팁이고
       // 클릭은 없다.
@@ -3973,21 +3921,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
           )
         );
       }
-      // 후보 레인이 드래그 소스인지도 그 재료가 가른다 (UI-d13v §6): 관측용 행을
-      // 싣는 어댑터(`eligible`을 실어 오는 쪽)의 후보 레인은 드래그 소스가 아니고,
-      // 배치는 `queue_placeable`이 그대로 물려받는다.
-      const observation_row = Object.hasOwn(entry, 'eligible');
       const has_placement_facts =
-        !observation_row &&
         Object.hasOwn(entry, 'route') &&
         Object.hasOwn(entry, 'spec_state') &&
         Object.hasOwn(entry, 'has_description') &&
         Object.hasOwn(entry, 'awaiting_user') &&
         Object.hasOwn(entry, 'worker_ineligible');
-      // Monitor 행은 서버가 실어 온 사실로 판정을 만들고, 어댑터 행은 이미 만든
-      // 판정을 필드로 실어 온다 (§4). 어느 쪽도 `reason` 문자열을 되읽어 판정을
-      // 재구성하지 않는다 — 사유 문구가 바뀌면 조용히 어긋나는 두 번째 판정 벌이
-      // 생긴다.
+      // Both sources carry facts; only legacy server rows lack this bundle.
       const placement = has_placement_facts
         ? placementFromFacts(
             {
@@ -4001,17 +3941,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
           )
         : null;
       // 구 서버 행에는 새 사실 묶음이 없다. 그때만 기존 허용 폴백을 보존한다.
-      const eligible = observation_row
-        ? entry.eligible !== false
-        : placement
-          ? placement.placeable
-          : true;
+      const eligible = placement ? placement.placeable : true;
       const worker_ineligible = placement
         ? placement.worker_ineligible
         : entry.worker_ineligible === true;
       const queue_placeable = eligible && !worker_ineligible;
-      // 판정 칩 재료 (§6.1). Monitor는 방금 접은 판정에서, 어댑터 행은 실어 온
-      // 필드에서 온다. 어느 쪽도 없으면 키를 싣지 않아 칩이 서지 않는다.
       const placement_chip_facts = placement
         ? {
             route_ok: placement.route_ok,
@@ -4019,21 +3953,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
             missing_description: placement.missing_description,
             placement_spec: placement.spec
           }
-        : Object.hasOwn(entry, 'route_ok')
-          ? {
-              route_ok: entry.route_ok === true,
-              awaiting_user: entry.awaiting_user === true,
-              missing_description: entry.missing_description === true,
-              placement_spec: entry.placement_spec
-            }
-          : null;
+        : null;
       /** @type {string[]} */
       const reason_parts = [];
-      if (!observation_row && placement && !placement.placeable) {
-        reason_parts.push(placementTitle(placement));
+      if (entry.blocked_without_ids === true) {
+        reason_parts.push('🔒 blocked');
       }
-      if (typeof entry.reason === 'string' && entry.reason.length > 0) {
-        reason_parts.push(entry.reason);
+      if (
+        typeof entry.awaiting_user_reason === 'string' &&
+        entry.awaiting_user_reason.length > 0
+      ) {
+        reason_parts.push(entry.awaiting_user_reason);
       }
       const admission_badge = admissionBadge(admission, bead_id);
       if (admission_badge) {
@@ -4053,19 +3983,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...base(bead_id),
         title: entry.title || titles[bead_id] || bead_id,
         lane: 'runnable',
-        draggable: !observation_row && queue_placeable,
+        draggable: entry.observation !== true && queue_placeable,
         queue_placeable,
         ...(placement_chip_facts || {}),
         ...(worker_ineligible ? { worker_ineligible: true } : {}),
-        // 세션 권장 advisory (UI-49mc §3). 자격 판정에는 들어가지 않고, 재료를
-        // 싣지 않는 서버 `runnable` 행에는 키 자체가 없다 (fail-quiet).
-        ...(entry.session_preferred === true
+        ...(typeof entry.session_preferred_reason === 'string' &&
+        entry.session_preferred_reason.length > 0
           ? {
               session_preferred: true,
-              session_preferred_reason:
-                typeof entry.session_preferred_reason === 'string'
-                  ? entry.session_preferred_reason
-                  : ''
+              session_preferred_reason: entry.session_preferred_reason
             }
           : {}),
         // 선행이 실행뿐 아니라 설계까지 막는다는 예외 라벨 (UI-svh6 §4.2).
@@ -4079,6 +4005,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
           ? { dependents_info: entry.dependents_info }
           : {}),
         reason: reason_parts.join(' · '),
+        ...(admission[bead_id]?.stale === true
+          ? { rereview_required: true }
+          : {}),
         created_at: entry.created_at ?? undefined,
         updated_at: entry.updated_at ?? undefined,
         status: typeof entry.status === 'string' ? entry.status : undefined,
@@ -4126,10 +4055,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
         terminal && typeof terminal.done_kind === 'string'
           ? terminal.done_kind
           : null;
-      // 완료 행의 오케/워커는 핀이 아니라 이 attempt의 기록에서 나온다
-      // (UI-q1tg §3.4). `exec_chips` 배분(아래 오버레이 루프)에 `done`이 없는
-      // 것과 어긋나지 않는다 — 완료 행이 얻는 것은 "돌아갈 설정"이 아니라 "무엇
-      // 으로 돌았나"이고, 재료도 경로도 다르다.
       const done_exec_chips = attemptExecChips(terminal);
       done.push({
         ...base(bead_id),
@@ -4185,9 +4110,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
 
   // Board live store가 아는 이슈 필드를 모든 레인 행에 덧씌운다 (§4.1) — 지금
   // Worker의 `idToPriority`·`idToFromId`·`beadRec`·`beadExecChips`가 하는 일이다.
-  // `exec_chips`는 "무엇으로 돌아갈까"에 답하는 레인(후보·대기·직렬)만 얻는다:
-  // 실행 중 타일은 그 attempt의 기록값이 진실이고, PR 대기·완료 행은 돌아갈
-  // 설정이 없다.
+  // Candidate exec pins already came from their facts; running chips keep the attempt record.
   if (overlay_by_key.size > 0) {
     for (const item of [
       ...runnable,
@@ -4255,12 +4178,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }
       const metadata = objectOf(overlay.metadata);
       item.rec = recSettings(metadata);
-      if (
-        item.lane === 'runnable' ||
-        item.lane.startsWith('s') ||
-        item.lane === 'queue'
-      ) {
-        const chips = overlayExecChips(
+      if (item.lane.startsWith('s') || item.lane === 'queue') {
+        const chips = execChipsFor(
           objectOf(state_by_root.get(item.root_dir)),
           metadata,
           // 오버레이가 이 bead의 route를 알면 그쪽이 원천이다 — 큐 스냅샷의
@@ -4268,7 +4187,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
           // 구서버도 있다 (fail-quiet).
           typeof overlay.route === 'string' && overlay.route.length > 0
             ? overlay.route
-            : objectOf(item.workflow).route
+            : objectOf(item.workflow).route || metadata.route || null
         );
         if (chips) {
           item.exec_chips = chips;
@@ -4306,16 +4225,32 @@ export function buildLanes(workspaces, workspaces_state, options) {
     // 읽지 않으므로 그대로 한다.
     const metadata_observed = !!overlay && Object.hasOwn(overlay, 'metadata');
     const metadata = objectOf(overlay && overlay.metadata);
-    const rows = metadata_observed
-      ? execRows(
-          state,
-          metadata,
-          typeof overlay.route === 'string' && overlay.route.length > 0
-            ? overlay.route
-            : objectOf(item.workflow).route,
-          null
-        )
-      : null;
+    const enriched_route =
+      metadata_observed &&
+      typeof overlay.route === 'string' &&
+      overlay.route.length > 0
+        ? overlay.route
+        : objectOf(item.workflow).route;
+    /** @type {Record<string, import('../../utils/execution-defaults.js').ExecutionValue>|null} */
+    let rows = null;
+    if (metadata_observed) {
+      try {
+        rows = resolveExecutionSettings({
+          pin: metadata,
+          global: execGlobalValues(state),
+          execution_defaults: state.execution_defaults ?? null,
+          runner_catalog: state.runner_catalog ?? null,
+          route: isWorkflowRoute(enriched_route)
+            ? enriched_route
+            : isWorkflowRoute(metadata.route)
+              ? metadata.route
+              : null,
+          controller_runtime: null
+        });
+      } catch {
+        rows = null;
+      }
+    }
     const runner = rows
       ? resolvedRunnerOf(rows, state.runner_catalog ?? null)
       : null;
@@ -4765,7 +4700,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
 
   // 실행가능 필터·정렬은 마지막이다: 파생값(의존 칩·체인)은 필터와 무관하게
   // 전 레포 사실에서 나와야 한다.
-  const before = model.runnable.length;
   // 필터가 감춘 카드도 의존 상대로는 살아 있다 (UI-j92s §6.1) — 후보 모집단은
   // 필터 이전 목록에서 나온다.
   model.runnable_all = model.runnable.slice();
@@ -4787,7 +4721,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const routePass = (item) =>
     filter_routes.length === 0 ||
     filter_routes.includes(routeFilterValueOf(item));
-  if (hidden_counts === 'per_control') {
+  {
     // Worker 규칙 (UI-ki09 `applyCandidateFilter`): 한 조작이 감춘 수는 "그
     // 조작만 풀면 나타날 행"이다. 두 필터에 **모두** 걸린 행은 어느 수에도
     // 들어가지 않는다 — 한쪽만 풀어도 그 행은 그대로 숨어 있으므로, 세면
@@ -4823,19 +4757,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
       blocked: hidden_blocked,
       readiness: hidden_readiness,
       route: hidden_route
-    };
-  } else {
-    // Monitor 규칙: 세 필터를 차례로 적용하고 각 단계가 줄인 수를 센다 — 두
-    // 필터에 모두 걸린 행은 앞 단계인 `blocked`가 가져간다.
-    visible = visible.filter(blockedPass);
-    const after_blocked = visible.length;
-    visible = visible.filter(readinessPass);
-    const after_readiness = visible.length;
-    visible = visible.filter(routePass);
-    model.runnable_hidden = {
-      blocked: before - after_blocked,
-      readiness: after_blocked - after_readiness,
-      route: after_readiness - visible.length
     };
   }
 

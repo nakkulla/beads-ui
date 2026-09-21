@@ -2931,7 +2931,6 @@ export function createWorkerView(mount_element, options = {}) {
       candidate_filter,
       // 감춘 수는 조작별로 센다 (UI-ki09): 두 필터에 모두 걸린 후보는 어느
       // 배지에도 들어가지 않는다 — 한쪽만 풀어도 나타나지 않기 때문이다.
-      candidate_hidden_counts: 'per_control',
       candidate_sort: 'as_given',
       groups: 'all',
       // 검색은 워커 탭만의 강조다 (§7): 값이 비면 모델은 키를 달지 않으므로

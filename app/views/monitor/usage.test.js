@@ -13,6 +13,33 @@ function doneItem(usage) {
 }
 
 describe('cross-repo token total (UI-qrfo §7)', () => {
+  test('keeps partial cost details in the tooltip of the compact total', () => {
+    const items = [
+      doneItem({
+        providers: {
+          claude: {
+            subtotal: 10,
+            breakdown: { input_tokens: 10 },
+            total_cost_usd: 6.1,
+            partial: true,
+            unpriced_leg_count: 2
+          }
+        },
+        roles: {}
+      })
+    ];
+
+    const total = crossRepoTokenTotal(items);
+
+    expect(total).toEqual([
+      expect.objectContaining({
+        label: 'Claude τ 10 · ≈$6.10',
+        tooltip: expect.stringContaining(
+          '단가 없는 leg 2개\n부분 집계 — 미확정 범위 제외'
+        )
+      })
+    ]);
+  });
   test('keeps Claude and Codex totals separate across workspaces', () => {
     const total = crossRepoTokenTotal([
       doneItem({
@@ -40,8 +67,14 @@ describe('cross-repo token total (UI-qrfo §7)', () => {
     ]);
 
     expect(total).toEqual([
-      expect.objectContaining({ label: 'Claude τ 15' }),
-      expect.objectContaining({ label: 'Codex τ 8' })
+      expect.objectContaining({
+        label: 'Claude τ 15',
+        tooltip: expect.not.stringMatching(/단가 없는 leg|부분 집계/)
+      }),
+      expect.objectContaining({
+        label: 'Codex τ 8',
+        tooltip: expect.not.stringMatching(/단가 없는 leg|부분 집계/)
+      })
     ]);
   });
 

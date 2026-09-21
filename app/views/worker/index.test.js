@@ -722,11 +722,24 @@ describe('views/worker', () => {
     HTMLElement.prototype.scrollIntoView = original_scroll;
   });
 
-  test('candidate lane renders Ready/Blocked with spec-missing + blocked reasons', () => {
+  test('renders candidate readiness and blocker chips without placement reason fragments', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = seedCandidates();
+    stores.getStore('tab:worker:ready').applyPush({
+      type: 'snapshot',
+      id: 'tab:worker:ready',
+      revision: 2,
+      issues: stores
+        .snapshotFor('tab:worker:ready')
+        .map((/** @type {any} */ issue) =>
+          issue.id === 'RD-2'
+            ? { ...issue, metadata: { route: 'spec_backed' } }
+            : issue
+        )
+    });
     presetCandidateFilter({ show_blocked: true });
     createWorkerView(mount, {
-      issueStores: seedCandidates(),
+      issueStores: stores,
       queueStore: createWorkerQueueStore(),
       transport: vi.fn()
     });
@@ -739,8 +752,11 @@ describe('views/worker', () => {
     const rd2 = /** @type {HTMLElement} */ (
       cand.querySelector('.worker-card[data-bead-id="RD-2"]')
     );
-    expect(rd2.querySelector('.worker-card__reason')?.textContent).toContain(
-      'spec 없음'
+    expect(
+      rd2.querySelector('.worker-card__reason')?.textContent ?? ''
+    ).not.toMatch(/대기 큐|spec 없음/);
+    expect(rd2.querySelector('.worker-card__readiness')?.textContent).toContain(
+      '스펙 미발행'
     );
     expect(placeButton(cand, 'RD-2').disabled).toBe(true);
 
@@ -761,9 +777,7 @@ describe('views/worker', () => {
     expect(placeButton(cand, 'RD-1').disabled).toBe(false);
   });
 
-  // 사유는 두 갈래로 갈린다 (UI-vb7u §3): 경로가 아예 없으면 `spec 없음`,
-  // 경로는 있는데 리뷰 영수증이 없거나 형식이 깨졌으면 `spec 미발행(draft)`.
-  test('names an unpublished spec path as a draft, not as a missing spec', () => {
+  test('shows unpublished and missing specs in readiness chips', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:ready', [
@@ -771,13 +785,14 @@ describe('views/worker', () => {
         id: 'DRAFT-1',
         title: 'spec awaiting review',
         status: 'open',
-        spec_id: 'docs/awaiting.md'
+        spec_id: 'docs/awaiting.md',
+        metadata: { route: 'spec_backed' }
       },
       {
         id: 'NONE-1',
         title: 'no spec at all',
         status: 'open',
-        metadata: {}
+        metadata: { route: 'spec_backed' }
       }
     ]);
     createWorkerView(mount, {
@@ -792,12 +807,14 @@ describe('views/worker', () => {
     const none = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-card[data-bead-id="NONE-1"]')
     );
-    expect(draft.querySelector('.worker-card__reason')?.textContent).toContain(
-      'spec 미발행(draft)'
-    );
-    expect(none.querySelector('.worker-card__reason')?.textContent).toContain(
-      'spec 없음'
-    );
+    for (const card of [draft, none]) {
+      expect(
+        card.querySelector('.worker-card__readiness')?.textContent
+      ).toContain('스펙 미발행');
+      expect(
+        card.querySelector('.worker-card__reason')?.textContent ?? ''
+      ).not.toMatch(/draft|spec 없음|대기 큐/);
+    }
   });
 
   test('leaves a candidate whose spec is unpublished undraggable', () => {
@@ -1574,15 +1591,21 @@ describe('views/worker', () => {
         '#worker-pane-candidate .worker-card[data-bead-id="RD-1"]'
       )
     );
-    const rd1_reason = rd1.querySelector('.worker-card__reason')?.textContent;
-    expect(rd1_reason).toContain('♻️ stale→재리뷰');
-    expect(rd1_reason).not.toContain('⛔');
-    // The bead is admitted, so the queued row reads the same way.
+    expect(
+      rd1.querySelector('.worker-card__badge--rereview')?.textContent
+    ).toBe('♻ 재리뷰 필요');
+    expect(
+      mount.querySelector('#worker-pane-queue .worker-mini__badge--rereview')
+        ?.textContent
+    ).toBe('♻ 재리뷰 필요');
+    const rd1_reason =
+      rd1.querySelector('.worker-card__reason')?.textContent ?? '';
+    expect(rd1_reason).not.toMatch(/stale|⛔/);
     expect(
       mount
         .querySelector('#worker-pane-queue .worker-mini[data-bead-id="SQ-1"]')
-        ?.querySelector('.worker-mini__reason')?.textContent
-    ).toContain('♻️ stale→재리뷰');
+        ?.querySelector('.worker-mini__reason')?.textContent ?? ''
+    ).not.toMatch(/stale|⛔/);
   });
 
   test('the control bar carries no policy selects or verify_cmd strip (worker-phase2 §2)', () => {
@@ -4712,9 +4735,12 @@ describe('views/worker', () => {
     );
 
     expect(card.getAttribute('draggable')).toBe('false');
-    expect(card.querySelector('.worker-card__reason')?.textContent).toContain(
-      'missing_description'
-    );
+    expect(
+      card.querySelector('.worker-card__reason')?.textContent ?? ''
+    ).not.toContain('missing_description');
+    expect(
+      card.querySelector('.worker-card__readiness')?.textContent
+    ).toContain('본문 필요');
     expect(card.textContent).not.toContain('spec 없음');
     expect(place.disabled).toBe(true);
     expect(place.title).toBe('description이 없어 대기 큐에 넣을 수 없습니다');
@@ -7965,7 +7991,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
       mount.querySelector('.rtile[data-bead-id="RD-1"] .worker-usage')
     );
     expect(el.getAttribute('title')).toBe(
-      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 239,430\n입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800\n$0.42\nAPI 환산 단가 기준\n부모 직접 τ 239.4k · $0.42'
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 239,430\n입력 8,420 · 출력 3,910 · 캐시읽기 214,300 · 캐시생성 12,800\n$0.42\n환산: USD · Standard · short context · 5분 cache write 기준\n부모 직접 τ 239.4k · $0.42'
     );
   });
 
@@ -8080,7 +8106,7 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     expect(el.textContent?.trim()).toBe('Claude τ 13.8k · 단가 없음');
   });
 
-  test('names the unpriced leg beside a partial cost sum (preset-compare §1.3)', () => {
+  test('marks a partial cost sum and explains the unpriced leg in the tooltip (preset-compare §1.3)', () => {
     const mount = renderQueue(
       queueOf({
         pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
@@ -8105,9 +8131,8 @@ describe('worker view — token usage display (UI-raqh §1)', () => {
     const el = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
     );
-    expect(el.textContent?.trim()).toBe(
-      'Claude τ 31.1k · $1.50 (+1 leg 단가 없음) · 부분 집계'
-    );
+    expect(el.textContent?.trim()).toBe('Claude τ 31.1k · ≈$1.50');
+    expect(el.title).toContain('단가 없는 leg 1개');
   });
 
   test('sums every attempt usage on a pr_wait row (UI-d7pw §1)', () => {
@@ -10107,9 +10132,12 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
         .querySelector('.worker-kpi__chip--tokens .tok__full')
         ?.textContent?.trim()
     ).toBe('오늘 완료 · 누적 Claude τ 2.0k · $3.75');
+    expect(
+      mount.querySelector('.worker-kpi__chip--tokens')?.getAttribute('title')
+    ).not.toMatch(/단가 없는 leg|부분 집계/);
   });
 
-  test('names the unpriced leg on the KPI chip (preset-compare §1.3)', () => {
+  test('marks a partial KPI cost and explains the unpriced leg in the tooltip (preset-compare §1.3)', () => {
     const mount = mountKpi({
       done: [
         { bead_id: 'RD-1', added_at: 1 },
@@ -10139,9 +10167,13 @@ describe('worker toolbar KPI chips (UI-58y2)', () => {
       mount
         .querySelector('.worker-kpi__chip--tokens .tok__full')
         ?.textContent?.trim()
-    ).toBe(
-      '오늘 완료 · 누적 Claude τ 2.0k · $1.50 (+1 leg 단가 없음) · 부분 집계'
-    );
+    ).toBe('오늘 완료 · 누적 Claude τ 2.0k · ≈$1.50');
+    expect(
+      mount.querySelector('.worker-kpi__chip--tokens')?.getAttribute('title')
+    ).toContain('단가 없는 leg 1개');
+    expect(
+      mount.querySelector('.worker-kpi__chip--tokens')?.getAttribute('title')
+    ).toContain('부분 집계 —');
   });
 });
 

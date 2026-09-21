@@ -599,7 +599,7 @@ export function createDecorationContext(snapshot, root_dir) {
  * @param {DecorationContext} context
  * @returns {ReleaseInfo | null}
  */
-function releaseInfoFor(issue_id, context) {
+export function releaseInfoFor(issue_id, context) {
   const blocker_ids = blocksIndexOf(context.snapshot, 'blocks_out').get(
     issue_id
   );
@@ -719,7 +719,7 @@ export function openDependentsWithOwners(issue_id, context) {
  * @param {DecorationContext} context
  * @returns {DependentsInfo | null}
  */
-function dependentsInfoFor(issue_id, context) {
+export function dependentsInfoFor(issue_id, context) {
   const { ids, root_dirs } = openDependentsWithOwners(issue_id, context);
   if (ids.length === 0) {
     return null;

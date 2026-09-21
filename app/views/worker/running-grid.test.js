@@ -1170,7 +1170,7 @@ describe('session tile (UI-yrzu §6)', () => {
   test('names the tile a session with the ownership tooltip', () => {
     const badge = renderSession().querySelector('.rtile__session-badge');
 
-    expect(badge?.textContent).toBe('세션');
+    expect(badge?.textContent).toBe('직접 세션');
     expect(badge?.getAttribute('title')).toBe(
       'Worker가 아닌 세션이 in_progress로 잡은 이슈'
     );
@@ -1305,9 +1305,13 @@ describe('session tile (UI-yrzu §6)', () => {
       '위임 중 · 구현 unit · codex'
     );
     expect(tile.querySelector('.worker-usage')?.textContent).toContain('τ 15');
-    expect(tile.textContent).toContain('현재 대화 기준');
-    expect(tile.textContent).toContain('워크스페이스 합계 제외');
-    expect(tile.textContent).toContain('Standard · short context · 5분');
+    const tooltip = tile.querySelector('.worker-usage')?.getAttribute('title');
+    expect(tooltip).toContain('집계: 현재 대화 기준 · 워크스페이스 합계 제외');
+    expect(tooltip).toContain(
+      '환산: USD · Standard · short context · 5분 cache write 기준'
+    );
+    expect(tile.querySelectorAll('.rtile__usage-scope')).toHaveLength(0);
+    expect(tile.textContent).not.toContain('현재 대화 기준');
   });
 
   test('keeps the bead id and the detail click contract of every other tile', () => {
@@ -1344,6 +1348,42 @@ describe('worker running tile header actions', () => {
  * 상대하고, 좌표 칩·route·exec·usage는 제목 아래 `.rtile__meta` 하나에 모인다.
  */
 describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
+  test.each([true, false])(
+    'moves native usage scope into the provider tooltip with inclusion=%s',
+    (included) => {
+      const tile = renderTile({
+        legs: /** @type {any} */ ([
+          {
+            native: true,
+            usage: { input_tokens: 10 },
+            usage_included: included
+          }
+        ]),
+        usage: {
+          providers: {
+            codex: {
+              subtotal: 10,
+              breakdown: { input_tokens: 10 },
+              total_cost_usd: 6.1
+            }
+          },
+          roles: {}
+        }
+      });
+
+      const tooltip =
+        tile.querySelector('.worker-usage')?.getAttribute('title') || '';
+
+      expect(tile.querySelectorAll('.rtile__usage-scope')).toHaveLength(0);
+      expect(tooltip).toContain(
+        included ? '집계: 부모·자식 합계' : '집계: 자식 사용량 · 부모 합계 제외'
+      );
+      expect(tooltip).toContain(
+        '환산: USD · Standard · short context · 5분 cache write 기준'
+      );
+      expect(tooltip.indexOf('집계:')).toBeLessThan(tooltip.indexOf('환산:'));
+    }
+  );
   const MONITOR = {
     repo: 'repo-a',
     root_dir: '/tmp/repo-a',
@@ -1386,13 +1426,21 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
     );
 
     expect(Array.from(meta.children, (child) => child.className)).toEqual([
+      'rtile__facts',
+      'rtile__usage'
+    ]);
+    expect(
+      Array.from(
+        meta.querySelectorAll('.rtile__facts > *, .rtile__usage > *'),
+        (child) => child.className
+      )
+    ).toEqual([
       'worker-card__repo rtile__repo',
       'rtile__lane',
       'ctl-chip ctl-chip--route',
       'exec-chip exec-chip--orch',
       'exec-chip exec-chip--worker',
-      'worker-usage',
-      'rtile__usage-scope'
+      'worker-usage'
     ]);
   });
 
@@ -1667,18 +1715,23 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
     expect(button.getAttribute('title')).toBe('라이브 세션 열기');
   });
 
-  test('places the session button after the clock and before the 세션 badge', () => {
+  test('keeps the direct-session identity outside the session action group', () => {
     const tile = renderSession({ session_refs: [view()] });
     const actions = /** @type {HTMLElement} */ (
       tile.querySelector('.rtile__hd-actions')
     );
     const order = Array.from(actions.children).map((el) => el.className);
 
-    expect(order).toEqual([
-      'rtile__elapsed',
-      'rtile__session',
-      'rtile__session-badge'
-    ]);
+    expect(order).toEqual(['rtile__elapsed', 'rtile__session']);
+    expect(
+      tile.querySelectorAll('.rtile__hd > .rtile__session-badge')
+    ).toHaveLength(1);
+    expect(tile.querySelector('.rtile__session-badge')?.textContent).toBe(
+      '직접 세션'
+    );
+    expect(
+      tile.querySelectorAll('.rtile__hd-actions > .rtile__session')
+    ).toHaveLength(1);
   });
 
   test('disables the button for a session of another machine', () => {

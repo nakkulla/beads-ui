@@ -156,7 +156,7 @@ describe('worker workspace adapter', () => {
     expect(rows.map((/** @type {any} */ r) => r.bead_id)).toEqual(['UI-abcd']);
   });
 
-  test('marks a spec-backed candidate with a published receipt eligible', () => {
+  test('carries published spec facts without placement or reason fragments', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:ready', [
       {
@@ -172,12 +172,23 @@ describe('worker workspace adapter', () => {
     const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
       .runnable[0];
 
-    expect(row.eligible).toBe(true);
-    expect(row.reason).toBe('');
+    expect(row.observation).toBe(true);
+    expect(row.spec_state).toBe('published');
+    for (const key of [
+      'eligible',
+      'reason',
+      'route_ok',
+      'missing_description',
+      'placement_spec',
+      'session_preferred',
+      'awaiting_user_reason'
+    ]) {
+      expect(row).not.toHaveProperty(key);
+    }
     expect(row.published).toBe(true);
   });
 
-  test('names a candidate without any spec as spec 없음', () => {
+  test('carries the none spec state', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:ready', [
       { id: 'NONE', title: 'none', metadata: {} }
@@ -187,8 +198,8 @@ describe('worker workspace adapter', () => {
     const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
       .runnable[0];
 
-    expect(row.eligible).toBe(false);
-    expect(row.reason).toBe('spec 없음');
+    expect(row.spec_state).toBe('none');
+    expect(row).not.toHaveProperty('reason');
   });
 
   test('carries the placement judgement material for the readiness chip', () => {
@@ -207,19 +218,19 @@ describe('worker workspace adapter', () => {
     const rows = adapter.read({ candidate_sort: SORT }).workspaces[0].runnable;
 
     expect(rows[0]).toMatchObject({
-      route_ok: false,
+      route: '',
       awaiting_user: false,
-      missing_description: false,
-      placement_spec: 'draft'
+      has_description: true,
+      spec_state: 'draft'
     });
     expect(rows[1]).toMatchObject({
-      route_ok: true,
-      missing_description: true,
-      placement_spec: 'n/a'
+      route: 'quick_fix',
+      has_description: false,
+      spec_state: 'n/a'
     });
   });
 
-  test('names an unreviewed spec as spec 미발행(draft)', () => {
+  test('carries the draft spec state', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:ready', [
       { id: 'DRAFT', title: 'draft', spec_id: 'SPEC-1', metadata: {} }
@@ -229,8 +240,8 @@ describe('worker workspace adapter', () => {
     const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
       .runnable[0];
 
-    expect(row.eligible).toBe(false);
-    expect(row.reason).toBe('spec 미발행(draft)');
+    expect(row.spec_state).toBe('draft');
+    expect(row).not.toHaveProperty('reason');
   });
 
   test('names a quick_fix candidate with an empty description missing_description', () => {
@@ -248,8 +259,8 @@ describe('worker workspace adapter', () => {
     const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
       .runnable[0];
 
-    expect(row.eligible).toBe(false);
-    expect(row.reason).toBe('missing_description');
+    expect(row.has_description).toBe(false);
+    expect(row).not.toHaveProperty('reason');
   });
 
   test('keeps the id-less lock sentence for a blocked candidate with no known blocker', () => {
@@ -269,7 +280,8 @@ describe('worker workspace adapter', () => {
       .runnable[0];
 
     expect(row.blocked).toBe(true);
-    expect(row.reason).toBe('🔒 blocked');
+    expect(row.blocked_without_ids).toBe(true);
+    expect(row).not.toHaveProperty('reason');
   });
 
   test('carries the blocker ids of a blocked candidate instead of the lock sentence', () => {
@@ -289,7 +301,7 @@ describe('worker workspace adapter', () => {
       .runnable[0];
 
     expect(row.blocked_by).toEqual(['DEP-9']);
-    expect(row.reason).toBe('');
+    expect(row).not.toHaveProperty('blocked_without_ids');
   });
 
   test('marks a worker-ineligible candidate as an observation row', () => {
@@ -309,7 +321,7 @@ describe('worker workspace adapter', () => {
       .runnable[0];
 
     expect(row.worker_ineligible).toBe(true);
-    expect(row.eligible).toBe(false);
+    expect(row.observation).toBe(true);
   });
 
   test('refuses an awaiting_user candidate and names the parking reason', () => {
@@ -327,8 +339,10 @@ describe('worker workspace adapter', () => {
     const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
       .runnable[0];
 
-    expect(row.eligible).toBe(false);
-    expect(row.reason).toContain('spec_review_stale');
+    expect(row.awaiting_user).toBe(true);
+    expect(row.awaiting_user_reason).toBe(
+      '사용자 리뷰 필요: spec_review_stale'
+    );
   });
 
   test('carries the session-preferred advisory apart from eligibility', () => {
@@ -351,8 +365,8 @@ describe('worker workspace adapter', () => {
     const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
       .runnable[0];
 
-    expect(row.session_preferred).toBe(true);
-    expect(row.eligible).toBe(true);
+    expect(row.session_preferred_reason).toBe('user_feedback_loop');
+    expect(row).not.toHaveProperty('session_preferred');
   });
 
   test('carries the 스펙 대기 judgement on a blocked candidate', () => {
