@@ -10856,9 +10856,11 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   grid-template-columns:
     10px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr)
     minmax(0, 1fr) minmax(0, 0.6fr);
-  grid-template-areas: 'dot title outcome chips time cost';
+  grid-template-areas:
+    'dot title outcome chips time cost'
+    'dot composition outcome chips time cost';
   align-items: center;
-  gap: var(--sp-6) var(--sp-10);
+  gap: var(--sp-2) var(--sp-10);
   padding: var(--sp-8) 0;
   border-bottom: 1px solid var(--border-card);
   color: var(--text-primary);
@@ -10900,6 +10902,14 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.cmp-session__composition {
+  grid-area: composition;
+  min-width: 0;
+  color: var(--text-muted);
+  font: var(--fs-small) var(--font-mono);
+  overflow-wrap: anywhere;
 }
 
 .cmp-session__outcome {
@@ -11040,7 +11050,11 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 
   .cmp-session {
     grid-template-columns: 10px minmax(0, 1fr) minmax(0, 105px);
-    grid-template-areas: 'dot title cost' 'dot outcome time' 'dot chips chips';
+    grid-template-areas:
+      'dot title cost'
+      'dot outcome time'
+      'dot chips chips'
+      'dot composition composition';
     row-gap: var(--sp-2);
   }
 

@@ -3593,7 +3593,7 @@ describe('ws worker-queue snapshot retention (UI-qbbg §4)', () => {
     expect(snapshot.attempts['att-fresh'].impl_actor.kind).toBe('main');
   });
 
-  test('omits impl_actor when the units disagree about the implementer', () => {
+  test('marks impl_actor mixed when the units disagree about the implementer', () => {
     const now = Date.now();
     const snapshot = /** @type {any} */ (
       decorateQueue(WS_RETENTION, {
@@ -3620,7 +3620,10 @@ describe('ws worker-queue snapshot retention (UI-qbbg §4)', () => {
       })
     );
 
-    expect(snapshot.attempts['att-fresh']).not.toHaveProperty('impl_actor');
+    expect(snapshot.attempts['att-fresh'].impl_actor).toMatchObject({
+      kind: 'mixed',
+      label: '혼합 2종'
+    });
   });
 
   test('collapses agreeing units into one impl_actor', () => {

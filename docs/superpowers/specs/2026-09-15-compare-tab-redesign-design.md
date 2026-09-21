@@ -133,6 +133,12 @@ REVISE/blocking, 사람 개입)를 모두 합산한다; 성공 판정은 `[verif
 붙인다(보조 표기, 사용자 결정). 행 클릭은 기존 이슈 상세 딥링크
 (`#/compare?issue=<id>`)다.
 
+> 정정(UI-obl0). 세션 행은 구성 줄 `<orch_model>/<orch_effort> → <impl_actor>`를
+> 제목 아래 보조 줄로(모바일은 격자 네 번째 행으로) 그린다. `group_by=impl_actor`의
+> 키는 `main` · `<actor>/<effort>` · `미기록`에 더해 혼합 구성 서명
+> `mixed:<정렬된 유닛 실행자 목록>`을 갖고, 그 카드 이름은 `<actor>/혼합` 또는
+> `혼합 n종`이다.
+
 ### 3.4 모바일 (≤640px)
 
 - 조작 줄: segmented control은 전폭 3등분, 필터·정렬 select는 2열 격자로 전폭,
@@ -266,6 +272,13 @@ ADR로 남지 않았으므로 supersede 없이 이 문서가 새 결정을 적�
 - `group_by=preset`: 키 `preset:<id>` 또는 `sig:<구성 서명>`(미대조).
 - `group_by=orchestration`: 키 `<model>/<effort ?? '미기록'>`.
 - `group_by=impl_actor`: 키 `main` · `<actor>/<effort>` · `미기록`.
+
+> 정정(UI-obl0). 세션 행은 구성 줄 `<orch_model>/<orch_effort> → <impl_actor>`를
+> 제목 아래 보조 줄로(모바일은 격자 네 번째 행으로) 그린다. `group_by=impl_actor`의
+> 키는 `main` · `<actor>/<effort>` · `미기록`에 더해 혼합 구성 서명
+> `mixed:<정렬된 유닛 실행자 목록>`을 갖고, 그 카드 이름은 `<actor>/혼합` 또는
+> `혼합 n종`이다.
+
 - 그룹 집계 `group`: `key`, `name`, `badge`(`preset`|`unmatched`|`none`),
   `n`, `issue_count`(고유 bead), `compositions[]`(구성 서명과 건수, 건수 내림),
   `landed`, `judged`, `in_flight`, `landing_rate`(`judged=0`이면 `null`),
