@@ -26,7 +26,6 @@
  * @import { BeadSnapshot } from './scheduler.js'
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -35,7 +34,6 @@ import {
 } from '../../app/utils/worker-eligibility.js';
 import { kvGetJson, runBdJsonProjected, runShell } from '../bd.js';
 import { getConfig } from '../config.js';
-import { createExternalJobObservations } from '../external-job-observations.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
 import {
@@ -124,133 +122,65 @@ import { createWorktreeManager } from './worktree.js';
 
 const log = debug('worker:attach');
 
-export const WAIT_JUDGE_INTERVAL_SECONDS = 5 * 60;
-
 /** @typedef {{ root_dir: string, name: string, snapshot: any, snapshot_stale?: boolean }} WaitWorkspace */
-/** @type {Map<string, ReturnType<typeof createWaitObservationCollector>>} */
-const wait_collectors = new Map();
 
 /**
- * Retain the judgment fields from the collector's SAME validated watch reads.
- * The existing external-row projection deliberately carries a smaller shape.
+ * Project public job coordinates and observations without owner session data.
  *
- * @param {Parameters<typeof createExternalJobObservations>[0]} [options]
+ * @param {import('./external-wait/store.js').WaitRecord} record
  */
-export function createWaitObservationCollector(options = {}) {
-  const io = options.fs || fs;
-  /** @type {Map<string, Record<string, any>>} */
-  const watches = new Map();
-  const collector = createExternalJobObservations({
-    ...options,
-    fs: {
-      readdir: async (file) => {
-        const names = await io.readdir(file);
-        watches.clear();
-        return names;
-      },
-      readFile: async (file) => {
-        const raw = await io.readFile(file, 'utf8');
-        const watch = JSON.parse(raw);
-        if (watch && typeof watch.watch_id === 'string') {
-          watches.set(watch.watch_id, {
-            interval_seconds: watch.interval_seconds,
-            ssh_host: watch.ssh_host,
-            error_count: watch.error_count,
-            notify: { on_complete: watch.notify?.on_complete }
-          });
-        }
-        return raw;
-      }
-    }
-  });
-  /** @type {{ rows: Record<string, any>[], collected_at: number, stale: boolean }|null} */
-  let completed = null;
+export function projectExternalWait(record) {
   return {
-    /** @param {WaitWorkspace[]} workspaces */
-    async collect(workspaces) {
-      await collector.collect(workspaces);
-      const snapshot = collector.get();
-      completed = {
-        ...snapshot,
-        rows: snapshot.rows.map((row) => ({
-          ...watches.get(row.watch_id),
-          ...row,
-          collected_at: snapshot.collected_at
-        }))
-      };
-      return completed.rows;
-    },
-    /** @returns {{ rows: Record<string, any>[], collected_at: number, stale: boolean }} */
-    get() {
-      return completed || collector.get();
-    },
-    clear() {
-      collector.clear();
-      watches.clear();
-      completed = null;
-    }
+    wait_id: record.wait_id,
+    root_dir: record.root_dir,
+    bead_id: record.bead_id,
+    owner_kind: record.owner.kind,
+    stage: record.stage,
+    budget: record.budget,
+    registered_at: record.registered_at,
+    next_observation_at: record.next_observation_at,
+    error_count: record.error_count,
+    last_error: record.last_error,
+    jobs: record.jobs.map((job) => ({
+      adapter: job.adapter,
+      ...(job.adapter === 'slurm'
+        ? { ssh_host: job.ssh_host, job_id: job.job_id }
+        : { pid: job.pid }),
+      submitted_at: job.submitted_at,
+      log_path: job.log_path,
+      state: job.state,
+      observed_at: job.observed_at,
+      terminal: job.terminal
+        ? {
+            exit_code: job.terminal.exit_code,
+            evidence: job.terminal.evidence,
+            recovery_needed: job.terminal.recovery_needed,
+            expected_results: job.terminal.expected_results
+          }
+        : null
+    })),
+    completion: record.completion,
+    resume: record.resume
   };
 }
 
 /**
- * A workspace owns its in-flight collection so overlapping roots never join a
- * promise that collected only a different workspace.
- *
- * @param {string} workspace_root
- */
-function waitCollectorFor(workspace_root) {
-  const key = keyFor(workspace_root);
-  let collector = wait_collectors.get(key);
-  if (!collector) {
-    collector = createWaitObservationCollector();
-    wait_collectors.set(key, collector);
-  }
-  return collector;
-}
-
-/** The Monitor and attached Worker both consume these same per-root caches. */
-export const workerExternalWaitObservations = {
-  /** @param {WaitWorkspace[]} workspaces */
-  async collect(workspaces) {
-    await Promise.all(
-      workspaces.map(async (workspace) => {
-        const att = ATTACHMENTS.get(keyFor(workspace.root_dir));
-        if (att?.waitJudge) {
-          await att.waitJudge.refresh(workspace);
-        } else {
-          await waitCollectorFor(workspace.root_dir).collect([workspace]);
-        }
-      })
-    );
-  },
-  get() {
-    const snapshots = [...wait_collectors.values()].map((collector) =>
-      collector.get()
-    );
-    return {
-      rows: snapshots.flatMap((snapshot) => snapshot.rows),
-      collected_at: snapshots.length
-        ? Math.max(...snapshots.map((snapshot) => snapshot.collected_at))
-        : 0,
-      stale: snapshots.some((snapshot) => snapshot.stale)
-    };
-  }
-};
-
-/**
  * Viewer-independent wait-judge lifecycle and memory-only observation clocks.
  *
- * @param {{ workspace: string, repo: string, store: Pick<ReturnType<import('./queue-store.js').createQueueStore>, 'snapshot'|'claimWaitNotifications'|'recordTimelineEvent'>, notifier: Pick<ReturnType<typeof createNotifier>, 'waitOverdue'|'waitActionRequired'>, collector?: ReturnType<typeof createWaitObservationCollector>, requestSnapshot?: typeof requestWorkspaceSnapshot, readFacts: (queue: any, workspace: WaitWorkspace) => Promise<{ bead_blocked_by?: Record<string, string[]>, blocker_facts?: Record<string, any>, foreign_readback?: Record<string, any>, account_catalog?: Record<string, any> }>, now?: () => number, onChanged?: (workspace: string) => void, subscribe?: typeof onQueueChanged }} deps
+ * @param {{ workspace: string, repo: string, store: Pick<ReturnType<import('./queue-store.js').createQueueStore>, 'snapshot'|'claimWaitNotifications'|'recordTimelineEvent'>, notifier: Pick<ReturnType<typeof createNotifier>, 'waitOverdue'|'waitActionRequired'>, listRecords?: (workspace: string) => import('./external-wait/store.js').WaitRecord[], requestSnapshot?: typeof requestWorkspaceSnapshot, readFacts: (queue: any, workspace: WaitWorkspace) => Promise<{ bead_blocked_by?: Record<string, string[]>, blocker_facts?: Record<string, any>, foreign_readback?: Record<string, any>, account_catalog?: Record<string, any> }>, now?: () => number, onChanged?: (workspace: string) => void, subscribe?: typeof onQueueChanged }} deps
  */
 export function createWaitJudge(deps) {
   const now = deps.now || Date.now;
-  const collector = deps.collector || waitCollectorFor(deps.workspace);
+  const listRecords =
+    deps.listRecords || getWorkerRuntime().externalWaitStore.list;
   const requestSnapshot = deps.requestSnapshot || requestWorkspaceSnapshot;
   const onChanged = deps.onChanged || emitQueueChanged;
   /** @type {import('./wait-judgment.js').ObservationTimes} */
   let observed_at = {};
   /** @type {{ wait_reasons: import('./wait-judgment.js').WaitReason[], external_waits: Record<string, any>[] }} */
   let state = { wait_reasons: [], external_waits: [] };
+  /** @type {WaitWorkspace|undefined} */
+  let last_material;
   /** @type {Promise<void>|null} */
   let in_flight = null;
   /** @type {(() => void)|null} */
@@ -283,20 +213,15 @@ export function createWaitJudge(deps) {
           snapshot_stale: !result.ok || result.stale === true
         };
       }
-      await collector.collect([material]);
       const queue = deps.store.snapshot(deps.workspace);
+      last_material = material;
       const facts = await deps.readFacts(queue, material);
       if (epoch !== run_epoch) {
         return;
       }
-      const snapshot = collector.get();
-      const external_waits = snapshot.rows
-        .filter((row) => row.root_dir === deps.workspace)
-        .map((row) => ({
-          ...row,
-          collected_at: snapshot.collected_at,
-          stale: row.stale === true
-        }));
+      const external_waits = listRecords(deps.workspace).map(
+        projectExternalWait
+      );
       const result = judgeWaitReasons({
         root_dir: deps.workspace,
         queue,
@@ -331,17 +256,19 @@ export function createWaitJudge(deps) {
       });
     return in_flight;
   }
-  const poller = createPoller({
-    intervalSeconds: WAIT_JUDGE_INTERVAL_SECONDS,
+  // Rejudge elapsed deadlines from owned records; no external recollection.
+  const clock_poller = createPoller({
+    intervalSeconds: 30,
     getClientCount: () => 1,
     onTick: () => {
-      void refresh();
+      void refresh(last_material);
     }
   });
 
   function controlState() {
     const queue = deps.store.snapshot(deps.workspace);
     return JSON.stringify([
+      queue.revision,
       queue.provider_hold,
       queue.hold,
       queue.auto_advance
@@ -369,13 +296,13 @@ export function createWaitJudge(deps) {
           }
         }
       });
-      poller.start();
+      clock_poller.start();
       void refresh();
     },
     stop() {
       epoch += 1;
+      clock_poller.stop();
       rerun = false;
-      poller.stop();
       if (unsubscribe) {
         unsubscribe();
         unsubscribe = null;
@@ -2140,6 +2067,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     }
 
     const fire = () => {
+      void refreshWorkerWaitReasons(key);
       Promise.resolve(resolvedCompletionActionDriver.onIssuesChanged?.()).catch(
         (err) => {
           log(
@@ -2284,6 +2212,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     repo,
     store: runtime.queueStore,
     notifier: notify,
+    listRecords: runtime.externalWaitStore.list,
     readFacts: async (queue, workspace) => {
       const ids = [
         ...new Set(
@@ -2317,7 +2246,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           blocker_facts[id] = {
             status: issue.status,
             title: issue.title,
-            labels: issue.labels
+            labels: issue.labels,
+            ...(Object.hasOwn(issue.metadata || {}, 'external_wait')
+              ? { external_wait: issue.metadata.external_wait }
+              : {})
           };
         }
       }
@@ -2396,7 +2328,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
  */
 const ATTACHMENTS = new Map();
 
-/** @type {WeakMap<object, Map<string, { onCompletion: (record: import('./external-wait/store.js').WaitRecord) => Promise<void>, resume: import('./external-wait/service.js').ResumeHook, stop: () => void }>>} */
+/** @type {WeakMap<object, Map<string, { onRecordChanged: () => Promise<void>, onCompletion: (record: import('./external-wait/store.js').WaitRecord) => Promise<void>, resume: import('./external-wait/service.js').ResumeHook, stop: () => void }>>} */
 const EXTERNAL_WAIT_HOOKS = new WeakMap();
 
 /**
@@ -2421,6 +2353,9 @@ export function bindExternalWaitHooks({
   /** @type {Map<string, () => void>} */
   const subscriptions = new Map();
   const binding = {
+    async onRecordChanged() {
+      await refreshWorkerWaitReasons(workspace);
+    },
     /** @param {import('./external-wait/store.js').WaitRecord} record */
     async onCompletion(record) {
       if (record.owner.kind === 'session') {
@@ -2453,6 +2388,7 @@ export function bindExternalWaitHooks({
           if (result.ok || result.reason !== 'origin_running') {
             subscriptions.get(record.wait_id)?.();
             subscriptions.delete(record.wait_id);
+            await binding.onRecordChanged();
           }
         } finally {
           busy = false;
@@ -2494,6 +2430,9 @@ export function bindExternalWaitHooks({
   bindings.set(workspace, binding);
   const by_workspace = bindings;
   runtime.setExternalWaitHooks({
+    onRecordChanged: async (ws) => {
+      await by_workspace.get(ws)?.onRecordChanged();
+    },
     onCompletion: async (ws, record) => {
       await by_workspace.get(ws)?.onCompletion(record);
     },
@@ -3460,140 +3399,6 @@ export async function probeProviderNow(workspace_root, input) {
   return { ok: true, armed: fired.armed };
 }
 
-/** @typedef {{ ok: boolean, outcome: 'settled'|'still_waiting'|'skipped'|'running'|'error', summary: string }} ExternalWaitCheckResult */
-
-/**
- * Run the installed monitor once; the deadline releases the reply, not the process.
- *
- * @param {{ spawn?: typeof spawn, readState?: typeof workerWaitState, refresh?: typeof refreshWorkerWaitReasons }} [deps]
- */
-export function createExternalWaitCheckNow(deps = {}) {
-  const spawnMonitor = deps.spawn || spawn;
-  const readState = deps.readState || workerWaitState;
-  const refresh = deps.refresh || refreshWorkerWaitReasons;
-  /** @type {Set<string>} */
-  const in_flight = new Set();
-
-  /**
-   * @param {string} workspace_root
-   * @param {{ watch_id: string, since: number }} input
-   * @returns {Promise<ExternalWaitCheckResult>}
-   */
-  return async function checkNow(workspace_root, input) {
-    const key = keyFor(workspace_root);
-    const before = readState(key).external_waits.find(
-      (row) => row.root_dir === key && row.watch_id === input.watch_id
-    );
-    if (!before || before.last_observed_at !== input.since) {
-      return {
-        ok: false,
-        outcome: 'skipped',
-        summary: '관측 상태가 바뀌었습니다 — 다시 확인하세요'
-      };
-    }
-    if (in_flight.has(key)) {
-      return { ok: false, outcome: 'skipped', summary: '이미 실행 중' };
-    }
-    in_flight.add(key);
-    const before_stage = before.stage;
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        resolve({
-          ok: true,
-          outcome: 'running',
-          summary: '관측기가 계속 실행 중입니다'
-        });
-      }, 360_000);
-      let stdout = '';
-      let stderr = '';
-      let finished = false;
-
-      /** @param {Error|null} error */
-      async function finish(error) {
-        if (finished) {
-          return;
-        }
-        finished = true;
-        /** @type {ExternalWaitCheckResult} */
-        let result;
-        try {
-          await refresh(key);
-          if (error) {
-            throw error;
-          }
-          const receipt = JSON.parse(stdout);
-          if (receipt.skipped === true) {
-            result = { ok: true, outcome: 'skipped', summary: '이미 실행 중' };
-          } else {
-            if (
-              !Number.isInteger(receipt.summary?.completed) ||
-              receipt.summary.completed < 0
-            ) {
-              throw new Error('관측기 응답 형식이 올바르지 않습니다');
-            }
-            const after = readState(key).external_waits.find(
-              (row) => row.root_dir === key && row.watch_id === input.watch_id
-            );
-            const settled =
-              receipt.summary.completed > 0 &&
-              before_stage !== 'complete' &&
-              after?.stage === 'complete';
-            result = {
-              ok: true,
-              outcome: settled ? 'settled' : 'still_waiting',
-              summary: settled
-                ? '대기 조건이 해제되었습니다'
-                : '확인했습니다 — 아직 대기 중입니다'
-            };
-          }
-        } catch (err) {
-          result = {
-            ok: false,
-            outcome: 'error',
-            summary:
-              stderr.split(/\r?\n/, 1)[0] ||
-              String(err instanceof Error ? err.message : err).split(
-                /\r?\n/,
-                1
-              )[0]
-          };
-        } finally {
-          clearTimeout(timer);
-          in_flight.delete(key);
-        }
-        resolve(result);
-      }
-
-      try {
-        const child = spawnMonitor('bead-job-monitor', ['tick'], {
-          cwd: key,
-          shell: false,
-          windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe']
-        });
-        child.stdout?.on('data', (chunk) => {
-          stdout += chunk.toString();
-        });
-        child.stderr?.on('data', (chunk) => {
-          stderr += chunk.toString();
-        });
-        child.once('error', (error) => {
-          void finish(error);
-        });
-        child.once('close', (code) => {
-          void finish(
-            code === 0 ? null : new Error(`관측기 종료 코드: ${code}`)
-          );
-        });
-      } catch (err) {
-        void finish(err instanceof Error ? err : new Error(String(err)));
-      }
-    });
-  };
-}
-
-export const checkWorkerExternalWaitNow = createExternalWaitCheckNow();
-
 /**
  * Acknowledge one FAILED RepoOperation row (UI-q0uy §4.6-2). The row stays
  * failed and auditable; only the 해결 필요 tally and its action buttons drop it.
@@ -3865,10 +3670,14 @@ export function workerMergeQueueState(workspace_root) {
  * @param {string} workspace_root
  */
 export function workerWaitState(workspace_root) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  return att?.waitJudge
-    ? att.waitJudge.get()
-    : { wait_reasons: [], external_waits: [] };
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  return {
+    wait_reasons: att?.waitJudge ? att.waitJudge.get().wait_reasons : [],
+    external_waits: getWorkerRuntime()
+      .externalWaitStore.list(key)
+      .map(projectExternalWait)
+  };
 }
 
 /**
@@ -4138,10 +3947,6 @@ export function __resetWorkerAttachmentsForTest() {
     }
   }
   ATTACHMENTS.clear();
-  for (const collector of wait_collectors.values()) {
-    collector.clear();
-  }
-  wait_collectors.clear();
   ATTACHMENT_STARTUPS.clear();
   __resetRecordMigrationPendingForTest();
   auto_advance_restore_controller = null;

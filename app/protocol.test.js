@@ -22,95 +22,68 @@ describe('protocol', () => {
     expect(isRequest(request)).toBe(true);
     expect(MESSAGE_TYPES).toContain('set-worker-url-common');
   });
-  test('accepts the external wait check-now request', () => {
-    const payload = { root_dir: '/repo', watch_id: 'watch-1', since: 123 };
+  test.each(
+    /** @type {const} */ ([
+      'external_wait_check',
+      'external_wait_stop',
+      'external_wait_resume'
+    ])
+  )('accepts %s operations', (op) => {
+    const payload = { root_dir: '/repo', wait_id: 'w-0123456789ab' };
 
-    const request = makeRequest('worker-external-wait-check-now', payload);
+    const request = makeRequest(op, payload);
 
     expect(isRequest(request)).toBe(true);
-    expect(MESSAGE_TYPES).toContain('worker-external-wait-check-now');
+    expect(MESSAGE_TYPES).toContain(op);
     expect(request.payload).toEqual(payload);
   });
-  const external_wait = {
-    kind: 'external_wait',
-    root_dir: '/repo',
-    workspace_name: 'repo',
-    gate_id: 'UI-gate',
-    gate_title: '외부 계산',
-    consumer_id: 'UI-consumer',
-    consumer_title: '분석',
-    watch_id: 'a'.repeat(24),
-    job_id: '42',
-    stage: 'active',
-    gate_open: true,
-    recent_complete: false,
-    job_state: '계산 중',
-    previous_job_state: null,
-    monitor_state: '자동 확인 중',
-    monitor_reason: null,
-    overdue: false,
-    last_observed_at: 1,
-    next_observation_at: 2,
-    completed_at: null,
-    recovery_needed: false
-  };
 
-  test('accepts the complete safe external wait projection', () => {
-    expect(isExternalWaitObservation(external_wait)).toBe(true);
-  });
-
-  test('rejects producer-only external wait fields', () => {
-    expect(
-      isExternalWaitObservation({ ...external_wait, log_path: '/tmp/a.log' })
-    ).toBe(false);
-  });
-
-  // The allowlist is exact, so a field the attach collector retains but this
-  // Set does not name drops the WHOLE row and both tabs render no external
-  // wait at all — silently, because every existing test feeds hand-built rows
-  // rather than the collector's own shape (UI-n99w).
-  test('accepts every judgment material the attach collector retains', () => {
-    const collected = {
-      ...external_wait,
-      interval_seconds: 900,
-      ssh_host: 'wallace',
+  /**
+   * @param {Record<string, any>} [patch]
+   * @returns {any}
+   */
+  function externalWait(patch = {}) {
+    return {
+      wait_id: 'w-0123456789ab',
+      root_dir: '/repo',
+      bead_id: 'A-1',
+      owner_kind: 'worker',
+      stage: 'detached',
+      budget: { turns_total: 3, turns_used: 3 },
+      registered_at: '2026-09-21T00:00:00Z',
+      next_observation_at: '2026-09-21T03:14:00Z',
       error_count: 0,
-      notify: { on_complete: 'discord' },
-      registered_at: 1,
-      terminal_recorded_at: null,
-      service_down: true,
-      collected_at: 3,
-      stale: false
+      last_error: null,
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '42',
+          submitted_at: '2026-09-21T00:00:00Z',
+          log_path: '/logs/job.log',
+          state: 'RUNNING',
+          observed_at: '2026-09-21T03:12:00Z',
+          terminal: null
+        }
+      ],
+      completion: null,
+      resume: null,
+      ...patch
     };
+  }
 
-    const accepted = isExternalWaitObservation(collected);
-
-    expect(accepted).toBe(true);
+  test('accepts the public record projection', () => {
+    expect(isExternalWaitObservation(externalWait())).toBe(true);
   });
-
-  test('rejects a judgment material carrying the wrong type', () => {
-    expect(isExternalWaitObservation({ ...external_wait, ssh_host: 42 })).toBe(
-      false
-    );
-  });
-
-  test.each([true, false, null, undefined])(
-    'accepts structured service state %s',
-    (service_down) => {
-      expect(
-        isExternalWaitObservation({ ...external_wait, service_down })
-      ).toBe(true);
-    }
-  );
 
   test.each([
-    { service_down: 'true' },
-    { registered_at: '2026-09-14T19:14:06Z' },
-    { terminal_recorded_at: '2026-09-15T00:10:00Z' }
-  ])('rejects unnormalized observation material %j', (fields) => {
-    expect(isExternalWaitObservation({ ...external_wait, ...fields })).toBe(
-      false
-    );
+    { owner: { session_ref: 'secret' } },
+    { worktree: '/private' },
+    { stage: 'active' },
+    { error_count: '3' },
+    { wait_id: 'bad' }
+  ])('rejects private or malformed fields %j', (patch) => {
+    expect(isExternalWaitObservation(externalWait(patch))).toBe(false);
   });
 
   test('version and message types', () => {

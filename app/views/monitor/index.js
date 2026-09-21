@@ -326,63 +326,52 @@ export function createMonitorView(mount_element, options) {
   const transport = options.transport;
 
   /** @type {Set<string>} */
-  const external_checks = new Set();
+  const external_actions = new Set();
 
-  /** Keep replacement buttons disabled when a snapshot redraws the view. */
+  /** Keep replacement buttons disabled while an operation is pending. */
   function syncExternalChecks() {
     for (const button of Array.from(
-      mount_element.querySelectorAll('[data-external-check-now]')
+      mount_element.querySelectorAll('[data-external-wait-op]')
     )) {
       const element = /** @type {HTMLButtonElement} */ (button);
-      element.disabled = external_checks.has(element.dataset.rootDir || '');
+      element.disabled = external_actions.has(
+        `${element.dataset.rootDir}:${element.dataset.waitId}`
+      );
     }
   }
 
   /** @param {HTMLButtonElement} button */
-  async function checkExternalWaitNow(button) {
+  async function applyExternalWaitAction(button) {
     const root_dir = button.dataset.rootDir || '';
-    const watch_id = button.dataset.externalCheckNow || '';
-    const since = Number(button.dataset.since);
-    if (
-      !transport ||
-      !root_dir ||
-      !watch_id ||
-      !button.dataset.since ||
-      !Number.isFinite(since) ||
-      external_checks.has(root_dir)
-    ) {
+    const wait_id = button.dataset.waitId || '';
+    const op = button.dataset.externalWaitOp || '';
+    const key = `${root_dir}:${wait_id}`;
+    if (!transport || !root_dir || !wait_id || external_actions.has(key)) {
       return;
     }
-    external_checks.add(root_dir);
+    external_actions.add(key);
     syncExternalChecks();
     try {
-      const res = /** @type {any} */ (
-        await transport('worker-external-wait-check-now', {
-          root_dir,
-          watch_id,
-          since
-        })
-      );
+      const res = await transport(op, {
+        root_dir,
+        wait_id,
+        ...(button.dataset.mode ? { mode: button.dataset.mode } : {}),
+        ...(button.dataset.beadId ? { bead_id: button.dataset.beadId } : {})
+      });
       if (res?.queue) {
         exec_adopted.set(root_dir, res.queue);
       }
-      const summaries = {
-        settled: '대기 조건이 해제되었습니다',
-        still_waiting: '확인했습니다 — 아직 대기 중입니다',
-        skipped: '이미 실행 중',
-        running: '관측기가 계속 실행 중입니다',
-        error: '관측기 실행에 실패했습니다'
-      };
-      const outcome = /** @type {keyof typeof summaries} */ (res?.outcome);
       showToast(
-        res?.summary || summaries[outcome] || summaries.error,
-        res?.ok === false || outcome === 'error' ? 'error' : 'success',
+        res?.ok === false
+          ? '외부 작업 요청에 실패했습니다'
+          : '외부 작업 상태를 갱신했습니다',
+        res?.ok === false ? 'error' : 'success',
         4000
       );
     } catch {
-      showToast('관측기 실행 요청에 실패했습니다', 'error', 4000);
+      showToast('외부 작업 요청에 실패했습니다', 'error', 4000);
     } finally {
-      external_checks.delete(root_dir);
+      external_actions.delete(key);
       syncExternalChecks();
       doRender();
     }
@@ -1214,18 +1203,7 @@ export function createMonitorView(mount_element, options) {
    * @returns {import('lit-html').TemplateResult}
    */
   function waitBodyTemplate() {
-    const open_external = lanes.external_waits.filter(
-      (item) => item.recent_complete !== true
-    );
-    const complete_external = lanes.external_waits.filter(
-      (item) => item.recent_complete === true
-    );
     return waitBody({
-      external: {
-        rows: open_external.map((item) => miniRow(item)),
-        completed: complete_external.map((item) => miniRow(item)),
-        count: open_external.length
-      },
       parallel: {
         rows: lanes.parallel_rows.map((item, index) =>
           parallelRow(item, index)
@@ -1276,8 +1254,7 @@ export function createMonitorView(mount_element, options) {
                 // 타일은 `kind`를 싣지 않는다. `updated_at`도 세션 타일만
                 // 받는다 — Worker 타일에 실으면 없던 시각 메타 줄이 생긴다.
                 kind: item.kind === 'session' ? 'session' : undefined,
-                external_wait_count: item.external_wait_count,
-                external_waits: item.external_waits,
+                external_wait: item.external_wait,
                 wait_reasons: item.wait_reasons,
                 ...(item.kind === 'session'
                   ? {
@@ -1373,9 +1350,6 @@ export function createMonitorView(mount_element, options) {
    * @returns {import('lit-html').TemplateResult}
    */
   function monitorTemplate(now) {
-    const open_external_count = lanes.external_waits.filter(
-      (item) => item.gate_open === true
-    ).length;
     /** @type {Record<string, LaneItem[]>} */
     const by_lane = {
       runnable: lanes.runnable,
@@ -1400,9 +1374,7 @@ export function createMonitorView(mount_element, options) {
               ? runnableBody()
               : undefined
           : meta.lane === 'queue'
-            ? lanes.queue_groups.length > 0 ||
-              lanes.parallel_rows.length > 0 ||
-              lanes.external_waits.length > 0
+            ? lanes.queue_groups.length > 0 || lanes.parallel_rows.length > 0
               ? waitBodyTemplate()
               : undefined
             : meta.lane === 'running'
@@ -1413,10 +1385,7 @@ export function createMonitorView(mount_element, options) {
                   // 사실이 레인마다 다르게 보인다.
                   html`${items.map((item) => miniRow(withOverlaps(item)))}`
                 : undefined;
-      const display_count =
-        meta.lane === 'queue'
-          ? items.length + open_external_count
-          : items.length;
+      const display_count = meta.lane === 'queue' ? items.length : items.length;
       return paneTemplate({
         id: `monitor-${meta.lane}`,
         lane: meta.pane,
@@ -2441,11 +2410,11 @@ export function createMonitorView(mount_element, options) {
     }
 
     const external_check = /** @type {HTMLButtonElement|null} */ (
-      target?.closest?.('[data-external-check-now]')
+      target?.closest?.('[data-external-wait-op]')
     );
     if (external_check) {
       ev.preventDefault();
-      void checkExternalWaitNow(external_check);
+      void applyExternalWaitAction(external_check);
       return;
     }
     const external_open = /** @type {HTMLElement|null} */ (
@@ -2462,7 +2431,7 @@ export function createMonitorView(mount_element, options) {
     if (target.closest('.external-wait-summary > summary')) {
       return;
     }
-    if (target.closest('[data-external-check-now]')) {
+    if (target.closest('[data-external-wait-op]')) {
       return;
     }
 

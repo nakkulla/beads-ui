@@ -96,6 +96,43 @@ test('rejects a mismatched metadata set readback', async () => {
   });
 });
 
+test('clears a matching orphan key without a wait record', async () => {
+  const runtime = createWorkerRuntime();
+  metadata.readMetadata
+    .mockResolvedValueOnce('w-0123456789ab')
+    .mockResolvedValueOnce(null);
+
+  const result = await runtime.externalWait.stop(
+    WS,
+    'w-0123456789ab',
+    'UI-wait'
+  );
+
+  expect(result).toMatchObject({
+    ok: true,
+    stage: 'stopped',
+    bead_id: 'UI-wait'
+  });
+  expect(metadata.unsetMetadata).toHaveBeenCalledExactlyOnceWith(
+    'UI-wait',
+    'external_wait'
+  );
+});
+
+test('preserves an orphan key that changed after the card was drawn', async () => {
+  const runtime = createWorkerRuntime();
+  metadata.readMetadata.mockResolvedValue('w-ffffffffffff');
+
+  const result = await runtime.externalWait.stop(
+    WS,
+    'w-0123456789ab',
+    'UI-wait'
+  );
+
+  expect(result).toMatchObject({ status: 409, error: 'wait_changed' });
+  expect(metadata.unsetMetadata).not.toHaveBeenCalled();
+});
+
 test('rejects a metadata unset whose readback still contains the key', async () => {
   const runtime = createWorkerRuntime();
   const record = runtime.externalWaitStore.insert(WS, externalWaitInput());
@@ -139,13 +176,14 @@ test('swaps completion and resume hooks on the existing runtime instances', asyn
   const runtime = createWorkerRuntime();
   const oldCompletion = vi.fn();
   const onCompletion = vi.fn();
+  const onRecordChanged = vi.fn();
   const resume = vi.fn(async () => ({
     ok: /** @type {const} */ (true),
     attempt_id: 'next'
   }));
   const original_service = runtime.externalWait;
   runtime.setExternalWaitHooks({ onCompletion: oldCompletion });
-  runtime.setExternalWaitHooks({ onCompletion, resume });
+  runtime.setExternalWaitHooks({ onCompletion, onRecordChanged, resume });
   const record = runtime.externalWaitStore.insert(WS, {
     ...externalWaitInput(),
     stage: 'detached',
@@ -167,6 +205,17 @@ test('swaps completion and resume hooks on the existing runtime instances', asyn
     expect.objectContaining({ stage: 'completing' })
   );
   expect(result).toEqual({ ok: true, attempt_id: 'next' });
+  expect(onRecordChanged).toHaveBeenLastCalledWith(
+    WS,
+    expect.objectContaining({ stage: 'completing' })
+  );
+  onRecordChanged.mockClear();
+  metadata.readMetadata.mockResolvedValue(null);
+  await runtime.externalWait.stop(WS, record.wait_id);
+  expect(onRecordChanged).toHaveBeenCalledExactlyOnceWith(
+    WS,
+    expect.objectContaining({ stage: 'stopped' })
+  );
 });
 
 test('starts the observer interval and stops it on singleton reset', () => {

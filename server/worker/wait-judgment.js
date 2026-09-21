@@ -7,6 +7,7 @@ import {
   RECOVERY_WAIT_SENTENCES
 } from '../../app/utils/failure-sentences.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
+import { OBSERVATION } from './external-wait/contract.js';
 import { USAGE_REARM_CAP } from './provider-health.js';
 
 /** All display/notification thresholds live here (UI-n99w §5.2). */
@@ -21,13 +22,15 @@ export const WAIT_THRESHOLDS = Object.freeze({
 
 /**
  * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'base_moved'|'provider_hold'|'queue_hold'|'awaiting_user'|'retry_wait'|'stale_work'|'recovery'} WaitKind
- * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'disposition'|'recovery_confirm'} VerdictCode
+ * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'disposition'|'recovery_confirm'|'resume_failed'|'wait_key_missing'|'wait_record_missing'} VerdictCode
  * @typedef {{ code: VerdictCode, message: string }} VerdictReason
  * @typedef {Object} WaitReason
  * @property {WaitKind} kind
  * @property {{ bead_id: string, root_dir: string }} subject
  * @property {string} headline
  * @property {string} release
+ * @property {string} [error]
+ * @property {number} [completed_at]
  * @property {number} [since]
  * @property {number} [next_check_at]
  * @property {number} [resets_at]
@@ -51,6 +54,9 @@ export const WAIT_THRESHOLDS = Object.freeze({
 
 /** @type {Record<VerdictCode, string>} */
 const VERDICT_MESSAGES = {
+  resume_failed: '재개 실패',
+  wait_key_missing: '키 없음',
+  wait_record_missing: '대기 레코드 없음',
   check_overdue: '다음 확인 시각에서 한 주기가 지나도 관측이 갱신되지 않음',
   settle_overdue: '종료 확인 후 두 주기가 지나도 대기가 해제되지 않음',
   job_failed: '작업이 실패로 끝나 복구 판단이 필요함',
@@ -155,13 +161,14 @@ function judge(result, verdict, code) {
 
 /**
  * @param {WaitReason} result
- * @param {{ since?: unknown, next_check_at?: unknown, resets_at?: unknown }} clocks
+ * @param {{ since?: unknown, next_check_at?: unknown, resets_at?: unknown, completed_at?: unknown }} clocks
  */
 function addClocks(result, clocks) {
   for (const field of /** @type {const} */ ([
     'since',
     'next_check_at',
-    'resets_at'
+    'resets_at',
+    'completed_at'
   ])) {
     const at = timestamp(clocks[field]);
     if (at !== undefined) {
@@ -171,23 +178,38 @@ function addClocks(result, clocks) {
 }
 
 /**
- * Compose the single external-job sentence from observed fields (UI-8gem
- * §7.3·§10.1). `monitor_reason` wins over `monitor_state`, and the idle
- * `자동 확인 중` state says nothing the row does not already say.
+ * Compose the external-job headline from public record fields.
  *
  * @param {Record<string, any>|null|undefined} row
+ * @param {number} [now]
  * @returns {string}
  */
-export function externalJobHeadline(row) {
-  const job = [line(row?.ssh_host), row?.job_id ? `작업 ${row.job_id}` : '']
+export function externalJobHeadline(row, now) {
+  const jobs = Array.isArray(row?.jobs) ? row.jobs : [];
+  if (jobs.length > 1) {
+    const completed = jobs.filter((job) => job.terminal).length;
+    return `잡 ${jobs.length}건 · 완료 ${completed} · 실행 ${jobs.length - completed}`;
+  }
+  const job = jobs[0];
+  if (!job) {
+    return '';
+  }
+  const submitted = timestamp(job.submitted_at);
+  const minutes =
+    now !== undefined && submitted !== undefined
+      ? Math.max(0, Math.floor((now - submitted) / 60_000))
+      : null;
+  return [
+    [line(job.ssh_host), `작업 ${job.job_id ?? job.pid}`]
+      .filter(Boolean)
+      .join(' '),
+    line(job.state),
+    minutes === null
+      ? ''
+      : `경과 ${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`
+  ]
     .filter(Boolean)
-    .join(' ');
-  const monitor_reason = line(row?.monitor_reason);
-  const monitor_state = line(row?.monitor_state);
-  const tail =
-    monitor_reason ||
-    (monitor_state && monitor_state !== '자동 확인 중' ? monitor_state : '');
-  return [job, line(row?.job_state), tail].filter(Boolean).join(' · ');
+    .join(' · ');
 }
 
 /**
@@ -202,7 +224,6 @@ export function judgeWaitReasons(input) {
   const wait_reasons = [];
   /** @type {Record<string, number>} */
   const settle_observed_at = {};
-  const prior = input.observed_at || {};
   const blocked_by = input.bead_blocked_by || {};
   const facts = input.blocker_facts || {};
   const foreign = input.foreign_readback || {};
@@ -234,85 +255,135 @@ export function judgeWaitReasons(input) {
   );
   const subject_ids = new Set([...pending_ids, ...attempts.keys()]);
 
-  const seen_gates = new Set();
-  for (const row of input.external_waits || []) {
-    if (
-      row.root_dir !== root_dir ||
-      !row.consumer_id ||
-      !row.gate_id ||
-      !row.watch_id ||
-      row.gate_open !== true ||
-      seen_gates.has(row.gate_id)
-    ) {
-      continue;
-    }
-    seen_gates.add(row.gate_id);
-    const interval =
-      typeof row.interval_seconds === 'number' && row.interval_seconds > 0
-        ? row.interval_seconds * 1000
-        : WAIT_THRESHOLDS.interval_ms;
+  const live_rows = (input.external_waits || []).filter(
+    (row) =>
+      row.root_dir === root_dir &&
+      row.bead_id &&
+      ['hold', 'detached', 'completing'].includes(row.stage)
+  );
+  for (const row of live_rows) {
+    const jobs = Array.isArray(row.jobs) ? row.jobs : [];
     const result = reason(
       'external_job',
-      row.consumer_id,
+      row.bead_id,
       root_dir,
-      externalJobHeadline(row),
-      `${interval / 60_000}분마다 자동 확인 · 종료 확인되면 대기 자동 해제`
+      externalJobHeadline(row, now),
+      row.stage === 'completing'
+        ? row.owner_kind === 'worker'
+          ? '재개 중'
+          : '완료 · [이어하기]를 누르면 세션을 fork해 이어간다'
+        : '완료되면 같은 세션을 이어간다'
     );
-    if (row.notify?.on_complete === 'discord') {
-      result.notify_plan.on_complete = 'discord';
-      result.release += ' · 완료 시 Discord 알림';
+    result.notify_plan.on_complete =
+      row.owner_kind === 'session' ? 'discord' : 'none';
+    if (row.error_count > 0) {
+      result.error = `관찰 오류 ${row.error_count}회 · ${line(row.last_error)}`;
     }
-    result.targets.push({ id: row.gate_id, kind: 'gate' });
-    if (row.watch_id && timestamp(row.last_observed_at) !== undefined) {
+    const payload = { root_dir, wait_id: row.wait_id };
+    if (row.stage === 'hold' || row.stage === 'detached') {
       result.actions.push({
-        op: 'monitor_tick_now',
+        op: 'external_wait_check',
         label: '[지금 확인]',
-        payload: {
-          root_dir,
-          watch_id: row.watch_id,
-          since: row.last_observed_at
-        }
+        payload
       });
+    }
+    result.actions.push({
+      op: 'external_wait_stop',
+      label: '[관찰 중단]',
+      payload
+    });
+    if (
+      row.stage === 'completing' &&
+      (row.owner_kind === 'session' || row.resume?.error)
+    ) {
+      if (!row.resume || row.resume.error) {
+        result.actions.push({
+          op: 'external_wait_resume',
+          label: '[이어하기]',
+          payload: { ...payload, mode: 'fork' }
+        });
+      }
+      if (row.resume?.error) {
+        result.actions.push({
+          op: 'external_wait_resume',
+          label: '[새 세션으로]',
+          payload: { ...payload, mode: 'fresh' }
+        });
+      }
     }
     addClocks(result, {
       since: row.registered_at,
-      next_check_at: row.next_observation_at
+      next_check_at: row.completion ? undefined : row.next_observation_at,
+      completed_at: row.completion?.completed_at
     });
+    const intervals = jobs
+      .filter((job) => !job.terminal)
+      .map((job) =>
+        job.adapter === 'slurm'
+          ? OBSERVATION.slurm_interval_seconds
+          : OBSERVATION.process_interval_seconds
+      );
+    const interval =
+      row.error_count > 0
+        ? OBSERVATION.error_backoff_seconds[
+            Math.min(
+              row.error_count - 1,
+              OBSERVATION.error_backoff_seconds.length - 1
+            )
+          ]
+        : intervals.length
+          ? Math.min(...intervals)
+          : OBSERVATION.slurm_interval_seconds;
     if (
-      elapsed(
-        row.next_observation_at,
-        interval * WAIT_THRESHOLDS.check_cycles,
-        now
-      )
+      ['hold', 'detached'].includes(row.stage) &&
+      now >
+        (timestamp(row.next_observation_at) ?? Infinity) + 2 * interval * 1000
     ) {
       judge(result, 'overdue', 'check_overdue');
     }
-    if (['terminal_recorded', 'gate_noted'].includes(row.stage)) {
-      const key = `${row.gate_id}:${row.watch_id || ''}`;
-      const since =
-        timestamp(row.terminal_recorded_at) ??
-        timestamp(row.completed_at) ??
-        timestamp(row.last_observed_at) ??
-        timestamp(prior.settle_observed_at?.[key]) ??
-        now;
-      settle_observed_at[key] = since;
-      addClocks(result, { since });
-      if (elapsed(since, interval * WAIT_THRESHOLDS.settle_cycles, now)) {
-        judge(result, 'overdue', 'settle_overdue');
-      }
-    }
-    if (row.stage === 'stopped') {
-      judge(result, 'action_required', 'monitor_stopped');
-    }
-    if (row.service_down === true) {
-      judge(result, 'action_required', 'service_down');
-    }
     if (row.error_count >= WAIT_THRESHOLDS.observation_errors) {
-      judge(result, 'action_required', 'observe_failing');
+      judge(result, 'overdue', 'observe_failing');
     }
-    if (row.recovery_needed === true) {
-      judge(result, 'action_required', 'job_failed');
+    if (row.stage === 'completing' && row.resume?.error) {
+      judge(result, 'action_required', 'resume_failed');
+      result.verdict_reason = {
+        code: 'resume_failed',
+        message: `재개 실패 · ${line(row.resume.error)}`
+      };
     }
+    if (
+      ['detached', 'completing'].includes(row.stage) &&
+      !Object.hasOwn(facts[row.bead_id] || {}, 'external_wait')
+    ) {
+      judge(result, 'action_required', 'wait_key_missing');
+    } else if (
+      ['detached', 'completing'].includes(row.stage) &&
+      facts[row.bead_id].external_wait !== row.wait_id
+    ) {
+      judge(result, 'action_required', 'wait_record_missing');
+    }
+    wait_reasons.push(result);
+  }
+  for (const [bead_id, fact] of Object.entries(facts)) {
+    if (
+      !Object.hasOwn(fact, 'external_wait') ||
+      live_rows.some((row) => row.bead_id === bead_id)
+    ) {
+      continue;
+    }
+    const result = reason(
+      'external_job',
+      bead_id,
+      root_dir,
+      '',
+      '관찰 중단으로 대기 키를 해제한다'
+    );
+    judge(result, 'action_required', 'wait_record_missing');
+    result.actions.push({
+      op: 'external_wait_stop',
+      label: '[관찰 중단]',
+      payload: { root_dir, wait_id: fact.external_wait, bead_id }
+    });
     wait_reasons.push(result);
   }
 

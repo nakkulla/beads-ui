@@ -250,6 +250,10 @@ export function createExternalWaitObserver({
     /** @param {RecordCallback|undefined} callback */
     setOnCompletion(callback) {
       onCompletion = callback;
+    },
+    /** @param {RecordCallback|undefined} callback */
+    setOnRecordChanged(callback) {
+      onRecordChanged = callback;
     }
   };
 }

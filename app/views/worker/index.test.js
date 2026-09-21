@@ -19,175 +19,112 @@ import {
  * evidence predicate requires before a spec counts as PUBLISHED (UI-vb7u §2). */
 const RECEIPT = 'codex@' + 'a'.repeat(40);
 
-test('reveals the external gate from the summary when the wait pane is collapsed', () => {
-  const row = {
-    kind: 'external_wait',
+/**
+ * @param {Record<string, any>} [patch]
+ * @returns {any}
+ */
+function externalWait(patch = {}) {
+  return {
+    wait_id: 'w-0123456789ab',
     root_dir: '/repo',
-    workspace_name: 'repo',
-    gate_id: 'G-1',
-    gate_title: '계산 관측',
-    consumer_id: 'A-1',
-    consumer_title: '분석',
-    watch_id: 'a'.repeat(24),
-    job_id: '42',
-    stage: 'active',
-    gate_open: true,
-    recent_complete: false,
-    job_state: '계산 중',
-    previous_job_state: null,
-    monitor_state: '자동 확인 중',
-    monitor_reason: null,
-    overdue: false,
-    last_observed_at: 123,
-    next_observation_at: 456,
-    completed_at: null,
-    recovery_needed: false
+    bead_id: 'A-1',
+    owner_kind: 'worker',
+    stage: 'detached',
+    budget: { turns_total: 3, turns_used: 3 },
+    registered_at: '2026-09-21T00:00:00Z',
+    next_observation_at: '2026-09-21T03:14:00Z',
+    error_count: 0,
+    last_error: null,
+    jobs: [
+      {
+        adapter: 'slurm',
+        ssh_host: 'wallace',
+        job_id: '42',
+        submitted_at: '2026-09-21T00:00:00Z',
+        log_path: '/logs/job.log',
+        state: 'RUNNING',
+        observed_at: '2026-09-21T03:12:00Z',
+        terminal: null
+      }
+    ],
+    completion: null,
+    resume: null,
+    ...patch
   };
+}
+
+test.each(
+  /** @type {const} */ ([
+    ['external_wait_check', undefined],
+    ['external_wait_stop', undefined],
+    ['external_wait_resume', 'fork'],
+    ['external_wait_resume', 'fresh']
+  ])
+)('sends %s with the consumer record coordinates', async (op, mode) => {
+  const row = externalWait();
   const reason = {
     kind: 'external_job',
     subject: { bead_id: 'A-1', root_dir: '/repo' },
-    headline: '계산 종료 대기',
-    release: '관측 후 자동 해제',
+    headline: 'wallace 작업 42 · RUNNING',
+    release: '완료되면 같은 세션을 이어간다',
     verdict: 'normal',
-    targets: [{ id: 'G-1', kind: 'gate' }],
-    actions: []
+    targets: [],
+    actions: [
+      {
+        op,
+        label: '[지금 확인]',
+        payload: {
+          root_dir: '/repo',
+          wait_id: row.wait_id,
+          ...(mode ? { mode } : {})
+        }
+      }
+    ]
   };
-  window.localStorage.setItem(
-    'beads-ui.worker.lane-collapsed',
-    JSON.stringify({ lanes: { queue: true }, areas: {} })
+  /** @type {(value: any) => void} */
+  let resolveAction = () => {};
+  const pending = new Promise((resolve) => {
+    resolveAction = resolve;
+  });
+  const transport = vi.fn((/** @type {string} */ type) =>
+    type === op ? pending : Promise.resolve({})
   );
-  const original_scroll = HTMLElement.prototype.scrollIntoView;
-  const scroll = vi.fn();
-  HTMLElement.prototype.scrollIntoView = scroll;
   document.body.innerHTML = '<div id="m"></div>';
   const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
   const queueStore = createWorkerQueueStore();
-  queueStore.set(queueOf({ external_waits: [row], wait_reasons: [reason] }));
+  queueStore.set(
+    queueOf({
+      queue: [{ bead_id: 'A-1' }],
+      external_waits: [row],
+      wait_reasons: [reason]
+    })
+  );
   const view = createWorkerView(mount, {
     queueStore,
-    getWorkspacePath: () => '/repo',
-    transport: vi.fn()
+    transport,
+    getWorkspacePath: () => '/repo'
   });
-  expect(mount.querySelector('.worker-mini[data-bead-id="A-1"]')).toBeNull();
-  expect(mount.querySelector('.worker-mini[data-bead-id="G-1"]')).toBeNull();
+  const button = /** @type {HTMLButtonElement} */ (
+    mount.querySelector('[data-external-wait-op]')
+  );
 
-  try {
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.wait-summary__item')
-    ).click();
+  button.click();
 
-    const gate = mount.querySelector('.worker-mini[data-bead-id="G-1"]');
-    expect(gate?.classList.contains('wait-reason--highlight')).toBe(true);
-    expect(gate?.closest('details')?.open).toBe(true);
-    expect(scroll).toHaveBeenCalled();
-    expect(
-      JSON.parse(
-        window.localStorage.getItem('beads-ui.worker.lane-collapsed') || '{}'
-      ).lanes.queue
-    ).toBe(false);
-  } finally {
-    view.destroy();
-    HTMLElement.prototype.scrollIntoView = original_scroll;
-  }
+  expect(transport).toHaveBeenCalledWith(op, {
+    root_dir: '/repo',
+    wait_id: row.wait_id,
+    ...(mode ? { mode } : {})
+  });
+  expect(button.disabled).toBe(true);
+  resolveAction({ ok: true });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-external-wait-op]')
+    ).disabled
+  ).toBe(false);
+  view.destroy();
 });
-
-test.each(['settled', 'still_waiting', 'skipped', 'running', 'error'])(
-  'sends external check-now and disables its button until %s arrives',
-  async (outcome) => {
-    const row = {
-      kind: 'external_wait',
-      root_dir: '/repo',
-      workspace_name: 'repo',
-      gate_id: 'G-1',
-      gate_title: '계산 관측',
-      consumer_id: 'A-1',
-      consumer_title: '분석',
-      watch_id: 'a'.repeat(24),
-      job_id: '42',
-      stage: 'active',
-      gate_open: true,
-      recent_complete: false,
-      job_state: '계산 중',
-      previous_job_state: null,
-      monitor_state: '자동 확인 중',
-      monitor_reason: null,
-      overdue: false,
-      last_observed_at: 123,
-      next_observation_at: 456,
-      completed_at: null,
-      recovery_needed: false
-    };
-    const reason = {
-      kind: 'external_job',
-      subject: { bead_id: 'A-1', root_dir: '/repo' },
-      headline: '계산 종료 대기',
-      release: '관측 후 자동 해제',
-      verdict: 'normal',
-      targets: [{ id: 'G-1', kind: 'gate' }],
-      actions: [
-        {
-          op: 'monitor_tick_now',
-          label: '지금 확인',
-          payload: { root_dir: '/repo', watch_id: 'a'.repeat(24), since: 123 }
-        }
-      ]
-    };
-    /** @type {(value: any) => void} */
-    let resolveCheck = () => {};
-    const pending = new Promise((resolve) => {
-      resolveCheck = resolve;
-    });
-    const transport = vi.fn((/** @type {string} */ type) =>
-      type === 'worker-external-wait-check-now' ? pending : Promise.resolve({})
-    );
-
-    document.body.innerHTML = '<div id="m"></div>';
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(queueOf({ external_waits: [row], wait_reasons: [reason] }));
-    const view = createWorkerView(mount, {
-      queueStore,
-      transport,
-      getWorkspacePath: () => '/repo'
-    });
-
-    const button = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('[data-external-check-now]')
-    );
-
-    button.click();
-
-    expect(transport).toHaveBeenCalledWith('worker-external-wait-check-now', {
-      root_dir: '/repo',
-      watch_id: 'a'.repeat(24),
-      since: 123
-    });
-    expect(button.disabled).toBe(true);
-    queueStore.set(
-      queueOf({ revision: 2, external_waits: [row], wait_reasons: [reason] })
-    );
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        mount.querySelector('[data-external-check-now]')
-      ).disabled
-    ).toBe(true);
-    resolveCheck({
-      ok: outcome !== 'error',
-      outcome,
-      summary: '관측 결과: ' + outcome
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        mount.querySelector('[data-external-check-now]')
-      ).disabled
-    ).toBe(false);
-    expect(document.querySelector('.toast')?.textContent).toBe(
-      '관측 결과: ' + outcome
-    );
-    view.destroy();
-  }
-);
 
 function createTestIssueStores() {
   /** @type {Map<string, any>} */
@@ -595,58 +532,27 @@ describe('views/worker', () => {
     expect(label).toBe(null);
   });
 
-  test('renders external waits and counts only open rows in the wait header', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+  test('counts the consumer once when it has an external wait', () => {
     const queueStore = createWorkerQueueStore();
-    const row = {
-      kind: 'external_wait',
-      root_dir: '/repo',
-      workspace_name: 'repo',
-      gate_id: 'G-1',
-      gate_title: '계산 관측',
-      watch_id: 'a'.repeat(24),
-      gate_open: true,
-      recent_complete: false,
-      job_state: '계산 중',
-      monitor_state: '자동 확인 중',
-      consumer_id: 'A-1',
-      consumer_title: null,
-      job_id: '42',
-      stage: 'active',
-      previous_job_state: null,
-      monitor_reason: null,
-      overdue: false,
-      recovery_needed: false,
-      last_observed_at: 123,
-      next_observation_at: 456,
-      completed_at: null
-    };
     queueStore.set(
       queueOf({
-        external_waits: [
-          row,
-          { ...row, gate_id: 'G-2', gate_open: false, recent_complete: true }
-        ]
+        queue: [{ bead_id: 'A-1' }],
+        external_waits: [externalWait()]
       })
     );
-
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const view = createWorkerView(mount, {
       queueStore,
-      getWorkspacePath: () => '/repo',
-      transport: vi.fn()
+      getWorkspacePath: () => '/repo'
     });
 
-    expect(mount.querySelectorAll('.worker-mini--external-wait')).toHaveLength(
-      2
-    );
     expect(
-      mount.querySelector('.worker-wait__external')?.textContent
-    ).toContain('계산 관측');
+      mount.querySelectorAll('.worker-mini[data-bead-id="A-1"]')
+    ).toHaveLength(1);
     expect(
-      mount
-        .querySelector('#worker-pane-queue .worker-pane__count')
-        ?.textContent?.trim()
+      mount.querySelector('#worker-pane-queue .worker-pane__count')?.textContent
     ).toBe('1');
+    expect(mount.querySelector('[data-lane="external_wait"]')).toBeNull();
     view.destroy();
   });
 

@@ -425,6 +425,30 @@ test.each(['done', 'resumed', 'stopped'])(
   }
 );
 
+test.each(['done', 'resumed', 'stopped'])(
+  'clears a lingering bead key when stopping a %s record',
+  async (stage) => {
+    const record = store.insert(WORKSPACE, {
+      ...input(),
+      stage: /** @type {import('./store.js').Stage} */ (stage)
+    });
+    const keyed = createExternalWaitService({
+      store,
+      observer,
+      bd: { ...bd, readExternalWait: vi.fn(async () => record.wait_id) }
+    });
+
+    const result = await keyed.stop(WORKSPACE, record.wait_id);
+
+    expect(result).toEqual({ ok: true, stage, bead_id: 'UI-test' });
+    expect(bd.unsetExternalWait).toHaveBeenCalledExactlyOnceWith(
+      WORKSPACE,
+      'UI-test'
+    );
+    expect(store.get(WORKSPACE, record.wait_id)?.stage).toBe(stage);
+  }
+);
+
 test('stops observation and unsets the bead key', async () => {
   const record = store.insert(WORKSPACE, input());
 

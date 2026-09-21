@@ -67,7 +67,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createExternalWaitService>} externalWait
  * @property {ReturnType<typeof createExternalWaitStore>} externalWaitStore
  * @property {ReturnType<typeof createExternalWaitObserver>} externalWaitObserver
- * @property {(hooks:{onCompletion?:import('./external-wait/observer.js').RecordCallback, resume?:import('./external-wait/service.js').ResumeHook})=>void} setExternalWaitHooks
+ * @property {(hooks:{onRecordChanged?:import('./external-wait/observer.js').RecordCallback, onCompletion?:import('./external-wait/observer.js').RecordCallback, resume?:import('./external-wait/service.js').ResumeHook})=>void} setExternalWaitHooks
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: typeof MANUAL_MERGE_CONTINUATION }} status
  */
@@ -90,6 +90,16 @@ export function createWorkerRuntime() {
     store: externalWaitStore,
     observer: externalWaitObserver,
     bd: {
+      /**
+       * @param {string} workspace
+       * @param {string} bead_id
+       */
+      readExternalWait(workspace, bead_id) {
+        return externalWaitMetadata(workspace).readMetadata(
+          bead_id,
+          EXTERNAL_WAIT_KEY
+        );
+      },
       /**
        * @param {string} workspace
        * @param {string} bead_id
@@ -296,8 +306,12 @@ export function createWorkerRuntime() {
     externalWait,
     externalWaitStore,
     externalWaitObserver,
-    /** @param {{onCompletion?:import('./external-wait/observer.js').RecordCallback, resume?:import('./external-wait/service.js').ResumeHook}} hooks */
+    /** @param {{onRecordChanged?:import('./external-wait/observer.js').RecordCallback, onCompletion?:import('./external-wait/observer.js').RecordCallback, resume?:import('./external-wait/service.js').ResumeHook}} hooks */
     setExternalWaitHooks(hooks) {
+      if (Object.hasOwn(hooks, 'onRecordChanged')) {
+        externalWaitObserver.setOnRecordChanged(hooks.onRecordChanged);
+        externalWait.setOnRecordChanged(hooks.onRecordChanged);
+      }
       if (Object.hasOwn(hooks, 'onCompletion')) {
         externalWaitObserver.setOnCompletion(hooks.onCompletion);
       }

@@ -742,7 +742,7 @@ describe('workspace snapshot blocks indexes (UI-d13v §3.2)', () => {
         },
         {
           id: 'Analysis-gate-a',
-          title: '외부 계산 101',
+          title: '외부 작업 101',
           issue_type: 'gate',
           await_id: 'a'.repeat(24),
           await_type: 'human',
@@ -750,7 +750,7 @@ describe('workspace snapshot blocks indexes (UI-d13v §3.2)', () => {
         },
         {
           id: 'Analysis-gate-b',
-          title: '외부 계산 202',
+          title: '외부 작업 202',
           issue_type: 'gate',
           await_id: 'b'.repeat(24),
           await_type: 'human',
@@ -766,7 +766,7 @@ describe('workspace snapshot blocks indexes (UI-d13v §3.2)', () => {
 
     expect(
       result.ok && result.snapshot.id_index.get('Analysis-gate-a')?.title
-    ).toBe('외부 계산 101');
+    ).toBe('외부 작업 101');
     expect(result.ok && [...result.snapshot.blocks_out]).toEqual([
       ['Analysis-consumer-a', ['Analysis-gate-a']],
       ['Analysis-consumer-b', ['Analysis-gate-b']]

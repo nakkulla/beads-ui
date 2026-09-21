@@ -51,13 +51,7 @@ vi.mock('../visible-workspaces-store.js', () => ({
 }));
 
 vi.mock('./attach.js', () => ({
-  refreshWorkerExternalPrs: async () => false,
-  // Inert shared wait collector (UI-n99w §6.2): this driver test never
-  // observes external jobs, so collect stays a no-op.
-  workerExternalWaitObservations: {
-    collect: async () => {},
-    get: () => ({ rows: [], collected_at: 0, stale: false })
-  }
+  refreshWorkerExternalPrs: async () => false
 }));
 
 vi.mock('../config.js', () => ({

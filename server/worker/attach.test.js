@@ -54,6 +54,22 @@ const merge_queue_capture = vi.hoisted(() => ({
 }));
 
 describe('external wait hook wiring', () => {
+  test('refreshes only the workspace whose record changed', async () => {
+    const env = hooksFixture();
+    const refresh = vi.fn(async () => {});
+    attachModule.__registerWorkerAttachmentForTest(
+      '/repo',
+      /** @type {any} */ ({
+        waitJudge: { refresh, stop: vi.fn() }
+      })
+    );
+
+    await env.hooks().onRecordChanged('/other', {});
+    await env.hooks().onRecordChanged('/repo', {});
+
+    expect(refresh).toHaveBeenCalledExactlyOnceWith(undefined, true);
+    attachModule.__resetWorkerAttachmentsForTest();
+  });
   /** @type {Array<() => void>} */
   const stops = [];
   afterEach(() => {
@@ -368,41 +384,33 @@ vi.mock('../watcher.js', async (importOriginal) => {
 const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
 
 describe('external wait check-now attachment seams', () => {
-  test('allows independent workspaces to run concurrently', async () => {
-    const children = [0, 1].map(() =>
-      Object.assign(new EventEmitter(), {
-        stdout: new EventEmitter(),
-        stderr: new EventEmitter()
-      })
-    );
-    const spawnMonitor = vi
-      .fn()
-      .mockReturnValueOnce(children[0])
-      .mockReturnValueOnce(children[1]);
-    const checkNow = attachModule.createExternalWaitCheckNow({
-      spawn: /** @type {any} */ (spawnMonitor),
-      readState: (root_dir) => ({
-        wait_reasons: [],
-        external_waits: [
-          { root_dir, watch_id: 'watch', last_observed_at: 1, stage: 'active' }
-        ]
-      }),
-      refresh: vi.fn(async () => true)
+  test('projects only public coordinates and observations', () => {
+    const record = /** @type {any} */ ({
+      wait_id: 'w-0123456789ab',
+      root_dir: '/repo',
+      bead_id: 'A-1',
+      owner: { kind: 'session', session_ref: 'private' },
+      worktree: '/private/tree',
+      jobs: [
+        {
+          adapter: 'process',
+          pid: 42,
+          submitted_at: '2026-09-21T00:00:00Z',
+          log_path: '/logs/job.log',
+          workdir: '/private/tree',
+          terminal: null
+        }
+      ]
     });
 
-    const first = checkNow('/repo-a', { watch_id: 'watch', since: 1 });
-    const second = checkNow('/repo-b', { watch_id: 'watch', since: 1 });
-    for (const child of children) {
-      child.stdout.emit('data', '{"summary":{"completed":0}}');
-      child.emit('close', 0);
-    }
-    const results = await Promise.all([first, second]);
+    const row = attachModule.projectExternalWait(record);
 
-    expect(spawnMonitor).toHaveBeenCalledTimes(2);
-    expect(results.map((result) => result.outcome)).toEqual([
-      'still_waiting',
-      'still_waiting'
-    ]);
+    expect(row).toMatchObject({
+      owner_kind: 'session',
+      jobs: [{ pid: 42, log_path: '/logs/job.log' }]
+    });
+    expect(row).not.toHaveProperty('owner');
+    expect(row.jobs[0]).not.toHaveProperty('workdir');
   });
 
   test('collects again after an older judgment finishes', async () => {
@@ -417,11 +425,11 @@ describe('external wait check-now attachment seams', () => {
       /** @type {any} */ ({
         workspace: '/repo',
         repo: '/repo',
-        collector: { collect, get: () => ({ rows: [], collected_at: 1 }) },
+        listRecords: () => [],
         store: { snapshot: () => ({}), claimWaitNotifications: () => [] },
         notifier: {},
         requestSnapshot: async () => ({ ok: true, snapshot: {} }),
-        readFacts: async () => ({}),
+        readFacts: collect,
         onChanged
       })
     );

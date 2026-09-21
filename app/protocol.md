@@ -156,16 +156,20 @@ plus, since UI-eey2 §9.4, the repo-panel control fields:
 `issue_prefix` comes from that workspace's bd config cache; missing, malformed,
 or temporarily unreadable config is `null`.
 
-Each `workspaces[]` row may also carry `external_waits[]`. These are read-only
-`external_wait` observations with the confirmed repository, gate and consumer
-identity; projected job/monitor labels; `job_id`; `stage`; `gate_open` and
-`recent_complete`; the validated `watch_id`; `last_observed_at`,
-`next_observation_at`, `completed_at`; and bounded `monitor_reason`, `stale`,
-and `collected_at` fields. The wire does not include SSH configuration, remote
-paths or logs, Worker API addresses, process identity, artifact contents, or the
-complete watch document. Older servers omit the array. The corresponding
-`workspaces_state[]` row may carry `external_wait_count` and
-`external_wait_attention_count`.
+Each `workspaces[]` row and decorated Worker queue may carry `external_waits[]`,
+the public projection of the server's external-wait records:
+`{wait_id, root_dir, bead_id, owner_kind, stage, budget, registered_at, next_observation_at, error_count, last_error, jobs, completion, resume}`.
+Each job carries `adapter`, `ssh_host` and `job_id` (Slurm) or `pid` (process),
+`submitted_at`, `log_path`, `state`, `observed_at`, and
+`terminal: null | {exit_code, evidence, recovery_needed, expected_results}`.
+Expected results contain path, existence, size and mtime; log and artifact
+contents are never projected. Cards attach live records (`hold`, `detached`,
+`completing`) to their consumer Bead. Missing metadata/records remain
+action-required wait reasons. Older servers omit the array.
+
+The corresponding `workspaces_state[]` row carries `external_wait_count` (live
+records) and `external_wait_attention_count` (live records whose
+already-projected `external_job` reason is `overdue` or `action_required`).
 
 - `serial_lane_count` and the six orchestration values are that workspace's own
   queue state. A legacy queue with no key reads as one serial lane and null
@@ -942,8 +946,13 @@ JSON이며 GET은 쿼리로 받는다. 모든 응답에 `Cache-Control: no-store
 `last_error`를 보존한다. 그 외 내부 오류는 500 `internal_error`다. 재개 연결
 전에는 409 `resume_unwired`를 반환한다.
 
-웹소켓의 기존 `external_waits[]` 투영은 후속 구현 단위에서 이 레코드 기반으로
-변경한다. 이 API 추가만으로 기존 웹소켓 투영은 바뀌지 않는다.
+웹소켓의 `external_waits[]`도 위 레코드에서 공개 필드만 투영한다. 카드 조작은
+`external_wait_check`·`external_wait_stop`·`external_wait_resume`이다. 본문은
+`{root_dir, wait_id}`이며 재개에는 `mode:'fork'|'fresh'`를 더한다. 레코드 없이
+키만 남은 조치 필요 사유의 중단 조작은 `bead_id`도 싣는다. 서버는 해당 이슈의
+현재 키가 `wait_id`와 일치하는지 확인한 뒤에만 제거한다. 성공 응답은 서비스
+결과와 `queue`(갱신된 장식 스냅샷), 실패는 표준 오류 응답이다. 세 조작 모두
+소비자 이슈의 타임라인에 클릭을 기록한다.
 
 ## Session-log (transcript) channel (spec §5.6)
 

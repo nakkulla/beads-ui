@@ -6,7 +6,7 @@ import { holdDecision, registrationDecision } from './decision.js';
 /**
  * @typedef {import('./store.js').WaitRecord} WaitRecord
  * @typedef {(workspace:string, wait_id:string, mode:'fork'|'fresh')=>Promise<{ok:true, attempt_id:string}|{ok:false, reason:string}>} ResumeHook
- * @typedef {{setExternalWait:(workspace:string, bead_id:string, wait_id:string)=>Promise<void>, unsetExternalWait:(workspace:string, bead_id:string)=>Promise<void>}} BeadWriter
+ * @typedef {{setExternalWait:(workspace:string, bead_id:string, wait_id:string)=>Promise<void>, unsetExternalWait:(workspace:string, bead_id:string)=>Promise<void>, readExternalWait?:(workspace:string, bead_id:string)=>Promise<unknown>}} BeadWriter
  */
 
 /**
@@ -98,13 +98,14 @@ function summary(record) {
 }
 
 /**
- * @param {{store:ReturnType<import('./store.js').createExternalWaitStore>, observer:Pick<ReturnType<import('./observer.js').createExternalWaitObserver>, 'observeRecord'>, bd:BeadWriter, resume?:ResumeHook, now?:()=>number, hold_turn_ms?:number, poll_interval_ms?:number, wait?:(ms:number)=>Promise<void>}} options
+ * @param {{store:ReturnType<import('./store.js').createExternalWaitStore>, observer:Pick<ReturnType<import('./observer.js').createExternalWaitObserver>, 'observeRecord'>, bd:BeadWriter, resume?:ResumeHook, onRecordChanged?:import('./observer.js').RecordCallback, now?:()=>number, hold_turn_ms?:number, poll_interval_ms?:number, wait?:(ms:number)=>Promise<void>}} options
  */
 export function createExternalWaitService({
   store,
   observer,
   bd,
   resume = async () => ({ ok: false, reason: 'resume_unwired' }),
+  onRecordChanged,
   now = () => Date.now(),
   hold_turn_ms = HOLD_BUDGET.turn_seconds * 1000,
   poll_interval_ms,
@@ -112,6 +113,19 @@ export function createExternalWaitService({
 }) {
   /** @type {Map<string, Promise<void>>} */
   const writes = new Map();
+
+  /**
+   * Publish service-owned mutations after metadata settlement, including failures.
+   *
+   * @param {string} workspace
+   * @param {string} wait_id
+   */
+  async function notifyChanged(workspace, wait_id) {
+    const record = store.get(workspace, wait_id);
+    if (record && onRecordChanged) {
+      await onRecordChanged(workspace, record);
+    }
+  }
 
   /**
    * Keep stop's unset after an in-flight detach set, including across records
@@ -155,6 +169,8 @@ export function createExternalWaitService({
           error instanceof Error ? error.message : String(error);
       });
       return failure(500, 'bead_write_failed');
+    } finally {
+      await notifyChanged(workspace, record.wait_id);
     }
   }
 
@@ -320,13 +336,51 @@ export function createExternalWaitService({
   /**
    * @param {string} workspace
    * @param {string} wait_id
+   * @param {string} [bead_id] - Required only for a metadata key without a record.
    */
-  async function stop(workspace, wait_id) {
+  async function stop(workspace, wait_id, bead_id) {
     const record = store.get(workspace, wait_id);
     if (!record) {
+      if (bead_id && bd.readExternalWait) {
+        const readExternalWait = bd.readExternalWait;
+        try {
+          let matched = false;
+          await writeMetadata(workspace, bead_id, async () => {
+            if ((await readExternalWait(workspace, bead_id)) === wait_id) {
+              await bd.unsetExternalWait(workspace, bead_id);
+              matched = true;
+            }
+          });
+          return matched
+            ? { ok: true, stage: 'stopped', bead_id }
+            : failure(409, 'wait_changed');
+        } catch {
+          return failure(500, 'bead_write_failed');
+        }
+      }
       return failure(404, 'not_found');
     }
     if (['done', 'resumed', 'stopped'].includes(record.stage)) {
+      // 종단 레코드에 키만 남은 경우(§3 fail-closed 잔재)는 stop이 키를 지운다.
+      if (bd.readExternalWait) {
+        const readExternalWait = bd.readExternalWait;
+        try {
+          let matched = false;
+          await writeMetadata(workspace, record.bead_id, async () => {
+            if (
+              (await readExternalWait(workspace, record.bead_id)) === wait_id
+            ) {
+              await bd.unsetExternalWait(workspace, record.bead_id);
+              matched = true;
+            }
+          });
+          if (matched) {
+            return { ok: true, stage: record.stage, bead_id: record.bead_id };
+          }
+        } catch {
+          return failure(500, 'bead_write_failed');
+        }
+      }
       return failure(409, 'invalid_stage');
     }
     store.update(workspace, wait_id, (current) => {
@@ -342,6 +396,8 @@ export function createExternalWaitService({
           error instanceof Error ? error.message : String(error);
       });
       return failure(500, 'bead_write_failed');
+    } finally {
+      await notifyChanged(workspace, wait_id);
     }
     return get(workspace, wait_id);
   }
@@ -366,8 +422,12 @@ export function createExternalWaitService({
     ) {
       return failure(409, 'resume_not_allowed');
     }
-    const result = await resume(workspace, wait_id, mode);
-    return result.ok ? result : failure(409, result.reason);
+    try {
+      const result = await resume(workspace, wait_id, mode);
+      return result.ok ? result : failure(409, result.reason);
+    } finally {
+      await notifyChanged(workspace, wait_id);
+    }
   }
 
   return {
@@ -381,6 +441,10 @@ export function createExternalWaitService({
     /** @param {ResumeHook} hook */
     setResume(hook) {
       resume = hook;
+    },
+    /** @param {import('./observer.js').RecordCallback|undefined} callback */
+    setOnRecordChanged(callback) {
+      onRecordChanged = callback;
     }
   };
 }
