@@ -58,9 +58,7 @@ import {
   refreshWorkerExternalPrs,
   refreshWorkerWaitReasons,
   resumeWorkerAttempt,
-  resumeWorkerQueueHold,
   retryWorkerCleanup,
-  retryWorkerQueueHoldNow,
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
   startWorkerRepoOperationDeployRun,
@@ -3177,11 +3175,6 @@ export function decorateQueue(workspace_key, raw_queue) {
     log('snapshot retention failed for %s: %o', workspace_key, err);
   }
   public_queue.admission = publicAdmissions(overlaid.admission);
-  // `hold` and `lineages` DO travel — the stop banner and its 다음 HH:MM are
-  // drawn from them (2026-08-28 worker-failure-tiers spec §8). `hold_history` is
-  // the reducer's own 30-minute working memory: nothing renders it, so it stays
-  // server-side like `completion_intents`.
-  delete public_queue.hold_history;
   delete public_queue.completion_intents;
   delete public_queue.last_deploy;
   delete public_queue.reconcile;
@@ -4890,77 +4883,6 @@ export async function handleWorkerRepoOperationDismiss(ws, req) {
 }
 
 /**
- * Handle `worker-queue-hold-resume`. Payload: `{ since: number }`.
- *
- * The `재개` click on a systemic queue stop (2026-08-28 worker-failure-tiers
- * spec §3.4). `since` is a CAS on the stop the button was drawn against: a
- * mismatch is a NO-OP reply, never a release, because clearing a stop the user
- * never saw is exactly what the confirmation is there to prevent. A duplicate
- * click is idempotent for the same reason — the second one no longer matches.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export async function handleWorkerQueueHoldResume(ws, req) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.since !== 'number' || !Number.isFinite(p.since)) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { since }')
-      )
-    );
-    return;
-  }
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
-  }
-  /** @type {{ ok: boolean, reason?: string }} */
-  let result;
-  try {
-    result = await resumeWorkerQueueHold(key, { since: p.since });
-  } catch (err) {
-    log('queue hold resume failed for %s: %o', key, err);
-    result = { ok: false, reason: 'queue_hold_resume_failed' };
-  }
-  replyQueueHold(ws, req, key, result);
-}
-
-/**
- * Handle `worker-queue-hold-retry-now`. Payload: `{ since: number }`.
- *
- * The `지금 재시도` click on an env hold (spec §4): every lineage's backoff
- * collapses to now. Same CAS, same idempotence.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export async function handleWorkerQueueHoldRetryNow(ws, req) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.since !== 'number' || !Number.isFinite(p.since)) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { since }')
-      )
-    );
-    return;
-  }
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
-  }
-  /** @type {{ ok: boolean, reason?: string }} */
-  let result;
-  try {
-    result = await retryWorkerQueueHoldNow(key, { since: p.since });
-  } catch (err) {
-    log('queue hold retry-now failed for %s: %o', key, err);
-    result = { ok: false, reason: 'queue_hold_retry_failed' };
-  }
-  replyQueueHold(ws, req, key, result);
-}
-
-/**
  * Handle `worker-provider-probe-now`. Payload: `{ runner: string, since: number }`.
  *
  * The `↻ 지금 프로브` click on a row blocked by a provider hold (UI-o5ll §3.3).
@@ -4999,7 +4921,7 @@ export async function handleWorkerProviderProbeNow(ws, req) {
     log('provider probe-now failed for %s: %o', key, err);
     result = { ok: false, reason: 'provider_probe_failed' };
   }
-  replyQueueHold(ws, req, key, result);
+  replyProviderProbe(ws, req, key, result);
 }
 
 /**
@@ -5099,22 +5021,19 @@ export async function handleWorkerExternalWait(ws, req) {
 }
 
 /**
- * The shared reply of the three queue-hold clicks: the decorated queue rides
- * the reply so the clicking client re-renders off a readback, and the fanout
- * gives every OTHER subscriber the same one.
+ * Return the provider probe result with the queue readback and notify subscribers.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  * @param {string} key
  * @param {{ ok: boolean, reason?: string, armed?: number }} result
  */
-function replyQueueHold(ws, req, key, result) {
+function replyProviderProbe(ws, req, key, result) {
   ws.send(
     JSON.stringify(
       makeOk(req, {
         ok: result.ok === true,
         reason: result.ok === true ? undefined : result.reason || 'refused',
-        // `↻ 지금 프로브`만 싣는 값이다 — 다른 두 조작에는 없으므로 undefined다.
         ...(typeof result.armed === 'number' ? { armed: result.armed } : {}),
         queue: decorateQueue(key, queueStore().snapshot(key))
       })

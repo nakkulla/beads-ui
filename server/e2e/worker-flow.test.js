@@ -500,7 +500,7 @@ describe('worker e2e — full success flow', () => {
       phase: 'needs_human',
       terminal_reason: { reason: 'cleanup_failed:worktree_remove_failed' }
     });
-    expect(queue.hold).toBeNull();
+    expect(queue).not.toHaveProperty('hold');
     const next_row = lanes.queue.find((row) => row.id === 'S1');
     expect(next_row).toBeDefined();
     expect(next_row?.gate).toBeUndefined();
@@ -1835,11 +1835,13 @@ describe('worker e2e — failure injection settles one bead (UI-5ym8 tiers)', ()
     await scheduler.tick(WS);
     expect(scheduler.isRunning('S1')).toBe(true);
 
-    // UI-3vvi: an unfinished ending is preserved as a recovery WAIT, never
-    // terminalized as `failed`; the raw `session_failed:` cause stays on it.
+    // UI-a5l2 §3.2: an unclassified ending rides the same-bead env retry
+    // ladder (`retry_wait`), never a recovery WAIT nor a terminal `failed`;
+    // the raw `session_failed:` cause stays on it.
     await waitFor(() =>
       Object.values(runtime.queueStore.snapshot(WS).attempts).some(
-        (/** @type {any} */ a) => a.bead_id === 'S1' && a.status === 'waiting'
+        (/** @type {any} */ a) =>
+          a.bead_id === 'S1' && a.status === 'retry_wait'
       )
     );
 
@@ -1847,7 +1849,7 @@ describe('worker e2e — failure injection settles one bead (UI-5ym8 tiers)', ()
     // is the user's toggle and `queue.hold` stays null. workflow_mode is still
     // reverted and the attempt still carries the decision record.
     expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(true);
-    expect(runtime.queueStore.snapshot(WS).hold).toBe(null);
+    expect(runtime.queueStore.snapshot(WS)).not.toHaveProperty('hold');
     expect(
       bd.calls.some(
         (c) =>
@@ -1861,12 +1863,10 @@ describe('worker e2e — failure injection settles one bead (UI-5ym8 tiers)', ()
         (/** @type {any} */ a) => a.bead_id === 'S1'
       )
     );
-    expect(failed.status).toBe('waiting');
-    expect(failed.cause_detail.recovery).toMatchObject({
-      classification: 'unknown_error',
-      disposition: 'wait',
-      reason: 'unclassified'
-    });
+    expect(failed.status).toBe('retry_wait');
+    expect(failed.cause_detail?.recovery).toBeUndefined();
+    expect(failed.retry).toMatchObject({ attempts: 1, max: 3 });
+    expect(typeof failed.retry.next_at).toBe('number');
     // The record carries what the decision tile renders.
     expect(failed.cause).toContain('session_failed:');
     expect(failed.repo).toBe(repo_dir);
@@ -1898,27 +1898,26 @@ describe('worker e2e — a session that never delivered fails verification (fail
     await scheduler.tick(WS);
     expect(scheduler.isRunning('S1')).toBe(true);
 
-    // Session succeeds, but the observation is empty → the bead is preserved
-    // as an unclassified recovery wait (UI-3vvi) and the queue keeps running;
-    // workflow_mode is still reverted.
+    // Session succeeds, but the observation is empty → the bead rides the
+    // env retry ladder (UI-a5l2 §3.2, group `unknown`) and the queue keeps
+    // running; workflow_mode is still reverted.
     await waitFor(() =>
       Object.values(runtime.queueStore.snapshot(WS).attempts).some(
-        (/** @type {any} */ a) => a.bead_id === 'S1' && a.status === 'waiting'
+        (/** @type {any} */ a) =>
+          a.bead_id === 'S1' && a.status === 'retry_wait'
       )
     );
     expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(true);
-    expect(runtime.queueStore.snapshot(WS).hold).toBe(null);
+    expect(runtime.queueStore.snapshot(WS)).not.toHaveProperty('hold');
 
     const attempt = /** @type {any} */ (
       Object.values(runtime.queueStore.snapshot(WS).attempts).find(
         (/** @type {any} */ a) => a.bead_id === 'S1'
       )
     );
-    expect(attempt.status).toBe('waiting');
-    expect(attempt.cause_detail.recovery).toMatchObject({
-      classification: 'finished_without_result_line',
-      reason: 'unclassified'
-    });
+    expect(attempt.status).toBe('retry_wait');
+    expect(attempt.cause_detail?.recovery).toBeUndefined();
+    expect(attempt.retry).toMatchObject({ attempts: 1, max: 3 });
     expect(attempt.verify_result.ok).toBe(false);
     // A SUCCESSFUL empty observation — not an observation error.
     expect(attempt.verify_result.reason).toBe('no_pr');

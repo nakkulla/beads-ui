@@ -481,9 +481,17 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `대기 · recovery:<reason> — <original cause>`. Ordinary queue dispatch is
   fenced by `recovery_wait`; manual resume preserves the recorded execution
   selection and any retry origin, consumed count, maximum and exhaustion flag.
-  Ending the queue timer keeps that budget on the attempt; an exhausted record
-  has `retry.exhausted: true` and `retry.next_at: null`. Two identical repeats
-  set reason `no_progress` and refuse provider automatic resume. These fields
+  `retry.migrated: 'unclassified_wait'` marks a policy-classified legacy wait
+  loaded as `failed` with `retry.attempts: 0`; declared session recovery waits
+  remain waiting. This migration starts no retry and sends no notification.
+  Policy-classified unclassified endings and `session_failed:turn_failed` use
+  `status: 'retry_wait'` with a per-Bead 2/5/15-minute retry ladder. A local
+  recorded session resumes with its execution settings; without one, a new
+  session inherits those settings. Exhaustion leaves `status: 'failed'`, the
+  original cause and one failure notification, with the Bead open. Ending the
+  retry timer keeps that budget on the attempt; an exhausted record has
+  `retry.exhausted: true` and `retry.next_at: null`. Two identical repeats set
+  reason `no_progress` and refuse provider automatic resume. These fields
   express waiting intent, not resume authority. The comparison uses cause,
   classification, normalized summary, head OID, verification result, PR URL and
   execution preset; incidental timestamps, attempt/run IDs and log SHAs do not

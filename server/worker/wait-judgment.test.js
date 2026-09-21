@@ -798,23 +798,6 @@ describe('wait judgment holds and manual waits', () => {
     });
   });
 
-  test('formats an env retry locally while retaining its epoch clock', () => {
-    const next_at = new Date(2026, 8, 15, 14, 5).getTime();
-
-    const result = run({
-      queue: queue({
-        hold: { kind: 'env', bead_ids: ['UI-consumer'], since: NOW },
-        lineages: [{ bead_id: 'UI-consumer', next_at }]
-      })
-    }).wait_reasons[0];
-
-    expect(result).toMatchObject({
-      release: '14:05에 자동 재시도 · 성공하면 자동 해제 (지금 재시도 가능)',
-      next_check_at: next_at,
-      since: NOW
-    });
-  });
-
   test.each([
     [5 * MINUTE - 1, 'normal'],
     [5 * MINUTE, 'overdue']
@@ -911,7 +894,7 @@ describe('wait judgment holds and manual waits', () => {
     expect(result).not.toHaveProperty('resets_at');
   });
 
-  test('requires approval for a systemic hold', () => {
+  test('omits a retired systemic queue hold', () => {
     const result = run({
       queue: queue({
         hold: {
@@ -922,32 +905,7 @@ describe('wait judgment holds and manual waits', () => {
       })
     });
 
-    expect(result.wait_reasons[0]).toMatchObject({
-      kind: 'queue_hold',
-      verdict: 'action_required',
-      verdict_reason: { code: 'hold' },
-      release: '▶ 재개로 해제 (사람 승인)'
-    });
-  });
-
-  test.each([
-    [5 * MINUTE - 1, 'normal'],
-    [5 * MINUTE, 'overdue']
-  ])('checks env retry grace %i', (age, verdict) => {
-    const result = run({
-      queue: queue({
-        hold: { kind: 'env', cause: 'network', bead_ids: ['UI-consumer'] },
-        lineages: [{ bead_id: 'UI-consumer', next_at: NOW - Number(age) }]
-      })
-    }).wait_reasons[0];
-
-    expect(result).toMatchObject({
-      verdict,
-      next_check_at: NOW - Number(age),
-      ...(verdict === 'overdue'
-        ? { verdict_reason: { code: 'retry_stalled' } }
-        : {})
-    });
+    expect(result.wait_reasons).toEqual([]);
   });
 
   test('builds the user-decision reason from a parked attempt', () => {
@@ -1146,7 +1104,7 @@ describe('auto-advance-off queues (UI-3pu9 §3)', () => {
     ).toEqual([]);
   });
 
-  test('keeps the queue hold reason', () => {
+  test('omits a retired queue hold while auto advance is paused', () => {
     const result = run({
       queue: queue({
         auto_advance: false,
@@ -1154,9 +1112,7 @@ describe('auto-advance-off queues (UI-3pu9 §3)', () => {
       })
     });
 
-    expect(result.wait_reasons).toMatchObject([
-      { kind: 'queue_hold', subject: { bead_id: 'UI-idle' } }
-    ]);
+    expect(result.wait_reasons).toEqual([]);
   });
 
   test('keeps the provider hold reason', () => {

@@ -75,7 +75,15 @@ describe('wait notification suppression', () => {
       root_dir: '/repo',
       now: 1000,
       queue: {
-        hold: { kind: 'systemic', cause: '검증 오류', bead_ids: ['UI-a'] }
+        attempts: {
+          a: {
+            attempt_id: 'a',
+            bead_id: 'UI-a',
+            status: 'parked',
+            finished_at: 1000,
+            cause_detail: { awaiting_user: '다음 방향 확인' }
+          }
+        }
       }
     }).wait_reasons;
     const input = {
@@ -230,7 +238,7 @@ describe('wait notification suppression', () => {
         kind: 'wait_notified',
         bead_id: 'UI-a',
         at: 1000,
-        detail: 'queue_hold:hold'
+        detail: 'awaiting_user:decision'
       })
     );
   });
@@ -247,7 +255,7 @@ describe('wait notification suppression', () => {
         kind: 'wait_notified',
         bead_id: 'UI-a',
         at: 1000,
-        detail: 'queue_hold:hold'
+        detail: 'awaiting_user:decision'
       })
     });
   });
@@ -286,14 +294,14 @@ describe('wait notification suppression', () => {
 
       await notifier[method]({
         bead_id: 'UI-a',
-        kind: 'queue_hold',
-        headline: '큐 정지\n검증 오류',
-        verdict_reason: { code: 'hold', message: '사람 승인 필요' },
+        kind: 'awaiting_user',
+        headline: '세션이 멈춤\n방향 확인',
+        verdict_reason: { code: 'decision', message: '사용자 답변 필요' },
         repo: '/repos/example'
       });
 
       expect(spawn.last().args).toEqual([
-        '⚠ example UI-a 지연 · 큐 정지 검증 오류 · 사람 승인 필요'
+        '⚠ example UI-a 지연 · 세션이 멈춤 방향 확인 · 사용자 답변 필요'
       ]);
     }
   );

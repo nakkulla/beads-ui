@@ -4605,8 +4605,8 @@ describe('cleanup retry load normalization', () => {
   test('removes a cleanup-only systemic hold without writing history', () => {
     const queue = loadLegacyHold();
 
-    expect(queue.hold).toBeNull();
-    expect(queue.hold_history).toEqual([]);
+    expect(queue).not.toHaveProperty('hold');
+    expect(queue).not.toHaveProperty('hold_history');
   });
 
   test('retains only a merged verification hold and its original resume identity', () => {
@@ -4642,14 +4642,8 @@ describe('cleanup retry load normalization', () => {
       }
     });
 
-    expect(queue.hold).toEqual({
-      kind: 'systemic',
-      cause: 'verify_red:regression',
-      since: 17,
-      bead_ids: ['UI-verify'],
-      halted_by_attempt_id: 'old-attempt'
-    });
-    expect(queue.hold_history).toEqual([]);
+    expect(queue).not.toHaveProperty('hold');
+    expect(queue).not.toHaveProperty('hold_history');
   });
 
   test('uses the latest inserted attempt even when timestamps move backwards', () => {
@@ -4683,13 +4677,7 @@ describe('cleanup retry load normalization', () => {
       }
     });
 
-    expect(queue.hold).toEqual({
-      kind: 'systemic',
-      cause: 'base_landing_detected',
-      since: 17,
-      bead_ids: ['UI-base'],
-      halted_by_attempt_id: 'old-attempt'
-    });
+    expect(queue).not.toHaveProperty('hold');
   });
 
   test.each([
@@ -4710,7 +4698,7 @@ describe('cleanup retry load normalization', () => {
   ])('preserves unrelated hold %j', (hold) => {
     const queue = loadLegacyHold({ hold });
 
-    expect(queue.hold).toEqual(hold);
+    expect(queue).not.toHaveProperty('hold');
   });
 });
 
@@ -10370,22 +10358,92 @@ describe('worker/queue-store — retired head-review migration (UI-d7fy §3.8)',
   });
 });
 
+describe('unclassified wait migration', () => {
+  test.each([
+    'finished_without_result_line',
+    'past_failure_line',
+    'environment_line',
+    'unknown_error'
+  ])('migrates %s without starting a retry', (classification) => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        hold: {
+          kind: 'systemic',
+          cause: 'verify_red',
+          since: 1,
+          bead_ids: ['UI-1']
+        },
+        hold_history: [{ bead_id: 'UI-1', cause: 'unknown', at: 1 }],
+        lineages: [
+          {
+            bead_id: 'UI-1',
+            origin_attempt_id: 'old',
+            cause: 'session_failed:is_error',
+            attempts: 1,
+            next_at: 120001
+          }
+        ],
+        attempts: {
+          old: {
+            bead_id: 'UI-1',
+            status: 'waiting',
+            cause: 'session_failed:is_error',
+            cause_detail: {
+              recovery: { classification, reason: 'unclassified' }
+            }
+          },
+          declared: {
+            bead_id: 'UI-2',
+            status: 'waiting',
+            cause: 'session_recovery_wait',
+            cause_detail: {
+              recovery: {
+                classification: 'session_recovery_wait',
+                reason: 'unclassified'
+              }
+            }
+          }
+        }
+      })
+    );
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded).not.toHaveProperty('hold');
+    expect(loaded).not.toHaveProperty('hold_history');
+    expect(loaded.lineages).toEqual([]);
+    expect(loaded.attempts.old).toMatchObject({
+      status: 'failed',
+      retry: { migrated: 'unclassified_wait', attempts: 0 }
+    });
+    expect(loaded.attempts.declared).toMatchObject({
+      status: 'waiting',
+      retry: null
+    });
+    expect(createQueueStore().load(WS).attempts.old.retry).toEqual(
+      loaded.attempts.old.retry
+    );
+  });
+});
+
 describe('queue store failure-tier fields (UI-5ym8)', () => {
   test('starts a fresh queue with no hold and no lineages', () => {
     const store = createQueueStore();
 
     const snap = store.snapshot(WS);
 
-    expect(snap.hold).toBe(null);
+    expect(snap).not.toHaveProperty('hold');
     expect(snap.lineages).toEqual([]);
-    expect(snap.hold_history).toEqual([]);
+    expect(snap).not.toHaveProperty('hold_history');
   });
 
   test('round-trips the durable hold triple through a reload', () => {
     const store = createQueueStore();
-    store.applyQueueHold(WS, {
+    store.applyRetryEvent(WS, {
       event: {
-        kind: 'env_failure',
+        kind: 'retry_scheduled',
         bead_id: 'UI-1',
         attempt_id: 'att-1',
         cause: 'verify_cmd_spawn_error',
@@ -10396,12 +10454,7 @@ describe('queue store failure-tier fields (UI-5ym8)', () => {
 
     const loaded = createQueueStore().load(WS);
 
-    expect(loaded.hold).toMatchObject({
-      kind: 'env',
-      cause: 'verify_cmd_spawn_error',
-      since: 1000,
-      bead_ids: ['UI-1']
-    });
+    expect(loaded).not.toHaveProperty('hold');
     expect(loaded.lineages).toEqual([
       {
         bead_id: 'UI-1',
@@ -10411,9 +10464,7 @@ describe('queue store failure-tier fields (UI-5ym8)', () => {
         attempts: 1
       }
     ]);
-    expect(loaded.hold_history).toEqual([
-      { bead_id: 'UI-1', cause: 'verify_cmd_spawn_error', at: 1000 }
-    ]);
+    expect(loaded).not.toHaveProperty('hold_history');
   });
 
   test('drops a malformed hold rather than refusing the load', () => {
@@ -10430,7 +10481,7 @@ describe('queue store failure-tier fields (UI-5ym8)', () => {
 
     const loaded = createQueueStore().load(WS);
 
-    expect(loaded.hold).toBe(null);
+    expect(loaded).not.toHaveProperty('hold');
     expect(loaded.lineages).toEqual([
       {
         bead_id: 'UI-2',
@@ -10440,15 +10491,15 @@ describe('queue store failure-tier fields (UI-5ym8)', () => {
         attempts: 1
       }
     ]);
-    expect(loaded.hold_history).toEqual([]);
+    expect(loaded).not.toHaveProperty('hold_history');
   });
 
   test('returns the reducer effects alongside the persisted state', () => {
     const store = createQueueStore();
 
-    const result = store.applyQueueHold(WS, {
+    const result = store.applyRetryEvent(WS, {
       event: {
-        kind: 'env_failure',
+        kind: 'retry_scheduled',
         bead_id: 'UI-1',
         attempt_id: 'att-1',
         cause: 'spawn_failed',
@@ -10467,7 +10518,7 @@ describe('queue store failure-tier fields (UI-5ym8)', () => {
         attempts: 1
       }
     ]);
-    expect(result.hold).toMatchObject({ kind: 'env' });
+    expect(result).not.toHaveProperty('hold');
   });
 
   test('defaults the new attempt fields on a legacy record', () => {
@@ -10571,225 +10622,6 @@ describe('queue store failure-tier fields (UI-5ym8)', () => {
     expect(snap.attempts.a2.status).toBe('superseded');
     expect(snap.attempts.a3.status).toBe('retry_wait');
     expect(snap.attempts.other.status).toBe('retry_wait');
-  });
-});
-
-describe('queue store atomic terminalize + hold (UI-5ym8 §7)', () => {
-  /**
-   * @param {string} root_bead_id
-   * @returns {any}
-   */
-  function storeWithIntent(root_bead_id) {
-    const store = createQueueStore();
-    store.appendAttempt(WS, {
-      expected_revision: 0,
-      attempt: {
-        attempt_id: `att-${root_bead_id}`,
-        bead_id: root_bead_id,
-        target_base: 'main',
-        base_oid: 'b'.repeat(40)
-      }
-    });
-    store.moveToPrWait(WS, {
-      bead_id: root_bead_id,
-      attempt_id: `att-${root_bead_id}`,
-      patch: { status: 'done', finished_at: 1 }
-    });
-    store.enqueueCompletionIntent(WS, {
-      root_bead_id,
-      source_attempt_id: `att-${root_bead_id}`,
-      target_base: 'main',
-      subject: {
-        role: 'root',
-        bead_id: root_bead_id,
-        pr_url: 'https://github.com/o/r/pull/1',
-        head_sha: 'a'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        merged_sha: null
-      }
-    });
-    return store;
-  }
-
-  test('lands the terminal and the systemic hold in ONE revision bump', () => {
-    const store = storeWithIntent('UI-1');
-    const before = store.snapshot(WS).revision;
-
-    const written = store.terminalizeCompletionIntent(WS, {
-      root_bead_id: 'UI-1',
-      terminal: {
-        reason: 'verify_red',
-        stage: 'repo_verify',
-        failure_key: null,
-        evidence: null,
-        log_path: null,
-        at: 2000
-      },
-      hold_event: {
-        kind: 'systemic_failure',
-        bead_id: 'UI-1',
-        cause: 'verify_red',
-        at: 2000
-      },
-      now: 2000
-    });
-
-    const snap = store.snapshot(WS);
-    expect(written.ok).toBe(true);
-    expect(snap.revision).toBe(before + 1);
-    expect(snap.completion_intents['UI-1'].phase).toBe('needs_human');
-    expect(snap.hold).toMatchObject({
-      kind: 'systemic',
-      cause: 'verify_red',
-      since: 2000,
-      bead_ids: ['UI-1']
-    });
-  });
-
-  test('leaves the queue running when no hold event is given', () => {
-    const store = storeWithIntent('UI-1');
-
-    store.terminalizeCompletionIntent(WS, {
-      root_bead_id: 'UI-1',
-      terminal: {
-        reason: 'conflict_unresolved:rebase',
-        stage: 'merge_subject',
-        failure_key: null,
-        evidence: null,
-        log_path: null,
-        at: 2000
-      }
-    });
-
-    expect(store.snapshot(WS).completion_intents['UI-1'].phase).toBe(
-      'needs_human'
-    );
-    expect(store.snapshot(WS).hold).toBe(null);
-  });
-
-  test('does not stop the queue when the terminal itself is rejected', () => {
-    const store = createQueueStore();
-
-    const written = store.terminalizeCompletionIntent(WS, {
-      root_bead_id: 'UI-absent',
-      terminal: {
-        reason: 'verify_red',
-        stage: 'repo_verify',
-        failure_key: null,
-        evidence: null,
-        log_path: null,
-        at: 2000
-      },
-      hold_event: {
-        kind: 'systemic_failure',
-        bead_id: 'UI-absent',
-        cause: 'verify_red',
-        at: 2000
-      },
-      now: 2000
-    });
-
-    expect(written.ok).toBe(false);
-    expect(store.snapshot(WS).hold).toBe(null);
-  });
-});
-
-describe('worker/queue-store queue-hold timeline (record-timeline-retention §5)', () => {
-  /**
-   * @param {{ timeline?: any }} [overrides]
-   */
-  function holdStore(overrides = {}) {
-    const timeline =
-      overrides.timeline || createBeadTimeline({ workspace_root: WS });
-    return { store: createQueueStore({ timeline }), timeline };
-  }
-
-  /**
-   * @param {any} store
-   * @param {string} bead_id
-   * @param {number} at
-   * @param {string} [cause]
-   */
-  function envFailure(store, bead_id, at, cause = 'spawn_failed') {
-    return store.applyQueueHold(WS, {
-      event: {
-        kind: 'env_failure',
-        bead_id,
-        attempt_id: `${bead_id}-att`,
-        cause,
-        at
-      },
-      now: at
-    });
-  }
-
-  test('records the stop on the timeline of the bead it held', () => {
-    const { store, timeline } = holdStore();
-
-    envFailure(store, 'UI-held', 500);
-
-    expect(timeline.readTimeline('UI-held')).toMatchObject([
-      {
-        event_id: 'queue_hold:UI-held:env:500',
-        kind: 'queue_hold',
-        summary: '환경 보류: spawn_failed',
-        at: 500
-      }
-    ]);
-  });
-
-  test('records a user resume under the episode it released', () => {
-    const { store, timeline } = holdStore();
-    envFailure(store, 'UI-held', 500);
-
-    store.applyQueueHold(WS, { event: { kind: 'resume' }, now: 900 });
-
-    expect(timeline.readTimeline('UI-held')).toMatchObject([
-      { kind: 'queue_hold' },
-      {
-        event_id: 'queue_resume:UI-held:env:500',
-        kind: 'queue_resume',
-        summary: '사용자 재개',
-        at: 900
-      }
-    ]);
-  });
-
-  test('announces one standing hold once however many rungs it survives', () => {
-    const { store, timeline } = holdStore();
-
-    envFailure(store, 'UI-held', 500);
-    envFailure(store, 'UI-held', 600);
-    envFailure(store, 'UI-held', 700);
-
-    expect(
-      timeline
-        .readTimeline('UI-held')
-        .filter((/** @type {any} */ event) => event.kind === 'queue_hold')
-    ).toHaveLength(1);
-  });
-
-  test('applies the hold when no timeline is registered', () => {
-    const store = createQueueStore();
-
-    const applied = envFailure(store, 'UI-held', 500);
-
-    expect(applied.ok).toBe(true);
-    expect(store.snapshot(WS).hold).toMatchObject({ kind: 'env', since: 500 });
-  });
-
-  test('applies the hold when the timeline append fails', () => {
-    const { store } = holdStore({
-      timeline: {
-        append: () => ({ ok: false, reason: 'write_failed', detail: 'nope' }),
-        readTimeline: () => []
-      }
-    });
-
-    const applied = envFailure(store, 'UI-held', 500);
-
-    expect(applied.ok).toBe(true);
-    expect(store.snapshot(WS).hold).toMatchObject({ kind: 'env', since: 500 });
   });
 });
 

@@ -155,29 +155,6 @@ const CLOSURE_STEPS = CLEANUP_STEPS.slice(
 );
 
 /**
- * The cleanup steps whose failures ride the `script_retry` ladder. Their
- * `cleanup_failed` record is a MID-ladder observation, not a terminal one, so
- * the `needs_human` push for them is owned solely by `completion-intent.js
- * terminalize()` (UI-jw27 §2) — announcing here too would send once early and
- * once again at the wall.
- *
- * @type {Set<string>}
- */
-const LADDER_CLEANUP_STEPS = new Set(['repo_operations', 'post_merge_jobs']);
-
-/**
- * The complement, DERIVED from {@link CLEANUP_STEPS} rather than listed again:
- * these steps have no ladder, so their first failure is already terminal and
- * the record write announces. A step added to the cursor joins this half
- * automatically instead of being silently dropped by a second private list.
- *
- * @type {Set<string>}
- */
-const IMMEDIATE_TERMINAL_CLEANUP_STEPS = new Set(
-  CLEANUP_STEPS.filter((step) => !LADDER_CLEANUP_STEPS.has(step))
-);
-
-/**
  * Where the post-merge job files live in the merged tree (UI-i60a §2). The
  * directory's EXISTENCE is the activation — `repo-ops/config.toml` has no key
  * for it — so an absent directory is a no-op, not a misconfiguration.
@@ -2308,60 +2285,6 @@ export function createPrActions(deps) {
   }
 
   /**
-   * Announce one cleanup stop that is terminal ON ITS OWN STEP (UI-jw27 §2).
-   * The step name is the whole judgment, read off a closed list: the ladder
-   * steps in {@link LADDER_CLEANUP_STEPS} are announced by `terminalize`, and
-   * anything outside the cursor is not a cleanup stop at all.
-   *
-   * Fire-and-forget and guarded, unlike {@link announceMerged}: nothing about a
-   * failure record has to be ordered against a deploy that restarts the
-   * process, so this must not add latency to the failure path.
-   *
-   * @param {Queue} q
-   * @param {string} bead_id
-   * @param {string} step
-   * @param {string} reason
-   * @param {string|null} summary
-   */
-  function announceCleanupStop(q, bead_id, step, reason, summary) {
-    if (!notify?.needsHuman) {
-      return;
-    }
-    if (!IMMEDIATE_TERMINAL_CLEANUP_STEPS.has(step)) {
-      // A ladder step, so `terminalize` owns the push — but only while it can
-      // still fire. `decideCompletionAction` returns null for an intent already
-      // in `needs_human`, so a [정리 재시도] click that fails again at the same
-      // ladder step writes a NEW cleanup record that no terminalization will
-      // ever follow. Silence there would drop the retry's own failure (spec §6
-      // acceptance 6), and it cannot duplicate the earlier push: that one was
-      // this intent's terminalization, which has already happened.
-      if (q?.completion_intents?.[bead_id]?.phase !== 'needs_human') {
-        return;
-      }
-    }
-    const row = (Array.isArray(q.pr_wait) ? q.pr_wait : []).find(
-      (/** @type {any} */ entry) => entry && entry.bead_id === bead_id
-    );
-    try {
-      Promise.resolve(
-        notify.needsHuman({
-          bead_id,
-          failure_class: '정리 중단',
-          reason,
-          reason_detail: summary,
-          next_action: '[정리 재시도] 또는 [세션에서 해결]',
-          pr_url: /** @type {any} */ (row)?.pr_url ?? null,
-          repo
-        })
-      ).catch((err) => {
-        log('cleanup stop notify failed: %o', err);
-      });
-    } catch (err) {
-      log('cleanup stop notify failed: %o', err);
-    }
-  }
-
-  /**
    * @param {Queue} q
    * @param {string} bead_id
    * @param {{ merge_sha?: string|null }} refs
@@ -3482,7 +3405,7 @@ export function createPrActions(deps) {
             (deps.now || Date.now)() + [60_000, 300_000, 900_000][retry_count];
         }
       }
-      const written = deps.store.recordCleanupFailure(workspace, {
+      deps.store.recordCleanupFailure(workspace, {
         bead_id,
         step,
         reason,
@@ -3494,12 +3417,6 @@ export function createPrActions(deps) {
         ...failure_evidence,
         ...cleanup_retry
       });
-      // No record, no push (UI-jw27 §2): an external row never wrote one here,
-      // and a write the store REFUSED on its own validation left none either,
-      // so there is nothing for this announcement to be about.
-      if (written.ok && cleanup_retry.next_retry_at === undefined) {
-        announceCleanupStop(q, bead_id, step, reason, summary);
-      }
     }
     notifyChanged(workspace);
     return { ok: false, step, reason, base_sync };
@@ -3872,6 +3789,15 @@ export function createPrActions(deps) {
         return refuse('verify_candidate_stale');
       }
     }
+    if (deps.store.snapshot(workspace).completion_intents?.[bead_id]) {
+      const recorded = deps.store.recordCompletionMergeHead(workspace, {
+        root_bead_id: bead_id,
+        head_sha
+      });
+      if (!recorded.ok) {
+        return refuse('merge_prerecord_failed');
+      }
+    }
     try {
       // Pinned to the head the gate approved — GitHub refuses the merge if the
       // branch moved since, so an unverified commit can never land (§5/§6).
@@ -4223,6 +4149,7 @@ export function createPrActions(deps) {
       base_reason: expected.ok ? null : expected.reason,
       merge_sha,
       head_sha:
+        q.completion_intents?.[bead_id]?.merge_head_sha ||
         observed?.pr?.head_sha ||
         q.completion_intents?.[bead_id]?.subject?.head_sha ||
         null,

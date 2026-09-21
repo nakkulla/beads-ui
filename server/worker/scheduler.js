@@ -1198,7 +1198,7 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   pause: (workspace: string, attempt_id: string, options?: { require_durable?: boolean }) => Promise<{ ok: boolean, reason?: string }>,
  *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh' }) => Promise<{ ok: true, attempt_id: string }|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
  *   livePreemptPass: (workspace: string) => Promise<void>,
  *   preemptRunningAttempt: (workspace: string, attempt_id: string, switch_to: { from: string, to: string, window: string, pct: number }) => Promise<{ ok: boolean, reason?: string }>,
@@ -1215,8 +1215,6 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   recoverControls: (workspace: string) => Promise<void>,
  *   onIssuesChanged: (workspace: string) => Promise<void>,
  *   rescanWaiting: (workspace: string) => Promise<{ checked: number, returned: number }>,
- *   resumeQueueHold: (workspace: string, input: { since?: number|null }) => Promise<{ ok: boolean, reason?: string }>,
- *   retryQueueHoldNow: (workspace: string, input: { since?: number|null }) => Promise<{ ok: boolean, reason?: string }>,
  *   reconcile: (workspace: string) => Promise<void>,
  *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
  *   activeBeadIds: (workspace: string) => Set<string>,
@@ -5307,23 +5305,8 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Write ONE classified outcome to its attempt record and to the queue's own
-   * stop state (2026-08-28 worker-failure-tiers spec §3). What used to be one
-   * behaviour ("mark failed, switch `auto_advance` OFF") is now four:
-   *
-   *   - `parked`     — the session ended successfully waiting on a user
-   *                    decision. Not a failure; the queue keeps running and
-   *                    nothing re-dispatches until the user acts or the
-   *                    `awaiting_user` key clears (§3.1).
-   *   - `individual` — this bead failed and nothing else is implicated (§3.2).
-   *   - `env`        — an environment fault: the attempt waits on a backoff
-   *                    ladder and the queue takes an unattended `env` hold,
-   *                    which promotes to a systemic stop on repetition (§3.3).
-   *   - `systemic`   — every bead would hit the same wall; the queue stops
-   *                    until the user clicks `재개` (§3.4).
-   *
-   * `auto_advance` is NOT touched on any of them: it went back to being the
-   * user's ⏸/▶ alone, and the failure-owned stop is `queue.hold` (§4).
+   * Record a classified outcome for one attempt. Environment failures use a
+   * per-bead backoff ladder; no outcome changes the user's `auto_advance`.
    *
    * Shared by {@link failAttempt} and {@link finalizeLaunchRefusal} so a launch
    * refusal is classified by the same table a session termination is: a
@@ -5351,9 +5334,7 @@ export function createScheduler(deps) {
       options.repo !== undefined
         ? options.repo
         : repoOfAttempt(workspace, attempt_id);
-    // A MOOT settlement is dismissed on arrival — its target is already gone —
-    // so it can never be the evidence of an environment fault or a systemic
-    // wall. It settles as the individual record it has always been.
+    // A moot settlement has no target left to retry.
     const tier = options.moot === true ? 'individual' : classification.tier;
 
     if (tier === 'parked') {
@@ -5411,24 +5392,56 @@ export function createScheduler(deps) {
     }
 
     if (tier === 'waiting') {
-      if (classification.recovery) {
-        if (
-          classification.cause === 'loud_fail_blocker' &&
-          ['hook_bypass_blocked', 'merge_to_base_blocked'].includes(
-            cause_detail?.reason
-          )
-        ) {
-          deps.store.applyQueueHold(workspace, {
-            event: {
-              kind: 'systemic_failure',
-              bead_id,
-              attempt_id,
-              cause: classification.cause,
-              at
+      if (classification.cause === 'base_moved' && !classification.recovery) {
+        const applied = deps.store.applyRetryEvent(workspace, {
+          event: {
+            kind: 'retry_scheduled',
+            bead_id,
+            attempt_id,
+            cause: 'base_moved',
+            origin_attempt_id: retryOriginOf(workspace, attempt_id),
+            at
+          },
+          now: at
+        });
+        const lineage = applied.lineages.find(
+          (/** @type {import('./queue-hold.js').RetryLineage} */ entry) =>
+            entry.bead_id === bead_id
+        );
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: {
+            retry: {
+              cause: 'base_moved',
+              attempts: lineage?.attempts ?? 0,
+              max: RETRY_MAX,
+              next_at: lineage?.next_at ?? null,
+              origin_attempt_id: lineage?.origin_attempt_id ?? attempt_id,
+              base_moved_count: lineage?.base_moved_count ?? 1
+            }
+          }
+        });
+        if ((lineage?.base_moved_count ?? 0) >= 3) {
+          settleFailureTier(
+            workspace,
+            attempt_id,
+            bead_id,
+            {
+              ...classification,
+              summary: `base가 반복 이동함 · 후보 ${cause_detail?.candidate_sha?.slice(0, 7) ?? ''}`,
+              recovery: {
+                classification: 'two_no_progress_repeats',
+                disposition: 'wait',
+                reason: 'no_progress'
+              }
             },
-            now: at
-          });
+            cause_detail,
+            { ...options, at }
+          );
+          return;
         }
+      }
+      if (classification.recovery) {
         const recovery = recoveryDetail(workspace, attempt_id, classification);
         deps.store.updateAttempt(workspace, {
           attempt_id,
@@ -5499,11 +5512,11 @@ export function createScheduler(deps) {
           finished_at: at
         }
       });
-      // Same reason the success path calls it: an env-retry rung that ends in a
-      // prerequisite wait would otherwise leave `queue.hold` standing, and the
-      // hold is exactly what would keep the bead from coming back as an
-      // ordinary candidate once the blocker closes.
-      closeRetryLineage(workspace, bead_id);
+      if (base_moved) {
+        armRetryTimer(workspace);
+      } else {
+        closeRetryLineage(workspace, bead_id);
+      }
       // §5's ending kind, in the SAME shape the park writes: this says how the
       // session ended, and it is not a failure, so `appendFailedEvent` and its
       // `attempt_failed` kind stay out of it. No lifecycle push, no direction
@@ -5526,16 +5539,13 @@ export function createScheduler(deps) {
     }
 
     if (tier === 'env') {
-      // `causeKey` answers null for a cause that never promotes (§4.3). No
-      // such cause classifies `env`, so this branch cannot see one; the
-      // fallback exists only so the ladder's key stays a string.
       const key =
         causeKey(classification.cause, classification.env_group) ??
         classification.cause;
       const origin_attempt_id = retryOriginOf(workspace, attempt_id);
-      const applied = deps.store.applyQueueHold(workspace, {
+      const applied = deps.store.applyRetryEvent(workspace, {
         event: {
-          kind: 'env_failure',
+          kind: 'retry_scheduled',
           bead_id,
           attempt_id,
           cause: key,
@@ -5544,107 +5554,40 @@ export function createScheduler(deps) {
         },
         now: at
       });
+      const lineage = applied.lineages.find(
+        (/** @type {import('./queue-hold.js').RetryLineage} */ entry) =>
+          entry.bead_id === bead_id
+      );
       const scheduled = applied.effects.find(
         (/** @type {any} */ effect) => effect.kind === 'retry_scheduled'
       );
-      const exhausted =
-        !scheduled && work_recovery_policy.workRecoveryReady()
-          ? work_recovery_policy.workRecoveryClassification(
-              'transient_retry_exhausted'
-            )
-          : null;
-      if (!exhausted) {
-        deps.store.updateAttempt(workspace, {
-          attempt_id,
-          patch: {
-            status: scheduled ? 'retry_wait' : 'failed',
-            cause: classification.cause,
-            cause_detail: mergeCauseDetail(
-              cause_detail,
-              classification.summary,
-              {
-                env_pattern: classification.env_group
-              }
-            ),
-            finished_at: at,
-            retry: scheduled
-              ? {
-                  cause: key,
-                  attempts: scheduled.attempts ?? 1,
-                  max: RETRY_MAX,
-                  next_at: scheduled.next_at ?? null,
-                  origin_attempt_id:
-                    scheduled.origin_attempt_id ?? origin_attempt_id
-                }
-              : null
-          }
-        });
-      }
-      // The reducer's own terminations: a promoted ladder fails the attempt it
-      // promoted on, and an env failure under a standing systemic stop opens no
-      // ladder at all.
-      for (const effect of /** @type {any[]} */ (applied.effects)) {
-        if (
-          effect.kind === 'attempt_failed' &&
-          effect.attempt_id &&
-          !(exhausted && effect.attempt_id === attempt_id)
-        ) {
-          deps.store.updateAttempt(workspace, {
-            attempt_id: effect.attempt_id,
-            patch: { status: 'failed', finished_at: at }
-          });
-        }
-      }
-      if (exhausted) {
-        const existing =
-          deps.store.snapshot(workspace).attempts[attempt_id]?.retry;
-        const lineage = applied.lineages.find(
-          (/** @type {import('./queue-hold.js').RetryLineage} */ entry) =>
-            entry.bead_id === bead_id
-        );
-        deps.store.updateAttempt(workspace, {
-          attempt_id,
-          patch: {
-            retry: {
-              ...existing,
-              cause: key,
-              origin_attempt_id,
-              attempts: lineage?.attempts ?? existing?.attempts ?? 0,
-              max: existing?.max ?? RETRY_MAX,
-              exhausted: true,
-              next_at: null
-            }
-          }
-        });
-        settleFailureTier(
-          workspace,
-          attempt_id,
-          bead_id,
-          {
-            ...classification,
-            tier: 'waiting',
-            retry: null,
-            recovery: {
-              classification: exhausted.classification,
-              disposition: exhausted.disposition,
-              reason: exhausted.reason
-            }
-          },
-          mergeCauseDetail(cause_detail, classification.summary, {
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: {
+          status: scheduled ? 'retry_wait' : 'failed',
+          cause: classification.cause,
+          cause_detail: mergeCauseDetail(cause_detail, classification.summary, {
             env_pattern: classification.env_group
           }),
-          { ...options, at }
-        );
-      } else if (scheduled) {
-        // The ladder rung, not an ending: this attempt is `retry_wait` and its
-        // ending arrives when the rung is superseded or exhausted.
+          finished_at: at,
+          retry: {
+            cause: key,
+            attempts: lineage?.attempts ?? 0,
+            max: RETRY_MAX,
+            next_at: lineage?.next_at ?? null,
+            origin_attempt_id: lineage?.origin_attempt_id ?? origin_attempt_id,
+            ...(lineage?.base_moved_count
+              ? { base_moved_count: lineage.base_moved_count }
+              : {}),
+            ...(!scheduled ? { exhausted: true } : {})
+          }
+        }
+      });
+      if (scheduled) {
         appendTimeline({
           bead_id,
           attempt_id,
           kind: 'attempt_retry',
-          // The rung INDEX. Each rung is a distinct fact and re-recording the
-          // same rung — a restart replaying this settlement — re-appends the
-          // same id.
           seq: scheduled.attempts ?? 1,
           summary: retrySummary(
             scheduled.attempts ?? 1,
@@ -5653,9 +5596,6 @@ export function createScheduler(deps) {
           at
         });
       } else {
-        // Only a TERMINAL env outcome is announced: a `retry_wait` rung is not
-        // a failure the watcher can act on, and a three-rung outage would
-        // otherwise push the same sentence four times.
         notifyLifecycle('attemptFailed', {
           bead_id,
           cause: classification.cause,
@@ -5675,18 +5615,6 @@ export function createScheduler(deps) {
       return;
     }
 
-    if (tier === 'systemic') {
-      deps.store.applyQueueHold(workspace, {
-        event: {
-          kind: 'systemic_failure',
-          bead_id,
-          attempt_id,
-          cause: classification.cause,
-          at
-        },
-        now: at
-      });
-    }
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
@@ -5790,9 +5718,10 @@ export function createScheduler(deps) {
       const background_summary = extractSummary(
         `${failureTokenSummary(classification.cause)}: ${background_shell_at_result.join('; ')}`
       );
-      classification.summary = classification.recovery
-        ? classification.summary
-        : background_summary;
+      classification.summary =
+        classification.recovery || work_recovery_policy.workRecoveryReady()
+          ? classification.summary
+          : background_summary;
       cause_detail = mergeCauseDetail(cause_detail, classification.summary, {
         background_shell_at_result
       });
@@ -6552,8 +6481,7 @@ export function createScheduler(deps) {
             attempt_id,
             patch: { status: 'done', finished_at: now() }
           });
-          // The bead DELIVERED, so its env lineage is over and an env hold with
-          // no lineage left releases itself (spec §3.3).
+          // Delivery closes this bead's retry lineage.
           appendSessionEnded(
             bead_id,
             attempt_id,
@@ -9128,7 +9056,7 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} bead_id
    * @param {LaneLaunchLease|null} reservation
-   * @param {{ stale_work?: StaleWorkAdmission, retry?: { cause: string, attempts: number, max?: number, origin_attempt_id?: string|null } }} [options]
+   * @param {{ stale_work?: StaleWorkAdmission, retry_source?: any, retry?: { cause: string, attempts: number, max?: number, origin_attempt_id?: string|null } }} [options]
    * `retry` continues an env backoff ladder (2026-08-28 worker-failure-tiers
    * spec §3.3): the new attempt carries the lineage's origin and rung count.
    */
@@ -9199,11 +9127,13 @@ export function createScheduler(deps) {
       // Capture the preset/reference + effective values once, before any launch
       // state mutation. The coordinator's snapshot is the only default source;
       // all later stamp/provenance work consumes this immutable result.
-      const resolved_exec = resolveDispatchSettings(
-        workspace,
-        snap,
-        await readWorkspaceAccountsLayer(workspace)
-      );
+      const resolved_exec = options.retry_source
+        ? recordedDispatchSettings(options.retry_source)
+        : resolveDispatchSettings(
+            workspace,
+            snap,
+            await readWorkspaceAccountsLayer(workspace)
+          );
       if (!resolved_exec.ok) {
         reservation?.release();
         refuseDispatch(workspace, bead_id, resolved_exec.reason);
@@ -9232,11 +9162,9 @@ export function createScheduler(deps) {
         isStartNowEntry(workspace, waiting_entry, now());
       // Preemptive switch runs BEFORE the gate so the gate judges the account
       // this launch will actually spend (spec §3.3).
-      const preempt = await applyPreemptSwitch(
-        workspace,
-        runner_name,
-        resolved_exec
-      );
+      const preempt = options.retry_source
+        ? null
+        : await applyPreemptSwitch(workspace, runner_name, resolved_exec);
       // The timeline entry belongs to the LAUNCH, not to this decision: a row
       // the gate below turns away is rescheduled, and recording here would
       // append one unexecuted switch per scheduling pass.
@@ -10807,8 +10735,7 @@ export function createScheduler(deps) {
    * table a terminated session uses (worker-failure-tiers §3): a `spawn_failed`
    * or `codex_home_prepare_failed` is an ENVIRONMENT fault whether it is caught
    * at spawn or at completion, and writing a bare `failed` patch here would
-   * silently deny those refusals the backoff ladder and the queue hold the same
-   * cause earns everywhere else.
+   * silently deny those refusals the same backoff ladder.
    *
    * @param {any} input
    * @param {string} cause
@@ -10843,11 +10770,8 @@ export function createScheduler(deps) {
     // (2026-08-28 auto-review-dispatch spec 결정 2): every launch refusal is one
     // `exhausted` claim plus a standing hold, and the caller writes it. Sending
     // it through the tier table instead would classify a review launch as an
-    // ENVIRONMENT fault of the worker at large — an `env` queue hold and a
-    // backoff retry lineage for a bead that is only waiting on a receipt — and
+    // environment retry for a bead that is only waiting on a receipt, and
     // then the review path would write its own settlement over that record.
-    // ADR 0016 reserves the queue-stopping tiers for failures that recur on the
-    // NEXT bead; this one recurs on nothing.
     if (!reviewSessionOf(input.workspace, input.attempt_id)) {
       settleFailureTier(
         input.workspace,
@@ -11579,7 +11503,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, route_change?: { prior_lane: string, current_route: string|null }, fallback?: string|null }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
@@ -11601,8 +11525,9 @@ export function createScheduler(deps) {
     // 대상이 아니다. 기록된 세션 승계를 선택한 계보의 자동 환경 재시도만이 그
     // rung을 resume로 소비한다 (UI-qce9 F1).
     const ladder_prior_attempt =
-      continuation.continuation === 'prior_attempt' &&
-      continuation.provider_auto_resume === true;
+      !!continuation.retry ||
+      (continuation.continuation === 'prior_attempt' &&
+        continuation.provider_auto_resume === true);
     if (
       !prior ||
       (prior.status !== 'failed' &&
@@ -11775,6 +11700,7 @@ export function createScheduler(deps) {
       completion_resume: true,
       continuation: continuation.continuation,
       decision_token: continuation.decision_token,
+      retry: continuation.retry,
       provider_auto_resume: continuation.provider_auto_resume === true,
       auto_resume_kind: continuation.auto_resume_kind,
       auto_resume_origin: continuation.auto_resume_origin,
@@ -11786,6 +11712,7 @@ export function createScheduler(deps) {
     if (result.ok) {
       if (
         continuation.provider_auto_resume !== true &&
+        !continuation.retry &&
         typeof prior.runner === 'string'
       ) {
         const cleared_target = deps.store.clearManualProviderResumeTarget(
@@ -11800,97 +11727,8 @@ export function createScheduler(deps) {
       if (cleared && cleared.ok) {
         notifyChanged(workspace);
       }
-      await releaseSystemicHoldForResume(workspace, attempt_id, continuation);
     }
     return result;
-  }
-
-  /**
-   * One human approval lifts a systemic stop, and the ↻ of the attempt that
-   * halted the queue IS that approval (2026-09-08 resume-click spec §3.1) —
-   * the user does not click the same decision twice. Judged only AFTER the
-   * child spawned, so a refused spawn leaves the stop standing.
-   *
-   * The unit is the halting attempt and its `resumed_from` descendants: another
-   * bead's ↻, a non-lineage attempt of the same bead, and provider auto resume
-   * all leave the stop to the `재개` button. A pre-field legacy stop with no
-   * `halted_by_attempt_id` is unattributable, so it stays too (fail-quiet).
-   *
-   * @param {string} workspace
-   * @param {string} attempt_id - The resumed (prior) attempt.
-   * @param {{ provider_auto_resume?: boolean }} continuation
-   */
-  async function releaseSystemicHoldForResume(
-    workspace,
-    attempt_id,
-    continuation
-  ) {
-    if (continuation.provider_auto_resume === true) {
-      return;
-    }
-    /** @type {import('./queue-hold.js').QueueHoldState} */
-    let state;
-    try {
-      state = holdStateOf(workspace);
-    } catch (err) {
-      log('systemic hold read failed on resume of %s: %o', attempt_id, err);
-      return;
-    }
-    const hold = state.hold;
-    if (hold === null || hold.kind !== 'systemic') {
-      return;
-    }
-    const halted_by = hold.halted_by_attempt_id;
-    if (typeof halted_by !== 'string' || halted_by.length === 0) {
-      return;
-    }
-    if (!resumeReachesHaltingAttempt(workspace, attempt_id, halted_by)) {
-      return;
-    }
-    // No `hold.since` CAS: the authority is the attempt lineage, not the stop
-    // the click was drawn against, and the snapshot was re-read just above.
-    await releaseQueueHold(workspace, now());
-  }
-
-  /**
-   * Walk `resumed_from` upward from `attempt_id` inside the queue's attempts
-   * map, looking for `halted_by_attempt_id`. A visited set breaks a cycle, and
-   * a missing parent record ends the walk as "not reached".
-   *
-   * @param {string} workspace
-   * @param {string} attempt_id
-   * @param {string} halted_by_attempt_id
-   */
-  function resumeReachesHaltingAttempt(
-    workspace,
-    attempt_id,
-    halted_by_attempt_id
-  ) {
-    if (attempt_id === halted_by_attempt_id) {
-      return true;
-    }
-    const attempts = deps.store.snapshot(workspace).attempts || {};
-    /** @type {Set<string>} */
-    const visited = new Set([attempt_id]);
-    let cursor = attempts[attempt_id];
-    while (cursor && typeof cursor.resumed_from === 'string') {
-      const parent_id = cursor.resumed_from;
-      if (visited.has(parent_id)) {
-        return false;
-      }
-      visited.add(parent_id);
-      cursor = attempts[parent_id];
-      // The record itself is the evidence, not the pointer: a parent that left
-      // the live map (transferred, pruned) is a broken lineage even when the
-      // id matches, so the walk ends before the comparison.
-      if (!cursor) {
-        return false;
-      }
-      if (parent_id === halted_by_attempt_id) {
-        return true;
-      }
-    }
-    return false;
   }
 
   /**
@@ -12962,6 +12800,7 @@ export function createScheduler(deps) {
     const prior_runner_available =
       recorded_prior_runner !== null && RUNNERS.includes(recorded_prior_runner);
     const provider_auto_resume = options.provider_auto_resume === true;
+    const ladder_retry = !!options.retry;
     const recovery_wait =
       prior.status === 'waiting' && !!prior.cause_detail?.recovery;
     const strict_preserved = baseMovedLineage(workspace, prior) !== null;
@@ -13013,30 +12852,11 @@ export function createScheduler(deps) {
       return lane_mismatch;
     }
     const base_resolved =
-      provider_auto_resume || prior_attempt_choice || recovery_wait
-        ? {
-            ok: /** @type {const} */ (true),
-            preset_id: prior.exec_default_preset_id ?? null,
-            preset_revision: prior.exec_default_preset_revision ?? null,
-            exec_preset: prior.exec_preset ?? null,
-            exec: {
-              ...(prior.exec_values || {}),
-              runner: recorded_prior_runner,
-              orchestration_model: prior.model ?? null,
-              orchestration_effort: prior.effort ?? null,
-              orchestration_speed: prior.speed ?? 'default',
-              stamped_keys: EXEC_SETTING_KEYS,
-              invalid_reason: null
-            },
-            accounts: {
-              claude: prior.claude_account ?? null,
-              codex: prior.codex_account ?? null
-            },
-            account_sources: prior.account_sources || {
-              claude: null,
-              codex: null
-            }
-          }
+      provider_auto_resume ||
+      ladder_retry ||
+      prior_attempt_choice ||
+      recovery_wait
+        ? recordedDispatchSettings(prior)
         : resolveDispatchSettings(
             workspace,
             bead_snapshot,
@@ -13192,7 +13012,8 @@ export function createScheduler(deps) {
     const use_prior =
       (decision === 'prior_session' ||
         decision === 'prior_attempt' ||
-        provider_auto_resume) &&
+        provider_auto_resume ||
+        ladder_retry) &&
       (!override_result.applied || (account_switch && account_only_override));
     const internal_fresh_fallback =
       provider_auto_resume &&
@@ -13313,7 +13134,7 @@ export function createScheduler(deps) {
       }
       // §5.3: `prior_attempt` never substitutes a fresh session — the refusal
       // is the answer, and the paused parent stays where the user left it.
-      if (prior_attempt_choice || strict_preserved) {
+      if (prior_attempt_choice || strict_preserved || ladder_retry) {
         return { ok: false, reason: 'prior_session_unavailable' };
       }
       continuation_mode = 'fresh';
@@ -13600,10 +13421,8 @@ export function createScheduler(deps) {
       ...(options.fork_session === true
         ? { forked_from_session_id: prior.session_id }
         : {}),
-      ...(prior.status === 'waiting' &&
-      prior.cause_detail?.recovery &&
-      prior.retry?.origin_attempt_id
-        ? { retry: { ...prior.retry, next_at: null } }
+      ...(options.retry || prior.retry?.origin_attempt_id
+        ? { retry: { ...(options.retry || prior.retry), next_at: null } }
         : {}),
       auto_resume_kind: options.auto_resume_kind ?? null,
       continuation_mode,
@@ -13682,22 +13501,23 @@ export function createScheduler(deps) {
           finished_at: landed_at
         }
       });
-      // A base landing is SYSTEMIC wherever it is observed (worker-failure-tiers
-      // §3.4): the prevention layer was breached and the base moved
-      // irreversibly, so the queue stops here exactly as it does on the session
-      // termination path. This branch writes its own record instead of going
-      // through `failAttempt` — the relaunch it aborts never started — so the
-      // hold has to be raised explicitly.
-      deps.store.applyQueueHold(workspace, {
-        event: {
-          kind: 'systemic_failure',
-          bead_id,
-          attempt_id: new_attempt_id,
-          cause: 'base_landing_detected',
-          at: landed_at
-        },
-        now: landed_at
+      const classification = classifyFailure({
+        cause: 'base_landing_detected'
       });
+      notifyLifecycle('attemptFailed', {
+        bead_id,
+        cause: classification.cause,
+        repo
+      });
+      appendFailedEvent(bead_id, new_attempt_id, classification, landed_at);
+      postAttemptFailureComment(
+        workspace,
+        new_attempt_id,
+        bead_id,
+        classification,
+        false
+      );
+      closeRetryLineage(workspace, bead_id);
       removeGuardHook(workspace, attempt_id);
       if (!options.disposition) {
         removeGuardHook(workspace, new_attempt_id);
@@ -14605,15 +14425,41 @@ export function createScheduler(deps) {
   const retry_timers = new Map();
 
   /**
-   * @param {string} workspace
-   * @returns {import('./queue-hold.js').QueueHoldState}
+   * Read the exact execution tuple recorded by an earlier attempt.
+   *
+   * @param {any} prior
    */
-  function holdStateOf(workspace) {
+  function recordedDispatchSettings(prior) {
+    return {
+      ok: /** @type {const} */ (true),
+      preset_id: prior.exec_default_preset_id ?? null,
+      preset_revision: prior.exec_default_preset_revision ?? null,
+      exec_preset: prior.exec_preset ?? null,
+      exec: {
+        ...(prior.exec_values || {}),
+        runner: prior.runner,
+        orchestration_model: prior.model ?? null,
+        orchestration_effort: prior.effort ?? null,
+        orchestration_speed: prior.speed ?? 'default',
+        stamped_keys: EXEC_SETTING_KEYS,
+        invalid_reason: null
+      },
+      accounts: {
+        claude: prior.claude_account ?? null,
+        codex: prior.codex_account ?? null
+      },
+      account_sources: prior.account_sources || { claude: null, codex: null }
+    };
+  }
+
+  /**
+   * @param {string} workspace
+   * @returns {import('./queue-hold.js').RetryState}
+   */
+  function retryStateOf(workspace) {
     const q = deps.store.snapshot(workspace);
     return {
-      hold: q.hold ?? null,
-      lineages: Array.isArray(q.lineages) ? q.lineages : [],
-      hold_history: Array.isArray(q.hold_history) ? q.hold_history : []
+      lineages: Array.isArray(q.lineages) ? q.lineages : []
     };
   }
 
@@ -14630,26 +14476,18 @@ export function createScheduler(deps) {
 
   /**
    * Arm the wake-up for the EARLIEST scheduled retry of this workspace. Idempotent
-   * — every caller re-arms from the durable ladder rather than adding a timer, so
-   * an env failure, a `지금 재시도` click and a restart all converge on one timer.
-   *
-   * A SYSTEMIC stop arms nothing: the ladder is preserved so `재개` can still
-   * redispatch what was mid-climb, but retrying into a wall every bead hits is
-   * the exact session waste the hold exists to stop (spec §3.4).
+   * — every caller re-arms from the durable ladder rather than adding a timer.
    *
    * @param {string} workspace
    */
   function armRetryTimer(workspace) {
     clearRetryTimer(workspace);
-    /** @type {import('./queue-hold.js').QueueHoldState} */
+    /** @type {import('./queue-hold.js').RetryState} */
     let state;
     try {
-      state = holdStateOf(workspace);
+      state = retryStateOf(workspace);
     } catch (err) {
       log('retry timer arm failed for %s: %o', workspace, err);
-      return;
-    }
-    if (state.hold !== null && state.hold.kind === 'systemic') {
       return;
     }
     const earliest = earliestRetryAt(state);
@@ -14769,9 +14607,6 @@ export function createScheduler(deps) {
    * the candidate fence {@link runPass} applies — the whole point of the ladder
    * is that this bead's last attempt failed.
    *
-   * The env hold itself does NOT block this: holding the queue means no NEW work
-   * starts, while the retries already on the ladder are what resolves the hold.
-   *
    * Every due lineage leaves exactly one outcome, so no `next_at` survives this
    * pass in the past (2026-08-29-worker-retry-lineage-off-lane-design.md §3):
    * a bead the user pulled out of the waiting lanes has abandoned the ladder,
@@ -14785,15 +14620,12 @@ export function createScheduler(deps) {
    */
   async function runDueRetries(workspace) {
     const at = now();
-    /** @type {import('./queue-hold.js').QueueHoldState} */
+    /** @type {import('./queue-hold.js').RetryState} */
     let state;
     try {
-      state = holdStateOf(workspace);
+      state = retryStateOf(workspace);
     } catch (err) {
       log('retry scan failed for %s: %o', workspace, err);
-      return;
-    }
-    if (state.hold !== null && state.hold.kind === 'systemic') {
       return;
     }
     const q = deps.store.snapshot(workspace);
@@ -14816,7 +14648,7 @@ export function createScheduler(deps) {
         // attempt settles would restart the ladder at `attempts: 1` on the next
         // env failure. The rung stays unspent — the settlement closes or
         // advances the lineage.
-        deps.store.applyQueueHold(workspace, {
+        deps.store.applyRetryEvent(workspace, {
           event: { kind: 'retry_deferred', bead_id, at },
           now: at
         });
@@ -14824,13 +14656,13 @@ export function createScheduler(deps) {
       }
       if (!waiting.has(bead_id)) {
         // Leaving the waiting lanes abandons the ladder: nothing will retry
-        // this bead, so the queue must not stay held for it. Closing here, not
+        // this bead. Closing here, not
         // through `closeRetryLineage`, because that arms the retry timer (D5).
         log(
           'retry lineage abandoned for %s: bead left the waiting lanes',
           bead_id
         );
-        const closed = deps.store.applyQueueHold(workspace, {
+        const closed = deps.store.applyRetryEvent(workspace, {
           event: { kind: 'retry_succeeded', bead_id, at },
           now: at
         });
@@ -14846,66 +14678,99 @@ export function createScheduler(deps) {
       // nothing to show for it — the ladder would silently stop climbing.
       const latest_attempt = latestImplementationAttempt(q, bead_id);
       const before_attempt_id = latest_attempt?.attempt_id ?? null;
-      // 기록된 세션을 잇겠다는 사용자 선택은 환경 재시도 사다리에서도 유지된다
-      // (스펙 §5.3): 이 계보는 `dispatch`의 현재 설정 새 attempt가 아니라 기록된
-      // tuple을 승계하는 resume로만 다시 시작한다. resume가 거부하면 아래 "아무것도
-      // 띄우지 않음" 분기가 `retry_deferred`로 남기고, fresh로 흘러가지 않는다.
-      //
-      // PRESERVED WORK is the second reason to resume rather than re-dispatch
-      // (harness-reduction spec D5b). A fresh dispatch is REFUSED by its own
-      // worktree residue check when commits remain (`worktree_stale_work`), so
-      // an attempt that finished implementation, tests and a push and then died
-      // on a provider capacity error could only ever be deferred — one audited
-      // lineage burned $7 and 15 minutes that way. Where the work still exists,
-      // the ladder resumes the attempt that made it.
+      const retry = {
+        cause: lineage.cause,
+        attempts: lineage.attempts,
+        max: RETRY_MAX,
+        next_at: null,
+        origin_attempt_id: lineage.origin_attempt_id,
+        ...(lineage.base_moved_count
+          ? { base_moved_count: lineage.base_moved_count }
+          : {})
+      };
+      const session_retry =
+        latest_attempt &&
+        (latest_attempt.cause === 'base_moved' ||
+          latest_attempt.cause === 'session_ended_unresolved' ||
+          latest_attempt.cause ===
+            'session_ended_unresolved:background_shell' ||
+          latest_attempt.cause === 'session_hard_stop:environment' ||
+          latest_attempt.cause?.startsWith('session_failed:'));
+      const local_session =
+        latest_attempt &&
+        typeof latest_attempt.session_id === 'string' &&
+        latest_attempt.session_id.length > 0 &&
+        transcriptPresent(
+          latest_attempt.runner,
+          latest_attempt.session_id,
+          latest_attempt
+        );
+      const base_moved = latest_attempt?.cause === 'base_moved';
       const keep_prior_attempt =
         before_attempt_id !== null &&
+        !session_retry &&
         (latest_attempt?.continuation_choice === 'prior_attempt' ||
           (await attemptHasPreservedWork(latest_attempt)));
       claimed.add(bead_id);
       try {
-        if (keep_prior_attempt) {
+        if (
+          base_moved ||
+          (session_retry && local_session) ||
+          keep_prior_attempt
+        ) {
           const resumed = await resume(workspace, before_attempt_id, {
-            continuation: 'prior_attempt',
-            provider_auto_resume: true,
+            continuation: keep_prior_attempt ? 'prior_attempt' : 'auto',
+            ...(keep_prior_attempt ? { provider_auto_resume: true } : {}),
+            retry,
             preclaimed: true
           });
           if (!resumed.ok) {
-            claimed.delete(bead_id);
-            log(
-              'prior_attempt retry refused for %s: %s',
-              bead_id,
-              resumed.reason || 'unknown'
-            );
+            if (
+              resumed.reason === 'prior_session_unavailable' &&
+              session_retry &&
+              !base_moved
+            ) {
+              claimed.add(bead_id);
+              await dispatch(workspace, bead_id, null, {
+                retry,
+                retry_source: latest_attempt
+              });
+            } else {
+              claimed.delete(bead_id);
+              log(
+                'retry resume refused for %s: %s',
+                bead_id,
+                resumed.reason || 'unknown'
+              );
+            }
           }
         } else {
           await dispatch(workspace, bead_id, null, {
-            retry: {
-              cause: lineage.cause,
-              attempts: lineage.attempts,
-              max: RETRY_MAX,
-              origin_attempt_id: lineage.origin_attempt_id
-            }
+            retry,
+            retry_source: latest_attempt
           });
         }
       } catch (err) {
         claimed.delete(bead_id);
         log('retry dispatch failed for %s: %o', bead_id, err);
       }
-      const after_attempt_id =
-        latestImplementationAttempt(deps.store.snapshot(workspace), bead_id)
-          ?.attempt_id ?? null;
+      const after_queue = deps.store.snapshot(workspace);
+      const after_attempt = latestImplementationAttempt(after_queue, bead_id);
+      const after_attempt_id = after_attempt?.attempt_id ?? null;
       if (after_attempt_id !== null && after_attempt_id !== before_attempt_id) {
-        deps.store.applyQueueHold(workspace, {
-          event: { kind: 'retry_dispatched', bead_id, at },
-          now: at
-        });
+        // A synchronous launch failure may already have scheduled the next rung.
+        if (after_attempt?.status === 'running') {
+          deps.store.applyRetryEvent(workspace, {
+            event: { kind: 'retry_dispatched', bead_id, at },
+            now: at
+          });
+        }
         dispatched = true;
       } else {
         // Nothing launched. The rung stays unspent, but its `next_at` has to
         // move off the past or `armRetryTimer` below would re-fire on it in a
         // tight loop.
-        deps.store.applyQueueHold(workspace, {
+        deps.store.applyRetryEvent(workspace, {
           event: { kind: 'retry_deferred', bead_id, at },
           now: at
         });
@@ -14989,27 +14854,24 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Close a bead's env retry lineage (spec §3.3): the lineage is removed and an
-   * env hold with no lineages left releases itself. A bead that carries no
-   * lineage is a no-op, so an ordinary outcome costs no queue write.
+   * Close one bead's retry lineage. An absent lineage costs no queue write.
    *
    * ANY non-env outcome closes the lineage, not just a delivery: the ladder
    * exists to answer "is this bead still failing on the environment?", and a
    * retry that ends `parked` or with an individual failure has answered it —
-   * leaving the lineage would hold the queue on a bead nothing will retry, and
-   * `armRetryTimer` would keep waking for a rung no attempt is climbing.
+   * leaving it would wake a timer for a rung no attempt is climbing.
    *
    * @param {string} workspace
    * @param {string} bead_id
    */
   function closeRetryLineage(workspace, bead_id) {
     try {
-      const state = holdStateOf(workspace);
+      const state = retryStateOf(workspace);
       if (!state.lineages.some((lineage) => lineage.bead_id === bead_id)) {
         return;
       }
       const at = now();
-      deps.store.applyQueueHold(workspace, {
+      deps.store.applyRetryEvent(workspace, {
         event: { kind: 'retry_succeeded', bead_id, at },
         now: at
       });
@@ -15222,109 +15084,6 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Lift a queue stop and let the held beads move again — the shared body of
-   * BOTH human approvals of the same stop (2026-09-08 resume-click spec §3.2):
-   * the `재개` button and the ↻ of the attempt that halted the queue. The
-   * caller owns its own authority check; this helper only performs the release.
-   *
-   * @param {string} workspace
-   * @param {number} at
-   */
-  async function releaseQueueHold(workspace, at) {
-    const applied = deps.store.applyQueueHold(workspace, {
-      event: { kind: 'resume', at },
-      now: at
-    });
-    clearRetryTimer(workspace);
-    /** @type {string[]} */
-    const bead_ids = [];
-    for (const effect of applied.effects) {
-      if (effect.kind === 'redispatch') {
-        bead_ids.push(...(effect.bead_ids ?? []));
-      }
-    }
-    // The fence keys off the bead's LAST attempt, so lifting the hold is not
-    // enough on its own: the record that stopped the pass is dismissed here,
-    // which is exactly what `재개` means — the user has seen this failure and
-    // wants the bead tried again.
-    const q = deps.store.snapshot(workspace);
-    for (const bead_id of bead_ids) {
-      const latest = latestImplementationAttempt(q, bead_id);
-      if (
-        latest &&
-        typeof latest.dismissed_at !== 'number' &&
-        (latest.status === 'retry_wait' || latest.status === 'failed')
-      ) {
-        deps.store.updateAttempt(workspace, {
-          attempt_id: latest.attempt_id,
-          patch: { dismissed_at: at }
-        });
-      }
-    }
-    notifyChanged(workspace);
-    await tick(workspace);
-  }
-
-  /**
-   * `재개` on a systemic stop (ws `worker-queue-hold-resume`, spec §3.4).
-   *
-   * CAS on `hold.since`: the button was drawn against ONE stop, and a stop that
-   * moved underneath it is a different one — clearing it would silently
-   * acknowledge a wall the user never saw.
-   *
-   * @param {string} workspace
-   * @param {{ since?: number|null }} input
-   * @returns {Promise<{ ok: boolean, reason?: string }>}
-   */
-  async function resumeQueueHold(workspace, input) {
-    /** @type {import('./queue-hold.js').QueueHoldState} */
-    let state;
-    try {
-      state = holdStateOf(workspace);
-    } catch {
-      return { ok: false, reason: 'queue_unreadable' };
-    }
-    if (state.hold === null || state.hold.since !== input.since) {
-      return { ok: false, reason: 'hold_changed' };
-    }
-    await releaseQueueHold(workspace, now());
-    return { ok: true };
-  }
-
-  /**
-   * `지금 재시도` on an env hold (ws `worker-queue-hold-retry-now`, spec §4):
-   * every lineage's `next_at` moves to now and the timer fires immediately.
-   * Same CAS as `재개`, for the same reason.
-   *
-   * @param {string} workspace
-   * @param {{ since?: number|null }} input
-   * @returns {Promise<{ ok: boolean, reason?: string }>}
-   */
-  async function retryQueueHoldNow(workspace, input) {
-    /** @type {import('./queue-hold.js').QueueHoldState} */
-    let state;
-    try {
-      state = holdStateOf(workspace);
-    } catch {
-      return { ok: false, reason: 'queue_unreadable' };
-    }
-    if (state.hold === null || state.hold.since !== input.since) {
-      return { ok: false, reason: 'hold_changed' };
-    }
-    if (state.hold.kind !== 'env') {
-      return { ok: false, reason: 'not_env_hold' };
-    }
-    const at = now();
-    deps.store.applyQueueHold(workspace, {
-      event: { kind: 'retry_now', at },
-      now: at
-    });
-    await runDueRetries(workspace);
-    notifyChanged(workspace);
-    return { ok: true };
-  }
-
-  /**
    * One dispatch pass (worker-phase2 §3): ONE ordered scan of the single
    * waiting lane, filling the free slots of the store-owned cap.
    *
@@ -15345,7 +15104,7 @@ export function createScheduler(deps) {
   async function runPass(workspace) {
     let q = deps.store.snapshot(workspace);
     const at = now();
-    const explicit_only = q.auto_advance !== true || q.hold !== null;
+    const explicit_only = q.auto_advance !== true;
     const explicit_serial = new Set();
     for (const lane of q.serial_lanes || []) {
       for (
@@ -16156,7 +15915,7 @@ export function createScheduler(deps) {
     // 판정 입력은 폐기 작업이 포착한 `source_status`다. 위 `discarded` 패치와
     // 호출자의 phase 저장 사이에서 죽으면 startup recovery가 이 단계를 다시
     // 돌리는데, 그때 살아 있는 레코드는 이미 `discarded`라 조건이 영영 거짓이
-    // 되어 lineage와 env hold가 남는다 — 이 스펙 §1이 없애려는 헛돎 그대로다.
+    // 되어 lineage가 남는다 — 이 스펙 §1이 없애려는 헛돎 그대로다.
     // `closeRetryLineage`는 lineage가 없으면 no-op이라 replay가 안전하다.
     if ((source_status ?? attempt.status) === 'retry_wait') {
       closeRetryLineage(workspace, attempt.bead_id);
@@ -16427,8 +16186,6 @@ export function createScheduler(deps) {
     recoverControls,
     onIssuesChanged,
     rescanWaiting,
-    resumeQueueHold,
-    retryQueueHoldNow,
     reconcile,
     sweepClosedQueue,
     activeBeadIds,

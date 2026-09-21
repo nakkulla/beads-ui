@@ -270,7 +270,6 @@ export function createWaitJudge(deps) {
     return JSON.stringify([
       queue.revision,
       queue.provider_hold,
-      queue.hold,
       queue.auto_advance
     ]);
   }
@@ -3336,38 +3335,6 @@ export async function resumeWorkerAttempt(
     return { ok: false, reason: 'no_attachment' };
   }
   return att.scheduler.resume(keyFor(workspace_root), attempt_id, continuation);
-}
-
-/**
- * Release a systemic queue stop (`재개`, 2026-08-28 worker-failure-tiers spec
- * §3.4). CAS on `hold.since`, so a stop that moved under the button is refused
- * rather than silently acknowledged.
- *
- * @param {string} workspace_root
- * @param {{ since?: number|null }} input
- * @returns {Promise<{ ok: boolean, reason?: string }>}
- */
-export async function resumeWorkerQueueHold(workspace_root, input) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  if (!att) {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  return att.scheduler.resumeQueueHold(keyFor(workspace_root), input);
-}
-
-/**
- * Collapse an env hold's backoff to now (`지금 재시도`, spec §4). Same CAS.
- *
- * @param {string} workspace_root
- * @param {{ since?: number|null }} input
- * @returns {Promise<{ ok: boolean, reason?: string }>}
- */
-export async function retryWorkerQueueHoldNow(workspace_root, input) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  if (!att) {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  return att.scheduler.retryQueueHoldNow(keyFor(workspace_root), input);
 }
 
 /**

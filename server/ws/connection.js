@@ -101,8 +101,6 @@ import {
   handleWorkerPrDiscard,
   handleWorkerProviderLimitPolicySet,
   handleWorkerProviderProbeNow,
-  handleWorkerQueueHoldResume,
-  handleWorkerQueueHoldRetryNow,
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
@@ -567,14 +565,6 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-repo-operation-dismiss':
       await handleWorkerRepoOperationDismiss(ws, req);
-      return;
-    // UI-5ym8: protocol.js union updated by worker-ui unit
-    case /** @type {any} */ ('worker-queue-hold-resume'):
-      await handleWorkerQueueHoldResume(ws, req);
-      return;
-    // UI-5ym8: protocol.js union updated by worker-ui unit
-    case /** @type {any} */ ('worker-queue-hold-retry-now'):
-      await handleWorkerQueueHoldRetryNow(ws, req);
       return;
     case 'worker-provider-probe-now':
       await handleWorkerProviderProbeNow(ws, req);

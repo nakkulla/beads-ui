@@ -20,7 +20,7 @@ export const WAIT_THRESHOLDS = Object.freeze({
 });
 
 /**
- * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'base_moved'|'provider_hold'|'queue_hold'|'awaiting_user'|'retry_wait'|'stale_work'|'recovery'} WaitKind
+ * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'base_moved'|'provider_hold'|'awaiting_user'|'retry_wait'|'stale_work'|'recovery'} WaitKind
  * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'disposition'|'recovery_confirm'|'resume_failed'|'wait_key_missing'|'wait_record_missing'} VerdictCode
  * @typedef {{ code: VerdictCode, message: string }} VerdictReason
  * @typedef {Object} WaitReason
@@ -729,43 +729,6 @@ export function judgeWaitReasons(input) {
         }
         wait_reasons.push(result);
       }
-    }
-  }
-  const hold = queue.hold;
-  if (hold && ['env', 'systemic'].includes(hold.kind)) {
-    for (const bead_id of new Set([...pending_ids, ...(hold.bead_ids || [])])) {
-      if (excluded.has(bead_id) || facts[bead_id]?.status === 'closed') {
-        continue;
-      }
-      const env = hold.kind === 'env';
-      const times = (queue.lineages || [])
-        .map((/** @type {any} */ row) => timestamp(row.next_at))
-        .filter((/** @type {any} */ at) => at !== undefined);
-      const next_at = times.length > 0 ? Math.min(...times) : undefined;
-      const result = reason(
-        'queue_hold',
-        bead_id,
-        root_dir,
-        `${env ? '환경 오류로 큐 일시 정지' : '큐 정지'}${hold.cause ? ` · ${line(hold.cause)}` : ''}`,
-        env
-          ? `${next_at === undefined ? '' : `${localClock(next_at)}에 `}자동 재시도 · 성공하면 자동 해제 (지금 재시도 가능)`
-          : '▶ 재개로 해제 (사람 승인)'
-      );
-      addClocks(result, {
-        since: hold.since,
-        ...(env ? { next_check_at: next_at } : {})
-      });
-      if (!env) {
-        result.actions.push({
-          op: 'resume',
-          label: '▶ 재개',
-          payload: { root_dir }
-        });
-        judge(result, 'action_required', 'hold');
-      } else if (elapsed(next_at, WAIT_THRESHOLDS.grace_ms, now)) {
-        judge(result, 'overdue', 'retry_stalled');
-      }
-      wait_reasons.push(result);
     }
   }
   // 자동 진행 꺼짐(`queue.auto_advance === false`)은 사유를 내지 않는다

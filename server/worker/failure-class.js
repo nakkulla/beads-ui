@@ -3,9 +3,7 @@
  * (2026-08-28 `worker-failure-tiers-queue-hold` spec §3).
  *
  * This module is pure and deliberately blind to queue state: it never sees a
- * bead's retry history, the clock, or `queue.hold`. Repetition, promotion and
- * release live in `queue-hold.js`, which consumes {@link causeKey} to decide
- * whether two attempts failed for "the same" reason.
+ * bead's retry history or the clock. Retry budgets live in `queue-hold.js`.
  *
  * Tier meaning (spec §3.1-§3.4):
  *   - `parked`     — the session ended successfully while waiting on a user
@@ -15,8 +13,7 @@
  *                    worker-prerequisite-wait-tier spec §4.3); not a failure,
  *                    and `bd ready` absence — not a fence — is what holds it.
  *   - `individual` — this bead failed; the queue keeps running.
- *   - `env`        — environment failure; backoff retry + queue hold.
- *   - `systemic`   — every bead would hit the same wall; the queue stops.
+ *   - `env`        — environment failure; this bead gets a backoff retry.
  */
 // The cause sentences of the landing/merge/cleanup contract tokens (spec §6
 // row 4). Imported from the dependency-free leaf under `app/utils/`, the same
@@ -26,7 +23,7 @@ import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
 import { EXTERNAL_WAIT_CAUSE } from './external-wait/contract.js';
 
 /**
- * @typedef {'parked' | 'waiting' | 'individual' | 'env' | 'systemic'} FailureTier
+ * @typedef {'parked' | 'waiting' | 'individual' | 'env'} FailureTier
  */
 
 /**
@@ -76,7 +73,7 @@ import { EXTERNAL_WAIT_CAUSE } from './external-wait/contract.js';
  */
 export const RETRY_DELAYS_MS = Object.freeze([120000, 300000, 900000]);
 
-/** Attempts a single env lineage may spend before promotion (spec §3.3). */
+/** Retry rungs available to a single env lineage. */
 export const RETRY_MAX = 3;
 
 /** Longest summary line kept on an attempt record (spec §6). */
@@ -128,23 +125,6 @@ const ALWAYS_ENV_CAUSES = new Set([
 /** Cause prefixes (`<prefix>:<detail>`) that are environmental. */
 const ALWAYS_ENV_PREFIXES = ['spawn_failed'];
 
-/** Causes that stop the queue on first sight (spec §3.4). */
-export const ALWAYS_SYSTEMIC_CAUSES = new Set([
-  'base_landing_detected',
-  'gh_unavailable',
-  'bd_unreachable',
-  'verify_red'
-]);
-
-/** Cause prefixes that stop the queue on first sight. @type {string[]} */
-const ALWAYS_SYSTEMIC_PREFIXES = [];
-
-/** `loud_fail_blocker` reasons that are a breached prevention layer (§3.4). */
-const SYSTEMIC_BLOCKER_REASONS = new Set([
-  'hook_bypass_blocked',
-  'merge_to_base_blocked'
-]);
-
 /** Session-level causes whose tier depends on the error text (spec §3.3). */
 const PATTERN_SENSITIVE_CAUSES = new Set([
   'session_failed:is_error',
@@ -154,9 +134,7 @@ const PATTERN_SENSITIVE_CAUSES = new Set([
 ]);
 
 /**
- * Causes whose "same cause" comparison key carries the matched pattern group
- * instead of the bare cause (spec §3.3): two beads dying on unrelated session
- * errors must not read as one systemic outage.
+ * Include the matched pattern group in the retry cause for session errors.
  */
 const GROUP_KEYED_CAUSES = new Set([
   'session_failed:is_error',
@@ -164,11 +142,9 @@ const GROUP_KEYED_CAUSES = new Set([
 ]);
 
 /**
- * Causes that never take part in queue-hold promotion (waiting-tier spec §4.3).
- * A `prerequisite_unmet` ending is a terminal WAIT, not a failure: two of them
- * in a row say the blocker is still open, never that the environment is.
+ * Waiting causes do not identify an environment retry.
  */
-const NON_PROMOTING_CAUSES = new Set([
+const NON_ENV_RETRY_CAUSES = new Set([
   'prerequisite_unmet',
   'base_moved',
   EXTERNAL_WAIT_CAUSE
@@ -341,13 +317,11 @@ export function matchEnvPattern(summary) {
 }
 
 /**
- * Comparison key for "the same cause" in queue-hold promotion (spec §3.3): the
- * first two colon segments, with the matched pattern group appended for the
- * session error causes whose text decides the tier.
+ * Retry cause key: retain the first two cause segments and the error group.
  *
  * @param {string | null | undefined} cause
  * @param {string | null} [env_group]
- * @returns {string | null} null for a cause that never promotes (§4.3).
+ * @returns {string | null} null for a waiting cause.
  */
 export function causeKey(cause, env_group) {
   if (typeof cause !== 'string' || cause.length === 0) {
@@ -357,7 +331,7 @@ export function causeKey(cause, env_group) {
     cause === 'session_ended_unresolved:background_shell'
       ? 'session_ended_unresolved'
       : cause.split(':').slice(0, 2).join(':');
-  if (NON_PROMOTING_CAUSES.has(head)) {
+  if (NON_ENV_RETRY_CAUSES.has(head)) {
     return null;
   }
   if (GROUP_KEYED_CAUSES.has(head) && typeof env_group === 'string') {
@@ -436,6 +410,21 @@ export function classifyFailure(input) {
   const summary = readSummary(input);
   const raw_cause = typeof input.cause === 'string' ? input.cause : '';
 
+  if (raw_cause === 'loud_fail_blocker') {
+    return classification('individual', raw_cause, summary, null);
+  }
+  if (raw_cause === 'gh_unavailable' || raw_cause === 'bd_unreachable') {
+    return classification('env', raw_cause, summary, 'api');
+  }
+  if (raw_cause === 'session_failed:turn_failed') {
+    return classification(
+      'env',
+      raw_cause,
+      summary,
+      matchEnvPattern(summary) ?? 'unknown'
+    );
+  }
+
   // Waiting-tier spec §4.3, ahead of every other rule: a prerequisite wait is
   // an ending the CALLER proved, and its inputs (exit 0, bead still open, no
   // PR) are exactly the ones §3.1-§3.2 below would otherwise read as an
@@ -493,12 +482,16 @@ export function classifyFailure(input) {
       key = 'environment_line';
     } else if (raw_cause.startsWith('session_failed:')) {
       key = 'unknown_error';
-    } else if (raw_cause === 'loud_fail_blocker') {
-      key = 'authority_required';
     } else if (raw_cause === 'session_recovery_wait') {
       key = 'unknown_error';
     }
     const mapped = key ? input.recovery.classify(key) : null;
+    if (
+      mapped?.reason === 'unclassified' &&
+      raw_cause !== 'session_recovery_wait'
+    ) {
+      return classification('env', raw_cause, summary, env_group ?? 'unknown');
+    }
     if (
       mapped &&
       (mapped.disposition === 'wait' || mapped.disposition === 'reconcile')
@@ -553,6 +546,14 @@ export function classifyFailure(input) {
       return classification('parked', 'session_parked', summary, null);
     }
     const recovered = input.recovery?.classify('finished_without_result_line');
+    if (recovered?.reason === 'unclassified') {
+      return classification(
+        'env',
+        'session_ended_unresolved',
+        summary,
+        matchEnvPattern(summary) ?? 'unknown'
+      );
+    }
     if (
       recovered &&
       (recovered.disposition === 'wait' ||
@@ -590,24 +591,6 @@ export function classifyFailure(input) {
 
   if (ALWAYS_ENV_CAUSES.has(cause) || hasPrefix(cause, ALWAYS_ENV_PREFIXES)) {
     return classification('env', cause, summary, null);
-  }
-
-  if (
-    ALWAYS_SYSTEMIC_CAUSES.has(cause) ||
-    hasPrefix(cause, ALWAYS_SYSTEMIC_PREFIXES)
-  ) {
-    return classification('systemic', cause, summary, null);
-  }
-
-  if (cause === 'loud_fail_blocker') {
-    const detail = /** @type {{ reason?: unknown } | null | undefined} */ (
-      input.cause_detail
-    );
-    const reason = typeof detail?.reason === 'string' ? detail.reason : '';
-    if (SYSTEMIC_BLOCKER_REASONS.has(reason)) {
-      return classification('systemic', cause, summary, null);
-    }
-    return classification('individual', cause, summary, null);
   }
 
   // Fail-quiet default (spec §3.2): an unknown cause fails its own bead only.
