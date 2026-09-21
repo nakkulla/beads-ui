@@ -995,7 +995,7 @@ describe('done lane row', () => {
     ).toContain('subset');
   });
 
-  test('gives the first line the id and title with no usage badge', () => {
+  test('gives the first line the id with no title or usage badge', () => {
     const row = renderRow({ usage: USAGE });
 
     const first = /** @type {HTMLElement} */ (
@@ -1004,22 +1004,32 @@ describe('done lane row', () => {
     expect(first.querySelector('.worker-mini__id')?.textContent).toContain(
       'UI-x1'
     );
-    expect(first.querySelector('.worker-mini__title')?.textContent).toContain(
-      '잘리지 않아야'
-    );
+    expect(first.querySelector('.worker-mini__title')).toBeNull();
     expect(first.querySelector('.worker-usage')).toBeNull();
   });
 
-  test('puts usage and the completion time on the second line', () => {
-    const row = renderRow({ usage: USAGE, done_at: Date.now() - 3_600_000 });
+  test('gives the title a line of its own below the id', () => {
+    const row = renderRow({ usage: USAGE });
 
     const second = /** @type {HTMLElement} */ (
       row.querySelector('.worker-mini__row2')
     );
-    expect(second.querySelector('.worker-usage')).not.toBeNull();
-    expect(
-      second.querySelector('.worker-mini__done-at')?.textContent
-    ).toContain('1시간 전');
+
+    expect(second.querySelector('.worker-mini__title')?.textContent).toContain(
+      '잘리지 않아야'
+    );
+  });
+
+  test('puts usage and the completion time on the last line', () => {
+    const row = renderRow({ usage: USAGE, done_at: Date.now() - 3_600_000 });
+
+    const last = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__row3')
+    );
+    expect(last.querySelector('.worker-usage')).not.toBeNull();
+    expect(last.querySelector('.worker-mini__done-at')?.textContent).toContain(
+      '1시간 전'
+    );
   });
 
   test('omits the completion time when the entry carries none', () => {
@@ -1028,7 +1038,7 @@ describe('done lane row', () => {
     expect(row.querySelector('.worker-mini__done-at')).toBeNull();
   });
 
-  test('renders the summed attempt work time on the second line', () => {
+  test('renders the summed attempt work time on the last line', () => {
     const row = renderRow({ work_ms: 754_000 });
 
     const work_el = row.querySelector('.worker-mini__work');
@@ -1139,7 +1149,7 @@ describe('discovered-from chip', () => {
     expect(row.querySelector('.ctl-chip--disabled')).not.toBeNull();
   });
 
-  test('draws Worker provenance only on row 2 of a two-line done row', () => {
+  test('draws Worker provenance only on the coordinate line of a worker done row', () => {
     const row = renderRow({
       workflow: /** @type {any} */ ({ route: 'quick_fix' }),
       worker_created_from: 'UI-source',
@@ -1153,11 +1163,11 @@ describe('discovered-from chip', () => {
       row.querySelector('.worker-mini__row1 .worker-created-source')
     ).toBeNull();
     expect(
-      row.querySelector('.worker-mini__row2 .ctl-chip--worker-created')
+      row.querySelector('.worker-mini__row3 .ctl-chip--worker-created')
         ?.textContent
     ).toContain('워커 생성');
     expect(
-      row.querySelector('.worker-mini__row2 .worker-created-source')
+      row.querySelector('.worker-mini__row3 .worker-created-source')
         ?.textContent
     ).toContain('UI-source');
   });
@@ -2474,10 +2484,10 @@ describe('exec chip placement', () => {
     );
   });
 
-  test('renders the exec chips on a two-line done row', () => {
+  test('renders the exec chips on a worker done row', () => {
     const row = renderRow({ exec_chips: /** @type {any} */ (CHIPS) });
 
-    expect(row.querySelectorAll('.worker-mini__row2 .exec-chip')).toHaveLength(
+    expect(row.querySelectorAll('.worker-mini__row3 .exec-chip')).toHaveLength(
       2
     );
   });
@@ -2701,19 +2711,19 @@ describe('카드 배치 문법 (UI-251y §2)', () => {
     );
   });
 
-  test('leaves the two-line done row carrying its repo and usage as before', () => {
+  test('leaves the worker done row carrying its repo and usage as before', () => {
     const row = renderRow({ ...COORD, lane: 'done', done: true });
 
     expect(
       row.querySelector('.worker-mini__row1 .worker-mini__repo')
     ).not.toBeNull();
     expect(
-      row.querySelector('.worker-mini__row2 .worker-usage')
+      row.querySelector('.worker-mini__row3 .worker-usage')
     ).not.toBeNull();
     expect(row.querySelector('.worker-chips')).toBeNull();
   });
 
-  test('draws the PR link on the two-line done row', () => {
+  test('draws the PR link on the worker done row', () => {
     const row = renderRow({
       lane: 'done',
       done: true,
@@ -2769,7 +2779,7 @@ describe('카드 배치 문법 (UI-251y §2)', () => {
 });
 
 describe('worker lanes 이월 칩 (UI-btj6 §3)', () => {
-  test('renders one chip per carryover successor on the two-line done row', () => {
+  test('renders one chip per carryover successor on the worker done row', () => {
     const row = renderRow({
       lane: 'done',
       done: true,
@@ -2886,8 +2896,9 @@ describe('worker lanes 이월 칩 (UI-btj6 §3)', () => {
 
     expect(classes).toEqual([
       'worker-mini__row1',
+      'worker-mini__row2',
       'worker-deps worker-deps--secondary',
-      'worker-mini__row2'
+      'worker-mini__row3'
     ]);
   });
 });
@@ -2958,7 +2969,7 @@ describe('worker templates are unchanged without the monitor options', () => {
     );
   });
 
-  test('renders the two-line done row when no layout is asked for', () => {
+  test('renders the worker done row when no layout is asked for', () => {
     const row = shape(
       miniRow(
         /** @type {any} */ ({
@@ -2975,7 +2986,6 @@ describe('worker templates are unchanged without the monitor options', () => {
 
     expect(row).toContain('worker-mini__row1');
     expect(row).not.toContain('worker-mini--three-line');
-    expect(row).not.toContain('worker-mini__row3');
   });
 
   test('renders a candidate card with resolved (not pinned) exec chips', () => {
@@ -3694,11 +3704,11 @@ describe('waiting row route chip (UI-yrzu §7.2)', () => {
     expect(row.querySelector('.ctl-chip--route')).toBeNull();
   });
 
-  test('draws the chip on the slot 5 line of a two-line done row', () => {
+  test('draws the chip on the slot 5 line of a worker done row', () => {
     const row = renderRow({ workflow: /** @type {any} */ (WORKFLOW) });
 
     expect(
-      row.querySelector('.worker-mini__row2 .ctl-chip--route')?.textContent
+      row.querySelector('.worker-mini__row3 .ctl-chip--route')?.textContent
     ).toBe('spec_backed');
   });
 
