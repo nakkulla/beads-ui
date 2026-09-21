@@ -43,9 +43,11 @@ describe('operation recovery wait reasons', () => {
         release: '수정 Bead의 PR·배포 뒤 [정리 재시도]',
         targets: [{ id: 'UI-repair', kind: 'issue' }],
         since: NOW - 30_000,
-        verdict: 'normal'
+        verdict: 'normal',
+        actions: []
       })
     );
+    expect(result.wait_reasons[0].verdict_reason).toBeUndefined();
   });
 
   test.each(['unclassified', 'reconcile'])(
@@ -69,13 +71,13 @@ describe('operation recovery wait reasons', () => {
         expect.objectContaining({
           kind: 'recovery',
           verdict: 'action_required',
-          verdict_reason: expect.objectContaining({ code: 'recovery_confirm' })
+          verdict_reason: expect.objectContaining({ code: 'decision' })
         })
       );
     }
   );
 
-  test('leaves verification waiting at normal verdict', () => {
+  test('requires a decision for operation verification', () => {
     const result = run({
       queue: queue({
         repo_operations: {
@@ -91,13 +93,12 @@ describe('operation recovery wait reasons', () => {
     });
 
     expect(result.wait_reasons).toContainEqual(
-      expect.objectContaining({ kind: 'recovery', verdict: 'normal' })
+      expect.objectContaining({ kind: 'recovery', verdict: 'action_required' })
     );
   });
 
   test.each([
     { cause_detail: { recovery: { reason: 'unclassified' } } },
-    { cause: 'base_moved', cause_detail: { candidate_sha: 'a'.repeat(40) } },
     {
       cause: 'prerequisite_unmet',
       cause_detail: { blockers: [{ id: 'UI-blocker', status: 'open' }] }
@@ -271,7 +272,7 @@ describe('recovery wait judgment', () => {
       session_id: 'saved-session',
       cause_detail: {
         recovery: {
-          classification: 'condition',
+          classification: 'session_recovery_wait',
           disposition: 'wait',
           reason,
           policy_schema: 1
@@ -281,122 +282,118 @@ describe('recovery wait judgment', () => {
     });
   }
 
-  test.each(['provider', 'credential', 'prerequisite', 'verification'])(
-    'promotes %s only at the settle threshold',
+  test.each([
+    'authority',
+    'verification',
+    'no_progress',
+    'reconcile',
+    'unclassified',
+    'prerequisite'
+  ])(
+    'requires a decision for session recovery %s regardless of elapsed time',
     (token) => {
       const material = queue({ attempts: { a: recoveryAttempt(token) } });
-      const threshold =
-        WAIT_THRESHOLDS.interval_ms * WAIT_THRESHOLDS.settle_cycles;
 
-      const before = run({ queue: material, now: NOW + threshold - 1 })
-        .wait_reasons[0];
-      const after = run({ queue: material, now: NOW + threshold })
+      const result = run({ queue: material, now: NOW + 24 * 60 * MINUTE })
         .wait_reasons[0];
 
-      expect(before).toMatchObject({
+      expect(result).toMatchObject({
         kind: 'recovery',
-        verdict: 'normal',
-        since: NOW,
-        notify_plan: { on_complete: 'none', on_overdue: 'discord' }
-      });
-      expect(after).toMatchObject({
-        verdict: 'overdue',
-        verdict_reason: { code: 'settle_overdue' }
+        verdict: 'action_required',
+        verdict_reason: { code: 'decision' }
       });
     }
   );
 
-  test.each(['unclassified', 'reconcile', 'authority', 'no_progress'])(
-    'requests a decision for %s immediately',
-    (token) => {
-      const result = run({
-        queue: queue({ attempts: { a: recoveryAttempt(token) } })
-      });
+  test('uses only the first session blocker sentence as the headline', () => {
+    const attempt = recoveryAttempt('authority');
+    attempt.cause_detail.summary =
+      '대기 · recovery:authority · blocker: 승인 범위를 골라 주세요\n둘째 줄';
+    attempt.cause_detail.recovery.no_progress = { count: 3, key: 'repeat' };
 
-      expect(result.wait_reasons).toMatchObject([
+    const result = run({ queue: queue({ attempts: { a: attempt } }) })
+      .wait_reasons[0];
+
+    expect(result.headline).toBe('승인 범위를 골라 주세요');
+  });
+
+  test('falls back to the release sentence when the session left no summary', () => {
+    const result = run({
+      queue: queue({ attempts: { a: recoveryAttempt('verification') } })
+    }).wait_reasons[0];
+
+    expect(result.headline).toBe(
+      '검증 오류의 정정을 기다리며, 원인이 고쳐지면 이어갈 수 있습니다.'
+    );
+  });
+
+  test.each(['saved-session', '', null, undefined])(
+    'offers session resolution and discard without a resume action for session %s',
+    (session_id) => {
+      const result = run({
+        queue: queue({
+          attempts: { a: recoveryAttempt('authority', { session_id }) }
+        })
+      }).wait_reasons[0];
+
+      expect(result.actions).toEqual([
         {
-          kind: 'recovery',
-          verdict: 'action_required',
-          verdict_reason: {
-            code: 'recovery_confirm',
-            message: '보존된 작업의 원인 확인 또는 이어하기·폐기 결정이 필요함'
-          }
+          op: 'worker-resolve-in-session',
+          label: '[세션에서 해결]',
+          payload: { root_dir: ROOT, bead_id: 'UI-consumer', attempt_id: 'a' }
+        },
+        {
+          op: 'worker-discard',
+          label: '폐기',
+          payload: { root_dir: ROOT, bead_id: 'UI-consumer', attempt_id: 'a' }
         }
       ]);
     }
   );
 
-  test('omits the internal recovery cause from the headline', () => {
-    const attempt = recoveryAttempt('verification', {
-      cause: 'session_recovery_wait'
-    });
-    attempt.cause_detail.recovery.no_progress = { count: 2, key: 'same-error' };
-
-    const result = run({
-      queue: queue({ attempts: { a: attempt } })
-    }).wait_reasons[0];
-
-    expect(result.headline).toBe(
-      '조건 대기 · 검증 오류의 정정을 기다리며, 원인이 고쳐지면 이어갈 수 있습니다. · 무진전 2회'
-    );
-  });
-
-  test('carries the original cause and no-progress evidence into one reason', () => {
-    const attempt = recoveryAttempt('no_progress');
-    attempt.cause_detail.recovery.no_progress = { count: 2, key: 'same-error' };
+  test('uses prerequisite reasons when recovery carries actual blockers', () => {
+    const attempt = recoveryAttempt('prerequisite');
+    attempt.cause_detail.blockers = [{ id: 'UI-first', status: 'open' }];
 
     const result = run({
       queue: queue({ attempts: { a: attempt } })
     }).wait_reasons;
 
-    expect(result).toHaveLength(1);
-    expect(result[0].headline).toContain('조건 대기 · 같은 오류에 진전이 없어');
-    expect(result[0].headline).toContain(
-      ' · 원인 session_ended_unresolved · 무진전 2회'
-    );
-    expect(result[0].actions).toEqual([
-      {
-        op: 'resume',
-        label: '↻ 이어하기',
-        payload: { root_dir: ROOT, bead_id: 'UI-consumer', attempt_id: 'a' }
-      }
-    ]);
+    expect(result.map((row) => row.kind)).toEqual(['prerequisite']);
   });
 
-  test.each(['', null, undefined])(
-    'withholds resume when the session is %s',
-    (session_id) => {
+  test.each(['provider', 'credential'])(
+    'keeps historic %s recovery out of overdue judgment',
+    (token) => {
       const result = run({
-        queue: queue({
-          attempts: { a: recoveryAttempt('credential', { session_id }) }
-        })
-      });
+        queue: queue({ attempts: { a: recoveryAttempt(token) } }),
+        now: NOW + 24 * 60 * MINUTE
+      }).wait_reasons[0];
 
-      expect(result.wait_reasons[0].actions).toEqual([]);
+      expect(result.verdict).toBe('normal');
     }
   );
 
   test.each(['future_reason', 'constructor'])(
-    'keeps unknown reason %s raw',
+    'keeps unknown recovery reason %s raw',
     (token) => {
       const result = run({
         queue: queue({ attempts: { a: recoveryAttempt(token) } })
       }).wait_reasons[0];
 
-      expect(result.headline).toBe(`${token} · 원인 session_ended_unresolved`);
-      expect(result.release).toBe('');
+      expect(result.headline).toBe(token);
     }
   );
 
-  test('does not infer elapsed time from an absent finish clock', () => {
+  test('does not infer a finish clock', () => {
     const result = run({
       queue: queue({
-        attempts: { a: recoveryAttempt('provider', { finished_at: undefined }) }
-      }),
-      now: NOW + 100 * MINUTE
+        attempts: {
+          a: recoveryAttempt('authority', { finished_at: undefined })
+        }
+      })
     }).wait_reasons[0];
 
-    expect(result.verdict).toBe('normal');
     expect(result.since).toBeUndefined();
   });
 
@@ -750,25 +747,46 @@ describe('wait judgment prerequisites', () => {
     );
   });
 
-  test('keeps base movement separate even when a frozen blockers list exists', () => {
+  test('omits a legacy base movement wait reason', () => {
     const result = run({
       queue: queue({
-        attempts: {
-          a: waiting({ cause: 'base_moved', head_oid: '1234567890' })
-        }
+        attempts: { a: waiting({ cause: 'base_moved', cause_detail: {} }) }
       })
     });
 
-    expect(result.wait_reasons).toMatchObject([
-      {
-        kind: 'base_moved',
-        verdict: 'normal',
-        headline:
-          '기준 이동 대기 · 보존 후보 1234567가 새 base 위에서 재검증을 기다림',
-        release: '↻ 이어하기로 보존 세션 재개'
-      }
-    ]);
+    expect(result.wait_reasons).toEqual([]);
   });
+
+  test.each([
+    [WAIT_THRESHOLDS.grace_ms - 1, 'normal'],
+    [WAIT_THRESHOLDS.grace_ms, 'overdue']
+  ])(
+    'projects a scheduled base movement at age %i as %s retry wait',
+    (age, verdict) => {
+      const material = queue({
+        attempts: {
+          a: waiting({
+            cause: 'base_moved',
+            cause_detail: { blockers: [] },
+            retry: { cause: 'base_moved', next_at: NOW }
+          })
+        }
+      });
+
+      const result = run({ queue: material, now: NOW + Number(age) });
+
+      expect(result.wait_reasons).toMatchObject([
+        {
+          kind: 'retry_wait',
+          next_check_at: NOW,
+          verdict,
+          ...(verdict === 'overdue'
+            ? { verdict_reason: { code: 'retry_stalled' } }
+            : {})
+        }
+      ]);
+    }
+  );
 
   test('ignores an older waiting attempt after a newer run starts', () => {
     const result = run({
@@ -795,23 +813,6 @@ describe('wait judgment holds and manual waits', () => {
       release: `리셋 ${clock} 뒤 자동 프로브 (상한 없음)`,
       resets_at: at,
       since: NOW - MINUTE
-    });
-  });
-
-  test('formats an env retry locally while retaining its epoch clock', () => {
-    const next_at = new Date(2026, 8, 15, 14, 5).getTime();
-
-    const result = run({
-      queue: queue({
-        hold: { kind: 'env', bead_ids: ['UI-consumer'], since: NOW },
-        lineages: [{ bead_id: 'UI-consumer', next_at }]
-      })
-    }).wait_reasons[0];
-
-    expect(result).toMatchObject({
-      release: '14:05에 자동 재시도 · 성공하면 자동 해제 (지금 재시도 가능)',
-      next_check_at: next_at,
-      since: NOW
     });
   });
 
@@ -911,7 +912,7 @@ describe('wait judgment holds and manual waits', () => {
     expect(result).not.toHaveProperty('resets_at');
   });
 
-  test('requires approval for a systemic hold', () => {
+  test('omits a retired systemic queue hold', () => {
     const result = run({
       queue: queue({
         hold: {
@@ -922,32 +923,7 @@ describe('wait judgment holds and manual waits', () => {
       })
     });
 
-    expect(result.wait_reasons[0]).toMatchObject({
-      kind: 'queue_hold',
-      verdict: 'action_required',
-      verdict_reason: { code: 'hold' },
-      release: '▶ 재개로 해제 (사람 승인)'
-    });
-  });
-
-  test.each([
-    [5 * MINUTE - 1, 'normal'],
-    [5 * MINUTE, 'overdue']
-  ])('checks env retry grace %i', (age, verdict) => {
-    const result = run({
-      queue: queue({
-        hold: { kind: 'env', cause: 'network', bead_ids: ['UI-consumer'] },
-        lineages: [{ bead_id: 'UI-consumer', next_at: NOW - Number(age) }]
-      })
-    }).wait_reasons[0];
-
-    expect(result).toMatchObject({
-      verdict,
-      next_check_at: NOW - Number(age),
-      ...(verdict === 'overdue'
-        ? { verdict_reason: { code: 'retry_stalled' } }
-        : {})
-    });
+    expect(result.wait_reasons).toEqual([]);
   });
 
   test('builds the user-decision reason from a parked attempt', () => {
@@ -991,7 +967,7 @@ describe('wait judgment holds and manual waits', () => {
     });
   });
 
-  test('builds the stale-work disposition reason', () => {
+  test('omits legacy stale-work disposition reasons', () => {
     const result = run({
       queue: queue({
         queue: [{ bead_id: 'UI-consumer' }],
@@ -1004,12 +980,7 @@ describe('wait judgment holds and manual waits', () => {
       })
     });
 
-    expect(result.wait_reasons[0]).toMatchObject({
-      kind: 'stale_work',
-      headline: '보존 작업 처분 대기',
-      release: '이어하기 / 새로 시작 선택',
-      verdict_reason: { code: 'disposition' }
-    });
+    expect(result.wait_reasons).toEqual([]);
   });
 
   test('leaves all input material unchanged', () => {
@@ -1146,7 +1117,7 @@ describe('auto-advance-off queues (UI-3pu9 §3)', () => {
     ).toEqual([]);
   });
 
-  test('keeps the queue hold reason', () => {
+  test('omits a retired queue hold while auto advance is paused', () => {
     const result = run({
       queue: queue({
         auto_advance: false,
@@ -1154,9 +1125,7 @@ describe('auto-advance-off queues (UI-3pu9 §3)', () => {
       })
     });
 
-    expect(result.wait_reasons).toMatchObject([
-      { kind: 'queue_hold', subject: { bead_id: 'UI-idle' } }
-    ]);
+    expect(result.wait_reasons).toEqual([]);
   });
 
   test('keeps the provider hold reason', () => {
@@ -1183,4 +1152,27 @@ describe('auto-advance-off queues (UI-3pu9 §3)', () => {
       { kind: 'prerequisite', subject: { bead_id: 'UI-consumer' } }
     ]);
   });
+});
+
+test('marks a retry overdue exactly after its scheduled grace', () => {
+  const material = queue({
+    attempts: {
+      a: waiting({
+        status: 'retry_wait',
+        retry: { cause: 'network', next_at: NOW }
+      })
+    }
+  });
+
+  const before = run({
+    queue: material,
+    now: NOW + WAIT_THRESHOLDS.grace_ms - 1
+  }).wait_reasons[0];
+  const after = run({ queue: material, now: NOW + WAIT_THRESHOLDS.grace_ms })
+    .wait_reasons[0];
+
+  expect([before.verdict, after.verdict_reason?.code]).toEqual([
+    'normal',
+    'retry_stalled'
+  ]);
 });

@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from 'vitest';
+import { describe, expect, test } from 'vitest';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import { normalizeCandidateSort } from './candidate-sort.js';
 import {
@@ -158,7 +158,7 @@ test('leaves manual_only false when auto_advance is absent (UI-3pu9 §4.1)', () 
   expect(lanes.queue[0].manual_only).toBe(false);
 });
 
-test('keeps the queue hold gate while auto_advance is off (UI-3pu9 §4.2)', () => {
+test('ignores a retired queue hold while auto advance is off', () => {
   const lanes = buildLanes(
     [
       workspace({
@@ -174,7 +174,7 @@ test('keeps the queue hold gate while auto_advance is off (UI-3pu9 §4.2)', () =
     [state({ auto_advance: false })]
   );
 
-  expect(lanes.queue[0].gate?.kind).toBe('systemic');
+  expect(lanes.queue[0].gate).toBeUndefined();
   expect(lanes.queue[0].manual_only).toBe(true);
 });
 
@@ -799,48 +799,6 @@ describe('monitor 대기 repo sections (UI-eey2 §6)', () => {
     expect(serial[0].occupants).toEqual([
       { id: 'A-1', title: '점유 중인 작업', badge: '실패 · 점유 유지' }
     ]);
-  });
-
-  test('demotes a stale-work occupant ghost to its serial waiting row', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          bead_titles: { 'A-1': '점유 중인 작업' },
-          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
-          lane_states: { s1: { occupied_by: ['A-1'] } },
-          admission: staleAdmission(),
-          runnable: [runnable('A-1')],
-          attempts: {
-            t1: {
-              attempt_id: 't1',
-              bead_id: 'A-1',
-              status: 'failed',
-              started_at: 10,
-              finished_at: 20,
-              dismissed_at: 30
-            }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    const serial = lanes.queue_groups[0].sublanes.serial[0];
-    expect({
-      running: lanes.running.map((item) => item.id),
-      items: serial.items.map((item) => item.id),
-      occupants: serial.occupants.map((item) => item.id),
-      badges: serial.items[0].badges,
-      runnable: lanes.runnable.map((item) => item.id),
-      copies: lanes.queue.filter((item) => item.id === 'A-1').length
-    }).toEqual({
-      running: [],
-      items: ['A-1'],
-      occupants: [],
-      badges: ['실패 · 점유 유지'],
-      runnable: [],
-      copies: 1
-    });
   });
 
   test('keeps an occupant ghost when stale-work action_id is empty', () => {
@@ -2362,7 +2320,7 @@ describe('monitor 대기 attempt 투영 (UI-5ym8 §3.1·§3.3·§6)', () => {
     );
 
     expect(map.get('A-1')?.failure?.resume_reason).toBe(
-      '세션 대기 — [세션에서 해결]로 문의를 이어갑니다'
+      '세션이 멈춤 — [세션에서 해결]로 문의를 이어갑니다'
     );
   });
 
@@ -2465,7 +2423,7 @@ describe('monitor 대기 attempt 투영 (UI-5ym8 §3.1·§3.3·§6)', () => {
     const row = lanes.running.find((item) => item.id === 'A-1');
     expect(row?.run_state).toBe('parked');
     expect(row?.alert).toBe(false);
-    expect(row?.badges).toEqual(['⏸ 세션 대기']);
+    expect(row?.badges).toEqual(['⏸ 세션이 멈춤']);
   });
 });
 
@@ -2501,7 +2459,7 @@ describe('recovery wait projection', () => {
 
     expect(projected).toMatchObject({
       run_state: 'waiting',
-      can_resume: true,
+      can_resume: false,
       wait: {
         cause: 'session_ended_unresolved',
         since: 30,
@@ -2510,12 +2468,14 @@ describe('recovery wait projection', () => {
           classification: 'unknown',
           disposition: 'wait',
           reason: 'unclassified',
-          label: '확인 대기',
+          label: '세션이 멈춤',
           no_progress: { count: 1, key: 'same-error' }
         }
       }
     });
-    expect(projected.wait.recovery.sentence).toContain('원인과 결과의 확인');
+    expect(projected.wait.recovery.sentence).toContain(
+      '세션에서 원인과 결과를 확인'
+    );
     expect(projected.failure).toBeUndefined();
   });
 
@@ -2528,9 +2488,6 @@ describe('recovery wait projection', () => {
       ).get('A-1');
 
       expect(projected.can_resume).toBe(false);
-      expect(projected.wait.resume_reason).toBe(
-        '보존된 세션 기록이 없어 이어하기 불가'
-      );
     }
   );
 
@@ -2550,9 +2507,6 @@ describe('recovery wait projection', () => {
     ).get('A-1');
 
     expect(projected.can_resume).toBe(false);
-    expect(projected.wait.resume_reason).toBe(
-      '이미 이어받은 실행이 있어 이어하기 불가'
-    );
   });
 
   test.each([false, true])(
@@ -2583,7 +2537,7 @@ describe('recovery wait projection', () => {
       expect(lanes.running).toHaveLength(1);
       expect(lanes.running[0]).toMatchObject({
         run_state: 'waiting',
-        badges: ['⏳ 확인 대기'],
+        badges: ['⏸ 세션이 멈춤'],
         alert: false,
         failure: null
       });
@@ -2696,28 +2650,6 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
     expect(map.get('A-1')?.run_state).toBe('waiting');
   });
 
-  test('demotes a stale-work waiting tile to its serial waiting row', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
-          attempts: waitingAttempt(),
-          admission: staleAdmission(),
-          runnable: [runnable('A-1')]
-        })
-      ],
-      [state()]
-    );
-
-    const serial = lanes.queue_groups[0].sublanes.serial[0];
-    expect({
-      running: lanes.running.map((item) => item.id),
-      items: serial.items.map((item) => item.id),
-      runnable: lanes.runnable.map((item) => item.id),
-      copies: lanes.queue.filter((item) => item.id === 'A-1').length
-    }).toEqual({ running: [], items: ['A-1'], runnable: [], copies: 1 });
-  });
-
   test('keeps a waiting tile when stale_work is absent', () => {
     const map = activeByBead(unknownWaitingAttempt(), new Map(), {
       admission: { 'A-1': { reason: 'worktree_stale_work' } }
@@ -2759,7 +2691,7 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
     expect(map.get('A-1')?.can_resume).toBe(false);
   });
 
-  test('projects a base-moved wait as a resumable preserved session', () => {
+  test('withholds manual resume for a historic base movement wait', () => {
     const map = activeByBead(
       waitingAttempt({
         cause: 'base_moved',
@@ -2774,8 +2706,8 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
 
     expect(map.get('A-1')).toMatchObject({
       run_state: 'waiting',
-      can_resume: true,
-      wait: { cause: 'base_moved', blockers: [] }
+      can_resume: false,
+      wait: { blockers: [] }
     });
   });
 
@@ -2817,6 +2749,27 @@ describe('선행 대기 attempt 투영 (선행 대기 계층 §5.1)', () => {
     );
 
     expect(lanes.running.map((item) => item.id)).toEqual(['A-1']);
+  });
+
+  test('projects scheduled base movement as a retry tile without a prerequisite badge', () => {
+    const attempts = waitingAttempt({
+      cause: 'base_moved',
+      cause_detail: { blockers: [] },
+      retry: { cause: 'base_moved', attempts: 1, max: 3, next_at: 120_020 },
+      quickfix_landing: { reason: 'base_moved', head_sha: 'd'.repeat(40) }
+    });
+
+    const lanes = buildLanes([queuedWorkspace({ attempts })], [state()]);
+
+    expect(lanes.running).toMatchObject([
+      {
+        id: 'A-1',
+        run_state: 'retry_wait',
+        badges: ['↻ 재시도 대기'],
+        retry: { next_at: 120_020 }
+      }
+    ]);
+    expect(lanes.running[0].wait).toBeNull();
   });
 
   test('keeps a recovery wait on its running tile', () => {
@@ -6672,7 +6625,7 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
     halted_by_attempt_id: 't9'
   };
 
-  test('marks every parallel row and only the first serial row as gated', () => {
+  test('ignores a retired queue hold on every parallel and serial row', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -6693,7 +6646,7 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
       by_id.get('A-2')?.kind,
       by_id.get('A-3')?.kind,
       by_id.get('A-4')
-    ]).toEqual(['systemic', 5000, 'systemic', 'systemic', undefined]);
+    ]).toEqual([undefined, undefined, undefined, undefined, undefined]);
   });
 
   test('draws no gate anywhere when a hold stands with no waiting row', () => {
@@ -6706,124 +6659,6 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
       lanes.queue.length,
       lanes.runnable.some((row) => row.gate !== undefined)
     ]).toEqual([0, false]);
-  });
-
-  test('names the earliest scheduled retry on an environment hold', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          hold: { kind: 'env', cause: 'verify_cmd_spawn_error', since: 100 },
-          lineages: [
-            {
-              bead_id: 'A-8',
-              origin_attempt_id: 't1',
-              cause: 'x',
-              next_at: 8000,
-              attempts: 2
-            },
-            {
-              bead_id: 'A-9',
-              origin_attempt_id: 't2',
-              cause: 'x',
-              next_at: 4000,
-              attempts: 1
-            }
-          ],
-          queue: [{ bead_id: 'A-1' }]
-        })
-      ],
-      [gateState()]
-    );
-
-    expect([lanes.queue[0].gate?.kind, lanes.queue[0].gate?.next_at]).toEqual([
-      'env',
-      4000
-    ]);
-  });
-
-  test('dates a retry scheduled on another day in the gate label', () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(2026, 8, 16, 12, 0));
-    const tomorrow = new Date(2026, 8, 17, 9, 5).getTime();
-    const lanes = buildLanes(
-      [
-        workspace({
-          hold: { kind: 'env', cause: 'verify_cmd_spawn_error', since: 100 },
-          lineages: [
-            {
-              bead_id: 'A-8',
-              origin_attempt_id: 't1',
-              cause: 'x',
-              next_at: tomorrow,
-              attempts: 2
-            }
-          ],
-          queue: [{ bead_id: 'A-1' }]
-        })
-      ],
-      [gateState()]
-    );
-
-    vi.useRealTimers();
-
-    expect(lanes.queue[0].gate?.label).toBe('↻ 환경 보류 · 다음 9/17 09:05');
-  });
-
-  test('says the retry is running when no lineage has a next_at', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          hold: { kind: 'env', cause: 'verify_cmd_spawn_error', since: 100 },
-          lineages: [
-            {
-              bead_id: 'A-9',
-              origin_attempt_id: 't2',
-              cause: 'x',
-              next_at: null,
-              attempts: 3
-            }
-          ],
-          queue: [{ bead_id: 'A-1' }]
-        })
-      ],
-      [gateState()]
-    );
-
-    expect([lanes.queue[0].gate?.label, lanes.queue[0].gate?.next_at]).toEqual([
-      '↻ 환경 보류 · 재시도 실행 중',
-      null
-    ]);
-  });
-
-  test('carries the standing environment hold onto the retry_wait tile', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          hold: { kind: 'env', cause: 'verify_cmd_spawn_error', since: 100 },
-          lineages: [
-            {
-              bead_id: 'A-1',
-              origin_attempt_id: 't1',
-              cause: 'x',
-              next_at: 8000,
-              attempts: 1
-            }
-          ],
-          attempts: {
-            t1: {
-              attempt_id: 't1',
-              bead_id: 'A-1',
-              status: 'retry_wait',
-              started_at: 1,
-              retry: { cause: 'x', attempts: 1, max: 3, next_at: 8000 }
-            }
-          }
-        })
-      ],
-      [gateState()]
-    );
-
-    expect(lanes.running[0].hold_since).toBe(100);
   });
 
   test('gates only the rows whose resolved runner carries the outage target', () => {
@@ -7110,10 +6945,7 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
     );
 
     const gate = lanes.queue[0].gate;
-    expect([
-      gate?.kind,
-      gate?.lines.at(-1)?.startsWith('공급자: ⏳ 공급자 장애')
-    ]).toEqual(['systemic', true]);
+    expect(gate?.kind).toBe('provider_outage');
   });
 
   test('skips the provider judgment until the row metadata was observed', () => {
@@ -7151,8 +6983,8 @@ describe('waiting row gate projection (UI-01wh §3.1)', () => {
         item.gate?.lines.some((line) => line.startsWith('공급자:')) === true
       ])
     ).toEqual([
-      ['systemic', false],
-      ['systemic', false]
+      [undefined, false],
+      [undefined, false]
     ]);
   });
 

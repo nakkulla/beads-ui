@@ -14,6 +14,7 @@
  * @import { RunnerCatalogEntry } from '../runner-catalog.js'
  */
 import { resolveCswapPath } from '../../routes/claude-usage.js';
+import { preToolHookGroup } from '../guard-hook.js';
 import { builtinCatalog } from '../runner-catalog.js';
 import { workRecoveryReadinessEnv } from '../work-recovery-policy.js';
 import { probeGuardMirror } from './guard-mirror.js';
@@ -129,6 +130,22 @@ export const WORKER_SETTINGS_OVERRIDE = Object.freeze({
     )
   )
 });
+
+/**
+ * @param {{ guard_hook_path?: string }} settings
+ */
+export function workerSettingsOverride(settings) {
+  return {
+    ...WORKER_SETTINGS_OVERRIDE,
+    ...(settings.guard_hook_path
+      ? {
+          hooks: {
+            PreToolUse: [preToolHookGroup(settings.guard_hook_path, 'claude')]
+          }
+        }
+      : {})
+  };
+}
 
 /**
  * Expand a catalog short name (`opus-4.6`) into the CLI model id
@@ -817,7 +834,7 @@ export function claudeSpec(options = {}) {
       // still call one by name; the model just cannot pick one up on its own.
       // A plugin skill (`frontend-design:frontend-design`) is out of
       // `skillOverrides`' reach and stays an observation.
-      args.push('--settings', JSON.stringify(WORKER_SETTINGS_OVERRIDE));
+      args.push('--settings', JSON.stringify(workerSettingsOverride(s)));
       // The two channels (UI-rxp3 §2): the session-constant contract goes to
       // `--append-system-prompt`, and only the task stays positional. The
       // resume branch above takes the same path deliberately — a `--resume`

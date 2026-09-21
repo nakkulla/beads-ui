@@ -1,10 +1,16 @@
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { parse } from 'smol-toml';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { prepareCodexAccountHome } from './codex-account-home.js';
+import {
+  codexHookHash,
+  prepareCodexAccountHome,
+  prepareCodexGuardHome
+} from './codex-account-home.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -37,6 +43,153 @@ afterEach(async () => {
   await Promise.all(
     temp_roots.splice(0).map((root) => fs.rm(root, { recursive: true }))
   );
+});
+
+test.each([false, true])(
+  'preserves existing hooks and trust in an attempt HOME (account=%s)',
+  async (account) => {
+    const paths = await fixture();
+    const hook_path = path.join(paths.root, 'pre-tool-use');
+    const source_hooks = path.join(paths.codex_root, 'hooks.json');
+    const source_config = path.join(paths.codex_root, 'config.toml');
+    const prior_hooks = {
+      hooks: {
+        PreToolUse: [
+          {
+            hooks: [{ type: 'command', command: 'existing-hook', timeout: 10 }]
+          }
+        ]
+      }
+    };
+    const prior_config = `model="sol"\n[hooks.state.${JSON.stringify(`${source_hooks}:pre_tool_use:0:0`)}]\ntrusted_hash="sha256:existing"\nenabled=false\n`;
+    await fs.writeFile(source_hooks, JSON.stringify(prior_hooks));
+    await fs.writeFile(source_config, prior_config);
+    if (account) {
+      expect((await prepareCodexAccountHome(paths.input)).ok).toBe(true);
+    }
+    const base_home = account ? paths.home_dir : paths.codex_root;
+
+    const result = await prepareCodexGuardHome({
+      base_home,
+      parent_dir: path.join(paths.root, 'attempt'),
+      hook_path
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error('attempt HOME missing');
+    }
+    const hooks_path = path.join(result.home_dir, 'hooks.json');
+    const hooks = JSON.parse(await fs.readFile(hooks_path, 'utf8'));
+    const config = /** @type {any} */ (
+      parse(
+        await fs.readFile(path.join(result.home_dir, 'config.toml'), 'utf8')
+      )
+    );
+    expect(hooks.hooks.PreToolUse[0]).toEqual(prior_hooks.hooks.PreToolUse[0]);
+    expect(hooks.hooks.PreToolUse[1]).toEqual({
+      matcher: 'Bash',
+      hooks: [{ type: 'command', command: `'${hook_path}' codex`, timeout: 10 }]
+    });
+    expect(config.hooks.state[`${hooks_path}:pre_tool_use:0:0`]).toEqual({
+      trusted_hash: 'sha256:existing',
+      enabled: false
+    });
+    expect(config.hooks.state[`${hooks_path}:pre_tool_use:1:0`]).toEqual({
+      trusted_hash: codexHookHash('pre_tool_use', hooks.hooks.PreToolUse[1]),
+      enabled: true
+    });
+    expect((await fs.lstat(hooks_path)).isSymbolicLink()).toBe(false);
+    expect(
+      (
+        await fs.lstat(path.join(result.home_dir, 'config.toml'))
+      ).isSymbolicLink()
+    ).toBe(false);
+    expect(await fs.readFile(source_config, 'utf8')).toBe(prior_config);
+    expect(JSON.parse(await fs.readFile(source_hooks, 'utf8'))).toEqual(
+      prior_hooks
+    );
+    if (account) {
+      expect(await fs.realpath(path.join(result.home_dir, 'auth.json'))).toBe(
+        await fs.realpath(paths.auth_file)
+      );
+    }
+  }
+);
+
+test('matches the Codex v0.155.1 trusted hook fingerprint', () => {
+  const group = {
+    hooks: [
+      {
+        type: 'command',
+        command: '$HOME/.codex/hooks/codex-impl-entry-guard-hook.sh',
+        timeout: 10
+      }
+    ]
+  };
+
+  const actual = codexHookHash('pre_tool_use', group);
+
+  expect(actual).toBe(
+    'sha256:6d92c9d6a6eb6c7896cfe580a6188d5e29f1720fd9e5cf4a4870c950d766b92a'
+  );
+});
+
+test('fingerprints normalized handlers and sorted JSON keys', () => {
+  const canonical =
+    '{"event_name":"pre_tool_use","hooks":[{"async":false,"command":"guard","timeout":600,"type":"command"},{"additionalContextLimit":42,"async":true,"command":"second","statusMessage":"checking","timeout":1,"type":"command"}],"matcher":"Bash"}';
+
+  const actual = codexHookHash('pre_tool_use', {
+    matcher: 'Bash',
+    hooks: [
+      { command: 'guard', additionalContextLimit: 2500 },
+      {
+        command: 'second',
+        timeout: 0,
+        async: true,
+        statusMessage: 'checking',
+        additionalContextLimit: 42
+      }
+    ]
+  });
+
+  expect(actual).toBe(
+    `sha256:${crypto.createHash('sha256').update(canonical).digest('hex')}`
+  );
+});
+
+test('isolates concurrent attempt settings under different homes', async () => {
+  const paths = await fixture();
+  const input = {
+    base_home: paths.codex_root,
+    parent_dir: paths.root,
+    hook_path: path.join(paths.root, 'guard')
+  };
+
+  const [first, second] = await Promise.all([
+    prepareCodexGuardHome(input),
+    prepareCodexGuardHome(input)
+  ]);
+
+  expect(first.ok && second.ok && first.home_dir !== second.home_dir).toBe(
+    true
+  );
+});
+
+test('reports unavailable trust state without changing the base config', async () => {
+  const paths = await fixture();
+  await fs.writeFile(path.join(paths.root, 'occupied'), 'keep');
+
+  const result = await prepareCodexGuardHome({
+    base_home: paths.codex_root,
+    parent_dir: path.join(paths.root, 'occupied'),
+    hook_path: '/guard'
+  });
+
+  expect(result).toEqual({ ok: false, reason: 'codex_hook_not_loaded' });
+  expect(
+    await fs.readFile(path.join(paths.codex_root, 'config.toml'), 'utf8')
+  ).toBe('model="sol"');
 });
 
 describe('worker/codex-account-home', () => {

@@ -1,17 +1,6 @@
 /**
- * The split `MERGE_RE` fail-closed guards (worker-phase2 §1/§13), migrated from
- * the retired merge-lock guard suite: the gate is the ATTEMPT's mode, not a lock.
- *
- * The EFFECT is the violation's `kind`, not its reason
- * (guard-enforcement-layer-replacement §4):
- *
- *   - `gh pr merge` / hook bypass  → killed on EVERY attempt.
- *   - a base push                  → warned about, session continues.
- *   - `git merge origin/main`      → warned about on EVERY attempt (UI-1xcd
- *                                    §1/§3); the attempt's mode no longer
- *                                    decides, because the command touches
- *                                    nothing remote.
- *   - a disposition session        → base push and hook bypass do not apply.
+ * Command observations warn without killing the session. Verified one-shot
+ * hook bypasses retain their deferred tool-result judgment.
  */
 import os from 'node:os';
 import path from 'node:path';
@@ -65,70 +54,69 @@ async function runCommand(command, settings = {}) {
 const NORMAL = {};
 const LEGACY_RESOLVING = /** @type {any} */ ({ conflict_resolution: true });
 
-describe('runner/session base-landing guard (always blocked)', () => {
-  test('kills `gh pr merge` on a normal attempt', async () => {
+describe('runner/session base-landing observations', () => {
+  test('warns for `gh pr merge` on a normal attempt', async () => {
     const { verdict, kill_impl } = await runCommand('gh pr merge 304 --squash');
 
-    // Group-kill uses the NEGATIVE pid (whole process group).
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
-    expect(verdict.blocked).toBe(true);
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
     expect(verdict.success).toBe(false);
     expect(
       verdict.events.some((e) => e.reason === 'merge_to_base_blocked')
     ).toBe(true);
   });
 
-  test('kills `gh pr merge` when the retired resolution flag is passed', async () => {
+  test('warns for `gh pr merge` when the retired resolution flag is passed', async () => {
     const { verdict, kill_impl } = await runCommand(
       'gh pr merge 304 --squash',
       LEGACY_RESOLVING
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
     expect(
       verdict.events.some((e) => e.reason === 'merge_to_base_blocked')
     ).toBe(true);
   });
 
-  test('kills `gh pr merge` aimed at another repository', async () => {
+  test('warns for `gh pr merge` aimed at another repository', async () => {
     const { verdict, kill_impl } = await runCommand(
       'gh pr merge 12 --repo nakkulla/other'
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
-    expect(verdict.blocked).toBe(true);
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
   });
 });
 
-describe('runner/session hook-bypass guard (killed)', () => {
-  test('kills a `--no-verify` push', async () => {
+describe('runner/session hook-bypass observations', () => {
+  test('warns for a `--no-verify` push', async () => {
     const { verdict, kill_impl } = await runCommand(
       'git push --no-verify origin UI-1'
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
-    expect(verdict.blocked).toBe(true);
-    expect(verdict.blocked_detail).toEqual({
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+    expect(verdict.events.find((e) => e.guard_warning)?.guard_warning).toEqual({
       reason: 'hook_bypass_blocked',
       command: 'git push --no-verify origin UI-1'
     });
   });
 
-  test('names the disabled hook in the blocker message', async () => {
+  test('names the disabled hook in the warning message', async () => {
     const { verdict } = await runCommand('git config core.hooksPath /tmp/x');
 
-    const blocker = verdict.events.find((e) => e.kind === 'blocker');
+    const blocker = verdict.events.find((e) => e.guard_warning);
 
     expect(blocker?.reason).toBe('hook_bypass_blocked');
     expect(blocker?.message).toContain('git config core.hooksPath /tmp/x');
   });
 
-  test('kills a GIT_CONFIG_* assignment prefix', async () => {
+  test('warns for a GIT_CONFIG_* assignment prefix', async () => {
     const { kill_impl } = await runCommand(
       'GIT_CONFIG_COUNT=0 git push origin UI-1'
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
   });
 
   test('does not kill a dry-run push', async () => {
@@ -362,42 +350,42 @@ describe('runner/session merge guards leave innocent commands alone', () => {
 });
 
 describe('runner/session merge guards see through wrappers and interpreters', () => {
-  test('kills `gh pr merge` behind an assignment prefix', async () => {
+  test('warns for `gh pr merge` behind an assignment prefix', async () => {
     const { kill_impl } = await runCommand('FOO=1 gh pr merge 311');
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
   });
 
-  test('kills `gh pr merge` invoked by absolute path', async () => {
+  test('warns for `gh pr merge` invoked by absolute path', async () => {
     const { kill_impl } = await runCommand('/usr/bin/gh pr merge 311');
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
   });
 
-  test('kills `gh pr merge` behind an if/then prefix', async () => {
+  test('warns for `gh pr merge` behind an if/then prefix', async () => {
     const { kill_impl } = await runCommand('if true; then gh pr merge 311; fi');
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
   });
 
-  test('kills a `bash -c` payload', async () => {
+  test('warns for a `bash -c` payload', async () => {
     const { kill_impl } = await runCommand('bash -c "gh pr merge 311"');
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
   });
 
-  test('kills an interpreter heredoc payload', async () => {
+  test('warns for an interpreter heredoc payload', async () => {
     const { kill_impl } = await runCommand(
       ["bash <<'EOF'", 'gh pr merge 311', 'EOF'].join('\n')
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
   });
 
-  test('kills an unbalanced-quote command by the regex fallback', async () => {
+  test('warns for an unbalanced-quote command by the regex fallback', async () => {
     const { kill_impl } = await runCommand('echo "gh pr merge');
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
   });
 });
 
@@ -490,10 +478,10 @@ describe('runner/session excludes a disposition session', () => {
     expect(verdict.blocked).toBe(false);
   });
 
-  test('still kills `gh pr merge`', async () => {
+  test('still warns for `gh pr merge`', async () => {
     const { kill_impl } = await runCommand('gh pr merge 311', DISPOSING);
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
   });
 
   test('applies the guard normally when the kind is null (every other attempt)', async () => {
@@ -514,7 +502,7 @@ describe('runner/session blocked_detail', () => {
   test('records the guard reason and the matched command', async () => {
     const { verdict } = await runCommand('gh pr merge 311 --squash');
 
-    expect(verdict.blocked_detail).toEqual({
+    expect(verdict.events.find((e) => e.guard_warning)?.guard_warning).toEqual({
       reason: 'merge_to_base_blocked',
       command: 'gh pr merge 311 --squash'
     });
@@ -523,7 +511,7 @@ describe('runner/session blocked_detail', () => {
   test('records the INNER command for an interpreter payload', async () => {
     const { verdict } = await runCommand('bash -c "gh pr merge 311"');
 
-    expect(verdict.blocked_detail).toEqual({
+    expect(verdict.events.find((e) => e.guard_warning)?.guard_warning).toEqual({
       reason: 'merge_to_base_blocked',
       command: 'gh pr merge 311'
     });
@@ -688,8 +676,8 @@ describe('runner/session deferred hook-bypass verdict (§3)', () => {
     expect(events.some((e) => e.guard_warning)).toBe(false);
   });
 
-  test('kills once the tool_result proves the command ran', async () => {
-    const { verdict, kill_impl } = await runLines(
+  test('warns once the tool_result proves the command ran', async () => {
+    const { verdict, kill_impl, events } = await runLines(
       [
         bashToolLineWithId(ONE_SHOT, 'toolu_1'),
         toolResultLine('toolu_1', { content: '3 files changed' })
@@ -697,11 +685,15 @@ describe('runner/session deferred hook-bypass verdict (§3)', () => {
       'verified'
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
-    expect(verdict.blocked_detail).toEqual({
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.blocked).toBe(false);
+    expect(
+      events.filter((e) => e.kind === 'guard_pending').map((e) => e.op)
+    ).toEqual(['add', 'clear']);
+    expect(events.filter((e) => e.guard_warning)).toHaveLength(1);
+    expect(verdict.events.find((e) => e.guard_warning)?.guard_warning).toEqual({
       reason: 'hook_bypass_blocked',
-      command: ONE_SHOT,
-      confirmed_by: 'tool_result'
+      command: ONE_SHOT
     });
   });
 
@@ -734,7 +726,7 @@ describe('runner/session deferred hook-bypass verdict (§3)', () => {
     expect(handle.guard_mirror).toBe('absent');
   });
 
-  test('keeps the deferral when another tool call reports back', async () => {
+  test('records an unresolved warning when only another tool call reports back', async () => {
     const { kill_impl, events } = await runLines(
       [
         bashToolLineWithId(ONE_SHOT, 'toolu_1'),
@@ -744,7 +736,6 @@ describe('runner/session deferred hook-bypass verdict (§3)', () => {
     );
 
     expect(kill_impl).not.toHaveBeenCalled();
-    // The `clear` is §4's end-of-session settlement, not a pairing.
     expect(
       events.filter((e) => e.kind === 'guard_pending').map((e) => e.op)
     ).toEqual(['add', 'clear']);
@@ -753,7 +744,7 @@ describe('runner/session deferred hook-bypass verdict (§3)', () => {
     ]);
   });
 
-  test('warns instead of killing when the session ends still holding it', async () => {
+  test('records an unresolved warning when the session ends without a result', async () => {
     const { verdict, kill_impl, events } = await runLines(
       [
         bashToolLineWithId(ONE_SHOT, 'toolu_1'),
@@ -769,28 +760,28 @@ describe('runner/session deferred hook-bypass verdict (§3)', () => {
     ).toEqual([{ reason: 'hook_bypass_unresolved', command: ONE_SHOT }]);
   });
 
-  test('kills a one-shot relocation at once on an unverified session', async () => {
+  test('warns for a one-shot relocation at once on an unverified session', async () => {
     const { verdict, kill_impl } = await runLines(
       [bashToolLineWithId(ONE_SHOT, 'toolu_1')],
       'absent'
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
-    expect(verdict.blocked_detail).toEqual({
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.events.find((e) => e.guard_warning)?.guard_warning).toEqual({
       reason: 'hook_bypass_blocked',
       command: ONE_SHOT
     });
   });
 
-  test('kills a `--no-verify` push at once even on a verified session', async () => {
+  test('warns for a `--no-verify` push at once even on a verified session', async () => {
     const push = 'git push --no-verify origin UI-1';
     const { verdict, kill_impl } = await runLines(
       [bashToolLineWithId(push, 'toolu_1')],
       'verified'
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-5150, 'SIGTERM');
-    expect(verdict.blocked_detail).toEqual({
+    expect(kill_impl).not.toHaveBeenCalled();
+    expect(verdict.events.find((e) => e.guard_warning)?.guard_warning).toEqual({
       reason: 'hook_bypass_blocked',
       command: push
     });

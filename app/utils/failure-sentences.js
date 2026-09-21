@@ -82,19 +82,6 @@ export const FAILURE_SENTENCES = Object.freeze({
   repair_lane_retired: '자동 수리 레인이 은퇴해 사람 처리로 넘어왔습니다.'
 });
 
-/** Recovery reason → current waiting state, shared by server and browser. */
-/** @type {Readonly<Record<string, string>>} */
-export const RECOVERY_WAIT_LABELS = Object.freeze({
-  provider: '조건 대기',
-  credential: '조건 대기',
-  prerequisite: '조건 대기',
-  authority: '조건 대기',
-  verification: '조건 대기',
-  no_progress: '조건 대기',
-  unclassified: '확인 대기',
-  reconcile: '확인 대기'
-});
-
 /** Recovery reason → what is awaited and what releases the wait. */
 /** @type {Readonly<Record<string, string>>} */
 export const RECOVERY_WAIT_SENTENCES = Object.freeze({
@@ -110,9 +97,9 @@ export const RECOVERY_WAIT_SENTENCES = Object.freeze({
   no_progress:
     '같은 오류에 진전이 없어 멈췄으며, 원인이 정정되면 이어갈 수 있습니다.',
   unclassified:
-    '원인과 결과의 확인을 기다리며, 확인 뒤 이어하기 또는 폐기를 결정합니다.',
+    '세션에서 원인과 결과를 확인하고, 이어갈 지시 또는 폐기를 결정합니다.',
   reconcile:
-    '원래 실행과 그 효과의 확인을 기다리며, 확인 뒤 이어하기 또는 폐기를 결정합니다.'
+    '세션에서 원래 실행과 그 효과를 확인하고, 이어갈 지시 또는 폐기를 결정합니다.'
 });
 
 /**
@@ -176,44 +163,6 @@ export const FAILURE_NEXT_ACTIONS = Object.freeze({
   conflict_unresolved: '남아 있는 원인과 실행 기록을 먼저 확인하세요.',
   internal_record_failed: '남아 있는 원인과 실행 기록을 먼저 확인하세요.',
   repair_lane_retired: '남아 있는 원인과 실행 기록을 먼저 확인하세요.'
-});
-
-/**
- * Stale-work action refusal `reason` → the sentence the toast says (UI-kyky §5).
- *
- * These are the reasons the SERVER answers a stale-work click with, so they are
- * a different vocabulary from `STALE_WORK_CAUSES`, which explains why leftover
- * work exists at all — the two stay in their own modules rather than merging
- * into one map that would answer two questions with one lookup (§4.1).
- *
- * `ownership_unknown` is deliberately absent: it is an admission cause, never an
- * answer to this action. A reason with no entry keeps the caller's existing
- * fallback — the generic conflict sentence, or the raw reason — because a
- * sentence invented for an unknown code would state a remedy nobody verified.
- *
- * @type {Readonly<Record<string, string>>}
- */
-export const STALE_WORK_REFUSALS = Object.freeze({
-  revision_conflict:
-    '작업 목록이 갱신되었습니다. 현재 상태를 확인한 뒤 다시 선택하세요.',
-  stale_work_conflict:
-    '이전 작업의 확인 결과가 바뀌었습니다. 현재 표시된 상태를 확인하세요.',
-  waiting_lane_changed:
-    '대기열 배치가 바뀌었습니다. 현재 위치를 확인한 뒤 다시 선택하세요.',
-  discard_in_progress:
-    '이 작업의 폐기가 진행 중입니다. 끝난 뒤 상태를 확인하세요.',
-  action_in_flight: '다른 작업 처리가 진행 중입니다. 끝난 뒤 다시 선택하세요.',
-  bead_running: '이 이슈의 세션이 실행 중입니다. 실행 상태를 먼저 확인하세요.',
-  external_pr_owner:
-    '다른 세션이 관리하는 PR이 있습니다. 해당 PR과 세션 상태를 먼저 확인하세요.',
-  remote_branch_owner:
-    '원격 브랜치가 남아 있어 자동으로 처리할 수 없습니다. 브랜치와 PR 상태를 확인하세요.',
-  base_identity_changed:
-    '기준 브랜치의 상태가 바뀌었습니다. 현재 기준 브랜치를 확인하세요.',
-  worktree_identity_changed:
-    '작업 디렉터리의 식별 정보가 바뀌었습니다. 해당 작업 디렉터리를 확인하세요.',
-  remote_ref_observe_failed:
-    '원격 PR·브랜치 상태를 확인하지 못했습니다. 연결과 접근 권한을 확인한 뒤 다시 선택하세요.'
 });
 
 /**

@@ -41,27 +41,27 @@ describe('work recovery classification', () => {
     ['session_hard_stop:environment', 'environment_line'],
     ['session_failed:is_error', 'unknown_error'],
     ['session_failed:subtype', 'unknown_error'],
-    ['session_failed:no_result', 'unknown_error'],
-    ['loud_fail_blocker', 'authority_required']
-  ])('preserves %s as policy-classified waiting', (cause, key) => {
-    const classified = classifyFailure({
-      cause,
-      recovery,
-      verdict: { success: false, summary: 'raw failure' }
-    });
+    ['session_failed:no_result', 'unknown_error']
+  ])(
+    'retries policy-classified %s without an environment pattern',
+    (cause, key) => {
+      const classified = classifyFailure({
+        cause,
+        recovery,
+        verdict: { success: false, summary: 'raw failure' }
+      });
 
-    expect(classified).toMatchObject({
-      tier: 'waiting',
-      cause,
-      summary: 'raw failure',
-      retry: null,
-      recovery: {
-        classification: key,
-        disposition: 'wait',
-        reason: key === 'authority_required' ? 'authority' : 'unclassified'
-      }
-    });
-  });
+      expect(classified).toMatchObject({
+        tier: 'env',
+        cause,
+        summary: 'raw failure',
+        env_group: 'unknown',
+        retry: { max: 3, delays_ms: RETRY_DELAYS_MS }
+      });
+      expect(recovery.classify(key)?.reason).toBe('unclassified');
+      expect(classified.recovery).toBeUndefined();
+    }
+  );
 
   test.each([
     'session_hard_stop:environment',
@@ -159,11 +159,36 @@ describe('work recovery classification', () => {
   });
 });
 
+describe('unclassified retry groups', () => {
+  test.each([
+    'session_ended_unresolved',
+    'session_failed:reported_failure',
+    'session_hard_stop:environment',
+    'session_failed:is_error',
+    'session_failed:turn_failed'
+  ])('keeps the matched environment group for %s', (cause) => {
+    for (const [summary, env_group] of [
+      ['unrecognized failure', 'unknown'],
+      ['fetch failed', 'api'],
+      ['spawn codex ENOENT', 'runtime'],
+      ['overloaded', 'provider_capacity']
+    ]) {
+      const result = classifyFailure({
+        cause,
+        verdict: { success: false, summary },
+        recovery: { classify: workRecoveryClassification }
+      });
+
+      expect(result).toMatchObject({ tier: 'env', env_group });
+    }
+  });
+});
+
 describe('worker failure classification table', () => {
   const cases = [
     ['session_failed:subtype', 'individual'],
     ['session_failed:no_result', 'individual'],
-    ['session_failed:turn_failed', 'individual'],
+    ['session_failed:turn_failed', 'env'],
     ['quickfix_landing_failed:head_mismatch', 'individual'],
     ['quickfix_landing_failed:delivery_unproven:push_log_absent', 'individual'],
     ['workflow_mode_record_failed', 'individual'],
@@ -178,10 +203,10 @@ describe('worker failure classification table', () => {
     ['spawn_failed', 'env'],
     ['spawn_failed:codex', 'env'],
     ['codex_home_prepare_failed', 'env'],
-    ['base_landing_detected', 'systemic'],
-    ['gh_unavailable', 'systemic'],
-    ['bd_unreachable', 'systemic'],
-    ['verify_red', 'systemic'],
+    ['base_landing_detected', 'individual'],
+    ['gh_unavailable', 'env'],
+    ['bd_unreachable', 'env'],
+    ['verify_red', 'individual'],
     ['cleanup_failed', 'individual'],
     ['cleanup_failed:deploy_script', 'individual']
   ];
@@ -213,7 +238,7 @@ describe('worker failure classification table', () => {
     expect(individual.retry).toBeNull();
   });
 
-  test('stops the queue on a bypassed prevention layer', () => {
+  test('fails only the attempt on a bypassed prevention layer', () => {
     const result = classifyFailure(
       input({
         cause: 'loud_fail_blocker',
@@ -221,7 +246,7 @@ describe('worker failure classification table', () => {
       })
     );
 
-    expect(result.tier).toEqual('systemic');
+    expect(result.tier).toEqual('individual');
   });
 
   test('keeps a bd_close blocker on its own bead', () => {
@@ -497,7 +522,7 @@ describe('worker parked classification', () => {
       input({ ...parked_input, cause: 'base_landing_detected' })
     );
 
-    expect(result.tier).toEqual('systemic');
+    expect(result.tier).toEqual('individual');
   });
 });
 
@@ -661,7 +686,7 @@ describe('worker guard kill summary', () => {
     );
 
     expect({ tier: result.tier, summary: result.summary }).toEqual({
-      tier: 'systemic',
+      tier: 'individual',
       summary:
         'landing on the base branch is never permitted: git merge origin/main'
     });

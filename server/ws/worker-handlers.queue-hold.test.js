@@ -1,6 +1,5 @@
 /**
- * `worker-queue-hold-resume` / `worker-queue-hold-retry-now` and the parked
- * tile's `worker-resolve-in-session` exit.
+ * The parked tile's `worker-resolve-in-session` exit and retired queue operations.
  *
  * The scheduler side is mocked — this file owns the ws contract: the payload
  * guard, the reply shape, the readback the reply carries, and the fanout that
@@ -12,15 +11,6 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createKeyedFrameNormalizer } from './keyed-frames-fixture.js';
 
-const state = vi.hoisted(() => ({
-  /** @type {Array<{ fn: string, workspace: string, input: any }>} */
-  calls: [],
-  /** @type {Record<string, { ok: boolean, reason?: string }>} */
-  results: {},
-  /** @type {null | (() => void)} */
-  onCall: null
-}));
-
 vi.mock('../registry-watcher.js', async (importOriginal) => {
   const actual = /** @type {any} */ (await importOriginal());
   return {
@@ -30,12 +20,9 @@ vi.mock('../registry-watcher.js', async (importOriginal) => {
 });
 
 vi.mock('../worker/attach.js', () => ({
-  // Empty wait judgment (UI-n99w §6.3): these cases are about hold projection,
-  // so decorateQueue attaches no external_waits or wait_reasons here.
+  // Keep unrelated wait rows out of the parked-tile contract.
   workerWaitState: () => ({ wait_reasons: [], external_waits: [] }),
-  backupFreshWorkerStaleWork: () => Promise.resolve({ ok: true }),
   checkWorkerQueueAdmission: () => Promise.resolve({ ok: true }),
-  continueWorkerStaleWork: () => Promise.resolve({ ok: true }),
   discardWorkerBead: () => Promise.resolve({ ok: true }),
   dismissWorkerRepoOperation: () => Promise.resolve({ ok: true }),
   enqueueWorkerManualMerge: () =>
@@ -45,29 +32,10 @@ vi.mock('../worker/attach.js', () => ({
   observeWorkerPrs: () => Promise.resolve(),
   pauseWorkerAttempt: () => Promise.resolve({ ok: true }),
   readBeadTimeline: () => [],
-  recheckWorkerStaleWork: () => Promise.resolve({ ok: true }),
   reconcileWorkerRepoOperations: () => Promise.resolve(),
   refreshWorkerExternalPrs: () => Promise.resolve(false),
   resumeWorkerAttempt: () => Promise.resolve({ ok: true }),
-  /**
-   * @param {string} workspace
-   * @param {any} input
-   */
-  resumeWorkerQueueHold: (workspace, input) => {
-    state.calls.push({ fn: 'resume', workspace, input });
-    state.onCall?.();
-    return Promise.resolve(state.results.resume ?? { ok: true });
-  },
   retryWorkerCleanup: () => Promise.resolve({ ok: true }),
-  /**
-   * @param {string} workspace
-   * @param {any} input
-   */
-  retryWorkerQueueHoldNow: (workspace, input) => {
-    state.calls.push({ fn: 'retry_now', workspace, input });
-    state.onCall?.();
-    return Promise.resolve(state.results.retry_now ?? { ok: true });
-  },
   reviseApproveWorkerBead: () => Promise.resolve({ ok: true }),
   reviseFixWorkerBead: () => Promise.resolve({ ok: true }),
   startWorkerRepoOperationDeployRun: () => Promise.resolve({ ok: true }),
@@ -127,32 +95,20 @@ async function dispatch(run, type, payload) {
   };
 }
 
-/**
- * A second connection subscribed to this workspace, so the fanout is
- * observable as the message it actually pushes.
- *
- * @returns {any}
- */
-function subscriber() {
-  const sock = fakeSocket();
-  setConnWorkspace(sock, { root_dir: WS, db_path: '' });
-  handlers.handleSubscribeWorkerQueue(sock, {
-    id: 'sub',
-    type: 'subscribe-worker-queue',
-    payload: { id: 'client-1' }
-  });
-  sock.sent.length = 0;
-  return sock;
-}
+test('removes the retired queue operation handlers and routes', () => {
+  const connection = fs.readFileSync(
+    new URL('./connection.js', import.meta.url),
+    'utf8'
+  );
+
+  expect(handlers).not.toHaveProperty('handleWorkerQueueHoldResume');
+  expect(handlers).not.toHaveProperty('handleWorkerQueueHoldRetryNow');
+  expect(connection).not.toMatch(/worker-queue-hold-(?:resume|retry-now)/);
+});
 
 beforeEach(() => {
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-queue-hold-'));
   process.env.XDG_STATE_HOME = tmp_state;
-  state.calls = [];
-  state.results = {};
-  // The fanout only pushes a CHANGED snapshot, so the tests that observe it
-  // make the mocked scheduler leg move the queue the way the real one does.
-  state.onCall = null;
   handlers.__resetWorkerQueueForTest();
   inquiry_calls = [];
   original_direction_inquiry = getWorkerRuntime().directionInquiry;
@@ -192,160 +148,68 @@ afterEach(() => {
   }
 });
 
-describe('worker-queue-hold-resume (UI-5ym8 §3.4)', () => {
-  test('forwards the since CAS and replies with the queue readback', async () => {
+describe('parked tile resolution (UI-gjp2 §3.3)', () => {
+  test('routes a stalled recovery click to its inquiry pane', async () => {
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'recovery',
+        bead_id: 'UI-1',
+        status: 'waiting',
+        repo: '/repo',
+        cause_detail: {
+          recovery: {
+            reason: 'authority',
+            classification: 'session_recovery_wait'
+          }
+        }
+      }
+    });
+
     const { reply } = await dispatch(
-      handlers.handleWorkerQueueHoldResume,
-      'worker-queue-hold-resume',
-      { since: 1700 }
+      handlers.handleWorkerResolveInSession,
+      'worker-resolve-in-session',
+      { bead_id: 'UI-1', expected_revision: store.snapshot(WS).revision }
     );
 
-    expect(state.calls).toEqual([
-      { fn: 'resume', workspace: WS, input: { since: 1700 } }
+    expect(inquiry_calls).toEqual([
+      expect.objectContaining({
+        awaiting_user: null,
+        recovery: {
+          reason: 'authority',
+          classification: 'session_recovery_wait'
+        }
+      })
     ]);
-    expect(reply.payload.ok).toBe(true);
-    expect(reply.payload.queue.revision).toBeGreaterThan(0);
+    expect(reply.payload.session).toBe('already_running');
   });
 
-  test('reports a CAS mismatch as a no-op reason', async () => {
-    state.results.resume = { ok: false, reason: 'hold_changed' };
+  test('refuses Worker resume requests for recovery attempts', async () => {
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'recovery',
+        bead_id: 'UI-1',
+        status: 'waiting',
+        repo: '/repo',
+        cause_detail: { recovery: { reason: 'authority' } }
+      }
+    });
 
     const { reply } = await dispatch(
-      handlers.handleWorkerQueueHoldResume,
-      'worker-queue-hold-resume',
-      { since: 1 }
+      handlers.handleWorkerAttemptResume,
+      'worker-attempt-resume',
+      { attempt_id: 'recovery', expected_revision: store.snapshot(WS).revision }
     );
 
     expect(reply.payload).toMatchObject({
-      ok: false,
-      reason: 'hold_changed'
+      resumed: false,
+      reason: 'recovery_requires_inquiry'
     });
+    expect(inquiry_calls).toEqual([]);
   });
-
-  test('a duplicate click is idempotent — the second one just misses', async () => {
-    await dispatch(
-      handlers.handleWorkerQueueHoldResume,
-      'worker-queue-hold-resume',
-      { since: 1700 }
-    );
-    state.results.resume = { ok: false, reason: 'hold_changed' };
-    const { reply } = await dispatch(
-      handlers.handleWorkerQueueHoldResume,
-      'worker-queue-hold-resume',
-      { since: 1700 }
-    );
-
-    expect(state.calls.map((call) => call.input.since)).toEqual([1700, 1700]);
-    expect(reply.payload).toMatchObject({ ok: false, reason: 'hold_changed' });
-  });
-
-  test('refuses a payload with no since', async () => {
-    const { reply } = await dispatch(
-      handlers.handleWorkerQueueHoldResume,
-      'worker-queue-hold-resume',
-      {}
-    );
-
-    expect(reply.ok).toBe(false);
-    expect(reply.error.code).toBe('bad_request');
-    expect(state.calls).toEqual([]);
-  });
-
-  test('fans the readback out to every other subscriber', async () => {
-    const watcher = subscriber();
-    state.onCall = () => {
-      const store = getWorkerRuntime().queueStore;
-      store.place(WS, {
-        expected_revision: store.snapshot(WS).revision,
-        bead_id: 'UI-2'
-      });
-    };
-
-    await dispatch(
-      handlers.handleWorkerQueueHoldResume,
-      'worker-queue-hold-resume',
-      { since: 1700 }
-    );
-
-    const pushed = watcher.sent.map((/** @type {string} */ raw) =>
-      JSON.parse(String(raw))
-    );
-    expect(
-      pushed.some(
-        (/** @type {any} */ msg) => msg.type === 'worker-queue-snapshot'
-      )
-    ).toBe(true);
-  });
-});
-
-describe('worker-queue-hold-retry-now (UI-5ym8 §4)', () => {
-  test('forwards the since CAS', async () => {
-    const { reply } = await dispatch(
-      handlers.handleWorkerQueueHoldRetryNow,
-      'worker-queue-hold-retry-now',
-      { since: 2400 }
-    );
-
-    expect(state.calls).toEqual([
-      { fn: 'retry_now', workspace: WS, input: { since: 2400 } }
-    ]);
-    expect(reply.payload.ok).toBe(true);
-  });
-
-  test('reports a CAS mismatch without touching the queue', async () => {
-    state.results.retry_now = { ok: false, reason: 'hold_changed' };
-    const before = getWorkerRuntime().queueStore.snapshot(WS).revision;
-
-    const { reply } = await dispatch(
-      handlers.handleWorkerQueueHoldRetryNow,
-      'worker-queue-hold-retry-now',
-      { since: 1 }
-    );
-
-    expect(reply.payload).toMatchObject({ ok: false, reason: 'hold_changed' });
-    expect(getWorkerRuntime().queueStore.snapshot(WS).revision).toBe(before);
-  });
-
-  test('refuses a non-numeric since', async () => {
-    const { reply } = await dispatch(
-      handlers.handleWorkerQueueHoldRetryNow,
-      'worker-queue-hold-retry-now',
-      { since: 'now' }
-    );
-
-    expect(reply.ok).toBe(false);
-    expect(reply.error.code).toBe('bad_request');
-    expect(state.calls).toEqual([]);
-  });
-});
-
-describe('worker queue hold snapshot projection (UI-5ym8 §4)', () => {
-  test('carries hold and lineages on the wire and withholds hold_history', () => {
-    const store = getWorkerRuntime().queueStore;
-    store.applyQueueHold(WS, {
-      event: {
-        kind: 'env_failure',
-        bead_id: 'UI-1',
-        attempt_id: 'att-1',
-        cause: 'verify_cmd_spawn_error',
-        at: 1000
-      },
-      now: 1000
-    });
-
-    const projected = handlers.decorateQueue(WS, store.snapshot(WS));
-
-    expect(projected.hold).toMatchObject({
-      kind: 'env',
-      cause: 'verify_cmd_spawn_error',
-      since: 1000
-    });
-    expect(projected.lineages).toHaveLength(1);
-    expect(projected.hold_history).toBeUndefined();
-  });
-});
-
-describe('parked tile resolution (UI-gjp2 §3.3)', () => {
   test('routes the parked tile click to worker-resolve-in-session', async () => {
     const store = getWorkerRuntime().queueStore;
     store.appendAttempt(WS, {

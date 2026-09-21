@@ -1971,34 +1971,7 @@ function setupStaleRecovery(options = {}) {
     base_oid: 'a'.repeat(40),
     status_digest: 'status-1'
   };
-  store.recordAdmission(workspace, {
-    bead_id: 'UI-stale',
-    reason: 'worktree_stale_work',
-    stale_work: {
-      schema: 1,
-      residue,
-      state: 'unique',
-      cause: options.clean_resume
-        ? 'resume_available'
-        : residue === 'worktree'
-          ? 'dirty_unique'
-          : 'ahead_not_contained',
-      summary: {
-        staged_count: options.clean_resume ? 0 : 1,
-        unstaged_count: options.clean_resume ? 0 : 1,
-        untracked_count: options.clean_resume ? 0 : 1,
-        branch_ahead: residue === 'branch' ? 1 : 0,
-        head_ahead: 0
-      },
-      identity_digest: 'identity-1',
-      action_id: 'action-1',
-      can_resume: false,
-      can_continue: residue === 'worktree',
-      can_backup_fresh: true,
-      can_recheck: residue === 'branch',
-      identity
-    }
-  });
+
   /** @type {string[]} */
   const calls = [];
   let local_ref = HEAD_SHA;
@@ -2146,7 +2119,6 @@ function setupStaleRecovery(options = {}) {
   };
   const scheduler = {
     activeBeadIds: vi.fn(() => new Set(['UI-stale'])),
-    staleWorkActionInFlight: vi.fn(() => options.in_flight === true),
     fenceDiscardAttempt: vi.fn(() => true),
     tick: vi.fn(async () => {
       calls.push('scheduler:tick');
@@ -2183,6 +2155,7 @@ function setupStaleRecovery(options = {}) {
     processController: {},
     sessionLog: { pathFor: () => '/state/session.jsonl' },
     makeOperationId: () => 'stale-work-1',
+    actionInFlight: () => options.in_flight === true,
     now: () => 300
   };
   const coordinator_options = {
@@ -2210,18 +2183,16 @@ describe('worker discard coordinator stale-work recovery', () => {
   test('cleans branch-only residue with a verified archive and CAS ref delete', async () => {
     const env = setupStaleRecovery({ residue: 'branch' });
 
-    const result = await env.coordinator.backupFresh({
-      bead_id: 'UI-stale',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(workspace).revision
+    const result = await env.coordinator.backupFreshResidue(env.identity, {
+      bead_id: 'UI-stale'
     });
 
-    expect(result).toEqual({ ok: true, operation_id: 'stale-work-1' });
-    expect(env.calls).toEqual([
-      'archive:branch-verified',
-      'cleanup:local-ref',
-      'scheduler:tick'
-    ]);
+    expect(result).toMatchObject({
+      ok: true,
+      operation_id: 'stale-work-1',
+      backup_path: expect.any(String)
+    });
+    expect(env.calls).toEqual(['archive:branch-verified', 'cleanup:local-ref']);
     expect(env.worktree.removeByBranch).not.toHaveBeenCalled();
     expect(env.archive.createBranch).toHaveBeenCalledWith({
       workspace,
@@ -2239,10 +2210,8 @@ describe('worker discard coordinator stale-work recovery', () => {
       archive_failure: true
     });
 
-    const result = await env.coordinator.backupFresh({
-      bead_id: 'UI-stale',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(workspace).revision
+    const result = await env.coordinator.backupFreshResidue(env.identity, {
+      bead_id: 'UI-stale'
     });
 
     expect(result).toMatchObject({ ok: false });
@@ -2250,58 +2219,48 @@ describe('worker discard coordinator stale-work recovery', () => {
     expect(env.worktree.removeByBranch).not.toHaveBeenCalled();
   });
 
-  test('preserves a verified branch archive across cleanup failure and retry', async () => {
+  test('preserves a verified archive and releases the fence after cleanup failure', async () => {
     const env = setupStaleRecovery({
       residue: 'branch',
       local_ref_failure: true
     });
 
-    const first = await env.coordinator.backupFresh({
-      bead_id: 'UI-stale',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(workspace).revision
+    const result = await env.coordinator.backupFreshResidue(env.identity, {
+      bead_id: 'UI-stale'
     });
-    const failed_operation =
-      env.store.snapshot(workspace).discard_operations['stale-work-1'];
-    const retried = await env.createCoordinator().retry('stale-work-1');
     const operation =
       env.store.snapshot(workspace).discard_operations['stale-work-1'];
 
-    expect(first).toMatchObject({
+    expect(result).toMatchObject({
       ok: false,
       reason: 'local_ref_delete_failed'
     });
-    expect(failed_operation).toMatchObject({
-      phase: 'backup_verified',
-      backup: { path: '/state/branch-archive' },
-      last_error: 'local_ref_delete_failed'
-    });
-    expect(retried).toEqual({ ok: true, operation_id: 'stale-work-1' });
-    expect(env.archive.createBranch).toHaveBeenCalledTimes(1);
-    expect(env.worktree.removeByBranch).not.toHaveBeenCalled();
     expect(operation).toMatchObject({
-      phase: 'done',
+      phase: 'abandoned',
       backup: { path: '/state/branch-archive' },
-      last_error: null
+      receipts: { automatic_failure: { reason: 'local_ref_delete_failed' } }
     });
+    expect(env.store.activeDiscardBeadIds(workspace).size).toBe(0);
+    expect(env.archive.createBranch).toHaveBeenCalledTimes(1);
   });
 
   test('backs up a clean worktree parked only by a resumable session', async () => {
     const env = setupStaleRecovery({ clean_resume: true });
 
-    const result = await env.coordinator.backupFresh({
-      bead_id: 'UI-stale',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(workspace).revision
+    const result = await env.coordinator.backupFreshResidue(env.identity, {
+      bead_id: 'UI-stale'
     });
     const queue = env.store.snapshot(workspace);
 
-    expect(result).toEqual({ ok: true, operation_id: 'stale-work-1' });
+    expect(result).toMatchObject({
+      ok: true,
+      operation_id: 'stale-work-1',
+      backup_path: expect.any(String)
+    });
     expect(env.calls).toEqual([
       'archive:verified',
       'cleanup:worktree',
-      'cleanup:local-ref',
-      'scheduler:tick'
+      'cleanup:local-ref'
     ]);
     expect(queue.discard_operations['stale-work-1']).toMatchObject({
       kind: 'stale_work_backup_fresh',
@@ -2327,10 +2286,8 @@ describe('worker discard coordinator stale-work recovery', () => {
       }
     });
 
-    const result = await env.coordinator.backupFresh({
-      bead_id: 'UI-stale',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(workspace).revision
+    const result = await env.coordinator.backupFreshResidue(env.identity, {
+      bead_id: 'UI-stale'
     });
 
     expect(result).toEqual({
@@ -2359,10 +2316,8 @@ describe('worker discard coordinator stale-work recovery', () => {
       }
     });
 
-    const result = await env.coordinator.backupFresh({
-      bead_id: 'UI-stale',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(workspace).revision
+    const result = await env.coordinator.backupFreshResidue(env.identity, {
+      bead_id: 'UI-stale'
     });
 
     expect(result).toEqual({
@@ -2376,19 +2331,20 @@ describe('worker discard coordinator stale-work recovery', () => {
   test('starts recovery while dispatch refusal remains visible', async () => {
     const env = setupStaleRecovery();
 
-    const result = await env.coordinator.backupFresh({
-      bead_id: 'UI-stale',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(workspace).revision
+    const result = await env.coordinator.backupFreshResidue(env.identity, {
+      bead_id: 'UI-stale'
     });
     const queue = env.store.snapshot(workspace);
 
-    expect(result).toEqual({ ok: true, operation_id: 'stale-work-1' });
+    expect(result).toMatchObject({
+      ok: true,
+      operation_id: 'stale-work-1',
+      backup_path: expect.any(String)
+    });
     expect(env.calls).toEqual([
       'archive:verified',
       'cleanup:worktree',
-      'cleanup:local-ref',
-      'scheduler:tick'
+      'cleanup:local-ref'
     ]);
     expect(queue.discard_operations['stale-work-1']).toMatchObject({
       kind: 'stale_work_backup_fresh',
@@ -2398,25 +2354,18 @@ describe('worker discard coordinator stale-work recovery', () => {
     expect(queue.admission['UI-stale']).toBeUndefined();
     expect(queue.serial_lanes[0].entries[0].bead_id).toBe('UI-stale');
     expect(env.scheduler.activeBeadIds).not.toHaveBeenCalled();
-    expect(env.scheduler.staleWorkActionInFlight).toHaveBeenCalledWith(
-      workspace,
-      'UI-stale'
-    );
-    expect(env.scheduler.tick).toHaveBeenCalledTimes(1);
+    expect(env.scheduler.tick).not.toHaveBeenCalled();
   });
 
   test('refuses recovery while a narrow scheduler action is in flight', async () => {
     const env = setupStaleRecovery({ in_flight: true });
 
-    const result = await env.coordinator.backupFresh({
-      bead_id: 'UI-stale',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(workspace).revision
+    const result = await env.coordinator.backupFreshResidue(env.identity, {
+      bead_id: 'UI-stale'
     });
 
     expect(result).toEqual({
       ok: false,
-      conflict: true,
       reason: 'action_in_flight'
     });
     expect(env.store.snapshot(workspace).discard_operations).toEqual({});
@@ -2434,15 +2383,12 @@ describe('worker discard coordinator stale-work recovery', () => {
       }
     });
 
-    const result = await env.coordinator.backupFresh({
-      bead_id: 'UI-stale',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(workspace).revision
+    const result = await env.coordinator.backupFreshResidue(env.identity, {
+      bead_id: 'UI-stale'
     });
 
     expect(result).toEqual({
       ok: false,
-      conflict: true,
       reason: 'action_in_flight'
     });
     expect(env.archive.create).not.toHaveBeenCalled();
@@ -2451,13 +2397,15 @@ describe('worker discard coordinator stale-work recovery', () => {
   test('backs up worktree residue against its recorded base after the base moved', async () => {
     const env = setupStaleRecovery({ base_moved: true });
 
-    const result = await env.coordinator.backupFresh({
-      bead_id: 'UI-stale',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(workspace).revision
+    const result = await env.coordinator.backupFreshResidue(env.identity, {
+      bead_id: 'UI-stale'
     });
 
-    expect(result).toEqual({ ok: true, operation_id: 'stale-work-1' });
+    expect(result).toMatchObject({
+      ok: true,
+      operation_id: 'stale-work-1',
+      backup_path: expect.any(String)
+    });
     expect(env.worktree.removeByBranch).toHaveBeenCalledWith(
       expect.objectContaining({ expected_base_oid: env.identity.base_oid })
     );
@@ -2475,10 +2423,8 @@ describe('worker discard coordinator stale-work recovery', () => {
       reason: 'identity_changed'
     });
 
-    const result = await env.coordinator.backupFresh({
-      bead_id: 'UI-stale',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(workspace).revision
+    const result = await env.coordinator.backupFreshResidue(env.identity, {
+      bead_id: 'UI-stale'
     });
 
     expect(result).toMatchObject({
@@ -2497,103 +2443,27 @@ describe('worker discard coordinator stale-work recovery', () => {
     expect(
       env.store.snapshot(workspace).discard_operations['stale-work-1']
     ).toMatchObject({
-      phase: 'backup_verified',
-      last_error: 'worktree_identity_changed'
+      phase: 'abandoned',
+      receipts: { automatic_failure: { reason: 'worktree_identity_changed' } }
     });
   });
 
-  test('adopts an already removed worktree after restart', async () => {
-    const env = setupStaleRecovery();
-    const original = env.store.advanceDiscardOperation.bind(env.store);
-    let interrupted = false;
-    vi.spyOn(env.store, 'advanceDiscardOperation').mockImplementation(
-      (ws, input) => {
-        if (!interrupted && input.expected_phase === 'backup_verified') {
-          interrupted = true;
-          return { ok: false, conflict: false, queue: env.store.snapshot(ws) };
-        }
-        return original(ws, input);
-      }
-    );
-
-    const first = await env.coordinator.backupFresh({
-      bead_id: 'UI-stale',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(workspace).revision
+  test('keeps a failed automatic backup terminal across restart', async () => {
+    const env = setupStaleRecovery({
+      archive_failure: true,
+      residue: 'branch'
     });
-    const restarted = env.createCoordinator();
-    const retried = await restarted.retry('stale-work-1');
 
-    expect(first).toMatchObject({ ok: false });
-    expect(retried).toEqual({ ok: true, operation_id: 'stale-work-1' });
+    await env.coordinator.backupFreshResidue(env.identity, {
+      bead_id: 'UI-stale'
+    });
+    await env.createCoordinator().recover();
+
+    expect(env.archive.createBranch).toHaveBeenCalledTimes(1);
+    expect(env.worktree.removeByBranch).not.toHaveBeenCalled();
     expect(
-      env.calls.filter((call) => call === 'cleanup:worktree')
-    ).toHaveLength(1);
-    expect(
-      env.store.snapshot(workspace).discard_operations['stale-work-1']
-    ).toMatchObject({ phase: 'done', last_error: null });
-  });
-
-  test('preserves a replacement worktree after restart', async () => {
-    const env = setupStaleRecovery();
-    const original_advance = env.store.advanceDiscardOperation.bind(env.store);
-    let interrupted = false;
-    vi.spyOn(env.store, 'advanceDiscardOperation').mockImplementation(
-      (ws, input) => {
-        if (!interrupted && input.expected_phase === 'backup_verified') {
-          interrupted = true;
-          return { ok: false, conflict: false, queue: env.store.snapshot(ws) };
-        }
-        return original_advance(ws, input);
-      }
-    );
-    const original_observe =
-      env.worktree.removeIfDiscardable.getMockImplementation();
-    let observations = 0;
-    env.worktree.removeIfDiscardable.mockImplementation(async (...args) => {
-      observations += 1;
-      if (observations <= 2 && original_observe) {
-        return original_observe(...args);
-      }
-      return {
-        ok: false,
-        state: 'unique',
-        cause: 'dirty_unique',
-        owned: true,
-        removed: false,
-        identity: {
-          ...env.identity,
-          worktree_realpath: '/repo/.worktrees/UI-stale-replacement',
-          status_digest: 'replacement-status'
-        },
-        summary: {
-          staged_count: 0,
-          unstaged_count: 1,
-          untracked_count: 0,
-          branch_ahead: 0,
-          head_ahead: 0
-        }
-      };
-    });
-
-    await env.coordinator.backupFresh({
-      bead_id: 'UI-stale',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(workspace).revision
-    });
-    const restarted = env.createCoordinator();
-    const retried = await restarted.retry('stale-work-1');
-
-    expect(retried).toMatchObject({
-      ok: false,
-      reason: 'worktree_identity_changed'
-    });
-    expect(
-      env.store.snapshot(workspace).discard_operations['stale-work-1']
-    ).toMatchObject({
-      phase: 'backup_verified',
-      last_error: 'worktree_identity_changed'
-    });
+      env.store.snapshot(workspace).discard_operations['stale-work-1'].phase
+    ).toBe('abandoned');
   });
 });
 

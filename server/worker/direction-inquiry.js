@@ -1,18 +1,17 @@
 /**
  * Parked-attempt inquiry session trigger (UI-gjp2).
  *
- * Every string-valued `awaiting_user` park reaches this module and selects one
- * of three dispositions: stale artifact review, implementation/design
- * conflict, or a generic unknown value. `onParkedAttempt` is the automatic
+ * Every string-valued `awaiting_user` park and stalled recovery reaches this
+ * module and selects stale artifact review, implementation/design conflict,
+ * a generic unknown value, or recovery. `onParkedAttempt` is the automatic
  * trigger and obeys `worker_direction_inquiry.enabled`; `launchForClick` is the
  * user's explicit `[세션에서 해결]` action and deliberately ignores that
  * automatic-launch gate. Both start an INTERACTIVE `claude` session in tmux so
  * `AskUserQuestion` reaches the user through `claude-discord-bridge`, with at
  * most one live inquiry pane per Bead.
  *
- * `STALE_INQUIRY_PROMPT`, `IMPL_CONFLICT_INQUIRY_PROMPT`, and
- * `GENERIC_INQUIRY_PROMPT` are byte-for-byte copies of the three canonical
- * dotfiles prompt blocks. Unit tests pin all three SHA-256 digests because this
+ * The four inquiry prompts are byte-for-byte copies of canonical dotfiles
+ * prompt blocks. Unit tests pin all four SHA-256 digests because this
  * runtime must not read the sibling repository's contract file.
  *
  * Three properties are load-bearing:
@@ -164,6 +163,46 @@ export const GENERIC_INQUIRY_PROMPT =
     '',
     '금지: `awaiting_user` 단독 해제 · Bead 상태 직접 변경 · 외부 리뷰어 dispatch.'
   ].join('\n') + '\n';
+
+/** Recovery prompt copied byte-for-byte from the approved dotfiles block. */
+export const RECOVERY_INQUIRY_PROMPT =
+  [
+    'Bead <bead-id>가 recovery:<reason>으로 멈췄습니다. 세션이 남긴 사유를 읽고 사용자에게 처분을 물어 기록하세요.',
+    '- blocker: <blocker 문장>',
+    '- 기록 세션: <기록 세션>',
+    '- 구현 워크트리: <구현 워크트리>',
+    '- target_base 체크아웃: <target_base 체크아웃>',
+    '',
+    '절차',
+    '1. `bd show <bead-id> --json`의 metadata·notes·최근 댓글과 attempt 결과 줄을 읽고 무엇이 멈췄는지 한 문단으로 요약한다.',
+    '2. `AskUserQuestion`을 1회 부른다. 선택지는 "이어가기 — 처분 지시를 자유 입력으로" / "폐기" / "사람이 직접 본다"다.',
+    '3. 답 원문을 notes에 `recovery-inquiry: <reason> — 사용자 답: <원문>` 줄로 남긴다. 이어가기 지시면 이 세션이 기록 세션을 fork해 지시대로 계속하며 Worker resume 경로로 넘기지 않는다.',
+    '',
+    '금지: `awaiting_user` 단독 해제 · Bead 상태 직접 변경 · 외부 리뷰어 dispatch.'
+  ].join('\n') + '\n';
+
+/**
+ * @param {{ bead_id: string, reason: string, summary?: string|null, session_id: string|null, worktree: string, checkout: string }} input
+ */
+export function fillRecoveryPrompt(input) {
+  const blocker = (input.summary || '')
+    .split('\n')[0]
+    .replace(/^blocker:\s*/, '')
+    .trim();
+  /** @type {Record<string, string>} */
+  const slots = {
+    '<bead-id>': input.bead_id,
+    '<reason>': input.reason,
+    '<blocker 문장>': blocker || ABSENT,
+    '<기록 세션>': input.session_id || ABSENT,
+    '<구현 워크트리>': input.worktree,
+    '<target_base 체크아웃>': input.checkout
+  };
+  return RECOVERY_INQUIRY_PROMPT.replace(
+    /<bead-id>|<reason>|<blocker 문장>|<기록 세션>|<구현 워크트리>|<target_base 체크아웃>/g,
+    (slot) => slots[slot]
+  );
+}
 
 /**
  * @typedef {Object} InquiryOutcome
@@ -558,7 +597,7 @@ export function createDirectionInquiry(deps) {
    *
    * @param {any} input
    * @param {boolean} automatic
-   * @returns {Promise<{ outcome: InquiryOutcome, branch: 'stale'|'impl_conflict'|'generic', stale_kind: string|null, title: string|null, repo: string }>}
+   * @returns {Promise<{ outcome: InquiryOutcome, branch: 'stale'|'impl_conflict'|'generic'|'recovery', stale_kind: string|null, title: string|null, repo: string }>}
    */
   async function dispose(input, automatic) {
     const workspace = String(input.workspace ?? '');
@@ -580,7 +619,9 @@ export function createDirectionInquiry(deps) {
       ? 'stale'
       : awaiting_user === IMPL_CONFLICT_REASON
         ? 'impl_conflict'
-        : 'generic';
+        : !awaiting_user && input.recovery?.reason
+          ? 'recovery'
+          : 'generic';
     if (!issue || typeof issue !== 'object') {
       return {
         outcome: refusal('bd_unavailable'),
@@ -600,7 +641,10 @@ export function createDirectionInquiry(deps) {
       typeof attempt?.repo === 'string' && attempt.repo.length > 0
         ? attempt.repo
         : null;
-    if (branch === 'impl_conflict' && (!attempt || attempt_repo === null)) {
+    if (
+      ['impl_conflict', 'recovery'].includes(branch) &&
+      (!attempt || attempt_repo === null)
+    ) {
       return {
         outcome: refusal('attempt_unavailable'),
         branch,
@@ -612,10 +656,9 @@ export function createDirectionInquiry(deps) {
     // Stale/generic dispositions edit the target-base checkout. An
     // implementation conflict must inherit the existing Bead worktree where
     // the reviewed candidate commit and uncommitted state live.
-    const checkout =
-      branch === 'impl_conflict'
-        ? path.join(/** @type {string} */ (attempt_repo), '.worktrees', bead_id)
-        : (attempt_repo ?? repo);
+    const checkout = ['impl_conflict', 'recovery'].includes(branch)
+      ? path.join(/** @type {string} */ (attempt_repo), '.worktrees', bead_id)
+      : (attempt_repo ?? repo);
     const config = readInquiryConfig();
     /** @type {string|null} */
     let stale_kind = null;
@@ -665,6 +708,15 @@ export function createDirectionInquiry(deps) {
         finding: parked.finding,
         checkout,
         session_id: fork.session_id
+      });
+    } else if (branch === 'recovery') {
+      prompt = fillRecoveryPrompt({
+        bead_id,
+        reason: input.recovery.reason,
+        summary: attempt.cause_detail?.summary,
+        session_id: attempt.session_id,
+        worktree: checkout,
+        checkout: attempt_repo ?? repo
       });
     } else {
       const receipt =
@@ -738,7 +790,7 @@ export function createDirectionInquiry(deps) {
     /**
      * Launch automatically after the parked record is durable.
      *
-     * @param {{ workspace: string, bead_id: string, attempt_id: string, repo: string|null, target_base: string|null, awaiting_user: string|null }} input
+     * @param {{ workspace: string, bead_id: string, attempt_id: string, repo: string|null, target_base: string|null, awaiting_user: string|null, recovery?: { reason: string } }} input
      */
     async onParkedAttempt(input) {
       const bead_id =
@@ -747,15 +799,21 @@ export function createDirectionInquiry(deps) {
         input && typeof input.awaiting_user === 'string'
           ? input.awaiting_user
           : '';
-      if (bead_id.length === 0 || awaiting_user.length === 0) {
+      if (
+        bead_id.length === 0 ||
+        (awaiting_user.length === 0 && !input.recovery?.reason)
+      ) {
         return;
       }
       if (in_flight.has(bead_id)) {
-        return;
+        return input.recovery ? refusal('inquiry_in_flight') : undefined;
       }
       in_flight.add(bead_id);
       try {
         const result = await dispose(input, true);
+        if (result.branch === 'recovery') {
+          return result.outcome;
+        }
         await announce({
           bead_id,
           title: result.title,
@@ -767,6 +825,7 @@ export function createDirectionInquiry(deps) {
         });
       } catch (err) {
         log('direction inquiry failed for %s: %o', bead_id, err);
+        return input.recovery ? refusal('error') : undefined;
       } finally {
         in_flight.delete(bead_id);
       }
@@ -783,7 +842,7 @@ export function createDirectionInquiry(deps) {
      * refusal, so answering `already_running` from it would name a window
      * nobody opened.
      *
-     * @param {{ workspace: string, bead_id: string, attempt_id: string, repo: string|null, awaiting_user: string|null }} input
+     * @param {{ workspace: string, bead_id: string, attempt_id: string, repo: string|null, awaiting_user: string|null, recovery?: { reason: string } }} input
      * @returns {Promise<InquiryOutcome>}
      */
     async launchForClick(input) {
@@ -793,7 +852,10 @@ export function createDirectionInquiry(deps) {
         input && typeof input.awaiting_user === 'string'
           ? input.awaiting_user
           : '';
-      if (bead_id.length === 0 || awaiting_user.length === 0) {
+      if (
+        bead_id.length === 0 ||
+        (awaiting_user.length === 0 && !input.recovery?.reason)
+      ) {
         return refusal('invalid_park');
       }
       const listed = await launcher.listPanes(PANE_MARKER);

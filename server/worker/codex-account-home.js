@@ -1,5 +1,147 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { parse, stringify } from 'smol-toml';
+import { preToolHookGroup } from './guard-hook.js';
+
+/**
+ * @param {any} value
+ * @returns {any}
+ */
+function canonicalValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(canonicalValue);
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonicalValue(value[key])])
+    );
+  }
+  return value;
+}
+
+/**
+ * Match Codex's fingerprint of the entire matcher group, not one handler.
+ *
+ * @param {string} event_name
+ * @param {{ matcher?: string, hooks: any[] }} group
+ */
+export function codexHookHash(event_name, group) {
+  const hooks = group.hooks.map((handler) => ({
+    type: handler.type ?? 'command',
+    command: handler.command,
+    timeout: Math.max(1, handler.timeout ?? 600),
+    async: !!handler.async,
+    ...(handler.statusMessage == null
+      ? {}
+      : { statusMessage: handler.statusMessage }),
+    ...(handler.additionalContextLimit == null ||
+    handler.additionalContextLimit === 2500
+      ? {}
+      : { additionalContextLimit: handler.additionalContextLimit })
+  }));
+  const canonical = canonicalValue({
+    event_name,
+    hooks,
+    ...(group.matcher == null ? {} : { matcher: group.matcher })
+  });
+  return `sha256:${crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex')}`;
+}
+
+/**
+ * @param {string} file
+ */
+async function readOptional(file) {
+  try {
+    return await fs.readFile(file, 'utf8');
+  } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
+      return '';
+    }
+    throw error;
+  }
+}
+
+/**
+ * Make a private attempt HOME, preserving user hooks and their existing trust.
+ * A preparation error leaves the caller on its original HOME with a warning.
+ *
+ * @param {{ base_home: string, parent_dir: string, hook_path: string }} input
+ * @returns {Promise<{ ok: true, home_dir: string }|{ ok: false, reason: 'codex_hook_not_loaded' }>}
+ */
+export async function prepareCodexGuardHome(input) {
+  try {
+    const base_home = path.resolve(input.base_home);
+    const hooks_path = path.join(base_home, 'hooks.json');
+    const config_path = path.join(base_home, 'config.toml');
+    const hooks_text = await readOptional(hooks_path);
+    const config_text = await readOptional(config_path);
+    const hooks_file = hooks_text ? JSON.parse(hooks_text) : {};
+    const config = /** @type {any} */ (parse(config_text));
+    const hook_group = preToolHookGroup(input.hook_path, 'codex');
+    hooks_file.hooks ??= {};
+    hooks_file.hooks.PreToolUse ??= [];
+    const group_index = hooks_file.hooks.PreToolUse.length;
+    hooks_file.hooks.PreToolUse.push(hook_group);
+
+    await fs.mkdir(input.parent_dir, { recursive: true });
+    const home_dir = await fs.mkdtemp(
+      path.join(input.parent_dir, 'codex-home-')
+    );
+    await fs.chmod(home_dir, 0o700);
+    for (const name of await fs.readdir(base_home)) {
+      if (name !== 'hooks.json' && name !== 'config.toml') {
+        await fs.symlink(path.join(base_home, name), path.join(home_dir, name));
+      }
+    }
+    /** @type {Record<string, any>} */
+    const states = {};
+    for (const file of ['hooks.json', 'config.toml']) {
+      const original = path.join(base_home, file);
+      const real = await fs.realpath(original).catch(() => original);
+      const link = await fs
+        .readlink(original)
+        .then((target) => path.resolve(base_home, target))
+        .catch(() => original);
+      for (const [key, value] of Object.entries(config.hooks?.state || {})) {
+        const source = [original, link, real].find((candidate) =>
+          key.startsWith(`${candidate}:`)
+        );
+        if (source) {
+          states[`${path.join(home_dir, file)}${key.slice(source.length)}`] =
+            value;
+        }
+      }
+    }
+    states[
+      `${path.join(home_dir, 'hooks.json')}:pre_tool_use:${group_index}:0`
+    ] = {
+      trusted_hash: codexHookHash('pre_tool_use', hook_group),
+      enabled: true
+    };
+    const state_text = Object.entries(states)
+      .map(
+        ([key, value]) =>
+          `\n[hooks.state.${JSON.stringify(key)}]\n${stringify(value)}`
+      )
+      .join('');
+    await fs.writeFile(
+      path.join(home_dir, 'hooks.json'),
+      `${JSON.stringify(hooks_file, null, 2)}\n`,
+      { mode: 0o600 }
+    );
+    await fs.writeFile(
+      path.join(home_dir, 'config.toml'),
+      `${config_text}\n${state_text}`,
+      { mode: 0o600 }
+    );
+    return { ok: true, home_dir };
+  } catch {
+    return { ok: false, reason: 'codex_hook_not_loaded' };
+  }
+}
 
 /**
  * Read a path without following a final symlink.

@@ -31,7 +31,7 @@ import { beadTimelinePath } from './state-paths.js';
 const log = debug('worker:bead-timeline');
 
 /**
- * @typedef {'dispatched'|'guard_warning'|'session_ended'|'attempt_failed'|'attempt_retry'|'queue_hold'|'queue_resume'|'provider_hold'|'provider_recovered'|'landing_step'|'merge_step'|'operation_failed'|'operation_recovery'|'repair_handoff'|'needs_human'|'user_action'} TimelineKind
+ * @typedef {'dispatched'|'stale_work_auto'|'guard_warning'|'guard_denied'|'session_ended'|'attempt_failed'|'attempt_retry'|'queue_hold'|'queue_resume'|'provider_hold'|'provider_recovered'|'landing_step'|'merge_step'|'operation_failed'|'operation_recovery'|'repair_handoff'|'needs_human'|'user_action'} TimelineKind
  */
 
 /**
@@ -45,7 +45,9 @@ const log = debug('worker:bead-timeline');
 export const TIMELINE_KINDS = Object.freeze(
   new Set([
     'dispatched',
+    'stale_work_auto',
     'guard_warning',
+    'guard_denied',
     'session_ended',
     'attempt_failed',
     'attempt_retry',
@@ -86,6 +88,9 @@ const SUMMARY_MAX = 200;
  * @property {string} summary - One human-readable line.
  * @property {string} [attempt_id]
  * @property {string} [detail]
+ * @property {string} [runner]
+ * @property {string} [reason]
+ * @property {string|null} [command]
  * @property {string} [log_path]
  * @property {string} [account] - Runner account the event is about, when the
  * event's meaning is account-scoped (a `provider_recovered` that switched pools
@@ -104,6 +109,9 @@ const SUMMARY_MAX = 200;
  * @property {string} [attempt_id] - Second `event_id` segment when present;
  * the bead id is used otherwise (a bead-level fact has no attempt).
  * @property {string} [detail]
+ * @property {string} [runner]
+ * @property {string} [reason]
+ * @property {string|null} [command]
  * @property {string} [log_path]
  * @property {string} [account]
  * @property {number} [at] - Epoch ms; defaults to the injected clock.
@@ -166,6 +174,17 @@ function buildEvent(input, now) {
   const account = String(input?.account ?? '').trim();
   if (account.length > 0) {
     event.account = account;
+  }
+  if (kind === 'guard_denied' || kind === 'guard_warning') {
+    if (typeof input.runner === 'string') {
+      event.runner = input.runner;
+    }
+    if (typeof input.reason === 'string') {
+      event.reason = input.reason;
+    }
+    if (typeof input.command === 'string' || input.command === null) {
+      event.command = input.command;
+    }
   }
   return { ok: true, event };
 }

@@ -16,7 +16,7 @@ describe('provider hold badge text (UI-01wh §3.2)', () => {
       next_probe_at: 3000
     });
 
-    expect(text).toBe(`⏳ 공급자 장애 · 다음 프로브 ${clock}`);
+    expect(text).toBe(`⏳ 공급자 보류 · 다음 프로브 ${clock}`);
   });
 
   test('formats the usage badge with an account alias', () => {
@@ -32,17 +32,17 @@ describe('provider hold badge text (UI-01wh §3.2)', () => {
       target: { account: 'one@example.com', account_alias: '업무' }
     });
 
-    expect(text).toBe(`⏳ 한도 대기 ${clock} · 업무`);
+    expect(text).toBe(`⏳ 공급자 보류 ${clock} · 업무`);
   });
 
-  test('formats an unknown reset with the manual suffix', () => {
+  test('ignores a retired auto-resume cap when formatting an unknown reset', () => {
     const text = providerHoldBadgeText({
       kind: 'usage_limit',
       detail: 'usage_limit',
       auto_resume: 'disarmed'
     });
 
-    expect(text).toBe('⏳ 한도 대기 · 리셋 미상 · 수동 조치');
+    expect(text).toBe('⏳ 공급자 보류 · 리셋 미상');
   });
 });
 

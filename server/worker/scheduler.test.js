@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { buildLanes } from '../../app/views/worker/lane-model.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { writeBenchManifest } from './bench-runs.js';
@@ -395,18 +394,18 @@ function flush() {
  * @param {string} classification
  * @param {string} [reason]
  */
-function expectRecoveryWait(attempt, classification, reason = 'unclassified') {
-  expect(attempt).toMatchObject({
-    status: 'waiting',
-    cause_detail: {
-      recovery: {
-        classification,
-        disposition: 'wait',
-        reason,
-        policy_schema: 1
-      }
-    }
-  });
+function expectRetryOutcome(attempt, classification, reason = 'unclassified') {
+  if (classification === 'session_recovery_wait') {
+    expect(attempt).toMatchObject({
+      status: 'waiting',
+      cause_detail: { recovery: { classification, reason } }
+    });
+    return;
+  }
+  expect(attempt.status).toBe(
+    classification === 'authority_required' ? 'failed' : 'retry_wait'
+  );
+  expect(attempt.cause_detail).not.toHaveProperty('recovery');
 }
 
 /**
@@ -961,6 +960,9 @@ function setup(opts) {
     kvGet: opts.kvGet,
     resolveCswapPath: opts.resolveCswapPath,
     prepareCodexAccountHome: opts.prepareCodexAccountHome,
+    prepareCodexGuardHome:
+      /** @type {any} */ (opts).prepareCodexGuardHome ||
+      (async ({ base_home }) => ({ ok: true, home_dir: base_home })),
     codexAccountHomeDir: opts.codexAccountHomeDir,
     codexRoot: opts.codexRoot,
     homeDir: opts.homeDir,
@@ -982,6 +984,7 @@ function setup(opts) {
     notify: opts.notify,
     disposition: opts.disposition,
     directionInquiry: opts.directionInquiry,
+    backupFreshResidue: /** @type {any} */ (opts).backupFreshResidue,
     // Absent by default: the external registry is a live-wiring dep, and a
     // scheduler built without it must refuse the external dispatch outright.
     externalPrs: opts.externalPrs
@@ -1029,6 +1032,171 @@ function setup(opts) {
 }
 
 describe('scheduler work recovery waits', () => {
+  test.each([
+    'authority',
+    'verification',
+    'no_progress',
+    'reconcile',
+    'unclassified',
+    'prerequisite'
+  ])(
+    'launches an inquiry immediately after recording %s recovery',
+    async (reason) => {
+      const onParkedAttempt = vi.fn(async () => ({
+        session: 'not_launched',
+        reason: 'disabled'
+      }));
+      const env = recoveryEnv({ directionInquiry: { onParkedAttempt } });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+
+      const attempt = await endSession(env, {
+        success: true,
+        summary: 'blocker: 확인 필요',
+        terminal_result: { kind: 'recovery_wait', reason }
+      });
+
+      expect(onParkedAttempt).toHaveBeenCalledOnce();
+      expect(onParkedAttempt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          awaiting_user: null,
+          recovery: expect.objectContaining({ reason })
+        })
+      );
+      expect(attempt).toMatchObject({
+        status: 'waiting',
+        cause_detail: {
+          inquiry: { session: 'not_launched', reason: 'disabled' }
+        }
+      });
+    }
+  );
+
+  test('launches one inquiry when reconciliation reclassifies a stalled failure', async () => {
+    const onParkedAttempt = vi.fn(async () => ({
+      session: 'not_launched',
+      reason: 'disabled'
+    }));
+    const env = recoveryEnv({
+      directionInquiry: { onParkedAttempt },
+      workRecoveryPolicy: {
+        ...work_recovery_policy,
+        workRecoveryClassification: () => ({
+          disposition: 'wait',
+          reason: 'authority'
+        })
+      }
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'past',
+        bead_id: 'S1',
+        repo: '/repo',
+        status: 'failed',
+        cause: 'session_failed:reported_failure',
+        cause_detail: { summary: 'blocker: 권한 확인' }
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+    await flush();
+    await env.scheduler.reconcile(WS);
+
+    expect(onParkedAttempt).toHaveBeenCalledOnce();
+    expect(env.store.snapshot(WS).attempts.past).toMatchObject({
+      status: 'waiting',
+      cause_detail: { inquiry: { session: 'not_launched', reason: 'disabled' } }
+    });
+  });
+
+  test('keeps policy-classified unknown failures out of inquiry sessions', async () => {
+    const onParkedAttempt = vi.fn();
+    const env = recoveryEnv({ directionInquiry: { onParkedAttempt } });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    const attempt = await endSession(env, {
+      success: false,
+      reason: 'turn_failed',
+      summary: 'unknown failure'
+    });
+
+    expect(onParkedAttempt).not.toHaveBeenCalled();
+    expect(attempt.status).toBe('retry_wait');
+  });
+
+  test('returns a declared prerequisite wait through the ready rescan after its blocker closes', async () => {
+    const onParkedAttempt = vi.fn();
+    const config = {
+      S1: {
+        ready: true,
+        dependencies: [{ id: 'S2', dependency_type: 'blocks' }]
+      },
+      S2: { status: 'open' }
+    };
+    const env = recoveryEnv({ config, directionInquiry: { onParkedAttempt } });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    config.S1.ready = false;
+
+    const attempt = await endSession(env, {
+      success: true,
+      summary: 'blocker: 선행 대기',
+      terminal_result: { kind: 'recovery_wait', reason: 'prerequisite' }
+    });
+
+    expect(attempt.cause_detail.blockers).toMatchObject([{ id: 'S2' }]);
+    expect(attempt).toMatchObject({
+      status: 'waiting',
+      cause: 'prerequisite_unmet'
+    });
+    expect(attempt.cause_detail.recovery).toBeUndefined();
+    expect(onParkedAttempt).not.toHaveBeenCalled();
+    config.S2.status = 'closed';
+    config.S1.ready = true;
+
+    const result = await env.scheduler.rescanWaiting(WS);
+
+    expect(result).toEqual({ checked: 1, returned: 1 });
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+  });
+
+  test.each(['missing', 'failed'])(
+    'launches an inquiry when prerequisite lookup is %s',
+    async (lookup) => {
+      const onParkedAttempt = vi.fn(async () => ({
+        session: 'not_launched',
+        reason: 'disabled'
+      }));
+      const env = recoveryEnv({ directionInquiry: { onParkedAttempt } });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      if (lookup === 'missing') {
+        delete (/** @type {any} */ (env.bd).readIssue);
+      } else {
+        vi.spyOn(env.bd, 'readIssue').mockRejectedValue(
+          new Error('unavailable')
+        );
+      }
+
+      const attempt = await endSession(env, {
+        success: true,
+        summary: 'blocker: 선행 확인 필요',
+        terminal_result: { kind: 'recovery_wait', reason: 'prerequisite' }
+      });
+
+      expect(attempt).toMatchObject({
+        status: 'waiting',
+        cause_detail: {
+          blockers_unavailable: true,
+          recovery: { reason: 'prerequisite' }
+        }
+      });
+      expect(onParkedAttempt).toHaveBeenCalledOnce();
+    }
+  );
+
   /** @param {Record<string, any>} [options] */
   function recoveryEnv(options = {}) {
     const timeline = { append: vi.fn() };
@@ -1115,17 +1283,21 @@ describe('scheduler work recovery waits', () => {
       });
 
       expect(attempt).toMatchObject({
-        status: 'waiting',
+        status: cause === 'session_recovery_wait' ? 'waiting' : 'retry_wait',
         cause,
         finished_at: 1000,
         cause_detail: {
           summary,
-          recovery: {
-            classification,
-            disposition: reason === 'reconcile' ? 'reconcile' : 'wait',
-            reason,
-            policy_schema: 1
-          }
+          ...(cause === 'session_recovery_wait'
+            ? {
+                recovery: {
+                  classification,
+                  disposition: reason === 'reconcile' ? 'reconcile' : 'wait',
+                  reason,
+                  policy_schema: 1
+                }
+              }
+            : { env_pattern: 'unknown' })
         }
       });
       expect(attempt.cause_detail).not.toHaveProperty('blockers');
@@ -1136,13 +1308,15 @@ describe('scheduler work recovery waits', () => {
       ) {
         expect(attempt.cause_detail.reason_token).toBe(terminal_result.reason);
       }
-      expect(env.timeline.append).toHaveBeenCalledWith(
-        expect.objectContaining({
-          kind: 'session_ended',
-          seq: 'waiting',
-          summary: `대기 · recovery:${reason} — ${cause}`
-        })
-      );
+      if (cause === 'session_recovery_wait') {
+        expect(env.timeline.append).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: 'session_ended',
+            seq: 'waiting',
+            summary: `대기 · recovery:${reason} — ${cause}`
+          })
+        );
+      }
       expect(
         env.timeline.append.mock.calls.some(
           ([event]) => event.kind === 'attempt_failed'
@@ -1154,62 +1328,70 @@ describe('scheduler work recovery waits', () => {
     }
   );
 
-  test('keeps an exhausted env ladder as provider waiting', async () => {
-    const env = recoveryEnv();
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
-    for (let rung = 0; rung < 3; rung += 1) {
-      env.store.applyQueueHold(WS, {
-        event: {
-          kind: 'env_failure',
-          bead_id: 'S1',
-          attempt_id,
-          cause: 'session_failed:is_error:api',
-          at: 1000,
-          origin_attempt_id: attempt_id
-        },
-        now: 1000
-      });
-    }
-
-    const attempt = await endSession(env, {
-      success: false,
-      reason: 'is_error',
-      exit: 1,
-      summary: 'fetch failed'
-    });
-
-    expect(attempt).toMatchObject({
-      status: 'waiting',
-      cause: 'session_failed:is_error',
-      retry: {
-        origin_attempt_id: attempt_id,
-        attempts: 4,
-        max: 3,
-        exhausted: true,
-        next_at: null
-      },
-      cause_detail: {
-        summary: 'fetch failed',
-        env_pattern: 'api',
-        recovery: {
-          classification: 'transient_retry_exhausted',
-          disposition: 'wait',
-          reason: 'provider',
-          policy_schema: 1
-        }
+  test.each([
+    ['api', 'fetch failed'],
+    ['runtime', 'command not found'],
+    ['provider_capacity', 'model is at capacity'],
+    ['unknown', 'unknown failure']
+  ])(
+    'fails once when the %s retry budget is exhausted',
+    async (group, summary) => {
+      const env = recoveryEnv();
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+      for (let rung = 0; rung < 3; rung += 1) {
+        env.store.applyRetryEvent(WS, {
+          event: {
+            kind: 'retry_scheduled',
+            bead_id: 'S1',
+            attempt_id,
+            cause: `session_failed:is_error:${group}`,
+            at: 1000,
+            origin_attempt_id: attempt_id
+          },
+          now: 1000
+        });
       }
-    });
-    expect(env.store.snapshot(WS).lineages).toEqual([]);
-    expect(env.notify.attemptFailed).not.toHaveBeenCalled();
-    expect(env.comment).not.toHaveBeenCalled();
-    expect(
-      env.timeline.append.mock.calls.some(
-        ([event]) => event.kind === 'attempt_failed'
-      )
-    ).toBe(false);
-  });
+
+      const attempt = await endSession(env, {
+        success: false,
+        reason: 'is_error',
+        exit: 1,
+        summary
+      });
+
+      expect(attempt).toMatchObject({
+        status: 'failed',
+        cause: 'session_failed:is_error',
+        retry: {
+          origin_attempt_id: attempt_id,
+          attempts: 4,
+          max: 3,
+          exhausted: true,
+          next_at: null
+        },
+        cause_detail: {
+          summary,
+          env_pattern: group
+        }
+      });
+      expect(env.store.snapshot(WS).lineages[0]).toMatchObject({
+        attempts: 4,
+        next_at: null
+      });
+      expect(attempt.cause_detail).not.toHaveProperty('recovery');
+      expect(env.bd.statuses.S1).toBe('open');
+      expect(env.notify.attemptFailed).toHaveBeenCalledTimes(1);
+      await env.scheduler.commentsIdle();
+      expect(env.comment).toHaveBeenCalledTimes(1);
+      expect(
+        env.timeline.append.mock.calls.some(
+          ([event]) => event.kind === 'attempt_failed'
+        )
+      ).toBe(true);
+    }
+  );
 
   test('keeps unsupported policy on the legacy failed path', async () => {
     const env = recoveryEnv({
@@ -1275,46 +1457,12 @@ describe('scheduler work recovery waits', () => {
 
     const queue = env.store.snapshot(WS);
     expect(queue.attempts.past).toMatchObject({
-      status: 'waiting',
+      status: 'failed',
       cause,
-      finished_at: 20,
       retry,
-      cause_detail: {
-        summary,
-        recovery: {
-          classification: 'unknown_error',
-          reason: 'unclassified',
-          policy_schema: 1,
-          reclassified_from: 'failed',
-          reclassified_at: 1000
-        }
-      }
+      finished_at: 20
     });
-    expect(
-      env.timeline.append.mock.calls.filter(
-        ([event]) => event.kind === 'attempt_failed'
-      )
-    ).toEqual([[failed_event]]);
-    expect(
-      env.timeline.append.mock.calls.filter(
-        ([event]) => event.kind === 'session_ended'
-      )
-    ).toMatchObject([
-      [
-        {
-          seq: 'waiting',
-          summary: `대기 · recovery:unclassified — ${cause} (재분류)`
-        }
-      ]
-    ]);
-    const lanes = buildLanes(
-      [{ ...queue, root_dir: WS, bead_blocked_by: { S1: [] } }],
-      [{ root_dir: WS }]
-    );
-    expect(lanes.running.filter((item) => item.run_state === 'failed')).toEqual(
-      []
-    );
-    expect(lanes.running).toMatchObject([{ id: 'S1', run_state: 'waiting' }]);
+    expect(env.timeline.append.mock.calls).toEqual([[failed_event]]);
     expect(env.runner.spawnOrder).toEqual([]);
   });
 
@@ -1376,16 +1524,16 @@ describe('scheduler work recovery waits', () => {
     expect(env.store.snapshot(WS).attempts.past).toEqual(before);
   });
 
-  test('keeps the exhausted env budget when a recovery wait resumes', async () => {
+  test('keeps the exhausted env budget when a failed attempt resumes', async () => {
     const env = recoveryEnv();
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
     env.runner.eventsFor('S1').emit('session_id', 'session-original');
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
     for (let rung = 0; rung < 3; rung += 1) {
-      env.store.applyQueueHold(WS, {
+      env.store.applyRetryEvent(WS, {
         event: {
-          kind: 'env_failure',
+          kind: 'retry_scheduled',
           bead_id: 'S1',
           attempt_id,
           cause: 'session_failed:is_error:api',
@@ -1413,19 +1561,17 @@ describe('scheduler work recovery waits', () => {
     });
 
     expect(next).toMatchObject({
-      status: 'waiting',
+      status: 'failed',
       retry: {
         origin_attempt_id: attempt_id,
         max: 3,
         exhausted: true,
         next_at: null
-      },
-      cause_detail: {
-        recovery: { classification: 'transient_retry_exhausted' }
       }
     });
     expect(next.retry.attempts).toBeGreaterThanOrEqual(prior.retry.attempts);
-    expect(env.store.snapshot(WS).lineages).toEqual([]);
+    expect(env.store.snapshot(WS).lineages[0].next_at).toBeNull();
+    expect(next.cause_detail).not.toHaveProperty('recovery');
     expect(
       createQueueStore().snapshot(WS).attempts[next.attempt_id].retry
     ).toEqual(next.retry);
@@ -1481,7 +1627,11 @@ describe('scheduler work recovery waits', () => {
     const env = recoveryEnv();
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
-    await endSession(env, { success: true, summary: 'unfinished' });
+    await endSession(env, {
+      success: true,
+      terminal_result: { kind: 'recovery_wait', reason: 'authority' },
+      summary: 'unfinished'
+    });
 
     await env.scheduler.tick(WS);
     await env.scheduler.onIssuesChanged(WS);
@@ -1497,6 +1647,7 @@ describe('scheduler work recovery waits', () => {
     env.runner.eventsFor('S1').emit('session_id', 'session-original');
     const prior = await endSession(env, {
       success: true,
+      terminal_result: { kind: 'recovery_wait', reason: 'authority' },
       summary: 'unfinished'
     });
     env.store.setOrchestrationDefaults(WS, {
@@ -1537,8 +1688,8 @@ describe('scheduler work recovery waits', () => {
     await env.scheduler.tick(WS);
     env.runner.eventsFor('S1').emit('session_id', 'session-original');
     let prior = await endSession(env, {
-      success: false,
-      reason: 'subtype',
+      success: true,
+      terminal_result: { kind: 'recovery_wait', reason: 'authority' },
       summary: 'same failure'
     });
     for (let count = 1; count <= 2; count += 1) {
@@ -1547,8 +1698,8 @@ describe('scheduler work recovery waits', () => {
       });
       env.runner.eventsFor('S1').emit('session_id', 'session-original');
       prior = await endSession(env, {
-        success: false,
-        reason: 'subtype',
+        success: true,
+        terminal_result: { kind: 'recovery_wait', reason: 'authority' },
         summary: ' \n same failure \n'
       });
       expect(prior.cause_detail.recovery.no_progress.count).toBe(count);
@@ -1574,15 +1725,15 @@ describe('scheduler work recovery waits', () => {
     await env.scheduler.tick(WS);
     env.runner.eventsFor('S1').emit('session_id', 'session-original');
     const prior = await endSession(env, {
-      success: false,
-      reason: 'subtype',
+      success: true,
+      terminal_result: { kind: 'recovery_wait', reason: 'authority' },
       summary: 'first failure'
     });
     await env.scheduler.resume(WS, prior.attempt_id);
 
     const next = await endSession(env, {
-      success: false,
-      reason: 'subtype',
+      success: true,
+      terminal_result: { kind: 'recovery_wait', reason: 'authority' },
       summary: 'different failure'
     });
 
@@ -1597,8 +1748,8 @@ describe('scheduler work recovery waits', () => {
       await env.scheduler.tick(WS);
       env.runner.eventsFor('S1').emit('session_id', 'session-original');
       const prior = await endSession(env, {
-        success: false,
-        reason: 'subtype',
+        success: true,
+        terminal_result: { kind: 'recovery_wait', reason: 'authority' },
         summary: 'same failure at 10:33 AM'
       });
       const resumed = await env.scheduler.resume(WS, prior.attempt_id);
@@ -1624,8 +1775,8 @@ describe('scheduler work recovery waits', () => {
       });
 
       const next = await endSession(env, {
-        success: false,
-        reason: 'subtype',
+        success: true,
+        terminal_result: { kind: 'recovery_wait', reason: 'authority' },
         summary:
           change === 'clock'
             ? 'same failure at 11:44 AM'
@@ -2224,7 +2375,7 @@ describe('scheduler provider hold and recovery', () => {
         resets_at: null
       }
     });
-    expect(queue.hold).toBeNull();
+    expect(queue).not.toHaveProperty('hold');
     expect(queue.lineages).toEqual([]);
     expect(queue.auto_advance).toBe(true);
     expect(providerHealth.sync).toHaveBeenCalledWith(WS);
@@ -4002,7 +4153,7 @@ describe('scheduler provider hold and recovery', () => {
         status: 'paused',
         cause: 'provider_outage:credential'
       });
-      expect(held.hold).toBeNull();
+      expect(held).not.toHaveProperty('hold');
       expect(held.provider_hold[runner].targets[0]).toMatchObject({
         kind: 'outage',
         detail: 'credential',
@@ -5485,10 +5636,10 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
     // A successful session with nothing delivered and no `awaiting_user` is an
     // individual failure, not a verify verdict (UI-5ym8 §3.2).
     const a = env.store.snapshot(WS).attempts[attempt_id];
-    expect(a.status).toBe('waiting');
+    expect(a.status).toBe('retry_wait');
     expect(a.cause).toBe('session_ended_unresolved');
     expect(env.store.snapshot(WS).pr_wait).toEqual([]);
-    expectRecoveryWait(a, 'finished_without_result_line');
+    expectRetryOutcome(a, 'finished_without_result_line');
   });
 
   test.each([null, 'spawn codex ENOENT'])(
@@ -5516,12 +5667,12 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
       const snapshot = env.store.snapshot(WS);
       const attempt = snapshot.attempts[attempt_id];
       expect(attempt.cause).toBe('session_ended_unresolved:background_shell');
-      expectRecoveryWait(attempt, 'finished_without_result_line');
+      expectRetryOutcome(attempt, 'finished_without_result_line');
       expect(attempt.cause_detail?.summary ?? null).toBe(summary);
       expect(attempt.cause_detail?.background_shell_at_result).toEqual([
         'Wait for final required run'
       ]);
-      expect(snapshot.hold).toBeNull();
+      expect(snapshot).not.toHaveProperty('hold');
     }
   );
 
@@ -5547,7 +5698,7 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
     expect(snap.attempts[attempt_id].cause).toBe(
       'verify_failed:gh_observation_failed'
     );
-    expect(snap.hold).toMatchObject({ kind: 'env' });
+    expect(snap).not.toHaveProperty('hold');
     expect(snap.pr_wait).toEqual([]);
   });
 });
@@ -5566,16 +5717,15 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     // `auto_advance` is the user's ⏸/▶ alone and `queue.hold` stays null.
     expect(env.store.snapshot(WS)).toMatchObject({
       auto_advance: true,
-      hold: null,
       attempts: {
         [attempt_id]: {
-          status: 'waiting',
+          status: 'retry_wait',
           dismissed_at: null,
           halted_auto_advance: false
         }
       }
     });
-    expectRecoveryWait(
+    expectRetryOutcome(
       env.store.snapshot(WS).attempts[attempt_id],
       'unknown_error'
     );
@@ -5673,9 +5823,9 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     // UI-5ym8 §4: `auto_advance` is the user's toggle; the failure-owned stop
     // is `queue.hold`, and an individual failure raises neither.
     expect(snap.auto_advance).toBe(true);
-    expect(snap.hold).toBe(null);
+    expect(snap).not.toHaveProperty('hold');
     // The terminal record carries what the failure banner renders.
-    expect(snap.attempts[String(attempt_id)].status).toBe('waiting');
+    expect(snap.attempts[String(attempt_id)].status).toBe('retry_wait');
     expect(snap.attempts[String(attempt_id)].cause).toBe(
       'session_failed:abnormal_exit'
     );
@@ -5689,7 +5839,7 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
           c.key === 'workflow_mode'
       )
     ).toBe(true);
-    expectRecoveryWait(snap.attempts[String(attempt_id)], 'unknown_error');
+    expectRetryOutcome(snap.attempts[String(attempt_id)], 'unknown_error');
   });
 
   test('a blocker failure records the guard reason and matched command', async () => {
@@ -5716,12 +5866,6 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     expect(a.cause_detail).toEqual({
       reason: 'merge_to_base_blocked',
       command: 'gh pr merge 311',
-      recovery: {
-        classification: 'authority_required',
-        disposition: 'wait',
-        reason: 'authority',
-        policy_schema: 1
-      },
       // The guard's own kill message, extracted once (UI-8wpb §6 row 3).
       summary: 'landing on the base branch is never permitted: gh pr merge 311'
     });
@@ -5751,7 +5895,7 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     ).toHaveLength(512);
   });
 
-  test('records unclassified recovery without inventing blocker details', async () => {
+  test('records an unknown environment failure without inventing blocker details', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
@@ -5762,12 +5906,7 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     await flush();
 
     expect(env.store.snapshot(WS).attempts[attempt_id].cause_detail).toEqual({
-      recovery: {
-        classification: 'unknown_error',
-        disposition: 'wait',
-        reason: 'unclassified',
-        policy_schema: 1
-      }
+      env_pattern: 'unknown'
     });
   });
 
@@ -5806,7 +5945,7 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
 
     const snap = env.store.snapshot(WS);
     expect(snap.auto_advance).toBe(true);
-    expect(snap.hold).toBe(null);
+    expect(snap).not.toHaveProperty('hold');
     expect(snap.attempts[attempt_id].cause).toBe('session_ended_unresolved');
   });
 
@@ -6473,7 +6612,7 @@ describe('scheduler fail-closed regressions (implementation review 2026-07-22)',
     expect(snap.attempts[attempt_id].cause).toBe('workflow_mode_revert_failed');
     // UI-5ym8 §3.2: a bd bookkeeping failure is that bead's own; the queue runs.
     expect(snap.auto_advance).toBe(true);
-    expect(snap.hold).toBe(null);
+    expect(snap).not.toHaveProperty('hold');
   });
 });
 
@@ -6809,6 +6948,37 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
 });
 
 describe('scheduler launch account pins', () => {
+  test.each([null, 'codex-key'])(
+    'delivers a private guard HOME to Codex (account=%s)',
+    async (account) => {
+      const prepareCodexGuardHome = vi.fn(async () => ({
+        ok: true,
+        home_dir: '/attempt/codex-home'
+      }));
+      const env = setup({
+        config: {
+          B1: {
+            model: 'sol',
+            ...(account ? { codex_account: account } : {})
+          }
+        },
+        ...accountDeps(),
+        ...{ prepareCodexGuardHome }
+      });
+      seedQueue(env.store, ['B1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(prepareCodexGuardHome).toHaveBeenCalledWith({
+        base_home: account ? '/state/codex-homes/codex-key' : '/codex-root',
+        parent_dir: guardHookDir(WS, 'B1-1000-1'),
+        hook_path: path.join(guardHookDir(WS, 'B1-1000-1'), 'pre-tool-use')
+      });
+      expect(env.runner.settingsFor('B1').env.CODEX_HOME).toBe(
+        '/attempt/codex-home'
+      );
+    }
+  );
   test('applies one dispatch snapshot and records both account pins', async () => {
     const deps = accountDeps();
     const env = setup({
@@ -10055,11 +10225,11 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
 
     const q = env.store.snapshot(WS);
     expect(q.attempts[/** @type {string} */ (res.attempt_id)].status).toBe(
-      'waiting'
+      'retry_wait'
     );
     expect(q.pr_wait).toEqual([]);
     expect(q.queue).toEqual([]);
-    expectRecoveryWait(q.attempts[String(res.attempt_id)], 'unknown_error');
+    expectRetryOutcome(q.attempts[String(res.attempt_id)], 'unknown_error');
   });
 
   test('recovers a restart-surviving resolution attempt as done, not into pr_wait', async () => {
@@ -10379,7 +10549,7 @@ describe('scheduler review-session dispatch (UI-d7fy §5)', () => {
     expect(q.attempts['review:1'].status).not.toBe('retry_wait');
     expect(q.attempts['review:1'].status).not.toBe('failed');
     expect(q.attempts['review:1'].cause ?? null).toBe(null);
-    expect(q.hold ?? null).toBe(null);
+    expect(q).not.toHaveProperty('hold');
   });
 
   test('the cancel stop kills the process and writes nothing durable', async () => {
@@ -11468,11 +11638,11 @@ describe('conflict resolution reaches the session guard end-to-end (§1/§6)', (
     expect(kill_impl).not.toHaveBeenCalled();
   });
 
-  test('still kills the SAME resolution attempt for gh pr merge', async () => {
+  test('keeps the resolution attempt alive after observing gh pr merge', async () => {
     const { res, kill_impl } = await resolveAndRun('gh pr merge 304 --squash');
 
     expect(res.ok).toBe(true);
-    expect(kill_impl).toHaveBeenCalledWith(-7100, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
   });
 
   // The base-push judgment survives the trip but no longer kills: the effect is
@@ -11484,12 +11654,12 @@ describe('conflict resolution reaches the session guard end-to-end (§1/§6)', (
     expect(kill_impl).not.toHaveBeenCalled();
   });
 
-  test('kills the SAME resolution attempt for a hook bypass', async () => {
+  test('keeps the resolution attempt alive after observing a hook bypass', async () => {
     const { kill_impl } = await resolveAndRun(
       'git push --no-verify origin HEAD:B1'
     );
 
-    expect(kill_impl).toHaveBeenCalledWith(-7100, 'SIGTERM');
+    expect(kill_impl).not.toHaveBeenCalled();
   });
 
   // Publishing the base IS the disposition's job. The scheduler carries the
@@ -11544,7 +11714,7 @@ describe('conflict resolution reaches the session guard end-to-end (§1/§6)', (
 
     expect(res.ok).toBe(true);
     expect(kill_impl).not.toHaveBeenCalled();
-    expectRecoveryWait(
+    expectRetryOutcome(
       env.store.snapshot(WS).attempts[String(res.attempt_id)],
       'unknown_error'
     );
@@ -11607,8 +11777,10 @@ describe('scheduler claim release on close-less termination', () => {
     await flush();
     await flush();
 
-    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('waiting');
-    expectRecoveryWait(
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe(
+      'retry_wait'
+    );
+    expectRetryOutcome(
       env.store.snapshot(WS).attempts[attempt_id],
       'unknown_error'
     );
@@ -11627,9 +11799,11 @@ describe('scheduler claim release on close-less termination', () => {
 
     // The halt is gone (UI-5ym8 §4); what stops the bead relaunching is the
     // candidate fence keyed on its own settled attempt.
-    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('waiting');
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe(
+      'retry_wait'
+    );
     expect(env.scheduler.isRunning('S1')).toBe(false);
-    expectRecoveryWait(
+    expectRetryOutcome(
       env.store.snapshot(WS).attempts[attempt_id],
       'unknown_error'
     );
@@ -11659,8 +11833,8 @@ describe('scheduler claim release on close-less termination', () => {
 
     // A tick raised by a concurrent attempt finishing must already see the
     // settled record, or the fence would not stop it relaunching this bead.
-    expect(status_at_release).toBe('waiting');
-    expectRecoveryWait(
+    expect(status_at_release).toBe('retry_wait');
+    expectRetryOutcome(
       env.store.snapshot(WS).attempts[attempt_id],
       'unknown_error'
     );
@@ -11747,7 +11921,7 @@ describe('scheduler claim release on close-less termination', () => {
     await env.scheduler.tick(WS);
 
     expect(env.scheduler.isRunning('S1')).toBe(false);
-    expect(env.store.snapshot(WS).admission.S1.reason).toBe('recovery_wait');
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe('retry_wait');
   });
 });
 
@@ -12035,43 +12209,6 @@ describe('scheduler silent-skip reasons', () => {
 
 describe('scheduler worktree residue hygiene', () => {
   /**
-   * @param {ReturnType<typeof import('./queue-store.js').createQueueStore>} store
-   * @param {Partial<Record<string, unknown>>} [patch]
-   */
-  function seedStaleWorkAdmission(store, patch = {}) {
-    store.recordAdmission(WS, {
-      bead_id: 'S1',
-      reason: 'worktree_stale_work',
-      stale_work: {
-        schema: 1,
-        state: 'unique',
-        cause: 'dirty_unique',
-        summary: {
-          staged_count: 1,
-          unstaged_count: 1,
-          untracked_count: 1,
-          branch_ahead: 0,
-          head_ahead: 0
-        },
-        identity_digest: 'identity-1',
-        action_id: 'action-1',
-        can_resume: false,
-        can_continue: true,
-        can_backup_fresh: true,
-        can_recheck: false,
-        identity: {
-          worktree_realpath: '/wt/S1',
-          branch: 'S1',
-          head_sha: 'a'.repeat(40),
-          base_oid: 'b'.repeat(40),
-          status_digest: 'c'.repeat(64)
-        },
-        ...patch
-      }
-    });
-  }
-
-  /**
    * @param {Partial<import('./worktree.js').WorktreeObservation>} [patch]
    */
   function uniqueStaleObservation(patch = {}) {
@@ -12269,909 +12406,354 @@ describe('scheduler worktree residue hygiene', () => {
     expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
   });
 
-  test('records an owned unique residue as structured admission without an attempt', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    env.worktree.removeIfDiscardable = vi.fn(async () => ({
-      ok: false,
-      state: 'unique',
-      removed: false,
-      reason: 'dirty_unique',
-      owned: true,
-      identity: {
-        worktree_realpath: '/wt/S1',
-        branch: 'S1',
-        head_sha: 'a'.repeat(40),
-        base_oid: 'b'.repeat(40),
-        status_digest: 'c'.repeat(64)
-      },
-      summary: {
-        staged_count: 1,
-        unstaged_count: 0,
-        untracked_count: 0,
-        branch_ahead: 0,
-        head_ahead: 0
-      }
-    }));
+  /**
+   * @param {Record<string, any>} [overrides]
+   */
+  function residueEnv(overrides = {}) {
+    const append = vi.fn();
+    const notify = { attemptFailed: vi.fn() };
+    const env = setup({
+      config: { S1: {}, S2: {} },
+      slots: 1,
+      timeline: { append },
+      notify,
+      resolveBase: async () => ({
+        ok: true,
+        base: 'main',
+        base_oid: 'b'.repeat(40)
+      }),
+      ...overrides
+    });
     seedQueue(env.store, ['S1']);
+    return { ...env, append, notify };
+  }
+
+  test('adopts unique work without recording an admission', async () => {
+    const env = residueEnv();
+    env.worktree.removeIfDiscardable.mockResolvedValue(
+      uniqueStaleObservation()
+    );
 
     await env.scheduler.tick(WS);
 
-    expect(env.store.snapshot(WS).admission.S1).toMatchObject({
-      reason: 'worktree_stale_work',
-      stale_work: {
-        schema: 1,
-        residue: 'worktree',
-        state: 'unique',
-        cause: 'dirty_unique',
-        can_resume: false,
-        can_continue: true,
-        can_backup_fresh: true,
-        can_recheck: false
-      }
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+    expect(Object.values(env.store.snapshot(WS).attempts)[0]).toMatchObject({
+      status: 'running',
+      head_oid: 'a'.repeat(40),
+      base_oid: 'b'.repeat(40)
     });
-    expect(env.store.snapshot(WS).attempts).toEqual({});
-    expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(true);
-    expect(env.scheduler.staleWorkActionInFlight(WS, 'S1')).toBe(false);
     expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.runner.cwdFor('S1')).toBe('/wt/S1');
+    expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    expect(env.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'stale_work_auto',
+        summary: '잔재 자동 처분 · continue · dirty_unique'
+      })
+    );
   });
 
-  test('closes every capability for a foreign residue identity', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    env.worktree.removeIfDiscardable = vi.fn(async () => ({
-      ok: false,
-      state: 'unique',
-      removed: false,
-      reason: 'dirty_unique',
-      owned: false,
-      identity: {
-        worktree_realpath: '/someone/worktree',
-        branch: 'foreign',
-        head_sha: 'a'.repeat(40),
+  test('resumes the matching recorded session before adopting its worktree', async () => {
+    const env = residueEnv();
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'prior',
+        bead_id: 'S1',
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
         base_oid: 'b'.repeat(40),
-        status_digest: 'c'.repeat(64)
-      },
-      summary: {
-        staged_count: 0,
-        unstaged_count: 1,
-        untracked_count: 0,
-        branch_ahead: 0,
-        head_ahead: 0
+        head_oid: 'a'.repeat(40),
+        session_id: 'session-1',
+        dismissed_at: 900
       }
-    }));
-    seedQueue(env.store, ['S1']);
+    });
+    env.worktree.removeIfDiscardable.mockResolvedValue(
+      uniqueStaleObservation()
+    );
 
     await env.scheduler.tick(WS);
 
-    expect(env.store.snapshot(WS).admission.S1.stale_work).toMatchObject({
-      state: 'unknown',
-      can_resume: false,
-      can_continue: false,
-      can_backup_fresh: false,
-      can_recheck: false
-    });
-    expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.runner.settingsFor('S1').resume_session_id).toBe('session-1');
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+    expect(env.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'stale_work_auto',
+        summary: '잔재 자동 처분 · resume · resume_available'
+      })
+    );
   });
 
-  test('offers only recheck for an owned unknown residue', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    env.worktree.removeIfDiscardable = vi.fn(async () => ({
-      ok: false,
-      state: 'unknown',
-      removed: false,
-      reason: 'observe_failed',
-      cause: 'observe_failed',
-      owned: true,
-      identity: {
-        worktree_realpath: '/wt/S1',
-        branch: 'S1',
-        head_sha: 'a'.repeat(40),
-        base_oid: 'b'.repeat(40),
-        status_digest: 'c'.repeat(64)
-      },
-      summary: {
-        staged_count: 0,
-        unstaged_count: 0,
-        untracked_count: 0,
-        branch_ahead: 0,
-        head_ahead: 0
-      }
+  test('backs up branch residue before dispatching in the same tick', async () => {
+    const backupFreshResidue = vi.fn(async () => ({
+      ok: true,
+      backup_path: '/state/discard-backups/one'
     }));
-    seedQueue(env.store, ['S1']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.store.snapshot(WS).admission.S1.stale_work).toMatchObject({
-      state: 'unknown',
-      can_resume: false,
-      can_continue: false,
-      can_backup_fresh: false,
-      can_recheck: true
-    });
-    expect(env.store.snapshot(WS).attempts).toEqual({});
-  });
-
-  test('records branch-only residue with backup and recheck capabilities', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    env.worktree.removeIfDiscardable = vi.fn(async () => ({
-      ok: false,
-      state: 'unique',
-      removed: false,
-      reason: 'ahead_not_contained',
-      cause: 'ahead_not_contained',
-      owned: true,
+    const env = residueEnv({ backupFreshResidue });
+    const observation = uniqueStaleObservation({
       identity: {
         worktree_realpath: null,
         branch: 'S1',
         head_sha: null,
         branch_head_sha: 'a'.repeat(40),
         base_oid: 'b'.repeat(40),
-        status_digest: 'c'.repeat(64)
-      },
-      summary: {
-        staged_count: 0,
-        unstaged_count: 0,
-        untracked_count: 0,
-        branch_ahead: 2,
-        head_ahead: 0
+        status_digest: 'status'
       }
-    }));
-    seedQueue(env.store, ['S1']);
+    });
+    env.worktree.removeIfDiscardable.mockResolvedValueOnce(observation);
 
     await env.scheduler.tick(WS);
 
-    expect(env.store.snapshot(WS).admission.S1.stale_work).toMatchObject({
-      residue: 'branch',
-      state: 'unique',
-      cause: 'ahead_not_contained',
-      can_resume: false,
-      can_continue: false,
-      can_backup_fresh: true,
-      can_recheck: true
+    expect(backupFreshResidue).toHaveBeenCalledWith(observation.identity, {
+      bead_id: 'S1'
     });
-    expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+    expect(env.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'stale_work_auto',
+        summary: '잔재 자동 처분 · backup_fresh · dirty_unique',
+        detail: '/state/discard-backups/one'
+      })
+    );
   });
 
-  test('prefers a matching resumable leaf over automatic reclaim', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    env.store.appendAttempt(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      attempt: { attempt_id: 'prior', bead_id: 'S1' }
-    });
-    env.store.updateAttempt(WS, {
-      attempt_id: 'prior',
-      patch: {
-        status: 'failed',
-        repo: '/repo',
-        session_id: 'session-1',
-        head_oid: 'a'.repeat(40),
-        // UI-5ym8: a standing failed tile fences its bead out of the pass, and
-        // residue hygiene is not what that fence is testing.
-        dismissed_at: 900
-      }
-    });
-    env.worktree.removeIfDiscardable = vi.fn(async () => ({
-      ok: true,
-      state: 'base_contained',
-      removed: false,
-      reason: null,
-      cause: null,
-      owned: true,
-      identity: {
-        worktree_realpath: '/wt/S1',
-        branch: 'S1',
-        head_sha: 'a'.repeat(40),
-        base_oid: 'b'.repeat(40),
-        status_digest: 'c'.repeat(64)
-      },
-      summary: {
-        staged_count: 1,
-        unstaged_count: 0,
-        untracked_count: 0,
-        branch_ahead: 0,
-        head_ahead: 0
-      }
-    }));
-    seedQueue(env.store, ['S1']);
+  test('reobserves unknown residue once before recording an individual failure', async () => {
+    const env = residueEnv();
+    env.worktree.removeIfDiscardable.mockResolvedValue(
+      uniqueStaleObservation({ state: 'unknown', cause: 'observe_failed' })
+    );
 
     await env.scheduler.tick(WS);
 
-    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledWith({
+    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledTimes(2);
+    expect(env.worktree.removeIfDiscardable).toHaveBeenLastCalledWith({
       repo: '/repo',
       bead_id: 'S1',
-      base: 'main',
-      preserve: true
+      base: 'b'.repeat(40)
     });
-    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledTimes(1);
-    expect(env.store.snapshot(WS).admission.S1.stale_work).toMatchObject({
-      residue: 'worktree',
-      state: 'unique',
-      cause: 'resume_available',
-      can_resume: true,
-      can_continue: true,
-      can_backup_fresh: true,
-      can_recheck: false
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+    expect(Object.values(env.store.snapshot(WS).attempts)[0]).toMatchObject({
+      status: 'failed',
+      cause: 'stale_work_unresolved'
     });
-    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual(['prior']);
-    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.worktree.remove).not.toHaveBeenCalled();
+    expect(env.notify.attemptFailed).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        bead_id: 'S1',
+        cause: 'stale_work_unresolved',
+        repo: '/repo'
+      })
+    );
   });
 
-  test('reclaims branch-only residue when a resumable row cannot match it', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
+  test('does not notify an unresolved residue failure that could not be recorded', async () => {
+    const env = residueEnv();
+    env.worktree.removeIfDiscardable.mockResolvedValue(
+      uniqueStaleObservation({ state: 'unknown', cause: 'observe_failed' })
+    );
+    vi.spyOn(env.store, 'appendAttempt').mockImplementation(() => {
+      throw new Error('write failed');
+    });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+  });
+
+  test('retries unresolved residue without requiring a recorded session', async () => {
+    const env = residueEnv();
+    env.worktree.removeIfDiscardable.mockResolvedValue(
+      uniqueStaleObservation({ state: 'unknown' })
+    );
+    await env.scheduler.tick(WS);
+    const prior = Object.values(env.store.snapshot(WS).attempts)[0];
+    env.worktree.removeIfDiscardable.mockResolvedValue({
+      ok: true,
+      removed: false
+    });
+
+    const result = await env.scheduler.resume(WS, prior.attempt_id);
+
+    expect(result.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({ status: 'running', resumed_from: prior.attempt_id });
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+  });
+
+  test('reobserves an unknown identity even when its head matches a session', async () => {
+    const env = residueEnv();
     env.store.appendAttempt(WS, {
       expected_revision: env.store.snapshot(WS).revision,
-      attempt: { attempt_id: 'prior', bead_id: 'S1' }
-    });
-    env.store.updateAttempt(WS, {
-      attempt_id: 'prior',
-      patch: {
-        status: 'failed',
+      attempt: {
+        attempt_id: 'prior',
+        bead_id: 'S1',
         repo: '/repo',
-        session_id: 'session-1',
+        status: 'failed',
         head_oid: 'a'.repeat(40),
-        // UI-5ym8: see above — the fence is not this test's subject.
+        session_id: 'session-1',
         dismissed_at: 900
       }
     });
-    env.worktree.removeIfDiscardable = vi.fn(
-      async (/** @type {any} */ input) => ({
-        ok: true,
-        state: 'discardable',
-        removed: input.preserve !== true,
-        reason: null,
-        cause: null,
-        owned: true,
+    env.worktree.removeIfDiscardable.mockResolvedValue(
+      uniqueStaleObservation({ state: 'unknown' })
+    );
+
+    await env.scheduler.tick(WS);
+
+    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledTimes(2);
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(Object.values(env.store.snapshot(WS).attempts).at(-1)?.cause).toBe(
+      'stale_work_unresolved'
+    );
+  });
+
+  test('dispatches when one reobservation clears unknown residue', async () => {
+    const env = residueEnv();
+    env.worktree.removeIfDiscardable.mockResolvedValueOnce(
+      uniqueStaleObservation({ state: 'unknown' })
+    );
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+    expect(env.append).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'stale_work_auto' })
+    );
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+  });
+
+  test('rejudges a changed backup identity once', async () => {
+    const backupFreshResidue = vi.fn(async () => ({
+      ok: false,
+      reason: 'worktree_identity_changed'
+    }));
+    const env = residueEnv({ backupFreshResidue });
+    env.worktree.removeIfDiscardable
+      .mockResolvedValueOnce(
+        uniqueStaleObservation({
+          identity: {
+            worktree_realpath: null,
+            branch: 'S1',
+            head_sha: null,
+            branch_head_sha: 'a'.repeat(40),
+            base_oid: 'b'.repeat(40),
+            status_digest: 'old'
+          }
+        })
+      )
+      .mockResolvedValue(uniqueStaleObservation());
+
+    await env.scheduler.tick(WS);
+
+    expect(backupFreshResidue).toHaveBeenCalledTimes(1);
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+    expect(env.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: '잔재 자동 처분 · continue · dirty_unique'
+      })
+    );
+  });
+
+  test('preserves residue and records failure when backup fails', async () => {
+    const backupFreshResidue = vi.fn(async () => ({
+      ok: false,
+      reason: 'archive_failed'
+    }));
+    const env = residueEnv({ backupFreshResidue });
+    env.worktree.removeIfDiscardable.mockResolvedValue(
+      uniqueStaleObservation({
         identity: {
           worktree_realpath: null,
           branch: 'S1',
           head_sha: null,
           branch_head_sha: 'a'.repeat(40),
           base_oid: 'b'.repeat(40),
-          status_digest: 'c'.repeat(64)
-        },
-        summary: {
-          staged_count: 0,
-          unstaged_count: 0,
-          untracked_count: 0,
-          branch_ahead: 2,
-          head_ahead: 0
+          status_digest: 'status'
         }
       })
     );
-    seedQueue(env.store, ['S1']);
 
     await env.scheduler.tick(WS);
 
-    expect(env.worktree.removeIfDiscardable.mock.calls).toEqual([
-      [
-        {
-          repo: '/repo',
-          bead_id: 'S1',
-          base: 'main',
-          preserve: true
-        }
-      ],
-      [{ repo: '/repo', bead_id: 'S1', base: 'main' }]
-    ]);
-    expect(env.worktree.add).toHaveBeenCalledTimes(1);
-    expect(env.scheduler.isRunning('S1')).toBe(true);
+    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledTimes(1);
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.worktree.remove).not.toHaveBeenCalled();
+    expect(Object.values(env.store.snapshot(WS).attempts)[0]).toMatchObject({
+      status: 'failed',
+      cause: 'stale_work_unresolved',
+      cause_detail: { summary: 'archive_failed' }
+    });
+    expect(env.notify.attemptFailed).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        cause: 'stale_work_unresolved',
+        cause_detail: expect.objectContaining({ summary: 'archive_failed' })
+      })
+    );
+  });
+
+  test('records a failure after observation throws twice', async () => {
+    const env = residueEnv();
+    env.worktree.removeIfDiscardable.mockRejectedValue(new Error('git failed'));
+
+    await env.scheduler.tick(WS);
+
+    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledTimes(2);
+    expect(Object.values(env.store.snapshot(WS).attempts)[0].cause).toBe(
+      'stale_work_unresolved'
+    );
     expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
   });
 
-  test('does not bump revision for the same residue on a later tick', async () => {
-    const notifyQueueChanged = vi.fn();
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      notifyQueueChanged
-    });
-    env.worktree.removeIfDiscardable = vi.fn(async () => ({
-      ok: false,
-      state: 'unknown',
-      removed: false,
-      reason: 'observe_failed',
-      cause: 'observe_failed',
-      owned: true,
-      identity: {
-        worktree_realpath: '/wt/S1',
-        branch: 'S1',
-        head_sha: 'a'.repeat(40),
-        base_oid: 'b'.repeat(40),
-        status_digest: 'c'.repeat(64)
-      },
-      summary: {
-        staged_count: 0,
-        unstaged_count: 0,
-        untracked_count: 0,
-        branch_ahead: 0,
-        head_ahead: 0
-      }
-    }));
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    const revision = env.store.snapshot(WS).revision;
-    const notifications = notifyQueueChanged.mock.calls.length;
-
-    await env.scheduler.tick(WS);
-
-    expect(env.store.snapshot(WS).revision).toBe(revision);
-    expect(notifyQueueChanged).toHaveBeenCalledTimes(notifications);
-  });
-
-  for (const reason of [
-    'dirty',
-    'branch_ahead',
-    'head_ahead',
-    'observe_failed',
-    'remove_failed'
-  ]) {
-    test(`refuses with worktree_stale_work when the residue is preserved (${reason})`, async () => {
-      const env = setup({ config: { S1: {} }, slots: 1 });
-      env.worktree.removeIfDiscardable = vi.fn(async () => ({
-        ok: false,
-        removed: false,
-        reason
-      }));
-      seedQueue(env.store, ['S1']);
-
-      await env.scheduler.tick(WS);
-
-      expect(env.store.snapshot(WS).admission.S1.reason).toBe(
-        'worktree_stale_work'
-      );
-      expect(env.worktree.add).not.toHaveBeenCalled();
-      expect(env.scheduler.isRunning('S1')).toBe(false);
-    });
-  }
-
-  test('never force-removes a residue it refused', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    env.worktree.removeIfDiscardable = vi.fn(async () => ({
-      ok: false,
-      removed: false,
-      reason: 'dirty'
-    }));
-    seedQueue(env.store, ['S1']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.worktree.remove).not.toHaveBeenCalled();
-  });
-
-  test('records git_error when the residue check itself throws', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    env.worktree.removeIfDiscardable = vi.fn(async () => {
-      throw new Error('git exploded');
-    });
-    seedQueue(env.store, ['S1']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.store.snapshot(WS).admission.S1.reason).toBe('git_error');
-    expect(env.worktree.add).not.toHaveBeenCalled();
-  });
-
-  test('a residue refusal does not starve the next queued bead', async () => {
-    const env = setup({ config: { S1: {}, S2: {} }, slots: 1 });
-    env.worktree.removeIfDiscardable = vi.fn(
+  test('keeps another bead runnable after unresolved residue', async () => {
+    const env = residueEnv();
+    seedQueue(env.store, ['S2']);
+    env.worktree.removeIfDiscardable.mockImplementation(
       async (/** @type {any} */ { bead_id }) =>
         bead_id === 'S1'
-          ? { ok: false, removed: false, reason: 'dirty' }
-          : { ok: true, removed: false, reason: null }
+          ? uniqueStaleObservation({ state: 'unknown' })
+          : { ok: true, removed: false }
     );
-    seedQueue(env.store, ['S1', 'S2']);
 
     await env.scheduler.tick(WS);
 
     expect(env.scheduler.isRunning('S2')).toBe(true);
   });
 
-  test('continues stale work through the matching resumable leaf first', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1']);
-    env.store.appendAttempt(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      attempt: { attempt_id: 'prior', bead_id: 'S1' }
-    });
-    env.store.updateAttempt(WS, {
-      attempt_id: 'prior',
-      patch: {
-        status: 'failed',
-        repo: '/repo',
-        target_base: 'main',
-        base_oid: 'b'.repeat(40),
-        head_oid: 'a'.repeat(40),
-        session_id: 'session-1'
-      }
-    });
-    seedStaleWorkAdmission(env.store, {
-      can_resume: true,
-      can_continue: false,
-      can_backup_fresh: false
-    });
-
-    const result = await env.scheduler.staleWorkContinue(WS, {
-      bead_id: 'S1',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(WS).revision
-    });
-
-    expect(result.ok).toBe(true);
-    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
-    expect(env.worktree.add).not.toHaveBeenCalled();
-    expect(env.runner.spawnOrder).toEqual(['S1']);
-    expect(env.runner.settingsFor('S1').resume_session_id).toBe('session-1');
-  });
-
-  test('adopts an orphan stale worktree without remove or add', async () => {
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      resolveBase: vi.fn(async () => ({
-        ok: true,
-        base: 'main',
-        base_oid: 'b'.repeat(40)
-      }))
-    });
-    seedQueue(env.store, ['S1']);
-    seedStaleWorkAdmission(env.store);
-    env.worktree.removeIfDiscardable = vi.fn(async () => ({
-      ok: false,
-      state: 'unique',
-      removed: false,
-      cause: 'dirty_unique',
-      owned: true,
-      identity: {
-        worktree_realpath: '/wt/S1',
-        branch: 'S1',
-        head_sha: 'a'.repeat(40),
-        base_oid: 'b'.repeat(40),
-        status_digest: 'c'.repeat(64)
-      },
-      summary: {
-        staged_count: 1,
-        unstaged_count: 1,
-        untracked_count: 1,
-        branch_ahead: 0,
-        head_ahead: 0
-      }
-    }));
-
-    const result = await env.scheduler.staleWorkContinue(WS, {
-      bead_id: 'S1',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(WS).revision
-    });
-    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
-
-    expect(result.ok).toBe(true);
-    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledWith({
-      repo: '/repo',
-      bead_id: 'S1',
-      base: 'b'.repeat(40),
-      preserve: true
-    });
-    expect(env.worktree.remove).not.toHaveBeenCalled();
-    expect(env.worktree.add).not.toHaveBeenCalled();
-    expect(attempt).toMatchObject({
-      base_oid: 'b'.repeat(40),
-      head_oid: 'a'.repeat(40),
-      status: 'running'
-    });
-    expect(env.runner.cwdFor('S1')).toBe('/wt/S1');
-    expect(env.runner.spawnedBead('S1').prompt).toContain(
-      '기존 worktree를 의도적으로 채택'
-    );
-  });
-
-  test('refuses orphan adoption before prerecord when identity drifts', async () => {
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      resolveBase: vi.fn(async () => ({
-        ok: true,
-        base: 'main',
-        base_oid: 'b'.repeat(40)
-      }))
-    });
-    seedQueue(env.store, ['S1']);
-    seedStaleWorkAdmission(env.store);
-    env.worktree.removeIfDiscardable = vi.fn(async () =>
-      uniqueStaleObservation({
-        identity: {
-          worktree_realpath: '/wt/S1',
-          branch: 'S1',
-          head_sha: 'a'.repeat(40),
-          base_oid: 'b'.repeat(40),
-          status_digest: 'drifted'
-        }
-      })
+  test('preserves a residue owned by another branch', async () => {
+    const env = residueEnv();
+    env.worktree.removeIfDiscardable.mockResolvedValue(
+      uniqueStaleObservation({ owned: false })
     );
 
-    const result = await env.scheduler.staleWorkContinue(WS, {
-      bead_id: 'S1',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(WS).revision
-    });
-
-    expect(result).toMatchObject({
-      ok: false,
-      reason: 'worktree_stale_work'
-    });
-    expect(env.store.snapshot(WS).attempts).toEqual({});
-    expect(env.store.snapshot(WS).admission.S1).toMatchObject({
-      reason: 'worktree_stale_work',
-      stale_work: { can_recheck: false }
-    });
-    expect(env.worktree.remove).not.toHaveBeenCalled();
-    expect(env.worktree.add).not.toHaveBeenCalled();
-  });
-
-  test('preserves adopted worktree when spawn records a failed attempt', async () => {
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      resolveBase: vi.fn(async () => ({
-        ok: true,
-        base: 'main',
-        base_oid: 'b'.repeat(40)
-      })),
-      makeRunner: () => ({
-        name: 'claude',
-        spawn() {
-          throw new Error('spawn failed');
-        }
-      })
-    });
-    seedQueue(env.store, ['S1']);
-    seedStaleWorkAdmission(env.store);
-    env.worktree.removeIfDiscardable = vi.fn(async () =>
-      uniqueStaleObservation()
-    );
-
-    const result = await env.scheduler.staleWorkContinue(WS, {
-      bead_id: 'S1',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(WS).revision
-    });
-    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
-
-    expect(result).toMatchObject({ ok: false, reason: 'spawn_failed' });
-    expect(attempt).toMatchObject({
-      status: 'retry_wait',
-      cause: 'spawn_failed'
-    });
-    expect(env.worktree.remove).not.toHaveBeenCalled();
-    expect(env.worktree.add).not.toHaveBeenCalled();
-  });
-
-  test('rejects stale-work action when a remote branch owns the residue', async () => {
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      gitRun: vi.fn(async (args) => ({
-        code: 0,
-        stdout:
-          args[0] === 'ls-remote' ? `${'a'.repeat(40)}\trefs/heads/S1\n` : '',
-        stderr: ''
-      }))
-    });
-    seedQueue(env.store, ['S1']);
-    seedStaleWorkAdmission(env.store);
-
-    const result = await env.scheduler.staleWorkContinue(WS, {
-      bead_id: 'S1',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(WS).revision
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      reason: 'remote_branch_owner',
-      conflict: true
-    });
-    expect(env.store.snapshot(WS).attempts).toEqual({});
-    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
-  });
-
-  test('rejects branch-only continue and resume capabilities without mutation', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1']);
-    seedStaleWorkAdmission(env.store, {
-      residue: 'branch',
-      can_resume: false,
-      can_continue: false,
-      can_backup_fresh: true,
-      can_recheck: true,
-      identity: {
-        worktree_realpath: null,
-        branch: 'S1',
-        head_sha: null,
-        branch_head_sha: 'a'.repeat(40),
-        base_oid: 'b'.repeat(40),
-        status_digest: 'c'.repeat(64)
-      }
-    });
-    const before = env.store.snapshot(WS);
-
-    const result = await env.scheduler.staleWorkContinue(WS, {
-      bead_id: 'S1',
-      action_id: 'action-1',
-      expected_revision: before.revision
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      reason: 'stale_work_conflict',
-      conflict: true
-    });
-    expect(env.store.snapshot(WS)).toEqual(before);
-  });
-
-  test('refuses stale continue when waiting authority changes during owner observation', async () => {
-    /** @type {() => void} */
-    let release_remote = () => {};
-    /** @type {() => void} */
-    let mark_remote_started = () => {};
-    const remote_started = new Promise((resolve) => {
-      mark_remote_started = () => resolve(undefined);
-    });
-    const remote_gate = new Promise((resolve) => {
-      release_remote = () => resolve(undefined);
-    });
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      gitRun: vi.fn(async () => {
-        mark_remote_started();
-        await remote_gate;
-        return { code: 0, stdout: '', stderr: '' };
-      })
-    });
-    seedQueue(env.store, ['S1']);
-    seedStaleWorkAdmission(env.store);
-    const pending = env.scheduler.staleWorkContinue(WS, {
-      bead_id: 'S1',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(WS).revision
-    });
-    await remote_started;
-
-    env.store.remove(WS, {
-      bead_id: 'S1',
-      expected_revision: env.store.snapshot(WS).revision
-    });
-    release_remote();
-    const result = await pending;
-
-    expect(result).toMatchObject({ ok: false, conflict: true });
-    expect(env.store.snapshot(WS).attempts).toEqual({});
-    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
-  });
-
-  test('refuses stale recheck when waiting authority changes during owner observation', async () => {
-    /** @type {() => void} */
-    let release_remote = () => {};
-    /** @type {() => void} */
-    let mark_remote_started = () => {};
-    const remote_started = new Promise((resolve) => {
-      mark_remote_started = () => resolve(undefined);
-    });
-    const remote_gate = new Promise((resolve) => {
-      release_remote = () => resolve(undefined);
-    });
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      gitRun: vi.fn(async () => {
-        mark_remote_started();
-        await remote_gate;
-        return { code: 0, stdout: '', stderr: '' };
-      })
-    });
-    seedQueue(env.store, ['S1']);
-    seedStaleWorkAdmission(env.store, { can_recheck: true });
-    const before = env.store.snapshot(WS);
-    const pending = env.scheduler.staleWorkRecheck(WS, {
-      bead_id: 'S1',
-      action_id: 'action-1',
-      expected_revision: before.revision
-    });
-    await remote_started;
-
-    env.store.remove(WS, {
-      bead_id: 'S1',
-      expected_revision: env.store.snapshot(WS).revision
-    });
-    release_remote();
-    const result = await pending;
-
-    expect(result).toMatchObject({ ok: false, conflict: true });
-    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
-    expect(env.store.snapshot(WS).attempts).toEqual(before.attempts);
-    expect(env.store.snapshot(WS).discard_operations).toEqual(
-      before.discard_operations
-    );
-  });
-
-  test('rechecks base-contained stale work and dispatches in the same action', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1']);
-    seedStaleWorkAdmission(env.store, {
-      state: 'unknown',
-      can_continue: false,
-      can_backup_fresh: false,
-      can_recheck: true
-    });
-    env.worktree.removeIfDiscardable = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        state: 'base_contained',
-        removed: true,
-        cause: null
-      })
-      .mockResolvedValue({
-        ok: true,
-        state: 'absent',
-        removed: false,
-        cause: null
-      });
-
-    const result = await env.scheduler.staleWorkRecheck(WS, {
-      bead_id: 'S1',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(WS).revision
-    });
-
-    expect(result).toMatchObject({ ok: true, state: 'base_contained' });
-    expect(env.worktree.add).toHaveBeenCalledTimes(1);
-    expect(env.scheduler.isRunning('S1')).toBe(true);
-  });
-
-  test('rechecks unique stale work and recalculates its capabilities', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1']);
-    seedStaleWorkAdmission(env.store, {
-      state: 'unknown',
-      can_continue: false,
-      can_backup_fresh: false,
-      can_recheck: true
-    });
-    env.worktree.removeIfDiscardable = vi.fn(async () => ({
-      ok: false,
-      state: 'unique',
-      removed: false,
-      cause: 'untracked_present',
-      owned: true,
-      identity: {
-        worktree_realpath: '/wt/S1',
-        branch: 'S1',
-        head_sha: 'a'.repeat(40),
-        base_oid: 'b'.repeat(40),
-        status_digest: 'd'.repeat(64)
-      },
-      summary: {
-        staged_count: 0,
-        unstaged_count: 0,
-        untracked_count: 1,
-        branch_ahead: 0,
-        head_ahead: 0
-      }
-    }));
-
-    const result = await env.scheduler.staleWorkRecheck(WS, {
-      bead_id: 'S1',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(WS).revision
-    });
-
-    expect(result).toMatchObject({ ok: true, state: 'unique' });
-    expect(env.store.snapshot(WS).admission.S1.stale_work).toMatchObject({
-      state: 'unique',
-      cause: 'untracked_present',
-      can_continue: true,
-      can_backup_fresh: true,
-      can_recheck: false
-    });
-    expect(env.store.snapshot(WS).attempts).toEqual({});
-    expect(env.worktree.add).not.toHaveBeenCalled();
-  });
-
-  test('no-ops a recheck whose unknown identity and capabilities are unchanged', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    const observation = {
-      ok: false,
-      state: 'unknown',
-      removed: false,
-      cause: 'observe_failed',
-      owned: true,
-      identity: {
-        worktree_realpath: '/wt/S1',
-        branch: 'S1',
-        head_sha: 'a'.repeat(40),
-        base_oid: 'b'.repeat(40),
-        status_digest: 'c'.repeat(64)
-      },
-      summary: {
-        staged_count: 0,
-        unstaged_count: 0,
-        untracked_count: 0,
-        branch_ahead: 0,
-        head_ahead: 0
-      }
-    };
-    env.worktree.removeIfDiscardable = vi.fn(async () => observation);
-    seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
-    const before = env.store.snapshot(WS);
-    const stale_work = before.admission.S1.stale_work;
-    expect(stale_work).toBeDefined();
-    if (!stale_work) {
-      return;
-    }
 
-    const result = await env.scheduler.staleWorkRecheck(WS, {
-      bead_id: 'S1',
-      action_id: stale_work.action_id,
-      expected_revision: before.revision
-    });
-    const after = env.store.snapshot(WS);
-
-    expect(result).toMatchObject({ ok: true, state: 'unknown' });
-    expect(after.revision).toBe(before.revision);
-    expect(after.attempts).toEqual(before.attempts);
-    expect(after.discard_operations).toEqual(before.discard_operations);
-    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.runner.spawnOrder).toEqual([]);
     expect(env.worktree.remove).not.toHaveBeenCalled();
+    expect(Object.values(env.store.snapshot(WS).attempts)[0].cause).toBe(
+      'stale_work_unresolved'
+    );
   });
 
-  test('keeps base drift actionable with a refreshed identity', async () => {
-    const current_base = 'd'.repeat(40);
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      resolveBase: vi.fn(async () => ({
-        ok: true,
-        base: 'main',
-        base_oid: current_base
-      }))
-    });
-    seedQueue(env.store, ['S1']);
-    seedStaleWorkAdmission(env.store);
-    env.worktree.removeIfDiscardable = vi.fn(async () =>
-      uniqueStaleObservation({
-        identity: {
-          worktree_realpath: '/wt/S1',
-          branch: 'S1',
-          head_sha: 'a'.repeat(40),
-          base_oid: current_base,
-          status_digest: 'c'.repeat(64)
-        }
-      })
+  test('refuses adoption when identity changes before launch', async () => {
+    const env = residueEnv();
+    env.worktree.removeIfDiscardable
+      .mockResolvedValueOnce(uniqueStaleObservation())
+      .mockResolvedValue(
+        uniqueStaleObservation({ state: 'unknown', cause: 'observe_failed' })
+      );
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(Object.values(env.store.snapshot(WS).attempts)[0].cause).toBe(
+      'stale_work_unresolved'
     );
-
-    const continued = await env.scheduler.staleWorkContinue(WS, {
-      bead_id: 'S1',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(WS).revision
-    });
-    const drifted = env.store.snapshot(WS);
-    const refreshed = drifted.admission.S1.stale_work;
-
-    expect(continued.ok).toBe(false);
-    expect(drifted.attempts).toEqual({});
-    expect(drifted.admission.S1.reason).toBe('worktree_stale_work');
-    expect(refreshed).toMatchObject({
-      state: 'unique',
-      can_continue: true,
-      can_backup_fresh: true,
-      can_recheck: false,
-      identity: { base_oid: current_base }
-    });
-    expect(refreshed?.action_id).not.toBe('action-1');
-    expect(env.store.snapshot(WS).attempts).toEqual({});
-    expect(env.worktree.remove).not.toHaveBeenCalled();
-    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
   });
 });
 
@@ -14206,7 +13788,6 @@ describe('scheduler protected bead sets (UI-b8n8 §접근 A)', () => {
 
     expect(env.scheduler.isRunning('S1')).toBe(false);
     expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(true);
-    expect(env.scheduler.staleWorkActionInFlight(WS, 'S1')).toBe(true);
     expect(env.scheduler.externalProtectedBeadIds(WS).has('S1')).toBe(true);
   });
 
@@ -14331,7 +13912,6 @@ describe('scheduler protected bead sets (UI-b8n8 §접근 A)', () => {
     await env.scheduler.tick(WS);
 
     expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(true);
-    expect(env.scheduler.staleWorkActionInFlight(WS, 'S1')).toBe(true);
   });
 
   test('drops a bead whose attempt reached a terminal status', async () => {
@@ -14358,7 +13938,6 @@ describe('scheduler protected bead sets (UI-b8n8 §접근 A)', () => {
     // the active union alone no longer covers the bead — the cleanup fence is
     // the only thing holding the live worktree out of the external registry.
     expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(false);
-    expect(env.scheduler.staleWorkActionInFlight(WS, 'S1')).toBe(true);
     expect(env.scheduler.externalProtectedBeadIds(WS).has('S1')).toBe(true);
   });
 
@@ -14992,11 +14571,11 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
 
       expect(env.store.snapshot(WS).attempts['att-1'].cause).toBe(cause);
       expect(env.store.snapshot(WS).attempts['att-1']).toMatchObject({
-        status: 'waiting',
+        status: cause === 'session_recovery_wait' ? 'waiting' : 'retry_wait',
         cause_detail: { summary }
       });
       if (cause === 'session_recovery_wait') {
-        expectRecoveryWait(
+        expectRetryOutcome(
           env.store.snapshot(WS).attempts['att-1'],
           'session_recovery_wait',
           'provider'
@@ -15135,7 +14714,7 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     await env.scheduler.reconcile(WS);
 
     expect(env.store.snapshot(WS).attempts['att-1']).toMatchObject({
-      status: 'waiting',
+      status: 'retry_wait',
       cause: 'session_failed:reported_failure',
       cause_detail: {
         summary: '실패 · sync conflict',
@@ -15145,7 +14724,7 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(observeFailureFacts).toHaveBeenCalledOnce();
     expect(settle).not.toHaveBeenCalled();
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
-    expectRecoveryWait(
+    expectRetryOutcome(
       env.store.snapshot(WS).attempts['att-1'],
       'past_failure_line'
     );
@@ -15526,19 +15105,14 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
 
     const snapshot = env.store.snapshot(WS);
     expect(snapshot.attempts['att-1']).toMatchObject({
-      status: 'waiting',
+      status: 'retry_wait',
       cause: 'session_ended_unresolved:background_shell',
       cause_detail: {
-        recovery: {
-          classification: 'finished_without_result_line',
-          disposition: 'wait',
-          reason: 'unclassified',
-          policy_schema: 1
-        },
+        env_pattern: 'unknown',
         background_shell_at_result: ['Wait for final required run']
       }
     });
-    expect(snapshot.hold).toBeNull();
+    expect(snapshot).not.toHaveProperty('hold');
     expect(snapshot.auto_advance).toBe(true);
   });
 
@@ -15555,10 +15129,10 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     // A detached session that delivered nothing is `session_ended_unresolved`
     // (UI-5ym8 §3.2) — an individual failure, so the queue keeps running.
     expect(snap.attempts['att-1'].cause).toBe('session_ended_unresolved');
-    expect(snap.attempts['att-1'].status).toBe('waiting');
+    expect(snap.attempts['att-1'].status).toBe('retry_wait');
     expect(snap.auto_advance).toBe(true);
-    expect(snap.hold).toBe(null);
-    expectRecoveryWait(snap.attempts['att-1'], 'finished_without_result_line');
+    expect(snap).not.toHaveProperty('hold');
+    expectRetryOutcome(snap.attempts['att-1'], 'finished_without_result_line');
   });
 
   test('fails closed when the PR observation could not be completed', async () => {
@@ -15607,19 +15181,13 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     await env.scheduler.reconcile(WS);
 
     const snap = env.store.snapshot(WS);
-    expectRecoveryWait(
+    expectRetryOutcome(
       snap.attempts['att-1'],
       'authority_required',
       'authority'
     );
     expect(snap.attempts['att-1'].cause).toBe('loud_fail_blocker');
     expect(snap.attempts['att-1'].cause_detail).toEqual({
-      recovery: {
-        classification: 'authority_required',
-        disposition: 'wait',
-        reason: 'authority',
-        policy_schema: 1
-      },
       reason: 'merge_to_base_blocked',
       command: 'git merge main',
       summary: 'landing on the base branch is never permitted: git merge main'
@@ -15628,11 +15196,7 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     // A breached prevention layer is SYSTEMIC (UI-5ym8 §3.4): the stop is
     // `queue.hold`, not the user's `auto_advance` toggle.
     expect(snap.auto_advance).toBe(true);
-    expect(snap.hold).toMatchObject({
-      kind: 'systemic',
-      cause: 'loud_fail_blocker',
-      bead_ids: ['UI-1']
-    });
+    expect(snap).not.toHaveProperty('hold');
   });
 
   test('stops the attempt monitor before lifting its terminal usage patch', async () => {
@@ -15955,9 +15519,9 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     await env.scheduler.reconcile(WS);
 
     const attempt = env.store.snapshot(WS).attempts['att-1'];
-    expect(attempt.status).toBe('waiting');
+    expect(attempt.status).toBe('retry_wait');
     expect(attempt.usage).toMatchObject({ input_tokens: 7, replayed: true });
-    expectRecoveryWait(attempt, 'finished_without_result_line');
+    expectRetryOutcome(attempt, 'finished_without_result_line');
   });
 
   test('leaves an attempt an active discard operation owns untouched', async () => {
@@ -16205,7 +15769,7 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
     await flush();
 
     expect(notify.attemptFailed).not.toHaveBeenCalled();
-    expectRecoveryWait(
+    expectRetryOutcome(
       env.store.snapshot(WS).attempts['S1-1000-1'],
       'unknown_error'
     );
@@ -16216,7 +15780,7 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
     });
   });
 
-  test('keeps blocker evidence on the authority wait without a failure push', async () => {
+  test('notifies the individual guard failure with its evidence', async () => {
     const notify = makeFakeNotify();
     const env = setup({ config: { S1: {} }, slots: 1, notify });
     seedQueue(env.store, ['S1']);
@@ -16233,16 +15797,10 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
     await flush();
 
     const attempt = env.store.snapshot(WS).attempts['S1-1000-1'];
-    expect(notify.attemptFailed).not.toHaveBeenCalled();
-    expectRecoveryWait(attempt, 'authority_required', 'authority');
+    expect(notify.attemptFailed).toHaveBeenCalledTimes(1);
+    expectRetryOutcome(attempt, 'authority_required');
     expect(attempt.cause).toBe('loud_fail_blocker');
     expect(attempt.cause_detail).toEqual({
-      recovery: {
-        classification: 'authority_required',
-        disposition: 'wait',
-        reason: 'authority',
-        policy_schema: 1
-      },
       reason: 'git_merge_guard',
       command: 'git merge main',
       summary: 'the session engine refused this command: git merge main'
@@ -18178,7 +17736,9 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
   });
 
   test('fails the attempt when its recorded base push is on the moved base', async () => {
+    const attemptFailed = vi.fn();
     const env = setup({
+      notify: { attemptFailed },
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase(),
@@ -18196,6 +17756,7 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     const attempt = q.attempts['S1-1000-1'];
     expect(attempt.status).toBe('failed');
     expect(attempt.cause).toBe('base_landing_detected');
+    expect(attemptFailed).toHaveBeenCalledTimes(1);
     expect(attempt.cause_detail).toEqual({
       reason: 'base_landing_detected',
       command: null
@@ -18211,10 +17772,7 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     // The queue stops and the PR verdict is never reached: a landing is not
     // laundered into a success by an open PR. The stop is `queue.hold`
     // (UI-5ym8 §3.4), not the user's `auto_advance` toggle.
-    expect(q.hold).toMatchObject({
-      kind: 'systemic',
-      cause: 'base_landing_detected'
-    });
+    expect(q).not.toHaveProperty('hold');
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
   });
 
@@ -18410,6 +17968,108 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     );
   });
 
+  test('resumes base movement twice and stops its third repetition', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      let clock = 1000;
+      const base_sha = 'a'.repeat(40);
+      const candidate_sha = 'd'.repeat(40);
+      const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
+        if (args[0] === 'cat-file') {
+          return { code: 0, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'rev-parse') {
+          if (args.includes('--abbrev-ref')) {
+            return { code: 0, stdout: 'S1\n', stderr: '' };
+          }
+          return {
+            code: 0,
+            stdout: `${args[1] === `${candidate_sha}^` ? base_sha : candidate_sha}\n`,
+            stderr: ''
+          };
+        }
+        if (args[0] === 'merge-base') {
+          return { code: 1, stdout: '', stderr: '' };
+        }
+        throw new Error(`unexpected git command: ${args.join(' ')}`);
+      });
+      /** @type {Record<string, any>} */
+      const config = {
+        S1: {
+          route: 'quick_fix',
+          status: 'open',
+          metadata: {
+            impl_review: `codex@${candidate_sha}`
+          }
+        }
+      };
+      const resolveBase = movedBase();
+      const observed_head = candidate_sha;
+      const env = setup({
+        config,
+        slots: 1,
+        now: () => clock,
+        resolveBase,
+        gitRun,
+        guardHook: guardHookWith(),
+        worktree: {
+          add: vi.fn(async () => ({
+            path: '/wt/S1',
+            branch: 'S1',
+            base_oid: base_sha
+          })),
+          observeOwnedByBead: vi.fn(async () => ({
+            ok: true,
+            present: true,
+            path: '/wt/S1',
+            branch: 'S1',
+            head_sha: observed_head
+          }))
+        }
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.runner.eventsFor('S1').emit('session_id', 'sid-base-moved');
+      await flush();
+
+      for (let count = 1; count <= 3; count++) {
+        env.runner.eventsFor('S1').emit('session_id', 'sid-base-moved');
+        await flush();
+        env.runner.finish('S1', {
+          success: true,
+          summary: `대기 · base_moved:${candidate_sha}:${base_sha}`,
+          terminal_result: { kind: 'base_moved', candidate_sha, base_sha }
+        });
+        await flush();
+        await flush();
+        if (count < 3) {
+          clock += RETRY_DELAYS_MS[0];
+          await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+          await flush();
+          expect(env.runner.settingsFor('S1').resume_session_id).toBe(
+            'sid-base-moved'
+          );
+        }
+      }
+
+      const latest = Object.values(env.store.snapshot(WS).attempts).sort(
+        (a, b) => (b.started_at ?? 0) - (a.started_at ?? 0)
+      )[0];
+      expect(env.runner.spawnOrder).toEqual(['S1', 'S1', 'S1']);
+      expect(latest).toMatchObject({
+        status: 'waiting',
+        cause_detail: {
+          summary: 'base가 반복 이동함 · 후보 ddddddd',
+          recovery: { reason: 'no_progress' }
+        },
+        retry: { base_moved_count: 3 }
+      });
+      expect(env.store.snapshot(WS).lineages).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('refuses base-moved waiting when candidate verification failed', async () => {
     const base_sha = 'a'.repeat(40);
     const candidate_sha = 'd'.repeat(40);
@@ -18603,14 +18263,13 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
       shas: [LANDED]
     });
     expect(q.attempts['S1-1000-1'].cause).toBe('base_landing_detected');
-    expect(q.hold).toMatchObject({
-      kind: 'systemic',
-      cause: 'base_landing_detected'
-    });
+    expect(q).not.toHaveProperty('hold');
   });
 
-  test('raises the systemic hold when a RELAUNCH detects the landing', async () => {
+  test('notifies once when a relaunch detects the landing', async () => {
+    const attemptFailed = vi.fn();
     const env = setup({
+      notify: { attemptFailed },
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase(),
@@ -18630,19 +18289,17 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
       attempt_id: 'S1-1000-1',
       patch: { base_drift: null, status: 'failed', cause: null }
     });
-    env.store.applyQueueHold(WS, { event: { kind: 'resume' }, now: 1000 });
-    expect(env.store.snapshot(WS).hold).toBe(null);
+    expect(env.store.snapshot(WS)).not.toHaveProperty('hold');
+
+    attemptFailed.mockClear();
 
     const res = await env.scheduler.resume(WS, 'S1-1000-1');
 
     // UI-5ym8 §3.4: the relaunch writes its own `failed` record, so the stop
     // has to be raised there too — it used to leave the queue running.
     expect(res).toMatchObject({ ok: false, reason: 'base_landing_detected' });
-    expect(env.store.snapshot(WS).hold).toMatchObject({
-      kind: 'systemic',
-      cause: 'base_landing_detected',
-      bead_ids: ['S1']
-    });
+    expect(attemptFailed).toHaveBeenCalledTimes(1);
+    expect(env.store.snapshot(WS)).not.toHaveProperty('hold');
   });
 
   test('leaves a stopped attempt stopped when the base did not move', async () => {
@@ -18798,8 +18455,48 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
   });
 
-  test('observes the base of a restart-restored paused attempt discarded by ■', async () => {
+  test('fails a discarded base landing and sends one notification across retries', async () => {
+    const attemptFailed = vi.fn();
     const env = setup({
+      config: { S1: {} },
+      notify: { attemptFailed },
+      resolveBase: movedBase(),
+      gitRun: gitFor({ reachable: [LANDED] }),
+      guardHook: guardHookWith({ 'att-discard': [pushedToBase(LANDED)] })
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-discard', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-discard',
+      patch: {
+        status: 'paused',
+        repo: '/repo',
+        base_oid: 'base-S1',
+        target_base: 'main'
+      }
+    });
+
+    const first = await env.scheduler.finalizeDiscardAttempt(WS, 'att-discard');
+    const repeated = await env.scheduler.finalizeDiscardAttempt(
+      WS,
+      'att-discard'
+    );
+
+    expect(first).toEqual({ ok: false, reason: 'base_landing_detected' });
+    expect(repeated).toEqual(first);
+    expect(env.store.snapshot(WS).attempts['att-discard']).toMatchObject({
+      status: 'failed',
+      cause: 'base_landing_detected'
+    });
+    expect(attemptFailed).toHaveBeenCalledTimes(1);
+  });
+
+  test('observes the base of a restart-restored paused attempt discarded by ■', async () => {
+    const attemptFailed = vi.fn();
+    const env = setup({
+      notify: { attemptFailed },
       config: { S1: {} },
       slots: 1,
       resolveBase: movedBase(),
@@ -18829,6 +18526,7 @@ describe('worker/scheduler post-hoc base invariant (UI-8mvc §3, UI-1xcd §4)', 
     expect(discarded).toBe(true);
     const attempt = env.store.snapshot(WS).attempts['att-paused'];
     expect(attempt.cause).toBe('base_landing_detected');
+    expect(attemptFailed).toHaveBeenCalledTimes(1);
     expect(attempt.base_drift).toEqual({
       pinned: 'base-S1',
       observed: MOVED,
@@ -21287,35 +20985,6 @@ describe('quick_fix self-review dispatch block (UI-r7or §6)', () => {
       }))
     });
     seedQueue(env.store, ['S1']);
-    env.store.recordAdmission(WS, {
-      bead_id: 'S1',
-      reason: 'worktree_stale_work',
-      stale_work: {
-        schema: 1,
-        state: 'unique',
-        cause: 'dirty_unique',
-        summary: {
-          staged_count: 1,
-          unstaged_count: 1,
-          untracked_count: 1,
-          branch_ahead: 0,
-          head_ahead: 0
-        },
-        identity_digest: 'identity-1',
-        action_id: 'action-1',
-        can_resume: false,
-        can_continue: true,
-        can_backup_fresh: true,
-        can_recheck: false,
-        identity: {
-          worktree_realpath: '/wt/S1',
-          branch: 'S1',
-          head_sha: 'a'.repeat(40),
-          base_oid: 'b'.repeat(40),
-          status_digest: 'c'.repeat(64)
-        }
-      }
-    });
     env.worktree.removeIfDiscardable = vi.fn(async () => ({
       ok: false,
       state: 'unique',
@@ -21338,18 +21007,243 @@ describe('quick_fix self-review dispatch block (UI-r7or §6)', () => {
       }
     }));
 
-    const result = await env.scheduler.staleWorkContinue(WS, {
-      bead_id: 'S1',
-      action_id: 'action-1',
-      expected_revision: env.store.snapshot(WS).revision
-    });
+    await env.scheduler.tick(WS);
 
-    expect(result.ok).toBe(true);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
     const prompt = env.runner.spawnedBead('S1').prompt;
     expect(prompt).toContain('기존 worktree를 의도적으로 채택');
     expect(prompt.indexOf('기존 worktree를 의도적으로 채택')).toBeLessThan(
       prompt.indexOf('[quick_fix self-review]')
     );
+  });
+});
+
+describe('automatic session retry selection', () => {
+  test.each(
+    [
+      ['claude', 'sonnet', 'low', true],
+      ['claude', 'sonnet', 'low', false],
+      ['codex', 'sol', 'xhigh', true],
+      ['codex', 'sol', 'xhigh', false]
+    ].flatMap((tuple) =>
+      (tuple[3]
+        ? ['none']
+        : ['none', 'continue', 'backup', 'reobserve', 'changed_identity']
+      ).map((residue) => [...tuple, residue])
+    )
+  )(
+    'retains the %s %s %s settings with a local session=%s through %s residue',
+    async (runner_name, model, effort, has_session, residue) => {
+      vi.useFakeTimers({ toFake: ['setTimeout'] });
+      try {
+        let clock = 1000;
+        /** @type {Record<string, any>} */
+        const config = {
+          S1: {
+            model,
+            effort,
+            claude_account: 'recorded@example.com',
+            codex_account: 'recorded-key'
+          }
+        };
+        const env = setup({
+          config,
+          slots: 1,
+          now: () => clock,
+          ...accountDeps(),
+          ...{
+            backupFreshResidue: vi.fn(async () => ({
+              ok: true,
+              backup_path: '/backup'
+            }))
+          },
+          resolveBase: async () => ({
+            ok: true,
+            base: 'main',
+            base_oid: 'b'.repeat(40)
+          })
+        });
+        seedQueue(env.store, ['S1']);
+        await env.scheduler.tick(WS);
+        const first = Object.keys(env.store.snapshot(WS).attempts)[0];
+        if (has_session) {
+          env.runner.eventsFor('S1').emit('session_id', 'recorded-session');
+          await flush();
+        }
+        env.runner.finish('S1', {
+          success: false,
+          reason: 'turn_failed',
+          summary: 'unspecified failure'
+        });
+        await flush();
+        await flush();
+        const observation = {
+          ok: false,
+          state: 'unique',
+          cause: 'dirty_unique',
+          owned: true,
+          identity: {
+            worktree_realpath: '/wt/S1',
+            branch: 'S1',
+            head_sha: 'a'.repeat(40),
+            base_oid: 'b'.repeat(40),
+            status_digest: 'c'.repeat(64)
+          },
+          summary: {
+            staged_count: 1,
+            unstaged_count: 0,
+            untracked_count: 0,
+            branch_ahead: 0,
+            head_ahead: 0
+          }
+        };
+        if (residue === 'continue') {
+          env.worktree.removeIfDiscardable.mockResolvedValue(observation);
+        } else if (residue === 'backup') {
+          env.worktree.removeIfDiscardable.mockResolvedValueOnce({
+            ...observation,
+            identity: {
+              ...observation.identity,
+              worktree_realpath: null,
+              head_sha: null,
+              branch_head_sha: 'a'.repeat(40)
+            }
+          });
+        } else if (residue === 'reobserve') {
+          env.worktree.removeIfDiscardable.mockResolvedValueOnce({
+            ...observation,
+            state: 'unknown'
+          });
+        } else if (residue === 'changed_identity') {
+          env.worktree.removeIfDiscardable
+            .mockResolvedValueOnce(observation)
+            .mockResolvedValue({
+              ...observation,
+              identity: { ...observation.identity, head_sha: 'd'.repeat(40) }
+            });
+        }
+        config.S1.model = runner_name === 'claude' ? 'sol' : 'sonnet';
+        config.S1.effort = 'medium';
+        config.S1.claude_account = 'changed@example.com';
+        config.S1.codex_account = 'changed-key';
+
+        clock += RETRY_DELAYS_MS[0];
+        await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+        await flush();
+
+        const latest = Object.values(env.store.snapshot(WS).attempts).find(
+          (attempt) => attempt.attempt_id !== first
+        );
+        expect(latest).toMatchObject({
+          status: 'running',
+          runner: runner_name,
+          model,
+          effort,
+          claude_account:
+            runner_name === 'claude' ? 'recorded@example.com' : null,
+          codex_account: 'recorded-key',
+          retry: { attempts: 1, origin_attempt_id: first }
+        });
+        expect(env.runner.settingsFor('S1').resume_session_id || null).toBe(
+          has_session ? 'recorded-session' : null
+        );
+        expect(env.store.snapshot(WS).lineages[0]).toMatchObject({
+          attempts: 1,
+          origin_attempt_id: first,
+          next_at: null
+        });
+        expect(env.store.snapshot(WS).attempts[first].head_oid).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  test('dispatches the same rung when the recorded session disappears before resume', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      let clock = 1000;
+      let probes = 0;
+      const env = setup({
+        config: {
+          S1: {
+            model: 'sonnet',
+            effort: 'low',
+            claude_account: 'recorded@example.com'
+          }
+        },
+        slots: 1,
+        now: () => clock,
+        ...accountDeps(),
+        resolveSessionFile: () =>
+          ++probes === 1
+            ? { locality: 'local', file: '/transcript', last_event_at: 1 }
+            : { locality: 'missing', file: null, last_event_at: null }
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.runner.eventsFor('S1').emit('session_id', 'lost-session');
+      await flush();
+      env.runner.finish('S1', {
+        success: false,
+        reason: 'turn_failed',
+        summary: 'unknown failure'
+      });
+      await flush();
+      await flush();
+      probes = 0;
+      const first = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+      clock += RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
+
+      expect(env.runner.spawnOrder).toEqual(['S1', 'S1']);
+      expect(env.runner.settingsFor('S1')).toMatchObject({
+        model: 'sonnet',
+        effort: 'low',
+        claude_account: 'recorded@example.com'
+      });
+      expect(env.runner.settingsFor('S1').resume_session_id || null).toBeNull();
+      expect(env.store.snapshot(WS).lineages[0]).toMatchObject({
+        attempts: 1,
+        origin_attempt_id: first,
+        next_at: null
+      });
+      expect(probes).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('starts another bead while an unclassified failure awaits its retry', async () => {
+    const env = setup({ config: { S1: {}, S2: {} }, slots: 1 });
+    seedQueue(env.store, ['S1', 'S2']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', {
+      success: false,
+      reason: 'turn_failed',
+      summary: 'unknown failure'
+    });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].status).toBe(
+      'retry_wait'
+    );
+    expect(env.scheduler.isRunning('S2')).toBe(true);
+    expect(env.store.snapshot(WS)).not.toHaveProperty('hold');
+  });
+
+  test('removes queue stop events and bases explicit admission only on auto advance', () => {
+    const source = fs.readFileSync(
+      new URL('./scheduler.js', import.meta.url),
+      'utf8'
+    );
+
+    expect(source).not.toMatch(/systemic_failure|env_failure|applyQueueHold/);
+    expect(source).toContain('const explicit_only = q.auto_advance !== true;');
   });
 });
 
@@ -21415,7 +21309,7 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
         origin_attempt_id: attempt_id
       }
     });
-    expect(snap.hold).toMatchObject({ kind: 'env', bead_ids: ['S1'] });
+    expect(snap).not.toHaveProperty('hold');
     expect(snap.lineages).toEqual([
       {
         bead_id: 'S1',
@@ -21438,55 +21332,9 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
 
     const snap = env.store.snapshot(WS);
     expect(snap.auto_advance).toBe(true);
-    expect(snap.hold).toBe(null);
+    expect(snap).not.toHaveProperty('hold');
     // The queue keeps going: the next bead takes the freed slot.
     expect(env.scheduler.isRunning('S2')).toBe(true);
-  });
-
-  test('a hold stops new dispatch even with auto_advance on', async () => {
-    const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
-    seedQueue(env.store, ['S2']);
-    env.store.applyQueueHold(WS, {
-      event: {
-        kind: 'systemic_failure',
-        bead_id: 'S1',
-        attempt_id: 'att-1',
-        cause: 'base_landing_detected',
-        at: 500
-      },
-      now: 500
-    });
-
-    await env.scheduler.tick(WS);
-
-    expect(env.store.snapshot(WS).auto_advance).toBe(true);
-    expect(env.scheduler.isRunning('S2')).toBe(false);
-  });
-
-  test('a released hold does not resume a user-paused queue', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    env.store.place(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      bead_id: 'S1'
-    });
-    env.store.setAutoAdvance(WS, false);
-    env.store.applyQueueHold(WS, {
-      event: {
-        kind: 'systemic_failure',
-        bead_id: 'S1',
-        attempt_id: 'att-1',
-        cause: 'verify_red',
-        at: 500
-      },
-      now: 500
-    });
-    const since = /** @type {any} */ (env.store.snapshot(WS).hold).since;
-
-    await env.scheduler.resumeQueueHold(WS, { since });
-
-    expect(env.store.snapshot(WS).hold).toBe(null);
-    expect(env.store.snapshot(WS).auto_advance).toBe(false);
-    expect(env.scheduler.isRunning('S1')).toBe(false);
   });
 
   test('parks a successful session that left awaiting_user', async () => {
@@ -21514,7 +21362,7 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
         bead_status: 'in_progress'
       }
     });
-    expect(snap.hold).toBe(null);
+    expect(snap).not.toHaveProperty('hold');
     expect(snap.auto_advance).toBe(true);
   });
 
@@ -21533,10 +21381,10 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
     await flush();
 
     const attempt = env.store.snapshot(WS).attempts[attempt_id];
-    expect(attempt.status).toBe('waiting');
+    expect(attempt.status).toBe('retry_wait');
     expect(attempt.cause).toBe('session_ended_unresolved');
     expect(attempt.awaiting_user_present).toBe(false);
-    expectRecoveryWait(attempt, 'finished_without_result_line');
+    expectRetryOutcome(attempt, 'finished_without_result_line');
   });
 
   /**
@@ -21851,7 +21699,7 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
 
       const snap = env.store.snapshot(WS);
       expect(snap.lineages).toEqual([]);
-      expect(snap.hold).toBe(null);
+      expect(snap).not.toHaveProperty('hold');
       expect(Object.keys(snap.attempts).length).toBe(1);
 
       // Nothing is due any more, so the pass leaves no timer behind: the
@@ -21960,119 +21808,43 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
     }
   });
 
-  test('retryQueueHoldNow refuses a since that no longer matches', async () => {
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      verify: ghDownVerifier()
-    });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    env.runner.finish('S1', { success: true });
-    await flush();
-    await flush();
+  test('closes the lineage after a delivered retry', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      let clock = 1000;
+      const env = setup({
+        now: () => clock,
+        config: { S1: {} },
+        slots: 1,
+        verify: ghDownVerifier()
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.runner.finish('S1', { success: true });
+      await flush();
+      await flush();
+      /** @type {any} */ (env.verify).verifyPrSubmitted = vi.fn(async () => ({
+        ok: true,
+        reason: 'ok',
+        pr_url: 'https://github.com/o/r/pull/1'
+      }));
 
-    const result = await env.scheduler.retryQueueHoldNow(WS, { since: 1 });
+      clock += RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
+      env.runner.finish('S1', { success: true });
+      await flush();
+      await flush();
 
-    expect(result).toEqual({ ok: false, reason: 'hold_changed' });
-    expect(env.store.snapshot(WS).lineages[0].next_at).toBe(
-      1000 + RETRY_DELAYS_MS[0]
-    );
-  });
-
-  test('retryQueueHoldNow collapses the backoff and redispatches', async () => {
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      verify: ghDownVerifier()
-    });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    const first = Object.keys(env.store.snapshot(WS).attempts)[0];
-    env.runner.finish('S1', { success: true });
-    await flush();
-    await flush();
-    const since = /** @type {any} */ (env.store.snapshot(WS).hold).since;
-
-    const result = await env.scheduler.retryQueueHoldNow(WS, { since });
-
-    expect(result).toEqual({ ok: true });
-    expect(Object.keys(env.store.snapshot(WS).attempts).length).toBe(2);
-    expect(env.store.snapshot(WS).attempts[first].status).toBe('superseded');
-  });
-
-  test('resumeQueueHold refuses a since that no longer matches', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    env.store.applyQueueHold(WS, {
-      event: {
-        kind: 'systemic_failure',
-        bead_id: 'S1',
-        attempt_id: 'att-1',
-        cause: 'verify_red',
-        at: 500
-      },
-      now: 500
-    });
-
-    const result = await env.scheduler.resumeQueueHold(WS, { since: 499 });
-
-    expect(result).toEqual({ ok: false, reason: 'hold_changed' });
-    expect(env.store.snapshot(WS).hold).not.toBe(null);
-  });
-
-  test('resumeQueueHold lifts the fence off a held bead and redispatches', async () => {
-    const env = setup({
-      config: { S1: { ready_follows_status: true } },
-      slots: 1,
-      verify: ghDownVerifier()
-    });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    const first = Object.keys(env.store.snapshot(WS).attempts)[0];
-    env.runner.finish('S1', { success: true });
-    await flush();
-    await flush();
-    const since = /** @type {any} */ (env.store.snapshot(WS).hold).since;
-
-    const result = await env.scheduler.resumeQueueHold(WS, { since });
-
-    const snap = env.store.snapshot(WS);
-    expect(result).toEqual({ ok: true });
-    expect(snap.hold).toBe(null);
-    expect(snap.lineages).toEqual([]);
-    expect(snap.attempts[first].dismissed_at).toEqual(1000);
-    expect(Object.keys(snap.attempts).length).toBe(2);
-  });
-
-  test('a delivered retry releases the env hold', async () => {
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      verify: ghDownVerifier()
-    });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    env.runner.finish('S1', { success: true });
-    await flush();
-    await flush();
-    const since = /** @type {any} */ (env.store.snapshot(WS).hold).since;
-    /** @type {any} */ (env.verify).verifyPrSubmitted = vi.fn(async () => ({
-      ok: true,
-      reason: 'ok',
-      pr_url: 'https://github.com/o/r/pull/1'
-    }));
-
-    await env.scheduler.retryQueueHoldNow(WS, { since });
-    env.runner.finish('S1', { success: true });
-    await flush();
-    await flush();
-
-    const snap = env.store.snapshot(WS);
-    expect(snap.hold).toBe(null);
-    expect(snap.lineages).toEqual([]);
-    expect(snap.pr_wait.map((/** @type {any} */ e) => e.bead_id)).toEqual([
-      'S1'
-    ]);
+      const snap = env.store.snapshot(WS);
+      expect(snap).not.toHaveProperty('hold');
+      expect(snap.lineages).toEqual([]);
+      expect(snap.pr_wait.map((/** @type {any} */ e) => e.bead_id)).toEqual([
+        'S1'
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('finalizing a discarded retry_wait attempt closes its env lineage', async () => {
@@ -22100,7 +21872,7 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
     expect(result).toEqual({ ok: true });
     expect(snap.attempts[attempt_id].status).toBe('discarded');
     expect(snap.lineages).toEqual([]);
-    expect(snap.hold).toBe(null);
+    expect(snap).not.toHaveProperty('hold');
   });
 
   test('closes the env lineage on a replayed retry_wait discard', async () => {
@@ -22130,7 +21902,7 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
     const snap = env.store.snapshot(WS);
     expect(result).toEqual({ ok: true });
     expect(snap.lineages).toEqual([]);
-    expect(snap.hold).toBe(null);
+    expect(snap).not.toHaveProperty('hold');
   });
 
   test('finalizing a discarded failed attempt leaves the lineage untouched', async () => {
@@ -22153,7 +21925,7 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
 
     const snap = env.store.snapshot(WS);
     expect(snap.lineages).toMatchObject([{ bead_id: 'S1', attempts: 1 }]);
-    expect(snap.hold).toMatchObject({ kind: 'env', bead_ids: ['S1'] });
+    expect(snap).not.toHaveProperty('hold');
   });
 });
 
@@ -22179,7 +21951,7 @@ describe('scheduler 실패 계층 회귀 (UI-5ym8 impl 리뷰)', () => {
       cause: 'spawn_failed',
       retry: { cause: 'spawn_failed', attempts: 1, max: 3 }
     });
-    expect(snap.hold).toMatchObject({ kind: 'env', bead_ids: ['S1'] });
+    expect(snap).not.toHaveProperty('hold');
   });
 
   test('a codex_home_prepare_failed refusal opens the same ladder', async () => {
@@ -22200,50 +21972,58 @@ describe('scheduler 실패 계층 회귀 (UI-5ym8 impl 리뷰)', () => {
 
     const snap = env.store.snapshot(WS);
     expect(snap.attempts['S1-1000-1'].status).toBe('retry_wait');
-    expect(snap.hold).toMatchObject({ kind: 'env' });
+    expect(snap).not.toHaveProperty('hold');
   });
 
-  test('an aborted retry defers the rung instead of spending it', async () => {
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      verify: {
-        verifyPrSubmitted: vi.fn(async () => ({
-          ok: false,
-          reason: 'gh_observation_failed',
-          pr_url: null
-        }))
-      }
-    });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    const first = Object.keys(env.store.snapshot(WS).attempts)[0];
-    env.runner.finish('S1', { success: true });
-    await flush();
-    await flush();
-    const since = /** @type {any} */ (env.store.snapshot(WS).hold).since;
-    // The bd re-read at dispatch refuses: `dispatch` returns normally with no
-    // new attempt, which is exactly the case that used to burn the rung.
-    env.bd.statuses.S1 = 'in_progress';
-    /** @type {any} */ (env.bd).snapshotBead = async () => ({
-      ready: false,
-      blocked: false,
-      repo: '/repo',
-      target_base: 'main',
-      status: 'in_progress',
-      labels: [],
-      deps: []
-    });
+  test('defers the rung when dispatch refuses', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      let clock = 1000;
+      const env = setup({
+        now: () => clock,
+        config: { S1: {} },
+        slots: 1,
+        verify: {
+          verifyPrSubmitted: vi.fn(async () => ({
+            ok: false,
+            reason: 'gh_observation_failed',
+            pr_url: null
+          }))
+        }
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const first = Object.keys(env.store.snapshot(WS).attempts)[0];
+      env.runner.finish('S1', { success: true });
+      await flush();
+      await flush();
+      // The bd re-read at dispatch refuses: `dispatch` returns normally with no
+      // new attempt, which is exactly the case that used to burn the rung.
+      env.bd.statuses.S1 = 'in_progress';
+      /** @type {any} */ (env.bd).snapshotBead = async () => ({
+        ready: false,
+        blocked: false,
+        repo: '/repo',
+        target_base: 'main',
+        status: 'in_progress',
+        labels: [],
+        deps: []
+      });
 
-    await env.scheduler.retryQueueHoldNow(WS, { since });
+      clock += RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
 
-    const snap = env.store.snapshot(WS);
-    expect(Object.keys(snap.attempts)).toEqual([first]);
-    expect(snap.lineages[0]).toMatchObject({ attempts: 1 });
-    // Deferred, not spent: `next_at` moved off the past so the timer cannot
-    // busy-loop, and the ladder still has all three rungs.
-    expect(snap.lineages[0].next_at).toBe(1000 + RETRY_DELAYS_MS[0]);
-    expect(snap.hold).toMatchObject({ kind: 'env' });
+      const snap = env.store.snapshot(WS);
+      expect(Object.keys(snap.attempts)).toEqual([first]);
+      expect(snap.lineages[0]).toMatchObject({ attempts: 1 });
+      // Deferred, not spent: `next_at` moved off the past so the timer cannot
+      // busy-loop, and the ladder still has all three rungs.
+      expect(snap.lineages[0].next_at).toBe(clock + RETRY_DELAYS_MS[0]);
+      expect(snap).not.toHaveProperty('hold');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('an aborted parked resume leaves the transition unspent', async () => {
@@ -22293,84 +22073,99 @@ describe('scheduler 실패 계층 회귀 (UI-5ym8 impl 리뷰)', () => {
     );
   });
 
-  test('a retry that parks closes the lineage and releases the hold', async () => {
-    /** @type {{ ok: boolean, reason: string, pr_url: null, bead_status?: string, awaiting_user?: string }} */
-    let verdict = {
-      ok: false,
-      reason: 'gh_observation_failed',
-      pr_url: null
-    };
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      verify: { verifyPrSubmitted: vi.fn(async () => verdict) }
-    });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    env.runner.finish('S1', { success: true });
-    await flush();
-    await flush();
-    const since = /** @type {any} */ (env.store.snapshot(WS).hold).since;
-    expect(env.store.snapshot(WS).lineages).toHaveLength(1);
+  test('closes the lineage when a retry parks', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      let clock = 1000;
+      /** @type {{ ok: boolean, reason: string, pr_url: null, bead_status?: string, awaiting_user?: string }} */
+      let verdict = {
+        ok: false,
+        reason: 'gh_observation_failed',
+        pr_url: null
+      };
+      const env = setup({
+        now: () => clock,
+        config: { S1: {} },
+        slots: 1,
+        verify: { verifyPrSubmitted: vi.fn(async () => verdict) }
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.runner.finish('S1', { success: true });
+      await flush();
+      await flush();
+      expect(env.store.snapshot(WS).lineages).toHaveLength(1);
 
-    verdict = {
-      ok: false,
-      reason: 'no_pr',
-      pr_url: null,
-      bead_status: 'in_progress',
-      awaiting_user: '스펙 승인 대기'
-    };
-    await env.scheduler.retryQueueHoldNow(WS, { since });
-    env.runner.finish('S1', { success: true });
-    await flush();
-    await flush();
+      verdict = {
+        ok: false,
+        reason: 'no_pr',
+        pr_url: null,
+        bead_status: 'in_progress',
+        awaiting_user: '스펙 승인 대기'
+      };
+      clock += RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
+      env.runner.finish('S1', { success: true });
+      await flush();
+      await flush();
 
-    // The ladder answered "not the environment": the lineage closes and the
-    // env hold with nothing left on it releases itself.
-    const snap = env.store.snapshot(WS);
-    expect(
-      Object.values(snap.attempts).some(
-        (/** @type {any} */ a) => a.status === 'parked'
-      )
-    ).toBe(true);
-    expect(snap.lineages).toEqual([]);
-    expect(snap.hold).toBe(null);
+      // A parked outcome closes this bead's retry lineage.
+      const snap = env.store.snapshot(WS);
+      expect(
+        Object.values(snap.attempts).some(
+          (/** @type {any} */ a) => a.status === 'parked'
+        )
+      ).toBe(true);
+      expect(snap.lineages).toEqual([]);
+      expect(snap).not.toHaveProperty('hold');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  test('a retry that fails individually closes the lineage too', async () => {
-    /** @type {any} */
-    let verdict = {
-      ok: false,
-      reason: 'gh_observation_failed',
-      pr_url: null
-    };
-    const env = setup({
-      config: { S1: {} },
-      slots: 1,
-      verify: { verifyPrSubmitted: vi.fn(async () => verdict) }
-    });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    env.runner.finish('S1', { success: true });
-    await flush();
-    await flush();
-    const since = /** @type {any} */ (env.store.snapshot(WS).hold).since;
+  test('closes the lineage after an individual retry failure', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      let clock = 1000;
+      /** @type {any} */
+      let verdict = {
+        ok: false,
+        reason: 'gh_observation_failed',
+        pr_url: null
+      };
+      const env = setup({
+        now: () => clock,
+        config: { S1: {} },
+        slots: 1,
+        verify: { verifyPrSubmitted: vi.fn(async () => verdict) }
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.runner.finish('S1', { success: true });
+      await flush();
+      await flush();
 
-    verdict = {
-      ok: false,
-      reason: 'no_pr',
-      pr_url: null,
-      bead_status: 'in_progress',
-      awaiting_user: null
-    };
-    await env.scheduler.retryQueueHoldNow(WS, { since });
-    env.runner.finish('S1', { success: true });
-    await flush();
-    await flush();
+      verdict = {
+        ok: false,
+        reason: 'pr_branch_mismatch',
+        pr_url: null,
+        bead_status: 'in_progress',
+        awaiting_user: null
+      };
+      clock += RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
+      env.runner.finish('S1', { success: true });
+      await flush();
+      await flush();
 
-    const snap = env.store.snapshot(WS);
-    expect(snap.lineages).toEqual([]);
-    expect(snap.hold).toBe(null);
+      const snap = env.store.snapshot(WS);
+      expect(snap.lineages).toEqual([]);
+      expect(snap).not.toHaveProperty('hold');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -22466,7 +22261,7 @@ describe('scheduler bead timeline (record-timeline-retention §5)', () => {
     ]);
   });
 
-  test('records the recovery waiting summary without an attempt_failed event', async () => {
+  test('records the scheduled retry without an attempt_failed event', async () => {
     const timeline = recorder();
     const env = setup({ timeline, config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
@@ -22479,13 +22274,13 @@ describe('scheduler bead timeline (record-timeline-retention §5)', () => {
 
     const failed = ofKind(timeline.events, 'attempt_failed');
     expect(failed).toEqual([]);
-    const ended = ofKind(timeline.events, 'session_ended');
+    const ended = ofKind(timeline.events, 'attempt_retry');
     expect(ended).toHaveLength(1);
     expect(ended[0]).toMatchObject({
       bead_id: 'S1',
       attempt_id,
-      seq: 'waiting',
-      summary: '대기 · recovery:unclassified — session_failed:subtype'
+      seq: 1,
+      summary: expect.stringContaining('1/3')
     });
   });
 
@@ -22572,8 +22367,10 @@ describe('scheduler bead timeline (record-timeline-retention §5)', () => {
     await flush();
     await flush();
 
-    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe('waiting');
-    expectRecoveryWait(
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe(
+      'retry_wait'
+    );
+    expectRetryOutcome(
       env.store.snapshot(WS).attempts[attempt_id],
       'unknown_error'
     );
@@ -22890,7 +22687,7 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
 
     expect(settle).not.toHaveBeenCalled();
     expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
-      status: 'waiting',
+      status: 'retry_wait',
       cause: 'session_failed:reported_failure',
       cause_detail: {
         summary: '실패 · 동기화 충돌',
@@ -22902,7 +22699,7 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
       bead_id: 'S1',
       target_base: 'release'
     });
-    expectRecoveryWait(
+    expectRetryOutcome(
       env.store.snapshot(WS).attempts['S1-1000-1'],
       'past_failure_line'
     );
@@ -22997,9 +22794,9 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
     });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
-    env.store.applyQueueHold(WS, {
+    env.store.applyRetryEvent(WS, {
       event: {
-        kind: 'env_failure',
+        kind: 'retry_scheduled',
         bead_id: 'S1',
         attempt_id: 'prior',
         cause: 'verify_failed:gh_observation_failed',
@@ -23016,7 +22813,7 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
     await flush();
 
     expect(env.store.snapshot(WS).lineages).toEqual([]);
-    expect(env.store.snapshot(WS).hold).toBe(null);
+    expect(env.store.snapshot(WS)).not.toHaveProperty('hold');
   });
 
   test('records one session_ended line and no attempt_failed', async () => {
@@ -23091,10 +22888,10 @@ describe('scheduler prerequisite wait (선행 대기 계층 §4)', () => {
     await flush();
 
     expect(env.store.snapshot(WS).attempts['S1-1000-1']).toMatchObject({
-      status: 'waiting',
+      status: 'retry_wait',
       cause: 'session_ended_unresolved'
     });
-    expectRecoveryWait(
+    expectRetryOutcome(
       env.store.snapshot(WS).attempts['S1-1000-1'],
       'finished_without_result_line'
     );
@@ -23979,7 +23776,7 @@ describe('scheduler bench cells (preset-compare §4.4·§4.5·§4.6)', () => {
     expect(
       env.bd.calls.filter((call) => call.method === 'closeWithReason')
     ).toEqual([]);
-    expectRecoveryWait(
+    expectRetryOutcome(
       env.store.snapshot(WS).attempts['S1-1000-1'],
       'unknown_error'
     );
@@ -24286,315 +24083,6 @@ describe('scheduler records the guard mirror and its deferrals (guard-hook-bypas
       reason: 'hook_bypass_blocked',
       command: 'git -c core.hooksPath=/dev/null diff',
       confirmed_by: 'tool_result'
-    });
-  });
-});
-
-describe('↻ 이어하기가 체계적 정지를 함께 푼다 (UI-hhju §3.1)', () => {
-  /**
-   * The newest implementation attempt recorded for one bead — the id a tile's ↻
-   * would carry.
-   *
-   * @param {any} store
-   * @param {string} bead_id
-   * @returns {string}
-   */
-  function latestAttemptId(store, bead_id) {
-    const attempts = Object.values(store.snapshot(WS).attempts);
-    const mine = attempts.filter(
-      (/** @type {any} */ a) => a && a.bead_id === bead_id
-    );
-    return /** @type {any} */ (mine[mine.length - 1]).attempt_id;
-  }
-
-  /**
-   * Dispatch one bead, record its session, fail it, and stop the queue ON that
-   * attempt — the state a guard kill leaves behind.
-   *
-   * @param {ReturnType<typeof setup>} env
-   * @param {string} bead_id
-   * @returns {Promise<string>} The halting attempt id.
-   */
-  async function failAndHalt(env, bead_id) {
-    env.runner.eventsFor(bead_id).emit('session_id', `sid-${bead_id}`);
-    env.runner.finish(bead_id, { success: false, reason: 'subtype', exit: 1 });
-    await flush();
-    await flush();
-    const attempt_id = latestAttemptId(env.store, bead_id);
-    env.store.applyQueueHold(WS, {
-      event: {
-        kind: 'systemic_failure',
-        bead_id,
-        attempt_id,
-        cause: 'loud_fail_blocker',
-        at: 1000
-      },
-      now: 1000
-    });
-    return attempt_id;
-  }
-
-  test('resuming the halting attempt clears the systemic hold', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    const halting = await failAndHalt(env, 'S1');
-
-    const result = await env.scheduler.resume(WS, halting);
-
-    const snap = env.store.snapshot(WS);
-    expect(result.ok).toBe(true);
-    expect(snap.hold).toBe(null);
-    expect(snap.lineages).toEqual([]);
-    expect(snap.attempts[String(result.attempt_id)]).toMatchObject({
-      status: 'running',
-      resumed_from: halting
-    });
-  });
-
-  test('leaves the halting attempt undismissed when its child took over', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    const halting = await failAndHalt(env, 'S1');
-
-    await env.scheduler.resume(WS, halting);
-
-    expect(env.store.snapshot(WS).attempts[halting].dismissed_at).toBe(null);
-  });
-
-  test('resuming a descendant of the halting attempt clears the hold', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    const halting = await failAndHalt(env, 'S1');
-    const first_child = String(
-      (await env.scheduler.resume(WS, halting)).attempt_id
-    );
-    // The hold is re-armed on the ORIGINAL attempt: a stop that predates this
-    // change and was already continued once.
-    env.runner.eventsFor('S1').emit('session_id', 'sid-child');
-    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
-    await flush();
-    await flush();
-    env.store.applyQueueHold(WS, {
-      event: {
-        kind: 'systemic_failure',
-        bead_id: 'S1',
-        attempt_id: halting,
-        cause: 'loud_fail_blocker',
-        at: 1000
-      },
-      now: 1000
-    });
-
-    const result = await env.scheduler.resume(WS, first_child);
-
-    expect(result.ok).toBe(true);
-    expect(env.store.snapshot(WS).hold).toBe(null);
-  });
-
-  test('keeps the hold when the halting attempt record is missing', async () => {
-    const base_store = makeQueueStore();
-    /** @type {string|null} */
-    let hidden = null;
-    const store = {
-      ...base_store,
-      /** @param {string} workspace */
-      snapshot(workspace) {
-        const snap = base_store.snapshot(workspace);
-        if (hidden === null) {
-          return snap;
-        }
-        const attempts = { ...snap.attempts };
-        delete attempts[hidden];
-        return { ...snap, attempts };
-      }
-    };
-    const env = setup({ config: { S1: {} }, slots: 1, store });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    const halting = await failAndHalt(env, 'S1');
-    const first_child = String(
-      (await env.scheduler.resume(WS, halting)).attempt_id
-    );
-    env.runner.eventsFor('S1').emit('session_id', 'sid-child');
-    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
-    await flush();
-    await flush();
-    base_store.applyQueueHold(WS, {
-      event: {
-        kind: 'systemic_failure',
-        bead_id: 'S1',
-        attempt_id: halting,
-        cause: 'loud_fail_blocker',
-        at: 1000
-      },
-      now: 1000
-    });
-    // The child still points at the halting attempt, but the record itself
-    // has left the live map — a broken lineage (spec §3.1 condition 4).
-    hidden = halting;
-
-    const result = await env.scheduler.resume(WS, first_child);
-
-    expect(result.ok).toBe(true);
-    expect(base_store.snapshot(WS).hold).toMatchObject({ kind: 'systemic' });
-  });
-
-  test('keeps the hold when another bead is resumed', async () => {
-    const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
-    seedQueue(env.store, ['S1', 'S2']);
-    await env.scheduler.tick(WS);
-    await failAndHalt(env, 'S1');
-    env.runner.eventsFor('S2').emit('session_id', 'sid-S2');
-    env.runner.finish('S2', { success: false, reason: 'subtype', exit: 1 });
-    await flush();
-    await flush();
-    const other = latestAttemptId(env.store, 'S2');
-
-    const result = await env.scheduler.resume(WS, other);
-
-    expect(result.ok).toBe(true);
-    expect(env.store.snapshot(WS).hold).toMatchObject({ kind: 'systemic' });
-  });
-
-  test('keeps the hold when a same-bead attempt outside the lineage is resumed', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    const halting = await failAndHalt(env, 'S1');
-    const stranger = 'S1-stranger';
-    env.store.appendAttempt(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      attempt: { attempt_id: stranger, bead_id: 'S1' }
-    });
-    env.store.updateAttempt(WS, {
-      attempt_id: stranger,
-      patch: {
-        status: 'failed',
-        session_id: 'sid-stranger',
-        repo: env.store.snapshot(WS).attempts[halting].repo,
-        runner: 'claude',
-        exec_values: env.store.snapshot(WS).attempts[halting].exec_values,
-        finished_at: 900
-      }
-    });
-
-    const result = await env.scheduler.resume(WS, stranger);
-
-    expect(result.ok).toBe(true);
-    expect(env.store.snapshot(WS).hold).toMatchObject({ kind: 'systemic' });
-  });
-
-  test('keeps the hold on an automatic provider resume', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    const halting = await failAndHalt(env, 'S1');
-
-    const result = await env.scheduler.resume(WS, halting, {
-      continuation: 'auto',
-      provider_auto_resume: true,
-      auto_resume_kind: 'provider_outage'
-    });
-
-    expect(result.ok).toBe(true);
-    expect(env.store.snapshot(WS).hold).toMatchObject({ kind: 'systemic' });
-  });
-
-  test('keeps the hold when the resumed session fails to spawn', async () => {
-    let spawns = 0;
-    /** @type {ReturnType<typeof setup>} */
-    let env;
-    env = setup({
-      config: { S1: {} },
-      slots: 1,
-      makeRunner: (/** @type {string} */ name) => {
-        const inner = env.runner.factory(name);
-        return {
-          name,
-          spawn: (/** @type {any[]} */ ...args) => {
-            spawns += 1;
-            if (spawns > 1) {
-              throw new Error('spawn failed');
-            }
-            return /** @type {any} */ (inner).spawn(...args);
-          }
-        };
-      }
-    });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    const halting = await failAndHalt(env, 'S1');
-
-    const result = await env.scheduler.resume(WS, halting);
-
-    expect(result.ok).toBe(false);
-    expect(env.store.snapshot(WS).hold).toMatchObject({ kind: 'systemic' });
-  });
-
-  test('keeps another recovery-wait bead fenced after the lineage ↻', async () => {
-    const env = setup({
-      config: {
-        S1: { ready_follows_status: true },
-        S2: { ready_follows_status: true }
-      },
-      slots: 2
-    });
-    seedQueue(env.store, ['S1', 'S2']);
-    await env.scheduler.tick(WS);
-    const halting = await failAndHalt(env, 'S1');
-    env.runner.eventsFor('S2').emit('session_id', 'sid-S2');
-    env.runner.finish('S2', { success: false, reason: 'subtype', exit: 1 });
-    await flush();
-    await flush();
-    const held = latestAttemptId(env.store, 'S2');
-    env.store.applyQueueHold(WS, {
-      event: {
-        kind: 'systemic_failure',
-        bead_id: 'S2',
-        attempt_id: held,
-        cause: 'loud_fail_blocker',
-        at: 1000
-      },
-      now: 1000
-    });
-
-    await env.scheduler.resume(WS, halting);
-
-    const snap = env.store.snapshot(WS);
-    expect(snap.hold).toBe(null);
-    expect(snap.attempts[held].dismissed_at).toBeNull();
-    expectRecoveryWait(snap.attempts[held], 'unknown_error');
-    expect(latestAttemptId(env.store, 'S2')).toBe(held);
-  });
-
-  test('keeps a legacy hold with no halting attempt recorded', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    env.runner.eventsFor('S1').emit('session_id', 'sid-S1');
-    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
-    await flush();
-    await flush();
-    const halting = latestAttemptId(env.store, 'S1');
-    env.store.applyQueueHold(WS, {
-      event: {
-        kind: 'systemic_failure',
-        bead_id: 'S1',
-        cause: 'loud_fail_blocker',
-        at: 1000
-      },
-      now: 1000
-    });
-
-    const result = await env.scheduler.resume(WS, halting);
-
-    expect(result.ok).toBe(true);
-    expect(env.store.snapshot(WS).hold).toMatchObject({
-      kind: 'systemic',
-      halted_by_attempt_id: null
     });
   });
 });

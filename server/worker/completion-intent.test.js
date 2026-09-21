@@ -17,8 +17,7 @@ import {
   createCompletionIntentCoordinator,
   decideCompletionAction,
   foldNeedsHumanReason,
-  migrateStoredNeedsHumanReason,
-  needsHumanHoldKind
+  migrateStoredNeedsHumanReason
 } from './completion-intent.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createQueueStore } from './queue-store.js';
@@ -528,7 +527,7 @@ describe('completion verify hold', () => {
       failures: {},
       waiting: null
     });
-    expect(store.snapshot(DRIVER_WS).hold).toBeNull();
+    expect(store.snapshot(DRIVER_WS)).not.toHaveProperty('hold');
   });
 });
 
@@ -832,17 +831,16 @@ describe('worker/completion-intent decisions', () => {
     );
   });
 
-  test('stops a post-merge verify red for a human instead of probing', () => {
+  test('holds a failed pre-merge verification without terminalizing', () => {
     const action = decideCompletionAction({
       auto_merge: true,
       intent: intent(),
-      fact: { state: 'verify_red' }
+      fact: { state: 'verify_hold' }
     });
 
     expect(action).toEqual({
-      kind: 'needs_human',
-      reason: 'verify_red',
-      terminal: true
+      kind: 'hold',
+      fact: { state: 'verify_hold' }
     });
   });
 
@@ -915,6 +913,70 @@ describe('worker/completion-intent decisions', () => {
   });
 });
 
+describe('verify command environment retries', () => {
+  test.each(['verify_cmd_spawn_error', 'verify_cmd_timeout'])(
+    're-evaluates %s once after five minutes and holds that head',
+    async (reason) => {
+      const store = seededCompletionStore();
+      let clock = 1000;
+      const completionGate = vi.fn(async () =>
+        redGate({
+          verdict: { enabled: false, tier: 'verify', reason },
+          evidence: { verify: { reason, output_tail: 'environment error' } }
+        })
+      );
+      const hold = vi.fn(async () => {});
+      const driver = actionDriver(store, {
+        prActions: { completionGate },
+        notify: { needsHuman: vi.fn(), hold },
+        now: () => clock
+      });
+      const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+      const fact = await driver.observe('UI-root', current);
+
+      await driver.onAction(
+        'UI-root',
+        { kind: 'needs_human', reason, fact },
+        current
+      );
+
+      const scheduled = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+      expect(scheduled).toMatchObject({
+        phase: 'retrying',
+        auto_resolution: { class: 'retry', attempts: 0, next_at: 301000 }
+      });
+      expect(
+        decideCompletionAction({
+          auto_merge: true,
+          intent: scheduled,
+          fact,
+          now: 300999
+        })
+      ).toBeNull();
+      await driver.observe('UI-root', scheduled);
+      expect(completionGate).toHaveBeenCalledTimes(1);
+
+      clock = 301000;
+      await driver.onAction('UI-root', { kind: 'retry_failed_op' }, scheduled);
+
+      const held = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+      expect(completionGate).toHaveBeenCalledTimes(2);
+      expect(held).toMatchObject({
+        phase: 'holding',
+        terminal_reason: null,
+        auto_resolution: null,
+        hold: { reason }
+      });
+      expect(hold).toHaveBeenCalledTimes(1);
+      const again = await driver.observe('UI-root', held);
+      expect(again.failure_key).toMatchObject({ stage: 'verify', reason });
+      await driver.onAction('UI-root', { kind: 'hold', fact: again }, held);
+      expect(hold).toHaveBeenCalledTimes(1);
+      expect(store.snapshot(DRIVER_WS)).not.toHaveProperty('hold');
+    }
+  );
+});
+
 describe('worker/completion-intent action driver', () => {
   test('binds a verify failure key to the gate subject base authority', async () => {
     const store = seededCompletionStore();
@@ -935,13 +997,13 @@ describe('worker/completion-intent action driver', () => {
     const fact = await driver.observe('UI-root', current);
 
     expect(fact).toMatchObject({
-      state: 'verify_red',
+      state: 'verify_hold',
       failure_key: { base_sha },
       gated: { base_sha, subject: { base_sha } }
     });
   });
 
-  test('terminalizes a post-merge verify red without consulting the policy table', async () => {
+  test('holds a failed verify command immediately and comments once', async () => {
     const store = seededCompletionStore();
     const comment = vi.fn(commentSpy(() => undefined));
     const driver = actionDriver(store, { bd: { comment } });
@@ -964,29 +1026,23 @@ describe('worker/completion-intent action driver', () => {
     expect(
       store.snapshot(DRIVER_WS).completion_intents['UI-root']
     ).toMatchObject({
-      phase: 'needs_human',
+      phase: 'holding',
       auto_resolution: null,
-      terminal_reason: {
-        reason: 'verify_red',
-        stage: 'coordinator',
+      terminal_reason: null,
+      hold: {
+        reason: 'verify_cmd_failed',
         log_path: '/state/verify.log',
-        op_id: 'verify',
+        operation_id: 'verify',
         comment_at: expect.any(Number)
       }
     });
     expect(comment).toHaveBeenCalledTimes(1);
-    expect(comment.mock.calls[0][1]).toContain(
-      '- 원인: verify_red — 머지 후 검증이 실패했습니다.'
-    );
+    expect(comment.mock.calls[0][1]).toContain('- 원인: verify_cmd_failed');
     // UI-5ym8 §3.4: a post-merge pipeline failure raises the SYSTEMIC hold.
-    expect(store.snapshot(DRIVER_WS).hold).toMatchObject({
-      kind: 'systemic',
-      cause: 'verify_red',
-      bead_ids: ['UI-root']
-    });
+    expect(store.snapshot(DRIVER_WS)).not.toHaveProperty('hold');
   });
 
-  test('records needs_human on the root bead timeline', async () => {
+  test('records the verification hold on the root Bead timeline', async () => {
     const store = seededCompletionStore();
     /** @type {any[]} */
     const events = [];
@@ -1009,9 +1065,9 @@ describe('worker/completion-intent action driver', () => {
 
     expect(events).toContainEqual({
       bead_id: 'UI-root',
-      kind: 'needs_human',
-      seq: 'verify_red',
-      summary: '확인 필요 — verify_red'
+      kind: 'merge_step',
+      seq: `hold:${current.subject.head_sha}`,
+      summary: '머지 보류 — 검증 실패 · verify_cmd_failed'
     });
   });
 
@@ -1042,11 +1098,11 @@ describe('worker/completion-intent action driver', () => {
     expect(
       timeline
         .readTimeline('UI-root')
-        .filter((event) => event.kind === 'needs_human')
+        .filter((event) => event.kind === 'merge_step')
     ).toHaveLength(1);
   });
 
-  test('terminalizes when no timeline is injected', async () => {
+  test('holds verification when no timeline is injected', async () => {
     const store = seededCompletionStore();
     const driver = actionDriver(store, {
       bd: { comment: vi.fn(commentSpy()) }
@@ -1065,11 +1121,11 @@ describe('worker/completion-intent action driver', () => {
     await driver.onAction('UI-root', action, current);
 
     expect(store.snapshot(DRIVER_WS).completion_intents['UI-root'].phase).toBe(
-      'needs_human'
+      'holding'
     );
   });
 
-  test('terminalizes when the timeline append fails', async () => {
+  test('holds verification when the timeline append fails', async () => {
     const store = seededCompletionStore();
     const driver = actionDriver(store, {
       bd: { comment: vi.fn(commentSpy()) },
@@ -1091,7 +1147,7 @@ describe('worker/completion-intent action driver', () => {
     await driver.onAction('UI-root', action, current);
 
     expect(store.snapshot(DRIVER_WS).completion_intents['UI-root'].phase).toBe(
-      'needs_human'
+      'holding'
     );
   });
 
@@ -1110,7 +1166,7 @@ describe('worker/completion-intent action driver', () => {
       }
     });
 
-    expect(store.snapshot(DRIVER_WS).hold ?? null).toBeNull();
+    expect(store.snapshot(DRIVER_WS)).not.toHaveProperty('hold');
   });
 
   test('comments one failure once across a [머지] re-click', async () => {
@@ -2791,7 +2847,7 @@ describe('worker/completion-intent auto-resolution driver (UI-hk74 §4/§5)', ()
 
     expect(
       store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    ).toMatchObject({ phase: 'gating', auto_resolution: null });
+    ).toMatchObject({ phase: 'holding', auto_resolution: null });
   });
 
   test('spends the budget and widens the delay when a retry fails again', async () => {
@@ -3034,8 +3090,14 @@ describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
   });
 
   test.each([
-    ['verification', '조건 대기'],
-    ['reconcile', '확인 대기'],
+    [
+      'verification',
+      '검증 오류의 정정을 기다리며, 원인이 고쳐지면 이어갈 수 있습니다.'
+    ],
+    [
+      'reconcile',
+      '세션에서 원래 실행과 그 효과를 확인하고, 이어갈 지시 또는 폐기를 결정합니다.'
+    ],
     ['new_reason', 'new_reason']
   ])('names the recovery condition %s', (reason, label) => {
     const comment = completionFailureComment(
@@ -3270,19 +3332,6 @@ describe('worker/completion-intent needs_human 5종 접기 (UI-5ym8 §7)', () =>
       'internal_record_failed:resolution_timeout'
     );
   });
-
-  test.each([
-    ['verify_red', 'systemic'],
-    ['cleanup_failed:verify_cmd_failed', null],
-    ['cleanup_journal_conflict', null],
-    ['retry_exhausted:cleanup_failed:remote_branch_delete_failed', null],
-    ['retry_exhausted:verify_cmd_failed', null],
-    ['conflict_unresolved:resolution_round_cap', null],
-    ['internal_record_failed:intent_state_invalid', null],
-    ['', null]
-  ])('holds the queue for %s as %s', (reason, kind) => {
-    expect(needsHumanHoldKind(reason)).toBe(kind);
-  });
 });
 
 describe('cleanup observation retries', () => {
@@ -3434,9 +3483,9 @@ describe('cleanup observation retries', () => {
 
     expect(terminalize).toHaveBeenCalledWith(
       DRIVER_WS,
-      expect.objectContaining({ hold_event: null })
+      expect.not.objectContaining({ hold_event: expect.anything() })
     );
-    expect(store.snapshot(DRIVER_WS).hold).toBeNull();
+    expect(store.snapshot(DRIVER_WS)).not.toHaveProperty('hold');
   });
 
   test.each([false, true])(

@@ -335,7 +335,7 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   full queue (`revision`, `auto_advance`, `slots`, `serial_lanes[]`,
   `serial_lane_count`, `queue[]`, `pr_wait[]`, `done[]`, `attempts`,
   `admission`, `cleanup_failed`, `exec_defaults`) — an `admission` record is
-  `{ reason, at, stale?, stale_work?, blockers? }`, where `blockers` is
+  `{ reason, at, stale?, blockers? }`, where `blockers` is
   `Array<{ id, rig: string|null, status }>` carried ONLY by the
   `prerequisite_unmet` reason: the unmet `blocks` prerequisites the scheduler
   proved, same-rig (`rig: null`) and foreign alike (UI-d3i1 §5.1). A malformed
@@ -390,6 +390,9 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   14 makes `buildLanes` the only assembler of a card — a renderer that fetched
   its own rows would be a second assembly path for the same tile. The WHOLE
   timeline is a different question, answered by `get-bead-timeline`.
+- Timeline kind `guard_denied` records a tool command refused before execution,
+  with `runner`, `reason`, and `command`. The session continues. Hook failures
+  remain `guard_warning` (`guard_hook_error` or `codex_hook_not_loaded`).
 - `bead_workflow: Record<bead_id, WorkflowSummary|null>` (UI-eey2 §9.2) is the
   stepper projection for the beads a LANE renders: `queue` ∪
   `serial_lanes[].entries` ∪ RUNNING attempts ∪ `pr_wait`. `done` is excluded —
@@ -473,17 +476,34 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `supported:false` with nullable facts; it never changes dispatch or queue
   persistence. Consumers also accept this whole field being absent from an older
   server and show `기본값 확인 불가` instead of reconstructing defaults.
+- Preserved worktree or branch residue is disposed of during dispatch: resume a
+  matching attempt, otherwise adopt the owned worktree, otherwise verify a
+  backup in `discard-backups` and dispatch fresh work in the same tick. A
+  changed backup identity or unknown observation is reobserved once. Unresolved
+  residue and backup failure leave an individual `status: 'failed'`,
+  `cause: 'stale_work_unresolved'` attempt. No admission or manual residue
+  WebSocket operation is exposed. Legacy residue admissions are dropped on load.
+  Successful dispositions emit `stale_work_auto` timeline events with summary
+  `잔재 자동 처분 · <resume|continue|backup_fresh> · <cause>`; `detail` contains
+  the backup path when applicable. They send no notification.
 - An unfinished implementation attempt may settle with `status: 'waiting'` and
   `cause_detail.recovery: { classification, disposition, reason, policy_schema: 1, no_progress?: { count, key } }`.
   Its original `cause`, summary, and other failure evidence remain intact. A
   recovery wait does not imply prerequisite blockers and does not emit
   `attempt_failed`; its timeline ending is `kind: 'session_ended'` with summary
   `대기 · recovery:<reason> — <original cause>`. Ordinary queue dispatch is
-  fenced by `recovery_wait`; manual resume preserves the recorded execution
-  selection and any retry origin, consumed count, maximum and exhaustion flag.
-  Ending the queue timer keeps that budget on the attempt; an exhausted record
-  has `retry.exhausted: true` and `retry.next_at: null`. Two identical repeats
-  set reason `no_progress` and refuse provider automatic resume. These fields
+  fenced by `recovery_wait`; the interactive inquiry owns its disposition.
+  `retry.migrated: 'unclassified_wait'` marks a policy-classified legacy wait
+  loaded as `failed` with `retry.attempts: 0`; declared session recovery waits
+  remain waiting. This migration starts no retry and sends no notification.
+  Policy-classified unclassified endings and `session_failed:turn_failed` use
+  `status: 'retry_wait'` with a per-Bead 2/5/15-minute retry ladder. A local
+  recorded session resumes with its execution settings; without one, a new
+  session inherits those settings. Exhaustion leaves `status: 'failed'`, the
+  original cause and one failure notification, with the Bead open. Ending the
+  retry timer keeps that budget on the attempt; an exhausted record has
+  `retry.exhausted: true` and `retry.next_at: null`. Two identical repeats set
+  reason `no_progress` and refuse provider automatic resume. These fields
   express waiting intent, not resume authority. The comparison uses cause,
   classification, normalized summary, head OID, verification result, PR URL and
   execution preset; incidental timestamps, attempt/run IDs and log SHAs do not
@@ -492,32 +512,25 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   recovery. Original cause, summary, retry, finish time and `attempt_failed`
   history remain. Dismissed, completed, discarded, superseded and live lineages,
   prerequisite/base-moved waits and matching environment failures are excluded.
-  This pass dispatches no session and requires both recovery contracts ready.
-- Worker and Monitor tiles project these records as `run_state: 'waiting'`,
-  without a failure projection or failure count. Their `wait.recovery` contains
-  `{ classification, disposition, reason, no_progress: { count, key }|null, label: string|null, sentence: string|null }`;
-  `wait.cause` retains the original cause and `wait.since` is `finished_at`.
-  Known labels and sentences come from `app/utils/failure-sentences.js`; unknown
-  reasons keep their raw token and no invented sentence. A recorded session with
-  no resume child enables the existing `↻ 이어하기` action; the existing waiting
-  discard action remains available. When resuming is unavailable,
-  `wait.resume_reason` names the missing session or the child that already
-  inherited it, using the existing wait body slot. A running attempt resumed
-  from a recovery record carries `status_label: '복구 중'`.
-- The shared `wait_reasons` model adds kind `recovery` for the latest waiting
-  implementation attempt carrying `cause_detail.recovery`, excluding live,
-  completed and PR-wait subjects. Its headline combines the state, awaited
-  condition, original cause token and any `무진전 N회`; `since` is
-  `finished_at`. Reasons `unclassified`, `reconcile`, `authority` and
-  `no_progress` have verdict `action_required` with code `recovery_confirm` and
-  message `보존된 작업의 원인 확인 또는 이어하기·폐기 결정이 필요함`. Other
-  reasons start `normal` and become `overdue` / `settle_overdue` after two
-  observation intervals. Actions contain `resume` with
-  `{ root_dir, bead_id, attempt_id }` only when the session ID is non-empty.
-  `notify_plan` is `{ on_overdue: 'discord', on_complete: 'none' }`; existing
-  claim-once suppression prevents repeated sends. Recovery subjects appear in
+  This pass requires both recovery contracts ready and launches the same inquiry
+  for a newly reclassified stalled recovery.
+- Recovery waits requiring a decision use `worker-resolve-in-session` to select
+  the live inquiry pane or fork the recorded session; discard remains available.
+  `worker-attempt-resume` refuses a recovery wait with
+  `reason: 'recovery_requires_inquiry'`.
+- Automatic inquiries use the parking launch gate and one-pane-per-Bead guard.
+  The shared predicate selects `authority`, `verification`, `no_progress`,
+  `reconcile`, session-declared `unclassified` (classification
+  `session_recovery_wait`), and `prerequisite` with an empty blocks list. The
+  attempt's `cause_detail.inquiry` stores the launch outcome. The existing
+  `waitActionRequired` notification uses the `(bead, recovery, decision)` key
+  and appends `질의 세션: launched · fork <sid8>` or
+  `질의 세션: not_launched · <reason>`; inquiry failure permits a click retry.
+  Recovery subjects appear in
+
   blocked summaries, with `action_required` subjects counted once in
   `조치 필요`.
+
 - A TERMINAL attempt inside `attempts` may additionally carry the non-persisted
   `impl_actor: { kind: 'delegated'|'main'|'mixed', model: string|null, effort: string|null, label: string, parts?: { unit, label }[] }`
   (UI-ys18 §5.1) — the actual implementer the attempt's own preserved
@@ -686,28 +699,49 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   state stores no history. The shared `wait_reasons` model adds one `recovery`
   row for an unfinished subject with an operation handoff:
   `수정 작업 대기 · <handoff_bead_id> · 원인 <failure code>`, an issue target,
-  and release `수정 Bead의 PR·배포 뒤 [정리 재시도]`. Its verdict is `normal`;
-  the repair issue's own lane judges progress. Operation waits without a handoff
-  use the shared recovery sentences, with `action_required/recovery_confirm` for
-  unclassified or reconciliation reasons. Existing attempt recovery, base-moved
-  and prerequisite rows take precedence, so one subject never gets two recovery
-  rows. `failure_kind` is a DISPLAY token: it is `verify_script_failure`,
-  `deploy_script_failure`, `interrupted_without_terminal_exit`, or — for every
-  other failure — the raw `failure.code`. There is no `other` token and no
-  allowlist behind it, and a client MUST render an unknown token verbatim. A
-  failed card carries no resolve affordance: the only automatic step is
-  `script_retry`, whose outcome `retry.status` reports (`unconsumed`,
-  `consumed`, `absorbed`, `not_applicable`) with `retry.blocked_reason`
-  (`schema_unsupported`) when it could not run at all, `retry.first_fingerprint`
-  for the failure it absorbed, and `retry.absorbed` when it did.
-  `retry.first_failure` is the FIRST attempt's failure record
-  (`{ code, fingerprint, detail, interrupted }`, `detail` sanitized like every
-  other one) — the only way a card whose retry produced a DIFFERENT failure can
-  name the one it started from. `source` is provenance, not state: `manual` is a
-  배포 실행 click, everything else is `automatic`. `dismissed` removes a row
-  from the 해결 필요 tally only; the record keeps its failure and its evidence.
-  A record that cannot be read as a complete operation is DROPPED rather than
-  projected partially.
+  and release `수정 Bead의 PR·배포 뒤 [정리 재시도]`. Handoff rows remain
+  `normal`, with no decision verdict or session actions. Operation waits without
+  a handoff use `action_required/decision` and session actions, with the first
+  failure summary line, falling back to the recovery sentence or reason token.
+  Existing attempt recovery and prerequisite rows take precedence, so one
+  subject never gets two recovery rows. `failure_kind` is a DISPLAY token: it is
+  `verify_script_failure`, `deploy_script_failure`,
+  `interrupted_without_terminal_exit`, or — for every other failure — the raw
+  `failure.code`. There is no `other` token and no allowlist behind it, and a
+  client MUST render an unknown token verbatim. A failed card carries no resolve
+  affordance: the only automatic step is `script_retry`, whose outcome
+  `retry.status` reports (`unconsumed`, `consumed`, `absorbed`,
+  `not_applicable`) with `retry.blocked_reason` (`schema_unsupported`) when it
+  could not run at all, `retry.first_fingerprint` for the failure it absorbed,
+  and `retry.absorbed` when it did. `retry.first_failure` is the FIRST attempt's
+  failure record (`{ code, fingerprint, detail, interrupted }`, `detail`
+  sanitized like every other one) — the only way a card whose retry produced a
+  DIFFERENT failure can name the one it started from. `source` is provenance,
+  not state: `manual` is a 배포 실행 click, everything else is `automatic`.
+  `dismissed` removes a row from the 해결 필요 tally only; the record keeps its
+  failure and its evidence. A record that cannot be read as a complete operation
+  is DROPPED rather than projected partially.
+- `wait_reasons[]` carries `kind`, `subject: { bead_id, root_dir }`, `headline`,
+  `release`, optional timestamps, `verdict`, optional
+  `verdict_reason: { code, message }`, `targets`, `actions`, and `notify_plan`.
+  Kinds are `prerequisite`, `prerequisite_foreign`, `provider_hold`,
+  `retry_wait`, `awaiting_user`, `recovery`, and `external_job`. The first six
+  fold into four client labels: 선행 대기, 공급자 보류, 재시도 대기, 세션이
+  멈춤; external work keeps its own row. Verdicts remain `normal`, `overdue`,
+  and `action_required`. Only provider holds, scheduled retries, and external
+  jobs can be overdue. Recovery waits identified by `isSessionStalledRecovery`
+  always use `action_required/decision`, with the first `cause_detail.summary`
+  line after `blocker:` as the headline (fallback: recovery release sentence or
+  reason token). Their only actions are `worker-resolve-in-session` and
+  `worker-discard`, matching parked sessions. Remaining verdict codes are
+  `blocker_needs_human`, `reset_passed`, `probe_stalled`, `retry_stalled`,
+  `decision`, plus external-job codes `check_overdue`, `settle_overdue`,
+  `job_failed`, `observe_failing`, `service_down`, `monitor_stopped`,
+  `resume_failed`, `wait_key_missing`, and `wait_record_missing`. The retry
+  grace is five minutes; recovery never emits `settle_overdue`.
+- `completion_status[bead_id].hold.reason` preserves verification failures:
+  `verify_cmd_spawn_error` and `verify_cmd_timeout` display 검증 명령 실패 —
+  환경 확인; ordinary verification failures display 검증 실패 — 수정 push 대기.
 - `worker-repo-operation-deploy-run` payload: `{ repo_id }` — the 배포 실행
   click (UI-s582 §3): run the DECLARED deploy script once, now. There is no
   target SHA input and no `expected_revision`: the server pins remote, base and

@@ -18,7 +18,6 @@
  * 레포 섹션은 **`workspaces_state`를 돌며** 만든다: 큐가 빈 레포에도 후보가
  * 있으면 드롭 타깃이 필요하고 (§6), 순서는 데크 순서와 같아야 한다.
  */
-import { RETRY_MAX } from '../../../server/worker/failure-class.js';
 import { priceUsage } from '../../../server/worker/usage-pricing.js';
 import { isExternalWaitObservation } from '../../protocol.js';
 import {
@@ -58,11 +57,7 @@ import {
   detectSerialLaneHeadCycles,
   serialCycleKey
 } from '../monitor/blockers.js';
-import {
-  failureText,
-  recoveryWaitLabel,
-  recoveryWaitSentence
-} from './failure-labels.js';
+import { recoveryWaitSentence } from './failure-labels.js';
 import { autoSwitchText, providerHoldBadgeText } from './gate-labels.js';
 import {
   discardProjection,
@@ -81,6 +76,7 @@ import {
   releasedChip,
   resolvedBlockerChip
 } from './queue-blockers.js';
+import { waitKindRow } from './wait-vocabulary.js';
 
 /**
  * @import { DependencyChip, DependencyChips, MiniItem } from './lanes.js'
@@ -372,7 +368,6 @@ const DONE_KIND_LABELS = {
  *   hold?: import('./running-grid.js').HoldTile|null,
  *   wait?: import('./running-grid.js').WaitTile|null,
  *   retry?: import('./running-grid.js').RetryTile|null,
- *   hold_since?: number,
  *   conflict_resolution?: boolean,
  *   base_exception?: string|null,
  *   rollup?: import('../../utils/child-rollup.js').ChildRollup|null,
@@ -696,17 +691,10 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
     if (map.has(bead_id)) {
       continue;
     }
-    if (
-      held.run_state === 'waiting' &&
-      staleDisposition(input.admission, bead_id)
-    ) {
-      continue;
-    }
     // 선행을 기다리는 attempt는 실행 흔적이 아니라 큐 순서 정보다 (직렬 레인
     // 순서 고정 스펙 §5.1): 세션은 착수하지 않고 끝났으므로 실행 중 그리드가
     // 아니라 그 bead의 대기 행(병렬 큐·직렬 레인 entry)이 대표한다. 재료는
-    // `cause` 하나이고, `base_moved`·recovery·미상은 타일 조작(이어하기·폐기)이
-    // 있으므로 현행 타일이다 (fail-closed).
+    // `cause` 하나이고 recovery는 세션 해결·폐기 조작을 가진 타일이다.
     if (
       held.run_state === 'waiting' &&
       held.attempt?.cause === 'prerequisite_unmet'
@@ -737,7 +725,8 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
               // 파킹 출구는 새 attempt나 원 세션 재개가 아니라 문의 세션이다:
               // 사용자가 결정을 내릴 대화만 이어지고 구현 재디스패치는 없다.
               resume_eligible: false,
-              resume_reason: '세션 대기 — [세션에서 해결]로 문의를 이어갑니다',
+              resume_reason:
+                '세션이 멈춤 — [세션에서 해결]로 문의를 이어갑니다',
               confirmation: discard.confirmation,
               history: input.bead_timelines?.[bead_id]
             })
@@ -746,21 +735,13 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
       // 선행 대기는 `failure` 투영을 쓰지 않는다 (선행 대기 계층 §5.1): 실패
       // 팝오버가 묻는 것 — 실패 코드·착지 단계·재개 행 — 중 이 결말이 답할 수
       // 있는 질문이 하나도 없고, 정산은 시작되지도 않았다.
-      ...(held.run_state === 'waiting'
-        ? { wait: waitProjection(a, resumed_from_ids.has(a.attempt_id)) }
-        : {}),
+      ...(held.run_state === 'waiting' ? { wait: waitProjection(a) } : {}),
       ...(hold ? { hold } : {}),
       ...(retry ? { retry } : {}),
       can_pause: false,
       // The resume handler owns transcript fallback, so a provider-held
       // attempt keeps its exit even when the old record has no session id.
-      can_resume:
-        held.run_state === 'provider_hold' ||
-        (held.run_state === 'waiting' &&
-          (a.cause === 'base_moved' || !!a.cause_detail?.recovery) &&
-          typeof a.session_id === 'string' &&
-          a.session_id.length > 0 &&
-          !resumed_from_ids.has(a.attempt_id))
+      can_resume: held.run_state === 'provider_hold'
     });
   }
   return map;
@@ -1090,7 +1071,7 @@ function timelineFields(history) {
 }
 
 /**
- * Decision material for prerequisite, base-moved and recovery waits. Recovery
+ * Decision material for prerequisite and recovery waits. Recovery
  * retains the original cause without acquiring a failure projection.
  *
  * `blockers` is the server's proven list (§4.4), kept in its `{id, rig, status}`
@@ -1098,10 +1079,9 @@ function timelineFields(history) {
  * written without it simply carry none (fail-quiet).
  *
  * @param {any} a
- * @param {boolean} [resumed] - Whether a child already consumed this session.
  * @returns {import('./running-grid.js').WaitTile}
  */
-function waitProjection(a, resumed = false) {
+function waitProjection(a) {
   const cause_detail =
     a.cause_detail && typeof a.cause_detail === 'object'
       ? a.cause_detail
@@ -1128,14 +1108,9 @@ function waitProjection(a, resumed = false) {
     });
   }
   return {
-    ...(a.cause === 'base_moved' || recovery ? { cause: a.cause } : {}),
+    ...(recovery ? { cause: a.cause } : {}),
     ...(recovery
       ? {
-          resume_reason: resumed
-            ? '이미 이어받은 실행이 있어 이어하기 불가'
-            : typeof a.session_id !== 'string' || a.session_id.length === 0
-              ? '보존된 세션 기록이 없어 이어하기 불가'
-              : null,
           recovery: {
             classification: recovery.classification,
             disposition: recovery.disposition,
@@ -1146,8 +1121,15 @@ function waitProjection(a, resumed = false) {
                   key: recovery.no_progress.key
                 }
               : null,
-            label: recoveryWaitLabel(recovery.reason),
-            sentence: recoveryWaitSentence(recovery.reason)
+            label: waitKindRow({ kind: 'recovery' })?.label || '',
+            sentence:
+              typeof cause_detail.summary === 'string' &&
+              cause_detail.summary.trim()
+                ? cause_detail.summary
+                    .split(/\r?\n/, 1)[0]
+                    .replace(/^.*?blocker:\s*/, '')
+                    .trim()
+                : recoveryWaitSentence(recovery.reason) || recovery.reason
           }
         }
       : {}),
@@ -1383,14 +1365,11 @@ function retryProjection(attempt) {
  * The waiting row's 게이트 재료 (UI-01wh §3.1) — 표시 전용 파생값.
  *
  * @typedef {Object} LaneGate
- * @property {'systemic'|'env'|'provider_outage'|'provider_usage'} kind -
- * 무엇이 이 행을 막고 있는가 — systemic·env는 큐 정지, provider_* 둘은 공급자
- * 보류다. 자동 진행 꺼짐은 게이트가 아니다 (UI-3pu9 §4.1).
+ * @property {'provider_outage'|'provider_usage'} kind - Provider gate blocking this row.
  * @property {string} label - 슬롯 4a 칩에 그대로 그려지는 한 줄.
  * @property {string} title - hover 툴팁이자 사유 팝업 본문의 첫 줄.
- * @property {number|null} since - systemic·env는 `queue.hold.since`, provider는
- * `provider_hold[runner].since`다 — `▶ 재개`와 `↻ 지금 프로브`가 보내는 CAS 값.
- * @property {number|null} next_at - env는 가장 이른 재시도, outage는 다음 프로브,
+ * @property {number|null} since - Provider hold CAS timestamp.
+ * @property {number|null} next_at - outage는 다음 프로브,
  * usage는 리셋 시각. 재료가 없으면 null이다.
  * @property {string|null} runner - provider 게이트일 때 그 보류의 러너 이름이고
  * `↻ 지금 프로브`의 op 인자다. 큐 게이트에는 없어 null이다.
@@ -1399,94 +1378,6 @@ function retryProjection(attempt) {
  * @property {string[]} lines - `chip-popover`가 그대로 그리는 문장들이고 마지막
  * 항목은 언제나 출구 안내다.
  */
-
-/** 환경 실패 사다리의 재시도 상한 (`failure-class.js`) — 팝업의 `n/3` 분모다. */
-const GATE_RETRY_MAX = RETRY_MAX;
-
-/**
- * The queue-wide hold gate (`systemic`/`env`) of one repo, or `null` when no
- * hold stands. 문구는 실패 어휘(`failureText`)를 그대로 쓰고, 모르는 원인 토큰은
- * raw로 흘려보낸다 — 침묵보다 낫다.
- *
- * @param {any} hold - 스냅샷이 실어 온 정지 레코드이고 서 있지 않으면 null이다.
- * @param {any[]} lineages - 환경 실패 사다리가 예약한 재시도 계보들, `next_at`이
- * 전부 null이면 재시도가 실행 중이다.
- * @returns {LaneGate|null}
- */
-function queueHoldGate(hold, lineages) {
-  if (!hold || (hold.kind !== 'env' && hold.kind !== 'systemic')) {
-    return null;
-  }
-  const cause = failureText(hold.cause) || String(hold.cause || '');
-  const since = typeof hold.since === 'number' ? hold.since : null;
-  const since_clock = formatClockLocal(since);
-  /** @type {string[]} */
-  const head = [cause, ...(since_clock ? [`시작 ${since_clock}`] : [])];
-  if (hold.kind === 'systemic') {
-    const bead_ids = (Array.isArray(hold.bead_ids) ? hold.bead_ids : []).filter(
-      (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
-    );
-    const halted_by =
-      typeof hold.halted_by_attempt_id === 'string' &&
-      hold.halted_by_attempt_id.length > 0
-        ? hold.halted_by_attempt_id
-        : null;
-    return {
-      kind: 'systemic',
-      label: `⛔ 정지 · ${cause}`,
-      title: cause,
-      since,
-      next_at: null,
-      runner: null,
-      probe_ready: false,
-      lines: [
-        ...head,
-        ...(halted_by ? [`정지시킨 attempt ${halted_by}`] : []),
-        ...(bead_ids.length > 0 ? [`bead ${bead_ids.join(', ')}`] : []),
-        '출구: 이 행의 ▶ 재개(큐 전체) 또는 [지금 시작](이 행만)'
-      ]
-    };
-  }
-  const rows = Array.isArray(lineages) ? lineages : [];
-  const scheduled = rows
-    .map((/** @type {any} */ row) => (row ? row.next_at : null))
-    .filter(
-      (/** @type {unknown} */ at) =>
-        typeof at === 'number' && Number.isFinite(at)
-    )
-    .sort((/** @type {number} */ a, /** @type {number} */ b) => a - b);
-  const next_at = scheduled.length > 0 ? scheduled[0] : null;
-  const next_clock = formatClockLocal(next_at);
-  return {
-    kind: 'env',
-    label: next_clock
-      ? `↻ 환경 보류 · 다음 ${next_clock}`
-      : '↻ 환경 보류 · 재시도 실행 중',
-    title: cause,
-    since,
-    next_at,
-    runner: null,
-    probe_ready: false,
-    lines: [
-      ...head,
-      ...rows
-        .filter(
-          (/** @type {any} */ row) => row && typeof row.bead_id === 'string'
-        )
-        .map((/** @type {any} */ row) => {
-          const attempts =
-            typeof row.attempts === 'number' ? row.attempts : GATE_RETRY_MAX;
-          const clock = formatClockLocal(row.next_at);
-          return `${row.bead_id} · 재시도 ${attempts}/${GATE_RETRY_MAX} · ${
-            clock ? `다음 ${clock}` : '재시도 실행 중'
-          }`;
-        }),
-      next_at === null
-        ? '출구: [지금 시작](이 행만) — 재시도 결과를 기다리는 중'
-        : '출구: 재시도 대기 타일의 ↻ 지금 재시도, 또는 [지금 시작](이 행만)'
-    ]
-  };
-}
 
 /**
  * The provider gate standing against ONE row's resolved runner and account
@@ -1853,7 +1744,14 @@ function heldAttemptStates(attempts, done_at_by_bead) {
     }
     held.set(a.bead_id, {
       attempt: a,
-      run_state: provider_hold ? 'provider_hold' : a.status
+      run_state: provider_hold
+        ? 'provider_hold'
+        : a.status === 'waiting' &&
+            a.cause === 'base_moved' &&
+            !a.cause_detail?.recovery &&
+            typeof a.retry?.next_at === 'number'
+          ? 'retry_wait'
+          : a.status
     });
   }
   return held;
@@ -1909,23 +1807,6 @@ function admissionBadge(admission, bead_id) {
     return `⛔ ${reason.slice(0, sep)} (${reason.slice(sep + 1)})`;
   }
   return `⛔ ${reason}`;
-}
-
-/**
- * Whether an admission can render its stale-work disposition on a waiting row.
- *
- * @param {unknown} admission
- * @param {string} bead_id
- * @returns {boolean}
- */
-function staleDisposition(admission, bead_id) {
-  const record = objectOf(objectOf(admission)[bead_id]);
-  const stale_work = objectOf(record.stale_work);
-  return (
-    record.reason === 'worktree_stale_work' &&
-    typeof stale_work.action_id === 'string' &&
-    stale_work.action_id.length > 0
-  );
 }
 
 /**
@@ -2893,7 +2774,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 막힌 대기 행을 판정할 저장소별 재료 (UI-01wh §3.1). 행 투영이 끝난 뒤
   // 한 번에 얹는다 — 러너·계정 해석에 오버레이 metadata가 필요하고 그것은
   // 이 루프보다 뒤에서 채워진다.
-  /** @type {Map<string, { hold: any, lineages: any[], provider_hold: Record<string, any>, account_catalog: Record<string, any>, workspace_account_defaults: Record<string, any>, admission: Record<string, any> }>} */
+  /** @type {Map<string, { provider_hold: Record<string, any>, account_catalog: Record<string, any>, workspace_account_defaults: Record<string, any>, admission: Record<string, any> }>} */
   const gate_input_by_root = new Map();
   // 선언 scope 사실 (UI-qm12 §5.2). 겹침은 레포 안에서만 정의되므로 레포별로
   // 모으고, 실행가능 항목의 scope는 큐 장식이 아니라 자기 행이 싣고 온다.
@@ -3083,11 +2964,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
       running: merge_queue.length > 0
     });
     gate_input_by_root.set(root_dir, {
-      hold:
-        workspace.hold && typeof workspace.hold === 'object'
-          ? workspace.hold
-          : null,
-      lineages: Array.isArray(workspace.lineages) ? workspace.lineages : [],
       provider_hold: objectOf(workspace.provider_hold),
       account_catalog: objectOf(workspace.account_catalog),
       workspace_account_defaults: objectOf(
@@ -3418,15 +3294,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
         // 배지가 이것만으로 그려지고, `failed` 타일에서는 팝오버의 재시도 이력
         // 줄이 같은 값을 읽는다.
         retry: live.retry || null,
-        // 환경 보류가 서 있는 동안의 `retry_wait` 타일에만 실리는 CAS 재료
-        // (UI-01wh §3.1) — foot의 `↻ 지금 재시도`가 이 값을 그대로 보낸다.
-        // hold가 없거나 다른 종류면 키 자체가 없고 버튼도 서지 않는다.
-        ...(live.run_state === 'retry_wait' &&
-        workspace.hold &&
-        workspace.hold.kind === 'env' &&
-        typeof workspace.hold.since === 'number'
-          ? { hold_since: workspace.hold.since }
-          : {}),
         exec_chips: {
           orchestration: formatAttemptOrchestrationChip(live),
           // worker 칩은 그 attempt가 기록한 runner를 controller로 삼아 푼다
@@ -3453,13 +3320,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
             : live.run_state === 'failed'
               ? ['⚠ 실패']
               : live.run_state === 'parked'
-                ? ['⏸ 세션 대기']
+                ? ['⏸ 세션이 멈춤']
                 : live.run_state === 'retry_wait'
                   ? ['↻ 재시도 대기']
                   : live.run_state === 'waiting'
                     ? live.wait?.recovery
                       ? live.wait.recovery.label
-                        ? [`⏳ ${live.wait.recovery.label}`]
+                        ? [`⏸ ${live.wait.recovery.label}`]
                         : []
                       : ['⛓ 선행 대기']
                     : live.run_state === 'provider_hold'
@@ -3938,41 +3805,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
       // 점유는 그것을 해제로 읽지 않는다. `claimed`에는 넣어야 그 bead가 뒤의 후보 레인으로
       // 새어나가지 않는다.
       const ghost_ids = new Set(occupied_by);
-      /** @type {Set<string>} */
-      const demoted_occupants = new Set(
-        entries
-          .map((/** @type {any} */ entry) => entry?.bead_id)
-          .filter(
-            (/** @type {unknown} */ bead_id) =>
-              typeof bead_id === 'string' &&
-              ghost_ids.has(bead_id) &&
-              staleDisposition(admission, bead_id)
-          )
-      );
       /** @type {LaneItem[]} */
       const items = [];
       for (let i = 0; i < entries.length; i++) {
         const entry_bead_id = entries[i] && entries[i].bead_id;
-        if (
-          typeof entry_bead_id === 'string' &&
-          ghost_ids.has(entry_bead_id) &&
-          !demoted_occupants.has(entry_bead_id)
-        ) {
+        if (typeof entry_bead_id === 'string' && ghost_ids.has(entry_bead_id)) {
           claimed.add(entry_bead_id);
           continue;
         }
         const item = waitingItem(entries[i], id, i, entries.length);
         if (!item) {
           continue;
-        }
-        if (
-          typeof entry_bead_id === 'string' &&
-          demoted_occupants.has(entry_bead_id)
-        ) {
-          item.badges = [
-            occupantOf(entry_bead_id).badge,
-            ...(item.badges || [])
-          ];
         }
         items.push(item);
         queue.push(item);
@@ -3992,9 +3835,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         items,
         raw_length: entries.length,
         occupied_by,
-        occupants: occupied_by
-          .filter((bead_id) => !demoted_occupants.has(bead_id))
-          .map((bead_id) => occupantOf(bead_id)),
+        occupants: occupied_by.map((bead_id) => occupantOf(bead_id)),
         corrections: Array.isArray(lane_state.corrections)
           ? lane_state.corrections.length
           : 0,
@@ -4476,7 +4317,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }
       serial_head_seen.add(lane_key);
     }
-    const queue_gate = queueHoldGate(gate_input.hold, gate_input.lineages);
     const state = objectOf(state_by_root.get(item.root_dir));
     const overlay = overlay_by_key.get(`${item.root_dir}\u0000${item.id}`);
     // 공급자 판정은 이 bead의 metadata를 **관측한** 뒤에만 한다 — exec 칩과
@@ -4537,7 +4377,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     // 서버 판정이 기록으로 남아 있으면 그것이 재료다 (UI-1l3a §3.3). 자체 판정은
     // 서버 pass가 아직 돌지 않은 행(방금 앉은 행, 자동 진행이 꺼진 저장소)의
     // 예측일 뿐이므로 뒤로 간다.
-    const provider_gate =
+    const gate =
       providerGateFromRecord(
         objectOf(gate_input.admission[item.id]),
         runner,
@@ -4552,16 +4392,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
         gate_input.provider_hold,
         gate_input.account_catalog
       );
-    // 둘 다 서면 칩은 큐 게이트 하나이고 공급자 사유는 그 팝업의 마지막 줄로
-    // 붙는다 (공급자 스펙 §6 "둘 다 서 있으면 둘 다 막는다") — 칩은 행당 하나다.
-    const gate = queue_gate
-      ? provider_gate
-        ? {
-            ...queue_gate,
-            lines: [...queue_gate.lines, `공급자: ${provider_gate.label}`]
-          }
-        : queue_gate
-      : provider_gate;
     if (gate) {
       item.gate = gate;
     }
@@ -4799,6 +4629,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const reasons = reasons_by_subject.get(key);
     if (reasons) {
       const queued = item.lane === 'queue' || /^s[1-5]$/.test(item.lane);
+      const recovery_reason = reasons.find(
+        (reason) => reason.kind === 'recovery'
+      );
+      if (item.wait?.recovery && recovery_reason) {
+        item.wait.recovery.sentence = recovery_reason.headline;
+      }
       item.wait_reasons = reasons.filter(
         (reason) =>
           !['prerequisite', 'prerequisite_foreign'].includes(reason.kind) ||

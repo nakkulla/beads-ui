@@ -1,7 +1,8 @@
 ---
 id: 7
 title: 머지 금지 강제를 git 수준 예방과 사후 ref 불변식으로 이전
-status: accepted
+status: superseded
+superseded_by: UI-a5l2
 date: 2026-07-30
 summary: '머지 금지는 pre-push 훅 예방과 사후 ref 불변식이 강제하고 텍스트 판정은 추론성 판정을 경고로 강등하되 정확한 원격 변경 명령의 kill은 유지한다'
 spec: docs/superpowers/specs/2026-07-30-guard-enforcement-layer-replacement-design.md

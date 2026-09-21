@@ -1693,6 +1693,33 @@ describe('runner/claude guard seam (guard-hook-bypass-result-judgment §2/§3)',
 });
 
 describe('runner/claude worker skill seal and read guard (spec D4)', () => {
+  test('carries the attempt PreToolUse hook alongside skill overrides', () => {
+    const built = claudeSpec().buildArgv(BEAD, WS, {
+      guard_hook_path: '/attempt/pre-tool-use'
+    });
+
+    const settings = JSON.parse(
+      built.args[built.args.indexOf('--settings') + 1]
+    );
+
+    expect(settings).toEqual({
+      ...WORKER_SETTINGS_OVERRIDE,
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [
+              {
+                type: 'command',
+                command: "'/attempt/pre-tool-use' claude",
+                timeout: 10
+              }
+            ]
+          }
+        ]
+      }
+    });
+  });
   test('carries the skillOverrides settings right after the permission mode', () => {
     const spec = claudeSpec();
 

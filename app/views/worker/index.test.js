@@ -1169,257 +1169,6 @@ describe('views/worker', () => {
     );
   });
 
-  test('renders and sends identity-bound stale-work recovery actions', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf({
-        revision: 7,
-        queue: [{ bead_id: 'SQ-1', added_at: 0 }],
-        admission: {
-          'SQ-1': {
-            reason: 'worktree_stale_work',
-            at: 1,
-            stale_work: {
-              state: 'unique',
-              cause: 'dirty_unique',
-              summary: {
-                staged_count: 1,
-                unstaged_count: 2,
-                untracked_count: 0,
-                branch_ahead: 1,
-                head_ahead: 0
-              },
-              action_id: 'opaque-action',
-              can_resume: false,
-              can_continue: true,
-              can_backup_fresh: true,
-              can_recheck: false
-            }
-          }
-        },
-        workspace_info: { verify_cmd: null }
-      })
-    );
-    const transport = vi.fn(async () => ({
-      continued: true,
-      conflict: false,
-      queue: queueStore.get()
-    }));
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
-    });
-    const row = /** @type {HTMLElement} */ (
-      mount.querySelector(
-        '#worker-pane-queue .worker-mini[data-bead-id="SQ-1"]'
-      )
-    );
-
-    row
-      .querySelector('.worker-mini__stale-continue')
-      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(row.textContent).toContain('이전 작업 보존됨');
-    expect(row.getAttribute('draggable')).toBe('false');
-    expect(transport).toHaveBeenCalledWith('worker-stale-work-continue', {
-      bead_id: 'SQ-1',
-      action_id: 'opaque-action',
-      expected_revision: 7
-    });
-  });
-
-  /**
-   * Click `기존 작업 이어가기` once against a canned reply and return the toast
-   * text (UI-kyky §5). The whole view is rebuilt per call so two reasons in one
-   * test cannot share a rendered row.
-   *
-   * @param {Record<string, unknown>} reply
-   * @returns {Promise<string>}
-   */
-  async function staleWorkRefusalToast(reply) {
-    document.querySelectorAll('.toast').forEach((el) => el.remove());
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    mount.innerHTML = '';
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf({
-        revision: 7,
-        queue: [{ bead_id: 'SQ-1', added_at: 0 }],
-        admission: {
-          'SQ-1': {
-            reason: 'worktree_stale_work',
-            at: 1,
-            stale_work: {
-              state: 'unique',
-              cause: 'dirty_unique',
-              summary: {
-                staged_count: 1,
-                unstaged_count: 0,
-                untracked_count: 0,
-                branch_ahead: 0,
-                head_ahead: 0
-              },
-              action_id: 'opaque-action',
-              can_resume: false,
-              can_continue: true,
-              can_backup_fresh: false,
-              can_recheck: false
-            }
-          }
-        },
-        workspace_info: { verify_cmd: null }
-      })
-    );
-    const transport = vi.fn(async () => ({
-      ...reply,
-      queue: reply.queue === undefined ? queueStore.get() : reply.queue
-    }));
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
-    });
-    mount
-      .querySelector(
-        '#worker-pane-queue .worker-mini[data-bead-id="SQ-1"] .worker-mini__stale-continue'
-      )
-      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    return Array.from(document.querySelectorAll('.toast'))
-      .map((el) => el.textContent || '')
-      .join(' | ');
-  }
-
-  test('says two different conflict reasons with two different sentences', async () => {
-    const remote = await staleWorkRefusalToast({
-      ok: false,
-      conflict: true,
-      reason: 'remote_branch_owner'
-    });
-    const running = await staleWorkRefusalToast({
-      ok: false,
-      conflict: true,
-      reason: 'bead_running'
-    });
-
-    expect(remote).toContain(
-      '원격 브랜치가 남아 있어 자동으로 처리할 수 없습니다.'
-    );
-    expect(running).toContain('이 이슈의 세션이 실행 중입니다.');
-    expect(remote).not.toBe(running);
-  });
-
-  test('names the observation failure of a remote ref conflict', async () => {
-    const toast = await staleWorkRefusalToast({
-      ok: false,
-      conflict: true,
-      reason: 'remote_ref_observe_failed'
-    });
-
-    expect(toast).toContain('원격 PR·브랜치 상태를 확인하지 못했습니다.');
-  });
-
-  test('uses the same sentence for a known non-conflict refusal', async () => {
-    const toast = await staleWorkRefusalToast({
-      ok: false,
-      conflict: false,
-      reason: 'discard_in_progress'
-    });
-
-    expect(toast).toContain('이 작업의 폐기가 진행 중입니다.');
-  });
-
-  test('keeps the generic sentence for an unknown conflict reason', async () => {
-    const toast = await staleWorkRefusalToast({
-      ok: false,
-      conflict: true,
-      reason: 'something_new'
-    });
-
-    expect(toast).toContain('이전 작업 상태가 바뀌었습니다.');
-  });
-
-  test('keeps the raw reason for an unknown non-conflict refusal', async () => {
-    const toast = await staleWorkRefusalToast({
-      ok: false,
-      conflict: false,
-      reason: 'something_new'
-    });
-
-    expect(toast).toContain('이전 작업 처리 거부: something_new');
-  });
-
-  test('applies the response snapshot without resending the action', async () => {
-    document.querySelectorAll('.toast').forEach((el) => el.remove());
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    mount.innerHTML = '';
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf({
-        revision: 7,
-        queue: [{ bead_id: 'SQ-1', added_at: 0 }],
-        admission: {
-          'SQ-1': {
-            reason: 'worktree_stale_work',
-            at: 1,
-            stale_work: {
-              state: 'unique',
-              cause: 'dirty_unique',
-              summary: {
-                staged_count: 1,
-                unstaged_count: 0,
-                untracked_count: 0,
-                branch_ahead: 0,
-                head_ahead: 0
-              },
-              action_id: 'opaque-action',
-              can_resume: false,
-              can_continue: true,
-              can_backup_fresh: false,
-              can_recheck: false
-            }
-          }
-        },
-        workspace_info: { verify_cmd: null }
-      })
-    );
-    const fresh = queueOf({
-      revision: 9,
-      queue: [{ bead_id: 'SQ-1', added_at: 0 }],
-      workspace_info: { verify_cmd: null }
-    });
-    const transport = vi.fn(async () => ({
-      ok: false,
-      conflict: true,
-      reason: 'revision_conflict',
-      queue: fresh
-    }));
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
-    });
-
-    mount
-      .querySelector(
-        '#worker-pane-queue .worker-mini[data-bead-id="SQ-1"] .worker-mini__stale-continue'
-      )
-      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledTimes(1);
-    expect(queueStore.get()?.revision).toBe(9);
-    expect(
-      Array.from(document.querySelectorAll('.toast')).map(
-        (el) => el.textContent || ''
-      )
-    ).toContainEqual(expect.stringContaining('작업 목록이 갱신되었습니다.'));
-  });
-
   test('keeps the legacy stale-work badge when optional projection is absent', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
@@ -2016,8 +1765,8 @@ describe('views/worker', () => {
     expect(tiles[2].querySelector('.rtile__elapsed')).toBeNull();
     expect(
       tiles[2].querySelector('.wait-verdict summary')?.textContent?.trim()
-    ).toBe('⛔ 확인 대기 · 조치 필요');
-    expect(tiles[2].querySelector('.op-btn.rtile__resume')).not.toBeNull();
+    ).toBe('⛔ 세션이 멈춤 · 조치 필요');
+    expect(tiles[2].querySelector('.op-btn.rtile__resolve')).not.toBeNull();
     expect(
       tiles[2].querySelector('.rtile__foot .rtile__discard')
     ).not.toBeNull();
@@ -2539,23 +2288,6 @@ describe('views/worker', () => {
     ]).toEqual([null, null]);
   });
 
-  test('sends the hold since when a blocked row 재개 is clicked', async () => {
-    const transport = vi.fn().mockResolvedValue({ ok: true });
-    const mount = mountAttemptTiles(
-      { hold: SYSTEMIC_HOLD, queue: [{ bead_id: 'A-1', added_at: 1 }] },
-      transport
-    );
-
-    mount
-      .querySelector('.worker-mini__hold-resume')
-      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-queue-hold-resume', {
-      since: 77
-    });
-  });
-
   /**
    * Mount with two waiting rows whose resolved runners differ: `P-1` takes the
    * repo default (claude) and `P-2` names a codex model. The provider gate is
@@ -2676,66 +2408,10 @@ describe('views/worker', () => {
     ]).toEqual([expect.any(HTMLElement), null]);
   });
 
-  test('reports a refused 재개 with the stale-hold toast', async () => {
-    const transport = vi
-      .fn()
-      .mockResolvedValue({ ok: false, reason: 'hold_changed' });
-    const mount = mountAttemptTiles(
-      { hold: SYSTEMIC_HOLD, queue: [{ bead_id: 'A-1', added_at: 1 }] },
-      transport
-    );
-
-    mount
-      .querySelector('.worker-mini__hold-resume')
-      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(document.body.textContent).toContain(
-      '재개 거부: 큐 상태가 바뀌었습니다 — 다시 확인하세요'
-    );
-  });
-
-  test('sends the hold since when the retry_wait tile 지금 재시도 is clicked', async () => {
-    const transport = vi.fn().mockResolvedValue({ ok: true });
-    const mount = mountAttemptTiles(
-      {
-        hold: { kind: 'env', cause: 'verify_cmd_spawn_error', since: 4242 },
-        lineages: [
-          {
-            bead_id: 'A-1',
-            origin_attempt_id: 't1',
-            cause: 'x',
-            next_at: 9000,
-            attempts: 1
-          }
-        ],
-        attempts: {
-          t1: {
-            attempt_id: 't1',
-            bead_id: 'A-1',
-            status: 'retry_wait',
-            started_at: 1,
-            retry: { cause: 'x', attempts: 1, max: 3, next_at: 9000 }
-          }
-        }
-      },
-      transport
-    );
-
-    mount
-      .querySelector('.rtile__hold-retry')
-      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-queue-hold-retry-now', {
-      since: 4242
-    });
-  });
-
   test('opens and closes the gate reason popup from the chip', () => {
-    const mount = mountAttemptTiles({
-      hold: SYSTEMIC_HOLD,
-      queue: [{ bead_id: 'A-1', added_at: 1 }]
+    const mount = mountProviderGated({
+      provider_hold: CLAUDE_OUTAGE_HOLD,
+      queue: [{ bead_id: 'P-1', added_at: 1 }]
     });
     const chip = () =>
       /** @type {HTMLElement} */ (mount.querySelector('.worker-dep--gate'));
@@ -2746,17 +2422,18 @@ describe('views/worker', () => {
 
     expect([
       opened.includes('자동 디스패치가 막혀 있다'),
-      opened.includes(
-        '출구: 이 행의 ▶ 재개(큐 전체) 또는 [지금 시작](이 행만)'
-      ),
+      opened.includes('target은 프로브 성공 시 자동 해제'),
       mount.querySelector('.chip-popover')
     ]).toEqual([true, true, null]);
   });
 
   test('starts a gated row now even after its grace has passed', async () => {
     const transport = vi.fn().mockResolvedValue({ ok: true });
-    const mount = mountAttemptTiles(
-      { hold: SYSTEMIC_HOLD, queue: [{ bead_id: 'A-1', added_at: 1 }] },
+    const mount = mountProviderGated(
+      {
+        provider_hold: CLAUDE_OUTAGE_HOLD,
+        queue: [{ bead_id: 'P-1', added_at: 1 }]
+      },
       transport
     );
 
@@ -2766,7 +2443,7 @@ describe('views/worker', () => {
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-start-now', {
-      bead_id: 'A-1'
+      bead_id: 'P-1'
     });
   });
 
@@ -3086,7 +2763,7 @@ describe('views/worker', () => {
     );
     expect(
       tile.querySelector('.wait-verdict summary')?.textContent?.trim()
-    ).toBe('⏸ 세션 대기');
+    ).toBe('⏸ 세션이 멈춤');
     expect(tile.querySelector('.rtile__held-summary')?.textContent).toContain(
       'REVISE 판정'
     );
@@ -3214,7 +2891,7 @@ describe('views/worker', () => {
     });
   });
 
-  test('resumes a recovery wait through the existing saved-attempt action', async () => {
+  test('opens the inquiry session for a recovery wait', async () => {
     const transport = vi.fn().mockResolvedValue({});
     const mount = mountAttemptTiles(
       {
@@ -3234,15 +2911,12 @@ describe('views/worker', () => {
     );
 
     /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.rtile__resume')
-    ).click();
-    /** @type {HTMLButtonElement} */ (
-      document.querySelector('.resume-instructions-dialog button')
+      mount.querySelector('.rtile__resolve')
     ).click();
     await flush();
 
-    expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
-      attempt_id: 'recovery',
+    expect(transport).toHaveBeenCalledWith('worker-resolve-in-session', {
+      bead_id: 'WAIT',
       expected_revision: 7
     });
   });
@@ -6755,6 +6429,24 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
     expect(badge?.textContent).toBe('검증 실패 — 수정 push 대기');
   });
+
+  test.each(['verify_cmd_spawn_error', 'verify_cmd_timeout'])(
+    'labels a held verification command environment failure %s',
+    (reason) => {
+      const completion = holdingCompletion();
+      completion.hold.reason = reason;
+
+      const { mount } = mountWith(
+        queueWithGate(RED, {
+          completion_status: { 'RD-1': completion }
+        })
+      );
+
+      expect(
+        mount.querySelector('.worker-mini__badge--alert')?.textContent
+      ).toBe('검증 명령 실패 — 환경 확인');
+    }
+  );
 
   test('offers 세션에서 해결 on a holding row', () => {
     const { mount } = mountWith(
@@ -13299,207 +12991,6 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
       ...over
     });
   }
-
-  /**
-   * @param {string} action_id
-   * @returns {Record<string, any>}
-   */
-  function staleAdmission(action_id) {
-    return {
-      reason: 'worktree_stale_work',
-      at: 1,
-      stale_work: {
-        state: 'unique',
-        cause: 'dirty_unique',
-        summary: {
-          staged_count: 1,
-          unstaged_count: 0,
-          untracked_count: 0,
-          branch_ahead: 0,
-          head_ahead: 0
-        },
-        action_id,
-        can_resume: false,
-        can_continue: true,
-        can_backup_fresh: true,
-        can_recheck: true
-      }
-    };
-  }
-
-  /**
-   * @param {Record<string, any>} patch
-   * @returns {{ mount: HTMLElement, transport: ReturnType<typeof vi.fn> }}
-   */
-  function mountStaleSerialPath(patch) {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    const transport = vi.fn(async () => ({
-      ok: true,
-      conflict: false,
-      queue: queueStore.get()
-    }));
-    createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
-      queueStore,
-      transport
-    });
-    queueStore.set(laneQueue({ revision: 17, ...patch }));
-    return { mount, transport };
-  }
-
-  /**
-   * @returns {Record<string, any>}
-   */
-  function waitingStalePath() {
-    return {
-      attempts: {
-        x1: {
-          attempt_id: 'x1',
-          bead_id: 'X',
-          status: 'waiting',
-          serial_lane_id: 's1',
-          finished_at: 10,
-          cause: 'prerequisite_unmet',
-          cause_detail: {
-            summary: '선행 미충족으로 착수하지 않았습니다',
-            blockers: [{ id: 'A-9', rig: null, status: 'open' }]
-          }
-        }
-      },
-      admission: { X: staleAdmission('waiting-action') },
-      serial_lanes: [
-        { id: 's1', entries: [{ bead_id: 'X', added_at: 1 }] },
-        { id: 's2', entries: [] }
-      ],
-      lane_states: {
-        s1: {
-          occupied_by: [],
-          order: ['X'],
-          corrections: [],
-          cycle: false
-        },
-        s2: { occupied_by: [], order: [], corrections: [], cycle: false }
-      }
-    };
-  }
-
-  /**
-   * @returns {Record<string, any>}
-   */
-  function failedStalePath() {
-    return {
-      attempts: {
-        x1: {
-          attempt_id: 'x1',
-          bead_id: 'X',
-          status: 'failed',
-          serial_lane_id: 's1',
-          finished_at: 10,
-          dismissed_at: 20
-        }
-      },
-      admission: { X: staleAdmission('failed-action') },
-      serial_lanes: [
-        { id: 's1', entries: [{ bead_id: 'X', added_at: 1 }] },
-        { id: 's2', entries: [] }
-      ],
-      lane_states: {
-        s1: {
-          occupied_by: ['X'],
-          order: ['X'],
-          corrections: [],
-          cycle: false
-        },
-        s2: { occupied_by: [], order: [], corrections: [], cycle: false }
-      }
-    };
-  }
-
-  test('renders stale-work actions on a demoted waiting row', () => {
-    const { mount } = mountStaleSerialPath(waitingStalePath());
-
-    const row = /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-pane-lane-s1 [data-bead-id="X"]')
-    );
-
-    expect(
-      Array.from(
-        row.querySelectorAll(
-          '.worker-mini__stale-continue, .worker-mini__stale-backup, .worker-mini__stale-recheck'
-        )
-      ).map((button) => button.getAttribute('data-action-id'))
-    ).toEqual(['waiting-action', 'waiting-action', 'waiting-action']);
-  });
-
-  test('sends the waiting-row continue action with identity and revision', async () => {
-    const { mount, transport } = mountStaleSerialPath(waitingStalePath());
-    const button = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini__stale-continue')
-    );
-
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-stale-work-continue', {
-      bead_id: 'X',
-      action_id: 'waiting-action',
-      expected_revision: 17
-    });
-  });
-
-  test('keeps the demoted waiting row undraggable', () => {
-    const { mount } = mountStaleSerialPath(waitingStalePath());
-
-    const row = mount.querySelector(
-      '#worker-pane-lane-s1 .worker-mini[data-bead-id="X"]'
-    );
-
-    expect(row?.getAttribute('draggable')).toBe('false');
-  });
-
-  test('renders stale-work actions instead of a ghost on a demoted failed row', () => {
-    const { mount } = mountStaleSerialPath(failedStalePath());
-
-    const row = /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-pane-lane-s1 [data-bead-id="X"]')
-    );
-
-    expect(row.classList.contains('worker-mini--ghost')).toBe(false);
-    expect(
-      Array.from(
-        row.querySelectorAll(
-          '.worker-mini__stale-continue, .worker-mini__stale-backup, .worker-mini__stale-recheck'
-        )
-      ).map((button) => button.getAttribute('data-action-id'))
-    ).toEqual(['failed-action', 'failed-action', 'failed-action']);
-  });
-
-  test('sends the failed-row recheck action with identity and revision', async () => {
-    const { mount, transport } = mountStaleSerialPath(failedStalePath());
-    const button = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini__stale-recheck')
-    );
-
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-stale-work-recheck', {
-      bead_id: 'X',
-      action_id: 'failed-action',
-      expected_revision: 17
-    });
-  });
-
-  test('puts the held occupancy badge first on a demoted failed row', () => {
-    const { mount } = mountStaleSerialPath(failedStalePath());
-
-    const first_badge = mount.querySelector(
-      '#worker-pane-lane-s1 [data-bead-id="X"] .worker-mini__badge'
-    );
-
-    expect(first_badge?.textContent).toBe('실패 · 점유 유지');
-  });
 
   test('renders serial lane cards with rows and an empty drop target', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));

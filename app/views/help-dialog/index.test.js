@@ -66,7 +66,7 @@ describe('help dialog legend', () => {
       (row) => element.querySelectorAll(`#help-${row.id}`).length
     );
 
-    expect(counts).toEqual(WAIT_KINDS.map(() => 1));
+    expect(counts).toEqual([1, 1, 1, 1, 1]);
   });
 
   test('reads the times-line words out of the vocabulary table (UI-0bvr §5.1)', () => {
@@ -87,7 +87,7 @@ describe('help dialog legend', () => {
     expect(cell?.textContent?.trim()).toBe('—');
   });
 
-  test('draws only queue-scope rows in the gate section (UI-3pu9 §4.4)', () => {
+  test('draws the provider hold in the gate section', () => {
     const { element } = mount();
 
     const gate_section = /** @type {HTMLElement} */ (
@@ -97,11 +97,7 @@ describe('help dialog legend', () => {
       (tr) => tr.id
     );
 
-    expect(ids).toEqual(
-      WAIT_KINDS.filter((row) => row.scope === 'queue').map(
-        (row) => `help-${row.id}`
-      )
-    );
+    expect(ids).toEqual(['help-gate-provider_hold']);
   });
 
   test('omits the manual-start gate row from the legend (UI-3pu9 §4.4)', () => {
@@ -118,11 +114,11 @@ describe('help dialog legend', () => {
     const api = createHelpDialog(root, {});
     dialog = api;
 
-    api.open({ anchor: 'provider_hold-usage_limit' });
+    api.open({ anchor: 'provider_hold' });
 
     expect(
       root
-        .querySelector('#help-provider_hold-usage_limit')
+        .querySelector('#help-provider_hold')
         ?.classList.contains('help-dialog__row--highlight')
     ).toBe(true);
   });

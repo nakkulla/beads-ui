@@ -104,6 +104,16 @@ export function createDiscardCoordinator(deps, options = {}) {
    * @param {string} reason
    */
   function fail(operation, reason) {
+    if (operation.kind === 'stale_work_backup_fresh') {
+      const written = advance(operation, 'abandoned', {
+        receipts: { automatic_failure: { at: now(), reason } }
+      });
+      return {
+        ok: false,
+        operation_id: operation.operation_id,
+        reason: written ? reason : 'failure_persist_failed'
+      };
+    }
     const written = deps.store.failDiscardOperation(deps.workspace, {
       operation_id: operation.operation_id,
       expected_phase: operation.phase,
@@ -564,7 +574,10 @@ export function createDiscardCoordinator(deps, options = {}) {
       processController: deps.processController,
       // The archive seam writes its own `failDiscardOperation` records, so it
       // gets the same announce path `fail()` uses (UI-e98l).
-      announceFailure: announceDiscardFailure,
+      announceFailure:
+        operation.kind === 'stale_work_backup_fresh'
+          ? undefined
+          : announceDiscardFailure,
       withTopologyLock: (work) =>
         deps.worktree.withTopologyLock(source.repo, async () => work()),
       createArchive: () =>
@@ -2131,6 +2144,12 @@ export function createDiscardCoordinator(deps, options = {}) {
       if (operation.phase === 'requested') {
         const result = await archive(operation);
         if (!result.ok) {
+          if (operation.kind === 'stale_work_backup_fresh') {
+            return fail(
+              operationOf(operation_id),
+              result.reason || 'backup_failed'
+            );
+          }
           return {
             ok: false,
             operation_id,
@@ -2187,8 +2206,11 @@ export function createDiscardCoordinator(deps, options = {}) {
           return fail(operation, 'stale_work_finalize_failed');
         }
         notifyChanged(deps.workspace);
-        await deps.scheduler.tick(deps.workspace);
-        return { ok: true, operation_id };
+        return {
+          ok: true,
+          operation_id,
+          backup_path: operation.backup?.path || null
+        };
       }
       if (operation.phase === 'backup_verified') {
         const result = await terminateRunner(operation);
@@ -2268,53 +2290,23 @@ export function createDiscardCoordinator(deps, options = {}) {
   }
 
   /**
-   * Start verified archive recovery for an attempt-less stale worktree. The
-   * admission identity and queue revision are checked again immediately before
-   * the durable operation/fence is created.
+   * Archive an identity verified by the scheduler, without a UI admission.
    *
-   * @param {{ bead_id: string, action_id: string, expected_revision: number }} input
+   * @param {import('./queue-store.js').StaleWorkIdentity} identity
+   * @param {{ bead_id: string }} input
    */
-  async function backupFresh(input) {
-    const snapshot = deps.store.snapshot(deps.workspace);
-    if (snapshot.revision !== input.expected_revision) {
-      return { ok: false, conflict: true, reason: 'revision_conflict' };
-    }
-    const admission = snapshot.admission?.[input.bead_id];
-    const stale_work = admission?.stale_work;
+  async function backupFreshResidue(identity, input) {
     if (
-      admission?.reason !== 'worktree_stale_work' ||
-      !stale_work ||
-      stale_work.action_id !== input.action_id ||
-      stale_work.can_backup_fresh !== true ||
-      !stale_work.identity
-    ) {
-      return { ok: false, conflict: true, reason: 'stale_work_conflict' };
-    }
-    const waiting =
-      snapshot.queue.some(
-        (/** @type {{ bead_id: string }} */ entry) =>
-          entry.bead_id === input.bead_id
-      ) ||
-      snapshot.serial_lanes.some(
-        (/** @type {{ entries: Array<{ bead_id: string }> }} */ lane) =>
-          lane.entries.some((entry) => entry.bead_id === input.bead_id)
-      );
-    if (!waiting) {
-      return { ok: false, conflict: true, reason: 'waiting_lane_changed' };
-    }
-    if (
-      Object.values(snapshot.discard_operations || {}).some(
+      Object.values(
+        deps.store.snapshot(deps.workspace).discard_operations || {}
+      ).some(
         (operation) =>
           operation.bead_id === input.bead_id &&
           discardOperationActive(operation)
       ) ||
-      deps.actionInFlight?.(input.bead_id) ||
-      deps.scheduler.staleWorkActionInFlight?.(
-        deps.workspace,
-        input.bead_id
-      ) === true
+      deps.actionInFlight?.(input.bead_id)
     ) {
-      return { ok: false, conflict: true, reason: 'action_in_flight' };
+      return { ok: false, reason: 'action_in_flight' };
     }
     if (deps.external?.get(deps.workspace, input.bead_id)) {
       return { ok: false, conflict: true, reason: 'external_pr_owner' };
@@ -2331,14 +2323,11 @@ export function createDiscardCoordinator(deps, options = {}) {
     // Only the base NAME is needed here (it labels the operation's
     // `target_base`). The recorded `base_oid` is the residue's own identity:
     // every later phase archives, re-observes, and removes against it, so a
-    // base that moved on since the admission was recorded changes nothing the
-    // backup depends on. Refusing on that drift left the card with no way
-    // out — the admission only refreshes on a dispatch retry, which an
-    // `auto_advance: false` workspace never runs (UI-avs8).
+    // base that moved on since observation changes nothing the backup depends on.
     if (!resolved.ok) {
       return { ok: false, conflict: true, reason: 'base_identity_changed' };
     }
-    const branch = stale_work.identity.branch;
+    const branch = identity.branch;
     if (typeof branch !== 'string' || branch.length === 0) {
       return { ok: false, conflict: true, reason: 'worktree_identity_changed' };
     }
@@ -2354,17 +2343,17 @@ export function createDiscardCoordinator(deps, options = {}) {
       observed = await deps.worktree.removeIfDiscardable({
         repo: deps.repo,
         bead_id: input.bead_id,
-        base: stale_work.identity.base_oid,
+        base: identity.base_oid,
         preserve: true
       });
     } catch {
       return { ok: false, conflict: false, reason: 'source_observe_failed' };
     }
-    if (!staleResidueIntact(stale_work.identity, observed)) {
+    if (!staleResidueIntact(identity, observed)) {
       return { ok: false, conflict: true, reason: 'worktree_identity_changed' };
     }
-    const residue = stale_work.residue === 'branch' ? 'branch' : 'worktree';
-    const branch_head_sha = stale_work.identity.branch_head_sha;
+    const residue = identity.worktree_realpath === null ? 'branch' : 'worktree';
+    const branch_head_sha = identity.branch_head_sha;
     if (
       residue === 'branch' &&
       (typeof branch_head_sha !== 'string' || branch_head_sha.length === 0)
@@ -2372,8 +2361,14 @@ export function createDiscardCoordinator(deps, options = {}) {
       return { ok: false, conflict: true, reason: 'worktree_identity_changed' };
     }
     const operation_id = makeOperationId();
+    if (
+      deps.actionInFlight?.(input.bead_id) ||
+      deps.external?.get(deps.workspace, input.bead_id)
+    ) {
+      return { ok: false, reason: 'action_in_flight' };
+    }
     const created = deps.store.createDiscardOperation(deps.workspace, {
-      expected_revision: input.expected_revision,
+      expected_revision: deps.store.snapshot(deps.workspace).revision,
       operation: {
         operation_id,
         bead_id: input.bead_id,
@@ -2383,19 +2378,16 @@ export function createDiscardCoordinator(deps, options = {}) {
         source_snapshot: {
           repo: deps.repo,
           residue,
-          worktree: stale_work.identity.worktree_realpath,
+          worktree: identity.worktree_realpath,
           branch,
-          source_head: stale_work.identity.head_sha,
+          source_head: identity.head_sha,
           branch_head_sha,
-          base_oid: stale_work.identity.base_oid,
+          base_oid: identity.base_oid,
           target_base: resolved.base,
           local_branch_sha:
-            residue === 'branch'
-              ? branch_head_sha
-              : stale_work.identity.head_sha,
+            residue === 'branch' ? branch_head_sha : identity.head_sha,
           remote_branch_sha: null,
-          identity_digest: stale_work.identity_digest,
-          status_digest: stale_work.identity.status_digest
+          status_digest: identity.status_digest
         }
       }
     });
@@ -2645,7 +2637,7 @@ export function createDiscardCoordinator(deps, options = {}) {
 
   return {
     discard,
-    backupFresh,
+    backupFreshResidue,
     recoverFences,
     recover,
     retry,

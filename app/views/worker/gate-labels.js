@@ -3,7 +3,7 @@
  * gate chip (UI-01wh §3.2).
  *
  * The tile and the row say the same fact about the same `provider_hold` target,
- * so one function owns the sentence: a second copy would let `⚠️ 공급자 장애`
+ * so one function owns the sentence: a second copy would let `⚠️ 공급자 보류`
  * drift from what the tile says about the very same outage.
  *
  * Pure: it reads its argument and nothing else — no DOM, no clock beyond the
@@ -39,19 +39,18 @@ export function providerHoldBadgeText(hold) {
   if (!hold) {
     return '';
   }
-  const manual = hold.auto_resume === 'disarmed' ? ' · 수동 조치' : '';
   if (hold.kind === 'usage_limit') {
     const reset = providerClock(hold.resets_at);
     if (!reset) {
-      return `⏳ 한도 대기 · 리셋 미상${manual}`;
+      return `⏳ 공급자 보류 · 리셋 미상`;
     }
     const account = hold.target?.account_alias || hold.target?.account || '';
-    return `⏳ 한도 대기 ${reset}${account ? ` · ${account}` : ''}${manual}`;
+    return `⏳ 공급자 보류 ${reset}${account ? ` · ${account}` : ''}`;
   }
   const next = providerClock(hold.next_probe_at);
   // 정상 글리프는 `⏳`다 (UI-8gem §5.2 정정): 프로브가 스스로 푸는 상태에
   // 지연·조치 글리프를 쓰지 않는다.
-  return `⏳ 공급자 장애${next ? ` · 다음 프로브 ${next}` : ''}${manual}`;
+  return `⏳ 공급자 보류${next ? ` · 다음 프로브 ${next}` : ''}`;
 }
 
 /**
@@ -63,9 +62,6 @@ export function providerHoldBadgeText(hold) {
 export function autoResumeText(value) {
   if (value === 'pending') {
     return '회복 후 자동 재개 대기';
-  }
-  if (value === 'disarmed') {
-    return '자동 재개 소진 · 수동 조치 필요';
   }
   if (typeof value === 'string' && value.startsWith('refused:')) {
     return `자동 재개 거부 · ${value.slice('refused:'.length)}`;

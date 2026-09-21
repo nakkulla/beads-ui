@@ -1,7 +1,8 @@
 ---
 id: UI-lmqu-2
 title: 기준 이동은 보존 세션 이어하기이고 기계 정산은 정리 재시도다
-status: accepted
+status: superseded
+superseded_by: UI-a5l2-2
 date: 2026-09-15
 summary: 'quick_fix 재개는 종료 사유로 session과 settlement를 구분하며 base_moved는 보존 세션 이어하기이고 기계 정산은 정리 재시도다'
 supersedes: [42]

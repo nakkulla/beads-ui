@@ -75,7 +75,15 @@ describe('wait notification suppression', () => {
       root_dir: '/repo',
       now: 1000,
       queue: {
-        hold: { kind: 'systemic', cause: '검증 오류', bead_ids: ['UI-a'] }
+        attempts: {
+          a: {
+            attempt_id: 'a',
+            bead_id: 'UI-a',
+            status: 'parked',
+            finished_at: 1000,
+            cause_detail: { awaiting_user: '다음 방향 확인' }
+          }
+        }
       }
     }).wait_reasons;
     const input = {
@@ -97,6 +105,52 @@ describe('wait notification suppression', () => {
 
     expect(spawn.calls).toHaveLength(1);
   });
+
+  test.each([
+    [
+      { session: 'launched', mode: 'fork', session_id: '1234567890' },
+      'launched · fork 12345678'
+    ],
+    [
+      { session: 'not_launched', reason: 'tmux_unavailable' },
+      'not_launched · tmux_unavailable'
+    ]
+  ])(
+    'adds a recovery inquiry outcome to one decision notification: %j',
+    async (inquiry, line) => {
+      const { input, store, spawn } = fixture();
+      store.appendAttempt('/repo', {
+        expected_revision: store.snapshot('/repo').revision,
+        attempt: {
+          attempt_id: 'recovery',
+          bead_id: 'UI-a',
+          status: 'waiting',
+          finished_at: 1000,
+          cause_detail: {
+            recovery: {
+              reason: 'verification',
+              classification: 'session_recovery_wait'
+            },
+            inquiry
+          }
+        }
+      });
+      input.wait_reasons = judgeWaitReasons({
+        root_dir: '/repo',
+        queue: store.snapshot('/repo'),
+        now: 1000
+      }).wait_reasons;
+
+      await notifyWaitReasons(input);
+      await notifyWaitReasons(input);
+
+      expect(spawn.calls).toHaveLength(1);
+      expect(messageOf(spawn.last())).toContain(`\n질의 세션: ${line}`);
+      expect(store.snapshot('/repo').wait_notified).toHaveProperty(
+        '["UI-a","recovery","decision"]'
+      );
+    }
+  );
 
   test('notifies external completion once across overdue scans and reload', async () => {
     const { input, store, spawn, recordTimelineEvent } = fixture();
@@ -135,50 +189,93 @@ describe('wait notification suppression', () => {
     );
   });
 
-  test.each(['unclassified', 'provider'])(
-    'claims recovery %s once across repeated observations and reload',
-    async (reason) => {
-      const { input, spawn, store } = fixture();
-      const wait_reasons = judgeWaitReasons({
-        root_dir: '/repo',
-        now: 2_000_000,
-        queue: {
-          attempts: {
-            a: {
-              attempt_id: 'a',
-              bead_id: 'UI-a',
-              status: 'waiting',
-              finished_at: 1000,
-              cause: 'session_ended_unresolved',
-              cause_detail: {
-                recovery: {
-                  classification: 'condition',
-                  disposition: 'wait',
-                  reason,
-                  policy_schema: 1
-                }
-              }
+  /**
+   * @param {string} reason
+   * @param {Record<string, unknown>} [extra_detail]
+   */
+  function recoveryWaitReasons(reason, extra_detail = {}) {
+    return judgeWaitReasons({
+      root_dir: '/repo',
+      now: 2_000_000,
+      queue: {
+        attempts: {
+          a: {
+            attempt_id: 'a',
+            bead_id: 'UI-a',
+            status: 'waiting',
+            finished_at: 1000,
+            cause: 'session_ended_unresolved',
+            cause_detail: {
+              summary: 'blocker: 승인 대상 자리표시자가 남아 있음',
+              recovery: {
+                classification: 'session_recovery_wait',
+                disposition: 'wait',
+                reason,
+                policy_schema: 1
+              },
+              ...extra_detail
             }
           }
         }
-      }).wait_reasons;
+      }
+    }).wait_reasons;
+  }
 
-      await notifyWaitReasons({ ...input, wait_reasons });
-      await notifyWaitReasons({ ...input, wait_reasons, now: 2000 });
-      await notifyWaitReasons({
-        ...input,
-        wait_reasons,
-        store: createQueueStore(),
-        now: 3000
-      });
+  test('claims a stalled recovery once across repeated observations and reload', async () => {
+    const { input, spawn, store } = fixture();
+    const wait_reasons = recoveryWaitReasons('authority', {
+      inquiry: { session: 'launched', mode: 'fork', session_id: 'abcdef1234' }
+    });
+    const queue_attempts = {
+      a: {
+        attempt_id: 'a',
+        bead_id: 'UI-a',
+        status: 'waiting',
+        cause_detail: {
+          recovery: { reason: 'authority' },
+          inquiry: {
+            session: 'launched',
+            mode: 'fork',
+            session_id: 'abcdef1234'
+          }
+        }
+      }
+    };
+    const stored = /** @type {typeof store} */ (
+      /** @type {unknown} */ ({
+        ...store,
+        snapshot: (/** @type {string} */ workspace) => ({
+          ...store.snapshot(workspace),
+          attempts: queue_attempts
+        })
+      })
+    );
 
-      expect(Object.keys(store.snapshot('/repo').wait_notified)).toHaveLength(
-        1
-      );
-      expect(spawn.calls).toHaveLength(1);
-      expect(spawn.last().args[0]).toContain('원인 session_ended_unresolved');
-    }
-  );
+    await notifyWaitReasons({ ...input, store: stored, wait_reasons });
+    await notifyWaitReasons({
+      ...input,
+      store: stored,
+      wait_reasons,
+      now: 2000
+    });
+
+    expect(Object.keys(store.snapshot('/repo').wait_notified)).toHaveLength(1);
+    expect(spawn.calls).toHaveLength(1);
+    expect(spawn.last().args[0]).toContain('세션이 멈춤');
+    expect(spawn.last().args[0]).toContain(
+      '질의 세션: launched · fork abcdef12'
+    );
+  });
+
+  test('sends no wait notification for a provider recovery wait', async () => {
+    const { input, spawn, store } = fixture();
+    const wait_reasons = recoveryWaitReasons('provider');
+
+    await notifyWaitReasons({ ...input, wait_reasons });
+
+    expect(Object.keys(store.snapshot('/repo').wait_notified)).toHaveLength(0);
+    expect(spawn.calls).toHaveLength(0);
+  });
 
   test('sends a recurring reason again after disappearance', async () => {
     const { input, spawn } = fixture();
@@ -230,7 +327,7 @@ describe('wait notification suppression', () => {
         kind: 'wait_notified',
         bead_id: 'UI-a',
         at: 1000,
-        detail: 'queue_hold:hold'
+        detail: 'awaiting_user:decision'
       })
     );
   });
@@ -247,7 +344,7 @@ describe('wait notification suppression', () => {
         kind: 'wait_notified',
         bead_id: 'UI-a',
         at: 1000,
-        detail: 'queue_hold:hold'
+        detail: 'awaiting_user:decision'
       })
     });
   });
@@ -286,14 +383,14 @@ describe('wait notification suppression', () => {
 
       await notifier[method]({
         bead_id: 'UI-a',
-        kind: 'queue_hold',
-        headline: '큐 정지\n검증 오류',
-        verdict_reason: { code: 'hold', message: '사람 승인 필요' },
+        kind: 'awaiting_user',
+        headline: '세션이 멈춤\n방향 확인',
+        verdict_reason: { code: 'decision', message: '사용자 답변 필요' },
         repo: '/repos/example'
       });
 
       expect(spawn.last().args).toEqual([
-        '⚠ example UI-a 지연 · 큐 정지 검증 오류 · 사람 승인 필요'
+        '⚠ example UI-a 지연 · 세션이 멈춤 방향 확인 · 사용자 답변 필요'
       ]);
     }
   );

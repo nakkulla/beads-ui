@@ -1,7 +1,8 @@
 ---
 id: UI-z437
 title: 외부 작업 대기는 소비자 Bead의 external_wait 상태이고 완료는 보존 세션의 fork 재개다
-status: accepted
+status: superseded
+superseded_by: UI-a5l2-2
 date: 2026-09-21
 summary: "외부 작업 대기는 게이트 Bead가 아니라 소비자 Bead의 external_wait 상태이고 관찰·완료·재개는 beads-ui Worker가 소유하며 완료는 보존 세션의 fork 재개다 — Worker 소유는 자동, 세션 소유는 알림 뒤 [이어하기], fork 자격 실패는 launch 없이 [새 세션으로]"
 supersedes: [34, "UI-3pu9"]

@@ -253,7 +253,7 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
     });
   });
 
-  test('records blocker evidence and group-kills on a merge-guard violation', () => {
+  test('records a merge warning without signaling', () => {
     const env = setup();
     const attempt = seedRunningAttempt(env.store);
 
@@ -262,17 +262,14 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
     env.monitors.stop(WS, 'att-1');
 
     const record = env.store.snapshot(WS).attempts['att-1'];
-    expect(record.guard_kill).toMatchObject({
+    expect(record.guard_warnings?.[0]).toMatchObject({
       reason: 'merge_to_base_blocked',
       command: 'gh pr merge 304 --squash',
       at: 5000
     });
-    expect(record.cause_detail).toEqual({
-      reason: 'merge_to_base_blocked',
-      command: 'gh pr merge 304 --squash'
-    });
+    expect(record.guard_kill).toBeNull();
     // NEGATIVE pid: the whole session process group, exactly like the engine.
-    expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
+    expect(env.kill_impl).not.toHaveBeenCalled();
   });
 
   test('kills on an interactive question the same way', () => {
@@ -358,7 +355,15 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
       patch: { started_at: 999999 }
     });
 
-    sessionWrites(env.session_log, bashLine('gh pr merge 304 --squash'));
+    sessionWrites(
+      env.session_log,
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', name: 'AskUserQuestion', input: {} }]
+        }
+      }) + '\n'
+    );
     env.monitors.stop(WS, 'att-1');
 
     expect(env.store.snapshot(WS).attempts['att-1'].guard_kill).toBeTruthy();
@@ -376,7 +381,15 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
     });
 
     env.monitors.start(WS, attempt);
-    sessionWrites(env.session_log, bashLine('gh pr merge 304 --squash'));
+    sessionWrites(
+      env.session_log,
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', name: 'AskUserQuestion', input: {} }]
+        }
+      }) + '\n'
+    );
     env.monitors.stop(WS, 'att-1');
 
     expect(processController.signal).toHaveBeenCalledWith(
@@ -411,7 +424,15 @@ describe('worker/session-monitor (UI-o2yt §3.3)', () => {
         throw new Error('queue write failed');
       });
 
-    sessionWrites(env.session_log, bashLine('gh pr merge 304 --squash'));
+    sessionWrites(
+      env.session_log,
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', name: 'AskUserQuestion', input: {} }]
+        }
+      }) + '\n'
+    );
     env.monitors.stop(WS, 'att-1');
     write_spy.mockRestore();
 
@@ -536,7 +557,7 @@ describe('worker/session-monitor guard effect parity (guard-enforcement-layer-re
 
     const record = env.store.snapshot(WS).attempts['att-1'];
     expect(env.kill_impl).not.toHaveBeenCalled();
-    expect(record.guard_warnings).toBe(null);
+    expect(record.guard_warnings).toBeNull();
     expect(pushed).toHaveLength(1);
   });
 
@@ -583,7 +604,7 @@ describe('worker/session-monitor guard effect parity (guard-enforcement-layer-re
     expect(pushed).toHaveLength(1);
   });
 
-  test('still kills a quick_fix attempt on gh pr merge', () => {
+  test('warns for a quick_fix attempt on gh pr merge', () => {
     const env = setup();
     const attempt = seedRunningAttempt(env.store, {
       repo: REPO,
@@ -596,11 +617,11 @@ describe('worker/session-monitor guard effect parity (guard-enforcement-layer-re
     env.monitors.stop(WS, 'att-1');
 
     const record = env.store.snapshot(WS).attempts['att-1'];
-    expect(record.guard_kill).toMatchObject({
+    expect(record.guard_warnings?.[0]).toMatchObject({
       reason: 'merge_to_base_blocked',
       command: 'gh pr merge 42 --squash'
     });
-    expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
+    expect(env.kill_impl).not.toHaveBeenCalled();
   });
 });
 
@@ -826,10 +847,10 @@ describe('worker/session-monitor deferred hook-bypass verdict (§3)', () => {
     expect(env.kill_impl).not.toHaveBeenCalled();
     expect(record.guard_kill).toBe(null);
     expect(record.guard_pending).toBe(null);
-    expect(record.guard_warnings).toBe(null);
+    expect(record.guard_warnings?.[0].reason).toBe('hook_bypass_blocked');
   });
 
-  test('kills once the tool_result proves the command ran', () => {
+  test('warns for once the tool_result proves the command ran', () => {
     const env = setup();
     const attempt = seedRunningAttempt(env.store, { guard_mirror: 'verified' });
 
@@ -842,13 +863,12 @@ describe('worker/session-monitor deferred hook-bypass verdict (§3)', () => {
     env.monitors.stop(WS, 'att-1');
 
     const record = env.store.snapshot(WS).attempts['att-1'];
-    expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
-    expect(record.guard_kill).toMatchObject({
+    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(record.guard_warnings?.[0]).toMatchObject({
       reason: 'hook_bypass_blocked',
-      command: ONE_SHOT_CMD,
-      confirmed_by: 'tool_result'
+      command: ONE_SHOT_CMD
     });
-    expect(record.cause_detail).toMatchObject({ confirmed_by: 'tool_result' });
+    expect(record.guard_kill).toBeNull();
   });
 
   test('records the held verdict on the attempt while it waits', () => {
@@ -874,7 +894,7 @@ describe('worker/session-monitor deferred hook-bypass verdict (§3)', () => {
 
     const record = env.store.snapshot(WS).attempts['att-1'];
     expect((record.guard_pending || []).length).toBe(1);
-    expect(record.guard_warnings).toBe(null);
+    expect(record.guard_warnings?.[0].reason).toBe('hook_bypass_blocked');
   });
 
   test('turns a still-held verdict into a warning when the session ends', () => {
@@ -893,6 +913,7 @@ describe('worker/session-monitor deferred hook-bypass verdict (§3)', () => {
     expect(env.kill_impl).not.toHaveBeenCalled();
     expect(record.guard_pending).toBe(null);
     expect(record.guard_warnings).toEqual([
+      { reason: 'hook_bypass_blocked', command: ONE_SHOT_CMD, at: 5000 },
       {
         reason: 'hook_bypass_unresolved',
         command: ONE_SHOT_CMD,
@@ -901,7 +922,7 @@ describe('worker/session-monitor deferred hook-bypass verdict (§3)', () => {
     ]);
   });
 
-  test('kills a one-shot relocation at once on an unverified attempt', () => {
+  test('warns for a one-shot relocation at once on an unverified attempt', () => {
     const env = setup();
     const attempt = seedRunningAttempt(env.store, { guard_mirror: 'absent' });
 
@@ -909,10 +930,10 @@ describe('worker/session-monitor deferred hook-bypass verdict (§3)', () => {
     sessionWrites(env.session_log, bashLineWithId(ONE_SHOT_CMD, 'toolu_1'));
     env.monitors.stop(WS, 'att-1');
 
-    expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
+    expect(env.kill_impl).not.toHaveBeenCalled();
   });
 
-  test('kills a one-shot relocation at once on an unrecorded mirror', () => {
+  test('warns for a one-shot relocation at once on an unrecorded mirror', () => {
     const env = setup();
     const attempt = seedRunningAttempt(env.store);
 
@@ -920,7 +941,7 @@ describe('worker/session-monitor deferred hook-bypass verdict (§3)', () => {
     sessionWrites(env.session_log, bashLineWithId(ONE_SHOT_CMD, 'toolu_1'));
     env.monitors.stop(WS, 'att-1');
 
-    expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
+    expect(env.kill_impl).not.toHaveBeenCalled();
   });
 });
 
@@ -980,7 +1001,7 @@ describe('worker/session-monitor re-attach backfill (§3)', () => {
     expect(record.guard_kill).toBe(null);
   });
 
-  test('kills on an execution written before the handoff boundary', () => {
+  test('warns for on an execution written before the handoff boundary', () => {
     const env = setup();
     const attempt = seedHeldAttempt(
       env,
@@ -990,9 +1011,12 @@ describe('worker/session-monitor re-attach backfill (§3)', () => {
     startAtReattach(env, attempt);
     env.monitors.stop(WS, 'att-1');
 
-    expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
-    expect(env.store.snapshot(WS).attempts['att-1'].guard_kill).toMatchObject({
-      confirmed_by: 'tool_result'
+    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(
+      env.store.snapshot(WS).attempts['att-1'].guard_warnings?.[0]
+    ).toMatchObject({
+      reason: 'hook_bypass_blocked',
+      command: ONE_SHOT_CMD
     });
   });
 
@@ -1040,6 +1064,6 @@ describe('worker/session-monitor re-attach backfill (§3)', () => {
     );
     env.monitors.stop(WS, 'att-1');
 
-    expect(env.kill_impl).toHaveBeenCalledWith(-4242, 'SIGTERM');
+    expect(env.kill_impl).not.toHaveBeenCalled();
   });
 });

@@ -43,8 +43,6 @@ import { listAccounts as listCodexAccounts } from '../routes/codex-usage.js';
 import { createAccountCatalog } from '../worker/account-catalog.js';
 import {
   abandonWorkerDiscard,
-  backupFreshWorkerStaleWork,
-  continueWorkerStaleWork,
   discardWorkerBead,
   dismissWorkerRepoOperation,
   enqueueWorkerManualMerge,
@@ -54,13 +52,10 @@ import {
   pauseWorkerAttempt,
   probeProviderNow,
   readBeadTimeline,
-  recheckWorkerStaleWork,
   refreshWorkerExternalPrs,
   refreshWorkerWaitReasons,
   resumeWorkerAttempt,
-  resumeWorkerQueueHold,
   retryWorkerCleanup,
-  retryWorkerQueueHoldNow,
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
   startWorkerRepoOperationDeployRun,
@@ -491,28 +486,6 @@ export async function __refreshWorkspaceAccountDefaultsForTest(workspace_key) {
 }
 
 /**
- * @typedef {Object} PublicStaleWorkSummary
- * @property {number} staged_count
- * @property {number} unstaged_count
- * @property {number} untracked_count
- * @property {number} branch_ahead
- * @property {number} head_ahead
- */
-/**
- * @typedef {Object} PublicStaleWork
- * @property {1} schema
- * @property {'worktree'|'branch'} residue
- * @property {'unique'|'unknown'} state
- * @property {string} cause
- * @property {PublicStaleWorkSummary} summary
- * @property {string} identity_digest
- * @property {string} action_id
- * @property {boolean} can_resume
- * @property {boolean} can_continue
- * @property {boolean} can_backup_fresh
- * @property {boolean} can_recheck
- */
-/**
  * @typedef {Object} PublicAdmissionBlocker
  * @property {string} id
  * @property {string|null} rig
@@ -523,7 +496,6 @@ export async function __refreshWorkspaceAccountDefaultsForTest(workspace_key) {
  * @property {string} reason
  * @property {number} at
  * @property {true} [stale]
- * @property {PublicStaleWork} [stale_work]
  * @property {PublicAdmissionBlocker[]} [blockers]
  * @property {{ runner: string, kind: 'outage'|'usage_limit', account: string|null, unresolved: boolean }} [gate]
  */
@@ -648,65 +620,6 @@ function publicDiscardPr(value) {
 }
 
 /**
- * Project the optional stale-work diagnostic without its server-only identity
- * snapshot. Unknown or legacy payloads fail quiet to the existing reason/at
- * badge contract.
- *
- * @param {unknown} value
- * @returns {PublicStaleWork|null}
- */
-function publicStaleWork(value) {
-  if (
-    !value ||
-    typeof value !== 'object' ||
-    Array.isArray(value) ||
-    /** @type {Record<string, unknown>} */ (value).schema !== 1
-  ) {
-    return null;
-  }
-  const stale_work = /** @type {Record<string, unknown>} */ (value);
-  const summary = /** @type {Record<string, unknown> | undefined} */ (
-    stale_work.summary
-  );
-  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) {
-    return null;
-  }
-  return {
-    schema: 1,
-    residue: stale_work.residue === 'branch' ? 'branch' : 'worktree',
-    state: stale_work.state === 'unique' ? 'unique' : 'unknown',
-    cause: typeof stale_work.cause === 'string' ? stale_work.cause : 'unknown',
-    summary: {
-      staged_count: Number.isInteger(summary.staged_count)
-        ? /** @type {number} */ (summary.staged_count)
-        : 0,
-      unstaged_count: Number.isInteger(summary.unstaged_count)
-        ? /** @type {number} */ (summary.unstaged_count)
-        : 0,
-      untracked_count: Number.isInteger(summary.untracked_count)
-        ? /** @type {number} */ (summary.untracked_count)
-        : 0,
-      branch_ahead: Number.isInteger(summary.branch_ahead)
-        ? /** @type {number} */ (summary.branch_ahead)
-        : 0,
-      head_ahead: Number.isInteger(summary.head_ahead)
-        ? /** @type {number} */ (summary.head_ahead)
-        : 0
-    },
-    identity_digest:
-      typeof stale_work.identity_digest === 'string'
-        ? stale_work.identity_digest
-        : '',
-    action_id:
-      typeof stale_work.action_id === 'string' ? stale_work.action_id : '',
-    can_resume: stale_work.can_resume === true,
-    can_continue: stale_work.can_continue === true,
-    can_backup_fresh: stale_work.can_backup_fresh === true,
-    can_recheck: stale_work.can_recheck === true
-  };
-}
-
-/**
  * @param {unknown} value
  * @returns {Record<string, PublicAdmission>}
  */
@@ -721,7 +634,6 @@ function publicAdmissions(value) {
       continue;
     }
     const admission = /** @type {Record<string, unknown>} */ (raw);
-    const stale_work = publicStaleWork(admission.stale_work);
     projected[bead_id] = {
       reason:
         typeof admission.reason === 'string' ? admission.reason : 'unknown',
@@ -729,9 +641,7 @@ function publicAdmissions(value) {
         ? /** @type {number} */ (admission.at)
         : 0,
       ...(admission.stale === true ? { stale: true } : {}),
-      ...(stale_work === null ? {} : { stale_work }),
-      // 이미 store가 검증해 저장한 값이라 여기서는 통과시킨다 (UI-d3i1 §5.1) —
-      // stale_work와 달리 server-only authority 필드가 없다.
+      // Store-validated blockers contain no server-only authority fields.
       ...(Array.isArray(admission.blockers)
         ? {
             blockers: /** @type {PublicAdmissionBlocker[]} */ (
@@ -3177,11 +3087,6 @@ export function decorateQueue(workspace_key, raw_queue) {
     log('snapshot retention failed for %s: %o', workspace_key, err);
   }
   public_queue.admission = publicAdmissions(overlaid.admission);
-  // `hold` and `lineages` DO travel — the stop banner and its 다음 HH:MM are
-  // drawn from them (2026-08-28 worker-failure-tiers spec §8). `hold_history` is
-  // the reducer's own 30-minute working memory: nothing renders it, so it stays
-  // server-side like `completion_intents`.
-  delete public_queue.hold_history;
   delete public_queue.completion_intents;
   delete public_queue.last_deploy;
   delete public_queue.reconcile;
@@ -4890,77 +4795,6 @@ export async function handleWorkerRepoOperationDismiss(ws, req) {
 }
 
 /**
- * Handle `worker-queue-hold-resume`. Payload: `{ since: number }`.
- *
- * The `재개` click on a systemic queue stop (2026-08-28 worker-failure-tiers
- * spec §3.4). `since` is a CAS on the stop the button was drawn against: a
- * mismatch is a NO-OP reply, never a release, because clearing a stop the user
- * never saw is exactly what the confirmation is there to prevent. A duplicate
- * click is idempotent for the same reason — the second one no longer matches.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export async function handleWorkerQueueHoldResume(ws, req) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.since !== 'number' || !Number.isFinite(p.since)) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { since }')
-      )
-    );
-    return;
-  }
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
-  }
-  /** @type {{ ok: boolean, reason?: string }} */
-  let result;
-  try {
-    result = await resumeWorkerQueueHold(key, { since: p.since });
-  } catch (err) {
-    log('queue hold resume failed for %s: %o', key, err);
-    result = { ok: false, reason: 'queue_hold_resume_failed' };
-  }
-  replyQueueHold(ws, req, key, result);
-}
-
-/**
- * Handle `worker-queue-hold-retry-now`. Payload: `{ since: number }`.
- *
- * The `지금 재시도` click on an env hold (spec §4): every lineage's backoff
- * collapses to now. Same CAS, same idempotence.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export async function handleWorkerQueueHoldRetryNow(ws, req) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.since !== 'number' || !Number.isFinite(p.since)) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { since }')
-      )
-    );
-    return;
-  }
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
-  }
-  /** @type {{ ok: boolean, reason?: string }} */
-  let result;
-  try {
-    result = await retryWorkerQueueHoldNow(key, { since: p.since });
-  } catch (err) {
-    log('queue hold retry-now failed for %s: %o', key, err);
-    result = { ok: false, reason: 'queue_hold_retry_failed' };
-  }
-  replyQueueHold(ws, req, key, result);
-}
-
-/**
  * Handle `worker-provider-probe-now`. Payload: `{ runner: string, since: number }`.
  *
  * The `↻ 지금 프로브` click on a row blocked by a provider hold (UI-o5ll §3.3).
@@ -4999,7 +4833,7 @@ export async function handleWorkerProviderProbeNow(ws, req) {
     log('provider probe-now failed for %s: %o', key, err);
     result = { ok: false, reason: 'provider_probe_failed' };
   }
-  replyQueueHold(ws, req, key, result);
+  replyProviderProbe(ws, req, key, result);
 }
 
 /**
@@ -5099,22 +4933,19 @@ export async function handleWorkerExternalWait(ws, req) {
 }
 
 /**
- * The shared reply of the three queue-hold clicks: the decorated queue rides
- * the reply so the clicking client re-renders off a readback, and the fanout
- * gives every OTHER subscriber the same one.
+ * Return the provider probe result with the queue readback and notify subscribers.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  * @param {string} key
  * @param {{ ok: boolean, reason?: string, armed?: number }} result
  */
-function replyQueueHold(ws, req, key, result) {
+function replyProviderProbe(ws, req, key, result) {
   ws.send(
     JSON.stringify(
       makeOk(req, {
         ok: result.ok === true,
         reason: result.ok === true ? undefined : result.reason || 'refused',
-        // `↻ 지금 프로브`만 싣는 값이다 — 다른 두 조작에는 없으므로 undefined다.
         ...(typeof result.armed === 'number' ? { armed: result.armed } : {}),
         queue: decorateQueue(key, queueStore().snapshot(key))
       })
@@ -5534,12 +5365,16 @@ export async function handleWorkerAttemptResume(ws, req) {
   /** @type {{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, route_change?: { prior_lane: string, current_route: string|null }, fallback?: string|null }} */
   let result = { ok: false, reason: 'no_attachment' };
   try {
-    result = await resumeWorkerAttempt(key, p.attempt_id, {
-      continuation: p.continuation,
-      decision_token: p.decision_token,
-      instructions,
-      exec_override
-    });
+    const attempt = current.attempts?.[p.attempt_id];
+    result =
+      attempt?.status === 'waiting' && attempt.cause_detail?.recovery
+        ? { ok: false, reason: 'recovery_requires_inquiry' }
+        : await resumeWorkerAttempt(key, p.attempt_id, {
+            continuation: p.continuation,
+            decision_token: p.decision_token,
+            instructions,
+            exec_override
+          });
   } catch (err) {
     log('worker-attempt-resume failed for %s/%s: %o', key, p.attempt_id, err);
     result = { ok: false, reason: 'error' };
@@ -6185,117 +6020,6 @@ export async function handleWorkerDiscardAbandon(ws, req) {
 }
 
 /**
- * @typedef {Object} WorkerStaleActionResult
- * @property {boolean} ok
- * @property {boolean} [conflict]
- * @property {string} [reason]
- * @property {string} [operation_id]
- * @property {string} [attempt_id]
- * @property {string} [state]
- */
-
-/**
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- * @param {(workspace: string, input: { bead_id: string, action_id: string, expected_revision: number }) => Promise<WorkerStaleActionResult>} action
- * @param {'continued'|'accepted'|'rechecked'} outcome_key
- */
-async function handleWorkerStaleWorkAction(ws, req, action, outcome_key) {
-  const p = /** @type {Record<string, unknown>} */ (req.payload || {});
-  if (
-    typeof p.bead_id !== 'string' ||
-    p.bead_id.length === 0 ||
-    typeof p.action_id !== 'string' ||
-    p.action_id.length === 0 ||
-    !Number.isInteger(p.expected_revision)
-  ) {
-    ws.send(
-      JSON.stringify(
-        makeError(
-          req,
-          'bad_request',
-          'payload requires { bead_id, action_id, expected_revision }'
-        )
-      )
-    );
-    return;
-  }
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
-  }
-  /** @type {WorkerStaleActionResult} */
-  let result;
-  try {
-    result = await action(key, {
-      bead_id: p.bead_id,
-      action_id: p.action_id,
-      expected_revision: Number(p.expected_revision)
-    });
-  } catch (err) {
-    log('%s failed for %s/%s: %o', req.type, key, p.bead_id, err);
-    result = { ok: false, reason: 'error' };
-  }
-  const queue = queueStore().snapshot(key);
-  ws.send(
-    JSON.stringify(
-      makeOk(req, {
-        bead_id: p.bead_id,
-        [outcome_key]: result.ok === true,
-        operation_id: result.operation_id || null,
-        attempt_id: result.attempt_id || null,
-        state: result.state || null,
-        conflict: result.conflict === true,
-        reason: result.reason || null,
-        queue: decorateQueue(key, queue)
-      })
-    )
-  );
-  if (result.ok === true) {
-    fanout(key, queue);
-  }
-}
-
-/**
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export function handleWorkerStaleWorkContinue(ws, req) {
-  return handleWorkerStaleWorkAction(
-    ws,
-    req,
-    continueWorkerStaleWork,
-    'continued'
-  );
-}
-
-/**
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export function handleWorkerStaleWorkBackupFresh(ws, req) {
-  return handleWorkerStaleWorkAction(
-    ws,
-    req,
-    backupFreshWorkerStaleWork,
-    'accepted'
-  );
-}
-
-/**
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export function handleWorkerStaleWorkRecheck(ws, req) {
-  return handleWorkerStaleWorkAction(
-    ws,
-    req,
-    recheckWorkerStaleWork,
-    'rechecked'
-  );
-}
-
-/**
  * Shared body of the two REVISE-disposition clicks (UI-hs11 §3.2). Both follow
  * the merge click's discipline exactly: validate the payload, refuse a stale
  * CAS revision WITHOUT acting (the snapshot the user clicked from may predate
@@ -6546,7 +6270,24 @@ export async function handleWorkerResolveInSession(ws, req) {
   // The click's own precondition, re-read server-side: the button is only drawn
   // on a failure row, but a row can settle between render and click and a
   // session that cannot state what it is for is worse than a refusal.
-  const failure = resolveFailureContext(current, p.bead_id);
+  const latest_attempt = Object.values(current.attempts || {})
+    .reverse()
+    .find(
+      (record) =>
+        record.bead_id === p.bead_id && isImplementationAttempt(record)
+    );
+  const recovery =
+    latest_attempt?.status === 'waiting'
+      ? latest_attempt.cause_detail?.recovery
+      : null;
+  const failure = recovery
+    ? {
+        failure_class: '세션이 멈춤',
+        reason: recovery.reason,
+        stage: null,
+        detail: null
+      }
+    : resolveFailureContext(current, p.bead_id);
   if (failure === null) {
     ws.send(
       JSON.stringify(
@@ -6569,7 +6310,7 @@ export async function handleWorkerResolveInSession(ws, req) {
   /** @type {any} */
   let result;
   try {
-    if (failure.failure_class === '파킹') {
+    if (failure.failure_class === '파킹' || recovery) {
       /** @type {any} */
       let attempt = null;
       for (const value of Object.values(current.attempts || {})) {
@@ -6586,7 +6327,8 @@ export async function handleWorkerResolveInSession(ws, req) {
           typeof attempt?.repo === 'string' && attempt.repo.length > 0
             ? attempt.repo
             : key,
-        awaiting_user: attempt?.cause_detail?.awaiting_user ?? null
+        awaiting_user: attempt?.cause_detail?.awaiting_user ?? null,
+        ...(recovery ? { recovery } : {})
       });
     } else {
       result = await getWorkerRuntime().resolveSession.resolve({

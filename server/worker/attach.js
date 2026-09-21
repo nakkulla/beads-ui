@@ -270,7 +270,6 @@ export function createWaitJudge(deps) {
     return JSON.stringify([
       queue.revision,
       queue.provider_hold,
-      queue.hold,
       queue.auto_advance
     ]);
   }
@@ -1262,6 +1261,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // every other runtime singleton: its duplicate guard is a tmux pane marker,
     // which is one truth for the whole machine.
     directionInquiry: runtime.directionInquiry,
+    backupFreshResidue: (identity, input) =>
+      discardCoordinator.backupFreshResidue(identity, input),
     // The external-row evidence the attempt-less conflict dispatch stands on
     // (UI-w0hi §1) — the SAME registry the poller refreshes and the merge click
     // reads, so a dispatch can never disagree with the row that was clicked.
@@ -3339,38 +3340,6 @@ export async function resumeWorkerAttempt(
 }
 
 /**
- * Release a systemic queue stop (`재개`, 2026-08-28 worker-failure-tiers spec
- * §3.4). CAS on `hold.since`, so a stop that moved under the button is refused
- * rather than silently acknowledged.
- *
- * @param {string} workspace_root
- * @param {{ since?: number|null }} input
- * @returns {Promise<{ ok: boolean, reason?: string }>}
- */
-export async function resumeWorkerQueueHold(workspace_root, input) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  if (!att) {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  return att.scheduler.resumeQueueHold(keyFor(workspace_root), input);
-}
-
-/**
- * Collapse an env hold's backoff to now (`지금 재시도`, spec §4). Same CAS.
- *
- * @param {string} workspace_root
- * @param {{ since?: number|null }} input
- * @returns {Promise<{ ok: boolean, reason?: string }>}
- */
-export async function retryWorkerQueueHoldNow(workspace_root, input) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  if (!att) {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  return att.scheduler.retryQueueHoldNow(keyFor(workspace_root), input);
-}
-
-/**
  * Pull one runner's provider recovery probes forward (`↻ 지금 프로브`, release
  * spec §3.3). `since` is a CAS on the hold the button was drawn against, but
  * here it only filters a click from a stale screen — a probe removes nothing,
@@ -3801,44 +3770,6 @@ export async function abandonWorkerDiscard(workspace_root, input) {
     return { ok: false, reason: 'operation_not_found' };
   }
   return att.discardCoordinator.abandon(input.operation_id);
-}
-
-/**
- * @param {string} workspace_root
- * @param {{ bead_id: string, action_id: string, expected_revision: number }} input
- */
-export async function continueWorkerStaleWork(workspace_root, input) {
-  const key = keyFor(workspace_root);
-  const att = ATTACHMENTS.get(key);
-  if (!att || typeof att.scheduler?.staleWorkContinue !== 'function') {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  return att.scheduler.staleWorkContinue(key, input);
-}
-
-/**
- * @param {string} workspace_root
- * @param {{ bead_id: string, action_id: string, expected_revision: number }} input
- */
-export async function backupFreshWorkerStaleWork(workspace_root, input) {
-  const att = ATTACHMENTS.get(keyFor(workspace_root));
-  if (!att || typeof att.discardCoordinator?.backupFresh !== 'function') {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  return att.discardCoordinator.backupFresh(input);
-}
-
-/**
- * @param {string} workspace_root
- * @param {{ bead_id: string, action_id: string, expected_revision: number }} input
- */
-export async function recheckWorkerStaleWork(workspace_root, input) {
-  const key = keyFor(workspace_root);
-  const att = ATTACHMENTS.get(key);
-  if (!att || typeof att.scheduler?.staleWorkRecheck !== 'function') {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  return att.scheduler.staleWorkRecheck(key, input);
 }
 
 /**

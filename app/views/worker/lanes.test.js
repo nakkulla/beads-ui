@@ -31,7 +31,6 @@ import {
   repoOpsStripModel,
   reviewSessionRowState,
   routeChipTemplate,
-  staleWorkProjection,
   startNowButtonTemplate,
   sumAttemptWorkMs,
   summaryChipsTemplate,
@@ -147,37 +146,14 @@ describe('server wait judgment rendering', () => {
 
     expect(summary.count).toBe(1);
     expect(summary.action_count).toBe(1);
-    expect(summary.groups.map((group) => group.label)).toEqual(['복구']);
+    expect(summary.groups.map((group) => group.label)).toEqual(['세션이 멈춤']);
     expect(summary.groups[0].entries[0].id).toBe('A-1');
-  });
-
-  test('routes recovery resume through the supplied attempt control', () => {
-    const reason = waitReason({
-      kind: 'recovery',
-      actions: [
-        {
-          op: 'resume',
-          label: '↻ 이어하기',
-          payload: { root_dir: '/repo', bead_id: 'A-1', attempt_id: 'a' }
-        }
-      ]
-    });
-
-    render(
-      waitReasonLines(reason, {
-        resume: html`<button class="op-btn rtile__resume">↻ 이어하기</button>`
-      }).actions,
-      mount
-    );
-
-    expect(mount.querySelectorAll('.rtile__resume')).toHaveLength(1);
-    expect(mount.querySelector('.worker-mini__hold-resume')).toBeNull();
   });
 
   test('keeps one recovery body when server wait reasons are available', () => {
     const reason = waitReason({
       kind: 'recovery',
-      headline: '확인 대기 · 원인과 결과 확인 · 원인 session_ended_unresolved',
+      headline: '승인 범위를 선택해 주세요',
       targets: []
     });
 
@@ -202,33 +178,25 @@ describe('server wait judgment rendering', () => {
     );
 
     expect(mount.querySelector('.rtile__held-summary')).toBeNull();
-    expect(mount.textContent).toContain('원인 세션 종료');
+    expect(mount.textContent).toContain('승인 범위를 선택해 주세요');
     expect(mount.textContent).not.toContain('이전 문장');
   });
 
-  test('keeps the base-moved resume action with server reason sentences', () => {
+  test('renders one parked session sentence when a server reason is present', () => {
     const reason = waitReason({
-      kind: 'base_moved',
-      headline: '보존 후보의 새 기준 검증 대기',
-      release: '이어하기로 보존 세션 재개',
-      actions: [
-        {
-          op: 'resume',
-          label: '',
-          payload: { attempt_id: 'a', bead_id: 'A-1' }
-        }
-      ]
+      kind: 'awaiting_user',
+      verdict: 'action_required',
+      headline: '사용자 결정 대기 · 방향 선택'
     });
 
     render(
       runningTile(
         /** @type {any} */ ({
           bead_id: 'A-1',
-          attempt_id: 'a',
-          title: '기준 이동',
-          waiting: true,
-          can_resume: true,
-          wait: { cause: 'base_moved', summary: '기존 문장', blockers: [] },
+          attempt_id: 'parked',
+          title: '방향 선택',
+          parked: true,
+          failure: { summary: '중복된 파킹 문장' },
           wait_reasons: [reason]
         }),
         Date.now()
@@ -236,19 +204,17 @@ describe('server wait judgment rendering', () => {
       mount
     );
 
-    expect(mount.querySelectorAll('.rtile__resume')).toHaveLength(1);
-    expect(mount.querySelector('.rtile__resume')?.textContent).toContain(
-      '이어하기'
-    );
-    expect(mount.textContent).toContain(reason.headline);
-    expect(mount.textContent).not.toContain('기존 문장');
+    expect(
+      mount.querySelector('.wait-reason__headline')?.textContent?.trim()
+    ).toBe(reason.headline);
+    expect(mount.querySelector('.rtile__held-summary')).toBeNull();
   });
 
   test('groups provider and human aliases together without empty groups', () => {
     const kinds = /** @type {const} */ ([
       'provider_hold',
       'awaiting_user',
-      'stale_work'
+      'recovery'
     ]);
 
     const summary = blockedSummary([
@@ -267,7 +233,7 @@ describe('server wait judgment rendering', () => {
       summary.groups.map((group) => [group.label, group.entries.length])
     ).toEqual([
       ['공급자', 1],
-      ['사람', 2]
+      ['세션이 멈춤', 2]
     ]);
   });
 
@@ -290,24 +256,6 @@ describe('server wait judgment rendering', () => {
     expect(mount.querySelector('button')).toBeNull();
   });
 
-  test('reuses the supplied disposition template once', () => {
-    const lines = waitReasonLines(
-      waitReason({
-        kind: 'stale_work',
-        actions: [{ op: 'disposition', label: '', payload: {} }]
-      }),
-      {
-        disposition: html`<button class="existing-disposition">
-          이어하기 / 새로 시작
-        </button>`
-      }
-    );
-
-    render(html`${lines.actions}`, mount);
-
-    expect(mount.querySelectorAll('.existing-disposition')).toHaveLength(1);
-  });
-
   test('keeps the server verdict after the local reset clock passes', () => {
     const lines = waitReasonLines(
       waitReason({ kind: 'provider_hold', resets_at: 100, verdict: 'normal' }),
@@ -317,7 +265,7 @@ describe('server wait judgment rendering', () => {
     render(html`${lines.badge}`, mount);
 
     expect(mount.querySelector('summary')?.textContent).toContain(
-      '⏳ 한도 대기'
+      '⏳ 공급자 보류'
     );
     expect(mount.querySelector('summary')?.textContent).not.toContain(
       '리셋까지'
@@ -483,7 +431,7 @@ describe('server wait judgment rendering', () => {
   test('reuses offered operations and hides unknown actions', () => {
     const lines = waitReasonLines(
       waitReason({
-        kind: 'queue_hold',
+        kind: 'provider_hold',
         since: 100,
         actions: [
           { op: 'resume', label: '', payload: {} },
@@ -495,13 +443,13 @@ describe('server wait judgment rendering', () => {
 
     render(html`${lines.actions}`, mount);
 
-    expect(mount.querySelectorAll('button')).toHaveLength(2);
+    expect(mount.querySelectorAll('button')).toHaveLength(1);
     expect(
       mount
         .querySelector('.worker-mini__provider-probe')
         ?.getAttribute('data-since')
     ).toBe('100');
-    expect(mount.querySelector('.worker-mini__hold-resume')).not.toBeNull();
+    expect(mount.querySelector('.worker-mini__hold-resume')).toBeNull();
   });
 
   test.each(['queue', 's1'])(
@@ -554,18 +502,14 @@ describe('server wait judgment rendering', () => {
             kind: 'prerequisite_foreign',
             verdict: 'action_required'
           }),
-          waitReason({ kind: 'external_job' }),
-          waitReason({
-            subject: { bead_id: 'A-2', root_dir: '/repo' },
-            kind: 'queue_hold'
-          })
+          waitReason({ kind: 'external_job' })
         ]
       }
     ]);
 
     expect(summary.count).toBe(1);
     expect(summary.action_count).toBe(1);
-    expect(summary.queue_line).toEqual(['정지 1']);
+    expect(summary.queue_line).toEqual([]);
     expect(
       summary.groups.map((group) => [group.label, group.entries.length])
     ).toEqual([
@@ -693,7 +637,7 @@ describe('server wait judgment rendering', () => {
       ).toBe(reason.headline);
       expect(
         mount.querySelector('.wait-verdict summary')?.textContent?.trim()
-      ).toBe(kind === 'usage_limit' ? '⏳ 한도 대기' : '⏳ 공급자 장애');
+      ).toBe('⏳ 공급자 보류');
     }
   );
 });
@@ -705,7 +649,7 @@ describe('카드당 대기 상태 배지 하나 (UI-8gem §6)', () => {
       done: false,
       wait_reasons: [
         waitReason({ kind: 'prerequisite' }),
-        waitReason({ kind: 'queue_hold', headline: '큐 정지' })
+        waitReason({ kind: 'retry_wait', headline: '곧 재시도' })
       ]
     });
 
@@ -739,7 +683,7 @@ describe('카드당 대기 상태 배지 하나 (UI-8gem §6)', () => {
       done: false,
       wait_reasons: [
         waitReason({ kind: 'prerequisite', verdict: 'action_required' }),
-        waitReason({ kind: 'base_moved', headline: '새 기준 재검증 대기' })
+        waitReason({ kind: 'retry_wait', headline: '재시도 예약' })
       ]
     });
     const popover = row.querySelector('.wait-verdict .chip-popover');
@@ -754,78 +698,7 @@ describe('카드당 대기 상태 배지 하나 (UI-8gem §6)', () => {
   });
 });
 
-describe('큐 사유는 게이트 칩 하나 (UI-8gem §7.1)', () => {
-  test('warns the gate chip with the queue_hold verdict', () => {
-    const row = renderRow({
-      lane: 'queue',
-      done: false,
-      gate: /** @type {any} */ ({
-        kind: 'systemic',
-        label: '⛔ 정지 · 검증 실패',
-        title: '큐 정지',
-        since: 10,
-        next_at: null,
-        runner: null,
-        probe_ready: false,
-        lines: ['출구: ▶ 재개']
-      }),
-      wait_reasons: [
-        waitReason({
-          kind: 'queue_hold',
-          verdict: 'action_required',
-          headline: '큐 정지',
-          verdict_reason: { code: 'hold', message: '사람 승인 필요' }
-        })
-      ]
-    });
-
-    expect(
-      row
-        .querySelector('.worker-dep--gate')
-        ?.classList.contains('worker-dep--gate-action')
-    ).toBe(true);
-    expect(row.querySelectorAll('.wait-verdict')).toHaveLength(0);
-    expect(
-      judgementPopoverContent(
-        /** @type {any} */ ({
-          gate: { lines: ['출구: ▶ 재개'] },
-          wait_reasons: [
-            waitReason({
-              kind: 'queue_hold',
-              verdict: 'action_required',
-              verdict_reason: { code: 'hold', message: '사람 승인 필요' }
-            })
-          ]
-        }),
-        'gate'
-      )?.lines
-    ).toEqual(['사람 승인 필요', '출구: ▶ 재개']);
-  });
-});
-
 describe('요약 칩 묶음 (UI-8gem §8)', () => {
-  test('counts only bead-scope subjects as 막힘', () => {
-    const summary = blockedSummary([
-      {
-        root_dir: '/repo',
-        wait_reasons: [
-          waitReason({
-            kind: 'provider_hold',
-            subject: { bead_id: 'A-1', root_dir: '/repo' }
-          }),
-          waitReason({
-            kind: 'queue_hold',
-            subject: { bead_id: 'A-2', root_dir: '/repo' }
-          })
-        ]
-      }
-    ]);
-
-    expect(summary.count).toBe(1);
-    expect(summary.groups.map((group) => group.label)).toEqual(['공급자']);
-    expect(summary.queue_line).toEqual(['정지 1']);
-  });
-
   test('leaves the queue line empty without a queue-scope reason (UI-3pu9 §4.2)', () => {
     const summary = blockedSummary([
       {
@@ -902,29 +775,7 @@ describe('요약 칩 묶음 (UI-8gem §8)', () => {
 
     expect(
       row.querySelector('.wait-verdict summary')?.textContent?.trim()
-    ).toBe('⏳ 복구 대기');
-  });
-
-  test('names the queue counts on the last popover line', () => {
-    render(
-      blockedSummaryTemplate([
-        {
-          root_dir: '/repo',
-          wait_reasons: [
-            waitReason(),
-            waitReason({
-              kind: 'queue_hold',
-              subject: { bead_id: 'A-9', root_dir: '/repo' }
-            })
-          ]
-        }
-      ]),
-      mount
-    );
-
-    expect(mount.querySelector('.wait-summary__queue')?.textContent).toContain(
-      '큐: 정지 1'
-    );
+    ).toBe('⏸ 세션이 멈춤');
   });
 
   test('draws both token chip forms from one label', () => {
@@ -1246,132 +1097,6 @@ describe('waiting row (UI-04vo 직렬 레인)', () => {
     expect(row.classList.contains('worker-mini--ghost')).toBe(true);
     expect(row.getAttribute('draggable')).toBe('false');
     expect(row.textContent).toContain('실패 · 점유 유지');
-  });
-
-  test('drops stale-work actions with an empty action_id', () => {
-    const stale_work = staleWorkProjection({
-      reason: 'worktree_stale_work',
-      stale_work: { action_id: '' }
-    });
-
-    expect(stale_work).toBeNull();
-  });
-
-  test('renders stale-work summary and only allowed recovery actions', () => {
-    const stale_work = staleWorkProjection({
-      reason: 'worktree_stale_work',
-      stale_work: {
-        state: 'unique',
-        cause: 'untracked_present',
-        summary: {
-          staged_count: 1,
-          unstaged_count: 2,
-          untracked_count: 3,
-          branch_ahead: 1,
-          head_ahead: 0
-        },
-        action_id: 'opaque-action',
-        can_resume: false,
-        can_continue: true,
-        can_backup_fresh: true,
-        can_recheck: true
-      }
-    });
-
-    const row = renderRow({
-      lane: 'queue',
-      done: false,
-      draggable: false,
-      stale_work
-    });
-
-    expect(row.textContent).toContain('이전 작업 보존됨');
-    expect(row.textContent).toContain('staged 1 · unstaged 2 · untracked 3');
-    expect(row.textContent).toContain('추적되지 않은 파일이 남아 있습니다');
-    expect(row.querySelector('.worker-mini__stale-continue')).not.toBeNull();
-    expect(row.querySelector('.worker-mini__stale-backup')).not.toBeNull();
-    expect(row.querySelector('.worker-mini__stale-recheck')).not.toBeNull();
-    expect(row.textContent?.replace(/\s+/g, ' ')).toContain(
-      'Git-ignored dependency/build output은 archive에 포함되지 않습니다'
-    );
-    expect(row.textContent).not.toContain('worktree_stale_work');
-    expect(row.getAttribute('draggable')).toBe('false');
-  });
-
-  test('renders unknown stale work with recheck only', () => {
-    const stale_work = staleWorkProjection({
-      reason: 'worktree_stale_work',
-      stale_work: {
-        state: 'unknown',
-        cause: 'observe_failed',
-        summary: {
-          staged_count: 0,
-          unstaged_count: 0,
-          untracked_count: 0,
-          branch_ahead: 0,
-          head_ahead: 0
-        },
-        action_id: 'opaque-action',
-        can_resume: false,
-        can_continue: false,
-        can_backup_fresh: false,
-        can_recheck: true
-      }
-    });
-
-    const row = renderRow({
-      lane: 'queue',
-      done: false,
-      draggable: false,
-      stale_work
-    });
-
-    expect(row.textContent).toContain('이전 작업 상태 확인 실패');
-    expect(row.querySelector('.worker-mini__stale-continue')).toBeNull();
-    expect(row.querySelector('.worker-mini__stale-backup')).toBeNull();
-    expect(row.querySelector('.worker-mini__stale-recheck')).not.toBeNull();
-  });
-
-  test('renders branch residue with commit count and allowed actions', () => {
-    const stale_work = staleWorkProjection({
-      reason: 'worktree_stale_work',
-      stale_work: {
-        residue: 'branch',
-        state: 'unique',
-        cause: 'ahead_not_contained',
-        summary: {
-          staged_count: 4,
-          unstaged_count: 3,
-          untracked_count: 2,
-          branch_ahead: 5,
-          head_ahead: 0
-        },
-        action_id: 'opaque-action',
-        can_resume: false,
-        can_continue: false,
-        can_backup_fresh: true,
-        can_recheck: true
-      }
-    });
-
-    const row = renderRow({
-      lane: 'queue',
-      done: false,
-      draggable: false,
-      stale_work
-    });
-
-    expect(row.textContent).toContain('이전 브랜치 보존됨');
-    expect(row.textContent).toContain('고유 commit 5');
-    expect(row.textContent).not.toContain('staged 4');
-    expect(row.textContent).not.toContain('unstaged 3');
-    expect(row.textContent).not.toContain('untracked 2');
-    expect(row.textContent).toContain(
-      '로컬 branch의 고유 commit이 최신 base에 포함됐음을 증명하지 못했습니다'
-    );
-    expect(row.querySelector('.worker-mini__stale-continue')).toBeNull();
-    expect(row.querySelector('.worker-mini__stale-backup')).not.toBeNull();
-    expect(row.querySelector('.worker-mini__stale-recheck')).not.toBeNull();
   });
 });
 
@@ -5999,7 +5724,7 @@ describe('대기 진입 유예 (UI-q1tg §3.3)', () => {
       manual_only: true,
       gate: /** @type {any} */ ({
         kind: 'provider_outage',
-        label: '⏳ 공급자 장애',
+        label: '⏳ 공급자 보류',
         title: '러너 전체가 공급자 장애로 보류',
         since: NOW - 60_000,
         next_at: null,
@@ -6034,12 +5759,12 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
    */
   function gate(patch = {}) {
     return {
-      kind: 'systemic',
-      label: '⛔ 정지 · loud_fail_blocker',
-      title: 'loud_fail_blocker',
+      kind: 'provider_outage',
+      label: '⏳ 공급자 보류',
+      title: '공급자 장애',
       since: 5000,
       next_at: null,
-      lines: ['loud_fail_blocker', '출구: 이 행의 ▶ 재개(큐 전체)'],
+      lines: ['공급자 장애', '출구: ↻ 지금 프로브'],
       ...patch
     };
   }
@@ -6089,7 +5814,7 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
     );
 
     expect([first.className, first.getAttribute('data-chip-key')]).toEqual([
-      'worker-dep worker-dep--gate worker-dep--gate-systemic judgement-chip',
+      'worker-dep worker-dep--gate worker-dep--gate-provider_outage judgement-chip',
       'gate'
     ]);
   });
@@ -6104,13 +5829,11 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
 
   test('draws each gate kind with its own text and colour variant', () => {
     const kinds = [
-      gate(),
-      gate({ kind: 'env', label: '↻ 환경 보류 · 다음 09:40' }),
       gate({
         kind: 'provider_outage',
-        label: '⚠️ 공급자 장애 · 다음 프로브 12:30'
+        label: '⏳ 공급자 보류 · 다음 프로브 12:30'
       }),
-      gate({ kind: 'provider_usage', label: '⏳ 한도 대기 13:00 · 업무' })
+      gate({ kind: 'provider_usage', label: '⏳ 공급자 보류 13:00 · 업무' })
     ].map((value) => {
       const row = renderQueueRow({ gate: value });
       const chip = /** @type {HTMLElement} */ (
@@ -6123,10 +5846,8 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
     });
 
     expect(kinds).toEqual([
-      [true, '⛔ 정지 · loud_fail_blocker'],
-      [true, '↻ 환경 보류 · 다음 09:40'],
-      [true, '⚠️ 공급자 장애 · 다음 프로브 12:30'],
-      [true, '⏳ 한도 대기 13:00 · 업무']
+      [true, '⏳ 공급자 보류 · 다음 프로브 12:30'],
+      [true, '⏳ 공급자 보류 13:00 · 업무']
     ]);
   });
 
@@ -6145,29 +5866,14 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
     ).toBe(label);
   });
 
-  test('orders the systemic row operations as ▶ 재개 지금 시작 ✕', () => {
+  test('orders provider row operations without a queue resume', () => {
     const ops = renderOps({ gate: gate() });
 
     const labels = Array.from(
       /** @type {HTMLElement} */ (ops).querySelectorAll('button')
     ).map((button) => button.textContent?.trim());
 
-    expect(labels).toEqual(['▶ 재개', '지금 시작', '✕']);
-  });
-
-  test('carries the hold since on ▶ 재개', () => {
-    const ops = renderOps({ gate: gate() });
-
-    const resume = /** @type {HTMLElement} */ (
-      /** @type {HTMLElement} */ (ops).querySelector(
-        '.worker-mini__hold-resume'
-      )
-    );
-
-    expect([resume.dataset.action, resume.dataset.since]).toEqual([
-      'queue-hold-resume',
-      '5000'
-    ]);
+    expect(labels).toEqual(['지금 시작', '✕']);
   });
 
   test('draws 지금 시작 but no ▶ 재개 on a provider gate outside the grace', () => {
@@ -6190,13 +5896,13 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
       queue_index: 0,
       gate: gate({
         kind: 'provider_usage',
-        label: '⏳ 한도 대기 13:00 · 업무',
-        title: '⏳ 한도 대기 13:00 · 업무',
+        label: '⏳ 공급자 보류 13:00 · 업무',
+        title: '⏳ 공급자 보류 13:00 · 업무',
         since: 4242,
         runner: 'claude',
         probe_ready: true,
         lines: [
-          '⏳ 한도 대기 13:00 · 업무',
+          '⏳ 공급자 보류 13:00 · 업무',
           '계정: 미해석 — 서버가 핀·저장소 기본·활성 로그인 어디에서도 claude 계정을 정하지 못함',
           '출구: [지금 시작](이 행만, 게이트 무시) — target은 프로브 성공 시 자동 해제'
         ]
@@ -6228,7 +5934,7 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
 
     expect(content).toEqual({
       title: '자동 디스패치가 막혀 있다',
-      lines: ['loud_fail_blocker', '출구: 이 행의 ▶ 재개(큐 전체)']
+      lines: ['공급자 장애', '출구: ↻ 지금 프로브']
     });
   });
 });
@@ -6473,7 +6179,9 @@ describe('대기 카드 표면 정리 2차 (UI-0bvr)', () => {
   test('lists an upstream-covered issue under its remaining kind', () => {
     const summary = blockedSummary(mixedReasonWorkspaces());
 
-    const people = summary.groups.find((group) => group.label === '사람');
+    const people = summary.groups.find(
+      (group) => group.label === '세션이 멈춤'
+    );
 
     expect(people?.entries.map((entry) => entry.id)).toEqual(['A-2']);
   });

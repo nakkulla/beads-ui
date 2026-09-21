@@ -180,10 +180,10 @@ function fixture(options = {}) {
     exists: () => options.worktree_present !== false,
     removeIfDiscardable: vi.fn(async () => ({
       ok: false,
-      reason: 'worktree_stale_work',
+      reason: 'dirty_unique',
       owned: true,
       present: true,
-      state: 'stale_work',
+      state: 'unique',
       identity: {
         branch: 'B1',
         worktree_realpath: '/wt/B1',
@@ -701,7 +701,71 @@ describe('external wait resume', () => {
     expect(env.launches[0].bead.prompt).toContain('## 외부 작업 완료');
   });
 
-  test('gate-r1 #4 preserves stale work when fresh user worktree acquisition is refused', async () => {
+  test('backs up residue while preserving the external completion reservation', async () => {
+    let prepared = false;
+    const backupFreshResidue = vi.fn(async () => ({
+      ok: true,
+      backup_path: '/backups/one'
+    }));
+    const append = vi.fn();
+    const env = fixture({
+      seed_prior: false,
+      worktree_present: false,
+      record: {
+        owner: {
+          kind: 'session',
+          session_ref: 'missing',
+          session_pid: 3333,
+          session_start: AT
+        }
+      },
+      observation: {
+        identity: {
+          branch: 'B1',
+          worktree_realpath: null,
+          head_sha: null,
+          branch_head_sha: 'b'.repeat(40),
+          base_oid: 'a'.repeat(40),
+          status_digest: 'status'
+        }
+      },
+      deps: {
+        backupFreshResidue,
+        timeline: { append },
+        gitRun: async (/** @type {string[]} */ args) => ({
+          code: 0,
+          stdout: args[0] === 'ls-remote' ? '' : 'B1\n',
+          stderr: ''
+        }),
+        fs: { existsSync: () => prepared }
+      }
+    });
+    env.worktree.add.mockImplementation(async () => {
+      prepared = true;
+      return { path: '/wt/recovered', branch: 'B1', base_oid: 'a'.repeat(40) };
+    });
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fresh'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(backupFreshResidue).toHaveBeenCalledOnce();
+    expect(env.launches[0].bead.prompt).toContain('## 외부 작업 완료');
+    expect(env.launches[0].reservation.attempt_id).toBe(
+      recordOf(env)?.resume?.attempt_id
+    );
+    expect(env.launches[0].cwd).toBe('/wt/recovered');
+    expect(append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'stale_work_auto',
+        detail: '/backups/one'
+      })
+    );
+    expect(env.store.snapshot(WS).admission.B1).toBeUndefined();
+  });
+
+  test('preserves stale work when fresh user worktree acquisition remains unresolved', async () => {
     const env = fixture({
       seed_prior: false,
       worktree_present: false,
@@ -719,10 +783,13 @@ describe('external wait resume', () => {
       mode: 'fresh'
     });
 
-    expect(result).toEqual({ ok: false, reason: 'worktree_stale_work' });
+    expect(result).toEqual({ ok: false, reason: 'stale_work_unresolved' });
     expect(env.worktree.add).not.toHaveBeenCalled();
     expect(env.launches).toHaveLength(0);
     expect(env.metadata.external_wait).toBe(WAIT);
+    expect(Object.values(env.store.snapshot(WS).attempts).at(-1)).toMatchObject(
+      { status: 'failed', cause: 'stale_work_unresolved', dismissed_at: null }
+    );
   });
 
   test('forks the local session_ref into a new Worker attempt', async () => {
@@ -757,7 +824,15 @@ describe('external wait resume', () => {
   });
 
   test('preserves a waiting external-job worktree during fresh dispatch preflight', async () => {
-    const env = fixture();
+    const env = fixture({
+      deps: {
+        gitRun: async (/** @type {string[]} */ args) => ({
+          code: 0,
+          stdout: args[0] === 'ls-remote' ? '' : 'B1\n',
+          stderr: ''
+        })
+      }
+    });
     delete env.metadata.external_wait;
     env.store.place(WS, {
       expected_revision: env.store.snapshot(WS).revision,
@@ -772,45 +847,11 @@ describe('external wait resume', () => {
     );
     expect(env.worktree.add).not.toHaveBeenCalled();
     expect(env.worktree.removeIfDiscardable).toHaveBeenCalledTimes(1);
-    expect(env.store.snapshot(WS).admission.B1.stale_work?.can_resume).toBe(
-      true
+    expect(env.store.snapshot(WS).admission.B1).toBeUndefined();
+    expect(Object.values(env.store.snapshot(WS).attempts).at(-1)).toMatchObject(
+      { status: 'running' }
     );
-  });
-
-  test('preserves an external-job worktree before a stale-work recheck', async () => {
-    const env = fixture({
-      observation: {
-        identity: {
-          branch: 'B1',
-          worktree_realpath: '/wt/B1',
-          head_sha: null,
-          base_oid: 'a'.repeat(40)
-        }
-      },
-      deps: { gitRun: async () => ({ code: 0, stdout: '', stderr: '' }) }
-    });
-    delete env.metadata.external_wait;
-    env.store.place(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      bead_id: 'B1'
-    });
-    env.store.setAutoAdvance(WS, true);
-    await env.scheduler.tick(WS);
-    env.store.setAutoAdvance(WS, false);
-    const queue = env.store.snapshot(WS);
-    const action_id = queue.admission.B1.stale_work?.action_id;
-    expect(typeof action_id).toBe('string');
-
-    const result = await env.scheduler.staleWorkRecheck(WS, {
-      bead_id: 'B1',
-      action_id: /** @type {string} */ (action_id),
-      expected_revision: queue.revision
-    });
-
-    expect(result.ok).toBe(true);
-    expect(env.worktree.removeIfDiscardable).toHaveBeenLastCalledWith(
-      expect.objectContaining({ bead_id: 'B1', preserve: true })
-    );
+    expect(env.launches).toHaveLength(1);
   });
 });
 

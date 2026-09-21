@@ -13,7 +13,7 @@ import path from 'node:path';
 // sentences. `attach.js` already imports `app/utils` the same way.
 import {
   FAILURE_SENTENCES,
-  RECOVERY_WAIT_LABELS
+  RECOVERY_WAIT_SENTENCES
 } from '../../app/utils/failure-sentences.js';
 import { scriptSummary } from './failure-class.js';
 import { commentHeading, logRow, summaryRow } from './failure-comment.js';
@@ -159,20 +159,6 @@ export function migrateStoredNeedsHumanReason(raw) {
 }
 
 /**
- * Which queue hold — if any — a folded `needs_human` cause earns (UI-5ym8 §7).
- *
- * Only `verify_red` recurs against the shared base on the next bead.
- * Cleanup failures belong to the bead whose worktree and branches remain.
- *
- * @param {unknown} reason
- * @returns {'systemic'|null}
- */
-export function needsHumanHoldKind(reason) {
-  const family = foldNeedsHumanReason(reason).split(':', 1)[0];
-  return family === 'verify_red' ? 'systemic' : null;
-}
-
-/**
  * Build the stable identity of one failure observed at pinned subject/base
  * SHAs. The digest input is bounded and normalized so line endings cannot
  * manufacture distinct completion operations for the same result.
@@ -253,12 +239,19 @@ export const COMPLETION_FAILURE_POLICY = Object.freeze({
   cleanup_settlement_record_failed: 'retry',
   completion_gate_spawn_failed: 'retry',
   verify_cmd_failed: 'retry',
+  verify_cmd_spawn_error: 'retry',
+  verify_cmd_timeout: 'retry',
   reconciliation_ambiguous: 'human',
   resolution_lineage_ambiguous: 'human',
   cleanup_journal_conflict: 'human',
   cleanup_completion_unrecorded: 'human',
   intent_state_invalid: 'human'
 });
+
+const VERIFY_ENV_REASONS = new Set([
+  'verify_cmd_spawn_error',
+  'verify_cmd_timeout'
+]);
 
 /**
  * @typedef {'gate'|'verify'|'retry_cleanup'} CompletionRetryEffect
@@ -295,6 +288,20 @@ export const COMPLETION_RETRY_POLICY = Object.freeze({
     inputs: ['operation_id', 'head_sha', 'base_sha'],
     optional_inputs: [],
     success: 'verify_settled'
+  },
+  verify_cmd_spawn_error: {
+    return_phase: 'gating',
+    effect: 'gate',
+    inputs: ['head_sha', 'base_sha'],
+    optional_inputs: [],
+    success: 'verify_operation_created'
+  },
+  verify_cmd_timeout: {
+    return_phase: 'gating',
+    effect: 'gate',
+    inputs: ['head_sha', 'base_sha'],
+    optional_inputs: [],
+    success: 'verify_operation_created'
   },
   cleanup_prerecord_failed: {
     return_phase: 'cleaning',
@@ -353,7 +360,7 @@ export function classifyCompletionFailure(reason) {
 }
 
 /**
- * @typedef {'green'|'conflict'|'verify_hold'|'verify_red'|'cleanup_repairable'|'cleanup_pending'|'completed'|'stale'|'undecidable'|'waiting'} CompletionFactState
+ * @typedef {'green'|'conflict'|'verify_hold'|'cleanup_repairable'|'cleanup_pending'|'completed'|'stale'|'undecidable'|'waiting'} CompletionFactState
  */
 /**
  * @typedef {{ state: CompletionFactState, reason?: string }} CompletionFact
@@ -579,12 +586,6 @@ export function decideCompletionAction(input) {
     // every later PR (spec §4.1, r1 blocking 1). Returning `null` would leave
     // that row in place as `completion_waiting:holding`.
     return { kind: 'hold', fact };
-  }
-  if (fact.state === 'verify_red') {
-    // Post-merge verification red is a code question, and code questions go
-    // through an ordinary Bead/PR (UI-8w4t §1). No ownership probe, no
-    // automatic session.
-    return needsHuman('verify_red', true);
   }
   return { kind: 'gate' };
 }
@@ -991,7 +992,7 @@ export function completionFailureComment(
   const next = handoff_bead_id
     ? `- 다음: 수정 Bead ${handoff_bead_id}의 PR·배포 뒤 [정리 재시도] · 원본 실패 기록은 보존됨`
     : recovery
-      ? `- 다음: ${RECOVERY_WAIT_LABELS[recovery_reason] || recovery_reason} — 조건 확인 뒤 [정리 재시도]`
+      ? `- 다음: ${RECOVERY_WAIT_SENTENCES[recovery_reason] || recovery_reason} — 조건 확인 뒤 [정리 재시도]`
       : '- 다음: [머지] 재클릭 · 설정 카드 배포 실행 · 코드 수정은 새 Bead';
   // 헤딩·요약·로그 세 행은 `failure-comment.js`가 소유한다
   // (record-timeline-retention §9): 세션 실패·파킹 댓글이 같은 형식을 써야
@@ -1550,21 +1551,9 @@ export function createCompletionActionDriver(deps) {
       comment_at: commented_at === null ? at : commented_at,
       at
     };
-    // Only shared-base verification raises a hold in the terminal write.
-    const hold_event =
-      needsHumanHoldKind(folded) === 'systemic'
-        ? {
-            kind: /** @type {const} */ ('systemic_failure'),
-            bead_id: root_bead_id,
-            cause: folded,
-            at
-          }
-        : null;
     const written = deps.store.terminalizeCompletionIntent(deps.workspace, {
       root_bead_id,
-      terminal,
-      hold_event,
-      now: at
+      terminal
     });
     // §5: the same folded reason the terminal and the `bd comment` carry, never
     // a second sentence for the same fact.
@@ -1812,7 +1801,11 @@ export function createCompletionActionDriver(deps) {
           origin_stage: carried ? carried.origin_stage : stage,
           return_phase: policy.return_phase,
           attempts,
-          next_at: now() + COMPLETION_RETRY_DELAYS_MS[attempts],
+          next_at:
+            now() +
+            (VERIFY_ENV_REASONS.has(reason)
+              ? 300_000
+              : COMPLETION_RETRY_DELAYS_MS[attempts]),
           last_error: reason,
           op: carried
             ? carried.op
@@ -1848,9 +1841,10 @@ export function createCompletionActionDriver(deps) {
 
   /**
    * @param {any} gated
+   * @param {any} [intent]
    * @returns {ObservedCompletionFact}
    */
-  function factFromGate(gated) {
+  function factFromGate(gated, intent = null) {
     if (!gated || gated.ok !== true) {
       const reason = gated?.reason || 'completion_gate_unreadable';
       return reason === 'pr_ref_unknown'
@@ -1869,13 +1863,22 @@ export function createCompletionActionDriver(deps) {
     }
     const reason = verdict.reason;
     if (
-      verdict.tier === 'verify' &&
-      verdict.gate_badge === '검증 실패' &&
-      reason !== 'verify_cmd_failed'
+      reason === 'verify_cmd_failed' ||
+      VERIFY_ENV_REASONS.has(reason) ||
+      (verdict.tier === 'verify' && verdict.gate_badge === '검증 실패')
     ) {
       const verify = gated.evidence?.verify;
+      const retried =
+        intent?.auto_resolution?.class === 'retry' &&
+        intent.auto_resolution.attempts >= 1 &&
+        intent.auto_resolution.op.head_sha === gated.subject.head_sha;
+      const held = intent?.hold?.head_sha === gated.subject.head_sha;
       return {
-        state: 'verify_hold',
+        state:
+          VERIFY_ENV_REASONS.has(reason) && !retried && !held
+            ? 'undecidable'
+            : 'verify_hold',
+        reason,
         failure_key: createCompletionFailureKey({
           stage: 'verify',
           reason,
@@ -1883,24 +1886,6 @@ export function createCompletionActionDriver(deps) {
           base_sha: gated.base_sha,
           evidence: { output_tail: verify?.output_tail }
         }),
-        evidence: verify,
-        op_id: operationIdFromLogPath(verify?.log_path),
-        gated
-      };
-    }
-    if (reason === 'verify_cmd_failed') {
-      const verify = gated.evidence?.verify;
-      const failure_key = createCompletionFailureKey({
-        stage: 'merge_gate',
-        reason,
-        subject_sha: gated.subject.head_sha,
-        base_sha: gated.base_sha,
-        evidence: { output_tail: verify?.output_tail }
-      });
-      return {
-        state: 'verify_red',
-        source: 'verify',
-        failure_key,
         evidence: verify,
         op_id: operationIdFromLogPath(verify?.log_path),
         gated
@@ -1991,6 +1976,17 @@ export function createCompletionActionDriver(deps) {
    * @returns {Promise<ObservedCompletionFact>}
    */
   async function observe(root_bead_id, intent) {
+    if (
+      intent.phase === 'retrying' &&
+      VERIFY_ENV_REASONS.has(intent.auto_resolution?.origin_reason)
+    ) {
+      const fact = {
+        state: /** @type {const} */ ('waiting'),
+        reason: 'verify_retry_scheduled'
+      };
+      facts.set(root_bead_id, fact);
+      return fact;
+    }
     if (intent.active_op) {
       /** @type {ObservedCompletionFact} */
       const fact = { state: 'waiting', reason: 'completion_op_in_flight' };
@@ -2022,7 +2018,7 @@ export function createCompletionActionDriver(deps) {
       log('completion gate failed for %s: %o', root_bead_id, err);
       gated = { ok: false, reason: 'completion_gate_spawn_failed' };
     }
-    let fact = factFromGate(gated);
+    let fact = factFromGate(gated, intent);
     if (
       gated.ok === true &&
       (intent.subject.head_sha !== gated.subject.head_sha ||
@@ -2105,7 +2101,7 @@ export function createCompletionActionDriver(deps) {
         recordResolutionError(root_bead_id, 'metadata_check_unreadable');
         return;
       }
-      const fact = factFromGate(gated);
+      const fact = factFromGate(gated, intent);
       if (fact.state === 'undecidable') {
         const again = classifyCompletionFailure(fact.reason);
         if (again.class === 'metadata_watch') {
@@ -2187,6 +2183,11 @@ export function createCompletionActionDriver(deps) {
         intent.subject.bead_id,
         intent.subject.role
       );
+      const fact = factFromGate(gated, intent);
+      if (fact.state === 'verify_hold') {
+        await onAction(root_bead_id, { kind: 'hold', fact }, intent);
+        return false;
+      }
       return gated?.ok === true;
     } catch (err) {
       log('retry gate failed for %s: %o', root_bead_id, err);
@@ -2615,7 +2616,7 @@ export function createCompletionActionDriver(deps) {
       settleFailure(
         root_bead_id,
         reason,
-        'coordinator',
+        fact.failure_key?.stage || 'coordinator',
         fact.failure_key,
         fact.evidence,
         { observed_head_sha: fact.gated?.subject?.head_sha }

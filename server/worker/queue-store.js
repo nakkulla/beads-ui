@@ -134,7 +134,7 @@
  * durable true-to-false auto-advance transition. LEGACY: the failure tiers of
  * the 2026-08-28 spec never write it; it is what limits the "unhandled
  * failure" judgment to the records the old regime halted on (§4).
- * @property {{ cause: string, attempts: number, max: number, next_at: number|null, origin_attempt_id: string|null, exhausted?: boolean }|null} retry -
+ * @property {{ cause: string, attempts: number, max: number, next_at: number|null, origin_attempt_id: string|null, exhausted?: boolean, migrated?: 'unclassified_wait', base_moved_count?: number }|null} retry -
  * The env retry ladder this attempt sits on (spec §3.3/§6). `origin_attempt_id`
  * names the FIRST attempt of the lineage, so a bead's retries read as one
  * chain. Null on every attempt that is not part of a ladder.
@@ -526,15 +526,9 @@
  * @property {QueueEntry[]} pr_wait - Beads whose PR the server OBSERVED open,
  * waiting for a human merge click (worker-phase2 §4).
  * @property {QueueEntry[]} done - Completed today.
- * @property {import('./queue-hold.js').QueueHold|null} hold - The queue's
- * FAILURE-owned stop (2026-08-28 worker-failure-tiers spec §4). `env` is an
- * unattended backoff hold, `systemic` is the stop only a user `재개` clears.
- * Independent of {@link Queue.auto_advance}, which is the user's ⏸/▶ alone.
  * @property {import('./queue-hold.js').RetryLineage[]} lineages - Live env
  * retry ladders, one per bead (spec §3.3). Empty means nothing is waiting to
  * retry, which is what every legacy `queue.json` loads as.
- * @property {import('./queue-hold.js').HoldHistoryEntry[]} hold_history -
- * Recent env failures, pruned to the 30-minute cross-bead repetition window.
  * @property {Record<string, ProviderHold>} provider_hold - Provider-health dispatch gates by runner.
  * @property {Record<string, number>} wait_notified - Current wait notification suppression keys; history lives in the bead timeline.
  * @property {{ claude: ProviderLimitPolicy, codex: ProviderLimitPolicy }} provider_limit_policy -
@@ -990,6 +984,7 @@
  * @property {CompletionPhase} phase
  * @property {CompletionSubject} subject
  * @property {CompletionOperation|null} active_op
+ * @property {string} [merge_head_sha] - The head pinned immediately before the merge effect.
  * @property {CompletionHold|null} hold
  * @property {CompletionTerminal|null} terminal_reason
  * @property {CompletionAutoResolution|null} auto_resolution
@@ -1034,12 +1029,11 @@ import {
   QUICK_FIX_ORCHESTRATION_KEYS,
   execSettingEnums
 } from './exec-enums.js';
-import { ALWAYS_SYSTEMIC_CAUSES } from './failure-class.js';
 import { orderLaneByBlocks } from './lane-order.js';
 import {
   RETRY_MAX,
-  normalizeHoldState,
-  reduceQueueHold
+  normalizeRetryState,
+  reduceRetryState
 } from './queue-hold.js';
 import { attemptRecordPath, queueFilePath } from './state-paths.js';
 import {
@@ -1576,6 +1570,10 @@ function normalizeCompletionIntent(root_bead_id, value) {
     phase: /** @type {CompletionPhase} */ (phase),
     subject,
     active_op,
+    ...(typeof value.merge_head_sha === 'string' &&
+    /^[0-9a-f]{40,64}$/i.test(value.merge_head_sha)
+      ? { merge_head_sha: value.merge_head_sha }
+      : {}),
     auto_resolution,
     paused_resolution,
     hold: normalizeCompletionHold(value.hold),
@@ -2178,9 +2176,7 @@ function emptyQueue() {
     applied_exec_preset: null,
     revision: 0,
     auto_advance: false,
-    hold: null,
     lineages: [],
-    hold_history: [],
     provider_hold: {},
     wait_notified: {},
     provider_limit_policy: emptyProviderLimitPolicy(),
@@ -3049,6 +3045,12 @@ function normalizeAttemptRetry(value) {
   }
   return {
     cause: value.cause,
+    ...(value.migrated === 'unclassified_wait'
+      ? { migrated: /** @type {const} */ ('unclassified_wait') }
+      : {}),
+    ...(typeof value.base_moved_count === 'number'
+      ? { base_moved_count: value.base_moved_count }
+      : {}),
     ...(typeof value.exhausted === 'boolean'
       ? { exhausted: value.exhausted }
       : {}),
@@ -4472,6 +4474,28 @@ function normalizeQueue(raw) {
             bead_id: value.bead_id
           })
         );
+        const attempt = q.attempts[key];
+        const recovery = /** @type {any} */ (attempt.cause_detail?.recovery);
+        if (
+          attempt.status === 'waiting' &&
+          recovery?.reason === 'unclassified' &&
+          [
+            'finished_without_result_line',
+            'past_failure_line',
+            'environment_line',
+            'unknown_error'
+          ].includes(recovery.classification)
+        ) {
+          attempt.status = 'failed';
+          attempt.retry = {
+            cause: attempt.cause || 'unknown',
+            migrated: 'unclassified_wait',
+            attempts: 0,
+            max: RETRY_MAX,
+            next_at: null,
+            origin_attempt_id: null
+          };
+        }
       }
     }
   }
@@ -4486,6 +4510,9 @@ function normalizeQueue(raw) {
   // on load without error (worker-phase2 §9).
   if (isRecord(raw.admission)) {
     for (const [bead_id, value] of Object.entries(raw.admission)) {
+      if (isRecord(value) && value.reason === 'worktree_stale_work') {
+        continue;
+      }
       if (isRecord(value) && typeof value.reason === 'string') {
         q.admission[bead_id] = {
           reason: value.reason,
@@ -4639,58 +4666,12 @@ function normalizeQueue(raw) {
   q.repo_operation_migration = normalizeRepoOperationMigration(
     raw.repo_operation_migration
   );
-  // The failure-owned stop (spec §4) survives a restart on purpose: the wall a
-  // `systemic` hold names is a property of the environment, not of this
-  // process, and an env ladder mid-climb must not silently resume dispatching.
-  // No `now` is passed, so a restart keeps the history it was written with and
-  // the first live reduction prunes it.
-  const hold_state = normalizeHoldState(raw);
-  q.hold = hold_state.hold;
-  q.lineages = hold_state.lineages;
-  q.hold_history = hold_state.hold_history;
-  if (
-    q.hold?.kind === 'systemic' &&
-    q.hold.cause.startsWith('cleanup_failed:')
-  ) {
-    const previous_hold = q.hold;
-    /** @type {Map<string, string>} */
-    const latest_causes = new Map();
-    // Attempt insertion order is authoritative even if a clock moved back.
-    for (const attempt of Object.values(q.attempts)) {
-      latest_causes.set(attempt.bead_id, attempt.cause || '');
-    }
-    const remaining = previous_hold.bead_ids.flatMap((bead_id) => {
-      const intent = q.completion_intents[bead_id];
-      const reason = intent?.terminal_reason?.reason;
-      if (
-        intent?.phase === 'needs_human' &&
-        reason?.split(':', 1)[0] === 'verify_red'
-      ) {
-        return [{ bead_id, cause: reason }];
-      }
-      const cause = latest_causes.get(bead_id) || '';
-      return ALWAYS_SYSTEMIC_CAUSES.has(cause) ? [{ bead_id, cause }] : [];
-    });
-    q.hold =
-      remaining.length === 0
-        ? null
-        : {
-            ...previous_hold,
-            bead_ids: remaining.map((entry) => entry.bead_id),
-            cause: remaining[0].cause
-          };
-    log(
-      'normalized cleanup hold %s',
-      JSON.stringify({
-        previous: {
-          cause: previous_hold.cause,
-          since: previous_hold.since,
-          bead_ids: previous_hold.bead_ids
-        },
-        hold: q.hold
-      })
-    );
-  }
+  q.lineages = normalizeRetryState(raw).lineages.filter((lineage) => {
+    const latest = Object.values(q.attempts)
+      .filter((attempt) => attempt.bead_id === lineage.bead_id)
+      .sort((a, b) => (b.started_at ?? 0) - (a.started_at ?? 0))[0];
+    return latest?.retry?.migrated !== 'unclassified_wait';
+  });
   // auto_advance intentionally left false — see load() restart-safety note.
   return q;
 }
@@ -5602,75 +5583,6 @@ export function createQueueStore(options = {}) {
   }
 
   /**
-   * Identity of one hold EPISODE. `since` is stamped when the hold opens and
-   * never moves while it stands, so the triple changes exactly when the queue
-   * takes a different stop — including the env→systemic promotion, which keeps
-   * `since` and changes `kind`.
-   *
-   * @param {import('./queue-hold.js').QueueHold|null} hold
-   * @returns {string|null}
-   */
-  function holdEpisodeOf(hold) {
-    return hold === null ? null : `${hold.kind}:${hold.since}`;
-  }
-
-  /**
-   * Put a queue stop and its release on the timelines of the beads it stopped
-   * (record-timeline-retention §5).
-   *
-   * This lives at the site that APPLIES the reducer's result, never inside the
-   * pure reducer, and it never reconstructs a past hold from `hold_history` —
-   * that list is live state trimmed to a 30-minute window, while the permanent
-   * history is the timeline's job.
-   *
-   * A standing hold is re-announced only for a bead it did not already name, so
-   * a hold that survives many settlements writes one line per bead rather than
-   * one per settlement.
-   *
-   * @param {string} workspace
-   * @param {import('./queue-hold.js').QueueHold|null} before
-   * @param {import('./queue-hold.js').QueueHold|null} after
-   * @param {import('./queue-hold.js').QueueHoldEvent} event
-   * @param {number} at
-   */
-  function recordHoldTransition(workspace, before, after, event, at) {
-    const was = holdEpisodeOf(before);
-    const is_now = holdEpisodeOf(after);
-    if (before !== null && is_now !== was) {
-      for (const bead_id of before.bead_ids) {
-        appendTimeline(workspace, {
-          bead_id,
-          kind: 'queue_resume',
-          // Names the episode that ENDED, so a replayed release re-appends one
-          // id the reader dedupes.
-          seq: /** @type {string} */ (was),
-          summary: event.kind === 'resume' ? '사용자 재개' : '자동 재개',
-          at
-        });
-      }
-    }
-    if (after === null) {
-      return;
-    }
-    const announced =
-      was === is_now && before !== null ? new Set(before.bead_ids) : new Set();
-    for (const bead_id of after.bead_ids) {
-      if (announced.has(bead_id)) {
-        continue;
-      }
-      appendTimeline(workspace, {
-        bead_id,
-        kind: 'queue_hold',
-        // The episode, not the moment: every bead this hold stops records the
-        // same stop once.
-        seq: /** @type {string} */ (is_now),
-        summary: `${after.kind === 'env' ? '환경' : '시스템'} 보류: ${after.cause}`,
-        at
-      });
-    }
-  }
-
-  /**
    * The directory holding one bead's transferred attempt records. Derived from
    * the record path so the `beads/<bead>/attempts/` layout is stated once, in
    * `state-paths.js` (§4).
@@ -5977,27 +5889,18 @@ export function createQueueStore(options = {}) {
   }
 
   /**
-   * Reduce one queue-hold event INTO a mutation already in progress (2026-08-28
-   * worker-failure-tiers spec §4).
+   * Apply a retry event while preserving the budget carried by a resumed attempt.
    *
-   * Separated from {@link createQueueStore.applyQueueHold} so a caller whose
-   * settlement must not be observable half-done — a `needs_human` terminal that
-   * also stops the queue — folds the hold into its OWN write instead of
-   * following it with a second one.
-   *
-   * @param {string} workspace
    * @param {Queue} next - the in-flight clone being mutated.
-   * @param {import('./queue-hold.js').QueueHoldEvent} event
+   * @param {import('./queue-hold.js').RetryEvent} event
    * @param {number} at
-   * @returns {import('./queue-hold.js').QueueHoldResult}
+   * @returns {import('./queue-hold.js').RetryResult}
    */
-  function applyHoldEvent(workspace, next, event, at) {
-    const before = next.hold;
-    if (event.kind === 'env_failure') {
+  function applyRetryState(next, event, at) {
+    if (event.kind === 'retry_scheduled') {
       const retry = next.attempts[event.attempt_id]?.retry;
       if (
         retry?.origin_attempt_id &&
-        retry.cause === event.cause &&
         retry.origin_attempt_id === event.origin_attempt_id &&
         !next.lineages.some((lineage) => lineage.bead_id === event.bead_id)
       ) {
@@ -6008,23 +5911,15 @@ export function createQueueStore(options = {}) {
           origin_attempt_id: retry.origin_attempt_id,
           cause: retry.cause,
           attempts: retry.attempts,
+          ...(retry.base_moved_count
+            ? { base_moved_count: retry.base_moved_count }
+            : {}),
           next_at: null
         });
       }
     }
-    const outcome = reduceQueueHold(
-      {
-        hold: next.hold,
-        lineages: next.lineages,
-        hold_history: next.hold_history
-      },
-      event,
-      at
-    );
-    next.hold = outcome.state.hold;
+    const outcome = reduceRetryState({ lineages: next.lineages }, event, at);
     next.lineages = outcome.state.lineages;
-    next.hold_history = outcome.state.hold_history;
-    recordHoldTransition(workspace, before, next.hold, event, at);
     return outcome;
   }
 
@@ -9445,32 +9340,25 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Apply one queue-hold event to the durable `hold`/`lineages`/`hold_history`
-     * triple (2026-08-28 worker-failure-tiers spec §4). Scheduler-owned and
-     * unconditional, exactly like the attempt lifecycle writes it accompanies.
-     *
-     * The reducer is pure, so this is the ONLY place the triple is written: the
-     * caller hands it an event and gets the effects it must act on plus the new
-     * state read back, rather than reasoning about the transition itself.
+     * Apply one event to the durable retry lineages and return its effects.
      *
      * @param {string} workspace
-     * @param {{ event: import('./queue-hold.js').QueueHoldEvent, now?: number }} input
-     * @returns {{ ok: boolean, effects: import('./queue-hold.js').QueueHoldEffect[], hold: import('./queue-hold.js').QueueHold|null, lineages: import('./queue-hold.js').RetryLineage[] }}
+     * @param {{ event: import('./queue-hold.js').RetryEvent, now?: number }} input
+     * @returns {{ ok: boolean, effects: import('./queue-hold.js').RetryEffect[], lineages: import('./queue-hold.js').RetryLineage[] }}
      */
-    applyQueueHold(workspace, input) {
+    applyRetryEvent(workspace, input) {
       const at = typeof input.now === 'number' ? input.now : now();
-      /** @type {import('./queue-hold.js').QueueHoldResult|null} */
+      /** @type {import('./queue-hold.js').RetryResult|null} */
       let outcome = null;
       const result = applyUnconditional(workspace, (next) => {
-        outcome = applyHoldEvent(workspace, next, input.event, at);
+        outcome = applyRetryState(next, input.event, at);
         return true;
       });
       const settled =
-        /** @type {import('./queue-hold.js').QueueHoldResult|null} */ (outcome);
+        /** @type {import('./queue-hold.js').RetryResult|null} */ (outcome);
       return {
         ok: result.ok === true,
         effects: settled ? settled.effects : [],
-        hold: settled ? settled.state.hold : null,
         lineages: settled ? settled.state.lineages : []
       };
     },
@@ -10626,6 +10514,27 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Preserve the merge effect's pinned head across operation consumption.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, head_sha: string }} input
+     */
+    recordCompletionMergeHead(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[input.root_bead_id];
+        if (
+          !intent ||
+          intent.phase === 'completed' ||
+          !/^[0-9a-f]{40,64}$/i.test(input.head_sha)
+        ) {
+          return false;
+        }
+        intent.merge_head_sha = input.head_sha;
+        return true;
+      });
+    },
+
+    /**
      * Advance the currently journaled operation without replacing its identity.
      * Status is monotonic; clearing is legal only after logical consumption.
      *
@@ -10885,10 +10794,13 @@ export function createQueueStore(options = {}) {
           !intent ||
           !normalized ||
           intent.active_op !== null ||
-          (intent.phase !== 'gating' && intent.phase !== 'holding')
+          (intent.phase !== 'gating' &&
+            intent.phase !== 'holding' &&
+            intent.phase !== 'retrying')
         ) {
           return false;
         }
+        intent.auto_resolution = null;
         if (!applyCompletionPhase(intent, 'holding')) {
           return false;
         }
@@ -10921,20 +10833,12 @@ export function createQueueStore(options = {}) {
      * journal is deliberately preserved: ambiguity at an external effect is
      * evidence a restart or human diagnosis still needs.
      *
-     * `hold_event` rides the SAME mutation (2026-08-28 worker-failure-tiers
-     * §3.4/§7): a `verify_red` terminal is a wall every
-     * later bead hits too, and raising that stop in a second write would leave a
-     * crash window in which the board shows `확인 필요` on a queue that is still
-     * dispatching. The event is applied only when the terminal itself lands, so
-     * a rejected terminalization never stops the queue on its own.
-     *
      * @param {string} workspace
-     * @param {{ root_bead_id: string, terminal: CompletionTerminalInput, hold_event?: import('./queue-hold.js').QueueHoldEvent|null, now?: number }} input
+     * @param {{ root_bead_id: string, terminal: CompletionTerminalInput }} input
      * @returns {QueueOpResult}
      */
     terminalizeCompletionIntent(workspace, input) {
-      const { root_bead_id, terminal, hold_event } = input;
-      const at = typeof input.now === 'number' ? input.now : now();
+      const { root_bead_id, terminal } = input;
       return applyUnconditional(workspace, (next) => {
         const intent = next.completion_intents[root_bead_id];
         const normalized_terminal = normalizeCompletionTerminal(terminal);
@@ -10948,9 +10852,6 @@ export function createQueueStore(options = {}) {
         next.merge_queue = next.merge_queue.filter(
           (entry) => entry.bead_id !== root_bead_id
         );
-        if (hold_event) {
-          applyHoldEvent(workspace, next, hold_event, at);
-        }
         return true;
       });
     },

@@ -101,8 +101,6 @@ import {
   handleWorkerPrDiscard,
   handleWorkerProviderLimitPolicySet,
   handleWorkerProviderProbeNow,
-  handleWorkerQueueHoldResume,
-  handleWorkerQueueHoldRetryNow,
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
@@ -116,10 +114,7 @@ import {
   handleWorkerRepoOpsOptOutToggle,
   handleWorkerResolveInSession,
   handleWorkerReviseApprove,
-  handleWorkerReviseFix,
-  handleWorkerStaleWorkBackupFresh,
-  handleWorkerStaleWorkContinue,
-  handleWorkerStaleWorkRecheck
+  handleWorkerReviseFix
 } from './worker-handlers.js';
 import {
   handleGetWorkspace,
@@ -568,14 +563,6 @@ export async function handleMessage(ws, data) {
     case 'worker-repo-operation-dismiss':
       await handleWorkerRepoOperationDismiss(ws, req);
       return;
-    // UI-5ym8: protocol.js union updated by worker-ui unit
-    case /** @type {any} */ ('worker-queue-hold-resume'):
-      await handleWorkerQueueHoldResume(ws, req);
-      return;
-    // UI-5ym8: protocol.js union updated by worker-ui unit
-    case /** @type {any} */ ('worker-queue-hold-retry-now'):
-      await handleWorkerQueueHoldRetryNow(ws, req);
-      return;
     case 'worker-provider-probe-now':
       await handleWorkerProviderProbeNow(ws, req);
       return;
@@ -631,15 +618,6 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-discard-abandon':
       await handleWorkerDiscardAbandon(ws, req);
-      return;
-    case 'worker-stale-work-continue':
-      await handleWorkerStaleWorkContinue(ws, req);
-      return;
-    case 'worker-stale-work-backup-fresh':
-      await handleWorkerStaleWorkBackupFresh(ws, req);
-      return;
-    case 'worker-stale-work-recheck':
-      await handleWorkerStaleWorkRecheck(ws, req);
       return;
     case 'worker-pr-discard':
       await handleWorkerPrDiscard(ws, req);

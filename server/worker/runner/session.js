@@ -29,11 +29,7 @@ import { EventEmitter } from 'node:events';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { guardKillMessage } from '../failure-class.js';
-import {
-  findMergeViolation,
-  guardEffect,
-  guardWarningMessage
-} from './command-guard.js';
+import { findMergeViolation, guardWarningMessage } from './command-guard.js';
 import { resolveGuardPending } from './guard-mirror.js';
 import { createTailReader } from './tail-reader.js';
 
@@ -646,34 +642,6 @@ export function runSession(spec, bead, workspace, settings, deps) {
   }
 
   /**
-   * Record the blocker evidence and group-kill the session.
-   *
-   * @param {BlockedDetail} detail
-   * @param {unknown} raw
-   */
-  function guardKill(detail, raw) {
-    blocked = true;
-    blocked_detail = detail;
-    // One copy of the sentence, in `failure-class.js`, because the restart
-    // monitor's kill reaches the same durable record through the scheduler's
-    // `blockerCauseDetail` (spec §6 row 3).
-    const message = guardKillMessage({
-      reason: detail.reason,
-      command: detail.command
-    });
-    /** @type {RunnerEvent} */
-    const merge_blocker = {
-      kind: 'blocker',
-      reason: detail.reason,
-      message,
-      raw
-    };
-    norm_events.push(merge_blocker);
-    events.emit('event', merge_blocker);
-    kill('SIGTERM');
-  }
-
-  /**
    * Process one complete jsonl line.
    *
    * @param {string} line
@@ -723,15 +691,8 @@ export function runSession(spec, bead, workspace, settings, deps) {
       return;
     }
 
-    // Merge guards, gated on the ATTEMPT rather than on any lock (worker-phase2
-    // §1). The judgment is argv-position based (command-guard.js); an
-    // unparseable command falls back to the old regexes there rather than
-    // passing. What a violation COSTS is the violation's kind
-    // (guard-enforcement-layer-replacement §4): a base push is judged from a
-    // command string with no cwd in it, so it only warns and the session runs
-    // on; the kinds decided by argv alone still fail closed.
-    // A deferred verdict's evidence line (§3), judged before the command
-    // extraction below because a `tool_result` carries no command of its own.
+    // Observations only warn. Deferral still pairs a tool_result before recording
+    // whether a command ran; the result carries no command of its own.
     for (const resolution of resolveGuardPending(obj, guard_pending)) {
       guard_pending = guard_pending.filter(
         (entry) => entry !== resolution.entry
@@ -742,15 +703,12 @@ export function runSession(spec, bead, workspace, settings, deps) {
         // record (§3, same disposition as UI-iw28 §2's exemption).
         continue;
       }
-      guardKill(
-        {
-          reason: 'hook_bypass_blocked',
-          command: resolution.entry.command,
-          confirmed_by: 'tool_result'
-        },
-        obj
-      );
-      return;
+      const violation = {
+        kind: /** @type {const} */ ('hook_bypass'),
+        reason: /** @type {const} */ ('hook_bypass_blocked'),
+        command: resolution.entry.command
+      };
+      emitGuardWarning(violation, guardWarningMessage(violation), obj);
     }
 
     if (typeof spec.extractShellCommand === 'function') {
@@ -772,14 +730,7 @@ export function runSession(spec, bead, workspace, settings, deps) {
           obj
         );
       }
-      if (violation && guardEffect(violation) === 'warn') {
-        emitGuardWarning(
-          { reason: violation.reason, command: violation.command },
-          guardWarningMessage(violation),
-          obj
-        );
-        // No `return`: the line is normalized like any other.
-      } else if (
+      if (
         violation &&
         violation.deferrable === true &&
         guard_mirror === 'verified' &&
@@ -799,11 +750,11 @@ export function runSession(spec, bead, workspace, settings, deps) {
         guard_pending = [...guard_pending, entry];
         emitGuardPending('add', entry);
       } else if (violation) {
-        guardKill(
+        emitGuardWarning(
           { reason: violation.reason, command: violation.command },
+          guardWarningMessage(violation),
           obj
         );
-        return;
       }
     }
 

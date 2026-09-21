@@ -29,8 +29,8 @@ export const HELP_SECTIONS = Object.freeze([
   '관계 칩과 요약 칩'
 ]);
 
-/** 판정 글리프 절이 예시로 쓰는 표본 행 (`prerequisite`). */
-const SAMPLE_KIND_ID = 'prerequisite';
+/** All three verdicts can apply to the external-job sample. */
+const SAMPLE_KIND_ID = 'external_job';
 
 /**
  * `WaitKindRow` 하나의 배지 예시 — 판정 없는 형태(`<글리프> <라벨>`)다.
@@ -74,7 +74,10 @@ function kindRowTemplate(row, shape) {
           >${exampleBadgeText(row)}</span
         >`
       : html`<span class="worker-mini__badge">${exampleBadgeText(row)}</span>`;
-  return html`<tr class="help-dialog__row" id=${`help-${row.id}`}>
+  return html`<tr
+    class="help-dialog__row"
+    id=${`help-${shape === 'gate' ? 'gate-' : ''}${row.id}`}
+  >
     <td class="help-dialog__example">${example}</td>
     <td>${row.when}</td>
     <td>${row.release}</td>
@@ -160,7 +163,9 @@ function verdictSection() {
  * @returns {TemplateResult}
  */
 function kindSection(title, scope, shape) {
-  const rows = WAIT_KINDS.filter((row) => row.scope === scope);
+  const rows = WAIT_KINDS.filter((row) =>
+    scope === 'queue' ? row.kind === 'provider_hold' : row.scope === scope
+  );
   return sectionTemplate(
     title,
     html`<table class="help-dialog__table">

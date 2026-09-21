@@ -1793,7 +1793,7 @@ describe('post-merge cleanup retry records', () => {
           terminal: true
         });
       }
-      expect(after.hold).toBeNull();
+      expect(after).not.toHaveProperty('hold');
     }
   );
 
@@ -3402,7 +3402,7 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
   // intent already in `needs_human`, so a retry that fails at the SAME ladder
   // step is never terminalized again. The record write announces there, or the
   // user's own retry failure reaches nobody.
-  test('announces the deploy step again once the intent is already terminal', async () => {
+  test('keeps the deploy step again once the intent is already terminal off Discord', async () => {
     const operations = coordinatorFor(null);
     operations.findExactDeployOperation.mockResolvedValue({
       operation_id: 'deploy-2',
@@ -3417,13 +3417,7 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
 
     await env.actions.resumeRepoOperations();
 
-    expect(env.human_notices).toEqual([
-      expect.objectContaining({
-        bead_id: BEAD,
-        failure_class: '정리 중단',
-        reason: 'repo_operation_timeout_unresolved'
-      })
-    ]);
+    expect(env.human_notices).toEqual([]);
   });
 
   // UI-jw27 §6-1: the deploy step rides the `script_retry` ladder, so its
@@ -4437,6 +4431,52 @@ describe('worker/pr-actions completion gate evidence', () => {
   });
 });
 
+describe('merge head cleanup identity', () => {
+  test('cleans the head used by the merge after conflict resolution moves the branch', async () => {
+    const final_head = 'd'.repeat(40);
+    const env = makeActions({ details: [prOf({ head_sha: final_head })] });
+    env.store.enqueueCompletionIntent(WS, {
+      root_bead_id: BEAD,
+      source_attempt_id: 'a1',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: BEAD,
+        pr_url: 'https://github.com/o/r/pull/304',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    env.worktree.removeCompleted.mockImplementation(async (input) => ({
+      ok: /** @type {any} */ (input).expected_head === final_head,
+      removed: true,
+      reason: null
+    }));
+
+    const observedGet = env.observations.get.bind(env.observations);
+    vi.spyOn(env.observations, 'get').mockImplementation(
+      (workspace, bead_id) => {
+        const observed = observedGet(workspace, bead_id);
+        return observed?.pr
+          ? { ...observed, pr: { ...observed.pr, head_sha: 'a'.repeat(40) } }
+          : observed;
+      }
+    );
+
+    const result = await env.actions.merge(BEAD);
+
+    expect(result.ok).toBe(true);
+    expect(env.gh.mergeSquash).toHaveBeenCalledWith(REPO, 304, final_head);
+    expect(env.worktree.removeCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({ expected_head: final_head })
+    );
+    expect(
+      env.store.snapshot(WS).completion_intents[BEAD]?.merge_head_sha
+    ).toBe(final_head);
+  });
+});
+
 describe('worker/pr-actions — legacy migration seams (master spec §11)', () => {
   test('reports the expected base and the observed merge SHA for a row', async () => {
     const env = makeActions({
@@ -4951,7 +4991,7 @@ describe('post-merge sweep — child disposition (2026-09-01 carryover §1)', ()
 
   // UI-jw27 §2: the sweep has no ladder, so its first stop IS terminal and the
   // record write announces — including the `carryover_*` tokens UI-btj6 added.
-  test('announces the sweep stop with its carryover cause', async () => {
+  test('keeps the sweep stop with its carryover cause off Discord', async () => {
     const successor = {
       title: '자식 제목',
       status: 'open',
@@ -4969,13 +5009,7 @@ describe('post-merge sweep — child disposition (2026-09-01 carryover §1)', ()
 
     await env.actions.merge(BEAD);
 
-    expect(env.human_notices).toEqual([
-      expect.objectContaining({
-        bead_id: BEAD,
-        failure_class: '정리 중단',
-        reason: `carryover_ambiguous:${CHILD}`
-      })
-    ]);
+    expect(env.human_notices).toEqual([]);
   });
 
   test('stops when the existing successor fails the identity triple', async () => {
@@ -6511,7 +6545,7 @@ describe('post-merge cleanup — the post-merge job step (UI-i60a §1–§3)', (
 });
 
 describe('cleanup stop notification (UI-jw27 §2)', () => {
-  test('announces a base containment stop with its cause and PR', async () => {
+  test('keeps a base containment stop with its cause and PR off Discord', async () => {
     const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
     h.store.recordCleanupFailure(WS, {
       bead_id: BEAD,
@@ -6527,15 +6561,7 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
       step: 'base_containment',
       retry_count: 3
     });
-    expect(h.human_notices).toEqual([
-      expect.objectContaining({
-        bead_id: BEAD,
-        failure_class: '정리 중단',
-        reason: 'base_fetch_failed',
-        next_action: '[정리 재시도] 또는 [세션에서 해결]',
-        repo: REPO
-      })
-    ]);
+    expect(h.human_notices).toEqual([]);
   });
 
   test('announces nothing while a base containment retry is scheduled', async () => {
@@ -6563,7 +6589,7 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
     expect(h.human_notices).toEqual([]);
   });
 
-  test('announces a branch cleanup stop', async () => {
+  test('keeps a branch cleanup stop off Discord', async () => {
     const h = makeActions({
       removeByBranchResult: {
         ok: false,
@@ -6587,12 +6613,7 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
       step: 'branch_cleanup',
       retry_count: 3
     });
-    expect(h.human_notices).toEqual([
-      expect.objectContaining({
-        failure_class: '정리 중단',
-        reason: 'local_branch_delete_failed'
-      })
-    ]);
+    expect(h.human_notices).toEqual([]);
   });
 
   test('announces nothing while a branch cleanup retry is scheduled', async () => {
@@ -6613,7 +6634,7 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
     });
   });
 
-  test('announces a parent close stop', async () => {
+  test('keeps a parent close stop off Discord', async () => {
     const h = makeActions();
     h.bd.readStatus.mockImplementation(async () => {
       throw new Error('bd down');
@@ -6624,12 +6645,7 @@ describe('cleanup stop notification (UI-jw27 §2)', () => {
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       step: 'parent_close'
     });
-    expect(h.human_notices).toEqual([
-      expect.objectContaining({
-        failure_class: '정리 중단',
-        reason: 'bd_close_failed'
-      })
-    ]);
+    expect(h.human_notices).toEqual([]);
   });
 
   test('completes the merge normally when the notifier throws', async () => {
