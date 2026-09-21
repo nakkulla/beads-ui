@@ -45,7 +45,6 @@ import { isImplementationAttempt } from '../../utils/active-attempts.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
-import { STALE_WORK_REFUSALS } from '../../utils/failure-sentences.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { runResumeFlow } from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
@@ -100,7 +99,6 @@ import {
   queueRowOps,
   repoOpsStripTemplate,
   reviewSessionRowState,
-  staleWorkProjection,
   summaryChipsTemplate,
   tokenChipTemplate,
   waitBody
@@ -531,12 +529,25 @@ export function resolveSessionTone(res) {
 }
 
 /**
+ * Distinguish failed verification code from a command that could not run.
+ *
+ * @param {string|null|undefined} reason
+ * @returns {string}
+ */
+function verifyHoldBadgeText(reason) {
+  return reason === 'verify_cmd_spawn_error' || reason === 'verify_cmd_timeout'
+    ? '검증 명령 실패 — 환경 확인'
+    : '검증 실패 — 수정 push 대기';
+}
+
+/**
  * Project a known nonterminal resolver wait reason; unknown values fail quiet.
  *
  * @param {unknown} reason
+ * @param {string|null} [hold_reason]
  * @returns {string|null}
  */
-export function mergeWaitingText(reason) {
+export function mergeWaitingText(reason, hold_reason = null) {
   if (reason === 'worker_sessions_busy') {
     return '해소 대기 — 실행 슬롯 대기 중';
   }
@@ -551,7 +562,7 @@ export function mergeWaitingText(reason) {
     case 'gating':
       return '머지 조건 확인 중';
     case 'holding':
-      return '검증 실패 — 수정 push 대기';
+      return verifyHoldBadgeText(hold_reason);
     case 'merging':
       return '머지 중';
     case 'cleaning':
@@ -771,7 +782,7 @@ function completionView(completion, auto_resolution = null) {
       badge = '머지 조건 확인 중';
       break;
     case 'holding':
-      badge = '검증 실패 — 수정 push 대기';
+      badge = verifyHoldBadgeText(completion.hold?.reason);
       break;
     case 'merging':
       badge = '머지 중';
@@ -1282,7 +1293,8 @@ function prWaitRow(
   const queue_active = !!merge_queue && merge_queue.active === true;
   const queue_failure = (merge_queue && merge_queue.failure) || null;
   const queue_waiting = mergeWaitingText(
-    merge_queue ? merge_queue.waiting : null
+    merge_queue ? merge_queue.waiting : null,
+    completion?.hold?.reason
   );
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
@@ -1958,8 +1970,6 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {Set<string>}
    */
   const revise_pending = new Set();
-  /** @type {Set<string>} Beads with one stale-work action in flight. */
-  const stale_work_pending = new Set();
   /**
    * Beads whose running-tile child rollup is EXPANDED
    * (worker-card-exec-chips §3.3). Only the expanded ones are remembered — the
@@ -2445,45 +2455,9 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * The two 큐 보류/정지 exits (UI-5ym8 §4). Both are CAS-guarded by the hold's
-   * own `since` rather than by the queue revision: the question is "is this
-   * still the hold I read", and a hold that was released and re-armed under the
-   * same revision would otherwise be released again by a stale click.
-   *
-   * A mismatch (`hold_changed`) is reported and NOT retried — the blocked row
-   * that carried the click has already been redrawn from the fanout snapshot by
-   * then, so a silent retry would act on a hold the person never saw.
-   *
-   * @param {'worker-queue-hold-resume'|'worker-queue-hold-retry-now'} type
-   * @param {string} refusal - 거부 응답을 알릴 때 쓰는 toast 앞머리.
-   */
-  async function sendHoldAction(type, refusal) {
-    const hold = currentQueue().hold;
-    if (!transport || !hold || typeof hold.since !== 'number') {
-      return;
-    }
-    const res = /** @type {any} */ (
-      await transport(type, { since: hold.since })
-    );
-    adopt(res);
-    if (res && res.ok === false) {
-      showToast(
-        `${refusal}: ${
-          res.reason === 'hold_changed'
-            ? '큐 상태가 바뀌었습니다 — 다시 확인하세요'
-            : res.reason || ''
-        }`,
-        'error',
-        2800
-      );
-    }
-  }
-
-  /**
    * `↻ 지금 프로브` (UI-o5ll §3.4): 그 러너의 공급자 회복 프로브를 지금
    * 발화시킨다. 재료는 버튼이 그려진 게이트의 것을 그대로 쓴다 —
-   * `sendHoldAction`이 읽는 `queue.hold`는 큐 정지의 것이고 공급자 보류는 러너별
-   * 레코드라 `since`가 다르기 때문이다. 응답은 무장 사실만 말하고 판정은 다음
+   * 공급자 보류는 러너별 레코드의 `since`를 쓴다. 응답은 무장 사실만 말하고 판정은 다음
    * 스냅샷으로 온다.
    *
    * @param {string} runner
@@ -2740,62 +2714,6 @@ export function createWorkerView(mount_element, options = {}) {
     }
     if (res && !res.conflict) {
       showToast('폐기 포기 거부: unknown', 'error', 2800);
-    }
-  }
-
-  /**
-   * Send one identity-bound stale-work action. A conflict response carries the
-   * newest queue snapshot, but is never retried with an obsolete action id.
-   *
-   * @param {'worker-stale-work-continue'|'worker-stale-work-backup-fresh'|'worker-stale-work-recheck'} type
-   * @param {string} bead_id
-   * @param {string} action_id
-   */
-  async function staleWorkAction(type, bead_id, action_id) {
-    if (
-      !transport ||
-      !bead_id ||
-      !action_id ||
-      stale_work_pending.has(bead_id)
-    ) {
-      return;
-    }
-    stale_work_pending.add(bead_id);
-    doRender();
-    try {
-      const res = /** @type {Record<string, unknown>} */ (
-        await transport(type, {
-          bead_id,
-          action_id,
-          expected_revision: currentRevision()
-        })
-      );
-      adopt(res);
-      // 스냅샷을 먼저 반영한 뒤 실제 사유를 사전에서 읽는다 (UI-kyky §5).
-      // conflict와 비충돌 `!ok`는 같은 사유에 같은 문장을 쓴다 — 같은 이유를 두
-      // 문장으로 말하면 사용자가 두 가지 일이 일어났다고 읽는다. 사전에 없는
-      // 사유는 기존 표시 그대로다: conflict는 일반 문구, 비충돌은 raw reason.
-      const reason =
-        typeof res?.reason === 'string' && res.reason.length > 0
-          ? res.reason
-          : '';
-      const refusal = Object.hasOwn(STALE_WORK_REFUSALS, reason)
-        ? STALE_WORK_REFUSALS[reason]
-        : '';
-      if (refusal.length > 0) {
-        showToast(refusal, 'error', 2800);
-      } else if (res?.conflict) {
-        showToast(
-          '이전 작업 상태가 바뀌었습니다. 최신 상태를 확인하세요.',
-          'error',
-          2800
-        );
-      } else if (!res?.ok && reason.length > 0) {
-        showToast(`이전 작업 처리 거부: ${reason}`, 'error', 2800);
-      }
-    } finally {
-      stale_work_pending.delete(bead_id);
-      doRender();
     }
   }
 
@@ -3089,37 +3007,15 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * What a 대기·직렬 row reads from the snapshot on top of the lane model
-   * (§4.4). 레인 모델은 두 탭이 공유하는 값만 싣고, stale 점유 처분은 워커 탭 대기
-   * 행만의 조작이다.
-   *
-   * @returns {{ admission: Record<string, any> }}
-   */
-  function waitingFacts() {
-    return { admission: objectOf(currentQueue().admission) };
-  }
-
-  /**
    * One 대기·직렬 row.
    *
    * @param {LaneItem} item
-   * @param {ReturnType<typeof waitingFacts>} facts
    * @returns {any}
    */
-  function waitingRowOf(item, facts) {
+  function waitingRowOf(item) {
     const row = rowOf(item);
-    // stale 점유 처분 카드 (UI-hs11 계열): 처분 대기 중인 행은 끌 수 없고,
-    // 같은 카드가 admission `⛔` 사유를 겹쳐 적지 않는다 — 처분 카드가 이미 그
-    // 상태를 말한다.
-    const stale_work = staleWorkProjection(
-      facts.admission[item.id] || null,
-      !!item.discard || stale_work_pending.has(item.id)
-    );
     return {
       ...row,
-      draggable: row.draggable === true && !stale_work,
-      stale_work,
-      reason: stale_work ? '' : row.reason,
       // 처분 세션 요청의 in-flight 창 (UI-hs11 §3.5) — 두 번째 클릭을 막는다.
       revise_enabled:
         row.revise_enabled === true && !revise_pending.has(item.id)
@@ -3133,10 +3029,7 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {any[]}
    */
   function waitingRows(m) {
-    const facts = waitingFacts();
-    return groupOf(m).sublanes.parallel.map((item) =>
-      waitingRowOf(item, facts)
-    );
+    return groupOf(m).sublanes.parallel.map((item) => waitingRowOf(item));
   }
 
   /**
@@ -3147,7 +3040,6 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {Array<{ id: string, index: number, raw_length: number, ghosts: any[], items: any[], occupied: boolean, badge: string, cycle: boolean }>}
    */
   function serialLanes(m) {
-    const facts = waitingFacts();
     return groupOf(m).sublanes.serial.map((lane) => {
       const ghosts = lane.occupants.map((occupant) => ({
         id: occupant.id,
@@ -3166,7 +3058,7 @@ export function createWorkerView(mount_element, options = {}) {
         index: lane.index + 1,
         raw_length: lane.raw_length,
         ghosts,
-        items: lane.items.map((item) => waitingRowOf(item, facts)),
+        items: lane.items.map((item) => waitingRowOf(item)),
         occupied: lane.occupied_by.length > 0,
         badge: lane.occupants.length > 0 ? lane.occupants[0].badge : '대기',
         cycle: lane.cycle === true
@@ -3275,15 +3167,13 @@ export function createWorkerView(mount_element, options = {}) {
                   ? '중단됨'
                   : '실패'
                 : item.run_state === 'parked'
-                  ? '세션 대기'
+                  ? '세션이 멈춤'
                   : item.run_state === 'retry_wait'
                     ? '재시도 대기'
                     : item.run_state === 'waiting'
                       ? item.wait?.recovery
                         ? item.wait.recovery.label || ''
-                        : item.wait?.cause === 'base_moved'
-                          ? '반영 대기'
-                          : '선행 대기'
+                        : '선행 대기'
                       : item.run_state === 'provider_hold'
                         ? '공급자 보류'
                         : item.status_label,
@@ -5019,13 +4909,6 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return;
     }
-    // 정지·보류의 두 출구는 이제 막힌 카드 위에 있다 (UI-01wh §3.3): 막힌 대기
-    // 행의 `▶ 재개`와 `retry_wait` 타일 foot의 `↻ 지금 재시도`. 같은 WS op와
-    // 같은 `since` CAS를 쓰므로 라우팅만 옮겼다.
-    if (target?.closest?.('[data-action="queue-hold-resume"]')) {
-      void sendHoldAction('worker-queue-hold-resume', '재개 거부');
-      return;
-    }
     // `↻ 지금 프로브`도 같은 자리의 출구다 (UI-o5ll §3.4). 재료는 버튼이 실은
     // `data-runner`/`data-since`이고 큐 정지의 `since`와 섞이지 않는다.
     const probe = /** @type {HTMLElement|null} */ (
@@ -5036,10 +4919,6 @@ export function createWorkerView(mount_element, options = {}) {
         probe.dataset.runner || '',
         Number(probe.dataset.since)
       );
-      return;
-    }
-    if (target?.closest?.('.rtile__hold-retry')) {
-      void sendHoldAction('worker-queue-hold-retry-now', '지금 재시도 거부');
       return;
     }
     if (target?.closest?.('.worker-play')) {
@@ -5279,39 +5158,6 @@ export function createWorkerView(mount_element, options = {}) {
         discardBtn.dataset.attemptId || null,
         discardBtn.dataset.discardMode === 'merged' ? 'merged' : 'unmerged',
         discardBtn.dataset.operationId || null
-      );
-      return;
-    }
-    const staleContinueBtn = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-mini__stale-continue')
-    );
-    if (staleContinueBtn) {
-      void staleWorkAction(
-        'worker-stale-work-continue',
-        staleContinueBtn.dataset.beadId || '',
-        staleContinueBtn.dataset.actionId || ''
-      );
-      return;
-    }
-    const staleBackupBtn = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-mini__stale-backup')
-    );
-    if (staleBackupBtn) {
-      void staleWorkAction(
-        'worker-stale-work-backup-fresh',
-        staleBackupBtn.dataset.beadId || '',
-        staleBackupBtn.dataset.actionId || ''
-      );
-      return;
-    }
-    const staleRecheckBtn = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-mini__stale-recheck')
-    );
-    if (staleRecheckBtn) {
-      void staleWorkAction(
-        'worker-stale-work-recheck',
-        staleRecheckBtn.dataset.beadId || '',
-        staleRecheckBtn.dataset.actionId || ''
       );
       return;
     }

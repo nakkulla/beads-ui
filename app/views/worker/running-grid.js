@@ -109,7 +109,6 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * @property {RetryTile|null} [retry] - backoff 사실 (§6). `retry_wait` 타일의
  * 배지 재료이며, 없으면 배지가 그려지지 않는다 (fail-quiet).
  * @property {HoldTile|null} [hold] - 슬롯 1 판정과 상세 팝오버에만 쓰는 hold 재료.
- * @property {number} [hold_since] - 서 있는 환경 보류의 `since` (UI-01wh §3.1).
  * `retry_wait` 타일 foot의 `↻ 지금 재시도`가 쓰는 CAS 재료이고, 보류가 없으면
  * 키 자체가 없어 버튼이 서지 않는다 (fail-quiet).
  * @property {'running'|'paused'|'failed'|'orphaned'|'parked'|'retry_wait'|'waiting'|'provider_hold'} [status] - Raw
@@ -940,9 +939,6 @@ function sessionOpenButton(current) {
  * @param {import('lit-html').TemplateResult|''} [resolve_action] - parked 출구.
  * @param {boolean} [discard_failed] - `true`면 같은 실패를 다루는 폐기 조작을
  * 문의 세션 조작보다 먼저 그린다.
- * @param {number} [hold_since] - 서 있는 환경 보류의 `since` (UI-01wh §3.3).
- * `retry_wait` 타일 foot의 `↻ 지금 재시도`가 이 CAS 재료로 서고, 없으면 그
- * 버튼이 없다 (fail-quiet).
  * @returns {import('lit-html').TemplateResult|''}
  */
 function heldBodyTemplate(
@@ -951,8 +947,7 @@ function heldBodyTemplate(
   discard_actions,
   dependency_chips = '',
   resolve_action = '',
-  discard_failed = false,
-  hold_since = undefined
+  discard_failed = false
 ) {
   if (kind === 'provider_hold') {
     return html`${dependency_chips}
@@ -977,44 +972,21 @@ function heldBodyTemplate(
       </div>`;
   }
   if (kind === 'retry_wait') {
-    // 스펙 §5.1: 뱃지 `↻ 재시도 대기 n/3 · HH:MM`이 이미 상태를 말하므로 본문은
-    // 비운다 (fail-quiet). foot의 재료는 `폐기`와, 환경 보류가 서 있을 때의
-    // `↻ 지금 재시도`(UI-01wh §3.3) 둘이다 — 큐 헤더가 없어졌으므로 예약된
-    // 재시도를 앞당기는 조작의 자리가 이 타일이다. 둘 다 없으면 foot을 그리지
-    // 않는다.
-    const retry_now =
-      typeof hold_since === 'number'
-        ? html`<button
-            type="button"
-            class="op-btn rtile__hold-retry"
-            data-since=${hold_since}
-            title="예약된 재시도를 지금 실행합니다"
-          >
-            ↻ 지금 재시도
-          </button>`
-        : '';
-    if (!discard_actions && !retry_now) {
-      return dependency_chips;
-    }
     return html`${dependency_chips}
-      <div class="rtile__foot">${discard_actions}${retry_now}</div>`;
+    ${discard_actions
+      ? html`<div class="rtile__foot">${discard_actions}</div>`
+      : ''}`;
   }
   const wait = kind === 'waiting' ? /** @type {WaitTile|null} */ (held) : null;
   const summary = wait?.recovery
-    ? [
-        wait.recovery.sentence || wait.recovery.label,
-        wait.cause ? `원인 ${failureText(wait.cause)}` : '',
-        wait.resume_reason
-      ]
-        .filter(Boolean)
-        .join(' · ')
+    ? wait.recovery.sentence
     : summaryText(held?.summary);
   if (kind === 'waiting') {
     return html`${summary
       ? html`<p class="rtile__held-summary">${summary}</p>`
       : ''}${dependency_chips}
-    ${discard_actions
-      ? html`<div class="rtile__foot">${discard_actions}</div>`
+    ${discard_actions || resolve_action
+      ? html`<div class="rtile__foot">${resolve_action}${discard_actions}</div>`
       : ''}`;
   }
   // 파킹 타일도 같은 블록을 싣는다 (§9): 팝오버가 없는 타일이므로 이력이
@@ -1082,45 +1054,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     !parked &&
     !retry_wait &&
     !waiting;
-  const waiting_resume_button =
-    waiting &&
-    (tile.wait?.cause === 'base_moved' || tile.wait?.recovery) &&
-    tile.can_resume === true
-      ? html`<button
-          type="button"
-          class="op-btn rtile__resume"
-          title=${tile.wait?.recovery
-            ? '보존한 작업을 기록된 실행 설정으로 같은 단계에서 이어갑니다'
-            : '보존한 후보를 같은 세션에서 최신 기준에 다시 반영합니다'}
-          aria-label="이어하기"
-        >
-          ↻ 이어하기
-        </button>`
-      : '';
   const park = parked ? tile.failure || null : null;
   const wait = waiting ? tile.wait || null : null;
   const hold = provider_hold ? tile.hold || null : null;
   const held = parked || retry_wait || waiting || provider_hold;
-  // 복구 대기의 사유 문장은 타일이 아는 원인·재개 사유로 읽히게 다듬는다 —
-  // 서버 문장을 자르지 않고 토큰만 바꾼다.
-  const decorateWaitReason = (
-    /** @type {import('../../protocol.js').WaitReason} */ reason
-  ) =>
-    wait?.recovery && reason.kind === 'recovery'
-      ? {
-          ...reason,
-          headline: wait.cause
-            ? reason.headline.replace(
-                `원인 ${wait.cause}`,
-                `원인 ${failureText(wait.cause)}`
-              )
-            : reason.headline,
-          release: [reason.release, wait.resume_reason]
-            .filter(Boolean)
-            .join(' · ')
-        }
-      : reason;
-  const wait_reasons = (tile.wait_reasons || []).map(decorateWaitReason);
+  const wait_reasons = tile.wait_reasons || [];
   const external = externalWaitCardParts(tile, now);
   // 조작은 사유 전부에서 모으고 (§6.2), 배지·본문·시각은 카드당 하나다 (§6).
   const wait_lines = wait_reasons.map((reason) =>
@@ -1345,18 +1283,19 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 실패한 폐기 작업의 두 번째 출구 (UI-jw27 §4). 폐기 실패는 실행 중·held·
   // 파킹 타일 어디서나 날 수 있으므로 상태 분기 밖에서 한 번만 만들고, 자리는
   // `[폐기]`와 같은 슬롯 1 오른쪽 끝이다 — 같은 실패가 내는 두 조작이다.
-  const resolve_button = tile.resolve_action
-    ? html`<button
-        type="button"
-        class="rtile__resolve"
-        ?disabled=${tile.resolve_enabled === false}
-        title=${tile.resolve_title ||
-        '이 실패를 사람이 이어받는 대화형 세션을 띄웁니다'}
-        aria-label="세션에서 해결"
-      >
-        세션에서 해결
-      </button>`
-    : '';
+  const resolve_button =
+    tile.resolve_action || (waiting && !!wait?.recovery)
+      ? html`<button
+          type="button"
+          class="op-btn rtile__resolve"
+          ?disabled=${tile.resolve_enabled === false}
+          title=${tile.resolve_title ||
+          '이 실패를 사람이 이어받는 대화형 세션을 띄웁니다'}
+          aria-label="세션에서 해결"
+        >
+          세션에서 해결
+        </button>`
+      : '';
   const discard_button =
     tile.discard?.action && !(failed && failure?.landed === true)
       ? html`<button
@@ -1440,7 +1379,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
             ? html`<span class="rtile__elapsed">${elapsed}</span>`
             : ''}
         ${session || held
-          ? waiting_resume_button
+          ? ''
           : failed
             ? html`<button
                   type="button"
@@ -1483,7 +1422,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                     >
                       ⏸
                     </button>`}
-                ${discard_actions}`}${parked ? '' : resolve_button}
+                ${discard_actions}`}${parked || waiting ? '' : resolve_button}
       </div>
     </div>
     <div class="rtile__title">${tile.title}</div>
@@ -1497,7 +1436,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 ? 'waiting'
                 : 'provider_hold',
           parked
-            ? park
+            ? wait_representative?.kind === 'awaiting_user' && park
+              ? { ...park, summary: '' }
+              : park
             : waiting
               ? wait_reasons.length > 0 && wait
                 ? { ...wait, summary: '', recovery: undefined }
@@ -1505,9 +1446,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
               : hold,
           discard_actions,
           waiting ? monitor_relations : '',
-          parked ? resolve_button : '',
-          parked && !!tile.discard?.error,
-          tile.hold_since
+          parked || waiting ? resolve_button : '',
+          parked && !!tile.discard?.error
         )
       : failed
         ? ''

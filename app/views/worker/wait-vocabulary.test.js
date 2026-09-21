@@ -23,19 +23,10 @@ describe('wait vocabulary table', () => {
 
     expect(ids).toEqual([
       'prerequisite',
-      'prerequisite_foreign',
-      'external_job',
-      'base_moved',
-      'awaiting_user',
+      'provider_hold',
       'retry_wait',
-      'stale_work',
-      'recovery',
-      'provider_hold-usage_limit',
-      'provider_hold-outage',
-      'queue_hold-systemic',
-      'queue_hold-env',
-      'gate-provider_usage',
-      'gate-provider_outage'
+      'awaiting_user',
+      'external_job'
     ]);
   });
 
@@ -66,13 +57,12 @@ describe('wait vocabulary table', () => {
     );
 
     expect(rows.map((row) => [row.elapsed_word, row.next_word])).toEqual([
-      ['', ''],
       ['', '']
     ]);
   });
 
   test('names the times-line words of the clock-carrying kinds', () => {
-    const words = ['external_job', 'retry_wait', 'provider_hold-usage_limit']
+    const words = ['external_job', 'retry_wait', 'provider_hold']
       .map((id) => WAIT_KINDS.find((row) => row.id === id))
       .map((row) => [row?.elapsed_word, row?.next_word]);
 
@@ -81,42 +71,6 @@ describe('wait vocabulary table', () => {
       ['대기', '다음 재시도'],
       ['보류', '다음 프로브']
     ]);
-  });
-
-  test('offers the restart probe as a release of the usage limit hold', () => {
-    const row = WAIT_KINDS.find(
-      (entry) => entry.id === 'provider_hold-usage_limit'
-    );
-
-    expect(row?.release).toBe(
-      '리셋 뒤 자동 프로브 · 소진이면 서버 재시작 시 1회 자동 프로브 또는 ↻ 지금 프로브'
-    );
-  });
-
-  test('counts the unresolved account row into the usage gate condition', () => {
-    const row = WAIT_KINDS.find((entry) => entry.id === 'gate-provider_usage');
-
-    expect(row?.when).toBe(
-      '러너의 계정 한도 보류 — target에 계정이 있으면 그 계정을 쓰는 행과 계정을 해석할 수 없는 행에, 없으면 러너의 모든 행에'
-    );
-  });
-
-  test('matches the usage gate release to the usage limit hold release', () => {
-    const gate = WAIT_KINDS.find((entry) => entry.id === 'gate-provider_usage');
-    const hold = WAIT_KINDS.find(
-      (entry) => entry.id === 'provider_hold-usage_limit'
-    );
-
-    expect(gate?.release).toBe(hold?.release);
-  });
-
-  test('marks only the recovery row as tile-labelled with a fallback label', () => {
-    const dynamic = WAIT_KINDS.filter((row) => row.dynamic_label === true);
-
-    expect(dynamic.map((row) => [row.id, row.label])).toEqual([
-      ['recovery', '복구 대기']
-    ]);
-    expect(WAIT_KINDS.every((row) => row.label.length > 0)).toBe(true);
   });
 
   test('writes the overdue glyph as one codepoint without a variation selector', () => {
@@ -129,8 +83,8 @@ describe('wait vocabulary table', () => {
 });
 
 describe('waitScopeOf', () => {
-  test('treats queue_hold as the only queue fact (UI-3pu9 §4.4)', () => {
-    expect(waitScopeOf('queue_hold')).toBe('queue');
+  test('treats provider gate chips as queue-scoped', () => {
+    expect(waitScopeOf('gate')).toBe('queue');
   });
 
   test.each(['prerequisite', 'provider_hold', 'external_job', 'recovery'])(
@@ -157,7 +111,7 @@ describe('waitKindRow', () => {
       headline: 'codex 공급자 장애 · 접속 실패'
     });
 
-    expect(row?.id).toBe('provider_hold-outage');
+    expect(row?.id).toBe('provider_hold');
   });
 
   test('defaults an unlabelled provider hold to the usage limit row', () => {
@@ -166,16 +120,16 @@ describe('waitKindRow', () => {
       headline: 'codex 한도 초과'
     });
 
-    expect(row?.id).toBe('provider_hold-usage_limit');
+    expect(row?.id).toBe('provider_hold');
   });
 
-  test('infers the env queue hold from the headline prefix', () => {
+  test('omits the retired queue hold', () => {
     const row = waitKindRow({
       kind: 'queue_hold',
       headline: '환경 오류로 큐 일시 정지 · network'
     });
 
-    expect(row?.id).toBe('queue_hold-env');
+    expect(row).toBeNull();
   });
 
   test('returns null for a reason without a kind', () => {
@@ -191,18 +145,18 @@ describe('waitBadgeText', () => {
   });
 
   test('adds the elapsed minutes to an overdue badge', () => {
-    const text = waitBadgeText(prerequisite, 'overdue', {
+    const text = waitBadgeText(waitKindRow({ kind: 'retry_wait' }), 'overdue', {
       since: 1000,
       now: 1000 + 12 * 60_000
     });
 
-    expect(text).toBe('⚠ 선행 대기 · 지연 12분');
+    expect(text).toBe('⚠ 재시도 대기 · 지연 12분');
   });
 
   test('omits the minutes when no observation start is known', () => {
-    expect(waitBadgeText(prerequisite, 'overdue', { now: 5 })).toBe(
-      '⚠ 선행 대기 · 지연'
-    );
+    expect(
+      waitBadgeText(waitKindRow({ kind: 'retry_wait' }), 'overdue', { now: 5 })
+    ).toBe('⚠ 재시도 대기 · 지연');
   });
 
   test('marks an action-required badge', () => {
@@ -215,10 +169,10 @@ describe('waitBadgeText', () => {
     expect(waitBadgeText(prerequisite, null)).toBe('⛓ 선행 대기');
   });
 
-  test('drops the leading space for a glyphless kind', () => {
+  test('omits retired base movement as a wait kind', () => {
     const base_moved = WAIT_KINDS.find((row) => row.id === 'base_moved');
 
-    expect(waitBadgeText(base_moved, 'normal')).toBe('반영 대기');
+    expect(waitBadgeText(base_moved, 'normal')).toBe('');
   });
 });
 
@@ -244,15 +198,15 @@ describe('representativeWaitReason', () => {
   test('ignores external work and queue facts', () => {
     const chosen = representativeWaitReason([
       { kind: 'external_job', verdict: 'action_required' },
-      { kind: 'queue_hold', verdict: 'normal' },
-      { kind: 'base_moved', verdict: 'normal' }
+      { kind: 'gate', verdict: 'normal' },
+      { kind: 'retry_wait', verdict: 'normal' }
     ]);
 
-    expect(chosen?.kind).toBe('base_moved');
+    expect(chosen?.kind).toBe('retry_wait');
   });
 
   test('returns null when nothing is issue-scoped', () => {
-    expect(representativeWaitReason([{ kind: 'queue_hold' }])).toBeNull();
+    expect(representativeWaitReason([{ kind: 'gate' }])).toBeNull();
   });
 
   test('orders human decisions ahead of prerequisites', () => {
@@ -289,7 +243,7 @@ describe('relation and summary chips', () => {
   test('states the blocked aggregation rule on the summary chip', () => {
     const blocked = SUMMARY_CHIPS.find((row) => row.id === 'blocked');
 
-    expect(blocked?.meaning).toContain('큐 사유(queue_hold)');
+    expect(blocked?.meaning).toContain('provider_hold도 포함');
   });
 
   test('names the four summary chips', () => {
@@ -300,4 +254,32 @@ describe('relation and summary chips', () => {
       'blocked'
     ]);
   });
+});
+
+test('shares one session label across parked and recovery kinds', () => {
+  const rows = ['awaiting_user', 'recovery'].map((kind) =>
+    waitKindRow({ kind })
+  );
+
+  expect(rows.map((row) => waitBadgeText(row, 'action_required'))).toEqual([
+    '⛔ 세션이 멈춤 · 조치 필요',
+    '⛔ 세션이 멈춤 · 조치 필요'
+  ]);
+});
+
+test('shares one prerequisite label across repositories', () => {
+  expect(waitKindRow({ kind: 'prerequisite_foreign' })).toBe(
+    waitKindRow({ kind: 'prerequisite' })
+  );
+});
+
+test('pins the representative reason order', () => {
+  expect(REPRESENTATIVE_KIND_ORDER).toEqual([
+    'awaiting_user',
+    'recovery',
+    'provider_hold',
+    'prerequisite_foreign',
+    'prerequisite',
+    'retry_wait'
+  ]);
 });

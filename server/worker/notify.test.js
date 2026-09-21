@@ -189,50 +189,93 @@ describe('wait notification suppression', () => {
     );
   });
 
-  test.each(['unclassified', 'provider'])(
-    'claims recovery %s once across repeated observations and reload',
-    async (reason) => {
-      const { input, spawn, store } = fixture();
-      const wait_reasons = judgeWaitReasons({
-        root_dir: '/repo',
-        now: 2_000_000,
-        queue: {
-          attempts: {
-            a: {
-              attempt_id: 'a',
-              bead_id: 'UI-a',
-              status: 'waiting',
-              finished_at: 1000,
-              cause: 'session_ended_unresolved',
-              cause_detail: {
-                recovery: {
-                  classification: 'condition',
-                  disposition: 'wait',
-                  reason,
-                  policy_schema: 1
-                }
-              }
+  /**
+   * @param {string} reason
+   * @param {Record<string, unknown>} [extra_detail]
+   */
+  function recoveryWaitReasons(reason, extra_detail = {}) {
+    return judgeWaitReasons({
+      root_dir: '/repo',
+      now: 2_000_000,
+      queue: {
+        attempts: {
+          a: {
+            attempt_id: 'a',
+            bead_id: 'UI-a',
+            status: 'waiting',
+            finished_at: 1000,
+            cause: 'session_ended_unresolved',
+            cause_detail: {
+              summary: 'blocker: 승인 대상 자리표시자가 남아 있음',
+              recovery: {
+                classification: 'session_recovery_wait',
+                disposition: 'wait',
+                reason,
+                policy_schema: 1
+              },
+              ...extra_detail
             }
           }
         }
-      }).wait_reasons;
+      }
+    }).wait_reasons;
+  }
 
-      await notifyWaitReasons({ ...input, wait_reasons });
-      await notifyWaitReasons({ ...input, wait_reasons, now: 2000 });
-      await notifyWaitReasons({
-        ...input,
-        wait_reasons,
-        store: createQueueStore(),
-        now: 3000
-      });
+  test('claims a stalled recovery once across repeated observations and reload', async () => {
+    const { input, spawn, store } = fixture();
+    const wait_reasons = recoveryWaitReasons('authority', {
+      inquiry: { session: 'launched', mode: 'fork', session_id: 'abcdef1234' }
+    });
+    const queue_attempts = {
+      a: {
+        attempt_id: 'a',
+        bead_id: 'UI-a',
+        status: 'waiting',
+        cause_detail: {
+          recovery: { reason: 'authority' },
+          inquiry: {
+            session: 'launched',
+            mode: 'fork',
+            session_id: 'abcdef1234'
+          }
+        }
+      }
+    };
+    const stored = /** @type {typeof store} */ (
+      /** @type {unknown} */ ({
+        ...store,
+        snapshot: (/** @type {string} */ workspace) => ({
+          ...store.snapshot(workspace),
+          attempts: queue_attempts
+        })
+      })
+    );
 
-      expect(Object.keys(store.snapshot('/repo').wait_notified)).toHaveLength(
-        1
-      );
-      expect(spawn.calls).toHaveLength(1);
-      expect(spawn.last().args[0]).toContain('원인 session_ended_unresolved');
-    }
-  );
+    await notifyWaitReasons({ ...input, store: stored, wait_reasons });
+    await notifyWaitReasons({
+      ...input,
+      store: stored,
+      wait_reasons,
+      now: 2000
+    });
+
+    expect(Object.keys(store.snapshot('/repo').wait_notified)).toHaveLength(1);
+    expect(spawn.calls).toHaveLength(1);
+    expect(spawn.last().args[0]).toContain('세션이 멈춤');
+    expect(spawn.last().args[0]).toContain(
+      '질의 세션: launched · fork abcdef12'
+    );
+  });
+
+  test('sends no wait notification for a provider recovery wait', async () => {
+    const { input, spawn, store } = fixture();
+    const wait_reasons = recoveryWaitReasons('provider');
+
+    await notifyWaitReasons({ ...input, wait_reasons });
+
+    expect(Object.keys(store.snapshot('/repo').wait_notified)).toHaveLength(0);
+    expect(spawn.calls).toHaveLength(0);
+  });
 
   test('sends a recurring reason again after disappearance', async () => {
     const { input, spawn } = fixture();

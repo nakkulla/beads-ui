@@ -771,50 +771,6 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     expect(tile.querySelector('.rtile__discard')).not.toBeNull();
   });
 
-  test('shows stale occupied work as an admission row without a ghost', () => {
-    const { mount, view } = setup({
-      workspaces: [
-        workspace({
-          bead_titles: { 'A-1': '처분 대기 작업' },
-          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
-          lane_states: { s1: { occupied_by: ['A-1'], order: ['A-1'] } },
-          admission: {
-            'A-1': {
-              reason: 'worktree_stale_work',
-              stale_work: { action_id: 'stale-action' }
-            }
-          },
-          attempts: {
-            t1: {
-              attempt_id: 't1',
-              bead_id: 'A-1',
-              status: 'failed',
-              serial_lane_id: 's1',
-              finished_at: 10,
-              dismissed_at: 20
-            }
-          }
-        })
-      ],
-      workspaces_state: [state()]
-    });
-
-    view.load();
-
-    const row = mount.querySelector(
-      '.worker-wait__lane .mon2-item[data-bead-id="A-1"]:not(.mon2-item--ghost)'
-    );
-    expect({
-      row_text: row?.textContent || '',
-      ghost_count: mount.querySelectorAll(
-        '.worker-wait__lane .mon2-item--ghost[data-bead-id="A-1"]'
-      ).length
-    }).toEqual({
-      row_text: expect.stringContaining('⛔ worktree_stale_work'),
-      ghost_count: 0
-    });
-  });
-
   // 두 탭이 같은 조각(`queueRowOps`)을 쓰기 전에는 Monitor 직렬 행만 `nudgeable`
   // false로 묶음 전체가 비어 `✕`가 없었다 (UI-6g3t §4).
   test('stands the remove ✕ on a serial lane row too', () => {
@@ -1127,7 +1083,7 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     });
   });
 
-  test('resumes a recovery wait with its repository and queue revision', async () => {
+  test('opens a recovery inquiry with its repository and queue revision', async () => {
     const { mount, view, sent } = setup({
       workspaces: [
         workspace({
@@ -1150,23 +1106,20 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     });
     view.load();
 
-    click(mount, '.rtile__resume');
-    /** @type {HTMLButtonElement} */ (
-      document.querySelector('.resume-instructions-dialog button')
-    ).click();
+    click(mount, '.rtile__resolve');
     await vi.waitFor(() =>
       expect(
-        sent.filter((call) => call.type === 'worker-attempt-resume')
+        sent.filter((call) => call.type === 'worker-resolve-in-session')
       ).toHaveLength(1)
     );
 
     expect(sent[0]).toMatchObject({
-      type: 'worker-attempt-resume',
-      payload: { attempt_id: 't1', root_dir: WS_A, expected_revision: 1 }
+      type: 'worker-resolve-in-session',
+      payload: { bead_id: 'A-1', root_dir: WS_A, expected_revision: 1 }
     });
   });
 
-  test('resumes a base-moved wait from the shared tile header', async () => {
+  test('withholds manual resume on a historic base movement tile', async () => {
     const { mount, view, sent } = setup({
       workspaces: [
         workspace({
@@ -1192,27 +1145,8 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     });
 
     view.load();
-    const button = el(mount, '.rtile__resume');
-    expect(button.closest('.rtile__hd-actions')).not.toBeNull();
-    expect(button.closest('.rtile__foot')).toBeNull();
-    button.click();
-    /** @type {HTMLButtonElement} */ (
-      document.querySelector('.resume-instructions-dialog button')
-    ).click();
-    await vi.waitFor(() =>
-      expect(
-        sent.filter((call) => call.type === 'worker-attempt-resume')
-      ).toHaveLength(1)
-    );
-
-    expect(sent[0]).toMatchObject({
-      type: 'worker-attempt-resume',
-      payload: {
-        attempt_id: 't1',
-        root_dir: WS_A,
-        expected_revision: 1
-      }
-    });
+    expect(mount.querySelector('.rtile__resume')).toBeNull();
+    expect(sent).toEqual([]);
   });
 
   test('draws no restart-instructions button for an old instructions_restart snapshot', async () => {
@@ -1671,7 +1605,7 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     const tile = el(mount, '.rtile[data-attempt-id="t1"]');
     expect(
       tile?.querySelector('.wait-verdict summary')?.textContent?.trim()
-    ).toBe('⏸ 세션 대기');
+    ).toBe('⏸ 세션이 멈춤');
     expect(tile?.querySelector('.rtile__held-summary')?.textContent).toBe(
       '사용자 결정 대기'
     );
@@ -1798,8 +1732,8 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     expect(tile?.querySelector('.rtile__elapsed')).toBeNull();
     expect(
       tile?.querySelector('.wait-verdict summary')?.textContent?.trim()
-    ).toContain('조건 대기');
-    expect(tile?.querySelector('.op-btn.rtile__resume')).not.toBeNull();
+    ).toBe('⛔ 세션이 멈춤 · 조치 필요');
+    expect(tile?.querySelector('.op-btn.rtile__resolve')).not.toBeNull();
     expect(tile?.querySelector('.rtile__foot .rtile__discard')).not.toBeNull();
     expect(mount.querySelectorAll('.rtile--failed')).toHaveLength(0);
     expect(mount.querySelector('.wait-summary')?.textContent).toMatch(
@@ -3745,35 +3679,6 @@ describe('views/monitor 숨김과 lifecycle (UI-hhn9 §6)', () => {
 
 // 막힌 대기 행의 `▶ 재개`는 두 탭이 같은 렌더러를 쓰므로 Monitor에도 선다
 // (UI-01wh §3.6). 다른 점은 어느 저장소의 큐인지를 `root_dir`이 말한다는 것뿐이다.
-describe('monitor blocked waiting row resume (UI-01wh §3.6)', () => {
-  test('sends the hold since with the row repo on a 재개 click', async () => {
-    const { mount, view, sent } = setup({
-      workspaces: [
-        workspace({
-          queue: [{ bead_id: 'A-1' }],
-          hold: {
-            kind: 'systemic',
-            cause: 'loud_fail_blocker',
-            since: 77,
-            bead_ids: ['A-1']
-          }
-        })
-      ],
-      workspaces_state: [state()]
-    });
-
-    view.load();
-    click(mount, '.worker-mini[data-bead-id="A-1"] .worker-mini__hold-resume');
-    await flushMicrotasks();
-
-    expect(sent).toEqual([
-      {
-        type: 'worker-queue-hold-resume',
-        payload: { since: 77, root_dir: WS_A }
-      }
-    ]);
-  });
-});
 
 describe('monitor 자동 진행 꺼짐 대기 행 (UI-3pu9 §4.2)', () => {
   test('draws no gate chip, grace chip or start-now button', () => {

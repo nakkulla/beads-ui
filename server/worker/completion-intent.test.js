@@ -3090,8 +3090,14 @@ describe('완료 실패 comment 형식 (UI-8w4t §4)', () => {
   });
 
   test.each([
-    ['verification', '조건 대기'],
-    ['reconcile', '확인 대기'],
+    [
+      'verification',
+      '검증 오류의 정정을 기다리며, 원인이 고쳐지면 이어갈 수 있습니다.'
+    ],
+    [
+      'reconcile',
+      '세션에서 원래 실행과 그 효과를 확인하고, 이어갈 지시 또는 폐기를 결정합니다.'
+    ],
     ['new_reason', 'new_reason']
   ])('names the recovery condition %s', (reason, label) => {
     const comment = completionFailureComment(

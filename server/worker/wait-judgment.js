@@ -2,12 +2,10 @@ import {
   isImplementationAttempt,
   latestImplementationAttempts
 } from '../../app/utils/active-attempts.js';
-import {
-  RECOVERY_WAIT_LABELS,
-  RECOVERY_WAIT_SENTENCES
-} from '../../app/utils/failure-sentences.js';
+import { RECOVERY_WAIT_SENTENCES } from '../../app/utils/failure-sentences.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { OBSERVATION } from './external-wait/contract.js';
+import { isSessionStalledRecovery } from './session-stall.js';
 
 /** All display/notification thresholds live here (UI-n99w §5.2). */
 export const WAIT_THRESHOLDS = Object.freeze({
@@ -20,8 +18,8 @@ export const WAIT_THRESHOLDS = Object.freeze({
 });
 
 /**
- * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'base_moved'|'provider_hold'|'awaiting_user'|'retry_wait'|'recovery'} WaitKind
- * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'recovery_confirm'|'resume_failed'|'wait_key_missing'|'wait_record_missing'} VerdictCode
+ * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'provider_hold'|'awaiting_user'|'retry_wait'|'recovery'} WaitKind
+ * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_stalled'|'retry_stalled'|'decision'|'resume_failed'|'wait_key_missing'|'wait_record_missing'} VerdictCode
  * @typedef {{ code: VerdictCode, message: string }} VerdictReason
  * @typedef {Object} WaitReason
  * @property {WaitKind} kind
@@ -64,25 +62,41 @@ const VERDICT_MESSAGES = {
   monitor_stopped: '외부 작업 감시가 중단됨',
   blocker_needs_human: '열린 선행에 사람의 조치가 필요함',
   reset_passed: '한도 리셋 후 5분이 지나도 보류가 유지됨',
-  probe_needed: '자동 재개가 꺼져 지금 프로브가 필요함',
   probe_stalled: '다음 프로브 시각에서 5분이 지나도 갱신되지 않음',
-  hold: '큐를 재개하려면 사람의 승인이 필요함',
-  retry_stalled: '재시도 시각에서 5분이 지나도 큐가 정지됨',
-  decision: '사용자의 답변이 필요함',
-  recovery_confirm: '보존된 작업의 원인 확인 또는 이어하기·폐기 결정이 필요함'
+  retry_stalled: '재시도 시각에서 5분이 지나도 실행되지 않음',
+  decision: '사용자의 답변이 필요함'
 };
 
-/** @type {Readonly<Record<string, string>>} */
-const RECOVERY_RELEASES = Object.freeze({
-  provider: '조건 해제 후 ↻ 이어하기',
-  credential: '인증 복구 확인 후 ↻ 이어하기',
-  prerequisite: '선행 해제 후 ↻ 이어하기',
-  authority: '승인·안전 판단 확인 후 ↻ 이어하기 또는 폐기',
-  verification: '검증 원인 정정 후 ↻ 이어하기',
-  no_progress: '무진전 원인 정정 후 ↻ 이어하기 또는 폐기',
-  unclassified: '원인·실행 결과 확인 뒤 ↻ 이어하기 또는 폐기',
-  reconcile: '원인·실행 결과 확인 뒤 ↻ 이어하기 또는 폐기'
-});
+/**
+ * Preserve the session's first blocker sentence without folding later lines in.
+ *
+ * @param {unknown} summary
+ * @param {string} token
+ * @returns {string}
+ */
+function recoveryHeadline(summary, token) {
+  const first = typeof summary === 'string' ? summary.split(/\r?\n/, 1)[0] : '';
+  return (
+    line(first.replace(/^.*?blocker:\s*/, '')) ||
+    (Object.hasOwn(RECOVERY_WAIT_SENTENCES, token)
+      ? RECOVERY_WAIT_SENTENCES[token]
+      : token)
+  );
+}
+
+/**
+ * The same interactive exits serve parked and recovery sessions.
+ *
+ * @param {WaitReason} result
+ * @param {string} [attempt_id]
+ */
+function sessionActions(result, attempt_id) {
+  const payload = { ...result.subject, ...(attempt_id ? { attempt_id } : {}) };
+  result.actions.push(
+    { op: 'worker-resolve-in-session', label: '[세션에서 해결]', payload },
+    { op: 'worker-discard', label: '폐기', payload }
+  );
+}
 
 /**
  * Inputs use epoch milliseconds or ISO strings; absent clocks stay absent.
@@ -392,72 +406,29 @@ export function judgeWaitReasons(input) {
     const attempt = attempts.get(bead_id);
     const record = admission[bead_id];
     const recovery = attempt?.cause_detail?.recovery;
-    if (attempt?.status === 'waiting' && recovery) {
+    const recovery_blockers = Array.isArray(attempt?.cause_detail?.blockers)
+      ? attempt.cause_detail.blockers
+      : [];
+    if (
+      attempt?.status === 'waiting' &&
+      recovery &&
+      (recovery.reason !== 'prerequisite' || recovery_blockers.length === 0)
+    ) {
       const token = line(recovery.reason);
-      const known = Object.hasOwn(RECOVERY_WAIT_LABELS, token);
-      const count = recovery.no_progress?.count;
       const result = reason(
         'recovery',
         bead_id,
         root_dir,
-        [
-          known ? RECOVERY_WAIT_LABELS[token] : token,
-          known ? RECOVERY_WAIT_SENTENCES[token] : '',
-          attempt.cause && attempt.cause !== 'session_recovery_wait'
-            ? `원인 ${line(attempt.cause)}`
-            : '',
-          count >= 1 ? `무진전 ${count}회` : ''
-        ]
-          .filter(Boolean)
-          .join(' · '),
-        known ? RECOVERY_RELEASES[token] : ''
+        recoveryHeadline(attempt.cause_detail.summary, token),
+        Object.hasOwn(RECOVERY_WAIT_SENTENCES, token)
+          ? RECOVERY_WAIT_SENTENCES[token]
+          : token
       );
       addClocks(result, { since: attempt.finished_at });
-      if (
-        typeof attempt.session_id === 'string' &&
-        attempt.session_id.length > 0
-      ) {
-        result.actions.push({
-          op: 'resume',
-          label: '↻ 이어하기',
-          payload: { root_dir, bead_id, attempt_id: attempt.attempt_id }
-        });
+      if (isSessionStalledRecovery(recovery, recovery_blockers)) {
+        judge(result, 'action_required', 'decision');
       }
-      if (
-        ['unclassified', 'reconcile', 'authority', 'no_progress'].includes(
-          token
-        )
-      ) {
-        judge(result, 'action_required', 'recovery_confirm');
-      } else if (
-        elapsed(
-          attempt.finished_at,
-          WAIT_THRESHOLDS.interval_ms * WAIT_THRESHOLDS.settle_cycles,
-          now
-        )
-      ) {
-        judge(result, 'overdue', 'settle_overdue');
-      }
-      wait_reasons.push(result);
-      continue;
-    }
-    if (attempt?.status === 'waiting' && attempt.cause === 'base_moved') {
-      const sha = line(
-        attempt.cause_detail?.candidate_sha || attempt.head_oid
-      ).slice(0, 7);
-      const result = reason(
-        'base_moved',
-        bead_id,
-        root_dir,
-        `기준 이동 대기${sha ? ` · 보존 후보 ${sha}가 새 base 위에서 재검증을 기다림` : ''}`,
-        '↻ 이어하기로 보존 세션 재개'
-      );
-      addClocks(result, { since: attempt.finished_at });
-      result.actions.push({
-        op: 'resume',
-        label: '↻ 이어하기',
-        payload: { root_dir, bead_id, attempt_id: attempt.attempt_id }
-      });
+      sessionActions(result, attempt.attempt_id);
       wait_reasons.push(result);
       continue;
     }
@@ -554,6 +525,7 @@ export function judgeWaitReasons(input) {
           '문의 세션에서 답하면 해제'
         );
         judge(result, 'action_required', 'decision');
+        sessionActions(result, attempt.attempt_id);
         addClocks(result, { since: attempt.finished_at });
         wait_reasons.push(result);
       }
@@ -568,6 +540,9 @@ export function judgeWaitReasons(input) {
         next_at === undefined ? '' : `${localClock(next_at)}에 자동 재시도`
       );
       addClocks(result, { since: attempt.finished_at, next_check_at: next_at });
+      if (elapsed(next_at, WAIT_THRESHOLDS.grace_ms, now)) {
+        judge(result, 'overdue', 'retry_stalled');
+      }
       wait_reasons.push(result);
     }
   }
@@ -593,12 +568,9 @@ export function judgeWaitReasons(input) {
         wait_reasons.some(
           (row) =>
             row.subject.bead_id === bead_id &&
-            [
-              'recovery',
-              'base_moved',
-              'prerequisite',
-              'prerequisite_foreign'
-            ].includes(row.kind)
+            ['recovery', 'prerequisite', 'prerequisite_foreign'].includes(
+              row.kind
+            )
         )
       ) {
         continue;
@@ -615,6 +587,8 @@ export function judgeWaitReasons(input) {
         );
         result.targets.push({ id: handoff_bead_id, kind: 'issue' });
         addClocks(result, { since: handoff.recorded_at });
+        judge(result, 'action_required', 'decision');
+        sessionActions(result);
         wait_reasons.push(result);
       } else if (['wait', 'reconcile'].includes(recovery.disposition)) {
         const token = line(recovery.reason);
@@ -622,21 +596,14 @@ export function judgeWaitReasons(input) {
           'recovery',
           bead_id,
           root_dir,
-          [
-            RECOVERY_WAIT_LABELS[token] || token,
-            RECOVERY_WAIT_SENTENCES[token],
-            operation.failure?.code
-              ? `원인 ${line(operation.failure.code)}`
-              : ''
-          ]
-            .filter(Boolean)
-            .join(' · '),
-          `${RECOVERY_WAIT_LABELS[token] || token} — 조건 확인 뒤 [정리 재시도]`
+          recoveryHeadline(operation.failure?.summary, token),
+          Object.hasOwn(RECOVERY_WAIT_SENTENCES, token)
+            ? RECOVERY_WAIT_SENTENCES[token]
+            : token
         );
         addClocks(result, { since: operation.finished_at });
-        if (['unclassified', 'reconcile'].includes(token)) {
-          judge(result, 'action_required', 'recovery_confirm');
-        }
+        judge(result, 'action_required', 'decision');
+        sessionActions(result);
         wait_reasons.push(result);
       }
     }

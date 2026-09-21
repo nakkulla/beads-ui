@@ -21,8 +21,6 @@
  * @property {WaitScope} scope
  * @property {string} glyph
  * @property {string} label
- * @property {boolean} [dynamic_label] - The tile's `recovery.label` overrides
- * `label`, which is the fallback for rows and the summary.
  * @property {string} when
  * @property {string} release
  * @property {string} action
@@ -32,7 +30,6 @@
  * (`<낱말> 11:55`). 비면 다음 조각을 그리지 않는다.
  * @typedef {Object} WaitKindContext
  * @property {'usage_limit'|'outage'} [hold_kind]
- * @property {'env'|'systemic'} [queue_hold_kind]
  */
 
 /** @type {ReadonlyArray<WaitVerdictRow>} */
@@ -63,28 +60,56 @@ export const WAIT_KINDS = Object.freeze(
     {
       id: 'prerequisite',
       kind: 'prerequisite',
-      condition: '열린 선행 있음',
+      condition: 'prerequisite · prerequisite_foreign',
       scope: 'bead',
       glyph: '⛓',
       label: '선행 대기',
-      when: '선행 이슈가 열려 있어 착수하지 못함',
-      release: '선행이 닫히면 bd ready 재스캔으로 자동 복귀',
+      when: '같은 저장소 또는 다른 저장소의 선행 이슈가 열려 있음',
+      release:
+        '선행이 닫히면 자동 복귀 · blocked·deferred·worker-ineligible 선행은 사람 조치 필요',
       action: '',
-      // 선행 대기는 시각 줄을 그리지 않는다 (§5.1): 슬롯 1 배지와 4a 칩이 이미
-      // 말하는 사정이고 시작 시각은 배지 팝업이 싣는다.
       elapsed_word: '',
       next_word: ''
     },
     {
-      id: 'prerequisite_foreign',
-      kind: 'prerequisite_foreign',
+      id: 'provider_hold',
+      kind: 'provider_hold',
+      condition: 'usage_limit · outage · 429 · 큐 행의 provider 게이트',
       scope: 'bead',
-      glyph: '⛓',
-      label: '선행 대기',
-      when: '다른 저장소의 선행이 열려 있음(칩 색·툴팁으로 rig 구분)',
-      release: '다른 저장소 선행이 닫히면 자동 복귀',
-      action: '',
-      elapsed_word: '',
+      glyph: '⏳',
+      label: '공급자 보류',
+      when: '계정 한도 또는 공급자 장애로 실행이나 출발이 보류됨',
+      release:
+        '한도 리셋 또는 다음 프로브 시각에 자동 확인 · 회복 확인 시 해제',
+      action: '↻ 지금 프로브',
+      elapsed_word: '보류',
+      next_word: '다음 프로브'
+    },
+    {
+      id: 'retry_wait',
+      kind: 'retry_wait',
+      condition: 'env 사다리의 자동 재시도 예약',
+      scope: 'bead',
+      glyph: '↻',
+      label: '재시도 대기',
+      when: '환경성 실패 뒤 이 Bead의 자동 재시도가 예약됨',
+      release: '예약 시각에 자동 재시도 · 5분이 지나도 실행되지 않으면 지연',
+      action: '폐기',
+      elapsed_word: '대기',
+      next_word: '다음 재시도'
+    },
+    {
+      id: 'awaiting_user',
+      kind: 'awaiting_user',
+      condition: 'awaiting_user · recovery',
+      scope: 'bead',
+      glyph: '⏸',
+      label: '세션이 멈춤',
+      when: '세션이 사용자 답변이나 원인 확인을 요청하고 멈춤',
+      release:
+        '세션에서 남긴 문장과 원인을 확인하고 이어갈 지시 또는 폐기를 결정',
+      action: '[세션에서 해결] · 폐기',
+      elapsed_word: '대기',
       next_word: ''
     },
     {
@@ -101,173 +126,22 @@ export const WAIT_KINDS = Object.freeze(
         '[지금 확인] · [관찰 중단] · [이어하기] · 재개 실패 시 [새 세션으로]',
       elapsed_word: '경과',
       next_word: '다음'
-    },
-    {
-      id: 'base_moved',
-      kind: 'base_moved',
-      scope: 'bead',
-      glyph: '',
-      label: '반영 대기',
-      when: '검증된 후보를 보존하고 새 base 재검증을 기다림',
-      release: '↻ 이어하기로 보존 세션 재개',
-      action: '↻ 이어하기',
-      elapsed_word: '대기',
-      next_word: ''
-    },
-    {
-      id: 'awaiting_user',
-      kind: 'awaiting_user',
-      scope: 'bead',
-      glyph: '⏸',
-      label: '세션 대기',
-      when: '세션이 사용자 답변을 기다리며 파킹됨',
-      release: '문의 세션에서 답하면 해제',
-      action: '[세션에서 해결]',
-      elapsed_word: '대기',
-      next_word: ''
-    },
-    {
-      id: 'retry_wait',
-      kind: 'retry_wait',
-      scope: 'bead',
-      glyph: '↻',
-      label: '재시도 대기',
-      when: '환경성 실패의 자동 재시도 예약',
-      release: '예약 시각에 자동 재시도',
-      action: '↻ 지금 재시도',
-      elapsed_word: '대기',
-      next_word: '다음 재시도'
-    },
-    {
-      id: 'stale_work',
-      kind: 'stale_work',
-      scope: 'bead',
-      glyph: '⛔',
-      label: '처분 대기',
-      when: '보존된 작업을 이어갈지 새로 시작할지 결정이 필요',
-      release: '처분 버튼으로 선택',
-      action: '처분 버튼',
-      // `since`를 싣지 않는 종류라 지금은 그려지지 않는다 (fail-quiet). 칸을 비워
-      // 두면 재료가 생겼을 때 낱말을 렌더가 다시 고르게 된다.
-      elapsed_word: '대기',
-      next_word: ''
-    },
-    {
-      id: 'recovery',
-      kind: 'recovery',
-      scope: 'bead',
-      glyph: '⏳',
-      label: '복구 대기',
-      dynamic_label: true,
-      when: '복구 분류된 보존 작업이 확인을 기다림',
-      release:
-        '복구 분류별 해제 조건은 서버 사유가 말함 · 수정 Bead 착지 또는 사람 확인 뒤 재개',
-      action: '↻ 이어하기·폐기',
-      elapsed_word: '대기',
-      next_word: ''
-    },
-    {
-      id: 'provider_hold-usage_limit',
-      kind: 'provider_hold',
-      condition: 'usage_limit',
-      scope: 'bead',
-      glyph: '⏳',
-      label: '한도 대기',
-      when: '이 attempt가 계정 한도로 멈춤',
-      release:
-        '리셋 뒤 자동 프로브 · 소진이면 서버 재시작 시 1회 자동 프로브 또는 ↻ 지금 프로브',
-      action: '↻ 지금 프로브',
-      elapsed_word: '보류',
-      next_word: '다음 프로브'
-    },
-    {
-      id: 'provider_hold-outage',
-      kind: 'provider_hold',
-      condition: 'outage',
-      scope: 'bead',
-      glyph: '⏳',
-      label: '공급자 장애',
-      when: '이 attempt가 공급자 장애로 멈춤',
-      release: '다음 프로브 시각에 자동 프로브(상한 없음)',
-      action: '↻ 지금 프로브',
-      elapsed_word: '보류',
-      next_word: '다음 프로브'
-    },
-    {
-      id: 'queue_hold-systemic',
-      kind: 'queue_hold',
-      condition: 'systemic',
-      scope: 'queue',
-      glyph: '⛔',
-      label: '정지',
-      when: '큐가 체계적 실패로 멈춤',
-      release: '▶ 재개(사람 승인)',
-      action: '▶ 재개',
-      // 큐 단위 사유와 게이트 칩은 공통 시각 줄을 그리지 않는다 (§5.1) — 배지도
-      // 본문도 없는 한 층짜리 칩이라 두 칸이 비어 있다.
-      elapsed_word: '',
-      next_word: ''
-    },
-    {
-      id: 'queue_hold-env',
-      kind: 'queue_hold',
-      condition: 'env',
-      scope: 'queue',
-      glyph: '↻',
-      label: '환경 보류',
-      when: '환경 오류로 큐가 일시 정지, 자동 재시도 예약',
-      release: '<t>에 자동 재시도 · 성공하면 해제',
-      action: '↻ 지금 재시도',
-      elapsed_word: '',
-      next_word: ''
-    },
-    {
-      id: 'gate-provider_usage',
-      kind: 'gate',
-      condition: 'provider_usage',
-      scope: 'queue',
-      glyph: '⏳',
-      label: '한도 대기',
-      when: '러너의 계정 한도 보류 — target에 계정이 있으면 그 계정을 쓰는 행과 계정을 해석할 수 없는 행에, 없으면 러너의 모든 행에',
-      release:
-        '리셋 뒤 자동 프로브 · 소진이면 서버 재시작 시 1회 자동 프로브 또는 ↻ 지금 프로브',
-      action: '↻ 지금 프로브',
-      elapsed_word: '',
-      next_word: ''
-    },
-    {
-      id: 'gate-provider_outage',
-      kind: 'gate',
-      condition: 'provider_outage',
-      scope: 'queue',
-      glyph: '⏳',
-      label: '공급자 장애',
-      when: '러너 전체가 공급자 장애로 보류라 이 행이 출발하지 못함',
-      release: '다음 프로브 시각에 자동 프로브',
-      action: '↻ 지금 프로브',
-      elapsed_word: '',
-      next_word: ''
     }
   ])
 );
 
-/** @type {ReadonlySet<string>} */
-const QUEUE_KINDS = new Set(['queue_hold']);
-
 /**
- * Which surface owns a WaitReason kind (§10.3): the card badge or the queue
- * gate chip. Unknown kinds stay `bead` so a new server kind is still visible.
+ * WaitReason rows describe a Bead; provider gate chips use the same vocabulary.
  *
  * @param {string} kind
  * @returns {WaitScope}
  */
 export function waitScopeOf(kind) {
-  return QUEUE_KINDS.has(kind) ? 'queue' : 'bead';
+  return kind === 'gate' ? 'queue' : 'bead';
 }
 
 /**
- * Pick the vocabulary row for a WaitReason. Context the reason does not carry
- * is inferred from its headline rather than guessed silently.
+ * Map server kinds and provider gate contexts onto the five legend rows.
  *
  * @param {{ kind?: string, headline?: string }|null|undefined} reason
  * @param {WaitKindContext} [context]
@@ -275,23 +149,14 @@ export function waitScopeOf(kind) {
  */
 export function waitKindRow(reason, context = {}) {
   const kind = reason?.kind;
-  if (!kind) {
-    return null;
-  }
-  const headline = typeof reason?.headline === 'string' ? reason.headline : '';
-  /** @type {string} */
-  let id = kind;
-  if (kind === 'provider_hold') {
-    const hold_kind =
-      context.hold_kind ||
-      (headline.includes('공급자 장애') ? 'outage' : 'usage_limit');
-    id = `provider_hold-${hold_kind}`;
-  } else if (kind === 'queue_hold') {
-    const queue_hold_kind =
-      context.queue_hold_kind ||
-      (headline.startsWith('환경 오류') ? 'env' : 'systemic');
-    id = `queue_hold-${queue_hold_kind}`;
-  }
+  const id =
+    kind === 'prerequisite_foreign'
+      ? 'prerequisite'
+      : kind === 'recovery'
+        ? 'awaiting_user'
+        : kind === 'gate' && context.hold_kind
+          ? 'provider_hold'
+          : kind;
   return WAIT_KINDS.find((row) => row.id === id) || null;
 }
 
@@ -328,12 +193,10 @@ export function waitBadgeText(row, verdict, clocks = {}) {
 /** @type {ReadonlyArray<string>} */
 export const REPRESENTATIVE_KIND_ORDER = Object.freeze([
   'awaiting_user',
-  'stale_work',
   'recovery',
   'provider_hold',
   'prerequisite_foreign',
   'prerequisite',
-  'base_moved',
   'retry_wait'
 ]);
 
@@ -484,6 +347,6 @@ export const SUMMARY_CHIPS = Object.freeze([
     prefix: '막힘',
     label: '막힘 N',
     meaning:
-      'scope=bead 사유가 하나라도 있는 원래 이슈 수 — external_job은 원래 이슈로 한 번만 세고, 보류된 attempt의 provider_hold는 포함하며, 큐 사유(queue_hold)는 세지 않는다'
+      'scope=bead 사유가 하나라도 있는 원래 이슈 수 — external_job은 원래 이슈로 한 번만 세고, 보류된 attempt의 provider_hold도 포함한다'
   })
 ]);

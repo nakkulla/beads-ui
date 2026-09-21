@@ -13,7 +13,7 @@ import path from 'node:path';
 // sentences. `attach.js` already imports `app/utils` the same way.
 import {
   FAILURE_SENTENCES,
-  RECOVERY_WAIT_LABELS
+  RECOVERY_WAIT_SENTENCES
 } from '../../app/utils/failure-sentences.js';
 import { scriptSummary } from './failure-class.js';
 import { commentHeading, logRow, summaryRow } from './failure-comment.js';
@@ -992,7 +992,7 @@ export function completionFailureComment(
   const next = handoff_bead_id
     ? `- 다음: 수정 Bead ${handoff_bead_id}의 PR·배포 뒤 [정리 재시도] · 원본 실패 기록은 보존됨`
     : recovery
-      ? `- 다음: ${RECOVERY_WAIT_LABELS[recovery_reason] || recovery_reason} — 조건 확인 뒤 [정리 재시도]`
+      ? `- 다음: ${RECOVERY_WAIT_SENTENCES[recovery_reason] || recovery_reason} — 조건 확인 뒤 [정리 재시도]`
       : '- 다음: [머지] 재클릭 · 설정 카드 배포 실행 · 코드 수정은 새 Bead';
   // 헤딩·요약·로그 세 행은 `failure-comment.js`가 소유한다
   // (record-timeline-retention §9): 세션 실패·파킹 댓글이 같은 형식을 써야

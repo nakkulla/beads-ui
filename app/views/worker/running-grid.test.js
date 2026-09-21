@@ -2114,7 +2114,7 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
         quickfix_lane: false,
         quickfix_landing: null,
         resume_eligible: false,
-        resume_reason: '세션 대기 — [세션에서 해결]로 문의를 이어갑니다',
+        resume_reason: '세션이 멈춤 — [세션에서 해결]로 문의를 이어갑니다',
         landed: false,
         confirmation: 'unmerged'
       },
@@ -2139,7 +2139,7 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
       tile
         .querySelector('.rtile__hd .wait-verdict summary')
         ?.textContent?.trim()
-    ).toBe('⏸ 세션 대기');
+    ).toBe('⏸ 세션이 멈춤');
     expect(tile.classList.contains('rtile--parked')).toBe(true);
     expect(tile.classList.contains('rtile--failed')).toBe(false);
   });
@@ -2540,10 +2540,10 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
   });
 
   test.each([
-    ['provider', '조건 대기'],
-    ['unclassified', '확인 대기']
+    ['authority', '세션이 멈춤'],
+    ['unclassified', '세션이 멈춤']
   ])(
-    'renders the recovery %s state with the existing resume and discard controls',
+    'renders recovery %s with one session resolution and discard control',
     (reason, label) => {
       const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
       const sentence = '조건이 해제되면 이어갈 수 있습니다.';
@@ -2567,15 +2567,14 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
 
       expect(
         mount.querySelector('.wait-verdict summary')?.textContent?.trim()
-      ).toBe(`⏳ ${label}`);
+      ).toBe(`⏸ ${label}`);
       expect(mount.querySelector('.rtile__elapsed')).toBeNull();
       expect(
         mount.querySelector('.rtile__held-summary')?.textContent
-      ).toContain(`${sentence} · 원인 세션 종료`);
-      expect(mount.querySelectorAll('.op-btn.rtile__resume')).toHaveLength(1);
-      expect(mount.querySelector('.rtile__resume')?.getAttribute('title')).toBe(
-        '보존한 작업을 기록된 실행 설정으로 같은 단계에서 이어갑니다'
-      );
+      ).toContain(sentence);
+      expect(mount.querySelector('.rtile__resume')).toBeNull();
+      expect(mount.querySelectorAll('.op-btn.rtile__resolve')).toHaveLength(1);
+
       expect(
         mount.querySelector('.rtile__foot .rtile__discard')
       ).not.toBeNull();
@@ -2603,9 +2602,7 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     );
 
     expect(mount.querySelector('.rtile__resume')).toBeNull();
-    expect(mount.querySelector('.rtile__held-summary')?.textContent).toBe(
-      'future'
-    );
+    expect(mount.querySelector('.rtile__resolve')).not.toBeNull();
     expect(mount.textContent).not.toContain('선행 대기');
   });
 
@@ -2655,7 +2652,7 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     expect(badge?.hasAttribute('data-verdict')).toBe(false);
     expect(
       mount.querySelector('.wait-verdict .chip-popover')?.textContent
-    ).toContain('선행이 닫히면 bd ready 재스캔으로 자동 복귀');
+    ).toContain('선행이 닫히면 자동 복귀');
     expect(mount.textContent).not.toContain('정상 대기');
   });
 
@@ -2695,37 +2692,6 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     render(runningGridTemplate([waitTile()]), mount);
 
     expect(mount.querySelector('.rtile__elapsed')).toBeNull();
-  });
-
-  test('uses the existing badge and operation slots for a base-moved wait', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    render(
-      runningGridTemplate([
-        waitTile({
-          status_label: '반영 대기',
-          wait: { summary: null, blockers: [], cause: 'base_moved' },
-          can_resume: true
-        })
-      ]),
-      mount
-    );
-
-    expect(
-      mount.querySelector('.wait-verdict summary')?.textContent?.trim()
-    ).toBe('반영 대기');
-    expect(mount.querySelector('.rtile__elapsed')).toBeNull();
-    expect(mount.querySelectorAll('.rtile__resume')).toHaveLength(1);
-    expect(mount.querySelector('.rtile__resume')?.classList).toContain(
-      'op-btn'
-    );
-    expect(
-      mount.querySelector('.rtile__resume')?.closest('.rtile__hd-actions')
-    ).not.toBeNull();
-    expect(
-      mount.querySelector('.rtile__resume')?.closest('.rtile__foot')
-    ).toBeNull();
-    expect(mount.querySelector('.worker-deps')).toBeNull();
   });
 
   test('omits base-moved resume when no session is available', () => {
@@ -3533,7 +3499,7 @@ describe('worker running tile — [폐기 포기] (discard-abandon §3.1)', () =
     expect(order).toEqual([
       'rtile__discard',
       'rtile__discard-abandon',
-      'rtile__resolve'
+      'op-btn rtile__resolve'
     ]);
   });
 
@@ -3647,17 +3613,10 @@ describe('retry_wait tile hold retry (UI-01wh §3.3)', () => {
     return mount;
   }
 
-  test('draws ↻ 지금 재시도 with the hold since', () => {
+  test('omits the retired queue retry even with an old hold clock', () => {
     const mount = renderRetryTile({ hold_since: 4242 });
 
-    const button = /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile__foot .rtile__hold-retry')
-    );
-
-    expect([button.dataset.since, button.textContent?.trim()]).toEqual([
-      '4242',
-      '↻ 지금 재시도'
-    ]);
+    expect(mount.querySelector('.rtile__hold-retry')).toBeNull();
   });
 
   test('draws no retry button when no hold stands', () => {
@@ -3666,7 +3625,7 @@ describe('retry_wait tile hold retry (UI-01wh §3.3)', () => {
     expect(mount.querySelector('.rtile__hold-retry')).toBeNull();
   });
 
-  test('puts ↻ 지금 재시도 after 폐기 when both stand', () => {
+  test('keeps discard without the retired queue retry', () => {
     const mount = renderRetryTile({
       hold_since: 4242,
       discard: {
@@ -3684,6 +3643,6 @@ describe('retry_wait tile hold retry (UI-01wh §3.3)', () => {
       ).querySelectorAll('button')
     ).map((button) => button.textContent?.trim());
 
-    expect(labels).toEqual(['폐기', '↻ 지금 재시도']);
+    expect(labels).toEqual(['폐기']);
   });
 });

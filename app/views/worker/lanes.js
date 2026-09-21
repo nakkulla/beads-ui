@@ -688,108 +688,6 @@ export function discardReceiptTemplate(item) {
 }
 
 /**
- * @typedef {Object} StaleWorkView
- * @property {'worktree'|'branch'} residue
- * @property {'unique'|'unknown'} state
- * @property {string} title
- * @property {string} cause
- * @property {string} summary
- * @property {string} action_id
- * @property {boolean} can_resume
- * @property {boolean} can_continue
- * @property {boolean} can_backup_fresh
- * @property {boolean} can_recheck
- * @property {boolean} locked
- */
-
-const STALE_WORK_CAUSES = {
-  dirty_unique: '최신 base에 없는 로컬 변경이 남아 있습니다',
-  untracked_present: '추적되지 않은 파일이 남아 있습니다',
-  branch_ahead: '로컬 branch에 고유 commit이 남아 있습니다',
-  head_ahead: 'worktree HEAD에 고유 commit이 남아 있습니다',
-  ahead_not_contained:
-    '로컬 branch의 고유 commit이 최신 base에 포함됐음을 증명하지 못했습니다',
-  ahead_merge_commit:
-    '로컬 branch에 자동 정리할 수 없는 merge commit이 남아 있습니다',
-  ahead_submodule_path:
-    '로컬 branch의 고유 commit이 submodule 경로를 변경합니다',
-  archive_failed: '고유 commit 백업을 안전하게 검증하지 못했습니다',
-  ref_delete_failed: '확인된 local branch를 안전하게 삭제하지 못했습니다',
-  resume_available: '이어갈 수 있는 이전 Worker session이 있습니다',
-  observe_failed: 'Git 상태를 안전하게 확인하지 못했습니다',
-  identity_changed: '확인 중 worktree 상태가 바뀌었습니다',
-  ownership_unknown: 'Worker 소유 worktree인지 확인하지 못했습니다'
-};
-
-/**
- * @param {unknown} admission
- * @param {boolean} [locked]
- * @returns {StaleWorkView|null}
- */
-export function staleWorkProjection(admission, locked = false) {
-  if (!admission || typeof admission !== 'object') {
-    return null;
-  }
-  const record = /** @type {Record<string, unknown>} */ (admission);
-  if (
-    record.reason !== 'worktree_stale_work' ||
-    !record.stale_work ||
-    typeof record.stale_work !== 'object'
-  ) {
-    return null;
-  }
-  const stale_work = /** @type {Record<string, unknown>} */ (record.stale_work);
-  const action_id = stale_work.action_id;
-  if (typeof action_id !== 'string' || action_id.length === 0) {
-    return null;
-  }
-  const residue = stale_work.residue === 'branch' ? 'branch' : 'worktree';
-  const state = stale_work.state === 'unique' ? 'unique' : 'unknown';
-  const summary =
-    stale_work.summary && typeof stale_work.summary === 'object'
-      ? /** @type {Record<string, unknown>} */ (stale_work.summary)
-      : {};
-  /**
-   * @param {string} key
-   */
-  function count(key) {
-    return Number.isInteger(summary[key]) ? Number(summary[key]) : 0;
-  }
-  const cause_key =
-    typeof stale_work.cause === 'string' ? stale_work.cause : 'observe_failed';
-  return {
-    residue,
-    state,
-    title:
-      residue === 'branch'
-        ? '이전 브랜치 보존됨'
-        : state === 'unique'
-          ? '이전 작업 보존됨'
-          : '이전 작업 상태 확인 실패',
-    cause:
-      STALE_WORK_CAUSES[
-        /** @type {keyof typeof STALE_WORK_CAUSES} */ (cause_key)
-      ] || '안전하게 자동 정리할 수 없는 이전 작업이 남아 있습니다',
-    summary:
-      residue === 'branch'
-        ? `고유 commit ${count('branch_ahead')}`
-        : [
-            `staged ${count('staged_count')}`,
-            `unstaged ${count('unstaged_count')}`,
-            `untracked ${count('untracked_count')}`,
-            `branch ahead ${count('branch_ahead')}`,
-            `HEAD ahead ${count('head_ahead')}`
-          ].join(' · '),
-    action_id,
-    can_resume: stale_work.can_resume === true,
-    can_continue: stale_work.can_continue === true,
-    can_backup_fresh: stale_work.can_backup_fresh === true,
-    can_recheck: stale_work.can_recheck === true,
-    locked
-  };
-}
-
-/**
  * The 오케/워커 execution-settings chips (worker-card-exec-chips §4).
  *
  * The prefix label lives here rather than in the formatter: the formatter owns
@@ -1571,7 +1469,6 @@ export function priorityBadgeTemplate(priority) {
  * @property {string} [resolve_title] - Tooltip: what the click starts.
  * @property {ReturnType<typeof discardProjection>} [discard] - Shared durable
  * discard eligibility, phase, error, archive, and PR-receipt projection.
- * @property {StaleWorkView|null} [stale_work] - Optional stale worktree action card.
  * @property {boolean} [merge_enabled] - Whether the gate lets [머지] be clicked.
  * @property {boolean} [discard_enabled] - Whether [폐기] may be clicked; false
  * while a merge is in flight (UI-raqh §4) or a conflict-resolution session owns
@@ -1790,22 +1687,6 @@ export function graceRemainingMs(added_at, now) {
 }
 
 /**
- * The `queue_hold` verdict this row's gate chip must wear (§7.1), or `null`
- * when the queue reason is absent or normal.
- *
- * @param {Record<string, any>} item
- * @returns {'overdue'|'action_required'|null}
- */
-function queueHoldVerdictOf(item) {
-  const reason = (item.wait_reasons || []).find(
-    (/** @type {import('../../protocol.js').WaitReason} */ entry) =>
-      entry.kind === 'queue_hold' &&
-      (entry.verdict === 'overdue' || entry.verdict === 'action_required')
-  );
-  return reason ? reason.verdict : null;
-}
-
-/**
  * The 게이트 칩 — 슬롯 4a 판정 칩 (UI-01wh §3.2). 줄 맨 앞에 선다: "왜 못 가나"의
  * 가장 바깥 사정이 큐 전체의 사정이기 때문이다. 클릭은 사유 팝업이고 칩은 상태를
  * 쓰지 않는다 (칩 문법 §4.5). 재료가 없으면 그리지 않는다 (fail-quiet).
@@ -1815,23 +1696,15 @@ function queueHoldVerdictOf(item) {
  * @param {string} bead_id - 이 행의 이슈 ID. 팝업 열림 키의 한 축이고 클릭
  * 핸들러가 `closest('[data-bead-id]')`로 읽는 좌표다.
  * @param {boolean} open
- * @param {'overdue'|'action_required'|null} [queue_verdict] - `queue_hold`
- * 사유의 판정, 있으면 칩이 경고색을 든다 (§7.1).
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function gateChipTemplate(gate, bead_id, open, queue_verdict = null) {
+export function gateChipTemplate(gate, bead_id, open) {
   if (!gate) {
     return '';
   }
-  const verdict_class =
-    queue_verdict === 'action_required'
-      ? ' worker-dep--gate-action'
-      : queue_verdict === 'overdue'
-        ? ' worker-dep--gate-overdue'
-        : '';
   return html`<button
     type="button"
-    class="worker-dep worker-dep--gate worker-dep--gate-${gate.kind}${verdict_class} judgement-chip"
+    class="worker-dep worker-dep--gate worker-dep--gate-${gate.kind} judgement-chip"
     data-chip-key="gate"
     data-bead-id=${bead_id}
     aria-expanded=${open ? 'true' : 'false'}
@@ -1877,11 +1750,11 @@ export function graceChipTemplate(item, now = Date.now()) {
  * 내리지 않는다.
  *
  * 서는 조건은 둘이다 (UI-01wh §3.3): 유예 중이거나, 게이트에 막혀 있거나.
- * 게이트로 설 때는 이 행 하나가 큐 정지·공급자 보류를 무시하고 지금 도는
+ * 게이트로 설 때는 이 행 하나가 공급자 보류를 무시하고 지금 도는
  * 결정이므로 title이 그것을 말한다. 둘 다 아니면 그리지 않는다 (fail-quiet).
  *
  * 자동 진행이 꺼진 저장소의 행(`manual_only === true`)에서는 유예 조건이
- * 성립하지 않는다 (UI-3pu9 §4.2). 게이트 조건은 그대로라 공급자 보류·큐 정지에
+ * 성립하지 않는다 (UI-3pu9 §4.2). 게이트 조건은 그대로라 공급자 보류에
  * 막힌 행은 자동 진행이 꺼져 있어도 버튼을 유지한다.
  *
  * 직렬 레인은 순서대로 쌓이므로 (직렬 레인 순서 고정 스펙 §6.2·§8.3) 선두가
@@ -1914,35 +1787,10 @@ export function startNowButtonTemplate(item, now = Date.now()) {
     data-action="queue-start-now"
     data-bead-id=${item.id}
     title=${gated
-      ? '큐 정지·공급자 보류를 이 행에 대해서만 무시하고 지금 실행합니다'
+      ? '공급자 보류를 이 행에 대해서만 무시하고 지금 실행합니다'
       : '대기 진입 유예를 이 항목에 대해서만 걷고 지금 실행합니다'}
   >
     지금 시작
-  </button>`;
-}
-
-/**
- * `▶ 재개` — 체계적 정지에 막힌 대기 행의 슬롯 1 조작 (UI-01wh §3.3). 클릭은
- * 배너가 하던 것과 같은 큐 전체 해제(`worker-queue-hold-resume`)이고 CAS 재료는
- * 그 hold의 `since`다. 막힌 행 전부에 그린다 — 같은 행동이고 `since` CAS가 두
- * 번째 클릭을 no-op으로 만든다 (ADR 0048 §3.3).
- *
- * @param {{ gate?: Pick<import('./lane-model.js').LaneGate, 'kind'|'since'> }} item
- * @returns {import('lit-html').TemplateResult|''}
- */
-export function holdResumeButtonTemplate(item) {
-  const gate = item.gate;
-  if (!gate || gate.kind !== 'systemic' || typeof gate.since !== 'number') {
-    return '';
-  }
-  return html`<button
-    type="button"
-    class="op-btn worker-mini__hold-resume"
-    data-action="queue-hold-resume"
-    data-since=${gate.since}
-    title="정지를 풀고 멈춰 있던 bead를 다시 디스패치합니다 (큐 전체)"
-  >
-    ▶ 재개
   </button>`;
 }
 
@@ -2085,9 +1933,7 @@ function heldRowId(material) {
     return 'retry_wait';
   }
   if (kind === 'provider_hold') {
-    return material.hold?.kind === 'outage'
-      ? 'provider_hold-outage'
-      : 'provider_hold-usage_limit';
+    return 'provider_hold';
   }
   if (kind !== 'waiting') {
     return null;
@@ -2095,9 +1941,6 @@ function heldRowId(material) {
   const wait = material.held || null;
   if (wait?.recovery) {
     return 'recovery';
-  }
-  if (wait?.cause === 'base_moved') {
-    return 'base_moved';
   }
   return 'prerequisite';
 }
@@ -2124,18 +1967,14 @@ export function waitStatusBadge(material) {
       : '';
   }
   const held_row_id = heldRowId(material);
-  const held_row = held_row_id
-    ? WAIT_KINDS.find((entry) => entry.id === held_row_id) || null
-    : null;
+  const held_row = held_row_id ? waitKindRow({ kind: held_row_id }) : null;
   /** @type {import('../../protocol.js').WaitReason|null} */
   let reason = null;
   /** @type {import('./wait-vocabulary.js').WaitKindRow|null} */
   let badge_row = held_row;
   if (held_row) {
-    const same_kind = reasons.filter((entry) =>
-      held_row.kind === 'prerequisite'
-        ? ['prerequisite', 'prerequisite_foreign'].includes(entry.kind)
-        : entry.kind === held_row.kind
+    const same_kind = reasons.filter(
+      (entry) => waitKindRow(entry) === held_row
     );
     reason = /** @type {import('../../protocol.js').WaitReason|null} */ (
       representativeWaitReason(same_kind)
@@ -2156,17 +1995,7 @@ export function waitStatusBadge(material) {
     material.hold || null,
     now,
     {
-      label:
-        material.label ||
-        (badge_row.dynamic_label === true
-          ? material.held?.recovery?.label || badge_row.label
-          : badge_row.label),
-      // 판정 없는 복구 타일의 해제 조건은 타일이 아는 문장이다 — 표의 일반 문장은
-      // 그 다음이다.
-      release:
-        badge_row.dynamic_label === true
-          ? material.held?.recovery?.sentence || ''
-          : ''
+      label: material.label || badge_row.label
     }
   );
 }
@@ -2202,8 +2031,7 @@ function externalGuidanceLines(reason) {
  * bead-scope reasons this card carries, one popup line each.
  * @param {Record<string, any>|null} hold - `HoldTile` for provider holds.
  * @param {number} now
- * @param {{ label?: string, release?: string }} [overrides] - `recovery` hands
- * its dynamic label and the tile's release sentence in.
+ * @param {{ label?: string, release?: string }} [overrides]
  * @returns {import('lit-html').TemplateResult|''}
  */
 function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
@@ -2333,7 +2161,7 @@ function waitTimesText(reason, now_ms) {
  * need their original projection; missing operation material stays absent.
  *
  * @param {import('../../protocol.js').WaitReason|null|undefined} reason
- * @param {{ item?: MiniItem, external_wait?: import('../../protocol.js').ExternalWaitObservation, resume?: import('lit-html').TemplateResult|'', disposition?: import('lit-html').TemplateResult|'', now?: number, last_observed_at?: number|null }} [options]
+ * @param {{ item?: MiniItem, external_wait?: import('../../protocol.js').ExternalWaitObservation, now?: number, last_observed_at?: number|null }} [options]
  */
 export function waitReasonLines(reason, options = {}) {
   if (!reason) {
@@ -2421,18 +2249,7 @@ export function waitReasonLines(reason, options = {}) {
             }
       );
     }
-    if (action.op === 'resume') {
-      return ['base_moved', 'recovery'].includes(reason.kind)
-        ? options.resume || ''
-        : holdResumeButtonTemplate(
-            item?.gate?.kind === 'systemic'
-              ? item
-              : {
-                  gate: { kind: 'systemic', since: reason.since ?? null }
-                }
-          );
-    }
-    return action.op === 'disposition' ? options.disposition || '' : '';
+    return '';
   });
   return {
     badge: label
@@ -2643,19 +2460,9 @@ function upstreamCoveredSubjects(subjects) {
 export function blockedSummary(workspaces) {
   /** @type {Map<string, { root_dir: string, id: string, name: string, reasons: import('../../protocol.js').WaitReason[] }>} */
   const subjects = new Map();
-  /** @type {Set<string>} */
-  const queue_hold_subjects = new Set();
   for (const workspace of workspaces) {
     for (const reason of workspace.wait_reasons || []) {
       if (reason.subject.root_dir !== workspace.root_dir) {
-        continue;
-      }
-      // 큐 사유는 이슈의 사정이 아니므로 `막힘 N`에 들어가지 않고 팝오버 마지막
-      // 줄로만 센다 (§8).
-      if (waitScopeOf(reason.kind) === 'queue') {
-        queue_hold_subjects.add(
-          `${workspace.root_dir}/${reason.subject.bead_id}`
-        );
         continue;
       }
       const key = `${workspace.root_dir}\u0000${reason.subject.bead_id}`;
@@ -2689,9 +2496,7 @@ export function blockedSummary(workspaces) {
     { label: '외부 작업', kinds: ['external_job'] },
     { label: '선행', kinds: ['prerequisite', 'prerequisite_foreign'] },
     { label: '공급자', kinds: ['provider_hold'] },
-    { label: '사람', kinds: ['awaiting_user', 'stale_work'] },
-    { label: '복구', kinds: ['recovery'] },
-    { label: '기준 이동', kinds: ['base_moved'] },
+    { label: '세션이 멈춤', kinds: ['awaiting_user', 'recovery'] },
     { label: '재시도', kinds: ['retry_wait'] }
   ]
     .map((group) => ({
@@ -2712,11 +2517,7 @@ export function blockedSummary(workspaces) {
       entry.reasons.some((reason) => reason.verdict === 'action_required')
     ).length,
     groups,
-    // 큐 사정은 건수만 남는다 (§8): 항목 행이 없으므로 카드로 데려갈 곳도 없다.
-    // 자동 진행 꺼짐은 여기 서지 않는다 (UI-3pu9 §4.2) — 비면 줄 자체가 없다.
-    queue_line: [
-      queue_hold_subjects.size > 0 ? `정지 ${queue_hold_subjects.size}` : ''
-    ].filter(Boolean)
+    queue_line: []
   };
 }
 
@@ -3096,9 +2897,7 @@ export function queueRowOps(item, options = {}) {
   );
   // 순서는 넓은 것(큐 전체) → 좁은 것(이 행) → 자리 조작 → 빼기다 (UI-01wh §3.3).
   return html`<span class="worker-mini__rowops">
-    ${offered.has('resume') ? '' : holdResumeButtonTemplate(item)}${offered.has(
-      'probe_now'
-    )
+    ${offered.has('probe_now')
       ? ''
       : providerProbeButtonTemplate(item)}${startNowButtonTemplate(
       item
@@ -3241,7 +3040,6 @@ export function miniRow(item, options = {}) {
     !!item.external_wait ||
     item.lane === 'pr_wait' ||
     !!item.revise_action ||
-    !!item.stale_work ||
     item.discard?.abandon.action === true ||
     options.card === true;
   // 완료 행은 2줄이다 (UI-rkly §3): 제목이 가로 전체를 쓰는 1줄과, 나머지 사실을
@@ -3424,68 +3222,23 @@ export function miniRow(item, options = {}) {
   // [세션에서 해결] (UI-jw27 §4). 평소에는 아무것도 되돌리지 않으므로 [폐기]
   // 앞에 선다. requested 실패에서는 더 약한 복구부터 읽히도록 재시도와 포기 뒤로
   // 이동한다 (discard-abandon §3.1).
-  const resolve_el = item.resolve_action
-    ? html`<button
-        type="button"
-        class="worker-mini__resolve"
-        data-bead-id=${item.id}
-        ?disabled=${item.resolve_enabled === false}
-        title=${item.resolve_title ||
-        '실패한 작업을 이어받는 대화형 세션을 띄웁니다 (기록된 세션이 있으면 fork)'}
-      >
-        세션에서 해결
-      </button>`
-    : '';
+  const resolve_el =
+    item.resolve_action ||
+    wait_reasons.some((reason) => reason.kind === 'recovery')
+      ? html`<button
+          type="button"
+          class="op-btn worker-mini__resolve"
+          data-bead-id=${item.id}
+          ?disabled=${item.resolve_enabled === false}
+          title=${item.resolve_title ||
+          '실패한 작업을 이어받는 대화형 세션을 띄웁니다 (기록된 세션이 있으면 fork)'}
+        >
+          세션에서 해결
+        </button>`
+      : '';
   const discard_actions_el = discard?.abandon.action
     ? html`${discard_el}${abandon_el}${resolve_el}`
     : html`${resolve_el}${discard_el}`;
-  const stale_work = item.stale_work || null;
-  const stale_els = stale_work
-    ? html`${stale_work.can_resume || stale_work.can_continue
-        ? html`<button
-            type="button"
-            class="worker-mini__stale-continue"
-            data-bead-id=${item.id}
-            data-action-id=${stale_work.action_id}
-            ?disabled=${stale_work.locked}
-          >
-            기존 작업 이어가기
-          </button>`
-        : ''}${stale_work.can_backup_fresh
-        ? html`<button
-            type="button"
-            class="worker-mini__stale-backup"
-            data-bead-id=${item.id}
-            data-action-id=${stale_work.action_id}
-            ?disabled=${stale_work.locked}
-          >
-            백업 후 새로 시작
-          </button>`
-        : ''}${stale_work.can_recheck
-        ? html`<button
-            type="button"
-            class="worker-mini__stale-recheck"
-            data-bead-id=${item.id}
-            data-action-id=${stale_work.action_id}
-            ?disabled=${stale_work.locked}
-          >
-            다시 확인
-          </button>`
-        : ''}`
-    : '';
-  const stale_details = stale_work
-    ? html`<div class="worker-mini__stale">
-        <strong>${stale_work.title}</strong>
-        <span>${stale_work.summary}</span>
-        <span>${stale_work.cause}</span>
-        ${stale_work.can_backup_fresh
-          ? html`<small
-              >Git-ignored dependency/build output은 archive에 포함되지
-              않습니다</small
-            >`
-          : ''}
-      </div>`
-    : '';
   // 파킹 처분 두 버튼 (UI-hs11 §3.5). 대기 레인 행에만 붙고, 머지/폐기와 같은
   // 클릭 위임·CAS 재시도 계약을 쓴다. findings 상세는 카드 클릭 → 이슈 상세
   // (notes 섹션, UI-yp64 §4)로 가고 여기서는 툴팁 요약만 싣는다.
@@ -3533,12 +3286,7 @@ export function miniRow(item, options = {}) {
   // 게이트 칩은 4a 줄 맨 앞이다 (UI-01wh §3.2) — 유예 칩과 같은 질문에 답하지만
   // 가장 바깥 사정이므로 먼저 선다. 팝업은 그 칩이 선 줄이 싣는다 (UI-8x90 §5).
   const gate_open = chipOpen(item, 'gate');
-  const gate_el = gateChipTemplate(
-    item.gate,
-    item.id,
-    gate_open,
-    queueHoldVerdictOf(item)
-  );
+  const gate_el = gateChipTemplate(item.gate, item.id, gate_open);
   const grace_el = graceChipTemplate(item);
   const receipt_badge_el = receiptBadgeChipTemplate(
     item,
@@ -3584,10 +3332,10 @@ export function miniRow(item, options = {}) {
     item.merge_action ||
     item.cancel_action ||
     item.resolve_action ||
+    wait_reasons.some((reason) => reason.kind === 'recovery') ||
     item.discard_action ||
     discard?.operation ||
-    item.revise_action ||
-    stale_work
+    item.revise_action
   );
   // 작업 종류 배경은 상태 표현이 없는 행에만 붙는다 (UI-kyky §3.1): 머지 진행·
   // 외부 세션·ghost 행은 이미 자기 배경·테두리로 상태를 말한다.
@@ -3649,12 +3397,12 @@ export function miniRow(item, options = {}) {
             ${reason_el
               ? html`<div class="worker-mini__reason-line">${reason_el}</div>`
               : ''}
-            <div class="worker-mini__body">${title_el}${stale_details}</div>
+            <div class="worker-mini__body">${title_el}</div>
             ${wait_lines.body}${deps_el}${chips_el}${has_foot
               ? html`<div class="worker-mini__foot">
                   ${merge_step_el}
                   <span class="worker-mini__actions"
-                    >${merge_el}${cancel_el}${discard_actions_el}${revise_els}${stale_els}</span
+                    >${merge_el}${cancel_el}${discard_actions_el}${revise_els}</span
                   >
                   ${discardReceiptTemplate(item)}
                 </div>`
@@ -3944,16 +3692,9 @@ export function judgementPopoverContent(item, chip_key) {
     if (!gate) {
       return null;
     }
-    // `queue_hold` 사유는 칩만 얹고 사라지므로 (§7.1) 그 판정 문장이 팝업의 첫
-    // 줄이다 — 배지도 본문도 만들지 않는 사유의 유일한 자리다.
-    const queue_hold = (item.wait_reasons || []).find(
-      (/** @type {import('../../protocol.js').WaitReason} */ reason) =>
-        reason.kind === 'queue_hold' && reason.verdict !== 'normal'
-    );
-    const message = queue_hold?.verdict_reason?.message || '';
     return {
       title: '자동 디스패치가 막혀 있다',
-      lines: message ? [message, ...gate.lines] : gate.lines
+      lines: gate.lines
     };
   }
   if (chip_key === 'readiness') {
