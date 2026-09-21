@@ -78,14 +78,14 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  * liveness triple; `session_name` leads so the SAME read also answers whether
  * the target session exists, rather than spending another tmux round trip.
  *
- * The separator is a real TAB in the argv: tmux is spawned without a shell and
- * does not expand a backslash escape inside a format.
+ * A colon is printable even in the C locale and is forbidden in session names.
+ * Keep the marker last so colons within its value survive parsing.
  *
  * @param {string} marker
  * @returns {string}
  */
 export function paneFormat(marker) {
-  return `#{session_name}\t#{pane_id}\t#{${marker}}\t#{pane_dead}`;
+  return `#{session_name}:#{pane_id}:#{pane_dead}:#{${marker}}`;
 }
 
 /**
@@ -265,11 +265,11 @@ export function createTmuxLauncher(deps = {}) {
       if (line.length === 0) {
         continue;
       }
-      const [session, pane, key, dead] = line.split('\t');
+      const [session, pane, dead, ...key_parts] = line.split(':');
       rows.push({
         session: session ?? '',
         pane: pane ?? '',
-        key: key ?? '',
+        key: key_parts.join(':'),
         dead: dead ?? ''
       });
     }

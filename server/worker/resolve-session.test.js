@@ -43,9 +43,9 @@ function makeTmux(script = {}) {
           [
             row.session,
             row.pane,
-            format.includes(`#{${row.marker}}`) ? row.key : '',
-            row.dead
-          ].join('\t')
+            row.dead,
+            format.includes(`#{${row.marker}}`) ? row.key : ''
+          ].join(':')
         )
         .join('\n');
       return {

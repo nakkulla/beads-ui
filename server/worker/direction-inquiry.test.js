@@ -65,8 +65,9 @@ function makeTmux(script = {}) {
    * @returns {string}
    */
   const render = (rows) =>
-    rows.map((row) => row.join('\t')).join('\n') +
-    (rows.length > 0 ? '\n' : '');
+    rows
+      .map(([session, pane, key, dead]) => [session, pane, dead, key].join(':'))
+      .join('\n') + (rows.length > 0 ? '\n' : '');
   /**
    * @param {string[]} args
    */
