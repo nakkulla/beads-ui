@@ -34,7 +34,7 @@ Bead: `UI-g0lk` · route: `spec_backed` · discovered-from `UI-3vvi` ·
 두 결함이 한 사고에 겹쳤다. 첫째, **머지 전 verify 실패가 소리 없이 머문다**
 — 자동 해소 주체(수정 push)가 있는 보류인데 그 사실을 아무 표면도 말하지 않고,
 사람이 이어받을 출구가 없다. 둘째, 그 침묵 때문에 사람이 **직접 연 세션**이
-승계 절차를 어기고 `impl_entry`를 써서, 이미 ADR 0040·dotfiles ADR 0064가 다룬
+승계 절차를 어기고 `impl_entry`를 써서, 이미 ADR 0040·ADR dotfiles/0064가 다룬
 `approval_forged`가 재발했다.
 
 ### 0.2 닫는 결함
@@ -60,8 +60,8 @@ Bead: `UI-g0lk` · route: `spec_backed` · discovered-from `UI-3vvi` ·
 
 - `receipt_baseline` 불변식·위조 3종 판정·`[머지]` 클릭의 waive(ADR 0040,
   UI-jxs3 D1). 결정: `receipt-check.js:886`의 위조 판정은 바꾸지 않는다 —
-  값만으로 사람 세션과 무인 세션의 쓰기를 가를 수 없고, 완화는 dotfiles ADR
-  0064가 기각한 위조 통로다.
+  값만으로 사람 세션과 무인 세션의 쓰기를 가를 수 없고, 완화는 ADR
+  dotfiles/0064가 기각한 위조 통로다.
 - verify 실패를 terminal needs_human으로 종단하는 것(D1에서 기각).
 - `[머지]` 클릭 의미. 결정: 보류 행의 `[머지]`는 지금처럼 게이트를 다시 돌릴 뿐이고
   verify를 재실행하거나 waive하지 않는다 — 출구는 수정 push와 `[세션에서 해결]`이다.
@@ -149,7 +149,7 @@ dotfiles `docs/contracts/workflow-state.yaml failure_classes.pre_merge_hold` —
 
 ### 2.5 (2) 직접 연 세션이 승계 절차를 어겼다
 
-dotfiles ADR 0064(→ dotfiles-48gg 승계)와 workflow
+ADR dotfiles/0064(→ ADR dotfiles/dotfiles-48gg 승계)와 workflow
 `references/execution-spec-backed.md` `## Attempt continuation`은 승계 대상에
 「사용자가 그 Bead에 직접 연 세션」을 명시하고, `status`를 보지 않으며, 승계면
 `workflow_mode=fast_track`만 쓰고 `impl_entry`를 쓰지 않는다고 정한다. beads-ui
@@ -190,7 +190,7 @@ dotfiles ②가 소유하는 것(독립 형제):
   블록의 `absent_or_failed: not_continuation`을 그대로 따른다.
 
 **beads-ui가 (2)로 바꾸는 코드는 없다.** 다만 §4.7의 resolve 프롬프트에 사람이
-읽는 안내 한 줄을 넣는다 — ADR 0064가 허용한 "판정 근거가 아닌 안내"다.
+읽는 안내 한 줄을 넣는다 — ADR dotfiles/0064가 허용한 "판정 근거가 아닌 안내"다.
 
 ## 4. 보류의 소유 — completion intent `holding` (beads-ui)
 
@@ -210,6 +210,18 @@ repairable =
 `verify_cmd_failed`든 `script_failed`든 같이 잡는다. `verify_missing`·
 `verify_sha_stale`·`verify_receipt_stale`(배지 「검증 대기」)은 여전히 자격이
 없다 — 그 셋은 poller가 곧 채우는 대기다. `completionIntentSeed`는 그대로다.
+
+**보류 중인 행은 머지 큐에 없다(r1 지적 1).** `completion-intent.js:652`의
+`reconcile`은 `merge_queue` 선두 하나만 관측하고, `merge-queue.js:1883`
+`processCompletionItem`은 선두 intent의 phase가 `merging`이 아니면 큐 전체를
+멈춘다. 그래서 `holding` intent는 `paused`와 같은 방식으로 **`merge_queue`에서
+빠진다**(§4.5) — 뒤의 정상 PR과 다른 실패 PR이 선두에 올라 각각 판정·머지·보류된다.
+등록기의 기존 intent 분기(`enqueueMergeAuto`)는 `holding` intent에 대해:
+`entry.head_sha === intent.hold.head_sha`면 아무 것도 하지 않고(재삽입 없음, 관측
+없음), head가 다르면 runnable entry를 다시 넣는다 — 이것이 새 head가 코디네이터의
+관측(선두 → `stale` → `gate`)에 도달하는 길이다. `merge-queue.js`는 바꾸지 않는다:
+보류 행이 큐에 없으므로 그 halt 규칙에 닿지 않고, §9(j)의 순서 테스트가 그 사실을
+고정한다.
 
 ### 4.2 fact — `server/worker/completion-intent.js factFromGate`
 
@@ -237,9 +249,10 @@ repairable =
   → `gating`·`holding` 둘 허용).
 - fact `verify_hold`:
   - phase `gating` → `{ kind: 'hold', fact }`.
-  - phase `holding`이고 `intent.hold`의 `(head_sha, operation_id, reason)`이
-    fact와 같으면 `null`(같은 벽, 아무 것도 다시 쓰지 않는다); 다르면
-    `{ kind: 'hold', fact }` (같은 head의 재실행이 다른 코드로 실패한 경우).
+  - phase `holding`(사람의 `[머지]` 클릭이 같은 head를 다시 큐에 넣어 관측된 경우)이고
+    `intent.hold.head_sha === fact.gated.subject.head_sha`이며 `operation_id`·
+    `reason`도 같으면 `null`; head는 같은데 `operation_id`나 `reason`이 다르면
+    `{ kind: 'hold', fact }` — 내용 갱신이지 새 알림이 아니다(§4.4).
 - fact `stale`(새 head 관측, `observe():1961`) → 기존 `{ kind: 'gate' }`.
   `onAction gate`의 `setCompletionSubject(phase 'gating')`이 `holding`에서도
   통과하도록 §4.5의 store 규칙을 둔다 — 이것이 보류의 자동 해소다.
@@ -263,47 +276,61 @@ const hold = {
 ```
 
 `deps.store.holdCompletionIntent(workspace, { root_bead_id, hold })`가 phase를
-`holding`으로 두고 `intent.hold`를 교체한다(§4.5). 쓰기가 성공하고 **이전
-`hold`가 같은 `(head_sha, operation_id, reason)`이 아니었을 때만** 세 효과를
-낸다 — terminalize의 `commented_at === null` 규칙과 같은 꼴이다.
+`holding`으로 두고 `merge_queue`에서 행을 빼며 `intent.hold`를 쓴다(§4.5).
+**알림 이력의 단위는 head다(r1 지적 2).** 이전 `intent.hold`가 없거나 그
+`head_sha`가 다를 때만 `comment_at = now()`로 새 기록을 만들고 아래 세 효과를
+낸다; 같은 head에서 `operation_id`나 `reason`만 바뀐 경우는 그 두 필드와
+`summary`·`log_path`·`at`을 갱신하되 `comment_at`을 그대로 두고 효과를 내지
+않는다. 재시작·재관측은 `intent.hold`를 다시 읽어 같은 head면 침묵한다 —
+terminalize의 `commented_at === null` 규칙과 같은 꼴이다.
 
-1. 타임라인: `recordTimeline(root, 'merge_step', 'hold:<operation_id>',
-   '머지 보류 — 검증 실패 · <reason>')`. `merge_step`은 이미 saga의 phase 줄
-   (「머지 게이트 통과」·「머지 후 정리 시작」)을 담는 kind이고, seq가
-   operation id라 재관측·재시작에 멱등이다. 새 TimelineKind는 만들지 않는다.
+1. 타임라인: `recordTimeline(root, 'merge_step', 'hold:<head_sha>',
+   '머지 보류 — 검증 실패 · <reason>')`. seq는 **head**다(r1 지적 3):
+   `verifyOperationId`(`repo-operation-coordinator.js:202`)는 candidate tree 등을
+   해시하므로 내용이 같은 새 head가 같은 operation id를 재사용하고, 로그 없는
+   실패는 `operation_id`가 `null`이라 seq가 될 수 없다. head는 보류마다 고유하고
+   `bead-timeline.js`의 `event_id` 중복 제거와 정확히 "head당 한 줄"로 맞는다.
+   `merge_step`은 이미 saga의 phase 줄(「머지 게이트 통과」·「머지 후 정리 시작」)을
+   담는 kind이므로 새 TimelineKind는 만들지 않는다.
 2. Bead 댓글 `## 🤖 완료 보류 기록`(§6.1).
 3. Discord 알림(§6.2).
-
-재시작·재관측은 `intent.hold`를 다시 읽어 같은 벽이면 침묵한다.
 
 ### 4.5 store — `server/worker/queue-store.js`
 
 - `CompletionPhase`·`COMPLETION_PHASES`에 `holding`. `CompletionIntent`에
   `hold: CompletionHold|null`(정규화기는 객체가 아니면 `null`).
 - `holdCompletionIntent(workspace, {root_bead_id, hold})`: intent가 있고
-  `active_op === null`, phase가 `gating`·`holding`일 때만 phase `holding`·`hold`
-  교체. `auto_resolution`이 살아 있으면 `applyCompletionPhase`의 기존 규칙대로
-  phase는 보류된다(변경 없음).
+  `active_op === null`, phase가 `gating`·`holding`일 때만 phase `holding`으로
+  두고, `paused` 전이(`:10577`)와 같이 `merge_queue`에서 그 행을 제거하며,
+  `intent.hold`를 §4.4 규칙(같은 head면 내용 갱신·`comment_at` 유지, 새 head면
+  새 기록)으로 쓴다. `auto_resolution`이 살아 있으면 `applyCompletionPhase`의
+  기존 규칙대로 phase는 보류된다(변경 없음).
 - `setCompletionSubject`: 거부 목록(`paused`·`needs_human`·`completed`)은 그대로
   — `holding`은 거부되지 않으므로 새 head 재핀이 통과하고, 이때 `intent.hold =
   null`로 비운다(보류의 해소 = 새 subject).
-- `terminalizeCompletionIntent`: `holding`에서도 종단 가능(변경 없음);
-  `hold`는 이력으로 남긴다(지우지 않는다).
-- `enqueueMergeAuto`(`:10938`): 기존 intent 분기에서 `holding`은 `gating`과
-  같이 취급한다 — `needs_human`·`completed`만 건너뛰고, `merge_queue`에 없으면
-  runnable entry를 다시 넣는다(현행 코드가 이미 그렇게 동작하며, 이 스펙은 그
-  사실을 테스트로 고정한다).
-- `[✕]`(큐 제거)·`auto_merge_skips`·`paused` 전이는 `gating` intent와 같은
-  규칙이다. 새 규칙 없음.
+- `terminalizeCompletionIntent`: `holding`에서도 종단 가능(변경 없음). `hold`는
+  레코드에 남지만 **`holding` phase 밖에서는 아무 표면도 읽지 않는다**(§4.6, r1
+  지적 4).
+- `enqueueMergeAuto`(`:10938`): 기존 intent 분기에 `holding` 규칙을 더한다 —
+  `intent.hold?.head_sha === entry.head_sha`면 건너뛴다(재삽입·`auto_merge_skips`
+  변경 없음); head가 다르면 `gating`과 같이 runnable entry를 다시 넣는다. 그 밖의
+  분기(`needs_human`·`completed` 건너뜀, `paused` 재개)는 그대로다.
+- `[✕]`·`auto_merge_skips`: 보류 행은 큐에 없어 `[✕]`가 그려지지 않는다.
+  `[머지]` 클릭(`enqueueMergeManual`)은 같은 head를 수동 authority로 다시 넣고,
+  코디네이터가 같은 실패 영수증을 관측해 다시 `hold`(효과 없음, 행 제거)로
+  돌아온다 — 클릭은 무해하고 verify를 재실행하지 않는다(§0.4 결정).
 
 ### 4.6 투영 — `server/ws/worker-handlers.js completionStatusFor`
 
-`COMPLETION_PHASES`(`:2546`)에 `holding`. 응답에
-`hold: { cause, reason, summary, operation_id, log_path, head_sha, at } | null`
-(각 문자열은 `boundedCompletionText`로 자른다). `failure_stage`는 `hold`가 있을
-때 `'verify'`, `failure_reason`은 `hold.reason`, `log_path`는 `hold.log_path`.
-`app/data/worker-queue-store.js CompletionStatus`에 phase `holding`과 `hold`를
-더한다. 구형 서버 스냅샷에는 필드가 없고 클라이언트는 fail-quiet.
+`COMPLETION_PHASES`(`:2546`)에 `holding`. **`value.phase === 'holding'`일 때만**
+응답에 `hold: { cause, reason, summary, operation_id, log_path, head_sha, at }`
+(각 문자열은 `boundedCompletionText`로 자른다)을 싣고 `failure_stage = 'verify'`,
+`failure_reason = hold.reason`, `log_path = hold.log_path`로 채운다. 다른 phase
+에서는 `hold: null`이고 기존 우선순위(`failure_key` → `terminal` → `cleanup`)가
+그대로다 — 같은 head에서 `approval_forged`로 종단하면 화면은 그 terminal 증거를
+보인다(r1 지적 4). `app/data/worker-queue-store.js CompletionStatus`에 phase
+`holding`과 `hold`를 더한다. 구형 서버 스냅샷에는 필드가 없고 클라이언트는
+fail-quiet.
 
 ### 4.7 `[세션에서 해결]` — `server/worker/resolve-session.js`
 
@@ -376,8 +403,8 @@ intent.hold`를 더한다.
 - 다음: 수정 커밋을 같은 브랜치에 push → 자동 재검증·머지 · 또는 [세션에서 해결]
 ```
 
-`hold.comment_at`이 그 댓글의 시각이며, 같은 `(head_sha, operation_id, reason)`
-에는 다시 달지 않는다(§4.4).
+`hold.comment_at`이 그 댓글의 시각이며, 같은 head에는 다시 달지 않는다 — 같은
+head에서 `operation_id`·`reason`만 바뀌면 내용은 갱신되지만 댓글은 그대로다(§4.4).
 
 ### 6.2 Discord 알림 — `server/worker/notify.js`
 
@@ -394,7 +421,7 @@ intent.hold`를 더한다.
   `receiptAttemptFor` 선택기: 불변.
 - 승계 세션이 `[세션에서 해결]` fork로 들어오게 하는 것(§4·§5)이 직접 연 세션의
   빈도를 줄이고, 훅 가드(dotfiles ②)가 남은 경우를 기계적으로 막는다.
-- 이 스펙의 §4.7 안내 한 줄은 판정 근거가 아니다(ADR 0064).
+- 이 스펙의 §4.7 안내 한 줄은 판정 근거가 아니다(ADR dotfiles/0064).
 
 ## 8. 바꾸는 파일 (beads-ui)
 
@@ -420,17 +447,23 @@ intent.hold`를 더한다.
   등록된다; 「검증 대기」(영수증 없음·stale) 행은 여전히 제외; 외부 행 제외 유지.
 - `completion-intent.test.js`: (a) tier verify·`script_failed` → fact
   `verify_hold`·failure_key stage `verify`; (b) `gating`+`verify_hold` →
-  `hold` action → phase `holding`·`hold` 기록·`merge_step hold:<op>` 타임라인 1건·
-  댓글 1건·알림 1건; (c) 같은 벽 재관측 → `null`·효과 0건; (d) 같은 head 다른
-  코드 → 새 hold·효과 1건; (e) `holding`+`stale` → `gate` → `setCompletionSubject`
-  통과·`hold` null·phase `gating`; (f) `holding`+`green` → `merge_subject`;
-  (g) `holding`에서 `approval_forged` terminal 종단 가능; (h) `verify_cmd_failed`
-  는 여전히 `verify_red` 종단; (i) 재시작(`intent.hold` 있는 스냅샷) 뒤 같은 벽
-  침묵.
+  `hold` action → phase `holding`·`hold` 기록·`merge_queue`에서 행 제거·
+  `merge_step hold:<head_sha>` 타임라인 1건·댓글 1건·알림 1건; (c) 같은 head 재관측
+  → `null`·효과 0건; (d) 같은 head 다른 `operation_id`/`reason` → `hold` 내용
+  갱신·`comment_at` 유지·타임라인/댓글/알림 0건; (e) `holding`+`stale` → `gate` →
+  `setCompletionSubject` 통과·`hold` null·phase `gating`; (f) `holding`+`green` →
+  `merge_subject`; (g) `holding`에서 `approval_forged` terminal 종단 가능; (h)
+  `verify_cmd_failed`는 여전히 `verify_red` 종단; (i) 재시작(`intent.hold` 있는
+  스냅샷) 뒤 같은 head 침묵; (j) 큐 순서 [실패 PR A, 정상 PR B, 실패 PR C]에서 A
+  보류 → 행 제거 → B 머지 → C 보류(A·C 각각 댓글·알림 1건), 어느 단계도 `halted`
+  없음; (k) 내용이 같은 두 head가 같은 `operation_id`를 공유해도 타임라인 줄은
+  head마다 하나이고 `operation_id`가 `null`인 실패도 줄을 얻는다.
 - `queue-store.test.js`: `holdCompletionIntent` 전이 규칙(`gating`·`holding`만,
-  `active_op` 있으면 거부); 정규화기가 `hold` 보존; `enqueueMergeAuto`가
-  `holding` intent를 `gating`처럼 유지·재삽입.
-- `worker-handlers.test.js`: `holding` 투영 필드·bounded 절단; 구형 intent(`hold`
+  `active_op` 있으면 거부)·`merge_queue` 행 제거·같은 head 내용 갱신 시
+  `comment_at` 보존; 정규화기가 `hold` 보존; `enqueueMergeAuto`가 같은 head의
+  `holding` intent를 건너뛰고 다른 head면 재삽입.
+- `worker-handlers.test.js`: `holding` 투영 필드·bounded 절단; `hold`가 남은
+  `needs_human` intent는 terminal 증거를 투영하고 `hold: null`; 구형 intent(`hold`
   없음) fail-quiet.
 - `resolve-session.test.js`: `holding` intent → 클래스·원인·stage·detail·`exit`;
   프롬프트 첫 문장·후보 행동 2·승계 안내 줄; `needs_human`·`cleanup`·`discard`·
@@ -468,10 +501,10 @@ intent.hold`를 더한다.
 
 - 비목표: §0.4의 결정 넷(위조 판정·`[머지]` 의미·`verify_cmd_failed` 종단·drawer
   버튼)과 `events.jsonl` 정리.
-- 관찰: 보류 행의 `[머지]` 클릭은 같은 head의 실패 영수증을 다시 읽어 거절되고
-  `merge_queue.failure`가 남을 수 있다. `prStatusBadge`에서 `recovery`가
-  `queue_failure`보다 앞이라 배지는 보류가 유지된다 — 클릭 자체를 막을지는 실측
-  뒤 판단한다.
+- 관찰: 보류 행의 `[머지]` 클릭은 같은 head를 다시 큐에 넣고 코디네이터가 같은
+  실패 영수증을 관측해 다시 `hold`(효과 없음)로 돌아온다(§4.5). `prStatusBadge`에서
+  `recovery`가 `queue_failure`보다 앞이라 배지는 보류가 유지된다 — 클릭 자체를
+  막을지는 실측 뒤 판단한다.
 - 관찰: Monitor 탭 PR 대기 행은 `completion_intents`를 싣지 않아 `holding`도
   보이지 않는다(UI-jxs3 관찰과 같은 투영 부재).
 - 관찰: repo-ops drawer의 실패 verify operation 행에는 `[기록 닫기]`만 남는다.
@@ -496,7 +529,7 @@ intent.hold`를 더한다.
   재료 표(셋→넷)의 갱신이며 새 슬롯은 없다.
 - 전제: ADR UI-3vvi — 원시 실패 기록은 보존된다. 실패한 verify operation과 그
   복구 분류는 그대로 두고 intent 쪽에 보류 상태만 더한다.
-- 전제: ADR dotfiles/0064(→ dotfiles-48gg) — Worker attempt를 이어받은 세션은
+- 전제: ADR dotfiles/0064(→ ADR dotfiles/dotfiles-48gg) — Worker attempt를 이어받은 세션은
   승계 프로브로 판정하고 권한 키를 쓰지 않는다. §4.7의 안내 줄은 그 규칙의
   소비이며 판정 근거가 아니다; 기계적 집행은 형제 ②다.
 - 머지 전 verify 실패는 completion intent의 비종단 `holding` phase가 소유하는
@@ -509,5 +542,5 @@ intent.hold`를 더한다.
   보이는 보류(자동 해소 유지, phase 하나 추가)).
   `summary`: "머지 전 검증 실패는 completion intent의 비종단 holding 보류로 보이게 남기고, 수정 push가 자동으로 풀며 [세션에서 해결]이 사람 출구다 — terminal 종단·baseline 위조 판정·[머지] 의미는 바꾸지 않는다" → ADR
 - 직접 연 세션의 `impl_entry` 재발 방지는 계약·훅이 소유하고 beads-ui는 위조
-  판정을 완화하지 않는다 — 이미 ADR 0040·dotfiles/0064의 전제이고 새 결정을
+  판정을 완화하지 않는다 — 이미 ADR 0040·ADR dotfiles/0064의 전제이고 새 결정을
   만들지 않는다 → ADR 아님
