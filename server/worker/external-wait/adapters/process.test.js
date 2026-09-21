@@ -113,14 +113,35 @@ test.each([null, 'old'])(
   }
 );
 
-test('accepts a live process when no start identity was recorded', async () => {
+test('gate-r1 #5 captures the first live process start identity', async () => {
   delete job.process_start;
 
   const result = await observeProcessJob(job, {
     run: async () => ({ code: 0, stdout: 'new', stderr: '' })
   });
 
-  expect(result).toEqual({ state: 'RUNNING', terminal: false });
+  expect(result).toEqual({
+    state: 'RUNNING',
+    terminal: false,
+    process_start: 'new'
+  });
+});
+
+test('gate-r1 #5 retains the first process identity even when its log is unreadable', async () => {
+  delete job.process_start;
+
+  const result = await observeProcessJob(job, {
+    run: async () => ({ code: 0, stdout: 'first\n', stderr: '' }),
+    readTail: async () => {
+      throw new Error('unreadable');
+    }
+  });
+
+  expect(result).toMatchObject({
+    process_start: 'first',
+    error: 'log unreadable',
+    terminal: false
+  });
 });
 
 test.each([

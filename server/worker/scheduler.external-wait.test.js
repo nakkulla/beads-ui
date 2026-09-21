@@ -26,7 +26,10 @@ afterEach(() => {
 /** @param {Record<string, any>} [options] */
 function fixture(options = {}) {
   const store = createQueueStore({ now: () => 0 });
-  const externalWait = createExternalWaitStore();
+  const externalWait = {
+    ...createExternalWaitStore(),
+    onCompletion: options.onCompletion
+  };
   /** @type {Record<string, string>} */
   const metadata = { external_wait: WAIT };
   let status = options.status || 'open';
@@ -449,6 +452,43 @@ describe('external wait resume', () => {
     });
   });
 
+  test('gate-r1 #7 persists a late fork session ID on the resumed wait', async () => {
+    const env = fixture();
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fork'
+    });
+    expect(result.ok).toBe(true);
+    expect(recordOf(env)?.stage).toBe('resumed');
+    const other = env.externalWait.insert(WS, {
+      .../** @type {import('./external-wait/store.js').WaitRecord} */ (
+        recordOf(env)
+      ),
+      wait_id: 'w-abcdef012345',
+      bead_id: 'B2',
+      resume: {
+        .../** @type {import('./external-wait/store.js').Resume} */ (
+          recordOf(env)?.resume
+        ),
+        attempt_id: 'other',
+        session_id: 'unchanged'
+      }
+    });
+
+    env.launches[0].events.emit('session_id', 'fork-session');
+
+    expect(recordOf(env)).toMatchObject({
+      stage: 'resumed',
+      resume: { session_id: 'fork-session' }
+    });
+    expect(
+      env.store.snapshot(WS).attempts[env.launches[0].reservation.attempt_id]
+        .session_id
+    ).toBe('fork-session');
+    expect(env.externalWait.get(WS, other.wait_id)?.resume?.session_id).toBe(
+      'unchanged'
+    );
+  });
+
   test.each([
     [{ prior: { session_id: null } }, 'no_session_id'],
     [{ transcript_present: false }, 'transcript_missing'],
@@ -614,6 +654,77 @@ describe('external wait resume', () => {
     expect(recordOf(env)?.stage).toBe('resumed');
   });
 
+  test('gate-r1 #4 acquires a missing user worktree for a fresh completion session', async () => {
+    let prepared = false;
+    const env = fixture({
+      seed_prior: false,
+      worktree_present: false,
+      observation: { ok: true },
+      record: {
+        owner: {
+          kind: 'session',
+          session_ref: 'missing',
+          session_pid: 3333,
+          session_start: AT
+        }
+      },
+      deps: {
+        fs: {
+          existsSync: (/** @type {string} */ file) =>
+            prepared && file === '/wt/recovered'
+        }
+      }
+    });
+    env.worktree.add.mockImplementation(async () => {
+      prepared = true;
+      return { path: '/wt/recovered', branch: 'B1', base_oid: 'a'.repeat(40) };
+    });
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fresh'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledWith({
+      repo: WS,
+      bead_id: 'B1',
+      base: 'main'
+    });
+    expect(env.worktree.add).toHaveBeenCalledWith({
+      repo: WS,
+      bead_id: 'B1',
+      base: 'main'
+    });
+    expect(env.launches[0].cwd).toBe('/wt/recovered');
+    expect(env.launches[0].settings.base_oid).toBe('a'.repeat(40));
+    expect(env.launches[0].settings).not.toHaveProperty('resume_session_id');
+    expect(env.launches[0].bead.prompt).toContain('## 외부 작업 완료');
+  });
+
+  test('gate-r1 #4 preserves stale work when fresh user worktree acquisition is refused', async () => {
+    const env = fixture({
+      seed_prior: false,
+      worktree_present: false,
+      record: {
+        owner: {
+          kind: 'session',
+          session_ref: 'missing',
+          session_pid: 3333,
+          session_start: AT
+        }
+      }
+    });
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fresh'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'worktree_stale_work' });
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.launches).toHaveLength(0);
+    expect(env.metadata.external_wait).toBe(WAIT);
+  });
+
   test('forks the local session_ref into a new Worker attempt', async () => {
     const transcript_dir = path.join(root, '.claude', 'projects', '-repo');
     fs.mkdirSync(transcript_dir, { recursive: true });
@@ -741,13 +852,132 @@ describe('external wait reservation recovery', () => {
     expect(env.launches).toHaveLength(!launched && !recorded ? 1 : 0);
   });
 
-  test('leaves completion alone without inventing launch evidence', async () => {
+  test('gate-r1 #1 resumes an unreserved worker completion after restart', async () => {
     const env = fixture();
 
-    await env.scheduler.settleExternalWaitReservations(WS);
+    await env.scheduler.reconcile(WS);
+
+    expect(recordOf(env)?.stage).toBe('resumed');
+    expect(env.launches).toHaveLength(1);
+  });
+
+  test('gate-r1 #1 reconnects completion hooks while the origin is still running', async () => {
+    const onCompletion = vi.fn();
+    const env = fixture({
+      prior: { status: 'running', pid: 3333, finished_at: null },
+      deps: { probePid: () => ({ alive: true, started_at: 1 }) },
+      onCompletion
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(onCompletion).toHaveBeenCalledExactlyOnceWith(
+      WS,
+      expect.objectContaining({ wait_id: WAIT, resume: null })
+    );
+    expect(env.launches).toHaveLength(0);
+  });
+
+  test('gate-r1 #1 leaves unreserved session completion for manual resume without notifying again', async () => {
+    const onCompletion = vi.fn();
+    const env = fixture({
+      onCompletion,
+      seed_prior: false,
+      record: {
+        owner: {
+          kind: 'session',
+          session_ref: 'missing',
+          session_pid: 3333,
+          session_start: AT
+        }
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
 
     expect(recordOf(env)?.stage).toBe('completing');
     expect(recordOf(env)?.resume).toBeNull();
     expect(env.launches).toHaveLength(0);
+    expect(onCompletion).not.toHaveBeenCalled();
   });
+
+  test.each(['reconcile', 'settleExternalWaitReservations'])(
+    'gate-r1 #2 retries a %s prerecord without treating it as launch evidence',
+    async (method) => {
+      const env = fixture({
+        record: {
+          resume: {
+            mode: 'fork',
+            attempt_id: 'reserved',
+            reserved_at: AT,
+            launched_at: null,
+            session_id: null,
+            error: null
+          }
+        }
+      });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'reserved',
+          bead_id: 'B1',
+          repo: WS,
+          target_base: 'main',
+          runner: 'claude',
+          status: 'running',
+          started_at: null,
+          pid: null
+        }
+      });
+
+      await env.scheduler[
+        /** @type {'reconcile'|'settleExternalWaitReservations'} */ (method)
+      ](WS);
+
+      expect(env.store.snapshot(WS).attempts.reserved.status).not.toBe(
+        'running'
+      );
+      expect(env.launches).toHaveLength(1);
+      expect(recordOf(env)).toMatchObject({
+        stage: 'resumed',
+        resume: { attempt_id: env.launches[0].reservation.attempt_id }
+      });
+      expect(env.launches[0].reservation.attempt_id).not.toBe('reserved');
+    }
+  );
+
+  test.each([
+    { started_at: 1, pid: null },
+    { started_at: null, pid: 3333 }
+  ])(
+    'gate-r1 #2 settles actual run evidence %j without launching twice',
+    async (evidence) => {
+      const env = fixture({
+        record: {
+          resume: {
+            mode: 'fork',
+            attempt_id: 'reserved',
+            reserved_at: AT,
+            launched_at: null,
+            session_id: null,
+            error: null
+          }
+        }
+      });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'reserved',
+          bead_id: 'B1',
+          status: 'running',
+          ...evidence
+        }
+      });
+
+      await env.scheduler.settleExternalWaitReservations(WS);
+
+      expect(recordOf(env)?.stage).toBe('resumed');
+      expect(env.launches).toHaveLength(0);
+    }
+  );
 });

@@ -26,7 +26,7 @@ async function readLogTail(file, bytes) {
 /**
  * @param {import('../store.js').ProcessJob} job
  * @param {{run:import('../store.js').Run, readTail?:(file:string, bytes:number)=>Promise<string>}} options
- * @returns {Promise<import('../store.js').Observation>}
+ * @returns {Promise<import('../store.js').Observation & {process_start?:string|null}>}
  */
 export async function observeProcessJob(job, { run, readTail = readLogTail }) {
   let probe;
@@ -44,18 +44,23 @@ export async function observeProcessJob(job, { run, readTail = readLogTail }) {
   if (!(probe.code === 0 && actual) && !absent) {
     return { state: 'UNKNOWN', terminal: false, error: 'process probe failed' };
   }
+  const process_start =
+    job.process_start === undefined && !absent ? actual : job.process_start;
   // Probe before reading: the wrapper may write its final rc as it exits.
   let tail;
   try {
     tail = await readTail(job.log_path, 4096);
   } catch {
-    return { state: 'UNKNOWN', terminal: false, error: 'log unreadable' };
+    return {
+      state: 'UNKNOWN',
+      terminal: false,
+      error: 'log unreadable',
+      process_start
+    };
   }
-  const alive =
-    !absent &&
-    (job.process_start === undefined || actual === job.process_start);
+  const alive = !absent && actual === process_start;
   if (alive) {
-    return { state: 'RUNNING', terminal: false };
+    return { state: 'RUNNING', terminal: false, process_start };
   }
   const matches = [...tail.matchAll(/^rc=(-?\d+)$/gm)];
   const last_match = matches.at(-1);

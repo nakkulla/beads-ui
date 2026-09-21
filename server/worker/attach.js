@@ -1185,7 +1185,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
 
   const scheduler = createScheduler({
     store: runtime.queueStore,
-    externalWait: runtime.externalWaitStore,
+    externalWait: {
+      ...runtime.externalWaitStore,
+      onCompletion: (ws, record) =>
+        EXTERNAL_WAIT_HOOKS.get(runtime)?.get(ws)?.onCompletion(record)
+    },
     // The workspace's ONE bead-history writer (record-timeline-retention §5) —
     // the same instance the queue store was registered with above, never a
     // second one.

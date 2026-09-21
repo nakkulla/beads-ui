@@ -577,7 +577,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @typedef {Object} SchedulerDeps
  * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryReady'|'workRecoveryClassification'|'workRecoveryReadinessEnv'|'recoveryResultLineReasons'>} [workRecoveryPolicy]
  * @property {any} store - Queue store (queue-store.js).
- * @property {Pick<ReturnType<typeof import('./external-wait/store.js').createExternalWaitStore>, 'findByBead'|'get'|'update'|'list'>} [externalWait]
+ * @property {Pick<ReturnType<typeof import('./external-wait/store.js').createExternalWaitStore>, 'findByBead'|'get'|'update'|'list'> & {onCompletion?:import('./external-wait/observer.js').RecordCallback}} [externalWait]
  * @property {ReturnType<typeof import('./exec-preset-coordinator.js').createExecPresetCoordinator>} execPresetCoordinator
  * The sole authority for workspace preset resolution. It snapshots the selected
  * preset before launch state changes, so the scheduler never reads mutable
@@ -7873,6 +7873,20 @@ export function createScheduler(deps) {
    * @param {any} attempt
    */
   async function disposeDeadAttempt(workspace, attempt_id, attempt) {
+    if (attempt.started_at == null && attempt.pid == null) {
+      const record = deps.externalWait?.findByBead(workspace, attempt.bead_id);
+      if (
+        record?.stage === 'completing' &&
+        record.resume?.attempt_id === attempt_id &&
+        !record.resume.launched_at
+      ) {
+        // Retirement changes status without proving a launch. Release the
+        // reservation first so another restart cannot mistake that status.
+        deps.externalWait?.update(workspace, record.wait_id, (current) => {
+          current.resume = null;
+        });
+      }
+    }
     // The hook assets come down AFTER the disposition, never before it
     // (UI-1xcd §4). They now carry the push record the settlement below reads,
     // and removing them at entry deleted that evidence a step ahead of the
@@ -10414,6 +10428,17 @@ export function createScheduler(deps) {
           session_id: normalized_session_id
         }
       });
+      if (deps.externalWait && normalized_session_id !== null) {
+        for (const record of deps.externalWait.list(workspace)) {
+          if (record.resume?.attempt_id === attempt_id) {
+            deps.externalWait.update(workspace, record.wait_id, (current) => {
+              if (current.resume?.attempt_id === attempt_id) {
+                current.resume.session_id = normalized_session_id;
+              }
+            });
+          }
+        }
+      }
       if (normalized_session_id !== null && !session_effort_attempted) {
         session_effort_attempted = true;
         backfillObservedEffort(normalized_session_id);
@@ -10869,22 +10894,47 @@ export function createScheduler(deps) {
     for (const record of store.list(workspace)) {
       if (
         record.stage !== 'completing' ||
-        !record.resume?.attempt_id ||
         external_wait_resumes.has(JSON.stringify([workspace, record.wait_id]))
       ) {
         continue;
       }
-      if (
-        record.resume.launched_at ||
-        deps.store.snapshot(workspace).attempts[record.resume.attempt_id]
-      ) {
-        await settleExternalWaitLaunch(workspace, record);
-      } else {
+      if (record.resume?.attempt_id) {
+        const attempt =
+          deps.store.snapshot(workspace).attempts[record.resume.attempt_id];
+        const launch_observed =
+          attempt &&
+          (attempt.started_at != null ||
+            attempt.pid != null ||
+            attempt.status !== 'running');
+        if (record.resume.launched_at || launch_observed) {
+          await settleExternalWaitLaunch(workspace, record);
+          continue;
+        }
+        if (attempt?.status === 'running') {
+          await disposeDeadAttempt(
+            workspace,
+            record.resume.attempt_id,
+            attempt
+          );
+        }
         const mode = record.resume.mode;
         store.update(workspace, record.wait_id, (current) => {
           current.resume = null;
         });
-        await resumeExternalWait(workspace, record.wait_id, { mode });
+        if (record.owner.kind === 'session') {
+          await resumeExternalWait(workspace, record.wait_id, { mode });
+          continue;
+        }
+      }
+      if (record.owner.kind === 'worker') {
+        if (store.onCompletion) {
+          await store.onCompletion(
+            workspace,
+            /** @type {WaitRecord} */ (store.get(workspace, record.wait_id))
+          );
+        } else {
+          await resumeExternalWait(workspace, record.wait_id, { mode: 'fork' });
+        }
       }
     }
   }
@@ -11193,6 +11243,7 @@ export function createScheduler(deps) {
       serial_launch.lease.release();
     }
     claimed.add(bead_id);
+    /** @type {Parameters<typeof launchSession>[0]} */
     const launch_input = {
       workspace,
       attempt_id,
@@ -11229,6 +11280,36 @@ export function createScheduler(deps) {
         : 'bead_claim_failed';
       await finalizeLaunchRefusal(launch_input, reason, true);
       return { ok: false, reason };
+    }
+    if (mode === 'fresh' && !fs.existsSync(record.worktree)) {
+      const base = snap.base_oid || target_base;
+      try {
+        if (typeof deps.worktree.removeIfDiscardable === 'function') {
+          const residue = await deps.worktree.removeIfDiscardable({
+            repo,
+            bead_id,
+            base
+          });
+          if (!residue.ok) {
+            await finalizeLaunchRefusal(
+              launch_input,
+              'worktree_stale_work',
+              true
+            );
+            return { ok: false, reason: 'worktree_stale_work' };
+          }
+        }
+        const wt = await deps.worktree.add({ repo, bead_id, base });
+        launch_input.wt_path = wt.path;
+        launch_input.base_oid = wt.base_oid;
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: { base_oid: wt.base_oid }
+        });
+      } catch {
+        await finalizeLaunchRefusal(launch_input, 'worktree_add_failed', true);
+        return { ok: false, reason: 'worktree_add_failed' };
+      }
     }
     const launched = await launchSession(launch_input);
     if (!launched.ok && launched.reason === 'worktree_missing') {

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { createExternalWaitObserver } from './observer.js';
 import { createExternalWaitService } from './service.js';
 import { createExternalWaitStore } from './store.js';
 
@@ -115,6 +116,155 @@ test('finishes a hold without starting a resume', async () => {
   expect(result).toMatchObject({ state: 'done', budget: { turns_used: 1 } });
   expect(resume).not.toHaveBeenCalled();
   expect(bd.setExternalWait).not.toHaveBeenCalled();
+});
+
+test.each([0, 1, 3])(
+  'gate-r1 #3 returns a completion recorded between hold calls with %s turns used',
+  async (turns_used) => {
+    const record = store.insert(WORKSPACE, {
+      ...input(),
+      budget: { turns_total: 3, turns_used }
+    });
+    store.update(WORKSPACE, record.wait_id, (current) => {
+      current.stage = 'done';
+    });
+
+    const result = await service.hold(WORKSPACE, record.wait_id);
+
+    expect(result).toMatchObject({
+      state: 'done',
+      budget: { turns_total: 3, turns_used }
+    });
+    expect(observer.observeRecord).not.toHaveBeenCalled();
+    expect(bd.setExternalWait).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+  }
+);
+
+test('gate-r1 #6 waits until the Slurm observation is due while polling stored completion', async () => {
+  const record = store.insert(WORKSPACE, {
+    ...input(),
+    next_observation_at: new Date(timestamp + 120000).toISOString(),
+    jobs: [
+      {
+        adapter: 'slurm',
+        ssh_host: 'wallace',
+        job_id: '123',
+        submitted_at: TIMESTAMP,
+        log_path: '/tmp/job.log',
+        expected: ['out']
+      }
+    ]
+  });
+  /** @type {number[]} */
+  const sleeps = [];
+  observer.observeRecord.mockImplementationOnce(async (workspace, wait_id) => {
+    expect(timestamp).toBe(Date.parse(TIMESTAMP) + 120000);
+    return store.update(workspace, wait_id, (current) => {
+      current.stage = 'done';
+    });
+  });
+  service = createExternalWaitService({
+    store,
+    observer,
+    bd,
+    now: () => timestamp,
+    hold_turn_ms: 300000,
+    wait: async (ms) => {
+      sleeps.push(ms);
+      timestamp += ms;
+    }
+  });
+
+  const result = await service.hold(WORKSPACE, record.wait_id);
+
+  expect(result).toMatchObject({ state: 'done' });
+  expect(observer.observeRecord).toHaveBeenCalledTimes(1);
+  expect(sleeps).toEqual([30000, 30000, 30000, 30000]);
+});
+
+test('gate-r1 #6 honors observer error backoff throughout a hold', async () => {
+  const record = store.insert(WORKSPACE, input());
+  /** @type {number[]} */
+  const observations = [];
+  const real_observer = createExternalWaitObserver({
+    store,
+    listWorkspaces: () => [WORKSPACE],
+    now: () => timestamp,
+    run: async () => {
+      observations.push((timestamp - Date.parse(TIMESTAMP)) / 1000);
+      return { code: 2, stdout: '', stderr: 'probe failed' };
+    }
+  });
+  service = createExternalWaitService({
+    store,
+    observer: real_observer,
+    bd,
+    now: () => timestamp,
+    hold_turn_ms: 1380001,
+    wait: async (ms) => {
+      timestamp += ms;
+    }
+  });
+
+  const result = await service.hold(WORKSPACE, record.wait_id);
+
+  expect(result).toMatchObject({ state: 'running' });
+  expect(observations).toEqual([0, 60, 180, 480, 1380]);
+});
+
+test('gate-r1 #6 wakes at the due time before the next thirty-second poll', async () => {
+  const record = store.insert(WORKSPACE, {
+    ...input(),
+    next_observation_at: new Date(timestamp + 45000).toISOString()
+  });
+  /** @type {number[]} */
+  const sleeps = [];
+  observer.observeRecord.mockImplementationOnce(async (workspace, wait_id) =>
+    store.update(workspace, wait_id, (current) => {
+      current.stage = 'done';
+    })
+  );
+  service = createExternalWaitService({
+    store,
+    observer,
+    bd,
+    now: () => timestamp,
+    hold_turn_ms: 60000,
+    wait: async (ms) => {
+      sleeps.push(ms);
+      timestamp += ms;
+    }
+  });
+
+  await service.hold(WORKSPACE, record.wait_id);
+
+  expect(sleeps).toEqual([30000, 15000]);
+});
+
+test('gate-r1 #6 returns stored completion before the next observation is due', async () => {
+  const record = store.insert(WORKSPACE, {
+    ...input(),
+    next_observation_at: new Date(timestamp + 120000).toISOString()
+  });
+  service = createExternalWaitService({
+    store,
+    observer,
+    bd,
+    now: () => timestamp,
+    hold_turn_ms: 300000,
+    wait: async (ms) => {
+      timestamp += ms;
+      store.update(WORKSPACE, record.wait_id, (current) => {
+        current.stage = 'done';
+      });
+    }
+  });
+
+  const result = await service.hold(WORKSPACE, record.wait_id);
+
+  expect(result).toMatchObject({ state: 'done' });
+  expect(observer.observeRecord).not.toHaveBeenCalled();
 });
 
 test('returns stopped when a concurrent stop ends the hold', async () => {

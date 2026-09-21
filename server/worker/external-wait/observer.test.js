@@ -123,6 +123,55 @@ test('resumes a persisted completion without probing after restart', async () =>
   expect(store.get(workspace, record.wait_id)?.stage).toBe('completing');
 });
 
+test.each(['rc=0\n', 'working\n'])(
+  'gate-r1 #5 persists initial process identity and detects PID reuse with log %s',
+  async (contents) => {
+    const record = insert();
+    store.update(workspace, record.wait_id, (current) => {
+      if (current.jobs[0].adapter === 'process') {
+        delete current.jobs[0].process_start;
+      }
+    });
+    fs.writeFileSync(record.jobs[0].log_path, contents);
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({ code: 0, stdout: 'first\n', stderr: '' })
+      .mockResolvedValue({ code: 0, stdout: 'reused\n', stderr: '' });
+    const observer = createExternalWaitObserver({
+      store,
+      listWorkspaces: () => [workspace],
+      run,
+      now: () => time
+    });
+    await observer.observeRecord(workspace, record.wait_id);
+    const restored = createExternalWaitStore({
+      filePathFor: (root) => path.join(root, 'external-wait.json')
+    });
+    expect(restored.get(workspace, record.wait_id)?.jobs[0]).toMatchObject({
+      process_start: 'first',
+      state: 'RUNNING'
+    });
+    const restarted = createExternalWaitObserver({
+      store: restored,
+      listWorkspaces: () => [workspace],
+      run,
+      now: () => time
+    });
+
+    await restarted.observeRecord(workspace, record.wait_id);
+
+    expect(restored.get(workspace, record.wait_id)).toMatchObject({
+      stage: 'done',
+      jobs: [
+        {
+          process_start: 'first',
+          state: contents.startsWith('rc=') ? 'COMPLETED' : 'VANISHED'
+        }
+      ]
+    });
+  }
+);
+
 test('backs off errors at 60, 120, 300, 900 and caps at 900 seconds', async () => {
   const record = insert();
   const run = vi.fn(async () => ({

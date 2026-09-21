@@ -87,6 +87,14 @@ export function createExternalWaitObserver({
           job.adapter === 'slurm'
             ? await observeSlurmJob(job, { run, now })
             : await observeProcessJob(job, { run });
+        if (
+          job.adapter === 'process' &&
+          'process_start' in observation &&
+          (typeof observation.process_start === 'string' ||
+            observation.process_start === null)
+        ) {
+          job.process_start = observation.process_start;
+        }
         if (observation.error) {
           throw new Error(observation.error);
         }

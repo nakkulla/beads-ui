@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { HOLD_BUDGET, OBSERVATION } from './contract.js';
+import { HOLD_BUDGET } from './contract.js';
 import { holdDecision, registrationDecision } from './decision.js';
 
 /**
@@ -255,6 +255,9 @@ export function createExternalWaitService({
     if (!record) {
       return failure(404, 'not_found');
     }
+    if (record.stage === 'done') {
+      return { state: 'done', ...summary(record) };
+    }
     if (record.stage !== 'hold') {
       return failure(409, 'invalid_stage');
     }
@@ -270,20 +273,11 @@ export function createExternalWaitService({
       current.budget.turns_used += 1;
     });
     const deadline = now() + hold_turn_ms;
-    const interval =
-      poll_interval_ms ??
-      Math.min(
-        30000,
-        ...record.jobs.map(
-          (job) =>
-            1000 *
-            (job.adapter === 'slurm'
-              ? OBSERVATION.slurm_interval_seconds
-              : OBSERVATION.process_interval_seconds)
-        )
-      );
+    const interval = Math.min(30000, poll_interval_ms ?? 30000);
     for (;;) {
-      await observer.observeRecord(workspace, wait_id);
+      if (Date.parse(record.next_observation_at) <= now()) {
+        await observer.observeRecord(workspace, wait_id);
+      }
       record = store.get(workspace, wait_id);
       if (!record) {
         return failure(404, 'not_found');
@@ -295,7 +289,13 @@ export function createExternalWaitService({
       if (remaining <= 0) {
         return { state: 'running', ...summary(record) };
       }
-      await wait(Math.min(interval, remaining));
+      await wait(
+        Math.min(
+          interval,
+          remaining,
+          Math.max(1000, Date.parse(record.next_observation_at) - now())
+        )
+      );
       record = store.get(workspace, wait_id);
       if (!record) {
         return failure(404, 'not_found');

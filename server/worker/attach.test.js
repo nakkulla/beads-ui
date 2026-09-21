@@ -725,6 +725,46 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(runtime.status(WS).running_count).toBe(0);
   });
 
+  test('gate-r1 #1 reconnects a boot completion to the origin-settlement subscription', async () => {
+    const runtime = createWorkerRuntime();
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+    const record = runtime.externalWaitStore.insert(WS, {
+      root_dir: WS,
+      bead_id: 'A-1',
+      owner: { kind: 'worker', attempt_id: 'origin' },
+      worktree: '/wt/A-1',
+      execution_sha: 'a'.repeat(40),
+      stage: 'completing',
+      jobs: [],
+      completion: {
+        digest: 'c'.repeat(64),
+        completed_at: '2026-09-21T00:00:00.000Z',
+        recovery_needed: false
+      }
+    });
+    const resume = vi
+      .spyOn(att.scheduler, 'resumeExternalWait')
+      .mockResolvedValueOnce({ ok: false, reason: 'origin_running' })
+      .mockResolvedValue({ ok: true, attempt_id: 'child' });
+
+    await att.scheduler.settleExternalWaitReservations(WS);
+    emitQueueChanged(WS);
+    await vi.waitFor(() => expect(resume).toHaveBeenCalledTimes(2));
+    emitQueueChanged(WS);
+
+    expect(resume).toHaveBeenCalledTimes(2);
+    expect(resume).toHaveBeenLastCalledWith(WS, record.wait_id, {
+      mode: 'fork'
+    });
+  });
+
   test('starts persisted provider probes during attachment startup', async () => {
     const providerHealth = {
       start: vi.fn(async () => {}),
