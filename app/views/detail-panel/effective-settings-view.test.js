@@ -153,6 +153,7 @@ function renderCard(model_overrides = {}, handler_overrides = {}) {
         controller_runtime: null,
         expanded: true,
         presets: [{ id: 'p1', name: '메인 구현', compatible: true }],
+        presets_loaded: true,
         preset_id: '',
         preset_busy: false,
         ...model_overrides
@@ -285,5 +286,374 @@ describe('effective-settings card preset head (UI-7yh2 §3.7-3.9)', () => {
     button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
     expect(onToggle).not.toHaveBeenCalled();
+  });
+});
+
+const CATALOG = {
+  runners: {
+    claude: {
+      command: 'claude',
+      models: { opus: { id: 'opus', efforts: ['high'] } }
+    },
+    codex: {
+      command: 'codex',
+      models: {
+        sol: {
+          id: 'gpt-5.6-sol',
+          efforts: ['medium'],
+          speed_tiers: ['default', 'fast']
+        }
+      }
+    }
+  },
+  model_index: { opus: 'claude', sol: 'codex' }
+};
+
+const EXECUTION_DEFAULTS = {
+  supported: true,
+  schema_version: 1,
+  session: {
+    workflow_mode_default: 'standard',
+    review: {
+      default: 'codex',
+      reviewers: {
+        codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+        fable: { model: 'fable', effort: 'high' }
+      }
+    },
+    plan_review: { standard_recommended: 'codex', fast_track_default: 'fable' },
+    implementation: {
+      default: {
+        dispatch: 'delegated',
+        runtime: 'codex',
+        model: 'sol',
+        model_id: 'gpt-5.6-sol',
+        effort: 'medium',
+        speed: 'default'
+      },
+      route_defaults: {},
+      model_catalog: { codex: { sol: 'gpt-5.6-sol' } },
+      effort_by_transport: {}
+    }
+  },
+  orchestration: {
+    runtime: 'claude',
+    model: 'opus',
+    model_id: 'opus',
+    effort: 'high',
+    speed: 'default'
+  }
+};
+
+/**
+ * @param {Partial<Parameters<typeof effectiveSettingsCardTemplate>[0]>} [model_overrides]
+ * @returns {HTMLElement}
+ */
+function renderResolvedCard(model_overrides = {}) {
+  return renderCard({
+    catalog: CATALOG,
+    execution_defaults: EXECUTION_DEFAULTS,
+    expanded: false,
+    ...model_overrides
+  });
+}
+
+/**
+ * @param {HTMLElement} mount
+ * @returns {string[]}
+ */
+function groupTexts(mount) {
+  return Array.from(mount.querySelectorAll('.detail-effective__grp'), (group) =>
+    (group.textContent || '').replace(/\s+/g, ' ').trim()
+  );
+}
+
+describe('effective-settings collapsed value line (UI-xq3h §3.2-3.3)', () => {
+  test('renames the card title to 이 이슈 실행 설정', () => {
+    const mount = renderResolvedCard();
+
+    expect(mount.querySelector('.detail-effective__t')?.textContent).toBe(
+      '이 이슈 실행 설정'
+    );
+  });
+
+  test('splits the value line into an 오케 group and a 워커 group', () => {
+    const mount = renderResolvedCard();
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('.detail-effective__role'),
+        (role) => role.textContent
+      )
+    ).toEqual(['오케', '워커']);
+  });
+
+  test('puts the orchestration model and effort in the 오케 group', () => {
+    const mount = renderResolvedCard({
+      metadata: { orchestration_effort: 'high' }
+    });
+
+    expect(groupTexts(mount)[0]).toBe('오케 opus · high');
+  });
+
+  test('puts the delegation target, model and effort in the 워커 group', () => {
+    const mount = renderResolvedCard();
+
+    expect(groupTexts(mount)[1]).toBe('워커 위임 codex · 5.6-sol · medium');
+  });
+
+  test('gives the value line its own row of the card head', () => {
+    const mount = renderResolvedCard();
+
+    const line = /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-effective__summary')
+    );
+
+    expect(line.previousElementSibling?.className).toBe(
+      'detail-effective__chev'
+    );
+    expect(line.nextElementSibling?.className).toBe('detail-effective__preset');
+  });
+
+  test('keeps the full model ids reachable in the value line title', () => {
+    const mount = renderResolvedCard();
+
+    expect(
+      mount.querySelector('.detail-effective__summary')?.getAttribute('title')
+    ).toContain('gpt-5.6-sol');
+  });
+
+  test('omits a speed token that resolved to default', () => {
+    const mount = renderResolvedCard();
+
+    expect(groupTexts(mount).join(' ')).not.toContain('default');
+  });
+
+  test('keeps a speed token the issue pinned to fast', () => {
+    const mount = renderResolvedCard({
+      metadata: { orchestration_effort: 'high', orchestration_speed: 'fast' }
+    });
+
+    expect(groupTexts(mount)[0]).toBe('오케 opus · high · fast');
+  });
+
+  test('collapses the 워커 group to 메인 when the issue runs on the controller', () => {
+    const mount = renderResolvedCard({ metadata: { impl_dispatch: 'main' } });
+
+    expect(groupTexts(mount)[1]).toBe('워커 메인');
+  });
+
+  test('draws only the 워커 group when no orchestration key resolves', () => {
+    const mount = renderResolvedCard({
+      execution_defaults: { ...EXECUTION_DEFAULTS, orchestration: null }
+    });
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('.detail-effective__role'),
+        (role) => role.textContent
+      )
+    ).toEqual(['워커']);
+  });
+
+  test('draws no value line at all when neither role resolves', () => {
+    const mount = renderCard({ expanded: false });
+
+    expect(mount.querySelector('.detail-effective__summary')).toBe(null);
+  });
+});
+
+describe('effective-settings mode token (UI-xq3h §3.3)', () => {
+  test('omits the mode token when the issue pins fast_track itself', () => {
+    const mount = renderResolvedCard({
+      metadata: { workflow_mode: 'fast_track' }
+    });
+
+    expect(mount.querySelector('.detail-effective__mode')).toBe(null);
+  });
+
+  test('ends the value line with the mode inherited from the workspace', () => {
+    const mount = renderResolvedCard({
+      workspace_values: { workflow_mode: 'fast_track' }
+    });
+
+    expect(mount.querySelector('.detail-effective__mode')?.textContent).toBe(
+      'fast_track'
+    );
+  });
+
+  test('never puts standard on the value line, pinned or inherited', () => {
+    const pinned = renderResolvedCard({
+      metadata: { workflow_mode: 'standard' }
+    });
+    const inherited = renderResolvedCard({
+      workspace_values: { workflow_mode: 'standard' }
+    });
+
+    expect(pinned.querySelector('.detail-effective__mode')).toBe(null);
+    expect(inherited.querySelector('.detail-effective__mode')).toBe(null);
+  });
+});
+
+describe('effective-settings applied preset token (UI-xq3h §3.4)', () => {
+  const PRESET = {
+    id: 'p1',
+    name: '페이블 기본',
+    compatible: true,
+    settings: { orchestration_model: 'opus', impl_model: 'sol' }
+  };
+
+  test('draws no token for an issue that records no preset', () => {
+    const mount = renderResolvedCard({ presets: [PRESET] });
+
+    expect(mount.querySelector('.detail-effective__applied')).toBe(null);
+  });
+
+  test('draws no token while the preset list has not arrived', () => {
+    const mount = renderResolvedCard({
+      metadata: { applied_exec_preset: 'p1' },
+      presets: [],
+      presets_loaded: false
+    });
+
+    expect(mount.querySelector('.detail-effective__applied')).toBe(null);
+  });
+
+  const LANE_PRESET = {
+    id: 'p1',
+    name: '페이블 기본',
+    compatible: true,
+    settings: {
+      impl_runtime: 'claude',
+      impl_model: 'opus',
+      quick_fix_impl_model: 'sol'
+    }
+  };
+
+  const LANE_METADATA = {
+    route: 'quick_fix',
+    applied_exec_preset: 'p1',
+    impl_runtime: 'codex',
+    impl_model: 'sol'
+  };
+
+  test('draws no token while the runner catalog has not arrived', () => {
+    const mount = renderResolvedCard({
+      catalog: null,
+      metadata: LANE_METADATA,
+      presets: [LANE_PRESET]
+    });
+
+    expect(mount.querySelector('.detail-effective__applied')).toBe(null);
+  });
+
+  test('reports no drift once the catalog can derive the lane runtime', () => {
+    const mount = renderResolvedCard({
+      metadata: LANE_METADATA,
+      presets: [LANE_PRESET]
+    });
+
+    expect(mount.querySelector('.detail-effective__applied')?.textContent).toBe(
+      '프리셋 페이블 기본'
+    );
+  });
+
+  test('names the preset when the issue still matches it', () => {
+    const mount = renderResolvedCard({
+      metadata: {
+        applied_exec_preset: 'p1',
+        orchestration_model: 'opus',
+        impl_model: 'sol'
+      },
+      presets: [PRESET]
+    });
+
+    expect(mount.querySelector('.detail-effective__applied')?.textContent).toBe(
+      '프리셋 페이블 기본'
+    );
+  });
+
+  test('counts the keys that drifted away from the preset', () => {
+    const mount = renderResolvedCard({
+      metadata: {
+        applied_exec_preset: 'p1',
+        orchestration_model: 'fable',
+        impl_model: 'sol'
+      },
+      presets: [PRESET]
+    });
+
+    expect(
+      mount
+        .querySelector('.detail-effective__applied')
+        ?.textContent?.replace(/\s+/g, ' ')
+    ).toBe('프리셋 페이블 기본 · 1개 변경');
+  });
+
+  test('lists each drifted key with both values in the token title', () => {
+    const mount = renderResolvedCard({
+      metadata: { applied_exec_preset: 'p1', impl_model: 'sol' },
+      presets: [PRESET]
+    });
+
+    expect(
+      mount.querySelector('.detail-effective__applied')?.getAttribute('title')
+    ).toBe('오케스트레이션 모델: 없음 (프리셋 opus)');
+  });
+
+  test('names the preset side as 비움 when only the issue carries the key', () => {
+    const mount = renderResolvedCard({
+      metadata: { applied_exec_preset: 'p1', impl_effort: 'high' },
+      presets: [{ ...PRESET, settings: {} }]
+    });
+
+    expect(
+      mount.querySelector('.detail-effective__applied')?.getAttribute('title')
+    ).toBe('effort: high (프리셋 비움)');
+  });
+
+  test('reports a preset that is gone from the arrived list as deleted', () => {
+    const mount = renderResolvedCard({
+      metadata: { applied_exec_preset: 'gone' },
+      presets: [PRESET]
+    });
+
+    const token = mount.querySelector('.detail-effective__applied');
+
+    expect(token?.textContent).toBe('프리셋 삭제됨');
+    expect(token?.getAttribute('title')).toBe(null);
+  });
+
+  test('places the token between the title and the layer counts', () => {
+    const mount = renderResolvedCard({
+      metadata: { applied_exec_preset: 'p1' },
+      presets: [PRESET]
+    });
+
+    const token = /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-effective__applied')
+    );
+
+    expect(token.previousElementSibling?.className).toBe('detail-effective__t');
+    expect(token.nextElementSibling?.className).toBe(
+      'detail-effective__counts'
+    );
+  });
+});
+
+describe('effective-settings expanded group headings (UI-xq3h §4)', () => {
+  test('titles the groups in role order', () => {
+    const mount = renderCard({
+      metadata: { route: 'full_plan' },
+      catalog: CATALOG,
+      execution_defaults: EXECUTION_DEFAULTS
+    });
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('.detail-effective__subhead'),
+        (head) => head.textContent
+      )
+    ).toEqual(['워크플로우', '오케스트레이션', '워커 구현', '리뷰']);
   });
 });

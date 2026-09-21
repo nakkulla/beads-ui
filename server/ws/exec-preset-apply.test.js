@@ -3,6 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { MESSAGE_TYPES } from '../../app/protocol.js';
+import {
+  APPLIED_EXEC_PRESET_KEY,
+  BEAD_PIN_KEYS
+} from '../worker/exec-enums.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 
 const runBdInWorkspace = vi.fn();
@@ -475,11 +479,15 @@ describe('broadcastImplPresets', () => {
 
 describe('buildApplyImplPresetArgs', () => {
   test('writes every pin key in canonical order with one update argv', () => {
-    const args = buildApplyImplPresetArgs('UI-1', {
-      impl_dispatch: 'delegated',
-      impl_effort: 'high',
-      orchestration_model: 'sol'
-    });
+    const args = buildApplyImplPresetArgs(
+      'UI-1',
+      {
+        impl_dispatch: 'delegated',
+        impl_effort: 'high',
+        orchestration_model: 'sol'
+      },
+      'preset-1'
+    );
 
     const named = args
       .slice(2)
@@ -502,7 +510,8 @@ describe('buildApplyImplPresetArgs', () => {
       'impl_runtime',
       'impl_model',
       'impl_effort',
-      'impl_speed'
+      'impl_speed',
+      'applied_exec_preset'
     ]);
     expect(args).toContain('impl_dispatch=delegated');
     expect(args).toContain('impl_effort=high');
@@ -517,9 +526,9 @@ describe('buildApplyImplPresetArgs', () => {
   });
 
   test('unsets exactly the 17 pin keys for an empty preset', () => {
-    const args = buildApplyImplPresetArgs('UI-1', {});
+    const args = buildApplyImplPresetArgs('UI-1', {}, 'preset-1');
 
-    const named = args.slice(2).filter((_, index) => index % 2 === 1);
+    const named = args.slice(2, -2).filter((_, index) => index % 2 === 1);
     expect(named).toHaveLength(17);
     expect(named).not.toContain('workflow_mode');
     expect(named.slice(0, 3)).toEqual([
@@ -527,9 +536,27 @@ describe('buildApplyImplPresetArgs', () => {
       'orchestration_effort',
       'orchestration_speed'
     ]);
-    expect(args.slice(2).filter((_, index) => index % 2 === 0)).toEqual(
+    expect(args.slice(2, -2).filter((_, index) => index % 2 === 0)).toEqual(
       Array(17).fill('--unset-metadata')
     );
+  });
+
+  test('records the preset identity in the same argv as the pins', () => {
+    const args = buildApplyImplPresetArgs('UI-1', {}, 'preset-1');
+
+    expect(args.slice(-2)).toEqual([
+      '--set-metadata',
+      'applied_exec_preset=preset-1'
+    ]);
+  });
+
+  test('keeps the identity key out of the 17 replaced pin keys', () => {
+    const args = buildApplyImplPresetArgs('UI-1', {}, 'preset-1');
+
+    expect(BEAD_PIN_KEYS).not.toContain(APPLIED_EXEC_PRESET_KEY);
+    expect(
+      args.filter((value) => value.startsWith(`${APPLIED_EXEC_PRESET_KEY}=`))
+    ).toHaveLength(1);
   });
 });
 
@@ -704,11 +731,15 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
 
     expect(runBdInWorkspace).toHaveBeenCalledWith(
       ws,
-      buildApplyImplPresetArgs('UI-1', {
-        spec_review_speed: 'fast',
-        impl_dispatch: 'delegated',
-        impl_runtime: 'auto'
-      })
+      buildApplyImplPresetArgs(
+        'UI-1',
+        {
+          spec_review_speed: 'fast',
+          impl_dispatch: 'delegated',
+          impl_runtime: 'auto'
+        },
+        preset_id
+      )
     );
     const reply = sent[sent.length - 1];
     expect(reply.ok).toBe(true);
@@ -721,6 +752,27 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
       'issue',
       'revision'
     ]);
+  });
+
+  test('records the applied preset id on the bead in the same update', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_dispatch: 'main' });
+    runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
+    runBdJsonProjectedInWorkspace.mockResolvedValue({
+      ok: true,
+      data: { id: 'UI-1', metadata: {} }
+    });
+
+    await handleApplyImplPreset(ws, {
+      id: 'apply',
+      type: 'apply-impl-preset',
+      payload: { id: 'UI-1', preset_id, expected_revision: 1 }
+    });
+
+    expect(runBdInWorkspace).toHaveBeenCalledTimes(1);
+    expect(runBdInWorkspace.mock.calls[0][1]).toContain(
+      `${APPLIED_EXEC_PRESET_KEY}=${preset_id}`
+    );
   });
 
   test('reports a conflict without touching bd when the revision is stale', async () => {
@@ -792,11 +844,15 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
 
     expect(runBdInWorkspace).toHaveBeenCalledWith(
       ws,
-      buildApplyImplPresetArgs('UI-1', {
-        impl_runtime: 'codex',
-        impl_model: 'sol',
-        impl_effort: 'high'
-      })
+      buildApplyImplPresetArgs(
+        'UI-1',
+        {
+          impl_runtime: 'codex',
+          impl_model: 'sol',
+          impl_effort: 'high'
+        },
+        preset_id
+      )
     );
   });
 

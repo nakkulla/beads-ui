@@ -19,6 +19,7 @@ import {
   normalizeSessionDefaults
 } from '../session-defaults.js';
 import {
+  APPLIED_EXEC_PRESET_KEY,
   BEAD_PIN_KEYS,
   ORCHESTRATION_KEYS,
   PRESET_KV_KEYS,
@@ -72,11 +73,15 @@ function queueStore() {
  * A key the preset omits is explicitly UNSET rather than left behind: applying
  * a preset must leave the Bead describing that preset and nothing else.
  *
+ * `APPLIED_EXEC_PRESET_KEY` rides the SAME argv outside the 17-key loop, so the
+ * pins and the identity that explains them never land separately.
+ *
  * @param {string} issue_id
  * @param {Record<string, string>} settings
+ * @param {string} preset_id
  * @returns {string[]}
  */
-export function buildApplyImplPresetArgs(issue_id, settings) {
+export function buildApplyImplPresetArgs(issue_id, settings, preset_id) {
   const args = ['update', issue_id];
   for (const key of BEAD_PIN_KEYS) {
     if (Object.hasOwn(settings, key)) {
@@ -85,6 +90,7 @@ export function buildApplyImplPresetArgs(issue_id, settings) {
       args.push('--unset-metadata', key);
     }
   }
+  args.push('--set-metadata', `${APPLIED_EXEC_PRESET_KEY}=${preset_id}`);
   return args;
 }
 
@@ -463,7 +469,7 @@ export async function handleApplyImplPreset(ws, req) {
   try {
     updated = await runBdInWorkspace(
       ws,
-      buildApplyImplPresetArgs(id, projected.settings)
+      buildApplyImplPresetArgs(id, projected.settings, resolved.preset.id)
     );
   } catch (err) {
     ws.send(

@@ -13,18 +13,39 @@
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import {
   BEAD_APPLY_KEYS,
-  ORCHESTRATION_KEYS
+  BEAD_PIN_KEYS,
+  ORCHESTRATION_KEYS,
+  QUICK_FIX_LANE_MAP
 } from '../settings-dialog/session-model.js';
+import { modelRunnerOf } from './exec-settings.js';
 
 /**
- * The per-bead editor's four groups, in display order. `Worker` is separate
- * because its three keys are the only ones the worker launcher consumes and the
- * only ones whose workspace layer is the queue rather than `bd kv`.
+ * The per-bead editor's four groups, in display order — the same role
+ * vocabulary the collapsed value line reads (오케 before 워커). 오케스트레이션
+ * is separate because its three keys are the only ones the worker launcher
+ * consumes and the only ones whose workspace layer is the queue rather than
+ * `bd kv`.
  *
  * @type {ReadonlyArray<{ id: string, label: string, keys: string[] }>}
  */
 export const EFFECTIVE_GROUPS = [
   { id: 'workflow', label: '워크플로우', keys: ['workflow_mode'] },
+  {
+    id: 'orchestration',
+    label: '오케스트레이션',
+    keys: [...ORCHESTRATION_KEYS]
+  },
+  {
+    id: 'implementation',
+    label: '워커 구현',
+    keys: [
+      'impl_dispatch',
+      'impl_runtime',
+      'impl_model',
+      'impl_effort',
+      'impl_speed'
+    ]
+  },
   {
     id: 'review',
     label: '리뷰',
@@ -39,19 +60,7 @@ export const EFFECTIVE_GROUPS = [
       'impl_review_effort',
       'impl_review_speed'
     ]
-  },
-  {
-    id: 'implementation',
-    label: '구현',
-    keys: [
-      'impl_dispatch',
-      'impl_runtime',
-      'impl_model',
-      'impl_effort',
-      'impl_speed'
-    ]
-  },
-  { id: 'worker', label: 'Worker', keys: [...ORCHESTRATION_KEYS] }
+  }
 ];
 
 /**
@@ -225,3 +234,176 @@ export function buildImplPresetApplyPayload(id, preset_id, expected_revision) {
  * @type {ReadonlyArray<string>}
  */
 export const EFFECTIVE_KEYS = [...BEAD_APPLY_KEYS, ...ORCHESTRATION_KEYS];
+
+/** The four implementation axes a quick_fix lane value overrides one by one. */
+const QUICK_FIX_IMPL_KEYS = [
+  'impl_dispatch',
+  'impl_model',
+  'impl_effort',
+  'impl_speed'
+];
+
+/**
+ * Project one preset onto the pin values an apply would actually write for this
+ * issue's route — the client mirror of the server `presetSettingsForIssue`
+ * (`server/ws/exec-preset-handlers.js`). The two write-blocking checks that
+ * function also runs (`validateOrchestrationPin`, `validateImplSettings`) are
+ * deliberately absent: they refuse a write, they never change an expectation.
+ *
+ * @param {Record<string, any>|null|undefined} preset_settings
+ * @param {string|null|undefined} route
+ * @param {Record<string, any>|null|undefined} runner_catalog
+ * @returns {Record<string, string>}
+ */
+export function presetExpectationForIssue(
+  preset_settings,
+  route,
+  runner_catalog
+) {
+  const settings = preset_settings || {};
+  /** @type {Record<string, string>} */
+  const projected = {};
+  for (const key of BEAD_PIN_KEYS) {
+    if (typeof settings[key] === 'string') {
+      projected[key] = settings[key];
+    }
+  }
+  if (route !== 'quick_fix') {
+    return projected;
+  }
+  for (const key of ORCHESTRATION_KEYS) {
+    const value = settings[QUICK_FIX_LANE_MAP[key]] ?? settings[key];
+    if (typeof value === 'string') {
+      projected[key] = value;
+    }
+  }
+  for (const key of QUICK_FIX_IMPL_KEYS) {
+    const lane_value = settings[QUICK_FIX_LANE_MAP[key]];
+    if (typeof lane_value === 'string') {
+      projected[key] = lane_value;
+    }
+  }
+  const lane_runtime = settings.quick_fix_impl_runtime;
+  const lane_model = settings.quick_fix_impl_model;
+  const derived_runtime =
+    typeof lane_model === 'string'
+      ? modelRunnerOf(runner_catalog, lane_model)
+      : null;
+  const runtime =
+    (typeof lane_runtime === 'string' ? lane_runtime : null) ??
+    derived_runtime ??
+    settings.impl_runtime;
+  if (typeof runtime === 'string') {
+    projected.impl_runtime = runtime;
+  } else {
+    delete projected.impl_runtime;
+  }
+  return projected;
+}
+
+/**
+ * One key's value, or null when the key is absent or carries an empty token.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function presentValue(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, any>}
+ */
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Whether the runner catalog can answer which runner owns a model — the same
+ * judgement `exec-settings.js catalogRunners` makes before a lookup. That
+ * helper is not exported and its file is outside this design's scope, so the
+ * predicate is restated here and the two must stay identical.
+ *
+ * @param {Record<string, any>|null|undefined} runner_catalog
+ * @returns {boolean}
+ */
+function catalogIsReady(runner_catalog) {
+  if (!isRecord(runner_catalog) || !isRecord(runner_catalog.runners)) {
+    return false;
+  }
+  return Object.values(runner_catalog.runners).some(
+    (entry) => isRecord(entry) && isRecord(entry.models)
+  );
+}
+
+/**
+ * Whether the runtime expectation cannot be judged YET: only a quick_fix issue
+ * whose preset supplies a lane MODEL but no lane runtime needs the catalog to
+ * derive a provider, and only an unarrived catalog makes that derivation
+ * impossible.
+ *
+ * A catalog that HAS arrived and simply does not list the model is not
+ * undecidable — the server `inferImplRuntime` fails the same way and falls
+ * through to the general `impl_runtime`, so both sides reach one conclusion.
+ *
+ * @param {Record<string, any>|null|undefined} preset_settings
+ * @param {string|null|undefined} route
+ * @param {Record<string, any>|null|undefined} runner_catalog
+ * @returns {boolean}
+ */
+function runtimeExpectationPending(preset_settings, route, runner_catalog) {
+  const settings = preset_settings || {};
+  return (
+    route === 'quick_fix' &&
+    typeof settings.quick_fix_impl_runtime !== 'string' &&
+    typeof settings.quick_fix_impl_model === 'string' &&
+    !catalogIsReady(runner_catalog)
+  );
+}
+
+/**
+ * How far this issue's pins have drifted from the preset it records.
+ *
+ * SYMMETRIC by design: a key the projection omits expects ABSENCE, because an
+ * apply `--unset-metadata`s it. That is why this is not the server's
+ * `dispatchPreset` `deviated_keys`, which walks only the pins that exist and so
+ * answers a different question — what one attempt carried, not whether the
+ * issue still describes the preset.
+ *
+ * Returns null while the expectation itself is unknowable, which the caller
+ * treats exactly like an unarrived preset list (spec §3.4): saying nothing
+ * beats reporting a drift that only an absent catalog invented.
+ *
+ * @param {Record<string, unknown>|null|undefined} bead_metadata
+ * @param {Record<string, any>|null|undefined} preset_settings
+ * @param {string|null|undefined} route
+ * @param {Record<string, any>|null|undefined} runner_catalog
+ * @returns {{ count: number, entries: Array<{ key: string, actual: string|null, expected: string|null }> }|null}
+ */
+export function presetDeviation(
+  bead_metadata,
+  preset_settings,
+  route,
+  runner_catalog
+) {
+  if (runtimeExpectationPending(preset_settings, route, runner_catalog)) {
+    return null;
+  }
+  const metadata = bead_metadata || {};
+  const expectation = presetExpectationForIssue(
+    preset_settings,
+    route,
+    runner_catalog
+  );
+  /** @type {Array<{ key: string, actual: string|null, expected: string|null }>} */
+  const entries = [];
+  for (const key of BEAD_PIN_KEYS) {
+    const actual = presentValue(metadata[key]);
+    const expected = presentValue(expectation[key]);
+    if (actual !== expected) {
+      entries.push({ key, actual, expected });
+    }
+  }
+  return { count: entries.length, entries };
+}

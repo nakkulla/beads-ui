@@ -3074,6 +3074,7 @@ export function createDetailPanel(mount_element, options) {
               execution_defaults: executionDefaults(),
               expanded: effective_expanded,
               presets: execPresetState()?.presets || [],
+              presets_loaded: execPresetState() !== null,
               preset_id: selected_preset_id,
               preset_busy: applying_preset
             },

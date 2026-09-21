@@ -23,10 +23,12 @@ import {
 import { chipPopoverTemplate } from '../chip-popover.js';
 import { formatExecReceipt, formatPlannedExecution } from '../exec-format.js';
 import {
+  APPLIED_EXEC_PRESET_KEY,
   AUTO_LITERAL,
   IMPL_DISPATCHES,
   IMPL_RUNTIMES,
   IMPL_SPEEDS,
+  ORCHESTRATION_KEYS,
   PLAN_REVIEW_MODELS,
   REVIEW_EFFORTS,
   REVIEW_STEP_MODELS,
@@ -42,7 +44,8 @@ import {
   SETTING_LABELS,
   SOURCE_LABELS,
   effectiveRows,
-  layerSummary
+  layerSummary,
+  presetDeviation
 } from './effective-settings.js';
 
 /**
@@ -280,6 +283,7 @@ function rowTemplate(row, view) {
  *   controller_runtime?: string|null,
  *   expanded: boolean,
  *   presets: any[],
+ *   presets_loaded: boolean,
  *   preset_id: string,
  *   preset_busy: boolean,
  * }} model
@@ -353,6 +357,9 @@ export function effectiveSettingsCardTemplate(model, handlers) {
     .filter((row) => row.full_value && row.display !== row.full_value)
     .map((row) => row.full_value)
     .join(' · ');
+  const summary_line = summaryLine(effective, {
+    mode_in_metadata: model.metadata?.workflow_mode === 'fast_track'
+  });
   return html`<details
     class=${`detail-effective${model.expanded ? ' detail-effective--open' : ''}`}
     data-seam="effective-settings"
@@ -373,10 +380,8 @@ export function effectiveSettingsCardTemplate(model, handlers) {
         handlers.onToggle(!details.open);
       }}
     >
-      <span class="detail-effective__t">유효 실행 설정</span>
-      <span class="detail-effective__summary" title=${full_summary}
-        >${summaryLine(effective)}</span
-      >
+      <span class="detail-effective__t">이 이슈 실행 설정</span>
+      ${presetTokenTemplate(model)}
       <span class="detail-effective__counts">
         <span class="detail-effective__count detail-effective__count--pin"
           >핀 ${counts.pin}</span
@@ -389,6 +394,11 @@ export function effectiveSettingsCardTemplate(model, handlers) {
         >
       </span>
       <span class="detail-effective__chev">▸</span>
+      ${summary_line === null
+        ? ''
+        : html`<span class="detail-effective__summary" title=${full_summary}
+            >${summary_line}</span
+          >`}
       <span
         class="detail-effective__preset"
         @click=${(/** @type {Event} */ event) => event.stopPropagation()}
@@ -477,31 +487,182 @@ export function effectiveSettingsCardTemplate(model, handlers) {
 }
 
 /**
- * The card's one-line synthesis: the values a reader checks first.
+ * One role group's value tokens, in key order, skipping keys that resolved to
+ * nothing a reader can act on.
+ *
+ * A speed of `default` is dropped HERE only: it means "nothing chosen", so in
+ * the collapsed line it costs a token and says nothing, while the expanded
+ * 속도 row keeps reporting it.
  *
  * @param {Record<string, EffectiveRow>} effective
- * @returns {string}
+ * @param {ReadonlyArray<string>} keys
+ * @returns {string[]}
  */
-export function summaryLine(effective) {
+function summaryTokens(effective, keys) {
   /** @type {string[]} */
-  const parts = [];
-  if (effective.workflow_mode) {
-    parts.push(effective.workflow_mode.display);
+  const tokens = [];
+  for (const key of keys) {
+    const row = effective[key];
+    if (
+      !row ||
+      row.resolution === 'not_applicable' ||
+      row.resolution === 'unavailable'
+    ) {
+      continue;
+    }
+    if (key.endsWith('_speed') && row.value === 'default') {
+      continue;
+    }
+    tokens.push(row.display);
   }
+  return tokens;
+}
+
+/**
+ * The 워커 group's tokens. `impl_runtime` is not a token of its own — it is the
+ * delegation target, so it reads as part of the 실행 방식 token.
+ *
+ * @param {Record<string, EffectiveRow>} effective
+ * @returns {string[]}
+ */
+function workerTokens(effective) {
+  /** @type {string[]} */
+  const tokens = [];
   if (effective.impl_dispatch?.value === 'main') {
-    parts.push('메인');
+    tokens.push('메인');
   } else if (effective.impl_dispatch?.value === 'delegated') {
     const target = effective.impl_runtime
       ? ` ${effective.impl_runtime.display}`
       : '';
-    parts.push(`위임${target}`);
+    tokens.push(`위임${target}`);
   }
-  for (const key of ['impl_model', 'impl_effort', 'impl_speed']) {
-    if (effective[key] && effective[key].resolution !== 'not_applicable') {
-      parts.push(effective[key]?.display || '기본값 확인 불가');
-    }
+  return [
+    ...tokens,
+    ...summaryTokens(effective, ['impl_model', 'impl_effort', 'impl_speed'])
+  ];
+}
+
+/**
+ * One role group of the collapsed value line: a dim role name and its tokens.
+ *
+ * @param {string} role
+ * @param {string[]} tokens
+ * @returns {TemplateResult}
+ */
+function roleGroupTemplate(role, tokens) {
+  return html`<span class="detail-effective__grp"
+    ><span class="detail-effective__role">${role}</span> ${tokens.join(
+      ' · '
+    )}</span
+  >`;
+}
+
+/**
+ * The card's collapsed value line: an 오케 group and a 워커 group. Tokens
+ * inside a group join with `·`; the two groups are separated by WHITESPACE,
+ * because one separator cannot carry two nesting levels and stay readable.
+ *
+ * `mode_in_metadata` suppresses the trailing mode token: the header chip
+ * already draws a `fast_track` the bead pins itself, while a `fast_track`
+ * inherited from the workspace appears nowhere else on the collapsed card.
+ *
+ * Returns null when neither group has material, so the card draws no line at
+ * all (AGENTS.md fail-quiet).
+ *
+ * @param {Record<string, EffectiveRow>} effective
+ * @param {{ mode_in_metadata?: boolean }} [options]
+ * @returns {TemplateResult|null}
+ */
+export function summaryLine(effective, options = {}) {
+  const orchestration = summaryTokens(effective, ORCHESTRATION_KEYS);
+  const worker = workerTokens(effective);
+  if (orchestration.length === 0 && worker.length === 0) {
+    return null;
   }
-  return parts.join(' · ');
+  const mode =
+    effective.workflow_mode?.value === 'fast_track' &&
+    options.mode_in_metadata !== true
+      ? effective.workflow_mode.display
+      : '';
+  return html`${orchestration.length > 0
+    ? roleGroupTemplate('오케', orchestration)
+    : ''}${worker.length > 0
+    ? roleGroupTemplate('워커', worker)
+    : ''}${mode.length > 0
+    ? html`<span class="detail-effective__mode">${mode}</span>`
+    : ''}`;
+}
+
+/**
+ * The `n개 변경` tooltip: one deviated key per line, issue value first.
+ *
+ * @param {Array<{ key: string, actual: string|null, expected: string|null }>} entries
+ * @returns {string}
+ */
+function deviationTitle(entries) {
+  return entries
+    .map((entry) => {
+      const label = SETTING_LABELS[entry.key] || entry.key;
+      const actual = entry.actual === null ? '없음' : entry.actual;
+      const expected =
+        entry.expected === null ? '프리셋 비움' : `프리셋 ${entry.expected}`;
+      return `${label}: ${actual} (${expected})`;
+    })
+    .join('\n');
+}
+
+/**
+ * The applied-preset token beside the card title: which preset these pins came
+ * from, and how far the issue has drifted from it since.
+ *
+ * Three different facts share the same silent shape — the bead records no
+ * preset, the preset list has NOT ARRIVED, and the deviation is not yet
+ * decidable. An unarrived list is empty, so judging membership against it would
+ * report a live preset as deleted; an undecided deviation is null for the same
+ * reason, a missing runner catalog.
+ *
+ * @param {any} model
+ * @returns {TemplateResult|''}
+ */
+function presetTokenTemplate(model) {
+  const metadata = model.metadata || {};
+  const applied_id =
+    typeof metadata[APPLIED_EXEC_PRESET_KEY] === 'string'
+      ? metadata[APPLIED_EXEC_PRESET_KEY]
+      : '';
+  if (applied_id.length === 0 || model.presets_loaded !== true) {
+    return '';
+  }
+  const preset = (model.presets || []).find(
+    (/** @type {any} */ entry) => entry && entry.id === applied_id
+  );
+  if (!preset) {
+    return html`<span
+      class="detail-effective__applied"
+      data-applied-preset="missing"
+      >프리셋 삭제됨</span
+    >`;
+  }
+  const deviation = presetDeviation(
+    metadata,
+    preset.settings,
+    typeof metadata.route === 'string' ? metadata.route : null,
+    model.catalog
+  );
+  if (deviation === null) {
+    return '';
+  }
+  if (deviation.count === 0) {
+    return html`<span class="detail-effective__applied" data-applied-preset="ok"
+      >프리셋 ${preset.name}</span
+    >`;
+  }
+  return html`<span
+    class="detail-effective__applied"
+    data-applied-preset="deviated"
+    title=${deviationTitle(deviation.entries)}
+    >프리셋 ${preset.name} · ${deviation.count}개 변경</span
+  >`;
 }
 
 /**

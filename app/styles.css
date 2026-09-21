@@ -10136,9 +10136,37 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   text-transform: uppercase;
 }
 
+/* 값 줄은 머리에서 제 줄을 차지하고, 좁은 폭에서는 역할 묶음 단위로 접힌다. */
 .detail-effective__summary {
+  display: flex;
+  gap: var(--sp-4) var(--sp-16);
+  align-items: baseline;
+  flex-wrap: wrap;
+  flex-basis: 100%;
+  min-width: 0;
   color: var(--text-primary);
   font-size: var(--fs-body-sm);
+}
+
+.detail-effective__grp {
+  min-width: 0;
+}
+
+.detail-effective__role {
+  margin-right: var(--sp-4);
+  color: var(--text-dim);
+}
+
+.detail-effective__mode {
+  color: var(--text-muted);
+}
+
+.detail-effective__applied {
+  padding: var(--sp-1) var(--sp-8);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-9);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
 }
 
 .detail-effective__counts {

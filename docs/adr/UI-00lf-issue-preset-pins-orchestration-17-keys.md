@@ -1,10 +1,11 @@
 ---
 id: UI-00lf
 title: 이슈별 프리셋 적용은 오케스트레이션 3키를 포함한 17키를 Bead에 교체 핀하고 quick_fix route는 오케스트레이션도 quick_fix 값을 우선 역매핑한다 — 25키 프리셋·단일 전역 적용·workflow_mode 제외·구현 키 역매핑은 UI-7yh2를 승계한다
-status: accepted
+status: superseded
 date: 2026-09-15
 summary: "이슈별 프리셋 적용은 오케스트레이션 3키를 포함한 17키(BEAD_PIN_KEYS)를 Bead에 교체 핀하고 quick_fix route는 오케스트레이션도 quick_fix 값을 우선 역매핑하며 투영된 오케스트레이션 값은 모델 기준으로 검증한다; skipped_orchestration_keys는 폐기한다; 25키 프리셋·단일 전역 적용·workflow_mode 제외·구현 키 역매핑·UI-s8qn 승계분은 UI-7yh2에서 승계한다"
 supersedes: [UI-7yh2]
+superseded_by: UI-xq3h
 spec: docs/superpowers/specs/2026-09-15-issue-preset-pins-orchestration-design.md
 bead: UI-00lf
 ---

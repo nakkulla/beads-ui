@@ -1107,7 +1107,9 @@ provider from it — only an exact `impl_model` token names one.
   replaces the issue's 17 pin keys (three orchestration keys plus 14 session
   keys). For a `route=quick_fix` issue, each orchestration and implementation
   axis uses its `quick_fix_*` preset value before the general value; an exact
-  quick_fix model derives its runtime before the general runtime fallback. An
+  quick_fix model derives its runtime before the general runtime fallback. The
+  same `bd update` also writes `applied_exec_preset=<preset id>`, the origin of
+  those pins, which only this request writes and no other path clears. An
   incompatible projected pin is `impl_preset_incompatible` and no metadata is
   written.
 - `apply-impl-preset-global` payload:

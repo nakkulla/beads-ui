@@ -681,7 +681,8 @@ describe('effective-settings card', () => {
 
     expect(details.open).toBe(false);
     expect(details.querySelector('.detail-effective__body')).toBeNull();
-    expect(summary.textContent).toContain('standard');
+    expect(summary.textContent).toContain('오케');
+    expect(summary.textContent).toContain('워커');
     expect(summary.textContent).toContain('5.6-sol');
     expect(summary.textContent).toContain('핀 0');
     expect(summary.textContent).toContain('전역 0');
@@ -1180,7 +1181,53 @@ describe('effective-settings card', () => {
     panel.destroy();
   });
 
-  test('groups the editor into 워크플로우 · 리뷰 · 구현 · Worker', async () => {
+  test('leaves a standard workflow mode off the collapsed value line', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount);
+    await settle();
+
+    expect(
+      mount.querySelector('.detail-effective__summary')?.textContent
+    ).not.toContain('standard');
+    panel.destroy();
+  });
+
+  test('names the preset the issue records once the list arrives', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { applied_exec_preset: 'p1', impl_model: 'sol' },
+      presets: {
+        revision: 4,
+        presets: [
+          {
+            id: 'p1',
+            name: '메인 구현',
+            settings: { impl_model: 'sol' },
+            compatible: true
+          }
+        ]
+      }
+    });
+    await settle();
+
+    expect(mount.querySelector('.detail-effective__applied')?.textContent).toBe(
+      '프리셋 메인 구현'
+    );
+    panel.destroy();
+  });
+
+  test('stays silent about the recorded preset until the list arrives', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { applied_exec_preset: 'p1' }
+    });
+    await settle();
+
+    expect(mount.querySelector('.detail-effective__applied')).toBe(null);
+    panel.destroy();
+  });
+
+  test('groups the editor into 워크플로우 · 오케스트레이션 · 워커 구현 · 리뷰', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount);
     await settle();
@@ -1190,7 +1237,12 @@ describe('effective-settings card', () => {
       mount.querySelectorAll('.detail-effective__subhead')
     ).map((el) => el.textContent?.trim());
 
-    expect(subheads).toEqual(['워크플로우', '리뷰', '구현', 'Worker']);
+    expect(subheads).toEqual([
+      '워크플로우',
+      '오케스트레이션',
+      '워커 구현',
+      '리뷰'
+    ]);
     panel.destroy();
   });
 
