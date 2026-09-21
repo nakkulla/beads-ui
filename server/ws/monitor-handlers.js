@@ -136,7 +136,11 @@ const SESSION_DEFAULTS_RETRY_MS = 60_000;
  * cold or expired entry ships the empty default and the fill's completion
  * schedules the push that carries the real one.
  *
- * @type {Map<string, { values: Record<string, string|boolean>, warnings: string[], expires_at: number, in_flight: boolean }>}
+ * A FAILED read is cached too, so the retry window is honoured, but it carries
+ * `ok: false`: an unread layer must never project as a confirmed absence, which
+ * the bulk window would send as a deletion request (UI-e1ta §3, §9).
+ *
+ * @type {Map<string, { ok: boolean, values: Record<string, string|boolean>, warnings: string[], expires_at: number, in_flight: boolean }>}
  */
 const session_defaults_cache = new Map();
 
@@ -156,9 +160,17 @@ function cachedSessionDefaultsFor(root_dir) {
   // An EXPIRED entry is as good as a cold one (spec §9.4): shipping the value it
   // is about to replace would show execution settings the repo no longer has,
   // and the empty layer is exactly what an absent kv key means anyway.
-  return hit && hit.expires_at > Date.now()
+  // A cached FAILURE is likewise not a reading: it keeps its retry window so the
+  // read is not hammered, but it projects `pending`. Only a read that SUCCEEDED
+  // is `ready`, warnings and all — a warning means some keys were dropped, not
+  // that the layer went unread (§9).
+  return hit && hit.ok === true && hit.expires_at > Date.now()
     ? { values: hit.values, warnings: hit.warnings, state: 'ready' }
-    : { values: {}, warnings: [], state: 'pending' };
+    : {
+        values: {},
+        warnings: hit && hit.expires_at > Date.now() ? hit.warnings : [],
+        state: 'pending'
+      };
 }
 
 /**
@@ -180,6 +192,7 @@ export async function prewarmSessionDefaults(root_dir, prewarm_options = {}) {
     return;
   }
   session_defaults_cache.set(key, {
+    ok: current?.ok === true,
     values: current?.values || {},
     warnings: current?.warnings || [],
     expires_at: current?.expires_at || 0,
@@ -189,6 +202,7 @@ export async function prewarmSessionDefaults(root_dir, prewarm_options = {}) {
     .then((read) => {
       if (!read.ok) {
         session_defaults_cache.set(key, {
+          ok: false,
           values: {},
           warnings: [read.error || 'bd kv get failed'],
           expires_at: Date.now() + SESSION_DEFAULTS_RETRY_MS,
@@ -199,6 +213,7 @@ export async function prewarmSessionDefaults(root_dir, prewarm_options = {}) {
       }
       const normalized = normalizeSessionDefaults(read.value);
       session_defaults_cache.set(key, {
+        ok: true,
         values: normalized.values,
         warnings: read.warning
           ? [read.warning, ...normalized.warnings]
@@ -210,6 +225,7 @@ export async function prewarmSessionDefaults(root_dir, prewarm_options = {}) {
     })
     .catch((err) => {
       session_defaults_cache.set(key, {
+        ok: false,
         values: {},
         warnings: ['kv_read_failed'],
         expires_at: Date.now() + SESSION_DEFAULTS_RETRY_MS,

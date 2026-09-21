@@ -76,6 +76,27 @@ export function observedValue(value) {
 }
 
 /**
+ * Whether EVERY ticked repo comes from a server too old to project the account
+ * layer (§8). `session_defaults_state` is the marker: a current server always
+ * writes it, so a row without it cannot be asked for `workspace_accounts`
+ * either. Holding those rows at `미확인` forever would leave the two account
+ * rows permanently out of every apply, so the legacy fallback stands them on
+ * `기본값 사용` with no badge, exactly as UI-628r did. One current row in the
+ * selection is enough to leave the fallback: that row CAN say whether it was
+ * read.
+ *
+ * @param {Array<Record<string, any>>} rows
+ * @returns {boolean}
+ */
+export function accountLayerLegacy(rows) {
+  const list = Array.isArray(rows) ? rows.filter((row) => isRecord(row)) : [];
+  return (
+    list.length > 0 &&
+    list.every((row) => !Object.hasOwn(row, 'session_defaults_state'))
+  );
+}
+
+/**
  * Whether one monitor row has READ the given layer (§3).
  *
  * @param {Record<string, any>} row
@@ -130,6 +151,12 @@ function valueOf(row, key, layer) {
  */
 export function observeKey(rows, key, layer) {
   const list = Array.isArray(rows) ? rows.filter((row) => isRecord(row)) : [];
+  if (layer === 'workspace_accounts' && accountLayerLegacy(list)) {
+    // An all-legacy selection has no lookup state to read, so it starts at
+    // `기본값 사용` with nothing to explain — an empty `per_repo` is what keeps
+    // {@link observationBadge} silent (§8).
+    return { state: 'empty', value: null, per_repo: [], pending_count: 0 };
+  }
   /** @type {Array<{ root_dir: string, name: string, value: string|null }>} */
   const per_repo = [];
   let pending_count = 0;

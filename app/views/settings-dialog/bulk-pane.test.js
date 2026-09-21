@@ -1236,3 +1236,106 @@ describe('createBulkPane 적용된 프리셋 (UI-e1ta §4.1)', () => {
     expect(el(host, '[data-bulk-applied-preset]')).toBe(null);
   });
 });
+
+describe('createBulkPane gate-r1 (UI-e1ta §3.1, §6, §9)', () => {
+  test('keeps a half-typed Worker 주소 across a snapshot push', () => {
+    const { host, pane, pushRows } = setup();
+    pane.render('session');
+    const input = el(host, '[data-bulk-session="bdui_url"]');
+    input.value = 'http://host:3000';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    pushRows([row(), row({ root_dir: WS_B, name: 'repo-b', revision: 6 })]);
+
+    expect(el(host, '[data-bulk-session="bdui_url"]').value).toBe(
+      'http://host:3000'
+    );
+  });
+
+  test('disables the 주소 관측 되돌리기 button while a run is in flight', async () => {
+    const { host, pane } = setup({
+      rows: [
+        row({ session_defaults: { bdui_url: 'http://a:3000' } }),
+        row({
+          root_dir: WS_B,
+          name: 'repo-b',
+          session_defaults: { bdui_url: 'http://b:3000' }
+        })
+      ],
+      transport: () => new Promise(() => {})
+    });
+    pane.render('session');
+
+    click(host, '[data-bulk-apply="session"]');
+    await settle();
+
+    expect(el(host, '[data-bulk-session-release="bdui_url"]').disabled).toBe(
+      true
+    );
+  });
+
+  test('offers a stored account the catalog does not carry', async () => {
+    const { host, pane } = setup({
+      rows: [
+        row({
+          workspace_accounts: {
+            state: 'usable',
+            values: { claude_account: 'gone@example.com' },
+            warnings: []
+          }
+        })
+      ]
+    });
+
+    pane.render('account');
+    await settle();
+
+    const option = el(
+      host,
+      '[data-bulk-account="claude_account"] option[value="gone@example.com"]'
+    );
+    expect(option.textContent?.trim()).toBe('gone@example.com (목록에 없음)');
+  });
+
+  test('checks an allow-set member the catalog does not carry', async () => {
+    const { host, pane } = setup({
+      rows: [
+        row({
+          provider_limit_policy: {
+            claude: {
+              mode: 'switch',
+              accounts: ['gone@example.com'],
+              preempt_pct: null
+            },
+            codex: { mode: 'switch', accounts: [], preempt_pct: null }
+          }
+        })
+      ]
+    });
+
+    pane.render('account');
+    await settle();
+
+    expect(
+      el(
+        host,
+        '[data-bulk-limit-account="gone@example.com"][data-runner="claude"]'
+      ).checked
+    ).toBe(true);
+  });
+
+  test('starts the account rows at 기본값 사용 on a legacy server', async () => {
+    const legacy = row();
+    delete legacy.session_defaults_state;
+    delete legacy.workspace_accounts;
+    const other = row({ root_dir: WS_B, name: 'repo-b' });
+    delete other.session_defaults_state;
+    delete other.workspace_accounts;
+    const { host, pane } = setup({ rows: [legacy, other] });
+
+    pane.render('account');
+    await settle();
+
+    expect(el(host, '[data-bulk-badge="claude_account"]')).toBe(null);
+  });
+});

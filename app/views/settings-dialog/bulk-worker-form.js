@@ -477,21 +477,35 @@ export function createBulkWorkerForm({
       releaseEdit(key);
       return;
     }
-    for (const coupled of ['impl_runtime', 'impl_model', 'impl_effort']) {
-      edited.add(coupled);
-    }
+    /** @type {Array<'impl_runtime'|'impl_model'|'impl_effort'>} */
+    const coupled_keys = ['impl_runtime', 'impl_model', 'impl_effort'];
+    const before = {
+      impl_runtime: values.impl_runtime,
+      impl_model: values.impl_model,
+      impl_effort: values.impl_effort
+    };
     const next = value === UNSET ? undefined : value;
     const narrowed = narrowImplTarget(
       {
-        impl_runtime: key === 'impl_runtime' ? next : values.impl_runtime,
-        impl_model: key === 'impl_model' ? next : values.impl_model,
-        impl_effort: key === 'impl_effort' ? next : values.impl_effort
+        impl_runtime: key === 'impl_runtime' ? next : before.impl_runtime,
+        impl_model: key === 'impl_model' ? next : before.impl_model,
+        impl_effort: key === 'impl_effort' ? next : before.impl_effort
       },
       catalogOf()
     );
-    writeValue('impl_runtime', narrowed.impl_runtime);
-    writeValue('impl_model', narrowed.impl_model);
-    writeValue('impl_effort', narrowed.impl_effort);
+    // Only the row the user touched and the coupled rows the narrowing ACTUALLY
+    // moved become `편집됨`. A coupled row still on its hold whose value the
+    // narrowing left alone keeps that hold, so changing one setting cannot send
+    // a null deletion for a sibling nobody touched (§3.1).
+    edited.add(key);
+    for (const coupled of coupled_keys) {
+      if (storedValue(narrowed[coupled]) !== storedValue(before[coupled])) {
+        edited.add(coupled);
+      }
+    }
+    for (const coupled of coupled_keys) {
+      writeValue(coupled, narrowed[coupled]);
+    }
     pruneHiddenSpeeds();
     notifyChange();
   }
@@ -560,6 +574,13 @@ export function createBulkWorkerForm({
    */
   function equalsPreset(settings) {
     const source = isRecord(settings) ? settings : {};
+    // A row still on a hold has promised to leave each repo's own value alone
+    // (§3.2). The whole-preset apply path writes EVERY key the preset names and
+    // deletes the ones it omits, so it would break that promise: an empty hold
+    // and an empty preset key compare equal while meaning opposite things.
+    if (BULK_FORM_KEYS.some((key) => holdStateOf(key) !== null)) {
+      return false;
+    }
     return BULK_FORM_ROW_KEYS.every(
       (key) => storedValue(source[key]) === storedValue(values[key])
     );

@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
+  accountLayerLegacy,
+  observationBadge,
   observeAppliedPreset,
   observeKey,
   observeSet
@@ -262,5 +264,47 @@ describe('observeAppliedPreset (UI-e1ta §4.1)', () => {
     const observation = observeAppliedPreset(rows);
 
     expect(observation.state).toBe('empty');
+  });
+});
+
+describe('observeKey over a legacy account layer (UI-e1ta §8)', () => {
+  test('stands legacy rows on 기본값 사용 with nothing to badge', () => {
+    const rows = [
+      { root_dir: '/tmp/a', name: 'a' },
+      { root_dir: '/tmp/b', name: 'b' }
+    ];
+
+    const observation = observeKey(
+      rows,
+      'claude_account',
+      'workspace_accounts'
+    );
+
+    expect(observation.state).toBe('empty');
+    expect(observationBadge(observation)).toBe(null);
+  });
+
+  test('holds a current row whose account layer has not landed', () => {
+    const rows = [
+      { root_dir: '/tmp/a', name: 'a' },
+      { root_dir: '/tmp/b', name: 'b', session_defaults_state: 'ready' }
+    ];
+
+    const observation = observeKey(
+      rows,
+      'claude_account',
+      'workspace_accounts'
+    );
+
+    expect(observation.state).toBe('pending');
+  });
+
+  test('reports a mixed selection as not legacy', () => {
+    const legacy = accountLayerLegacy([
+      { root_dir: '/tmp/a', name: 'a' },
+      { root_dir: '/tmp/b', name: 'b', session_defaults_state: 'pending' }
+    ]);
+
+    expect(legacy).toBe(false);
   });
 });

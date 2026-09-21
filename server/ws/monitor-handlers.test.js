@@ -2215,6 +2215,33 @@ describe('workspaces_state observation projection (UI-e1ta §8)', () => {
     expect(row.session_defaults).toEqual({ impl_effort: 'high' });
   });
 
+  test('marks a failed session defaults read as pending', async () => {
+    __resetSessionDefaultsCacheForTest();
+
+    await prewarmSessionDefaults(WS_A, {
+      kvGet: async () => ({ ok: false, error: 'bd kv get failed' })
+    });
+    const row = liveRow();
+
+    expect(row.session_defaults_state).toBe('pending');
+    expect(row.session_defaults).toEqual({});
+  });
+
+  test('keeps a read with normalization warnings ready', async () => {
+    __resetSessionDefaultsCacheForTest();
+
+    await prewarmSessionDefaults(WS_A, {
+      kvGet: async () => ({
+        ok: true,
+        value: { impl_effort: 'high', bogus_key: 'x' }
+      })
+    });
+    const row = liveRow();
+
+    expect(row.session_defaults_state).toBe('ready');
+    expect(row.session_defaults).toEqual({ impl_effort: 'high' });
+  });
+
   test('omits the account layer until its read lands', () => {
     __resetWorkspaceAccountsCacheForTest();
 

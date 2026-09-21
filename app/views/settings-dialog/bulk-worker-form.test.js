@@ -254,3 +254,50 @@ describe('createBulkWorkerForm quick_fix lane (UI-628r §3.2)', () => {
     ).toBe('기본값 사용 — opus');
   });
 });
+
+describe('createBulkWorkerForm holds (UI-e1ta §3.1, §3.2)', () => {
+  /**
+   * Two ticked repos that disagree about `impl_model`, so that row observes
+   * `갈림` while the rest observe `비어 있음`. Both carry `ready`.
+   *
+   * @returns {Array<Record<string, any>>}
+   */
+  function mixedModelRows() {
+    return [
+      row({
+        root_dir: '/tmp/example/repo-a',
+        name: 'repo-a',
+        session_defaults_state: 'ready',
+        session_defaults: { impl_model: 'opus' }
+      }),
+      row({
+        root_dir: '/tmp/example/repo-b',
+        name: 'repo-b',
+        session_defaults_state: 'ready',
+        session_defaults: { impl_model: 'sol' }
+      })
+    ];
+  }
+
+  test('stops matching a preset once a row it omits goes back to its hold', () => {
+    const { host, form } = mount(mixedModelRows());
+    form.observe();
+    const settings = { impl_review_model: 'fable' };
+    form.applyPreset(settings);
+
+    choose(host, 'impl_model', '__bulk_hold__');
+
+    expect(form.equalsPreset(settings)).toBe(false);
+  });
+
+  test('keeps an untouched coupled row on its hold when another one changes', () => {
+    const { host, form } = mount(mixedModelRows());
+    form.observe();
+
+    choose(host, 'impl_effort', 'high');
+
+    const kv = form.kvValues();
+    expect(Object.hasOwn(kv, 'impl_model')).toBe(false);
+    expect(kv.impl_effort).toBe('high');
+  });
+});

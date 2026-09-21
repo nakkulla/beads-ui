@@ -1187,7 +1187,7 @@ export function createBulkPane(host, options) {
               : HOLD_LABEL[hold]}
             .value=${live(hold === null ? value : '')}
             ?disabled=${disabled}
-            @change=${(/** @type {Event} */ ev) =>
+            @input=${(/** @type {Event} */ ev) =>
               onPick(String(/** @type {HTMLInputElement} */ (ev.target).value))}
           />`
         : html`<select
@@ -1226,6 +1226,7 @@ export function createBulkPane(host, options) {
               type="button"
               class="op-btn"
               data-bulk-session-release=${row.key}
+              ?disabled=${disabled}
               @click=${() => onPick(HOLD)}
             >
               ↩ 관측으로 되돌리기
@@ -1273,6 +1274,19 @@ export function createBulkPane(host, options) {
     const hold = holdOf(key, observation);
     const hold_option = holdOptionOf(observation);
     const value = hold === null ? account_values[key] : HOLD;
+    // A stored account the catalog does not carry keeps its own option, so the
+    // select never looks like `기본값 사용` while the apply still writes the
+    // hidden value (execution-pane `accountRow` does the same).
+    const orphan_value =
+      value !== HOLD &&
+      value !== USE_DEFAULT &&
+      typeof value === 'string' &&
+      value.length > 0 &&
+      !(provider?.accounts || []).some(
+        (/** @type {any} */ entry) => entry.key === value
+      )
+        ? value
+        : null;
     /** @param {string|null} stored */
     const nameOf = (stored) => {
       if (stored === null) {
@@ -1310,6 +1324,11 @@ export function createBulkPane(host, options) {
         <option value=${USE_DEFAULT} ?selected=${value === USE_DEFAULT}>
           ${accountDefaultLabel(provider_key, provider)}
         </option>
+        ${orphan_value === null
+          ? ''
+          : html`<option value=${orphan_value} selected>
+              ${`${orphan_value} (목록에 없음)`}
+            </option>`}
         ${(provider?.accounts || []).map(
           (/** @type {any} */ row) =>
             html`<option value=${row.key} ?selected=${row.key === value}>
@@ -1338,6 +1357,37 @@ export function createBulkPane(host, options) {
     const preempt_hold = holdOf(`${runner}.preempt`, preempt_observation);
     const mode_hold_option = holdOptionOf(mode_observation);
     const preempt_hold_option = holdOptionOf(preempt_observation);
+    const catalog_keys = (provider?.accounts || []).map(
+      (/** @type {any} */ entry) => String(entry.key)
+    );
+    // Members the catalog does not carry still belong to the allow set, so they
+    // get their own checkbox and keep their place in the written order — the
+    // screen and the request say the same thing (execution-pane `limitPolicyBlock`).
+    const orphans =
+      accounts_hold === null
+        ? form.accounts.filter((key) => !catalog_keys.includes(key))
+        : [];
+    const account_order = [...catalog_keys, ...orphans];
+    /**
+     * Toggle one allow-set member. Pressing any box means the SCREEN's set is
+     * now the runner's set (ADR UI-a5l2), so a hold counts from empty.
+     *
+     * @param {string} account_key
+     * @param {boolean} checked
+     */
+    const toggleAccount = (account_key, checked) => {
+      edited.add(`${runner}.accounts`);
+      const keys = new Set(accounts_hold === null ? form.accounts : []);
+      if (checked) {
+        keys.add(account_key);
+      } else {
+        keys.delete(account_key);
+      }
+      form.accounts = [...new Set([...account_order, account_key])].filter(
+        (key) => keys.has(key)
+      );
+      doRender();
+    };
     /** @type {Array<['wait'|'switch', string]>} */
     const modes = [
       ['wait', '기다림'],
@@ -1404,27 +1454,31 @@ export function createBulkPane(host, options) {
                     accounts_hold === null && form.accounts.includes(row.key)
                   )}
                   ?disabled=${disabled}
-                  @change=${(/** @type {Event} */ ev) => {
-                    const checked = /** @type {HTMLInputElement} */ (ev.target)
-                      .checked;
-                    // 하나만 눌러도 화면의 집합 전체가 그 러너의 허용 집합이
-                    // 된다 (ADR UI-a5l2) — 갈림에서 시작하면 빈 집합에서 센다.
-                    edited.add(`${runner}.accounts`);
-                    const keys = new Set(
-                      accounts_hold === null ? form.accounts : []
-                    );
-                    if (checked) {
-                      keys.add(row.key);
-                    } else {
-                      keys.delete(row.key);
-                    }
-                    form.accounts = (provider?.accounts || [])
-                      .map((/** @type {any} */ entry) => entry.key)
-                      .filter((/** @type {string} */ key) => keys.has(key));
-                    doRender();
-                  }}
+                  @change=${(/** @type {Event} */ ev) =>
+                    toggleAccount(
+                      row.key,
+                      /** @type {HTMLInputElement} */ (ev.target).checked
+                    )}
                 />
                 ${accountRowLabel(runner, row)}
+              </label>`
+          )}
+          ${orphans.map(
+            (key) =>
+              html`<label class="settings-dialog__check">
+                <input
+                  type="checkbox"
+                  data-bulk-limit-account=${key}
+                  data-runner=${runner}
+                  .checked=${live(true)}
+                  ?disabled=${disabled}
+                  @change=${(/** @type {Event} */ ev) =>
+                    toggleAccount(
+                      key,
+                      /** @type {HTMLInputElement} */ (ev.target).checked
+                    )}
+                />
+                ${`${key} (목록에 없음)`}
               </label>`
           )}
           ${provider
