@@ -389,6 +389,58 @@ describe('worker console styles', () => {
     expect(openRule).not.toContain('text-overflow: ellipsis');
   });
 
+  /**
+   * The one rule that releases the per-chip width caps inside a chip line
+   * (UI-pw2g §3.2 gate-r1).
+   *
+   * @returns {{ selector: string, declarations: string }}
+   */
+  function chipLineReleaseRule() {
+    const match = workerBlock.match(
+      /:is\(\.worker-card, \.worker-mini, \.rtile\)\s*:is\(\.rtile__facts, \.rtile__usage, \.worker-chips, \.worker-deps\)\s*:is\(([^)]*)\)\s*{([^}]*)}/
+    );
+    return { selector: match?.[1] || '', declarations: match?.[2] || '' };
+  }
+
+  // `.worker-usage`의 nowrap, 레포 배지의 12ch, 세션 정체 칩의 18ch가 담는 줄
+  // 안에서도 글자를 먹던 자리다 (UI-pw2g §3.2 gate-r1).
+  test('releases the per-chip width caps inside a chip line', () => {
+    const { selector, declarations } = chipLineReleaseRule();
+
+    for (const chip of [
+      '.worker-usage',
+      '.worker-card__repo',
+      '.worker-mini__repo',
+      '.ctl-chip--sref'
+    ]) {
+      expect(selector).toContain(chip);
+    }
+    expect(declarations).toContain('max-width: 100%');
+    expect(declarations).toContain('white-space: normal');
+    expect(declarations).toContain('text-overflow: clip');
+    expect(declarations).toContain('overflow-wrap: anywhere');
+  });
+
+  // 완료 레인 2줄·3줄 변형은 같은 칩을 `.worker-mini__row1`~`__row3`에 직접
+  // 담으므로 해제가 번지지 않는다 (스펙 §4.3). 담는 줄 넷만 지명해야 그렇다.
+  test('scopes the chip-line release to the four chip containers', () => {
+    const scoped = workerBlock.match(
+      /:is\(\.worker-card, \.worker-mini, \.rtile\)\s*:is\(([^)]*)\)\s*:is\(\s*\.worker-usage,/
+    );
+
+    expect(scoped?.[1]).toBe(
+      '.rtile__facts, .rtile__usage, .worker-chips, .worker-deps'
+    );
+  });
+
+  // `margin-left: auto`는 그대로다 (UI-pw2g §3.2): 대기 행 `.worker-chips` 안의
+  // usage 배지는 지금 자리를 유지한다.
+  test('leaves the usage badge auto margin alone', () => {
+    const { declarations } = chipLineReleaseRule();
+
+    expect(declarations).not.toContain('margin-left');
+  });
+
   test('wraps the shared coordinate chip row in narrow lanes', () => {
     const chipsRule =
       workerBlock.match(/(?:^|\n)\.worker-chips\s*{([^}]*)}/)?.[1] || '';

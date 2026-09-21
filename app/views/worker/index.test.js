@@ -15,6 +15,7 @@ import {
   prStatusBadge,
   receiptWarningCodes
 } from './index.js';
+import { providerProbeRefusalText } from './lanes.js';
 
 /** A format-valid spec review receipt (`<reviewer>@<40-hex>`), which the
  * evidence predicate requires before a spec counts as PUBLISHED (UI-vb7u §2). */
@@ -2376,6 +2377,33 @@ describe('views/worker', () => {
       runner: 'claude',
       since: 4242
     });
+  });
+
+  // 거부 결과는 팝업 안이 아니라 토스트다 (UI-pw2g §3.4): 클릭 뒤 팝업이 닫히는
+  // 경우가 있어 팝업 안 표시는 결과를 놓친다.
+  test('toasts the refusal when the popup probe is turned away', async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValue({ ok: false, reason: 'probe_in_flight' });
+    const mount = mountProviderGated(
+      {
+        queue: [{ bead_id: 'P-1', added_at: 1 }],
+        provider_hold: CLAUDE_OUTAGE_HOLD
+      },
+      transport
+    );
+
+    mount
+      .querySelector('.worker-dep--gate')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    mount
+      .querySelector('.chip-popover .worker-mini__provider-probe')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      `지금 프로브 거부: ${providerProbeRefusalText('probe_in_flight')}`
+    );
   });
 
   test('keeps 지금 프로브 out of the waiting row operation slot', () => {

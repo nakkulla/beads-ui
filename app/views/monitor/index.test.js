@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { providerProbeRefusalText } from '../worker/lanes.js';
 import { createMonitorView } from './index.js';
 
 const NOW = 1_700_000_000_000;
@@ -3733,10 +3734,13 @@ describe('monitor 공급자 보류 출구 (UI-pw2g §3.4)', () => {
   };
 
   /**
+   * @param {((type: string, payload: any) => Promise<any>)} [transport] - The
+   * server stub behind the probe op, `undefined` for the default null reply.
    * @returns {{ mount: HTMLElement, view: any, sent: Array<{ type: string, payload: any }> }}
    */
-  function gatedRow() {
+  function gatedRow(transport) {
     const parts = setup({
+      transport,
       workspaces: [
         workspace({
           queue: [{ bead_id: 'A-1', added_at: 1 }],
@@ -3788,6 +3792,25 @@ describe('monitor 공급자 보류 출구 (UI-pw2g §3.4)', () => {
       type: 'worker-provider-probe-now',
       payload: { runner: 'claude', since: 4242, root_dir: WS_A }
     });
+  });
+
+  // 거부 결과는 팝업 안이 아니라 토스트다 (UI-pw2g §3.4) — 두 탭이 같은
+  // `providerProbeRefusalText` 문장을 쓴다.
+  test('toasts the refusal when the popup probe is turned away', async () => {
+    const { mount } = gatedRow(async () => ({
+      ok: false,
+      reason: 'hold_changed'
+    }));
+
+    click(mount, '.worker-mini[data-bead-id="A-1"] .worker-dep--gate');
+    click(mount, '.chip-popover .worker-mini__provider-probe');
+    await vi.waitFor(() =>
+      expect(document.querySelector('.toast')).not.toBeNull()
+    );
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      `지금 프로브 거부: ${providerProbeRefusalText('hold_changed')}`
+    );
   });
 
   test('keeps the probe out of the wait row operation slot', () => {

@@ -4746,6 +4746,28 @@ html[data-theme='dark'] {
   border-radius: var(--r-4);
 }
 
+/* 칩 줄 안에서는 개별 칩의 폭 한계와 말줄임을 푼다 (UI-pw2g §3.2): 담는 줄이
+   줄을 넘기는데 칩이 제자리에서 글자를 버리면 "어떤 칩도 글자를 잃지 않는다"가
+   그 칩에서만 무효가 된다. 세 칩이 자기 규칙으로 그 한계를 들고 있었다 —
+   `.worker-usage`의 `nowrap`, 레포 배지의 `12ch`, 세션 정체 칩의 `18ch`.
+
+   담는 줄로 한정하는 것이 이 규칙의 요점이다. 완료 레인 2줄·3줄 변형은 같은
+   칩을 `.worker-mini__row1`~`__row3`에 **직접** 담고 `.worker-chips` 래퍼를 쓰지
+   않으므로(스펙 §4.3이 그 변형의 밀도를 그대로 두라고 한다) 여기 걸리지 않고,
+   머리줄의 칩도 마찬가지다. `margin-left: auto`는 건드리지 않는다 — 대기 행
+   `.worker-chips` 안의 usage 배지는 지금 자리를 유지한다. 전체 값은 계속
+   `title`이 싣는다. */
+:is(.worker-card, .worker-mini, .rtile)
+  :is(.rtile__facts, .rtile__usage, .worker-chips, .worker-deps)
+  :is(.worker-usage, .worker-card__repo, .worker-mini__repo, .ctl-chip--sref) {
+  flex-shrink: 1;
+  max-width: 100%;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* 타일 안에서 rollup은 카드의 footer가 아니라 그냥 한 줄이다. */
 .rtile .worker-card__roll {
   border-top: none;
