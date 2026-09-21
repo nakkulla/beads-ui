@@ -179,63 +179,68 @@ function sentTypes(client) {
 }
 
 describe('monitor tab direct entry (UI-nprg)', () => {
-  test('opens Worker after the picker re-selects the current workspace', async () => {
-    const client = /** @type {any} */ (createWsClient());
-    client._reply('list-workspaces', {
-      workspaces: [
-        { path: '/tmp/ws-a', database: '/tmp/ws-a/.beads/a.db' },
-        { path: '/tmp/ws-b', database: '/tmp/ws-b/.beads/b.db' }
-      ],
-      current: { root_dir: '/tmp/ws-a', db_path: '/tmp/ws-a/.beads/a.db' },
-      hidden: []
-    });
-    client._reply('set-workspace', {
-      changed: false,
-      workspace: { root_dir: '/tmp/ws-a', db_path: '/tmp/ws-a/.beads/a.db' }
-    });
-    window.location.hash = '#/monitor';
-    document.body.innerHTML =
-      '<div id="workspace-picker"></div><main id="app"></main>';
-    bootstrap(/** @type {HTMLElement} */ (document.getElementById('app')));
-    await flush();
+  test.each(['monitor', 'compare', 'adr'])(
+    'opens Worker from %s after the picker switches the workspace',
+    async (view) => {
+      const client = /** @type {any} */ (createWsClient());
+      client._reply('list-workspaces', {
+        workspaces: [
+          { path: '/tmp/ws-a', database: '/tmp/ws-a/.beads/a.db' },
+          { path: '/tmp/ws-b', database: '/tmp/ws-b/.beads/b.db' }
+        ],
+        current: { root_dir: '/tmp/ws-a', db_path: '/tmp/ws-a/.beads/a.db' },
+        hidden: []
+      });
+      client._reply('set-workspace', {
+        changed: true,
+        workspace: { root_dir: '/tmp/ws-b', db_path: '/tmp/ws-b/.beads/b.db' }
+      });
+      window.location.hash = `#/${view}`;
+      document.body.innerHTML =
+        '<div id="workspace-picker"></div><main id="app"></main>';
+      bootstrap(/** @type {HTMLElement} */ (document.getElementById('app')));
+      await flush();
 
-    const select = /** @type {HTMLSelectElement} */ (
-      document.querySelector('.workspace-picker__select')
-    );
-    expect(select.value).toBe('');
-    select.value = '/tmp/ws-a';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush();
+      const select = /** @type {HTMLSelectElement} */ (
+        document.querySelector('.workspace-picker__select')
+      );
+      select.value = '/tmp/ws-b';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
 
-    expect(window.location.hash).toBe('#/worker');
-  });
+      expect(window.location.hash).toBe('#/worker');
+    }
+  );
 
-  test('stays on Monitor when the picker switch fails', async () => {
-    const client = /** @type {any} */ (createWsClient());
-    client._reply('list-workspaces', {
-      workspaces: [
-        { path: '/tmp/ws-a', database: '/tmp/ws-a/.beads/a.db' },
-        { path: '/tmp/ws-b', database: '/tmp/ws-b/.beads/b.db' }
-      ],
-      current: { root_dir: '/tmp/ws-a', db_path: '/tmp/ws-a/.beads/a.db' },
-      hidden: []
-    });
-    client._failOnce('set-workspace', new Error('switch failed'));
-    window.location.hash = '#/monitor';
-    document.body.innerHTML =
-      '<div id="workspace-picker"></div><main id="app"></main>';
-    bootstrap(/** @type {HTMLElement} */ (document.getElementById('app')));
-    await flush();
+  test.each(['monitor', 'compare', 'adr'])(
+    'stays on %s when the picker switch fails',
+    async (view) => {
+      const client = /** @type {any} */ (createWsClient());
+      client._reply('list-workspaces', {
+        workspaces: [
+          { path: '/tmp/ws-a', database: '/tmp/ws-a/.beads/a.db' },
+          { path: '/tmp/ws-b', database: '/tmp/ws-b/.beads/b.db' }
+        ],
+        current: { root_dir: '/tmp/ws-a', db_path: '/tmp/ws-a/.beads/a.db' },
+        hidden: []
+      });
+      client._failOnce('set-workspace', new Error('switch failed'));
+      window.location.hash = `#/${view}`;
+      document.body.innerHTML =
+        '<div id="workspace-picker"></div><main id="app"></main>';
+      bootstrap(/** @type {HTMLElement} */ (document.getElementById('app')));
+      await flush();
 
-    const select = /** @type {HTMLSelectElement} */ (
-      document.querySelector('.workspace-picker__select')
-    );
-    select.value = '/tmp/ws-b';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    await flush();
+      const select = /** @type {HTMLSelectElement} */ (
+        document.querySelector('.workspace-picker__select')
+      );
+      select.value = '/tmp/ws-b';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await flush();
 
-    expect(window.location.hash).toBe('#/monitor');
-  });
+      expect(window.location.hash).toBe(`#/${view}`);
+    }
+  );
 
   test('preserves a newer tab intent while a picker switch is pending', async () => {
     const client = /** @type {any} */ (createWsClient());

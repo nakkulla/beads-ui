@@ -11174,6 +11174,11 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   overflow-x: auto;
 }
 
+.adr-tablewrap--current {
+  max-height: max(24rem, calc(100dvh - var(--app-header-h) - 12rem));
+  overflow: auto;
+}
+
 .adr-table {
   width: 100%;
   border-collapse: collapse;
@@ -11187,6 +11192,13 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   font-weight: 400;
   text-align: left;
   white-space: nowrap;
+}
+
+.adr-table--current thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-panel);
 }
 
 .adr-table td {
@@ -11203,16 +11215,45 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   color: var(--text-muted);
 }
 
-.adr-summary {
-  min-width: 18rem;
+.adr-table--current tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--bg-card) 52%, transparent);
+}
+
+.adr-table--current tbody tr:hover {
+  background: color-mix(in srgb, var(--bg-card) 82%, var(--bg-panel));
+}
+
+.adr-title {
+  min-width: 22rem;
+}
+
+.adr-title__top {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.adr-title__summary {
+  display: block;
+  max-width: 42rem;
+  margin-top: var(--sp-2);
+  overflow: hidden;
   color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adr-spec {
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .adr-signals {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-3);
-  border-bottom: none;
+  gap: var(--sp-2);
 }
 
 .adr-doc--plain {
