@@ -1,12 +1,13 @@
 ---
 id: UI-3pu9
 title: 자동 진행 꺼짐은 대기 카드·요약에 표시하지 않고 저장소 자동화 토글만 말한다
-status: accepted
+status: superseded
 date: 2026-09-17
 summary: '자동 진행 꺼짐은 대기 카드·요약에 표시하지 않고 저장소 자동화 토글만 말한다 — 서버는 auto_advance_off 사유를 내지 않고, 자동 진행이 꺼진 저장소의 대기 행에는 유예 칩과 유예·자동 진행 꺼짐으로 서는 [지금 시작]이 없으며 공급자 보류·큐 정지 게이트의 [지금 시작]은 남는다'
 supersedes: ["UI-8gem", "UI-cmx3", "UI-cmx3-2"]
 spec: docs/superpowers/specs/2026-09-16-auto-advance-off-quiet-cards-design.md
 bead: UI-3pu9
+superseded_by: UI-z437
 ---
 
 # 자동 진행 꺼짐은 대기 카드·요약에 표시하지 않고 저장소 자동화 토글만 말한다

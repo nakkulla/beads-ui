@@ -178,6 +178,98 @@ describe('worker/admission fail-closed validator', () => {
     }
   });
 
+  test.each([
+    'w-012345abcdef',
+    'malformed',
+    '',
+    '   ',
+    null,
+    undefined,
+    0,
+    false,
+    {}
+  ])(
+    'rejects an external_wait key before probes regardless of value %j',
+    async (value) => {
+      const gitRun = makeGitRun();
+      const ghAvailable = vi.fn(async () => true);
+
+      const result = await validateAdmission({
+        gitRun,
+        ghAvailable,
+        repo: '/repo',
+        base: BASE,
+        bead: { ...makeBead(), external_wait: value }
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'external_wait' });
+      expect(ghAvailable).not.toHaveBeenCalled();
+      expect(gitRun).not.toHaveBeenCalled();
+    }
+  );
+
+  test('admits an external wait when the caller explicitly allows resume', async () => {
+    const gitRun = makeGitRun();
+
+    const result = await validateAdmission({
+      gitRun,
+      repo: '/repo',
+      base: BASE,
+      bead: { ...makeBead(), external_wait: 'w-012345abcdef' },
+      allow_external_wait_resume: true
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(gitRun).toHaveBeenCalled();
+  });
+
+  test.each([false, undefined, 'true', 1])(
+    'requires literal true to bypass an external wait %j',
+    async (option) => {
+      const result = await validateAdmission({
+        gitRun: makeGitRun(),
+        repo: '/repo',
+        base: BASE,
+        bead: { ...makeBead(), external_wait: 'w-012345abcdef' },
+        allow_external_wait_resume: /** @type {any} */ (option)
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'external_wait' });
+    }
+  );
+
+  test('keeps awaiting_user refusal when external wait resume is allowed', async () => {
+    const gitRun = makeGitRun();
+
+    const result = await validateAdmission({
+      gitRun,
+      repo: '/repo',
+      base: BASE,
+      bead: {
+        ...makeBead(),
+        external_wait: 'w-012345abcdef',
+        awaiting_user: ''
+      },
+      allow_external_wait_resume: true
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'awaiting_user' });
+    expect(gitRun).not.toHaveBeenCalled();
+  });
+
+  test('keeps environment refusal when external wait resume is allowed', async () => {
+    const result = await validateAdmission({
+      gitRun: makeGitRun(),
+      ghAvailable: async () => false,
+      repo: '/repo',
+      base: BASE,
+      bead: { ...makeBead(), external_wait: 'w-012345abcdef' },
+      allow_external_wait_resume: true
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'gh_unavailable' });
+  });
+
   test('admits a bead that carries no awaiting_user key', async () => {
     const bead = makeBead();
 

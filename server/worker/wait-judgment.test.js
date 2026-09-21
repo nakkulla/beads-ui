@@ -1,10 +1,6 @@
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { isExternalWaitObservation } from '../../app/protocol.js';
-import {
-  WAIT_JUDGE_INTERVAL_SECONDS,
-  createWaitJudge,
-  createWaitObservationCollector
-} from './attach.js';
+import { createWaitJudge, projectExternalWait } from './attach.js';
 import {
   WAIT_THRESHOLDS,
   externalJobHeadline,
@@ -181,22 +177,37 @@ function queue(overrides = {}) {
   };
 }
 
-/** @param {Record<string, any>} [overrides] */
-function external(overrides = {}) {
+/**
+ * @param {Record<string, any>} [patch]
+ * @returns {any}
+ */
+function external(patch = {}) {
   return {
-    root_dir: ROOT,
-    gate_id: 'UI-gate',
-    consumer_id: 'UI-consumer',
-    consumer_title: '계산',
-    watch_id: 'watch',
-    ssh_host: 'wallace',
-    job_id: '246428',
-    job_state: '계산 중',
-    stage: 'active',
-    gate_open: true,
-    last_observed_at: NOW - MINUTE,
-    next_observation_at: NOW + MINUTE,
-    ...overrides
+    wait_id: 'w-0123456789ab',
+    root_dir: '/repo',
+    bead_id: 'UI-consumer',
+    owner_kind: 'worker',
+    stage: 'hold',
+    budget: { turns_total: 3, turns_used: 3 },
+    registered_at: new Date(NOW - 192 * MINUTE).toISOString(),
+    next_observation_at: new Date(NOW + MINUTE).toISOString(),
+    error_count: 0,
+    last_error: null,
+    jobs: [
+      {
+        adapter: 'slurm',
+        ssh_host: 'wallace',
+        job_id: '42',
+        submitted_at: new Date(NOW - 192 * MINUTE).toISOString(),
+        log_path: '/logs/job.log',
+        state: 'RUNNING',
+        observed_at: '2026-09-21T03:12:00Z',
+        terminal: null
+      }
+    ],
+    completion: null,
+    resume: null,
+    ...patch
   };
 }
 
@@ -426,119 +437,127 @@ describe('recovery wait judgment', () => {
 });
 
 describe('wait judgment external work', () => {
-  test('builds the external headline and release from observed facts', () => {
+  test('projects the consumer headline without dependency targets', () => {
+    const result = run({ external_waits: [external()] }).wait_reasons[0];
+
+    expect(result).toMatchObject({
+      subject: { bead_id: 'UI-consumer', root_dir: ROOT },
+      headline: 'wallace 작업 42 · RUNNING · 경과 3h12m',
+      release: '완료되면 같은 세션을 이어간다',
+      verdict: 'normal',
+      targets: []
+    });
+    expect(result.actions.map((action) => action.op)).toEqual([
+      'external_wait_check',
+      'external_wait_stop'
+    ]);
+  });
+
+  test.each([
+    [240000, 'normal'],
+    [240001, 'overdue']
+  ])('judges two Slurm intervals at %i ms', (age, verdict) => {
     const result = run({
-      external_waits: [external({ interval_seconds: 900 })]
+      external_waits: [
+        external({
+          next_observation_at: new Date(NOW - Number(age)).toISOString()
+        })
+      ]
     });
 
-    expect(result.wait_reasons[0]).toMatchObject({
-      kind: 'external_job',
-      headline: 'wallace 작업 246428 · 계산 중',
-      release: '15분마다 자동 확인 · 종료 확인되면 대기 자동 해제',
-      verdict: 'normal',
-      targets: [{ id: 'UI-gate', kind: 'gate' }]
+    expect(result.wait_reasons[0].verdict).toBe(verdict);
+  });
+
+  test('marks three observation errors overdue and preserves the error line', () => {
+    const result = run({
+      external_waits: [external({ error_count: 3, last_error: 'ssh failed' })]
+    }).wait_reasons[0];
+
+    expect(result).toMatchObject({
+      verdict: 'overdue',
+      error: '관찰 오류 3회 · ssh failed'
     });
   });
 
   test.each([
-    ['discord', true],
-    ['none', false],
-    [undefined, false],
-    ['email', false]
+    ['session', null, ['external_wait_stop', 'external_wait_resume']],
+    ['worker', null, ['external_wait_stop']],
+    [
+      'worker',
+      { error: 'no_session_ref' },
+      ['external_wait_stop', 'external_wait_resume', 'external_wait_resume']
+    ],
+    ['session', { error: null, attempt_id: 'reserved' }, ['external_wait_stop']]
   ])(
-    'limits the Discord fragment to supported notify value %s',
-    (value, visible) => {
-      const row = external(
-        value === undefined ? {} : { notify: { on_complete: value } }
+    'offers stage-aware completion actions for %s (%j)',
+    (owner_kind, resume, actions) => {
+      const result = run({
+        external_waits: [
+          external({
+            owner_kind,
+            resume,
+            stage: 'completing',
+            completion: { completed_at: new Date(NOW).toISOString() }
+          })
+        ],
+        blocker_facts: { 'UI-consumer': { external_wait: 'w-0123456789ab' } }
+      }).wait_reasons[0];
+
+      expect(result.actions.map((action) => action.op)).toEqual(actions);
+      expect(result.completed_at).toBe(NOW);
+      expect(result.next_check_at).toBeUndefined();
+      expect(result.notify_plan.on_complete).toBe(
+        owner_kind === 'session' ? 'discord' : 'none'
       );
-
-      const result = run({ external_waits: [row] }).wait_reasons[0];
-
-      expect(result.release.includes('완료 시 Discord 알림')).toBe(visible);
+      if (resume?.error) {
+        expect(result.verdict_reason?.message).toBe(
+          '재개 실패 · no_session_ref'
+        );
+        expect(
+          result.actions.slice(1).map((action) => action.payload.mode)
+        ).toEqual(['fork', 'fresh']);
+      }
     }
   );
 
-  test.each([
-    ['check_overdue', 15 * MINUTE - 1, 'normal'],
-    ['check_overdue', 15 * MINUTE, 'overdue'],
-    ['settle_overdue', 30 * MINUTE - 1, 'normal'],
-    ['settle_overdue', 30 * MINUTE, 'overdue']
-  ])('checks %s at age %i', (code, age, verdict) => {
-    const row =
-      code === 'check_overdue'
-        ? external({ next_observation_at: NOW - Number(age) })
-        : external({
-            stage: 'terminal_recorded',
-            last_observed_at: NOW - Number(age)
-          });
-
-    const result = run({ external_waits: [row] }).wait_reasons[0];
-
-    expect(result).toMatchObject({
-      verdict,
-      ...(verdict === 'overdue' ? { verdict_reason: { code } } : {})
-    });
-  });
-
-  test('overwrites the external wait start once settlement begins', () => {
-    const terminal_recorded_at = NOW - 5 * MINUTE;
-    const row = external({ stage: 'terminal_recorded', terminal_recorded_at });
-
-    const result = run({ external_waits: [row] }).wait_reasons[0];
-
-    expect(result.since).toBe(terminal_recorded_at);
-  });
-
-  test('uses the watch interval for the settlement threshold', () => {
-    const row = external({
-      stage: 'gate_noted',
-      interval_seconds: 300,
-      last_observed_at: NOW - 10 * MINUTE
-    });
-
-    const result = run({ external_waits: [row] }).wait_reasons[0];
-
-    expect(result.verdict_reason?.code).toBe('settle_overdue');
-  });
-
-  test.each([
-    [{ recovery_needed: true }, 'job_failed'],
-    [{ error_count: 3 }, 'observe_failing'],
-    [{ stage: 'stopped' }, 'monitor_stopped'],
-    [{ service_down: true }, 'service_down']
-  ])('prioritizes the confirmed action reason %j', (fields, code) => {
-    const row = external({ next_observation_at: NOW - 30 * MINUTE, ...fields });
-
-    const result = run({ external_waits: [row] }).wait_reasons[0];
+  test('fails closed when the detached record has no metadata key', () => {
+    const result = run({ external_waits: [external({ stage: 'detached' })] })
+      .wait_reasons[0];
 
     expect(result).toMatchObject({
       verdict: 'action_required',
-      verdict_reason: { code, message: expect.any(String) }
+      verdict_reason: { message: '키 없음' }
     });
   });
 
-  test('keeps two observation errors below the action threshold', () => {
-    const result = run({ external_waits: [external({ error_count: 2 })] });
+  test('fails closed when the metadata key has no record', () => {
+    const result = run({
+      blocker_facts: { 'UI-consumer': { external_wait: 'w-0123456789ab' } }
+    }).wait_reasons[0];
 
-    expect(result.wait_reasons[0].verdict).toBe('normal');
+    expect(result).toMatchObject({
+      verdict: 'action_required',
+      verdict_reason: { message: '대기 레코드 없음' }
+    });
+    expect(result.actions[0].op).toBe('external_wait_stop');
   });
 
-  test('emits only one reason per gate', () => {
-    const result = run({ external_waits: [external(), external()] });
+  test.each(['done', 'resumed', 'stopped'])(
+    'omits terminal records at %s',
+    (stage) => {
+      const result = run({ external_waits: [external({ stage })] });
 
-    expect(result.wait_reasons).toHaveLength(1);
-  });
+      expect(result.wait_reasons).toEqual([]);
+    }
+  );
 
-  test.each([
-    { stage: 'complete', gate_open: false },
-    { root_dir: '/other' },
-    { consumer_id: null },
-    { watch_id: null },
-    { watch_id: undefined }
-  ])('omits a gate without an active local wait %j', (fields) => {
-    const result = run({ external_waits: [external(fields)] });
+  test('summarizes multiple jobs by terminal count', () => {
+    const jobs = [
+      external().jobs[0],
+      { ...external().jobs[0], terminal: { exit_code: 0 } }
+    ];
 
-    expect(result.wait_reasons).toEqual([]);
+    expect(externalJobHeadline({ jobs }, NOW)).toBe('잡 2건 · 완료 1 · 실행 1');
   });
 });
 
@@ -1032,236 +1051,42 @@ describe('wait judgment holds and manual waits', () => {
 });
 
 describe('wait-judge runtime', () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  /** @param {Record<string, any>} [overrides] */
-  function runtime(overrides = {}) {
-    const material = queue();
-    const collect = vi.fn(async () => []);
+  test('projects changed records before broadcasting the judgment', async () => {
+    const record = {
+      ...external(),
+      owner: { kind: 'worker', attempt_id: 'a' },
+      worktree: '/repo/tree',
+      execution_sha: 'a'.repeat(40)
+    };
     const onChanged = vi.fn();
-    /** @type {(workspace: string) => void} */
-    let listener = () => {};
-    const instance = createWaitJudge({
+    const judge = createWaitJudge({
       workspace: ROOT,
       repo: ROOT,
       store: /** @type {any} */ ({
-        snapshot: () => material,
-        claimWaitNotifications: () => [],
-        recordTimelineEvent: vi.fn()
+        snapshot: () => queue(),
+        claimWaitNotifications: () => []
       }),
       notifier: /** @type {any} */ ({}),
-      now: () => NOW,
-      collector: {
-        collect,
-        get: () => ({ rows: [], collected_at: NOW, stale: false }),
-        clear: () => {}
-      },
+      listRecords: () => [record],
       requestSnapshot: /** @type {any} */ (
         async () => ({ ok: true, snapshot: {} })
       ),
       readFacts: async () => ({}),
       onChanged,
-      subscribe: (callback) => {
-        listener = callback;
-        return () => {};
-      },
-      ...overrides
-    });
-    return {
-      instance,
-      collect,
-      material,
-      onChanged,
-      emit: () => listener(ROOT)
-    };
-  }
-
-  test('collects at startup and every five minutes without viewers', async () => {
-    vi.useFakeTimers();
-    const harness = runtime();
-
-    harness.instance.start();
-    await harness.instance.refresh();
-    await vi.advanceTimersByTimeAsync(WAIT_JUDGE_INTERVAL_SECONDS * 1000);
-    harness.instance.stop();
-
-    expect(harness.collect).toHaveBeenCalledTimes(2);
-  });
-
-  test.each(['provider_hold', 'hold', 'auto_advance'])(
-    'refreshes immediately after %s changes',
-    async (field) => {
-      const harness = runtime();
-      harness.instance.start();
-      await harness.instance.refresh();
-
-      harness.material[field] =
-        field === 'auto_advance' ? false : { since: NOW };
-      harness.emit();
-      await harness.instance.refresh();
-      harness.instance.stop();
-
-      expect(harness.collect).toHaveBeenCalledTimes(2);
-    }
-  );
-
-  test('joins a concurrent manual refresh to the active collection', async () => {
-    const harness = runtime();
-
-    const first = harness.instance.refresh();
-    const second = harness.instance.refresh();
-    await first;
-
-    expect(second).toBe(first);
-    expect(harness.collect).toHaveBeenCalledTimes(1);
-  });
-
-  test('does not recursively collect after its own fanout', async () => {
-    const harness = runtime();
-    harness.instance.start();
-    await harness.instance.refresh();
-
-    harness.emit();
-    harness.instance.stop();
-
-    expect(harness.collect).toHaveBeenCalledTimes(1);
-  });
-
-  test('caches the external rows and judgment together before fanout', async () => {
-    const harness = runtime({
-      collector: {
-        collect: async () => [],
-        clear: () => {},
-        get: () => ({ rows: [external()], collected_at: NOW, stale: false })
-      }
+      now: () => NOW
     });
 
-    await harness.instance.refresh();
+    await judge.refresh();
+    record.error_count = 3;
+    record.last_error = 'ssh failed';
+    await judge.refresh();
 
-    expect(harness.instance.get()).toMatchObject({
-      external_waits: [{ gate_id: 'UI-gate' }],
-      wait_reasons: [{ kind: 'external_job' }]
-    });
-    expect(harness.onChanged).toHaveBeenCalledWith(ROOT);
+    expect(judge.get().wait_reasons[0].verdict).toBe('overdue');
+    expect(onChanged).toHaveBeenCalledTimes(2);
+    expect(isExternalWaitObservation(projectExternalWait(record))).toBe(true);
+    expect(projectExternalWait(record)).not.toHaveProperty('worktree');
+    judge.stop();
   });
-
-  test('fixes the default settlement threshold at thirty minutes', () => {
-    expect(WAIT_THRESHOLDS.interval_ms * WAIT_THRESHOLDS.settle_cycles).toBe(
-      30 * MINUTE
-    );
-  });
-
-  test.each([
-    {
-      notify: { on_complete: 'discord' },
-      error_count: 3,
-      interval_seconds: 300,
-      terminal_recorded_at: '2026-09-15T00:10:00Z'
-    },
-    {
-      notify: null,
-      error_count: 0,
-      interval_seconds: 900,
-      terminal_recorded_at: null
-    }
-  ])(
-    'transmits a collected ISO watch through client validation %j',
-    async (fields) => {
-      const watch_id = 'a'.repeat(24);
-      const gate = {
-        id: 'UI-gate',
-        issue_type: 'gate',
-        status: 'open',
-        await_id: watch_id,
-        await_type: 'human'
-      };
-      const consumer = {
-        id: 'UI-consumer',
-        title: '계산',
-        status: 'in_progress'
-      };
-      const readFile = vi.fn(async () =>
-        JSON.stringify({
-          schema: 'external-job-monitor-v1',
-          watch_id,
-          repo: ROOT,
-          gate_id: gate.id,
-          consumer: consumer.id,
-          job_id: '42',
-          stage: 'active',
-          observation_state: 'RUNNING',
-          last_observed_at: NOW,
-          next_observation_at: NOW + MINUTE,
-          registered_at: '2026-09-14T19:14:06Z',
-          ssh_host: 'wallace',
-          ...fields
-        })
-      );
-      const collector = createWaitObservationCollector({
-        state_root: '/state',
-        now: () => NOW,
-        fs: { readdir: async () => [`${watch_id}.json`], readFile },
-        run: async (file) => ({
-          stdout:
-            file === 'git'
-              ? '/repo/.git'
-              : JSON.stringify({
-                  ok: true,
-                  schema: 'external-job-monitor-service-v1',
-                  loaded: true,
-                  command_matches: true,
-                  loaded_matches_plist: true,
-                  executable_exists: true
-                })
-        })
-      });
-
-      await collector.collect([
-        {
-          root_dir: ROOT,
-          name: 'repo',
-          snapshot: {
-            all: [gate, consumer],
-            id_index: new Map(
-              /** @type {Array<[string, any]>} */ ([
-                [gate.id, gate],
-                [consumer.id, consumer]
-              ])
-            ),
-            blocks_in: new Map([[gate.id, [consumer.id]]])
-          }
-        }
-      ]);
-      const transmitted = JSON.parse(JSON.stringify(collector.get().rows));
-      const accepted = transmitted.filter(isExternalWaitObservation);
-      const result = run({ external_waits: accepted }).wait_reasons[0];
-
-      expect(readFile).toHaveBeenCalledTimes(1);
-      expect(accepted).toHaveLength(1);
-      expect(accepted[0]).toMatchObject({
-        registered_at: Date.parse('2026-09-14T19:14:06Z'),
-        terminal_recorded_at:
-          fields.terminal_recorded_at === null
-            ? null
-            : Date.parse(fields.terminal_recorded_at),
-        interval_seconds: fields.interval_seconds,
-        ssh_host: 'wallace',
-        error_count: fields.error_count
-      });
-      expect(result).toMatchObject({
-        verdict: fields.error_count === 3 ? 'action_required' : 'normal',
-        release: `${fields.interval_seconds / 60}분마다 자동 확인 · 종료 확인되면 대기 자동 해제${fields.notify ? ' · 완료 시 Discord 알림' : ''}`,
-        actions: [
-          {
-            op: 'monitor_tick_now',
-            payload: { root_dir: ROOT, watch_id, since: NOW }
-          }
-        ]
-      });
-    }
-  );
 });
 
 describe('wait judgment prerequisite headline (UI-0bvr §4.2)', () => {
@@ -1304,36 +1129,6 @@ describe('wait judgment prerequisite headline (UI-0bvr §4.2)', () => {
     });
 
     expect(result.wait_reasons).toEqual([]);
-  });
-});
-
-describe('externalJobHeadline', () => {
-  test('prefers the monitor reason over the monitor state', () => {
-    const row = external({
-      job_state: '종료 확인 · 결과 검증 필요',
-      monitor_state: '감시 확인 필요',
-      monitor_reason: '자동 확인 3회 연속 실패',
-      ssh_host: 'hamilton',
-      job_id: '803565'
-    });
-
-    expect(externalJobHeadline(row)).toBe(
-      'hamilton 작업 803565 · 종료 확인 · 결과 검증 필요 · 자동 확인 3회 연속 실패'
-    );
-  });
-
-  test('falls back to the monitor state when no reason is recorded', () => {
-    const row = external({ monitor_state: '감시 종료', monitor_reason: null });
-
-    expect(externalJobHeadline(row)).toBe(
-      'wallace 작업 246428 · 계산 중 · 감시 종료'
-    );
-  });
-
-  test('drops the idle monitor state', () => {
-    const row = external({ monitor_state: '자동 확인 중' });
-
-    expect(externalJobHeadline(row)).toBe('wallace 작업 246428 · 계산 중');
   });
 });
 

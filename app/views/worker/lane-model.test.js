@@ -225,32 +225,35 @@ function runnable(id, patch = {}) {
 }
 
 /**
- * @param {Partial<Record<string, any>>} [patch]
- * @returns {Record<string, any>}
+ * @param {Record<string, any>} [patch]
+ * @returns {any}
  */
 function externalWait(patch = {}) {
   return {
-    kind: 'external_wait',
+    wait_id: 'w-0123456789ab',
     root_dir: WS_A,
-    workspace_name: 'repo-a',
-    gate_id: 'A-gate',
-    gate_title: 'external job',
-    consumer_id: 'A-1',
-    consumer_title: 'consumer',
-    watch_id: 'a'.repeat(24),
-    job_id: '42',
-    stage: 'active',
-    gate_open: true,
-    recent_complete: false,
-    job_state: '실행 대기',
-    previous_job_state: null,
-    monitor_state: '자동 확인 중',
-    monitor_reason: null,
-    overdue: false,
-    last_observed_at: 1,
-    next_observation_at: 2,
-    completed_at: null,
-    recovery_needed: false,
+    bead_id: 'A-1',
+    owner_kind: 'worker',
+    stage: 'detached',
+    budget: { turns_total: 3, turns_used: 3 },
+    registered_at: '2026-09-21T00:00:00Z',
+    next_observation_at: '2026-09-21T03:14:00Z',
+    error_count: 0,
+    last_error: null,
+    jobs: [
+      {
+        adapter: 'slurm',
+        ssh_host: 'wallace',
+        job_id: '42',
+        submitted_at: '2026-09-21T00:00:00Z',
+        log_path: '/logs/job.log',
+        state: 'RUNNING',
+        observed_at: '2026-09-21T03:12:00Z',
+        terminal: null
+      }
+    ],
+    completion: null,
+    resume: null,
     ...patch
   };
 }
@@ -319,163 +322,59 @@ describe('monitor lane exclusive priority (UI-qrfo §8)', () => {
 });
 
 describe('external wait projection', () => {
-  test('keeps external waits outside worker lanes and decorates the consumer', () => {
+  test('attaches the record to the consumer candidate without adding a lane', () => {
+    const record = externalWait();
     const lanes = buildLanes(
       [
         workspace({
           runnable: [{ bead_id: 'A-1', title: 'consumer', admitted: true }],
-          external_waits: [
-            {
-              kind: 'external_wait',
-              root_dir: WS_A,
-              workspace_name: 'repo-a',
-              gate_id: 'A-gate',
-              gate_title: 'external job',
-              consumer_id: 'A-1',
-              consumer_title: 'consumer',
-              watch_id: 'a'.repeat(24),
-              job_id: '42',
-              stage: 'active',
-              gate_open: true,
-              recent_complete: false,
-              job_state: '실행 대기',
-              previous_job_state: null,
-              monitor_state: '자동 확인 중',
-              monitor_reason: null,
-              overdue: false,
-              last_observed_at: 1,
-              next_observation_at: 2,
-              completed_at: null,
-              recovery_needed: false
-            }
-          ]
+          external_waits: [record]
         })
       ],
       [state()]
     );
 
-    expect(lanes.external_waits).toEqual([
-      expect.objectContaining({ id: 'A-gate', lane: 'external_wait' })
-    ]);
+    expect(lanes.runnable[0].external_wait).toEqual(record);
     expect(lanes.queue).toHaveLength(0);
-    expect(lanes.running).toHaveLength(0);
-    expect(lanes.runnable[0]).toMatchObject({
-      external_wait_count: 1,
-      external_waits: [expect.objectContaining({ gate_id: 'A-gate' })]
-    });
+    expect(lanes).not.toHaveProperty('external_waits');
+    expect(lanes.runnable[0].dependency_chips?.predecessors || []).toEqual([]);
   });
 
-  test('does not decorate a consumer from an unverified native gate', () => {
+  test.each(['done', 'stopped', 'resumed'])(
+    'omits terminal records at %s',
+    (stage) => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            runnable: [{ bead_id: 'A-1', title: 'consumer', admitted: true }],
+            external_waits: [externalWait({ stage })]
+          })
+        ],
+        [state()]
+      );
+
+      expect(lanes.runnable[0].external_wait).toBeUndefined();
+    }
+  );
+
+  test('keeps equal Bead identifiers isolated by workspace', () => {
     const lanes = buildLanes(
       [
         workspace({
-          runnable: [{ bead_id: 'A-1', title: 'consumer', admitted: true }],
-          external_waits: [
-            {
-              kind: 'external_wait',
-              root_dir: WS_A,
-              workspace_name: 'repo-a',
-              gate_id: 'A-gate',
-              gate_title: 'native gate',
-              consumer_id: 'A-1',
-              consumer_title: 'consumer',
-              watch_id: null,
-              job_id: null,
-              stage: null,
-              gate_open: true,
-              recent_complete: false,
-              job_state: '대기 조건',
-              previous_job_state: null,
-              monitor_state: '감시 정보 없음',
-              monitor_reason: null,
-              overdue: false,
-              last_observed_at: null,
-              next_observation_at: null,
-              completed_at: null,
-              recovery_needed: false
-            }
-          ]
-        })
-      ],
-      [state()]
-    );
-
-    expect(lanes.runnable[0].external_wait_count).toBeUndefined();
-  });
-
-  test('sorts unified external waits independently of workspace registration order', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          root_dir: '/repo-z',
-          name: 'z-repo',
-          external_waits: [
-            externalWait({
-              root_dir: '/repo-z',
-              workspace_name: 'z-repo',
-              gate_id: 'Z-gate',
-              consumer_id: 'Z-consumer'
-            })
-          ]
+          queue: [{ bead_id: 'A-1' }],
+          external_waits: [externalWait()]
         }),
-        workspace({
-          root_dir: '/repo-a',
-          name: 'a-repo',
-          external_waits: [
-            externalWait({
-              root_dir: '/repo-a',
-              workspace_name: 'a-repo',
-              gate_id: 'A-gate-0',
-              consumer_id: 'A-consumer-a',
-              watch_id: 'b'.repeat(24)
-            }),
-            externalWait({
-              root_dir: '/repo-a',
-              workspace_name: 'a-repo',
-              gate_id: 'A-gate-2',
-              consumer_id: 'A-consumer-z'
-            }),
-            externalWait({
-              root_dir: '/repo-a',
-              workspace_name: 'a-repo',
-              gate_id: 'A-gate-1',
-              consumer_id: 'A-consumer-a'
-            })
-          ]
-        })
+        workspace({ root_dir: WS_B, queue: [{ bead_id: 'A-1' }] })
       ],
-      []
+      [state(), state({ root_dir: WS_B })]
     );
 
-    expect(lanes.external_waits.map((row) => row.gate_id)).toEqual([
-      'A-gate-0',
-      'A-gate-1',
-      'A-gate-2',
-      'Z-gate'
-    ]);
-  });
-
-  test('compares the whole workspace name before consumer and gate keys', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          root_dir: '/repo-aa',
-          name: 'aa',
-          external_waits: [externalWait({ consumer_id: 'a', gate_id: 'a' })]
-        }),
-        workspace({
-          root_dir: '/repo-a',
-          name: 'a',
-          external_waits: [externalWait({ consumer_id: 'z', gate_id: 'z' })]
-        })
-      ],
-      []
-    );
-
-    expect(lanes.external_waits.map((row) => row.workspace_name)).toEqual([
-      'a',
-      'aa'
-    ]);
+    expect(
+      lanes.queue.find((item) => item.root_dir === WS_A)?.external_wait
+    ).toBeDefined();
+    expect(
+      lanes.queue.find((item) => item.root_dir === WS_B)?.external_wait
+    ).toBeUndefined();
   });
 });
 

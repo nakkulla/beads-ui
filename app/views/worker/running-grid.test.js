@@ -822,27 +822,64 @@ function discardInput() {
 }
 
 describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', () => {
-  test('renders a verified external wait summary for a running consumer', () => {
+  /**
+   * @param {Record<string, any>} [patch]
+   * @returns {any}
+   */
+  function externalWait(patch = {}) {
+    return {
+      wait_id: 'w-0123456789ab',
+      root_dir: '/repo',
+      bead_id: 'A-1',
+      owner_kind: 'worker',
+      stage: 'detached',
+      budget: { turns_total: 3, turns_used: 3 },
+      registered_at: '2026-09-21T00:00:00Z',
+      next_observation_at: '2026-09-21T03:14:00Z',
+      error_count: 0,
+      last_error: null,
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '42',
+          submitted_at: '2026-09-21T00:00:00Z',
+          log_path: '/logs/job.log',
+          state: 'RUNNING',
+          observed_at: '2026-09-21T03:12:00Z',
+          terminal: null
+        }
+      ],
+      completion: null,
+      resume: null,
+      ...patch
+    };
+  }
+
+  test('renders external wait identity and coordinates on a running consumer', () => {
     const tile = shape(
       runningTile(
         tileInput({
-          external_wait_count: 1,
-          external_waits: [
+          external_wait: externalWait(),
+          wait_reasons: /** @type {any} */ ([
             {
-              gate_id: 'Analysis-ph3a',
-              root_dir: '/repo',
-              job_state: '계산 중',
-              monitor_state: '자동 확인 중'
+              kind: 'external_job',
+              headline: 'wallace 작업 42 · RUNNING',
+              release: '완료되면 같은 세션을 이어간다',
+              verdict: 'normal',
+              actions: [],
+              targets: []
             }
-          ]
+          ])
         }),
-        5000,
+        Date.parse('2026-09-21T03:12:00Z'),
         null
       )
     );
 
-    expect(tile).toContain('external-wait-summary');
-    expect(tile).toContain('⏳ 외부 계산 1건');
+    expect(tile).toContain('⏳ 외부 작업');
+    expect(tile).toContain('ssh wallace');
+    expect(tile).toContain('경과 3h12m');
   });
 
   test('renders no repo badge, stepper, activity or delegation line', () => {
@@ -920,49 +957,6 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
     );
     expect(tile.querySelector('.rtile__hd .rtile__repo')).toBeNull();
     expect(tile.querySelector('.rtile__hd .rtile__lane')).toBeNull();
-  });
-
-  test('keeps external waits in the upper dependency row above released and overlap chips', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    render(
-      runningTile(
-        tileInput({
-          external_wait_count: 1,
-          external_waits: [
-            {
-              gate_id: 'Analysis-ph3a',
-              root_dir: '/repo',
-              job_state: '계산 중',
-              monitor_state: '자동 확인 중'
-            }
-          ]
-        }),
-        5000,
-        null,
-        {
-          monitor: /** @type {any} */ ({
-            ...monitor,
-            dependency_chips: {
-              released: [{ id: 'UI-r1', label: '🔓 UI-r1' }],
-              overlaps: monitor.dependency_chips.overlaps
-            }
-          })
-        }
-      ),
-      mount
-    );
-    const primary = mount.querySelector('.worker-deps--primary');
-    const secondary = mount.querySelector('.worker-deps--secondary');
-
-    expect(primary?.querySelector('.external-wait-summary')).not.toBeNull();
-    expect(secondary?.textContent).toContain('🔓 UI-r1');
-    expect(secondary?.querySelector('.worker-dep--overlap')).not.toBeNull();
-    expect(
-      primary && secondary
-        ? primary.compareDocumentPosition(secondary) &
-            Node.DOCUMENT_POSITION_FOLLOWING
-        : 0
-    ).not.toBe(0);
   });
 
   test('draws blocked, 겹침 and scope 없음 chips on the tile (UI-anna §5.3)', () => {

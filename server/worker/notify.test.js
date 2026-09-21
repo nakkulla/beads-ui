@@ -4,7 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { createBeadTimeline } from './bead-timeline.js';
-import { createNotifier, notifyWaitReasons } from './notify.js';
+import {
+  createNotifier,
+  notifyExternalWaitCompleted,
+  notifyWaitReasons
+} from './notify.js';
 import { createQueueStore } from './queue-store.js';
 import { judgeWaitReasons } from './wait-judgment.js';
 
@@ -92,6 +96,43 @@ describe('wait notification suppression', () => {
     await notifyWaitReasons({ ...input, now: 2000 });
 
     expect(spawn.calls).toHaveLength(1);
+  });
+
+  test('notifies external completion once across overdue scans and reload', async () => {
+    const { input, store, spawn, recordTimelineEvent } = fixture();
+    const record = /** @type {any} */ ({
+      wait_id: 'w-0123456789ab',
+      bead_id: 'B1',
+      jobs: [{ adapter: 'process', pid: 1234, state: 'COMPLETED' }]
+    });
+    const completion = {
+      workspace: '/repo',
+      repo: '/repo',
+      record,
+      store,
+      notifier: makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl }),
+      now: 1000
+    };
+
+    await notifyExternalWaitCompleted(completion);
+    await notifyWaitReasons({ ...input, wait_reasons: [] });
+    await notifyExternalWaitCompleted({
+      ...completion,
+      store: createQueueStore()
+    });
+
+    expect(spawn.calls).toHaveLength(1);
+    expect(spawn.calls[0].args.join(' ')).toContain(
+      '✅ 외부 작업 완료 · B1 · 1234 COMPLETED'
+    );
+    expect(recordTimelineEvent).toHaveBeenCalledWith(
+      '/repo',
+      expect.objectContaining({
+        bead_id: 'B1',
+        kind: 'wait_notified',
+        seq: 'external_wait:w-0123456789ab:complete'
+      })
+    );
   });
 
   test.each(['unclassified', 'provider'])(

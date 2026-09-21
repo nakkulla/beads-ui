@@ -93,7 +93,7 @@ import {
   handleWorkerCleanupRetry,
   handleWorkerDiscard,
   handleWorkerDiscardAbandon,
-  handleWorkerExternalWaitCheckNow,
+  handleWorkerExternalWait,
   handleWorkerMergeAutoToggle,
   handleWorkerMergeQueueAdd,
   handleWorkerMergeQueueAddAll,
@@ -579,8 +579,10 @@ export async function handleMessage(ws, data) {
     case 'worker-provider-probe-now':
       await handleWorkerProviderProbeNow(ws, req);
       return;
-    case 'worker-external-wait-check-now':
-      await handleWorkerExternalWaitCheckNow(ws, req);
+    case 'external_wait_check':
+    case 'external_wait_stop':
+    case 'external_wait_resume':
+      await handleWorkerExternalWait(ws, req);
       return;
     case 'worker-repo-operation-deploy-run':
       await handleWorkerRepoOperationDeployRun(ws, req);

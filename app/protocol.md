@@ -140,16 +140,20 @@ plus, since UI-eey2 §9.4, the repo-panel control fields:
 `issue_prefix` comes from that workspace's bd config cache; missing, malformed,
 or temporarily unreadable config is `null`.
 
-Each `workspaces[]` row may also carry `external_waits[]`. These are read-only
-`external_wait` observations with the confirmed repository, gate and consumer
-identity; projected job/monitor labels; `job_id`; `stage`; `gate_open` and
-`recent_complete`; the validated `watch_id`; `last_observed_at`,
-`next_observation_at`, `completed_at`; and bounded `monitor_reason`, `stale`,
-and `collected_at` fields. The wire does not include SSH configuration, remote
-paths or logs, Worker API addresses, process identity, artifact contents, or the
-complete watch document. Older servers omit the array. The corresponding
-`workspaces_state[]` row may carry `external_wait_count` and
-`external_wait_attention_count`.
+Each `workspaces[]` row and decorated Worker queue may carry `external_waits[]`,
+the public projection of the server's external-wait records:
+`{wait_id, root_dir, bead_id, owner_kind, stage, budget, registered_at, next_observation_at, error_count, last_error, jobs, completion, resume}`.
+Each job carries `adapter`, `ssh_host` and `job_id` (Slurm) or `pid` (process),
+`submitted_at`, `log_path`, `state`, `observed_at`, and
+`terminal: null | {exit_code, evidence, recovery_needed, expected_results}`.
+Expected results contain path, existence, size and mtime; log and artifact
+contents are never projected. Cards attach live records (`hold`, `detached`,
+`completing`) to their consumer Bead. Missing metadata/records remain
+action-required wait reasons. Older servers omit the array.
+
+The corresponding `workspaces_state[]` row carries `external_wait_count` (live
+records) and `external_wait_attention_count` (live records whose
+already-projected `external_job` reason is `overdue` or `action_required`).
 
 - `serial_lane_count` and the six orchestration values are that workspace's own
   queue state. A legacy queue with no key reads as one serial lane and null
@@ -876,6 +880,63 @@ Every queue mutation replies `{ applied, conflict, queue }`; a stale
 
 없는 항목의 제거는 큐 버전을 바꾸지 않는다. 적용된 배치·제거는 웹소켓 구독자에게
 갱신된 스냅샷을 알리고 다음 대기 항목의 실행 판단을 요청한다.
+
+### HTTP 외부 작업 대기 API
+
+모든 요청은 등록된 워크스페이스의 절대 경로 `root_dir`를 받는다. POST 본문은
+JSON이며 GET은 쿼리로 받는다. 모든 응답에 `Cache-Control: no-store`를 설정한다.
+`:id`는 `w-<12자리 소문자 hex>` 형식이다.
+
+| 요청                                          | 입력                                                          | 성공 응답 (HTTP 200)                                                                        |
+| --------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `POST /api/worker/external-wait`              | `{ root_dir, bead_id, owner, worktree, execution_sha, jobs }` | `{ ok:true, wait_id, decision:'hold'\|'detached'\|'done', budget, jobs }`                   |
+| `POST /api/worker/external-wait/:id/hold`     | `{ root_dir }`                                                | `{ state:'running'\|'done'\|'detached'\|'completing'\|'resumed'\|'stopped', budget, jobs }` |
+| `GET /api/worker/external-wait/:id?root_dir=` | 쿼리 `root_dir`                                               | 대기 레코드 전체                                                                            |
+| `POST /api/worker/external-wait/:id/check`    | `{ root_dir }`                                                | 즉시 관찰한 대기 레코드 전체                                                                |
+| `POST /api/worker/external-wait/:id/stop`     | `{ root_dir }`                                                | `stage:'stopped'`인 대기 레코드 전체                                                        |
+| `POST /api/worker/external-wait/:id/resume`   | `{ root_dir, mode:'fork'\|'fresh' }`                          | `{ ok:true, attempt_id }`                                                                   |
+
+등록의 `owner`는 `{kind:'worker', attempt_id}` 또는
+`{kind:'session', session_ref, session_pid, session_start}`다. `worktree`는 절대
+경로, `execution_sha`는 40자리 hex다. `jobs`는 다음 두 형식의 배열이며 빈 배열은
+즉시 `done`이다.
+
+- Slurm:
+  `{adapter:'slurm', ssh_host, job_id, submitted_at, log_path, expected}`.
+  `ssh_host`는 옵션처럼 시작하지 않는 SSH alias이고 `expected`는 출력 경로를
+  하나 이상 담는다. `scheduler_submit_time`은 선택적 작업 식별 정보다.
+- Process:
+  `{adapter:'process', pid, submitted_at, workdir, log_path, expected?}`.
+  `workdir`와 `log_path`는 절대 경로다. `process_start`는 선택적 프로세스 시작
+  식별 정보다. `submitted_at`은 두 어댑터 모두 ISO 시각이다.
+
+등록·hold 응답의 `jobs`는 `{adapter, job_id|pid, state, terminal}`로 투영한다.
+`budget`은 `{turns_total:3, turns_used}`다. hold는 최대 540초 기다리며 세 번째
+호출까지 턴을 소비하고 네 번째는 관찰 없이 `detached`로 바꾸고 Bead의
+`external_wait` 키를 쓴 뒤 재확인한다. hold 중 완료는 `done` 응답만 반환하며
+재개하지 않는다. 동시에 중단되면 `state:'stopped'`를 반환한다.
+
+전체 레코드는
+`wait_id, root_dir, bead_id, owner, worktree, execution_sha, registered_at, stage, budget, next_observation_at, error_count, last_error, jobs, completion, resume`를
+포함한다. `check`는 `hold`·`detached`에서만 가능하다. `stop`은 관찰을 중단하고
+키 제거를 재확인하며 실제 작업에 신호를 보내지 않는다. `resume`은
+`completing`에서 세션 소유이거나 Worker 소유의 `resume.error`가 있을 때
+허용한다. 오류 없는 예약이 남은 경우 `fork`는 거부하고 `fresh`는 허용한다.
+
+실패 응답은 `{ok:false, error, status?}`다. 잘못된 경로·ID·등록 필드·mode는 400,
+없는 레코드는 404, 중복 등록·허용되지 않은 단계·재개 거부는 409다. 중복 등록은
+`error:'wait_exists'`와 기존 `wait_id`를 포함한다. 메타데이터 쓰기 또는 재확인
+실패는 500 `bead_write_failed`이며 변경된 `detached`·`stopped` 단계와
+`last_error`를 보존한다. 그 외 내부 오류는 500 `internal_error`다. 재개 연결
+전에는 409 `resume_unwired`를 반환한다.
+
+웹소켓의 `external_waits[]`도 위 레코드에서 공개 필드만 투영한다. 카드 조작은
+`external_wait_check`·`external_wait_stop`·`external_wait_resume`이다. 본문은
+`{root_dir, wait_id}`이며 재개에는 `mode:'fork'|'fresh'`를 더한다. 레코드 없이
+키만 남은 조치 필요 사유의 중단 조작은 `bead_id`도 싣는다. 서버는 해당 이슈의
+현재 키가 `wait_id`와 일치하는지 확인한 뒤에만 제거한다. 성공 응답은 서비스
+결과와 `queue`(갱신된 장식 스냅샷), 실패는 표준 오류 응답이다. 세 조작 모두
+소비자 이슈의 타임라인에 클릭을 기록한다.
 
 ## Session-log (transcript) channel (spec §5.6)
 

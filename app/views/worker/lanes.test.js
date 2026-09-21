@@ -271,15 +271,15 @@ describe('server wait judgment rendering', () => {
     ]);
   });
 
-  test('does not offer check-now without an observed timestamp', () => {
+  test('omits external actions without record coordinates', () => {
     const lines = waitReasonLines(
       waitReason({
         kind: 'external_job',
         actions: [
           {
-            op: 'monitor_tick_now',
-            label: '',
-            payload: { watch_id: 'watch-1', root_dir: '/repo' }
+            op: 'external_wait_check',
+            label: '[지금 확인]',
+            payload: { root_dir: '/repo' }
           }
         ]
       })
@@ -427,7 +427,7 @@ describe('server wait judgment rendering', () => {
     [
       'external_job',
       { since: NOW - 3 * HOUR, next_check_at: NOW + 20 * MINUTE },
-      `3시간째 대기 · 다음 확인 ${formatClockLocal(NOW + 20 * MINUTE, NOW)}`
+      `3시간째 경과 · 다음 ${formatClockLocal(NOW + 20 * MINUTE, NOW)}`
     ],
     [
       'provider_hold',
@@ -463,7 +463,13 @@ describe('server wait judgment rendering', () => {
   test('titles the times line with the absolute wait start', () => {
     const since = NOW - 3 * HOUR;
     const lines = waitReasonLines(
-      waitReason({ kind: 'retry_wait', headline: '', targets: [], since }),
+      waitReason({
+        kind: 'retry_wait',
+        headline: '',
+        targets: [],
+        since,
+        next_check_at: NOW + HOUR
+      }),
       { now: NOW }
     );
 
@@ -538,54 +544,6 @@ describe('server wait judgment rendering', () => {
     }
   );
 
-  test.each(['normal', 'overdue', 'action_required'])(
-    'renders external %s context and check coordinates',
-    (verdict) => {
-      const reason = waitReason({
-        kind: 'external_job',
-        verdict: /** @type {any} */ (verdict),
-        verdict_reason: { code: 'job_failed', message: '작업이 실패로 끝남' },
-        actions: [
-          {
-            op: 'monitor_tick_now',
-            label: '',
-            payload: { watch_id: 'watch-1', root_dir: '/repo', since: 123 }
-          }
-        ]
-      });
-
-      renderRow(
-        /** @type {any} */ ({
-          kind: 'external_wait',
-          reason,
-          gate_id: 'G-1',
-          gate_title: '계산',
-          watch_id: 'watch-1',
-          root_dir: '/repo',
-          job_id: '42',
-          ssh_host: 'wallace',
-          monitor_state: '자동 확인 중',
-          monitor_reason: '연결 실패',
-          previous_job_state: '계산 중',
-          stale: true
-        })
-      );
-
-      const button = mount.querySelector('[data-external-check-now]');
-      expect(button?.getAttribute('data-external-check-now')).toBe('watch-1');
-      expect(button?.getAttribute('data-root-dir')).toBe('/repo');
-      expect(button?.getAttribute('data-since')).toBe('123');
-      expect(button?.getAttribute('title')).toContain('항목 전부');
-      expect(
-        mount.querySelector('.wait-reason__headline')?.textContent?.trim()
-      ).toBe('wallace 작업 42 · 연결 실패 · 이전 관측: 계산 중 · 오래된 자료');
-      expect(
-        mount.querySelector('.external-wait__identity')?.textContent
-      ).toContain('wallace');
-      expect(mount.querySelectorAll('.wait-reason__headline')).toHaveLength(1);
-    }
-  );
-
   test('counts distinct original issues and omits empty groups', () => {
     const summary = blockedSummary([
       {
@@ -611,7 +569,7 @@ describe('server wait judgment rendering', () => {
     expect(
       summary.groups.map((group) => [group.label, group.entries.length])
     ).toEqual([
-      ['외부 계산', 1],
+      ['외부 작업', 1],
       ['선행', 1]
     ]);
   });
@@ -669,59 +627,32 @@ describe('server wait judgment rendering', () => {
     expect(card.closest('details')?.open).toBe(true);
   });
 
-  test.each([false, true])(
-    'navigates an external reason with original card present %s',
-    (has_consumer) => {
-      const reason = waitReason({
-        kind: 'external_job',
-        targets: [{ id: 'G-2', kind: 'gate' }]
-      });
-      render(
-        html`${blockedSummaryTemplate([
-            { root_dir: '/repo', wait_reasons: [reason] }
-          ])}
-          <details>
-            <div
-              class="worker-mini"
-              data-root-dir="/other"
-              data-bead-id="G-2"
-            ></div>
-            <div
-              class="worker-mini"
-              data-root-dir="/repo"
-              data-bead-id="G-1"
-            ></div>
-            <div
-              class="worker-mini"
-              data-root-dir="/repo"
-              data-bead-id="G-2"
-            ></div>
-            ${has_consumer
-              ? html`<div
-                  class="worker-mini"
-                  data-root-dir="/repo"
-                  data-bead-id="A-1"
-                ></div>`
-              : ''}
-          </details>`,
-        mount
-      );
-      const card = /** @type {HTMLElement} */ (
-        mount.querySelector(
-          `[data-root-dir="/repo"][data-bead-id="${has_consumer ? 'A-1' : 'G-2'}"]`
-        )
-      );
-      card.scrollIntoView = vi.fn();
+  test('reveals the consumer card for an external wait reason', () => {
+    const reason = waitReason({ kind: 'external_job', targets: [] });
+    render(
+      html`${blockedSummaryTemplate([
+          { root_dir: '/repo', wait_reasons: [reason] }
+        ])}
+        <div
+          class="worker-mini"
+          data-root-dir="/repo"
+          data-bead-id="A-1"
+        ></div>`,
+      mount
+    );
+    const scroll = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
 
-      /** @type {HTMLElement} */ (
-        mount.querySelector('.wait-summary__item')
-      ).click();
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.wait-summary__item')
+    ).click();
 
-      expect(card.scrollIntoView).toHaveBeenCalled();
-      expect(card.classList.contains('wait-reason--highlight')).toBe(true);
-      expect(card.closest('details')?.open).toBe(true);
-    }
-  );
+    expect(
+      mount
+        .querySelector('[data-bead-id="A-1"]')
+        ?.classList.contains('wait-reason--highlight')
+    ).toBe(true);
+  });
 
   test.each(['usage_limit', 'outage'])(
     'renders server provider judgment for %s without duplicating the probe',
@@ -974,42 +905,6 @@ describe('요약 칩 묶음 (UI-8gem §8)', () => {
     ).toBe('⏳ 복구 대기');
   });
 
-  test('moves the external guidance sentences into the badge popup', () => {
-    render(
-      miniRow(
-        /** @type {any} */ ({
-          kind: 'external_wait',
-          id: 'G-1',
-          gate_id: 'G-1',
-          gate_title: '외부 작업 1 관측',
-          consumer_id: 'C-1',
-          root_dir: '/repo',
-          workspace_name: 'repo',
-          watch_id: 'w1',
-          job_id: '1',
-          job_state: '실패',
-          monitor_state: '감시 확인 필요',
-          reason: waitReason({
-            kind: 'external_job',
-            subject: { bead_id: 'C-1', root_dir: '/repo' },
-            verdict: 'overdue',
-            verdict_reason: { code: 'job_failed', message: '작업 실패' },
-            targets: [{ id: 'G-1', kind: 'gate' }]
-          })
-        })
-      ),
-      mount
-    );
-
-    const popup =
-      mount.querySelector('.wait-verdict .chip-popover')?.textContent || '';
-    expect(popup).toContain(
-      '[지금 확인]으로 관측기를 지금 실행하거나 관측기 상태를 점검하세요'
-    );
-    expect(popup).toContain('원래 이슈가 재개되면 복구 판단이 필요합니다');
-    expect(mount.querySelector('.wait-reason__guidance')).toBeNull();
-  });
-
   test('names the queue counts on the last popover line', () => {
     render(
       blockedSummaryTemplate([
@@ -1044,180 +939,132 @@ describe('요약 칩 묶음 (UI-8gem §8)', () => {
   });
 });
 
-describe('external job wait rows', () => {
-  test('renders gate and consumer navigation without worker operations', () => {
-    render(
-      miniRow(
-        /** @type {any} */ ({
-          kind: 'external_wait',
-          id: 'Analysis-ph3a',
-          gate_id: 'Analysis-ph3a',
-          gate_title: '외부 계산 246416',
-          consumer_id: 'Analysis-xz9d',
-          consumer_title: 'microbiome_bile',
-          root_dir: '/repo',
-          workspace_name: 'analysis',
-          job_id: '246416',
-          job_state: '계산 중',
-          monitor_state: '자동 확인 중',
-          last_observed_at: Date.parse('2026-09-15T00:54:00Z'),
-          next_observation_at: Date.parse('2026-09-15T01:09:00Z')
-        })
-      ),
-      mount
-    );
+/**
+ * @param {Record<string, any>} [patch]
+ * @returns {any}
+ */
+function externalWait(patch = {}) {
+  return {
+    wait_id: 'w-0123456789ab',
+    root_dir: '/repo',
+    bead_id: 'A-1',
+    owner_kind: 'worker',
+    stage: 'detached',
+    budget: { turns_total: 3, turns_used: 3 },
+    registered_at: '2026-09-21T00:00:00Z',
+    next_observation_at: '2026-09-21T03:14:00Z',
+    error_count: 0,
+    last_error: null,
+    jobs: [
+      {
+        adapter: 'slurm',
+        ssh_host: 'wallace',
+        job_id: '42',
+        submitted_at: '2026-09-21T00:00:00Z',
+        log_path: '/logs/job.log',
+        state: 'RUNNING',
+        observed_at: '2026-09-21T03:12:00Z',
+        terminal: null
+      }
+    ],
+    completion: null,
+    resume: null,
+    ...patch
+  };
+}
 
-    expect(mount.textContent).toContain('대기 조건 · 감시 정보 없음');
-    expect(mount.querySelector('.wait-verdict')).toBeNull();
-    expect(mount.querySelectorAll('[data-external-open]')).toHaveLength(2);
+describe('consumer external work slots', () => {
+  test.each([
+    [{}, {}, '⏳ 외부 작업'],
+    [
+      {
+        owner_kind: 'session',
+        stage: 'completing',
+        completion: { completed_at: '2026-09-21T03:12:00Z' }
+      },
+      {},
+      '✅ 완료 · 이어하기 대기'
+    ],
+    [
+      {},
+      {
+        verdict: 'action_required',
+        verdict_reason: {
+          code: 'resume_failed',
+          message: '재개 실패 · no_session_ref'
+        }
+      },
+      '⛔ 조치 필요 · 재개 실패 · no_session_ref'
+    ]
+  ])('renders the consumer badge %s', (record, reason, label) => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      external_wait: externalWait(record),
+      wait_reasons: [
+        waitReason(/** @type {any} */ ({ kind: 'external_job', ...reason }))
+      ]
+    });
+
     expect(
-      mount.querySelector(
-        '.worker-mini__start-now, .worker-mini__rowops-remove, .rtile__resume'
-      )
-    ).toBeNull();
+      row.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe(label);
+    expect(row.textContent).not.toContain('⛓');
+    expect(row.querySelector('[data-lane="external_wait"]')).toBeNull();
   });
 
-  test('badges an open gate row and points at the original issue', () => {
-    const observed = Date.parse('2026-09-15T00:54:00Z');
-    render(
-      miniRow(
-        /** @type {any} */ ({
-          kind: 'external_wait',
-          id: 'Analysis-ph3a',
-          gate_id: 'Analysis-ph3a',
-          gate_title: '외부 계산 246416',
-          consumer_id: 'Analysis-xz9d',
-          consumer_title: 'microbiome_bile',
-          root_dir: '/repo',
-          workspace_name: 'analysis',
-          watch_id: 'watch-1',
-          job_id: '246416',
-          job_state: '계산 중',
-          ssh_host: 'hamilton',
-          monitor_state: '자동 확인 중',
-          last_observed_at: observed,
-          next_observation_at: observed + 900000,
-          reason: waitReason({
-            kind: 'external_job',
-            verdict: 'action_required',
-            headline: 'hamilton 작업 246416 · 계산 중'
-          })
+  test('places job coordinates and clocks in slots five and seven', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      external_wait: externalWait(),
+      wait_reasons: [
+        waitReason({
+          kind: 'external_job',
+          headline: 'wallace 작업 42 · RUNNING',
+          release: '완료되면 같은 세션을 이어간다'
         })
-      ),
-      mount
-    );
+      ]
+    });
 
-    expect(
-      mount.querySelector('.wait-verdict summary')?.textContent?.trim()
-    ).toBe('⛔ 외부 계산 · 조치 필요');
-    expect(mount.textContent).not.toContain('⛓ Analysis-ph3a');
-    expect(
-      mount
-        .querySelector('.worker-deps [data-external-open]')
-        ?.textContent?.trim()
-    ).toBe('→ Analysis-xz9d');
-    expect(
-      mount.querySelector('.wait-reason__headline')?.textContent?.trim()
-    ).toBe('hamilton 작업 246416 · 계산 중');
-    expect(mount.querySelectorAll('.wait-reason__headline')).toHaveLength(1);
-    expect(
-      mount.querySelector('.external-wait__identity')?.textContent
-    ).not.toContain('246416');
-  });
-
-  test('labels a closed monitor row with its completion clock', () => {
-    const completed = Date.parse('2026-09-15T00:54:00Z');
-    render(
-      miniRow(
-        /** @type {any} */ ({
-          kind: 'external_wait',
-          id: 'Analysis-ph3a',
-          gate_id: 'Analysis-ph3a',
-          gate_title: '외부 계산 246416',
-          root_dir: '/repo',
-          workspace_name: 'analysis',
-          watch_id: 'watch-1',
-          job_id: '246416',
-          job_state: '종료 확인',
-          ssh_host: 'hamilton',
-          monitor_state: '감시 종료',
-          completed_at: completed
-        })
-      ),
-      mount
+    expect(row.querySelector('.worker-chips')?.textContent).toContain(
+      'ssh wallace'
     );
-
-    expect(mount.querySelector('.external-wait__kind')?.textContent).toBe(
-      '외부 계산 · 감시 종료'
+    expect(row.querySelector('.worker-chips')?.textContent).toContain('42');
+    expect(row.querySelector('.worker-chips')?.textContent).toContain(
+      'log /logs/job.log'
     );
-    expect(mount.querySelector('.wait-verdict')).toBeNull();
-    expect(mount.querySelector('.external-wait__times')?.textContent).toContain(
-      `종료 ${formatClockLocal(completed)}`
+    expect(row.querySelector('.wait-reason__times')?.textContent).toContain(
+      '제출'
+    );
+    expect(row.querySelector('.wait-reason__times')?.textContent).toContain(
+      '마지막 확인'
+    );
+    expect(row.querySelector('.wait-reason__times')?.textContent).toContain(
+      '다음'
+    );
+    expect(row.querySelector('.wait-reason__release')?.textContent).toContain(
+      '완료되면 같은 세션'
     );
   });
 
-  test('renders a gate-only native row without inventing a consumer', () => {
-    render(
-      miniRow(
-        /** @type {any} */ ({
-          kind: 'external_wait',
-          id: 'Analysis-ph3a',
-          gate_id: 'Analysis-ph3a',
-          gate_title: '외부 계산 246416',
-          consumer_id: null,
-          consumer_title: null,
-          root_dir: '/repo',
-          workspace_name: 'analysis',
-          watch_id: null,
-          job_state: '대기 조건',
-          monitor_state: '감시 정보 없음'
-        })
-      ),
-      mount
+  test('replaces observation clocks with completion time', () => {
+    const row = renderRow({
+      lane: 'done',
+      done: true,
+      external_wait: externalWait({
+        stage: 'completing',
+        completion: { completed_at: '2026-09-21T03:12:00Z' }
+      }),
+      wait_reasons: [waitReason({ kind: 'external_job' })]
+    });
+
+    expect(row.querySelector('.wait-reason__times')?.textContent).toContain(
+      '완료'
     );
-
-    expect(mount.textContent).toContain('대기 조건');
-    expect(mount.querySelectorAll('[data-external-open]')).toHaveLength(1);
-    expect(mount.textContent).not.toContain('원래 이슈');
-  });
-
-  test('places external rows before ordinary waiting areas', () => {
-    render(
-      waitBody(
-        /** @type {any} */ ({
-          external: { rows: [html`<span>외부 행</span>`], count: 1 },
-          parallel: { rows: [], count: 0, collapsed: true },
-          serial: { lanes: [], collapsed: true }
-        })
-      ),
-      mount
+    expect(row.querySelector('.wait-reason__times')?.textContent).not.toContain(
+      '다음'
     );
-
-    expect(
-      mount
-        .querySelector('.worker-wait')
-        ?.firstElementChild?.classList.contains('worker-wait__external')
-    ).toBe(true);
-  });
-
-  test('keeps completed-only external history visible', () => {
-    render(
-      waitBody(
-        /** @type {any} */ ({
-          external: {
-            rows: [],
-            completed: [html`<span>종료된 외부 작업</span>`],
-            count: 0
-          },
-          parallel: { rows: [], count: 0, collapsed: true },
-          serial: { lanes: [], collapsed: true }
-        })
-      ),
-      mount
-    );
-
-    expect(mount.textContent).toContain('종료 확인 1');
-    expect(mount.textContent).toContain('종료된 외부 작업');
   });
 });
 
@@ -1714,49 +1561,6 @@ describe('priority badge', () => {
 });
 
 describe('candidate card', () => {
-  test('glyphs the original-issue chip with the worst gate verdict', () => {
-    const row = renderCandidate({
-      external_wait_count: 1,
-      wait_reasons: /** @type {any} */ ([
-        waitReason({ kind: 'external_job', verdict: 'action_required' })
-      ]),
-      external_waits: [
-        {
-          gate_id: 'Analysis-ph3a',
-          root_dir: '/repo',
-          ssh_host: 'hamilton',
-          job_id: '246416',
-          job_state: '계산 중',
-          monitor_state: '자동 확인 중'
-        }
-      ]
-    });
-
-    expect(
-      row.querySelector('.external-wait-summary > summary')?.textContent?.trim()
-    ).toBe('⛔ 외부 계산 1건 · 조치 필요');
-    expect(
-      row.querySelector('.external-wait-summary__row span')?.textContent
-    ).toBe('hamilton 작업 246416 · 계산 중');
-  });
-
-  test('renders a verified external wait summary in the dependency slot', () => {
-    const row = renderCandidate({
-      external_wait_count: 1,
-      external_waits: [
-        {
-          gate_id: 'Analysis-ph3a',
-          root_dir: '/repo',
-          job_state: '계산 중',
-          monitor_state: '자동 확인 중'
-        }
-      ]
-    });
-
-    expect(row.querySelector('details.external-wait-summary')).not.toBeNull();
-    expect(row.textContent).toContain('⏳ 외부 계산 1건');
-  });
-
   test('keeps a described quick_fix candidate draggable with an active queue button', () => {
     const card = renderCandidate({});
     const place = /** @type {HTMLButtonElement} */ (
@@ -6836,50 +6640,5 @@ describe('대기 카드 표면 정리 2차 (UI-0bvr)', () => {
     expect(head.nextElementSibling?.textContent).toContain(
       '⛔ spec_missing_at_base'
     );
-  });
-
-  test('names the next observation on a watched external row', () => {
-    const next_at = Date.parse('2026-09-15T02:55:00Z');
-    render(
-      miniRow(
-        /** @type {any} */ ({
-          kind: 'external_wait',
-          id: 'G-1',
-          gate_id: 'G-1',
-          gate_title: '외부 계산 246416',
-          root_dir: '/repo',
-          workspace_name: 'analysis',
-          watch_id: 'watch-1',
-          job_state: '계산 중',
-          last_observed_at: next_at - HOUR,
-          next_observation_at: next_at
-        })
-      ),
-      mount
-    );
-
-    expect(mount.querySelector('.external-wait__times')?.textContent).toContain(
-      `다음 확인 ${formatClockLocal(next_at)}`
-    );
-  });
-
-  test('draws no times line on an unwatched external row', () => {
-    render(
-      miniRow(
-        /** @type {any} */ ({
-          kind: 'external_wait',
-          id: 'G-1',
-          gate_id: 'G-1',
-          gate_title: '외부 계산 246416',
-          root_dir: '/repo',
-          workspace_name: 'analysis',
-          watch_id: null,
-          job_state: '대기 조건'
-        })
-      ),
-      mount
-    );
-
-    expect(mount.querySelector('.external-wait__times')).toBeNull();
   });
 });

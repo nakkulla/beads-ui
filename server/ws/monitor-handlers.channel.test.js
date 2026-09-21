@@ -89,12 +89,6 @@ vi.mock('../worker/attach.js', () => ({
   refreshWorkerExternalPrs: async (root_dir) => {
     external_refreshes.push(root_dir);
     return false;
-  },
-  // Inert shared wait collector (UI-n99w §6.2): this file is about the
-  // channel's subscriber/push behaviour, so collect stays a no-op.
-  workerExternalWaitObservations: {
-    collect: async () => {},
-    get: () => ({ rows: [], collected_at: 0, stale: false })
   }
 }));
 

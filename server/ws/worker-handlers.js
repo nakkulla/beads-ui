@@ -44,7 +44,6 @@ import { createAccountCatalog } from '../worker/account-catalog.js';
 import {
   abandonWorkerDiscard,
   backupFreshWorkerStaleWork,
-  checkWorkerExternalWaitNow,
   continueWorkerStaleWork,
   discardWorkerBead,
   dismissWorkerRepoOperation,
@@ -57,6 +56,7 @@ import {
   readBeadTimeline,
   recheckWorkerStaleWork,
   refreshWorkerExternalPrs,
+  refreshWorkerWaitReasons,
   resumeWorkerAttempt,
   resumeWorkerQueueHold,
   retryWorkerCleanup,
@@ -5003,27 +5003,30 @@ export async function handleWorkerProviderProbeNow(ws, req) {
 }
 
 /**
- * Handle `worker-external-wait-check-now` using the row's observation clock.
+ * Apply an external-wait operation to the workspace named by the card.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export async function handleWorkerExternalWaitCheckNow(ws, req) {
+export async function handleWorkerExternalWait(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
   if (
     typeof p.root_dir !== 'string' ||
     !p.root_dir ||
-    typeof p.watch_id !== 'string' ||
-    !p.watch_id ||
-    typeof p.since !== 'number' ||
-    !Number.isFinite(p.since)
+    typeof p.wait_id !== 'string' ||
+    !/^w-[0-9a-f]{12}$/.test(p.wait_id) ||
+    (p.bead_id !== undefined &&
+      (typeof p.bead_id !== 'string' ||
+        !p.bead_id ||
+        p.bead_id.startsWith('-'))) ||
+    (req.type === 'external_wait_resume' && !['fork', 'fresh'].includes(p.mode))
   ) {
     ws.send(
       JSON.stringify(
         makeError(
           req,
           'bad_request',
-          'payload requires { root_dir, watch_id, since }'
+          'payload requires { root_dir, wait_id, mode?: fork|fresh }'
         )
       )
     );
@@ -5033,48 +5036,66 @@ export async function handleWorkerExternalWaitCheckNow(ws, req) {
   if (key === null) {
     return;
   }
-  const watch = workerWaitState(key).external_waits.find(
-    (row) => row.root_dir === key && row.watch_id === p.watch_id
-  );
-  if (watch?.consumer_id) {
-    try {
-      queueStore().recordTimelineEvent(key, {
-        bead_id: watch.consumer_id,
-        kind: 'user_action',
-        seq: `external-check-now:${randomUUID()}`,
-        summary: '[지금 확인] 클릭'
-      });
-    } catch (err) {
-      log('external check-now timeline failed for %s: %o', key, err);
-    }
-  }
-  /** @type {import('../worker/attach.js').ExternalWaitCheckResult} */
-  let result;
-  try {
-    result = await checkWorkerExternalWaitNow(key, {
-      watch_id: p.watch_id,
-      since: p.since
+  const service = getWorkerRuntime().externalWait;
+  const record = service.get(key, p.wait_id);
+  const label =
+    req.type === 'external_wait_check'
+      ? '[지금 확인]'
+      : req.type === 'external_wait_stop'
+        ? '[관찰 중단]'
+        : p.mode === 'fresh'
+          ? '[새 세션으로]'
+          : '[이어하기]';
+  if ('bead_id' in record) {
+    queueStore().recordTimelineEvent(key, {
+      bead_id: record.bead_id,
+      kind: 'user_action',
+      seq: `external-wait:${randomUUID()}`,
+      summary: `${label} 클릭`
     });
-  } catch (err) {
-    result = {
-      ok: false,
-      outcome: 'error',
-      summary: String(err instanceof Error ? err.message : err).split(
-        /\r?\n/,
-        1
-      )[0]
-    };
   }
-  // The completed wait-judge refresh emits the single queue fanout, even after
-  // a `running` reply. Refused clicks have no changed observation to publish.
-  ws.send(
-    JSON.stringify(
-      makeOk(req, {
-        ...result,
-        queue: decorateQueue(key, queueStore().snapshot(key))
-      })
-    )
-  );
+  try {
+    const result =
+      req.type === 'external_wait_check'
+        ? await service.check(key, p.wait_id)
+        : req.type === 'external_wait_stop'
+          ? await service.stop(
+              key,
+              p.wait_id,
+              ...('bead_id' in record ? [] : [p.bead_id])
+            )
+          : await service.resume(key, p.wait_id, p.mode);
+    if (!('bead_id' in record) && req.type === 'external_wait_stop') {
+      await refreshWorkerWaitReasons(key);
+    }
+    if ('status' in result) {
+      ws.send(JSON.stringify(makeError(req, result.error, result.error)));
+      return;
+    }
+    if (!('bead_id' in record) && 'bead_id' in result) {
+      queueStore().recordTimelineEvent(key, {
+        bead_id: result.bead_id,
+        kind: 'user_action',
+        seq: `external-wait:${randomUUID()}`,
+        summary: `${label} 클릭`
+      });
+    }
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          ...result,
+          queue: decorateQueue(key, queueStore().snapshot(key))
+        })
+      )
+    );
+  } catch (error) {
+    log('external wait operation failed for %s: %o', key, error);
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'internal_error', '외부 작업 요청에 실패했습니다')
+      )
+    );
+  }
 }
 
 /**

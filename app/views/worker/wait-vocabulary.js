@@ -90,16 +90,17 @@ export const WAIT_KINDS = Object.freeze(
     {
       id: 'external_job',
       kind: 'external_job',
-      condition: 'gate 행에만',
+      condition: '소비자 Bead 행',
       scope: 'bead',
       glyph: '⏳',
-      label: '외부 계산',
-      when: '외부 호스트의 작업 종료를 관측기가 확인하는 중',
+      label: '외부 작업',
+      when: '외부 작업 종료를 관찰하고 같은 세션의 재개를 기다림',
       release:
-        '<interval>분마다 자동 확인 · 종료 확인되면 대기 자동 해제 (· 완료 시 Discord 알림)',
-      action: '[지금 확인]',
-      elapsed_word: '대기',
-      next_word: '다음 확인'
+        '완료되면 같은 세션을 이어간다 · 사용자 세션은 [이어하기]로 fork 재개',
+      action:
+        '[지금 확인] · [관찰 중단] · [이어하기] · 재개 실패 시 [새 세션으로]',
+      elapsed_word: '경과',
+      next_word: '다음'
     },
     {
       id: 'base_moved',
@@ -447,13 +448,6 @@ export const RELATION_CHIPS = Object.freeze(
       label: '⏳ <n>초',
       meaning: '대기 진입 유예가 끝나기까지 남은 시간',
       click: '조작 없음 · [지금 시작]이 이 행의 유예를 걷는다'
-    },
-    {
-      id: 'external-wait-count',
-      glyph: '',
-      label: '<판정 글리프> 외부 계산 N건',
-      meaning: '이 이슈가 기다리는 외부 작업 gate 수와 그중 최악 판정',
-      click: 'gate별 상태 팝업을 연다'
     }
   ])
 );

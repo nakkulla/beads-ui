@@ -12,7 +12,7 @@
 /** @typedef {{ provider: 'claude'|'codex', role: string, scope_id?: string, turn_id: string, model: string|null, usage: Record<string, number>, observed_from?: number|null, observed_through?: number|null, partial?: boolean, partial_reasons?: string[], cost_covered?: boolean }} UsageSegment */
 /** @typedef {{ provider: 'claude'|'codex', session_id: string|null, observed_at: number, model: string|null, usage: Record<string, number>|null, usage_legs: UsageSegment[], delegations: Array<Record<string, unknown>>, partial?: boolean }} SessionObservation */
 
-/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'update-assignee'|'dep-add'|'dep-remove'|'update-exec-settings'|'update-impl-target'|'get-session-defaults'|'set-session-defaults'|'set-worker-url-common'|'get-workspace-accounts'|'set-workspace-accounts'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-patch'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-automation-toggle'|'worker-provider-limit-policy-set'|'worker-repo-ops-opt-out-toggle'|'worker-repo-operation-dismiss'|'worker-repo-operation-deploy-run'|'worker-queue-set-slots'|'worker-queue-set-serial-lane-count'|'worker-queue-set-orchestration-defaults'|'worker-queue-remove'|'worker-queue-start-now'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-cleanup-retry'|'worker-resolve-in-session'|'worker-queue-hold-resume'|'worker-queue-hold-retry-now'|'worker-provider-probe-now'|'worker-external-wait-check-now'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-discard'|'worker-discard-abandon'|'worker-stale-work-continue'|'worker-stale-work-backup-fresh'|'worker-stale-work-recheck'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'get-attempt-prompt'|'get-bead-prompt'|'get-bead-timeline'|'get-session-refs'|'get-worker-system-prompt'|'subscribe-adr'|'unsubscribe-adr'|'adr-snapshot'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'|'monitor-pipeline-patch'|'monitor-auto-toggle'|'subscribe-impl-presets'|'unsubscribe-impl-presets'|'impl-presets-snapshot'|'impl-preset-create'|'impl-preset-update'|'impl-preset-delete'|'apply-impl-preset'|'apply-impl-preset-global'|'get-compare'|'compare-snapshot'|'bench-run-create'} MessageType */
+/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'update-assignee'|'dep-add'|'dep-remove'|'update-exec-settings'|'update-impl-target'|'get-session-defaults'|'set-session-defaults'|'set-worker-url-common'|'get-workspace-accounts'|'set-workspace-accounts'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-patch'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-automation-toggle'|'worker-provider-limit-policy-set'|'worker-repo-ops-opt-out-toggle'|'worker-repo-operation-dismiss'|'worker-repo-operation-deploy-run'|'worker-queue-set-slots'|'worker-queue-set-serial-lane-count'|'worker-queue-set-orchestration-defaults'|'worker-queue-remove'|'worker-queue-start-now'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-cleanup-retry'|'worker-resolve-in-session'|'worker-queue-hold-resume'|'worker-queue-hold-retry-now'|'worker-provider-probe-now'|'external_wait_check'|'external_wait_stop'|'external_wait_resume'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-discard'|'worker-discard-abandon'|'worker-stale-work-continue'|'worker-stale-work-backup-fresh'|'worker-stale-work-recheck'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'get-attempt-prompt'|'get-bead-prompt'|'get-bead-timeline'|'get-session-refs'|'get-worker-system-prompt'|'subscribe-adr'|'unsubscribe-adr'|'adr-snapshot'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'|'monitor-pipeline-patch'|'monitor-auto-toggle'|'subscribe-impl-presets'|'unsubscribe-impl-presets'|'impl-presets-snapshot'|'impl-preset-create'|'impl-preset-update'|'impl-preset-delete'|'apply-impl-preset'|'apply-impl-preset-global'|'get-compare'|'compare-snapshot'|'bench-run-create'} MessageType */
 
 /**
  * @typedef {Object} WorkerQueueSnapshotPayload
@@ -70,57 +70,38 @@
  */
 
 /**
- * Read-only projection of one native gate backed by an external-job watch.
- * The wire shape deliberately excludes producer commands and logs. The host
- * stopped being excluded with UI-n99w §5.1·§7.2, which put `ssh_host` in the
- * wait sentence and in slot 5 of the row, so the reader can tell WHERE the
- * job is waiting; `cmd` and `log_path` remain producer-only.
+ * Public projection of a consumer Bead's external-wait record.
+ * Logs and expected artifact contents never cross this boundary.
  *
  * @typedef {Object} ExternalWaitObservation
- * @property {'external_wait'} kind
+ * @property {string} wait_id
  * @property {string} root_dir
- * @property {string} workspace_name
- * @property {string} gate_id
- * @property {string} gate_title
- * @property {string|null} consumer_id
- * @property {string|null} consumer_title
- * @property {string|null} watch_id
- * @property {string|null} job_id
- * @property {string|null} stage
- * @property {boolean} gate_open
- * @property {boolean} recent_complete
- * @property {string} job_state
- * @property {string|null} previous_job_state
- * @property {string} monitor_state
- * @property {string|null} monitor_reason
- * @property {boolean|null} [service_down] - Confirmed service registration or command failure; null means unknown.
- * @property {boolean} overdue
- * @property {number|null} last_observed_at
- * @property {number|null} next_observation_at
- * @property {number|null} completed_at
- * @property {boolean} recovery_needed
- * @property {number} [collected_at]
- * @property {boolean} [stale]
- * @property {number|null} [interval_seconds] - Watch poll period in seconds.
- * @property {string|null} [ssh_host] - Host the external job runs on.
- * @property {number|null} [error_count] - Consecutive observation failures.
- * @property {{ on_complete?: string|null }|null} [notify] - Observer-side
- * completion notification plan; absent means the watch predates it.
- * @property {number|null} [registered_at]
- * @property {number|null} [terminal_recorded_at]
+ * @property {string} bead_id
+ * @property {'worker'|'session'} owner_kind
+ * @property {'hold'|'detached'|'completing'|'done'|'resumed'|'stopped'} stage
+ * @property {{turns_total:number, turns_used:number}} budget
+ * @property {string} registered_at
+ * @property {string} next_observation_at
+ * @property {number} error_count
+ * @property {string|null} last_error
+ * @property {Array<{adapter:'slurm'|'process', ssh_host?:string, job_id?:string, pid?:number, submitted_at:string, log_path:string, state?:string, observed_at?:string, terminal:null|{exit_code:number|null, evidence:string, recovery_needed:boolean, expected_results:Array<{path:string, exists:boolean, size:number|null, mtime:number|null}>}}>} jobs
+ * @property {{digest:string, completed_at:string, recovery_needed:boolean}|null} completion
+ * @property {{mode:'fork'|'fresh', attempt_id:string|null, reserved_at:string|null, launched_at:string|null, session_id:string|null, error:string|null}|null} resume
  */
 
 /**
  * Server-owned display judgment; consumers never recompute verdicts.
  *
  * @typedef {'external_job'|'prerequisite'|'prerequisite_foreign'|'base_moved'|'provider_hold'|'queue_hold'|'awaiting_user'|'retry_wait'|'stale_work'|'recovery'} WaitKind
- * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'disposition'|'recovery_confirm'} VerdictCode
+ * @typedef {'check_overdue'|'settle_overdue'|'job_failed'|'observe_failing'|'service_down'|'monitor_stopped'|'blocker_needs_human'|'reset_passed'|'probe_needed'|'probe_stalled'|'hold'|'retry_stalled'|'decision'|'disposition'|'recovery_confirm'|'resume_failed'|'wait_key_missing'|'wait_record_missing'} VerdictCode
  * @typedef {{ code: VerdictCode, message: string }} VerdictReason
  * @typedef {Object} WaitReason
  * @property {WaitKind} kind
  * @property {{ bead_id: string, root_dir: string }} subject
  * @property {string} headline
  * @property {string} release
+ * @property {string} [error]
+ * @property {number} [completed_at]
  * @property {number} [since]
  * @property {number} [next_check_at]
  * @property {number} [resets_at]
@@ -132,62 +113,23 @@
  */
 
 const EXTERNAL_WAIT_FIELDS = new Set([
-  'kind',
+  'wait_id',
   'root_dir',
-  'workspace_name',
-  'gate_id',
-  'gate_title',
-  'consumer_id',
-  'consumer_title',
-  'watch_id',
-  'job_id',
+  'bead_id',
+  'owner_kind',
   'stage',
-  'gate_open',
-  'recent_complete',
-  'job_state',
-  'previous_job_state',
-  'monitor_state',
-  'monitor_reason',
-  'service_down',
-  'overdue',
-  'last_observed_at',
-  'next_observation_at',
-  'completed_at',
-  'recovery_needed',
-  'collected_at',
-  'stale',
-  // Judgment materials the attach collector retains from the same watch read
-  // (UI-n99w §5.1). Optional: a fallback row built without a watch file has
-  // none of them, and this Set is an exact allowlist — an unlisted key makes
-  // `isExternalWaitObservation` reject the whole row.
-  'interval_seconds',
-  'ssh_host',
-  'error_count',
-  'notify',
+  'budget',
   'registered_at',
-  'terminal_recorded_at'
+  'next_observation_at',
+  'error_count',
+  'last_error',
+  'jobs',
+  'completion',
+  'resume'
 ]);
 
 /**
- * @param {unknown} value
- * @returns {value is string|null}
- */
-function isNullableString(value) {
-  return value === null || typeof value === 'string';
-}
-
-/**
- * @param {unknown} value
- * @returns {value is number|null}
- */
-function isNullableTime(value) {
-  return (
-    value === null || (typeof value === 'number' && Number.isFinite(value))
-  );
-}
-
-/**
- * Validate the complete safe external-wait wire projection.
+ * Validate the record projection before attaching it to a consumer card.
  *
  * @param {unknown} value
  * @returns {value is ExternalWaitObservation}
@@ -196,59 +138,37 @@ export function isExternalWaitObservation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return false;
   }
-  const row = /** @type {Record<string, unknown>} */ (value);
+  const row = /** @type {Record<string, any>} */ (value);
   return (
     Object.keys(row).every((key) => EXTERNAL_WAIT_FIELDS.has(key)) &&
-    row.kind === 'external_wait' &&
-    [
-      'root_dir',
-      'workspace_name',
-      'gate_id',
-      'gate_title',
-      'job_state',
-      'monitor_state'
-    ].every((key) => typeof row[key] === 'string' && row[key].length > 0) &&
-    [
-      'consumer_id',
-      'consumer_title',
-      'job_id',
-      'stage',
-      'previous_job_state',
-      'monitor_reason'
-    ].every((key) => isNullableString(row[key])) &&
-    (row.watch_id === null ||
-      (typeof row.watch_id === 'string' &&
-        /^[a-f0-9]{24}$/.test(row.watch_id))) &&
-    ['gate_open', 'recent_complete', 'overdue', 'recovery_needed'].every(
-      (key) => typeof row[key] === 'boolean'
+    typeof row.wait_id === 'string' &&
+    /^w-[0-9a-f]{12}$/.test(row.wait_id) &&
+    ['root_dir', 'bead_id', 'registered_at', 'next_observation_at'].every(
+      (key) => typeof row[key] === 'string' && row[key].length > 0
     ) &&
-    ['last_observed_at', 'next_observation_at', 'completed_at'].every((key) =>
-      isNullableTime(row[key])
+    ['worker', 'session'].includes(row.owner_kind) &&
+    ['hold', 'detached', 'completing', 'done', 'resumed', 'stopped'].includes(
+      row.stage
     ) &&
-    (row.collected_at === undefined ||
-      (typeof row.collected_at === 'number' &&
-        Number.isFinite(row.collected_at))) &&
-    (row.stale === undefined || typeof row.stale === 'boolean') &&
-    (row.service_down === undefined ||
-      row.service_down === null ||
-      typeof row.service_down === 'boolean') &&
-    ['interval_seconds', 'error_count', 'registered_at'].every(
-      (key) =>
-        row[key] === undefined ||
-        row[key] === null ||
-        (typeof row[key] === 'number' && Number.isFinite(row[key]))
-    ) &&
-    (row.ssh_host === undefined || isNullableString(row.ssh_host)) &&
-    (row.terminal_recorded_at === undefined ||
-      isNullableTime(row.terminal_recorded_at)) &&
-    (row.notify === undefined ||
-      row.notify === null ||
-      (typeof row.notify === 'object' &&
-        !Array.isArray(row.notify) &&
-        isNullableString(
-          /** @type {Record<string, unknown>} */ (row.notify).on_complete ??
-            null
-        )))
+    Number.isInteger(row.error_count) &&
+    row.error_count >= 0 &&
+    (row.last_error === null || typeof row.last_error === 'string') &&
+    row.budget &&
+    Number.isInteger(row.budget.turns_total) &&
+    Number.isInteger(row.budget.turns_used) &&
+    Array.isArray(row.jobs) &&
+    row.jobs.every(
+      (/** @type {any} */ job) =>
+        job &&
+        ['slurm', 'process'].includes(job.adapter) &&
+        typeof job.submitted_at === 'string' &&
+        typeof job.log_path === 'string' &&
+        (job.adapter === 'slurm'
+          ? typeof job.ssh_host === 'string' && typeof job.job_id === 'string'
+          : Number.isInteger(job.pid)) &&
+        (job.terminal === null ||
+          (job.terminal && Array.isArray(job.terminal.expected_results)))
+    )
   );
 }
 
@@ -359,7 +279,9 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   // 대해 지금 발화시킨다. target을 지우지 않으므로 `since`는 낡은 화면에서 온
   // 클릭을 거르는 몫만 하고, 중복 클릭은 서버의 in-flight 술어가 흡수한다.
   'worker-provider-probe-now',
-  'worker-external-wait-check-now',
+  'external_wait_check',
+  'external_wait_stop',
+  'external_wait_resume',
   // Sequential merge queue (UI-5v7d): the [머지] click QUEUES, [일괄 머지]
   // queues every mergeable row at once, and remove cancels a waiting item. The
   // server-side driver is the only thing that merges, one item at a time.

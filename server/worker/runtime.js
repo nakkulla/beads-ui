@@ -13,16 +13,25 @@
  * bead has, discard spec §1). Without a registered attachment those kicks are
  * inert and `running_count` stays 0.
  */
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { kvGetJson, kvSetJson, runBdJsonProjected } from '../bd.js';
+import { kvGetJson, kvSetJson, runBd, runBdJsonProjected } from '../bd.js';
 import { getConfig } from '../config.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
+import { getAvailableWorkspaces } from '../registry-watcher.js';
 import { createActivityStore } from './activity-store.js';
+import { createBdMetadata } from './bd-metadata.js';
 import { createDelegationStore } from './delegation-store.js';
 import { createDirectionInquiry } from './direction-inquiry.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { createExternalPrStore } from './external-pr.js';
+import {
+  EXTERNAL_WAIT_KEY,
+  createExternalWaitObserver,
+  createExternalWaitService,
+  createExternalWaitStore
+} from './external-wait/index.js';
 import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
 import { createNotifier } from './notify.js';
@@ -55,6 +64,10 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createDirectionInquiry>} directionInquiry
  * @property {ReturnType<typeof createResolveSession>} resolveSession
  * @property {ReturnType<typeof createSessionLog>} sessionLog
+ * @property {ReturnType<typeof createExternalWaitService>} externalWait
+ * @property {ReturnType<typeof createExternalWaitStore>} externalWaitStore
+ * @property {ReturnType<typeof createExternalWaitObserver>} externalWaitObserver
+ * @property {(hooks:{onRecordChanged?:import('./external-wait/observer.js').RecordCallback, onCompletion?:import('./external-wait/observer.js').RecordCallback, resume?:import('./external-wait/service.js').ResumeHook})=>void} setExternalWaitHooks
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: typeof MANUAL_MERGE_CONTINUATION }} status
  */
@@ -65,6 +78,67 @@ import { createUsageStore } from './usage-store.js';
  * @returns {WorkerRuntime}
  */
 export function createWorkerRuntime() {
+  const externalWaitStore = createExternalWaitStore();
+  const externalWaitObserver = createExternalWaitObserver({
+    store: externalWaitStore,
+    listWorkspaces: () =>
+      getAvailableWorkspaces().map((workspace) => path.resolve(workspace.path)),
+    run: (argv, options) =>
+      (externalWaitRunForTest || runExternalWait)(argv, options)
+  });
+  const externalWait = createExternalWaitService({
+    store: externalWaitStore,
+    observer: externalWaitObserver,
+    bd: {
+      /**
+       * @param {string} workspace
+       * @param {string} bead_id
+       */
+      readExternalWait(workspace, bead_id) {
+        return externalWaitMetadata(workspace).readMetadata(
+          bead_id,
+          EXTERNAL_WAIT_KEY
+        );
+      },
+      /**
+       * @param {string} workspace
+       * @param {string} bead_id
+       * @param {string} wait_id
+       */
+      async setExternalWait(workspace, bead_id, wait_id) {
+        const metadata = externalWaitMetadata(workspace);
+        await metadata.setMetadata(bead_id, EXTERNAL_WAIT_KEY, wait_id);
+        if (
+          (await metadata.readMetadata(bead_id, EXTERNAL_WAIT_KEY)) !== wait_id
+        ) {
+          throw new Error('external_wait set readback disagrees');
+        }
+      },
+      /**
+       * @param {string} workspace
+       * @param {string} bead_id
+       */
+      async unsetExternalWait(workspace, bead_id) {
+        const metadata = externalWaitMetadata(workspace);
+        try {
+          await metadata.unsetMetadata(bead_id, EXTERNAL_WAIT_KEY);
+        } catch (error) {
+          if (
+            (await metadata.readMetadata(bead_id, EXTERNAL_WAIT_KEY)) !== null
+          ) {
+            throw error;
+          }
+          return;
+        }
+        if (
+          (await metadata.readMetadata(bead_id, EXTERNAL_WAIT_KEY)) !== null
+        ) {
+          throw new Error('external_wait unset readback disagrees');
+        }
+      }
+    }
+  });
+  externalWaitObserver.start();
   // Process-wide live subagent tally (UI-2mpn §5.2), on the same contract as
   // the usage store below. Built BEFORE the queue store because the terminal
   // settlement drains it into the durable patch in the same mutation.
@@ -229,6 +303,22 @@ export function createWorkerRuntime() {
   let runningCount = () => 0;
 
   return {
+    externalWait,
+    externalWaitStore,
+    externalWaitObserver,
+    /** @param {{onRecordChanged?:import('./external-wait/observer.js').RecordCallback, onCompletion?:import('./external-wait/observer.js').RecordCallback, resume?:import('./external-wait/service.js').ResumeHook}} hooks */
+    setExternalWaitHooks(hooks) {
+      if (Object.hasOwn(hooks, 'onRecordChanged')) {
+        externalWaitObserver.setOnRecordChanged(hooks.onRecordChanged);
+        externalWait.setOnRecordChanged(hooks.onRecordChanged);
+      }
+      if (Object.hasOwn(hooks, 'onCompletion')) {
+        externalWaitObserver.setOnCompletion(hooks.onCompletion);
+      }
+      if (hooks.resume) {
+        externalWait.setResume(hooks.resume);
+      }
+    },
     queueStore,
     execPresetCoordinator,
     locks,
@@ -283,6 +373,46 @@ export function createWorkerRuntime() {
 /** @type {WorkerRuntime|null} */
 let RUNTIME = null;
 
+/** @type {import('./external-wait/store.js').Run|null} */
+let externalWaitRunForTest = null;
+
+/**
+ * @param {string[]} argv
+ * @param {{timeout_ms:number}} options
+ * @returns {Promise<{code:number, stdout:string, stderr:string}>}
+ */
+function runExternalWait(argv, { timeout_ms }) {
+  return new Promise((resolve) => {
+    execFile(
+      argv[0],
+      argv.slice(1),
+      { timeout: timeout_ms, encoding: 'utf8' },
+      (error, stdout, stderr) => {
+        resolve({
+          code: error ? (typeof error.code === 'number' ? error.code : 1) : 0,
+          stdout,
+          stderr:
+            stderr ||
+            (error && typeof error.code !== 'number' ? error.message : '')
+        });
+      }
+    );
+  });
+}
+
+/** @param {string} workspace */
+function externalWaitMetadata(workspace) {
+  return createBdMetadata({
+    cwd: workspace,
+    run: (args, options) => runBd(args, { cwd: workspace, ...options })
+  });
+}
+
+/** @param {import('./external-wait/store.js').Run|null} run */
+export function __setExternalWaitRunForTest(run) {
+  externalWaitRunForTest = run;
+}
+
 /**
  * Get (lazily creating) the process-wide Worker runtime.
  *
@@ -299,5 +429,9 @@ export function getWorkerRuntime() {
  * Test-only: drop the singleton so the next access rebuilds fresh state.
  */
 export function __resetWorkerRuntimeForTest() {
+  if (RUNTIME) {
+    RUNTIME.externalWaitObserver.stop();
+  }
   RUNTIME = null;
+  externalWaitRunForTest = null;
 }

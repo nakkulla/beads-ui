@@ -77,7 +77,7 @@ describe('wait vocabulary table', () => {
       .map((row) => [row?.elapsed_word, row?.next_word]);
 
     expect(words).toEqual([
-      ['대기', '다음 확인'],
+      ['경과', '다음'],
       ['대기', '다음 재시도'],
       ['보류', '다음 프로브']
     ]);
@@ -283,7 +283,7 @@ describe('relation and summary chips', () => {
     const labels = RELATION_CHIPS.map((row) => row.label);
 
     expect(labels).toContain('⏳ <n>초');
-    expect(labels).toContain('<판정 글리프> 외부 계산 N건');
+    expect(labels).not.toContain('<판정 글리프> 외부 작업 N건');
   });
 
   test('states the blocked aggregation rule on the summary chip', () => {

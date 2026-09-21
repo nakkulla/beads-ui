@@ -733,13 +733,14 @@ describe('runner/preamble runtime lifetime split (codex-orchestration-parity §3
 });
 
 describe('runner/preamble result line grammar (spec D1)', () => {
-  test('inlines the five result forms in the PR-submit terminal', () => {
+  test('inlines the result forms in the PR-submit terminal', () => {
     for (const form of [
       '성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>',
       '파킹 · <awaiting_user 값>',
       '실패 · <원인>',
       '환경 · <오류 문장 원문>',
-      '대기 · blocks:<ID>[, …]'
+      '대기 · blocks:<ID>[, …]',
+      '대기 · external:<wait_id>'
     ]) {
       expect(PR_SUBMIT_DIRECTIVE).toContain(form);
     }
@@ -748,7 +749,19 @@ describe('runner/preamble result line grammar (spec D1)', () => {
   test('inlines the same forms in the quick_fix terminal', () => {
     expect(QUICKFIX_LANE_DIRECTIVE).toContain('실패 · <원인>');
     expect(QUICKFIX_LANE_DIRECTIVE).toContain('환경 · <오류 문장 원문>');
+    expect(QUICKFIX_LANE_DIRECTIVE).toContain('대기 · external:<wait_id>');
   });
+
+  test.each([false, true])(
+    'places external wait directly after prerequisite wait with recovery readiness %s',
+    (work_recovery_ready) => {
+      const result = applyPreamble('작업하라', { work_recovery_ready });
+
+      expect(result.system_prompt).toContain(
+        '대기 · blocks:<ID>[, …]\n대기 · external:<wait_id>\n'
+      );
+    }
+  );
 
   test('declares the grammar a copy of the dotfiles canonical source', () => {
     expect(PR_SUBMIT_DIRECTIVE).toContain(

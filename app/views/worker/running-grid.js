@@ -39,7 +39,7 @@ import {
   dependencyChipsTemplate,
   discardReceiptTemplate,
   execChipsTemplate,
-  externalWaitSummaryTemplate,
+  externalWaitCardParts,
   priorityBadgeTemplate,
   recChipTemplate,
   routeCardTone,
@@ -98,8 +98,7 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * 닫히면 보통 후보로 저절로 돌아온다.
  * @property {boolean} [provider_hold] - 공급자 회복을 기다리는 paused leaf.
  * 사용자 일시정지와 달리 슬롯 1 판정 뱃지와 슬롯 6 복구 액션을 얻는다.
- * @property {number} [external_wait_count] - Verified open external waits.
- * @property {Array<Record<string, any>>} [external_waits] - Gate summary rows.
+ * @property {import('../../protocol.js').ExternalWaitObservation} [external_wait] - Consumer wait record.
  * @property {import('../../protocol.js').WaitReason[]} [wait_reasons] - Server display judgments.
  * @property {WaitTile|null} [wait] - 선행 대기 타일의 재료. 실패 투영과 따로인
  * 이유는 §5.1에 있다: 실패 팝오버가 묻는 질문에 이 결말이 답할 것이 없다.
@@ -1120,19 +1119,22 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         }
       : reason;
   const wait_reasons = (tile.wait_reasons || []).map(decorateWaitReason);
+  const external = externalWaitCardParts(tile, now);
   // 조작은 사유 전부에서 모으고 (§6.2), 배지·본문·시각은 카드당 하나다 (§6).
   const wait_lines = wait_reasons.map((reason) =>
     waitReasonLines(reason, { now })
   );
   const wait_representative = representativeWaitReason(wait_reasons);
-  const wait_body_lines = wait_representative
-    ? waitReasonLines(
-        /** @type {import('../../protocol.js').WaitReason} */ (
-          wait_representative
-        ),
-        { now }
-      )
-    : { badge: '', body: '', actions: '', times: '' };
+  const wait_body_lines = external.badge
+    ? external
+    : wait_representative
+      ? waitReasonLines(
+          /** @type {import('../../protocol.js').WaitReason} */ (
+            wait_representative
+          ),
+          { now }
+        )
+      : { badge: '', body: '', actions: '', times: '' };
   const paused = !!tile.paused;
   // 대기 중인 타일에 시계를 돌리면 멈춰 있는 것이 일하는 것처럼 읽힌다.
   // held 타일의 경과/상태 라벨은 그리지 않는다 (§6.2) — 슬롯 1 배지가 이미 그
@@ -1183,11 +1185,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 문자열이라 줄 판정에 영향이 없다.
   // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 자식 롤업·landing
   // 진행이 모두 슬롯 3이므로 그 뒤에 선다.
-  const external_wait_el = externalWaitSummaryTemplate(tile);
-  const monitor_relations = dependencyChipsTemplate(
-    monitor?.dependency_chips,
-    external_wait_el
-  );
+  const monitor_relations = dependencyChipsTemplate(monitor?.dependency_chips);
   const monitor_body = monitorTileBody(
     monitor,
     now,
@@ -1248,16 +1246,18 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     session_receipt_chip ||
     rec_chip ||
     provider_badges.length > 0 ||
-    usage_label
+    usage_label ||
+    external.chips
       ? html`<div class="rtile__meta">
           ${monitor_chips ||
           route_chip ||
           source_chips ||
           session_ref_chip ||
           session_receipt_chip ||
-          rec_chip
+          rec_chip ||
+          external.chips
             ? html`<div class="rtile__facts">
-                ${monitor_chips}${route_chip}${source_chips}${session_ref_chip}${session_receipt_chip}${rec_chip}
+                ${monitor_chips}${route_chip}${source_chips}${session_ref_chip}${session_receipt_chip}${rec_chip}${external.chips}
               </div>`
             : ''}${provider_badges.length > 0 || usage_label
             ? html`<div class="rtile__usage">
@@ -1298,25 +1298,27 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     : '';
   // 판정 칩 슬롯은 하나다 (카드 문법 §5.1): 실패 뱃지가 서는 그 자리에 파킹과
   // backoff·선행·공급자 대기가 선다. 다섯은 배타적이라 폭이 늘지 않는다.
-  const wait_status_badge = waitStatusBadge({
-    held_kind: parked
-      ? 'parked'
-      : retry_wait
-        ? 'retry_wait'
-        : waiting
-          ? 'waiting'
-          : provider_hold
-            ? 'provider_hold'
-            : null,
-    held: wait,
-    hold,
-    wait_reasons,
-    now,
-    // 재시도 대기 라벨은 회차와 예약 시각까지 말한다 (§5.2 "기존 문구").
-    ...(retry_wait
-      ? { label: retryWaitBadgeText(tile.retry).replace('↻ ', '') }
-      : {})
-  });
+  const wait_status_badge =
+    external.badge ||
+    waitStatusBadge({
+      held_kind: parked
+        ? 'parked'
+        : retry_wait
+          ? 'retry_wait'
+          : waiting
+            ? 'waiting'
+            : provider_hold
+              ? 'provider_hold'
+              : null,
+      held: wait,
+      hold,
+      wait_reasons,
+      now,
+      // 재시도 대기 라벨은 회차와 예약 시각까지 말한다 (§5.2 "기존 문구").
+      ...(retry_wait
+        ? { label: retryWaitBadgeText(tile.retry).replace('↻ ', '') }
+        : {})
+    });
   const status_badges = html`${conflict_badge
     ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
     : ''}${base_badge
@@ -1500,7 +1502,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 : wait
               : hold,
           discard_actions,
-          waiting ? monitor_relations : external_wait_el,
+          waiting ? monitor_relations : '',
           parked ? resolve_button : '',
           parked && !!tile.discard?.error,
           tile.hold_since
@@ -1538,17 +1540,19 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                   exec_chips ||
                   rec_chip ||
                   provider_badges.length > 0 ||
-                  usage_label
+                  usage_label ||
+                  external.chips
                 ? html`<div class="rtile__meta">
                     ${monitor_chips ||
                     route_chip ||
                     source_chips ||
                     exec_chips ||
-                    rec_chip
+                    rec_chip ||
+                    external.chips
                       ? html`<div class="rtile__facts">
                           ${monitor_chips}${route_chip}${source_chips}${execChipsTemplate(
                             tile.exec_chips
-                          )}${rec_chip}
+                          )}${rec_chip}${external.chips}
                         </div>`
                       : ''}
                     ${provider_badges.length > 0 || usage_label
@@ -1583,7 +1587,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
             ${failed || paused
               ? ''
               : html`<div class="rtile__accent" aria-hidden="true"></div>`}`}
-    ${wait_body_lines.times}${failurePopoverTemplate(failure, now)}
+    ${(held || failed) && external.chips
+      ? html`<div class="worker-chips">${external.chips}</div>`
+      : ''}${wait_body_lines.times}${failurePopoverTemplate(failure, now)}
   </div>`;
 }
 
