@@ -8,6 +8,8 @@ scope:
   - server/worker/bead-timeline.js
   - server/worker/compare-projection.js
   - server/worker/runner/claude.js
+  - server/worker/runner/provider-outage.js
+  - server/worker/runner/codex-outage.js
   - app/views/detail-panel/exec-accounts.js
   - app/views/detail-panel/index.js
   - app/views/worker/gate-labels.js
@@ -111,18 +113,34 @@ beads-ui가 아무리 자주 읽어도 네트워크 요청은 cswap 정책이 �
    kind:'account_switch', origin:'live_preempt' }`를 넣는다. 그 뒤 기존
    `pauseDurably` 경로가 SIGTERM과 종료 settlement를 맡는다. 두 기록이 한 쓰기라야
    정지와 재개 사이에 서버가 죽어도 재시작 복원(`auto_resume_pending` 복원)이
-   같은 계정으로 재개한다.
+   같은 계정으로 재개한다. 이 영수증은 **hold와 무관**하므로 durable 처리 셋을
+   함께 바꾼다: `normalizeAutoResumePending`(`queue-store.js:4234`)은
+   `origin:'live_preempt'`이면 `generation:0`을 받고 `origin`을 보존한다(그 외
+   origin은 현행대로 `≥ 1`); `discardStaleAutoResumePending`(`:8103`)은
+   `origin:'live_preempt'` 항목을 hold 세대 비교 없이 유지한다; `AutoResumePending`
+   typedef에 `origin?: 'live_preempt'`를 더한다.
 2. 종료 settlement는 일시정지 intent의 `reason:'account_preempt'`를 읽어 attempt를
    `status:'paused'`, `cause:'account_preempt:<window>'`, `cause_detail:
    { kind:'account_preempt', from, to, window, pct }`로 기록한다. 수동 일시정지의
    기존 cause 어휘는 그대로다. 종료 후 exit 판정 경로는 이 attempt를 실패로 분류하지
    않는다(일시정지 intent가 있는 종료는 이미 그렇게 처리된다).
-3. settlement 끝에서 `consumeProviderAutoResume(workspace)`를 부른다. 영수증의
-   `generation`이 0이고 대응 hold target이 없으므로 `switched_from`은
-   `prior.claude_account`/`codex_account`에서 읽고(기존 fallback), `resume(…,
-   { continuation:'auto', provider_auto_resume:true,
+3. settlement 끝에서 `consumeProviderAutoResume(workspace)`를 부른다. 소비기는
+   `origin:'live_preempt'` 영수증을 **prior가 `status:'paused'`·`cause`가
+   `account_preempt:`로 시작할 때만** 소비한다 — 정산 전에 다른 경로가 소비기를
+   불러도 그 영수증은 건너뛰고 남긴다(`resume()`의 `not_failed` 거부로 소모되지
+   않는다). 영수증의 `generation`이 0이고 대응 hold target이 없으므로
+   `switched_from`은 영수증에 함께 실은 `from`(`AutoResumePending`에
+   `switched_from?: string` 추가)에서 읽고, `resume(…, { continuation, provider_auto_resume:true,
    auto_resume_kind:'account_switch', exec_override:{ <runner>_account: to },
-   account_switched_from: from })`로 같은 세션을 이어간다. 회복 알림의
+   account_switched_from: from })`로 같은 세션을 이어간다. `continuation`은 prior의
+   `continuation_choice`가 `'prior_attempt'`면 `'prior_attempt'`, 아니면 `'auto'`다.
+   **`prior_attempt` 계정 잠금의 예외**: 현재 소비기는 `continuation_choice:
+   'prior_attempt'`인 prior의 계정 전환을 `prior_attempt_locked`로 거부한다
+   (`scheduler.js:11038`, ADR UI-6icf가 보존한 §5.3 계약 "기록된 세션·tuple·계정을
+   지킨다"). 자동 전환 모드의 `account_switch` 영수증(`live_preempt` 출처와
+   `holdAttempt` 출처 모두)은 이 잠금을 넘어 **계정만** 바꾸고 세션·tuple은
+   그대로 잇는다 — 잠금이 지키려던 것은 사용자가 고른 세션과 설정이지 한도에 걸린
+   계정이 아니다. UI-6icf의 그 조항은 ADR 후보가 supersede한다. 회복 알림의
    `duration_ms`는 hold가 없으니 0이다.
 4. `account_sources[runner]`에 새 값 `'live_switch'`를 찍는다.
    `AccountSourceValue`에 추가하고 정규화(`queue-store.js` 허용값 목록)에 더한다.
@@ -133,14 +151,22 @@ beads-ui가 아무리 자주 읽어도 네트워크 요청은 cswap 정책이 �
    <from> → <to> (<창> <pct>%)'`(`bead-timeline.js` 허용 kind에 추가,
    `compare-projection.js`의 계정 전환 kind 집합에도 추가). 디스코드 push:
    `notify.providerLivePreempt({ bead_id, runner, from, to, window, pct, repo })`,
-   제목 `🔀 실행 중 계정 전환`. 디스패치 시 선제 전환과 달리 한 attempt에 한 번만
-   일어나므로 반복 알림 위험이 없다.
+   제목 `🔀 실행 중 계정 전환`. 소비기가 성공한 `account_switch`에 보내는
+   `provider_recovered` timeline과 `providerRecovered` 알림(`scheduler.js:11077`)은
+   `origin:'live_preempt'`에서는 **보내지 않는다** — 이 출처의 기록·알림은 위
+   한 쌍뿐이다. 디스패치 시 선제 전환과 달리 한 attempt에 한 번만 일어나므로 반복
+   알림 위험이 없다.
 
 **경계.**
 
-- 전환된 자식도 감시 대상이다. 새 계정이 다시 임계를 넘으면 다시 전환한다. 후보
-  규칙(5h ≤ 80·그 외 ≤ 90, 보류 중 계정 제외, 현재 계정 제외)이 왕복을 막고, 후보가
-  없으면 한도까지 달리다 §3.4의 outage 경로가 잡는다.
+- 전환된 자식도 감시 대상이다. 새 계정이 다시 임계를 넘으면 다시 전환한다.
+  **후보 규칙**: 2026-09-09 §3.2의 건강 조건(5h ≤ 80·그 외 ≤ 90, 보류 중 계정 제외,
+  현재 계정 제외)에 더해 **후보의 모든 창이 `preempt_pct` 미만**이어야 한다 —
+  `selectProviderSwitchAccount`에 `max_pct` 인자를 더해 선제 전환 두 경로(§3.1·§3.2)가
+  넘긴다(한도 도달 경로 `holdAttempt`는 넘기지 않아 현행 그대로). 선제 전환은 떠난
+  계정에 hold를 만들지 않으므로 이 조건이 없으면 두 계정이 모두 임계 이상일 때
+  자식이 매 주기 반대 계정으로 왕복한다. 후보가 없으면 한도까지 달리다 한도 도달
+  경로가 잡는다.
 - 데이터 신선도는 cswap 정책이 정한다. 소비 중인 계정은 180초 간격으로 좁혀지므로
   판정 지연은 보통 3분 이내이고, 오늘 속도(분당 ~1.3%p)면 임계 뒤 4%p 안에서
   멈춘다. 이 스펙은 임계값을 보정하지 않는다 — 지연은 사용자가 `preempt_pct`로
@@ -160,7 +186,8 @@ null` 분기를 지운다. 판정 트리거는 둘이다:
 - (b) 신설: 그 계정이 `provider_hold[runner]`의 `kind:'usage_limit'` target
   (`account === current`)이다 — 창 값과 무관하게 후보를 고른다.
 
-둘 다 후보는 `selectProviderSwitchAccount`이고, 적용·기록은 현행대로
+둘 다 후보는 `selectProviderSwitchAccount(…, { max_pct: preempt_pct })`(§3.1
+후보 규칙)이고, 적용·기록은 현행대로
 (`account_sources[runner]='preempt_switch'`, `account_switched_from`, timeline
 `account_preempt`). (b)의 summary는 `(보류 중)`으로 쓴다:
 `'<runner> 선제 전환 <from> → <to> (보류 중)'`. 이어지는 `providerDispatchHeld`는
@@ -185,26 +212,22 @@ Bead의 `claude_account`/`codex_account` pin 값은 쓰지 않는다 — 덮기�
 - `start()`의 `probeCapped` 호출은 사라진다 — 재시작은 `sync()`가 모든 target을
   다시 무장하는 것으로 충분하다(UI-1l3a §3.4의 "상한 target 재시작 1회 프로브"는
   상한과 함께 사라진다).
-- `notify.providerAutoResumeDisarmed`와 `disarm_notified_at` 쓰기를 지운다. 과거 큐
-  파일의 `disarm_notified_at`·`auto_switch:'cap'`·`last_error:
+- `notify.providerAutoResumeDisarmed`의 `hold_age_cap`·`rearm_cap` 호출과 target의
+  `disarm_notified_at` 쓰기를 지운다. 같은 함수의 `reason:'auto_resume_cap'` 호출
+  (`provider-health.js:562`, §8.1 계보 자동 재개 상한)은 그 상한과 함께 **남는다**.
+  과거 큐 파일의 `disarm_notified_at`·`auto_switch:'cap'`·`last_error:
   'auto_resume_disarmed:*'`는 정규화가 읽기만 하고 버린다(`last_error`는 그대로
   두어도 무해하다).
 - `hold.since`는 첫 보류 시각의 표시용 값으로만 남는다. `probeCapped`·`scheduleTarget`
   이외의 `since` 소비(회복 알림 `duration_ms`, 팝오버 "보류 n분")는 바뀌지 않는다.
 
 **잔재 target 정리.** 오늘 dotfiles의 9/9 target 같은 잔재가 hold를 영원히 붙들지
-않도록 두 규칙을 둔다.
-
-- attempt가 라이브 맵에서 사라질 때(폐기·전송·`deleteAttempt`) 그 attempt id를
-  target의 `attempt_ids`에서 빼고, 비어 버린 usage_limit target은 제거한다. target이
-  없는 hold는 `delete provider_hold[runner]`(기존 `clearManualProviderResumeTarget`의
-  빈 hold 처리와 같다).
-- usage_limit target의 프로브가 `ok`도 provider outage도 아닌 오류(모델 부재·인증
-  실패·`probe_route_unavailable`)로 **3회 연속** 끝나면 target을 제거하고 timeline에
-  `kind:'provider_target_dropped'`, `summary:'<runner> <account> 보류 target 제거 —
-  프로브 판정 불가(<오류 요약>)'`를 남긴다. 그 target에 묶인 attempt는 `paused`로
-  남고 출구는 수동 `↻ 이어하기`다. 열린 게이트로 나간 디스패치가 진짜 한도에 걸리면
-  §3.4 경로가 다시 보류하므로 자기 치유된다.
+않도록 한 규칙을 둔다: attempt가 라이브 맵에서 사라질 때(폐기·전송·`deleteAttempt`)
+그 attempt id를 target의 `attempt_ids`에서 빼고, 비어 버린 usage_limit target은
+제거한다. target이 없는 hold는 `delete provider_hold[runner]`(기존
+`clearManualProviderResumeTarget`의 빈 hold 처리와 같다). 프로브 판정 불가 오류로
+target을 지우는 규칙은 두지 않는다 — 해제는 프로브만이 판정한다(§5의 `AGENTS.md`
+줄). 판정 불가 오류는 현행대로 `outage` kind 재분류와 백오프(최대 1시간)를 탄다.
 
 ### 3.4 전환 재개 단일성
 
@@ -216,10 +239,12 @@ Bead의 `claude_account`/`codex_account` pin 값은 쓰지 않는다 — 덮기�
 - `consumeProviderAutoResume`는 모듈 상태 `resume_in_flight: Set<attempt_id>`를
   둔다. 영수증의 attempt가 in-flight면 건너뛰고, `resume()` 전에 넣고 `finally`에서
   뺀다. 한 attempt의 영수증은 언제나 한 번만 `resume()`에 닿는다.
-- `resume()`의 기존 `bead_running` 판정(같은 Bead의 attempt가 실행 중이면 거부)을
-  전환 재개 경로에도 적용한다 — 오늘처럼 첫 자식이 이미 떠 있으면 두 번째
-  `resume()`은 `bead_running`으로 거부되고 첫 자식의 기록이 남는다. 거부 사유는
-  현행대로 prior의 `auto_resume_refused`에 적힌다.
+- `resume()`의 `bead_running` 판정(`scheduler.js:10723`)은 전환 재개에도 이미
+  적용되고 거부 사유도 이미 `auto_resume_refused`에 적힌다. 오늘 그 판정을 두 호출이
+  모두 지난 이유는 **경쟁**이다: 판정은 동기 스냅샷을 읽는데 `resume()`은 그 뒤
+  spawn까지 여러 `await`(카탈로그·워크트리·bd 읽기)를 거치므로, 첫 호출이
+  `running`에 등록되기 전 두 번째 호출이 같은 판정을 통과한다. 위 in-flight
+  집합이 그 창을 닫는다; `bead_running` 자체는 바꾸지 않는다.
 - `holdProviderAttempt`의 영수증 push는 이미 attempt id로 중복을 막는다; 위 세
   규칙으로 "소비된 뒤 다시 push"도 막힌다(멱등 `holdAttempt`가 두 번째 push 자체를
   내지 않는다).
@@ -232,17 +257,34 @@ Bead의 `claude_account`/`codex_account` pin 값은 쓰지 않는다 — 덮기�
   이벤트(`session-observation.js`가 이미 읽는다)를 보거나 프로세스가 끝나면 풀며,
   풀린 뒤 `LAUNCH_SPACING_MS = 3_000` 동안 다음 기동을 미룬다. 잠금 대기 상한은
   30초이고 넘으면 그냥 기동한다(잠금은 최적화이지 정확성 조건이 아니다). codex
-  러너는 `CODEX_HOME` 미러가 프로세스별이라 대상이 아니다.
-- **분류.** `failure-class.js ENV_ERROR_PATTERNS`에 그룹 `credential`을 더한다:
-  `/Failed to authenticate|OAuth session expired|could not be refreshed|invalid_grant/i`.
-  env 그룹이므로 기존 `RETRY_DELAYS_MS` 사다리로 같은 선택(같은 계정·같은 세션
-  continuation, `failed_record.account_switched_from` 승계)의 지연 재시도를 탄다.
-  사다리를 소진하면 현행 env 소진 처리대로 `대기 · recovery:credential`
-  (`wait-judgment.js`의 `credential` 문구)로 넘어간다.
-- **재시도 전 카탈로그 갱신.** `credential` 그룹 재시도 직전에
-  `invalidateClaudeUsageCache()` 뒤 `listClaude()`를 한 번 읽는다 — `cswap list`의
-  collect 패스가 회전된 백업을 재동기화한다(오늘 14:17:23의 "Resynced …"가 그
-  경로다). 실패해도 재시도는 진행한다.
+  러너는 `CODEX_HOME` 미러가 프로세스별이라 직렬화 대상이 아니다 — 아래 분류는
+  러너 무관이다.
+- **분류 — 인증 실패는 계정 단위 공급자 보류다.** 환경 오류 재시도 사다리는 쓰지
+  않는다: `runDueRetries`(`scheduler.js:13797`)는 보존 작업이 없으면 새
+  `dispatch()`를 내어 세션·계정·전환 출처를 승계하지 않고,
+  `queue-hold.js reduceEnvFailure`(`:363`)는 다른 Bead의 같은 오류에서 큐 전체를
+  세우며, 소진 분류는 `transient_retry_exhausted → provider`다. 대신 러너
+  어댑터의 공급자 분류(`providerOutageFor` → 각 어댑터의 `classifyProviderOutage`,
+  claude는 `runner/provider-outage.js`, codex는 `runner/codex-outage.js`)에 **러너
+  무관** 문구 그룹 `credential`을 더한다:
+  `/Failed to authenticate|OAuth session expired|could not be refreshed|invalid_grant|401 Unauthorized|Missing bearer/i`
+  (앞 넷은 claude·cswap, 뒤 둘은 codex — 오늘 14:03 dotfiles-w8r0 attempt -3의
+  `turn.failed` "unexpected status 401 Unauthorized: Missing bearer or basic
+  authentication in header"가 `unknown_error → wait`로 떨어진 같은 결함이다). 분류
+  결과는 `{ detail:'credential', scope:'account', resets_at:null }`이고 `holdAttempt`가
+  받아 attempt를 `paused`·`cause:'provider_outage:credential'`로 두고 그 계정의
+  `kind:'outage'`·`detail:'credential'` target을 만든다. 이후는 기존 outage 경로
+  그대로다: 프로브(`cswap run <계정> -- claude -p ok` / codex 미러)가 60초 →
+  … → 1시간 백오프로 판정하고, 통과하면 `recoverProviderTarget`이 target을 지우고
+  같은 attempt를 `provider_outage` 영수증으로 재개한다 — 재개는 기록된 세션·tuple·
+  계정·`account_switched_from`을 그대로 잇는다(계정 전환이 아니다). 프로브 자체가
+  `cswap run` 부트스트랩을 거치므로 회전된 백업의 재동기화(오늘 14:17:23의
+  "Resynced …")를 겸한다. 큐는 서지 않고(공급자 보류는 큐 정지가 아니다), 여러
+  Bead가 함께 인증 실패해도 같은 target에 묶여 한 프로브로 함께 회복된다. 게이트는
+  현행 outage 판정대로 그 러너를 프로브 통과까지 막는다 — 회전 창 안으로 새 기동을
+  내지 않는 것이 목적이므로 의도된 동작이다. `대기 · recovery:credential`은 이
+  경로가 만들지 않는다; 사람 확인 대기는 프로브도 못 잡는 오류에서만 남는다.
+  §8.1 계보 자동 재개 상한은 이 `provider_outage` 재개도 1회로 센다(비목표).
 - 관찰: claude-swap 0.26.0이 나와 있다. 업그레이드는 이 스펙 밖의 운영 항목이다.
 
 ### 3.6 표시
@@ -265,9 +307,11 @@ Bead의 `claude_account`/`codex_account` pin 값은 쓰지 않는다 — 덮기�
 
 ### 3.7 알림
 
-`providerHoldEntered`(⏳ 공급자 보류)·`providerRecovered`(✅ 공급자 회복, 전환이면
-`<from> → <to>`)는 유지하고 `providerLivePreempt`(🔀 실행 중 계정 전환)를 더한다.
-`providerAutoResumeDisarmed`(🚨 자동 재개 중단)는 상한과 함께 사라진다.
+`providerHoldEntered`(⏳ 공급자 보류 — `credential` 보류도 이 알림)·
+`providerRecovered`(✅ 공급자 회복, 전환이면 `<from> → <to>`)는 유지하고
+`providerLivePreempt`(🔀 실행 중 계정 전환)를 더한다. 실행 중 전환 한 번에 알림은
+`providerLivePreempt` 하나뿐이다(§3.1 5). `providerAutoResumeDisarmed`(🚨 자동 재개
+중단)는 `hold_age_cap`·`rearm_cap` 사유가 사라지고 `auto_resume_cap` 사유만 남는다.
 
 ## 4. 검토한 대안
 
@@ -278,9 +322,16 @@ Bead의 `claude_account`/`codex_account` pin 값은 쓰지 않는다 — 덮기�
   설명해야 한다.
 - **상한 유지 + 기산점만 target별로** — 사용자 기각. 오늘 버그는 사라지지만 24시간·
   3회 뒤 수동 개입이 남아 "자동화가 멈춘다"는 문제 자체는 남는다.
-- **인증 실패 재시도만 두고 직렬화 없음** — 부분 채택. 재시도가 정확성을 맡고
-  직렬화는 동시 부트스트랩이라는 원인을 줄이는 최적화라 둘 다 둔다. 직렬화만으로는
-  오늘처럼 20초 뒤 기동이 회전 창에 드는 것을 못 막는다.
+- **인증 실패 회복만 두고 직렬화 없음** — 부분 채택. 보류·프로브·회복이 정확성을
+  맡고 직렬화는 동시 부트스트랩이라는 원인을 줄이는 최적화라 둘 다 둔다.
+  직렬화만으로는 오늘처럼 20초 뒤 기동이 회전 창에 드는 것을 못 막는다.
+- **인증 실패를 env 재시도 사다리(`ENV_ERROR_PATTERNS` 그룹)로 처리** — 기각(리뷰
+  r1). `runDueRetries`는 보존 작업이 없으면 새 `dispatch()`라 세션·계정·전환 출처를
+  잃고, `reduceEnvFailure`는 두 Bead의 같은 오류에서 큐를 세우며, 소진 분류가
+  `provider`다. 계정 단위 outage 보류는 셋 다 피하고 프로브가 회전 창의 끝을
+  판정한다.
+- **프로브 판정 불가 오류 3회 뒤 target 삭제** — 기각(리뷰 r1). 승인 요구에 없는
+  새 상한이고 회복 증거 없이 게이트를 연다.
 - **정지 대신 턴 경계에서 전환** — 기각. `claude -p` 세션에는 밖에서 볼 수 있는 턴
   경계가 없고, 한도 도달 경로도 이미 턴 중간에 끊긴다.
 
@@ -311,12 +362,14 @@ Bead의 `claude_account`/`codex_account` pin 값은 쓰지 않는다 — 덮기�
 2. `mode:'wait'`·`preempt_pct:null`·허용 집합 빈 경우 각각 패스가 no-op다.
 3. 후보가 없으면 attempt에 `live_preempt_last_skip`이 기록되고 정지하지 않는다.
 4. `preemptRunningAttempt`는 일시정지 intent와 `auto_resume_pending`
-   (`origin:'live_preempt'`, `generation:0`)을 한 revision의 쓰기로 남긴다.
+   (`origin:'live_preempt'`, `generation:0`, `switched_from`)을 한 revision의 쓰기로
+   남긴다.
 5. 종료 settlement는 `reason:'account_preempt'` intent를 `cause:'account_preempt:
    <window>'`·`paused`로 기록하고 실패로 분류하지 않는다.
 6. `origin:'live_preempt'` 영수증의 재개는 `account_sources[runner]='live_switch'`,
    `account_switched_from`, timeline `account_live_preempt`, `providerLivePreempt`
-   알림 1회를 남긴다.
+   알림 1회를 남기고 `provider_recovered`·`providerRecovered`는 내지 않는다(알림
+   호출 총 1회).
 7. `applyPreemptSwitch`는 `source:'bead'`인 계정도 창이 임계 이상이면 바꾼다.
 8. `applyPreemptSwitch`는 계정이 usage_limit 보류 target이면 창 값과 무관하게
    바꾸고 summary가 `(보류 중)`이다; 이어지는 `providerDispatchHeld`는 바뀐 계정으로
@@ -325,47 +378,60 @@ Bead의 `claude_account`/`codex_account` pin 값은 쓰지 않는다 — 덮기�
    없다.
 10. `consumeProviderAutoResume`를 같은 스냅샷으로 동시에 두 번 부르면 `resume()`은 한
     번만 불린다.
-11. 같은 Bead의 attempt가 실행 중일 때 전환 재개 `resume()`은 `bead_running`으로
-    거부되고 prior에 `auto_resume_refused`가 적힌다.
-12. 같은 `claude_account`의 두 spawn은 첫 자식의 `init` 관측 후 3초가 지나야 두 번째가
+11. 같은 `claude_account`의 두 spawn은 첫 자식의 `init` 관측 후 3초가 지나야 두 번째가
     나가고, 다른 계정끼리는 기다리지 않는다; 30초 상한을 넘으면 그냥 나간다.
-13. `credential` 그룹 재시도 직전에 `invalidateClaudeUsageCache`와 `listClaude`가 한
-    번씩 불린다.
+12. `origin:'live_preempt'` 영수증은 prior가 아직 `running`이면 소비되지 않고 남으며,
+    prior가 `paused`·`account_preempt:*`가 된 뒤 호출에서 소비된다.
+13. `continuation_choice:'prior_attempt'`인 prior의 `account_switch` 영수증은
+    `prior_attempt_locked`가 아니라 `continuation:'prior_attempt'` + 계정
+    `exec_override`로 재개된다(세션·tuple 보존, 계정만 변경).
+14. 실행 중 전환 후보 선택은 모든 창이 `preempt_pct` 미만인 계정만 고른다 — 두
+    계정이 모두 임계 이상이면 전환하지 않고 `live_preempt_last_skip`만 남긴다.
+15. 러너 어댑터의 공급자 분류가 "Failed to authenticate: OAuth session expired and
+    could not be refreshed"(claude)와 "unexpected status 401 Unauthorized: Missing
+    bearer or basic authentication in header"(codex)를 `{ detail:'credential',
+    scope:'account' }`로 돌려주고, `holdAttempt`가 `cause:'provider_outage:credential'`·
+    `kind:'outage'` target으로 기록한다; 큐 `hold`는 열리지 않는다.
+16. `credential` target의 프로브 통과 뒤 재개는 실패한 attempt의 `claude_account`·
+    `session_id`·`account_switched_from`을 그대로 잇는다.
 
 `server/worker/provider-health.test.js`
 
-14. `rearm_count`가 3 이상이거나 `hold.since`가 25시간 전인 usage_limit target도
+17. `rearm_count`가 3 이상이거나 `hold.since`가 25시간 전인 usage_limit target도
     `resets_at + 60초`에 무장된다(기존 "leaves a rearm-capped…"·age cap 테스트는 이
     기대로 바뀐다).
-15. `disarmTarget`·`probeCapped`·`providerAutoResumeDisarmed` 호출이 없다.
-16. usage_limit 프로브가 판정 불가 오류로 3회 연속 끝나면 target이 제거되고
-    `provider_target_dropped`가 남는다; 2회면 남는다.
+18. `disarmTarget`·`probeCapped` 호출이 없고, `providerAutoResumeDisarmed`는
+    `hold_age_cap`·`rearm_cap` 사유로 불리지 않는다(`auto_resume_cap` 사유는 그대로
+    불린다).
 
 `server/worker/queue-store.test.js`
 
-17. 라이브 맵에서 attempt가 사라지면 그 id가 target `attempt_ids`에서 빠지고 빈
+19. 라이브 맵에서 attempt가 사라지면 그 id가 target `attempt_ids`에서 빠지고 빈
     target·빈 hold가 제거된다.
-18. `AccountSourceValue` 정규화가 `'live_switch'`를 받고, 구 파일의
+20. `AccountSourceValue` 정규화가 `'live_switch'`를 받고, 구 파일의
     `auto_switch:'cap'`·`disarm_notified_at`을 읽어도 실패하지 않는다.
-19. `auto_resume_pending` 정규화가 `origin`을 보존하고 부재를 `undefined`로 둔다.
-
-`server/worker/failure-class.test.js`
-
-20. "Failed to authenticate: OAuth session expired and could not be refreshed"가
-    `credential` env 그룹으로 분류된다.
+21. `auto_resume_pending` 정규화가 `origin:'live_preempt'`·`generation:0`·
+    `switched_from`을 보존하고(재시작 복원), `origin` 부재 `generation:0`은 현행대로
+    버린다.
+22. `discardStaleAutoResumePending`은 같은 러너에 다른 세대의 hold가 있어도
+    `origin:'live_preempt'` 영수증을 남긴다.
 
 `app/views/detail-panel/exec-accounts.test.js`
 
-21. 최신 attempt의 `account_sources.claude === 'live_switch'`면 `자동 적용:` 줄이
+23. 최신 attempt의 `account_sources.claude === 'live_switch'`면 `자동 적용:` 줄이
     `실행 중 선제 전환` 사유로 그려지고, `'bead'`·`'workspace_default'`·attempt
     없음이면 줄이 없다.
 
 #### 보존 검증 (변경 전에도 통과한다)
 
-22. 리셋 프로브 통과 시 `recoverProviderTarget`이 target을 지우고 `provider_outage`
+24. 리셋 프로브 통과 시 `recoverProviderTarget`이 target을 지우고 `provider_outage`
     영수증으로 1회 자동 재개한다(§8.1 lineage cap 유지).
-23. `[지금 시작]` bypass는 선제 전환·게이트와 무관하게 그 행을 디스패치한다.
-24. 전환 자식은 §8.1 cap을 소비하지 않는다.
+25. `[지금 시작]` bypass는 선제 전환·게이트와 무관하게 그 행을 디스패치한다.
+26. 전환 자식은 §8.1 cap을 소비하지 않는다.
+27. 같은 Bead의 attempt가 실행 중일 때 전환 재개 `resume()`은 `bead_running`으로
+    거부되고 prior에 `auto_resume_refused`가 적힌다.
+28. usage_limit target의 프로브가 판정 불가 오류로 끝나면 target은 남고 `outage`
+    kind로 재분류돼 백오프를 탄다.
 
 ### 절차
 
@@ -384,15 +450,18 @@ timeline과 디스코드 알림으로 확인하고 되돌린다.
 - usage_limit 보류는 상한 없이 리셋 시각마다 프로브되고 `hold_age_cap`·`rearm_cap`
   사유가 더 이상 생기지 않는다.
 - 한 attempt의 전환 재개는 정확히 한 프로세스를 만들고 그 기록이 살아남는다.
-- 인증 실패 문구는 `credential`로 분류돼 지연 재시도를 타고, 사람 확인 대기는
-  사다리 소진 뒤에만 생긴다.
+- 인증 실패 문구(claude·codex)는 계정 단위 `credential` 공급자 보류가 되어 큐를
+  세우지 않고, 프로브 통과 뒤 같은 세션·계정으로 자동 재개된다; 사람 확인 대기는
+  프로브도 잡지 못하는 오류에서만 생긴다.
 - 이슈 상세 `실행 계정`에 자동 적용된 계정과 사유가 보인다.
 
 ## 7. 비목표
 
 - `preempt_pct` 이외의 새 설정 키, 별도 실행 중 임계, 사용량 지연 보정.
-- §8.1 lineage 자동 재개 1회 cap(리셋 뒤 자동 재개)의 변경 — 전환 자식은 세지
-  않으므로 자동 전환 모드에서는 걸리지 않는다.
+- §8.1 lineage 자동 재개 1회 cap(리셋·회복 뒤 `provider_outage` 자동 재개)의 변경 —
+  전환 자식은 세지 않으므로 자동 전환 모드의 한도 경로에서는 걸리지 않고,
+  `credential` 회복 재개는 현행대로 1회로 센다. 그 알림(`auto_resume_cap`)도
+  남는다.
 - cswap 내부(부트스트랩 회전·Keychain 처리)의 수정과 업그레이드.
 - `dispatchReviewSession` 리뷰 세션의 선제 전환.
 - Bead pin 값·워크스페이스 기본 계정 값의 쓰기.
@@ -402,7 +471,7 @@ timeline과 디스코드 알림으로 확인하고 되돌린다.
 
 - unit-01: 서버 상태기 — §3.3 상한 제거·잔재 정리, §3.4 단일성, §3.5 직렬화·분류
   (`provider-health.js`, `queue-store.js`, `scheduler.js` 재개·보류 경로,
-  `failure-class.js`).
+  `runner/provider-outage.js`·`runner/codex-outage.js`의 공급자 분류).
 - unit-02: 실행 중 선제 전환과 디스패치 덮기 — §3.1·§3.2·§3.7
   (`scheduler.js` 패스·`preemptRunningAttempt`·`applyPreemptSwitch`, `notify.js`,
   `bead-timeline.js`, `compare-projection.js`).
@@ -430,19 +499,30 @@ timeline과 디스코드 알림으로 확인하고 되돌린다.
   `provider_gate` admission 기록으로 공개한다. 이 스펙은 판정 주체와 기록을 그대로
   두고 "상한으로 멎은 usage_limit target은 서버 재시작 시 한 번 프로브된다" 조항만
   상한과 함께 뒤집는다.
+- 전제: ADR UI-6icf — 세션 재개 조작은 `⏸`·`▶ 재개` 둘이고 durable pause와
+  `prior_attempt`의 서버 계약은 UI 진입점 없이 유지한다. 이 스펙은 조작과 계약을
+  그대로 두고 "`prior_attempt` 자동 회복은 기록된 계정을 지킨다(계정 전환 거부)"
+  조항만 자동 전환 모드의 `account_switch` 영수증에 한해 뒤집는다(§3.1 3).
+- 전제: ADR UI-o5ll(승계 UI-a8rq → UI-1l3a) — 공급자 보류의 해제는 프로브만이
+  판정한다. 이 스펙은 그 원칙을 usage_limit·credential target에도 그대로 적용한다.
 - **자동 전환 모드에서는 계정 한도가 자동화를 세우지 않는다 — 실행 중 attempt도
   임계에서 정지·전환·재개하고, 핀·기본 계정이 보류 중이거나 임계 이상이면
-  디스패치에서 덮어 전환하며, usage_limit 보류의 자동 프로브에는 상한이 없다.**
+  디스패치에서 덮어 전환하며, `prior_attempt` 계정 잠금도 이 전환에는 양보하고,
+  usage_limit 보류의 자동 프로브에는 상한이 없으며, 인증 실패는 계정 단위 공급자
+  보류로 프로브가 회복을 판정한다.**
   되돌리기 어려움: 있음 — durable 어휘(`account_sources:'live_switch'`,
-  `cause:'account_preempt:*'`, `auto_resume_pending.origin`)와 상한 상수·알림 제거가
-  함께 움직인다 / 맥락 없이 놀라움: 있음 — 이슈에 핀한 계정이 조용히 다른 계정으로
-  실행되고, 무인 Worker가 리셋마다 영원히 프로브한다 / 실제 트레이드오프: 있음 —
-  진행 중인 턴을 끊는 비용과 pin의 명시성 대 자동화의 연속성. 세 조건 충족.
+  `cause:'account_preempt:*'`, `auto_resume_pending.origin`,
+  `detail:'credential'`)와 상한 상수·알림 제거가 함께 움직인다 / 맥락 없이 놀라움:
+  있음 — 이슈에 핀한 계정이나 `prior_attempt`로 잠근 계정이 조용히 다른 계정으로
+  실행되고, 무인 Worker가 리셋마다 영원히 프로브하며, 인증 실패가 재시도가 아니라
+  보류로 보인다 / 실제 트레이드오프: 있음 — 진행 중인 턴을 끊는 비용과 pin·잠금의
+  명시성 대 자동화의 연속성. 세 조건 충족.
   `summary`: "자동 전환 모드에서는 계정 한도가 자동화를 세우지 않는다 — 실행 중
   attempt도 preempt_pct에서 정지해 허용 계정으로 같은 세션을 재개하고, 핀·기본
-  계정이 보류 중이거나 임계 이상이면 디스패치에서 launch-only로 덮어 전환하며,
-  usage_limit 보류의 자동 프로브에는 24시간·재무장 상한이 없다." → ADR, supersede
-  0052 · UI-1l3a
-- 전환 재개 단일성(멱등 `holdAttempt`·in-flight 집합·`bead_running`)과 같은 계정
-  기동 직렬화·`credential` 분류 — 되돌리기 어려움: 낮음(내부 가드와 패턴 한 줄) /
-  맥락 없이 놀라움: 없음 / 실제 트레이드오프: 없음. → ADR 아님
+  계정이 보류 중이거나 임계 이상이면 디스패치에서 launch-only로 덮어 전환하며
+  prior_attempt 계정 잠금도 이 전환에는 양보하고, usage_limit 보류의 자동 프로브에는
+  24시간·재무장 상한이 없으며, 인증 실패는 계정 단위 공급자 보류로 프로브가 회복을
+  판정한다." → ADR, supersede 0052 · UI-1l3a · UI-6icf
+- 전환 재개 단일성(멱등 `holdAttempt`·in-flight 집합)과 같은 계정 기동 직렬화 —
+  되돌리기 어려움: 낮음(내부 가드) / 맥락 없이 놀라움: 없음 / 실제 트레이드오프:
+  없음. → ADR 아님
