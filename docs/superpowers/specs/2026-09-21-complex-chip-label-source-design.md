@@ -22,7 +22,8 @@ Bead: `UI-7nhi` (`route=spec_backed`). 선행(`blocks` 셋): `dotfiles-23ev` —
 `docs/superpowers/specs/2026-09-21-complex-label-replaces-rec-keys-design.md` §1이 소유하며 이 spec은 그
 소비자다(ADR 0012); `UI-mfm1` — 후보 행 사실 키 집합(`CandidateFacts`)과 서버 행의 판정 키 추가를 소유하며
 이 spec은 그 착지 뒤 그 집합에서 `rec`를 지우고 `complex_reason`을 더한다(§2); `UI-p7s2` — `bead_overlay`의
-`labels?` 필드 도입을 소유하며 이 spec은 그 필드의 원천 열만 넓힌다(§3). 전신: `2026-08-27-ui-sbum-rec-complex-chip-design.md`(UI-sbum), 칩 클릭 의미는
+`labels?` 필드를 소유하며 그 착지(`26b0d1841636bc29cf02978190c2e36c47a97fc8`)가 다섯 열 모두에서 라벨을 싣는다; 이 spec은
+그 필드를 읽기만 한다(§3). 전신: `2026-08-27-ui-sbum-rec-complex-chip-design.md`(UI-sbum), 칩 클릭 의미는
 `2026-08-28-chip-grammar-unify-design.md`(UI-8x90 §4.5).
 
 ## 배경
@@ -42,17 +43,17 @@ metadata `complex_reason=<signal>[+…]`(신호 `hard_diagnosis|invariant_reason
 
 ## 결정
 
-| 결정 | 값 |
-| --- | --- |
-| 판정 유틸 | `app/utils/rec-settings.js`를 삭제하고 `app/utils/complex-judgement.js`를 신설한다. `session-preferred.js`와 같은 꼴: `complexReason(labels, metadata)` → 라벨 `complex`가 있고 `complex_reason`의 신호가 하나 이상 enum 안이면 그 신호 문자열(enum 밖 토큰 제거·`+` 재결합), 아니면 `''` |
-| 칩 재료 | 세 표면 모두 문자열 `complex_reason` 하나. 비어 있지 않으면 칩이 선다. 3상태(`state`)·`data-state`·권위 키 비교는 삭제 |
-| 툴팁·팝업 | `복잡한 작업으로 판정됨` / `사유: <문장> · <문장>`. 상태 줄 없음. 문장 사전은 신호 3개(`claude_bound` 항목 삭제). 모델·런타임 이름은 여전히 쓰지 않는다 |
-| 슬롯·클릭 | 자리는 지금 그대로다 — 후보 카드는 머리줄 슬롯 1(`세션 권장` 칩 옆, `lanes.js` `candidateCard`), 대기·PR 대기·완료 행과 실행 타일은 기존 슬롯 5, 상세 헤더는 `receipt` 칩 뒤(UI-8x90 §4.5, UI-sbum §3). 클릭 의미(사유 팝업, 상태 쓰기 없음)도 그대로. `data-chip-key`는 `rec` → `complex` |
-| Worker 탭 원천 | `bead_overlay`의 `labels?` 필드는 UI-p7s2가 in-progress·resolved·closed 열에서 도입한다(그 §6). 이 spec은 그 필드의 원천을 `metadata`와 같은 ready·blocked 열로 넓힌다(같은 `add(issue, with_metadata)` 조건에 `labels` 복사 추가). `lane-model.js`는 `item.rec` 자리에서 `item.complex_reason = complexReason(overlay.labels, overlay.metadata)` |
-| Monitor 원천 | UI-mfm1이 정한 `CandidateFacts`(그 §3.1)에서 어댑터·서버 공통 필드 `rec`를 지우고, 서버 추가 키로 `complex_reason: string`을 더한다(`qualify()`가 `complexReason(row.labels, meta)`; 빈 값이면 키 없음, `spec_after_blocker`와 같은 fail-quiet). `recOf`·`REC_VALUES`·`REC_SIGNALS`는 삭제. 서버는 `app/utils/complex-judgement.js`를 import한다(이미 `app/utils/worker-eligibility.js`를 import하는 경로) — enum 사본과 동일성 테스트가 사라진다 |
-| 상세 헤더 | `summaryHeaderTemplate(data)`가 `data.labels`와 `data.metadata`로 `complexReason`을 계산. 이슈 레코드에 `labels`가 없으면 칩 없음 |
-| 구 키 | `rec_orchestration_model`·`rec_reason`·`rec_impl_runtime`을 읽는 경로를 남기지 않는다(전환기 이중 읽기 없음). 계약 착지~이 Bead 착지 사이의 칩 공백은 사용자가 허용했다(dotfiles 스펙 §7) |
-| Worker 런타임 | 판정을 읽지 않는 불변은 유지하고 테스트를 새 재료로 옮긴다 |
+| 결정           | 값                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 판정 유틸      | `app/utils/rec-settings.js`를 삭제하고 `app/utils/complex-judgement.js`를 신설한다. `session-preferred.js`와 같은 꼴: `complexReason(labels, metadata)` → 라벨 `complex`가 있고 `complex_reason`의 신호가 하나 이상 enum 안이면 그 신호 문자열(enum 밖 토큰 제거·`+` 재결합), 아니면 `''`                                                                                                                                                                                                                                                  |
+| 칩 재료        | 세 표면 모두 문자열 `complex_reason` 하나. 비어 있지 않으면 칩이 선다. 3상태(`state`)·`data-state`·권위 키 비교는 삭제                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 툴팁·팝업      | `복잡한 작업으로 판정됨` / `사유: <문장> · <문장>`. 상태 줄 없음. 문장 사전은 신호 3개(`claude_bound` 항목 삭제). 모델·런타임 이름은 여전히 쓰지 않는다                                                                                                                                                                                                                                                                                                                                                                                    |
+| 슬롯·클릭      | 자리는 지금 그대로다 — 후보 카드는 머리줄 슬롯 1(`세션 권장` 칩 옆, `lanes.js` `candidateCard`), 대기·PR 대기·완료 행과 실행 타일은 기존 슬롯 5, 상세 헤더는 `receipt` 칩 뒤(UI-8x90 §4.5, UI-sbum §3). 클릭 의미(사유 팝업, 상태 쓰기 없음)도 그대로. `data-chip-key`는 `rec` → `complex`                                                                                                                                                                                                                                                 |
+| Worker 탭 원천 | `bead_overlay`의 `labels?` 필드는 UI-p7s2가 도입했고(그 §6), 착지한 `add(issue, with_metadata)`는 `with_metadata` 여부와 무관하게 다섯 열 모두에서 `labels`를 싣는다(재검토 correction: 원천 확장은 이미 착지, 이 spec의 어댑터 변경 없음). `lane-model.js`는 `item.rec` 자리에서 `item.complex_reason = complexReason(overlay.labels, overlay.metadata)`                                                                                                                                                                                  |
+| Monitor 원천   | UI-mfm1이 정한 `CandidateFacts`(그 §3.1)에 서버 추가 키로 `complex_reason?: string`을 더하고, 어댑터 `runnableRows()`의 `rec: null`과 서버 `qualify()`의 `rec`를 지운다(착지한 typedef에는 `rec`가 없다 — 재검토 correction)(`qualify()`가 `complexReason(row.labels, meta)`; 빈 값이면 키 없음, `spec_after_blocker`와 같은 fail-quiet). `recOf`·`REC_VALUES`·`REC_SIGNALS`는 삭제. 서버는 `app/utils/complex-judgement.js`를 import한다(이미 `app/utils/worker-eligibility.js`를 import하는 경로) — enum 사본과 동일성 테스트가 사라진다 |
+| 상세 헤더      | `summaryHeaderTemplate(data)`가 `data.labels`와 `data.metadata`로 `complexReason`을 계산. 이슈 레코드에 `labels`가 없으면 칩 없음                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 구 키          | `rec_orchestration_model`·`rec_reason`·`rec_impl_runtime`을 읽는 경로를 남기지 않는다(전환기 이중 읽기 없음). 계약 착지~이 Bead 착지 사이의 칩 공백은 사용자가 허용했다(dotfiles 스펙 §7)                                                                                                                                                                                                                                                                                                                                                  |
+| Worker 런타임  | 판정을 읽지 않는 불변은 유지하고 테스트를 새 재료로 옮긴다                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## 1. 판정 유틸 — `app/utils/complex-judgement.js` (신규, `rec-settings.js` 삭제)
 
@@ -88,28 +89,28 @@ export function complexTooltip(reason)
 - `protocol.md` runnable 행 절의 `rec` 단락을 `complex_reason` 단락으로 바꾼다: 표시 전용, Worker 미소비,
   `exec_pins` 밖, 라벨 `complex`와 `complex_reason` metadata에서 서버가 판정.
 - `pr-actions.js` 승계 주석 `the machine writes no rec_* judgement key` → `the machine writes no complex
-  judgement`.
+judgement`.
 
-순서와 소유: UI-mfm1이 `CandidateFacts`와 그 "`rec` 그대로" 항목을 소유하고 먼저 착지한다(`blocks`). 이 spec은
-그 뒤에 `rec`의 삭제 책임을 진다 — `placement.js`의 `CandidateFacts` typedef에서 `rec`를 지우고
-`complex_reason?: string`(서버 추가 키)을 더하며, 어댑터 `runnableRows()`의 `rec: null` 줄과 서버 `qualify()`의
-`rec`를 함께 지운다. UI-mfm1 §3.1의 "`rec` 그대로"는 이 착지로 대상이 사라지는 항목이지 이 spec이 재해석하는
-항목이 아니다.
+순서와 소유: UI-mfm1이 `CandidateFacts`를 소유하고 먼저 착지했다(`blocks`, `8aa158a1937bb6d48e89f78402a3f4248cbb5eff`).
+착지한 `placement.js`의 `CandidateFacts` typedef에는 `rec`가 없고 어댑터 `runnableRows()`의 `rec: null` 줄과 서버
+`qualify()`의 `rec`만 남았다. 이 spec은 typedef에 `complex_reason?: string`(서버 추가 키)을 더하고 그 두 `rec`를
+함께 지운다. UI-mfm1 §3.1의 "`rec` 그대로"는 이 착지로 대상이 사라지는 항목이지 이 spec이 재해석하는 항목이
+아니다.
 
 ## 3. Worker 탭 — `workspace-adapter.js` + `lane-model.js` + `lanes.js` + `running-grid.js`
 
-- `beadOverlay`의 `labels?` 필드는 UI-p7s2가 도입한다(in-progress·resolved·closed 열, 필터 재료). 이 spec은
-  `add(issue, with_metadata)`의 `with_metadata` 분기에 `entry.labels = workerLabels(issue.labels)`를 더해 원천을
-  ready·blocked 열로 넓힌다 — 같은 필드, 같은 정규화, 열만 추가. resolved·closed의 라벨 전달과 복잡 칩의
-  metadata 조건(`with_metadata` 열에서만 `complex_reason`을 읽음)은 각각 그대로다. `runnableRows()`의 `rec: null`
-  줄은 삭제한다(§2).
-- `lane-model.js` L4257 `item.rec = recSettings(metadata)` → `item.complex_reason =
-  complexReason(overlay.labels, metadata)`. Monitor 경로(L3957)는 `entry.complex_reason`을 문자열로 옮긴다
+- `beadOverlay`의 `labels?` 필드는 UI-p7s2가 도입했다(필터 재료). 착지한 `add(issue, with_metadata)`는
+  `with_metadata`와 무관하게 다섯 열 모두에서 문자열 라벨을 복사하므로 원천 확장 항목은 이미 착지했고 이 spec은
+  어댑터의 오버레이 코드를 바꾸지 않는다(재검토 correction). `complexReason`은 `workerLabels`로 다시 정규화하므로
+  오버레이의 원시 라벨 배열을 그대로 넘긴다. 복잡 칩의 metadata 조건(`with_metadata` 열에서만 `complex_reason`을
+  읽음)은 그대로다. `runnableRows()`의 `rec: null` 줄은 삭제한다(§2).
+- `lane-model.js` L4282 `item.rec = recSettings(metadata)` → `item.complex_reason =
+complexReason(overlay.labels, metadata)`. Monitor 경로(L3896)는 `entry.complex_reason`을 문자열로 옮긴다
   (`typeof === 'string'`이 아니면 `''`). 두 경로 모두 `''`면 키를 싣지 않는다.
 - `lanes.js`: `recChipTemplate(rec, open)` → `complexChipTemplate(reason, open)`. `reason`이 `''`면 `''`.
   클래스 `worker-card__rec` → `worker-card__complex`, `data-chip-key="complex"`, `data-state` 삭제,
   `title=${complexTooltip(reason)}`. `JudgementChipKey`의 `'rec'` → `'complex'`, `judgementPopoverContent`의
-  분기와 칩 키 목록(L3944) 치환. 항목 typedef의 `rec` → `complex_reason?: string`.
+  분기와 칩 키 목록(L3748) 치환. 항목 typedef의 `rec` → `complex_reason?: string`.
 - `running-grid.js` 타일 typedef `rec` → `complex_reason?: string`; 타일 렌더는 같은 템플릿.
 
 ## 4. 이슈 상세 헤더 — `effective-settings-view.js`
@@ -124,7 +125,7 @@ data-chip-key="complex" aria-expanded title=${complexTooltip(reason)}>복잡</bu
 
 `app/styles/base.css`: `.ctl-chip--label.worker-card__rec` 규칙을 `.worker-card__complex`로 이름만 바꾸고
 `[data-state='applied']`·`[data-state='diverged']` 두 규칙을 삭제한다. `app/styles.css`:
-`.detail-summary__chip--rec` → `--complex`, 두 `data-state` 규칙 삭제. `styles.css` L6757 주석의 클래스
+`.detail-summary__chip--rec` → `--complex`, 두 `data-state` 규칙 삭제. `styles.css` L6879 주석의 클래스
 이름을 맞춘다. 새 색 토큰 없음.
 
 ## 6. 검증
@@ -133,7 +134,7 @@ data-chip-key="complex" aria-expanded title=${complexTooltip(reason)}>복잡</bu
   잘못된 입력 fail-quiet·툴팁에 모델명 부재·상태 줄 부재.
 - `server/worker/runnable-cache.test.js`: `complex_reason` 전송 — 라벨+사유가 있을 때만 키, 없으면 키 없음,
   `exec_pins` 밖. 기존 `rec` 케이스 삭제.
-- `server/worker/policy.test.js` "rec_* invariance" → `complex` 라벨·`complex_reason`·`rec_impl_runtime`이
+- `server/worker/policy.test.js` "rec\_\* invariance" → `complex` 라벨·`complex_reason`·`rec_impl_runtime`이
   결정과 stamped_keys에 영향 없음.
 - `app/views/worker/lane-model.test.js`·`index.test.js`·`lanes.test.js`·`running-grid` 테스트·
   `app/views/monitor/index.test.js`·`effective-settings-view.test.js`·`effective-card.test.js`·
