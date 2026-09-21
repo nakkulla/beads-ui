@@ -2121,7 +2121,8 @@ describe('views/worker', () => {
     view.destroy();
   });
 
-  test('carries the running recovery label through the Worker adapter', () => {
+  test('carries the recovery label and elapsed time through the Worker adapter', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(800020);
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -2150,7 +2151,7 @@ describe('views/worker', () => {
     expect(
       mount.querySelector('.rtile[data-attempt-id="live"] .rtile__elapsed')
         ?.textContent
-    ).toBe('복구 중');
+    ).toBe('복구 중 · 13m 20s');
     view.destroy();
   });
 

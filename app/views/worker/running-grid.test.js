@@ -1473,11 +1473,16 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
   });
 
   test('draws the paused resolution badge in the header too', () => {
-    const tile = renderTile({ conflict_resolution: true, paused: true });
+    const tile = renderTile({
+      conflict_resolution: true,
+      paused: true,
+      status_label: '복구 중'
+    });
 
     expect(
       tile.querySelector('.rtile__hd .worker-mini__badge')?.textContent
     ).toBe('충돌 해소 일시정지');
+    expect(tile.querySelector('.rtile__elapsed')?.textContent).toBe('일시정지');
   });
 
   test('draws the base exception badge in the header, not the meta row', () => {
@@ -2610,22 +2615,29 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     expect(mount.textContent).not.toContain('선행 대기');
   });
 
-  test('renders the live recovery status in the existing elapsed slot', () => {
+  test.each([
+    [1000, '복구 중 · 13m 20s'],
+    [undefined, '복구 중 · —']
+  ])('renders live recovery with started_at=%s', (started_at, expected) => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(
-      runningGridTemplate([
-        waitTile({
-          waiting: false,
-          status: 'running',
-          status_label: '복구 중',
-          wait: null
-        })
-      ]),
+      runningGridTemplate(
+        [
+          waitTile({
+            waiting: false,
+            status: 'running',
+            status_label: '복구 중',
+            started_at,
+            wait: null
+          })
+        ],
+        801000
+      ),
       mount
     );
 
-    expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe('복구 중');
+    expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe(expected);
     expect(mount.querySelector('.rtile__held-badge')).toBeNull();
   });
 

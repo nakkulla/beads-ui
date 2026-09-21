@@ -1875,7 +1875,7 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     );
   });
 
-  test('carries the running recovery label through the Monitor adapter', () => {
+  test('carries the recovery label and elapsed time through the Monitor adapter', () => {
     const { mount, view } = setup({
       workspaces: [
         workspace({
@@ -1884,14 +1884,14 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
               attempt_id: 'old',
               bead_id: 'A-1',
               status: 'waiting',
-              started_at: NOW - 100,
+              started_at: NOW - 900000,
               cause_detail: { recovery: { reason: 'verification' } }
             },
             live: {
               attempt_id: 'live',
               bead_id: 'A-1',
               status: 'running',
-              started_at: NOW - 50,
+              started_at: NOW - 800000,
               resumed_from: 'old'
             }
           }
@@ -1904,7 +1904,7 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
 
     expect(
       el(mount, '.rtile[data-attempt-id="live"] .rtile__elapsed')?.textContent
-    ).toBe('복구 중');
+    ).toBe('복구 중 · 13m 20s');
   });
 
   test('renders a waiting attempt as a held tile with the 선행 대기 badge', () => {

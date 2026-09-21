@@ -115,7 +115,8 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * 키 자체가 없어 버튼이 서지 않는다 (fail-quiet).
  * @property {'running'|'paused'|'failed'|'orphaned'|'parked'|'retry_wait'|'waiting'|'provider_hold'} [status] - Raw
  * attempt status, used to distinguish failure from orphan interruption.
- * @property {string} [status_label] - Current recovery or terminal status label.
+ * @property {string} [status_label] - Recovery label shown alongside elapsed time
+ * while running, or terminal status label shown instead of elapsed time.
  * @property {boolean} [can_pause] - Running attempt whose session id is already
  * captured. Pausing before that would strand an unresumable attempt, so the ⏸
  * button renders disabled until it lands (§2.1).
@@ -1143,10 +1144,14 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         : tile.status_label || (tile.status === 'orphaned' ? '중단됨' : '실패')
       : paused
         ? '일시정지'
-        : tile.status_label ||
-          (typeof tile.started_at === 'number'
-            ? formatElapsed(now - tile.started_at)
-            : '—');
+        : [
+            tile.status_label,
+            typeof tile.started_at === 'number'
+              ? formatElapsed(now - tile.started_at)
+              : '—'
+          ]
+            .filter(Boolean)
+            .join(' · ');
   // 오케 칩이 종전 `formatAttemptTuple` 줄을 대신한다 (§4); 워커 칩만 있어도
   // meta 줄은 그려져야 하므로 표시 조건은 두 칩의 존재로 판정한다.
   const exec_chips =
