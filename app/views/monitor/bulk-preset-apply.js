@@ -1,19 +1,33 @@
 /**
- * 여러 저장소 설정 창의 `워커` 탭 — 프리셋 일괄 적용의 계획과 실행
- * (UI-8ncz §4.1, 진입점은 UI-nu43 §3.3).
+ * 여러 저장소 설정 창의 `워커` 탭 — 일괄 적용의 계획과 실행
+ * (UI-8ncz §4.1, 진입점은 UI-nu43 §3.3, 두 경로는 UI-628r §4.2).
  *
  * 서버에는 다중 저장소 op가 없다. 이 모듈은 선택한 저장소마다 기존 단일 저장소
- * op `apply-impl-preset-global`을 **순차**로 한 번씩 보내고 저장소별 결과를
- * 모은다. 병렬로 보내면 서버의 kv 쓰기와 모니터 재빌드가 뒤섞이고 revision
- * 충돌을 뒤늦게 발견한다. 렌더·전송·채택은 일괄 pane이 소유하고 이 모듈은
- * 순수하다.
+ * op를 **순차**로 보내고 저장소별 결과를 모은다. 병렬로 보내면 서버의 kv 쓰기와
+ * 모니터 재빌드가 뒤섞이고 revision 충돌을 뒤늦게 발견한다. 렌더·전송·채택은
+ * 일괄 pane이 소유하고 이 모듈은 순수하다.
+ *
+ * 경로는 둘이다. 폼이 고른 프리셋과 똑같으면 `apply-impl-preset-global` 한 번
+ * (큐에 프리셋 기록이 선다), 그 밖에는 `set-session-defaults`와
+ * `worker-queue-set-orchestration-defaults` 두 번이다.
  */
 
 /**
  * @typedef {Object} BulkTarget
  * @property {string} root_dir
  * @property {string} name
- * @property {Record<string, unknown>} payload - `apply-impl-preset-global` body.
+ * @property {'preset'|'form'} mode - preset op 하나로 쓸지 kv·queue 두 op로
+ * 쓸지 (§4.2).
+ * @property {Record<string, any>} [payload] - `apply-impl-preset-global` body.
+ * @property {Record<string, any>} [kv_payload] - `set-session-defaults` body.
+ * @property {Record<string, any>} [queue_payload] - 큐 op body.
+ */
+
+/**
+ * @typedef {Object} BulkFormValues
+ * @property {Record<string, string|null>} kv_values - 18키 전부, 빈 값은 `null`.
+ * @property {Record<string, string|null>} queue_values - 큐 6키 전부.
+ * @property {boolean} equals_preset - 폼이 고른 프리셋과 같은지 (§4.2).
  */
 
 /**
@@ -30,8 +44,33 @@
  * @property {string|null} disabled_reason - `null`이면 적용 버튼이 활성이다.
  */
 
-/** 프리셋 절이 쓰는 op 이름. */
+/**
+ * @typedef {Object} ApplyState
+ * @property {boolean} kv - 실행 설정 쓰기가 applied 응답으로 확인된 적이
+ * 있는가 (§4.2.1).
+ * @property {boolean} queue - 오케스트레이션 쓰기가 applied 응답으로 확인된
+ * 적이 있는가.
+ * @property {string} detail - 결과 줄에 그대로 실릴 문장; state 판정과는
+ * 별개로 마지막 응답의 것이 남는다.
+ */
+
+/** 프리셋 경로가 쓰는 op 이름. */
 export const PRESET_APPLY_OP = 'apply-impl-preset-global';
+
+/** 폼 경로의 kv op — 18키를 한 번에 얕게 병합한다. */
+export const SESSION_DEFAULTS_OP = 'set-session-defaults';
+
+/** 폼 경로의 큐 op — 6키를 CAS로 쓴다. */
+export const ORCHESTRATION_OP = 'worker-queue-set-orchestration-defaults';
+
+/** 프리셋 경로에서 kv만 반영된 저장소의 사유. */
+const PRESET_QUEUE_UNAPPLIED = '오케스트레이션 값 미적용';
+
+/** 폼 경로에서 kv만 반영된 저장소의 사유 (§4.2). */
+const FORM_QUEUE_UNAPPLIED = '큐 충돌, 실행 설정만 저장';
+
+/** 서버가 아무 말도 하지 않은 응답(no reply)의 실패 사유. */
+const NO_REPLY = '요청이 처리되지 않았습니다';
 
 /**
  * @param {unknown} value
@@ -89,8 +128,12 @@ export function supportsQuickFixLane(rows) {
 }
 
 /**
- * Plan — 저장소별 payload와 비활성 사유를 계산한다. 넘기는 행은 `adopted`를
- * 덮은 최신 행이어야 한다: `expected_queue_revision`이 거기서 나온다.
+ * Plan — 저장소별 요청과 비활성 사유를 계산한다. 넘기는 행은 `adopted`를 덮은
+ * 최신 행이어야 한다: 큐 revision이 거기서 나온다.
+ *
+ * 프리셋을 골랐고 폼이 그 프리셋 그대로면 프리셋 경로, 그 밖에는 폼 경로다
+ * (§4.2). 폼이 아예 없는 호출(행이 없어 폼을 그리지 못한 상태)은 프리셋 선택을
+ * 요구한다.
  *
  * @param {Object} input
  * @param {Array<Record<string, any>>} input.rows - 보이는 저장소를 모니터 행
@@ -98,6 +141,7 @@ export function supportsQuickFixLane(rows) {
  * @param {Iterable<string>|Set<string>} input.selected_roots
  * @param {{ revision: number, presets: Array<Record<string, any>> }|null} input.preset_state
  * @param {string} input.preset_id
+ * @param {BulkFormValues|null} [input.form] - 폼이 낸 24키 한 벌.
  * @param {boolean} [input.running] - 이미 실행 중이면 `true`.
  * @returns {BulkPlan}
  */
@@ -106,30 +150,59 @@ export function planBulkApply({
   selected_roots,
   preset_state,
   preset_id,
+  form = null,
   running = false
 }) {
   const list = (Array.isArray(rows) ? rows : []).filter((row) => isRecord(row));
-  const targets = list
-    .filter((row) => isSelected(selected_roots, String(row.root_dir)))
-    .map((row) => ({
-      root_dir: String(row.root_dir),
-      name: typeof row.name === 'string' ? row.name : String(row.root_dir),
-      payload: {
-        preset_id,
-        expected_revision: preset_state ? preset_state.revision : 0,
-        expected_queue_revision:
-          typeof row.revision === 'number' ? row.revision : 0,
-        root_dir: String(row.root_dir)
-      }
-    }));
+  const selected_rows = list.filter((row) =>
+    isSelected(selected_roots, String(row.root_dir))
+  );
   const preset = preset_state
     ? preset_state.presets.find((entry) => entry && entry.id === preset_id)
     : null;
+  const has_form =
+    isRecord(form) && isRecord(form.kv_values) && isRecord(form.queue_values);
+  const preset_chosen =
+    !!preset_state && typeof preset_id === 'string' && preset_id.length > 0;
+  const use_preset =
+    preset_chosen && (!has_form || (isRecord(form) && form.equals_preset));
+  /** @type {BulkTarget[]} */
+  const targets = [];
+  for (const row of selected_rows) {
+    const root_dir = String(row.root_dir);
+    const name = typeof row.name === 'string' ? row.name : root_dir;
+    const revision = typeof row.revision === 'number' ? row.revision : 0;
+    if (use_preset) {
+      targets.push({
+        root_dir,
+        name,
+        mode: 'preset',
+        payload: {
+          preset_id,
+          expected_revision: preset_state ? preset_state.revision : 0,
+          expected_queue_revision: revision,
+          root_dir
+        }
+      });
+    } else if (isRecord(form)) {
+      targets.push({
+        root_dir,
+        name,
+        mode: 'form',
+        kv_payload: { values: { ...form.kv_values }, root_dir },
+        queue_payload: {
+          values: { ...form.queue_values },
+          root_dir,
+          expected_revision: revision
+        }
+      });
+    }
+  }
   /** @type {string|null} */
   let disabled_reason = null;
   if (running === true) {
     disabled_reason = '적용 중입니다';
-  } else if (!preset_state || typeof preset_id !== 'string' || !preset_id) {
+  } else if (!use_preset && !has_form) {
     disabled_reason = '적용할 실행 프리셋을 고르세요';
   } else if (targets.length === 0) {
     disabled_reason = '적용할 저장소를 고르세요';
@@ -170,7 +243,7 @@ export function messageOf(value) {
       return messageOf(value.error);
     }
   }
-  return '요청이 처리되지 않았습니다';
+  return NO_REPLY;
 }
 
 /**
@@ -217,17 +290,16 @@ export function retryRootsOf(results) {
 }
 
 /**
- * Sequential 적용 — 선택한 저장소마다 프리셋을 한 번씩 보낸다.
+ * Sequential 적용 — 선택한 저장소마다 그 저장소의 경로를 한 번씩 돈다.
  *
  * 응답 `queue`는 성공·실패와 무관하게 즉시 `adopt`한다 — 그 저장소의 다음
- * 계획이 읽는 revision이 최신이 된다. `queue_applied:false`면 응답 revision으로 같은
- * 저장소를 **한 번만** 다시 보내고, 프리셋 revision 충돌(`conflict:true`)이면
- * 남은 대상을 `skipped`로 두고 멈춘다 — 바뀐 프리셋을 다시 읽은 뒤 사용자가
- * 다시 적용해야 한다.
+ * 계획이 읽는 revision이 최신이 된다. 큐 미적용이면 응답 revision으로 **한 번만**
+ * 다시 보내고, 프리셋 revision 충돌(`conflict:true`)이면 남은 대상을 `skipped`로
+ * 두고 멈춘다 — 바뀐 프리셋을 다시 읽은 뒤 사용자가 다시 적용해야 한다.
  *
  * @param {Object} input
  * @param {BulkTarget[]} input.targets
- * @param {(type: string, payload: Record<string, unknown>) => Promise<any>} input.send
+ * @param {(type: string, payload: Record<string, any>) => Promise<any>} input.send
  * @param {(root_dir: string, queue: any) => void} input.adopt
  * @param {(progress: { done: number, total: number, results: BulkResult[] }) => void} [input.onProgress]
  * @param {() => boolean} [input.isCancelled] - `true`면 남은 대상을 보내지 않는다.
@@ -258,42 +330,16 @@ export async function runBulkApply({
       onProgress?.({ done: results.length, total, results });
       continue;
     }
-    /** @type {BulkResult} */
-    let result;
-    try {
-      let res = await send(PRESET_APPLY_OP, { ...target.payload });
-      adoptQueue(adopt, target.root_dir, res);
-      // 취소 뒤에는 재시도를 보내지 않는다 (§4). 이미 받은 응답의 판정은 남겨
-      // 그 저장소가 쓰였는지를 호출자가 알게 한다.
-      if (isCancelled?.() === true) {
-        results.push(judgePresetResponse(target, res));
-        return results;
-      }
-      if (!isError(res) && isRecord(res) && res.queue_applied === false) {
-        const fresh =
-          isRecord(res.queue) && typeof res.queue.revision === 'number'
-            ? res.queue.revision
-            : target.payload.expected_queue_revision;
-        res = await send(PRESET_APPLY_OP, {
-          ...target.payload,
-          expected_queue_revision: fresh
-        });
-        adoptQueue(adopt, target.root_dir, res);
-      }
-      result = judgePresetResponse(target, res);
-      if (!isError(res) && isRecord(res) && res.applied !== true) {
-        stopped = res.conflict === true;
-      }
-    } catch (err) {
-      result = {
-        root_dir: target.root_dir,
-        name: target.name,
-        state: 'failed',
-        detail: messageOf(err)
-      };
-    }
-    results.push(result);
+    const outcome =
+      target.mode === 'form'
+        ? await runFormTarget(target, send, adopt, isCancelled)
+        : await runPresetTarget(target, send, adopt, isCancelled);
+    results.push(outcome.result);
     onProgress?.({ done: results.length, total, results });
+    if (outcome.cancelled) {
+      return results;
+    }
+    stopped = outcome.stopped;
   }
   return results;
 }
@@ -313,33 +359,163 @@ function adoptQueue(adopt, root_dir, res) {
 }
 
 /**
- * Verdict for one 저장소 — 재시도까지 끝난 마지막 응답 하나로 정한다
- * (§4.1 4·5). `partial`은 kv 반영이 응답으로 확인된 경우에만 쓴다.
+ * The revision a CAS retry should carry: the one the conflict response brought,
+ * else the one already tried.
+ *
+ * @param {any} res
+ * @param {unknown} fallback
+ * @returns {unknown}
+ */
+function freshRevision(res, fallback) {
+  return isRecord(res) &&
+    isRecord(res.queue) &&
+    typeof res.queue.revision === 'number'
+    ? res.queue.revision
+    : fallback;
+}
+
+/**
+ * Verdict for one 저장소 (§4.2.1). kv 적용이 한 번이라도 확인되었으면 그 사실은
+ * 재시도·예외를 넘어 살아남는다: 큐만 놓친 저장소는 `failed`가 아니라 `partial`
+ * 이다.
  *
  * @param {BulkTarget} target
- * @param {any} res
+ * @param {ApplyState} state
  * @returns {BulkResult}
  */
-function judgePresetResponse(target, res) {
+function judgeTarget(target, state) {
   const base = { root_dir: target.root_dir, name: target.name };
-  if (isError(res) || !isRecord(res)) {
+  if (!state.kv) {
+    return { ...base, state: 'failed', detail: state.detail || NO_REPLY };
+  }
+  if (!state.queue) {
     return {
       ...base,
-      state: 'failed',
-      detail: isRecord(res) ? messageOf(res) : '요청이 처리되지 않았습니다'
+      state: 'partial',
+      detail: state.detail || PRESET_QUEUE_UNAPPLIED
     };
   }
-  if (res.applied === true) {
-    return res.queue_applied === false
-      ? { ...base, state: 'partial', detail: '오케스트레이션 값 미적용' }
-      : { ...base, state: 'applied', detail: '' };
+  return { ...base, state: 'applied', detail: '' };
+}
+
+/**
+ * Read one `apply-impl-preset-global` 응답 into the running state.
+ *
+ * @param {ApplyState} state
+ * @param {any} res
+ */
+function readPresetResponse(state, res) {
+  if (isError(res) || !isRecord(res)) {
+    state.detail = isRecord(res) ? messageOf(res) : NO_REPLY;
+    return;
   }
-  return {
-    ...base,
-    state: 'failed',
-    detail:
-      res.conflict === true
-        ? '프리셋이 방금 변경되었습니다'
-        : '큐가 방금 변경되었습니다'
-  };
+  if (res.applied === true) {
+    state.kv = true;
+    if (res.queue_applied === false) {
+      state.detail = PRESET_QUEUE_UNAPPLIED;
+      return;
+    }
+    state.queue = true;
+    state.detail = '';
+    return;
+  }
+  state.detail =
+    res.conflict === true
+      ? '프리셋이 방금 변경되었습니다'
+      : '큐가 방금 변경되었습니다';
+}
+
+/**
+ * The 프리셋 경로 of one 저장소: one op that writes kv and queue together, with
+ * a single queue retry.
+ *
+ * @param {BulkTarget} target
+ * @param {(type: string, payload: Record<string, any>) => Promise<any>} send
+ * @param {(root_dir: string, queue: any) => void} adopt
+ * @param {(() => boolean)|undefined} isCancelled
+ * @returns {Promise<{ result: BulkResult, stopped: boolean, cancelled: boolean }>}
+ */
+async function runPresetTarget(target, send, adopt, isCancelled) {
+  /** @type {ApplyState} */
+  const state = { kv: false, queue: false, detail: '' };
+  const payload = target.payload || {};
+  let stopped = false;
+  let cancelled = false;
+  try {
+    let res = await send(PRESET_APPLY_OP, { ...payload });
+    adoptQueue(adopt, target.root_dir, res);
+    readPresetResponse(state, res);
+    // 취소 뒤에는 재시도를 보내지 않는다 (§4). 이미 받은 응답의 판정은 남겨
+    // 그 저장소가 쓰였는지를 호출자가 알게 한다.
+    if (isCancelled?.() === true) {
+      cancelled = true;
+    } else if (!isError(res) && isRecord(res) && res.queue_applied === false) {
+      res = await send(PRESET_APPLY_OP, {
+        ...payload,
+        expected_queue_revision: freshRevision(
+          res,
+          payload.expected_queue_revision
+        )
+      });
+      adoptQueue(adopt, target.root_dir, res);
+      readPresetResponse(state, res);
+    }
+    if (!cancelled && !isError(res) && isRecord(res) && res.applied !== true) {
+      stopped = res.conflict === true;
+    }
+  } catch (err) {
+    state.detail = messageOf(err);
+  }
+  return { result: judgeTarget(target, state), stopped, cancelled };
+}
+
+/**
+ * The 폼 경로 of one 저장소: kv 먼저, 큐 나중 (§4.2). 두 쓰기는 원자적이지
+ * 않고 그 비원자성은 기존 계약이다 (UI-8ncz §1.1). 프리셋 기록을 세우거나 지우는
+ * 일은 서버 판정에 맡기고 이 경로는 손대지 않는다.
+ *
+ * @param {BulkTarget} target
+ * @param {(type: string, payload: Record<string, any>) => Promise<any>} send
+ * @param {(root_dir: string, queue: any) => void} adopt
+ * @param {(() => boolean)|undefined} isCancelled
+ * @returns {Promise<{ result: BulkResult, stopped: boolean, cancelled: boolean }>}
+ */
+async function runFormTarget(target, send, adopt, isCancelled) {
+  /** @type {ApplyState} */
+  const state = { kv: false, queue: false, detail: '' };
+  const queue_payload = target.queue_payload || {};
+  let cancelled = false;
+  try {
+    const kv_res = await send(SESSION_DEFAULTS_OP, {
+      ...(target.kv_payload || {})
+    });
+    if (isError(kv_res) || !isRecord(kv_res)) {
+      state.detail = isRecord(kv_res) ? messageOf(kv_res) : NO_REPLY;
+      return { result: judgeTarget(target, state), stopped: false, cancelled };
+    }
+    state.kv = true;
+    state.detail = FORM_QUEUE_UNAPPLIED;
+    if (isCancelled?.() === true) {
+      cancelled = true;
+      return { result: judgeTarget(target, state), stopped: false, cancelled };
+    }
+    let res = await send(ORCHESTRATION_OP, { ...queue_payload });
+    adoptQueue(adopt, target.root_dir, res);
+    if (isCancelled?.() === true) {
+      cancelled = true;
+    } else if (!isError(res) && isRecord(res) && res.applied === false) {
+      res = await send(ORCHESTRATION_OP, {
+        ...queue_payload,
+        expected_revision: freshRevision(res, queue_payload.expected_revision)
+      });
+      adoptQueue(adopt, target.root_dir, res);
+    }
+    if (!isError(res) && isRecord(res) && res.applied === true) {
+      state.queue = true;
+      state.detail = '';
+    }
+  } catch (err) {
+    state.detail = messageOf(err);
+  }
+  return { result: judgeTarget(target, state), stopped: false, cancelled };
 }

@@ -248,6 +248,10 @@ pane의 `계정` 구역(`accountSection`)은 두 층을 편집하며, 둘 다 �
      `partial`(kv만 반영); `applied:false`·`conflict:false` → `failed: 큐가 방금
      변경되었습니다`(아무것도 쓰지 않음). `partial`은 kv 반영이 응답으로 확인된
      경우에만 쓴다.
+     이 "마지막 응답 하나로 정한다"는 규칙은
+     `2026-09-21-monitor-bulk-detail-settings-and-explicit-accounts-design.md`
+     (UI-628r) §4.2.1이 고쳤다 — kv 적용이 한 번이라도 확인되면 그 사실은
+     재시도·예외를 넘어 살아남아 `failed`가 아니라 `partial`이다.
   5. `applied:false`·`conflict:true`(프리셋 revision 충돌) → 이 저장소는 `failed:
      프리셋이 방금 변경되었습니다`, **남은 대상은 모두 `skipped`**로 두고 실행을
      멈춘다. 바뀐 프리셋을 다시 읽은 뒤 사용자가 다시 적용한다.

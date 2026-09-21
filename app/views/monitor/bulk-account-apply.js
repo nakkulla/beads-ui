@@ -1,10 +1,14 @@
 /**
- * 여러 저장소 설정 창의 `계정` 탭 — 일괄 편집 폼의 계획과 실행 (UI-nu43 §4.2).
+ * 여러 저장소 설정 창의 `계정` 탭 — 일괄 폼의 계획과 실행
+ * (UI-nu43 §4.2, `변경 안 함` 제거는 UI-628r §4.3).
  *
- * 폼은 바꾼 필드만 담는 `edit`를 넘긴다. 저장소마다 실행 계정 값이 있을 때만
- * `set-workspace-accounts`를, 러너 patch가 있을 때만 그 러너의 한도 정책 요청을
- * 이 순서로 보낸다. 계정 쓰기가 실패하면 그 저장소의 정책 요청은 보내지 않는다 —
- * 계정이 안 옮겨졌는데 허용 목록만 옮기지 않는다. 서버 op는 그대로다.
+ * 이 탭에는 `변경 안 함`이 없다. 폼은 화면의 값 한 벌을 통째로 넘기고, 저장소마다
+ * `set-workspace-accounts`와 러너별 한도 정책 요청 **셋**을 이 순서로 보낸다.
+ * 계정 쓰기가 실패하면 그 저장소의 정책 요청은 보내지 않는다 — 계정이 안
+ * 옮겨졌는데 허용 목록만 옮기지 않는다. 서버 op는 그대로다.
+ *
+ * 계정 카탈로그를 읽지 못하면 계획 자체가 비어야 한다: 고를 수 없는 상태에서
+ * 적용하면 사용자가 보지 못한 값(계정 삭제·빈 허용 집합)이 그대로 쓰인다.
  */
 import { formatBulkResult, messageOf } from './bulk-preset-apply.js';
 
@@ -27,10 +31,10 @@ export { formatBulkResult, messageOf };
 
 /**
  * @typedef {Object} BulkAccountEdit
- * @property {Partial<Record<AccountValueKey, string|null>>} values - 바꾼 실행
- * 계정 키만 (changed keys). `null`은 "기본값 사용"(키 삭제)이다.
+ * @property {Partial<Record<AccountValueKey, string|null>>} values - 화면의 실행
+ * 계정 두 키 (both keys). `null`은 "기본값 사용"(키 삭제)이다.
  * @property {{ claude?: Partial<LimitPatch>, codex?: Partial<LimitPatch> }} patches -
- * 러너별로 바꾼 한도 정책 필드만 (per runner).
+ * 러너별 한도 정책 한 벌 (per runner).
  */
 
 /**
@@ -62,9 +66,6 @@ export const ACCOUNT_VALUE_KEYS = /** @type {const} */ ([
  */
 export const LIMIT_RUNNERS = ['claude', 'codex'];
 
-/** 한도 정책 patch가 실을 수 있는 필드. */
-const LIMIT_PATCH_KEYS = ['mode', 'accounts', 'preempt_pct'];
-
 /** 계정 kv op. */
 export const ACCOUNTS_OP = 'set-workspace-accounts';
 
@@ -73,6 +74,9 @@ export const LIMIT_POLICY_OP = 'worker-provider-limit-policy-set';
 
 /** Disabled reason: 선제 전환 기준이 범위 밖일 때. */
 export const PREEMPT_RANGE_REASON = '선제 전환 기준은 1–99 정수입니다';
+
+/** Disabled reason: 계정 카탈로그를 읽지 못했을 때 (§3.3). */
+export const CATALOG_REASON = '계정 목록을 읽지 못해 적용할 수 없습니다';
 
 /**
  * @param {unknown} value
@@ -125,13 +129,13 @@ export function isValidPreemptPct(value) {
 }
 
 /**
- * The changed fields of one runner patch, with the allow list reduced to
- * whitespace-free strings. `null` when the runner changes nothing.
+ * The usable fields of one runner patch, with the allow list reduced to
+ * whitespace-free strings. `null` when the runner carries no usable field.
  *
  * @param {unknown} raw
  * @returns {Partial<LimitPatch>|null}
  */
-function changedPatch(raw) {
+function sanitizedPatch(raw) {
   if (!isRecord(raw)) {
     return null;
   }
@@ -153,13 +157,13 @@ function changedPatch(raw) {
 }
 
 /**
- * The changed account keys of an edit. Only the two known keys pass, and only
+ * The usable account keys of an edit. Only the two known keys pass, and only
  * with a non-empty string or `null`.
  *
  * @param {unknown} raw
  * @returns {Partial<Record<AccountValueKey, string|null>>}
  */
-function changedValues(raw) {
+function sanitizedValues(raw) {
   /** @type {Partial<Record<AccountValueKey, string|null>>} */
   const values = {};
   if (!isRecord(raw)) {
@@ -178,32 +182,20 @@ function changedValues(raw) {
 }
 
 /**
- * Count of changed fields (§3.4 `바꿀 항목 k개`). 러너별 필드는 따로 센다.
- *
- * @param {BulkAccountEdit|null|undefined} edit
- * @returns {number}
- */
-export function countEditFields(edit) {
-  let count = Object.keys(changedValues(edit?.values)).length;
-  for (const runner of LIMIT_RUNNERS) {
-    const patch = changedPatch(edit?.patches?.[runner]);
-    if (patch) {
-      count += LIMIT_PATCH_KEYS.filter((key) =>
-        Object.hasOwn(patch, key)
-      ).length;
-    }
-  }
-  return count;
-}
-
-/**
  * Build the target list and disabled reason — 대상은 선택한 행 전부다.
+ *
+ * `catalog_ready`가 거짓이면 대상이 비고 사유가 선다 (§4.3): 버튼 비활성과 별개로
+ * 계획 자체가 비어야, 버튼 상태를 거치지 않는 호출 경로에서도 사용자가 보지 못한
+ * 값이 쓰이지 않는다. 기본값이 `false`인 것은 그 때문이다 — 카탈로그를 읽었다고
+ * 말한 호출만 요청을 얻는다.
  *
  * @param {Object} input
  * @param {Array<Record<string, any>>} input.rows - 보이는 저장소를 모니터 행
  * 순서대로, `adopted`를 덮은 상태로.
  * @param {Iterable<string>|Set<string>} input.selected_roots
  * @param {BulkAccountEdit} input.edit
+ * @param {boolean} [input.catalog_ready] - 두 러너의 목록을 모두 읽었으면
+ * true.
  * @param {boolean} [input.running]
  * @returns {BulkAccountPlan}
  */
@@ -211,13 +203,14 @@ export function planBulkAccountApply({
   rows,
   selected_roots,
   edit,
+  catalog_ready = false,
   running = false
 }) {
-  const values = changedValues(edit?.values);
+  const values = sanitizedValues(edit?.values);
   /** @type {{ claude?: Partial<LimitPatch>, codex?: Partial<LimitPatch> }} */
   const patches = {};
   for (const runner of LIMIT_RUNNERS) {
-    const patch = changedPatch(edit?.patches?.[runner]);
+    const patch = sanitizedPatch(edit?.patches?.[runner]);
     if (patch) {
       patches[runner] = patch;
     }
@@ -225,7 +218,7 @@ export function planBulkAccountApply({
   const selected_rows = (Array.isArray(rows) ? rows : []).filter(
     (row) => isRecord(row) && isSelected(selected_roots, String(row.root_dir))
   );
-  const targets = selected_rows.map((row) => ({
+  const targets = (catalog_ready === true ? selected_rows : []).map((row) => ({
     root_dir: String(row.root_dir),
     name: typeof row.name === 'string' ? row.name : String(row.root_dir),
     revision: typeof row.revision === 'number' ? row.revision : 0,
@@ -245,10 +238,10 @@ export function planBulkAccountApply({
   let disabled_reason = null;
   if (running === true) {
     disabled_reason = '적용 중입니다';
+  } else if (catalog_ready !== true) {
+    disabled_reason = CATALOG_REASON;
   } else if (targets.length === 0) {
     disabled_reason = '적용할 저장소를 고르세요';
-  } else if (countEditFields({ values, patches }) === 0) {
-    disabled_reason = '바꿀 항목을 고르세요';
   } else if (preempt_invalid) {
     disabled_reason = PREEMPT_RANGE_REASON;
   } else if (

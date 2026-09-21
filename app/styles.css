@@ -9600,11 +9600,22 @@ button.detail-session__leg:focus-visible {
 }
 
 .settings-dialog__bulk-foot {
-  justify-content: flex-end;
+  justify-content: space-between;
 }
 
 .settings-dialog__bulk-count {
   color: var(--text-dim);
+}
+
+/* 적용 경고 배너는 일괄 본문의 한 줄이라 자기 아래 여백을 두지 않는다
+   (부모의 gap이 간격을 정한다, UI-628r §3.1). */
+.settings-dialog__bulk .settings-dialog__banner {
+  margin-bottom: 0;
+}
+
+.settings-dialog__bulk-reason {
+  margin: 0;
+  color: var(--accent-warn);
 }
 
 .settings-dialog__bulk-row {

@@ -46,9 +46,9 @@ const BULK_TITLE = '여러 저장소 설정';
 
 /** Bulk-mode one-line subtitle per tab. */
 const BULK_TAB_SUB = {
-  worker: '선택한 저장소에 실행 프리셋을 적용합니다.',
-  account:
-    '선택한 저장소의 실행 계정과 한도 대응을 바꿉니다. 바꾸지 않은 항목은 저장소마다 그대로 둡니다.'
+  worker:
+    '선택한 저장소에 실행 프로필 한 벌을 적용합니다. 프리셋을 고르면 아래 폼이 그 값으로 채워집니다.',
+  account: '선택한 저장소의 실행 계정과 한도 대응을 화면의 값 그대로 씁니다.'
 };
 
 /** Tabs the shared execution pane draws, by its own section ids. */

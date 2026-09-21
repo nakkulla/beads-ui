@@ -5,7 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
-| UI-nu43 | [모니터 탭의 헤더 설정은 여러 저장소 일괄 적용 창이고 레포 카드 설정은 그 저장소만 편집한다](UI-nu43-monitor-header-settings-bulk-mode.md) | 2026-09-17 | 모니터 탭의 헤더 설정은 연결 저장소를 편집하지 않는 여러 저장소 일괄 적용 창(워커 프리셋·계정 일괄 편집 폼)이고, 레포 카드 설정은 그 저장소만 편집한다 |
+| UI-628r | [여러 저장소 설정은 프리셋을 시작점으로 한 실행 프로필 편집면이고 계정은 명시 선택이다](UI-628r-bulk-settings-edit-surface-explicit-accounts.md) | 2026-09-21 | 모니터 탭의 여러 저장소 설정은 현재 값을 보여주지 않고 프리셋을 시작점으로 한 벌을 만들어 쓰는 편집면이며, 두 탭 어디에도 변경 안 함이 없고 적용은 화면의 값 전부를 쓴다 |
 | UI-3pu9 | [자동 진행 꺼짐은 대기 카드·요약에 표시하지 않고 저장소 자동화 토글만 말한다](UI-3pu9-auto-advance-off-quiet-wait-cards.md) | 2026-09-17 | 자동 진행 꺼짐은 대기 카드·요약에 표시하지 않고 저장소 자동화 토글만 말한다 — 서버는 auto_advance_off 사유를 내지 않고, 자동 진행이 꺼진 저장소의 대기 행에는 유예 칩과 유예·자동 진행 꺼짐으로 서는 [지금 시작]이 없으며 공급자 보류·큐 정지 게이트의 [지금 시작]은 남는다 |
 | UI-1l3a | [공급자 게이트의 판정은 서버가 러너 무관 사다리로 내리고 기록으로 공개하며 상한 target은 재시작 시 한 번 프로브된다](UI-1l3a-provider-gate-verdict-is-server-owned-and-recorded.md) | 2026-09-17 | 공급자 게이트의 판정은 서버가 러너 무관 세 층 사다리로 내리고 provider_gate admission 기록으로 공개하며 화면은 그 기록을 4a 칩의 재료로 우선 쓴다 — 계정 미해석은 fail-closed로 막되 칩에 보이고, 상한으로 멎은 usage_limit target은 서버 재시작 시 한 번 자동 프로브된다 |
 | UI-wecw | [Beads UI는 저장소 defaults와 공통 Worker 주소 적용값을 분리하며 공통 주소 조회·쓰기는 dotfiles 소유 CLI를 소비한다 — defaults 어휘·검증의 dotfiles 소유권과 fail-quiet 읽기·strict 쓰기는 0013을 승계한다](UI-wecw-worker-url-stored-vs-effective-split-common-via-dotfiles-cli.md) | 2026-09-16 | Beads UI는 저장소 defaults와 공통 Worker 주소 적용값을 분리하며 공통 주소 조회·쓰기는 dotfiles 소유 CLI를 소비한다 |
@@ -86,3 +86,4 @@
 | UI-8gem | [대기 카드의 상태는 슬롯 1 배지 하나가 말하고 큐 단위 사유는 게이트 칩으로만 선다](UI-8gem-one-wait-badge-queue-reasons-as-gate-chip.md) | superseded | [UI-3pu9](UI-3pu9-auto-advance-off-quiet-wait-cards.md) |
 | UI-cmx3 | [직렬 레인은 선두만 실행 후보이고 선행 대기 우회 예외는 없다](UI-cmx3-serial-lane-head-only-no-prerequisite-bypass.md) | superseded | [UI-3pu9](UI-3pu9-auto-advance-off-quiet-wait-cards.md) |
 | UI-cmx3-2 | [선행 대기 attempt가 있는 bead는 held 타일이 아니라 대기 행이 대표한다](UI-cmx3-2-prerequisite-waiting-attempt-represented-by-waiting-row.md) | superseded | [UI-3pu9](UI-3pu9-auto-advance-off-quiet-wait-cards.md) |
+| UI-nu43 | [모니터 탭의 헤더 설정은 여러 저장소 일괄 적용 창이고 레포 카드 설정은 그 저장소만 편집한다](UI-nu43-monitor-header-settings-bulk-mode.md) | superseded | [UI-628r](UI-628r-bulk-settings-edit-surface-explicit-accounts.md) |

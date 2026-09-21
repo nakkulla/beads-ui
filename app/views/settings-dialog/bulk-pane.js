@@ -1,14 +1,20 @@
 /**
- * 여러 저장소 설정 — the settings dialog's bulk mode body (UI-nu43 §3.2–§4.1).
+ * 여러 저장소 설정 — the settings dialog's bulk mode body
+ * (UI-nu43 §3.2–§4.1, 편집면은 UI-628r §3–§4.4).
  *
  * The header ⚙ opened from the monitor tab mounts this pane instead of the
  * execution pane. It never edits the connected workspace: every write names a
  * `root_dir` the user ticked in the shared `적용 대상` fieldset.
  *
- * - `워커` applies one execution preset to the selected repos
+ * Neither tab shows what a repo currently holds. Both are edit surfaces for ONE
+ * set of values that `[적용]` writes to every ticked repo, so there is no
+ * `변경 안 함` anywhere and the banner says as much (UI-628r §2.3–§2.4).
+ *
+ * - `워커` is the 24-key execution profile form (`bulk-worker-form.js`); a
+ *   preset fills it and the apply takes one of two paths
  *   (`bulk-preset-apply.js`).
- * - `계정` is a bulk edit form whose fields all start at `변경 안 함`; only the
- *   changed fields are written (`bulk-account-apply.js`).
+ * - `계정` is the execution accounts and limit policy form, applied whole
+ *   (`bulk-account-apply.js`).
  *
  * Requests run sequentially per repo; each response queue is adopted so the
  * next plan reads the newest revision (`adopted-queue.js`). Switching the tab
@@ -22,7 +28,7 @@ import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { mergeQueue, pruneAdopted } from '../monitor/adopted-queue.js';
 import {
-  countEditFields,
+  CATALOG_REASON,
   planBulkAccountApply,
   runBulkAccountApply
 } from '../monitor/bulk-account-apply.js';
@@ -38,15 +44,21 @@ import {
   accountRowLabel,
   loadAccountCatalog
 } from './account-catalog.js';
+import { BULK_FORM_KEYS, createBulkWorkerForm } from './bulk-worker-form.js';
 
-/** Select value for `변경 안 함`. */
-const KEEP = '';
 /** Select value for `기본값 사용` (sent as `null`). */
 const USE_DEFAULT = '__bulk_use_default__';
 /** Default preemptive threshold the number box starts from. */
 const DEFAULT_PREEMPT_PCT = '80';
 /** Loading copy while the monitor rows have not arrived. */
 const ROWS_LOADING = '저장소 목록을 불러오는 중입니다';
+/** The one-line warning both tabs carry under `적용 대상` (§3.1). */
+const APPLY_BANNER =
+  '화면에 보이는 값이 그대로 쓰입니다 — 손대지 않은 행도 함께 적용됩니다.';
+/** Hint next to the preset select (§3.2). */
+const PRESET_HINT = `고르면 아래 ${BULK_FORM_KEYS.length}행이 그 프리셋 값으로 채워집니다`;
+/** Copy for a runner whose account list could not be read. */
+const CATALOG_MISSING = '계정 목록을 불러올 수 없습니다';
 
 /** @type {ReadonlyArray<'claude'|'codex'>} */
 const RUNNERS = ['claude', 'codex'];
@@ -59,10 +71,9 @@ const ACCOUNT_FIELDS = [
 
 /**
  * @typedef {Object} RunnerForm
- * @property {''|'wait'|'switch'} mode - Limit mode; `''` = 변경 안 함.
- * @property {boolean} accounts_on - Whether the `바꾸기` box is ticked.
- * @property {string[]} accounts - Allow keys chosen while `바꾸기` is on.
- * @property {''|'off'|'pct'} preempt - Threshold choice; `''` = 변경 안 함.
+ * @property {'wait'|'switch'} mode - Limit mode; the queue default to start.
+ * @property {string[]} accounts - The allow set exactly as the boxes show it.
+ * @property {'off'|'pct'} preempt - Threshold choice.
  * @property {string} pct_text - Raw number box text, written on every input.
  */
 
@@ -85,13 +96,17 @@ function isRecord(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-/** @returns {RunnerForm} */
+/**
+ * The limit form every runner starts from: the queue's own defaults, because
+ * this tab has no `변경 안 함` to start from (§3.3).
+ *
+ * @returns {RunnerForm}
+ */
 function freshRunnerForm() {
   return {
-    mode: '',
-    accounts_on: false,
+    mode: 'switch',
     accounts: [],
-    preempt: '',
+    preempt: 'off',
     pct_text: DEFAULT_PREEMPT_PCT
   };
 }
@@ -125,7 +140,10 @@ export function createBulkPane(host, options) {
   let run_token = 0;
 
   /** @type {Record<'claude_account'|'codex_account', string>} */
-  const account_values = { claude_account: KEEP, codex_account: KEEP };
+  const account_values = {
+    claude_account: USE_DEFAULT,
+    codex_account: USE_DEFAULT
+  };
   /** @type {Record<'claude'|'codex', RunnerForm>} */
   const runner_forms = {
     claude: freshRunnerForm(),
@@ -149,6 +167,24 @@ export function createBulkPane(host, options) {
   function mergedRows() {
     return rows().map((row) => mergeQueue(row, adopted.get(row.root_dir)));
   }
+
+  /** @returns {Array<Record<string, any>>} */
+  function selectedRows() {
+    return mergedRows().filter((row) => selected.has(String(row.root_dir)));
+  }
+
+  /**
+   * The 24-key form. Its catalog comes from the first SELECTED repo; with
+   * nothing ticked the visible rows still name one server's catalog, so the
+   * form keeps drawing instead of blanking (UI-628r §4.1).
+   */
+  const worker_form = createBulkWorkerForm({
+    rows: () => {
+      const chosen = selectedRows();
+      return chosen.length > 0 ? chosen : mergedRows();
+    },
+    onChange: () => doRender()
+  });
 
   /** Seed the default selection once and drop repos that left the rows. */
   function reconcileRows() {
@@ -176,8 +212,32 @@ export function createBulkPane(host, options) {
       : null;
   }
 
+  /** @returns {Record<string, any>|null} */
+  function chosenPreset() {
+    const state = presetState();
+    if (!state || preset_choice === '') {
+      return null;
+    }
+    return (
+      state.presets.find((preset) => preset && preset.id === preset_choice) ||
+      null
+    );
+  }
+
   /**
-   * The form as a `BulkAccountEdit`: only fields that are not `변경 안 함`.
+   * Whether BOTH runners' account lists are on hand. Loading and a failed read
+   * are the same answer here: the tab may not write what the user cannot see
+   * (§3.3).
+   *
+   * @returns {boolean}
+   */
+  function catalogReady() {
+    return catalog !== null && !!catalog.claude && !!catalog.codex;
+  }
+
+  /**
+   * The form as a `BulkAccountEdit`. Every field is carried: this tab has no
+   * `변경 안 함`, so the screen's values are what gets written (§2.4).
    *
    * @returns {import('../monitor/bulk-account-apply.js').BulkAccountEdit}
    */
@@ -186,40 +246,39 @@ export function createBulkPane(host, options) {
     const edit = { values: {}, patches: {} };
     for (const [key] of ACCOUNT_FIELDS) {
       const value = account_values[key];
-      if (value !== KEEP) {
-        edit.values[key] = value === USE_DEFAULT ? null : value;
-      }
+      edit.values[key] = value === USE_DEFAULT ? null : value;
     }
     for (const runner of RUNNERS) {
       const form = runner_forms[runner];
-      /** @type {Partial<import('../monitor/bulk-account-apply.js').LimitPatch>} */
-      const patch = {};
-      if (form.mode !== '') {
-        patch.mode = form.mode;
-      }
-      if (form.accounts_on) {
-        patch.accounts = [...form.accounts];
-      }
-      if (form.preempt === 'off') {
-        patch.preempt_pct = null;
-      } else if (form.preempt === 'pct') {
-        const text = form.pct_text.trim();
-        patch.preempt_pct = /^-?\d+(\.\d+)?$/.test(text) ? Number(text) : NaN;
-      }
-      if (Object.keys(patch).length > 0) {
-        edit.patches[runner] = patch;
-      }
+      const text = form.pct_text.trim();
+      edit.patches[runner] = {
+        mode: form.mode,
+        accounts: [...form.accounts],
+        preempt_pct:
+          form.preempt === 'off'
+            ? null
+            : /^-?\d+(\.\d+)?$/.test(text)
+              ? Number(text)
+              : NaN
+      };
     }
     return edit;
   }
 
   /** @returns {import('../monitor/bulk-preset-apply.js').BulkPlan} */
   function presetPlan() {
+    const preset = chosenPreset();
     return planBulkApply({
       rows: mergedRows(),
       selected_roots: selected,
       preset_state: presetState(),
       preset_id: preset_choice,
+      form: {
+        kv_values: worker_form.kvValues(),
+        queue_values: worker_form.queueValues(),
+        equals_preset:
+          preset !== null && worker_form.equalsPreset(preset.settings)
+      },
       running: running !== null
     });
   }
@@ -230,6 +289,7 @@ export function createBulkPane(host, options) {
       rows: mergedRows(),
       selected_roots: selected,
       edit: accountEdit(),
+      catalog_ready: catalogReady(),
       running: running !== null
     });
   }
@@ -407,40 +467,66 @@ export function createBulkPane(host, options) {
     </div>`;
   }
 
+  /**
+   * The preset select fills the form and nothing else: the apply path is
+   * decided later by comparing the form against it (§2.2).
+   *
+   * @param {string} id
+   */
+  function onPresetChoice(id) {
+    preset_choice = id;
+    const preset = chosenPreset();
+    if (preset) {
+      worker_form.applyPreset(preset.settings);
+      return;
+    }
+    doRender();
+  }
+
   /** @returns {TemplateResult} */
   function workerTemplate() {
     const state = presetState();
     const plan = presetPlan();
     return html`<div class="settings-dialog__bulk-hd">
-      <select
-        class="settings-dialog__bulk-preset"
-        aria-label="적용할 실행 프리셋"
-        data-bulk-preset
-        ?disabled=${running !== null}
-        @change=${(/** @type {Event} */ ev) => {
-          preset_choice = String(
-            /** @type {HTMLSelectElement} */ (ev.target).value
-          );
-          doRender();
-        }}
-      >
-        <option value="" ?selected=${preset_choice === ''}>실행 프리셋…</option>
-        ${(state?.presets || []).map(
-          (preset) =>
-            html`<option
-              value=${preset.id}
-              ?selected=${preset.id === preset_choice}
-              ?disabled=${preset.compatible === false}
-              title=${preset.compatible === false
-                ? preset.incompatibility_reason || ''
-                : ''}
-            >
-              ${preset.name}
-            </option>`
-        )}
-      </select>
-      ${applyButtonTemplate('worker', plan)}
-    </div>`;
+        <select
+          class="settings-dialog__bulk-preset"
+          aria-label="적용할 실행 프리셋"
+          data-bulk-preset
+          ?disabled=${running !== null}
+          @change=${(/** @type {Event} */ ev) =>
+            onPresetChoice(
+              String(/** @type {HTMLSelectElement} */ (ev.target).value)
+            )}
+        >
+          <option value="" ?selected=${preset_choice === ''}>
+            실행 프리셋…
+          </option>
+          ${(state?.presets || []).map(
+            (preset) =>
+              html`<option
+                value=${preset.id}
+                ?selected=${preset.id === preset_choice}
+                ?disabled=${preset.compatible === false}
+                title=${preset.compatible === false
+                  ? preset.incompatibility_reason || ''
+                  : ''}
+              >
+                ${preset.name}
+              </option>`
+          )}
+        </select>
+        <span class="settings-dialog__hint" data-bulk-preset-hint
+          >${PRESET_HINT}</span
+        >
+      </div>
+      ${worker_form.template(running !== null)}
+      <div class="settings-dialog__bulk-hd settings-dialog__bulk-foot">
+        <span class="settings-dialog__bulk-count" data-bulk-count
+          >저장소 ${selectedRows().length}곳에 ${BULK_FORM_KEYS.length}개
+          항목</span
+        >
+        ${applyButtonTemplate('worker', plan)}
+      </div>`;
   }
 
   /**
@@ -457,7 +543,7 @@ export function createBulkPane(host, options) {
       <select
         aria-label=${`${label} 실행 계정`}
         data-bulk-account=${key}
-        ?disabled=${running !== null}
+        ?disabled=${running !== null || !provider}
         @change=${(/** @type {Event} */ ev) => {
           account_values[key] = String(
             /** @type {HTMLSelectElement} */ (ev.target).value
@@ -465,7 +551,6 @@ export function createBulkPane(host, options) {
           doRender();
         }}
       >
-        <option value=${KEEP} ?selected=${value === KEEP}>변경 안 함</option>
         <option value=${USE_DEFAULT} ?selected=${value === USE_DEFAULT}>
           ${accountDefaultLabel(provider_key, provider)}
         </option>
@@ -488,9 +573,8 @@ export function createBulkPane(host, options) {
     const form = runner_forms[runner];
     const provider = catalog ? catalog[runner] : null;
     const disabled = running !== null;
-    /** @type {Array<[''|'wait'|'switch', string]>} */
+    /** @type {Array<['wait'|'switch', string]>} */
     const modes = [
-      ['', '변경 안 함'],
       ['wait', '기다림'],
       ['switch', '자동 전환']
     ];
@@ -526,22 +610,6 @@ export function createBulkPane(host, options) {
       <div class="settings-dialog__row">
         <span class="settings-dialog__row-label">전환 허용 계정</span>
         <span class="settings-dialog__controls settings-dialog__bulk-accounts">
-          <label class="settings-dialog__check">
-            <input
-              type="checkbox"
-              data-bulk-limit-accounts-toggle=${runner}
-              .checked=${live(form.accounts_on)}
-              ?disabled=${disabled}
-              @change=${(/** @type {Event} */ ev) => {
-                form.accounts_on = /** @type {HTMLInputElement} */ (
-                  ev.target
-                ).checked;
-                form.accounts = [];
-                doRender();
-              }}
-            />
-            바꾸기
-          </label>
           ${(provider?.accounts || []).map(
             (/** @type {any} */ row) =>
               html`<label class="settings-dialog__check">
@@ -549,10 +617,8 @@ export function createBulkPane(host, options) {
                   type="checkbox"
                   data-bulk-limit-account=${row.key}
                   data-runner=${runner}
-                  .checked=${live(
-                    form.accounts_on && form.accounts.includes(row.key)
-                  )}
-                  ?disabled=${disabled || !form.accounts_on}
+                  .checked=${live(form.accounts.includes(row.key))}
+                  ?disabled=${disabled}
                   @change=${(/** @type {Event} */ ev) => {
                     const checked = /** @type {HTMLInputElement} */ (ev.target)
                       .checked;
@@ -574,7 +640,7 @@ export function createBulkPane(host, options) {
           ${provider
             ? ''
             : html`<span class="settings-dialog__hint"
-                >계정 목록을 불러올 수 없습니다</span
+                >${CATALOG_MISSING}</span
               >`}
         </span>
       </div>
@@ -586,15 +652,12 @@ export function createBulkPane(host, options) {
             data-bulk-preempt=${runner}
             ?disabled=${disabled}
             @change=${(/** @type {Event} */ ev) => {
-              form.preempt = /** @type {''|'off'|'pct'} */ (
+              form.preempt = /** @type {'off'|'pct'} */ (
                 String(/** @type {HTMLSelectElement} */ (ev.target).value)
               );
               doRender();
             }}
           >
-            <option value="" ?selected=${form.preempt === ''}>
-              변경 안 함
-            </option>
             <option value="off" ?selected=${form.preempt === 'off'}>끔</option>
             <option value="pct" ?selected=${form.preempt === 'pct'}>
               사용량 기준
@@ -625,7 +688,6 @@ export function createBulkPane(host, options) {
   /** @returns {TemplateResult} */
   function accountTemplate() {
     const plan = accountPlan();
-    const count = countEditFields(accountEdit());
     return html`<div class="settings-dialog__group">
         <div class="settings-dialog__group-title">실행 계정</div>
         <div class="settings-dialog__controls settings-dialog__bulk-row">
@@ -636,9 +698,15 @@ export function createBulkPane(host, options) {
       </div>
       ${limitGroupTemplate('claude', 'Claude')}
       ${limitGroupTemplate('codex', 'Codex')}
+      ${catalogReady()
+        ? ''
+        : html`<p class="settings-dialog__bulk-reason" data-bulk-reason>
+            ${CATALOG_REASON}
+          </p>`}
       <div class="settings-dialog__bulk-hd settings-dialog__bulk-foot">
         <span class="settings-dialog__bulk-count" data-bulk-count
-          >바꿀 항목 ${count}개</span
+          >저장소 ${selectedRows().length}곳에 계정 ${ACCOUNT_FIELDS.length}개 ·
+          한도 정책 ${RUNNERS.length}벌</span
         >
         ${applyButtonTemplate('account', plan)}
       </div>`;
@@ -652,6 +720,7 @@ export function createBulkPane(host, options) {
     render(
       html`<div class="settings-dialog__bulk" data-bulk-section=${section}>
         ${targetsTemplate()}
+        <p class="settings-dialog__banner" data-bulk-banner>${APPLY_BANNER}</p>
         ${section === 'worker' ? workerTemplate() : accountTemplate()}
         ${resultsTemplate()}
       </div>`,
