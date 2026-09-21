@@ -31,7 +31,7 @@ function visibleWorkspacesStore() {
 
 /**
  * Test-only: drop the store's in-memory cache so the next access cold-loads from
- * disk (mirrors the ui-order channel reset hook).
+ * disk (mirrors the display-policy channel reset hook).
  */
 export function __resetVisibleWorkspacesForTest() {
   visibleWorkspacesStore().__clearCacheForTest();

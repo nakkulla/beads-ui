@@ -2,19 +2,13 @@
  * @import { MessageType } from './protocol.js'
  */
 import { html, render } from 'lit-html';
-import {
-  DEFAULT_CLOSED_RANGE,
-  closedRangeSince,
-  isClosedRange,
-  normalizeDoneRange
-} from './data/closed-range.js';
+import { closedRangeSince, normalizeDoneRange } from './data/closed-range.js';
 import { createDisplayPolicyStore } from './data/display-policy-store.js';
 import { createExecPresetStore } from './data/exec-preset-store.js';
 import { createMonitorPipelineStore } from './data/monitor-pipeline-store.js';
 import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createSubscriptionStore } from './data/subscriptions-store.js';
-import { createUiOrderStore } from './data/ui-order-store.js';
 import { createWorkerQueueStore } from './data/worker-queue-store.js';
 import { createHashRouter } from './router.js';
 import { createStore } from './state.js';
@@ -22,7 +16,6 @@ import { createActivityIndicator } from './utils/activity-indicator.js';
 import { debug } from './utils/logging.js';
 import { showToast } from './utils/toast.js';
 import { ADR_SNAPSHOT_KEY, createAdrView } from './views/adr/index.js';
-import { createBoardView } from './views/board/index.js';
 import { createCompareView } from './views/compare/index.js';
 import { createDetailPanel } from './views/detail-panel/index.js';
 import { createMdViewer } from './views/detail-panel/md-viewer.js';
@@ -80,34 +73,11 @@ export async function refreshConfigSnapshot(store, log_error) {
 }
 
 /**
- * Board subscription keys and their bd list-adapter types. The board composes
- * its 5 columns from these push-only stores (Blocked comes from the server
- * `blocked-issues` adapter; the Blocked column itself is not a status target).
- *
- * @type {ReadonlyArray<[string, string]>}
- */
-const BOARD_SUBS = [
-  ['tab:board:ready', 'ready-issues'],
-  ['tab:board:blocked', 'blocked-issues'],
-  ['tab:board:in-progress', 'in-progress-issues'],
-  ['tab:board:resolved', 'resolved-issues'],
-  ['tab:board:deferred', 'deferred-issues'],
-  ['tab:board:closed', 'closed-issues']
-];
-
-/**
- * Worker candidate subscription keys (spec §5.1): the Worker console's candidate
- * lane is live Board Ready/Blocked data. These reuse the same list adapters as
- * the Board but under Worker-scoped client ids so the Worker tab keeps its
- * candidate stores independent of Board tab (de)registration.
- *
- * `tab:worker:in-progress` is what makes the running tile's child rollup work
- * (UI-53es §2): the child titles live in the in_progress issue set, which the
- * Board owned alone — entering Worker directly used to subscribe ready/blocked
- * only, so the line had no data to render. `tab:worker:resolved` completes the
- * same five-column child set the Board counts `children N/M` from
- * (worker-card-exec-chips §3.3); without it the Worker tile could see a child
- * start but never see it finish.
+ * Worker subscription keys (spec §5.1) and their bd list-adapter types. Since
+ * the Board tab retired (UI-p7s2 §7) these are the repo's only issue lists: the
+ * candidate lane reads ready/blocked, the running tiles' child rollup reads
+ * in-progress/resolved (UI-53es §2, worker-card-exec-chips §3.3), the completed
+ * lane reads closed, and the 보류 shelf reads deferred.
  *
  * @type {ReadonlyArray<[string, string]>}
  */
@@ -116,7 +86,10 @@ const WORKER_SUBS = [
   ['tab:worker:blocked', 'blocked-issues'],
   ['tab:worker:in-progress', 'in-progress-issues'],
   ['tab:worker:resolved', 'resolved-issues'],
-  ['tab:worker:closed', 'closed-issues']
+  ['tab:worker:closed', 'closed-issues'],
+  // 보류 선반의 재료 (UI-p7s2 §3.1). 이 구독의 유일한 소비자가 워커 탭이고,
+  // 탭이 활성일 때만 사는 생명주기는 다른 다섯과 같다.
+  ['tab:worker:deferred', 'deferred-issues']
 ];
 
 /** Worker-owned client id for session-completed closed issues. */
@@ -138,26 +111,14 @@ const MONITOR_PIPELINE_CLIENT_ID = MONITOR_PIPELINE_KEY;
 const WORKER_QUEUE_CLIENT_ID = 'worker:queue';
 
 /**
- * Client id for the singleton per-workspace UI-order subscription. This channel
- * is TAB-INDEPENDENT: Board and Worker share one manual order map, so it is
- * subscribed once at bootstrap and only torn down / re-established on a workspace
- * switch — never on a Board↔Worker tab change.
- */
-const UI_ORDER_CLIENT_ID = 'ui:order';
-
-/**
- * Client id for the singleton per-workspace display-policy subscription. Same
- * lifecycle as the UI-order channel: subscribed once at bootstrap, resubscribed
- * only on a workspace switch or reconnect.
+ * Client id for the singleton per-workspace display-policy subscription:
+ * subscribed once at bootstrap, resubscribed only on a workspace switch or
+ * reconnect.
  */
 const DISPLAY_POLICY_CLIENT_ID = 'ui:display-policy';
 
 /** Client id for the singleton server-global execution-preset subscription. */
 const EXEC_PRESETS_CLIENT_ID = 'exec:presets';
-
-/** Client id / localStorage key for the Board Closed column period (spec §3.2). */
-const CLOSED_CLIENT_ID = 'tab:board:closed';
-const CLOSED_RANGE_KEY = 'beads-ui.board.closed-range';
 
 /**
  * Publish the sticky header's measured height as `--app-header-h`.
@@ -251,8 +212,8 @@ function createAdrStore() {
 }
 
 /**
- * Bootstrap the two-tab control-tower shell (Board / Worker) with a shared
- * detail overlay.
+ * Bootstrap the control-tower shell (Worker / Monitor / 비교 / ADR) with a
+ * shared detail overlay.
  *
  * @param {HTMLElement} root_element - The container element to render into.
  */
@@ -266,8 +227,7 @@ export function bootstrap(root_element) {
 
   // Render route shells (nav + workspace picker live in the header).
   const shell = html`
-    <section id="board-root" class="route board"></section>
-    <section id="worker-root" class="route worker" hidden></section>
+    <section id="worker-root" class="route worker"></section>
     <section id="monitor-root" class="route monitor" hidden></section>
     <section id="compare-root" class="route compare" hidden></section>
     <section id="adr-root" class="route adr" hidden></section>
@@ -284,8 +244,6 @@ export function bootstrap(root_element) {
   /** @type {HTMLElement|null} */
   const usage_mount = document.getElementById('usage-meter');
   /** @type {HTMLElement|null} */
-  const board_root = document.getElementById('board-root');
-  /** @type {HTMLElement|null} */
   const worker_root = document.getElementById('worker-root');
   /** @type {HTMLElement|null} */
   const monitor_root = document.getElementById('monitor-root');
@@ -300,14 +258,7 @@ export function bootstrap(root_element) {
     createUsageMeter(usage_mount);
   }
 
-  if (
-    board_root &&
-    worker_root &&
-    monitor_root &&
-    compare_root &&
-    adr_root &&
-    detail_mount
-  ) {
+  if (worker_root && monitor_root && compare_root && adr_root && detail_mount) {
     /** @type {HTMLElement|null} */
     const header_loading = document.getElementById('header-loading');
     const activity = createActivityIndicator(header_loading);
@@ -362,7 +313,6 @@ export function bootstrap(root_element) {
     const sub_issue_stores = createSubscriptionIssueStores();
     const worker_queue_store = createWorkerQueueStore();
     const monitor_pipeline_store = createMonitorPipelineStore();
-    const ui_order_store = createUiOrderStore();
     const display_policy_store = createDisplayPolicyStore();
     const exec_preset_store = createExecPresetStore();
     const session_log_store = createSessionLogStore();
@@ -425,24 +375,8 @@ export function bootstrap(root_element) {
       }
     });
 
-    // Route manual UI-order snapshots (same unified push protocol) into the
-    // client-side order store shared by Board and Worker (spec §2).
-    client.on('ui-order-snapshot', (payload) => {
-      const p = /** @type {any} */ (payload);
-      if (p && typeof p.revision === 'number') {
-        try {
-          ui_order_store.set({
-            revision: p.revision,
-            order: p.order && typeof p.order === 'object' ? p.order : {}
-          });
-        } catch {
-          // ignore
-        }
-      }
-    });
-
     // Route label/metadata display-policy snapshots into the client-side policy
-    // store read by the board cards, the label filter, and the settings panel.
+    // store read by the worker cards, the label filter, and the settings panel.
     client.on('display-policy-snapshot', (payload) => {
       const p = /** @type {any} */ (payload);
       if (p && p.policy && typeof p.policy === 'object') {
@@ -611,9 +545,6 @@ export function bootstrap(root_element) {
       run();
     }
 
-    // --- Board subscription lifecycle ---
-    /** @type {Map<string, () => Promise<void>>} */
-    const board_unsubs = new Map();
     /** @type {Set<string>} */
     const pending_subscriptions = new Set();
 
@@ -625,15 +556,15 @@ export function bootstrap(root_element) {
      * counter, and a completion whose captured generation no longer matches is
      * released instead of stored.
      *
-     * @type {{ board: number, worker: number }}
+     * @type {{ worker: number }}
      */
-    const sub_generation = { board: 0, worker: 0 };
+    const sub_generation = { worker: 0 };
 
     /**
      * Store a completed subscription, or release it when its lane moved on.
      *
      * @param {Map<string, () => Promise<void>>} unsubs
-     * @param {'board'|'worker'} lane
+     * @param {'worker'} lane
      * @param {number} generation
      * @param {string} client_id
      * @param {() => Promise<void>} unsub
@@ -665,35 +596,19 @@ export function bootstrap(root_element) {
         return;
       }
       const state = store.getState();
-      ensureBoardSubscriptions(state.view === 'board');
       ensureWorkerSubscriptions(state.view === 'worker');
       ensureMonitorPipelineChannel(pipelineChannelWanted(state));
       ensureAdrChannel(state.view === 'adr');
       ensureWorkerQueueChannel(
-        state.view === 'board' ||
-          state.view === 'worker' ||
+        state.view === 'worker' ||
           settings_dialog_open ||
           Boolean(state.selected_id)
       );
     }
 
-    // Closed column period (spec §3.2): the closed-issues subscription carries a
-    // `params.since` bound derived from this range, applied on the FIRST
-    // subscription and every re-subscription (workspace switch included).
-    /** @type {import('./data/closed-range.js').ClosedRange} */
-    let closed_range = DEFAULT_CLOSED_RANGE;
-    try {
-      const raw = window.localStorage.getItem(CLOSED_RANGE_KEY);
-      if (isClosedRange(raw)) {
-        closed_range = raw;
-      }
-    } catch {
-      // ignore storage errors
-    }
-
-    // The 완료 레인 period is a two-value vocabulary (UI-qbbg §5): the snapshot
-    // carries at most seven days of done rows, so a stored `30d`/`all` is read
-    // as `7d` and the Worker `closed-issues` `since` below follows it.
+    // 완료 레인 기간 (UI-p7s2 §5): `closed-issues` 구독이 이 범위에서 나온
+    // `params.since`를 싣고, 첫 구독과 모든 재구독(워크스페이스 전환 포함)에
+    // 적용된다.
     /** @type {import('./data/closed-range.js').DoneRange} */
     let worker_done_range = 'today';
     try {
@@ -706,19 +621,9 @@ export function bootstrap(root_element) {
     }
 
     /**
-     * The current Closed subscription spec: a `closed-issues` list filtered by
-     * `params.since` for the selected range ('all' drops the filter).
+     * The current 완료 레인 subscription spec: a `closed-issues` list filtered
+     * by `params.since` for the selected range ('all' drops the filter).
      *
-     * @returns {{ type: string, params?: { since: number } }}
-     */
-    function closedSpec() {
-      const since = closedRangeSince(closed_range);
-      return since === undefined
-        ? { type: 'closed-issues' }
-        : { type: 'closed-issues', params: { since } };
-    }
-
-    /**
      * @returns {{ type: string, params?: { since: number } }}
      */
     function workerClosedSpec() {
@@ -729,103 +634,8 @@ export function bootstrap(root_element) {
     }
 
     /**
-     * @param {boolean} active
-     */
-    function ensureBoardSubscriptions(active) {
-      if (active) {
-        for (const [client_id, type] of BOARD_SUBS) {
-          if (
-            board_unsubs.has(client_id) ||
-            pending_subscriptions.has(client_id)
-          ) {
-            continue;
-          }
-          // The Closed column is special-cased: its INITIAL subscription (and
-          // every resubscribe) must carry the stored range's `since`; the static
-          // BOARD_SUBS tuple is paramless and would otherwise fetch ALL closed.
-          const spec = client_id === CLOSED_CLIENT_ID ? closedSpec() : { type };
-          try {
-            sub_issue_stores.register(client_id, spec);
-          } catch (err) {
-            log('register %s store failed: %o', client_id, err);
-          }
-          pending_subscriptions.add(client_id);
-          const generation = sub_generation.board;
-          let released = false;
-          void subscriptions
-            .subscribeList(client_id, spec)
-            .then((unsub) => {
-              released = !keepOrRelease(
-                board_unsubs,
-                'board',
-                generation,
-                client_id,
-                unsub
-              );
-            })
-            .catch((err) => {
-              log('subscribe %s failed: %o', client_id, err);
-              showFatalFromError(err, 'board');
-            })
-            .finally(() => {
-              pending_subscriptions.delete(client_id);
-              if (released) {
-                syncSubscriptionsToView();
-              }
-            });
-        }
-      } else {
-        clearBoardSubscriptions();
-      }
-    }
-
-    /**
-     * Switch the Closed column period (spec §3.2): persist the choice, then —
-     * only while the board is actively subscribed — tear down the existing
-     * closed subscription (`unsubscribe-list` MUST precede the new subscribe so
-     * the server does not leak a stale attach) and re-subscribe with the new
-     * `since`. A no-op when the range is unchanged; when the board is inactive
-     * the persisted range applies on the next `ensureBoardSubscriptions`.
-     *
-     * @param {string} range
-     */
-    async function setClosedRange(range) {
-      if (!isClosedRange(range) || range === closed_range) {
-        return;
-      }
-      closed_range = range;
-      try {
-        window.localStorage.setItem(CLOSED_RANGE_KEY, range);
-      } catch {
-        // ignore storage errors
-      }
-      const unsub = board_unsubs.get(CLOSED_CLIENT_ID);
-      if (!unsub) {
-        return;
-      }
-      board_unsubs.delete(CLOSED_CLIENT_ID);
-      await unsub().catch(() => {});
-      const spec = closedSpec();
-      try {
-        sub_issue_stores.register(CLOSED_CLIENT_ID, spec);
-      } catch (err) {
-        log('register %s store failed: %o', CLOSED_CLIENT_ID, err);
-      }
-      try {
-        const new_unsub = await subscriptions.subscribeList(
-          CLOSED_CLIENT_ID,
-          spec
-        );
-        board_unsubs.set(CLOSED_CLIENT_ID, new_unsub);
-      } catch (err) {
-        log('re-subscribe %s failed: %o', CLOSED_CLIENT_ID, err);
-        showFatalFromError(err, 'board');
-      }
-    }
-
-    /**
      * Keep the Worker session-completion source aligned with the completed-lane
-     * range. Its client id is deliberately distinct from Board Closed.
+     * range.
      *
      * @param {string} range
      */
@@ -856,22 +666,6 @@ export function bootstrap(root_element) {
       } catch (err) {
         log('re-subscribe %s failed: %o', WORKER_CLOSED_CLIENT_ID, err);
         showFatalFromError(err, 'worker');
-      }
-    }
-
-    function clearBoardSubscriptions() {
-      sub_generation.board += 1;
-      for (const [client_id] of BOARD_SUBS) {
-        const unsub = board_unsubs.get(client_id);
-        if (unsub) {
-          void unsub().catch(() => {});
-          board_unsubs.delete(client_id);
-        }
-        try {
-          sub_issue_stores.unregister(client_id);
-        } catch (err) {
-          log('unregister %s failed: %o', client_id, err);
-        }
       }
     }
 
@@ -949,8 +743,8 @@ export function bootstrap(root_element) {
 
     /**
      * The per-workspace worker-queue channel (reuses the authenticated ws).
-     * Board joins Worker as a reader for durable cleanup-failure controls; the
-     * Monitor remains on its server-global pipeline aggregation.
+     * The detail overlay joins Worker as a reader for durable cleanup-failure
+     * controls; the Monitor remains on its server-global pipeline aggregation.
      *
      * @param {boolean} active
      */
@@ -1000,7 +794,7 @@ export function bootstrap(root_element) {
      * 탭을 옮겨도 후보가 비거나 낡지 않는다 — 채널을 끊어도 store는 비워지지
      * 않으므로, 술어가 갈리면 오래된 snapshot이 남는다.
      *
-     * @param {{ view: 'board'|'worker'|'monitor'|'compare'|'adr', selected_id: string | null }} state
+     * @param {{ view: 'worker'|'monitor'|'compare'|'adr', selected_id: string | null }} state
      * @returns {boolean}
      */
     function pipelineChannelWanted(state) {
@@ -1084,46 +878,13 @@ export function bootstrap(root_element) {
       }
     }
 
-    // --- UI-order subscription lifecycle (bootstrap singleton) ---
-    /** @type {(() => Promise<unknown>) | null} */
-    let ui_order_unsub = null;
-
-    /**
-     * Subscribe to the per-workspace manual UI-order channel exactly once. Not
-     * tied to any tab — Board and Worker both read the shared order map.
-     */
-    function subscribeUiOrder() {
-      if (ui_order_unsub) {
-        return;
-      }
-      void tracked_send('subscribe-ui-order', { id: UI_ORDER_CLIENT_ID }).catch(
-        (err) => {
-          log('subscribe-ui-order failed: %o', err);
-        }
-      );
-      ui_order_unsub = () =>
-        tracked_send('unsubscribe-ui-order', { id: UI_ORDER_CLIENT_ID });
-    }
-
-    /**
-     * Tear down the UI-order subscription and drop the cached order (the order
-     * map is per-workspace, so a workspace switch must not carry it over).
-     */
-    function clearUiOrderSubscription() {
-      if (ui_order_unsub) {
-        void ui_order_unsub().catch(() => {});
-        ui_order_unsub = null;
-      }
-      ui_order_store.clear();
-    }
-
     // --- Display-policy subscription lifecycle (bootstrap singleton) ---
     /** @type {(() => Promise<unknown>) | null} */
     let display_policy_unsub = null;
 
     /**
      * Subscribe to the per-workspace display-policy channel exactly once. Not
-     * tied to any tab — the board cards, the label filter, and the settings
+     * tied to any tab — the worker cards, the label filter, and the settings
      * panel all read the same policy.
      */
     function subscribeDisplayPolicy() {
@@ -1201,9 +962,7 @@ export function bootstrap(root_element) {
       monitor_pipeline_unsub = null;
       monitor_pipeline_recovering = false;
       adr_unsub = null;
-      board_unsubs.clear();
       worker_unsubs.clear();
-      sub_generation.board += 1;
       sub_generation.worker += 1;
       subscribeExecPresets();
       const selected = store.getState().workspace.current?.path;
@@ -1217,14 +976,11 @@ export function bootstrap(root_element) {
       }
       subscribeDisplayPolicy();
       const state = store.getState();
-      ensureBoardSubscriptions(state.view === 'board');
       ensureWorkerSubscriptions(state.view === 'worker');
       ensureMonitorPipelineChannel(pipelineChannelWanted(state));
       ensureAdrChannel(state.view === 'adr');
       ensureWorkerQueueChannel(
-        state.view === 'board' ||
-          state.view === 'worker' ||
-          Boolean(state.selected_id)
+        state.view === 'worker' || Boolean(state.selected_id)
       );
     }
 
@@ -1234,16 +990,11 @@ export function bootstrap(root_element) {
      */
     async function clearAndResubscribe() {
       log('clearing all subscriptions for workspace switch');
-      clearBoardSubscriptions();
       clearWorkerSubscriptions();
       clearWorkerQueueChannel();
       worker_queue_store.clear();
-      // UI-order is a bootstrap singleton (not tab-scoped), but the order map is
-      // per-workspace — clear + resubscribe so the new workspace's order loads.
-      clearUiOrderSubscription();
-      subscribeUiOrder();
-      // Same shape for the display policy: a bootstrap singleton whose contents
-      // are per-workspace.
+      // The display policy is a bootstrap singleton whose contents are
+      // per-workspace — clear + resubscribe so the new workspace's policy loads.
       clearDisplayPolicySubscription();
       subscribeDisplayPolicy();
       resetDetailSubscription();
@@ -1256,13 +1007,10 @@ export function bootstrap(root_element) {
         }
       }
       const current_state = store.getState();
-      ensureBoardSubscriptions(current_state.view === 'board');
       ensureWorkerSubscriptions(current_state.view === 'worker');
       ensureMonitorPipelineChannel(pipelineChannelWanted(current_state));
       ensureWorkerQueueChannel(
-        current_state.view === 'board' ||
-          current_state.view === 'worker' ||
-          Boolean(current_state.selected_id)
+        current_state.view === 'worker' || Boolean(current_state.selected_id)
       );
       if (current_state.selected_id) {
         scheduleDetailSubscription(current_state.selected_id);
@@ -1323,7 +1071,7 @@ export function bootstrap(root_element) {
 
     let workspace_picker_request = 0;
     let workspace_picker_view_revision = 0;
-    /** @type {'board'|'worker'|'monitor'|'compare'|'adr'|null} */
+    /** @type {'worker'|'monitor'|'compare'|'adr'|null} */
     let workspace_picker_observed_view = null;
 
     /**
@@ -1544,13 +1292,13 @@ export function bootstrap(root_element) {
       client.onConnection(onConn);
     }
 
-    // Load last-view from storage (board/worker/monitor/compare/adr only).
-    /** @type {'board'|'worker'|'monitor'|'compare'|'adr'} */
-    let last_view = 'board';
+    // Load last-view from storage (worker/monitor/compare/adr only; a stored
+    // 'board' from the retired tab falls back to worker — UI-p7s2 §7.1).
+    /** @type {'worker'|'monitor'|'compare'|'adr'} */
+    let last_view = 'worker';
     try {
       const raw_view = window.localStorage.getItem('beads-ui.view');
       if (
-        raw_view === 'board' ||
         raw_view === 'worker' ||
         raw_view === 'monitor' ||
         raw_view === 'compare' ||
@@ -1698,7 +1446,7 @@ export function bootstrap(root_element) {
 
     // Unified settings dialog: ONE nav-bar ⚙ opens 세션 / Worker / 표시
     // (spec §D). Its label pills are drawn from the labels actually present in
-    // the loaded board data, WITHOUT the policy applied — an already-hidden
+    // the loaded worker data, WITHOUT the policy applied — an already-hidden
     // label has to stay clickable, otherwise hiding one would be irreversible.
     const settings_dialog = createSettingsDialog(root_element, {
       policyStore: display_policy_store,
@@ -1729,7 +1477,7 @@ export function bootstrap(root_element) {
       labelOptions: () => {
         /** @type {Set<string>} */
         const seen = new Set();
-        for (const [client_id] of BOARD_SUBS) {
+        for (const [client_id] of WORKER_SUBS) {
           for (const issue of sub_issue_stores.snapshotFor(client_id) || []) {
             const labels = /** @type {any} */ (issue).labels;
             if (!Array.isArray(labels)) {
@@ -1793,7 +1541,7 @@ export function bootstrap(root_element) {
     });
 
     /**
-     * @param {import('./views/board/stepper.js').StepperDoc} doc
+     * @param {import('./views/stepper.js').StepperDoc} doc
      * @param {string} [root_dir] - Workspace the document belongs to; the
      * monitor's cross-repo cards pass their own repo here.
      */
@@ -1804,26 +1552,10 @@ export function bootstrap(root_element) {
       });
     }
 
-    // Board view (default tab).
-    const board_view = createBoardView(board_root, {
-      gotoIssue: (id) => router.gotoIssue(id),
-      issueStores: sub_issue_stores,
-      transport,
-      workerQueueStore: worker_queue_store,
-      uiOrderStore: ui_order_store,
-      displayPolicyStore: display_policy_store,
-      closedRange: closed_range,
-      onClosedRangeChange: (range) => {
-        void setClosedRange(range);
-      },
-      onNewIssue: () => new_issue_dialog.open(),
-      openDoc
-    });
-
-    // Worker console (second tab): candidate lanes + Serial/Parallel queue.
-    // NOTE: the Worker route zeroes `selected_id` (its `?issue=` deep link means
-    // "select a parent"), so opening the shared detail overlay from Worker (ⓘ /
-    // candidate click) must set the selection directly instead of routing.
+    // Worker console (the repo tab): candidate lanes + Serial/Parallel queue.
+    // NOTE: opening the shared detail overlay from Worker (ⓘ / candidate click)
+    // sets the selection directly instead of routing, so the hash stays put; a
+    // Worker `?issue=` deep link opens the same overlay (UI-p7s2 §7.1).
     const worker_view = createWorkerView(worker_root, {
       transport,
       issueStores: sub_issue_stores,
@@ -1835,6 +1567,9 @@ export function bootstrap(root_element) {
       // 모니터에 넘기는 것과 같은 함수다.
       switchWorkspace: (root_dir) => handleWorkspaceChange(root_dir),
       openDoc,
+      // 툴바 버튼과 (UI-p7s2 §4)
+      // `Cmd/Ctrl+N` 단축키가 한 다이얼로그를 연다.
+      onNewIssue: () => new_issue_dialog.open(),
       doneRange: worker_done_range,
       onDoneRangeChange: (range) => {
         void setWorkerDoneRange(range);
@@ -1873,7 +1608,7 @@ export function bootstrap(root_element) {
       sourceCandidates: () => {
         /** @type {Map<string, any>} */
         const seen = new Map();
-        for (const [client_id] of BOARD_SUBS) {
+        for (const [client_id] of WORKER_SUBS) {
           for (const issue of sub_issue_stores.snapshotFor(client_id) || []) {
             const id = /** @type {any} */ (issue)?.id;
             if (typeof id === 'string' && id.length > 0 && !seen.has(id)) {
@@ -1915,7 +1650,7 @@ export function bootstrap(root_element) {
         }
         const workspaces_state = monitor_pipeline_store.getWorkspacesState();
         const s = store.getState();
-        // 모니터는 가시 레포 전체, Board·Worker는 현재 레포만 (UI-lx45 §3.2).
+        // 모니터는 가시 레포 전체, Worker는 현재 레포만 (UI-lx45 §3.2).
         if (s.view === 'monitor') {
           return depCandidateModel(workspaces, workspaces_state);
         }
@@ -1941,8 +1676,8 @@ export function bootstrap(root_element) {
       },
       onNavigate: (id, root_dir) => {
         const goto = () => {
-          // On the Worker view the router zeroes `selected_id`; keep the overlay
-          // navigation working there by setting the selection directly.
+          // On the Worker view the overlay is opened by direct selection (the
+          // hash stays put); other views route through the hash.
           if (store.getState().view === 'worker') {
             store.setState({ selected_id: id });
           } else {
@@ -1971,9 +1706,7 @@ export function bootstrap(root_element) {
         const s = store.getState();
         store.setState({ selected_id: null });
         try {
-          router.gotoView(
-            s.view === 'worker' || s.view === 'monitor' ? s.view : 'board'
-          );
+          router.gotoView(s.view === 'monitor' ? s.view : 'worker');
         } catch {
           // ignore
         }
@@ -2008,12 +1741,11 @@ export function bootstrap(root_element) {
     });
 
     /**
-     * Manage route visibility and board subscriptions per view.
+     * Manage route visibility and per-view subscriptions.
      *
-     * @param {{ selected_id: string | null, view: 'board'|'worker'|'monitor'|'compare'|'adr' }} s
+     * @param {{ selected_id: string | null, view: 'worker'|'monitor'|'compare'|'adr' }} s
      */
     const onRouteChange = (s) => {
-      board_root.hidden = s.view !== 'board';
       worker_root.hidden = s.view !== 'worker';
       monitor_root.hidden = s.view !== 'monitor';
       compare_root.hidden = s.view !== 'compare';
@@ -2027,20 +1759,13 @@ export function bootstrap(root_element) {
       }
       // Restore updates must not start lists for the server's default workspace.
       if (workspace_bootstrap_done) {
-        ensureBoardSubscriptions(s.view === 'board');
         ensureWorkerSubscriptions(s.view === 'worker');
         ensureWorkerQueueChannel(
-          s.view === 'board' ||
-            s.view === 'worker' ||
-            settings_dialog_open ||
-            Boolean(s.selected_id)
+          s.view === 'worker' || settings_dialog_open || Boolean(s.selected_id)
         );
       }
       ensureMonitorPipelineChannel(pipelineChannelWanted(s));
       ensureAdrChannel(s.view === 'adr');
-      if (!s.selected_id && s.view === 'board') {
-        void board_view.load();
-      }
       if (s.view === 'worker') {
         worker_view.load();
       } else {
@@ -2062,9 +1787,9 @@ export function bootstrap(root_element) {
     onRouteChange(store.getState());
     void workspace_bootstrap_ready.then(() => onRouteChange(store.getState()));
 
-    // UI-order is a shared, tab-independent singleton: subscribe once at startup
-    // (not from ensureBoard/WorkerSubscriptions) so it survives tab switches.
-    subscribeUiOrder();
+    // The display policy is a shared, tab-independent singleton: subscribe once
+    // at startup (not from ensureWorkerSubscriptions) so it survives tab
+    // switches.
     subscribeDisplayPolicy();
     subscribeExecPresets();
 

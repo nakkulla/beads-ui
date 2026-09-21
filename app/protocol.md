@@ -63,8 +63,7 @@ The detail panel uses the same mechanism with a `detail:<id>` client id and an
 
 Items of these two types carry additive display decorations derived from the
 workspace snapshot. Every key is OPTIONAL: an absent key means "not known", so a
-consumer omits the chip and sorts the row last (fail-quiet). Board reads the
-same projections and simply ignores them.
+consumer omits the chip and sorts the row last (fail-quiet).
 
 - `release_info?: { released_by: [{ id, closed_at, foreign, root_dir? }], last_released_at }`
   — the CLOSED blockers this issue was waiting on, `closed_at` descending;
@@ -114,21 +113,6 @@ same projections and simply ignores them.
   registered workspace shows in the picker for every client (server-global
   persisted set); reply `{ changed, hidden }`. The path must be absolute and in
   the available-workspace allowlist.
-
-## Manual UI-order channel (spec §2)
-
-Per-workspace persisted manual card ranking consumed by the Board columns only.
-The Worker candidate lane orders itself by its sort chain and neither reads nor
-writes this channel (UI-d13v §6). CAS-guarded like the worker queue.
-
-- `subscribe-ui-order` / `unsubscribe-ui-order` payload: `{ id: client_id }` —
-  subscribe replies `ok` then pushes an initial snapshot.
-- `ui-order-snapshot` (push) payload: `{ id, revision, order }` where `order`
-  maps bead id → numeric rank; pushed to every subscriber after any mutation.
-- `ui-order-set` payload: `{ expected_revision, entries: [{ bead_id, rank }] }`
-  — reply `{ applied, conflict, revision, order }`; on `conflict` adopt the
-  returned snapshot and retry. A WS-originated `update-status` → `closed` prunes
-  that bead's rank server-side.
 
 ## Periodic refresh
 

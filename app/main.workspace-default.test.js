@@ -88,21 +88,15 @@ afterEach(() => {
 describe('main workspace restore precedence', () => {
   test.each([
     [
-      'board',
-      ['ready', 'blocked', 'in-progress', 'resolved', 'deferred', 'closed'],
+      'worker',
+      ['ready', 'blocked', 'in-progress', 'resolved', 'closed', 'deferred'],
       false
     ],
     [
       'worker',
-      ['ready', 'blocked', 'in-progress', 'resolved', 'closed'],
-      false
-    ],
-    [
-      'board',
-      ['ready', 'blocked', 'in-progress', 'resolved', 'deferred', 'closed'],
+      ['ready', 'blocked', 'in-progress', 'resolved', 'closed', 'deferred'],
       true
     ],
-    ['worker', ['ready', 'blocked', 'in-progress', 'resolved', 'closed'], true],
     ['monitor', [], true]
   ])(
     'subscribes %s once after restore (lanes=%j, settings=%s)',
@@ -173,12 +167,26 @@ describe('main workspace restore precedence', () => {
       expect(
         list_calls.map((/** @type {[string, any]} */ [, payload]) => payload.id)
       ).toEqual(lanes.map((lane) => `tab:${view}:${lane}`));
+      // 구독 종류도 같은 순서로 선다 — 보류 선반의 `deferred-issues`가 워커 탭
+      // 구독에 실제로 들어 있는지는 id가 아니라 이 줄이 말한다 (UI-p7s2 §3.1).
+      expect(
+        list_calls.map(
+          (/** @type {[string, any]} */ [, payload]) => payload.type
+        )
+      ).toEqual(lanes.map((lane) => `${lane}-issues`));
       expect(
         CLIENT.send.mock.calls.filter(
           (/** @type {[string, any]} */ [type]) =>
             type === 'subscribe-worker-queue'
         )
       ).toHaveLength(1);
+      // Board가 퇴역했으므로 어떤 진입에서도 `tab:board:*` 구독이 서지 않는다
+      // (UI-p7s2 §7.1·§8).
+      expect(
+        list_calls.filter((/** @type {[string, any]} */ [, payload]) =>
+          String(payload.id).startsWith('tab:board:')
+        )
+      ).toEqual([]);
     }
   );
 

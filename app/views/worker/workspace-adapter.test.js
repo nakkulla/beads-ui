@@ -838,13 +838,13 @@ describe('worker workspace adapter', () => {
     const transport = vi.fn(async () => [{ text: SESSION_REPORT }]);
     const adapter = adapterOf({ stores, transport, onInvalidate });
 
-    expect(
-      adapter.read({ candidate_sort: SORT }).workspaces[0].session_done
-    ).toEqual([]);
+    const pending = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .session_done;
     await flush();
     const rows = adapter.read({ candidate_sort: SORT }).workspaces[0]
       .session_done;
 
+    expect(pending[0].badges).toEqual([]);
     expect(rows.map((/** @type {any} */ r) => r.id)).toEqual(['SESSION']);
     expect(rows[0].badges).toEqual(['세션 작업']);
     expect(rows[0].work_ms).toBe(1000);
@@ -852,7 +852,7 @@ describe('worker workspace adapter', () => {
     expect(transport).toHaveBeenCalledTimes(1);
   });
 
-  test('emits no session done row when the comments carry no session report', async () => {
+  test('stands a 닫힘 행 when the comments carry no session report', async () => {
     const stores = createTestIssueStores();
     const closed_at = Date.now();
     seed(stores, 'tab:worker:closed', [
@@ -863,10 +863,12 @@ describe('worker workspace adapter', () => {
 
     adapter.read({ candidate_sort: SORT });
     await flush();
+    const rows = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .session_done;
 
-    expect(
-      adapter.read({ candidate_sort: SORT }).workspaces[0].session_done
-    ).toEqual([]);
+    expect(rows.map((/** @type {any} */ r) => r.id)).toEqual(['PLAIN']);
+    expect(rows[0].badges).toEqual([]);
+    expect(rows[0].work_ms).toBe(null);
   });
 
   test('keeps a failed comment lookup out of the retry loop until the store emits', async () => {
@@ -926,6 +928,175 @@ describe('worker workspace adapter', () => {
     await flush();
 
     expect(transport).not.toHaveBeenCalled();
+  });
+
+  test('stands a deferred issue in the shelf and not in the candidates', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [{ id: 'READY', title: 'ready' }]);
+    seed(stores, 'tab:worker:deferred', [
+      { id: 'HELD', title: '보류된 일', updated_at: 5, labels: ['ops'] }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const workspace = adapter.read({ candidate_sort: SORT }).workspaces[0];
+
+    expect(workspace.deferred.map((/** @type {any} */ r) => r.bead_id)).toEqual(
+      ['HELD']
+    );
+    expect(workspace.runnable.map((/** @type {any} */ r) => r.bead_id)).toEqual(
+      ['READY']
+    );
+  });
+
+  test('orders the deferred shelf by updated_at descending', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:deferred', [
+      { id: 'OLD', title: 'old', updated_at: 100 },
+      { id: 'NEW', title: 'new', updated_at: 900 }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const rows = adapter.read({ candidate_sort: SORT }).workspaces[0].deferred;
+
+    expect(rows.map((/** @type {any} */ r) => r.bead_id)).toEqual([
+      'NEW',
+      'OLD'
+    ]);
+  });
+
+  test('stands a closed issue with no comments as a 닫힘 행', () => {
+    const stores = createTestIssueStores();
+    const closed_at = Date.now();
+    seed(stores, 'tab:worker:closed', [
+      { id: 'NOCOMMENT', title: '댓글 없음', closed_at, comment_count: 0 }
+    ]);
+    const transport = vi.fn(async () => []);
+    const adapter = adapterOf({ stores, transport });
+
+    const rows = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .session_done;
+
+    expect(rows.map((/** @type {any} */ r) => r.id)).toEqual(['NOCOMMENT']);
+    expect(rows[0].badges).toEqual([]);
+    expect(rows[0].work_ms).toBe(null);
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  test('carries the server workflow onto a 닫힘 행 for its route chip', () => {
+    const stores = createTestIssueStores();
+    const closed_at = Date.now();
+    seed(stores, 'tab:worker:closed', [
+      {
+        id: 'ROUTED',
+        title: 'route 있음',
+        closed_at,
+        comment_count: 0,
+        workflow: { route: 'quick_fix', chips: { route: 'quick_fix' } }
+      }
+    ]);
+    const adapter = adapterOf({ stores, transport: vi.fn(async () => []) });
+
+    const rows = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .session_done;
+
+    expect(rows[0].workflow?.route).toBe('quick_fix');
+  });
+
+  test('carries blocker ids and dependency decorations onto a deferred row', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:deferred', [
+      {
+        id: 'HELD',
+        title: '보류',
+        updated_at: 5,
+        dependencies: [{ id: 'PRE-1', dependency_type: 'blocks' }],
+        release_info: { released_by: [] },
+        dependents_info: { dependents: [] }
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .deferred[0];
+
+    expect(row.blocked_by).toEqual(['PRE-1']);
+    expect(row.release_info).toEqual({ released_by: [] });
+    expect(row.dependents_info).toEqual({ dependents: [] });
+  });
+
+  test('stands an old worker-lane report as a 닫힘 행 without the session badge', async () => {
+    const stores = createTestIssueStores();
+    const closed_at = Date.now();
+    seed(stores, 'tab:worker:closed', [
+      {
+        id: 'OLDWORKER',
+        title: '보존 창 밖 워커 완료',
+        closed_at,
+        updated_at: closed_at,
+        comment_count: 1
+      }
+    ]);
+    const transport = vi.fn(async () => [
+      {
+        text: [
+          '## 🤖 작업 보고서',
+          '> worker · attempt attempt-9 · 2026-08-12T00:00:00Z'
+        ].join('\n')
+      }
+    ]);
+    const adapter = adapterOf({ stores, transport });
+
+    adapter.read({ candidate_sort: SORT });
+    await flush();
+    const rows = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .session_done;
+
+    expect(rows.map((/** @type {any} */ r) => r.id)).toEqual(['OLDWORKER']);
+    expect(rows[0].badges).toEqual([]);
+  });
+
+  test('makes no closed row for an id the worker snapshot already reports done', () => {
+    const stores = createTestIssueStores();
+    const closed_at = Date.now();
+    seed(stores, 'tab:worker:closed', [
+      { id: 'DUP', title: 'duplicate', closed_at, comment_count: 0 }
+    ]);
+    const adapter = adapterOf({
+      stores,
+      queue: { done: [{ bead_id: 'DUP', added_at: closed_at }] }
+    });
+
+    const rows = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .session_done;
+
+    expect(rows).toEqual([]);
+  });
+
+  test('carries an empty label list into the bead overlay', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:in-progress', [
+      { id: 'RUN', title: 'running', labels: [] }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .bead_overlay;
+
+    expect(overlay.RUN.labels).toEqual([]);
+  });
+
+  test('carries issue_type and labels into the bead overlay', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:in-progress', [
+      { id: 'RUN', title: 'running', issue_type: 'bug', labels: ['infra'] }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .bead_overlay;
+
+    expect(overlay.RUN.issue_type).toBe('bug');
+    expect(overlay.RUN.labels).toEqual(['infra']);
   });
 
   test('destroy stops a late session-defaults reply from invalidating the view', async () => {

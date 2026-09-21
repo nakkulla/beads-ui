@@ -68,15 +68,23 @@ import { failureSentence } from './failure-labels.js';
 import { createLaneCollapse } from './lane-collapse.js';
 import { createLaneDrag } from './lane-drag.js';
 import {
+  PRIORITY_FILTER_OPTIONS,
   READINESS_FILTER_OPTIONS,
   ROUTE_FILTER_OPTIONS,
+  TYPE_FILTER_OPTIONS,
   baseException,
   buildLanes,
+  normalizeLabelFilter,
+  normalizePriorityFilter,
   normalizeRouteFilter,
+  normalizeTypeFilter,
   resolvesConflict,
+  toggleLabelFilter,
+  togglePriorityFilter,
   toggleRouteFilter
 } from './lane-model.js';
 import {
+  candidateCard,
   discardAbandonCompletionMessage,
   discardAbandonConfirmationMessage,
   discardCompletionMessage,
@@ -202,8 +210,46 @@ const CANDIDATE_FILTER_DEFAULT = {
   show_blocked: false,
   readiness: 'all',
   // 빈 배열이 "전체"다 (UI-q1tg §3.2) — 저장값 없는 사용자는 지금 화면 그대로다.
-  routes: []
+  routes: [],
+  // Board에서 옮겨 온 세 축 (UI-p7s2 §6). 같은 규칙으로 "없는 키 = 전체"다.
+  priorities: [],
+  type: '',
+  labels: []
 };
+
+/**
+ * 보류 선반의 열림 상태 저장 키 (UI-p7s2 §3.2). 기본은 접힘이고, 읽기 실패도
+ * 접힘이다.
+ *
+ * @type {string}
+ */
+const DEFERRED_OPEN_KEY = 'bdui.worker.deferred-open';
+
+/**
+ * @returns {boolean}
+ */
+function loadDeferredOpen() {
+  try {
+    return window.localStorage.getItem(DEFERRED_OPEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * @param {boolean} open
+ */
+function saveDeferredOpen(open) {
+  try {
+    if (open) {
+      window.localStorage.setItem(DEFERRED_OPEN_KEY, '1');
+    } else {
+      window.localStorage.removeItem(DEFERRED_OPEN_KEY);
+    }
+  } catch {
+    /* ignore — a private-mode storage denial must not break the shelf */
+  }
+}
 
 /**
  * 유예 남은 초를 흘리는 재렌더 주기 (UI-q1tg §3.3). Monitor `TICK_MS`와 같은
@@ -235,7 +281,10 @@ function loadCandidateFilter() {
       show_blocked: parsed.show_blocked === true,
       readiness:
         readiness === 'ready' || readiness === 'not_ready' ? readiness : 'all',
-      routes: normalizeRouteFilter(parsed.routes)
+      routes: normalizeRouteFilter(parsed.routes),
+      priorities: normalizePriorityFilter(parsed.priorities),
+      type: normalizeTypeFilter(parsed.type),
+      labels: normalizeLabelFilter(parsed.labels)
     };
   } catch {
     return { ...CANDIDATE_FILTER_DEFAULT };
@@ -1632,8 +1681,8 @@ function prWaitRow(
 }
 
 /**
- * The five subscription ids the Worker console renders (UI-hhn9 §5.1). Board
- * or detail pushes must not re-render this tab.
+ * The six subscription ids the Worker console renders (UI-hhn9 §5.1, 보류
+ * 선반은 UI-p7s2 §3.1). Board or detail pushes must not re-render this tab.
  *
  * @type {readonly string[]}
  */
@@ -1642,14 +1691,15 @@ const WORKER_CLIENT_IDS = [
   'tab:worker:blocked',
   'tab:worker:in-progress',
   'tab:worker:resolved',
-  'tab:worker:closed'
+  'tab:worker:closed',
+  'tab:worker:deferred'
 ];
 
 /**
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../board/stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void, onNewIssue?: () => void }} [options]
  * @returns {{ load: () => void, pause: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -1725,13 +1775,13 @@ export function createWorkerView(mount_element, options = {}) {
     switchWorkspace,
     openDoc,
     doneRange,
-    onDoneRangeChange
+    onDoneRangeChange,
+    onNewIssue
   } = options;
-  // Worker 탭은 ui-order를 읽지 않는다 (UI-d13v §6): 후보 순서는 정렬 체인과
-  // 그 뒤의 의존 인접화 패스가 정하고 (UI-q1y7 §2) 수동 rank는 Board 탭만 쓴다.
-  // 그래서 selectors도 order 인자 없이 만든다.
+  // 후보 순서는 정렬 체인과 그 뒤의 의존 인접화 패스가 정한다 (UI-d13v §6,
+  // UI-q1y7 §2) — 수동 rank 채널은 Board 탭과 함께 사라졌다 (UI-p7s2 §7.2).
   const selectors = issueStores
-    ? createListSelectors(issueStores, undefined, {
+    ? createListSelectors(issueStores, {
         client_ids: WORKER_CLIENT_IDS
       })
     : null;
@@ -1742,6 +1792,35 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {CandidateFilter}
    */
   let candidate_filter = loadCandidateFilter();
+  /** Whether the 라벨 필터 팝오버 is open (UI-p7s2 §6). */
+  let label_filter_open = false;
+  /**
+   * 보류 선반의 열림 상태 (§3.2), 뷰 생성 시 복원된다.
+   *
+   * @type {boolean}
+   */
+  let deferred_open = loadDeferredOpen();
+  /**
+   * The three Board-inherited filter axes, normalized at every read so a stored
+   * value that drifted cannot empty a lane (UI-p7s2 §6).
+   *
+   * @returns {number[]}
+   */
+  function priorityFilter() {
+    return normalizePriorityFilter(candidate_filter.priorities);
+  }
+  /**
+   * @returns {string}
+   */
+  function typeFilter() {
+    return normalizeTypeFilter(candidate_filter.type);
+  }
+  /**
+   * @returns {string[]}
+   */
+  function labelFilter() {
+    return normalizeLabelFilter(candidate_filter.labels);
+  }
   /**
    * 유예 행이 보이는 동안에만 도는 1초 타이머 (UI-q1tg §3.3). `null`이 "지금
    * 도는 것이 없다"이며, 상시 타이머는 만들지 않는다.
@@ -3117,6 +3196,46 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The 보류 선반 cards (UI-p7s2 §3.2). 후보 카드와 같은 투영을 쓴다 — 다른 것은
+   * `candidateCard`에 넘기는 변형 하나뿐이다.
+   *
+   * @param {LaneModel} m
+   * @returns {any[]}
+   */
+  function deferredRows(m) {
+    return m.deferred.map((item) => rowOf(item));
+  }
+
+  /**
+   * The collapsed 보류 구역 at the very bottom of the 후보 pane body (§3.2). N이 0이면 구역 자체를 그리지
+   * 않는다 — 재료가 없는 줄은 그리지 않는다 (fail-quiet). 모니터 스냅샷에는
+   * deferred 행이 없으므로 그 탭에서는 언제나 이 자리가 빈다.
+   *
+   * @param {LaneModel} m
+   * @returns {import('lit-html').TemplateResult|undefined}
+   */
+  function deferredSectionTemplate(m) {
+    const rows = deferredRows(m);
+    if (rows.length === 0) {
+      return undefined;
+    }
+    return html`<details class="worker-deferred" ?open=${deferred_open}>
+      <summary class="worker-deferred__summary">보류 ${rows.length}</summary>
+      <div class="worker-deferred__body">
+        ${rows.map((row) =>
+          candidateCard(row, null, {
+            variant: 'deferred',
+            onOpenDoc: openDoc
+              ? (/** @type {Event} */ _ev, /** @type {any} */ doc) =>
+                  openDoc(doc)
+              : undefined
+          })
+        )}
+      </div>
+    </details>`;
+  }
+
+  /**
    * The 완료 rows of this render, worker and session work merged.
    *
    * @param {LaneModel} m
@@ -3421,6 +3540,10 @@ export function createWorkerView(mount_element, options = {}) {
           ...(item?.search_match === undefined
             ? {}
             : { search_match: item.search_match }),
+          // 우선순위·타입·라벨 필터의 흐림도 같은 이유로 옮긴다 (UI-p7s2 §6).
+          ...(item?.filter_match === undefined
+            ? {}
+            : { filter_match: item.filter_match }),
           workflow: bead_workflow[e.bead_id] || null,
           priority: item?.priority,
           from_id: item?.from_id,
@@ -3627,6 +3750,16 @@ export function createWorkerView(mount_element, options = {}) {
       aria-label="이슈 검색 (ID·제목)"
       .value=${search_query}
     />`;
+    // `+ 새 이슈` (UI-p7s2 §4). 조작 묶음의 오른쪽 끝이고, 모바일에서는 글자를
+    // 떼고 `+`만 남긴다 — 좁은 리본에서 이 버튼은 아이콘으로 읽힌다.
+    const new_issue = html`<button
+      type="button"
+      class="op-btn op-btn--primary worker-new-issue"
+      aria-label="새 이슈"
+      title="새 이슈 (Cmd/Ctrl+N)"
+    >
+      ${is_mobile ? '+' : '+ 새 이슈'}
+    </button>`;
     // 정리 멈춤은 더 이상 배너가 아니라 타임라인의 한 항목이다 (§4.2) — 스트립의
     // 해결 필요 배지가 부르고, 클릭이 그 자리로 데려간다.
     const repo_operations = repoOpsStripTemplate(
@@ -3643,7 +3776,7 @@ export function createWorkerView(mount_element, options = {}) {
           <div class="worker-kpi worker-kpi--ribbon">${overcap}${counts}</div>
         </div>
         <div class="worker-ctrl worker-ctrl--mobile">
-          <div class="worker-ctrl__ops">${settings}${search}</div>
+          <div class="worker-ctrl__ops">${settings}${search}${new_issue}</div>
           <div class="worker-kpi">${base_chip}</div>
         </div>
         ${repo_operations}${repo_ops_settings.template()}`;
@@ -3651,7 +3784,7 @@ export function createWorkerView(mount_element, options = {}) {
     // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
     return html`<div class="worker-ctrl">
         <div class="worker-ctrl__ops">
-          ${play}${merge_all}${settings}${search}
+          ${play}${merge_all}${settings}${search}${new_issue}
         </div>
         <div class="worker-kpi">
           ${overcap}${counts}${base_chip}
@@ -3753,6 +3886,126 @@ export function createWorkerView(mount_element, options = {}) {
             >`
           : ''}
       </div>
+      <div
+        class="worker-filter__priorities"
+        role="group"
+        aria-label="우선순위 필터"
+      >
+        ${PRIORITY_FILTER_OPTIONS.map(
+          (o) =>
+            html`<button
+              type="button"
+              class="worker-filter__chip worker-filter__priority${priorityFilter().includes(
+                o.value
+              )
+                ? ' is-active'
+                : ''}"
+              data-priority=${String(o.value)}
+              aria-pressed=${priorityFilter().includes(o.value)
+                ? 'true'
+                : 'false'}
+            >
+              ${o.label}
+            </button>`
+        )}
+        ${hidden.priority > 0
+          ? html`<span class="worker-filter__hidden"
+              >숨김 ${hidden.priority}</span
+            >`
+          : ''}
+      </div>
+      <select class="worker-sort worker-filter__type" aria-label="타입 필터">
+        ${TYPE_FILTER_OPTIONS.map(
+          (o) =>
+            html`<option value=${o.value} ?selected=${typeFilter() === o.value}>
+              ${o.label}
+            </option>`
+        )}
+      </select>
+      ${hidden.type > 0
+        ? html`<span class="worker-filter__hidden">숨김 ${hidden.type}</span>`
+        : ''}
+      ${labelFilterTemplate(m)}
+      ${hidden.label > 0
+        ? html`<span class="worker-filter__hidden">숨김 ${hidden.label}</span>`
+        : ''}
+    </div>`;
+  }
+
+  /**
+   * Union of the labels on every lane row this render draws (UI-p7s2 §6). 표시 정책과
+   * 무관하게 전부 보인다 — 감춰진 라벨도 필터로는 걸 수 있어야 한다.
+   *
+   * @param {LaneModel} m
+   * @returns {string[]}
+   */
+  function labelOptions(m) {
+    /** @type {Set<string>} */
+    const labels = new Set();
+    // 보류도 필터 **이전** 집합에서 모은다 — 필터 뒤 목록에서 모으면 보류에만
+    // 있는 라벨 A를 고른 순간 B 옵션이 사라져 다중 선택이 성립하지 않는다.
+    for (const item of [
+      ...m.runnable_all,
+      ...m.deferred_all,
+      ...m.queue,
+      ...m.running,
+      ...m.pr_wait,
+      ...m.done
+    ]) {
+      for (const label of Array.isArray(item.labels) ? item.labels : []) {
+        if (typeof label === 'string' && label.length > 0) {
+          labels.add(label);
+        }
+      }
+    }
+    // 고른 라벨이 이 렌더의 행에 하나도 없어도 목록에 남아야 끌 수 있다.
+    for (const label of labelFilter()) {
+      labels.add(label);
+    }
+    return [...labels].sort((a, b) => a.localeCompare(b));
+  }
+
+  /**
+   * The 라벨 필터 button and its check-list popover (UI-p7s2 §6). 기존 판정 칩 팝오버와 같은
+   * `.chip-popover` 문법을 쓰되 열림은 이 조작 자신이 들고 있다 — 판정 칩 팝업은
+   * bead 하나에 매인 열림 키를 쓰므로 카드 밖 조작이 올라탈 자리가 없다.
+   *
+   * @param {LaneModel} m
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function labelFilterTemplate(m) {
+    const selected = labelFilter();
+    const options = labelOptions(m);
+    return html`<div class="worker-filter__labels">
+      <button
+        type="button"
+        class="worker-filter__chip worker-filter__labels-btn${selected.length >
+        0
+          ? ' is-active'
+          : ''}"
+        aria-expanded=${label_filter_open ? 'true' : 'false'}
+        title="라벨 필터"
+      >
+        라벨${selected.length > 0 ? ` ${selected.length}` : ''} ▾
+      </button>
+      ${label_filter_open
+        ? html`<div class="chip-popover worker-filter__labels-pop">
+            ${options.length === 0
+              ? html`<div class="chip-popover__line">라벨 없음</div>`
+              : options.map(
+                  (label) =>
+                    html`<label class="worker-filter__label-option">
+                      <input
+                        type="checkbox"
+                        class="worker-filter__label-check"
+                        data-label=${label}
+                        .checked=${selected.includes(label)}
+                      />
+                      ${label}
+                    </label>`
+                )}
+          </div>`
+        : ''}
     </div>`;
   }
 
@@ -4092,6 +4345,7 @@ export function createWorkerView(mount_element, options = {}) {
       header_control: candidateSortTemplate(),
       header_row: sort_chain_open ? candidateSortChainTemplate() : undefined,
       controls: candidateControlsTemplate(m),
+      footer: deferredSectionTemplate(m),
       collapsible: true,
       collapsed: collapse.isCollapsed('candidate'),
       place_menu: currentPlaceMenu(candidates),
@@ -4424,6 +4678,34 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return;
     }
+    // 라벨 체크박스와 타입 select는 `.worker-sort` 분기보다 먼저다 (UI-p7s2 §6):
+    // 타입 select가 후보 정렬과 같은 형태 토큰을 쓰므로 뒤에 두면 타입 변경이
+    // 정렬 변경으로 잘못 읽힌다.
+    const label_check = /** @type {HTMLInputElement|null} */ (
+      /** @type {HTMLElement} */ (ev.target)?.closest?.(
+        '.worker-filter__label-check'
+      )
+    );
+    if (label_check) {
+      const value = label_check.dataset.label || '';
+      if (value) {
+        setCandidateFilter({
+          ...candidate_filter,
+          labels: toggleLabelFilter(labelFilter(), value)
+        });
+      }
+      return;
+    }
+    const type_select = /** @type {HTMLSelectElement|null} */ (
+      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-filter__type')
+    );
+    if (type_select) {
+      setCandidateFilter({
+        ...candidate_filter,
+        type: normalizeTypeFilter(type_select.value)
+      });
+      return;
+    }
     // 완료 기간 select가 먼저다 — `.worker-done-range`는 `.worker-sort` 톤을
     // 공유하므로 순서를 뒤집으면 후보 정렬로 잘못 해석된다.
     const range_select = /** @type {HTMLSelectElement|null} */ (
@@ -4623,6 +4905,18 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function onClick(ev) {
     const target = /** @type {HTMLElement} */ (ev.target);
+    // `+ 새 이슈` (UI-p7s2 §4): 툴바 조작이므로 어떤 행 처리보다 먼저다.
+    if (target?.closest?.('.worker-new-issue')) {
+      onNewIssue?.();
+      return;
+    }
+    // 보류 선반의 열고 닫기 (§3.2). `<details>`의 기본 동작이 실제로 열고, 여기서는
+    // 그 결과를 저장해 다음 렌더가 같은 상태로 선다.
+    if (target?.closest?.('.worker-deferred__summary')) {
+      deferred_open = !deferred_open;
+      saveDeferredOpen(deferred_open);
+      return;
+    }
     const external_open = target.closest('[data-external-open]');
     if (external_open) {
       openBlocker(
@@ -4887,6 +5181,28 @@ export function createWorkerView(mount_element, options = {}) {
           routes: toggleRouteFilter(candidate_filter.routes, value)
         });
       }
+      return;
+    }
+    // 우선순위 칩도 route 칩과 같은 이유로 준비도보다 먼저다 (UI-p7s2 §6).
+    const priority_chip = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-filter__priority')
+    );
+    if (priority_chip) {
+      const parsed = Number.parseInt(priority_chip.dataset.priority || '', 10);
+      if (Number.isFinite(parsed)) {
+        setCandidateFilter({
+          ...candidate_filter,
+          priorities: togglePriorityFilter(priorityFilter(), parsed)
+        });
+      }
+      return;
+    }
+    const labels_btn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-filter__labels-btn')
+    );
+    if (labels_btn) {
+      label_filter_open = !label_filter_open;
+      doRender();
       return;
     }
     const readiness_chip = /** @type {HTMLElement|null} */ (
@@ -5198,7 +5514,7 @@ export function createWorkerView(mount_element, options = {}) {
     // 뒤에 두면 어느 쪽을 눌러도 부모 이슈가 열려 버린다. Board와 달리 여기서는
     // 템플릿에 핸들러를 주지 않고 DOM에 실린 id로 위임 처리한다.
     const rollup_toggle = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.rtile .board-card__roll-toggle')
+      target?.closest?.('.rtile .worker-card__roll-toggle')
     );
     if (rollup_toggle) {
       const parent_id = rollup_toggle.dataset.rollParent;
@@ -5213,7 +5529,7 @@ export function createWorkerView(mount_element, options = {}) {
       return;
     }
     const rollup_child = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.rtile .board-card__roll-child')
+      target?.closest?.('.rtile .worker-card__roll-child')
     );
     if (rollup_child) {
       const child_id = rollup_child.dataset.childId;
@@ -5350,6 +5666,12 @@ export function createWorkerView(mount_element, options = {}) {
       !closest('.rtile__failure-pop, .rtile__failure-badge')
     ) {
       open_failure_detail = null;
+      changed = true;
+    }
+    // 라벨 팝오버도 자기 상자 밖의 클릭 하나로 닫힌다 (UI-p7s2 §6) — 문서 어디를
+    // 눌러도 닫히고, 그 클릭 자체는 원래 갈 곳으로 계속 흐른다.
+    if (label_filter_open && !closest('.worker-filter__labels')) {
+      label_filter_open = false;
       changed = true;
     }
     if (changed) {

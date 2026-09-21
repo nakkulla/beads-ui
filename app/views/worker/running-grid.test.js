@@ -601,12 +601,12 @@ describe('worker failed running tile template', () => {
     const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
 
     expect(
-      tile.querySelector('.board-card__roll-toggle')?.textContent
+      tile.querySelector('.worker-card__roll-toggle')?.textContent
     ).toContain('children 1/3');
     expect(
-      tile.querySelector('.board-card__roll-current')?.textContent
+      tile.querySelector('.worker-card__roll-current')?.textContent
     ).toContain('T2: 서버 배선');
-    expect(tile.querySelector('.board-card__roll-list')).toBeNull();
+    expect(tile.querySelector('.worker-card__roll-list')).toBeNull();
     expect(tile.querySelector('.rtile__child')).toBeNull();
   });
 
@@ -637,7 +637,7 @@ describe('worker failed running tile template', () => {
       mount
     );
 
-    const rows = mount.querySelectorAll('.board-card__roll-child');
+    const rows = mount.querySelectorAll('.worker-card__roll-child');
 
     expect(rows).toHaveLength(2);
     expect(
@@ -666,7 +666,7 @@ describe('worker failed running tile template', () => {
       mount
     );
 
-    expect(mount.querySelector('.board-card__roll')).toBeNull();
+    expect(mount.querySelector('.worker-card__roll')).toBeNull();
     expect(mount.querySelector('.rtile__child')).toBeNull();
   });
 
@@ -1532,7 +1532,7 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
 
     const deps = order.indexOf('worker-deps worker-deps--secondary');
     expect(deps).toBeGreaterThan(order.indexOf('rtile__activity'));
-    expect(deps).toBeGreaterThan(order.indexOf('board-card__roll'));
+    expect(deps).toBeGreaterThan(order.indexOf('worker-card__roll'));
     expect(deps).toBeGreaterThan(order.indexOf('rtile__landing'));
     expect(deps).toBeLessThan(order.indexOf('rtile__meta'));
   });

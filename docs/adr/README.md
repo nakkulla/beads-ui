@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| UI-p7s2 | [Board 탭은 퇴역하고 워커 탭이 저장소의 단일 이슈 면이 된다](UI-p7s2-board-retired-worker-single-issue-surface.md) | 2026-09-21 | Board 탭은 퇴역하고 워커 탭이 저장소의 단일 이슈 면이 되어 deferred 선반·완료 기간·우선순위/타입/라벨 필터·새 이슈 버튼을 흡수하며 기본 뷰와 레거시 해시는 worker로 간다 |
 | UI-obl0 | [유닛 실행자가 엇갈린 attempt는 미기록이 아니라 혼합이다](UI-obl0-mixed-unit-impl-actor.md) | 2026-09-21 | 유닛 실행자가 엇갈린 attempt는 미기록이 아니라 갈린 축만 말하는 혼합으로 표시하고 미기록은 영수증 부재·손상에만 남긴다 |
 | UI-mfm1 | [Worker와 Monitor의 후보 행은 같은 사실 키를 싣고 lane-model 한 경로가 자격을 접는다](UI-mfm1-candidate-facts-single-placement-path.md) | 2026-09-21 | Worker와 Monitor의 후보 행은 같은 사실 키를 싣고 lane-model 한 경로가 자격을 접으며 배치 불가 사유는 슬롯 4a 준비도 칩 하나가 말한다 |
 | UI-g0lk | [머지 전 검증 실패는 completion intent의 비종단 holding 보류다](UI-g0lk-pre-merge-verify-failure-is-visible-holding-phase.md) | 2026-09-21 | 머지 전 검증 실패는 completion intent의 비종단 holding 보류로 보이게 남기고, 수정 push가 자동으로 풀며 [세션에서 해결]이 사람 출구다 — terminal 종단·baseline 위조 판정·[머지] 의미는 바꾸지 않는다 |

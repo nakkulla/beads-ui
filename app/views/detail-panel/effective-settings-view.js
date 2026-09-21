@@ -10,7 +10,7 @@
  *
  * @typedef {import('lit-html').TemplateResult} TemplateResult
  * @typedef {import('./effective-settings.js').EffectiveRow} EffectiveRow
- * @typedef {import('../board/card.js').ExecReceipt} ExecReceipt
+ * @typedef {import('../exec-format.js').ExecReceipt} ExecReceipt
  */
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
@@ -20,8 +20,8 @@ import {
   recSettings,
   recTooltip
 } from '../../utils/rec-settings.js';
-import { formatExecReceipt, formatPlannedExecution } from '../board/card.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
+import { formatExecReceipt, formatPlannedExecution } from '../exec-format.js';
 import {
   AUTO_LITERAL,
   IMPL_DISPATCHES,

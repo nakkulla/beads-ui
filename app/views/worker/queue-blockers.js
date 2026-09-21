@@ -82,7 +82,7 @@ function workspaceNameFromRoot(root_dir) {
 }
 
 /**
- * One blocked chip — Board 카드와 같은 한 벌이다 (`board/card.js`
+ * One blocked chip — Board 카드가 쓰던 것과 같은 한 벌이다 (retired `board/card.js`
  * `blockedChips`). 칩이 서 있다는 사실 자체가 "이 이슈는 저것 때문에 못
  * 나간다"이므로 방향어를 다시 적지 않고, blocker가 지금 어느 레인에 있는지는
  * 카드가 아니라 툴팁이 말한다 — 카드 위에서 `(실행가능)`은 이 이슈의 상태로

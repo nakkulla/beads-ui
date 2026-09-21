@@ -21,13 +21,13 @@ import {
   providerUsageBadges,
   usageTooltip
 } from '../../utils/token-usage.js';
+import { childRollupTemplate } from '../child-rollup.js';
+import { chipPopoverTemplate } from '../chip-popover.js';
 import {
   childExecChips,
   execReceiptActor,
   formatExecReceipt
-} from '../board/card.js';
-import { childRollupTemplate } from '../child-rollup.js';
-import { chipPopoverTemplate } from '../chip-popover.js';
+} from '../exec-format.js';
 import {
   failureCategory,
   failureNextAction,
@@ -62,6 +62,8 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * @property {string} attempt_id
  * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
  * `false`인 타일만 `is-dimmed`로 흐려지고, 검색 중이 아니면 키가 없다.
+ * @property {boolean} [filter_match] - 우선순위·타입·라벨 필터와의 일치
+ * (UI-p7s2 §6). 검색과 같은 흐림이다 — 타일을 숨기면 슬롯 점유가 보이지 않는다.
  * @property {'session'} [kind] - 세션이 `in_progress`로 잡은 이슈의 타일
  * (UI-yrzu §6). attempt가 없으므로 운영 버튼·세션 드로어·위임 칩이 없고,
  * 경과는 bead의 `started_at`에서 온다. 생략(=Worker attempt 타일)이 기본이다.
@@ -1397,7 +1399,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ? ' rtile--session'
       : ''}${provider_hold
       ? ' rtile--provider-hold'
-      : ''}${tile.search_match === false ? ' is-dimmed' : ''}"
+      : ''}${tile.search_match === false || tile.filter_match === false
+      ? ' is-dimmed'
+      : ''}"
     data-bead-id=${tile.bead_id}
     data-root-dir=${ifDefined(tile.root_dir)}
     data-attempt-id=${tile.attempt_id || ''}
