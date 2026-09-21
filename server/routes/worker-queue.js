@@ -13,6 +13,7 @@
 import path from 'node:path';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
+import { WAIT_ID_RE } from '../worker/external-wait/contract.js';
 import { placeBeadInQueue } from '../worker/queue-place.js';
 import { removeBeadFromQueue } from '../worker/queue-remove.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
@@ -302,3 +303,46 @@ export function workerQueueRemoveHandler(req, res) {
         }
   );
 }
+
+/**
+ * @param {'register'|'hold'|'get'|'check'|'stop'|'resume'} method
+ * @returns {(req:Request, res:Response)=>Promise<void>}
+ */
+function externalWaitHandler(method) {
+  return async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const body = req.body || {};
+    const workspace = workspaceKeyOf(
+      method === 'get' ? req.query.root_dir : body.root_dir
+    );
+    const wait_id = req.params.id;
+    if (
+      workspace === null ||
+      (method !== 'register' &&
+        (typeof wait_id !== 'string' || !WAIT_ID_RE.test(wait_id)))
+    ) {
+      res.status(400).json({ ok: false, error: 'bad_request' });
+      return;
+    }
+    try {
+      const service = getWorkerRuntime().externalWait;
+      const result =
+        method === 'register'
+          ? await service.register(workspace, body)
+          : method === 'resume'
+            ? await service.resume(workspace, wait_id, body.mode)
+            : await service[method](workspace, wait_id);
+      const status = 'status' in result ? result.status : 200;
+      res.status(status).json(result);
+    } catch {
+      res.status(500).json({ ok: false, error: 'internal_error' });
+    }
+  };
+}
+
+export const externalWaitRegisterHandler = externalWaitHandler('register');
+export const externalWaitHoldHandler = externalWaitHandler('hold');
+export const externalWaitGetHandler = externalWaitHandler('get');
+export const externalWaitCheckHandler = externalWaitHandler('check');
+export const externalWaitStopHandler = externalWaitHandler('stop');
+export const externalWaitResumeHandler = externalWaitHandler('resume');

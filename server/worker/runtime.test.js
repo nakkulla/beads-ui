@@ -2,25 +2,211 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createWorkerRuntime } from './runtime.js';
+import {
+  __resetWorkerRuntimeForTest,
+  __setExternalWaitRunForTest,
+  createWorkerRuntime as buildWorkerRuntime,
+  getWorkerRuntime
+} from './runtime.js';
 import { sessionLogPath, workspaceStateDir } from './state-paths.js';
 
 const WS = '/tmp/example-workspace/project-a';
+const metadata = vi.hoisted(() => ({
+  setMetadata: vi.fn(),
+  unsetMetadata: vi.fn(),
+  readMetadata: vi.fn()
+}));
+vi.mock('./bd-metadata.js', () => ({ createBdMetadata: () => metadata }));
+/** @type {ReturnType<typeof buildWorkerRuntime>[]} */
+const runtimes = [];
+
+function createWorkerRuntime() {
+  const runtime = buildWorkerRuntime();
+  runtimes.push(runtime);
+  return runtime;
+}
 /** @type {string} */
 let tmp_state;
 
 beforeEach(() => {
+  vi.resetAllMocks();
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-rt-'));
   process.env.XDG_STATE_HOME = tmp_state;
 });
 
 afterEach(() => {
+  for (const runtime of runtimes.splice(0)) {
+    runtime.externalWaitObserver.stop();
+  }
+  __resetWorkerRuntimeForTest();
+  vi.restoreAllMocks();
   delete process.env.XDG_STATE_HOME;
   try {
     fs.rmSync(tmp_state, { recursive: true, force: true });
   } catch {
     /* ignore */
   }
+});
+
+/** @returns {import('./external-wait/store.js').WaitInput} */
+function externalWaitInput() {
+  return {
+    root_dir: WS,
+    bead_id: 'UI-wait',
+    owner: { kind: 'worker', attempt_id: 'prior' },
+    worktree: WS,
+    execution_sha: 'a'.repeat(40),
+    jobs: [],
+    budget: { turns_total: 3, turns_used: 3 }
+  };
+}
+
+test('writes the external wait metadata and confirms it before replying', async () => {
+  const runtime = createWorkerRuntime();
+  const record = runtime.externalWaitStore.insert(WS, externalWaitInput());
+  metadata.readMetadata.mockResolvedValue(record.wait_id);
+
+  const result = await runtime.externalWait.hold(WS, record.wait_id);
+
+  expect(result).toMatchObject({ state: 'detached' });
+  expect(metadata.setMetadata).toHaveBeenCalledExactlyOnceWith(
+    'UI-wait',
+    'external_wait',
+    record.wait_id
+  );
+  expect(metadata.readMetadata).toHaveBeenCalledExactlyOnceWith(
+    'UI-wait',
+    'external_wait'
+  );
+  expect(metadata.setMetadata.mock.invocationCallOrder[0]).toBeLessThan(
+    metadata.readMetadata.mock.invocationCallOrder[0]
+  );
+});
+
+test('rejects a mismatched metadata set readback', async () => {
+  const runtime = createWorkerRuntime();
+  const record = runtime.externalWaitStore.insert(WS, externalWaitInput());
+  metadata.readMetadata.mockResolvedValue(null);
+
+  const result = await runtime.externalWait.hold(WS, record.wait_id);
+
+  expect(result).toMatchObject({ status: 500, error: 'bead_write_failed' });
+  expect(runtime.externalWaitStore.get(WS, record.wait_id)).toMatchObject({
+    stage: 'detached'
+  });
+});
+
+test('rejects a metadata unset whose readback still contains the key', async () => {
+  const runtime = createWorkerRuntime();
+  const record = runtime.externalWaitStore.insert(WS, externalWaitInput());
+  metadata.readMetadata.mockResolvedValue(record.wait_id);
+
+  const result = await runtime.externalWait.stop(WS, record.wait_id);
+
+  expect(result).toMatchObject({ status: 500, error: 'bead_write_failed' });
+  expect(runtime.externalWaitStore.get(WS, record.wait_id)).toMatchObject({
+    stage: 'stopped'
+  });
+});
+
+test('accepts an already absent metadata key only after a successful readback', async () => {
+  const runtime = createWorkerRuntime();
+  const record = runtime.externalWaitStore.insert(WS, externalWaitInput());
+  metadata.unsetMetadata.mockRejectedValue(new Error('key absent'));
+  metadata.readMetadata.mockResolvedValue(null);
+
+  const result = await runtime.externalWait.stop(WS, record.wait_id);
+
+  expect(result).toMatchObject({ stage: 'stopped' });
+  expect(metadata.readMetadata).toHaveBeenCalledExactlyOnceWith(
+    'UI-wait',
+    'external_wait'
+  );
+});
+
+test('reports an unavailable metadata readback after an unset failure', async () => {
+  const runtime = createWorkerRuntime();
+  const record = runtime.externalWaitStore.insert(WS, externalWaitInput());
+  metadata.unsetMetadata.mockRejectedValue(new Error('write unavailable'));
+  metadata.readMetadata.mockRejectedValue(new Error('read unavailable'));
+
+  const result = await runtime.externalWait.stop(WS, record.wait_id);
+
+  expect(result).toMatchObject({ status: 500, error: 'bead_write_failed' });
+});
+
+test('swaps completion and resume hooks on the existing runtime instances', async () => {
+  const runtime = createWorkerRuntime();
+  const oldCompletion = vi.fn();
+  const onCompletion = vi.fn();
+  const resume = vi.fn(async () => ({
+    ok: /** @type {const} */ (true),
+    attempt_id: 'next'
+  }));
+  const original_service = runtime.externalWait;
+  runtime.setExternalWaitHooks({ onCompletion: oldCompletion });
+  runtime.setExternalWaitHooks({ onCompletion, resume });
+  const record = runtime.externalWaitStore.insert(WS, {
+    ...externalWaitInput(),
+    stage: 'detached',
+    owner: {
+      kind: 'session',
+      session_ref: 'codex:test',
+      session_pid: 123,
+      session_start: 'start'
+    }
+  });
+
+  await runtime.externalWait.check(WS, record.wait_id);
+  const result = await runtime.externalWait.resume(WS, record.wait_id, 'fork');
+
+  expect(runtime.externalWait).toBe(original_service);
+  expect(oldCompletion).not.toHaveBeenCalled();
+  expect(onCompletion).toHaveBeenCalledExactlyOnceWith(
+    WS,
+    expect.objectContaining({ stage: 'completing' })
+  );
+  expect(result).toEqual({ ok: true, attempt_id: 'next' });
+});
+
+test('starts the observer interval and stops it on singleton reset', () => {
+  const interval = vi.spyOn(globalThis, 'setInterval');
+  const clear = vi.spyOn(globalThis, 'clearInterval');
+
+  getWorkerRuntime();
+  const timer = interval.mock.results[0].value;
+  __resetWorkerRuntimeForTest();
+
+  expect(interval).toHaveBeenCalledWith(expect.any(Function), 15000);
+  expect(clear).toHaveBeenCalledWith(timer);
+});
+
+test('passes observation argv and timeout through the test runner seam', async () => {
+  const run = vi.fn(async () => ({ code: 1, stdout: '', stderr: '' }));
+  __setExternalWaitRunForTest(run);
+  const runtime = createWorkerRuntime();
+  const log_path = path.join(tmp_state, 'process.log');
+  fs.writeFileSync(log_path, 'rc=0\n');
+  const record = runtime.externalWaitStore.insert(WS, {
+    ...externalWaitInput(),
+    jobs: [
+      {
+        adapter: 'process',
+        pid: 123,
+        submitted_at: '2026-09-21T00:00:00.000Z',
+        workdir: WS,
+        log_path
+      }
+    ]
+  });
+
+  const result = await runtime.externalWait.check(WS, record.wait_id);
+
+  expect(result).toMatchObject({ stage: 'done' });
+  expect(run).toHaveBeenCalledExactlyOnceWith(
+    ['env', 'LC_ALL=C', 'ps', '-p', '123', '-o', 'lstart='],
+    { timeout_ms: 5000 }
+  );
 });
 
 describe('worker/runtime status', () => {

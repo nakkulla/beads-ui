@@ -242,5 +242,14 @@ export function createExternalWaitObserver({
     }
   }
 
-  return { observeRecord, tick, start, stop };
+  return {
+    observeRecord,
+    tick,
+    start,
+    stop,
+    /** @param {RecordCallback|undefined} callback */
+    setOnCompletion(callback) {
+      onCompletion = callback;
+    }
+  };
 }

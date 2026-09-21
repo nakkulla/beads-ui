@@ -9,3 +9,4 @@ export {
 export { observeSlurmJob } from './adapters/slurm.js';
 export { observeProcessJob } from './adapters/process.js';
 export { createExternalWaitObserver } from './observer.js';
+export { createExternalWaitService } from './service.js';

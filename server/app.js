@@ -15,6 +15,12 @@ import { codexUsageHandler } from './routes/codex-usage.js';
 import { docHandler } from './routes/doc.js';
 import { repoOpsScriptHandler } from './routes/repo-ops-script.js';
 import {
+  externalWaitCheckHandler,
+  externalWaitGetHandler,
+  externalWaitHoldHandler,
+  externalWaitRegisterHandler,
+  externalWaitResumeHandler,
+  externalWaitStopHandler,
   workerQueueGetHandler,
   workerQueuePlaceHandler,
   workerQueueRemoveHandler
@@ -108,6 +114,12 @@ export function createApp(config) {
   app.get('/api/worker/queue', workerQueueGetHandler);
   app.post('/api/worker/queue/place', workerQueuePlaceHandler);
   app.post('/api/worker/queue/remove', workerQueueRemoveHandler);
+  app.post('/api/worker/external-wait', externalWaitRegisterHandler);
+  app.post('/api/worker/external-wait/:id/hold', externalWaitHoldHandler);
+  app.get('/api/worker/external-wait/:id', externalWaitGetHandler);
+  app.post('/api/worker/external-wait/:id/check', externalWaitCheckHandler);
+  app.post('/api/worker/external-wait/:id/stop', externalWaitStopHandler);
+  app.post('/api/worker/external-wait/:id/resume', externalWaitResumeHandler);
 
   // Switch the active account of one provider from the usage card.
   app.post('/api/claude-account/switch', claudeAccountSwitchHandler);

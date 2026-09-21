@@ -893,6 +893,58 @@ Every queue mutation replies `{ applied, conflict, queue }`; a stale
 없는 항목의 제거는 큐 버전을 바꾸지 않는다. 적용된 배치·제거는 웹소켓 구독자에게
 갱신된 스냅샷을 알리고 다음 대기 항목의 실행 판단을 요청한다.
 
+### HTTP 외부 작업 대기 API
+
+모든 요청은 등록된 워크스페이스의 절대 경로 `root_dir`를 받는다. POST 본문은
+JSON이며 GET은 쿼리로 받는다. 모든 응답에 `Cache-Control: no-store`를 설정한다.
+`:id`는 `w-<12자리 소문자 hex>` 형식이다.
+
+| 요청                                          | 입력                                                          | 성공 응답 (HTTP 200)                                                                        |
+| --------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `POST /api/worker/external-wait`              | `{ root_dir, bead_id, owner, worktree, execution_sha, jobs }` | `{ ok:true, wait_id, decision:'hold'\|'detached'\|'done', budget, jobs }`                   |
+| `POST /api/worker/external-wait/:id/hold`     | `{ root_dir }`                                                | `{ state:'running'\|'done'\|'detached'\|'completing'\|'resumed'\|'stopped', budget, jobs }` |
+| `GET /api/worker/external-wait/:id?root_dir=` | 쿼리 `root_dir`                                               | 대기 레코드 전체                                                                            |
+| `POST /api/worker/external-wait/:id/check`    | `{ root_dir }`                                                | 즉시 관찰한 대기 레코드 전체                                                                |
+| `POST /api/worker/external-wait/:id/stop`     | `{ root_dir }`                                                | `stage:'stopped'`인 대기 레코드 전체                                                        |
+| `POST /api/worker/external-wait/:id/resume`   | `{ root_dir, mode:'fork'\|'fresh' }`                          | `{ ok:true, attempt_id }`                                                                   |
+
+등록의 `owner`는 `{kind:'worker', attempt_id}` 또는
+`{kind:'session', session_ref, session_pid, session_start}`다. `worktree`는 절대
+경로, `execution_sha`는 40자리 hex다. `jobs`는 다음 두 형식의 배열이며 빈 배열은
+즉시 `done`이다.
+
+- Slurm:
+  `{adapter:'slurm', ssh_host, job_id, submitted_at, log_path, expected}`.
+  `ssh_host`는 옵션처럼 시작하지 않는 SSH alias이고 `expected`는 출력 경로를
+  하나 이상 담는다. `scheduler_submit_time`은 선택적 작업 식별 정보다.
+- Process:
+  `{adapter:'process', pid, submitted_at, workdir, log_path, expected?}`.
+  `workdir`와 `log_path`는 절대 경로다. `process_start`는 선택적 프로세스 시작
+  식별 정보다. `submitted_at`은 두 어댑터 모두 ISO 시각이다.
+
+등록·hold 응답의 `jobs`는 `{adapter, job_id|pid, state, terminal}`로 투영한다.
+`budget`은 `{turns_total:3, turns_used}`다. hold는 최대 540초 기다리며 세 번째
+호출까지 턴을 소비하고 네 번째는 관찰 없이 `detached`로 바꾸고 Bead의
+`external_wait` 키를 쓴 뒤 재확인한다. hold 중 완료는 `done` 응답만 반환하며
+재개하지 않는다. 동시에 중단되면 `state:'stopped'`를 반환한다.
+
+전체 레코드는
+`wait_id, root_dir, bead_id, owner, worktree, execution_sha, registered_at, stage, budget, next_observation_at, error_count, last_error, jobs, completion, resume`를
+포함한다. `check`는 `hold`·`detached`에서만 가능하다. `stop`은 관찰을 중단하고
+키 제거를 재확인하며 실제 작업에 신호를 보내지 않는다. `resume`은
+`completing`에서 세션 소유이거나 Worker 소유의 `resume.error`가 있을 때
+허용한다. 오류 없는 예약이 남은 경우 `fork`는 거부하고 `fresh`는 허용한다.
+
+실패 응답은 `{ok:false, error, status?}`다. 잘못된 경로·ID·등록 필드·mode는 400,
+없는 레코드는 404, 중복 등록·허용되지 않은 단계·재개 거부는 409다. 중복 등록은
+`error:'wait_exists'`와 기존 `wait_id`를 포함한다. 메타데이터 쓰기 또는 재확인
+실패는 500 `bead_write_failed`이며 변경된 `detached`·`stopped` 단계와
+`last_error`를 보존한다. 그 외 내부 오류는 500 `internal_error`다. 재개 연결
+전에는 409 `resume_unwired`를 반환한다.
+
+웹소켓의 기존 `external_waits[]` 투영은 후속 구현 단위에서 이 레코드 기반으로
+변경한다. 이 API 추가만으로 기존 웹소켓 투영은 바뀌지 않는다.
+
 ## Session-log (transcript) channel (spec §5.6)
 
 Streams a per-attempt raw runner event stream to the transcript viewer.

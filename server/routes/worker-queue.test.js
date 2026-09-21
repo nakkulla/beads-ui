@@ -13,6 +13,16 @@ import path from 'node:path';
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 import { createKeyedFrameNormalizer } from '../ws/keyed-frames-fixture.js';
 
+const external_wait_metadata = vi.hoisted(() => ({
+  setMetadata: vi.fn(async () => {}),
+  unsetMetadata: vi.fn(async () => {}),
+  readMetadata: vi.fn(async () => null)
+}));
+vi.mock('../worker/bd-metadata.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  createBdMetadata: () => external_wait_metadata
+}));
+
 // `subscribe-worker-queue` triggers the session-lane scan, which would spawn a
 // real `bd`; the same seam ws.worker-queue.test.js uses keeps it inert.
 vi.mock('../workspace-snapshot-runtime.js', () => ({
@@ -28,8 +38,11 @@ const {
   __resetWorkerAttachmentsForTest,
   __setUnattachedAdmissionCheckForTest
 } = await import('../worker/attach.js');
-const { __resetWorkerRuntimeForTest, getWorkerRuntime } =
-  await import('../worker/runtime.js');
+const {
+  __resetWorkerRuntimeForTest,
+  getWorkerRuntime,
+  __setExternalWaitRunForTest
+} = await import('../worker/runtime.js');
 const { queueFilePath } = await import('../worker/state-paths.js');
 const { setConnWorkspace } = await import('../ws/context.js');
 const { __resetWorkerQueueForTest, handleSubscribeWorkerQueue } =
@@ -56,6 +69,11 @@ beforeEach(async () => {
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-wq-route-'));
   process.env.XDG_STATE_HOME = tmp_state;
   __resetWorkerRuntimeForTest();
+  __setExternalWaitRunForTest(async () => ({
+    code: 1,
+    stdout: '',
+    stderr: ''
+  }));
   __resetWorkerQueueForTest();
   __setUnattachedAdmissionCheckForTest(async () => ({ ok: true }));
 
@@ -69,9 +87,10 @@ beforeEach(async () => {
   });
   server = createServer(app);
   // Bind loopback explicitly: a wildcard bind would expose the test server.
-  await new Promise((resolve) =>
-    server.listen(0, '127.0.0.1', () => resolve(undefined))
-  );
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve(undefined));
+  });
   const address = server.address();
   if (!address || typeof address === 'string') {
     throw new Error('no address');
@@ -86,6 +105,195 @@ afterEach(async () => {
   __resetWorkerRuntimeForTest();
   delete process.env.XDG_STATE_HOME;
   fs.rmSync(tmp_state, { recursive: true, force: true });
+});
+
+/**
+ * @param {string} suffix
+ * @param {Record<string, unknown>} [body]
+ * @param {boolean} [get]
+ */
+async function externalWaitRequest(
+  suffix,
+  body = { root_dir: workspace },
+  get = false
+) {
+  const response = await fetch(
+    `${base_url}/api/worker/external-wait${suffix}${get ? `?root_dir=${encodeURIComponent(String(body.root_dir || ''))}` : ''}`,
+    get
+      ? {}
+      : {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body)
+        }
+  );
+  return {
+    status: response.status,
+    body: await response.json(),
+    cache_control: response.headers.get('cache-control')
+  };
+}
+
+/** @returns {import('../worker/external-wait/store.js').WaitInput} */
+function waitInput() {
+  const log_path = path.join(tmp_state, 'process.log');
+  fs.writeFileSync(log_path, 'rc=0\n');
+  return {
+    root_dir: workspace,
+    bead_id: 'UI-wait',
+    owner: {
+      kind: 'session',
+      session_ref: 'codex:test',
+      session_pid: 123,
+      session_start: 'Mon Sep 21 00:00:00 2026'
+    },
+    worktree: workspace,
+    execution_sha: 'a'.repeat(40),
+    jobs: [
+      {
+        adapter: 'process',
+        pid: 123,
+        workdir: workspace,
+        log_path,
+        submitted_at: '2026-09-21T00:00:00.000Z'
+      }
+    ]
+  };
+}
+
+test.each([
+  '',
+  '/w-000000000000/hold',
+  '/w-000000000000',
+  '/w-000000000000/check',
+  '/w-000000000000/stop',
+  '/w-000000000000/resume'
+])('rejects an unregistered external wait workspace for %s', async (suffix) => {
+  const result = await externalWaitRequest(
+    suffix,
+    { root_dir: '/tmp/not-registered' },
+    suffix === '/w-000000000000'
+  );
+
+  expect(result).toMatchObject({
+    status: 400,
+    body: { ok: false, error: 'bad_request' },
+    cache_control: 'no-store'
+  });
+});
+
+test.each(['', '/hold', '/check', '/stop', '/resume'])(
+  'rejects an invalid external wait id for %s',
+  async (suffix) => {
+    const result = await externalWaitRequest(
+      `/invalid${suffix}`,
+      { root_dir: workspace },
+      suffix === ''
+    );
+
+    expect(result.status).toBe(400);
+  }
+);
+
+test.each(['', '/hold', '/check', '/stop', '/resume'])(
+  'returns 404 for an unknown external wait at %s',
+  async (suffix) => {
+    const result = await externalWaitRequest(
+      `/w-000000000000${suffix}`,
+      { root_dir: workspace, mode: 'fork' },
+      suffix === ''
+    );
+
+    expect(result).toMatchObject({ status: 404, body: { error: 'not_found' } });
+  }
+);
+
+test('registers an external wait after observing its process', async () => {
+  const result = await externalWaitRequest('', waitInput());
+
+  expect(result).toMatchObject({
+    status: 200,
+    body: { ok: true, decision: 'done', jobs: [{ state: 'COMPLETED' }] },
+    cache_control: 'no-store'
+  });
+});
+
+test('reads a full external wait record', async () => {
+  const record = getWorkerRuntime().externalWaitStore.insert(
+    workspace,
+    waitInput()
+  );
+
+  const result = await externalWaitRequest(
+    `/${record.wait_id}`,
+    { root_dir: workspace },
+    true
+  );
+
+  expect(result.status).toBe(200);
+  expect(result.body).toEqual(record);
+});
+
+test.each(['hold', 'check'])(
+  'observes completion through the external wait %s route',
+  async (method) => {
+    const runtime = getWorkerRuntime();
+    const resume = vi.fn(async () => ({
+      ok: /** @type {const} */ (true),
+      attempt_id: 'unused'
+    }));
+    runtime.setExternalWaitHooks({ resume });
+    const record = runtime.externalWaitStore.insert(workspace, waitInput());
+
+    const result = await externalWaitRequest(`/${record.wait_id}/${method}`);
+
+    expect(result.status).toBe(200);
+    expect(result.body[method === 'hold' ? 'state' : 'stage']).toBe('done');
+    expect(resume).not.toHaveBeenCalled();
+  }
+);
+
+test('stops external observation and confirms the metadata removal', async () => {
+  const record = getWorkerRuntime().externalWaitStore.insert(
+    workspace,
+    waitInput()
+  );
+
+  const result = await externalWaitRequest(`/${record.wait_id}/stop`);
+
+  expect(result).toMatchObject({ status: 200, body: { stage: 'stopped' } });
+  expect(external_wait_metadata.unsetMetadata).toHaveBeenCalledWith(
+    'UI-wait',
+    'external_wait'
+  );
+  expect(external_wait_metadata.readMetadata).toHaveBeenCalledWith(
+    'UI-wait',
+    'external_wait'
+  );
+});
+
+test('delegates a manual external wait resume through the runtime hook', async () => {
+  const runtime = getWorkerRuntime();
+  const resume = vi.fn(async () => ({
+    ok: /** @type {const} */ (true),
+    attempt_id: 'resumed-attempt'
+  }));
+  runtime.setExternalWaitHooks({ resume });
+  const record = runtime.externalWaitStore.insert(workspace, {
+    ...waitInput(),
+    stage: 'completing'
+  });
+
+  const result = await externalWaitRequest(`/${record.wait_id}/resume`, {
+    root_dir: workspace,
+    mode: 'fresh'
+  });
+
+  expect(result).toMatchObject({
+    status: 200,
+    body: { ok: true, attempt_id: 'resumed-attempt' }
+  });
+  expect(resume).toHaveBeenCalledWith(workspace, record.wait_id, 'fresh');
 });
 
 /**
