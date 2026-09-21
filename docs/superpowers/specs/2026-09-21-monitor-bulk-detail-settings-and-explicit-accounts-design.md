@@ -13,6 +13,7 @@ scope:
   - app/views/monitor/bulk-account-apply.test.js
   - app/styles.css
   - docs/superpowers/specs/2026-09-17-monitor-header-settings-bulk-mode-design.md
+  - docs/superpowers/specs/2026-09-16-monitor-bulk-preset-apply-design.md
   - docs/adr/
 ---
 
@@ -30,10 +31,13 @@ scope:
   대체한다. 모드 진입(모니터 탭 헤더 ⚙만 일괄), 두 탭 구성, 연결 저장소를
   편집하지 않는 원칙, 저장소별 순차 호출, 기본 선택, 저장소별 결과·재적용은
   그대로 이어받는다. 그 앞 설계 `2026-09-16-monitor-bulk-preset-apply-design.md`
-  (UI-8ncz, #302 착지)의 프리셋 적용 판정 규칙도 이어받는다.
+  (UI-8ncz, #302 착지)의 프리셋 적용 판정 규칙도 이어받되, 저장소별 결과를
+  마지막 응답 하나로만 정하던 부분은 §4.2.1이 고친다.
 - 사용자 결정(2026-09-21):
-  1. 일괄 `워커` 탭에서 프리셋이 담는 25키 전부를 세세하게 편집할 수 있어야
-     한다. 시스템 프롬프트는 범위 밖이다.
+  1. 일괄 `워커` 탭에서 프리셋이 담는 실행 프로필을 세세하게 편집할 수 있어야
+     한다. 선택지 설명은 "저장소 하나를 열었을 때의 워커 탭과 같은 그룹 구성"
+     이었고, 시스템 프롬프트는 범위 밖이다. 그 그룹에 없는 `impl_dispatch`는
+     §2.1의 `결정:` 줄로 제외한다.
   2. 프리셋은 폼의 **시작점**이다. 고르면 폼이 그 값으로 채워지고, 몇 행을 고쳐
      한 번의 `[적용]`으로 선택한 저장소에 쓴다.
   3. 프리셋을 고르지 않아도 폼을 편집하고 적용할 수 있다. 손대지 않은 행도
@@ -89,10 +93,14 @@ scope:
   `replyMutation`의 `{ applied, conflict, queue }`다
   (`server/ws/worker-handlers.js:5208`).
 - 두 핸들러 모두 쓰기 전에
-  `execPresetCoordinator.changesAppliedExecPreset`으로 판정해, 결과가 기록된
-  프리셋과 달라지면 큐의 `applied_exec_preset`을 `null`로 지운다
-  (`worker-handlers.js:5229`, `session-defaults-handlers.js:224`). 즉 "프리셋을
-  고치면 프리셋 표시가 풀린다"는 규칙은 **서버가 이미 소유**한다.
+  `execPresetCoordinator.changesAppliedExecPreset`으로 판정해 큐의
+  `applied_exec_preset`을 `null`로 지운다
+  (`worker-handlers.js:5229`, `session-defaults-handlers.js:224`). 판정 범위는
+  좁다: 기록된 프리셋을 찾을 수 있으면 **그 프리셋이 명시한 키**의 변경만 센다
+  (`exec-preset-coordinator.js:166` `!preset || Object.hasOwn(preset.settings,
+  key)`). 프리셋이 비워 둔 키만 바꾸면 값이 달라져도 기록은 남고, 프리셋을
+  찾을 수 없으면 25키 가운데 하나만 달라져도 지운다. 이 판정은 **서버가
+  소유**하며 클라이언트는 따르기만 한다.
 - `apply-impl-preset-global { preset_id, expected_revision,
   expected_queue_revision, root_dir? }`은 kv와 큐를 함께 쓰고
   `applied_exec_preset`을 기록한다. 개별 op에는 그 기록을 **세우는** 경로가
@@ -106,8 +114,16 @@ scope:
 `session_defaults_warnings`를 싣는다. `buildExecutionOptionView`
 (`session-model.js:686` → `app/utils/execution-defaults.js buildOptionView`)는
 `layer: 'global'`과 `execution_defaults`·`runner_catalog`만 있으면
-`기본값 사용 — <해석값> (<층>)` 라벨과 선택지를 만든다. **서버 변경이 필요
+`기본값 사용 — <해석값>` 라벨과 선택지를 만든다. 전역 층 편집에서는
+`unsetOptionLabel`의 `with_source`가 거짓이라 `(전역)`·`(harness)` 같은 층
+표기가 붙지 않는다(`execution-defaults.js:1049,1124`). **서버 변경이 필요
 없다.**
+
+해석은 층 하나가 아니라 사다리다. `buildOptionView`는 편집 중인 층의 나머지
+값을 `resolution_global`로 함께 받아 `resolveExecutionSettings`를 돌리므로,
+quick_fix 키를 비우면 harness 기본이 아니라 **폼의 같은 이름 일반 키**를
+상속한 값이 라벨에 뜬다(`QUICK_FIX_LANE_MAP`, `server/worker/policy.js`
+`resolveExecSettings`). 폼은 이 계산을 다시 만들지 않고 그대로 호출한다.
 
 `session-model.js`는 키 목록·옵션 계산(`implModelOptions`·`implEffortOptions`·
 `orchestrationModelOptions`·`orchestrationEffortOptions`·
@@ -154,7 +170,13 @@ patch, expected_revision }`(patch의 `mode`·`accounts`·`preempt_pct` 가운데
 - **시스템 프롬프트는 범위 밖이다**(사용자 결정 1). 프리셋에 없는 자유
   텍스트이고 저장소마다 내용이 다른 것이 정상이라, 한 벌 덮어쓰기의 대상이
   아니다.
-- **`impl_dispatch`는 폼에 없다.** §1.2의 계약상 워크스페이스 전역 저장이 없다.
+- `결정: impl_dispatch는 일괄 폼에 두지 않는다 — 이 키에는 워크스페이스 전역
+  저장이 계약상 없다.` dotfiles `workflow-state.yaml`이 `write_rule:
+  user_write_only`로 두어 `WORKSPACE_KV_KEYS`가 제외하고, 저장소 하나를 여는
+  `implGroup`도 같은 이유로 `실행 방식` 행을 그리지 않는다(§1.2). 25키 가운데
+  이 하나를 뺀 24키가 이 화면이 실제로 저장할 수 있는 전부이며, 저장 위치를
+  새로 만드는 일은 dotfiles 계약을 바꾸는 별개 작업이라 이번 범위 밖이다
+  (ADR 0012 — beads-ui는 그 계약의 소비자다).
 
 ### 2.2 프리셋과 폼의 관계
 
@@ -171,6 +193,13 @@ patch, expected_revision }`(patch의 `mode`·`accounts`·`preempt_pct` 가운데
   말지는 §1.3의 서버 판정에 맡긴다. 클라이언트는 그 기록을 스스로 세우거나
   지우지 않는다.
 
+폼 경로의 기록 결과는 §1.3의 좁은 판정을 그대로 따른다. 프리셋이 **명시한**
+키를 고쳤으면 기록이 풀리고, 프리셋이 **비워 둔** 키만 고쳤으면 기록이 남는다.
+후자는 "이 저장소는 그 프리셋 그대로다"라는 표시를 유지한 채 프리셋 밖 키만
+달라진 상태인데, 이것이 서버가 이미 정한 의미다. 화면은 그 상태를 따로 알리지
+않는다 — 일괄 창은 저장소의 현재 상태를 읽어 보이는 화면이 아니기 때문이다
+(사용자 결정 5).
+
 기각 — 언제나 개별 op 두 번: 프리셋만 고른 흔한 경우에 `applied_exec_preset`
 기록이 서지 않아 단일 저장소 화면의 프리셋 표시가 사라진다.
 
@@ -179,9 +208,14 @@ patch, expected_revision }`(patch의 `mode`·`accounts`·`preempt_pct` 가운데
 **선택 — 24행 모두 `기본값 사용`에서 출발한다**(사용자 결정 3·5). 저장소별 현재
 값을 읽지 않고, 값이 갈리는 것도 표시하지 않는다. `기본값 사용`은 `변경 안 함`이
 아니라 **"이 저장소에 값을 두지 않는다"는 실제 설정**이며, 적용하면 해당 키가
-kv·큐에서 지워져 harness 기본으로 해석된다. 라벨은
-`buildExecutionOptionView`가 만드는 `기본값 사용 — <해석값> (harness)`라, 고르지
-않은 행에서도 실제로 어떤 값으로 돌아가는지 화면에 보인다.
+kv·큐에서 지워진다.
+
+지워진 뒤의 해석은 키마다 다르고, 폼은 그 차이를 만들지 않고 읽기만 한다.
+일반 키는 harness 기본으로 내려가고, quick_fix 키는 그 아래로 내려가기 전에
+폼의 같은 이름 일반 키를 먼저 상속한다(§1.4). 그래서 라벨은 `기본값 사용 —
+<해석값>`이고 그 `<해석값>`은 `buildExecutionOptionView`에 **폼 값 전체**를
+`global`과 `resolution_global`로 넘겨 얻는다. 한 행만 떼어 계산하면 상속을
+놓친다. 고르지 않은 행에서도 실제로 어떤 값으로 돌아가는지가 그 라벨에 보인다.
 
 기각 — 선택한 저장소들의 현재 값으로 채우고 갈리는 행에 배지: 사용자 결정 5.
 기각 — 값이 갈리는 행만 비워 두기: `변경 안 함`이 그 행에만 되살아난다.
@@ -238,15 +272,23 @@ kv·큐에서 지워져 harness 기본으로 해석된다. 라벨은
 
 - **실행 계정**: `Claude`·`Codex` 각 `select`. 선택지는
   `기본값 사용 — 현재 로그인`과 계정 목록이며 `변경 안 함`은 없다. 초기 선택은
-  `기본값 사용`이다. 계정 카탈로그를 읽지 못하면 기존 문구
-  `계정 목록을 불러올 수 없습니다`를 두고 그 러너의 계정 행과 허용 목록을
-  비활성으로 둔다.
+  `기본값 사용`이다.
 - **러너별 한도 대응**: `대응 방식` 세그먼트는 `기다림`·`자동 전환` 둘,
   `전환 허용 계정`은 체크박스 집합만(‘바꾸기’ 없음), `선제 전환`은 `끔`·
   `사용량 기준`과 숫자 상자다. 초기값은 큐 기본과 같은 `자동 전환` · 빈 허용
   목록 · `끔` · `80`이다. `사용량 기준`이 아닐 때 숫자 상자는 비활성이고 값은
   그대로 남는다.
-- **푸터**: `저장소 N곳에 계정 2개 · 한도 정책 2벌`과 `[적용]`.
+- **카탈로그를 읽지 못하면 탭 전체가 적용을 막는다.** 이 탭은 `변경 안 함`이
+  없어 언제나 전부를 쓰므로(§2.4), 고를 수 없는 상태에서 `[적용]`을 누르면
+  사용자가 보지 못한 값 — 계정 삭제와 빈 허용 집합 — 이 그대로 저장소에
+  쓰인다. 그래서 두 러너 가운데 **하나라도** 계정 카탈로그가 아직 로딩 중이거나
+  조회에 실패했으면 기존 문구 `계정 목록을 불러올 수 없습니다`를 그 러너 자리에
+  두고, 그 러너의 계정 행·허용 목록뿐 아니라 **`[적용]`까지** 비활성으로 둔다.
+  푸터에 사유 한 줄 `계정 목록을 읽지 못해 적용할 수 없습니다`를 단다.
+  `[적용]`이 비활성인 동안 어떤 요청도 보내지 않는다.
+- **푸터**: `저장소 N곳에 계정 2개 · 한도 정책 2벌`과 `[적용]`. 대상이 없거나,
+  실행 중이거나, 위 카탈로그 조건에 걸리거나, `선제 전환` 숫자가 1~99 밖이면
+  비활성이다.
 
 ### 3.4 값이 화면을 좁히는 규칙
 
@@ -282,8 +324,8 @@ kv·큐에서 지워져 harness 기본으로 해석된다. 라벨은
 
 - **프리셋 경로**(프리셋을 골랐고 `equalsPreset`이 참): 지금과 같이
   `apply-impl-preset-global { preset_id, expected_revision,
-  expected_queue_revision, root_dir }` 한 번. 판정 규칙(`applied`·`queue_applied`
-  ·1회 재시도)도 그대로다.
+  expected_queue_revision, root_dir }` 한 번. 요청 형태와 1회 재시도 규칙은
+  그대로다. 판정에는 아래 §4.2.1의 정정이 걸린다.
 - **폼 경로**(그 밖): 저장소마다 두 요청을 순서대로 보낸다.
   1. `set-session-defaults { values: kvValues(), root_dir }`
   2. `worker-queue-set-orchestration-defaults { values: queueValues(),
@@ -298,6 +340,26 @@ kv·큐에서 지워져 harness 기본으로 해석된다. 라벨은
 - 응답의 `queue`는 지금처럼 `adopted`에 채택해 다음 저장소 계획이 최신 revision을
   읽게 한다(`adopted-queue.js`).
 
+#### 4.2.1 kv 적용 사실은 재시도를 넘어 살아남는다
+
+현재 `judgePresetResponse`는 "재시도까지 끝난 마지막 응답 하나로" 저장소의 결과를
+정한다(`bulk-preset-apply.js:283` 주석과 구현). 그래서 첫 응답이
+`applied: true, queue_applied: false`여서 재시도를 보냈는데 그 재시도가
+`applied: false`로 오거나 예외로 끝나면, kv가 이미 쓰였는데도 `failed`가 된다.
+사용자는 아무것도 쓰이지 않았다고 읽고 다시 적용하며, 새로 만드는 폼 경로의
+판정(kv 성공·큐 실패는 `partial`)과도 어긋난다.
+
+정정: 저장소마다 **그 저장소에서 kv 적용이 응답으로 확인된 적이 있는지**를
+기억한다. 두 경로 모두 최종 판정을 이렇게 내린다.
+
+- kv 확인 없음 → `failed`.
+- kv 확인 있고 큐 적용 확인 있음 → `applied`.
+- kv 확인 있고 큐 적용 확인 없음(미적용·충돌·예외 무엇이든) → `partial`.
+
+예외로 끝난 경우의 `detail`은 예외 메시지를 그대로 싣되 상태는 위 규칙을 따른다.
+`stopped`(프리셋 충돌로 남은 저장소를 건너뛰는 기존 동작)와 `skipped` 결과는
+바뀌지 않는다.
+
 ### 4.3 `bulk-account-apply.js` — 언제나 전부 쓰기
 
 - `countEditFields`를 지우고, `planBulkAccountApply`는 폼 상태에서 언제나 세
@@ -305,6 +367,10 @@ kv·큐에서 지워져 harness 기본으로 해석된다. 라벨은
   codex_account } }`와 러너별
   `worker-provider-limit-policy-set { root_dir, runner, patch: { mode, accounts,
   preempt_pct }, expected_revision }` 둘.
+- **카탈로그 게이트는 계획 단계에서도 닫힌다.** 두 러너 가운데 하나라도 계정
+  카탈로그가 로딩 중이거나 조회에 실패했으면 `planBulkAccountApply`는 빈 계획을
+  낸다(§3.3). 버튼 비활성과 별개로 계획 자체가 비어야, 버튼 상태를 거치지 않는
+  호출 경로에서도 보지 못한 값이 쓰이지 않는다.
 - `기본값 사용`은 지금과 같이 `null`로 보낸다. `선제 전환`이 `끔`이면
   `preempt_pct: null`, `사용량 기준`이면 1~99의 정수다. 숫자가 범위를 벗어나면
   `[적용]`을 비활성으로 두고 그 행에 문구를 단다.
@@ -323,8 +389,11 @@ kv·큐에서 지워져 harness 기본으로 해석된다. 라벨은
 
 - `2026-09-17-monitor-header-settings-bulk-mode-design.md`의 결정 2·4가 있는
   자리에 이 스펙이 대체했다는 한 줄을 단다. 나머지 결정은 그대로 둔다.
+- `2026-09-16-monitor-bulk-preset-apply-design.md`의 저장소별 결과 판정 절에
+  §4.2.1이 그 규칙을 고쳤다는 한 줄을 단다.
 - `app/protocol.md`는 바꾸지 않는다. 새 op도, 기존 op의 payload 변경도 없다.
-- 서버는 바꾸지 않는다.
+- 서버는 바꾸지 않는다. §1.3의 `applied_exec_preset` 판정도 서버 것 그대로
+  쓴다.
 
 ## 6. 테스트 범위와 인도 조건
 
@@ -335,20 +404,38 @@ kv·큐에서 지워져 harness 기본으로 해석된다. 라벨은
   - 오케스트레이션 런타임을 바꾸면 그 provider가 못 내는 모델·effort가 폼에서
     지워진다.
   - quick_fix 실행 방식이 `main`이면 위임 행을 그리지 않는다.
+  - quick_fix 키를 비운 채 같은 이름 일반 키를 고르면 그 행의 `기본값 사용`
+    라벨이 일반 키 값을 상속해 보인다(§1.4·§2.3).
 - `bulk-preset-apply.test.js`
   - 프리셋만 고른 적용이 저장소마다 `apply-impl-preset-global` 한 번을 보낸다.
+  - **프리셋을 고르지 않고 한 행도 고치지 않은 초기 폼에서 적용이 활성이고,
+    선택한 저장소마다 kv 18키와 큐 6키를 모두 `null`로 보낸다**(사용자 결정 3).
   - 폼을 고친 적용이 저장소마다 `set-session-defaults` → 큐 op 순서로 보낸다.
   - 큐 op의 `applied:false`에 응답 revision으로 한 번만 재시도한다.
   - kv 성공·큐 실패가 `partial`로 보고된다.
+  - **프리셋 경로에서 첫 응답이 `applied:true, queue_applied:false`이고 재시도가
+    `applied:false`로 오면 `partial`이다**(§4.2.1).
+  - **프리셋 경로에서 첫 응답이 `applied:true, queue_applied:false`이고 재시도가
+    예외로 끝나면 `partial`이고 `detail`에 예외 메시지가 실린다**(§4.2.1).
+  - 첫 응답부터 `applied:false`면 `failed`다.
 - `bulk-account-apply.test.js`
   - 아무것도 고치지 않아도 세 요청을 모두 보낸다.
   - `기본값 사용`이 `null`로, `끔`이 `preempt_pct: null`로 실린다.
   - 허용 목록이 화면 집합 그대로 실린다.
+  - **한 러너의 계정 카탈로그가 없으면 계획이 비고 어떤 요청도 보내지
+    않는다**(§3.3·§4.3).
 - `bulk-pane.test.js`
   - `워커` 탭에 네 그룹이 그려지고 `계정` 탭 어디에도 `변경 안 함` 선택지가
     없다.
   - 두 탭에 적용 경고 배너가 있다.
   - 대상이 없으면 `[적용]`이 비활성이다.
+  - **계정 카탈로그를 읽지 못하면 `계정` 탭의 `[적용]`이 비활성이고 사유 줄이
+    보인다**(§3.3).
+- 코드로 검증하지 않고 인수 조건으로만 두는 것: 프리셋이 **비워 둔** 키만 고친
+  적용 뒤에도 그 저장소의 `applied_exec_preset` 기록이 남는다는 서버 동작
+  (§1.3·§2.2). 판정이 `server/worker/exec-preset-coordinator.js`에 있고 이
+  변경이 건드리지 않으므로, 클라이언트 테스트가 아니라 이 문장이 그 계약을
+  기록한다.
 - 인도 조건: `npm run tsc`, `npm run lint`,
   `npx prettier --write <변경 파일>`, `npx vitest run --reporter=dot` 전부 통과.
   모니터 탭 헤더 ⚙를 열어 두 탭의 1280·390 폭 스크린샷으로 배치를 확인한다.
@@ -383,3 +470,7 @@ kv·큐에서 지워져 harness 기본으로 해석된다. 라벨은
 
 - 관찰: 일괄 `워커` 탭에 시스템 프롬프트를 더하는 안 — 사용자 결정 1로 범위
   밖이고, 저장소마다 내용이 다른 것이 정상이라 결함이 아니다.
+- 관찰: `impl_dispatch`에 워크스페이스 전역 저장을 만드는 안 — §2.1의 `결정:`
+  줄이 이번 범위에서 제외한다. 정본이 dotfiles `workflow-state.yaml`
+  (`write_rule: user_write_only`)이라 beads-ui 혼자 정할 수 없고(ADR 0012),
+  사용자가 그 키를 지목해 요구한 적도 없다.
