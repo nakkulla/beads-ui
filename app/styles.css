@@ -8716,7 +8716,10 @@ button.detail-session__leg:focus-visible {
     gap: var(--sp-6);
   }
 
+  /* 조작 묶음은 접는다 — 슬롯·검색 뒤의 `+`(UI-p7s2 §4)가 리본 폭을 넘치면
+     잘리지 않고 다음 줄로 내려간다. */
   .worker-ctrl__ops {
+    flex-wrap: wrap;
     gap: var(--sp-6);
   }
 

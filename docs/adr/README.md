@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| UI-p7s2 | [Board 탭은 퇴역하고 워커 탭이 저장소의 단일 이슈 면이 된다](UI-p7s2-board-retired-worker-single-issue-surface.md) | 2026-09-21 | Board 탭은 퇴역하고 워커 탭이 저장소의 단일 이슈 면이 되어 deferred 선반·완료 기간·우선순위/타입/라벨 필터·새 이슈 버튼을 흡수하며 기본 뷰와 레거시 해시는 worker로 간다 |
 | UI-obl0 | [유닛 실행자가 엇갈린 attempt는 미기록이 아니라 혼합이다](UI-obl0-mixed-unit-impl-actor.md) | 2026-09-21 | 유닛 실행자가 엇갈린 attempt는 미기록이 아니라 갈린 축만 말하는 혼합으로 표시하고 미기록은 영수증 부재·손상에만 남긴다 |
 | UI-mfm1 | [Worker와 Monitor의 후보 행은 같은 사실 키를 싣고 lane-model 한 경로가 자격을 접는다](UI-mfm1-candidate-facts-single-placement-path.md) | 2026-09-21 | Worker와 Monitor의 후보 행은 같은 사실 키를 싣고 lane-model 한 경로가 자격을 접으며 배치 불가 사유는 슬롯 4a 준비도 칩 하나가 말한다 |
 | UI-628r | [여러 저장소 설정은 프리셋을 시작점으로 한 실행 프로필 편집면이고 계정은 명시 선택이다](UI-628r-bulk-settings-edit-surface-explicit-accounts.md) | 2026-09-21 | 모니터 탭의 여러 저장소 설정은 현재 값을 보여주지 않고 프리셋을 시작점으로 한 벌을 만들어 쓰는 편집면이며, 두 탭 어디에도 변경 안 함이 없고 적용은 화면의 값 전부를 쓴다 |
