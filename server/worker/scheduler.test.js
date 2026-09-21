@@ -3546,6 +3546,95 @@ describe('scheduler provider hold and recovery', () => {
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
   });
 
+  test('resumes a live preempt when an unrelated queue write lands during relaunch', async () => {
+    const env = await livePreemptEnv();
+    const readMetadata = env.bd.readMetadata.bind(env.bd);
+    let queue_changed = false;
+    vi.spyOn(env.bd, 'readMetadata').mockImplementation(
+      async (bead_id, key) => {
+        const value = await readMetadata(bead_id, key);
+        if (key === 'impl_entry' && !queue_changed) {
+          const result = env.store.appendAttempt(WS, {
+            expected_revision: env.store.snapshot(WS).revision,
+            attempt: {
+              attempt_id: 'unrelated-attempt',
+              bead_id: 'B2',
+              status: 'done'
+            }
+          });
+          queue_changed = result.ok;
+        }
+        return value;
+      }
+    );
+
+    await env.scheduler.livePreemptPass(WS);
+
+    const queue = env.store.snapshot(WS);
+    const child = Object.values(queue.attempts).find(
+      (/** @type {any} */ attempt) => attempt.resumed_from === env.attempt_id
+    );
+    expect(queue_changed).toBe(true);
+    expect(queue.attempts[env.attempt_id].auto_resume_refused).toBeNull();
+    expect(child).toMatchObject({
+      status: 'running',
+      claude_account: 'cool@example.com',
+      account_sources: { claude: 'live_switch' },
+      auto_resume_kind: 'account_switch'
+    });
+    expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-live');
+  });
+
+  test.each([
+    ['session_id', { session_id: 'sid-replaced' }],
+    ['exec_values', { exec_values: { impl_runtime: 'codex' } }],
+    ['codex_account', { codex_account: 'replacement' }],
+    ['preset_revision', { exec_default_preset_revision: 2 }]
+  ])(
+    'refuses a live preempt when source %s changes during revalidation',
+    async (_field, patch) => {
+      const env = await livePreemptEnv();
+      const readMetadata = env.bd.readMetadata.bind(env.bd);
+      const snapshotBead = env.bd.snapshotBead.bind(env.bd);
+      let revalidating = false;
+      let source_changed = false;
+      vi.spyOn(env.bd, 'readMetadata').mockImplementation(
+        async (bead_id, key) => {
+          const value = await readMetadata(bead_id, key);
+          if (key === 'impl_entry') {
+            revalidating = true;
+          }
+          return value;
+        }
+      );
+      vi.spyOn(env.bd, 'snapshotBead').mockImplementation(async (bead_id) => {
+        const bead = await snapshotBead(bead_id);
+        if (revalidating && !source_changed) {
+          env.store.updateAttempt(WS, {
+            attempt_id: env.attempt_id,
+            patch
+          });
+          source_changed = true;
+        }
+        return bead;
+      });
+
+      await env.scheduler.livePreemptPass(WS);
+
+      const queue = env.store.snapshot(WS);
+      expect(source_changed).toBe(true);
+      expect(queue.attempts[env.attempt_id].auto_resume_refused).toBe(
+        'continuation_settings_changed'
+      );
+      expect(
+        Object.values(queue.attempts).some(
+          (/** @type {any} */ attempt) =>
+            attempt.resumed_from === env.attempt_id
+        )
+      ).toBe(false);
+    }
+  );
+
   test('keeps the workspace poll while a recovered attempt still runs', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     try {
