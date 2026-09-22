@@ -20,7 +20,7 @@ import { coerceTimestampMs } from '../../utils/relative-time.js';
 import { parseReport } from '../../utils/report-marker.js';
 import { sessionPreferredReason } from '../../utils/session-preferred.js';
 import { specAfterBlockerActive } from '../../utils/spec-after-blocker.js';
-import { IMPL_PRESET_KEYS } from '../settings-dialog/session-model.js';
+import { BEAD_PIN_KEYS } from '../settings-dialog/session-model.js';
 import { blockerIdsOf } from './blocker-ids.js';
 import {
   applyCandidateSort,
@@ -77,12 +77,14 @@ const EMPTY_QUEUE_SNAPSHOT = {
 const ACCOUNT_KEYS = ['claude_account', 'codex_account'];
 
 /**
- * 실행 핀으로 인정하는 metadata 키 집합. 서버 `runnable-cache.js`의
- * `EXEC_PIN_KEYS`와 같은 집합이어야 두 원천의 후보 행이 같은 칩을 얻는다.
+ * 실행 핀으로 인정하는 metadata 키 집합 — 이슈별 실행 핀 17키와 계정 2키다.
+ * 서버 `runnable-cache.js`의 `EXEC_PIN_KEYS`와 같은 집합이어야 두 원천의 후보
+ * 행이 같은 칩을 얻는다. quick_fix 저장 키는 여기 없다: 그 값은 워크스페이스
+ * kv와 큐에 살고 Bead metadata에는 쓰이지 않는다 (design §5).
  *
  * @type {ReadonlyArray<string>}
  */
-const EXEC_PIN_KEYS = [...IMPL_PRESET_KEYS, ...ACCOUNT_KEYS];
+const EXEC_PIN_KEYS = [...BEAD_PIN_KEYS, ...ACCOUNT_KEYS];
 
 /**
  * A full_plan phase child (`UI-xxxx.N`) is a sub-unit of its parent plan's

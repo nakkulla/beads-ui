@@ -314,6 +314,12 @@ function modelToken(token, catalog) {
  * Infer a preset using only recorded execution axes. Equal top scores remain
  * ambiguous, while candidates preserve every matching name for the UI.
  *
+ * Every preset is read by its CANONICAL keys and no candidate is filtered by
+ * profile (design §7). A bench clone is built with `route=quick_fix` and
+ * `impl_dispatch=delegated` (`benchCloneFields`), so narrowing candidates by
+ * the attempt route would stop an experiment run from a general preset from
+ * ever matching the preset that produced it.
+ *
  * @param {{ route: string|null, orch_model: string|null, orch_effort: string|null, impl_actor: ImplActor }} attempt_facts
  * @param {Array<{ id?: string, name?: string, settings?: Record<string, any> }>} presets
  * @param {ResolvedCatalog|null} catalog
@@ -327,12 +333,7 @@ export function presetMatch(attempt_facts, presets, catalog) {
   for (const preset of presets) {
     const settings = isRecord(preset.settings) ? preset.settings : {};
     /** @param {string} key */
-    const effectiveValue = (key) =>
-      str(
-        attempt_facts.route === 'quick_fix'
-          ? (settings[`quick_fix_${key}`] ?? settings[key])
-          : settings[key]
-      );
+    const effectiveValue = (key) => str(settings[key]);
     const id = str(preset.id);
     const name = str(preset.name);
     if (

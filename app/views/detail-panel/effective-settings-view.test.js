@@ -293,6 +293,106 @@ describe('effective-settings card preset head (UI-7yh2 §3.7-3.9)', () => {
   });
 });
 
+describe('effective-settings preset dropdown profile (design §6.3)', () => {
+  const PROFILE_PRESETS = [
+    { id: 'g1', name: '일반 하나', compatible: true, applies_to: 'general' },
+    {
+      id: 'q1',
+      name: 'quick fix 기본',
+      compatible: true,
+      applies_to: 'quick_fix'
+    },
+    { id: 'legacy', name: '계열 없는 옛 항목', compatible: true }
+  ];
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string[]}
+   */
+  function optionValues(mount) {
+    return Array.from(
+      mount.querySelectorAll('[data-impl-preset-select] option'),
+      (option) => /** @type {HTMLOptionElement} */ (option).value
+    );
+  }
+
+  test('lists only the general presets for an issue outside quick_fix', () => {
+    const mount = renderCard({
+      metadata: { route: 'spec_backed' },
+      presets: PROFILE_PRESETS
+    });
+
+    expect(optionValues(mount)).toEqual(['', 'g1', 'legacy']);
+  });
+
+  test('lists only the quick fix presets for a quick_fix issue', () => {
+    const mount = renderCard({
+      metadata: { route: 'quick_fix' },
+      presets: PROFILE_PRESETS
+    });
+
+    expect(optionValues(mount)).toEqual(['', 'q1']);
+  });
+
+  test('lists the general presets for an issue whose route is not pinned yet', () => {
+    const mount = renderCard({ metadata: {}, presets: PROFILE_PRESETS });
+
+    expect(optionValues(mount)).toEqual(['', 'g1', 'legacy']);
+  });
+
+  test('disables the select when this issue profile has no preset', () => {
+    const mount = renderCard({
+      metadata: { route: 'quick_fix' },
+      presets: [PROFILE_PRESETS[0]]
+    });
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-impl-preset-select]')
+    );
+
+    expect(select.disabled).toBe(true);
+  });
+
+  test('says which issue has no preset to use in the empty profile', () => {
+    const mount = renderCard({
+      metadata: { route: 'quick_fix' },
+      presets: [PROFILE_PRESETS[0]]
+    });
+
+    const select = mount.querySelector('[data-impl-preset-select]');
+
+    expect(select?.textContent?.trim()).toBe('이 이슈에 쓸 프리셋이 없습니다');
+  });
+
+  test('stays silent about an empty profile while the list has not arrived', () => {
+    const mount = renderCard({
+      metadata: { route: 'quick_fix' },
+      presets: [],
+      presets_loaded: false
+    });
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-impl-preset-select]')
+    );
+
+    expect(select.disabled).toBe(false);
+    expect(select.textContent?.trim()).toBe('실행 프리셋…');
+  });
+
+  test('names the quick fix key count in the select title', () => {
+    const mount = renderCard({
+      metadata: { route: 'quick_fix' },
+      presets: PROFILE_PRESETS
+    });
+
+    const select = mount.querySelector('[data-impl-preset-select]');
+
+    expect(select?.getAttribute('title')).toBe(
+      '오케스트레이션 3키와 구현 5키를 핀으로 기록'
+    );
+  });
+});
+
 const CATALOG = {
   runners: {
     claude: {
@@ -504,7 +604,12 @@ describe('effective-settings applied preset token (UI-xq3h §3.4)', () => {
     id: 'p1',
     name: '페이블 기본',
     compatible: true,
-    settings: { orchestration_model: 'opus', impl_model: 'sol' }
+    applies_to: 'general',
+    settings: {
+      orchestration_model: 'opus',
+      impl_runtime: 'codex',
+      impl_model: 'sol'
+    }
   };
 
   test('draws no token for an issue that records no preset', () => {
@@ -523,18 +628,15 @@ describe('effective-settings applied preset token (UI-xq3h §3.4)', () => {
     expect(mount.querySelector('.detail-effective__applied')).toBe(null);
   });
 
-  const LANE_PRESET = {
+  const QUICK_FIX_PRESET = {
     id: 'p1',
     name: '페이블 기본',
     compatible: true,
-    settings: {
-      impl_runtime: 'claude',
-      impl_model: 'opus',
-      quick_fix_impl_model: 'sol'
-    }
+    applies_to: 'quick_fix',
+    settings: { impl_model: 'sol' }
   };
 
-  const LANE_METADATA = {
+  const QUICK_FIX_METADATA = {
     route: 'quick_fix',
     applied_exec_preset: 'p1',
     impl_runtime: 'codex',
@@ -544,17 +646,32 @@ describe('effective-settings applied preset token (UI-xq3h §3.4)', () => {
   test('draws no token while the runner catalog has not arrived', () => {
     const mount = renderResolvedCard({
       catalog: null,
-      metadata: LANE_METADATA,
-      presets: [LANE_PRESET]
+      metadata: QUICK_FIX_METADATA,
+      presets: [QUICK_FIX_PRESET]
     });
 
     expect(mount.querySelector('.detail-effective__applied')).toBe(null);
   });
 
-  test('reports no drift once the catalog can derive the lane runtime', () => {
+  test('reports no drift once the catalog can derive the runtime', () => {
     const mount = renderResolvedCard({
-      metadata: LANE_METADATA,
-      presets: [LANE_PRESET]
+      metadata: QUICK_FIX_METADATA,
+      presets: [QUICK_FIX_PRESET]
+    });
+
+    expect(mount.querySelector('.detail-effective__applied')?.textContent).toBe(
+      '프리셋 페이블 기본'
+    );
+  });
+
+  test('reports no drift on a review-pinned issue a quick fix preset just took', () => {
+    const mount = renderResolvedCard({
+      metadata: {
+        ...QUICK_FIX_METADATA,
+        impl_review_model: 'fable',
+        impl_review_effort: 'high'
+      },
+      presets: [QUICK_FIX_PRESET]
     });
 
     expect(mount.querySelector('.detail-effective__applied')?.textContent).toBe(
@@ -567,6 +684,7 @@ describe('effective-settings applied preset token (UI-xq3h §3.4)', () => {
       metadata: {
         applied_exec_preset: 'p1',
         orchestration_model: 'opus',
+        impl_runtime: 'codex',
         impl_model: 'sol'
       },
       presets: [PRESET]
@@ -582,6 +700,7 @@ describe('effective-settings applied preset token (UI-xq3h §3.4)', () => {
       metadata: {
         applied_exec_preset: 'p1',
         orchestration_model: 'fable',
+        impl_runtime: 'codex',
         impl_model: 'sol'
       },
       presets: [PRESET]
@@ -596,7 +715,11 @@ describe('effective-settings applied preset token (UI-xq3h §3.4)', () => {
 
   test('lists each drifted key with both values in the token title', () => {
     const mount = renderResolvedCard({
-      metadata: { applied_exec_preset: 'p1', impl_model: 'sol' },
+      metadata: {
+        applied_exec_preset: 'p1',
+        impl_runtime: 'codex',
+        impl_model: 'sol'
+      },
       presets: [PRESET]
     });
 

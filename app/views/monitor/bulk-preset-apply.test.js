@@ -1,8 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   ORCHESTRATION_KEYS,
-  PRESET_KV_KEYS,
-  QUICK_FIX_ORCHESTRATION_KEYS
+  QUICK_FIX_ORCHESTRATION_KEYS,
+  presetKvKeysFor
 } from '../settings-dialog/session-model.js';
 import {
   defaultSelectedRoots,
@@ -29,14 +29,30 @@ function row(overrides) {
   };
 }
 
-/** The form as it stands before anyone touches it: 24 keys, all empty. */
+/**
+ * The `워커` tab's form before anyone touches it: the general profile's 13 kv
+ * keys and 3 queue keys, all empty.
+ */
 const EMPTY_FORM = {
-  kv_values: Object.fromEntries(PRESET_KV_KEYS.map((key) => [key, null])),
+  kv_values: Object.fromEntries(
+    presetKvKeysFor('general').map((key) => [key, null])
+  ),
   queue_values: Object.fromEntries(
-    [...ORCHESTRATION_KEYS, ...QUICK_FIX_ORCHESTRATION_KEYS].map((key) => [
-      key,
-      null
-    ])
+    ORCHESTRATION_KEYS.map((key) => [key, null])
+  ),
+  equals_preset: false
+};
+
+/**
+ * The `quick fix` tab's form before anyone touches it: that profile's 5
+ * prefixed kv keys and its 3 prefixed queue keys.
+ */
+const EMPTY_QUICK_FIX_FORM = {
+  kv_values: Object.fromEntries(
+    presetKvKeysFor('quick_fix').map((key) => [key, null])
+  ),
+  queue_values: Object.fromEntries(
+    QUICK_FIX_ORCHESTRATION_KEYS.map((key) => [key, null])
   ),
   equals_preset: false
 };
@@ -225,7 +241,7 @@ describe('planBulkApply form path (UI-628r §4.2)', () => {
     expect(plan.disabled_reason).toBe(null);
   });
 
-  test('sends every kv and queue key of an untouched form as null', () => {
+  test('sends every kv and queue key of an untouched general form as null', () => {
     const rows = [row({ root_dir: '/repo/a', revision: 3 })];
 
     const plan = planBulkApply({
@@ -237,7 +253,7 @@ describe('planBulkApply form path (UI-628r §4.2)', () => {
     });
 
     expect(Object.keys(plan.targets[0].kv_payload?.values || {})).toHaveLength(
-      18
+      13
     );
     expect(plan.targets[0].kv_payload).toEqual({
       values: EMPTY_FORM.kv_values,
@@ -251,11 +267,48 @@ describe('planBulkApply form path (UI-628r §4.2)', () => {
     expect(Object.values(plan.targets[0].queue_payload?.values || {})).toEqual([
       null,
       null,
-      null,
-      null,
-      null,
       null
     ]);
+  });
+
+  test('carries the quick fix form keys through untouched', () => {
+    const rows = [row({ root_dir: '/repo/a', revision: 3 })];
+
+    const plan = planBulkApply({
+      rows,
+      selected_roots: ['/repo/a'],
+      preset_state,
+      preset_id: '',
+      form: EMPTY_QUICK_FIX_FORM
+    });
+
+    expect(plan.targets[0].kv_payload).toEqual({
+      values: EMPTY_QUICK_FIX_FORM.kv_values,
+      root_dir: '/repo/a'
+    });
+    expect(plan.targets[0].queue_payload).toEqual({
+      values: EMPTY_QUICK_FIX_FORM.queue_values,
+      root_dir: '/repo/a',
+      expected_revision: 3
+    });
+  });
+
+  test('names no general kv key in a quick fix form payload', () => {
+    const rows = [row({ root_dir: '/repo/a', revision: 3 })];
+
+    const plan = planBulkApply({
+      rows,
+      selected_roots: ['/repo/a'],
+      preset_state,
+      preset_id: '',
+      form: EMPTY_QUICK_FIX_FORM
+    });
+
+    expect(
+      Object.keys(plan.targets[0].kv_payload?.values || {}).every((key) =>
+        key.startsWith('quick_fix_')
+      )
+    ).toBe(true);
   });
 
   test('takes the form path when the form no longer equals the chosen preset', () => {

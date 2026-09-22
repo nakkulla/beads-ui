@@ -1229,6 +1229,25 @@ export function createDetailPanel(mount_element, options) {
     }
   }
 
+  /**
+   * The toast one failed `apply-impl-preset` earns, by the code the server
+   * refused with. `preset_route_mismatch` names a profile mismatch the
+   * dropdown normally prevents (design §5), so the copy has to explain what a
+   * user cannot see: the preset belongs to the other profile.
+   *
+   * @param {unknown} code
+   * @returns {string}
+   */
+  function presetApplyFailureMessage(code) {
+    if (code === 'bd_readback_failed') {
+      return '설정은 전송됐지만 적용 여부 확인이 필요합니다.';
+    }
+    if (code === 'preset_route_mismatch') {
+      return '이 프리셋은 다른 계열이라 이 이슈에 적용할 수 없습니다.';
+    }
+    return '실행 프리셋 적용 실패';
+  }
+
   async function applyImplPreset() {
     const state = execPresetState();
     const preset = state?.presets.find(
@@ -1273,29 +1292,17 @@ export function createDetailPanel(mount_element, options) {
         showToast('실행 프리셋을 적용했습니다.', 'success', 4000);
         return;
       }
-      if (res && res.error === 'bd_readback_failed') {
-        showToast(
-          '설정은 전송됐지만 적용 여부 확인이 필요합니다.',
-          'error',
-          4000
-        );
-      } else {
-        showToast('실행 프리셋 적용 실패', 'error', 4000);
-      }
+      showToast(presetApplyFailureMessage(res && res.error), 'error', 4000);
     } catch (err) {
-      if (
-        err &&
-        typeof err === 'object' &&
-        /** @type {any} */ (err).code === 'bd_readback_failed'
-      ) {
-        showToast(
-          '설정은 전송됐지만 적용 여부 확인이 필요합니다.',
-          'error',
-          4000
-        );
-      } else {
-        showToast('실행 프리셋 적용 실패', 'error', 4000);
-      }
+      showToast(
+        presetApplyFailureMessage(
+          err && typeof err === 'object'
+            ? /** @type {any} */ (err).code
+            : undefined
+        ),
+        'error',
+        4000
+      );
     } finally {
       applying_preset = false;
       doRender();

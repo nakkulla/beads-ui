@@ -1,6 +1,11 @@
 /**
- * 여러 저장소 설정 창의 `워커` 탭 — 일괄 적용의 계획과 실행
+ * 여러 저장소 설정 창의 `워커`·`quick fix` 탭 — 일괄 적용의 계획과 실행
  * (UI-8ncz §4.1, 진입점은 UI-nu43 §3.3, 두 경로는 UI-628r §4.2).
+ *
+ * 두 탭이 이 모듈을 그대로 공유한다. 계열(`applies_to`)이 정하는 것은 탭이
+ * 넘기는 키 이름뿐이고 — 일반 탭은 canonical kv 13키와 오케스트레이션 3키,
+ * quick fix 탭은 `quick_fix_` 접두 kv 5키와 접두 큐 3키 — 계획·순차 실행·판정은
+ * 계열을 묻지 않는다.
  *
  * 서버에는 다중 저장소 op가 없다. 이 모듈은 선택한 저장소마다 기존 단일 저장소
  * op를 **순차**로 보내고 저장소별 결과를 모은다. 병렬로 보내면 서버의 kv 쓰기와
@@ -25,8 +30,10 @@
 
 /**
  * @typedef {Object} BulkFormValues
- * @property {Record<string, string|null>} kv_values - 18키 전부, 빈 값은 `null`.
- * @property {Record<string, string|null>} queue_values - 큐 6키 전부.
+ * @property {Record<string, string|null>} kv_values - 그 탭 계열의 kv 키 전부,
+ * 빈 값은 `null`.
+ * @property {Record<string, string|null>} queue_values - 그 탭 계열의 큐 3키
+ * 전부.
  * @property {boolean} equals_preset - 폼이 고른 프리셋과 같은지 (§4.2).
  */
 
@@ -57,10 +64,10 @@
 /** 프리셋 경로가 쓰는 op 이름. */
 export const PRESET_APPLY_OP = 'apply-impl-preset-global';
 
-/** 폼 경로의 kv op — 18키를 한 번에 얕게 병합한다. */
+/** 폼 경로의 kv op — 그 탭 계열의 kv 키를 한 번에 얕게 병합한다. */
 export const SESSION_DEFAULTS_OP = 'set-session-defaults';
 
-/** 폼 경로의 큐 op — 6키를 CAS로 쓴다. */
+/** 폼 경로의 큐 op — 그 탭 계열의 오케스트레이션 3키를 CAS로 쓴다. */
 export const ORCHESTRATION_OP = 'worker-queue-set-orchestration-defaults';
 
 /** 프리셋 경로에서 kv만 반영된 저장소의 사유. */
@@ -141,7 +148,8 @@ export function supportsQuickFixLane(rows) {
  * @param {Iterable<string>|Set<string>} input.selected_roots
  * @param {{ revision: number, presets: Array<Record<string, any>> }|null} input.preset_state
  * @param {string} input.preset_id
- * @param {BulkFormValues|null} [input.form] - 폼이 낸 24키 한 벌.
+ * @param {BulkFormValues|null} [input.form] - 그 탭이 낸 계열 키 한 벌:
+ * `kv_values`와 `queue_values`.
  * @param {boolean} [input.running] - 이미 실행 중이면 `true`.
  * @returns {BulkPlan}
  */

@@ -35,6 +35,7 @@ import {
   WORKFLOW_MODES,
   implEffortOptions,
   implModelOptions,
+  normalizeAppliesTo,
   orchestrationModelOptions,
   speedVisible
 } from '../settings-dialog/session-model.js';
@@ -296,7 +297,20 @@ function rowTemplate(row, view) {
  * @returns {TemplateResult}
  */
 export function effectiveSettingsCardTemplate(model, handlers) {
-  const gates = routeGates(model.route || model.metadata?.route);
+  const route = model.route || model.metadata?.route;
+  const gates = routeGates(route);
+  // 이 이슈가 받을 수 있는 계열만 고를 수 있게 한다 (design §6.3). 서버는 어긋난
+  // 적용을 `preset_route_mismatch`로 거부하므로, 목록을 좁히는 것이 그 거부를
+  // 정상 경로에서 만나지 않게 하는 유일한 장치다.
+  const issue_profile = normalizeAppliesTo(route);
+  const presets = (model.presets || []).filter(
+    (/** @type {any} */ preset) =>
+      normalizeAppliesTo(preset && preset.applies_to) === issue_profile
+  );
+  // 목록이 아직 도착하지 않은 것과 이 계열이 비어 있는 것은 다른 사실이다:
+  // 도착 전에는 아무 말도 하지 않는다 (fail-quiet).
+  const preset_profile_empty =
+    model.presets_loaded === true && presets.length === 0;
   const groups = EFFECTIVE_GROUPS.map((group) => ({
     ...group,
     keys: group.keys.filter((key) => {
@@ -406,9 +420,11 @@ export function effectiveSettingsCardTemplate(model, handlers) {
         <select
           data-impl-preset-select
           aria-label="실행 프리셋"
-          title="오케스트레이션 3키와 세션 14키를 핀으로 기록"
+          title=${issue_profile === 'quick_fix'
+            ? '오케스트레이션 3키와 구현 5키를 핀으로 기록'
+            : '오케스트레이션 3키와 세션 14키를 핀으로 기록'}
           .value=${live(model.preset_id)}
-          ?disabled=${model.preset_busy}
+          ?disabled=${model.preset_busy || preset_profile_empty}
           @click=${(/** @type {Event} */ event) => event.stopPropagation()}
           @keydown=${(/** @type {Event} */ event) => event.stopPropagation()}
           @change=${(/** @type {Event} */ ev) => {
@@ -419,10 +435,12 @@ export function effectiveSettingsCardTemplate(model, handlers) {
           }}
         >
           <option value="" ?selected=${model.preset_id === ''}>
-            실행 프리셋…
+            ${preset_profile_empty
+              ? '이 이슈에 쓸 프리셋이 없습니다'
+              : '실행 프리셋…'}
           </option>
-          ${model.presets.map(
-            (preset) =>
+          ${presets.map(
+            (/** @type {any} */ preset) =>
               html`<option
                 value=${preset.id}
                 ?selected=${preset.id === model.preset_id}
@@ -645,7 +663,7 @@ function presetTokenTemplate(model) {
   }
   const deviation = presetDeviation(
     metadata,
-    preset.settings,
+    preset,
     typeof metadata.route === 'string' ? metadata.route : null,
     model.catalog
   );

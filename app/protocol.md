@@ -138,7 +138,7 @@ Every visible workspace has a `workspaces_state` row:
 plus, since UI-eey2 §9.4, the repo-panel control fields:
 `{ serial_lane_count, orchestration_model, orchestration_effort, orchestration_speed, quick_fix_orchestration_model, quick_fix_orchestration_effort, quick_fix_orchestration_speed, execution_defaults, session_defaults, session_defaults_warnings, counts, provider_limit_policy }`
 and, since UI-e1ta §8, the observation fields
-`{ session_defaults_state, workspace_accounts?, applied_exec_preset }`.
+`{ session_defaults_state, workspace_accounts?, applied_exec_preset, applied_quick_fix_preset }`.
 `issue_prefix` comes from that workspace's bd config cache; missing, malformed,
 or temporarily unreadable config is `null`.
 
@@ -196,10 +196,16 @@ already-projected `external_job` reason is `overdue` or `action_required`).
   schedules the next push. `unusable` means the layer could not be read or
   parsed, which is not the same fact as having no repo default.
 - `applied_exec_preset: { id, name, revision, applied_at }|null` is the queue's
-  own record of the last fully applied global execution profile, carried
+  own record of the last fully applied GENERAL execution preset, carried
   verbatim like `provider_limit_policy`. The record's identity is its `id`; the
   stored `name` is a copy from apply time and may name a preset that has since
   been renamed or deleted.
+- `applied_quick_fix_preset` is the same shape for the `quick_fix` profile. The
+  two records are INDEPENDENT: applying one profile never clears the other's
+  record, and editing a single value releases only the record of the profile
+  that value belongs to. The field is added beside the first rather than
+  replacing it, so a client that knows only the general record keeps working; an
+  older server omits it, which a client reads as an absent record.
 - `counts: { running, pr_wait, queue, runnable, session_active }` counts each
   bead in EXACTLY ONE lane, on the client's exclusive lane priority (`running` >
   `session_active` > `pr_wait` > `queue` ∪ serial lanes > `runnable`).
@@ -240,9 +246,11 @@ row — no extra bd call — and is `null` when it could not be computed. In eve
 `WorkflowSummary`, `stages.spec`/`stages.plan` carry
 `doc { path, missing_state }` whenever a document path exists (independent of
 `fill`); the other stages never do. `exec_pins: Record<string, string>` is the
-row's execution metadata pins only (the per-bead preset axes plus
+row's execution metadata pins only (the 17 per-Bead execution pins plus
 `claude_account`/`codex_account`); the rest of `metadata` never travels, so the
-whole backlog's metadata stays off the wire.
+whole backlog's metadata stays off the wire. The `quick_fix_*` storage names are
+not among them: those values live in workspace kv and the queue, never in a
+Bead's metadata.
 
 `WorkflowSummary.worker_created_from: string|null` is the validated immutable
 native source ID from `metadata.worker_created_from`. Invalid, blank,
@@ -1149,29 +1157,59 @@ provider from it — only an exact `impl_model` token names one.
   use the normal error envelope: `revision_conflict`, `invalid_input`,
   `common_invalid`, `common_unavailable`, or `helper_unavailable`. Clients keep
   the draft and its original revision on conflict and never retry automatically.
-- `impl-preset-create` payload: `{ expected_revision, name, settings }`;
-  `impl-preset-update` adds `id`. `settings` is a sparse 25-key profile: the 14
-  per-Bead execution keys, the three general orchestration keys, the five
-  `quick_fix_impl_*` keys, and the three `quick_fix_orchestration_*` keys.
-  `workflow_mode` is not a preset key. Both mutations validate enum membership
-  and the general and quick_fix runtime/model/effort triples; `fast` quick_fix
+- An execution preset belongs to ONE profile, named by
+  `applies_to: 'general'|'quick_fix'`. An absent or unknown value reads as
+  `general`, so a preset file written before the split loads as a general one.
+  `settings` is sparse and carries CANONICAL key names in either profile — a
+  `quick_fix_` name never appears inside a preset:
+  - `general`: 17 keys — the three orchestration keys plus the 14 per-Bead
+    execution keys.
+  - `quick_fix`: 8 keys — the three orchestration keys plus `impl_dispatch`,
+    `impl_runtime`, `impl_model`, `impl_effort`, `impl_speed`. The nine review
+    keys are not quick_fix preset keys.
+- `impl-preset-create` payload:
+  `{ expected_revision, name, settings, applies_to? }`; `impl-preset-update`
+  adds `id` and takes NO `applies_to` — an update keeps the profile the store
+  holds. `workflow_mode` is not a preset key in either profile. Both mutations
+  validate enum membership and the runtime/model/effort triple against that
+  profile's vocabulary: `general` allows `auto` for `impl_runtime`/`impl_model`,
+  `quick_fix` takes `claude|codex` and a bare catalog model token. A `fast`
   implementation speed requires a runner whose catalog exposes that speed tier.
-- `apply-impl-preset` payload: `{ id, preset_id, expected_revision }`. It
-  replaces the issue's 17 pin keys (three orchestration keys plus 14 session
-  keys). For a `route=quick_fix` issue, each orchestration and implementation
-  axis uses its `quick_fix_*` preset value before the general value; an exact
-  quick_fix model derives its runtime before the general runtime fallback. The
-  same `bd update` also writes `applied_exec_preset=<preset id>`, the origin of
-  those pins, which only this request writes and no other path clears. An
-  incompatible projected pin is `impl_preset_incompatible` and no metadata is
+  Refusal reasons name the canonical key, with no profile prefix.
+- `apply-impl-preset` payload: `{ id, preset_id, expected_revision }`. The
+  issue's observed `route` must match the preset's profile — a `route=quick_fix`
+  issue takes a `quick_fix` preset, every other route (a missing route included)
+  takes a `general` one. A mismatch is `preset_route_mismatch` and nothing is
+  written; a client that lists only the issue's own profile never reaches it.
+  Otherwise the apply replaces exactly that profile's key set: the general 17
+  pin keys, or the quick_fix 8, leaving the nine review pins alone. A preset
+  value is set and a key the preset omits is unset. A model with no explicit
+  runtime derives its runtime in either profile, and an explicit `impl_runtime`
+  wins over the derived one. The same `bd update` also writes
+  `applied_exec_preset=<preset id>` — one metadata key for either profile — the
+  origin of those pins, which only this request writes and no other path clears.
+  An incompatible projected pin is `impl_preset_incompatible` and no metadata is
   written.
 - `apply-impl-preset-global` payload:
   `{ preset_id, expected_revision, expected_queue_revision, root_dir? }`. A
-  `lane` field is `bad_request`. One apply replaces all 18 preset-carried kv
-  keys and all six general/quick_fix orchestration queue keys; a key absent from
-  the sparse preset is unset, so the quick_fix layer falls through to the
-  general profile. The kv write and readback happen before the queue CAS and
-  remain non-atomic. The response is
+  `lane` field is `bad_request`. The preset's profile decides what one apply
+  replaces:
+  - `general`: the 13 canonical kv keys of that profile (`impl_dispatch` has no
+    workspace-global storage by contract) and the three `orchestration_*` queue
+    keys. The five `quick_fix_impl_*` kv keys and the three
+    `quick_fix_orchestration_*` queue keys are PRESERVED.
+  - `quick_fix`: the five `quick_fix_impl_*` kv keys (the profile's canonical
+    implementation keys written under their prefixed storage names) and the
+    three `quick_fix_orchestration_*` queue keys. The general kv keys and the
+    three `orchestration_*` queue keys are PRESERVED.
+
+  A key the sparse preset omits is unset WITHIN its own profile; a key outside
+  the profile never appears in the patch, so `workflow_mode`, `bdui_url`,
+  `base_sync_accept_local_commits`, accounts and concurrency keep whatever the
+  workspace holds. The queue records the applied preset in that profile's own
+  field (`applied_exec_preset` or `applied_quick_fix_preset`) and does not touch
+  the other's. The kv write and readback happen before the queue CAS and remain
+  non-atomic. The response is
   `{ applied, conflict, revision, values, warnings, queue_applied, queue_conflict, queue }`.
 
   A new client sends a quick_fix apply only when the queue snapshot HAS the
@@ -1283,10 +1321,13 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
     their toggles.
   - `preset: { id, name, basis, deviated_keys }|null`; basis is `recorded` or
     `inferred`. Recorded ids use the current name, or the recorded name plus
-    `(삭제됨)` when deleted. Inference compares route-effective orchestration
-    and delegated executor axes using catalog-normalized model names. Equally
-    specific matches remain null. Unmatched rows additionally carry
-    `preset_candidates: string[]`.
+    `(삭제됨)` when deleted, and `deviated_keys` walks the key set of the
+    recorded preset's own profile. Inference compares the orchestration and
+    delegated executor axes by the preset's CANONICAL keys, using
+    catalog-normalized model names, and no candidate is filtered by profile: a
+    bench clone runs under `route=quick_fix` whatever profile the preset it
+    measures belongs to. Equally specific matches remain null. Unmatched rows
+    additionally carry `preset_candidates: string[]`.
   - `orchestration: { model, effort }`,
     `impl_actor: { kind, label, model, effort, parts? }` with `kind` one of
     `delegated`, `main`, `missing` or `mixed` and `parts` present only on
@@ -1351,7 +1392,10 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
   else is refused rather than cloned (§4.1·§6). `reviewer_mode: 'fixed'`
   requires `reviewer.impl_review_model` / `impl_review_effort` /
   `impl_review_speed`, which overwrite that triple on every cell; `'preset'`
-  leaves each preset's own reviewer keys in place.
+  leaves each preset's own reviewer keys in place. A preset of either profile is
+  read by its canonical keys, and a `quick_fix` preset carries no reviewer key
+  at all, so under `'preset'` that triple resolves from the workspace kv layers
+  and the harness projection like every other axis the preset does not name.
 - `root_dir` is optional and, when present, must be the connection's own
   workspace: this op WRITES beads, so it may not be steered at a workspace the
   connection did not select.

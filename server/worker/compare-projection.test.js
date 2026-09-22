@@ -325,17 +325,8 @@ describe('worker/compare-projection preset inference', () => {
     expect(match.preset?.id).toBe('p1');
   });
 
-  test('uses quick-fix overrides before general values', () => {
-    const preset = makePreset({
-      orchestration_model: 'wrong',
-      orchestration_effort: 'low',
-      impl_runtime: 'claude',
-      impl_model: 'wrong',
-      quick_fix_orchestration_model: 'opus',
-      quick_fix_orchestration_effort: 'high',
-      quick_fix_impl_runtime: 'codex',
-      quick_fix_impl_model: 'sol'
-    });
+  test('matches a quick fix preset by its canonical keys', () => {
+    const preset = { ...makePreset(), applies_to: 'quick_fix' };
 
     const match = presetMatch(
       makeFacts({ route: 'quick_fix' }),
@@ -346,20 +337,27 @@ describe('worker/compare-projection preset inference', () => {
     expect(match.preset?.id).toBe('p1');
   });
 
-  test('ignores quick-fix overrides on a general route', () => {
+  test('matches a general preset the bench clone ran under a quick_fix route', () => {
+    const preset = { ...makePreset(), applies_to: 'general' };
+
     const match = presetMatch(
-      makeFacts(),
-      [makePreset({ quick_fix_impl_model: 'terra' })],
+      makeFacts({ route: 'quick_fix' }),
+      [preset],
       CATALOG
     );
 
     expect(match.preset?.id).toBe('p1');
   });
 
-  test('falls back to general values on a quick-fix route', () => {
+  test('reads no prefixed key, which no profile stores in a preset', () => {
+    const preset = makePreset({
+      impl_model: 'sol',
+      quick_fix_impl_model: 'terra'
+    });
+
     const match = presetMatch(
       makeFacts({ route: 'quick_fix' }),
-      [makePreset()],
+      [preset],
       CATALOG
     );
 
