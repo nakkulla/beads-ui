@@ -142,6 +142,7 @@ import {
   codexSessionsRoot,
   codexAccountHomeDir as defaultCodexAccountHomeDir
 } from './state-paths.js';
+import { INQUIRY_PANE_MARKER, RESOLVE_PANE_MARKER } from './tmux-launcher.js';
 import * as default_usage_receipts from './usage-receipts.js';
 import * as default_work_recovery_policy from './work-recovery-policy.js';
 import { publishWorkspaceActivity } from './workspace-activity.js';
@@ -151,6 +152,8 @@ const log = debug('worker:scheduler');
 
 const WAITING_RESCAN_COVER_MS = 2_000;
 const WAITING_RESCAN_MAX_WAIT_MS = 30_000;
+export const INTERACTIVE_EXIT_GRACE_MS = 90_000;
+export const INTERACTIVE_EXIT_DEFER_MAX_MS = 1_800_000;
 /**
  * 대기 진입 유예 (2026-09-03 monitor-exec-material-queue-grace §3.3): 자동
  * dispatch는 큐 항목이 대기 레인에 앉은 지 이만큼 지나야 그 항목을 집는다.
@@ -624,6 +627,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @typedef {Object} SchedulerDeps
  * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryReady'|'workRecoveryClassification'|'workRecoveryReadinessEnv'|'recoveryResultLineReasons'>} [workRecoveryPolicy]
  * @property {any} store - Queue store (queue-store.js).
+ * @property {ReturnType<typeof import('./tmux-launcher.js').createTmuxLauncher>} [interactiveLauncher]
  * @property {Pick<ReturnType<typeof import('./external-wait/store.js').createExternalWaitStore>, 'findByBead'|'get'|'update'|'list'> & {onCompletion?:import('./external-wait/observer.js').RecordCallback}} [externalWait]
  * @property {ReturnType<typeof import('./exec-preset-coordinator.js').createExecPresetCoordinator>} execPresetCoordinator
  * The sole authority for workspace preset resolution. It snapshots the selected
@@ -1257,6 +1261,7 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   onIssuesChanged: (workspace: string) => Promise<void>,
  *   rescanWaiting: (workspace: string) => Promise<{ checked: number, returned: number }>,
  *   reconcile: (workspace: string) => Promise<void>,
+ *   reconcileInteractiveSessions: (workspace: string) => Promise<void>,
  *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
  *   activeBeadIds: (workspace: string) => Set<string>,
  *   externalProtectedBeadIds: (workspace: string) => Set<string>,
@@ -4349,6 +4354,19 @@ export function createScheduler(deps) {
     const active = activeBeadIdsFrom(q, { leaf_paused: false });
     let moved = false;
     try {
+      for (const record of Object.values(q.interactive_sessions || {})) {
+        if (
+          statuses[record.bead_id] === 'closed' &&
+          record.settled_at === null
+        ) {
+          const result = deps.store.markInteractiveSessionsSettled(
+            workspace,
+            record.bead_id,
+            'bd_closed'
+          );
+          moved = result.ok || moved;
+        }
+      }
       for (const entry of [
         ...q.queue,
         ...q.serial_lanes.flatMap((lane) => lane.entries)
@@ -8862,8 +8880,263 @@ export function createScheduler(deps) {
       reclassifyPreservedFailures(workspace);
       await settleStaleWorkerClaims(workspace);
       await settleExternalWaitReservations(workspace);
+      await reconcileInteractiveSessions(workspace);
     } finally {
       reconciling.delete(workspace);
+    }
+  }
+
+  /** @type {Map<string, Promise<void>>} */
+  const interactive_passes = new Map();
+
+  /**
+   * Serialize periodic and settlement-triggered passes, preserving both calls.
+   *
+   * @param {string} workspace
+   * @returns {Promise<void>}
+   */
+  function reconcileInteractiveSessions(workspace) {
+    if (!deps.interactiveLauncher) {
+      return Promise.resolve();
+    }
+    const prior = interactive_passes.get(workspace) || Promise.resolve();
+    const pass = prior
+      .catch(() => {})
+      .then(() => reconcileInteractivePass(workspace));
+    interactive_passes.set(workspace, pass);
+    return pass.finally(() => {
+      if (interactive_passes.get(workspace) === pass) {
+        interactive_passes.delete(workspace);
+      }
+    });
+  }
+
+  /**
+   * @param {string} workspace
+   */
+  async function reconcileInteractivePass(workspace) {
+    const launcher = deps.interactiveLauncher;
+    if (!launcher) {
+      return;
+    }
+    const [resolve_panes, inquiry_panes] = await Promise.all([
+      launcher.listPanesExtended(RESOLVE_PANE_MARKER),
+      launcher.listPanesExtended(INQUIRY_PANE_MARKER)
+    ]);
+    // A partial tmux observation cannot prove either absence or safe recovery.
+    if (!resolve_panes.ok || !inquiry_panes.ok) {
+      log(
+        'interactive pane observation failed for %s: %o %o',
+        workspace,
+        resolve_panes,
+        inquiry_panes
+      );
+      return;
+    }
+    const panes = { resolve: resolve_panes.rows, inquiry: inquiry_panes.rows };
+    const records =
+      /** @type {Record<string, import('./queue-store.js').InteractiveSession>} */ (
+        deps.store.snapshot(workspace).interactive_sessions || {}
+      );
+    /**
+     * A launch may replace the same key while tmux I/O is in flight.
+     *
+     * @param {string} key
+     * @param {import('./queue-store.js').InteractiveSession} record
+     */
+    function isCurrent(key, record) {
+      const current = deps.store.snapshot(workspace).interactive_sessions[key];
+      return (
+        current?.pane_id === record.pane_id &&
+        current.launched_at === record.launched_at
+      );
+    }
+    /**
+     * @param {string} key
+     * @param {import('./queue-store.js').InteractiveSession} record
+     * @param {Partial<import('./queue-store.js').InteractiveSession>} patch
+     */
+    function update(key, record, patch) {
+      if (
+        isCurrent(key, record) &&
+        deps.store.updateInteractiveSession(workspace, key, patch).ok
+      ) {
+        Object.assign(record, patch);
+        notifyChanged(workspace);
+      }
+    }
+    /**
+     * @param {string} key
+     * @param {import('./queue-store.js').InteractiveSession} record
+     * @param {'exit_sent'|'pane_gone'|'killed'} reason
+     */
+    function ended(key, record, reason) {
+      if (!isCurrent(key, record)) {
+        return;
+      }
+      appendTimeline({
+        bead_id: record.bead_id,
+        kind: 'interactive_session',
+        seq: `${record.kind}:${record.launched_at}:ended`,
+        summary: `${record.kind === 'resolve' ? '해결' : '문의'} 세션 종료 · ${reason}`
+      });
+      if (deps.store.removeInteractiveSession(workspace, key).ok) {
+        notifyChanged(workspace);
+      }
+    }
+    /**
+     * @param {string} key
+     * @param {import('./queue-store.js').InteractiveSession} record
+     */
+    async function kill(key, record) {
+      if (!launcher || !isCurrent(key, record)) {
+        return;
+      }
+      const result = await launcher.killWindow(
+        record.tmux_session,
+        record.tmux_window
+      );
+      if (result.ok) {
+        ended(key, record, 'killed');
+      } else {
+        log('interactive kill failed for %s/%s: %o', workspace, key, result);
+      }
+    }
+    for (const [key, record] of Object.entries(records)) {
+      const label = record.kind === 'resolve' ? '해결' : '문의';
+      const source =
+        record.mode === 'fork'
+          ? `fork ${record.source || ''}`.trim()
+          : record.source === 'recovered'
+            ? '복구'
+            : `새 세션${record.fallback_reason ? ` (${record.fallback_reason})` : ''}`;
+      // The timeline writer deduplicates this deterministic event_id.
+      appendTimeline({
+        bead_id: record.bead_id,
+        kind: 'interactive_session',
+        seq: `${record.kind}:${record.launched_at}:started`,
+        summary: `${label} 세션 시작 · ${source}`
+      });
+      const alive = panes[record.kind].some(
+        (pane) =>
+          pane.pane === record.pane_id &&
+          pane.key === record.bead_id &&
+          pane.dead === '0'
+      );
+      if (!alive) {
+        ended(
+          key,
+          record,
+          record.state === 'exiting' ? 'exit_sent' : 'pane_gone'
+        );
+        continue;
+      }
+      update(key, record, { last_seen_alive_at: now() });
+      if (record.session_id === null) {
+        const session_id = await launcher.readPaneOption(
+          record.pane_id,
+          '@agent_session'
+        );
+        if (session_id) {
+          update(key, record, { session_id, session_id_source: 'pane_option' });
+        }
+      }
+      if (!isCurrent(key, record)) {
+        continue;
+      }
+      // Settlement can land during the pane reads above.
+      Object.assign(
+        record,
+        deps.store.snapshot(workspace).interactive_sessions[key]
+      );
+      if (
+        record.defer_since !== null &&
+        now() - record.defer_since > INTERACTIVE_EXIT_DEFER_MAX_MS
+      ) {
+        await kill(key, record);
+        continue;
+      }
+      if (record.state === 'exiting') {
+        if (
+          record.exit_requested_at !== null &&
+          now() - record.exit_requested_at > INTERACTIVE_EXIT_GRACE_MS
+        ) {
+          await kill(key, record);
+        }
+        continue;
+      }
+      if (record.settled_at === null) {
+        continue;
+      }
+      const running = await launcher.readPaneOption(
+        record.pane_id,
+        '@agent_running'
+      );
+      const attention = await launcher.readPaneOption(
+        record.pane_id,
+        '@agent_attention'
+      );
+      let idle =
+        running === null &&
+        (attention === null || attention === 'done' || attention === 'stopped');
+      if (idle && record.provider === 'claude') {
+        const tail = await launcher.capturePaneTail(record.pane_id);
+        idle = typeof tail === 'string' && /^❯\s*$/.test(tail);
+      }
+      if (!idle) {
+        if (record.defer_since === null) {
+          update(key, record, { defer_since: now() });
+        }
+        continue;
+      }
+      if (record.provider === 'codex') {
+        await kill(key, record);
+      } else if (isCurrent(key, record)) {
+        const result = await launcher.sendExit(record.pane_id);
+        if (result.ok) {
+          update(key, record, { state: 'exiting', exit_requested_at: now() });
+        } else {
+          log('interactive exit failed for %s/%s: %o', workspace, key, result);
+        }
+      }
+    }
+    for (const kind of /** @type {const} */ (['resolve', 'inquiry'])) {
+      for (const pane of panes[kind]) {
+        const key = `${pane.key}:${kind}`;
+        // Markers are machine-wide; only this workspace's checkouts belong here.
+        const relative_cwd = path.relative(workspace, pane.cwd);
+        if (
+          !pane.cwd ||
+          relative_cwd === '..' ||
+          relative_cwd.startsWith(`..${path.sep}`) ||
+          path.isAbsolute(relative_cwd)
+        ) {
+          continue;
+        }
+        if (
+          pane.dead !== '0' ||
+          !pane.key ||
+          records[key] ||
+          deps.store.snapshot(workspace).interactive_sessions[key]
+        ) {
+          continue;
+        }
+        const result = deps.store.recordInteractiveSession(workspace, {
+          bead_id: pane.key,
+          kind,
+          provider: pane.agent_runtime === 'codex' ? 'codex' : 'claude',
+          pane_id: pane.pane,
+          tmux_session: pane.session,
+          tmux_window: pane.window,
+          cwd: pane.cwd,
+          launched_at: now(),
+          state: 'live',
+          source: 'recovered'
+        });
+        if (result.ok) {
+          notifyChanged(workspace);
+        }
+      }
     }
   }
 
@@ -16481,6 +16754,7 @@ export function createScheduler(deps) {
     onIssuesChanged,
     rescanWaiting,
     reconcile,
+    reconcileInteractiveSessions,
     sweepClosedQueue,
     activeBeadIds,
     externalProtectedBeadIds,

@@ -328,6 +328,16 @@ export function createWaitJudge(deps) {
 export const RECONCILE_INTERVAL_SECONDS = 60;
 
 /**
+ * Cadence of the interactive-session pass alone (UI-6pif §3.4: 30 s poll). It
+ * reads two tmux pane listings and nothing else, so it runs on its own timer
+ * rather than doubling the attempt reconcile above; the two passes share the
+ * scheduler's per-workspace serialization.
+ *
+ * @type {number}
+ */
+export const INTERACTIVE_RECONCILE_INTERVAL_SECONDS = 30;
+
+/**
  * How often the record-retention pass runs (record-timeline-retention §8.2).
  *
  * Daily, because both horizons are measured in DAYS: a shorter cadence would
@@ -1191,6 +1201,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
 
   const scheduler = createScheduler({
     store: runtime.queueStore,
+    interactiveLauncher: runtime.interactiveLauncher,
     externalWait: {
       ...runtime.externalWaitStore,
       onCompletion: (ws, record) =>
@@ -1469,6 +1480,21 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       Promise.resolve(repoOperationCoordinator.reconcile(ws_key)).catch(
         (err) => {
           log('repo-operation reconcile pass failed for %s: %o', ws_key, err);
+        }
+      );
+    }
+  });
+  // The interactive-session pass (UI-6pif §3.4) on its own 30 s cadence, with
+  // the same subscriber-less gate: a settled bead's window must close whether
+  // or not anyone is watching the Worker tab.
+  const interactive_reconciler = createPoller({
+    intervalSeconds: INTERACTIVE_RECONCILE_INTERVAL_SECONDS,
+    getClientCount: () => 1,
+    onTick: () => {
+      const ws_key = keyFor(workspace_root);
+      Promise.resolve(scheduler.reconcileInteractiveSessions(ws_key)).catch(
+        (err) => {
+          log('interactive reconcile pass failed for %s: %o', ws_key, err);
         }
       );
     }
@@ -2298,6 +2324,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     stopExternalWaitHooks,
     waitJudge,
     reconciler,
+    interactiveReconciler: interactive_reconciler,
     prPoller,
     prActions,
     discardCoordinator,
@@ -2971,6 +2998,11 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     att.reconciler.start();
   } catch (err) {
     log('reconcile timer start failed for %s: %o', key, err);
+  }
+  try {
+    att.interactiveReconciler?.start();
+  } catch (err) {
+    log('interactive reconcile timer start failed for %s: %o', key, err);
   }
   att.waitJudge?.start();
   // The startup retention pass and its daily timer (§8.2). Fire-and-forget:

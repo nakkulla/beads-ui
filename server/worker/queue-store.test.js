@@ -33,6 +33,168 @@ import { ensureUsageReceiptInbox } from './usage-receipts.js';
 let tmp_state;
 const WS = '/tmp/example-workspace/project-a';
 
+describe('interactive session persistence', () => {
+  /** @param {Record<string, unknown>} [patch] */
+  function record(patch = {}) {
+    return {
+      bead_id: 'B1',
+      kind: 'resolve',
+      provider: 'claude',
+      pane_id: '%1',
+      tmux_session: 'interactive',
+      tmux_window: 'resolve-B1',
+      launched_at: 10,
+      state: 'live',
+      ...patch
+    };
+  }
+
+  test('defaults legacy queues to an empty session map', () => {
+    const store = createQueueStore();
+
+    const queue = store.load(WS);
+
+    expect(queue.interactive_sessions).toEqual({});
+  });
+
+  test('normalizes optional fields and canonical keys on cold load', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({ interactive_sessions: { wrong: record() } })
+    );
+
+    const sessions = createQueueStore().load(WS).interactive_sessions;
+
+    expect(sessions).toEqual({
+      'B1:resolve': {
+        ...record(),
+        session_id: null,
+        session_id_source: null,
+        mode: null,
+        source: null,
+        forked_from: null,
+        fallback_reason: null,
+        attempt_id: null,
+        failure_class: null,
+        cwd: null,
+        last_seen_alive_at: null,
+        settled_at: null,
+        settled_by: null,
+        exit_requested_at: null,
+        defer_since: null
+      }
+    });
+  });
+
+  test.each([
+    { bead_id: '' },
+    { kind: 'unknown' },
+    { provider: 'unknown' },
+    { pane_id: null },
+    { tmux_session: '' },
+    { tmux_window: null },
+    { launched_at: '10' },
+    { state: 'ended' }
+  ])('drops malformed required fields %j', (patch) => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({ interactive_sessions: { invalid: record(patch) } })
+    );
+
+    const sessions = createQueueStore().load(WS).interactive_sessions;
+
+    expect(sessions).toEqual({});
+  });
+
+  test('replaces the same session key durably', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(WS, record());
+
+    const result = store.recordInteractiveSession(
+      WS,
+      record({ pane_id: '%2', launched_at: 20 })
+    );
+
+    expect(result.ok).toBe(true);
+    expect(
+      createQueueStore().load(WS).interactive_sessions['B1:resolve']
+    ).toMatchObject({ pane_id: '%2', launched_at: 20 });
+  });
+
+  test('persists a session patch across restart', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(WS, record());
+
+    const result = store.updateInteractiveSession(WS, 'B1:resolve', {
+      session_id: 'sid',
+      session_id_source: 'pane_option'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(
+      createQueueStore().load(WS).interactive_sessions['B1:resolve']
+    ).toMatchObject({ session_id: 'sid', session_id_source: 'pane_option' });
+  });
+
+  test('removes ended sessions durably', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(WS, record());
+
+    const result = store.removeInteractiveSession(WS, 'B1:resolve');
+
+    expect(result.ok).toBe(true);
+    expect(createQueueStore().load(WS).interactive_sessions).toEqual({});
+  });
+
+  test('settles every session of one bead while preserving prior settlement', () => {
+    const store = createQueueStore({ now: () => 100 });
+    store.recordInteractiveSession(WS, record());
+    store.recordInteractiveSession(
+      WS,
+      record({ kind: 'inquiry', settled_at: 50, settled_by: 'discard' })
+    );
+    store.recordInteractiveSession(WS, record({ bead_id: 'B2' }));
+
+    const result = store.markInteractiveSessionsSettled(WS, 'B1', 'done');
+
+    expect(result.ok).toBe(true);
+    expect(createQueueStore().load(WS).interactive_sessions).toMatchObject({
+      'B1:resolve': { settled_at: 100, settled_by: 'done' },
+      'B1:inquiry': { settled_at: 50, settled_by: 'discard' },
+      'B2:resolve': { settled_at: null, settled_by: null }
+    });
+  });
+
+  test('settles both unaccounted session kinds together', () => {
+    const store = createQueueStore({ now: () => 100 });
+    store.recordInteractiveSession(WS, record());
+    store.recordInteractiveSession(WS, record({ kind: 'inquiry' }));
+
+    store.markInteractiveSessionsSettled(WS, 'B1', 'bd_closed');
+
+    expect(
+      Object.values(store.snapshot(WS).interactive_sessions).map(
+        (item) => item.settled_at
+      )
+    ).toEqual([100, 100]);
+  });
+
+  test('refuses mutations without a matching session', () => {
+    const store = createQueueStore();
+
+    const results = [
+      store.updateInteractiveSession(WS, 'missing', { session_id: 'sid' }),
+      store.removeInteractiveSession(WS, 'missing'),
+      store.markInteractiveSessionsSettled(WS, 'missing', 'done')
+    ];
+
+    expect(results.map((result) => result.ok)).toEqual([false, false, false]);
+    expect(store.snapshot(WS).revision).toBe(0);
+  });
+});
+
 describe('live account preemption persistence', () => {
   test('persists pause intent and recovery receipt in one revision across restart', () => {
     const store = createQueueStore({ now: () => 100 });

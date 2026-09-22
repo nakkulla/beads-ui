@@ -33,7 +33,7 @@ import { emitQueueChanged } from './queue-events.js';
 import { createQueueStore } from './queue-store.js';
 import { recordRepoOpsDisplay } from './repo-ops-display.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
-import { createWorkerRuntime } from './runtime.js';
+import { createWorkerRuntime as buildWorkerRuntime } from './runtime.js';
 import { requestStartNow } from './scheduler.js';
 import {
   queueFilePath,
@@ -45,6 +45,15 @@ import {
   onWorkspaceActivity,
   publishWorkspaceActivity
 } from './workspace-activity.js';
+
+function createWorkerRuntime() {
+  const runtime = buildWorkerRuntime();
+  vi.spyOn(runtime.interactiveLauncher, 'listPanesExtended').mockResolvedValue({
+    ok: true,
+    rows: []
+  });
+  return runtime;
+}
 
 // 큐 deps는 attach 안에서만 조립된다. 같은 위임 mock으로 그 deps를 붙잡아,
 // 생산 조립이 seam을 실제로 연결하는지 본다(UI-p49g §4.1).
@@ -2057,6 +2066,41 @@ describe('worker/attach construction + live loop (F1)', () => {
       const snap = runtime.queueStore.snapshot(WS);
       expect(snap.attempts['att-late'].status).toBe('done');
       expect(snap.pr_wait.map((e) => e.bead_id)).toEqual(['UI-late']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('reconciles interactive panes every thirty seconds without subscribers', async () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = createWorkerRuntime();
+      const att = createWorkerAttachment(WS, {
+        runtime,
+        bd: fakeBd(),
+        worktree: fakeWorktree,
+        verify: okVerify,
+        spawn_impl: makeFixtureSpawn({ lines: [] }),
+        getSubscriberCount: () => 0
+      });
+      __registerWorkerAttachmentForTest(WS, att);
+      initWorkerRuntime({ workspaces: [WS], getSubscriberCount: () => 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      runtime.queueStore.recordInteractiveSession(WS, {
+        bead_id: 'UI-interactive',
+        kind: 'resolve',
+        provider: 'claude',
+        pane_id: '%1',
+        tmux_session: 'interactive',
+        tmux_window: 'resolve',
+        launched_at: 10,
+        state: 'live'
+      });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(runtime.queueStore.snapshot(WS).interactive_sessions).toEqual({});
+      expect(runtime.interactiveLauncher.listPanesExtended).toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

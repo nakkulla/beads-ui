@@ -20,6 +20,8 @@ import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
 import { runSession } from './runner/session.js';
 import {
+  INTERACTIVE_EXIT_DEFER_MAX_MS,
+  INTERACTIVE_EXIT_GRACE_MS,
   QUEUE_GRACE_MS,
   activeLaneLineages,
   createScheduler,
@@ -35,6 +37,7 @@ import {
   guardHookDir,
   usageReceiptInboxDir
 } from './state-paths.js';
+import { INQUIRY_PANE_MARKER, RESOLVE_PANE_MARKER } from './tmux-launcher.js';
 import { createUsageStore } from './usage-store.js';
 import * as work_recovery_policy from './work-recovery-policy.js';
 
@@ -56,6 +59,305 @@ vi.mock('./foreign-blocker-status.js', async (importOriginal) => {
 });
 
 const WS = '/tmp/example-workspace/project-a';
+
+describe('interactive session reconciliation', () => {
+  /** @param {Record<string, any>} [patch] */
+  function interactiveFixture(patch = {}) {
+    let at = 1000;
+    const store = createQueueStore({ now: () => at });
+    store.recordInteractiveSession(WS, {
+      bead_id: 'B1',
+      kind: 'resolve',
+      provider: 'claude',
+      pane_id: '%1',
+      tmux_session: 'interactive',
+      tmux_window: 'resolve-B1',
+      launched_at: 10,
+      state: 'live',
+      source: 'attempt',
+      mode: 'fork',
+      ...patch
+    });
+    const pane = {
+      key: 'B1',
+      pane: '%1',
+      dead: '0',
+      session: 'interactive',
+      window: 'resolve-B1',
+      cwd: WS,
+      agent_runtime: 'claude'
+    };
+    const launcher = {
+      listPanesExtended: vi.fn(async (marker) => ({
+        ok: true,
+        rows: marker === RESOLVE_PANE_MARKER ? [pane] : []
+      })),
+      readPaneOption: vi.fn(
+        /** @type {(pane_id: string, name: string) => Promise<string|null>} */ (
+          async () => null
+        )
+      ),
+      capturePaneTail: vi.fn(async () => '❯ '),
+      sendExit: vi.fn(async () => ({ ok: true })),
+      killWindow: vi.fn(async () => ({ ok: true }))
+    };
+    const timeline = { append: vi.fn() };
+    const changed = vi.fn();
+    const h = setup({
+      config: {},
+      store,
+      timeline,
+      now: () => at,
+      notifyQueueChanged: changed,
+      ...{ interactiveLauncher: launcher }
+    });
+    return {
+      ...h,
+      launcher,
+      timeline,
+      changed,
+      pane,
+      current: () => store.snapshot(WS).interactive_sessions['B1:resolve'],
+      /** @param {number} value */
+      setTime(value) {
+        at = value;
+      }
+    };
+  }
+
+  test.each([
+    ['live', 'pane_gone'],
+    ['exiting', 'exit_sent']
+  ])('records %s pane disappearance as %s', async (state, reason) => {
+    const h = interactiveFixture({ state });
+    h.launcher.listPanesExtended.mockResolvedValue({ ok: true, rows: [] });
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.current()).toBeUndefined();
+    expect(h.timeline.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        seq: 'resolve:10:ended',
+        summary: `해결 세션 종료 · ${reason}`
+      })
+    );
+    expect(h.changed).toHaveBeenCalledWith(WS);
+  });
+
+  test('makes no judgments when either marker lookup fails', async () => {
+    const h = interactiveFixture({ settled_at: 1 });
+    h.launcher.listPanesExtended
+      .mockResolvedValueOnce({ ok: true, rows: [] })
+      .mockResolvedValueOnce(
+        /** @type {any} */ ({ ok: false, error: 'tmux_unavailable' })
+      );
+    const before = h.store.snapshot(WS);
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.store.snapshot(WS)).toEqual(before);
+    expect(h.timeline.append).not.toHaveBeenCalled();
+    expect(h.launcher.sendExit).not.toHaveBeenCalled();
+  });
+
+  test('fills the session identity from the pane option', async () => {
+    const h = interactiveFixture({ provider: 'codex' });
+    h.launcher.readPaneOption.mockResolvedValue('sid');
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.current()).toMatchObject({
+      session_id: 'sid',
+      session_id_source: 'pane_option',
+      last_seen_alive_at: 1000
+    });
+  });
+
+  test.each([
+    ['claude', RESOLVE_PANE_MARKER, 'resolve'],
+    ['codex', INQUIRY_PANE_MARKER, 'inquiry']
+  ])(
+    'recovers a %s pane under its %s marker',
+    async (provider, marker, kind) => {
+      const h = interactiveFixture();
+      h.store.removeInteractiveSession(WS, 'B1:resolve');
+      h.launcher.listPanesExtended.mockImplementation(async (name) => ({
+        ok: true,
+        rows: name === marker ? [{ ...h.pane, agent_runtime: provider }] : []
+      }));
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(
+        h.store.snapshot(WS).interactive_sessions[`B1:${kind}`]
+      ).toMatchObject({
+        provider,
+        kind,
+        source: 'recovered',
+        state: 'live',
+        launched_at: 1000,
+        session_id: null,
+        settled_at: null,
+        mode: null
+      });
+      expect(h.launcher.readPaneOption).not.toHaveBeenCalled();
+    }
+  );
+
+  test('ignores recovery panes from another workspace', async () => {
+    const h = interactiveFixture();
+    h.store.removeInteractiveSession(WS, 'B1:resolve');
+    h.pane.cwd = `${WS}-other`;
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.store.snapshot(WS).interactive_sessions).toEqual({});
+  });
+
+  test('keeps unsettled panes open even when the bead has a done row', async () => {
+    const h = interactiveFixture();
+    h.store.moveToDone(WS, { bead_id: 'B1' });
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.current().state).toBe('live');
+    expect(h.launcher.sendExit).not.toHaveBeenCalled();
+  });
+
+  test.each([null, 'done', 'stopped'])(
+    'sends Claude exit at an empty prompt with attention %s',
+    async (attention) => {
+      const h = interactiveFixture({ settled_at: 1 });
+      h.launcher.readPaneOption.mockImplementation(async (_pane, name) =>
+        name === '@agent_attention' ? attention : null
+      );
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(h.launcher.sendExit).toHaveBeenCalledWith('%1');
+      expect(h.current()).toMatchObject({
+        state: 'exiting',
+        exit_requested_at: 1000
+      });
+      expect(h.launcher.killWindow).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([
+    { option: '@agent_running', value: '1', prompt: '❯' },
+    { option: '@agent_attention', value: 'permission', prompt: '❯' },
+    { option: '', value: null, prompt: '❯ draft' },
+    { option: '', value: null, prompt: 'Working...' }
+  ])('defers a busy or nonempty pane %j', async ({ option, value, prompt }) => {
+    const h = interactiveFixture({ settled_at: 1 });
+    h.launcher.readPaneOption.mockImplementation(async (_pane, name) =>
+      name === option ? value : null
+    );
+    h.launcher.capturePaneTail.mockResolvedValue(prompt);
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+    h.setTime(2000);
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.current()).toMatchObject({ state: 'live', defer_since: 1000 });
+    expect(h.launcher.sendExit).not.toHaveBeenCalled();
+  });
+
+  test('kills idle Codex without inspecting a Claude prompt', async () => {
+    const h = interactiveFixture({ provider: 'codex', settled_at: 1 });
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.launcher.killWindow).toHaveBeenCalledWith(
+      'interactive',
+      'resolve-B1'
+    );
+    expect(h.launcher.capturePaneTail).not.toHaveBeenCalled();
+    expect(h.current()).toBeUndefined();
+    expect(h.timeline.append).toHaveBeenCalledWith(
+      expect.objectContaining({ summary: '해결 세션 종료 · killed' })
+    );
+  });
+
+  test('kills a busy pane after the thirty minute deferral limit', async () => {
+    const h = interactiveFixture({ settled_at: 1, defer_since: 10 });
+    h.launcher.readPaneOption.mockResolvedValue('running');
+    h.setTime(10 + INTERACTIVE_EXIT_DEFER_MAX_MS + 1);
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.launcher.killWindow).toHaveBeenCalledOnce();
+    expect(h.current()).toBeUndefined();
+  });
+
+  test('kills an exiting pane after the ninety second grace', async () => {
+    const h = interactiveFixture({ state: 'exiting', exit_requested_at: 10 });
+    h.setTime(10 + INTERACTIVE_EXIT_GRACE_MS);
+    await h.scheduler.reconcileInteractiveSessions(WS);
+    expect(h.launcher.killWindow).not.toHaveBeenCalled();
+    h.setTime(11 + INTERACTIVE_EXIT_GRACE_MS);
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.launcher.killWindow).toHaveBeenCalledOnce();
+    expect(h.current()).toBeUndefined();
+  });
+
+  test.each(['sendExit', 'killWindow'])(
+    'retains sessions when %s fails and retries next pass',
+    async (method) => {
+      const h = interactiveFixture({
+        provider: method === 'killWindow' ? 'codex' : 'claude',
+        settled_at: 1
+      });
+      const action =
+        h.launcher[/** @type {'sendExit'|'killWindow'} */ (method)];
+      action.mockResolvedValueOnce({ ok: false });
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+      expect(h.current().state).toBe('live');
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(action).toHaveBeenCalledTimes(2);
+    }
+  );
+
+  test('serializes overlapping exit requests', async () => {
+    const h = interactiveFixture({ settled_at: 1 });
+
+    await Promise.all([
+      h.scheduler.reconcileInteractiveSessions(WS),
+      h.scheduler.reconcileInteractiveSessions(WS)
+    ]);
+
+    expect(h.launcher.sendExit).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    ['closed', 'bd_closed'],
+    ['resolved', null],
+    ['deferred', null]
+  ])('settles observed %s status as %s', (status, expected) => {
+    const h = interactiveFixture();
+
+    h.scheduler.sweepClosedQueue(WS, { B1: status });
+
+    expect(h.current().settled_by).toBe(expected);
+  });
+
+  test('runs interactive reconciliation on the periodic reconcile path', async () => {
+    const h = interactiveFixture();
+
+    await h.scheduler.reconcile(WS);
+
+    expect(h.launcher.listPanesExtended).toHaveBeenCalledWith(
+      RESOLVE_PANE_MARKER
+    );
+    expect(h.launcher.listPanesExtended).toHaveBeenCalledWith(
+      INQUIRY_PANE_MARKER
+    );
+  });
+});
 
 describe('dispatch preset observations', () => {
   /** @param {'present'|'deleted'|'unreadable'|'absent'} [state] */
@@ -979,6 +1281,7 @@ function setup(opts) {
     workRecoveryPolicy: /** @type {any} */ (opts).workRecoveryPolicy,
     store,
     makeRunner: opts.makeRunner || runner.factory,
+    interactiveLauncher: /** @type {any} */ (opts).interactiveLauncher,
     acquireClaudeLaunch: async () => () => {},
     accountCatalog: opts.accountCatalog,
     providerHealth: opts.providerHealth,

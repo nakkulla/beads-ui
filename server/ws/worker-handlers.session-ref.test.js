@@ -24,6 +24,9 @@ process.env.HOME = home_dir;
 const bd = vi.hoisted(() => ({
   runBdJsonProjectedInWorkspace: vi.fn()
 }));
+const interactive = vi.hoisted(() => ({
+  records: /** @type {Record<string, any>} */ ({})
+}));
 
 const tail = vi.hoisted(() => ({
   /** @type {any[]} */
@@ -42,7 +45,12 @@ vi.mock('../registry-watcher.js', async (importOriginal) => {
 
 vi.mock('../worker/runtime.js', () => ({
   getWorkerRuntime: () => ({
-    queueStore: { snapshot: () => ({ attempts: {} }) },
+    queueStore: {
+      snapshot: () => ({
+        attempts: {},
+        interactive_sessions: interactive.records
+      })
+    },
     usageStore: { get: () => null },
     sessionLog: {
       read: () => [],
@@ -160,6 +168,7 @@ beforeEach(() => {
   bd.runBdJsonProjectedInWorkspace.mockReset();
   tail.inputs.length = 0;
   tail.readers.length = 0;
+  interactive.records = {};
 });
 
 afterEach(() => {
@@ -277,6 +286,68 @@ describe('subscribe-session-log session_ref validation', () => {
 });
 
 describe('subscribe-session-log session_ref authorization', () => {
+  test('authorizes the transcript through an interactive session record', async () => {
+    const socket = fakeSocket();
+    bdShows(null);
+    const file = writeClaudeSessionFile(
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"interactive reply"}]}}\n'
+    );
+    interactive.records['UI-1:resolve'] = {
+      bead_id: 'UI-1',
+      provider: 'claude',
+      session_id: SESSION_ID
+    };
+
+    await handleSubscribeSessionLog(
+      socket,
+      subscribeRequest({
+        id: 'c1',
+        attempt_id: ATTEMPT_SLOT,
+        session_ref: {
+          bead_id: 'UI-1',
+          provider: 'claude',
+          session_id: SESSION_ID
+        }
+      })
+    );
+
+    expect(tail.inputs[0].file).toBe(file);
+    expect(
+      JSON.stringify(pushOf(socket, 'session-log-snapshot').payload.lines)
+    ).toContain('interactive reply');
+    detachSessionLog(socket);
+  });
+
+  test.each([
+    { bead_id: 'UI-other' },
+    { provider: 'codex' },
+    { session_id: 'different' }
+  ])('refuses an interactive identity mismatch %j', async (patch) => {
+    const socket = fakeSocket();
+    bdShows(null);
+    interactive.records.record = {
+      bead_id: 'UI-1',
+      provider: 'claude',
+      session_id: SESSION_ID,
+      ...patch
+    };
+
+    await handleSubscribeSessionLog(
+      socket,
+      subscribeRequest({
+        id: 'c1',
+        attempt_id: ATTEMPT_SLOT,
+        session_ref: {
+          bead_id: 'UI-1',
+          provider: 'claude',
+          session_id: SESSION_ID
+        }
+      })
+    );
+
+    expect(tail.readers).toHaveLength(0);
+    expect(pushOf(socket, 'session-log-snapshot').payload.lines).toEqual([]);
+  });
   test('reads the bead through the projected bd JSON owner', async () => {
     const socket = fakeSocket();
     bdShows({ session_ref: `claude:${SESSION_ID}@${HOST}` });

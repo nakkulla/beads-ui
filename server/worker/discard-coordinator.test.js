@@ -297,6 +297,7 @@ function setup(options = {}) {
   });
   const gitRun = options.gitRun || defaultGitRun;
   const scheduler = {
+    reconcileInteractiveSessions: vi.fn(async () => {}),
     canDiscardAttempt: vi.fn(() => options.schedulerCanDiscard ?? true),
     fenceDiscardAttempt: vi.fn(() => true),
     unfenceDiscardAttempt: vi.fn(() => true),
@@ -371,6 +372,71 @@ function setup(options = {}) {
     notifyChanged
   };
 }
+
+describe('interactive discard settlement', () => {
+  test.each([
+    ['parent_reset', 'discard', 'discard'],
+    ['rollback_finalized', 'discard', null],
+    ['stale_local_ref_removed', 'stale_work_backup_fresh', null]
+  ])(
+    'settles %s completion only when it ends the bead work',
+    async (phase, kind, expected) => {
+      const env = setup();
+      env.store.recordInteractiveSession(workspace, {
+        bead_id: 'UI-1',
+        kind: 'inquiry',
+        provider: 'claude',
+        pane_id: '%1',
+        tmux_session: 'interactive',
+        tmux_window: 'inquiry',
+        launched_at: 10,
+        state: 'live'
+      });
+      env.store.createDiscardOperation(workspace, {
+        expected_revision: env.store.snapshot(workspace).revision,
+        operation: {
+          operation_id: 'interactive-discard',
+          bead_id: 'UI-1',
+          attempt_id: 'att-1',
+          kind: /** @type {'discard'|'stale_work_backup_fresh'} */ (kind),
+          source_snapshot: { repo: '/repo', branch: 'UI-1' }
+        }
+      });
+      env.store.advanceDiscardOperation(workspace, {
+        operation_id: 'interactive-discard',
+        expected_phase: 'requested',
+        next_phase: phase
+      });
+      const completed = vi.spyOn(env.store, 'completeDiscardOperation');
+      const settled = vi.spyOn(env.store, 'markInteractiveSessionsSettled');
+
+      const result = await env.coordinator.drive('interactive-discard');
+
+      expect(result.ok).toBe(true);
+      expect(
+        env.store.snapshot(workspace).interactive_sessions['UI-1:inquiry']
+          .settled_by
+      ).toBe(expected);
+      if (expected) {
+        expect(settled).toHaveBeenCalledWith(workspace, 'UI-1', 'discard');
+        expect(env.scheduler.reconcileInteractiveSessions).toHaveBeenCalledWith(
+          workspace
+        );
+        expect(completed.mock.invocationCallOrder[0]).toBeLessThan(
+          settled.mock.invocationCallOrder[0]
+        );
+        expect(settled.mock.invocationCallOrder[0]).toBeLessThan(
+          env.scheduler.reconcileInteractiveSessions.mock.invocationCallOrder[0]
+        );
+      } else {
+        expect(settled).not.toHaveBeenCalled();
+        expect(
+          env.scheduler.reconcileInteractiveSessions
+        ).not.toHaveBeenCalled();
+      }
+    }
+  );
+});
 
 describe('worker discard source eligibility (선행 대기 계층 §5.2)', () => {
   test('discards an attempt that ended on an unmet prerequisite', async () => {

@@ -44,6 +44,7 @@ import { createSessionLog } from './session-log.js';
 import { createWorkerSessionObservationStore } from './session-observation.js';
 import { workspaceSlug, workspaceStateDir } from './state-paths.js';
 import { createTitleCache } from './title-cache.js';
+import { createTmuxLauncher } from './tmux-launcher.js';
 import { createUsageStore } from './usage-store.js';
 
 /**
@@ -63,6 +64,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createReviseParkedStore>} reviseParked
  * @property {ReturnType<typeof createDirectionInquiry>} directionInquiry
  * @property {ReturnType<typeof createResolveSession>} resolveSession
+ * @property {ReturnType<typeof createTmuxLauncher>} interactiveLauncher
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {ReturnType<typeof createExternalWaitService>} externalWait
  * @property {ReturnType<typeof createExternalWaitStore>} externalWaitStore
@@ -190,6 +192,7 @@ export function createWorkerRuntime() {
   // and the two disposition handlers re-verify through the same instance so a
   // click and a badge can never disagree about which bead is parked.
   const reviseParked = createReviseParkedStore();
+  const interactiveLauncher = createTmuxLauncher();
   // Process-wide parked-attempt inquiry trigger (UI-gjp2 §1). Process-wide
   // rather than per-attachment because its duplicate guard is a tmux pane
   // marker, which is one truth for the whole machine; the workspace it acts on
@@ -346,6 +349,7 @@ export function createWorkerRuntime() {
     reviseParked,
     directionInquiry,
     resolveSession,
+    interactiveLauncher,
     sessionLog,
     /**
      * @param {() => number} fn
