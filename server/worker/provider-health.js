@@ -442,6 +442,32 @@ export function createProviderHealth(deps) {
   }
 
   /**
+   * Require a successful catalog read before declaring an account absent.
+   *
+   * @param {string} runner
+   * @param {string|null} account
+   */
+  async function accountAbsent(runner, account) {
+    if (account === null || (runner !== 'claude' && runner !== 'codex')) {
+      return false;
+    }
+    try {
+      const listed =
+        runner === 'claude'
+          ? await deps.accountCatalog.listClaude()
+          : await deps.accountCatalog.listCodex();
+      return (
+        listed.ok &&
+        !listed.accounts.some(
+          (/** @type {{ key: string }} */ row) => row.key === account
+        )
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Execute one scheduled target transition and then resynchronize timers.
    *
    * @param {string} workspace
@@ -479,6 +505,34 @@ export function createProviderHealth(deps) {
     /** @type {Awaited<ReturnType<typeof probeTarget>>} */
     let result;
     try {
+      if (await accountAbsent(runner, live_target.account)) {
+        const released = deps.store.releaseProviderTarget(workspace, {
+          runner,
+          generation,
+          kind: live_target.kind,
+          model: live_target.model,
+          account: live_target.account,
+          reason: 'account_absent'
+        });
+        if (released.ok) {
+          for (const attempt_id of released.recovered_attempt_ids || []) {
+            const attempt = released.queue.attempts[attempt_id];
+            if (attempt) {
+              deps.timeline?.append({
+                bead_id: attempt.bead_id,
+                attempt_id,
+                kind: 'provider_hold_released',
+                seq: generation,
+                summary: `${runner} 보류 해제 · account_absent`
+              });
+            }
+          }
+          await deps.onPending(workspace);
+          await deps.tick(workspace);
+        }
+        sync(workspace);
+        return;
+      }
       result = await probeTarget(workspace, runner, live_target);
     } finally {
       in_flight.delete(probe_key);

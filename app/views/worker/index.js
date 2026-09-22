@@ -41,7 +41,10 @@ import {
   normalizeDoneRange
 } from '../../data/closed-range.js';
 import { createListSelectors } from '../../data/list-selectors.js';
-import { isImplementationAttempt } from '../../utils/active-attempts.js';
+import {
+  isImplementationAttempt,
+  latestImplementationAttempts
+} from '../../utils/active-attempts.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { createChipPresetToggle } from '../../utils/chip-preset-binding.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
@@ -78,12 +81,14 @@ import {
   normalizePriorityFilter,
   normalizeRouteFilter,
   normalizeTypeFilter,
+  prWaitLaneOriginFields,
   resolvesConflict,
   toggleLabelFilter,
   togglePriorityFilter,
   toggleRouteFilter
 } from './lane-model.js';
 import {
+  SERIAL_LANE_LABEL,
   candidateCard,
   discardAbandonCompletionMessage,
   discardAbandonConfirmationMessage,
@@ -3334,6 +3339,9 @@ export function createWorkerView(mount_element, options = {}) {
         merge_entries.set(entry.bead_id, entry);
       }
     }
+    // 레인 출처는 durable 항목에서 판정한다 (UI-us7l §3): 충돌 해소 세션이 도는
+    // bead는 `item`이 실행 타일이라 그 attempt의 레인은 PR의 레인이 아니다.
+    const last_impl_by_bead = latestImplementationAttempts(attempts);
     const rows = (Array.isArray(q.pr_wait) ? q.pr_wait : []).map(
       (/** @type {any} */ e) => {
         const item = item_by_id.get(e.bead_id);
@@ -3416,6 +3424,7 @@ export function createWorkerView(mount_element, options = {}) {
         );
         return {
           ...row,
+          ...prWaitLaneOriginFields(e, last_impl_by_bead),
           // 검색 판정은 레인 모델이 소유한다 (UI-6g3t §7). PR 대기 행은 행
           // 투영이 새로 만드는 객체라 그 키를 여기서 옮겨 실어야 하고, 검색이
           // 없으면 옮길 키도 없다 (fail-quiet).
@@ -3466,7 +3475,10 @@ export function createWorkerView(mount_element, options = {}) {
         title: tile.title,
         location_label: '실행중',
         kind: 'running',
-        lane_id: tile.serial_lane_id ?? null
+        lane_id:
+          tile.lane_origin?.kind === 'serial'
+            ? `s${tile.lane_origin.index}`
+            : null
       });
     }
     for (const item of m.pr_wait) {
@@ -4109,19 +4121,32 @@ export function createWorkerView(mount_element, options = {}) {
   function waitBodyTemplate(m) {
     const parallel_rows = waitingRows(m);
     const root_dir = rootDir();
+    const group = groupOf(m);
     return waitBody({
       parallel: {
         rows: parallel_rows.map((/** @type {any} */ it, index) =>
           dragRow(it, { kind: 'parallel', root_dir, row_index: index })
         ),
         count: parallel_rows.length,
+        slots:
+          parallel_rows.length > 0 || group.live_count >= 1 || group.over_cap
+            ? [
+                {
+                  root_dir,
+                  name: '',
+                  live: group.live_count,
+                  cap: group.slots,
+                  saturated: group.live_count >= group.slots
+                }
+              ]
+            : [],
         collapsed: collapse.isAreaCollapsed('parallel'),
         drop: { drop: 'parallel', root_dir }
       },
       serial: {
         lanes: serialLanes(m).map((lane) => ({
           id: lane.id,
-          title: `직렬 ${lane.index}`,
+          title: `${SERIAL_LANE_LABEL} ${lane.index}`,
           rows: [
             // 점유 ghost 행은 서버 레인 entries의 구성원이 아니므로 드롭 마커
             // 에도 서버 인덱스에도 들어가지 않는다 — 좌표 속성을 싣지 않는다.

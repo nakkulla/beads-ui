@@ -342,14 +342,13 @@ describe('worker console styles', () => {
     expect(actionsRule).toContain('flex: 0 0 auto');
   });
 
-  test('stacks running tile facts and usage as two metadata lines', () => {
+  test('stacks running tile coordinate and run lines as two metadata lines', () => {
     const metaRule =
       workerBlock.match(/(?:^|\n)\.rtile__meta\s*{([^}]*)}/)?.[1] || '';
 
     const rowRule =
-      workerBlock.match(
-        /(?:^|\n)\.rtile__facts,\s*\.rtile__usage\s*{([^}]*)}/
-      )?.[1] || '';
+      workerBlock.match(/(?:^|\n)\.rtile \.worker-chips\s*{([^}]*)}/)?.[1] ||
+      '';
 
     expect(metaRule).toContain('flex-direction: column');
     expect(metaRule).toContain('min-width: 0');
@@ -359,14 +358,13 @@ describe('worker console styles', () => {
 
   // 실행 중 타일의 칩 줄도 줄을 넘긴다 (UI-pw2g §3.2): 담는 줄이 wrap하고 자식은
   // 말줄임을 갖지 않아야 `오케 claude · fable · l…`이 나오지 않는다.
-  test('wraps the running tile fact and usage lines instead of clipping them', () => {
+  test('wraps the running tile coordinate and run lines instead of clipping them', () => {
     const rowRule =
-      workerBlock.match(
-        /(?:^|\n)\.rtile__facts,\s*\.rtile__usage\s*{([^}]*)}/
-      )?.[1] || '';
+      workerBlock.match(/(?:^|\n)\.rtile \.worker-chips\s*{([^}]*)}/)?.[1] ||
+      '';
     const childRule =
       workerBlock.match(
-        /(?:^|\n)\.rtile__facts > \*,\s*\.rtile__usage > \*\s*{([^}]*)}/
+        /(?:^|\n)\.rtile \.worker-chips > \*\s*{([^}]*)}/
       )?.[1] || '';
 
     expect(rowRule).toContain('flex-wrap: wrap');
@@ -397,7 +395,7 @@ describe('worker console styles', () => {
    */
   function chipLineReleaseRule() {
     const match = workerBlock.match(
-      /:is\(\.worker-card, \.worker-mini, \.rtile\)\s*:is\(\.rtile__facts, \.rtile__usage, \.worker-chips, \.worker-deps\)\s*:is\(([^)]*)\)\s*{([^}]*)}/
+      /:is\(\.worker-card, \.worker-mini, \.rtile\)\s*:is\(\.worker-chips, \.worker-deps\)\s*:is\(([^)]*)\)\s*{([^}]*)}/
     );
     return { selector: match?.[1] || '', declarations: match?.[2] || '' };
   }
@@ -421,16 +419,14 @@ describe('worker console styles', () => {
     expect(declarations).toContain('overflow-wrap: anywhere');
   });
 
-  // 완료 레인 2줄·3줄 변형은 같은 칩을 `.worker-mini__row1`~`__row3`에 직접
-  // 담으므로 해제가 번지지 않는다 (스펙 §4.3). 담는 줄 넷만 지명해야 그렇다.
-  test('scopes the chip-line release to the four chip containers', () => {
+  // 실행 타일의 `.rtile__facts`·`.rtile__usage`는 5a·5b `.worker-chips` 줄로
+  // 합쳐졌다 (UI-us7l §4.3). 담는 줄 둘만 지명해야 머리줄 칩에 번지지 않는다.
+  test('scopes the chip-line release to the two chip containers', () => {
     const scoped = workerBlock.match(
       /:is\(\.worker-card, \.worker-mini, \.rtile\)\s*:is\(([^)]*)\)\s*:is\(\s*\.worker-usage,/
     );
 
-    expect(scoped?.[1]).toBe(
-      '.rtile__facts, .rtile__usage, .worker-chips, .worker-deps'
-    );
+    expect(scoped?.[1]).toBe('.worker-chips, .worker-deps');
   });
 
   // `margin-left: auto`는 그대로다 (UI-pw2g §3.2): 대기 행 `.worker-chips` 안의

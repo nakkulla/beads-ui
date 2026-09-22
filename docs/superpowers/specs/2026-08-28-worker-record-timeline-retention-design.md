@@ -105,6 +105,7 @@ Airflow(`dag/run/task/attempt=N.log`, 원격 아카이브), GitHub Actions(step 
 | `attempt_failed` | `failAttempt` | `세션 실패 — API Error: 529 Overloaded` |
 | `attempt_retry` | `queue-hold.js` lineage(사다리 상수는 `failure-class.js`) | `자동 재시도 2/3 · 다음 14:05` |
 | `queue_hold` / `queue_resume` | `queue-hold.js` `reduceQueueHold` | `환경 보류: gh 관측 실패` / `사용자 재개` |
+| `provider_hold_released` | `provider-health.js` 카탈로그에서 계정 부재 확인 후 보류 대상 해제 | `claude 보류 해제 · account_absent` |
 | `landing_step` | quickfix-landing | `push 포함 확인 · deploy 시작 · close` |
 | `merge_step` | merge-queue / completion-intent | `머지 큐 진입 · gate eligible · squash 머지 · cleanup` |
 | `operation_failed` | repo-operation-coordinator | `배포 실패 — deploy: exit 1 · npm ci ENOENT` |

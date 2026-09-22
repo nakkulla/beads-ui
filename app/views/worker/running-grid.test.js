@@ -943,7 +943,7 @@ describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', 
     expect(tile).not.toContain('rtile__legs');
     expect(tile).not.toContain('stepper');
     expect(tile).toMatchInlineSnapshot(
-      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span> <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions">  <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div>  </div>"`
+      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span>  <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions">  <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div>  </div>"`
     );
   });
 
@@ -964,7 +964,6 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
   const monitor = {
     repo: 'repo-a',
     root_dir: '/tmp/repo-a',
-    serial_lane_id: /** @type {const} */ ('s1'),
     workflow: {
       route: /** @type {const} */ ('spec_backed'),
       stages: {
@@ -991,25 +990,30 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
     }
   };
 
-  test('adds the repo badge and serial lane chip to the meta row', () => {
+  test('puts repo identity in the header and dispatch origin in coordinates', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(
-      runningTile(tileInput(), 5000, null, {
-        monitor: /** @type {any} */ (monitor)
-      }),
+      runningTile(
+        tileInput({ lane_origin: { kind: 'serial', index: 1 } }),
+        5000,
+        null,
+        {
+          monitor: /** @type {any} */ (monitor)
+        }
+      ),
       mount
     );
     const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
 
-    expect(tile.querySelector('.rtile__meta .rtile__repo')?.textContent).toBe(
+    expect(tile.querySelector('.rtile__hd .rtile__repo')?.textContent).toBe(
       'repo-a'
     );
-    expect(tile.querySelector('.rtile__meta .rtile__lane')?.textContent).toBe(
-      's1'
-    );
-    expect(tile.querySelector('.rtile__hd .rtile__repo')).toBeNull();
-    expect(tile.querySelector('.rtile__hd .rtile__lane')).toBeNull();
+    expect(
+      tile.querySelector('.worker-chips--coords .ctl-chip--lane')?.textContent
+    ).toBe('직렬 1');
+    expect(tile.querySelector('.rtile__meta .rtile__repo')).toBeNull();
+    expect(tile.querySelector('.rtile__hd .ctl-chip--lane')).toBeNull();
   });
 
   test('draws blocked, 겹침 and scope 없음 chips on the tile (UI-anna §5.3)', () => {
@@ -1320,15 +1324,13 @@ describe('session tile (UI-yrzu §6)', () => {
     expect(tile.querySelector('.rtile__meta')).toBeNull();
   });
 
-  // 좌표 칩(레포 · 레인)도 슬롯 5다 (UI-251y §3.1): 오버레이가 그것만 실어도
-  // 줄은 선다.
-  test('keeps the meta row for the monitor coordinate chip alone', () => {
+  test('keeps a repo-only session header without an empty coordinate row', () => {
     const tile = renderSession();
 
-    expect(tile.querySelector('.rtile__meta .rtile__repo')?.textContent).toBe(
+    expect(tile.querySelector('.rtile__hd .rtile__repo')?.textContent).toBe(
       'repo-a'
     );
-    expect(tile.querySelector('.rtile__hd .rtile__repo')).toBeNull();
+    expect(tile.querySelector('.worker-chips--coords')).toBeNull();
   });
 
   test('renders observed delegation and token facts for a session', () => {
@@ -1433,8 +1435,7 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
   );
   const MONITOR = {
     repo: 'repo-a',
-    root_dir: '/tmp/repo-a',
-    serial_lane_id: /** @type {const} */ ('s2')
+    root_dir: '/tmp/repo-a'
   };
 
   /**
@@ -1449,9 +1450,10 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
     return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
   }
 
-  test('orders the meta row repo, lane, route, exec then usage', () => {
+  test('splits lane and route from execution and usage', () => {
     const tile = renderTile(
       {
+        lane_origin: { kind: 'serial', index: 2 },
         workflow: /** @type {any} */ ({
           chips: { route: 'spec_backed', route_source: 'explicit' }
         }),
@@ -1473,17 +1475,18 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
     );
 
     expect(Array.from(meta.children, (child) => child.className)).toEqual([
-      'rtile__facts',
-      'rtile__usage'
+      'worker-chips worker-chips--coords',
+      'worker-chips worker-chips--run'
     ]);
     expect(
       Array.from(
-        meta.querySelectorAll('.rtile__facts > *, .rtile__usage > *'),
+        meta.querySelectorAll(
+          '.worker-chips--coords > *, .worker-chips--run > *'
+        ),
         (child) => child.className
       )
     ).toEqual([
-      'worker-card__repo rtile__repo',
-      'rtile__lane',
+      'ctl-chip ctl-chip--lane',
       'ctl-chip ctl-chip--route',
       'exec-chip exec-chip--orch',
       'exec-chip exec-chip--worker',
@@ -1546,6 +1549,7 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
   test('draws the dependency chips after every progress line', () => {
     const tile = renderTile(
       {
+        lane_origin: { kind: 'parallel' },
         rollup: /** @type {any} */ ({
           total: 2,
           count: 1,
@@ -1625,14 +1629,75 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
     );
     const head = /** @type {HTMLElement} */ (tile.querySelector('.rtile__hd'));
 
-    expect(head.querySelector('.rtile__repo')).toBeNull();
-    expect(head.querySelector('.rtile__lane')).toBeNull();
+    expect(
+      head.querySelector('.rtile__repo')?.nextElementSibling?.className
+    ).toBe('rtile__id');
+    expect(head.querySelector('.ctl-chip--lane')).toBeNull();
     expect(head.querySelector('.ctl-chip--route')).toBeNull();
     expect(head.querySelector('.worker-usage')).toBeNull();
   });
 });
 
 describe('worker running tile route chip (UI-yrzu §7.2)', () => {
+  test.each([
+    { paused: true },
+    { failed: true },
+    { parked: true },
+    { waiting: true },
+    { provider_hold: true }
+  ])('keeps origin visible on a retained tile %j', (patch) => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        tileInput({ ...patch, lane_origin: { kind: 'serial', index: 5 } }),
+        5000
+      ),
+      mount
+    );
+
+    expect(
+      mount.querySelector('.worker-chips--coords .ctl-chip--lane')?.textContent
+    ).toBe('직렬 5');
+  });
+
+  test.each([null, { repo: 'repo-a', root_dir: '/repo' }])(
+    'renders tile-owned parallel origin with overlay %j',
+    (monitor) => {
+      const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+      render(
+        runningTile(
+          tileInput({ lane_origin: { kind: 'parallel' } }),
+          5000,
+          null,
+          { monitor }
+        ),
+        mount
+      );
+
+      expect(
+        mount.querySelector('.worker-chips--coords .ctl-chip--lane')
+          ?.textContent
+      ).toBe('병렬');
+      expect(mount.querySelector('.worker-chips--run')).toBeNull();
+    }
+  );
+
+  test('omits lane origin on a direct session even with supplied origin', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(
+        tileInput({ kind: 'session', lane_origin: { kind: 'parallel' } }),
+        5000
+      ),
+      mount
+    );
+
+    expect(mount.querySelector('.ctl-chip--lane')).toBeNull();
+  });
+
   test('draws confirmed Worker creation provenance in the meta row', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 

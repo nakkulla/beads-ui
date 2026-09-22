@@ -10418,6 +10418,42 @@ describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
     );
   }
 
+  test('reads the PR wait lane origin from the durable entry while a resolution tile runs', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1, serial_lane_id: 's2' }],
+        pr_observations: {
+          'RD-1': {
+            pr: {
+              number: 304,
+              url: 'https://github.com/o/r/pull/304',
+              state: 'OPEN',
+              head_sha: 'a'.repeat(40)
+            },
+            verify: null,
+            error: null,
+            observed_at: 1,
+            gate: CONFLICTING
+          }
+        },
+        attempts: resolutionAttempt({ serial_lane_id: null })
+      })
+    );
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(
+      card(mount).querySelector('.worker-chips--coords .ctl-chip--lane')
+        ?.textContent
+    ).toBe('직렬 2');
+  });
+
   test('marks a running resolution tile 충돌 해소', () => {
     const mount = mountBoard({ attempts: resolutionAttempt() });
 
@@ -15756,6 +15792,66 @@ describe('레인 표면 정합 — 접기·제목·조작 (UI-5ksp)', () => {
     const meta = mount.querySelector('#worker-pane-running .worker-pane__meta');
 
     expect(meta?.textContent?.trim()).toBe('슬롯 2');
+  });
+
+  test('shows live-only slot usage and the origins of running and PR rows', () => {
+    const mount = mountDesktop({
+      slots: 1,
+      queue: [],
+      attempts: {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'RUN-1',
+          status: 'running',
+          started_at: 1,
+          serial_lane_id: 's2'
+        }
+      },
+      pr_wait: [{ bead_id: 'PR-1', serial_lane_id: null }]
+    });
+
+    expect(
+      mount
+        .querySelector('.worker-wait__slots')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).toBe('슬롯 1/1 ⚠');
+    expect(mount.querySelector('.worker-wait__slots--warn')).not.toBeNull();
+    expect(
+      mount.querySelector('.rtile .worker-chips--coords .ctl-chip--lane')
+        ?.textContent
+    ).toBe('직렬 2');
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="PR-1"] .ctl-chip--lane')
+        ?.textContent
+    ).toBe('병렬');
+    expect(
+      mount
+        .querySelector('#worker-pane-running .worker-pane__meta')
+        ?.textContent?.trim()
+    ).toBe('슬롯 1');
+  });
+
+  test('shows unused slots when only parallel rows remain', () => {
+    const mount = mountDesktop({
+      queue: [{ bead_id: 'Q-1' }],
+      attempts: {},
+      slots: 2
+    });
+
+    expect(
+      mount
+        .querySelector('.worker-wait__slots')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).toBe('슬롯 0/2');
+    expect(mount.querySelector('.worker-wait__slots--warn')).toBeNull();
+  });
+
+  test('omits slot usage without parallel rows or live attempts', () => {
+    const mount = mountDesktop({ queue: [], attempts: {} });
+
+    expect(mount.querySelector('.worker-wait__slots')).toBeNull();
   });
 
   test('leaves the lane expanded when its header control changes', () => {

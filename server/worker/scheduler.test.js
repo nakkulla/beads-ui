@@ -3685,6 +3685,50 @@ describe('scheduler provider hold and recovery', () => {
     expect(child?.auto_resume_kind).toBe('provider_outage');
   });
 
+  test('resolves the current account after releasing a deleted account hold', async () => {
+    const env = setup({
+      config: { B1: { claude_account: 'current@example.com' } },
+      slots: 1,
+      ...accountDeps()
+    });
+    seedProviderAttempt(env.store, 'held-1', 'B1', {
+      effort: 'high',
+      speed: 'default',
+      session_id: 'session-1',
+      base_oid: 'base-B1',
+      target_base: 'main',
+      claude_account: 'deleted@example.com',
+      exec_values: resumableExecValues()
+    });
+    const held = registerProviderHold(
+      env.store,
+      'held-1',
+      'outage',
+      'deleted@example.com'
+    );
+    env.store.releaseProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'deleted@example.com',
+      reason: 'account_absent'
+    });
+
+    await env.scheduler.consumeProviderAutoResume(WS);
+
+    const child = Object.values(env.store.snapshot(WS).attempts).find(
+      (attempt) => attempt.resumed_from === 'held-1'
+    );
+    expect(child).toMatchObject({
+      claude_account: 'current@example.com',
+      model: 'opus',
+      effort: 'high',
+      auto_resume_kind: 'provider_outage'
+    });
+    expect(env.store.snapshot(WS).provider_hold).toEqual({});
+  });
+
   test('records a changed route after consuming provider recovery pending', async () => {
     const env = setup({ config: { B1: { route: 'quick_fix' } }, slots: 1 });
     seedProviderAttempt(env.store, 'held-route', 'B1', {
@@ -15242,6 +15286,91 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('done');
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
   });
+
+  /**
+   * Recover a quick_fix session that ended on an unresolved blocks edge.
+   *
+   * @param {boolean} ready
+   * @param {boolean} with_log
+   */
+  function prerequisiteReconcileEnv(ready, with_log) {
+    const sessionLog = createSessionLog();
+    const log_path = beadSessionLogPath(WS, 'UI-1', 'att-1');
+    if (with_log) {
+      fs.mkdirSync(path.dirname(log_path), { recursive: true });
+      fs.writeFileSync(
+        log_path,
+        [
+          {
+            type: 'item.completed',
+            item: { type: 'agent_message', text: '대기 · blocks:S9' }
+          },
+          { type: 'turn.completed' }
+        ]
+          .map((line) => JSON.stringify(line))
+          .join('\n') + '\n'
+      );
+    }
+    const settle = vi.fn(async () => ({
+      ok: false,
+      reason: 'delivery_unproven:push_log_absent',
+      step: null
+    }));
+    const env = reconcileEnv(
+      { alive: false, started_at: null },
+      {
+        'UI-1': {
+          route: 'quick_fix',
+          status: 'open',
+          ready,
+          dependencies: [{ dependency_type: 'blocks', id: 'S9' }]
+        },
+        S9: { status: 'open' }
+      },
+      { sessionLog, quickfixLanding: { settle } }
+    );
+    env.bd.statuses['UI-1'] = 'in_progress';
+    seedDetachedAttempt(env.store, {
+      runner: 'codex',
+      log_path,
+      quickfix_lane: true,
+      target_base: 'main'
+    });
+    return { env, settle };
+  }
+
+  test.each([true, false])(
+    'recovers a quick_fix prerequisite wait before landing (persisted log: %s)',
+    async (with_log) => {
+      const { env, settle } = prerequisiteReconcileEnv(false, with_log);
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.store.snapshot(WS).attempts['att-1']).toMatchObject({
+        status: 'waiting',
+        cause: 'prerequisite_unmet',
+        cause_detail: {
+          blockers: [{ id: 'S9', rig: null, status: 'open' }]
+        }
+      });
+      expect(settle).not.toHaveBeenCalled();
+      expect(env.bd.statuses['UI-1']).toBe('open');
+    }
+  );
+
+  test.each([true, false])(
+    'keeps a ready recovered quick_fix on landing failure (persisted log: %s)',
+    async (with_log) => {
+      const { env, settle } = prerequisiteReconcileEnv(true, with_log);
+
+      await env.scheduler.reconcile(WS);
+
+      expect(env.store.snapshot(WS).attempts['att-1'].cause).toBe(
+        'quickfix_landing_failed:delivery_unproven:push_log_absent'
+      );
+      expect(settle).toHaveBeenCalledOnce();
+    }
+  );
 
   test('preserves recovered quick_fix failure facts without settling delivery', async () => {
     const sessionLog = createSessionLog();

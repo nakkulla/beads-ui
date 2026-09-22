@@ -313,6 +313,7 @@ describe('TIMELINE_KINDS', () => {
       'queue_resume',
       'provider_hold',
       'provider_recovered',
+      'provider_hold_released',
       'account_preempt',
       'account_live_preempt',
       'landing_step',
