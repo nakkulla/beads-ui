@@ -368,6 +368,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 Worker가 이 attempt를 준비하며 이미 확인한 값이다. 다시 탐색하지 말고 그대로 쓰라. 빠진 줄은 Worker가 확인하지 못한 것이니 필요하면 세션이 직접 확인한다.
 Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagent wave) 없이 그 경로를 직접 읽고 시작한다.
+단계별 읽기 명령이 있는 단계는 그 명령 한 번으로 읽는다. \`SKILL.md\`와 계약 문서를 다시 \`cat\`하거나 헤딩을 찾아 범위를 나눠 읽지 않는다. 카드에 없는 질문이 생겼을 때만 문서를 연다.
 
 - attempt=att-1 bead=UI-1 route=spec_backed workflow_mode=fast_track (source=attempt 기록)
 - base=origin/main@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (source=dispatch 시 base 재해소)
@@ -388,6 +389,11 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 스크립트 호출:
 
 - \`python3 /skills/impl-selector.py --controller-runtime codex\`
+
+단계별 읽기 (그 단계에 들어갈 때 한 번):
+
+- 인도: \`sed -n '/^## Final PR delivery$/,/^## Merge tail$/p' /skills/references/finishing.md\`
+- 무인 대기: \`cat /skills/references/unattended-waits.md\` — 대기 절차.
 
 ### Worker pitfalls (대상 저장소 AGENTS.md)
 
@@ -469,6 +475,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 Worker가 이 attempt를 준비하며 이미 확인한 값이다. 다시 탐색하지 말고 그대로 쓰라. 빠진 줄은 Worker가 확인하지 못한 것이니 필요하면 세션이 직접 확인한다.
 Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagent wave) 없이 그 경로를 직접 읽고 시작한다.
+단계별 읽기 명령이 있는 단계는 그 명령 한 번으로 읽는다. \`SKILL.md\`와 계약 문서를 다시 \`cat\`하거나 헤딩을 찾아 범위를 나눠 읽지 않는다. 카드에 없는 질문이 생겼을 때만 문서를 연다.
 
 - attempt=att-1 bead=UI-1 route=spec_backed workflow_mode=fast_track (source=attempt 기록)
 - base=origin/main@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (source=dispatch 시 base 재해소)
@@ -490,6 +497,11 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 
 - \`python3 /skills/impl-selector.py --controller-runtime claude\` — 실행 형태 정본.
 - \`python3 /skills/check-completion-report.py <경로>\`
+
+단계별 읽기 (그 단계에 들어갈 때 한 번):
+
+- 인도: \`sed -n '/^## Final PR delivery$/,/^## Merge tail$/p' /skills/references/finishing.md\`
+- 무인 대기: \`cat /skills/references/unattended-waits.md\` — 대기 절차.
 
 ### Worker pitfalls (대상 저장소 AGENTS.md)
 
@@ -545,6 +557,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 Worker가 이 attempt를 준비하며 이미 확인한 값이다. 다시 탐색하지 말고 그대로 쓰라. 빠진 줄은 Worker가 확인하지 못한 것이니 필요하면 세션이 직접 확인한다.
 Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagent wave) 없이 그 경로를 직접 읽고 시작한다.
+단계별 읽기 명령이 있는 단계는 그 명령 한 번으로 읽는다. \`SKILL.md\`와 계약 문서를 다시 \`cat\`하거나 헤딩을 찾아 범위를 나눠 읽지 않는다. 카드에 없는 질문이 생겼을 때만 문서를 연다.
 
 - attempt=att-1 bead=UI-1 route=spec_backed workflow_mode=fast_track (source=attempt 기록)
 - base=origin/main@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (source=dispatch 시 base 재해소)
@@ -566,6 +579,11 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 
 - \`python3 /skills/impl-selector.py --controller-runtime claude\` — 실행 형태 정본.
 - \`python3 /skills/check-completion-report.py <경로>\`
+
+단계별 읽기 (그 단계에 들어갈 때 한 번):
+
+- 인도: \`sed -n '/^## Final PR delivery$/,/^## Merge tail$/p' /skills/references/finishing.md\`
+- 무인 대기: \`cat /skills/references/unattended-waits.md\` — 대기 절차.
 
 ### Worker pitfalls (대상 저장소 AGENTS.md)
 
@@ -645,6 +663,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 
 Worker가 이 attempt를 준비하며 이미 확인한 값이다. 다시 탐색하지 말고 그대로 쓰라. 빠진 줄은 Worker가 확인하지 못한 것이니 필요하면 세션이 직접 확인한다.
 Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagent wave) 없이 그 경로를 직접 읽고 시작한다.
+단계별 읽기 명령이 있는 단계는 그 명령 한 번으로 읽는다. \`SKILL.md\`와 계약 문서를 다시 \`cat\`하거나 헤딩을 찾아 범위를 나눠 읽지 않는다. 카드에 없는 질문이 생겼을 때만 문서를 연다.
 
 - attempt=att-1 bead=UI-1 route=quick_fix workflow_mode=fast_track (source=attempt 기록)
 - base=origin/main@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa (source=dispatch 시 base 재해소)
@@ -666,6 +685,11 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 
 - \`python3 /skills/impl-selector.py --controller-runtime claude\` — 실행 형태 정본.
 - \`python3 /skills/check-completion-report.py <경로>\`
+
+단계별 읽기 (그 단계에 들어갈 때 한 번):
+
+- 인도: \`sed -n '/^## Final PR delivery$/,/^## Merge tail$/p' /skills/references/finishing.md\`
+- 무인 대기: \`cat /skills/references/unattended-waits.md\` — 대기 절차.
 
 ### Worker pitfalls (대상 저장소 AGENTS.md)
 

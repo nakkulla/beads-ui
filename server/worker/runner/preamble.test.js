@@ -63,6 +63,19 @@ function facts(over = {}) {
         note: null
       }
     ],
+    stage_reads: [
+      {
+        stage: '인도',
+        command:
+          "sed -n '/^## Final PR delivery$/,/^## Merge tail$/p' /skills/references/finishing.md",
+        note: null
+      },
+      {
+        stage: '무인 대기',
+        command: 'cat /skills/references/unattended-waits.md',
+        note: '대기 절차.'
+      }
+    ],
     pitfalls: '- zsh: 글롭은 따옴표\n- `set -o pipefail`',
     ...over
   };
@@ -771,6 +784,36 @@ describe('runner/preamble result line grammar (spec D1)', () => {
 });
 
 describe('runner/preamble attempt facts card (spec D1)', () => {
+  test.each(/** @type {const} */ (['claude', 'codex']))(
+    'renders stage reads and guidance for %s',
+    (runtime) => {
+      const card = facts();
+
+      const { system_prompt } = applyPreamble('작업', {
+        runtime,
+        attempt_facts: card
+      });
+
+      expect(system_prompt).toContain(
+        '단계별 읽기 명령이 있는 단계는 그 명령 한 번으로 읽는다. `SKILL.md`와 계약 문서를 다시 `cat`하거나 헤딩을 찾아 범위를 나눠 읽지 않는다. 카드에 없는 질문이 생겼을 때만 문서를 연다.'
+      );
+      expect(system_prompt).toContain(
+        "단계별 읽기 (그 단계에 들어갈 때 한 번):\n\n- 인도: `sed -n '/^## Final PR delivery$/,/^## Merge tail$/p' /skills/references/finishing.md`\n- 무인 대기: `cat /skills/references/unattended-waits.md` — 대기 절차."
+      );
+      expect(system_prompt.indexOf('단계별 읽기 (')).toBeGreaterThan(
+        system_prompt.indexOf('스크립트 호출:')
+      );
+    }
+  );
+
+  test('omits stage guidance together with empty readings', () => {
+    const card = facts({ stage_reads: [] });
+
+    const { system_prompt } = applyPreamble('작업', { attempt_facts: card });
+
+    expect(system_prompt).not.toContain('단계별 읽기');
+  });
+
   test('emits no facts block when the caller hands over no facts', () => {
     const out = applyPreamble('작업하라', { fast_track: true }).system_prompt;
 
