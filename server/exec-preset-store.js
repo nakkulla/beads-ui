@@ -1,12 +1,14 @@
 /**
- * Server-global full-profile execution preset persistence.
+ * Server-global execution preset persistence.
  *
- * A preset sparsely carries the 12 session-default keys plus the workspace
- * queue's three orchestration keys.
+ * A preset belongs to one profile (`applies_to`) and sparsely carries that
+ * profile's canonical keys: 17 for `general`, 8 for `quick_fix`. No stored
+ * preset carries a `quick_fix_` prefixed key any more (design §3).
  *
  * @typedef {Object} ExecPreset
  * @property {string} id
  * @property {string} name
+ * @property {'general'|'quick_fix'} applies_to
  * @property {Record<string, string>} settings
  * @property {{ kind: 'user' }|{ kind: 'workspace-exec-defaults', workspace_key: string, source_digest: string }|{ kind: 'legacy-preset-copy', source_preset_id: string }} origin
  */
@@ -15,15 +17,38 @@
  * @property {number} revision
  * @property {ExecPreset[]} presets
  * @property {{ version: number }} [reseed_migration]
+ * @property {{ version: number }} [preset_profile_migration]
  */
 import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import {
+  QUICK_FIX_LANE_MAP,
   implPresetEnums,
+  normalizeAppliesTo,
   validateImplPresetSettings
 } from './worker/exec-enums.js';
 import { execPresetsFilePath } from './worker/state-paths.js';
+
+/**
+ * Name of every quick_fix preset the profile migration creates. Fixed by
+ * design §8.3: a name derived from the values would be arbitrary, and the
+ * existing collision rule appends ` 2` when a second combination exists.
+ */
+const MIGRATED_QUICK_FIX_NAME = 'quick fix 기본';
+
+/**
+ * The quick_fix storage key of each canonical key, reversed once for the
+ * migration's lift of legacy `quick_fix_*` settings.
+ *
+ * @type {Record<string, string>}
+ */
+const CANONICAL_BY_QUICK_FIX_KEY = Object.fromEntries(
+  Object.entries(QUICK_FIX_LANE_MAP).map(([canonical_key, storage_key]) => [
+    storage_key,
+    canonical_key
+  ])
+);
 
 /**
  * @template T
@@ -72,12 +97,21 @@ function normalizeState(raw) {
       version: Number(raw.reseed_migration.version)
     };
   }
+  if (
+    isRecord(raw.preset_profile_migration) &&
+    Number.isInteger(raw.preset_profile_migration.version) &&
+    Number(raw.preset_profile_migration.version) > 0
+  ) {
+    state.preset_profile_migration = {
+      version: Number(raw.preset_profile_migration.version)
+    };
+  }
   if (!Array.isArray(raw.presets)) {
     return state;
   }
   // Load keeps every string setting except the retired preset-only
   // `workflow_mode`, including one outside the current
-  // vocabulary: the write path is what enforces the 25 keys, and the
+  // vocabulary: the write path is what enforces the profile's key set, and the
   // coordinator needs an unknown key to survive to classify its preset as
   // legacy and hide it. Stripping here would delete the only evidence and
   // re-expose the preset with truncated settings.
@@ -122,19 +156,28 @@ function normalizeState(raw) {
               source_digest: entry.origin.source_digest
             }
           : { kind: /** @type {'user'} */ ('user') };
-    state.presets.push({ id, name, settings, origin });
+    state.presets.push({
+      id,
+      name,
+      applies_to: normalizeAppliesTo(entry.applies_to),
+      settings,
+      origin
+    });
   }
   return state;
 }
 
 /**
- * @param {{ filePath?: string, fs?: typeof import('node:fs'), randomUUID?: () => string, settingEnums?: () => Record<string, ReadonlyArray<string>> }} [options]
+ * @param {{ filePath?: string, fs?: typeof import('node:fs'), randomUUID?: () => string, settingEnums?: (applies_to: 'general'|'quick_fix') => Record<string, ReadonlyArray<string>> }} [options]
  */
 export function createExecPresetStore(options = {}) {
   const file_path = options.filePath || execPresetsFilePath();
   const fs = options.fs || nodeFs;
   const randomUUID = options.randomUUID || (() => crypto.randomUUID());
-  const settingEnums = options.settingEnums || (() => implPresetEnums());
+  const settingEnums =
+    options.settingEnums ||
+    ((/** @type {'general'|'quick_fix'} */ applies_to) =>
+      implPresetEnums(applies_to));
   /** @type {ExecPresetState|null} */
   let cache = null;
   // Observation only: never persist the cached read failure with preset data.
@@ -216,16 +259,22 @@ export function createExecPresetStore(options = {}) {
   }
 
   /**
+   * Judge one write against the profile it is written for. An absent or
+   * unknown `applies_to` reads as `general`, the same rule the load path uses,
+   * so the two layers cannot disagree about which key set applies.
+   *
    * @param {unknown} name
    * @param {unknown} settings
-   * @returns {{ name: string, settings: Record<string, string> }|null}
+   * @param {unknown} applies_to
+   * @returns {{ name: string, applies_to: 'general'|'quick_fix', settings: Record<string, string> }|null}
    */
-  function normalizeMutation(name, settings) {
+  function normalizeMutation(name, settings, applies_to) {
     const trimmed_name = typeof name === 'string' ? name.trim() : '';
     if (trimmed_name.length === 0 || !isRecord(settings)) {
       return null;
     }
-    const enums = settingEnums();
+    const profile = normalizeAppliesTo(applies_to);
+    const enums = settingEnums(profile);
     /** @type {Record<string, string>} */
     const normalized_settings = {};
     for (const [key, value] of Object.entries(settings)) {
@@ -239,10 +288,18 @@ export function createExecPresetStore(options = {}) {
       }
       normalized_settings[key] = value;
     }
-    if (!validateImplPresetSettings(normalized_settings).ok) {
+    if (
+      !validateImplPresetSettings(normalized_settings, {
+        applies_to: profile
+      }).ok
+    ) {
       return null;
     }
-    return { name: trimmed_name, settings: normalized_settings };
+    return {
+      name: trimmed_name,
+      applies_to: profile,
+      settings: normalized_settings
+    };
   }
 
   /**
@@ -280,10 +337,18 @@ export function createExecPresetStore(options = {}) {
     },
 
     /**
-     * @param {{ expected_revision: number, name: string, settings: Record<string, string> }} input
+     * Create one preset in the requested profile. Name collisions are judged
+     * ACROSS profiles: the file is one list, and two presets sharing a name
+     * would make the compare tab's name display ambiguous (design §3.1).
+     *
+     * @param {{ expected_revision: number, name: string, settings: Record<string, string>, applies_to?: 'general'|'quick_fix' }} input
      */
     create(input) {
-      const normalized = normalizeMutation(input?.name, input?.settings);
+      const normalized = normalizeMutation(
+        input?.name,
+        input?.settings,
+        input?.applies_to
+      );
       return applyMutation(input?.expected_revision, (next) => {
         if (!normalized) {
           return false;
@@ -299,6 +364,7 @@ export function createExecPresetStore(options = {}) {
         next.presets.push({
           id: randomUUID(),
           name: normalized.name,
+          applies_to: normalized.applies_to,
           settings: normalized.settings,
           origin: { kind: 'user' }
         });
@@ -307,17 +373,29 @@ export function createExecPresetStore(options = {}) {
     },
 
     /**
+     * Rewrite one preset's name and settings within ITS OWN profile. Changing
+     * a preset's profile is not part of this design, so the stored value wins
+     * over anything a caller might pass.
+     *
      * @param {{ expected_revision: number, id: string, name: string, settings: Record<string, string> }} input
      */
     update(input) {
       const id = typeof input?.id === 'string' ? input.id : '';
-      const normalized = normalizeMutation(input?.name, input?.settings);
       return applyMutation(input?.expected_revision, (next) => {
-        if (id.length === 0 || !normalized) {
+        if (id.length === 0) {
           return false;
         }
         const index = next.presets.findIndex((preset) => preset.id === id);
         if (index < 0) {
+          return false;
+        }
+        const applies_to = normalizeAppliesTo(next.presets[index].applies_to);
+        const normalized = normalizeMutation(
+          input?.name,
+          input?.settings,
+          applies_to
+        );
+        if (!normalized) {
           return false;
         }
         const folded_name = normalized.name.toLowerCase();
@@ -333,6 +411,7 @@ export function createExecPresetStore(options = {}) {
         next.presets[index] = {
           id,
           name: normalized.name,
+          applies_to,
           settings: normalized.settings,
           origin: next.presets[index].origin
         };
@@ -361,10 +440,14 @@ export function createExecPresetStore(options = {}) {
      * migration that stopped before its completion marker never duplicates the
      * copy, and the copy COEXISTS with its source until cleanup.
      *
-     * @param {{ name: string, settings: Record<string, string>, source_preset_id: string }} input
+     * @param {{ name: string, settings: Record<string, string>, source_preset_id: string, applies_to?: 'general'|'quick_fix' }} input
      */
     createOrReuseImplCopy(input) {
-      const normalized = normalizeMutation(input?.name, input?.settings);
+      const normalized = normalizeMutation(
+        input?.name,
+        input?.settings,
+        input?.applies_to
+      );
       const source_preset_id =
         typeof input?.source_preset_id === 'string'
           ? input.source_preset_id
@@ -401,6 +484,7 @@ export function createExecPresetStore(options = {}) {
       const preset = {
         id: randomUUID(),
         name,
+        applies_to: normalized.applies_to,
         settings: normalized.settings,
         origin: {
           kind: /** @type {'legacy-preset-copy'} */ ('legacy-preset-copy'),
@@ -460,7 +544,7 @@ export function createExecPresetStore(options = {}) {
      * Atomically replace every preset and record the server-global reseed
      * marker in the same state-file rename.
      *
-     * @param {{ presets: Array<{ name: string, settings: Record<string, string> }>, marker: { version: number } }} input
+     * @param {{ presets: Array<{ name: string, settings: Record<string, string>, applies_to?: 'general'|'quick_fix' }>, marker: { version: number } }} input
      */
     replaceAllForReseed(input) {
       const current = ensureLoaded();
@@ -484,7 +568,11 @@ export function createExecPresetStore(options = {}) {
       const presets = [];
       const names = new Set();
       for (const seed of input.presets) {
-        const normalized = normalizeMutation(seed?.name, seed?.settings);
+        const normalized = normalizeMutation(
+          seed?.name,
+          seed?.settings,
+          seed?.applies_to
+        );
         if (!normalized) {
           return rejected(current, false, 'invalid');
         }
@@ -496,6 +584,7 @@ export function createExecPresetStore(options = {}) {
         presets.push({
           id: randomUUID(),
           name: normalized.name,
+          applies_to: normalized.applies_to,
           settings: normalized.settings,
           origin: { kind: 'user' }
         });
@@ -516,6 +605,143 @@ export function createExecPresetStore(options = {}) {
       }
       if (JSON.stringify(readback) !== JSON.stringify(next)) {
         throw new Error('Exec preset reseed failed readback verification');
+      }
+      commitCache(next);
+      return {
+        applied: true,
+        conflict: false,
+        revision: next.revision,
+        presets: clone(next.presets)
+      };
+    },
+
+    /**
+     * Split every stored preset into the two profiles in ONE state-file
+     * rename, and record the completion marker in that same write (design §8).
+     *
+     * Each existing entry keeps its id, name, origin, list position, and every
+     * non-quick_fix setting, and becomes a `general` preset. The lifted
+     * `quick_fix_*` values return to their canonical names and are grouped by
+     * VALUE: one `quick_fix` preset per distinct non-empty combination, named
+     * after the design's fixed name rather than after any model token.
+     *
+     * Values are carried over WITHOUT revalidation, exactly as the load path
+     * preserves them: this is a format transform of settings a user already
+     * stored, and a token the catalog has since dropped must keep showing as
+     * incompatible instead of failing every boot.
+     *
+     * The marker makes the whole thing idempotent, so an interrupted run
+     * simply repeats from the step whose marker is missing.
+     *
+     * @param {{ marker: { version: number } }} input
+     */
+    migratePresetProfiles(input) {
+      const current = ensureLoaded();
+      if (current.preset_profile_migration) {
+        return {
+          applied: false,
+          conflict: false,
+          revision: current.revision,
+          presets: clone(current.presets)
+        };
+      }
+      if (
+        !isRecord(input?.marker) ||
+        !Number.isInteger(input.marker.version) ||
+        input.marker.version <= 0
+      ) {
+        return rejected(current, false, 'invalid');
+      }
+      /** @type {ExecPreset[]} */
+      const presets = [];
+      /** @type {Map<string, { settings: Record<string, string>, source_preset_id: string }>} */
+      const quick_fix_groups = new Map();
+      for (const preset of current.presets) {
+        // A preset that already declares the quick_fix profile carries no
+        // prefixed key and is not a legacy entry: re-running the split after a
+        // lost marker must leave it alone rather than demote it to general.
+        if (normalizeAppliesTo(preset.applies_to) === 'quick_fix') {
+          presets.push(clone(preset));
+          continue;
+        }
+        /** @type {Record<string, string>} */
+        const general_settings = {};
+        for (const [key, value] of Object.entries(preset.settings)) {
+          if (!CANONICAL_BY_QUICK_FIX_KEY[key]) {
+            general_settings[key] = value;
+          }
+        }
+        presets.push({
+          id: preset.id,
+          name: preset.name,
+          applies_to: 'general',
+          settings: general_settings,
+          origin: clone(preset.origin)
+        });
+        // Build the lifted object in one fixed key order so two presets that
+        // stored the same values in a different order group together.
+        /** @type {Record<string, string>} */
+        const quick_fix_settings = {};
+        for (const [canonical_key, storage_key] of Object.entries(
+          QUICK_FIX_LANE_MAP
+        )) {
+          const value = preset.settings[storage_key];
+          if (typeof value === 'string') {
+            quick_fix_settings[canonical_key] = value;
+          }
+        }
+        if (Object.keys(quick_fix_settings).length === 0) {
+          continue;
+        }
+        const group_key = JSON.stringify(quick_fix_settings);
+        if (!quick_fix_groups.has(group_key)) {
+          quick_fix_groups.set(group_key, {
+            settings: quick_fix_settings,
+            source_preset_id: preset.id
+          });
+        }
+      }
+      for (const group of quick_fix_groups.values()) {
+        let name = MIGRATED_QUICK_FIX_NAME;
+        let ordinal = 2;
+        while (
+          presets.some(
+            (preset) => preset.name.toLowerCase() === name.toLowerCase()
+          )
+        ) {
+          name = `${MIGRATED_QUICK_FIX_NAME} ${ordinal++}`;
+        }
+        presets.push({
+          id: randomUUID(),
+          name,
+          applies_to: 'quick_fix',
+          settings: group.settings,
+          origin: {
+            kind: 'legacy-preset-copy',
+            source_preset_id: group.source_preset_id
+          }
+        });
+      }
+      const next = {
+        ...current,
+        revision: current.revision + 1,
+        presets,
+        preset_profile_migration: { version: input.marker.version }
+      };
+      persist(next);
+      let readback;
+      try {
+        readback = JSON.parse(fs.readFileSync(file_path, 'utf8'));
+      } catch (err) {
+        throw new Error(
+          'Exec preset profile split failed readback verification',
+          { cause: err }
+        );
+      }
+      if (JSON.stringify(readback) !== JSON.stringify(next)) {
+        throw new Error(
+          'Exec preset profile split failed readback verification'
+        );
       }
       commitCache(next);
       return {

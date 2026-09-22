@@ -56,7 +56,7 @@ import {
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
 import { parseDescriptionScope } from './artifact-scope.js';
-import { ACCOUNT_KEYS, IMPL_PRESET_KEYS } from './exec-enums.js';
+import { ACCOUNT_KEYS, BEAD_PIN_KEYS } from './exec-enums.js';
 import { WORKFLOW_ROUTES } from './routes.js';
 import { createSessionObservationStore } from './session-observation.js';
 import {
@@ -230,16 +230,19 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  */
 
 /**
- * The metadata keys an execution chip may be resolved from: the full-profile
- * preset axes (session keys AND the orchestration keys) plus the two account
- * pins. Anything else in `metadata` stays off the wire. The orchestration keys
- * ride along because the monitor lane resolves its execution chips from these
- * pins: without `orchestration_model` here a pinned card would read as unpinned
- * on that surface.
+ * The metadata keys an execution chip may be resolved from: the 17 per-Bead
+ * execution pins (session keys AND the orchestration keys) plus the two
+ * account pins. Anything else in `metadata` stays off the wire. The
+ * orchestration keys ride along because the monitor lane resolves its
+ * execution chips from these pins: without `orchestration_model` here a pinned
+ * card would read as unpinned on that surface.
+ *
+ * The quick_fix storage keys are deliberately not here: they live in workspace
+ * kv and the queue, never in a Bead's metadata (design §5).
  *
  * @type {ReadonlyArray<string>}
  */
-const EXEC_PIN_KEYS = [...IMPL_PRESET_KEYS, ...ACCOUNT_KEYS];
+const EXEC_PIN_KEYS = [...BEAD_PIN_KEYS, ...ACCOUNT_KEYS];
 
 /**
  * Project the execution pins of one row's metadata (UI-eey2 §9.1). Non-string
