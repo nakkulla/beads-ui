@@ -377,7 +377,7 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 - workflow_python=/dotfiles/.venv/bin/python (source=경로 존재 확인)
 - node_modules=ok (source=dispatch 시 npm ci)
 - 선택 입력: impl_runtime=claude (source=bead), impl_model=opus (source=workspace_kv), impl_effort=없음 (source=없음), impl_speed=없음 (source=없음), impl_dispatch=없음 (source=없음)
-- 리뷰어 프리셋: codex → gpt-5.6-sol/xhigh (source=핀 사본 review.reviewers, digest=abc123)
+- 리뷰어 프리셋: codex → gpt-5.6-sol/xhigh (source=핀 사본 review.reviewers·implementation.model_catalog, digest=abc123)
 
 이미 되어 있음:
 
@@ -484,7 +484,7 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 - workflow_python=/dotfiles/.venv/bin/python (source=경로 존재 확인)
 - node_modules=ok (source=dispatch 시 npm ci)
 - 선택 입력: impl_runtime=claude (source=bead), impl_model=opus (source=workspace_kv), impl_effort=없음 (source=없음), impl_speed=없음 (source=없음), impl_dispatch=없음 (source=없음)
-- 리뷰어 프리셋: codex → gpt-5.6-sol/xhigh (source=핀 사본 review.reviewers, digest=abc123)
+- 리뷰어 프리셋: codex → gpt-5.6-sol/xhigh (source=핀 사본 review.reviewers·implementation.model_catalog, digest=abc123)
 
 이미 되어 있음:
 
@@ -566,7 +566,7 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 - workflow_python=/dotfiles/.venv/bin/python (source=경로 존재 확인)
 - node_modules=ok (source=dispatch 시 npm ci)
 - 선택 입력: impl_runtime=claude (source=bead), impl_model=opus (source=workspace_kv), impl_effort=없음 (source=없음), impl_speed=없음 (source=없음), impl_dispatch=없음 (source=없음)
-- 리뷰어 프리셋: codex → gpt-5.6-sol/xhigh (source=핀 사본 review.reviewers, digest=abc123)
+- 리뷰어 프리셋: codex → gpt-5.6-sol/xhigh (source=핀 사본 review.reviewers·implementation.model_catalog, digest=abc123)
 
 이미 되어 있음:
 
@@ -672,7 +672,7 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 - workflow_python=/dotfiles/.venv/bin/python (source=경로 존재 확인)
 - node_modules=ok (source=dispatch 시 npm ci)
 - 선택 입력: impl_runtime=claude (source=bead), impl_model=opus (source=workspace_kv), impl_effort=없음 (source=없음), impl_speed=없음 (source=없음), impl_dispatch=없음 (source=없음)
-- 리뷰어 프리셋: codex → gpt-5.6-sol/xhigh (source=핀 사본 review.reviewers, digest=abc123)
+- 리뷰어 프리셋: codex → gpt-5.6-sol/xhigh (source=핀 사본 review.reviewers·implementation.model_catalog, digest=abc123)
 
 이미 되어 있음:
 

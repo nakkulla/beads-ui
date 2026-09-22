@@ -157,6 +157,27 @@ describe('worker/attempt-facts selector inputs (spec D1)', () => {
   });
 });
 
+/**
+ * A pinned projection whose codex reviewer names a catalog alias.
+ *
+ * @param {string} alias
+ */
+function aliasDefaults(alias) {
+  return {
+    supported: true,
+    digest: null,
+    session: {
+      review: {
+        default: 'codex',
+        reviewers: { codex: { model: alias, effort: 'xhigh' } }
+      },
+      implementation: {
+        model_catalog: { claude: ['opus'], codex: { sol: 'gpt-6-sol' } }
+      }
+    }
+  };
+}
+
 describe('worker/attempt-facts reviewer preset (spec D1)', () => {
   test('falls back to the pinned default reviewer token', () => {
     expect(resolveReviewerPreset({}, PINNED_DEFAULTS)).toEqual({
@@ -181,6 +202,22 @@ describe('worker/attempt-facts reviewer preset (spec D1)', () => {
 
   test('returns null when the pinned copy failed to load', () => {
     expect(resolveReviewerPreset({}, { supported: false })).toBeNull();
+  });
+
+  test('resolves an aliased reviewer model through the pinned catalog', () => {
+    const defaults = aliasDefaults('sol');
+
+    const preset = resolveReviewerPreset({}, defaults);
+
+    expect(preset?.model).toBe('gpt-6-sol');
+  });
+
+  test('keeps an alias the pinned catalog does not name', () => {
+    const defaults = aliasDefaults('nova');
+
+    const preset = resolveReviewerPreset({}, defaults);
+
+    expect(preset?.model).toBe('nova');
   });
 });
 

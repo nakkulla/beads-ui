@@ -122,6 +122,23 @@ describe('resolveExecutionSettings', () => {
     });
   });
 
+  test('resolves the codex reviewer alias through the pinned model catalog', () => {
+    const rows = resolveExecutionSettings({
+      pin: { spec_review_model: 'codex' },
+      execution_defaults: {
+        supported: true,
+        schema_version: EXECUTION_DEFAULTS.schema_version,
+        session: EXECUTION_DEFAULTS
+      }
+    });
+
+    expect(rows.spec_review_model).toMatchObject({
+      value: 'codex',
+      display: '6-sol',
+      full_value: 'gpt-6-sol'
+    });
+  });
+
   test('uses workflow mode to choose the plan reviewer preset', () => {
     const rows = resolveExecutionSettings({
       pin: { workflow_mode: 'fast_track' },

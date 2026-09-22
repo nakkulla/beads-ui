@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { resolveCatalog } from './runner-catalog.js';
-import { priceUsage } from './usage-pricing.js';
+import { modelPrice, priceUsage } from './usage-pricing.js';
 
 /**
  * A catalog whose `sol` model declares every unit price.
@@ -252,7 +252,7 @@ describe('worker/usage-pricing priceUsage', () => {
         input_tokens: 1_000_000,
         cache_read_input_tokens: 500_000
       },
-      'gpt-5.6-sol',
+      'gpt-6-sol',
       catalog
     );
 
@@ -278,5 +278,38 @@ describe('worker/usage-pricing priceUsage', () => {
       usd: null,
       basis: 'none'
     });
+  });
+});
+
+describe('worker/usage-pricing modelPrice across sol generations', () => {
+  /** @returns {ReturnType<typeof resolveCatalog>} */
+  function twoSolCatalog() {
+    return resolveCatalog({
+      overrides: {
+        codex: {
+          models: {
+            sol: { price: { input: 5, output: 20 } },
+            'sol-5.6': { price: { input: 2.5, output: 10 } }
+          }
+        }
+      },
+      warn: () => {}
+    });
+  }
+
+  test('prices a gpt-5.6-sol record with the sol-5.6 price', () => {
+    const catalog = twoSolCatalog();
+
+    const price = modelPrice(catalog, 'gpt-5.6-sol');
+
+    expect(price).toMatchObject({ input: 2.5, output: 10 });
+  });
+
+  test('prices a gpt-6-sol record with the sol price', () => {
+    const catalog = twoSolCatalog();
+
+    const price = modelPrice(catalog, 'gpt-6-sol');
+
+    expect(price).toMatchObject({ input: 5, output: 20 });
   });
 });
