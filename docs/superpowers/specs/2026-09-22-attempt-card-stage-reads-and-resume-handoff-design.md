@@ -7,7 +7,7 @@ scope:
   - server/worker/runner/preamble.test.js
   - server/worker/runner/__snapshots__/
   - server/worker/scheduler.js
-  - server/worker/session-ref-transcript.js
+  - server/worker/scheduler.test.js
 ---
 
 # UI-52uv — attempt 카드의 단계별 읽기 명령과 재시작 handoff
@@ -39,7 +39,7 @@ attempt 카드(`server/worker/attempt-facts.js` + `runner/preamble.js attemptFac
 
 - `buildScriptCalls`는 `installed(<name>)`로 스크립트·reference 파일 존재를 확인한 뒤에만 명령 줄을 만든다(fail-quiet by omission). 헤딩 앵커 sed 명령의 선례는 `stale_reference` 한 건이다.
 - 설치된 reference의 절 경계(2026-09-22 설치본): `execution-spec-backed.md` `## Worktree and branch safety`·`## Artifact publication`·`## Worker lane placement`·`## Attempt continuation`·`## Staleness re-review`·`## Selector and dispatch`·`## Prerequisite gate`; `execution-quick-fix.md` `## Cross-repo units (quick_fix disposition)`·`## quick_fix landing`; `finishing.md` `## Phase seal`·`## Final PR delivery`·`## Merge tail`·`## quick_fix tail`·`### Worker-dispatched quick_fix`·`### No-change close (refuted or no-delta)`·`## Resume`·`## Terminal result line`·`## Completion report`; `execution-common.md` `## Push safety`·`## 탐색 지도 (recommended)`; `unattended-waits.md`는 2.3KB 단일 절.
-- `resumePrompt(bead_id, prior_status, facts)`의 `facts`는 `resumeAncestorFacts(prior, bead_id)`가 attempt 레코드와 Bead 메타데이터에서 만든다. 세션 transcript 읽기는 `session-ref-transcript.js`의 provider가 맡고, Codex rollout의 마지막 턴은 `task_complete.last_agent_message`, Claude 세션의 마지막 assistant 텍스트 블록이 그 세션의 최종 보고다.
+- `resumePrompt(bead_id, prior_status, facts)`의 `facts`는 `resumeAncestorFacts(prior, bead_id)`가 attempt 레코드와 Bead 메타데이터에서 만든다. 이전 세션의 모델 텍스트를 읽는 함수는 이미 있다: `scheduler.js` `recentAssistantText(workspace, prior)`는 Worker가 저장한 attempt 세션 로그(`deps.sessionLog.read`, 레코드의 `log_path`)를 `createTranscriptReducer`로 줄여 assistant·gate·phase 텍스트를 모으고 `resumed_from` 사슬을 거슬러 첫 비어 있지 않은 attempt를 쓴다. 공급자 세션 파일(계정별 `CODEX_HOME` 미러, `codexSessionsRoot`)이 아니라 Worker 자체 로그를 읽으므로 계정별 경로 해소가 필요 없다. 그 텍스트는 `resumeHandoffBlock(workspace, prior)`가 4,000자 상한(`RESUME_HANDOFF_MAX_CHARS`)으로 잘라 `handoff_instructions`에 넣고, 이는 `needs_handoff`인 continuation(공급자 장애·한도 뒤 fresh 세션)에만 붙는다. 그 밖의 재시작(실패·일시정지 뒤 `resume`)은 `resumePrompt`만 받고 이전 모델 텍스트를 받지 않는다.
 - Worker attempt는 `CODEX_LIFETIME_DIRECTIVE`(Codex) 또는 Claude 분기 지시 하나와 공통 `attemptFactsDirective`를 받는다.
 
 ## 4. 설계
@@ -71,11 +71,13 @@ attempt 카드(`server/worker/attempt-facts.js` + `runner/preamble.js attemptFac
 
 ### 4.3 재시작 handoff (scheduler.js resumeAncestorFacts · resumePrompt)
 
-`resumeAncestorFacts`의 반환에 `prior_final_message: string|null`을 더한다. 출처 우선순위는 하나다: 이전 attempt 세션의 마지막 모델 메시지(Codex: 마지막 `task_complete.last_agent_message`; Claude: 마지막 assistant 텍스트 블록). `session-ref-transcript.js` provider에 `readFinalMessage(runner, session_id)`를 더해 읽고, 3,000자를 넘으면 앞 3,000자에 ` …(잘림)`을 붙인다. 세션 파일이 없거나 메시지가 없으면 null이고 문장을 만들지 않는다.
+출처는 하나, Worker가 저장한 이전 attempt의 세션 로그다. `recentAssistantText`를 텍스트 배열을 돌려주는 `recentAssistantTexts(workspace, prior)`로 나누고, 기존 `recentAssistantText`는 그 배열을 `\n\n`으로 이은 값으로 유지한다(호출자 `resumeHandoffBlock` 동작 불변). `resumeAncestorFacts(prior, bead_id)`는 `workspace`를 더 받아 `prior_final_message: string|null`을 반환에 더한다: `recentAssistantTexts`의 **마지막** 항목이며, 3,000자를 넘으면 뒤 3,000자만 남기고 앞에 `(앞부분 생략) `을 붙인다. 로그를 읽을 수 없거나 항목이 없으면 null이고 문장을 만들지 않는다. 공급자 세션 파일은 읽지 않으므로 계정별 홈 경로 해소가 필요 없다.
 
 `resumePrompt`는 `facts.prior_final_message`가 있을 때 ancestor 문장 뒤에 한 문장을 더한다:
 
 > 이전 세션의 마지막 보고: <메시지>. 이 보고는 그 세션의 tool result에 결속된 것만 사실로 보고, 워크트리·Bead·PR 상태로 다시 확인한 뒤 남은 단계만 한다.
+
+이전 모델 텍스트는 프롬프트에 한 번만 들어간다. `needs_handoff`인 continuation은 `handoff_instructions`(`resumeHandoffBlock`, 최근 텍스트 전체의 뒤 4,000자)가 그 역할을 하므로, 그 경로의 `resumePrompt` 호출은 `prior_final_message`를 null로 넘겨 문장을 만들지 않는다. `needs_handoff`가 아닌 재시작(실패·일시정지 뒤 `resume`)만 새 문장을 받는다. 판정 입력은 `resolveContinuationForAttempt`가 이미 계산한 `needs_handoff`이며 새 플래그를 만들지 않는다.
 
 Bead 코멘트의 `## 🤖 작업 보고서`는 쓰지 않는다. 실패한 attempt는 보고서를 남기지 않는 경우가 많고, 두 출처를 두면 어느 쪽이 최신인지 판정이 필요해진다.
 
@@ -92,18 +94,24 @@ Bead 코멘트의 `## 🤖 작업 보고서`는 쓰지 않는다. 실패한 atte
 
 - spec_backed 첫 attempt 카드에 진입·push·인도·종료 보고·무인 대기 읽기 명령이, 재시작 attempt 카드에는 이어하기 명령이 추가로, quick_fix Worker 인계 카드에 착지·마무리·종료 보고·무인 대기 명령이 실린다. 각 명령의 헤딩은 설치된 파일에 존재한다.
 - 헤딩이 없는 파일로 카드를 만들면 그 줄만 빠지고 나머지는 그대로다.
-- 재시작 attempt의 프롬프트에 이전 세션 마지막 메시지 문장이 실리고, 세션 파일이 없으면 문장이 없다. 3,000자 초과 메시지는 잘린 표시와 함께 실린다.
+- `needs_handoff`가 아닌 재시작 attempt의 프롬프트에 이전 세션 마지막 메시지 문장이 실리고, Worker 세션 로그가 없으면 문장이 없다. 3,000자 초과 메시지는 뒤 3,000자와 생략 표시로 실린다. `needs_handoff` continuation은 `handoff_instructions`만 받고 새 문장을 받지 않는다(이전 모델 텍스트 1회 전달).
+- `resumeHandoffBlock`의 출력 바이트는 변경 전과 같다.
 - 기존 `stale_reference` 명령 문자열은 바뀌지 않는다.
 - Claude·Codex 양 런타임 스냅샷이 같은 카드 절을 담는다.
 
 ## 6. Test scope
 
-- `server/worker/attempt-facts.test.js`: route별 `stage_reads`, 재시작 여부에 따른 이어하기 항목, 헤딩 부재 시 생략, 헤딩이 두 줄이면 생략.
-- `server/worker/runner/preamble.test.js`: `stage_reads` 렌더와 안내 줄, 빈 목록 생략, 스냅샷 갱신.
-- `server/worker/scheduler.js`의 `resumePrompt` 테스트: `prior_final_message` 문장, null 생략, 3,000자 잘림.
-- `server/worker/session-ref-transcript.test.js`: `readFinalMessage` — Codex rollout과 Claude 세션 fixture 각 1개.
-- `server/worker/attempt-facts.cross-runtime.test.js`: 4.1 표의 헤딩 존재.
-- 실행: `npx vitest run --reporter=dot <위 파일들>`, 이어서 저장소 기본 검증.
+변경 전에 실패하는 seam(RED)은 카드 생성·렌더·메시지 전달 동작이다:
+
+- `server/worker/attempt-facts.test.js`: route별 `stage_reads` 목록(spec_backed 첫 attempt 5항목, 재시작 시 이어하기 추가, quick_fix Worker 인계 4항목), 헤딩 부재 시 생략, 헤딩이 두 줄이면 생략, `stale_reference` 명령 문자열 불변. 변경 전에는 `stage_reads` 필드가 없어 실패한다.
+- `server/worker/runner/preamble.test.js`: `stage_reads` 렌더와 안내 줄, 빈 목록 생략, 스냅샷 갱신. 변경 전에는 절이 렌더되지 않아 실패한다.
+- `server/worker/scheduler.test.js`: `resumeAncestorFacts`의 `prior_final_message`(마지막 항목 선택, 3,000자 뒤쪽 잘림, 로그 부재 null), `resumePrompt` 문장 유무, `needs_handoff` continuation에서 문장 부재와 `handoff_instructions` 존재, `resumeHandoffBlock` 출력 불변. 변경 전에는 필드와 문장이 없어 실패한다.
+
+보조 정합성 검사(변경 전에도 통과하며 RED seam이 아니다):
+
+- `server/worker/attempt-facts.cross-runtime.test.js`(신규): 4.1 표의 헤딩이 dotfiles 소스 reference에 정확히 한 줄로 존재. dotfiles가 절 이름을 바꾸면 빨개진다.
+
+실행: `npx vitest run --reporter=dot <위 파일들>`, 이어서 저장소 기본 검증.
 
 ## 경계·후속
 
