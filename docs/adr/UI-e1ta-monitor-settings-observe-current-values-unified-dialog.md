@@ -1,10 +1,11 @@
 ---
 id: UI-e1ta
 title: 모니터 탭의 설정은 저장소의 현재 값을 읽어 세우고 갈리거나 읽지 못한 행은 적용에서 빠지며 일괄 창은 세 탭과 프리셋 관리를 갖고 레포 카드 설정은 같은 다이얼로그로 열린다 — 모드 고정·순차 op·결과 형식·계정 명시 선택은 UI-628r을 승계한다
-status: accepted
+status: superseded
 date: 2026-09-22
 summary: "모니터 탭의 설정은 저장소의 현재 값을 읽어 세우고 갈리거나 아직 읽지 못한 행은 손대기 전까지 적용에서 빠지며, 일괄 창이 세 탭과 프리셋 관리를 갖고 레포 카드 설정은 헤더와 같은 다이얼로그로 열린다"
 supersedes: [UI-628r]
+superseded_by: UI-uohc-2
 spec: docs/superpowers/specs/2026-09-21-monitor-settings-observed-values-and-unified-popup-design.md
 bead: UI-e1ta
 ---

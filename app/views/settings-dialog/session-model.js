@@ -161,7 +161,13 @@ export const QUICK_FIX_ORCHESTRATION_KEYS = [
 ];
 
 /**
- * Lane-neutral preset fields mapped onto quick_fix storage keys.
+ * One canonical key name mapped onto the name the quick_fix layer STORES it
+ * under — the route-scoped kv keys and the route-scoped queue keys.
+ *
+ * A storage-name mapping, not a preset profile mapping: a preset carries
+ * canonical names in BOTH profiles, and it is the workspace kv object and the
+ * queue that still keep the prefixed names. Mirrors `server/worker/exec-enums.js
+ * QUICK_FIX_LANE_MAP`.
  *
  * @type {Readonly<Record<string, string>>}
  */
@@ -177,25 +183,87 @@ export const QUICK_FIX_LANE_MAP = Object.freeze({
 });
 
 /**
- * The twenty-five keys an execution preset carries: the per-bead values plus
- * the general and quick_fix workspace profiles, in the same order as
- * `server/worker/exec-enums.js IMPL_PRESET_KEYS`.
+ * The `applies_to` vocabulary: one execution preset belongs to exactly one
+ * profile, and the profile — not a key prefix — decides where its canonical
+ * settings apply. Mirrors `server/worker/exec-enums.js APPLIES_TO_VALUES`.
  */
-export const IMPL_PRESET_KEYS = [
-  ...BEAD_APPLY_KEYS,
+export const APPLIES_TO_VALUES = ['general', 'quick_fix'];
+
+/**
+ * Read any stored or requested value as one profile. An absent value and a
+ * value outside the vocabulary both read as `general`, so a preset written
+ * before this field existed loads as a general preset.
+ *
+ * @param {unknown} value
+ * @returns {'general'|'quick_fix'}
+ */
+export function normalizeAppliesTo(value) {
+  return value === 'quick_fix' ? 'quick_fix' : 'general';
+}
+
+/**
+ * The 17 keys a `general` preset may carry — the same set as
+ * {@link BEAD_PIN_KEYS}, named separately because this one is the profile's
+ * `settings` vocabulary. Mirrors server `GENERAL_PRESET_KEYS`.
+ */
+export const GENERAL_PRESET_KEYS = [...BEAD_PIN_KEYS];
+
+/**
+ * The five implementation keys a `quick_fix` preset may carry, in CANONICAL
+ * names. The nine review keys are deliberately absent: a review setting is a
+ * profile-independent axis. Mirrors server `QUICK_FIX_IMPL_KEYS`.
+ */
+export const QUICK_FIX_IMPL_KEYS = [
+  'impl_dispatch',
+  'impl_runtime',
+  'impl_model',
+  'impl_effort',
+  'impl_speed'
+];
+
+/** The 8 keys a `quick_fix` preset may carry; mirrors server list. */
+export const QUICK_FIX_PRESET_KEYS = [
   ...ORCHESTRATION_KEYS,
-  ...QUICK_FIX_ORCHESTRATION_KEYS,
-  ...QUICK_FIX_KV_KEYS
+  ...QUICK_FIX_IMPL_KEYS
 ];
 
 /**
- * The eighteen kv keys a preset actually CARRIES — the workspace kv list minus
- * the keys no preset can supply. Mirrors `server/worker/exec-enums.js
- * PRESET_KV_KEYS`, which is exactly the list one apply REPLACES.
+ * The 13 kv keys a `general` apply replaces. `impl_dispatch` is the one
+ * general preset key with no kv member — the contract keeps it
+ * `write_rule: user_write_only`. Mirrors server `GENERAL_PRESET_KV_KEYS`.
  */
-export const PRESET_KV_KEYS = WORKSPACE_KV_KEYS.filter((key) =>
-  IMPL_PRESET_KEYS.includes(key)
+export const GENERAL_PRESET_KV_KEYS = WORKSPACE_KV_KEYS.filter((key) =>
+  GENERAL_PRESET_KEYS.includes(key)
 );
+
+/**
+ * The `settings` key set of one profile, in canonical names. Replaces the
+ * retired 25-key `IMPL_PRESET_KEYS`, which merged both profiles into one
+ * sparse object and told them apart by the `quick_fix_` key prefix.
+ *
+ * @param {unknown} applies_to
+ * @returns {ReadonlyArray<string>}
+ */
+export function presetKeysFor(applies_to) {
+  return normalizeAppliesTo(applies_to) === 'quick_fix'
+    ? QUICK_FIX_PRESET_KEYS
+    : GENERAL_PRESET_KEYS;
+}
+
+/**
+ * The workspace kv STORAGE keys one profile's apply replaces. The general
+ * profile stores canonical names; the quick_fix profile stores its five
+ * canonical implementation keys under the prefixed {@link QUICK_FIX_KV_KEYS}
+ * names. Replaces the retired 18-key `PRESET_KV_KEYS`.
+ *
+ * @param {unknown} applies_to
+ * @returns {ReadonlyArray<string>}
+ */
+export function presetKvKeysFor(applies_to) {
+  return normalizeAppliesTo(applies_to) === 'quick_fix'
+    ? QUICK_FIX_KV_KEYS
+    : GENERAL_PRESET_KV_KEYS;
+}
 
 /** 실행 방식: 위임(기존 runtime matrix) 또는 메인(컨트롤러 직접 구현). */
 export const IMPL_DISPATCHES = ['delegated', 'main'];
@@ -604,52 +672,69 @@ export const PRESET_DIFF_LABELS = {
   impl_model: '구현 모델',
   impl_effort: '구현 effort',
   impl_speed: '구현 속도',
+  impl_dispatch: '실행 방식',
   orchestration_model: '워커 모델',
   orchestration_effort: '워커 effort',
-  orchestration_speed: '워커 속도',
-  quick_fix_orchestration_model: 'quick_fix 워커 모델',
-  quick_fix_orchestration_effort: 'quick_fix 워커 effort',
-  quick_fix_orchestration_speed: 'quick_fix 워커 속도',
-  quick_fix_impl_dispatch: 'quick_fix 실행 방식',
-  quick_fix_impl_runtime: 'quick_fix 위임 대상',
-  quick_fix_impl_model: 'quick_fix 구현 모델',
-  quick_fix_impl_effort: 'quick_fix 구현 effort',
-  quick_fix_impl_speed: 'quick_fix 구현 속도'
+  orchestration_speed: '워커 속도'
 };
 
-/** Exactly the keys one preset apply replaces, in declaration order. */
-const PRESET_DIFF_KEYS = [
-  ...PRESET_KV_KEYS,
-  ...ORCHESTRATION_KEYS,
-  ...QUICK_FIX_ORCHESTRATION_KEYS
-];
+/**
+ * Exactly the canonical keys one profile's apply replaces, in declaration
+ * order. A `general` apply writes its 13 kv keys and the three queue
+ * orchestration keys; a `quick_fix` apply writes all 8 of its keys, because
+ * `impl_dispatch` IS a contract-allowed global there (design §4).
+ *
+ * @param {unknown} applies_to
+ * @returns {ReadonlyArray<string>}
+ */
+function presetDiffKeysFor(applies_to) {
+  return normalizeAppliesTo(applies_to) === 'quick_fix'
+    ? QUICK_FIX_PRESET_KEYS
+    : [...GENERAL_PRESET_KV_KEYS, ...ORCHESTRATION_KEYS];
+}
 
 /**
- * Declared keys a preset may carry that one apply does NOT write:
- * `impl_dispatch` is `user_write_only`, and `workflow_mode`/`bdui_url` have no
- * preset layer at all.
+ * Declared keys of one profile that its apply does NOT write. In the general
+ * profile `impl_dispatch` is `user_write_only` and `workflow_mode`/`bdui_url`
+ * have no preset layer at all; the quick_fix profile writes every key it may
+ * carry, so its list is empty.
+ *
+ * @param {unknown} applies_to
+ * @returns {string[]}
  */
-const PRESET_IGNORED_KEYS = [...IMPL_PRESET_KEYS, ...WORKSPACE_KV_KEYS].filter(
-  (key, index, list) =>
-    list.indexOf(key) === index && !PRESET_DIFF_KEYS.includes(key)
-);
+function presetIgnoredKeysFor(applies_to) {
+  const profile = normalizeAppliesTo(applies_to);
+  const diff_keys = presetDiffKeysFor(profile);
+  const declared =
+    profile === 'quick_fix'
+      ? [...QUICK_FIX_PRESET_KEYS]
+      : [...GENERAL_PRESET_KEYS, ...WORKSPACE_KV_KEYS];
+  return declared.filter(
+    (key, index, list) =>
+      list.indexOf(key) === index && !diff_keys.includes(key)
+  );
+}
 
 /**
  * Preview what applying a preset would change, key by key.
  *
- * The comparison set is the one the SERVER replaces, not the workspace kv list:
- * a key the apply preserves must never be previewed as cleared.
+ * The comparison set is the one the SERVER replaces for that profile, not the
+ * workspace kv list: a key the apply preserves must never be previewed as
+ * cleared, and the other profile's keys are preserved by construction.
  *
- * @param {Record<string, string>} current - `executionDraftSettings()`.
+ * @param {Record<string, string>} current - `executionDraftSettings()` of the
+ * same profile, in canonical names.
  * @param {Record<string, string>} preset - `preset.settings` (sparse).
+ * @param {unknown} [applies_to] - The preset's profile; `general` by default.
  * @returns {{ rows: PresetDiffRow[], ignored_keys: string[] }}
  */
-export function buildPresetDiff(current, preset) {
+export function buildPresetDiff(current, preset, applies_to = 'general') {
   const before_values = isRecord(current) ? current : {};
   const after_values = isRecord(preset) ? preset : {};
+  const diff_keys = presetDiffKeysFor(applies_to);
   /** @type {PresetDiffRow[]} */
   const rows = [];
-  for (const key of PRESET_DIFF_KEYS) {
+  for (const key of diff_keys) {
     const before = before_values[key] ?? null;
     const after = after_values[key] ?? null;
     if (before === after) {
@@ -665,9 +750,12 @@ export function buildPresetDiff(current, preset) {
   }
   /** @type {string[]} */
   const ignored_keys = [];
-  for (const key of [...PRESET_IGNORED_KEYS, ...Object.keys(after_values)]) {
+  for (const key of [
+    ...presetIgnoredKeysFor(applies_to),
+    ...Object.keys(after_values)
+  ]) {
     if (
-      !PRESET_DIFF_KEYS.includes(key) &&
+      !diff_keys.includes(key) &&
       !ignored_keys.includes(key) &&
       Object.hasOwn(after_values, key)
     ) {

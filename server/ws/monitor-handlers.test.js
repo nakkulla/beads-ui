@@ -2315,4 +2315,45 @@ describe('workspaces_state observation projection (UI-e1ta §8)', () => {
 
     expect(out[0].applied_exec_preset).toBe(null);
   });
+
+  test('carries both profile records as separate row fields', () => {
+    const applied = {
+      id: 'p1',
+      name: '페이블 기본',
+      revision: 2,
+      applied_at: 17
+    };
+    const applied_quick_fix = { ...applied, id: 'q1', name: 'quick fix 기본' };
+
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: {
+        [WS_A]: snapshot({
+          applied_exec_preset: applied,
+          applied_quick_fix_preset: applied_quick_fix
+        })
+      }
+    });
+
+    expect(out[0]).toMatchObject({
+      applied_exec_preset: applied,
+      applied_quick_fix_preset: applied_quick_fix
+    });
+  });
+
+  test('carries a null quick_fix record for a queue written before the split', () => {
+    const applied = {
+      id: 'p1',
+      name: '페이블 기본',
+      revision: 2,
+      applied_at: 17
+    };
+
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: { [WS_A]: snapshot({ applied_exec_preset: applied }) }
+    });
+
+    expect(out[0].applied_quick_fix_preset).toBe(null);
+  });
 });

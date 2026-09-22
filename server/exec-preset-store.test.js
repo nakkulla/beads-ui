@@ -119,6 +119,7 @@ describe('exec-preset-store defaults', () => {
         {
           id: 'preset-1',
           name: 'Legacy',
+          applies_to: 'general',
           settings: { impl_model: 'removed-model', unknown_key: 'drop-me' },
           origin: { kind: 'user' }
         }
@@ -218,6 +219,7 @@ describe('exec-preset-store defaults', () => {
         {
           id: 'seed-1',
           name: '클로드 라인',
+          applies_to: 'general',
           settings: {
             orchestration_model: 'opus',
             impl_runtime: 'claude'
@@ -390,6 +392,7 @@ describe('exec-preset-store CRUD', () => {
         {
           id: 'preset-1',
           name: '기본 개발',
+          applies_to: 'general',
           settings: {
             impl_model: 'sol',
             impl_speed: 'fast'
@@ -440,6 +443,7 @@ describe('exec-preset-store CRUD', () => {
     expect(result.presets[0]).toEqual({
       id: 'preset-1',
       name: '수정됨',
+      applies_to: 'general',
       settings: { impl_model: 'terra', impl_speed: 'fast' },
       origin: { kind: 'user' }
     });
@@ -494,6 +498,7 @@ describe('exec-preset-store CRUD', () => {
         {
           id: 'preset-1',
           name: '현재',
+          applies_to: 'general',
           settings: {},
           origin: { kind: 'user' }
         }
@@ -621,5 +626,485 @@ describe('exec-preset-store CRUD', () => {
     expect(failing.snapshot().revision).toBe(1);
     expect(failing.snapshot().presets[0].name).toBe('원본');
     expect(fs.readFileSync(file_path, 'utf8')).toBe(before);
+  });
+});
+
+describe('exec-preset-store profiles', () => {
+  test('reads a stored preset without applies_to as a general preset', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(
+      file_path,
+      JSON.stringify({
+        revision: 1,
+        presets: [{ id: 'p1', name: '계열 없음', settings: {} }]
+      })
+    );
+    const store = createExecPresetStore({ filePath: file_path });
+
+    const snapshot = store.snapshot();
+
+    expect(snapshot.presets[0].applies_to).toBe('general');
+  });
+
+  test('reads a stored applies_to outside the vocabulary as a general preset', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(
+      file_path,
+      JSON.stringify({
+        revision: 1,
+        presets: [{ id: 'p1', name: '레인', applies_to: 'lane', settings: {} }]
+      })
+    );
+    const store = createExecPresetStore({ filePath: file_path });
+
+    const snapshot = store.snapshot();
+
+    expect(snapshot.presets[0].applies_to).toBe('general');
+  });
+
+  test('creates a quick_fix preset from canonical implementation keys', () => {
+    const store = createExecPresetStore({
+      filePath: path.join(tmp_dir, 'exec-presets.json'),
+      randomUUID: () => 'qf-1'
+    });
+
+    const result = store.create({
+      expected_revision: 0,
+      name: '빠른 수정 기본',
+      applies_to: 'quick_fix',
+      settings: {
+        orchestration_model: 'astra',
+        impl_runtime: 'codex',
+        impl_model: 'sol'
+      }
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.presets[0]).toEqual({
+      id: 'qf-1',
+      name: '빠른 수정 기본',
+      applies_to: 'quick_fix',
+      settings: {
+        orchestration_model: 'astra',
+        impl_runtime: 'codex',
+        impl_model: 'sol'
+      },
+      origin: { kind: 'user' }
+    });
+  });
+
+  test('rejects a review key in a quick_fix preset', () => {
+    const store = createExecPresetStore({
+      filePath: path.join(tmp_dir, 'exec-presets.json')
+    });
+
+    const result = store.create({
+      expected_revision: 0,
+      name: '리뷰 포함',
+      applies_to: 'quick_fix',
+      settings: { impl_review_model: 'fable' }
+    });
+
+    expect(result).toMatchObject({
+      applied: false,
+      conflict: false,
+      revision: 0,
+      reason: 'invalid'
+    });
+  });
+
+  test('rejects an auto implementation runtime in a quick_fix preset', () => {
+    const store = createExecPresetStore({
+      filePath: path.join(tmp_dir, 'exec-presets.json')
+    });
+
+    const result = store.create({
+      expected_revision: 0,
+      name: '자동 런타임',
+      applies_to: 'quick_fix',
+      settings: { impl_runtime: 'auto' }
+    });
+
+    expect(result.applied).toBe(false);
+  });
+
+  test('rejects a prefixed quick_fix key in a general preset', () => {
+    const store = createExecPresetStore({
+      filePath: path.join(tmp_dir, 'exec-presets.json')
+    });
+
+    const result = store.create({
+      expected_revision: 0,
+      name: '접두 키',
+      settings: { quick_fix_impl_runtime: 'codex' }
+    });
+
+    expect(result.applied).toBe(false);
+  });
+
+  test('rejects a duplicate name across the two profiles', () => {
+    const store = createExecPresetStore({
+      filePath: path.join(tmp_dir, 'exec-presets.json'),
+      randomUUID: () => 'preset-1'
+    });
+    store.create({
+      expected_revision: 0,
+      name: '실행 기본',
+      settings: { impl_runtime: 'codex' }
+    });
+
+    const result = store.create({
+      expected_revision: 1,
+      name: ' 실행 기본 ',
+      applies_to: 'quick_fix',
+      settings: { impl_runtime: 'codex' }
+    });
+
+    expect(result.applied).toBe(false);
+    expect(result.presets).toHaveLength(1);
+  });
+
+  test('keeps a preset in its own profile through an update', () => {
+    const store = createExecPresetStore({
+      filePath: path.join(tmp_dir, 'exec-presets.json'),
+      randomUUID: () => 'qf-1'
+    });
+    store.create({
+      expected_revision: 0,
+      name: '빠른 수정',
+      applies_to: 'quick_fix',
+      settings: { impl_runtime: 'codex' }
+    });
+
+    const updated = store.update({
+      expected_revision: 1,
+      id: 'qf-1',
+      name: '빠른 수정',
+      settings: { impl_runtime: 'claude' }
+    });
+    const review_key = store.update({
+      expected_revision: 2,
+      id: 'qf-1',
+      name: '빠른 수정',
+      settings: { impl_review_model: 'fable' }
+    });
+
+    expect(updated.presets[0].applies_to).toBe('quick_fix');
+    expect(review_key.applied).toBe(false);
+  });
+});
+
+describe('exec-preset-store profile migration', () => {
+  /**
+   * Write one legacy preset file and open a store over it. The ids are handed
+   * out in order so each test can name the migration copy it expects.
+   *
+   * @param {unknown[]} presets
+   * @param {string[]} ids
+   * @param {Record<string, unknown>} [extra]
+   */
+  function legacyStore(presets, ids, extra = {}) {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(
+      file_path,
+      JSON.stringify({ revision: 4, presets, ...extra })
+    );
+    return {
+      file_path,
+      store: createExecPresetStore({
+        filePath: file_path,
+        randomUUID: () => String(ids.shift())
+      })
+    };
+  }
+
+  test('lifts the quick fix keys into one copy while preserving the originals', () => {
+    const { file_path, store } = legacyStore(
+      [
+        {
+          id: 'p1',
+          name: '오퍼스 라인',
+          settings: {
+            orchestration_model: 'opus',
+            impl_runtime: 'claude',
+            quick_fix_orchestration_model: 'astra',
+            quick_fix_orchestration_effort: 'xhigh'
+          },
+          origin: { kind: 'user' }
+        },
+        {
+          id: 'p2',
+          name: '코덱스 라인',
+          settings: {
+            impl_runtime: 'codex',
+            quick_fix_orchestration_model: 'astra',
+            quick_fix_orchestration_effort: 'xhigh'
+          },
+          origin: { kind: 'legacy-preset-copy', source_preset_id: 'old-1' }
+        }
+      ],
+      ['qf-1']
+    );
+
+    const result = /** @type {any} */ (store).migratePresetProfiles({
+      marker: { version: 1 }
+    });
+
+    expect(result.revision).toBe(5);
+    expect(result.presets).toEqual([
+      {
+        id: 'p1',
+        name: '오퍼스 라인',
+        applies_to: 'general',
+        settings: { orchestration_model: 'opus', impl_runtime: 'claude' },
+        origin: { kind: 'user' }
+      },
+      {
+        id: 'p2',
+        name: '코덱스 라인',
+        applies_to: 'general',
+        settings: { impl_runtime: 'codex' },
+        origin: { kind: 'legacy-preset-copy', source_preset_id: 'old-1' }
+      },
+      {
+        id: 'qf-1',
+        name: 'quick fix 기본',
+        applies_to: 'quick_fix',
+        settings: {
+          orchestration_model: 'astra',
+          orchestration_effort: 'xhigh'
+        },
+        origin: { kind: 'legacy-preset-copy', source_preset_id: 'p1' }
+      }
+    ]);
+    expect(JSON.parse(fs.readFileSync(file_path, 'utf8'))).toEqual({
+      revision: 5,
+      presets: result.presets,
+      preset_profile_migration: { version: 1 }
+    });
+  });
+
+  test('creates one quick fix preset per distinct combination', () => {
+    const { store } = legacyStore(
+      [
+        {
+          id: 'p1',
+          name: '첫째',
+          settings: { quick_fix_impl_runtime: 'codex' },
+          origin: { kind: 'user' }
+        },
+        {
+          id: 'p2',
+          name: '둘째',
+          settings: { quick_fix_impl_runtime: 'claude' },
+          origin: { kind: 'user' }
+        },
+        {
+          id: 'p3',
+          name: '셋째',
+          settings: { quick_fix_impl_runtime: 'codex' },
+          origin: { kind: 'user' }
+        }
+      ],
+      ['qf-1', 'qf-2']
+    );
+
+    const result = /** @type {any} */ (store).migratePresetProfiles({
+      marker: { version: 1 }
+    });
+
+    expect(result.presets.slice(3)).toEqual([
+      {
+        id: 'qf-1',
+        name: 'quick fix 기본',
+        applies_to: 'quick_fix',
+        settings: { impl_runtime: 'codex' },
+        origin: { kind: 'legacy-preset-copy', source_preset_id: 'p1' }
+      },
+      {
+        id: 'qf-2',
+        name: 'quick fix 기본 2',
+        applies_to: 'quick_fix',
+        settings: { impl_runtime: 'claude' },
+        origin: { kind: 'legacy-preset-copy', source_preset_id: 'p2' }
+      }
+    ]);
+  });
+
+  test('creates nothing when no preset carries a quick fix value', () => {
+    const { store } = legacyStore(
+      [
+        {
+          id: 'p1',
+          name: '일반만',
+          settings: { impl_runtime: 'codex' },
+          origin: { kind: 'user' }
+        }
+      ],
+      ['unused']
+    );
+
+    const result = /** @type {any} */ (store).migratePresetProfiles({
+      marker: { version: 1 }
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.presets).toHaveLength(1);
+  });
+
+  test('skips a second run once the marker is stored', () => {
+    const { file_path, store } = legacyStore(
+      [
+        {
+          id: 'p1',
+          name: '첫째',
+          settings: { quick_fix_impl_runtime: 'codex' },
+          origin: { kind: 'user' }
+        }
+      ],
+      ['qf-1', 'qf-2']
+    );
+    /** @type {any} */ (store).migratePresetProfiles({
+      marker: { version: 1 }
+    });
+    const after_first = fs.readFileSync(file_path, 'utf8');
+
+    const repeated = /** @type {any} */ (store).migratePresetProfiles({
+      marker: { version: 1 }
+    });
+    const restarted = createExecPresetStore({ filePath: file_path });
+    const resumed = /** @type {any} */ (restarted).migratePresetProfiles({
+      marker: { version: 1 }
+    });
+
+    expect(repeated).toMatchObject({ applied: false, revision: 5 });
+    expect(resumed).toMatchObject({ applied: false, revision: 5 });
+    expect(fs.readFileSync(file_path, 'utf8')).toBe(after_first);
+  });
+
+  test('resumes after the reseed step and keeps that marker', () => {
+    const { store } = legacyStore(
+      [
+        {
+          id: 'p1',
+          name: '첫째',
+          settings: { quick_fix_impl_runtime: 'codex' },
+          origin: { kind: 'user' }
+        }
+      ],
+      ['qf-1'],
+      { reseed_migration: { version: 1 } }
+    );
+
+    const result = /** @type {any} */ (store).migratePresetProfiles({
+      marker: { version: 1 }
+    });
+
+    expect(result.applied).toBe(true);
+    expect(store.snapshot()).toMatchObject({
+      revision: 5,
+      reseed_migration: { version: 1 },
+      preset_profile_migration: { version: 1 }
+    });
+  });
+
+  test('rejects a malformed marker without touching the presets', () => {
+    const { file_path, store } = legacyStore(
+      [
+        {
+          id: 'p1',
+          name: '첫째',
+          settings: { quick_fix_impl_runtime: 'codex' },
+          origin: { kind: 'user' }
+        }
+      ],
+      ['qf-1']
+    );
+    store.snapshot();
+    const before = fs.readFileSync(file_path, 'utf8');
+
+    const result = /** @type {any} */ (store).migratePresetProfiles({
+      marker: { version: 0 }
+    });
+
+    expect(result).toMatchObject({ applied: false, reason: 'invalid' });
+    expect(fs.readFileSync(file_path, 'utf8')).toBe(before);
+  });
+
+  test('fails closed when the migrated state does not read back', () => {
+    const { file_path, store } = legacyStore(
+      [
+        {
+          id: 'p1',
+          name: '첫째',
+          settings: { quick_fix_impl_runtime: 'codex' },
+          origin: { kind: 'user' }
+        }
+      ],
+      ['qf-1']
+    );
+    store.snapshot();
+    const original_read_file = fs.readFileSync;
+    const read_file = vi.spyOn(fs, 'readFileSync');
+    read_file.mockImplementation((target, options) => {
+      if (target === file_path) {
+        return JSON.stringify({ revision: 0, presets: [] });
+      }
+      return original_read_file(target, options);
+    });
+
+    expect(() =>
+      /** @type {any} */ (store).migratePresetProfiles({
+        marker: { version: 1 }
+      })
+    ).toThrow('Exec preset profile split failed readback verification');
+
+    read_file.mockRestore();
+  });
+});
+
+describe('exec-preset-store profile migration idempotence', () => {
+  test('leaves an existing quick_fix preset alone when the marker was lost', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(
+      file_path,
+      JSON.stringify({
+        revision: 8,
+        presets: [
+          {
+            id: 'p1',
+            name: '일반',
+            applies_to: 'general',
+            settings: { impl_runtime: 'codex' },
+            origin: { kind: 'user' }
+          },
+          {
+            id: 'qf-1',
+            name: 'quick fix 기본',
+            applies_to: 'quick_fix',
+            settings: { impl_runtime: 'codex' },
+            origin: { kind: 'legacy-preset-copy', source_preset_id: 'p1' }
+          }
+        ]
+      })
+    );
+    const store = createExecPresetStore({
+      filePath: file_path,
+      randomUUID: () => 'unexpected'
+    });
+
+    const result = /** @type {any} */ (store).migratePresetProfiles({
+      marker: { version: 1 }
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.presets).toHaveLength(2);
+    expect(result.presets[1]).toEqual({
+      id: 'qf-1',
+      name: 'quick fix 기본',
+      applies_to: 'quick_fix',
+      settings: { impl_runtime: 'codex' },
+      origin: { kind: 'legacy-preset-copy', source_preset_id: 'p1' }
+    });
   });
 });

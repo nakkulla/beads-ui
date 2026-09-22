@@ -415,6 +415,93 @@ describe('queue defaults preset identity', () => {
       );
     }
   );
+
+  /** @param {Record<string, string|null>} values */
+  function writeOrchestration(values) {
+    const runtime = getWorkerRuntime();
+    const general = runtime.execPresetCoordinator.create({
+      expected_revision: runtime.execPresetCoordinator.snapshot().revision,
+      name: '일반',
+      settings: { orchestration_model: 'sonnet' }
+    });
+    const general_id =
+      general.presets.find((entry) => entry.name === '일반')?.id ?? '';
+    const quick_fix = runtime.execPresetCoordinator.create({
+      expected_revision: general.revision,
+      name: 'quick fix',
+      applies_to: 'quick_fix',
+      settings: { orchestration_model: 'sonnet' }
+    });
+    const quick_fix_id =
+      quick_fix.presets.find((entry) => entry.name === 'quick fix')?.id ?? '';
+    const applied_exec_preset = {
+      id: general_id,
+      name: '일반',
+      revision: quick_fix.revision,
+      applied_at: 10
+    };
+    const applied_quick_fix_preset = {
+      id: quick_fix_id,
+      name: 'quick fix',
+      revision: quick_fix.revision,
+      applied_at: 20
+    };
+    const seeded = runtime.queueStore.setOrchestrationDefaults(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      values: {
+        orchestration_model: 'sonnet',
+        quick_fix_orchestration_model: 'sonnet'
+      },
+      applied_exec_preset,
+      applied_quick_fix_preset
+    });
+    const socket = /** @type {any} */ ({ send: vi.fn() });
+    setConnWorkspace(socket, /** @type {any} */ ({ root_dir: WS }));
+
+    handleWorkerQueueSetOrchestrationDefaults(socket, {
+      id: 'defaults',
+      type: 'worker-queue-set-orchestration-defaults',
+      payload: { expected_revision: seeded.queue.revision, values }
+    });
+
+    return {
+      queue: runtime.queueStore.snapshot(WS),
+      applied_exec_preset,
+      applied_quick_fix_preset
+    };
+  }
+
+  test('releases only the quick_fix record for a quick_fix orchestration edit', () => {
+    const result = writeOrchestration({
+      quick_fix_orchestration_model: 'opus'
+    });
+
+    expect(result.queue).toMatchObject({
+      applied_exec_preset: result.applied_exec_preset,
+      applied_quick_fix_preset: null
+    });
+  });
+
+  test('releases only the general record for a general orchestration edit', () => {
+    const result = writeOrchestration({ orchestration_model: 'opus' });
+
+    expect(result.queue).toMatchObject({
+      applied_exec_preset: null,
+      applied_quick_fix_preset: result.applied_quick_fix_preset
+    });
+  });
+
+  test('releases both records when one write touches both profiles', () => {
+    const result = writeOrchestration({
+      orchestration_model: 'opus',
+      quick_fix_orchestration_model: 'opus'
+    });
+
+    expect(result.queue).toMatchObject({
+      applied_exec_preset: null,
+      applied_quick_fix_preset: null
+    });
+  });
 });
 
 /**

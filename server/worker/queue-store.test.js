@@ -2627,6 +2627,98 @@ describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
     expect(result.queue.applied_exec_preset).toEqual(applied_exec_preset);
   });
 
+  test('stores the quick_fix record beside the general one', () => {
+    const store = createQueueStore();
+    const applied_quick_fix_preset = { ...applied_exec_preset, id: 'q1' };
+
+    store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet' },
+      applied_exec_preset,
+      applied_quick_fix_preset
+    });
+
+    expect(createQueueStore().snapshot(WS)).toMatchObject({
+      applied_exec_preset,
+      applied_quick_fix_preset
+    });
+  });
+
+  test('preserves the quick_fix record when only the general one is written', () => {
+    const store = createQueueStore();
+    const applied_quick_fix_preset = { ...applied_exec_preset, id: 'q1' };
+    store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet' },
+      applied_quick_fix_preset
+    });
+
+    const result = store.setOrchestrationDefaults(WS, {
+      expected_revision: 1,
+      values: { orchestration_effort: 'high' },
+      applied_exec_preset
+    });
+
+    expect(result.queue.applied_quick_fix_preset).toEqual(
+      applied_quick_fix_preset
+    );
+  });
+
+  test('clears only the named profile record', () => {
+    const store = createQueueStore();
+    const applied_quick_fix_preset = { ...applied_exec_preset, id: 'q1' };
+    store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet' },
+      applied_exec_preset,
+      applied_quick_fix_preset
+    });
+
+    const result = store.clearAppliedExecPreset(WS, {
+      expected_revision: 1,
+      applies_to: 'quick_fix'
+    });
+
+    expect(result.queue).toMatchObject({
+      applied_exec_preset,
+      applied_quick_fix_preset: null
+    });
+  });
+
+  test('clears both profile records under one revision', () => {
+    const store = createQueueStore();
+    const applied_quick_fix_preset = { ...applied_exec_preset, id: 'q1' };
+    store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet' },
+      applied_exec_preset,
+      applied_quick_fix_preset
+    });
+
+    const result = store.clearAppliedExecPreset(WS, {
+      expected_revision: 1,
+      applies_to: ['general', 'quick_fix']
+    });
+
+    expect(result.queue).toMatchObject({
+      revision: 2,
+      applied_exec_preset: null,
+      applied_quick_fix_preset: null
+    });
+  });
+
+  test('reads a malformed quick_fix record as null', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({ applied_quick_fix_preset: { id: 'q1' } })
+    );
+
+    const queue = createQueueStore().snapshot(WS);
+
+    expect(queue.applied_quick_fix_preset).toBeNull();
+  });
+
   test('clears preset identity durably', () => {
     const store = createQueueStore();
     store.setOrchestrationDefaults(WS, {

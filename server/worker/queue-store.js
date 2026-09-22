@@ -516,7 +516,11 @@
  * The per-workspace completion marker for the spec §F migration. Written ONLY
  * after all three destinations read back, and it is what stops the migration
  * from re-running on the next start.
- * @property {AppliedExecPreset|null} applied_exec_preset - Last fully applied global profile.
+ * @property {AppliedExecPreset|null} applied_exec_preset - Last fully applied
+ * `general` profile.
+ * @property {AppliedExecPreset|null} applied_quick_fix_preset - Last fully
+ * applied `quick_fix` profile. Independent of the general record: applying one
+ * profile never touches the other's (design §4.1).
  * @property {number} slots - Concurrency cap: how many sessions the scheduler
  * may run at once (worker-phase2 §3). Integer ≥ 1, default 2. `slots = 1` IS
  * the retired serial lane's semantics.
@@ -1027,7 +1031,8 @@ import { errorDetail } from './error-detail.js';
 import {
   ORCHESTRATION_KEYS,
   QUICK_FIX_ORCHESTRATION_KEYS,
-  execSettingEnums
+  execSettingEnums,
+  normalizeAppliesTo
 } from './exec-enums.js';
 import { orderLaneByBlocks } from './lane-order.js';
 import {
@@ -2066,6 +2071,43 @@ function normalizeAppliedExecPreset(value) {
 }
 
 /**
+ * Queue field holding each profile's applied-preset record. Two independent
+ * fields rather than one keyed object: the general record predates the split
+ * and every stored queue already carries it under this exact name.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+export const APPLIED_PRESET_FIELDS = Object.freeze({
+  general: 'applied_exec_preset',
+  quick_fix: 'applied_quick_fix_preset'
+});
+
+/**
+ * Read one write's `applies_to` input as the list of records it targets. An
+ * absent value means the general record alone, which is what every caller
+ * written before the split meant.
+ *
+ * @param {unknown} applies_to
+ * @returns {string[]}
+ */
+function appliedPresetFieldsFor(applies_to) {
+  const requested = Array.isArray(applies_to)
+    ? applies_to
+    : [applies_to ?? 'general'];
+  /** @type {string[]} */
+  const fields = [];
+  for (const profile of requested) {
+    const field =
+      APPLIED_PRESET_FIELDS[normalizeAppliesTo(profile)] ||
+      APPLIED_PRESET_FIELDS.general;
+    if (!fields.includes(field)) {
+      fields.push(field);
+    }
+  }
+  return fields;
+}
+
+/**
  * @param {unknown} value
  * @returns {ExecPresetRecord|null}
  */
@@ -2097,6 +2139,7 @@ function normalizeExecPresetRecord(value) {
 // migration deletes them itself once its completion marker is written.
 const KNOWN_QUEUE_FIELDS = new Set([
   'applied_exec_preset',
+  'applied_quick_fix_preset',
   'wait_notified',
   'revision',
   'auto_advance',
@@ -2174,6 +2217,7 @@ function emptySerialLanes(count) {
 function emptyQueue() {
   return {
     applied_exec_preset: null,
+    applied_quick_fix_preset: null,
     revision: 0,
     auto_advance: false,
     lineages: [],
@@ -4351,6 +4395,9 @@ function normalizeQueue(raw) {
     return q;
   }
   q.applied_exec_preset = normalizeAppliedExecPreset(raw.applied_exec_preset);
+  q.applied_quick_fix_preset = normalizeAppliedExecPreset(
+    raw.applied_quick_fix_preset
+  );
   for (const [key, value] of Object.entries(raw)) {
     if (!KNOWN_QUEUE_FIELDS.has(key)) {
       q[key] = value;
@@ -9081,8 +9128,12 @@ export function createQueueStore(options = {}) {
      * with no partial write — when any named key is not an orchestration key or
      * carries a value the current catalog rejects.
      *
+     * Each profile's applied-preset record is an INDEPENDENT optional field:
+     * a call that names one leaves the other exactly as it stands, and a call
+     * that names both writes both under this one revision.
+     *
      * @param {string} workspace
-     * @param {{ expected_revision: number, values: Record<string, string|null>, applied_exec_preset?: AppliedExecPreset|null }} input
+     * @param {{ expected_revision: number, values: Record<string, string|null>, applied_exec_preset?: AppliedExecPreset|null, applied_quick_fix_preset?: AppliedExecPreset|null }} input
      * @returns {QueueOpResult}
      */
     setOrchestrationDefaults(workspace, input) {
@@ -9122,25 +9173,35 @@ export function createQueueStore(options = {}) {
         for (const [key, value] of Object.entries(normalized)) {
           target[key] = value;
         }
-        if (Object.hasOwn(input, 'applied_exec_preset')) {
-          next.applied_exec_preset = normalizeAppliedExecPreset(
-            input.applied_exec_preset
-          );
+        for (const field of Object.values(APPLIED_PRESET_FIELDS)) {
+          if (Object.hasOwn(input, field)) {
+            target[field] = normalizeAppliedExecPreset(
+              /** @type {Record<string, unknown>} */ (input)[field]
+            );
+          }
         }
         return true;
       });
     },
 
     /**
-     * Consume a revision before every non-atomic profile write, even with null provenance.
+     * Consume a revision before every non-atomic profile write, even with null
+     * provenance. `applies_to` names the profile record — or records, as an
+     * array — this clear targets; an absent value means `general` alone.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number }} input
+     * @param {{ expected_revision: number, applies_to?: unknown }} input
      * @returns {QueueOpResult}
      */
     clearAppliedExecPreset(workspace, input) {
+      const fields = appliedPresetFieldsFor(input?.applies_to);
       return applyMutation(workspace, input.expected_revision, (next) => {
-        next.applied_exec_preset = null;
+        const target = /** @type {Record<string, unknown>} */ (
+          /** @type {unknown} */ (next)
+        );
+        for (const field of fields) {
+          target[field] = null;
+        }
         return true;
       });
     },

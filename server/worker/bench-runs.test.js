@@ -153,7 +153,7 @@ describe('resolveBenchTuple', () => {
     expect(resolved.ok && resolved.values.impl_model).toBe('sonnet');
   });
 
-  test('prefers the preset quick_fix value over the quick_fix workspace value', () => {
+  test('reads the preset canonical key and no prefixed one', () => {
     const resolved = resolveBenchTuple({
       coordinator: fakeCoordinator(),
       workspace: WS,
@@ -165,7 +165,19 @@ describe('resolveBenchTuple', () => {
       harness: HARNESS
     });
 
-    expect(resolved.ok && resolved.values.impl_model).toBe('sol');
+    expect(resolved.ok && resolved.values.impl_model).toBe('opus');
+  });
+
+  test('takes the orchestration model of a quick fix preset from its canonical key', () => {
+    const resolved = resolveBenchTuple({
+      coordinator: fakeCoordinator(),
+      workspace: WS,
+      preset_settings: { orchestration_model: 'fable' },
+      kv_values: {},
+      harness: HARNESS
+    });
+
+    expect(resolved.ok && resolved.values.orchestration_model).toBe('fable');
   });
 
   test('falls back to the harness value when no layer names the key', () => {
@@ -451,6 +463,28 @@ describe('createBenchRun', () => {
       created_at: 1700000000000
     });
     expect(result.ok).toBe(true);
+  });
+
+  test('reads a manifest written before the profile split unchanged', () => {
+    const legacy = {
+      run_id: 'bench-old',
+      source_bead_id: 'UI-src',
+      base_sha: BASE,
+      presets: [{ id: 'p1', name: '옛 프리셋', resolved_tuple: { ...TUPLE } }],
+      repeats: 1,
+      reviewer_mode: 'preset',
+      reviewer: null,
+      delegate_forced: true,
+      cells: [{ preset_id: 'p1', k: 1, bead_id: 'UI-old1' }],
+      created_at: 1690000000000
+    };
+    const file = benchManifestPath(WS, 'bench-old');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(legacy), 'utf8');
+
+    const manifest = readBenchManifest(WS, 'bench-old');
+
+    expect(manifest).toEqual(legacy);
   });
 
   test('leaves the manifest untouched after creation', async () => {

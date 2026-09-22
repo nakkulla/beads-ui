@@ -13,17 +13,20 @@ import {
 import * as enums from './exec-enums.js';
 import {
   ACCOUNT_KEYS,
+  APPLIES_TO_VALUES,
   BEAD_APPLY_KEYS,
   BEAD_PIN_KEYS,
   EXEC_SETTING_KEYS,
-  IMPL_PRESET_KEYS,
+  GENERAL_PRESET_KEYS,
+  GENERAL_PRESET_KV_KEYS,
   IMPL_RUNTIMES,
   ORCHESTRATION_KEYS,
   PLAN_REVIEW_MODELS,
-  PRESET_KV_KEYS,
+  QUICK_FIX_IMPL_KEYS,
   QUICK_FIX_KV_KEYS,
   QUICK_FIX_LANE_MAP,
   QUICK_FIX_ORCHESTRATION_KEYS,
+  QUICK_FIX_PRESET_KEYS,
   REVIEW_EFFORTS,
   REVIEW_SPEEDS,
   REVIEW_STEP_MODELS,
@@ -31,6 +34,9 @@ import {
   execSettingEnums,
   implPresetEnums,
   inferImplRuntime,
+  normalizeAppliesTo,
+  presetKeysFor,
+  presetKvKeysFor,
   sessionDefaultEnums,
   validateExecSettings,
   validateImplPresetSettings,
@@ -149,21 +155,72 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     for (const key of ACCOUNT_KEYS) {
       expect(BEAD_APPLY_KEYS).not.toContain(key);
       expect(WORKSPACE_KV_KEYS).not.toContain(key);
-      expect(IMPL_PRESET_KEYS).not.toContain(key);
-      expect(PRESET_KV_KEYS).not.toContain(key);
+      expect(GENERAL_PRESET_KEYS).not.toContain(key);
+      expect(QUICK_FIX_PRESET_KEYS).not.toContain(key);
+      expect(GENERAL_PRESET_KV_KEYS).not.toContain(key);
       expect(EXEC_SETTING_KEYS).not.toContain(key);
     }
   });
 
-  test('covers all 25 full-profile preset keys', () => {
-    expect(IMPL_PRESET_KEYS).toHaveLength(25);
-    expect(IMPL_PRESET_KEYS).toEqual([
-      ...BEAD_APPLY_KEYS,
+  test('carries the 17 per-Bead pins in the general profile', () => {
+    expect(GENERAL_PRESET_KEYS).toHaveLength(17);
+
+    expect(GENERAL_PRESET_KEYS).toEqual([...BEAD_PIN_KEYS]);
+    expect(Object.keys(implPresetEnums('general'))).toEqual(
+      GENERAL_PRESET_KEYS
+    );
+  });
+
+  test('carries orchestration plus the five implementation keys in the quick_fix profile', () => {
+    expect(QUICK_FIX_PRESET_KEYS).toHaveLength(8);
+
+    expect(QUICK_FIX_PRESET_KEYS).toEqual([
       ...ORCHESTRATION_KEYS,
-      ...QUICK_FIX_ORCHESTRATION_KEYS,
-      ...QUICK_FIX_KV_KEYS
+      ...QUICK_FIX_IMPL_KEYS
     ]);
-    expect(Object.keys(implPresetEnums())).toEqual(IMPL_PRESET_KEYS);
+    expect(Object.keys(implPresetEnums('quick_fix'))).toEqual(
+      QUICK_FIX_PRESET_KEYS
+    );
+  });
+
+  test('leaves the nine review keys out of the quick_fix profile', () => {
+    const review_keys = BEAD_APPLY_KEYS.filter(
+      (key) =>
+        key.endsWith('_review_model') ||
+        key.endsWith('_review_effort') ||
+        key.endsWith('_review_speed')
+    );
+
+    expect(review_keys).toHaveLength(9);
+    for (const key of review_keys) {
+      expect(GENERAL_PRESET_KEYS).toContain(key);
+      expect(QUICK_FIX_PRESET_KEYS).not.toContain(key);
+    }
+  });
+
+  test('names canonical keys only in both profiles', () => {
+    const prefixed = [...GENERAL_PRESET_KEYS, ...QUICK_FIX_PRESET_KEYS].filter(
+      (key) => key.startsWith('quick_fix_')
+    );
+
+    expect(prefixed).toEqual([]);
+  });
+
+  test('selects the profile key set from an applies_to value', () => {
+    expect(presetKeysFor('general')).toEqual(GENERAL_PRESET_KEYS);
+    expect(presetKeysFor('quick_fix')).toEqual(QUICK_FIX_PRESET_KEYS);
+    expect(presetKeysFor(undefined)).toEqual(GENERAL_PRESET_KEYS);
+    expect(presetKeysFor('lane')).toEqual(GENERAL_PRESET_KEYS);
+  });
+
+  test('reads an absent or unknown applies_to as the general profile', () => {
+    expect(APPLIES_TO_VALUES).toEqual(['general', 'quick_fix']);
+
+    expect(normalizeAppliesTo('quick_fix')).toBe('quick_fix');
+    expect(normalizeAppliesTo('general')).toBe('general');
+    expect(normalizeAppliesTo(undefined)).toBe('general');
+    expect(normalizeAppliesTo('lane')).toBe('general');
+    expect(normalizeAppliesTo(7)).toBe('general');
   });
 
   test('keeps fourteen execution keys on the per-bead apply list', () => {
@@ -220,14 +277,16 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
 
   test('keeps base_sync_accept_local_commits off every per-bead surface', () => {
     expect(BEAD_APPLY_KEYS).not.toContain('base_sync_accept_local_commits');
-    expect(IMPL_PRESET_KEYS).not.toContain('base_sync_accept_local_commits');
+    expect(GENERAL_PRESET_KEYS).not.toContain('base_sync_accept_local_commits');
     expect(EXEC_SETTING_KEYS).not.toContain('base_sync_accept_local_commits');
-    expect(PRESET_KV_KEYS).not.toContain('base_sync_accept_local_commits');
+    expect(GENERAL_PRESET_KV_KEYS).not.toContain(
+      'base_sync_accept_local_commits'
+    );
   });
 
   test('keeps bdui_url off every per-bead surface (metadata_key forbidden)', () => {
     expect(BEAD_APPLY_KEYS).not.toContain('bdui_url');
-    expect(IMPL_PRESET_KEYS).not.toContain('bdui_url');
+    expect(GENERAL_PRESET_KEYS).not.toContain('bdui_url');
     expect(EXEC_SETTING_KEYS).not.toContain('bdui_url');
     expect(
       Object.keys(execSettingEnums(resolveCatalog({ warn: () => {} })))
@@ -254,17 +313,24 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     );
   });
 
-  test('includes every quick_fix kv key in the preset-carried kv list', () => {
-    expect(PRESET_KV_KEYS).toHaveLength(18);
-    for (const key of QUICK_FIX_KV_KEYS) {
-      expect(PRESET_KV_KEYS).toContain(key);
-    }
-    expect(PRESET_KV_KEYS).not.toContain('workflow_mode');
-    expect(PRESET_KV_KEYS).not.toContain('bdui_url');
+  test('replaces thirteen canonical kv keys for a general apply', () => {
+    expect(GENERAL_PRESET_KV_KEYS).toHaveLength(13);
 
-    expect(PRESET_KV_KEYS.every((key) => IMPL_PRESET_KEYS.includes(key))).toBe(
-      true
-    );
+    expect(presetKvKeysFor('general')).toEqual(GENERAL_PRESET_KV_KEYS);
+    expect(GENERAL_PRESET_KV_KEYS).not.toContain('impl_dispatch');
+    expect(GENERAL_PRESET_KV_KEYS).not.toContain('workflow_mode');
+    expect(GENERAL_PRESET_KV_KEYS).not.toContain('bdui_url');
+    expect(
+      GENERAL_PRESET_KV_KEYS.every((key) => GENERAL_PRESET_KEYS.includes(key))
+    ).toBe(true);
+  });
+
+  test('replaces the five prefixed kv keys for a quick_fix apply', () => {
+    expect(presetKvKeysFor('quick_fix')).toEqual(QUICK_FIX_KV_KEYS);
+
+    for (const key of QUICK_FIX_KV_KEYS) {
+      expect(GENERAL_PRESET_KV_KEYS).not.toContain(key);
+    }
   });
 
   test('offers the catalog model tokens to quick_fix_impl_model without auto', () => {
@@ -332,20 +398,86 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
   });
 });
 
-describe('worker/exec-enums full-profile presets', () => {
-  test('accepts every quick_fix preset key', () => {
-    const result = validateImplPresetSettings({
-      quick_fix_orchestration_model: 'sol',
-      quick_fix_orchestration_effort: 'high',
-      quick_fix_orchestration_speed: 'fast',
-      quick_fix_impl_dispatch: 'delegated',
-      quick_fix_impl_runtime: 'codex',
-      quick_fix_impl_model: 'sol',
-      quick_fix_impl_effort: 'auto',
-      quick_fix_impl_speed: 'fast'
-    });
+describe('worker/exec-enums preset profiles', () => {
+  test('accepts every quick_fix preset key under its own profile', () => {
+    const result = validateImplPresetSettings(
+      {
+        orchestration_model: 'sol',
+        orchestration_effort: 'high',
+        orchestration_speed: 'fast',
+        impl_dispatch: 'delegated',
+        impl_runtime: 'codex',
+        impl_model: 'sol',
+        impl_effort: 'auto',
+        impl_speed: 'fast'
+      },
+      { applies_to: 'quick_fix' }
+    );
 
     expect(result).toEqual({ ok: true });
+  });
+
+  test('rejects a prefixed quick_fix key in the general profile', () => {
+    const result = validateImplPresetSettings({
+      quick_fix_impl_runtime: 'codex'
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'unknown_impl_preset_key:quick_fix_impl_runtime'
+    });
+  });
+
+  test('rejects a review key in the quick_fix profile', () => {
+    const result = validateImplPresetSettings(
+      { impl_review_model: 'fable' },
+      { applies_to: 'quick_fix' }
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'unknown_impl_preset_key:impl_review_model'
+    });
+  });
+
+  test('rejects an auto runtime in the quick_fix profile while the general profile takes it', () => {
+    const quick_fix = validateImplPresetSettings(
+      { impl_runtime: 'auto' },
+      { applies_to: 'quick_fix' }
+    );
+    const general = validateImplPresetSettings({ impl_runtime: 'auto' });
+
+    expect(quick_fix).toEqual({ ok: false, reason: 'invalid_impl_runtime' });
+    expect(general).toEqual({ ok: true });
+  });
+
+  test('rejects an auto model in the quick_fix profile while the general profile takes it', () => {
+    const quick_fix = validateImplPresetSettings(
+      { impl_model: 'auto' },
+      { applies_to: 'quick_fix' }
+    );
+    const general = validateImplPresetSettings({ impl_model: 'auto' });
+
+    expect(quick_fix).toEqual({ ok: false, reason: 'invalid_impl_model' });
+    expect(general).toEqual({ ok: true });
+  });
+
+  test('keeps the auto effort in the quick_fix profile', () => {
+    const result = validateImplPresetSettings(
+      { impl_effort: 'auto' },
+      { applies_to: 'quick_fix' }
+    );
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  test('names the mismatch reason canonically in the quick_fix profile', () => {
+    const result = validateImplPresetSettings(
+      { impl_runtime: 'claude', impl_model: 'astra' },
+      { applies_to: 'quick_fix' }
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'provider_model_mismatch' });
   });
 
   test('rejects workflow_mode as an unknown preset key', () => {
@@ -359,35 +491,52 @@ describe('worker/exec-enums full-profile presets', () => {
     });
   });
 
-  test('rejects fast quick_fix speed when the runner lacks that tier', () => {
+  test('rejects a fast implementation speed when the resolved runner lacks that tier', () => {
+    const result = validateImplPresetSettings(
+      { impl_runtime: 'claude', impl_speed: 'fast' },
+      { applies_to: 'quick_fix' }
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'impl_speed_unsupported' });
+  });
+
+  test('accepts a fast implementation speed while no runner is resolvable', () => {
+    const result = validateImplPresetSettings(
+      { impl_speed: 'fast' },
+      { applies_to: 'quick_fix' }
+    );
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  test('leaves a general implementation speed unchecked against its runner', () => {
     const result = validateImplPresetSettings({
-      quick_fix_impl_runtime: 'claude',
-      quick_fix_impl_speed: 'fast'
+      impl_runtime: 'claude',
+      impl_speed: 'fast'
     });
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  test('rejects a fast orchestration speed when the chosen model lacks that tier', () => {
+    const result = validateImplPresetSettings(
+      {
+        orchestration_model: 'opus',
+        orchestration_speed: 'fast'
+      },
+      { applies_to: 'quick_fix' }
+    );
 
     expect(result).toEqual({
       ok: false,
-      reason: 'quick_fix_speed_unsupported'
+      reason: 'orchestration_speed_unsupported'
     });
   });
 
-  test('rejects fast quick_fix orchestration speed when the effective model lacks that tier', () => {
+  test('leaves a general orchestration speed unchecked against its model', () => {
     const result = validateImplPresetSettings({
-      quick_fix_orchestration_model: 'opus',
-      quick_fix_orchestration_speed: 'fast'
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      reason: 'quick_fix_speed_unsupported'
-    });
-  });
-
-  test('accepts fast quick_fix impl speed inherited from a concrete general runtime', () => {
-    const result = validateImplPresetSettings({
-      impl_runtime: 'codex',
-      quick_fix_impl_dispatch: 'delegated',
-      quick_fix_impl_speed: 'fast'
+      orchestration_model: 'opus',
+      orchestration_speed: 'fast'
     });
 
     expect(result).toEqual({ ok: true });
@@ -408,7 +557,7 @@ describe('worker/exec-enums full-profile presets', () => {
     });
   });
 
-  test('reuses the exec-setting orchestration enums', () => {
+  test('reuses the exec-setting orchestration enums in both profiles', () => {
     const catalog = resolveCatalog({
       overrides: {
         codex: { models: { nova: { id: 'gpt-5.7-nova', efforts: ['ultra'] } } }
@@ -416,11 +565,26 @@ describe('worker/exec-enums full-profile presets', () => {
       warn: () => {}
     });
 
-    const preset_enums = implPresetEnums(catalog);
+    const general_enums = implPresetEnums('general', catalog);
+    const quick_fix_enums = implPresetEnums('quick_fix', catalog);
     const exec_enums = execSettingEnums(catalog);
 
     for (const key of ORCHESTRATION_KEYS) {
-      expect(preset_enums[key]).toEqual(exec_enums[key]);
+      expect(general_enums[key]).toEqual(exec_enums[key]);
+      expect(quick_fix_enums[key]).toEqual(exec_enums[key]);
+    }
+  });
+
+  test('mirrors the contract quick_fix implementation vocabulary onto canonical names', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+    const session_enums = sessionDefaultEnums(catalog);
+
+    const quick_fix_enums = implPresetEnums('quick_fix', catalog);
+
+    for (const key of QUICK_FIX_IMPL_KEYS) {
+      expect(quick_fix_enums[key]).toEqual(
+        session_enums[QUICK_FIX_LANE_MAP[key]]
+      );
     }
   });
 

@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import {
   accountLayerLegacy,
+  appliedPresetFieldFor,
+  appliedPresetProjected,
   observationBadge,
   observeAppliedPreset,
   observeKey,
@@ -264,6 +266,45 @@ describe('observeAppliedPreset (UI-e1ta §4.1)', () => {
     const observation = observeAppliedPreset(rows);
 
     expect(observation.state).toBe('empty');
+  });
+});
+
+describe('observeAppliedPreset per profile (UI-uohc §4.1)', () => {
+  test('names one queue field per profile', () => {
+    expect(appliedPresetFieldFor('general')).toBe('applied_exec_preset');
+    expect(appliedPresetFieldFor('quick_fix')).toBe('applied_quick_fix_preset');
+  });
+
+  test('reads the quick_fix record rather than the general one', () => {
+    const rows = [
+      row(
+        'a',
+        {},
+        {
+          applied_exec_preset: { id: 'p1' },
+          applied_quick_fix_preset: { id: 'q1' }
+        }
+      )
+    ];
+
+    const observation = observeAppliedPreset(rows, 'quick_fix');
+
+    expect(observation.value).toBe('q1');
+  });
+
+  test('reads an absent quick_fix record while a general one stands', () => {
+    const rows = [row('a', {}, { applied_exec_preset: { id: 'p1' } })];
+
+    const observation = observeAppliedPreset(rows, 'quick_fix');
+
+    expect(observation.state).toBe('empty');
+  });
+
+  test('projects each profile field independently', () => {
+    const rows = [row('a', {}, { applied_exec_preset: { id: 'p1' } })];
+
+    expect(appliedPresetProjected(rows, 'general')).toBe(true);
+    expect(appliedPresetProjected(rows, 'quick_fix')).toBe(false);
   });
 });
 

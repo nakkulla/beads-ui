@@ -1,10 +1,11 @@
 ---
 id: UI-xq3h
 title: 이슈에 적용한 프리셋의 정체성은 id 하나로 기록하고 어긋남은 읽을 때 대칭 비교로 계산한다 — 17키 교체·quick_fix 역매핑·오케스트레이션 검증·응답 형식은 UI-00lf를 승계한다
-status: accepted
+status: superseded
 date: 2026-09-21
 summary: "이슈에 적용한 프리셋의 정체성은 id 하나를 metadata `applied_exec_preset`에 기록하고 프리셋과의 어긋남은 저장하지 않고 읽을 때 현재 프리셋과 대칭 비교해 계산한다 — UI-00lf의 '새 표시 요소는 없다' 조항만 뒤집고 17키 교체·역매핑·검증은 승계한다"
 supersedes: [UI-00lf]
+superseded_by: UI-uohc
 spec: docs/superpowers/specs/2026-09-21-issue-detail-execution-roles-and-applied-preset-design.md
 bead: UI-xq3h
 ---

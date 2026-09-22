@@ -182,8 +182,8 @@ export const QUICK_FIX_KV_KEYS = [
  * The list is NOT a subset of the per-bead list: it carries the route-scoped
  * {@link QUICK_FIX_KV_KEYS} profile, `base_sync_accept_local_commits`, and
  * `bdui_url` (`key_scoped`, `metadata_key: forbidden`). None of those seven is
- * an `IMPL_PRESET_KEYS` member, so {@link PRESET_KV_KEYS} drops them and a
- * general preset apply preserves them.
+ * a {@link GENERAL_PRESET_KEYS} member, so {@link presetKvKeysFor} leaves them
+ * out of the general profile and a general preset apply preserves them.
  *
  * Those last two are also the only keys with no entry in
  * {@link sessionDefaultEnums}: the contract types `bdui_url` `enum: none` and
@@ -231,7 +231,13 @@ export const QUICK_FIX_ORCHESTRATION_KEYS = [
 ];
 
 /**
- * Map one canonical preset field onto the quick_fix storage profile.
+ * Map one canonical key name onto the name the quick_fix layer STORES it
+ * under: the route-scoped kv keys and the route-scoped queue keys.
+ *
+ * This is a storage-name mapping, not a preset profile mapping. An execution
+ * preset carries canonical names in both profiles (design §3.2), and it is the
+ * workspace apply path and `bench-runs.js` that still need the prefixed names
+ * because the kv object and the queue keep them.
  *
  * @type {Readonly<Record<string, string>>}
  */
@@ -247,27 +253,103 @@ export const QUICK_FIX_LANE_MAP = Object.freeze({
 });
 
 /**
- * The 25 sparse keys a full-profile execution preset may carry: the per-Bead
- * values plus the general and quick_fix workspace profiles.
+ * The `applies_to` vocabulary: an execution preset belongs to exactly one
+ * profile, and the profile — not a key prefix — decides where its canonical
+ * settings apply (design §3.1).
  *
  * @type {ReadonlyArray<string>}
  */
-export const IMPL_PRESET_KEYS = [
-  ...BEAD_APPLY_KEYS,
-  ...ORCHESTRATION_KEYS,
-  ...QUICK_FIX_ORCHESTRATION_KEYS,
-  ...QUICK_FIX_KV_KEYS
+export const APPLIES_TO_VALUES = ['general', 'quick_fix'];
+
+/**
+ * Read any stored or requested value as one profile. An absent value and a
+ * value outside the vocabulary both read as `general`, so a preset file
+ * written before this field existed loads as a general preset.
+ *
+ * @param {unknown} value
+ * @returns {'general'|'quick_fix'}
+ */
+export function normalizeAppliesTo(value) {
+  return value === 'quick_fix' ? 'quick_fix' : 'general';
+}
+
+/**
+ * The 17 keys a `general` preset may carry. The same set as
+ * {@link BEAD_PIN_KEYS} and named separately on purpose: this one is the
+ * profile's `settings` vocabulary, that one is what an apply writes onto a
+ * Bead, and the two are free to drift.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const GENERAL_PRESET_KEYS = [...BEAD_PIN_KEYS];
+
+/**
+ * The five implementation keys a `quick_fix` preset may carry, in canonical
+ * names. The nine review keys are deliberately absent: review settings are a
+ * profile-independent axis and the contract has no route-scoped review key.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const QUICK_FIX_IMPL_KEYS = [
+  'impl_dispatch',
+  'impl_runtime',
+  'impl_model',
+  'impl_effort',
+  'impl_speed'
 ];
 
 /**
- * The 18 kv keys a full-profile preset carries. Preset application replaces
- * every general and quick_fix member in this list.
+ * The 8 keys a `quick_fix` preset may carry.
  *
  * @type {ReadonlyArray<string>}
  */
-export const PRESET_KV_KEYS = WORKSPACE_KV_KEYS.filter((key) =>
-  IMPL_PRESET_KEYS.includes(key)
+export const QUICK_FIX_PRESET_KEYS = [
+  ...ORCHESTRATION_KEYS,
+  ...QUICK_FIX_IMPL_KEYS
+];
+
+/**
+ * The 13 kv keys a `general` apply replaces. `impl_dispatch` is the one
+ * general preset key with no kv member: the contract makes it
+ * `write_rule: user_write_only`, so it stays an issue pin.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const GENERAL_PRESET_KV_KEYS = WORKSPACE_KV_KEYS.filter((key) =>
+  GENERAL_PRESET_KEYS.includes(key)
 );
+
+/**
+ * The `settings` key set of one profile. Replaces the retired 25-key
+ * `IMPL_PRESET_KEYS`, which merged both profiles into one sparse object and
+ * distinguished them by the `quick_fix_` key prefix.
+ *
+ * @param {unknown} applies_to
+ * @returns {ReadonlyArray<string>}
+ */
+export function presetKeysFor(applies_to) {
+  return normalizeAppliesTo(applies_to) === 'quick_fix'
+    ? QUICK_FIX_PRESET_KEYS
+    : GENERAL_PRESET_KEYS;
+}
+
+/**
+ * The workspace kv STORAGE keys one profile's apply replaces (design §4).
+ * Replaces the retired 18-key `PRESET_KV_KEYS`, which carried both profiles.
+ *
+ * The general profile stores canonical names, so its list is the canonical
+ * keys themselves; the quick_fix profile stores its five canonical
+ * implementation keys under the prefixed {@link QUICK_FIX_KV_KEYS} names, so
+ * that is the list an apply replaces there.
+ *
+ * @param {unknown} applies_to
+ * @returns {ReadonlyArray<string>}
+ */
+export function presetKvKeysFor(applies_to) {
+  return normalizeAppliesTo(applies_to) === 'quick_fix'
+    ? QUICK_FIX_KV_KEYS
+    : GENERAL_PRESET_KV_KEYS;
+}
 
 /**
  * Allowed values per per-bead session key. `impl_model`/`impl_effort` add the
@@ -307,30 +389,41 @@ export function sessionDefaultEnums(catalog = runtimeCatalog()) {
 }
 
 /**
- * Allowed values per full-profile preset key. Session keys reuse the session
- * table; orchestration keys reuse the queue-facing execution table.
+ * Allowed values per preset key, for one profile.
  *
+ * The three orchestration keys reuse the queue-facing execution table in BOTH
+ * profiles. That is not a simplification: the retired
+ * `quick_fix_orchestration_*` entries resolved through
+ * {@link QUICK_FIX_LANE_MAP} to those same three lists, so the two profiles
+ * genuinely share one orchestration vocabulary.
+ *
+ * The profiles differ on the implementation axis only, and that difference is
+ * the contract's (ADR 0012), carried over key for key from the
+ * `quick_fix_impl_*` rows of {@link sessionDefaultEnums}: `general` reuses the
+ * session table, which adds the `auto` literal to runtime, model, and effort,
+ * while `quick_fix` takes `claude`|`codex` with no `auto` runtime and bare
+ * catalog tokens with no `auto` model, because there the provider is DERIVED
+ * from the model token.
+ *
+ * @param {unknown} applies_to
  * @param {ResolvedCatalog} [catalog]
  * @returns {Record<string, ReadonlyArray<string>>}
  */
-export function implPresetEnums(catalog = runtimeCatalog()) {
+export function implPresetEnums(applies_to, catalog = runtimeCatalog()) {
   const session_enums = sessionDefaultEnums(catalog);
   const exec_enums = execSettingEnums(catalog);
+  const profile = normalizeAppliesTo(applies_to);
   /** @type {Record<string, ReadonlyArray<string>>} */
   const narrowed = {};
-  for (const key of IMPL_PRESET_KEYS) {
+  for (const key of presetKeysFor(profile)) {
     if (ORCHESTRATION_KEYS.includes(key)) {
       narrowed[key] = exec_enums[key];
       continue;
     }
-    if (QUICK_FIX_ORCHESTRATION_KEYS.includes(key)) {
-      const source_key = Object.entries(QUICK_FIX_LANE_MAP).find(
-        ([, target_key]) => target_key === key
-      )?.[0];
-      narrowed[key] = source_key ? exec_enums[source_key] : [];
-      continue;
-    }
-    narrowed[key] = session_enums[key];
+    narrowed[key] =
+      profile === 'quick_fix'
+        ? session_enums[QUICK_FIX_LANE_MAP[key]]
+        : session_enums[key];
   }
   return narrowed;
 }
@@ -353,20 +446,7 @@ function runnerSupportsSpeed(catalog, runtime, speed) {
 }
 
 /**
- * Translate canonical implementation validation reasons to quick_fix names.
- *
- * @param {string} reason
- * @returns {string}
- */
-function quickFixReason(reason) {
-  if (reason === 'provider_model_mismatch') {
-    return 'quick_fix_provider_model_mismatch';
-  }
-  return reason.replace('impl_', 'quick_fix_impl_');
-}
-
-/**
- * Validate one full-profile execution preset's sparse settings.
+ * Validate one execution preset's sparse settings against its profile.
  *
  * The `auto` literal is a SELECTOR STATE, not a catalog model or effort, so it
  * is removed before the runtime/model/effort coherence check — otherwise
@@ -374,31 +454,46 @@ function quickFixReason(reason) {
  * likewise suspends coherence: a controller-implemented unit has no delegation
  * target to be coherent with.
  *
+ * Every reason is a canonical key name in both profiles. The retired
+ * `quick_fix_` reason prefix went with the prefixed keys: one profile's
+ * `impl_model` is judged by one check, so there is nothing to disambiguate
+ * (design §3.2).
+ *
+ * The two `fast` speed checks are the QUICK_FIX profile's alone, as they were
+ * when they read the prefixed keys: the general profile stored a `fast` speed
+ * unchecked before the split and still does. Each runs against whichever
+ * runner that profile resolves, and stays silent when no runner is resolvable
+ * at all — an `auto` target names no provider, so its speed tier is unknowable
+ * rather than unsupported. The orchestration leg already read that way.
+ *
  * @param {Record<string, unknown>} settings
- * @param {{ catalog?: ResolvedCatalog }} [options]
+ * @param {{ catalog?: ResolvedCatalog, applies_to?: unknown }} [options]
  * @returns {{ ok: true }|{ ok: false, reason: string }}
  */
 export function validateImplPresetSettings(settings, options = {}) {
   const catalog = options.catalog ?? runtimeCatalog();
-  const enums = implPresetEnums(catalog);
+  const applies_to = normalizeAppliesTo(options.applies_to);
+  const preset_keys = presetKeysFor(applies_to);
+  const enums = implPresetEnums(applies_to, catalog);
   for (const [key, value] of Object.entries(settings)) {
-    if (!IMPL_PRESET_KEYS.includes(key)) {
+    if (!preset_keys.includes(key)) {
       return { ok: false, reason: `unknown_impl_preset_key:${key}` };
     }
     if (typeof value !== 'string' || !enums[key].includes(value)) {
       return { ok: false, reason: `invalid_${key}` };
     }
   }
-  if (settings.impl_dispatch !== 'main') {
-    /** @type {Record<string, unknown>} */
-    const coherence_input = {};
-    for (const key of ['impl_runtime', 'impl_model', 'impl_effort']) {
-      const value = settings[key];
-      if (typeof value === 'string' && value !== AUTO_LITERAL) {
-        coherence_input[key] = value;
-      }
+
+  /** @type {Record<string, unknown>} */
+  const impl_target = {};
+  for (const key of ['impl_runtime', 'impl_model', 'impl_effort']) {
+    const value = settings[key];
+    if (typeof value === 'string' && value !== AUTO_LITERAL) {
+      impl_target[key] = value;
     }
-    const coherence = validateImplSettings(coherence_input, {
+  }
+  if (settings.impl_dispatch !== 'main') {
+    const coherence = validateImplSettings(impl_target, {
       catalog,
       active_writer: false
     });
@@ -407,47 +502,23 @@ export function validateImplPresetSettings(settings, options = {}) {
     }
   }
 
-  /** @type {Record<string, unknown>} */
-  const quick_fix_input = {};
-  for (const key of ['impl_runtime', 'impl_model', 'impl_effort']) {
-    const value = settings[`quick_fix_${key}`];
-    if (typeof value === 'string' && value !== AUTO_LITERAL) {
-      quick_fix_input[key] = value;
-    }
-  }
-  if (settings.quick_fix_impl_dispatch !== 'main') {
-    const coherence = validateImplSettings(quick_fix_input, {
-      catalog,
-      active_writer: false
-    });
-    if (!coherence.ok) {
-      return { ok: false, reason: quickFixReason(coherence.reason) };
-    }
-  }
-
-  if (settings.quick_fix_impl_speed === 'fast') {
-    const concrete_impl_runtime =
-      typeof settings.impl_runtime === 'string' &&
-      settings.impl_runtime !== AUTO_LITERAL
-        ? settings.impl_runtime
-        : undefined;
+  if (applies_to === 'quick_fix' && settings.impl_speed === 'fast') {
     const runtime =
-      quick_fix_input.impl_runtime ??
-      modelRunner(catalog, quick_fix_input.impl_model) ??
-      concrete_impl_runtime ??
-      modelRunner(catalog, settings.impl_model);
-    if (!runnerSupportsSpeed(catalog, runtime, 'fast')) {
-      return { ok: false, reason: 'quick_fix_speed_unsupported' };
+      impl_target.impl_runtime ?? modelRunner(catalog, impl_target.impl_model);
+    if (
+      typeof runtime === 'string' &&
+      !runnerSupportsSpeed(catalog, runtime, 'fast')
+    ) {
+      return { ok: false, reason: 'impl_speed_unsupported' };
     }
   }
 
-  if (settings.quick_fix_orchestration_speed === 'fast') {
-    const effective_model =
-      settings.quick_fix_orchestration_model ?? settings.orchestration_model;
-    if (typeof effective_model === 'string') {
-      const runtime = modelRunner(catalog, effective_model);
+  if (applies_to === 'quick_fix' && settings.orchestration_speed === 'fast') {
+    const orchestration_model = settings.orchestration_model;
+    if (typeof orchestration_model === 'string') {
+      const runtime = modelRunner(catalog, orchestration_model);
       if (!runnerSupportsSpeed(catalog, runtime, 'fast')) {
-        return { ok: false, reason: 'quick_fix_speed_unsupported' };
+        return { ok: false, reason: 'orchestration_speed_unsupported' };
       }
     }
   }

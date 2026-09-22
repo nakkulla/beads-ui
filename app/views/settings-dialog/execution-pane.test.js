@@ -69,6 +69,38 @@ const PRESETS = {
   ]
 };
 
+/** A general preset that already stands in the queue, so its diff is empty. */
+const SAME_VALUE_PRESET = {
+  revision: 4,
+  presets: [
+    {
+      id: 'p1',
+      name: '같은 값',
+      applies_to: 'general',
+      settings: { orchestration_model: 'opus' }
+    }
+  ]
+};
+
+/** One preset per profile, so each tab's bar has exactly one to offer. */
+const BOTH_PROFILE_PRESETS = {
+  revision: 4,
+  presets: [
+    {
+      id: 'p1',
+      name: '위임',
+      applies_to: 'general',
+      settings: { impl_runtime: 'codex', impl_model: 'sol' }
+    },
+    {
+      id: 'q1',
+      name: 'quick fix 기본',
+      applies_to: 'quick_fix',
+      settings: { orchestration_model: 'opus' }
+    }
+  ]
+};
+
 /**
  * @param {Partial<Record<string, any>>} [patch]
  * @returns {Record<string, any>}
@@ -334,14 +366,13 @@ describe('createExecutionPane unbound (root_dir null)', () => {
   });
 });
 
-describe('createExecutionPane quick_fix group', () => {
+describe('createExecutionPane quick fix tab (UI-uohc §6.1)', () => {
   test('draws the orchestration rows and the dispatch row on main', async () => {
-    const { root, pane } = mount();
+    const { root, pane } = mount({ section: 'quick_fix' });
 
     await pane.load();
 
-    const group = el(root, '[data-quick-fix-group]');
-    const rows = Array.from(group.querySelectorAll('select[data-key]'));
+    const rows = Array.from(root.querySelectorAll('select[data-key]'));
 
     expect(rows.map((row) => row.getAttribute('data-key'))).toEqual([
       'quick_fix_orchestration_model',
@@ -350,8 +381,20 @@ describe('createExecutionPane quick_fix group', () => {
     ]);
   });
 
+  test('splits its rows into an orchestration and an impl group', async () => {
+    const { root, pane } = mount({ section: 'quick_fix' });
+
+    await pane.load();
+
+    expect(
+      Array.from(root.querySelectorAll('[data-quick-fix-group]'), (node) =>
+        node.getAttribute('data-quick-fix-group')
+      )
+    ).toEqual(['orchestration', 'impl']);
+  });
+
   test('names the main-session hint instead of the delegation rows', async () => {
-    const { root, pane } = mount();
+    const { root, pane } = mount({ section: 'quick_fix' });
 
     await pane.load();
 
@@ -362,6 +405,7 @@ describe('createExecutionPane quick_fix group', () => {
 
   test('draws the four delegation rows once the dispatch resolves delegated', async () => {
     const { root, pane } = mount({
+      section: 'quick_fix',
       values: {
         quick_fix_impl_dispatch: 'delegated',
         quick_fix_impl_runtime: 'codex'
@@ -370,9 +414,7 @@ describe('createExecutionPane quick_fix group', () => {
 
     await pane.load();
 
-    const rows = Array.from(
-      el(root, '[data-quick-fix-group]').querySelectorAll('select[data-key]')
-    );
+    const rows = Array.from(root.querySelectorAll('select[data-key]'));
 
     expect(rows.map((row) => row.getAttribute('data-key'))).toEqual([
       'quick_fix_orchestration_model',
@@ -385,8 +427,29 @@ describe('createExecutionPane quick_fix group', () => {
     ]);
   });
 
+  test('removes the delegation rows from the DOM on a switch back to main', async () => {
+    const { root, pane } = mount({
+      section: 'quick_fix',
+      values: {
+        quick_fix_impl_dispatch: 'delegated',
+        quick_fix_impl_runtime: 'codex'
+      }
+    });
+    await pane.load();
+    const dispatch = /** @type {HTMLSelectElement} */ (
+      el(root, 'select[data-key="quick_fix_impl_dispatch"]')
+    );
+
+    dispatch.value = 'main';
+    dispatch.dispatchEvent(new Event('change'));
+
+    expect(el(root, 'select[data-key="quick_fix_impl_runtime"]')).toBe(null);
+    expect(el(root, 'select[data-key="quick_fix_impl_model"]')).toBe(null);
+  });
+
   test('hides the quick_fix delegation speed row for a claude runtime', async () => {
     const { root, pane } = mount({
+      section: 'quick_fix',
       values: {
         quick_fix_impl_dispatch: 'delegated',
         quick_fix_impl_runtime: 'claude'
@@ -395,15 +458,14 @@ describe('createExecutionPane quick_fix group', () => {
 
     await pane.load();
 
-    expect(
-      el(root, '[data-quick-fix-group]').querySelector(
-        'select[data-key="quick_fix_impl_speed"]'
-      )
-    ).toBe(null);
+    expect(root.querySelector('select[data-key="quick_fix_impl_speed"]')).toBe(
+      null
+    );
   });
 
   test('derives the unset quick_fix runtime from its model before general runtime', async () => {
     const { root, pane } = mount({
+      section: 'quick_fix',
       values: {
         impl_runtime: 'claude',
         quick_fix_impl_dispatch: 'delegated',
@@ -423,6 +485,7 @@ describe('createExecutionPane quick_fix group', () => {
 
   test('marks a general model incompatible with the quick_fix runtime', async () => {
     const { root, pane } = mount({
+      section: 'quick_fix',
       values: {
         impl_model: 'sol',
         quick_fix_impl_dispatch: 'delegated',
@@ -438,6 +501,35 @@ describe('createExecutionPane quick_fix group', () => {
     expect(model.options[0].textContent).toContain(
       '기본값 사용 — sol (비호환)'
     );
+  });
+
+  test('keeps every quick_fix row out of the worker tab', async () => {
+    const { root, pane } = mount();
+
+    await pane.load();
+
+    expect(root.querySelector('[data-quick-fix-group]')).toBe(null);
+    expect(
+      Array.from(root.querySelectorAll('select[data-key]')).some((row) =>
+        String(row.getAttribute('data-key')).startsWith('quick_fix_')
+      )
+    ).toBe(false);
+  });
+
+  test('locks its rows when the server takes no quick_fix values', async () => {
+    const old_queue = queueRow();
+    Reflect.deleteProperty(old_queue, 'quick_fix_orchestration_model');
+    const { root, pane } = mount({ section: 'quick_fix', queue: old_queue });
+
+    await pane.load();
+
+    const dispatch = /** @type {HTMLSelectElement} */ (
+      el(root, 'select[data-key="quick_fix_impl_dispatch"]')
+    );
+    expect(dispatch.disabled).toBe(true);
+    expect(
+      el(root, '[data-quick-fix-group="impl"]').getAttribute('title')
+    ).toBe('서버가 quick_fix 레인을 지원하지 않습니다');
   });
 });
 
@@ -482,7 +574,57 @@ describe('createExecutionPane preset strip', () => {
     ]);
   });
 
-  test('refuses to apply against a server that takes no quick_fix values', async () => {
+  test('refuses a quick fix apply against a server that takes no quick_fix values', async () => {
+    const old_queue = queueRow();
+    Reflect.deleteProperty(old_queue, 'quick_fix_orchestration_model');
+    const { root, pane } = mount({
+      section: 'quick_fix',
+      queue: old_queue,
+      presets: BOTH_PROFILE_PRESETS
+    });
+
+    await pane.load();
+
+    const apply = /** @type {HTMLButtonElement} */ (
+      el(root, '[data-preset-apply-global]')
+    );
+    expect(apply.disabled).toBe(true);
+    expect(apply.title).toBe('서버가 quick_fix 값을 받지 않습니다');
+  });
+
+  test('locks the whole quick fix bar on a server that takes no quick_fix values', async () => {
+    const old_queue = queueRow();
+    Reflect.deleteProperty(old_queue, 'quick_fix_orchestration_model');
+    const { root, pane } = mount({
+      section: 'quick_fix',
+      queue: old_queue,
+      presets: BOTH_PROFILE_PRESETS
+    });
+
+    await pane.load();
+
+    const locked = [
+      el(root, '[aria-label="실행 프리셋"]'),
+      el(root, '[aria-label="프리셋 이름"]'),
+      el(root, '[data-preset-save]'),
+      el(root, '[data-preset-delete]')
+    ].map((control) => ({
+      disabled: /** @type {HTMLButtonElement} */ (control).disabled,
+      title: control.getAttribute('title')
+    }));
+    const unsupported = {
+      disabled: true,
+      title: '서버가 quick_fix 레인을 지원하지 않습니다'
+    };
+    expect(locked).toEqual([
+      unsupported,
+      unsupported,
+      unsupported,
+      unsupported
+    ]);
+  });
+
+  test('keeps the general bar live on a server that takes no quick_fix values', async () => {
     const old_queue = queueRow();
     Reflect.deleteProperty(old_queue, 'quick_fix_orchestration_model');
     const { root, pane } = mount({ queue: old_queue, presets: PRESETS });
@@ -491,18 +633,105 @@ describe('createExecutionPane preset strip', () => {
       el(root, '[aria-label="실행 프리셋"]')
     );
     preset.value = 'p1';
+
+    preset.dispatchEvent(new Event('change'));
+
+    expect(
+      /** @type {HTMLButtonElement} */ (el(root, '[data-preset-apply-global]'))
+        .disabled
+    ).toBe(false);
+  });
+
+  test('applies a preset whose values already stand when no record names it', async () => {
+    const { root, pane } = mount({
+      queue: queueRow({ orchestration_model: 'opus' }),
+      presets: SAME_VALUE_PRESET
+    });
+    await pane.load();
+    const preset = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    preset.value = 'p1';
+
+    preset.dispatchEvent(new Event('change'));
+
+    expect(
+      /** @type {HTMLButtonElement} */ (el(root, '[data-preset-apply-global]'))
+        .disabled
+    ).toBe(false);
+  });
+
+  test('locks 적용 once the record names the preset its values already match', async () => {
+    const { root, pane } = mount({
+      queue: queueRow({
+        orchestration_model: 'opus',
+        applied_exec_preset: { id: 'p1', name: '같은 값', revision: 4 }
+      }),
+      presets: SAME_VALUE_PRESET
+    });
+    await pane.load();
+    const preset = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    preset.value = 'p1';
+
     preset.dispatchEvent(new Event('change'));
 
     const apply = /** @type {HTMLButtonElement} */ (
       el(root, '[data-preset-apply-global]')
     );
-
     expect(apply.disabled).toBe(true);
-    expect(apply.title).toBe('서버가 quick_fix 값을 받지 않습니다');
+    expect(apply.title).toBe(
+      '이 프리셋이 이미 적용되어 있고 바뀔 값도 없습니다'
+    );
   });
 
-  test('captures the quick_fix rows when the current settings are saved', async () => {
+  test('reads the quick fix record rather than the general one on its own tab', async () => {
+    const { root, pane } = mount({
+      section: 'quick_fix',
+      queue: queueRow({
+        quick_fix_orchestration_model: 'opus',
+        applied_exec_preset: { id: 'q1' }
+      }),
+      presets: {
+        revision: 4,
+        presets: [
+          {
+            id: 'q1',
+            name: 'quick fix 기본',
+            applies_to: 'quick_fix',
+            settings: { orchestration_model: 'opus' }
+          }
+        ]
+      }
+    });
+    await pane.load();
+    const preset = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    preset.value = 'q1';
+
+    preset.dispatchEvent(new Event('change'));
+
+    expect(
+      /** @type {HTMLButtonElement} */ (el(root, '[data-preset-apply-global]'))
+        .disabled
+    ).toBe(false);
+  });
+
+  test('says the preset list is server-wide on the save control', async () => {
+    const { root, pane } = mount({ presets: PRESETS });
+
+    await pane.load();
+
+    expect(el(root, '[data-preset-save]').getAttribute('title')).toContain(
+      '프리셋 목록은 서버 전역이라 저장·삭제가 모든 저장소의 목록을 바꿉니다'
+    );
+  });
+
+  test('saves the quick fix tab rows under canonical key names', async () => {
     const { root, pane, calls } = mount({
+      section: 'quick_fix',
       queue: queueRow({ quick_fix_orchestration_model: 'opus' }),
       values: {
         quick_fix_impl_dispatch: 'delegated',
@@ -532,15 +761,79 @@ describe('createExecutionPane preset strip', () => {
     await settle();
 
     expect(payloadsOf(calls, 'impl-preset-create')[0].settings).toEqual({
-      quick_fix_orchestration_model: 'opus',
-      quick_fix_impl_dispatch: 'delegated',
-      quick_fix_impl_runtime: 'codex'
+      orchestration_model: 'opus',
+      impl_dispatch: 'delegated',
+      impl_runtime: 'codex'
+    });
+  });
+
+  test('names the quick fix profile on the preset it creates', async () => {
+    const { root, pane, calls } = mount({
+      section: 'quick_fix',
+      queue: queueRow({ quick_fix_orchestration_model: 'opus' }),
+      transport: async () => ({ applied: true, presets: [] })
+    });
+    await pane.load();
+    const name = /** @type {HTMLInputElement} */ (
+      el(root, '[aria-label="프리셋 이름"]')
+    );
+    name.value = '빠른 수정';
+    name.dispatchEvent(new Event('input'));
+
+    el(root, '[data-preset-save]').click();
+    await settle();
+
+    expect(payloadsOf(calls, 'impl-preset-create')[0].applies_to).toBe(
+      'quick_fix'
+    );
+  });
+
+  test('names the general profile on a preset saved from the worker tab', async () => {
+    const { root, pane, calls } = mount({
+      queue: queueRow({ orchestration_model: 'opus' }),
+      transport: async () => ({ applied: true, presets: [] })
+    });
+    await pane.load();
+    const name = /** @type {HTMLInputElement} */ (
+      el(root, '[aria-label="프리셋 이름"]')
+    );
+    name.value = '일반';
+    name.dispatchEvent(new Event('input'));
+
+    el(root, '[data-preset-save]').click();
+    await settle();
+
+    expect(payloadsOf(calls, 'impl-preset-create')[0].applies_to).toBe(
+      'general'
+    );
+  });
+
+  test('keeps the quick fix rows out of a general preset it saves', async () => {
+    const { root, pane, calls } = mount({
+      queue: queueRow({
+        orchestration_model: 'opus',
+        quick_fix_orchestration_model: 'sol'
+      }),
+      transport: async () => ({ applied: true, presets: [] })
+    });
+    await pane.load();
+    const name = /** @type {HTMLInputElement} */ (
+      el(root, '[aria-label="프리셋 이름"]')
+    );
+    name.value = '일반';
+    name.dispatchEvent(new Event('input'));
+
+    el(root, '[data-preset-save]').click();
+    await settle();
+
+    expect(payloadsOf(calls, 'impl-preset-create')[0].settings).toEqual({
+      orchestration_model: 'opus'
     });
   });
 
   test('previews a key the preset omits as cleared', async () => {
     const { root, pane } = mount({
-      queue: queueRow({ quick_fix_orchestration_model: 'opus' }),
+      queue: queueRow({ orchestration_model: 'opus' }),
       presets: {
         revision: 4,
         presets: [{ id: 'p1', name: '자동', settings: { impl_model: 'sol' } }]
@@ -554,6 +847,52 @@ describe('createExecutionPane preset strip', () => {
     preset.dispatchEvent(new Event('change'));
 
     expect(el(root, '[data-preset-diff]').textContent).toContain('기본(해제)');
+  });
+
+  test('lists only the general presets in the worker tab bar', async () => {
+    const { root, pane } = mount({ presets: BOTH_PROFILE_PRESETS });
+
+    await pane.load();
+
+    expect(
+      Array.from(
+        el(root, '[aria-label="실행 프리셋"]').querySelectorAll('option'),
+        (node) => node.textContent?.trim()
+      )
+    ).toEqual(['실행 프리셋…', '위임']);
+  });
+
+  test('lists only the quick_fix presets in the quick fix tab bar', async () => {
+    const { root, pane } = mount({
+      section: 'quick_fix',
+      presets: BOTH_PROFILE_PRESETS
+    });
+
+    await pane.load();
+
+    expect(
+      Array.from(
+        el(root, '[aria-label="실행 프리셋"]').querySelectorAll('option'),
+        (node) => node.textContent?.trim()
+      )
+    ).toEqual(['실행 프리셋…', 'quick fix 기본']);
+  });
+
+  test('keeps one tab selection out of the other tab bar', async () => {
+    const { root, pane } = mount({ presets: BOTH_PROFILE_PRESETS });
+    await pane.load();
+    const worker_bar = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    worker_bar.value = 'p1';
+    worker_bar.dispatchEvent(new Event('change'));
+
+    pane.render('quick_fix');
+
+    expect(
+      /** @type {HTMLSelectElement} */ (el(root, '[aria-label="실행 프리셋"]'))
+        .value
+    ).toBe('');
   });
 
   test('re-derives the runtime selection from an adopted codex preset', async () => {

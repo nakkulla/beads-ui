@@ -286,6 +286,10 @@ export function benchHarnessDefaults(deps = {}) {
  * so it falls through to the general one — that is what makes the profile an
  * override layer rather than an independent profile (ADR 0032).
  *
+ * The preset rung is read by CANONICAL key alone, in either profile: a preset
+ * stores no `quick_fix_` name (design §3.2). The kv rungs keep the prefixed
+ * lookup because kv is where those STORAGE names live.
+ *
  * @param {{
  *   coordinator: { resolveForDispatch: (workspace: string, bead: any) => any },
  *   workspace: string,
@@ -309,18 +313,9 @@ export function resolveBenchTuple(input) {
       route: 'quick_fix',
       // `resolveExecSettings` reads the orchestration axis under the bead
       // snapshot's own field names, not the metadata ones.
-      model:
-        usableString(preset.quick_fix_orchestration_model) ??
-        usableString(preset.orchestration_model) ??
-        undefined,
-      effort:
-        usableString(preset.quick_fix_orchestration_effort) ??
-        usableString(preset.orchestration_effort) ??
-        undefined,
-      orchestration_speed:
-        usableString(preset.quick_fix_orchestration_speed) ??
-        usableString(preset.orchestration_speed) ??
-        undefined
+      model: usableString(preset.orchestration_model) ?? undefined,
+      effort: usableString(preset.orchestration_effort) ?? undefined,
+      orchestration_speed: usableString(preset.orchestration_speed) ?? undefined
     });
   } catch (err) {
     log('bench tuple orchestration resolution threw: %o', err);
@@ -345,7 +340,6 @@ export function resolveBenchTuple(input) {
     }
     const lane_key = QUICK_FIX_LANE_MAP[key];
     const picked =
-      (lane_key ? usableString(preset[lane_key]) : null) ??
       usableString(preset[key]) ??
       (lane_key ? usableString(kv[lane_key]) : null) ??
       usableString(kv[key]) ??

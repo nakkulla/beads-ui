@@ -13,9 +13,8 @@
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import {
   BEAD_APPLY_KEYS,
-  BEAD_PIN_KEYS,
   ORCHESTRATION_KEYS,
-  QUICK_FIX_LANE_MAP
+  presetKeysFor
 } from '../settings-dialog/session-model.js';
 import { modelRunnerOf } from './exec-settings.js';
 
@@ -235,68 +234,55 @@ export function buildImplPresetApplyPayload(id, preset_id, expected_revision) {
  */
 export const EFFECTIVE_KEYS = [...BEAD_APPLY_KEYS, ...ORCHESTRATION_KEYS];
 
-/** The four implementation axes a quick_fix lane value overrides one by one. */
-const QUICK_FIX_IMPL_KEYS = [
-  'impl_dispatch',
-  'impl_model',
-  'impl_effort',
-  'impl_speed'
-];
-
 /**
- * Project one preset onto the pin values an apply would actually write for this
- * issue's route — the client mirror of the server `presetSettingsForIssue`
- * (`server/ws/exec-preset-handlers.js`). The two write-blocking checks that
- * function also runs (`validateOrchestrationPin`, `validateImplSettings`) are
- * deliberately absent: they refuse a write, they never change an expectation.
+ * Copy one preset's `settings` onto the keys of ITS OWN profile — the profile
+ * decides the key set, and both profiles name their keys canonically, so the
+ * projection is a copy (design §3.2).
  *
- * @param {Record<string, any>|null|undefined} preset_settings
- * @param {string|null|undefined} route
- * @param {Record<string, any>|null|undefined} runner_catalog
+ * @param {{ applies_to?: unknown, settings?: Record<string, any>|null }|null|undefined} preset
  * @returns {Record<string, string>}
  */
-export function presetExpectationForIssue(
-  preset_settings,
-  route,
-  runner_catalog
-) {
-  const settings = preset_settings || {};
+function presetProjection(preset) {
+  const settings = preset && preset.settings ? preset.settings : {};
   /** @type {Record<string, string>} */
   const projected = {};
-  for (const key of BEAD_PIN_KEYS) {
+  for (const key of presetKeysFor(preset ? preset.applies_to : undefined)) {
     if (typeof settings[key] === 'string') {
       projected[key] = settings[key];
     }
   }
-  if (route !== 'quick_fix') {
+  return projected;
+}
+
+/**
+ * Project one preset onto the pin values an apply would actually write for this
+ * issue — the client mirror of the server `presetSettingsForIssue`
+ * (`server/ws/exec-preset-handlers.js`). The two write-blocking checks that
+ * function also runs (`validateOrchestrationPin`, `validateImplSettings`) are
+ * deliberately absent: they refuse a write, they never change an expectation.
+ * Its route/profile refusal is absent for the same reason — the dropdown lists
+ * only the issue's own profile, so a mismatch reaches no expectation.
+ *
+ * The prefixed reverse lookup is gone with the 25-key profile. What stays is
+ * the runtime DERIVATION, which the server runs for either profile: preset
+ * storage accepts a model with no runtime while the Bead pin validator rejects
+ * that pair, and an explicit `impl_runtime` wins over the derived one.
+ *
+ * @param {{ applies_to?: unknown, settings?: Record<string, any>|null }|null|undefined} preset
+ * @param {Record<string, any>|null|undefined} runner_catalog
+ * @returns {Record<string, string>}
+ */
+export function presetExpectationForIssue(preset, runner_catalog) {
+  const projected = presetProjection(preset);
+  if (typeof projected.impl_runtime === 'string') {
     return projected;
   }
-  for (const key of ORCHESTRATION_KEYS) {
-    const value = settings[QUICK_FIX_LANE_MAP[key]] ?? settings[key];
-    if (typeof value === 'string') {
-      projected[key] = value;
-    }
-  }
-  for (const key of QUICK_FIX_IMPL_KEYS) {
-    const lane_value = settings[QUICK_FIX_LANE_MAP[key]];
-    if (typeof lane_value === 'string') {
-      projected[key] = lane_value;
-    }
-  }
-  const lane_runtime = settings.quick_fix_impl_runtime;
-  const lane_model = settings.quick_fix_impl_model;
   const derived_runtime =
-    typeof lane_model === 'string'
-      ? modelRunnerOf(runner_catalog, lane_model)
+    typeof projected.impl_model === 'string'
+      ? modelRunnerOf(runner_catalog, projected.impl_model)
       : null;
-  const runtime =
-    (typeof lane_runtime === 'string' ? lane_runtime : null) ??
-    derived_runtime ??
-    settings.impl_runtime;
-  if (typeof runtime === 'string') {
-    projected.impl_runtime = runtime;
-  } else {
-    delete projected.impl_runtime;
+  if (typeof derived_runtime === 'string') {
+    projected.impl_runtime = derived_runtime;
   }
   return projected;
 }
@@ -338,26 +324,24 @@ function catalogIsReady(runner_catalog) {
 }
 
 /**
- * Whether the runtime expectation cannot be judged YET: only a quick_fix issue
- * whose preset supplies a lane MODEL but no lane runtime needs the catalog to
+ * Whether the runtime expectation cannot be judged YET: a preset of EITHER
+ * profile that supplies a canonical MODEL but no runtime needs the catalog to
  * derive a provider, and only an unarrived catalog makes that derivation
  * impossible.
  *
  * A catalog that HAS arrived and simply does not list the model is not
- * undecidable — the server `inferImplRuntime` fails the same way and falls
- * through to the general `impl_runtime`, so both sides reach one conclusion.
+ * undecidable — the server `inferImplRuntime` fails the same way and leaves the
+ * runtime absent, so both sides reach one conclusion.
  *
- * @param {Record<string, any>|null|undefined} preset_settings
- * @param {string|null|undefined} route
+ * @param {{ applies_to?: unknown, settings?: Record<string, any>|null }|null|undefined} preset
  * @param {Record<string, any>|null|undefined} runner_catalog
  * @returns {boolean}
  */
-function runtimeExpectationPending(preset_settings, route, runner_catalog) {
-  const settings = preset_settings || {};
+function runtimeExpectationPending(preset, runner_catalog) {
+  const projected = presetProjection(preset);
   return (
-    route === 'quick_fix' &&
-    typeof settings.quick_fix_impl_runtime !== 'string' &&
-    typeof settings.quick_fix_impl_model === 'string' &&
+    typeof projected.impl_runtime !== 'string' &&
+    typeof projected.impl_model === 'string' &&
     !catalogIsReady(runner_catalog)
   );
 }
@@ -375,30 +359,27 @@ function runtimeExpectationPending(preset_settings, route, runner_catalog) {
  * treats exactly like an unarrived preset list (spec §3.4): saying nothing
  * beats reporting a drift that only an absent catalog invented.
  *
+ * The compared key range follows the ISSUE's profile (design §5): a
+ * `route=quick_fix` issue is judged on 8 keys, every other issue on 17. A
+ * quick fix preset replaces no review pin, so a review pin standing on such an
+ * issue is not a drift — `normalizeAppliesTo` reads the route the same way the
+ * apply path does, since every route but `quick_fix` takes a general preset.
+ *
  * @param {Record<string, unknown>|null|undefined} bead_metadata
- * @param {Record<string, any>|null|undefined} preset_settings
+ * @param {{ applies_to?: unknown, settings?: Record<string, any>|null }|null|undefined} preset
  * @param {string|null|undefined} route
  * @param {Record<string, any>|null|undefined} runner_catalog
  * @returns {{ count: number, entries: Array<{ key: string, actual: string|null, expected: string|null }> }|null}
  */
-export function presetDeviation(
-  bead_metadata,
-  preset_settings,
-  route,
-  runner_catalog
-) {
-  if (runtimeExpectationPending(preset_settings, route, runner_catalog)) {
+export function presetDeviation(bead_metadata, preset, route, runner_catalog) {
+  if (runtimeExpectationPending(preset, runner_catalog)) {
     return null;
   }
   const metadata = bead_metadata || {};
-  const expectation = presetExpectationForIssue(
-    preset_settings,
-    route,
-    runner_catalog
-  );
+  const expectation = presetExpectationForIssue(preset, runner_catalog);
   /** @type {Array<{ key: string, actual: string|null, expected: string|null }>} */
   const entries = [];
-  for (const key of BEAD_PIN_KEYS) {
+  for (const key of presetKeysFor(route)) {
     const actual = presentValue(metadata[key]);
     const expected = presentValue(expectation[key]);
     if (actual !== expected) {

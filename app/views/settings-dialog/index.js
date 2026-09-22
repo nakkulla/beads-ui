@@ -2,8 +2,8 @@
  * The unified settings dialog — the ONE entry point behind the nav-bar ⚙
  * (spec §D).
  *
- * The `워커`·`세션`·`계정` tabs are NOT built here: they are the three sections
- * of `createExecutionPane`, which this dialog mounts ONCE and asks for one
+ * The `워커`·`quick fix`·`세션`·`계정` tabs are NOT built here: they are the four
+ * sections of `createExecutionPane`, which this dialog mounts ONCE and asks for one
  * section at a time (`render(section)`). The monitor deck's per-repo `⚙` panel
  * mounts the same module (UI-eey2 §4.4). This dialog binds it to the CONNECTED
  * workspace (`root_dir: null`), so its wire format is unchanged.
@@ -14,7 +14,7 @@
  * switch.
  *
  * Opened with `{ scope: 'monitor' }` (the header ⚙ on the monitor tab) the
- * dialog is in bulk mode (UI-nu43 §3.1): the rail carries only `워커`·`계정`,
+ * dialog is in bulk mode (UI-nu43 §3.1): the rail drops `표시`,
  * the execution pane is never created, and `createBulkPane` edits the repos
  * ticked in its own target list instead of the connected workspace. The mode
  * is fixed from `open` until the dialog closes.
@@ -28,9 +28,14 @@ import { createBulkPane } from './bulk-pane.js';
 import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import { createExecutionPane } from './execution-pane.js';
 
-/** The rail's tabs, in display order. */
+/**
+ * The rail's tabs, in display order. `quick fix` carries `◈` — the same
+ * diamond family as `워커`'s `◆`, because it IS that profile's route-scoped
+ * twin, and distinct from every other glyph on the rail (UI-uohc §6.1).
+ */
 export const SETTINGS_TABS = [
   { id: 'worker', label: '워커', glyph: '◆' },
+  { id: 'quick_fix', label: 'quick fix', glyph: '◈' },
   { id: 'session', label: '세션', glyph: '◇' },
   { id: 'account', label: '계정', glyph: '◎' },
   { id: 'display', label: '표시', glyph: '◫' }
@@ -45,7 +50,7 @@ export const BULK_SETTINGS_TABS = SETTINGS_TABS.filter(
   (tab) => tab.id !== 'display'
 );
 
-/** One repo's window carries the same three tabs (§7). */
+/** One repo's window carries the same four tabs (§7). */
 export const REPO_SETTINGS_TABS = BULK_SETTINGS_TABS;
 
 /** Bulk-mode pane heading shared by both tabs. */
@@ -54,19 +59,25 @@ const BULK_TITLE = '여러 저장소 설정';
 /** Bulk-mode one-line subtitle per tab. */
 const BULK_TAB_SUB = {
   worker:
-    '선택한 저장소의 현재 실행 프로필을 읽어 세웁니다. 프리셋을 고르면 25행이 그 값으로 채워집니다.',
+    '선택한 저장소의 현재 실행 프로필을 읽어 세웁니다. 프리셋을 고르면 17행이 그 값으로 채워집니다.',
+  quick_fix:
+    '선택한 저장소의 quick fix 값을 읽어 세웁니다. 프리셋을 고르면 8행이 그 값으로 채워집니다.',
   session: '선택한 저장소의 대화형 세션 값을 읽어 세웁니다.',
   account: '선택한 저장소의 실행 계정과 한도 대응을 읽어 세웁니다.'
 };
 
 /** Tabs the shared execution pane draws, by its own section ids. */
-const EXECUTION_TABS = ['worker', 'session', 'account'];
+const EXECUTION_TABS = ['worker', 'quick_fix', 'session', 'account'];
 
 /** Per-tab pane heading and one-line subtitle. */
 const TAB_COPY = {
   worker: {
     title: '워커 설정',
     sub: 'Worker와 대화형 세션이 함께 쓰는 실행 프로파일입니다.'
+  },
+  quick_fix: {
+    title: 'quick fix 설정',
+    sub: 'route가 quick fix인 Bead만 읽는 실행 값입니다.'
   },
   session: {
     title: '세션 설정',
@@ -279,7 +290,9 @@ export function createSettingsDialog(mount_element, options) {
         onBulkApplied: (root_dirs) => options.onBulkApplied?.(root_dirs)
       });
     }
-    bulk_pane.render(/** @type {'worker'|'session'|'account'} */ (active_tab));
+    bulk_pane.render(
+      /** @type {'worker'|'quick_fix'|'session'|'account'} */ (active_tab)
+    );
   }
 
   function destroyBulkPane() {

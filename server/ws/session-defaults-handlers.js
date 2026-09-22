@@ -25,6 +25,8 @@ import {
   validateSessionDefaultsPatch
 } from '../session-defaults.js';
 import { commonSet, resolveWorkerUrl } from '../worker-url.js';
+import { APPLIES_TO_VALUES } from '../worker/exec-enums.js';
+import { APPLIED_PRESET_FIELDS } from '../worker/queue-store.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import {
   WORKSPACE_ACCOUNTS_KV_KEY,
@@ -222,19 +224,26 @@ export async function handleSetSessionDefaults(ws, req) {
   try {
     const runtime = getWorkerRuntime();
     for (let attempt = 0; attempt < 2; attempt++) {
-      const queue = runtime.queueStore.snapshot(target.root);
-      if (
-        !queue.applied_exec_preset ||
-        !runtime.execPresetCoordinator.changesAppliedExecPreset(
-          queue.applied_exec_preset,
+      const queue = /** @type {Record<string, any>} */ (
+        /** @type {unknown} */ (runtime.queueStore.snapshot(target.root))
+      );
+      // One patch may touch both profiles' kv keys, so each record is judged
+      // on its OWN key set and only the falsified ones are released (design
+      // §4.1). Both released records go in the same queue revision.
+      const applies_to = APPLIES_TO_VALUES.filter((profile) =>
+        runtime.execPresetCoordinator.changesAppliedExecPreset(
+          queue[APPLIED_PRESET_FIELDS[profile]],
           before.values,
-          planned.values
+          planned.values,
+          profile
         )
-      ) {
+      );
+      if (applies_to.length === 0) {
         break;
       }
       const cleared = runtime.queueStore.clearAppliedExecPreset(target.root, {
-        expected_revision: queue.revision
+        expected_revision: queue.revision,
+        applies_to
       });
       if (cleared.ok) {
         break;

@@ -265,93 +265,105 @@ describe('APPLIED_EXEC_PRESET_KEY', () => {
 });
 
 describe('presetExpectationForIssue', () => {
-  test('keeps the general values for a route that has no lane', () => {
+  test('copies the canonical values a general preset carries', () => {
     const expectation = presetExpectationForIssue(
-      { orchestration_model: 'fable', impl_model: 'opus' },
-      'spec_backed',
+      {
+        applies_to: 'general',
+        settings: { orchestration_model: 'fable', impl_model: 'opus' }
+      },
       RUNNER_CATALOG
     );
 
     expect(expectation).toEqual({
       orchestration_model: 'fable',
-      impl_model: 'opus'
+      impl_model: 'opus',
+      impl_runtime: 'claude'
     });
   });
 
-  test('prefers the quick_fix orchestration value on a quick_fix issue', () => {
-    const expectation = presetExpectationForIssue(
-      { orchestration_model: 'fable', quick_fix_orchestration_model: 'opus' },
-      'quick_fix',
-      RUNNER_CATALOG
-    );
-
-    expect(expectation.orchestration_model).toBe('opus');
-  });
-
-  test('leaves the general implementation values when the lane axes are empty', () => {
+  test('copies the canonical values a quick fix preset carries', () => {
     const expectation = presetExpectationForIssue(
       {
-        impl_dispatch: 'delegated',
-        impl_runtime: 'claude',
-        impl_model: 'opus',
-        impl_effort: 'high',
-        impl_speed: 'default'
+        applies_to: 'quick_fix',
+        settings: {
+          orchestration_model: 'fable',
+          impl_dispatch: 'delegated',
+          impl_runtime: 'codex',
+          impl_model: 'sol'
+        }
       },
-      'quick_fix',
       RUNNER_CATALOG
     );
 
     expect(expectation).toEqual({
+      orchestration_model: 'fable',
       impl_dispatch: 'delegated',
-      impl_runtime: 'claude',
-      impl_model: 'opus',
-      impl_effort: 'high',
-      impl_speed: 'default'
+      impl_runtime: 'codex',
+      impl_model: 'sol'
     });
   });
 
-  test('takes the explicit quick_fix runtime before anything else', () => {
+  test('leaves a review key out of a quick fix projection', () => {
     const expectation = presetExpectationForIssue(
       {
-        impl_runtime: 'codex',
-        quick_fix_impl_runtime: 'claude',
-        quick_fix_impl_model: 'sol'
+        applies_to: 'quick_fix',
+        settings: { impl_runtime: 'codex', impl_review_model: 'fable' }
       },
-      'quick_fix',
       RUNNER_CATALOG
     );
 
-    expect(expectation.impl_runtime).toBe('claude');
+    expect(Object.hasOwn(expectation, 'impl_review_model')).toBe(false);
   });
 
-  test('derives the runtime from the quick_fix model when no lane runtime exists', () => {
+  test('ignores a prefixed key, which no profile stores in a preset', () => {
     const expectation = presetExpectationForIssue(
-      { impl_runtime: 'claude', quick_fix_impl_model: 'sol' },
-      'quick_fix',
+      {
+        applies_to: 'quick_fix',
+        settings: { quick_fix_impl_model: 'sol' }
+      },
+      RUNNER_CATALOG
+    );
+
+    expect(expectation).toEqual({});
+  });
+
+  test('derives the runtime from the canonical model of a quick fix preset', () => {
+    const expectation = presetExpectationForIssue(
+      { applies_to: 'quick_fix', settings: { impl_model: 'sol' } },
       RUNNER_CATALOG
     );
 
     expect(expectation.impl_runtime).toBe('codex');
   });
 
-  test('falls back to the general runtime when the lane carries neither', () => {
+  test('takes the explicit runtime over the one the model implies', () => {
     const expectation = presetExpectationForIssue(
-      { impl_runtime: 'claude' },
-      'quick_fix',
+      {
+        applies_to: 'quick_fix',
+        settings: { impl_runtime: 'claude', impl_model: 'sol' }
+      },
       RUNNER_CATALOG
     );
 
     expect(expectation.impl_runtime).toBe('claude');
   });
 
-  test('expects no runtime at all when all three ladder rungs are empty', () => {
+  test('expects no runtime at all when the preset names neither', () => {
     const expectation = presetExpectationForIssue(
-      { impl_model: 'opus' },
-      'quick_fix',
+      { applies_to: 'general', settings: { impl_effort: 'high' } },
       RUNNER_CATALOG
     );
 
     expect(Object.hasOwn(expectation, 'impl_runtime')).toBe(false);
+  });
+
+  test('reads a preset with no applies_to field as the general profile', () => {
+    const expectation = presetExpectationForIssue(
+      { settings: { impl_review_model: 'fable' } },
+      RUNNER_CATALOG
+    );
+
+    expect(expectation.impl_review_model).toBe('fable');
   });
 });
 
@@ -359,7 +371,10 @@ describe('presetDeviation', () => {
   test('counts nothing right after the preset was applied', () => {
     const deviation = presetDeviation(
       { orchestration_model: 'fable', impl_dispatch: 'main' },
-      { orchestration_model: 'fable', impl_dispatch: 'main' },
+      {
+        applies_to: 'general',
+        settings: { orchestration_model: 'fable', impl_dispatch: 'main' }
+      },
       'spec_backed',
       RUNNER_CATALOG
     );
@@ -370,7 +385,10 @@ describe('presetDeviation', () => {
   test('counts one key the user edited by hand after applying', () => {
     const deviation = presetDeviation(
       { orchestration_model: 'fable', impl_dispatch: 'delegated' },
-      { orchestration_model: 'fable', impl_dispatch: 'main' },
+      {
+        applies_to: 'general',
+        settings: { orchestration_model: 'fable', impl_dispatch: 'main' }
+      },
       'spec_backed',
       RUNNER_CATALOG
     );
@@ -383,7 +401,7 @@ describe('presetDeviation', () => {
   test('counts a pin the preset leaves empty, because applying would unset it', () => {
     const deviation = presetDeviation(
       { impl_model: 'sol' },
-      {},
+      { applies_to: 'general', settings: {} },
       'spec_backed',
       RUNNER_CATALOG
     );
@@ -395,8 +413,11 @@ describe('presetDeviation', () => {
 
   test('counts a preset value the issue does not carry, unlike dispatchPreset', () => {
     const deviation = presetDeviation(
-      {},
-      { impl_model: 'sol' },
+      { impl_runtime: 'codex' },
+      {
+        applies_to: 'general',
+        settings: { impl_runtime: 'codex', impl_model: 'sol' }
+      },
       'spec_backed',
       RUNNER_CATALOG
     );
@@ -409,7 +430,7 @@ describe('presetDeviation', () => {
   test('reads an empty metadata string as absence on both sides', () => {
     const deviation = presetDeviation(
       { impl_model: '' },
-      {},
+      { applies_to: 'general', settings: {} },
       'spec_backed',
       RUNNER_CATALOG
     );
@@ -417,14 +438,12 @@ describe('presetDeviation', () => {
     expect(deviation?.count).toBe(0);
   });
 
-  test('counts nothing when a quick_fix issue carries the derived lane runtime', () => {
+  test('counts nothing when the issue carries the derived runtime', () => {
     const deviation = presetDeviation(
       { impl_runtime: 'codex', impl_model: 'sol', impl_effort: 'high' },
       {
-        impl_runtime: 'claude',
-        impl_model: 'opus',
-        impl_effort: 'high',
-        quick_fix_impl_model: 'sol'
+        applies_to: 'quick_fix',
+        settings: { impl_model: 'sol', impl_effort: 'high' }
       },
       'quick_fix',
       RUNNER_CATALOG
@@ -435,13 +454,8 @@ describe('presetDeviation', () => {
 
   test('withholds a verdict until the runner catalog can derive the runtime', () => {
     const deviation = presetDeviation(
-      { impl_runtime: 'codex', impl_model: 'sol', impl_effort: 'high' },
-      {
-        impl_runtime: 'claude',
-        impl_model: 'opus',
-        impl_effort: 'high',
-        quick_fix_impl_model: 'sol'
-      },
+      { impl_runtime: 'codex', impl_model: 'sol' },
+      { applies_to: 'quick_fix', settings: { impl_model: 'sol' } },
       'quick_fix',
       null
     );
@@ -449,10 +463,10 @@ describe('presetDeviation', () => {
     expect(deviation).toBe(null);
   });
 
-  test('judges without a catalog when the preset states the lane runtime', () => {
+  test('judges without a catalog when the preset states the runtime', () => {
     const deviation = presetDeviation(
       { impl_runtime: 'claude' },
-      { quick_fix_impl_runtime: 'claude' },
+      { applies_to: 'quick_fix', settings: { impl_runtime: 'claude' } },
       'quick_fix',
       null
     );
@@ -460,21 +474,10 @@ describe('presetDeviation', () => {
     expect(deviation).toEqual({ count: 0, entries: [] });
   });
 
-  test('judges without a catalog for a route that never derives a runtime', () => {
+  test('leaves the runtime absent when the arrived catalog omits the model', () => {
     const deviation = presetDeviation(
-      { impl_runtime: 'claude' },
-      { impl_runtime: 'claude', quick_fix_impl_model: 'sol' },
-      'spec_backed',
-      null
-    );
-
-    expect(deviation).toEqual({ count: 0, entries: [] });
-  });
-
-  test('keeps the general runtime when the arrived catalog omits the lane model', () => {
-    const deviation = presetDeviation(
-      { impl_runtime: 'claude', impl_model: 'ghost' },
-      { impl_runtime: 'claude', quick_fix_impl_model: 'ghost' },
+      { impl_model: 'ghost' },
+      { applies_to: 'quick_fix', settings: { impl_model: 'ghost' } },
       'quick_fix',
       RUNNER_CATALOG
     );
@@ -482,16 +485,32 @@ describe('presetDeviation', () => {
     expect(deviation).toEqual({ count: 0, entries: [] });
   });
 
-  test('judges a quick_fix issue against the lane values, not the general ones', () => {
+  test('ignores a review pin on a quick_fix issue, which the profile never replaces', () => {
     const deviation = presetDeviation(
-      { orchestration_model: 'fable' },
-      { orchestration_model: 'fable', quick_fix_orchestration_model: 'opus' },
+      {
+        impl_review_model: 'fable',
+        impl_review_effort: 'high',
+        spec_review_model: 'codex',
+        impl_runtime: 'codex'
+      },
+      { applies_to: 'quick_fix', settings: { impl_runtime: 'codex' } },
       'quick_fix',
+      RUNNER_CATALOG
+    );
+
+    expect(deviation).toEqual({ count: 0, entries: [] });
+  });
+
+  test('counts a review pin the general profile would have unset', () => {
+    const deviation = presetDeviation(
+      { impl_review_model: 'fable' },
+      { applies_to: 'general', settings: {} },
+      'spec_backed',
       RUNNER_CATALOG
     );
 
     expect(deviation?.entries).toEqual([
-      { key: 'orchestration_model', actual: 'fable', expected: 'opus' }
+      { key: 'impl_review_model', actual: 'fable', expected: null }
     ]);
   });
 });

@@ -6,9 +6,10 @@
  * The pane owns one state machine — session-defaults draft over a server
  * baseline, the UI-only orchestration runtime selection, the orchestration
  * draft over the queue snapshot, and execution presets — and draws ONE of its
- * three sections at a time through `render(section)`: `worker` (the execution
- * profile), `session` (what an interactive session reads), `account` (this
- * repo's execution accounts and limit policy). The automation switches are NOT
+ * four sections at a time through `render(section)`: `worker` (the execution
+ * profile), `quick_fix` (the route-scoped profile and its own preset bar),
+ * `session` (what an interactive session reads), `account` (this repo's
+ * execution accounts and limit policy). The automation switches are NOT
  * here: the Worker toolbar is their one editing surface (UI-7yh2 §3.12).
  *
  * `binding.root_dir` is the ONE axis that separates the two mounts:
@@ -37,15 +38,16 @@ import {
   accountRowLabel,
   loadAccountCatalog as readAccountCatalog
 } from './account-catalog.js';
+import { appliedPresetFieldFor } from './bulk-observation.js';
 import {
   AUTO_LITERAL,
   BOOLEAN_DRAFT_ON,
   IMPL_DISPATCHES,
-  IMPL_PRESET_KEYS,
   IMPL_RUNTIMES,
   IMPL_SPEEDS,
   ORCHESTRATION_KEYS,
   PLAN_REVIEW_MODELS,
+  QUICK_FIX_LANE_MAP,
   QUICK_FIX_ORCHESTRATION_KEYS,
   REVIEW_EFFORTS,
   REVIEW_SPEEDS,
@@ -62,10 +64,12 @@ import {
   implModelOptions,
   isHttpOriginValue,
   narrowImplTarget,
+  normalizeAppliesTo,
   orchestrationEffortOptions,
   orchestrationModelOptions,
   orchestrationRuntimeInitial,
   orchestrationRuntimeOptions,
+  presetKeysFor,
   speedVisible,
   workerUrlMessage,
   workerUrlWarning
@@ -79,6 +83,16 @@ const IMPL_TARGET_KEYS = ['impl_runtime', 'impl_model', 'impl_effort'];
 
 /** A workspace quick_fix runtime is concrete; `inherit` has no controller yet. */
 const QUICK_FIX_IMPL_RUNTIMES = ['claude', 'codex'];
+
+/** Copy a server with no quick_fix lane locks that whole tab with (§6.1). */
+const QUICK_FIX_UNSUPPORTED = '서버가 quick_fix 레인을 지원하지 않습니다';
+
+/**
+ * What every preset bar says about the list it edits: one list lives on the
+ * server, so a save or a delete here is seen by every workspace (§6.1).
+ */
+const PRESET_LIST_GLOBAL =
+  '프리셋 목록은 서버 전역이라 저장·삭제가 모든 저장소의 목록을 바꿉니다';
 
 /** Preset keys the QUEUE stores; the rest of the preset lives in workspace kv. */
 const QUEUE_PRESET_KEYS = [
@@ -96,21 +110,46 @@ const QUEUE_SPEED_KEYS = [
 const ACCOUNT_ROW_KEYS = ['claude_account', 'codex_account'];
 
 /**
- * The three sections one mounted pane can draw, in rail and segment order. The
+ * The `적용` button's title: why it is locked, or what an apply that changes no
+ * value still does. An apply also WRITES the profile's apply record (§4.1), so
+ * a preset whose values already match is still appliable until that record
+ * names it. An empty string leaves no tooltip, as before.
+ *
+ * @param {{ lane_locked: boolean, chosen: boolean, value_change: boolean, record_matches: boolean }} state
+ * @returns {string}
+ */
+function presetApplyTitle(state) {
+  if (state.lane_locked) {
+    return '서버가 quick_fix 값을 받지 않습니다';
+  }
+  if (!state.chosen) {
+    return '적용할 프리셋을 고르세요';
+  }
+  if (state.value_change) {
+    return '';
+  }
+  return state.record_matches
+    ? '이 프리셋이 이미 적용되어 있고 바뀔 값도 없습니다'
+    : '값은 이미 같습니다 — 이 프리셋을 적용했다는 기록만 남깁니다';
+}
+
+/**
+ * The four sections one mounted pane can draw, in rail and segment order. The
  * dialog's rail and the monitor panel's segment both name these ids.
  *
  * @type {ReadonlyArray<{ id: string, label: string }>}
  */
 export const PANE_SECTIONS = [
   { id: 'worker', label: '워커' },
+  { id: 'quick_fix', label: 'quick fix' },
   { id: 'session', label: '세션' },
   { id: 'account', label: '계정' }
 ];
 
 /**
- * The `[워커|세션|계정]` segment both mounts draw, so the section chooser is
- * written once. The monitor panel renders it in its own head; the dialog rail
- * uses its tab buttons instead and never calls this.
+ * The `[워커|quick fix|세션|계정]` segment both mounts draw, so the section
+ * chooser is written once. The monitor panel renders it in its own head; the
+ * dialog rail uses its tab buttons instead and never calls this.
  *
  * @param {string} active - The section id currently drawn.
  * @param {(section: string) => void} onSelect
@@ -314,10 +353,21 @@ export function createExecutionPane(mount_element, binding) {
   /** @type {Record<string, string|null>} */
   let worker_draft = {};
 
-  /** @type {string} */
-  let preset_choice = '';
-  /** Draft name for saving the current execution settings as a preset. */
-  let preset_name_draft = '';
+  /**
+   * The selected preset, PER PROFILE. One shared variable would carry a
+   * general preset's id into the `quick fix` tab's bar the moment the user
+   * switched tabs, and the bar there lists only quick_fix presets (§6.1).
+   *
+   * @type {Record<string, string>}
+   */
+  const preset_choice = { general: '', quick_fix: '' };
+  /**
+   * Draft name for saving the current execution settings as a preset, per
+   * profile for the same reason.
+   *
+   * @type {Record<string, string>}
+   */
+  const preset_name_draft = { general: '', quick_fix: '' };
 
   // The worker system prompt: read-only, server-assembled. It moved here with
   // the retired exec-defaults dialog so the surface is not lost (UI-rxp3 §4).
@@ -1429,21 +1479,36 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * Current explicit execution values as preset settings — what the pane shows,
-   * not what the stores hold. Orchestration reads the same draft-over-queue
-   * overlay the rows render, so a value whose queue save failed is still the
-   * one a save captures.
+   * The storage key one canonical preset key is read from and written to on
+   * screen. A quick_fix preset carries canonical names, but the kv object and
+   * the queue keep the prefixed ones, which is what the rows edit (§3.2).
    *
+   * @param {string} key - A canonical preset key.
+   * @param {'general'|'quick_fix'} profile
+   * @returns {string}
+   */
+  function storageKeyOf(key, profile) {
+    return profile === 'quick_fix' ? QUICK_FIX_LANE_MAP[key] : key;
+  }
+
+  /**
+   * Current explicit execution values of ONE profile as preset settings, in
+   * canonical key names — what the pane shows, not what the stores hold.
+   * Orchestration reads the same draft-over-queue overlay the rows render, so
+   * a value whose queue save failed is still the one a save captures.
+   *
+   * @param {'general'|'quick_fix'} profile
    * @returns {Record<string, string>}
    */
-  function executionDraftSettings() {
+  function executionDraftSettings(profile) {
     /** @type {Record<string, string>} */
     const settings = {};
     const orchestration = currentOrchestrationValues();
-    for (const key of IMPL_PRESET_KEYS) {
-      const value = QUEUE_PRESET_KEYS.includes(key)
-        ? orchestration[key]
-        : session_draft[key];
+    for (const key of presetKeysFor(profile)) {
+      const storage_key = storageKeyOf(key, profile);
+      const value = QUEUE_PRESET_KEYS.includes(storage_key)
+        ? orchestration[storage_key]
+        : session_draft[storage_key];
       if (typeof value === 'string' && value.length > 0) {
         settings[key] = value;
       }
@@ -1452,27 +1517,75 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * Save the current execution settings as a preset: create when no
-   * preset is selected, update the selected one otherwise. Conflicts notify
-   * and re-render — the store snapshot arrives through the presets fanout.
+   * The presets of ONE profile, in store order. A preset written before
+   * `applies_to` existed reads as `general` (§3.1).
+   *
+   * @param {'general'|'quick_fix'} profile
+   * @returns {any[]}
+   */
+  function presetsOf(profile) {
+    const state = presetState();
+    return (state?.presets || []).filter(
+      (/** @type {any} */ preset) =>
+        normalizeAppliesTo(preset?.applies_to) === profile
+    );
+  }
+
+  /**
+   * The id this workspace's queue records as the applied preset OF ONE
+   * PROFILE, or `null` with no record. The two records are independent, so a
+   * tab reads only its own field (§4.1) — the names are the server's
+   * `APPLIED_PRESET_FIELDS`, mirrored by `appliedPresetFieldFor`.
+   *
+   * @param {'general'|'quick_fix'} profile
+   * @returns {string|null}
+   */
+  function appliedPresetIdOf(profile) {
+    const queue = queueOf();
+    const record = queue ? queue[appliedPresetFieldFor(profile)] : null;
+    return isRecord(record) && typeof record.id === 'string' ? record.id : null;
+  }
+
+  /**
+   * The selected preset of one profile, or `null`. The lookup stays inside
+   * that profile's list, so a stale id from the other tab selects nothing.
+   *
+   * @param {'general'|'quick_fix'} profile
+   * @returns {any}
+   */
+  function selectedPresetOf(profile) {
+    const id = preset_choice[profile];
+    return id
+      ? (presetsOf(profile).find(
+          (/** @type {any} */ preset) => preset.id === id
+        ) ?? null)
+      : null;
+  }
+
+  /**
+   * Save this tab's execution settings as a preset OF THIS TAB'S PROFILE:
+   * create when no preset is selected, update the selected one otherwise.
+   * Conflicts notify and re-render — the store snapshot arrives through the
+   * presets fanout.
    *
    * Presets are workspace-independent (one global catalog), so these three ops
    * take no `root_dir`.
+   *
+   * @param {'general'|'quick_fix'} profile
    */
-  async function onSavePreset() {
+  async function onSavePreset(profile) {
     const state = presetState();
     if (!state) {
       return;
     }
-    const settings = executionDraftSettings();
+    const settings = executionDraftSettings(profile);
     if (Object.keys(settings).length === 0) {
       notify('저장할 실행 설정이 없습니다 — 먼저 실행 값을 선택하세요');
       return;
     }
-    const selected = (state.presets || []).find(
-      (/** @type {any} */ preset) => preset.id === preset_choice
-    );
-    const name = preset_name_draft.trim() || (selected ? selected.name : '');
+    const selected = selectedPresetOf(profile);
+    const name =
+      preset_name_draft[profile].trim() || (selected ? selected.name : '');
     if (!name) {
       notify('프리셋 이름을 입력하세요');
       return;
@@ -1488,15 +1601,20 @@ export function createExecutionPane(mount_element, binding) {
         : await send('impl-preset-create', {
             expected_revision: state.revision,
             name,
+            applies_to: profile,
             settings
           });
       if (res && res.applied) {
-        preset_name_draft = '';
+        preset_name_draft[profile] = '';
         if (!selected && Array.isArray(res.presets)) {
           const created = res.presets.find(
-            (/** @type {any} */ preset) => preset.name === name
+            (/** @type {any} */ preset) =>
+              preset.name === name &&
+              normalizeAppliesTo(preset?.applies_to) === profile
           );
-          preset_choice = created ? created.id : preset_choice;
+          preset_choice[profile] = created
+            ? created.id
+            : preset_choice[profile];
         }
         doRender();
       } else {
@@ -1510,19 +1628,24 @@ export function createExecutionPane(mount_element, binding) {
     }
   }
 
-  /** Delete the selected execution preset. */
-  async function onDeletePreset() {
+  /**
+   * Delete this tab's selected execution preset.
+   *
+   * @param {'general'|'quick_fix'} profile
+   */
+  async function onDeletePreset(profile) {
     const state = presetState();
-    if (!state || preset_choice.length === 0) {
+    const selected = selectedPresetOf(profile);
+    if (!state || !selected) {
       return;
     }
     try {
       const res = await send('impl-preset-delete', {
         expected_revision: state.revision,
-        id: preset_choice
+        id: selected.id
       });
       if (res && res.applied) {
-        preset_choice = '';
+        preset_choice[profile] = '';
         doRender();
       } else {
         notify('프리셋 삭제 실패: 다른 곳에서 방금 변경되었습니다');
@@ -1536,7 +1659,10 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * Adopt the kv + queue halves of an `apply-impl-preset-global` response.
+   * Adopt the kv + queue halves of an `apply-impl-preset-global` response. The
+   * response carries the WHOLE kv layer and the whole queue, so the profile
+   * the server did not touch — and both `applied_*_preset` records — arrive
+   * with their preserved values (§4.1).
    *
    * @param {any} res
    */
@@ -1553,22 +1679,27 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * Apply the chosen execution preset to this workspace. ONE request replaces
-   * both the general and the quick_fix halves (UI-7yh2 §3.6), so there is no
-   * lane in the payload and none in the response.
+   * Apply this tab's chosen execution preset to this workspace. The payload is
+   * unchanged: the SERVER reads the preset's `applies_to` and decides which
+   * keys it replaces, and the other profile's values are preserved (§4).
+   *
+   * @param {'general'|'quick_fix'} profile
    */
-  async function onApplyPresetGlobally() {
+  async function onApplyPresetGlobally(profile) {
     const state = presetState();
     const queue = queueOf();
-    if (!state || !queue || preset_choice.length === 0) {
+    const selected = selectedPresetOf(profile);
+    if (!state || !queue || !selected) {
       return;
     }
-    if (!supportsQuickFixLane()) {
+    // Only a quick_fix apply needs the lane: a general preset replaces general
+    // keys alone, so an old server drops nothing (§4).
+    if (profile === 'quick_fix' && !supportsQuickFixLane()) {
       return;
     }
     /** @param {number} queue_revision */
     const payloadFor = (queue_revision) => ({
-      preset_id: preset_choice,
+      preset_id: selected.id,
       expected_revision: state.revision,
       expected_queue_revision: queue_revision,
       ...rootPayload()
@@ -2276,48 +2407,68 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * The Worker tab's one bold element: preset select · `적용` · name · save ·
-   * delete on one line, with the changed-keys preview under it.
+   * One profile's preset bar: preset select · `적용` · name · save · delete on
+   * one line, with the changed-keys preview under it. The list, the selection
+   * and the name box are all that profile's own, so a choice made here never
+   * reaches the other tab's bar (§6.1).
    *
+   * A server with no quick_fix lane locks the WHOLE quick fix bar, not its
+   * `적용` alone (§6.1); the general bar is untouched by that probe because a
+   * general apply writes no quick_fix key (§4).
+   *
+   * @param {'general'|'quick_fix'} profile
    * @returns {TemplateResult}
    */
-  function presetStripTemplate() {
-    const state = presetState();
-    const selected_preset = preset_choice
-      ? (state?.presets || []).find(
-          (/** @type {any} */ preset) => preset.id === preset_choice
-        )
-      : null;
+  function presetStripTemplate(profile) {
+    const presets = presetsOf(profile);
+    const chosen_id = preset_choice[profile];
+    const selected_preset = selectedPresetOf(profile);
     const preset_diff = selected_preset
       ? buildPresetDiff(
-          executionDraftSettings(),
-          isRecord(selected_preset.settings) ? selected_preset.settings : {}
+          executionDraftSettings(profile),
+          isRecord(selected_preset.settings) ? selected_preset.settings : {},
+          profile
         )
       : null;
-    const quick_fix_supported = supportsQuickFixLane();
-    const apply_title = quick_fix_supported
-      ? ''
-      : '서버가 quick_fix 값을 받지 않습니다';
+    const lane_locked = profile === 'quick_fix' && !supportsQuickFixLane();
+    const lane_title = lane_locked ? QUICK_FIX_UNSUPPORTED : '';
+    const value_change = Boolean(preset_diff && preset_diff.rows.length > 0);
+    const record_matches =
+      selected_preset !== null &&
+      appliedPresetIdOf(profile) === selected_preset.id;
+    const apply_title = presetApplyTitle({
+      lane_locked,
+      chosen: selected_preset !== null,
+      value_change,
+      record_matches
+    });
+    const save_title = lane_locked
+      ? QUICK_FIX_UNSUPPORTED
+      : `${
+          selected_preset
+            ? '현재 화면의 실행 설정을 이 프리셋에 저장합니다 (프리셋 → 설정 방향이 아님)'
+            : '현재 화면의 실행 설정을 새 프리셋으로 저장합니다'
+        } — ${PRESET_LIST_GLOBAL}`;
     return html`
-      <div class="settings-dialog__preset-bar">
+      <div class="settings-dialog__preset-bar" data-preset-bar=${profile}>
         <select
           aria-label="실행 프리셋"
-          .value=${live(preset_choice)}
+          title=${lane_title}
+          ?disabled=${lane_locked}
+          .value=${live(chosen_id)}
           @change=${(/** @type {Event} */ ev) => {
-            preset_choice = String(
+            preset_choice[profile] = String(
               /** @type {HTMLSelectElement} */ (ev.target).value
             );
             doRender();
           }}
         >
-          <option value="" ?selected=${preset_choice === ''}>
-            실행 프리셋…
-          </option>
-          ${(state?.presets || []).map(
+          <option value="" ?selected=${chosen_id === ''}>실행 프리셋…</option>
+          ${presets.map(
             (preset) =>
               html`<option
                 value=${preset.id}
-                ?selected=${preset.id === preset_choice}
+                ?selected=${preset.id === chosen_id}
               >
                 ${preset.name}
               </option>`
@@ -2328,21 +2479,25 @@ export function createExecutionPane(mount_element, binding) {
           class="settings-dialog__btn settings-dialog__btn--primary op-btn"
           data-preset-apply-global
           title=${apply_title}
-          ?disabled=${!quick_fix_supported ||
-          !preset_diff ||
-          preset_diff.rows.length === 0}
-          @click=${() => onApplyPresetGlobally()}
+          ?disabled=${lane_locked ||
+          selected_preset === null ||
+          (!value_change && record_matches)}
+          @click=${() => onApplyPresetGlobally(profile)}
         >
           적용
         </button>
         <input
           type="text"
           class="settings-dialog__preset-name"
-          placeholder=${preset_choice ? '이름 (비우면 유지)' : '새 프리셋 이름'}
+          placeholder=${selected_preset
+            ? '이름 (비우면 유지)'
+            : '새 프리셋 이름'}
           aria-label="프리셋 이름"
-          .value=${live(preset_name_draft)}
+          title=${lane_title}
+          ?disabled=${lane_locked}
+          .value=${live(preset_name_draft[profile])}
           @input=${(/** @type {Event} */ ev) => {
-            preset_name_draft = String(
+            preset_name_draft[profile] = String(
               /** @type {HTMLInputElement} */ (ev.target).value
             );
           }}
@@ -2351,19 +2506,19 @@ export function createExecutionPane(mount_element, binding) {
           type="button"
           class="settings-dialog__btn"
           data-preset-save
-          title=${preset_choice
-            ? '현재 화면의 실행 설정을 이 프리셋에 저장합니다 (프리셋 → 설정 방향이 아님)'
-            : '현재 화면의 실행 설정을 새 프리셋으로 저장합니다'}
-          @click=${onSavePreset}
+          title=${save_title}
+          ?disabled=${lane_locked}
+          @click=${() => onSavePreset(profile)}
         >
-          ${preset_choice ? '현재 설정으로 덮어쓰기' : '새 프리셋 저장'}
+          ${selected_preset ? '현재 설정으로 덮어쓰기' : '새 프리셋 저장'}
         </button>
         <button
           type="button"
           class="settings-dialog__btn"
           data-preset-delete
-          ?disabled=${preset_choice.length === 0}
-          @click=${onDeletePreset}
+          title=${lane_title}
+          ?disabled=${lane_locked || selected_preset === null}
+          @click=${() => onDeletePreset(profile)}
         >
           삭제
         </button>
@@ -2527,75 +2682,74 @@ export function createExecutionPane(mount_element, binding) {
     </div>`;
   }
 
+  /** Copy a server with no quick_fix lane locks the whole tab with (§6.1). */
+  function quickFixDisabledTitle() {
+    return supportsQuickFixLane() ? null : QUICK_FIX_UNSUPPORTED;
+  }
+
   /**
-   * The quick_fix profile. The delegation rows exist only while the resolved
-   * `실행 방식` is `delegated`; on `main` they are absent from the template, not
-   * hidden, and the values they would edit stay stored (UI-7yh2 §3.5).
+   * One quick_fix row. The rows edit the PREFIXED storage keys the kv object
+   * and the queue keep, and the label resolution sees the general layer behind
+   * them so an empty row names what it falls through to.
+   *
+   * @param {string} key
+   * @param {string} label
+   * @param {ReadonlyArray<string>} choices
+   * @param {(key: string, value: string) => void} onChange
+   * @param {Record<string, string|null|undefined>} source
+   * @returns {TemplateResult}
+   */
+  function quickFixRow(key, label, choices, onChange, source) {
+    return selectRow(
+      key,
+      label,
+      choices,
+      onChange,
+      source,
+      !supportsQuickFixLane(),
+      { ...session_draft, ...currentOrchestrationValues() },
+      'quick_fix',
+      quickFixDisabledTitle()
+    );
+  }
+
+  /**
+   * The quick_fix tab's orchestration group — what carries a quick fix Bead's
+   * own worker model, effort and speed (§6.1).
    *
    * @param {Record<string, boolean>} visibility
    * @returns {TemplateResult}
    */
-  function quickFixGroup(visibility) {
+  function quickFixOrchestrationGroup(visibility) {
     const catalog = runnerCatalog();
     const orchestration = currentOrchestrationValues();
-    const quick_fix_supported = supportsQuickFixLane();
-    const disabled_title = quick_fix_supported
-      ? null
-      : '서버가 quick_fix 레인을 지원하지 않습니다';
-    const resolution = { ...session_draft, ...orchestration };
-    // Every catalog token, runtime-independent: the delegation runtime is
-    // DERIVED from this key's model, so the 위임 대상 row must not narrow it.
-    const models = implModelOptions(catalog, undefined).filter(
-      (token) => token !== AUTO_LITERAL
-    );
-    const efforts = implEffortOptions(catalog, undefined, undefined);
+    const disabled_title = quickFixDisabledTitle();
     const orchestration_efforts = orchestrationEffortOptions(
       catalog,
       null,
       null
     ).filter((effort) => effort !== AUTO_LITERAL);
-    const delegated = quickFixDelegated();
-    /**
-     * @param {string} key
-     * @param {string} label
-     * @param {ReadonlyArray<string>} choices
-     * @param {(key: string, value: string) => void} onChange
-     * @param {Record<string, string|null|undefined>} source
-     * @returns {TemplateResult}
-     */
-    const quickFixRow = (key, label, choices, onChange, source) =>
-      selectRow(
-        key,
-        label,
-        choices,
-        onChange,
-        source,
-        !quick_fix_supported,
-        resolution,
-        'quick_fix',
-        disabled_title
-      );
     return html`<div
       class="settings-dialog__group"
-      data-quick-fix-group
+      data-quick-fix-group="orchestration"
       title=${disabled_title || ''}
     >
       <div class="settings-dialog__group-title">
-        quick_fix
+        오케스트레이션
         <span class="settings-dialog__hint"
-          >${'비어 있는 값은 일반 프로파일로 떨어집니다. 이슈 핀이 있으면 핀이 우선합니다.'}</span
+          >${'비어 있는 값은 일반 프로파일로 떨어집니다.'}</span
         >
       </div>
       ${quickFixRow(
         'quick_fix_orchestration_model',
-        '오케스트레이션 모델',
+        '모델',
         orchestrationModelOptions(catalog, null),
         onWorkerChange,
         orchestration
       )}
       ${quickFixRow(
         'quick_fix_orchestration_effort',
-        '오케스트레이션 effort',
+        'effort',
         orchestration_efforts,
         onWorkerChange,
         orchestration
@@ -2603,12 +2757,44 @@ export function createExecutionPane(mount_element, binding) {
       ${visibility.quick_fix_orchestration_speed
         ? quickFixRow(
             'quick_fix_orchestration_speed',
-            '오케스트레이션 속도',
+            '속도',
             IMPL_SPEEDS,
             onWorkerChange,
             orchestration
           )
         : ''}
+    </div>`;
+  }
+
+  /**
+   * The quick_fix tab's implementation group. `실행 방식` leads it because it
+   * governs whether the delegation rows exist at all; on `main` those rows are
+   * absent from the template, not hidden, and the values they would edit stay
+   * stored (UI-7yh2 §3.5).
+   *
+   * @param {Record<string, boolean>} visibility
+   * @returns {TemplateResult}
+   */
+  function quickFixImplGroup(visibility) {
+    const catalog = runnerCatalog();
+    const disabled_title = quickFixDisabledTitle();
+    // Every catalog token, runtime-independent: the delegation runtime is
+    // DERIVED from this key's model, so the 위임 대상 row must not narrow it.
+    const models = implModelOptions(catalog, undefined).filter(
+      (token) => token !== AUTO_LITERAL
+    );
+    const efforts = implEffortOptions(catalog, undefined, undefined);
+    return html`<div
+      class="settings-dialog__group"
+      data-quick-fix-group="impl"
+      title=${disabled_title || ''}
+    >
+      <div class="settings-dialog__group-title">
+        구현
+        <span class="settings-dialog__hint"
+          >${'실행 방식은 quick fix에서만 저장소 값입니다 · 이슈 핀이 있으면 핀이 우선합니다'}</span
+        >
+      </div>
       ${quickFixRow(
         'quick_fix_impl_dispatch',
         '실행 방식',
@@ -2616,7 +2802,7 @@ export function createExecutionPane(mount_element, binding) {
         onSessionChange,
         session_draft
       )}
-      ${delegated
+      ${quickFixDelegated()
         ? html`
             ${quickFixRow(
               'quick_fix_impl_runtime',
@@ -2661,7 +2847,9 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * The execution profile the Worker and an interactive session share.
+   * The execution profile the Worker and an interactive session share. The
+   * quick_fix rows are NOT here: they are their own tab, and this tab's preset
+   * bar lists general presets only (§6.1).
    *
    * @returns {TemplateResult}
    */
@@ -2671,10 +2859,29 @@ export function createExecutionPane(mount_element, binding) {
     }
     const visibility = speedVisibility();
     return html`
-      ${sessionWarningBanner()} ${projectionBanner()} ${presetStripTemplate()}
-      ${orchestrationGroup(visibility)} ${implGroup(visibility)}
-      ${reviewGatesGroup(visibility)} ${quickFixGroup(visibility)}
+      ${sessionWarningBanner()} ${projectionBanner()}
+      ${presetStripTemplate('general')} ${orchestrationGroup(visibility)}
+      ${implGroup(visibility)} ${reviewGatesGroup(visibility)}
       ${systemPromptSection()}
+    `;
+  }
+
+  /**
+   * The route-scoped quick_fix profile: its own preset bar and two groups. A
+   * server with no quick_fix lane leaves the rows locked with the same copy
+   * they carried inside the Worker tab (§6.1).
+   *
+   * @returns {TemplateResult}
+   */
+  function quickFixSection() {
+    if (session_loading) {
+      return html`<div class="settings-dialog__empty">불러오는 중…</div>`;
+    }
+    const visibility = speedVisibility();
+    return html`
+      ${sessionWarningBanner()} ${projectionBanner()}
+      ${presetStripTemplate('quick_fix')}
+      ${quickFixOrchestrationGroup(visibility)} ${quickFixImplGroup(visibility)}
     `;
   }
 
@@ -2774,6 +2981,9 @@ export function createExecutionPane(mount_element, binding) {
    * @returns {TemplateResult}
    */
   function paneTemplate() {
+    if (active_section === 'quick_fix') {
+      return quickFixSection();
+    }
     if (active_section === 'session') {
       return sessionSection();
     }

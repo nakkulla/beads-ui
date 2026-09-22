@@ -1164,6 +1164,55 @@ describe('effective-settings card', () => {
     panel.destroy();
   });
 
+  test('explains a profile mismatch the server refused', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const transport = vi.fn(async (/** @type {string} */ type) => {
+      if (type === 'get-session-defaults') {
+        return { values: {}, warnings: [] };
+      }
+      if (type === 'apply-impl-preset') {
+        const err = /** @type {any} */ (new Error('profile mismatch'));
+        err.code = 'preset_route_mismatch';
+        throw err;
+      }
+      return [];
+    });
+    const { panel } = seed(mount, {
+      transport,
+      presets: {
+        revision: 4,
+        presets: [
+          {
+            id: 'p1',
+            name: '메인 구현',
+            applies_to: 'general',
+            settings: { impl_runtime: 'codex' },
+            compatible: true
+          }
+        ]
+      }
+    });
+    await settle();
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-seam="effective-settings-toggle"]')
+    ).click();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('[data-impl-preset-select]')
+    );
+    select.value = 'p1';
+    select.dispatchEvent(new Event('change'));
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-apply-impl-preset]')
+    ).click();
+    await settle();
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '이 프리셋은 다른 계열이라 이 이슈에 적용할 수 없습니다.'
+    );
+    panel.destroy();
+  });
+
   test('offers no preset apply until one is chosen', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount, {
@@ -1196,14 +1245,19 @@ describe('effective-settings card', () => {
   test('names the preset the issue records once the list arrives', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount, {
-      metadata: { applied_exec_preset: 'p1', impl_model: 'sol' },
+      metadata: {
+        applied_exec_preset: 'p1',
+        impl_runtime: 'codex',
+        impl_model: 'sol'
+      },
       presets: {
         revision: 4,
         presets: [
           {
             id: 'p1',
             name: '메인 구현',
-            settings: { impl_model: 'sol' },
+            applies_to: 'general',
+            settings: { impl_runtime: 'codex', impl_model: 'sol' },
             compatible: true
           }
         ]

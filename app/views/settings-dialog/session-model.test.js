@@ -1,20 +1,27 @@
 import { describe, expect, test } from 'vitest';
 import {
+  APPLIES_TO_VALUES as SERVER_APPLIES_TO_VALUES,
   BEAD_PIN_KEYS as SERVER_BEAD_PIN_KEYS,
-  IMPL_PRESET_KEYS as SERVER_IMPL_PRESET_KEYS
+  GENERAL_PRESET_KEYS as SERVER_GENERAL_PRESET_KEYS,
+  GENERAL_PRESET_KV_KEYS as SERVER_GENERAL_PRESET_KV_KEYS,
+  QUICK_FIX_IMPL_KEYS as SERVER_QUICK_FIX_IMPL_KEYS,
+  QUICK_FIX_PRESET_KEYS as SERVER_QUICK_FIX_PRESET_KEYS
 } from '../../../server/worker/exec-enums.js';
 import {
+  APPLIES_TO_VALUES,
   BEAD_APPLY_KEYS,
   BEAD_PIN_KEYS,
   BOOLEAN_DRAFT_ON,
+  GENERAL_PRESET_KEYS,
+  GENERAL_PRESET_KV_KEYS,
   IMPL_DISPATCHES,
-  IMPL_PRESET_KEYS,
   ORCHESTRATION_KEYS,
   PLAN_REVIEW_MODELS,
-  PRESET_KV_KEYS,
+  QUICK_FIX_IMPL_KEYS,
   QUICK_FIX_KV_KEYS,
   QUICK_FIX_LANE_MAP,
   QUICK_FIX_ORCHESTRATION_KEYS,
+  QUICK_FIX_PRESET_KEYS,
   REVIEW_EFFORTS,
   REVIEW_SPEEDS,
   REVIEW_STEP_MODELS,
@@ -30,10 +37,13 @@ import {
   isDelegationDisabled,
   isHttpOriginValue,
   narrowImplTarget,
+  normalizeAppliesTo,
   orchestrationEffortOptions,
   orchestrationModelOptions,
   orchestrationRuntimeInitial,
   orchestrationRuntimeOptions,
+  presetKeysFor,
+  presetKvKeysFor,
   speedVisible,
   workerUrlMessage
 } from './session-model.js';
@@ -232,13 +242,21 @@ describe('session key lists', () => {
       'base_sync_accept_local_commits',
       'bdui_url'
     ]);
-    for (const key of QUICK_FIX_KV_KEYS) {
-      expect(IMPL_PRESET_KEYS).toContain(key);
-      expect(PRESET_KV_KEYS).toContain(key);
+  });
+
+  test('keeps the kv-only keys out of both preset profiles', () => {
+    for (const key of ['bdui_url', 'base_sync_accept_local_commits']) {
+      expect(GENERAL_PRESET_KEYS).not.toContain(key);
+      expect(GENERAL_PRESET_KV_KEYS).not.toContain(key);
+      expect(QUICK_FIX_PRESET_KEYS).not.toContain(key);
     }
-    expect(IMPL_PRESET_KEYS).not.toContain('bdui_url');
-    expect(IMPL_PRESET_KEYS).not.toContain('base_sync_accept_local_commits');
-    expect(PRESET_KV_KEYS).not.toContain('base_sync_accept_local_commits');
+  });
+
+  test('keeps the quick_fix storage keys out of the general profile', () => {
+    for (const key of QUICK_FIX_KV_KEYS) {
+      expect(GENERAL_PRESET_KEYS).not.toContain(key);
+      expect(GENERAL_PRESET_KV_KEYS).not.toContain(key);
+    }
   });
 
   test('maps exactly eight preset fields onto the quick_fix lane', () => {
@@ -259,8 +277,8 @@ describe('session key lists', () => {
     });
   });
 
-  test('names the eighteen kv keys one preset apply replaces', () => {
-    expect(PRESET_KV_KEYS).toEqual([
+  test('names the thirteen kv keys a general apply replaces', () => {
+    expect(GENERAL_PRESET_KV_KEYS).toEqual([
       'spec_review_model',
       'spec_review_effort',
       'spec_review_speed',
@@ -273,8 +291,7 @@ describe('session key lists', () => {
       'impl_runtime',
       'impl_model',
       'impl_effort',
-      'impl_speed',
-      ...QUICK_FIX_KV_KEYS
+      'impl_speed'
     ]);
   });
 
@@ -282,18 +299,52 @@ describe('session key lists', () => {
     expect(IMPL_DISPATCHES).toEqual(['delegated', 'main']);
   });
 
-  test('mirrors all twenty-five execution preset keys', () => {
-    expect(IMPL_PRESET_KEYS).toEqual([
-      ...BEAD_APPLY_KEYS,
-      ...ORCHESTRATION_KEYS,
-      ...QUICK_FIX_ORCHESTRATION_KEYS,
-      ...QUICK_FIX_KV_KEYS
-    ]);
-    expect(IMPL_PRESET_KEYS).toHaveLength(25);
+  test('carries the seventeen pin keys in the general profile', () => {
+    expect(GENERAL_PRESET_KEYS).toEqual([...BEAD_PIN_KEYS]);
+    expect(GENERAL_PRESET_KEYS).toHaveLength(17);
   });
 
-  test('matches the server preset key list exactly', () => {
-    expect(IMPL_PRESET_KEYS).toEqual([...SERVER_IMPL_PRESET_KEYS]);
+  test('carries eight canonical keys in the quick_fix profile', () => {
+    expect(QUICK_FIX_PRESET_KEYS).toEqual([
+      ...ORCHESTRATION_KEYS,
+      ...QUICK_FIX_IMPL_KEYS
+    ]);
+    expect(QUICK_FIX_PRESET_KEYS).toHaveLength(8);
+  });
+
+  test('leaves the nine review keys out of the quick_fix profile', () => {
+    for (const key of BEAD_APPLY_KEYS.filter((entry) =>
+      entry.includes('_review_')
+    )) {
+      expect(QUICK_FIX_PRESET_KEYS).not.toContain(key);
+    }
+  });
+
+  test('names quick_fix storage keys nowhere in the quick_fix profile', () => {
+    expect(
+      QUICK_FIX_PRESET_KEYS.some((key) => key.startsWith('quick_fix_'))
+    ).toBe(false);
+  });
+
+  test('reads an absent or unknown applies_to as general', () => {
+    expect(normalizeAppliesTo(undefined)).toBe('general');
+    expect(normalizeAppliesTo('lane')).toBe('general');
+    expect(normalizeAppliesTo('quick_fix')).toBe('quick_fix');
+  });
+
+  test('selects each profile key set by applies_to', () => {
+    expect(presetKeysFor('general')).toEqual(GENERAL_PRESET_KEYS);
+    expect(presetKeysFor('quick_fix')).toEqual(QUICK_FIX_PRESET_KEYS);
+    expect(presetKvKeysFor('general')).toEqual(GENERAL_PRESET_KV_KEYS);
+    expect(presetKvKeysFor('quick_fix')).toEqual(QUICK_FIX_KV_KEYS);
+  });
+
+  test('matches the server profile key lists exactly', () => {
+    expect(APPLIES_TO_VALUES).toEqual([...SERVER_APPLIES_TO_VALUES]);
+    expect(GENERAL_PRESET_KEYS).toEqual([...SERVER_GENERAL_PRESET_KEYS]);
+    expect(QUICK_FIX_IMPL_KEYS).toEqual([...SERVER_QUICK_FIX_IMPL_KEYS]);
+    expect(QUICK_FIX_PRESET_KEYS).toEqual([...SERVER_QUICK_FIX_PRESET_KEYS]);
+    expect(GENERAL_PRESET_KV_KEYS).toEqual([...SERVER_GENERAL_PRESET_KV_KEYS]);
   });
 
   test('offers the fixed review speed vocabulary', () => {
@@ -569,18 +620,17 @@ describe('buildPresetDiff', () => {
     ]);
   });
 
-  test('compares exactly the twenty-four keys one apply writes', () => {
+  test('compares exactly the sixteen keys one general apply writes', () => {
     const every_key = Object.fromEntries(
       [
-        ...PRESET_KV_KEYS,
+        ...GENERAL_PRESET_KV_KEYS,
         ...ORCHESTRATION_KEYS,
-        ...QUICK_FIX_ORCHESTRATION_KEYS,
         ...WORKSPACE_KV_KEYS,
         'impl_dispatch'
       ].map((key) => [key, 'x'])
     );
 
-    const diff = buildPresetDiff({}, every_key);
+    const diff = buildPresetDiff({}, every_key, 'general');
 
     expect(diff.rows.map((row) => row.key)).toEqual([
       'spec_review_model',
@@ -596,18 +646,38 @@ describe('buildPresetDiff', () => {
       'impl_model',
       'impl_effort',
       'impl_speed',
-      ...QUICK_FIX_KV_KEYS,
       'orchestration_model',
       'orchestration_effort',
-      'orchestration_speed',
-      ...QUICK_FIX_ORCHESTRATION_KEYS
+      'orchestration_speed'
     ]);
     expect(diff.ignored_keys).toEqual([
       'impl_dispatch',
       'workflow_mode',
+      ...QUICK_FIX_KV_KEYS,
       'base_sync_accept_local_commits',
       'bdui_url'
     ]);
+  });
+
+  test('compares exactly the eight keys one quick_fix apply writes', () => {
+    const every_key = Object.fromEntries(
+      QUICK_FIX_PRESET_KEYS.map((key) => [key, 'x'])
+    );
+
+    const diff = buildPresetDiff({}, every_key, 'quick_fix');
+
+    expect(diff.rows.map((row) => row.key)).toEqual([...QUICK_FIX_PRESET_KEYS]);
+    expect(diff.ignored_keys).toEqual([]);
+  });
+
+  test('leaves the review keys out of a quick_fix comparison', () => {
+    const diff = buildPresetDiff(
+      { impl_review_model: 'astra' },
+      { impl_model: 'sol' },
+      'quick_fix'
+    );
+
+    expect(diff.rows.map((row) => row.key)).toEqual(['impl_model']);
   });
 
   test('returns impl_dispatch as ignored rather than comparing it', () => {
@@ -617,16 +687,11 @@ describe('buildPresetDiff', () => {
     expect(diff.ignored_keys).toEqual(['impl_dispatch']);
   });
 
-  test('previews a quick_fix model the preset omits as cleared', () => {
-    const diff = buildPresetDiff(
-      { quick_fix_impl_model: 'sol' },
-      { impl_runtime: 'codex' }
-    );
+  test('compares impl_dispatch in the quick_fix profile', () => {
+    const diff = buildPresetDiff({}, { impl_dispatch: 'main' }, 'quick_fix');
 
-    expect(diff.rows.map((row) => row.key)).toEqual([
-      'impl_runtime',
-      'quick_fix_impl_model'
-    ]);
+    expect(diff.rows.map((row) => row.key)).toEqual(['impl_dispatch']);
+    expect(diff.ignored_keys).toEqual([]);
   });
 
   test('returns no rows for an empty preset against empty settings', () => {

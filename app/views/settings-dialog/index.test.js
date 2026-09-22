@@ -155,7 +155,7 @@ beforeEach(() => {
 });
 
 describe('createSettingsDialog tabs', () => {
-  test('renders the four rail tabs in contract order', async () => {
+  test('renders the five rail tabs in contract order', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
@@ -164,13 +164,29 @@ describe('createSettingsDialog tabs', () => {
       tab.getAttribute('data-tab')
     );
 
-    expect(tabs).toEqual(['worker', 'session', 'account', 'display']);
+    expect(tabs).toEqual([
+      'worker',
+      'quick_fix',
+      'session',
+      'account',
+      'display'
+    ]);
     expect(SETTINGS_TABS.map((tab) => tab.label)).toEqual([
       '워커',
+      'quick fix',
       '세션',
       '계정',
       '표시'
     ]);
+  });
+
+  test('gives the quick fix tab a glyph no other rail tab carries', () => {
+    const glyphs = SETTINGS_TABS.map((tab) => tab.glyph);
+
+    expect(new Set(glyphs).size).toBe(glyphs.length);
+    expect(SETTINGS_TABS.find((tab) => tab.id === 'quick_fix')?.glyph).toBe(
+      '◈'
+    );
   });
 
   test('opens on the 워커 tab', async () => {
@@ -232,9 +248,33 @@ describe('createSettingsDialog tabs', () => {
       '오케스트레이션',
       '구현',
       '리뷰 게이트',
-      'quick_fix',
       '워커 시스템 프롬프트'
     ]);
+  });
+
+  test('renders the quick fix groups under their own tab', async () => {
+    const { root, dialog } = mount();
+    dialog.open();
+    await settle();
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-tab="quick_fix"]')
+    ).click();
+    await settle();
+
+    const groups = Array.from(
+      root.querySelectorAll(
+        '#settings-pane-quick_fix .settings-dialog__preset-bar, #settings-pane-quick_fix .settings-dialog__group'
+      )
+    ).map((element) =>
+      element.classList.contains('settings-dialog__preset-bar')
+        ? '프리셋'
+        : element
+            .querySelector('.settings-dialog__group-title')
+            ?.childNodes[0]?.textContent?.trim()
+    );
+
+    expect(groups).toEqual(['프리셋', '오케스트레이션', '구현']);
   });
 });
 
@@ -262,7 +302,7 @@ describe('createSettingsDialog repo scope (UI-e1ta §7)', () => {
     const tabs = Array.from(root.querySelectorAll('[role="tab"]')).map((tab) =>
       tab.textContent?.replace(/\s+/g, ' ').trim()
     );
-    expect(tabs).toEqual(['◆ 워커', '◇ 세션', '◎ 계정']);
+    expect(tabs).toEqual(['◆ 워커', '◈ quick fix', '◇ 세션', '◎ 계정']);
     expect(
       root.querySelector('.settings-dialog__pane-head h2')?.textContent
     ).toBe('repo-b 실행 설정');
@@ -315,9 +355,10 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
     const tabs = Array.from(root.querySelectorAll('[role="tab"]')).map((tab) =>
       tab.textContent?.replace(/\s+/g, ' ').trim()
     );
-    expect(tabs).toEqual(['◆ 워커', '◇ 세션', '◎ 계정']);
+    expect(tabs).toEqual(['◆ 워커', '◈ quick fix', '◇ 세션', '◎ 계정']);
     expect(BULK_SETTINGS_TABS.map((tab) => tab.id)).toEqual([
       'worker',
+      'quick_fix',
       'session',
       'account'
     ]);
@@ -354,7 +395,7 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
 
     expect(worker).toEqual({
       title: '여러 저장소 설정',
-      sub: '선택한 저장소의 현재 실행 프로필을 읽어 세웁니다. 프리셋을 고르면 25행이 그 값으로 채워집니다.'
+      sub: '선택한 저장소의 현재 실행 프로필을 읽어 세웁니다. 프리셋을 고르면 17행이 그 값으로 채워집니다.'
     });
     expect(
       root.querySelector('.settings-dialog__pane-head h2')?.textContent
@@ -366,13 +407,13 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
     dialog.destroy();
   });
 
-  test('keeps the four tabs and the connected workspace reads when opened without a scope', async () => {
+  test('keeps the five tabs and the connected workspace reads when opened without a scope', async () => {
     const { root, dialog, transport } = mount({ monitorRows: MONITOR_ROWS });
 
     dialog.open();
     await settle();
 
-    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(4);
+    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(5);
     expect(requestTypes(transport)).toEqual(
       expect.arrayContaining(['get-session-defaults', 'get-workspace-accounts'])
     );
@@ -386,10 +427,10 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
     await settle();
     dialog.close();
 
-    dialog.open();
+    dialog.open('quick_fix');
     await settle();
 
-    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(4);
+    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(5);
     expect(root.querySelector('[data-quick-fix-group]')).not.toBe(null);
     dialog.destroy();
   });
@@ -508,7 +549,7 @@ describe('createSettingsDialog session tab', () => {
     const { root, dialog } = mount({
       values: { quick_fix_impl_dispatch: 'delegated' }
     });
-    dialog.open();
+    dialog.open('quick_fix');
     await settle();
 
     const select = /** @type {HTMLSelectElement} */ (
@@ -533,7 +574,7 @@ describe('createSettingsDialog session tab', () => {
         orchestration_speed: null
       }
     });
-    dialog.open();
+    dialog.open('quick_fix');
     await settle();
 
     const select = /** @type {HTMLSelectElement} */ (
@@ -843,7 +884,7 @@ describe('createSettingsDialog execution tab orchestration', () => {
     await settle();
 
     expect(
-      root.querySelector('#settings-pane-worker [data-quick-fix-group]')
+      root.querySelector('#settings-pane-worker [data-preset-bar="general"]')
     ).not.toBe(null);
     expect(transport).toHaveBeenCalledWith('get-session-defaults', {});
   });
@@ -953,10 +994,23 @@ describe('createSettingsDialog implementation presets', () => {
     dialog.destroy();
   });
 
-  test('disables the apply button for a preset equal to the current settings', async () => {
+  test('disables the apply button for the preset its record already names', async () => {
     const { root, dialog } = mount({
       presets: PRESETS,
-      values: { impl_runtime: 'codex', impl_model: 'sol' }
+      values: { impl_runtime: 'codex', impl_model: 'sol' },
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        orchestration_model: null,
+        orchestration_effort: null,
+        orchestration_speed: null,
+        quick_fix_orchestration_model: null,
+        quick_fix_orchestration_effort: null,
+        quick_fix_orchestration_speed: null,
+        applied_exec_preset: { id: 'p1', name: '기본 위임', revision: 4 }
+      }
     });
     dialog.open();
     await settle();
@@ -1024,6 +1078,7 @@ describe('createSettingsDialog implementation presets', () => {
     expect(create[1]).toEqual({
       expected_revision: 4,
       name: '새 조합',
+      applies_to: 'general',
       settings: {
         impl_runtime: 'codex',
         orchestration_model: 'opus',
