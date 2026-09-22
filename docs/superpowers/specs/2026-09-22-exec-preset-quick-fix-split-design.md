@@ -7,6 +7,9 @@ scope:
   - server/worker/compare-projection.js
   - server/worker/bench-runs.js
   - server/ws/exec-preset-handlers.js
+  - server/ws/monitor-handlers.js
+  - server/ws/session-defaults-handlers.js
+  - server/ws/worker-handlers.js
   - app/views/settings-dialog/
   - app/views/detail-panel/
   - app/views/monitor/
@@ -59,7 +62,7 @@ scope:
 | `general` | `ORCHESTRATION_KEYS` 3 + `BEAD_APPLY_KEYS` 14 | 17 |
 | `quick_fix` | `ORCHESTRATION_KEYS` 3 + 구현 5(`impl_dispatch`, `impl_runtime`, `impl_model`, `impl_effort`, `impl_speed`) | 8 |
 
-`quick_fix` 계열은 리뷰 9키(`spec_review`·`plan_review`·`impl_review`의 model·effort·speed)를 담지 않는다. quick fix의 검토는 self-review이고 그 세 리뷰어 키는 quick fix 실행에 쓰이지 않는다. 저장 파일에 `quick_fix_` 접두 키는 더 이상 나타나지 않는다.
+`quick_fix` 계열은 리뷰 9키(`spec_review`·`plan_review`·`impl_review`의 model·effort·speed)를 담지 않는다. 리뷰 설정은 계열과 무관한 공통 축이고 계약에도 route별 리뷰 키가 없다 — quick fix Bead가 도는 구현 리뷰도 이슈 핀과 일반 kv 층에서 해석되며, 이 분리가 그 해석을 바꾸지 않는다. 저장 파일에 `quick_fix_` 접두 키는 더 이상 나타나지 않는다.
 
 허용 값은 계열마다 다르고, 그 차이는 dotfiles 계약이 정한 것을 그대로 옮긴 것이다(ADR 0012, 이 저장소는 소비자다).
 
@@ -91,7 +94,9 @@ kv 먼저, 큐 나중의 쓰기 순서와 비원자성, 부분 적용 시의 안
 
 큐는 계열마다 하나씩 기록한다: 기존 `applied_exec_preset`(일반)과 새 `applied_quick_fix_preset`(quick fix). 둘 다 `{ id, name, revision, applied_at }`이며 정규화·직렬화 경로는 기존 것을 공유한다. 한 계열의 적용은 다른 계열의 기록을 지우지 않는다 — 적용 직전 `clearAppliedExecPreset`이 비우는 것도 그 계열의 기록뿐이다.
 
-모니터 행이 싣는 `applied_exec_preset` 필드(UI-e1ta)는 두 필드가 되고, 구버전 클라이언트가 모르는 필드를 무시하는 현행 관용을 유지한다.
+모니터 행이 싣는 `applied_exec_preset` 필드(UI-e1ta)는 두 필드가 되고, 구버전 클라이언트가 모르는 필드를 무시하는 현행 관용을 유지한다. 행을 구성하는 `server/ws/monitor-handlers.js`가 두 기록을 그대로 싣는다.
+
+개별 값을 직접 고쳐 기록이 더 이상 사실이 아닐 때 그것을 푸는 판정(`changesAppliedExecPreset`)도 계열을 따른다. 세션 기본값 쓰기(`server/ws/session-defaults-handlers.js`)와 큐 오케스트레이션 쓰기(`server/ws/worker-handlers.js`)는 그 요청이 실제로 바꾼 키가 속한 계열의 기록만 푼다. 일반 행을 고쳤다고 quick fix 기록이 지워지지 않고, 그 반대도 마찬가지다.
 
 ## 5. 이슈에 적용
 
@@ -103,9 +108,9 @@ kv 먼저, 큐 나중의 쓰기 순서와 비원자성, 부분 적용 시의 안
 
 교체 범위는 계열의 키 집합이다. 일반 프리셋은 지금처럼 `BEAD_PIN_KEYS` 17키를 교체한다(명시값 set, 누락 unset). quick fix 프리셋은 오케스트레이션 3키와 구현 5키만 교체하고 리뷰 9키는 손대지 않는다. `applied_exec_preset` metadata 키는 계열과 무관하게 프리셋 `id` 하나를 기록한다(ADR UI-xq3h 승계).
 
-`presetSettingsForIssue`의 quick fix 역매핑은 사라진다. 프리셋이 이미 canonical 키를 담고 있으므로 route에 따라 `quick_fix_` 접두 키를 먼저 찾고 일반 키로 떨어지던 분기, 그리고 `quick_fix_impl_model`에서 런타임을 유도하던 분기가 모두 필요 없다. 이슈 metadata에 quick fix 접두 키를 쓰지 않는다는 기존 규칙은 그대로다.
+`presetSettingsForIssue`에서 사라지는 것은 접두어 역매핑뿐이다. 프리셋이 이미 canonical 키를 담으므로 route에 따라 `quick_fix_` 접두 키를 먼저 찾고 일반 키로 떨어지던 분기는 필요 없다. 반면 모델에서 런타임을 유도하는 규칙은 유지한다. 프리셋 저장 검증은 런타임 없는 모델 단독을 허용하지만(`validateImplPresetSettings`가 `active_writer:false`로 대조한다) 이슈 핀 검증은 같은 조합을 `impl_runtime_required`로 거부하므로, 유도를 없애면 모델만 담은 프리셋의 적용이 실패한다. 유도는 계열과 무관하게 canonical `impl_model`에서 하고, 명시된 `impl_runtime`이 있으면 그것이 이긴다. 이슈 metadata에 quick fix 접두 키를 쓰지 않는다는 기존 규칙은 그대로다.
 
-어긋남 계산(`dispatchPreset`)도 계열을 따른다: 이슈 route가 `quick_fix`면 큐의 `applied_quick_fix_preset`과 8키를, 아니면 `applied_exec_preset`과 17키를 대조한다. 비교에서 접두 키 조회는 없어진다.
+어긋남 계산(`dispatchPreset`)도 계열을 따른다: 이슈 route가 `quick_fix`면 큐의 `applied_quick_fix_preset`과 8키를, 아니면 `applied_exec_preset`과 17키를 대조한다. 비교에서 접두 키 조회는 없어진다. 이슈 상세가 쓰는 대칭 비교(`presetDeviation`)의 키 범위도 같다 — quick fix 계열에서 리뷰 9키는 교체 대상이 아니므로 비교 대상도 아니고, 리뷰 핀이 선 이슈에 quick fix 프리셋을 적용한 직후의 어긋남은 0이어야 한다.
 
 기본값은 저장소 설정이다. 이슈에 핀이 없으면 실행은 지금처럼 kv의 quick fix 층 → 일반 층 → 하네스 순으로 해석된다(`app/utils/execution-defaults.js`, dotfiles 계약). 이 해석 순서는 이 설계의 변경 대상이 아니다.
 
@@ -145,13 +150,15 @@ quick fix        작업 진행     모델  사고 깊이  (속도)
 
 ## 7. 비교 탭과 실험
 
-`compare-projection.js`의 `presetMatch`는 attempt의 route로 계열을 먼저 고르고, 그 계열의 프리셋만 후보로 삼아 canonical 키로 대조한다. `quick_fix_<key> ?? <key>`로 읽던 분기는 사라진다. 점수·동점 처리·`candidates` 노출 방식은 그대로다.
+`compare-projection.js`의 `presetMatch`에서 사라지는 것은 `quick_fix_<key> ?? <key>` 접두 조회뿐이다. 후보를 계열로 거르지는 않는다. 실험 복제 이슈는 `benchCloneFields`가 route를 `quick_fix`로 두고 `impl_dispatch`를 `delegated`로 덮어 만들기 때문에, route로 계열을 좁히면 일반 계열 프리셋으로 돌린 실험이 자기 프리셋과 매칭되지 않는다. 모든 프리셋을 canonical 키로 같은 방식으로 대조하며 점수·동점 처리·`candidates` 노출은 그대로다.
 
-`bench-runs.js`의 기록 형식과 `resolved_tuple`은 바꾸지 않는다. 과거 manifest와 attempt는 당시 값 그대로 읽힌다. 새 실험은 `general` 계열 프리셋만 입력으로 받는다 — 실험 clone이 `impl_dispatch=delegated`로 고정된 현행 목적을 유지하고, quick fix 계열은 `main`이 기본이라 그 목적과 맞지 않는다. quick fix 계열을 고르면 clone 생성 전에 거부하고 그 이유를 말한다.
+`bench-runs.js`의 기록 형식과 `resolved_tuple`은 바꾸지 않는다. 실험 복제는 `apply-impl-preset`을 거치지 않고 `bd create`의 metadata로 tuple을 직접 핀하므로 §5의 route-계열 일치 판정 대상이 아니다. 과거 manifest와 attempt는 당시 값 그대로 읽힌다. 실험 입력에도 계열 제한을 두지 않는다 — clone이 `impl_dispatch=delegated`로 덮는 기존 동작과 그 이유(그 축을 덮지 않으면 프리셋의 구현 런타임·모델이 실행되지 않는다)를 그대로 두며, 프리셋의 `impl_dispatch`가 `main`이어도 그 덮어쓰기가 측정 대상을 만든다는 현행 계약을 바꾸지 않는다.
 
 ## 8. 마이그레이션
 
 새 마커 `preset_profile_migration: { version: 1 }`을 파일 최상위에 둔다. 마커가 이미 있으면 다시 실행하지 않는다(`reseed_migration`의 선례를 따른다). 절차는 기존 프리셋 파일 한 번의 rename으로 끝난다.
+
+부팅 경로에서 두 마이그레이션의 순서를 고정한다: `migrateWorkspaces`가 기존 재시드(`reseedPresets`, 마커 `reseed_migration`)를 끝낸 뒤에 이 분리를 실행한다. 반대 순서면 `replaceAllForReseed`의 전체 교체가 방금 만든 quick fix 프리셋과 새 마커를 지운다. 각 마커는 자기 쓰기와 같은 rename에 들어가고 쓰기 뒤 readback으로 확인하므로, 어느 한쪽에서 멈춰도 다음 부팅이 마커가 없는 단계부터 다시 시작한다.
 
 1. 기존 항목마다 `settings`에서 quick fix 8키를 떼어내고 `applies_to: 'general'`을 부여한다. `id`·`name`·`origin`·순서·나머지 키는 그대로 둔다.
 2. 떼어낸 값을 canonical 이름으로 되돌려 조합별로 모은다. 비어 있지 않은 조합마다 `applies_to: 'quick_fix'` 프리셋 하나를 새 `id`로 만든다. `origin`은 `{ kind: 'legacy-preset-copy', source_preset_id: <그 조합의 첫 원본 id> }`다.
@@ -171,14 +178,14 @@ quick fix        작업 진행     모델  사고 깊이  (속도)
 | 저장 형식 | `applies_to` 부재는 `general`; 어휘 밖 값도 `general`; 계열별 허용 키 밖은 쓰기에서 거부; 이름 중복 회피가 계열을 가로질러 동작 |
 | 계열 enum | quick fix 계열이 `impl_runtime=auto`·`impl_model=auto`를 거부하고 일반 계열은 허용; 사유 문자열에 접두 변환이 없음 |
 | 전역 적용 | 일반 적용이 quick fix kv 5키와 큐 3키를 보존; quick fix 적용이 일반 키를 보존; 각 계열의 누락 키만 unset; `workflow_mode`·주소·base 동기화·계정·동시성 보존 |
-| 적용 기록 | 두 기록이 독립; 한 계열 적용이 다른 기록을 지우지 않음; 모니터 행이 두 필드를 싣고 구버전 필드 부재를 견딤 |
-| 이슈 적용 | route와 계열이 맞을 때만 적용; 불일치는 write 전 `preset_route_mismatch`; quick fix 적용이 리뷰 9키를 보존; route 미핀 이슈는 일반 계열 |
-| 어긋남 | route별로 대조 대상 기록과 키 집합이 갈림; 접두 키 조회 없음; 기록된 정체성이 프리셋 삭제 후에도 살아남는 현행 유지 |
+| 적용 기록 | 두 기록이 독립; 한 계열 적용이 다른 기록을 지우지 않음; 모니터 행이 두 필드를 싣고 구버전 필드 부재를 견딤; 개별 값 수정은 그 값이 속한 계열의 기록만 해제 |
+| 이슈 적용 | route와 계열이 맞을 때만 적용; 불일치는 write 전 `preset_route_mismatch`; quick fix 적용이 리뷰 9키를 보존; route 미핀 이슈는 일반 계열; 모델만 담은 프리셋이 런타임 유도로 적용되고 명시 런타임이 유도를 이김 |
+| 어긋남 | route별로 대조 대상 기록과 키 집합이 갈림; 접두 키 조회 없음; 리뷰 핀이 선 이슈에 quick fix 프리셋을 적용한 직후 상세의 어긋남이 0; 기록된 정체성이 프리셋 삭제 후에도 살아남는 현행 유지 |
 | 화면 | 네 탭이 두 모드 모두에 존재; `워커` 탭에 quick fix 행 없음; `quick fix` 탭의 main 전환이 위임 행을 DOM에서 제거; 두 프리셋 바가 서로의 목록을 담지 않음 |
 | 일괄 | quick fix 탭의 관측 네 상태·갈림/미확인 제외·부분 실패 재적용; 프리셋 선택이 그 탭 행만 편집됨으로 바꿈 |
 | 이슈 상세 | 드롭다운이 route의 계열만 나열; 빈 계열에서 안내와 비활성 |
-| 비교·실험 | route별 계열 매칭; canonical 키 대조; quick fix 계열 실험 거부; 과거 manifest·attempt 해석 불변 |
-| 마이그레이션 | 이름·id·origin·순서 보존, quick fix 키 제거, 조합별 생성, 마커 멱등, revision +1, readback; kv·큐 무변경 |
+| 비교·실험 | canonical 키 대조로 계열 구분 없이 매칭; route `quick_fix`인 실험 복제가 일반 계열 프리셋과 매칭됨; 과거 manifest·attempt 해석 불변 |
+| 마이그레이션 | 이름·id·origin·순서 보존, quick fix 키 제거, 조합별 생성, 마커 멱등, revision +1, readback; 재시드 뒤에 실행되어 결과가 지워지지 않음; 중단 후 재부팅이 남은 단계부터 재개; kv·큐 무변경 |
 
 기존 테스트를 확장한다: `exec-preset-store`, `exec-preset-apply`, `exec-preset-coordinator`, `exec-enums`, `ws.impl-presets`, `bulk-pane`, `bulk-worker-form`, `execution-pane`, `settings-dialog/index`, `detail-panel`, `monitor/deck`, `compare-projection`, `bench-runs`.
 
@@ -197,7 +204,7 @@ quick fix        작업 진행     모델  사고 깊이  (속도)
 - 전제: ADR UI-wecw — 세션 기본값 어휘·검증의 dotfiles 소유권(0013 승계)을 그대로 따르고 프리셋이 무엇을 교체하는지만 바꾼다.
 - 전제: ADR 0014 — 새 컨트롤은 설정 다이얼로그와 이슈 상세에만 두고 워커·모니터 카드의 슬롯은 바꾸지 않는다.
 - 실행 프리셋을 `applies_to`로 가르고 계열이 적용 대상과 이슈 route를 정하는 것: 되돌림 비용 있음(영속 형식·마이그레이션·두 적용 경로·두 기록·비교 소비자), 배경 없이 의외임(한 목록에 두 계열), 실재 대안 있음(키만 제거, 별도 파일). `summary`: "실행 프리셋은 applies_to로 일반·quick fix 두 계열로 갈리고 settings는 canonical 키만 담으며, 계열이 저장소 적용의 키 집합과 이슈 route 일치를 정해 다른 계열의 값은 보존된다 — 이슈 적용의 25키 프로파일과 quick fix 역매핑을 대체하고 id 하나 정체성·대칭 비교는 승계한다" → ADR, supersede UI-xq3h
-- 설정 창이 네 탭이고 quick fix 탭이 자기 프리셋 바를 갖는 것: 되돌림 비용 낮지 않음(일괄 창의 탭 고정·프리셋 관리 위치가 UI-e1ta의 결정), 배경 없이 의외 아님, 실재 대안 있음(한 탭 안에서 프리셋 밖임을 표시). `summary`: "설정 창은 워커·quick fix·세션·계정 네 탭이고 quick fix 탭이 자기 계열의 프리셋 바와 8행을 가지며 프리셋 선택은 그 탭의 행만 편집됨으로 바꾼다 — 세 탭과 25행 일괄 편집만 UI-e1ta에서 뒤집고 관측 네 상태·순차 op·레포 카드의 같은 다이얼로그는 승계한다" → ADR, supersede UI-e1ta
+- 설정 창이 네 탭이고 quick fix 탭이 자기 프리셋 바를 갖는 것: 되돌림 비용 있음(일괄 창의 탭 고정·관측 상태 기계·프리셋 관리 호출 지점이 UI-e1ta에 함께 묶여 있어 탭 수 변경이 셋을 같이 건드린다), 배경 없이 의외임(같은 창의 두 프리셋 바가 서로 다른 목록을 담고 한쪽 선택이 다른 탭의 행을 건드리지 않는다 — UI-e1ta의 "프리셋을 고르면 25행 전부가 편집됨"과 정반대다), 실재 대안 있음(한 탭에 두고 프리셋 밖임을 표시만 하는 안). `summary`: "설정 창은 워커·quick fix·세션·계정 네 탭이고 quick fix 탭이 자기 계열의 프리셋 바와 8행을 가지며 프리셋 선택은 그 탭의 행만 편집됨으로 바꾼다 — 세 탭과 25행 일괄 편집만 UI-e1ta에서 뒤집고 관측 네 상태·순차 op·레포 카드의 같은 다이얼로그는 승계한다" → ADR, supersede UI-e1ta
 
 ## 경계·후속
 
