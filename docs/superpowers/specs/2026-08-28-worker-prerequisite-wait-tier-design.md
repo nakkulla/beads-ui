@@ -262,8 +262,14 @@ parked·retry_wait와 같은 네 키 규칙(ADR 0014)으로 `waiting: item.run_s
   남는다. 계약이 그 레인에도 같은 절차를 적용하므로 같은 판정식을 그 경로의
   `endedWithoutDelivery` 앞에 두는 것이 자연스럽지만, 이 Bead의 출처 둘이 모두 quick_fix라
   범위를 quick_fix로 한정했다. — 2026-08-30 `Analysis-ez8l`로 재관측되어 `UI-8kvi`(quick_fix)가
-  같은 `judgePrerequisiteWait`를 PR 검증 경로의 `no_pr` 갈래 앞에 두었다. 죽은 attempt 복구
-  경로(`disposeDeadAttempt`)는 세션 verdict가 없어 그대로 `session_ended_unresolved`다.
+  같은 `judgePrerequisiteWait`를 PR 검증 경로의 `no_pr` 갈래 앞에 두었다.
+  정정(`UI-7dy1`, 2026-09-22): `persistedRunnerVerdict`가 저장된 세션 로그에서 verdict를
+  복원하므로 죽은 attempt 복구 경로에 verdict가 없다는 전제는 더 이상 맞지 않는다.
+  `disposeDeadAttemptSettlement`의 quick_fix 갈래도 `settleQuickfixLanding` 전에 같은
+  `judgePrerequisiteWait`를 호출한다. 복원된 verdict를 쓰되 로그가 없어 복원하지 못하면
+  PR 복구 갈래처럼 `success: true`, `reason: reconciled`인 관측용 verdict를 넘긴다.
+  판정은 여전히 §4.2의 네 조건이 맡고, 조건이 성립하지 않으면 기존 착지 정산을 따른다.
+  guard 판정과 bench 검증·정산·정리 순서는 유지한다.
 - 관찰: `foreign-blocker-status.js`는 표시 전용이라는 헤더 주석을 달고 있다. 이 설계가 판정에
   쓰는 것은 즉시 조회 경로 하나이며, 캐시·TTL·정리 로직은 판정에 관여하지 않는다 — 헤더
   주석의 "Display only" 문장을 그 경계로 고쳐 쓴다.
