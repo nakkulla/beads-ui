@@ -4630,8 +4630,7 @@ html[data-theme='dark'] {
 /* 칩 줄은 줄을 넘긴다 (UI-pw2g §3.2): 한 줄에 담기지 않으면 칩이 제자리에서
    압축돼 글자를 잃는 대신 다음 줄로 내려간다. 타일이 한 줄 높아지는 것이 잘린
    `오케 claude · fable · l…`보다 싸다. */
-.rtile__facts,
-.rtile__usage {
+.rtile .worker-chips {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -4641,8 +4640,7 @@ html[data-theme='dark'] {
 
 /* 칩 하나가 담는 줄보다 넓으면 말줄임하지 않고 그 칩 안에서 넘긴다 — 말줄임은
    어느 층에도 남기지 않는다 (UI-pw2g §3.2). */
-.rtile__facts > *,
-.rtile__usage > * {
+.rtile .worker-chips > * {
   flex: 0 1 auto;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -4676,10 +4674,7 @@ html[data-theme='dark'] {
   overflow-wrap: anywhere;
 }
 
-/* 좌표·실행 사실 칩 줄 (UI-251y §3.5). 후보 카드 · mini 행이 공유하는 슬롯 5
-   줄이고, 좌표 칩 → exec 칩 → usage 순으로 담는다. 실행 타일은 같은 역할을
-   하는 `.rtile__meta`를 이미 갖고 있어 합치지 않는다 — 타일과 행의 여백·글자
-   크기 토큰이 다르다. */
+/* Shared slot 5a coordinates and 5b execution facts (UI-us7l). */
 .worker-chips {
   position: relative;
   display: flex;
@@ -4740,7 +4735,7 @@ html[data-theme='dark'] {
     .worker-usage,
     .worker-card__repo,
     .worker-mini__repo,
-    .rtile__lane
+    .ctl-chip--lane
   ) {
   font-size: var(--fs-chip);
   border-radius: var(--r-4);
@@ -4751,14 +4746,12 @@ html[data-theme='dark'] {
    그 칩에서만 무효가 된다. 세 칩이 자기 규칙으로 그 한계를 들고 있었다 —
    `.worker-usage`의 `nowrap`, 레포 배지의 `12ch`, 세션 정체 칩의 `18ch`.
 
-   담는 줄로 한정하는 것이 이 규칙의 요점이다. 완료 레인의 두 3줄 변형은 같은
-   칩을 `.worker-mini__row1`~`__row3`에 **직접** 담고 `.worker-chips` 래퍼를 쓰지
-   않으므로(스펙 §4.3이 그 변형의 밀도를 그대로 두라고 한다) 여기 걸리지 않고,
-   머리줄의 칩도 마찬가지다. `margin-left: auto`는 건드리지 않는다 — 대기 행
+   담는 줄로 한정하여 머리줄 칩의 배치는 유지한다. 완료 행도 슬롯 5만 이
+   래퍼를 쓴다(UI-us7l). `margin-left: auto`는 건드리지 않는다 — 대기 행
    `.worker-chips` 안의 usage 배지는 지금 자리를 유지한다. 전체 값은 계속
    `title`이 싣는다. */
 :is(.worker-card, .worker-mini, .rtile)
-  :is(.rtile__facts, .rtile__usage, .worker-chips, .worker-deps)
+  :is(.worker-chips, .worker-deps)
   :is(.worker-usage, .worker-card__repo, .worker-mini__repo, .ctl-chip--sref) {
   flex-shrink: 1;
   max-width: 100%;
@@ -5900,11 +5893,20 @@ html[data-theme='dark'] {
   top: 0;
   z-index: 1;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-5);
   padding: var(--sp-3) 0;
   background: var(--bg-app);
   font-size: var(--fs-chip);
+}
+
+.worker-wait__slots {
+  color: var(--text-muted);
+}
+
+.worker-wait__slots--warn {
+  color: var(--accent-warn);
 }
 
 .worker-wait__area-toggle {
@@ -6068,6 +6070,10 @@ html[data-theme='dark'] {
   gap: var(--sp-6);
   color: var(--text-muted);
   font-size: var(--fs-small);
+}
+
+.worker-mini__row3 > .worker-chips {
+  flex-basis: 100%;
 }
 
 .worker-mini__done-at {
@@ -7718,7 +7724,7 @@ html[data-theme='dark'] {
   flex: 0 0 auto;
 }
 
-.rtile__lane {
+.ctl-chip--lane {
   padding: 0 var(--sp-4);
   border: 1px solid var(--border-chip);
   border-radius: var(--r-5);

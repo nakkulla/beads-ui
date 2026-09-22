@@ -1536,8 +1536,31 @@ export function priorityBadgeTemplate(priority) {
   >`;
 }
 
+export const SERIAL_LANE_LABEL = '직렬';
+
+/**
+ * Shared dispatch origin chip for running tiles and PR rows.
+ *
+ * @param {import('./lane-model.js').LaneOrigin|undefined} origin
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function laneOriginChipTemplate(origin) {
+  if (!origin) {
+    return '';
+  }
+  const serial = origin.kind === 'serial';
+  return html`<span
+    class="ctl-chip ctl-chip--lane"
+    title=${serial
+      ? `직렬 레인 ${origin.index} — 이 레인은 이 일감이 끝날 때까지 다음 항목을 내보내지 않는다`
+      : '병렬 큐 — 슬롯이 남는 한 다른 항목과 함께 실행된다'}
+    >${serial ? `${SERIAL_LANE_LABEL} ${origin.index}` : '병렬'}</span
+  >`;
+}
+
 /**
  * @typedef {Object} MiniItem
+ * @property {import('./lane-model.js').LaneOrigin} [lane_origin]
  * @property {string} id - Bead id.
  * @property {string} title - Bead title (falls back to id).
  * @property {string|import('../../protocol.js').WaitReason} [reason] - Candidate reason chip or external wait judgment (missing_description /
@@ -1736,14 +1759,15 @@ export function priorityBadgeTemplate(priority) {
  * @returns {import('lit-html').TemplateResult}
  */
 function doneThreeLineRow(item) {
-  // 3번째 줄은 이미 usage/작업 시간을 싣는 슬롯 5 줄이다 — 그 앞쪽에 route →
-  // 오케 → 워커를 붙이므로 줄 수는 늘지 않는다 (UI-q1tg §3.4). 일반 출처 칩은
-  // 빠지고, Worker 생성 그룹은 생성 사실을 설명하기 위해 남는다 (UI-j10d §4).
+  // Slot 5 splits inside row3; completion and work times keep their positions.
   const badges = Array.isArray(item.badges) ? item.badges : [];
   const usage_options = { scope: undefined, direct_session: false };
   const provider_badges = providerUsageBadges(item.usage, usage_options);
   const usage_label = formatUsageTotalWithCost(item.usage);
   const done_at_label = formatRelativeTime(item.done_at);
+  const route_el = routeChipTemplate(item.workflow);
+  const from_el = creationSourceChipsTemplate(item, { include_from: false });
+  const exec_el = execChipsTemplate(item.exec_chips);
   return html`<div
     class="worker-mini worker-mini--static worker-mini--done worker-mini--three-line${item.search_match ===
     false
@@ -1782,24 +1806,29 @@ function doneThreeLineRow(item) {
     </div>
     ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
     <div class="worker-mini__row3">
-      ${routeChipTemplate(item.workflow)}${creationSourceChipsTemplate(item, {
-        include_from: false
-      })}${item.exec_chips
-        ? execChipsTemplate(item.exec_chips)
-        : ''}${provider_badges.length > 0
-        ? provider_badges.map(
-            (badge) =>
-              html`<span class="worker-usage" title=${badge.tooltip}
-                >${badge.label}</span
-              >`
-          )
-        : usage_label
-          ? html`<span
-              class="worker-usage"
-              title=${usageTooltip(item.usage, usage_options)}
-              >${usage_label}</span
-            >`
-          : ''}
+      ${route_el || from_el
+        ? html`<div class="worker-chips worker-chips--coords">
+            ${route_el}${from_el}
+          </div>`
+        : ''}
+      ${exec_el || provider_badges.length > 0 || usage_label
+        ? html`<div class="worker-chips worker-chips--run">
+            ${exec_el}${provider_badges.length > 0
+              ? provider_badges.map(
+                  (badge) =>
+                    html`<span class="worker-usage" title=${badge.tooltip}
+                      >${badge.label}</span
+                    >`
+                )
+              : usage_label
+                ? html`<span
+                    class="worker-usage"
+                    title=${usageTooltip(item.usage, usage_options)}
+                    >${usage_label}</span
+                  >`
+                : ''}
+          </div>`
+        : ''}
       ${typeof item.work_ms === 'number'
         ? html`<span
             class="worker-mini__work"
@@ -3213,6 +3242,10 @@ export function miniRow(item, options = {}) {
   // route 칩은 좌표 칩 줄이 싣는다 (UI-251y §2). 완료 행도 얻는다 (UI-q1tg
   // §3.4): 끝난 일에 대해서도 사용자는 "무엇으로 돌았나"를 묻는다.
   const route_el = routeChipTemplate(item.workflow);
+  const lane_el =
+    item.lane === 'pr_wait' && !item.external
+      ? laneOriginChipTemplate(item.lane_origin)
+      : '';
   // 일반 discovered-from 출처는 완료 행에서 빠진다. Worker 생성 그룹은 immutable
   // 생성 원본을 설명하므로 완료 행에도 남는다 (UI-j10d §4).
   const from_el = creationSourceChipsTemplate(item, {
@@ -3417,10 +3450,7 @@ export function miniRow(item, options = {}) {
         pin: item.exec_chips_pinned === true
       })
     : '';
-  // 슬롯 5 줄 (UI-251y §2·§3.5): 좌표 칩 → exec 칩 → usage 하나를 공유한다.
-  // 판정은 그 줄의 재료 전부로 한다 — 좌표·exec만 세면 usage만 있는 행에서
-  // 지금 보이는 정보가 사라진다. 재료가 하나도 없으면 줄 자체를 그리지 않는다
-  // (빈 div는 행에 여백만 남긴다).
+  // Slot 5a coordinates and 5b execution facts each fail quiet (UI-us7l).
   const complex_el = complexChipTemplate(
     item.complex_reason,
     chipOpen(item, 'complex'),
@@ -3447,19 +3477,21 @@ export function miniRow(item, options = {}) {
   // 카드의 처분을 바꾸지 않는다. 타임라인 `세부`와 같은 템플릿·같은 토스트를
   // 쓰므로 두 표면이 같은 값을 다르게 다루지 않는다. 재료가 없으면 없다.
   const log_path_el = logPathTemplate(item.log_path);
-  const chips_el =
-    repo_el ||
-    route_el ||
-    from_el ||
+  const coords_el =
+    lane_el || route_el || from_el || external.chips
+      ? html`<div class="worker-chips worker-chips--coords">
+          ${lane_el}${route_el}${from_el}${external.chips}
+        </div>`
+      : '';
+  const run_el =
     has_exec_chips ||
     complex_el ||
     area_el ||
     receipt_badge_el ||
     usage_el ||
-    log_path_el ||
-    external.chips
-      ? html`<div class="worker-chips">
-          ${repo_el}${route_el}${from_el}${exec_chips_el}${complex_el}${area_el}${receipt_badge_el}${usage_el}${log_path_el}${external.chips}${gate_open
+    log_path_el
+      ? html`<div class="worker-chips worker-chips--run">
+          ${exec_chips_el}${complex_el}${area_el}${receipt_badge_el}${usage_el}${log_path_el}${gate_open
             ? ''
             : judgementPopover(item)}
         </div>`
@@ -3522,7 +3554,11 @@ export function miniRow(item, options = {}) {
           <div class="worker-mini__row2">${title_el}</div>
           ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
           <div class="worker-mini__row3">
-            ${route_el}${from_el}${exec_chips_el}${usage_el}${done_at_label
+            ${coords_el}${exec_chips_el || usage_el
+              ? html`<div class="worker-chips worker-chips--run">
+                  ${exec_chips_el}${usage_el}
+                </div>`
+              : ''}${done_at_label
               ? html`<span
                   class="worker-mini__done-at"
                   title=${`완료 ${formatTimestampLocal(item.done_at)}`}
@@ -3541,13 +3577,13 @@ export function miniRow(item, options = {}) {
             ${timesMeta(item)}
           </div>`
       : html`<div class="worker-mini__head">
-            ${grip}${seq_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${wait_badge}${actions_el}
+            ${grip}${seq_el}${repo_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${wait_badge}${actions_el}
           </div>
           ${reason_el
             ? html`<div class="worker-mini__reason-line">${reason_el}</div>`
             : ''}
           <div class="worker-mini__body">${title_el}</div>
-          ${wait_lines.body}${deps_el}${chips_el}${has_foot
+          ${wait_lines.body}${deps_el}${coords_el}${run_el}${has_foot
             ? html`<div class="worker-mini__foot">
                 ${merge_step_el}
                 <span class="worker-mini__actions"
@@ -4054,9 +4090,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
     item.dependency_chips,
     spec_after_blocker_el === '' && readiness_el === '' ? '' : slot4_el
   );
-  // 좌표 칩은 정체성 줄이 아니라 슬롯 5 줄이다 (UI-251y §2·§3.2): 헤더에 서면
-  // 폭에 따라 조작 버튼을 다음 줄로 밀어내 사용자가 버튼을 찾는 자리가
-  // 달라진다. 순서는 레포 → route → from → exec 칩 하나다.
+  // Repo identity belongs in slot 1; coordinates and execution use 5a/5b.
   const repo_el = item.workspace_name
     ? html`<span class="worker-card__repo" title=${item.root_dir || ''}
         >${item.workspace_name}</span
@@ -4102,6 +4136,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
       ${draggable
         ? html`<span class="worker-card__grip" aria-hidden="true">⠿</span>`
         : ''}
+      ${repo_el}
       <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span
       >${priorityBadgeTemplate(item.priority)}${item.rereview_required === true
         ? html`<span
@@ -4155,11 +4190,14 @@ export function candidateCard(item, place_menu = null, options = {}) {
           onOpenDoc: options.onOpenDoc
         })
       : ''}${external.body}${deps_el}
-    ${repo_el || route_el || from_el || has_exec_chips || external.chips
-      ? html`<div class="worker-chips">
-          ${repo_el}${route_el}${from_el}${execChipsTemplate(
-            item.exec_chips
-          )}${external.chips}
+    ${route_el || from_el || external.chips
+      ? html`<div class="worker-chips worker-chips--coords">
+          ${route_el}${from_el}${external.chips}
+        </div>`
+      : ''}
+    ${has_exec_chips
+      ? html`<div class="worker-chips worker-chips--run">
+          ${execChipsTemplate(item.exec_chips)}
         </div>`
       : ''}
     ${is_deferred
@@ -4350,7 +4388,7 @@ export function paneTemplate(pane) {
 /**
  * @typedef {Object} WaitBodyModel
  * @property {{ rows: import('lit-html').TemplateResult[], completed?: import('lit-html').TemplateResult[], count: number }} [external]
- * @property {{ rows: import('lit-html').TemplateResult[], count: number, collapsed: boolean, drop?: WaitDropAttrs }} parallel
+ * @property {{ rows: import('lit-html').TemplateResult[], count: number, collapsed: boolean, drop?: WaitDropAttrs, slots?: Array<{root_dir: string, name: string, live: number, cap: number, saturated: boolean}> }} parallel
  * @property {{ lanes: WaitSerialLane[], collapsed: boolean, extra_panes?: import('lit-html').TemplateResult[], header_control?: import('lit-html').TemplateResult, notice?: import('lit-html').TemplateResult }} serial
  */
 
@@ -4419,6 +4457,18 @@ export function waitBody(model) {
       <header class="worker-wait__area-hd">
         ${areaToggle('parallel', '병렬 영역', parallel.collapsed)}
         <span class="worker-wait__area-count">${parallel.count}</span>
+        ${(parallel.slots || []).map(
+          (slot) =>
+            html`<span
+              class="worker-wait__slots${slot.saturated
+                ? ' worker-wait__slots--warn'
+                : ''}"
+              data-root-dir=${slot.root_dir}
+              title=${`실행 중 ${slot.live} / 슬롯 ${slot.cap} — 슬롯이 빌 때까지 이 레포의 병렬 항목은 나가지 않는다`}
+              >${slot.name || '슬롯'}
+              ${slot.live}/${slot.cap}${slot.saturated ? ' ⚠' : ''}</span
+            >`
+        )}
       </header>
       ${parallel.collapsed
         ? ''

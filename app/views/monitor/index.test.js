@@ -6,6 +6,78 @@ const NOW = 1_700_000_000_000;
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
 
+describe('parallel slot usage and lane origins (UI-us7l)', () => {
+  test('combines queued and live-only repos in name order and marks saturation', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-q' }],
+          pr_wait: [{ bead_id: 'A-pr', serial_lane_id: 's4' }]
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'B-1',
+              status: 'running',
+              started_at: 1,
+              serial_lane_id: null
+            }
+          }
+        }),
+        workspace({
+          root_dir: '/repo-empty',
+          name: 'repo-empty',
+          runnable: [{ bead_id: 'E-1' }]
+        })
+      ],
+      workspaces_state: [
+        state({ root_dir: WS_B, name: 'repo-b', slots: 1 }),
+        state({ slots: 3 }),
+        state({ root_dir: '/repo-empty', name: 'repo-empty' })
+      ]
+    });
+
+    view.load();
+
+    expect(
+      Array.from(mount.querySelectorAll('.worker-wait__slots'), (el) =>
+        el.textContent?.replace(/\s+/g, ' ').trim()
+      )
+    ).toEqual(['repo-a 0/3', 'repo-b 1/1 ⚠']);
+    expect(mount.querySelectorAll('.worker-wait__slots--warn')).toHaveLength(1);
+    expect(
+      mount.querySelector('.rtile .worker-chips--coords .ctl-chip--lane')
+        ?.textContent
+    ).toBe('병렬');
+    expect(mount.querySelector('.rtile__hd .rtile__repo')?.textContent).toBe(
+      'repo-b'
+    );
+    const pr_row = mount.querySelector('.worker-mini[data-bead-id="A-pr"]');
+    expect(
+      pr_row?.querySelector('.worker-chips--coords .ctl-chip--lane')
+        ?.textContent
+    ).toBe('직렬 4');
+    expect(
+      pr_row?.querySelector('.worker-mini__head .worker-mini__repo')
+        ?.textContent
+    ).toBe('repo-a');
+  });
+
+  test('omits slot usage for repos with only candidates', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ runnable: [{ bead_id: 'A-1' }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(mount.querySelector('.worker-wait__slots')).toBeNull();
+  });
+});
+
 /**
  * @param {Record<string, any>} [patch]
  * @returns {any}
