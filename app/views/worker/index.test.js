@@ -14540,9 +14540,10 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
    * One candidate carrying the `복잡` judgement.
    *
    * @param {{ gotoIssue?: any }} [handlers]
+   * @param {Record<string, any>} [metadata]
    * @returns {HTMLElement}
    */
-  function mountJudgement(handlers = {}) {
+  function mountJudgement(handlers = {}, metadata = {}) {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:ready', [
       {
@@ -14555,7 +14556,8 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
         metadata: {
           route: 'spec_backed',
           spec_review: RECEIPT,
-          complex_reason: 'invariant_reasoning'
+          complex_reason: 'invariant_reasoning',
+          ...metadata
         }
       }
     ]);
@@ -14568,6 +14570,66 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
     });
     return mount;
   }
+
+  /**
+   * The same candidate under a server-global binding on the `복잡` chip.
+   *
+   * @param {any} transport
+   * @returns {HTMLElement}
+   */
+  function mountBound(transport) {
+    return mountJudgement(
+      /** @type {any} */ ({
+        transport,
+        execPresetStore: {
+          get: () => ({
+            revision: 4,
+            presets: [
+              {
+                id: 'p1',
+                name: '오퍼스 → 클로드',
+                applies_to: 'general',
+                settings: { impl_runtime: 'claude' }
+              }
+            ],
+            chip_bindings: { complex: 'p1', frontend: null, backend: null }
+          }),
+          set: () => {},
+          subscribe: () => () => {}
+        }
+      })
+    );
+  }
+
+  test('sends chip-preset-toggle from a bound chip instead of the popup', () => {
+    const transport = vi.fn().mockResolvedValue({ applied: 'applied' });
+    const mount = mountBound(transport);
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-card[data-bead-id="REC-1"] .judgement-chip--bound'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(transport).toHaveBeenCalledWith('chip-preset-toggle', {
+      id: 'REC-1',
+      chip: 'complex',
+      expected_revision: 4
+    });
+  });
+
+  test('opens no 사유 popup on a bound chip click', () => {
+    const transport = vi.fn().mockResolvedValue({ applied: 'applied' });
+    const mount = mountBound(transport);
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-card[data-bead-id="REC-1"] .judgement-chip--bound'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.chip-popover')).toBeNull();
+  });
 
   /**
    * @param {HTMLElement} mount

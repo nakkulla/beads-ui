@@ -435,6 +435,51 @@ describe('worker workspace adapter', () => {
     });
   });
 
+  test('carries the chip identity keys beside the pins (UI-wg68 §5.1)', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'CHIP',
+        title: 'bound',
+        spec_id: 'SPEC-1',
+        metadata: {
+          spec_review: RECEIPT,
+          impl_runtime: 'claude',
+          applied_exec_preset: 'p1',
+          chip_preset_source: 'complex'
+        }
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .runnable[0];
+
+    expect(row.exec_pins).toEqual({
+      impl_runtime: 'claude',
+      applied_exec_preset: 'p1',
+      chip_preset_source: 'complex'
+    });
+  });
+
+  test('omits the chip identity keys when the issue carries none', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'PLAIN',
+        title: 'unbound',
+        spec_id: 'SPEC-1',
+        metadata: { spec_review: RECEIPT, impl_runtime: 'claude' }
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .runnable[0];
+
+    expect(Object.keys(row.exec_pins)).toEqual(['impl_runtime']);
+  });
+
   test('passes the release and dependents decorations through untouched', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:ready', [

@@ -387,6 +387,7 @@ const DONE_KIND_LABELS = {
  *   spec_id?: string,
  *   published?: boolean,
  *   labels?: string[],
+ *   chip_metadata?: Record<string, any>,
  *   dependents_info?: import('./queue-blockers.js').DependentsInfo,
  *   overlap_chips?: OverlapChip[],
  *   scope_state?: 'declared'|'missing',
@@ -2673,6 +2674,26 @@ function laneItemBuckets(model) {
 }
 
 /**
+ * The execution pins one projected row observed, or `null` when the row carries
+ * no `exec_pins` object at all. Both readers of that object ask here: the exec
+ * chips (UI-eey2 §9.1) and the chip-binding state judgment (UI-wg68 §5.1),
+ * which reads `applied_exec_preset`/`chip_preset_source` from the same object.
+ * An ABSENT object is "unobserved", while an EMPTY one is "no pins" — the two
+ * must not collapse, so the membership test stays.
+ *
+ * @param {any} entry
+ * @returns {Record<string, string>|null}
+ */
+function chipPinsOf(entry) {
+  return entry &&
+    Object.hasOwn(entry, 'exec_pins') &&
+    entry.exec_pins &&
+    typeof entry.exec_pins === 'object'
+    ? entry.exec_pins
+    : null;
+}
+
+/**
  * Merge the aggregated snapshot into the five exclusive lanes and repo sections.
  *
  * `options.candidate_sort: 'as_given'`은 정렬을 이미 끝낸 호출자(Worker
@@ -3676,16 +3697,18 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const parked = revise_parked[bead_id];
       const projected_discard = discardProjection(discard_operations, bead_id);
       const discard = projected_discard.operation ? projected_discard : null;
-      const exec_chips =
-        Object.hasOwn(entry, 'exec_pins') &&
-        entry.exec_pins &&
-        typeof entry.exec_pins === 'object'
-          ? execChipsFor(
-              objectOf(state),
-              entry.exec_pins,
-              objectOf(bead_workflow[bead_id]).route || null
-            )
-          : null;
+      // 서버 투영의 `exec_pins`는 exec 칩의 재료이자 칩 바인딩 판정의 재료다
+      // (UI-wg68 §5.1): 17핀 옆에 `applied_exec_preset`·`chip_preset_source`가
+      // 실려 오므로 오버레이 metadata가 없는 행도 상태를 그릴 수 있다. 오버레이가
+      // 오면 더 넓고 더 최신인 그쪽이 이 값을 덮는다.
+      const chip_pins = chipPinsOf(entry);
+      const exec_chips = chip_pins
+        ? execChipsFor(
+            objectOf(state),
+            chip_pins,
+            objectOf(bead_workflow[bead_id]).route || null
+          )
+        : null;
       /** @type {LaneItem} */
       const item = {
         ...base(bead_id),
@@ -3700,6 +3723,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
         // 데스크톱의 유일한 적재 수단이 드래그다 (§6) — 대기 행은 끌 수 있다.
         ...(exec_chips ? { exec_chips } : {}),
+        ...(chip_pins ? { chip_metadata: chip_pins } : {}),
         draggable: !discard,
         discard: discard || undefined,
         reason: admissionBadge(admission, bead_id),
@@ -3886,12 +3910,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const route =
         (workflow && typeof workflow.route === 'string' && workflow.route) ||
         (typeof entry.route === 'string' ? entry.route : null);
-      const exec_chips =
-        Object.hasOwn(entry, 'exec_pins') &&
-        entry.exec_pins &&
-        typeof entry.exec_pins === 'object'
-          ? execChipsFor(objectOf(state), entry.exec_pins, route)
-          : null;
+      const chip_pins = chipPinsOf(entry);
+      const exec_chips = chip_pins
+        ? execChipsFor(objectOf(state), chip_pins, route)
+        : null;
       // 복잡 판정 (UI-7nhi §3): 서버가 라벨과 사유를 이미 합쳐 `complex_reason`
       // 문자열 하나로 보내므로 레인은 옮기기만 한다. Worker 카드와 같은 칩·같은
       // 툴팁이다.
@@ -4024,6 +4046,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
           workflow || (route ? { route, chips: { route } } : null)
         ),
         ...(exec_chips ? { exec_chips } : {}),
+        ...(chip_pins ? { chip_metadata: chip_pins } : {}),
         ...(complex_reason.length > 0 ? { complex_reason } : {}),
         blocked: entry.blocked === true,
         ...(Array.isArray(entry.blocked_by)
@@ -4130,10 +4153,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
         (typeof entry.route === 'string' && entry.route.length > 0
           ? entry.route
           : null);
-      const deferred_exec_chips =
-        entry.exec_pins && typeof entry.exec_pins === 'object'
-          ? execChipsFor(objectOf(state), entry.exec_pins, deferred_route)
-          : null;
+      const deferred_chip_pins = chipPinsOf(entry);
+      const deferred_exec_chips = deferred_chip_pins
+        ? execChipsFor(objectOf(state), deferred_chip_pins, deferred_route)
+        : null;
       // 의존 칩은 후보와 같은 재료·같은 부착 경로다 (§3.2) — 선행 ID는 blocked
       // 칩 조립이 읽는 지도에 넣고, 해제·후속 재료는 후보 행과 같이 싣는다.
       const deferred_blocked_by = Array.isArray(entry.blocked_by)
@@ -4288,6 +4311,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
       if (complex_reason.length > 0) {
         item.complex_reason = complex_reason;
       }
+      // 칩 바인딩 판정의 재료 (UI-wg68 §5.1): `applied_exec_preset`·
+      // `chip_preset_source`와 17핀이 **한 객체에** 있어야 대칭 비교가 선다.
+      // 오버레이 metadata가 그 객체의 첫 원천이다 — bead의 metadata 전부이므로
+      // 가장 넓다. 없는 행은 아래 `exec_pins` 폴백이 받는다.
+      item.chip_metadata = metadata;
       if (item.lane.startsWith('s') || item.lane === 'queue') {
         const chips = execChipsFor(
           objectOf(state_by_root.get(item.root_dir)),

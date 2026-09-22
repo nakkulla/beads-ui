@@ -35,6 +35,7 @@ import {
   failureText
 } from './failure-labels.js';
 import {
+  areaChipsTemplate,
   complexChipTemplate,
   creationSourceChipsTemplate,
   dependencyChipsTemplate,
@@ -1017,7 +1018,7 @@ function heldBodyTemplate(
  * @param {RunningTile} tile
  * @param {number} now
  * @param {string|null} [selected_attempt]
- * @param {{ monitor?: MonitorTileOverlay|null }} [options]
+ * @param {{ monitor?: MonitorTileOverlay|null, chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function runningTile(tile, now, selected_attempt = null, options = {}) {
@@ -1153,7 +1154,14 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const source_chips = creationSourceChipsTemplate(tile);
   const complex_chip = complexChipTemplate(
     tile.complex_reason,
-    tile.chip_popover?.chip_key === 'complex'
+    tile.chip_popover?.chip_key === 'complex',
+    /** @type {any} */ (tile),
+    options.chipPresets || null
+  );
+  // `frontend`·`backend`는 `복잡` 바로 뒤, 같은 슬롯 5다 (UI-wg68 §5.4).
+  const area_chips = areaChipsTemplate(
+    /** @type {any} */ (tile),
+    options.chipPresets || null
   );
   const chip_popover = tile.chip_popover
     ? chipPopoverTemplate(tile.chip_popover.content)
@@ -1186,6 +1194,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     session_ref_chip ||
     session_receipt_chip ||
     complex_chip ||
+    area_chips ||
     provider_badges.length > 0 ||
     usage_label ||
     external.chips
@@ -1196,9 +1205,10 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           session_ref_chip ||
           session_receipt_chip ||
           complex_chip ||
+          area_chips ||
           external.chips
             ? html`<div class="rtile__facts">
-                ${monitor_chips}${route_chip}${source_chips}${session_ref_chip}${session_receipt_chip}${complex_chip}${external.chips}
+                ${monitor_chips}${route_chip}${source_chips}${session_ref_chip}${session_receipt_chip}${complex_chip}${area_chips}${external.chips}
               </div>`
             : ''}${provider_badges.length > 0 || usage_label
             ? html`<div class="rtile__usage">
@@ -1482,6 +1492,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                   source_chips ||
                   exec_chips ||
                   complex_chip ||
+                  area_chips ||
                   provider_badges.length > 0 ||
                   usage_label ||
                   external.chips
@@ -1491,11 +1502,12 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                     source_chips ||
                     exec_chips ||
                     complex_chip ||
+                    area_chips ||
                     external.chips
                       ? html`<div class="rtile__facts">
                           ${monitor_chips}${route_chip}${source_chips}${execChipsTemplate(
                             tile.exec_chips
-                          )}${complex_chip}${external.chips}
+                          )}${complex_chip}${area_chips}${external.chips}
                         </div>`
                       : ''}
                     ${provider_badges.length > 0 || usage_label

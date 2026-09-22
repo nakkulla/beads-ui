@@ -1,3 +1,4 @@
+import { render } from 'lit-html';
 import { describe, expect, test } from 'vitest';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
 import { normalizeCandidateSort } from './candidate-sort.js';
@@ -11,6 +12,7 @@ import {
   routeChipValue,
   validTime
 } from './lane-model.js';
+import { candidateCard, setChipPresetContext } from './lanes.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
 
 const WS_A = '/tmp/example/repo-a';
@@ -7570,5 +7572,86 @@ describe('보류 선반과 세 필터 축 (UI-p7s2 §3·§6)', () => {
 
     expect(lanes.queue[0].issue_type).toBe('epic');
     expect(lanes.queue[0].labels).toEqual(['ops']);
+  });
+});
+
+describe('칩 바인딩 판정 재료 (UI-wg68 §5.1)', () => {
+  const PRESET = {
+    id: 'p1',
+    name: '오퍼스 → 클로드',
+    applies_to: 'general',
+    settings: { impl_runtime: 'claude' }
+  };
+  const CHIP_PRESETS = {
+    bindings: { complex: 'p1', frontend: null, backend: null },
+    presets: [PRESET],
+    revision: 4
+  };
+
+  /**
+   * @param {Record<string, string>} exec_pins
+   * @returns {any}
+   */
+  function candidateWithPins(exec_pins) {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', {
+              exec_pins,
+              route: 'spec_backed',
+              labels: ['complex'],
+              complex_reason: 'hard_diagnosis'
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+    return lanes.runnable[0];
+  }
+
+  /**
+   * @param {any} item
+   * @returns {HTMLElement}
+   */
+  function renderCard(item) {
+    const host = document.createElement('div');
+    setChipPresetContext(CHIP_PRESETS);
+    render(candidateCard(item), host);
+    setChipPresetContext(null);
+    return host;
+  }
+
+  test('reads the row exec_pins as the chip material when no overlay metadata is observed', () => {
+    const item = candidateWithPins({ impl_runtime: 'claude' });
+
+    expect(item.chip_metadata).toEqual({ impl_runtime: 'claude' });
+  });
+
+  test('draws the applied state from the row exec_pins alone', () => {
+    const card = renderCard(
+      candidateWithPins({
+        impl_runtime: 'claude',
+        applied_exec_preset: 'p1',
+        chip_preset_source: 'complex'
+      })
+    );
+
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.judgement-chip--bound')
+    );
+
+    expect(chip.dataset.state).toBe('applied');
+  });
+
+  test('draws the unapplied state when the identity keys are absent', () => {
+    const card = renderCard(candidateWithPins({ impl_runtime: 'claude' }));
+
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.judgement-chip--bound')
+    );
+
+    expect(chip.dataset.state).toBe('unapplied');
   });
 });

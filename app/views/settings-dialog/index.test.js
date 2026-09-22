@@ -346,7 +346,7 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
     return transport.mock.calls.map((/** @type {any[]} */ call) => call[0]);
   }
 
-  test('draws the 워커·세션·계정 tabs when opened from the monitor', async () => {
+  test('draws the 워커·quick fix·세션·계정·칩 tabs when opened from the monitor', async () => {
     const { root, dialog } = mount({ monitorRows: MONITOR_ROWS });
 
     dialog.open(undefined, { scope: 'monitor' });
@@ -355,12 +355,13 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
     const tabs = Array.from(root.querySelectorAll('[role="tab"]')).map((tab) =>
       tab.textContent?.replace(/\s+/g, ' ').trim()
     );
-    expect(tabs).toEqual(['◆ 워커', '◈ quick fix', '◇ 세션', '◎ 계정']);
+    expect(tabs).toEqual(['◆ 워커', '◈ quick fix', '◇ 세션', '◎ 계정', '⬡ 칩']);
     expect(BULK_SETTINGS_TABS.map((tab) => tab.id)).toEqual([
       'worker',
       'quick_fix',
       'session',
-      'account'
+      'account',
+      'chips'
     ]);
     dialog.destroy();
   });

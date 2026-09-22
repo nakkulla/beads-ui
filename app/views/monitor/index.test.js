@@ -234,7 +234,7 @@ test('demotes a prerequisite wait to its queue row and keeps the summary', () =>
 });
 
 /**
- * @param {{ workspaces?: any[], workspaces_state?: any[], cross_lanes?: { revision: number, lanes: Array<Record<string, any>> }|null, now?: () => number, current?: string, switchWorkspace?: (root: string) => Promise<unknown>, transport?: (type: string, payload?: any) => Promise<any>, confirm?: (message: string) => boolean, openDoc?: (doc: any, root_dir?: string) => void }} [input]
+ * @param {{ workspaces?: any[], workspaces_state?: any[], cross_lanes?: { revision: number, lanes: Array<Record<string, any>> }|null, now?: () => number, current?: string, switchWorkspace?: (root: string) => Promise<unknown>, transport?: (type: string, payload?: any) => Promise<any>, confirm?: (message: string) => boolean, openDoc?: (doc: any, root_dir?: string) => void, execPresetStore?: any }} [input]
  */
 function setup(input = {}) {
   document.body.innerHTML = '<div id="m"></div>';
@@ -275,6 +275,7 @@ function setup(input = {}) {
     switchWorkspace,
     confirm: confirmFn,
     openDoc: input.openDoc,
+    execPresetStore: input.execPresetStore,
     now: input.now || (() => NOW)
   });
   active_views.push(view);
@@ -3113,6 +3114,87 @@ describe('monitor 판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 
     expect(mount.querySelector('.chip-popover')).toBeNull();
+  });
+});
+
+describe('monitor 바인딩 칩 클릭 (UI-wg68 §5.3)', () => {
+  const PRESET = {
+    id: 'p1',
+    name: '오퍼스 → 클로드',
+    applies_to: 'general',
+    settings: { impl_runtime: 'claude' }
+  };
+
+  /**
+   * @param {any} [store_state]
+   * @returns {ReturnType<typeof setup>}
+   */
+  function boundSetup(store_state) {
+    return setup({
+      execPresetStore: {
+        get: () =>
+          store_state === undefined
+            ? {
+                revision: 4,
+                presets: [PRESET],
+                chip_bindings: { complex: 'p1', frontend: null, backend: null }
+              }
+            : store_state,
+        set: () => {},
+        subscribe: () => () => {}
+      },
+      workspaces: [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-1',
+              title: '복잡 후보',
+              route: 'spec_backed',
+              complex_reason: 'invariant_reasoning'
+            }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+  }
+
+  test('sends chip-preset-toggle with the row repo', () => {
+    const { mount, view, sent } = boundSetup();
+
+    view.load();
+    click(mount, '.worker-card[data-bead-id="A-1"] .judgement-chip--bound');
+
+    expect(sent.at(-1)).toEqual({
+      type: 'chip-preset-toggle',
+      payload: {
+        id: 'A-1',
+        chip: 'complex',
+        expected_revision: 4,
+        root_dir: WS_A
+      }
+    });
+  });
+
+  test('opens no 사유 popup on that click', () => {
+    const { mount, view } = boundSetup();
+
+    view.load();
+    click(mount, '.worker-card[data-bead-id="A-1"] .judgement-chip--bound');
+
+    expect(mount.querySelector('.chip-popover')).toBeNull();
+  });
+
+  test('keeps the popup chip while no snapshot has arrived', () => {
+    const { mount, view } = boundSetup(null);
+
+    view.load();
+
+    expect(
+      mount.querySelector(
+        '.worker-card[data-bead-id="A-1"] .judgement-chip--bound'
+      )
+    ).toBeNull();
   });
 });
 

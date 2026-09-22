@@ -1322,6 +1322,64 @@ describe('runnable cache workflow + exec_pins (UI-eey2 §9.1)', () => {
       codex_account: 'work'
     });
   });
+
+  test('carries the chip identity keys beside the pins (UI-wg68 §5.1)', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [
+          row({
+            metadata: {
+              impl_runtime: 'claude',
+              applied_exec_preset: 'p1',
+              chip_preset_source: 'complex'
+            }
+          })
+        ]
+      }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].exec_pins).toEqual({
+      impl_runtime: 'claude',
+      applied_exec_preset: 'p1',
+      chip_preset_source: 'complex'
+    });
+  });
+
+  test('omits the chip identity keys when the issue carries none', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [row({ metadata: { impl_runtime: 'claude' } })]
+      }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(Object.keys(out[0].exec_pins)).toEqual(['impl_runtime']);
+  });
+
+  test('keeps the restore point out of the projection', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [
+          row({
+            metadata: {
+              applied_exec_preset: 'p1',
+              chip_preset_restore: '{"impl_runtime":"codex"}'
+            }
+          })
+        ]
+      }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(Object.keys(out[0].exec_pins)).not.toContain('chip_preset_restore');
+  });
 });
 
 describe('runnable cache 복잡 판정 projection (UI-7nhi §2)', () => {

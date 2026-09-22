@@ -32,6 +32,7 @@ import {
   repoOpsStripModel,
   reviewSessionRowState,
   routeChipTemplate,
+  setChipPresetContext,
   startNowButtonTemplate,
   sumAttemptWorkMs,
   summaryChipsTemplate,
@@ -5017,7 +5018,7 @@ describe('judgementPopoverContent (UI-8x90 §4.5)', () => {
       title: '복잡한 작업으로 판정됨',
       lines: [
         '테스트가 못 잡고 리뷰어의 추론으로만 검증할 수 있다',
-        '적용은 이슈 상세의 실행 설정 편집기에서'
+        '칩에 프리셋을 매려면 모니터 탭 ⚙ → 칩'
       ]
     });
   });
@@ -6380,6 +6381,155 @@ describe('대기 카드 표면 정리 2차 (UI-0bvr)', () => {
     expect(head.nextElementSibling?.className).toBe('worker-mini__reason-line');
     expect(head.nextElementSibling?.textContent).toContain(
       '⛔ spec_missing_at_base'
+    );
+  });
+});
+
+describe('바인딩된 판정 칩 (UI-wg68 §5)', () => {
+  const PRESET = {
+    id: 'p1',
+    name: '오퍼스 → 클로드',
+    applies_to: 'general',
+    settings: { impl_runtime: 'claude' }
+  };
+
+  /**
+   * @param {Record<string, any>} item
+   * @returns {HTMLElement}
+   */
+  function renderCard(item) {
+    const host = document.createElement('div');
+    render(
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'UI-b1',
+          root_dir: '/repo',
+          title: '바인딩',
+          lane: 'candidate',
+          reason: '',
+          route: 'spec_backed',
+          ...item
+        })
+      ),
+      host
+    );
+    return host;
+  }
+
+  afterEach(() => {
+    setChipPresetContext(null);
+  });
+
+  test('turns a bound 복잡 chip into an apply button', () => {
+    setChipPresetContext({
+      bindings: { complex: 'p1', frontend: null, backend: null },
+      presets: [PRESET],
+      revision: 3
+    });
+
+    const card = renderCard({
+      complex_reason: 'hard_diagnosis',
+      chip_metadata: {}
+    });
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.judgement-chip--bound')
+    );
+
+    expect(chip.dataset.chipKey).toBe('complex');
+    expect(chip.dataset.state).toBe('unapplied');
+    expect(chip.dataset.beadId).toBe('UI-b1');
+    expect(chip.dataset.rootDir).toBe('/repo');
+  });
+
+  test('marks a chip whose preset stands as applied', () => {
+    setChipPresetContext({
+      bindings: { complex: 'p1', frontend: null, backend: null },
+      presets: [PRESET],
+      revision: 3
+    });
+
+    const card = renderCard({
+      complex_reason: 'hard_diagnosis',
+      chip_metadata: {
+        chip_preset_source: 'complex',
+        applied_exec_preset: 'p1',
+        impl_runtime: 'claude'
+      }
+    });
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.judgement-chip--bound')
+    );
+
+    expect(chip.dataset.state).toBe('applied');
+  });
+
+  test('keeps a quick fix issue on the 사유 팝업 chip', () => {
+    setChipPresetContext({
+      bindings: { complex: 'p1', frontend: null, backend: null },
+      presets: [PRESET],
+      revision: 3
+    });
+
+    const card = renderCard({
+      complex_reason: 'hard_diagnosis',
+      route: 'quick_fix',
+      chip_metadata: {}
+    });
+
+    expect(card.querySelector('.judgement-chip--bound')).toBeNull();
+    expect(card.querySelector('.worker-card__complex')).not.toBeNull();
+  });
+
+  test('leaves an unbound chip a popup button', () => {
+    const card = renderCard({
+      complex_reason: 'hard_diagnosis',
+      chip_metadata: {}
+    });
+
+    expect(card.querySelector('.judgement-chip--bound')).toBeNull();
+  });
+
+  test('draws the area chips right after 복잡', () => {
+    const card = renderCard({
+      complex_reason: 'hard_diagnosis',
+      labels: ['backend', 'frontend']
+    });
+    const keys = Array.from(card.querySelectorAll('.judgement-chip')).map(
+      (chip) => chip.getAttribute('data-chip-key')
+    );
+
+    expect(keys).toEqual(['complex', 'frontend', 'backend']);
+  });
+
+  test('names the acceptance question in the area chip title', () => {
+    const card = renderCard({ labels: ['frontend'] });
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('[data-chip-key="frontend"]')
+    );
+
+    expect(chip.getAttribute('title')).toBe(
+      'frontend: 렌더된 화면으로 acceptance를 판정하는 작업'
+    );
+  });
+
+  test('never draws a label outside the contract vocabulary', () => {
+    const card = renderCard({ labels: ['fullstack'] });
+
+    expect(card.querySelector('.worker-card__area')).toBeNull();
+  });
+
+  test('reads a quick fix issue popup with its own guidance line', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-b1',
+        route: 'quick_fix',
+        complex_reason: 'hard_diagnosis'
+      }),
+      'complex'
+    );
+
+    expect(content?.lines.at(-1)).toBe(
+      'quick fix 이슈에는 칩 적용이 없습니다 — 적용은 이슈 상세의 quick fix 프리셋에서'
     );
   });
 });

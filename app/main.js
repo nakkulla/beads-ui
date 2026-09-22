@@ -327,7 +327,8 @@ export function bootstrap(root_element) {
       ) {
         exec_preset_store.set({
           revision: snapshot.revision,
-          presets: snapshot.presets
+          presets: snapshot.presets,
+          chip_bindings: snapshot.chip_bindings
         });
       }
     });
@@ -1559,6 +1560,9 @@ export function bootstrap(root_element) {
       issueStores: sub_issue_stores,
       queueStore: worker_queue_store,
       sessionLogStore: session_log_store,
+      // 판정 칩의 프리셋 바인딩은 서버 전역이라 Monitor·이슈 상세와 같은
+      // 저장소 하나를 읽는다 (UI-wg68 §3.1).
+      execPresetStore: exec_preset_store,
       gotoIssue: (id) => store.setState({ selected_id: id }),
       getWorkspacePath: () => store.getState().workspace.current?.path,
       // blocked 칩이 타 레포 blocker를 열 때 쓰는 전환 경로 (UI-u6zf §5.3) —

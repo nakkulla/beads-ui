@@ -25,6 +25,7 @@ import {
   normalizeDoneRange
 } from '../../data/closed-range.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
+import { createChipPresetToggle } from '../../utils/chip-preset-binding.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { debug } from '../../utils/logging.js';
@@ -57,6 +58,7 @@ import {
   paneTemplate,
   providerProbeRefusalText,
   queueRowOps,
+  setChipPresetContext,
   waitBody
 } from '../worker/lanes.js';
 import {
@@ -1600,6 +1602,49 @@ export function createMonitorView(mount_element, options) {
     return buildLanes(workspaces, workspaces_state, options);
   }
 
+  /**
+   * 바인딩된 판정 칩의 클릭 (UI-wg68 §5.3). 모니터의 카드는 연결 저장소가 아닐
+   * 수 있으므로 `root_dir`을 언제나 싣는다.
+   */
+  const chip_preset_toggle = createChipPresetToggle({
+    transport: (/** @type {any} */ type, /** @type {any} */ payload) =>
+      transport ? transport(type, payload) : Promise.resolve(null),
+    store: {
+      get: () => options.execPresetStore?.get() || null,
+      set: (/** @type {any} */ next) => options.execPresetStore?.set(next)
+    },
+    onChange: () => doRender(),
+    toast: (/** @type {string} */ message, /** @type {any} */ kind) =>
+      showToast(message, kind, 2600)
+  });
+
+  /**
+   * The preset context of every chip this tab draws (§5.1). 저장소마다 러너
+   * 카탈로그가 다르므로 `catalogOf`가 행의 `root_dir`로 고른다 — 틀린 판정보다
+   * 없는 판정이 낫다.
+   *
+   * @returns {import('../../utils/chip-preset-binding.js').ChipPresetContext|null}
+   */
+  function chipPresetContext() {
+    const state = options.execPresetStore?.get() || null;
+    if (!state || typeof state.revision !== 'number') {
+      return null;
+    }
+    const states =
+      pipelineStore && pipelineStore.getWorkspacesState
+        ? pipelineStore.getWorkspacesState()
+        : [];
+    return {
+      bindings: state.chip_bindings,
+      presets: Array.isArray(state.presets) ? state.presets : [],
+      revision: state.revision,
+      catalogOf: (root_dir) =>
+        states.find((/** @type {any} */ row) => row.root_dir === root_dir)
+          ?.runner_catalog || null,
+      isBusy: (bead_id, chip) => chip_preset_toggle.isBusy(bead_id, chip)
+    };
+  }
+
   function doRender() {
     if (mount_element.hidden) {
       // 숨긴 탭은 pipeline·viewport·지연 callback 어느 쪽으로 들어와도 DOM을
@@ -1608,6 +1653,7 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     const now = nowFn();
+    setChipPresetContext(chipPresetContext());
     lanes = projectLanes();
     item_by_bead = new Map();
     for (const item of [
@@ -2089,6 +2135,19 @@ export function createMonitorView(mount_element, options) {
         button.getAttribute('data-source-id') || '',
         button.getAttribute('data-root-dir') || ''
       );
+      return;
+    }
+    if (cls.contains('judgement-chip--bound')) {
+      // 바인딩된 칩은 팝업 칩보다 먼저 판정한다 (UI-wg68 §5.3) — 같은 버튼에
+      // 두 선택자가 걸리므로 순서가 클릭 의미다.
+      const chip_key = button.getAttribute('data-chip-key') || '';
+      if (chip_key && button.getAttribute('aria-busy') !== 'true') {
+        void chip_preset_toggle.toggle(
+          button.getAttribute('data-bead-id') || bead_id,
+          chip_key,
+          button.getAttribute('data-root-dir') || root_dir || ''
+        );
+      }
       return;
     }
     if (cls.contains('judgement-chip')) {
