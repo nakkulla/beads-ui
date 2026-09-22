@@ -140,14 +140,15 @@ describe('exec-preset-coordinator implementation presets', () => {
     ]);
   });
 
-  test('keeps a 25-key profile and hides a preset with an outside key', () => {
+  test('keeps a full 17-key general profile and hides a preset with an outside key', () => {
     const presetStore = {
       snapshot: () => ({
         revision: 2,
         presets: [
           {
-            id: 'profile-25',
-            name: '전체 프로필',
+            id: 'profile-17',
+            name: '전체 일반 프로필',
+            applies_to: /** @type {'general'} */ ('general'),
             settings: {
               spec_review_model: 'codex',
               spec_review_effort: 'high',
@@ -165,21 +166,14 @@ describe('exec-preset-coordinator implementation presets', () => {
               impl_speed: 'fast',
               orchestration_model: 'opus',
               orchestration_effort: 'high',
-              orchestration_speed: 'default',
-              quick_fix_orchestration_model: 'sol',
-              quick_fix_orchestration_effort: 'high',
-              quick_fix_orchestration_speed: 'fast',
-              quick_fix_impl_dispatch: 'delegated',
-              quick_fix_impl_runtime: 'codex',
-              quick_fix_impl_model: 'sol',
-              quick_fix_impl_effort: 'high',
-              quick_fix_impl_speed: 'fast'
+              orchestration_speed: 'default'
             },
             origin: { kind: /** @type {'user'} */ ('user') }
           },
           {
             id: 'outside',
             name: '외부 키',
+            applies_to: /** @type {'general'} */ ('general'),
             settings: { removed_key: 'value' },
             origin: { kind: /** @type {'user'} */ ('user') }
           }
@@ -193,7 +187,85 @@ describe('exec-preset-coordinator implementation presets', () => {
 
     const snapshot = coordinator.snapshot();
 
-    expect(snapshot.presets.map((preset) => preset.id)).toEqual(['profile-25']);
+    expect(snapshot.presets.map((preset) => preset.id)).toEqual(['profile-17']);
+  });
+
+  test('hides a general preset that still carries a quick_fix key', () => {
+    const fixture = createFixture({
+      preset: {
+        revision: 1,
+        presets: [
+          {
+            id: 'unsplit',
+            name: '분리 전 프리셋',
+            applies_to: 'general',
+            settings: {
+              impl_runtime: 'codex',
+              quick_fix_impl_model: 'sol'
+            },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const snapshot = fixture.coordinator.snapshot();
+
+    expect(snapshot.presets).toHaveLength(0);
+  });
+
+  test('keeps a quick_fix preset carrying its own eight keys', () => {
+    const fixture = createFixture({
+      preset: {
+        revision: 1,
+        presets: [
+          {
+            id: 'quick-fix-full',
+            name: '전체 quick fix 프로필',
+            applies_to: 'quick_fix',
+            settings: {
+              orchestration_model: 'opus',
+              orchestration_effort: 'high',
+              orchestration_speed: 'default',
+              impl_dispatch: 'delegated',
+              impl_runtime: 'codex',
+              impl_model: 'sol',
+              impl_effort: 'high',
+              impl_speed: 'fast'
+            },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const snapshot = fixture.coordinator.snapshot();
+
+    expect(snapshot.presets.map((preset) => preset.id)).toEqual([
+      'quick-fix-full'
+    ]);
+    expect(snapshot.presets[0].compatible).toBe(true);
+  });
+
+  test('hides a quick_fix preset carrying a review key', () => {
+    const fixture = createFixture({
+      preset: {
+        revision: 1,
+        presets: [
+          {
+            id: 'quick-fix-review',
+            name: '리뷰 키를 든 quick fix',
+            applies_to: 'quick_fix',
+            settings: { impl_runtime: 'codex', spec_review_model: 'codex' },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const snapshot = fixture.coordinator.snapshot();
+
+    expect(snapshot.presets).toHaveLength(0);
   });
 
   test('hides a preset whose outside key survived a real store load', () => {
@@ -296,7 +368,7 @@ describe('exec-preset-coordinator implementation presets', () => {
     );
   });
 
-  test('reports a quick_fix implementation mismatch', () => {
+  test('reports a quick_fix implementation mismatch under the canonical reason', () => {
     const fixture = createFixture({
       preset: {
         revision: 1,
@@ -304,10 +376,8 @@ describe('exec-preset-coordinator implementation presets', () => {
           {
             id: 'quick-fix-incompatible',
             name: '잘못된 quick_fix',
-            settings: {
-              quick_fix_impl_runtime: 'claude',
-              quick_fix_impl_model: 'sol'
-            },
+            applies_to: 'quick_fix',
+            settings: { impl_runtime: 'claude', impl_model: 'sol' },
             origin: { kind: 'user' }
           }
         ]
@@ -318,7 +388,7 @@ describe('exec-preset-coordinator implementation presets', () => {
 
     expect(snapshot.presets[0].compatible).toBe(false);
     expect(snapshot.presets[0].incompatibility_reason).toBe(
-      'quick_fix_provider_model_mismatch'
+      'provider_model_mismatch'
     );
   });
 
@@ -373,8 +443,7 @@ describe('exec-preset-coordinator server-global reseed (spec §D)', () => {
     expect(state).toHaveProperty('reseed_migration', { version: 1 });
   });
 
-  test('changes nothing when the reseed marker already exists', async () => {
-    const preset_file = path.join(tmp_dir, 'exec-presets.json');
+  test('replaces no preset when the reseed marker already exists', async () => {
     const fixture = createFixture({
       preset: {
         revision: 8,
@@ -389,13 +458,17 @@ describe('exec-preset-coordinator server-global reseed (spec §D)', () => {
         reseed_migration: { version: 1 }
       }
     });
-    const before = fs.readFileSync(preset_file, 'utf8');
 
     const result = await fixture.coordinator.migrateWorkspaces([]);
 
     expect(result.ok).toBe(true);
-    expect(fs.readFileSync(preset_file, 'utf8')).toBe(before);
-    expect(fixture.presetStore.snapshot().revision).toBe(8);
+    expect(
+      fixture.presetStore
+        .snapshot()
+        .presets.map(({ id, name, settings }) => ({ id, name, settings }))
+    ).toEqual([
+      { id: 'kept', name: '이미 완료', settings: { impl_runtime: 'codex' } }
+    ]);
   });
 
   test('warns and keeps startup successful when reseed readback fails', async () => {
@@ -447,7 +520,8 @@ describe('exec-preset-coordinator server-global reseed (spec §D)', () => {
         reseed_migration: { version: 1 }
       }),
       createOrReuseImplCopy,
-      replaceAllForReseed
+      replaceAllForReseed,
+      migratePresetProfiles: vi.fn(() => ({ applied: true }))
     };
     const coordinator = createExecPresetCoordinator({
       queueStore: /** @type {any} */ ({}),
@@ -486,6 +560,149 @@ describe('exec-preset-coordinator server-global reseed (spec §D)', () => {
         .snapshot()
         .presets.map(({ name, settings }) => ({ name, settings }))
     ).toEqual(RESEED_PRESETS);
+  });
+});
+
+describe('exec-preset-coordinator profile split (design §8)', () => {
+  /** @param {Record<string, unknown>} [extra] */
+  function splitReadyPresets(extra = {}) {
+    return {
+      revision: 8,
+      presets: [
+        {
+          id: 'kept',
+          name: '이미 완료',
+          settings: {
+            impl_runtime: 'codex',
+            quick_fix_orchestration_model: 'astra',
+            quick_fix_orchestration_effort: 'xhigh'
+          },
+          origin: { kind: 'user' }
+        }
+      ],
+      reseed_migration: { version: 1 },
+      ...extra
+    };
+  }
+
+  test('runs after the reseed so the seeded presets survive the split', async () => {
+    const fixture = createFixture({
+      preset: {
+        revision: 7,
+        presets: [
+          {
+            id: 'old-preset',
+            name: '삭제 대상',
+            settings: { impl_runtime: 'claude' },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    await fixture.coordinator.migrateWorkspaces([]);
+
+    const state = fixture.presetStore.snapshot();
+    expect(
+      state.presets.map(({ name, settings }) => ({ name, settings }))
+    ).toEqual(RESEED_PRESETS);
+    expect(state).toHaveProperty('preset_profile_migration', { version: 1 });
+  });
+
+  test('lifts the stored quick_fix keys into their own preset', async () => {
+    const fixture = createFixture({ preset: splitReadyPresets() });
+
+    await fixture.coordinator.migrateWorkspaces([]);
+
+    const presets = fixture.presetStore.snapshot().presets;
+    expect(
+      presets.map(({ name, applies_to, settings }) => ({
+        name,
+        applies_to,
+        settings
+      }))
+    ).toEqual([
+      {
+        name: '이미 완료',
+        applies_to: 'general',
+        settings: { impl_runtime: 'codex' }
+      },
+      {
+        name: 'quick fix 기본',
+        applies_to: 'quick_fix',
+        settings: {
+          orchestration_model: 'astra',
+          orchestration_effort: 'xhigh'
+        }
+      }
+    ]);
+  });
+
+  test('writes the profile marker only once across two starts', async () => {
+    const fixture = createFixture({ preset: splitReadyPresets() });
+    await fixture.coordinator.migrateWorkspaces([]);
+    const after_first = fixture.presetStore.snapshot().revision;
+
+    await fixture.coordinator.migrateWorkspaces([]);
+
+    expect(fixture.presetStore.snapshot().revision).toBe(after_first);
+  });
+
+  test('resumes the split on the next start when only its marker is missing', async () => {
+    const preset_file = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(preset_file, JSON.stringify(splitReadyPresets()));
+    const resumed = createFixture();
+
+    await resumed.coordinator.migrateWorkspaces([]);
+
+    expect(resumed.presetStore.snapshot()).toHaveProperty(
+      'preset_profile_migration',
+      { version: 1 }
+    );
+    expect(
+      resumed.presetStore
+        .snapshot()
+        .presets.filter((preset) => preset.applies_to === 'quick_fix')
+    ).toHaveLength(1);
+  });
+
+  test('leaves the workspace kv and queue untouched', async () => {
+    const fixture = createFixture({
+      queue: { revision: 3, orchestration_model: 'opus' },
+      preset: splitReadyPresets()
+    });
+
+    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(fixture.kvSet).not.toHaveBeenCalled();
+    expect(fixture.queueStore.snapshot(WORKSPACE)).toMatchObject({
+      revision: 3,
+      orchestration_model: 'opus',
+      applied_exec_preset: null,
+      applied_quick_fix_preset: null
+    });
+  });
+
+  test('defers the split while the reseed has not completed', async () => {
+    const migratePresetProfiles = vi.fn();
+    const presetStore = {
+      snapshot: () => ({ revision: 2, presets: [] }),
+      createOrReuseImplCopy: vi.fn(),
+      replaceAllForReseed: vi.fn(() => ({
+        applied: false,
+        reason: 'invalid'
+      })),
+      migratePresetProfiles
+    };
+    const coordinator = createExecPresetCoordinator({
+      queueStore: /** @type {any} */ ({}),
+      presetStore: /** @type {any} */ (presetStore),
+      warn: () => {}
+    });
+
+    await coordinator.migrateWorkspaces([]);
+
+    expect(migratePresetProfiles).not.toHaveBeenCalled();
   });
 });
 
@@ -605,6 +822,152 @@ describe('exec-preset-coordinator resolveForDispatch', () => {
     );
 
     expect(resolved.exec.stamped_keys).toEqual([]);
+  });
+});
+
+describe('exec-preset-coordinator profile-scoped applied records', () => {
+  function twoProfileFixture() {
+    const fixture = createFixture();
+    const general = fixture.coordinator.create({
+      expected_revision: 0,
+      name: '일반',
+      settings: { impl_runtime: 'codex' }
+    });
+    const quick_fix = fixture.coordinator.create({
+      expected_revision: 1,
+      name: 'quick fix',
+      applies_to: /** @type {'quick_fix'} */ ('quick_fix'),
+      settings: { impl_runtime: 'claude' }
+    });
+    const general_id = general.presets[0].id;
+    const quick_fix_id =
+      quick_fix.presets.find((preset) => preset.id !== general_id)?.id ?? '';
+    const applied_exec_preset = {
+      id: general_id,
+      name: '일반',
+      revision: 2,
+      applied_at: 10
+    };
+    const applied_quick_fix_preset = {
+      id: quick_fix_id,
+      name: 'quick fix',
+      revision: 2,
+      applied_at: 20
+    };
+    fixture.queueStore.setOrchestrationDefaults(WORKSPACE, {
+      expected_revision: 0,
+      values: { orchestration_model: 'opus' },
+      applied_exec_preset,
+      applied_quick_fix_preset
+    });
+    return {
+      ...fixture,
+      general_id,
+      quick_fix_id,
+      applied_exec_preset,
+      applied_quick_fix_preset
+    };
+  }
+
+  test('releases the general record when a general key changes', () => {
+    const fixture = twoProfileFixture();
+
+    const changed = fixture.coordinator.changesAppliedExecPreset(
+      fixture.applied_exec_preset,
+      { impl_runtime: 'codex' },
+      { impl_runtime: 'claude' },
+      'general'
+    );
+
+    expect(changed).toBe(true);
+  });
+
+  test('keeps the general record when only a quick_fix key changes', () => {
+    const fixture = twoProfileFixture();
+
+    const changed = fixture.coordinator.changesAppliedExecPreset(
+      fixture.applied_exec_preset,
+      { impl_runtime: 'codex', quick_fix_impl_runtime: 'claude' },
+      { impl_runtime: 'codex', quick_fix_impl_runtime: 'codex' },
+      'general'
+    );
+
+    expect(changed).toBe(false);
+  });
+
+  test('releases the quick_fix record when its prefixed key changes', () => {
+    const fixture = twoProfileFixture();
+
+    const changed = fixture.coordinator.changesAppliedExecPreset(
+      fixture.applied_quick_fix_preset,
+      { quick_fix_impl_runtime: 'claude' },
+      { quick_fix_impl_runtime: 'codex' },
+      'quick_fix'
+    );
+
+    expect(changed).toBe(true);
+  });
+
+  test('keeps the quick_fix record when only a general key changes', () => {
+    const fixture = twoProfileFixture();
+
+    const changed = fixture.coordinator.changesAppliedExecPreset(
+      fixture.applied_quick_fix_preset,
+      { impl_runtime: 'codex' },
+      { impl_runtime: 'claude' },
+      'quick_fix'
+    );
+
+    expect(changed).toBe(false);
+  });
+
+  test('reads a quick_fix route against the quick_fix record', () => {
+    const fixture = twoProfileFixture();
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, {
+        route: 'quick_fix',
+        impl_runtime: 'codex'
+      })
+    );
+
+    expect(resolved.exec_preset).toMatchObject({
+      id: fixture.quick_fix_id,
+      deviated_keys: ['impl_runtime']
+    });
+  });
+
+  test('reads every other route against the general record', () => {
+    const fixture = twoProfileFixture();
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, {
+        route: 'spec_backed',
+        impl_runtime: 'codex'
+      })
+    );
+
+    expect(resolved.exec_preset).toMatchObject({
+      id: fixture.general_id,
+      deviated_keys: []
+    });
+  });
+
+  test('records null for a quick_fix route with no quick_fix record', () => {
+    const fixture = twoProfileFixture();
+    fixture.queueStore.clearAppliedExecPreset(WORKSPACE, {
+      expected_revision: 1,
+      applies_to: 'quick_fix'
+    });
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, { route: 'quick_fix' })
+    );
+
+    expect(resolved.exec_preset).toBe(null);
+    expect(
+      fixture.queueStore.snapshot(WORKSPACE).applied_exec_preset
+    ).toMatchObject({ id: fixture.general_id });
   });
 });
 

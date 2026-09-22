@@ -13,19 +13,21 @@ import {
   normalizeSessionDefaults
 } from '../session-defaults.js';
 import {
-  BEAD_PIN_KEYS,
-  IMPL_PRESET_KEYS,
+  GENERAL_PRESET_KV_KEYS,
   ORCHESTRATION_KEYS,
-  PRESET_KV_KEYS,
   QUICK_FIX_LANE_MAP,
   execSettingEnums,
   implPresetEnums,
+  normalizeAppliesTo,
+  presetKeysFor,
   validateImplPresetSettings
 } from './exec-enums.js';
 import { resolveExecSettings } from './policy.js';
 import { discoverQueueStates } from './queue-state-discovery.js';
+import { APPLIED_PRESET_FIELDS } from './queue-store.js';
 
 const RESEED_MIGRATION_VERSION = 1;
+const PRESET_PROFILE_MIGRATION_VERSION = 1;
 /** @type {Readonly<Record<string, string>>} */
 const BEAD_SNAPSHOT_PIN_FIELDS = {
   orchestration_model: 'model',
@@ -64,15 +66,18 @@ function isRecord(value) {
 }
 
 /**
- * A preset is legacy only while it carries a key outside the 25-key
- * full-profile vocabulary.
+ * A preset is legacy only while it carries a key outside ITS OWN profile's
+ * vocabulary. The judgement moved from one merged 25-key list to the profile
+ * key set, so a general preset still holding a `quick_fix_` key is legacy
+ * until the profile split lifts it (design §3.2).
  *
  * @param {ExecPreset} preset
  * @returns {boolean}
  */
 function isLegacyPreset(preset) {
+  const profile_keys = presetKeysFor(preset.applies_to);
   return Object.keys(preset.settings).some(
-    (key) => !IMPL_PRESET_KEYS.includes(key)
+    (key) => !profile_keys.includes(key)
   );
 }
 
@@ -90,15 +95,16 @@ function reseedCompleted(state) {
 }
 
 /**
- * Project a legacy preset onto the current 25-key vocabulary.
+ * Project a legacy preset onto its profile's current vocabulary.
  *
  * @param {Record<string, string>} settings
+ * @param {unknown} applies_to
  * @returns {Record<string, string>}
  */
-function implSubsetOf(settings) {
+function implSubsetOf(settings, applies_to) {
   /** @type {Record<string, string>} */
   const subset = {};
-  for (const key of IMPL_PRESET_KEYS) {
+  for (const key of presetKeysFor(applies_to)) {
     if (typeof settings[key] === 'string') {
       subset[key] = settings[key];
     }
@@ -127,7 +133,7 @@ export function createExecPresetCoordinator(options) {
   const warn = options.warn ?? console.warn;
 
   /**
-   * Every applicable preset. A preset with a key outside the current 25-key
+   * Every applicable preset. A preset with a key outside its own profile's
    * vocabulary stays hidden.
    */
   function snapshot() {
@@ -138,7 +144,9 @@ export function createExecPresetCoordinator(options) {
       presets: state.presets
         .filter((preset) => !isLegacyPreset(preset))
         .map((preset) => {
-          const coherence = validateImplPresetSettings(preset.settings);
+          const coherence = validateImplPresetSettings(preset.settings, {
+            applies_to: preset.applies_to
+          });
           return {
             ...preset,
             compatible: coherence.ok,
@@ -157,16 +165,26 @@ export function createExecPresetCoordinator(options) {
   }
 
   /**
+   * Whether one edit falsifies the named profile's applied-preset record. Only
+   * that profile's key set is compared, so editing a general row leaves the
+   * quick_fix record standing and the reverse holds too (design §4.1).
+   *
+   * The comparison reads STORAGE names, because `before`/`after` are kv or
+   * queue objects; the ownership test reads the canonical name, because that
+   * is what a preset's `settings` carries.
+   *
    * An unreadable or deleted preset cannot identify which changed keys it owned.
    *
    * @param {import('./queue-store.js').AppliedExecPreset|null} applied
    * @param {Record<string, unknown>} before
    * @param {Record<string, unknown>} after
+   * @param {unknown} [applies_to]
    */
-  function changesAppliedExecPreset(applied, before, after) {
+  function changesAppliedExecPreset(applied, before, after, applies_to) {
     if (!applied) {
       return false;
     }
+    const profile = normalizeAppliesTo(applies_to);
     let preset = null;
     try {
       preset =
@@ -174,19 +192,28 @@ export function createExecPresetCoordinator(options) {
     } catch {
       // Unknown ownership clears provenance on any changed execution key.
     }
-    return IMPL_PRESET_KEYS.some(
-      (key) =>
-        (before[key] ?? null) !== (after[key] ?? null) &&
+    return presetKeysFor(profile).some((key) => {
+      const storage_key =
+        profile === 'quick_fix' ? QUICK_FIX_LANE_MAP[key] : key;
+      return (
+        (before[storage_key] ?? null) !== (after[storage_key] ?? null) &&
         (!preset || Object.hasOwn(preset.settings, key))
-    );
+      );
+    });
   }
 
   /**
+   * Compare a Bead's actual pins against the profile the workspace recorded.
+   * Both the record and the key set come from the profile, and the preset's
+   * settings are read by canonical name in either one — the prefixed lookup
+   * went with the prefixed preset keys (design §5).
+   *
    * @param {import('./queue-store.js').AppliedExecPreset|null} applied
    * @param {any} bead_snapshot
+   * @param {unknown} [applies_to]
    * @returns {import('./queue-store.js').ExecPresetRecord|null}
    */
-  function dispatchPreset(applied, bead_snapshot) {
+  function dispatchPreset(applied, bead_snapshot, applies_to) {
     if (!applied) {
       return null;
     }
@@ -197,22 +224,15 @@ export function createExecPresetCoordinator(options) {
         (entry) => entry.id === applied.id
       );
       if (preset) {
-        for (const key of BEAD_PIN_KEYS) {
+        for (const key of presetKeysFor(applies_to)) {
           const bead_key = BEAD_SNAPSHOT_PIN_FIELDS[key] || key;
           const pin = bead_snapshot?.[bead_key];
           if (pin === undefined || pin === null || pin === '') {
             continue;
           }
-          const lane_key = QUICK_FIX_LANE_MAP[key];
-          const comparison_key =
-            bead_snapshot.route === 'quick_fix' &&
-            lane_key &&
-            Object.hasOwn(preset.settings, lane_key)
-              ? lane_key
-              : key;
           if (
-            Object.hasOwn(preset.settings, comparison_key) &&
-            pin !== preset.settings[comparison_key]
+            Object.hasOwn(preset.settings, key) &&
+            pin !== preset.settings[key]
           ) {
             deviated_keys.push(key);
           }
@@ -259,9 +279,16 @@ export function createExecPresetCoordinator(options) {
       ...raw_exec,
       stamped_keys: Object.freeze([...raw_exec.stamped_keys])
     });
+    const profile = quick_fix ? 'quick_fix' : 'general';
     return Object.freeze({
       ok: true,
-      exec_preset: dispatchPreset(queue.applied_exec_preset, bead_snapshot),
+      exec_preset: dispatchPreset(
+        /** @type {Record<string, any>} */ (/** @type {unknown} */ (queue))[
+          APPLIED_PRESET_FIELDS[profile]
+        ],
+        bead_snapshot,
+        profile
+      ),
       // Retired fields remain null for older consumers.
       preset_id: null,
       preset_revision: null,
@@ -298,7 +325,7 @@ export function createExecPresetCoordinator(options) {
     const enums = execSettingEnums();
     /** @type {Record<string, string>} */
     const candidates = {};
-    for (const key of PRESET_KV_KEYS) {
+    for (const key of GENERAL_PRESET_KV_KEYS) {
       const value = legacy_settings[key];
       const allowed = enums[key];
       if (
@@ -403,13 +430,15 @@ export function createExecPresetCoordinator(options) {
     const legacy_ids = [];
     for (const preset of legacy) {
       legacy_ids.push(preset.id);
-      const settings = implSubsetOf(preset.settings);
+      const applies_to = normalizeAppliesTo(preset.applies_to);
+      const settings = implSubsetOf(preset.settings, applies_to);
       let created;
       try {
         created = presetStore.createOrReuseImplCopy({
           name: preset.name,
           settings,
-          source_preset_id: preset.id
+          source_preset_id: preset.id,
+          applies_to
         });
       } catch {
         return { ok: false, step: 'preset_copy_persist', legacy_ids };
@@ -449,6 +478,41 @@ export function createExecPresetCoordinator(options) {
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       warn(`실행 프리셋 재시드 readback 실패: ${detail}`);
+    }
+  }
+
+  /**
+   * Split the stored presets into the general and quick_fix profiles once
+   * (design §8). Strictly AFTER the reseed: `replaceAllForReseed` replaces the
+   * whole list, so a split that ran first would have its new quick_fix presets
+   * and its own marker thrown away. A reseed that has not completed therefore
+   * defers the split to the next start, where the missing marker restarts it.
+   */
+  function splitPresetProfiles() {
+    /** @type {{ reseed_migration?: unknown }} */
+    let state;
+    try {
+      state = presetStore.snapshot();
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      warn(`실행 프리셋 계열 분리 상태 읽기 실패: ${detail}`);
+      return;
+    }
+    if (!reseedCompleted(state)) {
+      return;
+    }
+    try {
+      const migrated = presetStore.migratePresetProfiles({
+        marker: { version: PRESET_PROFILE_MIGRATION_VERSION }
+      });
+      // A rejection leaves no marker and would otherwise retry silently on
+      // every start, exactly like the reseed above.
+      if (!migrated.applied && migrated.reason) {
+        warn(`실행 프리셋 계열 분리 거부: ${migrated.reason}`);
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      warn(`실행 프리셋 계열 분리 readback 실패: ${detail}`);
     }
   }
 
@@ -640,6 +704,7 @@ export function createExecPresetCoordinator(options) {
     // workspace has read it would strand the retry with no source.
     if (all_ok) {
       reseedPresets();
+      splitPresetProfiles();
     }
     // A workspace that could not be migrated is DEFERRED, not fatal: its own
     // durable state is untouched (fill-only-empty, marker unwritten), so the
@@ -656,7 +721,7 @@ export function createExecPresetCoordinator(options) {
   return {
     snapshot,
     changesAppliedExecPreset,
-    /** @param {{ expected_revision: number, name: string, settings: Record<string, string> }} input */
+    /** @param {{ expected_revision: number, name: string, settings: Record<string, string>, applies_to?: 'general'|'quick_fix' }} input */
     create(input) {
       return annotated(presetStore.create(input));
     },
@@ -679,7 +744,11 @@ export function createExecPresetCoordinator(options) {
     resolveForDispatch,
     migrateWorkspace,
     migrateWorkspaces,
-    /** Enum table the WS layer validates an apply against. */
-    presetEnums: () => implPresetEnums()
+    /**
+     * Enum table the WS layer validates an apply against, for one profile.
+     *
+     * @param {unknown} [applies_to]
+     */
+    presetEnums: (applies_to) => implPresetEnums(applies_to)
   };
 }

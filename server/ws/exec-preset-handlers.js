@@ -1,9 +1,10 @@
 /**
  * Server-global IMPLEMENTATION-preset WebSocket channel (spec §C.6).
  *
- * A preset carries the full execution profile and has exactly two apply paths:
- * its 17 pin keys go onto ONE Bead's metadata, while a
- * global apply replaces the general and quick_fix workspace profiles.
+ * A preset belongs to one profile (`applies_to`) and has exactly two apply
+ * paths: its profile's pin keys go onto ONE Bead's metadata whose route
+ * matches that profile, while a global apply replaces that profile's
+ * workspace storage and leaves the other profile's values standing.
  * The retired 12-key family — `exec-preset-*`, `apply-exec-preset`,
  * `worker-queue-set-default-exec-preset` — is gone from the protocol, so a
  * client still sending one gets `unknown_type` rather than a silent no-op.
@@ -22,15 +23,17 @@ import {
   APPLIED_EXEC_PRESET_KEY,
   BEAD_PIN_KEYS,
   ORCHESTRATION_KEYS,
-  PRESET_KV_KEYS,
   QUICK_FIX_LANE_MAP,
-  QUICK_FIX_ORCHESTRATION_KEYS,
   implPresetEnums,
   inferImplRuntime,
+  normalizeAppliesTo,
+  presetKeysFor,
+  presetKvKeysFor,
   validateImplPresetSettings,
   validateImplSettings,
   validateOrchestrationPin
 } from '../worker/exec-enums.js';
+import { APPLIED_PRESET_FIELDS } from '../worker/queue-store.js';
 import {
   __resetWorkerRuntimeForTest,
   getWorkerRuntime
@@ -69,21 +72,46 @@ function queueStore() {
 }
 
 /**
- * Build one `bd update` argv that replaces all 17 preset pin keys on a Bead.
+ * The name one canonical preset key is STORED under in a workspace, for one
+ * profile. The general profile stores canonical names; the quick_fix profile
+ * stores the route-scoped prefixed names in both kv and the queue.
+ *
+ * @param {string} canonical_key
+ * @param {'general'|'quick_fix'} applies_to
+ * @returns {string}
+ */
+function storageKeyFor(canonical_key, applies_to) {
+  return applies_to === 'quick_fix'
+    ? QUICK_FIX_LANE_MAP[canonical_key]
+    : canonical_key;
+}
+
+/**
+ * Build one `bd update` argv that replaces the profile's pin keys on a Bead.
  * A key the preset omits is explicitly UNSET rather than left behind: applying
  * a preset must leave the Bead describing that preset and nothing else.
  *
- * `APPLIED_EXEC_PRESET_KEY` rides the SAME argv outside the 17-key loop, so the
- * pins and the identity that explains them never land separately.
+ * The replaced set is the PROFILE's, so a quick_fix apply never names the nine
+ * review keys and leaves whatever stands there (design §5). A general apply
+ * keeps replacing all 17.
+ *
+ * `APPLIED_EXEC_PRESET_KEY` rides the SAME argv outside that loop, so the pins
+ * and the identity that explains them never land separately.
  *
  * @param {string} issue_id
  * @param {Record<string, string>} settings
  * @param {string} preset_id
+ * @param {ReadonlyArray<string>} [replaced_keys]
  * @returns {string[]}
  */
-export function buildApplyImplPresetArgs(issue_id, settings, preset_id) {
+export function buildApplyImplPresetArgs(
+  issue_id,
+  settings,
+  preset_id,
+  replaced_keys = BEAD_PIN_KEYS
+) {
   const args = ['update', issue_id];
-  for (const key of BEAD_PIN_KEYS) {
+  for (const key of replaced_keys) {
     if (Object.hasOwn(settings, key)) {
       args.push('--set-metadata', `${key}=${settings[key]}`);
     } else {
@@ -183,11 +211,18 @@ function handleMutation(ws, req, operation) {
         if (connected !== null) {
           workspaces.add(connected);
         }
+        // Only the edited preset's OWN profile record can have stopped being
+        // true; the other profile's record names a different preset.
+        const applies_to = normalizeAppliesTo(before.applies_to);
+        const field = APPLIED_PRESET_FIELDS[applies_to];
         for (const workspace of workspaces) {
-          const queue = queueStore().snapshot(workspace);
-          if (queue.applied_exec_preset?.id === input.id) {
+          const queue = /** @type {Record<string, any>} */ (
+            /** @type {unknown} */ (queueStore().snapshot(workspace))
+          );
+          if (queue[field]?.id === input.id) {
             const cleared = queueStore().clearAppliedExecPreset(workspace, {
-              expected_revision: queue.revision
+              expected_revision: queue.revision,
+              applies_to
             });
             if (cleared.ok) {
               fanoutWorkerQueue(workspace, cleared.queue);
@@ -248,12 +283,25 @@ export function handleUnsubscribeImplPresets(ws, req) {
   );
 }
 
-/** @param {WebSocket} ws - Socket. @param {RequestEnvelope} req - Request. */
+/**
+ * Create one preset. `payload.applies_to` names the profile and an absent
+ * value reads as `general`, so a client written before the split keeps
+ * creating general presets.
+ *
+ * @param {WebSocket} ws - Socket.
+ * @param {RequestEnvelope} req - Request.
+ */
 export function handleImplPresetCreate(ws, req) {
   handleMutation(ws, req, 'create');
 }
 
-/** @param {WebSocket} ws - Socket. @param {RequestEnvelope} req - Request. */
+/**
+ * Rewrite one preset within its stored profile. `applies_to` is NOT an update
+ * input: the store keeps the profile it holds (design §3.1).
+ *
+ * @param {WebSocket} ws - Socket.
+ * @param {RequestEnvelope} req - Request.
+ */
 export function handleImplPresetUpdate(ws, req) {
   handleMutation(ws, req, 'update');
 }
@@ -293,7 +341,7 @@ function resolvePresetForApply(ws, req, preset_id, expected_revision) {
     );
     return { ok: false };
   }
-  const enums = implPresetEnums();
+  const enums = implPresetEnums(preset.applies_to);
   for (const [key, value] of Object.entries(preset.settings)) {
     const allowed = enums[key];
     if (!Array.isArray(allowed) || !allowed.includes(value)) {
@@ -309,7 +357,9 @@ function resolvePresetForApply(ws, req, preset_id, expected_revision) {
       return { ok: false };
     }
   }
-  const coherence = validateImplPresetSettings(preset.settings);
+  const coherence = validateImplPresetSettings(preset.settings, {
+    applies_to: preset.applies_to
+  });
   if (!coherence.ok) {
     ws.send(
       JSON.stringify(
@@ -326,68 +376,47 @@ function resolvePresetForApply(ws, req, preset_id, expected_revision) {
 }
 
 /**
- * Project a preset into the canonical per-Bead keys for one issue route.
+ * Project one preset onto the canonical per-Bead keys of ITS OWN profile, for
+ * an issue whose observed route must match that profile (design §5).
  *
- * @param {Record<string, string>} settings
+ * The prefixed reverse lookup is gone: a preset carries canonical names in
+ * either profile, so the projection is a copy. What stays is the runtime
+ * DERIVATION — preset storage accepts a model with no runtime
+ * (`active_writer:false`) while the Bead pin validator rejects that same pair
+ * with `impl_runtime_required`, so a model-only preset would otherwise fail to
+ * apply. An explicit `impl_runtime` still wins over the derived one.
+ *
+ * @param {{ applies_to?: unknown, settings: Record<string, string> }} preset
  * @param {unknown} route
- * @returns {{ ok: true, settings: Record<string, string> }|{ ok: false, reason: string }}
+ * @returns {{ ok: true, settings: Record<string, string>, replaced_keys: ReadonlyArray<string> }|{ ok: false, reason: string }}
  */
-function presetSettingsForIssue(settings, route) {
+function presetSettingsForIssue(preset, route) {
+  const applies_to = normalizeAppliesTo(preset.applies_to);
+  if ((route === 'quick_fix') !== (applies_to === 'quick_fix')) {
+    return { ok: false, reason: 'preset_route_mismatch' };
+  }
+  const settings = preset.settings;
+  const replaced_keys = presetKeysFor(applies_to);
   /** @type {Record<string, string>} */
   const projected = {};
-  for (const key of BEAD_PIN_KEYS) {
+  for (const key of replaced_keys) {
     if (typeof settings[key] === 'string') {
       projected[key] = settings[key];
-    }
-  }
-  if (route === 'quick_fix') {
-    for (const key of ORCHESTRATION_KEYS) {
-      const value = settings[QUICK_FIX_LANE_MAP[key]] ?? settings[key];
-      if (typeof value === 'string') {
-        projected[key] = value;
-      }
     }
   }
   const orchestration = validateOrchestrationPin(projected);
   if (!orchestration.ok) {
     return orchestration;
   }
-  if (route !== 'quick_fix') {
-    return { ok: true, settings: projected };
+  const derived_runtime = inferImplRuntime(projected);
+  if (derived_runtime !== undefined) {
+    projected.impl_runtime = derived_runtime;
   }
-
-  for (const key of [
-    'impl_dispatch',
-    'impl_model',
-    'impl_effort',
-    'impl_speed'
-  ]) {
-    const lane_value = settings[QUICK_FIX_LANE_MAP[key]];
-    if (typeof lane_value === 'string') {
-      projected[key] = lane_value;
-    }
-  }
-  const lane_runtime = settings.quick_fix_impl_runtime;
-  const lane_model = settings.quick_fix_impl_model;
-  const derived_runtime =
-    typeof lane_model === 'string'
-      ? inferImplRuntime({ impl_model: lane_model })
-      : undefined;
-  const runtime =
-    (typeof lane_runtime === 'string' ? lane_runtime : undefined) ??
-    derived_runtime ??
-    settings.impl_runtime;
-  if (typeof runtime === 'string') {
-    projected.impl_runtime = runtime;
-  } else {
-    delete projected.impl_runtime;
-  }
-
   const coherence = validateImplSettings(projected);
   if (!coherence.ok) {
     return { ok: false, reason: coherence.reason };
   }
-  return { ok: true, settings: projected };
+  return { ok: true, settings: projected, replaced_keys };
 }
 
 /**
@@ -451,15 +480,23 @@ export async function handleApplyImplPreset(ws, req) {
     return;
   }
   const route = current.data?.metadata?.route;
-  const projected = presetSettingsForIssue(resolved.preset.settings, route);
+  const projected = presetSettingsForIssue(resolved.preset, route);
   if (!projected.ok) {
+    // The route/profile refusal is its own code: nothing about the preset is
+    // incompatible, it simply belongs to the other profile.
     ws.send(
       JSON.stringify(
-        makeError(
-          req,
-          'impl_preset_incompatible',
-          `Implementation preset value is incompatible: ${projected.reason}`
-        )
+        projected.reason === 'preset_route_mismatch'
+          ? makeError(
+              req,
+              'preset_route_mismatch',
+              'Implementation preset profile does not match the issue route'
+            )
+          : makeError(
+              req,
+              'impl_preset_incompatible',
+              `Implementation preset value is incompatible: ${projected.reason}`
+            )
       )
     );
     return;
@@ -469,7 +506,12 @@ export async function handleApplyImplPreset(ws, req) {
   try {
     updated = await runBdInWorkspace(
       ws,
-      buildApplyImplPresetArgs(id, projected.settings, resolved.preset.id)
+      buildApplyImplPresetArgs(
+        id,
+        projected.settings,
+        resolved.preset.id,
+        projected.replaced_keys
+      )
     );
   } catch (err) {
     ws.send(
@@ -628,17 +670,28 @@ export async function handleApplyImplPresetGlobal(ws, req) {
     );
     return;
   }
+  // The preset's profile decides WHAT this apply replaces. Only that profile's
+  // storage keys appear in the patch, so the other profile's kv values — and
+  // `workflow_mode`, the address, base sync, accounts and concurrency, which
+  // belong to no profile — keep whatever the workspace holds (design §4).
+  const applies_to = normalizeAppliesTo(resolved.preset.applies_to);
+  const kv_keys = presetKvKeysFor(applies_to);
   /** @type {Record<string, string|null>} */
   const patch = {};
-  for (const key of PRESET_KV_KEYS) {
-    patch[key] = Object.hasOwn(resolved.preset.settings, key)
-      ? resolved.preset.settings[key]
+  for (const canonical_key of presetKeysFor(applies_to)) {
+    const storage_key = storageKeyFor(canonical_key, applies_to);
+    if (!kv_keys.includes(storage_key)) {
+      continue;
+    }
+    patch[storage_key] = Object.hasOwn(resolved.preset.settings, canonical_key)
+      ? resolved.preset.settings[canonical_key]
       : null;
   }
   let cleared;
   try {
     cleared = queueStore().clearAppliedExecPreset(workspace_key, {
-      expected_revision: expected_queue_revision
+      expected_revision: expected_queue_revision,
+      applies_to
     });
   } catch (err) {
     ws.send(
@@ -723,10 +776,11 @@ export async function handleApplyImplPresetGlobal(ws, req) {
 
   /** @type {Record<string, string|null>} */
   const orchestration_values = {};
-  for (const key of [...ORCHESTRATION_KEYS, ...QUICK_FIX_ORCHESTRATION_KEYS]) {
-    orchestration_values[key] = Object.hasOwn(resolved.preset.settings, key)
-      ? resolved.preset.settings[key]
-      : null;
+  for (const canonical_key of ORCHESTRATION_KEYS) {
+    orchestration_values[storageKeyFor(canonical_key, applies_to)] =
+      Object.hasOwn(resolved.preset.settings, canonical_key)
+        ? resolved.preset.settings[canonical_key]
+        : null;
   }
   /** @type {import('../worker/queue-store.js').QueueOpResult} */
   let queue_result;
@@ -734,7 +788,7 @@ export async function handleApplyImplPresetGlobal(ws, req) {
     queue_result = queueStore().setOrchestrationDefaults(workspace_key, {
       expected_revision: cleared.queue.revision,
       values: orchestration_values,
-      applied_exec_preset: {
+      [APPLIED_PRESET_FIELDS[applies_to]]: {
         id: resolved.preset.id,
         name: resolved.preset.name,
         revision: resolved.revision,

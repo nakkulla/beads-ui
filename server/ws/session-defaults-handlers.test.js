@@ -176,8 +176,8 @@ describe('session defaults preset identity', () => {
     await handleSetSessionDefaults(ws, req);
 
     expect(clearAppliedExecPreset.mock.calls).toEqual([
-      [WS_OTHER, { expected_revision: 1 }],
-      [WS_OTHER, { expected_revision: 2 }]
+      [WS_OTHER, { expected_revision: 1, applies_to: ['general'] }],
+      [WS_OTHER, { expected_revision: 2, applies_to: ['general'] }]
     ]);
     expect(store.snapshot(WS_OTHER).applied_exec_preset).toBeNull();
     expect(sent.at(-1)).toMatchObject({
@@ -361,6 +361,99 @@ describe('session defaults preset identity', () => {
       );
     }
   );
+});
+
+describe('session defaults profile-scoped identity release', () => {
+  /** @param {Record<string, unknown>} values */
+  async function writeDefaults(values) {
+    const runtime = getWorkerRuntime();
+    const general = runtime.execPresetCoordinator.create({
+      expected_revision: 0,
+      name: '일반',
+      settings: { impl_runtime: 'codex' }
+    });
+    const quick_fix = runtime.execPresetCoordinator.create({
+      expected_revision: 1,
+      name: 'quick fix',
+      applies_to: 'quick_fix',
+      settings: { impl_runtime: 'codex' }
+    });
+    const general_id = general.presets[0].id;
+    const quick_fix_id =
+      quick_fix.presets.find((preset) => preset.id !== general_id)?.id ?? '';
+    const applied_exec_preset = {
+      id: general_id,
+      name: '일반',
+      revision: 2,
+      applied_at: 10
+    };
+    const applied_quick_fix_preset = {
+      id: quick_fix_id,
+      name: 'quick fix',
+      revision: 2,
+      applied_at: 20
+    };
+    runtime.queueStore.setOrchestrationDefaults(WS_OTHER, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet' },
+      applied_exec_preset,
+      applied_quick_fix_preset
+    });
+    const before = {
+      schema: 1,
+      impl_runtime: 'codex',
+      quick_fix_impl_runtime: 'codex'
+    };
+    kvGetJsonAtRoot
+      .mockResolvedValueOnce({ ok: true, value: before })
+      .mockResolvedValueOnce({ ok: true, value: { ...before, ...values } });
+    kvSetJsonAtRoot.mockResolvedValue({ ok: true });
+    const { ws, sent } = fakeWs();
+
+    await handleSetSessionDefaults(ws, {
+      id: 'set',
+      type: 'set-session-defaults',
+      payload: { root_dir: WS_OTHER, values }
+    });
+
+    return {
+      sent,
+      queue: runtime.queueStore.snapshot(WS_OTHER),
+      applied_exec_preset,
+      applied_quick_fix_preset
+    };
+  }
+
+  test('releases only the quick_fix record for a quick_fix key edit', async () => {
+    const result = await writeDefaults({ quick_fix_impl_runtime: 'claude' });
+
+    expect(result.queue).toMatchObject({
+      applied_exec_preset: result.applied_exec_preset,
+      applied_quick_fix_preset: null
+    });
+  });
+
+  test('releases only the general record for a general key edit', async () => {
+    const result = await writeDefaults({ impl_runtime: 'claude' });
+
+    expect(result.queue).toMatchObject({
+      applied_exec_preset: null,
+      applied_quick_fix_preset: result.applied_quick_fix_preset
+    });
+  });
+
+  test('releases both records for a patch touching both profiles', async () => {
+    const result = await writeDefaults({
+      impl_runtime: 'claude',
+      quick_fix_impl_runtime: 'claude'
+    });
+
+    expect(result.queue).toMatchObject({
+      applied_exec_preset: null,
+      applied_quick_fix_preset: null,
+      revision: 2
+    });
+  });
 });
 
 describe('get-session-defaults root_dir (UI-eey2 §9.5)', () => {

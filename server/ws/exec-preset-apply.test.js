@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { MESSAGE_TYPES } from '../../app/protocol.js';
 import {
   APPLIED_EXEC_PRESET_KEY,
-  BEAD_PIN_KEYS
+  BEAD_PIN_KEYS,
+  QUICK_FIX_PRESET_KEYS
 } from '../worker/exec-enums.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 
@@ -126,12 +127,13 @@ function fakeWs() {
  * @param {any} ws
  * @param {any[]} sent
  * @param {Record<string, string>} [settings]
+ * @param {'general'|'quick_fix'} [applies_to]
  */
-function seedPreset(ws, sent, settings = {}) {
+function seedPreset(ws, sent, settings = {}, applies_to = 'general') {
   handleImplPresetCreate(ws, {
     id: 'create',
     type: 'impl-preset-create',
-    payload: { expected_revision: 0, name: '프리셋', settings }
+    payload: { expected_revision: 0, name: '프리셋', settings, applies_to }
   });
   return sent[0].payload.presets[0].id;
 }
@@ -372,6 +374,132 @@ describe('global preset identity recording', () => {
     );
   });
 
+  test('records a quick_fix apply in its own identity field', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      { orchestration_model: 'astra' },
+      'quick_fix'
+    );
+    const store = getWorkerRuntime().queueStore;
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'global',
+      type: 'apply-impl-preset-global',
+      payload: { preset_id, expected_revision: 1, expected_queue_revision: 0 }
+    });
+
+    expect(store.snapshot('/workspace')).toMatchObject({
+      applied_exec_preset: null,
+      applied_quick_fix_preset: { id: preset_id, name: '프리셋' }
+    });
+  });
+
+  test('leaves the quick_fix identity standing when a general preset applies', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { orchestration_model: 'sol' });
+    const store = getWorkerRuntime().queueStore;
+    const applied_quick_fix_preset = {
+      id: 'quick-fix-preset',
+      name: 'quick fix',
+      revision: 1,
+      applied_at: 10
+    };
+    store.setOrchestrationDefaults('/workspace', {
+      expected_revision: 0,
+      values: { quick_fix_orchestration_model: 'astra' },
+      applied_quick_fix_preset
+    });
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'global',
+      type: 'apply-impl-preset-global',
+      payload: { preset_id, expected_revision: 1, expected_queue_revision: 1 }
+    });
+
+    expect(store.snapshot('/workspace').applied_quick_fix_preset).toEqual(
+      applied_quick_fix_preset
+    );
+  });
+
+  test('leaves the general identity standing when a quick_fix preset applies', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      { orchestration_model: 'astra' },
+      'quick_fix'
+    );
+    const store = getWorkerRuntime().queueStore;
+    const applied_exec_preset = {
+      id: 'general-preset',
+      name: '일반',
+      revision: 1,
+      applied_at: 10
+    };
+    store.setOrchestrationDefaults('/workspace', {
+      expected_revision: 0,
+      values: { orchestration_model: 'sol' },
+      applied_exec_preset
+    });
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'global',
+      type: 'apply-impl-preset-global',
+      payload: { preset_id, expected_revision: 1, expected_queue_revision: 1 }
+    });
+
+    expect(store.snapshot('/workspace').applied_exec_preset).toEqual(
+      applied_exec_preset
+    );
+  });
+
+  test('releases only the edited preset profile record', () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      { impl_runtime: 'codex' },
+      'quick_fix'
+    );
+    const store = getWorkerRuntime().queueStore;
+    const applied_exec_preset = {
+      id: preset_id,
+      name: '프리셋',
+      revision: 1,
+      applied_at: 10
+    };
+    store.setOrchestrationDefaults('/workspace', {
+      expected_revision: 0,
+      values: { orchestration_model: 'sol' },
+      applied_exec_preset,
+      applied_quick_fix_preset: applied_exec_preset
+    });
+
+    handleImplPresetUpdate(ws, {
+      id: 'update',
+      type: 'impl-preset-update',
+      payload: {
+        id: preset_id,
+        expected_revision: 1,
+        name: '프리셋',
+        settings: { impl_runtime: 'claude' }
+      }
+    });
+
+    expect(store.snapshot('/workspace')).toMatchObject({
+      applied_exec_preset,
+      applied_quick_fix_preset: null
+    });
+  });
+
   test.each(['settings', 'name', 'same', 'other', 'delete'])(
     'invalidates only an actual applied preset update: %s',
     (change) => {
@@ -567,10 +695,7 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
       const { ws, sent } = fakeWs();
       const preset_id = seedPreset(ws, sent, {
         orchestration_model: 'astra',
-        orchestration_effort: 'ultra',
-        quick_fix_orchestration_model: 'opus',
-        quick_fix_orchestration_effort: 'high',
-        quick_fix_orchestration_speed: 'default'
+        orchestration_effort: 'ultra'
       });
       runBdJsonProjectedInWorkspace.mockResolvedValue({
         ok: true,
@@ -606,86 +731,101 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
     }
   );
 
-  test.each([
-    [
+  test('projects a quick_fix preset onto canonical pins of a quick_fix issue', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(
+      ws,
+      sent,
       {
-        quick_fix_orchestration_model: 'sol',
-        quick_fix_orchestration_effort: 'ultra',
-        quick_fix_orchestration_speed: 'fast'
+        orchestration_model: 'sol',
+        orchestration_effort: 'ultra',
+        orchestration_speed: 'fast'
       },
-      ['sol', 'ultra', 'fast']
-    ],
-    [
-      { quick_fix_orchestration_effort: 'medium' },
-      ['astra', 'medium', 'default']
-    ]
-  ])(
-    'projects quick_fix orchestration overrides %j onto canonical pins',
-    async (overrides, expected) => {
-      const { ws, sent } = fakeWs();
-      const preset_id = seedPreset(ws, sent, {
-        orchestration_model: 'astra',
-        orchestration_effort: 'high',
-        orchestration_speed: 'default',
-        ...overrides
-      });
-      runBdJsonProjectedInWorkspace.mockResolvedValue({
-        ok: true,
-        data: { id: 'UI-1', metadata: { route: 'quick_fix' } }
-      });
-      runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
+      'quick_fix'
+    );
+    runBdJsonProjectedInWorkspace.mockResolvedValue({
+      ok: true,
+      data: { id: 'UI-1', metadata: { route: 'quick_fix' } }
+    });
+    runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
 
-      await handleApplyImplPreset(ws, {
-        id: 'apply',
-        type: 'apply-impl-preset',
-        payload: { id: 'UI-1', preset_id, expected_revision: 1 }
-      });
+    await handleApplyImplPreset(ws, {
+      id: 'apply',
+      type: 'apply-impl-preset',
+      payload: { id: 'UI-1', preset_id, expected_revision: 1 }
+    });
 
-      const args = runBdInWorkspace.mock.calls[0][1];
-      expect(args.slice(2, 8)).toEqual([
-        '--set-metadata',
-        `orchestration_model=${expected[0]}`,
-        '--set-metadata',
-        `orchestration_effort=${expected[1]}`,
-        '--set-metadata',
-        `orchestration_speed=${expected[2]}`
-      ]);
-      expect(
-        args.some((/** @type {string} */ arg) => arg.includes('quick_fix_'))
-      ).toBe(false);
-    }
-  );
+    const args = runBdInWorkspace.mock.calls[0][1];
+    expect(args.slice(2, 8)).toEqual([
+      '--set-metadata',
+      'orchestration_model=sol',
+      '--set-metadata',
+      'orchestration_effort=ultra',
+      '--set-metadata',
+      'orchestration_speed=fast'
+    ]);
+    expect(
+      args.some((/** @type {string} */ arg) => arg.includes('quick_fix_'))
+    ).toBe(false);
+  });
+
+  test('leaves the nine review pins alone when a quick_fix preset applies', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      { impl_runtime: 'codex', impl_model: 'sol' },
+      'quick_fix'
+    );
+    runBdJsonProjectedInWorkspace.mockResolvedValue({
+      ok: true,
+      data: { id: 'UI-1', metadata: { route: 'quick_fix' } }
+    });
+    runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
+
+    await handleApplyImplPreset(ws, {
+      id: 'apply',
+      type: 'apply-impl-preset',
+      payload: { id: 'UI-1', preset_id, expected_revision: 1 }
+    });
+
+    const named = runBdInWorkspace.mock.calls[0][1]
+      .slice(2, -2)
+      .filter(
+        (/** @type {string} */ _value, /** @type {number} */ index) =>
+          index % 2 === 1
+      )
+      .map((/** @type {string} */ value) => value.split('=')[0]);
+    expect(named).toEqual([
+      'orchestration_model',
+      'orchestration_effort',
+      'orchestration_speed',
+      'impl_dispatch',
+      'impl_runtime',
+      'impl_model',
+      'impl_effort',
+      'impl_speed'
+    ]);
+  });
 
   test.each([
     [
       'quick_fix',
-      { orchestration_model: 'opus', quick_fix_orchestration_effort: 'ultra' },
-      'invalid_orchestration_effort'
-    ],
-    [
-      'quick_fix',
-      {
-        orchestration_model: 'astra',
-        orchestration_speed: 'fast',
-        quick_fix_orchestration_model: 'opus'
-      },
-      'invalid_orchestration_speed'
-    ],
-    [
-      'spec_backed',
+      /** @type {'quick_fix'} */ ('quick_fix'),
       { orchestration_model: 'opus', orchestration_effort: 'ultra' },
       'invalid_orchestration_effort'
     ],
     [
-      'full_plan',
-      { orchestration_model: 'opus', orchestration_speed: 'fast' },
-      'invalid_orchestration_speed'
+      'spec_backed',
+      /** @type {'general'} */ ('general'),
+      { orchestration_model: 'opus', orchestration_effort: 'ultra' },
+      'invalid_orchestration_effort'
     ]
   ])(
-    'rejects incompatible %s orchestration projection %j before writing',
-    async (route, settings, reason) => {
+    'rejects incompatible %s orchestration projection before writing',
+    async (route, applies_to, settings, reason) => {
       const { ws, sent } = fakeWs();
-      const preset_id = seedPreset(ws, sent, settings);
+      const preset_id = seedPreset(ws, sent, settings, applies_to);
       runBdJsonProjectedInWorkspace.mockResolvedValue({
         ok: true,
         data: { id: 'UI-1', metadata: { route } }
@@ -702,6 +842,75 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
       expect(runBdInWorkspace).not.toHaveBeenCalled();
     }
   );
+
+  test.each([
+    ['quick_fix', /** @type {'general'} */ ('general')],
+    ['spec_backed', /** @type {'quick_fix'} */ ('quick_fix')],
+    [undefined, /** @type {'quick_fix'} */ ('quick_fix')]
+  ])(
+    'refuses route %s with a %s preset before any write',
+    async (route, applies_to) => {
+      const { ws, sent } = fakeWs();
+      const preset_id = seedPreset(
+        ws,
+        sent,
+        { impl_runtime: 'codex' },
+        applies_to
+      );
+      runBdJsonProjectedInWorkspace.mockResolvedValue({
+        ok: true,
+        data: { id: 'UI-1', metadata: { route } }
+      });
+
+      await handleApplyImplPreset(ws, {
+        id: 'apply',
+        type: 'apply-impl-preset',
+        payload: { id: 'UI-1', preset_id, expected_revision: 1 }
+      });
+
+      expect(sent[sent.length - 1].error.code).toBe('preset_route_mismatch');
+      expect(runBdInWorkspace).not.toHaveBeenCalled();
+    }
+  );
+
+  test('derives the implementation runtime from a model-only preset', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_model: 'sol' });
+    runBdJsonProjectedInWorkspace.mockResolvedValue({
+      ok: true,
+      data: { id: 'UI-1', metadata: { route: 'spec_backed' } }
+    });
+    runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
+
+    await handleApplyImplPreset(ws, {
+      id: 'apply',
+      type: 'apply-impl-preset',
+      payload: { id: 'UI-1', preset_id, expected_revision: 1 }
+    });
+
+    expect(runBdInWorkspace.mock.calls[0][1]).toContain('impl_runtime=codex');
+  });
+
+  test('keeps an explicit runtime above the derived one', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, {
+      impl_runtime: 'auto',
+      impl_model: 'auto'
+    });
+    runBdJsonProjectedInWorkspace.mockResolvedValue({
+      ok: true,
+      data: { id: 'UI-1', metadata: { route: 'spec_backed' } }
+    });
+    runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
+
+    await handleApplyImplPreset(ws, {
+      id: 'apply',
+      type: 'apply-impl-preset',
+      payload: { id: 'UI-1', preset_id, expected_revision: 1 }
+    });
+
+    expect(runBdInWorkspace.mock.calls[0][1]).toContain('impl_runtime=auto');
+  });
 
   test('pins the preset onto the bead and replies with the readback issue', async () => {
     const { ws, sent } = fakeWs();
@@ -822,12 +1031,12 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
 
   test('maps quick_fix preset values onto a quick_fix issue pin', async () => {
     const { ws, sent } = fakeWs();
-    const preset_id = seedPreset(ws, sent, {
-      impl_runtime: 'claude',
-      impl_model: 'opus',
-      impl_effort: 'high',
-      quick_fix_impl_model: 'sol'
-    });
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      { impl_model: 'sol', impl_effort: 'high' },
+      'quick_fix'
+    );
     runBdJsonProjectedInWorkspace
       .mockResolvedValueOnce({
         ok: true,
@@ -851,19 +1060,22 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
           impl_model: 'sol',
           impl_effort: 'high'
         },
-        preset_id
+        preset_id,
+        QUICK_FIX_PRESET_KEYS
       )
     );
   });
 
   test('rejects an incompatible quick_fix issue pin', async () => {
+    // `impl_dispatch: main` suspends the STORE's coherence check, so this pair
+    // reaches the pin path, where a Bead's target must still be coherent.
     const { ws, sent } = fakeWs();
-    const preset_id = seedPreset(ws, sent, {
-      impl_runtime: 'codex',
-      impl_model: 'astra',
-      impl_effort: 'max',
-      quick_fix_impl_model: 'sol'
-    });
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      { impl_dispatch: 'main', impl_runtime: 'claude', impl_model: 'sol' },
+      'quick_fix'
+    );
     runBdJsonProjectedInWorkspace.mockResolvedValue({
       ok: true,
       data: { id: 'UI-1', metadata: { route: 'quick_fix' } }
@@ -877,21 +1089,18 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
 
     expect(sent[sent.length - 1].error.code).toBe('impl_preset_incompatible');
     expect(sent[sent.length - 1].error.message).toContain(
-      'illegal_impl_effort'
+      'provider_model_mismatch'
     );
     expect(runBdInWorkspace).not.toHaveBeenCalled();
   });
 });
 
 describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
-  test('replaces kv and queue values and publishes the updated queue', async () => {
+  test('replaces the general kv and queue values and publishes the updated queue', async () => {
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(ws, sent, {
       impl_runtime: 'codex',
-      quick_fix_impl_runtime: 'codex',
-      quick_fix_impl_model: 'sol',
-      orchestration_model: 'sol',
-      quick_fix_orchestration_model: 'opus'
+      orchestration_model: 'sol'
     });
     kvGetJsonInWorkspace
       .mockResolvedValueOnce({
@@ -910,8 +1119,7 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
           schema: 1,
           workflow_mode: 'fast_track',
           impl_runtime: 'codex',
-          quick_fix_impl_runtime: 'codex',
-          quick_fix_impl_model: 'sol'
+          quick_fix_impl_model: 'terra'
         }
       });
     kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
@@ -937,8 +1145,7 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
         impl_dispatch: 'delegated',
         workflow_mode: 'fast_track',
         impl_runtime: 'codex',
-        quick_fix_impl_runtime: 'codex',
-        quick_fix_impl_model: 'sol'
+        quick_fix_impl_model: 'terra'
       }
     );
     const reply = sent[sent.length - 1];
@@ -948,17 +1155,13 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
       values: {
         workflow_mode: 'fast_track',
         impl_runtime: 'codex',
-        quick_fix_impl_runtime: 'codex',
-        quick_fix_impl_model: 'sol'
+        quick_fix_impl_model: 'terra'
       },
       queue: {
         revision: 2,
         orchestration_model: 'sol',
         orchestration_effort: null,
-        orchestration_speed: null,
-        quick_fix_orchestration_model: 'opus',
-        quick_fix_orchestration_effort: null,
-        quick_fix_orchestration_speed: null
+        orchestration_speed: null
       }
     });
     expect(reply.payload).not.toHaveProperty('lane');
@@ -969,13 +1172,177 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
         revision: 2,
         orchestration_model: 'sol',
         orchestration_effort: null,
-        orchestration_speed: null,
-        quick_fix_orchestration_model: 'opus',
-        quick_fix_orchestration_effort: null,
-        quick_fix_orchestration_speed: null
+        orchestration_speed: null
       })
     );
   });
+
+  test('preserves the queue quick_fix orchestration keys during a general apply', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { orchestration_model: 'sol' });
+    const store = getWorkerRuntime().queueStore;
+    store.setOrchestrationDefaults('/workspace', {
+      expected_revision: 0,
+      values: {
+        quick_fix_orchestration_model: 'astra',
+        quick_fix_orchestration_effort: 'xhigh'
+      }
+    });
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 1
+      }
+    });
+
+    expect(store.snapshot('/workspace')).toMatchObject({
+      orchestration_model: 'sol',
+      quick_fix_orchestration_model: 'astra',
+      quick_fix_orchestration_effort: 'xhigh'
+    });
+  });
+
+  test('stores a quick_fix preset under the prefixed kv and queue names', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      {
+        orchestration_model: 'astra',
+        impl_dispatch: 'delegated',
+        impl_runtime: 'codex',
+        impl_model: 'sol'
+      },
+      'quick_fix'
+    );
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, impl_runtime: 'claude', workflow_mode: 'standard' }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          schema: 1,
+          impl_runtime: 'claude',
+          workflow_mode: 'standard',
+          quick_fix_impl_dispatch: 'delegated',
+          quick_fix_impl_runtime: 'codex',
+          quick_fix_impl_model: 'sol'
+        }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0
+      }
+    });
+
+    expect(kvSetJsonInWorkspace.mock.calls[0][2]).toEqual({
+      schema: 1,
+      workflow_mode: 'standard',
+      impl_runtime: 'claude',
+      quick_fix_impl_dispatch: 'delegated',
+      quick_fix_impl_runtime: 'codex',
+      quick_fix_impl_model: 'sol'
+    });
+    expect(getWorkerRuntime().queueStore.snapshot('/workspace')).toMatchObject({
+      orchestration_model: null,
+      quick_fix_orchestration_model: 'astra',
+      quick_fix_orchestration_effort: null,
+      quick_fix_orchestration_speed: null
+    });
+  });
+
+  test('unsets an absent quick_fix kv key during a quick_fix apply', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      { impl_runtime: 'codex' },
+      'quick_fix'
+    );
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, quick_fix_impl_model: 'terra' }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, quick_fix_impl_runtime: 'codex' }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0
+      }
+    });
+
+    expect(kvSetJsonInWorkspace.mock.calls[0][2]).toEqual({
+      schema: 1,
+      quick_fix_impl_runtime: 'codex'
+    });
+  });
+
+  test.each([
+    'workflow_mode',
+    'bdui_url',
+    'base_sync_accept_local_commits',
+    'spec_review_model'
+  ])(
+    'preserves the non-profile session key %s during a quick_fix apply',
+    async (key) => {
+      const values = {
+        workflow_mode: 'fast_track',
+        bdui_url: 'http://example.test',
+        base_sync_accept_local_commits: true,
+        spec_review_model: 'codex'
+      };
+      const { ws, sent } = fakeWs();
+      const preset_id = seedPreset(
+        ws,
+        sent,
+        { impl_runtime: 'codex' },
+        'quick_fix'
+      );
+      kvGetJsonInWorkspace.mockResolvedValue({
+        ok: true,
+        value: { schema: 1, ...values, quick_fix_impl_runtime: 'codex' }
+      });
+      kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+      await handleApplyImplPresetGlobal(ws, {
+        id: 'apply-global',
+        type: 'apply-impl-preset-global',
+        payload: {
+          preset_id,
+          expected_revision: 1,
+          expected_queue_revision: 0
+        }
+      });
+
+      expect(kvSetJsonInWorkspace.mock.calls[0][2]).toHaveProperty(
+        key,
+        /** @type {Record<string, unknown>} */ (values)[key]
+      );
+    }
+  );
 
   test('rejects a lane payload before touching kv', async () => {
     const { ws, sent } = fakeWs();
@@ -1056,20 +1423,24 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
     });
   });
 
-  test('unsets an absent quick_fix key during workspace apply', async () => {
+  test('preserves the five quick_fix kv keys during a general apply', async () => {
+    const quick_fix_values = {
+      quick_fix_impl_dispatch: 'delegated',
+      quick_fix_impl_runtime: 'codex',
+      quick_fix_impl_model: 'terra',
+      quick_fix_impl_effort: 'high',
+      quick_fix_impl_speed: 'default'
+    };
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(ws, sent, { impl_runtime: 'codex' });
     kvGetJsonInWorkspace
       .mockResolvedValueOnce({
         ok: true,
-        value: { schema: 1, quick_fix_impl_model: 'terra' }
+        value: { schema: 1, ...quick_fix_values }
       })
       .mockResolvedValueOnce({
         ok: true,
-        value: {
-          schema: 1,
-          impl_runtime: 'codex'
-        }
+        value: { schema: 1, impl_runtime: 'codex', ...quick_fix_values }
       });
     kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
 
@@ -1085,7 +1456,8 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
 
     expect(kvSetJsonInWorkspace.mock.calls[0][2]).toEqual({
       schema: 1,
-      impl_runtime: 'codex'
+      impl_runtime: 'codex',
+      ...quick_fix_values
     });
   });
 

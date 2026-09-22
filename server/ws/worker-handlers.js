@@ -74,6 +74,7 @@ import {
   readAttemptDelegationStreams
 } from '../worker/delegation-monitor.js';
 import { discardOperationActive } from '../worker/discard-phase.js';
+import { APPLIES_TO_VALUES } from '../worker/exec-enums.js';
 import { projectExecutionDefaults } from '../worker/execution-defaults.js';
 import {
   applyForeignBlockerCleanup,
@@ -90,6 +91,7 @@ import { onQueueChanged } from '../worker/queue-events.js';
 import { placeBeadInQueue } from '../worker/queue-place.js';
 import { removeBeadFromQueue } from '../worker/queue-remove.js';
 import {
+  APPLIED_PRESET_FIELDS,
   COMPLETION_AUTO_RESOLUTION_PHASE,
   COMPLETION_RETRY_MAX,
   MANUAL_MERGE_CONTINUATION,
@@ -5099,23 +5101,38 @@ export function handleWorkerQueueSetOrchestrationDefaults(ws, req) {
   if (key === null) {
     return;
   }
-  const queue = queueStore().snapshot(key);
+  const queue = /** @type {Record<string, any>} */ (
+    /** @type {unknown} */ (queueStore().snapshot(key))
+  );
   const values = Object.fromEntries(
     Object.entries(p.values).map(([name, value]) => [
       name,
       value === '' ? null : value
     ])
   );
-  const clear_preset =
-    getWorkerRuntime().execPresetCoordinator.changesAppliedExecPreset(
-      queue.applied_exec_preset,
-      queue,
-      { ...queue, ...values }
-    );
+  const next_queue = { ...queue, ...values };
+  // One write may carry general and quick_fix orchestration keys together, so
+  // each profile's record is judged on its own key set and only the falsified
+  // ones are released — under this same revision (design §4.1).
+  /** @type {Record<string, null>} */
+  const released = {};
+  for (const profile of APPLIES_TO_VALUES) {
+    const field = APPLIED_PRESET_FIELDS[profile];
+    if (
+      getWorkerRuntime().execPresetCoordinator.changesAppliedExecPreset(
+        queue[field],
+        queue,
+        next_queue,
+        profile
+      )
+    ) {
+      released[field] = null;
+    }
+  }
   const result = queueStore().setOrchestrationDefaults(key, {
     expected_revision: revisionOf(p),
     values: p.values,
-    ...(clear_preset ? { applied_exec_preset: null } : {})
+    ...released
   });
   replyMutation(ws, req, key, result);
 }

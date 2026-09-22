@@ -1309,9 +1309,12 @@ export function buildMonitorWorkspacesState(options = {}) {
       ...(workspace_accounts === null
         ? {}
         : { workspace_accounts: workspace_accounts }),
-      // The queue's own record of the last fully applied global profile,
-      // carried verbatim like `provider_limit_policy`.
+      // The queue's own record of the last fully applied profile, one field
+      // per profile, carried verbatim like `provider_limit_policy`. The second
+      // field is ADDED rather than replacing the first, so a client that only
+      // knows the general record keeps reading it (design §4.1).
       applied_exec_preset: queue.applied_exec_preset ?? null,
+      applied_quick_fix_preset: queue.applied_quick_fix_preset ?? null,
       external_wait_count: (queue.external_waits || []).filter(
         (/** @type {any} */ row) =>
           ['hold', 'detached', 'completing'].includes(row.stage)

@@ -75,10 +75,19 @@ describe('dispatch preset observations', () => {
         orchestration_speed: 'default',
         spec_review_speed: 'default',
         impl_runtime: 'claude',
-        impl_model: 'auto',
-        quick_fix_orchestration_model: 'sol',
-        quick_fix_orchestration_effort: 'xhigh',
-        quick_fix_impl_model: 'sol'
+        impl_model: 'auto'
+      }
+    });
+    const quick_fix_created = coordinator.create({
+      expected_revision: created.revision,
+      name: 'Quick fix profile',
+      applies_to: 'quick_fix',
+      settings: {
+        orchestration_model: 'sol',
+        orchestration_effort: 'xhigh',
+        orchestration_speed: 'default',
+        impl_runtime: 'claude',
+        impl_model: 'opus'
       }
     });
     const applied = {
@@ -87,19 +96,31 @@ describe('dispatch preset observations', () => {
       revision: 1,
       applied_at: 10
     };
+    const quick_fix_applied = {
+      id:
+        quick_fix_created.presets.find((preset) => preset.id !== applied.id)
+          ?.id ?? '',
+      name: 'Recorded quick fix name',
+      revision: 1,
+      applied_at: 20
+    };
     queueStore.setOrchestrationDefaults(WS, {
       expected_revision: 0,
       values: { orchestration_model: 'opus' },
-      applied_exec_preset: state === 'absent' ? null : applied
+      applied_exec_preset: state === 'absent' ? null : applied,
+      applied_quick_fix_preset: state === 'absent' ? null : quick_fix_applied
     });
     if (state === 'deleted') {
-      coordinator.delete({ id: applied.id, expected_revision: 1 });
+      coordinator.delete({
+        id: applied.id,
+        expected_revision: quick_fix_created.revision
+      });
     } else if (state === 'unreadable') {
       vi.spyOn(presetStore, 'snapshot').mockImplementation(() => {
         throw new Error('unreadable');
       });
     }
-    return { coordinator, applied };
+    return { coordinator, applied, quick_fix_applied };
   }
 
   test.each([
@@ -122,7 +143,7 @@ describe('dispatch preset observations', () => {
         impl_runtime: 'codex',
         impl_model: 'sol'
       },
-      ['impl_runtime']
+      ['impl_runtime', 'impl_model']
     ],
     [
       'quick_fix',
@@ -137,6 +158,11 @@ describe('dispatch preset observations', () => {
     [
       'quick_fix',
       { orchestration_speed: 'fast', spec_review_speed: 'fast' },
+      ['orchestration_speed']
+    ],
+    [
+      'spec_backed',
+      { orchestration_speed: 'fast', spec_review_speed: 'fast' },
       ['orchestration_speed', 'spec_review_speed']
     ],
     ['full_plan', {}, []],
@@ -144,7 +170,8 @@ describe('dispatch preset observations', () => {
   ])(
     'compares actual pins with route-specific declared values: %s %j',
     (route, pins, deviated_keys) => {
-      const { coordinator, applied } = presetFixture();
+      const { coordinator, applied, quick_fix_applied } = presetFixture();
+      const expected = route === 'quick_fix' ? quick_fix_applied : applied;
 
       const result = coordinator.resolveForDispatch(WS, { route, ...pins });
 
@@ -153,8 +180,8 @@ describe('dispatch preset observations', () => {
         preset_id: null,
         preset_revision: null,
         exec_preset: {
-          id: applied.id,
-          name: applied.name,
+          id: expected.id,
+          name: expected.name,
           revision: 1,
           deviated_keys
         }
