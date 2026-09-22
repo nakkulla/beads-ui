@@ -1,7 +1,8 @@
 ---
 id: UI-uohc
 title: 실행 프리셋은 applies_to로 일반·quick fix 두 계열로 갈리고 계열이 저장소 적용의 키 집합과 이슈 route 일치를 정한다 — 25키 프로파일과 접두어 역매핑을 대체하되 런타임 유도·id 하나 정체성·대칭 비교는 UI-xq3h를 승계한다
-status: accepted
+status: superseded
+superseded_by: UI-wg68
 date: 2026-09-22
 summary: "실행 프리셋은 applies_to로 일반·quick fix 두 계열로 갈리고 settings는 canonical 키만 담으며, 계열이 저장소 적용의 키 집합과 이슈 route 일치를 정해 다른 계열의 값은 보존된다 — 25키 프로파일과 접두어 역매핑을 대체하되 모델에서의 런타임 유도·id 하나 정체성·대칭 비교는 승계한다"
 supersedes: [UI-xq3h]

@@ -54,7 +54,7 @@ export function chipPresetBinding(
   if (!ctx || !CHIP_BINDING_KEYS.includes(chip)) {
     return null;
   }
-  // 칩 클릭은 quick_fix 이슈에서 동작하지 않는다 (§0, ADR UI-uohc).
+  // 칩 클릭은 quick_fix 이슈에서 동작하지 않는다 (§0, ADR UI-wg68).
   if (route === 'quick_fix') {
     return null;
   }
