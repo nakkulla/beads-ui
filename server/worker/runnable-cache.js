@@ -56,7 +56,12 @@ import {
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
 import { parseDescriptionScope } from './artifact-scope.js';
-import { ACCOUNT_KEYS, BEAD_PIN_KEYS } from './exec-enums.js';
+import {
+  ACCOUNT_KEYS,
+  APPLIED_EXEC_PRESET_KEY,
+  BEAD_PIN_KEYS,
+  CHIP_PRESET_SOURCE_KEY
+} from './exec-enums.js';
 import { WORKFLOW_ROUTES } from './routes.js';
 import { createSessionObservationStore } from './session-observation.js';
 import {
@@ -237,12 +242,26 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * execution chips from these pins: without `orchestration_model` here a pinned
  * card would read as unpinned on that surface.
  *
+ * `applied_exec_preset` and `chip_preset_source` ride along for the SAME
+ * reason at one remove (UI-wg68 §5.1): the chip-binding state judgment reads
+ * those two identity keys BESIDE the 17 pins, in one object, to decide whether
+ * a bound chip is `applied`, `diverged` or `unapplied`. Splitting them off the
+ * pin projection would leave a candidate card able to compare pins it cannot
+ * attribute, so the card would draw no state at all. Neither key is a pin: the
+ * apply path writes them in the same argv but they stand outside
+ * `BEAD_PIN_KEYS` and outside every profile's preset vocabulary (design §4.6).
+ *
  * The quick_fix storage keys are deliberately not here: they live in workspace
  * kv and the queue, never in a Bead's metadata (design §5).
  *
  * @type {ReadonlyArray<string>}
  */
-const EXEC_PIN_KEYS = [...BEAD_PIN_KEYS, ...ACCOUNT_KEYS];
+const EXEC_PIN_KEYS = [
+  ...BEAD_PIN_KEYS,
+  ...ACCOUNT_KEYS,
+  APPLIED_EXEC_PRESET_KEY,
+  CHIP_PRESET_SOURCE_KEY
+];
 
 /**
  * Project the execution pins of one row's metadata (UI-eey2 §9.1). Non-string

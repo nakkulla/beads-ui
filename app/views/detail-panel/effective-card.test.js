@@ -1567,7 +1567,7 @@ describe('detail header 복잡 chip (UI-8x90 §5.1, UI-7nhi §4)', () => {
     /** @type {HTMLButtonElement} */ (complexChip(mount)).click();
 
     expect(mount.querySelector('.chip-popover')?.textContent).toContain(
-      '적용은 이슈 상세의 실행 설정 편집기에서'
+      '칩에 프리셋을 매려면 모니터 탭 ⚙ → 칩'
     );
     panel.destroy();
   });

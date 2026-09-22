@@ -660,6 +660,13 @@ export function createLiveBd(config) {
         // decides where a cell's worktree is cut, the run id decides which hook
         // mode it gets, and `landing` is what makes its `bench:` close a
         // success instead of a `premature_close`.
+        // The issue's OWN preset identity (UI-wg68 §7). A chip apply writes it
+        // onto the Bead, so `dispatchPreset` can record the attempt under the
+        // preset this issue actually carried instead of the workspace's.
+        applied_exec_preset:
+          typeof md.applied_exec_preset === 'string'
+            ? md.applied_exec_preset
+            : null,
         bench_run: typeof md.bench_run === 'string' ? md.bench_run : null,
         bench_base: typeof md.bench_base === 'string' ? md.bench_base : null,
         landing: typeof md.landing === 'string' ? md.landing : null,

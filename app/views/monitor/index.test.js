@@ -234,7 +234,7 @@ test('demotes a prerequisite wait to its queue row and keeps the summary', () =>
 });
 
 /**
- * @param {{ workspaces?: any[], workspaces_state?: any[], cross_lanes?: { revision: number, lanes: Array<Record<string, any>> }|null, now?: () => number, current?: string, switchWorkspace?: (root: string) => Promise<unknown>, transport?: (type: string, payload?: any) => Promise<any>, confirm?: (message: string) => boolean, openDoc?: (doc: any, root_dir?: string) => void }} [input]
+ * @param {{ workspaces?: any[], workspaces_state?: any[], cross_lanes?: { revision: number, lanes: Array<Record<string, any>> }|null, now?: () => number, current?: string, switchWorkspace?: (root: string) => Promise<unknown>, transport?: (type: string, payload?: any) => Promise<any>, confirm?: (message: string) => boolean, openDoc?: (doc: any, root_dir?: string) => void, execPresetStore?: any }} [input]
  */
 function setup(input = {}) {
   document.body.innerHTML = '<div id="m"></div>';
@@ -275,6 +275,7 @@ function setup(input = {}) {
     switchWorkspace,
     confirm: confirmFn,
     openDoc: input.openDoc,
+    execPresetStore: input.execPresetStore,
     now: input.now || (() => NOW)
   });
   active_views.push(view);
@@ -3085,6 +3086,31 @@ describe('monitor 판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
     expect(el(mount, '.chip-popover')?.getAttribute('role')).toBe('dialog');
   });
 
+  test('opens the area chip popup on an unbound area chip click', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-1',
+              title: '영역 후보',
+              route: 'spec_backed',
+              labels: ['frontend']
+            }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.worker-card[data-bead-id="A-1"] [data-chip-key="frontend"]');
+
+    expect(el(mount, '.chip-popover')?.textContent).toContain(
+      'frontend: 렌더된 화면으로 acceptance를 판정하는 작업'
+    );
+  });
+
   test('writes the 사유 sentence rather than the signal code', () => {
     const { mount, view } = judgementSetup();
 
@@ -3113,6 +3139,225 @@ describe('monitor 판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 
     expect(mount.querySelector('.chip-popover')).toBeNull();
+  });
+});
+
+describe('monitor 바인딩 칩 클릭 (UI-wg68 §5.3)', () => {
+  const PRESET = {
+    id: 'p1',
+    name: '오퍼스 → 클로드',
+    applies_to: 'general',
+    settings: { impl_runtime: 'claude' }
+  };
+
+  /**
+   * @param {any} [store_state]
+   * @returns {ReturnType<typeof setup>}
+   */
+  function boundSetup(store_state) {
+    return setup({
+      execPresetStore: {
+        get: () =>
+          store_state === undefined
+            ? {
+                revision: 4,
+                presets: [PRESET],
+                chip_bindings: { complex: 'p1', frontend: null, backend: null }
+              }
+            : store_state,
+        set: () => {},
+        subscribe: () => () => {}
+      },
+      workspaces: [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-1',
+              title: '복잡 후보',
+              route: 'spec_backed',
+              complex_reason: 'invariant_reasoning'
+            }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+  }
+
+  test('sends chip-preset-toggle with the row repo', () => {
+    const { mount, view, sent } = boundSetup();
+
+    view.load();
+    click(mount, '.worker-card[data-bead-id="A-1"] .judgement-chip--bound');
+
+    expect(sent.at(-1)).toEqual({
+      type: 'chip-preset-toggle',
+      payload: {
+        id: 'A-1',
+        chip: 'complex',
+        expected_revision: 4,
+        root_dir: WS_A
+      }
+    });
+  });
+
+  test('opens no 사유 popup on that click', () => {
+    const { mount, view } = boundSetup();
+
+    view.load();
+    click(mount, '.worker-card[data-bead-id="A-1"] .judgement-chip--bound');
+
+    expect(mount.querySelector('.chip-popover')).toBeNull();
+  });
+
+  test('redraws the chips when the preset snapshot arrives', () => {
+    /** @type {Array<() => void>} */
+    const listeners = [];
+    /** @type {any} */
+    let store_state = null;
+    const { mount, view } = setup({
+      execPresetStore: {
+        get: () => store_state,
+        set: () => {},
+        subscribe: (/** @type {() => void} */ fn) => {
+          listeners.push(fn);
+          return () => {};
+        }
+      },
+      workspaces: [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-1',
+              title: '복잡 후보',
+              route: 'spec_backed',
+              complex_reason: 'invariant_reasoning'
+            }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    store_state = {
+      revision: 4,
+      presets: [PRESET],
+      chip_bindings: { complex: 'p1', frontend: null, backend: null }
+    };
+    for (const listener of listeners) {
+      listener();
+    }
+
+    expect(
+      mount.querySelector(
+        '.worker-card[data-bead-id="A-1"] .judgement-chip--bound'
+      )
+    ).not.toBeNull();
+  });
+
+  test('keeps the popup chip while no snapshot has arrived', () => {
+    const { mount, view } = boundSetup(null);
+
+    view.load();
+
+    expect(
+      mount.querySelector(
+        '.worker-card[data-bead-id="A-1"] .judgement-chip--bound'
+      )
+    ).toBeNull();
+  });
+});
+
+describe('monitor 실행 타일의 판정 칩 (UI-wg68 §5.4)', () => {
+  const PRESET = {
+    id: 'p1',
+    name: '오퍼스 → 클로드',
+    applies_to: 'general',
+    settings: { impl_runtime: 'claude' }
+  };
+
+  /**
+   * One running attempt whose bead carries the three judgements.
+   *
+   * @param {Record<string, any>} metadata
+   * @returns {ReturnType<typeof setup>}
+   */
+  function runningSetup(metadata) {
+    return setup({
+      execPresetStore: {
+        get: () => ({
+          revision: 4,
+          presets: [PRESET],
+          chip_bindings: { complex: 'p1', frontend: null, backend: null }
+        }),
+        set: () => {},
+        subscribe: () => () => {}
+      },
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-5',
+              status: 'running',
+              started_at: NOW - 1000
+            }
+          },
+          bead_titles: { 'A-5': '실행 중' },
+          bead_overlay: {
+            'A-5': {
+              labels: ['complex', 'frontend'],
+              route: 'spec_backed',
+              metadata: { complex_reason: 'hard_diagnosis', ...metadata }
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+  }
+
+  test('draws the area chip on a running tile', () => {
+    const { mount, view } = runningSetup({});
+
+    view.load();
+
+    expect(
+      mount.querySelector(
+        '.rtile[data-bead-id="A-5"] [data-chip-key="frontend"]'
+      )
+    ).not.toBeNull();
+  });
+
+  test('marks the bound 복잡 chip applied on a running tile', () => {
+    const { mount, view } = runningSetup({
+      chip_preset_source: 'complex',
+      applied_exec_preset: 'p1',
+      impl_runtime: 'claude'
+    });
+
+    view.load();
+    const chip = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.rtile[data-bead-id="A-5"] .judgement-chip--bound[data-chip-key="complex"]'
+      )
+    );
+
+    expect(chip.dataset.state).toBe('applied');
+  });
+
+  test('carries the bead id on a running tile bound chip', () => {
+    const { mount, view } = runningSetup({});
+
+    view.load();
+    const chip = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.rtile[data-bead-id="A-5"] .judgement-chip--bound[data-chip-key="complex"]'
+      )
+    );
+
+    expect(chip.dataset.beadId).toBe('A-5');
   });
 });
 

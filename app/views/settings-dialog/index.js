@@ -25,6 +25,7 @@
 import { html, render } from 'lit-html';
 import { showToast } from '../../utils/toast.js';
 import { createBulkPane } from './bulk-pane.js';
+import { createChipBindingsTab } from './chip-bindings-tab.js';
 import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import { createExecutionPane } from './execution-pane.js';
 
@@ -46,12 +47,20 @@ export const SETTINGS_TABS = [
  * workspace-global policy, so it stays on the connected-workspace window
  * (UI-e1ta §5, §7).
  */
-export const BULK_SETTINGS_TABS = SETTINGS_TABS.filter(
+export const REPO_SETTINGS_TABS = SETTINGS_TABS.filter(
   (tab) => tab.id !== 'display'
 );
 
-/** One repo's window carries the same four tabs (§7). */
-export const REPO_SETTINGS_TABS = BULK_SETTINGS_TABS;
+/**
+ * 일괄 모드(모니터 탭 헤더 `⚙`)만 다섯 번째 탭 `칩`을 갖는다 (UI-wg68 §6). 그
+ * 값은 서버 전역이라 `적용 대상` 저장소 선택과 무관하고, 그래서 저장소 하나를
+ * 편집하는 전체 설정 창·레포 카드 창에는 없다 — 두 배열이 갈라지는 유일한
+ * 이유다. `⬡`는 `quick fix`의 `◈`와 겹치지 않는 글리프다.
+ */
+export const BULK_SETTINGS_TABS = [
+  ...REPO_SETTINGS_TABS,
+  { id: 'chips', label: '칩', glyph: '⬡' }
+];
 
 /** Bulk-mode pane heading shared by both tabs. */
 const BULK_TITLE = '여러 저장소 설정';
@@ -63,7 +72,9 @@ const BULK_TAB_SUB = {
   quick_fix:
     '선택한 저장소의 quick fix 값을 읽어 세웁니다. 프리셋을 고르면 8행이 그 값으로 채워집니다.',
   session: '선택한 저장소의 대화형 세션 값을 읽어 세웁니다.',
-  account: '선택한 저장소의 실행 계정과 한도 대응을 읽어 세웁니다.'
+  account: '선택한 저장소의 실행 계정과 한도 대응을 읽어 세웁니다.',
+  chips:
+    '판정 칩에 맬 프리셋입니다. 서버 전역이라 적용 대상 저장소와 무관합니다.'
 };
 
 /** Tabs the shared execution pane draws, by its own section ids. */
@@ -143,6 +154,12 @@ export function createSettingsDialog(mount_element, options) {
   /** The bulk pane's own host, re-parented like {@link pane_host}. */
   const bulk_host = document.createElement('div');
   bulk_host.className = 'settings-dialog__pane-host';
+
+  /** @type {ReturnType<typeof createChipBindingsTab>|null} */
+  let chip_tab = null;
+  /** The `칩` 탭's own host — 서버 전역 값이라 일괄 pane과 섞지 않는다 (§6). */
+  const chip_host = document.createElement('div');
+  chip_host.className = 'settings-dialog__pane-host';
 
   /** @type {ReturnType<typeof createExecutionPane>|null} */
   let execution_pane = null;
@@ -278,6 +295,23 @@ export function createSettingsDialog(mount_element, options) {
     if (!slot) {
       return;
     }
+    if (active_tab === 'chips') {
+      bulk_host.remove();
+      if (chip_host.parentElement !== slot) {
+        slot.appendChild(chip_host);
+      }
+      if (!chip_tab) {
+        chip_tab = createChipBindingsTab(chip_host, {
+          transport,
+          implPresetStore: options.implPresetStore,
+          toast: (message, kind) =>
+            showToast(message, /** @type {any} */ (kind))
+        });
+      }
+      chip_tab.render();
+      return;
+    }
+    chip_host.remove();
     if (bulk_host.parentElement !== slot) {
       slot.appendChild(bulk_host);
     }
@@ -299,6 +333,9 @@ export function createSettingsDialog(mount_element, options) {
     bulk_pane?.destroy();
     bulk_pane = null;
     bulk_host.remove();
+    chip_tab?.destroy();
+    chip_tab = null;
+    chip_host.remove();
   }
 
   /**
@@ -530,6 +567,7 @@ export function createSettingsDialog(mount_element, options) {
       if (is_open) {
         execution_pane?.render();
         bulk_pane?.render();
+        chip_tab?.render();
       }
     });
   }

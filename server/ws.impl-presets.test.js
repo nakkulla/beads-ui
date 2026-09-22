@@ -94,7 +94,8 @@ describe('ws impl-preset channel', () => {
         type: 'impl-presets-snapshot',
         id: 'exec:presets',
         revision: 0,
-        presets: []
+        presets: [],
+        chip_bindings: { complex: null, frontend: null, backend: null }
       }
     ]);
   });

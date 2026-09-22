@@ -33,6 +33,8 @@ import {
   detachImplPresets,
   handleApplyImplPreset,
   handleApplyImplPresetGlobal,
+  handleChipPresetToggle,
+  handleImplPresetBind,
   handleImplPresetCreate,
   handleImplPresetDelete,
   handleImplPresetUpdate,
@@ -529,6 +531,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'impl-preset-delete':
       handleImplPresetDelete(ws, req);
+      return;
+    case 'impl-preset-bind':
+      handleImplPresetBind(ws, req);
+      return;
+    case 'chip-preset-toggle':
+      await handleChipPresetToggle(ws, req);
       return;
     case 'apply-impl-preset':
       await handleApplyImplPreset(ws, req);

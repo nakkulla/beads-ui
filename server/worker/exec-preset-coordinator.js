@@ -13,6 +13,7 @@ import {
   normalizeSessionDefaults
 } from '../session-defaults.js';
 import {
+  CHIP_BINDING_KEYS,
   GENERAL_PRESET_KV_KEYS,
   ORCHESTRATION_KEYS,
   QUICK_FIX_LANE_MAP,
@@ -138,21 +139,32 @@ export function createExecPresetCoordinator(options) {
    */
   function snapshot() {
     const state = presetStore.snapshot();
+    const visible_presets = state.presets.filter(
+      (preset) => !isLegacyPreset(preset)
+    );
+    // A binding onto a preset this snapshot hides is projected as unbound: the
+    // file keeps the id, but a client may not offer a target it cannot see.
+    const visible_ids = new Set(visible_presets.map((preset) => preset.id));
+    /** @type {Record<string, string|null>} */
+    const chip_bindings = {};
+    for (const chip of CHIP_BINDING_KEYS) {
+      const bound = state.chip_bindings?.[chip] ?? null;
+      chip_bindings[chip] = bound && visible_ids.has(bound) ? bound : null;
+    }
     return {
       revision: state.revision,
       ...(state.read_failed ? { read_failed: true } : {}),
-      presets: state.presets
-        .filter((preset) => !isLegacyPreset(preset))
-        .map((preset) => {
-          const coherence = validateImplPresetSettings(preset.settings, {
-            applies_to: preset.applies_to
-          });
-          return {
-            ...preset,
-            compatible: coherence.ok,
-            incompatibility_reason: coherence.ok ? null : coherence.reason
-          };
-        })
+      chip_bindings,
+      presets: visible_presets.map((preset) => {
+        const coherence = validateImplPresetSettings(preset.settings, {
+          applies_to: preset.applies_to
+        });
+        return {
+          ...preset,
+          compatible: coherence.ok,
+          incompatibility_reason: coherence.ok ? null : coherence.reason
+        };
+      })
     };
   }
 
@@ -161,7 +173,12 @@ export function createExecPresetCoordinator(options) {
    */
   function annotated(result) {
     const current = snapshot();
-    return { ...result, revision: current.revision, presets: current.presets };
+    return {
+      ...result,
+      revision: current.revision,
+      presets: current.presets,
+      chip_bindings: current.chip_bindings
+    };
   }
 
   /**
@@ -203,28 +220,59 @@ export function createExecPresetCoordinator(options) {
   }
 
   /**
-   * Compare a Bead's actual pins against the profile the workspace recorded.
+   * Compare a Bead's actual pins against the preset this dispatch carries.
    * Both the record and the key set come from the profile, and the preset's
    * settings are read by canonical name in either one — the prefixed lookup
    * went with the prefixed preset keys (design §5).
    *
    * @param {import('./queue-store.js').AppliedExecPreset|null} applied
-   * @param {any} bead_snapshot
+   * @param {any} bead_snapshot - Includes `applied_exec_preset`, the issue's
+   * own preset identity, which outranks the workspace record.
    * @param {unknown} [applies_to]
    * @returns {import('./queue-store.js').ExecPresetRecord|null}
    */
   function dispatchPreset(applied, bead_snapshot, applies_to) {
-    if (!applied) {
+    const profile = normalizeAppliesTo(applies_to);
+    /** @type {Array<any>|null} */
+    let visible = null;
+    let visible_revision = 0;
+    try {
+      const current = snapshot();
+      visible = current.presets;
+      visible_revision = current.revision;
+    } catch {
+      // The recorded identity survives loss of the comparison profile.
+    }
+    // Which preset did THIS issue actually carry? A chip apply writes the id
+    // onto the Bead, so the Bead's own answer wins over the workspace record
+    // whenever it names a preset of this issue's profile (design §7).
+    const bead_preset_id =
+      typeof bead_snapshot?.applied_exec_preset === 'string' &&
+      bead_snapshot.applied_exec_preset.length > 0
+        ? bead_snapshot.applied_exec_preset
+        : null;
+    const own =
+      bead_preset_id && visible
+        ? visible.find(
+            (entry) =>
+              entry.id === bead_preset_id &&
+              normalizeAppliesTo(entry.applies_to) === profile
+          )
+        : undefined;
+    const identity = own
+      ? { id: own.id, name: own.name, revision: visible_revision }
+      : applied
+        ? { id: applied.id, name: applied.name, revision: applied.revision }
+        : null;
+    if (!identity) {
       return null;
     }
     /** @type {string[]} */
     const deviated_keys = [];
     try {
-      const preset = snapshot().presets.find(
-        (entry) => entry.id === applied.id
-      );
+      const preset = visible?.find((entry) => entry.id === identity.id);
       if (preset) {
-        for (const key of presetKeysFor(applies_to)) {
+        for (const key of presetKeysFor(profile)) {
           const bead_key = BEAD_SNAPSHOT_PIN_FIELDS[key] || key;
           const pin = bead_snapshot?.[bead_key];
           if (pin === undefined || pin === null || pin === '') {
@@ -241,12 +289,7 @@ export function createExecPresetCoordinator(options) {
     } catch {
       // The recorded identity survives loss of the comparison profile.
     }
-    return {
-      id: applied.id,
-      name: applied.name,
-      revision: applied.revision,
-      deviated_keys
-    };
+    return { ...identity, deviated_keys };
   }
 
   /**
@@ -741,6 +784,10 @@ export function createExecPresetCoordinator(options) {
       return annotated(presetStore.update(input));
     },
     delete: deletePreset,
+    /** @param {{ expected_revision: number, chip: string, preset_id: string|null }} input */
+    bindChip(input) {
+      return annotated(presetStore.bindChip(input));
+    },
     resolveForDispatch,
     migrateWorkspace,
     migrateWorkspaces,

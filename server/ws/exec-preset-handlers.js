@@ -22,6 +22,9 @@ import {
 import {
   APPLIED_EXEC_PRESET_KEY,
   BEAD_PIN_KEYS,
+  CHIP_BINDING_KEYS,
+  CHIP_PRESET_RESTORE_KEY,
+  CHIP_PRESET_SOURCE_KEY,
   ORCHESTRATION_KEYS,
   QUICK_FIX_LANE_MAP,
   implPresetEnums,
@@ -57,6 +60,26 @@ import {
 import { targetWorkspaceOf } from './workspace-target.js';
 
 const DEFAULT_CLIENT_ID = 'impl:presets';
+
+/**
+ * One in-flight chip transition per `(workspace, bead)`, so a double click
+ * reads its predecessor's readback instead of the same pre-click state
+ * (design §4.5). `bd.js` serializes single commands; this serializes the
+ * read-judge-write-reread transition above them.
+ *
+ * @type {Map<string, Promise<void>>}
+ */
+const toggle_chains = new Map();
+
+/** @returns {Record<string, string|null>} */
+function emptyChipBindings() {
+  /** @type {Record<string, string|null>} */
+  const bindings = {};
+  for (const chip of CHIP_BINDING_KEYS) {
+    bindings[chip] = null;
+  }
+  return bindings;
+}
 
 /** @type {Set<{ ws: WebSocket, client_id: string }>} */
 const SUBSCRIBERS = new Set();
@@ -134,7 +157,7 @@ function clientIdOf(req) {
 /**
  * @param {WebSocket} ws
  * @param {string} client_id
- * @param {{ revision: number, presets: unknown[] }} snapshot
+ * @param {{ revision: number, presets: unknown[], chip_bindings?: Record<string, string|null> }} snapshot
  */
 function emitSnapshot(ws, client_id, snapshot) {
   try {
@@ -147,7 +170,8 @@ function emitSnapshot(ws, client_id, snapshot) {
           type: 'impl-presets-snapshot',
           id: client_id,
           revision: snapshot.revision,
-          presets: snapshot.presets
+          presets: snapshot.presets,
+          chip_bindings: snapshot.chip_bindings ?? emptyChipBindings()
         }
       })
     );
@@ -157,7 +181,7 @@ function emitSnapshot(ws, client_id, snapshot) {
 }
 
 /**
- * @param {{ revision: number, presets: unknown[] }} snapshot
+ * @param {{ revision: number, presets: unknown[], chip_bindings?: Record<string, string|null> }} snapshot
  */
 function fanout(snapshot) {
   for (const subscriber of SUBSCRIBERS) {
@@ -233,7 +257,11 @@ function handleMutation(ws, req, operation) {
     }
     ws.send(JSON.stringify(makeOk(req, result)));
     if (result.applied) {
-      fanout({ revision: result.revision, presets: result.presets });
+      fanout({
+        revision: result.revision,
+        presets: result.presets,
+        chip_bindings: result.chip_bindings
+      });
     }
   } catch (err) {
     ws.send(
@@ -502,17 +530,25 @@ export async function handleApplyImplPreset(ws, req) {
     return;
   }
 
+  // A person choosing a preset in the editor ends the chip's ownership, and
+  // the restore point loses its meaning with it (design §4.4). Same argv, so
+  // the pins and the end of chip ownership never land separately.
+  const args = buildApplyImplPresetArgs(
+    id,
+    projected.settings,
+    resolved.preset.id,
+    projected.replaced_keys
+  );
+  args.push(
+    '--unset-metadata',
+    CHIP_PRESET_SOURCE_KEY,
+    '--unset-metadata',
+    CHIP_PRESET_RESTORE_KEY
+  );
+
   let updated;
   try {
-    updated = await runBdInWorkspace(
-      ws,
-      buildApplyImplPresetArgs(
-        id,
-        projected.settings,
-        resolved.preset.id,
-        projected.replaced_keys
-      )
-    );
+    updated = await runBdInWorkspace(ws, args);
   } catch (err) {
     ws.send(
       JSON.stringify(
@@ -826,6 +862,450 @@ export async function handleApplyImplPresetGlobal(ws, req) {
   }
 }
 
+/**
+ * Hang one judgement chip on one general preset, or unbind it (design §3.2).
+ * The binding rides the preset list's own CAS revision, so a delete and the
+ * unbinding it forces can never be observed apart.
+ *
+ * @param {WebSocket} ws - Socket.
+ * @param {RequestEnvelope} req - Request.
+ */
+export function handleImplPresetBind(ws, req) {
+  const { expected_revision, chip, preset_id } = /** @type {any} */ (
+    req.payload || {}
+  );
+  const bound_id = preset_id === undefined ? null : preset_id;
+  if (
+    !CHIP_BINDING_KEYS.includes(chip) ||
+    !Number.isInteger(expected_revision) ||
+    expected_revision < 0 ||
+    !(
+      bound_id === null ||
+      (typeof bound_id === 'string' && bound_id.length > 0)
+    )
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { expected_revision, chip, preset_id }'
+        )
+      )
+    );
+    return;
+  }
+  if (bound_id !== null) {
+    const preset = coordinator()
+      .snapshot()
+      .presets.find((entry) => entry.id === bound_id);
+    if (!preset) {
+      ws.send(
+        JSON.stringify(
+          makeError(
+            req,
+            'impl_preset_missing',
+            'Implementation preset not found'
+          )
+        )
+      );
+      return;
+    }
+    // A quick_fix preset could never be applied by a chip, because a chip
+    // click refuses a `route=quick_fix` issue outright (design §0, §4.1).
+    if (normalizeAppliesTo(preset.applies_to) !== 'general') {
+      ws.send(
+        JSON.stringify(
+          makeError(
+            req,
+            'preset_route_mismatch',
+            'Only a general implementation preset may be bound to a chip'
+          )
+        )
+      );
+      return;
+    }
+  }
+  try {
+    const result = coordinator().bindChip({
+      expected_revision,
+      chip,
+      preset_id: bound_id
+    });
+    ws.send(JSON.stringify(makeOk(req, result)));
+    if (result.applied) {
+      fanout({
+        revision: result.revision,
+        presets: result.presets,
+        chip_bindings: result.chip_bindings
+      });
+    }
+  } catch (err) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'impl_preset_write_failed',
+          'Failed to persist implementation presets',
+          err instanceof Error ? err.message : String(err)
+        )
+      )
+    );
+  }
+}
+
+/**
+ * The JSON object one chip apply stores so a second click can undo it: every
+ * pin key the issue carries a string value for, plus its preset identity.
+ *
+ * @param {Record<string, unknown>} metadata
+ * @returns {Record<string, string>}
+ */
+function restorePointOf(metadata) {
+  /** @type {Record<string, string>} */
+  const point = {};
+  for (const key of [...BEAD_PIN_KEYS, APPLIED_EXEC_PRESET_KEY]) {
+    const value = metadata[key];
+    if (typeof value === 'string' && value.length > 0) {
+      point[key] = value;
+    }
+  }
+  return point;
+}
+
+/**
+ * Build the single argv that puts a stored restore point back and ends the
+ * chip's ownership. A key the point does not name is UNSET, because the pins
+ * before the first click are the whole answer — anything else standing came
+ * from the chip apply (design §4.3).
+ *
+ * @param {string} issue_id
+ * @param {Record<string, string>|null} restore_point
+ * @returns {string[]}
+ */
+function buildChipRestoreArgs(issue_id, restore_point) {
+  const args = ['update', issue_id];
+  for (const key of [...BEAD_PIN_KEYS, APPLIED_EXEC_PRESET_KEY]) {
+    const value = restore_point?.[key];
+    if (typeof value === 'string' && value.length > 0) {
+      args.push('--set-metadata', `${key}=${value}`);
+    } else {
+      args.push('--unset-metadata', key);
+    }
+  }
+  args.push(
+    '--unset-metadata',
+    CHIP_PRESET_SOURCE_KEY,
+    '--unset-metadata',
+    CHIP_PRESET_RESTORE_KEY
+  );
+  return args;
+}
+
+/**
+ * Run ONE chip transition: read the binding, read the issue, judge apply or
+ * restore, write one `bd update`, and answer with the readback (design §4).
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {{ id: string, chip: string, expected_revision: number, workspace_key: string }} input
+ * @returns {Promise<void>}
+ */
+async function runChipPresetToggle(ws, req, input) {
+  const { id, chip, expected_revision, workspace_key } = input;
+  const cwd = workspace_key || undefined;
+  const snapshot = coordinator().snapshot();
+  if (expected_revision !== snapshot.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          applied: false,
+          conflict: true,
+          revision: snapshot.revision,
+          presets: snapshot.presets,
+          chip_bindings: snapshot.chip_bindings
+        })
+      )
+    );
+    return;
+  }
+  const preset_id = snapshot.chip_bindings[chip];
+  if (!preset_id) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'chip_unbound',
+          'No implementation preset is bound to this chip'
+        )
+      )
+    );
+    return;
+  }
+
+  let current;
+  try {
+    current = await runBdJsonProjectedInWorkspace(
+      ws,
+      'show',
+      ['show', id, '--json'],
+      { expected_id: id, ...(cwd ? { cwd } : {}) }
+    );
+  } catch (err) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_read_failed',
+          err instanceof Error ? err.message : String(err)
+        )
+      )
+    );
+    return;
+  }
+  if (current.ok !== true) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bd_read_failed', current.error.message))
+    );
+    return;
+  }
+  const metadata = /** @type {Record<string, unknown>} */ (
+    current.data?.metadata && typeof current.data.metadata === 'object'
+      ? current.data.metadata
+      : {}
+  );
+  const route = metadata.route;
+  if (route === 'quick_fix') {
+    // Nothing is written: a chip never owns a quick_fix issue's pins, and its
+    // own profile's preset is applied from the issue detail editor instead.
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'preset_route_mismatch',
+          'A chip preset does not apply to a quick_fix issue'
+        )
+      )
+    );
+    return;
+  }
+
+  const restoring =
+    metadata[CHIP_PRESET_SOURCE_KEY] === chip &&
+    metadata[APPLIED_EXEC_PRESET_KEY] === preset_id;
+
+  /** @type {string[]} */
+  let args;
+  let restore_fallback = false;
+  if (restoring) {
+    const raw = metadata[CHIP_PRESET_RESTORE_KEY];
+    /** @type {Record<string, string>|null} */
+    let restore_point = null;
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          restore_point = /** @type {Record<string, string>} */ (parsed);
+        }
+      } catch {
+        // A broken keepsake is not a reason to refuse the click.
+      }
+    }
+    restore_fallback = restore_point === null;
+    args = buildChipRestoreArgs(id, restore_point);
+  } else {
+    const resolved = resolvePresetForApply(
+      ws,
+      req,
+      preset_id,
+      expected_revision
+    );
+    if (!resolved.ok) {
+      return;
+    }
+    const projected = presetSettingsForIssue(resolved.preset, route);
+    if (!projected.ok) {
+      ws.send(
+        JSON.stringify(
+          projected.reason === 'preset_route_mismatch'
+            ? makeError(
+                req,
+                'preset_route_mismatch',
+                'Implementation preset profile does not match the issue route'
+              )
+            : makeError(
+                req,
+                'impl_preset_incompatible',
+                `Implementation preset value is incompatible: ${projected.reason}`
+              )
+        )
+      );
+      return;
+    }
+    args = buildApplyImplPresetArgs(
+      id,
+      projected.settings,
+      resolved.preset.id,
+      projected.replaced_keys
+    );
+    args.push('--set-metadata', `${CHIP_PRESET_SOURCE_KEY}=${chip}`);
+    // Written on the FIRST chip click only: the last click wins, but what a
+    // restore returns to is always the state before the first (design §4.2).
+    if (typeof metadata[CHIP_PRESET_RESTORE_KEY] !== 'string') {
+      args.push(
+        '--set-metadata',
+        `${CHIP_PRESET_RESTORE_KEY}=${JSON.stringify(restorePointOf(metadata))}`
+      );
+    }
+  }
+
+  let updated;
+  try {
+    updated = await runBdInWorkspace(ws, args, cwd ? { cwd } : undefined);
+  } catch (err) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_update_failed',
+          err instanceof Error ? err.message : String(err)
+        )
+      )
+    );
+    return;
+  }
+  if (updated.code !== 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bd_update_failed', updated.stderr || 'bd update failed')
+      )
+    );
+    return;
+  }
+
+  let shown;
+  try {
+    shown = await runBdJsonProjectedInWorkspace(
+      ws,
+      'show',
+      ['show', id, '--json'],
+      { expected_id: id, ...(cwd ? { cwd } : {}) }
+    );
+  } catch (err) {
+    triggerMutationRefreshOnce(ws);
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          err instanceof Error ? err.message : String(err),
+          readbackFailureDetail('bd_readback_threw')
+        )
+      )
+    );
+    return;
+  }
+  triggerMutationRefreshOnce(ws);
+  if (shown.ok !== true) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
+      )
+    );
+    return;
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        applied: restoring ? 'restored' : 'applied',
+        conflict: false,
+        revision: snapshot.revision,
+        issue: shown.data,
+        ...(restore_fallback ? { restore_fallback: true } : {})
+      })
+    )
+  );
+}
+
+/**
+ * Apply the chip's bound preset to one issue, or restore the pins that stood
+ * before the first chip click. The transition is serialized per issue.
+ *
+ * @param {WebSocket} ws - Socket.
+ * @param {RequestEnvelope} req - Request.
+ * @returns {Promise<void>}
+ */
+export async function handleChipPresetToggle(ws, req) {
+  const { id, chip, expected_revision } = /** @type {any} */ (
+    req.payload || {}
+  );
+  if (
+    typeof id !== 'string' ||
+    id.length === 0 ||
+    !CHIP_BINDING_KEYS.includes(chip) ||
+    !Number.isInteger(expected_revision) ||
+    expected_revision < 0
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { id, chip, expected_revision }'
+        )
+      )
+    );
+    return;
+  }
+  // The monitor tab's cards belong to repos this connection is not bound to,
+  // so unlike `apply-impl-preset` this op reads `root_dir` for real.
+  const workspace_key = targetWorkspaceOf(ws, req.payload);
+  if (workspace_key === null) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload.root_dir must be an absolute path in the available workspace list'
+        )
+      )
+    );
+    return;
+  }
+
+  const chain_key = `${workspace_key}\u0000${id}`;
+  const previous = toggle_chains.get(chain_key) || Promise.resolve();
+  const current = previous.then(() =>
+    runChipPresetToggle(ws, req, {
+      id,
+      chip,
+      expected_revision,
+      workspace_key
+    }).catch((err) => {
+      log('chip preset toggle failed: %o', err);
+      ws.send(
+        JSON.stringify(
+          makeError(
+            req,
+            'bd_update_failed',
+            err instanceof Error ? err.message : String(err)
+          )
+        )
+      );
+    })
+  );
+  toggle_chains.set(chain_key, current);
+  await current;
+  if (toggle_chains.get(chain_key) === current) {
+    toggle_chains.delete(chain_key);
+  }
+}
+
 /** @param {WebSocket} ws */
 export function detachImplPresets(ws) {
   for (const subscriber of SUBSCRIBERS) {
@@ -838,5 +1318,6 @@ export function detachImplPresets(ws) {
 /** Reset global channel state and re-resolve the XDG path for tests. */
 export function __resetImplPresetsForTest() {
   SUBSCRIBERS.clear();
+  toggle_chains.clear();
   __resetWorkerRuntimeForTest();
 }

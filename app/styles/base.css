@@ -116,6 +116,48 @@ body {
   color: var(--chip-ft);
   border-color: var(--border-ft);
 }
+/* 바인딩된 판정 칩 (UI-wg68 §5.1): 적용·어긋남은 채운 모양(배경 반전)이고
+   미적용은 지금 모양 그대로다. 새 색 토큰은 만들지 않는다 — 칩이 이미 쓰는
+   색을 배경으로 옮길 뿐이다. 상태를 모르는 동안에는 `data-state`가 비어 있어
+   어떤 규칙도 걸리지 않는다. 선택자가 `.ctl-chip--label`을 요구하지 않는 이유는
+   이슈 상세 헤더의 칩이 그 클래스를 쓰지 않기 때문이다 — 요구하면 같은 판정이
+   한 표면에서만 채워진다. */
+.judgement-chip--bound {
+  cursor: pointer;
+}
+.judgement-chip--bound[data-state='applied'],
+.judgement-chip--bound[data-state='diverged'] {
+  background: var(--chip-label);
+  color: var(--bg-app);
+}
+/* `복잡`은 카드에서도 상세 헤더에서도 강조 톤을 빌려 쓰므로 채운 모양의 색도
+   그 톤이다 — 두 표면이 같은 판정을 같은 색으로 읽는다. */
+.worker-card__complex.judgement-chip--bound[data-state='applied'],
+.worker-card__complex.judgement-chip--bound[data-state='diverged'],
+.detail-summary__chip--complex.judgement-chip--bound[data-state='applied'],
+.detail-summary__chip--complex.judgement-chip--bound[data-state='diverged'] {
+  background: var(--chip-ft);
+  color: var(--bg-app);
+}
+.judgement-chip--bound[aria-busy='true'] {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* `칩` 탭의 행 (UI-wg68 §6): 라벨 하나와 select 하나짜리 줄이다. */
+.settings-chips__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+.settings-chips__label {
+  min-width: 6rem;
+}
+.settings-chips__error {
+  color: var(--chip-alert, inherit);
+}
+
 .ctl-chip--from {
   color: var(--chip-from);
   border-color: var(--border-from);

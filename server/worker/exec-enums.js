@@ -223,6 +223,26 @@ export const BEAD_PIN_KEYS = [...ORCHESTRATION_KEYS, ...BEAD_APPLY_KEYS];
  */
 export const APPLIED_EXEC_PRESET_KEY = 'applied_exec_preset';
 
+/**
+ * The judgement chips a server-global preset binding may be hung on
+ * (design UI-wg68 §3.1). The word `slot` is avoided on purpose: the queue
+ * already owns it for parallel lanes.
+ */
+export const CHIP_BINDING_KEYS = ['complex', 'frontend', 'backend'];
+
+/**
+ * Bead metadata key naming WHICH chip set the current pins. Like
+ * {@link APPLIED_EXEC_PRESET_KEY} it is outside `BEAD_PIN_KEYS` and outside
+ * every profile's preset key set (design UI-wg68 §4.6).
+ */
+export const CHIP_PRESET_SOURCE_KEY = 'chip_preset_source';
+
+/**
+ * Bead metadata key holding the JSON object of the pins that stood BEFORE the
+ * first chip click, so a second click can put them back (design UI-wg68 §4.3).
+ */
+export const CHIP_PRESET_RESTORE_KEY = 'chip_preset_restore';
+
 /** Route-scoped queue keys used only for quick_fix dispatches. */
 export const QUICK_FIX_ORCHESTRATION_KEYS = [
   'quick_fix_orchestration_model',

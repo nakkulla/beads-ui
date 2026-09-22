@@ -5,6 +5,7 @@ import {
   latestImplementationAttempts
 } from '../../utils/active-attempts.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
+import { createChipPresetToggle } from '../../utils/chip-preset-binding.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import {
@@ -1216,6 +1217,42 @@ export function createDetailPanel(mount_element, options) {
   function presetIsIncompatible(preset) {
     return preset?.compatible === false;
   }
+
+  /**
+   * The preset context this issue's 판정 칩 reads (UI-wg68 §5.1). 상세는 언제나
+   * 연결된 워크스페이스의 이슈이므로 카탈로그도 그 하나다.
+   *
+   * @returns {import('../../utils/chip-preset-binding.js').ChipPresetContext|null}
+   */
+  function chipPresetContext() {
+    const state = execPresetStore ? execPresetStore.get() : null;
+    if (!state || typeof state.revision !== 'number') {
+      return null;
+    }
+    return {
+      bindings: state.chip_bindings,
+      presets: Array.isArray(state.presets) ? state.presets : [],
+      revision: state.revision,
+      catalogOf: () => runnerCatalog(),
+      isBusy: (bead_id, chip) => chip_preset_toggle.isBusy(bead_id, chip)
+    };
+  }
+
+  /**
+   * 상세 헤더의 바인딩된 칩 클릭 (§5.3). 연결된 워크스페이스의 이슈이므로
+   * `root_dir`을 싣지 않는다 — 서버가 연결 워크스페이스를 쓴다.
+   */
+  const chip_preset_toggle = createChipPresetToggle({
+    transport: (/** @type {any} */ type, /** @type {any} */ payload) =>
+      transport ? transport(type, payload) : Promise.resolve(null),
+    store: {
+      get: () => (execPresetStore ? execPresetStore.get() : null),
+      set: (/** @type {any} */ next) => execPresetStore?.set(next)
+    },
+    onChange: () => doRender(),
+    toast: (/** @type {string} */ message, /** @type {any} */ kind) =>
+      showToast(message, kind, 2600)
+  });
 
   /** @param {any} res */
   function adoptExecPresets(res) {
@@ -3070,7 +3107,12 @@ export function createDetailPanel(mount_element, options) {
             onChipToggle: (chip_key) =>
               chip_popover.toggle({ bead_id: id, chip_key }),
             isChipOpen: (chip_key) =>
-              chip_popover.isOpen({ bead_id: id, chip_key })
+              chip_popover.isOpen({ bead_id: id, chip_key }),
+            // 바인딩된 칩은 카드와 같은 op를 부른다 (UI-wg68 §5.3).
+            chipPresets: chipPresetContext(),
+            onChipPresetToggle: (chip_key) => {
+              void chip_preset_toggle.toggle(id, chip_key);
+            }
           })}
           ${effectiveSettingsCardTemplate(
             {

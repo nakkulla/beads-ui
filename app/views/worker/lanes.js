@@ -14,6 +14,12 @@
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
 import { discardOperationActive } from '../../../server/worker/discard-phase.js';
+import {
+  AREA_LABELS,
+  areaLabels,
+  areaTooltip
+} from '../../utils/area-judgement.js';
+import { chipPresetBinding } from '../../utils/chip-preset-binding.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import {
   COMPLEX_CHIP_LABEL,
@@ -1236,9 +1242,9 @@ export function creationSourceChipsTemplate(item, options = {}) {
 
 /**
  * `복잡` chip (UI-7nhi §3): the workflow contract judged this bead complex,
- * carried by label `complex` + metadata `complex_reason`. 클릭은 어디서나 사유
- * 팝업이고, 적용은 실행 설정 편집기에서 사용자가 수동으로 한다 (UI-8x90 §4.5)
- * — 카드 위의 칩은 상태를 쓰지 않는다.
+ * carried by label `complex` + metadata `complex_reason`. 바인딩이 있고 이슈
+ * route가 `quick_fix`가 아니면 클릭이 그 프리셋을 적용·복원하고 칩이 `data-state`를
+ * 얻는다 (UI-wg68 §5). 그 밖에는 UI-8x90 §4.5 그대로 사유 팝업이다.
  *
  * One chip, never a model or runtime name: the judgement's WHY lives in the
  * tooltip, which every surface shares so one judgement never reads two ways.
@@ -1247,21 +1253,149 @@ export function creationSourceChipsTemplate(item, options = {}) {
  * `+`. Empty or absent means no judgement and no chip (fail-quiet).
  * @param {boolean} [open] - 사유 팝업이 지금 이 카드에서 이 칩 아래에 펼쳐져
  * 있는지. `aria-expanded`가 되는 값이다.
+ * @param {MiniItem|null} [item] - 바인딩 판정의 재료를 실은 행 (`null`이면 팝업
+ * 칩 그대로다).
+ * @param {import('../../utils/chip-preset-binding.js').ChipPresetContext|null} [ctx]
+ * - 프리셋 스냅샷 맥락. 없으면 상태도 클릭 의미도 바뀌지 않는다 (fail-quiet).
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function complexChipTemplate(reason, open = false) {
+export function complexChipTemplate(
+  reason,
+  open = false,
+  item = null,
+  ctx = null
+) {
   if (typeof reason !== 'string' || reason.length === 0) {
     return '';
   }
+  return judgementChipTemplate({
+    chip_key: 'complex',
+    label: COMPLEX_CHIP_LABEL,
+    title: complexTooltip(reason),
+    extra_class: 'worker-card__complex',
+    open,
+    item,
+    ctx
+  });
+}
+
+/**
+ * The preset-snapshot context every judgement chip reads (UI-wg68 §5.1).
+ *
+ * It is module state rather than a template argument because the bindings are
+ * SERVER-GLOBAL: `복잡`·`frontend`·`backend` sit on candidate cards, waiting
+ * rows, running tiles and pane bodies alike, and threading one identical
+ * server-global map through every one of those call sites would put the same
+ * value in a dozen signatures. Each tab sets it before it renders; the only
+ * per-tab parts are `catalogOf` and `isBusy`.
+ *
+ * @type {import('../../utils/chip-preset-binding.js').ChipPresetContext|null}
+ */
+let chip_preset_ctx = null;
+
+/**
+ * Install the render-scoped preset context. `null` restores the pre-binding
+ * behaviour — every judgement chip is a 사유 팝업 (fail-quiet).
+ *
+ * @param {import('../../utils/chip-preset-binding.js').ChipPresetContext|null} ctx
+ */
+export function setChipPresetContext(ctx) {
+  chip_preset_ctx = ctx || null;
+}
+
+/**
+ * One 판정 칩 — 바인딩이 있으면 프리셋을 적용·복원하는 버튼, 없으면 지금까지의
+ * 사유 팝업 버튼 (UI-wg68 §5.2). 두 모양이 한 함수에 있는 이유는 같은 칩이
+ * 이슈마다 다른 의미를 갖기 때문이다: `route=quick_fix` 이슈나 바인딩 없는 칩은
+ * 언제나 팝업이다.
+ *
+ * @param {{ chip_key: string, label: string, title: string, extra_class: string, open: boolean, item: MiniItem|null, ctx: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} input
+ * @returns {import('lit-html').TemplateResult}
+ */
+function judgementChipTemplate(input) {
+  const { chip_key, label, title, extra_class, open, item } = input;
+  const ctx = input.ctx || chip_preset_ctx;
+  const binding = item
+    ? chipPresetBinding(
+        chip_key,
+        item.chip_metadata,
+        routeOf(item),
+        ctx,
+        item.id,
+        item.root_dir || ''
+      )
+    : null;
+  if (!binding) {
+    return html`<button
+      type="button"
+      class="ctl-chip ctl-chip--label judgement-chip ${extra_class}"
+      data-chip-key=${chip_key}
+      aria-expanded=${open ? 'true' : 'false'}
+      title=${title}
+    >
+      ${label}
+    </button>`;
+  }
   return html`<button
     type="button"
-    class="ctl-chip ctl-chip--label judgement-chip worker-card__complex"
-    data-chip-key="complex"
-    aria-expanded=${open ? 'true' : 'false'}
-    title=${complexTooltip(reason)}
+    class="ctl-chip ctl-chip--label judgement-chip judgement-chip--bound ${extra_class}"
+    data-chip-key=${chip_key}
+    data-bead-id=${item ? item.id : ''}
+    data-root-dir=${item && item.root_dir ? item.root_dir : ''}
+    data-state=${binding.state}
+    aria-busy=${binding.busy ? 'true' : 'false'}
+    title=${`${title}${binding.title_suffix}`}
   >
-    ${COMPLEX_CHIP_LABEL}
+    ${label}
   </button>`;
+}
+
+/**
+ * The route this row observed, the only material deciding whether a chip click
+ * is refused as a quick fix issue (§5.2). Candidate rows carry `route`; overlay
+ * rows carry it inside `workflow` (false when neither is known).
+ *
+ * @param {MiniItem} item
+ * @returns {string}
+ */
+function routeOf(item) {
+  if (typeof item.route === 'string' && item.route.length > 0) {
+    return item.route;
+  }
+  const workflow = /** @type {any} */ (item.workflow);
+  const route = workflow && workflow.route;
+  return typeof route === 'string' ? route : '';
+}
+
+/**
+ * `frontend`·`backend` 판정 칩 (UI-wg68 §5.4). 어휘는 dotfiles 계약이 소유하고
+ * 칩 문구는 라벨 그대로다 — 사유 키가 없으므로 팝업도 없고, 바인딩이 있으면
+ * `복잡`과 같은 클릭을 한다. 자리도 `복잡` 바로 뒤다.
+ *
+ * @param {MiniItem|null} item
+ * @param {import('../../utils/chip-preset-binding.js').ChipPresetContext|null} [ctx]
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function areaChipsTemplate(item, ctx = null) {
+  if (!item) {
+    return '';
+  }
+  const labels = areaLabels(item.labels);
+  if (labels.length === 0) {
+    return '';
+  }
+  const chip_ctx = ctx || chip_preset_ctx;
+  return html`${labels.map((label) =>
+    judgementChipTemplate({
+      chip_key: label,
+      label,
+      title: areaTooltip(label),
+      extra_class: `worker-card__area worker-card__area--${label}`,
+      open: chipOpen(item, label),
+      item,
+      ctx: chip_ctx
+    })
+  )}`;
 }
 
 /**
@@ -1559,6 +1693,14 @@ export function priorityBadgeTemplate(priority) {
  * 복잡 판정 (UI-7nhi §3): 라벨 `complex`와 metadata `complex_reason`이 함께
  * 성립할 때의 신호 문자열이다. 표시 전용이고 자격·drag·적재 어디에도 들어가지
  * 않는다. 생략·`''`는 판정 없음이다.
+ * @property {string} [route] - 이 bead의 관측된 `metadata.route`. 칩 클릭이
+ * quick fix 이슈에서 거부되는지의 유일한 재료다 (UI-wg68 §5.2).
+ * @property {string[]} [labels] - 이 bead의 라벨. `frontend`·`backend` 판정 칩의
+ * 재료이고, 계약 어휘 밖 라벨은 그리지 않는다 (UI-wg68 §5.4).
+ * @property {Record<string, any>} [chip_metadata] - 칩 바인딩 판정의 재료
+ * (UI-wg68 §5.1): 이 bead의 metadata 그대로다. `applied_exec_preset`·
+ * `chip_preset_source`·17핀을 한 객체에서 읽어야 `data-state`가 선다. 오버레이가
+ * 이 bead의 metadata를 모르면 필드도 없고, 그때 바인딩된 칩은 상태 없이 그려진다.
  * @property {{ codes: string[] }} [receipt_badge] - 실행 영수증 회계 잔여
  * (UI-h6t1 §4.3): dotfiles 계약이 `badge` 등급으로 확정한 코드들이다. 머지
  * 판정을 바꾸지 않으므로 슬롯 5 판정 칩 하나로만 선다. 코드가 없으면 필드도
@@ -2989,7 +3131,7 @@ function chipsWithBlockerStatus(chips, wait_reasons) {
  * 않으면 렌더가 그대로다.
  *
  * @param {MiniItem} item
- * @param {{ actions?: import('lit-html').TemplateResult }} [options]
+ * @param {{ actions?: import('lit-html').TemplateResult, chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function miniRow(item, options = {}) {
@@ -3281,8 +3423,12 @@ export function miniRow(item, options = {}) {
   // (빈 div는 행에 여백만 남긴다).
   const complex_el = complexChipTemplate(
     item.complex_reason,
-    chipOpen(item, 'complex')
+    chipOpen(item, 'complex'),
+    item,
+    options.chipPresets || null
   );
+  // `frontend`·`backend`는 `복잡` 바로 뒤다 (UI-wg68 §5.4).
+  const area_el = areaChipsTemplate(item, options.chipPresets || null);
   // 영수증 회계 잔여도 슬롯 5다 (UI-h6t1 §4.1): 같은 줄의 `exec_receipt`·실패
   // 로그 경로와 짝이라 "그 실행이 어디서 무엇으로 일어났고 그 기록이 얼마나
   // 성립하는지"를 한 줄이 답한다.
@@ -3307,12 +3453,13 @@ export function miniRow(item, options = {}) {
     from_el ||
     has_exec_chips ||
     complex_el ||
+    area_el ||
     receipt_badge_el ||
     usage_el ||
     log_path_el ||
     external.chips
       ? html`<div class="worker-chips">
-          ${repo_el}${route_el}${from_el}${exec_chips_el}${complex_el}${receipt_badge_el}${usage_el}${log_path_el}${external.chips}${gate_open
+          ${repo_el}${route_el}${from_el}${exec_chips_el}${complex_el}${area_el}${receipt_badge_el}${usage_el}${log_path_el}${external.chips}${gate_open
             ? ''
             : judgementPopover(item)}
         </div>`
@@ -3618,8 +3765,21 @@ const SESSION_PREFERRED_TOOLTIP = {
  * The 판정 칩 keys (UI-8x90 §4.5, UI-svh6 §4.3). `data-chip-key` carries them
  * into the DOM so one click handler per tab covers every surface.
  *
- * @typedef {'complex'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'|'readiness'} JudgementChipKey
+ * @typedef {'complex'|'frontend'|'backend'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'|'readiness'} JudgementChipKey
  */
+
+/**
+ * The last guidance line of a chip that still opens a 팝업 (UI-wg68 §5.2).
+ * quick fix 이슈에서는 바인딩이 있어도 칩 클릭이 없으므로 다른 문장을 읽는다.
+ *
+ * @param {MiniItem} item
+ * @returns {string}
+ */
+function chipBindingGuidance(item) {
+  return routeOf(item) === 'quick_fix'
+    ? 'quick fix 이슈에는 칩 적용이 없습니다 — 적용은 이슈 상세의 quick fix 프리셋에서'
+    : '칩에 프리셋을 매려면 모니터 탭 ⚙ → 칩';
+}
 
 /**
  * One 판정 칩's 사유 팝업 내용 (UI-8x90 §4.5 표). 두 탭과 이슈 상세가 같은
@@ -3638,10 +3798,19 @@ export function judgementPopoverContent(item, chip_key) {
     }
     return {
       title: '복잡한 작업으로 판정됨',
-      lines: [
-        ...complexReasonSentences(reason),
-        '적용은 이슈 상세의 실행 설정 편집기에서'
-      ]
+      lines: [...complexReasonSentences(reason), chipBindingGuidance(item)]
+    };
+  }
+  if (AREA_LABELS.includes(chip_key)) {
+    // 영역 칩에는 사유 키가 없다 — 라벨 자체가 판정이다 (UI-wg68 §5.4). 그래서
+    // 팝업의 제목이 그 판정의 한 줄이고, 본문은 클릭이 무엇을 하는지(또는 왜
+    // 아무것도 하지 않는지)만 남는다. 라벨이 없는 bead에는 팝업도 없다.
+    if (!areaLabels(item.labels).includes(chip_key)) {
+      return null;
+    }
+    return {
+      title: areaTooltip(chip_key),
+      lines: [chipBindingGuidance(item)]
     };
   }
   if (chip_key === 'session_preferred') {
@@ -3745,6 +3914,8 @@ export function judgementPopoverContent(item, chip_key) {
 export const JUDGEMENT_CHIP_KEYS = [
   'gate',
   'complex',
+  'frontend',
+  'backend',
   'receipt',
   'session_preferred',
   'ineligible',
@@ -3827,7 +3998,7 @@ export { AWAITING_USER_REASON_PREFIX } from '../../utils/awaiting-user-reason.js
  *
  * @param {MiniItem} item
  * @param {PlaceMenu|null} [place_menu]
- * @param {{ onOpenDoc?: import('../stepper.js').OpenDocHandler, variant?: 'deferred' }} [options]
+ * @param {{ onOpenDoc?: import('../stepper.js').OpenDocHandler, variant?: 'deferred', chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function candidateCard(item, place_menu = null, options = {}) {
@@ -3963,7 +4134,12 @@ export function candidateCard(item, place_menu = null, options = {}) {
             </button>`
           : ''}${complexChipTemplate(
         item.complex_reason,
-        chipOpen(item, 'complex')
+        chipOpen(item, 'complex'),
+        item,
+        options.chipPresets || null
+      )}${areaChipsTemplate(
+        item,
+        options.chipPresets || null
       )}${quickFixReviewChipTemplate(workflow, chipOpen(item, 'qfr'))}
       ${spec_after_blocker_open || readiness_open
         ? ''

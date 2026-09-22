@@ -570,6 +570,9 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {string} [impl_dispatch] - impl_dispatch, under the same
  * display-only rule. It is a user-write-only key the session may not write, and
  * the card states its value so a session stops looking for it.
+ * @property {string|null} [applied_exec_preset] - The preset id this issue's
+ * pins came from, or null. Read by `dispatchPreset` so an attempt is recorded
+ * under the preset the ISSUE carried rather than the workspace record.
  * @property {string|null} [workflow_mode] - Current workflow_mode metadata.
  * @property {string|null} [workflow_mode_source] - Current workflow_mode_source
  * metadata, read from the same issue observation as `workflow_mode`.

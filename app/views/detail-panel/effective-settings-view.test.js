@@ -102,7 +102,7 @@ describe('detail header 복잡 chip (UI-8x90 §5.1, UI-7nhi §4)', () => {
       '원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다'
     );
     expect(popover.textContent).toContain(
-      '적용은 이슈 상세의 실행 설정 편집기에서'
+      '칩에 프리셋을 매려면 모니터 탭 ⚙ → 칩'
     );
   });
 
@@ -782,5 +782,131 @@ describe('effective-settings expanded group headings (UI-xq3h §4)', () => {
         (head) => head.textContent
       )
     ).toEqual(['워크플로우', '오케스트레이션', '워커 구현', '리뷰']);
+  });
+});
+
+describe('detail header 바인딩 칩 (UI-wg68 §5)', () => {
+  const PRESET = {
+    id: 'p1',
+    name: '오퍼스 → 클로드',
+    applies_to: 'general',
+    settings: { impl_runtime: 'claude' }
+  };
+  const CHIP_PRESETS = {
+    bindings: { complex: 'p1', frontend: null, backend: null },
+    presets: [PRESET],
+    revision: 3
+  };
+
+  /**
+   * @param {Record<string, unknown>} metadata
+   * @param {any} [handlers]
+   * @param {string[]} [labels]
+   * @returns {HTMLElement}
+   */
+  function renderBound(metadata, handlers = {}, labels = ['complex']) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      summaryHeaderTemplate(
+        { id: 'UI-1', status: 'open', metadata, labels },
+        /** @type {any} */ ({ chipPresets: CHIP_PRESETS, ...handlers })
+      ),
+      mount
+    );
+    return mount;
+  }
+
+  test('marks the bound chip applied when its preset stands', () => {
+    const mount = renderBound({
+      ...COMPLEX_META,
+      chip_preset_source: 'complex',
+      applied_exec_preset: 'p1',
+      impl_runtime: 'claude'
+    });
+
+    const chip = /** @type {HTMLElement} */ (
+      mount.querySelector('.judgement-chip--bound')
+    );
+
+    expect(chip.dataset.state).toBe('applied');
+  });
+
+  test('calls the preset toggle instead of the popup on click', () => {
+    const onChipPresetToggle = vi.fn();
+    const onChipToggle = vi.fn();
+    const mount = renderBound(COMPLEX_META, {
+      onChipPresetToggle,
+      onChipToggle
+    });
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.judgement-chip--bound')
+    ).click();
+
+    expect(onChipPresetToggle).toHaveBeenCalledWith('complex');
+    expect(onChipToggle).not.toHaveBeenCalled();
+  });
+
+  test('keeps a quick fix issue on the popup chip', () => {
+    const onChipToggle = vi.fn();
+    const mount = renderBound(
+      { ...COMPLEX_META, route: 'quick_fix' },
+      { onChipToggle }
+    );
+
+    expect(mount.querySelector('.judgement-chip--bound')).toBeNull();
+  });
+
+  test('opens the area chip popup from the detail header', () => {
+    const mount = renderBound(
+      { route: 'spec_backed' },
+      { isChipOpen: (/** @type {string} */ key) => key === 'frontend' },
+      ['frontend']
+    );
+
+    const popover = /** @type {HTMLElement} */ (
+      mount.querySelector('.chip-popover')
+    );
+
+    expect(popover.textContent).toContain(
+      'frontend: 렌더된 화면으로 acceptance를 판정하는 작업'
+    );
+  });
+
+  test('asks the view to toggle an unbound area chip popup on click', () => {
+    const onChipToggle = vi.fn();
+    const mount = renderBound({ route: 'quick_fix' }, { onChipToggle }, [
+      'frontend'
+    ]);
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-chip-key="frontend"]')
+    ).click();
+
+    expect(onChipToggle).toHaveBeenCalledWith('frontend');
+  });
+
+  test('marks the open area chip with aria-expanded', () => {
+    const mount = renderBound(
+      { route: 'spec_backed' },
+      { isChipOpen: (/** @type {string} */ key) => key === 'frontend' },
+      ['frontend']
+    );
+
+    expect(
+      mount
+        .querySelector('[data-chip-key="frontend"]')
+        ?.getAttribute('aria-expanded')
+    ).toBe('true');
+  });
+
+  test('draws the area chips beside 복잡', () => {
+    const mount = renderBound(COMPLEX_META, {}, ['complex', 'frontend']);
+
+    const keys = Array.from(mount.querySelectorAll('.judgement-chip')).map(
+      (chip) => chip.getAttribute('data-chip-key')
+    );
+
+    expect(keys).toEqual(['complex', 'frontend']);
   });
 });

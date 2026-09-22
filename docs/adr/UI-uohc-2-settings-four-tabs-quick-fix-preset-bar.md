@@ -1,7 +1,8 @@
 ---
 id: UI-uohc-2
 title: 설정 창은 워커·quick fix·세션·계정 네 탭이고 quick fix 탭이 자기 계열의 프리셋 바와 8행을 갖는다 — 세 탭과 25행 일괄 편집만 UI-e1ta에서 뒤집고 관측 네 상태·순차 op·레포 카드의 같은 다이얼로그는 승계한다
-status: accepted
+status: superseded
+superseded_by: UI-wg68-2
 date: 2026-09-22
 summary: "설정 창은 워커·quick fix·세션·계정 네 탭이고 quick fix 탭이 자기 계열의 프리셋 바와 8행을 가지며 프리셋 선택은 그 탭의 행만 편집됨으로 바꾼다 — 세 탭과 25행 일괄 편집만 UI-e1ta에서 뒤집고 관측 네 상태·순차 op·레포 카드의 같은 다이얼로그는 승계한다"
 supersedes: [UI-e1ta]

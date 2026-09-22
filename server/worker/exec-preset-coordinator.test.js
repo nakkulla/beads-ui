@@ -1262,3 +1262,213 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     expect(copies).toHaveLength(0);
   });
 });
+
+describe('exec-preset-coordinator chip bindings (design §3, §7)', () => {
+  test('reads three unbound chips from a file with no bindings field', () => {
+    const fixture = createFixture({
+      preset: { revision: 1, presets: [] }
+    });
+
+    const snapshot = fixture.coordinator.snapshot();
+
+    expect(snapshot.chip_bindings).toEqual({
+      complex: null,
+      frontend: null,
+      backend: null
+    });
+  });
+
+  test('projects a binding onto a hidden legacy preset as unbound', () => {
+    const fixture = createFixture({
+      preset: {
+        revision: 1,
+        presets: [
+          {
+            id: 'legacy-1',
+            name: '옛 프리셋',
+            applies_to: 'general',
+            settings: { quick_fix_impl_runtime: 'codex' },
+            origin: { kind: 'user' }
+          }
+        ],
+        chip_bindings: { complex: 'legacy-1', frontend: null, backend: null }
+      }
+    });
+
+    const snapshot = fixture.coordinator.snapshot();
+
+    expect(snapshot.presets).toEqual([]);
+    expect(snapshot.chip_bindings.complex).toBe(null);
+    expect(fixture.presetStore.snapshot().chip_bindings.complex).toBe(
+      'legacy-1'
+    );
+  });
+
+  test('binds a general preset and reports it in the annotated snapshot', () => {
+    const fixture = createFixture();
+    const created = fixture.coordinator.create({
+      expected_revision: 0,
+      name: '일반',
+      settings: { impl_runtime: 'codex' }
+    });
+
+    const result = /** @type {any} */ (
+      fixture.coordinator.bindChip({
+        expected_revision: 1,
+        chip: 'frontend',
+        preset_id: created.presets[0].id
+      })
+    );
+
+    expect(result.applied).toBe(true);
+    expect(result.chip_bindings.frontend).toBe(created.presets[0].id);
+  });
+
+  test('refuses to bind a quick_fix preset', () => {
+    const fixture = createFixture();
+    fixture.coordinator.create({
+      expected_revision: 0,
+      name: 'quick fix',
+      applies_to: /** @type {'quick_fix'} */ ('quick_fix'),
+      settings: { impl_runtime: 'claude' }
+    });
+    const quick_fix_id = fixture.coordinator.snapshot().presets[0].id;
+
+    const result = /** @type {any} */ (
+      fixture.coordinator.bindChip({
+        expected_revision: 1,
+        chip: 'complex',
+        preset_id: quick_fix_id
+      })
+    );
+
+    expect(result.applied).toBe(false);
+    expect(result.chip_bindings.complex).toBe(null);
+  });
+
+  test('clears a binding in the same mutation that deletes its preset', () => {
+    const fixture = createFixture();
+    const created = fixture.coordinator.create({
+      expected_revision: 0,
+      name: '일반',
+      settings: { impl_runtime: 'codex' }
+    });
+    const preset_id = created.presets[0].id;
+    fixture.coordinator.bindChip({
+      expected_revision: 1,
+      chip: 'backend',
+      preset_id
+    });
+
+    const result = /** @type {any} */ (
+      fixture.coordinator.delete({ expected_revision: 2, id: preset_id })
+    );
+
+    expect(result.applied).toBe(true);
+    expect(result.chip_bindings.backend).toBe(null);
+    expect(fixture.presetStore.snapshot().chip_bindings.backend).toBe(null);
+  });
+});
+
+describe('exec-preset-coordinator dispatch preset identity (design §7)', () => {
+  /** Two general presets with the FIRST recorded as the workspace's. */
+  function twoGeneralFixture() {
+    const fixture = createFixture();
+    fixture.coordinator.create({
+      expected_revision: 0,
+      name: '워크스페이스',
+      settings: { impl_runtime: 'codex' }
+    });
+    fixture.coordinator.create({
+      expected_revision: 1,
+      name: '칩',
+      settings: { impl_runtime: 'claude' }
+    });
+    fixture.coordinator.create({
+      expected_revision: 2,
+      name: 'quick fix',
+      applies_to: /** @type {'quick_fix'} */ ('quick_fix'),
+      settings: { impl_runtime: 'claude' }
+    });
+    const presets = fixture.coordinator.snapshot().presets;
+    const workspace_id = presets[0].id;
+    const chip_id = presets[1].id;
+    const quick_fix_id = presets[2].id;
+    fixture.queueStore.setOrchestrationDefaults(WORKSPACE, {
+      expected_revision: 0,
+      values: { orchestration_model: 'opus' },
+      applied_exec_preset: {
+        id: workspace_id,
+        name: '워크스페이스',
+        revision: 3,
+        applied_at: 10
+      }
+    });
+    return { ...fixture, workspace_id, chip_id, quick_fix_id };
+  }
+
+  test('records the preset the issue carries over the workspace record', () => {
+    const fixture = twoGeneralFixture();
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, {
+        route: 'spec_backed',
+        applied_exec_preset: fixture.chip_id,
+        impl_runtime: 'claude'
+      })
+    );
+
+    expect(resolved.exec_preset).toMatchObject({
+      id: fixture.chip_id,
+      name: '칩',
+      deviated_keys: []
+    });
+  });
+
+  test('keeps the workspace record when the issue preset is of another profile', () => {
+    const fixture = twoGeneralFixture();
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, {
+        route: 'spec_backed',
+        applied_exec_preset: fixture.quick_fix_id
+      })
+    );
+
+    expect(resolved.exec_preset).toMatchObject({ id: fixture.workspace_id });
+  });
+
+  test('keeps the workspace record when the issue names a deleted preset', () => {
+    const fixture = twoGeneralFixture();
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, {
+        route: 'spec_backed',
+        applied_exec_preset: 'gone'
+      })
+    );
+
+    expect(resolved.exec_preset).toMatchObject({ id: fixture.workspace_id });
+  });
+
+  test('records the issue preset even with no workspace record at all', () => {
+    const fixture = twoGeneralFixture();
+    fixture.queueStore.clearAppliedExecPreset(WORKSPACE, {
+      expected_revision: 1,
+      applies_to: 'general'
+    });
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, {
+        route: 'spec_backed',
+        applied_exec_preset: fixture.chip_id,
+        impl_runtime: 'codex'
+      })
+    );
+
+    expect(resolved.exec_preset).toMatchObject({
+      id: fixture.chip_id,
+      deviated_keys: ['impl_runtime']
+    });
+  });
+});

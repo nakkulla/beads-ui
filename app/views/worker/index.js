@@ -43,6 +43,7 @@ import {
 import { createListSelectors } from '../../data/list-selectors.js';
 import { isImplementationAttempt } from '../../utils/active-attempts.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
+import { createChipPresetToggle } from '../../utils/chip-preset-binding.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
@@ -99,6 +100,7 @@ import {
   queueRowOps,
   repoOpsStripTemplate,
   reviewSessionRowState,
+  setChipPresetContext,
   summaryChipsTemplate,
   tokenChipTemplate,
   waitBody
@@ -1711,7 +1713,7 @@ const WORKER_CLIENT_IDS = [
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void, onNewIssue?: () => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, execPresetStore?: any, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void, onNewIssue?: () => void }} [options]
  * @returns {{ load: () => void, pause: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -1771,6 +1773,7 @@ export function createWorkerView(mount_element, options = {}) {
     issueStores,
     queueStore,
     sessionLogStore,
+    execPresetStore,
     gotoIssue,
     getWorkspacePath,
     switchWorkspace,
@@ -4372,6 +4375,45 @@ export function createWorkerView(mount_element, options = {}) {
     }
   }
 
+  /**
+   * 바인딩된 판정 칩의 클릭 하나 (UI-wg68 §5.3). 서버가 적용과 복원을 고르므로
+   * 여기서는 CAS revision과 `root_dir`만 싣는다.
+   */
+  const chip_preset_toggle = createChipPresetToggle({
+    transport: (/** @type {any} */ type, /** @type {any} */ payload) =>
+      transport ? transport(type, payload) : Promise.resolve(null),
+    store: {
+      get: () => (execPresetStore ? execPresetStore.get() : null),
+      set: (/** @type {any} */ next) => execPresetStore?.set(next)
+    },
+    onChange: () => doRender(),
+    toast: (/** @type {string} */ message, /** @type {any} */ kind) =>
+      showToast(message, kind, 2600)
+  });
+
+  /**
+   * The preset context of every chip this tab draws (§5.1). 스냅샷이 없으면
+   * `null`이라 칩은 지금까지의 사유 팝업 그대로다 (fail-quiet).
+   *
+   * @param {LaneModel} m
+   * @returns {import('../../utils/chip-preset-binding.js').ChipPresetContext|null}
+   */
+  function chipPresetContext(m) {
+    const state = execPresetStore ? execPresetStore.get() : null;
+    if (!state || typeof state.revision !== 'number') {
+      return null;
+    }
+    const group = groupOf(m);
+    const catalog = /** @type {any} */ (group)?.runner_catalog || null;
+    return {
+      bindings: state.chip_bindings,
+      presets: Array.isArray(state.presets) ? state.presets : [],
+      revision: state.revision,
+      catalogOf: () => catalog,
+      isBusy: (bead_id, chip) => chip_preset_toggle.isBusy(bead_id, chip)
+    };
+  }
+
   function doRender() {
     if (mount_element.hidden) {
       // 숨긴 탭은 목록 재조합도 DOM 렌더도 표시용 grace tick도 하지 않는다
@@ -4380,6 +4422,9 @@ export function createWorkerView(mount_element, options = {}) {
       return;
     }
     const m = laneModel();
+    // 칩 맥락은 템플릿을 부르기 직전에 세운다 (§5.1): 두 탭이 같은 템플릿
+    // 모듈을 쓰므로 그리는 쪽이 자기 맥락을 소유한다.
+    setChipPresetContext(chipPresetContext(m));
     syncGraceTimer(m);
     refreshOverlapFacts(m);
     render(topTemplate(m), top_el);
@@ -4847,6 +4892,27 @@ export function createWorkerView(mount_element, options = {}) {
         source_chip.getAttribute('data-source-id') || '',
         source_chip.getAttribute('data-root-dir') || ''
       );
+      return;
+    }
+    // 바인딩된 판정 칩은 팝업 칩보다 **먼저** 잡는다 (UI-wg68 §5.3): 두 선택자가
+    // 같은 버튼에 걸리므로 순서가 곧 클릭 의미다. 멈추는 규칙은 UI-8x90과 같다.
+    const bound_chip = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.judgement-chip--bound')
+    );
+    if (bound_chip) {
+      const bound_bead_id = bound_chip.getAttribute('data-bead-id') || '';
+      const bound_key = bound_chip.getAttribute('data-chip-key') || '';
+      if (
+        bound_bead_id &&
+        bound_key &&
+        bound_chip.getAttribute('aria-busy') !== 'true'
+      ) {
+        void chip_preset_toggle.toggle(
+          bound_bead_id,
+          bound_key,
+          bound_chip.getAttribute('data-root-dir') || ''
+        );
+      }
       return;
     }
     // 판정 칩 (UI-8x90 §4.5): 카드 클릭(상세 열기)보다 먼저 잡고 거기서 멈춘다 —
@@ -5534,6 +5600,12 @@ export function createWorkerView(mount_element, options = {}) {
         doRender();
       })
     );
+  }
+  // 프리셋 스냅샷은 서버 전역이라 이슈·큐와 다른 채널로 도착한다 (UI-wg68 §3.1):
+  // 구독하지 않으면 첫 스냅샷도, 다른 창에서 바꾼 바인딩도 다음 이슈·큐 갱신까지
+  // 화면에 서지 않아 칩 모양과 클릭 의미가 낡은 채 남는다.
+  if (execPresetStore && typeof execPresetStore.subscribe === 'function') {
+    unsubscribers.push(execPresetStore.subscribe(() => doRender()));
   }
   if (queueStore) {
     unsubscribers.push(

@@ -20,7 +20,8 @@ describe('client exec-preset store', () => {
 
     expect(store.get()).toEqual({
       revision: 2,
-      presets: [{ id: 'p2', name: '둘째', settings: {} }]
+      presets: [{ id: 'p2', name: '둘째', settings: {} }],
+      chip_bindings: { complex: null, frontend: null, backend: null }
     });
     expect(listener).toHaveBeenCalledTimes(2);
   });
@@ -49,6 +50,42 @@ describe('client exec-preset store', () => {
 
     store.set(snapshot);
 
-    expect(store.get()).toEqual(snapshot);
+    expect(store.get()).toEqual({
+      ...snapshot,
+      chip_bindings: { complex: null, frontend: null, backend: null }
+    });
+  });
+
+  test('narrows chip bindings to the chip vocabulary', () => {
+    const store = createExecPresetStore();
+
+    store.set({
+      revision: 3,
+      presets: [],
+      chip_bindings: /** @type {any} */ ({
+        complex: 'p1',
+        frontend: '',
+        nonsense: 'p9'
+      })
+    });
+
+    expect(store.get()?.chip_bindings).toEqual({
+      complex: 'p1',
+      frontend: null,
+      backend: null
+    });
+  });
+
+  test('keeps the last bindings when a reply omits them', () => {
+    const store = createExecPresetStore();
+    store.set({
+      revision: 3,
+      presets: [],
+      chip_bindings: { complex: 'p1', frontend: null, backend: null }
+    });
+
+    store.set({ revision: 4, presets: [] });
+
+    expect(store.get()?.chip_bindings?.complex).toBe('p1');
   });
 });

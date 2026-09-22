@@ -14,6 +14,8 @@
  */
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
+import { areaLabels, areaTooltip } from '../../utils/area-judgement.js';
+import { chipPresetBinding } from '../../utils/chip-preset-binding.js';
 import {
   COMPLEX_CHIP_LABEL,
   complexReason,
@@ -712,16 +714,64 @@ function normalizeExecReceipt(value) {
 }
 
 /**
+ * One 판정 칩 of the issue detail header — 카드와 같은 판정, 같은 두 모양
+ * (UI-wg68 §5.2). 여기서는 클릭이 DOM 위임이 아니라 핸들러 직접 호출이라
+ * `data-*`는 상태 표시용이다.
+ *
+ * @param {{ chip_key: string, label: string, title: string, modifier: string, open: boolean, metadata: Record<string, any>, route: string|null, data: any, handlers: Record<string, any> }} input
+ * @returns {TemplateResult}
+ */
+function detailJudgementChip(input) {
+  const { chip_key, label, title, modifier, open, metadata, route, data } =
+    input;
+  const handlers = input.handlers;
+  const binding = chipPresetBinding(
+    chip_key,
+    metadata,
+    route,
+    handlers.chipPresets || null,
+    typeof data?.id === 'string' ? data.id : ''
+  );
+  if (!binding) {
+    return html`<button
+      type="button"
+      class="detail-summary__chip detail-summary__chip--${modifier} judgement-chip"
+      data-chip-key=${chip_key}
+      aria-expanded=${open ? 'true' : 'false'}
+      title=${title}
+      @click=${() => handlers.onChipToggle?.(chip_key)}
+    >
+      ${label}
+    </button>`;
+  }
+  return html`<button
+    type="button"
+    class="detail-summary__chip detail-summary__chip--${modifier} judgement-chip judgement-chip--bound"
+    data-chip-key=${chip_key}
+    data-bead-id=${typeof data?.id === 'string' ? data.id : ''}
+    data-state=${binding.state}
+    aria-busy=${binding.busy ? 'true' : 'false'}
+    title=${`${title}${binding.title_suffix}`}
+    @click=${() => {
+      if (!binding.busy) {
+        handlers.onChipPresetToggle?.(chip_key);
+      }
+    }}
+  >
+    ${label}
+  </button>`;
+}
+
+/**
  * The summary header: status, route, the gate stepper with receipt binding, the
  * PR link, the `exec_receipt` chip, and the 복잡 chip.
  *
- * Display-only, all of it. The 복잡 chip used to apply the whole recommendation
- * on one click; it is now the same 판정 칩 the lane cards draw, and clicking it
- * opens the 사유 팝업 (UI-8x90 §5.1). 적용은 아래 실행 설정 편집기가 소유한다 —
- * 이 헤더는 어떤 metadata도 쓰지 않는다.
+ * 판정 칩 `복잡`·`frontend`·`backend`는 카드와 같은 규칙이다 (UI-wg68 §5): 바인딩이
+ * 있고 이슈 route가 `quick_fix`가 아니면 클릭이 그 프리셋을 적용·복원하고, 그
+ * 밖에는 UI-8x90 §5.1 그대로 사유 팝업을 연다.
  *
  * @param {any} data - The bd issue payload.
- * @param {{ onChipToggle?: (chip_key: string) => void, isChipOpen?: (chip_key: string) => boolean }} [handlers]
+ * @param {{ onChipToggle?: (chip_key: string) => void, isChipOpen?: (chip_key: string) => boolean, onChipPresetToggle?: (chip_key: string) => void, chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} [handlers]
  * @returns {TemplateResult}
  */
 export function summaryHeaderTemplate(data, handlers = {}) {
@@ -761,12 +811,22 @@ export function summaryHeaderTemplate(data, handlers = {}) {
   const reason = complexReason(data?.labels, metadata);
   const complex_open =
     reason.length > 0 && handlers.isChipOpen?.('complex') === true;
-  // 카드와 같은 문장을 쓴다 (§4.5). `judgementPopoverContent`가 `complex_reason`
-  // 하나만 읽으므로 레인 항목 전체를 지어내지 않는다.
-  const complex_popover = complex_open
+  const area_labels = areaLabels(data?.labels);
+  // 카드와 같은 문장을 쓴다 (§4.5, UI-wg68 §5.2): `복잡`과 영역 칩 셋이 한 팝업
+  // 자리를 나눠 쓰므로 열린 칩 하나를 먼저 고르고 그 내용만 그린다.
+  // `judgementPopoverContent`가 읽는 필드만 지어 넘긴다 — 레인 항목 전체를
+  // 만들지 않는다.
+  const open_chip_key = complex_open
+    ? 'complex'
+    : area_labels.find((label) => handlers.isChipOpen?.(label) === true) || '';
+  const chip_popover = open_chip_key
     ? judgementPopoverContent(
-        /** @type {any} */ ({ complex_reason: reason }),
-        'complex'
+        /** @type {any} */ ({
+          complex_reason: reason,
+          route,
+          labels: data?.labels
+        }),
+        open_chip_key
       )
     : null;
   return html`<section class="detail-summary" data-seam="detail-summary">
@@ -815,19 +875,32 @@ export function summaryHeaderTemplate(data, handlers = {}) {
           >`
         : ''}
       ${reason.length > 0
-        ? html`<button
-            type="button"
-            class="detail-summary__chip detail-summary__chip--complex judgement-chip"
-            data-chip-key="complex"
-            aria-expanded=${complex_open ? 'true' : 'false'}
-            title=${complexTooltip(reason)}
-            @click=${() => handlers.onChipToggle?.('complex')}
-          >
-            ${COMPLEX_CHIP_LABEL}
-          </button>`
-        : ''}
+        ? detailJudgementChip({
+            chip_key: 'complex',
+            label: COMPLEX_CHIP_LABEL,
+            title: complexTooltip(reason),
+            modifier: 'complex',
+            open: complex_open,
+            metadata,
+            route,
+            data,
+            handlers
+          })
+        : ''}${area_labels.map((label) =>
+        detailJudgementChip({
+          chip_key: label,
+          label,
+          title: areaTooltip(label),
+          modifier: 'area',
+          open: handlers.isChipOpen?.(label) === true,
+          metadata,
+          route,
+          data,
+          handlers
+        })
+      )}
     </div>
-    ${complex_popover ? chipPopoverTemplate(complex_popover) : ''}
+    ${chip_popover ? chipPopoverTemplate(chip_popover) : ''}
     <div
       class="detail-summary__gates"
       role="group"
