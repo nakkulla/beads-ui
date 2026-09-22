@@ -69,6 +69,19 @@ const PRESETS = {
   ]
 };
 
+/** A general preset that already stands in the queue, so its diff is empty. */
+const SAME_VALUE_PRESET = {
+  revision: 4,
+  presets: [
+    {
+      id: 'p1',
+      name: '같은 값',
+      applies_to: 'general',
+      settings: { orchestration_model: 'opus' }
+    }
+  ]
+};
+
 /** One preset per profile, so each tab's bar has exactly one to offer. */
 const BOTH_PROFILE_PRESETS = {
   revision: 4,
@@ -561,7 +574,57 @@ describe('createExecutionPane preset strip', () => {
     ]);
   });
 
-  test('refuses to apply against a server that takes no quick_fix values', async () => {
+  test('refuses a quick fix apply against a server that takes no quick_fix values', async () => {
+    const old_queue = queueRow();
+    Reflect.deleteProperty(old_queue, 'quick_fix_orchestration_model');
+    const { root, pane } = mount({
+      section: 'quick_fix',
+      queue: old_queue,
+      presets: BOTH_PROFILE_PRESETS
+    });
+
+    await pane.load();
+
+    const apply = /** @type {HTMLButtonElement} */ (
+      el(root, '[data-preset-apply-global]')
+    );
+    expect(apply.disabled).toBe(true);
+    expect(apply.title).toBe('서버가 quick_fix 값을 받지 않습니다');
+  });
+
+  test('locks the whole quick fix bar on a server that takes no quick_fix values', async () => {
+    const old_queue = queueRow();
+    Reflect.deleteProperty(old_queue, 'quick_fix_orchestration_model');
+    const { root, pane } = mount({
+      section: 'quick_fix',
+      queue: old_queue,
+      presets: BOTH_PROFILE_PRESETS
+    });
+
+    await pane.load();
+
+    const locked = [
+      el(root, '[aria-label="실행 프리셋"]'),
+      el(root, '[aria-label="프리셋 이름"]'),
+      el(root, '[data-preset-save]'),
+      el(root, '[data-preset-delete]')
+    ].map((control) => ({
+      disabled: /** @type {HTMLButtonElement} */ (control).disabled,
+      title: control.getAttribute('title')
+    }));
+    const unsupported = {
+      disabled: true,
+      title: '서버가 quick_fix 레인을 지원하지 않습니다'
+    };
+    expect(locked).toEqual([
+      unsupported,
+      unsupported,
+      unsupported,
+      unsupported
+    ]);
+  });
+
+  test('keeps the general bar live on a server that takes no quick_fix values', async () => {
     const old_queue = queueRow();
     Reflect.deleteProperty(old_queue, 'quick_fix_orchestration_model');
     const { root, pane } = mount({ queue: old_queue, presets: PRESETS });
@@ -570,14 +633,100 @@ describe('createExecutionPane preset strip', () => {
       el(root, '[aria-label="실행 프리셋"]')
     );
     preset.value = 'p1';
+
+    preset.dispatchEvent(new Event('change'));
+
+    expect(
+      /** @type {HTMLButtonElement} */ (el(root, '[data-preset-apply-global]'))
+        .disabled
+    ).toBe(false);
+  });
+
+  test('applies a preset whose values already stand when no record names it', async () => {
+    const { root, pane } = mount({
+      queue: queueRow({ orchestration_model: 'opus' }),
+      presets: SAME_VALUE_PRESET
+    });
+    await pane.load();
+    const preset = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    preset.value = 'p1';
+
+    preset.dispatchEvent(new Event('change'));
+
+    expect(
+      /** @type {HTMLButtonElement} */ (el(root, '[data-preset-apply-global]'))
+        .disabled
+    ).toBe(false);
+  });
+
+  test('locks 적용 once the record names the preset its values already match', async () => {
+    const { root, pane } = mount({
+      queue: queueRow({
+        orchestration_model: 'opus',
+        applied_exec_preset: { id: 'p1', name: '같은 값', revision: 4 }
+      }),
+      presets: SAME_VALUE_PRESET
+    });
+    await pane.load();
+    const preset = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    preset.value = 'p1';
+
     preset.dispatchEvent(new Event('change'));
 
     const apply = /** @type {HTMLButtonElement} */ (
       el(root, '[data-preset-apply-global]')
     );
-
     expect(apply.disabled).toBe(true);
-    expect(apply.title).toBe('서버가 quick_fix 값을 받지 않습니다');
+    expect(apply.title).toBe(
+      '이 프리셋이 이미 적용되어 있고 바뀔 값도 없습니다'
+    );
+  });
+
+  test('reads the quick fix record rather than the general one on its own tab', async () => {
+    const { root, pane } = mount({
+      section: 'quick_fix',
+      queue: queueRow({
+        quick_fix_orchestration_model: 'opus',
+        applied_exec_preset: { id: 'q1' }
+      }),
+      presets: {
+        revision: 4,
+        presets: [
+          {
+            id: 'q1',
+            name: 'quick fix 기본',
+            applies_to: 'quick_fix',
+            settings: { orchestration_model: 'opus' }
+          }
+        ]
+      }
+    });
+    await pane.load();
+    const preset = /** @type {HTMLSelectElement} */ (
+      el(root, '[aria-label="실행 프리셋"]')
+    );
+    preset.value = 'q1';
+
+    preset.dispatchEvent(new Event('change'));
+
+    expect(
+      /** @type {HTMLButtonElement} */ (el(root, '[data-preset-apply-global]'))
+        .disabled
+    ).toBe(false);
+  });
+
+  test('says the preset list is server-wide on the save control', async () => {
+    const { root, pane } = mount({ presets: PRESETS });
+
+    await pane.load();
+
+    expect(el(root, '[data-preset-save]').getAttribute('title')).toContain(
+      '프리셋 목록은 서버 전역이라 저장·삭제가 모든 저장소의 목록을 바꿉니다'
+    );
   });
 
   test('saves the quick fix tab rows under canonical key names', async () => {

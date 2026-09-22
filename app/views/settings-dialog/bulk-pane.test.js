@@ -1499,6 +1499,64 @@ describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
 
     expect(el(host, '[data-bulk-applied-preset]')).toBe(null);
   });
+
+  test('locks its whole preset bar on a server with no quick_fix lane', () => {
+    const legacy = row();
+    delete legacy.quick_fix_orchestration_model;
+    const { host, pane } = setup({ rows: [legacy], presets: BOTH_PRESETS });
+
+    pane.render('quick_fix');
+
+    const locked = [
+      el(host, '[data-bulk-preset]'),
+      el(host, '[data-bulk-preset-name]'),
+      el(host, '[data-bulk-preset-save]'),
+      el(host, '[data-bulk-preset-delete]')
+    ].map((control) => ({
+      disabled: control.disabled,
+      title: control.getAttribute('title')
+    }));
+    const unsupported = {
+      disabled: true,
+      title: '서버가 quick_fix 레인을 지원하지 않습니다'
+    };
+    expect(locked).toEqual([
+      unsupported,
+      unsupported,
+      unsupported,
+      unsupported
+    ]);
+  });
+
+  test('leaves the worker preset bar live on that same server', () => {
+    const legacy = row();
+    delete legacy.quick_fix_orchestration_model;
+    const { host, pane } = setup({ rows: [legacy], presets: BOTH_PRESETS });
+
+    pane.render('worker');
+
+    expect(el(host, '[data-bulk-preset]').disabled).toBe(false);
+  });
+
+  test('says the preset list is server-wide on both tabs 저장', () => {
+    const { host, pane } = setup({ presets: BOTH_PRESETS });
+
+    pane.render('quick_fix');
+    const quick_fix_title = el(host, '[data-bulk-preset-save]').title;
+    pane.render('worker');
+
+    expect([
+      quick_fix_title,
+      el(host, '[data-bulk-preset-save]').title
+    ]).toEqual([
+      expect.stringContaining(
+        '프리셋 목록은 서버 전역이라 저장·삭제가 모든 저장소의 목록을 바꿉니다'
+      ),
+      expect.stringContaining(
+        '프리셋 목록은 서버 전역이라 저장·삭제가 모든 저장소의 목록을 바꿉니다'
+      )
+    ]);
+  });
 });
 
 describe('createBulkPane gate-r1 (UI-e1ta §3.1, §6, §9)', () => {

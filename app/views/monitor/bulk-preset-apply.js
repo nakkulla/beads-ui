@@ -151,6 +151,8 @@ export function supportsQuickFixLane(rows) {
  * @param {BulkFormValues|null} [input.form] - 그 탭이 낸 계열 키 한 벌:
  * `kv_values`와 `queue_values`.
  * @param {boolean} [input.running] - 이미 실행 중이면 `true`.
+ * @param {'general'|'quick_fix'} [input.applies_to] - 이 계획을 낸 탭의 계열.
+ * `supportsQuickFixLane` 판정에만 쓰이고 payload는 바꾸지 않는다.
  * @returns {BulkPlan}
  */
 export function planBulkApply({
@@ -159,7 +161,8 @@ export function planBulkApply({
   preset_state,
   preset_id,
   form = null,
-  running = false
+  running = false,
+  applies_to = 'general'
 }) {
   const list = (Array.isArray(rows) ? rows : []).filter((row) => isRecord(row));
   const selected_rows = list.filter((row) =>
@@ -220,7 +223,15 @@ export function planBulkApply({
       preset.incompatibility_reason.length > 0
         ? preset.incompatibility_reason
         : '이 프리셋은 지금 설치된 카탈로그와 호환되지 않습니다';
-  } else if (!supportsQuickFixLane(list)) {
+  } else if (
+    // 레인이 필요한 쪽은 quick fix 계열뿐이다: 일반 계열의 적용은 프리셋
+    // 경로든 폼 경로든 `quick_fix_` 키를 하나도 쓰지 않으므로, 레인 없는 서버
+    // 에서도 잃을 값이 없다 (design section 4).
+    (use_preset
+      ? (preset && preset.applies_to) === 'quick_fix'
+      : applies_to === 'quick_fix') &&
+    !supportsQuickFixLane(list)
+  ) {
     disabled_reason = '서버가 quick_fix 값을 받지 않습니다';
   }
   return { targets, disabled_reason };

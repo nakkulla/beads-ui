@@ -38,6 +38,7 @@ import {
   accountRowLabel,
   loadAccountCatalog as readAccountCatalog
 } from './account-catalog.js';
+import { appliedPresetFieldFor } from './bulk-observation.js';
 import {
   AUTO_LITERAL,
   BOOLEAN_DRAFT_ON,
@@ -83,6 +84,16 @@ const IMPL_TARGET_KEYS = ['impl_runtime', 'impl_model', 'impl_effort'];
 /** A workspace quick_fix runtime is concrete; `inherit` has no controller yet. */
 const QUICK_FIX_IMPL_RUNTIMES = ['claude', 'codex'];
 
+/** Copy a server with no quick_fix lane locks that whole tab with (§6.1). */
+const QUICK_FIX_UNSUPPORTED = '서버가 quick_fix 레인을 지원하지 않습니다';
+
+/**
+ * What every preset bar says about the list it edits: one list lives on the
+ * server, so a save or a delete here is seen by every workspace (§6.1).
+ */
+const PRESET_LIST_GLOBAL =
+  '프리셋 목록은 서버 전역이라 저장·삭제가 모든 저장소의 목록을 바꿉니다';
+
 /** Preset keys the QUEUE stores; the rest of the preset lives in workspace kv. */
 const QUEUE_PRESET_KEYS = [
   ...ORCHESTRATION_KEYS,
@@ -97,6 +108,30 @@ const QUEUE_SPEED_KEYS = [
 
 /** The two repo-scoped account keys the `실행 계정` section edits. */
 const ACCOUNT_ROW_KEYS = ['claude_account', 'codex_account'];
+
+/**
+ * The `적용` button's title: why it is locked, or what an apply that changes no
+ * value still does. An apply also WRITES the profile's apply record (§4.1), so
+ * a preset whose values already match is still appliable until that record
+ * names it. An empty string leaves no tooltip, as before.
+ *
+ * @param {{ lane_locked: boolean, chosen: boolean, value_change: boolean, record_matches: boolean }} state
+ * @returns {string}
+ */
+function presetApplyTitle(state) {
+  if (state.lane_locked) {
+    return '서버가 quick_fix 값을 받지 않습니다';
+  }
+  if (!state.chosen) {
+    return '적용할 프리셋을 고르세요';
+  }
+  if (state.value_change) {
+    return '';
+  }
+  return state.record_matches
+    ? '이 프리셋이 이미 적용되어 있고 바뀔 값도 없습니다'
+    : '값은 이미 같습니다 — 이 프리셋을 적용했다는 기록만 남깁니다';
+}
 
 /**
  * The four sections one mounted pane can draw, in rail and segment order. The
@@ -1497,6 +1532,21 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
+   * The id this workspace's queue records as the applied preset OF ONE
+   * PROFILE, or `null` with no record. The two records are independent, so a
+   * tab reads only its own field (§4.1) — the names are the server's
+   * `APPLIED_PRESET_FIELDS`, mirrored by `appliedPresetFieldFor`.
+   *
+   * @param {'general'|'quick_fix'} profile
+   * @returns {string|null}
+   */
+  function appliedPresetIdOf(profile) {
+    const queue = queueOf();
+    const record = queue ? queue[appliedPresetFieldFor(profile)] : null;
+    return isRecord(record) && typeof record.id === 'string' ? record.id : null;
+  }
+
+  /**
    * The selected preset of one profile, or `null`. The lookup stays inside
    * that profile's list, so a stale id from the other tab selects nothing.
    *
@@ -1642,7 +1692,9 @@ export function createExecutionPane(mount_element, binding) {
     if (!state || !queue || !selected) {
       return;
     }
-    if (!supportsQuickFixLane()) {
+    // Only a quick_fix apply needs the lane: a general preset replaces general
+    // keys alone, so an old server drops nothing (§4).
+    if (profile === 'quick_fix' && !supportsQuickFixLane()) {
       return;
     }
     /** @param {number} queue_revision */
@@ -2360,6 +2412,10 @@ export function createExecutionPane(mount_element, binding) {
    * and the name box are all that profile's own, so a choice made here never
    * reaches the other tab's bar (§6.1).
    *
+   * A server with no quick_fix lane locks the WHOLE quick fix bar, not its
+   * `적용` alone (§6.1); the general bar is untouched by that probe because a
+   * general apply writes no quick_fix key (§4).
+   *
    * @param {'general'|'quick_fix'} profile
    * @returns {TemplateResult}
    */
@@ -2374,14 +2430,31 @@ export function createExecutionPane(mount_element, binding) {
           profile
         )
       : null;
-    const quick_fix_supported = supportsQuickFixLane();
-    const apply_title = quick_fix_supported
-      ? ''
-      : '서버가 quick_fix 값을 받지 않습니다';
+    const lane_locked = profile === 'quick_fix' && !supportsQuickFixLane();
+    const lane_title = lane_locked ? QUICK_FIX_UNSUPPORTED : '';
+    const value_change = Boolean(preset_diff && preset_diff.rows.length > 0);
+    const record_matches =
+      selected_preset !== null &&
+      appliedPresetIdOf(profile) === selected_preset.id;
+    const apply_title = presetApplyTitle({
+      lane_locked,
+      chosen: selected_preset !== null,
+      value_change,
+      record_matches
+    });
+    const save_title = lane_locked
+      ? QUICK_FIX_UNSUPPORTED
+      : `${
+          selected_preset
+            ? '현재 화면의 실행 설정을 이 프리셋에 저장합니다 (프리셋 → 설정 방향이 아님)'
+            : '현재 화면의 실행 설정을 새 프리셋으로 저장합니다'
+        } — ${PRESET_LIST_GLOBAL}`;
     return html`
       <div class="settings-dialog__preset-bar" data-preset-bar=${profile}>
         <select
           aria-label="실행 프리셋"
+          title=${lane_title}
+          ?disabled=${lane_locked}
           .value=${live(chosen_id)}
           @change=${(/** @type {Event} */ ev) => {
             preset_choice[profile] = String(
@@ -2406,9 +2479,9 @@ export function createExecutionPane(mount_element, binding) {
           class="settings-dialog__btn settings-dialog__btn--primary op-btn"
           data-preset-apply-global
           title=${apply_title}
-          ?disabled=${!quick_fix_supported ||
-          !preset_diff ||
-          preset_diff.rows.length === 0}
+          ?disabled=${lane_locked ||
+          selected_preset === null ||
+          (!value_change && record_matches)}
           @click=${() => onApplyPresetGlobally(profile)}
         >
           적용
@@ -2420,6 +2493,8 @@ export function createExecutionPane(mount_element, binding) {
             ? '이름 (비우면 유지)'
             : '새 프리셋 이름'}
           aria-label="프리셋 이름"
+          title=${lane_title}
+          ?disabled=${lane_locked}
           .value=${live(preset_name_draft[profile])}
           @input=${(/** @type {Event} */ ev) => {
             preset_name_draft[profile] = String(
@@ -2431,9 +2506,8 @@ export function createExecutionPane(mount_element, binding) {
           type="button"
           class="settings-dialog__btn"
           data-preset-save
-          title=${selected_preset
-            ? '현재 화면의 실행 설정을 이 프리셋에 저장합니다 (프리셋 → 설정 방향이 아님)'
-            : '현재 화면의 실행 설정을 새 프리셋으로 저장합니다'}
+          title=${save_title}
+          ?disabled=${lane_locked}
           @click=${() => onSavePreset(profile)}
         >
           ${selected_preset ? '현재 설정으로 덮어쓰기' : '새 프리셋 저장'}
@@ -2442,7 +2516,8 @@ export function createExecutionPane(mount_element, binding) {
           type="button"
           class="settings-dialog__btn"
           data-preset-delete
-          ?disabled=${selected_preset === null}
+          title=${lane_title}
+          ?disabled=${lane_locked || selected_preset === null}
           @click=${() => onDeletePreset(profile)}
         >
           삭제
@@ -2609,9 +2684,7 @@ export function createExecutionPane(mount_element, binding) {
 
   /** Copy a server with no quick_fix lane locks the whole tab with (§6.1). */
   function quickFixDisabledTitle() {
-    return supportsQuickFixLane()
-      ? null
-      : '서버가 quick_fix 레인을 지원하지 않습니다';
+    return supportsQuickFixLane() ? null : QUICK_FIX_UNSUPPORTED;
   }
 
   /**

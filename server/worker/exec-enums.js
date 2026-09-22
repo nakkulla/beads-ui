@@ -459,10 +459,12 @@ function runnerSupportsSpeed(catalog, runtime, speed) {
  * `impl_model` is judged by one check, so there is nothing to disambiguate
  * (design §3.2).
  *
- * The `fast` speed check runs against whichever runner the SAME profile
- * resolves, and stays silent when no runner is resolvable at all — an `auto`
- * target names no provider, so its speed tier is unknowable rather than
- * unsupported. The orchestration leg already read that way.
+ * The two `fast` speed checks are the QUICK_FIX profile's alone, as they were
+ * when they read the prefixed keys: the general profile stored a `fast` speed
+ * unchecked before the split and still does. Each runs against whichever
+ * runner that profile resolves, and stays silent when no runner is resolvable
+ * at all — an `auto` target names no provider, so its speed tier is unknowable
+ * rather than unsupported. The orchestration leg already read that way.
  *
  * @param {Record<string, unknown>} settings
  * @param {{ catalog?: ResolvedCatalog, applies_to?: unknown }} [options]
@@ -500,7 +502,7 @@ export function validateImplPresetSettings(settings, options = {}) {
     }
   }
 
-  if (settings.impl_speed === 'fast') {
+  if (applies_to === 'quick_fix' && settings.impl_speed === 'fast') {
     const runtime =
       impl_target.impl_runtime ?? modelRunner(catalog, impl_target.impl_model);
     if (
@@ -511,7 +513,7 @@ export function validateImplPresetSettings(settings, options = {}) {
     }
   }
 
-  if (settings.orchestration_speed === 'fast') {
+  if (applies_to === 'quick_fix' && settings.orchestration_speed === 'fast') {
     const orchestration_model = settings.orchestration_model;
     if (typeof orchestration_model === 'string') {
       const runtime = modelRunner(catalog, orchestration_model);

@@ -45,7 +45,8 @@ import {
   messageOf,
   planBulkApply,
   retryRootsOf,
-  runBulkApply
+  runBulkApply,
+  supportsQuickFixLane
 } from '../monitor/bulk-preset-apply.js';
 import {
   accountDefaultLabel,
@@ -101,6 +102,14 @@ const CATALOG_MISSING = '계정 목록을 불러올 수 없습니다';
 const DELETED_PRESET = '삭제된 프리셋';
 /** What that line says for a repo with no record at all. */
 const NO_APPLIED_PRESET = '없음';
+/** Copy a server with no quick_fix lane locks that whole tab with (§6.1). */
+const QUICK_FIX_UNSUPPORTED = '서버가 quick_fix 레인을 지원하지 않습니다';
+/**
+ * What every preset bar says about the list it edits: one list lives on the
+ * server, so a save or a delete here is seen by every workspace (§6.1).
+ */
+const PRESET_LIST_GLOBAL =
+  '프리셋 목록은 서버 전역이라 저장·삭제가 모든 저장소의 목록을 바꿉니다';
 
 /** @type {ReadonlyArray<'claude'|'codex'>} */
 const RUNNERS = ['claude', 'codex'];
@@ -288,6 +297,17 @@ export function createBulkPane(host, options) {
   function formRows() {
     const chosen = selectedRows();
     return chosen.length > 0 ? chosen : mergedRows();
+  }
+
+  /**
+   * Whether any visible repo's server takes quick_fix values at all. The rows
+   * the quick fix form reads are the rows this probe reads, so its bar and its
+   * fields lock together (§6.1). A capability probe is false by absence.
+   *
+   * @returns {boolean}
+   */
+  function quickFixSupported() {
+    return supportsQuickFixLane(formRows());
   }
 
   /** The `워커` tab's 17-row form (§6.2). */
@@ -626,7 +646,8 @@ export function createBulkPane(host, options) {
         queue_values: form.queueValues(),
         equals_preset: preset !== null && form.equalsPreset(preset.settings)
       },
-      running: running !== null
+      running: running !== null,
+      applies_to: tab === 'quick_fix' ? 'quick_fix' : 'general'
     });
   }
 
@@ -1167,7 +1188,9 @@ export function createBulkPane(host, options) {
 
   /**
    * One tab's preset bar. The list is that tab's profile alone, so neither bar
-   * ever offers the other's presets (§6.2).
+   * ever offers the other's presets (§6.2). A server with no quick_fix lane
+   * locks the quick fix bar whole — select, name, save and delete — with the
+   * same copy its rows carry (§6.1); the worker bar is untouched by that probe.
    *
    * @param {'worker'|'quick_fix'} tab
    * @returns {TemplateResult}
@@ -1181,12 +1204,17 @@ export function createBulkPane(host, options) {
     const row_count = bulkFormRowKeysFor(profile).length;
     const holds = form.holdCounts();
     const unsettled = holds.mixed + holds.pending;
-    const save_title =
-      unsettled > 0
+    const lane_locked = tab === 'quick_fix' && !quickFixSupported();
+    const lane_title = lane_locked ? QUICK_FIX_UNSUPPORTED : '';
+    const save_title = lane_locked
+      ? QUICK_FIX_UNSUPPORTED
+      : unsettled > 0
         ? `값이 서지 않은 ${unsettled}행을 먼저 정하세요`
-        : chosen
-          ? `현재 화면의 ${row_count}행을 이 프리셋에 저장합니다`
-          : `현재 화면의 ${row_count}행을 새 프리셋으로 저장합니다`;
+        : `${
+            chosen
+              ? `현재 화면의 ${row_count}행을 이 프리셋에 저장합니다`
+              : `현재 화면의 ${row_count}행을 새 프리셋으로 저장합니다`
+          } — ${PRESET_LIST_GLOBAL}`;
     return html`<div
       class="settings-dialog__bulk-hd settings-dialog__preset-bar"
       data-bulk-preset-bar=${profile}
@@ -1195,7 +1223,8 @@ export function createBulkPane(host, options) {
         class="settings-dialog__bulk-preset"
         aria-label="적용할 실행 프리셋"
         data-bulk-preset
-        ?disabled=${running !== null}
+        title=${lane_title}
+        ?disabled=${running !== null || lane_locked}
         @change=${(/** @type {Event} */ ev) =>
           onPresetChoice(
             tab,
@@ -1223,8 +1252,9 @@ export function createBulkPane(host, options) {
         aria-label="프리셋 이름"
         data-bulk-preset-name
         placeholder=${chosen ? '이름 (비우면 유지)' : '새 프리셋 이름'}
+        title=${lane_title}
         .value=${live(preset_name_draft[tab])}
-        ?disabled=${running !== null}
+        ?disabled=${running !== null || lane_locked}
         @input=${(/** @type {Event} */ ev) => {
           preset_name_draft[tab] = String(
             /** @type {HTMLInputElement} */ (ev.target).value
@@ -1236,7 +1266,7 @@ export function createBulkPane(host, options) {
         class="op-btn"
         data-bulk-preset-save
         title=${save_title}
-        ?disabled=${running !== null || unsettled > 0}
+        ?disabled=${running !== null || unsettled > 0 || lane_locked}
         @click=${() => void onSavePreset(tab)}
       >
         ${chosen ? '현재 설정으로 덮어쓰기' : '새 프리셋 저장'}
@@ -1245,7 +1275,8 @@ export function createBulkPane(host, options) {
         type="button"
         class="op-btn"
         data-bulk-preset-delete
-        ?disabled=${running !== null || chosen === null}
+        title=${lane_title}
+        ?disabled=${running !== null || chosen === null || lane_locked}
         @click=${() => void onDeletePreset(tab)}
       >
         삭제

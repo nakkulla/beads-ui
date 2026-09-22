@@ -190,7 +190,28 @@ describe('planBulkApply preset path', () => {
     expect(plan.disabled_reason).toBe('카탈로그에 없는 프리셋입니다');
   });
 
-  test('disables for a legacy server lacking the quick_fix key on every row', () => {
+  test('disables a quick fix preset for a legacy server lacking the lane key on every row', () => {
+    const rows = [
+      { root_dir: '/repo/a', name: 'a', revision: 1 },
+      { root_dir: '/repo/b', name: 'b', revision: 1 }
+    ];
+    const lane_state = {
+      revision: 7,
+      presets: [{ id: 'q1', compatible: true, applies_to: 'quick_fix' }]
+    };
+
+    const plan = planBulkApply({
+      rows,
+      selected_roots: new Set(['/repo/a', '/repo/b']),
+      preset_state: lane_state,
+      preset_id: 'q1',
+      applies_to: 'quick_fix'
+    });
+
+    expect(plan.disabled_reason).toBe('서버가 quick_fix 값을 받지 않습니다');
+  });
+
+  test('enables a general preset on that same legacy server', () => {
     const rows = [
       { root_dir: '/repo/a', name: 'a', revision: 1 },
       { root_dir: '/repo/b', name: 'b', revision: 1 }
@@ -203,7 +224,7 @@ describe('planBulkApply preset path', () => {
       preset_id: 'p1'
     });
 
-    expect(plan.disabled_reason).toBe('서버가 quick_fix 값을 받지 않습니다');
+    expect(plan.disabled_reason).toBe(null);
   });
 
   test('disables while a run is already in progress', () => {

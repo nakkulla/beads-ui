@@ -994,10 +994,23 @@ describe('createSettingsDialog implementation presets', () => {
     dialog.destroy();
   });
 
-  test('disables the apply button for a preset equal to the current settings', async () => {
+  test('disables the apply button for the preset its record already names', async () => {
     const { root, dialog } = mount({
       presets: PRESETS,
-      values: { impl_runtime: 'codex', impl_model: 'sol' }
+      values: { impl_runtime: 'codex', impl_model: 'sol' },
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        orchestration_model: null,
+        orchestration_effort: null,
+        orchestration_speed: null,
+        quick_fix_orchestration_model: null,
+        quick_fix_orchestration_effort: null,
+        quick_fix_orchestration_speed: null,
+        applied_exec_preset: { id: 'p1', name: '기본 위임', revision: 4 }
+      }
     });
     dialog.open();
     await settle();

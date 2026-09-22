@@ -501,8 +501,17 @@ describe('worker/exec-enums preset profiles', () => {
   });
 
   test('accepts a fast implementation speed while no runner is resolvable', () => {
+    const result = validateImplPresetSettings(
+      { impl_speed: 'fast' },
+      { applies_to: 'quick_fix' }
+    );
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  test('leaves a general implementation speed unchecked against its runner', () => {
     const result = validateImplPresetSettings({
-      impl_runtime: 'auto',
+      impl_runtime: 'claude',
       impl_speed: 'fast'
     });
 
@@ -510,15 +519,27 @@ describe('worker/exec-enums preset profiles', () => {
   });
 
   test('rejects a fast orchestration speed when the chosen model lacks that tier', () => {
-    const result = validateImplPresetSettings({
-      orchestration_model: 'opus',
-      orchestration_speed: 'fast'
-    });
+    const result = validateImplPresetSettings(
+      {
+        orchestration_model: 'opus',
+        orchestration_speed: 'fast'
+      },
+      { applies_to: 'quick_fix' }
+    );
 
     expect(result).toEqual({
       ok: false,
       reason: 'orchestration_speed_unsupported'
     });
+  });
+
+  test('leaves a general orchestration speed unchecked against its model', () => {
+    const result = validateImplPresetSettings({
+      orchestration_model: 'opus',
+      orchestration_speed: 'fast'
+    });
+
+    expect(result).toEqual({ ok: true });
   });
 
   test('validates review speed without a missing enum crash', () => {
