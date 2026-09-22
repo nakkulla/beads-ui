@@ -525,5 +525,301 @@
         "scope:undeclared"
       ]
     }
+  },
+  {
+    "name": "선행 언급과 blocks 의존이 모두 있으면 누락이 없다",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 dotfiles-aaaa\n\n## scope\n- server/",
+      "dependencies": [
+        {
+          "id": "dotfiles-aaaa",
+          "dependency_type": "blocks"
+        }
+      ]
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "선행 언급은 있지만 blocks 의존이 없으면 predecessor_edge_missing",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 dotfiles-aaaa\n\n## scope\n- server/",
+      "dependencies": []
+    },
+    "related": {
+      "dotfiles-aaaa": {
+        "id": "dotfiles-aaaa",
+        "dependencies": []
+      }
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["predecessor_edge_missing:dotfiles-aaaa"]
+    }
+  },
+  {
+    "name": "선행이 거꾸로 이 Bead를 막으면 predecessor_edge_reversed",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 dotfiles-aaaa\n\n## scope\n- server/",
+      "dependencies": []
+    },
+    "related": {
+      "dotfiles-aaaa": {
+        "id": "dotfiles-aaaa",
+        "dependencies": [
+          {
+            "id": "dotfiles-slf1",
+            "dependency_type": "blocks"
+          }
+        ]
+      }
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["predecessor_edge_reversed:dotfiles-aaaa"]
+    }
+  },
+  {
+    "name": "resolver가 후보를 해석하지 못하면 건너뛴다",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 dotfiles-aaaa\n\n## scope\n- server/",
+      "dependencies": []
+    },
+    "related": {},
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "대문자 접두 ID는 정본 id_regex가 인식하지 못해 후보가 없다",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 UI-aaaa\n\n## scope\n- server/",
+      "dependencies": []
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "선행 의존 라벨 줄이 검증 bundle을 닫고 그 자리에서 언급을 모은다",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n선행 의존 — dotfiles-aaaa\n\n## scope\n- server/",
+      "dependencies": [
+        {
+          "id": "dotfiles-aaaa",
+          "dependency_type": "blocks"
+        }
+      ]
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "선행 의존 라벨 줄 뒤의 baseline_red 줄은 검증 bundle 밖으로 나간다",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n선행 의존 — dotfiles-aaaa\n- baseline_red: command=npm test | base=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | exit=1\n\n## scope\n- server/",
+      "dependencies": [
+        {
+          "id": "dotfiles-aaaa",
+          "dependency_type": "blocks"
+        }
+      ]
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["baseline_red"]
+    }
+  },
+  {
+    "name": "## 선행 의존 절 안의 언급도 읽힌다",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## 선행 의존\n- 선행 dotfiles-aaaa\n\n## scope\n- server/",
+      "dependencies": [
+        {
+          "id": "dotfiles-aaaa",
+          "dependency_type": "blocks"
+        }
+      ]
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "선행 단어가 없는 줄의 ID는 모으지 않는다",
+    "issue": {
+      "id": "dotfiles-slf1",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- dotfiles-aaaa 참고\n\n## scope\n- server/",
+      "dependencies": []
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "자기 ID는 제외한다",
+    "issue": {
+      "id": "dotfiles-aaaa",
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 dotfiles-aaaa\n\n## scope\n- server/",
+      "dependencies": []
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "본문 어느 절이든 사용자 결정이 필요하다 줄은 예약 토큰을 낸다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n사용자 결정이 필요하다\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["user_decision_reserved:L6"]
+    }
+  },
+  {
+    "name": "기대 효과 절 안의 영어 예약 문구도 대소문자 무시로 맞는다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\nUser approval required before merge\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["user_decision_reserved:L6"]
+    }
+  },
+  {
+    "name": "예약 줄 둘은 줄 순으로 토큰 둘을 낸다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n사용자 결정이 필요하다\n\n## 영향 surface와 경계\n- 경계 한 줄\n사용자 승인 1회 필요\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["user_decision_reserved:L6", "user_decision_reserved:L10"]
+    }
+  },
+  {
+    "name": "사용자 없는 승인 확인 문구는 토큰을 내지 않는다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n일반 workflow의 승인·검토·PR·배포를 따른다.\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "앞뒤 공백과 탭이 있어도 트림 뒤 검색된다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n  사용자 결정이 필요하다\t\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["user_decision_reserved:L6"]
+    }
+  },
+  {
+    "name": "BMP 밖 문자 7개를 사이에 둔 한국어 예약 문구도 u 플래그로 맞는다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n사용자😀😀😀😀😀😀😀결정 필요\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["user_decision_reserved:L6"]
+    }
+  },
+  {
+    "name": "BMP 밖 문자를 사이에 둔 영어 예약 문구도 u 플래그로 맞는다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\nuser 😀😀😀😀😀😀 decision required\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["user_decision_reserved:L6"]
+    }
   }
 ]

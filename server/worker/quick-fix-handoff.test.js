@@ -19,8 +19,35 @@ const FIXTURES = path.join(
  * @typedef {Object} HandoffCase
  * @property {string} name
  * @property {Record<string, any>} issue
+ * @property {Record<string, any>} [related]
  * @property {{ state: string, missing: string[] }} expect
  */
+
+/**
+ * @param {Array<{ id: string, dependency_type: string }>|undefined} dependencies
+ * @returns {string[]}
+ */
+function blocksIds(dependencies) {
+  return (dependencies || [])
+    .filter((edge) => edge.dependency_type === 'blocks')
+    .map((edge) => edge.id);
+}
+
+/**
+ * @param {HandoffCase} entry
+ * @returns {import('./quick-fix-handoff.js').PredecessorResolver}
+ */
+function resolverFor(entry) {
+  return {
+    blocksOf(bead_id) {
+      if (bead_id === entry.issue.id) {
+        return blocksIds(entry.issue.dependencies);
+      }
+      const other = (entry.related || {})[bead_id];
+      return other ? blocksIds(other.dependencies) : null;
+    }
+  };
+}
 
 /** @type {HandoffCase[]} */
 const CASES = JSON.parse(
@@ -83,7 +110,7 @@ describe('loadQuickFixHandoff', () => {
     expect(first).toMatchObject({
       supported: true,
       schema_version: 1,
-      source_commit: '0220a0b58a488581e06edf1530aba154695f82e9'
+      source_commit: 'efb5b5be85baceb95b575065e4d69cc9a793d1d5'
     });
     expect(first.rules?.quick_fix_handoff.receipt.key).toBe('quick_fix_review');
     expect(second).toBe(first);
@@ -112,6 +139,83 @@ describe('loadQuickFixHandoff', () => {
     const loaded = loadQuickFixHandoff({ fs: THROWING_FS });
 
     expect(loaded).toMatchObject({ supported: false, rules: null });
+  });
+
+  test('rejects a predecessor_edge rule with an unsupported token', () => {
+    const artifact = structuredClone(ARTIFACT);
+    artifact.quick_fix_handoff.checks.predecessor_edge.absent_mention = 'error';
+    const loaded = loadQuickFixHandoff({ fs: fixtureFs(artifact) });
+
+    expect(loaded.supported).toBe(false);
+  });
+
+  test('supports a pin with no predecessor_edge key at all', () => {
+    const artifact = structuredClone(ARTIFACT);
+    delete artifact.quick_fix_handoff.checks.predecessor_edge;
+    const loaded = loadQuickFixHandoff({ fs: fixtureFs(artifact) });
+
+    expect(loaded.supported).toBe(true);
+    const judged = judgeQuickFixHandoff(
+      {
+        id: 'dotfiles-slf1',
+        issue_type: 'task',
+        metadata: { route: 'quick_fix' },
+        description:
+          '## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- 선행 dotfiles-aaaa\n\n## scope\n- server/',
+        dependencies: []
+      },
+      { fs: fixtureFs(artifact), predecessors: { blocksOf: () => [] } }
+    );
+
+    expect(judged?.missing).toEqual([]);
+  });
+
+  test('rejects a user_decision_reserved rule with an unsupported token', () => {
+    const artifact = structuredClone(ARTIFACT);
+    artifact.quick_fix_handoff.checks.user_decision_reserved.absent_match =
+      'error';
+    const loaded = loadQuickFixHandoff({ fs: fixtureFs(artifact) });
+
+    expect(loaded.supported).toBe(false);
+  });
+
+  test('rejects a line_regex with an untranslatable inline flag', () => {
+    const artifact = structuredClone(ARTIFACT);
+    artifact.quick_fix_handoff.checks.user_decision_reserved.line_regex = [
+      '(?m)abc'
+    ];
+    const loaded = loadQuickFixHandoff({ fs: fixtureFs(artifact) });
+
+    expect(loaded.supported).toBe(false);
+  });
+
+  test('rejects a line_regex only invalid under the u flag', () => {
+    const artifact = structuredClone(ARTIFACT);
+    artifact.quick_fix_handoff.checks.user_decision_reserved.line_regex = [
+      '\\q'
+    ];
+    const loaded = loadQuickFixHandoff({ fs: fixtureFs(artifact) });
+
+    expect(loaded.supported).toBe(false);
+  });
+
+  test('supports a pin with no user_decision_reserved key at all', () => {
+    const artifact = structuredClone(ARTIFACT);
+    delete artifact.quick_fix_handoff.checks.user_decision_reserved;
+    const loaded = loadQuickFixHandoff({ fs: fixtureFs(artifact) });
+
+    expect(loaded.supported).toBe(true);
+    const judged = judgeQuickFixHandoff(
+      {
+        issue_type: 'task',
+        metadata: { route: 'quick_fix' },
+        description:
+          '## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n사용자 결정이 필요하다\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/'
+      },
+      { fs: fixtureFs(artifact) }
+    );
+
+    expect(judged?.missing).toEqual([]);
   });
 });
 
@@ -164,7 +268,8 @@ describe('judgeQuickFixHandoff', () => {
 describe('quick_fix handoff boundary fixtures', () => {
   test.each(CASES.map((entry) => [entry.name, entry]))('%s', (_name, entry) => {
     const judged = judgeQuickFixHandoff(
-      /** @type {HandoffCase} */ (entry).issue
+      /** @type {HandoffCase} */ (entry).issue,
+      { predecessors: resolverFor(/** @type {HandoffCase} */ (entry)) }
     );
 
     expect({
