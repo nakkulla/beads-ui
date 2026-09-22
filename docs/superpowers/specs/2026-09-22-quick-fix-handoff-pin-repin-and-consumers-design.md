@@ -71,7 +71,7 @@ close다(사용자 결정 2026-09-22). UI-ctff 본문의 고유 항목 — 새 �
 | 복구 인계 `baseline_red` | 재현을 다시 돌리지 않는다. `code_defect`는 같은 `target_sha`·blob·mode에서 같은 fingerprint로 두 번 재현된 뒤에만 서므로 operation 기록 자체가 측정 기록이다. `command=`는 런너가 실제로 돌린 것(프로토콜 env 세 개 + `script_path`), `base=`는 `target_sha`, `exit=`는 `operation.exit_code` |
 | 정수 exit 전제 | `classifyOperationRecovery`의 `code_defect` 술어에 `Number.isInteger(operation.exit_code)`와 `target_sha`가 40hex라는 조건을 더한다. 신호로 죽어 exit가 없는 재현은 측정 기록이 아니므로 `code_defect`가 아니라 기존 사다리의 `unknown_error` 대기로 남는다 |
 | `predecessor_edge` JS 판정 | 옮긴다. `judgeQuickFixHandoff`가 선택적 resolver를 받아 워크스페이스 스냅샷 범위에서만 다른 Bead를 해석하고, resolver가 없거나 해석되지 않는 ID는 계약의 `unresolved_candidate=skip_fail_quiet` 그대로 건너뛴다. 동기 자식 프로세스는 띄우지 않는다(ADR 0043) |
-| `user_decision_reserved` JS 판정 | 옮긴다. resolver 없이 모든 호출처에서 본문 전체 줄을 정본과 같은 순서로 스캔한다(§4.4). 정본 셋째 정규식의 `(?i)` 접두는 Node가 컴파일하지 못하므로 식 머리의 `(?i)`만 떼어 `i` 플래그로 옮긴다; 그 밖의 inline 플래그는 로더가 `supported: false`(fail-quiet)로 막는다 |
+| `user_decision_reserved` JS 판정 | 옮긴다. resolver 없이 모든 호출처에서 본문 전체 줄을 정본과 같은 순서로 스캔한다(§4.4). 세 정규식은 `u` 플래그로 컴파일해 Python `re`처럼 코드 포인트 단위로 센다; 정본 셋째 정규식의 `(?i)` 접두는 Node가 컴파일하지 못하므로 식 머리의 `(?i)`만 떼어 `iu`로 옮긴다; 그 밖의 inline 플래그는 로더가 `supported: false`(fail-quiet)로 막는다 |
 | 드리프트 검사 | cross-runtime 테스트 파일에 핀 사본 바이트 ≠ 로컬 dotfiles 체크아웃 HEAD의 정본 바이트면 실패하는 검사를 둔다. dotfiles 체크아웃이 없으면 skip |
 | 복구 본문의 정본 대조 | cross-runtime 테스트가 `repairHandoffDescription()` 산출 본문을 정본 checker에 넣어 `missing=[]`를 확인한다. `operation-recovery.test.js`의 핀 사본 정규식 대조는 유지한다(재핀 뒤에는 엄격한 정규식이 된다) |
 
@@ -259,8 +259,11 @@ export function judgeQuickFixHandoff(issue, deps = {}) // deps.predecessors?: Pr
 
 ### 4.3 표시
 
-카드 툴팁과 상세 패널은 `missing`을 그대로 나열하므로(UI-r7or §5.4) 새 토큰은
-클라이언트 변경 없이 보인다. 토큰 문구를 번역하지 않는다 — 정본 어휘를 그대로
+워커 카드의 quick_fix 판정 칩(`lanes.js`, `reviewed`·`stale` 상태에서만 선다)이
+툴팁과 사유 팝업에 `missing`을 그대로 나열하므로(UI-r7or §5.4) 새 토큰은
+클라이언트 변경 없이 그 두 자리에 보인다. 상세 패널(`detail-panel/index.js`
+`workflowTemplate`)은 영수증 값과 `stale` 접미만 보이고 `missing`을 읽지
+않는다 — 그대로 둔다(§7). 토큰 문구를 번역하지 않는다 — 정본 어휘를 그대로
 보이는 것이 소비자의 자리다.
 
 ### 4.4 `user_decision_reserved` JS 판정
@@ -275,12 +278,19 @@ coordinator의 `handoff_unreviewed:` 오류에도 이 토큰은 실린다. 정�
   앵커 없음)로 맞으면 `missing_token`의 `<n>`을 그 번호로 바꿔 `missing`에
   더한다. 한 줄에 토큰 하나, 줄 순.
 - 절 구분이 없다: `## scope` 절과 heading 줄도 스캔 대상이다.
+- 컴파일: 세 정규식 모두 `u` 플래그다. Python `re`는 `str`을 코드 포인트로
+  세지만 JS는 `u` 없이 UTF-16 단위로 세므로, `[^\n]{0,12}?` 같은 계수 한정자가
+  이모지 등 BMP 밖 문자 앞에서 어긋난다(`사용자😀😀😀😀😀😀😀결정 필요`는
+  Python과 `u` 모드에서 맞고 `u` 없는 JS에서는 빠진다). `u`는 정본 정규식의
+  의미를 바꾸지 않고 계수 단위만 맞춘다.
 - `(?i)` 번역: 정규식 문자열이 `(?i)`로 **시작하면** 그 네 글자를 떼고
-  `new RegExp(rest, 'i')`, 아니면 `new RegExp(pattern)`. Python `re`의 전역
-  inline 플래그는 식 머리에서만 유효하므로 머리 접두만 옮기면 같은 식이다. 그 밖의
-  inline 플래그(`(?m)`·`(?s)` 등)는 `new RegExp`가 던지고 로더가
+  `new RegExp(rest, 'iu')`, 아니면 `new RegExp(pattern, 'u')`. Python `re`의
+  전역 inline 플래그는 식 머리에서만 유효하므로 머리 접두만 옮기면 같은 식이다. 그
+  밖의 inline 플래그(`(?m)`·`(?s)` 등)는 `new RegExp`가 던지고 로더가
   `supported: false`로 만든다(§2.3) — 이 저장소가 정규식을 고쳐 쓰는 일은 없다.
-  번역 함수 하나를 `rulesUsable`과 판정이 함께 쓴다.
+  번역 함수 하나를 `rulesUsable`과 판정이 함께 쓴다. 기존 검사(`sections`·
+  `baseline_red`·`predecessor_edge`)의 컴파일은 바꾸지 않는다 — 그 정규식들은
+  ASCII 고정폭 계수(`{40}` hex 등)뿐이라 단위 차이가 결과에 닿지 않는다.
 - details(일치한 줄 원문)는 내지 않는다 — `QuickFixHandoffState`는
   `state`·`missing`·`digest` 그대로다. 토큰의 줄 번호가 그 자리를 대신한다.
 - 복구 인계 본문(§3)은 예약 문구를 담지 않는다. 생성 본문의 고정 문장은
@@ -296,12 +306,20 @@ coordinator의 `handoff_unreviewed:` 오류에도 이 토큰은 실린다. 정�
 predecessor 케이스의 `issue`는 `id`와 `dependencies`(`{id, dependency_type}`)를
 갖는다. 최소 케이스:
 
-- `검증 bundle`의 `선행 UI-aaaa` 줄, `blocks` 의존 있음 → `missing: []`
-- 같은 줄, 의존 없음, `related`에 UI-aaaa 있음 → `predecessor_edge_missing:UI-aaaa`
-- 같은 줄, UI-aaaa가 거꾸로 이 Bead를 `blocks` → `predecessor_edge_reversed:UI-aaaa`
+정본 `id_regex`는 `[a-z][a-z0-9]*-[a-z0-9]{4}` — 소문자 접두와 네 자리 접미만
+인식한다. 이 rig의 `UI-xxxx`는 대문자 접두라 정본에서도 후보로 모이지 않으며,
+그것은 정본 소유다(§9 관찰). 픽스처는 정본이 인식하는 ID(`dotfiles-aaaa`)를 쓴다.
+
+- `검증 bundle`의 `선행 dotfiles-aaaa` 줄, `blocks` 의존 있음 → `missing: []`
+- 같은 줄, 의존 없음, `related`에 dotfiles-aaaa 있음 →
+  `predecessor_edge_missing:dotfiles-aaaa`
+- 같은 줄, dotfiles-aaaa가 거꾸로 이 Bead를 `blocks` →
+  `predecessor_edge_reversed:dotfiles-aaaa`
 - 같은 줄, `related`에 없음 → `missing: []`(unresolved skip)
-- `선행 의존 — UI-aaaa` 라벨 줄이 `검증 bundle`을 닫는다(앞 절의 `baseline_red`
-  줄이 라벨 뒤에 있으면 밖으로 나감)
+- `선행 UI-aaaa` 줄(대문자 접두) → 후보 없음, `missing: []` — 정본 `id_regex`
+  parity
+- `선행 의존 — dotfiles-aaaa` 라벨 줄이 `검증 bundle`을 닫는다(앞 절의
+  `baseline_red` 줄이 라벨 뒤에 있으면 밖으로 나감)
 - `## 선행 의존` 절 안의 언급도 읽힌다
 - `선행` 단어가 없는 줄의 ID는 모으지 않는다
 - 자기 ID는 제외한다
@@ -315,6 +333,9 @@ predecessor 케이스의 `issue`는 `id`와 `dependencies`(`{id, dependency_type
 - 예약 줄 둘 → 토큰 둘, 줄 순
 - `승인·검토·PR·배포를 따른다`처럼 `사용자` 없는 승인·확인 문구 → 토큰 없음
 - 앞뒤 공백·탭이 있는 예약 줄도 맞는다(트림 뒤 검색)
+- `사용자😀😀😀😀😀😀😀결정 필요`(BMP 밖 문자 7개, 계수 한정자 경계) → 토큰
+  있음 — `u` 플래그 parity(§4.4). 영어 식에도 같은 경계 사례 하나
+  (`user 😀😀😀😀😀😀 decision required`)
 
 두 테스트가 한 픽스처를 읽는 규칙(UI-r7or §7.2)은 그대로다.
 
@@ -337,7 +358,8 @@ predecessor 케이스의 `issue`는 `id`와 `dependencies`(`{id, dependency_type
 - `user_decision_reserved.absent_match`를 `'error'`로 바꾼 사본은
   `supported: false`.
 - `line_regex`에 `(?m)abc`를 넣은 사본은 `supported: false`(번역 불가 inline
-  플래그).
+  플래그). `u` 모드에서만 거부되는 식(`\-` 같은 불필요한 이스케이프)을 넣은
+  사본도 `supported: false`.
 - `user_decision_reserved` 키를 통째로 뺀 사본은 `supported: true`이고 판정은
   그 토큰을 내지 않는다.
 
@@ -374,13 +396,13 @@ predecessor 케이스의 `issue`는 `id`와 `dependencies`(`{id, dependency_type
   `user_decision_reserved:L<n>`)임과, predecessor 토큰은 스냅샷 resolver가 있는
   경로에서만 나오고 예약 토큰은 모든 경로에서 나온다는 것.
 - `server/worker/quick-fix-handoff.js` 머리 주석: 불활성 키 목록(§1)과 "읽는
-  코드가 없다"는 정의, `(?i)` 접두 번역 규칙(§4.4).
+  코드가 없다"는 정의, `u` 플래그와 `(?i)` 접두 번역 규칙(§4.4).
 
 ## 7. 비목표
 
 - 계약 어휘·정규식·토큰을 이 저장소에서 다시 정하거나 번역하지 않는다. §4.4의
-  `(?i)` 접두 → `i` 플래그는 Python `re`와 JS `RegExp`의 문법 차이를 잇는
-  변환이지 어휘·정규식의 재정의가 아니다.
+  `u` 플래그와 `(?i)` 접두 → `iu`는 Python `re`와 JS `RegExp`의 문법·계수 단위
+  차이를 잇는 변환이지 어휘·정규식의 재정의가 아니다.
 - dotfiles 정본·checker·스킬 문서를 바꾸지 않는다(크로스 리포 unit 없음).
 - `automatic_queue_handoff` 등 불활성 키의 reader를 만들지 않는다.
 - 투영 갱신 자동화를 만들지 않는다 — 핀은 사람이 옮긴다(UI-r7or §8). 드리프트
@@ -414,6 +436,9 @@ predecessor 케이스의 `issue`는 `id`와 `dependencies`(`{id, dependency_type
 - 관찰: dotfiles 투영이 다음에 바뀌면 §5.3 드리프트 검사가 red가 되고 그때의
   재핀은 UI-ctff와 같은 admission으로 새 Bead가 된다. 이 spec은 자동화하지
   않는다.
+- 관찰: 정본 `predecessor_edge.id_regex`가 소문자 접두만 인식해 이 rig의
+  `UI-xxxx` 선행은 정본·JS 어디서도 검사되지 않는다(§5.1). 어휘는 dotfiles
+  소유라 이 저장소가 고치지 않으며, 정본 정정은 별도 제기 대상이다 — 후속 아님.
 
 ## 결정 (ADR 후보)
 
@@ -445,14 +470,21 @@ predecessor 케이스의 `issue`는 `id`와 `dependencies`(`{id, dependency_type
   HEAD와 바이트가 다르면 cross-runtime 테스트가 실패하며, 재핀은 사람이 그
   실패를 보고 옮긴다" → ADR
 - `predecessor_edge` JS 판정은 resolver가 있을 때만·스냅샷 범위에서 돌고 나머지는
-  unresolved skip이다. 계약이 이미 `unresolved_candidate=skip_fail_quiet`를
-  정했고 이것은 그 소비자 구현이다; resolver를 다른 자리에 더하는 일은 되돌리기
-  쉽다 → ADR 아님
-- `user_decision_reserved` JS 판정과 `(?i)` 접두의 `i` 플래그 번역. 계약이 정한
-  검사의 소비자 구현이고, 번역은 Python `re`와 JS `RegExp`의 문법 차이를 잇는
-  한 줄이며 되돌리기 쉽다(정규식이 바뀌면 로더가 fail-quiet로 막는다) → ADR 아님
-- 새 투영 키를 불활성으로 두는 것. reader가 없다는 상태이지 결정이 아니며 키를
-  읽기 시작하는 순간 그 Bead의 spec이 다룬다 → ADR 아님
+  unresolved skip이다. 되돌리기 어려움: 없다 — resolver는 선택 인자라 빼면 검사가
+  통째로 꺼지고, 다른 호출처에 더하는 것도 인자 하나다. 맥락 필요: 없다 — 계약이
+  이미 `unresolved_candidate=skip_fail_quiet`를 정했고 코드 주석이 그 소비자
+  구현임을 말한다. 실제 절충: 없다 — 스냅샷 밖 해석(동기 `bd show`)은 ADR 0043이
+  이미 막았으므로 대안이 열려 있지 않았다 → ADR 아님
+- `user_decision_reserved` JS 판정과 `u`·`(?i)` 접두 번역. 되돌리기 어려움: 없다
+  — 판정 한 블록과 번역 함수 하나이며 빼면 토큰이 사라질 뿐 다른 코드가 기대지
+  않는다. 맥락 필요: 없다 — 번역 함수 주석이 Python `re`와 JS `RegExp`의 계수
+  단위·inline 플래그 차이를 말하고 픽스처 경계 사례가 그 이유를 실행으로 보인다.
+  실제 절충: 없다 — 정본 정규식을 그대로 쓰는 길은 Node가 컴파일하지 못해 선택지가
+  아니었고, 정규식을 고쳐 쓰는 길은 §7이 금한다 → ADR 아님
+- 새 투영 키를 불활성으로 두는 것. 되돌리기 어려움: 없다 — reader를 만드는 순간
+  끝나는 상태다. 맥락 필요: 없다 — §1 표와 `quick-fix-handoff.js` 머리 주석이
+  키마다 왜 읽지 않는지 적는다. 실제 절충: 없다 — 결정이 아니라 현재 상태의 기록이며
+  키를 읽기 시작하는 Bead의 spec이 그때 다룬다 → ADR 아님
 
 ## 구현 unit 후보
 
@@ -460,7 +492,7 @@ predecessor 케이스의 `issue`는 `id`와 `dependencies`(`{id, dependency_type
 
 1. **재핀 + 판정기 + 픽스처** — `generated/contracts/quick-fix-handoff*`,
    `server/worker/quick-fix-handoff.js`(predecessor·`user_decision_reserved`
-   판정, `(?i)` 번역), 픽스처, 두 테스트(드리프트·parity 포함),
+   판정, `u`·`(?i)` 번역), 픽스처, 두 테스트(드리프트·parity 포함),
    `workflow-enrich.js`·`list-adapters.js`·`runnable-cache.js`의 resolver 배선
 2. **복구 인계 본문 + 분류 가드 + 문서** — `operation-recovery.js`와 테스트,
    cross-runtime 복구 본문 parity, `app/protocol.md`
