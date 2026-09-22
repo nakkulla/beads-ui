@@ -8702,6 +8702,19 @@ button.detail-session__leg:focus-visible {
     width: fit-content;
   }
 
+  /* 머리줄이 줄을 넘기므로 레포 배지도 12ch 상한을 푼다 (UI-nr86): 칩 줄
+     해제(UI-pw2g §3.2)가 머리줄을 뺀 이유는 배치 유지였고, 이 폭에서는 긴
+     이름이 다음 줄로 내려갈 뿐이다. 640px 초과 폭은 상한을 유지한다. */
+  :is(.worker-card__head, .worker-mini__head, .worker-mini__row1, .rtile__hd)
+    > :is(.worker-card__repo, .worker-mini__repo) {
+    flex-shrink: 1;
+    max-width: 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   /* 후보 보드가 화면의 주인 (§모바일 4, §4.7): 단일 컬럼으로 쌓인 레인 안에 또
      스크롤러를 두지 않는다 — 상한도 내부 스크롤도 풀어 내용만큼 늘어나고 문서
      스크롤 하나만 남긴다. 5등분 문제의 직접 해결이다. */

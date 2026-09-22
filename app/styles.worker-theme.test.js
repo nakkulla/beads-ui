@@ -337,6 +337,29 @@ describe('worker console styles', () => {
     expect(summaryRule).toContain('width: fit-content');
   });
 
+  // 머리줄이 줄을 넘기는 폭에서는 레포 배지의 12ch 상한도 풀린다 (UI-nr86).
+  test('releases the header repo badge width cap below 640px', () => {
+    const mq = CSS.slice(
+      CSS.indexOf('/* ---------- Worker responsive (<=640px)')
+    );
+    const repoRule = mq.match(
+      /:is\(([^)]*)\)\s*>\s*:is\(\.worker-card__repo, \.worker-mini__repo\)\s*{([^}]*)}/
+    );
+
+    for (const selector of [
+      '.worker-card__head',
+      '.worker-mini__head',
+      '.worker-mini__row1',
+      '.rtile__hd'
+    ]) {
+      expect(repoRule?.[1] || '').toContain(selector);
+    }
+    expect(repoRule?.[2] || '').toContain('max-width: 100%');
+    expect(repoRule?.[2] || '').toContain('white-space: normal');
+    expect(repoRule?.[2] || '').toContain('text-overflow: clip');
+    expect(repoRule?.[2] || '').toContain('overflow-wrap: anywhere');
+  });
+
   test('wraps candidate card footer items in narrow lanes', () => {
     const footRule =
       workerBlock.match(/(?:^|\n)\.worker-card__foot\s*{([^}]*)}/)?.[1] || '';
