@@ -615,13 +615,15 @@ export function createDirectionInquiry(deps) {
     } catch (err) {
       log('bd read failed for %s: %o', bead_id, err);
     }
-    const branch = STALE_REASONS.has(awaiting_user)
-      ? 'stale'
-      : awaiting_user === IMPL_CONFLICT_REASON
-        ? 'impl_conflict'
-        : !awaiting_user && input.recovery?.reason
-          ? 'recovery'
-          : 'generic';
+    const stale = parseStaleNotes(issue?.notes);
+    const branch =
+      STALE_REASONS.has(awaiting_user) && stale.stale_kind !== null
+        ? 'stale'
+        : awaiting_user === IMPL_CONFLICT_REASON
+          ? 'impl_conflict'
+          : !awaiting_user && input.recovery?.reason
+            ? 'recovery'
+            : 'generic';
     if (!issue || typeof issue !== 'object') {
       return {
         outcome: refusal('bd_unavailable'),
@@ -660,23 +662,11 @@ export function createDirectionInquiry(deps) {
       ? path.join(/** @type {string} */ (attempt_repo), '.worktrees', bead_id)
       : (attempt_repo ?? repo);
     const config = readInquiryConfig();
-    /** @type {string|null} */
-    let stale_kind = null;
+    const stale_kind = branch === 'stale' ? stale.stale_kind : null;
     /** @type {string} */
     let prompt;
     const fork = forkTarget(issue, attempt);
-    if (branch === 'stale') {
-      const stale = parseStaleNotes(issue.notes);
-      stale_kind = stale.stale_kind;
-      if (stale_kind === null) {
-        return {
-          outcome: refusal('stale_kind_missing'),
-          branch,
-          stale_kind,
-          title,
-          repo
-        };
-      }
+    if (stale_kind !== null) {
       const receipt_key = receiptKeyFor(awaiting_user);
       const receipt = metadata[receipt_key];
       prompt = fillStalePrompt({

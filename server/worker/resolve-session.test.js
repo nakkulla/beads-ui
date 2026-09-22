@@ -1,5 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   buildResolvePrompt,
   createResolveSession,
@@ -11,6 +13,16 @@ const REPO = '/tmp/example-workspace/project-a';
 const HOST = 'test-host';
 const SESSION_ID = 'ff11a2b3-4c5d-6e7f-8091-a2b3c4d5e6f7';
 const HOME = '/tmp/fake-home';
+
+let codex_home = '';
+beforeEach(() => {
+  codex_home = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-resolve-codex-'));
+  vi.stubEnv('CODEX_HOME', codex_home);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  fs.rmSync(codex_home, { recursive: true, force: true });
+});
 
 /**
  * A marker-aware fake tmux. A pane row carries the marker it was written with,
@@ -493,7 +505,7 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       -1
     );
     expect(wrapper).toBe(
-      `tmux set-option -p @bdui_resolve_bead '${BEAD}' && exec ` +
+      `tmux set-option -p -t "$TMUX_PANE" @bdui_resolve_bead '${BEAD}' && exec ` +
         `'/usr/local/bin/claude' '--resume' '${SESSION_ID}' '--fork-session' ` +
         `'${buildResolvePrompt({
           bead_id: BEAD,

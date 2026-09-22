@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, test, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   GENERIC_INQUIRY_PROMPT,
   IMPL_CONFLICT_INQUIRY_PROMPT,
@@ -36,6 +39,16 @@ const GENERIC_PROMPT_DIGEST =
 
 const BEAD = 'UI-7uid';
 const AWAITING = 'spec_review_stale:revise';
+
+let codex_home = '';
+beforeEach(() => {
+  codex_home = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-inquiry-codex-'));
+  vi.stubEnv('CODEX_HOME', codex_home);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  fs.rmSync(codex_home, { recursive: true, force: true });
+});
 
 /**
  * A fake tmux runner. Records every argv and answers from a scripted table
@@ -379,7 +392,7 @@ describe('direction-inquiry wrapper', () => {
     });
 
     expect(wrapper).toBe(
-      "tmux set-option -p @bdui_inquiry_bead 'UI-7uid' && " +
+      `tmux set-option -p -t "$TMUX_PANE" @bdui_inquiry_bead 'UI-7uid' && ` +
         "exec '/opt/homebrew/bin/claude' '프롬프트'"
     );
   });
@@ -706,7 +719,7 @@ describe('direction-inquiry launch', () => {
 
     await inquiry.onParkedAttempt(parkedInput());
 
-    const wrapper = tmux.calls.find((call) => call[0] === 'new-window')?.[12];
+    const wrapper = tmux.calls.find((call) => call[0] === 'new-window')?.at(-1);
     expect(wrapper).toContain("'/opt/homebrew/bin/codex' 'fork' 'codex-sid'");
   });
 
@@ -1032,7 +1045,9 @@ describe('direction-inquiry launch', () => {
     ]);
     expect(args[10]).toBe('/repo');
     expect(args[11]).toBe('--');
-    expect(args[12]).toContain('tmux set-option -p @bdui_inquiry_bead');
+    expect(args[12]).toContain(
+      'tmux set-option -p -t "$TMUX_PANE" @bdui_inquiry_bead'
+    );
     expect(args[12]).toContain('- target_base 체크아웃: /repo');
   });
 
@@ -1190,16 +1205,51 @@ describe('direction-inquiry refusals', () => {
     );
   });
 
-  test('notifies stale_kind_missing when notes carry no kind', async () => {
-    const { inquiry, tmux, awaitingUser } = makeInquiry({
-      readIssue: async () => issue({ notes: '재리뷰 메모만 있다' })
+  test.each(['spec_review_stale:revise', 'plan_approval_stale:revise'])(
+    'launches a generic inquiry for %s without a stale kind',
+    async (awaiting_user) => {
+      const tmux = makeTmux({
+        panes: [['bdui-inquiry', '%1', '', '0']],
+        panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
+      });
+      const { inquiry, awaitingUser } = makeInquiry({
+        tmux,
+        readIssue: async () => issue({ notes: '재리뷰 메모만 있다' })
+      });
+
+      await inquiry.onParkedAttempt(parkedInput({ awaiting_user }));
+
+      expect(awaitingUser).toHaveBeenCalledWith(
+        expect.objectContaining({
+          branch: 'generic',
+          session: 'launched',
+          stale_kind: null
+        })
+      );
+      const wrapper = tmux.calls.find((call) => call[0] === 'new-window')?.[12];
+      expect(wrapper).toContain(`awaiting_user=${awaiting_user}`);
+    }
+  );
+
+  test('opens a clicked stale inquiry without a kind when automatic launch is disabled', async () => {
+    const tmux = makeTmux({
+      panes_seq: [
+        [['bdui-inquiry', '%1', '', '0']],
+        [['bdui-inquiry', '%1', '', '0']],
+        [['bdui-inquiry', '%9', BEAD, '0']]
+      ]
+    });
+    const { inquiry } = makeInquiry({
+      tmux,
+      enabled: false,
+      readIssue: async () => issue({ notes: '' })
     });
 
-    await inquiry.onParkedAttempt(parkedInput());
+    const outcome = await inquiry.launchForClick(parkedInput());
 
-    expect(tmux.calls).toHaveLength(0);
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'stale_kind_missing' })
+    expect(outcome.session).toBe('launched');
+    expect(tmux.calls.find((call) => call[0] === 'new-window')?.[12]).toContain(
+      `awaiting_user=${AWAITING}`
     );
   });
 

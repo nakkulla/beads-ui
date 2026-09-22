@@ -27,6 +27,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { parse as parseToml } from 'smol-toml';
 import { runShell } from '../bd.js';
 import { debug } from '../logging.js';
 import { ACTIVE_RUNNERS } from './runner-catalog.js';
@@ -113,7 +114,7 @@ export function shellQuote(value) {
  */
 export function markerWrapper(input) {
   return [
-    `tmux set-option -p ${input.marker} ${shellQuote(input.key)}`,
+    `tmux set-option -p -t "$TMUX_PANE" ${input.marker} ${shellQuote(input.key)}`,
     `&& exec ${input.argv.map((word) => shellQuote(word)).join(' ')}`
   ].join(' ');
 }
@@ -182,6 +183,51 @@ export function defaultResolveRunner(runner) {
  */
 export function defaultResolveClaude() {
   return defaultResolveRunner('claude');
+}
+
+/**
+ * Register a missing Codex project without rewriting existing config bytes or
+ * overriding an explicit trust choice. Worktrees share the common Git root.
+ *
+ * @param {string} cwd
+ * @returns {Promise<string>} Absolute config home for the new window's environment.
+ */
+async function ensureCodexProjectTrust(cwd) {
+  const common = await runShell(
+    'git',
+    ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+    { cwd }
+  );
+  const root =
+    common.code === 0 && common.stdout.trim().length > 0
+      ? path.dirname(common.stdout.trim())
+      : path.resolve(cwd);
+  const codex_home = path.resolve(
+    process.env.CODEX_HOME || path.join(os.homedir(), '.codex')
+  );
+  const config_path = path.join(codex_home, 'config.toml');
+  let contents = '';
+  try {
+    contents = fs.readFileSync(config_path, 'utf8');
+  } catch (err) {
+    if (/** @type {NodeJS.ErrnoException} */ (err).code !== 'ENOENT') {
+      throw err;
+    }
+  }
+  const config = parseToml(contents);
+  if (
+    config.projects &&
+    typeof config.projects === 'object' &&
+    Object.hasOwn(config.projects, root)
+  ) {
+    return codex_home;
+  }
+  const addition = `\n[projects.${JSON.stringify(root)}]\ntrust_level = "trusted"\n`;
+  // Inline or malformed project tables cannot be extended by appending a table.
+  parseToml(contents + addition);
+  fs.mkdirSync(codex_home, { recursive: true, mode: 0o700 });
+  fs.appendFileSync(config_path, addition, { mode: 0o600 });
+  return codex_home;
 }
 
 /**
@@ -335,6 +381,19 @@ export function createTmuxLauncher(deps = {}) {
         reason: `launch_failed:${runner}_not_found`
       };
     }
+    /** @type {string|null} */
+    let codex_home = null;
+    if (runner === 'codex') {
+      try {
+        codex_home = await ensureCodexProjectTrust(input.cwd);
+      } catch {
+        log('codex project trust setup failed for %s', input.key);
+        return {
+          session: 'not_launched',
+          reason: 'launch_failed:codex_trust_setup'
+        };
+      }
+    }
     if (!listed.rows.some((row) => row.session === input.tmux_session)) {
       /** @type {{ code: number }} */
       let created;
@@ -387,6 +446,7 @@ export function createTmuxLauncher(deps = {}) {
         input.window_name,
         '-c',
         input.cwd,
+        ...(codex_home === null ? [] : ['-e', `CODEX_HOME=${codex_home}`]),
         '--',
         wrapper
       ]);
