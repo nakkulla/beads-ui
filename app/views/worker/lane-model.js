@@ -89,6 +89,59 @@ import { waitKindRow } from './wait-vocabulary.js';
  */
 export const MIN_SLOTS = 1;
 
+/** @typedef {{kind: 'serial', index: 1|2|3|4|5}|{kind: 'parallel'}} LaneOrigin */
+
+/**
+ * Read recorded dispatch origin; missing material never implies parallel.
+ *
+ * @param {{serial_lane_id?: unknown}|null|undefined} record
+ * @returns {{lane_origin?: LaneOrigin}}
+ */
+function laneOriginFields(record) {
+  if (!record || !Object.hasOwn(record, 'serial_lane_id')) {
+    return {};
+  }
+  if (record.serial_lane_id === null) {
+    return { lane_origin: { kind: 'parallel' } };
+  }
+  if (
+    typeof record.serial_lane_id === 'string' &&
+    /^s[1-5]$/.test(record.serial_lane_id)
+  ) {
+    return {
+      lane_origin: {
+        kind: 'serial',
+        index: /** @type {1|2|3|4|5} */ (Number(record.serial_lane_id.slice(1)))
+      }
+    };
+  }
+  return {};
+}
+
+/**
+ * Lane origin of one PR wait row (UI-us7l §3): the durable `pr_wait` entry's own
+ * `serial_lane_id` first, else the bead's last implementation attempt. The
+ * durable entry wins because merge cleanup releases the attempt's lane binding
+ * (`releaseLandedLineageLanes`) while the entry keeps its lane. Exported so the
+ * Worker tab's PR wait projection reads the same judgment for an entry whose
+ * bead is claimed by a running conflict-resolution tile — there the lane item
+ * is the tile and its attempt is not the PR's. External entries carry nothing.
+ *
+ * @param {any} entry - durable `pr_wait` entry
+ * @param {Map<string, any>} last_impl_by_bead - `latestImplementationAttempts` result
+ * @returns {{lane_origin?: LaneOrigin}}
+ */
+export function prWaitLaneOriginFields(entry, last_impl_by_bead) {
+  if (!entry || typeof entry !== 'object' || entry.external === true) {
+    return {};
+  }
+  return laneOriginFields(
+    Object.hasOwn(entry, 'serial_lane_id')
+      ? entry
+      : last_impl_by_bead.get(entry.bead_id)
+  );
+}
+
 /**
  * 대기 진입 유예의 길이. 서버 `QUEUE_GRACE_MS`(`server/worker/scheduler.js`)를
  * 이름 그대로 비춘다 — 클라이언트는 `server/**`에서 import할 수 없다. 남은 초
@@ -377,7 +430,7 @@ const DONE_KIND_LABELS = {
  *   queue_index?: number,
  *   queue_length?: number,
  *   place_index?: number,
- *   serial_lane_id?: 's1'|'s2'|'s3'|'s4'|'s5',
+ *   lane_origin?: LaneOrigin,
  *   place_lanes?: Array<{ id: 's1'|'s2'|'s3'|'s4'|'s5', index: number, length: number, occupied_by: string[] }>,
  *   blocked?: boolean,
  *   blocked_by?: string[],
@@ -2903,6 +2956,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
     /** @type {Map<string, any>} */
     const attempt_by_id = new Map();
+    const last_impl_by_bead = latestImplementationAttempts(attempts);
     for (const attempt of Object.values(attempts)) {
       if (attempt && typeof attempt.attempt_id === 'string') {
         attempt_by_id.set(attempt.attempt_id, attempt);
@@ -3012,18 +3066,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
     raw_queue_length_by_root.set(root_dir, queue_lane.length);
     /** @type {Map<string, any>} */
     const serial_by_id = new Map(serial_lanes.map((lane) => [lane.id, lane]));
-    /** @type {Map<string, 's1'|'s2'|'s3'|'s4'|'s5'>} */
-    const serial_lane_by_bead = new Map();
-    for (const lane of serial_lanes) {
-      for (const entry of lane.entries) {
-        if (entry && typeof entry.bead_id === 'string') {
-          serial_lane_by_bead.set(
-            entry.bead_id,
-            /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane.id)
-          );
-        }
-      }
-    }
     for (const [bead_id, entry] of Object.entries(
       objectOf(workspace.bead_dependents)
     )) {
@@ -3285,9 +3327,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...base(bead_id),
         lane: 'running',
         ...blocker_fields,
-        ...(serial_lane_by_bead.has(bead_id)
-          ? { serial_lane_id: serial_lane_by_bead.get(bead_id) }
-          : {}),
+        ...laneOriginFields(attempt),
         attempt_id: live.attempt_id,
         run_state: live.run_state,
         status: live.status || undefined,
@@ -3597,6 +3637,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       pr_wait.push({
         ...base(bead_id),
         lane: 'pr_wait',
+        ...prWaitLaneOriginFields(entry, last_impl_by_bead),
         ...decoratedBlockedBy(bead_id),
         ...(receipt_badge_codes.length > 0
           ? { receipt_badge: { codes: receipt_badge_codes } }
@@ -4553,6 +4594,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
     const parallel = queue_by_root.get(source.root_dir) || [];
     const serial = serial_by_root.get(source.root_dir) || [];
+    const live_count = live_by_root.get(source.root_dir) || 0;
     const has_queue =
       parallel.length > 0 ||
       serial.some(
@@ -4563,6 +4605,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     if (
       groups_mode !== 'all' &&
       !has_queue &&
+      live_count === 0 &&
       !roots_with_candidates.has(source.root_dir)
     ) {
       continue;
@@ -4571,7 +4614,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
       typeof source.slots === 'number' && source.slots >= MIN_SLOTS
         ? source.slots
         : MIN_SLOTS;
-    const live_count = live_by_root.get(source.root_dir) || 0;
     queue_groups.push({
       live_count,
       over_cap: live_count > slots,

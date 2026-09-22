@@ -9,6 +9,7 @@ import {
   buildLanes,
   lastImplementationStatus,
   latestTerminalAttempt,
+  prWaitLaneOriginFields,
   routeChipValue,
   validTime
 } from './lane-model.js';
@@ -17,6 +18,173 @@ import { createWorkspaceAdapter } from './workspace-adapter.js';
 
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
+
+describe('recorded lane origin (UI-us7l)', () => {
+  test('prefers the durable PR wait entry lane over the last implementation attempt', () => {
+    const last_impl_by_bead = new Map([
+      ['A-1', { attempt_id: 'impl', bead_id: 'A-1', serial_lane_id: null }]
+    ]);
+
+    const with_entry_lane = prWaitLaneOriginFields(
+      { bead_id: 'A-1', serial_lane_id: 's2' },
+      last_impl_by_bead
+    );
+    const without_entry_lane = prWaitLaneOriginFields(
+      { bead_id: 'A-1' },
+      last_impl_by_bead
+    );
+    const external = prWaitLaneOriginFields(
+      { bead_id: 'A-1', serial_lane_id: 's2', external: true },
+      last_impl_by_bead
+    );
+
+    expect(with_entry_lane).toEqual({
+      lane_origin: { kind: 'serial', index: 2 }
+    });
+    expect(without_entry_lane).toEqual({ lane_origin: { kind: 'parallel' } });
+    expect(external).toEqual({});
+  });
+
+  test.each([
+    ['s1', { kind: 'serial', index: 1 }],
+    ['s5', { kind: 'serial', index: 5 }],
+    [null, { kind: 'parallel' }],
+    ['s6', undefined],
+    [undefined, undefined]
+  ])(
+    'reads the live attempt origin %s after dispatch removes queue membership',
+    (serial_lane_id, expected) => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            attempts: {
+              old: {
+                attempt_id: 'old',
+                bead_id: 'A-1',
+                status: 'completed',
+                started_at: 1,
+                serial_lane_id: 's3'
+              },
+              live: {
+                attempt_id: 'live',
+                bead_id: 'A-1',
+                status: 'running',
+                started_at: 2,
+                ...(serial_lane_id === undefined ? {} : { serial_lane_id })
+              }
+            }
+          })
+        ],
+        [state()]
+      );
+
+      expect(lanes.running[0].lane_origin).toEqual(expected);
+      expect(Object.hasOwn(lanes.running[0], 'lane_origin')).toBe(
+        expected !== undefined
+      );
+      expect(Object.hasOwn(lanes.running[0], 'serial_lane_id')).toBe(false);
+    }
+  );
+
+  test('omits origin when the live attempt cannot be looked up by id', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            legacy: { bead_id: 'A-1', status: 'running', serial_lane_id: null }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running).toHaveLength(1);
+    expect(Object.hasOwn(lanes.running[0], 'lane_origin')).toBe(false);
+  });
+
+  test.each([
+    [{ serial_lane_id: 's2' }, { kind: 'serial', index: 2 }],
+    [{ serial_lane_id: null }, { kind: 'parallel' }],
+    [{}, { kind: 'serial', index: 4 }],
+    [{ serial_lane_id: 'invalid' }, undefined],
+    [{ external: true, serial_lane_id: 's2' }, undefined]
+  ])(
+    'prefers durable PR origin and falls back only when its key is absent (%j)',
+    (entry, expected) => {
+      const lanes = buildLanes(
+        [
+          workspace({
+            pr_wait: [{ bead_id: 'A-1', ...entry }],
+            attempts: {
+              newer: {
+                attempt_id: 'newer',
+                bead_id: 'A-1',
+                kind: 'implementation',
+                status: 'completed',
+                started_at: 2,
+                serial_lane_id: 's4'
+              },
+              older: {
+                attempt_id: 'older',
+                bead_id: 'A-1',
+                status: 'completed',
+                started_at: 1,
+                serial_lane_id: 's1'
+              },
+              review: {
+                attempt_id: 'review',
+                bead_id: 'A-1',
+                kind: 'review_session',
+                status: 'completed',
+                started_at: 3,
+                serial_lane_id: null
+              }
+            }
+          })
+        ],
+        [state()]
+      );
+
+      expect(lanes.pr_wait[0].lane_origin).toEqual(expected);
+      expect(Object.hasOwn(lanes.pr_wait[0], 'lane_origin')).toBe(
+        expected !== undefined
+      );
+    }
+  );
+
+  test.each([
+    {},
+    { legacy: { attempt_id: 'legacy', bead_id: 'A-1', status: 'completed' } }
+  ])('omits PR origin without recorded dispatch material (%j)', (attempts) => {
+    const lanes = buildLanes(
+      [workspace({ pr_wait: [{ bead_id: 'A-1' }], attempts })],
+      [state()]
+    );
+
+    expect(Object.hasOwn(lanes.pr_wait[0], 'lane_origin')).toBe(false);
+  });
+
+  test('leaves waiting rows without an origin even with previous attempts', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          attempts: {
+            old: {
+              attempt_id: 'old',
+              bead_id: 'A-1',
+              status: 'completed',
+              serial_lane_id: 's1'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(Object.hasOwn(lanes.queue[0], 'lane_origin')).toBe(false);
+  });
+});
 
 test.each([false, true])(
   'reads the latest occupancy status regardless of snapshot order (reverse=%s)',
@@ -3144,6 +3312,7 @@ describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
 
     const tile = lanes.running[0];
     expect(tile.kind).toBe('session');
+    expect(Object.hasOwn(tile, 'lane_origin')).toBe(false);
     expect(tile.lane).toBe('running');
     expect(tile.status).toBe('in_progress');
     expect(tile.draggable).toBe(false);
@@ -4652,10 +4821,12 @@ describe('lane model group retention (UI-4tud §4.3)', () => {
       expect(lanes.queue_groups.map((group) => group.root_dir)).toEqual([WS_A]);
     });
 
-    test(`drops the empty group by default (${label} only)`, () => {
+    test(`retains only live slot usage among otherwise empty groups (${label})`, () => {
       const lanes = buildLanes([ws], [state()]);
 
-      expect(lanes.queue_groups).toEqual([]);
+      expect(lanes.queue_groups.map((group) => group.root_dir)).toEqual(
+        label === 'running' ? [WS_A] : []
+      );
     });
   }
 });

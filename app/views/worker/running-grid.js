@@ -42,6 +42,7 @@ import {
   discardReceiptTemplate,
   execChipsTemplate,
   externalWaitCardParts,
+  laneOriginChipTemplate,
   priorityBadgeTemplate,
   routeCardTone,
   routeChipTemplate,
@@ -59,6 +60,7 @@ import { representativeWaitReason } from './wait-vocabulary.js';
 /**
  * @typedef {Object} RunningTile
  * @property {string} bead_id
+ * @property {import('./lane-model.js').LaneOrigin} [lane_origin]
  * @property {string} [root_dir] - Workspace owning this tile.
  * @property {string} attempt_id
  * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
@@ -676,10 +678,9 @@ function failurePopoverTemplate(failure, now) {
 
 /**
  * @typedef {Object} MonitorTileOverlay
- * @property {string} [repo] - Owning workspace name; the badge is a coordinate
- * on the monitor and clicking it goes to that repo's Worker tab (UI-eey2 §7).
+ * @property {string} [repo] - Owning workspace identity in the Monitor header;
+ * clicking it goes to that repo's Worker tab (UI-eey2 §7, UI-us7l).
  * @property {string} [root_dir] - The badge's tooltip.
- * @property {'s1'|'s2'|'s3'|'s4'|'s5'} [serial_lane_id] - Serial lane chip.
  * @property {{ at?: number|null, kind?: string, text?: string, tool?: string }|null} [last_activity] -
  * The attempt's last non-thinking transcript line (§9.3).
  * @property {Array<{ label: string, state: 'live'|'done'|'failed'|'interrupted', agent_type?: string|null, model?: string|null, usage?: Record<string, number>|null, price_usd?: number|null, price_basis?: string, native?: boolean, usage_included?: boolean }>} [legs] -
@@ -692,27 +693,20 @@ function failurePopoverTemplate(failure, now) {
  */
 
 /**
- * Monitor-only 좌표 칩 of a running tile (UI-eey2 §7): 레포 배지 · 직렬 레인
- * 칩. 두 칩은 슬롯 5(좌표·실행 사실)이므로 헤더가 아니라 `.rtile__meta`가
- * 싣는다 (UI-251y §3.1). 재료가 없으면 빈 문자열이다 — 호출 자리가 이 값의
- * 유무로 줄을 그릴지 판정하므로 빈 조각을 돌려주면 빈 줄이 남는다.
+ * Monitor repo identity in slot 1 (UI-us7l).
  *
  * @param {MonitorTileOverlay|null} monitor
  * @returns {import('lit-html').TemplateResult|''}
  */
-function monitorTileChips(monitor) {
-  if (!monitor || (!monitor.repo && !monitor.serial_lane_id)) {
+function monitorTileHead(monitor) {
+  if (!monitor || !monitor.repo) {
     return '';
   }
-  return html`${monitor.repo
-    ? html`<span
-        class="worker-card__repo rtile__repo"
-        title=${monitor.root_dir || ''}
-        >${monitor.repo}</span
-      >`
-    : ''}${monitor.serial_lane_id
-    ? html`<span class="rtile__lane">${monitor.serial_lane_id}</span>`
-    : ''}`;
+  return html`<span
+    class="worker-card__repo rtile__repo"
+    title=${monitor.root_dir || ''}
+    >${monitor.repo}</span
+  >`;
 }
 
 /**
@@ -1108,7 +1102,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 오케 칩이 종전 `formatAttemptTuple` 줄을 대신한다 (§4); 워커 칩만 있어도
   // meta 줄은 그려져야 하므로 표시 조건은 두 칩의 존재로 판정한다.
   const exec_chips =
-    tile.exec_chips && (tile.exec_chips.orchestration || tile.exec_chips.worker)
+    !session &&
+    tile.exec_chips &&
+    (tile.exec_chips.orchestration || tile.exec_chips.worker)
       ? tile.exec_chips
       : null;
   const lineage = formatContinuationLineage(tile);
@@ -1131,7 +1127,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const landing = tile.landing;
   const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
   const monitor = options.monitor || null;
-  const monitor_chips = monitorTileChips(monitor);
+  const repo_chip = monitorTileHead(monitor);
+  const lane_chip = session ? '' : laneOriginChipTemplate(tile.lane_origin);
   // 소속 칩은 좌표(레포·직렬 레인) 다음이다 (UI-8x90 §4.1). 재료가 없으면 빈
   // 문자열이라 줄 판정에 영향이 없다.
   // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 자식 롤업·landing
@@ -1196,31 +1193,34 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         >${sessionRefLabel(session_current)}</span
       >`
     : '';
-  const session_meta =
-    monitor_chips ||
+  const tile_meta =
+    lane_chip ||
     route_chip ||
     source_chips ||
     session_ref_chip ||
     session_receipt_chip ||
+    exec_chips ||
     complex_chip ||
     area_chips ||
     provider_badges.length > 0 ||
     usage_label ||
     external.chips
       ? html`<div class="rtile__meta">
-          ${monitor_chips ||
-          route_chip ||
-          source_chips ||
-          session_ref_chip ||
+          ${lane_chip || route_chip || source_chips || external.chips
+            ? html`<div class="worker-chips worker-chips--coords">
+                ${lane_chip}${route_chip}${source_chips}${external.chips}
+              </div>`
+            : ''}${session_ref_chip ||
           session_receipt_chip ||
+          exec_chips ||
           complex_chip ||
           area_chips ||
-          external.chips
-            ? html`<div class="rtile__facts">
-                ${monitor_chips}${route_chip}${source_chips}${session_ref_chip}${session_receipt_chip}${complex_chip}${area_chips}${external.chips}
-              </div>`
-            : ''}${provider_badges.length > 0 || usage_label
-            ? html`<div class="rtile__usage">
+          provider_badges.length > 0 ||
+          usage_label
+            ? html`<div class="worker-chips worker-chips--run">
+                ${session_ref_chip}${session_receipt_chip}${session
+                  ? ''
+                  : execChipsTemplate(exec_chips)}${complex_chip}${area_chips}
                 ${provider_badges.length > 0
                   ? provider_badges.map(
                       (badge) =>
@@ -1380,6 +1380,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         class="rtile__dot${session ? ' rtile__dot--session' : ''}"
         aria-hidden="true"
       ></span>
+      ${repo_chip}
       <span class="rtile__id" title="클릭하면 ID 복사">${tile.bead_id}</span>
       ${priorityBadgeTemplate(tile.priority)}${lineage
         ? html`<span class="rtile__resumed" title=${lineage}>↻</span>`
@@ -1493,66 +1494,18 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                   >
                 </div>`
               : ''}
-            ${monitor_relations}
-            ${session
-              ? session_meta
-              : monitor_chips ||
-                  route_chip ||
-                  source_chips ||
-                  exec_chips ||
-                  complex_chip ||
-                  area_chips ||
-                  provider_badges.length > 0 ||
-                  usage_label ||
-                  external.chips
-                ? html`<div class="rtile__meta">
-                    ${monitor_chips ||
-                    route_chip ||
-                    source_chips ||
-                    exec_chips ||
-                    complex_chip ||
-                    area_chips ||
-                    external.chips
-                      ? html`<div class="rtile__facts">
-                          ${monitor_chips}${route_chip}${source_chips}${execChipsTemplate(
-                            tile.exec_chips
-                          )}${complex_chip}${area_chips}${external.chips}
-                        </div>`
-                      : ''}
-                    ${provider_badges.length > 0 || usage_label
-                      ? html`<div class="rtile__usage">
-                          ${provider_badges.length > 0
-                            ? provider_badges.map(
-                                (badge) =>
-                                  html`<span
-                                    class="worker-usage"
-                                    title=${badge.tooltip}
-                                    >${badge.label}</span
-                                  >`
-                              )
-                            : usage_label
-                              ? html`<span
-                                  class="worker-usage"
-                                  title=${usageTooltip(
-                                    tile.usage,
-                                    usage_options
-                                  )}
-                                  >${usage_label}</span
-                                >`
-                              : ''}
-                        </div>`
-                      : ''}${chip_popover}
-                  </div>`
-                : ''}
-            ${discardReceiptTemplate(tile)} ${times_el}
+            ${monitor_relations} ${tile_meta} ${discardReceiptTemplate(tile)}
+            ${times_el}
             <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일).
          quick_fix landing의 실제 진행은 위의 별도 진행 줄이 소유한다.
          일시정지된 타일은 살아있지 않으므로 액센트도 없다. -->
             ${failed || paused
               ? ''
               : html`<div class="rtile__accent" aria-hidden="true"></div>`}`}
-    ${(held || failed) && external.chips
-      ? html`<div class="worker-chips">${external.chips}</div>`
+    ${(held || failed) && (lane_chip || external.chips)
+      ? html`<div class="worker-chips worker-chips--coords">
+          ${lane_chip}${external.chips}
+        </div>`
       : ''}${wait_body_lines.times}${failurePopoverTemplate(failure, now)}
   </div>`;
 }

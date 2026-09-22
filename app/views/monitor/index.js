@@ -46,6 +46,7 @@ import {
   toggleRouteFilter
 } from '../worker/lane-model.js';
 import {
+  SERIAL_LANE_LABEL,
   candidateCard,
   discardAbandonCompletionMessage,
   discardAbandonConfirmationMessage,
@@ -1157,7 +1158,7 @@ export function createMonitorView(mount_element, options) {
       id: lane.id,
       // 레포마다 같은 `s1`이 있으므로 pane 요소 id는 붙이지 않는다.
       pane_id: '',
-      title: `${group.name} · 직렬 ${lane.index + 1}`,
+      title: `${group.name} · ${SERIAL_LANE_LABEL} ${lane.index + 1}`,
       rows: [
         ...occupants.map((occupant) => occupantRow(occupant)),
         ...lane.items.map((item, index) => serialRow(lane, item, index))
@@ -1208,12 +1209,30 @@ export function createMonitorView(mount_element, options) {
    * @returns {import('lit-html').TemplateResult}
    */
   function waitBodyTemplate() {
+    const parallel_roots = new Set(
+      lanes.parallel_rows.map((item) => item.root_dir)
+    );
     return waitBody({
       parallel: {
         rows: lanes.parallel_rows.map((item, index) =>
           parallelRow(item, index)
         ),
         count: lanes.parallel_rows.length,
+        slots: lanes.queue_groups
+          .filter(
+            (group) =>
+              parallel_roots.has(group.root_dir) ||
+              group.live_count >= 1 ||
+              group.over_cap
+          )
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((group) => ({
+            root_dir: group.root_dir,
+            name: group.name,
+            live: group.live_count,
+            cap: group.slots,
+            saturated: group.live_count >= group.slots
+          })),
         collapsed: collapse.isAreaCollapsed('parallel'),
         drop: { drop: 'parallel' }
       },
@@ -1253,6 +1272,7 @@ export function createMonitorView(mount_element, options) {
                 id: item.id,
                 root_dir: item.root_dir,
                 attempt_id: item.attempt_id || '',
+                lane_origin: item.lane_origin,
                 title: item.title,
                 // 판정 칩 3종의 재료 (UI-wg68 §5.4, ADR 0014): Worker 타일은
                 // 레인 항목을 통째로 펼쳐 이미 싣는다. 여기서 빠뜨리면 같은
@@ -1345,7 +1365,6 @@ export function createMonitorView(mount_element, options) {
                 monitor: {
                   repo: item.workspace_name,
                   root_dir: item.root_dir,
-                  serial_lane_id: item.serial_lane_id,
                   last_activity: item.last_activity || null,
                   legs: /** @type {any} */ (item.legs || []),
                   dependency_chips: chipsWithOverlaps(item)
