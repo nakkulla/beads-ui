@@ -2408,6 +2408,72 @@ describe('scheduler provider hold and recovery', () => {
     expect(providerHealth.sync).toHaveBeenCalledWith(WS);
   });
 
+  test('keeps a live disabled-access failure on its account while other accounts dispatch', async () => {
+    const notify = { providerHoldEntered: vi.fn() };
+    const env = setup({
+      config: {
+        B1: { claude_account: 'held@example.com' },
+        B2: { claude_account: 'healthy@example.com' }
+      },
+      slots: 1,
+      notify,
+      ...accountDeps({
+        accountCatalog: {
+          ...accountDeps().accountCatalog,
+          readClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: { email, status: 'ok', windows: [] }
+          }))
+        }
+      })
+    });
+    allowSwitchAccounts(env.store, 'claude', [
+      'held@example.com',
+      'healthy@example.com'
+    ]);
+    seedQueue(env.store, ['B1', 'B2']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          is_error: true,
+          api_error_status: 403,
+          result:
+            'Your organization has disabled Claude subscription access for Claude Code'
+        }
+      ]
+    });
+    await flush();
+    await env.scheduler.tick(WS);
+
+    const queue = env.store.snapshot(WS);
+    expect(queue.provider_hold.claude.targets).toMatchObject([
+      {
+        kind: 'usage_limit',
+        detail: 'access_disabled',
+        account: 'held@example.com'
+      }
+    ]);
+    expect(queue.attempts['B1-1000-1']).toMatchObject({
+      status: 'paused',
+      cause: 'provider_outage:access_disabled'
+    });
+    expect(queue.auto_resume_pending).toEqual([]);
+    expect(queue.admission.B2).toBeUndefined();
+    expect(env.runner.spawnOrder).toEqual(['B1', 'B2']);
+    expect(notify.providerHoldEntered).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'usage_limit',
+        detail: 'access_disabled',
+        account: 'held@example.com'
+      })
+    );
+  });
+
   test('switches a usage-limited attempt to the lowest eligible account', async () => {
     const append = vi.fn();
     const providerRecovered = vi.fn();
@@ -21686,6 +21752,115 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
         redispatch_refusal: expect.stringMatching(/^not_ready:/)
       })
     );
+  });
+
+  test('notifies each changed redispatch refusal once while preserving other wait keys', async () => {
+    const notify = { awaitingUser: vi.fn() };
+    /** @type {any} */
+    const config = {
+      S1: { metadata: { awaiting_user: 'plan_approval_stale:revise' } }
+    };
+    const { env } = await parkOne(config, 'plan_approval_stale:revise', {
+      notify
+    });
+    config.S1.metadata = {};
+    notify.awaitingUser.mockClear();
+    const snapshot = {
+      ready: false,
+      blocked: false,
+      repo: '/repo',
+      target_base: 'main',
+      status: 'in_progress',
+      labels: [],
+      deps: []
+    };
+    env.bd.snapshotBead = async () => snapshot;
+    const other_keys = [
+      'S2:redispatch:provider_gate',
+      'external_wait:w:complete'
+    ];
+    env.store.claimWaitNotifications(WS, other_keys, 500);
+
+    await env.scheduler.onIssuesChanged(WS);
+    await env.scheduler.onIssuesChanged(WS);
+    expect(notify.awaitingUser).toHaveBeenCalledTimes(1);
+    snapshot.status = 'open';
+    await env.scheduler.onIssuesChanged(WS);
+    await env.scheduler.onIssuesChanged(WS);
+    expect(notify.awaitingUser).toHaveBeenCalledTimes(2);
+    snapshot.status = 'in_progress';
+    await env.scheduler.onIssuesChanged(WS);
+    await env.scheduler.onIssuesChanged(WS);
+
+    expect(notify.awaitingUser).toHaveBeenCalledTimes(3);
+    expect(Object.keys(env.store.snapshot(WS).wait_notified)).toEqual(
+      expect.arrayContaining(other_keys)
+    );
+  });
+
+  test('clears redispatch suppression after a successful resume', async () => {
+    const notify = { awaitingUser: vi.fn() };
+    /** @type {any} */
+    const config = {
+      S1: { metadata: { awaiting_user: 'plan_approval_stale:revise' } }
+    };
+    const { env, attempt_id } = await parkOne(
+      config,
+      'plan_approval_stale:revise',
+      {
+        notify
+      }
+    );
+    config.S1.metadata = {};
+    notify.awaitingUser.mockClear();
+    const snapshotBead = env.bd.snapshotBead;
+    env.bd.snapshotBead = async (...args) => ({
+      ...(await snapshotBead(...args)),
+      ready: false
+    });
+    await env.scheduler.onIssuesChanged(WS);
+    env.bd.snapshotBead = snapshotBead;
+
+    await env.scheduler.onIssuesChanged(WS);
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].parked_resumed_at).toBe(
+      1000
+    );
+    expect(env.store.snapshot(WS).wait_notified).toEqual({});
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    notify.awaitingUser.mockClear();
+    env.bd.snapshotBead = async (...args) => ({
+      ...(await snapshotBead(...args)),
+      ready: false
+    });
+    await env.scheduler.onIssuesChanged(WS);
+    await env.scheduler.onIssuesChanged(WS);
+
+    expect(notify.awaitingUser).toHaveBeenCalledTimes(1);
+  });
+
+  test('clears only the discarded bead redispatch suppression', async () => {
+    /** @type {any} */
+    const config = {
+      S1: { metadata: { awaiting_user: 'plan_approval_stale:revise' } }
+    };
+    const { env, attempt_id } = await parkOne(
+      config,
+      'plan_approval_stale:revise'
+    );
+    const other_key = 'S2:redispatch:provider_gate';
+    env.store.claimWaitNotifications(
+      WS,
+      ['S1:redispatch:provider_gate', other_key],
+      500
+    );
+
+    const result = await env.scheduler.finalizeDiscardAttempt(WS, attempt_id);
+
+    expect(result).toEqual({ ok: true });
+    expect(env.store.snapshot(WS).wait_notified).toEqual({ [other_key]: 500 });
   });
 
   test('the retry timer dispatches the ladder as a new attempt', async () => {

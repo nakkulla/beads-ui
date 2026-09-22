@@ -17,6 +17,45 @@ function resultEvent(overrides = {}) {
 }
 
 describe('runner/provider-outage result classification', () => {
+  test('classifies disabled organization access as an account failure', () => {
+    const message =
+      'Your organization has disabled Claude subscription access for Claude Code';
+    const raw = [resultEvent({ api_error_status: 403, result: message })];
+
+    const result = classifyProviderOutage({ raw, stderr_tail: null });
+
+    expect(result).toEqual({
+      detail: 'access_disabled',
+      scope: 'account',
+      resets_at: null,
+      message
+    });
+  });
+
+  test('leaves an unrelated structured 403 unclassified', () => {
+    const raw = [
+      resultEvent({ api_error_status: 403, result: 'Permission denied' })
+    ];
+
+    const result = classifyProviderOutage({ raw, stderr_tail: null });
+
+    expect(result).toBeNull();
+  });
+
+  test('keeps a structured provider error ahead of disabled-access text', () => {
+    const raw = [
+      resultEvent({
+        api_error_status: 503,
+        result:
+          'Your organization has disabled Claude subscription access for Claude Code'
+      })
+    ];
+
+    const result = classifyProviderOutage({ raw, stderr_tail: null });
+
+    expect(result).toMatchObject({ detail: 'http_503', scope: 'provider' });
+  });
+
   test.each([
     'Failed to authenticate: OAuth session expired and could not be refreshed',
     'invalid_grant',

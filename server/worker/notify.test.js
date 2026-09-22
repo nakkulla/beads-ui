@@ -106,6 +106,17 @@ describe('wait notification suppression', () => {
     expect(spawn.calls).toHaveLength(1);
   });
 
+  test('preserves redispatch suppression while refreshing wait judgments', async () => {
+    const { input, store } = fixture();
+    const key = 'UI-a:redispatch:provider_gate';
+    store.claimWaitNotifications('/repo', [key], 500);
+
+    await notifyWaitReasons(input);
+    await notifyWaitReasons({ ...input, wait_reasons: [], now: 2000 });
+
+    expect(store.snapshot('/repo').wait_notified).toEqual({ [key]: 500 });
+  });
+
   test.each([
     [
       { session: 'launched', mode: 'fork', session_id: '1234567890' },

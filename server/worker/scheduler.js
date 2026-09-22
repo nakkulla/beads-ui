@@ -5820,6 +5820,10 @@ export function createScheduler(deps) {
       200
     );
     const usage_limit = outage.detail === 'usage_limit';
+    const target_kind =
+      usage_limit || outage.detail === 'access_disabled'
+        ? 'usage_limit'
+        : 'outage';
     const policy = providerLimitPolicyOf(workspace, attempt.runner);
     // An unresolved account is fail-closed (§6 F3): the target neither probes
     // nor auto-resumes, because nothing here knows which pool hit the limit,
@@ -5861,7 +5865,7 @@ export function createScheduler(deps) {
       },
       runner: attempt.runner,
       target: {
-        kind: usage_limit ? 'usage_limit' : 'outage',
+        kind: target_kind,
         model: attempt.model ?? '',
         account: classified.account,
         detail: outage.detail,
@@ -5892,13 +5896,13 @@ export function createScheduler(deps) {
         attempt.runner
       ]?.targets?.find(
         (/** @type {any} */ candidate) =>
-          candidate.kind === (usage_limit ? 'usage_limit' : 'outage') &&
+          candidate.kind === target_kind &&
           candidate.account === classified.account
       )?.auto_switch;
       notifyLifecycle('providerHoldEntered', {
         bead_id,
         runner: attempt.runner,
-        kind: usage_limit ? 'usage_limit' : 'outage',
+        kind: target_kind,
         detail: outage.detail,
         summary,
         account: classified.account,
@@ -15275,6 +15279,28 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Replace only this bead's redispatch suppression, preserving other producers.
+   * A null refusal clears suppression after resume or discard.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string|null} refusal
+   * @returns {boolean} True when this refusal needs its first notification.
+   */
+  function claimRedispatchNotification(workspace, bead_id, refusal) {
+    const prefix = `${bead_id}:redispatch:`;
+    const keys = Object.keys(
+      deps.store.snapshot(workspace).wait_notified
+    ).filter((key) => !key.startsWith(prefix));
+    const key = refusal === null ? null : `${prefix}${refusal}`;
+    if (key !== null) {
+      keys.push(key);
+    }
+    const fresh = deps.store.claimWaitNotifications(workspace, keys, now());
+    return key !== null && fresh.includes(key);
+  }
+
+  /**
    * Dispatch a fresh attempt for a parked one and stamp the parked record
    * resumed (spec §3.1).
    *
@@ -15317,7 +15343,11 @@ export function createScheduler(deps) {
     if (launched === null || launched === attempt_id) {
       const refusal =
         deps.store.snapshot(workspace).admission?.[bead_id]?.reason;
-      if (typeof refusal === 'string' && refusal.length > 0) {
+      if (
+        typeof refusal === 'string' &&
+        refusal.length > 0 &&
+        claimRedispatchNotification(workspace, bead_id, refusal)
+      ) {
         notifyLifecycle('awaitingUser', {
           bead_id,
           awaiting_user: record.cause_detail?.awaiting_user ?? null,
@@ -15331,6 +15361,7 @@ export function createScheduler(deps) {
       return false;
     }
     deps.store.markParkedResumed(workspace, { attempt_id, at: now() });
+    claimRedispatchNotification(workspace, bead_id, null);
     notifyChanged(workspace);
     return true;
   }
@@ -16170,6 +16201,7 @@ export function createScheduler(deps) {
     if (!updated.ok) {
       return { ok: false, reason: 'attempt_persist_failed' };
     }
+    claimRedispatchNotification(workspace, attempt.bead_id, null);
     // 2026-08-29 worker-held-tile-discard spec §4.2 (D2 사다리 포기): 폐기는
     // env 사다리의 비-env 결말 중 하나이므로 그 bead의 lineage를 닫는다.
     // `parked`·`waiting`은 `settleFailureTier`에서 이미 닫았고 `retry_wait`만

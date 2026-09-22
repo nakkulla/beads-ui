@@ -14,6 +14,8 @@ export const LIMIT_RE =
 export const CREDENTIAL_RE =
   /Failed to authenticate|OAuth session expired|could not be refreshed|invalid_grant|401 Unauthorized|Missing bearer/i;
 
+const ACCESS_DISABLED_RE = /organization has disabled.*subscription access/i;
+
 /** @type {RegExp} */
 const API_529_RE = /\bAPI Error: 529\b/i;
 /** @type {RegExp} */
@@ -141,6 +143,13 @@ function classifyLines(lines, structured_status, allow_limit) {
     return outageMatch('credential', 'account', credential_line);
   }
   if (structured_status !== null) {
+    if (structured_status === 403) {
+      return outageMatch(
+        'access_disabled',
+        'account',
+        matchingLine(lines, ACCESS_DISABLED_RE)
+      );
+    }
     if (structured_status === 529) {
       return outageMatch('overloaded_529', 'provider', first_line);
     }

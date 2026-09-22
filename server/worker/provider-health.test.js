@@ -373,12 +373,11 @@ describe('provider health probe', () => {
     expect(timers.next()?.delay).toBe(900_000);
   });
 
-  // 보존 23 (spec §5)
-  test('reclassifies a non-limit usage probe failure as outage', async () => {
+  test('promotes a usage target only for a classified provider outage', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
     const spawnImpl = makeSpawn(
-      { type: 'result', is_error: true, result: 'permission denied' },
+      { type: 'result', is_error: true, result: 'API Error: 529 Overloaded' },
       1
     );
     const env = setup(store, timers, spawnImpl);
@@ -393,6 +392,83 @@ describe('provider health probe', () => {
     const target = store.snapshot(WS).provider_hold.claude.targets[0];
     expect(target.kind).toBe('outage');
     expect(target.attempt_ids).toEqual(['att-1']);
+  });
+
+  test.each([
+    { result: 'permission denied' },
+    { api_error_status: 401, result: '401 Unauthorized: Missing bearer' },
+    {
+      api_error_status: 403,
+      result:
+        'Your organization has disabled Claude subscription access for Claude Code'
+    }
+  ])(
+    'keeps failed account probes scoped to the usage target: %j',
+    async (failure) => {
+      const store = createQueueStore({ now: () => NOW });
+      const timers = makeTimers();
+      const spawnImpl = makeSpawn(
+        { type: 'result', is_error: true, ...failure },
+        1
+      );
+      const env = setup(store, timers, spawnImpl);
+      seedHold(store, 'usage_limit', 'held@example.com', {
+        resets_at: NOW - 60_000
+      });
+      await env.health.start(WS);
+
+      timers.fireNext();
+      await flush();
+
+      const target = store.snapshot(WS).provider_hold.claude.targets[0];
+      expect(target).toMatchObject({
+        kind: 'usage_limit',
+        account: 'held@example.com',
+        rearm_count: 1,
+        resets_at: NOW - 60_000,
+        last_error:
+          'api_error_status' in failure ? failure.result : 'probe_failed',
+        attempt_ids: ['att-1']
+      });
+      expect(timers.next()?.delay).toBe(OUTAGE_BACKOFF_MS[1]);
+    }
+  );
+
+  test('backs off repeated unclassified usage probes instead of reusing an expired reset', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ type: 'result', is_error: true, result: 'unknown' }, 1)
+    );
+    seedHold(store, 'usage_limit', 'held@example.com', {
+      resets_at: NOW - 60_000
+    });
+    await env.health.start(WS);
+    /** @type {number[]} */
+    const delays = [];
+
+    for (let index = 0; index < OUTAGE_BACKOFF_MS.length + 1; index += 1) {
+      timers.fireNext();
+      await flush();
+      env.health.sync(WS);
+      const next = timers.next();
+      if (!next) {
+        throw new Error('usage probe was not rearmed');
+      }
+      delays.push(next.delay);
+    }
+
+    expect(delays).toEqual([
+      ...OUTAGE_BACKOFF_MS.slice(1),
+      3_600_000,
+      3_600_000
+    ]);
+    expect(store.snapshot(WS).provider_hold.claude.targets[0]).toMatchObject({
+      kind: 'usage_limit',
+      rearm_count: OUTAGE_BACKOFF_MS.length + 1
+    });
   });
 
   test('rearms usage targets beyond three resets without a disarmed notification', async () => {
@@ -615,6 +691,62 @@ describe('provider health probe', () => {
     const target = store.snapshot(WS).provider_hold.claude.targets[0];
     expect(target.kind).toBe('usage_limit');
     expect(target.resets_at).toBe(Date.parse('2026-09-03T09:00:00Z'));
+  });
+
+  test.each([
+    { api_error_status: 401, result: '401 Unauthorized: Missing bearer' },
+    {
+      api_error_status: 403,
+      result:
+        'Your organization has disabled Claude subscription access for Claude Code'
+    }
+  ])(
+    'narrows an existing outage after an account failure: %j',
+    async (failure) => {
+      const store = createQueueStore({ now: () => NOW });
+      const timers = makeTimers();
+      const spawnImpl = makeSpawn(
+        { type: 'result', is_error: true, ...failure },
+        1
+      );
+      const env = setup(store, timers, spawnImpl);
+      seedHold(store, 'outage', 'held@example.com', { rearm_count: 49 });
+      await env.health.start(WS);
+
+      timers.fireNext();
+      await flush();
+
+      expect(store.snapshot(WS).provider_hold.claude.targets[0]).toMatchObject({
+        kind: 'usage_limit',
+        account: 'held@example.com',
+        resets_at: null,
+        rearm_count: 49,
+        last_error: failure.result,
+        attempt_ids: ['att-1']
+      });
+      expect(env.tick).toHaveBeenCalledTimes(1);
+      expect(timers.next()?.delay).toBe(900_000);
+    }
+  );
+
+  test('keeps an existing outage when the failed probe is unclassified', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ type: 'result', is_error: true, result: 'unknown' }, 1)
+    );
+    seedHold(store, 'outage', 'held@example.com');
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect(store.snapshot(WS).provider_hold.claude.targets[0].kind).toBe(
+      'outage'
+    );
+    expect(env.tick).not.toHaveBeenCalled();
   });
 
   // RED 4 (spec §5)

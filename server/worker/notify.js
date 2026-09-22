@@ -158,7 +158,10 @@ export async function notifyWaitReasons(input) {
       ...by_key.keys(),
       ...Object.keys(
         input.store.snapshot?.(input.workspace).wait_notified || {}
-      ).filter((key) => key.startsWith('external_wait:'))
+      ).filter(
+        (key) =>
+          key.startsWith('external_wait:') || key.includes(':redispatch:')
+      )
     ],
     input.now
   );

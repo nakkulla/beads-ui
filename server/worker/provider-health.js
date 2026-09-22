@@ -417,7 +417,7 @@ export function createProviderHealth(deps) {
       return;
     }
     const delay =
-      target.kind === 'usage_limit'
+      target.kind === 'usage_limit' && failures === 0
         ? target.resets_at === null
           ? USAGE_FALLBACK_MS
           : Math.max(0, target.resets_at + USAGE_RESET_GRACE_MS - now())
@@ -542,16 +542,16 @@ export function createProviderHealth(deps) {
       sync(workspace);
       return;
     }
-    // The mirror of the usage-limit promotion below (release spec §3.2): when
-    // the classifier now reads a standing outage as a usage limit, the target
-    // follows it down to an account-scoped gate. `rearm_count` and the hold's
+    // The mirror of the provider-only promotion below: when the classifier
+    // now reads a standing outage as an account failure, the target follows
+    // it down to an account-scoped gate. `rearm_count` and the hold's
     // `since` are untouched and remain display observations. An
     // `account === null` target is NOT demoted: it would become a target that
     // neither probes nor auto-resumes (outage spec §6 F3).
     if (
       live_target.kind === 'outage' &&
       live_target.account !== null &&
-      result.outage?.detail === 'usage_limit'
+      result.outage?.scope === 'account'
     ) {
       deps.store.updateProviderTarget(workspace, {
         runner,
@@ -587,7 +587,7 @@ export function createProviderHealth(deps) {
             last_error: result.error
           }
         });
-      } else {
+      } else if (result.outage?.scope === 'provider') {
         deps.store.updateProviderTarget(workspace, {
           runner,
           generation,
@@ -596,6 +596,29 @@ export function createProviderHealth(deps) {
           account: live_target.account,
           patch: { kind: 'outage' }
         });
+      } else {
+        deps.store.updateProviderTarget(workspace, {
+          runner,
+          generation,
+          kind: live_target.kind,
+          model: live_target.model,
+          account: live_target.account,
+          patch: {
+            last_error: result.error,
+            rearm_count: live_target.rearm_count + 1
+          }
+        });
+        // An expired usage reset is not a retry deadline for an unclassified
+        // or account failure; carry the probe backoff without widening its gate.
+        scheduleTarget(
+          workspace,
+          runner,
+          generation,
+          since,
+          live_target,
+          failures + 1
+        );
+        return;
       }
       sync(workspace);
       return;
