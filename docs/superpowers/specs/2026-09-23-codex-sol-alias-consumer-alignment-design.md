@@ -5,10 +5,12 @@ scope:
   - server/worker/runner-catalog.js
   - server/worker/runner-catalog.test.js
   - server/worker/runner/codex.js
+  - server/worker/runner/codex.test.js
   - server/worker/attempt-facts.js
   - server/worker/attempt-facts.test.js
   - server/worker/runner/preamble.js
   - server/worker/runner/preamble.test.js
+  - server/worker/runner/__snapshots__/preamble.test.js.snap
   - server/worker/usage-pricing.test.js
   - app/utils/execution-defaults.js
   - app/utils/execution-defaults.test.js
@@ -21,12 +23,15 @@ scope:
 - Bead: UI-vui5 (route=spec_backed) · 선행 dotfiles-oh3s (blocks, closed — PR #525,
   `ded9af947984dbb4ed1e1bd62737e3a0dedecada`)
 - 정본: dotfiles `docs/superpowers/specs/2026-09-23-codex-sol-gpt-6-sol-rerouting-design.md`
-  (ADR dotfiles-oh3s·oh3s-2). beads-ui는 그 projection의 소비자다(ADR 0012).
+  (ADR dotfiles/dotfiles-oh3s, ADR dotfiles/dotfiles-oh3s-2). beads-ui는 그 projection의
+  소비자다(ADR 0012).
 - 기준: beads-ui `origin/main bef092bf8bfb5d6a24450e77efb28a53cbaa8167`, dotfiles
   `origin/main ded9af947984dbb4ed1e1bd62737e3a0dedecada`
 - 사용자 결정(2026-09-23): runner catalog는 자체 표를 유지하고 일치 테스트로 드리프트를
   잡는다; 리뷰어 모델은 구현 모델 행과 같은 ID 표시; 직전 세대 gpt-5.6-sol을 버전 고정
   모델 `sol-5.6`으로 남긴다.
+- r1 리뷰(astra, REVISE) 반영: BUILTIN 파생 테스트 기대값의 동반 갱신 명시와
+  `runner/codex.test.js` scope 추가, preamble 스냅샷 파일 scope 추가, dotfiles ADR 인용 접두.
 
 ## 1. 배경 (2026-09-23 실측)
 
@@ -138,11 +143,23 @@ RED → GREEN 시임(핀 재발행을 먼저 하면 1·2가 RED가 된다):
 3. `server/worker/attempt-facts.test.js` — 별칭형 핀(`reviewers.codex.model: 'sol'`,
    `model_catalog.codex.sol: 'gpt-6-sol'`)에서 `resolveReviewerPreset`의 `model === 'gpt-6-sol'`;
    표에 없는 별칭은 별칭 그대로.
-4. `server/worker/usage-pricing.test.js` — `sol`·`sol-5.6`에 서로 다른 가격을 준 해석 카탈로그에서
+4. `server/worker/usage-pricing.test.js` — `sol`·`sol-5.6`에 서로 다른 가격만 준(overrides에
+   `id`를 넣지 않아 BUILTIN ID가 그대로인) 해석 카탈로그에서
    `modelPrice(catalog, 'gpt-5.6-sol')`이 `sol-5.6`의 가격, `'gpt-6-sol'`이 `sol`의 가격이다.
 
-동반 갱신(시임 아님): `preamble.test.js`의 기대 줄(출처 표기), Codex 모델 이름 목록을 정확히
-나열하는 테스트가 있으면 `sol-5.6` 추가, 나머지 `gpt-5.6-sol` 픽스처는 관측 ID 예시라 그대로 둔다.
+동반 갱신(시임 아님):
+
+- BUILTIN의 `sol` ID에서 파생된 기대값은 새 매핑(`gpt-6-sol`)으로 바꾼다 —
+  `runner/codex.test.js`의 `buildArgv` 기대 인자(`:58·120·142`), `runner-catalog.test.js`의
+  `sol.id` 단언(`:64·380`), `usage-pricing.test.js` "CLI id로 조회" 테스트(`:247` 부근, `sol`에만
+  가격을 준 카탈로그)의 조회 문자열.
+- preamble 출처 표기 변경: `preamble.test.js:935`의 기대 줄과
+  `runner/__snapshots__/preamble.test.js.snap`의 네 줄(`:380·487·569·675`). 스냅샷 diff가 그 네
+  줄의 출처 표기 말고는 없음을 확인한다.
+- Codex 모델 이름 목록을 정확히 나열하는 기대값이 있으면 `sol-5.6`을 더한다.
+- 옛 ID `gpt-5.6-sol`을 그대로 두는 것은 관측 기록 픽스처(rollout·usage leg·영수증 문자열)와
+  카탈로그를 명시 주입한 테스트뿐이다. 전체 테스트에서 추가로 드러나는 BUILTIN 파생 기대값도
+  같은 규칙으로 갱신한다.
 
 ## 검증 범위
 
