@@ -49,26 +49,41 @@ scope:
   **둘 다** 붙을 수 있다. 어휘·판정 신호는 dotfiles 계약이 소유한다(형제 스펙, §10).
 - 칩 문법 스펙 UI-8x90 §4.5·§5.1의 "판정 칩 클릭은 사유 팝업이고 즉시 적용은 없다"는 결정을
   `복잡`·`frontend`·`backend` 세 칩에 한해 뒤집는다.
+- (UI-uohc 착지 뒤 정정, 2026-09-22) 프리셋은 `applies_to` 계열(`general`·`quick_fix`)로 갈리고
+  이슈 적용은 route와 계열이 맞을 때만 일어난다(ADR UI-uohc). **칩 클릭은 `route=quick_fix` 이슈에서
+  동작하지 않는다** — 그 이슈에서는 기존처럼 사유 팝업만 뜬다. 칩 바인딩은 `general` 계열 프리셋만
+  가리키고, 계열별 바인딩은 필요가 생겼을 때 따로 판단한다(UI-uohc 사용자 결정).
 
 ## 1. 요구와 확인된 현재 동작
 
 - 프리셋 저장소는 서버 전역 파일 `$XDG_STATE_HOME/bdui/exec-presets.json` 하나다
-  (`server/exec-preset-store.js`, `{ revision, presets[], reseed_migration? }`). 모든 변경은
+  (`server/exec-preset-store.js`,
+  `{ revision, presets[], reseed_migration?, preset_profile_migration? }`). 프리셋 항목은
+  `applies_to: 'general'|'quick_fix'` 계열을 갖고 `settings`는 계열의 canonical 키 집합만 담는다
+  (`general` 17키 = `GENERAL_PRESET_KEYS`, `quick_fix` 8키 = `QUICK_FIX_PRESET_KEYS`;
+  `server/worker/exec-enums.js` `presetKeysFor`, ADR UI-uohc). 모든 변경은
   `applyMutation(expected_revision, mutate)`의 CAS를 지나고 `revision`이 1 오른다. 구독 채널은
   서버 전역이며(`server/ws/exec-preset-handlers.js` `SUBSCRIBERS`) 변경마다
   `impl-presets-snapshot { id, revision, presets }`를 민다.
 - 이슈에 프리셋을 적용하는 op는 `apply-impl-preset { id, preset_id, expected_revision }` 하나다.
   `handleApplyImplPreset`은 `root_dir`을 읽지 않고 **연결된 워크스페이스**에서 이슈를 조회·수정한다.
-  `buildApplyImplPresetArgs`가 `BEAD_PIN_KEYS` 17키를 `--set-metadata`/`--unset-metadata`로 교체하고
-  같은 argv에 `applied_exec_preset=<preset_id>`를 더한다(ADR UI-xq3h). 개별 키 편집
+  `presetSettingsForIssue(preset, route)`가 이슈 route와 프리셋 계열이 맞는지 판정해 어긋나면 쓰기
+  전에 `preset_route_mismatch`로 거부하고, 맞으면 계열 키 집합을 복사한 뒤 명시 `impl_runtime`이
+  없으면 `impl_model`에서 런타임을 유도한다. `buildApplyImplPresetArgs(id, settings, preset_id,
+  replaced_keys)`가 그 계열 키 집합(`general`이면 `BEAD_PIN_KEYS` 17키)을
+  `--set-metadata`/`--unset-metadata`로 교체하고 같은 argv에 `applied_exec_preset=<preset_id>`를
+  더한다(ADR UI-uohc; id 하나 정체성은 UI-xq3h 승계). 개별 키 편집
   (`update-exec-settings`·`update-impl-target`)은 `applied_exec_preset`을 건드리지 않고, 카드의
-  어긋남은 읽을 때 17키 대칭 비교로 계산한다(`app/views/detail-panel/effective-settings.js`
-  `presetDeviation`).
+  어긋남은 읽을 때 이슈 route의 계열 키 집합으로 대칭 비교한다
+  (`app/views/detail-panel/effective-settings.js` `presetDeviation(metadata, preset, route, catalog)`;
+  `quick_fix`가 아닌 route는 17키).
 - WS 요청 처리는 병렬이다. `server/bd.js` `runBd`는 `withBdRunQueue`로 **개별 `bd` 명령**만
   직렬화하므로, 읽고 판정해 쓰는 한 전이는 요청 두 개가 끼어들 수 있다.
 - attempt 기록의 `exec_preset { id, name, revision, deviated_keys }`는
-  `exec-preset-coordinator.js` `dispatchPreset(queue.applied_exec_preset, bead_snapshot)`이
-  **워크스페이스**의 전역 적용 기록으로 만든다. dispatch 입력인 `BeadSnapshot`은
+  `exec-preset-coordinator.js` `resolveForDispatch`가
+  `dispatchPreset(queue[APPLIED_PRESET_FIELDS[profile]], bead_snapshot, profile)`로
+  **워크스페이스**의 계열별 적용 기록(`applied_exec_preset`·`applied_quick_fix_preset`,
+  `server/worker/queue-store.js`)에서 만든다. dispatch 입력인 `BeadSnapshot`은
   `server/worker/attach.js` `snapshotBead`가 `bd show --json`의 metadata에서 고른 필드로 만들며
   `applied_exec_preset`을 싣지 않는다. 이슈에 다른 프리셋을 적용해도 attempt는 워크스페이스 프리셋
   이름에 `deviated_keys`가 붙은 모양으로 기록되고, 비교탭은 그 이름으로 묶는다.
@@ -82,11 +97,15 @@ scope:
 - 서버 runnable 투영(`server/worker/runnable-cache.js`)은 행에 `labels`·`complex_reason`·
   `exec_pins`를 싣는다. 라벨 편집 op는 `label-add`/`label-remove { id, label }`다.
 - 모니터 탭 헤더 `⚙`는 `settings_dialog.open(undefined, { scope: 'monitor' })`로 일괄 창을 열고,
-  일괄 창의 탭은 `BULK_SETTINGS_TABS` = 워커·세션·계정이다(ADR UI-e1ta). 이 창에는 서버 전역
-  값을 쓰는 컨트롤이 아직 없다 — 프리셋 목록 CRUD가 서버 전역이지만 적용은 언제나 저장소
-  단위다.
-- 계약의 활성 라벨은 `worker-ineligible`·`session-preferred`·`complex`·`spec-after-blocker`
-  넷이고 `frontend`·`backend`는 없다. beads-ui는 계약 어휘의 소비자다(ADR 0012).
+  탭은 `SETTINGS_TABS`(워커·quick fix·세션·계정·표시)에서 일괄 모드가 `표시`만 뺀
+  `BULK_SETTINGS_TABS` = 워커·quick fix·세션·계정 넷이고, 레포 카드 창의 `REPO_SETTINGS_TABS`는 같은
+  배열을 가리킨다(ADR UI-uohc-2). `quick fix` 탭의 glyph는 `◈`다. 이 창에는 서버 전역 값을 쓰는
+  컨트롤이 아직 없다 — 프리셋 목록 CRUD가 서버 전역이지만 적용은 언제나 저장소 단위다.
+- 계약의 활성 라벨은 `worker-ineligible`·`session-preferred`·`complex`·`frontend`·`backend`·
+  `spec-after-blocker`다. `frontend`·`backend`는 형제 스펙 dotfiles-kp4c가 착지해 `labels.area`
+  범주로 등록됐고(판정 질문: acceptance가 렌더된 화면으로 판정되는가; 둘 다 가능; 사유 키 없음;
+  `route=quick_fix` 핀이 지우지 않음), 소비자는 beads-ui뿐이다. beads-ui는 계약 어휘의 소비자다
+  (ADR 0012).
 
 ## 2. 검토한 접근과 선택
 
@@ -131,10 +150,12 @@ CAS·같은 스냅샷 채널을 쓴다 — **선택**. 바인딩은 프리셋 id
 ### 3.2 변경
 
 - 새 op `impl-preset-bind { expected_revision, chip, preset_id }` — `chip ∈ CHIP_BINDING_KEYS`,
-  `preset_id`는 현재 `presets`에 있는 id이거나 `null`(해제). `applyMutation`을 지나 `revision`이
-  오르고 스냅샷이 밀린다. 응답은 `{ applied: true, revision }` 또는 CAS 실패
-  `{ applied: false, conflict: true, revision, presets, chip_bindings }`. 어휘 밖 `chip`,
-  목록에 없는 `preset_id`는 `bad_request`.
+  `preset_id`는 현재 `presets`에 있는 **`applies_to=general`** 프리셋의 id이거나 `null`(해제).
+  `applyMutation`을 지나 `revision`이 오르고 스냅샷이 밀린다. 응답은 `{ applied: true, revision }`
+  또는 CAS 실패 `{ applied: false, conflict: true, revision, presets, chip_bindings }`. 어휘 밖
+  `chip`, 목록에 없는 `preset_id`, `applies_to=quick_fix` 프리셋의 id는 `bad_request`
+  (`preset_route_mismatch`) — 칩 클릭은 quick_fix 이슈에서 동작하지 않으므로(§0, ADR UI-uohc)
+  quick_fix 계열 프리셋을 맨 바인딩은 어느 이슈에도 적용될 수 없다.
 - `impl-preset-delete`는 같은 mutation 안에서 그 id를 가리키는 바인딩을 전부 `null`로 만든다.
   `impl-preset-update`는 바인딩을 건드리지 않는다(id가 같다).
 - `impl-presets-snapshot`은 `chip_bindings`를 함께 싣는다. 구버전 클라이언트는 모르는 필드를
@@ -156,6 +177,7 @@ CAS·같은 스냅샷 채널을 쓴다 — **선택**. 바인딩은 프리셋 id
 | 이슈 상태 | 동작 |
 | --- | --- |
 | `preset_id === null` | `bad_request` `chip_unbound` — 클라이언트는 바인딩 없는 칩을 버튼으로 그리지 않으므로(§5.2) 정상 경로에서 오지 않는다 |
+| `metadata.route === 'quick_fix'` | `bad_request` `preset_route_mismatch` — 칩 클릭은 quick_fix 이슈에서 동작하지 않는다(§0, ADR UI-uohc). 클라이언트는 그 이슈의 칩을 팝업 버튼으로 그리므로(§5.2) 정상 경로에서 오지 않는다. 아무것도 쓰지 않는다 |
 | `metadata.chip_preset_source === chip` 이고 `metadata.applied_exec_preset === preset_id` | **복원**(§4.3) |
 | 그 밖 | **적용**(§4.2) |
 
@@ -165,8 +187,10 @@ CAS·같은 스냅샷 채널을 쓴다 — **선택**. 바인딩은 프리셋 id
 ### 4.2 적용
 
 `apply-impl-preset`의 헬퍼 `resolvePresetForApply`·`presetSettingsForIssue`·`buildApplyImplPresetArgs`를
-재사용해(17키 교체 + `applied_exec_preset=<preset_id>`, quick_fix 역매핑·오케스트레이션 검증 포함)
-§4.1이 고른 워크스페이스에서 `bd update` 한 번을 쓰고, 같은 argv에 두 키를 더한다. 핸들러
+재사용해(계열 키 집합 교체 + `applied_exec_preset=<preset_id>`; route·계열 일치 판정, 모델에서의
+런타임 유도, 오케스트레이션·정합 검증 포함 — ADR UI-uohc) §4.1이 고른 워크스페이스에서 `bd update`
+한 번을 쓰고, 같은 argv에 두 키를 더한다. 바인딩은 `general` 계열만 가리키고 §4.1이 quick_fix
+route를 먼저 거르므로 이 경로의 교체 집합은 언제나 `general` 17키(`BEAD_PIN_KEYS`)다. 핸들러
 `handleApplyImplPreset` 자체는 부르지 않는다(연결 워크스페이스에 묶여 있다).
 
 - `chip_preset_source=<chip>` — 이 핀 집합을 세운 칩.
@@ -209,9 +233,10 @@ promise 체인(`toggle_chains: Map<string, Promise<void>>`)을 들고, 새 요�
 ### 4.6 키의 소유
 
 `chip_preset_source`·`chip_preset_restore`는 `applied_exec_preset`과 같은 beads-ui 자신의 키다
-(ADR UI-xq3h 전제: dotfiles가 읽지 않는 키는 계약 정의가 아니다). 어휘 정본은
+(ADR UI-uohc가 UI-xq3h에서 승계한 전제: dotfiles가 읽지 않는 키는 계약 정의가 아니다). 어휘 정본은
 `server/worker/exec-enums.js`(`CHIP_PRESET_SOURCE_KEY`·`CHIP_PRESET_RESTORE_KEY`)이고
-`session-model.js`가 미러한다. `BEAD_PIN_KEYS` 17키 밖이며 프리셋 대상 키가 아니다.
+`session-model.js`가 미러한다. `BEAD_PIN_KEYS` 17키 밖이며 어느 계열의 프리셋 키 집합
+(`presetKeysFor`)에도 없다.
 
 ## 5. 칩 상태와 표면
 
@@ -222,22 +247,28 @@ promise 체인(`toggle_chains: Map<string, Promise<void>>`)을 들고, 새 요�
 
 | `data-state` | 조건 |
 | --- | --- |
-| `applied` | `chip_preset_source === chip` 이고 `applied_exec_preset === chip_bindings[chip]` 이고 17키 대칭 비교(`presetDeviation`)가 0건 |
+| `applied` | `chip_preset_source === chip` 이고 `applied_exec_preset === chip_bindings[chip]` 이고 이슈 route의 계열 키 집합 대칭 비교(`presetDeviation(metadata, preset, route, catalog)`; 칩 이슈는 quick_fix가 아니므로 17키)가 0건 |
 | `diverged` | 위와 같되 대칭 비교가 1건 이상 |
 | `unapplied` | 그 밖(바인딩이 있음) |
 
-프리셋 스냅샷이 아직 없으면 상태를 그리지 않는다(ADR UI-xq3h "알 수 없는 동안 말하지 않는다").
+`route=quick_fix` 이슈의 칩은 바인딩이 있어도 상태를 얻지 않는다 — 바인딩 없는 칩과 같은 팝업
+버튼이다(§5.2). 프리셋 스냅샷이 아직 없으면 상태를 그리지 않는다(ADR UI-xq3h에서 UI-uohc가
+승계한 "알 수 없는 동안 말하지 않는다").
 `applied`·`diverged`는 칩을 채운 모양(기존 `.ctl-chip--label` 위 배경 반전)으로, `unapplied`는
 지금 모양이다. 클릭은 상태와 무관하게 §4.1 서버 판정을 따른다 — `diverged`에서 클릭은 복원이다
 (사용자 결정: 재클릭=해제).
 
 ### 5.2 바인딩 유무
 
-- 바인딩이 있는 칩은 `<button class="… judgement-chip judgement-chip--bound" data-chip-key=… data-state=…>`
+- 바인딩이 있고 이슈 route가 `quick_fix`가 아닌 칩은
+  `<button class="… judgement-chip judgement-chip--bound" data-chip-key=… data-state=…>`
   이고 클릭이 `chip-preset-toggle`이다. `title`은 사유 문장(§5.4) 뒤에 ` · 클릭: <프리셋 이름> 적용`
-  또는 ` · 클릭: 클릭 전 설정으로 복원`을 붙인다.
-- 바인딩이 없는 칩은 지금과 같은 사유 팝업 버튼이다. 팝업 본문의 안내 줄은 "적용은 이슈 상세의
-  실행 설정 편집기에서"에서 "칩에 프리셋을 매려면 모니터 탭 ⚙ → 칩"으로 바꾼다.
+  또는 ` · 클릭: 클릭 전 설정으로 복원`을 붙인다. 재료인 route는 후보 행·오버레이 행의 `route`
+  (이미 실림)와 상세의 `metadata.route`다.
+- 바인딩이 없는 칩과 `route=quick_fix` 이슈의 칩은 지금과 같은 사유 팝업 버튼이다. 팝업 본문의
+  안내 줄은 "적용은 이슈 상세의 실행 설정 편집기에서"에서 "칩에 프리셋을 매려면 모니터 탭 ⚙ →
+  칩"으로 바꾸고, `route=quick_fix` 이슈에서는 "quick fix 이슈에는 칩 적용이 없습니다 — 적용은
+  이슈 상세의 quick fix 프리셋에서"로 한다.
 - 다른 판정 칩(`세션 권장`·`worker-ineligible`·`리뷰`·`영수증`·`gate`·`readiness`·
   `spec_after_blocker`)은 그대로 팝업이다.
 
@@ -267,14 +298,17 @@ promise 체인(`toggle_chains: Map<string, Promise<void>>`)을 들고, 새 요�
 
 ## 6. 모니터 설정 창 `칩` 탭
 
-- `BULK_SETTINGS_TABS`에 `{ id: 'chips', label: '칩', glyph: '◈' }`를 마지막에 더한다. 일괄
-  모드(`scope: 'monitor'`)에만 있다 — 서버 전역 값이므로 `적용 대상` 저장소 선택과 무관하고,
-  단일·레포 창(`REPO_SETTINGS_TABS`)에는 없다.
+- `BULK_SETTINGS_TABS`(워커·quick fix·세션·계정, ADR UI-uohc-2)에
+  `{ id: 'chips', label: '칩', glyph: '⬡' }`를 다섯 번째로 더한다(`◈`는 `quick fix` 탭이 쓴다).
+  일괄 모드(`scope: 'monitor'`)에만 있다 — 서버 전역 값이므로 `적용 대상` 저장소 선택과 무관하고,
+  전체 설정 창(`SETTINGS_TABS`)과 레포 카드 창(`REPO_SETTINGS_TABS`)에는 없다. 따라서
+  `REPO_SETTINGS_TABS`가 `BULK_SETTINGS_TABS`와 같은 배열을 가리키는 현행은 갈라진다.
 - 새 모듈 `app/views/settings-dialog/chip-bindings-tab.js`. 행 셋(`복잡`·`frontend`·`backend`),
-  행마다 `<select>`에 `없음` + 현재 프리셋 목록(이름, 비호환 프리셋은 `disabled`). 고르는 즉시
-  `impl-preset-bind`를 보내고, `conflict`면 스냅샷을 다시 받아 폼을 세우고 토스트로 알린다.
-  저장 버튼은 없다. 머리말 한 줄: "칩을 클릭하면 여기 맨 프리셋이 그 이슈에 적용됩니다. 다시
-  클릭하면 클릭 전 설정으로 돌아갑니다."
+  행마다 `<select>`에 `없음` + 현재 **`general` 계열** 프리셋 목록(이름, 비호환 프리셋은
+  `disabled`; `quick_fix` 계열은 목록에 없다). 고르는 즉시 `impl-preset-bind`를 보내고, `conflict`면
+  스냅샷을 다시 받아 폼을 세우고 토스트로 알린다. 저장 버튼은 없다. 머리말 한 줄: "칩을 클릭하면
+  여기 맨 프리셋이 그 이슈에 적용됩니다. 다시 클릭하면 클릭 전 설정으로 돌아갑니다. quick fix
+  이슈에는 적용되지 않습니다."
 - 재료는 `impl-presets-snapshot`의 `presets`·`chip_bindings`·`revision`뿐이다. 스냅샷이 오기 전엔
   행을 비활성으로 그린다.
 
@@ -287,13 +321,15 @@ promise 체인(`toggle_chains: Map<string, Promise<void>>`)을 들고, 새 요�
   `attach.js`의 `BeadSnapshot` typedef와 이를 받는 `scheduler.js`·`exec-preset-coordinator.js`의
   JSDoc에 함께 적고, `attach.test.js`가 그 필드를 단언한다. 다른 필드·판정(`ready`·`blocked`·
   `blocks_blockers`)은 그대로다.
-- **선택.** `resolveForDispatch`의 `dispatchPreset(applied, bead_snapshot)`에서 `applied`를 고르는
-  규칙을 바꾼다: `bead_snapshot.applied_exec_preset`이 있고 그 id가 현재 프리셋 스냅샷에 있으면
-  `{ id, name: <현재 이름>, revision: <현재 revision> }`을 쓰고, 없으면 지금처럼 워크스페이스의
-  `queue.applied_exec_preset`을 쓴다. `deviated_keys` 계산은 그대로다(그 프리셋과 bead 핀의 대조).
+- **선택.** `resolveForDispatch`의 `dispatchPreset(applied, bead_snapshot, profile)`에서 `applied`를
+  고르는 규칙을 바꾼다: `bead_snapshot.applied_exec_preset`이 있고 그 id가 현재 프리셋 스냅샷에 있고
+  그 프리셋의 `applies_to`가 이슈의 계열(`profile`)과 같으면
+  `{ id, name: <현재 이름>, revision: <현재 revision> }`을 쓰고, 아니면 지금처럼 워크스페이스의
+  계열별 기록 `queue[APPLIED_PRESET_FIELDS[profile]]`을 쓴다. `deviated_keys` 계산은 그대로다(그
+  프리셋과 bead 핀을 계열 키 집합으로 대조).
 
 이렇게 attempt와 비교탭이 "이 이슈가 실제로 들고 간 프리셋"으로 묶인다. 카드의 대칭 비교와
-`dispatchPreset`을 한 구현으로 합치지 않는 결정(ADR UI-xq3h)은 유지한다.
+`dispatchPreset`을 한 구현으로 합치지 않는 결정(ADR UI-uohc, UI-xq3h 승계)은 유지한다.
 
 ## 8. 프로토콜·소유권
 
@@ -307,13 +343,15 @@ promise 체인(`toggle_chains: Map<string, Promise<void>>`)을 들고, 새 요�
 ## 9. 검증
 
 - 서버 단위 테스트: `exec-preset-store` 로드/정규화(`chip_bindings` 부재·어휘 밖 키), bind CAS,
-  delete가 바인딩을 비움; `chip-preset-toggle` 적용(복원점 최초 1회 기록)·마지막 클릭 우선·복원
-  argv·보관 손상 fallback·`chip_unbound`·`root_dir` 워크스페이스 해석(연결 저장소가 아닌 저장소의
+  bind가 `quick_fix` 계열 id를 거부, delete가 바인딩을 비움; `chip-preset-toggle` 적용(복원점 최초
+  1회 기록)·마지막 클릭 우선·복원 argv·보관 손상 fallback·`chip_unbound`·`route=quick_fix` 이슈
+  거부(쓰기 없음)·`root_dir` 워크스페이스 해석(연결 저장소가 아닌 저장소의
   이슈에 쓰고 재조회)·**같은 이슈 연속 두 요청이 순서대로 `applied`→`restored`가 되는 직렬화**(§4.5,
   두 요청을 동시에 보내는 테스트); 편집기 `apply-impl-preset`이 두 키를 unset; `attach.js`
   `snapshotBead`가 `applied_exec_preset`을 싣고 `dispatchPreset`이 그 값을 우선.
 - 클라이언트 단위 테스트: `area-judgement`, 칩 `data-state` 판정 셋, bound/unbound 렌더와 클릭
-  분기(worker·monitor·detail), `칩` 탭 select→op→conflict 재세움.
+  분기(worker·monitor·detail; `route=quick_fix` 이슈는 바인딩이 있어도 unbound), `칩` 탭
+  select→op→conflict 재세움과 `general` 계열만 나열.
 - 스크린샷 확인(복잡 판정 `verification_by_judgment`): 워커 후보 카드·모니터 후보 카드·이슈 상세
   헤더 세 표면에서 bound(`applied`/`unapplied`)와 unbound 칩, 그리고 일괄 창 `칩` 탭.
   헤드리스 최소 뷰포트 500px 주의(390은 iframe 래퍼).
@@ -335,6 +373,10 @@ promise 체인(`toggle_chains: Map<string, Promise<void>>`)을 들고, 새 요�
 - 이 Bead(UI-wg68)는 `bd dep add UI-wg68 dotfiles-kp4c --type blocks`로 그 형제를 기다린다
   (foreign issue dependency; 구현 진입만 막는다, ADR 0020). 형제의 스펙은 이 세션이 dotfiles
   저장소에 함께 썼다(`docs/superpowers/specs/2026-09-22-area-labels-frontend-backend-design.md`).
+  형제는 2026-09-22 착지·closed됐다(dotfiles PR #519) — 계약 `labels.area`가 이 스펙 §5.4의 전제다.
+- 관찰: UI-uohc(실행 프리셋 계열 분리)가 이 스펙보다 먼저 착지했다(2236da1e). 그 스펙 §5가 예고한
+  대로 이 스펙의 17키 교체·quick_fix 역매핑 인용과 UI-xq3h·UI-e1ta supersede 지명을 UI-uohc·
+  UI-uohc-2 기준으로 정정했다(staleness 재검토 `correction`).
 - 관찰: 기존 Bead에 `frontend`·`backend`를 소급해 붙이는 일은 하지 않는다 — 라벨은 사람이
   언제든 붙일 수 있고(계약 `freely mutable`) 칩은 그때 나타난다.
 - 관찰: `페이블 → 아스트라`(구 페이블 복잡)를 복잡 칩에 수동 적용하던 규칙(세션 메모리)은 이
@@ -344,14 +386,20 @@ promise 체인(`toggle_chains: Map<string, Promise<void>>`)을 들고, 새 요�
 
 ## 결정 (ADR 후보)
 
-- 전제: ADR UI-xq3h — 이슈의 프리셋 정체성은 `applied_exec_preset` id 하나이고 어긋남은 읽을 때
-  17키 대칭 비교로 계산하며, 카드 비교와 `dispatchPreset`을 합치지 않는다. 이 조항들은 그대로
-  따른다. 다만 같은 ADR의 "쓰는 경로는 `apply-impl-preset` 하나다 — 개별 키 편집·전역 적용·프리셋
-  삭제는 이 키를 건드리지 않는다" 조항은 아래 첫 후보가 뒤집는다(`chip-preset-toggle`이 두 번째
-  작성자가 되고 복원이 이 키를 지운다).
-- 전제: ADR UI-e1ta — 모니터 탭 헤더 `⚙`의 일괄 창은 여는 순간의 모드로 고정되고 저장소 적용
-  op를 새로 두지 않으며 프리셋 관리를 갖는다. 다만 "일괄 창은 `워커`·`세션`·`계정` 세 탭이다"
-  조항은 아래 둘째 후보가 뒤집는다(네 번째 탭 `칩`).
+- 전제: ADR UI-uohc — 프리셋은 `applies_to`로 `general`·`quick_fix` 두 계열로 갈리고 `settings`는
+  canonical 키만 담으며, 계열이 이슈 route 일치(`preset_route_mismatch`)와 교체 키 집합을 정한다;
+  이슈의 프리셋 정체성은 `applied_exec_preset` id 하나이고 어긋남은 읽을 때 계열 키 집합의 대칭
+  비교로 계산하며, 모델에서의 런타임 유도를 승계하고 카드 비교와 `dispatchPreset`을 합치지 않는다
+  (UI-xq3h 승계). 이 조항들은 그대로 따른다 — 바인딩은 `general` 계열만 가리키고 quick_fix
+  이슈에서 칩 클릭은 동작하지 않는다. 다만 UI-xq3h에서 승계한 "`applied_exec_preset`을 쓰는
+  경로는 `apply-impl-preset` 하나다 — 개별 키 편집·전역 적용·프리셋 삭제는 이 키를 건드리지
+  않는다" 조항은 아래 첫 후보가 뒤집는다(`chip-preset-toggle`이 두 번째 작성자가 되고 복원이 이
+  키를 지운다).
+- 전제: ADR UI-uohc-2 — 설정 창은 `워커`·`quick fix`·`세션`·`계정` 네 탭이고 `quick fix` 탭이 자기
+  계열의 프리셋 바와 8행을 가지며, 모니터 탭 헤더 `⚙`의 일괄 창은 여는 순간의 모드로 고정되고
+  저장소 적용 op를 새로 두지 않으며 관측 네 상태·순차 op·프리셋 관리·레포 카드의 같은 다이얼로그를
+  갖는다(UI-e1ta 승계). 다만 "단일 저장소 모드와 여러 저장소 일괄 모드 모두 같은 넷이다" 조항은
+  아래 둘째 후보가 뒤집는다(일괄 창에만 다섯 번째 탭 `칩`).
 - 전제: ADR 0012 — beads-ui는 dotfiles 계약의 소비자다. `frontend`·`backend` 어휘는 코드 상수로
   복제하고 계약에 없는 라벨은 그리지 않는다.
 - 전제: ADR 0014 — 카드의 줄 순서와 새 요소의 자리는 공유 슬롯 표가 정한다. 새 칩 둘은
@@ -368,19 +416,22 @@ promise 체인(`toggle_chains: Map<string, Promise<void>>`)을 들고, 새 요�
   `exec-presets.json` 스키마가 늘며 클릭 의미를 아는 사용자 습관이 생긴다. 맥락 없이는
   놀랍다 — 같은 카드의 다른 판정 칩은 팝업인데 세 칩만 상태를 쓰는 이유(프리셋별 성능 비교
   실측과 오터치보다 한 번 클릭을 택한 사용자 결정)는 코드에 남지 않는다. 진짜 트레이드오프가
-  있다 — 팝업 안 버튼 절충안을 사용자가 배제했다. 이 결정은 ADR UI-xq3h의 "`applied_exec_preset`을
-  쓰는 경로는 `apply-impl-preset` 하나" 조항을 뒤집는다 — `chip-preset-toggle`이 같은 argv 규칙으로
-  이 키를 쓰고 복원이 지운다; id 하나 정체성·17키 대칭 비교·`dispatchPreset` 분리는 승계한다.
-  `summary`: "판정 칩 복잡·frontend·backend의 클릭은 모니터 설정의 서버 전역 바인딩이 가리키는 프리셋을 그 이슈에 적용하고 재클릭은 첫 클릭 전 핀으로 되돌리며 그 전이는 이슈별로 직렬화된다 — applied_exec_preset을 chip-preset-toggle도 쓴다는 점만 UI-xq3h에서 뒤집고 id 하나 정체성·17키 대칭 비교·dispatchPreset 분리는 승계한다" → ADR, supersede UI-xq3h
-- 모니터 일괄 창에 서버 전역 값을 편집하는 네 번째 탭 `칩`을 두는 것. 되돌리기 어렵다 — 탭은
+  있다 — 팝업 안 버튼 절충안을 사용자가 배제했다. 이 결정은 ADR UI-uohc가 UI-xq3h에서 승계한
+  "`applied_exec_preset`을 쓰는 경로는 `apply-impl-preset` 하나" 조항을 뒤집는다 —
+  `chip-preset-toggle`이 같은 argv 규칙으로 이 키를 쓰고 복원이 지운다; `applies_to` 계열과 route
+  일치·id 하나 정체성·계열 키 집합 대칭 비교·런타임 유도·`dispatchPreset` 분리는 승계하고, 바인딩은
+  `general` 계열만 가리키며 quick_fix 이슈에서 칩 클릭은 동작하지 않는다.
+  `summary`: "판정 칩 복잡·frontend·backend의 클릭은 모니터 설정의 서버 전역 바인딩이 가리키는 general 프리셋을 quick_fix가 아닌 그 이슈에 적용하고 재클릭은 첫 클릭 전 핀으로 되돌리며 그 전이는 이슈별로 직렬화된다 — applied_exec_preset을 chip-preset-toggle도 쓴다는 점만 UI-uohc에서 뒤집고 applies_to 계열·route 일치·id 하나 정체성·계열 키 집합 대칭 비교·dispatchPreset 분리는 승계한다" → ADR, supersede UI-uohc
+- 모니터 일괄 창에 서버 전역 값을 편집하는 다섯 번째 탭 `칩`을 두는 것. 되돌리기 어렵다 — 탭은
   지우기 쉬우나 바인딩을 세우는 유일한 표면이라 지우면 §3의 상태를 세울 곳이 없어지고, 일괄 창이
-  "저장소 단위 편집면"이라는 UI-e1ta의 성격에 서버 전역 면이 섞이는 구조 변화다. 맥락 없이는
-  놀랍다 — 세 탭은 저장소를 고르는데 네 번째 탭만 `적용 대상`과 무관한 이유는 창을 보면 드러나지
-  않는다. 진짜 트레이드오프가 있다 — 단일·레포 창의 `워커` 탭(프리셋 CRUD 자리) 안에 바인딩을
-  두는 대안이 실재했고, 저장소 창에 서버 전역 값을 섞지 않으려고 버렸다. 이 결정이 ADR UI-e1ta의
-  "일괄 창은 `워커`·`세션`·`계정` 세 탭" 조항을 뒤집는다; 모드 고정·순차 op·관측 넷·프리셋 관리·
-  레포 카드 다이얼로그는 승계한다.
-  `summary`: "모니터 일괄 창은 워커·세션·계정에 서버 전역 칩 바인딩을 편집하는 네 번째 탭 칩을 더하며 그 탭만 적용 대상 저장소와 무관하다 — 모드 고정·순차 op·관측 넷·프리셋 관리·레포 카드 다이얼로그는 UI-e1ta를 승계한다" → ADR, supersede UI-e1ta
+  "저장소 단위 편집면"이라는 UI-e1ta·UI-uohc-2의 성격에 서버 전역 면이 섞이는 구조 변화다. 맥락
+  없이는 놀랍다 — 네 탭은 저장소를 고르는데 다섯째 탭만 `적용 대상`과 무관한 이유는 창을 보면
+  드러나지 않는다. 진짜 트레이드오프가 있다 — 단일·레포 창의 `워커` 탭(프리셋 CRUD 자리) 안에
+  바인딩을 두는 대안이 실재했고, 저장소 창에 서버 전역 값을 섞지 않으려고 버렸다. 이 결정이 ADR
+  UI-uohc-2의 "설정 창은 네 탭이고 단일·일괄 두 모드가 같은 넷" 조항을 뒤집는다(일괄 창만
+  다섯); 계열별 프리셋 바·8행·탭 행만 편집됨·모드 고정·순차 op·관측 넷·프리셋 관리·레포 카드
+  다이얼로그는 승계한다.
+  `summary`: "모니터 일괄 창은 워커·quick fix·세션·계정에 서버 전역 칩 바인딩을 편집하는 다섯 번째 탭 칩을 더하며 그 탭만 적용 대상 저장소와 무관하고 단일 창에는 없다 — 두 모드가 같은 네 탭이라는 점만 UI-uohc-2에서 뒤집고 계열별 프리셋 바·탭 행만 편집됨·모드 고정·순차 op·관측 넷·프리셋 관리·레포 카드 다이얼로그는 승계한다" → ADR, supersede UI-uohc-2
 - 바인딩을 `exec-presets.json`의 `chip_bindings`로 같은 revision CAS 아래 두는 것. 되돌리기
   어렵지 않다 — 필드 하나를 다른 파일로 옮기는 일이고 소비자는 스냅샷 하나다. 맥락 없이도
   놀랍지 않다 — 프리셋 id를 가리키는 값이 프리셋 목록 옆에 있는 것은 읽으면 이유가 보인다.
