@@ -2369,6 +2369,39 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.labels).toEqual(['worker-ineligible', 'frontend']);
   });
 
+  test.each([
+    ['preset-1', 'preset-1'],
+    [undefined, null],
+    [7, null]
+  ])(
+    'snapshotBead carries applied_exec_preset %s as %s',
+    async (stored, expected) => {
+      const runJson = vi.fn(async (/** @type {string[]} */ args) =>
+        args[0] === 'show'
+          ? {
+              code: 0,
+              stdoutJson: {
+                id: 'UI-1',
+                status: 'open',
+                metadata:
+                  stored === undefined ? {} : { applied_exec_preset: stored }
+              }
+            }
+          : { code: 0, stdoutJson: [{ id: 'UI-1' }] }
+      );
+      const bd = createLiveBd({
+        cwd: '/ws',
+        repo: '/repo',
+        resolveBase: okBase('main'),
+        runJson: asProjected(runJson)
+      });
+
+      const snap = await bd.snapshotBead('UI-1');
+
+      expect(snap.applied_exec_preset).toBe(expected);
+    }
+  );
+
   test.each([undefined, null, 'w-0123456789ab'])(
     'preserves external_wait presence in snapshots (%s)',
     async (value) => {

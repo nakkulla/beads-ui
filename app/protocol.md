@@ -1176,6 +1176,54 @@ provider from it — only an exact `impl_model` token names one.
   `quick_fix` takes `claude|codex` and a bare catalog model token. A `fast`
   implementation speed requires a runner whose catalog exposes that speed tier.
   Refusal reasons name the canonical key, with no profile prefix.
+- `subscribe-impl-presets` / `unsubscribe-impl-presets` payload: `{ id? }` —
+  `id` is the client's own channel name and defaults to `impl:presets`. The
+  subscription is SERVER-GLOBAL: it survives tab and workspace changes and is
+  not scoped by `root_dir`. Subscribing replies `{ id }` and then immediately
+  pushes one `impl-presets-snapshot`; unsubscribing replies
+  `{ id, unsubscribed }`.
+- `impl-presets-snapshot` payload:
+  `{ type, id, revision, presets, chip_bindings }` — total state, not a patch,
+  pushed after every applied mutation as well as on subscribe. `revision` is the
+  CAS value every mutation sends back as `expected_revision`. A preset carrying
+  a key outside its own profile's vocabulary is omitted from `presets` entirely.
+- `impl-preset-delete` payload: `{ expected_revision, id }`. Deleting a preset
+  also nulls every `chip_bindings` entry pointing at it, inside the SAME
+  mutation, so no binding can outlive its target.
+- `impl-preset-bind` payload: `{ expected_revision, chip, preset_id }` — `chip`
+  is one of `complex`, `frontend`, `backend`; `preset_id` names a preset
+  currently in the snapshot or is `null` to unbind. Bindings are server-global
+  and live in the preset file under the same revision CAS. A `preset_id` whose
+  preset has `applies_to: 'quick_fix'` is `preset_route_mismatch` — a chip click
+  never runs on a `route=quick_fix` issue, so such a binding could never apply.
+  An unknown `chip` is `bad_request` and an unknown `preset_id` is
+  `impl_preset_missing`. Success is
+  `{ applied: true, conflict: false, revision, presets, chip_bindings }`; a CAS
+  failure is the same shape with `applied: false, conflict: true`.
+  `chip_bindings` projects a binding as `null` whenever its target is not in the
+  snapshot's `presets`.
+- `chip-preset-toggle` payload: `{ id, chip, expected_revision, root_dir? }`.
+  The server reads `chip_bindings[chip]`, reads the issue, and decides:
+  - no binding → `chip_unbound`, nothing written;
+  - `metadata.route === 'quick_fix'` → `preset_route_mismatch`, nothing written;
+  - `chip_preset_source === chip` AND `applied_exec_preset` equals the bound id
+    → RESTORE;
+  - otherwise → APPLY.
+
+  An apply is exactly one `apply-impl-preset` write (the general 17 pin keys
+  plus `applied_exec_preset`) with `chip_preset_source=<chip>` in the same argv,
+  plus `chip_preset_restore=<json>` WHEN THAT KEY IS ABSENT — the JSON object of
+  the pin keys the issue carried plus its `applied_exec_preset`. The last click
+  wins, but the restore point is always the state before the FIRST click. A
+  restore is one write that sets the stored keys, unsets every other pin key and
+  `applied_exec_preset`, and unsets both chip keys; an absent or unparsable
+  restore value unsets everything instead and adds `restore_fallback: true`.
+  Success is
+  `{ applied: 'applied'|'restored', conflict: false, revision, issue }` where
+  `issue` is the post-write `bd show --json`; a CAS failure answers like
+  `apply-impl-preset`. Transitions on the same `(root_dir, bead)` are serialized
+  server-side, so two fast clicks resolve `applied` then `restored`.
+
 - `apply-impl-preset` payload: `{ id, preset_id, expected_revision }`. The
   issue's observed `route` must match the preset's profile — a `route=quick_fix`
   issue takes a `quick_fix` preset, every other route (a missing route included)
@@ -1187,8 +1235,10 @@ provider from it — only an exact `impl_model` token names one.
   runtime derives its runtime in either profile, and an explicit `impl_runtime`
   wins over the derived one. The same `bd update` also writes
   `applied_exec_preset=<preset id>` — one metadata key for either profile — the
-  origin of those pins, which only this request writes and no other path clears.
-  An incompatible projected pin is `impl_preset_incompatible` and no metadata is
+  origin of those pins, and unsets `chip_preset_source`/`chip_preset_restore`: a
+  person choosing a preset here ends any chip's ownership of those pins.
+  `chip-preset-toggle` is the only other writer of `applied_exec_preset`. An
+  incompatible projected pin is `impl_preset_incompatible` and no metadata is
   written.
 - `apply-impl-preset-global` payload:
   `{ preset_id, expected_revision, expected_queue_revision, root_dir? }`. A

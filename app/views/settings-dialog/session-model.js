@@ -153,6 +153,15 @@ export const BEAD_PIN_KEYS = [...ORCHESTRATION_KEYS, ...BEAD_APPLY_KEYS];
  */
 export const APPLIED_EXEC_PRESET_KEY = 'applied_exec_preset';
 
+/** Judgement chips a preset binding may hang on; mirrors server `CHIP_BINDING_KEYS`. */
+export const CHIP_BINDING_KEYS = ['complex', 'frontend', 'backend'];
+
+/** Bead metadata key naming the chip that set the pins; mirrors server constant. */
+export const CHIP_PRESET_SOURCE_KEY = 'chip_preset_source';
+
+/** Bead metadata key holding the pre-click pins as JSON; mirrors server constant. */
+export const CHIP_PRESET_RESTORE_KEY = 'chip_preset_restore';
+
 /** Route-scoped queue keys used only for quick_fix dispatches. */
 export const QUICK_FIX_ORCHESTRATION_KEYS = [
   'quick_fix_orchestration_model',

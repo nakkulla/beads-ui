@@ -10,6 +10,14 @@ import {
 } from '../worker/exec-enums.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 
+/** The two chip keys every editor apply unsets in the same argv (design 4.4). */
+const CHIP_KEY_UNSETS = [
+  '--unset-metadata',
+  'chip_preset_source',
+  '--unset-metadata',
+  'chip_preset_restore'
+];
+
 const runBdInWorkspace = vi.fn();
 const runBdJsonProjectedInWorkspace = vi.fn();
 const triggerMutationRefreshOnce = vi.fn();
@@ -55,8 +63,11 @@ vi.mock('./context.js', () => ({
     retry_safe: false,
     reason
   }),
-  runBdInWorkspace: (/** @type {any} */ ws, /** @type {string[]} */ args) =>
-    runBdInWorkspace(ws, args),
+  runBdInWorkspace: (
+    /** @type {any} */ ws,
+    /** @type {string[]} */ args,
+    /** @type {any} */ options
+  ) => runBdInWorkspace(ws, args, options),
   runBdJsonProjectedInWorkspace: (
     /** @type {any} */ ws,
     /** @type {string} */ command_family,
@@ -100,7 +111,9 @@ const {
   handleApplyImplPresetGlobal,
   handleImplPresetCreate,
   handleImplPresetUpdate,
+  handleImplPresetBind,
   handleImplPresetDelete,
+  handleChipPresetToggle,
   handleSubscribeImplPresets
 } = await import('./exec-preset-handlers.js');
 
@@ -790,7 +803,7 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
     });
 
     const named = runBdInWorkspace.mock.calls[0][1]
-      .slice(2, -2)
+      .slice(2, -6)
       .filter(
         (/** @type {string} */ _value, /** @type {number} */ index) =>
           index % 2 === 1
@@ -948,7 +961,8 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
           impl_runtime: 'auto'
         },
         preset_id
-      )
+      ).concat(CHIP_KEY_UNSETS),
+      undefined
     );
     const reply = sent[sent.length - 1];
     expect(reply.ok).toBe(true);
@@ -1062,7 +1076,8 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
         },
         preset_id,
         QUICK_FIX_PRESET_KEYS
-      )
+      ).concat(CHIP_KEY_UNSETS),
+      undefined
     );
   });
 
@@ -1721,5 +1736,274 @@ describe('handleApplyImplPresetGlobal root_dir kv scope (UI-eey2 §9.5)', () => 
     expect(sent[sent.length - 1].error.code).toBe('bad_request');
     expect(kvGetJsonAtRoot).not.toHaveBeenCalled();
     expect(kvGetJsonInWorkspace).not.toHaveBeenCalled();
+  });
+});
+
+describe('chip preset bindings (design §3.2)', () => {
+  test('binds a general preset to a chip and fans the new snapshot', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_runtime: 'codex' });
+    handleSubscribeImplPresets(ws, {
+      id: 'sub',
+      type: 'subscribe-impl-presets',
+      payload: { id: 'exec:presets' }
+    });
+    sent.length = 0;
+
+    handleImplPresetBind(ws, {
+      id: 'bind',
+      type: 'impl-preset-bind',
+      payload: { expected_revision: 1, chip: 'complex', preset_id }
+    });
+
+    expect(sent[0].payload).toMatchObject({ applied: true, revision: 2 });
+    expect(sent[0].payload.chip_bindings.complex).toBe(preset_id);
+    expect(sent[1].payload.type).toBe('impl-presets-snapshot');
+    expect(sent[1].payload.chip_bindings.complex).toBe(preset_id);
+  });
+
+  test('refuses a quick_fix preset with preset_route_mismatch', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(
+      ws,
+      sent,
+      { impl_runtime: 'claude' },
+      'quick_fix'
+    );
+
+    handleImplPresetBind(ws, {
+      id: 'bind',
+      type: 'impl-preset-bind',
+      payload: { expected_revision: 1, chip: 'complex', preset_id }
+    });
+
+    expect(sent[sent.length - 1].error.code).toBe('preset_route_mismatch');
+  });
+
+  test('refuses a chip outside the vocabulary', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_runtime: 'codex' });
+
+    handleImplPresetBind(ws, {
+      id: 'bind',
+      type: 'impl-preset-bind',
+      payload: { expected_revision: 1, chip: 'session', preset_id }
+    });
+
+    expect(sent[sent.length - 1].error.code).toBe('bad_request');
+  });
+
+  test('unbinds a chip whose preset is deleted', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_runtime: 'codex' });
+    handleImplPresetBind(ws, {
+      id: 'bind',
+      type: 'impl-preset-bind',
+      payload: { expected_revision: 1, chip: 'backend', preset_id }
+    });
+    sent.length = 0;
+
+    handleImplPresetDelete(ws, {
+      id: 'del',
+      type: 'impl-preset-delete',
+      payload: { expected_revision: 2, id: preset_id }
+    });
+
+    expect(sent[0].payload.chip_bindings.backend).toBe(null);
+  });
+});
+
+describe('chip-preset-toggle (design §4)', () => {
+  /**
+   * Seed one bound general preset and answer every bd call from one mutable
+   * metadata object, so a second toggle reads the first one's write.
+   *
+   * @param {Record<string, string>} metadata
+   */
+  function boundFixture(metadata = {}) {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, {
+      impl_runtime: 'codex',
+      impl_model: 'sol'
+    });
+    handleImplPresetBind(ws, {
+      id: 'bind',
+      type: 'impl-preset-bind',
+      payload: { expected_revision: 1, chip: 'complex', preset_id }
+    });
+    /** @type {Record<string, string>} */
+    const state = { ...metadata };
+    runBdJsonProjectedInWorkspace.mockImplementation(async () => ({
+      ok: true,
+      data: { id: 'UI-1', metadata: { ...state } }
+    }));
+    runBdInWorkspace.mockImplementation(
+      async (/** @type {any} */ _ws, /** @type {string[]} */ args) => {
+        for (let index = 2; index < args.length; index += 1) {
+          if (args[index] === '--set-metadata') {
+            const raw = args[index + 1];
+            const split = raw.indexOf('=');
+            state[raw.slice(0, split)] = raw.slice(split + 1);
+          } else if (args[index] === '--unset-metadata') {
+            delete state[args[index + 1]];
+          }
+        }
+        return { code: 0, stderr: '' };
+      }
+    );
+    sent.length = 0;
+    return { ws, sent, preset_id, state };
+  }
+
+  /** @param {any} payload */
+  function toggleReq(payload) {
+    return {
+      id: 'toggle',
+      type: /** @type {const} */ ('chip-preset-toggle'),
+      payload: { id: 'UI-1', chip: 'complex', expected_revision: 2, ...payload }
+    };
+  }
+
+  test('applies the bound preset and records the chip and restore point', async () => {
+    const { ws, sent, preset_id, state } = boundFixture({
+      impl_model: 'terra',
+      applied_exec_preset: 'older'
+    });
+
+    await handleChipPresetToggle(ws, toggleReq({}));
+
+    expect(sent[sent.length - 1].payload).toMatchObject({
+      applied: 'applied',
+      conflict: false,
+      revision: 2
+    });
+    expect(state.chip_preset_source).toBe('complex');
+    expect(JSON.parse(state.chip_preset_restore)).toEqual({
+      impl_model: 'terra',
+      applied_exec_preset: 'older'
+    });
+    expect(state.applied_exec_preset).toBe(preset_id);
+    expect(state.impl_model).toBe('sol');
+  });
+
+  test('keeps the first restore point when a later chip apply overwrites', async () => {
+    const { ws, state } = boundFixture({ impl_model: 'terra' });
+    await handleChipPresetToggle(ws, toggleReq({}));
+    const first_point = state.chip_preset_restore;
+    state.chip_preset_source = 'frontend';
+
+    await handleChipPresetToggle(ws, toggleReq({}));
+
+    expect(state.chip_preset_restore).toBe(first_point);
+  });
+
+  test('restores the pre-click pins on a second click of the same chip', async () => {
+    const { ws, sent, state } = boundFixture({ impl_model: 'terra' });
+    await handleChipPresetToggle(ws, toggleReq({}));
+
+    await handleChipPresetToggle(ws, toggleReq({}));
+
+    expect(sent[sent.length - 1].payload).toMatchObject({
+      applied: 'restored'
+    });
+    expect(sent[sent.length - 1].payload).not.toHaveProperty(
+      'restore_fallback'
+    );
+    expect(state).toEqual({ impl_model: 'terra' });
+  });
+
+  test('unsets every pin when the restore point is unparsable', async () => {
+    const { ws, sent, preset_id, state } = boundFixture({
+      impl_model: 'terra',
+      chip_preset_source: 'complex',
+      chip_preset_restore: '{broken'
+    });
+    state.applied_exec_preset = preset_id;
+
+    await handleChipPresetToggle(ws, toggleReq({}));
+
+    expect(sent[sent.length - 1].payload).toMatchObject({
+      applied: 'restored',
+      restore_fallback: true
+    });
+    expect(state).toEqual({});
+  });
+
+  test('refuses a chip with no binding', async () => {
+    const { ws, sent } = boundFixture();
+    handleImplPresetBind(ws, {
+      id: 'unbind',
+      type: 'impl-preset-bind',
+      payload: { expected_revision: 2, chip: 'complex', preset_id: null }
+    });
+    sent.length = 0;
+
+    await handleChipPresetToggle(ws, toggleReq({ expected_revision: 3 }));
+
+    expect(sent[sent.length - 1].error.code).toBe('chip_unbound');
+    expect(runBdInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('writes nothing for a quick_fix issue', async () => {
+    const { ws, sent } = boundFixture({ route: 'quick_fix' });
+
+    await handleChipPresetToggle(ws, toggleReq({}));
+
+    expect(sent[sent.length - 1].error.code).toBe('preset_route_mismatch');
+    expect(runBdInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('answers a stale preset revision with a conflict', async () => {
+    const { ws, sent } = boundFixture();
+
+    await handleChipPresetToggle(ws, toggleReq({ expected_revision: 1 }));
+
+    expect(sent[sent.length - 1].payload).toMatchObject({
+      applied: false,
+      conflict: true,
+      revision: 2
+    });
+    expect(runBdInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('reads and writes the workspace named by root_dir', async () => {
+    const { ws, sent } = boundFixture();
+
+    await handleChipPresetToggle(ws, toggleReq({ root_dir: '/other-repo' }));
+
+    expect(sent[sent.length - 1].payload.applied).toBe('applied');
+    expect(runBdInWorkspace).toHaveBeenCalledWith(
+      ws,
+      expect.any(Array),
+      expect.objectContaining({ cwd: '/other-repo' })
+    );
+    expect(runBdJsonProjectedInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'show',
+      ['show', 'UI-1', '--json'],
+      expect.objectContaining({ cwd: '/other-repo' })
+    );
+  });
+
+  test('refuses an unregistered root_dir', async () => {
+    const { ws, sent } = boundFixture();
+
+    await handleChipPresetToggle(ws, toggleReq({ root_dir: '/nope' }));
+
+    expect(sent[sent.length - 1].error.code).toBe('bad_request');
+    expect(runBdInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('serializes two concurrent toggles of the same issue into apply then restore', async () => {
+    const { ws, sent } = boundFixture({ impl_model: 'terra' });
+
+    await Promise.all([
+      handleChipPresetToggle(ws, toggleReq({})),
+      handleChipPresetToggle(ws, toggleReq({}))
+    ]);
+
+    expect(
+      sent.filter((entry) => entry.ok).map((entry) => entry.payload.applied)
+    ).toEqual(['applied', 'restored']);
   });
 });

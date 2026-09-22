@@ -16,6 +16,9 @@
  * @typedef {Object} ExecPresetState
  * @property {number} revision
  * @property {ExecPreset[]} presets
+ * @property {Record<string, string|null>} chip_bindings - Which preset each
+ * judgement chip applies, under the SAME revision CAS as the list it points
+ * into, so deleting a preset and unbinding it is one mutation (design §3.1).
  * @property {{ version: number }} [reseed_migration]
  * @property {{ version: number }} [preset_profile_migration]
  */
@@ -23,6 +26,7 @@ import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import {
+  CHIP_BINDING_KEYS,
   QUICK_FIX_LANE_MAP,
   implPresetEnums,
   normalizeAppliesTo,
@@ -59,9 +63,19 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+/** @returns {Record<string, string|null>} */
+function emptyChipBindings() {
+  /** @type {Record<string, string|null>} */
+  const bindings = {};
+  for (const chip of CHIP_BINDING_KEYS) {
+    bindings[chip] = null;
+  }
+  return bindings;
+}
+
 /** @returns {ExecPresetState} */
 function emptyState() {
-  return { revision: 0, presets: [] };
+  return { revision: 0, presets: [], chip_bindings: emptyChipBindings() };
 }
 
 /**
@@ -105,6 +119,17 @@ function normalizeState(raw) {
     state.preset_profile_migration = {
       version: Number(raw.preset_profile_migration.version)
     };
+  }
+  // A key outside the chip vocabulary is dropped and an absent field reads as
+  // three unbound chips, so a file written before this design loads clean.
+  if (isRecord(raw.chip_bindings)) {
+    for (const chip of CHIP_BINDING_KEYS) {
+      const value = raw.chip_bindings[chip];
+      state.chip_bindings[chip] =
+        typeof value === 'string' && value.trim().length > 0
+          ? value.trim()
+          : null;
+    }
   }
   if (!Array.isArray(raw.presets)) {
     return state;
@@ -254,6 +279,7 @@ export function createExecPresetStore(options = {}) {
       conflict,
       revision: state.revision,
       presets: clone(state.presets),
+      chip_bindings: clone(state.chip_bindings ?? emptyChipBindings()),
       ...(reason ? { reason } : {})
     };
   }
@@ -325,7 +351,8 @@ export function createExecPresetStore(options = {}) {
       applied: true,
       conflict: false,
       revision: next.revision,
-      presets: clone(next.presets)
+      presets: clone(next.presets),
+      chip_bindings: clone(next.chip_bindings)
     };
   }
 
@@ -420,6 +447,10 @@ export function createExecPresetStore(options = {}) {
     },
 
     /**
+     * Delete one preset and, in the SAME mutation, drop every chip binding
+     * that pointed at it — a binding onto a deleted id could never be applied
+     * and would outlive the id forever (design §3.2).
+     *
      * @param {{ expected_revision: number, id: string }} input
      */
     delete(input) {
@@ -430,6 +461,39 @@ export function createExecPresetStore(options = {}) {
           return false;
         }
         next.presets.splice(index, 1);
+        for (const chip of CHIP_BINDING_KEYS) {
+          if (next.chip_bindings[chip] === id) {
+            next.chip_bindings[chip] = null;
+          }
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Hang one judgement chip on one `general` preset, or unbind it with
+     * `preset_id: null`. A `quick_fix` preset is refused because a chip click
+     * never runs on a `route=quick_fix` issue, so such a binding would be
+     * unreachable (design §3.2).
+     *
+     * @param {{ expected_revision: number, chip: string, preset_id: string|null }} input
+     * @returns {ReturnType<typeof applyMutation>}
+     */
+    bindChip(input) {
+      const chip = typeof input?.chip === 'string' ? input.chip : '';
+      const preset_id =
+        typeof input?.preset_id === 'string' ? input.preset_id : null;
+      return applyMutation(input?.expected_revision, (next) => {
+        if (!CHIP_BINDING_KEYS.includes(chip)) {
+          return false;
+        }
+        if (preset_id !== null) {
+          const preset = next.presets.find((entry) => entry.id === preset_id);
+          if (!preset || normalizeAppliesTo(preset.applies_to) !== 'general') {
+            return false;
+          }
+        }
+        next.chip_bindings[chip] = preset_id;
         return true;
       });
     },
@@ -468,7 +532,8 @@ export function createExecPresetStore(options = {}) {
           conflict: false,
           revision: current.revision,
           preset: clone(existing),
-          presets: clone(current.presets)
+          presets: clone(current.presets),
+          chip_bindings: clone(current.chip_bindings ?? emptyChipBindings())
         };
       }
       const next = clone(current);
@@ -501,7 +566,8 @@ export function createExecPresetStore(options = {}) {
         conflict: false,
         revision: next.revision,
         preset: clone(preset),
-        presets: clone(next.presets)
+        presets: clone(next.presets),
+        chip_bindings: clone(next.chip_bindings ?? emptyChipBindings())
       };
     },
 
@@ -522,7 +588,8 @@ export function createExecPresetStore(options = {}) {
           applied: false,
           conflict: false,
           revision: current.revision,
-          presets: clone(current.presets)
+          presets: clone(current.presets),
+          chip_bindings: clone(current.chip_bindings ?? emptyChipBindings())
         };
       }
       const next = {
@@ -536,7 +603,8 @@ export function createExecPresetStore(options = {}) {
         applied: true,
         conflict: false,
         revision: next.revision,
-        presets: clone(next.presets)
+        presets: clone(next.presets),
+        chip_bindings: clone(next.chip_bindings ?? emptyChipBindings())
       };
     },
 
@@ -553,7 +621,8 @@ export function createExecPresetStore(options = {}) {
           applied: false,
           conflict: false,
           revision: current.revision,
-          presets: clone(current.presets)
+          presets: clone(current.presets),
+          chip_bindings: clone(current.chip_bindings ?? emptyChipBindings())
         };
       }
       if (
@@ -589,9 +658,11 @@ export function createExecPresetStore(options = {}) {
           origin: { kind: 'user' }
         });
       }
+      // Every id in the list is replaced, so no binding can survive the reseed.
       const next = {
         revision: current.revision + 1,
         presets,
+        chip_bindings: emptyChipBindings(),
         reseed_migration: { version: input.marker.version }
       };
       persist(next);
@@ -611,7 +682,8 @@ export function createExecPresetStore(options = {}) {
         applied: true,
         conflict: false,
         revision: next.revision,
-        presets: clone(next.presets)
+        presets: clone(next.presets),
+        chip_bindings: clone(next.chip_bindings ?? emptyChipBindings())
       };
     },
 
@@ -642,7 +714,8 @@ export function createExecPresetStore(options = {}) {
           applied: false,
           conflict: false,
           revision: current.revision,
-          presets: clone(current.presets)
+          presets: clone(current.presets),
+          chip_bindings: clone(current.chip_bindings ?? emptyChipBindings())
         };
       }
       if (
@@ -748,7 +821,8 @@ export function createExecPresetStore(options = {}) {
         applied: true,
         conflict: false,
         revision: next.revision,
-        presets: clone(next.presets)
+        presets: clone(next.presets),
+        chip_bindings: clone(next.chip_bindings ?? emptyChipBindings())
       };
     }
   };

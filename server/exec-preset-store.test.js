@@ -4,6 +4,9 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createExecPresetStore } from './exec-preset-store.js';
 
+/** The three chip bindings a file with no `chip_bindings` field loads as. */
+const UNBOUND_CHIPS = { complex: null, frontend: null, backend: null };
+
 /** @type {string} */
 let tmp_dir;
 
@@ -30,7 +33,12 @@ describe('exec-preset-store defaults', () => {
       const first = store.snapshot();
       const second = store.snapshot();
 
-      expect(first).toEqual({ revision: 0, presets: [], read_failed: true });
+      expect(first).toEqual({
+        revision: 0,
+        presets: [],
+        chip_bindings: UNBOUND_CHIPS,
+        read_failed: true
+      });
       expect(second).toEqual(first);
       expect(readFileSync).toHaveBeenCalledTimes(1);
     }
@@ -45,7 +53,12 @@ describe('exec-preset-store defaults', () => {
     expect(fs.readFileSync(file_path, 'utf8')).toBe('{broken');
     fs.writeFileSync(file_path, JSON.stringify({ revision: 0, presets: [] }));
 
-    expect(snapshot).toEqual({ revision: 0, presets: [], read_failed: true });
+    expect(snapshot).toEqual({
+      revision: 0,
+      presets: [],
+      chip_bindings: UNBOUND_CHIPS,
+      read_failed: true
+    });
     expect(store.snapshot()).toEqual(snapshot);
   });
 
@@ -64,7 +77,8 @@ describe('exec-preset-store defaults', () => {
     expect(result.applied).toBe(true);
     expect(JSON.parse(fs.readFileSync(file_path, 'utf8'))).toEqual({
       revision: 1,
-      presets: result.presets
+      presets: result.presets,
+      chip_bindings: UNBOUND_CHIPS
     });
   });
 
@@ -86,7 +100,11 @@ describe('exec-preset-store defaults', () => {
 
     const snapshot = store.snapshot();
 
-    expect(snapshot).toEqual({ revision: 0, presets: [] });
+    expect(snapshot).toEqual({
+      revision: 0,
+      presets: [],
+      chip_bindings: UNBOUND_CHIPS
+    });
   });
 
   test('normalizes loaded presets while preserving every string setting', () => {
@@ -115,6 +133,7 @@ describe('exec-preset-store defaults', () => {
 
     expect(snapshot).toEqual({
       revision: 3,
+      chip_bindings: UNBOUND_CHIPS,
       presets: [
         {
           id: 'preset-1',
@@ -227,6 +246,7 @@ describe('exec-preset-store defaults', () => {
           origin: { kind: 'user' }
         }
       ],
+      chip_bindings: UNBOUND_CHIPS,
       reseed_migration: { version: 1 }
     });
     expect(restarted.snapshot()).toEqual(durable);
@@ -399,11 +419,13 @@ describe('exec-preset-store CRUD', () => {
           },
           origin: { kind: 'user' }
         }
-      ]
+      ],
+      chip_bindings: UNBOUND_CHIPS
     });
     expect(createExecPresetStore({ filePath: file_path }).snapshot()).toEqual({
       revision: 1,
-      presets: result.presets
+      presets: result.presets,
+      chip_bindings: UNBOUND_CHIPS
     });
   });
 
@@ -451,7 +473,11 @@ describe('exec-preset-store CRUD', () => {
       createExecPresetStore({
         filePath: path.join(tmp_dir, 'exec-presets.json')
       }).snapshot()
-    ).toEqual({ revision: 3, presets: result.presets });
+    ).toEqual({
+      revision: 3,
+      presets: result.presets,
+      chip_bindings: UNBOUND_CHIPS
+    });
   });
 
   test('deletes only the named preset without cascading', () => {
@@ -502,7 +528,8 @@ describe('exec-preset-store CRUD', () => {
           settings: {},
           origin: { kind: 'user' }
         }
-      ]
+      ],
+      chip_bindings: UNBOUND_CHIPS
     });
     expect(fs.readFileSync(file_path, 'utf8')).toBe(before);
   });
@@ -880,6 +907,7 @@ describe('exec-preset-store profile migration', () => {
     expect(JSON.parse(fs.readFileSync(file_path, 'utf8'))).toEqual({
       revision: 5,
       presets: result.presets,
+      chip_bindings: UNBOUND_CHIPS,
       preset_profile_migration: { version: 1 }
     });
   });
@@ -1105,6 +1133,145 @@ describe('exec-preset-store profile migration idempotence', () => {
       applies_to: 'quick_fix',
       settings: { impl_runtime: 'codex' },
       origin: { kind: 'legacy-preset-copy', source_preset_id: 'p1' }
+    });
+  });
+});
+
+describe('exec-preset-store chip bindings', () => {
+  test('drops a chip key outside the vocabulary on load', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    fs.writeFileSync(
+      file_path,
+      JSON.stringify({
+        revision: 2,
+        presets: [],
+        chip_bindings: { complex: 'preset-1', 세션: 'preset-1' }
+      })
+    );
+    const store = createExecPresetStore({ filePath: file_path });
+
+    const snapshot = store.snapshot();
+
+    expect(snapshot.chip_bindings).toEqual({
+      complex: 'preset-1',
+      frontend: null,
+      backend: null
+    });
+  });
+
+  test('persists a binding under the list revision CAS', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    const store = createExecPresetStore({
+      filePath: file_path,
+      randomUUID: () => 'preset-1',
+      settingEnums: () => ({})
+    });
+    store.create({ expected_revision: 0, name: '일반', settings: {} });
+
+    const result = /** @type {any} */ (
+      store.bindChip({
+        expected_revision: 1,
+        chip: 'complex',
+        preset_id: 'preset-1'
+      })
+    );
+
+    expect(result).toMatchObject({ applied: true, revision: 2 });
+    expect(
+      createExecPresetStore({ filePath: file_path }).snapshot().chip_bindings
+    ).toEqual({ complex: 'preset-1', frontend: null, backend: null });
+  });
+
+  test('refuses a stale revision without writing the binding', () => {
+    const store = createExecPresetStore({
+      filePath: path.join(tmp_dir, 'exec-presets.json'),
+      randomUUID: () => 'preset-1',
+      settingEnums: () => ({})
+    });
+    store.create({ expected_revision: 0, name: '일반', settings: {} });
+
+    const result = /** @type {any} */ (
+      store.bindChip({
+        expected_revision: 0,
+        chip: 'complex',
+        preset_id: 'preset-1'
+      })
+    );
+
+    expect(result).toMatchObject({ applied: false, conflict: true });
+    expect(store.snapshot().chip_bindings.complex).toBe(null);
+  });
+
+  test('refuses a preset id that is not in the list', () => {
+    const store = createExecPresetStore({
+      filePath: path.join(tmp_dir, 'exec-presets.json'),
+      settingEnums: () => ({})
+    });
+
+    const result = /** @type {any} */ (
+      store.bindChip({
+        expected_revision: 0,
+        chip: 'complex',
+        preset_id: 'missing'
+      })
+    );
+
+    expect(result).toMatchObject({ applied: false, reason: 'invalid' });
+  });
+
+  test('unbinds a chip with a null preset id', () => {
+    const store = createExecPresetStore({
+      filePath: path.join(tmp_dir, 'exec-presets.json'),
+      randomUUID: () => 'preset-1',
+      settingEnums: () => ({})
+    });
+    store.create({ expected_revision: 0, name: '일반', settings: {} });
+    store.bindChip({
+      expected_revision: 1,
+      chip: 'frontend',
+      preset_id: 'preset-1'
+    });
+
+    const result = /** @type {any} */ (
+      store.bindChip({
+        expected_revision: 2,
+        chip: 'frontend',
+        preset_id: null
+      })
+    );
+
+    expect(result.applied).toBe(true);
+    expect(store.snapshot().chip_bindings.frontend).toBe(null);
+  });
+
+  test('nulls every binding onto a preset the delete removes', () => {
+    const ids = ['preset-1', 'preset-2'];
+    const store = createExecPresetStore({
+      filePath: path.join(tmp_dir, 'exec-presets.json'),
+      randomUUID: () => String(ids.shift()),
+      settingEnums: () => ({})
+    });
+    store.create({ expected_revision: 0, name: '첫째', settings: {} });
+    store.create({ expected_revision: 1, name: '둘째', settings: {} });
+    store.bindChip({
+      expected_revision: 2,
+      chip: 'complex',
+      preset_id: 'preset-1'
+    });
+    store.bindChip({
+      expected_revision: 3,
+      chip: 'backend',
+      preset_id: 'preset-2'
+    });
+
+    const result = /** @type {any} */ (
+      store.delete({ expected_revision: 4, id: 'preset-1' })
+    );
+
+    expect(result.chip_bindings).toEqual({
+      complex: null,
+      frontend: null,
+      backend: 'preset-2'
     });
   });
 });
