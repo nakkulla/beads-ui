@@ -8002,13 +8002,24 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Release a deleted account's target without pinning resumes to that account.
+     *
+     * @param {string} workspace
+     * @param {{ runner: string, generation: number, kind: 'outage'|'usage_limit', model: string, account: string, reason: 'account_absent' }} input
+     */
+    releaseProviderTarget(workspace, input) {
+      return this.recoverProviderTarget(workspace, input, null);
+    },
+
+    /**
      * Remove one recovered target and prerecord every eligible resume.
      *
      * @param {string} workspace
      * @param {{ runner: string, generation: number, kind: 'outage'|'usage_limit', model: string, account: string|null }} input
+     * @param {string|null} [resume_account] - Null lets normal account resolution choose the resume account.
      * @returns {QueueOpResult & { pending?: AutoResumePending[], disarmed_attempt_ids?: string[], recovered_attempt_ids?: string[] }}
      */
-    recoverProviderTarget(workspace, input) {
+    recoverProviderTarget(workspace, input, resume_account = input.account) {
       /** @type {AutoResumePending[]} */
       const pending = [];
       /** @type {string[]} */
@@ -8070,7 +8081,7 @@ export function createQueueStore(options = {}) {
           const receipt = {
             attempt_id,
             generation: hold.generation,
-            account: target.account,
+            account: resume_account,
             kind: /** @type {const} */ ('provider_outage')
           };
           if (

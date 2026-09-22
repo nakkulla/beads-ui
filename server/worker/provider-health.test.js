@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createBeadTimeline } from './bead-timeline.js';
 import { OUTAGE_BACKOFF_MS, createProviderHealth } from './provider-health.js';
 import { createQueueStore } from './queue-store.js';
 
@@ -110,18 +111,19 @@ function makeHangingSpawn() {
  * @param {ReturnType<typeof createQueueStore>} store
  * @param {'outage'|'usage_limit'} kind
  * @param {string|null} account
- * @param {Partial<{ resets_at: number|null, rearm_count: number, attempt_id: string, model: string }>} [patch]
+ * @param {Partial<{ resets_at: number|null, rearm_count: number, attempt_id: string, model: string, runner: string }>} [patch]
  */
 function seedHold(store, kind, account, patch = {}) {
   const attempt_id = patch.attempt_id ?? 'att-1';
   const model = patch.model ?? 'opus';
+  const runner = patch.runner ?? 'claude';
   store.appendAttempt(WS, {
     expected_revision: store.snapshot(WS).revision,
     attempt: { attempt_id, bead_id: `B${attempt_id.slice(4)}` }
   });
   store.updateAttempt(WS, {
     attempt_id,
-    patch: { runner: 'claude', model, status: 'running' }
+    patch: { runner, model, status: 'running' }
   });
   return store.holdProviderAttempt(WS, {
     attempt_id,
@@ -130,7 +132,7 @@ function seedHold(store, kind, account, patch = {}) {
       cause: `provider_outage:${kind}`,
       finished_at: NOW
     },
-    runner: 'claude',
+    runner,
     target: {
       kind,
       model,
@@ -203,6 +205,128 @@ function setup(store, timers, spawnImpl, overrides = {}) {
 }
 
 describe('provider health probe', () => {
+  test.each(['claude', 'codex'])(
+    'releases an absent %s account without spawning a probe or notifying',
+    async (runner) => {
+      const store = createQueueStore({ now: () => NOW });
+      const timers = makeTimers();
+      const spawnImpl = makeHangingSpawn();
+      const list = vi.fn(async () => ({ ok: true, accounts: [] }));
+      const timeline = createBeadTimeline({ workspace_root: WS });
+      const env = setup(store, timers, spawnImpl, {
+        accountCatalog: { listClaude: list, listCodex: list },
+        timeline
+      });
+      seedHold(store, 'outage', 'deleted', { runner });
+      await env.health.start(WS);
+      env.onPending.mockClear();
+
+      timers.fireNext();
+      await flush();
+
+      expect(spawnImpl).not.toHaveBeenCalled();
+      expect(store.snapshot(WS).provider_hold).toEqual({});
+      expect(store.snapshot(WS).auto_resume_pending).toEqual([
+        expect.objectContaining({ account: null, kind: 'provider_outage' })
+      ]);
+      expect(timeline.readTimeline('B1')).toEqual([
+        expect.objectContaining({
+          kind: 'provider_hold_released',
+          summary: `${runner} 보류 해제 · account_absent`
+        })
+      ]);
+      expect(env.onPending).toHaveBeenCalledOnce();
+      expect(env.tick).toHaveBeenCalledWith(WS);
+      expect(env.notify.providerRecovered).not.toHaveBeenCalled();
+      expect(env.notify.providerAutoResumeDisarmed).not.toHaveBeenCalled();
+      expect(timers.next()).toBeUndefined();
+    }
+  );
+
+  test('records release for attempts joining during the account lookup', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    /** @type {() => void} */
+    let finishListing = () => {};
+    const listing = new Promise((resolve) => {
+      finishListing = () => resolve({ ok: true, accounts: [] });
+    });
+    const env = setup(store, timers, makeHangingSpawn(), {
+      accountCatalog: { listClaude: () => listing },
+      timeline
+    });
+    seedHold(store, 'outage', 'deleted');
+    await env.health.start(WS);
+    timers.fireNext();
+    await flush();
+
+    seedHold(store, 'outage', 'deleted', { attempt_id: 'att-2' });
+    finishListing();
+    await flush();
+
+    expect(
+      store.snapshot(WS).auto_resume_pending.map((entry) => entry.attempt_id)
+    ).toEqual(['att-1', 'att-2']);
+    expect(timeline.readTimeline('B2')).toEqual([
+      expect.objectContaining({
+        attempt_id: 'att-2',
+        kind: 'provider_hold_released'
+      })
+    ]);
+  });
+
+  test.each(['present', 'unavailable', 'throws'])(
+    'keeps probing when the account catalog is %s',
+    async (state) => {
+      const store = createQueueStore({ now: () => NOW });
+      const timers = makeTimers();
+      const spawnImpl = makeHangingSpawn();
+      const env = setup(store, timers, spawnImpl, {
+        accountCatalog: {
+          listClaude: async () => {
+            if (state === 'throws') {
+              throw new Error('catalog unavailable');
+            }
+            return {
+              ok: state === 'present',
+              accounts: [{ key: 'held@example.com' }]
+            };
+          }
+        }
+      });
+      seedHold(store, 'usage_limit', 'held@example.com');
+      await env.health.start(WS);
+
+      timers.fireNext();
+      await flush();
+
+      expect(spawnImpl).toHaveBeenCalledOnce();
+      expect(store.snapshot(WS).provider_hold.claude.targets).toHaveLength(1);
+      env.health.stop(WS);
+    }
+  );
+
+  test('keeps an unbound outage target when the catalog is empty', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeHangingSpawn();
+    const listClaude = vi.fn(async () => ({ ok: true, accounts: [] }));
+    const env = setup(store, timers, spawnImpl, {
+      accountCatalog: { listClaude }
+    });
+    seedHold(store, 'outage', null);
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect(listClaude).not.toHaveBeenCalled();
+    expect(spawnImpl).toHaveBeenCalledOnce();
+    expect(store.snapshot(WS).provider_hold.claude.targets).toHaveLength(1);
+    env.health.stop(WS);
+  });
+
   test('retains the lineage auto resume cap notification after a successful probe', async () => {
     const store = createQueueStore({ now: () => NOW });
     const timers = makeTimers();
@@ -630,6 +754,7 @@ describe('provider health probe', () => {
     env.health.probeNow(WS, 'claude');
 
     await env.health.start(WS);
+    await flush();
 
     expect(spawnImpl).toHaveBeenCalledTimes(1);
   });

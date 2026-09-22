@@ -3382,6 +3382,50 @@ describe('scheduler provider hold and recovery', () => {
     expect(child?.auto_resume_kind).toBe('provider_outage');
   });
 
+  test('resolves the current account after releasing a deleted account hold', async () => {
+    const env = setup({
+      config: { B1: { claude_account: 'current@example.com' } },
+      slots: 1,
+      ...accountDeps()
+    });
+    seedProviderAttempt(env.store, 'held-1', 'B1', {
+      effort: 'high',
+      speed: 'default',
+      session_id: 'session-1',
+      base_oid: 'base-B1',
+      target_base: 'main',
+      claude_account: 'deleted@example.com',
+      exec_values: resumableExecValues()
+    });
+    const held = registerProviderHold(
+      env.store,
+      'held-1',
+      'outage',
+      'deleted@example.com'
+    );
+    env.store.releaseProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'deleted@example.com',
+      reason: 'account_absent'
+    });
+
+    await env.scheduler.consumeProviderAutoResume(WS);
+
+    const child = Object.values(env.store.snapshot(WS).attempts).find(
+      (attempt) => attempt.resumed_from === 'held-1'
+    );
+    expect(child).toMatchObject({
+      claude_account: 'current@example.com',
+      model: 'opus',
+      effort: 'high',
+      auto_resume_kind: 'provider_outage'
+    });
+    expect(env.store.snapshot(WS).provider_hold).toEqual({});
+  });
+
   test('records a changed route after consuming provider recovery pending', async () => {
     const env = setup({ config: { B1: { route: 'quick_fix' } }, slots: 1 });
     seedProviderAttempt(env.store, 'held-route', 'B1', {

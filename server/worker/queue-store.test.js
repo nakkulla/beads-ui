@@ -905,6 +905,86 @@ describe('worker/queue-store provider hold', () => {
     ]);
   });
 
+  test('persists an unpinned resume when a deleted account target is released', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-1');
+    const held = holdProviderAttempt(store, 'att-1');
+    const revision = store.snapshot(WS).revision;
+
+    const released = store.releaseProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com',
+      reason: 'account_absent'
+    });
+
+    expect(released.queue.revision).toBe(revision + 1);
+    expect(released.queue.provider_hold).toEqual({});
+    expect(createQueueStore().snapshot(WS).auto_resume_pending).toEqual([
+      {
+        attempt_id: 'att-1',
+        generation: held.generation,
+        account: null,
+        kind: 'provider_outage'
+      }
+    ]);
+  });
+
+  test('preserves other targets when releasing an absent account', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-1');
+    seedProviderAttempt(store, 'att-2');
+    const held = holdProviderAttempt(store, 'att-1');
+    holdProviderAttempt(store, 'att-2');
+    store.updateProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com',
+      patch: { kind: 'usage_limit' }
+    });
+    seedProviderAttempt(store, 'att-3');
+    holdProviderAttempt(store, 'att-3');
+
+    const released = store.releaseProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'usage_limit',
+      model: 'opus',
+      account: 'held@example.com',
+      reason: 'account_absent'
+    });
+
+    expect(released.queue.provider_hold.claude.targets).toEqual([
+      expect.objectContaining({ kind: 'outage', attempt_ids: ['att-3'] })
+    ]);
+    expect(
+      released.queue.auto_resume_pending.map((entry) => entry.attempt_id)
+    ).toEqual(['att-1', 'att-2']);
+  });
+
+  test('rejects a stale generation when releasing an absent account', () => {
+    const store = createQueueStore();
+    seedProviderAttempt(store, 'att-1');
+    const held = holdProviderAttempt(store, 'att-1');
+    const before = store.snapshot(WS);
+
+    const released = store.releaseProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation + 1,
+      kind: 'outage',
+      model: 'opus',
+      account: 'held@example.com',
+      reason: 'account_absent'
+    });
+
+    expect(released.ok).toBe(false);
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
   test('clears only matching provider-gate admissions with the last target', () => {
     const store = createQueueStore();
     seedProviderAttempt(store, 'att-1');

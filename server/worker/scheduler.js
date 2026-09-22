@@ -1239,7 +1239,7 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   pause: (workspace: string, attempt_id: string, options?: { require_durable?: boolean }) => Promise<{ ok: boolean, reason?: string }>,
  *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh' }) => Promise<{ ok: true, attempt_id: string }|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
  *   livePreemptPass: (workspace: string) => Promise<void>,
  *   preemptRunningAttempt: (workspace: string, attempt_id: string, switch_to: { from: string, to: string, window: string, pct: number }) => Promise<{ ok: boolean, reason?: string }>,
@@ -1247,7 +1247,7 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean, dispatch_head_sha?: string, base_ref?: string, head_ref?: string }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
- *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchReviewSession: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, resume_session_id?: string|null, resume_runner?: 'claude'|'codex'|null, head_ref?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
@@ -11715,7 +11715,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, route_change?: { prior_lane: string, current_route: string|null }, fallback?: string|null }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
@@ -11959,6 +11959,7 @@ export function createScheduler(deps) {
       decision_token: continuation.decision_token,
       retry: continuation.retry,
       provider_auto_resume: continuation.provider_auto_resume === true,
+      resolve_provider_account: continuation.resolve_provider_account === true,
       auto_resume_kind: continuation.auto_resume_kind,
       auto_resume_origin: continuation.auto_resume_origin,
       exec_override: continuation.exec_override,
@@ -12046,6 +12047,7 @@ export function createScheduler(deps) {
             locked ? 'prior_attempt' : 'auto'
           ),
           provider_auto_resume: true,
+          resolve_provider_account: pending.account === null,
           auto_resume_kind: resume_kind,
           auto_resume_origin: pending.origin,
           ...(pending.account !== null &&
@@ -13125,6 +13127,32 @@ export function createScheduler(deps) {
     if (base_resolved.exec.invalid_reason) {
       return { ok: false, reason: base_resolved.exec.invalid_reason };
     }
+    if (
+      provider_auto_resume &&
+      options.resolve_provider_account === true &&
+      !prior_attempt_choice
+    ) {
+      const workspace_accounts = await readWorkspaceAccountsLayer(workspace);
+      if (workspace_accounts.state === 'unusable') {
+        return { ok: false, reason: 'workspace_accounts_unavailable' };
+      }
+      const runner = /** @type {string} */ (base_resolved.exec.runner);
+      if (runner === 'claude' || runner === 'codex') {
+        // An unpinned recovery receipt must not resurrect a deleted account
+        // from the paused attempt. Keep its execution tuple, re-resolve only
+        // this runner's account through the normal Bead/repository layers.
+        const key = runner === 'claude' ? 'claude_account' : 'codex_account';
+        const account = effectiveAccount(
+          bead_snapshot[key],
+          workspace_accounts.values[key]
+        );
+        base_resolved.accounts[runner] = account.value;
+        base_resolved.account_sources = {
+          ...base_resolved.account_sources,
+          [runner]: account.source
+        };
+      }
+    }
     const override_result = await applyExecutionOverride(
       base_resolved,
       options.exec_override
@@ -14101,7 +14129,7 @@ export function createScheduler(deps) {
    * Cap-exempt like every other human-click dispatch.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviseFix(workspace, input) {
@@ -14160,6 +14188,7 @@ export function createScheduler(deps) {
       continuation: input.continuation,
       decision_token: input.decision_token,
       provider_auto_resume: input.provider_auto_resume === true,
+      resolve_provider_account: input.resolve_provider_account === true,
       auto_resume_kind: input.auto_resume_kind,
       auto_resume_origin: input.auto_resume_origin,
       exec_override: input.exec_override,
