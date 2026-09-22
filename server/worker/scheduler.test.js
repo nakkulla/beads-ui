@@ -26291,6 +26291,33 @@ describe('scheduler prerequisite wait residue resume (prerequisite-wait-residue 
       expect(readIssue).toHaveBeenCalledWith('S9');
     });
 
+    test.each([
+      ['an unparsable string', 'not-a-date'],
+      ['an out-of-range number', 8.64e15 + 1]
+    ])(
+      'renders closed_at as unknown when the record carries %s and still launches',
+      async (_label, closed_at) => {
+        const env = returnEnv({
+          sessionLog: { attach: vi.fn(), read: () => [] }
+        });
+        env.bd.readIssue = vi.fn(async (/** @type {string} */ bead_id) => ({
+          id: bead_id,
+          status: 'closed',
+          closed_at,
+          close_reason: '착지',
+          dependencies: []
+        }));
+        seedPrior(env, waitingPrior());
+        env.worktree.removeIfDiscardable.mockResolvedValue(uniqueResidue());
+
+        await env.scheduler.tick(WS);
+
+        expect(env.runner.spawnedBead('S1').prompt).toContain(
+          'S9 · closed · closed_at 미상 · close_reason 착지'
+        );
+      }
+    );
+
     test('renders a foreign blocker whose read fails as unknown and still launches', async () => {
       foreign_query_seam.fn = async () => ({ ok: false, reason: 'bd_failed' });
       const env = returnEnv({
@@ -26447,6 +26474,32 @@ describe('scheduler prerequisite wait residue resume (prerequisite-wait-residue 
         expect.objectContaining({
           kind: 'stale_work_auto',
           summary: '잔재 자동 처분 · continue · resume_refused:runner_mismatch'
+        })
+      );
+      expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    });
+
+    test('falls to continue in the same pass when the recorded transcript is missing', async () => {
+      const env = returnEnv({
+        resolveSessionFile: () => ({
+          locality: 'missing',
+          file: null,
+          last_event_at: null
+        })
+      });
+      seedPrior(env, waitingPrior());
+      env.worktree.removeIfDiscardable.mockResolvedValue(uniqueResidue());
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.settingsFor('S1').resume_session_id).toBeUndefined();
+      expect(latestAttempt(env)).toMatchObject({ status: 'running' });
+      expect(latestAttempt(env)?.resumed_from).toBeNull();
+      expect(env.append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'stale_work_auto',
+          summary:
+            '잔재 자동 처분 · continue · resume_refused:transcript_missing'
         })
       );
       expect(env.notify.attemptFailed).not.toHaveBeenCalled();

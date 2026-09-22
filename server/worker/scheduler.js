@@ -168,21 +168,24 @@ const AUTO_SWITCH_7D_MAX_PCT = 90;
 const RESUME_HANDOFF_MAX_CHARS = 4_000;
 /**
  * Render a `closed_at` value as ISO 8601: epoch ms or a parsable string
- * become ISO, an unparsable non-empty string is kept verbatim, and anything
- * else is null (unknown).
+ * become ISO; anything else — including an out-of-range number, which
+ * `toISOString` would throw on — is null (unknown).
  *
  * @param {unknown} value
  * @returns {string|null}
  */
 function isoTimestampOrNull(value) {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return new Date(value).toISOString();
+  const millis =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.length > 0
+        ? Date.parse(value)
+        : NaN;
+  if (!Number.isFinite(millis)) {
+    return null;
   }
-  if (typeof value === 'string' && value.length > 0) {
-    const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : value;
-  }
-  return null;
+  const date = new Date(millis);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 /**
@@ -12455,6 +12458,18 @@ export function createScheduler(deps) {
     const lane_mismatch = refuseLaneMismatch(workspace, prior, snap);
     if (lane_mismatch) {
       return lane_mismatch;
+    }
+    // A prerequisite-wait return is a resume or nothing (§4.4): the automatic
+    // continuation would otherwise fall back to a fresh session and report
+    // success, spending `resumed_from` without ever reaching the ladder.
+    if (
+      isPrerequisiteWaitAttempt(prior) &&
+      (typeof prior.session_id !== 'string' ||
+        prior.session_id.length === 0 ||
+        (prior.runner !== 'claude' && prior.runner !== 'codex') ||
+        !transcriptPresent(prior.runner, prior.session_id, prior))
+    ) {
+      return { ok: false, reason: 'transcript_missing' };
     }
     const base_moved_resume =
       prior.status === 'waiting' &&
