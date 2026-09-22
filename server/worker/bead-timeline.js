@@ -31,14 +31,14 @@ import { beadTimelinePath } from './state-paths.js';
 const log = debug('worker:bead-timeline');
 
 /**
- * @typedef {'dispatched'|'stale_work_auto'|'guard_warning'|'guard_denied'|'session_ended'|'attempt_failed'|'attempt_retry'|'queue_hold'|'queue_resume'|'provider_hold'|'provider_recovered'|'provider_hold_released'|'landing_step'|'merge_step'|'operation_failed'|'operation_recovery'|'repair_handoff'|'needs_human'|'user_action'} TimelineKind
+ * @typedef {'dispatched'|'stale_work_auto'|'guard_warning'|'guard_denied'|'session_ended'|'attempt_failed'|'attempt_retry'|'queue_hold'|'queue_resume'|'provider_hold'|'provider_recovered'|'provider_hold_released'|'landing_step'|'merge_step'|'operation_failed'|'operation_recovery'|'repair_handoff'|'needs_human'|'user_action'|'interactive_session'} TimelineKind
  */
 
 /**
  * The closed event vocabulary of §5. Typed `ReadonlySet` so `checkJs` rejects a
  * consumer that tries to extend it: a kind that is not in this table has no
  * defined producer and no defined surface, so it must be added to the spec table
- * first.
+ * first. The interactive_session producer table is UI-6pif spec §3.3.
  *
  * @type {ReadonlySet<string>}
  */
@@ -49,6 +49,7 @@ export const TIMELINE_KINDS = Object.freeze(
     'guard_warning',
     'guard_denied',
     'session_ended',
+    'interactive_session',
     'attempt_failed',
     'attempt_retry',
     'queue_hold',

@@ -11,6 +11,59 @@ describe('worker failed running tile template', () => {
     document.body.innerHTML = '<div id="m"></div>';
   });
 
+  test.each([false, true])(
+    'places interactive sessions in the identity slot of held=%s tiles',
+    (held) => {
+      const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+      const tile = {
+        bead_id: 'UI-1',
+        attempt_id: 'attempt-1',
+        title: 'work',
+        runner: 'claude',
+        model: 'opus',
+        started_at: 1,
+        parked: held,
+        interactive_sessions: [
+          {
+            key: 'UI-1:resolve',
+            kind: 'resolve',
+            provider: 'claude',
+            session_id: 'sid',
+            mode: 'fork',
+            source: 'attempt',
+            attempt_id: 'attempt-1',
+            fallback_reason: null,
+            tmux_session: 'bdui-inquiry',
+            tmux_window: 'resolve-UI-1',
+            state: 'exiting',
+            settled_at: 2,
+            launched_at: 1,
+            discord_url: null,
+            closing: true
+          }
+        ]
+      };
+
+      render(
+        runningTile(
+          /** @type {import('./running-grid.js').RunningTile} */ (tile),
+          1000
+        ),
+        mount
+      );
+
+      expect(
+        mount
+          .querySelector('.rtile__hd > .interactive-session-badge')
+          ?.textContent?.trim()
+      ).toBe('▤ 해결 세션 · fork');
+      expect(
+        mount.querySelector('.rtile__hd-actions .interactive-session-closing')
+          ?.textContent
+      ).toBe('세션 닫는 중');
+    }
+  );
+
   test('renders the categorized cause badge without dismiss', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
@@ -890,7 +943,7 @@ describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', 
     expect(tile).not.toContain('rtile__legs');
     expect(tile).not.toContain('stepper');
     expect(tile).toMatchInlineSnapshot(
-      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span>  <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions"> <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div>  </div>"`
+      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span>  <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions">  <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div>  </div>"`
     );
   });
 

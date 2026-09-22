@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   CODEX_SCAN_DAYS,
   parseSessionRef,
+  qualifyInteractiveForkSource,
   qualifySessionFork,
   resolveSessionFile,
   sessionRefViews
@@ -9,6 +10,110 @@ import {
 
 const V7_ID = '01a035fc-4659-7220-aa50-e57904d303f3';
 const V7_STARTED_AT = 1787612120665;
+
+describe('qualifyInteractiveForkSource', () => {
+  const options = {
+    home_dir: '/home/u',
+    hostname: 'box',
+    fs: /** @type {any} */ (
+      fakeFs({
+        dirs: { '/home/u/.claude/projects': ['repo'] },
+        files: {
+          '/home/u/.claude/projects/repo/attempt.jsonl': 100,
+          '/home/u/.claude/projects/repo/ref.jsonl': 100
+        }
+      })
+    )
+  };
+
+  test('prefers the local attempt over the recorded ref', () => {
+    const input = {
+      attempt: { runner: 'claude', session_id: 'attempt' },
+      metadata: { session_ref: 'claude:ref@box' },
+      options
+    };
+
+    const result = qualifyInteractiveForkSource(input);
+
+    expect(result).toEqual({
+      session_id: 'attempt',
+      provider: 'claude',
+      source: 'attempt',
+      fallback_reason: null
+    });
+  });
+
+  test('uses the ref when the attempt transcript is missing', () => {
+    const input = {
+      attempt: { runner: 'codex', session_id: 'missing' },
+      metadata: { session_ref: 'claude:ref@box' },
+      options
+    };
+
+    const result = qualifyInteractiveForkSource(input);
+
+    expect(result).toEqual({
+      session_id: 'ref',
+      provider: 'claude',
+      source: 'session_ref',
+      fallback_reason: null
+    });
+  });
+
+  test.each([
+    [{}, 'no_session_ref', null],
+    [{ session_ref: 'claude:-unsafe@box' }, 'unsafe_session_id', 'claude'],
+    [{ session_ref: 'claude:missing@box' }, 'not_local', 'claude']
+  ])('reports the fresh fallback for %j', (metadata, reason, provider) => {
+    const input = {
+      metadata: /** @type {Record<string, unknown>} */ (metadata),
+      options
+    };
+
+    const result = qualifyInteractiveForkSource(input);
+
+    expect(result).toEqual({
+      session_id: null,
+      provider,
+      source: 'fresh',
+      fallback_reason: reason
+    });
+  });
+
+  test('preserves the attempt provider when both transcripts are missing', () => {
+    const input = {
+      attempt: { runner: 'codex', session_id: 'missing' },
+      metadata: { session_ref: 'claude:missing@box' },
+      options
+    };
+
+    const result = qualifyInteractiveForkSource(input);
+
+    expect(result).toEqual({
+      session_id: null,
+      provider: 'codex',
+      source: 'fresh',
+      fallback_reason: 'attempt_transcript_missing'
+    });
+  });
+
+  test('falls through an attempt that never recorded a session', () => {
+    const input = {
+      attempt: { runner: 'codex', session_id: null },
+      metadata: { session_ref: 'claude:missing@box' },
+      options
+    };
+
+    const result = qualifyInteractiveForkSource(input);
+
+    expect(result).toEqual({
+      session_id: null,
+      provider: 'claude',
+      source: 'fresh',
+      fallback_reason: 'not_local'
+    });
+  });
+});
 
 /**
  * A fake filesystem over a `path → entry names` map for directories and a

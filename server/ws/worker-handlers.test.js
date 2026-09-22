@@ -343,6 +343,32 @@ afterEach(() => {
 });
 
 describe('queue defaults preset identity', () => {
+  test.each([true, false])(
+    'projects an interactive Discord link when available: %s',
+    (available) => {
+      const url = 'https://discord.com/channels/guild/thread';
+      const threads = new Map(
+        available
+          ? [['sid', { thread_id: 'thread', guild_id: 'guild', url }]]
+          : []
+      );
+      const read = vi
+        .spyOn(getWorkerRuntime().interactiveLauncher, 'readBridgeThreads')
+        .mockReturnValue(threads);
+      const record = { bead_id: 'UI-1', kind: 'resolve', session_id: 'sid' };
+
+      const result = /** @type {any} */ (
+        decorateQueue(WS, { interactive_sessions: { 'UI-1:resolve': record } })
+      );
+
+      expect(result.interactive_sessions['UI-1:resolve']).toEqual({
+        ...record,
+        discord_url: available ? url : null
+      });
+      expect(read).toHaveBeenCalledOnce();
+      expect(record).not.toHaveProperty('discord_url');
+    }
+  );
   test.each([
     ['declared', { orchestration_model: 'opus' }, true],
     ['same', { orchestration_model: 'sonnet' }, false],

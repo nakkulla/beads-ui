@@ -536,7 +536,7 @@ function authoritativeMergeSha(pr) {
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   runBaseSync?: (file: string, args: string[], options: { cwd: string, encoding: 'utf8' }) => Promise<{ stdout: string }>,
  *   homeDir?: string,
- *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, tick: (workspace: string) => Promise<void> },
+ *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: ResolutionWaitInput|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }, head_ref?: string|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, tick: (workspace: string) => Promise<void>, reconcileInteractiveSessions?: (workspace: string) => Promise<void> },
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
@@ -2959,7 +2959,15 @@ export function createPrActions(deps) {
         log('external row drop failed for %s: %o', bead_id, err);
       }
     }
-    deps.store.moveToDone(workspace, { bead_id });
+    const moved = deps.store.moveToDone(workspace, { bead_id });
+    if (moved.ok) {
+      deps.store.markInteractiveSessionsSettled?.(workspace, bead_id, 'done');
+      try {
+        await deps.scheduler.reconcileInteractiveSessions?.(workspace);
+      } catch (err) {
+        log('interactive settlement reconcile failed for %s: %o', bead_id, err);
+      }
+    }
     notifyChanged(workspace);
     requestQueueTick();
     await announceMerged(bead_id, row.pr_url || null);

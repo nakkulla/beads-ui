@@ -1559,7 +1559,64 @@ export function laneOriginChipTemplate(origin) {
 }
 
 /**
+ * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
+ * @param {{ bead_id: string }} options
+ */
+export function interactiveSessionBadgesTemplate(views, options) {
+  return (views || []).map((view) => {
+    const mode =
+      view.mode === 'fork'
+        ? 'fork'
+        : view.source === 'recovered'
+          ? '복구'
+          : '새 세션';
+    const origin =
+      mode === 'fork'
+        ? view.source === 'attempt'
+          ? `fork · attempt ${(view.attempt_id || '').slice(0, 8)}`
+          : 'fork · session_ref'
+        : mode === '복구'
+          ? '복구'
+          : `새 세션 · ${view.fallback_reason || ''}`;
+    const title = `${origin} · ${view.tmux_session}:${view.tmux_window}`;
+    const label = `▤ ${view.kind === 'resolve' ? '해결' : '문의'} 세션 · ${mode}`;
+    return html`${view.session_id
+      ? html`<button
+          type="button"
+          class="interactive-session-badge"
+          data-session-provider=${view.provider}
+          data-session-id=${view.session_id}
+          data-bead-id=${options.bead_id}
+          title=${title}
+        >
+          ${label}
+        </button>`
+      : html`<span class="interactive-session-badge" title=${title}
+          >${label}</span
+        >`}${view.discord_url
+      ? html`<a
+          class="interactive-session-discord"
+          href=${view.discord_url}
+          target="_blank"
+          rel="noopener"
+          >↗ Discord</a
+        >`
+      : ''}`;
+  });
+}
+
+/**
+ * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
+ */
+export function interactiveSessionClosingTemplate(views) {
+  return (views || []).some((view) => view.closing)
+    ? html`<span class="interactive-session-closing">세션 닫는 중</span>`
+    : '';
+}
+
+/**
  * @typedef {Object} MiniItem
+ * @property {import('./lane-model.js').InteractiveSessionView[]} [interactive_sessions]
  * @property {import('./lane-model.js').LaneOrigin} [lane_origin]
  * @property {string} id - Bead id.
  * @property {string} title - Bead title (falls back to id).
@@ -1799,7 +1856,9 @@ function doneThreeLineRow(item) {
               : ''}"
             >${b}</span
           >`
-      )}
+      )}${interactiveSessionBadgesTemplate(item.interactive_sessions, {
+        bead_id: item.id
+      })}${interactiveSessionClosingTemplate(item.interactive_sessions)}
     </div>
     <div class="worker-mini__row2">
       <span class="worker-mini__title">${item.title}</span>
@@ -3164,6 +3223,13 @@ function chipsWithBlockerStatus(chips, wait_reasons) {
  * @returns {import('lit-html').TemplateResult}
  */
 export function miniRow(item, options = {}) {
+  const interactive_badges = interactiveSessionBadgesTemplate(
+    item.interactive_sessions,
+    { bead_id: item.id }
+  );
+  const interactive_closing = interactiveSessionClosingTemplate(
+    item.interactive_sessions
+  );
   if (
     item.lane === 'done' &&
     item.done_layout === 'three_line' &&
@@ -3549,7 +3615,7 @@ export function miniRow(item, options = {}) {
   >
     ${done_row
       ? html`<div class="worker-mini__row1">
-            ${repo_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${actions_el}
+            ${repo_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${interactive_badges}${interactive_closing}${actions_el}
           </div>
           <div class="worker-mini__row2">${title_el}</div>
           ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
@@ -3577,7 +3643,7 @@ export function miniRow(item, options = {}) {
             ${timesMeta(item)}
           </div>`
       : html`<div class="worker-mini__head">
-            ${grip}${seq_el}${repo_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${wait_badge}${actions_el}
+            ${grip}${seq_el}${repo_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${interactive_badges}${wait_badge}${interactive_closing}${actions_el}
           </div>
           ${reason_el
             ? html`<div class="worker-mini__reason-line">${reason_el}</div>`
@@ -4175,10 +4241,19 @@ export function candidateCard(item, place_menu = null, options = {}) {
       )}${areaChipsTemplate(
         item,
         options.chipPresets || null
-      )}${quickFixReviewChipTemplate(workflow, chipOpen(item, 'qfr'))}
+      )}${quickFixReviewChipTemplate(
+        workflow,
+        chipOpen(item, 'qfr')
+      )}${interactiveSessionBadgesTemplate(item.interactive_sessions, {
+        bead_id: item.id
+      })}
       ${spec_after_blocker_open || readiness_open
         ? ''
-        : judgementPopover(item)}${external.badge}${external.actions
+        : judgementPopover(
+            item
+          )}${external.badge}${interactiveSessionClosingTemplate(
+        item.interactive_sessions
+      )}${external.actions
         ? html`<span class="worker-card__head-actions"
             >${external.actions}</span
           >`

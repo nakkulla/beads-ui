@@ -33,18 +33,28 @@ import { emitQueueChanged } from './queue-events.js';
 import { createQueueStore } from './queue-store.js';
 import { recordRepoOpsDisplay } from './repo-ops-display.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
-import { createWorkerRuntime } from './runtime.js';
+import { createWorkerRuntime as buildWorkerRuntime } from './runtime.js';
 import { requestStartNow } from './scheduler.js';
 import {
   queueFilePath,
   sessionLogPath,
   workspaceStateDir
 } from './state-paths.js';
+import { RESOLVE_PANE_MARKER } from './tmux-launcher.js';
 import {
   __resetWorkspaceActivityForTest,
   onWorkspaceActivity,
   publishWorkspaceActivity
 } from './workspace-activity.js';
+
+function createWorkerRuntime() {
+  const runtime = buildWorkerRuntime();
+  vi.spyOn(runtime.interactiveLauncher, 'listPanesExtended').mockResolvedValue({
+    ok: true,
+    rows: []
+  });
+  return runtime;
+}
 
 // 큐 deps는 attach 안에서만 조립된다. 같은 위임 mock으로 그 deps를 붙잡아,
 // 생산 조립이 seam을 실제로 연결하는지 본다(UI-p49g §4.1).
@@ -2061,6 +2071,110 @@ describe('worker/attach construction + live loop (F1)', () => {
       vi.useRealTimers();
     }
   });
+
+  test('reconciles interactive panes every thirty seconds without subscribers', async () => {
+    vi.useFakeTimers();
+    try {
+      const runtime = createWorkerRuntime();
+      const att = createWorkerAttachment(WS, {
+        runtime,
+        bd: fakeBd(),
+        worktree: fakeWorktree,
+        verify: okVerify,
+        spawn_impl: makeFixtureSpawn({ lines: [] }),
+        getSubscriberCount: () => 0
+      });
+      __registerWorkerAttachmentForTest(WS, att);
+      initWorkerRuntime({ workspaces: [WS], getSubscriberCount: () => 0 });
+      await vi.advanceTimersByTimeAsync(0);
+      runtime.queueStore.recordInteractiveSession(WS, {
+        bead_id: 'UI-interactive',
+        kind: 'resolve',
+        provider: 'claude',
+        pane_id: '%1',
+        tmux_session: 'interactive',
+        tmux_window: 'resolve',
+        launched_at: 10,
+        state: 'live'
+      });
+
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      expect(runtime.queueStore.snapshot(WS).interactive_sessions).toEqual({});
+      expect(runtime.interactiveLauncher.listPanesExtended).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test.each(['closed', 'resolved'])(
+    'observes interactive bead status %s without subscribers or PR automation',
+    async (status) => {
+      vi.useFakeTimers();
+      try {
+        const runtime = createWorkerRuntime();
+        const readStatus = vi.fn(async () => status);
+        vi.mocked(
+          runtime.interactiveLauncher.listPanesExtended
+        ).mockImplementation(async (marker) => ({
+          ok: true,
+          rows:
+            marker === RESOLVE_PANE_MARKER
+              ? [
+                  {
+                    key: 'UI-interactive',
+                    pane: '%1',
+                    dead: '0',
+                    session: 'interactive',
+                    window: 'resolve',
+                    cwd: WS,
+                    agent_runtime: 'claude'
+                  }
+                ]
+              : []
+        }));
+        vi.spyOn(
+          runtime.interactiveLauncher,
+          'readPaneOption'
+        ).mockResolvedValue({ ok: true, value: '1' });
+        const att = createWorkerAttachment(WS, {
+          runtime,
+          bd: { ...fakeBd(), readStatus },
+          worktree: fakeWorktree,
+          verify: okVerify,
+          spawn_impl: makeFixtureSpawn({ lines: [] }),
+          getSubscriberCount: () => 0
+        });
+        __registerWorkerAttachmentForTest(WS, att);
+        initWorkerRuntime({ workspaces: [WS], getSubscriberCount: () => 0 });
+        await vi.advanceTimersByTimeAsync(0);
+        runtime.queueStore.recordInteractiveSession(WS, {
+          bead_id: 'UI-interactive',
+          kind: 'resolve',
+          provider: 'claude',
+          pane_id: '%1',
+          tmux_session: 'interactive',
+          tmux_window: 'resolve',
+          launched_at: 10,
+          state: 'live',
+          session_id: 'existing'
+        });
+        readStatus.mockClear();
+
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        const snapshot = runtime.queueStore.snapshot(WS);
+        expect(snapshot.pr_wait).toEqual([]);
+        expect(snapshot.auto_merge).toBe(false);
+        expect(readStatus).toHaveBeenCalledExactlyOnceWith('UI-interactive');
+        expect(
+          snapshot.interactive_sessions['UI-interactive:resolve'].settled_by
+        ).toBe(status === 'closed' ? 'bd_closed' : null);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
 
   test('wires the detection layer with the attachment git runner and push record (UI-8mvc §3, UI-1xcd §4)', async () => {
     const PINNED = 'a'.repeat(40);

@@ -2855,6 +2855,97 @@ describe('views/monitor 세션 타일 (UI-yrzu §6·§9)', () => {
 });
 
 describe('views/monitor 세션 타일 drawer (UI-4xzk §6.4)', () => {
+  test.each(['claude', 'codex'])(
+    'opens the interactive %s session drawer with its workspace',
+    (provider) => {
+      const { mount, view, sent } = setup({
+        workspaces: [
+          workspace({
+            attempts: {
+              a: {
+                attempt_id: 'a',
+                bead_id: 'A-7',
+                status: 'running',
+                started_at: NOW - 1000
+              }
+            },
+            interactive_sessions: {
+              'A-7:inquiry': {
+                bead_id: 'A-7',
+                kind: 'inquiry',
+                provider,
+                session_id: 'interactive-sid',
+                mode: 'fork',
+                source: 'attempt',
+                fallback_reason: null,
+                attempt_id: 'a',
+                tmux_session: 'bdui-inquiry',
+                tmux_window: 'A-7',
+                state: 'live',
+                settled_at: null,
+                launched_at: NOW - 1000
+              }
+            }
+          })
+        ],
+        workspaces_state: [state()]
+      });
+      view.load();
+
+      click(mount, '.interactive-session-badge');
+
+      expect(
+        sent.find((message) => message.type === 'subscribe-session-log')
+          ?.payload
+      ).toMatchObject({
+        attempt_id: `session:${provider}:interactive-sid`,
+        session_ref: {
+          bead_id: 'A-7',
+          provider,
+          session_id: 'interactive-sid'
+        },
+        root_dir: WS_A
+      });
+    }
+  );
+
+  test('leaves interactive Discord navigation to the anchor', () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-7', added_at: 1 }],
+          interactive_sessions: {
+            'A-7:resolve': {
+              bead_id: 'A-7',
+              kind: 'resolve',
+              provider: 'claude',
+              session_id: 'sid',
+              mode: 'fresh',
+              source: 'fresh',
+              fallback_reason: 'no_session_ref',
+              attempt_id: null,
+              tmux_session: 'bdui-inquiry',
+              tmux_window: 'resolve-A-7',
+              state: 'live',
+              settled_at: null,
+              launched_at: NOW,
+              discord_url: 'https://discord.com/channels/1/2'
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+    view.load();
+    sent.length = 0;
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+
+    el(mount, '.interactive-session-discord')?.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(sent).toEqual([]);
+  });
+
   const VIEW = {
     index: 0,
     provider: 'claude',

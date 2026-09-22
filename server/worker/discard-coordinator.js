@@ -2247,6 +2247,22 @@ export function createDiscardCoordinator(deps, options = {}) {
         if (!completed.ok) {
           return fail(operation, 'discard_finalize_failed');
         }
+        if (operation.kind !== 'stale_work_backup_fresh') {
+          deps.store.markInteractiveSessionsSettled?.(
+            deps.workspace,
+            operation.bead_id,
+            'discard'
+          );
+          try {
+            await deps.scheduler.reconcileInteractiveSessions?.(deps.workspace);
+          } catch (err) {
+            log(
+              'interactive discard reconcile failed for %s: %o',
+              operation.bead_id,
+              err
+            );
+          }
+        }
         notifyChanged(deps.workspace);
         await deps.scheduler.tick(deps.workspace);
         continue;

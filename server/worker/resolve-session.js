@@ -22,12 +22,13 @@
  * The duplicate guard is the pane marker, which is one truth for the whole
  * machine: at most one live resolution session per bead.
  */
+import { randomUUID } from 'node:crypto';
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
 import { PRE_MERGE_HOLD_NOTIFY_LABEL } from './completion-intent.js';
 import { discardOperationActive } from './discard-phase.js';
-import { qualifySessionFork, recordedSessionProvider } from './session-ref.js';
+import { qualifyInteractiveForkSource } from './session-ref.js';
 import {
   RESOLVE_PANE_MARKER,
   createTmuxLauncher,
@@ -47,12 +48,20 @@ const default_log = debug('worker:resolve-session');
  * @param {'claude'|'codex'} runner
  * @param {string} session_id
  * @param {string} prompt
+ * @param {string|null} launch_session_id
  * @returns {string[]}
  */
-function forkArgs(runner, session_id, prompt) {
+function forkArgs(runner, session_id, prompt, launch_session_id) {
   return runner === 'codex'
     ? ['fork', session_id, prompt]
-    : ['--resume', session_id, '--fork-session', prompt];
+    : [
+        '--resume',
+        session_id,
+        '--fork-session',
+        '--session-id',
+        /** @type {string} */ (launch_session_id),
+        prompt
+      ];
 }
 
 /**
@@ -61,12 +70,13 @@ function forkArgs(runner, session_id, prompt) {
  *
  * @param {'claude'|'codex'} runner
  * @param {string} session_id
+ * @param {string|null} launch_session_id
  * @returns {string}
  */
-function forkCommand(runner, session_id) {
+function forkCommand(runner, session_id, launch_session_id) {
   return runner === 'codex'
     ? `codex fork ${shellQuote(session_id)}`
-    : `claude --resume ${shellQuote(session_id)} --fork-session`;
+    : `claude --resume ${shellQuote(session_id)} --fork-session --session-id ${shellQuote(/** @type {string} */ (launch_session_id))}`;
 }
 
 /**
@@ -258,6 +268,9 @@ export function buildResolvePrompt(input) {
   lines.push(
     '이 세션은 Worker attempt를 이어받은 승계 세션이다 — workflow `Attempt continuation`대로 `impl_entry`·`plan_approval`을 쓰지 않고 `workflow_mode=fast_track`으로 잇는다.'
   );
+  lines.push(
+    '이 Bead가 머지·close·폐기로 정산되면 Worker가 이 세션을 닫고(claude: `/exit`) Discord 스레드는 아카이브된다.'
+  );
   lines.push('');
   lines.push(
     '금지: 머지·폐기 실행 · Worker 큐 상태 직접 편집 · 실패 기록 삭제.'
@@ -274,6 +287,7 @@ export function buildResolvePrompt(input) {
  * @property {(runner: string) => string|null} [resolveRunner]
  * @property {(file_path: string) => { mtimeMs: number }} [statFile]
  * @property {() => number} [now]
+ * @property {{ recordInteractiveSession: (workspace: string, record: any) => void }} [store]
  * @property {(...args: any[]) => void} [log]
  * @property {string} [heartbeatPath]
  * @property {{ home_dir?: string, hostname?: string, fs?: any, now?: () => number }} [sessionRefOptions]
@@ -290,6 +304,7 @@ export function buildResolvePrompt(input) {
  * @property {'launched'|'already_running'|'not_launched'} session
  * @property {string|null} reason - Why nothing was launched; null otherwise.
  * @property {'fork'|'fresh'} mode
+ * @property {'attempt'|'session_ref'|'fresh'} source
  * @property {string|null} fallback_reason - Why the recorded session was not
  * forked; null on a fork.
  * @property {string|null} session_id
@@ -354,9 +369,10 @@ export function createResolveSession(deps) {
    *
    * @param {string} workspace
    * @param {string} bead_id
-   * @returns {Promise<{ session_id: string|null, runner: 'claude'|'codex', fallback_reason: string|null }>}
+   * @param {any} attempt
+   * @returns {Promise<{ session_id: string|null, runner: 'claude'|'codex', source: 'attempt'|'session_ref'|'fresh', fallback_reason: string|null }>}
    */
-  async function forkTarget(workspace, bead_id) {
+  async function forkTarget(workspace, bead_id, attempt) {
     /**
      * The provider a launch with no usable source runs on: current execution
      * settings when they resolve, and otherwise this lane's own default tool.
@@ -382,50 +398,33 @@ export function createResolveSession(deps) {
       issue = await deps.bd.readIssue(workspace, bead_id);
     } catch (err) {
       log('bd read failed for %s: %o', bead_id, err);
-      return {
-        session_id: null,
-        runner: currentRunner(null),
-        fallback_reason: 'bd_unavailable'
-      };
     }
     if (!issue || typeof issue !== 'object') {
-      return {
-        session_id: null,
-        runner: currentRunner(null),
-        fallback_reason: 'bd_unavailable'
-      };
+      issue = null;
     }
-    // `null` runner: the recorded provider decides, instead of a claude pin
-    // whose only effect was to report a perfectly forkable codex session as a
-    // `provider_mismatch` (§4.1).
-    const qualified = qualifySessionFork(
-      issue.metadata,
-      null,
-      deps.sessionRefOptions || {}
-    );
-    return qualified.ok
-      ? {
-          session_id: qualified.session_id,
-          runner: qualified.provider,
-          fallback_reason: null
-        }
-      : {
-          // The SOURCE provider survives its own failure (§4.1): a missing
-          // transcript or an unusable id makes the session fresh, never a
-          // different CLI. Only `no_session_ref` — no source at all — follows
-          // current settings.
-          session_id: null,
-          runner:
-            recordedSessionProvider(issue.metadata) ?? currentRunner(issue),
-          fallback_reason: qualified.reason
-        };
+    const source = qualifyInteractiveForkSource({
+      attempt,
+      metadata: issue?.metadata,
+      options: deps.sessionRefOptions || {}
+    });
+    return {
+      session_id: source.session_id,
+      runner: source.provider ?? currentRunner(issue),
+      source: source.source,
+      fallback_reason:
+        !issue &&
+        source.source === 'fresh' &&
+        source.fallback_reason === 'no_session_ref'
+          ? 'bd_unavailable'
+          : source.fallback_reason
+    };
   }
 
   return {
     /**
      * Start (or find) this bead's resolution session.
      *
-     * @param {{ workspace: string, repo?: string|null, bead_id: string, failure: ResolveFailureContext }} input
+     * @param {{ workspace: string, repo?: string|null, bead_id: string, failure: ResolveFailureContext, attempt?: any }} input
      * @returns {Promise<ResolveSessionOutcome>}
      */
     async resolve(input) {
@@ -433,9 +432,10 @@ export function createResolveSession(deps) {
         typeof input.repo === 'string' && input.repo.length > 0
           ? input.repo
           : input.workspace;
-      const { session_id, runner, fallback_reason } = await forkTarget(
+      const { session_id, runner, source, fallback_reason } = await forkTarget(
         input.workspace,
-        input.bead_id
+        input.bead_id,
+        input.attempt
       );
       const prompt = buildResolvePrompt({
         bead_id: input.bead_id,
@@ -443,8 +443,17 @@ export function createResolveSession(deps) {
         checkout,
         fallback_reason
       });
+      const launch_session_id = runner === 'claude' ? randomUUID() : null;
       const command_args =
-        session_id === null ? [prompt] : forkArgs(runner, session_id, prompt);
+        session_id === null
+          ? runner === 'claude'
+            ? [
+                '--session-id',
+                /** @type {string} */ (launch_session_id),
+                prompt
+              ]
+            : [prompt]
+          : forkArgs(runner, session_id, prompt, launch_session_id);
       const outcome = await launcher.launch({
         marker: RESOLVE_PANE_MARKER,
         key: input.bead_id,
@@ -454,15 +463,60 @@ export function createResolveSession(deps) {
         commandArgs: command_args,
         runner
       });
+      if (outcome.session === 'launched') {
+        try {
+          const launched_at = deps.now ? deps.now() : Date.now();
+          if (deps.store) {
+            deps.store.recordInteractiveSession(input.workspace, {
+              bead_id: input.bead_id,
+              kind: 'resolve',
+              provider: runner,
+              session_id: launch_session_id,
+              session_id_source: launch_session_id === null ? null : 'launch',
+              mode: session_id === null ? 'fresh' : 'fork',
+              source,
+              forked_from: session_id,
+              fallback_reason,
+              attempt_id: input.attempt?.attempt_id ?? null,
+              failure_class: input.failure.failure_class,
+              tmux_session: outcome.tmux_session,
+              tmux_window: outcome.tmux_window,
+              pane_id: outcome.pane_id,
+              cwd: checkout,
+              launched_at,
+              last_seen_alive_at: launched_at,
+              settled_at: null,
+              settled_by: null,
+              state: 'live',
+              exit_requested_at: null,
+              defer_since: null
+            });
+          } else {
+            log('interactive session store unavailable for %s', input.bead_id);
+          }
+        } catch (err) {
+          log(
+            'interactive session record failed for %s: %o',
+            input.bead_id,
+            err
+          );
+        }
+      }
       return {
         launched: outcome.session === 'launched',
         session: outcome.session,
         reason: outcome.session === 'not_launched' ? outcome.reason : null,
         mode: session_id === null ? 'fresh' : 'fork',
+        source,
         fallback_reason,
         session_id,
         runner,
-        command: session_id === null ? runner : forkCommand(runner, session_id),
+        command:
+          session_id === null
+            ? runner === 'claude'
+              ? `claude --session-id ${shellQuote(/** @type {string} */ (launch_session_id))}`
+              : runner
+            : forkCommand(runner, session_id, launch_session_id),
         bridge_active: launcher.bridgeActive(),
         tmux_session:
           outcome.session === 'launched' ? outcome.tmux_session : null,

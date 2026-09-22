@@ -28,6 +28,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import nodeFs from 'node:fs';
+import os from 'node:os';
 import { canonicalJson, splitWorkerQueue } from '../../app/data/keyed-patch.js';
 import { makeError, makeOk } from '../../app/protocol.js';
 import {
@@ -3057,6 +3058,15 @@ export function decorateQueue(workspace_key, raw_queue) {
   const completion_status = completionStatusFor(workspace_key, overlaid);
   /** @type {Record<string, any>} */
   const public_queue = { ...overlaid };
+  const threads = getWorkerRuntime().interactiveLauncher?.readBridgeThreads();
+  public_queue.interactive_sessions = Object.fromEntries(
+    Object.entries(
+      /** @type {Record<string, any>} */ (overlaid.interactive_sessions || {})
+    ).map(([key, record]) => [
+      key,
+      { ...record, discord_url: threads?.get(record.session_id)?.url || null }
+    ])
+  );
   // 실제 구현 주체는 내부 필드 제거 전에 파생한다 (UI-ys18 §5.1): trimming이
   // `receipt_check`를 지운 뒤에는 어떤 종료 attempt도 `missing`으로만 읽힌다.
   public_queue.attempts = attemptsWithImplActor(overlaid.attempts);
@@ -3559,11 +3569,29 @@ async function followSessionRefLog(ws, input) {
     SESSION_LOG_SUBS.delete(sub);
     emitSessionLogSnapshot(ws, client_id, attempt_id, [], null);
   };
-  const entry = parseSessionRef(metadata?.session_ref).find(
+  let entry = parseSessionRef(metadata?.session_ref).find(
     (item) =>
       item.provider === session_ref.provider &&
       item.session_id === session_ref.session_id
   );
+  if (entry === undefined) {
+    const records = queueStore().snapshot(key).interactive_sessions || {};
+    if (
+      Object.values(records).some(
+        (record) =>
+          record.bead_id === session_ref.bead_id &&
+          record.provider === session_ref.provider &&
+          record.session_id === session_ref.session_id
+      )
+    ) {
+      entry = {
+        index: 0,
+        provider: session_ref.provider,
+        session_id: session_ref.session_id,
+        host: os.hostname()
+      };
+    }
+  }
   if (entry === undefined) {
     giveUp();
     return;
@@ -6352,7 +6380,8 @@ export async function handleWorkerResolveInSession(ws, req) {
         workspace: key,
         repo: key,
         bead_id: p.bead_id,
-        failure
+        failure,
+        attempt: latest_attempt
       });
     }
   } catch (err) {
@@ -6383,6 +6412,7 @@ export async function handleWorkerResolveInSession(ws, req) {
         session: result.session || null,
         reason: result.reason || null,
         mode: result.mode || null,
+        source: result.source || null,
         fallback_reason: result.fallback_reason || null,
         command: result.command || null,
         bridge_active: result.bridge_active === true,

@@ -179,6 +179,10 @@ describe('worker-resolve-in-session (UI-jw27 §4)', () => {
         workspace: WS,
         repo: WS,
         bead_id: BEAD,
+        attempt: expect.objectContaining({
+          attempt_id: 'a-jw27',
+          bead_id: BEAD
+        }),
         failure: {
           failure_class: '정리 중단',
           reason: 'child_close_failed',
@@ -204,6 +208,15 @@ describe('worker-resolve-in-session (UI-jw27 §4)', () => {
       fallback_reason: null,
       failure_class: '정리 중단'
     });
+  });
+
+  test('returns the recorded fork source in the response', async () => {
+    recordCleanupStop();
+    launch_result.source = 'attempt';
+
+    const reply = await click({ bead_id: BEAD, expected_revision: revision() });
+
+    expect(reply.payload.source).toBe('attempt');
   });
 
   test('carries the fallback reason of a fresh session into the reply', async () => {

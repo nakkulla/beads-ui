@@ -1291,6 +1291,7 @@ export function createMonitorView(mount_element, options) {
                 // 받는다 — Worker 타일에 실으면 없던 시각 메타 줄이 생긴다.
                 kind: item.kind === 'session' ? 'session' : undefined,
                 external_wait: item.external_wait,
+                interactive_sessions: item.interactive_sessions,
                 wait_reasons: item.wait_reasons,
                 ...(item.kind === 'session'
                   ? {
@@ -2225,6 +2226,32 @@ export function createMonitorView(mount_element, options) {
       const choice = button.getAttribute('data-lane') || 'parallel';
       place_menu_bead = null;
       void placeCandidateAt(bead_id, choice);
+      return;
+    }
+    if (cls.contains('interactive-session-badge')) {
+      const provider = button.getAttribute('data-session-provider');
+      const session_id = button.getAttribute('data-session-id');
+      if ((provider === 'claude' || provider === 'codex') && session_id) {
+        drawer_overlay_el.hidden = false;
+        drawer.open(
+          sessionRefDrawerInput(
+            {
+              provider,
+              session_id,
+              current: true,
+              locality: 'local',
+              index: 0,
+              host: '',
+              last_event_at: null,
+              resume_command: null
+            },
+            bead_id,
+            'in_progress',
+            root_dir
+          )
+        );
+        doRender();
+      }
       return;
     }
     if (cls.contains('rtile__session')) {

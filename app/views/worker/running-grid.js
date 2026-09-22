@@ -42,6 +42,8 @@ import {
   discardReceiptTemplate,
   execChipsTemplate,
   externalWaitCardParts,
+  interactiveSessionBadgesTemplate,
+  interactiveSessionClosingTemplate,
   laneOriginChipTemplate,
   priorityBadgeTemplate,
   routeCardTone,
@@ -60,6 +62,7 @@ import { representativeWaitReason } from './wait-vocabulary.js';
 /**
  * @typedef {Object} RunningTile
  * @property {string} bead_id
+ * @property {import('./lane-model.js').InteractiveSessionView[]} [interactive_sessions]
  * @property {import('./lane-model.js').LaneOrigin} [lane_origin]
  * @property {string} [root_dir] - Workspace owning this tile.
  * @property {string} attempt_id
@@ -1390,8 +1393,12 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
             title="Worker가 아닌 세션이 in_progress로 잡은 이슈"
             >직접 세션</span
           >`
-        : ''}${status_badges}
+        : ''}${status_badges}${interactiveSessionBadgesTemplate(
+        tile.interactive_sessions,
+        { bead_id: tile.bead_id }
+      )}
       <div class="rtile__hd-actions">
+        ${interactiveSessionClosingTemplate(tile.interactive_sessions)}
         ${wait_lines.map((line) => line.actions)}${session
           ? html`${typeof tile.started_at === 'number'
               ? html`<span class="rtile__elapsed">${elapsed}</span>`

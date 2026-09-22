@@ -22,6 +22,8 @@ import {
   execChipsTemplate,
   formatClock,
   formatElapsed,
+  interactiveSessionBadgesTemplate,
+  interactiveSessionClosingTemplate,
   judgementPopoverContent,
   judgementPopoverOf,
   miniRow,
@@ -46,6 +48,177 @@ import { SUMMARY_CHIPS } from './wait-vocabulary.js';
 
 /** @type {HTMLElement} */
 let mount;
+
+/**
+ * @param {Partial<import('./lane-model.js').InteractiveSessionView>} [patch]
+ * @returns {import('./lane-model.js').InteractiveSessionView}
+ */
+function interactiveView(patch = {}) {
+  return {
+    key: 'UI-x1:resolve',
+    kind: 'resolve',
+    provider: 'claude',
+    session_id: 'sid',
+    mode: 'fork',
+    source: 'attempt',
+    fallback_reason: null,
+    attempt_id: '1234567890',
+    tmux_session: 'bdui-inquiry',
+    tmux_window: 'resolve-UI-x1',
+    state: 'live',
+    settled_at: null,
+    launched_at: 1,
+    discord_url: null,
+    closing: false,
+    ...patch
+  };
+}
+
+describe('interactive session badges', () => {
+  test.each([
+    [{}, '▤ 해결 세션 · fork', 'fork · attempt 12345678'],
+    [
+      { source: 'session_ref', kind: 'inquiry' },
+      '▤ 문의 세션 · fork',
+      'fork · session_ref'
+    ],
+    [
+      { mode: 'fresh', source: 'fresh', fallback_reason: 'no_session_ref' },
+      '▤ 해결 세션 · 새 세션',
+      '새 세션 · no_session_ref'
+    ],
+    [{ mode: null, source: 'recovered' }, '▤ 해결 세션 · 복구', '복구']
+  ])('renders the label and provenance for %j', (patch, label, title) => {
+    const view = interactiveView(/** @type {any} */ (patch));
+
+    render(
+      interactiveSessionBadgesTemplate([view], { bead_id: 'UI-x1' }),
+      mount
+    );
+
+    const badge = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.interactive-session-badge')
+    );
+    expect(badge.textContent?.trim()).toBe(label);
+    expect(badge.title).toBe(`${title} · bdui-inquiry:resolve-UI-x1`);
+    expect(badge.dataset).toMatchObject({
+      sessionProvider: 'claude',
+      sessionId: 'sid',
+      beadId: 'UI-x1'
+    });
+  });
+
+  test('renders an inert span before the session id arrives', () => {
+    const view = interactiveView({ session_id: null });
+
+    render(
+      interactiveSessionBadgesTemplate([view], { bead_id: 'UI-x1' }),
+      mount
+    );
+
+    expect(mount.querySelector('.interactive-session-badge')?.tagName).toBe(
+      'SPAN'
+    );
+  });
+
+  test.each([null, 'https://discord.com/channels/1/2'])(
+    'renders a Discord link only with its URL (%s)',
+    (discord_url) => {
+      const view = interactiveView({ discord_url });
+
+      render(
+        interactiveSessionBadgesTemplate([view], { bead_id: 'UI-x1' }),
+        mount
+      );
+
+      const link = mount.querySelector('a');
+      expect(link?.getAttribute('href') || null).toBe(discord_url);
+      if (discord_url) {
+        expect(link?.getAttribute('target')).toBe('_blank');
+        expect(link?.getAttribute('rel')).toBe('noopener');
+        expect(link?.previousElementSibling?.className).toBe(
+          'interactive-session-badge'
+        );
+      }
+    }
+  );
+
+  test('renders both session kinds', () => {
+    const views = [
+      interactiveView(),
+      interactiveView({ kind: 'inquiry', key: 'UI-x1:inquiry' })
+    ];
+
+    render(
+      interactiveSessionBadgesTemplate(views, { bead_id: 'UI-x1' }),
+      mount
+    );
+
+    expect(mount.querySelectorAll('.interactive-session-badge')).toHaveLength(
+      2
+    );
+  });
+
+  test.each([false, true])(
+    'renders a single closing label when needed (%s)',
+    (closing) => {
+      const views = [
+        interactiveView({ closing }),
+        interactiveView({ closing })
+      ];
+
+      render(interactiveSessionClosingTemplate(views), mount);
+
+      expect(mount.textContent).toBe(closing ? '세션 닫는 중' : '');
+    }
+  );
+
+  test.each(/** @type {const} */ (['queue', 'pr_wait', 'done', 'three_line']))(
+    'places sessions in the identity row of %s',
+    (lane) => {
+      const row = renderRow({
+        lane: lane === 'three_line' ? 'done' : lane,
+        done_layout: lane === 'three_line' ? 'three_line' : undefined,
+        interactive_sessions: [interactiveView({ closing: true })]
+      });
+
+      const badge = row.querySelector('.interactive-session-badge');
+
+      expect(
+        badge?.closest('.worker-mini__head, .worker-mini__row1')
+      ).not.toBeNull();
+      expect(
+        row.querySelector('.interactive-session-closing')?.textContent
+      ).toBe('세션 닫는 중');
+    }
+  );
+
+  test('keeps candidate sessions in the identity slot when supplied', () => {
+    const item = { interactive_sessions: [interactiveView()] };
+
+    const card = renderCandidate(item);
+
+    expect(
+      card.querySelector('.worker-card__head .interactive-session-badge')
+    ).not.toBeNull();
+  });
+
+  test('preserves the resolve action alongside a live session', () => {
+    /** @type {Partial<import('./lanes.js').MiniItem>} */
+    const item = {
+      lane: 'pr_wait',
+      resolve_action: true,
+      done: false,
+      interactive_sessions: [interactiveView()]
+    };
+
+    const row = renderRow(item);
+
+    expect(
+      row.querySelector('.worker-mini__resolve')?.textContent?.trim()
+    ).toBe('세션에서 해결');
+  });
+});
 
 /**
  * @param {Partial<import('./lanes.js').MiniItem>} item

@@ -51,6 +51,28 @@ afterEach(() => {
 });
 
 describe('bead-timeline append', () => {
+  test('persists interactive session events with the session kind and launch time', () => {
+    const timeline = createBeadTimeline({ workspace_root: WS });
+
+    const result = timeline.append(
+      dispatchEvent({
+        kind: 'interactive_session',
+        attempt_id: undefined,
+        seq: 'resolve:1790030288074:started',
+        summary: '해결 세션 시작 · fork attempt'
+      })
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      event: {
+        kind: 'interactive_session',
+        event_id: `interactive_session:${BEAD}:resolve:1790030288074:started`
+      }
+    });
+    expect(timeline.readTimeline(BEAD)[0].kind).toBe('interactive_session');
+  });
+
   test('persists the live account preempt event kind', () => {
     const timeline = createBeadTimeline({ workspace_root: WS });
 
@@ -284,6 +306,7 @@ describe('TIMELINE_KINDS', () => {
       'guard_warning',
       'guard_denied',
       'session_ended',
+      'interactive_session',
       'attempt_failed',
       'attempt_retry',
       'queue_hold',

@@ -361,8 +361,8 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   snapshot from a subscription the server has not torn down yet; the rest is the
   full queue (`revision`, `auto_advance`, `slots`, `serial_lanes[]`,
   `serial_lane_count`, `queue[]`, `pr_wait[]`, `done[]`, `attempts`,
-  `admission`, `cleanup_failed`, `exec_defaults`) — an `admission` record is
-  `{ reason, at, stale?, blockers? }`, where `blockers` is
+  `admission`, `cleanup_failed`, `exec_defaults`, `interactive_sessions`) — an
+  `admission` record is `{ reason, at, stale?, blockers? }`, where `blockers` is
   `Array<{ id, rig: string|null, status }>` carried ONLY by the
   `prerequisite_unmet` reason: the unmet `blocks` prerequisites the scheduler
   proved, same-rig (`rig: null`) and foreign alike (UI-d3i1 §5.1). A malformed
@@ -384,6 +384,18 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   no entry means label truth is unknown (not an empty array), including when an
   older server omits the whole key. It is UI projection only and never Worker
   scheduler authority.
+- `interactive_sessions` is a record keyed by `<bead_id>:<kind>`, where `kind`
+  is `resolve` or `inquiry`. Each live session carries its `bead_id`, `kind`,
+  `provider`, nullable `session_id`, `mode`, `source`, `fallback_reason`,
+  `attempt_id`, tmux coordinates, `state`, `settled_at`, and `launched_at`. The
+  server decorates each record with `discord_url: string|null`; a missing URL
+  produces no link. Records exist only while the session is alive; ended session
+  history is available through `get-bead-timeline` events of kind
+  `interactive_session`. Missing records produce no session badges.
+- The `worker-resolve-in-session` response includes `source` identifying the
+  fork origin: `attempt`, `session_ref`, or `fresh` (`null` when the launch
+  response has no source). `mode` and `fallback_reason` retain their existing
+  meaning.
 - A `pr_wait` entry the server SYNTHESIZED for an external PR (UI-7agi §2) is
   marked `external: true` and carries `wt_present: boolean`. When the row comes
   from the external-PR registry it additionally carries that registry's own PR

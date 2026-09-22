@@ -491,7 +491,33 @@
  * @property {ProviderGateAdmission} [gate]
  */
 /**
+ * @typedef {Object} InteractiveSession
+ * @property {string} bead_id
+ * @property {'resolve'|'inquiry'} kind
+ * @property {'claude'|'codex'} provider
+ * @property {string|null} session_id
+ * @property {'launch'|'pane_option'|null} session_id_source
+ * @property {'fork'|'fresh'|null} mode
+ * @property {'attempt'|'session_ref'|'fresh'|'recovered'|null} source
+ * @property {string|null} forked_from
+ * @property {string|null} fallback_reason
+ * @property {string|null} attempt_id
+ * @property {string|null} failure_class
+ * @property {string} tmux_session
+ * @property {string} tmux_window
+ * @property {string} pane_id
+ * @property {string|null} cwd
+ * @property {number} launched_at
+ * @property {number|null} last_seen_alive_at
+ * @property {number|null} settled_at
+ * @property {'done'|'discard'|'bd_closed'|null} settled_by
+ * @property {'live'|'exiting'} state
+ * @property {number|null} exit_requested_at
+ * @property {number|null} defer_since
+ */
+/**
  * @typedef {Object} Queue
+ * @property {Record<string, InteractiveSession>} interactive_sessions - Live interactive panes, keyed by bead and kind.
  * @property {number} revision - CAS counter; bumped on every mutation.
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
  * Cold load resets this OFF; only a verified terminal self-deploy may restore
@@ -2182,6 +2208,7 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'auto_merge_skips',
   'completion_intents',
   'discard_operations',
+  'interactive_sessions',
   'merge_policy',
   'drift_policy',
   'worker_runner',
@@ -2246,6 +2273,7 @@ function emptyQueue() {
     auto_merge_skips: {},
     completion_intents: {},
     discard_operations: {},
+    interactive_sessions: {},
     repo_ops_opt_out: { verify: false, deploy: false },
     repo_operations: {},
     post_merge_jobs: {},
@@ -3033,6 +3061,86 @@ function normalizeDiscardOperations(raw) {
     }
   }
   return operations;
+}
+
+/**
+ * Normalize durable interactive panes, dropping records without an identity.
+ *
+ * @param {unknown} raw
+ * @returns {Record<string, InteractiveSession>}
+ */
+function normalizeInteractiveSessions(raw) {
+  /** @type {Record<string, InteractiveSession>} */
+  const sessions = {};
+  if (!isRecord(raw)) {
+    return sessions;
+  }
+  for (const value of Object.values(raw)) {
+    if (
+      !isRecord(value) ||
+      !['bead_id', 'pane_id', 'tmux_session', 'tmux_window'].every(
+        (key) => typeof value[key] === 'string' && value[key].trim().length > 0
+      ) ||
+      (value.kind !== 'resolve' && value.kind !== 'inquiry') ||
+      (value.provider !== 'claude' && value.provider !== 'codex') ||
+      (value.state !== 'live' && value.state !== 'exiting') ||
+      typeof value.launched_at !== 'number' ||
+      !Number.isFinite(value.launched_at)
+    ) {
+      continue;
+    }
+    /** @param {string} key */
+    const stringOrNull = (key) =>
+      typeof value[key] === 'string' && value[key].length > 0
+        ? value[key]
+        : null;
+    /** @param {string} key */
+    const numberOrNull = (key) =>
+      typeof value[key] === 'number' && Number.isFinite(value[key])
+        ? value[key]
+        : null;
+    const bead_id = String(value.bead_id);
+    sessions[`${bead_id}:${value.kind}`] = {
+      bead_id,
+      kind: value.kind,
+      provider: value.provider,
+      pane_id: String(value.pane_id),
+      tmux_session: String(value.tmux_session),
+      tmux_window: String(value.tmux_window),
+      launched_at: value.launched_at,
+      state: value.state,
+      session_id: stringOrNull('session_id'),
+      session_id_source:
+        value.session_id_source === 'launch' ||
+        value.session_id_source === 'pane_option'
+          ? value.session_id_source
+          : null,
+      mode: value.mode === 'fork' || value.mode === 'fresh' ? value.mode : null,
+      source:
+        value.source === 'attempt' ||
+        value.source === 'session_ref' ||
+        value.source === 'fresh' ||
+        value.source === 'recovered'
+          ? value.source
+          : null,
+      forked_from: stringOrNull('forked_from'),
+      fallback_reason: stringOrNull('fallback_reason'),
+      attempt_id: stringOrNull('attempt_id'),
+      failure_class: stringOrNull('failure_class'),
+      cwd: stringOrNull('cwd'),
+      last_seen_alive_at: numberOrNull('last_seen_alive_at'),
+      settled_at: numberOrNull('settled_at'),
+      settled_by:
+        value.settled_by === 'done' ||
+        value.settled_by === 'discard' ||
+        value.settled_by === 'bd_closed'
+          ? value.settled_by
+          : null,
+      exit_requested_at: numberOrNull('exit_requested_at'),
+      defer_since: numberOrNull('defer_since')
+    };
+  }
+  return sessions;
 }
 
 /**
@@ -4679,6 +4787,9 @@ function normalizeQueue(raw) {
   q.completion_intents = normalizeCompletionIntents(raw.completion_intents);
   recoverLegacyCompletionAnchors(q);
   q.discard_operations = normalizeDiscardOperations(raw.discard_operations);
+  q.interactive_sessions = normalizeInteractiveSessions(
+    raw.interactive_sessions
+  );
   // 부재·비객체·비불리언은 모두 '실행'으로 읽는다: opt-out은 사용자가 명시적으로
   // 켠 설정이며, 읽을 수 없는 값이 게이트를 건너뛰게 만들어서는 안 된다.
   q.repo_ops_opt_out = {
@@ -6110,6 +6221,83 @@ export function createQueueStore(options = {}) {
      */
     snapshot(workspace) {
       return exportQueue(workspace, ensureLoaded(workspace));
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {InteractiveSession|Record<string, unknown>} record
+     * @returns {QueueOpResult}
+     */
+    recordInteractiveSession(workspace, record) {
+      return applyUnconditional(workspace, (next) => {
+        const records = normalizeInteractiveSessions({ record });
+        if (Object.keys(records).length === 0) {
+          return false;
+        }
+        Object.assign(next.interactive_sessions, records);
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {string} key
+     * @param {Partial<InteractiveSession>} patch
+     * @returns {QueueOpResult}
+     */
+    updateInteractiveSession(workspace, key, patch) {
+      return applyUnconditional(workspace, (next) => {
+        const current = next.interactive_sessions[key];
+        if (!current) {
+          return false;
+        }
+        const record = normalizeInteractiveSessions({
+          record: { ...current, ...patch }
+        })[key];
+        if (!record) {
+          return false;
+        }
+        next.interactive_sessions[key] = record;
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {string} key
+     * @returns {QueueOpResult}
+     */
+    removeInteractiveSession(workspace, key) {
+      return applyUnconditional(workspace, (next) => {
+        if (!next.interactive_sessions[key]) {
+          return false;
+        }
+        delete next.interactive_sessions[key];
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {string} bead_id
+     * @param {'done'|'discard'|'bd_closed'} settled_by
+     * @returns {QueueOpResult}
+     */
+    markInteractiveSessionsSettled(workspace, bead_id, settled_by) {
+      return applyUnconditional(workspace, (next) => {
+        const records = Object.values(next.interactive_sessions).filter(
+          (record) => record.bead_id === bead_id && record.settled_at === null
+        );
+        if (records.length === 0) {
+          return false;
+        }
+        const at = now();
+        for (const record of records) {
+          record.settled_at = at;
+          record.settled_by = settled_by;
+        }
+        return true;
+      });
     },
 
     /**

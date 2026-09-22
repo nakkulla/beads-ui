@@ -596,6 +596,7 @@ function makeActions(options = {}) {
   };
 
   const scheduler = {
+    reconcileInteractiveSessions: vi.fn(async () => {}),
     resolveConflict: vi.fn(async () => {
       calls.push('sched:resolveConflict');
       return options.resolveConflictResult || { ok: true, attempt_id: 'a2' };
@@ -945,6 +946,63 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     expect(h.gh.mergeSquash).toHaveBeenCalledWith(REPO, 304, 'sha-aaa');
     expect(h.gh.updateBranch).not.toHaveBeenCalled();
     expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+  });
+
+  test('settles interactive sessions immediately after moving a merged row to done', async () => {
+    const h = makeActions();
+    h.store.recordInteractiveSession(WS, {
+      bead_id: BEAD,
+      kind: 'resolve',
+      provider: 'claude',
+      pane_id: '%1',
+      tmux_session: 'interactive',
+      tmux_window: 'resolve',
+      launched_at: 10,
+      state: 'live'
+    });
+    const moved = vi.spyOn(h.store, 'moveToDone');
+    const settled = vi.spyOn(h.store, 'markInteractiveSessionsSettled');
+    h.scheduler.reconcileInteractiveSessions.mockImplementation(async () => {
+      expect(
+        h.store.snapshot(WS).interactive_sessions[`${BEAD}:resolve`].settled_by
+      ).toBe('done');
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result.ok).toBe(true);
+    expect(settled).toHaveBeenCalledWith(WS, BEAD, 'done');
+    expect(h.scheduler.reconcileInteractiveSessions).toHaveBeenCalledWith(WS);
+    expect(moved.mock.invocationCallOrder[0]).toBeLessThan(
+      settled.mock.invocationCallOrder[0]
+    );
+    expect(settled.mock.invocationCallOrder[0]).toBeLessThan(
+      h.scheduler.reconcileInteractiveSessions.mock.invocationCallOrder[0]
+    );
+  });
+
+  test('keeps merged settlement durable when immediate pane reconciliation fails', async () => {
+    const h = makeActions();
+    h.scheduler.reconcileInteractiveSessions.mockRejectedValue(
+      new Error('tmux unavailable')
+    );
+    h.store.recordInteractiveSession(WS, {
+      bead_id: BEAD,
+      kind: 'resolve',
+      provider: 'claude',
+      pane_id: '%1',
+      tmux_session: 'interactive',
+      tmux_window: 'resolve',
+      launched_at: 10,
+      state: 'live'
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result.ok).toBe(true);
+    expect(
+      h.store.snapshot(WS).interactive_sessions[`${BEAD}:resolve`].settled_by
+    ).toBe('done');
   });
 
   test('refuses a BEHIND pull request', async () => {
