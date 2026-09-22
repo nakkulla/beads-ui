@@ -168,6 +168,11 @@ export function attemptFactsDirective(facts) {
     '',
     'Worker가 이 attempt를 준비하며 이미 확인한 값이다. 다시 탐색하지 말고 그대로 쓰라. 빠진 줄은 Worker가 확인하지 못한 것이니 필요하면 세션이 직접 확인한다.',
     'Bead 본문 `## scope`가 표면을 열거한 attempt는 수집 위임(subagent wave) 없이 그 경로를 직접 읽고 시작한다.',
+    ...((facts.stage_reads || []).length > 0
+      ? [
+          '단계별 읽기 명령이 있는 단계는 그 명령 한 번으로 읽는다. `SKILL.md`와 계약 문서를 다시 `cat`하거나 헤딩을 찾아 범위를 나눠 읽지 않는다. 카드에 없는 질문이 생겼을 때만 문서를 연다.'
+        ]
+      : []),
     ''
   ];
   const identity = [
@@ -237,6 +242,14 @@ export function attemptFactsDirective(facts) {
     lines.push('', '스크립트 호출:', '');
     for (const call of facts.scripts) {
       lines.push(`- \`${call.command}\`${call.note ? ` — ${call.note}` : ''}`);
+    }
+  }
+  if ((facts.stage_reads || []).length > 0) {
+    lines.push('', '단계별 읽기 (그 단계에 들어갈 때 한 번):', '');
+    for (const read of facts.stage_reads) {
+      lines.push(
+        `- ${read.stage}: \`${read.command}\`${read.note ? ` — ${read.note}` : ''}`
+      );
     }
   }
   if (facts.pitfalls) {

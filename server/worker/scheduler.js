@@ -163,6 +163,7 @@ const resume_in_flight = new Set();
 const AUTO_SWITCH_5H_MAX_PCT = 80;
 const AUTO_SWITCH_7D_MAX_PCT = 90;
 const RESUME_HANDOFF_MAX_CHARS = 4_000;
+const RESUME_FINAL_MESSAGE_MAX_CHARS = 3_000;
 const STALE_PARK_REASONS = new Set([
   'spec_review_stale:revise',
   'plan_approval_stale:revise'
@@ -1802,9 +1803,9 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {any} prior
    */
-  function recentAssistantText(workspace, prior) {
+  function recentAssistantTexts(workspace, prior) {
     if (typeof deps.sessionLog.read !== 'function') {
-      return '';
+      return [];
     }
     const attempts = deps.store.snapshot(workspace).attempts || {};
     const seen = new Set();
@@ -1838,14 +1839,24 @@ export function createScheduler(deps) {
           }
         }
         if (texts.length > 0) {
-          return texts.join('\n\n');
+          return texts;
         }
       }
       cursor = cursor.resumed_from
         ? attempts[cursor.resumed_from] || null
         : null;
     }
-    return '';
+    return [];
+  }
+
+  /**
+   * Preserve the joined prose used by the existing bounded handoff.
+   *
+   * @param {string} workspace
+   * @param {any} prior
+   */
+  function recentAssistantText(workspace, prior) {
+    return recentAssistantTexts(workspace, prior).join('\n\n');
   }
 
   /**
@@ -4630,6 +4641,7 @@ export function createScheduler(deps) {
           worktree: input.wt.path,
           controller_runtime: input.runner_name,
           quickfix_lane: input.quickfix_lane,
+          continuation: input.continuation,
           base: {
             remote: input.base_remote,
             branch: input.snap.target_base || null,
@@ -10960,7 +10972,7 @@ export function createScheduler(deps) {
    *
    * @param {string} bead_id
    * @param {string|null} prior_status
-   * @param {{ prior_attempt_id: string, cause: string, exec_receipt: string|null, impl_review: string|null, remote: string, branch: string, account_usage: string[] }|null} [facts]
+   * @param {{ prior_attempt_id: string, cause: string, exec_receipt: string|null, impl_review: string|null, remote: string, branch: string, account_usage: string[], prior_final_message: string|null }|null} [facts]
    * @returns {string}
    */
   function resumePrompt(bead_id, prior_status, facts = null) {
@@ -10979,6 +10991,11 @@ export function createScheduler(deps) {
     return [
       opening,
       ...ancestor,
+      ...(facts?.prior_final_message
+        ? [
+            `이전 세션의 마지막 보고: ${facts.prior_final_message}. 이 보고는 그 세션의 tool result에 결속된 것만 사실로 보고, 워크트리·Bead·PR 상태로 다시 확인한 뒤 남은 단계만 한다.`
+          ]
+        : []),
       '같은 워크트리에서 세션을 이어 진행한다. 먼저 워크트리·bead 상태·PR/머지 현황을 직접 점검해 어디까지 진행됐는지 확인하라.',
       '이미 끝난 단계는 반복하지 말고, 남은 계약 단계만 마무리한 뒤 종료하라.'
     ].join(' ');
@@ -10990,11 +11007,12 @@ export function createScheduler(deps) {
    * that key rather than dropping the sentence: the git sequence is useful
    * regardless of whether a receipt could be read.
    *
+   * @param {string} workspace
    * @param {any} prior - The prior attempt record.
    * @param {string} bead_id
-   * @returns {Promise<{ prior_attempt_id: string, cause: string, exec_receipt: string|null, impl_review: string|null, remote: string, branch: string, account_usage: string[] }|null>}
+   * @returns {Promise<{ prior_attempt_id: string, cause: string, exec_receipt: string|null, impl_review: string|null, remote: string, branch: string, account_usage: string[], prior_final_message: string|null }|null>}
    */
-  async function resumeAncestorFacts(prior, bead_id) {
+  async function resumeAncestorFacts(workspace, prior, bead_id) {
     if (!prior || typeof prior.attempt_id !== 'string') {
       return null;
     }
@@ -11080,8 +11098,14 @@ export function createScheduler(deps) {
         remote = null;
       }
     }
+    const final_message = recentAssistantTexts(workspace, prior).at(-1) ?? null;
+    const prior_final_message =
+      final_message && final_message.length > RESUME_FINAL_MESSAGE_MAX_CHARS
+        ? `(앞부분 생략) ${final_message.slice(-RESUME_FINAL_MESSAGE_MAX_CHARS)}`
+        : final_message;
     return {
       prior_attempt_id: prior.attempt_id,
+      prior_final_message,
       cause:
         typeof prior.cause === 'string' && prior.cause.length > 0
           ? prior.cause
@@ -11355,14 +11379,10 @@ export function createScheduler(deps) {
             return externalWaitResumeError(workspace, wait_id, mode, reason);
           }
         }
-        const prompt =
+        const ancestor_facts =
           mode === 'fork'
-            ? resumePrompt(
-                bead_id,
-                prior.status,
-                await resumeAncestorFacts(prior, bead_id)
-              )
-            : defaultTaskPrompt(bead_id);
+            ? await resumeAncestorFacts(workspace, prior, bead_id)
+            : null;
         result = await relaunchFromAttempt(workspace, prior, {
           attempt_id,
           continuation: mode === 'fork' ? 'auto' : 'fresh_current',
@@ -11374,7 +11394,22 @@ export function createScheduler(deps) {
             mode === 'fresh' && !fs.existsSync(record.worktree)
               ? snap.repo
               : record.worktree,
-          prompt: `${prompt}\n\n${completion_prompt}`
+          prompt: (
+            /** @type {string} */ _attempt_id,
+            /** @type {any} */ resolved
+          ) => {
+            const prompt =
+              mode === 'fork'
+                ? resumePrompt(
+                    bead_id,
+                    prior.status,
+                    ancestor_facts && resolved.handoff_instructions
+                      ? { ...ancestor_facts, prior_final_message: null }
+                      : ancestor_facts
+                  )
+                : defaultTaskPrompt(bead_id);
+            return `${prompt}\n\n${completion_prompt}`;
+          }
         });
       } else {
         result = await launchExternalWaitSession(
@@ -11892,16 +11927,26 @@ export function createScheduler(deps) {
       recordSkipReason(workspace, bead_id, reason);
       return { ok: false, reason };
     }
-    const default_prompt = resumePrompt(
-      bead_id,
-      prior.status ?? null,
-      await resumeAncestorFacts(prior, bead_id)
-    );
-    const prompt =
-      typeof continuation.instructions === 'string' &&
-      continuation.instructions.length > 0
+    const ancestor_facts = await resumeAncestorFacts(workspace, prior, bead_id);
+    /**
+     * Render after continuation resolution so prior prose enters only once.
+     *
+     * @param {string} _attempt_id
+     * @param {any} resolved
+     */
+    const prompt = (_attempt_id, resolved) => {
+      const default_prompt = resumePrompt(
+        bead_id,
+        prior.status ?? null,
+        ancestor_facts && resolved.handoff_instructions
+          ? { ...ancestor_facts, prior_final_message: null }
+          : ancestor_facts
+      );
+      return typeof continuation.instructions === 'string' &&
+        continuation.instructions.length > 0
         ? `${default_prompt}\n\n사용자가 이번 재개에 추가 지침을 남겼다. 아래 지침이 위 기본 절차와 충돌하면 지침을 우선하라.\n${continuation.instructions}`
         : default_prompt;
+    };
     const result = await relaunchFromAttempt(workspace, prior, {
       prompt,
       conflict_resolution: prior.conflict_resolution === true,
@@ -13555,7 +13600,7 @@ export function createScheduler(deps) {
     // UI-hm55) is handed in as a factory, because the id is minted only here.
     const base_prompt =
       typeof options.prompt === 'function'
-        ? options.prompt(new_attempt_id)
+        ? options.prompt(new_attempt_id, continuation)
         : options.prompt;
     const prompt =
       typeof handoff_instructions === 'string'

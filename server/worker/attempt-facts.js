@@ -55,8 +55,16 @@ import path from 'node:path';
  * @property {string|null} bead_status
  * @property {boolean} claimed_by_worker
  * @property {ScriptCall[]} scripts
+ * @property {StageRead[]} stage_reads
  * @property {string|null} pitfalls - Body of the target repo's
  * `## Worker pitfalls` section.
+ */
+
+/**
+ * @typedef {Object} StageRead
+ * @property {string} stage
+ * @property {string} command
+ * @property {string|null} note
  */
 
 /**
@@ -286,13 +294,6 @@ export function buildScriptCalls(input, deps) {
    * @returns {string}
    */
   const script = (name) => shellQuote(path.join(dir, name));
-  const stale_reference = '../references/execution-spec-backed.md';
-  if (installed('stale-rereview-inputs.py') && installed(stale_reference)) {
-    calls.push({
-      command: `sed -n '/^## Staleness re-review$/,/^## Selector and dispatch$/p' ${script(stale_reference)}`,
-      note: 'workflow `Staleness re-review` 절차를 읽고 재검토 입력 전체를 파일에 저장한 뒤 로컬에서 파싱한다. `needs_judgment`는 최종 판정이 아니며 `verdict_draft_blockers`가 지정한 항목을 비교한 뒤 정본 절차로 분류·기록한다.'
-    });
-  }
   if (installed('impl-selector.py') && input.route && input.worktree) {
     calls.push({
       command: `python3 ${script('impl-selector.py')} --controller-runtime ${input.controller_runtime} --route ${input.route} --bead ${input.bead_id} --repo ${shellQuote(input.worktree)} --json`,
@@ -339,6 +340,132 @@ export function buildScriptCalls(input, deps) {
 }
 
 /**
+ * Build stage reads only from installed references with unique start lines.
+ *
+ * @param {{ route: string|null, quickfix_lane: boolean, continuation?: boolean }} input
+ * @param {{ script_dir: string, fs?: { existsSync: (p: string) => boolean, readFileSync: (p: string, encoding: string) => string } }} deps
+ * @returns {StageRead[]}
+ */
+function buildStageReads(input, deps) {
+  const fs = deps.fs || nodeFs;
+  /** @type {StageRead[]} */
+  const reads = [];
+  /**
+   * Read one installed reference, leaving unavailable files absent.
+   *
+   * @param {string} name
+   * @returns {{ file: string, lines: string[] }|null}
+   */
+  const reference = (name) => {
+    const file = path.join(deps.script_dir, '../references', name);
+    try {
+      if (!fs.existsSync(file)) {
+        return null;
+      }
+      return { file, lines: fs.readFileSync(file, 'utf8').split(/\r?\n/) };
+    } catch {
+      return null;
+    }
+  };
+  /**
+   * Assemble a sed range after checking literal whole-line headings.
+   *
+   * @param {string} name
+   * @param {string} start
+   * @param {string|null} end
+   * @returns {string|null}
+   */
+  const range = (name, start, end) => {
+    const ref = reference(name);
+    if (!ref || ref.lines.filter((line) => line === start).length !== 1) {
+      return null;
+    }
+    const stop = end && ref.lines.includes(end) ? `/^${end}$/` : '$';
+    return `sed -n '/^${start}$/,${stop}p' ${shellQuote(ref.file)}`;
+  };
+  /**
+   * Append one available stage command.
+   *
+   * @param {string} stage
+   * @param {string|null} command
+   * @param {string|null} [note]
+   */
+  const add = (stage, command, note = null) => {
+    if (command) {
+      reads.push({ stage, command, note });
+    }
+  };
+  const spec_reference = 'execution-spec-backed.md';
+  if (input.route === 'spec_backed') {
+    add(
+      '진입·선택·dispatch',
+      range(spec_reference, '## Selector and dispatch', '## Prerequisite gate')
+    );
+    if (input.continuation === true) {
+      add(
+        '이어하기',
+        range(
+          spec_reference,
+          '## Attempt continuation',
+          '## Staleness re-review'
+        )
+      );
+    }
+    add(
+      'push 전',
+      range(
+        'execution-common.md',
+        '## Push safety',
+        '## 탐색 지도 (recommended)'
+      )
+    );
+    add('인도', range('finishing.md', '## Final PR delivery', '## Merge tail'));
+  }
+  if (input.quickfix_lane || input.route === 'quick_fix') {
+    add('착지', range('execution-quick-fix.md', '## quick_fix landing', null));
+    add(
+      '마무리',
+      range(
+        'finishing.md',
+        '### Worker-dispatched quick_fix',
+        '### No-change close (refuted or no-delta)'
+      )
+    );
+  }
+  const terminal = range(
+    'finishing.md',
+    '## Terminal result line',
+    '## Completion report'
+  );
+  const report = range('finishing.md', '## Completion report', null);
+  add('종료 보고', [terminal, report].filter(Boolean).join(' && '));
+  const waits = reference('unattended-waits.md');
+  if (waits) {
+    add('무인 대기', `cat ${shellQuote(waits.file)}`);
+  }
+  let stale_installed = false;
+  try {
+    stale_installed = fs.existsSync(
+      path.join(deps.script_dir, 'stale-rereview-inputs.py')
+    );
+  } catch {
+    stale_installed = false;
+  }
+  if (stale_installed) {
+    add(
+      '재검토',
+      range(
+        spec_reference,
+        '## Staleness re-review',
+        '## Selector and dispatch'
+      ),
+      'workflow `Staleness re-review` 절차를 읽고 재검토 입력 전체를 파일에 저장한 뒤 로컬에서 파싱한다. `needs_judgment`는 최종 판정이 아니며 `verdict_draft_blockers`가 지정한 항목을 비교한 뒤 정본 절차로 분류·기록한다.'
+    );
+  }
+  return reads;
+}
+
+/**
  * Quote one argument for a POSIX shell only when it needs it. A path made of
  * the usual safe characters stays bare so the card reads as a command a person
  * would type; anything else (a space, a quote, a glob) is single-quoted with
@@ -368,6 +495,7 @@ export function shellQuote(value) {
  *   worktree: string|null,
  *   controller_runtime: string,
  *   quickfix_lane: boolean,
+ *   continuation?: boolean,
  *   base: { remote: string|null, branch: string|null, sha: string|null },
  *   remote_tip: { remote: string, branch: string, sha: string }|null,
  *   node_modules: string|null,
@@ -464,6 +592,10 @@ export async function buildAttemptFacts(input, deps) {
         fs
       }
     ),
+    stage_reads: buildStageReads(input, {
+      script_dir: workflowScriptDir(deps.homeDir, input.controller_runtime),
+      fs
+    }),
     pitfalls
   };
 }

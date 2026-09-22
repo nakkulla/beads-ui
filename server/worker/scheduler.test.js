@@ -7876,6 +7876,15 @@ describe('scheduler resume (spec §1)', () => {
     expect(prompt).toContain('`git status`');
     expect(prompt).toContain('`git diff`');
     expect(prompt.slice(handoff_start)).toHaveLength(4000);
+    const handoff_prefix =
+      '이 작업은 공급자 장애/한도로 중단된 claude 세션의 연속이다. 같은 워크트리에 부분 작업이 남아 있을 수 있다.\n\n진행 요약:\n';
+    const handoff_suffix =
+      '\n\n지시:\n먼저 `git status`와 `git diff`로 워크트리의 실제 상태를 확인한 뒤, 이미 끝난 작업을 반복하지 말고 남은 작업을 이어서 진행하라.';
+    expect(prompt.slice(handoff_start)).toBe(
+      `${handoff_prefix}${recent.slice(-(4000 - handoff_prefix.length - handoff_suffix.length))}${handoff_suffix}`
+    );
+    expect(prompt).not.toContain('이전 세션의 마지막 보고:');
+    expect(prompt.split('-RECENT-END')).toHaveLength(2);
     expect(
       env.store.snapshot(WS).attempts[String(result.attempt_id)]
     ).toMatchObject({
@@ -8503,6 +8512,163 @@ describe('scheduler resume (spec §1)', () => {
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)]
         .conflict_resolution
     ).toBe(true);
+  });
+
+  test('delivers only the last prior assistant report on resume', async () => {
+    const read = vi.fn(() => [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'earlier report' }] }
+      },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'final report' }] }
+      }
+    ]);
+    const env = setup({
+      config: {},
+      slots: 1,
+      sessionLog: { attach: vi.fn(), read }
+    });
+    seedAttempt(
+      env.store,
+      'f1',
+      resumablePrior({ log_path: '/logs/prior.jsonl' })
+    );
+
+    const result = await env.scheduler.resume(WS, 'f1');
+
+    expect(result.ok).toBe(true);
+    const prompt = env.runner.spawnedBead('B1').prompt;
+    expect(prompt).toContain(
+      '이전 세션의 마지막 보고: final report. 이 보고는 그 세션의 tool result에 결속된 것만 사실로 보고, 워크트리·Bead·PR 상태로 다시 확인한 뒤 남은 단계만 한다.'
+    );
+    expect(prompt).not.toContain('earlier report');
+    expect(read).toHaveBeenCalledWith(WS, 'f1', {
+      bead_id: 'B1',
+      log_path: '/logs/prior.jsonl'
+    });
+  });
+
+  test.each([3000, 3001])(
+    'bounds a %i-character final report at the tail',
+    async (length) => {
+      const message = `START${'x'.repeat(length - 8)}END`;
+      const env = setup({
+        config: {},
+        slots: 1,
+        sessionLog: {
+          attach: vi.fn(),
+          read: () => [
+            {
+              type: 'assistant',
+              message: { content: [{ type: 'text', text: message }] }
+            }
+          ]
+        }
+      });
+      seedAttempt(env.store, 'f1', resumablePrior());
+
+      const result = await env.scheduler.resume(WS, 'f1');
+
+      expect(result.ok).toBe(true);
+      const expected =
+        length > 3000 ? `(앞부분 생략) ${message.slice(-3000)}` : message;
+      expect(env.runner.spawnedBead('B1').prompt).toContain(
+        `이전 세션의 마지막 보고: ${expected}. 이 보고는`
+      );
+    }
+  );
+
+  test.each(['unreadable', 'empty', 'unavailable'])(
+    'omits the last report for an %s log',
+    async (kind) => {
+      const env = setup({
+        config: {},
+        slots: 1,
+        sessionLog: {
+          attach: vi.fn(),
+          ...(kind === 'unavailable'
+            ? {}
+            : {
+                read: () => {
+                  if (kind === 'unreadable') {
+                    throw new Error('ENOENT');
+                  }
+                  return [];
+                }
+              })
+        }
+      });
+      seedAttempt(env.store, 'f1', resumablePrior());
+
+      const result = await env.scheduler.resume(WS, 'f1');
+
+      expect(result.ok).toBe(true);
+      expect(env.runner.spawnedBead('B1').prompt).not.toContain(
+        '이전 세션의 마지막 보고:'
+      );
+    }
+  );
+
+  test('uses the nearest readable ancestor log when the immediate log is empty', async () => {
+    const read = vi.fn((_workspace, attempt_id) =>
+      attempt_id === 'ancestor'
+        ? [
+            {
+              type: 'assistant',
+              message: { content: [{ type: 'text', text: 'ancestor final' }] }
+            }
+          ]
+        : []
+    );
+    const env = setup({
+      config: {},
+      slots: 1,
+      sessionLog: { attach: vi.fn(), read }
+    });
+    seedAttempt(env.store, 'ancestor', resumablePrior({ status: 'paused' }));
+    seedAttempt(env.store, 'f1', resumablePrior({ resumed_from: 'ancestor' }));
+
+    const result = await env.scheduler.resume(WS, 'f1');
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.spawnedBead('B1').prompt).toContain(
+      '이전 세션의 마지막 보고: ancestor final.'
+    );
+  });
+
+  test('preserves the joined handoff bytes for multiple messages', async () => {
+    const env = setup({
+      config: {},
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      sessionLog: {
+        attach: vi.fn(),
+        read: () =>
+          ['first report', 'last report'].map((text) => ({
+            type: 'assistant',
+            message: { content: [{ type: 'text', text }] }
+          }))
+      }
+    });
+    seedAttempt(
+      env.store,
+      'f1',
+      resumablePrior({ cause: 'provider_outage:usage_limit' })
+    );
+
+    const result = await env.scheduler.resume(WS, 'f1', {
+      exec_override: { runner: 'codex', model: 'sol', effort: 'xhigh' }
+    });
+
+    expect(result.ok).toBe(true);
+    const prompt = env.runner.spawnedBead('B1').prompt;
+    const start = prompt.indexOf('이 작업은 공급자 장애/한도로 중단된');
+    expect(prompt.slice(start)).toBe(
+      '이 작업은 공급자 장애/한도로 중단된 claude 세션의 연속이다. 같은 워크트리에 부분 작업이 남아 있을 수 있다.\n\n진행 요약:\nfirst report\n\nlast report\n\n지시:\n먼저 `git status`와 `git diff`로 워크트리의 실제 상태를 확인한 뒤, 이미 끝난 작업을 반복하지 말고 남은 작업을 이어서 진행하라.'
+    );
+    expect(prompt).not.toContain('이전 세션의 마지막 보고:');
   });
 
   test('a failed resume is announced as a failure', async () => {

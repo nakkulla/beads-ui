@@ -15,6 +15,28 @@ import { applyPreamble } from './runner/preamble.js';
 const HOME = '/home/tester';
 const SCRIPTS = workflowScriptDir(HOME);
 
+const REFERENCES = {
+  [path.join(SCRIPTS, '../references/execution-spec-backed.md')]: [
+    '## Attempt continuation',
+    '## Staleness re-review',
+    '## Selector and dispatch',
+    '## Prerequisite gate'
+  ].join('\n'),
+  [path.join(SCRIPTS, '../references/execution-common.md')]:
+    '## Push safety\n## 탐색 지도 (recommended)',
+  [path.join(SCRIPTS, '../references/execution-quick-fix.md')]:
+    '## quick_fix landing',
+  [path.join(SCRIPTS, '../references/finishing.md')]: [
+    '## Final PR delivery',
+    '## Merge tail',
+    '### Worker-dispatched quick_fix',
+    '### No-change close (refuted or no-delta)',
+    '## Terminal result line',
+    '## Completion report'
+  ].join('\n'),
+  [path.join(SCRIPTS, '../references/unattended-waits.md')]: '# Waits'
+};
+
 /**
  * A filesystem stub over an explicit path→content map. Any path outside the map
  * is absent, which is what makes every fail-quiet case expressible.
@@ -265,7 +287,7 @@ describe('worker/attempt-facts script calls (spec D1)', () => {
           homeDir: HOME,
           fs: fakeFs({
             [path.join(script_dir, 'stale-rereview-inputs.py')]: '',
-            [reference_path]: ''
+            [reference_path]: '## Staleness re-review\n## Selector and dispatch'
           })
         }
       );
@@ -275,9 +297,12 @@ describe('worker/attempt-facts script calls (spec D1)', () => {
         runtime: controller_runtime
       });
 
-      expect(facts.scripts[0].command).toBe(
+      expect(
+        facts.stage_reads.find((read) => read.stage === '재검토')?.command
+      ).toBe(
         `sed -n '/^## Staleness re-review$/,/^## Selector and dispatch$/p' ${reference_path}`
       );
+      expect(facts.scripts).toEqual([]);
       expect(system_prompt).toContain(reference_path);
       expect(system_prompt).not.toContain('stale-rereview-inputs.py');
       expect(system_prompt).toContain(
@@ -464,6 +489,155 @@ describe('worker/attempt-facts shell quoting (spec D1)', () => {
 });
 
 describe('worker/attempt-facts collection (spec D1)', () => {
+  test('adds continuation reading to a restarted attempt', async () => {
+    const input = factsInput({ continuation: true });
+
+    const facts = await buildAttemptFacts(input, {
+      homeDir: HOME,
+      fs: fakeFs(REFERENCES)
+    });
+
+    expect(facts.stage_reads).toHaveLength(6);
+    expect(facts.stage_reads[1]).toEqual({
+      stage: '이어하기',
+      command: `sed -n '/^## Attempt continuation$/,/^## Staleness re-review$/p' ${path.join(SCRIPTS, '../references/execution-spec-backed.md')}`,
+      note: null
+    });
+  });
+
+  test.each([
+    { route: 'quick_fix', quickfix_lane: false },
+    { route: null, quickfix_lane: true }
+  ])('collects Worker handoff readings for %j', async (over) => {
+    const input = factsInput(over);
+
+    const facts = await buildAttemptFacts(input, {
+      homeDir: HOME,
+      fs: fakeFs(REFERENCES)
+    });
+
+    expect(facts.stage_reads.map((read) => read.stage)).toEqual([
+      '착지',
+      '마무리',
+      '종료 보고',
+      '무인 대기'
+    ]);
+    expect(facts.stage_reads.slice(0, 2).map((read) => read.command)).toEqual([
+      `sed -n '/^## quick_fix landing$/,$p' ${path.join(SCRIPTS, '../references/execution-quick-fix.md')}`,
+      `sed -n '/^### Worker-dispatched quick_fix$/,/^### No-change close (refuted or no-delta)$/p' ${path.join(SCRIPTS, '../references/finishing.md')}`
+    ]);
+  });
+
+  test.each(['missing', 'duplicate', 'partial', 'absent file'])(
+    'omits only the affected read for a %s start heading',
+    async (kind) => {
+      const file = path.join(SCRIPTS, '../references/execution-common.md');
+      const files = { ...REFERENCES };
+      files[file] =
+        kind === 'duplicate'
+          ? '## Push safety\n## Push safety'
+          : kind === 'partial'
+            ? ' ## Push safety\n## Push safety suffix'
+            : '';
+      if (kind === 'absent file') {
+        delete files[file];
+      }
+
+      const facts = await buildAttemptFacts(factsInput(), {
+        homeDir: HOME,
+        fs: fakeFs(files)
+      });
+
+      expect(facts.stage_reads.map((read) => read.stage)).toEqual([
+        '진입·선택·dispatch',
+        '인도',
+        '종료 보고',
+        '무인 대기'
+      ]);
+    }
+  );
+
+  test('reads to EOF when the end heading is missing', async () => {
+    const file = path.join(SCRIPTS, '../references/execution-common.md');
+
+    const facts = await buildAttemptFacts(factsInput(), {
+      homeDir: HOME,
+      fs: fakeFs({ [file]: '## Push safety' })
+    });
+
+    expect(facts.stage_reads).toEqual([
+      {
+        stage: 'push 전',
+        command: `sed -n '/^## Push safety$/,$p' ${file}`,
+        note: null
+      }
+    ]);
+  });
+
+  test('omits unreadable reference files', async () => {
+    const fs = {
+      existsSync: () => true,
+      readFileSync: () => {
+        throw new Error('EACCES');
+      }
+    };
+
+    const facts = await buildAttemptFacts(factsInput(), { homeDir: HOME, fs });
+
+    expect(facts.stage_reads).toEqual([]);
+  });
+
+  test('keeps common readings for an unknown route', async () => {
+    const input = factsInput({ route: null });
+
+    const facts = await buildAttemptFacts(input, {
+      homeDir: HOME,
+      fs: fakeFs(REFERENCES)
+    });
+
+    expect(facts.stage_reads.map((read) => read.stage)).toEqual([
+      '종료 보고',
+      '무인 대기'
+    ]);
+  });
+
+  test('collects the five first-attempt stage reads', async () => {
+    const input = factsInput();
+
+    const facts = await buildAttemptFacts(input, {
+      homeDir: HOME,
+      fs: fakeFs(REFERENCES)
+    });
+
+    expect(facts.stage_reads).toEqual([
+      {
+        stage: '진입·선택·dispatch',
+        command: `sed -n '/^## Selector and dispatch$/,/^## Prerequisite gate$/p' ${path.join(SCRIPTS, '../references/execution-spec-backed.md')}`,
+        note: null
+      },
+      {
+        stage: 'push 전',
+        command: `sed -n '/^## Push safety$/,/^## 탐색 지도 (recommended)$/p' ${path.join(SCRIPTS, '../references/execution-common.md')}`,
+        note: null
+      },
+      {
+        stage: '인도',
+        command: `sed -n '/^## Final PR delivery$/,/^## Merge tail$/p' ${path.join(SCRIPTS, '../references/finishing.md')}`,
+        note: null
+      },
+      {
+        stage: '종료 보고',
+        command: `sed -n '/^## Terminal result line$/,/^## Completion report$/p' ${path.join(SCRIPTS, '../references/finishing.md')} && sed -n '/^## Completion report$/,$p' ${path.join(SCRIPTS, '../references/finishing.md')}`,
+        note: null
+      },
+      {
+        stage: '무인 대기',
+        command: `cat ${path.join(SCRIPTS, '../references/unattended-waits.md')}`,
+        note: null
+      }
+    ]);
+  });
+
   test('formats the base as remote/branch@sha', async () => {
     const facts = await buildAttemptFacts(factsInput(), {
       homeDir: HOME,
