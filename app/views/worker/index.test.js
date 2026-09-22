@@ -1913,6 +1913,91 @@ describe('views/worker', () => {
     return mount;
   }
 
+  test.each(['claude', 'codex'])(
+    'opens the interactive %s session drawer from a queue row',
+    (provider) => {
+      const transport = vi.fn().mockResolvedValue({ ok: true });
+      const mount = mountAttemptTiles(
+        {
+          queue: [{ bead_id: 'W1', added_at: 1 }],
+          interactive_sessions: {
+            'W1:resolve': {
+              bead_id: 'W1',
+              kind: 'resolve',
+              provider,
+              session_id: 'interactive-sid',
+              mode: 'fork',
+              source: 'attempt',
+              fallback_reason: null,
+              attempt_id: 'attempt-1234',
+              tmux_session: 'bdui-inquiry',
+              tmux_window: 'resolve-W1',
+              state: 'live',
+              settled_at: null,
+              launched_at: 1
+            }
+          }
+        },
+        transport
+      );
+      const badge = /** @type {HTMLElement} */ (
+        mount.querySelector('.interactive-session-badge')
+      );
+
+      badge.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+      expect(transport).toHaveBeenCalledWith(
+        'subscribe-session-log',
+        expect.objectContaining({
+          attempt_id: `session:${provider}:interactive-sid`,
+          session_ref: {
+            bead_id: 'W1',
+            provider,
+            session_id: 'interactive-sid'
+          }
+        })
+      );
+    }
+  );
+
+  test('leaves interactive Discord navigation to the anchor', () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountAttemptTiles(
+      {
+        queue: [{ bead_id: 'W1', added_at: 1 }],
+        interactive_sessions: {
+          'W1:resolve': {
+            bead_id: 'W1',
+            kind: 'resolve',
+            provider: 'claude',
+            session_id: 'sid',
+            mode: 'fresh',
+            source: 'fresh',
+            fallback_reason: 'no_session_ref',
+            attempt_id: null,
+            tmux_session: 'bdui-inquiry',
+            tmux_window: 'resolve-W1',
+            state: 'live',
+            settled_at: null,
+            launched_at: 1,
+            discord_url: 'https://discord.com/channels/1/2'
+          }
+        }
+      },
+      transport
+    );
+    const link = /** @type {HTMLElement} */ (
+      mount.querySelector('.interactive-session-discord')
+    );
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+    transport.mockClear();
+
+    link.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   test('renders session_active rows as session tiles after attempt tiles', () => {
     const mount = mountAttemptTiles({
       attempts: {

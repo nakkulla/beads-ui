@@ -380,6 +380,132 @@ describe('external wait projection', () => {
   });
 });
 
+describe('interactive session projection', () => {
+  const record = {
+    bead_id: 'A-1',
+    kind: 'resolve',
+    provider: 'claude',
+    session_id: 'sid',
+    mode: 'fork',
+    source: 'attempt',
+    fallback_reason: null,
+    attempt_id: 'attempt-1',
+    tmux_session: 'bdui-inquiry',
+    tmux_window: 'resolve-A-1',
+    state: 'live',
+    settled_at: null,
+    launched_at: 10,
+    discord_url: 'https://discord.com/channels/1/2'
+  };
+  /** @type {Array<['running'|'pr_wait'|'done'|'queue', Record<string, any>]>} */
+  const surfaces = [
+    [
+      'running',
+      {
+        attempts: {
+          a: {
+            attempt_id: 'a',
+            bead_id: 'A-1',
+            status: 'running',
+            started_at: 1
+          }
+        }
+      }
+    ],
+    ['pr_wait', { pr_wait: [{ bead_id: 'A-1', added_at: 1 }] }],
+    ['done', { done: [{ bead_id: 'A-1', added_at: 1 }] }],
+    ['queue', { queue: [{ bead_id: 'A-1', added_at: 1 }] }],
+    [
+      'running',
+      { session_active: [{ bead_id: 'A-1', status: 'in_progress' }] }
+    ],
+    [
+      'running',
+      {
+        attempts: {
+          a: {
+            attempt_id: 'a',
+            bead_id: 'A-1',
+            status: 'waiting',
+            started_at: 1
+          }
+        }
+      }
+    ]
+  ];
+
+  test.each(surfaces)(
+    'carries both live sessions onto %s (%j)',
+    (lane, patch) => {
+      const records = {
+        'A-1:resolve': record,
+        'A-1:inquiry': { ...record, kind: 'inquiry', session_id: 'inquiry-sid' }
+      };
+
+      const lanes = buildLanes(
+        [workspace({ ...patch, interactive_sessions: records })],
+        [state()]
+      );
+
+      expect(lanes[lane][0].interactive_sessions).toEqual([
+        { ...record, bead_id: undefined, key: 'A-1:resolve', closing: false },
+        {
+          ...record,
+          bead_id: undefined,
+          kind: 'inquiry',
+          session_id: 'inquiry-sid',
+          key: 'A-1:inquiry',
+          closing: false
+        }
+      ]);
+    }
+  );
+
+  test('projects an empty array when the snapshot has no sessions', () => {
+    const snapshot = workspace({ queue: [{ bead_id: 'A-1', added_at: 1 }] });
+
+    const lanes = buildLanes([snapshot], [state()]);
+
+    expect(lanes.queue[0].interactive_sessions).toEqual([]);
+  });
+
+  test.each([
+    ['exiting', null, true],
+    ['live', 20, true],
+    ['live', null, false]
+  ])(
+    'derives closing from state %s and settlement %s',
+    (session_state, settled_at, closing) => {
+      const snapshot = workspace({
+        queue: [{ bead_id: 'A-1', added_at: 1 }],
+        interactive_sessions: {
+          'A-1:resolve': { ...record, state: session_state, settled_at }
+        }
+      });
+
+      const lanes = buildLanes([snapshot], [state()]);
+
+      expect(lanes.queue[0].interactive_sessions?.[0].closing).toBe(closing);
+    }
+  );
+
+  test('isolates sessions by workspace even when bead ids match', () => {
+    const rows = { queue: [{ bead_id: 'A-1', added_at: 1 }] };
+
+    const lanes = buildLanes(
+      [
+        workspace({ ...rows, interactive_sessions: { 'A-1:resolve': record } }),
+        workspace({ ...rows, root_dir: WS_B })
+      ],
+      [state(), state({ root_dir: WS_B })]
+    );
+
+    expect(
+      lanes.queue.find((item) => item.root_dir === WS_B)?.interactive_sessions
+    ).toEqual([]);
+  });
+});
+
 describe('monitor 실행가능 repo sections (UI-eey2 §5)', () => {
   test('groups candidates per repo in workspaces_state order', () => {
     const lanes = buildLanes(

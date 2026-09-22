@@ -24,6 +24,44 @@ body {
 
 /* --- shared primitives --- */
 
+.interactive-session-badge {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-3);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+button.interactive-session-badge {
+  cursor: pointer;
+}
+
+.interactive-session-discord {
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+}
+
+.interactive-session-closing {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: var(--fs-small);
+  white-space: nowrap;
+}
+
+.interactive-session-closing + .worker-mini__rowops,
+.interactive-session-closing + .worker-card__head-actions {
+  margin-left: 0;
+}
+
 /* pill button */
 .ctl-pill {
   display: inline-flex;

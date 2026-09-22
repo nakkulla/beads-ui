@@ -4811,6 +4811,44 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function onClick(ev) {
     const target = /** @type {HTMLElement} */ (ev.target);
+    if (target.closest('a.interactive-session-discord')) {
+      return;
+    }
+    const interactive_badge = target.closest(
+      'button.interactive-session-badge'
+    );
+    if (interactive_badge) {
+      const provider = interactive_badge.getAttribute('data-session-provider');
+      const session_id = interactive_badge.getAttribute('data-session-id');
+      const bead_id = interactive_badge.getAttribute('data-bead-id');
+      if (
+        (provider === 'claude' || provider === 'codex') &&
+        session_id &&
+        bead_id
+      ) {
+        repo_ops_drawer.close();
+        repo_ops_drawer_el.hidden = true;
+        drawer_overlay_el.hidden = false;
+        drawer.open(
+          sessionRefDrawerInput(
+            {
+              provider,
+              session_id,
+              current: true,
+              locality: 'local',
+              index: 0,
+              host: '',
+              last_event_at: null,
+              resume_command: null
+            },
+            bead_id,
+            'in_progress'
+          )
+        );
+        doRender();
+      }
+      return;
+    }
     // `+ 새 이슈` (UI-p7s2 §4): 툴바 조작이므로 어떤 행 처리보다 먼저다.
     if (target?.closest?.('.worker-new-issue')) {
       onNewIssue?.();

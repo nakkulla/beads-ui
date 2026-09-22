@@ -342,6 +342,25 @@ const DONE_KIND_LABELS = {
 };
 
 /**
+ * @typedef {Object} InteractiveSessionView
+ * @property {string} key
+ * @property {'resolve'|'inquiry'} kind
+ * @property {'claude'|'codex'} provider
+ * @property {string|null} session_id
+ * @property {'fork'|'fresh'|null} mode
+ * @property {'attempt'|'session_ref'|'fresh'|'recovered'|null} source
+ * @property {string|null} fallback_reason
+ * @property {string|null} attempt_id
+ * @property {string} tmux_session
+ * @property {string} tmux_window
+ * @property {'live'|'exiting'} state
+ * @property {number|null} settled_at
+ * @property {number} launched_at
+ * @property {string|null} discord_url
+ * @property {boolean} closing
+ */
+
+/**
  * @typedef {MiniItem & {
  *   root_dir: string,
  *   workspace_name: string,
@@ -392,6 +411,7 @@ const DONE_KIND_LABELS = {
  *   overlap_chips?: OverlapChip[],
  *   scope_state?: 'declared'|'missing',
  *   session_refs?: import('../../../server/worker/session-ref.js').SessionRefView[],
+ *   interactive_sessions?: InteractiveSessionView[],
  *   external_wait?: import('../../protocol.js').ExternalWaitObservation,
  *   watch_id?: string|null,
  *   gate_id?: string,
@@ -2715,6 +2735,8 @@ function chipPinsOf(entry) {
  */
 export function buildLanes(workspaces, workspaces_state, options) {
   const list = Array.isArray(workspaces) ? workspaces : [];
+  /** @type {Map<string, InteractiveSessionView[]>} */
+  const interactive_by_bead = new Map();
   const states = Array.isArray(workspaces_state) ? workspaces_state : [];
   const done_since =
     options && typeof options.done_since === 'number'
@@ -2818,6 +2840,30 @@ export function buildLanes(workspaces, workspaces_state, options) {
           ? workspace.revision
           : 0;
     const attempts = objectOf(workspace.attempts);
+    for (const [key, record] of Object.entries(
+      objectOf(workspace.interactive_sessions)
+    )) {
+      const identity = `${root_dir}\u0000${record.bead_id}`;
+      const views = interactive_by_bead.get(identity) || [];
+      views.push({
+        key,
+        kind: record.kind,
+        provider: record.provider,
+        session_id: record.session_id,
+        mode: record.mode,
+        source: record.source,
+        fallback_reason: record.fallback_reason,
+        attempt_id: record.attempt_id,
+        tmux_session: record.tmux_session,
+        tmux_window: record.tmux_window,
+        state: record.state,
+        settled_at: record.settled_at,
+        launched_at: record.launched_at,
+        discord_url: record.discord_url ?? null,
+        closing: record.state === 'exiting' || record.settled_at !== null
+      });
+      interactive_by_bead.set(identity, views);
+    }
     // The repo's own unit prices (preset-compare §1.3). Config, not code, owns
     // them, so two repos may price the same model differently.
     const runner_catalog =
@@ -4620,6 +4666,18 @@ export function buildLanes(workspaces, workspaces_state, options) {
     parallel_raw_length: Object.fromEntries(raw_queue_length_by_root),
     owner_of: {}
   };
+
+  for (const item of [
+    ...model.runnable,
+    ...model.deferred,
+    ...model.queue,
+    ...model.running,
+    ...model.pr_wait,
+    ...model.done
+  ]) {
+    item.interactive_sessions =
+      interactive_by_bead.get(`${item.root_dir}\u0000${item.id}`) || [];
+  }
 
   // 대기 행만 `manual_only`를 진다 (UI-3pu9 §4.1) — `model.queue`는 병렬 행과
   // 직렬 레인 행 전부다. 유예 칩과 유예로 서는 `[지금 시작]`이 이 값을 읽는다.
