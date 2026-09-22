@@ -331,6 +331,67 @@ export function recordedSessionProvider(metadata) {
 }
 
 /**
+ * Select the attempt transcript, then the recorded ref, then a fresh session.
+ * An attempt without a recorded session is not a fork source.
+ *
+ * @param {{ attempt?: { runner?: string, session_id?: string|null }|null, metadata?: Record<string, unknown>|null, hostname?: string, options?: Parameters<typeof qualifySessionFork>[2] }} input
+ * @returns {{ session_id: string|null, provider: 'claude'|'codex'|null, source: 'attempt'|'session_ref'|'fresh', fallback_reason: string|null }}
+ */
+export function qualifyInteractiveForkSource({
+  attempt,
+  metadata,
+  hostname,
+  options = {}
+}) {
+  const attempt_runner =
+    attempt?.runner === 'claude' || attempt?.runner === 'codex'
+      ? attempt.runner
+      : null;
+  const has_attempt_source =
+    attempt_runner !== null &&
+    typeof attempt?.session_id === 'string' &&
+    attempt.session_id.length > 0;
+  if (
+    has_attempt_source &&
+    resolveSessionFile(
+      {
+        index: 0,
+        provider: attempt_runner,
+        session_id: /** @type {string} */ (attempt.session_id),
+        host: hostname || options.hostname || os.hostname()
+      },
+      options
+    ).locality === 'local'
+  ) {
+    return {
+      session_id: /** @type {string} */ (attempt.session_id),
+      provider: attempt_runner,
+      source: 'attempt',
+      fallback_reason: null
+    };
+  }
+  const qualified = qualifySessionFork(metadata, null, options);
+  if (qualified.ok) {
+    return {
+      session_id: qualified.session_id,
+      provider: qualified.provider,
+      source: 'session_ref',
+      fallback_reason: null
+    };
+  }
+  return {
+    session_id: null,
+    provider:
+      (has_attempt_source ? attempt_runner : null) ??
+      recordedSessionProvider(metadata),
+    source: 'fresh',
+    fallback_reason: has_attempt_source
+      ? 'attempt_transcript_missing'
+      : qualified.reason
+  };
+}
+
+/**
  * Whether the bead's CURRENT `session_ref` item may be forked to open the first
  * EXTERNAL conflict-resolution session (UI-p206 §3).
  *

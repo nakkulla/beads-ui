@@ -69,7 +69,7 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  */
 
 /**
- * @typedef {{ session: 'launched', tmux_session: string, tmux_window: string }
+ * @typedef {{ session: 'launched', tmux_session: string, tmux_window: string, pane_id: string }
  *   | { session: 'already_running' }
  *   | { session: 'not_launched', reason: string }} LaunchOutcome
  */
@@ -87,6 +87,15 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  */
 export function paneFormat(marker) {
   return `#{session_name}:#{pane_id}:#{pane_dead}:#{${marker}}`;
+}
+
+/**
+ * Project the recovery facts with the marker last (UI-6pif §3.4).
+ *
+ * @param {string} marker
+ */
+export function paneFormatExtended(marker) {
+  return `#{session_name}:#{window_name}:#{pane_id}:#{pane_dead}:#{pane_current_path}:#{@agent_runtime}:#{${marker}}`;
 }
 
 /**
@@ -240,6 +249,7 @@ async function ensureCodexProjectTrust(cwd) {
  * @property {() => number} [now]
  * @property {(...args: any[]) => void} [log]
  * @property {string} [heartbeatPath]
+ * @property {string} [bridgeStateDir]
  */
 
 /**
@@ -273,15 +283,184 @@ export function createTmuxLauncher(deps = {}) {
     deps.statFile || ((/** @type {string} */ p) => fs.statSync(p));
   const runTmux =
     deps.runTmux || ((/** @type {string[]} */ args) => runShell('tmux', args));
+  const bridge_state_dir =
+    deps.bridgeStateDir ||
+    path.join(os.homedir(), 'tmp', 'claude-discord-bridge', 'state');
   const heartbeat_path =
-    deps.heartbeatPath ||
-    path.join(
-      os.homedir(),
-      'tmp',
-      'claude-discord-bridge',
-      'state',
-      'heartbeat'
+    deps.heartbeatPath || path.join(bridge_state_dir, 'heartbeat');
+  /** @type {number|null} */
+  let threads_mtime = null;
+  /** @type {Map<string, { thread_id: string|number, url: string|null, guild_id: string|number|null }>} */
+  let threads_cache = new Map();
+
+  /** Read bridge-owned thread records, reusing the last mtime's projection. */
+  function readBridgeThreads() {
+    try {
+      const file = path.join(bridge_state_dir, 'threads.json');
+      const mtime = statFile(file).mtimeMs;
+      if (threads_mtime === mtime) {
+        return threads_cache;
+      }
+      threads_cache = new Map();
+      threads_mtime = mtime;
+      const records = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (records && typeof records === 'object' && !Array.isArray(records)) {
+        for (const [session_id, record] of Object.entries(records)) {
+          if (
+            !record ||
+            (typeof record.thread_id !== 'string' &&
+              typeof record.thread_id !== 'number')
+          ) {
+            continue;
+          }
+          threads_cache.set(session_id, {
+            thread_id: record.thread_id,
+            url:
+              typeof record.url === 'string' && record.url.length > 0
+                ? record.url
+                : null,
+            guild_id:
+              typeof record.guild_id === 'string' ||
+              typeof record.guild_id === 'number'
+                ? record.guild_id
+                : null
+          });
+        }
+      }
+    } catch {
+      threads_mtime = null;
+      threads_cache = new Map();
+    }
+    return threads_cache;
+  }
+
+  /**
+   * Run a tmux operation without throwing across the reconciliation boundary.
+   *
+   * @param {string[]} args
+   * @returns {Promise<{ ok: true, stdout: string }|{ ok: false, error: string }>}
+   */
+  async function runChecked(args) {
+    try {
+      const result = await runTmux(args);
+      if (!result || result.code !== 0) {
+        return {
+          ok: false,
+          error: (result?.stderr || '').trim() || `exit ${result?.code}`
+        };
+      }
+      return { ok: true, stdout: result.stdout || '' };
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+  }
+
+  /**
+   * List recovery facts, preserving colons in paths and marker keys.
+   *
+   * @param {string} marker
+   */
+  async function listPanesExtended(marker) {
+    const result = await runChecked([
+      'list-panes',
+      '-a',
+      '-F',
+      paneFormatExtended(marker)
+    ]);
+    if (!result.ok) {
+      return result;
+    }
+    /** @type {{ session: string, window: string, pane: string, dead: string, cwd: string, agent_runtime: string, key: string }[]} */
+    const rows = [];
+    for (const line of result.stdout.split('\n')) {
+      if (!line) {
+        continue;
+      }
+      const [session, window, pane, dead, ...tail] = line.split(':');
+      // Runtime is a closed vocabulary; splitting six fields would truncate
+      // a colon-bearing cwd. The final runtime boundary leaves the marker
+      // intact; this format assumes marker keys contain no runtime delimiter.
+      const match = tail.join(':').match(/^(.*):(claude|codex|):(.*)$/);
+      if (!match || !session || !window || !pane || !dead) {
+        continue;
+      }
+      rows.push({
+        session,
+        window,
+        pane,
+        dead,
+        cwd: match[1],
+        agent_runtime: match[2],
+        key: match[3]
+      });
+    }
+    return { ok: /** @type {const} */ (true), rows };
+  }
+
+  /**
+   * Read one optional pane fact; an unavailable value remains unknown.
+   *
+   * @param {string} pane_id
+   * @param {string} name
+   */
+  async function readPaneOption(pane_id, name) {
+    const result = await runChecked([
+      'show-options',
+      '-pqv',
+      '-t',
+      pane_id,
+      name
+    ]);
+    return result.ok ? result.stdout.trim() || null : null;
+  }
+
+  /**
+   * Submit the caller-authorized Claude exit command.
+   *
+   * @param {string} pane_id
+   */
+  async function sendExit(pane_id) {
+    const typed = await runChecked(['send-keys', '-t', pane_id, '-l', '/exit']);
+    if (!typed.ok) {
+      return typed;
+    }
+    const submitted = await runChecked(['send-keys', '-t', pane_id, 'Enter']);
+    return submitted.ok ? { ok: /** @type {const} */ (true) } : submitted;
+  }
+
+  /**
+   * Close the window selected by the reconciliation owner.
+   *
+   * @param {string} tmux_session
+   * @param {string} tmux_window
+   */
+  async function killWindow(tmux_session, tmux_window) {
+    const result = await runChecked([
+      'kill-window',
+      '-t',
+      `${tmux_session}:${tmux_window}`
+    ]);
+    return result.ok ? { ok: /** @type {const} */ (true) } : result;
+  }
+
+  /**
+   * Capture the last nonblank pane line for the caller's idle judgment.
+   *
+   * @param {string} pane_id
+   */
+  async function capturePaneTail(pane_id) {
+    const result = await runChecked(['capture-pane', '-p', '-t', pane_id]);
+    if (!result.ok) {
+      return result;
+    }
+    return (
+      result.stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .at(-1) ?? null
     );
+  }
 
   /**
    * Every pane the tmux server knows about, projected onto ONE marker.
@@ -469,7 +648,8 @@ export function createTmuxLauncher(deps = {}) {
     return {
       session: 'launched',
       tmux_session: input.tmux_session,
-      tmux_window: input.window_name
+      tmux_window: input.window_name,
+      pane_id
     };
   }
 
@@ -491,5 +671,15 @@ export function createTmuxLauncher(deps = {}) {
     }
   }
 
-  return { listPanes, launch, bridgeActive };
+  return {
+    listPanes,
+    listPanesExtended,
+    readPaneOption,
+    sendExit,
+    killWindow,
+    capturePaneTail,
+    readBridgeThreads,
+    launch,
+    bridgeActive
+  };
 }

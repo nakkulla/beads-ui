@@ -192,6 +192,7 @@ function issue(over = {}) {
  *   resolveClaude?: any,
  *   resolveRunner?: any,
  *   readAttempt?: any,
+ *   store?: import('./direction-inquiry.js').DirectionInquiryDeps['store'],
  *   sessionRefOptions?: any,
  *   now?: () => number
  * }} [over]
@@ -222,6 +223,7 @@ function makeInquiry(over = {}) {
             : null),
     statFile: over.statFile || (() => ({ mtimeMs: 1000 })),
     now: over.now || (() => 2000),
+    store: over.store,
     readAttempt:
       over.readAttempt ||
       (async () => ({ attempt_id: 'a1', repo: '/repo', runner: 'codex' })),
@@ -246,6 +248,207 @@ function parkedInput(over = {}) {
     ...over
   };
 }
+
+describe('direction-inquiry interactive session records', () => {
+  test.each(['attempt', 'session_ref'])(
+    'records the selected %s fork source',
+    async (source) => {
+      const recordInteractiveSession = vi.fn();
+      const { inquiry, tmux, awaitingUser } = makeInquiry({
+        tmux: makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] }),
+        store: { recordInteractiveSession },
+        readAttempt: async () => ({
+          repo: '/repo',
+          runner: 'claude',
+          session_id: source === 'attempt' ? 'attempt-sid' : 'missing'
+        }),
+        readIssue: async () =>
+          issue({ metadata: { session_ref: 'claude:ref-sid@host' } }),
+        sessionRefOptions: {
+          home_dir: '/home',
+          hostname: 'host',
+          fs: sessionFs(['attempt-sid', 'ref-sid'])
+        }
+      });
+
+      await inquiry.onParkedAttempt(parkedInput());
+
+      const record = recordInteractiveSession.mock.calls[0]?.[1];
+      expect(record).toMatchObject({
+        source,
+        mode: 'fork',
+        forked_from: source === 'attempt' ? 'attempt-sid' : 'ref-sid',
+        fallback_reason: null
+      });
+      expect(
+        tmux.calls.find((call) => call[0] === 'new-window')?.at(-1)
+      ).toContain(
+        `'--resume' '${record.forked_from}' '--fork-session' '--session-id' '${record.session_id}'`
+      );
+      expect(awaitingUser).toHaveBeenCalledWith(
+        expect.objectContaining({ source })
+      );
+    }
+  );
+
+  test('leaves the launched codex inquiry identity for reconciliation', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { inquiry, tmux } = makeInquiry({
+      tmux: makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] }),
+      store: { recordInteractiveSession },
+      readAttempt: async () => ({
+        repo: '/repo',
+        runner: 'codex',
+        session_id: 'codex-sid'
+      }),
+      sessionRefOptions: {
+        home_dir: '/home',
+        hostname: 'host',
+        fs: sessionFs([], ['codex-sid'])
+      }
+    });
+
+    await inquiry.onParkedAttempt(parkedInput());
+
+    expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
+      provider: 'codex',
+      session_id: null,
+      session_id_source: null,
+      source: 'attempt',
+      mode: 'fork',
+      forked_from: 'codex-sid'
+    });
+    expect(
+      tmux.calls.find((call) => call[0] === 'new-window')?.at(-1)
+    ).not.toContain('--session-id');
+  });
+
+  test('skips recording a refused inquiry launch', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { inquiry } = makeInquiry({
+      store: { recordInteractiveSession },
+      resolveClaude: () => null
+    });
+
+    await inquiry.onParkedAttempt(parkedInput());
+
+    expect(recordInteractiveSession).not.toHaveBeenCalled();
+  });
+
+  test.each(['click', 'automatic'])(
+    'records a launched %s inquiry with its argv UUID',
+    async (entry) => {
+      const recordInteractiveSession = vi.fn();
+      const tmux = makeTmux({
+        panes_seq:
+          entry === 'click'
+            ? [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
+            : [[], [['bdui-inquiry', '%9', BEAD, '0']]]
+      });
+      const { inquiry, awaitingUser } = makeInquiry({
+        tmux,
+        store: { recordInteractiveSession }
+      });
+
+      const outcome =
+        entry === 'click'
+          ? await inquiry.launchForClick(parkedInput())
+          : await inquiry.onParkedAttempt(parkedInput());
+
+      const record = recordInteractiveSession.mock.calls[0]?.[1];
+      expect(recordInteractiveSession).toHaveBeenCalledExactlyOnceWith('/ws', {
+        bead_id: BEAD,
+        kind: 'inquiry',
+        provider: 'claude',
+        session_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        session_id_source: 'launch',
+        mode: 'fresh',
+        source: 'fresh',
+        forked_from: null,
+        fallback_reason: 'no_session_ref',
+        attempt_id: 'a1',
+        failure_class: null,
+        tmux_session: 'bdui-inquiry',
+        tmux_window: BEAD,
+        pane_id: '%9',
+        cwd: '/repo',
+        launched_at: 2000,
+        last_seen_alive_at: 2000,
+        settled_at: null,
+        settled_by: null,
+        state: 'live',
+        exit_requested_at: null,
+        defer_since: null
+      });
+      const expected = {
+        source: 'fresh',
+        command: `claude --session-id '${record.session_id}'`
+      };
+      if (entry === 'click') {
+        expect(outcome).toMatchObject(expected);
+      } else {
+        expect(awaitingUser).toHaveBeenCalledWith(
+          expect.objectContaining(expected)
+        );
+      }
+      expect(
+        tmux.calls.find((call) => call[0] === 'new-window')?.at(-1)
+      ).toContain(
+        `exec '/opt/homebrew/bin/claude' '--session-id' '${record.session_id}'`
+      );
+    }
+  );
+
+  test.each(['click', 'automatic'])(
+    'skips record writes for an existing %s inquiry',
+    async (entry) => {
+      const recordInteractiveSession = vi.fn();
+      const { inquiry } = makeInquiry({
+        store: { recordInteractiveSession },
+        tmux: makeTmux({ panes: [['bdui-inquiry', '%9', BEAD, '0']] })
+      });
+
+      if (entry === 'click') {
+        await inquiry.launchForClick(parkedInput());
+      } else {
+        await inquiry.onParkedAttempt(parkedInput());
+      }
+
+      expect(recordInteractiveSession).not.toHaveBeenCalled();
+    }
+  );
+
+  test('keeps the launched outcome when the store rejects a record', async () => {
+    const { inquiry, awaitingUser } = makeInquiry({
+      tmux: makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] }),
+      store: {
+        recordInteractiveSession: () => {
+          throw new Error('unavailable');
+        }
+      }
+    });
+
+    await inquiry.onParkedAttempt(parkedInput());
+
+    expect(awaitingUser).toHaveBeenCalledWith(
+      expect.objectContaining({ session: 'launched' })
+    );
+  });
+
+  test('appends settlement guidance outside the copied prompt', async () => {
+    const { inquiry, tmux } = makeInquiry({
+      tmux: makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] })
+    });
+
+    await inquiry.onParkedAttempt(parkedInput());
+
+    expect(
+      tmux.calls.find((call) => call[0] === 'new-window')?.at(-1)
+    ).toContain(
+      "이 Bead가 머지·close·폐기로 정산되면 Worker가 이 세션을 닫고(claude: `/exit`) Discord 스레드는 아카이브된다.\n'"
+    );
+  });
+});
 
 describe('direction-inquiry prompt constant', () => {
   test('pins the recovery block digest', () => {

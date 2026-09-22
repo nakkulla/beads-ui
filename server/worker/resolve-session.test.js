@@ -131,7 +131,7 @@ const FAILURE = {
 };
 
 /**
- * @param {{ tmux?: ReturnType<typeof makeTmux>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null }} [input]
+ * @param {{ tmux?: ReturnType<typeof makeTmux>, metadata?: any, present?: boolean, readIssue?: any, codex?: boolean, resolveRunner?: (runner: string) => string|null, currentRunner?: () => 'claude'|'codex'|null, store?: import('./resolve-session.js').ResolveSessionDeps['store'] }} [input]
  */
 function makeLauncher(input = {}) {
   const tmux = input.tmux ?? makeTmux();
@@ -152,6 +152,7 @@ function makeLauncher(input = {}) {
           : null),
     statFile: () => ({ mtimeMs: 0 }),
     now: () => 0,
+    store: input.store,
     ...(input.currentRunner ? { currentRunner: input.currentRunner } : {}),
     sessionRefOptions: {
       home_dir: HOME,
@@ -449,6 +450,184 @@ describe('buildResolvePrompt (UI-jw27 §4)', () => {
 });
 
 describe('createResolveSession (UI-jw27 §4)', () => {
+  test('records the attempt fork with the UUID passed to claude', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { resolver, tmux } = makeLauncher({
+      metadata: { session_ref: 'codex:missing@box' },
+      store: { recordInteractiveSession }
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      bead_id: BEAD,
+      failure: FAILURE,
+      attempt: { attempt_id: 'a1', runner: 'claude', session_id: SESSION_ID }
+    });
+
+    const wrapper = tmux.calls.find((call) => call[0] === 'new-window')?.at(-1);
+    const launch_id = wrapper?.match(/'--session-id' '([^']+)'/)?.[1];
+    expect(launch_id).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
+    expect(wrapper).toContain(
+      `'--resume' '${SESSION_ID}' '--fork-session' '--session-id' '${launch_id}'`
+    );
+    expect(outcome.source).toBe('attempt');
+    expect(recordInteractiveSession).toHaveBeenCalledExactlyOnceWith(REPO, {
+      bead_id: BEAD,
+      kind: 'resolve',
+      provider: 'claude',
+      session_id: launch_id,
+      session_id_source: 'launch',
+      mode: 'fork',
+      source: 'attempt',
+      forked_from: SESSION_ID,
+      fallback_reason: null,
+      attempt_id: 'a1',
+      failure_class: FAILURE.failure_class,
+      tmux_session: 'bdui-inquiry',
+      tmux_window: `resolve-${BEAD}`,
+      pane_id: '%9',
+      cwd: REPO,
+      launched_at: 0,
+      last_seen_alive_at: 0,
+      settled_at: null,
+      settled_by: null,
+      state: 'live',
+      exit_requested_at: null,
+      defer_since: null
+    });
+  });
+
+  test('assigns a launch UUID to a fresh claude session', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { resolver, tmux } = makeLauncher({
+      store: { recordInteractiveSession }
+    });
+
+    await resolver.resolve({
+      workspace: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    const record = recordInteractiveSession.mock.calls[0][1];
+    expect(record).toMatchObject({
+      mode: 'fresh',
+      source: 'fresh',
+      session_id_source: 'launch',
+      forked_from: null,
+      attempt_id: null
+    });
+    expect(
+      tmux.calls.find((call) => call[0] === 'new-window')?.at(-1)
+    ).toContain(
+      `exec '/usr/local/bin/claude' '--session-id' '${record.session_id}'`
+    );
+  });
+
+  test.each([true, false])(
+    'leaves codex session identity unknown after launch with fork=%s',
+    async (fork) => {
+      const recordInteractiveSession = vi.fn();
+      const { resolver, tmux } = makeLauncher({
+        store: { recordInteractiveSession },
+        codex: true,
+        metadata: fork ? { session_ref: `codex:${SESSION_ID}@${HOST}` } : {},
+        currentRunner: () => 'codex'
+      });
+
+      await resolver.resolve({
+        workspace: REPO,
+        bead_id: BEAD,
+        failure: FAILURE
+      });
+
+      expect(recordInteractiveSession.mock.calls[0][1]).toMatchObject({
+        provider: 'codex',
+        session_id: null,
+        session_id_source: null,
+        mode: fork ? 'fork' : 'fresh'
+      });
+      const wrapper = tmux.calls
+        .find((call) => call[0] === 'new-window')
+        ?.at(-1);
+      expect(wrapper).not.toContain('--session-id');
+      expect(wrapper).toContain(
+        fork
+          ? `exec '/usr/local/bin/codex' 'fork' '${SESSION_ID}'`
+          : `exec '/usr/local/bin/codex' 'Bead`
+      );
+    }
+  );
+
+  test('does not record a session that is already running', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { resolver } = makeLauncher({
+      store: { recordInteractiveSession },
+      tmux: makeTmux({ panes: [{ key: BEAD, marker: '@bdui_resolve_bead' }] })
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect(outcome.session).toBe('already_running');
+    expect(recordInteractiveSession).not.toHaveBeenCalled();
+  });
+
+  test('does not record a refused launch', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { resolver } = makeLauncher({
+      store: { recordInteractiveSession },
+      tmux: makeTmux({ new_window: { code: 1 } })
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect(outcome.session).toBe('not_launched');
+    expect(recordInteractiveSession).not.toHaveBeenCalled();
+  });
+
+  test('preserves a successful launch when recording throws', async () => {
+    const { resolver } = makeLauncher({
+      store: {
+        recordInteractiveSession: () => {
+          throw new Error('unavailable');
+        }
+      }
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect(outcome.session).toBe('launched');
+  });
+
+  test('explains settlement immediately after the continuation instruction', () => {
+    const input = {
+      bead_id: BEAD,
+      failure: FAILURE,
+      checkout: REPO,
+      fallback_reason: null
+    };
+
+    const prompt = buildResolvePrompt(input);
+
+    expect(prompt).toContain(
+      '`workflow_mode=fast_track`으로 잇는다.\n이 Bead가 머지·close·폐기로 정산되면 Worker가 이 세션을 닫고(claude: `/exit`) Discord 스레드는 아카이브된다.'
+    );
+  });
+
   test('forks the recorded claude session', async () => {
     const { tmux, resolver } = makeLauncher({
       metadata: { session_ref: `claude:${SESSION_ID}@${HOST}` }
@@ -484,8 +663,10 @@ describe('createResolveSession (UI-jw27 §4)', () => {
       failure: FAILURE
     });
 
-    expect(outcome.command).toBe(
-      `claude --resume '${SESSION_ID}' --fork-session`
+    expect(outcome.command).toMatch(
+      new RegExp(
+        `^claude --resume '${SESSION_ID}' --fork-session --session-id '[0-9a-f-]{36}'$`
+      )
     );
   });
 
@@ -504,9 +685,10 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     const wrapper = (tmux.calls.find((c) => c[0] === 'new-window') || []).at(
       -1
     );
+    const launch_id = wrapper?.match(/'--session-id' '([^']+)'/)?.[1];
     expect(wrapper).toBe(
       `tmux set-option -p -t "$TMUX_PANE" @bdui_resolve_bead '${BEAD}' && exec ` +
-        `'/usr/local/bin/claude' '--resume' '${SESSION_ID}' '--fork-session' ` +
+        `'/usr/local/bin/claude' '--resume' '${SESSION_ID}' '--fork-session' '--session-id' '${launch_id}' ` +
         `'${buildResolvePrompt({
           bead_id: BEAD,
           failure: FAILURE,

@@ -10,7 +10,8 @@ import {
   RESOLVE_PANE_MARKER,
   createTmuxLauncher,
   defaultResolveRunner,
-  markerWrapper
+  markerWrapper,
+  paneFormatExtended
 } from './tmux-launcher.js';
 
 /**
@@ -137,7 +138,8 @@ describe('tmux-launcher C-locale pane listing', () => {
     expect(result).toEqual({
       session: 'launched',
       tmux_session: 'bdui-inquiry',
-      tmux_window: 'test'
+      tmux_window: 'test',
+      pane_id: '%2'
     });
     expect(calls).toEqual(['list-panes', 'new-window', 'list-panes']);
   });
@@ -147,6 +149,267 @@ describe('tmux-launcher C-locale pane listing', () => {
 const temp_dirs = [];
 let test_dir = '';
 let codex_home = '';
+
+describe('tmux interactive session inspection and exit', () => {
+  test('keeps runtime-like path segments inside the cwd', async () => {
+    const launcher = createTmuxLauncher({
+      runTmux: async () => ({
+        code: 0,
+        stdout:
+          'inquiry:window:%9:0:/repo:claude:work::tree:codex:foreign:UI-1\n',
+        stderr: ''
+      })
+    });
+
+    const result = await launcher.listPanesExtended(RESOLVE_PANE_MARKER);
+
+    expect(result).toMatchObject({
+      ok: true,
+      rows: [
+        {
+          cwd: '/repo:claude:work::tree',
+          agent_runtime: 'codex',
+          key: 'foreign:UI-1'
+        }
+      ]
+    });
+  });
+
+  test.each(['claude', 'codex', ''])(
+    'preserves cwd and marker colons for runtime %j',
+    async (agent_runtime) => {
+      const runTmux = vi.fn(async () => ({
+        code: 0,
+        stdout: `inquiry:resolve-UI-1:%9:0:/repo:with:colons:${agent_runtime}:foreign:rig:UI-1\n`,
+        stderr: ''
+      }));
+      const launcher = createTmuxLauncher({ runTmux });
+
+      const result = await launcher.listPanesExtended(RESOLVE_PANE_MARKER);
+
+      expect(runTmux).toHaveBeenCalledExactlyOnceWith([
+        'list-panes',
+        '-a',
+        '-F',
+        paneFormatExtended(RESOLVE_PANE_MARKER)
+      ]);
+      expect(result).toEqual({
+        ok: true,
+        rows: [
+          {
+            session: 'inquiry',
+            window: 'resolve-UI-1',
+            pane: '%9',
+            dead: '0',
+            cwd: '/repo:with:colons',
+            agent_runtime,
+            key: 'foreign:rig:UI-1'
+          }
+        ]
+      });
+    }
+  );
+
+  test.each([' session-id \n', '', '  \n'])(
+    'reads optional pane value %j',
+    async (stdout) => {
+      const runTmux = vi.fn(async () => ({ code: 0, stdout, stderr: '' }));
+      const launcher = createTmuxLauncher({ runTmux });
+
+      const result = await launcher.readPaneOption('%9', '@agent_session');
+
+      expect(runTmux).toHaveBeenCalledExactlyOnceWith([
+        'show-options',
+        '-pqv',
+        '-t',
+        '%9',
+        '@agent_session'
+      ]);
+      expect(result).toBe(stdout.trim() || null);
+    }
+  );
+
+  test('treats an unavailable option as unknown', async () => {
+    const launcher = createTmuxLauncher({
+      runTmux: async () => {
+        throw new Error('offline');
+      }
+    });
+
+    const result = await launcher.readPaneOption('%9', '@agent_session');
+
+    expect(result).toBeNull();
+  });
+
+  test('types exit literally before submitting Enter', async () => {
+    const runTmux = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const launcher = createTmuxLauncher({ runTmux });
+
+    const result = await launcher.sendExit('%9');
+
+    expect(result).toEqual({ ok: true });
+    expect(runTmux.mock.calls).toEqual([
+      [['send-keys', '-t', '%9', '-l', '/exit']],
+      [['send-keys', '-t', '%9', 'Enter']]
+    ]);
+  });
+
+  test('does not submit Enter when literal exit input fails', async () => {
+    const runTmux = vi.fn(async () => ({
+      code: 1,
+      stdout: '',
+      stderr: 'missing pane'
+    }));
+    const launcher = createTmuxLauncher({ runTmux });
+
+    const result = await launcher.sendExit('%9');
+
+    expect(result).toEqual({ ok: false, error: 'missing pane' });
+    expect(runTmux).toHaveBeenCalledTimes(1);
+  });
+
+  test('kills the selected session window', async () => {
+    const runTmux = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const launcher = createTmuxLauncher({ runTmux });
+
+    const result = await launcher.killWindow('inquiry', 'resolve-UI-1');
+
+    expect(result).toEqual({ ok: true });
+    expect(runTmux).toHaveBeenCalledExactlyOnceWith([
+      'kill-window',
+      '-t',
+      'inquiry:resolve-UI-1'
+    ]);
+  });
+
+  test.each([
+    ['earlier\n ❯ \n   \n', '❯'],
+    ['\n \n', null]
+  ])('captures the last nonblank line from %j', async (stdout, expected) => {
+    const runTmux = vi.fn(async () => ({
+      code: 0,
+      stdout: /** @type {string} */ (stdout),
+      stderr: ''
+    }));
+    const launcher = createTmuxLauncher({ runTmux });
+
+    const result = await launcher.capturePaneTail('%9');
+
+    expect(result).toBe(expected);
+    expect(runTmux).toHaveBeenCalledExactlyOnceWith([
+      'capture-pane',
+      '-p',
+      '-t',
+      '%9'
+    ]);
+  });
+
+  test.each(['list', 'exit', 'kill', 'capture'])(
+    'reports a thrown %s operation',
+    async (operation) => {
+      const launcher = createTmuxLauncher({
+        runTmux: async () => {
+          throw new Error('offline');
+        }
+      });
+
+      const result =
+        operation === 'list'
+          ? await launcher.listPanesExtended(RESOLVE_PANE_MARKER)
+          : operation === 'exit'
+            ? await launcher.sendExit('%9')
+            : operation === 'kill'
+              ? await launcher.killWindow('inquiry', 'resolve-UI-1')
+              : await launcher.capturePaneTail('%9');
+
+      expect(result).toEqual({ ok: false, error: 'Error: offline' });
+    }
+  );
+});
+
+describe('bridge thread projection', () => {
+  test('reads a session-keyed map while keeping absent link fields nullable', () => {
+    const file = path.join(test_dir, 'threads.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        legacy: { thread_id: 123 },
+        linked: {
+          thread_id: '456',
+          url: 'https://discord.com/channels/1/456',
+          guild_id: '1'
+        },
+        broken: {}
+      })
+    );
+    const launcher = createTmuxLauncher({ bridgeStateDir: test_dir });
+
+    const result = launcher.readBridgeThreads();
+
+    expect(result).toEqual(
+      new Map([
+        ['legacy', { thread_id: 123, url: null, guild_id: null }],
+        [
+          'linked',
+          {
+            thread_id: '456',
+            url: 'https://discord.com/channels/1/456',
+            guild_id: '1'
+          }
+        ]
+      ])
+    );
+  });
+
+  test('reuses the cached map until the file mtime changes', () => {
+    const file = path.join(test_dir, 'threads.json');
+    let mtime = 1;
+    const launcher = createTmuxLauncher({
+      bridgeStateDir: test_dir,
+      statFile: () => ({ mtimeMs: mtime })
+    });
+    fs.writeFileSync(file, '{"sid":{"thread_id":"first"}}');
+    const first = launcher.readBridgeThreads();
+    fs.writeFileSync(file, '{"sid":{"thread_id":"next"}}');
+
+    const cached = launcher.readBridgeThreads();
+    mtime = 2;
+    const refreshed = launcher.readBridgeThreads();
+
+    expect(cached).toBe(first);
+    expect(cached.get('sid')?.thread_id).toBe('first');
+    expect(refreshed.get('sid')?.thread_id).toBe('next');
+  });
+
+  test.each(['missing', 'corrupt', 'array'])(
+    'returns an empty map for a %s file',
+    (condition) => {
+      if (condition !== 'missing') {
+        fs.writeFileSync(
+          path.join(test_dir, 'threads.json'),
+          condition === 'corrupt' ? '{' : '[]'
+        );
+      }
+      const launcher = createTmuxLauncher({ bridgeStateDir: test_dir });
+
+      const result = launcher.readBridgeThreads();
+
+      expect(result).toEqual(new Map());
+    }
+  );
+
+  test('drops stale links when the bridge file disappears', () => {
+    const file = path.join(test_dir, 'threads.json');
+    fs.writeFileSync(file, '{"sid":{"thread_id":"first"}}');
+    const launcher = createTmuxLauncher({ bridgeStateDir: test_dir });
+    launcher.readBridgeThreads();
+    fs.unlinkSync(file);
+
+    const result = launcher.readBridgeThreads();
+
+    expect(result.size).toBe(0);
+  });
+});
 beforeEach(() => {
   test_dir = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-trust-'))

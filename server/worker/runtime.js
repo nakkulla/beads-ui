@@ -198,6 +198,12 @@ export function createWorkerRuntime() {
   // so no title cache has to be bound to it.
   const directionInquiry = createDirectionInquiry({
     getConfig,
+    store: {
+      recordInteractiveSession: (ws, rec) =>
+        /** @type {typeof queueStore & { recordInteractiveSession?: (workspace: string, record: any) => void }} */ (
+          queueStore
+        ).recordInteractiveSession?.(ws, rec)
+    },
     readAttempt: (workspace, attempt_id) =>
       queueStore.snapshot(workspace).attempts?.[attempt_id] ?? null,
     bd: {
@@ -219,6 +225,12 @@ export function createWorkerRuntime() {
   // the reply on their own socket IS the report.
   const resolveSession = createResolveSession({
     getConfig,
+    store: {
+      recordInteractiveSession: (ws, rec) =>
+        /** @type {typeof queueStore & { recordInteractiveSession?: (workspace: string, record: any) => void }} */ (
+          queueStore
+        ).recordInteractiveSession?.(ws, rec)
+    },
     // Only a bead with NO recorded session follows current settings (§4.1); a
     // recorded source keeps its own provider even when it cannot be forked.
     currentRunner: (workspace, issue) => {
