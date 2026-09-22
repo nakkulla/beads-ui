@@ -17,7 +17,12 @@
  * `external_waits` stays inside its owning workspace row. The store treats it
  * like every other optional projection and never invents queue membership or
  * execution state from it.
+ *
+ * Each row's `bead_titles` is filled from the last titles its repo carried
+ * (UI-uhfj, `bead-title-memory.js`), so a title the server omits for a moment
+ * does not turn a card heading into its bead id.
  */
+import { createBeadTitleMemory } from './bead-title-memory.js';
 import {
   applyPatch as applyKeyedPatch,
   assembleMonitorPipeline,
@@ -41,6 +46,21 @@ export function createMonitorPipelineStore() {
   let state_canonical = canonicalJson(workspaces_state);
   /** @type {Set<() => void>} */
   const listeners = new Set();
+  const known_titles = createBeadTitleMemory();
+
+  /**
+   * @param {Array<Record<string, any>>} list
+   * @returns {Array<Record<string, any>>}
+   */
+  function withKnownTitles(list) {
+    return list.map((workspace) => {
+      const filled = known_titles.fill(
+        workspace.root_dir,
+        workspace.bead_titles
+      );
+      return filled ? { ...workspace, bead_titles: filled } : workspace;
+    });
+  }
 
   function emit() {
     for (const fn of Array.from(listeners)) {
@@ -100,7 +120,7 @@ export function createMonitorPipelineStore() {
       last_seq = seq;
       const body = assembleMonitorPipeline(keyed);
       adopt(
-        Array.isArray(list) ? body.workspaces : null,
+        Array.isArray(list) ? withKnownTitles(body.workspaces) : null,
         body.workspaces_state
       );
     },
@@ -113,7 +133,7 @@ export function createMonitorPipelineStore() {
       keyed = applyKeyedPatch(keyed, patch);
       last_seq = patch.seq;
       const body = assembleMonitorPipeline(keyed);
-      adopt(body.workspaces, body.workspaces_state);
+      adopt(withKnownTitles(body.workspaces), body.workspaces_state);
       return true;
     },
     clear,

@@ -135,6 +135,29 @@ describe('data/monitor-pipeline-store', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
+  test('keeps the last known title when a patch drops it', () => {
+    const store = createMonitorPipelineStore();
+    store.set([{ root_dir: '/repo', bead_titles: { 'UI-1': '제목' } }], [], 1);
+
+    store.applyPatch({
+      seq: 2,
+      set: { 'ws//repo/bead_titles': {} },
+      unset: []
+    });
+
+    expect(store.get()?.[0].bead_titles).toEqual({ 'UI-1': '제목' });
+  });
+
+  test('keeps known titles across clear and a fresh snapshot', () => {
+    const store = createMonitorPipelineStore();
+    store.set([{ root_dir: '/repo', bead_titles: { 'UI-1': '제목' } }], []);
+    store.clear();
+
+    store.set([{ root_dir: '/repo' }], []);
+
+    expect(store.get()?.[0].bead_titles).toEqual({ 'UI-1': '제목' });
+  });
+
   test('preserves the unchanged array when only controls change', () => {
     const store = createMonitorPipelineStore();
     store.set([{ root_dir: '/repo' }], [{ root_dir: '/repo', revision: 1 }]);

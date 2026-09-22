@@ -196,6 +196,39 @@ describe('data/worker-queue-store', () => {
     expect(store.get()?.attempts['UI-a-1-1']).toBe(attempt);
   });
 
+  test('keeps the last known title when a patch drops it', () => {
+    const store = createWorkerQueueStore();
+    store.setSnapshot({
+      root_dir: '/repo',
+      queue: queue({ bead_titles: { 'UI-1': '제목' } })
+    });
+
+    store.applyPatch({
+      seq: 2,
+      set: { 'queue/bead_titles': {} },
+      unset: []
+    });
+
+    expect(/** @type {any} */ (store.get())?.bead_titles).toEqual({
+      'UI-1': '제목'
+    });
+  });
+
+  test('keeps known titles across clear and a fresh snapshot', () => {
+    const store = createWorkerQueueStore();
+    store.setSnapshot({
+      root_dir: '/repo',
+      queue: queue({ bead_titles: { 'UI-1': '제목' } })
+    });
+    store.clear();
+
+    store.setSnapshot({ root_dir: '/repo', queue: queue() });
+
+    expect(/** @type {any} */ (store.get())?.bead_titles).toEqual({
+      'UI-1': '제목'
+    });
+  });
+
   test('clears sequencing and notifies only when received state is removed', () => {
     const store = createWorkerQueueStore();
     store.setSnapshot({ root_dir: '/repo', queue: queue() });

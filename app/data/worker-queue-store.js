@@ -30,6 +30,7 @@
  * @property {number|null} settled_at
  * @typedef {Omit<Queue, 'completion_intents'|'merge_queue'> & { merge_queue: Array<{ bead_id: string, resolution_rounds: number, resolution?: ResolutionProjection|null, authority?: import('../../server/worker/queue-store.js').MergeAuthority|null, hold?: import('../../server/worker/queue-store.js').MergeHold|null, review_dispatch?: import('../../server/worker/queue-store.js').ReviewDispatchClaim|null }>, completion_status?: Record<string, CompletionStatus>, manual_merge_continuation?: { schema_version: number }, execution_defaults?: { supported: boolean, schema_version: number|null, source_commit: string|null, digest: string|null, session: Record<string, any>|null, orchestration: Record<string, any>|null }, bead_scope?: Record<string, { scope: string[], artifacts: string[] }|null> }} WorkerQueueSnapshot
  */
+import { createBeadTitleMemory } from './bead-title-memory.js';
 import {
   applyPatch as applyKeyedPatch,
   assembleWorkerQueue,
@@ -50,6 +51,9 @@ export function createWorkerQueueStore() {
   let canonical = canonicalJson(queue);
   /** @type {Set<() => void>} */
   const listeners = new Set();
+  // Omitted titles are filled from the last ones this repo carried (UI-uhfj,
+  // `bead-title-memory.js`); the memory deliberately survives `clear()`.
+  const known_titles = createBeadTitleMemory();
 
   function emit() {
     for (const fn of Array.from(listeners)) {
@@ -63,9 +67,11 @@ export function createWorkerQueueStore() {
 
   /** @param {import('./keyed-patch.js').KeyedMap} next */
   function adopt(next) {
-    const assembled = /** @type {WorkerQueueSnapshot} */ (
+    const raw = /** @type {WorkerQueueSnapshot & { bead_titles?: unknown }} */ (
       assembleWorkerQueue(next).queue
     );
+    const filled = known_titles.fill(next.get('root_dir'), raw.bead_titles);
+    const assembled = filled ? { ...raw, bead_titles: filled } : raw;
     const next_canonical = canonicalJson(assembled);
     keyed = next;
     if (canonical !== next_canonical) {
