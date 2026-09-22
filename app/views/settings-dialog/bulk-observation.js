@@ -221,21 +221,37 @@ export function observeSet(rows, readSet) {
 }
 
 /**
- * Observe the queue's `applied_exec_preset` record. The identity of an applied
+ * The queue field one profile's apply record rides on. The two records are
+ * independent: a general apply never touches the quick_fix one (design §4.1).
+ *
+ * @param {unknown} applies_to
+ * @returns {string}
+ */
+export function appliedPresetFieldFor(applies_to) {
+  return applies_to === 'quick_fix'
+    ? 'applied_quick_fix_preset'
+    : 'applied_exec_preset';
+}
+
+/**
+ * Observe the queue's apply record OF ONE PROFILE. The identity of an applied
  * preset is its `id` ALONE (§4.1): `applied_at` is written per repo by
  * `apply-impl-preset-global`, so comparing whole records would report `갈림`
  * for one preset applied to every repo at once, and `revision` is a fact about
  * the preset rather than about this read-only line.
  *
  * @param {Array<Record<string, any>>} rows
+ * @param {unknown} [applies_to] - The profile whose record to read; `general`
+ * by default.
  * @returns {Observation}
  */
-export function observeAppliedPreset(rows) {
+export function observeAppliedPreset(rows, applies_to = 'general') {
+  const field = appliedPresetFieldFor(applies_to);
   return observeKey(
     (Array.isArray(rows) ? rows : []).map((row) => ({
       ...row,
-      __applied_preset_id: isRecord(row?.applied_exec_preset)
-        ? observedValue(row.applied_exec_preset.id)
+      __applied_preset_id: isRecord(row?.[field])
+        ? observedValue(row[field].id)
         : null
     })),
     '__applied_preset_id',
@@ -244,19 +260,18 @@ export function observeAppliedPreset(rows) {
 }
 
 /**
- * Whether EVERY ticked repo carries the `applied_exec_preset` key. The line is
+ * Whether EVERY ticked repo carries this profile's record key. The line is
  * drawn only when the projection has it: an older server that omits the field
  * gets no line and no invented wording (§8).
  *
  * @param {Array<Record<string, any>>} rows
+ * @param {unknown} [applies_to] - The profile whose record to look for.
  * @returns {boolean}
  */
-export function appliedPresetProjected(rows) {
+export function appliedPresetProjected(rows, applies_to = 'general') {
+  const field = appliedPresetFieldFor(applies_to);
   const list = Array.isArray(rows) ? rows.filter((row) => isRecord(row)) : [];
-  return (
-    list.length > 0 &&
-    list.every((row) => Object.hasOwn(row, 'applied_exec_preset'))
-  );
+  return list.length > 0 && list.every((row) => Object.hasOwn(row, field));
 }
 
 /**

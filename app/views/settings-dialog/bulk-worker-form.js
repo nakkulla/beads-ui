@@ -31,14 +31,17 @@ import {
 } from './bulk-observation.js';
 import {
   AUTO_LITERAL,
+  GENERAL_PRESET_KEYS,
+  GENERAL_PRESET_KV_KEYS,
   IMPL_DISPATCHES,
-  IMPL_PRESET_KEYS,
   IMPL_RUNTIMES,
   IMPL_SPEEDS,
   ORCHESTRATION_KEYS,
   PLAN_REVIEW_MODELS,
-  PRESET_KV_KEYS,
+  QUICK_FIX_KV_KEYS,
+  QUICK_FIX_LANE_MAP,
   QUICK_FIX_ORCHESTRATION_KEYS,
+  QUICK_FIX_PRESET_KEYS,
   REVIEW_EFFORTS,
   REVIEW_SPEEDS,
   REVIEW_STEP_MODELS,
@@ -46,6 +49,7 @@ import {
   implEffortOptions,
   implModelOptions,
   narrowImplTarget,
+  normalizeAppliesTo,
   orchestrationEffortOptions,
   orchestrationModelOptions,
   orchestrationRuntimeInitial,
@@ -77,43 +81,68 @@ const QUICK_FIX_UNSUPPORTED = '서버가 quick_fix 레인을 지원하지 않습
 /** Loading copy while no monitor row has arrived yet. */
 const FORM_LOADING = '불러오는 중';
 
-/** The six preset keys the workspace QUEUE stores rather than kv. */
-export const BULK_FORM_QUEUE_KEYS = [
-  ...ORCHESTRATION_KEYS,
-  ...QUICK_FIX_ORCHESTRATION_KEYS
-];
-
 /**
- * The twenty-four keys this form edits: the preset profile minus
- * `impl_dispatch`, which the contract keeps `user_write_only` and no workspace
- * layer can store (UI-628r §2.1). 18 of them are kv keys (`PRESET_KV_KEYS`) and
- * 6 are queue keys ({@link BULK_FORM_QUEUE_KEYS}).
+ * The queue keys one profile's rows are stored under (design §4).
+ *
+ * @param {unknown} applies_to
+ * @returns {ReadonlyArray<string>}
  */
-export const BULK_FORM_KEYS = IMPL_PRESET_KEYS.filter(
-  (key) => key !== 'impl_dispatch'
-);
+export function bulkFormQueueKeysFor(applies_to) {
+  return normalizeAppliesTo(applies_to) === 'quick_fix'
+    ? QUICK_FIX_ORCHESTRATION_KEYS
+    : ORCHESTRATION_KEYS;
+}
 
 /**
- * The twenty-five rows this form DRAWS: the observed 24 plus `impl_dispatch`,
- * which exists only so a preset can carry it (UI-e1ta §4). That key has no
- * workspace-global storage (ADR 0012), so it is never observed and never goes
- * into an apply payload.
+ * The rows one profile's tab DRAWS, in that profile's own STORAGE key names:
+ * 17 canonical rows for `general` and 8 prefixed rows for `quick_fix` (§6.2).
+ *
+ * The general list keeps `impl_dispatch`, which exists only so a preset can
+ * carry it (UI-e1ta §4) — the contract gives it no workspace-global storage
+ * (ADR 0012), so it is never observed and never joins an apply payload. In the
+ * quick_fix profile the contract DOES allow the global, so its
+ * `quick_fix_impl_dispatch` row is an ordinary observed row.
+ *
+ * @param {unknown} applies_to
+ * @returns {ReadonlyArray<string>}
  */
-export const BULK_FORM_ROW_KEYS = IMPL_PRESET_KEYS;
+export function bulkFormRowKeysFor(applies_to) {
+  return normalizeAppliesTo(applies_to) === 'quick_fix'
+    ? QUICK_FIX_PRESET_KEYS.map((key) => QUICK_FIX_LANE_MAP[key])
+    : GENERAL_PRESET_KEYS;
+}
 
 /**
- * Which layer a row is observed from. The 18 preset kv keys come from the
- * session-defaults layer and the 6 orchestration keys ride on the monitor row
- * itself; `impl_dispatch` comes from nowhere.
+ * The rows one profile actually WRITES — the drawn rows minus the ones no
+ * workspace layer stores.
+ *
+ * @param {unknown} applies_to
+ * @returns {ReadonlyArray<string>}
+ */
+export function bulkFormKeysFor(applies_to) {
+  const profile = normalizeAppliesTo(applies_to);
+  return bulkFormRowKeysFor(profile).filter(
+    (key) => layerOf(key, profile) !== null
+  );
+}
+
+/**
+ * Which layer a row is observed from. A profile's kv keys come from the
+ * session-defaults layer and its orchestration keys ride on the monitor row
+ * itself; the general `impl_dispatch` comes from nowhere.
  *
  * @param {string} key
+ * @param {unknown} applies_to
  * @returns {import('./bulk-observation.js').ObservationLayer|null}
  */
-function layerOf(key) {
-  if (PRESET_KV_KEYS.includes(key)) {
+function layerOf(key, applies_to) {
+  const profile = normalizeAppliesTo(applies_to);
+  const kv_keys =
+    profile === 'quick_fix' ? QUICK_FIX_KV_KEYS : GENERAL_PRESET_KV_KEYS;
+  if (kv_keys.includes(key)) {
     return 'session_defaults';
   }
-  return BULK_FORM_QUEUE_KEYS.includes(key) ? 'queue' : null;
+  return bulkFormQueueKeysFor(profile).includes(key) ? 'queue' : null;
 }
 
 /**
@@ -139,26 +168,42 @@ function storedValue(value) {
  * @typedef {Object} BulkWorkerFormOptions
  * @property {() => Array<Record<string, any>>} rows - The monitor rows the form
  * reads its catalog from, selected repos first.
+ * @property {'general'|'quick_fix'} [profile] - Which preset profile this form
+ * edits; `general` by default.
  * @property {(row: Record<string, any>) => Record<string, any>} [queueOf] - How
  * to read one row's queue surface; the row itself by default.
  * @property {() => Array<Record<string, any>>} [selectedRows] - The ticked
  * repos, which is what the rows are OBSERVED from; `rows` by default.
+ * @property {() => Record<string, string>} [resolutionValues] - The OTHER
+ * profile's screen values a label resolves against, so an empty quick_fix row
+ * names the general row it falls through to; this form's own values by default.
  * @property {() => void} [onChange] - Called after every edit so the pane
  * redraws.
  */
 
 /**
- * One closure holding the bulk `워커` tab's 24-key map, its group templates
- * and the payloads an apply sends.
+ * One closure holding ONE profile's bulk row map, its group templates and the
+ * payloads an apply sends. Two instances stand side by side in the bulk
+ * window, one per tab, and neither sees the other's edits (§6.2).
  *
  * @param {BulkWorkerFormOptions} options
  */
 export function createBulkWorkerForm({
   rows,
+  profile = 'general',
   queueOf,
   selectedRows,
+  resolutionValues,
   onChange
 }) {
+  /** The rows this instance draws, in storage key names. */
+  const row_keys = bulkFormRowKeysFor(profile);
+  /** The rows this instance writes. */
+  const applied_key_list = bulkFormKeysFor(profile);
+  /** The queue keys of this profile. */
+  const queue_keys = bulkFormQueueKeysFor(profile);
+  const is_quick_fix = profile === 'quick_fix';
+
   /** @type {Record<string, string>} */
   const values = {};
 
@@ -210,8 +255,8 @@ export function createBulkWorkerForm({
       return;
     }
     const list = observedRows();
-    for (const key of BULK_FORM_ROW_KEYS) {
-      const layer = layerOf(key);
+    for (const key of row_keys) {
+      const layer = layerOf(key, profile);
       if (layer === null) {
         observations[key] = null;
         continue;
@@ -263,13 +308,26 @@ export function createBulkWorkerForm({
   }
 
   /**
-   * Which of the 24 applied keys carry a value this round. `impl_dispatch` is
-   * absent by construction — it is not in {@link BULK_FORM_KEYS}.
+   * Which of this profile's applied keys carry a value this round. A row no
+   * workspace layer stores is absent by construction.
    *
    * @returns {string[]}
    */
   function appliedKeys() {
-    return BULK_FORM_KEYS.filter((key) => holdStateOf(key) === null);
+    return applied_key_list.filter((key) => holdStateOf(key) === null);
+  }
+
+  /**
+   * The screen values a row's label resolves against: this form's own values,
+   * with the other tab's underneath when the pane supplies them. An empty
+   * quick_fix row then names the general value it falls through to.
+   *
+   * @returns {Record<string, string>}
+   */
+  function resolutionOf() {
+    const outer =
+      typeof resolutionValues === 'function' ? resolutionValues() : null;
+    return isRecord(outer) ? { ...outer, ...values } : values;
   }
 
   /**
@@ -327,7 +385,7 @@ export function createBulkWorkerForm({
         : null;
     return orchestrationRuntimeInitial(
       catalogOf(),
-      values.orchestration_model ?? null,
+      resolutionOf().orchestration_model ?? null,
       typeof projected === 'string' ? projected : null
     );
   }
@@ -366,6 +424,21 @@ export function createBulkWorkerForm({
   function speedVisibility() {
     const catalog = catalogOf();
     const worker_runtime = orchestrationRuntime();
+    if (is_quick_fix) {
+      return {
+        // An unset quick_fix orchestration model falls through to the general
+        // profile, so the row follows the general provider until it names one.
+        quick_fix_orchestration_speed: values.quick_fix_orchestration_model
+          ? speedVisible(catalog, {
+              model: values.quick_fix_orchestration_model
+            })
+          : speedVisible(catalog, { runtime: worker_runtime }),
+        quick_fix_impl_speed: speedVisible(catalog, {
+          runtime: values.quick_fix_impl_runtime,
+          model: values.quick_fix_impl_model
+        })
+      };
+    }
     return {
       orchestration_speed: speedVisible(catalog, { runtime: worker_runtime }),
       spec_review_speed: speedVisible(catalog, {
@@ -380,15 +453,6 @@ export function createBulkWorkerForm({
       impl_speed: speedVisible(catalog, {
         runtime: values.impl_runtime,
         model: values.impl_model
-      }),
-      quick_fix_orchestration_speed: values.quick_fix_orchestration_model
-        ? speedVisible(catalog, {
-            model: values.quick_fix_orchestration_model
-          })
-        : speedVisible(catalog, { runtime: worker_runtime }),
-      quick_fix_impl_speed: speedVisible(catalog, {
-        runtime: values.quick_fix_impl_runtime,
-        model: values.quick_fix_impl_model
       })
     };
   }
@@ -411,7 +475,7 @@ export function createBulkWorkerForm({
   function quickFixDelegated() {
     const resolved = resolveExecutionSettings({
       pin: null,
-      global: { ...values },
+      global: { ...resolutionOf() },
       execution_defaults: defaultsOf(),
       runner_catalog: catalogOf(),
       route: 'quick_fix'
@@ -545,19 +609,39 @@ export function createBulkWorkerForm({
   }
 
   /**
-   * Fill the whole form from one preset: the keys it names take its values and
-   * the keys it leaves empty go back to `기본값 사용` (UI-628r §2.2).
+   * The canonical preset key one screen row stands for. The `general` rows
+   * already carry canonical names; the `quick_fix` rows carry the prefixed
+   * storage names a preset never holds (design §3.2).
    *
-   * All 25 rows become `편집됨`, `갈림`과 `미확인` included: picking a preset is
-   * the user naming one whole profile, so those rows now stand on its value and
-   * go into the apply (UI-e1ta §3.1).
+   * @param {string} key - A storage key of this profile.
+   * @returns {string}
+   */
+  function canonicalKeyOf(key) {
+    if (!is_quick_fix) {
+      return key;
+    }
+    const found = QUICK_FIX_PRESET_KEYS.find(
+      (canonical) => QUICK_FIX_LANE_MAP[canonical] === key
+    );
+    return found ?? key;
+  }
+
+  /**
+   * Fill THIS TAB's rows from one preset of THIS TAB's profile: the keys it
+   * names take its values and the keys it leaves empty go back to
+   * `기본값 사용` (UI-628r §2.2). The other tab's rows are untouched — one
+   * tab's choice never becomes the other tab's plan (§6.2).
+   *
+   * Every row of this tab becomes `편집됨`, `갈림`과 `미확인` included: picking
+   * a preset is the user naming one whole profile, so those rows now stand on
+   * its value and go into the apply (UI-e1ta §3.1).
    *
    * @param {Record<string, any>|null|undefined} settings
    */
   function applyPreset(settings) {
     const source = isRecord(settings) ? settings : {};
-    for (const key of BULK_FORM_ROW_KEYS) {
-      writeValue(key, storedValue(source[key]) ?? undefined);
+    for (const key of row_keys) {
+      writeValue(key, storedValue(source[canonicalKeyOf(key)]) ?? undefined);
       edited.add(key);
     }
     // The provider axis follows the preset's own orchestration model.
@@ -578,11 +662,12 @@ export function createBulkWorkerForm({
     // (§3.2). The whole-preset apply path writes EVERY key the preset names and
     // deletes the ones it omits, so it would break that promise: an empty hold
     // and an empty preset key compare equal while meaning opposite things.
-    if (BULK_FORM_KEYS.some((key) => holdStateOf(key) !== null)) {
+    if (applied_key_list.some((key) => holdStateOf(key) !== null)) {
       return false;
     }
-    return BULK_FORM_ROW_KEYS.every(
-      (key) => storedValue(source[key]) === storedValue(values[key])
+    return row_keys.every(
+      (key) =>
+        storedValue(source[canonicalKeyOf(key)]) === storedValue(values[key])
     );
   }
 
@@ -626,7 +711,7 @@ export function createBulkWorkerForm({
       values,
       defaultsOf(),
       catalogOf(),
-      values,
+      resolutionOf(),
       route
     );
     const chosen = view.options.find((option) => option.value === selected);
@@ -668,14 +753,14 @@ export function createBulkWorkerForm({
 
   /**
    * The badge that says what the ticked repos hold for this row (§3). A row
-   * nothing observes — `impl_dispatch` — says so instead, and a single ticked
-   * repo gets no badge because there is nothing to compare.
+   * nothing observes — the general `impl_dispatch` — says so instead, and a
+   * single ticked repo gets no badge because there is nothing to compare.
    *
    * @param {string} key
    * @returns {TemplateResult|''}
    */
   function observationBadgeTemplate(key) {
-    if (key === 'impl_dispatch') {
+    if (layerOf(key, profile) === null) {
       return html`<span
         class="settings-dialog__obs settings-dialog__obs--note"
         data-bulk-badge=${key}
@@ -952,46 +1037,49 @@ export function createBulkWorkerForm({
   }
 
   /**
-   * The quick_fix lane. `실행 방식` leads the group because it governs whether
-   * the delegation rows exist at all (UI-628r §3.2), and those rows exist only
-   * while the resolved dispatch is `delegated`; on `main` they are absent, not
-   * hidden.
+   * One quick_fix row: the hold option, the disabled state of a server with no
+   * lane, and the general-layer resolution behind an empty value.
+   *
+   * @param {string} key
+   * @param {string} label
+   * @param {ReadonlyArray<string>} choices
+   * @param {(key: string, value: string) => void} onSelect
+   * @param {boolean} disabled
+   * @returns {TemplateResult}
+   */
+  function quickFixRow(key, label, choices, onSelect, disabled) {
+    return selectRow(
+      key,
+      label,
+      choices,
+      onSelect,
+      disabled || !quickFixSupported(),
+      'quick_fix'
+    );
+  }
+
+  /**
+   * The quick_fix tab's orchestration group (§6.1).
    *
    * @param {Record<string, boolean>} visibility
    * @param {boolean} disabled
    * @returns {TemplateResult}
    */
-  function quickFixGroup(visibility, disabled) {
+  function quickFixOrchestrationGroup(visibility, disabled) {
     const catalog = catalogOf();
     const supported = quickFixSupported();
-    const off = disabled || !supported;
-    // Every catalog token, runtime-independent: the delegation runtime is
-    // DERIVED from this key's model, so the 위임 대상 row must not narrow it.
-    const models = implModelOptions(catalog, undefined).filter(
-      (token) => token !== AUTO_LITERAL
-    );
-    const efforts = implEffortOptions(catalog, undefined, undefined);
     const orchestration_efforts = orchestrationEffortOptions(
       catalog,
       null,
       null
     ).filter((effort) => effort !== AUTO_LITERAL);
-    /**
-     * @param {string} key
-     * @param {string} label
-     * @param {ReadonlyArray<string>} choices
-     * @param {(key: string, value: string) => void} onSelect
-     * @returns {TemplateResult}
-     */
-    const quickFixRow = (key, label, choices, onSelect) =>
-      selectRow(key, label, choices, onSelect, off, 'quick_fix');
     return html`<div
       class="settings-dialog__group"
-      data-bulk-group="quick_fix"
+      data-bulk-group="quick_fix_orchestration"
       title=${supported ? '' : QUICK_FIX_UNSUPPORTED}
     >
       <div class="settings-dialog__group-title">
-        quick_fix
+        오케스트레이션
         <span class="settings-dialog__hint"
           >${supported
             ? '비어 있는 값은 일반 프로파일로 떨어집니다.'
@@ -999,57 +1087,98 @@ export function createBulkWorkerForm({
         >
       </div>
       ${quickFixRow(
-        'quick_fix_impl_dispatch',
-        '실행 방식',
-        IMPL_DISPATCHES,
-        onValueChange
-      )}
-      ${quickFixRow(
         'quick_fix_orchestration_model',
-        '오케스트레이션 모델',
+        '모델',
         orchestrationModelOptions(catalog, null),
-        onValueChange
+        onValueChange,
+        disabled
       )}
       ${quickFixRow(
         'quick_fix_orchestration_effort',
-        '오케스트레이션 effort',
+        'effort',
         orchestration_efforts,
-        onValueChange
+        onValueChange,
+        disabled
       )}
       ${visibility.quick_fix_orchestration_speed
         ? quickFixRow(
             'quick_fix_orchestration_speed',
-            '오케스트레이션 속도',
+            '속도',
             IMPL_SPEEDS,
-            onValueChange
+            onValueChange,
+            disabled
           )
         : ''}
+    </div>`;
+  }
+
+  /**
+   * The quick_fix tab's implementation group. `실행 방식` leads it because it
+   * governs whether the delegation rows exist at all (UI-628r §3.2), and those
+   * rows exist only while the resolved dispatch is `delegated`; on `main` they
+   * are absent, not hidden.
+   *
+   * @param {Record<string, boolean>} visibility
+   * @param {boolean} disabled
+   * @returns {TemplateResult}
+   */
+  function quickFixImplGroup(visibility, disabled) {
+    const catalog = catalogOf();
+    const supported = quickFixSupported();
+    // Every catalog token, runtime-independent: the delegation runtime is
+    // DERIVED from this key's model, so the 위임 대상 row must not narrow it.
+    const models = implModelOptions(catalog, undefined).filter(
+      (token) => token !== AUTO_LITERAL
+    );
+    const efforts = implEffortOptions(catalog, undefined, undefined);
+    return html`<div
+      class="settings-dialog__group"
+      data-bulk-group="quick_fix_impl"
+      title=${supported ? '' : QUICK_FIX_UNSUPPORTED}
+    >
+      <div class="settings-dialog__group-title">
+        구현
+        <span class="settings-dialog__hint"
+          >이슈 핀이 있으면 핀이 우선합니다</span
+        >
+      </div>
+      ${quickFixRow(
+        'quick_fix_impl_dispatch',
+        '실행 방식',
+        IMPL_DISPATCHES,
+        onValueChange,
+        disabled
+      )}
       ${quickFixDelegated()
         ? html`
             ${quickFixRow(
               'quick_fix_impl_runtime',
               '위임 대상',
               QUICK_FIX_IMPL_RUNTIMES,
-              onValueChange
+              onValueChange,
+              disabled
             )}
             ${quickFixRow(
               'quick_fix_impl_model',
               '모델',
               models,
-              onValueChange
+              onValueChange,
+              disabled
             )}
             ${quickFixRow(
               'quick_fix_impl_effort',
               'effort',
               efforts,
-              onValueChange
+              onValueChange,
+              disabled
             )}
             ${visibility.quick_fix_impl_speed
               ? quickFixRow(
                   'quick_fix_impl_speed',
                   '속도',
                   IMPL_SPEEDS,
-                  onValueChange
+                  onValueChange,
+                  disabled
                 )
               : ''}
           `
@@ -1072,15 +1201,15 @@ export function createBulkWorkerForm({
     holdStateOf,
 
     /**
-     * How many of the 24 applied rows are still standing on a hold, split by
-     * which hold it is — what the footer line counts (§3.2).
+     * How many of this profile's applied rows are still standing on a hold,
+     * split by which hold it is — what the footer line counts (§3.2).
      *
      * @returns {{ mixed: number, pending: number }}
      */
     holdCounts() {
       let mixed = 0;
       let pending = 0;
-      for (const key of BULK_FORM_KEYS) {
+      for (const key of applied_key_list) {
         const hold = holdStateOf(key);
         if (hold === 'mixed') {
           mixed += 1;
@@ -1092,39 +1221,40 @@ export function createBulkWorkerForm({
     },
 
     /**
-     * The sparse 25-key profile a preset save stores — the screen as it
-     * stands, `기본값 사용` rows omitted (§4.1).
+     * The sparse profile a preset save stores, in CANONICAL key names — the
+     * screen as it stands, `기본값 사용` rows omitted (§4.1). A quick_fix save
+     * carries 8 canonical keys, never the prefixed storage names (§3.2).
      *
      * @returns {Record<string, string>}
      */
     presetSettings() {
       /** @type {Record<string, string>} */
       const out = {};
-      for (const key of BULK_FORM_ROW_KEYS) {
+      for (const key of row_keys) {
         const value = storedValue(values[key]);
         if (value !== null) {
-          out[key] = value;
+          out[canonicalKeyOf(key)] = value;
         }
       }
       return out;
     },
 
     /**
-     * The eighteen kv keys, every one present (UI-628r §4.1).
+     * This profile's kv keys, every one present (UI-628r §4.1).
      *
      * @returns {Record<string, string|null>}
      */
     kvValues() {
-      return mapOf(PRESET_KV_KEYS);
+      return mapOf(applied_key_list.filter((key) => !queue_keys.includes(key)));
     },
 
     /**
-     * The six queue keys, every one present (UI-628r §4.1).
+     * This profile's queue keys, every one present (UI-628r §4.1).
      *
      * @returns {Record<string, string|null>}
      */
     queueValues() {
-      return mapOf(BULK_FORM_QUEUE_KEYS);
+      return mapOf(queue_keys);
     },
 
     /**
@@ -1137,8 +1267,9 @@ export function createBulkWorkerForm({
     },
 
     /**
-     * The four groups, in `워커` 탭 order. With no row yet there is no catalog
-     * to draw options from, so the form says so instead of guessing.
+     * This profile's groups, in tab order: three for `워커` and two for
+     * `quick fix`. With no row yet there is no catalog to draw options from,
+     * so the form says so instead of guessing.
      *
      * @param {boolean} [disabled] - `true` while a run is in flight.
      * @returns {TemplateResult}
@@ -1153,10 +1284,13 @@ export function createBulkWorkerForm({
         </p>`;
       }
       const visibility = speedVisibility();
+      if (is_quick_fix) {
+        return html`${quickFixOrchestrationGroup(visibility, disabled)}
+        ${quickFixImplGroup(visibility, disabled)}`;
+      }
       return html`${orchestrationGroup(visibility, disabled)}
       ${implGroup(visibility, disabled)}
-      ${reviewGatesGroup(visibility, disabled)}
-      ${quickFixGroup(visibility, disabled)}`;
+      ${reviewGatesGroup(visibility, disabled)}`;
     }
   };
 }

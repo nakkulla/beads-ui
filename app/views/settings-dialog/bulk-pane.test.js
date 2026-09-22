@@ -450,7 +450,7 @@ describe('createBulkPane targets (UI-nu43 §3.2)', () => {
 });
 
 describe('createBulkPane worker tab (UI-628r §3.2)', () => {
-  test('draws the four execution profile groups', () => {
+  test('draws the three general execution profile groups', () => {
     const { host, pane } = setup();
 
     pane.render('worker');
@@ -459,7 +459,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
       Array.from(host.querySelectorAll('[data-bulk-group]'), (node) =>
         node.getAttribute('data-bulk-group')
       )
-    ).toEqual(['orchestration', 'impl', 'review', 'quick_fix']);
+    ).toEqual(['orchestration', 'impl', 'review']);
   });
 
   test('counts the rows this round writes in the footer', () => {
@@ -468,7 +468,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
     pane.render('worker');
 
     expect(el(host, '[data-bulk-count]').textContent.replace(/\s+/g, ' ')).toBe(
-      '24행을 저장소 2곳에 씁니다'
+      '16행을 저장소 2곳에 씁니다'
     );
   });
 
@@ -1301,6 +1301,201 @@ describe('createBulkPane 적용된 프리셋 (UI-e1ta §4.1)', () => {
     const { host, pane } = setup({ rows: [plain] });
 
     pane.render('worker');
+
+    expect(el(host, '[data-bulk-applied-preset]')).toBe(null);
+  });
+});
+
+describe('createBulkPane quick fix tab (UI-uohc §6.2)', () => {
+  /** One preset per profile, so each bar has exactly one entry to offer. */
+  const BOTH_PRESETS = {
+    revision: 9,
+    presets: [
+      {
+        id: 'p1',
+        name: '위임',
+        compatible: true,
+        applies_to: 'general',
+        settings: { impl_model: 'sol' }
+      },
+      {
+        id: 'q1',
+        name: 'quick fix 기본',
+        compatible: true,
+        applies_to: 'quick_fix',
+        settings: { orchestration_model: 'opus', impl_model: 'sol' }
+      }
+    ]
+  };
+
+  test('draws its own two groups and none of the worker tab rows', () => {
+    const { host, pane } = setup();
+
+    pane.render('quick_fix');
+
+    expect(
+      Array.from(host.querySelectorAll('[data-bulk-group]'), (node) =>
+        node.getAttribute('data-bulk-group')
+      )
+    ).toEqual(['quick_fix_orchestration', 'quick_fix_impl']);
+    expect(el(host, '[data-bulk-key="impl_review_model"]')).toBe(null);
+  });
+
+  test('counts its eight rows in the footer', () => {
+    const { host, pane } = setup();
+
+    pane.render('quick_fix');
+
+    expect(el(host, '[data-bulk-count]').textContent.replace(/\s+/g, ' ')).toBe(
+      '8행을 저장소 2곳에 씁니다'
+    );
+  });
+
+  test('offers only the quick_fix presets in its bar', () => {
+    const { host, pane } = setup({ presets: BOTH_PRESETS });
+
+    pane.render('quick_fix');
+
+    expect(
+      Array.from(host.querySelectorAll('[data-bulk-preset] option'), (node) =>
+        node.textContent?.trim()
+      )
+    ).toEqual(['실행 프리셋…', 'quick fix 기본']);
+  });
+
+  test('offers only the general presets in the worker bar', () => {
+    const { host, pane } = setup({ presets: BOTH_PRESETS });
+
+    pane.render('worker');
+
+    expect(
+      Array.from(host.querySelectorAll('[data-bulk-preset] option'), (node) =>
+        node.textContent?.trim()
+      )
+    ).toEqual(['실행 프리셋…', '위임']);
+  });
+
+  test('marks only its own rows 편집됨 when a preset is chosen', () => {
+    const { host, pane } = setup({ presets: BOTH_PRESETS });
+    pane.render('quick_fix');
+
+    choose(host, '[data-bulk-preset]', 'q1');
+
+    expect(
+      el(host, '[data-bulk-badge="quick_fix_impl_model"]').textContent.trim()
+    ).toBe('편집됨');
+    pane.render('worker');
+    expect(
+      el(host, '[data-bulk-badge="impl_model"]')?.textContent.trim()
+    ).not.toBe('편집됨');
+  });
+
+  test('sends one preset request per repository from its own bar', async () => {
+    const { host, pane, calls } = setup({ presets: BOTH_PRESETS });
+    pane.render('quick_fix');
+
+    choose(host, '[data-bulk-preset]', 'q1');
+    click(host, '[data-bulk-apply="quick_fix"]');
+    await settle();
+
+    expect(payloadsOf(calls, 'apply-impl-preset-global')).toEqual([
+      {
+        preset_id: 'q1',
+        expected_revision: 9,
+        expected_queue_revision: 1,
+        root_dir: WS_A
+      },
+      {
+        preset_id: 'q1',
+        expected_revision: 9,
+        expected_queue_revision: 5,
+        root_dir: WS_B
+      }
+    ]);
+  });
+
+  test('writes only the quick_fix kv keys once a row is edited', async () => {
+    const { host, pane, calls } = setup({ rows: [row()] });
+    pane.render('quick_fix');
+
+    choose(host, '[data-bulk-key="quick_fix_impl_dispatch"]', 'delegated');
+    click(host, '[data-bulk-apply="quick_fix"]');
+    await settle();
+
+    const values = payloadsOf(calls, 'set-session-defaults')[0].values;
+    expect(values.quick_fix_impl_dispatch).toBe('delegated');
+    expect(
+      Object.keys(values).every((key) => key.startsWith('quick_fix_impl_'))
+    ).toBe(true);
+  });
+
+  test('leaves a 갈림 row out of its kv payload', async () => {
+    const { host, pane, calls } = setup({
+      rows: [
+        row({ session_defaults: { quick_fix_impl_model: 'sol' } }),
+        row({
+          root_dir: WS_B,
+          name: 'repo-b',
+          revision: 5,
+          session_defaults: { quick_fix_impl_model: 'opus' }
+        })
+      ]
+    });
+    pane.render('quick_fix');
+
+    choose(host, '[data-bulk-key="quick_fix_impl_dispatch"]', 'delegated');
+    click(host, '[data-bulk-apply="quick_fix"]');
+    await settle();
+
+    const values = payloadsOf(calls, 'set-session-defaults')[0].values;
+    expect(Object.hasOwn(values, 'quick_fix_impl_model')).toBe(false);
+  });
+
+  test('narrows the selection to its failed repositories on retry', async () => {
+    const { host, pane } = setup({
+      presets: BOTH_PRESETS,
+      transport: async (type, payload) =>
+        type === 'apply-impl-preset-global' && payload.root_dir === WS_B
+          ? { ...OK, applied: false, queue_applied: false }
+          : OK
+    });
+    pane.render('quick_fix');
+    choose(host, '[data-bulk-preset]', 'q1');
+    click(host, '[data-bulk-apply="quick_fix"]');
+    await settle();
+
+    click(host, '[data-bulk-retry="quick_fix"]');
+
+    expect(el(host, `[data-bulk-repo="${WS_A}"]`).checked).toBe(false);
+    expect(el(host, `[data-bulk-repo="${WS_B}"]`).checked).toBe(true);
+  });
+
+  test('names its own apply record rather than the general one', () => {
+    const rows = [
+      row({
+        applied_exec_preset: { id: 'p1' },
+        applied_quick_fix_preset: { id: 'q1' }
+      }),
+      row({
+        root_dir: WS_B,
+        name: 'repo-b',
+        applied_exec_preset: { id: 'p1' },
+        applied_quick_fix_preset: { id: 'q1' }
+      })
+    ];
+    const { host, pane } = setup({ rows, presets: BOTH_PRESETS });
+
+    pane.render('quick_fix');
+
+    expect(
+      el(host, '[data-bulk-applied-preset-value]').textContent.trim()
+    ).toBe('quick fix 기본');
+  });
+
+  test('draws no apply record line while the projection omits the field', () => {
+    const { host, pane } = setup();
+
+    pane.render('quick_fix');
 
     expect(el(host, '[data-bulk-applied-preset]')).toBe(null);
   });

@@ -12,9 +12,12 @@
  * stays out of the apply until the user touches it. A row that DOES stand on a
  * value is written untouched, which is UI-628r's contract unchanged.
  *
- * - `워커` is the 25-row execution profile form (`bulk-worker-form.js`) with its
- *   own preset bar; a preset fills it and the apply takes one of two paths
- *   (`bulk-preset-apply.js`).
+ * - `워커` is the 17-row general execution profile form (`bulk-worker-form.js`)
+ *   with its own preset bar; a preset fills it and the apply takes one of two
+ *   paths (`bulk-preset-apply.js`).
+ * - `quick fix` is the same form over the 8-row quick_fix profile, with its own
+ *   preset bar and its own apply record; choosing a preset there edits that
+ *   tab's rows alone (UI-uohc §6.2).
  * - `세션` is the three interactive-session rows, written per repo with
  *   `set-session-defaults` (§5).
  * - `계정` is the execution accounts and limit policy form, applied whole
@@ -57,11 +60,11 @@ import {
   observeSet
 } from './bulk-observation.js';
 import {
-  BULK_FORM_KEYS,
-  BULK_FORM_ROW_KEYS,
+  bulkFormKeysFor,
+  bulkFormRowKeysFor,
   createBulkWorkerForm
 } from './bulk-worker-form.js';
-import { WORKFLOW_MODES } from './session-model.js';
+import { WORKFLOW_MODES, normalizeAppliesTo } from './session-model.js';
 
 /** Select value for `기본값 사용` (sent as `null`). */
 const USE_DEFAULT = '__bulk_use_default__';
@@ -76,8 +79,22 @@ const HOLD_LABEL = { mixed: '갈림 — 유지', pending: '미확인 — 유지'
 /** The one-line contract every tab carries under `적용 대상` (§3.2). */
 const APPLY_BANNER =
   '화면에 값이 선 행은 손대지 않아도 그대로 쓰입니다 — 갈림·미확인으로 남은 행만 저장소별 현재 값을 유지합니다.';
-/** Hint next to the preset select (§4.1). */
-const PRESET_HINT = `고르면 아래 ${BULK_FORM_ROW_KEYS.length}행이 그 프리셋 값으로 채워집니다`;
+/**
+ * Hint next to one tab's preset select (§4.1). The count is that tab's own row
+ * count — a preset fills the tab it was chosen on and nothing else (§6.2).
+ *
+ * @param {'general'|'quick_fix'} profile
+ * @returns {string}
+ */
+function presetHintFor(profile) {
+  return `고르면 아래 ${bulkFormRowKeysFor(profile).length}행이 그 프리셋 값으로 채워집니다`;
+}
+
+/** The preset profile each bulk tab edits (§6.2). */
+const SECTION_PROFILE = Object.freeze({
+  worker: 'general',
+  quick_fix: 'quick_fix'
+});
 /** Copy for a runner whose account list could not be read. */
 const CATALOG_MISSING = '계정 목록을 불러올 수 없습니다';
 /** What the read-only `적용된 프리셋` line says for an id nothing names (§4.1). */
@@ -170,7 +187,7 @@ function freshRunnerForm() {
  * @param {BulkPaneOptions} options
  */
 export function createBulkPane(host, options) {
-  /** @type {'worker'|'session'|'account'} */
+  /** @type {'worker'|'quick_fix'|'session'|'account'} */
   let section = 'worker';
   let destroyed = false;
 
@@ -183,16 +200,35 @@ export function createBulkPane(host, options) {
   /** The default selection is taken once, from the first non-empty rows. */
   let selection_seeded = false;
 
-  let preset_choice = '';
-  /** The preset name box, written on every keystroke like the single window. */
-  let preset_name_draft = '';
-  /** The last preset save/delete refusal, shown beside the bar (§9). */
-  /** @type {string} */
-  let preset_error = '';
+  /**
+   * The selected preset PER PROFILE tab: the two bars list different presets,
+   * so one selection must not travel to the other tab (§6.2).
+   *
+   * @type {Record<string, string>}
+   */
+  const preset_choice = { worker: '', quick_fix: '' };
+  /**
+   * The preset name box of each tab, written on every keystroke like the
+   * single window.
+   *
+   * @type {Record<string, string>}
+   */
+  const preset_name_draft = { worker: '', quick_fix: '' };
+  /**
+   * The last preset save/delete refusal of each tab, shown beside its bar (§9).
+   *
+   * @type {Record<string, string>}
+   */
+  const preset_error = { worker: '', quick_fix: '' };
 
-  /** @type {{ worker: BulkResult[]|null, session: BulkResult[]|null, account: BulkResult[]|null }} */
-  let results = { worker: null, session: null, account: null };
-  /** @type {{ section: 'worker'|'session'|'account', done: number, total: number }|null} */
+  /** @type {{ worker: BulkResult[]|null, quick_fix: BulkResult[]|null, session: BulkResult[]|null, account: BulkResult[]|null }} */
+  let results = {
+    worker: null,
+    quick_fix: null,
+    session: null,
+    account: null
+  };
+  /** @type {{ section: 'worker'|'quick_fix'|'session'|'account', done: number, total: number }|null} */
   let running = null;
   let run_token = 0;
 
@@ -243,19 +279,48 @@ export function createBulkPane(host, options) {
   }
 
   /**
-   * The 24-key form. Its catalog comes from the first SELECTED repo; with
-   * nothing ticked the visible rows still name one server's catalog, so the
-   * form keeps drawing instead of blanking (UI-628r §4.1).
+   * The rows both profile forms read their catalog from: the SELECTED repos,
+   * or every visible one while nothing is ticked, so the form keeps drawing
+   * instead of blanking (UI-628r §4.1).
+   *
+   * @returns {Array<Record<string, any>>}
    */
+  function formRows() {
+    const chosen = selectedRows();
+    return chosen.length > 0 ? chosen : mergedRows();
+  }
+
+  /** The `워커` tab's 17-row form (§6.2). */
   const worker_form = createBulkWorkerForm({
-    rows: () => {
-      const chosen = selectedRows();
-      return chosen.length > 0 ? chosen : mergedRows();
-    },
+    rows: formRows,
+    profile: 'general',
     // 관측은 고른 저장소만 본다 — 안 고른 저장소의 값은 이 회차의 사실이 아니다.
     selectedRows: () => selectedRows(),
     onChange: () => doRender()
   });
+
+  /**
+   * The `quick fix` tab's 8-row form. Its labels resolve against the `워커`
+   * tab's screen values, which is what makes an empty quick_fix row name the
+   * general row it falls through to (§6.2).
+   */
+  const quick_fix_form = createBulkWorkerForm({
+    rows: formRows,
+    profile: 'quick_fix',
+    selectedRows: () => selectedRows(),
+    resolutionValues: () => worker_form.values(),
+    onChange: () => doRender()
+  });
+
+  /**
+   * The form of one profile tab.
+   *
+   * @param {'worker'|'quick_fix'} tab
+   * @returns {ReturnType<typeof createBulkWorkerForm>}
+   */
+  function formOf(tab) {
+    return tab === 'quick_fix' ? quick_fix_form : worker_form;
+  }
 
   /**
    * Observe one account-layer key across the ticked repos (§6).
@@ -370,6 +435,7 @@ export function createBulkPane(host, options) {
       return;
     }
     worker_form.observe(false);
+    quick_fix_form.observe(false);
     for (const [key] of ACCOUNT_FIELDS) {
       if (edited.has(key)) {
         continue;
@@ -441,16 +507,33 @@ export function createBulkPane(host, options) {
       : null;
   }
 
-  /** @returns {Record<string, any>|null} */
-  function chosenPreset() {
+  /**
+   * One tab's presets — the store list narrowed to that tab's profile. A
+   * preset stored before `applies_to` existed reads as `general` (§3.1).
+   *
+   * @param {'worker'|'quick_fix'} tab
+   * @returns {Array<Record<string, any>>}
+   */
+  function presetsOf(tab) {
     const state = presetState();
-    if (!state || preset_choice === '') {
+    const profile = SECTION_PROFILE[tab];
+    return (state?.presets || []).filter(
+      (preset) => preset && normalizeAppliesTo(preset.applies_to) === profile
+    );
+  }
+
+  /**
+   * The preset one tab has selected, looked up inside that tab's own list.
+   *
+   * @param {'worker'|'quick_fix'} tab
+   * @returns {Record<string, any>|null}
+   */
+  function chosenPreset(tab) {
+    const id = preset_choice[tab];
+    if (id === '') {
       return null;
     }
-    return (
-      state.presets.find((preset) => preset && preset.id === preset_choice) ||
-      null
-    );
+    return presetsOf(tab).find((preset) => preset.id === id) || null;
   }
 
   /**
@@ -523,19 +606,25 @@ export function createBulkPane(host, options) {
     );
   }
 
-  /** @returns {import('../monitor/bulk-preset-apply.js').BulkPlan} */
-  function presetPlan() {
-    const preset = chosenPreset();
+  /**
+   * One profile tab's plan. Only that tab's form and selection feed it, so a
+   * preset chosen on the other tab makes no targets here (§6.2).
+   *
+   * @param {'worker'|'quick_fix'} tab
+   * @returns {import('../monitor/bulk-preset-apply.js').BulkPlan}
+   */
+  function presetPlan(tab) {
+    const preset = chosenPreset(tab);
+    const form = formOf(tab);
     return planBulkApply({
       rows: mergedRows(),
       selected_roots: selected,
       preset_state: presetState(),
-      preset_id: preset_choice,
+      preset_id: preset ? preset_choice[tab] : '',
       form: {
-        kv_values: worker_form.kvValues(),
-        queue_values: worker_form.queueValues(),
-        equals_preset:
-          preset !== null && worker_form.equalsPreset(preset.settings)
+        kv_values: form.kvValues(),
+        queue_values: form.queueValues(),
+        equals_preset: preset !== null && form.equalsPreset(preset.settings)
       },
       running: running !== null
     });
@@ -676,12 +765,12 @@ export function createBulkPane(host, options) {
   /**
    * The plan of one tab.
    *
-   * @param {'worker'|'session'|'account'} run_section
+   * @param {'worker'|'quick_fix'|'session'|'account'} run_section
    * @returns {{ targets: Array<any>, disabled_reason: string|null }}
    */
   function planOf(run_section) {
-    if (run_section === 'worker') {
-      return presetPlan();
+    if (run_section === 'worker' || run_section === 'quick_fix') {
+      return presetPlan(run_section);
     }
     return run_section === 'session' ? sessionPlan() : accountPlan();
   }
@@ -689,7 +778,7 @@ export function createBulkPane(host, options) {
   /**
    * Run the active tab's plan.
    *
-   * @param {'worker'|'session'|'account'} run_section
+   * @param {'worker'|'quick_fix'|'session'|'account'} run_section
    */
   async function startRun(run_section) {
     const plan = planOf(run_section);
@@ -727,7 +816,7 @@ export function createBulkPane(host, options) {
     };
     /** @type {BulkResult[]} */
     let outcome;
-    if (run_section === 'worker') {
+    if (run_section === 'worker' || run_section === 'quick_fix') {
       outcome = await runBulkApply(input);
     } else if (run_section === 'session') {
       outcome = await runBulkSessionApply({
@@ -877,7 +966,7 @@ export function createBulkPane(host, options) {
   }
 
   /**
-   * @param {'worker'|'session'|'account'} run_section
+   * @param {'worker'|'quick_fix'|'session'|'account'} run_section
    * @param {{ targets: unknown[], disabled_reason: string|null }} plan
    * @returns {TemplateResult}
    */
@@ -929,105 +1018,121 @@ export function createBulkPane(host, options) {
   }
 
   /**
-   * The preset select fills the form and nothing else: the apply path is
-   * decided later by comparing the form against it (§2.2).
+   * The preset select fills THIS TAB's form and nothing else: the apply path
+   * is decided later by comparing that form against it (§2.2), and the other
+   * tab's rows keep their own observations (§6.2).
    *
+   * @param {'worker'|'quick_fix'} tab
    * @param {string} id
    */
-  function onPresetChoice(id) {
-    preset_choice = id;
-    const preset = chosenPreset();
+  function onPresetChoice(tab, id) {
+    preset_choice[tab] = id;
+    const preset = chosenPreset(tab);
     if (preset) {
-      worker_form.applyPreset(preset.settings);
+      formOf(tab).applyPreset(preset.settings);
       return;
     }
     doRender();
   }
 
   /**
-   * Save the screen's 25 rows as a preset: create when nothing is selected,
-   * overwrite the selected one otherwise. Same three ops and the same
-   * `expected_revision` race judgement as the single-repo window (§4.1).
+   * Save this tab's rows as a preset OF THIS TAB'S PROFILE: create when
+   * nothing is selected, overwrite the selected one otherwise. Same three ops
+   * and the same `expected_revision` race judgement as the single-repo window
+   * (§4.1).
+   *
+   * @param {'worker'|'quick_fix'} tab
    */
-  async function onSavePreset() {
+  async function onSavePreset(tab) {
     const state = presetState();
     if (!state) {
       return;
     }
-    const settings = worker_form.presetSettings();
-    const selected = (state.presets || []).find(
-      (/** @type {any} */ preset) => preset.id === preset_choice
-    );
-    const name = preset_name_draft.trim() || (selected ? selected.name : '');
+    const profile = SECTION_PROFILE[tab];
+    const settings = formOf(tab).presetSettings();
+    const chosen = chosenPreset(tab);
+    const name = preset_name_draft[tab].trim() || (chosen ? chosen.name : '');
     if (!name) {
       return;
     }
     try {
-      const res = selected
+      const res = chosen
         ? await options.transport('impl-preset-update', {
             expected_revision: state.revision,
-            id: selected.id,
+            id: chosen.id,
             name,
             settings
           })
         : await options.transport('impl-preset-create', {
             expected_revision: state.revision,
             name,
+            applies_to: profile,
             settings
           });
       if (isRecord(res) && res.applied === true) {
-        preset_name_draft = '';
-        if (!selected && Array.isArray(res.presets)) {
+        preset_name_draft[tab] = '';
+        if (!chosen && Array.isArray(res.presets)) {
           const created = res.presets.find(
-            (/** @type {any} */ preset) => preset && preset.name === name
+            (/** @type {any} */ preset) =>
+              preset &&
+              preset.name === name &&
+              normalizeAppliesTo(preset.applies_to) === profile
           );
-          preset_choice = created ? created.id : preset_choice;
+          preset_choice[tab] = created ? created.id : preset_choice[tab];
         }
       } else {
-        preset_error = '프리셋 저장 실패: 다른 곳에서 방금 변경되었습니다';
+        preset_error[tab] = '프리셋 저장 실패: 다른 곳에서 방금 변경되었습니다';
       }
     } catch (err) {
-      preset_error = `프리셋 저장 실패: ${messageOf(err)}`;
-    }
-    doRender();
-  }
-
-  /** Delete the selected preset; nothing else is touched (§4.1). */
-  async function onDeletePreset() {
-    const state = presetState();
-    if (!state || preset_choice.length === 0) {
-      return;
-    }
-    try {
-      const res = await options.transport('impl-preset-delete', {
-        expected_revision: state.revision,
-        id: preset_choice
-      });
-      if (isRecord(res) && res.applied === true) {
-        preset_choice = '';
-      } else {
-        preset_error = '프리셋 삭제 실패: 다른 곳에서 방금 변경되었습니다';
-      }
-    } catch (err) {
-      preset_error = `프리셋 삭제 실패: ${messageOf(err)}`;
+      preset_error[tab] = `프리셋 저장 실패: ${messageOf(err)}`;
     }
     doRender();
   }
 
   /**
-   * The read-only `적용된 프리셋` line (§4.1). The record's identity is its
-   * `id`, and the NAME is looked up in the preset list the window already
-   * holds — the stored `name` is a copy from apply time and lies after a
-   * rename. An id nothing names is `삭제된 프리셋`, never an invented name.
+   * Delete this tab's selected preset; nothing else is touched (§4.1).
    *
+   * @param {'worker'|'quick_fix'} tab
+   */
+  async function onDeletePreset(tab) {
+    const state = presetState();
+    const chosen = chosenPreset(tab);
+    if (!state || !chosen) {
+      return;
+    }
+    try {
+      const res = await options.transport('impl-preset-delete', {
+        expected_revision: state.revision,
+        id: chosen.id
+      });
+      if (isRecord(res) && res.applied === true) {
+        preset_choice[tab] = '';
+      } else {
+        preset_error[tab] = '프리셋 삭제 실패: 다른 곳에서 방금 변경되었습니다';
+      }
+    } catch (err) {
+      preset_error[tab] = `프리셋 삭제 실패: ${messageOf(err)}`;
+    }
+    doRender();
+  }
+
+  /**
+   * The read-only `적용된 프리셋` line of ONE tab (§4.1): each tab reads its
+   * own profile's record, and the two are independent. The record's identity
+   * is its `id`, and the NAME is looked up in the preset list the window
+   * already holds — the stored `name` is a copy from apply time and lies after
+   * a rename. An id nothing names is `삭제된 프리셋`, never an invented name.
+   *
+   * @param {'worker'|'quick_fix'} tab
    * @returns {TemplateResult|''}
    */
-  function appliedPresetTemplate() {
+  function appliedPresetTemplate(tab) {
     const chosen = selectedRows();
-    if (!appliedPresetProjected(chosen)) {
+    const profile = SECTION_PROFILE[tab];
+    if (!appliedPresetProjected(chosen, profile)) {
       return '';
     }
-    const observation = observeAppliedPreset(chosen);
+    const observation = observeAppliedPreset(chosen, profile);
     const presets = presetState()?.presets || [];
     /** @param {string|null} id */
     const nameOf = (id) => {
@@ -1060,19 +1165,31 @@ export function createBulkPane(host, options) {
     </div>`;
   }
 
-  /** @returns {TemplateResult} */
-  function presetBarTemplate() {
-    const state = presetState();
-    const holds = worker_form.holdCounts();
+  /**
+   * One tab's preset bar. The list is that tab's profile alone, so neither bar
+   * ever offers the other's presets (§6.2).
+   *
+   * @param {'worker'|'quick_fix'} tab
+   * @returns {TemplateResult}
+   */
+  function presetBarTemplate(tab) {
+    const profile = SECTION_PROFILE[tab];
+    const form = formOf(tab);
+    const presets = presetsOf(tab);
+    const chosen_id = preset_choice[tab];
+    const chosen = chosenPreset(tab);
+    const row_count = bulkFormRowKeysFor(profile).length;
+    const holds = form.holdCounts();
     const unsettled = holds.mixed + holds.pending;
     const save_title =
       unsettled > 0
         ? `값이 서지 않은 ${unsettled}행을 먼저 정하세요`
-        : preset_choice
-          ? '현재 화면의 25행을 이 프리셋에 저장합니다'
-          : '현재 화면의 25행을 새 프리셋으로 저장합니다';
+        : chosen
+          ? `현재 화면의 ${row_count}행을 이 프리셋에 저장합니다`
+          : `현재 화면의 ${row_count}행을 새 프리셋으로 저장합니다`;
     return html`<div
       class="settings-dialog__bulk-hd settings-dialog__preset-bar"
+      data-bulk-preset-bar=${profile}
     >
       <select
         class="settings-dialog__bulk-preset"
@@ -1081,15 +1198,16 @@ export function createBulkPane(host, options) {
         ?disabled=${running !== null}
         @change=${(/** @type {Event} */ ev) =>
           onPresetChoice(
+            tab,
             String(/** @type {HTMLSelectElement} */ (ev.target).value)
           )}
       >
-        <option value="" ?selected=${preset_choice === ''}>실행 프리셋…</option>
-        ${(state?.presets || []).map(
+        <option value="" ?selected=${chosen_id === ''}>실행 프리셋…</option>
+        ${presets.map(
           (preset) =>
             html`<option
               value=${preset.id}
-              ?selected=${preset.id === preset_choice}
+              ?selected=${preset.id === chosen_id}
               ?disabled=${preset.compatible === false}
               title=${preset.compatible === false
                 ? preset.incompatibility_reason || ''
@@ -1104,11 +1222,11 @@ export function createBulkPane(host, options) {
         class="settings-dialog__preset-name"
         aria-label="프리셋 이름"
         data-bulk-preset-name
-        placeholder=${preset_choice ? '이름 (비우면 유지)' : '새 프리셋 이름'}
-        .value=${live(preset_name_draft)}
+        placeholder=${chosen ? '이름 (비우면 유지)' : '새 프리셋 이름'}
+        .value=${live(preset_name_draft[tab])}
         ?disabled=${running !== null}
         @input=${(/** @type {Event} */ ev) => {
-          preset_name_draft = String(
+          preset_name_draft[tab] = String(
             /** @type {HTMLInputElement} */ (ev.target).value
           );
         }}
@@ -1119,25 +1237,25 @@ export function createBulkPane(host, options) {
         data-bulk-preset-save
         title=${save_title}
         ?disabled=${running !== null || unsettled > 0}
-        @click=${() => void onSavePreset()}
+        @click=${() => void onSavePreset(tab)}
       >
-        ${preset_choice ? '현재 설정으로 덮어쓰기' : '새 프리셋 저장'}
+        ${chosen ? '현재 설정으로 덮어쓰기' : '새 프리셋 저장'}
       </button>
       <button
         type="button"
         class="op-btn"
         data-bulk-preset-delete
-        ?disabled=${running !== null || preset_choice.length === 0}
-        @click=${() => void onDeletePreset()}
+        ?disabled=${running !== null || chosen === null}
+        @click=${() => void onDeletePreset(tab)}
       >
         삭제
       </button>
       <span class="settings-dialog__hint" data-bulk-preset-hint
-        >${PRESET_HINT}</span
+        >${presetHintFor(profile)}</span
       >
-      ${preset_error
+      ${preset_error[tab]
         ? html`<span class="settings-dialog__bulk-reason" data-bulk-preset-error
-            >${preset_error}</span
+            >${preset_error[tab]}</span
           >`
         : ''}
     </div>`;
@@ -1166,17 +1284,27 @@ export function createBulkPane(host, options) {
       : `${applied}행을 저장소 ${repos}곳에 씁니다`;
   }
 
-  /** @returns {TemplateResult} */
-  function workerTemplate() {
-    const plan = presetPlan();
-    const holds = worker_form.holdCounts();
-    return html`${presetBarTemplate()} ${appliedPresetTemplate()}
-      ${worker_form.template(running !== null)}
+  /**
+   * One profile tab: its preset bar, its read-only apply record, its rows and
+   * its own footer count and apply button (§6.2).
+   *
+   * @param {'worker'|'quick_fix'} tab
+   * @returns {TemplateResult}
+   */
+  function profileTemplate(tab) {
+    const form = formOf(tab);
+    const plan = presetPlan(tab);
+    const holds = form.holdCounts();
+    return html`${presetBarTemplate(tab)} ${appliedPresetTemplate(tab)}
+      ${form.template(running !== null)}
       <div class="settings-dialog__bulk-hd settings-dialog__bulk-foot">
         <span class="settings-dialog__bulk-count" data-bulk-count
-          >${footerCount(BULK_FORM_KEYS.length, holds)}</span
+          >${footerCount(
+            bulkFormKeysFor(SECTION_PROFILE[tab]).length,
+            holds
+          )}</span
         >
-        ${applyButtonTemplate('worker', plan)}
+        ${applyButtonTemplate(tab, plan)}
       </div>`;
   }
 
@@ -1659,8 +1787,8 @@ export function createBulkPane(host, options) {
 
   /** @returns {TemplateResult} */
   function sectionTemplate() {
-    if (section === 'worker') {
-      return workerTemplate();
+    if (section === 'worker' || section === 'quick_fix') {
+      return profileTemplate(section);
     }
     return section === 'session' ? sessionTemplate() : accountTemplate();
   }
@@ -1696,14 +1824,17 @@ export function createBulkPane(host, options) {
 
   return {
     /**
-     * Draw one tab. Switching to the other tab stops a run in flight; called
+     * Draw one tab. Switching to another tab stops a run in flight; called
      * with nothing it redraws the tab on screen.
      *
-     * @param {'worker'|'session'|'account'} [next]
+     * @param {'worker'|'quick_fix'|'session'|'account'} [next]
      */
     render(next) {
       if (
-        (next === 'worker' || next === 'session' || next === 'account') &&
+        (next === 'worker' ||
+          next === 'quick_fix' ||
+          next === 'session' ||
+          next === 'account') &&
         next !== section
       ) {
         if (running !== null) {
