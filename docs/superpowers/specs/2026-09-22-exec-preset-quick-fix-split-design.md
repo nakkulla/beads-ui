@@ -194,7 +194,7 @@ quick fix        작업 진행     모델  사고 깊이  (속도)
 ## 구현 unit 후보
 
 - `preset-profile-contract`: `server/worker/exec-enums.js`, `server/exec-preset-store.js` — 계열 필드·키 집합·enum·검증·마이그레이션.
-- `apply-paths`: `server/worker/exec-preset-coordinator.js`, `server/worker/queue-store.js`, `server/ws/exec-preset-handlers.js` — 전역·이슈 적용과 두 기록, 어긋남 계산.
+- `apply-paths`: `server/worker/exec-preset-coordinator.js`, `server/worker/queue-store.js`, `server/ws/exec-preset-handlers.js`, `server/ws/session-defaults-handlers.js`, `server/ws/worker-handlers.js`, `server/ws/monitor-handlers.js` — 전역·이슈 적용, 두 기록의 투영과 계열별 해제, 어긋남 계산.
 - `settings-tabs`: `app/views/settings-dialog/` — 네 탭, 두 프리셋 바, 일괄 관측.
 - `consumers`: `app/views/detail-panel/`, `app/views/monitor/`, `server/worker/compare-projection.js`, `server/worker/bench-runs.js` — 드롭다운 필터, 모니터 투영, 비교·실험.
 
@@ -203,7 +203,7 @@ quick fix        작업 진행     모델  사고 깊이  (속도)
 - 전제: ADR 0012 — 키 어휘·허용 값·`impl_dispatch`의 전역 쓰기 금지는 dotfiles 계약을 읽어 따르고 새 어휘를 만들지 않는다.
 - 전제: ADR UI-wecw — 세션 기본값 어휘·검증의 dotfiles 소유권(0013 승계)을 그대로 따르고 프리셋이 무엇을 교체하는지만 바꾼다.
 - 전제: ADR 0014 — 새 컨트롤은 설정 다이얼로그와 이슈 상세에만 두고 워커·모니터 카드의 슬롯은 바꾸지 않는다.
-- 실행 프리셋을 `applies_to`로 가르고 계열이 적용 대상과 이슈 route를 정하는 것: 되돌림 비용 있음(영속 형식·마이그레이션·두 적용 경로·두 기록·비교 소비자), 배경 없이 의외임(한 목록에 두 계열), 실재 대안 있음(키만 제거, 별도 파일). `summary`: "실행 프리셋은 applies_to로 일반·quick fix 두 계열로 갈리고 settings는 canonical 키만 담으며, 계열이 저장소 적용의 키 집합과 이슈 route 일치를 정해 다른 계열의 값은 보존된다 — 이슈 적용의 25키 프로파일과 quick fix 역매핑을 대체하고 id 하나 정체성·대칭 비교는 승계한다" → ADR, supersede UI-xq3h
+- 실행 프리셋을 `applies_to`로 가르고 계열이 적용 대상과 이슈 route를 정하는 것: 되돌림 비용 있음(영속 형식·마이그레이션·두 적용 경로·두 기록·비교 소비자), 배경 없이 의외임(한 목록에 두 계열), 실재 대안 있음(키만 제거, 별도 파일). `summary`: "실행 프리셋은 applies_to로 일반·quick fix 두 계열로 갈리고 settings는 canonical 키만 담으며, 계열이 저장소 적용의 키 집합과 이슈 route 일치를 정해 다른 계열의 값은 보존된다 — 25키 프로파일과 접두어 역매핑을 대체하되 모델에서의 런타임 유도·id 하나 정체성·대칭 비교는 승계한다" → ADR, supersede UI-xq3h
 - 설정 창이 네 탭이고 quick fix 탭이 자기 프리셋 바를 갖는 것: 되돌림 비용 있음(일괄 창의 탭 고정·관측 상태 기계·프리셋 관리 호출 지점이 UI-e1ta에 함께 묶여 있어 탭 수 변경이 셋을 같이 건드린다), 배경 없이 의외임(같은 창의 두 프리셋 바가 서로 다른 목록을 담고 한쪽 선택이 다른 탭의 행을 건드리지 않는다 — UI-e1ta의 "프리셋을 고르면 25행 전부가 편집됨"과 정반대다), 실재 대안 있음(한 탭에 두고 프리셋 밖임을 표시만 하는 안). `summary`: "설정 창은 워커·quick fix·세션·계정 네 탭이고 quick fix 탭이 자기 계열의 프리셋 바와 8행을 가지며 프리셋 선택은 그 탭의 행만 편집됨으로 바꾼다 — 세 탭과 25행 일괄 편집만 UI-e1ta에서 뒤집고 관측 네 상태·순차 op·레포 카드의 같은 다이얼로그는 승계한다" → ADR, supersede UI-e1ta
 
 ## 경계·후속
