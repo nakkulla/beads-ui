@@ -74,8 +74,11 @@ export function chipPresetBinding(
   }
   const meta = metadata && typeof metadata === 'object' ? metadata : null;
   const state = stateOf(chip, meta, preset, preset_id, route, ctx, root_dir);
-  const action =
-    state === 'applied' || state === 'diverged' ? 'restore' : 'apply';
+  // 클릭이 적용인지 복원인지는 **정체성 두 키의 일치**가 정한다 (§4.1 표) —
+  // `data-state`가 아니라. 어긋남 계산이 아직 불가능한 동안(카탈로그 미도착)
+  // 상태는 비지만 서버의 판정은 이미 정해져 있으므로, 툴팁이 "적용"을 말하고
+  // 서버가 복원하는 어긋남이 생기지 않게 같은 재료로 답한다.
+  const action = identityMatches(chip, meta, preset_id) ? 'restore' : 'apply';
   const preset_name = typeof preset.name === 'string' ? preset.name : preset_id;
   return {
     preset_id,
@@ -88,6 +91,25 @@ export function chipPresetBinding(
         : ` · 클릭: ${preset_name} 적용`,
     busy: ctx.isBusy ? ctx.isBusy(bead_id, chip) === true : false
   };
+}
+
+/**
+ * Whether this chip owns the pins standing on the issue: the chip that wrote
+ * them and the preset they came from both match (§4.1). This is the server's
+ * own restore condition, so the click hint never promises the opposite of what
+ * the write will do.
+ *
+ * @param {string} chip
+ * @param {Record<string, any>|null} metadata
+ * @param {string} preset_id
+ * @returns {boolean}
+ */
+function identityMatches(chip, metadata, preset_id) {
+  return (
+    !!metadata &&
+    metadata[CHIP_PRESET_SOURCE_KEY] === chip &&
+    metadata[APPLIED_EXEC_PRESET_KEY] === preset_id
+  );
 }
 
 /**
@@ -107,10 +129,7 @@ function stateOf(chip, metadata, preset, preset_id, route, ctx, root_dir) {
   if (!metadata) {
     return '';
   }
-  if (
-    metadata[CHIP_PRESET_SOURCE_KEY] !== chip ||
-    metadata[APPLIED_EXEC_PRESET_KEY] !== preset_id
-  ) {
+  if (!identityMatches(chip, metadata, preset_id)) {
     return 'unapplied';
   }
   const catalog = ctx.catalogOf ? ctx.catalogOf(root_dir) : null;

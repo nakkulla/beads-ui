@@ -505,6 +505,8 @@ export function createMonitorView(mount_element, options) {
 
   /** @type {null | (() => void)} */
   let unsubscribe_pipeline = null;
+  /** @type {(() => void)|null} */
+  let unsubscribe_presets = null;
   /** @type {any} */
   let tick_timer = null;
   /** @type {ReturnType<typeof createRepoDeck>|null} */
@@ -1245,9 +1247,20 @@ export function createMonitorView(mount_element, options) {
             runningTile(
               {
                 bead_id: item.id,
+                // 판정 칩은 bead 식별자를 `id`에서 읽는다 (UI-wg68 §5.3): 바인딩된
+                // 칩이 싣는 `data-bead-id`·`data-root-dir`가 클릭의 유일한 재료라
+                // `bead_id`만 실으면 모니터 타일의 칩이 빈 id로 그려진다.
+                id: item.id,
                 root_dir: item.root_dir,
                 attempt_id: item.attempt_id || '',
                 title: item.title,
+                // 판정 칩 3종의 재료 (UI-wg68 §5.4, ADR 0014): Worker 타일은
+                // 레인 항목을 통째로 펼쳐 이미 싣는다. 여기서 빠뜨리면 같은
+                // 렌더러가 모니터에서만 칩 없는 타일을 그린다.
+                labels: item.labels,
+                complex_reason: item.complex_reason,
+                chip_metadata: item.chip_metadata,
+                route: item.route,
                 runner: item.runner ?? null,
                 model: item.model ?? null,
                 effort: item.effort ?? null,
@@ -2732,6 +2745,22 @@ export function createMonitorView(mount_element, options) {
     });
   }
 
+  // 같은 이유로 모니터도 프리셋 스냅샷을 구독한다 (UI-wg68 §3.1) — 파이프라인
+  // 스냅샷과 다른 채널이므로 이것 없이는 바인딩 변경이 다음 파이프라인 푸시까지
+  // 보이지 않는다.
+  if (
+    options.execPresetStore &&
+    typeof options.execPresetStore.subscribe === 'function'
+  ) {
+    unsubscribe_presets = options.execPresetStore.subscribe(() => {
+      try {
+        doRender();
+      } catch {
+        // ignore
+      }
+    });
+  }
+
   function stopTick() {
     if (tick_timer !== null) {
       clearInterval(tick_timer);
@@ -2762,6 +2791,10 @@ export function createMonitorView(mount_element, options) {
       if (unsubscribe_pipeline) {
         unsubscribe_pipeline();
         unsubscribe_pipeline = null;
+      }
+      if (unsubscribe_presets) {
+        unsubscribe_presets();
+        unsubscribe_presets = null;
       }
       if (unsubscribe_viewport) {
         unsubscribe_viewport();

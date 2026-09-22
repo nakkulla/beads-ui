@@ -126,6 +126,67 @@ describe('chipPresetBinding (UI-wg68 §5.1)', () => {
     expect(binding?.state).toBe('');
   });
 
+  test('offers a restore while the deviation is still undecidable', () => {
+    const model_only = {
+      id: 'p1',
+      name: '모델만',
+      applies_to: 'general',
+      settings: { impl_model: 'opus' }
+    };
+    const metadata = {
+      chip_preset_source: 'complex',
+      applied_exec_preset: 'p1'
+    };
+
+    const binding = chipPresetBinding(
+      'complex',
+      metadata,
+      'spec_backed',
+      ctx({ presets: [model_only] })
+    );
+
+    expect(binding?.title_suffix).toBe(' · 클릭: 클릭 전 설정으로 복원');
+  });
+
+  test('still draws no state while the deviation is undecidable', () => {
+    const model_only = {
+      id: 'p1',
+      name: '모델만',
+      applies_to: 'general',
+      settings: { impl_model: 'opus' }
+    };
+    const metadata = {
+      chip_preset_source: 'complex',
+      applied_exec_preset: 'p1'
+    };
+
+    const binding = chipPresetBinding(
+      'complex',
+      metadata,
+      'spec_backed',
+      ctx({ presets: [model_only] })
+    );
+
+    expect(binding?.state).toBe('');
+  });
+
+  test('offers an apply when another chip owns the standing pins', () => {
+    const metadata = {
+      chip_preset_source: 'frontend',
+      applied_exec_preset: 'p1',
+      impl_runtime: 'claude'
+    };
+
+    const binding = chipPresetBinding(
+      'complex',
+      metadata,
+      'spec_backed',
+      ctx()
+    );
+
+    expect(binding?.action).toBe('apply');
+  });
+
   test('refuses a binding whose preset left the snapshot', () => {
     const binding = chipPresetBinding(
       'complex',

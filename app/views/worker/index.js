@@ -5601,6 +5601,12 @@ export function createWorkerView(mount_element, options = {}) {
       })
     );
   }
+  // 프리셋 스냅샷은 서버 전역이라 이슈·큐와 다른 채널로 도착한다 (UI-wg68 §3.1):
+  // 구독하지 않으면 첫 스냅샷도, 다른 창에서 바꾼 바인딩도 다음 이슈·큐 갱신까지
+  // 화면에 서지 않아 칩 모양과 클릭 의미가 낡은 채 남는다.
+  if (execPresetStore && typeof execPresetStore.subscribe === 'function') {
+    unsubscribers.push(execPresetStore.subscribe(() => doRender()));
+  }
   if (queueStore) {
     unsubscribers.push(
       queueStore.subscribe(() => {

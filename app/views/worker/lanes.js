@@ -14,7 +14,11 @@
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
 import { discardOperationActive } from '../../../server/worker/discard-phase.js';
-import { areaLabels, areaTooltip } from '../../utils/area-judgement.js';
+import {
+  AREA_LABELS,
+  areaLabels,
+  areaTooltip
+} from '../../utils/area-judgement.js';
 import { chipPresetBinding } from '../../utils/chip-preset-binding.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import {
@@ -1387,7 +1391,7 @@ export function areaChipsTemplate(item, ctx = null) {
       label,
       title: areaTooltip(label),
       extra_class: `worker-card__area worker-card__area--${label}`,
-      open: false,
+      open: chipOpen(item, label),
       item,
       ctx: chip_ctx
     })
@@ -3761,7 +3765,7 @@ const SESSION_PREFERRED_TOOLTIP = {
  * The 판정 칩 keys (UI-8x90 §4.5, UI-svh6 §4.3). `data-chip-key` carries them
  * into the DOM so one click handler per tab covers every surface.
  *
- * @typedef {'complex'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'|'readiness'} JudgementChipKey
+ * @typedef {'complex'|'frontend'|'backend'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'|'readiness'} JudgementChipKey
  */
 
 /**
@@ -3795,6 +3799,18 @@ export function judgementPopoverContent(item, chip_key) {
     return {
       title: '복잡한 작업으로 판정됨',
       lines: [...complexReasonSentences(reason), chipBindingGuidance(item)]
+    };
+  }
+  if (AREA_LABELS.includes(chip_key)) {
+    // 영역 칩에는 사유 키가 없다 — 라벨 자체가 판정이다 (UI-wg68 §5.4). 그래서
+    // 팝업의 제목이 그 판정의 한 줄이고, 본문은 클릭이 무엇을 하는지(또는 왜
+    // 아무것도 하지 않는지)만 남는다. 라벨이 없는 bead에는 팝업도 없다.
+    if (!areaLabels(item.labels).includes(chip_key)) {
+      return null;
+    }
+    return {
+      title: areaTooltip(chip_key),
+      lines: [chipBindingGuidance(item)]
     };
   }
   if (chip_key === 'session_preferred') {
@@ -3898,6 +3914,8 @@ export function judgementPopoverContent(item, chip_key) {
 export const JUDGEMENT_CHIP_KEYS = [
   'gate',
   'complex',
+  'frontend',
+  'backend',
   'receipt',
   'session_preferred',
   'ineligible',

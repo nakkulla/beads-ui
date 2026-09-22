@@ -151,6 +151,15 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * 응답을 기다리는 중이라 버튼이 잠긴다.
  * @property {string} [resolve_title] - hover 문구: 이 클릭이 무엇을 띄우는지.
  * 없으면 렌더러의 기본 문장이 대신 선다.
+ * @property {string} [id] - 이 타일이 그리는 bead의 id. 판정 칩이 `data-bead-id`로
+ * 싣는 값이라 `bead_id`와 같되, 두 탭이 같은 칩 렌더러를 쓰므로 레인 항목과 같은
+ * 이름으로도 읽힌다 (UI-wg68 §5.3).
+ * @property {string[]} [labels] - 이 bead의 라벨. `frontend`·`backend` 판정 칩의
+ * 재료다 (UI-wg68 §5.4).
+ * @property {string} [route] - 관측된 `metadata.route`. 칩 클릭이 quick fix
+ * 이슈에서 거부되는지의 재료다 (UI-wg68 §5.2).
+ * @property {Record<string, any>} [chip_metadata] - 칩 바인딩 상태 판정의 재료
+ * (UI-wg68 §5.1).
  * @property {string} [complex_reason] -
  * 복잡 판정 (UI-7nhi §3), 레인 행·후보 카드와 같은 칩·같은 툴팁. 라벨 `complex`와
  * `complex_reason`이 함께 성립할 때의 신호 문자열이고 표시 전용이다.

@@ -14618,6 +14618,48 @@ describe('판정 칩 사유 팝업 (UI-8x90 §4.5)', () => {
     });
   });
 
+  test('redraws the chips when the preset snapshot arrives', () => {
+    /** @type {Array<() => void>} */
+    const listeners = [];
+    /** @type {any} */
+    let state = null;
+    const mount = mountJudgement(
+      /** @type {any} */ ({
+        transport: vi.fn(),
+        execPresetStore: {
+          get: () => state,
+          set: () => {},
+          subscribe: (/** @type {() => void} */ fn) => {
+            listeners.push(fn);
+            return () => {};
+          }
+        }
+      })
+    );
+
+    state = {
+      revision: 4,
+      presets: [
+        {
+          id: 'p1',
+          name: '오퍼스 → 클로드',
+          applies_to: 'general',
+          settings: { impl_runtime: 'claude' }
+        }
+      ],
+      chip_bindings: { complex: 'p1', frontend: null, backend: null }
+    };
+    for (const listener of listeners) {
+      listener();
+    }
+
+    expect(
+      mount.querySelector(
+        '.worker-card[data-bead-id="REC-1"] .judgement-chip--bound'
+      )
+    ).not.toBeNull();
+  });
+
   test('opens no 사유 popup on a bound chip click', () => {
     const transport = vi.fn().mockResolvedValue({ applied: 'applied' });
     const mount = mountBound(transport);

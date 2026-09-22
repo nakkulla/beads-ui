@@ -6518,6 +6518,63 @@ describe('바인딩된 판정 칩 (UI-wg68 §5)', () => {
     expect(card.querySelector('.worker-card__area')).toBeNull();
   });
 
+  test('names the area judgement in its popup title', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-b1',
+        route: 'spec_backed',
+        labels: ['frontend']
+      }),
+      'frontend'
+    );
+
+    expect(content?.title).toBe(
+      'frontend: 렌더된 화면으로 acceptance를 판정하는 작업'
+    );
+  });
+
+  test('sends the area popup to the 칩 탭 for a binding', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-b1',
+        route: 'spec_backed',
+        labels: ['backend']
+      }),
+      'backend'
+    );
+
+    expect(content?.lines).toEqual(['칩에 프리셋을 매려면 모니터 탭 ⚙ → 칩']);
+  });
+
+  test('opens no area popup for a label the bead does not carry', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({ id: 'UI-b1', labels: ['complex'] }),
+      'frontend'
+    );
+
+    expect(content).toBeNull();
+  });
+
+  test('marks the open area chip with aria-expanded', () => {
+    const card = renderCard({
+      labels: ['frontend'],
+      chip_popover: {
+        chip_key: 'frontend',
+        content: { title: 'frontend', lines: [] }
+      }
+    });
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('[data-chip-key="frontend"]')
+    );
+
+    expect(chip.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  test('lists the area chips among the popup keys', () => {
+    expect(JUDGEMENT_CHIP_KEYS).toContain('frontend');
+    expect(JUDGEMENT_CHIP_KEYS).toContain('backend');
+  });
+
   test('reads a quick fix issue popup with its own guidance line', () => {
     const content = judgementPopoverContent(
       /** @type {any} */ ({

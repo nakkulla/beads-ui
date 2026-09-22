@@ -811,12 +811,22 @@ export function summaryHeaderTemplate(data, handlers = {}) {
   const reason = complexReason(data?.labels, metadata);
   const complex_open =
     reason.length > 0 && handlers.isChipOpen?.('complex') === true;
-  // 카드와 같은 문장을 쓴다 (§4.5). `judgementPopoverContent`가 `complex_reason`
-  // 하나만 읽으므로 레인 항목 전체를 지어내지 않는다.
-  const complex_popover = complex_open
+  const area_labels = areaLabels(data?.labels);
+  // 카드와 같은 문장을 쓴다 (§4.5, UI-wg68 §5.2): `복잡`과 영역 칩 셋이 한 팝업
+  // 자리를 나눠 쓰므로 열린 칩 하나를 먼저 고르고 그 내용만 그린다.
+  // `judgementPopoverContent`가 읽는 필드만 지어 넘긴다 — 레인 항목 전체를
+  // 만들지 않는다.
+  const open_chip_key = complex_open
+    ? 'complex'
+    : area_labels.find((label) => handlers.isChipOpen?.(label) === true) || '';
+  const chip_popover = open_chip_key
     ? judgementPopoverContent(
-        /** @type {any} */ ({ complex_reason: reason, route }),
-        'complex'
+        /** @type {any} */ ({
+          complex_reason: reason,
+          route,
+          labels: data?.labels
+        }),
+        open_chip_key
       )
     : null;
   return html`<section class="detail-summary" data-seam="detail-summary">
@@ -876,13 +886,13 @@ export function summaryHeaderTemplate(data, handlers = {}) {
             data,
             handlers
           })
-        : ''}${areaLabels(data?.labels).map((label) =>
+        : ''}${area_labels.map((label) =>
         detailJudgementChip({
           chip_key: label,
           label,
           title: areaTooltip(label),
           modifier: 'area',
-          open: false,
+          open: handlers.isChipOpen?.(label) === true,
           metadata,
           route,
           data,
@@ -890,7 +900,7 @@ export function summaryHeaderTemplate(data, handlers = {}) {
         })
       )}
     </div>
-    ${complex_popover ? chipPopoverTemplate(complex_popover) : ''}
+    ${chip_popover ? chipPopoverTemplate(chip_popover) : ''}
     <div
       class="detail-summary__gates"
       role="group"

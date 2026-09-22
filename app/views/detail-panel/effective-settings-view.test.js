@@ -857,6 +857,49 @@ describe('detail header 바인딩 칩 (UI-wg68 §5)', () => {
     expect(mount.querySelector('.judgement-chip--bound')).toBeNull();
   });
 
+  test('opens the area chip popup from the detail header', () => {
+    const mount = renderBound(
+      { route: 'spec_backed' },
+      { isChipOpen: (/** @type {string} */ key) => key === 'frontend' },
+      ['frontend']
+    );
+
+    const popover = /** @type {HTMLElement} */ (
+      mount.querySelector('.chip-popover')
+    );
+
+    expect(popover.textContent).toContain(
+      'frontend: 렌더된 화면으로 acceptance를 판정하는 작업'
+    );
+  });
+
+  test('asks the view to toggle an unbound area chip popup on click', () => {
+    const onChipToggle = vi.fn();
+    const mount = renderBound({ route: 'quick_fix' }, { onChipToggle }, [
+      'frontend'
+    ]);
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-chip-key="frontend"]')
+    ).click();
+
+    expect(onChipToggle).toHaveBeenCalledWith('frontend');
+  });
+
+  test('marks the open area chip with aria-expanded', () => {
+    const mount = renderBound(
+      { route: 'spec_backed' },
+      { isChipOpen: (/** @type {string} */ key) => key === 'frontend' },
+      ['frontend']
+    );
+
+    expect(
+      mount
+        .querySelector('[data-chip-key="frontend"]')
+        ?.getAttribute('aria-expanded')
+    ).toBe('true');
+  });
+
   test('draws the area chips beside 복잡', () => {
     const mount = renderBound(COMPLEX_META, {}, ['complex', 'frontend']);
 
