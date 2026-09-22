@@ -743,7 +743,12 @@ describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
         issuePrefixFor: () => 'dotfiles'
       });
 
-      expect(result).toEqual({ ok: true, status });
+      expect(result).toEqual({
+        ok: true,
+        status,
+        closed_at: null,
+        close_reason: null
+      });
       expect(runBdJsonProjected).toHaveBeenCalledWith(
         'show',
         ['show', 'dotfiles-1', '--json'],
@@ -791,8 +796,68 @@ describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
       querySeams({ [WS_B]: 'dotfiles' })
     );
 
-    expect(result).toEqual({ ok: true, status: 'open' });
+    expect(result).toEqual({
+      ok: true,
+      status: 'open',
+      closed_at: null,
+      close_reason: null
+    });
   });
+
+  test('returns closed_at as epoch ms and close_reason from the owning rig payload (§4.3)', async () => {
+    vi.mocked(runBdJsonProjected).mockResolvedValue(
+      /** @type {any} */ ({
+        ok: true,
+        data: {
+          id: 'dotfiles-1',
+          status: 'closed',
+          closed_at: '2026-09-22T11:20:30Z',
+          close_reason: '계약 정정 착지'
+        }
+      })
+    );
+
+    const result = await queryForeignBlockerStatus(
+      'dotfiles-1',
+      WS_A,
+      querySeams({ [WS_B]: 'dotfiles' })
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      status: 'closed',
+      closed_at: Date.parse('2026-09-22T11:20:30Z'),
+      close_reason: '계약 정정 착지'
+    });
+  });
+
+  test.each([
+    ['absent', {}],
+    ['unparsable', { closed_at: 'not-a-date' }]
+  ])(
+    'returns closed_at null when the payload value is %s while keeping the status',
+    async (_label, patch) => {
+      vi.mocked(runBdJsonProjected).mockResolvedValue(
+        /** @type {any} */ ({
+          ok: true,
+          data: { id: 'dotfiles-1', status: 'closed', ...patch }
+        })
+      );
+
+      const result = await queryForeignBlockerStatus(
+        'dotfiles-1',
+        WS_A,
+        querySeams({ [WS_B]: 'dotfiles' })
+      );
+
+      expect(result).toEqual({
+        ok: true,
+        status: 'closed',
+        closed_at: null,
+        close_reason: null
+      });
+    }
+  );
 
   test('reports no_rig when no registered rig owns the prefix', async () => {
     const result = await queryForeignBlockerStatus(
@@ -873,7 +938,12 @@ describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
       querySeams({ [WS_B]: 'dotfiles' })
     );
 
-    expect(result).toEqual({ ok: true, status: 'open' });
+    expect(result).toEqual({
+      ok: true,
+      status: 'open',
+      closed_at: null,
+      close_reason: null
+    });
   });
 
   test('excludes the requesting workspace from the rig search', async () => {
@@ -902,7 +972,12 @@ describe('queryForeignBlockerStatus (선행 대기 계층 §4.2)', () => {
       listRoots: () => [WS_B]
     });
 
-    expect(result).toEqual({ ok: true, status: 'open' });
+    expect(result).toEqual({
+      ok: true,
+      status: 'open',
+      closed_at: null,
+      close_reason: null
+    });
     expect(cachedIssuePrefixFor(WS_B)).toBeNull();
   });
 });
