@@ -724,14 +724,19 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   restarts; only a confirmed closed repair permits a new reservation on another
   operation. A returned repair id is retained before dependency writes, and
   missing responses are reconciled by `repair_key` metadata before creation. The
-  new issue is read back and checked against the quick-fix handoff contract.
-  After the checker passes, one update pins `route=quick_fix` and the
-  `quick_fix_review=worker@<digest>` receipt; a second readback must recompute
-  as reviewed before placement. Existing routed and placed issues are adopted.
-  Errors retain the same reservation for restart; absent placement means the
-  handoff is incomplete. Repair PR creation alone does not complete the original
-  cleanup. Bead history records `kind: 'operation_recovery', seq: operation_id`
-  with `복구 분류 — <disposition>:<reason|repair> · <failure code>` and
+  new issue is read back and checked against the quick-fix handoff contract. Its
+  `검증 bundle` carries a measured-record `baseline_red` line
+  (`command=…, base=<target_sha>, exit=<exit_code>`) rather than a re-run
+  command, and an operation without an integer exit code is not classified as a
+  code defect at all — the recovery classifier waits instead of writing an
+  unusable line. After the checker passes, one update pins `route=quick_fix` and
+  the `quick_fix_review=worker@<digest>` receipt; a second readback must
+  recompute as reviewed before placement. Existing routed and placed issues are
+  adopted. Errors retain the same reservation for restart; absent placement
+  means the handoff is incomplete. Repair PR creation alone does not complete
+  the original cleanup. Bead history records
+  `kind: 'operation_recovery', seq: operation_id` with
+  `복구 분류 — <disposition>:<reason|repair> · <failure code>` and
   `kind: 'repair_handoff', seq: handoff.key` with
   `수정 인계 — <handoff_bead_id> (<reused|created>) · 배치 parallel`. Each
   subject gets the same replay-safe event identity in its `events.jsonl`; queue

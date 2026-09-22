@@ -170,6 +170,10 @@ const probe_waiters = [];
  * @property {Set<string>} dirty_paths
  * @property {Set<string>} checked_paths
  * @property {Set<string>} undetermined
+ * @property {import('./worker/quick-fix-handoff.js').PredecessorResolver} [predecessors]
+ * Optional (false: absent at a call site with no snapshot). Present only
+ * where a workspace snapshot's `id_index`/`blocks_out` are available
+ * (ADR 0025); `judgeQuickFixHandoff` skips the predecessor check without it.
  */
 
 /**
@@ -510,7 +514,7 @@ export function classifyGlyph(receipt) {
  *
  * @param {Array<{ id?: string, status?: string, spec_id?: unknown, metadata?: Record<string, any> }>} items
  * @param {string | undefined | null} workspace_root
- * @param {{ generation: number, all: Array<{ id?: string, status?: string, spec_id?: unknown, metadata?: Record<string, any> }> }} generation
+ * @param {{ generation: number, all: Array<{ id?: string, status?: string, spec_id?: unknown, metadata?: Record<string, any> }>, id_index?: Map<string, any>, blocks_out?: Map<string, string[]> }} generation
  * @returns {Promise<WorkflowProbeContext | null>}
  */
 export async function warmWorkflowProbes(items, workspace_root, generation) {
@@ -518,6 +522,7 @@ export async function warmWorkflowProbes(items, workspace_root, generation) {
     return null;
   }
   const context = await generationProbeContext(workspace_root, generation);
+  attachPredecessorResolver(context, generation);
   if (!context.head) {
     return context;
   }
@@ -615,6 +620,28 @@ export async function warmWorkflowProbes(items, workspace_root, generation) {
   }
   await Promise.all(probes);
   return context;
+}
+
+/**
+ * Attach a `predecessors` resolver to the shared probe context when the
+ * generation carries a snapshot's `id_index`/`blocks_out` (ADR 0025). false:
+ * a call site with no snapshot (e.g. the raw list path) never gets this
+ * field, and `judgeQuickFixHandoff` treats its absence as skip-the-check.
+ *
+ * @param {WorkflowProbeContext} context
+ * @param {{ id_index?: Map<string, any>, blocks_out?: Map<string, string[]> }} generation
+ */
+function attachPredecessorResolver(context, generation) {
+  const id_index = generation?.id_index;
+  const blocks_out = generation?.blocks_out;
+  if (!(id_index instanceof Map) || !(blocks_out instanceof Map)) {
+    return;
+  }
+  context.predecessors = {
+    blocksOf(bead_id) {
+      return id_index.has(bead_id) ? blocks_out.get(bead_id) || [] : null;
+    }
+  };
 }
 
 /**
@@ -1815,6 +1842,12 @@ function mergeStage(md, status) {
  * The pinned quick_fix self-review projection's verdict for this issue. Absent
  * (key and all) whenever the judgement does not apply — `metadata.route` is not
  * the `quick_fix` pin — so a missing key never reads as a negative verdict.
+ * `missing` holds canonical projection tokens verbatim, never translated:
+ * `section:*`, `scope:*`, `baseline_red`, `predecessor_edge_missing:<id>`,
+ * `predecessor_edge_reversed:<id>`, `user_decision_reserved:L<n>`.
+ * Predecessor tokens appear only where the probe context carries a snapshot
+ * `predecessors` resolver (false when absent — the check is skipped, not
+ * failed); reservation tokens appear on every call path regardless.
  */
 
 /**
@@ -1924,7 +1957,7 @@ export function enrichIssueWorkflow(
       impl_entry
     }
   };
-  const quick_fix_review = quickFixReview(issue);
+  const quick_fix_review = quickFixReview(issue, probes?.predecessors ?? null);
   if (quick_fix_review) {
     summary.quick_fix_review = quick_fix_review;
   }
@@ -1938,14 +1971,17 @@ export function enrichIssueWorkflow(
  * fallback, so a spec_backed default can never be asked this question.
  *
  * Fail-quiet like every other probe here — a projection this repo only consumes
- * must never be the reason a card fails to render.
+ * must never be the reason a card fails to render. `predecessors` is only
+ * present where a snapshot resolver exists (§4.2); its absence means the
+ * `predecessor_edge_*` tokens never appear, not that the check failed.
  *
  * @param {unknown} issue
+ * @param {import('./worker/quick-fix-handoff.js').PredecessorResolver|null} predecessors
  * @returns {import('./worker/quick-fix-handoff.js').QuickFixHandoffState|null}
  */
-function quickFixReview(issue) {
+function quickFixReview(issue, predecessors) {
   try {
-    return judgeQuickFixHandoff(issue);
+    return judgeQuickFixHandoff(issue, { predecessors });
   } catch (err) {
     log('judgeQuickFixHandoff failed: %o', err);
     return null;

@@ -50,7 +50,9 @@ export function classifyOperationRecovery({
     failure.fingerprint.length > 0 &&
     retry.first_failure?.fingerprint === failure.fingerprint &&
     scriptIdentity(operation) !== null &&
-    typeof operation.target_sha === 'string'
+    typeof operation.target_sha === 'string' &&
+    /^[0-9a-f]{40}$/.test(operation.target_sha) &&
+    Number.isInteger(operation.exit_code)
   ) {
     const summary = typeof failure.summary === 'string' ? failure.summary : '';
     const detail = typeof failure.detail === 'string' ? failure.detail : '';
@@ -139,7 +141,7 @@ export function repairHandoffDescription({ operation_id, operation }) {
     `- ${script_path}`,
     '',
     '## 검증 bundle',
-    `- baseline_red: command=${script_path} --mode ${operation.script_mode} @ ${operation.target_sha}`,
+    `- baseline_red: command=REPO_OPS_TARGET_SHA=${operation.target_sha} REPO_OPS_TARGET_BASE=${operation.target_base} REPO_OPS_REPO_ROOT="$PWD" ${script_path} | base=${operation.target_sha} | exit=${operation.exit_code}`,
     '- 동일 실패 재현 근거와 승인 artifact를 확인하고 원인 수정 뒤 저장소 필수 검증을 실행한다.',
     '- 수정 대상의 실제 종료·산출·clean 및 배포 성공을 확인한 뒤 원본 [정리 재시도]와 닫힘을 확인한다.'
   ].join('\n');

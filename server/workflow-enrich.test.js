@@ -2232,6 +2232,70 @@ describe(
       expect(wf.route_source).toBe('derived');
       expect(Object.hasOwn(wf, 'quick_fix_review')).toBe(false);
     });
+
+    const PREDECESSOR_BODY = [
+      '출처/배경 — 칩이 없다.',
+      '',
+      '기대 효과 — 칩이 생긴다.',
+      '',
+      '영향 surface와 경계 — server/workflow-enrich.js',
+      '',
+      '검증 bundle — 선행 dotfiles-aaaa',
+      '',
+      '## scope',
+      '',
+      '- server/workflow-enrich.js',
+      ''
+    ].join('\n');
+
+    test('carries predecessor tokens when the probe context has a resolver', () => {
+      const wf = enrichIssueWorkflow(
+        {
+          id: 'dotfiles-slf1',
+          issue_type: 'task',
+          description: PREDECESSOR_BODY,
+          metadata: { route: 'quick_fix' }
+        },
+        undefined,
+        undefined,
+        {
+          head: null,
+          branch_tips: new Map(),
+          dirty_paths: new Set(),
+          checked_paths: new Set(),
+          undetermined: new Set(),
+          predecessors: { blocksOf: () => [] }
+        }
+      );
+
+      expect(wf.quick_fix_review?.missing).toContain(
+        'predecessor_edge_missing:dotfiles-aaaa'
+      );
+    });
+
+    test('omits predecessor tokens when the probe context has no resolver', () => {
+      const wf = enrichIssueWorkflow(
+        {
+          id: 'dotfiles-slf1',
+          issue_type: 'task',
+          description: PREDECESSOR_BODY,
+          metadata: { route: 'quick_fix' }
+        },
+        undefined,
+        undefined,
+        {
+          head: null,
+          branch_tips: new Map(),
+          dirty_paths: new Set(),
+          checked_paths: new Set(),
+          undetermined: new Set()
+        }
+      );
+
+      expect(wf.quick_fix_review?.missing).not.toContain(
+        'predecessor_edge_missing:dotfiles-aaaa'
+      );
+    });
   }
 );
 

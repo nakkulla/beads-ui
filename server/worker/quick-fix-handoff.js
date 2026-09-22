@@ -4,6 +4,35 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseDescriptionScope } from './artifact-scope.js';
 
+/**
+ * false: this file reads a subset of the pinned `quick_fix_handoff` canon.
+ * The following projection keys ship as bytes but have no reader here — no
+ * reader exists means the key is inactive, not that it was overlooked:
+ *
+ * - `quick_fix_handoff.automatic_queue_handoff` — a session-side procedure;
+ *   this repository only receives its result (queue placement) via the
+ *   existing place API.
+ * - `quick_fix_handoff.session_owned_pin` — no reader.
+ * - `description_scope.writer` — `parseDescriptionScope` reads only the
+ *   `section`/`item` rules.
+ * - `metadata.parent_keys.worker_created_from` — already consumed as a code
+ *   registry elsewhere (ADR 0012 style), not through this projection.
+ * - `process_routes.quick_fix.worker_dispatch` — the behavior is already a
+ *   fixed code path (ADR 0019/0031/0050).
+ * - `manual_merge_continuation.auto_review_dispatch` — ADR 0019.
+ *
+ * `checks.user_decision_reserved.details_key` is also unread: this module
+ * never emits per-line detail objects, only the `missing` token.
+ *
+ * Regex translation for `checks.user_decision_reserved.line_regex`: each
+ * pattern is compiled with the `u` flag so counted quantifiers advance by
+ * Unicode code point like Python `re`, not UTF-16 code unit. A pattern
+ * beginning with the Python-only inline flag `(?i)` has that four-character
+ * prefix stripped and is compiled with `'iu'` instead — this is the only
+ * inline flag translated; any other inline flag makes `new RegExp` throw,
+ * which callers treat as `supported: false` (fail-quiet, not a rewrite).
+ */
+
 const CONTRACTS_DIR = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
@@ -39,6 +68,12 @@ const TRIM_RE = /^[ \t]+|[ \t]+$/g;
 const REGEX_METACHARS_RE = /[.*+?^${}()|[\]\\]/g;
 
 /** @typedef {{ readFileSync: (path: string, encoding?: string) => Buffer|string }} QuickFixHandoffFs */
+/**
+ * @typedef {Object} PredecessorResolver
+ * @property {(bead_id: string) => string[]|null} blocksOf IDs this Bead
+ * depends on with `blocks` (its own predecessors). false: a snapshot-unresolved
+ * ID returns null, never an empty array by omission.
+ */
 /**
  * @typedef {Object} QuickFixHandoffLoad
  * @property {number|null} schema_version
@@ -122,6 +157,95 @@ function provenanceMatches(provenance, bytes, digest) {
 }
 
 /**
+ * Translate a Python `re` pattern from `checks.user_decision_reserved` into a
+ * Node `RegExp`. Only the head `(?i)` prefix is understood (rest); any other
+ * inline flag is left for `new RegExp` to reject, which the callers treat as
+ * unsupported. false: the case-insensitive projection pattern needs this.
+ *
+ * @param {string} pattern
+ * @returns {RegExp}
+ */
+function compileReservationRegex(pattern) {
+  if (pattern.startsWith('(?i)')) {
+    return new RegExp(pattern.slice(4), 'iu');
+  }
+  return new RegExp(pattern, 'u');
+}
+
+/**
+ * @param {unknown} rule
+ * @returns {boolean}
+ */
+function predecessorEdgeUsable(rule) {
+  if (rule === undefined) {
+    return true;
+  }
+  if (!isRecord(rule)) {
+    return false;
+  }
+  const required_edge = rule.required_edge;
+  const reversed_edge = rule.reversed_edge;
+  const missing_tokens = rule.missing_tokens;
+  return (
+    Array.isArray(rule.sections) &&
+    rule.sections.length > 0 &&
+    rule.sections.every((name) => isNonEmptyString(name)) &&
+    isNonEmptyString(rule.line_trigger) &&
+    isNonEmptyString(rule.id_regex) &&
+    (rule.excludes === undefined || rule.excludes === 'self_id') &&
+    rule.absent_mention === 'skip_fail_quiet' &&
+    rule.unresolved_candidate === 'skip_fail_quiet' &&
+    isRecord(required_edge) &&
+    required_edge.dependency_type === 'blocks' &&
+    required_edge.side === 'issue_dependencies' &&
+    isRecord(reversed_edge) &&
+    reversed_edge.side === 'predecessor_dependencies_contain_issue' &&
+    isRecord(missing_tokens) &&
+    isNonEmptyString(missing_tokens.missing) &&
+    isNonEmptyString(missing_tokens.reversed)
+  );
+}
+
+/**
+ * @param {unknown} rule
+ * @returns {boolean}
+ */
+function userDecisionReservedUsable(rule) {
+  if (rule === undefined) {
+    return true;
+  }
+  if (!isRecord(rule)) {
+    return false;
+  }
+  if (rule.scan !== 'all_body_lines_trimmed') {
+    return false;
+  }
+  if (!Array.isArray(rule.line_regex) || rule.line_regex.length === 0) {
+    return false;
+  }
+  if (rule.absent_match !== 'skip_fail_quiet') {
+    return false;
+  }
+  if (
+    !isNonEmptyString(rule.missing_token) ||
+    !rule.missing_token.includes('<n>')
+  ) {
+    return false;
+  }
+  return rule.line_regex.every((/** @type {unknown} */ pattern) => {
+    if (!isNonEmptyString(pattern)) {
+      return false;
+    }
+    try {
+      compileReservationRegex(pattern);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
  * Every predicate the judgment reads must be present as the type it will be
  * used as, because a half-projection would otherwise reach `new RegExp` and
  * turn a contract drift into a wrong answer instead of a quiet `unknown`.
@@ -154,7 +278,9 @@ function rulesUsable(handoff, description_scope) {
     isNonEmptyString(baseline_red.section) &&
     isNonEmptyString(baseline_red.line_regex) &&
     isNonEmptyString(receipt.key) &&
-    isNonEmptyString(receipt.format_regex)
+    isNonEmptyString(receipt.format_regex) &&
+    predecessorEdgeUsable(checks.predecessor_edge) &&
+    userDecisionReservedUsable(checks.user_decision_reserved)
   );
 }
 
@@ -355,12 +481,120 @@ function issueType(issue) {
 }
 
 /**
+ * Bead IDs the `line_trigger` line declares as predecessors, in first-seen
+ * mention order with the issue's own id excluded when `excludes` says so.
+ *
+ * @param {Map<string, string[]>} sections
+ * @param {Record<string, any>} rule
+ * @param {unknown} self_id
+ * @returns {string[]}
+ */
+function predecessorMentions(sections, rule, self_id) {
+  const trigger = rule.line_trigger;
+  const id_re = new RegExp(rule.id_regex, 'g');
+  const excludes_self = rule.excludes === 'self_id';
+
+  /** @type {string[]} */
+  const found = [];
+  for (const name of rule.sections) {
+    for (const line of sections.get(name) || []) {
+      if (trigger && !line.includes(trigger)) {
+        continue;
+      }
+      for (const match of line.matchAll(id_re)) {
+        const candidate = match[0];
+        if (excludes_self && candidate === self_id) {
+          continue;
+        }
+        if (!found.includes(candidate)) {
+          found.push(candidate);
+        }
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * `missing` tokens for every declared predecessor whose edge is wrong. A
+ * declared ID the resolver cannot place is skipped fail-quiet — the id
+ * regex also matches ordinary hyphenated words.
+ *
+ * @param {Record<string, any>} issue
+ * @param {Map<string, string[]>} sections
+ * @param {Record<string, any>|undefined} rule
+ * @param {PredecessorResolver|null|undefined} resolver
+ * @returns {string[]}
+ */
+function predecessorState(issue, sections, rule, resolver) {
+  if (!rule || !resolver) {
+    return [];
+  }
+  const self_id = issue.id;
+  const mentions = predecessorMentions(sections, rule, self_id);
+  if (mentions.length === 0) {
+    return [];
+  }
+  const declared =
+    typeof self_id === 'string' ? resolver.blocksOf(self_id) : null;
+  const missing_token = rule.missing_tokens.missing;
+  const reversed_token = rule.missing_tokens.reversed;
+
+  /** @type {string[]} */
+  const failures = [];
+  for (const candidate of mentions) {
+    if (declared && declared.includes(candidate)) {
+      continue;
+    }
+    const other = resolver.blocksOf(candidate);
+    if (other === null) {
+      continue;
+    }
+    const template =
+      typeof self_id === 'string' && other.includes(self_id)
+        ? reversed_token
+        : missing_token;
+    failures.push(template.replace('<id>', candidate));
+  }
+  return failures;
+}
+
+/**
+ * `user_decision_reserved:L<n>` tokens for every trimmed body line matching
+ * one of the pinned reservation regexes, resolver-independent (§4.4).
+ *
+ * @param {string} text
+ * @param {Record<string, any>|undefined} rule
+ * @returns {string[]}
+ */
+function reservationTokens(text, rule) {
+  if (!rule) {
+    return [];
+  }
+  const patterns = rule.line_regex.map((/** @type {string} */ pattern) =>
+    compileReservationRegex(pattern)
+  );
+  /** @type {string[]} */
+  const tokens = [];
+  const lines = splitLines(text);
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = trimAscii(lines[index]);
+    if (
+      patterns.some((/** @type {RegExp} */ pattern) => pattern.test(trimmed))
+    ) {
+      tokens.push(rule.missing_token.replace('<n>', String(index + 1)));
+    }
+  }
+  return tokens;
+}
+
+/**
  * Judge one issue against the pinned predicates. `null`이면 판정 대상이
  * 아니고(route가 quick_fix가 아님), `state: 'unknown'`이면 투영을 못 읽어
  * 판정 자체가 불가하다.
  *
  * @param {unknown} issue
- * @param {{ fs?: QuickFixHandoffFs }} [deps]
+ * @param {{ fs?: QuickFixHandoffFs, predecessors?: PredecessorResolver|null }} [deps]
  * @returns {QuickFixHandoffState|null}
  */
 export function judgeQuickFixHandoff(issue, deps = {}) {
@@ -382,9 +616,15 @@ export function judgeQuickFixHandoff(issue, deps = {}) {
 
     /** @type {string[]} */
     const required = checks.sections.required;
+    const predecessor_rule = checks.predecessor_edge;
+    const named = required.concat(
+      (predecessor_rule?.sections || []).filter(
+        (/** @type {string} */ name) => !required.includes(name)
+      )
+    );
     const sections = findSections(
       text,
-      required,
+      named,
       checks.sections.heading_regex,
       checks.sections.label_regex
     );
@@ -412,6 +652,11 @@ export function judgeQuickFixHandoff(issue, deps = {}) {
         missing.push('baseline_red');
       }
     }
+
+    missing.push(
+      ...predecessorState(record, sections, predecessor_rule, deps.predecessors)
+    );
+    missing.push(...reservationTokens(text, checks.user_decision_reserved));
 
     const digest = bodyDigest(description);
     const receipt = metadata[receipt_rules.key];

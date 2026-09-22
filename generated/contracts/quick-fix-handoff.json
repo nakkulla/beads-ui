@@ -31,7 +31,41 @@
       "baseline_red": {
         "required_when": "issue_type_bug",
         "section": "검증 bundle",
-        "line_regex": "^[ \\t]*(?:-[ \\t]*|[0-9]+\\.[ \\t]*)?`?baseline_red:[ \\t]*command=[^ \\t].*$"
+        "line_regex": "^[ \\t]*(?:-[ \\t]*|[0-9]+\\.[ \\t]*)?`?baseline_red:[ \\t]*command=[^< \\t].* \\| base=[0-9a-f]{40} \\| exit=-?[0-9]+`?[ \\t]*$"
+      },
+      "predecessor_edge": {
+        "sections": [
+          "검증 bundle",
+          "선행 의존"
+        ],
+        "line_trigger": "선행",
+        "id_regex": "(?<![0-9A-Za-z_-])[a-z][a-z0-9]*-[a-z0-9]{4}(?![0-9A-Za-z_-])",
+        "excludes": "self_id",
+        "required_edge": {
+          "side": "issue_dependencies",
+          "dependency_type": "blocks"
+        },
+        "reversed_edge": {
+          "side": "predecessor_dependencies_contain_issue",
+          "dependency_type": "blocks"
+        },
+        "absent_mention": "skip_fail_quiet",
+        "unresolved_candidate": "skip_fail_quiet",
+        "missing_tokens": {
+          "missing": "predecessor_edge_missing:<id>",
+          "reversed": "predecessor_edge_reversed:<id>"
+        }
+      },
+      "user_decision_reserved": {
+        "scan": "all_body_lines_trimmed",
+        "line_regex": [
+          "사용자[^\\n]{0,12}?(결정|승인|확인|답)[^\\n]{0,24}?(필요|미정|전에는|정한다|정할|기다리|받은 뒤|받기 전|없으면)",
+          "(결정|승인|확인)[^\\n]{0,8}?1회[^\\n]{0,8}?필요",
+          "(?i)(user|human)[^\\n]{0,12}?(decision|approval|confirmation)[^\\n]{0,24}?(required|pending|needed|before|await)"
+        ],
+        "missing_token": "user_decision_reserved:L<n>",
+        "details_key": "user_decision_reserved",
+        "absent_match": "skip_fail_quiet"
       }
     },
     "receipt": {
@@ -56,7 +90,62 @@
       "readback_recompute_reviewed",
       "route_pin_last"
     ],
-    "session_owned_pin": "route_and_in_progress_in_one_bd_update"
+    "automatic_queue_handoff": {
+      "applies_to": "separated_prerequisite_or_followup_created_or_adopted_by_originating_session",
+      "entry_question": "none",
+      "starts_after": "reviewed_body_and_existing_route_pin_order",
+      "config": {
+        "source": "worker_url_resolver",
+        "missing_invalid_or_unreachable": "report_failure"
+      },
+      "initial_observation": {
+        "reuse": [
+          "waiting",
+          "running",
+          "pr_wait"
+        ],
+        "moving_other_issues": "forbidden"
+      },
+      "placement": {
+        "request": "existing_worker_queue_place_api",
+        "revision": "observed_queue_revision",
+        "conflict_retry": "once_after_fresh_get_reuse_observation_and_rejudgment",
+        "second_conflict": "fail"
+      },
+      "completion": {
+        "requires_observation": [
+          "actual_waiting_lane_and_index",
+          "active_attempt_started"
+        ],
+        "post_success_without_observation": "fail_without_repost",
+        "notes": "lane_placed: <observed-lane>#<observed-index>|active — <one-line ground>"
+      },
+      "failures": [
+        "missing_url",
+        "invalid_url",
+        "connection_failure",
+        "admission_refusal",
+        "http_error",
+        "second_conflict",
+        "post_place_observation_failure"
+      ],
+      "disposition": "keep_issue_review_receipt_and_pin_report_target_stage_and_cause_no_session_execution",
+      "prerequisite_ending": {
+        "order": "handoff_before_notes_and_claim_release",
+        "failure_notes_fields": [
+          "target",
+          "failed_stage",
+          "cause"
+        ],
+        "blocks_gate": "preserved"
+      },
+      "preserves": [
+        "worker_start_controls",
+        "approval_authority",
+        "review_authority"
+      ]
+    },
+    "session_owned_pin": "route_pin_before_entry_question_then_claim_in_answer_turn"
   },
   "description_scope": {
     "applies_to": [
@@ -94,6 +183,77 @@
       "gate_use": "forbidden"
     },
     "absent_or_unparsable": "fail_quiet",
-    "writer": "workflow_quick_fix_route_pin_then_update_on_surface_growth"
+    "writer": "workflow_quick_fix_body_before_route_pin_then_update_on_surface_growth"
+  },
+  "metadata": {
+    "parent_keys": {
+      "worker_created_from": {
+        "type": "string",
+        "format": "non-empty native source Bead ID, no leading/trailing whitespace or control characters, not self",
+        "writer": [
+          "worker_dispatched_creating_session",
+          "beads_ui_carryover_creator",
+          "beads_ui_benchmark_creator"
+        ],
+        "written_at": "initial_bd_create_metadata",
+        "readback": "bd_show_json_after_create",
+        "immutable": true,
+        "absent_or_invalid": "not_worker_created",
+        "inference_or_backfill": "forbidden",
+        "authority": "none",
+        "consumer": [
+          "workflow_session",
+          "beads_ui"
+        ]
+      }
+    },
+    "child_keys": {
+      "worker_created_from": {
+        "schema": "metadata.parent_keys.worker_created_from",
+        "applies_when": "worker_creates_phase_child"
+      }
+    }
+  },
+  "process_routes": {
+    "quick_fix": {
+      "worker_dispatch": {
+        "implementation_gate": "exactly_once_in_session",
+        "reviewer_selection": "existing_formal_gate_selector",
+        "impl_review": {
+          "binding": {
+            "default": "push_head",
+            "landing_none": "worktree_head"
+          },
+          "invalid_at_landing": [
+            "absent",
+            "malformed"
+          ],
+          "post_review_head_change": "controller_exact_delta_self_review_and_receipt_update"
+        },
+        "session_delivery": {
+          "default": "base_push_containment_and_push_head_bound_valid_impl_review_then_completion_report_then_resolved_without_pr_url",
+          "landing_none": "verify_then_one_gate_then_completion_report_then_close_with_bench_reason"
+        },
+        "worker_owns": {
+          "default": [
+            "deploy_execution",
+            "deploy_evidence",
+            "close",
+            "residue_cleanup"
+          ],
+          "landing_none": [
+            "residue_cleanup",
+            "close_of_failed_or_aborted_cells"
+          ]
+        }
+      }
+    }
+  },
+  "manual_merge_continuation": {
+    "auto_review_dispatch": {
+      "per_head": 1,
+      "claim_key": "review_dispatch",
+      "button_role": "resume_same_lineage"
+    }
   }
 }

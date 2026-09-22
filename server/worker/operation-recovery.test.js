@@ -194,6 +194,14 @@ describe('operation recovery classification', () => {
     });
   });
 
+  test('withholds code proof for a signal-killed reproduction with no exit code', () => {
+    expect(classify({ exit_code: null })).toMatchObject({
+      classification: 'unknown_error',
+      code_defect: false,
+      handoff_key: null
+    });
+  });
+
   test('falls back to an unclassified wait if the contract cannot classify', () => {
     expect(
       classifyOperationRecovery({
@@ -235,6 +243,14 @@ describe('repair handoff description', () => {
     expect(description).toMatch(
       new RegExp(checks.baseline_red.line_regex, 'm')
     );
+    expect(description).toContain(
+      '- baseline_red: command=REPO_OPS_TARGET_SHA=' +
+        'a'.repeat(40) +
+        ' REPO_OPS_TARGET_BASE=main REPO_OPS_REPO_ROOT="$PWD" repo-ops/script/deploy' +
+        ' | base=' +
+        'a'.repeat(40) +
+        ' | exit=2'
+    );
     expect(description).toContain('## scope\n- repo-ops/script/deploy');
   });
 
@@ -253,7 +269,8 @@ describe('repair handoff description', () => {
       'exit 2',
       'script_failed',
       'npm ERR! Test failed',
-      '/logs/op.log'
+      '/logs/op.log',
+      'exit=2'
     ]) {
       expect(description).toContain(value);
     }
