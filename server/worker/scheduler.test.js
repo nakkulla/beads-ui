@@ -25943,3 +25943,622 @@ describe('worker 하네스 축소 (2026-09-09 spec D1·D2·D3·D5b)', () => {
     });
   });
 });
+
+describe('scheduler prerequisite wait residue resume (prerequisite-wait-residue §4)', () => {
+  const HEAD = 'a'.repeat(40);
+  const BASE = 'b'.repeat(40);
+
+  afterEach(() => {
+    foreign_query_seam.fn = null;
+  });
+
+  /**
+   * An owned dirty worktree on the bead's branch — the `unique` residue a
+   * session leaves when it stops before committing.
+   *
+   * @param {Record<string, any>} [patch]
+   */
+  function uniqueResidue(patch = {}) {
+    return {
+      ok: false,
+      state: 'unique',
+      removed: false,
+      cause: 'dirty_unique',
+      owned: true,
+      identity: {
+        worktree_realpath: '/wt/S1',
+        branch: 'S1',
+        head_sha: HEAD,
+        base_oid: BASE,
+        status_digest: 'c'.repeat(64)
+      },
+      summary: {
+        staged_count: 1,
+        unstaged_count: 1,
+        untracked_count: 0,
+        branch_ahead: 0,
+        head_ahead: 0
+      },
+      ...patch
+    };
+  }
+
+  /**
+   * The prior attempt that ended on a prerequisite wait with a session and a
+   * HEAD to match its residue on.
+   *
+   * @param {Record<string, any>} [patch]
+   */
+  function waitingPrior(patch = {}) {
+    return {
+      attempt_id: 'prior',
+      bead_id: 'S1',
+      repo: '/repo',
+      status: 'waiting',
+      cause: 'prerequisite_unmet',
+      cause_detail: {
+        summary: '대기 · blocks:S9',
+        blockers: [{ id: 'S9', rig: null, status: 'open' }],
+        bead_status: 'in_progress'
+      },
+      target_base: 'main',
+      base_oid: BASE,
+      head_oid: HEAD,
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      session_id: 'session-1',
+      quickfix_lane: true,
+      finished_at: 900,
+      ...patch
+    };
+  }
+
+  /**
+   * @param {Record<string, any>} [overrides]
+   * @param {Record<string, any>} [config_patch]
+   */
+  function returnEnv(overrides = {}, config_patch = {}) {
+    const append = vi.fn();
+    const notify = { attemptFailed: vi.fn() };
+    const env = setup({
+      config: {
+        S1: { route: 'quick_fix', status: 'open', ...config_patch },
+        S9: { status: 'closed' }
+      },
+      slots: 1,
+      timeline: { append },
+      notify,
+      resolveBase: async () => ({ ok: true, base: 'main', base_oid: BASE }),
+      quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) },
+      ...overrides
+    });
+    seedQueue(env.store, ['S1']);
+    return { ...env, append, notify };
+  }
+
+  /**
+   * @param {ReturnType<typeof returnEnv>} env
+   * @param {any} attempt
+   */
+  function seedPrior(env, attempt) {
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt
+    });
+  }
+
+  /**
+   * @param {ReturnType<typeof returnEnv>} env
+   */
+  function latestAttempt(env) {
+    return Object.values(env.store.snapshot(WS).attempts).at(-1);
+  }
+
+  test('resumes the waiting session on the residue whose HEAD it recorded', async () => {
+    const env = returnEnv();
+    seedPrior(env, waitingPrior());
+    env.worktree.removeIfDiscardable.mockResolvedValue(uniqueResidue());
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.settingsFor('S1').resume_session_id).toBe('session-1');
+    expect(latestAttempt(env)).toMatchObject({
+      status: 'running',
+      resumed_from: 'prior'
+    });
+    expect(env.worktree.add).not.toHaveBeenCalled();
+    expect(env.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'stale_work_auto',
+        summary: '잔재 자동 처분 · resume · resume_available'
+      })
+    );
+    expect(env.append).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'dispatched', seq: 'resume' })
+    );
+  });
+
+  test('continues on the residue instead of resuming when its HEAD differs', async () => {
+    const env = returnEnv();
+    seedPrior(env, waitingPrior({ head_oid: 'd'.repeat(40) }));
+    env.worktree.removeIfDiscardable.mockResolvedValue(uniqueResidue());
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.settingsFor('S1').resume_session_id).toBeUndefined();
+    expect(latestAttempt(env)).toMatchObject({ status: 'running' });
+    expect(latestAttempt(env)?.resumed_from).toBeNull();
+    expect(env.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'stale_work_auto',
+        summary: '잔재 자동 처분 · continue · dirty_unique'
+      })
+    );
+  });
+
+  describe('judgePrerequisiteWait records the worktree HEAD (D3)', () => {
+    /**
+     * A git seam that answers the bead branch tip, so the dispatch records a
+     * `head_oid` the wait judgment could leave untouched.
+     */
+    function branchTipGit() {
+      return vi.fn(async (/** @type {string[]} */ args) => {
+        if (args.includes('--abbrev-ref')) {
+          return { code: 0, stdout: 'S1\n', stderr: '' };
+        }
+        if (String(args.at(-1)).includes('refs/heads/S1')) {
+          return { code: 0, stdout: `${BASE}\n`, stderr: '' };
+        }
+        return { code: 1, stdout: '', stderr: '' };
+      });
+    }
+
+    /**
+     * @param {any} observed
+     */
+    function judgedEnv(observed) {
+      const config = {
+        S1: {
+          route: 'quick_fix',
+          target_base: 'main',
+          status: 'open',
+          dependencies: [{ dependency_type: 'blocks', id: 'S9' }]
+        },
+        S9: { status: 'open' }
+      };
+      const env = setup({
+        config,
+        slots: 1,
+        gitRun: branchTipGit(),
+        worktree: { observeOwnedByBead: vi.fn(async () => observed) },
+        quickfixLanding: { settle: vi.fn(async () => ({ ok: true })) }
+      });
+      return { env, config };
+    }
+
+    /**
+     * @param {any} env
+     * @param {Record<string, any>} config
+     */
+    async function endOnWait(env, config) {
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      env.bd.statuses.S1 = 'in_progress';
+      config.S1.ready = false;
+
+      env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+      await flush();
+      await flush();
+      return env.store.snapshot(WS).attempts['S1-1000-1'];
+    }
+
+    test('writes the observed owned HEAD as head_oid', async () => {
+      const { env, config } = judgedEnv({
+        ok: true,
+        present: true,
+        path: '/wt/S1',
+        branch: 'S1',
+        head_sha: 'e'.repeat(40),
+        reason: null
+      });
+
+      const attempt = await endOnWait(env, config);
+
+      expect(attempt).toMatchObject({
+        status: 'waiting',
+        cause: 'prerequisite_unmet',
+        head_oid: 'e'.repeat(40)
+      });
+      expect(env.worktree.observeOwnedByBead).toHaveBeenCalledWith({
+        repo: '/repo',
+        bead_id: 'S1'
+      });
+    });
+
+    test.each([
+      [
+        'observation failed',
+        {
+          ok: false,
+          present: false,
+          path: null,
+          branch: null,
+          head_sha: null,
+          reason: 'git_error'
+        }
+      ],
+      [
+        'branch differs',
+        {
+          ok: true,
+          present: true,
+          path: '/wt/S1',
+          branch: 'other',
+          head_sha: 'e'.repeat(40),
+          reason: null
+        }
+      ]
+    ])('keeps the dispatch head_oid when the %s', async (_label, observed) => {
+      const { env, config } = judgedEnv(observed);
+
+      const attempt = await endOnWait(env, config);
+
+      expect(attempt).toMatchObject({
+        status: 'waiting',
+        cause: 'prerequisite_unmet',
+        head_oid: BASE
+      });
+    });
+  });
+
+  test('refuses a prerequisite wait resume that is not preclaimed as not_failed', async () => {
+    const env = returnEnv();
+    seedPrior(env, waitingPrior());
+
+    const result = await env.scheduler.resume(WS, 'prior');
+
+    expect(result).toEqual({ ok: false, reason: 'not_failed' });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  describe('resume prompt (D5)', () => {
+    /**
+     * @param {Record<string, any>} [overrides]
+     * @param {Record<string, any>} [prior_patch]
+     */
+    async function resumedPrompt(overrides = {}, prior_patch = {}) {
+      const env = returnEnv({
+        sessionLog: {
+          attach: vi.fn(),
+          read: () => [
+            {
+              type: 'assistant',
+              message: {
+                content: [{ type: 'text', text: '3파일 수정·검증 완료' }]
+              }
+            }
+          ]
+        },
+        ...overrides
+      });
+      seedPrior(
+        env,
+        waitingPrior({ log_path: '/logs/prior.jsonl', ...prior_patch })
+      );
+      env.worktree.removeIfDiscardable.mockResolvedValue(uniqueResidue());
+
+      await env.scheduler.tick(WS);
+
+      return { env, prompt: env.runner.spawnedBead('S1').prompt };
+    }
+
+    test('opens with the prerequisite return sentence, the block and the prior final report', async () => {
+      const { prompt } = await resumedPrompt();
+
+      expect(prompt).toContain(
+        '이전 무인 세션이 선행 대기(blocks)로 끝났고 그 선행이 닫혔다(bead S1).'
+      );
+      expect(prompt).toContain('\n\n## 선행 완료\n');
+      expect(prompt).toContain(
+        '이전 세션의 마지막 보고: 3파일 수정·검증 완료.'
+      );
+      expect(prompt).toContain(
+        '선행 완료는 구현 완료가 아니다 — 잔재 worktree·Bead·base를 다시 확인한 뒤 남은 단계(commit·구현 게이트·push)만 이 세션이 한다'
+      );
+    });
+
+    test('renders a same-rig blocker with its closed_at as ISO and its close_reason', async () => {
+      const readIssue = vi.fn(async (/** @type {string} */ bead_id) => ({
+        id: bead_id,
+        status: 'closed',
+        closed_at: Date.parse('2026-09-22T11:20:30.000Z'),
+        close_reason: '계약 정정 착지',
+        dependencies: []
+      }));
+      const env = returnEnv({
+        sessionLog: { attach: vi.fn(), read: () => [] }
+      });
+      env.bd.readIssue = readIssue;
+      seedPrior(env, waitingPrior());
+      env.worktree.removeIfDiscardable.mockResolvedValue(uniqueResidue());
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnedBead('S1').prompt).toContain(
+        'S9 · closed · closed_at 2026-09-22T11:20:30.000Z · close_reason 계약 정정 착지'
+      );
+      expect(readIssue).toHaveBeenCalledWith('S9');
+    });
+
+    test.each([
+      ['an unparsable string', 'not-a-date'],
+      ['an out-of-range number', 8.64e15 + 1]
+    ])(
+      'renders closed_at as unknown when the record carries %s and still launches',
+      async (_label, closed_at) => {
+        const env = returnEnv({
+          sessionLog: { attach: vi.fn(), read: () => [] }
+        });
+        env.bd.readIssue = vi.fn(async (/** @type {string} */ bead_id) => ({
+          id: bead_id,
+          status: 'closed',
+          closed_at,
+          close_reason: '착지',
+          dependencies: []
+        }));
+        seedPrior(env, waitingPrior());
+        env.worktree.removeIfDiscardable.mockResolvedValue(uniqueResidue());
+
+        await env.scheduler.tick(WS);
+
+        expect(env.runner.spawnedBead('S1').prompt).toContain(
+          'S9 · closed · closed_at 미상 · close_reason 착지'
+        );
+      }
+    );
+
+    test('renders a foreign blocker whose read fails as unknown and still launches', async () => {
+      foreign_query_seam.fn = async () => ({ ok: false, reason: 'bd_failed' });
+      const env = returnEnv({
+        sessionLog: { attach: vi.fn(), read: () => [] }
+      });
+      seedPrior(
+        env,
+        waitingPrior({
+          cause_detail: {
+            summary: '대기 · blocks:dotfiles-re1l',
+            blockers: [
+              { id: 'dotfiles-re1l', rig: 'dotfiles', status: 'open' }
+            ],
+            bead_status: 'in_progress'
+          }
+        })
+      );
+      env.worktree.removeIfDiscardable.mockResolvedValue(uniqueResidue());
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnedBead('S1').prompt).toContain(
+        'dotfiles-re1l · 미상 · closed_at 미상 · close_reason 미상'
+      );
+      expect(latestAttempt(env)).toMatchObject({
+        status: 'running',
+        resumed_from: 'prior'
+      });
+    });
+
+    test('renders a foreign blocker from the widened query answer', async () => {
+      foreign_query_seam.fn = async () => ({
+        ok: true,
+        status: 'closed',
+        closed_at: Date.parse('2026-09-22T12:00:00.000Z'),
+        close_reason: 'landed'
+      });
+      const env = returnEnv({
+        sessionLog: { attach: vi.fn(), read: () => [] }
+      });
+      seedPrior(
+        env,
+        waitingPrior({
+          cause_detail: {
+            summary: '대기 · blocks:dotfiles-re1l',
+            blockers: [
+              { id: 'dotfiles-re1l', rig: 'dotfiles', status: 'open' }
+            ],
+            bead_status: 'in_progress'
+          }
+        })
+      );
+      env.worktree.removeIfDiscardable.mockResolvedValue(uniqueResidue());
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnedBead('S1').prompt).toContain(
+        'dotfiles-re1l · closed · closed_at 2026-09-22T12:00:00.000Z · close_reason landed'
+      );
+    });
+
+    test('keeps the interrupted-session opening for an external_job wait', async () => {
+      const env = returnEnv({
+        sessionLog: { attach: vi.fn(), read: () => [] }
+      });
+      seedPrior(
+        env,
+        waitingPrior({
+          cause: 'external_job',
+          cause_detail: { summary: '외부 작업 대기', blockers: [] }
+        })
+      );
+
+      const result = await env.scheduler.resume(WS, 'prior', {
+        preclaimed: true
+      });
+
+      expect(result.ok).toBe(true);
+      const prompt = env.runner.spawnedBead('S1').prompt;
+      expect(prompt).toContain(
+        '이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead S1).'
+      );
+      expect(prompt).not.toContain('## 선행 완료');
+    });
+  });
+
+  describe('preflight preserve (§4.1)', () => {
+    test('removes a discardable worktree without preserve when only a prerequisite wait candidate exists', async () => {
+      const env = returnEnv();
+      seedPrior(env, waitingPrior());
+      env.worktree.removeIfDiscardable.mockResolvedValue({
+        ok: true,
+        removed: true,
+        reason: null
+      });
+
+      await env.scheduler.tick(WS);
+
+      expect(env.worktree.removeIfDiscardable).toHaveBeenCalledWith({
+        repo: '/repo',
+        bead_id: 'S1',
+        base: BASE
+      });
+      expect(env.worktree.add).toHaveBeenCalledTimes(1);
+      expect(latestAttempt(env)).toMatchObject({ status: 'running' });
+      expect(latestAttempt(env)?.resumed_from).toBeNull();
+    });
+
+    test('keeps preserve on when a failed candidate exists alongside', async () => {
+      const env = returnEnv();
+      seedPrior(env, waitingPrior());
+      seedPrior(
+        env,
+        waitingPrior({
+          attempt_id: 'failed-prior',
+          status: 'failed',
+          cause: 'session_failed:reported_failure',
+          cause_detail: { summary: '실패' },
+          head_oid: 'd'.repeat(40),
+          session_id: 'session-2',
+          dismissed_at: 900
+        })
+      );
+      env.worktree.removeIfDiscardable.mockResolvedValue({
+        ok: true,
+        removed: false,
+        reason: null
+      });
+
+      await env.scheduler.tick(WS);
+
+      expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+      expect(env.worktree.removeIfDiscardable).toHaveBeenNthCalledWith(1, {
+        repo: '/repo',
+        bead_id: 'S1',
+        base: BASE,
+        preserve: true
+      });
+    });
+  });
+
+  describe('refusal ladder (§4.4)', () => {
+    test('falls to continue in the same pass when resume refuses on runner_mismatch', async () => {
+      const env = returnEnv({}, { model: 'sol' });
+      seedPrior(env, waitingPrior());
+      env.worktree.removeIfDiscardable.mockResolvedValue(uniqueResidue());
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.settingsFor('S1').resume_session_id).toBeUndefined();
+      expect(latestAttempt(env)).toMatchObject({ status: 'running' });
+      expect(latestAttempt(env)?.resumed_from).toBeNull();
+      expect(env.append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'stale_work_auto',
+          summary: '잔재 자동 처분 · continue · resume_refused:runner_mismatch'
+        })
+      );
+      expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    });
+
+    test('falls to continue in the same pass when the recorded transcript is missing', async () => {
+      const env = returnEnv({
+        resolveSessionFile: () => ({
+          locality: 'missing',
+          file: null,
+          last_event_at: null
+        })
+      });
+      seedPrior(env, waitingPrior());
+      env.worktree.removeIfDiscardable.mockResolvedValue(uniqueResidue());
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.settingsFor('S1').resume_session_id).toBeUndefined();
+      expect(latestAttempt(env)).toMatchObject({ status: 'running' });
+      expect(latestAttempt(env)?.resumed_from).toBeNull();
+      expect(env.append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'stale_work_auto',
+          summary:
+            '잔재 자동 처분 · continue · resume_refused:transcript_missing'
+        })
+      );
+      expect(env.notify.attemptFailed).not.toHaveBeenCalled();
+    });
+
+    test('fails the residue when the resume launch itself fails', async () => {
+      const env = returnEnv({
+        makeRunner: () => ({
+          name: 'claude',
+          spawn() {
+            throw new Error('spawn failed');
+          }
+        })
+      });
+      seedPrior(env, waitingPrior());
+      env.worktree.removeIfDiscardable.mockResolvedValue(uniqueResidue());
+
+      await env.scheduler.tick(WS);
+
+      expect(latestAttempt(env)).toMatchObject({
+        status: 'failed',
+        cause: 'stale_work_unresolved',
+        cause_detail: { summary: 'spawn_failed' }
+      });
+    });
+
+    test('keeps failing the residue when a failed candidate refuses on runner_mismatch', async () => {
+      const env = returnEnv({}, { model: 'sol' });
+      seedPrior(
+        env,
+        waitingPrior({
+          status: 'failed',
+          cause: 'session_failed:reported_failure',
+          cause_detail: { summary: '실패' },
+          dismissed_at: 900
+        })
+      );
+      env.worktree.removeIfDiscardable.mockResolvedValue(uniqueResidue());
+
+      await env.scheduler.tick(WS);
+
+      expect(latestAttempt(env)).toMatchObject({
+        status: 'failed',
+        cause: 'stale_work_unresolved',
+        cause_detail: { summary: 'runner_mismatch' }
+      });
+      expect(env.runner.spawnOrder).toEqual([]);
+    });
+  });
+
+  test('dispatches a waiting bead the ordinary way when no residue exists', async () => {
+    const env = returnEnv();
+    seedPrior(env, waitingPrior());
+
+    await env.scheduler.tick(WS);
+
+    expect(env.worktree.add).toHaveBeenCalledTimes(1);
+    expect(latestAttempt(env)).toMatchObject({ status: 'running' });
+    expect(latestAttempt(env)?.resumed_from).toBeNull();
+    expect(env.runner.settingsFor('S1').resume_session_id).toBeUndefined();
+  });
+});

@@ -166,6 +166,45 @@ const resume_in_flight = new Set();
 const AUTO_SWITCH_5H_MAX_PCT = 80;
 const AUTO_SWITCH_7D_MAX_PCT = 90;
 const RESUME_HANDOFF_MAX_CHARS = 4_000;
+/**
+ * Render a `closed_at` value as ISO 8601: epoch ms or a parsable string
+ * become ISO; anything else — including an out-of-range number, which
+ * `toISOString` would throw on — is null (unknown).
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function isoTimestampOrNull(value) {
+  const millis =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && value.length > 0
+        ? Date.parse(value)
+        : NaN;
+  if (!Number.isFinite(millis)) {
+    return null;
+  }
+  const date = new Date(millis);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+/**
+ * `resume()` refusals that are eligibility judgments made before any launch
+ * (prerequisite-wait-residue §4.4). For a prerequisite-wait candidate these
+ * send the residue ladder to its next rung instead of recording a failure;
+ * every other reason (launch or state errors) still fails the residue.
+ */
+const PREREQUISITE_RESUME_REFUSALS = new Set([
+  'not_failed',
+  'prior_session_unavailable',
+  'transcript_missing',
+  'worktree_missing',
+  'runner_mismatch',
+  'continuation_decision_stale',
+  'already_resumed',
+  'no_progress'
+]);
+
 const RESUME_FINAL_MESSAGE_MAX_CHARS = 3_000;
 const STALE_PARK_REASONS = new Set([
   'spec_review_stale:revise',
@@ -2756,8 +2795,25 @@ export function createScheduler(deps) {
   }
 
   /**
+   * A prerequisite-wait ending (waiting-tier §4.1) whose session may be
+   * resumed once its blockers close (prerequisite-wait-residue D2).
+   *
+   * @param {Attempt|null|undefined} attempt
+   * @returns {boolean}
+   */
+  function isPrerequisiteWaitAttempt(attempt) {
+    return (
+      attempt?.status === 'waiting' && attempt.cause === 'prerequisite_unmet'
+    );
+  }
+
+  /**
    * Leaf attempts that can still resume the same Bead conversation. Identity is
    * checked after the worktree observation, before any automatic reclaim.
+   *
+   * A prerequisite-wait attempt is a candidate too (D2), but it never turns
+   * the preflight `preserve` on: a discardable worktree left by such an ending
+   * is ordinary dispatch, and only a `unique` residue can be resumed.
    *
    * @param {string} workspace
    * @param {string} bead_id
@@ -2779,7 +2835,8 @@ export function createScheduler(deps) {
         (attempt.status === 'failed' ||
           attempt.status === 'orphaned' ||
           attempt.status === 'paused' ||
-          (attempt.status === 'waiting' && attempt.cause === 'external_job')) &&
+          (attempt.status === 'waiting' && attempt.cause === 'external_job') ||
+          isPrerequisiteWaitAttempt(attempt)) &&
         attempt.cleanup_diagnosis !== true &&
         typeof attempt.session_id === 'string' &&
         attempt.session_id.length > 0 &&
@@ -2808,8 +2865,12 @@ export function createScheduler(deps) {
       return null;
     }
     return (
-      candidates.find((attempt) => attempt.head_oid === identity.head_sha) ||
-      null
+      candidates.find(
+        (attempt) =>
+          attempt.head_oid === identity.head_sha &&
+          (!isPrerequisiteWaitAttempt(attempt) ||
+            observation.state === 'unique')
+      ) || null
     );
   }
 
@@ -5296,7 +5357,9 @@ export function createScheduler(deps) {
    * @param {string} bead_id
    * @param {import('./failure-class.js').FailureClassification} classification
    * @param {any} cause_detail
-   * @param {{ moot?: boolean, bead_status?: string|null, awaiting_user?: string|null, repo?: string|null, at?: number }} [options]
+   * @param {{ moot?: boolean, bead_status?: string|null, awaiting_user?: string|null, repo?: string|null, at?: number, head_oid?: string }} [options]
+   * `head_oid` is the owned worktree HEAD a proven prerequisite wait observed
+   * (prerequisite-wait-residue D3); the residue resume matches identity on it.
    */
   function settleFailureTier(
     workspace,
@@ -5496,6 +5559,10 @@ export function createScheduler(deps) {
                 }
               }
             : {}),
+          ...(typeof options.head_oid === 'string' &&
+          options.head_oid.length > 0
+            ? { head_oid: options.head_oid }
+            : {}),
           finished_at: at
         }
       });
@@ -5651,11 +5718,12 @@ export function createScheduler(deps) {
    * (UI-2o4z §2); the classifier's `summary` is merged into it here.
    * @param {{ moot?: boolean, verdict?: any, bead_status?: string|null,
    *   pr_url?: string|null, awaiting_user?: string|null,
-   *   tier_hint?: 'waiting' }} [options]
+   *   tier_hint?: 'waiting', head_oid?: string }} [options]
    * `verdict`/`bead_status`/`pr_url`/`awaiting_user` are the classifier's
    * inputs (§3.1): without them a successful-but-undelivered ending cannot be
    * told apart from a park, so only the paths that HAVE them pass them.
-   * `tier_hint` is carried only by the server's proven wait judgments.
+   * `tier_hint` is carried only by the server's proven wait judgments, and
+   * `head_oid` only by the prerequisite wait that observed its worktree (D3).
    */
   async function failAttempt(
     workspace,
@@ -5762,7 +5830,10 @@ export function createScheduler(deps) {
         moot: options.moot === true,
         bead_status: options.bead_status ?? null,
         awaiting_user: options.awaiting_user ?? null,
-        at
+        at,
+        ...(typeof options.head_oid === 'string' && options.head_oid.length > 0
+          ? { head_oid: options.head_oid }
+          : {})
       }
     );
 
@@ -7181,6 +7252,7 @@ export function createScheduler(deps) {
     if (proven === null) {
       return false;
     }
+    const head_oid = await prerequisiteWaitHeadOid(workspace, attempt_id);
     await failAttempt(
       workspace,
       attempt_id,
@@ -7188,11 +7260,53 @@ export function createScheduler(deps) {
       prior,
       'prerequisite_unmet',
       { blockers: proven.blockers },
-      { verdict, bead_status: proven.bead_status, tier_hint: 'waiting' }
+      {
+        verdict,
+        bead_status: proven.bead_status,
+        tier_hint: 'waiting',
+        ...(head_oid ? { head_oid } : {})
+      }
     );
     notifyChanged(workspace);
     await tick(workspace);
     return true;
+  }
+
+  /**
+   * The HEAD the wait leaves behind (prerequisite-wait-residue D3): the owned
+   * worktree on the bead's own branch, read at settlement so a session that
+   * committed still matches its residue on return. Anything short of that
+   * observation answers null and the attempt keeps its dispatch `head_oid`.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {Promise<string|null>}
+   */
+  async function prerequisiteWaitHeadOid(workspace, attempt_id) {
+    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    const repo = attempt?.repo;
+    const bead_id = attempt?.bead_id;
+    if (
+      typeof repo !== 'string' ||
+      repo.length === 0 ||
+      typeof bead_id !== 'string' ||
+      typeof deps.worktree.observeOwnedByBead !== 'function'
+    ) {
+      return null;
+    }
+    try {
+      const owned = await deps.worktree.observeOwnedByBead({ repo, bead_id });
+      return owned.ok &&
+        owned.present &&
+        owned.branch === branchForBead(bead_id) &&
+        typeof owned.head_sha === 'string' &&
+        owned.head_sha.length > 0
+        ? owned.head_sha
+        : null;
+    } catch (err) {
+      log('prerequisite wait head observation failed for %s: %o', bead_id, err);
+      return null;
+    }
   }
 
   /**
@@ -9764,6 +9878,11 @@ export function createScheduler(deps) {
           bead_id,
           snap.repo
         );
+        // A prerequisite-wait candidate alone leaves a discardable worktree
+        // to ordinary removal (§4.1); only a `unique` residue is kept for it.
+        const preserve = resume_candidates.some(
+          (attempt) => !isPrerequisiteWaitAttempt(attempt)
+        );
         /** @type {WorktreeObservation} */
         let residue;
         try {
@@ -9771,7 +9890,7 @@ export function createScheduler(deps) {
             repo: snap.repo,
             bead_id,
             base: cut_base,
-            ...(resume_candidates.length > 0 ? { preserve: true } : {})
+            ...(preserve ? { preserve: true } : {})
           });
         } catch {
           residue = unknownStaleWorkObservation(
@@ -10346,14 +10465,24 @@ export function createScheduler(deps) {
           recordStaleDisposition(bead_id, residue, 'resume');
           return result;
         }
-        return failStaleResidue(
-          workspace,
-          bead_id,
-          snap,
-          residue,
-          result.reason || 'resume_failed'
-        );
-      } else if (residue.can_continue) {
+        const reason = result.reason || 'resume_failed';
+        if (
+          !isPrerequisiteWaitAttempt(resume_attempt) ||
+          !PREREQUISITE_RESUME_REFUSALS.has(reason)
+        ) {
+          return failStaleResidue(workspace, bead_id, snap, residue, reason);
+        }
+        // §4.4: an eligibility refusal of a prerequisite-wait candidate is not
+        // a failure — the same pass continues down the ladder without the
+        // candidate, and the refusal reason becomes the disposition cause.
+        resume_attempt = null;
+        residue = {
+          ...describeStaleResidue(observation, bead_id, null),
+          cause: `resume_refused:${reason}`
+        };
+        failure = residue.cause;
+      }
+      if (!owner_reason && residue.can_continue) {
         if (continue_dispatch) {
           try {
             await continue_dispatch(residue);
@@ -10377,7 +10506,7 @@ export function createScheduler(deps) {
           stale_rechecked: pass > 0
         });
         return { ok: true };
-      } else if (residue.can_backup_fresh) {
+      } else if (!owner_reason && residue.can_backup_fresh) {
         let result;
         try {
           result = await deps.backupFreshResidue?.(residue.identity, {
@@ -11347,7 +11476,8 @@ export function createScheduler(deps) {
    * facts leave the sentence out entirely.
    *
    * @param {string} bead_id
-   * @param {string|null} prior_status
+   * @param {string|null} prior_status - The prior status, or the
+   * `prerequisite_return` token a prerequisite-wait return passes (D5).
    * @param {{ prior_attempt_id: string, cause: string, exec_receipt: string|null, impl_review: string|null, remote: string, branch: string, account_usage: string[], prior_final_message: string|null }|null} [facts]
    * @returns {string}
    */
@@ -11355,7 +11485,9 @@ export function createScheduler(deps) {
     const opening =
       prior_status === 'paused'
         ? `이전 무인 세션이 사용자 요청으로 일시정지되었다(bead ${bead_id}).`
-        : `이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead ${bead_id}).`;
+        : prior_status === 'prerequisite_return'
+          ? `이전 무인 세션이 선행 대기(blocks)로 끝났고 그 선행이 닫혔다(bead ${bead_id}).`
+          : `이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead ${bead_id}).`;
     const ancestor = facts
       ? [
           `이전 attempt ${facts.prior_attempt_id}는 ${facts.cause}로 끝났다(exec_receipt=${facts.exec_receipt ?? '없음'}, impl_review=${facts.impl_review ?? '없음'}).`,
@@ -11375,6 +11507,76 @@ export function createScheduler(deps) {
       '같은 워크트리에서 세션을 이어 진행한다. 먼저 워크트리·bead 상태·PR/머지 현황을 직접 점검해 어디까지 진행됐는지 확인하라.',
       '이미 끝난 단계는 반복하지 말고, 남은 계약 단계만 마무리한 뒤 종료하라.'
     ].join(' ');
+  }
+
+  /**
+   * The `## 선행 완료` block a prerequisite-wait return carries (D5): one line
+   * per recorded blocker with the closing facts read back from its owning rig,
+   * then the reminder that a closed prerequisite is not a finished
+   * implementation. Every read failure renders `미상`; none blocks the launch.
+   *
+   * @param {string} workspace
+   * @param {any} prior - The waiting attempt record.
+   * @returns {Promise<string>}
+   */
+  async function prerequisiteReturnBlock(workspace, prior) {
+    const blockers = Array.isArray(prior?.cause_detail?.blockers)
+      ? /** @type {Array<{ id?: unknown, rig?: unknown }>} */ (
+          prior.cause_detail.blockers
+        )
+      : [];
+    /** @type {string[]} */
+    const lines = [];
+    for (const blocker of blockers) {
+      if (typeof blocker?.id !== 'string' || blocker.id.length === 0) {
+        continue;
+      }
+      const facts = await blockerCloseFacts(workspace, blocker.id, blocker.rig);
+      lines.push(
+        `${blocker.id} · ${facts.status ?? '미상'} · closed_at ${facts.closed_at ?? '미상'} · close_reason ${facts.close_reason ?? '미상'}`
+      );
+    }
+    return [
+      '## 선행 완료',
+      ...lines,
+      '선행 완료는 구현 완료가 아니다 — 잔재 worktree·Bead·base를 다시 확인한 뒤 남은 단계(commit·구현 게이트·push)만 이 세션이 한다'
+    ].join('\n');
+  }
+
+  /**
+   * One blocker's closing facts through the SAME readers the wait judgment
+   * uses: `bd.readIssue` for a same-rig id, `queryForeignBlockerStatus` for a
+   * foreign one (`rig` set). A null field is unknown, never an inference.
+   *
+   * @param {string} workspace
+   * @param {string} blocker_id
+   * @param {unknown} rig - The blocker's rig prefix, null for the same rig.
+   * @returns {Promise<{ status: string|null, closed_at: string|null, close_reason: string|null }>}
+   */
+  async function blockerCloseFacts(workspace, blocker_id, rig) {
+    /** @type {{ status?: unknown, closed_at?: unknown, close_reason?: unknown }|null} */
+    let record = null;
+    try {
+      if (typeof rig === 'string' && rig.length > 0) {
+        const found = await queryForeignBlockerStatus(blocker_id, workspace);
+        record = found.ok === true ? found : null;
+      } else if (typeof deps.bd.readIssue === 'function') {
+        record = await deps.bd.readIssue(blocker_id);
+      }
+    } catch (err) {
+      log('blocker close facts read failed for %s: %o', blocker_id, err);
+      record = null;
+    }
+    const status = record?.status;
+    const close_reason = record?.close_reason;
+    return {
+      status: typeof status === 'string' && status.length > 0 ? status : null,
+      closed_at: isoTimestampOrNull(record?.closed_at),
+      close_reason:
+        typeof close_reason === 'string' && close_reason.length > 0
+          ? close_reason
+          : null
+    };
   }
 
   /**
@@ -12121,7 +12323,8 @@ export function createScheduler(deps) {
         !(
           prior.status === 'waiting' &&
           (prior.cause === 'base_moved' ||
-            (prior.cause === 'external_job' &&
+            ((prior.cause === 'external_job' ||
+              prior.cause === 'prerequisite_unmet') &&
               continuation.preclaimed === true))
         ) &&
         !(ladder_prior_attempt && prior.status === 'retry_wait'))
@@ -12256,6 +12459,18 @@ export function createScheduler(deps) {
     if (lane_mismatch) {
       return lane_mismatch;
     }
+    // A prerequisite-wait return is a resume or nothing (§4.4): the automatic
+    // continuation would otherwise fall back to a fresh session and report
+    // success, spending `resumed_from` without ever reaching the ladder.
+    if (
+      isPrerequisiteWaitAttempt(prior) &&
+      (typeof prior.session_id !== 'string' ||
+        prior.session_id.length === 0 ||
+        (prior.runner !== 'claude' && prior.runner !== 'codex') ||
+        !transcriptPresent(prior.runner, prior.session_id, prior))
+    ) {
+      return { ok: false, reason: 'transcript_missing' };
+    }
     const base_moved_resume =
       prior.status === 'waiting' &&
       prior.cause === 'base_moved' &&
@@ -12304,6 +12519,10 @@ export function createScheduler(deps) {
       return { ok: false, reason };
     }
     const ancestor_facts = await resumeAncestorFacts(workspace, prior, bead_id);
+    const prerequisite_return = isPrerequisiteWaitAttempt(prior);
+    const prerequisite_block = prerequisite_return
+      ? await prerequisiteReturnBlock(workspace, prior)
+      : null;
     /**
      * Render after continuation resolution so prior prose enters only once.
      *
@@ -12311,13 +12530,16 @@ export function createScheduler(deps) {
      * @param {any} resolved
      */
     const prompt = (_attempt_id, resolved) => {
-      const default_prompt = resumePrompt(
+      const base_prompt = resumePrompt(
         bead_id,
-        prior.status ?? null,
+        prerequisite_return ? 'prerequisite_return' : (prior.status ?? null),
         ancestor_facts && resolved.handoff_instructions
           ? { ...ancestor_facts, prior_final_message: null }
           : ancestor_facts
       );
+      const default_prompt = prerequisite_block
+        ? `${base_prompt}\n\n${prerequisite_block}`
+        : base_prompt;
       return typeof continuation.instructions === 'string' &&
         continuation.instructions.length > 0
         ? `${default_prompt}\n\n사용자가 이번 재개에 추가 지침을 남겼다. 아래 지침이 위 기본 절차와 충돌하면 지침을 우선하라.\n${continuation.instructions}`

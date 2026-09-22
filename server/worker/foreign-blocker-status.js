@@ -400,7 +400,11 @@ export function foreignBlockerClosedAtFor(bead_id, owner_root, requester_root) {
 }
 
 /**
- * @typedef {{ ok: true, status: string }
+ * `closed_at` is epoch ms through {@link closedAtOfShow} (null when absent or
+ * unparsable); `close_reason` is the rig's recorded reason or null. Both are
+ * readback for a resume prompt only — the status judgment reads `status`.
+ *
+ * @typedef {{ ok: true, status: string, closed_at: number|null, close_reason: string|null }
  *   | { ok: false, reason: 'no_rig'|'bd_failed'|'unparsable' }} ForeignBlockerQuery
  */
 
@@ -506,7 +510,20 @@ export async function queryForeignBlockerStatus(
   if (typeof status !== 'string' || status.length === 0) {
     return { ok: false, reason: 'unparsable' };
   }
-  return { ok: true, status };
+  const close_reason = /** @type {any} */ (shown.data).close_reason;
+  // The shared normalizer answers 0 for an unparsable timestamp; a resume
+  // prompt must show that as unknown, not as the epoch.
+  const closed_at = closedAtOfShow(shown);
+  return {
+    ok: true,
+    status,
+    closed_at:
+      typeof closed_at === 'number' && closed_at > 0 ? closed_at : null,
+    close_reason:
+      typeof close_reason === 'string' && close_reason.length > 0
+        ? close_reason
+        : null
+  };
 }
 
 /**
