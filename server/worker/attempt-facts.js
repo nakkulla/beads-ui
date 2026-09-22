@@ -19,6 +19,7 @@
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { catalogModelId } from '../../app/utils/execution-defaults.js';
 
 /**
  * @typedef {(args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>} FactsGitRunner
@@ -254,7 +255,7 @@ export function resolveReviewerPreset(token_layers, defaults) {
   }
   return {
     token,
-    model: entry.model,
+    model: catalogModelId(entry.model, null, defaults.session, null),
     effort: entry.effort,
     digest: typeof defaults.digest === 'string' ? defaults.digest : null
   };

@@ -1364,7 +1364,7 @@ export function createExecutionPane(mount_element, binding) {
 
   /**
    * The catalog token a review gate's reviewer stands for. A reviewer name the
-   * projection maps to a model id resolves through that map, so the row's
+   * projection maps to a catalog alias resolves through that map, so the row's
    * provider is the one that will actually run it. `self`, `skip`, and an unset
    * gate name no runner at all.
    *

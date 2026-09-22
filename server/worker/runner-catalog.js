@@ -104,6 +104,19 @@ const BUILTIN = {
         speed_tiers: ['default', 'fast']
       },
       sol: {
+        id: 'gpt-6-sol',
+        efforts: ['low', 'medium', 'high', 'xhigh'],
+        orchestration_efforts: [
+          'low',
+          'medium',
+          'high',
+          'xhigh',
+          'max',
+          'ultra'
+        ],
+        speed_tiers: ['default', 'fast']
+      },
+      'sol-5.6': {
         id: 'gpt-5.6-sol',
         efforts: ['low', 'medium', 'high', 'xhigh'],
         orchestration_efforts: [

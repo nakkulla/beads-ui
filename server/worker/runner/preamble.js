@@ -222,7 +222,7 @@ export function attemptFactsDirective(facts) {
       ? `, digest=${facts.reviewer_preset.digest}`
       : '';
     lines.push(
-      `- 리뷰어 프리셋: ${facts.reviewer_preset.token} → ${facts.reviewer_preset.model}/${facts.reviewer_preset.effort} (source=핀 사본 review.reviewers${digest})`
+      `- 리뷰어 프리셋: ${facts.reviewer_preset.token} → ${facts.reviewer_preset.model}/${facts.reviewer_preset.effort} (source=핀 사본 review.reviewers·implementation.model_catalog${digest})`
     );
   }
   lines.push('', '이미 되어 있음:', '');

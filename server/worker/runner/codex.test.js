@@ -55,7 +55,7 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
       'exec',
       '--json',
       '-m',
-      'gpt-5.6-sol'
+      'gpt-6-sol'
     ]);
   });
 
@@ -117,7 +117,7 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
       'thread-1',
       '--json',
       '-m',
-      'gpt-5.6-sol'
+      'gpt-6-sol'
     ]);
     expect(
       built.args.filter((arg) => arg === 'service_tier="fast"')
@@ -139,7 +139,7 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
       'thread-1',
       '--json',
       '-m',
-      'gpt-5.6-sol'
+      'gpt-6-sol'
     ]);
   });
 
@@ -335,7 +335,7 @@ describe('runner/codex catalog entry override (worker-multi-provider-runner §B)
   test('a config command reaches the spawn command', () => {
     const spec = codexSpec({
       command: '/opt/homebrew/bin/codex',
-      models: { sol: { id: 'gpt-5.6-sol' } },
+      models: { sol: { id: 'gpt-6-sol' } },
       efforts: []
     });
 
@@ -954,7 +954,7 @@ describe('runner/codex fixture replay through the session engine', () => {
         spawn_impl,
         catalog_entry: {
           command: '/opt/codex',
-          models: { sol: { id: 'gpt-5.6-sol' } },
+          models: { sol: { id: 'gpt-6-sol' } },
           efforts: []
         }
       }

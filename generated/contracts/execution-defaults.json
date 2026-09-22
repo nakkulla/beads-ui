@@ -5,11 +5,11 @@
     "default": "astra",
     "reviewers": {
       "codex": {
-        "model": "gpt-5.6-sol",
+        "model": "sol",
         "effort": "xhigh"
       },
       "astra": {
-        "model": "gpt-6-astra",
+        "model": "astra",
         "effort": "xhigh"
       },
       "opus": {
@@ -19,6 +19,20 @@
       "fable": {
         "model": "fable",
         "effort": "high"
+      }
+    },
+    "runtime_transports": {
+      "claude": {
+        "codex": "codex-runner-bridge",
+        "astra": "codex-runner-bridge",
+        "opus": "claude-agent-readonly",
+        "fable": "claude-agent-readonly"
+      },
+      "codex": {
+        "codex": "codex-native-spawn",
+        "astra": "codex-native-spawn",
+        "opus": "claude-runner",
+        "fable": "claude-runner"
       }
     }
   },
@@ -48,9 +62,14 @@
       ],
       "codex": {
         "astra": "gpt-6-astra",
-        "sol": "gpt-5.6-sol",
+        "sol": "gpt-6-sol",
         "terra": "gpt-5.6-terra",
         "luna": "gpt-5.6-luna"
+      }
+    },
+    "model_catalog_fallback": {
+      "codex": {
+        "sol": "gpt-5.6-sol"
       }
     },
     "exact_model_default_effort": {

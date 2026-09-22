@@ -114,7 +114,7 @@ function errorEvent(message, raw) {
 }
 
 /**
- * Expand a catalog short name (`sol`) into the CLI model id (`gpt-5.6-sol`). A
+ * Expand a catalog short name (`sol`) into the CLI model id (`gpt-6-sol`). A
  * name the catalog does not know passes through verbatim — the catalog is the
  * curated list, not an allowlist, so a model added on the CLI side is usable
  * before it is catalogued.

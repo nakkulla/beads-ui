@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
+import pin from '../../generated/contracts/execution-defaults.json' with { type: 'json' };
 import {
   ACTIVE_RUNNERS,
   builtinCatalog,
@@ -10,6 +11,53 @@ import {
   modelSpeedTiers,
   resolveCatalog
 } from './runner-catalog.js';
+
+describe('worker/runner-catalog parity with the pinned execution defaults', () => {
+  test('matches every pinned codex alias id in the builtin table', () => {
+    const codex_models = builtinCatalog().codex.models;
+
+    const pairs = Object.entries(pin.implementation.model_catalog.codex);
+
+    for (const [alias, id] of pairs) {
+      expect(codex_models[alias]?.id, alias).toBe(id);
+    }
+  });
+
+  test('carries every pinned claude alias in the builtin table', () => {
+    const claude_models = builtinCatalog().claude.models;
+
+    const aliases = pin.implementation.model_catalog.claude;
+
+    for (const alias of aliases) {
+      expect(Object.keys(claude_models), alias).toContain(alias);
+    }
+  });
+
+  test('indexes every pinned reviewer model alias', () => {
+    const { model_index } = resolveCatalog();
+
+    const aliases = Object.values(pin.review.reviewers).map(
+      (entry) => entry.model
+    );
+
+    for (const alias of aliases) {
+      expect(Object.keys(model_index), alias).toContain(alias);
+    }
+  });
+
+  test('keeps sol-5.6 as the version-pinned gpt-5.6-sol with sol capabilities', () => {
+    const codex_models = builtinCatalog().codex.models;
+
+    const pinned = codex_models['sol-5.6'];
+
+    expect(pinned.id).toBe('gpt-5.6-sol');
+    expect(pinned.efforts).toEqual(codex_models.sol.efforts);
+    expect(pinned.orchestration_efforts).toEqual(
+      codex_models.sol.orchestration_efforts
+    );
+    expect(pinned.speed_tiers).toEqual(codex_models.sol.speed_tiers);
+  });
+});
 
 describe('worker/runner-catalog builtin defaults', () => {
   test('lists claude and codex as the active runners', () => {
@@ -61,7 +109,7 @@ describe('worker/runner-catalog builtin defaults', () => {
 
     expect(runners.codex.command).toBe('codex');
     expect(runners.codex.models.astra.id).toBe('gpt-6-astra');
-    expect(runners.codex.models.sol.id).toBe('gpt-5.6-sol');
+    expect(runners.codex.models.sol.id).toBe('gpt-6-sol');
     expect(runners.codex.models.terra.id).toBe('gpt-5.6-terra');
     expect(runners.codex.models.luna.id).toBe('gpt-5.6-luna');
   });
@@ -132,6 +180,7 @@ describe('worker/runner-catalog builtin defaults', () => {
       fable: 'claude',
       astra: 'codex',
       sol: 'codex',
+      'sol-5.6': 'codex',
       terra: 'codex',
       luna: 'codex'
     });
@@ -377,7 +426,7 @@ describe('worker/runner-catalog fail-quiet validation', () => {
     });
 
     expect(runners.codex.models.astra.id).toBe('gpt-6-astra');
-    expect(runners.codex.models.sol.id).toBe('gpt-5.6-sol');
+    expect(runners.codex.models.sol.id).toBe('gpt-6-sol');
     expect(warn).toHaveBeenCalledTimes(1);
   });
 

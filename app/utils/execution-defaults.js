@@ -172,7 +172,7 @@ function layeredValue(key, pin, global_values, base) {
  * @param {Record<string, any>|null} session
  * @param {Record<string, any>|null} runner_catalog
  */
-function implementationModelId(token, runtime, session, runner_catalog) {
+export function catalogModelId(token, runtime, session, runner_catalog) {
   const models = session?.implementation?.model_catalog;
   if (runtime && isRecord(models?.[runtime])) {
     const mapped = usableString(models[runtime][token]);
@@ -213,9 +213,13 @@ function implementationModelId(token, runtime, session, runner_catalog) {
 /**
  * @param {string} token
  * @param {Record<string, any>|null} session
+ * @param {Record<string, any>|null} runner_catalog
  */
-function reviewerModelId(token, session) {
-  return usableString(session?.review?.reviewers?.[token]?.model) || token;
+function reviewerModelId(token, session, runner_catalog) {
+  const alias = usableString(session?.review?.reviewers?.[token]?.model);
+  return alias === null
+    ? token
+    : catalogModelId(alias, null, session, runner_catalog);
 }
 
 /**
@@ -451,7 +455,11 @@ export function resolveExecutionSettings(input) {
           result(chosen.value, chosen.source, '', null, 'explicit')
         );
       } else {
-        const full_value = reviewerModelId(chosen.value, session);
+        const full_value = reviewerModelId(
+          chosen.value,
+          session,
+          runner_catalog
+        );
         rows[model_key] = result(
           chosen.value,
           chosen.source,
@@ -744,7 +752,7 @@ export function resolveExecutionSettings(input) {
       ) {
         rows.impl_model = incompatibleResult(rows.impl_model);
       } else {
-        const full_value = implementationModelId(
+        const full_value = catalogModelId(
           model_value,
           runtime,
           session,
@@ -949,7 +957,7 @@ export function resolveExecutionSettings(input) {
       const full_value =
         chosen.source === 'base'
           ? usableString(orchestration.model_id) || chosen.value
-          : implementationModelId(chosen.value, null, session, runner_catalog);
+          : catalogModelId(chosen.value, null, session, runner_catalog);
       rows[key] = result(
         chosen.value,
         chosen.source,
@@ -1009,7 +1017,7 @@ export function resolveExecutionSettings(input) {
         'default'
       );
     } else if (quick_fix_derived.runtime !== null) {
-      const full_value = implementationModelId(
+      const full_value = catalogModelId(
         quick_fix_model,
         quick_fix_derived.runtime,
         session,
