@@ -10333,6 +10333,42 @@ describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
     );
   }
 
+  test('reads the PR wait lane origin from the durable entry while a resolution tile runs', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1, serial_lane_id: 's2' }],
+        pr_observations: {
+          'RD-1': {
+            pr: {
+              number: 304,
+              url: 'https://github.com/o/r/pull/304',
+              state: 'OPEN',
+              head_sha: 'a'.repeat(40)
+            },
+            verify: null,
+            error: null,
+            observed_at: 1,
+            gate: CONFLICTING
+          }
+        },
+        attempts: resolutionAttempt({ serial_lane_id: null })
+      })
+    );
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(
+      card(mount).querySelector('.worker-chips--coords .ctl-chip--lane')
+        ?.textContent
+    ).toBe('직렬 2');
+  });
+
   test('marks a running resolution tile 충돌 해소', () => {
     const mount = mountBoard({ attempts: resolutionAttempt() });
 

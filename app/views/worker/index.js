@@ -41,7 +41,10 @@ import {
   normalizeDoneRange
 } from '../../data/closed-range.js';
 import { createListSelectors } from '../../data/list-selectors.js';
-import { isImplementationAttempt } from '../../utils/active-attempts.js';
+import {
+  isImplementationAttempt,
+  latestImplementationAttempts
+} from '../../utils/active-attempts.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { createChipPresetToggle } from '../../utils/chip-preset-binding.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
@@ -78,6 +81,7 @@ import {
   normalizePriorityFilter,
   normalizeRouteFilter,
   normalizeTypeFilter,
+  prWaitLaneOriginFields,
   resolvesConflict,
   toggleLabelFilter,
   togglePriorityFilter,
@@ -3335,6 +3339,9 @@ export function createWorkerView(mount_element, options = {}) {
         merge_entries.set(entry.bead_id, entry);
       }
     }
+    // 레인 출처는 durable 항목에서 판정한다 (UI-us7l §3): 충돌 해소 세션이 도는
+    // bead는 `item`이 실행 타일이라 그 attempt의 레인은 PR의 레인이 아니다.
+    const last_impl_by_bead = latestImplementationAttempts(attempts);
     const rows = (Array.isArray(q.pr_wait) ? q.pr_wait : []).map(
       (/** @type {any} */ e) => {
         const item = item_by_id.get(e.bead_id);
@@ -3417,7 +3424,7 @@ export function createWorkerView(mount_element, options = {}) {
         );
         return {
           ...row,
-          ...(item?.lane_origin ? { lane_origin: item.lane_origin } : {}),
+          ...prWaitLaneOriginFields(e, last_impl_by_bead),
           // 검색 판정은 레인 모델이 소유한다 (UI-6g3t §7). PR 대기 행은 행
           // 투영이 새로 만드는 객체라 그 키를 여기서 옮겨 실어야 하고, 검색이
           // 없으면 옮길 키도 없다 (fail-quiet).

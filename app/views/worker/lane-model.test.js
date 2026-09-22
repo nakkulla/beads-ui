@@ -9,6 +9,7 @@ import {
   buildLanes,
   lastImplementationStatus,
   latestTerminalAttempt,
+  prWaitLaneOriginFields,
   routeChipValue,
   validTime
 } from './lane-model.js';
@@ -19,6 +20,31 @@ const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
 
 describe('recorded lane origin (UI-us7l)', () => {
+  test('prefers the durable PR wait entry lane over the last implementation attempt', () => {
+    const last_impl_by_bead = new Map([
+      ['A-1', { attempt_id: 'impl', bead_id: 'A-1', serial_lane_id: null }]
+    ]);
+
+    const with_entry_lane = prWaitLaneOriginFields(
+      { bead_id: 'A-1', serial_lane_id: 's2' },
+      last_impl_by_bead
+    );
+    const without_entry_lane = prWaitLaneOriginFields(
+      { bead_id: 'A-1' },
+      last_impl_by_bead
+    );
+    const external = prWaitLaneOriginFields(
+      { bead_id: 'A-1', serial_lane_id: 's2', external: true },
+      last_impl_by_bead
+    );
+
+    expect(with_entry_lane).toEqual({
+      lane_origin: { kind: 'serial', index: 2 }
+    });
+    expect(without_entry_lane).toEqual({ lane_origin: { kind: 'parallel' } });
+    expect(external).toEqual({});
+  });
+
   test.each([
     ['s1', { kind: 'serial', index: 1 }],
     ['s5', { kind: 'serial', index: 5 }],

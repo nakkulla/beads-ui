@@ -119,6 +119,30 @@ function laneOriginFields(record) {
 }
 
 /**
+ * Lane origin of one PR wait row (UI-us7l §3): the durable `pr_wait` entry's own
+ * `serial_lane_id` first, else the bead's last implementation attempt. The
+ * durable entry wins because merge cleanup releases the attempt's lane binding
+ * (`releaseLandedLineageLanes`) while the entry keeps its lane. Exported so the
+ * Worker tab's PR wait projection reads the same judgment for an entry whose
+ * bead is claimed by a running conflict-resolution tile — there the lane item
+ * is the tile and its attempt is not the PR's. External entries carry nothing.
+ *
+ * @param {any} entry - durable `pr_wait` entry
+ * @param {Map<string, any>} last_impl_by_bead - `latestImplementationAttempts` result
+ * @returns {{lane_origin?: LaneOrigin}}
+ */
+export function prWaitLaneOriginFields(entry, last_impl_by_bead) {
+  if (!entry || typeof entry !== 'object' || entry.external === true) {
+    return {};
+  }
+  return laneOriginFields(
+    Object.hasOwn(entry, 'serial_lane_id')
+      ? entry
+      : last_impl_by_bead.get(entry.bead_id)
+  );
+}
+
+/**
  * 대기 진입 유예의 길이. 서버 `QUEUE_GRACE_MS`(`server/worker/scheduler.js`)를
  * 이름 그대로 비춘다 — 클라이언트는 `server/**`에서 import할 수 없다. 남은 초
  * 표시는 이 상수와 큐 항목의 `added_at` 하나로만 판정하므로 (UI-q1tg §3.3), 두
@@ -3613,13 +3637,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       pr_wait.push({
         ...base(bead_id),
         lane: 'pr_wait',
-        ...(external
-          ? {}
-          : laneOriginFields(
-              Object.hasOwn(entry, 'serial_lane_id')
-                ? entry
-                : last_impl_by_bead.get(bead_id)
-            )),
+        ...prWaitLaneOriginFields(entry, last_impl_by_bead),
         ...decoratedBlockedBy(bead_id),
         ...(receipt_badge_codes.length > 0
           ? { receipt_badge: { codes: receipt_badge_codes } }
