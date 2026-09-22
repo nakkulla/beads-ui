@@ -8483,6 +8483,27 @@ export function createScheduler(deps) {
           if (bench_succeeded) {
             await recordBenchVerify(workspace, attempt_id, bead_id, repo);
           }
+          if (
+            await judgePrerequisiteWait(
+              workspace,
+              attempt_id,
+              bead_id,
+              prior,
+              persisted_verdict ?? {
+                success: true,
+                reason: 'reconciled',
+                summary: null,
+                terminal_result: null,
+                exit: null,
+                blocked: false,
+                blocked_detail: null,
+                events: [],
+                raw: []
+              }
+            )
+          ) {
+            return;
+          }
           const settled = await settleQuickfixLanding(
             workspace,
             attempt_id,
