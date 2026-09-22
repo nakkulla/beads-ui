@@ -283,6 +283,60 @@ describe('worker console styles', () => {
     expect(declarations).toContain('text-overflow: ellipsis');
   });
 
+  // 좁은 화면의 머리줄은 말줄임 대신 줄을 넘긴다 (UI-c8kc). 같은 명시도의 기본
+  // `nowrap` 규칙보다 뒤에 서야 덮으므로 순서도 함께 본다.
+  test('wraps every card header row below 640px', () => {
+    const mediaStart = CSS.indexOf('/* ---------- Worker responsive (<=640px)');
+    const mq = CSS.slice(mediaStart);
+    const wrapRule =
+      mq.match(
+        /\n\s*:is\(\.worker-card__head, \.worker-mini__head, \.rtile__hd\)\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(wrapRule).toContain('flex-wrap: wrap');
+    for (const base_rule of [
+      '\n.worker-card__head {',
+      '\n.worker-mini__head {',
+      '\n.rtile__hd {'
+    ]) {
+      expect(CSS.indexOf(base_rule)).toBeGreaterThan(0);
+      expect(CSS.indexOf(base_rule)).toBeLessThan(mediaStart);
+    }
+  });
+
+  // 이 폭의 `.chip-popover`는 정적 블록이라 담는 `<details>`의 폭을 그대로 쓴다
+  // (UI-c8kc): 열린 대기 배지가 한 줄을 차지하지 않으면 팝업이 배지 폭으로 눌린다.
+  test('gives an open header wait badge its own line below 640px', () => {
+    const mq = CSS.slice(
+      CSS.indexOf('/* ---------- Worker responsive (<=640px)')
+    );
+    const openRule = mq.match(
+      /:is\(([^)]*)\)\s*:is\(\.wait-verdict, \.external-wait-summary\)\[open\]\s*{([^}]*)}/
+    );
+
+    for (const selector of [
+      '.worker-card__head',
+      '.worker-mini__head',
+      '.worker-mini__row1',
+      '.rtile__hd'
+    ]) {
+      expect(openRule?.[1] || '').toContain(selector);
+    }
+    expect(openRule?.[2] || '').toContain('flex-basis: 100%');
+  });
+
+  test('keeps an open header wait badge at its chip width below 640px', () => {
+    const mq = CSS.slice(
+      CSS.indexOf('/* ---------- Worker responsive (<=640px)')
+    );
+    const summaryRule =
+      mq.match(
+        /:is\(\.wait-verdict, \.external-wait-summary\)\[open\]\s*>\s*summary\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(summaryRule).toContain('width: fit-content');
+  });
+
   test('wraps candidate card footer items in narrow lanes', () => {
     const footRule =
       workerBlock.match(/(?:^|\n)\.worker-card__foot\s*{([^}]*)}/)?.[1] || '';

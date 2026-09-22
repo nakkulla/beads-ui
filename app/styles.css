@@ -8683,6 +8683,25 @@ button.detail-session__leg:focus-visible {
     min-width: 0;
   }
 
+  /* 좁은 화면의 머리줄은 말줄임 대신 줄을 넘긴다 (UI-c8kc): 칩은 다음 줄로
+     내려가고 조작 묶음은 자기가 선 줄의 오른쪽 끝에 남는다. 이 폭의
+     `.chip-popover`는 정적 블록이라 그 폭이 담는 `<details>`의 폭이다 — 열린
+     대기 배지가 한 줄을 통째로 차지해야 팝업이 카드 폭으로 펼쳐진다. */
+  :is(.worker-card__head, .worker-mini__head, .rtile__hd) {
+    flex-wrap: wrap;
+  }
+
+  :is(.worker-card__head, .worker-mini__head, .worker-mini__row1, .rtile__hd)
+    :is(.wait-verdict, .external-wait-summary)[open] {
+    flex-basis: 100%;
+  }
+
+  :is(.worker-card__head, .worker-mini__head, .worker-mini__row1, .rtile__hd)
+    :is(.wait-verdict, .external-wait-summary)[open]
+    > summary {
+    width: fit-content;
+  }
+
   /* 후보 보드가 화면의 주인 (§모바일 4, §4.7): 단일 컬럼으로 쌓인 레인 안에 또
      스크롤러를 두지 않는다 — 상한도 내부 스크롤도 풀어 내용만큼 늘어나고 문서
      스크롤 하나만 남긴다. 5등분 문제의 직접 해결이다. */
