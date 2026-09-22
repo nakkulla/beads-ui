@@ -193,6 +193,25 @@ export function createWorkerRuntime() {
   // click and a badge can never disagree about which bead is parked.
   const reviseParked = createReviseParkedStore();
   const interactiveLauncher = createTmuxLauncher();
+  /**
+   * Resolve current settings only when no recorded session owns the provider.
+   *
+   * @param {string} workspace
+   * @param {any} issue
+   * @returns {'claude'|'codex'|null}
+   */
+  function currentRunner(workspace, issue) {
+    try {
+      const resolved = execPresetCoordinator.resolveForDispatch(
+        workspace,
+        issue || {}
+      );
+      const runner = resolved.ok ? resolved.exec.runner : null;
+      return runner === 'claude' || runner === 'codex' ? runner : null;
+    } catch {
+      return null;
+    }
+  }
   // Process-wide parked-attempt inquiry trigger (UI-gjp2 §1). Process-wide
   // rather than per-attachment because its duplicate guard is a tmux pane
   // marker, which is one truth for the whole machine; the workspace it acts on
@@ -201,6 +220,7 @@ export function createWorkerRuntime() {
   // so no title cache has to be bound to it.
   const directionInquiry = createDirectionInquiry({
     getConfig,
+    currentRunner,
     store: {
       recordInteractiveSession: (ws, rec) =>
         /** @type {typeof queueStore & { recordInteractiveSession?: (workspace: string, record: any) => void }} */ (
@@ -234,20 +254,7 @@ export function createWorkerRuntime() {
           queueStore
         ).recordInteractiveSession?.(ws, rec)
     },
-    // Only a bead with NO recorded session follows current settings (§4.1); a
-    // recorded source keeps its own provider even when it cannot be forked.
-    currentRunner: (workspace, issue) => {
-      try {
-        const resolved = execPresetCoordinator.resolveForDispatch(
-          workspace,
-          issue || {}
-        );
-        const runner = resolved.ok ? resolved.exec.runner : null;
-        return runner === 'claude' || runner === 'codex' ? runner : null;
-      } catch {
-        return null;
-      }
-    },
+    currentRunner,
     bd: {
       readIssue: async (workspace, bead_id) => {
         const result = await runBdJsonProjected(

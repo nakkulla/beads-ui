@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import * as directionInquiry from './direction-inquiry.js';
+import * as resolveSession from './resolve-session.js';
 import {
   __resetWorkerRuntimeForTest,
   __setExternalWaitRunForTest,
@@ -60,6 +62,26 @@ function externalWaitInput() {
     budget: { turns_total: 3, turns_used: 3 }
   };
 }
+
+test('shares the current runner resolver between inquiry and resolve launchers', () => {
+  const inquiry = vi.spyOn(directionInquiry, 'createDirectionInquiry');
+  const resolve = vi.spyOn(resolveSession, 'createResolveSession');
+  const runtime = createWorkerRuntime();
+  const resolveForDispatch = vi
+    .spyOn(runtime.execPresetCoordinator, 'resolveForDispatch')
+    .mockReturnValue(
+      /** @type {any} */ ({ ok: true, exec: { runner: 'codex' } })
+    );
+  const bead = { id: 'UI-fresh' };
+  const inquiry_runner = inquiry.mock.calls[0][0].currentRunner;
+  const resolve_runner = resolve.mock.calls[0][0].currentRunner;
+
+  const runner = inquiry_runner?.(WS, bead);
+
+  expect(inquiry_runner).toBe(resolve_runner);
+  expect(runner).toBe('codex');
+  expect(resolveForDispatch).toHaveBeenCalledExactlyOnceWith(WS, bead);
+});
 
 test('writes the external wait metadata and confirms it before replying', async () => {
   const runtime = createWorkerRuntime();

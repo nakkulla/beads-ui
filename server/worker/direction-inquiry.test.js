@@ -191,6 +191,7 @@ function issue(over = {}) {
  *   statFile?: any,
  *   resolveClaude?: any,
  *   resolveRunner?: any,
+ *   currentRunner?: import('./direction-inquiry.js').DirectionInquiryDeps['currentRunner'],
  *   readAttempt?: any,
  *   store?: import('./direction-inquiry.js').DirectionInquiryDeps['store'],
  *   sessionRefOptions?: any,
@@ -224,6 +225,7 @@ function makeInquiry(over = {}) {
     statFile: over.statFile || (() => ({ mtimeMs: 1000 })),
     now: over.now || (() => 2000),
     store: over.store,
+    currentRunner: over.currentRunner,
     readAttempt:
       over.readAttempt ||
       (async () => ({ attempt_id: 'a1', repo: '/repo', runner: 'codex' })),
@@ -250,13 +252,74 @@ function parkedInput(over = {}) {
 }
 
 describe('direction-inquiry interactive session records', () => {
+  test.each(['click', 'automatic'])(
+    'launches a fresh %s inquiry with the current Codex runner',
+    async (entry) => {
+      const bead = issue();
+      const currentRunner = vi.fn(() => /** @type {const} */ ('codex'));
+      const recordInteractiveSession = vi.fn();
+      const { inquiry, tmux } = makeInquiry({
+        tmux: makeTmux({
+          panes_seq:
+            entry === 'click'
+              ? [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
+              : [[], [['bdui-inquiry', '%9', BEAD, '0']]]
+        }),
+        readAttempt: async () => null,
+        readIssue: async () => bead,
+        currentRunner,
+        store: { recordInteractiveSession }
+      });
+
+      if (entry === 'click') {
+        await inquiry.launchForClick(parkedInput());
+      } else {
+        await inquiry.onParkedAttempt(parkedInput());
+      }
+
+      expect(currentRunner).toHaveBeenCalledExactlyOnceWith('/ws', bead);
+      expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
+        provider: 'codex',
+        source: 'fresh',
+        mode: 'fresh',
+        session_id: null
+      });
+      expect(
+        tmux.calls.find((call) => call[0] === 'new-window')?.at(-1)
+      ).toContain("exec '/opt/homebrew/bin/codex'");
+    }
+  );
+
+  test.each(['absent', 'null'])(
+    'defaults fresh inquiries to Claude when currentRunner is %s',
+    async (resolution) => {
+      const recordInteractiveSession = vi.fn();
+      const { inquiry } = makeInquiry({
+        tmux: makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] }),
+        readAttempt: async () => null,
+        currentRunner: resolution === 'null' ? () => null : undefined,
+        store: { recordInteractiveSession }
+      });
+
+      await inquiry.onParkedAttempt(parkedInput());
+
+      expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
+        provider: 'claude',
+        source: 'fresh',
+        mode: 'fresh'
+      });
+    }
+  );
+
   test.each(['attempt', 'session_ref'])(
     'records the selected %s fork source',
     async (source) => {
       const recordInteractiveSession = vi.fn();
+      const currentRunner = vi.fn(() => /** @type {const} */ ('codex'));
       const { inquiry, tmux, awaitingUser } = makeInquiry({
         tmux: makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] }),
         store: { recordInteractiveSession },
+        currentRunner,
         readAttempt: async () => ({
           repo: '/repo',
           runner: 'claude',
@@ -275,11 +338,13 @@ describe('direction-inquiry interactive session records', () => {
 
       const record = recordInteractiveSession.mock.calls[0]?.[1];
       expect(record).toMatchObject({
+        provider: 'claude',
         source,
         mode: 'fork',
         forked_from: source === 'attempt' ? 'attempt-sid' : 'ref-sid',
         fallback_reason: null
       });
+      expect(currentRunner).not.toHaveBeenCalled();
       expect(
         tmux.calls.find((call) => call[0] === 'new-window')?.at(-1)
       ).toContain(

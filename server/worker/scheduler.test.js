@@ -93,11 +93,15 @@ describe('interactive session reconciliation', () => {
         rows: marker === RESOLVE_PANE_MARKER ? [pane] : []
       })),
       readPaneOption: vi.fn(
-        /** @type {(pane_id: string, name: string) => Promise<string|null>} */ (
-          async () => null
+        /** @type {ReturnType<import('./tmux-launcher.js').createTmuxLauncher>['readPaneOption']} */ (
+          async () => ({ ok: true, value: null })
         )
       ),
-      capturePaneTail: vi.fn(async () => '❯ '),
+      capturePaneTail: vi.fn(
+        /** @type {ReturnType<import('./tmux-launcher.js').createTmuxLauncher>['capturePaneTail']} */ (
+          async () => ({ ok: true, line: '❯ ' })
+        )
+      ),
       sendExit: vi.fn(async () => ({ ok: true })),
       killWindow: vi.fn(async () => ({ ok: true }))
     };
@@ -162,7 +166,7 @@ describe('interactive session reconciliation', () => {
 
   test('fills the session identity from the pane option', async () => {
     const h = interactiveFixture({ provider: 'codex' });
-    h.launcher.readPaneOption.mockResolvedValue('sid');
+    h.launcher.readPaneOption.mockResolvedValue({ ok: true, value: 'sid' });
 
     await h.scheduler.reconcileInteractiveSessions(WS);
 
@@ -171,6 +175,95 @@ describe('interactive session reconciliation', () => {
       session_id_source: 'pane_option',
       last_seen_alive_at: 1000
     });
+  });
+
+  test.each(
+    ['@agent_session', '@agent_running', '@agent_attention'].flatMap((option) =>
+      [null, 10].map((defer_since) => ({ option, defer_since }))
+    )
+  )(
+    'skips Codex exit and deferral after a failed option read %j',
+    async ({ option, defer_since }) => {
+      const h = interactiveFixture({
+        provider: 'codex',
+        settled_at: 1,
+        defer_since
+      });
+      h.setTime(11 + INTERACTIVE_EXIT_DEFER_MAX_MS);
+      h.launcher.readPaneOption.mockImplementation(async (_pane, name) =>
+        name === option
+          ? { ok: false, error: 'pane unavailable' }
+          : { ok: true, value: null }
+      );
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(h.current()).toMatchObject({ state: 'live', defer_since });
+      expect(h.launcher.killWindow).not.toHaveBeenCalled();
+      expect(h.launcher.sendExit).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([null, 10])(
+    'skips Claude exit and deferral after a failed prompt read with defer_since %s',
+    async (defer_since) => {
+      const h = interactiveFixture({ settled_at: 1, defer_since });
+      h.setTime(11 + INTERACTIVE_EXIT_DEFER_MAX_MS);
+      h.launcher.capturePaneTail.mockResolvedValue({
+        ok: false,
+        error: 'pane unavailable'
+      });
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(h.current()).toMatchObject({ state: 'live', defer_since });
+      expect(h.launcher.killWindow).not.toHaveBeenCalled();
+      expect(h.launcher.sendExit).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each(['launch', 'replace', 'reuse-pane'])(
+    'preserves a record from %s during the pane list read',
+    async (change) => {
+      const h = interactiveFixture({ provider: 'codex', settled_at: 1 });
+      const replacement = {
+        ...h.current(),
+        pane_id: change === 'reuse-pane' ? '%1' : '%2',
+        launched_at: 1000
+      };
+      if (change === 'launch') {
+        h.store.removeInteractiveSession(WS, 'B1:resolve');
+      }
+      h.launcher.listPanesExtended.mockImplementation(async (marker) => {
+        if (marker === RESOLVE_PANE_MARKER) {
+          h.store.recordInteractiveSession(WS, replacement);
+        }
+        return { ok: true, rows: [] };
+      });
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(h.current()).toEqual(replacement);
+      expect(h.timeline.append).not.toHaveBeenCalled();
+      expect(h.launcher.killWindow).not.toHaveBeenCalled();
+    }
+  );
+
+  test('keeps a newly launched record instead of recovering an older marker pane', async () => {
+    const h = interactiveFixture();
+    const replacement = { ...h.current(), pane_id: '%2', launched_at: 1000 };
+    h.store.removeInteractiveSession(WS, 'B1:resolve');
+    h.launcher.listPanesExtended.mockImplementation(async (marker) => {
+      if (marker === RESOLVE_PANE_MARKER) {
+        h.store.recordInteractiveSession(WS, replacement);
+        return { ok: true, rows: [h.pane] };
+      }
+      return { ok: true, rows: [] };
+    });
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.current()).toEqual(replacement);
   });
 
   test.each([
@@ -228,9 +321,10 @@ describe('interactive session reconciliation', () => {
     'sends Claude exit at an empty prompt with attention %s',
     async (attention) => {
       const h = interactiveFixture({ settled_at: 1 });
-      h.launcher.readPaneOption.mockImplementation(async (_pane, name) =>
-        name === '@agent_attention' ? attention : null
-      );
+      h.launcher.readPaneOption.mockImplementation(async (_pane, name) => ({
+        ok: true,
+        value: name === '@agent_attention' ? attention : null
+      }));
 
       await h.scheduler.reconcileInteractiveSessions(WS);
 
@@ -250,10 +344,11 @@ describe('interactive session reconciliation', () => {
     { option: '', value: null, prompt: 'Working...' }
   ])('defers a busy or nonempty pane %j', async ({ option, value, prompt }) => {
     const h = interactiveFixture({ settled_at: 1 });
-    h.launcher.readPaneOption.mockImplementation(async (_pane, name) =>
-      name === option ? value : null
-    );
-    h.launcher.capturePaneTail.mockResolvedValue(prompt);
+    h.launcher.readPaneOption.mockImplementation(async (_pane, name) => ({
+      ok: true,
+      value: name === option ? value : null
+    }));
+    h.launcher.capturePaneTail.mockResolvedValue({ ok: true, line: prompt });
 
     await h.scheduler.reconcileInteractiveSessions(WS);
     h.setTime(2000);
@@ -281,7 +376,7 @@ describe('interactive session reconciliation', () => {
 
   test('kills a busy pane after the thirty minute deferral limit', async () => {
     const h = interactiveFixture({ settled_at: 1, defer_since: 10 });
-    h.launcher.readPaneOption.mockResolvedValue('running');
+    h.launcher.readPaneOption.mockResolvedValue({ ok: true, value: 'running' });
     h.setTime(10 + INTERACTIVE_EXIT_DEFER_MAX_MS + 1);
 
     await h.scheduler.reconcileInteractiveSessions(WS);
@@ -344,6 +439,96 @@ describe('interactive session reconciliation', () => {
 
     expect(h.current().settled_by).toBe(expected);
   });
+
+  test.each(['closed', 'resolved', 'open', 'deferred', null])(
+    'reads current %s status during the interactive pass',
+    async (status) => {
+      const h = interactiveFixture();
+      const readStatus = vi.spyOn(h.bd, 'readStatus').mockResolvedValue(status);
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(readStatus).toHaveBeenCalledExactlyOnceWith('B1');
+      expect(h.current()).toMatchObject({
+        settled_by: status === 'closed' ? 'bd_closed' : null,
+        settled_at: status === 'closed' ? 1000 : null,
+        state: status === 'closed' ? 'exiting' : 'live'
+      });
+    }
+  );
+
+  test('reads each unsettled bead once and skips already settled records', async () => {
+    const h = interactiveFixture();
+    h.store.recordInteractiveSession(WS, {
+      ...h.current(),
+      kind: 'inquiry',
+      pane_id: '%2'
+    });
+    h.launcher.listPanesExtended.mockImplementation(async (marker) => ({
+      ok: true,
+      rows: [{ ...h.pane, pane: marker === RESOLVE_PANE_MARKER ? '%1' : '%2' }]
+    }));
+    const readStatus = vi.spyOn(h.bd, 'readStatus').mockResolvedValue('closed');
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(readStatus).toHaveBeenCalledExactlyOnceWith('B1');
+    for (const record of Object.values(
+      h.store.snapshot(WS).interactive_sessions
+    )) {
+      expect(record).toMatchObject({
+        settled_at: 1000,
+        settled_by: 'bd_closed'
+      });
+    }
+  });
+
+  test('leaves settlement unknown after a status read failure and retries next pass', async () => {
+    const h = interactiveFixture();
+    vi.spyOn(h.bd, 'readStatus')
+      .mockRejectedValueOnce(new Error('bd unavailable'))
+      .mockResolvedValue('closed');
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.current()).toMatchObject({
+      settled_at: null,
+      settled_by: null,
+      defer_since: null
+    });
+    expect(h.launcher.sendExit).not.toHaveBeenCalled();
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.current().settled_by).toBe('bd_closed');
+    expect(h.launcher.sendExit).toHaveBeenCalledOnce();
+  });
+
+  test.each(['replace', 'add'])(
+    'defers settlement when a session changes by %s during the status read',
+    async (change) => {
+      const h = interactiveFixture();
+      const replacement = {
+        ...h.current(),
+        kind: change === 'add' ? 'inquiry' : 'resolve',
+        pane_id: '%2',
+        launched_at: 1000
+      };
+      vi.spyOn(h.bd, 'readStatus').mockImplementation(async () => {
+        h.store.recordInteractiveSession(WS, replacement);
+        return 'closed';
+      });
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(
+        h.store.snapshot(WS).interactive_sessions[`B1:${replacement.kind}`]
+      ).toEqual(replacement);
+      expect(h.launcher.sendExit).not.toHaveBeenCalled();
+      expect(h.launcher.killWindow).not.toHaveBeenCalled();
+    }
+  );
 
   test('runs interactive reconciliation on the periodic reconcile path', async () => {
     const h = interactiveFixture();

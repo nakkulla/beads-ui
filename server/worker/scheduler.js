@@ -8940,6 +8940,10 @@ export function createScheduler(deps) {
     if (!launcher) {
       return;
     }
+    const records =
+      /** @type {Record<string, import('./queue-store.js').InteractiveSession>} */ (
+        deps.store.snapshot(workspace).interactive_sessions || {}
+      );
     const [resolve_panes, inquiry_panes] = await Promise.all([
       launcher.listPanesExtended(RESOLVE_PANE_MARKER),
       launcher.listPanesExtended(INQUIRY_PANE_MARKER)
@@ -8955,10 +8959,6 @@ export function createScheduler(deps) {
       return;
     }
     const panes = { resolve: resolve_panes.rows, inquiry: inquiry_panes.rows };
-    const records =
-      /** @type {Record<string, import('./queue-store.js').InteractiveSession>} */ (
-        deps.store.snapshot(workspace).interactive_sessions || {}
-      );
     /**
      * A launch may replace the same key while tmux I/O is in flight.
      *
@@ -9023,7 +9023,52 @@ export function createScheduler(deps) {
         log('interactive kill failed for %s/%s: %o', workspace, key, result);
       }
     }
+    const unsettled_beads = new Set(
+      Object.entries(records)
+        .filter(
+          ([key, record]) =>
+            record.settled_at === null && isCurrent(key, record)
+        )
+        .map(([, record]) => record.bead_id)
+    );
+    for (const bead_id of unsettled_beads) {
+      try {
+        const status = await deps.bd.readStatus(bead_id);
+        const current_records = Object.entries(
+          deps.store.snapshot(workspace).interactive_sessions
+        ).filter(
+          ([, record]) =>
+            record.bead_id === bead_id && record.settled_at === null
+        );
+        // Settlement writes every unsettled session for this bead at once.
+        if (
+          status === 'closed' &&
+          current_records.every(
+            ([key]) => records[key] && isCurrent(key, records[key])
+          )
+        ) {
+          const result = deps.store.markInteractiveSessionsSettled(
+            workspace,
+            bead_id,
+            'bd_closed'
+          );
+          if (result.ok) {
+            notifyChanged(workspace);
+          }
+        }
+      } catch (err) {
+        log(
+          'interactive bead status read failed for %s/%s: %o',
+          workspace,
+          bead_id,
+          err
+        );
+      }
+    }
     for (const [key, record] of Object.entries(records)) {
+      if (!isCurrent(key, record)) {
+        continue;
+      }
       const label = record.kind === 'resolve' ? '해결' : '문의';
       const source =
         record.mode === 'fork'
@@ -9054,12 +9099,24 @@ export function createScheduler(deps) {
       }
       update(key, record, { last_seen_alive_at: now() });
       if (record.session_id === null) {
-        const session_id = await launcher.readPaneOption(
+        const session = await launcher.readPaneOption(
           record.pane_id,
           '@agent_session'
         );
-        if (session_id) {
-          update(key, record, { session_id, session_id_source: 'pane_option' });
+        if (!session.ok) {
+          log(
+            'interactive session observation failed for %s/%s: %o',
+            workspace,
+            key,
+            session
+          );
+          continue;
+        }
+        if (session.value) {
+          update(key, record, {
+            session_id: session.value,
+            session_id_source: 'pane_option'
+          });
         }
       }
       if (!isCurrent(key, record)) {
@@ -9070,13 +9127,6 @@ export function createScheduler(deps) {
         record,
         deps.store.snapshot(workspace).interactive_sessions[key]
       );
-      if (
-        record.defer_since !== null &&
-        now() - record.defer_since > INTERACTIVE_EXIT_DEFER_MAX_MS
-      ) {
-        await kill(key, record);
-        continue;
-      }
       if (record.state === 'exiting') {
         if (
           record.exit_requested_at !== null &&
@@ -9097,12 +9147,40 @@ export function createScheduler(deps) {
         record.pane_id,
         '@agent_attention'
       );
+      if (!running.ok || !attention.ok) {
+        log(
+          'interactive idle observation failed for %s/%s: %o %o',
+          workspace,
+          key,
+          running,
+          attention
+        );
+        continue;
+      }
       let idle =
-        running === null &&
-        (attention === null || attention === 'done' || attention === 'stopped');
+        running.value === null &&
+        (attention.value === null ||
+          attention.value === 'done' ||
+          attention.value === 'stopped');
       if (idle && record.provider === 'claude') {
         const tail = await launcher.capturePaneTail(record.pane_id);
-        idle = typeof tail === 'string' && /^❯\s*$/.test(tail);
+        if (!tail.ok) {
+          log(
+            'interactive prompt observation failed for %s/%s: %o',
+            workspace,
+            key,
+            tail
+          );
+          continue;
+        }
+        idle = typeof tail.line === 'string' && /^❯\s*$/.test(tail.line);
+      }
+      if (
+        record.defer_since !== null &&
+        now() - record.defer_since > INTERACTIVE_EXIT_DEFER_MAX_MS
+      ) {
+        await kill(key, record);
+        continue;
       }
       if (!idle) {
         if (record.defer_since === null) {

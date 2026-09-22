@@ -225,11 +225,11 @@ describe('tmux interactive session inspection and exit', () => {
         '%9',
         '@agent_session'
       ]);
-      expect(result).toBe(stdout.trim() || null);
+      expect(result).toEqual({ ok: true, value: stdout.trim() || null });
     }
   );
 
-  test('treats an unavailable option as unknown', async () => {
+  test('reports a thrown option read as a failed observation', async () => {
     const launcher = createTmuxLauncher({
       runTmux: async () => {
         throw new Error('offline');
@@ -238,8 +238,24 @@ describe('tmux interactive session inspection and exit', () => {
 
     const result = await launcher.readPaneOption('%9', '@agent_session');
 
-    expect(result).toBeNull();
+    expect(result).toEqual({ ok: false, error: 'Error: offline' });
   });
+
+  test.each(['option', 'capture'])(
+    'reports a nonzero %s read as a failed observation',
+    async (operation) => {
+      const launcher = createTmuxLauncher({
+        runTmux: async () => ({ code: 1, stdout: '', stderr: 'missing pane' })
+      });
+
+      const result =
+        operation === 'option'
+          ? await launcher.readPaneOption('%9', '@agent_running')
+          : await launcher.capturePaneTail('%9');
+
+      expect(result).toEqual({ ok: false, error: 'missing pane' });
+    }
+  );
 
   test('types exit literally before submitting Enter', async () => {
     const runTmux = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
@@ -295,7 +311,7 @@ describe('tmux interactive session inspection and exit', () => {
 
     const result = await launcher.capturePaneTail('%9');
 
-    expect(result).toBe(expected);
+    expect(result).toEqual({ ok: true, line: expected });
     expect(runTmux).toHaveBeenCalledExactlyOnceWith([
       'capture-pane',
       '-p',

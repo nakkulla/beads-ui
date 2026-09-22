@@ -398,6 +398,7 @@ function withFallbackReason(prompt, fallback_reason) {
  * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runTmux]
  * @property {() => string|null} [resolveClaude]
  * @property {(runner: string) => string|null} [resolveRunner]
+ * @property {(workspace: string, issue: any) => 'claude'|'codex'|null} [currentRunner]
  * @property {(file_path: string) => { mtimeMs: number }} [statFile]
  * @property {() => number} [now]
  * @property {{ recordInteractiveSession: (workspace: string, record: any) => void }} [store]
@@ -472,10 +473,11 @@ export function createDirectionInquiry(deps) {
   /**
    * Choose the attempt transcript, then session_ref, then fresh mode.
    *
+   * @param {string} workspace
    * @param {any} issue
    * @param {any} attempt
    */
-  function forkTarget(issue, attempt) {
+  function forkTarget(workspace, issue, attempt) {
     const source = qualifyInteractiveForkSource({
       attempt,
       metadata: issue?.metadata,
@@ -483,7 +485,8 @@ export function createDirectionInquiry(deps) {
     });
     return {
       session_id: source.session_id,
-      runner: source.provider ?? /** @type {'claude'} */ ('claude'),
+      runner:
+        source.provider ?? deps.currentRunner?.(workspace, issue) ?? 'claude',
       source: source.source,
       fallback_reason: source.fallback_reason
     };
@@ -618,7 +621,7 @@ export function createDirectionInquiry(deps) {
     const stale_kind = branch === 'stale' ? stale.stale_kind : null;
     /** @type {string} */
     let prompt;
-    const fork = forkTarget(issue, attempt);
+    const fork = forkTarget(workspace, issue, attempt);
     if (stale_kind !== null) {
       const receipt_key = receiptKeyFor(awaiting_user);
       const receipt = metadata[receipt_key];

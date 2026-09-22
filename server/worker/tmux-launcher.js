@@ -398,7 +398,7 @@ export function createTmuxLauncher(deps = {}) {
   }
 
   /**
-   * Read one optional pane fact; an unavailable value remains unknown.
+   * Read one optional pane fact without treating a failed read as empty.
    *
    * @param {string} pane_id
    * @param {string} name
@@ -411,7 +411,9 @@ export function createTmuxLauncher(deps = {}) {
       pane_id,
       name
     ]);
-    return result.ok ? result.stdout.trim() || null : null;
+    return result.ok
+      ? { ok: /** @type {const} */ (true), value: result.stdout.trim() || null }
+      : result;
   }
 
   /**
@@ -453,13 +455,15 @@ export function createTmuxLauncher(deps = {}) {
     if (!result.ok) {
       return result;
     }
-    return (
-      result.stdout
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .at(-1) ?? null
-    );
+    return {
+      ok: /** @type {const} */ (true),
+      line:
+        result.stdout
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .at(-1) ?? null
+    };
   }
 
   /**
