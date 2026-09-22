@@ -7,6 +7,9 @@ scope:
   - server/ws/mutation-handlers.js
   - server/worker/exec-enums.js
   - server/worker/runnable-cache.js
+  - server/worker/attach.js
+  - server/worker/scheduler.js
+  - server/bd.js
   - app/protocol.js
   - app/protocol.md
   - app/data/exec-preset-store.js
@@ -54,17 +57,21 @@ scope:
   `applyMutation(expected_revision, mutate)`의 CAS를 지나고 `revision`이 1 오른다. 구독 채널은
   서버 전역이며(`server/ws/exec-preset-handlers.js` `SUBSCRIBERS`) 변경마다
   `impl-presets-snapshot { id, revision, presets }`를 민다.
-- 이슈에 프리셋을 적용하는 op는 `apply-impl-preset { id, preset_id, expected_revision, root_dir? }`
-  하나다. `buildApplyImplPresetArgs`가 `BEAD_PIN_KEYS` 17키를 `--set-metadata`/`--unset-metadata`로
-  교체하고 같은 argv에 `applied_exec_preset=<preset_id>`를 더한다(ADR UI-xq3h). 개별 키 편집
+- 이슈에 프리셋을 적용하는 op는 `apply-impl-preset { id, preset_id, expected_revision }` 하나다.
+  `handleApplyImplPreset`은 `root_dir`을 읽지 않고 **연결된 워크스페이스**에서 이슈를 조회·수정한다.
+  `buildApplyImplPresetArgs`가 `BEAD_PIN_KEYS` 17키를 `--set-metadata`/`--unset-metadata`로 교체하고
+  같은 argv에 `applied_exec_preset=<preset_id>`를 더한다(ADR UI-xq3h). 개별 키 편집
   (`update-exec-settings`·`update-impl-target`)은 `applied_exec_preset`을 건드리지 않고, 카드의
   어긋남은 읽을 때 17키 대칭 비교로 계산한다(`app/views/detail-panel/effective-settings.js`
   `presetDeviation`).
+- WS 요청 처리는 병렬이다. `server/bd.js` `runBd`는 `withBdRunQueue`로 **개별 `bd` 명령**만
+  직렬화하므로, 읽고 판정해 쓰는 한 전이는 요청 두 개가 끼어들 수 있다.
 - attempt 기록의 `exec_preset { id, name, revision, deviated_keys }`는
   `exec-preset-coordinator.js` `dispatchPreset(queue.applied_exec_preset, bead_snapshot)`이
-  **워크스페이스**의 전역 적용 기록으로 만든다. 이슈에 다른 프리셋을 적용해도 attempt는
-  워크스페이스 프리셋 이름에 `deviated_keys`가 붙은 모양으로 기록되고, 비교탭은 그 이름으로
-  묶는다.
+  **워크스페이스**의 전역 적용 기록으로 만든다. dispatch 입력인 `BeadSnapshot`은
+  `server/worker/attach.js` `snapshotBead`가 `bd show --json`의 metadata에서 고른 필드로 만들며
+  `applied_exec_preset`을 싣지 않는다. 이슈에 다른 프리셋을 적용해도 attempt는 워크스페이스 프리셋
+  이름에 `deviated_keys`가 붙은 모양으로 기록되고, 비교탭은 그 이름으로 묶는다.
 - 판정 칩은 `복잡` 하나다(`app/utils/complex-judgement.js`; 라벨 `complex` + `complex_reason`).
   후보 카드·대기/PR 대기/완료 행·실행 타일(`lanes.js` `complexChipTemplate`,
   `running-grid.js`)과 이슈 상세 헤더(`effective-settings-view.js` `summaryHeaderTemplate`)에
@@ -140,8 +147,11 @@ CAS·같은 스냅샷 채널을 쓴다 — **선택**. 바인딩은 프리셋 id
 ### 4.1 payload와 판정
 
 `chip-preset-toggle { id, chip, expected_revision, root_dir? }`. `expected_revision`은 프리셋
-스냅샷 revision이다(`apply-impl-preset`과 같은 CAS). 서버는 바인딩 `preset_id = chip_bindings[chip]`을
-읽고 이슈를 `bd show --json`으로 읽은 뒤 한 가지를 고른다.
+스냅샷 revision이다(`apply-impl-preset`과 같은 CAS). `root_dir`이 있으면 그 워크스페이스에서, 없으면
+연결된 워크스페이스에서 조회·수정·재조회를 모두 수행한다 — 모니터 탭의 카드는 연결 저장소가 아닌
+저장소의 이슈일 수 있으므로 `apply-impl-preset`과 달리 `root_dir`을 실제로 읽는다(다른
+`root_dir` 수용 op와 같은 워크스페이스 해석; 등록되지 않은 경로는 `bad_request`). 서버는 바인딩
+`preset_id = chip_bindings[chip]`을 읽고 이슈를 `bd show --json`으로 읽은 뒤 한 가지를 고른다.
 
 | 이슈 상태 | 동작 |
 | --- | --- |
@@ -154,9 +164,10 @@ CAS·같은 스냅샷 채널을 쓴다 — **선택**. 바인딩은 프리셋 id
 
 ### 4.2 적용
 
-`apply-impl-preset`의 `presetSettingsForIssue`·`buildApplyImplPresetArgs` 경로를 그대로 타고
-(17키 교체 + `applied_exec_preset=<preset_id>`, quick_fix 역매핑·오케스트레이션 검증 포함),
-같은 argv에 두 키를 더한다.
+`apply-impl-preset`의 헬퍼 `resolvePresetForApply`·`presetSettingsForIssue`·`buildApplyImplPresetArgs`를
+재사용해(17키 교체 + `applied_exec_preset=<preset_id>`, quick_fix 역매핑·오케스트레이션 검증 포함)
+§4.1이 고른 워크스페이스에서 `bd update` 한 번을 쓰고, 같은 argv에 두 키를 더한다. 핸들러
+`handleApplyImplPreset` 자체는 부르지 않는다(연결 워크스페이스에 묶여 있다).
 
 - `chip_preset_source=<chip>` — 이 핀 집합을 세운 칩.
 - `chip_preset_restore=<json>` — **이 키가 아직 없을 때만** 쓴다. 값은 쓰기 직전 이슈의
@@ -184,7 +195,18 @@ CAS·같은 스냅샷 채널을 쓴다 — **선택**. 바인딩은 프리셋 id
   적용으로 덮는다.
 - 실행 중 attempt는 바뀌지 않는다 — 핀은 다음 dispatch가 읽는다(현행).
 
-### 4.5 키의 소유
+### 4.5 전이의 직렬화
+
+한 전이(바인딩 읽기 → 이슈 읽기 → 판정 → `bd update` → 재조회)는 **같은 워크스페이스·같은 이슈**
+안에서 요청 순서대로 하나씩 처리한다. `exec-preset-handlers.js`가 `(root_dir, bead_id)` 키의
+promise 체인(`toggle_chains: Map<string, Promise<void>>`)을 들고, 새 요청은 이전 체인이 끝난 뒤
+시작하며 끝나면 체인에서 자기 항목을 지운다. 이렇게 같은 칩을 빠르게 두 번 누르면 첫 요청이
+`applied`, 두 번째가 `restored`로 판정된다 — 두 번째 요청이 첫 요청의 재조회 결과를 읽기
+때문이다. `bd.js`의 명령 단위 직렬화는 그대로다(이 체인은 그 위의 전이 단위 직렬화다). 다른
+이슈끼리는 병렬이다. 클라이언트는 요청이 떠 있는 동안 그 칩을 `aria-busy="true"`로 두고 클릭을
+무시하되, 이는 편의일 뿐 정합성은 서버 체인이 지킨다.
+
+### 4.6 키의 소유
 
 `chip_preset_source`·`chip_preset_restore`는 `applied_exec_preset`과 같은 beads-ui 자신의 키다
 (ADR UI-xq3h 전제: dotfiles가 읽지 않는 키는 계약 정의가 아니다). 어휘 정본은
@@ -258,12 +280,20 @@ CAS·같은 스냅샷 채널을 쓴다 — **선택**. 바인딩은 프리셋 id
 
 ## 7. attempt 기록
 
-`resolveForDispatch`의 `dispatchPreset(applied, bead_snapshot)`에서 `applied`를 고르는 규칙을
-바꾼다: bead 스냅샷의 `applied_exec_preset`이 있고 그 id가 현재 프리셋 스냅샷에 있으면
-`{ id, name: <현재 이름>, revision: <현재 revision> }`을 쓰고, 없으면 지금처럼 워크스페이스의
-`queue.applied_exec_preset`을 쓴다. `deviated_keys` 계산은 그대로다(그 프리셋과 bead 핀의
-대조). 이렇게 attempt와 비교탭이 "이 이슈가 실제로 들고 간 프리셋"으로 묶인다. 카드의 대칭
-비교와 `dispatchPreset`을 한 구현으로 합치지 않는 결정(ADR UI-xq3h)은 유지한다.
+두 곳을 바꾼다.
+
+- **입력.** `server/worker/attach.js` `snapshotBead`가 `BeadSnapshot`에
+  `applied_exec_preset: string|null`(metadata의 문자열 그대로, 없으면 `null`)을 더한다. 타입은
+  `attach.js`의 `BeadSnapshot` typedef와 이를 받는 `scheduler.js`·`exec-preset-coordinator.js`의
+  JSDoc에 함께 적고, `attach.test.js`가 그 필드를 단언한다. 다른 필드·판정(`ready`·`blocked`·
+  `blocks_blockers`)은 그대로다.
+- **선택.** `resolveForDispatch`의 `dispatchPreset(applied, bead_snapshot)`에서 `applied`를 고르는
+  규칙을 바꾼다: `bead_snapshot.applied_exec_preset`이 있고 그 id가 현재 프리셋 스냅샷에 있으면
+  `{ id, name: <현재 이름>, revision: <현재 revision> }`을 쓰고, 없으면 지금처럼 워크스페이스의
+  `queue.applied_exec_preset`을 쓴다. `deviated_keys` 계산은 그대로다(그 프리셋과 bead 핀의 대조).
+
+이렇게 attempt와 비교탭이 "이 이슈가 실제로 들고 간 프리셋"으로 묶인다. 카드의 대칭 비교와
+`dispatchPreset`을 한 구현으로 합치지 않는 결정(ADR UI-xq3h)은 유지한다.
 
 ## 8. 프로토콜·소유권
 
@@ -278,8 +308,10 @@ CAS·같은 스냅샷 채널을 쓴다 — **선택**. 바인딩은 프리셋 id
 
 - 서버 단위 테스트: `exec-preset-store` 로드/정규화(`chip_bindings` 부재·어휘 밖 키), bind CAS,
   delete가 바인딩을 비움; `chip-preset-toggle` 적용(복원점 최초 1회 기록)·마지막 클릭 우선·복원
-  argv·보관 손상 fallback·`chip_unbound`; 편집기 `apply-impl-preset`이 두 키를 unset;
-  `dispatchPreset`이 bead 프리셋을 우선.
+  argv·보관 손상 fallback·`chip_unbound`·`root_dir` 워크스페이스 해석(연결 저장소가 아닌 저장소의
+  이슈에 쓰고 재조회)·**같은 이슈 연속 두 요청이 순서대로 `applied`→`restored`가 되는 직렬화**(§4.5,
+  두 요청을 동시에 보내는 테스트); 편집기 `apply-impl-preset`이 두 키를 unset; `attach.js`
+  `snapshotBead`가 `applied_exec_preset`을 싣고 `dispatchPreset`이 그 값을 우선.
 - 클라이언트 단위 테스트: `area-judgement`, 칩 `data-state` 판정 셋, bound/unbound 렌더와 클릭
   분기(worker·monitor·detail), `칩` 탭 select→op→conflict 재세움.
 - 스크린샷 확인(복잡 판정 `verification_by_judgment`): 워커 후보 카드·모니터 후보 카드·이슈 상세
@@ -313,10 +345,13 @@ CAS·같은 스냅샷 채널을 쓴다 — **선택**. 바인딩은 프리셋 id
 ## 결정 (ADR 후보)
 
 - 전제: ADR UI-xq3h — 이슈의 프리셋 정체성은 `applied_exec_preset` id 하나이고 어긋남은 읽을 때
-  17키 대칭 비교로 계산한다. 칩 적용은 `apply-impl-preset`의 같은 argv 규칙을 타고 새 키 둘을
-  17키 밖에 둔다. 카드 비교와 `dispatchPreset`을 합치지 않는 조항도 그대로다.
-- 전제: ADR UI-e1ta — 모니터 탭 헤더 `⚙`의 일괄 창은 여는 순간의 모드로 고정되고 세 탭과
-  프리셋 관리를 갖는다. `칩` 탭은 그 창의 네 번째 탭이며 저장소 적용 op를 새로 두지 않는다.
+  17키 대칭 비교로 계산하며, 카드 비교와 `dispatchPreset`을 합치지 않는다. 이 조항들은 그대로
+  따른다. 다만 같은 ADR의 "쓰는 경로는 `apply-impl-preset` 하나다 — 개별 키 편집·전역 적용·프리셋
+  삭제는 이 키를 건드리지 않는다" 조항은 아래 첫 후보가 뒤집는다(`chip-preset-toggle`이 두 번째
+  작성자가 되고 복원이 이 키를 지운다).
+- 전제: ADR UI-e1ta — 모니터 탭 헤더 `⚙`의 일괄 창은 여는 순간의 모드로 고정되고 저장소 적용
+  op를 새로 두지 않으며 프리셋 관리를 갖는다. 다만 "일괄 창은 `워커`·`세션`·`계정` 세 탭이다"
+  조항은 아래 둘째 후보가 뒤집는다(네 번째 탭 `칩`).
 - 전제: ADR 0012 — beads-ui는 dotfiles 계약의 소비자다. `frontend`·`backend` 어휘는 코드 상수로
   복제하고 계약에 없는 라벨은 그리지 않는다.
 - 전제: ADR 0014 — 카드의 줄 순서와 새 요소의 자리는 공유 슬롯 표가 정한다. 새 칩 둘은
@@ -333,8 +368,19 @@ CAS·같은 스냅샷 채널을 쓴다 — **선택**. 바인딩은 프리셋 id
   `exec-presets.json` 스키마가 늘며 클릭 의미를 아는 사용자 습관이 생긴다. 맥락 없이는
   놀랍다 — 같은 카드의 다른 판정 칩은 팝업인데 세 칩만 상태를 쓰는 이유(프리셋별 성능 비교
   실측과 오터치보다 한 번 클릭을 택한 사용자 결정)는 코드에 남지 않는다. 진짜 트레이드오프가
-  있다 — 팝업 안 버튼 절충안을 사용자가 배제했다.
-  `summary`: "판정 칩 복잡·frontend·backend의 클릭은 모니터 설정의 서버 전역 바인딩이 가리키는 프리셋을 그 이슈에 적용하고 재클릭은 첫 클릭 전 핀으로 되돌린다 — 다른 판정 칩의 클릭=사유 팝업과 applied_exec_preset 정체성·17키 교체는 UI-xq3h를 승계한다" → ADR
+  있다 — 팝업 안 버튼 절충안을 사용자가 배제했다. 이 결정은 ADR UI-xq3h의 "`applied_exec_preset`을
+  쓰는 경로는 `apply-impl-preset` 하나" 조항을 뒤집는다 — `chip-preset-toggle`이 같은 argv 규칙으로
+  이 키를 쓰고 복원이 지운다; id 하나 정체성·17키 대칭 비교·`dispatchPreset` 분리는 승계한다.
+  `summary`: "판정 칩 복잡·frontend·backend의 클릭은 모니터 설정의 서버 전역 바인딩이 가리키는 프리셋을 그 이슈에 적용하고 재클릭은 첫 클릭 전 핀으로 되돌리며 그 전이는 이슈별로 직렬화된다 — applied_exec_preset을 chip-preset-toggle도 쓴다는 점만 UI-xq3h에서 뒤집고 id 하나 정체성·17키 대칭 비교·dispatchPreset 분리는 승계한다" → ADR, supersede UI-xq3h
+- 모니터 일괄 창에 서버 전역 값을 편집하는 네 번째 탭 `칩`을 두는 것. 되돌리기 어렵다 — 탭은
+  지우기 쉬우나 바인딩을 세우는 유일한 표면이라 지우면 §3의 상태를 세울 곳이 없어지고, 일괄 창이
+  "저장소 단위 편집면"이라는 UI-e1ta의 성격에 서버 전역 면이 섞이는 구조 변화다. 맥락 없이는
+  놀랍다 — 세 탭은 저장소를 고르는데 네 번째 탭만 `적용 대상`과 무관한 이유는 창을 보면 드러나지
+  않는다. 진짜 트레이드오프가 있다 — 단일·레포 창의 `워커` 탭(프리셋 CRUD 자리) 안에 바인딩을
+  두는 대안이 실재했고, 저장소 창에 서버 전역 값을 섞지 않으려고 버렸다. 이 결정이 ADR UI-e1ta의
+  "일괄 창은 `워커`·`세션`·`계정` 세 탭" 조항을 뒤집는다; 모드 고정·순차 op·관측 넷·프리셋 관리·
+  레포 카드 다이얼로그는 승계한다.
+  `summary`: "모니터 일괄 창은 워커·세션·계정에 서버 전역 칩 바인딩을 편집하는 네 번째 탭 칩을 더하며 그 탭만 적용 대상 저장소와 무관하다 — 모드 고정·순차 op·관측 넷·프리셋 관리·레포 카드 다이얼로그는 UI-e1ta를 승계한다" → ADR, supersede UI-e1ta
 - 바인딩을 `exec-presets.json`의 `chip_bindings`로 같은 revision CAS 아래 두는 것. 되돌리기
   어렵지 않다 — 필드 하나를 다른 파일로 옮기는 일이고 소비자는 스냅샷 하나다. 맥락 없이도
   놀랍지 않다 — 프리셋 id를 가리키는 값이 프리셋 목록 옆에 있는 것은 읽으면 이유가 보인다.
