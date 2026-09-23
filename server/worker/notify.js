@@ -31,6 +31,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { debug } from '../logging.js';
+import { parseSessionRef, sessionResumeCommand } from './session-ref.js';
 import { isSessionStalledRecovery } from './session-stall.js';
 
 const default_log = debug('worker:notify');
@@ -222,7 +223,8 @@ export async function notifyExternalWaitCompleted(input) {
     await input.notifier.externalWaitCompleted({
       bead_id: record.bead_id,
       headline,
-      repo: input.repo
+      repo: input.repo,
+      session: ownerSession(record)
     })
   ) {
     store.recordTimelineEvent(workspace, {
@@ -234,6 +236,33 @@ export async function notifyExternalWaitCompleted(input) {
       detail: record.wait_id
     });
   }
+}
+
+/**
+ * The owning session's label and resume command for a session-owned wait, or
+ * null (fail-quiet) for a worker owner, a malformed ref, or an unsafe id.
+ *
+ * @param {import('./external-wait/store.js').WaitRecord} record
+ * @returns {{ label: string, resume_command: string }|null}
+ */
+function ownerSession(record) {
+  const owner = record.owner;
+  if (!owner || owner.kind !== 'session') {
+    return null;
+  }
+  const entries = parseSessionRef(owner.session_ref);
+  const entry = entries[entries.length - 1];
+  if (!entry) {
+    return null;
+  }
+  const resume_command = sessionResumeCommand(entry);
+  if (resume_command === null) {
+    return null;
+  }
+  return {
+    label: `${entry.provider} ${entry.session_id.slice(0, 8)}`,
+    resume_command
+  };
 }
 
 /**
@@ -324,7 +353,7 @@ function headline(transition, bead_id, bead_title) {
  *   needsHuman: (input: NeedsHumanInput) => Promise<void>,
  *   hold: (input: NeedsHumanInput) => Promise<void>,
  *   waitOverdue: (input: WaitNotificationInput) => Promise<boolean>,
- *   externalWaitCompleted: (input: Pick<WaitNotificationInput, 'bead_id'|'headline'|'repo'>) => Promise<boolean>,
+ *   externalWaitCompleted: (input: Pick<WaitNotificationInput, 'bead_id'|'headline'|'repo'> & { session?: { label: string, resume_command: string }|null }) => Promise<boolean>,
  *   waitActionRequired: (input: WaitNotificationInput) => Promise<boolean>
  * }}
  */
@@ -564,11 +593,17 @@ export function createNotifier(deps) {
         if (!cmd) {
           return false;
         }
+        const summary =
+          `✅ 외부 작업 완료 · ${input.bead_id} · ${input.headline}${
+            input.session ? ` · 세션 ${input.session.label}` : ''
+          }`
+            .replace(/\s+/g, ' ')
+            .trim();
         return send(
           cmd,
-          `✅ 외부 작업 완료 · ${input.bead_id} · ${input.headline}`
-            .replace(/\s+/g, ' ')
-            .trim()
+          input.session
+            ? `${summary}\n${input.session.resume_command}`
+            : summary
         );
       } catch (err) {
         log('external wait completion notification failed: %o', err);

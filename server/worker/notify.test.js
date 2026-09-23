@@ -201,6 +201,63 @@ describe('wait notification suppression', () => {
   });
 
   /**
+   * @param {any} owner
+   */
+  async function completionMessage(owner) {
+    const { store, spawn } = fixture();
+    const record = /** @type {any} */ ({
+      wait_id: 'w-0123456789ab',
+      bead_id: 'B1',
+      owner,
+      jobs: [{ adapter: 'process', pid: 1234, state: 'COMPLETED' }]
+    });
+
+    await notifyExternalWaitCompleted({
+      workspace: '/repo',
+      repo: '/repo',
+      record,
+      store,
+      notifier: makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl }),
+      now: 1000
+    });
+
+    return messageOf(spawn.last());
+  }
+
+  test('appends the owning session and its resume command to a session-owned completion', async () => {
+    const message = await completionMessage({
+      kind: 'session',
+      session_ref: 'claude:old-session@host; claude:0199aaaa-bbbb-7ccc@host',
+      session_pid: 1,
+      session_start: 'x'
+    });
+
+    expect(message).toBe(
+      "✅ 외부 작업 완료 · B1 · 1234 COMPLETED · 세션 claude 0199aaaa\nclaude --resume '0199aaaa-bbbb-7ccc'"
+    );
+  });
+
+  test('keeps the plain completion message for a worker owner', async () => {
+    const message = await completionMessage({
+      kind: 'worker',
+      attempt_id: 'a'
+    });
+
+    expect(message).toBe('✅ 외부 작업 완료 · B1 · 1234 COMPLETED');
+  });
+
+  test('keeps the plain completion message for an unsafe session id', async () => {
+    const message = await completionMessage({
+      kind: 'session',
+      session_ref: 'claude:-rm@host',
+      session_pid: 1,
+      session_start: 'x'
+    });
+
+    expect(message).toBe('✅ 외부 작업 완료 · B1 · 1234 COMPLETED');
+  });
+
+  /**
    * @param {string} reason
    * @param {Record<string, unknown>} [extra_detail]
    */
