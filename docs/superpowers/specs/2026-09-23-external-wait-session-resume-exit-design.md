@@ -491,7 +491,7 @@ paths와 바꾸는 바이트는 다음과 같고, 설계는 이 스펙이 소유
   조작은 슬롯 6 foot이다(자리 규칙은 그대로 따른다).
 - 전제: ADR UI-u6ud-2 — beads-ui는 dotfiles 계약의 소비자이며 `mode: 'session'` 어휘는
   dotfiles가 정의하고 이 저장소는 코드 registry로 복제한다.
-- 전제: ADR UI-u6ud-7(UI-l48z가 승계) — 파킹·복구 대기의 `[세션에서 해결]`이 tmux
+- 전제: ADR UI-l48z(UI-u6ud-7 승계) — 파킹·복구 대기의 `[세션에서 해결]`이 tmux
   launcher로 대화형 세션을 여는 방식을 외부 대기 재개가 같은 launcher로 따른다.
 - 전제: ADR dotfiles/dotfiles-o7y9-12 — 외부 대기는 `external_wait` 키 하나이고
   관찰·완료·재개는 beads-ui Worker가 소유한다(그 소유 안에 session 재개를 더한다).
