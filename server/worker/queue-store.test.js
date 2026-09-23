@@ -87,6 +87,33 @@ describe('interactive session persistence', () => {
     });
   });
 
+  test('loads an external resume session in resume mode', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        interactive_sessions: {
+          any: record({
+            kind: 'external_resume',
+            mode: 'resume',
+            source: 'session_ref',
+            session_id: 'user-session',
+            session_id_source: 'launch'
+          })
+        }
+      })
+    );
+
+    const sessions = createQueueStore().load(WS).interactive_sessions;
+
+    expect(sessions['B1:external_resume']).toMatchObject({
+      kind: 'external_resume',
+      mode: 'resume',
+      source: 'session_ref',
+      session_id: 'user-session'
+    });
+  });
+
   test.each([
     { bead_id: '' },
     { kind: 'unknown' },

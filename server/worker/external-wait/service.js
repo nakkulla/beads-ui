@@ -2,10 +2,12 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { HOLD_BUDGET } from './contract.js';
 import { holdDecision, registrationDecision } from './decision.js';
+import { resumeBlocked } from './store.js';
 
 /**
  * @typedef {import('./store.js').WaitRecord} WaitRecord
- * @typedef {(workspace:string, wait_id:string, mode:'fork'|'fresh')=>Promise<{ok:true, attempt_id:string}|{ok:false, reason:string}>} ResumeHook
+ * @typedef {{ok:true, mode:'session', session:'launched'|'already_running'|'not_launched', reason:string|null, command:string|null, owner_tmux:string|null, tmux_session:string|null, tmux_window:string|null, pane_id:string|null, bridge_active:boolean}} SessionResumeResult
+ * @typedef {(workspace:string, wait_id:string, mode:'fork'|'fresh'|'session')=>Promise<{ok:true, attempt_id:string}|SessionResumeResult|{ok:false, reason:string}>} ResumeHook
  * @typedef {{setExternalWait:(workspace:string, bead_id:string, wait_id:string)=>Promise<void>, unsetExternalWait:(workspace:string, bead_id:string)=>Promise<void>, readExternalWait?:(workspace:string, bead_id:string)=>Promise<unknown>}} BeadWriter
  */
 
@@ -430,7 +432,7 @@ export function createExternalWaitService({
    * @param {unknown} mode
    */
   async function resumeWait(workspace, wait_id, mode) {
-    if (mode !== 'fork' && mode !== 'fresh') {
+    if (mode !== 'fork' && mode !== 'fresh' && mode !== 'session') {
       return failure(400, 'bad_request');
     }
     const record = store.get(workspace, wait_id);
@@ -440,9 +442,12 @@ export function createExternalWaitService({
     if (
       record.stage !== 'completing' ||
       !(record.owner.kind === 'session' || record.resume?.error) ||
-      (mode === 'fork' && record.resume && !record.resume.error)
+      (mode === 'session' && record.owner.kind !== 'session')
     ) {
       return failure(409, 'resume_not_allowed');
+    }
+    if (resumeBlocked(record.resume, mode)) {
+      return failure(409, 'resume_reserved');
     }
     try {
       const result = await resume(workspace, wait_id, mode);

@@ -493,11 +493,11 @@
 /**
  * @typedef {Object} InteractiveSession
  * @property {string} bead_id
- * @property {'resolve'|'inquiry'} kind
+ * @property {'resolve'|'inquiry'|'external_resume'} kind
  * @property {'claude'|'codex'} provider
  * @property {string|null} session_id
  * @property {'launch'|'pane_option'|null} session_id_source
- * @property {'fork'|'fresh'|null} mode
+ * @property {'fork'|'fresh'|'resume'|null} mode
  * @property {'attempt'|'session_ref'|'fresh'|'recovered'|null} source
  * @property {string|null} forked_from
  * @property {string|null} fallback_reason
@@ -3081,7 +3081,9 @@ function normalizeInteractiveSessions(raw) {
       !['bead_id', 'pane_id', 'tmux_session', 'tmux_window'].every(
         (key) => typeof value[key] === 'string' && value[key].trim().length > 0
       ) ||
-      (value.kind !== 'resolve' && value.kind !== 'inquiry') ||
+      !['resolve', 'inquiry', 'external_resume'].includes(
+        /** @type {string} */ (value.kind)
+      ) ||
       (value.provider !== 'claude' && value.provider !== 'codex') ||
       (value.state !== 'live' && value.state !== 'exiting') ||
       typeof value.launched_at !== 'number' ||
@@ -3102,7 +3104,7 @@ function normalizeInteractiveSessions(raw) {
     const bead_id = String(value.bead_id);
     sessions[`${bead_id}:${value.kind}`] = {
       bead_id,
-      kind: value.kind,
+      kind: /** @type {InteractiveSession['kind']} */ (value.kind),
       provider: value.provider,
       pane_id: String(value.pane_id),
       tmux_session: String(value.tmux_session),
@@ -3115,7 +3117,12 @@ function normalizeInteractiveSessions(raw) {
         value.session_id_source === 'pane_option'
           ? value.session_id_source
           : null,
-      mode: value.mode === 'fork' || value.mode === 'fresh' ? value.mode : null,
+      mode:
+        value.mode === 'fork' ||
+        value.mode === 'fresh' ||
+        value.mode === 'resume'
+          ? value.mode
+          : null,
       source:
         value.source === 'attempt' ||
         value.source === 'session_ref' ||

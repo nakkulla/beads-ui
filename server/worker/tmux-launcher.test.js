@@ -6,6 +6,7 @@ import { parse as parseToml } from 'smol-toml';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { __resetRuntimeCatalogForTest } from './runner/index.js';
 import {
+  EXTERNAL_RESUME_PANE_MARKER,
   INQUIRY_PANE_MARKER,
   RESOLVE_PANE_MARKER,
   createTmuxLauncher,
@@ -67,7 +68,11 @@ describe('tmux-launcher C-locale pane listing', () => {
     }
   );
 
-  test.each([INQUIRY_PANE_MARKER, RESOLVE_PANE_MARKER])(
+  test.each([
+    INQUIRY_PANE_MARKER,
+    RESOLVE_PANE_MARKER,
+    EXTERNAL_RESUME_PANE_MARKER
+  ])(
     'recognizes a live %s pane without launching a duplicate',
     async (marker) => {
       const launcher = createTmuxLauncher({
@@ -98,6 +103,56 @@ describe('tmux-launcher C-locale pane listing', () => {
       expect(result).toEqual({ session: 'already_running' });
     }
   );
+
+  test('names the external resume kind with its own marker', () => {
+    const markers = [
+      INQUIRY_PANE_MARKER,
+      RESOLVE_PANE_MARKER,
+      EXTERNAL_RESUME_PANE_MARKER
+    ];
+
+    const distinct = new Set(markers);
+
+    expect(EXTERNAL_RESUME_PANE_MARKER).toBe('@bdui_external_resume_bead');
+    expect(distinct.size).toBe(3);
+  });
+
+  test('ignores a live resolve pane when guarding an external resume launch', async () => {
+    /** @type {string[]} */
+    const calls = [];
+    const launcher = createTmuxLauncher({
+      resolveRunner: () => '/usr/bin/true',
+      runTmux: async (args) => {
+        calls.push(args[0]);
+        if (args[0] === 'list-panes') {
+          return {
+            code: 0,
+            stdout: renderPanes(args[3], [
+              {
+                session_name: 'bdui-inquiry',
+                pane_id: '%1',
+                pane_dead: '0',
+                [RESOLVE_PANE_MARKER]: 'UI-gcf6'
+              }
+            ]),
+            stderr: ''
+          };
+        }
+        return { code: 0, stdout: '%2\n', stderr: '' };
+      }
+    });
+
+    await launcher.launch({
+      marker: EXTERNAL_RESUME_PANE_MARKER,
+      key: 'UI-gcf6',
+      tmux_session: 'bdui-inquiry',
+      window_name: 'UI-gcf6',
+      cwd: '/tmp',
+      commandArgs: []
+    });
+
+    expect(calls).toContain('new-window');
+  });
 
   test('opens a window in the existing session under the C locale', async () => {
     /** @type {Record<string, string>[]} */

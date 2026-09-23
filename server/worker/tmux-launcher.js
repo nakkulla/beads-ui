@@ -51,6 +51,14 @@ export const INQUIRY_PANE_MARKER = '@bdui_inquiry_bead';
 export const RESOLVE_PANE_MARKER = '@bdui_resolve_bead';
 
 /**
+ * The pane option an external-wait `[세션에서 이어가기]` window carries
+ * (UI-r6xq §4.3). Distinct from the other two markers — see the module header.
+ *
+ * @type {string}
+ */
+export const EXTERNAL_RESUME_PANE_MARKER = '@bdui_external_resume_bead';
+
+/**
  * How fresh the bridge heartbeat must be to read as active. Read-only
  * observation: a stale beat is reported, never a reason to skip a launch — the
  * session then waits for the user in tmux.

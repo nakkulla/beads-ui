@@ -268,9 +268,11 @@ describe('external wait settlement', () => {
     'uses the server record for a live exit with success=%s',
     async (success) => {
       const env = fixture();
-      const resumed = await env.scheduler.resumeExternalWait(WS, WAIT, {
-        mode: 'fork'
-      });
+      const resumed = /** @type {{ ok: true, attempt_id: string }} */ (
+        await env.scheduler.resumeExternalWait(WS, WAIT, {
+          mode: 'fork'
+        })
+      );
       expect(resumed.ok).toBe(true);
       if (!resumed.ok) {
         return;
@@ -1021,4 +1023,289 @@ describe('external wait reservation recovery', () => {
       expect(env.launches).toHaveLength(0);
     }
   );
+});
+
+/**
+ * A session-owned completing wait whose Bead session_ref names a local, dead
+ * claude session, with a fake tmux launcher.
+ *
+ * @param {{ record?: Record<string, any>, snapshot?: Record<string, any>, launch?: any, panes?: any, deps?: Record<string, any> }} [options]
+ */
+function sessionFixture(options = {}) {
+  const transcript_dir = path.join(root, '.claude', 'projects', '-repo');
+  fs.mkdirSync(transcript_dir, { recursive: true });
+  fs.writeFileSync(path.join(transcript_dir, 'user-session.jsonl'), '{}\n');
+  fs.mkdirSync(path.join(root, '.claude', 'sessions'), { recursive: true });
+  const worktree_dir = path.join(root, 'wt');
+  fs.mkdirSync(worktree_dir, { recursive: true });
+  const launcher = {
+    launch: vi.fn(
+      async () =>
+        options.launch || {
+          session: 'launched',
+          tmux_session: 'bdui-inquiry',
+          tmux_window: 'B1',
+          pane_id: '%7'
+        }
+    ),
+    listPanesExtended: vi.fn(
+      async () => options.panes || { ok: true, rows: [] }
+    ),
+    bridgeActive: vi.fn(() => false)
+  };
+  const env = fixture({
+    seed_prior: false,
+    snapshot: { session_ref: 'claude:user-session@host', ...options.snapshot },
+    record: {
+      worktree: worktree_dir,
+      owner: {
+        kind: 'session',
+        session_ref: 'claude:user-session@host',
+        session_pid: 3333,
+        session_start: AT
+      },
+      ...options.record
+    },
+    deps: {
+      interactiveLauncher: launcher,
+      externalWaitSessionResume: { run: vi.fn() },
+      ...options.deps
+    }
+  });
+  return { ...env, launcher, worktree_dir };
+}
+
+describe('external wait session resume', () => {
+  test('launches the preserved session without an attempt or admission', async () => {
+    const env = sessionFixture();
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'session'
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      mode: 'session',
+      session: 'launched',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'B1',
+      pane_id: '%7'
+    });
+    expect(env.admission.validate).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.launches).toHaveLength(0);
+    expect(recordOf(env)?.stage).toBe('resumed');
+    expect(env.metadata).not.toHaveProperty('external_wait');
+  });
+
+  test('refuses a worker-owned wait in session mode', async () => {
+    const env = sessionFixture({
+      record: { owner: { kind: 'worker', attempt_id: 'origin' } }
+    });
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'session'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'resume_not_allowed' });
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+  });
+
+  test('refuses a claimed bead as bead_running', async () => {
+    const env = sessionFixture();
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'live', bead_id: 'B1', status: 'running' }
+    });
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'session'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'bead_running' });
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+  });
+
+  test('refuses while a discard is in progress', async () => {
+    const env = sessionFixture();
+    env.store.createDiscardOperation(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      operation: { operation_id: 'op-1', bead_id: 'B1', source_snapshot: {} }
+    });
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'session'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'discard_in_progress' });
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+  });
+
+  test('stops the wait when the bead is no longer open', async () => {
+    const env = sessionFixture({ snapshot: { status: 'closed' } });
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'session'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'bead_closed' });
+    expect(recordOf(env)?.stage).toBe('stopped');
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+  });
+
+  test('refuses fresh while a session reservation is in progress', async () => {
+    const env = sessionFixture({
+      record: {
+        resume: {
+          mode: 'session',
+          attempt_id: null,
+          reserved_at: AT,
+          launched_at: null,
+          session_id: 'user-session',
+          error: null
+        }
+      }
+    });
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fresh'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'resume_reserved' });
+    expect(env.launches).toHaveLength(0);
+  });
+});
+
+describe('external wait session reservation recovery', () => {
+  test('keeps a failed session record untouched', async () => {
+    const failed = {
+      mode: 'session',
+      attempt_id: null,
+      reserved_at: AT,
+      launched_at: null,
+      session_id: 'user-session',
+      error: 'tmux_unavailable'
+    };
+    const env = sessionFixture({ record: { resume: failed } });
+
+    await env.scheduler.settleExternalWaitReservations(WS);
+
+    expect(recordOf(env)).toMatchObject({
+      stage: 'completing',
+      resume: failed
+    });
+    expect(env.metadata).toHaveProperty('external_wait', WAIT);
+  });
+
+  test('releases the key of a launched session reservation', async () => {
+    const env = sessionFixture({
+      record: {
+        resume: {
+          mode: 'session',
+          attempt_id: null,
+          reserved_at: AT,
+          launched_at: AT,
+          session_id: 'user-session',
+          error: null
+        }
+      }
+    });
+
+    await env.scheduler.settleExternalWaitReservations(WS);
+
+    expect(recordOf(env)?.stage).toBe('resumed');
+    expect(env.metadata).not.toHaveProperty('external_wait');
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+  });
+
+  test('settles an unfinished reservation from a live resume pane', async () => {
+    const env = sessionFixture({
+      record: {
+        resume: {
+          mode: 'session',
+          attempt_id: null,
+          reserved_at: AT,
+          launched_at: null,
+          session_id: 'user-session',
+          error: null
+        }
+      },
+      panes: {
+        ok: true,
+        rows: [
+          {
+            session: 'bdui-inquiry',
+            window: 'B1',
+            pane: '%9',
+            dead: '0',
+            cwd: '/wt',
+            agent_runtime: 'claude',
+            key: 'B1'
+          }
+        ]
+      }
+    });
+
+    await env.scheduler.settleExternalWaitReservations(WS);
+
+    expect(recordOf(env)).toMatchObject({
+      stage: 'resumed',
+      resume: { launched_at: AT }
+    });
+    expect(
+      env.store.snapshot(WS).interactive_sessions['B1:external_resume']
+    ).toMatchObject({
+      kind: 'external_resume',
+      mode: 'resume',
+      source: 'recovered',
+      session_id: 'user-session',
+      session_id_source: 'launch',
+      pane_id: '%9'
+    });
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+  });
+
+  test('drops an unfinished reservation without a pane and never relaunches', async () => {
+    const env = sessionFixture({
+      record: {
+        resume: {
+          mode: 'session',
+          attempt_id: null,
+          reserved_at: AT,
+          launched_at: null,
+          session_id: 'user-session',
+          error: null
+        }
+      }
+    });
+
+    await env.scheduler.settleExternalWaitReservations(WS);
+
+    expect(recordOf(env)).toMatchObject({ stage: 'completing', resume: null });
+    expect(env.metadata).toHaveProperty('external_wait', WAIT);
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+  });
+
+  test('writes nothing when the tmux observation fails', async () => {
+    const reservation = {
+      mode: 'session',
+      attempt_id: null,
+      reserved_at: AT,
+      launched_at: null,
+      session_id: 'user-session',
+      error: null
+    };
+    const env = sessionFixture({
+      record: { resume: reservation },
+      panes: { ok: false, error: 'no server' }
+    });
+
+    await env.scheduler.settleExternalWaitReservations(WS);
+
+    expect(recordOf(env)).toMatchObject({
+      stage: 'completing',
+      resume: reservation
+    });
+    expect(env.metadata).toHaveProperty('external_wait', WAIT);
+  });
 });

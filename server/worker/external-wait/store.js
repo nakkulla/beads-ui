@@ -19,7 +19,7 @@ import {
  * @typedef {'hold'|'done'|'detached'|'completing'|'resumed'|'stopped'} Stage
  * @typedef {{kind:'worker', attempt_id:string}|{kind:'session', session_ref:string, session_pid:number, session_start:string}} Owner
  * @typedef {{digest:string, completed_at:string, recovery_needed:boolean}} Completion
- * @typedef {{mode:'fork'|'fresh', attempt_id:string|null, reserved_at:string|null, launched_at:string|null, session_id:string|null, error:string|null}} Resume
+ * @typedef {{mode:'fork'|'fresh'|'session', attempt_id:string|null, reserved_at:string|null, launched_at:string|null, session_id:string|null, error:string|null}} Resume
  * @typedef {{wait_id:string, root_dir:string, bead_id:string, owner:Owner, worktree:string, execution_sha:string, registered_at:string, stage:Stage, budget:{turns_total:number, turns_used:number}, next_observation_at:string, error_count:number, last_error:string|null, jobs:Job[], completion:Completion|null, resume:Resume|null}} WaitRecord
  * @typedef {Pick<WaitRecord, 'root_dir'|'bead_id'|'owner'|'worktree'|'execution_sha'|'jobs'> & Partial<Omit<WaitRecord, 'root_dir'|'bead_id'|'owner'|'worktree'|'execution_sha'|'jobs'>>} WaitInput
  * @typedef {(argv:string[], options:{timeout_ms:number}) => Promise<{code:number, stdout:string, stderr:string}>} Run
@@ -36,6 +36,45 @@ const TRANSITIONS = {
   resumed: [],
   stopped: []
 };
+
+/**
+ * Whether a resume reservation is still in flight (UI-r6xq §4.2): present,
+ * no `error`, and no `launched_at`, whatever its mode.
+ *
+ * @param {Resume|null} resume
+ * @returns {boolean}
+ */
+export function resumeInProgress(resume) {
+  return (
+    resume !== null && resume.error === null && resume.launched_at === null
+  );
+}
+
+/**
+ * Whether a new resume in `mode` must be refused as `resume_reserved`. An
+ * in-flight reservation refuses every mode. A reservation that owns an attempt
+ * stays refused even after an uncertain launch recorded `error`, because the
+ * restart settlement owns that attempt. `fork`/`fresh` are also refused by any
+ * launched, not-yet-settled resume; a `session` click on a launched session
+ * reservation passes so the launcher answers `already_running` and the key
+ * settlement is retried.
+ *
+ * @param {Resume|null} resume
+ * @param {'fork'|'fresh'|'session'} mode
+ * @returns {boolean}
+ */
+export function resumeBlocked(resume, mode) {
+  if (resume === null) {
+    return false;
+  }
+  if (resumeInProgress(resume) || resume.attempt_id !== null) {
+    return true;
+  }
+  if (resume.error !== null) {
+    return false;
+  }
+  return mode !== 'session' || resume.mode !== 'session';
+}
 
 /** @returns {string} A new opaque wait identifier. */
 export function makeWaitId() {
@@ -158,7 +197,8 @@ function validate(record) {
   if (
     record.resume !== null &&
     (!record.resume ||
-      !['fork', 'fresh'].includes(record.resume.mode) ||
+      !['fork', 'fresh', 'session'].includes(record.resume.mode) ||
+      (record.resume.mode === 'session' && record.resume.attempt_id !== null) ||
       [record.resume.reserved_at, record.resume.launched_at].some(
         (value) => value !== null && !isTimestamp(value)
       ) ||
