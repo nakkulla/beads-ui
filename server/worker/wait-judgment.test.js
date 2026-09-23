@@ -637,6 +637,41 @@ describe('wait judgment external work', () => {
     expect(result.actions[0].op).toBe('external_wait_stop');
   });
 
+  test('waits for a pending key set before judging a detached record', () => {
+    const result = run({
+      external_waits: [external({ stage: 'detached', key_write_pending: true })]
+    }).wait_reasons[0];
+
+    expect(result.verdict).toBe('normal');
+  });
+
+  test('waits for a pending key unset before judging a leftover key', () => {
+    const result = run({
+      external_waits: [external({ stage: 'stopped', key_write_pending: true })],
+      blocker_facts: { 'UI-consumer': { external_wait: 'w-0123456789ab' } }
+    });
+
+    expect(result.wait_reasons).toEqual([]);
+  });
+
+  test('fails closed on a leftover key after its unset failed', () => {
+    const result = run({
+      external_waits: [
+        external({
+          stage: 'stopped',
+          key_write_pending: false,
+          last_error: 'external_wait unset readback disagrees'
+        })
+      ],
+      blocker_facts: { 'UI-consumer': { external_wait: 'w-0123456789ab' } }
+    }).wait_reasons[0];
+
+    expect(result).toMatchObject({
+      verdict: 'action_required',
+      verdict_reason: { code: 'wait_record_missing' }
+    });
+  });
+
   test.each(['done', 'resumed', 'stopped'])(
     'omits terminal records at %s',
     (stage) => {
@@ -1131,6 +1166,121 @@ describe('wait-judge runtime', () => {
     expect(onChanged).toHaveBeenCalledTimes(2);
     expect(isExternalWaitObservation(projectExternalWait(record))).toBe(true);
     expect(projectExternalWait(record)).not.toHaveProperty('worktree');
+    judge.stop();
+  });
+
+  /**
+   * @param {Record<string, any>} deps
+   */
+  function pendingJudge(deps) {
+    return createWaitJudge({
+      workspace: ROOT,
+      repo: ROOT,
+      store: /** @type {any} */ ({
+        snapshot: () => queue(),
+        claimWaitNotifications: () => []
+      }),
+      notifier: /** @type {any} */ ({}),
+      requestSnapshot: /** @type {any} */ (
+        async () => ({ ok: true, snapshot: {} })
+      ),
+      readFacts: async () => ({}),
+      onChanged: vi.fn(),
+      now: () => NOW,
+      ...deps
+    });
+  }
+
+  /** @param {Record<string, any>} [patch] */
+  function stored(patch = {}) {
+    return {
+      ...external(patch),
+      owner: { kind: 'worker', attempt_id: 'a' },
+      worktree: '/repo/tree',
+      execution_sha: 'a'.repeat(40)
+    };
+  }
+
+  test('holds the verdict while a record key write is pending', async () => {
+    const judge = pendingJudge({
+      listRecords: () => [
+        { ...stored({ stage: 'detached' }), key_write_pending: true }
+      ]
+    });
+
+    await judge.refresh();
+
+    expect(judge.get().wait_reasons[0].verdict).toBe('normal');
+    judge.stop();
+  });
+
+  test('keeps the key write state out of the public projection', async () => {
+    const judge = pendingJudge({
+      listRecords: () => [
+        { ...stored({ stage: 'detached' }), key_write_pending: true }
+      ]
+    });
+
+    await judge.refresh();
+
+    expect(judge.get().external_waits[0]).not.toHaveProperty(
+      'key_write_pending'
+    );
+    judge.stop();
+  });
+
+  /** @param {import('vitest').Mock} claim */
+  function claimedCodes(claim) {
+    return claim.mock.calls.flatMap(([, keys]) =>
+      keys.map((/** @type {string} */ key) => JSON.parse(key)[2])
+    );
+  }
+
+  test('drops a round whose key unset settles during the facts read', async () => {
+    let pending = true;
+    let snapshots = 0;
+    const record = stored({ stage: 'stopped' });
+    const claim = vi.fn(() => []);
+    const judge = pendingJudge({
+      store: { snapshot: () => queue(), claimWaitNotifications: claim },
+      listRecords: () => [{ ...record, key_write_pending: pending }],
+      requestSnapshot: async () => {
+        snapshots += 1;
+        pending = false;
+        return { ok: true, snapshot: {} };
+      },
+      readFacts: async () => ({
+        blocker_facts: {
+          'UI-consumer':
+            snapshots === 1 ? { external_wait: record.wait_id } : {}
+        }
+      })
+    });
+
+    await judge.refresh();
+    await judge.refresh();
+
+    expect(claimedCodes(claim)).not.toContain('wait_record_missing');
+    judge.stop();
+  });
+
+  test('drops a round whose stop starts and settles during the facts read', async () => {
+    let stage = 'completing';
+    const claim = vi.fn(() => []);
+    const judge = pendingJudge({
+      store: { snapshot: () => queue(), claimWaitNotifications: claim },
+      listRecords: () => [{ ...stored({ stage }), key_write_pending: false }],
+      requestSnapshot: async () => {
+        stage = 'stopped';
+        return { ok: true, snapshot: {} };
+      },
+      readFacts: async () => ({ blocker_facts: { 'UI-consumer': {} } })
+    });
+
+    await judge.refresh();
+    await judge.refresh();
+
+    expect(claimedCodes(claim)).not.toContain('wait_key_missing');
     judge.stop();
   });
 });

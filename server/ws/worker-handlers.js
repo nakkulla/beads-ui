@@ -4906,7 +4906,9 @@ export async function handleWorkerExternalWait(ws, req) {
     req.type === 'external_wait_check'
       ? '[지금 확인]'
       : req.type === 'external_wait_stop'
-        ? '[관찰 중단]'
+        ? 'stage' in record && record.stage === 'completing'
+          ? '[대기 해제]'
+          : '[관찰 중단]'
         : p.mode === 'fresh'
           ? '[새 세션으로]'
           : '[이어하기]';

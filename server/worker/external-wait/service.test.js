@@ -612,6 +612,72 @@ test('stops observation and unsets the bead key', async () => {
   expect(observer.observeRecord).not.toHaveBeenCalled();
 });
 
+test('lists a stopped record as pending while its key unset runs', async () => {
+  const record = store.insert(WORKSPACE, input());
+  /** @type {()=>void} */
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = () => resolve(undefined);
+  });
+  bd.unsetExternalWait.mockImplementationOnce(async () => {
+    await gate;
+  });
+
+  const stopping = service.stop(WORKSPACE, record.wait_id);
+  const listed = service.listRecords(WORKSPACE);
+  release();
+  await stopping;
+
+  expect(listed).toMatchObject([
+    { wait_id: record.wait_id, stage: 'stopped', key_write_pending: true }
+  ]);
+});
+
+test('clears the pending mark once the key unset settles', async () => {
+  const record = store.insert(WORKSPACE, input());
+
+  await service.stop(WORKSPACE, record.wait_id);
+
+  expect(service.listRecords(WORKSPACE)).toMatchObject([
+    { wait_id: record.wait_id, key_write_pending: false }
+  ]);
+});
+
+test('clears the pending mark with the error when the key unset fails', async () => {
+  const record = store.insert(WORKSPACE, input());
+  bd.unsetExternalWait.mockRejectedValueOnce(new Error('readback failed'));
+
+  await service.stop(WORKSPACE, record.wait_id);
+
+  expect(service.listRecords(WORKSPACE)).toMatchObject([
+    { key_write_pending: false, last_error: 'readback failed' }
+  ]);
+});
+
+test('lists a detached record as pending while its key set runs', async () => {
+  const record = store.insert(WORKSPACE, {
+    ...input(),
+    budget: { turns_total: 3, turns_used: 3 }
+  });
+  /** @type {()=>void} */
+  let release = () => {};
+  const gate = new Promise((resolve) => {
+    release = () => resolve(undefined);
+  });
+  bd.setExternalWait.mockImplementationOnce(async () => {
+    await gate;
+  });
+
+  const holding = service.hold(WORKSPACE, record.wait_id);
+  const listed = service.listRecords(WORKSPACE);
+  release();
+  await holding;
+
+  expect(listed).toMatchObject([
+    { stage: 'detached', key_write_pending: true }
+  ]);
+});
+
 test('keeps the record stopped when the unset readback fails', async () => {
   const record = store.insert(WORKSPACE, input());
   bd.unsetExternalWait.mockRejectedValueOnce(new Error('readback failed'));

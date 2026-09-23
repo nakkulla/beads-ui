@@ -165,14 +165,30 @@ export function projectExternalWait(record) {
 }
 
 /**
+ * Stage and key-write progress of each record, for comparing two reads.
+ *
+ * @param {Array<{ wait_id: string, stage: string, key_write_pending?: boolean }>} records
+ * @returns {string}
+ */
+function recordWriteState(records) {
+  return JSON.stringify(
+    records.map((record) => [
+      record.wait_id,
+      record.stage,
+      record.key_write_pending === true
+    ])
+  );
+}
+
+/**
  * Viewer-independent wait-judge lifecycle and memory-only observation clocks.
  *
- * @param {{ workspace: string, repo: string, store: Pick<ReturnType<import('./queue-store.js').createQueueStore>, 'snapshot'|'claimWaitNotifications'|'recordTimelineEvent'>, notifier: Pick<ReturnType<typeof createNotifier>, 'waitOverdue'|'waitActionRequired'>, listRecords?: (workspace: string) => import('./external-wait/store.js').WaitRecord[], requestSnapshot?: typeof requestWorkspaceSnapshot, readFacts: (queue: any, workspace: WaitWorkspace) => Promise<{ bead_blocked_by?: Record<string, string[]>, blocker_facts?: Record<string, any>, foreign_readback?: Record<string, any>, account_catalog?: Record<string, any> }>, now?: () => number, onChanged?: (workspace: string) => void, subscribe?: typeof onQueueChanged }} deps
+ * @param {{ workspace: string, repo: string, store: Pick<ReturnType<import('./queue-store.js').createQueueStore>, 'snapshot'|'claimWaitNotifications'|'recordTimelineEvent'>, notifier: Pick<ReturnType<typeof createNotifier>, 'waitOverdue'|'waitActionRequired'>, listRecords?: (workspace: string) => Array<import('./external-wait/store.js').WaitRecord & { key_write_pending?: boolean }>, requestSnapshot?: typeof requestWorkspaceSnapshot, readFacts: (queue: any, workspace: WaitWorkspace) => Promise<{ bead_blocked_by?: Record<string, string[]>, blocker_facts?: Record<string, any>, foreign_readback?: Record<string, any>, account_catalog?: Record<string, any> }>, now?: () => number, onChanged?: (workspace: string) => void, subscribe?: typeof onQueueChanged }} deps
  */
 export function createWaitJudge(deps) {
   const now = deps.now || Date.now;
   const listRecords =
-    deps.listRecords || getWorkerRuntime().externalWaitStore.list;
+    deps.listRecords || getWorkerRuntime().externalWait.listRecords;
   const requestSnapshot = deps.requestSnapshot || requestWorkspaceSnapshot;
   const onChanged = deps.onChanged || emitQueueChanged;
   /** @type {import('./wait-judgment.js').ObservationTimes} */
@@ -203,6 +219,7 @@ export function createWaitJudge(deps) {
     }
     const run_epoch = epoch;
     in_flight = (async () => {
+      const records = listRecords(deps.workspace);
       let material = workspace;
       if (!material) {
         const result = await requestSnapshot(deps.workspace, 'wait-judge');
@@ -219,13 +236,26 @@ export function createWaitJudge(deps) {
       if (epoch !== run_epoch) {
         return;
       }
-      const external_waits = listRecords(deps.workspace).map(
-        projectExternalWait
-      );
+      // A stage change or key write that starts or settles while the facts
+      // load pairs these records with facts from the other side of it; drop
+      // the round before any notification and judge again.
+      if (
+        recordWriteState(listRecords(deps.workspace)) !==
+        recordWriteState(records)
+      ) {
+        rerun = true;
+        return;
+      }
+      const external_waits = records.map(projectExternalWait);
       const result = judgeWaitReasons({
         root_dir: deps.workspace,
         queue,
-        external_waits,
+        // Key-write progress is judgment input only; the public projection
+        // keeps its exact field set.
+        external_waits: records.map((record, index) => ({
+          ...external_waits[index],
+          key_write_pending: record.key_write_pending === true
+        })),
         ...facts,
         observed_at,
         now: now()
@@ -2250,7 +2280,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     repo,
     store: runtime.queueStore,
     notifier: notify,
-    listRecords: runtime.externalWaitStore.list,
+    listRecords: runtime.externalWait.listRecords,
     readFacts: async (queue, workspace) => {
       const ids = [
         ...new Set(

@@ -86,6 +86,24 @@ describe('external wait operations', () => {
     }
   );
 
+  test('records a completing stop as the release click', async () => {
+    const runtime = getWorkerRuntime();
+    vi.spyOn(runtime.externalWait, 'get').mockReturnValue(
+      /** @type {any} */ ({ bead_id: 'A-1', stage: 'completing' })
+    );
+    vi.spyOn(runtime.externalWait, 'stop').mockResolvedValue(
+      /** @type {any} */ ({ ok: true })
+    );
+    const timeline = vi.spyOn(runtime.queueStore, 'recordTimelineEvent');
+
+    await request('external_wait_stop');
+
+    expect(timeline).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({ summary: '[대기 해제] 클릭' })
+    );
+  });
+
   test('returns the service failure as a protocol error', async () => {
     vi.spyOn(getWorkerRuntime().externalWait, 'check').mockResolvedValue({
       ok: false,

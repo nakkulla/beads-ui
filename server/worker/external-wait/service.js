@@ -115,6 +115,28 @@ export function createExternalWaitService({
   const writes = new Map();
 
   /**
+   * @param {string} workspace
+   * @param {string} bead_id
+   */
+  function writeKey(workspace, bead_id) {
+    return JSON.stringify([workspace, bead_id]);
+  }
+
+  /**
+   * List records with whether their bead key write is still in flight; the
+   * durable record shape stays unchanged.
+   *
+   * @param {string} workspace
+   * @returns {Array<WaitRecord & { key_write_pending: boolean }>}
+   */
+  function listRecords(workspace) {
+    return store.list(workspace).map((record) => ({
+      ...record,
+      key_write_pending: writes.has(writeKey(workspace, record.bead_id))
+    }));
+  }
+
+  /**
    * Publish service-owned mutations after metadata settlement, including failures.
    *
    * @param {string} workspace
@@ -136,7 +158,7 @@ export function createExternalWaitService({
    * @param {()=>Promise<void>} write
    */
   function writeMetadata(workspace, bead_id, write) {
-    const key = JSON.stringify([workspace, bead_id]);
+    const key = writeKey(workspace, bead_id);
     const previous = writes.get(key) || Promise.resolve();
     const pending = previous
       .catch(() => {})
@@ -437,7 +459,7 @@ export function createExternalWaitService({
     check,
     stop,
     resume: resumeWait,
-    listRecords: store.list,
+    listRecords,
     /** @param {ResumeHook} hook */
     setResume(hook) {
       resume = hook;

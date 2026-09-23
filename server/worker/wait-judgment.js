@@ -380,23 +380,30 @@ export function judgeWaitReasons(input) {
         message: `재개 실패 · ${line(row.resume.error)}`
       };
     }
+    // A key set/unset still in flight is not yet a missing key or record;
+    // only its settled outcome, including a recorded write failure, is judged.
     if (
-      ['detached', 'completing'].includes(row.stage) &&
-      !Object.hasOwn(facts[row.bead_id] || {}, 'external_wait')
+      !row.key_write_pending &&
+      ['detached', 'completing'].includes(row.stage)
     ) {
-      judge(result, 'action_required', 'wait_key_missing');
-    } else if (
-      ['detached', 'completing'].includes(row.stage) &&
-      facts[row.bead_id].external_wait !== row.wait_id
-    ) {
-      judge(result, 'action_required', 'wait_record_missing');
+      if (!Object.hasOwn(facts[row.bead_id] || {}, 'external_wait')) {
+        judge(result, 'action_required', 'wait_key_missing');
+      } else if (facts[row.bead_id].external_wait !== row.wait_id) {
+        judge(result, 'action_required', 'wait_record_missing');
+      }
     }
     wait_reasons.push(result);
   }
+  const key_write_pending = new Set(
+    (input.external_waits || [])
+      .filter((row) => row.root_dir === root_dir && row.key_write_pending)
+      .map((row) => row.bead_id)
+  );
   for (const [bead_id, fact] of Object.entries(facts)) {
     if (
       !Object.hasOwn(fact, 'external_wait') ||
-      live_rows.some((row) => row.bead_id === bead_id)
+      live_rows.some((row) => row.bead_id === bead_id) ||
+      key_write_pending.has(bead_id)
     ) {
       continue;
     }
