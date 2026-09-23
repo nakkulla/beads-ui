@@ -20,7 +20,6 @@ import {
   areaTooltip
 } from '../../utils/area-judgement.js';
 import { chipPresetBinding } from '../../utils/chip-preset-binding.js';
-import { copyToClipboard } from '../../utils/clipboard.js';
 import {
   COMPLEX_CHIP_LABEL,
   complexReasonSentences,
@@ -32,7 +31,6 @@ import {
   formatRelativeTime,
   formatTimestampLocal
 } from '../../utils/relative-time.js';
-import { showToast } from '../../utils/toast.js';
 import {
   formatUsageTotalWithCost,
   providerUsageBadges,
@@ -2392,7 +2390,7 @@ function waitTimesText(reason, now_ms) {
  * need their original projection; missing operation material stays absent.
  *
  * @param {import('../../protocol.js').WaitReason|null|undefined} reason
- * @param {{ item?: MiniItem, external_wait?: import('../../protocol.js').ExternalWaitObservation, now?: number, last_observed_at?: number|null }} [options]
+ * @param {{ item?: MiniItem, external_wait?: import('../../protocol.js').ExternalWaitObservation, now?: number, last_observed_at?: number|null, session_preferred?: boolean }} [options]
  */
 export function waitReasonLines(reason, options = {}) {
   if (!reason) {
@@ -2453,9 +2451,15 @@ export function waitReasonLines(reason, options = {}) {
       payload.wait_id &&
       payload.root_dir
     ) {
+      // `session-preferred` Bead는 세션에서 잇는 쪽이 1순위다 (UI-l48z §4.3).
+      const primary =
+        action.op === 'external_wait_resume' &&
+        payload.mode === 'fork' &&
+        options.session_preferred !== true;
       return html`<button
         type="button"
-        class="op-btn external-wait__action"
+        class="op-btn${primary ? ' op-btn--primary' : ''} external-wait__action"
+        title=${ifDefined(action.title || undefined)}
         data-external-wait-op=${action.op}
         data-wait-id=${payload.wait_id}
         data-root-dir=${payload.root_dir}
@@ -3544,9 +3548,9 @@ export function miniRow(item, options = {}) {
   // 쓰므로 두 표면이 같은 값을 다르게 다루지 않는다. 재료가 없으면 없다.
   const log_path_el = logPathTemplate(item.log_path);
   const coords_el =
-    lane_el || route_el || from_el || external.chips
+    lane_el || route_el || from_el
       ? html`<div class="worker-chips worker-chips--coords">
-          ${lane_el}${route_el}${from_el}${external.chips}
+          ${lane_el}${route_el}${from_el}
         </div>`
       : '';
   const run_el =
@@ -3573,8 +3577,15 @@ export function miniRow(item, options = {}) {
       : html`${gate_el}${gate_open ? judgementPopover(item) : ''}`,
     grace_el
   );
-  const actions_el = options.actions ? options.actions : external.actions;
+  // 외부 대기 조작은 슬롯 6이다 (UI-l48z §4.3): 카드 변형은 foot 줄에 둔다.
+  const external_foot_el = card ? external.actions : '';
+  const actions_el = options.actions
+    ? options.actions
+    : card
+      ? ''
+      : external.actions;
   const has_foot = !!(
+    external_foot_el ||
     merging ||
     item.merge_action ||
     item.cancel_action ||
@@ -3653,7 +3664,7 @@ export function miniRow(item, options = {}) {
             ? html`<div class="worker-mini__foot">
                 ${merge_step_el}
                 <span class="worker-mini__actions"
-                  >${merge_el}${cancel_el}${discard_actions_el}${revise_els}</span
+                  >${external_foot_el}${merge_el}${cancel_el}${discard_actions_el}${revise_els}</span
                 >
                 ${discardReceiptTemplate(item)}
               </div>`
@@ -3664,8 +3675,9 @@ export function miniRow(item, options = {}) {
 
 /**
  * Consumer-card slots shared by candidates, queue rows and running tiles.
+ * 좌표(`ssh`·job·`log`)는 상세 패널 잡 표의 것이다 (UI-l48z §4.2).
  *
- * @param {{external_wait?: import('../../protocol.js').ExternalWaitObservation, wait_reasons?: import('../../protocol.js').WaitReason[]}} item
+ * @param {{external_wait?: import('../../protocol.js').ExternalWaitObservation, wait_reasons?: import('../../protocol.js').WaitReason[], labels?: string[], session_preferred?: boolean}} item
  * @param {number} [now]
  */
 export function externalWaitCardParts(item, now = Date.now()) {
@@ -3673,51 +3685,14 @@ export function externalWaitCardParts(item, now = Date.now()) {
   const reason = (item.wait_reasons || []).find(
     (entry) => entry.kind === 'external_job'
   );
-  const lines = waitReasonLines(reason, { now, external_wait: record });
-  const jobs = record?.jobs || [];
-  const chips =
-    jobs.length > 0
-      ? html`${jobs.map(
-          (job) => html`
-            ${job.ssh_host
-              ? html`<span class="worker-chip">ssh ${job.ssh_host}</span>`
-              : ''}
-            ${externalCopyChip(
-              String(job.job_id ?? job.pid),
-              String(job.job_id ?? job.pid)
-            )}
-            ${job.log_path
-              ? externalCopyChip(`log ${job.log_path}`, job.log_path)
-              : ''}
-          `
-        )}`
-      : '';
-  return { ...lines, chips };
+  return waitReasonLines(reason, {
+    now,
+    external_wait: record,
+    session_preferred:
+      item.session_preferred === true ||
+      (Array.isArray(item.labels) && item.labels.includes('session-preferred'))
+  });
 }
-
-/**
- * @param {string} label
- * @param {string} value
- */
-function externalCopyChip(label, value) {
-  return html`<button
-    type="button"
-    class="ctl-chip"
-    title="클릭하면 복사"
-    @click=${async (/** @type {Event} */ event) => {
-      event.stopPropagation();
-      const copied = await copyToClipboard(value);
-      showToast(
-        copied ? '복사됨' : '복사 실패',
-        copied ? 'success' : 'error',
-        1200
-      );
-    }}
-  >
-    ${label}
-  </button>`;
-}
-
 /**
  * @param {import('../../protocol.js').WaitReason} reason
  * @param {import('../../protocol.js').ExternalWaitObservation|undefined} record
@@ -4253,11 +4228,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
             item
           )}${external.badge}${interactiveSessionClosingTemplate(
         item.interactive_sessions
-      )}${external.actions
-        ? html`<span class="worker-card__head-actions"
-            >${external.actions}</span
-          >`
-        : ''}
+      )}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow
@@ -4265,9 +4236,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
           onOpenDoc: options.onOpenDoc
         })
       : ''}${external.body}${deps_el}
-    ${route_el || from_el || external.chips
+    ${route_el || from_el
       ? html`<div class="worker-chips worker-chips--coords">
-          ${route_el}${from_el}${external.chips}
+          ${route_el}${from_el}
         </div>`
       : ''}
     ${has_exec_chips
@@ -4300,33 +4271,36 @@ export function candidateCard(item, place_menu = null, options = {}) {
                 </button>
               </div>`
             : html`${item.reason
-                  ? html`<span
-                      class="worker-card__reason${danger
-                        ? ' worker-card__reason--danger'
-                        : ''}"
-                      >${item.reason}</span
-                    >`
-                  : ''}
-                <!-- 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 후보 레인에서 대기로 가는
+                ? html`<span
+                    class="worker-card__reason${danger
+                      ? ' worker-card__reason--danger'
+                      : ''}"
+                    >${item.reason}</span
+                  >`
+                : ''}${external.badge
+                ? // 외부 대기 사유가 입장을 막으므로 `↴ 대기로`는 뜻이 없다 —
+                  // 그 자리가 대기 처분 조작이다 (UI-l48z §4.3).
+                  external.actions
+                : html` <!-- 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 후보 레인에서 대기로 가는
                  유일한 경로다 (UI-d13v §6). queue_placeable 하나가 준비도
                  세그먼트와 같은 자격을 말하며, blocked 자체는 막지 않는다.
                  포인터 종류로 감추지 않는다: 드래그라는 대체 경로가 없다. -->
-                <button
-                  type="button"
-                  class="op-btn op-btn--primary worker-card__place"
-                  data-bead-id=${item.id}
-                  ?disabled=${!queue_placeable}
-                  title=${placementTitle({
-                    placeable: queue_placeable,
-                    route_ok: item.route_ok,
-                    worker_ineligible,
-                    awaiting_user,
-                    missing_description,
-                    spec: item.placement_spec
-                  })}
-                >
-                  ↴ 대기로
-                </button>`}
+                    <button
+                      type="button"
+                      class="op-btn op-btn--primary worker-card__place"
+                      data-bead-id=${item.id}
+                      ?disabled=${!queue_placeable}
+                      title=${placementTitle({
+                        placeable: queue_placeable,
+                        route_ok: item.route_ok,
+                        worker_ineligible,
+                        awaiting_user,
+                        missing_description,
+                        spec: item.placement_spec
+                      })}
+                    >
+                      ↴ 대기로
+                    </button>`}`}
         </div>`}
     ${external.times}${timesMeta(item)}
   </div>`;

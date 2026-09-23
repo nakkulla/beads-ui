@@ -2255,6 +2255,59 @@ export function createDetailPanel(mount_element, options) {
     );
   }
 
+  /** @type {Set<string>} */
+  const external_pending = new Set();
+
+  /**
+   * The detail panel is a sibling of the Worker/Monitor mounts, so their
+   * delegated `data-external-wait-op` handlers never see these buttons; the
+   * panel sends the same op and payload itself (UI-l48z §4.2).
+   *
+   * @param {Event} event
+   */
+  async function onExternalWaitOp(event) {
+    const target = /** @type {HTMLElement|null} */ (event.target);
+    const button = /** @type {HTMLButtonElement|null} */ (
+      target?.closest('[data-external-wait-op]') || null
+    );
+    if (!button) {
+      return;
+    }
+    event.stopPropagation();
+    const root_dir = button.dataset.rootDir || '';
+    const wait_id = button.dataset.waitId || '';
+    const op = button.dataset.externalWaitOp || '';
+    const key = `${root_dir}:${wait_id}`;
+    if (!transport || !root_dir || !wait_id || external_pending.has(key)) {
+      return;
+    }
+    external_pending.add(key);
+    button.disabled = true;
+    try {
+      const res = /** @type {{ ok?: boolean }|undefined} */ (
+        await transport(op, {
+          root_dir,
+          wait_id,
+          ...(button.dataset.mode ? { mode: button.dataset.mode } : {}),
+          ...(button.dataset.beadId ? { bead_id: button.dataset.beadId } : {})
+        })
+      );
+      showToast(
+        res?.ok === false
+          ? '외부 작업 요청에 실패했습니다'
+          : '외부 작업 상태를 갱신했습니다',
+        res?.ok === false ? 'error' : 'success',
+        4000
+      );
+    } catch {
+      showToast('외부 작업 요청에 실패했습니다', 'error', 4000);
+    } finally {
+      external_pending.delete(key);
+      button.disabled = false;
+      doRender();
+    }
+  }
+
   /** Render expected-path observations on the consumer issue. */
   function externalJobsTemplate() {
     const root_dir = options.getWorkspacePath?.() || '';
@@ -2280,7 +2333,11 @@ export function createDetailPanel(mount_element, options) {
       (entry) =>
         entry.kind === 'external_job' && entry.subject.bead_id === current_id
     );
-    const lines = waitReasonLines(reason, { external_wait: record });
+    const labels = Array.isArray(current?.labels) ? current.labels : [];
+    const lines = waitReasonLines(reason, {
+      external_wait: record,
+      session_preferred: labels.includes('session-preferred')
+    });
     return html`<section class="detail-external-wait">
       <div class="detail-section-label">외부 작업</div>
       ${lines.badge}${lines.body}
@@ -2321,11 +2378,30 @@ export function createDetailPanel(mount_element, options) {
                       </div>`
                   )}
                 </td>
-                <td>${job.log_path}</td>
+                <td>
+                  ${job.log_path
+                    ? html`<button
+                        type="button"
+                        class="detail-external-wait__log"
+                        title="클릭하면 복사"
+                        @click=${() => copyText(job.log_path)}
+                      >
+                        ${job.log_path}
+                      </button>`
+                    : ''}
+                </td>
               </tr>`
           )}
         </tbody>
       </table>
+      ${lines.actions
+        ? html`<div
+            class="detail-external-wait__ops"
+            @click=${onExternalWaitOp}
+          >
+            ${lines.actions}
+          </div>`
+        : ''}
       ${lines.times}
     </section>`;
   }

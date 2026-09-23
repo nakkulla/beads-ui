@@ -2878,6 +2878,21 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const bead_scope_by_root = new Map();
   /** @type {Map<string, string[]>} */
   const runnable_scope_by_bead = new Map();
+  // 살아 있는 외부 대기 레코드 (UI-l48z §4.1). 세션 타일 조립이 레코드 유무로
+  // 필드를 정하므로 레인 루프보다 먼저 모은다; 뒤의 부착 루프도 같은 표를 읽는다.
+  /** @type {Map<string, import('../../protocol.js').ExternalWaitObservation>} */
+  const external_by_bead = new Map();
+  for (const workspace of list) {
+    for (const wait of workspace.external_waits || []) {
+      if (
+        isExternalWaitObservation(wait) &&
+        wait.root_dir === workspace.root_dir &&
+        ['hold', 'detached', 'completing'].includes(wait.stage)
+      ) {
+        external_by_bead.set(`${wait.root_dir}\u0000${wait.bead_id}`, wait);
+      }
+    }
+  }
 
   for (const workspace of list) {
     if (!workspace || typeof workspace.root_dir !== 'string') {
@@ -3522,19 +3537,32 @@ export function buildLanes(workspaces, workspaces_state, options) {
           )
         );
       }
+      const session_wait = external_by_bead.get(
+        `${workspace.root_dir}\u0000${bead_id}`
+      );
+      // 세션 소유 외부 대기 (UI-l48z §4.1): 세션이 살아 있지 않으므로 경과
+      // 시계를 돌리지 않는다 — 경과는 잡 제출 기준 headline이 말한다.
+      const external_record =
+        session_wait && session_wait.owner_kind === 'session'
+          ? session_wait
+          : null;
       running.push({
         ...base(bead_id),
         title: entry.title || titles[bead_id] || bead_id,
         lane: 'running',
         kind: 'session',
-        status: 'in_progress',
+        status: entry.status === 'open' ? 'open' : 'in_progress',
         // 세션 타일의 경과는 시작 시각이 없으면 마지막 갱신 시각으로 물러나고,
         // 둘 다 없으면 경과·활동 줄이 통째로 생략된다 (§5·§10).
-        started_at:
-          validTime(entry.started_at) ??
-          validTime(entry.updated_at) ??
-          undefined,
-        updated_at: validTime(entry.updated_at) ?? undefined,
+        ...(external_record
+          ? { external_wait: external_record }
+          : {
+              started_at:
+                validTime(entry.started_at) ??
+                validTime(entry.updated_at) ??
+                undefined,
+              updated_at: validTime(entry.updated_at) ?? undefined
+            }),
         workflow: /** @type {any} */ (entry.workflow || null),
         labels: Array.isArray(entry.labels) ? entry.labels : [],
         spec_id: typeof entry.spec_id === 'string' ? entry.spec_id : '',
@@ -4727,8 +4755,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
     item.manual_only = manual_only_roots.has(item.root_dir);
   }
 
-  /** @type {Map<string, import('../../protocol.js').ExternalWaitObservation>} */
-  const external_by_bead = new Map();
   /** @type {Map<string, import('../../protocol.js').WaitReason[]>} */
   const reasons_by_subject = new Map();
   for (const workspace of list) {
@@ -4740,17 +4766,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const reasons = reasons_by_subject.get(key) || [];
       reasons.push(reason);
       reasons_by_subject.set(key, reasons);
-    }
-  }
-  for (const workspace of list) {
-    for (const wait of workspace.external_waits || []) {
-      if (
-        isExternalWaitObservation(wait) &&
-        wait.root_dir === workspace.root_dir &&
-        ['hold', 'detached', 'completing'].includes(wait.stage)
-      ) {
-        external_by_bead.set(`${wait.root_dir}\u0000${wait.bead_id}`, wait);
-      }
     }
   }
   for (const item of [

@@ -20,6 +20,7 @@ import {
   discardProjection,
   discardReceiptTemplate,
   execChipsTemplate,
+  externalWaitCardParts,
   formatClock,
   formatElapsed,
   interactiveSessionBadgesTemplate,
@@ -1039,7 +1040,7 @@ describe('consumer external work slots', () => {
     expect(row.querySelector('[data-lane="external_wait"]')).toBeNull();
   });
 
-  test('places job coordinates and clocks in slots five and seven', () => {
+  test('leaves job coordinates to the detail panel and keeps clocks in slot seven', () => {
     const row = renderRow({
       lane: 'queue',
       done: false,
@@ -1053,13 +1054,8 @@ describe('consumer external work slots', () => {
       ]
     });
 
-    expect(row.querySelector('.worker-chips')?.textContent).toContain(
-      'ssh wallace'
-    );
-    expect(row.querySelector('.worker-chips')?.textContent).toContain('42');
-    expect(row.querySelector('.worker-chips')?.textContent).toContain(
-      'log /logs/job.log'
-    );
+    expect(row.textContent).not.toContain('ssh wallace');
+    expect(row.textContent).not.toContain('log /logs/job.log');
     expect(row.querySelector('.wait-reason__times')?.textContent).toContain(
       '제출'
     );
@@ -1091,6 +1087,111 @@ describe('consumer external work slots', () => {
     expect(row.querySelector('.wait-reason__times')?.textContent).not.toContain(
       '다음'
     );
+  });
+});
+
+/**
+ * @returns {any[]}
+ */
+function externalActions() {
+  const payload = { root_dir: '/repo', wait_id: 'w-0123456789ab' };
+  return [
+    {
+      op: 'external_wait_stop',
+      label: '[대기 해제]',
+      title: '이어가지 않고 대기 키를 지운다',
+      payload
+    },
+    {
+      op: 'external_wait_resume',
+      label: '[워커로 이어가기]',
+      title: 'Worker가 보존 세션을 fork해 이어간다',
+      payload: { ...payload, mode: 'fork' }
+    }
+  ];
+}
+
+describe('external wait operations sit in slot six (UI-l48z §4.3)', () => {
+  test('draws the external operations in the candidate foot', () => {
+    const card = renderCandidate({
+      external_wait: externalWait({ stage: 'completing' }),
+      wait_reasons: [
+        waitReason({ kind: 'external_job', actions: externalActions() })
+      ]
+    });
+
+    expect(
+      card.querySelectorAll('.worker-card__foot [data-external-wait-op]')
+    ).toHaveLength(2);
+  });
+
+  test('drops the queue placement button from an external wait candidate', () => {
+    const card = renderCandidate({
+      external_wait: externalWait(),
+      wait_reasons: [
+        waitReason({ kind: 'external_job', actions: externalActions() })
+      ]
+    });
+
+    expect(card.querySelector('.worker-card__place')).toBeNull();
+  });
+
+  test('keeps the external operations out of the candidate head', () => {
+    const card = renderCandidate({
+      external_wait: externalWait(),
+      wait_reasons: [
+        waitReason({ kind: 'external_job', actions: externalActions() })
+      ]
+    });
+
+    expect(
+      card.querySelector('.worker-card__head [data-external-wait-op]')
+    ).toBeNull();
+  });
+
+  test('carries the server title on each operation button', () => {
+    const card = renderCandidate({
+      external_wait: externalWait(),
+      wait_reasons: [
+        waitReason({ kind: 'external_job', actions: externalActions() })
+      ]
+    });
+
+    expect(
+      Array.from(card.querySelectorAll('[data-external-wait-op]')).map(
+        (button) => button.getAttribute('title')
+      )
+    ).toEqual([
+      '이어가지 않고 대기 키를 지운다',
+      'Worker가 보존 세션을 fork해 이어간다'
+    ]);
+  });
+
+  test('draws the queue row operations in the card foot', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      external_wait: externalWait(),
+      wait_reasons: [
+        waitReason({ kind: 'external_job', actions: externalActions() })
+      ]
+    });
+
+    expect(
+      row.querySelectorAll('.worker-mini__foot [data-external-wait-op]')
+    ).toHaveLength(2);
+    expect(
+      row.querySelector('.worker-mini__head [data-external-wait-op]')
+    ).toBeNull();
+  });
+
+  test('returns no coordinate chips from the card parts', () => {
+    const parts = externalWaitCardParts({
+      external_wait: externalWait(),
+      wait_reasons: [waitReason({ kind: 'external_job' })]
+    });
+
+    expect(Object.keys(parts)).not.toContain('chips');
   });
 });
 

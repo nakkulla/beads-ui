@@ -87,6 +87,109 @@ test('renders jobs and expected results on the consumer detail', () => {
   panel.destroy();
 });
 
+/**
+ * @param {Record<string, any>} [options]
+ * @returns {{ mount: HTMLElement, panel: ReturnType<typeof createDetailPanel> }}
+ */
+function renderExternalDetail(options = {}) {
+  document.body.innerHTML = '<div id="m"></div>';
+  const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+  const issueStores = createSubscriptionIssueStores();
+  const record = externalWait();
+  const panel = createDetailPanel(mount, {
+    issueStores,
+    onClose: vi.fn(),
+    getWorkspacePath: () => '/repo',
+    pipelineStore: {
+      get: () => [
+        {
+          root_dir: '/repo',
+          external_waits: [record],
+          wait_reasons: [
+            {
+              kind: 'external_job',
+              subject: { root_dir: '/repo', bead_id: 'A-1' },
+              headline: 'wallace 작업 42 · RUNNING',
+              release: '완료되면 같은 세션을 이어간다',
+              verdict: 'normal',
+              targets: [],
+              actions: [
+                {
+                  op: 'external_wait_check',
+                  label: '[지금 확인]',
+                  title: '관찰을 지금 한 번 더 한다',
+                  payload: { root_dir: '/repo', wait_id: record.wait_id }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    ...options
+  });
+  issueStores.register('detail:A-1', {
+    type: 'issue-detail',
+    params: { id: 'A-1' }
+  });
+  issueStores.getStore('detail:A-1')?.applyPush({
+    type: 'snapshot',
+    id: 'detail:A-1',
+    revision: 1,
+    issues: /** @type {any} */ ([
+      { id: 'A-1', title: '분석', status: 'open', issue_type: 'task' }
+    ])
+  });
+  panel.load('A-1');
+  return { mount, panel };
+}
+
+describe('external wait detail ops (UI-l48z §4.2)', () => {
+  test('draws the external operations under the job table', () => {
+    const { mount, panel } = renderExternalDetail();
+
+    expect(
+      mount.querySelector(
+        '.detail-external-wait__jobs + .detail-external-wait__ops [data-external-wait-op="external_wait_check"]'
+      )
+    ).not.toBeNull();
+    panel.destroy();
+  });
+
+  test('sends the operation through the panel transport', async () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const { mount, panel } = renderExternalDetail({ transport });
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-external-wait-op]')
+    ).click();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('external_wait_check', {
+      root_dir: '/repo',
+      wait_id: 'w-0123456789ab'
+    });
+    panel.destroy();
+  });
+
+  test('copies the log path from the log cell button', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    });
+    const { mount, panel } = renderExternalDetail();
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.detail-external-wait__log')
+    ).click();
+    await Promise.resolve();
+
+    expect(writeText).toHaveBeenCalledWith('/logs/job.log');
+    panel.destroy();
+  });
+});
+
 describe('views/detail-panel', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';

@@ -1,5 +1,5 @@
 import { render } from 'lit-html';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   formatAttemptOrchestrationChip,
   formatWorkerChip
@@ -931,7 +931,7 @@ describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', 
     );
 
     expect(tile).toContain('⏳ 외부 작업');
-    expect(tile).toContain('ssh wallace');
+    expect(tile).not.toContain('ssh wallace');
     expect(tile).toContain('경과 3h12m');
   });
 
@@ -1894,7 +1894,7 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
       tile.querySelectorAll('.rtile__meta .ctl-chip')
     ).map((el) => el.className);
 
-    expect(tile.querySelector('.ctl-chip--sref')?.textContent).toBe(
+    expect(tile.querySelector('.ctl-chip--sref')?.textContent?.trim()).toBe(
       'claude · a1b2c3d4'
     );
     expect(chips.indexOf('ctl-chip ctl-chip--sref')).toBeLessThan(
@@ -1906,7 +1906,7 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
     const tile = renderSession({ session_refs: [view()] });
 
     expect(tile.querySelector('.ctl-chip--sref')?.getAttribute('title')).toBe(
-      'claude:a1b2c3d4-5e6f@mac-studio'
+      'claude:a1b2c3d4-5e6f@mac-studio · 클릭하면 세션 ID 복사'
     );
   });
 
@@ -1919,8 +1919,249 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
     });
 
     expect(tile.querySelector('.ctl-chip--sref')?.getAttribute('title')).toBe(
-      'claude:a1b2c3d4-5e6f@mac-studio · 이력 2'
+      'claude:a1b2c3d4-5e6f@mac-studio · 이력 2 · 클릭하면 세션 ID 복사'
     );
+  });
+
+  test('draws the session identity chip as a button', () => {
+    const tile = renderSession({ session_refs: [view()] });
+
+    expect(tile.querySelector('.ctl-chip--sref')?.tagName).toBe('BUTTON');
+  });
+
+  test('copies the full session ID from the session identity chip', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    });
+    const tile = renderSession({ session_refs: [view()] });
+
+    /** @type {HTMLButtonElement} */ (
+      tile.querySelector('.ctl-chip--sref')
+    ).click();
+    await Promise.resolve();
+
+    expect(writeText).toHaveBeenCalledWith('a1b2c3d4-5e6f');
+  });
+
+  /**
+   * @param {Record<string, any>} [record_patch]
+   * @param {any[]} [actions]
+   * @param {Record<string, any>} [tile_patch]
+   * @returns {HTMLElement}
+   */
+  function renderExternalSession(
+    record_patch = {},
+    actions = [],
+    tile_patch = {}
+  ) {
+    const record = {
+      wait_id: 'w-0123456789ab',
+      root_dir: '/repo',
+      bead_id: 'UI-t1',
+      owner_kind: 'session',
+      stage: 'detached',
+      budget: { turns_total: 3, turns_used: 0 },
+      registered_at: '2026-09-21T00:00:00Z',
+      next_observation_at: '2026-09-21T03:14:00Z',
+      error_count: 0,
+      last_error: null,
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '42',
+          submitted_at: '2026-09-21T00:00:00Z',
+          log_path: '/logs/job.log',
+          state: 'RUNNING',
+          observed_at: '2026-09-21T03:12:00Z',
+          terminal: null
+        }
+      ],
+      completion: null,
+      resume: null,
+      ...record_patch
+    };
+    return renderSession({
+      started_at: undefined,
+      updated_at: undefined,
+      session_refs: [view()],
+      external_wait: /** @type {any} */ (record),
+      wait_reasons: /** @type {any} */ ([
+        {
+          kind: 'external_job',
+          subject: { root_dir: '/repo', bead_id: 'UI-t1' },
+          headline: 'wallace 작업 42 · RUNNING',
+          release: '완료되면 같은 세션을 이어간다',
+          verdict: 'normal',
+          targets: [],
+          actions
+        }
+      ]),
+      ...tile_patch
+    });
+  }
+
+  const EXTERNAL_PAYLOAD = { root_dir: '/repo', wait_id: 'w-0123456789ab' };
+  const CHECK_ACTIONS = [
+    {
+      op: 'external_wait_check',
+      label: '[지금 확인]',
+      title: '관찰을 지금 한 번 더 한다',
+      payload: EXTERNAL_PAYLOAD
+    },
+    {
+      op: 'external_wait_stop',
+      label: '[관찰 중단]',
+      title: '잡은 그대로',
+      payload: EXTERNAL_PAYLOAD
+    }
+  ];
+  const FORK_ACTIONS = [
+    {
+      op: 'external_wait_resume',
+      label: '[워커로 이어가기]',
+      title: 'fork',
+      payload: { ...EXTERNAL_PAYLOAD, mode: 'fork' }
+    }
+  ];
+
+  test('marks a session tile with an external wait as held (UI-l48z §4.1)', () => {
+    const tile = renderExternalSession();
+
+    expect(Array.from(tile.classList)).toEqual(
+      expect.arrayContaining([
+        'rtile--session',
+        'rtile--held',
+        'rtile--compact',
+        'rtile--external-wait'
+      ])
+    );
+  });
+
+  test('replaces the direct-session badge with the external wait badge', () => {
+    const tile = renderExternalSession();
+
+    expect(tile.querySelector('.rtile__session-badge')).toBeNull();
+    expect(
+      tile
+        .querySelector('.rtile__hd .wait-verdict summary')
+        ?.textContent?.trim()
+    ).toBe('⏳ 외부 작업');
+  });
+
+  test('draws no elapsed label or activity line on an external wait tile', () => {
+    const tile = renderExternalSession();
+
+    expect(tile.querySelector('.rtile__elapsed')).toBeNull();
+    expect(tile.querySelector('.rtile__activity')).toBeNull();
+  });
+
+  test('keeps the session button on an external wait tile', () => {
+    const tile = renderExternalSession();
+
+    expect(
+      tile.querySelector('.rtile__hd-actions .rtile__session')
+    ).not.toBeNull();
+  });
+
+  test('draws the external headline and times on an external wait tile', () => {
+    const tile = renderExternalSession();
+
+    expect(tile.querySelector('.wait-reason__headline')?.textContent).toContain(
+      'wallace 작업 42'
+    );
+    expect(tile.querySelector('.wait-reason__times')?.textContent).toContain(
+      '마지막 확인'
+    );
+  });
+
+  test('keeps the session identity chip on an external wait tile', () => {
+    const tile = renderExternalSession();
+
+    expect(tile.querySelector('.ctl-chip--sref')).not.toBeNull();
+  });
+
+  test('draws the external operations in the foot, not the header', () => {
+    const tile = renderExternalSession({}, CHECK_ACTIONS);
+
+    expect(
+      tile.querySelectorAll('.rtile__foot [data-external-wait-op]')
+    ).toHaveLength(2);
+    expect(
+      tile.querySelector('.rtile__hd-actions [data-external-wait-op]')
+    ).toBeNull();
+  });
+
+  test('draws no coordinate chips on an external wait tile', () => {
+    const tile = renderExternalSession();
+
+    expect(tile.textContent).not.toContain('ssh wallace');
+    expect(tile.textContent).not.toContain('/logs/job.log');
+  });
+
+  test('holds a record-less wait_record_missing tile with its stop exit', () => {
+    const tile = renderSession({
+      started_at: undefined,
+      updated_at: undefined,
+      session_refs: [view()],
+      wait_reasons: /** @type {any} */ ([
+        {
+          kind: 'external_job',
+          subject: { root_dir: '/repo', bead_id: 'UI-t1' },
+          headline: '',
+          release: '',
+          verdict: 'action_required',
+          verdict_reason: {
+            code: 'wait_record_missing',
+            message: '대기 레코드 없음'
+          },
+          targets: [],
+          actions: [
+            {
+              op: 'external_wait_stop',
+              label: '[관찰 중단]',
+              title: '레코드가 없는 대기 키를 지운다',
+              payload: EXTERNAL_PAYLOAD
+            }
+          ]
+        }
+      ])
+    });
+
+    expect(
+      tile.querySelector('.rtile__hd .wait-verdict summary')?.textContent
+    ).toContain('⛔ 조치 필요');
+    expect(
+      tile
+        .querySelector('.rtile__foot [data-external-wait-op]')
+        ?.textContent?.trim()
+    ).toBe('관찰 중단');
+  });
+
+  test('makes the worker fork exit primary without session-preferred', () => {
+    const tile = renderExternalSession({ stage: 'completing' }, FORK_ACTIONS, {
+      labels: []
+    });
+
+    expect(
+      tile
+        .querySelector('[data-external-wait-op="external_wait_resume"]')
+        ?.classList.contains('op-btn--primary')
+    ).toBe(true);
+  });
+
+  test('keeps the worker fork exit plain on a session-preferred bead', () => {
+    const tile = renderExternalSession({ stage: 'completing' }, FORK_ACTIONS, {
+      labels: ['session-preferred']
+    });
+
+    expect(
+      tile
+        .querySelector('[data-external-wait-op="external_wait_resume"]')
+        ?.classList.contains('op-btn--primary')
+    ).toBe(false);
   });
 
   test('reports the transcript mtime as the activity line', () => {

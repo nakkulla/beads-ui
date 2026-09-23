@@ -30,6 +30,20 @@ describe('wait vocabulary table', () => {
     ]);
   });
 
+  test('names the external job exits by their stage labels (UI-l48z §4.3)', () => {
+    const row = WAIT_KINDS.find((entry) => entry.id === 'external_job');
+
+    expect(row?.action).toBe(
+      '[지금 확인] · [관찰 중단]/[대기 해제] · [워커로 이어가기] · 재개 실패 시 [새 세션으로]'
+    );
+  });
+
+  test('points the external job release at the worker fork label', () => {
+    const row = WAIT_KINDS.find((entry) => entry.id === 'external_job');
+
+    expect(row?.release).toContain('[워커로 이어가기]');
+  });
+
   test('gives every row a scope, a glyph string and the release sentence', () => {
     const complete = WAIT_KINDS.every(
       (row) =>

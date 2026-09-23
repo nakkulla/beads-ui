@@ -4212,7 +4212,6 @@ html[data-theme='dark'] {
 
 .rtile__hd {
   display: flex;
-  flex-wrap: nowrap;
   min-height: 28px;
   align-items: center;
   gap: var(--sp-2);
@@ -4690,14 +4689,20 @@ html[data-theme='dark'] {
   margin-top: 0;
 }
 
+/* 머리줄은 모든 폭에서 말줄임 대신 줄을 넘긴다 (UI-l48z §4.5, 종전 UI-c8kc의
+   640px 이하 규칙): 칩과 배지는 글자를 잃지 않고 조작 묶음은 자기 줄의 오른쪽
+   끝에 남는다. */
+:is(.worker-card__head, .worker-mini__head, .worker-mini__row1, .rtile__hd) {
+  flex-wrap: wrap;
+}
+
 :is(.worker-card__head, .worker-mini__head, .worker-mini__row1, .rtile__hd)
   > .ctl-chip {
   min-width: 0;
   font-size: var(--fs-chip);
   border-radius: var(--r-3);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 :is(.worker-card, .worker-mini, .rtile) .wait-verdict {
@@ -4715,9 +4720,8 @@ html[data-theme='dark'] {
   :is(.wait-verdict, .external-wait-summary)
   > summary {
   display: block;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 :is(.worker-card, .worker-mini, .rtile)
@@ -6260,7 +6264,6 @@ html[data-theme='dark'] {
 }
 
 .worker-mini__head {
-  flex-wrap: nowrap;
   min-height: 28px;
 }
 
@@ -6731,7 +6734,6 @@ html[data-theme='dark'] {
 .worker-card__head {
   position: relative;
   display: flex;
-  flex-wrap: nowrap;
   min-height: 28px;
   align-items: center;
   gap: var(--sp-2);
@@ -8683,14 +8685,9 @@ button.detail-session__leg:focus-visible {
     min-width: 0;
   }
 
-  /* 좁은 화면의 머리줄은 말줄임 대신 줄을 넘긴다 (UI-c8kc): 칩은 다음 줄로
-     내려가고 조작 묶음은 자기가 선 줄의 오른쪽 끝에 남는다. 이 폭의
-     `.chip-popover`는 정적 블록이라 그 폭이 담는 `<details>`의 폭이다 — 열린
-     대기 배지가 한 줄을 통째로 차지해야 팝업이 카드 폭으로 펼쳐진다. */
-  :is(.worker-card__head, .worker-mini__head, .rtile__hd) {
-    flex-wrap: wrap;
-  }
-
+  /* 머리줄 줄넘김은 공통 규칙이다 (UI-l48z §4.5). 이 폭의 `.chip-popover`는
+     정적 블록이라 그 폭이 담는 `<details>`의 폭이다 — 열린 대기 배지가 한 줄을
+     통째로 차지해야 팝업이 카드 폭으로 펼쳐진다. */
   :is(.worker-card__head, .worker-mini__head, .worker-mini__row1, .rtile__hd)
     :is(.wait-verdict, .external-wait-summary)[open] {
     flex-basis: 100%;
