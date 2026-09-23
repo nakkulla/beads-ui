@@ -288,6 +288,82 @@ describe('readAdrDir', () => {
     expect(result.errors).toEqual([]);
   });
 
+  test('reads the root and history/ with history files as history/<name>', async () => {
+    await fs.mkdir(path.join(dir, 'history'));
+    await fs.writeFile(
+      path.join(dir, '0012-x.md'),
+      frontmatter({ ...VALID, id: '12' })
+    );
+    await fs.writeFile(
+      path.join(dir, 'history', '0007-old.md'),
+      frontmatter({ ...VALID, id: '7', status: 'superseded' })
+    );
+
+    const result = await readAdrDir(dir);
+
+    expect(result.adrs.map((a) => a.file)).toEqual([
+      '0012-x.md',
+      'history/0007-old.md'
+    ]);
+    expect(result.errors).toEqual([]);
+  });
+
+  test('returns the root-only result when history/ is absent', async () => {
+    await fs.writeFile(
+      path.join(dir, '0012-x.md'),
+      frontmatter({ ...VALID, id: '12' })
+    );
+
+    const result = await readAdrDir(dir);
+
+    expect(result.adrs.map((a) => [a.file, a.id])).toEqual([['0012-x.md', 12]]);
+    expect(result.errors).toEqual([]);
+  });
+
+  test('skips history/README.md and non-ADR names inside history/', async () => {
+    await fs.mkdir(path.join(dir, 'history'));
+    await fs.writeFile(path.join(dir, 'history', 'README.md'), 'index\n');
+    await fs.writeFile(path.join(dir, 'history', 'notes.txt'), 'x\n');
+    await fs.writeFile(
+      path.join(dir, 'history', '0007-old.md'),
+      frontmatter({ ...VALID, id: '7', status: 'superseded' })
+    );
+
+    const result = await readAdrDir(dir);
+
+    expect(result.adrs.map((a) => a.file)).toEqual(['history/0007-old.md']);
+    expect(result.errors).toEqual([]);
+  });
+
+  test('reports a history/ read failure under its relative path', async () => {
+    await fs.mkdir(path.join(dir, 'history'));
+    // A directory whose name matches the ADR pattern lists like a file but
+    // fails at readFile (EISDIR), exercising the read-failure branch.
+    await fs.mkdir(path.join(dir, 'history', '0007-old.md'));
+
+    const result = await readAdrDir(dir);
+
+    expect(result.adrs).toEqual([]);
+    expect(result.errors.map((e) => e.file)).toEqual(['history/0007-old.md']);
+  });
+
+  test('reports a history/ parse error under its relative path', async () => {
+    await fs.mkdir(path.join(dir, 'history'));
+    await fs.writeFile(
+      path.join(dir, 'history', '0013-bad.md'),
+      'no frontmatter\n'
+    );
+
+    const result = await readAdrDir(dir);
+
+    expect(result.errors).toEqual([
+      {
+        file: 'history/0013-bad.md',
+        error: 'no YAML frontmatter block at the top of the file'
+      }
+    ]);
+  });
+
   test('returns an empty result for a missing directory', async () => {
     const result = await readAdrDir(path.join(dir, 'nope'));
 

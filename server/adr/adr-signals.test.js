@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { CANDIDATE_ERROR_KINDS } from './adr-registry.js';
 import { createAdrSignals } from './adr-signals.js';
 
 /**
@@ -597,6 +598,74 @@ describe('cross citations', () => {
   });
 });
 
+describe('history directory', () => {
+  test('scans root and history/ ADRs for cross citations under docs/adr paths', async () => {
+    await writeAdr(12, 'see ADR dotfiles/0045 for context');
+    await writeFile(
+      'docs/adr/history/0007-old.md',
+      [
+        '---',
+        'id: 7',
+        'title: t',
+        'status: superseded',
+        'date: 2026-09-05',
+        'summary: s',
+        'superseded_by: 12',
+        '---',
+        'see ADR dotfiles/0046 for context',
+        ''
+      ].join('\n')
+    );
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.cross_citations.map((c) => [c.file, c.adr])).toEqual([
+      ['docs/adr/0012-decision.md', 45],
+      ['docs/adr/history/0007-old.md', 46]
+    ]);
+  });
+
+  test('classifies current and history by status regardless of location', async () => {
+    await writeFile(
+      'docs/adr/history/0012-decision.md',
+      [
+        '---',
+        'id: 12',
+        'title: t',
+        'status: accepted',
+        'date: 2026-09-05',
+        'summary: s',
+        '---',
+        ''
+      ].join('\n')
+    );
+    await writeFile(
+      'docs/adr/0007-old.md',
+      [
+        '---',
+        'id: 7',
+        'title: t',
+        'status: superseded',
+        'date: 2026-09-05',
+        'summary: s',
+        '---',
+        ''
+      ].join('\n')
+    );
+
+    const result = await signals().computeWorkspace(root_dir, { full: true });
+
+    expect(result.current.map((a) => a.file)).toEqual([
+      'history/0012-decision.md'
+    ]);
+    expect(result.history.map((a) => a.file)).toEqual(['0007-old.md']);
+  });
+
+  test('registers title_too_long as a candidate error kind', () => {
+    expect(CANDIDATE_ERROR_KINDS).toContain('title_too_long');
+  });
+});
+
 describe('legacy-only regression', () => {
   test('renders a numeric-only fixture directory exactly as before the string id change', async () => {
     await writeAdr(30);
@@ -622,9 +691,13 @@ describe('legacy-only regression', () => {
 
   test("keeps every one of this repository's numeric ADRs in the pre-change order", async () => {
     const repo_root = process.cwd();
-    const adr_files = (
-      await fs.readdir(path.join(repo_root, 'docs/adr'))
-    ).filter((name) => /^\d{4}-.*\.md$/.test(name));
+    const adr_dir = path.join(repo_root, 'docs/adr');
+    const history_names = await fs
+      .readdir(path.join(adr_dir, 'history'))
+      .catch(() => /** @type {string[]} */ ([]));
+    const adr_files = [...(await fs.readdir(adr_dir)), ...history_names].filter(
+      (name) => /^\d{4}-.*\.md$/.test(name)
+    );
 
     const result = await signals().computeWorkspace(repo_root, { full: true });
 
