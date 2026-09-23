@@ -134,11 +134,16 @@ Worker 탭의 후보 행(`workspace-adapter.runnableRows()`)은 Board live store
 후보 카드가 대기 배지·본문·조작(§4.3)을 단 채 서고, 다음 스냅샷에서 타일로 옮겨
 간다 — 어느 순간에도 대기가 화면에서 사라지지는 않는다.
 
-**타일 렌더 (`running-grid.js runningTile`).** `tile.external_wait`가 있으면 다섯째
-held 상태 `external_wait`다: `held = parked || retry_wait || waiting || provider_hold || external_wait`,
-`waiting` 뒤에 배타로 판정한다(Worker 소유 대기는 `waiting` attempt라 `waiting`으로
-먼저 잡히고 `external.badge`가 배지를 대신하는 지금 동작 그대로다). 세션 타일
-(`kind: 'session'`)에서 `external_wait`이면:
+**타일 렌더 (`running-grid.js runningTile`).** `externalWaitCardParts(tile)`의
+`badge`가 비어 있지 않으면 — 즉 `wait_reasons`에 `external_job` 사유가 있으면, 레코드
+(`tile.external_wait`) 유무와 무관하게 — 다섯째 held 상태 `external_wait`다:
+`held = parked || retry_wait || waiting || provider_hold || external_wait`, `waiting` 뒤에
+배타로 판정한다(Worker 소유 대기는 `waiting` attempt라 `waiting`으로 먼저 잡히고
+`external.badge`가 배지를 대신하는 지금 동작 그대로다). 레코드 없이 `external_wait`
+키만 남은 Bead는 `wait_record_missing` 사유(`wait-judgment.js:386`)만 갖는데, 그
+사유의 `⛔ 조치 필요` 배지와 `[관찰 중단]` 출구도 같은 경로로 타일에 선다 — 레코드를
+술어로 삼으면 §5의 그 출구가 사라진다. 세션 타일(`kind: 'session'`)에서
+`external_wait`이면:
 
 | 슬롯 | 그리는 것 |
 |---|---|
@@ -165,10 +170,12 @@ Worker 소유 보류 타일(`waiting` + `external_wait`)은 슬롯 1 조작에�
 (슬롯 6)이다. headline이 이미 호스트와 잡 번호를 말한다.
 
 상세 패널 `externalJobsTemplate`(`detail-panel/index.js:2259`)은 그대로 잡 표를
-그리되 두 가지를 더한다: `잡` 열에 `ssh_host`를 앞세워 `wallace 247443`처럼 쓰고
-(process 잡은 `pid <n>`), 표 아래에 외부 대기 조작 줄(§4.3의 같은 버튼, 같은
-`data-external-wait-op` 계약)을 둔다. `로그` 열의 경로는 클릭 = 복사 버튼으로 만든다
+그린다 — `잡` 열은 이미 `ssh_host · job_id`(process 잡은 pid)를 쓰므로(`:2304`)
+바꾸지 않는다. 더하는 것은 둘이다: 표 아래에 외부 대기 조작 줄(§4.3의 같은 버튼, 같은
+`data-external-wait-op` 계약)을 두고, `로그` 열의 경로를 클릭 = 복사 버튼으로 만든다
 (지금 카드의 `externalCopyChip`과 같은 복사·토스트 동작; 기존 `copyText`를 쓴다).
+표는 지금처럼 `stage ∈ {hold, detached, completing}` 레코드에만 그려지므로 `/stop` 뒤
+(`stopped`)에는 사라진다 — §4.3의 `[대기 해제]` 툴팁이 그 사실을 말한다.
 상세 패널의 `[data-external-wait-op]` 클릭은 Worker·Monitor 탭의 기존 처리기
 (`worker/index.js:1731`·`monitor/index.js:341`)가 `mount_element` 안을 위임으로 받고
 있으므로 상세 패널이 그 탭의 `mount_element` 안에 있으면 그대로 닿는다; 아니면
@@ -184,8 +191,9 @@ Worker 소유 보류 타일(`waiting` + `external_wait`)은 슬롯 1 조작에�
 - `runningTile`: `.rtile__hd-actions`의 `wait_lines.map((line) => line.actions)`에서
   외부 대기 조작을 빼고, held 타일의 `.rtile__foot`(파킹 처분 버튼과 같은 자리)에
   둔다. 다른 종류의 대기 조작(`▶ 재개`·`↻ 지금 재시도` 등)은 자리를 바꾸지 않는다.
-- `candidateCard`: `item.external_wait`가 있으면 foot의 `↴ 대기로` 대신 외부 대기
-  조작을 그린다 — `external_wait` 키가 입장을 막아 그 버튼은 뜻이 없다.
+- `candidateCard`: 외부 대기 사유가 있으면(`external.badge`가 비어 있지 않으면, 레코드
+  유무와 무관하게) foot의 `↴ 대기로` 대신 외부 대기 조작을 그린다 — `external_wait`
+  키가 입장을 막아 그 버튼은 뜻이 없다.
   `.worker-card__head-actions`의 외부 대기 조작은 지운다.
 - `miniRow`(큐·직렬 레인 행): 카드 변형의 foot(`.worker-mini__actions`가 서는 줄)에
   둔다.
@@ -199,8 +207,8 @@ Worker 소유 보류 타일(`waiting` + `external_wait`)은 슬롯 1 조작에�
 | stage | op | label | title |
 |---|---|---|---|
 | `hold`·`detached` | `external_wait_check` | `[지금 확인]` | `관찰을 지금 한 번 더 한다 (다음 예정 <t>)` — `<t>`는 `next_observation_at` |
-| `hold`·`detached` | `external_wait_stop` | `[관찰 중단]` | `beads-ui가 이 작업을 더 지켜보지 않고 대기 표시를 지운다 · 잡은 그대로 · Bead는 후보로 돌아간다` |
-| `completing` | `external_wait_stop` | `[대기 해제]` | `이어가지 않고 대기 표시를 지운다 · 잡 결과는 상세 패널 표에 남는다` |
+| `hold`·`detached` | `external_wait_stop` | `[관찰 중단]` | `beads-ui가 이 작업을 더 지켜보지 않고 대기 키를 지운다 · 잡은 그대로` |
+| `completing` | `external_wait_stop` | `[대기 해제]` | `이어가지 않고 대기 키를 지운다 · 잡은 그대로 · 이 대기의 표시는 카드와 상세에서 사라진다` |
 | `completing` | `external_wait_resume` (fork) | `[워커로 이어가기]` | `Worker가 보존 세션을 fork해 이어간다 — 이후 소유는 Worker` |
 | `completing` + `resume.error` | `external_wait_resume` (fresh) | `[새 세션으로]` | `fork 없이 완료 페이로드로 새 Worker 세션을 연다` |
 
@@ -300,7 +308,8 @@ UI-z437 §7의 슬롯 표는 이 정정으로 읽는다 — 그 스펙 파일은
   타일 하나만; `session_active`에 없고 레코드만 있으면 후보 카드에 레코드 부착.
 - `app/views/worker/running-grid.test.js`: 외부 대기 세션 타일은 `직접 세션` 배지·경과
   라벨·활동 줄이 없고 외부 대기 배지·headline·times가 있으며 조작은 `.rtile__foot`
-  안, `.rtile__hd-actions` 안에는 없다; 세션 정체 칩은 `button`이고 클릭이 전체
+  안, `.rtile__hd-actions` 안에는 없다; 레코드 없이 `wait_record_missing` 사유만 있는
+  세션 타일도 `⛔ 조치 필요` 배지와 foot의 `[관찰 중단]`을 갖는다; 세션 정체 칩은 `button`이고 클릭이 전체
   세션 ID를 복사한다; `session-preferred` 라벨 유무로 `[워커로 이어가기]`의
   `op-btn--primary`가 갈린다; `external.chips`가 그려지지 않는다.
 - `app/views/worker/lanes.test.js`: `candidateCard`에 `external_wait`가 있으면 foot에
@@ -310,8 +319,8 @@ UI-z437 §7의 슬롯 표는 이 정정으로 읽는다 — 그 스펙 파일은
   `[워커로 이어가기]`)과 `title`, 세션 소유 `completing`의 release 문장.
 - `server/worker/notify.test.js`: 세션 소유 완료 알림에 세션 8자와 재개 명령 줄이
   붙고, Worker 소유·unsafe ID에서는 지금 메시지다.
-- `app/views/detail-panel/index.test.js`: 잡 표 `잡` 열에 호스트가 앞서고 표 아래 조작
-  줄이 있으며 로그 셀이 복사 버튼이다.
+- `app/views/detail-panel/index.test.js`: 잡 표 아래 조작 줄이 있으며 로그 셀이 복사
+  버튼이다(`잡` 열의 호스트 표기는 기존 동작이라 seam이 아니다).
 - `app/views/worker/wait-vocabulary.test.js`: `external_job` 행의 `action`·`release`.
 - `app/styles.worker-theme.test.js`: 머리줄 wrap과 no-ellipsis 규칙이 미디어쿼리 밖에
   있다(기존 CSS 정적 검사 방식).
@@ -354,11 +363,17 @@ UI-z437 §7의 슬롯 표는 이 정정으로 읽는다 — 그 스펙 파일은
 ## 결정 (ADR 후보)
 
 - 전제: ADR 0014 — 새 요소의 자리는 공유 슬롯 표가 정한다; §4.6이 그 표를 정정한다.
-- 전제: ADR 0033 — 후보 레인은 미착수 이슈의 관측 집합이다; 외부 대기 Bead는 착수된
-  Bead라 그 집합 밖이고, 표시 집합만 바뀌며 admission·dispatch 경로는 그대로다.
-- 전제: ADR UI-a5l2-2 — 승계한 UI-z437 조항 중 "세션 소유는 알림 뒤 `[이어하기]`, 자격
-  실패는 launch 없이 사람의 `[새 세션으로]`"는 라벨만 바뀌고 동작이 유지된다;
-  대기 어휘의 `external_job` 종류·배지 순서도 그대로다.
+- 전제: ADR 0033 — "후보 레인은 미착수 이슈의 관측 집합이고 실행 안전은 서버
+  admission이 지킨다"는 결정과 `admitted`·사실 필드·세그먼트·`include_unadmitted`
+  규칙은 그대로 따른다. 뒤집는 것은 한 조항 — "`runnable-cache`의 채택 조건은 셋뿐이다
+  (`bead_id`·`open`·phase child 아님)" — 이며, `external_wait` 키가 있는 `open` 행을
+  후보 버킷에서 `session_active` 버킷으로 옮기는 넷째 조건을 더한다(§4.1).
+- 전제: ADR UI-a5l2-2 — 승계한 UI-z437 조항 중 `external_wait` 상태·Worker 한 런타임의
+  관찰·완료·알림·재개 소유·hold 예산·`대기 · external:` 종결·"세션 소유는 알림 뒤
+  `[이어하기]`, 자격 실패는 launch 없이 사람의 `[새 세션으로]`"(라벨만 바뀌고 동작
+  유지)·대기 어휘의 `external_job` 종류와 배지 순서는 그대로다. 뒤집는 것은 그 승계
+  조항 중 "소비자 카드 표면" 하나다 — UI-z437 §7 슬롯 표의 슬롯 1 조작(넷)과 슬롯 5
+  좌표 칩(`ssh`·잡 번호·`log`)을 §4.6대로 슬롯 6 foot과 상세 패널로 옮긴다.
 - 전제: ADR UI-mfm1 — Worker와 Monitor의 후보 행은 lane-model 한 경로가 접는다; 후보
   제외도 그 경로의 `claimed` 집합 하나로 한다.
 - 세션 소유 외부 대기 Bead는 `external_wait` 키 하나를 술어로 후보 레인이 아니라
@@ -370,4 +385,6 @@ UI-z437 §7의 슬롯 표는 이 정정으로 읽는다 — 그 스펙 파일은
   Bead가 후보에 없고 실행 중 레인에 "세션 타일"로 서는데 세션 프로세스는 없다.
   **실제 절충**: §3의 세 대안 — 클라이언트 단독 조립(두 후보 원천), 후보 구획
   (뜻 없는 `↴ 대기로`), 머리줄 유지(조작이 제목 위로) — 를 기각했다.
-  `summary`: "세션 소유 외부 대기 Bead는 external_wait 키를 술어로 후보 레인이 아니라 실행 중 레인의 세션 타일에 서고, 외부 대기 조작은 슬롯 6 foot이며 좌표 칩은 상세 패널 잡 표가 갖는다" → ADR
+  이 결정은 ADR 0033의 "채택 조건은 셋뿐" 조항과 ADR UI-a5l2-2가 UI-z437에서 승계한
+  "소비자 카드 표면" 조항을 뒤집고 두 ADR의 나머지 조항은 위 전제 줄대로 승계한다.
+  `summary`: "세션 소유 외부 대기 Bead는 external_wait 키를 술어로 후보 레인이 아니라 실행 중 레인의 세션 타일에 서고, 외부 대기 조작은 슬롯 6 foot이며 좌표 칩은 상세 패널 잡 표가 갖는다" → ADR, supersede 0033·UI-a5l2-2
