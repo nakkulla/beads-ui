@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { buildLanes } from '../../app/views/worker/lane-model.js';
 import {
   __resetScopeCacheForTest,
@@ -17,6 +17,7 @@ import {
   prewarmRepoHealth,
   prewarmSessionDefaults,
   prewarmWorkspaceAccounts,
+  prewarmWorkspaceKv,
   projectRepoHealth
 } from './monitor-handlers.js';
 
@@ -2133,7 +2134,10 @@ describe('repo health kv projection (UI-y9hl U2)', () => {
       sessionActiveFor: () => []
     });
     await prewarmRepoHealth(WS_A, {
-      kvGet: async () => ({ ok: true, value: healthRecord() })
+      kvList: async () => ({
+        ok: true,
+        entries: { repo_health: { ok: true, value: healthRecord() } }
+      })
     });
     const warm = buildMonitorWorkspacesState({
       listWorkspaces: () => [{ path: WS_A }],
@@ -2154,7 +2158,7 @@ describe('repo health kv projection (UI-y9hl U2)', () => {
     __resetRepoHealthCacheForTest();
 
     await prewarmRepoHealth(WS_A, {
-      kvGet: async () => ({ ok: false, error: 'bd kv get failed' })
+      kvList: async () => ({ ok: false, error: 'bd kv list failed' })
     });
     const out = buildMonitorWorkspacesState({
       listWorkspaces: () => [{ path: WS_A }],
@@ -2207,7 +2211,15 @@ describe('workspaces_state observation projection (UI-e1ta §8)', () => {
     __resetSessionDefaultsCacheForTest();
 
     await prewarmSessionDefaults(WS_A, {
-      kvGet: async () => ({ ok: true, value: { impl_effort: 'high' } })
+      kvList: async () => ({
+        ok: true,
+        entries: {
+          workflow_session_defaults: {
+            ok: true,
+            value: { impl_effort: 'high' }
+          }
+        }
+      })
     });
     const row = liveRow();
 
@@ -2219,7 +2231,7 @@ describe('workspaces_state observation projection (UI-e1ta §8)', () => {
     __resetSessionDefaultsCacheForTest();
 
     await prewarmSessionDefaults(WS_A, {
-      kvGet: async () => ({ ok: false, error: 'bd kv get failed' })
+      kvList: async () => ({ ok: false, error: 'bd kv list failed' })
     });
     const row = liveRow();
 
@@ -2231,9 +2243,14 @@ describe('workspaces_state observation projection (UI-e1ta §8)', () => {
     __resetSessionDefaultsCacheForTest();
 
     await prewarmSessionDefaults(WS_A, {
-      kvGet: async () => ({
+      kvList: async () => ({
         ok: true,
-        value: { impl_effort: 'high', bogus_key: 'x' }
+        entries: {
+          workflow_session_defaults: {
+            ok: true,
+            value: { impl_effort: 'high', bogus_key: 'x' }
+          }
+        }
       })
     });
     const row = liveRow();
@@ -2254,9 +2271,14 @@ describe('workspaces_state observation projection (UI-e1ta §8)', () => {
     __resetWorkspaceAccountsCacheForTest();
 
     await prewarmWorkspaceAccounts(WS_A, {
-      kvGet: async () => ({
+      kvList: async () => ({
         ok: true,
-        value: { claude_account: 'work@example.com' }
+        entries: {
+          workspace_exec_accounts: {
+            ok: true,
+            value: { claude_account: 'work@example.com' }
+          }
+        }
       })
     });
     const row = liveRow();
@@ -2271,7 +2293,12 @@ describe('workspaces_state observation projection (UI-e1ta §8)', () => {
   test('omits the account layer again once its cache is invalidated', async () => {
     __resetWorkspaceAccountsCacheForTest();
     await prewarmWorkspaceAccounts(WS_A, {
-      kvGet: async () => ({ ok: true, value: { codex_account: 'k' } })
+      kvList: async () => ({
+        ok: true,
+        entries: {
+          workspace_exec_accounts: { ok: true, value: { codex_account: 'k' } }
+        }
+      })
     });
 
     invalidateWorkspaceAccounts(WS_A);
@@ -2284,7 +2311,7 @@ describe('workspaces_state observation projection (UI-e1ta §8)', () => {
     __resetWorkspaceAccountsCacheForTest();
 
     await prewarmWorkspaceAccounts(WS_A, {
-      kvGet: async () => ({ ok: false, error: 'bd kv get failed' })
+      kvList: async () => ({ ok: false, error: 'bd kv list failed' })
     });
     const row = liveRow();
 
@@ -2355,5 +2382,136 @@ describe('workspaces_state observation projection (UI-e1ta §8)', () => {
     });
 
     expect(out[0].applied_quick_fix_preset).toBe(null);
+  });
+});
+
+describe('prewarmWorkspaceKv (UI-j2h3 §4.3)', () => {
+  /**
+   * Build one row through the live caches.
+   *
+   * @returns {Record<string, any>}
+   */
+  function liveRow() {
+    return buildMonitorWorkspacesState({
+      listWorkspaces: () => [{ path: WS_A }],
+      listHidden: () => [],
+      snapshotFor: () => snapshot(),
+      issuePrefixFor: () => null,
+      runnableFor: () => [],
+      sessionActiveFor: () => []
+    })[0];
+  }
+
+  /**
+   * Clear all three kv-backed caches.
+   */
+  function resetKvCaches() {
+    __resetSessionDefaultsCacheForTest();
+    __resetWorkspaceAccountsCacheForTest();
+    __resetRepoHealthCacheForTest();
+  }
+
+  const HEALTH_RECORD = {
+    schema: 'repo-health-v1',
+    rig: 'beads-ui',
+    observed_at: new Date().toISOString(),
+    last_success_at: new Date().toISOString(),
+    status: 'ok',
+    base: 'main',
+    head_relation: 'equal',
+    behind: 0,
+    ahead: 0,
+    classes: { disjoint: 0, converged: 0, conflict: 0, staged: 0, unmerged: 0 },
+    truncated: false
+  };
+
+  beforeEach(resetKvCaches);
+  afterEach(resetKvCaches);
+
+  test('fills all three caches from one kvList read', async () => {
+    const kvList = vi.fn(
+      async () =>
+        /** @type {any} */ ({
+          ok: true,
+          entries: {
+            workflow_session_defaults: {
+              ok: true,
+              value: { impl_effort: 'high' }
+            },
+            workspace_exec_accounts: {
+              ok: true,
+              value: { codex_account: 'k' }
+            },
+            repo_health: { ok: true, value: HEALTH_RECORD }
+          }
+        })
+    );
+
+    await prewarmWorkspaceKv(WS_A, { kvList });
+    await prewarmSessionDefaults(WS_A, { kvList });
+    await prewarmWorkspaceAccounts(WS_A, { kvList });
+    await prewarmRepoHealth(WS_A, { kvList });
+    const row = liveRow();
+
+    expect(kvList).toHaveBeenCalledTimes(1);
+    expect([
+      row.session_defaults_state,
+      row.workspace_accounts.state,
+      row.repo_health.base
+    ]).toEqual(['ready', 'usable', 'main']);
+  });
+
+  test('shares one in-flight read between concurrent prewarms', async () => {
+    /** @type {(value: any) => void} */
+    let resolve_list = () => {};
+    const kvList = vi.fn(
+      /** @returns {Promise<any>} */ () =>
+        new Promise((resolve) => {
+          resolve_list = resolve;
+        })
+    );
+
+    const first = prewarmSessionDefaults(WS_A, { kvList });
+    const second = prewarmWorkspaceAccounts(WS_A, { kvList });
+    const third = prewarmRepoHealth(WS_A, { kvList });
+    resolve_list({ ok: true, entries: {} });
+    await Promise.all([first, second, third]);
+
+    expect(kvList).toHaveBeenCalledTimes(1);
+  });
+
+  test('projects a failed read per cache into its retry window', async () => {
+    const kvList = vi.fn(
+      async () =>
+        /** @type {any} */ ({
+          ok: false,
+          error: 'bd kv list failed'
+        })
+    );
+
+    await prewarmWorkspaceKv(WS_A, { kvList });
+    await prewarmWorkspaceKv(WS_A, { kvList });
+    const row = liveRow();
+
+    expect(kvList).toHaveBeenCalledTimes(1);
+    expect([
+      row.session_defaults_state,
+      row.workspace_accounts.state,
+      row.repo_health.state
+    ]).toEqual(['pending', 'unusable', 'unknown']);
+  });
+
+  test('reads absent keys as confirmed empty layers', async () => {
+    const kvList = vi.fn(
+      async () => /** @type {any} */ ({ ok: true, entries: {} })
+    );
+
+    await prewarmWorkspaceKv(WS_A, { kvList });
+    const row = liveRow();
+
+    expect([row.session_defaults_state, row.workspace_accounts.state]).toEqual([
+      'ready',
+      'absent'
+    ]);
   });
 });

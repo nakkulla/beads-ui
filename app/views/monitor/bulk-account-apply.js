@@ -10,7 +10,11 @@
  * 계정 카탈로그를 읽지 못하면 계획 자체가 비어야 한다: 고를 수 없는 상태에서
  * 적용하면 사용자가 보지 못한 값(계정 삭제·빈 허용 집합)이 그대로 쓰인다.
  */
-import { formatBulkResult, messageOf } from './bulk-preset-apply.js';
+import {
+  formatBulkResult,
+  messageOf,
+  runBulkTargets
+} from './bulk-preset-apply.js';
 
 export { formatBulkResult, messageOf };
 
@@ -338,8 +342,9 @@ async function applyLimitPolicy({
 }
 
 /**
- * Sequential 적용 — 선택한 저장소마다 폼의 변경을 쓴다. 저장소 사이에 공유되는
- * revision이 없으므로 하나가 실패해도 다음 대상으로 항상 계속한다.
+ * Parallel 적용 — 선택한 저장소마다 폼의 변경을 쓴다. 저장소 사이는 동시 상한
+ * 안에서 병렬로 보내고(UI-j2h3 §4.4), 저장소 사이에 공유되는 revision이
+ * 없으므로 하나가 실패해도 나머지 대상은 항상 계속한다.
  *
  * @param {Object} input
  * @param {BulkAccountTarget[]} input.targets
@@ -349,25 +354,29 @@ async function applyLimitPolicy({
  * @param {() => boolean} [input.isCancelled]
  * @returns {Promise<BulkResult[]>}
  */
-export async function runBulkAccountApply({
+export function runBulkAccountApply({
   targets,
   send,
   adopt,
   onProgress,
   isCancelled
 }) {
-  /** @type {BulkResult[]} */
-  const results = [];
-  const total = targets.length;
-  for (const target of targets) {
-    if (isCancelled?.() === true) {
-      return results;
-    }
-    const result = await applyOne(target, send, adopt, isCancelled);
-    results.push(result);
-    onProgress?.({ done: results.length, total, results });
-  }
-  return results;
+  return runBulkTargets({
+    targets,
+    skippedResult: (target) => ({
+      root_dir: target.root_dir,
+      name: target.name,
+      state: 'skipped',
+      detail: ''
+    }),
+    runOne: async (target) => ({
+      result: await applyOne(target, send, adopt, isCancelled),
+      stopped: false,
+      cancelled: false
+    }),
+    onProgress,
+    isCancelled
+  });
 }
 
 /**

@@ -6,9 +6,11 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
+  entryFor,
   getBdBin,
   getGitUserName,
   kvGetJson,
+  kvListJson,
   kvSetJson,
   runBd,
   runBdJson,
@@ -563,5 +565,277 @@ describe('getGitUserName', () => {
     mockedSpawn.mockReturnValueOnce(makeFakeProc('', 'error', 1));
     const name = await getGitUserName();
     expect(name).toBe('');
+  });
+});
+
+/**
+ * Install a spawn mock whose processes close only when released by the test.
+ *
+ * @returns {{ started: string[], release: (index: number, stdout?: string) => void, active: () => number, max_active: () => number }}
+ */
+function installControlledSpawn() {
+  /** @type {string[]} */
+  const started = [];
+  /** @type {Array<(stdout?: string) => void>} */
+  const closers = [];
+  let active = 0;
+  let max_active = 0;
+  mockedSpawn.mockImplementation((_bin, _args, opts) => {
+    started.push(String(opts.cwd));
+    active += 1;
+    max_active = Math.max(max_active, active);
+    const cp = /** @type {any} */ (new EventEmitter());
+    cp.stdout = new PassThrough();
+    cp.stderr = new PassThrough();
+    closers.push((stdout) => {
+      if (stdout) {
+        cp.stdout.write(stdout);
+      }
+      cp.stdout.end();
+      cp.stderr.end();
+      active -= 1;
+      cp.emit('close', 0);
+    });
+    return cp;
+  });
+  return {
+    started,
+    release: (index, stdout) => closers[index](stdout),
+    active: () => active,
+    max_active: () => max_active
+  };
+}
+
+/**
+ * Let pending promise callbacks and timers run.
+ */
+async function flush() {
+  await new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+describe('runBd lanes', () => {
+  test('runs two calls for the same cwd one after another', async () => {
+    const spawn = installControlledSpawn();
+
+    const first = runBd(['list'], { cwd: '/lane-a' });
+    const second = runBd(['show'], { cwd: '/lane-a' });
+    await flush();
+    const started_before_release = spawn.started.length;
+    spawn.release(0);
+    await first;
+    await flush();
+    spawn.release(1);
+    await second;
+
+    expect(started_before_release).toBe(1);
+    expect(spawn.max_active()).toBe(1);
+  });
+
+  test('overlaps two calls for different cwds', async () => {
+    const spawn = installControlledSpawn();
+
+    const first = runBd(['list'], { cwd: '/lane-b1' });
+    const second = runBd(['list'], { cwd: '/lane-b2' });
+    await flush();
+    const active = spawn.active();
+    spawn.release(0);
+    spawn.release(1);
+    await Promise.all([first, second]);
+
+    expect(active).toBe(2);
+  });
+
+  test('holds a fifth workspace call while four run', async () => {
+    const spawn = installControlledSpawn();
+
+    const calls = [1, 2, 3, 4, 5].map((n) =>
+      runBd(['list'], { cwd: `/lane-c${n}` })
+    );
+    await flush();
+    const started_at_limit = spawn.started.length;
+    spawn.release(0);
+    await flush();
+    const started_after_release = spawn.started.length;
+    for (const index of [1, 2, 3, 4]) {
+      spawn.release(index);
+    }
+    await Promise.all(calls);
+
+    expect([started_at_limit, started_after_release]).toEqual([4, 5]);
+  });
+
+  test('serializes calls without cwd on the process.cwd lane', async () => {
+    const spawn = installControlledSpawn();
+
+    const first = runBd(['list']);
+    const second = runBd(['list'], { cwd: process.cwd() });
+    await flush();
+    const started_before_release = spawn.started.length;
+    spawn.release(0);
+    await first;
+    await flush();
+    spawn.release(1);
+    await second;
+
+    expect(started_before_release).toBe(1);
+  });
+
+  test('releases the lane and the slot after a thrown spawn', async () => {
+    mockedSpawn.mockImplementationOnce(() => {
+      throw new Error('spawn exploded');
+    });
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('ok', '', 0));
+
+    const failed = runBd(['list'], { cwd: '/lane-d' });
+    const next = runBd(['list'], { cwd: '/lane-d' });
+
+    await expect(failed).rejects.toThrow('spawn exploded');
+    await expect(next).resolves.toMatchObject({ code: 0, stdout: 'ok' });
+  });
+});
+
+describe('kvListJson', () => {
+  test('reads a plain listing into decoded entries', async () => {
+    const stdout = JSON.stringify({
+      schema_version: 2,
+      workflow_session_defaults: JSON.stringify({ schema: 1 }),
+      workspace_exec_accounts: JSON.stringify({ claude_account: 'x' })
+    });
+    mockedSpawn.mockReturnValueOnce(makeFakeProc(stdout, '', 0));
+
+    const res = await kvListJson();
+
+    expect(res).toEqual({
+      ok: true,
+      entries: {
+        workflow_session_defaults: {
+          ok: true,
+          found: true,
+          value: { schema: 1 }
+        },
+        workspace_exec_accounts: {
+          ok: true,
+          found: true,
+          value: { claude_account: 'x' }
+        }
+      }
+    });
+  });
+
+  test('calls bd kv list with the json flag', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('{}', '', 0));
+
+    await kvListJson({ cwd: '/kv-list-args' });
+
+    const call = mockedSpawn.mock.calls[0];
+    expect(call[1].slice(-3)).toEqual(['kv', 'list', '--json']);
+  });
+
+  test('treats a string data value as a stored key', async () => {
+    const stdout = JSON.stringify({
+      schema_version: 2,
+      data: JSON.stringify({ a: 1 })
+    });
+    mockedSpawn.mockReturnValueOnce(makeFakeProc(stdout, '', 0));
+
+    const res = await kvListJson();
+
+    expect(res).toEqual({
+      ok: true,
+      entries: { data: { ok: true, found: true, value: { a: 1 } } }
+    });
+  });
+
+  test('unwraps an envelope whose data is an object', async () => {
+    const stdout = JSON.stringify({
+      schema_version: 2,
+      data: { repo_health: JSON.stringify({ ok: true }) }
+    });
+    mockedSpawn.mockReturnValueOnce(makeFakeProc(stdout, '', 0));
+
+    const res = await kvListJson();
+
+    expect(res).toEqual({
+      ok: true,
+      entries: { repo_health: { ok: true, found: true, value: { ok: true } } }
+    });
+  });
+
+  test('reads an empty string value as found without a warning', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('{"k":""}', '', 0));
+
+    const res = await kvListJson();
+
+    expect(res).toEqual({
+      ok: true,
+      entries: { k: { ok: true, found: true, value: undefined } }
+    });
+  });
+
+  test('warns on a stored value that is not a JSON object', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('{"k":"[1,2]"}', '', 0));
+
+    const res = await kvListJson();
+
+    expect(res).toEqual({
+      ok: true,
+      entries: {
+        k: {
+          ok: true,
+          found: true,
+          value: undefined,
+          warning: 'kv_value_unparsable'
+        }
+      }
+    });
+  });
+
+  test('fails on a non-zero exit with the bd message', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('', 'db locked', 1));
+
+    const res = await kvListJson();
+
+    expect(res).toEqual({ ok: false, error: 'db locked' });
+  });
+
+  test('fails closed on a non-string entry value', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('{"k":5}', '', 0));
+
+    const res = await kvListJson();
+
+    expect(res.ok).toBe(false);
+  });
+
+  test('fails closed on a non-object payload', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('[]', '', 0));
+
+    const res = await kvListJson();
+
+    expect(res.ok).toBe(false);
+  });
+
+  test.each(['', 'not-json{', '[1]', '{"schema":1}'])(
+    'decodes %s exactly like kvGetJson',
+    async (value) => {
+      mockedSpawn.mockReturnValueOnce(
+        makeFakeProc(JSON.stringify({ found: true, key: 'k', value }), '', 0)
+      );
+      mockedSpawn.mockReturnValueOnce(
+        makeFakeProc(JSON.stringify({ k: value }), '', 0)
+      );
+
+      const single = await kvGetJson('k');
+      const listed = await kvListJson();
+
+      expect(listed.ok && listed.entries.k).toEqual(single);
+    }
+  );
+});
+
+describe('entryFor', () => {
+  test('returns an absent read for a missing key', () => {
+    const entry = entryFor({}, 'missing');
+
+    expect(entry).toEqual({ ok: true, found: false, value: undefined });
   });
 });

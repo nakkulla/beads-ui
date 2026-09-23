@@ -3,12 +3,23 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { afterEach, expect, test } from 'vitest';
 import {
   createBuildOptions,
   normalizeSourceMapFile,
-  normalizeSourceMapText
+  normalizeSourceMapText,
+  writeGzipAssets
 } from './build-frontend.js';
+
+/** @type {string[]} */
+const temp_roots_for_gzip = [];
+
+afterEach(() => {
+  for (const root of temp_roots_for_gzip.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 /**
  * The installed `node_modules` this test run actually resolves through, which
@@ -114,4 +125,31 @@ test('a worktree resolving node_modules upward emits the same map as a local ins
   expect(source_map.sources.some((source) => source.startsWith('../..'))).toBe(
     false
   );
+});
+
+test('writes a gzip sibling for every js and css file under app', () => {
+  const app_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-gzip-'));
+  temp_roots_for_gzip.push(app_dir);
+  fs.mkdirSync(path.join(app_dir, 'views'));
+  fs.writeFileSync(path.join(app_dir, 'main.bundle.js'), 'export const a = 1;');
+  fs.writeFileSync(path.join(app_dir, 'views', 'screen.css'), 'body{}');
+  fs.writeFileSync(path.join(app_dir, 'index.html'), '<html></html>');
+  fs.writeFileSync(path.join(app_dir, 'main.test.js'), 'test');
+
+  writeGzipAssets(app_dir);
+
+  const gz_files = fs
+    .readdirSync(app_dir, { recursive: true })
+    .map(String)
+    .filter((name) => name.endsWith('.gz'))
+    .sort();
+  expect(gz_files).toEqual([
+    'main.bundle.js.gz',
+    path.join('views', 'screen.css.gz')
+  ]);
+  expect(
+    zlib
+      .gunzipSync(fs.readFileSync(path.join(app_dir, 'views', 'screen.css.gz')))
+      .toString()
+  ).toBe('body{}');
 });

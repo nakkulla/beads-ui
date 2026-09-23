@@ -64,18 +64,19 @@ vi.mock('./context.js', async (importOriginal) => {
   return {
     ...actual,
     /**
-     * Only the session-defaults key is counted: the monitor also warms the
-     * `repo_health` key on the same boundary (UI-y9hl U2), and that read is
-     * not what these cache assertions are about.
+     * One `bd kv list` per workspace fills the session-defaults, account and
+     * `repo_health` caches together (UI-j2h3 §4.3); the stubbed answer is the
+     * session-defaults entry.
      *
      * @param {string} root
-     * @param {string} key
      */
-    kvGetJsonAtRoot: (root, key) => {
-      if (key === 'workflow_session_defaults') {
-        kv_reads.push(root);
-      }
-      return kv_answer(root);
+    kvListJsonAtRoot: (root) => {
+      kv_reads.push(root);
+      return kv_answer(root).then((/** @type {any} */ read) =>
+        read.ok
+          ? { ok: true, entries: { workflow_session_defaults: read } }
+          : read
+      );
     }
   };
 });

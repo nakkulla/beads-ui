@@ -608,6 +608,9 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
     /** @type {Array<() => void>} */
     const gates = [];
     const { host, pane, calls } = setup({
+      rows: [1, 2, 3, 4, 5].map((n) =>
+        row({ root_dir: `/tmp/example/repo-${n}`, name: `repo-${n}` })
+      ),
       transport: async () => {
         await new Promise((resolve) => gates.push(() => resolve(undefined)));
         return OK;
@@ -622,13 +625,16 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
     gates.shift()?.();
     await settle();
 
-    expect(payloadsOf(calls, 'apply-impl-preset-global')).toHaveLength(1);
+    expect(payloadsOf(calls, 'apply-impl-preset-global')).toHaveLength(4);
   });
 
   test('stops the remaining requests when the pane is destroyed', async () => {
     /** @type {Array<() => void>} */
     const gates = [];
     const { host, pane, calls } = setup({
+      rows: [1, 2, 3, 4, 5].map((n) =>
+        row({ root_dir: `/tmp/example/repo-${n}`, name: `repo-${n}` })
+      ),
       transport: async () => {
         await new Promise((resolve) => gates.push(() => resolve(undefined)));
         return OK;
@@ -643,7 +649,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
     gates.shift()?.();
     await settle();
 
-    expect(payloadsOf(calls, 'apply-impl-preset-global')).toHaveLength(1);
+    expect(payloadsOf(calls, 'apply-impl-preset-global')).toHaveLength(4);
   });
 
   test('keeps each tab result separately', async () => {
@@ -723,7 +729,7 @@ describe('createBulkPane worker tab (UI-628r §3.2)', () => {
     resolve_first(OK);
     await settle();
 
-    expect(onBulkApplied).toHaveBeenCalledWith([WS_A]);
+    expect(onBulkApplied).toHaveBeenCalledWith([WS_A, WS_B]);
   });
 });
 
@@ -830,13 +836,21 @@ describe('createBulkPane account tab (UI-628r §3.3)', () => {
     click(host, '[data-bulk-apply="account"]');
     await settle();
 
-    expect(calls.map(([type]) => type)).toEqual([
-      'set-workspace-accounts',
-      'worker-provider-limit-policy-set',
-      'worker-provider-limit-policy-set',
-      'set-workspace-accounts',
-      'worker-provider-limit-policy-set',
-      'worker-provider-limit-policy-set'
+    const types_for = (/** @type {string} */ root) =>
+      calls
+        .filter(([, payload]) => payload.root_dir === root)
+        .map(([type]) => type);
+    expect([types_for(WS_A), types_for(WS_B)]).toEqual([
+      [
+        'set-workspace-accounts',
+        'worker-provider-limit-policy-set',
+        'worker-provider-limit-policy-set'
+      ],
+      [
+        'set-workspace-accounts',
+        'worker-provider-limit-policy-set',
+        'worker-provider-limit-policy-set'
+      ]
     ]);
   });
 

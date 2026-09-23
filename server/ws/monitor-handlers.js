@@ -15,6 +15,7 @@
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
  * @import { KeyedSubscriber } from './push-patch.js'
+ * @import { KvGetResult } from '../bd.js'
  */
 import path from 'node:path';
 import {
@@ -26,6 +27,7 @@ import {
   activeBeadIds,
   isImplementationAttempt
 } from '../../app/utils/active-attempts.js';
+import { entryFor } from '../bd.js';
 import { getConfig } from '../config.js';
 import { createPoller } from '../poller.js';
 import {
@@ -56,7 +58,7 @@ import {
   WORKSPACE_ACCOUNTS_KV_KEY,
   normalizeWorkspaceAccounts
 } from '../workspace-accounts.js';
-import { kvGetJsonAtRoot, log } from './context.js';
+import { kvListJsonAtRoot, log } from './context.js';
 import {
   doneAtByBead,
   laneBeadIds,
@@ -174,66 +176,44 @@ function cachedSessionDefaultsFor(root_dir) {
 }
 
 /**
- * Start at most one async `bd kv get` per workspace.
+ * Warm the session-defaults layer through the shared workspace kv read.
  *
  * @param {string} root_dir
- * @param {{ kvGet?: typeof kvGetJsonAtRoot }} [prewarm_options] - Test seam for
- * the kv read; the live reader by default.
+ * @param {{ kvList?: typeof kvListJsonAtRoot }} [prewarm_options] - Test seam
+ * for the kv list read; the live reader by default.
  * @returns {Promise<void>}
  */
-export async function prewarmSessionDefaults(root_dir, prewarm_options = {}) {
-  const kvGet = prewarm_options.kvGet || kvGetJsonAtRoot;
-  const key = path.resolve(root_dir);
-  const current = session_defaults_cache.get(key);
-  if (
-    current?.in_flight === true ||
-    (current && current.expires_at > Date.now())
-  ) {
+export function prewarmSessionDefaults(root_dir, prewarm_options = {}) {
+  return prewarmWorkspaceKv(root_dir, prewarm_options);
+}
+
+/**
+ * Fill the session-defaults cache from one kv read.
+ *
+ * @param {string} key - Resolved workspace root.
+ * @param {KvGetResult} read
+ */
+function fillSessionDefaults(key, read) {
+  if (!read.ok) {
+    session_defaults_cache.set(key, {
+      ok: false,
+      values: {},
+      warnings: [read.error || 'bd kv list failed'],
+      expires_at: Date.now() + SESSION_DEFAULTS_RETRY_MS,
+      in_flight: false
+    });
     return;
   }
+  const normalized = normalizeSessionDefaults(read.value);
   session_defaults_cache.set(key, {
-    ok: current?.ok === true,
-    values: current?.values || {},
-    warnings: current?.warnings || [],
-    expires_at: current?.expires_at || 0,
-    in_flight: true
+    ok: true,
+    values: normalized.values,
+    warnings: read.warning
+      ? [read.warning, ...normalized.warnings]
+      : normalized.warnings,
+    expires_at: Date.now() + SESSION_DEFAULTS_TTL_MS,
+    in_flight: false
   });
-  await kvGet(key, SESSION_DEFAULTS_KV_KEY)
-    .then((read) => {
-      if (!read.ok) {
-        session_defaults_cache.set(key, {
-          ok: false,
-          values: {},
-          warnings: [read.error || 'bd kv get failed'],
-          expires_at: Date.now() + SESSION_DEFAULTS_RETRY_MS,
-          in_flight: false
-        });
-        schedulePush();
-        return;
-      }
-      const normalized = normalizeSessionDefaults(read.value);
-      session_defaults_cache.set(key, {
-        ok: true,
-        values: normalized.values,
-        warnings: read.warning
-          ? [read.warning, ...normalized.warnings]
-          : normalized.warnings,
-        expires_at: Date.now() + SESSION_DEFAULTS_TTL_MS,
-        in_flight: false
-      });
-      schedulePush();
-    })
-    .catch((err) => {
-      session_defaults_cache.set(key, {
-        ok: false,
-        values: {},
-        warnings: ['kv_read_failed'],
-        expires_at: Date.now() + SESSION_DEFAULTS_RETRY_MS,
-        in_flight: false
-      });
-      log('monitor: session defaults lookup failed for %s: %o', key, err);
-      schedulePush();
-    });
 }
 
 /**
@@ -242,6 +222,7 @@ export async function prewarmSessionDefaults(root_dir, prewarm_options = {}) {
  */
 export function __resetSessionDefaultsCacheForTest() {
   session_defaults_cache.clear();
+  workspace_kv_in_flight.clear();
 }
 
 /**
@@ -271,49 +252,34 @@ function cachedWorkspaceAccountsFor(root_dir) {
 }
 
 /**
- * Start at most one async `bd kv get workspace_exec_accounts` per workspace.
+ * Warm the workspace-account layer through the shared workspace kv read.
  *
  * @param {string} root_dir
- * @param {{ kvGet?: typeof kvGetJsonAtRoot }} [prewarm_options] - Test seam for
- * the kv read; the live reader by default.
+ * @param {{ kvList?: typeof kvListJsonAtRoot }} [prewarm_options] - Test seam
+ * for the kv list read; the live reader by default.
  * @returns {Promise<void>}
  */
-export async function prewarmWorkspaceAccounts(root_dir, prewarm_options = {}) {
-  const key = path.resolve(root_dir);
-  const current = workspace_accounts_cache.get(key);
-  if (
-    current?.in_flight === true ||
-    (current && current.expires_at > Date.now())
-  ) {
-    return;
-  }
-  const kvGet = prewarm_options.kvGet || kvGetJsonAtRoot;
+export function prewarmWorkspaceAccounts(root_dir, prewarm_options = {}) {
+  return prewarmWorkspaceKv(root_dir, prewarm_options);
+}
+
+/**
+ * Fill the workspace-account cache from one kv read.
+ *
+ * @param {string} key - Resolved workspace root.
+ * @param {KvGetResult} read
+ */
+function fillWorkspaceAccounts(key, read) {
+  // A bd FAILURE is the only thing that is not a read: `normalizeWorkspaceAccounts`
+  // turns it into the `unusable` layer, which is what `get-workspace-accounts`
+  // would report to the one user who can fix it.
   workspace_accounts_cache.set(key, {
-    layer: current?.layer ?? null,
-    expires_at: current?.expires_at || 0,
-    in_flight: true
+    layer: normalizeWorkspaceAccounts(read),
+    expires_at:
+      Date.now() +
+      (read.ok ? SESSION_DEFAULTS_TTL_MS : SESSION_DEFAULTS_RETRY_MS),
+    in_flight: false
   });
-  try {
-    const read = await kvGet(key, WORKSPACE_ACCOUNTS_KV_KEY);
-    // A bd FAILURE is the only thing that is not a read: `normalizeWorkspaceAccounts`
-    // turns it into the `unusable` layer, which is what `get-workspace-accounts`
-    // would report to the one user who can fix it.
-    workspace_accounts_cache.set(key, {
-      layer: normalizeWorkspaceAccounts(read),
-      expires_at:
-        Date.now() +
-        (read.ok ? SESSION_DEFAULTS_TTL_MS : SESSION_DEFAULTS_RETRY_MS),
-      in_flight: false
-    });
-  } catch (err) {
-    workspace_accounts_cache.set(key, {
-      layer: { state: 'unusable', values: {}, warnings: ['kv_read_failed'] },
-      expires_at: Date.now() + SESSION_DEFAULTS_RETRY_MS,
-      in_flight: false
-    });
-    log('monitor: workspace accounts lookup failed for %s: %o', key, err);
-  }
-  schedulePush();
 }
 
 /**
@@ -340,6 +306,7 @@ export function invalidateWorkspaceAccounts(root_dir) {
  */
 export function __resetWorkspaceAccountsCacheForTest() {
   workspace_accounts_cache.clear();
+  workspace_kv_in_flight.clear();
 }
 
 /**
@@ -566,44 +533,146 @@ function cachedRepoHealthFor(root_dir) {
 }
 
 /**
- * Start at most one async `bd kv get repo_health` per workspace.
+ * Warm the repo-health record through the shared workspace kv read.
  *
  * @param {string} root_dir
- * @param {{ kvGet?: typeof kvGetJsonAtRoot }} [options]
+ * @param {{ kvList?: typeof kvListJsonAtRoot }} [options]
  * @returns {Promise<void>}
  */
-export async function prewarmRepoHealth(root_dir, options = {}) {
-  const key = path.resolve(root_dir);
-  const current = repo_health_cache.get(key);
-  if (
-    current?.in_flight === true ||
-    (current && current.expires_at > Date.now())
-  ) {
-    return;
-  }
-  const kvGet = options.kvGet || kvGetJsonAtRoot;
+export function prewarmRepoHealth(root_dir, options = {}) {
+  return prewarmWorkspaceKv(root_dir, options);
+}
+
+/**
+ * Fill the repo-health cache from one kv read.
+ *
+ * @param {string} key - Resolved workspace root.
+ * @param {KvGetResult} read
+ */
+function fillRepoHealth(key, read) {
   repo_health_cache.set(key, {
-    value: current?.value ?? null,
-    expires_at: current?.expires_at || 0,
+    value: read.ok ? read.value : null,
+    expires_at:
+      Date.now() + (read.ok ? REPO_HEALTH_TTL_MS : REPO_HEALTH_RETRY_MS),
+    in_flight: false
+  });
+}
+
+/**
+ * In-flight `bd kv list` read per resolved workspace root.
+ *
+ * @type {Map<string, Promise<void>>}
+ */
+const workspace_kv_in_flight = new Map();
+
+/**
+ * Whether a cache entry is neither fresh nor already being read.
+ *
+ * @param {{ expires_at: number, in_flight: boolean }|undefined} entry
+ * @returns {boolean}
+ */
+function needsKvRead(entry) {
+  return !entry || (entry.in_flight !== true && entry.expires_at <= Date.now());
+}
+
+/**
+ * Warm the session-defaults, workspace-account and repo-health caches of one
+ * workspace with a single `bd kv list` (UI-j2h3 §4.3).
+ *
+ * At most one read runs per workspace. When any of the three caches is cold or
+ * expired, one list read fills all three with the same per-key KvGetResult a
+ * single `bd kv get` would have returned, so each cache keeps its own TTL,
+ * retry window and failure projection. One push is scheduled after the fill.
+ *
+ * @param {string} root_dir
+ * @param {{ kvList?: typeof kvListJsonAtRoot }} [prewarm_options] - Test seam
+ * for the kv list read; the live reader by default.
+ * @returns {Promise<void>}
+ */
+export function prewarmWorkspaceKv(root_dir, prewarm_options = {}) {
+  const key = path.resolve(root_dir);
+  const running = workspace_kv_in_flight.get(key);
+  if (running) {
+    return running;
+  }
+  if (
+    !needsKvRead(session_defaults_cache.get(key)) &&
+    !needsKvRead(workspace_accounts_cache.get(key)) &&
+    !needsKvRead(repo_health_cache.get(key))
+  ) {
+    return Promise.resolve();
+  }
+  const kvList = prewarm_options.kvList || kvListJsonAtRoot;
+  markKvInFlight(key);
+  const read = (async () => {
+    try {
+      const listed = await kvList(key);
+      /**
+       * @param {string} kv_key
+       * @returns {KvGetResult}
+       */
+      const readFor = (kv_key) =>
+        listed.ok
+          ? entryFor(listed.entries, kv_key)
+          : { ok: false, error: listed.error };
+      fillSessionDefaults(key, readFor(SESSION_DEFAULTS_KV_KEY));
+      fillWorkspaceAccounts(key, readFor(WORKSPACE_ACCOUNTS_KV_KEY));
+      fillRepoHealth(key, readFor(REPO_HEALTH_KV_KEY));
+    } catch (err) {
+      session_defaults_cache.set(key, {
+        ok: false,
+        values: {},
+        warnings: ['kv_read_failed'],
+        expires_at: Date.now() + SESSION_DEFAULTS_RETRY_MS,
+        in_flight: false
+      });
+      workspace_accounts_cache.set(key, {
+        layer: { state: 'unusable', values: {}, warnings: ['kv_read_failed'] },
+        expires_at: Date.now() + SESSION_DEFAULTS_RETRY_MS,
+        in_flight: false
+      });
+      repo_health_cache.set(key, {
+        value: null,
+        expires_at: Date.now() + REPO_HEALTH_RETRY_MS,
+        in_flight: false
+      });
+      log('monitor: workspace kv lookup failed for %s: %o', key, err);
+    } finally {
+      workspace_kv_in_flight.delete(key);
+    }
+    schedulePush();
+  })();
+  workspace_kv_in_flight.set(key, read);
+  return read;
+}
+
+/**
+ * Mark the three kv-backed caches of a workspace as being read, keeping the
+ * values they already hold.
+ *
+ * @param {string} key - Resolved workspace root.
+ */
+function markKvInFlight(key) {
+  const session = session_defaults_cache.get(key);
+  session_defaults_cache.set(key, {
+    ok: session?.ok === true,
+    values: session?.values || {},
+    warnings: session?.warnings || [],
+    expires_at: session?.expires_at || 0,
     in_flight: true
   });
-  try {
-    const read = await kvGet(key, REPO_HEALTH_KV_KEY);
-    repo_health_cache.set(key, {
-      value: read.ok ? read.value : null,
-      expires_at:
-        Date.now() + (read.ok ? REPO_HEALTH_TTL_MS : REPO_HEALTH_RETRY_MS),
-      in_flight: false
-    });
-  } catch (err) {
-    repo_health_cache.set(key, {
-      value: null,
-      expires_at: Date.now() + REPO_HEALTH_RETRY_MS,
-      in_flight: false
-    });
-    log('monitor: repo health lookup failed for %s: %o', key, err);
-  }
-  schedulePush();
+  const accounts = workspace_accounts_cache.get(key);
+  workspace_accounts_cache.set(key, {
+    layer: accounts?.layer ?? null,
+    expires_at: accounts?.expires_at || 0,
+    in_flight: true
+  });
+  const health = repo_health_cache.get(key);
+  repo_health_cache.set(key, {
+    value: health?.value ?? null,
+    expires_at: health?.expires_at || 0,
+    in_flight: true
+  });
 }
 
 /**
@@ -611,6 +680,7 @@ export async function prewarmRepoHealth(root_dir, options = {}) {
  */
 export function __resetRepoHealthCacheForTest() {
   repo_health_cache.clear();
+  workspace_kv_in_flight.clear();
 }
 
 /**
@@ -636,9 +706,7 @@ export function invalidateSessionDefaults(root_dir) {
 function prewarmVisibleIssuePrefixes() {
   for (const root_dir of visibleWorkspaceRoots()) {
     prewarmIssuePrefix(root_dir);
-    void prewarmSessionDefaults(root_dir);
-    void prewarmWorkspaceAccounts(root_dir);
-    void prewarmRepoHealth(root_dir);
+    void prewarmWorkspaceKv(root_dir);
   }
 }
 
@@ -2059,5 +2127,6 @@ export function __resetMonitorPipelineForTest() {
   last_seen_revision.clear();
   session_defaults_cache.clear();
   workspace_accounts_cache.clear();
+  workspace_kv_in_flight.clear();
   poll_interval_seconds = null;
 }

@@ -4,6 +4,7 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { checkHealth } from './health.js';
 import { registerWorkspace } from './registry-watcher.js';
 import {
@@ -55,6 +56,56 @@ function escapeBootstrapJson(json) {
     .replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
+}
+
+/**
+ * Whether the request accepts a gzip response body.
+ *
+ * @param {Request} req
+ * @returns {boolean}
+ */
+function acceptsGzip(req) {
+  const header = req.headers['accept-encoding'];
+  return typeof header === 'string' && /\bgzip\b/i.test(header);
+}
+
+/**
+ * Resolve the `.gz` sibling of a requested `.js`/`.css` asset under `app_dir`
+ * when the request accepts gzip and the `.gz` is at least as new as the
+ * original; `null` otherwise.
+ *
+ * @param {string} app_dir
+ * @param {Request} req
+ * @returns {string | null}
+ */
+function freshGzipSibling(app_dir, req) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    return null;
+  }
+  if (!/\.(?:js|css)$/.test(req.path) || !acceptsGzip(req)) {
+    return null;
+  }
+  /** @type {string} */
+  let relative;
+  try {
+    relative = decodeURIComponent(req.path);
+  } catch {
+    return null;
+  }
+  const root = path.resolve(app_dir);
+  const original = path.resolve(root, `.${relative}`);
+  if (!original.startsWith(root + path.sep)) {
+    return null;
+  }
+  const original_stat = fs.statSync(original, { throwIfNoEntry: false });
+  const gz_stat = fs.statSync(`${original}.gz`, { throwIfNoEntry: false });
+  if (!original_stat?.isFile() || !gz_stat?.isFile()) {
+    return null;
+  }
+  if (gz_stat.mtimeMs < original_stat.mtimeMs) {
+    return null;
+  }
+  return `${original}.gz`;
 }
 
 /**
@@ -173,10 +224,10 @@ export function createApp(config) {
     /**
      * On-demand bundle for the browser using esbuild.
      *
-     * @param {Request} _req
+     * @param {Request} req
      * @param {Response} res
      */
-    app.get('/main.bundle.js', async (_req, res) => {
+    app.get('/main.bundle.js', async (req, res) => {
       try {
         const esbuild = await import('esbuild');
         const entry = path.join(config.app_dir, 'main.js');
@@ -197,6 +248,12 @@ export function createApp(config) {
         }
         res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
         res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Vary', 'Accept-Encoding');
+        if (acceptsGzip(req)) {
+          res.setHeader('Content-Encoding', 'gzip');
+          res.send(zlib.gzipSync(out.text));
+          return;
+        }
         res.send(out.text);
       } catch (err) {
         res
@@ -206,6 +263,24 @@ export function createApp(config) {
       }
     });
   }
+
+  // Pre-compressed `.js`/`.css` built by `npm run build` (UI-j2h3 §4.5). A
+  // missing or older `.gz` falls through to the plain static file.
+  app.use((req, res, next) => {
+    const gz_path = freshGzipSibling(config.app_dir, req);
+    if (gz_path === null) {
+      next();
+      return;
+    }
+    res.setHeader('Vary', 'Accept-Encoding');
+    res.setHeader('Content-Encoding', 'gzip');
+    res.type(path.extname(req.path));
+    res.sendFile(gz_path, (err) => {
+      if (err) {
+        next(err);
+      }
+    });
+  });
 
   // Root serves bootstrapped index.html explicitly before static middleware.
   /**
