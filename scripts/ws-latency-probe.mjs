@@ -300,7 +300,10 @@ async function measureSnapshotBytes(target) {
         const text = fragment_compressed
           ? zlib
               .inflateRawSync(
-                Buffer.concat([raw, Buffer.from([0, 0, 0xff, 0xff])])
+                Buffer.concat([raw, Buffer.from([0, 0, 0xff, 0xff])]),
+                // A deflate message never carries a stream end; without a sync
+                // flush inflate reports `unexpected end of file`.
+                { finishFlush: zlib.constants.Z_SYNC_FLUSH }
               )
               .toString()
           : raw.toString();

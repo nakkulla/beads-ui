@@ -852,8 +852,10 @@ export async function kvListJson(options = {}) {
     listing = /** @type {Record<string, unknown>} */ (payload.data);
   }
 
+  // Stored keys are arbitrary strings: a null prototype keeps a key such as
+  // `__proto__` as an own entry instead of a prototype assignment.
   /** @type {Record<string, KvGetResult>} */
-  const entries = {};
+  const entries = Object.create(null);
   for (const [key, raw_value] of Object.entries(listing)) {
     if (key === 'schema_version') {
       continue;

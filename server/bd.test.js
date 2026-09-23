@@ -722,6 +722,23 @@ describe('kvListJson', () => {
     });
   });
 
+  test('keeps a stored key named __proto__ as an own entry', async () => {
+    const stdout = JSON.stringify({
+      schema_version: 2,
+      ['__proto__']: JSON.stringify({ schema: 1 })
+    });
+    mockedSpawn.mockReturnValueOnce(makeFakeProc(stdout, '', 0));
+
+    const res = await kvListJson();
+
+    expect(res.ok).toBe(true);
+    expect(entryFor(/** @type {any} */ (res).entries, '__proto__')).toEqual({
+      ok: true,
+      found: true,
+      value: { schema: 1 }
+    });
+  });
+
   test('calls bd kv list with the json flag', async () => {
     mockedSpawn.mockReturnValueOnce(makeFakeProc('{}', '', 0));
 

@@ -153,6 +153,17 @@ describe('pre-compressed static assets (UI-j2h3 §4.5)', () => {
     expect(res.body.toString()).toContain('static-marker');
   });
 
+  test('serves the original when gzip is refused with q=0', async () => {
+    const app = makeApp(appDir({ gzip: true }));
+
+    const res = await rawGet(app, '/main.bundle.js', {
+      'accept-encoding': 'gzip;q=0, identity'
+    });
+
+    expect(res.headers['content-encoding']).toBeUndefined();
+    expect(res.body.toString()).toContain('static-marker');
+  });
+
   test('gzips the live bundle for a gzip request', async () => {
     const app = makeApp(appDir(), 'live');
 

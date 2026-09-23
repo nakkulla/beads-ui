@@ -65,8 +65,8 @@ function escapeBootstrapJson(json) {
  * @returns {boolean}
  */
 function acceptsGzip(req) {
-  const header = req.headers['accept-encoding'];
-  return typeof header === 'string' && /\bgzip\b/i.test(header);
+  // Content negotiation honours `gzip;q=0`, which a substring test would not.
+  return req.acceptsEncodings('gzip') === 'gzip';
 }
 
 /**
