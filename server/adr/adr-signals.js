@@ -539,9 +539,12 @@ export function createAdrSignals(options = {}) {
     const spec_files = (await listMarkdown(spec_dir)).map(
       (name) => `${SPEC_DIR_REL}/${name}`
     );
-    const adr_files = (await listMarkdown(adr_dir)).map(
-      (name) => `${ADR_DIR_REL}/${name}`
-    );
+    const adr_files = [
+      ...(await listMarkdown(adr_dir)).map((name) => `${ADR_DIR_REL}/${name}`),
+      ...(await listMarkdown(path.join(adr_dir, 'history'))).map(
+        (name) => `${ADR_DIR_REL}/history/${name}`
+      )
+    ];
 
     const [index_result, citation_result, candidate_result, cross_citations] =
       await Promise.all([

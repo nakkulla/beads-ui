@@ -25,7 +25,7 @@ import {
 
 /**
  * @typedef {Object} AdrRecord
- * @property {string} file - ADR file name (`NNNN-slug.md` or `<bead-id>[-n]-slug.md`).
+ * @property {string} file - Path relative to `docs/adr` (`<name>.md` at the root, `history/<name>.md` in `history/`).
  * @property {number | string} id - ADR identifier.
  * @property {string} title - One-line ADR title.
  * @property {string} status - One of the §2 status vocabulary values.
@@ -323,8 +323,54 @@ export function readAdrFile(text, file_name) {
 }
 
 /**
- * Read every ADR in a directory. Non-ADR file names (including `README.md`) are
- * skipped silently; an unreadable directory yields an empty result.
+ * Read the ADR files directly inside one directory into `adrs`/`errors`,
+ * prefixing each recorded `file` with `prefix`.
+ *
+ * @param {string} dir - Absolute directory path.
+ * @param {string} prefix - Relative prefix (`''` or `'history/'`).
+ * @param {AdrRecord[]} adrs
+ * @param {{ file: string, error: string }[]} errors
+ * @returns {Promise<boolean>} False when the directory could not be listed.
+ */
+async function readAdrEntries(dir, prefix, adrs, errors) {
+  /** @type {string[]} */
+  let entries;
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return false;
+  }
+  for (const file_name of entries.sort()) {
+    if (!ADR_FILE_NAME_RE.test(file_name)) {
+      continue;
+    }
+    const rel_file = prefix + file_name;
+    /** @type {string} */
+    let text;
+    try {
+      text = await fs.readFile(path.join(dir, file_name), 'utf8');
+    } catch (err) {
+      errors.push({
+        file: rel_file,
+        error: /** @type {Error} */ (err).message
+      });
+      continue;
+    }
+    const result = readAdrFile(text, file_name);
+    if (result.ok) {
+      adrs.push({ ...result.adr, file: rel_file });
+    } else {
+      errors.push({ file: rel_file, error: result.error });
+    }
+  }
+  return true;
+}
+
+/**
+ * Read every ADR at the root of a directory and, when present, directly inside
+ * its `history/` subdirectory (no recursion). Non-ADR file names (including
+ * `README.md`) are skipped silently; an unreadable directory yields an empty
+ * result.
  *
  * @param {string} adr_dir - Absolute path of the ADR directory.
  * @returns {Promise<AdrDirResult>}
@@ -334,34 +380,10 @@ export async function readAdrDir(adr_dir) {
   const adrs = [];
   /** @type {{ file: string, error: string }[]} */
   const errors = [];
-  /** @type {string[]} */
-  let entries;
-  try {
-    entries = await fs.readdir(adr_dir);
-  } catch {
+  const root_ok = await readAdrEntries(adr_dir, '', adrs, errors);
+  if (!root_ok) {
     return { adrs, errors };
   }
-  for (const file_name of entries.sort()) {
-    if (!ADR_FILE_NAME_RE.test(file_name)) {
-      continue;
-    }
-    /** @type {string} */
-    let text;
-    try {
-      text = await fs.readFile(path.join(adr_dir, file_name), 'utf8');
-    } catch (err) {
-      errors.push({
-        file: file_name,
-        error: /** @type {Error} */ (err).message
-      });
-      continue;
-    }
-    const result = readAdrFile(text, file_name);
-    if (result.ok) {
-      adrs.push(result.adr);
-    } else {
-      errors.push({ file: file_name, error: result.error });
-    }
-  }
+  await readAdrEntries(path.join(adr_dir, 'history'), 'history/', adrs, errors);
   return { adrs, errors };
 }

@@ -720,7 +720,7 @@ describe('views/adr legacy-only regression', () => {
       `"<tr data-adr="24"> <td class="adr-num">24</td> <td class="adr-title"> <div class="adr-title__top"> <span class="adr-doc adr-doc--plain">결정 24</span> <span class="adr-signals"> <span class="adr-chip adr-chip--signal">인용 stale 1</span> </span> </div> <span class="adr-title__summary">summary 24</span> </td> <td class="adr-date">2026-09-03</td> <td class="adr-spec"> </td> <td> </td> </tr> <tr data-adr="30"> <td class="adr-num">30</td> <td class="adr-title"> <div class="adr-title__top"> <span class="adr-doc adr-doc--plain">결정 30</span> <span class="adr-signals"> </span> </div> <span class="adr-title__summary">summary 30</span> </td> <td class="adr-date">2026-09-01</td> <td class="adr-spec"> </td> <td> </td> </tr>"`
     );
     expect(markup(history)).toMatchInlineSnapshot(
-      `"<tr data-adr="9"> <td class="adr-num">9</td> <td>결정 9</td> <td class="adr-status">superseded</td> <td class="adr-superseded"> → 24 </td> </tr>"`
+      `"<tr data-adr="9"> <td class="adr-num">9</td> <td> <span class="adr-doc adr-doc--plain">결정 9</span> </td> <td class="adr-status">superseded</td> <td class="adr-superseded"> → <span class="adr-doc adr-doc--plain">24</span> </td> </tr>"`
     );
   });
 });
@@ -838,5 +838,101 @@ describe('views/adr header', () => {
     const { root } = mount([workspace({ name_duplicate: true })]);
 
     expect(texts(root, '.adr-chip--dup')).toEqual(['이름 중복']);
+  });
+});
+
+describe('views/adr history directory', () => {
+  test('links a history/ record and flags its frontmatter error in the history table', () => {
+    const openDoc = vi.fn();
+    const { root } = mount(
+      [
+        workspace({
+          history: [
+            adr(9, {
+              file: 'history/0009-old.md',
+              status: 'superseded',
+              superseded_by: null
+            })
+          ],
+          frontmatter_errors: [{ file: 'history/0009-old.md', error: 'bad' }]
+        })
+      ],
+      { openDoc }
+    );
+
+    const link = /** @type {HTMLElement} */ (
+      root.querySelector('.adr-table--history .adr-doc--link')
+    );
+    link.click();
+
+    expect(openDoc).toHaveBeenCalledWith(
+      { path: 'docs/adr/history/0009-old.md', missing_state: null },
+      '/repo/a'
+    );
+    expect(texts(root, '.adr-table--history .adr-chip--signal')).toEqual([
+      'frontmatter 오류'
+    ]);
+  });
+
+  test('links a superseded_by target present in the snapshot and leaves a missing one as text', () => {
+    const openDoc = vi.fn();
+    const { root } = mount(
+      [
+        workspace({
+          current: [adr(24)],
+          history: [
+            adr(9, {
+              file: 'history/0009-a.md',
+              status: 'superseded',
+              superseded_by: 24
+            }),
+            adr(8, {
+              file: 'history/0008-b.md',
+              status: 'superseded',
+              superseded_by: 77
+            })
+          ]
+        })
+      ],
+      { openDoc }
+    );
+
+    const cells = root.querySelectorAll('.adr-table--history .adr-superseded');
+    /** @type {HTMLElement} */ (
+      cells[0].querySelector('.adr-doc--link')
+    ).click();
+
+    expect(cells[1].querySelector('.adr-doc')).toBeNull();
+    expect((cells[1].textContent || '').trim()).toBe('→ 77');
+    expect(openDoc).toHaveBeenCalledWith(
+      { path: 'docs/adr/0024-decision.md', missing_state: null },
+      '/repo/a'
+    );
+  });
+
+  test('draws a title_too_long candidate error as 제목 초과', () => {
+    const { root } = mount([
+      workspace({
+        candidates: [
+          {
+            spec: 'docs/superpowers/specs/s.md',
+            ok: false,
+            errors: [
+              {
+                kind: 'title_too_long',
+                file: 's.md',
+                line: 1,
+                adr: 'UI-1',
+                detail: ''
+              }
+            ]
+          }
+        ]
+      })
+    ]);
+
+    expect(texts(root, '.adr-sec--cand .adr-chip--kind')).toEqual([
+      '제목 초과'
+    ]);
   });
 });
