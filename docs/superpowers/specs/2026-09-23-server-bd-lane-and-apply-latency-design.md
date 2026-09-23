@@ -121,14 +121,20 @@ CLI 직접 측정: `bd kv get <key> --json` 210~240ms, `bd kv list --json` 60~70
 전체 kv를 읽어 `{ ok: true, entries: Record<string, KvGetResult> }` 또는
 `{ ok: false, error }`를 돌려준다.
 
-- 출력 형태(실측): `{ "schema_version": 2, "<key>": "<json 문자열>", … }` —
-  `data` 키가 없으므로 `normalizeBdJsonTransport`가 bare로 읽는다. `data`가 있으면
-  envelope로 읽는다. `schema_version`은 엔트리에서 제외한다.
-- 각 값은 `kvGetJson`과 같은 규칙으로 판정한다: JSON 객체면 `{ ok, found: true,
-  value }`, 빈 문자열·객체 아님·파싱 실패는 `found: true, value: undefined,
-  warning: 'kv_value_unparsable'`. 목록에 없는 키는 호출자가 `found: false`로
-  읽는다(`entryFor(entries, key)` 헬퍼).
-- 종료 코드 0이 아니면 `cliFailure`. 성공인데 객체가 아니면 protocol failure로
+- 출력 형태(실측): `{ "schema_version": 2, "<key>": "<json 문자열>", … }`. 저장
+  키는 임의 문자열이라 `data`라는 키도 올 수 있으므로 `normalizeBdJsonTransport`를
+  쓰지 않고 이 명령 전용 판별을 둔다: 최상위가 객체이고 `data` 값이 **객체**이며
+  정수 `schema_version`이 있고 그 밖의 키가 없으면 envelope(`data`가 목록 본문),
+  그 밖에는 최상위 객체 자체가 목록이다. 목록의 값은 언제나 문자열이므로 `data`
+  값이 문자열이면 저장 키 `data`다. `schema_version`은 엔트리에서 제외한다.
+- 각 값의 해석은 `kvGetJson`의 값 판정 코드를 함수(`decodeKvValue(raw)`)로 빼내
+  **같은 함수**를 쓴다: 빈 문자열은 `{ found: true, value: undefined }`(경고 없음,
+  `server/bd.js:666`과 동일), JSON 객체는 `value`, 객체 아님·파싱 실패는
+  `warning: 'kv_value_unparsable'`. 목록에 없는 키는 `{ ok: true, found: false,
+  value: undefined }`다(`entryFor(entries, key)` 헬퍼). `kvGetJson`도 같은 함수를
+  호출하도록 바꿔 두 경로가 갈라질 수 없게 한다.
+- 종료 코드 0이 아니면 `cliFailure`. 성공인데 최상위가 객체가 아니거나 문자열이
+  아닌 엔트리 값이 있으면 protocol failure로
   `recordBdProtocolObservation(command_family: 'kv')`.
 - `kvGetJson`·`kvSetJson`은 그대로 남는다(핸들러의 단건 읽기·쓰기가 쓴다).
 
@@ -138,9 +144,12 @@ CLI 직접 측정: `bd kv get <key> --json` 210~240ms, `bd kv list --json` 60~70
 경유하게 한다.
 
 - 워크스페이스당 in-flight 하나. 세 캐시 중 하나라도 cold/만료면 `kvListJson`
-  한 번을 띄우고 결과로 세 캐시를 **함께** 채운다. TTL·retry(5분·60초)·
-  `state: ready|pending`·`workspace_accounts` 3상태·`repo_health` 투영 규칙은
-  불변. 실패는 지금과 같이 세 캐시 모두 retry 창으로 기록한다.
+  한 번을 띄우고 결과로 세 캐시를 **함께** 채운다. 각 캐시는 지금의 `kvGet`
+  결과와 같은 형태의 `entryFor(entries, key)`를 받으므로 TTL·retry(5분·60초)·
+  `state: ready|pending`·`workspace_accounts` 3상태(`normalizeWorkspaceAccounts`
+  그대로)·`repo_health` 투영 규칙은 불변이다. `bd` 실패(`ok: false`)의 투영도
+  지금 그대로 셋이 다르다: 세션 기본값은 `pending`(retry 창), 계정은 `unusable`
+  (retry 창), 저장소 건강은 `unknown`(retry 창).
 - 채운 뒤 `schedulePush()` 한 번. `invalidateSessionDefaults`·
   `invalidateWorkspaceAccounts`는 자기 캐시만 지우고 push를 예약한다(불변);
   다음 push의 prewarm이 그 워크스페이스만 다시 읽는다.
@@ -158,8 +167,11 @@ kv list는 70ms. 레인 덕에 워크스페이스끼리 병렬이라 8개 기준
 서버 핸들러는 바꾸지 않는다. 두 러너의 `for … await` 순차 루프를 저장소 간
 병렬(동시 상한 `BULK_PARALLEL = 4`, 파일 상수)로 바꾼다.
 
-- 저장소 **안**의 순서(kv → 큐, 계정 → 정책 2건)와 1회 재시도, 취소 판정은
-  지금 그대로다. 취소는 아직 시작하지 않은 대상만 막는다.
+- 저장소 **안**의 동작은 바꾸지 않는다: 요청 순서(kv → 큐, 계정 → 정책 2건),
+  1회 재시도, 그리고 **요청 사이마다** `isCancelled()`를 확인해 진행 중 저장소의
+  재시도·후속 쓰기를 멈추고 `partial`로 판정하는 지금의 규칙(`runPresetTarget`·
+  `runFormTarget`, `bulk-account-apply.js`의 정책 쓰기 사이 검사)이 그대로다.
+  취소는 그 밖에 아직 시작하지 않은 대상을 보내지 않는다.
 - `results`는 대상 순서대로 채우고, `onProgress`는 대상 하나가 끝날 때마다
   `done`을 올린다. `stopped`(preset 경로의 `conflict: true`)는 아직 시작하지 않은
   대상을 `skipped`로 만든다 — 지금과 같은 의미다.
@@ -170,29 +182,45 @@ kv list는 70ms. 레인 덕에 워크스페이스끼리 병렬이라 8개 기준
 
 ### 4.5 압축 (`server/ws/connection.js`, `server/app.js`, `scripts/build-frontend.js`)
 
-- WS: `new WebSocketServer({ …, perMessageDeflate: { threshold: 1024 } })`.
-  브라우저는 자동 협상하고 비대응 클라이언트는 비압축으로 남는다. 세션-로그
-  라인 같은 작은 프레임은 threshold 아래라 CPU를 쓰지 않는다.
-- 정적 자산: `scripts/build-frontend.js`가 번들과 함께 `app/main.bundle.js.gz`,
-  그리고 `app/styles.css.gz`·`app/styles/base.css.gz`·`app/styles/tokens.css.gz`를
-  `zlib.gzipSync`(level 9)로 쓴다. `.gitignore`에 `app/**/*.gz`를 더한다.
-  `server/app.js`는 `express.static` 앞에 미들웨어 하나를 둔다: 요청 경로가
-  `.js`·`.css`이고 `Accept-Encoding`에 gzip이 있고 `<file>.gz`가 있으며 원본보다
-  mtime이 같거나 새로우면 그 파일을 `Content-Encoding: gzip`,
+- WS: `new WebSocketServer({ …, perMessageDeflate: { serverNoContextTakeover:
+  true, threshold: 1024 } })`. 설치된 `ws`는 context takeover가 꺼진 경우에만
+  `threshold`를 적용하므로(`sender.js`) 둘을 함께 둔다; 세션-로그 라인 같은 작은
+  프레임은 비압축으로 나간다. 브라우저는 자동 협상하고 비대응 클라이언트는
+  비압축으로 남는다.
+- 정적 자산: `scripts/build-frontend.js`가 번들을 쓴 뒤 **빌드 시점에 `app/`
+  아래에 존재하는 모든 `.js`·`.css` 파일**(테스트 파일 제외, 재귀)을 찾아 각각
+  `<file>.gz`를 `zlib.gzipSync`(level 9)로 쓴다. 고정 파일 목록은 두지 않는다 —
+  형제 UI-dbn6가 `app/styles.css`를 지우고 화면별 스타일시트로 옮겨도 규칙이
+  그대로 맞는다. `.gitignore`에 `app/**/*.gz`를 더한다.
+  `server/app.js`는 `express.static` 앞, live 번들 라우트 **뒤**에 미들웨어 하나를
+  둔다: 요청 경로가 `.js`·`.css`이고 `Accept-Encoding`에 gzip이 있고 `<file>.gz`가
+  있으며 원본보다 mtime이 같거나 새로우면 그 파일을 `Content-Encoding: gzip`,
   `Vary: Accept-Encoding`, 원본 Content-Type으로 보낸다. 조건이 하나라도 빠지면
-  그냥 다음으로 넘긴다(기존 동작).
-- live 모드 `GET /main.bundle.js`는 `out.text`를 요청이 gzip을 받을 때
-  `zlib.gzipSync`로 보낸다.
+  그냥 다음으로 넘긴다(기존 동작). mtime 비교는 정적 파일 자신의 갱신만 본다;
+  번들의 소스 변경은 `npm run build`가 번들과 `.gz`를 함께 다시 쓰는 것으로
+  맞춘다.
+- live 모드 `GET /main.bundle.js`는 지금처럼 미들웨어보다 앞에 있고, `out.text`를
+  요청이 gzip을 받을 때 `zlib.gzipSync`로 보낸다.
 - `Cache-Control`·ETag 정책은 지금(`express.static` 기본)과 같다.
 
 ### 4.6 측정 스크립트 (`scripts/ws-latency-probe.mjs`)
 
-수용 기준을 재현하는 읽기 전용 스크립트를 리포에 둔다: `node scripts/ws-latency-
-probe.mjs <host:port>`가 (1) `subscribe-monitor-pipeline` 직후 가시 워크스페이스
-셋에 `get-session-defaults`·`get-workspace-accounts`를 보내 왕복 ms를, (2) 첫
-스냅샷의 JSON 바이트와 실제 수신 프레임 크기(압축 여부)를, (3) 250ms 간격 ping의
-p50/p99/max를 출력한다. 쓰기 요청은 보내지 않는다. UI-7xrf가 같은 스크립트로 전후를
-비교한다.
+수용 기준을 재현하는 스크립트를 리포에 둔다. 기본은 읽기 전용이다:
+`node scripts/ws-latency-probe.mjs <host:port>`가 (1) `subscribe-monitor-pipeline`
+직후 가시 워크스페이스 셋에 `get-session-defaults`·`get-workspace-accounts`를 보내
+왕복 ms를, (2) 60초 동안 push가 없는 유휴 상태를 기다린 뒤 같은 요청의 왕복 ms를,
+(3) 첫 스냅샷의 JSON 바이트와 실제 수신 프레임 바이트(WebSocket `message` 이벤트
+크기가 아니라 소켓 수신 바이트 — Node `net.Socket.bytesRead` 차이)를, (4)
+`GET /main.bundle.js`·`/styles.css`를 `Accept-Encoding: gzip`으로 받아 응답 헤더와
+전송 바이트를, (5) 250ms 간격 ping의 p50/p99/max를 출력한다.
+
+일괄 적용 기준은 명시 플래그가 있을 때만 도는 쓰기 모드로 잰다:
+`--apply-preset <preset_id> --repos <root_dir,…>`는 각 저장소의 현재
+`applied_exec_preset.id`가 `<preset_id>`와 같을 때만 `apply-impl-preset-global`을
+동시 상한 4로 보내고(다르면 그 저장소는 건너뛰고 이유를 출력), 벽시계·저장소별
+응답·`queue_applied`를 기록한다. 같은 프리셋의 재적용은 kv 값을 바꾸지 않고
+`applied_at`만 갱신하므로 상태가 보존된다. 스크립트는 그 밖의 쓰기 요청을 보내지
+않는다. UI-7xrf가 같은 스크립트로 전후를 비교한다.
 
 ## 5. 데이터 흐름 요약
 
@@ -210,37 +238,48 @@ p50/p99/max를 출력한다. 쓰기 요청은 보내지 않는다. UI-7xrf가 �
 
 - 세마포어·레인은 예외를 삼키지 않는다: `operation`이 던지면 레인·상한을 풀고
   그대로 전파(지금과 같음).
-- `kvListJson` 실패 시 세 캐시는 모두 retry 창(60초)이며 `pending`을 유지한다 —
-  팝업 `get-session-defaults`는 캐시를 보지 않으므로 영향이 없다.
+- `kvListJson` 실패 시 세 캐시는 각자의 실패 투영(세션 `pending`·계정
+  `unusable`·건강 `unknown`)으로 retry 창(60초)에 들어간다 — 팝업
+  `get-session-defaults`는 캐시를 보지 않으므로 영향이 없다.
 - 압축 파일이 원본보다 오래되면(빌드 없이 소스만 바뀐 live 개발) 미들웨어가
   건너뛴다. 배포는 `npm run build`가 선행이라 항상 최신이다.
 
-수용 기준(배포 뒤 공유 서버에서 §4.6 스크립트로 확인, 8개 가시 워크스페이스)
+수용 기준(배포 뒤 공유 서버에서 §4.6 스크립트로 확인, 8개 가시 워크스페이스;
+각 행의 측정 절차는 §4.6의 번호)
 
-| 항목 | 현재 | 기준 |
-| --- | --- | --- |
-| 구독 직후 `get-session-defaults` | 5.2~6.1초 | ≤ 1.0초 |
-| 구독 직후 `get-workspace-accounts` | 5.4~6.3초 | ≤ 1.0초 |
-| 유휴 `get-session-defaults` | 0.25~0.3초 | ≤ 0.6초 |
-| 8개 저장소 프리셋 일괄 적용 벽시계 | ≈ N × 0.8초 이상 | ≤ 3초 |
-| `monitor-pipeline-snapshot` 수신 바이트 | 1.55MB | JSON의 20% 이하 |
-| `main.bundle.js` 전송 바이트 | 842KB | ≤ 250KB |
+| 항목 | 현재 | 기준 | 절차 |
+| --- | --- | --- | --- |
+| 구독 직후 `get-session-defaults` | 5.2~6.1초 | ≤ 1.0초 | (1) |
+| 구독 직후 `get-workspace-accounts` | 5.4~6.3초 | ≤ 1.0초 | (1) |
+| 유휴 `get-session-defaults` | 0.25~0.3초 | ≤ 0.6초 | (2) |
+| 8개 저장소 프리셋 일괄 적용 벽시계 | ≈ N × 0.8초 이상 | ≤ 3초 | 쓰기 모드 `--apply-preset`, 8개 저장소 모두 같은 적용 프리셋일 때 |
+| `monitor-pipeline-snapshot` 수신 바이트 | 1.55MB | JSON의 20% 이하 | (3) |
+| `main.bundle.js` 전송 바이트 | 842KB | ≤ 250KB | (4) |
+| ping p99 | 2.2초(정지 포함) | 기준 없음 — 기록만, UI-7xrf 입력 | (5) |
 
 테스트(vitest)
 
 - `server/bd.test.js`: 같은 cwd 두 호출은 겹치지 않음(가짜 spawn으로 시작·종료
   순서 관측), 다른 cwd 두 호출은 겹침, 상한 4 초과 시 다섯 번째는 대기, `cwd`
-  없는 호출은 `process.cwd()` 레인, 예외 뒤 레인·상한 해제, `kvListJson` 파싱
-  4종(정상·envelope·비객체 값·종료 코드 ≠ 0).
+  없는 호출은 `process.cwd()` 레인, 예외 뒤 레인·상한 해제; `kvListJson` 파싱:
+  정상 목록, `data`라는 저장 키를 가진 정상 목록(문자열 값 → 엔트리), envelope
+  (`data`가 객체), 빈 문자열 값(경고 없음), 비객체 값(경고), 종료 코드 ≠ 0;
+  `kvGetJson`과 `kvListJson`이 같은 입력 문자열에 같은 결과를 냄.
 - `server/ws/monitor-handlers.test.js`: prewarm이 워크스페이스당 `kvList` 1회로
-  세 캐시를 채움, in-flight 중복 억제, 실패 시 세 캐시 retry 창, 기존
-  `session_defaults_state`·`workspace_accounts` 3상태 테스트 유지.
+  세 캐시를 채움, in-flight 중복 억제, 실패 시 세 캐시가 각자의 투영(`pending`·
+  `unusable`·`unknown`)으로 retry 창, 기존 `session_defaults_state`·
+  `workspace_accounts` 3상태 테스트 유지.
 - `app/views/monitor/bulk-preset-apply.test.js`·`bulk-account-apply.test.js`:
-  동시 상한 준수, 결과 순서 보존, 취소·`stopped`가 미시작 대상만 막음, 저장소 안
-  순서 유지.
+  동시 상한 준수, 결과 순서 보존, `stopped`가 미시작 대상만 `skipped`, 취소가
+  미시작 대상을 보내지 않고 진행 중 저장소는 다음 요청 전에 멈춰 `partial`, 저장소
+  안 순서 유지, 기존 취소·재시도 테스트 유지.
 - `server/app.test.js`(또는 새 `app.static-gzip.test.js`): `.gz` 있으면 gzip
-  응답, 없거나 오래되면 원본, `Accept-Encoding` 없으면 원본.
-- `server/ws.test.js`: `perMessageDeflate` 옵션이 서버 생성에 전달됨.
+  응답, 없거나 오래되면 원본, `Accept-Encoding` 없으면 원본, live 모드 번들은
+  gzip 요청에 압축 응답. `scripts/build-frontend.js`: 임시 `app/`에서 `.js`·
+  `.css`마다 `.gz` 생성.
+- `server/ws.test.js`: `perMessageDeflate`가 `serverNoContextTakeover: true`와
+  `threshold: 1024`로 서버 생성에 전달되고, 1KB 미만 push 프레임은 비압축
+  (`ws` 클라이언트로 수신 프레임의 RSV1 비트 관측), 첫 스냅샷은 압축.
 
 ## 7. 구현 unit 후보
 
@@ -256,6 +295,10 @@ p50/p99/max를 출력한다. 쓰기 요청은 보내지 않는다. UI-7xrf가 �
 
 - 관찰: `get-session-defaults`의 첫 호출 2초(`beads-ui` 워크스페이스, 이후 0.26초)
   — 원인 미확인(worker-url 콜드 스타트 추정), UI-7xrf의 프로파일링 항목.
+- 관찰: UI-7xrf는 §4.6 측정 스크립트의 소비자라 `blocks` 엣지(UI-7xrf ← UI-j2h3)를
+  함께 둔다; 표의 선행 열은 설계 전제인 UI-dbn6 하나만 적는다.
+- 관찰: UI-dbn6 §3.7이 이 설계의 병렬 러너를 소비한다 — 그쪽 스펙의 선행 표기는
+  UI-dbn6 재검토 라운드에서 보완한다.
 
 ## 결정 (ADR 후보)
 
@@ -272,6 +315,12 @@ p50/p99/max를 출력한다. 쓰기 요청은 보내지 않는다. UI-7xrf가 �
   와 레인 근거를 함수 주석이 담는다. 실제 절충 있음(안전 vs 지연)이나 레인이 원래
   근거를 그대로 만족해 경쟁하는 선택지가 아니다 → ADR 아님
 - 일괄 적용은 클라이언트가 저장소 간 병렬(상한 4)로 보낸다. 되돌리기 쉬움: 러너
-  상수 하나. 맥락 필요 낮음: 안전 근거가 파일 머리 주석에 있다 → ADR 아님
+  상수 하나. 맥락 필요 낮음: 안전 근거가 파일 머리 주석에 있다. 실제 절충 있음:
+  대안인 서버 다중 저장소 op는 프로토콜을 늘려 UI-dbn6와 결합되고, 순차 유지는
+  지연을 남긴다 — 클라이언트 병렬은 프로토콜을 바꾸지 않는 대신 진행 표시가 대상
+  순서와 완료 순서로 갈린다. 한 조건만 성립한다 → ADR 아님
 - 정적 자산은 빌드 시 사전 압축, WS는 `perMessageDeflate`. 되돌리기 쉬움: 옵션과
-  미들웨어 하나. 맥락 필요 낮음 → ADR 아님
+  미들웨어 하나. 맥락 필요 낮음. 실제 절충 있음: 대안인 요청 시 압축(`compression`
+  의존성 또는 스트림 gzip)은 요청마다 CPU를 쓰고 의존성이 늘며, 사전 압축은 빌드
+  없이 소스만 바뀐 live 개발에서 압축 응답을 건너뛴다 — 배포는 항상 빌드가
+  선행하므로 후자를 택했다. 한 조건만 성립한다 → ADR 아님
