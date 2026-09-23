@@ -517,6 +517,104 @@ describe('wait judgment external work', () => {
     }
   );
 
+  test('labels hold actions with their stage-specific titles', () => {
+    const next_at = new Date(2026, 8, 15, 12, 1).toISOString();
+
+    const result = run({
+      external_waits: [external({ next_observation_at: next_at })]
+    }).wait_reasons[0];
+
+    expect(
+      result.actions.map((action) => [action.label, action.title])
+    ).toEqual([
+      ['[지금 확인]', '관찰을 지금 한 번 더 한다 (다음 예정 12:01)'],
+      [
+        '[관찰 중단]',
+        'beads-ui가 이 작업을 더 지켜보지 않고 대기 키를 지운다 · 잡은 그대로'
+      ]
+    ]);
+  });
+
+  test('omits the next-check parenthetical when no observation is scheduled', () => {
+    const result = run({
+      external_waits: [external({ next_observation_at: undefined })]
+    }).wait_reasons[0];
+
+    expect(result.actions[0].title).toBe('관찰을 지금 한 번 더 한다');
+  });
+
+  test('labels completing actions as release and worker handoff', () => {
+    const result = run({
+      external_waits: [
+        external({
+          owner_kind: 'session',
+          stage: 'completing',
+          completion: { completed_at: new Date(NOW).toISOString() }
+        })
+      ],
+      blocker_facts: { 'UI-consumer': { external_wait: 'w-0123456789ab' } }
+    }).wait_reasons[0];
+
+    expect(
+      result.actions.map((action) => [action.label, action.title])
+    ).toEqual([
+      [
+        '[대기 해제]',
+        '이어가지 않고 대기 키를 지운다 · 잡은 그대로 · 이 대기의 표시는 카드와 상세에서 사라진다'
+      ],
+      [
+        '[워커로 이어가기]',
+        'Worker가 보존 세션을 fork해 이어간다 — 이후 소유는 Worker'
+      ]
+    ]);
+  });
+
+  test('labels the fresh resume after a failed resume', () => {
+    const result = run({
+      external_waits: [
+        external({
+          stage: 'completing',
+          resume: { error: 'no_session_ref' },
+          completion: { completed_at: new Date(NOW).toISOString() }
+        })
+      ],
+      blocker_facts: { 'UI-consumer': { external_wait: 'w-0123456789ab' } }
+    }).wait_reasons[0];
+
+    expect(result.actions[2]).toMatchObject({
+      label: '[새 세션으로]',
+      title: 'fork 없이 완료 페이로드로 새 Worker 세션을 연다'
+    });
+  });
+
+  test('tells a session-owned completion to copy the session or hand off', () => {
+    const result = run({
+      external_waits: [
+        external({
+          owner_kind: 'session',
+          stage: 'completing',
+          completion: { completed_at: new Date(NOW).toISOString() }
+        })
+      ],
+      blocker_facts: { 'UI-consumer': { external_wait: 'w-0123456789ab' } }
+    }).wait_reasons[0];
+
+    expect(result.release).toBe(
+      '완료 · 세션 칩을 눌러 ID를 복사해 그 세션에서 잇거나 [워커로 이어가기]'
+    );
+  });
+
+  test('titles the stop action of a key without a record', () => {
+    const result = run({
+      blocker_facts: { 'UI-consumer': { external_wait: 'w-0123456789ab' } }
+    }).wait_reasons[0];
+
+    expect(result.actions[0]).toMatchObject({
+      label: '[관찰 중단]',
+      title: '레코드가 없는 대기 키를 지운다'
+    });
+  });
+
   test('fails closed when the detached record has no metadata key', () => {
     const result = run({ external_waits: [external({ stage: 'detached' })] })
       .wait_reasons[0];

@@ -13,9 +13,11 @@
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
 import { formatContinuationLineage } from '../../utils/attempt-display.js';
+import { copyToClipboard } from '../../utils/clipboard.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
 import { formatRelativeTime } from '../../utils/relative-time.js';
 import { sessionRefLabel } from '../../utils/session-ref.js';
+import { showToast } from '../../utils/toast.js';
 import {
   formatUsageTotalWithCost,
   providerUsageBadges,
@@ -1065,12 +1067,28 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const park = parked ? tile.failure || null : null;
   const wait = waiting ? tile.wait || null : null;
   const hold = provider_hold ? tile.hold || null : null;
-  const held = parked || retry_wait || waiting || provider_hold;
   const wait_reasons = tile.wait_reasons || [];
   const external = externalWaitCardParts(tile, now);
+  // 외부 대기는 다섯째 held 상태다 (UI-l48z §4.1). 술어는 레코드가 아니라
+  // 사유다 — 레코드 없는 `wait_record_missing` 사유도 그 출구를 가져야 한다.
+  // Worker 소유 대기는 `waiting` attempt라 앞에서 먼저 잡힌다.
+  const external_wait =
+    !!external.badge &&
+    !failed &&
+    !parked &&
+    !retry_wait &&
+    !waiting &&
+    !provider_hold;
+  const held =
+    parked || retry_wait || waiting || provider_hold || external_wait;
+  // 외부 대기 조작은 held 타일에서 슬롯 6 foot이다 (UI-l48z §4.3); 다른 대기
+  // 조작은 자리를 바꾸지 않는다.
+  const external_foot = held ? external.actions : '';
   // 조작은 사유 전부에서 모으고 (§6.2), 배지·본문·시각은 카드당 하나다 (§6).
   const wait_lines = wait_reasons.map((reason) =>
-    waitReasonLines(reason, { now })
+    held && reason.kind === 'external_job'
+      ? { actions: '' }
+      : waitReasonLines(reason, { now })
   );
   const wait_representative = representativeWaitReason(wait_reasons);
   const wait_body_lines = external.badge
@@ -1185,16 +1203,28 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 세션 정체 칩은 exec_receipt 앞이다 (UI-4xzk §6.4): 슬롯 5 안에서도 "누가"가
   // "무엇으로 실행했나"보다 앞선다. 이력이 둘 이상일 때만 개수를 덧붙인다 —
   // 하나뿐인 이력은 셀 것이 없다.
+  // 클릭 = 전체 세션 ID 복사 (UI-l48z §4.4): 사람이 자기 세션에서 잇는 출구다.
   const session_ref_chip = session_current
-    ? html`<span
+    ? html`<button
+        type="button"
         class="ctl-chip ctl-chip--sref"
         title=${`${session_current.provider}:${session_current.session_id}@${session_current.host}${
           (tile.session_refs || []).length >= 2
             ? ` · 이력 ${(tile.session_refs || []).length}`
             : ''
-        }`}
-        >${sessionRefLabel(session_current)}</span
-      >`
+        } · 클릭하면 세션 ID 복사`}
+        @click=${async (/** @type {Event} */ event) => {
+          event.stopPropagation();
+          const copied = await copyToClipboard(session_current.session_id);
+          showToast(
+            copied ? '복사됨' : '복사 실패',
+            copied ? 'success' : 'error',
+            1200
+          );
+        }}
+      >
+        ${sessionRefLabel(session_current)}
+      </button>`
     : '';
   const tile_meta =
     lane_chip ||
@@ -1206,12 +1236,11 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     complex_chip ||
     area_chips ||
     provider_badges.length > 0 ||
-    usage_label ||
-    external.chips
+    usage_label
       ? html`<div class="rtile__meta">
-          ${lane_chip || route_chip || source_chips || external.chips
+          ${lane_chip || route_chip || source_chips
             ? html`<div class="worker-chips worker-chips--coords">
-                ${lane_chip}${route_chip}${source_chips}${external.chips}
+                ${lane_chip}${route_chip}${source_chips}
               </div>`
             : ''}${session_ref_chip ||
           session_receipt_chip ||
@@ -1368,8 +1397,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       ? ' rtile--retry-wait'
       : ''}${waiting ? ' rtile--waiting' : ''}${session
       ? ' rtile--session'
-      : ''}${provider_hold
-      ? ' rtile--provider-hold'
+      : ''}${provider_hold ? ' rtile--provider-hold' : ''}${external_wait
+      ? ' rtile--external-wait'
       : ''}${tile.search_match === false || tile.filter_match === false
       ? ' is-dimmed'
       : ''}"
@@ -1387,7 +1416,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       <span class="rtile__id" title="클릭하면 ID 복사">${tile.bead_id}</span>
       ${priorityBadgeTemplate(tile.priority)}${lineage
         ? html`<span class="rtile__resumed" title=${lineage}>↻</span>`
-        : ''}${session
+        : ''}${session && !external_wait
         ? html`<span
             class="rtile__session-badge"
             title="Worker가 아닌 세션이 in_progress로 잡은 이슈"
@@ -1400,7 +1429,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       <div class="rtile__hd-actions">
         ${interactiveSessionClosingTemplate(tile.interactive_sessions)}
         ${wait_lines.map((line) => line.actions)}${session
-          ? html`${typeof tile.started_at === 'number'
+          ? html`${typeof tile.started_at === 'number' && !external_wait
               ? html`<span class="rtile__elapsed">${elapsed}</span>`
               : ''}${sessionOpenButton(session_current)}`
           : elapsed
@@ -1454,65 +1483,73 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       </div>
     </div>
     <div class="rtile__title">${tile.title}</div>
-    ${wait_body_lines.body}${held
-      ? heldBodyTemplate(
-          parked
-            ? 'parked'
-            : retry_wait
-              ? 'retry_wait'
+    ${wait_body_lines.body}${external_wait
+      ? // 세션 소유 외부 대기 타일 (UI-l48z §4.1): 활동 줄 없이 4a·4b·5 재료와
+        // 슬롯 6 조작만 싣는다.
+        html`${monitor_relations}${tile_meta}${external_foot || discard_actions
+          ? html`<div class="rtile__foot">
+              ${external_foot}${discard_actions}
+            </div>`
+          : ''}`
+      : held
+        ? heldBodyTemplate(
+            parked
+              ? 'parked'
+              : retry_wait
+                ? 'retry_wait'
+                : waiting
+                  ? 'waiting'
+                  : 'provider_hold',
+            parked
+              ? wait_representative?.kind === 'awaiting_user' && park
+                ? { ...park, summary: '' }
+                : park
               : waiting
-                ? 'waiting'
-                : 'provider_hold',
-          parked
-            ? wait_representative?.kind === 'awaiting_user' && park
-              ? { ...park, summary: '' }
-              : park
-            : waiting
-              ? wait_reasons.length > 0 && wait
-                ? { ...wait, summary: '', recovery: undefined }
-                : wait
-              : hold,
-          discard_actions,
-          waiting ? monitor_relations : '',
-          parked || waiting ? resolve_button : '',
-          parked && !!tile.discard?.error
-        )
-      : failed
-        ? ''
-        : html`${monitor_body}${tile.rollup
-              ? childRollupTemplate(tile.rollup, {
-                  parent_id: tile.bead_id,
-                  expanded: tile.rollup_expanded === true,
-                  childChips: childExecChips
-                })
-              : ''}
-            ${landing
-              ? html`<div class="rtile__landing">
-                  <span
-                    class="merge-step${landing.failed
-                      ? ' merge-step--failed'
-                      : ''}"
-                    style=${`--progress: ${landing.percent}%`}
-                    >${landing.label}${landing.index > 0
-                      ? html`<span class="merge-step__n"
-                          >${landing.index}/${landing.total}</span
-                        >`
-                      : ''}</span
-                  >
-                </div>`
-              : ''}
-            ${monitor_relations} ${tile_meta} ${discardReceiptTemplate(tile)}
-            ${times_el}
-            <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일).
+                ? wait_reasons.length > 0 && wait
+                  ? { ...wait, summary: '', recovery: undefined }
+                  : wait
+                : hold,
+            external_foot
+              ? html`${external_foot}${discard_actions}`
+              : discard_actions,
+            waiting ? monitor_relations : '',
+            parked || waiting ? resolve_button : '',
+            parked && !!tile.discard?.error
+          )
+        : failed
+          ? ''
+          : html`${monitor_body}${tile.rollup
+                ? childRollupTemplate(tile.rollup, {
+                    parent_id: tile.bead_id,
+                    expanded: tile.rollup_expanded === true,
+                    childChips: childExecChips
+                  })
+                : ''}
+              ${landing
+                ? html`<div class="rtile__landing">
+                    <span
+                      class="merge-step${landing.failed
+                        ? ' merge-step--failed'
+                        : ''}"
+                      style=${`--progress: ${landing.percent}%`}
+                      >${landing.label}${landing.index > 0
+                        ? html`<span class="merge-step__n"
+                            >${landing.index}/${landing.total}</span
+                          >`
+                        : ''}</span
+                    >
+                  </div>`
+                : ''}
+              ${monitor_relations} ${tile_meta} ${discardReceiptTemplate(tile)}
+              ${times_el}
+              <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일).
          quick_fix landing의 실제 진행은 위의 별도 진행 줄이 소유한다.
          일시정지된 타일은 살아있지 않으므로 액센트도 없다. -->
-            ${failed || paused
-              ? ''
-              : html`<div class="rtile__accent" aria-hidden="true"></div>`}`}
-    ${(held || failed) && (lane_chip || external.chips)
-      ? html`<div class="worker-chips worker-chips--coords">
-          ${lane_chip}${external.chips}
-        </div>`
+              ${failed || paused
+                ? ''
+                : html`<div class="rtile__accent" aria-hidden="true"></div>`}`}
+    ${(held || failed) && lane_chip
+      ? html`<div class="worker-chips worker-chips--coords">${lane_chip}</div>`
       : ''}${wait_body_lines.times}${failurePopoverTemplate(failure, now)}
   </div>`;
 }

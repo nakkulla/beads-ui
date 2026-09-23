@@ -202,7 +202,8 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * @typedef {Object} SessionActiveItem
  * @property {string} bead_id
  * @property {string} title
- * @property {'in_progress'} status
+ * @property {'in_progress'|'open'} status - The row's actual status; `open`
+ * only for a bead holding a non-empty `external_wait` key (UI-l48z §4.1).
  * @property {string} route - `metadata.route`, or `''` when unpinned.
  * @property {string} spec_id - Resolved spec path; `''` when absent or in
  * conflict. Also the SCOPE source pointer for this row (UI-anna §3.1): a
@@ -509,8 +510,9 @@ function sessionStamp(value) {
  * The 판정 for a SESSION-held bead (UI-yrzu §3), minus the lane exclusion, which
  * the caller applies at read time exactly like the runnable one.
  *
- * Only two things disqualify a row here: no id, and a status that is not
- * `in_progress`. Everything `qualify()` additionally demands — the route enum,
+ * Only two things disqualify a row here: no id, and a status that is neither
+ * `in_progress` nor `open` with a non-empty `external_wait` key (UI-l48z §4.1).
+ * Everything `qualify()` additionally demands — the route enum,
  * the `spec_review` receipt, `worker-ineligible`, phase-child parentage — is a
  * WORKER admission condition, and a session is not the worker.
  *
@@ -523,7 +525,13 @@ function qualifySession(row, blocked_by = null) {
   if (bead_id.length === 0) {
     return null;
   }
-  if (row.status !== 'in_progress') {
+  /** @type {'in_progress'|'open'} */
+  let status;
+  if (row.status === 'in_progress') {
+    status = 'in_progress';
+  } else if (row.status === 'open' && hasExternalWait(row)) {
+    status = 'open';
+  } else {
     return null;
   }
   const meta = metadataOf(row);
@@ -533,7 +541,7 @@ function qualifySession(row, blocked_by = null) {
   return {
     bead_id,
     title: typeof row.title === 'string' ? row.title : '',
-    status: 'in_progress',
+    status,
     route: typeof meta.route === 'string' ? meta.route : '',
     spec_id: spec.conflict ? '' : spec.path,
     plan_path: plan_path.length > 0 ? plan_path : null,
@@ -546,6 +554,17 @@ function qualifySession(row, blocked_by = null) {
     blocked_by: blocked_by || [],
     session_refs: sessionRefsOf(meta)
   };
+}
+
+/**
+ * Whether the row carries a non-empty string `external_wait` metadata key.
+ *
+ * @param {Record<string, unknown>} row
+ * @returns {boolean}
+ */
+function hasExternalWait(row) {
+  const value = metadataOf(row).external_wait;
+  return typeof value === 'string' && value.length > 0;
 }
 
 /**
@@ -885,7 +904,11 @@ export function createRunnableCache(options = {}) {
           : explained.length > 0
             ? explained
             : embeddedBlockerIds(row);
-      const item = qualify(row, blocked_by, decoration_context);
+      // A bead parked on an external job is held by its session, not runnable:
+      // it skips the runnable 판정 and goes straight to the session bucket.
+      const item = hasExternalWait(row)
+        ? null
+        : qualify(row, blocked_by, decoration_context);
       if (item) {
         items.push(item);
         projected.push({ row, item });

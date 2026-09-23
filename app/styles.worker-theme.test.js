@@ -227,7 +227,6 @@ describe('worker console styles', () => {
     expect(responsiveMarker).toBeGreaterThan(markerIndex);
     expect(reasonRule).toContain('min-width: 0');
     expect(reasonRule).toContain('overflow-wrap: anywhere');
-    expect(headRule).toContain('flex-wrap: nowrap');
     expect(headRule).toContain('min-height: 28px');
   });
 
@@ -253,16 +252,16 @@ describe('worker console styles', () => {
     expect(badgeRule).toContain('text-overflow: ellipsis');
   });
 
-  test('keeps candidate card headers on one line in narrow lanes', () => {
+  test('leaves no nowrap on the candidate card header base rule (UI-l48z §4.5)', () => {
     const headRule =
       workerBlock.match(/(?:^|\n)\.worker-card__head\s*{([^}]*)}/)?.[1] || '';
 
-    expect(headRule).toContain('flex-wrap: nowrap');
+    expect(headRule).not.toContain('flex-wrap: nowrap');
     expect(headRule).toContain('min-height: 28px');
     expect(headRule).toContain('min-width: 0');
   });
 
-  test('ellipsizes wait summaries within every card header without wrapping', () => {
+  test('wraps wait summaries within every card header instead of ellipsizing (UI-l48z §4.5)', () => {
     const summaryRule = CSS.match(
       /:is\(([^)]*)\)\s*:is\(\.wait-verdict,\s*\.external-wait-summary\)\s*>\s*summary\s*{([^}]*)}/
     );
@@ -278,30 +277,47 @@ describe('worker console styles', () => {
       expect(selectors).toContain(selector);
     }
     expect(declarations).toContain('display: block');
-    expect(declarations).toContain('white-space: nowrap');
-    expect(declarations).toContain('overflow: hidden');
-    expect(declarations).toContain('text-overflow: ellipsis');
+    expect(declarations).toContain('white-space: normal');
+    expect(declarations).toContain('overflow-wrap: anywhere');
+    expect(declarations).not.toContain('text-overflow: ellipsis');
+    expect(CSS.indexOf(summaryRule?.[0] || '\u0000')).toBeLessThan(
+      CSS.indexOf('/* ---------- Worker responsive (<=640px)')
+    );
   });
 
-  // 좁은 화면의 머리줄은 말줄임 대신 줄을 넘긴다 (UI-c8kc). 같은 명시도의 기본
-  // `nowrap` 규칙보다 뒤에 서야 덮으므로 순서도 함께 본다.
-  test('wraps every card header row below 640px', () => {
+  // 머리줄은 모든 폭에서 말줄임 대신 줄을 넘긴다 (UI-l48z §4.5, 종전 UI-c8kc의
+  // 640px 이하 규칙): 공통 규칙은 미디어쿼리 밖이고, 기본 규칙은 nowrap을 싣지 않는다.
+  test('wraps every card header row outside the 640px media query', () => {
     const mediaStart = CSS.indexOf('/* ---------- Worker responsive (<=640px)');
-    const mq = CSS.slice(mediaStart);
-    const wrapRule =
-      mq.match(
-        /\n\s*:is\(\.worker-card__head, \.worker-mini__head, \.rtile__hd\)\s*{([^}]*)}/
-      )?.[1] || '';
+    const wrapMatch = CSS.match(
+      /\n:is\(\.worker-card__head, \.worker-mini__head, \.worker-mini__row1, \.rtile__hd\)\s*{([^}]*)}/
+    );
 
-    expect(wrapRule).toContain('flex-wrap: wrap');
+    expect(wrapMatch?.[1] || '').toContain('flex-wrap: wrap');
+    expect(CSS.indexOf(wrapMatch?.[0] || '\u0000')).toBeLessThan(mediaStart);
     for (const base_rule of [
-      '\n.worker-card__head {',
-      '\n.worker-mini__head {',
-      '\n.rtile__hd {'
+      '.worker-card__head',
+      '.worker-mini__head',
+      '.rtile__hd'
     ]) {
-      expect(CSS.indexOf(base_rule)).toBeGreaterThan(0);
-      expect(CSS.indexOf(base_rule)).toBeLessThan(mediaStart);
+      const body =
+        CSS.match(new RegExp(`\\n\\${base_rule} {([^}]*)}`))?.[1] || '';
+      expect(body).not.toContain('flex-wrap: nowrap');
     }
+  });
+
+  test('keeps header chips whole outside the 640px media query (UI-l48z §4.5)', () => {
+    const mediaStart = CSS.indexOf('/* ---------- Worker responsive (<=640px)');
+    const chipMatch = CSS.match(
+      /\n:is\(\.worker-card__head, \.worker-mini__head, \.worker-mini__row1, \.rtile__hd\)\s*>\s*\.ctl-chip\s*{([^}]*)}/
+    );
+    const declarations = chipMatch?.[1] || '';
+
+    expect(CSS.indexOf(chipMatch?.[0] || '\u0000')).toBeLessThan(mediaStart);
+    expect(declarations).toContain('white-space: normal');
+    expect(declarations).toContain('overflow-wrap: anywhere');
+    expect(declarations).not.toContain('text-overflow: ellipsis');
+    expect(declarations).not.toContain('overflow: hidden');
   });
 
   // 이 폭의 `.chip-popover`는 정적 블록이라 담는 `<details>`의 폭을 그대로 쓴다
@@ -402,11 +418,11 @@ describe('worker console styles', () => {
     expect(reasonRule).toContain('overflow-wrap: anywhere');
   });
 
-  test('keeps running tile headers on one line in narrow lanes', () => {
+  test('leaves no nowrap on the running tile header base rule (UI-l48z §4.5)', () => {
     const headerRule =
       workerBlock.match(/(?:^|\n)\.rtile__hd\s*{([^}]*)}/)?.[1] || '';
 
-    expect(headerRule).toContain('flex-wrap: nowrap');
+    expect(headerRule).not.toContain('flex-wrap: nowrap');
     expect(headerRule).toContain('min-height: 28px');
     expect(headerRule).toContain('min-width: 0');
   });

@@ -1,7 +1,8 @@
 ---
 id: UI-u6ud-8
 title: 후보 레인과 카드 조립
-status: accepted
+status: superseded
+superseded_by: UI-l48z
 date: 2026-09-23
 summary: "레인은 buildLanes 하나로 조립하고 카드 줄 순서는 공유 슬롯 표가 정하며 재료 없는 줄은 그리지 않는다; 후보 레인은 미착수 이슈의 관측 집합이고 큐 진입 자격은 서버 admission이 판정한다; Worker와 Monitor의 후보 행은 같은 사실 키를 싣고 lane-model 한 경로가 자격을 접으며 배치 불가 사유는 슬롯 4a 칩 하나다; 워커 탭이 저장소의 단일 이슈 면이고 Board 탭·ui-order는 없다"
 supersedes: [14, 33, "UI-mfm1", "UI-p7s2"]

@@ -527,6 +527,88 @@ describe('external wait projection', () => {
     }
   );
 
+  test('stands a session-owned wait as a running session tile (UI-l48z §4.1)', () => {
+    const record = externalWait({ owner_kind: 'session' });
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [{ bead_id: 'A-1', title: 'consumer', admitted: true }],
+          session_active: [{ bead_id: 'A-1', status: 'open', updated_at: 5 }],
+          external_waits: [record]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running).toHaveLength(1);
+    expect(lanes.running[0]).toMatchObject({
+      id: 'A-1',
+      kind: 'session',
+      status: 'open',
+      external_wait: record
+    });
+  });
+
+  test('drops the session-owned wait bead from the candidate lane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [{ bead_id: 'A-1', title: 'consumer', admitted: true }],
+          session_active: [{ bead_id: 'A-1', status: 'open' }],
+          external_waits: [externalWait({ owner_kind: 'session' })]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable).toHaveLength(0);
+  });
+
+  test('gives a session-owned wait tile no elapsed clock', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          session_active: [
+            {
+              bead_id: 'A-1',
+              status: 'open',
+              started_at: 3,
+              updated_at: 5
+            }
+          ],
+          external_waits: [externalWait({ owner_kind: 'session' })]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].started_at).toBeUndefined();
+    expect(lanes.running[0].updated_at).toBeUndefined();
+  });
+
+  test('keeps a worker-owned wait as the one held attempt tile', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            a: {
+              attempt_id: 'a',
+              bead_id: 'A-1',
+              status: 'waiting',
+              started_at: 1
+            }
+          },
+          session_active: [{ bead_id: 'A-1', status: 'open' }],
+          external_waits: [externalWait()]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running).toHaveLength(1);
+    expect(lanes.running[0].kind).toBeUndefined();
+  });
+
   test('keeps equal Bead identifiers isolated by workspace', () => {
     const lanes = buildLanes(
       [

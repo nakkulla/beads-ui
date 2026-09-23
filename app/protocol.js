@@ -108,7 +108,7 @@
  * @property {'normal'|'overdue'|'action_required'} verdict
  * @property {VerdictReason} [verdict_reason]
  * @property {Array<{ id: string, rig?: string, status?: string, kind: 'gate'|'issue' }>} targets
- * @property {Array<{ op: string, label: string, payload: Record<string, any> }>} actions
+ * @property {Array<{ op: string, label: string, title?: string, payload: Record<string, any> }>} actions
  * @property {{ on_complete: 'discord'|'none', on_overdue: 'discord'|'none' }} notify_plan
  */
 

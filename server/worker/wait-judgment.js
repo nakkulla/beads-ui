@@ -34,7 +34,7 @@ export const WAIT_THRESHOLDS = Object.freeze({
  * @property {'normal'|'overdue'|'action_required'} verdict
  * @property {VerdictReason} [verdict_reason]
  * @property {Array<{ id: string, rig?: string, status?: string, kind: 'gate'|'issue' }>} targets
- * @property {Array<{ op: string, label: string, payload: Record<string, any> }>} actions
+ * @property {Array<{ op: string, label: string, title?: string, payload: Record<string, any> }>} actions
  * @property {{ on_complete: 'discord'|'none', on_overdue: 'discord'|'none' }} notify_plan
  * @typedef {{ settle_observed_at?: Record<string, number> }} ObservationTimes
  * @typedef {Object} WaitJudgmentInput
@@ -283,7 +283,7 @@ export function judgeWaitReasons(input) {
       row.stage === 'completing'
         ? row.owner_kind === 'worker'
           ? '재개 중'
-          : '완료 · [이어하기]를 누르면 세션을 fork해 이어간다'
+          : '완료 · 세션 칩을 눌러 ID를 복사해 그 세션에서 잇거나 [워커로 이어가기]'
         : '완료되면 같은 세션을 이어간다'
     );
     result.notify_plan.on_complete =
@@ -293,17 +293,32 @@ export function judgeWaitReasons(input) {
     }
     const payload = { root_dir, wait_id: row.wait_id };
     if (row.stage === 'hold' || row.stage === 'detached') {
+      const next_at = timestamp(row.next_observation_at);
       result.actions.push({
         op: 'external_wait_check',
         label: '[지금 확인]',
+        title:
+          next_at === undefined
+            ? '관찰을 지금 한 번 더 한다'
+            : `관찰을 지금 한 번 더 한다 (다음 예정 ${localClock(next_at)})`,
+        payload
+      });
+      result.actions.push({
+        op: 'external_wait_stop',
+        label: '[관찰 중단]',
+        title:
+          'beads-ui가 이 작업을 더 지켜보지 않고 대기 키를 지운다 · 잡은 그대로',
+        payload
+      });
+    } else {
+      result.actions.push({
+        op: 'external_wait_stop',
+        label: '[대기 해제]',
+        title:
+          '이어가지 않고 대기 키를 지운다 · 잡은 그대로 · 이 대기의 표시는 카드와 상세에서 사라진다',
         payload
       });
     }
-    result.actions.push({
-      op: 'external_wait_stop',
-      label: '[관찰 중단]',
-      payload
-    });
     if (
       row.stage === 'completing' &&
       (row.owner_kind === 'session' || row.resume?.error)
@@ -311,7 +326,8 @@ export function judgeWaitReasons(input) {
       if (!row.resume || row.resume.error) {
         result.actions.push({
           op: 'external_wait_resume',
-          label: '[이어하기]',
+          label: '[워커로 이어가기]',
+          title: 'Worker가 보존 세션을 fork해 이어간다 — 이후 소유는 Worker',
           payload: { ...payload, mode: 'fork' }
         });
       }
@@ -319,6 +335,7 @@ export function judgeWaitReasons(input) {
         result.actions.push({
           op: 'external_wait_resume',
           label: '[새 세션으로]',
+          title: 'fork 없이 완료 페이로드로 새 Worker 세션을 연다',
           payload: { ...payload, mode: 'fresh' }
         });
       }
@@ -394,6 +411,7 @@ export function judgeWaitReasons(input) {
     result.actions.push({
       op: 'external_wait_stop',
       label: '[관찰 중단]',
+      title: '레코드가 없는 대기 키를 지운다',
       payload: { root_dir, wait_id: fact.external_wait, bead_id }
     });
     wait_reasons.push(result);

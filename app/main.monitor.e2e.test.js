@@ -572,7 +572,8 @@ describe('monitor tab direct entry (UI-nprg)', () => {
 
       const consumer = root.querySelector('[data-bead-id="Analysis-xz9d"]');
       expect(consumer?.textContent).toContain('⏳ 외부 작업');
-      expect(consumer?.textContent).toContain('ssh wallace');
+      expect(consumer?.textContent).toContain('wallace 작업 42');
+      expect(consumer?.textContent).not.toContain('ssh wallace');
       expect(root.querySelector('[data-lane="external_wait"]')).toBeNull();
       expect(
         root.querySelector('#monitor-queue .worker-pane__count')?.textContent

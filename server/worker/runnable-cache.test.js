@@ -1566,6 +1566,80 @@ describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
     expect(out[0].plan_path).toBeNull();
   });
 
+  // UI-l48z §4.1: 외부 대기 키가 있는 open 행은 세션 타일이다.
+  test('routes an open row with an external_wait key to session_active', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [row({ metadata: { external_wait: 'w-0123456789ab' } })]
+      })
+    });
+
+    await warm(cache, WS_A);
+
+    expect(cache.runnableFor(WS_A)).toEqual([]);
+    expect(cache.sessionActiveFor(WS_A)).toMatchObject([
+      { bead_id: 'UI-1', status: 'open' }
+    ]);
+  });
+
+  test('projects session_refs for an open external-wait row', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [
+          row({
+            metadata: {
+              external_wait: 'w-0123456789ab',
+              session_ref:
+                'codex:0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000@elsewhere'
+            }
+          })
+        ]
+      })
+    });
+
+    const out = await warmSession(cache, WS_A);
+
+    expect(out[0].session_refs).toMatchObject([
+      {
+        provider: 'codex',
+        session_id: '0199aaaa-bbbb-7ccc-8ddd-eeeeffff0000'
+      }
+    ]);
+  });
+
+  test.each([[''], [42]])(
+    'keeps a row with external_wait %j in runnable items',
+    async (external_wait) => {
+      const cache = createRunnableCache({
+        requestSnapshot: fakeSnapshot({
+          [WS_A]: [row({ metadata: { external_wait } })]
+        })
+      });
+
+      await warm(cache, WS_A);
+
+      expect(cache.runnableFor(WS_A).map((item) => item.bead_id)).toEqual([
+        'UI-1'
+      ]);
+      expect(cache.sessionActiveFor(WS_A)).toEqual([]);
+    }
+  );
+
+  test('keeps a deferred row with an external_wait key out of both buckets', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [
+          row({ status: 'deferred', metadata: { external_wait: 'w-1' } })
+        ]
+      })
+    });
+
+    await warm(cache, WS_A);
+
+    expect(cache.runnableFor(WS_A)).toEqual([]);
+    expect(cache.sessionActiveFor(WS_A)).toEqual([]);
+  });
+
   // §3: 세션은 Worker 자격과 무관하게 아무 이슈나 잡는다.
   test('keeps a session bead no worker admission condition would admit', async () => {
     const cache = createRunnableCache({

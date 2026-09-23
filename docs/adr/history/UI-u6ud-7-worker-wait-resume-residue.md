@@ -1,7 +1,8 @@
 ---
 id: UI-u6ud-7
 title: Worker 대기·재개·잔재 처분
-status: accepted
+status: superseded
+superseded_by: UI-l48z
 date: 2026-09-23
 summary: "Worker 대기 어휘는 선행 대기·공급자 보류·재시도 대기·세션이 멈춤 넷이고 사람 결정이 필요한 곳에서만 멈춘다; 미분류 실패는 같은 세션 재시도 사다리 뒤 실패 타일이고 파킹과 복구 대기의 출구는 문의 세션뿐이며 새 attempt 재시도 버튼은 없다; base_moved는 보존 세션을 자동 재개하고 잔재는 resume·continue·backup_fresh 순으로 자동 처분하며 선행 대기 attempt도 그 후보다; 재개는 기록된 provider를 보존하고 현재 route가 유도한 실행 레인이 기록된 레인과 다른 세션 재개는 route_changed로 거절하며 기계 정산만 기록된 레인으로 마친다; closed·deferred Bead는 대기 레인에서 자동으로 물러나고 자동 재배치는 없다"
 supersedes: ["UI-a5l2-2", "UI-hgd2", 36, "UI-tqqp", "UI-kq54", 46]
