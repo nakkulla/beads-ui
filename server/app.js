@@ -70,9 +70,9 @@ function acceptsGzip(req) {
 }
 
 /**
- * Resolve the `.gz` sibling of a requested `.js`/`.css` asset under `app_dir`
- * when the request accepts gzip and the `.gz` is at least as new as the
- * original; `null` otherwise.
+ * Resolve the `.gz` sibling of a requested `.js`/`.css` asset, relative to
+ * `app_dir`, when the request accepts gzip and the `.gz` is at least as new
+ * as the original; `null` otherwise.
  *
  * @param {string} app_dir
  * @param {Request} req
@@ -105,7 +105,7 @@ function freshGzipSibling(app_dir, req) {
   if (gz_stat.mtimeMs < original_stat.mtimeMs) {
     return null;
   }
-  return `${original}.gz`;
+  return `${path.relative(root, original)}.gz`;
 }
 
 /**
@@ -275,7 +275,9 @@ export function createApp(config) {
     res.setHeader('Vary', 'Accept-Encoding');
     res.setHeader('Content-Encoding', 'gzip');
     res.type(path.extname(req.path));
-    res.sendFile(gz_path, (err) => {
+    // Without `root`, send refuses every dot segment of the absolute path,
+    // including the deploy runtime's own `.worktrees/.repo-ops-deploy`.
+    res.sendFile(gz_path, { root: config.app_dir }, (err) => {
       if (err) {
         next(err);
       }

@@ -17,13 +17,22 @@ afterEach(() => {
 
 /**
  * A temporary `app_dir` with a bundle, a stylesheet and optional `.gz` files.
+ * `dot_parent` nests it under dot directories like the deploy runtime
+ * `.worktrees/.repo-ops-deploy/app`.
  *
- * @param {{ gzip?: boolean, stale_gzip?: boolean }} [options]
+ * @param {{ gzip?: boolean, stale_gzip?: boolean, dot_parent?: boolean }} [options]
  * @returns {string}
  */
 function appDir(options = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-gzip-app-'));
-  temporary_roots.push(root);
+  const temporary_root = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'bdui-gzip-app-')
+  );
+  temporary_roots.push(temporary_root);
+  const root =
+    options.dot_parent === true
+      ? path.join(temporary_root, '.worktrees', '.repo-ops-deploy', 'app')
+      : temporary_root;
+  fs.mkdirSync(root, { recursive: true });
   fs.copyFileSync(
     path.resolve('app', 'index.html'),
     path.join(root, 'index.html')
@@ -122,6 +131,37 @@ describe('pre-compressed static assets (UI-j2h3 §4.5)', () => {
       'text/javascript; charset=utf-8',
       'gzipped-marker'
     ]);
+  });
+
+  test('serves the gz sibling when app_dir sits under dot directories', async () => {
+    const app = makeApp(appDir({ gzip: true, dot_parent: true }));
+
+    const res = await rawGet(app, '/main.bundle.js', {
+      'accept-encoding': 'gzip'
+    });
+
+    expect([res.status, res.headers['content-encoding']]).toEqual([
+      200,
+      'gzip'
+    ]);
+    expect(zlib.gunzipSync(res.body).toString()).toBe('gzipped-marker');
+  });
+
+  test('keeps refusing a dot segment in the request path', async () => {
+    const root = appDir();
+    fs.mkdirSync(path.join(root, '.hidden'));
+    fs.writeFileSync(path.join(root, '.hidden', 'leak.js'), 'leak-marker');
+    fs.writeFileSync(
+      path.join(root, '.hidden', 'leak.js.gz'),
+      zlib.gzipSync('leak-marker')
+    );
+    const app = makeApp(root);
+
+    const res = await rawGet(app, '/.hidden/leak.js', {
+      'accept-encoding': 'gzip'
+    });
+
+    expect(res.status).toBe(404);
   });
 
   test('serves the original when no gz sibling exists', async () => {
