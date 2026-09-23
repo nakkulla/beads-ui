@@ -16,6 +16,16 @@ function resultEvent(overrides = {}) {
   };
 }
 
+/**
+ * Build one Claude CLI account-window event.
+ *
+ * @param {Record<string, unknown>} rate_limit_info
+ * @returns {Record<string, unknown>}
+ */
+function rateLimitEvent(rate_limit_info) {
+  return { type: 'rate_limit_event', rate_limit_info };
+}
+
 describe('runner/provider-outage result classification', () => {
   test('classifies disabled organization access as an account failure', () => {
     const message =
@@ -226,6 +236,72 @@ describe('runner/provider-outage result classification', () => {
     expect(result?.detail).toBe('rate_limited_429');
   });
 
+  test('classifies a 429 after a rejected account window as account usage', () => {
+    const message =
+      "You've reached your Fable limit. Switch to another model, or manage usage credits at claude.ai/settings/usage?from=cc_cli_limit_message, to continue.";
+    const raw = [
+      rateLimitEvent({
+        status: 'rejected',
+        resetsAt: 1790679600,
+        rateLimitType: 'seven_day_overage_included'
+      }),
+      resultEvent({
+        terminal_reason: 'api_error',
+        api_error_status: 429,
+        result: message
+      })
+    ];
+
+    const result = classifyProviderOutage({ raw, stderr_tail: null });
+
+    expect(result).toEqual({
+      detail: 'usage_limit',
+      message,
+      scope: 'account',
+      resets_at: 1790679600000
+    });
+  });
+
+  test('keeps a 429 after an allowed account window rate limited', () => {
+    const raw = [
+      rateLimitEvent({ status: 'allowed', resetsAt: 1790679600 }),
+      resultEvent({
+        api_error_status: 429,
+        result: 'Too many requests; retry later'
+      })
+    ];
+
+    const result = classifyProviderOutage({ raw, stderr_tail: null });
+
+    expect(result?.detail).toBe('rate_limited_429');
+  });
+
+  test('ignores a rejected account window from an earlier turn', () => {
+    const raw = [
+      rateLimitEvent({ status: 'rejected', resetsAt: 1790679600 }),
+      resultEvent({ is_error: false, result: 'done' }),
+      resultEvent({
+        api_error_status: 429,
+        result: 'Too many requests; retry later'
+      })
+    ];
+
+    const result = classifyProviderOutage({ raw, stderr_tail: null });
+
+    expect(result?.detail).toBe('rate_limited_429');
+  });
+
+  test('keeps a rejected account window off a non-429 status', () => {
+    const raw = [
+      rateLimitEvent({ status: 'rejected', resetsAt: 1790679600 }),
+      resultEvent({ api_error_status: 529, result: 'Overloaded' })
+    ];
+
+    const result = classifyProviderOutage({ raw, stderr_tail: null });
+
+    expect(result?.detail).toBe('overloaded_529');
+  });
+
   test('ignores assistant text that only quotes a session limit', () => {
     const raw = [
       {
@@ -333,6 +409,25 @@ describe('runner/provider-outage reset extraction', () => {
     });
 
     expect(result?.resets_at).toBe(Date.parse('2026-09-03T09:00:00Z'));
+  });
+
+  test('prefers the rejected window reset over the result text', () => {
+    const finished_at = Date.parse('2026-09-01T05:39:00Z');
+    const raw = [
+      rateLimitEvent({ status: 'rejected', resetsAt: 1788944400 }),
+      resultEvent({
+        api_error_status: 429,
+        result: "You've hit your session limit · resets 7pm (Asia/Seoul)"
+      })
+    ];
+
+    const result = classifyProviderOutage({
+      raw,
+      stderr_tail: null,
+      finished_at
+    });
+
+    expect(result?.resets_at).toBe(1788944400000);
   });
 
   test('returns a null reset when result parsing fails', () => {

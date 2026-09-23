@@ -70,19 +70,25 @@ function makeTimers() {
 }
 
 /**
- * Return a fake spawn that emits one configured JSON result.
+ * Return a fake spawn that emits one configured result, or the given
+ * stream-json events one per line.
  *
- * @param {Record<string, unknown>} output
+ * @param {Record<string, unknown>|Record<string, unknown>[]} output
  * @param {number} code
  */
 function makeSpawn(output, code) {
+  const events = Array.isArray(output)
+    ? output
+    : [{ type: 'result', ...output }];
   return vi.fn(() => {
     const child = /** @type {any} */ (new EventEmitter());
     child.stdout = new PassThrough();
     child.stderr = new PassThrough();
     child.kill = vi.fn();
     queueMicrotask(() => {
-      child.stdout.write(JSON.stringify(output));
+      child.stdout.write(
+        events.map((event) => JSON.stringify(event)).join('\n')
+      );
       child.stdout.end();
       child.stderr.end();
       child.emit('close', code);
@@ -383,7 +389,8 @@ describe('provider health probe', () => {
         '--model',
         'claude-opus-4-8',
         '--output-format',
-        'json'
+        'stream-json',
+        '--verbose'
       ],
       expect.objectContaining({ cwd: WS, shell: false })
     );
@@ -816,6 +823,38 @@ describe('provider health probe', () => {
     const target = store.snapshot(WS).provider_hold.claude.targets[0];
     expect(target.kind).toBe('usage_limit');
     expect(target.resets_at).toBe(Date.parse('2026-09-03T09:00:00Z'));
+  });
+
+  test('demotes an outage whose probe stream carries a rejected account window', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn(
+      [
+        { type: 'system', subtype: 'init' },
+        {
+          type: 'rate_limit_event',
+          rate_limit_info: { status: 'rejected', resetsAt: 1790679600 }
+        },
+        {
+          type: 'result',
+          is_error: true,
+          api_error_status: 429,
+          result: "You've reached your Fable limit."
+        }
+      ],
+      1
+    );
+    const env = setup(store, timers, spawnImpl);
+    seedHold(store, 'outage', 'held@example.com');
+    await env.health.start(WS);
+
+    timers.fireNext();
+    await flush();
+
+    expect(store.snapshot(WS).provider_hold.claude.targets[0]).toMatchObject({
+      kind: 'usage_limit',
+      resets_at: 1790679600000
+    });
   });
 
   test.each([

@@ -168,6 +168,17 @@ stderr 꼬리)다. assistant 텍스트·tool_result 본문·중간 result는 보
 `provider-outage.js`가 소유하고, 실패 2계층의 `ENV_ERROR_PATTERNS.api`는 §4.1대로
 공급자 토큰을 넘겨준다.
 
+> 정정(UI-nvmb, 2026-09-23): §3.1의 판정 재료에 구조화 동반 이벤트 하나를 더한다.
+> 마지막 `result`가 구조화 429이고 **그 result의 턴 안**(직전 `result` 이후)의
+> 마지막 `rate_limit_event`가 `rate_limit_info.status === 'rejected'`면 `LIMIT_RE`
+> 불일치여도 `usage_limit`/account이며, `resets_at`은 그 이벤트의 `resetsAt`(초)을
+> ms로 바꾼 값이 결과 문구·카탈로그보다 먼저다. CLI가 쓰는 타입 이벤트라 모델 인용
+> 텍스트의 오탐 방지 원칙은 그대로다. `LIMIT_RE`는 구 CLI용 텍스트 폴백으로 남는다.
+> 근거: 문구 의존이 두 번 깨졌다(UI-k96h `Fable 5.1 requires usage credits`,
+> UI-r6xq `You've reached your Fable limit.` — 같은 계정에서 20분 사이에 두
+> 문구가 모두 나왔다). 세션 로그의 구조화 429 30건은 모두 직전 `rejected` 이벤트를 동반한
+> 계정 한도였다.
+
 `message`는 매칭된 원문 라인을 `errorDetail()` 상한(512자)으로 잘라 담는다.
 영속은 문자열이 아니라 **객체형** `cause_detail: { kind: 'provider_outage',
 message, resets_at }`로 한다 — 현행 `makeAttempt()` 정규화는 객체만 보존하고 문자열을
@@ -389,6 +400,12 @@ workspace 기본값 → 카탈로그 활성 계정)은 **러너 무관**이다 �
 `is_error === false`. 그 외(비정상 종료, 파싱 실패, is_error, 타임아웃)는 그
 target 실패로 계속 보류. 프로브 출력에 §3 분류기를 다시 적용해 `usage_limit`이면
 `resets_at`을 갱신한다(§7.4).
+
+> 정정(UI-nvmb, 2026-09-23): claude 프로브의 출력 형식은
+> `--output-format stream-json --verbose`다. 파서는 모든 비어 있지 않은 줄이 JSON
+> 객체여야 하고(아니면 파싱 실패) 마지막 `result`를 성공 판정에, 스트림 전체를 §3
+> 분류기에 넘긴다 — 분류기가 §3.2 끝 정정의 `rate_limit_event`를 라이브 경로와 똑같이
+> 보게 해 `usage_limit`↔`outage` 재분류가 두 경로 사이에서 뒤집히지 않게 한다.
 
 **한계 명시**: 소형 프로브 통과가 누적 컨텍스트를 통째로 싣는 대형 재개 요청의
 통과를 보증하지 않는다. 프로브 통과 후 자동 재개가 다시 provider_outage로 죽는
