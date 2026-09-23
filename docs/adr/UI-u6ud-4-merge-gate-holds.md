@@ -45,7 +45,7 @@ bead: UI-u6ud
 
 verify 보류
 
-- 머지 전 verify 실패는 completion intent의 비종단 phase `holding`이 소유하는 보이는 보류(`verify_hold`)다. 보류 중인 행은 `merge_queue`에서 빠지고 뒤의 PR이 선두에 오른다.
+- 머지 전 verify 실패는 completion intent의 비종단 phase `holding`이 소유하는 보이는 보류(`verify_hold`)다. 등록 자격은 「verify 영수증이 있고 실패했다」다. 보류 중인 행은 `merge_queue`에서 빠지고 뒤의 PR이 선두에 오른다.
 - `verify_cmd_failed`는 재평가 없이 곧바로 `verify_hold`다. 배지 `검증 실패 — 수정 push 대기`, 출구 `[세션에서 해결]`, 수정 push가 자동 해제하며, Discord는 「머지 전 검증 실패」를 head당 1회 쓴다. 실패 키 stage는 `verify`, reason은 `verify_cmd_failed`다.
 - `verify_cmd_spawn_error`·`verify_cmd_timeout`(환경 증거가 있는 경우)은 `auto_resolution`(`class:'retry'`)으로 5분 뒤 한 번 재평가하고, 다시 같은 코드면 같은 `verify_hold`에 사유 코드를 싣고 배지만 `검증 명령 실패 — 환경 확인`이다.
 - terminal `needs_human('verify_red')`와 그 systemic 판정은 없다.

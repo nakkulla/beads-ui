@@ -335,6 +335,18 @@ describe('readAdrDir', () => {
     expect(result.errors).toEqual([]);
   });
 
+  test('reports a history/ read failure under its relative path', async () => {
+    await fs.mkdir(path.join(dir, 'history'));
+    // A directory whose name matches the ADR pattern lists like a file but
+    // fails at readFile (EISDIR), exercising the read-failure branch.
+    await fs.mkdir(path.join(dir, 'history', '0007-old.md'));
+
+    const result = await readAdrDir(dir);
+
+    expect(result.adrs).toEqual([]);
+    expect(result.errors.map((e) => e.file)).toEqual(['history/0007-old.md']);
+  });
+
   test('reports a history/ parse error under its relative path', async () => {
     await fs.mkdir(path.join(dir, 'history'));
     await fs.writeFile(
