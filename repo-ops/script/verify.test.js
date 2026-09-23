@@ -336,7 +336,7 @@ describe('repo-ops/config.toml verify declaration', () => {
 
     expect(agents).not.toContain('저장소는 `[verify]`를 선언하지 않는다');
     expect(agents).toContain('`gh pr checks`를 호출하지 않는다');
-    expect(agents).toContain('ADR 0003');
+    expect(agents).toContain('ADR UI-u6ud-3');
     expect(agents).toContain('repo-ops/script/verify');
   });
 });

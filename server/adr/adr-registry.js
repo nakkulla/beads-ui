@@ -46,7 +46,8 @@ export const CANDIDATE_ERROR_KINDS = [
   'adr_missing',
   'adr_status',
   'supersede_unapplied',
-  'usage'
+  'usage',
+  'title_too_long'
 ];
 
 /**

@@ -75,7 +75,12 @@ const CANDIDATE_PENDING_KIND = 'section_missing';
 const CANDIDATE_ENV_KIND = 'usage';
 
 /** 이름 붙은 카운트에 들어가지 않는 알려진 kind. */
-const CANDIDATE_OTHER_KINDS = ['adr_status'];
+const CANDIDATE_OTHER_KINDS = ['adr_status', 'title_too_long'];
+
+/** Chip text for kinds drawn under a Korean name instead of the kind token. */
+const KIND_LABELS = /** @type {Record<string, string>} */ ({
+  title_too_long: '제목 초과'
+});
 
 /**
  * @typedef {{ kind: string, file: string, line: number|null, adr: number|string|null, detail: string }} CheckerError
@@ -113,7 +118,10 @@ const CANDIDATE_KNOWN_KINDS = [
  * @param {string[]} known
  */
 function kindLabel(kind, known) {
-  return known.includes(kind) ? kind : '기타';
+  if (!known.includes(kind)) {
+    return '기타';
+  }
+  return KIND_LABELS[kind] || kind;
 }
 
 /**
@@ -472,27 +480,59 @@ export function createAdrView(root, options = {}) {
     if (rows.length === 0) {
       return html``;
     }
+    /** @type {Map<string, AdrRecord>} */
+    const by_id = new Map();
+    for (const adr of [...(ws.current || []), ...(ws.history || [])]) {
+      by_id.set(String(adr.id), adr);
+    }
     return html`
       <details class="adr-history">
         <summary>이력 ${rows.length}</summary>
         <div class="adr-tablewrap">
           <table class="adr-table adr-table--history">
             <tbody>
-              ${rows.map(
-                (adr) => html`
+              ${rows.map((adr) => {
+                const fm = (ws.frontmatter_errors || []).filter(
+                  (e) => e.file === adr.file
+                );
+                const target =
+                  adr.superseded_by === null || adr.superseded_by === undefined
+                    ? null
+                    : by_id.get(String(adr.superseded_by)) || null;
+                return html`
                   <tr data-adr=${String(adr.id)}>
                     <td class="adr-num">${adr.id}</td>
-                    <td>${adr.title || adr.file}</td>
+                    <td>
+                      ${docCell(
+                        `docs/adr/${adr.file}`,
+                        ws.root_dir,
+                        adr.title || adr.file
+                      )}
+                      ${fm.length > 0
+                        ? html`<span class="adr-signals"
+                            ><span class="adr-chip adr-chip--signal"
+                              >frontmatter 오류</span
+                            ></span
+                          >`
+                        : html``}
+                    </td>
                     <td class="adr-status">${adr.status}</td>
                     <td class="adr-superseded">
                       ${adr.superseded_by === null ||
                       adr.superseded_by === undefined
                         ? ''
-                        : `→ ${adr.superseded_by}`}
+                        : target
+                          ? html`→
+                            ${docCell(
+                              `docs/adr/${target.file}`,
+                              ws.root_dir,
+                              String(adr.superseded_by)
+                            )}`
+                          : `→ ${adr.superseded_by}`}
                     </td>
                   </tr>
-                `
-              )}
+                `;
+              })}
             </tbody>
           </table>
         </div>
