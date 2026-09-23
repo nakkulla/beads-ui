@@ -691,9 +691,13 @@ describe('legacy-only regression', () => {
 
   test("keeps every one of this repository's numeric ADRs in the pre-change order", async () => {
     const repo_root = process.cwd();
-    const adr_files = (
-      await fs.readdir(path.join(repo_root, 'docs/adr'))
-    ).filter((name) => /^\d{4}-.*\.md$/.test(name));
+    const adr_dir = path.join(repo_root, 'docs/adr');
+    const history_names = await fs
+      .readdir(path.join(adr_dir, 'history'))
+      .catch(() => /** @type {string[]} */ ([]));
+    const adr_files = [...(await fs.readdir(adr_dir)), ...history_names].filter(
+      (name) => /^\d{4}-.*\.md$/.test(name)
+    );
 
     const result = await signals().computeWorkspace(repo_root, { full: true });
 

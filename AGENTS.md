@@ -11,7 +11,7 @@
   `CHANGES.md`는 갱신하지 않는다.
 - 이 저장소가 읽고 표시하는 workflow 계약 표면(라벨·metadata 키·`status` 어휘)의
   정본은 dotfiles
-  `docs/contracts/workflow-contract.md`/`workflow-state.yaml`이다(ADR 0012).
+  `docs/contracts/workflow-contract.md`/`workflow-state.yaml`이다(ADR UI-u6ud-2).
   beads-ui는 소비자이며 정의자가 아니다 — 계약 키 부재를 관측하면 표시를
   생략(fail-quiet)하고 계약 쪽 정정을 별도로 제기한다.
 
@@ -32,8 +32,8 @@
 `docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md`(§2 줄
 순서, §5.1 슬롯 표), `2026-08-28-chip-grammar-unify-design.md`(칩 클릭 의미),
 `2026-09-02-worker-operation-surface-unify-design.md`(§3.2 `.op-btn`). 슬롯이
-없는 새 라벨·칩·버튼은 스펙을 먼저 갱신해 슬롯을 정한 뒤 단다(ADR 0014). 재료가
-없는 줄은 그리지 않는다(fail-quiet).
+없는 새 라벨·칩·버튼은 스펙을 먼저 갱신해 슬롯을 정한 뒤 단다(ADR UI-u6ud-8).
+재료가 없는 줄은 그리지 않는다(fail-quiet).
 
 - 공급자 보류의 해제는 프로브가 판정하고 `↻ 지금 프로브`는 그 판정을 앞당기는
   조작이다 — 카드 위의 조작은 target을 지우지 않는다
@@ -75,7 +75,7 @@
 ## Post-Merge Runtime Validation
 
 - 머지는 완료가 아니다: 이 저장소는 공유 서비스 배포까지 마쳐야 완료다. 배포
-  선언은 핀된 base SHA의 `repo-ops/config.toml` `[deploy]`(ADR 0010)이고,
+  선언은 핀된 base SHA의 `repo-ops/config.toml` `[deploy]`(ADR UI-u6ud-5)이고,
   Worker가 추적하는 Bead PR 머지는 관측 후 Worker가 배포·정리한다. 실패
   사다리·자동 처리 범위의 정본은 dotfiles이며 이 저장소는 핀 사본
   `generated/contracts/repo-operation-policy.json`만 읽는다.
@@ -90,7 +90,7 @@
 ## GitHub Actions
 
 - `.github/workflows/`는 비어 있고 재추가하면 테스트가 실패한다. 머지 자격은
-  checks를 보지 않는다(ADR 0003) — `gh pr checks`를 호출하지 않는다.
+  checks를 보지 않는다(ADR UI-u6ud-3) — `gh pr checks`를 호출하지 않는다.
 - 머지 전 검증은 Pre-Handoff Validation이 맡고,
   `[verify]`(`repo-ops/script/verify`)는 머지 직전 candidate에서 도는 별개
   안전망이다.
