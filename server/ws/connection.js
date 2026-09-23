@@ -244,6 +244,10 @@ export function attachWsServer(http_server, options = {}) {
   const wss = new WebSocketServer({
     server: http_server,
     path: ws_path,
+    // `ws` applies `threshold` only without context takeover, so both are set:
+    // small frames (session-log lines) stay uncompressed while snapshots are
+    // deflated for clients that negotiate the extension (UI-j2h3 §4.5).
+    perMessageDeflate: { serverNoContextTakeover: true, threshold: 1024 },
     verifyClient: (info, cb) => {
       // Pass the request Host so a same-origin browser socket (page served by
       // this very server, e.g. the tailscale-IP deployment) is accepted.

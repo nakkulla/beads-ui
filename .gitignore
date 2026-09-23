@@ -21,3 +21,6 @@ tsconfig.tsbuildinfo
 # Frontend build output — deploy, verify and prepack build it (UI-47y7)
 app/main.bundle.js
 app/main.bundle.js.map
+
+# Pre-compressed static assets written by npm run build (UI-j2h3)
+app/**/*.gz

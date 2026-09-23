@@ -8,9 +8,11 @@
  * 계열을 묻지 않는다.
  *
  * 서버에는 다중 저장소 op가 없다. 이 모듈은 선택한 저장소마다 기존 단일 저장소
- * op를 **순차**로 보내고 저장소별 결과를 모은다. 병렬로 보내면 서버의 kv 쓰기와
- * 모니터 재빌드가 뒤섞이고 revision 충돌을 뒤늦게 발견한다. 렌더·전송·채택은
- * 일괄 pane이 소유하고 이 모듈은 순수하다.
+ * op를 보내되 저장소 사이는 동시 상한 `BULK_PARALLEL` 안에서 병렬로 보내고
+ * (UI-j2h3 §4.4), 저장소 안의 요청은 지금처럼 순서대로 보낸다. 병렬이 안전한
+ * 이유: 큐 revision은 저장소별로 독립이고, 프리셋 store revision은 apply가 바꾸지
+ * 않으며, 모니터 재빌드는 1초 디바운스로 합쳐지고, 같은 저장소의 bd 호출은 서버
+ * 레인이 직렬화한다. 렌더·전송·채택은 일괄 pane이 소유하고 이 모듈은 순수하다.
  *
  * 경로는 둘이다. 폼이 고른 프리셋과 똑같으면 `apply-impl-preset-global` 한 번
  * (큐에 프리셋 기록이 선다), 그 밖에는 `set-session-defaults`와
@@ -308,13 +310,100 @@ export function retryRootsOf(results) {
     .map((result) => result.root_dir);
 }
 
+/** 저장소 사이 동시 적용 상한 (UI-j2h3 §4.4). */
+export const BULK_PARALLEL = 4;
+
 /**
- * Sequential 적용 — 선택한 저장소마다 그 저장소의 경로를 한 번씩 돈다.
+ * @typedef {Object} TargetOutcome
+ * @property {BulkResult} result
+ * @property {boolean} stopped - 아직 시작하지 않은 대상을 `skipped`로 둘지.
+ * @property {boolean} cancelled - 진행 중 취소를 관측했으면 `true`.
+ */
+
+/**
+ * Bounded 병렬 실행 — 대상들을 동시 상한 `BULK_PARALLEL` 안에서 병렬로 돈다 (UI-j2h3 §4.4).
+ *
+ * 결과는 대상 순서로 모으고 `onProgress`는 대상 하나가 끝날 때마다 `done`을
+ * 올린다. `stopped`가 오면 아직 시작하지 않은 대상만 `skipped`가 되고, 취소는
+ * 아직 시작하지 않은 대상을 보내지 않는다 — 진행 중인 저장소는 `runOne`이 요청
+ * 사이마다 취소를 확인해 스스로 멈춘다.
+ *
+ * @template T
+ * @param {Object} input
+ * @param {T[]} input.targets
+ * @param {(target: T) => BulkResult} input.skippedResult
+ * @param {(target: T) => Promise<TargetOutcome>} input.runOne
+ * @param {(progress: { done: number, total: number, results: BulkResult[] }) => void} [input.onProgress]
+ * @param {() => boolean} [input.isCancelled]
+ * @returns {Promise<BulkResult[]>} 시작한 대상의 `BulkResult`, 대상 순서.
+ */
+export async function runBulkTargets({
+  targets,
+  skippedResult,
+  runOne,
+  onProgress,
+  isCancelled
+}) {
+  /** @type {Array<BulkResult|undefined>} */
+  const slots = new Array(targets.length).fill(undefined);
+  const total = targets.length;
+  let next_index = 0;
+  let done = 0;
+  let stopped = false;
+  let cancelled = false;
+
+  /** @returns {BulkResult[]} */
+  const ordered = () =>
+    /** @type {BulkResult[]} */ (slots.filter((slot) => slot !== undefined));
+
+  /**
+   * @param {number} index
+   * @param {BulkResult} result
+   */
+  const settle = (index, result) => {
+    slots[index] = result;
+    done += 1;
+    onProgress?.({ done, total, results: ordered() });
+  };
+
+  const drain = async () => {
+    while (next_index < targets.length) {
+      if (cancelled || isCancelled?.() === true) {
+        cancelled = true;
+        return;
+      }
+      const index = next_index;
+      next_index += 1;
+      const target = targets[index];
+      if (stopped) {
+        settle(index, skippedResult(target));
+        continue;
+      }
+      const outcome = await runOne(target);
+      settle(index, outcome.result);
+      if (outcome.cancelled) {
+        cancelled = true;
+      }
+      if (outcome.stopped) {
+        stopped = true;
+      }
+    }
+  };
+
+  const lanes = Math.min(BULK_PARALLEL, targets.length);
+  await Promise.all(Array.from({ length: lanes }, () => drain()));
+  return ordered();
+}
+
+/**
+ * Parallel 적용 — 선택한 저장소마다 그 저장소의 경로를 한 번씩 돈다. 저장소 사이는
+ * {@link runBulkTargets}가 동시 상한 안에서 병렬로 보낸다.
  *
  * 응답 `queue`는 성공·실패와 무관하게 즉시 `adopt`한다 — 그 저장소의 다음
  * 계획이 읽는 revision이 최신이 된다. 큐 미적용이면 응답 revision으로 **한 번만**
- * 다시 보내고, 프리셋 revision 충돌(`conflict:true`)이면 남은 대상을 `skipped`로
- * 두고 멈춘다 — 바뀐 프리셋을 다시 읽은 뒤 사용자가 다시 적용해야 한다.
+ * 다시 보내고, 프리셋 revision 충돌(`conflict:true`)이면 아직 시작하지 않은
+ * 대상을 `skipped`로 두고 멈춘다 — 바뀐 프리셋을 다시 읽은 뒤 사용자가 다시
+ * 적용해야 한다.
  *
  * @param {Object} input
  * @param {BulkTarget[]} input.targets
@@ -324,43 +413,28 @@ export function retryRootsOf(results) {
  * @param {() => boolean} [input.isCancelled] - `true`면 남은 대상을 보내지 않는다.
  * @returns {Promise<BulkResult[]>}
  */
-export async function runBulkApply({
+export function runBulkApply({
   targets,
   send,
   adopt,
   onProgress,
   isCancelled
 }) {
-  /** @type {BulkResult[]} */
-  const results = [];
-  const total = targets.length;
-  let stopped = false;
-  for (const target of targets) {
-    if (isCancelled?.() === true) {
-      return results;
-    }
-    if (stopped) {
-      results.push({
-        root_dir: target.root_dir,
-        name: target.name,
-        state: 'skipped',
-        detail: ''
-      });
-      onProgress?.({ done: results.length, total, results });
-      continue;
-    }
-    const outcome =
+  return runBulkTargets({
+    targets,
+    skippedResult: (target) => ({
+      root_dir: target.root_dir,
+      name: target.name,
+      state: 'skipped',
+      detail: ''
+    }),
+    runOne: (target) =>
       target.mode === 'form'
-        ? await runFormTarget(target, send, adopt, isCancelled)
-        : await runPresetTarget(target, send, adopt, isCancelled);
-    results.push(outcome.result);
-    onProgress?.({ done: results.length, total, results });
-    if (outcome.cancelled) {
-      return results;
-    }
-    stopped = outcome.stopped;
-  }
-  return results;
+        ? runFormTarget(target, send, adopt, isCancelled)
+        : runPresetTarget(target, send, adopt, isCancelled),
+    onProgress,
+    isCancelled
+  });
 }
 
 /**

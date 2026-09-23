@@ -1,10 +1,13 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
+  ACCOUNTS_OP,
   CATALOG_REASON,
+  LIMIT_POLICY_OP,
   formatBulkResult,
   planBulkAccountApply,
   runBulkAccountApply
 } from './bulk-account-apply.js';
+import { BULK_PARALLEL } from './bulk-preset-apply.js';
 
 /**
  * @param {Partial<Record<string, any>>} overrides
@@ -268,7 +271,7 @@ describe('runBulkAccountApply', () => {
     expect(send.mock.calls[2][1].runner).toBe('codex');
   });
 
-  test('sends for each repo in order', async () => {
+  test('keeps the request order inside each repo', async () => {
     const send = vi
       .fn()
       .mockResolvedValue({ applied: true, queue: { revision: 2 } });
@@ -276,15 +279,75 @@ describe('runBulkAccountApply', () => {
 
     await runBulkAccountApply({ targets, send, adopt: vi.fn() });
 
-    const roots = send.mock.calls.map((call) => call[1].root_dir);
-    expect(roots).toEqual([
-      '/repo/a',
-      '/repo/a',
-      '/repo/a',
-      '/repo/b',
-      '/repo/b',
-      '/repo/b'
+    const types_for = (/** @type {string} */ root) =>
+      send.mock.calls
+        .filter((call) => call[1].root_dir === root)
+        .map((call) => call[0]);
+    expect([types_for('/repo/a'), types_for('/repo/b')]).toEqual([
+      [ACCOUNTS_OP, LIMIT_POLICY_OP, LIMIT_POLICY_OP],
+      [ACCOUNTS_OP, LIMIT_POLICY_OP, LIMIT_POLICY_OP]
     ]);
+  });
+
+  test('keeps at most BULK_PARALLEL repos in flight', async () => {
+    let active = 0;
+    let max_active = 0;
+    const send = vi.fn(async () => {
+      active += 1;
+      max_active = Math.max(max_active, active);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      active -= 1;
+      return { applied: true, queue: { revision: 2 } };
+    });
+    const targets = [1, 2, 3, 4, 5, 6].map((n) => target(`/repo/${n}`, `${n}`));
+
+    await runBulkAccountApply({ targets, send, adopt: vi.fn() });
+
+    expect(max_active).toBe(BULK_PARALLEL);
+  });
+
+  test('returns results in target order when later repos finish first', async () => {
+    const send = vi.fn(async (_type, payload) => {
+      const delay = payload.root_dir === '/repo/a' ? 5 : 0;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return payload.root_dir === '/repo/a'
+        ? { error: '거부됨' }
+        : { applied: true, queue: { revision: 2 } };
+    });
+    const targets = [target('/repo/a', 'a'), target('/repo/b', 'b')];
+
+    const results = await runBulkAccountApply({
+      targets,
+      send,
+      adopt: vi.fn()
+    });
+
+    expect(results.map((result) => [result.root_dir, result.state])).toEqual([
+      ['/repo/a', 'failed'],
+      ['/repo/b', 'applied']
+    ]);
+  });
+
+  test('sends nothing to repos not yet started once cancelled', async () => {
+    let cancelled = false;
+    const send = vi.fn(async () => {
+      await Promise.resolve();
+      cancelled = true;
+      return { applied: true, queue: { revision: 2 } };
+    });
+    const targets = [1, 2, 3, 4, 5, 6].map((n) => target(`/repo/${n}`, `${n}`));
+
+    await runBulkAccountApply({
+      targets,
+      send,
+      adopt: vi.fn(),
+      isCancelled: () => cancelled
+    });
+
+    const roots = new Set(
+      send.mock.calls.map((/** @type {any[]} */ call) => call[1].root_dir)
+    );
+    expect(roots.size).toBe(BULK_PARALLEL);
   });
 
   test('marks a repo failed with zero policy requests on an account error response', async () => {

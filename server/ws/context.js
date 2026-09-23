@@ -6,6 +6,7 @@ import { requireBdJsonCapabilityForWorkspace } from '../bd-effect-gate.js';
 import {
   getGitUserName,
   kvGetJson,
+  kvListJson,
   kvSetJson,
   runBd,
   runBdJsonProjected
@@ -251,6 +252,16 @@ export function readbackFailureDetail(reason) {
  */
 export function kvGetJsonAtRoot(root_dir, key) {
   return root_dir ? kvGetJson(key, { cwd: root_dir }) : kvGetJson(key);
+}
+
+/**
+ * Read every `bd kv` entry of an EXPLICIT workspace root in one call.
+ *
+ * @param {string|null|undefined} root_dir
+ * @returns {ReturnType<typeof kvListJson>}
+ */
+export function kvListJsonAtRoot(root_dir) {
+  return root_dir ? kvListJson({ cwd: root_dir }) : kvListJson();
 }
 
 /**

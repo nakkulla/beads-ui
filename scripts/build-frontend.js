@@ -5,12 +5,14 @@
  * - Produces `app/main.bundle.js` with an external source map.
  * - Minifies in production builds.
  * - Keeps ESM output targeting modern browsers.
+ * - Writes a gzip `<file>.gz` next to every `.js`/`.css` under `app/`.
  *
  * @import { BuildOptions } from 'esbuild'
  */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import zlib from 'node:zlib';
 import { debug } from '../server/logging.js';
 
 /**
@@ -65,6 +67,43 @@ export function normalizeSourceMapFile(map_path) {
 }
 
 /**
+ * Pre-compress every `.js`/`.css` file under `dir` (recursively, test files
+ * excluded) into a `<file>.gz` sibling, so the server can answer gzip requests
+ * without compressing per request (UI-j2h3 §4.5). The file set is discovered at
+ * build time rather than listed, so renamed or split stylesheets stay covered.
+ *
+ * @param {string} dir
+ * @returns {string[]} absolute paths of the written `.gz` files
+ */
+export function writeGzipAssets(dir) {
+  /** @type {string[]} */
+  const written = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const entry_path = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules') {
+        continue;
+      }
+      written.push(...writeGzipAssets(entry_path));
+      continue;
+    }
+    if (!entry.isFile() || !/\.(?:js|css)$/.test(entry.name)) {
+      continue;
+    }
+    if (entry.name.endsWith('.test.js')) {
+      continue;
+    }
+    const gz_path = `${entry_path}.gz`;
+    writeFileSync(
+      gz_path,
+      zlib.gzipSync(readFileSync(entry_path), { level: 9 })
+    );
+    written.push(gz_path);
+  }
+  return written;
+}
+
+/**
  * Build frontend bundle to `app/main.bundle.js` using esbuild.
  */
 async function run() {
@@ -85,6 +124,8 @@ async function run() {
     const esbuild = await import('esbuild');
     await esbuild.build(options);
     normalizeSourceMapFile(`${outfile}.map`);
+    const gz_files = writeGzipAssets(app_dir);
+    log('wrote %d gzip assets', gz_files.length);
     log('built %s', path.relative(repo_root, outfile));
   } catch (err) {
     log('bundle error %o', err);

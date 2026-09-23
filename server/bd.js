@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 import {
   recordBdProtocolObservation,
   resolveBdWorkspaceIdentity
@@ -33,8 +34,29 @@ import { debug } from './logging.js';
  */
 
 const log = debug('bd');
-/** @type {Promise<void>} */
-let bd_run_queue = Promise.resolve();
+const DEFAULT_BD_CONCURRENCY = 4;
+/** @type {Map<string, Promise<void>>} */
+const bd_run_lanes = new Map();
+/** @type {Array<() => void>} */
+const bd_semaphore_waiters = [];
+let bd_semaphore_active = 0;
+
+/**
+ * Resolve the global bd process limit from `BDUI_BD_CONCURRENCY`.
+ *
+ * @returns {number}
+ */
+function bdConcurrencyLimit() {
+  const raw = process.env.BDUI_BD_CONCURRENCY;
+  if (raw === undefined || !/^\d+$/.test(raw.trim())) {
+    return DEFAULT_BD_CONCURRENCY;
+  }
+  const value = Number.parseInt(raw.trim(), 10);
+  if (!Number.isSafeInteger(value) || value < 1) {
+    return DEFAULT_BD_CONCURRENCY;
+  }
+  return value;
+}
 
 /**
  * Get the git user name from git config.
@@ -91,7 +113,8 @@ export function getBdBin() {
  * @returns {Promise<{ code: number, stdout: string, stderr: string, timed_out?: boolean }>}
  */
 export function runBd(args, options = {}) {
-  return withBdRunQueue(async () => runBdUnlocked(args, options));
+  const lane_key = path.resolve(options.cwd || process.cwd());
+  return withBdRunLane(lane_key, async () => runBdUnlocked(args, options));
 }
 
 /**
@@ -225,27 +248,71 @@ function buildBdArgs(args, options = {}) {
 }
 
 /**
- * Serialize `bd` invocations.
+ * Serialize `bd` invocations per workspace lane.
  * Dolt embedded mode can crash when multiple `bd` processes run concurrently
  * against the same workspace.
  *
+ * The lane is the workspace (the resolved cwd): that crash only concerns
+ * processes sharing one workspace, so calls within a lane stay strictly
+ * serial and ordered, while different workspaces run in parallel under a
+ * global process limit. The lane is acquired before the global slot, so one
+ * busy workspace can hold at most one slot. The registry backend mode is not
+ * read, which keeps an embedded workspace safe as well.
+ *
  * @template T
+ * @param {string} lane_key
  * @param {() => Promise<T>} operation
  * @returns {Promise<T>}
  */
-async function withBdRunQueue(operation) {
-  const previous = bd_run_queue;
+async function withBdRunLane(lane_key, operation) {
+  const previous = bd_run_lanes.get(lane_key) || Promise.resolve();
   /** @type {() => void} */
-  let release = () => {};
-  bd_run_queue = new Promise((resolve) => {
-    release = resolve;
+  let release_lane = () => {};
+  const current = new Promise((resolve) => {
+    release_lane = () => resolve(undefined);
   });
+  const tail = previous.then(() => current);
+  bd_run_lanes.set(lane_key, tail);
 
-  await previous.catch(() => {});
+  await previous;
+  await acquireBdSlot();
   try {
     return await operation();
   } finally {
-    release();
+    releaseBdSlot();
+    release_lane();
+    if (bd_run_lanes.get(lane_key) === tail) {
+      bd_run_lanes.delete(lane_key);
+    }
+  }
+}
+
+/**
+ * Wait for a free global bd process slot (FIFO).
+ *
+ * @returns {Promise<void>}
+ */
+function acquireBdSlot() {
+  if (bd_semaphore_active < bdConcurrencyLimit()) {
+    bd_semaphore_active += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    bd_semaphore_waiters.push(() => {
+      bd_semaphore_active += 1;
+      resolve();
+    });
+  });
+}
+
+/**
+ * Release one global bd process slot and wake the next waiter.
+ */
+function releaseBdSlot() {
+  bd_semaphore_active -= 1;
+  const next = bd_semaphore_waiters.shift();
+  if (next) {
+    next();
   }
 }
 
@@ -662,19 +729,29 @@ export async function kvGetJson(key, options = {}) {
     return cliFailure();
   }
 
-  const raw_value = record.value;
+  return decodeKvValue(record.value);
+}
+
+/**
+ * Decode one stored `bd kv` value string into a KvGetResult.
+ *
+ * Shared by kvGetJson and kvListJson so both read paths judge a value the
+ * same way: an empty string is a found-but-empty layer, a non-object or
+ * unparsable value is skipped with the `kv_value_unparsable` warning.
+ *
+ * @param {unknown} raw_value
+ * @returns {KvGetResult}
+ */
+export function decodeKvValue(raw_value) {
   if (typeof raw_value !== 'string' || raw_value.length === 0) {
     return { ok: true, found: true, value: undefined };
   }
-  // From here the record itself is well formed; only its stored VALUE can be
-  // unusable, which is the one case the workspace-defaults layer skips with a
-  // warning rather than failing the read.
   /** @type {unknown} */
   let decoded;
   try {
     decoded = JSON.parse(raw_value);
   } catch {
-    log('bd kv value is not JSON (key=%s)', key);
+    log('bd kv value is not JSON');
     return {
       ok: true,
       found: true,
@@ -695,6 +772,140 @@ export async function kvGetJson(key, options = {}) {
     found: true,
     value: /** @type {Record<string, unknown>} */ (decoded)
   };
+}
+
+/**
+ * @typedef {{ ok: true, entries: Record<string, KvGetResult> } | { ok: false, error: string }} KvListResult
+ */
+
+/**
+ * Read every `bd kv` entry of a workspace with one `bd kv list --json`.
+ *
+ * Stored keys are arbitrary strings (a key named `data` is possible), so the
+ * generic transport normalizer is not used. The payload is an envelope only
+ * when it has exactly an object-valued `data` and an integer
+ * `schema_version`; otherwise the top-level object itself is the listing.
+ * Listing values are always strings, so a string `data` is a stored key.
+ *
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number }} [options]
+ * @returns {Promise<KvListResult>}
+ */
+export async function kvListJson(options = {}) {
+  const result = await runBd(['kv', 'list', '--json'], options);
+  if (result.code !== 0) {
+    return {
+      ok: false,
+      error: stderrTail(result.stderr) || `bd kv list exited ${result.code}`
+    };
+  }
+  const workspace_key = observationWorkspaceKey('kv', options.cwd);
+
+  /**
+   * Record the protocol observation and return the failure.
+   *
+   * @param {{ ok: false, error: BdJsonError }} failure
+   * @returns {KvListResult}
+   */
+  const protocolFailure = (failure) => {
+    log('bd kv list protocol failure: %s', failure.error.code);
+    recordBdProtocolObservation({
+      workspace_key,
+      command_family: 'kv',
+      result: failure
+    });
+    return { ok: false, error: failure.error.code };
+  };
+
+  /** @type {unknown} */
+  let payload;
+  try {
+    payload = JSON.parse(result.stdout || 'null');
+  } catch {
+    return protocolFailure(
+      bdJsonFailure(BD_JSON_INVALID, 'bd kv list returned invalid JSON', {
+        command_family: 'kv'
+      })
+    );
+  }
+  if (!isPlainObject(payload)) {
+    return protocolFailure(
+      bdJsonFailure(
+        BD_JSON_SHAPE_INVALID,
+        'bd kv list payload is not an object',
+        {
+          command_family: 'kv',
+          expected: 'object',
+          actual: describeJsonType(payload)
+        }
+      )
+    );
+  }
+
+  /** @type {Record<string, unknown>} */
+  let listing = payload;
+  const keys = Object.keys(payload);
+  if (
+    isPlainObject(payload.data) &&
+    Number.isInteger(payload.schema_version) &&
+    keys.every((key) => key === 'data' || key === 'schema_version')
+  ) {
+    listing = /** @type {Record<string, unknown>} */ (payload.data);
+  }
+
+  // Stored keys are arbitrary strings: a null prototype keeps a key such as
+  // `__proto__` as an own entry instead of a prototype assignment.
+  /** @type {Record<string, KvGetResult>} */
+  const entries = Object.create(null);
+  for (const [key, raw_value] of Object.entries(listing)) {
+    if (key === 'schema_version') {
+      continue;
+    }
+    if (typeof raw_value !== 'string') {
+      return protocolFailure(
+        bdJsonFailure(
+          BD_JSON_SHAPE_INVALID,
+          'bd kv list entry value is not a string',
+          {
+            command_family: 'kv',
+            expected: 'string',
+            actual: describeJsonType(raw_value)
+          }
+        )
+      );
+    }
+    entries[key] = decodeKvValue(raw_value);
+  }
+
+  recordBdProtocolObservation({
+    workspace_key,
+    command_family: 'kv',
+    result: { ok: true }
+  });
+  return { ok: true, entries };
+}
+
+/**
+ * Look up one key of a kvListJson listing as a KvGetResult.
+ *
+ * @param {Record<string, KvGetResult>} entries
+ * @param {string} key
+ * @returns {KvGetResult}
+ */
+export function entryFor(entries, key) {
+  if (Object.prototype.hasOwnProperty.call(entries, key)) {
+    return entries[key];
+  }
+  return { ok: true, found: false, value: undefined };
+}
+
+/**
+ * Check for a non-null, non-array object.
+ *
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /**

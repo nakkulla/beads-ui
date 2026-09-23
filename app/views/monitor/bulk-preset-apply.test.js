@@ -5,6 +5,7 @@ import {
   presetKvKeysFor
 } from '../settings-dialog/session-model.js';
 import {
+  BULK_PARALLEL,
   defaultSelectedRoots,
   formatBulkResult,
   planBulkApply,
@@ -526,30 +527,118 @@ describe('runBulkApply preset path', () => {
     expect(results[0].state).toBe('failed');
   });
 
-  test('stops remaining targets as skipped on a preset conflict', async () => {
-    const send = vi.fn().mockResolvedValue({ applied: false, conflict: true });
-    const targets = [
-      target('/repo/a', 'a', 1),
-      target('/repo/b', 'b', 1),
-      target('/repo/c', 'c', 1)
-    ];
+  test('marks only targets not yet started as skipped on a preset conflict', async () => {
+    const send = vi.fn(async (_type, payload) =>
+      payload.root_dir === '/repo/a'
+        ? { applied: false, conflict: true }
+        : { applied: true, queue_applied: true }
+    );
+    const targets = ['a', 'b', 'c', 'd', 'e'].map((n) =>
+      target(`/repo/${n}`, n, 1)
+    );
 
     const results = await runBulkApply({ targets, send, adopt: vi.fn() });
 
     expect(results.map((result) => result.state)).toEqual([
       'failed',
-      'skipped',
+      'applied',
+      'applied',
+      'applied',
       'skipped'
     ]);
   });
 
-  test('sends nothing further after a preset conflict stops the run', async () => {
+  test('sends nothing to targets not yet started after a preset conflict', async () => {
     const send = vi.fn().mockResolvedValue({ applied: false, conflict: true });
-    const targets = [target('/repo/a', 'a', 1), target('/repo/b', 'b', 1)];
+    const targets = ['a', 'b', 'c', 'd', 'e', 'f'].map((n) =>
+      target(`/repo/${n}`, n, 1)
+    );
 
     await runBulkApply({ targets, send, adopt: vi.fn() });
 
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(BULK_PARALLEL);
+  });
+
+  test('keeps at most BULK_PARALLEL targets in flight', async () => {
+    let active = 0;
+    let max_active = 0;
+    const send = vi.fn(async () => {
+      active += 1;
+      max_active = Math.max(max_active, active);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      active -= 1;
+      return { applied: true, queue_applied: true };
+    });
+    const targets = [1, 2, 3, 4, 5, 6].map((n) =>
+      target(`/repo/${n}`, `${n}`, 1)
+    );
+
+    await runBulkApply({ targets, send, adopt: vi.fn() });
+
+    expect(max_active).toBe(BULK_PARALLEL);
+  });
+
+  test('returns results in target order when later targets finish first', async () => {
+    const send = vi.fn(async (_type, payload) => {
+      const delay = payload.root_dir === '/repo/a' ? 5 : 0;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return payload.root_dir === '/repo/a'
+        ? { error: '거부됨' }
+        : { applied: true, queue_applied: true };
+    });
+    const targets = [target('/repo/a', 'a', 1), target('/repo/b', 'b', 1)];
+
+    const results = await runBulkApply({ targets, send, adopt: vi.fn() });
+
+    expect(results.map((result) => [result.root_dir, result.state])).toEqual([
+      ['/repo/a', 'failed'],
+      ['/repo/b', 'applied']
+    ]);
+  });
+
+  test('raises done once per finished target', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValue({ applied: true, queue_applied: true });
+    const targets = [1, 2, 3, 4, 5].map((n) => target(`/repo/${n}`, `${n}`, 1));
+    /** @type {number[]} */
+    const dones = [];
+
+    await runBulkApply({
+      targets,
+      send,
+      adopt: vi.fn(),
+      onProgress: (progress) => dones.push(progress.done)
+    });
+
+    expect(dones).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  test('sends nothing to targets not yet started once cancelled and stops started ones as partial', async () => {
+    let cancelled = false;
+    const send = vi.fn(async () => {
+      await Promise.resolve();
+      cancelled = true;
+      return { applied: true, queue_applied: false, queue: { revision: 4 } };
+    });
+    const targets = [1, 2, 3, 4, 5, 6].map((n) =>
+      target(`/repo/${n}`, `${n}`, 1)
+    );
+
+    const results = await runBulkApply({
+      targets,
+      send,
+      adopt: vi.fn(),
+      isCancelled: () => cancelled
+    });
+
+    expect(send).toHaveBeenCalledTimes(BULK_PARALLEL);
+    expect(results.map((result) => result.state)).toEqual([
+      'partial',
+      'partial',
+      'partial',
+      'partial'
+    ]);
   });
 
   test('marks a repo failed on a thrown send and continues to the next target', async () => {
@@ -621,21 +710,22 @@ describe('runBulkApply preset path', () => {
 
 describe('runBulkApply form path (UI-628r §4.2)', () => {
   test('sends the kv write before the queue write for each repo', async () => {
-    const send = vi
-      .fn()
-      .mockResolvedValueOnce(KV_OK)
-      .mockResolvedValueOnce({ applied: true, queue: { revision: 2 } })
-      .mockResolvedValueOnce(KV_OK)
-      .mockResolvedValueOnce({ applied: true, queue: { revision: 2 } });
+    const send = vi.fn(async (type) =>
+      type === 'set-session-defaults'
+        ? KV_OK
+        : { applied: true, queue: { revision: 2 } }
+    );
     const targets = [formTarget('/repo/a', 'a'), formTarget('/repo/b', 'b')];
 
     await runBulkApply({ targets, send, adopt: vi.fn() });
 
-    expect(send.mock.calls.map((call) => [call[0], call[1].root_dir])).toEqual([
-      ['set-session-defaults', '/repo/a'],
-      ['worker-queue-set-orchestration-defaults', '/repo/a'],
-      ['set-session-defaults', '/repo/b'],
-      ['worker-queue-set-orchestration-defaults', '/repo/b']
+    const types_for = (/** @type {string} */ root) =>
+      send.mock.calls
+        .filter((/** @type {any[]} */ call) => call[1].root_dir === root)
+        .map((/** @type {any[]} */ call) => call[0]);
+    expect([types_for('/repo/a'), types_for('/repo/b')]).toEqual([
+      ['set-session-defaults', 'worker-queue-set-orchestration-defaults'],
+      ['set-session-defaults', 'worker-queue-set-orchestration-defaults']
     ]);
   });
 
