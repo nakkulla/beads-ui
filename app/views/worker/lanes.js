@@ -4247,9 +4247,17 @@ export function candidateCard(item, place_menu = null, options = {}) {
         </div>`
       : ''}
     ${is_deferred
-      ? item.reason
-        ? html`<div class="worker-card__foot">
-            <span class="worker-card__reason">${item.reason}</span>
+      ? // 보류 변형에도 외부 대기 조작은 foot이다 (UI-l48z §4.3): 보류가 관찰을
+        // 멈추지 않으므로 확인·중단·재개 출구가 카드에서 사라지면 안 된다.
+        item.reason || external.badge
+        ? html`<div
+            class="worker-card__foot${item.reason
+              ? ''
+              : ' worker-card__foot--actions-only'}"
+          >
+            ${item.reason
+              ? html`<span class="worker-card__reason">${item.reason}</span>`
+              : ''}${external.badge ? external.actions : ''}
           </div>`
         : ''
       : html`<div

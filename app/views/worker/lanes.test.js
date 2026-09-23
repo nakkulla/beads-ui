@@ -1125,6 +1125,38 @@ describe('external wait operations sit in slot six (UI-l48z §4.3)', () => {
     ).toHaveLength(2);
   });
 
+  test('draws the external operations in the deferred-variant foot', () => {
+    render(
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'UI-d2',
+          title: '보류 외부 대기',
+          lane: 'candidate',
+          draggable: false,
+          queue_placeable: false,
+          external_wait: externalWait({ stage: 'completing' }),
+          wait_reasons: [
+            waitReason({ kind: 'external_job', actions: externalActions() })
+          ]
+        }),
+        null,
+        { variant: 'deferred' }
+      ),
+      mount
+    );
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card')
+    );
+
+    expect(card.classList.contains('worker-card--deferred')).toBe(true);
+    expect(
+      card.querySelectorAll('.worker-card__foot [data-external-wait-op]')
+    ).toHaveLength(2);
+    expect(
+      card.querySelector('.worker-card__head [data-external-wait-op]')
+    ).toBeNull();
+  });
+
   test('drops the queue placement button from an external wait candidate', () => {
     const card = renderCandidate({
       external_wait: externalWait(),
