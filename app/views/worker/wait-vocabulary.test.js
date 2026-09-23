@@ -30,18 +30,20 @@ describe('wait vocabulary table', () => {
     ]);
   });
 
-  test('names the external job exits by their stage labels (UI-l48z §4.3)', () => {
+  test('names the external job exits by their stage labels (UI-r6xq §4.5)', () => {
     const row = WAIT_KINDS.find((entry) => entry.id === 'external_job');
 
     expect(row?.action).toBe(
-      '[지금 확인] · [관찰 중단]/[대기 해제] · [워커로 이어가기] · 재개 실패 시 [새 세션으로]'
+      '[지금 확인] · [관찰 중단] · [세션에서 이어가기] · [워커로 이어가기] · 재개 실패 시 [새 세션으로] · 상세의 [대기 해제]'
     );
   });
 
-  test('points the external job release at the worker fork label', () => {
+  test('points the external job release at both resume exits', () => {
     const row = WAIT_KINDS.find((entry) => entry.id === 'external_job');
 
-    expect(row?.release).toContain('[워커로 이어가기]');
+    expect(row?.release).toBe(
+      '완료되면 같은 세션을 이어간다 · 사용자 세션은 [세션에서 이어가기] 또는 [워커로 이어가기]'
+    );
   });
 
   test('gives every row a scope, a glyph string and the release sentence', () => {

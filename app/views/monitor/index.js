@@ -34,6 +34,7 @@ import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { watchMobile } from '../../utils/viewport.js';
 import { createChipPopover } from '../chip-popover.js';
+import { runExternalWaitAction } from '../worker/external-wait-action.js';
 import { createLaneCollapse } from '../worker/lane-collapse.js';
 import { createLaneDrag } from '../worker/lane-drag.js';
 import {
@@ -351,7 +352,6 @@ export function createMonitorView(mount_element, options) {
   async function applyExternalWaitAction(button) {
     const root_dir = button.dataset.rootDir || '';
     const wait_id = button.dataset.waitId || '';
-    const op = button.dataset.externalWaitOp || '';
     const key = `${root_dir}:${wait_id}`;
     if (!transport || !root_dir || !wait_id || external_actions.has(key)) {
       return;
@@ -359,24 +359,15 @@ export function createMonitorView(mount_element, options) {
     external_actions.add(key);
     syncExternalChecks();
     try {
-      const res = await transport(op, {
-        root_dir,
-        wait_id,
-        ...(button.dataset.mode ? { mode: button.dataset.mode } : {}),
-        ...(button.dataset.beadId ? { bead_id: button.dataset.beadId } : {})
+      await runExternalWaitAction(button, {
+        transport,
+        confirm: confirmFn,
+        adopt: (res) => {
+          if (res?.queue) {
+            exec_adopted.set(root_dir, res.queue);
+          }
+        }
       });
-      if (res?.queue) {
-        exec_adopted.set(root_dir, res.queue);
-      }
-      showToast(
-        res?.ok === false
-          ? '외부 작업 요청에 실패했습니다'
-          : '외부 작업 상태를 갱신했습니다',
-        res?.ok === false ? 'error' : 'success',
-        4000
-      );
-    } catch {
-      showToast('외부 작업 요청에 실패했습니다', 'error', 4000);
     } finally {
       external_actions.delete(key);
       syncExternalChecks();
