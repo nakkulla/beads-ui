@@ -23,7 +23,7 @@ scope:
 
 ## 1. 요구와 확인한 현재 동작
 
-UI-z437(2026-09-21-external-wait-same-bead-fork-resume-design.md, ADR은 UI-a5l2-2가
+UI-z437(2026-09-21-external-wait-same-bead-fork-resume-design.md, ADR은 UI-u6ud-7이
 승계)이 착지한 뒤 사용자가 2026-09-23 후보 탭에서 외부 작업 대기 카드 세 장
 (Analysis-owzn·ops-pyg·PROSTATE-8vf)을 보고 여섯 가지를 지적했다. 각 지적에 대해
 코드에서 확인한 원인은 다음과 같다.
@@ -68,7 +68,7 @@ UI-z437(2026-09-21-external-wait-same-bead-fork-resume-design.md, ADR은 UI-a5l2
 - *(선택) `external_wait` 키가 있는 `open` Bead를 서버가 `session_active`로 투영하고,
   클라이언트는 기존 세션 타일 경로로 실행 중 레인에 세운다.* 재료(제목·라벨·route·
   `session_refs`)와 타일 껍데기가 모두 있다. 후보 제외는 기존 `claimed` 집합이 한다.
-  ADR 0033의 "후보 레인은 미착수 이슈의 관측 집합"과 맞는다 — 외부 대기 Bead는
+  ADR UI-u6ud-8의 "후보 레인은 미착수 이슈의 관측 집합"과 맞는다 — 외부 대기 Bead는
   세션이 일하고 결과를 기다리는 **착수된** Bead다.
 - *클라이언트가 대기 레코드만으로 타일을 만든다.* 제목·라벨·`session_refs`를 다른
   경로(후보 행·오버레이)에서 끌어와야 하고, Worker 탭(Board live store)과 Monitor
@@ -362,20 +362,20 @@ UI-z437 §7의 슬롯 표는 이 정정으로 읽는다 — 그 스펙 파일은
 
 ## 결정 (ADR 후보)
 
-- 전제: ADR 0014 — 새 요소의 자리는 공유 슬롯 표가 정한다; §4.6이 그 표를 정정한다.
-- 전제: ADR 0033 — "후보 레인은 미착수 이슈의 관측 집합이고 실행 안전은 서버
-  admission이 지킨다"는 결정과 `admitted`·사실 필드·세그먼트·`include_unadmitted`
-  규칙은 그대로 따른다. 뒤집는 것은 한 조항 — "`runnable-cache`의 채택 조건은 셋뿐이다
-  (`bead_id`·`open`·phase child 아님)" — 이며, `external_wait` 키가 있는 `open` 행을
-  후보 버킷에서 `session_active` 버킷으로 옮기는 넷째 조건을 더한다(§4.1).
-- 전제: ADR UI-a5l2-2 — 승계한 UI-z437 조항 중 `external_wait` 상태·Worker 한 런타임의
+- 전제: ADR UI-u6ud-8 — (0014에서 통합한 조항) 새 요소의 자리는 공유 슬롯 표가
+  정한다; §4.6이 그 표를 정정한다. (0033에서 통합한 조항) "후보 레인은 미착수 이슈의
+  관측 집합이고 실행 안전은 서버 admission이 지킨다"는 결정과 `admitted`·사실 필드·
+  세그먼트·`include_unadmitted` 규칙은 그대로 따른다. (UI-mfm1에서 통합한 조항)
+  Worker와 Monitor의 후보 행은 lane-model 한 경로가 접는다; 후보 제외도 그 경로의
+  `claimed` 집합 하나로 한다. 뒤집는 것은 한 조항 — "`runnable-cache`의 채택 조건은
+  셋뿐이다(`bead_id`·`open`·phase child 아님)" — 이며, `external_wait` 키가 있는
+  `open` 행을 후보 버킷에서 `session_active` 버킷으로 옮기는 넷째 조건을 더한다(§4.1).
+- 전제: ADR UI-u6ud-7 — UI-a5l2-2를 거쳐 승계한 UI-z437 조항 중 `external_wait` 상태·Worker 한 런타임의
   관찰·완료·알림·재개 소유·hold 예산·`대기 · external:` 종결·"세션 소유는 알림 뒤
   `[이어하기]`, 자격 실패는 launch 없이 사람의 `[새 세션으로]`"(라벨만 바뀌고 동작
   유지)·대기 어휘의 `external_job` 종류와 배지 순서는 그대로다. 뒤집는 것은 그 승계
   조항 중 "소비자 카드 표면" 하나다 — UI-z437 §7 슬롯 표의 슬롯 1 조작(넷)과 슬롯 5
   좌표 칩(`ssh`·잡 번호·`log`)을 §4.6대로 슬롯 6 foot과 상세 패널로 옮긴다.
-- 전제: ADR UI-mfm1 — Worker와 Monitor의 후보 행은 lane-model 한 경로가 접는다; 후보
-  제외도 그 경로의 `claimed` 집합 하나로 한다.
 - 세션 소유 외부 대기 Bead는 `external_wait` 키 하나를 술어로 후보 레인이 아니라
   실행 중 레인의 세션 타일에 서고, 외부 대기 조작은 슬롯 6 foot, 좌표 칩은 상세
   패널의 것이다. **되돌리기 어렵다**: 서버 `session_active` 버킷 규칙, 두 탭의
@@ -385,6 +385,7 @@ UI-z437 §7의 슬롯 표는 이 정정으로 읽는다 — 그 스펙 파일은
   Bead가 후보에 없고 실행 중 레인에 "세션 타일"로 서는데 세션 프로세스는 없다.
   **실제 절충**: §3의 세 대안 — 클라이언트 단독 조립(두 후보 원천), 후보 구획
   (뜻 없는 `↴ 대기로`), 머리줄 유지(조작이 제목 위로) — 를 기각했다.
-  이 결정은 ADR 0033의 "채택 조건은 셋뿐" 조항과 ADR UI-a5l2-2가 UI-z437에서 승계한
-  "소비자 카드 표면" 조항을 뒤집고 두 ADR의 나머지 조항은 위 전제 줄대로 승계한다.
-  `summary`: "세션 소유 외부 대기 Bead는 external_wait 키를 술어로 후보 레인이 아니라 실행 중 레인의 세션 타일에 서고, 외부 대기 조작은 슬롯 6 foot이며 좌표 칩은 상세 패널 잡 표가 갖는다" → ADR, supersede 0033·UI-a5l2-2
+  이 결정은 ADR UI-u6ud-8의 "채택 조건은 셋뿐" 조항과 ADR UI-u6ud-7이 UI-z437에서
+  승계한 "소비자 카드 표면" 조항을 뒤집고 두 ADR의 나머지 조항은 위 전제 줄대로
+  승계한다.
+  `summary`: "세션 소유 외부 대기 Bead는 external_wait 키를 술어로 후보 레인이 아니라 실행 중 레인의 세션 타일에 서고, 외부 대기 조작은 슬롯 6 foot이며 좌표 칩은 상세 패널 잡 표가 갖는다" → ADR, supersede UI-u6ud-8·UI-u6ud-7
