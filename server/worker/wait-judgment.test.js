@@ -312,6 +312,115 @@ describe('recovery wait judgment', () => {
     }
   );
 
+  /**
+   * @param {Record<string, any>} [patch]
+   * @returns {Record<string, any>}
+   */
+  function liveInquiry(patch = {}) {
+    return {
+      'UI-consumer:inquiry': {
+        bead_id: 'UI-consumer',
+        kind: 'inquiry',
+        state: 'live',
+        settled_at: null,
+        turn_state: 'running',
+        ...patch
+      }
+    };
+  }
+
+  const DISCARD_ONLY = [
+    {
+      op: 'worker-discard',
+      label: '폐기',
+      payload: { root_dir: ROOT, bead_id: 'UI-consumer', attempt_id: 'a' }
+    }
+  ];
+
+  test('keeps the human decision without a live inquiry session', () => {
+    const material = queue({
+      attempts: { a: recoveryAttempt('verification') }
+    });
+
+    const result = run({ queue: material }).wait_reasons[0];
+
+    expect(result).toMatchObject({
+      verdict: 'action_required',
+      verdict_reason: { code: 'decision', message: '사용자의 답변이 필요함' }
+    });
+    expect(result.actions.map((/** @type {any} */ a) => a.op)).toEqual([
+      'worker-resolve-in-session',
+      'worker-discard'
+    ]);
+  });
+
+  test.each(['question', 'limit'])(
+    'asks for the inquiry answer while the live inquiry is at %s',
+    (turn_state) => {
+      const material = queue({
+        attempts: { a: recoveryAttempt('verification') },
+        interactive_sessions: liveInquiry({ turn_state })
+      });
+
+      const result = run({ queue: material }).wait_reasons[0];
+
+      expect(result).toMatchObject({
+        verdict: 'action_required',
+        verdict_reason: {
+          code: 'decision',
+          message:
+            '문의 세션이 답을 기다림 — Discord 스레드 또는 tmux 창에서 답'
+        },
+        actions: DISCARD_ONLY
+      });
+    }
+  );
+
+  test.each(['running', 'idle', null])(
+    'judges a live inquiry at %s as normal with discard only',
+    (turn_state) => {
+      const material = queue({
+        attempts: { a: recoveryAttempt('verification') },
+        interactive_sessions: liveInquiry({ turn_state })
+      });
+
+      const result = run({ queue: material }).wait_reasons[0];
+
+      expect(result.verdict).toBe('normal');
+      expect(result.verdict_reason).toBeUndefined();
+      expect(result.actions).toEqual(DISCARD_ONLY);
+    }
+  );
+
+  test('ignores a settled inquiry session', () => {
+    const material = queue({
+      attempts: { a: recoveryAttempt('verification') },
+      interactive_sessions: liveInquiry({ settled_at: 5 })
+    });
+
+    const result = run({ queue: material }).wait_reasons[0];
+
+    expect(result.verdict_reason).toEqual({
+      code: 'decision',
+      message: '사용자의 답변이 필요함'
+    });
+  });
+
+  test('keeps provider recovery unchanged beside a live inquiry', () => {
+    const material = queue({
+      attempts: { a: recoveryAttempt('provider') },
+      interactive_sessions: liveInquiry({ turn_state: 'question' })
+    });
+
+    const result = run({ queue: material }).wait_reasons[0];
+
+    expect(result.verdict).toBe('normal');
+    expect(result.actions.map((/** @type {any} */ a) => a.op)).toEqual([
+      'worker-resolve-in-session',
+      'worker-discard'
+    ]);
+  });
+
   test('uses only the first session blocker sentence as the headline', () => {
     const attempt = recoveryAttempt('authority');
     attempt.cause_detail.summary =
@@ -1209,6 +1318,28 @@ describe('wait judgment holds and manual waits', () => {
       release: '문의 세션에서 답하면 해제',
       verdict_reason: { code: 'decision' }
     });
+  });
+
+  test('judges a parked decision normal while its inquiry session works', () => {
+    const material = queue({
+      attempts: {
+        a: waiting({
+          status: 'parked',
+          cause_detail: { awaiting_user: '방향 선택' }
+        })
+      },
+      interactive_sessions: {
+        'UI-consumer:inquiry': {
+          state: 'live',
+          settled_at: null,
+          turn_state: 'running'
+        }
+      }
+    });
+
+    const result = run({ queue: material }).wait_reasons[0];
+
+    expect(result).toMatchObject({ kind: 'awaiting_user', verdict: 'normal' });
   });
 
   test('builds retry timing without guessing an abnormal verdict', () => {

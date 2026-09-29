@@ -82,8 +82,53 @@ describe('interactive session persistence', () => {
         settled_at: null,
         settled_by: null,
         exit_requested_at: null,
-        defer_since: null
+        defer_since: null,
+        turn_state: null,
+        turn_state_since: null,
+        last_message: null,
+        last_message_read_at: null
       }
+    });
+  });
+
+  test.each([
+    { turn_state: 'dreaming' },
+    { turn_state_since: '10' },
+    { last_message: { text: '' } },
+    { last_message: 'line' },
+    { last_message_read_at: Number.NaN }
+  ])('keeps the record and nulls a malformed turn field %j', (patch) => {
+    const store = createQueueStore();
+
+    store.recordInteractiveSession(WS, record(patch));
+
+    const session = store.snapshot(WS).interactive_sessions['B1:resolve'];
+    expect(session).toMatchObject({
+      turn_state: null,
+      turn_state_since: null,
+      last_message: null,
+      last_message_read_at: null
+    });
+  });
+
+  test('preserves turn fields through a session patch', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(WS, record());
+
+    store.updateInteractiveSession(WS, 'B1:resolve', {
+      turn_state: 'question',
+      turn_state_since: 30,
+      last_message: { text: '답을 기다립니다', at: null },
+      last_message_read_at: 25
+    });
+
+    expect(
+      createQueueStore().load(WS).interactive_sessions['B1:resolve']
+    ).toMatchObject({
+      turn_state: 'question',
+      turn_state_since: 30,
+      last_message: { text: '답을 기다립니다', at: null },
+      last_message_read_at: 25
     });
   });
 

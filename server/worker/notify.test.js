@@ -163,6 +163,68 @@ describe('wait notification suppression', () => {
     }
   );
 
+  test('notifies each inquiry question and the later inquiry death once', async () => {
+    const { input, store, spawn } = fixture();
+    store.appendAttempt('/repo', {
+      expected_revision: store.snapshot('/repo').revision,
+      attempt: {
+        attempt_id: 'recovery',
+        bead_id: 'UI-a',
+        status: 'waiting',
+        finished_at: 1000,
+        cause_detail: {
+          recovery: {
+            reason: 'verification',
+            classification: 'session_recovery_wait'
+          },
+          inquiry: { session: 'launched', mode: 'fork', session_id: 'abc' }
+        }
+      }
+    });
+    store.recordInteractiveSession('/repo', {
+      bead_id: 'UI-a',
+      kind: 'inquiry',
+      provider: 'codex',
+      pane_id: '%1',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'UI-a',
+      launched_at: 1000,
+      state: 'live'
+    });
+    /** @type {number[]} */
+    const counts = [];
+    /** @param {'running'|'question'|null} turn_state */
+    const step = async (turn_state) => {
+      if (turn_state === null) {
+        store.removeInteractiveSession('/repo', 'UI-a:inquiry');
+      } else {
+        store.updateInteractiveSession('/repo', 'UI-a:inquiry', {
+          turn_state
+        });
+      }
+      const before = spawn.calls.length;
+      await notifyWaitReasons({
+        ...input,
+        wait_reasons: judgeWaitReasons({
+          root_dir: '/repo',
+          queue: store.snapshot('/repo'),
+          now: 1000
+        }).wait_reasons
+      });
+      counts.push(spawn.calls.length - before);
+    };
+
+    await step('question');
+    await step('running');
+    await step('question');
+    await step('running');
+    await step(null);
+
+    expect(counts).toEqual([1, 0, 1, 0, 1]);
+    expect(messageOf(spawn.last())).toContain('세션이 멈춤');
+    expect(messageOf(spawn.last())).toContain('\n질의 세션: ');
+  });
+
   test('notifies external completion once across overdue scans and reload', async () => {
     const { input, store, spawn, recordTimelineEvent } = fixture();
     const record = /** @type {any} */ ({

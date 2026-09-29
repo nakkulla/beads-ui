@@ -46,7 +46,8 @@ export const WAIT_THRESHOLDS = Object.freeze({
  * @typedef {{ settle_observed_at?: Record<string, number> }} ObservationTimes
  * @typedef {Object} WaitJudgmentInput
  * @property {string} root_dir
- * @property {Record<string, any>} queue
+ * @property {Record<string, any>} queue - Includes `interactive_sessions`,
+ * whose live inquiry record judges a session-stalled wait.
  * @property {Record<string, any>[]} [external_waits]
  * @property {Record<string, string[]>} [bead_blocked_by]
  * @property {Record<string, any>} [blocker_facts]
@@ -181,6 +182,39 @@ function reason(kind, bead_id, root_dir, headline, release) {
 function judge(result, verdict, code) {
   result.verdict = verdict;
   result.verdict_reason = { code, message: VERDICT_MESSAGES[code] };
+}
+
+const INQUIRY_WAITING_MESSAGE =
+  '문의 세션이 답을 기다림 — Discord 스레드 또는 tmux 창에서 답';
+
+/**
+ * Judge a session-stalled wait by its live inquiry session, if any (UI-ri8n
+ * §3.2): without one the human decision stands; a live one asking or limited
+ * still needs the human, and one working or idle leaves only `discard`.
+ *
+ * @param {WaitReason} result
+ * @param {Record<string, any>} queue
+ * @param {string} bead_id
+ * @param {string|undefined} attempt_id
+ */
+function judgeStalledSession(result, queue, bead_id, attempt_id) {
+  const inquiry = queue.interactive_sessions?.[`${bead_id}:inquiry`];
+  const live =
+    !!inquiry && inquiry.state === 'live' && inquiry.settled_at === null;
+  if (!live) {
+    judge(result, 'action_required', 'decision');
+    sessionActions(result, attempt_id);
+    return;
+  }
+  if (inquiry.turn_state === 'question' || inquiry.turn_state === 'limit') {
+    result.verdict = 'action_required';
+    result.verdict_reason = {
+      code: 'decision',
+      message: INQUIRY_WAITING_MESSAGE
+    };
+  }
+  const payload = { ...result.subject, ...(attempt_id ? { attempt_id } : {}) };
+  result.actions.push({ op: 'worker-discard', label: '폐기', payload });
 }
 
 /**
@@ -484,9 +518,10 @@ export function judgeWaitReasons(input) {
       );
       addClocks(result, { since: attempt.finished_at });
       if (isSessionStalledRecovery(recovery, recovery_blockers)) {
-        judge(result, 'action_required', 'decision');
+        judgeStalledSession(result, queue, bead_id, attempt.attempt_id);
+      } else {
+        sessionActions(result, attempt.attempt_id);
       }
-      sessionActions(result, attempt.attempt_id);
       wait_reasons.push(result);
       continue;
     }
@@ -582,8 +617,7 @@ export function judgeWaitReasons(input) {
           `사용자 결정 대기 · ${value}`,
           '문의 세션에서 답하면 해제'
         );
-        judge(result, 'action_required', 'decision');
-        sessionActions(result, attempt.attempt_id);
+        judgeStalledSession(result, queue, bead_id, attempt.attempt_id);
         addClocks(result, { since: attempt.finished_at });
         wait_reasons.push(result);
       }

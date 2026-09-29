@@ -44,7 +44,7 @@ export const SESSION_RESUME_PROMPT_LEAD =
  * @typedef {'alive'|'dead'|'unverified'} OwnerLivenessState
  * @typedef {{ state: OwnerLivenessState, owner_tmux: string|null }} OwnerLiveness
  * @typedef {(argv: string[], options: { timeout_ms: number }) => Promise<{ code: number, stdout: string, stderr: string }>} Run
- * @typedef {{ session: string, window: string, pane: string, dead: string, cwd: string, agent_runtime: string, key: string }} ExtendedPaneRow
+ * @typedef {{ session: string, window: string, pane: string, dead: string, agent_running?: string, agent_attention?: string, cwd: string, agent_runtime: string, key: string }} ExtendedPaneRow
  * @typedef {Object} SessionResumeResult
  * @property {true} ok
  * @property {'session'} mode

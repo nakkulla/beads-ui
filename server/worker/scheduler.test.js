@@ -111,13 +111,19 @@ describe('interactive session reconciliation', () => {
     };
     const timeline = { append: vi.fn() };
     const changed = vi.fn();
+    const transcript = {
+      /** @type {{ locality: string, file: string|null, last_event_at: number|null }} */
+      location: { locality: 'missing', file: null, last_event_at: null }
+    };
+    const reader = vi.fn(() => ({ text: '테스트를 다시 돌린다', at: 900 }));
     const h = setup({
       config: {},
       store,
       timeline,
       now: () => at,
       notifyQueueChanged: changed,
-      ...{ interactiveLauncher: launcher }
+      resolveSessionFile: () => transcript.location,
+      ...{ interactiveLauncher: launcher, readLastAssistantMessage: reader }
     });
     return {
       ...h,
@@ -125,6 +131,8 @@ describe('interactive session reconciliation', () => {
       timeline,
       changed,
       pane,
+      transcript,
+      reader,
       current: () => store.snapshot(WS).interactive_sessions['B1:resolve'],
       /** @param {number} value */
       setTime(value) {
@@ -150,6 +158,137 @@ describe('interactive session reconciliation', () => {
       })
     );
     expect(h.changed).toHaveBeenCalledWith(WS);
+  });
+
+  test.each([
+    ['1', '', 'running'],
+    ['1', 'question', 'running'],
+    ['', 'question', 'question'],
+    ['', 'plan', 'question'],
+    ['', 'limit', 'limit'],
+    ['', 'done', 'idle'],
+    ['', 'stopped', 'idle'],
+    ['', '', 'idle']
+  ])(
+    'writes running %j attention %j as turn state %s',
+    async (agent_running, agent_attention, turn_state) => {
+      const h = interactiveFixture();
+      Object.assign(h.pane, { agent_running, agent_attention });
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(h.current()).toMatchObject({
+        turn_state,
+        turn_state_since: 1000
+      });
+    }
+  );
+
+  test('keeps turn state since while the stage is unchanged', async () => {
+    const h = interactiveFixture();
+    Object.assign(h.pane, { agent_running: '1', agent_attention: '' });
+    await h.scheduler.reconcileInteractiveSessions(WS);
+    h.setTime(31_000);
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.current()).toMatchObject({
+      turn_state: 'running',
+      turn_state_since: 1000,
+      last_seen_alive_at: 31_000
+    });
+  });
+
+  test('moves turn state since when the stage changes', async () => {
+    const h = interactiveFixture();
+    Object.assign(h.pane, { agent_running: '1', agent_attention: '' });
+    await h.scheduler.reconcileInteractiveSessions(WS);
+    h.setTime(31_000);
+    Object.assign(h.pane, { agent_running: '', agent_attention: 'question' });
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.current()).toMatchObject({
+      turn_state: 'question',
+      turn_state_since: 31_000
+    });
+  });
+
+  test('leaves turn state null before the first pass', () => {
+    const h = interactiveFixture();
+
+    const record = h.current();
+
+    expect(record).toMatchObject({ turn_state: null, turn_state_since: null });
+  });
+
+  test('stores the last assistant line of a local transcript', async () => {
+    const h = interactiveFixture({ session_id: 'S1' });
+    h.transcript.location = {
+      locality: 'local',
+      file: '/sessions/S1.jsonl',
+      last_event_at: 500
+    };
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.reader).toHaveBeenCalledWith({
+      provider: 'claude',
+      file: '/sessions/S1.jsonl'
+    });
+    expect(h.current()).toMatchObject({
+      last_message: { text: '테스트를 다시 돌린다', at: 900 },
+      last_message_read_at: 500
+    });
+  });
+
+  test('skips the transcript read while its mtime is unchanged', async () => {
+    const h = interactiveFixture({ session_id: 'S1' });
+    h.transcript.location = {
+      locality: 'local',
+      file: '/sessions/S1.jsonl',
+      last_event_at: 500
+    };
+    await h.scheduler.reconcileInteractiveSessions(WS);
+    h.setTime(31_000);
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.reader).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps the previous message when the transcript read fails', async () => {
+    const h = interactiveFixture({ session_id: 'S1' });
+    h.transcript.location = {
+      locality: 'local',
+      file: '/sessions/S1.jsonl',
+      last_event_at: 500
+    };
+    await h.scheduler.reconcileInteractiveSessions(WS);
+    h.transcript.location = { ...h.transcript.location, last_event_at: 600 };
+    h.reader.mockImplementation(() => {
+      throw new Error('EIO');
+    });
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.current()).toMatchObject({
+      last_message: { text: '테스트를 다시 돌린다', at: 900 },
+      last_message_read_at: 500
+    });
+  });
+
+  test('appends the start event only on the first pass', async () => {
+    const h = interactiveFixture();
+    await h.scheduler.reconcileInteractiveSessions(WS);
+    h.setTime(31_000);
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    const started = h.timeline.append.mock.calls.filter(
+      ([event]) => event.seq === 'resolve:10:started'
+    );
+    expect(started).toHaveLength(1);
   });
 
   test('makes no judgments when either marker lookup fails', async () => {
@@ -1548,6 +1687,8 @@ function setup(opts) {
     store,
     makeRunner: opts.makeRunner || runner.factory,
     interactiveLauncher: /** @type {any} */ (opts).interactiveLauncher,
+    readLastAssistantMessage: /** @type {any} */ (opts)
+      .readLastAssistantMessage,
     acquireClaudeLaunch: async () => () => {},
     accountCatalog: opts.accountCatalog,
     providerHealth: opts.providerHealth,
