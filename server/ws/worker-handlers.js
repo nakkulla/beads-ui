@@ -4883,14 +4883,15 @@ export async function handleWorkerExternalWait(ws, req) {
       (typeof p.bead_id !== 'string' ||
         !p.bead_id ||
         p.bead_id.startsWith('-'))) ||
-    (req.type === 'external_wait_resume' && !['fork', 'fresh'].includes(p.mode))
+    (req.type === 'external_wait_resume' &&
+      !['fork', 'fresh', 'session'].includes(p.mode))
   ) {
     ws.send(
       JSON.stringify(
         makeError(
           req,
           'bad_request',
-          'payload requires { root_dir, wait_id, mode?: fork|fresh }'
+          'payload requires { root_dir, wait_id, mode?: fork|fresh|session }'
         )
       )
     );
@@ -4911,7 +4912,9 @@ export async function handleWorkerExternalWait(ws, req) {
           : '[관찰 중단]'
         : p.mode === 'fresh'
           ? '[새 세션으로]'
-          : '[이어하기]';
+          : p.mode === 'session'
+            ? '[세션에서 이어가기]'
+            : '[이어하기]';
   if ('bead_id' in record) {
     queueStore().recordTimelineEvent(key, {
       bead_id: record.bead_id,

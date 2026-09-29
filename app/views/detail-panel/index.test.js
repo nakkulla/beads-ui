@@ -92,6 +92,7 @@ test('renders jobs and expected results on the consumer detail', () => {
  * @returns {{ mount: HTMLElement, panel: ReturnType<typeof createDetailPanel> }}
  */
 function renderExternalDetail(options = {}) {
+  const { actions, ...panel_options } = options;
   document.body.innerHTML = '<div id="m"></div>';
   const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
   const issueStores = createSubscriptionIssueStores();
@@ -113,7 +114,7 @@ function renderExternalDetail(options = {}) {
               release: '완료되면 같은 세션을 이어간다',
               verdict: 'normal',
               targets: [],
-              actions: [
+              actions: actions || [
                 {
                   op: 'external_wait_check',
                   label: '[지금 확인]',
@@ -126,7 +127,7 @@ function renderExternalDetail(options = {}) {
         }
       ]
     },
-    ...options
+    ...panel_options
   });
   issueStores.register('detail:A-1', {
     type: 'issue-detail',
@@ -169,6 +170,77 @@ describe('external wait detail ops (UI-l48z §4.2)', () => {
       root_dir: '/repo',
       wait_id: 'w-0123456789ab'
     });
+    panel.destroy();
+  });
+
+  test('draws the detail-only release with its confirm beside the card ops', () => {
+    const { mount, panel } = renderExternalDetail({
+      actions: [
+        {
+          op: 'external_wait_resume',
+          label: '[세션에서 이어가기]',
+          placement: 'card',
+          payload: {
+            root_dir: '/repo',
+            wait_id: 'w-0123456789ab',
+            mode: 'session'
+          }
+        },
+        {
+          op: 'external_wait_stop',
+          label: '[대기 해제]',
+          placement: 'detail',
+          confirm: '이어가지 않고 대기 키를 지웁니다. 계속할까요?',
+          payload: { root_dir: '/repo', wait_id: 'w-0123456789ab' }
+        }
+      ]
+    });
+
+    const buttons = Array.from(
+      mount.querySelectorAll(
+        '.detail-external-wait__ops [data-external-wait-op]'
+      )
+    ).map((button) => [
+      button.textContent?.trim(),
+      button.getAttribute('data-confirm')
+    ]);
+
+    expect(buttons).toEqual([
+      ['세션에서 이어가기', null],
+      ['대기 해제', '이어가지 않고 대기 키를 지웁니다. 계속할까요?']
+    ]);
+    panel.destroy();
+  });
+
+  test('sends nothing when the release confirm is cancelled', async () => {
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => false)
+    );
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const { mount, panel } = renderExternalDetail({
+      transport,
+      actions: [
+        {
+          op: 'external_wait_stop',
+          label: '[대기 해제]',
+          placement: 'detail',
+          confirm: '이어가지 않고 대기 키를 지웁니다. 계속할까요?',
+          payload: { root_dir: '/repo', wait_id: 'w-0123456789ab' }
+        }
+      ]
+    });
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-external-wait-op]')
+    ).click();
+    await Promise.resolve();
+
+    expect(transport).not.toHaveBeenCalledWith(
+      'external_wait_stop',
+      expect.anything()
+    );
+    vi.unstubAllGlobals();
     panel.destroy();
   });
 

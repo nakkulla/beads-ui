@@ -4226,3 +4226,142 @@ describe('monitor 공급자 보류 출구 (UI-pw2g §3.4)', () => {
     ).toBeNull();
   });
 });
+
+/**
+ * @param {Record<string, any>} action
+ */
+function externalWaitReason(action) {
+  return {
+    kind: 'external_job',
+    subject: { bead_id: 'A-1', root_dir: '/repo' },
+    headline: 'wallace 작업 42 · RUNNING',
+    release: '완료되면 같은 세션을 이어간다',
+    verdict: 'normal',
+    targets: [],
+    actions: [action]
+  };
+}
+
+/**
+ * @param {Record<string, any>} action
+ * @param {Record<string, any>} [input]
+ */
+function setupExternalWait(action, input = {}) {
+  const row = externalWait();
+  return setup({
+    workspaces: [
+      workspace({
+        root_dir: '/repo',
+        queue: [{ bead_id: 'A-1' }],
+        external_waits: [row],
+        wait_reasons: [externalWaitReason(action)]
+      })
+    ],
+    workspaces_state: [state({ root_dir: '/repo' })],
+    ...input
+  });
+}
+
+describe('views/monitor external wait confirm and session resume (UI-r6xq §4.4)', () => {
+  test('sends nothing when the stop confirm is cancelled', async () => {
+    const confirm = vi.fn(() => false);
+    const transport = vi.fn(async () => ({ ok: true }));
+    const { mount, view } = setupExternalWait(
+      {
+        op: 'external_wait_stop',
+        label: '[관찰 중단]',
+        confirm: '대기 키를 지웁니다. 계속할까요?',
+        payload: { root_dir: '/repo', wait_id: 'w-0123456789ab' }
+      },
+      { confirm, transport }
+    );
+    view.load();
+
+    click(mount, '[data-external-wait-op]');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(confirm).toHaveBeenCalledWith('대기 키를 지웁니다. 계속할까요?');
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  test('shows the launched tmux coordinates for a session resume', async () => {
+    const transport = vi.fn(async () => ({
+      ok: true,
+      mode: 'session',
+      session: 'launched',
+      reason: null,
+      command: 'claude --resume s-1',
+      owner_tmux: null,
+      tmux_session: 'bdui',
+      tmux_window: 'A-1',
+      pane_id: '%1',
+      bridge_active: true
+    }));
+    const { mount, view } = setupExternalWait(
+      {
+        op: 'external_wait_resume',
+        label: '[세션에서 이어가기]',
+        payload: {
+          root_dir: '/repo',
+          wait_id: 'w-0123456789ab',
+          mode: 'session'
+        }
+      },
+      { transport }
+    );
+    view.load();
+
+    click(mount, '[data-external-wait-op]');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(transport).toHaveBeenCalledWith('external_wait_resume', {
+      root_dir: '/repo',
+      wait_id: 'w-0123456789ab',
+      mode: 'session'
+    });
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '세션을 열었습니다 · tmux bdui:A-1 · Discord 브리지 활성'
+    );
+  });
+
+  test('copies the resume command when the owner session is alive', async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    });
+    const transport = vi.fn(async () => ({
+      ok: true,
+      mode: 'session',
+      session: 'not_launched',
+      reason: 'owner_alive',
+      command: 'claude --resume s-1',
+      owner_tmux: 'main:2',
+      tmux_session: null,
+      tmux_window: null,
+      pane_id: null,
+      bridge_active: false
+    }));
+    const { mount, view } = setupExternalWait(
+      {
+        op: 'external_wait_resume',
+        label: '[세션에서 이어가기]',
+        payload: {
+          root_dir: '/repo',
+          wait_id: 'w-0123456789ab',
+          mode: 'session'
+        }
+      },
+      { transport }
+    );
+    view.load();
+
+    click(mount, '[data-external-wait-op]');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(writeText).toHaveBeenCalledWith('claude --resume s-1');
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '원래 세션이 살아 있어 열지 않았습니다 · 재개 명령을 복사했습니다 · tmux main:2'
+    );
+  });
+});

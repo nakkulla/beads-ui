@@ -17550,3 +17550,184 @@ describe('보류 선반·새 이슈·필터 줄 (UI-p7s2 §3·§4·§6)', () => 
     ).toBe('bug');
   });
 });
+
+describe('external wait confirm and session resume (UI-r6xq §4.4)', () => {
+  /**
+   * @param {Record<string, any>} action
+   * @param {(type: string) => Promise<any>} transport
+   */
+  function mountExternalWait(action, transport) {
+    const row = externalWait();
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'A-1' }],
+        external_waits: [row],
+        wait_reasons: [
+          {
+            kind: 'external_job',
+            subject: { bead_id: 'A-1', root_dir: '/repo' },
+            headline: 'wallace 작업 42 · RUNNING',
+            release: '완료되면 같은 세션을 이어간다',
+            verdict: 'normal',
+            targets: [],
+            actions: [action]
+          }
+        ]
+      })
+    );
+    const view = createWorkerView(mount, {
+      queueStore,
+      transport,
+      getWorkspacePath: () => '/repo'
+    });
+    return { mount, view };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test('sends nothing when the stop confirm is cancelled', async () => {
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal('confirm', confirm);
+    const transport = vi.fn(async () => ({ ok: true }));
+    const { mount, view } = mountExternalWait(
+      {
+        op: 'external_wait_stop',
+        label: '[관찰 중단]',
+        confirm: '대기 키를 지웁니다. 계속할까요?',
+        payload: { root_dir: '/repo', wait_id: 'w-0123456789ab' }
+      },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-external-wait-op]')
+    ).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(confirm).toHaveBeenCalledWith('대기 키를 지웁니다. 계속할까요?');
+    expect(transport).not.toHaveBeenCalled();
+    view.destroy();
+  });
+
+  test('shows the already-running tmux coordinates for a session resume', async () => {
+    const transport = vi.fn(async () => ({
+      ok: true,
+      mode: 'session',
+      session: 'already_running',
+      reason: null,
+      command: null,
+      owner_tmux: null,
+      tmux_session: 'bdui',
+      tmux_window: 'A-1',
+      pane_id: '%1',
+      bridge_active: false
+    }));
+    const { mount, view } = mountExternalWait(
+      {
+        op: 'external_wait_resume',
+        label: '[세션에서 이어가기]',
+        payload: {
+          root_dir: '/repo',
+          wait_id: 'w-0123456789ab',
+          mode: 'session'
+        }
+      },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-external-wait-op]')
+    ).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '이미 열려 있습니다 · tmux bdui:A-1'
+    );
+    view.destroy();
+  });
+
+  test('copies the resume command when the owner session is unverified', async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    });
+    const transport = vi.fn(async () => ({
+      ok: true,
+      mode: 'session',
+      session: 'not_launched',
+      reason: 'owner_unverified',
+      command: 'codex resume s-1',
+      owner_tmux: null,
+      tmux_session: null,
+      tmux_window: null,
+      pane_id: null,
+      bridge_active: false
+    }));
+    const { mount, view } = mountExternalWait(
+      {
+        op: 'external_wait_resume',
+        label: '[세션에서 이어가기]',
+        payload: {
+          root_dir: '/repo',
+          wait_id: 'w-0123456789ab',
+          mode: 'session'
+        }
+      },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-external-wait-op]')
+    ).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(writeText).toHaveBeenCalledWith('codex resume s-1');
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '원래 세션이 살아 있는지 확인하지 못해 열지 않았습니다 · 재개 명령을 복사했습니다'
+    );
+    view.destroy();
+  });
+
+  test('shows an error toast for another not-launched reason', async () => {
+    const transport = vi.fn(async () => ({
+      ok: true,
+      mode: 'session',
+      session: 'not_launched',
+      reason: 'no_session_ref',
+      command: null,
+      owner_tmux: null,
+      tmux_session: null,
+      tmux_window: null,
+      pane_id: null,
+      bridge_active: false
+    }));
+    const { mount, view } = mountExternalWait(
+      {
+        op: 'external_wait_resume',
+        label: '[세션에서 이어가기]',
+        payload: {
+          root_dir: '/repo',
+          wait_id: 'w-0123456789ab',
+          mode: 'session'
+        }
+      },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-external-wait-op]')
+    ).click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      '세션을 열지 못했습니다 · no_session_ref'
+    );
+    view.destroy();
+  });
+});

@@ -319,6 +319,30 @@ export function buildResolvePrompt(input) {
  */
 
 /**
+ * The tmux session every click-started interactive window opens in: the
+ * `worker_direction_inquiry.tmux_session` config value, else the default. The
+ * resolution launcher and the external-wait session resume share it.
+ *
+ * @param {() => any} getConfig
+ * @param {(...args: any[]) => void} log
+ * @returns {string}
+ */
+export function interactiveTmuxSessionName(getConfig, log) {
+  /** @type {any} */
+  let section;
+  try {
+    section = getConfig()?.worker_direction_inquiry;
+  } catch (err) {
+    log('config read failed: %o', err);
+    return DEFAULT_INQUIRY_TMUX_SESSION;
+  }
+  const name = section?.tmux_session;
+  return typeof name === 'string' && name.length > 0
+    ? name
+    : DEFAULT_INQUIRY_TMUX_SESSION;
+}
+
+/**
  * Build the resolution-session launcher.
  *
  * @param {ResolveSessionDeps} deps
@@ -345,18 +369,7 @@ export function createResolveSession(deps) {
    * @returns {string}
    */
   function tmuxSessionName() {
-    /** @type {any} */
-    let section;
-    try {
-      section = deps.getConfig()?.worker_direction_inquiry;
-    } catch (err) {
-      log('config read failed: %o', err);
-      return DEFAULT_INQUIRY_TMUX_SESSION;
-    }
-    const name = section?.tmux_session;
-    return typeof name === 'string' && name.length > 0
-      ? name
-      : DEFAULT_INQUIRY_TMUX_SESSION;
+    return interactiveTmuxSessionName(deps.getConfig, log);
   }
 
   /**

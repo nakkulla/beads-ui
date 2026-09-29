@@ -30,6 +30,7 @@ import {
   ORCHESTRATION_KEYS,
   QUICK_FIX_ORCHESTRATION_KEYS
 } from '../settings-dialog/session-model.js';
+import { runExternalWaitAction } from '../worker/external-wait-action.js';
 import {
   formatElapsed,
   placeMenuList,
@@ -2276,7 +2277,6 @@ export function createDetailPanel(mount_element, options) {
     event.stopPropagation();
     const root_dir = button.dataset.rootDir || '';
     const wait_id = button.dataset.waitId || '';
-    const op = button.dataset.externalWaitOp || '';
     const key = `${root_dir}:${wait_id}`;
     if (!transport || !root_dir || !wait_id || external_pending.has(key)) {
       return;
@@ -2284,23 +2284,7 @@ export function createDetailPanel(mount_element, options) {
     external_pending.add(key);
     button.disabled = true;
     try {
-      const res = /** @type {{ ok?: boolean }|undefined} */ (
-        await transport(op, {
-          root_dir,
-          wait_id,
-          ...(button.dataset.mode ? { mode: button.dataset.mode } : {}),
-          ...(button.dataset.beadId ? { bead_id: button.dataset.beadId } : {})
-        })
-      );
-      showToast(
-        res?.ok === false
-          ? '외부 작업 요청에 실패했습니다'
-          : '외부 작업 상태를 갱신했습니다',
-        res?.ok === false ? 'error' : 'success',
-        4000
-      );
-    } catch {
-      showToast('외부 작업 요청에 실패했습니다', 'error', 4000);
+      await runExternalWaitAction(button, { transport });
     } finally {
       external_pending.delete(key);
       button.disabled = false;
@@ -2335,6 +2319,7 @@ export function createDetailPanel(mount_element, options) {
     );
     const labels = Array.isArray(current?.labels) ? current.labels : [];
     const lines = waitReasonLines(reason, {
+      surface: 'detail',
       external_wait: record,
       session_preferred: labels.includes('session-preferred')
     });

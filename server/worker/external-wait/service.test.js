@@ -512,7 +512,12 @@ test.each([
   ['worker', 'completing', null, 'fork', 409],
   ['worker', 'completing', 'failed', 'fork', 200],
   ['session', 'completing', 'pending', 'fork', 409],
-  ['session', 'completing', 'pending', 'fresh', 200],
+  ['session', 'completing', 'pending', 'fresh', 409],
+  ['session', 'completing', null, 'session', 200],
+  ['session', 'completing', 'failed', 'session', 200],
+  ['worker', 'completing', null, 'session', 409],
+  ['worker', 'completing', 'failed', 'session', 409],
+  ['session', 'hold', null, 'session', 409],
   ['worker', 'completing', 'failed', 'fresh', 200],
   ['worker', 'completing', null, 'fresh', 409],
   ['session', 'hold', null, 'fork', 409],
@@ -532,7 +537,7 @@ test.each([
           ? null
           : {
               mode: 'fork',
-              attempt_id: 'reserved',
+              attempt_id: reservation === 'failed' ? null : 'reserved',
               reserved_at: TIMESTAMP,
               launched_at: null,
               session_id: null,
@@ -548,6 +553,33 @@ test.each([
       expect(resume).toHaveBeenCalledWith(WORKSPACE, record.wait_id, mode);
       expect(result).toEqual({ ok: true, attempt_id: 'attempt-resumed' });
     }
+  }
+);
+
+test.each(['fork', 'fresh', 'session'])(
+  'refuses %s while a session reservation is in progress',
+  async (mode) => {
+    const record = store.insert(WORKSPACE, {
+      ...input(),
+      stage: 'completing',
+      resume: {
+        mode: 'session',
+        attempt_id: null,
+        reserved_at: TIMESTAMP,
+        launched_at: null,
+        session_id: 'user-session',
+        error: null
+      }
+    });
+
+    const result = await service.resume(WORKSPACE, record.wait_id, mode);
+
+    expect(result).toEqual({
+      ok: false,
+      status: 409,
+      error: 'resume_reserved'
+    });
+    expect(resume).not.toHaveBeenCalled();
   }
 );
 

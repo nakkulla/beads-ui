@@ -177,3 +177,43 @@ test('removes only the requested wait', () => {
   expect(store.list(workspace)).toEqual([second]);
   expect(store.remove(workspace, first.wait_id)).toBe(false);
 });
+
+test('stores and rereads a session resume without an attempt', () => {
+  const record = store.insert(workspace, input());
+  const session_resume = {
+    mode: /** @type {const} */ ('session'),
+    attempt_id: null,
+    reserved_at: '2026-09-21T00:00:00.000Z',
+    launched_at: null,
+    session_id: 'user-session',
+    error: null
+  };
+
+  store.update(workspace, record.wait_id, (current) => {
+    current.resume = session_resume;
+  });
+  const reread = createExternalWaitStore({ filePathFor: () => file }).get(
+    workspace,
+    record.wait_id
+  );
+
+  expect(reread?.resume).toEqual(session_resume);
+});
+
+test('rejects a session resume that names an attempt', () => {
+  const record = store.insert(workspace, input());
+
+  const write = () =>
+    store.update(workspace, record.wait_id, (current) => {
+      current.resume = {
+        mode: 'session',
+        attempt_id: 'attempt-2',
+        reserved_at: null,
+        launched_at: null,
+        session_id: 'user-session',
+        error: null
+      };
+    });
+
+  expect(write).toThrow('Invalid external wait resume');
+});

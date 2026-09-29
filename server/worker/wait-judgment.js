@@ -34,8 +34,15 @@ export const WAIT_THRESHOLDS = Object.freeze({
  * @property {'normal'|'overdue'|'action_required'} verdict
  * @property {VerdictReason} [verdict_reason]
  * @property {Array<{ id: string, rig?: string, status?: string, kind: 'gate'|'issue' }>} targets
- * @property {Array<{ op: string, label: string, title?: string, payload: Record<string, any> }>} actions
+ * @property {WaitAction[]} actions
  * @property {{ on_complete: 'discord'|'none', on_overdue: 'discord'|'none' }} notify_plan
+ * @typedef {Object} WaitAction
+ * @property {string} op
+ * @property {string} label
+ * @property {string} [title]
+ * @property {'card'|'detail'} [placement]
+ * @property {string} [confirm]
+ * @property {Record<string, any>} payload
  * @typedef {{ settle_observed_at?: Record<string, number> }} ObservationTimes
  * @typedef {Object} WaitJudgmentInput
  * @property {string} root_dir
@@ -48,6 +55,11 @@ export const WAIT_THRESHOLDS = Object.freeze({
  * @property {ObservationTimes} [observed_at]
  * @property {number} now
  */
+
+const STOP_OBSERVING_CONFIRM =
+  'beads-ui가 이 작업을 더 지켜보지 않고 대기 키를 지웁니다. 잡은 그대로이고 Worker가 이 Bead를 다시 집을 수 있게 됩니다. 계속할까요?';
+const RELEASE_CONFIRM =
+  '이어가지 않고 대기 키를 지웁니다. 잡은 그대로이고 이 대기의 표시는 카드와 상세에서 사라집니다. 계속할까요?';
 
 /** @type {Record<VerdictCode, string>} */
 const VERDICT_MESSAGES = {
@@ -283,7 +295,7 @@ export function judgeWaitReasons(input) {
       row.stage === 'completing'
         ? row.owner_kind === 'worker'
           ? '재개 중'
-          : '완료 · 세션 칩을 눌러 ID를 복사해 그 세션에서 잇거나 [워커로 이어가기]'
+          : '완료 · [세션에서 이어가기] 또는 [워커로 이어가기]'
         : '완료되면 같은 세션을 이어간다'
     );
     result.notify_plan.on_complete =
@@ -301,6 +313,7 @@ export function judgeWaitReasons(input) {
           next_at === undefined
             ? '관찰을 지금 한 번 더 한다'
             : `관찰을 지금 한 번 더 한다 (다음 예정 ${localClock(next_at)})`,
+        placement: 'card',
         payload
       });
       result.actions.push({
@@ -308,14 +321,8 @@ export function judgeWaitReasons(input) {
         label: '[관찰 중단]',
         title:
           'beads-ui가 이 작업을 더 지켜보지 않고 대기 키를 지운다 · 잡은 그대로',
-        payload
-      });
-    } else {
-      result.actions.push({
-        op: 'external_wait_stop',
-        label: '[대기 해제]',
-        title:
-          '이어가지 않고 대기 키를 지운다 · 잡은 그대로 · 이 대기의 표시는 카드와 상세에서 사라진다',
+        placement: 'card',
+        confirm: STOP_OBSERVING_CONFIRM,
         payload
       });
     }
@@ -323,11 +330,23 @@ export function judgeWaitReasons(input) {
       row.stage === 'completing' &&
       (row.owner_kind === 'session' || row.resume?.error)
     ) {
-      if (!row.resume || row.resume.error) {
+      const retry_allowed = !row.resume || Boolean(row.resume.error);
+      if (row.owner_kind === 'session' && retry_allowed) {
+        result.actions.push({
+          op: 'external_wait_resume',
+          label: '[세션에서 이어가기]',
+          title:
+            '보존 세션을 같은 워크트리의 tmux 창에서 재개한다 · 열리면 대기 키가 풀린다 · 원래 세션이 살아 있거나 확인되지 않으면 열지 않고 재개 명령을 복사한다',
+          placement: 'card',
+          payload: { ...payload, mode: 'session' }
+        });
+      }
+      if (retry_allowed) {
         result.actions.push({
           op: 'external_wait_resume',
           label: '[워커로 이어가기]',
           title: 'Worker가 보존 세션을 fork해 이어간다 — 이후 소유는 Worker',
+          placement: 'card',
           payload: { ...payload, mode: 'fork' }
         });
       }
@@ -336,9 +355,21 @@ export function judgeWaitReasons(input) {
           op: 'external_wait_resume',
           label: '[새 세션으로]',
           title: 'fork 없이 완료 페이로드로 새 Worker 세션을 연다',
+          placement: 'card',
           payload: { ...payload, mode: 'fresh' }
         });
       }
+    }
+    if (row.stage === 'completing') {
+      result.actions.push({
+        op: 'external_wait_stop',
+        label: '[대기 해제]',
+        title:
+          '이어가지 않고 대기 키를 지운다 · 잡은 그대로 · 이 대기의 표시는 카드와 상세에서 사라진다',
+        placement: 'detail',
+        confirm: RELEASE_CONFIRM,
+        payload
+      });
     }
     addClocks(result, {
       since: row.registered_at,
@@ -419,6 +450,8 @@ export function judgeWaitReasons(input) {
       op: 'external_wait_stop',
       label: '[관찰 중단]',
       title: '레코드가 없는 대기 키를 지운다',
+      placement: 'card',
+      confirm: '레코드가 없는 대기 키를 지웁니다. 계속할까요?',
       payload: { root_dir, wait_id: fact.external_wait, bead_id }
     });
     wait_reasons.push(result);

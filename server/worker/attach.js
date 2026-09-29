@@ -99,6 +99,7 @@ import {
   repoOpsDisplayFor,
   repoOpsVerifyReceiptState
 } from './repo-ops-display.js';
+import { interactiveTmuxSessionName } from './resolve-session.js';
 import { createRevertBuilder } from './revert-builder.js';
 import {
   createReviewSession,
@@ -1232,6 +1233,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   const scheduler = createScheduler({
     store: runtime.queueStore,
     interactiveLauncher: runtime.interactiveLauncher,
+    interactiveTmuxSession: () => interactiveTmuxSessionName(getConfig, log),
     externalWait: {
       ...runtime.externalWaitStore,
       onCompletion: (ws, record) =>
@@ -2484,7 +2486,7 @@ export function bindExternalWaitHooks({
     /**
      * @param {string} ws
      * @param {string} wait_id
-     * @param {'fork'|'fresh'} mode
+     * @param {'fork'|'fresh'|'session'} mode
      */
     resume(ws, wait_id, mode) {
       return scheduler.resumeExternalWait(ws, wait_id, { mode });

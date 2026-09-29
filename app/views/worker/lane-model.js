@@ -397,10 +397,10 @@ const DONE_KIND_LABELS = {
 /**
  * @typedef {Object} InteractiveSessionView
  * @property {string} key
- * @property {'resolve'|'inquiry'} kind
+ * @property {'resolve'|'inquiry'|'external_resume'} kind
  * @property {'claude'|'codex'} provider
  * @property {string|null} session_id
- * @property {'fork'|'fresh'|null} mode
+ * @property {'fork'|'fresh'|'resume'|null} mode
  * @property {'attempt'|'session_ref'|'fresh'|'recovered'|null} source
  * @property {string|null} fallback_reason
  * @property {string|null} attempt_id

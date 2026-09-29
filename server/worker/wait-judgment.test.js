@@ -477,12 +477,16 @@ describe('wait judgment external work', () => {
   });
 
   test.each([
-    ['session', null, ['external_wait_stop', 'external_wait_resume']],
+    [
+      'session',
+      null,
+      ['external_wait_resume', 'external_wait_resume', 'external_wait_stop']
+    ],
     ['worker', null, ['external_wait_stop']],
     [
       'worker',
       { error: 'no_session_ref' },
-      ['external_wait_stop', 'external_wait_resume', 'external_wait_resume']
+      ['external_wait_resume', 'external_wait_resume', 'external_wait_stop']
     ],
     ['session', { error: null, attempt_id: 'reserved' }, ['external_wait_stop']]
   ])(
@@ -511,7 +515,7 @@ describe('wait judgment external work', () => {
           '재개 실패 · no_session_ref'
         );
         expect(
-          result.actions.slice(1).map((action) => action.payload.mode)
+          result.actions.slice(0, 2).map((action) => action.payload.mode)
         ).toEqual(['fork', 'fresh']);
       }
     }
@@ -543,7 +547,7 @@ describe('wait judgment external work', () => {
     expect(result.actions[0].title).toBe('관찰을 지금 한 번 더 한다');
   });
 
-  test('labels completing actions as release and worker handoff', () => {
+  test('orders session-owned completion exits before the detail-only release', () => {
     const result = run({
       external_waits: [
         external({
@@ -556,17 +560,89 @@ describe('wait judgment external work', () => {
     }).wait_reasons[0];
 
     expect(
-      result.actions.map((action) => [action.label, action.title])
+      result.actions.map(({ label, title, placement, confirm, payload }) => ({
+        label,
+        title,
+        placement,
+        confirm,
+        mode: payload.mode
+      }))
     ).toEqual([
-      [
-        '[대기 해제]',
-        '이어가지 않고 대기 키를 지운다 · 잡은 그대로 · 이 대기의 표시는 카드와 상세에서 사라진다'
-      ],
-      [
-        '[워커로 이어가기]',
-        'Worker가 보존 세션을 fork해 이어간다 — 이후 소유는 Worker'
-      ]
+      {
+        label: '[세션에서 이어가기]',
+        title:
+          '보존 세션을 같은 워크트리의 tmux 창에서 재개한다 · 열리면 대기 키가 풀린다 · 원래 세션이 살아 있거나 확인되지 않으면 열지 않고 재개 명령을 복사한다',
+        placement: 'card',
+        confirm: undefined,
+        mode: 'session'
+      },
+      {
+        label: '[워커로 이어가기]',
+        title: 'Worker가 보존 세션을 fork해 이어간다 — 이후 소유는 Worker',
+        placement: 'card',
+        confirm: undefined,
+        mode: 'fork'
+      },
+      {
+        label: '[대기 해제]',
+        title:
+          '이어가지 않고 대기 키를 지운다 · 잡은 그대로 · 이 대기의 표시는 카드와 상세에서 사라진다',
+        placement: 'detail',
+        confirm:
+          '이어가지 않고 대기 키를 지웁니다. 잡은 그대로이고 이 대기의 표시는 카드와 상세에서 사라집니다. 계속할까요?',
+        mode: undefined
+      }
     ]);
+  });
+
+  test('offers the session resume again after a failed resume', () => {
+    const result = run({
+      external_waits: [
+        external({
+          owner_kind: 'session',
+          stage: 'completing',
+          resume: { mode: 'session', error: 'tmux_unavailable' },
+          completion: { completed_at: new Date(NOW).toISOString() }
+        })
+      ],
+      blocker_facts: { 'UI-consumer': { external_wait: 'w-0123456789ab' } }
+    }).wait_reasons[0];
+
+    expect(result.actions.map((action) => action.label)).toEqual([
+      '[세션에서 이어가기]',
+      '[워커로 이어가기]',
+      '[새 세션으로]',
+      '[대기 해제]'
+    ]);
+  });
+
+  test('omits the session resume from a worker-owned failed resume', () => {
+    const result = run({
+      external_waits: [
+        external({
+          owner_kind: 'worker',
+          stage: 'completing',
+          resume: { mode: 'fork', error: 'no_session_ref' },
+          completion: { completed_at: new Date(NOW).toISOString() }
+        })
+      ],
+      blocker_facts: { 'UI-consumer': { external_wait: 'w-0123456789ab' } }
+    }).wait_reasons[0];
+
+    expect(
+      result.actions.some((action) => action.payload.mode === 'session')
+    ).toBe(false);
+  });
+
+  test('asks for confirmation before the hold stop on the card', () => {
+    const result = run({ external_waits: [external()] }).wait_reasons[0];
+
+    expect(result.actions[1]).toMatchObject({
+      label: '[관찰 중단]',
+      placement: 'card',
+      confirm:
+        'beads-ui가 이 작업을 더 지켜보지 않고 대기 키를 지웁니다. 잡은 그대로이고 Worker가 이 Bead를 다시 집을 수 있게 됩니다. 계속할까요?'
+    });
   });
 
   test('labels the fresh resume after a failed resume', () => {
@@ -581,13 +657,15 @@ describe('wait judgment external work', () => {
       blocker_facts: { 'UI-consumer': { external_wait: 'w-0123456789ab' } }
     }).wait_reasons[0];
 
-    expect(result.actions[2]).toMatchObject({
+    expect(
+      result.actions.find((action) => action.payload.mode === 'fresh')
+    ).toMatchObject({
       label: '[새 세션으로]',
       title: 'fork 없이 완료 페이로드로 새 Worker 세션을 연다'
     });
   });
 
-  test('tells a session-owned completion to copy the session or hand off', () => {
+  test('tells a session-owned completion to resume in session or hand off', () => {
     const result = run({
       external_waits: [
         external({
@@ -600,7 +678,7 @@ describe('wait judgment external work', () => {
     }).wait_reasons[0];
 
     expect(result.release).toBe(
-      '완료 · 세션 칩을 눌러 ID를 복사해 그 세션에서 잇거나 [워커로 이어가기]'
+      '완료 · [세션에서 이어가기] 또는 [워커로 이어가기]'
     );
   });
 
@@ -611,7 +689,9 @@ describe('wait judgment external work', () => {
 
     expect(result.actions[0]).toMatchObject({
       label: '[관찰 중단]',
-      title: '레코드가 없는 대기 키를 지운다'
+      title: '레코드가 없는 대기 키를 지운다',
+      placement: 'card',
+      confirm: '레코드가 없는 대기 키를 지웁니다. 계속할까요?'
     });
   });
 

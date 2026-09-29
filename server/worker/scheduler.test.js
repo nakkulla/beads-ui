@@ -37,7 +37,11 @@ import {
   guardHookDir,
   usageReceiptInboxDir
 } from './state-paths.js';
-import { INQUIRY_PANE_MARKER, RESOLVE_PANE_MARKER } from './tmux-launcher.js';
+import {
+  EXTERNAL_RESUME_PANE_MARKER,
+  INQUIRY_PANE_MARKER,
+  RESOLVE_PANE_MARKER
+} from './tmux-launcher.js';
 import { createUsageStore } from './usage-store.js';
 import * as work_recovery_policy from './work-recovery-policy.js';
 
@@ -164,6 +168,76 @@ describe('interactive session reconciliation', () => {
     expect(h.launcher.sendExit).not.toHaveBeenCalled();
   });
 
+  test.each([0, 1, 2])(
+    'makes no judgments when marker lookup %i of three fails',
+    async (failing) => {
+      const h = interactiveFixture({ settled_at: 1 });
+      const markers = [
+        RESOLVE_PANE_MARKER,
+        INQUIRY_PANE_MARKER,
+        EXTERNAL_RESUME_PANE_MARKER
+      ];
+      h.launcher.listPanesExtended.mockImplementation(async (marker) =>
+        marker === markers[failing]
+          ? /** @type {any} */ ({ ok: false, error: 'tmux_unavailable' })
+          : { ok: true, rows: [] }
+      );
+      const before = h.store.snapshot(WS);
+
+      await h.scheduler.reconcileInteractiveSessions(WS);
+
+      expect(h.store.snapshot(WS)).toEqual(before);
+      expect(h.timeline.append).not.toHaveBeenCalled();
+    }
+  );
+
+  test('keeps a live external resume session under its own marker', async () => {
+    const h = interactiveFixture({
+      kind: 'external_resume',
+      mode: 'resume',
+      source: 'session_ref',
+      session_id: 'user-session',
+      session_id_source: 'launch'
+    });
+    h.launcher.listPanesExtended.mockImplementation(async (marker) => ({
+      ok: true,
+      rows: marker === EXTERNAL_RESUME_PANE_MARKER ? [h.pane] : []
+    }));
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(
+      h.store.snapshot(WS).interactive_sessions['B1:external_resume']
+    ).toMatchObject({ state: 'live', last_seen_alive_at: 1000 });
+    expect(h.timeline.append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        seq: 'external_resume:10:started',
+        summary: '재개 세션 시작 · 보존 세션'
+      })
+    );
+  });
+
+  test('ends an external resume session whose pane is gone', async () => {
+    const h = interactiveFixture({
+      kind: 'external_resume',
+      mode: 'resume',
+      source: 'session_ref'
+    });
+    h.launcher.listPanesExtended.mockImplementation(async (marker) => ({
+      ok: true,
+      rows: marker === RESOLVE_PANE_MARKER ? [h.pane] : []
+    }));
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(
+      h.store.snapshot(WS).interactive_sessions['B1:external_resume']
+    ).toBeUndefined();
+    expect(h.timeline.append).toHaveBeenCalledWith(
+      expect.objectContaining({ summary: '재개 세션 종료 · pane_gone' })
+    );
+  });
+
   test('fills the session identity from the pane option', async () => {
     const h = interactiveFixture({ provider: 'codex' });
     h.launcher.readPaneOption.mockResolvedValue({ ok: true, value: 'sid' });
@@ -268,7 +342,8 @@ describe('interactive session reconciliation', () => {
 
   test.each([
     ['claude', RESOLVE_PANE_MARKER, 'resolve'],
-    ['codex', INQUIRY_PANE_MARKER, 'inquiry']
+    ['codex', INQUIRY_PANE_MARKER, 'inquiry'],
+    ['claude', EXTERNAL_RESUME_PANE_MARKER, 'external_resume']
   ])(
     'recovers a %s pane under its %s marker',
     async (provider, marker, kind) => {
@@ -466,7 +541,10 @@ describe('interactive session reconciliation', () => {
     });
     h.launcher.listPanesExtended.mockImplementation(async (marker) => ({
       ok: true,
-      rows: [{ ...h.pane, pane: marker === RESOLVE_PANE_MARKER ? '%1' : '%2' }]
+      rows:
+        marker === EXTERNAL_RESUME_PANE_MARKER
+          ? []
+          : [{ ...h.pane, pane: marker === RESOLVE_PANE_MARKER ? '%1' : '%2' }]
     }));
     const readStatus = vi.spyOn(h.bd, 'readStatus').mockResolvedValue('closed');
 
@@ -540,6 +618,9 @@ describe('interactive session reconciliation', () => {
     );
     expect(h.launcher.listPanesExtended).toHaveBeenCalledWith(
       INQUIRY_PANE_MARKER
+    );
+    expect(h.launcher.listPanesExtended).toHaveBeenCalledWith(
+      EXTERNAL_RESUME_PANE_MARKER
     );
   });
 });

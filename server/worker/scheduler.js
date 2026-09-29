@@ -58,6 +58,7 @@ import { laneMismatchOf, laneOfRoute } from '../../app/utils/quickfix-lane.js';
 import { resumeKindOf } from '../../app/utils/quickfix-resume-kind.js';
 import { createTranscriptReducer } from '../../app/utils/transcript-lines.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
+import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
 import {
@@ -86,6 +87,9 @@ import { discardOperationActive } from './discard-phase.js';
 import { errorDetail } from './error-detail.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
+import { externalWaitCompletionPrompt } from './external-wait/completion-prompt.js';
+import { createExternalWaitSessionResume } from './external-wait/session-resume.js';
+import { resumeBlocked } from './external-wait/store.js';
 import {
   RETRY_MAX,
   causeKey,
@@ -142,7 +146,11 @@ import {
   codexSessionsRoot,
   codexAccountHomeDir as defaultCodexAccountHomeDir
 } from './state-paths.js';
-import { INQUIRY_PANE_MARKER, RESOLVE_PANE_MARKER } from './tmux-launcher.js';
+import {
+  EXTERNAL_RESUME_PANE_MARKER,
+  INQUIRY_PANE_MARKER,
+  RESOLVE_PANE_MARKER
+} from './tmux-launcher.js';
 import * as default_usage_receipts from './usage-receipts.js';
 import * as default_work_recovery_policy from './work-recovery-policy.js';
 import { publishWorkspaceActivity } from './workspace-activity.js';
@@ -767,6 +775,12 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * attachment built without it (every hermetic test) refuses the dispatch as
  * `not_external` rather than launching against an unverified bead.
  * @property {{ existsSync: (path: string) => boolean }} [fs]
+ * @property {() => string} [interactiveTmuxSession] - The tmux session a
+ * click-started interactive window opens in (resolve-session
+ * `interactiveTmuxSessionName`); the default name when unwired.
+ * @property {Partial<import('./external-wait/session-resume.js').SessionResumeDeps>} [externalWaitSessionResume]
+ * Overrides for the `[세션에서 이어가기]` launcher's IO (registry fs, ps
+ * probe, session-ref options); production passes none.
  * @property {(entry: any, options?: any) => { locality: string, file: string|null, last_event_at: number|null }} [resolveSessionFile]
  * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, publish?: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void, read?: (workspace: string, attempt_id: string, options?: any) => unknown[], pathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string, stderrPathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string }} sessionLog
  * The session-log broker. `pathFor`/`stderrPathFor` are what the spawn hands the
@@ -1270,6 +1284,17 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
 }
 
 /**
+ * Timeline label of each interactive session kind (`… 세션 시작`).
+ *
+ * @type {Record<import('./queue-store.js').InteractiveSession['kind'], string>}
+ */
+const INTERACTIVE_KIND_LABELS = {
+  resolve: '해결',
+  inquiry: '문의',
+  external_resume: '재개'
+};
+
+/**
  * Build the auto-advance state machine over the queue store.
  *
  * @param {SchedulerDeps} deps
@@ -1280,7 +1305,7 @@ function dispatchSummary(runner_name, model, effort, base_oid) {
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   stopReviewSessionProcess: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string, options?: { require_durable?: boolean }) => Promise<{ ok: boolean, reason?: string }>,
- *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh' }) => Promise<{ ok: true, attempt_id: string }|{ ok: false, reason: string }>,
+ *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh'|'session' }) => Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
  *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
@@ -1332,6 +1357,44 @@ export function createScheduler(deps) {
     deps.makeAttemptId || ((bead_id) => `${bead_id}-${now()}-${++attempt_seq}`);
   /** @type {Set<string>} */
   const external_wait_resumes = new Set();
+  /** @type {ReturnType<typeof createExternalWaitSessionResume>|null} */
+  let external_wait_session_resume = null;
+
+  /**
+   * The `[세션에서 이어가기]` launcher, built on first use; null without an
+   * interactive launcher or wait store.
+   */
+  function externalWaitSessionResume() {
+    const launcher = deps.interactiveLauncher;
+    const store = deps.externalWait;
+    if (!launcher || !store) {
+      return null;
+    }
+    external_wait_session_resume ||= createExternalWaitSessionResume({
+      launcher,
+      externalWait: store,
+      recordInteractiveSession: (workspace, record) =>
+        deps.store.recordInteractiveSession(workspace, record),
+      unsetExternalWait: async (bead_id) => {
+        await deps.bd.unsetMetadata(bead_id, 'external_wait');
+        if ((await deps.bd.readMetadata(bead_id, 'external_wait')) !== null) {
+          throw new Error('external_wait_unset_failed');
+        }
+      },
+      notifyChanged: (workspace) => notifyChanged(workspace),
+      tmuxSession:
+        deps.interactiveTmuxSession || (() => DEFAULT_INQUIRY_TMUX_SESSION),
+      sessionsDir: path.join(
+        deps.homeDir || os.homedir(),
+        '.claude',
+        'sessions'
+      ),
+      sessionRefOptions: { home_dir: deps.homeDir },
+      now,
+      ...deps.externalWaitSessionResume
+    });
+    return external_wait_session_resume;
+  }
 
   /**
    * Append one event to the bead's permanent history (record-timeline-retention
@@ -9058,21 +9121,28 @@ export function createScheduler(deps) {
       /** @type {Record<string, import('./queue-store.js').InteractiveSession>} */ (
         deps.store.snapshot(workspace).interactive_sessions || {}
       );
-    const [resolve_panes, inquiry_panes] = await Promise.all([
-      launcher.listPanesExtended(RESOLVE_PANE_MARKER),
-      launcher.listPanesExtended(INQUIRY_PANE_MARKER)
-    ]);
+    const [resolve_panes, inquiry_panes, external_resume_panes] =
+      await Promise.all([
+        launcher.listPanesExtended(RESOLVE_PANE_MARKER),
+        launcher.listPanesExtended(INQUIRY_PANE_MARKER),
+        launcher.listPanesExtended(EXTERNAL_RESUME_PANE_MARKER)
+      ]);
     // A partial tmux observation cannot prove either absence or safe recovery.
-    if (!resolve_panes.ok || !inquiry_panes.ok) {
+    if (!resolve_panes.ok || !inquiry_panes.ok || !external_resume_panes.ok) {
       log(
-        'interactive pane observation failed for %s: %o %o',
+        'interactive pane observation failed for %s: %o %o %o',
         workspace,
         resolve_panes,
-        inquiry_panes
+        inquiry_panes,
+        external_resume_panes
       );
       return;
     }
-    const panes = { resolve: resolve_panes.rows, inquiry: inquiry_panes.rows };
+    const panes = {
+      resolve: resolve_panes.rows,
+      inquiry: inquiry_panes.rows,
+      external_resume: external_resume_panes.rows
+    };
     /**
      * A launch may replace the same key while tmux I/O is in flight.
      *
@@ -9113,7 +9183,7 @@ export function createScheduler(deps) {
         bead_id: record.bead_id,
         kind: 'interactive_session',
         seq: `${record.kind}:${record.launched_at}:ended`,
-        summary: `${record.kind === 'resolve' ? '해결' : '문의'} 세션 종료 · ${reason}`
+        summary: `${INTERACTIVE_KIND_LABELS[record.kind]} 세션 종료 · ${reason}`
       });
       if (deps.store.removeInteractiveSession(workspace, key).ok) {
         notifyChanged(workspace);
@@ -9183,13 +9253,15 @@ export function createScheduler(deps) {
       if (!isCurrent(key, record)) {
         continue;
       }
-      const label = record.kind === 'resolve' ? '해결' : '문의';
+      const label = INTERACTIVE_KIND_LABELS[record.kind];
       const source =
         record.mode === 'fork'
           ? `fork ${record.source || ''}`.trim()
-          : record.source === 'recovered'
-            ? '복구'
-            : `새 세션${record.fallback_reason ? ` (${record.fallback_reason})` : ''}`;
+          : record.mode === 'resume' && record.source !== 'recovered'
+            ? '보존 세션'
+            : record.source === 'recovered'
+              ? '복구'
+              : `새 세션${record.fallback_reason ? ` (${record.fallback_reason})` : ''}`;
       // The timeline writer deduplicates this deterministic event_id.
       appendTimeline({
         bead_id: record.bead_id,
@@ -9313,7 +9385,11 @@ export function createScheduler(deps) {
         }
       }
     }
-    for (const kind of /** @type {const} */ (['resolve', 'inquiry'])) {
+    for (const kind of /** @type {const} */ ([
+      'resolve',
+      'inquiry',
+      'external_resume'
+    ])) {
       for (const pane of panes[kind]) {
         const key = `${pane.key}:${kind}`;
         // Markers are machine-wide; only this workspace's checkouts belong here.
@@ -11697,40 +11773,11 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Give the resumed session observations, without claiming artifact correctness.
-   *
-   * @param {WaitRecord} record
-   */
-  function externalWaitCompletionPrompt(record) {
-    const lines = ['## 외부 작업 완료'];
-    for (const job of record.jobs) {
-      const terminal = job.terminal;
-      lines.push(
-        `${job.adapter === 'slurm' ? job.job_id : job.pid} · ${job.state} · exit_code=${terminal?.exit_code ?? 'unknown'} · evidence=${terminal?.evidence || 'unknown'}`
-      );
-      for (const result of terminal?.expected_results || []) {
-        lines.push(
-          `${result.path} exists=${result.exists} size=${result.size} mtime=${result.mtime}`
-        );
-      }
-      lines.push(
-        `recovery_needed=${terminal?.recovery_needed ?? true} · log=${job.log_path}`
-      );
-    }
-    lines.push(
-      `completion.digest=${record.completion?.digest}`,
-      `recovery_needed=${record.completion?.recovery_needed}`,
-      '관찰 완료는 구현 완료가 아니다 — 아티팩트의 의미 검증·복구·커밋·완료는 이 세션이 한다'
-    );
-    return lines.join('\n');
-  }
-
-  /**
    * Clear only the reservation; keep the wait key and a retryable diagnostic.
    *
    * @param {string} workspace
    * @param {string} wait_id
-   * @param {'fork'|'fresh'} mode
+   * @param {'fork'|'fresh'|'session'} mode
    * @param {string} error
    */
   function externalWaitResumeError(workspace, wait_id, mode, error) {
@@ -11798,6 +11845,10 @@ export function createScheduler(deps) {
       ) {
         continue;
       }
+      if (record.resume?.mode === 'session') {
+        await externalWaitSessionResume()?.settleReservation(workspace, record);
+        continue;
+      }
       if (record.resume?.attempt_id) {
         const attempt =
           deps.store.snapshot(workspace).attempts[record.resume.attempt_id];
@@ -11845,13 +11896,13 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} wait_id
-   * @param {{ mode: 'fork'|'fresh' }} options
-   * @returns {Promise<{ ok: true, attempt_id: string }|{ ok: false, reason: string }>}
+   * @param {{ mode: 'fork'|'fresh'|'session' }} options
+   * @returns {Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>}
    */
   async function resumeExternalWait(workspace, wait_id, { mode }) {
     const store = deps.externalWait;
     const key = JSON.stringify([workspace, wait_id]);
-    if (!store || (mode !== 'fork' && mode !== 'fresh')) {
+    if (!store || (mode !== 'fork' && mode !== 'fresh' && mode !== 'session')) {
       return { ok: false, reason: 'bad_request' };
     }
     if (external_wait_resumes.has(key)) {
@@ -11860,10 +11911,15 @@ export function createScheduler(deps) {
     external_wait_resumes.add(key);
     try {
       const record = store.get(workspace, wait_id);
-      if (!record || record.stage !== 'completing' || !record.completion) {
+      if (
+        !record ||
+        record.stage !== 'completing' ||
+        !record.completion ||
+        (mode === 'session' && record.owner.kind !== 'session')
+      ) {
         return { ok: false, reason: 'resume_not_allowed' };
       }
-      if (record.resume?.attempt_id) {
+      if (resumeBlocked(record.resume, mode)) {
         return { ok: false, reason: 'resume_reserved' };
       }
       const q = deps.store.snapshot(workspace);
@@ -11915,6 +11971,18 @@ export function createScheduler(deps) {
           current.stage = 'stopped';
         });
         return { ok: false, reason: error };
+      }
+      if (mode === 'session') {
+        // A person's own session claims by its workflow: no attempt, no admission.
+        const resumer = externalWaitSessionResume();
+        if (!resumer) {
+          return { ok: false, reason: 'resume_unwired' };
+        }
+        return await resumer.resume({
+          workspace,
+          record,
+          bead_metadata: { session_ref: snap.session_ref }
+        });
       }
       const admission = await checkAdmission(
         snap,

@@ -1576,8 +1576,14 @@ export function interactiveSessionBadgesTemplate(views, options) {
         : mode === '복구'
           ? '복구'
           : `새 세션 · ${view.fallback_reason || ''}`;
-    const title = `${origin} · ${view.tmux_session}:${view.tmux_window}`;
-    const label = `▤ ${view.kind === 'resolve' ? '해결' : '문의'} 세션 · ${mode}`;
+    // 외부 대기 완료 재개는 fork·새 세션이 아니라 같은 세션 `--resume`이다 (UI-r6xq §4.3).
+    const resumed = view.kind === 'external_resume';
+    const title = resumed
+      ? `resume · ${view.source === 'recovered' ? '복구' : 'session_ref'} · ${view.tmux_session}:${view.tmux_window}`
+      : `${origin} · ${view.tmux_session}:${view.tmux_window}`;
+    const label = resumed
+      ? `▤ 재개 세션${view.source === 'recovered' ? ' · 복구' : ''}`
+      : `▤ ${view.kind === 'resolve' ? '해결' : '문의'} 세션 · ${mode}`;
     return html`${view.session_id
       ? html`<button
           type="button"
@@ -2390,7 +2396,7 @@ function waitTimesText(reason, now_ms) {
  * need their original projection; missing operation material stays absent.
  *
  * @param {import('../../protocol.js').WaitReason|null|undefined} reason
- * @param {{ item?: MiniItem, external_wait?: import('../../protocol.js').ExternalWaitObservation, now?: number, last_observed_at?: number|null, session_preferred?: boolean }} [options]
+ * @param {{ item?: MiniItem, external_wait?: import('../../protocol.js').ExternalWaitObservation, now?: number, last_observed_at?: number|null, session_preferred?: boolean, surface?: 'card'|'detail' }} [options]
  */
 export function waitReasonLines(reason, options = {}) {
   if (!reason) {
@@ -2440,7 +2446,12 @@ export function waitReasonLines(reason, options = {}) {
       ? `대기 시작 ${formatTimestampLocal(reason.since)}`
       : '';
   const item = options.item;
-  const actions = (reason.actions || []).map((action) => {
+  const surface = options.surface || 'card';
+  // `placement: 'detail'` 조작은 카드에서 빠지고 상세 패널에만 선다 (UI-r6xq §4.1).
+  const visible_actions = (reason.actions || []).filter(
+    (action) => surface === 'detail' || action.placement !== 'detail'
+  );
+  const actions = visible_actions.map((action) => {
     const payload = action.payload;
     if (
       [
@@ -2451,11 +2462,12 @@ export function waitReasonLines(reason, options = {}) {
       payload.wait_id &&
       payload.root_dir
     ) {
-      // `session-preferred` Bead는 세션에서 잇는 쪽이 1순위다 (UI-l48z §4.3).
+      // `session-preferred` Bead는 세션에서 잇는 쪽이 1순위다 (UI-l48z §4.3, UI-r6xq §4.1).
       const primary =
         action.op === 'external_wait_resume' &&
-        payload.mode === 'fork' &&
-        options.session_preferred !== true;
+        (options.session_preferred === true
+          ? payload.mode === 'session'
+          : payload.mode === 'fork');
       return html`<button
         type="button"
         class="op-btn${primary ? ' op-btn--primary' : ''} external-wait__action"
@@ -2465,6 +2477,7 @@ export function waitReasonLines(reason, options = {}) {
         data-root-dir=${payload.root_dir}
         data-mode=${ifDefined(payload.mode)}
         data-bead-id=${ifDefined(payload.bead_id)}
+        data-confirm=${ifDefined(action.confirm || undefined)}
       >
         ${action.label.replace(/^\[|\]$/g, '')}
       </button>`;

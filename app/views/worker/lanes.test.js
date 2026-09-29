@@ -1227,6 +1227,151 @@ describe('external wait operations sit in slot six (UI-l48z §4.3)', () => {
   });
 });
 
+/**
+ * @returns {any[]}
+ */
+function placedExternalActions() {
+  const payload = { root_dir: '/repo', wait_id: 'w-0123456789ab' };
+  return [
+    {
+      op: 'external_wait_resume',
+      label: '[세션에서 이어가기]',
+      placement: 'card',
+      payload: { ...payload, mode: 'session' }
+    },
+    {
+      op: 'external_wait_resume',
+      label: '[워커로 이어가기]',
+      placement: 'card',
+      payload: { ...payload, mode: 'fork' }
+    },
+    {
+      op: 'external_wait_stop',
+      label: '[대기 해제]',
+      placement: 'detail',
+      confirm: '이어가지 않고 대기 키를 지웁니다. 계속할까요?',
+      payload
+    }
+  ];
+}
+
+describe('external wait placement and confirm (UI-r6xq §4.1)', () => {
+  test('drops a detail-placed operation from the candidate card', () => {
+    const card = renderCandidate({
+      external_wait: externalWait({ stage: 'completing' }),
+      wait_reasons: [
+        waitReason({ kind: 'external_job', actions: placedExternalActions() })
+      ]
+    });
+
+    expect(
+      card.querySelector('[data-external-wait-op="external_wait_stop"]')
+    ).toBeNull();
+  });
+
+  test('drops a detail-placed operation from the deferred-variant card', () => {
+    render(
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'UI-d2',
+          title: '보류 외부 대기',
+          lane: 'candidate',
+          draggable: false,
+          queue_placeable: false,
+          external_wait: externalWait({ stage: 'completing' }),
+          wait_reasons: [
+            waitReason({
+              kind: 'external_job',
+              actions: placedExternalActions()
+            })
+          ]
+        }),
+        null,
+        { variant: 'deferred' }
+      ),
+      mount
+    );
+
+    expect(
+      mount.querySelectorAll('.worker-card__foot [data-external-wait-op]')
+    ).toHaveLength(2);
+  });
+
+  test('drops a detail-placed operation from the queue row', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      external_wait: externalWait({ stage: 'completing' }),
+      wait_reasons: [
+        waitReason({ kind: 'external_job', actions: placedExternalActions() })
+      ]
+    });
+
+    expect(
+      row.querySelector('[data-external-wait-op="external_wait_stop"]')
+    ).toBeNull();
+  });
+
+  test('draws every operation on the detail surface', () => {
+    const lines = waitReasonLines(
+      waitReason({ kind: 'external_job', actions: placedExternalActions() }),
+      { surface: 'detail' }
+    );
+    render(html`${lines.actions}`, mount);
+
+    expect(mount.querySelectorAll('[data-external-wait-op]')).toHaveLength(3);
+  });
+
+  test('carries the confirm sentence on the button', () => {
+    const lines = waitReasonLines(
+      waitReason({ kind: 'external_job', actions: placedExternalActions() }),
+      { surface: 'detail' }
+    );
+    render(html`${lines.actions}`, mount);
+
+    expect(
+      mount
+        .querySelector('[data-external-wait-op="external_wait_stop"]')
+        ?.getAttribute('data-confirm')
+    ).toBe('이어가지 않고 대기 키를 지웁니다. 계속할까요?');
+  });
+
+  test('keeps a placement-less operation on the card without confirm', () => {
+    const card = renderCandidate({
+      external_wait: externalWait(),
+      wait_reasons: [
+        waitReason({ kind: 'external_job', actions: externalActions() })
+      ]
+    });
+
+    expect(
+      Array.from(card.querySelectorAll('[data-external-wait-op]')).map(
+        (button) => button.hasAttribute('data-confirm')
+      )
+    ).toEqual([false, false]);
+  });
+
+  test.each([
+    [true, 'session'],
+    [false, 'fork']
+  ])(
+    'makes one resume exit primary when session_preferred=%s',
+    (session_preferred, mode) => {
+      const lines = waitReasonLines(
+        waitReason({ kind: 'external_job', actions: placedExternalActions() }),
+        { session_preferred }
+      );
+      render(html`${lines.actions}`, mount);
+
+      expect(
+        Array.from(mount.querySelectorAll('.op-btn--primary')).map((button) =>
+          button.getAttribute('data-mode')
+        )
+      ).toEqual([mode]);
+    }
+  );
+});
+
 describe('merge progress row', () => {
   test('renders the shared fixed position and progress rail', () => {
     const row = renderRow({

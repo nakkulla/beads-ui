@@ -52,7 +52,8 @@ describe('external wait operations', () => {
       ['external_wait_check', 'check', undefined, '[지금 확인] 클릭'],
       ['external_wait_stop', 'stop', undefined, '[관찰 중단] 클릭'],
       ['external_wait_resume', 'resume', 'fork', '[이어하기] 클릭'],
-      ['external_wait_resume', 'resume', 'fresh', '[새 세션으로] 클릭']
+      ['external_wait_resume', 'resume', 'fresh', '[새 세션으로] 클릭'],
+      ['external_wait_resume', 'resume', 'session', '[세션에서 이어가기] 클릭']
     ])
   )(
     'routes %s mode %s and records its consumer action',
@@ -102,6 +103,33 @@ describe('external wait operations', () => {
       WS,
       expect.objectContaining({ summary: '[대기 해제] 클릭' })
     );
+  });
+
+  test('replies with the session resume outcome and the queue', async () => {
+    const runtime = getWorkerRuntime();
+    vi.spyOn(runtime.externalWait, 'get').mockReturnValue(
+      /** @type {any} */ ({ bead_id: 'A-1', stage: 'completing' })
+    );
+    const outcome = {
+      ok: /** @type {const} */ (true),
+      mode: /** @type {const} */ ('session'),
+      session: /** @type {const} */ ('not_launched'),
+      reason: 'owner_alive',
+      command: "claude --resume 'user-session'",
+      owner_tmux: 'main:1.0',
+      tmux_session: null,
+      tmux_window: null,
+      pane_id: null,
+      bridge_active: false
+    };
+    vi.spyOn(runtime.externalWait, 'resume').mockResolvedValue(outcome);
+
+    const reply = await request('external_wait_resume', { mode: 'session' });
+
+    expect(reply.payload).toEqual({
+      ...outcome,
+      queue: expect.objectContaining({ external_waits: [] })
+    });
   });
 
   test('returns the service failure as a protocol error', async () => {

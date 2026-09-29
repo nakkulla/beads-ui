@@ -64,6 +64,51 @@ describe('worker failed running tile template', () => {
     }
   );
 
+  test('labels an external resume interactive session as 재개 세션', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const tile = {
+      bead_id: 'UI-1',
+      attempt_id: 'attempt-1',
+      title: 'work',
+      runner: 'claude',
+      model: 'opus',
+      started_at: 1,
+      interactive_sessions: [
+        {
+          key: 'UI-1:external_resume',
+          kind: 'external_resume',
+          provider: 'claude',
+          session_id: 'sid',
+          mode: 'resume',
+          source: 'session_ref',
+          attempt_id: null,
+          fallback_reason: null,
+          tmux_session: 'bdui-inquiry',
+          tmux_window: 'resume-UI-1',
+          state: 'live',
+          settled_at: null,
+          launched_at: 1,
+          discord_url: null,
+          closing: false
+        }
+      ]
+    };
+
+    render(
+      runningTile(
+        /** @type {import('./running-grid.js').RunningTile} */ (tile),
+        1000
+      ),
+      mount
+    );
+
+    expect(
+      mount
+        .querySelector('.rtile__hd > .interactive-session-badge')
+        ?.textContent?.trim()
+    ).toBe('▤ 재개 세션');
+  });
+
   test('renders the categorized cause badge without dismiss', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
@@ -2162,6 +2207,55 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
         .querySelector('[data-external-wait-op="external_wait_resume"]')
         ?.classList.contains('op-btn--primary')
     ).toBe(false);
+  });
+
+  const SESSION_COMPLETE_ACTIONS = [
+    {
+      op: 'external_wait_resume',
+      label: '[세션에서 이어가기]',
+      placement: 'card',
+      payload: { ...EXTERNAL_PAYLOAD, mode: 'session' }
+    },
+    {
+      op: 'external_wait_resume',
+      label: '[워커로 이어가기]',
+      placement: 'card',
+      payload: { ...EXTERNAL_PAYLOAD, mode: 'fork' }
+    },
+    {
+      op: 'external_wait_stop',
+      label: '[대기 해제]',
+      placement: 'detail',
+      confirm: '이어가지 않고 대기 키를 지웁니다. 계속할까요?',
+      payload: EXTERNAL_PAYLOAD
+    }
+  ];
+
+  test('draws the two resume exits in order and drops the detail release (UI-r6xq §4.1)', () => {
+    const tile = renderExternalSession(
+      { stage: 'completing', owner_kind: 'session' },
+      SESSION_COMPLETE_ACTIONS
+    );
+
+    expect(
+      Array.from(
+        tile.querySelectorAll('.rtile__foot [data-external-wait-op]')
+      ).map((button) => button.textContent?.trim())
+    ).toEqual(['세션에서 이어가기', '워커로 이어가기']);
+  });
+
+  test('makes the session exit primary on a session-preferred bead', () => {
+    const tile = renderExternalSession(
+      { stage: 'completing', owner_kind: 'session' },
+      SESSION_COMPLETE_ACTIONS,
+      { labels: ['session-preferred'] }
+    );
+
+    expect(
+      Array.from(tile.querySelectorAll('.rtile__foot .op-btn--primary')).map(
+        (button) => button.getAttribute('data-mode')
+      )
+    ).toEqual(['session']);
   });
 
   test('reports the transcript mtime as the activity line', () => {
