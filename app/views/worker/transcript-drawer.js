@@ -18,6 +18,10 @@
  *
  * Live-follow: the `⇣` pill auto-scrolls to the tail on each append while ON;
  * a manual scroll-up flips it OFF; clicking the pill toggles it back.
+ *
+ * Conversation view (UI-2dbn): what the session said is the main line, and each
+ * run of tool/thinking lines between two narrative lines sits in one work
+ * bundle whose summary a past bundle collapses to (see {@link blocksOf}).
  */
 import { html, render } from 'lit-html';
 import { copyToClipboard } from '../../utils/clipboard.js';
@@ -37,6 +41,15 @@ import { parseTranscript } from './transcript-render.js';
 
 /** A run of this many identical tool lines collapses into one group. */
 const FOLD_AT = 5;
+
+/**
+ * A past work bundle with this many rows starts collapsed to its summary
+ * (UI-2dbn §4.3); the trailing bundle and shorter ones start open.
+ */
+const WORK_FOLD_AT = 4;
+
+/** How many tool names the work-bundle summary lists. */
+const WORK_TOP_TOOLS = 3;
 
 /** How many trailing tool lines the tier-3 stage guess votes over. */
 const ACTIVITY_WINDOW = 10;
@@ -252,6 +265,164 @@ function formatAgo(at, now_ms) {
 }
 
 /**
+ * Whether a top-level segment is work (tool line, same-tool group, subagent,
+ * thinking) rather than narrative (UI-2dbn §4.3). Every other kind — including
+ * one the parser does not know — is narrative and breaks a work bundle.
+ *
+ * @param {any} seg
+ * @returns {boolean}
+ */
+function isWorkSegment(seg) {
+  if (seg.kind === 'subagent' || seg.kind === 'group') {
+    return true;
+  }
+  return seg.line.kind === 'tool' || seg.line.kind === 'thinking';
+}
+
+/**
+ * @param {any} seg
+ * @returns {boolean}
+ */
+function isToolSegment(seg) {
+  return (
+    isWorkSegment(seg) && (seg.kind !== 'line' || seg.line.kind === 'tool')
+  );
+}
+
+/**
+ * Gather each maximal run of work segments into one bundle (UI-2dbn §4.3). A
+ * run with no tool-family segment (thinking only, e.g. the session-start line)
+ * stays as plain segments — a bundle summary of "작업 0" says nothing.
+ *
+ * A bundle is followed by narrative exactly when it is not the last block,
+ * because the run is maximal.
+ *
+ * @param {any[]} segments
+ * @returns {Array<{ kind: 'seg', seg: any } | { kind: 'work', idx: number, segs: any[], default_open: boolean }>}
+ */
+function blocksOf(segments) {
+  /** @type {Array<{ kind: 'seg', seg: any } | { kind: 'work', idx: number, segs: any[], default_open: boolean }>} */
+  const out = [];
+  let i = 0;
+  while (i < segments.length) {
+    if (!isWorkSegment(segments[i])) {
+      out.push({ kind: 'seg', seg: segments[i] });
+      i += 1;
+      continue;
+    }
+    let j = i;
+    while (j < segments.length && isWorkSegment(segments[j])) {
+      j += 1;
+    }
+    const run = segments.slice(i, j);
+    if (run.some(isToolSegment)) {
+      const trailing = j === segments.length;
+      out.push({
+        kind: 'work',
+        idx: run[0].idx,
+        segs: run,
+        default_open: trailing || run.length < WORK_FOLD_AT
+      });
+    } else {
+      for (const seg of run) {
+        out.push({ kind: 'seg', seg });
+      }
+    }
+    i = j;
+  }
+  return out;
+}
+
+/**
+ * The counts a work-bundle summary shows (UI-2dbn §4.3). A call is one tool
+ * line, every line of a same-tool group, or one subagent (its child lines are
+ * the subagent's own work). Names tie-break by first appearance, which the
+ * stable sort keeps from the insertion order.
+ *
+ * @param {any[]} segs
+ * @returns {{ calls: number, tools: Array<[string, number]>, thinking: number, failed: number }}
+ */
+function summarizeWork(segs) {
+  let calls = 0;
+  let thinking = 0;
+  let failed = 0;
+  /** @type {Map<string, number>} */
+  const by_tool = new Map();
+  /**
+   * @param {string} name
+   * @param {number} n
+   */
+  const tally = (name, n) => {
+    calls += n;
+    if (name.length > 0) {
+      by_tool.set(name, (by_tool.get(name) || 0) + n);
+    }
+  };
+  for (const seg of segs) {
+    if (seg.kind === 'subagent') {
+      tally('Agent', 1);
+      if (seg.header && seg.header.line.is_error === true) {
+        failed += 1;
+      }
+    } else if (seg.kind === 'group') {
+      tally(seg.tool, seg.lines.length);
+      failed += seg.lines.filter(
+        (/** @type {{ line: DisplayLine }} */ entry) =>
+          entry.line.is_error === true
+      ).length;
+    } else if (seg.line.kind === 'thinking') {
+      thinking += 1;
+    } else {
+      tally(seg.line.tool || '', 1);
+      if (seg.line.is_error === true) {
+        failed += 1;
+      }
+    }
+  }
+  const tools = [...by_tool]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, WORK_TOP_TOOLS);
+  return { calls, tools, thinking, failed };
+}
+
+/**
+ * How a session that is not running ended, for the bar's state slot (UI-2dbn
+ * §4.2): the last TOP-LEVEL `result` line decides — a subagent's `result` is
+ * that subagent's conclusion, not the session's. `status: 'done'` is never
+ * evidence, since an interactive session reads `done` for "not the current
+ * session".
+ *
+ * @param {DisplayLine[]} lines
+ * @param {string|undefined} status
+ * @returns {'done'|'failed'|null}
+ */
+function finishedState(lines, status) {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i];
+    const is_child =
+      typeof line.parent_tool_use_id === 'string' &&
+      line.parent_tool_use_id.length > 0;
+    if (line.kind === 'result' && !is_child) {
+      return line.success ? 'done' : 'failed';
+    }
+  }
+  return status === 'failed' ? 'failed' : null;
+}
+
+/**
+ * The colour modifier of a gate verdict: only the verdict word carries colour.
+ *
+ * @param {string} verdict
+ * @returns {string}
+ */
+function verdictClass(verdict) {
+  if (verdict === 'APPROVE') {
+    return ' sv__verdict--ok';
+  }
+  return verdict === 'REVISE' ? ' sv__verdict--warn' : '';
+}
+
+/**
  * @typedef {Object} DrawerMeta
  * @property {string} [runner] - claude/codex/ccx.
  * @property {string} [model]
@@ -339,6 +510,13 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   const expanded = new Set();
   /** @type {Set<number>} */
   const unfolded = new Set();
+  /**
+   * Work bundles the reader opened or closed, keyed by the bundle's first
+   * segment idx. A choice here outlives re-renders and beats the default rule.
+   *
+   * @type {Map<number, boolean>}
+   */
+  const bundle_open = new Map();
   /** @type {null | (() => void)} */
   let storeOff = null;
   /** @type {ReturnType<typeof setInterval> | null} */
@@ -704,25 +882,36 @@ export function createTranscriptDrawer(mount_element, options = {}) {
    */
   function lineTemplate(idx, line) {
     if (line.kind === 'gate') {
-      return html`<div class="sv__gate">${line.text}</div>`;
+      if (!line.gate || !line.verdict) {
+        return html`<div class="sv__gate">${line.text}</div>`;
+      }
+      return html`<div class="sv__gate" title=${line.text || ''}>
+        <span class="sv__gate-name">${line.gate}</span>
+        ${line.reviewer
+          ? html`<span class="sv__gate-reviewer">${line.reviewer}</span>`
+          : ''}
+        <span class="sv__verdict${verdictClass(line.verdict)}"
+          >${line.verdict}</span
+        >
+      </div>`;
     }
     if (line.kind === 'phase') {
       return html`<div class="sv__phase">${line.text}</div>`;
     }
     if (line.kind === 'result') {
-      // The final report is markdown too — the glyph and the verdict colour are
-      // the drawer's own signal, so only the body goes through the renderer.
+      // The verdict lives in the card head; the report body is markdown in the
+      // body colour, so a long report no longer reads as one green block.
       return html`<div
         class="sv__result${line.success
           ? ' sv__result--ok'
           : ' sv__result--fail'}"
       >
-        <span class="sv__result-glyph">${line.success ? '✓' : '✗'}</span>
-        <span class="sv__result-body"
-          >${renderMarkdown(
-            line.text || (line.success ? 'DONE' : '실패')
-          )}</span
-        >
+        <div class="sv__result-head">${line.success ? '✓ 완료' : '✗ 실패'}</div>
+        ${line.text
+          ? html`<div class="sv__result-body">
+              ${renderMarkdown(line.text)}
+            </div>`
+          : ''}
       </div>`;
     }
     if (line.kind === 'thinking') {
@@ -755,10 +944,13 @@ export function createTranscriptDrawer(mount_element, options = {}) {
         title="펼치기"
         @click=${() => toggleExpand(idx)}
       >
-        <span class="sv__user-line">▷ ${firstLineOf(line.text)}</span>
-        ${is_expanded
-          ? html`<pre class="sv__user-expand">${line.text}</pre>`
-          : ''}
+        <div class="sv__user-bubble">
+          <span class="sv__user-who">사람 입력</span>
+          <span class="sv__user-line">▷ ${firstLineOf(line.text)}</span>
+          ${is_expanded
+            ? html`<pre class="sv__user-expand">${line.text}</pre>`
+            : ''}
+        </div>
       </div>`;
     }
     if (line.kind === 'error') {
@@ -779,8 +971,13 @@ export function createTranscriptDrawer(mount_element, options = {}) {
             ? firstLineOf(line.command)
             : line.command
           : line.path || line.command || '';
+      // The detail is ellipsized to keep the row one line; the title carries
+      // what the ellipsis cut, including a heredoc's hidden lines.
+      const detail_full = line.tool === 'Bash' ? line.command || '' : detail;
       return html`<div
-        class="sv__tool${is_expanded ? ' sv__tool--expanded' : ''}"
+        class="sv__tool${line.is_error === true
+          ? ' sv__tool--error'
+          : ''}${is_expanded ? ' sv__tool--expanded' : ''}"
         role="button"
         tabindex="0"
         @click=${() => toggleExpand(idx)}
@@ -788,7 +985,11 @@ export function createTranscriptDrawer(mount_element, options = {}) {
         <span class="sv__tool-line">
           <span class="sv__tool-icon">${line.icon}</span>
           <span class="sv__tool-name">${line.tool}</span>
-          ${detail ? html`<span class="sv__tool-detail">${detail}</span>` : ''}
+          ${detail
+            ? html`<span class="sv__tool-detail" title=${detail_full}
+                >${detail}</span
+              >`
+            : ''}
           ${command_lines > 1
             ? html`<span class="sv__tool-more">⋯ ${command_lines}줄</span>`
             : ''}
@@ -799,11 +1000,13 @@ export function createTranscriptDrawer(mount_element, options = {}) {
             ? html`<span class="sv__diff-del">−${line.removed}</span>`
             : ''}
           ${line.result
-            ? html`<span class="sv__tool-ok">→ ${line.result}</span>`
+            ? html`<span class="sv__tool-out" title=${line.result}
+                >${line.result}</span
+              >`
             : ''}
         </span>
         ${is_expanded
-          ? html`<pre class="sv__tool-expand">${expandBody(line)}</pre>`
+          ? html`<pre class="sv__tool-expand">${expandTemplate(line)}</pre>`
           : ''}
       </div>`;
     }
@@ -813,11 +1016,13 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   }
 
   /**
+   * The expanded tool pane: the call, then its output under a `출력` label.
+   *
    * @param {import('./transcript-render.js').DisplayLine} line
-   * @returns {string}
+   * @returns {import('lit-html').TemplateResult}
    */
-  function expandBody(line) {
-    const parts = [];
+  function expandTemplate(line) {
+    let call = '';
     if (
       line.tool === 'Bash' &&
       typeof line.command === 'string' &&
@@ -825,18 +1030,21 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     ) {
       // Verbatim, not the JSON-escaped input blob — the command is the thing
       // the reader came to read.
-      parts.push(line.command);
+      call = line.command;
     } else if (line.input !== undefined) {
       try {
-        parts.push(`input: ${JSON.stringify(line.input, null, 2)}`);
+        call = `input: ${JSON.stringify(line.input, null, 2)}`;
       } catch {
         /* ignore */
       }
     }
-    if (typeof line.output === 'string' && line.output.length > 0) {
-      parts.push(`output:\n${line.output}`);
-    }
-    return parts.join('\n\n');
+    const output =
+      typeof line.output === 'string' && line.output.length > 0
+        ? line.output
+        : '';
+    return html`${call}${output
+      ? html`<span class="sv__tool-expand-label">출력</span>${output}`
+      : ''}`;
   }
 
   function template() {
@@ -857,6 +1065,16 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     const follow_label = `라이브 따라가기 ${follow ? 'ON' : 'OFF'}`;
     const live = isLive();
     const ago = live ? formatAgo(lastEventAt(), Date.now()) : '';
+    const finished = live ? null : finishedState(lines, meta.status);
+    const title = meta.label || (launch_id ? meta.role || '' : attempt_id);
+    const show_prompt = !(launch_id || hide_prompt);
+    const has_info = Boolean(
+      metaBits ||
+      session_id ||
+      meta.resume_command ||
+      show_prompt ||
+      meta.worktree
+    );
     // Only a live attempt has a "지금" — a paused or finished session's dangling
     // tool line is history, and pinning it would claim work that is not running.
     const pending = live ? pendingTool(lines) : null;
@@ -864,106 +1082,113 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     const stage = stageOf(lines);
     return html`<div class="sv" data-attempt-id=${attempt_id}>
       <div class="sv__bar">
-        <span class="sv__id"
-          >${meta.label || (launch_id ? meta.role || '' : attempt_id)}</span
-        >
-        ${stage
-          ? html`<span
-              class="sv__stage${stage.guess ? ' sv__stage--guess' : ''}"
-              title=${stage.text}
-              >${stage.text}</span
-            >`
+        <div class="sv__head">
+          ${live
+            ? html`<span
+                class="sv__state sv__live"
+                title="세션이 진행 중입니다"
+                aria-label=${ago ? `진행 중 · 마지막 이벤트 ${ago}` : '진행 중'}
+                ><span class="sv__live-dot" aria-hidden="true"></span>${ago
+                  ? html`<span class="sv__live-ago">${ago}</span>`
+                  : ''}</span
+              >`
+            : finished === 'done'
+              ? html`<span class="sv__state sv__state--done">✓ 완료</span>`
+              : finished === 'failed'
+                ? html`<span class="sv__state sv__state--failed">✗ 실패</span>`
+                : ''}
+          <span class="sv__id" title=${title}>${title}</span>
+          ${stage
+            ? html`<span
+                class="sv__stage${stage.guess ? ' sv__stage--guess' : ''}"
+                title=${stage.text}
+                >${stage.text}</span
+              >`
+            : ''}
+          <button
+            type="button"
+            class="sv__follow${follow ? ' sv__follow--on' : ''}"
+            aria-pressed=${follow ? 'true' : 'false'}
+            aria-label=${follow_label}
+            @click=${toggleFollow}
+          >
+            <span class="sv__follow-full">⇣ 따라가기</span>
+            <span class="sv__follow-short">⇣ ${follow ? 'ON' : 'OFF'}</span>
+          </button>
+          <button
+            type="button"
+            class="sv__close"
+            aria-label="닫기"
+            @click=${() => close()}
+          >
+            ✕
+          </button>
+        </div>
+        ${has_info
+          ? html`<div class="sv__info">
+              ${metaBits ? html`<span class="sv__meta">${metaBits}</span>` : ''}
+              ${session_id
+                ? html`<button
+                    type="button"
+                    class="sv__session"
+                    title=${session_id}
+                    aria-label=${`세션 ID 복사: ${session_id}`}
+                    @click=${() => copyValue(session_id)}
+                  >
+                    ⧉ ${session_id.slice(0, 8)}
+                  </button>`
+                : ''}
+              ${meta.resume_command
+                ? html`<button
+                    type="button"
+                    class="sv__resume-cmd"
+                    title=${meta.resume_command}
+                    aria-label=${`재개 명령 복사: ${meta.resume_command}`}
+                    @click=${() => copyValue(meta.resume_command || '')}
+                  >
+                    ⧉ 재개 명령
+                  </button>`
+                : ''}
+              ${show_prompt
+                ? html`<button
+                    type="button"
+                    class="sv__prompt-toggle${prompt_expanded
+                      ? ' sv__prompt-toggle--on'
+                      : ''}"
+                    data-seam="attempt-prompt-toggle"
+                    aria-pressed=${prompt_expanded ? 'true' : 'false'}
+                    aria-label="발송 프롬프트 보기"
+                    title="이 세션에 실제로 보낸 시스템·과업 프롬프트"
+                    @click=${togglePrompt}
+                  >
+                    ✉ 프롬프트
+                  </button>`
+                : ''}
+              ${meta.worktree
+                ? html`<span class="sv__wt" title=${meta.worktree}
+                    >${meta.worktree}</span
+                  >`
+                : ''}
+            </div>`
           : ''}
-        ${live
-          ? html`<span
-              class="sv__live"
-              title="세션이 진행 중입니다"
-              aria-label=${ago ? `진행 중 · 마지막 이벤트 ${ago}` : '진행 중'}
-              ><span class="sv__live-dot" aria-hidden="true"></span>${ago
-                ? html`<span class="sv__live-ago">${ago}</span>`
-                : ''}</span
-            >`
-          : ''}
-        ${session_id
-          ? html`<button
-              type="button"
-              class="sv__session"
-              title=${session_id}
-              aria-label=${`세션 ID 복사: ${session_id}`}
-              @click=${() => copyValue(session_id)}
-            >
-              ⧉ ${session_id.slice(0, 8)}
-            </button>`
-          : ''}
-        ${meta.resume_command
-          ? html`<button
-              type="button"
-              class="sv__resume-cmd"
-              title=${meta.resume_command}
-              aria-label=${`재개 명령 복사: ${meta.resume_command}`}
-              @click=${() => copyValue(meta.resume_command || '')}
-            >
-              ⧉ 재개 명령
-            </button>`
-          : ''}
-        ${metaBits ? html`<span class="sv__meta">${metaBits}</span>` : ''}
-        ${meta.worktree
-          ? html`<span class="sv__wt" title=${meta.worktree}
-              >${meta.worktree}</span
-            >`
-          : ''}
-        ${launch_id || hide_prompt
-          ? ''
-          : html`<button
-              type="button"
-              class="sv__prompt-toggle${prompt_expanded
-                ? ' sv__prompt-toggle--on'
-                : ''}"
-              data-seam="attempt-prompt-toggle"
-              aria-pressed=${prompt_expanded ? 'true' : 'false'}
-              aria-label="발송 프롬프트 보기"
-              title="이 세션에 실제로 보낸 시스템·과업 프롬프트"
-              @click=${togglePrompt}
-            >
-              ✉ 프롬프트
-            </button>`}
-        <button
-          type="button"
-          class="sv__follow${follow ? ' sv__follow--on' : ''}"
-          aria-pressed=${follow ? 'true' : 'false'}
-          aria-label=${follow_label}
-          @click=${toggleFollow}
-        >
-          <span class="sv__follow-full">⇣ ${follow_label}</span>
-          <span class="sv__follow-short">⇣ ${follow ? 'ON' : 'OFF'}</span>
-        </button>
-        <button
-          type="button"
-          class="sv__close"
-          aria-label="닫기"
-          @click=${() => close()}
-        >
-          ✕
-        </button>
       </div>
-      ${launch_id || hide_prompt ? '' : promptTemplate()}
+      ${show_prompt ? promptTemplate() : ''}
       <div class="sv__body">
         ${lines.length === 0
           ? html`<div class="sv__empty">세션 로그 없음</div>`
-          : segmentsOf(lines).map((seg) =>
-              seg.kind === 'subagent'
-                ? subagentTemplate(seg)
-                : seg.kind === 'group'
-                  ? groupTemplate(seg)
-                  : lineTemplate(seg.idx, seg.line)
+          : blocksOf(segmentsOf(lines)).map((block) =>
+              block.kind === 'work'
+                ? workTemplate(block)
+                : segmentTemplate(block.seg)
             )}
       </div>
       ${pending || thinking
         ? html`<div class="sv__now">
-            <span class="sv__now-label">지금</span>
+            <span class="sv__now-label"
+              ><span class="sv__now-dot" aria-hidden="true"></span>지금</span
+            >
             ${pending
-              ? html`<span class="sv__now-icon">${pending.icon}</span>
-                  <span class="sv__now-name">${pending.tool}</span>
+              ? html`<span class="sv__now-name">${pending.tool}</span>
                   <span class="sv__now-detail"
                     >${pending.tool === 'Bash'
                       ? firstLineOf(pending.command)
@@ -978,6 +1203,75 @@ export function createTranscriptDrawer(mount_element, options = {}) {
           </div>`
         : ''}
     </div>`;
+  }
+
+  /**
+   * One top-level segment outside or inside a work bundle — the same renderer
+   * either way, so folding rules do not depend on where a segment lands.
+   *
+   * @param {any} seg
+   */
+  function segmentTemplate(seg) {
+    if (seg.kind === 'subagent') {
+      return subagentTemplate(seg);
+    }
+    return seg.kind === 'group'
+      ? groupTemplate(seg)
+      : lineTemplate(seg.idx, seg.line);
+  }
+
+  /**
+   * One work bundle (UI-2dbn §4.3): a one-line summary, and the rows while
+   * open. The reader's own toggle wins over the default rule.
+   *
+   * @param {{ idx: number, segs: any[], default_open: boolean }} block
+   */
+  function workTemplate(block) {
+    const chosen = bundle_open.get(block.idx);
+    const is_open = typeof chosen === 'boolean' ? chosen : block.default_open;
+    const summary = summarizeWork(block.segs);
+    // A native button: a collapsed bundle hides rows by default, so its toggle
+    // has to answer Enter/Space as well as a click.
+    return html`<div class="sv__work${is_open ? ' sv__work--open' : ''}">
+      <button
+        type="button"
+        class="sv__work-sum"
+        aria-expanded=${is_open ? 'true' : 'false'}
+        @click=${() => toggleBundle(block.idx, is_open)}
+      >
+        <span class="sv__work-caret" aria-hidden="true"
+          >${is_open ? '▾' : '▸'}</span
+        >
+        <span class="sv__work-title">작업 ${summary.calls}</span>
+        ${summary.tools.length > 0
+          ? html`<span class="sv__work-tools"
+              >${summary.tools
+                .map(([name, count]) => `${name} ${count}`)
+                .join(' · ')}</span
+            >`
+          : ''}
+        ${summary.thinking > 0
+          ? html`<span class="sv__work-think">생각 ${summary.thinking}</span>`
+          : ''}
+        ${summary.failed > 0
+          ? html`<span class="sv__work-err">✗ ${summary.failed}</span>`
+          : ''}
+      </button>
+      ${is_open
+        ? html`<div class="sv__work-rows">
+            ${block.segs.map(segmentTemplate)}
+          </div>`
+        : ''}
+    </div>`;
+  }
+
+  /**
+   * @param {number} idx
+   * @param {boolean} is_open - What the bundle shows right now.
+   */
+  function toggleBundle(idx, is_open) {
+    bundle_open.set(idx, !is_open);
+    doRender();
   }
 
   /**
@@ -1029,7 +1323,16 @@ export function createTranscriptDrawer(mount_element, options = {}) {
         <span class="sv__sub-name">${seg.agent_type || 'subagent'}</span>
         ${detail ? html`<span class="sv__sub-detail">${detail}</span>` : ''}
         <span class="sv__sub-count">${seg.lines.length}줄</span>
-        ${state ? html`<span class="sv__sub-state">${state}</span>` : ''}
+        ${state
+          ? html`<span
+              class="sv__sub-state${state === '✓'
+                ? ' sv__sub-state--ok'
+                : state === '✗'
+                  ? ' sv__sub-state--bad'
+                  : ''}"
+              >${state}</span
+            >`
+          : ''}
         ${open
           ? ''
           : html`<span class="sv__sub-caret" aria-hidden="true">▸</span>`}
@@ -1232,6 +1535,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     follow = true;
     expanded.clear();
     unfolded.clear();
+    bundle_open.clear();
     resetPrompt();
     if (!storeOff && sessionLogStore) {
       storeOff = sessionLogStore.subscribe(doRender);
@@ -1262,6 +1566,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     hide_prompt = false;
     expanded.clear();
     unfolded.clear();
+    bundle_open.clear();
     resetPrompt();
     stopHeartbeat();
     if (transport && id) {
@@ -1296,6 +1601,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
       subscription_id = null;
       root_dir = null;
       hide_prompt = false;
+      bundle_open.clear();
       render(html``, mount_element);
     }
   };

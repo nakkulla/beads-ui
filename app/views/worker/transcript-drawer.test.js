@@ -596,7 +596,9 @@ describe('transcript drawer', () => {
     });
 
     expect(mount.querySelector('.sv__id')?.textContent).toBe('implementation');
-    expect(mount.querySelector('.sv__bar')?.textContent).not.toContain('att-1');
+    expect(mount.querySelector('.sv__head')?.textContent).not.toContain(
+      'att-1'
+    );
     expect(mount.querySelector('.sv__session')?.textContent).toContain(
       'session-'
     );
@@ -891,7 +893,7 @@ describe('transcript drawer — 마크다운·thinking·멀티라인 (UI-dixx �
     const body = mount.querySelector('.sv__tool-expand')?.textContent || '';
     expect(body).toContain('echo one\necho two');
     expect(body).not.toContain('"command"');
-    expect(body).toContain('output:');
+    expect(body).toContain('출력');
   });
 
   test('pairs the pending tool with the latest thinking in the 지금 bar', () => {
@@ -1689,5 +1691,441 @@ describe('transcript drawer session_ref 변형 (UI-4xzk §6.2)', () => {
       '첫 줄 지시\n둘째 줄 세부'
     );
     drawer.destroy();
+  });
+});
+
+/**
+ * A claude assistant text block.
+ *
+ * @param {string} text
+ */
+function assistantText(text) {
+  return {
+    type: 'assistant',
+    message: { content: [{ type: 'text', text }] }
+  };
+}
+
+/**
+ * A `tool_result` that reports a failure for a {@link toolWith}.
+ *
+ * @param {string} id
+ * @param {string} content
+ */
+function failedResult(id, content) {
+  return {
+    type: 'user',
+    message: {
+      content: [
+        { type: 'tool_result', tool_use_id: id, content, is_error: true }
+      ]
+    }
+  };
+}
+
+/** A top-level `result` event that ended the session in failure. */
+const FAILED_RESULT_EVENT = {
+  type: 'result',
+  subtype: 'error_during_execution',
+  is_error: true,
+  result: 'tsc 실패'
+};
+
+/**
+ * A drawer over one stored transcript, not yet opened.
+ *
+ * @param {string} attempt
+ * @param {unknown[]} lines
+ */
+function drawerOver(attempt, lines) {
+  store.set(`session-log:${attempt}`, lines);
+  return createTranscriptDrawer(mount, {
+    transport: mockTransport(),
+    sessionLogStore: store
+  });
+}
+
+/**
+ * Four tool lines of distinct tools, so no same-tool fold hides a row.
+ *
+ * @param {string} prefix
+ */
+function fourDistinctTools(prefix) {
+  return [
+    toolWith(`${prefix}r`, 'Read', { file_path: '/a.js' }),
+    toolWith(`${prefix}b`, 'Bash', { command: 'npm test' }),
+    toolWith(`${prefix}g`, 'Grep', { pattern: 'x' }),
+    toolWith(`${prefix}e`, 'Edit', {
+      file_path: '/a.js',
+      old_string: 'a',
+      new_string: 'b'
+    })
+  ];
+}
+
+describe('transcript drawer 작업 묶음 (UI-2dbn §4.3)', () => {
+  test('gathers the tool and thinking lines between assistant lines into one bundle', () => {
+    const drawer = drawerOver('att-w1', [
+      assistantText('앞 본문'),
+      thinking('판단'),
+      toolWith('r1', 'Read', { file_path: '/a.js' }),
+      toolWith('b1', 'Bash', { command: 'npm test' }),
+      assistantText('뒤 본문')
+    ]);
+
+    drawer.open({ attempt_id: 'att-w1' });
+
+    const bundles = mount.querySelectorAll('.sv__work');
+    const narrative = Array.from(mount.querySelectorAll('.sv__as'));
+    expect(bundles).toHaveLength(1);
+    expect(bundles[0].querySelectorAll('.sv__tool')).toHaveLength(2);
+    expect(bundles[0].querySelectorAll('.sv__think')).toHaveLength(1);
+    expect(narrative).toHaveLength(2);
+    expect(narrative.every((el) => el.closest('.sv__work') === null)).toBe(
+      true
+    );
+  });
+
+  test('collapses a past bundle of four or more rows to its summary', () => {
+    const drawer = drawerOver('att-w2', [
+      assistantText('앞 본문'),
+      ...fourDistinctTools('w2'),
+      assistantText('뒤 본문')
+    ]);
+
+    drawer.open({ attempt_id: 'att-w2' });
+
+    expect(mount.querySelector('.sv__work .sv__work-sum')).not.toBeNull();
+    expect(mount.querySelector('.sv__work-rows')).toBeNull();
+    expect(mount.querySelectorAll('.sv__tool')).toHaveLength(0);
+  });
+
+  test('opens the trailing bundle of a transcript that ends in work', () => {
+    const drawer = drawerOver('att-w3', [
+      assistantText('앞 본문'),
+      ...fourDistinctTools('w3')
+    ]);
+
+    drawer.open({ attempt_id: 'att-w3', meta: { status: 'running' } });
+
+    expect(mount.querySelectorAll('.sv__work .sv__tool')).toHaveLength(4);
+    drawer.destroy();
+  });
+
+  test('opens a past bundle of three rows or fewer', () => {
+    const drawer = drawerOver('att-w4', [
+      assistantText('앞 본문'),
+      ...fourDistinctTools('w4').slice(0, 3),
+      assistantText('뒤 본문')
+    ]);
+
+    drawer.open({ attempt_id: 'att-w4' });
+
+    expect(mount.querySelectorAll('.sv__work .sv__tool')).toHaveLength(3);
+  });
+
+  test('counts tool calls and the top three tools in the bundle summary', () => {
+    /** @type {unknown[]} */
+    const reads = [];
+    for (let i = 0; i < 5; i += 1) {
+      reads.push(toolWith(`r${i}`, 'Read', { file_path: `/f${i}.js` }));
+    }
+    const drawer = drawerOver('att-w5', [
+      assistantText('앞 본문'),
+      ...reads,
+      toolWith('b1', 'Bash', { command: 'npm test' }),
+      toolWith('b2', 'Bash', { command: 'npm run lint' }),
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_agent_w5',
+              name: 'Agent',
+              input: { description: '조사', subagent_type: 'general-purpose' }
+            }
+          ]
+        }
+      },
+      {
+        type: 'assistant',
+        parent_tool_use_id: 'toolu_agent_w5',
+        message: { content: [{ type: 'text', text: '자식 줄' }] }
+      },
+      toolWith('g1', 'Grep', { pattern: 'x' }),
+      assistantText('뒤 본문')
+    ]);
+
+    drawer.open({ attempt_id: 'att-w5' });
+
+    const summary = mount.querySelector('.sv__work-sum')?.textContent || '';
+    expect(summary).toContain('작업 9');
+    expect(summary).toContain('Read 5 · Bash 2 · Agent 1');
+    expect(summary).not.toContain('Grep');
+  });
+
+  test('counts the thinking lines in the bundle summary', () => {
+    const drawer = drawerOver('att-w6', [
+      assistantText('앞 본문'),
+      thinking('첫 판단'),
+      toolWith('b1', 'Bash', { command: 'npm test' }),
+      thinking('둘째 판단'),
+      assistantText('뒤 본문')
+    ]);
+
+    drawer.open({ attempt_id: 'att-w6' });
+
+    expect(mount.querySelector('.sv__work-sum')?.textContent).toContain(
+      '생각 2'
+    );
+  });
+
+  test('counts failed tools in the bundle summary, folded lines included', () => {
+    /** @type {unknown[]} */
+    const reads = [];
+    for (let i = 0; i < 5; i += 1) {
+      reads.push(toolWith(`r${i}`, 'Read', { file_path: `/f${i}.js` }));
+    }
+    const drawer = drawerOver('att-w7', [
+      assistantText('앞 본문'),
+      ...reads,
+      failedResult('r2', 'ENOENT'),
+      toolWith('b1', 'Bash', { command: 'npm test' }),
+      failedResult('b1', 'FAIL 2'),
+      assistantText('뒤 본문')
+    ]);
+
+    drawer.open({ attempt_id: 'att-w7' });
+
+    expect(mount.querySelector('.sv__work-err')?.textContent).toContain('✗ 2');
+  });
+
+  test('keeps a bundle the reader opened open across a store append', () => {
+    const drawer = drawerOver('att-w8', [
+      assistantText('앞 본문'),
+      ...fourDistinctTools('w8'),
+      assistantText('뒤 본문')
+    ]);
+    drawer.open({ attempt_id: 'att-w8' });
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.sv__work-sum')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    store.append('session-log:att-w8', assistantText('다음 본문'));
+
+    expect(mount.querySelectorAll('.sv__work .sv__tool')).toHaveLength(4);
+  });
+
+  // A collapsed bundle hides rows by default, so its toggle must answer the
+  // keyboard too — a native button does, a clickable div does not.
+  test('makes the bundle summary a native button', () => {
+    const drawer = drawerOver('att-w10', [
+      assistantText('앞 본문'),
+      ...fourDistinctTools('w10'),
+      assistantText('뒤 본문')
+    ]);
+
+    drawer.open({ attempt_id: 'att-w10' });
+
+    const summary = mount.querySelector('.sv__work-sum');
+    expect(summary?.tagName).toBe('BUTTON');
+    expect(summary?.getAttribute('type')).toBe('button');
+    expect(summary?.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('draws a thinking-only run without a work bundle', () => {
+    const drawer = drawerOver('att-w9', [
+      thinking('세션 시작 판단'),
+      assistantText('본문')
+    ]);
+
+    drawer.open({ attempt_id: 'att-w9' });
+
+    expect(mount.querySelector('.sv__work')).toBeNull();
+    expect(mount.querySelector('.sv__think')?.textContent).toContain(
+      '세션 시작 판단'
+    );
+  });
+});
+
+describe('transcript drawer 머리줄 상태 (UI-2dbn §4.2)', () => {
+  test('marks a finished session with a successful top-level result as done', () => {
+    const drawer = drawerOver('att-s1', [assistantText('끝'), RESULT_EVENT]);
+
+    drawer.open({ attempt_id: 'att-s1', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__state--done')?.textContent).toContain(
+      '✓ 완료'
+    );
+  });
+
+  test('marks a session whose top-level result failed as failed', () => {
+    const drawer = drawerOver('att-s2', [
+      assistantText('끝'),
+      FAILED_RESULT_EVENT
+    ]);
+
+    drawer.open({ attempt_id: 'att-s2', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__state--failed')?.textContent).toContain(
+      '✗ 실패'
+    );
+  });
+
+  test('marks a failed attempt with no top-level result as failed', () => {
+    const drawer = drawerOver('att-s3', [assistantText('중단')]);
+
+    drawer.open({ attempt_id: 'att-s3', meta: { status: 'failed' } });
+
+    expect(mount.querySelector('.sv__state--failed')?.textContent).toContain(
+      '✗ 실패'
+    );
+  });
+
+  test('judges the state by the top-level result, not a subagent result', () => {
+    const drawer = drawerOver('att-s4', [
+      toolWith('toolu_agent_s4', 'Agent', {
+        description: '조사',
+        subagent_type: 'general-purpose'
+      }),
+      FAILED_RESULT_EVENT,
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: '자식 완료',
+        parent_tool_use_id: 'toolu_agent_s4'
+      }
+    ]);
+
+    drawer.open({ attempt_id: 'att-s4', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__state--failed')?.textContent).toContain(
+      '✗ 실패'
+    );
+  });
+
+  test('shows the live heartbeat as the state of a running session', () => {
+    const drawer = drawerOver('att-s5', [assistantText('진행'), RESULT_EVENT]);
+
+    drawer.open({ attempt_id: 'att-s5', meta: { status: 'running' } });
+
+    expect(mount.querySelector('.sv__live')).not.toBeNull();
+    expect(mount.querySelector('.sv__state--done')).toBeNull();
+    drawer.destroy();
+  });
+
+  test('draws no state for a done session with no top-level result', () => {
+    const drawer = drawerOver('att-s6', [assistantText('대화형 세션')]);
+
+    drawer.open({ attempt_id: 'att-s6', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__state')).toBeNull();
+  });
+
+  test('draws no done state from a subagent result alone', () => {
+    const drawer = drawerOver('att-s7', [
+      toolWith('toolu_agent_s7', 'Agent', {
+        description: '조사',
+        subagent_type: 'general-purpose'
+      }),
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: '자식 완료',
+        parent_tool_use_id: 'toolu_agent_s7'
+      }
+    ]);
+
+    drawer.open({ attempt_id: 'att-s7', meta: { status: 'done' } });
+
+    expect(mount.querySelector('.sv__state--done')).toBeNull();
+  });
+});
+
+describe('transcript drawer 도구 줄 (UI-2dbn §4.3)', () => {
+  test('carries the full tool detail in the detail title', () => {
+    const command = 'cat <<EOF > /tmp/x\nline two\nEOF';
+    const drawer = drawerOver('att-t1', [toolWith('b1', 'Bash', { command })]);
+
+    drawer.open({ attempt_id: 'att-t1' });
+
+    expect(mount.querySelector('.sv__tool-detail')?.getAttribute('title')).toBe(
+      command
+    );
+  });
+
+  test('marks a tool line whose result reported an error', () => {
+    const drawer = drawerOver('att-t2', [
+      toolWith('b1', 'Bash', { command: 'npm test' }),
+      failedResult('b1', 'FAIL 2')
+    ]);
+
+    drawer.open({ attempt_id: 'att-t2' });
+
+    expect(
+      mount.querySelector('.sv__tool')?.classList.contains('sv__tool--error')
+    ).toBe(true);
+  });
+});
+
+describe('transcript drawer 결과 카드 (UI-2dbn §4.3)', () => {
+  test('heads a successful result card with 완료', () => {
+    const drawer = drawerOver('att-r1', [RESULT_EVENT]);
+
+    drawer.open({ attempt_id: 'att-r1' });
+
+    expect(
+      mount.querySelector('.sv__result--ok .sv__result-head')?.textContent
+    ).toContain('✓ 완료');
+  });
+
+  test('heads a failed result card with 실패', () => {
+    const drawer = drawerOver('att-r2', [FAILED_RESULT_EVENT]);
+
+    drawer.open({ attempt_id: 'att-r2' });
+
+    expect(
+      mount.querySelector('.sv__result--fail .sv__result-head')?.textContent
+    ).toContain('✗ 실패');
+  });
+
+  test('draws no result body for an empty result text', () => {
+    const drawer = drawerOver('att-r3', [
+      { type: 'result', subtype: 'error_during_execution', is_error: true }
+    ]);
+
+    drawer.open({ attempt_id: 'att-r3' });
+
+    expect(mount.querySelector('.sv__result')).not.toBeNull();
+    expect(mount.querySelector('.sv__result-body')).toBeNull();
+  });
+});
+
+describe('transcript drawer 게이트 알약 (UI-2dbn §4.3)', () => {
+  test('colours an APPROVE verdict as ok', () => {
+    const drawer = drawerOver('att-g1', [
+      assistantText('✓ spec 게이트 — codex APPROVE · 14:03')
+    ]);
+
+    drawer.open({ attempt_id: 'att-g1' });
+
+    expect(mount.querySelector('.sv__gate .sv__verdict--ok')?.textContent).toBe(
+      'APPROVE'
+    );
+  });
+
+  test('colours a REVISE verdict as a warning', () => {
+    const drawer = drawerOver('att-g2', [
+      assistantText('✗ impl 게이트 — astra REVISE')
+    ]);
+
+    drawer.open({ attempt_id: 'att-g2' });
+
+    expect(
+      mount.querySelector('.sv__gate .sv__verdict--warn')?.textContent
+    ).toBe('REVISE');
   });
 });
