@@ -12,14 +12,17 @@ scope:
   - server/worker/usage-pricing.test.js
   - generated/contracts/
   - app/protocol.js
+  - app/protocol.md
   - app/data/model-visibility-store.js
   - app/main.js
   - app/utils/model-visibility.js
+  - app/utils/model-visibility.test.js
   - app/utils/execution-defaults.js
   - app/views/settings-dialog/
   - app/views/detail-panel/effective-settings-view.js
   - app/views/detail-panel/index.js
   - app/views/worker/provider-resume-dialog.js
+  - app/views/worker/provider-resume-dialog.test.js
   - app/views/worker/index.js
   - app/views/monitor/index.js
   - app/styles.css
@@ -72,7 +75,7 @@ scope:
 - gpt-6-luna 실측(2026-09-29):
   - `codex exec -m gpt-6-luna` 호출은 성공한다.
   - 설치된 CLI 0.155.1의 번들 카탈로그에는 없어서 `Model metadata for gpt-6-luna not found` 경고가 난다.
-  - dotfiles의 `model_catalog_fallback` 합성(ADR dotfiles-oh3s-2)은 gpt-5.6-luna 항목을 복제해 이 공백을 메운다.
+  - dotfiles의 `model_catalog_fallback` 합성(ADR dotfiles/dotfiles-oh3s-2)은 gpt-5.6-luna 항목을 복제해 이 공백을 메운다.
 - gpt-5.6-terra도 아직 호출된다. 5.6 세대를 끄는 것은 사용 중단이 아니라 사용자의 선택이다.
 
 ## 2. 검토한 접근과 선택
@@ -117,7 +120,8 @@ scope:
 - 스냅샷 페이로드는 `{ revision, disabled_models, runners }`다. `runners`는 `{ claude: [{ name, id }], codex: [...] }`이며
   `runtimeCatalog()`의 카탈로그 순서를 따른다. 모델 탭은 이 채널 하나로 그린다. 모니터 행의 카탈로그에 기대지 않는다.
 - 새 메시지 타입은 `app/protocol.js MESSAGE_TYPES`에 등록한다(`protocol.test.js`의 `connection.js` case 스캔).
-  `protocol.md`는 ADR 채널 전용이라 적지 않는다.
+- `app/protocol.md`에 `## Model visibility channel` 절을 더해 세 메시지의 페이로드와 오류 코드를 적는다. 자리는
+  `## Workspace session defaults and execution presets` 절 뒤다.
 - 연결이 닫히면 구독자에서 뺀다(`connection.js` close-time detach).
 
 ### 3.3 클라이언트 저장소
@@ -133,6 +137,7 @@ scope:
 
 - `visibleModelChoices(choices, disabled_models)`는 `choices`에서 꺼 둔 이름을 뺀다. `auto`는 빼지 않는다.
   `disabled_models`가 `null`이면 `choices`를 그대로 돌려준다.
+- `visibleReviewerChoices(tokens, reviewers, disabled_models)`는 리뷰어 토큰에 같은 규칙을 적용한다(§4.2 마지막 항목).
 - 필터는 **화면이 선택지를 만드는 자리**에서만 적용한다. `implModelOptions`·`orchestrationModelOptions`·
   `narrowImplTarget`·해석기(`resolveExecutionSettings`·`deriveModelRuntime`)는 바꾸지 않는다.
   이렇게 해야 호환 판정과 런타임 유도가 꺼 둔 모델을 계속 알아본다.
@@ -156,7 +161,14 @@ scope:
   - 러너를 바꾸면 `default_model`이 켜져 있을 때 그것을, 아니면 그 러너의 첫 번째 켜진 모델을 고른다.
 - effort·속도 선택지는 바꾸지 않는다. `auto` 모델일 때의 effort 합집합과 속도 합집합은 지금처럼 러너의
   모든 모델에서 모은다. 현재 카탈로그에서는 꺼 둔 모델만 가진 어휘가 없어서 차이가 나지 않는다.
-- 리뷰어 모델 목록(`astra`·`opus`·`fable` 고정 목록)은 카탈로그에서 파생하지 않으므로 대상이 아니다.
+- 리뷰어 선택지도 거른다. 리뷰어 토큰 목록(`REVIEW_STEP_MODELS` = `codex`·`astra`·`opus`·`fable`·`self`·`skip`,
+  `PLAN_REVIEW_MODELS` = `codex`·`astra`·`fable`·`skip`)은 모델 이름이 아니라 프리셋 토큰이다.
+  - `visibleReviewerChoices(tokens, reviewers, disabled_models)`는 핀 사본 `review.reviewers[token].model` 별칭이
+    꺼 둔 모델인 토큰을 뺀다. 예: `codex`는 `sol`로 풀리므로 `sol`을 끄면 사라진다.
+  - `self`·`skip`처럼 핀에 항목이 없는 토큰과, 핀을 읽지 못해 풀 수 없는 토큰은 남긴다(fail-quiet).
+  - 저장된 리뷰어 토큰이 걸러졌으면 모델 선택지와 같은 규칙으로 `(비활성)` 레이블을 달고 선택된 채 남긴다.
+  - 적용 자리: `execution-pane.js`·`bulk-worker-form.js`의 리뷰 행(`gateRow`에 넘기는 `REVIEW_STEP_MODELS`·
+    `PLAN_REVIEW_MODELS`), `effective-settings-view.js optionsForKey`의 `*_review_model` 키.
 
 ### 4.3 서버 동작
 
@@ -194,7 +206,10 @@ scope:
   - `luna.id`를 `gpt-6-luna`로 바꾼다. efforts·orchestration_efforts·speed_tiers는 지금 luna 값을 그대로 쓴다.
     dotfiles fallback 합성이 gpt-5.6-luna 메타데이터를 복제하기 때문이다.
   - 직전 세대를 `luna-5.6` `{ id: 'gpt-5.6-luna' }`로 남긴다. 어휘는 luna와 같다. `sol-5.6` 선례와 같다.
-    이 항목이 있어야 gpt-5.6-luna로 기록된 과거 attempt가 모델 자리와 단가 조회를 잃지 않는다.
+    이 항목이 있어야 gpt-5.6-luna로 기록된 과거 attempt가 모델 자리(`compare-projection.js modelToken`)를 잃지 않는다.
+- 단가는 BUILTIN에 없고 사용자 `config.toml`이 모델 이름으로 준다. 지금의 `[runner.codex.models."luna".price]`는
+  gpt-5.6-luna의 단가다. 재배치 뒤에는 이 절이 gpt-6-luna에 적용되므로, gpt-5.6-luna 기록은 `luna-5.6` 가격 절이
+  있어야 단가를 찾는다. 이 절은 §7의 사전 조치가 더한다.
 - 핀의 나머지 변경(`model_tiers`의 bounded → sol 등)은 beads-ui가 읽지 않는 키다. 재발행으로 따라온다.
 
 ## 7. 경계·후속
@@ -204,12 +219,21 @@ scope:
   전사 분석 위임 모델을 gpt-6-luna로 바꾼다. Bead `dotfiles-nn3q5`(Worker 병렬 레인 배치). `UI-ooc0`은 이 Bead에 foreign `blocks`로 걸린다.
 - 프런트엔드 재작성 `UI-dbn6`(full_plan)과의 관계(사용자 결정 2026-09-29):
   - 이 기능은 현재 화면에 먼저 구현한다. `UI-dbn6`은 이 Bead를 기다리지 않는다.
-  - `UI-dbn6`의 새 설정 화면(3단계, 일괄 모드 서버 전역 탭)과 새 이슈 상세(2단계)는 활성 모델 묶음과 `visibleModelChoices`
-    필터를 보존 대상으로 이어받는다. 이 요청은 `UI-dbn6` notes에 남긴다.
+  - `UI-dbn6`의 새 설정 화면(3단계, 일괄 모드 서버 전역 탭)과 새 이슈 상세(2단계)는 활성 모델 묶음과 `visibleModelChoices`·
+    `visibleReviewerChoices` 필터를 보존 대상으로 이어받는다. 이 요청은 `UI-dbn6` notes에 남긴다.
   - 두 Bead의 실행 순서는 Worker 직렬 레인 배치가 정한다. 나중에 착지하는 쪽이 먼저 착지한 쪽의 변경을 흡수한다.
-- 관찰: `~/.config/bdui/config.toml`의 `[runner.codex.models."luna".price]`는 재배치 뒤 gpt-6-luna에 적용되고
-  `luna-5.6` 가격 절은 없다. 사용자 소유 설정이라 이 작업은 쓰지 않는다. gpt-5.6-luna 과거 비용을 보려면
-  `luna-5.6` 가격 절을 더한다(`sol-5.6` 선례와 같음).
+- 사전 조치(사용자 승인 2026-09-29, 스펙 게이트 전에 이 세션이 수행):
+  - `~/.config/bdui/config.toml`에 `[runner.codex.models."luna-5.6"]` `id = "gpt-5.6-luna"`와
+    `[runner.codex.models."luna-5.6".price]`(지금 `luna` 절과 같은 값)를 더한다.
+  - `id`를 명시하므로 이 Bead 착지 전에도 잘못된 모델이 생기지 않는다. 착지 전에는 설정 전용 모델 `luna-5.6`으로 보이고,
+    착지 뒤에는 BUILTIN `luna-5.6` 항목에 가격만 합쳐진다.
+  - 완료 확인: 그 설정으로 해석한 카탈로그에서 `modelPrice(catalog, 'gpt-5.6-luna')`가 기존 `luna` 단가와 같다.
+  - 완료(2026-09-29): 추가 뒤 `resolveCatalog`는 경고 없이 `luna-5.6 { id: 'gpt-5.6-luna' }`를 만들었다.
+    `modelPrice(…, 'gpt-5.6-luna')`는 지금 카탈로그와 `luna.id = 'gpt-6-luna'`로 모사한 재배치 뒤 카탈로그에서
+    모두 `input 0.2 · output 1.2 · cache_read 0.02 · cache_write 0.25`다.
+- 관찰: 재배치 뒤 `luna` 가격 절은 gpt-6-luna에 적용된다. gpt-6-luna 단가가 다르면 사용자가 `luna` 값을 고친다.
+- 관찰: `sol-5.6`(gpt-5.6-sol)에도 같은 공백이 이미 있다(가격 절 없음, UI-vui5 관찰). `config.toml`의 가격 절은
+  2026-09-11 기준 단가라서 `sol` 값도 gpt-5.6-sol 시절 것이다. `sol-5.6` 절 추가는 이번 사용자 승인 범위 밖이라 하지 않는다.
 - 관찰: dotfiles `ccx` 모델 매핑(`ccx_model_mapping`)은 여전히 gpt-5.6 계열을 가리킨다. `sol` 재배치 때도 바꾸지 않았고
   이번 사용자 결정의 범위가 아니다.
 - 관찰: 워크플로의 `자동` 모델 선택은 dotfiles `model_tiers`가 정한다. 이 설정은 beads-ui 선택 목록만 거른다.
@@ -235,15 +259,17 @@ RED → GREEN 시임:
 - `server/ws.model-visibility.test.js`
   - 구독 즉시 `runners`(이름·id)를 담은 스냅샷을 받는다.
   - 성공한 `set`이 다른 구독자에게 새 스냅샷을 민다.
-- `app/utils/model-visibility.test.js`
+- `app/utils/model-visibility.test.js`(새 파일)
   - `visibleModelChoices`가 꺼 둔 이름을 빼고 `auto`를 남긴다.
   - `null` 목록에 입력을 그대로 돌려준다.
+  - `visibleReviewerChoices`가 `sol`이 꺼져 있을 때 `codex`를 빼고 `self`·`skip`과 풀 수 없는 토큰을 남긴다.
 - `app/utils/execution-defaults.test.js`
   - `buildOptionView`가 꺼 둔 저장 모델을 `(비활성)` 레이블로 되살려 선택된 채 둔다.
 - `app/views/settings-dialog/execution-pane` 계열 테스트
   - 워커 탭 구현 모델 선택지에서 꺼 둔 모델이 빠진다.
   - 저장 값이 꺼 둔 모델이면 `(비활성)`으로 남는다.
-- `app/views/worker/provider-resume-dialog` 테스트
+  - `sol`이 꺼져 있으면 리뷰 행 선택지에서 `codex`가 빠진다.
+- `app/views/worker/provider-resume-dialog.test.js`(새 파일)
   - 꺼 둔 모델이 선택지에서 빠진다.
   - 원래 attempt의 꺼 둔 모델은 `(비활성)`으로 남는다.
   - 러너를 바꿀 때 `default_model`이 꺼져 있으면 첫 번째 켜진 모델을 고른다.
@@ -253,10 +279,15 @@ RED → GREEN 시임:
   - 러너의 마지막 켜진 체크박스는 비활성이다.
 - `server/worker/runner-catalog.test.js`
   - `luna.id`가 `gpt-6-luna`이고 `luna-5.6.id`가 `gpt-5.6-luna`다.
-  - 핀 `model_catalog_fallback.codex`의 모든 ID를 BUILTIN 항목 하나가 싣는다.
 - `server/worker/usage-pricing.test.js`
-  - `modelPrice(catalog, 'gpt-5.6-luna')`는 `luna-5.6`의 가격을 찾는다.
-  - `modelPrice(catalog, 'gpt-6-luna')`는 `luna`의 가격을 찾는다.
+  - §7 사전 조치와 같은 설정(`luna` 가격 A, `luna-5.6` `id = "gpt-5.6-luna"`·가격 A)으로 해석한 카탈로그에서
+    `modelPrice(catalog, 'gpt-5.6-luna')`가 A이고 `modelPrice(catalog, 'gpt-6-luna')`가 `luna`의 가격 A를 찾는다.
+    변경 전에는 `gpt-6-luna`가 어느 항목에도 없어 `null`이다.
+
+회귀 검사(시임 아님, 변경 전에도 통과):
+
+- `server/worker/runner-catalog.test.js` — 핀 `model_catalog_fallback.codex`의 모든 ID를 BUILTIN 항목 하나가 싣는다.
+  다음 별칭 재배치가 직전 세대 항목을 빠뜨리지 않게 한다.
 
 검증 bundle은 AGENTS.md Pre-Handoff Validation 그대로다(`npm run tsc`, `npm run lint`, `npx prettier --write <변경 파일>`,
 `npx vitest run --reporter=dot`). UI 변경은 공유 서버 배포 뒤 모니터 일괄 창 `전역` 탭과 설정 창 워커 탭의 스크린샷으로 확인한다.
