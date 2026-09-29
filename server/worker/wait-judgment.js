@@ -684,7 +684,8 @@ export function judgeWaitReasons(input) {
         const attempt = attempts.get(bead_id);
         if (
           !attempt ||
-          attempt.status !== 'provider_hold' ||
+          attempt.status !== 'paused' ||
+          !attempt.cause?.startsWith('provider_outage:') ||
           !target.attempt_ids.includes(attempt.attempt_id) ||
           excluded.has(bead_id)
         ) {

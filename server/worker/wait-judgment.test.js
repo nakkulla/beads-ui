@@ -238,7 +238,14 @@ function run(overrides = {}) {
 /** @param {Record<string, any>} [target] */
 function provider(target = {}) {
   return queue({
-    attempts: { a: waiting({ status: 'provider_hold' }) },
+    attempts: {
+      a: waiting({
+        runner: 'codex',
+        status: 'paused',
+        cause: 'provider_outage:usage_limit',
+        cause_detail: { kind: 'provider_outage' }
+      })
+    },
     provider_hold: {
       codex: {
         since: NOW - MINUTE,
@@ -1016,6 +1023,51 @@ describe('wait judgment prerequisites', () => {
 });
 
 describe('wait judgment holds and manual waits', () => {
+  test('offers a probe for a paused provider outage attempt', () => {
+    const result = run({ queue: provider() });
+
+    expect(result.wait_reasons).toMatchObject([
+      {
+        kind: 'provider_hold',
+        subject: { bead_id: 'UI-consumer', root_dir: ROOT },
+        actions: [
+          {
+            op: 'probe_now',
+            label: '↻ 지금 프로브',
+            payload: { root_dir: ROOT, runner: 'codex' }
+          }
+        ]
+      }
+    ]);
+  });
+
+  test.each([
+    { status: 'failed' },
+    { cause: 'user_paused' },
+    { cause: 'provider_outage' },
+    { cause: undefined }
+  ])('omits a hold for an attempt outside provider pause %j', (patch) => {
+    const snapshot = provider();
+    Object.assign(snapshot.attempts.a, patch);
+
+    const result = run({ queue: snapshot });
+
+    expect(result.wait_reasons).toEqual([]);
+  });
+
+  test('omits a hold when the latest attempt is not its target', () => {
+    const snapshot = provider();
+    snapshot.attempts.b = {
+      ...snapshot.attempts.a,
+      attempt_id: 'b',
+      started_at: NOW
+    };
+
+    const result = run({ queue: snapshot });
+
+    expect(result.wait_reasons).toEqual([]);
+  });
+
   test.each([
     [new Date(2026, 8, 15, 23, 59, 59, 999).getTime(), '23:59'],
     [new Date(2026, 8, 16, 0, 0, 0, 0).getTime(), '00:00']
