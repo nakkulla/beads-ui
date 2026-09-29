@@ -140,6 +140,21 @@ function normalizeUsageWindows(input) {
 }
 
 /**
+ * Identify an HTTP 401 from the latest usage refresh.
+ *
+ * @param {unknown} input
+ */
+function hasUnauthorizedRefresh(input) {
+  if (!input || typeof input !== 'object') {
+    return false;
+  }
+  const usage = /** @type {any} */ (input);
+  return (
+    usage.refresh?.status === 'http_error' && usage.refresh.http_status === 401
+  );
+}
+
+/**
  * Normalize one codex-auth account row for the multi-account card. Identity
  * beyond number/email/alias/plan stays out of the response.
  *
@@ -170,7 +185,8 @@ function normalizeAccountRow(input, active_account_key, now) {
     typeof active_account_key === 'string' &&
     row.account_key === active_account_key;
 
-  const windows = normalizeUsageWindows(row.usage);
+  const token_expired = hasUnauthorizedRefresh(row.usage);
+  const windows = token_expired ? null : normalizeUsageWindows(row.usage);
   const fetched_at = windows ? epochToIso(row.usage.updated_at) : null;
   if (!windows || !fetched_at) {
     return {
@@ -180,7 +196,7 @@ function normalizeAccountRow(input, active_account_key, now) {
       alias,
       plan,
       active,
-      status: 'unavailable',
+      status: token_expired ? 'token_expired' : 'unavailable',
       windows: [],
       fetchedAt: null,
       ageSeconds: null
@@ -246,6 +262,9 @@ function normalizeActiveAccount(root, now) {
     return unavailable();
   }
   const usage = account.usage;
+  if (hasUnauthorizedRefresh(usage)) {
+    return unavailable();
+  }
   if (!['api', 'local', 'cache'].includes(usage.source)) {
     return unavailable();
   }

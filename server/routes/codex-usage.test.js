@@ -185,6 +185,23 @@ describe('codex usage normalization', () => {
     expect(payload).toMatchObject({ available: true, provider: 'codex' });
   });
 
+  test('hides the active summary after an HTTP 401 refresh', () => {
+    const row = accountRow({
+      usage: {
+        ...accountRow().usage,
+        source: 'cache',
+        refresh: { status: 'http_error', http_status: 401 }
+      }
+    });
+
+    const payload = normalizeCodexUsage(listSnapshot([row]));
+
+    expect(payload).toEqual({
+      available: false,
+      accounts: [expect.objectContaining({ key: 'account-1', active: true })]
+    });
+  });
+
   test('clamps negative snapshot age to zero', () => {
     const payload = normalizeCodexUsage(
       usageSnapshot(),
@@ -442,6 +459,64 @@ describe('GET /api/codex-usage', () => {
 });
 
 describe('codex account rows', () => {
+  test.each(['cache', 'api', 'local', 'none'])(
+    'marks an HTTP 401 refresh as token_expired for source %s',
+    (source) => {
+      const row = accountRow({
+        usage: {
+          ...accountRow().usage,
+          source,
+          refresh: {
+            status: 'http_error',
+            http_status: 401,
+            error_code: 'unauthorized_unknown'
+          }
+        }
+      });
+
+      const payload = normalizeCodexUsage(listSnapshot([row], 'other'));
+
+      expect(payload.accounts).toEqual([
+        {
+          key: 'account-1',
+          number: 1,
+          email: 'user@example.com',
+          alias: null,
+          plan: 'pro',
+          active: false,
+          status: 'token_expired',
+          windows: [],
+          fetchedAt: null,
+          ageSeconds: null
+        }
+      ]);
+    }
+  );
+
+  test.each([
+    ['missing refresh', undefined],
+    ['null refresh', null],
+    ['malformed refresh', 'http_error'],
+    ['empty refresh', {}],
+    ['successful refresh', { status: 'ok', http_status: 200 }],
+    ['server failure', { status: 'http_error', http_status: 500 }],
+    ['forbidden refresh', { status: 'http_error', http_status: 403 }],
+    ['network failure', { status: 'error' }],
+    ['different status', { status: 'ok', http_status: 401 }],
+    ['string HTTP status', { status: 'http_error', http_status: '401' }]
+  ])('preserves cached usage for %s', (_name, refresh) => {
+    const row = accountRow({
+      usage: { ...accountRow().usage, source: 'cache', refresh }
+    });
+    const snapshot = listSnapshot([row]);
+    const now = () => 1_786_334_400_000;
+    const expected = normalizeCodexUsage(listSnapshot([accountRow()]), now);
+
+    const payload = normalizeCodexUsage(snapshot, now);
+
+    expect(payload).toEqual(expected);
+  });
+
   test('keeps the plan of every same-email account', () => {
     const payload = normalizeCodexUsage(
       listSnapshot([
