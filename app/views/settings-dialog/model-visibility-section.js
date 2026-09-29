@@ -11,6 +11,7 @@
  * @typedef {import('../../data/model-visibility-store.js').ModelVisibilityState} ModelVisibilityState
  */
 import { html, render } from 'lit-html';
+import { live } from 'lit-html/directives/live.js';
 
 /** The info line under the group title. */
 export const MODEL_VISIBILITY_INTRO =
@@ -165,7 +166,7 @@ export function createModelVisibilitySection(host, options) {
             <input
               type="checkbox"
               data-model=${model.name}
-              .checked=${enabled}
+              .checked=${live(enabled)}
               ?disabled=${last || busy}
               @change=${(/** @type {Event} */ ev) =>
                 void onToggle(

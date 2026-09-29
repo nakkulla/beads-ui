@@ -970,6 +970,10 @@ export function bootstrap(root_element) {
         id: MODEL_VISIBILITY_CLIENT_ID
       }).catch((err) => {
         log('subscribe-model-visibility failed: %o', err);
+        // 구독에 실패하면 모든 모델이 보인다(스펙 §8) — 이전 스냅샷으로 계속
+        // 숨기지 않고 비우며, 다음 재연결이 다시 구독하도록 플래그를 푼다.
+        model_visibility_store.clear();
+        model_visibility_subscribed = false;
       });
     }
 

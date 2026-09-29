@@ -124,8 +124,13 @@ export function createModelVisibilityStore(options = {}) {
     let text = null;
     try {
       text = fs.readFileSync(filePath(), 'utf8');
-    } catch {
+    } catch (err) {
       text = null;
+      if (/** @type {any} */ (err)?.code !== 'ENOENT') {
+        warn(
+          `model-visibility: ${filePath()} 읽기 실패(${String(err)}): 기본값으로 읽습니다.`
+        );
+      }
     }
     if (text === null) {
       cache = defaultState();

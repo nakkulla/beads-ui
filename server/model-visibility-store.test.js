@@ -40,6 +40,35 @@ describe('model visibility store', () => {
     });
   });
 
+  test('warns on a read error other than a missing file and keeps the defaults', () => {
+    /** @type {string[]} */
+    const warnings = [];
+    fs.mkdirSync(file);
+    const store = createModelVisibilityStore({
+      filePath: () => file,
+      warn: (message) => warnings.push(message)
+    });
+
+    const snapshot = store.snapshot(CATALOG);
+
+    expect(snapshot.revision).toBe(0);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('읽기 실패');
+  });
+
+  test('stays silent when the file is merely absent', () => {
+    /** @type {string[]} */
+    const warnings = [];
+    const store = createModelVisibilityStore({
+      filePath: () => file,
+      warn: (message) => warnings.push(message)
+    });
+
+    store.snapshot(CATALOG);
+
+    expect(warnings).toEqual([]);
+  });
+
   test('rejects a stale revision with conflict and the current snapshot', () => {
     const store = makeStore();
 
