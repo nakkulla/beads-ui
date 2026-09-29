@@ -106,22 +106,54 @@ describe('worker console styles', () => {
     expect(workerBlock).toContain('.detail-session');
   });
 
-  test('wraps long transcript tool details inside the drawer', () => {
+  // 도구 줄은 한 줄이다 (UI-2dbn §4.3): 세부는 말줄임으로 자르고 전문은 펼침
+  // 칸이 싣는다. 줄바꿈 계약이던 시절에는 긴 Bash 한 줄이 5~10줄로 늘어났다.
+  test('keeps a transcript tool line on one line inside the drawer', () => {
     const bodyRule =
       workerBlock.match(/(?:^|\n)\.sv__body\s*{([^}]*)}/)?.[1] || '';
-    const lineRule =
-      workerBlock.match(/(?:^|\n)\.sv__tool-line\s*{([^}]*)}/)?.[1] || '';
     const detailRule =
       workerBlock.match(/(?:^|\n)\.sv__tool-detail\s*{([^}]*)}/)?.[1] || '';
-    const resultRule =
-      workerBlock.match(/(?:^|\n)\.sv__tool-ok\s*{([^}]*)}/)?.[1] || '';
+    const expandRule =
+      workerBlock.match(/(?:^|\n)\.sv__tool-expand\s*{([^}]*)}/)?.[1] || '';
 
     expect(bodyRule).toContain('overflow-x: hidden');
-    expect(lineRule).toContain('display: flex');
-    expect(lineRule).toContain('width: 100%');
-    expect(detailRule).toContain('white-space: normal');
-    expect(detailRule).toContain('overflow-wrap: anywhere');
-    expect(resultRule).toContain('overflow-wrap: anywhere');
+    expect(detailRule).toContain('white-space: nowrap');
+    expect(detailRule).toContain('text-overflow: ellipsis');
+    expect(detailRule).toContain('min-width: 0');
+    expect(expandRule).toContain('overflow-wrap: anywhere');
+  });
+
+  // 창 높이는 상한이 아니라 고정이다 (UI-2dbn §4.1): 스트리밍 중 창이 출렁이지
+  // 않고, 이슈 상세 호스트도 같은 규격을 쓴다.
+  test('fixes the desktop transcript window height on both hosts', () => {
+    const hostRule =
+      CSS.match(
+        /(?:^|\n)\.worker-drawer-overlay \.worker-drawer-host\s*{([^}]*)}/
+      )?.[1] || '';
+    const detailRule =
+      CSS.match(/(?:^|\n)\.session-log-root \.sv\s*{([^}]*)}/)?.[1] || '';
+
+    expect(hostRule).toContain('height: min(88vh, 1000px)');
+    expect(detailRule).toContain('height: min(88vh, 1000px)');
+  });
+
+  test('turns every transcript host into a full-screen sheet below 640px', () => {
+    const mq = CSS.slice(
+      CSS.indexOf('/* ---------- Worker responsive (<=640px)')
+    );
+    const hostRule =
+      mq.match(
+        /(?:^|\n)\s*\.worker-drawer-overlay \.worker-drawer-host\s*{([^}]*)}/
+      )?.[1] || '';
+    const detailRule =
+      mq.match(/(?:^|\n)\s*\.session-log-root \.sv\s*{([^}]*)}/)?.[1] || '';
+
+    expect(hostRule).toContain('width: 100%');
+    expect(hostRule).toContain('height: 100dvh');
+    expect(detailRule).toContain('inset: 0');
+    expect(detailRule).toContain('height: 100dvh');
+    expect(detailRule).toContain('border-radius: 0');
+    expect(detailRule).toContain('box-shadow: none');
   });
 
   test('shows the queue placement button without a pointer media gate', () => {
