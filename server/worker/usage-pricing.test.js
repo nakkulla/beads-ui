@@ -313,3 +313,36 @@ describe('worker/usage-pricing modelPrice across sol generations', () => {
     expect(price).toMatchObject({ input: 5, output: 20 });
   });
 });
+
+describe('worker/usage-pricing modelPrice across luna generations', () => {
+  /** @returns {ReturnType<typeof resolveCatalog>} */
+  function twoLunaCatalog() {
+    return resolveCatalog({
+      overrides: {
+        codex: {
+          models: {
+            luna: { price: { input: 1, output: 4 } },
+            'luna-5.6': { id: 'gpt-5.6-luna', price: { input: 1, output: 4 } }
+          }
+        }
+      },
+      warn: () => {}
+    });
+  }
+
+  test('prices a gpt-5.6-luna record with the luna-5.6 price', () => {
+    const catalog = twoLunaCatalog();
+
+    const price = modelPrice(catalog, 'gpt-5.6-luna');
+
+    expect(price).toMatchObject({ input: 1, output: 4 });
+  });
+
+  test('prices a gpt-6-luna record with the luna price', () => {
+    const catalog = twoLunaCatalog();
+
+    const price = modelPrice(catalog, 'gpt-6-luna');
+
+    expect(price).toMatchObject({ input: 1, output: 4 });
+  });
+});

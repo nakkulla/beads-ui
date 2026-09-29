@@ -143,6 +143,12 @@ const BUILTIN = {
         speed_tiers: ['default', 'fast']
       },
       luna: {
+        id: 'gpt-6-luna',
+        efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+        speed_tiers: ['default', 'fast']
+      },
+      'luna-5.6': {
         id: 'gpt-5.6-luna',
         efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
         orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max'],

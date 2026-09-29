@@ -57,6 +57,21 @@ describe('worker/runner-catalog parity with the pinned execution defaults', () =
     );
     expect(pinned.speed_tiers).toEqual(codex_models.sol.speed_tiers);
   });
+
+  test('carries every pinned codex fallback id in exactly one builtin entry', () => {
+    const codex_models = builtinCatalog().codex.models;
+
+    const fallback_ids = Object.values(
+      pin.implementation.model_catalog_fallback.codex
+    );
+
+    for (const id of fallback_ids) {
+      const owners = Object.keys(codex_models).filter(
+        (alias) => codex_models[alias].id === id
+      );
+      expect(owners, id).toHaveLength(1);
+    }
+  });
 });
 
 describe('worker/runner-catalog builtin defaults', () => {
@@ -111,7 +126,8 @@ describe('worker/runner-catalog builtin defaults', () => {
     expect(runners.codex.models.astra.id).toBe('gpt-6-astra');
     expect(runners.codex.models.sol.id).toBe('gpt-6-sol');
     expect(runners.codex.models.terra.id).toBe('gpt-5.6-terra');
-    expect(runners.codex.models.luna.id).toBe('gpt-5.6-luna');
+    expect(runners.codex.models.luna.id).toBe('gpt-6-luna');
+    expect(runners.codex.models['luna-5.6'].id).toBe('gpt-5.6-luna');
   });
 
   test('gives luna max effort while sol stops at xhigh', () => {
@@ -182,7 +198,8 @@ describe('worker/runner-catalog builtin defaults', () => {
       sol: 'codex',
       'sol-5.6': 'codex',
       terra: 'codex',
-      luna: 'codex'
+      luna: 'codex',
+      'luna-5.6': 'codex'
     });
   });
 });

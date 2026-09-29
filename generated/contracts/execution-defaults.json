@@ -64,12 +64,13 @@
         "astra": "gpt-6-astra",
         "sol": "gpt-6-sol",
         "terra": "gpt-5.6-terra",
-        "luna": "gpt-5.6-luna"
+        "luna": "gpt-6-luna"
       }
     },
     "model_catalog_fallback": {
       "codex": {
-        "sol": "gpt-5.6-sol"
+        "sol": "gpt-5.6-sol",
+        "luna": "gpt-5.6-luna"
       }
     },
     "exact_model_default_effort": {
