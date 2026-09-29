@@ -44,6 +44,7 @@ import {
   discardReceiptTemplate,
   execChipsTemplate,
   externalWaitCardParts,
+  interactiveProgressLineTemplate,
   interactiveSessionBadgesTemplate,
   interactiveSessionClosingTemplate,
   laneOriginChipTemplate,
@@ -1098,7 +1099,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           /** @type {import('../../protocol.js').WaitReason} */ (
             wait_representative
           ),
-          { now }
+          { now, interactive_sessions: tile.interactive_sessions }
         )
       : { badge: '', body: '', actions: '', times: '' };
   const paused = !!tile.paused;
@@ -1305,6 +1306,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       held: wait,
       hold,
       wait_reasons,
+      interactive_sessions: tile.interactive_sessions,
       now,
       // 재시도 대기 라벨은 회차와 예약 시각까지 말한다 (§5.2 "기존 문구").
       ...(retry_wait
@@ -1335,19 +1337,18 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 실패한 폐기 작업의 두 번째 출구 (UI-jw27 §4). 폐기 실패는 실행 중·held·
   // 파킹 타일 어디서나 날 수 있으므로 상태 분기 밖에서 한 번만 만들고, 자리는
   // `[폐기]`와 같은 슬롯 1 오른쪽 끝이다 — 같은 실패가 내는 두 조작이다.
-  const resolve_button =
-    tile.resolve_action || (waiting && !!wait?.recovery)
-      ? html`<button
-          type="button"
-          class="op-btn rtile__resolve"
-          ?disabled=${tile.resolve_enabled === false}
-          title=${tile.resolve_title ||
-          '이 실패를 사람이 이어받는 대화형 세션을 띄웁니다'}
-          aria-label="세션에서 해결"
-        >
-          세션에서 해결
-        </button>`
-      : '';
+  const resolve_button = tile.resolve_action
+    ? html`<button
+        type="button"
+        class="op-btn rtile__resolve"
+        ?disabled=${tile.resolve_enabled === false}
+        title=${tile.resolve_title ||
+        '이 실패를 사람이 이어받는 대화형 세션을 띄웁니다'}
+        aria-label="세션에서 해결"
+      >
+        세션에서 해결
+      </button>`
+    : '';
   const discard_button =
     tile.discard?.action && !(failed && failure?.landed === true)
       ? html`<button
@@ -1424,7 +1425,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           >`
         : ''}${status_badges}${interactiveSessionBadgesTemplate(
         tile.interactive_sessions,
-        { bead_id: tile.bead_id }
+        { bead_id: tile.bead_id, now }
       )}
       <div class="rtile__hd-actions">
         ${interactiveSessionClosingTemplate(tile.interactive_sessions)}
@@ -1483,7 +1484,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       </div>
     </div>
     <div class="rtile__title">${tile.title}</div>
-    ${wait_body_lines.body}${external_wait
+    ${wait_body_lines.body}${parked || waiting
+      ? interactiveProgressLineTemplate(tile.interactive_sessions, now)
+      : ''}${external_wait
       ? // 세션 소유 외부 대기 타일 (UI-l48z §4.1): 활동 줄 없이 4a·4b·5 재료와
         // 슬롯 6 조작만 싣는다.
         html`${monitor_relations}${tile_meta}${external_foot || discard_actions

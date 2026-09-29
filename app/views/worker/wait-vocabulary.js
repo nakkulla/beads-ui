@@ -108,7 +108,7 @@ export const WAIT_KINDS = Object.freeze(
       when: '세션이 사용자 답변이나 원인 확인을 요청하고 멈춤',
       release:
         '세션에서 남긴 문장과 원인을 확인하고 이어갈 지시 또는 폐기를 결정',
-      action: '[세션에서 해결] · 폐기',
+      action: '[세션에서 해결] · 폐기 — 문의 세션이 살아 있으면 폐기만',
       elapsed_word: '대기',
       next_word: ''
     },

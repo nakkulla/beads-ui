@@ -110,6 +110,7 @@ import {
   processIdentityOf,
   recordedExecutionEligibility
 } from './instructions-restart.js';
+import { readLastAssistantMessage as defaultReadLastAssistantMessage } from './interactive-progress.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import {
   DEFAULT_SLOTS,
@@ -783,6 +784,8 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * Overrides for the `[세션에서 이어가기]` launcher's IO (registry fs, ps
  * probe, session-ref options); production passes none.
  * @property {(entry: any, options?: any) => { locality: string, file: string|null, last_event_at: number|null }} [resolveSessionFile]
+ * @property {typeof defaultReadLastAssistantMessage} [readLastAssistantMessage]
+ * The interactive session transcript tail reader (UI-ri8n §3.1).
  * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, publish?: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void, read?: (workspace: string, attempt_id: string, options?: any) => unknown[], pathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string, stderrPathFor?: (workspace: string, attempt_id: string, bead_id?: string|null) => string }} sessionLog
  * The session-log broker. `pathFor`/`stderrPathFor` are what the spawn hands the
  * runner as its stdout/stderr files (UI-o2yt §3.1); a fake without them simply
@@ -1294,6 +1297,27 @@ const INTERACTIVE_KIND_LABELS = {
   inquiry: '문의',
   external_resume: '재개'
 };
+
+/**
+ * The turn stage a live interactive pane's hook options describe (UI-ri8n
+ * §3.1); two empty options still read as `idle`.
+ *
+ * @param {string|undefined} running - `@agent_running`
+ * @param {string|undefined} attention - `@agent_attention`
+ * @returns {'running'|'question'|'limit'|'idle'}
+ */
+export function interactiveTurnState(running, attention) {
+  if (running === '1') {
+    return 'running';
+  }
+  if (attention === 'question' || attention === 'plan') {
+    return 'question';
+  }
+  if (attention === 'limit') {
+    return 'limit';
+  }
+  return 'idle';
+}
 
 /**
  * Build the auto-advance state machine over the queue store.
@@ -9208,6 +9232,57 @@ export function createScheduler(deps) {
         log('interactive kill failed for %s/%s: %o', workspace, key, result);
       }
     }
+    /**
+     * Patch for the last assistant line when the transcript moved since the
+     * last read; empty otherwise, and a read failure keeps the previous value
+     * (UI-ri8n §4). The caller folds it into the pass's single record write.
+     *
+     * @param {string} key
+     * @param {import('./queue-store.js').InteractiveSession} record
+     * @param {string} session_id
+     * @returns {Partial<import('./queue-store.js').InteractiveSession>}
+     */
+    function interactiveLastMessagePatch(key, record, session_id) {
+      const resolver = deps.resolveSessionFile || defaultResolveSessionFile;
+      const reader =
+        deps.readLastAssistantMessage || defaultReadLastAssistantMessage;
+      try {
+        const location = resolver(
+          {
+            provider: record.provider,
+            session_id,
+            host: os.hostname(),
+            index: 0
+          },
+          { home_dir: deps.homeDir, hostname: os.hostname() }
+        );
+        if (
+          location.locality !== 'local' ||
+          location.file === null ||
+          location.last_event_at === null ||
+          (record.last_message_read_at !== null &&
+            location.last_event_at <= record.last_message_read_at)
+        ) {
+          return {};
+        }
+        const message = reader({
+          provider: record.provider,
+          file: location.file
+        });
+        return {
+          last_message_read_at: location.last_event_at,
+          ...(message !== null ? { last_message: message } : {})
+        };
+      } catch (err) {
+        log(
+          'interactive transcript read failed for %s/%s: %o',
+          workspace,
+          key,
+          err
+        );
+        return {};
+      }
+    }
     const unsettled_beads = new Set(
       Object.entries(records)
         .filter(
@@ -9263,20 +9338,24 @@ export function createScheduler(deps) {
             : record.source === 'recovered'
               ? '복구'
               : `새 세션${record.fallback_reason ? ` (${record.fallback_reason})` : ''}`;
-      // The timeline writer deduplicates this deterministic event_id.
-      appendTimeline({
-        bead_id: record.bead_id,
-        kind: 'interactive_session',
-        seq: `${record.kind}:${record.launched_at}:started`,
-        summary: `${label} 세션 시작 · ${source}`
-      });
-      const alive = panes[record.kind].some(
+      // Launch fills `last_seen_alive_at`; the first reconcile observation is
+      // the pass that has not yet written a turn state. Later passes must not
+      // grow the timeline file with the same start event.
+      if (record.turn_state === null) {
+        appendTimeline({
+          bead_id: record.bead_id,
+          kind: 'interactive_session',
+          seq: `${record.kind}:${record.launched_at}:started`,
+          summary: `${label} 세션 시작 · ${source}`
+        });
+      }
+      const pane_row = panes[record.kind].find(
         (pane) =>
           pane.pane === record.pane_id &&
           pane.key === record.bead_id &&
           pane.dead === '0'
       );
-      if (!alive) {
+      if (!pane_row) {
         ended(
           key,
           record,
@@ -9284,7 +9363,19 @@ export function createScheduler(deps) {
         );
         continue;
       }
-      update(key, record, { last_seen_alive_at: now() });
+      const turn_state = interactiveTurnState(
+        pane_row.agent_running,
+        pane_row.agent_attention
+      );
+      update(key, record, {
+        last_seen_alive_at: now(),
+        ...(turn_state !== record.turn_state
+          ? { turn_state, turn_state_since: now() }
+          : {}),
+        ...(record.session_id !== null
+          ? interactiveLastMessagePatch(key, record, record.session_id)
+          : {})
+      });
       if (record.session_id === null) {
         const session = await launcher.readPaneOption(
           record.pane_id,

@@ -98,12 +98,15 @@ export function paneFormat(marker) {
 }
 
 /**
- * Project the recovery facts with the marker last (UI-6pif §3.4).
+ * Project the recovery facts with the marker last (UI-6pif §3.4). The hook
+ * owned `@agent_running`/`@agent_attention` pair sits right after `pane_dead`
+ * — both are colon-free flag words, so the fixed-position split still holds
+ * and the colon-bearing cwd and marker keep their tail parsing (UI-ri8n).
  *
  * @param {string} marker
  */
 export function paneFormatExtended(marker) {
-  return `#{session_name}:#{window_name}:#{pane_id}:#{pane_dead}:#{pane_current_path}:#{@agent_runtime}:#{${marker}}`;
+  return `#{session_name}:#{window_name}:#{pane_id}:#{pane_dead}:#{@agent_running}:#{@agent_attention}:#{pane_current_path}:#{@agent_runtime}:#{${marker}}`;
 }
 
 /**
@@ -378,13 +381,21 @@ export function createTmuxLauncher(deps = {}) {
     if (!result.ok) {
       return result;
     }
-    /** @type {{ session: string, window: string, pane: string, dead: string, cwd: string, agent_runtime: string, key: string }[]} */
+    /** @type {{ session: string, window: string, pane: string, dead: string, agent_running: string, agent_attention: string, cwd: string, agent_runtime: string, key: string }[]} */
     const rows = [];
     for (const line of result.stdout.split('\n')) {
       if (!line) {
         continue;
       }
-      const [session, window, pane, dead, ...tail] = line.split(':');
+      const [
+        session,
+        window,
+        pane,
+        dead,
+        agent_running = '',
+        agent_attention = '',
+        ...tail
+      ] = line.split(':');
       // Runtime is a closed vocabulary; splitting six fields would truncate
       // a colon-bearing cwd. The final runtime boundary leaves the marker
       // intact; this format assumes marker keys contain no runtime delimiter.
@@ -397,6 +408,8 @@ export function createTmuxLauncher(deps = {}) {
         window,
         pane,
         dead,
+        agent_running,
+        agent_attention,
         cwd: match[1],
         agent_runtime: match[2],
         key: match[3]

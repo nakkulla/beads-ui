@@ -5,6 +5,7 @@
 ## 현재 유효한 결정
 | # | 제목 | 날짜 | 요약 |
 | --- | --- | --- | --- |
+| UI-ri8n | [멈춤 판정과 [세션에서 해결]은 살아 있는 문의 세션이 정한다](UI-ri8n-live-inquiry-session-decides-stall-verdict-and-resolve-exit.md) | 2026-09-29 | 세션이 멈춤의 verdict는 살아 있는 문의 세션의 단계가 정한다 — 작업 중이면 normal(⏸ 배지, 문의 배지 단계 꼬리), 질문·한도 대기이거나 문의 세션이 없으면 action_required이고 알림은 그 전환마다 1회; [세션에서 해결]은 살아 있는 문의·해결 세션이 없을 때만 서고 서버 already_running은 방어로 남는다; 단계는 reconcile이 pane 옵션과 전사 tail로 레코드에 쓴다 |
 | UI-ooc0 | [모델 활성은 서버 전역 꺼 둔 모델 목록으로 선택지만 거른다](UI-ooc0-model-visibility-disabled-list.md) | 2026-09-29 | 모델 활성은 서버 전역 꺼 둔 모델 목록이 선택지 표시에서만 빼는 것이며 카탈로그·저장 값·디스패치 검증·단가는 그대로 둔다; 저장된 값이 꺼 둔 모델이면 (비활성)으로 남기고 러너마다 하나 이상 켜 둔다 |
 | UI-u6ud-9 | [사용량 집계](UI-u6ud-9-usage-aggregation.md) | 2026-09-23 | 사용량은 검증된 직접 사용량만 부모·자식 중복 없이 합산하고 입증되지 않은 값은 추정 가산하지 않으며 미관측 범위는 부분 집계로 표시한다; 직접 세션 카드는 현재 참조 대화 전체를 보이되 Bead별 배분·워크스페이스 합계 가산을 하지 않는다 |
 | UI-u6ud-6 | [Worker 이력 기록과 세션 생존 소유](UI-u6ud-6-worker-history-and-liveness.md) | 2026-09-23 | Worker 이력의 SoT는 bead별 append-only events.jsonl이고 queue.json은 살아 있는 상태만 담으며 살아 있는 queue.attempts는 bead 이력의 최신 접미다; 구현·리뷰 attempt의 생존·슬롯 점유·정산 시작은 scheduler reconcile이, 결과 판정은 큐가 소유한다; beads-ui가 띄운 대화형 세션은 슬롯을 점유하지 않는 별도 큐 레코드로 투영되고 그 생존·종료만 reconcile이 소유한다; Worker는 구현 attempt dispatch에서만 open Bead를 in_progress로 선점하고 session_ref는 쓰지 않는다 |
@@ -15,7 +16,6 @@
 | UI-u6ud-11 | [Worker 주소와 저장소 defaults 소비](UI-u6ud-11-worker-url-and-defaults.md) | 2026-09-23 | Beads UI는 저장소 defaults 저장값과 Worker 주소 적용값을 분리하고 공통 주소의 조회·쓰기는 설치된 dotfiles worker-url CLI로만 하며 kv·공통 파일을 직접 쓰거나 적용값을 추측하지 않는다; defaults의 키·schema·허용값·부재 규칙은 dotfiles 계약이 정의하고 beads-ui는 어휘를 넓히거나 하네스 기본값을 복제하지 않으며 kv 읽기는 fail-quiet, 사용자 편집 쓰기는 strict 거절이다; 설정 화면은 적용 주소·저장소 예외·공통 기본값을 따로 보이고 새 연결 점검 API는 두지 않는다 |
 | UI-u6ud-10 | [실행 프리셋과 판정 칩](UI-u6ud-10-exec-presets-and-chips.md) | 2026-09-23 | 실행 프리셋은 applies_to 계열별 id 하나가 정체성이고 읽을 때 계열 키 집합을 대칭 비교하며 dispatchPreset과 카드 비교는 분리한다; 판정 칩 복잡·frontend·backend 클릭은 서버 전역 바인딩의 general 프리셋을 그 이슈에 적용하고 재클릭은 첫 클릭 전 핀으로 되돌리며 quick_fix 이슈는 거부한다; 칩 바인딩 편집은 모니터 일괄 창의 서버 전역 탭에만 있고 저장소 하나를 편집하는 창에는 섞지 않는다 |
 | UI-u6ud | [데이터 계층과 스냅샷 투영](UI-u6ud-data-layer-snapshot-projection.md) | 2026-09-23 | 데이터 계층은 bd CLI shell-out(스냅샷 세대당 기본 2회 read, legacy 3회)이고 DB 직결·daemon·batch RPC는 없다; issue-detail을 포함한 모든 목록은 같은 워크스페이스 스냅샷 세대에서 투영하고 상세 전용 bd read는 없다; 워크스페이스·후보 투영은 비동기 준비 컨텍스트만 읽고 동기 자식 프로세스는 title-cache 외에 띄우지 않는다; 구독별 store는 전체 issue push를 받아 내용 변경만 통지하고 registry가 구독 출처를 전달한다 |
-| UI-l48z | [세션 소유 외부 대기는 실행 중 레인의 세션 타일이다](UI-l48z-session-external-wait-is-running-lane-session-tile.md) | 2026-09-23 | 세션 소유 외부 대기 Bead는 external_wait 키를 술어로 후보 레인이 아니라 실행 중 레인의 세션 타일에 서고, 외부 대기 조작은 슬롯 6 foot이며 좌표 칩은 상세 패널 잡 표가 갖는다 |
 | UI-a5l2 | [Worker 가드: 실행 전 거부·pre-push 예방·사후 base 착지 감지](UI-a5l2-guard-pre-tool-deny-no-kill-no-queue-hold.md) | 2026-09-21 | Worker 가드는 Claude·Codex 세션의 실행 전 거부 훅과 pre-push 예방, 사후 base 착지 감지로만 강제하며 텍스트 판정으로 세션을 죽이지 않고, 큐 단위 보류는 어떤 종류도 만들지 않으며, 뚫린 착지는 그 Bead의 개별 실패다 |
 
 ## 이력
@@ -116,5 +116,6 @@
 | UI-wg68 | [판정 칩 복잡·frontend·backend의 클릭은 모니터 설정의 서버 전역 바인딩이 가리키는 general 프리셋을 그 이슈에 적용하고 재클릭은 첫 클릭 전 핀으로 되돌린다 — applied_exec_preset을 chip-preset-toggle도 쓴다는 점만 UI-uohc에서 뒤집고 계열·route 일치·id 하나 정체성·대칭 비교·dispatchPreset 분리는 승계한다](history/UI-wg68-judgement-chip-click-applies-bound-preset.md) | superseded | [UI-u6ud-10](UI-u6ud-10-exec-presets-and-chips.md) |
 | UI-wg68-2 | [모니터 일괄 창은 워커·quick fix·세션·계정에 서버 전역 칩 바인딩을 편집하는 다섯 번째 탭 칩을 더하며 그 탭만 적용 대상 저장소와 무관하고 단일 창에는 없다 — 두 모드가 같은 네 탭이라는 점만 UI-uohc-2에서 뒤집고 나머지는 승계한다](history/UI-wg68-2-bulk-settings-fifth-tab-chip-bindings.md) | superseded | [UI-u6ud-10](UI-u6ud-10-exec-presets-and-chips.md) |
 | UI-hgd2 | [선행 대기 attempt는 잔재 재개 후보다 — 복귀 dispatch의 잔재 처분 사다리가 보존 세션을 resume하고 대기 종결이 worktree HEAD를 기록한다](history/UI-hgd2-prerequisite-wait-attempt-is-residue-resume-candidate.md) | superseded | [UI-u6ud-7](history/UI-u6ud-7-worker-wait-resume-residue.md) |
-| UI-u6ud-7 | [Worker 대기·재개·잔재 처분](history/UI-u6ud-7-worker-wait-resume-residue.md) | superseded | [UI-l48z](UI-l48z-session-external-wait-is-running-lane-session-tile.md) |
-| UI-u6ud-8 | [후보 레인과 카드 조립](history/UI-u6ud-8-candidate-lanes-and-cards.md) | superseded | [UI-l48z](UI-l48z-session-external-wait-is-running-lane-session-tile.md) |
+| UI-l48z | [세션 소유 외부 대기는 실행 중 레인의 세션 타일이다](history/UI-l48z-session-external-wait-is-running-lane-session-tile.md) | superseded | [UI-ri8n](UI-ri8n-live-inquiry-session-decides-stall-verdict-and-resolve-exit.md) |
+| UI-u6ud-7 | [Worker 대기·재개·잔재 처분](history/UI-u6ud-7-worker-wait-resume-residue.md) | superseded | [UI-l48z](history/UI-l48z-session-external-wait-is-running-lane-session-tile.md) |
+| UI-u6ud-8 | [후보 레인과 카드 조립](history/UI-u6ud-8-candidate-lanes-and-cards.md) | superseded | [UI-l48z](history/UI-l48z-session-external-wait-is-running-lane-session-tile.md) |

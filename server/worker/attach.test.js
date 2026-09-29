@@ -2125,6 +2125,8 @@ describe('worker/attach construction + live loop (F1)', () => {
                     key: 'UI-interactive',
                     pane: '%1',
                     dead: '0',
+                    agent_running: '',
+                    agent_attention: '',
                     session: 'interactive',
                     window: 'resolve',
                     cwd: WS,

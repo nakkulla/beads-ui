@@ -4365,3 +4365,119 @@ describe('views/monitor external wait confirm and session resume (UI-r6xq §4.4)
     );
   });
 });
+
+describe('views/monitor resolve action while an inquiry lives (UI-ri8n)', () => {
+  /** @param {string} bead_id */
+  function liveInquiry(bead_id) {
+    return {
+      [`${bead_id}:inquiry`]: {
+        bead_id,
+        kind: 'inquiry',
+        provider: 'claude',
+        session_id: 'sid',
+        mode: 'fork',
+        source: 'attempt',
+        fallback_reason: null,
+        attempt_id: null,
+        tmux_session: 'bdui-inquiry',
+        tmux_window: bead_id,
+        state: 'live',
+        settled_at: null,
+        launched_at: NOW - 1000
+      }
+    };
+  }
+
+  /** @param {string} bead_id */
+  function recoveryReason(bead_id) {
+    return {
+      kind: 'recovery',
+      subject: { bead_id, root_dir: WS_A },
+      headline: '확인 대기',
+      release: '',
+      verdict: 'action_required',
+      targets: [],
+      actions: []
+    };
+  }
+
+  /**
+   * @param {Record<string, any>} over
+   * @param {boolean} live
+   * @param {string} bead_id
+   */
+  function mountWorkspace(over, live, bead_id) {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          ...over,
+          wait_reasons: [recoveryReason(bead_id)],
+          interactive_sessions: live ? liveInquiry(bead_id) : {}
+        })
+      ],
+      workspaces_state: [state()]
+    });
+    view.load();
+    return mount;
+  }
+
+  const WAITING = {
+    attempts: {
+      t1: {
+        attempt_id: 't1',
+        bead_id: 'A-1',
+        status: 'waiting',
+        cause: 'session_ended_unresolved',
+        cause_detail: { recovery: { reason: 'verification' } },
+        started_at: NOW - 100,
+        finished_at: NOW - 50,
+        session_id: 'saved-session'
+      }
+    }
+  };
+
+  test.each([
+    [true, false],
+    [false, true]
+  ])('draws the running-tile button with live=%s as %s', (live, drawn) => {
+    const mount = mountWorkspace(WAITING, live, 'A-1');
+
+    const button = mount.querySelector('.rtile__resolve');
+
+    expect(button !== null).toBe(drawn);
+  });
+
+  test.each([
+    [true, false],
+    [false, true]
+  ])('draws the parallel-row button with live=%s as %s', (live, drawn) => {
+    const mount = mountWorkspace(
+      { queue: [{ bead_id: 'A-2', added_at: 1 }] },
+      live,
+      'A-2'
+    );
+
+    const button = mount.querySelector(
+      '.worker-wait__area--parallel .worker-mini__resolve'
+    );
+
+    expect(button !== null).toBe(drawn);
+  });
+
+  test.each([
+    [true, false],
+    [false, true]
+  ])('draws the serial-row button with live=%s as %s', (live, drawn) => {
+    const mount = mountWorkspace(
+      { serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-3' }] }] },
+      live,
+      'A-3'
+    );
+
+    const button = mount.querySelector(
+      '.worker-wait__lane .worker-mini__resolve'
+    );
+
+    expect(button !== null).toBe(drawn);
+  });
+});

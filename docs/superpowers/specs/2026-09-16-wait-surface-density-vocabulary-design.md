@@ -201,6 +201,8 @@ WaitReason과 `gate-*` LaneGate가 같은 칩(`⛔ 정지`·`↻ 환경 보류`)
 `⚠️ 공급자 장애` 문구 정정). held 타일의 공급자 보류 배지 상세(리셋 시각·계정·
 `수동 조치`)는 배지에서 빼고 팝업으로 내린다(§6.3).
 
+**정정(UI-ri8n)**: `세션이 멈춤` 행의 verdict는 「항상 `action_required`」에서 `2026-09-29-inquiry-session-live-card-consistency-design.md` §3.2 표로 바뀐다(살아 있는 문의가 작업 중이면 `normal`).
+
 ### 5.3 관계 칩 표 (범례용, 칩 문법 §3의 사본이 아니라 참조)
 
 `RELATION_CHIPS`는 `⛓`·`→`·`🔓`·`⧉`·`scope 없음`·`↩`·`워커 생성`·`⏳ <n>초`
@@ -240,6 +242,8 @@ WaitReason과 `gate-*` LaneGate가 같은 칩(`⛔ 정지`·`↻ 환경 보류`)
   `data-help-anchor=<행 id>`). 판정이 없는 held 카드의 팝업은 제목이 `대기 종류`이고
   본문은 어휘 표의 풀리는 조건과 `범례 보기`뿐이다.
 - `title` 툴팁은 어휘 표의 "언제 뜨나" 문장이다.
+
+**정정(UI-ri8n)**: 살아 있는 문의 세션이 있으면 배지 팝업의 판정 문장 아래에 `문의 세션 <tmux_session:tmux_window> · <단계 꼬리>` 한 줄이 더해진다.
 
 ### 6.3 슬롯 3 — headline 한 줄
 

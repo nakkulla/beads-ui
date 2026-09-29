@@ -128,7 +128,7 @@ import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
 import { createRepoOpsDrawer } from './repo-ops-timeline.js';
 import { runningGridTemplate } from './running-grid.js';
-import { tileResolveFields } from './tile-resolve.js';
+import { hasLiveResolveSession, tileResolveFields } from './tile-resolve.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
 
@@ -528,12 +528,16 @@ export function resolveSessionToast(res) {
 
 /**
  * The toast tone for the same reply. A fresh-session fallback is a SUCCESS with
- * a caveat, not an error: a session did start.
+ * a caveat, not an error: a session did start. An `already_running` reply is
+ * guidance, not a refusal (UI-ri8n §3.4).
  *
  * @param {any} res
- * @returns {'success'|'error'}
+ * @returns {'success'|'error'|'info'}
  */
 export function resolveSessionTone(res) {
+  if (res && res.session === 'already_running') {
+    return 'info';
+  }
   return res && res.launched === true ? 'success' : 'error';
 }
 
@@ -3193,14 +3197,7 @@ export function createWorkerView(mount_element, options = {}) {
                   open: open_failure_detail === item.attempt_id
                 }
               : null,
-            ...tileResolveFields(
-              item.id,
-              {
-                discard: item.discard,
-                parked: item.run_state === 'parked'
-              },
-              resolve_pending.has(item.id)
-            )
+            ...tileResolveFields(item, resolve_pending.has(item.id))
           })
       );
     // 사람이 결정할 것이 먼저 보여야 한다: 실패, 그 다음 파킹(사용자 결정을
@@ -3341,7 +3338,7 @@ export function createWorkerView(mount_element, options = {}) {
     const rows = (Array.isArray(q.pr_wait) ? q.pr_wait : []).map(
       (/** @type {any} */ e) => {
         const item = item_by_id.get(e.bead_id);
-        const row = prWaitRow(
+        const pr_row = prWaitRow(
           e.bead_id,
           item?.title || bead_titles[e.bead_id] || e.bead_id,
           pr_obs,
@@ -3418,6 +3415,13 @@ export function createWorkerView(mount_element, options = {}) {
               : {})
           }
         );
+        // 살아 있는 해결 세션이 이미 이 질문에 답하고 있다 (UI-ri8n §3.4).
+        const row = {
+          ...pr_row,
+          resolve_action:
+            pr_row.resolve_action &&
+            !hasLiveResolveSession(item?.interactive_sessions)
+        };
         return {
           ...row,
           ...prWaitLaneOriginFields(e, last_impl_by_bead),
@@ -4095,11 +4099,7 @@ export function createWorkerView(mount_element, options = {}) {
       ${miniRow(
         {
           ...item,
-          ...tileResolveFields(
-            item.id,
-            { discard: item.discard, parked: false },
-            resolve_pending.has(item.id)
-          )
+          ...tileResolveFields(item, resolve_pending.has(item.id))
         },
         { actions: queueRowOps(item) }
       )}
@@ -4150,11 +4150,7 @@ export function createWorkerView(mount_element, options = {}) {
               miniRow(
                 {
                   ...it,
-                  ...tileResolveFields(
-                    it.id,
-                    { discard: it.discard, parked: false },
-                    resolve_pending.has(it.id)
-                  )
+                  ...tileResolveFields(it, resolve_pending.has(it.id))
                 },
                 { actions: queueRowOps(it) }
               )
