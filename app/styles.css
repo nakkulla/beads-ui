@@ -5235,10 +5235,15 @@ html[data-theme='dark'] {
   display: flex;
   align-items: center;
   gap: var(--sp-8);
+  width: 100%;
   min-width: 0;
   padding: var(--sp-7) var(--sp-12);
+  border: none;
+  background: none;
   color: var(--text-muted);
+  font-family: inherit;
   font-size: var(--fs-small);
+  text-align: left;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -9036,6 +9041,16 @@ button.detail-session__leg:focus-visible {
     flex-wrap: wrap;
     padding: var(--sp-4) 0;
     line-height: 1.45;
+  }
+
+  /* 줄바꿈은 결과 요약만 둘째 줄로 보내려는 것이다. 긴 도구 이름이 첫 줄을
+     넘으면 이름이 따로 한 줄을 차지하므로, 폭 상한 안에서 말줄임한다. */
+  .sv__tool-name {
+    flex: 0 1 auto;
+    max-width: 40%;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .sv__tool-detail {

@@ -156,6 +156,22 @@ describe('worker console styles', () => {
     expect(detailRule).toContain('box-shadow: none');
   });
 
+  // 모바일 도구 줄은 결과 요약만 둘째 줄로 내려간다 (UI-2dbn §4.3): 긴 도구
+  // 이름이 따로 한 줄을 차지하면 세 줄이 된다.
+  test('caps the tool name so only the result wraps below 640px', () => {
+    const mq = CSS.slice(
+      CSS.indexOf('/* ---------- Worker responsive (<=640px)')
+    );
+    const nameRule =
+      mq.match(/(?:^|\n)\s*\.sv__tool-name\s*{([^}]*)}/)?.[1] || '';
+    const outRule =
+      mq.match(/(?:^|\n)\s*\.sv__tool-out\s*{([^}]*)}/)?.[1] || '';
+
+    expect(nameRule).toContain('max-width: 40%');
+    expect(nameRule).toContain('text-overflow: ellipsis');
+    expect(outRule).toContain('flex: 1 1 100%');
+  });
+
   test('shows the queue placement button without a pointer media gate', () => {
     const baseRule =
       CSS.match(/(?:^|\n)\.worker-card__place\s*{([^}]*)}/)?.[1] || '';

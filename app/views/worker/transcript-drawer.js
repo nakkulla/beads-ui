@@ -1230,11 +1230,12 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     const chosen = bundle_open.get(block.idx);
     const is_open = typeof chosen === 'boolean' ? chosen : block.default_open;
     const summary = summarizeWork(block.segs);
+    // A native button: a collapsed bundle hides rows by default, so its toggle
+    // has to answer Enter/Space as well as a click.
     return html`<div class="sv__work${is_open ? ' sv__work--open' : ''}">
-      <div
+      <button
+        type="button"
         class="sv__work-sum"
-        role="button"
-        tabindex="0"
         aria-expanded=${is_open ? 'true' : 'false'}
         @click=${() => toggleBundle(block.idx, is_open)}
       >
@@ -1255,7 +1256,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
         ${summary.failed > 0
           ? html`<span class="sv__work-err">✗ ${summary.failed}</span>`
           : ''}
-      </div>
+      </button>
       ${is_open
         ? html`<div class="sv__work-rows">
             ${block.segs.map(segmentTemplate)}

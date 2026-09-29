@@ -1917,6 +1917,23 @@ describe('transcript drawer 작업 묶음 (UI-2dbn §4.3)', () => {
     expect(mount.querySelectorAll('.sv__work .sv__tool')).toHaveLength(4);
   });
 
+  // A collapsed bundle hides rows by default, so its toggle must answer the
+  // keyboard too — a native button does, a clickable div does not.
+  test('makes the bundle summary a native button', () => {
+    const drawer = drawerOver('att-w10', [
+      assistantText('앞 본문'),
+      ...fourDistinctTools('w10'),
+      assistantText('뒤 본문')
+    ]);
+
+    drawer.open({ attempt_id: 'att-w10' });
+
+    const summary = mount.querySelector('.sv__work-sum');
+    expect(summary?.tagName).toBe('BUTTON');
+    expect(summary?.getAttribute('type')).toBe('button');
+    expect(summary?.getAttribute('aria-expanded')).toBe('false');
+  });
+
   test('draws a thinking-only run without a work bundle', () => {
     const drawer = drawerOver('att-w9', [
       thinking('세션 시작 판단'),
