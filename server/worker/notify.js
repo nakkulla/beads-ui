@@ -129,15 +129,9 @@ export async function notifyWaitReasons(input) {
           continue;
         }
         inquiries.set(item.subject.bead_id, detail.inquiry);
-        item = {
-          ...item,
-          headline: '세션이 멈춤',
-          verdict: 'action_required',
-          verdict_reason: {
-            code: 'decision',
-            message: '문의 세션에서 처분 결정이 필요함'
-          }
-        };
+        // The judge's verdict stands: a working inquiry session is `normal`,
+        // which drops the key and rearms it for the next question (UI-ri8n).
+        item = { ...item, headline: '세션이 멈춤' };
       }
     }
     if (

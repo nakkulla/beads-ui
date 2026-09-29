@@ -514,6 +514,10 @@
  * @property {'live'|'exiting'} state
  * @property {number|null} exit_requested_at
  * @property {number|null} defer_since
+ * @property {'running'|'question'|'limit'|'idle'|null} turn_state
+ * @property {number|null} turn_state_since
+ * @property {{ text: string, at: number|null }|null} last_message
+ * @property {number|null} last_message_read_at
  */
 /**
  * @typedef {Object} Queue
@@ -3064,6 +3068,23 @@ function normalizeDiscardOperations(raw) {
 }
 
 /**
+ * Normalize one interactive session's last assistant line; any malformed
+ * value reads as null.
+ *
+ * @param {unknown} raw
+ * @returns {{ text: string, at: number|null }|null}
+ */
+function normalizeLastMessage(raw) {
+  if (!isRecord(raw) || typeof raw.text !== 'string' || raw.text.length === 0) {
+    return null;
+  }
+  return {
+    text: raw.text,
+    at: typeof raw.at === 'number' && Number.isFinite(raw.at) ? raw.at : null
+  };
+}
+
+/**
  * Normalize durable interactive panes, dropping records without an identity.
  *
  * @param {unknown} raw
@@ -3144,7 +3165,17 @@ function normalizeInteractiveSessions(raw) {
           ? value.settled_by
           : null,
       exit_requested_at: numberOrNull('exit_requested_at'),
-      defer_since: numberOrNull('defer_since')
+      defer_since: numberOrNull('defer_since'),
+      turn_state:
+        value.turn_state === 'running' ||
+        value.turn_state === 'question' ||
+        value.turn_state === 'limit' ||
+        value.turn_state === 'idle'
+          ? value.turn_state
+          : null,
+      turn_state_since: numberOrNull('turn_state_since'),
+      last_message: normalizeLastMessage(value.last_message),
+      last_message_read_at: numberOrNull('last_message_read_at')
     };
   }
   return sessions;

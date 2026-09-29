@@ -785,7 +785,7 @@ export function createMonitorView(mount_element, options) {
         false
       );
       if (res?.session === 'already_running') {
-        showToast(`이미 열려 있습니다 · ${res.tmux_window || '?'}`, 'error');
+        showToast(`이미 열려 있습니다 · ${res.tmux_window || '?'}`, 'info');
       } else if (res?.launched !== true) {
         showToast(`세션 기동 실패: ${res?.reason || 'unknown'}`, 'error');
       } else if (res.mode !== 'fork') {
@@ -1064,9 +1064,13 @@ export function createMonitorView(mount_element, options) {
       data-row-index=${row_index}
       data-queue-index=${String(item.queue_index ?? 0)}
     >
-      ${miniRow(withOverlaps(item), {
-        actions: queueRowOps(item, { nudgeable: true })
-      })}
+      ${miniRow(
+        {
+          ...withOverlaps(item),
+          ...tileResolveFields(item, resolve_pending.has(item.id))
+        },
+        { actions: queueRowOps(item, { nudgeable: true }) }
+      )}
     </div>`;
   }
 
@@ -1088,9 +1092,13 @@ export function createMonitorView(mount_element, options) {
       data-row-index=${row_index}
       data-queue-index=${String(item.queue_index ?? 0)}
     >
-      ${miniRow(withOverlaps(item), {
-        actions: queueRowOps(item)
-      })}
+      ${miniRow(
+        {
+          ...withOverlaps(item),
+          ...tileResolveFields(item, resolve_pending.has(item.id))
+        },
+        { actions: queueRowOps(item) }
+      )}
     </div>`;
   }
 
@@ -1342,14 +1350,7 @@ export function createMonitorView(mount_element, options) {
                       open: open_failure_detail === item.attempt_id
                     }
                   : null,
-                ...tileResolveFields(
-                  item.id,
-                  {
-                    discard: item.discard,
-                    parked: item.run_state === 'parked'
-                  },
-                  resolve_pending.has(item.id)
-                )
+                ...tileResolveFields(item, resolve_pending.has(item.id))
               },
               now,
               selected_attempt,

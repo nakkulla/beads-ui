@@ -1,42 +1,96 @@
 ---
-id: UI-l48z
-title: 세션 소유 외부 대기는 실행 중 레인의 세션 타일이다
+id: UI-ri8n
+title: 멈춤 판정과 [세션에서 해결]은 살아 있는 문의 세션이 정한다
 status: accepted
-date: 2026-09-23
-summary: "세션 소유 외부 대기 Bead는 external_wait 키를 술어로 후보 레인이 아니라 실행 중 레인의 세션 타일에 서고, 외부 대기 조작은 슬롯 6 foot이며 좌표 칩은 상세 패널 잡 표가 갖는다"
-supersedes: ["UI-u6ud-8", "UI-u6ud-7"]
-spec: docs/superpowers/specs/2026-09-23-external-wait-session-tile-card-declutter-design.md
-bead: UI-l48z
+date: 2026-09-29
+summary: "세션이 멈춤의 verdict는 살아 있는 문의 세션의 단계가 정한다 — 작업 중이면 normal(⏸ 배지, 문의 배지 단계 꼬리), 질문·한도 대기이거나 문의 세션이 없으면 action_required이고 알림은 그 전환마다 1회; [세션에서 해결]은 살아 있는 문의·해결 세션이 없을 때만 서고 서버 already_running은 방어로 남는다; 단계는 reconcile이 pane 옵션과 전사 tail로 레코드에 쓴다"
+supersedes: ["UI-l48z"]
+spec: docs/superpowers/specs/2026-09-29-inquiry-session-live-card-consistency-design.md
+bead: UI-ri8n
 ---
 
-# 세션 소유 외부 대기는 실행 중 레인의 세션 타일이다
+# 멈춤 판정과 [세션에서 해결]은 살아 있는 문의 세션이 정한다
 
 ## Context
 
-UI-z437(ADR UI-u6ud-7이 승계)이 착지한 뒤 세션이 제출한 외부 작업을 기다리는 Bead는
-후보 레인에 섰다. 세션은 `대기 · external:` 종결에서 Bead를 `in_progress → open`으로
-돌리므로 `runnable-cache`의 세션 버킷(`status === 'in_progress'`)에서 빠지고 `bd ready`
-행으로만 남았기 때문이다. 그 카드는 한 줄 머리줄에 `세션 권장`·`복잡`·영역 라벨·
-대기 배지·조작 버튼 셋을 실어 640px 초과 폭에서 말줄임으로 잘렸고, 슬롯 5의 `ssh`·
-잡 번호·`log` 칩은 상세 패널 잡 표와 중복이었으며, 세션 소유 대기의 완료 출구는
-Worker fork `[이어하기]`뿐이라 사람이 자기 세션에서 이어갈 세션 ID를 카드에서 얻을
-수 없었다. 사용자 결정(2026-09-23, 스펙 §2): 세션 소유 대기는 실행 중 레인에 둔다;
-카드에는 배지·한 줄 요약·시각 줄만 남긴다; 머리줄은 줄을 넘긴다; 세션 ID는 카드에서
-한 번 클릭으로 복사한다; 완료 뒤 `[관찰 중단]`은 "이어가지 않고 대기를 푼다"로
-읽혀야 한다.
+2026-09-29 beads rig `beads-sw1` 실측: Codex quick_fix 시도가 `대기 · recovery:verification`을
+선언하고 종료하자 Worker가 문의 세션을 `codex fork`로 띄웠고, Discord 답 "이어가자"를
+받은 그 세션이 12분 넘게 한 턴으로 작업하는 동안에도 카드는 `⛔ 세션이 멈춤 · 조치 필요`·
+`[세션에서 해결]`·`22분째 대기`를 그대로 그렸다. `wait-judgment.js`는 `waiting` +
+`isSessionStalledRecovery`면 항상 `action_required`를 냈고, `notify.js`는 복구 문의가 있으면
+판정을 다시 `action_required`로 덮어써 억제 키가 풀리지 않았으며, 렌더러는 `[세션에서
+해결]`을 그려 놓고 서버가 `already_running`으로 거절했다. 문의 세션의 진행(질문 대기·
+작업 중·마지막 메시지)은 어디에도 없었다. 사용자 결정(2026-09-29, 스펙 §1): 문의 세션이
+작업 중이면 대기 배지는 조용한 `⏸`이고 문의 배지가 단계를 말한다; 카드는 그 진행을
+보인다; `[세션에서 해결]`은 살아 있는 문의·해결 세션이 있는 동안 서지 않는다.
 
-- `UI-u6ud-8`(후보 레인과 카드 조립): "`runnable-cache`의 채택 조건은 `bead_id` 있음·
-  `open`·phase child 아님 셋뿐이다" 한 조항을 뒤집고 나머지 조항 전부를 승계한다.
-- `UI-u6ud-7`(Worker 대기·재개·잔재 처분): 외부 작업 대기 절의 "보존 세션의 fork
-  재개와 `[이어하기]`·`[새 세션으로]`, 소비자 카드 표면"에서 카드 표면 조항 하나를
-  뒤집고(라벨은 `[워커로 이어가기]`·`[새 세션으로]`로 바뀌며 동작은 유지) 나머지
-  조항 전부를 승계한다.
+- `UI-l48z`(세션 소유 외부 대기는 실행 중 레인의 세션 타일이다): 대기 어휘의 「`세션이
+  멈춤` … 항상 `action_required`·코드 `decision`」과 파킹·복구 대기 출구의 「`[세션에서
+  해결]`은 살아 있는 문의 세션이 있으면 그 pane을 가리키고(`already_running`)」 두 조항을
+  뒤집고 나머지 조항 전부를 승계한다.
+- ADR UI-u6ud-6(대화형 세션의 생존·종료는 reconcile 소유)은 전제다. 같은 reconcile pass가
+  레코드에 단계 필드 넷을 더 쓸 뿐 그 ADR의 조항은 뒤집지 않는다.
 
 ## Decision
 
-**세션 소유 외부 대기 Bead는 `external_wait` 키 하나를 술어로 후보 레인이 아니라
+**`세션이 멈춤`의 verdict는 살아 있는 문의 세션의 단계가 정하고, `[세션에서 해결]`은 살아
+있는 문의·해결 세션이 없을 때만 선다. 단계는 reconcile이 pane 옵션과 전사 tail로
+`interactive_sessions` 레코드에 쓴다.**
+
+단계 관측
+
+- `interactive_sessions` 레코드는 `turn_state`(`running`·`question`·`limit`·`idle`·`null`),
+  `turn_state_since`, `last_message`(`{ text, at }`, 마지막 assistant 메시지 첫 줄 ≤160자),
+  `last_message_read_at`을 갖는다. reconcile pass가 `listPanesExtended` 포맷에 실린
+  `@agent_running`·`@agent_attention`으로 단계를 정하고(`1` → `running`; `question`·`plan`
+  → `question`; `limit` → `limit`; 그 밖·둘 다 비어 있음 → `idle`), 값이 바뀔 때만
+  `turn_state_since`를 쓴다. `null`은 첫 관측 전 레코드뿐이다. 전사는 `session_id`가 있고
+  로컬이며 mtime이 새로울 때만 끝 64KB를 읽는다(`interactive-progress.js`).
+- 시작 타임라인 이벤트는 레코드당 1회다(첫 관측 pass).
+
+대기 판정과 알림
+
+- `judgeWaitReasons`의 `recovery` 분기 중 `isSessionStalledRecovery`가 참인 경우와
+  `awaiting_user` 분기만 `queue.interactive_sessions[<bead>:inquiry]`를 읽는다.
+  `state === 'live'`·`settled_at === null`이 "살아 있는 문의"다.
+
+  | 살아 있는 문의 | `turn_state` | verdict | `actions` |
+  | --- | --- | --- | --- |
+  | 없음 | — | `action_required` · `decision` (현행 문구) | `[세션에서 해결]` · `폐기` |
+  | 있음 | `question` · `limit` | `action_required` · `decision` 「문의 세션이 답을 기다림 …」 | `폐기` |
+  | 있음 | `running` · `idle` · `null` | `normal` | `폐기` |
+
+- `provider`·`credential`·선행 목록 있는 `prerequisite` 등 다른 복구 대기의 판정은 바뀌지
+  않는다. `headline`은 세션이 남긴 blocker 문장, `since`는 `attempt.finished_at` 그대로다.
+- `notifyWaitReasons`는 복구 문의의 verdict를 덮어쓰지 않는다(headline `세션이 멈춤` 강제와
+  `detail.inquiry` 첨부는 유지). 억제 키 `(bead, recovery, decision)`은 verdict가 `normal`인
+  동안 빠져 재무장하고 `action_required` 전환마다 1회 난다. 새 알림 종류는 없다.
+
+카드 출구와 표면
+
+- `[세션에서 해결]`의 유무는 `tileResolveFields(item, resolve_pending)` 하나가 정한다:
+  `eligible = parked || wait.recovery || wait_reasons에 recovery || discard.error`,
+  `live = interactive_sessions 중 state==='live' && !closing && kind ∈ {inquiry, resolve}`,
+  `resolve_action = eligible && !live`. 렌더러(`running-grid.js`·`lanes.js`)는 다시 판정하지
+  않는다. 호출자는 Worker·Monitor 실행 타일, Worker 대기 행·ghost 행, Monitor
+  `parallelRow`·`serialRow`, PR 대기 행이다. `external_resume` 세션은 `live`에 세지 않는다.
+- 서버 `launchForClick`의 `already_running` 응답은 오래된 스냅샷·타임라인 클릭의 방어로
+  남고 토스트 톤은 `info`다.
+- 슬롯 표(2026-08-25 스펙 §5.1 `정정(UI-ri8n)`): 슬롯 1 대화형 세션 배지에 단계 꼬리
+  (`작업 중 <경과>`·`질문 대기`·`한도 대기`·`턴 종료 <경과>`), 대기 배지 팝업에 `문의 세션
+  <tmux_session:tmux_window> · <단계>` 줄, 슬롯 3 held 타일·대기 행에 `▤ <마지막 메시지>`
+  진행 줄(재료 없으면 안 그림), 슬롯 7 시각 줄은 살아 있는 문의가 있으면 `문의 세션
+  <n>분째`. Worker·Monitor가 같은 `buildLanes` 경로를 그린다.
+- 바꾸지 않는 것: 문의 세션의 자동 기동 게이트·프롬프트 다이제스트·브리지 이벤트,
+  레코드의 생존·정산·종료 규칙(ADR UI-u6ud-6), 대기 어휘 4종과 대표 사유 순서, 슬롯 6의
+  `폐기`.
+
+### ADR UI-l48z에서 승계하는 조항
+
+
+세션 소유 외부 대기 Bead는 `external_wait` 키 하나를 술어로 후보 레인이 아니라
 실행 중 레인의 세션 타일에 서고, 외부 대기 조작은 슬롯 6 foot이며, 좌표 칩은 상세
-패널 잡 표가 갖는다.**
+패널 잡 표가 갖는다.
 
 외부 대기 타일과 카드
 
@@ -79,7 +133,7 @@ Worker fork `[이어하기]`뿐이라 사람이 자기 세션에서 이어갈 �
   `/stop`의 서버 동작, 관찰기 주기·hold 예산·admission의 `external_wait` 거절은
   바꾸지 않는다.
 
-### ADR UI-u6ud-8에서 승계하는 조항
+#### ADR UI-u6ud-8에서 승계한 조항
 
 레인과 카드 조립
 
@@ -88,7 +142,7 @@ Worker fork `[이어하기]`뿐이라 사람이 자기 세션에서 이어갈 �
   접어 넣는다. Worker 전용 모델 빌더는 없다.
 - 카드 렌더러는 두 탭이 공유한다. 줄 순서와 새 요소의 자리는 그 요소가 답하는 질문으로
   카드 헤더 문법 스펙의 슬롯 표가 정한다 — 그 표의 현재 값은 2026-08-25 스펙 §2·§5.1의
-  `정정(UI-l48z)` 문단까지다.
+  `정정(UI-ri8n)` 문단까지다.
 - 재료가 없는 줄은 그리지 않는다. 조작은 첫 줄 오른쪽 끝이거나 액션 foot이고 그 사이에
   칩을 끼우지 않는다. 슬롯 표에 없는 요소는 스펙을 먼저 갱신한 뒤 단다.
 
@@ -143,7 +197,7 @@ Worker fork `[이어하기]`뿐이라 사람이 자기 세션에서 이어갈 �
   `ui-order-snapshot`)와 그 서버 저장소는 없다.
 - 공유 코드는 `app/views/stepper.js`와 `app/views/exec-format.js`에 둔다.
 
-### ADR UI-u6ud-7에서 승계하는 조항
+#### ADR UI-u6ud-7에서 승계한 조항
 
 대기 어휘
 
@@ -151,7 +205,8 @@ Worker fork `[이어하기]`뿐이라 사람이 자기 세션에서 이어갈 �
 - 대기 어휘는 넷이다: `선행 대기 ⛓`(`prerequisite`·`prerequisite_foreign`; 선행이
   `blocked`·`deferred`·worker-ineligible이면 `action_required`), `공급자 보류 ⏳`
   (`provider_hold`), `재시도 대기 ↻`(`retry_wait`; 예약 + `grace_ms` 경과면 `overdue`),
-  `세션이 멈춤 ⏸`(`awaiting_user`와 `recovery`; 항상 `action_required`·코드 `decision`).
+  `세션이 멈춤 ⏸`(`awaiting_user`와 `recovery`; verdict는 위 결정의 표가 정한다 — 살아 있는
+  문의 세션이 작업 중이면 `normal`, 아니면 `action_required`·코드 `decision`).
   `external_job` 행은 나란히 선다.
 - 판정은 `normal`·`overdue`·`action_required`이고 `overdue`는 다음 확인 시각이 있는
   종류(공급자 보류·재시도 대기·외부 작업)에만 난다. 대표 사유 순서는
@@ -202,8 +257,9 @@ Worker fork `[이어하기]`뿐이라 사람이 자기 세션에서 이어갈 �
   블록) 셋이고 프롬프트 원문은 dotfiles 소유이며 beads-ui는 바이트 복사를 다이제스트로
   고정한다.
 - 파킹 타일의 출구는 `[세션에서 해결]`·`[폐기]` 둘이다. `[세션에서 해결]`은 살아 있는
-  문의 세션이 있으면 그 pane을 가리키고(`already_running`) 없으면 기록된 세션을 fork해
-  띄우며 자동 기동 게이트(`worker_direction_inquiry.enabled`)를 읽지 않는다.
+  문의·해결 세션이 없을 때만 서고(위 결정의 술어) 기록된 세션을 fork해 띄우며 자동 기동
+  게이트(`worker_direction_inquiry.enabled`)를 읽지 않는다. 서버 `already_running` 응답은
+  오래된 스냅샷·타임라인 클릭의 방어로 남는다.
 - 새 attempt `[재시도]` 버튼은 없다.
 - 해제 전이 자동 재디스패치는 stale 두 값에만 걸리고 후보 판정은 파킹 레코드의
   `cause_detail.awaiting_user`로 한다. `impl_review_conflict:design`은 PR 관측
@@ -215,8 +271,9 @@ Worker fork `[이어하기]`뿐이라 사람이 자기 세션에서 이어갈 �
   직후 파킹과 같은 게이트(`worker_direction_inquiry.enabled`·tmux·Bead당 1개)로 문의
   세션을 띄운다. 프롬프트는 dotfiles `execution-common.md` Direction inquiry 절 `recovery`
   블록의 바이트 복사이고 다이제스트를 고정한다.
-- 복구 대기 카드 조작은 `[세션에서 해결]`·`폐기`이고 `↻ 이어하기`는 없다. 알림은
-  `waitActionRequired` 1회에 문의 세션 결과 한 줄을 붙인다. `provider`·`credential`은
+- 복구 대기 카드 조작은 `[세션에서 해결]`(살아 있는 문의·해결 세션이 없을 때)·`폐기`이고
+  `↻ 이어하기`는 없다. 알림은 `waitActionRequired`가 `action_required` 전환마다 1회이고
+  문의 세션 결과 한 줄을 붙인다. `provider`·`credential`은
   공급자 보류 경로, `blocks` 목록이 있는 `prerequisite`는 선행 대기다.
 
 base_moved와 재개 종류
@@ -321,6 +378,18 @@ base_moved와 재개 종류
 
 ### 대안과 기각 사유
 
+- **대기 배지를 숨기고 문의 배지만 남긴다.** 카드는 단순하지만 attempt가 멈춰 있다는 사실과
+  `막힘 N` 요약이 어긋난다.
+- **버튼을 남기고 `already_running` 토스트만 고친다.** 코드 변경이 가장 적지만 이미 열린
+  창을 다시 가리키는 조작이 남아 실측에서 사용자가 두 번 헤맸다.
+- **클라이언트가 transcript 서랍 구독으로 진행을 파생한다.** 카드마다 구독을 열어야 하고
+  판정(배지)이 서버와 클라이언트로 갈린다.
+- **브리지 스풀·manifest에서 마지막 메시지를 읽는다.** 스풀은 Discord ack 뒤 삭제되고
+  manifest에는 메시지가 없다.
+
+UI-l48z에서 승계한 대안:
+
+
 - **클라이언트가 대기 레코드만으로 타일을 만든다.** 제목·라벨·`session_refs`를 다른
   경로에서 끌어와야 하고 Worker 탭(Board live store)과 Monitor 탭(runnable-cache)의 후보
   원천이 달라 조립 규칙이 둘이 된다 — 승계한 "lane-model 한 경로" 조항과 어긋난다.
@@ -333,15 +402,17 @@ base_moved와 재개 종류
 
 ## Consequences
 
-- 되돌리기 어렵다: 서버 `session_active` 버킷 규칙, 두 탭의 `claimed` 조립, 타일의 held
-  상태, 카드 문법 슬롯 표 정정, `wait-judgment` 라벨을 소비하는 테스트·어휘 표가 함께
-  움직여야 하고, 사용자가 보는 자리가 바뀌므로 코드만 되돌려도 원상복구가 아니다.
-- 맥락 없이는 놀랍다: `bd ready`에 나열되는 `open` Bead가 후보에 없고 실행 중 레인에
-  "세션 타일"로 서는데 세션 프로세스는 없다. 모니터 덱의 레인 카운트에서 이 행은 `세션`
-  열에 잡힌다.
-- `session_active` 캐시 갱신 사이의 스냅샷에서는 후보 카드가 배지·본문·foot 조작을 단 채
-  잠깐 서고 다음 스냅샷에서 타일로 옮겨 간다 — 어느 순간에도 대기가 화면에서 사라지지는
-  않는다. 레코드가 `stopped`로 닫힌 직후 키 unset 전에는 `external_wait` 없는 `open`
-  세션 타일이 잠깐 선다.
-- UI-u6ud-8·UI-u6ud-7의 조항은 뒤집은 둘(채택 조건 셋뿐, 소비자 카드 표면) 외에 전부
-  승계했고 폐기한 조항은 없다.
+- 되돌리기 어렵다: `wait-judgment.js`의 verdict 표, `notify.js`의 억제 키, `tile-resolve.js`
+  술어, `running-grid.js`·`lanes.js`의 fallback 제거, `direction-inquiry.js` 클릭 응답 톤,
+  `scheduler.js` reconcile의 단계 쓰기가 함께 움직이며, 되돌리려면 이 소비자를 같은
+  커밋에서 되돌려야 한다.
+- 맥락 없이는 놀랍다: attempt는 `waiting`으로 남아 있는데 배지가 조용하고(⏸) 출구 버튼이
+  없다. 근거(문의 세션이 곧 작업 세션이라 사람이 지금 할 일이 없다)는 이 결정에만 남는다.
+- `@agent_attention`은 사람이 pane을 포커스하면 `limit` 외에는 지워지므로 질문이 화면에
+  남아 있어도 `idle`로 읽혀 배지가 `⏸`로 내려갈 수 있다 — 브리지 `MODAL_BLOCKED` 가드와
+  같은 한계이며 감수한다.
+- 문의 세션이 작업을 이어가 base에 push하면 Worker의 push 로그 기반 착지 판정은 그 push를
+  보지 못한다(문의 세션에는 pre-push 가드 훅이 없다) — 정산은 Bead close·`done` 이동에
+  의존한다.
+- UI-l48z의 조항은 뒤집은 둘(`세션이 멈춤` 항상 `action_required`, `[세션에서 해결]`이
+  살아 있는 문의 pane을 가리킴) 외에 전부 승계했고 폐기한 조항은 없다.

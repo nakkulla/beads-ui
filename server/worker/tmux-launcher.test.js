@@ -211,7 +211,7 @@ describe('tmux interactive session inspection and exit', () => {
       runTmux: async () => ({
         code: 0,
         stdout:
-          'inquiry:window:%9:0:/repo:claude:work::tree:codex:foreign:UI-1\n',
+          'inquiry:window:%9:0:::/repo:claude:work::tree:codex:foreign:UI-1\n',
         stderr: ''
       })
     });
@@ -230,12 +230,37 @@ describe('tmux interactive session inspection and exit', () => {
     });
   });
 
+  test('exposes the agent running and attention pane options', async () => {
+    const launcher = createTmuxLauncher({
+      runTmux: async () => ({
+        code: 0,
+        stdout: 'inquiry:window:%9:0:1:question:/repo:a:codex:UI-1\n',
+        stderr: ''
+      })
+    });
+
+    const result = await launcher.listPanesExtended(RESOLVE_PANE_MARKER);
+
+    expect(result).toMatchObject({
+      ok: true,
+      rows: [
+        {
+          agent_running: '1',
+          agent_attention: 'question',
+          cwd: '/repo:a',
+          agent_runtime: 'codex',
+          key: 'UI-1'
+        }
+      ]
+    });
+  });
+
   test.each(['claude', 'codex', ''])(
     'preserves cwd and marker colons for runtime %j',
     async (agent_runtime) => {
       const runTmux = vi.fn(async () => ({
         code: 0,
-        stdout: `inquiry:resolve-UI-1:%9:0:/repo:with:colons:${agent_runtime}:foreign:rig:UI-1\n`,
+        stdout: `inquiry:resolve-UI-1:%9:0:::/repo:with:colons:${agent_runtime}:foreign:rig:UI-1\n`,
         stderr: ''
       }));
       const launcher = createTmuxLauncher({ runTmux });
@@ -256,6 +281,8 @@ describe('tmux interactive session inspection and exit', () => {
             window: 'resolve-UI-1',
             pane: '%9',
             dead: '0',
+            agent_running: '',
+            agent_attention: '',
             cwd: '/repo:with:colons',
             agent_runtime,
             key: 'foreign:rig:UI-1'

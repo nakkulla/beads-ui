@@ -631,6 +631,11 @@ describe('external wait projection', () => {
 });
 
 describe('interactive session projection', () => {
+  const NO_TURN = {
+    turn_state: null,
+    turn_state_since: null,
+    last_message: null
+  };
   const record = {
     bead_id: 'A-1',
     kind: 'resolve',
@@ -698,18 +703,48 @@ describe('interactive session projection', () => {
       );
 
       expect(lanes[lane][0].interactive_sessions).toEqual([
-        { ...record, bead_id: undefined, key: 'A-1:resolve', closing: false },
+        {
+          ...record,
+          bead_id: undefined,
+          key: 'A-1:resolve',
+          closing: false,
+          ...NO_TURN
+        },
         {
           ...record,
           bead_id: undefined,
           kind: 'inquiry',
           session_id: 'inquiry-sid',
           key: 'A-1:inquiry',
-          closing: false
+          closing: false,
+          ...NO_TURN
         }
       ]);
     }
   );
+
+  test('carries the turn state, its since, and the last message', () => {
+    const snapshot = workspace({
+      queue: [{ bead_id: 'A-1', added_at: 1 }],
+      interactive_sessions: {
+        'A-1:inquiry': {
+          ...record,
+          kind: 'inquiry',
+          turn_state: 'running',
+          turn_state_since: 50,
+          last_message: { text: 'make test 재실행', at: 60 }
+        }
+      }
+    });
+
+    const lanes = buildLanes([snapshot], [state()]);
+
+    expect(lanes.queue[0].interactive_sessions?.[0]).toMatchObject({
+      turn_state: 'running',
+      turn_state_since: 50,
+      last_message: { text: 'make test 재실행', at: 60 }
+    });
+  });
 
   test('projects an empty array when the snapshot has no sessions', () => {
     const snapshot = workspace({ queue: [{ bead_id: 'A-1', added_at: 1 }] });

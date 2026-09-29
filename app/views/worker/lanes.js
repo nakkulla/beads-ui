@@ -1557,11 +1557,80 @@ export function laneOriginChipTemplate(origin) {
 }
 
 /**
+ * The live inquiry session of a card (UI-ri8n §3.3): `inquiry`, `live`, not
+ * closing. `null` when there is none.
+ *
  * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
- * @param {{ bead_id: string }} options
+ * @returns {import('./lane-model.js').InteractiveSessionView|null}
+ */
+export function liveInquiryView(views) {
+  return (
+    (views || []).find(
+      (view) =>
+        view.kind === 'inquiry' && view.state === 'live' && !view.closing
+    ) || null
+  );
+}
+
+/**
+ * The turn-state tail of an interactive session badge (UI-ri8n §3.3):
+ * `작업 중 <경과>` · `질문 대기` · `한도 대기` · `턴 종료 <경과>`. A null
+ * `turn_state` draws nothing (fail-quiet).
+ *
+ * @param {import('./lane-model.js').InteractiveSessionView} view
+ * @param {number} [now]
+ * @returns {string}
+ */
+export function interactiveTurnTail(view, now = Date.now()) {
+  const elapsed = formatElapsedSince(view.turn_state_since, now).replace(
+    /째$/,
+    ''
+  );
+  switch (view.turn_state) {
+    case 'running':
+      return elapsed ? `작업 중 ${elapsed}` : '작업 중';
+    case 'question':
+      return '질문 대기';
+    case 'limit':
+      return '한도 대기';
+    case 'idle':
+      return elapsed ? `턴 종료 ${elapsed}` : '턴 종료';
+    default:
+      return '';
+  }
+}
+
+/**
+ * The inquiry progress line (UI-ri8n §3.3 slot 3): `▤ <last_message>` with its
+ * age on the right. No live inquiry or no message draws nothing.
+ *
+ * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
+ * @param {number} [now]
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function interactiveProgressLineTemplate(views, now = Date.now()) {
+  const message = liveInquiryView(views)?.last_message;
+  if (!message || !message.text) {
+    return '';
+  }
+  return html`<div class="rtile__activity rtile__activity--session">
+    <span class="rtile__activity-text">▤ ${message.text}</span>
+    ${typeof message.at === 'number'
+      ? html`<span class="rtile__activity-age"
+          >${formatRelativeTime(message.at, now)}</span
+        >`
+      : ''}
+  </div>`;
+}
+
+/**
+ * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
+ * @param {{ bead_id: string, now?: number }} options
  */
 export function interactiveSessionBadgesTemplate(views, options) {
+  const now = options.now ?? Date.now();
   return (views || []).map((view) => {
+    const tail = interactiveTurnTail(view, now);
     const mode =
       view.mode === 'fork'
         ? 'fork'
@@ -1581,9 +1650,11 @@ export function interactiveSessionBadgesTemplate(views, options) {
     const title = resumed
       ? `resume · ${view.source === 'recovered' ? '복구' : 'session_ref'} · ${view.tmux_session}:${view.tmux_window}`
       : `${origin} · ${view.tmux_session}:${view.tmux_window}`;
-    const label = resumed
-      ? `▤ 재개 세션${view.source === 'recovered' ? ' · 복구' : ''}`
-      : `▤ ${view.kind === 'resolve' ? '해결' : '문의'} 세션 · ${mode}`;
+    const label = `${
+      resumed
+        ? `▤ 재개 세션${view.source === 'recovered' ? ' · 복구' : ''}`
+        : `▤ ${view.kind === 'resolve' ? '해결' : '문의'} 세션 · ${mode}`
+    }${tail ? ` · ${tail}` : ''}`;
     return html`${view.session_id
       ? html`<button
           type="button"
@@ -2149,6 +2220,8 @@ function waitPopoverTemplate(title, lines, anchor_id) {
  * explicit reason that bypasses the representative rule (외부 작업 행).
  * @property {string} [label] - A label the card knows better than the table
  * (`retry_wait`의 회차·예약 시각).
+ * @property {import('./lane-model.js').InteractiveSessionView[]} [interactive_sessions]
+ * - The card's interactive sessions; a live inquiry adds one popup line.
  * @property {number} [now]
  */
 
@@ -2230,7 +2303,8 @@ export function waitStatusBadge(material) {
     material.hold || null,
     now,
     {
-      label: material.label || badge_row.label
+      label: material.label || badge_row.label,
+      inquiry: liveInquiryView(material.interactive_sessions)
     }
   );
 }
@@ -2266,7 +2340,7 @@ function externalGuidanceLines(reason) {
  * bead-scope reasons this card carries, one popup line each.
  * @param {Record<string, any>|null} hold - `HoldTile` for provider holds.
  * @param {number} now
- * @param {{ label?: string, release?: string }} [overrides]
+ * @param {{ label?: string, release?: string, inquiry?: import('./lane-model.js').InteractiveSessionView|null }} [overrides]
  * @returns {import('lit-html').TemplateResult|''}
  */
 function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
@@ -2319,9 +2393,16 @@ function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
           typeof hold.log_path === 'string' ? hold.log_path : ''
         ].filter(Boolean)
       : [];
+  const inquiry = overrides.inquiry || null;
+  const inquiry_tail = inquiry ? interactiveTurnTail(inquiry, now) : '';
+  // 살아 있는 문의 세션이 이 대기에 이미 답하고 있다 (UI-ri8n §3.3).
+  const inquiry_line = inquiry
+    ? `문의 세션 ${inquiry.tmux_session}:${inquiry.tmux_window}${inquiry_tail ? ` · ${inquiry_tail}` : ''}`
+    : '';
   const lines = reason
     ? [
         reason.verdict === 'normal' ? '' : reason.verdict_reason?.message || '',
+        inquiry_line,
         reason.release || row.release,
         reason.since ? `대기 시작 ${formatClockLocal(reason.since, now)}` : '',
         reason.next_check_at
@@ -2396,7 +2477,7 @@ function waitTimesText(reason, now_ms) {
  * need their original projection; missing operation material stays absent.
  *
  * @param {import('../../protocol.js').WaitReason|null|undefined} reason
- * @param {{ item?: MiniItem, external_wait?: import('../../protocol.js').ExternalWaitObservation, now?: number, last_observed_at?: number|null, session_preferred?: boolean, surface?: 'card'|'detail' }} [options]
+ * @param {{ item?: MiniItem, interactive_sessions?: import('./lane-model.js').InteractiveSessionView[], external_wait?: import('../../protocol.js').ExternalWaitObservation, now?: number, last_observed_at?: number|null, session_preferred?: boolean, surface?: 'card'|'detail' }} [options]
  */
 export function waitReasonLines(reason, options = {}) {
   if (!reason) {
@@ -2431,16 +2512,25 @@ export function waitReasonLines(reason, options = {}) {
   // 상세 패널만 `last_observed_at`을 넘긴다 (§11): 그 화면의 `확인`은 실제 마지막
   // 관측 시각이라 종류별 낱말 규칙(§5.2) 밖이다.
   const observed_line = options.last_observed_at !== undefined;
+  // 살아 있는 문의가 있으면 시각 줄은 그 세션의 나이다 (UI-ri8n §3.3 slot 7).
+  const inquiry = liveInquiryView(
+    options.interactive_sessions || options.item?.interactive_sessions
+  );
+  const inquiry_elapsed = inquiry
+    ? formatElapsedSince(inquiry.launched_at, now_ms)
+    : '';
   const times_text =
     external && record
       ? externalWaitTimes(record, now_ms)
-      : observed_line
-        ? reset
-          ? `리셋 ${reset}`
-          : [observed ? `확인 ${observed}` : '', next ? `다음 ${next}` : '']
-              .filter(Boolean)
-              .join(' · ')
-        : waitTimesText(reason, now_ms);
+      : inquiry_elapsed && !observed_line
+        ? `문의 세션 ${inquiry_elapsed}`
+        : observed_line
+          ? reset
+            ? `리셋 ${reset}`
+            : [observed ? `확인 ${observed}` : '', next ? `다음 ${next}` : '']
+                .filter(Boolean)
+                .join(' · ')
+          : waitTimesText(reason, now_ms);
   const times_title =
     !observed_line && reason.since
       ? `대기 시작 ${formatTimestampLocal(reason.since)}`
@@ -3269,7 +3359,12 @@ export function miniRow(item, options = {}) {
   // 카드당 상태 배지 하나, 본문 한 줄, 시각 한 줄 (§6). 나머지 사유는 배지
   // 팝업의 `다른 사유` 목록에 남는다.
   const external = externalWaitCardParts(item);
-  const wait_badge = external.badge || waitStatusBadge({ wait_reasons });
+  const wait_badge =
+    external.badge ||
+    waitStatusBadge({
+      wait_reasons,
+      interactive_sessions: item.interactive_sessions
+    });
   const representative = representativeWaitReason(wait_reasons);
   const wait_lines = external.badge
     ? external
@@ -3480,20 +3575,18 @@ export function miniRow(item, options = {}) {
   // [세션에서 해결] (UI-jw27 §4). 평소에는 아무것도 되돌리지 않으므로 [폐기]
   // 앞에 선다. requested 실패에서는 더 약한 복구부터 읽히도록 재시도와 포기 뒤로
   // 이동한다 (discard-abandon §3.1).
-  const resolve_el =
-    item.resolve_action ||
-    wait_reasons.some((reason) => reason.kind === 'recovery')
-      ? html`<button
-          type="button"
-          class="op-btn worker-mini__resolve"
-          data-bead-id=${item.id}
-          ?disabled=${item.resolve_enabled === false}
-          title=${item.resolve_title ||
-          '실패한 작업을 이어받는 대화형 세션을 띄웁니다 (기록된 세션이 있으면 fork)'}
-        >
-          세션에서 해결
-        </button>`
-      : '';
+  const resolve_el = item.resolve_action
+    ? html`<button
+        type="button"
+        class="op-btn worker-mini__resolve"
+        data-bead-id=${item.id}
+        ?disabled=${item.resolve_enabled === false}
+        title=${item.resolve_title ||
+        '실패한 작업을 이어받는 대화형 세션을 띄웁니다 (기록된 세션이 있으면 fork)'}
+      >
+        세션에서 해결
+      </button>`
+    : '';
   const discard_actions_el = discard?.abandon.action
     ? html`${discard_el}${abandon_el}${resolve_el}`
     : html`${resolve_el}${discard_el}`;
@@ -3603,7 +3696,6 @@ export function miniRow(item, options = {}) {
     item.merge_action ||
     item.cancel_action ||
     item.resolve_action ||
-    wait_reasons.some((reason) => reason.kind === 'recovery') ||
     item.discard_action ||
     discard?.operation ||
     item.revise_action
@@ -3673,7 +3765,9 @@ export function miniRow(item, options = {}) {
             ? html`<div class="worker-mini__reason-line">${reason_el}</div>`
             : ''}
           <div class="worker-mini__body">${title_el}</div>
-          ${wait_lines.body}${deps_el}${coords_el}${run_el}${has_foot
+          ${wait_lines.body}${interactiveProgressLineTemplate(
+            item.interactive_sessions
+          )}${deps_el}${coords_el}${run_el}${has_foot
             ? html`<div class="worker-mini__foot">
                 ${merge_step_el}
                 <span class="worker-mini__actions"

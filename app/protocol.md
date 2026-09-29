@@ -392,6 +392,15 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   produces no link. Records exist only while the session is alive; ended session
   history is available through `get-bead-timeline` events of kind
   `interactive_session`. Missing records produce no session badges.
+- Each `interactive_sessions` record also carries four nullable turn fields
+  written by the reconcile pass (UI-ri8n): `turn_state`
+  (`running`|`question`|`limit`|`idle`, `null` until the first observation of
+  the pane's `@agent_running`/`@agent_attention` options), `turn_state_since`
+  (epoch ms of the last `turn_state` change), `last_message` (`{ text, at }` —
+  the first line of the session's last assistant message, at most 160
+  characters; `at` is epoch ms or `null`), and `last_message_read_at` (the
+  transcript mtime the last read saw). An older server omits all four; a missing
+  field renders nothing.
 - The `worker-resolve-in-session` response includes `source` identifying the
   fork origin: `attempt`, `session_ref`, or `fresh` (`null` when the launch
   response has no source). `mode` and `fallback_reason` retain their existing

@@ -3009,6 +3009,7 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
           waitTile({
             status_label: undefined,
             can_resume: true,
+            resolve_action: true,
             wait: {
               summary: '원래 summary',
               blockers: [],
@@ -3039,6 +3040,87 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     }
   );
 
+  test('draws no resolve button on a recovery tile without resolve_action', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        waitTile({
+          wait: {
+            summary: null,
+            blockers: [],
+            recovery: { reason: 'verification', label: 'x', sentence: 's' }
+          }
+        })
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__resolve')).toBeNull();
+  });
+
+  test('draws the inquiry progress line after the headline of a held tile', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const now = 1_000_000;
+
+    render(
+      runningGridTemplate(
+        [
+          waitTile({
+            wait: {
+              summary: null,
+              blockers: [],
+              recovery: { reason: 'verification', label: 'x', sentence: 's' }
+            },
+            interactive_sessions: [
+              {
+                key: 'UI-w1:inquiry',
+                kind: 'inquiry',
+                state: 'live',
+                closing: false,
+                mode: 'fork',
+                source: 'attempt',
+                tmux_session: 'bdui-inquiry',
+                tmux_window: 'UI-w1',
+                launched_at: now - 7 * 60_000,
+                turn_state: 'running',
+                turn_state_since: now - 8 * 60_000,
+                last_message: { text: '테스트 재실행', at: now - 120_000 }
+              }
+            ],
+            wait_reasons: [
+              {
+                kind: 'recovery',
+                subject: { bead_id: 'UI-w1', root_dir: '/repo' },
+                headline: '막힘 문장',
+                verdict: 'normal',
+                since: now - 20 * 60_000,
+                targets: [],
+                actions: [],
+                notify_plan: { on_complete: 'none', on_overdue: 'none' }
+              }
+            ]
+          })
+        ],
+        now
+      ),
+      mount
+    );
+
+    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+    const line = tile.querySelector('.rtile__activity--session');
+    expect(line?.textContent).toContain('▤ 테스트 재실행');
+    expect(line?.previousElementSibling?.className).toContain(
+      'wait-reason__lines'
+    );
+    expect(
+      tile.querySelector('.interactive-session-badge')?.textContent?.trim()
+    ).toBe('▤ 문의 세션 · fork · 작업 중 8분');
+    expect(tile.querySelector('.wait-reason__times')?.textContent?.trim()).toBe(
+      '문의 세션 7분째'
+    );
+  });
+
   test('omits the recovery resume control when the projection refuses it', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
@@ -3047,6 +3129,7 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
         waitTile({
           status_label: undefined,
           can_resume: false,
+          resolve_action: true,
           wait: {
             summary: null,
             blockers: [],
