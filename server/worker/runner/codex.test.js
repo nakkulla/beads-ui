@@ -195,7 +195,7 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
       resume_session_id: 'thread-1'
     });
 
-    expect(built.args[built.args.indexOf('-m') + 1]).toBe('gpt-5.6-luna');
+    expect(built.args[built.args.indexOf('-m') + 1]).toBe('gpt-6-luna');
   });
 
   test('carries the unattended bypass flag on both branches', () => {

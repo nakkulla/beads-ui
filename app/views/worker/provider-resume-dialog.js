@@ -10,6 +10,7 @@
  * 뿐이므로, 그 둘만 호출자가 넘긴다.
  */
 import { html } from 'lit-html';
+import { visibleModelChoices } from '../../utils/model-visibility.js';
 
 /**
  * @typedef {Object} ProviderResumeDraft
@@ -126,14 +127,42 @@ function providerAccountEligibility(runner, account) {
 }
 
 /**
+ * The model a runner switch lands on: its `default_model` while that is
+ * enabled, else the runner's first enabled model (UI-ooc0 §4.2).
+ *
+ * @param {Record<string, any>} runner_entry
+ * @param {ReadonlyArray<string>|null} disabled_models
+ * @returns {string}
+ */
+function runnerDefaultModel(runner_entry, disabled_models) {
+  const visible = visibleModelChoices(
+    Object.keys(objectOf(runner_entry.models)),
+    disabled_models
+  );
+  const fallback =
+    typeof runner_entry.default_model === 'string'
+      ? runner_entry.default_model
+      : '';
+  if (fallback && visible.includes(fallback)) {
+    return fallback;
+  }
+  return visible[0] || fallback;
+}
+
+/**
  * The draft the selector opens with, read from the ORIGINAL attempt identity:
  * 같은 러너·같은 모델·같은 계정이 기본값이고, 사람이 바꾼 것만 복구가 된다.
  *
+ * The original model stays even when it is disabled; the selector labels it
+ * `(비활성)` rather than silently swapping it.
+ *
  * @param {string} attempt_id
  * @param {Record<string, any>} queue
+ * @param {ReadonlyArray<string>|null} [disabled_models] - Server-global disabled
+ * model list; `null` shows every model.
  * @returns {ProviderResumeDraft|null} attempt를 못 찾으면 `null` (열지 않는다).
  */
-export function providerResumeDraft(attempt_id, queue) {
+export function providerResumeDraft(attempt_id, queue, disabled_models = null) {
   const attempt = objectOf(objectOf(queue).attempts)[attempt_id];
   if (!attempt) {
     return null;
@@ -149,9 +178,7 @@ export function providerResumeDraft(attempt_id, queue) {
   const model =
     typeof attempt.model === 'string' && models[attempt.model]
       ? attempt.model
-      : typeof runner_entry.default_model === 'string'
-        ? runner_entry.default_model
-        : Object.keys(models)[0] || '';
+      : runnerDefaultModel(runner_entry, disabled_models);
   const target = providerTargetForAttempt(attempt_id, objectOf(queue));
   const recorded_account =
     original_runner === 'codex'
@@ -182,9 +209,15 @@ export function providerResumeDraft(attempt_id, queue) {
  * @param {ProviderResumeDraft} draft
  * @param {HTMLElement|null} event_target
  * @param {Record<string, any>} queue
+ * @param {ReadonlyArray<string>|null} [disabled_models]
  * @returns {ProviderResumeDraft|null}
  */
-export function providerResumeDraftChange(draft, event_target, queue) {
+export function providerResumeDraftChange(
+  draft,
+  event_target,
+  queue,
+  disabled_models = null
+) {
   if (!draft || !event_target || typeof event_target.closest !== 'function') {
     return null;
   }
@@ -194,16 +227,12 @@ export function providerResumeDraftChange(draft, event_target, queue) {
   if (runner_select) {
     const runners = objectOf(objectOf(objectOf(queue).runner_catalog).runners);
     const runner_entry = objectOf(runners[runner_select.value]);
-    const models = Object.keys(objectOf(runner_entry.models));
     return {
       ...draft,
       runner: runner_select.value,
       // 러너가 바뀌면 계정 식별자의 종류가 달라지므로 고른 계정을 비운다.
       account: runner_select.value === draft.runner ? draft.account : '',
-      model:
-        typeof runner_entry.default_model === 'string'
-          ? runner_entry.default_model
-          : models[0] || ''
+      model: runnerDefaultModel(runner_entry, disabled_models)
     };
   }
   const model_select = /** @type {HTMLSelectElement|null} */ (
@@ -309,15 +338,24 @@ export function providerResumeOverride(draft) {
  *
  * @param {ProviderResumeDraft|null} draft
  * @param {Record<string, any>} queue
+ * @param {ReadonlyArray<string>|null} [disabled_models] - Disabled models drop
+ * out of the choices, except the draft's own model, labelled `(비활성)`.
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function providerResumeDialogTemplate(draft, queue) {
+export function providerResumeDialogTemplate(
+  draft,
+  queue,
+  disabled_models = null
+) {
   if (!draft) {
     return '';
   }
   const runners = objectOf(objectOf(objectOf(queue).runner_catalog).runners);
   const accounts = accountRowsFor(draft.runner, queue);
   const cross_runner = draft.runner !== draft.original_runner;
+  /** @param {string} model */
+  const isEnabled = (model) =>
+    visibleModelChoices([model], disabled_models).length > 0;
   return html`<dialog
     class="op-dialog provider-resume-dialog"
     aria-label="다른 방법으로 이어하기"
@@ -341,16 +379,22 @@ export function providerResumeDialogTemplate(draft, queue) {
           ${Object.entries(runners).map(
             ([runner, entry]) =>
               html`<optgroup label=${runner}>
-                ${Object.keys(objectOf(entry?.models)).map(
-                  (model) =>
-                    html`<option
-                      value=${JSON.stringify([runner, model])}
-                      ?selected=${runner === draft.runner &&
-                      model === draft.model}
-                    >
-                      ${model}
-                    </option>`
-                )}
+                ${Object.keys(objectOf(entry?.models))
+                  .filter(
+                    (model) =>
+                      (runner === draft.runner && model === draft.model) ||
+                      isEnabled(model)
+                  )
+                  .map(
+                    (model) =>
+                      html`<option
+                        value=${JSON.stringify([runner, model])}
+                        ?selected=${runner === draft.runner &&
+                        model === draft.model}
+                      >
+                        ${isEnabled(model) ? model : `${model} (비활성)`}
+                      </option>`
+                  )}
               </optgroup>`
           )}
         </select>

@@ -31,6 +31,10 @@
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import {
+  disabledModelsOf,
+  visibleChoicesForKey
+} from '../../utils/model-visibility.js';
 import { showToast } from '../../utils/toast.js';
 import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
 import {
@@ -199,6 +203,8 @@ function isRecord(value) {
  * `workspaces_state` row.
  * @property {(type: any, payload?: unknown) => Promise<any>} transport
  * @property {{ get: () => any }} [implPresetStore]
+ * @property {{ get: () => any }} [modelVisibilityStore] - Server-global model
+ * visibility; its disabled list filters the model and reviewer choices.
  * @property {(message: string) => void} [notify]
  * @property {(queue: any) => void} [onQueueAdopt] - Where an authoritative queue
  * snapshot from a mutation response goes. The dialog writes it back into the
@@ -1855,14 +1861,21 @@ export function createExecutionPane(mount_element, binding) {
     route
   ) {
     const selected = source[key] ?? UNSET;
-    const view = buildExecutionOptionView(
+    const visible = visibleChoicesForKey(
       key,
       choices,
+      disabledModelsOf(binding.modelVisibilityStore),
+      executionProjection()
+    );
+    const view = buildExecutionOptionView(
+      key,
+      visible.choices,
       source,
       executionProjection(),
       runnerCatalog(),
       resolution_source,
-      route
+      route,
+      visible.hidden_choices
     );
     const selected_option = view.options.find(
       (option) => option.value === selected

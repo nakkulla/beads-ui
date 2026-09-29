@@ -129,7 +129,7 @@ function queueRow(patch = {}) {
 }
 
 /**
- * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string|boolean>, transport?: any, presets?: any, section?: string }} [options]
+ * @param {{ root_dir?: string|null, queue?: any, values?: Record<string, string|boolean>, transport?: any, presets?: any, section?: string, disabled_models?: string[] }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -151,6 +151,16 @@ function mount(options = {}) {
     transport,
     implPresetStore: {
       get: () => options.presets || { revision: 1, presets: [] }
+    },
+    modelVisibilityStore: {
+      get: () =>
+        options.disabled_models
+          ? {
+              revision: 1,
+              disabled_models: options.disabled_models,
+              runners: {}
+            }
+          : null
     },
     notify,
     onQueueAdopt: (queue) => {
@@ -363,6 +373,80 @@ describe('createExecutionPane unbound (root_dir null)', () => {
     expect(payloadsOf(calls, 'worker-provider-limit-policy-set')).toHaveLength(
       1
     );
+  });
+});
+
+describe('createExecutionPane model visibility (UI-ooc0 §4.2)', () => {
+  const TWO_CLAUDE_MODELS = {
+    ...CATALOG,
+    runners: {
+      ...CATALOG.runners,
+      claude: {
+        models: {
+          opus: { id: 'opus', efforts: ['low', 'high'] },
+          sonnet: { id: 'sonnet', efforts: ['low', 'high'] }
+        }
+      }
+    },
+    model_index: { opus: 'claude', sonnet: 'claude', sol: 'codex' }
+  };
+
+  /**
+   * @param {HTMLElement} root
+   * @param {string} key
+   * @returns {HTMLOptionElement[]}
+   */
+  function optionsOf(root, key) {
+    return Array.from(
+      /** @type {HTMLSelectElement} */ (el(root, `select[data-key="${key}"]`))
+        .options
+    );
+  }
+
+  test('omits a disabled model from the worker-tab implementation choices', async () => {
+    const { root, pane } = mount({
+      queue: queueRow({ runner_catalog: TWO_CLAUDE_MODELS }),
+      disabled_models: ['sonnet']
+    });
+
+    await pane.load();
+
+    const values = optionsOf(root, 'impl_model').map((option) => option.value);
+    expect(values).toContain('opus');
+    expect(values).not.toContain('sonnet');
+  });
+
+  test('keeps a stored disabled model selected with the (비활성) label', async () => {
+    const { root, pane } = mount({
+      queue: queueRow({ runner_catalog: TWO_CLAUDE_MODELS }),
+      values: { impl_runtime: 'claude', impl_model: 'sonnet' },
+      disabled_models: ['sonnet']
+    });
+
+    await pane.load();
+
+    const stored = optionsOf(root, 'impl_model').find(
+      (option) => option.value === 'sonnet'
+    );
+    expect(stored?.textContent?.trim()).toBe('sonnet (비활성)');
+    expect(stored?.selected).toBe(true);
+  });
+
+  test('omits codex from a review row when sol is disabled', async () => {
+    const execution_defaults = structuredClone(EXECUTION_DEFAULTS);
+    execution_defaults.session.review.reviewers.codex.model = 'sol';
+    const { root, pane } = mount({
+      queue: queueRow({ execution_defaults }),
+      disabled_models: ['sol']
+    });
+
+    await pane.load();
+
+    const values = optionsOf(root, 'spec_review_model').map(
+      (option) => option.value
+    );
+    expect(values).toContain('fable');
+    expect(values).not.toContain('codex');
   });
 });
 

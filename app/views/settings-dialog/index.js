@@ -28,6 +28,7 @@ import { createBulkPane } from './bulk-pane.js';
 import { createChipBindingsTab } from './chip-bindings-tab.js';
 import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import { createExecutionPane } from './execution-pane.js';
+import { createModelVisibilitySection } from './model-visibility-section.js';
 
 /**
  * The rail's tabs, in display order. `quick fix` carries `◈` — the same
@@ -52,14 +53,15 @@ export const REPO_SETTINGS_TABS = SETTINGS_TABS.filter(
 );
 
 /**
- * 일괄 모드(모니터 탭 헤더 `⚙`)만 다섯 번째 탭 `칩`을 갖는다 (UI-wg68 §6). 그
- * 값은 서버 전역이라 `적용 대상` 저장소 선택과 무관하고, 그래서 저장소 하나를
- * 편집하는 전체 설정 창·레포 카드 창에는 없다 — 두 배열이 갈라지는 유일한
- * 이유다. `⬡`는 `quick fix`의 `◈`와 겹치지 않는 글리프다.
+ * 일괄 모드(모니터 탭 헤더 `⚙`)만 다섯 번째 탭 `전역`을 갖는다 (UI-wg68 §6,
+ * UI-ooc0 §5). 판정 칩 프리셋과 활성 모델은 서버 전역이라 `적용 대상` 저장소
+ * 선택과 무관하고, 그래서 저장소 하나를 편집하는 전체 설정 창·레포 카드 창에는
+ * 없다 — 두 배열이 갈라지는 유일한 이유다. `⬡`는 `quick fix`의 `◈`와 겹치지
+ * 않는 글리프다.
  */
 export const BULK_SETTINGS_TABS = [
   ...REPO_SETTINGS_TABS,
-  { id: 'chips', label: '칩', glyph: '⬡' }
+  { id: 'global', label: '전역', glyph: '⬡' }
 ];
 
 /** Bulk-mode pane heading shared by both tabs. */
@@ -73,8 +75,8 @@ const BULK_TAB_SUB = {
     '선택한 저장소의 quick fix 값을 읽어 세웁니다. 프리셋을 고르면 8행이 그 값으로 채워집니다.',
   session: '선택한 저장소의 대화형 세션 값을 읽어 세웁니다.',
   account: '선택한 저장소의 실행 계정과 한도 대응을 읽어 세웁니다.',
-  chips:
-    '판정 칩에 맬 프리셋입니다. 서버 전역이라 적용 대상 저장소와 무관합니다.'
+  global:
+    '모든 저장소에 공통인 서버 전역 설정입니다. 적용 대상 저장소와 무관합니다.'
 };
 
 /** Tabs the shared execution pane draws, by its own section ids. */
@@ -109,6 +111,7 @@ const TAB_COPY = {
  *   policyStore: { get: () => DisplayPolicy|null, set: (p: DisplayPolicy|null) => void, subscribe?: (fn: () => void) => () => void },
  *   queueStore?: { get: () => any, set?: (queue: any) => void },
  *   implPresetStore?: { get: () => any, subscribe?: (fn: () => void) => () => void },
+ *   modelVisibilityStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
  *   labelOptions: () => string[],
  *   notify?: (message: string) => void,
  *   onOpenChange?: (open: boolean) => void,
@@ -157,9 +160,24 @@ export function createSettingsDialog(mount_element, options) {
 
   /** @type {ReturnType<typeof createChipBindingsTab>|null} */
   let chip_tab = null;
-  /** The `칩` 탭's own host — 서버 전역 값이라 일괄 pane과 섞지 않는다 (§6). */
+  /** @type {ReturnType<typeof createModelVisibilitySection>|null} */
+  let model_section = null;
+  /**
+   * The `전역` 탭's own host — 서버 전역 값이라 일괄 pane과 섞지 않는다 (§6).
+   * It holds two groups: the chip bindings under their own title, then the
+   * model-visibility section, each drawn into its own child host.
+   */
+  const global_host = document.createElement('div');
+  global_host.className = 'settings-dialog__pane-host';
+  const chip_group = document.createElement('section');
+  chip_group.className = 'settings-dialog__group';
+  const chip_title = document.createElement('div');
+  chip_title.className = 'settings-dialog__group-title';
+  chip_title.textContent = '판정 칩 프리셋';
   const chip_host = document.createElement('div');
-  chip_host.className = 'settings-dialog__pane-host';
+  chip_group.append(chip_title, chip_host);
+  const model_host = document.createElement('div');
+  global_host.append(chip_group, model_host);
 
   /** @type {ReturnType<typeof createExecutionPane>|null} */
   let execution_pane = null;
@@ -197,6 +215,7 @@ export function createSettingsDialog(mount_element, options) {
             null),
       transport,
       implPresetStore: options.implPresetStore,
+      modelVisibilityStore: options.modelVisibilityStore,
       notify,
       onQueueAdopt: (queue) => {
         if (bound_root === null) {
@@ -295,10 +314,10 @@ export function createSettingsDialog(mount_element, options) {
     if (!slot) {
       return;
     }
-    if (active_tab === 'chips') {
+    if (active_tab === 'global') {
       bulk_host.remove();
-      if (chip_host.parentElement !== slot) {
-        slot.appendChild(chip_host);
+      if (global_host.parentElement !== slot) {
+        slot.appendChild(global_host);
       }
       if (!chip_tab) {
         chip_tab = createChipBindingsTab(chip_host, {
@@ -309,9 +328,16 @@ export function createSettingsDialog(mount_element, options) {
         });
       }
       chip_tab.render();
+      if (!model_section) {
+        model_section = createModelVisibilitySection(model_host, {
+          transport,
+          modelVisibilityStore: options.modelVisibilityStore
+        });
+      }
+      model_section.render();
       return;
     }
-    chip_host.remove();
+    global_host.remove();
     if (bulk_host.parentElement !== slot) {
       slot.appendChild(bulk_host);
     }
@@ -321,6 +347,7 @@ export function createSettingsDialog(mount_element, options) {
         rows: () => options.monitorRows?.() ?? [],
         subscribeRows: options.subscribeMonitorRows,
         implPresetStore: options.implPresetStore,
+        modelVisibilityStore: options.modelVisibilityStore,
         onBulkApplied: (root_dirs) => options.onBulkApplied?.(root_dirs)
       });
     }
@@ -335,7 +362,9 @@ export function createSettingsDialog(mount_element, options) {
     bulk_host.remove();
     chip_tab?.destroy();
     chip_tab = null;
-    chip_host.remove();
+    model_section?.destroy();
+    model_section = null;
+    global_host.remove();
   }
 
   /**
@@ -572,6 +601,19 @@ export function createSettingsDialog(mount_element, options) {
     });
   }
 
+  /** @type {null | (() => void)} */
+  let unsubscribe_model_visibility = null;
+  if (options.modelVisibilityStore?.subscribe) {
+    unsubscribe_model_visibility = options.modelVisibilityStore.subscribe(
+      () => {
+        if (is_open) {
+          execution_pane?.render();
+          bulk_pane?.render();
+        }
+      }
+    );
+  }
+
   /**
    * Open the dialog on one rail tab. An id the rail does not carry opens the
    * default `워커` tab rather than an empty pane. `scope: 'monitor'` opens the
@@ -658,6 +700,10 @@ export function createSettingsDialog(mount_element, options) {
       if (unsubscribe_presets) {
         unsubscribe_presets();
         unsubscribe_presets = null;
+      }
+      if (unsubscribe_model_visibility) {
+        unsubscribe_model_visibility();
+        unsubscribe_model_visibility = null;
       }
       execution_pane?.destroy();
       execution_pane = null;

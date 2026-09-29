@@ -146,6 +146,16 @@ export function execPresetsFilePath() {
 }
 
 /**
+ * Absolute path to the SERVER-GLOBAL model-visibility file: which catalog
+ * models the selectors hide. Shared across workspaces.
+ *
+ * @returns {string} `$XDG_STATE_HOME/bdui/model-visibility.json`.
+ */
+export function modelVisibilityFilePath() {
+  return path.join(stateHome(), 'bdui', 'model-visibility.json');
+}
+
+/**
  * Absolute account-isolated Codex HOME for one durable account key.
  *
  * @param {string} key

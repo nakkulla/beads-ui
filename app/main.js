@@ -5,6 +5,7 @@ import { html, render } from 'lit-html';
 import { closedRangeSince, normalizeDoneRange } from './data/closed-range.js';
 import { createDisplayPolicyStore } from './data/display-policy-store.js';
 import { createExecPresetStore } from './data/exec-preset-store.js';
+import { createModelVisibilityStore } from './data/model-visibility-store.js';
 import { createMonitorPipelineStore } from './data/monitor-pipeline-store.js';
 import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
@@ -119,6 +120,9 @@ const DISPLAY_POLICY_CLIENT_ID = 'ui:display-policy';
 
 /** Client id for the singleton server-global execution-preset subscription. */
 const EXEC_PRESETS_CLIENT_ID = 'exec:presets';
+
+/** Client id for the singleton server-global model-visibility subscription. */
+const MODEL_VISIBILITY_CLIENT_ID = 'model-visibility';
 
 /**
  * Publish the sticky header's measured height as `--app-header-h`.
@@ -315,6 +319,7 @@ export function bootstrap(root_element) {
     const monitor_pipeline_store = createMonitorPipelineStore();
     const display_policy_store = createDisplayPolicyStore();
     const exec_preset_store = createExecPresetStore();
+    const model_visibility_store = createModelVisibilityStore();
     const session_log_store = createSessionLogStore();
     const adr_store = createAdrStore();
 
@@ -329,6 +334,25 @@ export function bootstrap(root_element) {
           revision: snapshot.revision,
           presets: snapshot.presets,
           chip_bindings: snapshot.chip_bindings
+        });
+      }
+    });
+
+    // 활성 모델 채널(UI-ooc0 §3.3)의 push. 서버 전역이라 워크스페이스 전환에도
+    // 비우지 않고, 스냅샷을 통째로 교체한다.
+    client.on('model-visibility-snapshot', (payload) => {
+      const snapshot = /** @type {any} */ (payload);
+      if (
+        snapshot &&
+        typeof snapshot.revision === 'number' &&
+        Array.isArray(snapshot.disabled_models) &&
+        snapshot.runners &&
+        typeof snapshot.runners === 'object'
+      ) {
+        model_visibility_store.set({
+          revision: snapshot.revision,
+          disabled_models: snapshot.disabled_models,
+          runners: snapshot.runners
         });
       }
     });
@@ -934,6 +958,25 @@ export function bootstrap(root_element) {
         });
     }
 
+    // --- Model-visibility subscription lifecycle (server-global singleton) ---
+    let model_visibility_subscribed = false;
+
+    function subscribeModelVisibility() {
+      if (model_visibility_subscribed) {
+        return;
+      }
+      model_visibility_subscribed = true;
+      void tracked_send('subscribe-model-visibility', {
+        id: MODEL_VISIBILITY_CLIENT_ID
+      }).catch((err) => {
+        log('subscribe-model-visibility failed: %o', err);
+        // 구독에 실패하면 모든 모델이 보인다(스펙 §8) — 이전 스냅샷으로 계속
+        // 숨기지 않고 비우며, 다음 재연결이 다시 구독하도록 플래그를 푼다.
+        model_visibility_store.clear();
+        model_visibility_subscribed = false;
+      });
+    }
+
     /**
      * Re-establish the per-workspace push subscriptions on a NEW socket after a
      * reconnect.
@@ -958,6 +1001,9 @@ export function bootstrap(root_element) {
       display_policy_store.clear();
       exec_presets_unsub = null;
       exec_preset_store.clear();
+      // The last snapshot stays: filtering by it until the new one lands beats
+      // flashing every hidden model back into the selectors.
+      model_visibility_subscribed = false;
       worker_queue_unsub = null;
       worker_queue_recovering = false;
       monitor_pipeline_unsub = null;
@@ -966,6 +1012,7 @@ export function bootstrap(root_element) {
       worker_unsubs.clear();
       sub_generation.worker += 1;
       subscribeExecPresets();
+      subscribeModelVisibility();
       const selected = store.getState().workspace.current?.path;
       if (selected) {
         try {
@@ -1453,6 +1500,7 @@ export function bootstrap(root_element) {
       policyStore: display_policy_store,
       queueStore: worker_queue_store,
       implPresetStore: exec_preset_store,
+      modelVisibilityStore: model_visibility_store,
       transport: (type, payload) => tracked_send(type, payload),
       // 모니터 탭에서 연 헤더 ⚙의 일괄 모드는 보이는 저장소 행을 대상으로 쓴다
       // (UI-nu43 §4.1). 레포 카드 ⚙도 같은 창을 `scope: 'repo'`로 열므로 일괄
@@ -1563,6 +1611,7 @@ export function bootstrap(root_element) {
       // 판정 칩의 프리셋 바인딩은 서버 전역이라 Monitor·이슈 상세와 같은
       // 저장소 하나를 읽는다 (UI-wg68 §3.1).
       execPresetStore: exec_preset_store,
+      modelVisibilityStore: model_visibility_store,
       gotoIssue: (id) => store.setState({ selected_id: id }),
       getWorkspacePath: () => store.getState().workspace.current?.path,
       // blocked 칩이 타 레포 blocker를 열 때 쓰는 전환 경로 (UI-u6zf §5.3) —
@@ -1591,6 +1640,7 @@ export function bootstrap(root_element) {
       transport,
       pipelineStore: monitor_pipeline_store,
       execPresetStore: exec_preset_store,
+      modelVisibilityStore: model_visibility_store,
       // 실행 타일의 `▤ 세션`은 Worker 탭과 같은 드로어·같은 라인 스토어를 쓴다
       // (UI-eey2 §7); `root_dir`만 더 실어 다른 레포의 세션도 연다.
       sessionLogStore: session_log_store,
@@ -1646,6 +1696,7 @@ export function bootstrap(root_element) {
       queueStore: worker_queue_store,
       pipelineStore: monitor_pipeline_store,
       execPresetStore: exec_preset_store,
+      modelVisibilityStore: model_visibility_store,
       sessionLogStore: session_log_store,
       getWorkspacePath: () => store.getState().workspace.current?.path,
       mdViewer: md_viewer,
@@ -1798,6 +1849,7 @@ export function bootstrap(root_element) {
     // switches.
     subscribeDisplayPolicy();
     subscribeExecPresets();
+    subscribeModelVisibility();
 
     // Load workspaces after startup subscriptions can safely resubscribe.
     void loadWorkspaces().finally(() => {

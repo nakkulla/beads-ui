@@ -1082,9 +1082,14 @@ export function unsetOptionLabel(unset, with_source) {
  * derived from one would otherwise read the projection fallback. The edited key
  * itself is never taken from it.
  *
+ * `hidden_choices` names the values the view's visibility filter removed from
+ * `choices` (UI-ooc0 §4.2). A stored one is still revived and selected, labelled
+ * `(비활성)` unless the `(비호환)` marker already applies.
+ *
  * @param {{
  *   key: string,
  *   choices: ReadonlyArray<string>,
+ *   hidden_choices?: ReadonlyArray<string>,
  *   layer: 'pin'|'global',
  *   pin?: Record<string, any>|null,
  *   global?: Record<string, any>|null,
@@ -1149,6 +1154,13 @@ export function buildOptionView(input) {
         Object.hasOwn(IMPL_RUNTIME_OPTION_LABELS, choice)
       ) {
         option_label = IMPL_RUNTIME_OPTION_LABELS[choice];
+      }
+      if (
+        input.hidden_choices &&
+        input.hidden_choices.includes(choice) &&
+        row.resolution !== 'incompatible'
+      ) {
+        option_label = `${option_label} (비활성)`;
       }
       return { value: choice, label: option_label, full_value: row.full_value };
     })

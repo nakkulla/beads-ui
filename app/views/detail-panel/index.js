@@ -8,6 +8,7 @@ import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { createChipPresetToggle } from '../../utils/chip-preset-binding.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import { disabledModelsOf } from '../../utils/model-visibility.js';
 import {
   coerceTimestampMs,
   formatTimestampLocal
@@ -104,6 +105,8 @@ const PRIORITY_OPTIONS = [0, 1, 2, 3, 4];
  * @property {{ get: () => any, set?: (queue: any) => void, subscribe?: (fn: () => void) => () => void }} [queueStore] - Client worker-queue store (source of a bead's attempts).
  * @property {{ get: () => Array<Record<string, any>>|null, subscribe?: (fn: () => void) => () => void }} [pipelineStore] - Current Monitor projection, including external waits.
  * @property {{ get: () => any, set: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [execPresetStore]
+ * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [modelVisibilityStore] - Server-global
+ * model visibility; its disabled list filters the editor's model choices.
  * @property {{ get: (id: string) => { lines: unknown[] } | null, subscribe: (fn: () => void) => () => void }} [sessionLogStore]
  * @property {() => string | null | undefined} [getWorkspacePath]
  * @property {{ open: (doc_path: string, open_options?: any) => Promise<void>|void, close: () => void, destroy: () => void }} [mdViewer] - Shared
@@ -138,6 +141,7 @@ export function createDetailPanel(mount_element, options) {
   const queueStore = options.queueStore;
   const pipelineStore = options.pipelineStore;
   const execPresetStore = options.execPresetStore;
+  const modelVisibilityStore = options.modelVisibilityStore;
   const sessionLogStore = options.sessionLogStore;
 
   /** @type {string | null} */
@@ -1398,6 +1402,18 @@ export function createDetailPanel(mount_element, options) {
   }
   if (execPresetStore && typeof execPresetStore.subscribe === 'function') {
     unsubscribe_presets = execPresetStore.subscribe(() => {
+      if (current_id) {
+        doRender();
+      }
+    });
+  }
+  /** @type {(() => void) | null} */
+  let unsubscribe_model_visibility = null;
+  if (
+    modelVisibilityStore &&
+    typeof modelVisibilityStore.subscribe === 'function'
+  ) {
+    unsubscribe_model_visibility = modelVisibilityStore.subscribe(() => {
       if (current_id) {
         doRender();
       }
@@ -3182,6 +3198,7 @@ export function createDetailPanel(mount_element, options) {
               workspace_values: execDefaults(),
               catalog: runnerCatalog(),
               execution_defaults: executionDefaults(),
+              disabled_models: disabledModelsOf(modelVisibilityStore),
               expanded: effective_expanded,
               presets: execPresetState()?.presets || [],
               presets_loaded: execPresetState() !== null,
@@ -3334,6 +3351,10 @@ export function createDetailPanel(mount_element, options) {
       if (unsubscribe_presets) {
         unsubscribe_presets();
         unsubscribe_presets = null;
+      }
+      if (unsubscribe_model_visibility) {
+        unsubscribe_model_visibility();
+        unsubscribe_model_visibility = null;
       }
       releaseCandidates();
       document.removeEventListener('keydown', onKeydown);

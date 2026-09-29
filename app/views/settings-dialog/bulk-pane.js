@@ -33,6 +33,7 @@
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
+import { disabledModelsOf } from '../../utils/model-visibility.js';
 import { mergeQueue, pruneAdopted } from '../monitor/adopted-queue.js';
 import {
   CATALOG_REASON,
@@ -162,6 +163,8 @@ const SESSION_DEFAULTS_OP = 'set-session-defaults';
  * store's `workspaces_state`.
  * @property {(fn: () => void) => () => void} [subscribeRows]
  * @property {{ get: () => any }} [implPresetStore]
+ * @property {{ get: () => any }} [modelVisibilityStore] - Server-global model
+ * visibility the profile forms filter their model choices by.
  * @property {(root_dirs: string[]) => void} [onBulkApplied] - Called once when
  * a run ends, with the repos whose result is `applied` or `partial`.
  */
@@ -316,7 +319,8 @@ export function createBulkPane(host, options) {
     profile: 'general',
     // 관측은 고른 저장소만 본다 — 안 고른 저장소의 값은 이 회차의 사실이 아니다.
     selectedRows: () => selectedRows(),
-    onChange: () => doRender()
+    onChange: () => doRender(),
+    disabledModels: () => disabledModelsOf(options.modelVisibilityStore)
   });
 
   /**
@@ -329,7 +333,8 @@ export function createBulkPane(host, options) {
     profile: 'quick_fix',
     selectedRows: () => selectedRows(),
     resolutionValues: () => worker_form.values(),
-    onChange: () => doRender()
+    onChange: () => doRender(),
+    disabledModels: () => disabledModelsOf(options.modelVisibilityStore)
   });
 
   /**
