@@ -4856,6 +4856,50 @@ describe('scheduler provider hold and recovery', () => {
     );
   });
 
+  // Avoiding a held account is not preemption: it must not wait for a threshold.
+  test.each([
+    { source: 'a bead pin', pin: 'hot@example.com', repo_default: null },
+    { source: 'the repo default', pin: null, repo_default: 'hot@example.com' },
+    { source: 'the active account', pin: null, repo_default: null }
+  ])(
+    'switches a held account from $source while no preempt threshold is set',
+    async ({ pin, repo_default }) => {
+      const append = vi.fn();
+      const env = preemptEnv(
+        pin ? { B1: { claude_account: pin } } : { B1: {} },
+        {
+          timeline: { append },
+          kvGet: vi.fn(async () => ({
+            ok: true,
+            value: repo_default
+              ? { schema: 1, claude_account: repo_default }
+              : undefined
+          }))
+        }
+      );
+      allowSwitchAccounts(env.store, 'claude', ['cool@example.com']);
+      seedProviderAttempt(env.store, 'held', 'H1');
+      registerProviderHold(env.store, 'held', 'usage_limit', 'hot@example.com');
+      seedQueue(env.store, ['B1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual(['B1']);
+      expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+        claude_account: 'cool@example.com',
+        account_sources: { claude: 'preempt_switch', codex: null },
+        account_switched_from: 'hot@example.com'
+      });
+      expect(append).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'account_preempt',
+          summary:
+            'claude 선제 전환 hot@example.com → cool@example.com (보류 중)'
+        })
+      );
+    }
+  );
+
   test('makes a repeated provider hold a no-op without notifications or receipt writes', async () => {
     const notify = { providerHoldEntered: vi.fn() };
     const append = vi.fn();

@@ -1802,7 +1802,7 @@ export function createScheduler(deps) {
    * @param {string} runner
    * @param {string|null} current_account
    * @param {string[]} allowed
-   * @param {{ max_pct?: number }} [options]
+   * @param {{ max_pct?: number|null }} [options]
    * @returns {Promise<string|null>}
    */
   async function selectProviderSwitchAccount(
@@ -1865,7 +1865,7 @@ export function createScheduler(deps) {
               return false;
             }
             if (
-              options.max_pct !== undefined &&
+              typeof options.max_pct === 'number' &&
               window.pct >= options.max_pct
             ) {
               return false;
@@ -3217,10 +3217,20 @@ export function createScheduler(deps) {
       return null;
     }
     const policy = providerLimitPolicyOf(workspace, runner);
+    if (policy.mode !== 'switch' || policy.accounts.length === 0) {
+      return null;
+    }
+    const preempt_pct = policy.preempt_pct;
+    // Moving off a usage-held account is not preemption, so an unset
+    // `preempt_pct` leaves only that trigger, which needs a usage hold.
     if (
-      policy.mode !== 'switch' ||
-      policy.preempt_pct === null ||
-      policy.accounts.length === 0
+      preempt_pct === null &&
+      deps.store
+        .snapshot(workspace)
+        .provider_hold?.[
+          runner
+        ]?.targets?.some((/** @type {any} */ target) => target.kind === 'usage_limit') !==
+        true
     ) {
       return null;
     }
@@ -3251,11 +3261,13 @@ export function createScheduler(deps) {
       (/** @type {any} */ account) => account?.key === current
     );
     const windows = Array.isArray(row?.windows) ? row.windows : [];
-    const crossed = windows.find(
-      (/** @type {any} */ window) =>
-        typeof window?.pct === 'number' &&
-        window.pct >= /** @type {number} */ (policy.preempt_pct)
-    );
+    const crossed =
+      preempt_pct === null
+        ? undefined
+        : windows.find(
+            (/** @type {any} */ window) =>
+              typeof window?.pct === 'number' && window.pct >= preempt_pct
+          );
     const held =
       deps.store
         .snapshot(workspace)
@@ -3271,20 +3283,19 @@ export function createScheduler(deps) {
       runner,
       current,
       policy.accounts,
-      { max_pct: policy.preempt_pct }
+      { max_pct: preempt_pct }
     );
     if (candidate === null) {
       return null;
     }
     // The catalog read above is async, so the policy this decision started from
     // may already be stale: re-read it and drop the switch unless the STORED
-    // policy still asks for exactly this move (spec §3.3).
+    // policy still asks for exactly this move (spec §3.3). An unchanged
+    // threshold also keeps a crossed window crossed.
     const fresh = providerLimitPolicyOf(workspace, runner);
     if (
       fresh.mode !== 'switch' ||
-      fresh.preempt_pct === null ||
-      fresh.preempt_pct !== policy.preempt_pct ||
-      (!held && crossed.pct < fresh.preempt_pct) ||
+      fresh.preempt_pct !== preempt_pct ||
       !fresh.accounts.includes(candidate)
     ) {
       return null;
