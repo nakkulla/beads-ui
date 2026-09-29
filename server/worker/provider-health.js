@@ -2,6 +2,7 @@
  * Durable provider-hold probes and recovery sequencing.
  *
  * @import { ChildProcess } from 'node:child_process'
+ * @import { Account } from './account-catalog.js'
  */
 import { spawn } from 'node:child_process';
 import os from 'node:os';
@@ -231,8 +232,12 @@ export function createProviderHealth(deps) {
   const catalog = deps.catalog || runtimeCatalog();
   const setTimeoutImpl = deps.setTimeoutImpl || setTimeout;
   const clearTimeoutImpl = deps.clearTimeoutImpl || clearTimeout;
-  /** @type {Map<string, { timer: any, failures: number }> } */
+  /** @type {Map<string, { timer: any, failures: number, next_probe_at: number }> } */
   const timers = new Map();
+  /** @type {Map<string, string>} */
+  const catalog_hints = new Map();
+  /** @type {(() => void)|null} */
+  let unsubscribe_catalog = null;
   // The one predicate the timer path, `sync()` and the manual `↻ 지금 프로브`
   // share: a target whose probe is running now is neither re-armed nor fired a
   // second time. The timer callback drops its key BEFORE the probe starts, so
@@ -241,6 +246,103 @@ export function createProviderHealth(deps) {
   const in_flight = new Set();
   /** @type {Set<string>} */
   const active_workspaces = new Set();
+
+  /**
+   * Advance usage probes from catalog evidence; only the probe releases a hold.
+   *
+   * @param {Account[]} accounts
+   */
+  function refreshUsageTargets(accounts) {
+    for (const workspace of active_workspaces) {
+      const hold = deps.store.snapshot(workspace).provider_hold.claude;
+      if (!hold) {
+        continue;
+      }
+      for (const target of hold.targets) {
+        if (target.kind !== 'usage_limit' || target.account === null) {
+          continue;
+        }
+        const matches = accounts.filter((row) => row.email === target.account);
+        if (matches.length !== 1) {
+          continue;
+        }
+        const account = matches[0];
+        if (account.status !== 'ok' || !Array.isArray(account.windows)) {
+          continue;
+        }
+        const scoped = account.windows.filter(
+          (window) => window.key?.toLowerCase() === target.model.toLowerCase()
+        );
+        const windows = scoped.length
+          ? scoped
+          : account.windows.filter(
+              (window) => window.key === '5h' || window.key === '7d'
+            );
+        if (windows.length === 0) {
+          continue;
+        }
+        const available = windows.every(
+          (window) =>
+            Number.isFinite(window.pct) && window.pct >= 0 && window.pct < 100
+        );
+        const resets = windows
+          .map((window) =>
+            window.resetsAt === null ? NaN : Date.parse(window.resetsAt)
+          )
+          .filter(Number.isFinite);
+        if (!available && resets.length === 0) {
+          continue;
+        }
+        const reset_at = resets.length ? Math.min(...resets) : null;
+        const hint = JSON.stringify([available, reset_at]);
+        const key = targetKey(workspace, 'claude', hold.generation, target);
+        if (catalog_hints.get(key) === hint) {
+          continue;
+        }
+        const entry = timers.get(key);
+        if (!entry && !in_flight.has(key)) {
+          continue;
+        }
+        // Consume an observation even during a probe: a rejected probe must keep
+        // its CLI deadline until the catalog supplies a different recovery hint.
+        catalog_hints.set(key, hint);
+        if (!entry || in_flight.has(key) || entry.failures > 0) {
+          continue;
+        }
+        const deadline = available
+          ? now()
+          : Math.max(
+              now(),
+              /** @type {number} */ (reset_at) + USAGE_RESET_GRACE_MS
+            );
+        if (deadline >= entry.next_probe_at) {
+          continue;
+        }
+        clearTimeoutImpl(entry.timer);
+        timers.delete(key);
+        scheduleTarget(
+          workspace,
+          'claude',
+          hold.generation,
+          hold.since,
+          target,
+          0,
+          deadline
+        );
+      }
+    }
+  }
+
+  /** Subscribe only while a workspace is attached. */
+  function observeCatalog() {
+    if (
+      !unsubscribe_catalog &&
+      typeof deps.accountCatalog.subscribeClaude === 'function'
+    ) {
+      unsubscribe_catalog =
+        deps.accountCatalog.subscribeClaude(refreshUsageTargets);
+    }
+  }
 
   /**
    * Resolve the probe command, argv and env from the same catalog and account
@@ -423,6 +525,7 @@ export function createProviderHealth(deps) {
    * @param {number} since
    * @param {ProviderTarget} target
    * @param {number} failures
+   * @param {number} [deadline]
    */
   function scheduleTarget(
     workspace,
@@ -430,7 +533,8 @@ export function createProviderHealth(deps) {
     generation,
     since,
     target,
-    failures
+    failures,
+    deadline
   ) {
     if (target.kind === 'usage_limit' && target.account === null) {
       return;
@@ -439,12 +543,15 @@ export function createProviderHealth(deps) {
     if (timers.has(key) || in_flight.has(key)) {
       return;
     }
-    const delay =
+    const default_delay =
       target.kind === 'usage_limit' && failures === 0
         ? target.resets_at === null
           ? USAGE_FALLBACK_MS
           : Math.max(0, target.resets_at + USAGE_RESET_GRACE_MS - now())
         : OUTAGE_BACKOFF_MS[Math.min(failures, OUTAGE_BACKOFF_MS.length - 1)];
+    const next_probe_at =
+      deadline === undefined ? now() + default_delay : deadline;
+    const delay = Math.max(0, next_probe_at - now());
     // The held tile names the next probe clock, so the deadline is written
     // before the timer is armed: a timer alone dies with the process and the
     // badge would read `리셋 미상` after every restart.
@@ -454,14 +561,14 @@ export function createProviderHealth(deps) {
       kind: target.kind,
       model: target.model,
       account: target.account,
-      patch: { next_probe_at: now() + delay }
+      patch: { next_probe_at }
     });
     const timer = setTimeoutImpl(() => {
       timers.delete(key);
       void runTarget(workspace, runner, generation, since, target, failures);
     }, delay);
     timer?.unref?.();
-    timers.set(key, { timer, failures });
+    timers.set(key, { timer, failures, next_probe_at });
   }
 
   /**
@@ -792,6 +899,11 @@ export function createProviderHealth(deps) {
         timers.delete(key);
       }
     }
+    for (const key of catalog_hints.keys()) {
+      if (key.startsWith(`["${workspace}",`) && !wanted.has(key)) {
+        catalog_hints.delete(key);
+      }
+    }
   }
 
   return {
@@ -802,6 +914,7 @@ export function createProviderHealth(deps) {
      */
     async start(workspace) {
       active_workspaces.add(workspace);
+      observeCatalog();
       deps.store.discardStaleAutoResumePending(workspace);
       await deps.onPending(workspace);
       sync(workspace);
@@ -814,6 +927,7 @@ export function createProviderHealth(deps) {
      */
     sync(workspace) {
       active_workspaces.add(workspace);
+      observeCatalog();
       sync(workspace);
     },
 
@@ -824,10 +938,19 @@ export function createProviderHealth(deps) {
      */
     stop(workspace) {
       active_workspaces.delete(workspace);
+      if (active_workspaces.size === 0 && unsubscribe_catalog) {
+        unsubscribe_catalog();
+        unsubscribe_catalog = null;
+      }
       for (const [key, entry] of timers) {
         if (key.startsWith(`["${workspace}",`)) {
           clearTimeoutImpl(entry.timer);
           timers.delete(key);
+        }
+      }
+      for (const key of catalog_hints.keys()) {
+        if (key.startsWith(`["${workspace}",`)) {
+          catalog_hints.delete(key);
         }
       }
     },

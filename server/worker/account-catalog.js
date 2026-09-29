@@ -9,7 +9,19 @@
  * @param {{ listClaude: () => Promise<AccountList>, listCodex: () => Promise<AccountList> }} deps
  */
 export function createAccountCatalog({ listClaude, listCodex }) {
+  /** @type {Set<(accounts: Account[]) => void>} */
+  const claude_observers = new Set();
   return {
+    /**
+     * Observe existing hold-evaluation reads without adding a polling loop.
+     *
+     * @param {(accounts: Account[]) => void} listener
+     */
+    subscribeClaude(listener) {
+      claude_observers.add(listener);
+      return () => claude_observers.delete(listener);
+    },
+
     /**
      * Read every Claude account row used for automatic outage switching.
      *
@@ -19,6 +31,9 @@ export function createAccountCatalog({ listClaude, listCodex }) {
       const listed = await listClaude();
       if (!listed.ok) {
         return { ok: false, reason: 'claude_account_list_unavailable' };
+      }
+      for (const listener of claude_observers) {
+        listener(listed.accounts);
       }
       return {
         ok: true,

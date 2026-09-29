@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createAccountCatalog } from './account-catalog.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { OUTAGE_BACKOFF_MS, createProviderHealth } from './provider-health.js';
 import { createQueueStore } from './queue-store.js';
@@ -209,6 +210,232 @@ function setup(store, timers, spawnImpl, overrides = {}) {
   });
   return { health, notify, onPending, tick };
 }
+
+describe('catalog-driven usage probes', () => {
+  /**
+   * Exercise the same catalog read used by the existing hold-evaluation tick.
+   *
+   * @param {import('./account-catalog.js').Account['windows']} windows
+   * @param {any} [spawnImpl]
+   */
+  async function setupUsage(windows, spawnImpl = makeHangingSpawn()) {
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const account = {
+      key: 'held@example.com',
+      email: 'held@example.com',
+      status: 'ok',
+      windows
+    };
+    const listClaude = vi.fn(async () => ({
+      ok: /** @type {const} */ (true),
+      accounts: [account],
+      active_key: account.key
+    }));
+    const accountCatalog = createAccountCatalog({
+      listClaude,
+      listCodex: async () => ({ ok: true, accounts: [], active_key: null })
+    });
+    const env = setup(store, timers, spawnImpl, { accountCatalog });
+    seedHold(store, 'usage_limit', account.email, {
+      resets_at: NOW + 172_800_000
+    });
+    await env.health.start(WS);
+    return {
+      ...env,
+      store,
+      timers,
+      account,
+      accountCatalog,
+      listClaude,
+      spawnImpl
+    };
+  }
+
+  test('advances the existing timer to a model window reset plus grace', async () => {
+    const env = await setupUsage([
+      {
+        key: 'Opus',
+        pct: 100,
+        resetsAt: new Date(NOW + 3_600_000).toISOString()
+      },
+      { key: '5h', pct: 2, resetsAt: new Date(NOW + 60_000).toISOString() }
+    ]);
+    const original = env.timers.next();
+
+    await env.accountCatalog.listClaude();
+
+    expect(original?.cleared).toBe(true);
+    expect(env.timers.next()?.delay).toBe(3_660_000);
+    expect(
+      env.store.snapshot(WS).provider_hold.claude.targets[0]
+    ).toMatchObject({
+      resets_at: NOW + 172_800_000,
+      next_probe_at: NOW + 3_660_000
+    });
+    expect(env.spawnImpl).not.toHaveBeenCalled();
+  });
+
+  test('uses the earlier generic reset when no model window exists', async () => {
+    const env = await setupUsage([
+      { key: 'Fable', pct: 1, resetsAt: new Date(NOW + 30_000).toISOString() },
+      {
+        key: '5h',
+        pct: 100,
+        resetsAt: new Date(NOW + 7_200_000).toISOString()
+      },
+      { key: '7d', pct: 100, resetsAt: new Date(NOW + 3_600_000).toISOString() }
+    ]);
+
+    await env.accountCatalog.listClaude();
+
+    expect(env.timers.next()?.delay).toBe(3_660_000);
+  });
+
+  test.each([
+    { windows: [] },
+    { windows: [{ key: 'Fable', pct: 1, resetsAt: null }] },
+    { windows: [{ key: 'Opus', pct: 100, resetsAt: 'invalid' }] },
+    {
+      windows: [
+        {
+          key: 'Opus',
+          pct: 100,
+          resetsAt: new Date(NOW + 259_200_000).toISOString()
+        }
+      ]
+    }
+  ])(
+    'retains the CLI deadline without an earlier matching hint: %j',
+    async ({ windows }) => {
+      const env = await setupUsage(windows);
+      const original = env.timers.next();
+      const revision = env.store.snapshot(WS).revision;
+
+      await env.accountCatalog.listClaude();
+
+      expect(env.timers.next()).toBe(original);
+      expect(env.store.snapshot(WS).revision).toBe(revision);
+    }
+  );
+
+  test('probes immediately on available usage without clearing the target', async () => {
+    const env = await setupUsage([{ key: 'Opus', pct: 4, resetsAt: null }]);
+
+    await env.accountCatalog.listClaude();
+    expect(env.timers.fireNext()).toBe(0);
+    await flush();
+    await env.accountCatalog.listClaude();
+
+    expect(env.spawnImpl).toHaveBeenCalledOnce();
+    expect(env.store.snapshot(WS).provider_hold.claude.targets).toHaveLength(1);
+    expect(
+      env.timers.entries.filter((entry) => !entry.cleared && !entry.fired)
+    ).toHaveLength(1);
+    env.health.stop(WS);
+  });
+
+  test.each([100, 4])(
+    'rearms a rejected accelerated probe from CLI evidence at pct=%s',
+    async (pct) => {
+      const reset_at = NOW + 86_400_000;
+      const spawnImpl = makeSpawn(
+        [
+          {
+            type: 'rate_limit_event',
+            rate_limit_info: { status: 'rejected', resetsAt: reset_at / 1000 }
+          },
+          {
+            type: 'result',
+            is_error: true,
+            api_error_status: 429,
+            result: "You've hit your limit"
+          }
+        ],
+        1
+      );
+      const env = await setupUsage(
+        [
+          {
+            key: 'Opus',
+            pct,
+            resetsAt: new Date(NOW + 3_600_000).toISOString()
+          }
+        ],
+        spawnImpl
+      );
+      await env.accountCatalog.listClaude();
+
+      env.timers.fireNext();
+      await flush();
+      const timer = env.timers.next();
+      await env.accountCatalog.listClaude();
+
+      expect(
+        env.store.snapshot(WS).provider_hold.claude.targets[0]
+      ).toMatchObject({
+        resets_at: reset_at,
+        next_probe_at: reset_at + 60_000,
+        rearm_count: 1
+      });
+      expect(env.timers.next()).toBe(timer);
+      expect(env.spawnImpl).toHaveBeenCalledOnce();
+    }
+  );
+
+  test('observes a later catalog change without adding catalog reads', async () => {
+    const env = await setupUsage([
+      {
+        key: 'Opus',
+        pct: 100,
+        resetsAt: new Date(NOW + 86_400_000).toISOString()
+      }
+    ]);
+    await env.accountCatalog.listClaude();
+    env.account.windows = [
+      {
+        key: 'Opus',
+        pct: 100,
+        resetsAt: new Date(NOW + 3_600_000).toISOString()
+      }
+    ];
+
+    await env.accountCatalog.listClaude();
+    const revision = env.store.snapshot(WS).revision;
+    await env.accountCatalog.listClaude();
+
+    expect(env.listClaude).toHaveBeenCalledTimes(3);
+    expect(env.timers.next()?.delay).toBe(3_660_000);
+    expect(env.store.snapshot(WS).revision).toBe(revision);
+  });
+
+  test('unsubscribes on stop and observes again after restart', async () => {
+    const env = await setupUsage([{ key: 'Opus', pct: 4, resetsAt: null }]);
+    env.health.stop(WS);
+
+    await env.accountCatalog.listClaude();
+    expect(env.timers.next()).toBeUndefined();
+    await env.health.start(WS);
+    await env.accountCatalog.listClaude();
+
+    expect(env.timers.next()?.delay).toBe(0);
+  });
+
+  test('releases the hold only after an accelerated probe succeeds', async () => {
+    const env = await setupUsage(
+      [{ key: 'Opus', pct: 4, resetsAt: null }],
+      makeSpawn({ is_error: false, result: 'ok' }, 0)
+    );
+    await env.accountCatalog.listClaude();
+    expect(env.store.snapshot(WS).provider_hold.claude.targets).toHaveLength(1);
+
+    env.timers.fireNext();
+    await flush();
+
+    expect(env.store.snapshot(WS).provider_hold).toEqual({});
+    expect(env.notify.providerRecovered).toHaveBeenCalledOnce();
+  });
+});
 
 describe('provider health probe', () => {
   test.each(['claude', 'codex'])(
