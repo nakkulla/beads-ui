@@ -136,8 +136,9 @@ export function createExternalWaitSessionResume(deps) {
       try {
         text = String(fs.readFileSync(path.join(sessions_dir, name), 'utf8'));
       } catch (err) {
+        // An unreadable entry may be the live owner's; liveness stays unknown.
         log('session registry entry unreadable %s: %o', name, err);
-        continue;
+        return unverified;
       }
       /** @type {unknown} */
       let parsed;
@@ -330,6 +331,51 @@ export function createExternalWaitSessionResume(deps) {
       pane_id: null,
       bridge_active: deps.launcher.bridgeActive()
     });
+    const prior = record.resume;
+    if (
+      prior !== null &&
+      prior.mode === 'session' &&
+      prior.launched_at !== null &&
+      prior.error === null
+    ) {
+      // Launch evidence already exists and only the key settlement failed
+      // (UI-r6xq §5): retry that settlement alone. Re-entering the launch path
+      // would read the window this launch opened as the live owner.
+      const found = await findPane(record.bead_id);
+      const pane =
+        found.ok && found.pane
+          ? {
+              tmux_session: found.pane.session,
+              tmux_window: found.pane.window,
+              pane_id: found.pane.pane
+            }
+          : null;
+      try {
+        await settleLaunch(workspace, record, {
+          source: 'session_ref',
+          pane: null
+        });
+      } catch (err) {
+        log(
+          'external wait key settlement retry failed for %s: %o',
+          record.bead_id,
+          err
+        );
+        deps.notifyChanged(workspace);
+      }
+      return {
+        ok: true,
+        mode: 'session',
+        session: 'already_running',
+        reason: null,
+        command: null,
+        owner_tmux: null,
+        tmux_session: pane?.tmux_session ?? null,
+        tmux_window: pane?.tmux_window ?? null,
+        pane_id: pane?.pane_id ?? null,
+        bridge_active: deps.launcher.bridgeActive()
+      };
+    }
     const qualified = qualifySessionFork(
       bead_metadata,
       null,
@@ -367,13 +413,12 @@ export function createExternalWaitSessionResume(deps) {
       return notLaunched('worktree_missing');
     }
     const prompt = `${SESSION_RESUME_PROMPT_LEAD}\n\n${externalWaitCompletionPrompt(record)}`;
-    const launched_before = record.resume?.launched_at ?? null;
     deps.externalWait.update(workspace, record.wait_id, (current) => {
       current.resume = {
         mode: 'session',
         attempt_id: null,
         reserved_at: new Date(now()).toISOString(),
-        launched_at: launched_before,
+        launched_at: null,
         session_id,
         error: null
       };
@@ -400,8 +445,8 @@ export function createExternalWaitSessionResume(deps) {
         tmux_window: outcome.tmux_window,
         pane_id: outcome.pane_id
       };
-    } else if (launched_before === null) {
-      // A second click on a launched session already recorded its pane.
+    } else {
+      // The launcher found this bead's window already open; read its pane.
       const found = await findPane(record.bead_id);
       if (found.ok && found.pane) {
         pane = {

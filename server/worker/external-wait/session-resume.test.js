@@ -447,6 +447,95 @@ describe('session resume launch', () => {
     );
   });
 
+  test('retries only the key settlement when launch evidence exists', async () => {
+    const env = fixture({
+      record: {
+        resume: {
+          mode: 'session',
+          attempt_id: null,
+          reserved_at: AT,
+          launched_at: AT,
+          session_id: SESSION,
+          error: null
+        }
+      },
+      panes: {
+        ok: true,
+        rows: [
+          {
+            session: 'bdui-inquiry',
+            window: 'B1',
+            pane: '%9',
+            dead: '0',
+            cwd: '/wt',
+            agent_runtime: 'claude',
+            key: 'B1'
+          }
+        ]
+      }
+    });
+    writeRegistry('4242.json', {
+      pid: 4242,
+      sessionId: SESSION,
+      procStart: PROC_START,
+      tmux: 'dev:@1.%1'
+    });
+
+    const result = await env.resume();
+
+    expect(result).toMatchObject({ session: 'already_running', pane_id: '%9' });
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+    expect(env.run).not.toHaveBeenCalled();
+    expect(env.unsetExternalWait).toHaveBeenCalledWith('B1');
+    expect(env.recordOf()).toMatchObject({
+      stage: 'resumed',
+      resume: { launched_at: AT, error: null }
+    });
+  });
+
+  test('keeps launch evidence when the settlement retry fails again', async () => {
+    const env = fixture({
+      record: {
+        resume: {
+          mode: 'session',
+          attempt_id: null,
+          reserved_at: AT,
+          launched_at: AT,
+          session_id: SESSION,
+          error: null
+        }
+      },
+      unset: async () => {
+        throw new Error('external_wait_unset_failed');
+      }
+    });
+
+    const result = await env.resume();
+
+    expect(result.session).toBe('already_running');
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+    expect(env.recordOf()).toMatchObject({
+      stage: 'completing',
+      resume: { launched_at: AT, error: null }
+    });
+  });
+
+  test('does not launch when a registry entry cannot be read', async () => {
+    const env = fixture();
+    const entry = path.join(root, '.claude', 'sessions', '5151.json');
+    fs.mkdirSync(entry);
+
+    const result = await env.resume();
+
+    expect(result).toMatchObject({
+      session: 'not_launched',
+      reason: 'owner_unverified',
+      command: `claude --resume '${SESSION}'`
+    });
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+    expect(env.recordOf().resume).toBeNull();
+  });
+
   test('keeps a launched completing record when the key unset fails', async () => {
     const env = fixture({
       unset: async () => {
