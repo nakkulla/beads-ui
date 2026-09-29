@@ -9232,14 +9232,16 @@ export function createScheduler(deps) {
       }
     }
     /**
-     * Refresh the last assistant line when the transcript moved since the last
-     * read; failures keep the previous value (UI-ri8n §4).
+     * Patch for the last assistant line when the transcript moved since the
+     * last read; empty otherwise, and a read failure keeps the previous value
+     * (UI-ri8n §4). The caller folds it into the pass's single record write.
      *
      * @param {string} key
      * @param {import('./queue-store.js').InteractiveSession} record
      * @param {string} session_id
+     * @returns {Partial<import('./queue-store.js').InteractiveSession>}
      */
-    function readInteractiveLastMessage(key, record, session_id) {
+    function interactiveLastMessagePatch(key, record, session_id) {
       const resolver = deps.resolveSessionFile || defaultResolveSessionFile;
       const reader =
         deps.readLastAssistantMessage || defaultReadLastAssistantMessage;
@@ -9260,16 +9262,16 @@ export function createScheduler(deps) {
           (record.last_message_read_at !== null &&
             location.last_event_at <= record.last_message_read_at)
         ) {
-          return;
+          return {};
         }
         const message = reader({
           provider: record.provider,
           file: location.file
         });
-        update(key, record, {
+        return {
           last_message_read_at: location.last_event_at,
           ...(message !== null ? { last_message: message } : {})
-        });
+        };
       } catch (err) {
         log(
           'interactive transcript read failed for %s/%s: %o',
@@ -9277,6 +9279,7 @@ export function createScheduler(deps) {
           key,
           err
         );
+        return {};
       }
     }
     const unsettled_beads = new Set(
@@ -9334,9 +9337,10 @@ export function createScheduler(deps) {
             : record.source === 'recovered'
               ? '복구'
               : `새 세션${record.fallback_reason ? ` (${record.fallback_reason})` : ''}`;
-      // A record no pass has seen alive yet is new; later passes must not
+      // Launch fills `last_seen_alive_at`; the first reconcile observation is
+      // the pass that has not yet written a turn state. Later passes must not
       // grow the timeline file with the same start event.
-      if (record.last_seen_alive_at === null) {
+      if (record.turn_state === null) {
         appendTimeline({
           bead_id: record.bead_id,
           kind: 'interactive_session',
@@ -9366,6 +9370,9 @@ export function createScheduler(deps) {
         last_seen_alive_at: now(),
         ...(turn_state !== record.turn_state
           ? { turn_state, turn_state_since: now() }
+          : {}),
+        ...(record.session_id !== null
+          ? interactiveLastMessagePatch(key, record, record.session_id)
           : {})
       });
       if (record.session_id === null) {
@@ -9388,9 +9395,6 @@ export function createScheduler(deps) {
             session_id_source: 'pane_option'
           });
         }
-      }
-      if (record.session_id !== null && isCurrent(key, record)) {
-        readInteractiveLastMessage(key, record, record.session_id);
       }
       if (!isCurrent(key, record)) {
         continue;

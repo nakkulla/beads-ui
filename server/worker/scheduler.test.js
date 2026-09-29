@@ -77,6 +77,7 @@ describe('interactive session reconciliation', () => {
       tmux_session: 'interactive',
       tmux_window: 'resolve-B1',
       launched_at: 10,
+      last_seen_alive_at: 10,
       state: 'live',
       source: 'attempt',
       mode: 'fork',
@@ -275,6 +276,24 @@ describe('interactive session reconciliation', () => {
     expect(h.current()).toMatchObject({
       last_message: { text: '테스트를 다시 돌린다', at: 900 },
       last_message_read_at: 500
+    });
+  });
+
+  test('writes the message and the stage in one record update', async () => {
+    const h = interactiveFixture({ session_id: 'S1' });
+    h.transcript.location = {
+      locality: 'local',
+      file: '/sessions/S1.jsonl',
+      last_event_at: 500
+    };
+    Object.assign(h.pane, { agent_running: '1', agent_attention: '' });
+
+    await h.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(h.changed).toHaveBeenCalledTimes(1);
+    expect(h.current()).toMatchObject({
+      turn_state: 'running',
+      last_message: { text: '테스트를 다시 돌린다', at: 900 }
     });
   });
 
