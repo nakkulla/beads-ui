@@ -152,8 +152,9 @@ scope:
 | 공급자 재개 대화상자 | `provider-resume-dialog.js` 러너별 모델 `<optgroup>`, `providerResumeDraft`, `providerResumeDraftChange` | 아래 규칙 |
 
 - 저장된 값이 꺼 둔 모델이면 그 값은 지우지 않고 선택된 채로 둔다. 레이블은 `<표시값> (비활성)`이다.
-  - `buildOptionView`는 이미 저장 값이 `choices`에 없으면 맨 앞에 되살린다. 여기에 `disabled_models` 입력을 더해,
-    꺼 둔 모델인 선택지의 레이블 끝에 ` (비활성)`을 붙인다.
+  - `buildOptionView`는 이미 저장 값이 `choices`에 없으면 맨 앞에 되살린다. 여기에 `hidden_choices` 입력(그 화면의
+    필터가 뺀 선택지 값 목록)을 더해, 그 목록에 있는 선택지의 레이블 끝에 ` (비활성)`을 붙인다. 모델 키는 꺼 둔 모델
+    이름을, 리뷰어 키는 걸러진 리뷰어 토큰(예: `codex`)을 넘긴다.
   - 다른 값을 고르면 저장 값이 바뀌고, 꺼 둔 모델은 목록에서 사라진다.
   - `(비호환)`과 겹치면 `(비호환)`을 그대로 둔다. 호환성이 더 강한 신호이기 때문이다.
 - 공급자 재개 대화상자는 다음 규칙을 따른다.
@@ -264,8 +265,8 @@ RED → GREEN 시임:
   - `null` 목록에 입력을 그대로 돌려준다.
   - `visibleReviewerChoices`가 `sol`이 꺼져 있을 때 `codex`를 빼고 `self`·`skip`과 풀 수 없는 토큰을 남긴다.
 - `app/utils/execution-defaults.test.js`
-  - `buildOptionView`가 꺼 둔 저장 모델을 `(비활성)` 레이블로 되살려 선택된 채 둔다.
-- `app/views/settings-dialog/execution-pane` 계열 테스트
+  - `buildOptionView`가 `hidden_choices`에 든 저장 값을 `(비활성)` 레이블로 되살려 선택된 채 둔다.
+- `app/views/settings-dialog/execution-pane.test.js`
   - 워커 탭 구현 모델 선택지에서 꺼 둔 모델이 빠진다.
   - 저장 값이 꺼 둔 모델이면 `(비활성)`으로 남는다.
   - `sol`이 꺼져 있으면 리뷰 행 선택지에서 `codex`가 빠진다.
