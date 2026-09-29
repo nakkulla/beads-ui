@@ -157,6 +157,22 @@ export function codexAccountHomeDir(key) {
 }
 
 /**
+ * Durable attempt HOME, outside the removable guard-hook tree. Codex records
+ * rollout paths through this directory, so it must survive attempt cleanup.
+ *
+ * @param {string} workspace_root
+ * @param {string} attempt_id
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/codex-attempt-homes/<attempt_id>`.
+ */
+export function codexAttemptHomeDir(workspace_root, attempt_id) {
+  return path.join(
+    workspaceStateDir(workspace_root),
+    'codex-attempt-homes',
+    safeSegment(attempt_id, 'attempt')
+  );
+}
+
+/**
  * Absolute directory that holds a workspace's full verify-run output logs
  * (UI-0x54). Shares the per-workspace state dir with the queue file so a verify
  * failure's evidence outlives the detached worktree the run happened in — that

@@ -144,6 +144,7 @@ import {
 import { isSessionStalledRecovery } from './session-stall.js';
 import { staleResidueIntact } from './stale-work.js';
 import {
+  codexAttemptHomeDir,
   codexSessionsRoot,
   codexAccountHomeDir as defaultCodexAccountHomeDir
 } from './state-paths.js';
@@ -1618,11 +1619,12 @@ export function createScheduler(deps) {
    */
   const stopped = new Set();
   /**
-   * Attempts whose scheduler-local stop fence was added by discard itself.
+   * Discard-owned stop fences retain the live settlement chain before exit
+   * removes the running entry. A null chain names an attempt without a handle.
    *
-   * @type {Set<string>}
+   * @type {Map<string, Promise<any>|null>}
    */
-  const discard_fenced = new Set();
+  const discard_fenced = new Map();
   /**
    * Beads refused by the dispatch-time admission RE-check within the current
    * tick cascade. The refill pass skips them so a scan-pass/dispatch-fail
@@ -6280,7 +6282,6 @@ export function createScheduler(deps) {
       // finalizing write and would otherwise strand a live tally forever.
       if (stopped.has(attempt_id)) {
         stopped.delete(attempt_id);
-        discard_fenced.delete(attempt_id);
         // A ⏸/■ of a disposition session ends that disposition: the guard and
         // the repo lease it holds must come back, or the bead and every later
         // fix in this repo stay fenced (UI-hs11 §3.3).
@@ -11107,7 +11108,7 @@ export function createScheduler(deps) {
         deps.prepareCodexGuardHome || prepareCodexGuardHome
       )({
         base_home,
-        parent_dir: path.dirname(settings.guard_hook_path),
+        home_dir: codexAttemptHomeDir(workspace, attempt_id),
         hook_path: settings.guard_hook_path
       });
       if (prepared.ok) {
@@ -11495,6 +11496,8 @@ export function createScheduler(deps) {
         // 체인이 던지면 pause 대기자는 아무 표시 없이 성공을 읽는다 (UI-qce9 F4).
         // 실패를 control에 남겨 `pauseWithSettlement`·재개 자격이 그것을 읽게 한다.
         markSettlementFailed(workspace, attempt_id);
+      } finally {
+        discard_fenced.delete(attempt_id);
       }
       return verdict;
     });
@@ -16884,9 +16887,9 @@ export function createScheduler(deps) {
     if (!canDiscardAttempt(attempt_id)) {
       return false;
     }
-    if (!stopped.has(attempt_id)) {
+    if (!stopped.has(attempt_id) && !discard_fenced.has(attempt_id)) {
       stopped.add(attempt_id);
-      discard_fenced.add(attempt_id);
+      discard_fenced.set(attempt_id, running.get(attempt_id)?.settled ?? null);
     }
     return true;
   }
@@ -16924,6 +16927,10 @@ export function createScheduler(deps) {
     bead_id = null,
     source_status = null
   ) {
+    const discard_settled = discard_fenced.get(attempt_id);
+    if (discard_settled) {
+      await discard_settled;
+    }
     if (!canDiscardAttempt(attempt_id)) {
       return { ok: false, reason: 'attempt_settling' };
     }
