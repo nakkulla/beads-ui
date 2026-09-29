@@ -46,20 +46,35 @@ function targetKey(workspace, runner, generation, target) {
 }
 
 /**
- * Parse the probe's single JSON result without accepting trailing noise.
+ * Parse the probe's stream-json lines without accepting noise. `events` keeps
+ * the whole stream so the classifier sees the CLI's `rate_limit_event`
+ * beside the final `result`.
  *
  * @param {string} output
- * @returns {Record<string, any>|null}
+ * @returns {{ result: Record<string, any>, events: Record<string, any>[] }|null}
  */
 function parseProbeOutput(output) {
-  try {
-    const parsed = JSON.parse(output.trim());
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed
-      : null;
-  } catch {
-    return null;
+  /** @type {Record<string, any>[]} */
+  const events = [];
+  for (const line of output.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    /** @type {unknown} */
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    events.push(/** @type {Record<string, any>} */ (parsed));
   }
+  const result = events.filter((event) => event.type === 'result').at(-1);
+  return result ? { result, events } : null;
 }
 
 /**
@@ -285,7 +300,15 @@ export function createProviderHealth(deps) {
       }
       return { command: entry.command, args, env };
     }
-    const args = ['-p', 'ok', '--model', model.id, '--output-format', 'json'];
+    const args = [
+      '-p',
+      'ok',
+      '--model',
+      model.id,
+      '--output-format',
+      'stream-json',
+      '--verbose'
+    ];
     if (runner === 'claude' && target.account !== null) {
       const cswap_path = resolveCswapPath();
       if (!cswap_path) {
@@ -366,7 +389,7 @@ export function createProviderHealth(deps) {
       };
     }
     const parsed = parseProbeOutput(result.stdout);
-    if (result.code === 0 && parsed && parsed.is_error === false) {
+    if (result.code === 0 && parsed && parsed.result.is_error === false) {
       return { ok: true, outage: null, error: '' };
     }
     let account_row = null;
@@ -378,7 +401,7 @@ export function createProviderHealth(deps) {
     }
     const outage = classifier
       ? classifier({
-          raw: parsed ? [parsed] : [],
+          raw: parsed ? parsed.events : [],
           stderr_tail: result.stderr,
           finished_at: now(),
           account_row

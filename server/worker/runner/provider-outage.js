@@ -3,7 +3,9 @@
  *
  * Only the final `result` event, or stderr when no result exists, may supply a
  * signal. This keeps quoted API errors in assistant/tool text from becoming
- * worker state.
+ * worker state. The one typed companion is the CLI's own `rate_limit_event`
+ * in that result's turn: a `rejected` account-window verdict makes a
+ * structured 429 an account usage limit whatever the result wording says.
  */
 import { errorDetail } from '../error-detail.js';
 
@@ -125,15 +127,21 @@ function outageMatch(detail, scope, line) {
 
 /**
  * Apply §3.2 in first-match order. A structured status bypasses conflicting
- * status strings; only `LIMIT_RE` still refines structured 429 into account
- * usage exhaustion.
+ * status strings; `LIMIT_RE` or a rejected account window refines structured
+ * 429 into account usage exhaustion.
  *
  * @param {string[]} lines
  * @param {number|null} structured_status
  * @param {boolean} allow_limit
+ * @param {boolean} [window_rejected]
  * @returns {OutageMatch|null}
  */
-function classifyLines(lines, structured_status, allow_limit) {
+function classifyLines(
+  lines,
+  structured_status,
+  allow_limit,
+  window_rejected = false
+) {
   const first_line = lines[0] ?? null;
   const credential_line = matchingLine(lines, CREDENTIAL_RE);
   if (
@@ -160,6 +168,9 @@ function classifyLines(lines, structured_status, allow_limit) {
       const limit_line = allow_limit ? matchingLine(lines, LIMIT_RE) : null;
       if (limit_line !== null) {
         return outageMatch('usage_limit', 'account', limit_line);
+      }
+      if (window_rejected) {
+        return outageMatch('usage_limit', 'account', first_line);
       }
       return outageMatch('rate_limited_429', 'provider', first_line);
     }
@@ -458,6 +469,44 @@ function catalogResetAt(account_row) {
 }
 
 /**
+ * Read the CLI's account-window verdict for the final result: the latest
+ * `rate_limit_event` inside that result's turn, when it rejected the request.
+ * `resets_at` is that window's reset instant, or null when absent.
+ *
+ * @param {any[]} raw
+ * @param {number} result_index
+ * @returns {{ resets_at: number|null }|null}
+ */
+function rejectedWindow(raw, result_index) {
+  for (let index = result_index - 1; index >= 0; index -= 1) {
+    const event = raw[index];
+    if (!event || typeof event !== 'object') {
+      continue;
+    }
+    if (event.type === 'result') {
+      return null;
+    }
+    if (event.type !== 'rate_limit_event') {
+      continue;
+    }
+    const info = event.rate_limit_info;
+    if (info?.status !== 'rejected') {
+      return null;
+    }
+    const resets_at_seconds = info.resetsAt;
+    return {
+      resets_at:
+        typeof resets_at_seconds === 'number' &&
+        Number.isFinite(resets_at_seconds) &&
+        resets_at_seconds > 0
+          ? resets_at_seconds * 1000
+          : null
+    };
+  }
+  return null;
+}
+
+/**
  * Classify one closed Claude stream without reading queue or account state.
  * `account_row` is an optional injection seam for the later catalog-wiring
  * unit; absence keeps an unparseable `usage_limit` reset at null.
@@ -467,11 +516,9 @@ function catalogResetAt(account_row) {
  */
 export function classifyProviderOutage(ctx) {
   const raw = Array.isArray(ctx.raw) ? ctx.raw : [];
-  const results = raw.filter(
-    (event) => event && typeof event === 'object' && event.type === 'result'
-  );
-  if (results.length > 0) {
-    const result = results[results.length - 1];
+  const result_index = raw.map((event) => event?.type).lastIndexOf('result');
+  if (result_index !== -1) {
+    const result = raw[result_index];
     if (result.is_error !== true) {
       return null;
     }
@@ -482,13 +529,21 @@ export function classifyProviderOutage(ctx) {
     const structured_status = Number.isInteger(result.api_error_status)
       ? result.api_error_status
       : null;
-    const match = classifyLines(lines, structured_status, true);
+    const rejected =
+      structured_status === 429 ? rejectedWindow(raw, result_index) : null;
+    const match = classifyLines(
+      lines,
+      structured_status,
+      true,
+      rejected !== null
+    );
     if (match === null) {
       return null;
     }
     const resets_at =
       match.detail === 'usage_limit'
-        ? (resultResetAt(lines, ctx.finished_at) ??
+        ? (rejected?.resets_at ??
+          resultResetAt(lines, ctx.finished_at) ??
           catalogResetAt(ctx.account_row))
         : null;
     return { ...match, resets_at };
