@@ -10,6 +10,7 @@ import {
   beadTimelinePath,
   beadsRootDir,
   codexAccountHomeDir,
+  codexAttemptHomeDir,
   delegationMonitorDir,
   delegationMonitorRootDir,
   discardBackupDir,
@@ -144,6 +145,37 @@ describe('codexAccountHomeDir', () => {
       )
     );
     expect(path.basename(result)).not.toMatch(/[+/=]/);
+  });
+});
+
+describe('codexAttemptHomeDir', () => {
+  test('keeps deterministic attempt homes beside the removable hook tree', () => {
+    const dir = codexAttemptHomeDir(WS, 'UI-3z1e-1');
+
+    expect(dir).toBe(
+      path.join(workspaceStateDir(WS), 'codex-attempt-homes', 'UI-3z1e-1')
+    );
+    expect(dir.startsWith(`${guardHookDir(WS, 'UI-3z1e-1')}/`)).toBe(false);
+    expect(codexAttemptHomeDir(WS, 'UI-3z1e-1')).toBe(dir);
+  });
+
+  test('isolates attempts and workspaces', () => {
+    const dir = codexAttemptHomeDir(WS, 'UI-3z1e-1');
+
+    expect(codexAttemptHomeDir(WS, 'UI-3z1e-2')).not.toBe(dir);
+    expect(codexAttemptHomeDir(`${WS}-other`, 'UI-3z1e-1')).not.toBe(dir);
+  });
+
+  test.each([
+    ['../escape/UI-1', '.._escape_UI-1'],
+    ['..', 'attempt'],
+    ['', 'attempt']
+  ])('contains the sanitized attempt id %s', (attempt_id, expected) => {
+    const dir = codexAttemptHomeDir(WS, attempt_id);
+
+    expect(dir).toBe(
+      path.join(workspaceStateDir(WS), 'codex-attempt-homes', expected)
+    );
   });
 });
 

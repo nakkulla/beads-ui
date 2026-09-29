@@ -65,10 +65,12 @@ async function readOptional(file) {
 }
 
 /**
- * Make a private attempt HOME, preserving user hooks and their existing trust.
+ * Prepare a durable private attempt HOME, preserving user hooks and trust.
+ * The caller supplies a deterministic path outside the guard-hook directory;
+ * retain it after the attempt because Codex registers rollout paths through it.
  * A preparation error leaves the caller on its original HOME with a warning.
  *
- * @param {{ base_home: string, parent_dir: string, hook_path: string }} input
+ * @param {{ base_home: string, home_dir: string, hook_path: string }} input
  * @returns {Promise<{ ok: true, home_dir: string }|{ ok: false, reason: 'codex_hook_not_loaded' }>}
  */
 export async function prepareCodexGuardHome(input) {
@@ -86,14 +88,23 @@ export async function prepareCodexGuardHome(input) {
     const group_index = hooks_file.hooks.PreToolUse.length;
     hooks_file.hooks.PreToolUse.push(hook_group);
 
-    await fs.mkdir(input.parent_dir, { recursive: true });
-    const home_dir = await fs.mkdtemp(
-      path.join(input.parent_dir, 'codex-home-')
-    );
+    const home_dir = path.resolve(input.home_dir);
+    await fs.mkdir(home_dir, { recursive: true, mode: 0o700 });
+    const home_stat = await fs.lstat(home_dir);
+    if (!home_stat.isDirectory() || home_stat.isSymbolicLink()) {
+      return { ok: false, reason: 'codex_hook_not_loaded' };
+    }
     await fs.chmod(home_dir, 0o700);
     for (const name of await fs.readdir(base_home)) {
       if (name !== 'hooks.json' && name !== 'config.toml') {
-        await fs.symlink(path.join(base_home, name), path.join(home_dir, name));
+        const mirror = await ensureMirrorLink(
+          path.join(home_dir, name),
+          path.join(base_home, name),
+          name
+        );
+        if (!mirror.ok) {
+          return { ok: false, reason: 'codex_hook_not_loaded' };
+        }
       }
     }
     /** @type {Record<string, any>} */

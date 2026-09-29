@@ -23,6 +23,9 @@
  * Known limitation, kept deliberately: `git push --no-verify` skips the hook
  * (measured — the remote base really moves). PreToolUse refuses that command;
  * the independent landing check detects any push that still reaches the base.
+ *
+ * This tree contains disposable hook scripts and push records. Codex attempt
+ * HOMEs live separately and survive removal so registered rollouts stay readable.
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';

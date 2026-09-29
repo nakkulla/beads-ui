@@ -33,6 +33,7 @@ import { createSessionLog, stderrPathOf } from './session-log.js';
 import {
   beadSessionLogPath,
   beadSessionStderrPath,
+  codexAttemptHomeDir,
   delegationMonitorDir,
   guardHookDir,
   usageReceiptInboxDir
@@ -7677,7 +7678,7 @@ describe('scheduler launch account pins', () => {
 
       expect(prepareCodexGuardHome).toHaveBeenCalledWith({
         base_home: account ? '/state/codex-homes/codex-key' : '/codex-root',
-        parent_dir: guardHookDir(WS, 'B1-1000-1'),
+        home_dir: codexAttemptHomeDir(WS, 'B1-1000-1'),
         hook_path: path.join(guardHookDir(WS, 'B1-1000-1'), 'pre-tool-use')
       });
       expect(env.runner.settingsFor('B1').env.CODEX_HOME).toBe(

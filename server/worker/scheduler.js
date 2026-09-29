@@ -143,6 +143,7 @@ import {
 import { isSessionStalledRecovery } from './session-stall.js';
 import { staleResidueIntact } from './stale-work.js';
 import {
+  codexAttemptHomeDir,
   codexSessionsRoot,
   codexAccountHomeDir as defaultCodexAccountHomeDir
 } from './state-paths.js';
@@ -11016,7 +11017,7 @@ export function createScheduler(deps) {
         deps.prepareCodexGuardHome || prepareCodexGuardHome
       )({
         base_home,
-        parent_dir: path.dirname(settings.guard_hook_path),
+        home_dir: codexAttemptHomeDir(workspace, attempt_id),
         hook_path: settings.guard_hook_path
       });
       if (prepared.ok) {

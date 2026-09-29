@@ -11,6 +11,8 @@ import {
   prepareCodexAccountHome,
   prepareCodexGuardHome
 } from './codex-account-home.js';
+import { installPreToolHook, preToolHookPath, remove } from './guard-hook.js';
+import { codexAttemptHomeDir, guardHookDir } from './state-paths.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -40,6 +42,7 @@ async function fixture() {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await Promise.all(
     temp_roots.splice(0).map((root) => fs.rm(root, { recursive: true }))
   );
@@ -71,7 +74,7 @@ test.each([false, true])(
 
     const result = await prepareCodexGuardHome({
       base_home,
-      parent_dir: path.join(paths.root, 'attempt'),
+      home_dir: path.join(paths.root, 'attempt'),
       hook_path
     });
 
@@ -162,17 +165,83 @@ test('isolates concurrent attempt settings under different homes', async () => {
   const paths = await fixture();
   const input = {
     base_home: paths.codex_root,
-    parent_dir: paths.root,
     hook_path: path.join(paths.root, 'guard')
   };
 
   const [first, second] = await Promise.all([
-    prepareCodexGuardHome(input),
-    prepareCodexGuardHome(input)
+    prepareCodexGuardHome({
+      ...input,
+      home_dir: path.join(paths.root, 'attempt-1')
+    }),
+    prepareCodexGuardHome({
+      ...input,
+      home_dir: path.join(paths.root, 'attempt-2')
+    })
   ]);
 
   expect(first.ok && second.ok && first.home_dir !== second.home_dir).toBe(
     true
+  );
+});
+
+test.each([false, true])(
+  'keeps registered rollout paths readable after hook cleanup (account=%s)',
+  async (account) => {
+    const paths = await fixture();
+    vi.stubEnv('XDG_STATE_HOME', path.join(paths.root, 'state'));
+    const workspace = path.join(paths.root, 'workspace');
+    const attempt_id = 'UI-3z1e-1';
+    const home_dir = codexAttemptHomeDir(workspace, attempt_id);
+    await fs.mkdir(path.join(paths.codex_root, 'sessions'));
+    await fs.writeFile(
+      path.join(paths.codex_root, 'sessions', 'rollout.jsonl'),
+      'preserved rollout'
+    );
+    if (account) {
+      expect((await prepareCodexAccountHome(paths.input)).ok).toBe(true);
+    }
+    installPreToolHook({
+      workspace,
+      attempt_id,
+      repo: workspace,
+      target_base: 'main'
+    });
+    const prepared = await prepareCodexGuardHome({
+      base_home: account ? paths.home_dir : paths.codex_root,
+      home_dir,
+      hook_path: preToolHookPath(workspace, attempt_id)
+    });
+    expect(prepared).toEqual({ ok: true, home_dir });
+    const registered_rollout = path.join(home_dir, 'sessions', 'rollout.jsonl');
+
+    const removed = remove({ workspace, attempt_id });
+
+    expect(removed).toBe(true);
+    await expect(
+      fs.stat(guardHookDir(workspace, attempt_id))
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await fs.readFile(registered_rollout, 'utf8')).toBe(
+      'preserved rollout'
+    );
+    expect((await fs.stat(home_dir)).mode & 0o777).toBe(0o700);
+  }
+);
+
+test('reuses the same attempt HOME without losing its session links', async () => {
+  const paths = await fixture();
+  await fs.mkdir(path.join(paths.codex_root, 'sessions'));
+  const input = {
+    base_home: paths.codex_root,
+    home_dir: path.join(paths.root, 'attempt'),
+    hook_path: path.join(paths.root, 'guard')
+  };
+  expect((await prepareCodexGuardHome(input)).ok).toBe(true);
+
+  const result = await prepareCodexGuardHome(input);
+
+  expect(result).toEqual({ ok: true, home_dir: input.home_dir });
+  expect(await fs.realpath(path.join(input.home_dir, 'sessions'))).toBe(
+    await fs.realpath(path.join(paths.codex_root, 'sessions'))
   );
 });
 
@@ -182,7 +251,7 @@ test('reports unavailable trust state without changing the base config', async (
 
   const result = await prepareCodexGuardHome({
     base_home: paths.codex_root,
-    parent_dir: path.join(paths.root, 'occupied'),
+    home_dir: path.join(paths.root, 'occupied'),
     hook_path: '/guard'
   });
 
