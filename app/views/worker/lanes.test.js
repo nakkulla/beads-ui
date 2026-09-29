@@ -71,6 +71,9 @@ function interactiveView(patch = {}) {
     launched_at: 1,
     discord_url: null,
     closing: false,
+    turn_state: null,
+    turn_state_since: null,
+    last_message: null,
     ...patch
   };
 }
@@ -218,6 +221,123 @@ describe('interactive session badges', () => {
     expect(
       row.querySelector('.worker-mini__resolve')?.textContent?.trim()
     ).toBe('세션에서 해결');
+  });
+});
+
+describe('inquiry session live card (UI-ri8n)', () => {
+  const NOW = 10 * 60_000;
+
+  test.each([
+    ['running', '▤ 문의 세션 · fork · 작업 중 8분'],
+    ['question', '▤ 문의 세션 · fork · 질문 대기'],
+    ['limit', '▤ 문의 세션 · fork · 한도 대기'],
+    ['idle', '▤ 문의 세션 · fork · 턴 종료 8분'],
+    [null, '▤ 문의 세션 · fork']
+  ])('renders the %s turn tail on the badge', (turn_state, label) => {
+    const view = interactiveView({
+      kind: 'inquiry',
+      turn_state: /** @type {any} */ (turn_state),
+      turn_state_since: 2 * 60_000
+    });
+
+    render(
+      interactiveSessionBadgesTemplate([view], { bead_id: 'UI-x1', now: NOW }),
+      mount
+    );
+
+    expect(
+      mount.querySelector('.interactive-session-badge')?.textContent?.trim()
+    ).toBe(label);
+  });
+
+  test('draws the progress line under the reason of a waiting row', () => {
+    const item = {
+      lane: 'queue',
+      done: false,
+      wait_reasons: [waitReason({ kind: 'recovery', headline: '막힘 문장' })],
+      interactive_sessions: [
+        interactiveView({
+          kind: 'inquiry',
+          last_message: {
+            text: 'make test 재실행 중',
+            at: Date.now() - 180_000
+          }
+        })
+      ]
+    };
+
+    const row = renderRow(/** @type {any} */ (item));
+
+    const line = row.querySelector('.rtile__activity--session');
+    expect(line?.textContent).toContain('▤ make test 재실행 중');
+    expect(line?.textContent).toContain('3분 전');
+  });
+
+  test('omits the progress line without a last message', () => {
+    const item = {
+      lane: 'queue',
+      done: false,
+      wait_reasons: [waitReason({ kind: 'recovery' })],
+      interactive_sessions: [interactiveView({ kind: 'inquiry' })]
+    };
+
+    const row = renderRow(/** @type {any} */ (item));
+
+    expect(row.querySelector('.rtile__activity--session')).toBeNull();
+  });
+
+  test('replaces the times line with the inquiry age', () => {
+    const item = {
+      lane: 'queue',
+      done: false,
+      wait_reasons: [waitReason({ kind: 'recovery', since: 1 })],
+      interactive_sessions: [
+        interactiveView({ kind: 'inquiry', launched_at: Date.now() - 300_000 })
+      ]
+    };
+
+    const row = renderRow(/** @type {any} */ (item));
+
+    expect(row.querySelector('.wait-reason__times')?.textContent?.trim()).toBe(
+      '문의 세션 5분째'
+    );
+  });
+
+  test('adds the inquiry line to the wait badge popup', () => {
+    const view = interactiveView({ kind: 'inquiry', turn_state: 'question' });
+
+    render(
+      waitStatusBadge({
+        wait_reasons: [
+          waitReason({
+            kind: 'recovery',
+            verdict: 'action_required',
+            verdict_reason: {
+              code: 'decision',
+              message: '문의 세션이 답을 기다림'
+            }
+          })
+        ],
+        interactive_sessions: [view]
+      }),
+      mount
+    );
+
+    const text = mount.querySelector('.wait-verdict')?.textContent || '';
+    expect(text).toContain('문의 세션이 답을 기다림');
+    expect(text).toContain('문의 세션 bdui-inquiry:resolve-UI-x1 · 질문 대기');
+  });
+
+  test('draws no resolve button on a recovery row without resolve_action', () => {
+    const item = {
+      lane: 'queue',
+      done: false,
+      wait_reasons: [waitReason({ kind: 'recovery' })]
+    };
+
+    const row = renderRow(/** @type {any} */ (item));
+
+    expect(row.querySelector('.worker-mini__resolve')).toBeNull();
   });
 });
 

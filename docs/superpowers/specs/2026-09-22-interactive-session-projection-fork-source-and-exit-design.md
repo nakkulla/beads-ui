@@ -114,6 +114,8 @@ InteractiveSession {
 - **수명.** ADR 0027(queue.json은 진행 중인 것만): 세션이 끝나면 레코드를 지우고 타임라인 종료 이벤트만 남긴다. 클라이언트에는 살아 있는 동안만 보이고, 끝난 세션의 이력은 `get-bead-timeline`이 갖는다.
 - **투영.** `decorateQueue`는 `interactive_sessions`를 그대로 내보내되 §3.5의 `discord_url`을 붙인다. `completion_intents`처럼 지우는 내부 필드가 아니다.
 
+**정정(UI-ri8n)**: 레코드에 단계 필드 넷(`turn_state`·`turn_state_since`·`last_message`·`last_message_read_at`)이 더해진다 — `2026-09-29-inquiry-session-live-card-consistency-design.md` §3.1.
+
 ### 3.4 생존·정산·종료 — scheduler reconcile
 
 `tickPass`에 `reconcileInteractiveSessions(workspace)`를 더한다(30초 poll). 상수는 `INTERACTIVE_EXIT_GRACE_MS = 90_000`(exit 요청 뒤 pane 소멸 대기), `INTERACTIVE_EXIT_DEFER_MAX_MS = 1_800_000`(idle을 기다리는 상한).
@@ -165,6 +167,8 @@ InteractiveSession {
 - `[세션에서 해결]` 버튼은 현행 그대로 그린다(ADR 0036 §2·UI-a5l2-2 §3의 카드 조작). 살아 있는 세션이 있을 때의 클릭은 서버가 `already_running`으로 답하고 토스트 「이미 열려 있습니다 · <창>」이 뜬다 — 지금과 같다. 뱃지는 그 사실을 클릭 전에 보여 주는 추가 표면이다.
 - 세션이 끝나면 레코드가 사라지고 뱃지도 사라진다. 이력은 타임라인(`get-bead-timeline`)이 갖는다.
 - 문의 세션의 자동 기동 알림(`awaitingUser`)과 해결 세션의 응답 형식은 바꾸지 않는다.
+
+**정정(UI-ri8n)**: 「`[세션에서 해결]` 버튼은 현행 그대로 그린다 … 뱃지는 그 사실을 클릭 전에 보여 주는 추가 표면이다」를 대체한다 — 살아 있는 세션이 있으면 버튼을 그리지 않고 뱃지가 단계를 말한다. 서버 `already_running`은 방어로 남는다.
 
 ### 3.8 프롬프트 한 줄
 

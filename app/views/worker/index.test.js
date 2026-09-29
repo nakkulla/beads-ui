@@ -13,7 +13,8 @@ import {
   mergeStepView,
   mergeWaitingText,
   prStatusBadge,
-  receiptWarningCodes
+  receiptWarningCodes,
+  resolveSessionTone
 } from './index.js';
 import { providerProbeRefusalText } from './lanes.js';
 
@@ -17729,5 +17730,188 @@ describe('external wait confirm and session resume (UI-r6xq §4.4)', () => {
       '세션을 열지 못했습니다 · no_session_ref'
     );
     view.destroy();
+  });
+});
+
+describe('resolve action while an interactive session lives (UI-ri8n)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {'inquiry'|'resolve'|'external_resume'} kind
+   * @param {string} bead_id
+   */
+  function liveSession(kind, bead_id) {
+    return {
+      [`${bead_id}:${kind}`]: {
+        bead_id,
+        kind,
+        provider: 'claude',
+        session_id: 'sid',
+        mode: 'fork',
+        source: 'attempt',
+        fallback_reason: null,
+        attempt_id: null,
+        tmux_session: 'bdui-inquiry',
+        tmux_window: bead_id,
+        state: 'live',
+        settled_at: null,
+        launched_at: 1
+      }
+    };
+  }
+
+  /** @param {string} bead_id */
+  function recoveryReason(bead_id) {
+    return {
+      kind: 'recovery',
+      subject: { bead_id, root_dir: '/repo' },
+      headline: '확인 대기',
+      release: '',
+      verdict: 'action_required',
+      targets: [],
+      actions: []
+    };
+  }
+
+  const WAITING_ATTEMPT = {
+    aw: {
+      attempt_id: 'aw',
+      bead_id: 'W1',
+      status: 'waiting',
+      started_at: 20,
+      finished_at: 30,
+      session_id: 'saved',
+      cause: 'session_ended_unresolved',
+      cause_detail: {
+        recovery: {
+          reason: 'verification',
+          classification: 'unknown',
+          disposition: 'wait',
+          policy_schema: 1
+        }
+      }
+    }
+  };
+
+  /** @param {any} q */
+  function mountQueue(q) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(q);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      getWorkspacePath: () => '/repo',
+      transport: vi.fn()
+    });
+    return { mount, queueStore };
+  }
+
+  test('hides the running-tile button while the inquiry lives and restores it after', () => {
+    const base = {
+      attempts: WAITING_ATTEMPT,
+      wait_reasons: [recoveryReason('W1')]
+    };
+    const { mount, queueStore } = mountQueue(
+      queueOf({ ...base, interactive_sessions: liveSession('inquiry', 'W1') })
+    );
+    const hidden = mount.querySelector(
+      '.rtile[data-attempt-id="aw"] .rtile__resolve'
+    );
+
+    queueStore.set(queueOf({ ...base, revision: 2, interactive_sessions: {} }));
+
+    expect(hidden).toBeNull();
+    expect(
+      mount.querySelector('.rtile[data-attempt-id="aw"] .rtile__resolve')
+    ).not.toBeNull();
+  });
+
+  test('hides the waiting-row button while the inquiry lives and restores it after', () => {
+    const base = {
+      queue: [{ bead_id: 'Q1', added_at: 1 }],
+      wait_reasons: [recoveryReason('Q1')]
+    };
+    const { mount, queueStore } = mountQueue(
+      queueOf({ ...base, interactive_sessions: liveSession('inquiry', 'Q1') })
+    );
+    const hidden = mount.querySelector('.worker-mini__resolve');
+
+    queueStore.set(queueOf({ ...base, revision: 2, interactive_sessions: {} }));
+
+    expect(hidden).toBeNull();
+    expect(mount.querySelector('.worker-mini__resolve')).not.toBeNull();
+  });
+
+  /** @param {Record<string, any>} interactive_sessions */
+  function prWaitQueue(interactive_sessions) {
+    return queueOf({
+      pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+      pr_observations: {
+        'RD-1': {
+          pr: {
+            number: 304,
+            url: 'https://github.com/o/r/pull/304',
+            state: 'OPEN',
+            head_sha: 'a'.repeat(40)
+          },
+          verify: null,
+          error: null,
+          observed_at: 1,
+          gate: {
+            enabled: false,
+            tier: 'merged',
+            gate_badge: '머지됨',
+            base_badge: '머지됨',
+            reason: null
+          }
+        }
+      },
+      cleanup_failed: { 'RD-1': { step: 'child_sweep', reason: 'x', at: 1 } },
+      interactive_sessions
+    });
+  }
+
+  test('hides the PR-wait button while a resolve session lives', () => {
+    const { mount } = mountQueue(prWaitQueue(liveSession('resolve', 'RD-1')));
+
+    const button = mount.querySelector('.worker-mini__resolve');
+
+    expect(button).toBeNull();
+  });
+
+  test('keeps the PR-wait button beside an external_resume session', () => {
+    const { mount } = mountQueue(
+      prWaitQueue(liveSession('external_resume', 'RD-1'))
+    );
+
+    const button = mount.querySelector('.worker-mini__resolve');
+
+    expect(button).not.toBeNull();
+  });
+
+  test('tones the already_running reply as info', () => {
+    const res = { launched: false, session: 'already_running' };
+
+    const tone = resolveSessionTone(res);
+
+    expect(tone).toBe('info');
+  });
+
+  test('keeps the waiting-row button beside an external_resume session', () => {
+    const { mount } = mountQueue(
+      queueOf({
+        queue: [{ bead_id: 'Q1', added_at: 1 }],
+        wait_reasons: [recoveryReason('Q1')],
+        interactive_sessions: liveSession('external_resume', 'Q1')
+      })
+    );
+
+    const button = mount.querySelector('.worker-mini__resolve');
+
+    expect(button).not.toBeNull();
   });
 });

@@ -411,6 +411,9 @@ const DONE_KIND_LABELS = {
  * @property {number} launched_at
  * @property {string|null} discord_url
  * @property {boolean} closing
+ * @property {'running'|'question'|'limit'|'idle'|null} turn_state
+ * @property {number|null} turn_state_since
+ * @property {{ text: string, at: number|null }|null} last_message
  */
 
 /**
@@ -2928,6 +2931,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
         settled_at: record.settled_at,
         launched_at: record.launched_at,
         discord_url: record.discord_url ?? null,
+        turn_state: record.turn_state ?? null,
+        turn_state_since: record.turn_state_since ?? null,
+        last_message: record.last_message ?? null,
         closing: record.state === 'exiting' || record.settled_at !== null
       });
       interactive_by_bead.set(identity, views);
