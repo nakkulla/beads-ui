@@ -172,9 +172,9 @@ export const RECOVERY_INQUIRY_PROMPT =
     '절차',
     '1. `bd show <bead-id> --json`의 metadata·notes·최근 댓글과 attempt 결과 줄을 읽고 무엇이 멈췄는지 한 문단으로 요약한다.',
     '2. `AskUserQuestion`을 1회 부른다. 선택지는 "이어가기 — 처분 지시를 자유 입력으로" / "폐기" / "사람이 직접 본다"다.',
-    '3. 답 원문을 notes에 `recovery-inquiry: <reason> — 사용자 답: <원문>` 줄로 남긴다. 이어가기 지시면 이 세션이 기록 세션을 fork해 지시대로 계속하며 Worker resume 경로로 넘기지 않는다.',
+    '3. 답 원문을 notes에 `recovery-inquiry: <reason> — 사용자 답: <원문>` 줄로 남긴다. 이어가기 지시면 이미 기록 세션을 fork해 뜬 세션은 이 세션에서 그대로 지시대로 계속하고, fresh 세션만 기록 세션을 fork해 계속하며, 둘 다 Worker resume 경로로 넘기지 않는다.',
     '',
-    '금지: `awaiting_user` 단독 해제 · Bead 상태 직접 변경 · 외부 리뷰어 dispatch.'
+    '금지: `awaiting_user` 단독 해제 · Bead 상태 직접 변경 · 외부 리뷰어 dispatch · 공급자 세션 상태 파일(`~/.codex`·`~/.claude` 아래 sqlite·세션 등록 파일) 직접 수정 · 중첩 헤드리스 세션(`codex exec`·`claude -p`) 기동.'
   ].join('\n') + '\n';
 
 /**

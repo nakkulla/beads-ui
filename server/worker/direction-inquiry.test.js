@@ -522,7 +522,7 @@ describe('direction-inquiry prompt constant', () => {
       .digest('hex');
 
     expect(digest).toBe(
-      'f128ae5890fc1d9020af901d888fd749496231c2fd9a045834c79ad3a8a7f330'
+      '19b21293ce0e55995bce0bcb9fcd75e02ad1cd2b51f0199f51445e7c9974551f'
     );
   });
 
