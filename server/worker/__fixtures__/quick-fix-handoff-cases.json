@@ -216,6 +216,118 @@
     }
   },
   {
+    "name": "command만 적은 baseline_red를 인정한다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- baseline_red: command=npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "완전한 base만 덧붙인 baseline_red를 인정한다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- baseline_red: command=npm test | base=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "정수 exit만 덧붙인 baseline_red를 인정한다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- baseline_red: command=npm test | exit=-1\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "자리표시자 command를 baseline_red로 인정하지 않는다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- baseline_red: command=<명령>\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["baseline_red"]
+    }
+  },
+  {
+    "name": "자리표시자 base를 baseline_red로 인정하지 않는다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- baseline_red: command=npm test | base=<sha>\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["baseline_red"]
+    }
+  },
+  {
+    "name": "짧은 base를 baseline_red로 인정하지 않는다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- baseline_red: command=npm test | base=aaaaaaa\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["baseline_red"]
+    }
+  },
+  {
+    "name": "자리표시자 exit를 baseline_red로 인정하지 않는다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- baseline_red: command=npm test | exit=<정수>\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["baseline_red"]
+    }
+  },
+  {
+    "name": "비정수 exit를 baseline_red로 인정하지 않는다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- baseline_red: command=npm test | exit=1.5\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["baseline_red"]
+    }
+  },
+  {
     "name": "issue_type이 없으면 type 키를 읽는다",
     "issue": {
       "type": "bug",

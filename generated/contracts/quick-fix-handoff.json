@@ -31,7 +31,7 @@
       "baseline_red": {
         "required_when": "issue_type_bug",
         "section": "검증 bundle",
-        "line_regex": "^[ \\t]*(?:-[ \\t]*|[0-9]+\\.[ \\t]*)?`?baseline_red:[ \\t]*command=[^< \\t].* \\| base=[0-9a-f]{40} \\| exit=-?[0-9]+`?[ \\t]*$"
+        "line_regex": "^[ \\t]*(?:-[ \\t]*|[0-9]+\\.[ \\t]*)?`?baseline_red:[ \\t]*command=[^< \\t](?:(?!\\| base=|\\| exit=).)*(?: \\| base=[0-9a-f]{40})?(?: \\| exit=-?[0-9]+)?`?[ \\t]*$"
       },
       "predecessor_edge": {
         "sections": [
@@ -80,7 +80,8 @@
       },
       "writers": [
         "creating_session_after_checker_pass",
-        "worker_session_after_delta_self_review"
+        "worker_session_after_delta_self_review",
+        "checker_write_receipt_flag_after_session_self_review"
       ]
     },
     "order": [
@@ -210,7 +211,8 @@
     "child_keys": {
       "worker_created_from": {
         "schema": "metadata.parent_keys.worker_created_from",
-        "applies_when": "worker_creates_phase_child"
+        "applies_when": "worker_creates_phase_child",
+        "status": "historical_read"
       }
     }
   },
