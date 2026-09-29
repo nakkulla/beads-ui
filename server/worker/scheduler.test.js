@@ -14685,6 +14685,122 @@ describe('scheduler protected bead sets (UI-b8n8 §접근 A)', () => {
     });
   });
 
+  test.each(['before', 'during'])(
+    'waits for discard-owned settlement when finalized %s the exit callback',
+    async (timing) => {
+      /** @type {() => void} */
+      let release = () => {};
+      const gate = new Promise((resolve) => {
+        release = () => resolve(undefined);
+      });
+      const resolveBase = vi.fn(async () => ({
+        ok: true,
+        base: 'main',
+        base_oid: 'a'.repeat(40)
+      }));
+      const env = setup({
+        config: { S1: {} },
+        slots: 1,
+        resolveBase
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+      env.store.updateAttempt(WS, {
+        attempt_id,
+        patch: { repo: '/repo', base_oid: 'a'.repeat(40) }
+      });
+      resolveBase.mockImplementationOnce(async () => {
+        await gate;
+        return { ok: true, base: 'main', base_oid: 'a'.repeat(40) };
+      });
+      expect(env.scheduler.fenceDiscardAttempt(attempt_id)).toBe(true);
+
+      if (timing === 'during') {
+        env.runner.finish('S1', { success: false, reason: 'killed' });
+        await flush();
+      }
+      let finished = false;
+      const pending = env.scheduler
+        .finalizeDiscardAttempt(WS, attempt_id)
+        .then((result) => {
+          finished = true;
+          return result;
+        });
+      if (timing === 'before') {
+        env.runner.finish('S1', { success: false, reason: 'killed' });
+      }
+      await flush();
+      const finished_before_release = finished;
+      const status_before_release =
+        env.store.snapshot(WS).attempts[attempt_id].status;
+      release();
+      const result = await pending;
+
+      expect(result).toEqual({ ok: true });
+      expect(finished_before_release).toBe(false);
+      expect(status_before_release).toBe('running');
+      expect(env.scheduler.runningCount()).toBe(0);
+      expect(env.store.snapshot(WS).attempts[attempt_id]).toMatchObject({
+        status: 'discarded',
+        cause: null,
+        control: null
+      });
+    }
+  );
+
+  test('retains discard settlement when fenced again during completion reporting', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () => resolve(undefined);
+    });
+    const onCompletionAttemptSettled = vi.fn(() => gate);
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      onCompletionAttemptSettled
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: {
+        completion_root_id: 'S1',
+        completion_op_id: 'op-1',
+        completion_failure_key: COMPLETION_FAILURE
+      }
+    });
+    env.scheduler.fenceDiscardAttempt(attempt_id);
+    env.runner.finish('S1', { success: false, reason: 'killed' });
+    await flush();
+
+    const fenced_again = env.scheduler.fenceDiscardAttempt(attempt_id);
+    let finished = false;
+    const pending = env.scheduler
+      .finalizeDiscardAttempt(WS, attempt_id)
+      .then((result) => {
+        finished = true;
+        return result;
+      });
+    await flush();
+    const finished_before_release = finished;
+    const status_before_release =
+      env.store.snapshot(WS).attempts[attempt_id].status;
+    release();
+    const result = await pending;
+
+    expect(onCompletionAttemptSettled).toHaveBeenCalledTimes(1);
+    expect(fenced_again).toBe(true);
+    expect(finished_before_release).toBe(false);
+    expect(status_before_release).toBe('running');
+    expect(result).toEqual({ ok: true });
+    expect(env.store.snapshot(WS).attempts[attempt_id].status).toBe(
+      'discarded'
+    );
+  });
+
   test('refuses pause while an active discard owns the attempt', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
