@@ -29,6 +29,7 @@ import { createChipPresetToggle } from '../../utils/chip-preset-binding.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { debug } from '../../utils/logging.js';
+import { disabledModelsOf } from '../../utils/model-visibility.js';
 import { runResumeFlow } from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
@@ -271,6 +272,8 @@ const TICK_MS = 1_000;
  * @property {(id: string) => void} gotoIssue
  * @property {{ get: () => Array<Record<string, any>>|null, getWorkspacesState?: () => Array<Record<string, any>>, subscribe?: (fn: () => void) => () => void }} [pipelineStore]
  * @property {any} [execPresetStore]
+ * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [modelVisibilityStore] - Server-global
+ * model visibility the provider-resume selector filters its models by.
  * @property {(root_dir: string) => void} [openRepoSettings] - 레포 카드 `⚙`가
  * 여는 설정 다이얼로그 (UI-e1ta §7).
  * @property {() => void} [closeRepoSettings]
@@ -499,6 +502,8 @@ export function createMonitorView(mount_element, options) {
   let unsubscribe_pipeline = null;
   /** @type {(() => void)|null} */
   let unsubscribe_presets = null;
+  /** @type {(() => void) | null} */
+  let unsubscribe_model_visibility = null;
   /** @type {any} */
   let tick_timer = null;
   /** @type {ReturnType<typeof createRepoDeck>|null} */
@@ -1450,7 +1455,8 @@ export function createMonitorView(mount_element, options) {
         </div>
         ${providerResumeDialogTemplate(
           provider_resume?.draft || null,
-          provider_resume ? queueOf(provider_resume.root_dir) : {}
+          provider_resume ? queueOf(provider_resume.root_dir) : {},
+          disabledModelsOf(options.modelVisibilityStore)
         )}`;
     }
     // 레인 host는 Worker 탭과 같다 (§4.1): 다섯 레인의 최소 폭 합이 창을 넘으면
@@ -1464,7 +1470,8 @@ export function createMonitorView(mount_element, options) {
       </div>
       ${providerResumeDialogTemplate(
         provider_resume?.draft || null,
-        provider_resume ? queueOf(provider_resume.root_dir) : {}
+        provider_resume ? queueOf(provider_resume.root_dir) : {},
+        disabledModelsOf(options.modelVisibilityStore)
       )}`;
   }
 
@@ -2281,7 +2288,11 @@ export function createMonitorView(mount_element, options) {
       // 공급자 보류의 두 번째 출구 (UI-jr8v §10). 선택기는 Worker 탭과 같은
       // 모듈이 그리므로, 이 탭이 하는 일은 어느 레포의 attempt인지를 실어 두는
       // 것뿐이다.
-      const draft = providerResumeDraft(attempt_id, queueOf(root_dir));
+      const draft = providerResumeDraft(
+        attempt_id,
+        queueOf(root_dir),
+        disabledModelsOf(options.modelVisibilityStore)
+      );
       if (draft) {
         provider_resume = { root_dir, bead_id, draft };
         doRender();
@@ -2634,7 +2645,8 @@ export function createMonitorView(mount_element, options) {
       const next = providerResumeDraftChange(
         provider_resume.draft,
         target,
-        queueOf(provider_resume.root_dir)
+        queueOf(provider_resume.root_dir),
+        disabledModelsOf(options.modelVisibilityStore)
       );
       if (next) {
         // 같은 참조는 "우리 이벤트지만 바뀐 것이 없다"는 뜻이다: 다시 그리면
@@ -2797,6 +2809,18 @@ export function createMonitorView(mount_element, options) {
       }
     });
   }
+  // 공급자 재개 선택기의 모델 목록은 서버 전역 활성 모델을 읽는다 (UI-ooc0 §4.2).
+  if (typeof options.modelVisibilityStore?.subscribe === 'function') {
+    unsubscribe_model_visibility = options.modelVisibilityStore.subscribe(
+      () => {
+        try {
+          doRender();
+        } catch {
+          // ignore
+        }
+      }
+    );
+  }
 
   function stopTick() {
     if (tick_timer !== null) {
@@ -2832,6 +2856,10 @@ export function createMonitorView(mount_element, options) {
       if (unsubscribe_presets) {
         unsubscribe_presets();
         unsubscribe_presets = null;
+      }
+      if (unsubscribe_model_visibility) {
+        unsubscribe_model_visibility();
+        unsubscribe_model_visibility = null;
       }
       if (unsubscribe_viewport) {
         unsubscribe_viewport();

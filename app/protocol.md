@@ -1293,6 +1293,30 @@ profile applied from another repo's panel split across two repos. All three now
 address one repo, and a successful write invalidates that repo's monitor
 `session_defaults` cache.
 
+## Model visibility channel
+
+Server-global list of catalog models the selectors hide (UI-ooc0 §3). It is a
+display filter only: the catalog, stored settings, dispatch validation, and
+pricing ignore it. State lives in `$XDG_STATE_HOME/bdui/model-visibility.json`.
+
+- `subscribe-model-visibility` `{ id? }` → `ok { id }`, then an immediate
+  `model-visibility-snapshot`. `unsubscribe-model-visibility` `{ id? }` →
+  `ok { id, unsubscribed }`. Closing the connection drops its subscription.
+- `model-visibility-snapshot` payload:
+  `{ type, id, revision, disabled_models, runners }` where `runners` is
+  `{ claude: [{ name, id }], codex: [...] }` in catalog order and
+  `disabled_models` lists only catalog names (unknown stored names are ignored
+  on read).
+- `model-visibility-set` `{ expected_revision, disabled_models }` replaces the
+  whole list (duplicates are dropped). Success → `ok { snapshot }`, then the new
+  snapshot is pushed to every subscriber. Rejections write nothing and carry the
+  current snapshot in `error.details.snapshot`:
+  - `conflict` — `expected_revision` is not the current revision.
+  - `invalid_disabled_models` — not an array of non-empty strings.
+  - `unknown_model` — a name the current catalog does not know.
+  - `runner_all_disabled` — every model of one runner would be disabled.
+  - `internal_error` — the file could not be written.
+
 ## ADR channel (UI-8uz7 §6)
 
 `subscribe-adr` / `unsubscribe-adr` (reply `ok` with `{ id }`) open and close a

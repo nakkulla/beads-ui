@@ -18,6 +18,7 @@ import {
   execPresetsFilePath,
   externalWaitFilePath,
   guardHookDir,
+  modelVisibilityFilePath,
   recordMigrationMarkerPath,
   retentionPolicyPath,
   sessionLogPath,
@@ -126,6 +127,14 @@ describe('execPresetsFilePath', () => {
   test('derives one server-global file under the bdui state root', () => {
     expect(execPresetsFilePath()).toBe(
       path.join('/state', 'bdui', 'exec-presets.json')
+    );
+  });
+});
+
+describe('modelVisibilityFilePath', () => {
+  test('derives one server-global file under the bdui state root', () => {
+    expect(modelVisibilityFilePath()).toBe(
+      path.join('/state', 'bdui', 'model-visibility.json')
     );
   });
 });

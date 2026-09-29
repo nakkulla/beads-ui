@@ -22,6 +22,7 @@ import {
   complexTooltip
 } from '../../utils/complex-judgement.js';
 import { buildOptionView } from '../../utils/execution-defaults.js';
+import { visibleChoicesForKey } from '../../utils/model-visibility.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
 import { formatExecReceipt, formatPlannedExecution } from '../exec-format.js';
 import {
@@ -284,6 +285,7 @@ function rowTemplate(row, view) {
  *   catalog: any,
  *   execution_defaults: Record<string, any>|null,
  *   controller_runtime?: string|null,
+ *   disabled_models?: ReadonlyArray<string>|null,
  *   expanded: boolean,
  *   presets: any[],
  *   presets_loaded: boolean,
@@ -473,13 +475,16 @@ export function effectiveSettingsCardTemplate(model, handlers) {
               ${rows
                 .filter((row) => group.keys.includes(row.key))
                 .map((row) => {
+                  const visible = visibleChoicesForKey(
+                    row.key,
+                    optionsForKey(row.key, effective_values, model.catalog),
+                    model.disabled_models ?? null,
+                    model.execution_defaults
+                  );
                   const option_view = buildOptionView({
                     key: row.key,
-                    choices: optionsForKey(
-                      row.key,
-                      effective_values,
-                      model.catalog
-                    ),
+                    choices: visible.choices,
+                    hidden_choices: visible.hidden_choices,
                     layer: 'pin',
                     pin: model.metadata,
                     global: model.workspace_values,

@@ -42,6 +42,12 @@ import {
   handleUnsubscribeImplPresets
 } from './exec-preset-handlers.js';
 import {
+  detachModelVisibility,
+  handleModelVisibilitySet,
+  handleSubscribeModelVisibility,
+  handleUnsubscribeModelVisibility
+} from './model-visibility-handlers.js';
+import {
   detachMonitorPipeline,
   ensureRunnableScanWired,
   handleMonitorAutoToggle,
@@ -294,6 +300,7 @@ export function attachWsServer(http_server, options = {}) {
         detachAdr(ws);
         detachDisplayPolicy(ws);
         detachImplPresets(ws);
+        detachModelVisibility(ws);
       } catch {
         // ignore cleanup errors
       }
@@ -526,6 +533,15 @@ export async function handleMessage(ws, data) {
       return;
     case 'unsubscribe-impl-presets':
       handleUnsubscribeImplPresets(ws, req);
+      return;
+    case 'subscribe-model-visibility':
+      handleSubscribeModelVisibility(ws, req);
+      return;
+    case 'unsubscribe-model-visibility':
+      handleUnsubscribeModelVisibility(ws, req);
+      return;
+    case 'model-visibility-set':
+      handleModelVisibilitySet(ws, req);
       return;
     case 'impl-preset-create':
       handleImplPresetCreate(ws, req);

@@ -23,6 +23,7 @@
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import { visibleChoicesForKey } from '../../utils/model-visibility.js';
 import { supportsQuickFixLane } from '../monitor/bulk-preset-apply.js';
 import {
   observationApplies,
@@ -179,6 +180,9 @@ function storedValue(value) {
  * names the general row it falls through to; this form's own values by default.
  * @property {() => void} [onChange] - Called after every edit so the pane
  * redraws.
+ * @property {() => ReadonlyArray<string>|null} [disabledModels] - The
+ * server-global disabled model list filtering the model and reviewer choices;
+ * `null` shows everything.
  */
 
 /**
@@ -194,7 +198,8 @@ export function createBulkWorkerForm({
   queueOf,
   selectedRows,
   resolutionValues,
-  onChange
+  onChange,
+  disabledModels
 }) {
   /** The rows this instance draws, in storage key names. */
   const row_keys = bulkFormRowKeysFor(profile);
@@ -705,14 +710,21 @@ export function createBulkWorkerForm({
     const hold = holdStateOf(key);
     const hold_option = holdOptionOf(key);
     const selected = hold === null ? (values[key] ?? UNSET) : HOLD;
-    const view = buildExecutionOptionView(
+    const visible = visibleChoicesForKey(
       key,
       choices,
+      disabledModels ? disabledModels() : null,
+      defaultsOf()
+    );
+    const view = buildExecutionOptionView(
+      key,
+      visible.choices,
       values,
       defaultsOf(),
       catalogOf(),
       resolutionOf(),
-      route
+      route,
+      visible.hidden_choices
     );
     const chosen = view.options.find((option) => option.value === selected);
     const full_value =

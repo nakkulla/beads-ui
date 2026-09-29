@@ -9565,6 +9565,18 @@ button.detail-session__leg:focus-visible {
   flex-wrap: wrap;
 }
 
+/* 전역 탭 활성 모델 묶음의 러너 소제목 (UI-ooc0 §5). */
+.settings-dialog__model-runner + .settings-dialog__model-runner {
+  margin-top: var(--sp-8);
+}
+
+.settings-dialog__model-runner-title {
+  margin-bottom: var(--sp-4);
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+  font-weight: 600;
+}
+
 .settings-dialog__pill {
   padding: var(--sp-2) var(--sp-9);
   border: 1px solid var(--border-chip);

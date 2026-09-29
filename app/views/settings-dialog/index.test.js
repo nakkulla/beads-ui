@@ -93,7 +93,7 @@ const EXECUTION_DEFAULTS = {
 };
 
 /**
- * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>> }} [options]
+ * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, modelVisibility?: any }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -135,6 +135,10 @@ function mount(options = {}) {
     },
     implPresetStore: {
       get: () => options.presets || { revision: 1, presets: [] }
+    },
+    modelVisibilityStore: {
+      get: () => options.modelVisibility ?? null,
+      set: () => {}
     },
     labelOptions: () => ['worker-serial'],
     notify,
@@ -327,6 +331,68 @@ describe('createSettingsDialog repo scope (UI-e1ta §7)', () => {
   });
 });
 
+describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
+  const MODEL_VISIBILITY = {
+    revision: 2,
+    disabled_models: ['opus-4.8'],
+    runners: {
+      claude: [
+        { name: 'opus', id: 'opus' },
+        { name: 'opus-4.8', id: 'claude-opus-4-8' }
+      ],
+      codex: [
+        { name: 'astra', id: 'gpt-6-astra' },
+        { name: 'luna', id: 'gpt-6-luna' }
+      ]
+    }
+  };
+
+  /**
+   * @param {HTMLElement} root
+   */
+  async function openGlobalTab(root) {
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-tab="global"]')
+    ).click();
+    await settle();
+  }
+
+  test('draws the 판정 칩 프리셋 and 활성 모델 groups', async () => {
+    const { root, dialog } = mount({ modelVisibility: MODEL_VISIBILITY });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    await openGlobalTab(root);
+
+    const titles = Array.from(
+      root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
+    ).map((title) => title.textContent?.trim());
+    expect(titles).toEqual(['판정 칩 프리셋', '활성 모델']);
+    dialog.destroy();
+  });
+
+  test('disables the last enabled checkbox of a runner', async () => {
+    const { root, dialog } = mount({ modelVisibility: MODEL_VISIBILITY });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    await openGlobalTab(root);
+
+    const opus = /** @type {HTMLInputElement} */ (
+      root.querySelector('input[data-model="opus"]')
+    );
+    const astra = /** @type {HTMLInputElement} */ (
+      root.querySelector('input[data-model="astra"]')
+    );
+    expect(opus.disabled).toBe(true);
+    expect(opus.closest('label')?.title).toBe(
+      '러너마다 하나 이상 켜 두어야 합니다.'
+    );
+    expect(astra.disabled).toBe(false);
+    dialog.destroy();
+  });
+});
+
 describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
   const MONITOR_ROWS = [
     {
@@ -346,7 +412,7 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
     return transport.mock.calls.map((/** @type {any[]} */ call) => call[0]);
   }
 
-  test('draws the 워커·quick fix·세션·계정·칩 tabs when opened from the monitor', async () => {
+  test('draws the 워커·quick fix·세션·계정·전역 tabs when opened from the monitor', async () => {
     const { root, dialog } = mount({ monitorRows: MONITOR_ROWS });
 
     dialog.open(undefined, { scope: 'monitor' });
@@ -355,13 +421,19 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
     const tabs = Array.from(root.querySelectorAll('[role="tab"]')).map((tab) =>
       tab.textContent?.replace(/\s+/g, ' ').trim()
     );
-    expect(tabs).toEqual(['◆ 워커', '◈ quick fix', '◇ 세션', '◎ 계정', '⬡ 칩']);
+    expect(tabs).toEqual([
+      '◆ 워커',
+      '◈ quick fix',
+      '◇ 세션',
+      '◎ 계정',
+      '⬡ 전역'
+    ]);
     expect(BULK_SETTINGS_TABS.map((tab) => tab.id)).toEqual([
       'worker',
       'quick_fix',
       'session',
       'account',
-      'chips'
+      'global'
     ]);
     dialog.destroy();
   });

@@ -49,6 +49,7 @@ import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { createChipPresetToggle } from '../../utils/chip-preset-binding.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
+import { disabledModelsOf } from '../../utils/model-visibility.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { runResumeFlow } from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
@@ -1719,7 +1720,7 @@ const WORKER_CLIENT_IDS = [
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, execPresetStore?: any, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void, onNewIssue?: () => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, sessionLogStore?: any, execPresetStore?: any, modelVisibilityStore?: any, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), switchWorkspace?: (root_dir: string) => Promise<unknown>, openDoc?: (doc: import('../stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void, onNewIssue?: () => void }} [options]
  * @returns {{ load: () => void, pause: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -1769,6 +1770,7 @@ export function createWorkerView(mount_element, options = {}) {
     queueStore,
     sessionLogStore,
     execPresetStore,
+    modelVisibilityStore,
     gotoIssue,
     getWorkspacePath,
     switchWorkspace,
@@ -2138,7 +2140,11 @@ export function createWorkerView(mount_element, options = {}) {
    * @param {string} attempt_id
    */
   function openProviderResumeDialog(attempt_id) {
-    const draft = providerResumeDraft(attempt_id, currentQueue());
+    const draft = providerResumeDraft(
+      attempt_id,
+      currentQueue(),
+      disabledModelsOf(modelVisibilityStore)
+    );
     if (!draft) {
       return;
     }
@@ -4284,7 +4290,11 @@ export function createWorkerView(mount_element, options = {}) {
           })}
           ${candidate_pane} ${done_pane}
         </div>
-        ${providerResumeDialogTemplate(provider_resume_draft, currentQueue())}`;
+        ${providerResumeDialogTemplate(
+          provider_resume_draft,
+          currentQueue(),
+          disabledModelsOf(modelVisibilityStore)
+        )}`;
     }
     return html`<div class="worker-lanes">
         ${candidate_pane}
@@ -4327,7 +4337,11 @@ export function createWorkerView(mount_element, options = {}) {
         })}
         ${done_pane}
       </div>
-      ${providerResumeDialogTemplate(provider_resume_draft, currentQueue())}`;
+      ${providerResumeDialogTemplate(
+        provider_resume_draft,
+        currentQueue(),
+        disabledModelsOf(modelVisibilityStore)
+      )}`;
   }
 
   /**
@@ -4542,7 +4556,8 @@ export function createWorkerView(mount_element, options = {}) {
       const next = providerResumeDraftChange(
         provider_resume_draft,
         event_target,
-        currentQueue()
+        currentQueue(),
+        disabledModelsOf(modelVisibilityStore)
       );
       if (next) {
         // 같은 참조는 "우리 이벤트지만 바뀐 것이 없다"는 뜻이다: 다시 그리면
@@ -5659,6 +5674,12 @@ export function createWorkerView(mount_element, options = {}) {
   // 화면에 서지 않아 칩 모양과 클릭 의미가 낡은 채 남는다.
   if (execPresetStore && typeof execPresetStore.subscribe === 'function') {
     unsubscribers.push(execPresetStore.subscribe(() => doRender()));
+  }
+  if (
+    modelVisibilityStore &&
+    typeof modelVisibilityStore.subscribe === 'function'
+  ) {
+    unsubscribers.push(modelVisibilityStore.subscribe(() => doRender()));
   }
   if (queueStore) {
     unsubscribers.push(

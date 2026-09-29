@@ -788,6 +788,8 @@ export function buildPresetDiff(current, preset, applies_to = 'general') {
  * OTHER keys resolve against when the session draft is not the whole workspace
  * layer; `draft` stays the edited and saved source.
  * @param {string|null} [route]
+ * @param {ReadonlyArray<string>} [hidden_choices] - Choices the model
+ * visibility filter removed; a stored one reads `(비활성)`.
  * @returns {{ unset_label: string, full_value: string|null, unavailable: boolean, disabled: boolean, options: Array<{ value: string, label: string, full_value: string|null }> }}
  */
 export function buildExecutionOptionView(
@@ -797,11 +799,13 @@ export function buildExecutionOptionView(
   execution_defaults,
   runner_catalog,
   resolution_draft,
-  route = null
+  route = null,
+  hidden_choices = []
 ) {
   return buildOptionView({
     key,
     choices,
+    hidden_choices,
     layer: 'global',
     global: draft,
     resolution_global: resolution_draft,

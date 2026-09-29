@@ -770,6 +770,22 @@ describe('buildOptionView', () => {
     });
   });
 
+  test('revives a stored hidden choice with the (비활성) label, still selected', () => {
+    const view = buildOptionView({
+      key: 'impl_model',
+      choices: ['auto', 'sonnet'],
+      hidden_choices: ['opus'],
+      layer: 'pin',
+      pin: { impl_runtime: 'claude', impl_model: 'opus' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(view.options[0]).toMatchObject({
+      value: 'opus',
+      label: 'opus (비활성)'
+    });
+  });
+
   test('reads the quick_fix kv implication only when given the bead route', () => {
     const routed = buildOptionView({
       key: 'impl_dispatch',
