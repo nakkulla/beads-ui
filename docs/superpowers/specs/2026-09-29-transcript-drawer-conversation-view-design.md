@@ -10,7 +10,7 @@ scope:
 # 라이브 세션 전사 드로어를 대화 중심으로 다시 그린다 — 작업 묶음 접기, 한 줄 도구 줄, 색은 상태에만, 큰 창과 모바일 전체 화면
 
 - Bead: UI-2dbn (`spec_backed`)
-- 작성: 2026-09-29 · r0
+- 작성: 2026-09-29 · r1(spec_review r1 지적 6건 반영)
 - 조사 기준: `origin/main` `1b0cc9d4224835556f07b284ada8cc710af09a47`
 - 참고 목업(비정본, 본문이 정본): `~/tmp/mockups/2026-09-29-transcript-drawer-redesign.html`
   (`http://100.122.98.8:9000/2026-09-29-transcript-drawer-redesign.html`) — 실제 UI-j2h3
@@ -28,7 +28,7 @@ scope:
 |---|---|
 | 도구 줄 하나가 5~10줄 덩어리로 세로로 늘어진다 | `.sv__tool-detail`이 `white-space: normal; overflow-wrap: anywhere; flex: 1 1 28ch`이고 `.sv__tool-ok`(결과)도 `flex: 1 1 28ch`라(`styles.css:5445`·`:5473`, `f5f35ec3` "세션 로그 긴 경로 줄바꿈") 긴 한 줄 Bash 명령이 좁은 왼쪽 열에서 전부 줄바꿈되고 결과가 오른쪽 둘째 열로 붙는다. `styles.worker-theme.test.js`의 `wraps long transcript tool details inside the drawer`가 이 줄바꿈을 계약으로 고정한다. |
 | 초록 글씨가 너무 많아 무엇이 중요한지 안 보인다 | 모든 도구 결과가 `.sv__tool-ok { color: var(--accent-success) }`, 최종 보고가 `.sv__result--ok { color: var(--accent-success) }` + `font-weight: 600`으로 본문 전체가 초록 굵은 글씨다. 게이트 줄도 통째로 초록이다(`.sv__gate`). 라이트 테마에서 `#5ad198` 글씨는 대비가 낮다. |
-| 창이 작다 | 이슈 상세에서 열면 `.session-log-root .sv`가 화면 아래 고정, 최대 720px, 본문 `max-height: 46vh`(`:5526`·`:5029`)다. Worker·Monitor 오버레이는 `min(860px, 94vw)`에 `max-height: 85vh`라 내용이 적으면 창이 작고 스트리밍 중 창 높이가 출렁인다. 모바일(≤640px)은 셋 다 아래 시트 70vh·본문 60vh다(`:8752`~`:8790`). |
+| 창이 작다 | 이슈 상세에서 열면 `.session-log-root .sv`가 화면 아래 고정, 최대 720px, 본문 `max-height: 46vh`(`:5526`·`:5029`)다. Worker·Monitor 오버레이는 `min(860px, 94vw)`에 `max-height: 85vh`라 내용이 적으면 창이 작고 스트리밍 중 창 높이가 출렁인다. 모바일(≤640px)은 Worker·Monitor가 아래 시트로 host `max-height: 70vh`(`:8770`)이고 본문은 `.worker-drawer-overlay .sv__body`(`:4870`)의 `max-height: none`이 미디어 쿼리 안 `.sv__body { max-height: 60vh }`(`:8752`)를 이긴다. 이슈 상세는 화면 아래 전폭 고정(`:8779`)에 본문 `max-height: 60vh`(`:8785`)다. |
 | 머리줄이 빽빽하다 | 한 줄에 attempt ID(`UI-j2h3-1790133262718-1`), 단계 칩, 진행 점, 세션 ID, 재개 명령, 러너·모델·effort, worktree, 프롬프트, `⇣ 라이브 따라가기 ON`, 닫기가 모두 선다(`transcript-drawer.js:857`~`:960`). |
 | 전체 흐름이 안 읽힌다 | 세션이 한 말(본문 7줄)이 도구 줄 59개·"생각 중… N 토큰" 19줄 사이에 묻힌다. 같은 도구 5개 연속만 접히고(`FOLD_AT`), 서로 다른 도구가 섞인 긴 구간은 그대로 펼쳐진다. |
 
@@ -80,7 +80,7 @@ scope:
 
 | 순서 | 요소 | 내용 |
 |---|---|---|
-| 1 | 상태 `.sv__state` | 진행 중(`meta.status === 'running'`): 숨쉬는 초록 점 + 마지막 이벤트 경과(`3초 전`, 현행 `.sv__live`·`.sv__live-dot`·`.sv__live-ago`). 진행 중이 아니면 전사의 마지막 `result` 줄로 `✓ 완료`(`.sv__state--done`) 또는 `✗ 실패`(`.sv__state--failed`); `result` 줄이 없고 `meta.status === 'failed'`면 `✗ 실패`; 그 밖은 그리지 않는다. `meta.status`의 `done`은 호스트마다 뜻이 달라(대화형 세션은 "현재 세션 아님", `session-ref.js:53`) 완료 근거로 쓰지 않는다. |
+| 1 | 상태 `.sv__state` | 진행 중(`meta.status === 'running'`): 숨쉬는 초록 점 + 마지막 이벤트 경과(`3초 전`, 현행 `.sv__live`·`.sv__live-dot`·`.sv__live-ago`). 진행 중이 아니면 전사의 마지막 **최상위** `result` 줄(`parent_tool_use_id`가 없는 줄)로 `✓ 완료`(`.sv__state--done`) 또는 `✗ 실패`(`.sv__state--failed`) — 서브에이전트의 `result`(`transcript-lines.js:721`이 `parent_tool_use_id`를 붙인다)는 그 서브에이전트 묶음 안의 줄이고 세션의 결론이 아니므로 판정에 쓰지 않는다; 최상위 `result` 줄이 없고 `meta.status === 'failed'`면 `✗ 실패`; 그 밖은 그리지 않는다. `meta.status`의 `done`은 호스트마다 뜻이 달라(대화형 세션은 "현재 세션 아님", `session-ref.js:53`) 완료 근거로 쓰지 않는다. |
 | 2 | 제목 `.sv__id` | 현행과 같은 값(`meta.label` → `launch_id`면 role → attempt ID). 모노, 남는 폭에서 말줄임, 전문은 `title`. |
 | 3 | 단계 칩 `.sv__stage` | 현행 3층 판정 그대로. 추정(`--guess`)은 노랑 점선. |
 | 4 | (여백) | |
@@ -214,13 +214,18 @@ scope:
   행(예: UI-j2h3)에서 연 드로어를 1440×900과 390×844, 다크·라이트 각각. 실행 중
   attempt나 세션 타일이 그 시점에 있으면 Worker·Monitor 오버레이도 1440 한 장씩.
   수용 기준:
-  1. `.sv__body`의 가로 넘침 0(`scrollWidth - clientWidth === 0`), 세 폭 모두.
+  1. `.sv__body`의 가로 넘침 0(`scrollWidth - clientWidth === 0`), 두 폭(1440·390)
+     모두.
   2. 데스크톱에서 모든 `.sv__tool-line` 높이가 한 줄(≤ 30px); 390에서 ≤ 2줄.
   3. 데스크톱 창 높이가 `min(88vh, 1000px)`이고 390에서 창이 뷰포트를 채운다.
-  4. UI-j2h3 세션에서 지난 작업 묶음이 요약 한 줄로 접히고 마지막 묶음은 펼쳐져
-     있으며, 본문 줄과 결과 카드가 첫 화면에서 도구 줄보다 먼저 읽힌다(캡처로 판단).
-  5. 결과 카드 몸통 글자색이 본문색이다(초록 아님).
-- 캡처는 완료 보고서에 경로로 남긴다.
+  4. UI-j2h3 세션(완료 로그 — 마지막 작업 묶음 뒤에 최종 `result`가 온다)의 캡처
+     시점 DOM에서, 뒤에 서사 줄이 이어진 행 4개 이상 `.sv__work`는 모두 요약만
+     갖고(`.sv__work-rows` 없음), 행 3개 이하 `.sv__work`는 행을 펼쳐 갖는다 — §4.3
+     규칙 그대로이며 완료 로그의 마지막 묶음도 같은 규칙으로 판정한다. 끝이 작업
+     묶음인 입력(진행 중 세션)의 기본 펼침은 Test scope의 단위 테스트가 확인한다.
+  5. 결과 카드 몸통 `.sv__result-body`의 계산된 글자색이 `--text-primary`와 같다
+     (초록 아님).
+- 캡처 파일과 위 1~5의 측정값은 완료 보고서에 경로·수치로 남긴다.
 
 ## Test scope
 
@@ -228,16 +233,17 @@ RED-GREEN seam(변경 전 실제 실패를 확인하는 항목):
 
 - `app/views/worker/transcript-drawer.test.js`
   - 본문 줄 사이의 연속한 도구·생각 줄이 `.sv__work` 하나에 담기고 본문 줄은 밖에 선다.
-  - 도구 계열 없이 생각 줄만 이어진 구간은 `.sv__work` 없이 그린다.
-  - 뒤에 본문 줄이 이어진 행 4개 이상 묶음은 요약만 그리고(`.sv__tool` 없음), 마지막
-    묶음은 펼쳐 그린다.
-  - 뒤에 본문 줄이 이어져도 행 3개 이하 묶음은 펼쳐 그린다.
+  - 뒤에 본문 줄이 이어진 행 4개 이상 묶음은 요약만 그리고(`.sv__tool` 없음), 끝이
+    작업 묶음인 입력의 마지막 묶음은 `.sv__work` 안에 `.sv__tool` 행을 펼쳐 그린다.
+  - 뒤에 본문 줄이 이어져도 행 3개 이하 묶음은 `.sv__work` 안에 `.sv__tool` 행을
+    펼쳐 그린다.
   - 요약이 `작업 N`, 상위 3개 도구 개수, `생각 K`를 싣고, `is_error` 도구가 있으면
     `✗ n`을 싣는다(`group` 안 줄 포함).
   - 요약 클릭으로 연 묶음이 store append 뒤 재렌더에도 열려 있다.
-  - 머리줄 상태: 진행 중 → `.sv__live`; 비진행 + 성공 `result` 줄 → `✓ 완료`;
-    실패 `result` 줄 → `✗ 실패`; `result` 줄 없이 `status: 'failed'` → `✗ 실패`;
-    `status: 'done'`이고 `result` 줄 없음 → 상태 없음.
+  - 머리줄 상태: 비진행 + 성공 최상위 `result` 줄 → `.sv__state--done` `✓ 완료`;
+    실패 최상위 `result` 줄 → `.sv__state--failed` `✗ 실패`; 최상위 `result` 줄 없이
+    `status: 'failed'` → `✗ 실패`; 서브에이전트 자식 `result`는 성공이고 최상위
+    `result`는 실패 → `✗ 실패`.
   - 도구 줄 세부의 전문이 `title`에 실리고, `is_error` 도구 줄이 `.sv__tool--error`를 갖는다.
   - 결과 카드 머리 `.sv__result-head`가 `✓ 완료`/`✗ 실패`를 싣고, 빈 `text`면 몸통이 없다.
   - 게이트 판정 `APPROVE` → `.sv__verdict--ok`, `REVISE` → `.sv__verdict--warn`.
@@ -253,6 +259,12 @@ RED-GREEN 제외 — 회귀(현 구현에서도 통과):
 
 - 호스트 테스트(`monitor/index.test.js`·`worker/index.test.js`·
   `detail-panel/index.test.js`)의 드로어 클래스 조회.
+- 도구 계열 없이 생각 줄만 이어진 구간은 `.sv__work` 없이 그린다(현행에도 `.sv__work`가
+  없어 RED가 아니다).
+- 머리줄 상태: 진행 중 → `.sv__live`; `status: 'done'`이고 최상위 `result` 줄 없음 →
+  상태 요소 없음; 최상위 `result` 없이 서브에이전트 자식 `result`만 성공 →
+  `.sv__state--done` 없음(셋 다 현행에서 성립 — 마지막 것은 §4.2 최상위 한정의 회귀
+  방지).
 - 따라가기 토글·수동 스크롤 OFF, 단계 칩 3층, 같은 도구 접힘, 서브에이전트 묶음,
   프롬프트 토글, 세션 ID·재개 명령 복사.
 
@@ -269,6 +281,11 @@ RED-GREEN 제외 — 회귀(현 구현에서도 통과):
 ## 결정 (ADR 후보)
 
 - 전사 드로어의 대화 중심 표시 문법(작업 묶음 기본 접힘, 한 줄 도구 줄, 상태색 한정,
-  세 호스트 같은 창 규격) — 되돌리기 어렵지 않다(한 모듈의 템플릿·CSS이고 함께
-  움직여야 할 소비자가 없으며, UI-dbn6는 이 스펙을 계획의 전제로 읽을 뿐 코드 계약이
-  아니다); 시각 표시 규칙은 스펙이 정본으로 충분하다 → ADR 아님
+  세 호스트 같은 창 규격). 세 조건: (1) 되돌리기 어려운가 — 아니다. 한 모듈의
+  템플릿·CSS이고 함께 움직여야 할 소비자가 없다(호스트는 `open` 입력과 클래스만 쓰고
+  그 둘은 바뀌지 않는다, §4.6; UI-dbn6는 이 스펙을 계획의 전제로 읽을 뿐 코드 계약이
+  아니다). (2) 맥락 없이 놀라운가 — 아니다. 규칙이 화면에 그대로 보이고(접힌 요약,
+  말줄임 도구 줄) 접힘 규칙은 템플릿 한 곳의 판정이라 코드와 이 스펙으로 읽힌다.
+  (3) 실제 절충이 있는가 — 약하게 있다. 지난 작업의 도구 세부를 클릭 한 번 뒤로
+  미루는 대신 흐름이 읽히는데, 되돌리기 쉬운 국소 표시 선택이라 (1)·(2)가 성립하지
+  않는 한 ADR 사유가 되지 않는다. 시각 표시 규칙은 스펙이 정본으로 충분하다 → ADR 아님
