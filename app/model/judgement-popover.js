@@ -1,7 +1,7 @@
 /**
  * The 판정 칩 사유 팝업 vocabulary (UI-8x90 §4.5, UI-wg68 §5.2) — moved from
- * `views/worker/lanes.js` (UI-dbn6 Phase 1) so the pipeline screen and the old
- * views read the same sentences. Pure: no template.
+ * `views/worker/lanes.js` (UI-dbn6 Phase 1) so the pipeline screen and the
+ * issue detail read the same sentences. Pure: no template.
  *
  * @import { MiniItem } from './lane-model.js'
  */

@@ -5590,7 +5590,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
  * 정보 칩 (UI-eey2 §5.1, 두 줄은 UI-8x90 §4.1).
  * @property {{ chip_key: string, content: import('./judgement-popover.js').ChipPopoverContent }|null} [chip_popover] -
  * 이 카드에서 열려 있는 판정 칩 사유 팝업 (UI-8x90 §4.5). 열림 상태는 뷰가
- * 소유하고 (`app/views/chip-popover.js`), 템플릿은 어느 칩 아래에 무엇을 그릴지만
+ * 소유하고 (`app/ui/chip-popover.js`), 템플릿은 어느 칩 아래에 무엇을 그릴지만
  * 읽는다.
  * @property {'three_line'} [done_layout] - 완료 행 변형 (UI-eey2 §8). The
  * monitor's done row carries a repo badge as well, which squeezes the two-line

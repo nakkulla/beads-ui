@@ -1,5 +1,5 @@
 /* Issue detail host (UI-dbn6 §3.5·§3.6). The section templates keep their
-   `detail-*` classes (app/styles.css, app/ui/base.css); this sheet only places
+   `detail-*` classes (styled in `detail-panel.css`); this sheet only places
    the screen: a 560px panel on the right edge over the lanes from 720px, a
    full-screen sheet below it, the header sticky with the ✕ always in reach,
    and one hairline between sections in the §3.5 order. */
@@ -469,8 +469,8 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 
 /* ---------- borrowed shared classes, restyled inside the detail ----------
    `chip-popover` (ui/chip-popover.js), `ctl-chip` (exec-format.js) and
-   `prompt-block__meta` also serve the old views from `styles.css` /
-   `ui/legacy.css`; inside the detail panel they take the new skin. */
+   `prompt-block__meta` are shared class names; inside the detail panel they
+   take this skin. */
 .dt-panel .chip-popover {
   border: 0;
   border-radius: var(--r-pop);
@@ -536,8 +536,8 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   font-size: var(--t-11);
 }
 
-/* Form fields without a primitive class (the legacy element rules of
-   styles.css would otherwise paint them): the field tokens inside the panel. */
+/* Form fields without a primitive class (only the `ui/base.css` element
+   defaults would paint them): the field tokens inside the panel. */
 .dt-panel select,
 .dt-panel textarea,
 .dt-panel input[type='text'],

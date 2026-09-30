@@ -2,12 +2,12 @@
  * Which kind of resume one FAILED quick_fix landing row asks for — re-running
  * the same attempt's settlement, or re-running its session (UI-8h1x §3.1).
  *
- * It lives here, with no imports, because FOUR consumers must read the same one
- * copy: the server's `server/worker/scheduler.js` (which branch `resume()`
- * takes) and the client's `app/views/worker/running-grid.js` (button label),
- * `lane-model.js` (`resume_eligible`), and `index.js` (refusal toast). The
- * server may not pull the client modules — those import `lanes.js` and
- * therefore lit-html — so shared judgment goes in a dependency-free leaf. The
+ * It lives here, with no imports, because the server and the client must read
+ * the same one copy: the server's `server/worker/scheduler.js` (which branch
+ * `resume()` takes) and the client's `app/screens/pipeline/running-tile.js`
+ * (button label) and `app/model/lane-model.js` (`resume_eligible`). The
+ * server may not pull the client screen modules — they import lit-html — so
+ * shared judgment goes in a dependency-free leaf. The
  * precedent is `app/utils/failure-sentences.js` and `app/utils/
  * worker-eligibility.js`, both already imported by `server/worker/*`.
  *

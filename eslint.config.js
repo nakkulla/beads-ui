@@ -77,24 +77,14 @@ export default defineConfig([
   },
   {
     // UI-dbn6: every mounted root renders through app/ui/render.js so
-    // window.__bdui.render_count sees it; the old views keep their own
-    // render until they are deleted, and tests render detached fixtures.
-    // New code never imports the old views (Phase 2): a helper they share
-    // moves out of app/views/ and the old view imports it from there.
+    // window.__bdui.render_count sees it; tests render detached fixtures.
     files: ['app/**/*.js'],
-    ignores: ['app/ui/render.js', 'app/views/**', '**/*.test.js'],
+    ignores: ['app/ui/render.js', '**/*.test.js'],
     rules: {
       'no-restricted-imports': [
         'error',
         {
-          paths: [LIT_RENDER_RESTRICTION],
-          patterns: [
-            {
-              group: ['**/views/**'],
-              message:
-                'New code does not import app/views/** (UI-dbn6) — move the helper out.'
-            }
-          ]
+          paths: [LIT_RENDER_RESTRICTION]
         }
       ]
     }

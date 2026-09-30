@@ -1,7 +1,6 @@
 /**
- * The lane-choice list of `[↴ 대기로]` (UI-j92s §6.4), shared by the issue
- * detail and the retired Worker/Monitor tabs (which import it from here until
- * Phase 4 deletes them). Moved verbatim out of `views/worker/lanes.js`.
+ * The lane-choice list of `[↴ 대기로]` (UI-j92s §6.4) on the issue detail.
+ * Moved verbatim out of `views/worker/lanes.js`.
  */
 import { html } from 'lit-html';
 

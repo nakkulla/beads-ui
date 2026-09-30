@@ -1,8 +1,8 @@
 /**
  * The 막힘 summary (UI-0bvr §6.2, UI-n99w §8): each original issue counted
  * once, grouped by wait kind, with the upstream-covered prerequisite rule.
- * Moved from `views/worker/lanes.js` (UI-dbn6 P1-r2) so the pipeline toolbar
- * and the retiring views read one owner. Pure: no template.
+ * Moved from `views/worker/lanes.js` (UI-dbn6 P1-r2) for the pipeline toolbar.
+ * Pure: no template.
  */
 import { waitBadgeText, waitKindRow } from './wait-vocabulary.js';
 

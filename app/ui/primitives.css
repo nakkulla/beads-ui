@@ -648,9 +648,8 @@ a.ui-strand__bead:focus-visible .ui-strand__dot::before {
 }
 
 /* ---------- fields ----------
-   `input.ui-input` / `textarea.ui-input` match the legacy `input[type=…]`
-   element rules of styles.css in specificity and win by order (this sheet
-   loads after it). */
+   `input.ui-input` / `textarea.ui-input` outrank the `input[type=…]` element
+   defaults of `ui/base.css` and win by order (this sheet loads after it). */
 .ui-select,
 .ui-input,
 input.ui-input,

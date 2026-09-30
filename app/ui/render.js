@@ -1,8 +1,8 @@
 /**
- * The render observation wrapper (UI-dbn6 §4.1). This is the ONLY module
- * outside the legacy `app/views/**` that imports lit-html's `render` (eslint
- * `no-restricted-imports`), so every screen, sheet and bridge mount the new
- * shell draws is counted in one place. The count is published as
+ * The render observation wrapper (UI-dbn6 §4.1). This is the ONLY module that
+ * imports lit-html's `render` (eslint `no-restricted-imports`), so every
+ * screen, sheet and mount the shell draws is counted in one place. The count
+ * is published as
  * `window.__bdui.render_count` — jsdom tests and `scripts/ui-shots.mjs` read
  * the same value to prove an idle screen does not re-render.
  */

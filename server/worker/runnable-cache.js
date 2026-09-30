@@ -348,8 +348,7 @@ function metadataOf(row) {
 /**
  * Whether a row is a full_plan phase child (`UI-xxxx.N`).
  *
- * Same predicate as `app/views/worker/index.js` `isPhaseChild()`: a phase child
- * is a sub-unit of its parent plan's execution, never a standalone worker
+ * A phase child is a sub-unit of its parent plan's execution, never a standalone worker
  * candidate. Judged by the flattened `parent` edge OR a dotted id suffix,
  * because a list row may omit `parent`.
  *

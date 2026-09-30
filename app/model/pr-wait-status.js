@@ -2,8 +2,8 @@
  * The PR-wait row status vocabulary (UI-5v7d §4, UI-vkk8 §3, UI-hk74 §9,
  * UI-d7fy §5.4, UI-qksl §4): merge-queue skip and wait texts, the completion
  * projection and the one priority-ordered status badge a PR row shows. Moved
- * verbatim from `views/worker/index.js` (UI-dbn6 P1-r2) so the pipeline and the
- * retiring Worker view read one owner. Pure: no template, no browser global.
+ * verbatim from `views/worker/index.js` (UI-dbn6 P1-r2). Pure: no template, no
+ * browser global.
  */
 import { failureSentence } from './failure-labels.js';
 import { formatTimestampLocal } from './relative-time.js';

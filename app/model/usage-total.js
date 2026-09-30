@@ -1,11 +1,9 @@
 /**
  * Cross-repo token/cost total for the monitor's top bar (UI-qrfo §7).
  *
- * This REPLICATES the Worker tab's `token_total` formula
- * (`app/views/worker/index.js`, the 완료 lane KPI) verbatim and only widens the
- * population from one repo's period-filtered 완료 rows to every visible repo's.
- * A different formula would make the two tabs report different numbers for the
- * same repo, which is exactly the confusion the replication avoids.
+ * The formula is the retired Worker tab's 완료-lane `token_total` KPI,
+ * verbatim, with the population widened from one repo's period-filtered 완료
+ * rows to every visible repo's.
  */
 import {
   SUM_FIELDS,

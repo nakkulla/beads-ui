@@ -265,7 +265,7 @@ export function guardKillMessage(detail) {
  * the cause carries one the sentence does not already name.
  *
  * Segment lookup runs front-to-back and keeps the LAST match, mirroring
- * `app/views/worker/failure-labels.js failureSentence` so the server and the
+ * `app/model/failure-labels.js failureSentence` so the server and the
  * card say the same thing about the same code. An unknown token is never
  * guessed at: it yields `null` and the caller keeps showing the raw cause.
  *

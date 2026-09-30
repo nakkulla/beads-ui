@@ -861,6 +861,18 @@ select.detail-kv__v:disabled {
   font-size: var(--t-11);
 }
 
+/* The account rows wrap their hint under the value (moved from the retired
+   `styles.css`, UI-dbn6 Phase 4). */
+.exec-accounts .detail-kv__vgroup {
+  flex-wrap: wrap;
+}
+
+.exec-accounts .detail-effective__hint {
+  flex: 1 0 100%;
+  margin-left: 0;
+  text-align: right;
+}
+
 @media (max-width: 640px) {
   .detail-effective__row {
     grid-template-columns: 14px 84px minmax(0, 1fr) auto auto;

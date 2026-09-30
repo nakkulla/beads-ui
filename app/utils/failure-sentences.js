@@ -1,10 +1,10 @@
 /**
  * The cause sentence for one failure contract token — the ONE copy both the
- * client card vocabulary (`app/views/worker/failure-labels.js`) and the
+ * client card vocabulary (`app/model/failure-labels.js`) and the
  * server's completion failure comment read (UI-8w4t §4).
  *
- * It lives here, with no imports, because the server may not pull the client's
- * label module: that one imports `lanes.js` and therefore lit-html. The
+ * It lives here, with no imports, because the server imports it by this path
+ * and does not pull the client's label module. The
  * precedent is `app/utils/worker-eligibility.js`, which `server/worker/
  * attach.js` already imports — pure data shared by both runtimes, not a new
  * layer.

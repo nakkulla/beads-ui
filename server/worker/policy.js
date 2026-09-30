@@ -53,8 +53,6 @@ import { runtimeCatalog } from './runner/index.js';
  * NEITHER the bead metadata NOR the workspace-global default resolves. Unlike
  * the global layer this never lands in `stamped_keys` — a constant carries no
  * information worth writing back to every bead's metadata.
- *
- * MIRROR: app/views/detail-panel/exec-settings.js DEFAULT_LABELS.
  */
 export const ORCHESTRATION_MODEL_FALLBACK = 'opus';
 

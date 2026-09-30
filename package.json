@@ -64,12 +64,10 @@
   "files": [
     "app/index.html",
     "generated/contracts",
-    "app/styles.css",
     "app/vendor/pretendard",
     "app/ui/tokens.css",
     "app/ui/base.css",
     "app/ui/primitives.css",
-    "app/ui/legacy.css",
     "app/screens/pipeline/pipeline.css",
     "app/screens/pipeline/pipeline-cards.css",
     "app/screens/pipeline/pipeline-surfaces.css",
