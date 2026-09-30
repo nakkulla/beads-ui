@@ -26,14 +26,19 @@ scope:
 ## Context
 
 - 승인 스펙: `docs/superpowers/specs/2026-09-23-frontend-rewrite-unified-pipeline-design.md`
-  @ `27e524291e5f57b5a209bc5ebb0d094aa6066818`
-  (`spec_review=astra@27e52429…`, r2 APPROVE). 목업
+  @ `3a391c4eedb8f119757ecaa39c6530182eb64831`
+  (`spec_review=self@3a391c4e…`, r3 — staleness 정정; 원 게이트는 astra r2 APPROVE
+  @ `27e52429`). 목업
   `~/tmp/mockups/2026-09-23-beads-ui-redesign.html`
   (`http://100.122.98.8:9000/2026-09-23-beads-ui-redesign.html`) — 예시 데이터의
   시각 산출물이며 동작의 정본은 스펙이다. 스테일 재검토(2026-09-29, base
   `1b0cc9d4224835556f07b284ada8cc710af09a47`): `unchanged` — 기준 이후 scope
   변경은 선행 UI-j2h3(병렬 일괄 러너·gzip 빌드)와 UI-c7bv(gzip 미들웨어 root
-  수리)뿐이고 ADR 현재 결정 표는 변동 없다.
+  수리)뿐이고 ADR 현재 결정 표는 변동 없다. 재검토(2026-09-30, base
+  `84c3d4da589dd16e10c92f8935c57d4ee1a1f32e`): `correction` — dotfiles-b0xsk 착지
+  모델 정렬(착지 줄, Phase 자식 롤업·이월·`bead_children` 제거), ADR UI-l48z가
+  UI-ri8n으로 대체됨, addendum UI-ooc0(활성 모델)·UI-2dbn(전사 드로어) 반영, 기준
+  이후 착지한 UI-r6xq·UI-ri8n 카드 동작 승계.
 - 문제와 목표: `app/` 비테스트 약 4만 줄 + CSS 1만 3천 줄이 4탭(Worker·Monitor·
   비교·ADR)과 설정·상세·전사 드로어를 담고, Monitor는 1초마다 전체 레인을
   재계산·재렌더하며, 모바일에서 드래그 재배치가 안 된다. 서버 코어와
@@ -46,10 +51,11 @@ scope:
   `scripts/build-frontend.js`(삭제·이동에 영향 없음). UI-7xrf(스냅샷 축소)는 이
   Bead 뒤 `spec-after-blocker`다.
 - 계약 소유권: WS 프로토콜의 op·payload·`seq`·keyed patch 조립은 바꾸지 않는다.
-  허용하는 추가는 스펙 §4.2의 비영속 스냅샷 필드 셋뿐이다 — `runnable[]`·
+  허용하는 추가는 스펙 §4.2의 비영속 스냅샷 필드 둘뿐이다 — `runnable[]`·
   `session_active[]`의 `priority`·`issue_type`, `bead_overlay[id]`의
-  `priority`·`issue_type`·`labels`·`from_id`, 모니터 행 `bead_children`. 모두
-  fail-quiet(부재 시 클라이언트가 칩·필터를 생략). 새 durable metadata 키·새 op
+  `priority`·`issue_type`·`labels`·`from_id`. 모두 fail-quiet(부재 시
+  클라이언트가 칩·필터를 생략). 모니터 행 `bead_children`은 두지 않는다
+  (dotfiles-b0xsk가 Phase 자식을 폐지). 새 durable metadata 키·새 op
   없음. 제거 op는 마지막 Phase에서 `protocol.md` `## Removed (historical)`에
   기재한다. dotfiles 계약이 소유하는 라벨·키·`status` 어휘는 넓히지 않는다(ADR
   UI-u6ud-2). 서버 코어(`server/index.js`의 Worker 초기화·스케줄러·머지 큐·
@@ -74,6 +80,17 @@ scope:
     import 모듈을 **경로로** 나열한다. CSS를 옮기거나 새 화면별 스타일시트를
     더하면 이 목록을 같은 커밋에서 갱신해야 설치본에서 스타일이 빠지지 않는다
     (저장소 안 빌드·캡처로는 드러나지 않는 결함).
+  - 기준 이후 착지한 `app/` 변경(2026-09-29~30, 조사 base `84c3d4da`):
+    UI-r6xq(외부 대기 완료 출구 — 서버 `actions[]`의 `placement: card|detail`·
+    `confirm`, 렌더 `app/views/worker/external-wait-action.js`), UI-ri8n(문의
+    세션 생존 중 카드 정합 — 술어 `app/views/worker/tile-resolve.js`
+    `hasLiveResolveSession`·`tileResolveFields`, 배지 단계 꼬리 렌더는
+    `lanes.js`·`running-grid.js`), UI-ooc0(활성 모델 — `app/utils/model-visibility.js`
+    `visibleModelChoices`·`visibleReviewerChoices`, `app/data/model-visibility-store.js`,
+    `main.js`가 부팅 때 `subscribe-model-visibility`를 서버 전역 단발로 연다),
+    UI-2dbn(전사 드로어 대화 중심 재설계 — `app/views/worker/transcript-drawer.js`).
+    `tile-resolve.js`·`model-visibility.js`·`model-visibility-store.js`는 브라우저
+    전역을 읽지 않고 서버가 import하지 않는다.
   - `RETIRED_MIRROR_LABEL_PREFIXES = ['reviewed:', 'skipped:']`는
     `server/display-policy-store.js`(Phase 4 삭제 대상)에 있다. 값을
     `app/model/label-policy.js` 고정 상수로 복제한다. 정책 인자를 받는 기존
@@ -95,8 +112,11 @@ scope:
     ad-hoc 서버를 띄우는 미리보기는 운영 큐·상태를 건드린다 — 이 계획은 그런
     시험 기동을 하지 않는다.
 - 실행 형태와 착지: 네 Phase 모두 `delegated`(kv 기본 `impl_runtime=claude`·
-  `impl_model=opus`, 컨트롤러는 이 세션). landing 힌트 없음 = 모든 Phase를
-  parent 브랜치 `UI-dbn6`에 누적하고 마지막에 non-empty PR 하나를 낸다. 머지·
+  `impl_model=opus`, 컨트롤러는 이 세션). 착지 줄은 Phase 1~3 `다음과 함께`,
+  Phase 4 `단독`이다 — 착지 묶음 하나 = 이슈 UI-dbn6 하나 = non-empty PR 하나
+  (dotfiles-b0xsk 착지 모델; 묶음이 하나라 `plan_task_anchor`를 쓰지 않는다). 네
+  Phase는 이 이슈 안의 unit으로 실행하고(실행 진입 때 `unit_plan`), 봉인 커밋을
+  이슈 브랜치 `UI-dbn6`에 누적한 뒤 마지막에 PR 하나를 낸다. 머지·
   배포(`repo-ops/config.toml [deploy]`, `bdui-shared restart` 뒤 프로세스·포트·
   HTTP 확인)는 `pr-finish`가 맡고, 사용자의 실제 데이터 확인은 배포 뒤 통상
   결과 확인 인계다. Phase 사이의 사용자 피드백(`session_preferred_reason=
@@ -125,6 +145,7 @@ scope:
   프로토콜 부분집합을 fixture로 흉내 낸다 — `set-workspace`·`list-workspaces`·
   `subscribe-monitor-pipeline`(8개 레포 합성 스냅샷: 5레인 전부·유예 칩·외부
   대기·PR 대기·완료 포함)·`subscribe-worker-queue`·`subscribe-impl-presets`·
+  `subscribe-model-visibility`(꺼 둔 모델 하나 포함)·
   `subscribe-list`(closed·deferred·issue-detail)·`get-*` 요청형 읽기, 그리고
   `worker-queue-reorder`·`-place`·`-remove`·`-start-now`는 메모리 큐에 적용해
   revision을 올린 응답과 keyed patch를 push한다; 그 밖의 op는 `ok` 응답만 준다.
@@ -142,18 +163,26 @@ scope:
   import 금지 — 옛 뷰 삭제 전까지 `app/views/**` 예외), 모든 화면·시트·브리지
   마운트가 이 래퍼로 그린다. 래퍼는 호출 수를 세어 `window.__bdui.render_count`
   로 노출하며 jsdom 테스트와 ui-shots가 같은 값을 본다.
-- 겹침 관찰: UI-r6xq(외부 대기 완료 출구 — 카드·상세의 외부 대기 버튼 집합
-  변경)가 `app/`에 in-flight다. 이 설계의 전제가 아니며 착지 순서는 큐가 정한다.
-  Phase 1·2가 외부 대기 조작을 옮길 때 **그 시점 base**의 버튼 집합·확인 문구를
-  기준으로 옮기고, 나중에 착지하는 쪽이 base 동기화에서 충돌을 해소한다.
+- 겹침 관찰: UI-r6xq는 착지했다(`25a71e70`) — Phase 1·2는 그 버튼 집합과
+  `actions[].placement`·`confirm`을 옮긴다. in-flight 둘: UI-nuwy(같은 Worker 세션
+  대화와 무인 복귀, 스펙 `84c3d4da`, scope `app/views/worker/`)는 표면 판정을 서버
+  투영(`wait-judgment` actions·`tileResolveFields`)에만 두므로 새 카드는 그 결과를
+  그리기만 하고 다시 판정하지 않는다; UI-ruwu(plan 묶음 표시·자식 롤업/이월 은퇴)는
+  이 이슈 뒤(`blocks`)에서 새 프런트엔드 위에 얹는다. 둘 다 이 설계의 전제가 아니며
+  착지 순서는 큐가 정한다. 각 Phase가 기존 동작을 옮길 때 **그 시점 base**의 버튼
+  집합·확인 문구·판정 결과를 기준으로 옮기고, 나중에 착지하는 쪽이 base 동기화에서
+  충돌을 해소한다.
 - 만들지 않는 것: `delete-issue`·`update-assignee`·`worker-queue-toggle`·
   `monitor-auto-toggle` UI(지금도 없음), 도움말 다이얼로그, 실험 벤치, 표시 정책
   탭, 정렬 체인 편집기, `buildLanes` 분할(UI-7xrf 뒤 별도), 서버의 Worker 비활성
-  플래그(검증 환경은 fixture 서버가 맡는다).
+  플래그(검증 환경은 fixture 서버가 맡는다), Phase 자식 롤업·이월 칩 렌더와
+  `bead_children` 투영(dotfiles-b0xsk 폐지; 서버 쪽 `carryover-index`·`child_sweep`
+  은퇴는 UI-ruwu).
 
 ## Phase 1: 기반과 파이프라인 — 모듈 이동·서버 투영·shell·레인·카드·모바일·드래그
 
 실행: delegated
+착지: 다음과 함께(옛 뷰 브리지가 남은 중간 상태는 따로 착지하지 않고 Phase 4 정리까지 한 PR로 착지한다 — dotfiles-b0xsk §8 처분)
 
 작업 내용 (스펙 §3.1~3.4·§3.6·§4.1·§4.2·§4.4·§5):
 
@@ -168,14 +197,14 @@ scope:
     `views/monitor/adopted-queue.js`·`blockers.js`·`dep-candidates.js`·
     `bulk-preset-apply.js`·`bulk-account-apply.js`,
     `views/settings-dialog/session-model.js`·`bulk-observation.js`,
-    `views/child-rollup.js`, `utils/blocker-scope.js`·`exec-settings-chip.js`·
+    `views/worker/tile-resolve.js`, `utils/blocker-scope.js`·`exec-settings-chip.js`·
     `chip-preset-binding.js`·`report-marker.js`·`relative-time.js`·
-    `scope-overlap.js`·`child-rollup.js`, `data/sort.js`·
+    `scope-overlap.js`·`model-visibility.js`, `data/sort.js`·
     `subscription-issue-store.js`·`subscription-issue-stores.js`·
     `subscriptions-store.js`·`monitor-pipeline-store.js`·`worker-queue-store.js`·
-    `exec-preset-store.js`·`session-log-store.js`. 이름이 겹치는
-    `utils/child-rollup.js`와 `views/child-rollup.js`는 이동 전에 역할을 확인해
-    순수 쪽만 `model/child-rollup.js`로, 렌더 쪽은 옛 뷰에 남긴다. 규칙: `model/`
+    `exec-preset-store.js`·`session-log-store.js`·`model-visibility-store.js`.
+    자식 롤업(`utils/child-rollup.js`·`views/child-rollup.js`)은 옮기지 않는다 —
+    새 화면이 그리지 않으므로 옛 뷰와 함께 Phase 4에서 지운다. 규칙: `model/`
     은 브라우저 전역을 읽지 않는다(`lane-model.js`의 `usage-pricing.js` import는
     유지).
   - `app/ui/`: `app/styles/tokens.css`·`base.css` → `app/ui/tokens.css`·
@@ -185,17 +214,15 @@ scope:
 - **서버 투영**(모두 fail-quiet, 기존 필드·순서 불변):
   - `server/worker/runnable-cache.js`: `RunnableItem`(123행)·
     `SessionActiveItem`(202행)에 `priority: number|null`·`issue_type:
-    string|null`(같은 `bd list` 행 값, 부재 `null`). 워크스페이스 목록 스냅샷을
-    `parent`로 색인한 `childrenIndexFor(workspace) → Record<parent_id, { ids:
-    string[], closed: string[] }>` 읽기 API(스냅샷 세대 캐시, `bd` 추가 호출
-    없음 — ADR UI-u6ud).
+    string|null`(같은 `bd list` 행 값, 부재 `null`, `bd` 추가 호출 없음 — ADR
+    UI-u6ud).
   - `server/worker/title-cache.js`: `BeadRecord`(102행)에 `priority`·
     `issue_type`·`labels: string[]`·`from_id: string|null`을 같은 `bd show`
     페이로드에서 채운다(예외 → 필드 생략).
   - `server/ws/monitor-handlers.js`: `beadOverlayFor()`(887행)가 위 네 필드를
-    통과시키고, 모니터 행 조립(1035~1074행)에 `bead_children`을 붙인다. 대상 id
-    집합은 지금과 같다(레인 구성원 ∪ done ∪ runnable ∪ pr_wait ∪ session_active).
-  - `app/protocol.md` 모니터 파이프라인 채널 섹션에 세 항목을 문서화한다.
+    통과시킨다. 대상 id 집합은 지금과 같다(레인 구성원 ∪ done ∪ runnable ∪
+    pr_wait ∪ session_active).
+  - `app/protocol.md` 모니터 파이프라인 채널 섹션에 두 항목을 문서화한다.
 - **`app/model/label-policy.js`**(신설, 고정 규칙 상수 하나):
   `HIDDEN_LABEL_PREFIXES = ['reviewed:', 'skipped:', 'export:', 'provides:']`,
   `HIDDEN_LABELS = ['has:spec', 'pr']`, `JUDGEMENT_LABELS = ['frontend',
@@ -214,7 +241,8 @@ scope:
   정렬·완료 기간은 기존 키를 잇는다.
 - **`app/main.js` 부트 순서**(스펙 §5.1): 두 값 읽기 → `set-workspace` 1회 →
   `subscribe-monitor-pipeline`(+ 레포 범위면 `subscribe-worker-queue`) →
-  `subscribe-impl-presets` 1회 → 첫 스냅샷 `buildLanes` → 렌더. 부팅 목록 구독
+  `subscribe-impl-presets`·`subscribe-model-visibility` 각 1회(둘 다 서버 전역
+  단발, 재연결 때 다시 연다 — 스펙 §4.2) → 첫 스냅샷 `buildLanes` → 렌더. 부팅 목록 구독
   6개는 없다. `set-workspace` 응답 `changed: true` 뒤 열린 표면의 구독(상세
   `issue-detail`, 레포 범위 완료·보류 목록)을 다시 연다. 테마 토글은
   `app/ui/theme.js`(`localStorage beads-ui.theme`·`data-theme` 의미 그대로).
@@ -241,7 +269,11 @@ scope:
   슬롯 표·칩 클릭 의미·`.op-btn` 자리; 바뀌는 셋 — 슬롯 3 stepper를 상단 5칸
   진행 띠로, 굵은 포인터의 대기 행 조작은 `⋯` 하나, 슬롯 7 시각 줄은
   `data-ts`; 라벨 칩은 `model/label-policy.js`; foot 버튼 44px, 둘 넘는 조작은
-  `⋯` 시트로, 파괴적 조작은 항상 시트 안 + 확인 문구 유지), `lane-bar.js`
+  `⋯` 시트로, 파괴적 조작은 항상 시트 안 + 확인 문구 유지; 자식 롤업(슬롯 3)·
+  이월 칩(슬롯 4b)은 그리지 않는다; 문의 세션 배지 단계 꼬리·`⏸ 세션이 멈춤`·
+  `[세션에서 해결]` 유무는 `model/tile-resolve.js`와 서버 판정 결과를 그리기만
+  한다(ADR UI-ri8n); 외부 대기 `actions[]`는 `placement: card`인 것만 카드에 두고
+  `confirm`이 있으면 확인 뒤 보낸다(UI-r6xq)), `lane-bar.js`
   (모바일 하단 레인 바, 카운트·단계색 점), `move-sheet.js`(`↑ 위로`·`↓ 아래로`·
   `맨 앞으로`·`병렬로`·`직렬 n`·`지금 시작`·`대기에서 빼기` — 각각 기존 op
   하나), `drag.js`(포인터 이벤트; 마우스 즉시, 터치·펜 350ms 길게 누름, 가장자리
@@ -271,23 +303,26 @@ scope:
   (`package.json#files`의 파일 항목이 모두 존재하고 `app/index.html`이 참조하는
   CSS·JS가 `files`에 포함된다), eslint `no-restricted-imports` 규칙.
 
-검증: RED→GREEN으로 `npx vitest run server/worker/runnable-cache.test.js server/worker/title-cache.test.js server/ws/monitor-handlers.test.js app/model/label-policy.test.js app/model/adopted-queue.test.js app/model/lane-model.test.js app/core app/ui app/screens/pipeline app/main.boot.test.js test/package-files.test.js`를 통과시키고(새 테스트는 §Test scope; 이동한 모듈의 기존 테스트는 경로만 바뀐 채 그대로 통과), 부록 A의 파이프라인·데크·Worker 툴바 행 전부를 체크리스트로 봉인 커밋 메시지 본문(최종 PR 본문에 합침)에 첨부하며, `node scripts/ui-fixture-server.mjs --port 3101`을 띄운 뒤 `node scripts/ui-shots.mjs http://127.0.0.1:3101 --out <scratch>`가 파이프라인(전체·레포) 390·1280 캡처·`scrollWidth` 초과 0·조작 버튼 높이 ≥ 44px·드래그와 이동 시트의 실제 재배치·8개 레포 첫 렌더 100ms 이하·유휴 60초 `render_count` 증가 0을 모두 통과 보고한 뒤, 브라우저에서 fixture 서버에 대한 기본 상태 WS 구독이 monitor-pipeline + impl-presets 둘(레포 범위는 worker-queue 하나 추가)인지 확인하고, Pre-Handoff Validation 전부(고정 순서).
+검증: RED→GREEN으로 `npx vitest run server/worker/runnable-cache.test.js server/worker/title-cache.test.js server/ws/monitor-handlers.test.js app/model/label-policy.test.js app/model/adopted-queue.test.js app/model/lane-model.test.js app/core app/ui app/screens/pipeline app/main.boot.test.js test/package-files.test.js`를 통과시키고(새 테스트는 §Test scope; 이동한 모듈의 기존 테스트는 경로만 바뀐 채 그대로 통과), 부록 A의 파이프라인·데크·Worker 툴바 행 전부를 체크리스트로 봉인 커밋 메시지 본문(최종 PR 본문에 합침)에 첨부하며, `node scripts/ui-fixture-server.mjs --port 3101`을 띄운 뒤 `node scripts/ui-shots.mjs http://127.0.0.1:3101 --out <scratch>`가 파이프라인(전체·레포) 390·1280 캡처·`scrollWidth` 초과 0·조작 버튼 높이 ≥ 44px·드래그와 이동 시트의 실제 재배치·8개 레포 첫 렌더 100ms 이하·유휴 60초 `render_count` 증가 0을 모두 통과 보고한 뒤, 브라우저에서 fixture 서버에 대한 기본 상태 WS 구독이 monitor-pipeline + impl-presets + model-visibility 셋(레포 범위는 worker-queue 하나 추가)인지 확인하고, Pre-Handoff Validation 전부(고정 순서).
 
 Phase 1 봉인 기준: 부록 A 파이프라인 행 도달 가능, 옛 Worker·Monitor 탭 진입
 없음, `protocol.md` 갱신, 서버 테스트 10개의 import 경로 갱신, `package.json#
 files` 갱신, 캡처 페이지를 tailnet 목업으로 공유(사용자 피드백 → Phase 2 패킷).
-parent 브랜치에 리뷰 가능한 커밋으로 누적.
+이슈 브랜치 `UI-dbn6`에 리뷰 가능한 봉인 커밋으로 누적(착지는 Phase 4 뒤 PR 하나).
 
 ## Phase 2: 이슈 상세·전사 드로어·새 이슈·문서 뷰어
 
 실행: delegated
+착지: 다음과 함께(옛 뷰 브리지가 남은 중간 상태 — Phase 4 정리까지 한 PR로 착지한다)
 
 작업 내용 (스펙 §3.1·§3.2·§3.5·§3.6·§4.2·§5.4):
 
 - **`app/screens/detail/`**: 데스크톱 오른쪽 패널(560px, 레인 위 오버레이),
   모바일 전체 화면 시트(헤더 ✕·뒤로가기 hash로 닫음). 순서: 머리(ID·route·판정
   칩·닫기) → 제목 → 라벨 stepper → 실행 설정(유효값 + 층 표시, 행별 편집 시트,
-  프리셋 적용 바 — 값 해석은 `app/utils/execution-defaults.js` 그대로) → 의존 →
+  프리셋 적용 바 — 값 해석은 `app/utils/execution-defaults.js` 그대로; 모델
+  선택지는 `model/model-visibility.js` `visibleModelChoices`·`visibleReviewerChoices`
+  로 거르고 꺼 둔 저장 값은 `(비활성)`으로 남긴다 — ADR UI-ooc0) → 의존 →
   속성(상태·우선순위·라벨) → 설명(markdown) → 외부 작업 → Worker 이력(세션 행:
   전사·이어하기·재개 명령 복사·토큰 사용량 상세 펼치기; 문의·해결 세션 배지의
   Discord 링크) → 댓글 → 과업 프롬프트(펼침). 조작은 부록 A 상세 행 전부
@@ -303,11 +338,17 @@ parent 브랜치에 리뷰 가능한 커밋으로 누적.
 - **`app/screens/transcript/`**: 드로어(모바일 전체 화면 시트),
   `subscribe-session-log`/`unsubscribe-session-log`(attempt·launch_id·
   session_ref) 표시 중만, `get-attempt-prompt`, 따라가기·접기·복사. 파서는
-  `app/utils/transcript-lines.js` 그대로.
+  `app/utils/transcript-lines.js` 그대로. 표시 문법(작업 묶음 접기·한 줄 도구 줄·
+  색은 상태에만·2행 머리줄·결과 카드·창 규격)은 UI-2dbn 스펙
+  `2026-09-29-transcript-drawer-conversation-view-design.md` §4.2~§4.5가 정본이다 —
+  착지한 `app/views/worker/transcript-drawer.js`의 렌더를 다시 설계하지 않고
+  옮기며, 호스트(새 shell 오버레이 층, 전체 화면 시트의 뒤로가기 닫기)만 바꾼다.
+  UI-2dbn과의 `blocks` 엣지는 없다(UI-2dbn §4.7, UI-2dbn은 closed).
 - **`app/screens/new-issue/`**: 전체 범위에서 대상 저장소 선택(기본 연결
   저장소; 다른 저장소면 `set-workspace` 뒤 `create-issue`), Ctrl/Cmd+N.
 - **`app/screens/doc-viewer/`**: `GET /api/doc` 문서 뷰어(스펙·ADR·플랜 공통).
-- 재개·계속 다이얼로그, 복구 선택 다이얼로그, `continuation_mismatch`·
+- 재개·계속 다이얼로그, 공급자 재개 대화상자(모델 선택지의 활성 모델 필터
+  유지), 복구 선택 다이얼로그, `continuation_mismatch`·
   `prior_session_unavailable` 다이얼로그는 현행 의미로 새 `ui/dialog.js` 위에
   옮긴다. 옛 `detail-panel/`·`transcript-drawer.js` 브리지 마운트를 해제한다.
 - fixture 서버에 `issue-detail`·댓글·프롬프트·세션 참조·전사 스트림 fixture를,
@@ -321,18 +362,23 @@ Phase 2 봉인 기준: 부록 A 상세·전사 행 도달 가능, 다른 레포 
 ## Phase 3: 설정(레포·일괄)·사용량 팝업·ADR·비교
 
 실행: delegated
+착지: 다음과 함께(옛 뷰 브리지가 남은 중간 상태 — Phase 4 정리까지 한 PR로 착지한다)
 
 작업 내용 (스펙 §3.7~3.9·§3.6):
 
 - **`app/screens/settings/`**: 레포 모드(레포 범위 ⚙·레포 띠 ⚙·상세의 프리셋
   바꾸기 → 워커 프리셋·세션·계정 3탭), 일괄 모드(전체 범위 ⚙ → 워커 프리셋·
-  세션·계정·칩 바인딩 4탭 + 대상 레포 체크, 실패만 재선택·취소). 워커 프리셋
+  세션·계정·전역 4탭 + 대상 레포 체크, 실패만 재선택·취소). 전역 탭은 판정 칩
+  프리셋 바인딩과 활성 모델 체크(`model-visibility-set`, `expected_revision` CAS,
+  `conflict`·`unknown_model`·`runner_all_disabled` 거절 표시) 두 묶음이다(ADR
+  UI-u6ud-10·UI-ooc0). 워커 프리셋·quick fix 탭의 모델 묶음과 리뷰 행 선택지는
+  활성 모델 필터를 건다. 워커 프리셋
   탭은 UI-7yh2 설계의 배치·모양만 승계하고 의미는 현행: 프리셋은 `applies_to`
   계열(일반/quick_fix) 하나에 속하고 적용 바는 계열별로 하나씩(각각
   `apply-impl-preset-global` 한 번, ADR UI-u6ud-10), 폼 값과 적용 프리셋의 차이
   판정(`applied_exec_preset`·`applied_quick_fix_preset` 대비)도 계열별.
-  `impl-preset-create/-update/-delete`, `impl-preset-bind`(일괄 모드 칩 바인딩
-  탭), `get-worker-system-prompt`. 세션·계정 탭의 필드·저장 의미(strict 거절,
+  `impl-preset-create/-update/-delete`, `impl-preset-bind`(일괄 모드 전역 탭),
+  `get-worker-system-prompt`. 세션·계정 탭의 필드·저장 의미(strict 거절,
   per-key 마지막 쓰기)는 현행: `set-session-defaults`·`set-worker-url-common`·
   `set-workspace-accounts`·`worker-provider-limit-policy-set`·
   `worker-queue-set-orchestration-defaults`. 일괄 세션 탭은 `workflow_mode`·
@@ -354,7 +400,8 @@ Phase 2 봉인 기준: 부록 A 상세·전사 행 도달 가능, 다른 레포 
   새로고침·행 클릭 → 상세. 실험 섹션·`새 실험` 없음. `get-compare`는
   `include_bench: false` 고정, `runs`·`bench_rows`는 읽지 않는다.
 - 옛 `settings-dialog/`·`adr/`·`compare/`·`usage-meter.js` 브리지 마운트 해제.
-  fixture 서버에 프리셋·세션 기본값·계정·ADR 스냅샷·비교 fixture를, `ui-shots.mjs`
+  fixture 서버에 프리셋·세션 기본값·계정·활성 모델 쓰기(`model-visibility-set`)·ADR
+  스냅샷·비교 fixture를, `ui-shots.mjs`
   에 설정(레포·일괄)·ADR·비교 항목을 더한다.
 
 검증: RED→GREEN으로 `npx vitest run app/screens/settings app/screens/adr app/screens/compare app/screens/pipeline/shell.test.js`를 통과시키고(새 테스트는 §Test scope), 부록 A의 설정·ADR·비교·전역 행 전부를 체크리스트로 봉인 커밋 본문에 첨부하며, fixture 서버 대상 `ui-shots.mjs`가 설정(레포·일괄)·ADR·비교(390·1280) 캡처·잘림 0·버튼 높이·유휴 렌더 0을 통과 보고한 뒤 Pre-Handoff Validation 전부(고정 순서).
@@ -366,6 +413,7 @@ Phase 4 삭제의 입력), 계열별 프리셋 적용·차이 판정 테스트 �
 ## Phase 4: 정리 — 서버 제거·옛 뷰·CSS 삭제·protocol.md·ADR 착지·코드 예산
 
 실행: delegated
+착지: 단독
 
 작업 내용 (스펙 §4.5·§4.6·§6):
 
@@ -389,7 +437,8 @@ Phase 4 삭제의 입력), 계열별 프리셋 적용·차이 판정 테스트 �
   `## Bench experiment creation` 섹션·표시 정책 항목·`include_bench` 설명을
   정리한다.
 - **ADR 착지**(`adr` 스킬): 스펙 `## 결정 (ADR 후보)`의 후보 1을 materialize하고
-  UI-l48z를 supersede한다(스펙 §7이 정리 Phase에 두었다).
+  UI-ri8n을 supersede한다(UI-ri8n이 UI-l48z를 대체하며 그 조항을 승계했고, 새 ADR은
+  UI-ri8n의 문의 세션 조항을 승계한다; 스펙 §7이 정리 Phase에 두었다).
   `check-adr-candidates.py --spec <상대경로> --adr-dir docs/adr`가 `ok`.
 - **코드 예산 테스트** `test/frontend-budget.test.js`(node 프로젝트): `app/`
   비테스트 `.js` 2만 줄 이하, CSS 4,000줄 이하, 파일당 1,000줄 이하(예외 목록:
@@ -412,14 +461,11 @@ execution → assertion 빈 줄 구분; 테스트를 통과시키려고 구현�
 
 - Phase 1
   - `server/worker/runnable-cache.test.js`: `bd list` 행의 `priority`·
-    `issue_type`이 `RunnableItem`·`SessionActiveItem`에 실리고 부재 시 `null`;
-    `childrenIndexFor`가 `parent`별 `ids`·`closed`를 돌려주고 자식 없는 부모는
-    키가 없다.
+    `issue_type`이 `RunnableItem`·`SessionActiveItem`에 실리고 부재 시 `null`.
   - `server/worker/title-cache.test.js`: 같은 `bd show` 페이로드에서
     `priority`·`issue_type`·`labels`·`from_id`를 채우고 필드 부재 시 생략한다.
   - `server/ws/monitor-handlers.test.js`: 모니터 행의 `bead_overlay[id]`에 네
-    필드가 통과하고 `bead_children`이 붙으며, 캐시 예외 시 두 필드가 생략돼도
-    행은 나간다(fail-quiet).
+    필드가 통과하고, 캐시 예외 시 그 필드가 생략돼도 행은 나간다(fail-quiet).
   - `app/model/label-policy.test.js`: 접두 4종·라벨 2종 숨김, 판정 라벨 6종
     분리, 나머지는 plain.
   - `app/core/router.test.js`: 레거시 해시 6종 정규화, `#/monitor` → 범위 전체,
@@ -438,25 +484,33 @@ execution → assertion 빈 줄 구분; 테스트를 통과시키려고 구현�
     `repo-strip.test.js`·`toolbar.test.js`: 각 조작 클릭·드롭이 정확한 WS 타입·
     payload(`root_dir`·`expected_revision` 포함)를 `send`로 보내고, 파괴적 조작은
     확인 뒤에만 보내며, 터치 길게 누름 350ms 전에는 드래그가 시작되지 않고 타
-    레포 직렬 레인 드롭은 거부된다.
+    레포 직렬 레인 드롭은 거부된다. `card.test.js`는 추가로 자식 롤업·이월 칩을
+    그리지 않고, `[세션에서 해결]`을 `tileResolveFields` 결과대로만 그리며, 외부
+    대기 `actions[]` 중 `placement: card`만 카드에 두고 `confirm`이 있으면 확인
+    뒤에만 보낸다.
   - `app/ui/render.test.js`·`ticker.test.js`·`viewport.test.js`: 렌더 호출 수
     노출, `data-ts` 텍스트만 갱신(렌더 0회), 분기 판정.
-  - `app/main.boot.test.js`: 부팅 구독이 monitor-pipeline + impl-presets 둘(레포
-    범위는 worker-queue 하나 추가), `set-workspace` `changed: true` 뒤 열린 표면
-    재구독.
+  - `app/main.boot.test.js`: 부팅 구독이 monitor-pipeline + impl-presets +
+    model-visibility 셋(레포 범위는 worker-queue 하나 추가), `set-workspace`
+    `changed: true` 뒤 열린 표면 재구독.
   - `test/package-files.test.js`: `files`의 파일 항목 존재, `index.html` 참조
     CSS·JS 포함.
   - 이동한 모듈의 기존 테스트: 경로만 바뀐 채 변경 없이 통과(RED 없음).
 - Phase 2
   - `app/screens/detail/*.test.js`: 섹션 순서, 각 조작의 WS 타입·payload, 다른
-    레포 카드 열기 시 `set-workspace` 선행과 해시 `root` 보존, 재로드 복원.
+    레포 카드 열기 시 `set-workspace` 선행과 해시 `root` 보존, 재로드 복원, 모델
+    선택지가 꺼 둔 모델을 빼고 저장된 꺼 둔 값은 `(비활성)`으로 남긴다.
   - `app/screens/transcript/*.test.js`: 표시 중만 구독·해제, 따라가기·접기.
+    옮긴 UI-2dbn 표시 문법 테스트(`transcript-drawer.test.js`)는 경로만 바뀐 채
+    변경 없이 통과(RED 없음).
   - `app/screens/new-issue/*.test.js`: 전체 범위 대상 저장소 선택 →
     `set-workspace` → `create-issue` 순서.
 - Phase 3
   - `app/screens/settings/*.test.js`: 계열별 적용 바가 각각
     `apply-impl-preset-global` 한 번, 계열별 차이 판정, 일괄 세션 탭 세 필드가
-    대상 저장소마다 쓰임, strict 거절 표시.
+    대상 저장소마다 쓰임, strict 거절 표시, 전역 탭 활성 모델 체크가
+    `model-visibility-set`을 `expected_revision`과 함께 보내고 거절 사유를
+    표시하며, 모델 묶음 선택지가 활성 모델만 보인다.
   - `app/screens/adr/*.test.js`·`compare/*.test.js`: `include_bench: false`
     고정과 `runs`·`bench_rows` 미사용, 배지 팝업의 `CheckerError` 표시.
 - Phase 4
