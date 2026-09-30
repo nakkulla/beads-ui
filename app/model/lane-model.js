@@ -40,6 +40,7 @@ import {
 } from '../utils/token-usage.js';
 import {
   reviewSessionAttemptBadges,
+  reviewSessionRowState,
   sumAttemptWorkMs
 } from './attempt-facts.js';
 import { isForeignBlocker } from './blocker-scope.js';
@@ -64,6 +65,7 @@ import { autoSwitchText, providerHoldBadgeText } from './gate-labels.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
 import { placementFromFacts } from './placement.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
+import { prWaitRowFields } from './pr-wait-row.js';
 // 칩의 모양은 두 탭이 공유한다 (UI-anna §5.1): 워커 투영도 같은 함수를 불러
 // 같은 라벨·같은 툴팁 문장 틀을 낸다.
 import {
@@ -2809,9 +2811,13 @@ function chipPinsOf(entry) {
  * 하나당 그룹을 남긴다 — 실행 중·PR 대기·완료·저장소 작업만 있는 스냅샷에서도
  * `slots`·`merge`·`repo_operations`가 살아 있어야 하기 때문이다.
  *
+ * `options.pr_wait_detail`는 PR 대기 행을 Worker 투영(`prWaitRowFields`)으로
+ * 조립하고 `options.pr_pending`(`root_dir\0bead_id` → 클릭 응답 대기 종류)을
+ * 읽는다 (UI-dbn6 P1-r2).
+ *
  * @param {Array<Record<string, any>>|null|undefined} workspaces
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state]
- * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', groups?: 'nonempty'|'all', search?: string }} [options]
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', groups?: 'nonempty'|'all', search?: string, pr_wait_detail?: boolean, pr_pending?: Map<string, 'merge'|'cleanup'> }} [options]
  * @returns {LaneModel}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
@@ -2837,6 +2843,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
           )
         : 'repo_spec';
   const groups_mode = options && options.groups === 'all' ? 'all' : 'nonempty';
+  // The Worker-grade PR row projection (UI-dbn6 P1-r2, `prWaitRowFields`) and
+  // the client's own click windows it reads; without the option the rows keep
+  // the coarse gate projection.
+  const pr_wait_detail = !!options && options.pr_wait_detail === true;
+  /** @type {Map<string, 'merge'|'cleanup'>|null} */
+  const pr_pending =
+    options && options.pr_pending instanceof Map ? options.pr_pending : null;
   // 해제 칩의 7일 창 기준 시각 (UI-d13v §5.3). 모델 조립당 한 번만 읽어 같은
   // 렌더 안의 모든 카드가 같은 창을 본다.
   const now = Date.now();
@@ -3640,14 +3653,153 @@ export function buildLanes(workspaces, workspaces_state, options) {
       });
     }
 
+    // 실행 중(leaf paused 포함) 충돌 해소 세션 (UI-dxgz §1). Worker 투영에서는
+    // 그 bead의 PR 행이 타일 옆에 함께 선다 — 두 카드가 같은 사실의 다른 면이다.
+    /** @type {Map<string, 'running'|'paused'>} */
+    const conflict_sessions = new Map();
+    if (pr_wait_detail) {
+      for (const tile of running) {
+        if (
+          tile.root_dir !== root_dir ||
+          tile.run_state === 'failed' ||
+          tile.conflict_resolution !== true
+        ) {
+          continue;
+        }
+        if (tile.run_state !== 'paused') {
+          conflict_sessions.set(tile.id, 'running');
+        } else if (!conflict_sessions.has(tile.id)) {
+          conflict_sessions.set(tile.id, 'paused');
+        }
+      }
+    }
+    /**
+     * The base the PR's attempt targets (UI-j6wa §3): the latest
+     * implementation attempt that is not a conflict resolution.
+     *
+     * @param {string} bead_id
+     * @returns {string|null}
+     */
+    const prTargetBase = (bead_id) => {
+      /** @type {any} */
+      let picked = null;
+      for (const a of Object.values(attempts)) {
+        if (
+          !a ||
+          a.bead_id !== bead_id ||
+          !isImplementationAttempt(a) ||
+          resolvesConflict(a, attempt_by_id)
+        ) {
+          continue;
+        }
+        if (
+          picked === null ||
+          (typeof a.started_at === 'number' ? a.started_at : 0) >=
+            (typeof picked.started_at === 'number' ? picked.started_at : 0)
+        ) {
+          picked = a;
+        }
+      }
+      return picked && typeof picked.target_base === 'string'
+        ? picked.target_base
+        : null;
+    };
+    const auto_merge_on =
+      typeof workspace.auto_merge === 'boolean'
+        ? workspace.auto_merge
+        : objectOf(state).auto_merge === true;
+    const completion_status = objectOf(workspace.completion_status);
+    /**
+     * The Worker-grade projection of one PR row (`prWaitRowFields`).
+     *
+     * @param {any} entry
+     * @param {boolean} beside_conflict - The bead's conflict-resolution tile
+     * owns its item key; the row stands beside it without occupying.
+     * @returns {LaneItem}
+     */
+    const prDetailRow = (entry, beside_conflict) => {
+      const bead_id = entry.bead_id;
+      const pending = pr_pending?.get(`${root_dir}\u0000${bead_id}`) || null;
+      const skip = auto_merge_on ? autoSkipReason(bead_id) : null;
+      const fields = prWaitRowFields({
+        bead_id,
+        title: base(bead_id).title,
+        observations,
+        cleanup_failed: cleanup_failed[bead_id] || null,
+        usage: sumAttemptUsage(attempts, bead_id, runner_catalog),
+        active:
+          pr_activity[bead_id] ||
+          (pending
+            ? { activity: null, merge_progress: null, queueing: pending }
+            : null),
+        conflict_session: conflict_sessions.get(bead_id) || null,
+        external: entry.external === true,
+        merge_queue: {
+          position: merge_positions.get(bead_id) || 0,
+          active: merge_state.active === bead_id,
+          failure: objectOf(merge_state.failures)[bead_id] || null,
+          waiting:
+            merge_state.waiting && merge_state.waiting.bead_id === bead_id
+              ? merge_state.waiting.reason
+              : null,
+          resolution: merge_resolutions.get(bead_id),
+          continuation_action: merge_continuations.get(bead_id),
+          authority: merge_authorities.get(bead_id) || null,
+          hold: merge_entries.get(bead_id)?.hold || null,
+          review_dispatch: merge_entries.get(bead_id)?.review_dispatch || null
+        },
+        wt_present: entry.wt_present !== false,
+        auto_skip: skip,
+        base_exception: baseException(declared_base, prTargetBase(bead_id)),
+        completion: completion_status[bead_id] || null,
+        discard_operations,
+        auto_merge_on,
+        progress_input: {
+          merge_sha: entry.merge_sha,
+          cleanup_cursor: entry.cleanup_cursor,
+          repo_operations
+        },
+        review_session: reviewSessionRowState(attempts, bead_id),
+        external_pr: {
+          ...(entry.foreign === true ? { foreign: true } : {}),
+          ...(typeof entry.repo_slug === 'string'
+            ? { repo_slug: entry.repo_slug }
+            : {}),
+          ...(typeof entry.pr_url === 'string' ? { pr_url: entry.pr_url } : {}),
+          ...(typeof entry.pr_number === 'number'
+            ? { pr_number: entry.pr_number }
+            : {})
+        }
+      });
+      return /** @type {LaneItem} */ ({
+        ...base(bead_id),
+        ...prWaitLaneOriginFields(entry, last_impl_by_bead),
+        ...decoratedBlockedBy(bead_id),
+        workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
+        ...fields,
+        pr_url: fields.pr_url || undefined,
+        continuation_mismatch:
+          merge_continuations.get(bead_id)?.mismatch || null,
+        ...(beside_conflict ? { non_occupying: true } : {})
+      });
+    };
+
     for (const entry of Array.isArray(workspace.pr_wait)
       ? workspace.pr_wait
       : []) {
       const bead_id = entry && entry.bead_id;
-      if (typeof bead_id !== 'string' || claimed.has(bead_id)) {
+      if (
+        typeof bead_id !== 'string' ||
+        (claimed.has(bead_id) && !conflict_sessions.has(bead_id))
+      ) {
         continue;
       }
+      const beside_conflict = claimed.has(bead_id);
       claimed.add(bead_id);
+      if (pr_wait_detail) {
+        pr_wait.push(prDetailRow(entry, beside_conflict));
+        continue;
+      }
       const observed = objectOf(observations[bead_id]);
       const pr = objectOf(observed.pr);
       const gate = observed.gate ? objectOf(observed.gate) : null;

@@ -99,11 +99,19 @@ export function tileResolveFields(
     : {};
   const discard_failed = !!item.discard?.error;
   const reasons = Array.isArray(item.wait_reasons) ? item.wait_reasons : [];
+  // A PR row a person has to take over (UI-jw27 §4, UI-g0lk §5.1): a stopped
+  // post-merge cleanup, a `needs_human` terminal, or a `holding` verify hold.
+  const pr_failure =
+    item.lane === 'pr_wait' &&
+    (!!item.cleanup_failed ||
+      item.completion_phase === 'needs_human' ||
+      item.completion_phase === 'holding');
   const eligible =
     item.run_state === 'parked' ||
     !!item.wait?.recovery ||
     reasons.some((/** @type {any} */ r) => r && r.kind === 'recovery') ||
-    discard_failed;
+    discard_failed ||
+    pr_failure;
   if (
     !eligible ||
     hasLiveResolveSession(item.interactive_sessions) ||
@@ -116,9 +124,11 @@ export function tileResolveFields(
     resolve_enabled: !resolve_pending,
     resolve_title: resolve_pending
       ? '세션 기동 요청 중 — 서버 응답을 기다립니다'
-      : discard_failed
-        ? '실패한 폐기를 사람이 이어받는 대화형 세션을 띄웁니다 — 기록된 세션이 있으면 fork하고, 없으면 새 세션에 사유를 싣습니다'
-        : '멈춘 세션을 같은 세션 그대로 대화형으로 다시 엽니다 — 사람과 대화한 뒤 인계하면 Worker가 이어갑니다',
+      : item.lane === 'pr_wait'
+        ? '이 실패를 사람이 이어받는 대화형 세션을 띄웁니다 — 기록된 세션이 있으면 fork하고, 없으면 새 세션에 사유를 싣습니다'
+        : discard_failed
+          ? '실패한 폐기를 사람이 이어받는 대화형 세션을 띄웁니다 — 기록된 세션이 있으면 fork하고, 없으면 새 세션에 사유를 싣습니다'
+          : '멈춘 세션을 같은 세션 그대로 대화형으로 다시 엽니다 — 사람과 대화한 뒤 인계하면 Worker가 이어갑니다',
     ...handoff_fields
   };
 }

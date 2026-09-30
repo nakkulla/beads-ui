@@ -17,6 +17,7 @@ import {
   discardConfirmationMessage
 } from '../../model/discard.js';
 import { providerProbeRefusalText } from '../../model/gate-labels.js';
+import { mergeQueueRefusalText } from '../../model/pr-wait-status.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { resolveContinuationMismatch } from '../dialogs/continuation-dialog.js';
 import { runResumeFlow } from '../dialogs/resume-flow.js';
@@ -59,6 +60,19 @@ export function createPipelineActions(deps) {
   const revise_pending = new Set();
   /** @type {Set<string>} */
   const external_pending = new Set();
+  // A PR row's click-to-reply window (UI-raqh §4): the server has not taken
+  // the request yet, so the row says so and locks its buttons.
+  /** @type {Map<string, 'merge'|'cleanup'>} */
+  const pr_pending = new Map();
+
+  /**
+   * @param {string} root_dir
+   * @param {string} bead_id
+   * @returns {string}
+   */
+  function prKey(root_dir, bead_id) {
+    return `${root_dir}\u0000${bead_id}`;
+  }
 
   /**
    * @param {string} root_dir
@@ -165,6 +179,34 @@ export function createPipelineActions(deps) {
     }
   }
 
+  /**
+   * `worker-cleanup-retry` — the PR row's and the timeline drawer's
+   * `[정리 재시도]`. A conflict is adopted but never retried: another click
+   * against the fresh snapshot is the authorization boundary.
+   *
+   * @param {string} bead_id
+   * @param {string} root_dir
+   */
+  async function cleanupRetry(bead_id, root_dir) {
+    const key = prKey(root_dir, bead_id);
+    if (pr_pending.has(key)) {
+      return;
+    }
+    pr_pending.set(key, 'cleanup');
+    deps.onChange();
+    try {
+      const res = await sendCas('worker-cleanup-retry', { bead_id }, root_dir, {
+        retry: false
+      });
+      if (res && !res.retried && !res.conflict && res.reason) {
+        deps.toast(`정리 재시도 거부: ${res.reason}`, 'error', 2400);
+      }
+    } finally {
+      pr_pending.delete(key);
+      deps.onChange();
+    }
+  }
+
   return {
     sendCas,
     /**
@@ -182,6 +224,16 @@ export function createPipelineActions(deps) {
      * @returns {boolean}
      */
     isRevisePending: (bead_id) => revise_pending.has(bead_id),
+    /**
+     * The PR rows whose merge / cleanup click awaits its reply, keyed
+     * `root_dir\0bead_id` (the lane model's `pr_pending`).
+     *
+     * @returns {Map<string, 'merge'|'cleanup'>}
+     */
+    prPending: () => pr_pending,
+    /** @returns {string} The `pr_pending` memo key. */
+    prPendingKey: () =>
+      [...pr_pending].map(([key, kind]) => `${key}:${kind}`).join('|'),
 
     /**
      * A queue placement/order op (`-place`·`-reorder`·`-remove`) with the drag
@@ -470,19 +522,58 @@ export function createPipelineActions(deps) {
     },
 
     /**
-     * `[머지]` (or `[이어하기 선택]` / `[정리 재시도]` on the same button).
+     * `[머지]` (UI-5v7d §4) — or `[이어하기 선택]` / `[정리 재시도]` on the
+     * same button. A stopped cleanup re-runs it; otherwise the click takes a
+     * merge-queue place, and every way the reply can fail to apply says so
+     * (a dead-looking button is the failure this guards).
      *
      * @param {string} bead_id
      * @param {string} root_dir
      */
     async merge(bead_id, root_dir) {
+      if (deps.queueOf(root_dir)?.cleanup_failed?.[bead_id]) {
+        await cleanupRetry(bead_id, root_dir);
+        return;
+      }
       const action = queuedContinuation(root_dir, bead_id);
       if (action?.mismatch && action.continuation === null) {
         await decideQueuedContinuation(root_dir, bead_id, action.mismatch);
-      } else {
-        await sendCas('worker-merge-queue-add', { bead_id }, root_dir);
+        deps.onChange();
+        return;
       }
+      const key = prKey(root_dir, bead_id);
+      if (pr_pending.has(key)) {
+        return;
+      }
+      pr_pending.set(key, 'merge');
       deps.onChange();
+      /** @type {any} */
+      let res;
+      try {
+        res = await sendCas('worker-merge-queue-add', { bead_id }, root_dir);
+      } catch {
+        deps.toast(
+          '머지 클릭이 서버에 전달되지 않았습니다(연결 문제) — 연결 복구 후 다시 눌러주세요',
+          'error',
+          3200
+        );
+        return;
+      } finally {
+        pr_pending.delete(key);
+        deps.onChange();
+      }
+      if (!res || res.applied) {
+        return;
+      }
+      if (res.conflict) {
+        deps.toast(
+          '큐가 바뀌어 머지 클릭이 적용되지 않았습니다 — 다시 눌러주세요',
+          'error',
+          2400
+        );
+        return;
+      }
+      deps.toast(mergeQueueRefusalText(res.reason), 'error', 2400);
     },
 
     /**
@@ -687,21 +778,7 @@ export function createPipelineActions(deps) {
       }
     },
 
-    /**
-     * `worker-cleanup-retry` — the timeline drawer's `[정리 재시도]`.
-     *
-     * @param {string} bead_id
-     * @param {string} root_dir
-     */
-    async cleanupRetry(bead_id, root_dir) {
-      const res = await sendCas('worker-cleanup-retry', { bead_id }, root_dir, {
-        retry: false
-      });
-      if (res && !res.retried && !res.conflict && res.reason) {
-        deps.toast(`정리 재시도 거부: ${res.reason}`, 'error', 2400);
-      }
-      deps.onChange();
-    },
+    cleanupRetry,
 
     /**
      * `worker-repo-operation-dismiss` — the timeline's `기록 닫기`.

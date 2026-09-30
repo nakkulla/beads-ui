@@ -43,6 +43,8 @@ import { isQueueRow } from './mini-row.js';
  * @property {string} search
  * @property {number|undefined} done_since - The 레포 완료 period lower bound.
  * @property {number} now
+ * @property {Map<string, 'merge'|'cleanup'>} [pr_pending] - PR rows whose
+ * merge / cleanup click awaits its reply.
  */
 
 /**
@@ -137,7 +139,11 @@ export function laneInputsOf(env) {
   const base_options = {
     running_sort: 'started',
     candidate_filter: env.filter,
-    candidate_sort: 'as_given'
+    candidate_sort: 'as_given',
+    // The Worker-grade PR rows in both scopes: the monitor rows carry the same
+    // decorated queue fields, and a missing one fails quiet (UI-dbn6 P1-r2).
+    pr_wait_detail: true,
+    pr_pending: env.pr_pending || new Map()
   };
   if (env.scope === ALL_SCOPE) {
     return {

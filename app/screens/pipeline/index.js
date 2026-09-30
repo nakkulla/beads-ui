@@ -305,7 +305,8 @@ export function createPipelineScreen(mount, deps) {
       all ? 'today' : vs.done_range,
       ui.shelf_open ? 1 : 0,
       doneCollapsed() ? 1 : 0,
-      boundary_epoch
+      boundary_epoch,
+      actions.prPendingKey()
     ].join('\u0001');
     if (key === memo_key && memo_model) {
       return memo_model;
@@ -323,7 +324,8 @@ export function createPipelineScreen(mount, deps) {
       filter: vs.filter,
       search: vs.search,
       done_since: doneSince(),
-      now: now()
+      now: now(),
+      pr_pending: actions.prPending()
     });
     memo_key = key;
     memo_model = buildLanes(

@@ -250,3 +250,57 @@ describe('hasLiveResolveSession', () => {
     expect(live).toBe(false);
   });
 });
+
+describe('tileResolveFields on a PR 대기 row (UI-jw27 §4, UI-dbn6 P1-r2)', () => {
+  /** @type {Record<string, Record<string, any>>} */
+  const PR_MATERIALS = {
+    cleanup_stall: { cleanup_failed: { step: 'child_sweep', reason: 'x' } },
+    needs_human: { completion_phase: 'needs_human' },
+    holding: { completion_phase: 'holding' }
+  };
+
+  for (const [name, material] of Object.entries(PR_MATERIALS)) {
+    test(`exposes the action for a PR row's ${name}`, () => {
+      const item = { id: 'UI-dbn6', lane: 'pr_wait', ...material };
+
+      const fields = tileResolveFields(item, false);
+
+      expect(fields.resolve_action).toBe(true);
+    });
+  }
+
+  test('titles the PR-row action as a failure takeover', () => {
+    const item = {
+      id: 'UI-dbn6',
+      lane: 'pr_wait',
+      completion_phase: 'needs_human'
+    };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields.resolve_title).toBe(
+      '이 실패를 사람이 이어받는 대화형 세션을 띄웁니다 — 기록된 세션이 있으면 fork하고, 없으면 새 세션에 사유를 싣습니다'
+    );
+  });
+
+  test('omits the action on a PR row that only waits for its merge', () => {
+    const item = { id: 'UI-dbn6', lane: 'pr_wait', completion_phase: 'gating' };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields.resolve_action).toBe(undefined);
+  });
+
+  test('hides the PR-row action while a resolve session lives', () => {
+    const item = {
+      id: 'UI-dbn6',
+      lane: 'pr_wait',
+      completion_phase: 'holding',
+      interactive_sessions: [session('resolve')]
+    };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields.resolve_action).toBe(undefined);
+  });
+});

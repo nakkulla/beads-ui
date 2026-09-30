@@ -379,7 +379,7 @@ function statusBadge(item, badge) {
   if (badge === item.live_badge) {
     return html`<span
       class="pl-badge pl-badge--live"
-      title="서버가 이 PR을 처리하는 중입니다"
+      title=${item.live_title || '서버가 이 PR을 처리하는 중입니다'}
       ><span class="pl-dot is-live" aria-hidden="true"></span>${badge}</span
     >`;
   }
@@ -585,7 +585,11 @@ export function miniRow(item, ctx, options = {}) {
           ${item.reason}
         </div>`
       : ''}
-    <div class="pl-title">${item.title}</div>
+    <div class="pl-title">
+      ${item.title}${item.lane === 'pr_wait' && item.external
+        ? html`<span class="pl-title__tail"> · 세션</span>`
+        : ''}
+    </div>
     ${lines.body}${inquiryLine(item.interactive_sessions, now)}
     ${depLines(item.dependency_chips, {
       root_dir: item.root_dir,
