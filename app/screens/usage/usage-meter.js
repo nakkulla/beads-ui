@@ -1,6 +1,7 @@
 /**
  * The header usage meter (UI-dbn6 §3.6): per provider one small group — the
- * provider name (from 720px), one small bar per usage window and the highest
+ * provider name (from 720px; below it the one-letter `mark`, so two equal
+ * percentages still say whose they are), one small bar per usage window and the highest
  * window's percentage — and, where the provider reports managed accounts, the
  * group is the toggle of that provider's account card: every account with its
  * window meters and resets, and `전환` (`POST /api/<provider>-account/switch`).
@@ -69,6 +70,7 @@ function groupView(entry, now_ms) {
   return {
     key: entry.provider.key,
     label: entry.provider.label,
+    mark: entry.provider.mark,
     available: snapshot.available,
     stale,
     stale_note: stale ? `${Math.floor(age_seconds / 60)}분 전 측정` : '',
@@ -314,8 +316,9 @@ export function createUsageMeter(mount_element) {
     const group_class = `usage-meter__group${
       view.stale ? ' usage-meter__group--stale' : ''
     }`;
-    const content = html`<span class="usage-meter__provider"
-        >${view.label}</span
+    const content = html`<span class="usage-meter__provider">${view.label}</span
+      ><span class="usage-meter__mark" aria-hidden="true" title=${view.label}
+        >${view.mark}</span
       >
       ${view.available && view.windows.length > 0
         ? html`<span class="usage-meter__bars" aria-hidden="true"

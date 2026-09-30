@@ -8,7 +8,9 @@
  * @typedef {{ key: string, pct: number, resetsAt: string }} UsageWindow
  * @typedef {{ number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
  * @typedef {{ available: boolean, windows: UsageWindow[], ageSeconds: number | null, accounts: UsageAccount[], receivedAtMs: number, held: boolean }} ProviderSnapshot
- * @typedef {{ key: string, label: string, endpoint: string, switch_endpoint: string, tool: string }} ProviderDescriptor
+ * @typedef {{ key: string, label: string, mark: string, endpoint: string, switch_endpoint: string, tool: string }} ProviderDescriptor
+ * `mark` is the one-letter badge that tells the providers apart on a phone,
+ * where the name is hidden (`Claude` and `Codex` share their initial).
  * @typedef {{ kind: 'ok', snapshot: ProviderSnapshot } | { kind: 'empty' } | { kind: 'error' }} ProviderRead
  */
 
@@ -38,6 +40,7 @@ export const PROVIDERS = [
   {
     key: 'claude',
     label: 'Claude',
+    mark: 'C',
     endpoint: '/api/claude-usage',
     switch_endpoint: '/api/claude-account/switch',
     tool: 'cswap'
@@ -45,6 +48,7 @@ export const PROVIDERS = [
   {
     key: 'codex',
     label: 'Codex',
+    mark: 'X',
     endpoint: '/api/codex-usage',
     switch_endpoint: '/api/codex-account/switch',
     tool: 'codex-auth'

@@ -43,6 +43,22 @@ button.usage-meter__group[aria-expanded='true'] {
   font-weight: var(--w-semibold);
 }
 
+/* The one-letter provider badge that stands in for the name on a phone. */
+.usage-meter__mark {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  flex: none;
+  border-radius: var(--radius-1);
+  background: var(--gray-bg);
+  color: var(--ink-2);
+  font-size: var(--t-11);
+  font-weight: var(--w-semibold);
+  line-height: 1;
+}
+
 .usage-meter__bars {
   display: grid;
   gap: 2px;
@@ -294,7 +310,8 @@ button.usage-meter__group[aria-expanded='true'] {
   font-size: var(--t-11);
 }
 
-/* ---------- phone: no provider label, the card is a bottom sheet ---------- */
+/* ---------- phone: a letter mark for the provider label, the card is a
+   bottom sheet ---------- */
 @media (max-width: 719px) {
   .usage-meter__group {
     gap: var(--s-2);
@@ -303,6 +320,10 @@ button.usage-meter__group[aria-expanded='true'] {
 
   .usage-meter__provider {
     display: none;
+  }
+
+  .usage-meter__mark {
+    display: inline-flex;
   }
 
   /* the +n of inactive accounts moves into the card on a phone */

@@ -353,6 +353,53 @@ describe('usage meter rendering', () => {
     expect(mount.querySelector('.usage-meter')).toBeNull();
   });
 
+  test('marks each provider group with a distinct short letter (UI-dbn6 P4)', async () => {
+    document.body.innerHTML = '<div id="usage-meter"></div>';
+    const mount = /** @type {HTMLElement} */ (
+      document.getElementById('usage-meter')
+    );
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve(
+              usageResponse([{ key: '5h', pct: 38, resetsAt: reset_at }])
+            )
+        })
+      )
+    );
+
+    const meter = createUsageMeter(mount);
+    await vi.waitFor(() =>
+      expect(mount.querySelectorAll('.usage-meter__group')).toHaveLength(2)
+    );
+
+    expect(
+      Array.from(mount.querySelectorAll('.usage-meter__mark'), (mark) => [
+        mark.textContent?.trim(),
+        mark.getAttribute('title'),
+        mark.closest('.usage-meter__group')?.getAttribute('aria-label')
+      ])
+    ).toEqual([
+      ['C', 'Claude', 'Claude usage'],
+      ['X', 'Codex', 'Codex usage']
+    ]);
+    meter.destroy();
+  });
+
+  test('shows the provider mark only where the provider name is hidden', () => {
+    const styles = fs.readFileSync('app/screens/usage/usage.css', 'utf8');
+    const phone = styles.slice(styles.indexOf('@media (max-width: 719px)'));
+
+    expect(styles).toMatch(
+      /(?:^|\n)\.usage-meter__mark\s*{[^}]*display: none;/
+    );
+    expect(phone).toMatch(/\.usage-meter__mark\s*{[^}]*display: inline-flex;/);
+  });
+
   test('keeps provider groups and drops their label below 720px', () => {
     const styles = fs.readFileSync('app/screens/usage/usage.css', 'utf8');
 
