@@ -942,14 +942,15 @@ describe('usage meter account card', () => {
 describe('usage meter account switch', () => {
   /**
    * @param {unknown} switch_payload
+   * @param {string} [provider]
    */
-  function stubSwitch(switch_payload) {
-    const claude_payload = {
+  function stubSwitch(switch_payload, provider = 'claude') {
+    const usage_payload = {
       available: false,
       accounts: [accountRow({ number: 1, status: 'token_expired' })]
     };
     const fetchMock = vi.fn((/** @type {string} */ url) => {
-      if (url === '/api/claude-account/switch') {
+      if (url === `/api/${provider}-account/switch`) {
         return Promise.resolve({
           ok: true,
           json: () => Promise.resolve(switch_payload)
@@ -959,7 +960,9 @@ describe('usage meter account switch', () => {
         ok: true,
         json: () =>
           Promise.resolve(
-            url === '/api/codex-usage' ? { available: false } : claude_payload
+            url === `/api/${provider}-usage`
+              ? usage_payload
+              : { available: false }
           )
       });
     });
@@ -989,6 +992,110 @@ describe('usage meter account switch', () => {
         body: JSON.stringify({ number: 1 })
       })
     );
+    meter.destroy();
+  });
+
+  test.each(['claude', 'codex'])(
+    'shows %s worker usage and login risk on the account row',
+    async (provider) => {
+      const mount = mountMeter();
+      const fetchMock = stubSwitch(
+        { ok: false, error: 'account_in_use', in_use: ['UI-one', 'UI-two'] },
+        provider
+      );
+
+      const meter = createUsageMeter(mount);
+      await openCard(mount);
+      /** @type {HTMLButtonElement} */ (
+        document.querySelector('.usage-meter__switch')
+      ).click();
+      await vi.waitFor(() =>
+        expect(document.querySelector('.usage-meter__confirm')).not.toBeNull()
+      );
+
+      const row = document.querySelector('.usage-meter__account');
+      expect(row?.textContent).toContain('UI-one, UI-two');
+      expect(row?.textContent).toContain('토큰 갱신 충돌');
+      expect(row?.textContent).toContain('그래도 전환');
+      expect(row?.textContent).toContain('취소');
+      expect(
+        fetchMock.mock.calls.filter(
+          (call) => call[0] === `/api/${provider}-usage`
+        )
+      ).toHaveLength(1);
+      meter.destroy();
+    }
+  );
+
+  test.each(['claude', 'codex'])(
+    'retries %s with confirm true and refreshes after success',
+    async (provider) => {
+      const mount = mountMeter();
+      const fetchMock = stubSwitch(
+        { ok: false, error: 'account_in_use', in_use: ['UI-one'] },
+        provider
+      );
+
+      const meter = createUsageMeter(mount);
+      await openCard(mount);
+      /** @type {HTMLButtonElement} */ (
+        document.querySelector('.usage-meter__switch')
+      ).click();
+      await vi.waitFor(() =>
+        expect(document.querySelector('.usage-meter__confirm')).not.toBeNull()
+      );
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ ok: true, switched: true, warnings: [] })
+      });
+      /** @type {HTMLButtonElement} */ (
+        document.querySelector('.usage-meter__confirm')
+      ).click();
+      await vi.waitFor(() =>
+        expect(
+          fetchMock.mock.calls.filter(
+            (call) => call[0] === `/api/${provider}-usage`
+          )
+        ).toHaveLength(2)
+      );
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/api/${provider}-account/switch`,
+        expect.objectContaining({
+          body: JSON.stringify({ number: 1, confirm: true })
+        })
+      );
+      expect(document.querySelector('.usage-meter__confirm')).toBeNull();
+      meter.destroy();
+    }
+  );
+
+  test('cancels confirmation without another request', async () => {
+    const mount = mountMeter();
+    const fetchMock = stubSwitch({
+      ok: false,
+      error: 'account_in_use',
+      in_use: ['UI-one']
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.usage-meter__switch')
+    ).click();
+    await vi.waitFor(() =>
+      expect(document.querySelector('.usage-meter__cancel')).not.toBeNull()
+    );
+    const calls_before_cancel = fetchMock.mock.calls.length;
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.usage-meter__cancel')
+    ).click();
+
+    expect(fetchMock).toHaveBeenCalledTimes(calls_before_cancel);
+    expect(document.querySelector('.usage-meter__account-message')).toBeNull();
+    expect(
+      document.querySelector('.usage-meter__switch')?.textContent?.trim()
+    ).toBe('전환');
     meter.destroy();
   });
 

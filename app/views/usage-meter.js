@@ -5,7 +5,7 @@ import { html, render } from 'lit-html';
  * @typedef {{ number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
  * @typedef {{ available: boolean, windows: UsageWindow[], ageSeconds: number | null, accounts: UsageAccount[], receivedAtMs: number, held: boolean }} ProviderSnapshot
  * @typedef {{ key: string, label: string, endpoint: string, switch_endpoint: string, tool: string }} ProviderDescriptor
- * @typedef {{ kind: 'warn' | 'error', text: string }} RowMessage
+ * @typedef {{ kind: 'warn' | 'error' | 'confirm', text: string }} RowMessage
  * @typedef {{ kind: 'ok', snapshot: ProviderSnapshot } | { kind: 'empty' } | { kind: 'error' }} ProviderRead
  */
 
@@ -471,8 +471,9 @@ export function createUsageMeter(mount_element) {
    *
    * @param {ProviderDescriptor} provider
    * @param {number} account_number
+   * @param {boolean} [confirm]
    */
-  async function switchAccount(provider, account_number) {
+  async function switchAccount(provider, account_number, confirm = false) {
     if (switching_rows.has(provider.key)) {
       return;
     }
@@ -487,7 +488,10 @@ export function createUsageMeter(mount_element) {
       const response = await fetch(provider.switch_endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ number: account_number })
+        body: JSON.stringify({
+          number: account_number,
+          ...(confirm ? { confirm: true } : {})
+        })
       });
       body = await response.json();
     } catch {
@@ -497,6 +501,20 @@ export function createUsageMeter(mount_element) {
       return;
     }
     switching_rows.delete(provider.key);
+
+    if (body && body.ok === false && body.error === 'account_in_use') {
+      const in_use = Array.isArray(body.in_use)
+        ? body.in_use.filter(
+            (/** @type {unknown} */ id) => typeof id === 'string'
+          )
+        : [];
+      row_messages.set(row_key, {
+        kind: 'confirm',
+        text: `실행 중인 워커가 이 계정을 사용 중입니다${in_use.length > 0 ? ` (${in_use.join(', ')})` : ''}. 전환하면 토큰 갱신 충돌로 워커의 로그인이 풀릴 수 있습니다.`
+      });
+      renderProviders();
+      return;
+    }
 
     if (!body || body.ok !== true) {
       const error_text =
@@ -522,6 +540,17 @@ export function createUsageMeter(mount_element) {
     }
     renderProviders();
     await refresh();
+  }
+
+  /**
+   * Dismiss the row confirmation without issuing a switch request.
+   *
+   * @param {string} provider_key
+   * @param {number} account_number
+   */
+  function cancelSwitch(provider_key, account_number) {
+    row_messages.delete(rowKey(provider_key, account_number));
+    renderProviders();
   }
 
   /**
@@ -700,7 +729,7 @@ export function createUsageMeter(mount_element) {
           : html`<span class="usage-meter__account-age"
               >${formatAge(account.ageSeconds)}</span
             >`}
-        ${account.active
+        ${account.active || message?.kind === 'confirm'
           ? ''
           : html`<button
               type="button"
@@ -723,9 +752,30 @@ export function createUsageMeter(mount_element) {
       ${message === undefined
         ? ''
         : html`<div
-            class="usage-meter__account-message usage-meter__account-message--${message.kind}"
+            class="usage-meter__account-message usage-meter__account-message--${message.kind ===
+            'confirm'
+              ? 'warn'
+              : message.kind}"
           >
             ${message.text}
+            ${message.kind === 'confirm'
+              ? html`<button
+                    type="button"
+                    class="usage-meter__switch usage-meter__confirm"
+                    ?disabled=${provider_switching}
+                    @click=${() =>
+                      void switchAccount(provider, account.number, true)}
+                  >
+                    그래도 전환
+                  </button>
+                  <button
+                    type="button"
+                    class="usage-meter__switch usage-meter__cancel"
+                    @click=${() => cancelSwitch(provider.key, account.number)}
+                  >
+                    취소
+                  </button>`
+              : ''}
           </div>`}
     </div>`;
   }

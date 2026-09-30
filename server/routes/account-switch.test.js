@@ -2,7 +2,7 @@ import express from 'express';
 import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import { PassThrough } from 'node:stream';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   __resetSwitchStateForTest,
   createAccountSwitchHandler,
@@ -16,6 +16,35 @@ import {
 
 const CLAUDE_ROUTE = '/api/claude-account/switch';
 const CODEX_ROUTE = '/api/codex-account/switch';
+
+const account_deps = vi.hoisted(() => ({
+  listClaude: vi.fn(),
+  listCodex: vi.fn(),
+  workspaces: vi.fn(),
+  snapshot: vi.fn()
+}));
+
+vi.mock('./claude-usage.js', () => ({
+  invalidateCache: vi.fn(),
+  listAccounts: account_deps.listClaude
+}));
+vi.mock('./codex-usage.js', () => ({
+  invalidateCache: vi.fn(),
+  listAccounts: account_deps.listCodex
+}));
+vi.mock('../registry-watcher.js', () => ({
+  getAvailableWorkspaces: account_deps.workspaces
+}));
+vi.mock('../worker/runtime.js', () => ({
+  getWorkerRuntime: () => ({ queueStore: { snapshot: account_deps.snapshot } })
+}));
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  account_deps.listClaude.mockResolvedValue({ ok: true, accounts: [] });
+  account_deps.listCodex.mockResolvedValue({ ok: true, accounts: [] });
+  account_deps.workspaces.mockReturnValue([]);
+});
 
 /**
  * @param {Record<string, unknown>} [overrides]
@@ -263,6 +292,171 @@ describe('failed switches', () => {
     expect(invalidateUsageCache).not.toHaveBeenCalled();
   });
 });
+
+describe.each(/** @type {const} */ (['claude', 'codex']))(
+  '%s account in use confirmation',
+  (provider) => {
+    const route = provider === 'claude' ? CLAUDE_ROUTE : CODEX_ROUTE;
+    const account_key =
+      provider === 'claude' ? 'worker@example.com' : 'worker-key';
+    const account_field = `${provider}_account`;
+    const listAccounts =
+      provider === 'claude' ? account_deps.listClaude : account_deps.listCodex;
+
+    beforeEach(() => {
+      listAccounts.mockResolvedValue({
+        ok: true,
+        accounts: [
+          { number: 2, email: 'worker@example.com', key: 'worker-key' }
+        ]
+      });
+      account_deps.workspaces.mockReturnValue([
+        { path: '/workspace/one' },
+        { path: '/workspace/two' }
+      ]);
+      account_deps.snapshot.mockImplementation((workspace) => ({
+        attempts:
+          workspace === '/workspace/one'
+            ? {
+                a: {
+                  bead_id: 'UI-one',
+                  status: 'running',
+                  [account_field]: account_key
+                }
+              }
+            : {
+                b: {
+                  bead_id: 'UI-two',
+                  status: 'running',
+                  [account_field]: account_key
+                },
+                duplicate: {
+                  bead_id: 'UI-one',
+                  status: 'running',
+                  [account_field]: account_key
+                },
+                done: {
+                  bead_id: 'UI-done',
+                  status: 'succeeded',
+                  [account_field]: account_key
+                },
+                other: {
+                  bead_id: 'UI-other',
+                  status: 'running',
+                  [account_field]: 'other-account'
+                }
+              }
+      }));
+    });
+
+    /**
+     * @param {unknown} body
+     */
+    async function request(body) {
+      const runSwitch = vi.fn().mockResolvedValue(switchResult());
+      const invalidateUsageCache = vi.fn();
+      const server = await startSwitchServer({
+        [provider]: createAccountSwitchHandler({
+          provider,
+          runSwitch,
+          invalidateUsageCache
+        })
+      });
+      try {
+        return {
+          ...(await server.post(route, body)),
+          runSwitch,
+          invalidateUsageCache
+        };
+      } finally {
+        await server.close();
+      }
+    }
+
+    test('returns running Beads across workspaces without switching', async () => {
+      const response = await request({ number: 2 });
+
+      expect(response.body).toEqual({
+        ok: false,
+        error: 'account_in_use',
+        in_use: ['UI-one', 'UI-two']
+      });
+      expect(response.runSwitch).not.toHaveBeenCalled();
+      expect(response.invalidateUsageCache).not.toHaveBeenCalled();
+    });
+
+    test('switches after explicit confirmation', async () => {
+      const response = await request({ number: 2, confirm: true });
+
+      expect(response.body.ok).toBe(true);
+      expect(response.runSwitch).toHaveBeenCalledWith(2);
+      expect(listAccounts).not.toHaveBeenCalled();
+    });
+
+    test.each([false, 'true', 1])(
+      'requires boolean true instead of %s',
+      async (confirm) => {
+        const response = await request({ number: 2, confirm });
+
+        expect(response.body.error).toBe('account_in_use');
+        expect(response.runSwitch).not.toHaveBeenCalled();
+      }
+    );
+
+    test('switches immediately when no running attempt uses the account', async () => {
+      account_deps.snapshot.mockReturnValue({
+        attempts: {
+          done: { status: 'succeeded', [account_field]: account_key },
+          other: { status: 'running', [account_field]: 'other-account' }
+        }
+      });
+
+      const response = await request({ number: 2 });
+
+      expect(response.runSwitch).toHaveBeenCalledWith(2);
+    });
+
+    test('switches when the account number cannot be mapped', async () => {
+      const response = await request({ number: 3 });
+
+      expect(response.runSwitch).toHaveBeenCalledWith(3);
+    });
+
+    test('switches when the account list is unavailable', async () => {
+      listAccounts.mockResolvedValue({ ok: false, error: 'unavailable' });
+
+      const response = await request({ number: 2 });
+
+      expect(response.runSwitch).toHaveBeenCalledWith(2);
+    });
+
+    test('switches when reading accounts rejects', async () => {
+      listAccounts.mockRejectedValue(new Error('unavailable'));
+
+      const response = await request({ number: 2 });
+
+      expect(response.runSwitch).toHaveBeenCalledWith(2);
+    });
+
+    test('switches when reading a queue snapshot fails', async () => {
+      account_deps.snapshot.mockImplementation(() => {
+        throw new Error('unavailable');
+      });
+
+      const response = await request({ number: 2 });
+
+      expect(response.runSwitch).toHaveBeenCalledWith(2);
+    });
+
+    test('releases the provider guard after requesting confirmation', async () => {
+      await request({ number: 2 });
+
+      const response = await request({ number: 2, confirm: true });
+
+      expect(response.runSwitch).toHaveBeenCalledWith(2);
+    });
+  }
+);
 
 describe('per-provider concurrency', () => {
   test('rejects a second switch of the same provider with 409', async () => {

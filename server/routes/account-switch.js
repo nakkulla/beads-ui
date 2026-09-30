@@ -4,8 +4,16 @@
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { invalidateCache as invalidateClaudeUsageCache } from './claude-usage.js';
-import { invalidateCache as invalidateCodexUsageCache } from './codex-usage.js';
+import { getAvailableWorkspaces } from '../registry-watcher.js';
+import { getWorkerRuntime } from '../worker/runtime.js';
+import {
+  invalidateCache as invalidateClaudeUsageCache,
+  listAccounts as listClaudeAccounts
+} from './claude-usage.js';
+import {
+  invalidateCache as invalidateCodexUsageCache,
+  listAccounts as listCodexAccounts
+} from './codex-usage.js';
 
 /**
  * @typedef {'claude' | 'codex'} SwitchProvider
@@ -203,6 +211,54 @@ function readAccountNumber(body) {
 }
 
 /**
+ * Find running workers using the target account across registered workspaces.
+ * This advisory check must not prevent switching when its inputs are unavailable.
+ *
+ * @param {SwitchProvider} provider
+ * @param {number} account_number
+ * @returns {Promise<string[]>}
+ */
+async function inUseBeads(provider, account_number) {
+  try {
+    const listed = await (provider === 'claude'
+      ? listClaudeAccounts()
+      : listCodexAccounts());
+    if (!listed.ok) {
+      return [];
+    }
+    const account = listed.accounts.find(
+      (candidate) => candidate.number === account_number
+    );
+    if (!account) {
+      return [];
+    }
+    const account_key = provider === 'claude' ? account.email : account.key;
+    if (!account_key) {
+      return [];
+    }
+    const account_field =
+      provider === 'claude' ? 'claude_account' : 'codex_account';
+    const { queueStore } = getWorkerRuntime();
+    /** @type {Set<string>} */
+    const bead_ids = new Set();
+    for (const workspace of getAvailableWorkspaces()) {
+      const queue = queueStore.snapshot(path.resolve(workspace.path));
+      for (const attempt of Object.values(queue.attempts)) {
+        if (
+          attempt.status === 'running' &&
+          attempt[account_field] === account_key
+        ) {
+          bead_ids.add(attempt.bead_id);
+        }
+      }
+    }
+    return [...bead_ids];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Create the account switch handler for one provider. The usage cache is
  * invalidated on every successful run, including `already-active`, so the
  * follow-up refresh cannot be served from a pre-switch snapshot.
@@ -233,6 +289,13 @@ export function createAccountSwitchHandler(options) {
 
     in_flight_providers.add(provider);
     try {
+      if (req.body.confirm !== true) {
+        const in_use = await inUseBeads(provider, account_number);
+        if (in_use.length > 0) {
+          res.status(200).json({ ok: false, error: 'account_in_use', in_use });
+          return;
+        }
+      }
       const result = await runSwitch(account_number);
       if (!result) {
         res.status(200).json({ ok: false, error: 'switch_failed' });
