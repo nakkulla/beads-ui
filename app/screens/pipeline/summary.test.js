@@ -40,7 +40,7 @@ function el(root, selector) {
  * Make repo-c's second queue row wait on an action-required recovery and
  * its third on a normal provider hold.
  *
- * @param {ReturnType<typeof import('../../../scripts/ui-fixture-server.mjs').buildPipelineFixture>} fixture
+ * @param {ReturnType<typeof import('../../../scripts/ui-fixture-data.mjs').buildPipelineFixture>} fixture
  */
 function blockRepoC(fixture) {
   fixture.workspaces[2].wait_reasons = [

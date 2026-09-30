@@ -17,7 +17,11 @@
  *   5. 60 idle seconds add 0 to `window.__bdui.render_count`;
  *   6. boot WS subscriptions are exactly monitor-pipeline + impl-presets +
  *      model-visibility (레포 scope: + worker-queue);
- *   7. the issue detail (1280 panel, 390 full-screen sheet) and the transcript
+ *   7. (P1-r2) every capture of 1 in both `colorScheme`s, the progress-band
+ *      bead buttons inside the 390 44px check, and the 막힘 sheet, a PR row's
+ *      live-badge evidence and chip popover and the usage card in both
+ *      schemes at 1280 and 390;
+ *   8. the issue detail (1280 panel, 390 full-screen sheet) and the transcript
  *      (1280 window, 390 sheet): captures, `scrollWidth` overflow 0, every
  *      visible button/select ≥ 44px at 390, opening the detail adds only
  *      `subscribe-list issue-detail` and the transcript only
@@ -26,299 +30,29 @@
  *
  * Usage: node scripts/ui-shots.mjs http://127.0.0.1:3101 --out <dir>
  */
-/* global window, document, getComputedStyle */
+/* global window, document */
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
-import { clearTimeout, setTimeout } from 'node:timers';
-import { URL, pathToFileURL } from 'node:url';
-import { WebSocket } from 'ws';
-
-const REPO_A = '/fixture/repo-a';
-const LANES = ['candidate', 'queue', 'running', 'pr_wait', 'done'];
-const FIRST_RENDER_BUDGET_MS = 100;
-const IDLE_MS = 60_000;
-const MIN_BUTTON_PX = 44;
-
-/** @type {Array<{ name: string, ok: boolean, detail: string }>} */
-const results = [];
-
-/**
- * @param {string} name
- * @param {boolean} ok
- * @param {string} detail
- */
-function report(name, ok, detail) {
-  results.push({ name, ok, detail });
-  process.stdout.write(`${ok ? 'PASS' : 'FAIL'} ${name} — ${detail}\n`);
-}
-
-/**
- * Find a Playwright: a resolvable package first, else the newest npx cache.
- *
- * @returns {Promise<any|null>}
- */
-async function loadPlaywright() {
-  try {
-    return await import('playwright');
-  } catch {
-    // not installed here — look in the npx cache
-  }
-  const root = path.join(os.homedir(), '.npm', '_npx');
-  /** @type {Array<{ dir: string, mtime: number }>} */
-  const found = [];
-  for (const entry of fs.existsSync(root) ? fs.readdirSync(root) : []) {
-    const dir = path.join(root, entry, 'node_modules', 'playwright');
-    if (fs.existsSync(path.join(dir, 'package.json'))) {
-      found.push({ dir, mtime: fs.statSync(dir).mtimeMs });
-    }
-  }
-  found.sort((a, b) => b.mtime - a.mtime);
-  for (const { dir } of found) {
-    try {
-      const pkg = JSON.parse(
-        fs.readFileSync(path.join(dir, 'package.json'), 'utf8')
-      );
-      const entry = pkg.exports?.['.']?.import || 'index.mjs';
-      return await import(pathToFileURL(path.join(dir, entry)).href);
-    } catch {
-      // try the next cache entry
-    }
-  }
-  return null;
-}
-
-/**
- * The page instrumentation: outgoing WS types, and the handling time of the
- * first monitor-pipeline snapshot (the render is synchronous inside it).
- *
- * @param {string} scope
- * @returns {string}
- */
-function initScript(scope) {
-  return `(() => {
-    try {
-      localStorage.setItem('beads-ui.scope', ${JSON.stringify(scope)});
-    } catch {}
-    const shots = { sent: [], first: null };
-    window.__shots = shots;
-    const send = WebSocket.prototype.send;
-    WebSocket.prototype.send = function (data) {
-      try {
-        const msg = JSON.parse(String(data));
-        if (msg && typeof msg.type === 'string') {
-          shots.sent.push(
-            msg.type === 'subscribe-list' || msg.type === 'unsubscribe-list'
-              ? msg.type + ':' + String((msg.payload && (msg.payload.type || msg.payload.id)) || '')
-              : msg.type
-          );
-        }
-      } catch {}
-      return send.call(this, data);
-    };
-    const add = WebSocket.prototype.addEventListener;
-    WebSocket.prototype.addEventListener = function (type, fn, opts) {
-      if (type !== 'message' || typeof fn !== 'function') {
-        return add.call(this, type, fn, opts);
-      }
-      const wrapped = function (ev) {
-        const text = typeof ev.data === 'string' ? ev.data : '';
-        const first =
-          shots.first === null && text.includes('"monitor-pipeline-snapshot"');
-        const start = first ? performance.now() : 0;
-        const out = fn.call(this, ev);
-        if (first) {
-          const end = performance.now();
-          performance.measure('bdui:first-render', { start, end });
-          shots.first = end - start;
-        }
-        return out;
-      };
-      return add.call(this, type, wrapped, opts);
-    };
-  })();`;
-}
-
-/**
- * The fixture's repo-a parallel queue order, read over its own WebSocket.
- *
- * @param {string} base
- * @returns {Promise<string[]>}
- */
-function fixtureQueue(base) {
-  const url = new URL('/ws', base);
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url.href);
-    const timer = setTimeout(() => {
-      ws.terminate();
-      reject(new Error('fixture queue read timed out'));
-    }, 5000);
-    ws.on('open', () => {
-      ws.send(
-        JSON.stringify({
-          id: 'shots-1',
-          type: 'subscribe-monitor-pipeline',
-          payload: { id: 'shots' }
-        })
-      );
-    });
-    ws.on('message', (data) => {
-      const msg = JSON.parse(String(data));
-      if (msg.type !== 'monitor-pipeline-snapshot') {
-        return;
-      }
-      clearTimeout(timer);
-      const row = msg.payload.workspaces.find(
-        (/** @type {any} */ entry) => entry.root_dir === REPO_A
-      );
-      ws.close();
-      resolve(
-        (row?.queue || []).map((/** @type {any} */ entry) => entry.bead_id)
-      );
-    });
-    ws.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
-}
-
-/**
- * The repo-a parallel rows in DOM order.
- *
- * @param {any} page
- * @returns {Promise<string[]>}
- */
-function domQueue(page) {
-  return page.$$eval(
-    `[data-lane-body="queue"] [data-drop="parallel"][data-root-dir="${REPO_A}"] .pl-row`,
-    (/** @type {HTMLElement[]} */ rows) =>
-      rows.map((row) => row.dataset.beadId || '')
-  );
-}
-
-/**
- * @param {any} page
- * @param {(ids: string[]) => boolean} predicate
- * @returns {Promise<string[]>}
- */
-async function waitDomQueue(page, predicate) {
-  const deadline = Date.now() + 5000;
-  let ids = await domQueue(page);
-  while (!predicate(ids) && Date.now() < deadline) {
-    await page.waitForTimeout(100);
-    ids = await domQueue(page);
-  }
-  return ids;
-}
-
-/**
- * @param {any} browser
- * @param {string} base
- * @param {{ scope: string, width: number }} options
- */
-async function openPage(browser, base, options) {
-  const mobile = options.width < 720;
-  const context = await browser.newContext({
-    viewport: { width: options.width, height: mobile ? 844 : 900 },
-    deviceScaleFactor: mobile ? 2 : 1,
-    isMobile: mobile,
-    hasTouch: mobile,
-    reducedMotion: 'reduce'
-  });
-  await context.addInitScript(initScript(options.scope));
-  const page = await context.newPage();
-  /** @type {string[]} */
-  const errors = [];
-  page.on('pageerror', (err) => errors.push(String(err)));
-  await page.goto(`${base}/#/pipeline`);
-  await page.waitForSelector('.pl-lane');
-  await page.waitForFunction(
-    () => document.querySelectorAll('.pl-row, .pl-card, .pl-tile').length > 0
-  );
-  await page.waitForTimeout(300);
-  return { context, page, errors };
-}
-
-/**
- * @param {any} page
- * @returns {Promise<{ over: boolean, scroll: number, inner: number, wide: string[] }>}
- */
-function overflowOf(page) {
-  return page.evaluate(() => {
-    const inner = window.innerWidth;
-    const scroll = document.documentElement.scrollWidth;
-    /** @type {string[]} */
-    const wide = [];
-    /** @param {Element} el */
-    const clipped = (el) => {
-      for (let node = el.parentElement; node; node = node.parentElement) {
-        if (getComputedStyle(node).overflowX !== 'visible') {
-          return true;
-        }
-      }
-      return false;
-    };
-    for (const el of Array.from(document.querySelectorAll('body *'))) {
-      const rect = el.getBoundingClientRect();
-      if (
-        rect.width > 0 &&
-        rect.right > inner + 1 &&
-        wide.length < 5 &&
-        !clipped(el)
-      ) {
-        const node = /** @type {HTMLElement} */ (el);
-        wide.push(
-          `${node.tagName.toLowerCase()}.${String(node.className).split(' ')[0]}`
-        );
-      }
-    }
-    return { over: scroll > inner, scroll, inner, wide };
-  });
-}
-
-/**
- * Op buttons shorter than 44px among the visible ones matching `selector`.
- *
- * @param {any} page
- * @param {string} selector
- * @returns {Promise<{ count: number, short: string[] }>}
- */
-function shortButtons(page, selector) {
-  return page.$$eval(
-    selector,
-    (/** @type {HTMLElement[]} */ nodes, min) => {
-      /** @type {string[]} */
-      const short = [];
-      let count = 0;
-      for (const node of nodes) {
-        const rect = node.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) {
-          continue;
-        }
-        count += 1;
-        if (rect.height < min) {
-          short.push(
-            `${node.dataset.op || node.textContent?.trim()}=${rect.height.toFixed(1)}`
-          );
-        }
-      }
-      return { count, short };
-    },
-    MIN_BUTTON_PX
-  );
-}
-
-/**
- * @param {any} page
- * @param {string} lane
- */
-async function showLane(page, lane) {
-  await page.click(`[data-op="mobile-lane"][data-value="${lane}"]`);
-  await page.waitForTimeout(150);
-}
+import {
+  FIRST_RENDER_BUDGET_MS,
+  IDLE_MS,
+  LANES,
+  REPO_A,
+  fixtureQueue,
+  loadPlaywright,
+  openPage,
+  overflowOf,
+  report,
+  reportButtons,
+  reportOverflow,
+  results,
+  sentCount,
+  sentSince,
+  shortButtons,
+  showLane,
+  waitDomQueue
+} from './ui-shots-lib.mjs';
 
 /**
  * @param {any} browser
@@ -326,14 +60,30 @@ async function showLane(page, lane) {
  * @param {string} out
  */
 async function captures(browser, base, out) {
-  for (const [label, scope] of [
+  for (const scheme of /** @type {const} */ (['dark', 'light'])) {
+    await capturesIn(browser, base, out, scheme);
+  }
+}
+
+/**
+ * The capture pass of one colour scheme.
+ *
+ * @param {any} browser
+ * @param {string} base
+ * @param {string} out
+ * @param {'dark'|'light'} scheme
+ */
+async function capturesIn(browser, base, out, scheme) {
+  for (const [label_base, scope] of [
     ['all', '*'],
     ['repo', REPO_A]
   ]) {
+    const label = `${label_base} ${scheme}`;
     for (const width of [1280, 390]) {
       const { context, page, errors } = await openPage(browser, base, {
         scope,
-        width
+        width,
+        colorScheme: scheme
       });
       if (width === 1280) {
         const expected = [
@@ -383,7 +133,10 @@ async function captures(browser, base, out) {
           }
           await handle.click();
           await page.waitForSelector('.pl-sheet-host .ui-sheet');
-          const file = path.join(out, `sheet-${label}-${lane}-390.png`);
+          const file = path.join(
+            out,
+            `sheet-${label_base}-${scheme}-${lane}-390.png`
+          );
           await page.screenshot({ path: file });
           const buttons = await shortButtons(
             page,
@@ -417,7 +170,7 @@ async function captures(browser, base, out) {
           );
           const buttons = await shortButtons(
             page,
-            '.pl-card .pl-op, .pl-row .pl-op, .pl-tile .pl-op'
+            '.pl-card .pl-op, .pl-row .pl-op, .pl-tile .pl-op, .pl-card .pl-band__bead.is-open'
           );
           report(
             `op buttons ≥ 44px (${label} 390 ${lane})`,
@@ -448,13 +201,111 @@ async function captures(browser, base, out) {
         await page.screenshot({
           path: path.join(
             out,
-            `pipeline-${label}-${width}${lane === 'all' ? '' : `-${lane}`}.png`
+            `pipeline-${label_base}-${scheme}-${width}${lane === 'all' ? '' : `-${lane}`}.png`
           ),
           fullPage: width !== 390
         });
       }
       report(
         `no page errors (${label} ${width})`,
+        errors.length === 0,
+        errors.slice(0, 3).join(' | ') || 'none'
+      );
+      await context.close();
+    }
+  }
+}
+
+/**
+ * The P1-r2 restored surfaces in both colour schemes at 1280 and 390: the
+ * 막힘 sheet, a PR row's live badge evidence and chip popover, and the
+ * usage card with its accounts.
+ *
+ * @param {any} browser
+ * @param {string} base
+ * @param {string} out
+ */
+async function restoredSurfaces(browser, base, out) {
+  for (const scheme of /** @type {const} */ (['dark', 'light'])) {
+    for (const width of [1280, 390]) {
+      const tag = `${scheme} ${width}`;
+      const { context, page, errors } = await openPage(browser, base, {
+        scope: '*',
+        width,
+        colorScheme: scheme
+      });
+      await page.click('.pl-toolbar--all [data-op="blocked-open"]');
+      await page.waitForSelector('.pl-sheet-host .pl-blocked__group');
+      await page.screenshot({
+        path: path.join(out, `blocked-${scheme}-${width}.png`)
+      });
+      const groups = await page.$$eval(
+        '.pl-sheet-host .pl-blocked__group-head',
+        (/** @type {HTMLElement[]} */ nodes) =>
+          nodes.map((node) =>
+            (node.textContent || '').replace(/\s+/g, ' ').trim()
+          )
+      );
+      report(
+        `막힘 sheet lists its wait groups (${tag})`,
+        groups.length >= 3,
+        groups.join(', ')
+      );
+      if (width === 390) {
+        await reportButtons(
+          page,
+          `막힘 sheet ${tag}`,
+          '.pl-sheet-host .ui-sheet'
+        );
+      }
+      await reportOverflow(page, `막힘 sheet ${tag}`);
+      await page.click(
+        '.pl-sheet-host .ui-sheet__head [data-op="sheet-close"]'
+      );
+      await page.waitForTimeout(250);
+
+      if (width === 390) {
+        await showLane(page, 'pr_wait');
+      }
+      const live = await page.$eval(
+        '[data-lane-body="pr_wait"] .pl-row[data-bead-id="B-5"] .pl-badge--live',
+        (/** @type {HTMLElement} */ node) => ({
+          text: (node.textContent || '').trim(),
+          title: node.getAttribute('title') || ''
+        })
+      );
+      report(
+        `PR row live badge carries its evidence (${tag})`,
+        live.title.length > 0,
+        `${live.text} — ${live.title.replace(/\n/g, ' / ')}`
+      );
+      const pr = '[data-lane-body="pr_wait"] .pl-row[data-bead-id="F-8"]';
+      await page.click(`${pr} [data-op="chip-popover"]`);
+      await page.waitForSelector(`${pr} .pl-pop`);
+      await (await page.$(pr)).scrollIntoViewIfNeeded();
+      await page.screenshot({
+        path: path.join(out, `pr-popover-${scheme}-${width}.png`)
+      });
+      await reportOverflow(page, `PR popover ${tag}`);
+
+      await page.click('.usage-meter__toggle');
+      await page.waitForSelector('#usage-meter-card');
+      await page.waitForTimeout(250);
+      await page.screenshot({
+        path: path.join(out, `usage-card-${scheme}-${width}.png`)
+      });
+      const accounts = await page.$$eval(
+        '#usage-meter-card .usage-meter__account-head',
+        (/** @type {HTMLElement[]} */ nodes) => nodes.length
+      );
+      report(
+        `usage card lists the accounts (${tag})`,
+        accounts >= 2,
+        `${accounts} account rows`
+      );
+      await reportOverflow(page, `usage card ${tag}`);
+      report(
+        `no page errors (restored ${tag})`,
         errors.length === 0,
         errors.slice(0, 3).join(' | ') || 'none'
       );
@@ -649,28 +500,6 @@ const DETAIL_BEAD = 'A-4';
 const DONE_ATTEMPT = 'A-4-1699990000-0';
 
 /**
- * WS types the page sent since `from`.
- *
- * @param {any} page
- * @param {number} from
- * @returns {Promise<string[]>}
- */
-async function sentSince(page, from) {
-  const sent = await page.evaluate(
-    () => /** @type {any} */ (window).__shots.sent
-  );
-  return sent.slice(from);
-}
-
-/**
- * @param {any} page
- * @returns {Promise<number>}
- */
-function sentCount(page) {
-  return page.evaluate(() => /** @type {any} */ (window).__shots.sent.length);
-}
-
-/**
  * Open the running tile's detail from the lanes.
  *
  * @param {any} page
@@ -690,37 +519,6 @@ async function openDetail(page, width) {
     `#detail-panel button.detail-session[data-attempt-id="${DONE_ATTEMPT}"]`
   );
   await page.waitForTimeout(300);
-}
-
-/**
- * @param {any} page
- * @param {string} label
- * @param {string} scope - A selector the measured buttons live under.
- */
-async function reportButtons(page, label, scope) {
-  const buttons = await shortButtons(page, `${scope} button, ${scope} select`);
-  report(
-    `buttons ≥ 44px (${label})`,
-    buttons.short.length === 0 && buttons.count > 0,
-    `${buttons.count} measured${
-      buttons.short.length > 0 ? ` · short: ${buttons.short.join(' ')}` : ''
-    }`
-  );
-}
-
-/**
- * @param {any} page
- * @param {string} label
- */
-async function reportOverflow(page, label) {
-  const overflow = await overflowOf(page);
-  report(
-    `no horizontal overflow (${label})`,
-    !overflow.over,
-    `scrollWidth ${overflow.scroll} / innerWidth ${overflow.inner}${
-      overflow.wide.length > 0 ? ` · wide: ${overflow.wide.join(' ')}` : ''
-    }`
-  );
 }
 
 /**
@@ -891,6 +689,7 @@ async function main() {
   const browser = await playwright.chromium.launch();
   try {
     await captures(browser, base, out);
+    await restoredSurfaces(browser, base, out);
     await firstRender(browser, base);
     await mouseDrag(browser, base, out);
     await touchDrag(browser, base, out);

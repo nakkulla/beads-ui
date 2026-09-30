@@ -37,9 +37,12 @@ export function blockedChip(summary) {
     aria-haspopup="dialog"
     title="대기 사유가 있는 원래 이슈 수 — 누르면 사유별 목록"
   >
-    ${prefix} <b>${summary.count}</b>${summary.action_count > 0
-      ? html` · <span class="pl-stat__alert">⛔ ${summary.action_count}</span>`
-      : ''}
+    <span
+      >${prefix} <b>${summary.count}</b>${summary.action_count > 0
+        ? html` ·
+            <span class="pl-stat__alert">⛔ ${summary.action_count}</span>`
+        : ''}</span
+    >
   </button>`;
 }
 

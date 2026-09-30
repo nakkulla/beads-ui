@@ -1,6 +1,6 @@
 /**
  * Shared jsdom harness of the pipeline screen tests (UI-dbn6 Phase 1): the
- * 8-repo fixture of `scripts/ui-fixture-server.mjs` delivered through the
+ * 8-repo fixture of `scripts/ui-fixture-data.mjs` delivered through the
  * keyed-frames normalizer (one keyed patch folded into a snapshot, as the
  * monitor channel conveys it), real stores, and a recording `send`.
  */
@@ -8,7 +8,7 @@ import { vi } from 'vitest';
 import {
   buildPipelineFixture,
   queueViewOf
-} from '../../../scripts/ui-fixture-server.mjs';
+} from '../../../scripts/ui-fixture-data.mjs';
 import { createKeyedFrameNormalizer } from '../../../server/ws/keyed-frames-fixture.js';
 import { splitMonitorPipeline } from '../../data/keyed-patch.js';
 import { createMonitorPipelineStore } from '../../model/monitor-pipeline-store.js';
