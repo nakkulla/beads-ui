@@ -44,6 +44,7 @@ import { listAccounts as listCodexAccounts } from '../routes/codex-usage.js';
 import { createAccountCatalog } from '../worker/account-catalog.js';
 import {
   abandonWorkerDiscard,
+  conversationHandoffWorker,
   discardWorkerBead,
   dismissWorkerRepoOperation,
   enqueueWorkerManualMerge,
@@ -6332,7 +6333,7 @@ export async function handleWorkerResolveInSession(ws, req) {
       : null;
   const failure = recovery
     ? {
-        failure_class: '세션이 멈춤',
+        failure_class: '확인 필요',
         reason: recovery.reason,
         stage: null,
         detail: null
@@ -6430,6 +6431,95 @@ export async function handleWorkerResolveInSession(ws, req) {
         tmux_session: result.tmux_session || null,
         tmux_window: result.tmux_window || null,
         failure_class: failure.failure_class,
+        queue: decorateQueue(key, latest)
+      })
+    )
+  );
+  fanout(key, latest);
+}
+
+/**
+ * Handle `worker-conversation-handoff`. Payload:
+ * `{ bead_id, attempt_id, expected_revision }`.
+ *
+ * [워커로 이어가기] (UI-nuwy §3.6): the person ended a conversation stop
+ * without a result line and hands it back to the Worker. Same skeleton as
+ * {@link handleWorkerResolveInSession}: the queue revision is checked BEFORE
+ * anything else, so a stale click has no action-side effects. The scheduler
+ * owns the judgment — a live conversation waiting for its answer gets a
+ * `button` handoff reservation and its window closed; one whose window already
+ * vanished continues directly; anything else is refused with a reason.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerConversationHandoff(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (
+    typeof p.bead_id !== 'string' ||
+    p.bead_id.trim().length === 0 ||
+    typeof p.attempt_id !== 'string' ||
+    p.attempt_id.trim().length === 0
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { bead_id: string, attempt_id: string }'
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          attempt_id: p.attempt_id,
+          resumed: false,
+          pending: false,
+          conflict: true,
+          reason: null,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  /** @type {{ ok: boolean, reason: string|null, pending?: boolean }} */
+  let result = { ok: false, reason: 'no_attachment' };
+  try {
+    result = await conversationHandoffWorker(key, {
+      bead_id: p.bead_id,
+      attempt_id: p.attempt_id
+    });
+  } catch (err) {
+    log('conversation handoff failed for %s/%s: %o', key, p.bead_id, err);
+    result = { ok: false, reason: 'error' };
+  }
+  recordUserAction(
+    key,
+    p.bead_id,
+    'conversation_handoff',
+    '[워커로 이어가기] 클릭'
+  );
+  const latest = /** @type {any} */ (queueStore().snapshot(key));
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        attempt_id: p.attempt_id,
+        resumed: result.ok === true,
+        pending: result.pending === true,
+        conflict: false,
+        reason: result.ok ? null : result.reason || null,
         queue: decorateQueue(key, latest)
       })
     )

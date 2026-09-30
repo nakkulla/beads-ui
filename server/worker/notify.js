@@ -68,6 +68,43 @@ const TITLE = {
 };
 
 /**
+ * The four conversation-stage first lines (UI-nuwy §3.7). The spec fixes these
+ * words, so they carry no sender mark.
+ */
+const CONVERSATION_TITLE = {
+  confirm: '🙋 확인 필요',
+  answer: '❓ 답 대기',
+  resumed: '↪ Worker가 이어감',
+  takeover: '🙋 사람 인수'
+};
+
+/**
+ * The `이유:` value of a `🙋 확인 필요` push, read off the stop label the entry
+ * block printed (`session-stall.js` `conversationStopLabel`).
+ *
+ * @param {unknown} stop
+ * @returns {string|null}
+ */
+export function conversationReasonText(stop) {
+  if (typeof stop !== 'string' || stop.length === 0) {
+    return null;
+  }
+  if (stop.startsWith('awaiting_user=')) {
+    return `설계 충돌 · ${stop.slice('awaiting_user='.length)}`;
+  }
+  if (stop.endsWith(' (옛 기록)')) {
+    return `옛 기록 · ${stop.slice(0, -' (옛 기록)'.length)}`;
+  }
+  if (stop === 'recovery:authority') {
+    return '범위 충돌';
+  }
+  if (stop === 'recovery:no_progress') {
+    return '같은 원인 반복';
+  }
+  return stop;
+}
+
+/**
  * How much of a bead title the headline may spend. The first line is the whole
  * push preview budget, so a long title would push the transition and the id out
  * of view on a narrow notification.
@@ -104,6 +141,48 @@ const TITLE_MAX = 60;
  */
 
 /**
+ * Whether a Bead's inquiry record is a live legacy fork inquiry (no
+ * `conversation`, not yet settled) — the one record that keeps its
+ * pre-UI-nuwy pushes (§3.2).
+ *
+ * @param {any} record
+ * @returns {boolean}
+ */
+function isLegacyInquiry(record) {
+  return (
+    !!record &&
+    record.kind === 'inquiry' &&
+    record.settled_at === null &&
+    !record.conversation
+  );
+}
+
+/**
+ * The `🙋 확인 필요` push (UI-nuwy §3.7): sent once per stopped attempt, after
+ * the automatic conversation launch was attempted.
+ *
+ * @typedef {Object} ConversationConfirmInput
+ * @property {string} bead_id
+ * @property {string|null} [title]
+ * @property {string|null} [stop] - The stop label the entry block printed.
+ * @property {string|null} [sentence] - The session's own sentence.
+ * @property {string|null} [session] - `launched`|`already_running`|`not_launched`.
+ * @property {string|null} [reason] - Why no conversation opened.
+ * @property {string|null} [tmux_session]
+ * @property {string|null} [tmux_window]
+ * @property {string|null} [repo]
+ */
+
+/**
+ * The `❓ 답 대기` push: one per processed non-result-line message.
+ *
+ * @typedef {Object} ConversationAnswerInput
+ * @property {string} bead_id
+ * @property {string|null} [excerpt]
+ * @property {string|null} [tmux_window]
+ */
+
+/**
  * Claim current abnormal reasons before sending; a disappearing key rearms it.
  * The store owns only suppression state; the timeline owns notification history.
  *
@@ -116,6 +195,18 @@ export async function notifyWaitReasons(input) {
   /** @type {Map<string, import('./wait-judgment.js').WaitReason & { verdict_reason: import('./wait-judgment.js').VerdictReason }>} */
   const by_key = new Map();
   for (let item of input.wait_reasons) {
+    // A fork inquiry launched before UI-nuwy is no conversation: no
+    // `❓ 답 대기` will ever speak for it, so until it settles its Bead keeps
+    // the pushes it was launched under (§3.2, UI-ri8n).
+    const legacy = isLegacyInquiry(
+      queue?.interactive_sessions?.[`${item.subject.bead_id}:inquiry`]
+    );
+    // A conversation target speaks through its own four pushes (UI-nuwy
+    // §3.7): `🙋 확인 필요` replaces both the park push and this `⚠ … 지연`
+    // line, and each later turn is a `❓ 답 대기`.
+    if (item.kind === 'awaiting_user' && !legacy) {
+      continue;
+    }
     if (item.kind === 'recovery') {
       const attempt = Object.values(queue?.attempts || {})
         .reverse()
@@ -125,7 +216,7 @@ export async function notifyWaitReasons(input) {
         );
       const detail = /** @type {any} */ (attempt?.cause_detail);
       if (isSessionStalledRecovery(detail?.recovery, detail?.blockers || [])) {
-        if (!detail.inquiry) {
+        if (!legacy || !detail.inquiry) {
           continue;
         }
         inquiries.set(item.subject.bead_id, detail.inquiry);
@@ -334,7 +425,10 @@ function headline(transition, bead_id, bead_title) {
  *
  * @param {NotifierDeps} deps
  * @returns {{
- *   attemptStarted: (input: { bead_id: string, title?: string|null, runner?: string|null, model?: string|null, effort?: string|null, speed?: string|null, repo?: string|null, kind?: string|null }) => Promise<void>,
+ *   attemptStarted: (input: { bead_id: string, title?: string|null, runner?: string|null, model?: string|null, effort?: string|null, speed?: string|null, repo?: string|null, kind?: string|null, decision?: string|null }) => Promise<void>,
+ *   conversationConfirm: (input: ConversationConfirmInput) => Promise<boolean>,
+ *   conversationAnswer: (input: ConversationAnswerInput) => Promise<boolean>,
+ *   conversationTakeover: (input: { bead_id: string }) => Promise<boolean>,
  *   attemptFailed: (input: { bead_id: string, cause: string, repo?: string|null, cause_detail?: { reason: string, command: string|null }|null }) => Promise<void>,
  *   prWaitEntered: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
  *   mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void>,
@@ -486,7 +580,30 @@ export function createNotifier(deps) {
     if (kind === 'conflict') {
       return TITLE.conflict;
     }
+    if (kind === 'conversation_return') {
+      return CONVERSATION_TITLE.resumed;
+    }
     return TITLE.started;
+  }
+
+  /**
+   * One conversation-stage push; the caller builds the lines.
+   *
+   * @param {string} label
+   * @param {() => Promise<string[]>} build
+   * @returns {Promise<boolean>}
+   */
+  async function sendConversation(label, build) {
+    try {
+      const cmd = resolveCmd();
+      if (!cmd) {
+        return false;
+      }
+      return send(cmd, (await build()).join('\n'));
+    } catch (err) {
+      log('%s notification failed: %o', label, err);
+      return false;
+    }
   }
 
   /**
@@ -526,6 +643,7 @@ export function createNotifier(deps) {
         .filter(Boolean)
         .join(' ');
       const message = `⚠ ${subject} 지연 · ${input.headline} · ${input.verdict_reason.message}`;
+      // Only a legacy fork inquiry still carries this line (UI-nuwy §3.2).
       const inquiry = input.inquiry
         ? `\n질의 세션: ${inquirySessionLine(input.inquiry)}`
         : '';
@@ -581,6 +699,60 @@ export function createNotifier(deps) {
   return {
     waitOverdue: sendWait,
     waitActionRequired: sendWait,
+    conversationConfirm(input) {
+      return sendConversation('conversationConfirm', async () => {
+        const bead_title =
+          text(input.title) ?? (await lookupTitle(input.bead_id));
+        const lines = [
+          headline(CONVERSATION_TITLE.confirm, input.bead_id, bead_title)
+        ];
+        const reason = conversationReasonText(input.stop);
+        if (reason) {
+          lines.push(`이유: ${reason}`);
+        }
+        const sentence = firstLine(input.sentence);
+        if (sentence) {
+          lines.push(`세션: ${sentence}`);
+        }
+        if (
+          input.session === 'launched' ||
+          input.session === 'already_running'
+        ) {
+          const place = [text(input.tmux_session), text(input.tmux_window)]
+            .filter(Boolean)
+            .join(':');
+          lines.push(`대화: Discord 스레드 · tmux ${place || '?'}`);
+        } else {
+          lines.push(
+            `대화를 열지 못함 · ${text(input.reason) ?? 'unknown'} — Worker 탭 [세션에서 해결]`
+          );
+        }
+        const repo = repoLabel(input.repo);
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
+        return lines;
+      });
+    },
+    conversationAnswer(input) {
+      return sendConversation('conversationAnswer', async () => {
+        const lines = [`${CONVERSATION_TITLE.answer} — ${input.bead_id}`];
+        const excerpt = text(input.excerpt);
+        if (excerpt) {
+          lines.push(excerpt);
+        }
+        lines.push(
+          `답: Discord 스레드 · tmux ${text(input.tmux_window) ?? input.bead_id}`
+        );
+        return lines;
+      });
+    },
+    conversationTakeover(input) {
+      return sendConversation('conversationTakeover', async () => [
+        `${CONVERSATION_TITLE.takeover} — ${input.bead_id}`,
+        'Worker는 정산만 관찰'
+      ]);
+    },
     async externalWaitCompleted(input) {
       try {
         const cmd = resolveCmd();
@@ -616,17 +788,9 @@ export function createNotifier(deps) {
         // conflict launches have to go and read it.
         const bead_title =
           text(input.title) ?? (await lookupTitle(input.bead_id));
-        const lines = [
-          headline(
-            startedTitle(String(input.kind ?? '')),
-            input.bead_id,
-            bead_title
-          )
-        ];
+        const kind = String(input.kind ?? '');
+        const lines = [headline(startedTitle(kind), input.bead_id, bead_title)];
         const repo = repoLabel(input.repo);
-        if (repo) {
-          lines.push(`리포: ${repo}`);
-        }
         // `<runner> <model> / <effort> / <speed>`: the runner leads because a model name
         // alone no longer says which CLI ran (`sol` is codex, `opus` claude),
         // and it is the only part that is always resolved. Every piece is
@@ -638,6 +802,24 @@ export function createNotifier(deps) {
         ]
           .filter(Boolean)
           .join(' / ');
+        if (kind === 'conversation_return') {
+          // UI-nuwy §3.7 fixes this push's order: headline, decision, exec.
+          const decision = firstLine(input.decision);
+          if (decision) {
+            lines.push(`결정: ${decision}`);
+          }
+          if (exec.length > 0) {
+            lines.push(`실행: ${exec}`);
+          }
+          if (repo) {
+            lines.push(`리포: ${repo}`);
+          }
+          send(cmd, lines.join('\n'));
+          return;
+        }
+        if (repo) {
+          lines.push(`리포: ${repo}`);
+        }
         if (exec.length > 0) {
           lines.push(`실행: ${exec}`);
         }

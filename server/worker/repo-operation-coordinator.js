@@ -925,7 +925,7 @@ export function createRepoOperationCoordinator(deps) {
         operation,
         'operation_recovery',
         operation_id,
-        `복구 분류 — ${recovery.disposition}:${recovery.reason || 'repair'} · ${operation.failure?.code || 'unknown_error'}`
+        `복구 분류 — ${recovery.disposition}:${recovery.reason || recovery.disposition} · ${operation.failure?.code || 'unknown_error'}`
       );
     }
     const placed_before = !!recovery.handoff?.placement;

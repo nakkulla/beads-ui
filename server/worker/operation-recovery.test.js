@@ -154,8 +154,8 @@ describe('operation recovery classification', () => {
 
       expect(result).toMatchObject({
         classification: 'verification_failure',
-        disposition: 'wait',
-        reason: 'verification',
+        disposition: 'repair',
+        reason: null,
         code_defect: false,
         prover: null,
         proof_gap,

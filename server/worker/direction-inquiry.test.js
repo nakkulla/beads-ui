@@ -4,41 +4,29 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
-  GENERIC_INQUIRY_PROMPT,
-  IMPL_CONFLICT_INQUIRY_PROMPT,
-  RECOVERY_INQUIRY_PROMPT,
-  STALE_INQUIRY_PROMPT,
+  CONVERSATION_ENTRY_BLOCK,
   createDirectionInquiry,
-  fillGenericPrompt,
-  fillImplConflictPrompt,
-  fillRecoveryPrompt,
-  fillStalePrompt,
+  fillConversationEntry,
   inquiryWrapper,
-  parseParkNotes,
-  parseStaleNotes,
-  receiptKeyFor,
+  parkSentence,
+  recoverySentence,
   shellQuote
 } from './direction-inquiry.js';
 
 /**
- * Digests of the fenced `text` blocks under "Direction inquiry session" in
- * dotfiles `src/shared/skills/flow/workflow/references/execution.md` at commit
- * `b8e6decf`, taken over the block's inner content with a single trailing
- * newline. The stale block follows `execution-common.md` at commit
- * `88411f326f5620d47c4d5f672ba4135944d6145c`; the other blocks retain their pins.
- * The two repositories are deliberately NOT compared at runtime (spec
- * §3.4): the Worker `[verify]` checkout has no dotfiles path, so a direct
- * cross-repo read would be an env-gated test that never actually runs.
+ * Digest of the fenced `text` block under `## Worker 세션 대화` in dotfiles
+ * `src/shared/skills/flow/workflow/references/execution-common.md` at commit
+ * `f031c9853f536c1478e9d1129b8c69628be27ef8`, taken over the block's inner
+ * content WITHOUT a trailing newline (1950 bytes). The two repositories are
+ * deliberately NOT compared at runtime: the Worker `[verify]` checkout has no
+ * dotfiles path, so a cross-repo read would be a test that never runs.
  */
-const STALE_PROMPT_DIGEST =
-  '4f951bb8971beefa272b5d55d8a5ef8b383f644ec4e397bc7e590bb91567055c';
-const IMPL_PROMPT_DIGEST =
-  'aeaa79c6c037cfedee96a81ad0f0911afafe1e487882a0c57fc2756211539660';
-const GENERIC_PROMPT_DIGEST =
-  'bebd5f2a6a08d960a7ffeae7e15ab23783445a7249e8dd63c5f44b9596409511';
+const ENTRY_BLOCK_DIGEST =
+  'cdc347bb4d34ba40d2ae5f3292f134a86998605630d7a88ff7185a8561092d56';
 
 const BEAD = 'UI-7uid';
 const AWAITING = 'spec_review_stale:revise';
+const WORKTREE = `/repo/.worktrees/${BEAD}`;
 
 let codex_home = '';
 beforeEach(() => {
@@ -119,16 +107,26 @@ function makeTmux(script = {}) {
     }
     return { code: 1, stdout: '', stderr: 'unknown command' };
   };
-  return { calls, runTmux, names: () => calls.map((c) => c[0]) };
+  /** @returns {string} */
+  const wrapper = () =>
+    calls.find((call) => call[0] === 'new-window')?.at(-1) ?? '';
+  return { calls, runTmux, names: () => calls.map((c) => c[0]), wrapper };
+}
+
+/** A tmux script whose launch confirms the new pane. */
+function launchingTmux() {
+  return makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] });
 }
 
 const NOTES = [
   '2026-08-28 재리뷰 시작.',
-  'rereview: direction_conflict — ADR 0012와 정면 충돌 stale_kind=adr_conflict'
+  'park: impl_review_conflict:design — 대상: ADR 12 — finding: major',
+  `park: ${AWAITING} — 방향 충돌 · ADR 0012`,
+  'rereview: direction_conflict — ADR 0012와 정면 충돌'
 ].join('\n');
 
 /**
- * Fake transcript filesystem for session fork selection.
+ * Fake transcript filesystem for session selection.
  *
  * @param {string[]} session_ids
  * @param {string[]} [codex_ids]
@@ -164,6 +162,13 @@ function sessionFs(session_ids, codex_ids = []) {
   };
 }
 
+/** Session lookup options that find both providers' test transcripts. */
+const SESSION_OPTIONS = {
+  home_dir: '/home',
+  hostname: 'host',
+  fs: sessionFs(['claude-sid'], ['codex-sid'])
+};
+
 /**
  * @param {Record<string, any>} [over]
  * @returns {Record<string, any>}
@@ -173,16 +178,26 @@ function issue(over = {}) {
     id: BEAD,
     title: '방향 질의 트리거',
     notes: NOTES,
-    metadata: {
-      awaiting_user: AWAITING,
-      spec_review: `self@${'a'.repeat(40)}`
-    },
+    metadata: { awaiting_user: AWAITING },
     ...over
   };
 }
 
 /**
- * Build an inquiry with fake tmux/bd runners and an enabled config.
+ * @param {Record<string, any>} [over]
+ */
+function attempt(over = {}) {
+  return {
+    attempt_id: 'a1',
+    repo: '/repo',
+    runner: 'codex',
+    session_id: 'codex-sid',
+    ...over
+  };
+}
+
+/**
+ * Build a launcher with fake tmux/bd runners and an enabled config.
  *
  * @param {{
  *   tmux?: ReturnType<typeof makeTmux>,
@@ -195,14 +210,17 @@ function issue(over = {}) {
  *   readAttempt?: any,
  *   store?: import('./direction-inquiry.js').DirectionInquiryDeps['store'],
  *   sessionRefOptions?: any,
- *   now?: () => number
+ *   observeProcess?: any,
+ *   existsSync?: (file_path: string) => boolean,
+ *   now?: () => number,
+ *   handoffPending?: (workspace: string, bead_id: string) => boolean
  * }} [over]
  */
 function makeInquiry(over = {}) {
   const tmux = over.tmux || makeTmux();
   const resolveClaude =
     over.resolveClaude || (() => '/opt/homebrew/bin/claude');
-  const awaitingUser = vi.fn(async () => {});
+  const conversationConfirm = vi.fn(async () => true);
   const inquiry = createDirectionInquiry({
     getConfig: () => ({
       worker_direction_inquiry: {
@@ -211,7 +229,7 @@ function makeInquiry(over = {}) {
       }
     }),
     bd: { readIssue: over.readIssue || (async () => issue()) },
-    notifier: { awaitingUser },
+    notifier: { conversationConfirm },
     runTmux: tmux.runTmux,
     resolveClaude,
     resolveRunner:
@@ -226,13 +244,14 @@ function makeInquiry(over = {}) {
     now: over.now || (() => 2000),
     store: over.store,
     currentRunner: over.currentRunner,
-    readAttempt:
-      over.readAttempt ||
-      (async () => ({ attempt_id: 'a1', repo: '/repo', runner: 'codex' })),
-    sessionRefOptions: over.sessionRefOptions,
+    readAttempt: over.readAttempt || (async () => attempt()),
+    sessionRefOptions: over.sessionRefOptions || SESSION_OPTIONS,
+    observeProcess: over.observeProcess,
+    existsSync: over.existsSync || (() => true),
+    handoffPending: over.handoffPending,
     log: () => {}
   });
-  return { inquiry, tmux, awaitingUser };
+  return { inquiry, tmux, conversationConfirm };
 }
 
 /**
@@ -251,890 +270,544 @@ function parkedInput(over = {}) {
   };
 }
 
-describe('direction-inquiry interactive session records', () => {
-  test.each(['click', 'automatic'])(
-    'launches a fresh %s inquiry with the current Codex runner',
-    async (entry) => {
-      const bead = issue();
-      const currentRunner = vi.fn(() => /** @type {const} */ ('codex'));
-      const recordInteractiveSession = vi.fn();
-      const { inquiry, tmux } = makeInquiry({
-        tmux: makeTmux({
-          panes_seq:
-            entry === 'click'
-              ? [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
-              : [[], [['bdui-inquiry', '%9', BEAD, '0']]]
-        }),
-        readAttempt: async () => null,
-        readIssue: async () => bead,
-        currentRunner,
-        store: { recordInteractiveSession }
-      });
-
-      if (entry === 'click') {
-        await inquiry.launchForClick(parkedInput());
-      } else {
-        await inquiry.onParkedAttempt(parkedInput());
-      }
-
-      expect(currentRunner).toHaveBeenCalledExactlyOnceWith('/ws', bead);
-      expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
-        provider: 'codex',
-        source: 'fresh',
-        mode: 'fresh',
-        session_id: null
-      });
-      expect(
-        tmux.calls.find((call) => call[0] === 'new-window')?.at(-1)
-      ).toContain("exec '/opt/homebrew/bin/codex'");
-    }
-  );
-
-  test.each(['absent', 'null'])(
-    'defaults fresh inquiries to Claude when currentRunner is %s',
-    async (resolution) => {
-      const recordInteractiveSession = vi.fn();
-      const { inquiry } = makeInquiry({
-        tmux: makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] }),
-        readAttempt: async () => null,
-        currentRunner: resolution === 'null' ? () => null : undefined,
-        store: { recordInteractiveSession }
-      });
-
-      await inquiry.onParkedAttempt(parkedInput());
-
-      expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
-        provider: 'claude',
-        source: 'fresh',
-        mode: 'fresh'
-      });
-    }
-  );
-
-  test.each(['attempt', 'session_ref'])(
-    'records the selected %s fork source',
-    async (source) => {
-      const recordInteractiveSession = vi.fn();
-      const currentRunner = vi.fn(() => /** @type {const} */ ('codex'));
-      const { inquiry, tmux, awaitingUser } = makeInquiry({
-        tmux: makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] }),
-        store: { recordInteractiveSession },
-        currentRunner,
-        readAttempt: async () => ({
-          repo: '/repo',
-          runner: 'claude',
-          session_id: source === 'attempt' ? 'attempt-sid' : 'missing'
-        }),
-        readIssue: async () =>
-          issue({ metadata: { session_ref: 'claude:ref-sid@host' } }),
-        sessionRefOptions: {
-          home_dir: '/home',
-          hostname: 'host',
-          fs: sessionFs(['attempt-sid', 'ref-sid'])
-        }
-      });
-
-      await inquiry.onParkedAttempt(parkedInput());
-
-      const record = recordInteractiveSession.mock.calls[0]?.[1];
-      expect(record).toMatchObject({
-        provider: 'claude',
-        source,
-        mode: 'fork',
-        forked_from: source === 'attempt' ? 'attempt-sid' : 'ref-sid',
-        fallback_reason: null
-      });
-      expect(currentRunner).not.toHaveBeenCalled();
-      expect(
-        tmux.calls.find((call) => call[0] === 'new-window')?.at(-1)
-      ).toContain(
-        `'--resume' '${record.forked_from}' '--fork-session' '--session-id' '${record.session_id}'`
-      );
-      expect(awaitingUser).toHaveBeenCalledWith(
-        expect.objectContaining({ source })
-      );
-    }
-  );
-
-  test('leaves the launched codex inquiry identity for reconciliation', async () => {
-    const recordInteractiveSession = vi.fn();
-    const { inquiry, tmux } = makeInquiry({
-      tmux: makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] }),
-      store: { recordInteractiveSession },
-      readAttempt: async () => ({
-        repo: '/repo',
-        runner: 'codex',
-        session_id: 'codex-sid'
-      }),
-      sessionRefOptions: {
-        home_dir: '/home',
-        hostname: 'host',
-        fs: sessionFs([], ['codex-sid'])
-      }
-    });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
-      provider: 'codex',
-      session_id: null,
-      session_id_source: null,
-      source: 'attempt',
-      mode: 'fork',
-      forked_from: 'codex-sid'
-    });
-    expect(
-      tmux.calls.find((call) => call[0] === 'new-window')?.at(-1)
-    ).not.toContain('--session-id');
+/**
+ * @param {Record<string, any>} [over]
+ * @returns {any}
+ */
+function recoveryInput(over = {}) {
+  return parkedInput({
+    awaiting_user: null,
+    recovery: { reason: 'authority' },
+    ...over
   });
+}
 
-  test('skips recording a refused inquiry launch', async () => {
-    const recordInteractiveSession = vi.fn();
-    const { inquiry } = makeInquiry({
-      store: { recordInteractiveSession },
-      resolveClaude: () => null
-    });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(recordInteractiveSession).not.toHaveBeenCalled();
-  });
-
-  test.each(['click', 'automatic'])(
-    'records a launched %s inquiry with its argv UUID',
-    async (entry) => {
-      const recordInteractiveSession = vi.fn();
-      const tmux = makeTmux({
-        panes_seq:
-          entry === 'click'
-            ? [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
-            : [[], [['bdui-inquiry', '%9', BEAD, '0']]]
-      });
-      const { inquiry, awaitingUser } = makeInquiry({
-        tmux,
-        store: { recordInteractiveSession }
-      });
-
-      const outcome =
-        entry === 'click'
-          ? await inquiry.launchForClick(parkedInput())
-          : await inquiry.onParkedAttempt(parkedInput());
-
-      const record = recordInteractiveSession.mock.calls[0]?.[1];
-      expect(recordInteractiveSession).toHaveBeenCalledExactlyOnceWith('/ws', {
-        bead_id: BEAD,
-        kind: 'inquiry',
-        provider: 'claude',
-        session_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
-        session_id_source: 'launch',
-        mode: 'fresh',
-        source: 'fresh',
-        forked_from: null,
-        fallback_reason: 'no_session_ref',
-        attempt_id: 'a1',
-        failure_class: null,
-        tmux_session: 'bdui-inquiry',
-        tmux_window: BEAD,
-        pane_id: '%9',
-        cwd: '/repo',
-        launched_at: 2000,
-        last_seen_alive_at: 2000,
-        settled_at: null,
-        settled_by: null,
-        state: 'live',
-        exit_requested_at: null,
-        defer_since: null
-      });
-      const expected = {
-        source: 'fresh',
-        command: `claude --session-id '${record.session_id}'`
-      };
-      if (entry === 'click') {
-        expect(outcome).toMatchObject(expected);
-      } else {
-        expect(awaitingUser).toHaveBeenCalledWith(
-          expect.objectContaining(expected)
-        );
-      }
-      expect(
-        tmux.calls.find((call) => call[0] === 'new-window')?.at(-1)
-      ).toContain(
-        `exec '/opt/homebrew/bin/claude' '--session-id' '${record.session_id}'`
-      );
-    }
-  );
-
-  test.each(['click', 'automatic'])(
-    'skips record writes for an existing %s inquiry',
-    async (entry) => {
-      const recordInteractiveSession = vi.fn();
-      const { inquiry } = makeInquiry({
-        store: { recordInteractiveSession },
-        tmux: makeTmux({ panes: [['bdui-inquiry', '%9', BEAD, '0']] })
-      });
-
-      if (entry === 'click') {
-        await inquiry.launchForClick(parkedInput());
-      } else {
-        await inquiry.onParkedAttempt(parkedInput());
-      }
-
-      expect(recordInteractiveSession).not.toHaveBeenCalled();
-    }
-  );
-
-  test('keeps the launched outcome when the store rejects a record', async () => {
-    const { inquiry, awaitingUser } = makeInquiry({
-      tmux: makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] }),
-      store: {
-        recordInteractiveSession: () => {
-          throw new Error('unavailable');
-        }
-      }
-    });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ session: 'launched' })
-    );
-  });
-
-  test('appends settlement guidance outside the copied prompt', async () => {
-    const { inquiry, tmux } = makeInquiry({
-      tmux: makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] })
-    });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(
-      tmux.calls.find((call) => call[0] === 'new-window')?.at(-1)
-    ).toContain(
-      "이 Bead가 머지·close·폐기로 정산되면 Worker가 이 세션을 닫고(claude: `/exit`) Discord 스레드는 아카이브된다.\n'"
-    );
-  });
-});
-
-describe('direction-inquiry prompt constant', () => {
-  test('pins the recovery block digest', () => {
+describe('direction-inquiry entry block', () => {
+  test('pins the dotfiles entry block digest', () => {
     const digest = createHash('sha256')
-      .update(RECOVERY_INQUIRY_PROMPT)
+      .update(CONVERSATION_ENTRY_BLOCK)
       .digest('hex');
 
-    expect(digest).toBe(
-      '19b21293ce0e55995bce0bcb9fcd75e02ad1cd2b51f0199f51445e7c9974551f'
-    );
+    expect(digest).toBe(ENTRY_BLOCK_DIGEST);
   });
 
-  test('fills recovery slots from the first blocker line', () => {
-    const prompt = fillRecoveryPrompt({
-      bead_id: BEAD,
-      reason: 'authority',
-      summary: 'blocker: 승인 필요\nignored',
-      session_id: 'session-123',
-      worktree: '/repo/.worktrees/UI-7uid',
+  test('carries no trailing newline', () => {
+    const bytes = Buffer.byteLength(CONVERSATION_ENTRY_BLOCK, 'utf8');
+
+    expect(bytes).toBe(1950);
+    expect(CONVERSATION_ENTRY_BLOCK.endsWith('\n')).toBe(false);
+  });
+
+  test('fills the stop label in the opening, the stop line, and step 2', () => {
+    const block = fillConversationEntry({
+      stop: 'recovery:authority',
+      sentence: '범위 밖',
+      worktree: WORKTREE,
       checkout: '/repo'
     });
 
-    expect(prompt).toContain('recovery:authority');
-    expect(prompt).toContain('- blocker: 승인 필요\n');
-    expect(prompt).toContain('- 기록 세션: session-123\n');
-    expect(prompt).toContain('- 구현 워크트리: /repo/.worktrees/UI-7uid\n');
-    expect(prompt).toContain('- target_base 체크아웃: /repo\n');
-    expect(prompt).not.toContain('ignored');
+    expect(block.split('\n')[0]).toContain('recovery:authority로 멈춰');
+    expect(block).toContain('- 멈춤 사유: recovery:authority\n');
+    expect(block).toContain(
+      '`대화 결정: recovery:authority — 사용자 답: <원문>`'
+    );
+    expect(block).not.toContain('<멈춤 사유>');
   });
 
-  test('fills an absent recovery blocker explicitly', () => {
-    const prompt = fillRecoveryPrompt({
-      bead_id: BEAD,
-      reason: 'reconcile',
-      session_id: null,
-      worktree: '/worktree',
+  test('fills the sentence and the two paths positionally', () => {
+    const block = fillConversationEntry({
+      stop: 'awaiting_user=x',
+      sentence: '세션 문장',
+      worktree: WORKTREE,
       checkout: '/repo'
     });
 
-    expect(prompt).toContain('- blocker: (없음)\n');
+    expect(block).toContain('- 세션이 남긴 문장: 세션 문장\n');
+    expect(block).toContain(`- 구현 워크트리: ${WORKTREE}\n`);
+    expect(block).toContain('- target_base 체크아웃: /repo\n');
   });
-  test('pins all dotfiles fenced blocks byte for byte', () => {
-    const digests = [
-      STALE_INQUIRY_PROMPT,
-      IMPL_CONFLICT_INQUIRY_PROMPT,
-      GENERIC_INQUIRY_PROMPT
-    ].map((prompt) =>
-      createHash('sha256').update(prompt, 'utf8').digest('hex')
+
+  test('leaves the session-owned slots untouched', () => {
+    const block = fillConversationEntry({
+      stop: 's',
+      sentence: 'x',
+      worktree: '/w',
+      checkout: '/c'
+    });
+
+    expect(block).toContain('<원문>');
+    expect(block).toContain('`인계 · <결정 한 줄>`');
+    expect(block).toContain('`인수 · <한 줄>`');
+    expect(block).toContain('`보류 · <한 줄>`');
+  });
+
+  test('prints absent values explicitly', () => {
+    const block = fillConversationEntry({
+      stop: 's',
+      sentence: null,
+      worktree: null,
+      checkout: null
+    });
+
+    expect(block).toContain('- 세션이 남긴 문장: (없음)\n');
+    expect(block).toContain('- 구현 워크트리: (없음)\n');
+  });
+
+  test('never rescans a value that quotes a slot', () => {
+    const block = fillConversationEntry({
+      stop: 's',
+      sentence: '- target_base 체크아웃: <path>',
+      worktree: '/w',
+      checkout: '/c'
+    });
+
+    expect(block).toContain(
+      '- 세션이 남긴 문장: - target_base 체크아웃: <path>\n'
     );
-
-    expect(digests).toEqual([
-      STALE_PROMPT_DIGEST,
-      IMPL_PROMPT_DIGEST,
-      GENERIC_PROMPT_DIGEST
-    ]);
-  });
-
-  test('ends with exactly one trailing newline', () => {
-    for (const prompt of [
-      STALE_INQUIRY_PROMPT,
-      IMPL_CONFLICT_INQUIRY_PROMPT,
-      GENERIC_INQUIRY_PROMPT
-    ]) {
-      expect(prompt.endsWith('\n')).toBe(true);
-      expect(prompt.endsWith('\n\n')).toBe(false);
-    }
+    expect(block).toContain('\n- target_base 체크아웃: /c\n');
   });
 });
 
-describe('direction-inquiry receipt selection', () => {
-  test('names the receipt key the park value belongs to', () => {
-    expect(receiptKeyFor('spec_review_stale:revise')).toBe('spec_review');
-    expect(receiptKeyFor('plan_approval_stale:revise')).toBe('plan_approval');
+describe('direction-inquiry sentences', () => {
+  test('reads the last park line naming the park value', () => {
+    const sentence = parkSentence(NOTES, AWAITING);
+
+    expect(sentence).toBe(`park: ${AWAITING} — 방향 충돌 · ADR 0012`);
+  });
+
+  test('falls back to the last park line', () => {
+    const sentence = parkSentence(NOTES, 'unknown_value');
+
+    expect(sentence).toBe(`park: ${AWAITING} — 방향 충돌 · ADR 0012`);
+  });
+
+  test('returns null when notes carry no park line', () => {
+    const sentence = parkSentence('메모만 있다', AWAITING);
+
+    expect(sentence).toBeNull();
+  });
+
+  test('strips the blocker prefix off the first summary line', () => {
+    const sentence = recoverySentence('blocker: 승인 필요\n무시');
+
+    expect(sentence).toBe('승인 필요');
   });
 });
 
-describe('direction-inquiry notes parsing', () => {
-  test('reads the stale kind and the conflict reason off one line', () => {
-    const parsed = parseStaleNotes(NOTES);
-
-    expect(parsed).toEqual({
-      stale_kind: 'adr_conflict',
-      summary: 'ADR 0012와 정면 충돌 stale_kind=adr_conflict'
-    });
-  });
-
-  test('keeps the LAST occurrence when notes carry several', () => {
-    const parsed = parseStaleNotes(
-      [
-        'rereview: direction_conflict — 첫 근거 stale_kind=adr_conflict',
-        'rereview: direction_conflict — 나중 근거 stale_kind=intent_conflict'
-      ].join('\n')
-    );
-
-    expect(parsed).toEqual({
-      stale_kind: 'intent_conflict',
-      summary: '나중 근거 stale_kind=intent_conflict'
-    });
-  });
-
-  test('answers nulls for notes that carry neither line', () => {
-    expect(parseStaleNotes('그냥 메모')).toEqual({
-      stale_kind: null,
-      summary: null
-    });
-    expect(parseStaleNotes(null)).toEqual({ stale_kind: null, summary: null });
-  });
-
-  test('keeps the last implementation-conflict park line', () => {
-    const parsed = parseParkNotes(
-      [
-        'park: impl_review_conflict:design — 대상: ADR 1 — finding: first',
-        'park: impl_review_conflict:design — 대상: 결정: 새 방향 — finding: last'
-      ].join('\n')
-    );
-
-    expect(parsed).toEqual({
-      target: '결정: 새 방향',
-      finding: 'last'
-    });
-  });
-});
-
-describe('direction-inquiry shell quoting', () => {
-  test('wraps a plain value in single quotes', () => {
-    expect(shellQuote('UI-7uid')).toBe("'UI-7uid'");
-  });
-
-  test('escapes an embedded single quote by closing and reopening', () => {
-    expect(shellQuote("it's")).toBe("'it'\\''s'");
-  });
-
-  test('leaves the shell nothing to expand in a hostile value', () => {
-    expect(shellQuote('$(rm -rf /) `id` "x"')).toBe('\'$(rm -rf /) `id` "x"\'');
-  });
-});
-
-describe('direction-inquiry wrapper', () => {
-  test('writes the pane marker before it execs claude', () => {
-    const wrapper = inquiryWrapper({
-      bead_id: BEAD,
-      claude: '/opt/homebrew/bin/claude',
-      prompt: '프롬프트'
-    });
-
-    expect(wrapper).toBe(
-      `tmux set-option -p -t "$TMUX_PANE" @bdui_inquiry_bead 'UI-7uid' && ` +
-        "exec '/opt/homebrew/bin/claude' '프롬프트'"
-    );
-  });
-
-  test('quotes a prompt that carries a single quote', () => {
-    const wrapper = inquiryWrapper({
-      bead_id: BEAD,
-      claude: '/bin/claude',
-      prompt: "don't"
-    });
-
-    expect(wrapper.endsWith("'don'\\''t'")).toBe(true);
-  });
-});
-
-describe('direction-inquiry prompt filling', () => {
-  test('fills every placeholder field the template declares', () => {
-    const filled = fillStalePrompt({
-      bead_id: BEAD,
-      receipt_key: 'spec_review',
-      receipt: 'self@abc',
-      stale_kind: 'adr_conflict',
-      summary: 'ADR 0012와 충돌',
-      checkout: '/repo'
-    });
-
-    expect(filled).toContain('Bead UI-7uid의 stale 재리뷰가');
-    expect(filled).toContain('- 원 영수증: spec_review=self@abc');
-    expect(filled).toContain('- stale_kind: adr_conflict');
-    expect(filled).toContain('- 충돌 요약: ADR 0012와 충돌');
-    expect(filled).toContain('- target_base 체크아웃: /repo');
-    expect(filled).toContain('`references/execution-spec-backed.md`');
-    expect(filled).toContain('재검토 입력을 파일에 저장하고 읽는다');
-    expect(filled).toContain(
-      'notes의 `rereview:` 줄로 충돌을 한 문단으로 요약'
-    );
-    expect(filled).not.toContain('stale-rereview-inputs.py');
-    expect(filled).not.toContain('<bead-id>');
-    expect(filled).not.toContain('<path>');
-  });
-
-  test('marks an absent receipt and summary rather than leaving the slot', () => {
-    const filled = fillStalePrompt({
-      bead_id: BEAD,
-      receipt_key: 'plan_approval',
-      receipt: null,
-      stale_kind: 'intent_conflict',
-      summary: null,
-      checkout: '/repo'
-    });
-
-    expect(filled).toContain('- 원 영수증: plan_approval=(없음)');
-    expect(filled).toContain('- 충돌 요약: (없음)');
-  });
-
-  test('leaves the session-owned placeholders untouched', () => {
-    const filled = fillStalePrompt({
-      bead_id: BEAD,
-      receipt_key: 'spec_review',
-      receipt: 'self@abc',
-      stale_kind: 'adr_conflict',
-      summary: '요약',
-      checkout: '/repo'
-    });
-
-    expect(filled).toContain('ADR <번호>에 맞춰');
-    expect(filled).toContain('상대 spec(<Bead ID>)이 권위');
-  });
-
-  test('keeps a summary that quotes a slot from eating the checkout', () => {
-    const filled = fillStalePrompt({
-      bead_id: BEAD,
-      receipt_key: 'spec_review',
-      receipt: 'self@abc',
-      stale_kind: 'adr_conflict',
-      summary: '상대 spec이 <path>를 다르게 정한다',
-      checkout: '/repo'
-    });
-
-    expect(filled).toContain('- 충돌 요약: 상대 spec이 <path>를 다르게 정한다');
-    expect(filled).toContain('- target_base 체크아웃: /repo');
-  });
-
-  test('fills implementation-conflict slots in one pass', () => {
-    const filled = fillImplConflictPrompt({
-      bead_id: BEAD,
-      receipt: 'self@abc',
-      target: 'ADR 12',
-      finding: 'major | file | mismatch | fix',
-      checkout: '/repo',
-      session_id: 'sid'
-    });
-
-    expect(filled).toContain('- 원 영수증: spec_review=self@abc');
-    expect(filled).toContain('- 충돌 대상: ADR 12');
-    expect(filled).toContain('- finding: major | file | mismatch | fix');
-    expect(filled).toContain('- 기록 세션: sid');
-  });
-
-  test('fills generic slots from the original receipt', () => {
-    const filled = fillGenericPrompt({
-      bead_id: BEAD,
-      awaiting_user: 'unknown:value',
-      receipt: 'plan_approval=user@abc',
-      checkout: '/repo',
-      session_id: null
-    });
-
-    expect(filled).toContain('awaiting_user=unknown:value');
-    expect(filled).toContain('- 원 영수증: plan_approval=user@abc');
-    expect(filled).toContain('- 기록 세션: 없음');
-  });
-});
-
-describe('direction-inquiry launch', () => {
-  test('forks a recovery inquiry in the implementation worktree', async () => {
-    const tmux = makeTmux({ panes_after: [['bdui-inquiry', '%9', BEAD, '0']] });
-    const { inquiry, awaitingUser } = makeInquiry({
+describe('direction-inquiry same-session launch', () => {
+  test('resumes the Codex attempt session without a fork', async () => {
+    const tmux = launchingTmux();
+    const recordInteractiveSession = vi.fn();
+    const { inquiry } = makeInquiry({
       tmux,
-      readAttempt: async () => ({
-        repo: '/repo',
-        runner: 'claude',
-        session_id: 'recovery-session',
-        cause_detail: { summary: 'blocker: 승인 필요' }
-      }),
-      sessionRefOptions: {
-        home_dir: '/home',
-        fs: sessionFs(['recovery-session'])
-      }
+      store: { recordInteractiveSession }
     });
 
-    const outcome = await inquiry.onParkedAttempt(
-      parkedInput({ awaiting_user: null, recovery: { reason: 'authority' } })
-    );
+    const outcome = await inquiry.onParkedAttempt(recoveryInput());
 
+    expect(tmux.wrapper()).toContain(
+      "exec '/opt/homebrew/bin/codex' 'resume' 'codex-sid' '이 세션은"
+    );
+    expect(tmux.wrapper()).not.toContain("'fork'");
     expect(outcome).toMatchObject({
       session: 'launched',
-      mode: 'fork',
-      session_id: 'recovery-session'
+      mode: 'resume',
+      source: 'attempt',
+      session_id: 'codex-sid',
+      command: "codex resume 'codex-sid'"
     });
-    const wrapper = tmux.calls
-      .find((args) => args[0] === 'new-window')
-      ?.join(' ');
-    expect(wrapper).toContain('/repo/.worktrees/UI-7uid');
-    expect(wrapper).toContain('recovery:authority');
-    expect(awaitingUser).not.toHaveBeenCalled();
   });
 
-  test('reports a disabled recovery inquiry for the wait notification', async () => {
-    const { inquiry, awaitingUser } = makeInquiry({ enabled: false });
-
-    const outcome = await inquiry.onParkedAttempt(
-      parkedInput({ awaiting_user: null, recovery: { reason: 'verification' } })
-    );
-
-    expect(outcome).toMatchObject({
-      session: 'not_launched',
-      reason: 'disabled'
-    });
-    expect(awaitingUser).not.toHaveBeenCalled();
-  });
-  test('launches the implementation-conflict branch', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
-    const { inquiry, awaitingUser } = makeInquiry({
+  test('resumes the Claude attempt session without a new session id', async () => {
+    const tmux = launchingTmux();
+    const { inquiry } = makeInquiry({
       tmux,
-      readIssue: async () =>
-        issue({
-          notes:
-            'park: impl_review_conflict:design — 대상: ADR 12 — finding: major | file | mismatch | fix'
-        })
+      readAttempt: async () =>
+        attempt({ runner: 'claude', session_id: 'claude-sid' })
     });
 
-    await inquiry.onParkedAttempt(
-      parkedInput({ awaiting_user: 'impl_review_conflict:design' })
-    );
+    const outcome = await inquiry.onParkedAttempt(recoveryInput());
 
-    expect(awaitingUser).toHaveBeenCalledWith(
+    expect(tmux.wrapper()).toContain(
+      "exec '/opt/homebrew/bin/claude' '--resume' 'claude-sid' '이 세션은"
+    );
+    expect(tmux.wrapper()).not.toContain('--fork-session');
+    expect(tmux.wrapper()).not.toContain('--session-id');
+    expect(outcome?.command).toBe("claude --resume 'claude-sid'");
+  });
+
+  test('opens the conversation in the attempt worktree', async () => {
+    const tmux = launchingTmux();
+    const { inquiry } = makeInquiry({ tmux });
+
+    await inquiry.onParkedAttempt(recoveryInput());
+
+    const args = tmux.calls.find((call) => call[0] === 'new-window') || [];
+    expect(args[args.indexOf('-c') + 1]).toBe(WORKTREE);
+  });
+
+  test('sends only the filled entry block as the first input', async () => {
+    const tmux = launchingTmux();
+    const { inquiry } = makeInquiry({ tmux });
+
+    await inquiry.onParkedAttempt(recoveryInput());
+
+    const expected = fillConversationEntry({
+      stop: 'recovery:authority',
+      sentence: null,
+      worktree: WORKTREE,
+      checkout: '/repo'
+    });
+    expect(tmux.wrapper().endsWith(shellQuote(expected))).toBe(true);
+    expect(tmux.wrapper()).not.toContain('정산되면');
+  });
+
+  test('records a resume conversation with its stop label', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { inquiry } = makeInquiry({
+      tmux: launchingTmux(),
+      store: { recordInteractiveSession }
+    });
+
+    await inquiry.onParkedAttempt(parkedInput());
+
+    expect(recordInteractiveSession).toHaveBeenCalledExactlyOnceWith(
+      '/ws',
       expect.objectContaining({
-        branch: 'impl_conflict',
-        session: 'launched'
+        bead_id: BEAD,
+        kind: 'inquiry',
+        provider: 'codex',
+        session_id: 'codex-sid',
+        session_id_source: 'launch',
+        mode: 'resume',
+        source: 'attempt',
+        forked_from: null,
+        fallback_reason: null,
+        attempt_id: 'a1',
+        cwd: WORKTREE,
+        launched_at: 2000,
+        state: 'live',
+        conversation: {
+          stop: `awaiting_user=${AWAITING}`,
+          processed_message_at: null,
+          message_excerpt: null,
+          result: null,
+          handoff: null,
+          takeover_notified_at: null
+        }
       })
     );
   });
 
-  test('launches an implementation conflict from its existing worktree', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
-    const { inquiry } = makeInquiry({
-      tmux,
-      readIssue: async () =>
-        issue({
-          notes:
-            'park: impl_review_conflict:design — 대상: ADR 12 — finding: major | file | mismatch | fix'
-        })
-    });
-
-    await inquiry.onParkedAttempt(
-      parkedInput({ awaiting_user: 'impl_review_conflict:design' })
-    );
-
-    const launch = tmux.calls.find((call) => call[0] === 'new-window');
-    expect(launch?.[launch.indexOf('-c') + 1]).toBe('/repo/.worktrees/UI-7uid');
-    expect(launch?.at(-1)).toContain(
-      '- 구현 워크트리: /repo/.worktrees/UI-7uid'
-    );
-  });
-
-  test('keeps a stale inquiry in the target-base checkout', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
+  test('fills the park sentence from the notes', async () => {
+    const tmux = launchingTmux();
     const { inquiry } = makeInquiry({ tmux });
 
     await inquiry.onParkedAttempt(parkedInput());
 
-    const launch = tmux.calls.find((call) => call[0] === 'new-window');
-    expect(launch?.[launch.indexOf('-c') + 1]).toBe('/repo');
-    expect(launch?.at(-1)).toContain('- target_base 체크아웃: /repo');
-  });
-
-  test('launches a stale inquiry without an attempt record', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
-    const { inquiry, awaitingUser } = makeInquiry({
-      tmux,
-      readAttempt: async () => null
-    });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ branch: 'stale', session: 'launched' })
+    expect(tmux.wrapper()).toContain(
+      `- 세션이 남긴 문장: park: ${AWAITING} — 방향 충돌 · ADR 0012`
     );
   });
 
-  test('launches a generic inquiry without an attempt record', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
-    const { inquiry, awaitingUser } = makeInquiry({
+  test('fills the recovery sentence from the attempt summary', async () => {
+    const tmux = launchingTmux();
+    const { inquiry } = makeInquiry({
       tmux,
-      readAttempt: async () => null
+      readAttempt: async () =>
+        attempt({ cause_detail: { summary: 'blocker: 범위 밖 파일\n둘째' } })
     });
+
+    await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(tmux.wrapper()).toContain('- 세션이 남긴 문장: 범위 밖 파일');
+  });
+
+  test('labels a legacy recovery stop as an old record', async () => {
+    const tmux = launchingTmux();
+    const { inquiry } = makeInquiry({ tmux });
 
     await inquiry.onParkedAttempt(
-      parkedInput({ awaiting_user: 'unknown:value' })
+      recoveryInput({ recovery: { reason: 'verification' } })
     );
 
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ branch: 'generic', session: 'launched' })
+    expect(tmux.wrapper()).toContain(
+      '- 멈춤 사유: recovery:verification (옛 기록)'
     );
   });
+});
 
-  test('launches the generic branch for an unknown value', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
-    const { inquiry, awaitingUser } = makeInquiry({ tmux });
+describe('direction-inquiry fresh fallback', () => {
+  test.each([
+    [
+      'attempt_transcript_missing',
+      attempt({ session_id: 'gone-sid' }),
+      'codex'
+    ],
+    ['attempt_session_missing', attempt({ session_id: null }), 'codex'],
+    ['runner_unknown', attempt({ runner: 'gemini' }), 'claude']
+  ])(
+    'opens a fresh same-provider session for %s',
+    async (reason, record, provider) => {
+      const recordInteractiveSession = vi.fn();
+      const { inquiry } = makeInquiry({
+        tmux: launchingTmux(),
+        readAttempt: async () => record,
+        store: { recordInteractiveSession }
+      });
 
-    await inquiry.onParkedAttempt(
-      parkedInput({ awaiting_user: 'unknown:value' })
-    );
+      await inquiry.onParkedAttempt(recoveryInput());
 
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ branch: 'generic', session: 'launched' })
-    );
-  });
-
-  test('prefers the parked attempt transcript for a fork', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
-    const { inquiry } = makeInquiry({
-      tmux,
-      readAttempt: async () => ({
-        attempt_id: 'a1',
-        repo: '/repo',
-        runner: 'claude',
-        session_id: 'attempt-sid'
-      }),
-      sessionRefOptions: {
-        home_dir: '/home',
-        hostname: 'host',
-        fs: sessionFs(['attempt-sid'])
-      }
-    });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    const wrapper = tmux.calls.find((call) => call[0] === 'new-window')?.[12];
-    expect(wrapper).toContain("'--resume' 'attempt-sid' '--fork-session'");
-  });
-
-  test('forks a codex attempt with the codex interactive argv', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
-    const { inquiry } = makeInquiry({
-      tmux,
-      readAttempt: async () => ({
-        attempt_id: 'a1',
-        repo: '/repo',
-        runner: 'codex',
-        session_id: 'codex-sid'
-      }),
-      sessionRefOptions: {
-        home_dir: '/home',
-        hostname: 'host',
-        fs: sessionFs([], ['codex-sid'])
-      }
-    });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    const wrapper = tmux.calls.find((call) => call[0] === 'new-window')?.at(-1);
-    expect(wrapper).toContain("'/opt/homebrew/bin/codex' 'fork' 'codex-sid'");
-  });
-
-  test('reports the codex runner it actually launched', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
-    const { inquiry, awaitingUser } = makeInquiry({
-      tmux,
-      readAttempt: async () => ({
-        attempt_id: 'a1',
-        repo: '/repo',
-        runner: 'codex',
-        session_id: 'codex-sid'
-      }),
-      sessionRefOptions: {
-        home_dir: '/home',
-        hostname: 'host',
-        fs: sessionFs([], ['codex-sid'])
-      }
-    });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ mode: 'fork', runner: 'codex' })
-    );
-  });
-
-  test('notifies launch_failed:codex_not_found when codex is off PATH', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']]
-    });
-    const { inquiry, awaitingUser } = makeInquiry({
-      tmux,
-      readAttempt: async () => ({
-        attempt_id: 'a1',
-        repo: '/repo',
-        runner: 'codex',
-        session_id: 'codex-sid'
-      }),
-      sessionRefOptions: {
-        home_dir: '/home',
-        hostname: 'host',
-        fs: sessionFs([], ['codex-sid'])
-      },
-      resolveRunner: (/** @type {string} */ runner) =>
-        runner === 'claude' ? '/opt/homebrew/bin/claude' : null
-    });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'launch_failed:codex_not_found' })
-    );
-  });
-
-  test('falls back to session_ref when the attempt cannot fork', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
-    const { inquiry } = makeInquiry({
-      tmux,
-      readIssue: async () =>
-        issue({
-          metadata: {
-            spec_review: 'self@abc',
-            session_ref: 'claude:metadata-sid@host'
-          }
-        }),
-      sessionRefOptions: {
-        home_dir: '/home',
-        hostname: 'host',
-        fs: sessionFs(['metadata-sid'])
-      }
-    });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    const wrapper = tmux.calls.find((call) => call[0] === 'new-window')?.[12];
-    expect(wrapper).toContain("'--resume' 'metadata-sid' '--fork-session'");
-  });
-
-  test('reports attempt_transcript_missing when no fork target remains', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
-    const { inquiry, awaitingUser } = makeInquiry({
-      tmux,
-      readAttempt: async () => ({
-        attempt_id: 'a1',
-        repo: '/repo',
-        runner: 'claude',
-        session_id: 'missing-sid'
-      }),
-      sessionRefOptions: {
-        home_dir: '/home',
-        hostname: 'host',
-        fs: sessionFs([])
-      }
-    });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({
+      expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
+        provider,
         mode: 'fresh',
-        fallback_reason: 'attempt_transcript_missing'
+        source: 'fresh',
+        fallback_reason: reason
+      });
+    }
+  );
+
+  test('opens a fresh session in the checkout when the worktree is gone', async () => {
+    const tmux = launchingTmux();
+    const recordInteractiveSession = vi.fn();
+    const { inquiry } = makeInquiry({
+      tmux,
+      existsSync: () => false,
+      store: { recordInteractiveSession }
+    });
+
+    await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(recordInteractiveSession.mock.calls[0]?.[1]).toMatchObject({
+      mode: 'fresh',
+      fallback_reason: 'worktree_missing',
+      cwd: '/repo'
+    });
+  });
+
+  test('passes only the block to a fresh Codex session', async () => {
+    const tmux = launchingTmux();
+    const { inquiry } = makeInquiry({
+      tmux,
+      readAttempt: async () => attempt({ session_id: null })
+    });
+
+    await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(tmux.wrapper()).toContain(
+      "exec '/opt/homebrew/bin/codex' '이 세션은"
+    );
+  });
+
+  test('gives a fresh Claude session its own id', async () => {
+    const tmux = launchingTmux();
+    const recordInteractiveSession = vi.fn();
+    const { inquiry } = makeInquiry({
+      tmux,
+      readAttempt: async () => attempt({ runner: 'claude', session_id: null }),
+      store: { recordInteractiveSession }
+    });
+
+    const outcome = await inquiry.onParkedAttempt(recoveryInput());
+
+    const record = recordInteractiveSession.mock.calls[0]?.[1];
+    expect(record.session_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(tmux.wrapper()).toContain(
+      `'--session-id' '${record.session_id}' '이 세션은`
+    );
+    expect(outcome?.command).toBe(`claude --session-id '${record.session_id}'`);
+  });
+
+  test('uses the current runner when the attempt names none', async () => {
+    const currentRunner = vi.fn(() => /** @type {const} */ ('codex'));
+    const recordInteractiveSession = vi.fn();
+    const { inquiry } = makeInquiry({
+      tmux: launchingTmux(),
+      readAttempt: async () => attempt({ runner: null }),
+      currentRunner,
+      store: { recordInteractiveSession }
+    });
+
+    await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(recordInteractiveSession.mock.calls[0]?.[1].provider).toBe('codex');
+  });
+});
+
+describe('direction-inquiry runner liveness', () => {
+  const identity = { pid: 42, pgid: 42, started_at: 5000 };
+
+  test('refuses while the attempt runner is still alive', async () => {
+    const tmux = launchingTmux();
+    const { inquiry } = makeInquiry({
+      tmux,
+      readAttempt: async () => attempt({ process_identity: identity }),
+      observeProcess: () => ({
+        ok: true,
+        identity: { pid: 42, process_started_at: 5500 }
+      })
+    });
+
+    const outcome = await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(outcome).toMatchObject({
+      session: 'not_launched',
+      reason: 'runner_alive'
+    });
+    expect(tmux.names()).not.toContain('new-window');
+  });
+
+  test('refuses when the runner cannot be observed', async () => {
+    const { inquiry, tmux } = makeInquiry({
+      readAttempt: async () => attempt({ process_identity: identity }),
+      observeProcess: () => ({ ok: false, reason: 'inspect_failed' })
+    });
+
+    const outcome = await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(outcome?.reason).toBe('runner_liveness_unknown');
+    expect(tmux.calls).toHaveLength(0);
+  });
+
+  test('launches once the runner process is gone', async () => {
+    const { inquiry } = makeInquiry({
+      tmux: launchingTmux(),
+      readAttempt: async () => attempt({ process_identity: identity }),
+      observeProcess: () => ({ ok: false, reason: 'process_gone' })
+    });
+
+    const outcome = await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(outcome?.session).toBe('launched');
+  });
+
+  test('launches when the pid was recycled by another process', async () => {
+    const { inquiry } = makeInquiry({
+      tmux: launchingTmux(),
+      readAttempt: async () => attempt({ process_identity: identity }),
+      observeProcess: () => ({
+        ok: true,
+        identity: { pid: 42, process_started_at: 60_000 }
+      })
+    });
+
+    const outcome = await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(outcome?.session).toBe('launched');
+  });
+});
+
+describe('direction-inquiry handoff reservation', () => {
+  test('refuses a click while the bead holds a handoff reservation', async () => {
+    const tmux = makeTmux({
+      panes_seq: [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
+    });
+    const recordInteractiveSession = vi.fn();
+    const handoffPending = vi.fn(() => true);
+    const { inquiry } = makeInquiry({
+      tmux,
+      handoffPending,
+      store: { recordInteractiveSession }
+    });
+
+    const outcome = await inquiry.launchForClick(parkedInput());
+
+    expect(outcome).toMatchObject({
+      session: 'not_launched',
+      reason: 'handoff_pending'
+    });
+    expect(handoffPending).toHaveBeenCalledWith('/ws', BEAD);
+    expect(tmux.names()).not.toContain('new-window');
+    expect(recordInteractiveSession).not.toHaveBeenCalled();
+  });
+
+  test('refuses an automatic launch while the bead holds a handoff reservation', async () => {
+    const tmux = launchingTmux();
+    const { inquiry } = makeInquiry({ tmux, handoffPending: () => true });
+
+    const outcome = await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(outcome).toMatchObject({
+      session: 'not_launched',
+      reason: 'handoff_pending'
+    });
+    expect(tmux.names()).not.toContain('new-window');
+  });
+
+  test('launches once no handoff reservation is pending', async () => {
+    const { inquiry } = makeInquiry({
+      tmux: launchingTmux(),
+      handoffPending: () => false
+    });
+
+    const outcome = await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(outcome?.session).toBe('launched');
+  });
+});
+
+describe('direction-inquiry confirm notification', () => {
+  test('announces a launched automatic conversation', async () => {
+    const { inquiry, conversationConfirm } = makeInquiry({
+      tmux: launchingTmux(),
+      readAttempt: async () =>
+        attempt({ cause_detail: { summary: 'blocker: 범위 밖' } })
+    });
+
+    await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(conversationConfirm).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        bead_id: BEAD,
+        title: '방향 질의 트리거',
+        stop: 'recovery:authority',
+        sentence: '범위 밖',
+        session: 'launched',
+        tmux_session: 'bdui-inquiry',
+        tmux_window: BEAD,
+        repo: '/repo'
       })
     );
   });
 
-  test('keeps the codex attempt provider when its transcript is missing', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
-    const { inquiry, awaitingUser } = makeInquiry({
-      tmux,
-      readAttempt: async () => ({
-        attempt_id: 'a1',
-        repo: '/repo',
-        runner: 'codex',
-        session_id: 'missing-thread'
-      }),
-      sessionRefOptions: {
-        home_dir: '/home',
-        hostname: 'host',
-        fs: sessionFs([])
-      }
+  test('announces a disabled launch with its reason', async () => {
+    const { inquiry, tmux, conversationConfirm } = makeInquiry({
+      enabled: false
     });
 
     await inquiry.onParkedAttempt(parkedInput());
 
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mode: 'fresh',
-        runner: 'codex',
-        fallback_reason: 'attempt_transcript_missing'
-      })
+    expect(tmux.calls).toHaveLength(0);
+    expect(conversationConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ session: 'not_launched', reason: 'disabled' })
     );
   });
 
-  test('launches from a click while automatic inquiry is disabled', async () => {
+  test('stays silent when the caller already spent the notification', async () => {
+    const { inquiry, conversationConfirm } = makeInquiry({
+      tmux: launchingTmux()
+    });
+
+    await inquiry.onParkedAttempt(parkedInput({ confirm: false }));
+
+    expect(conversationConfirm).not.toHaveBeenCalled();
+  });
+
+  test('sends nothing for a click', async () => {
+    const { inquiry, conversationConfirm } = makeInquiry({
+      tmux: makeTmux({
+        panes_seq: [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
+      })
+    });
+
+    await inquiry.launchForClick(parkedInput());
+
+    expect(conversationConfirm).not.toHaveBeenCalled();
+  });
+});
+
+describe('direction-inquiry click', () => {
+  test('launches from a click while automatic launch is disabled', async () => {
     const tmux = makeTmux({
       panes_seq: [
         [['bdui-inquiry', '%1', '', '0']],
@@ -1149,7 +822,20 @@ describe('direction-inquiry launch', () => {
     expect(outcome.session).toBe('launched');
   });
 
-  test('points a click at the live inquiry pane it observed', async () => {
+  test('opens a clicked non-target recovery under its own reason', async () => {
+    const tmux = makeTmux({
+      panes_seq: [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
+    });
+    const { inquiry } = makeInquiry({ tmux });
+
+    await inquiry.launchForClick(
+      recoveryInput({ recovery: { reason: 'provider' } })
+    );
+
+    expect(tmux.wrapper()).toContain('- 멈춤 사유: recovery:provider\n');
+  });
+
+  test('points a click at the live conversation pane it observed', async () => {
     const tmux = makeTmux({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
     const readIssue = vi.fn(async () => issue());
     const { inquiry } = makeInquiry({ tmux, readIssue });
@@ -1176,7 +862,7 @@ describe('direction-inquiry launch', () => {
     });
   });
 
-  test('refuses a click while a disposal holds the bead with no pane yet', async () => {
+  test('refuses a click while a launch holds the bead with no pane yet', async () => {
     let release = () => {};
     const gate = new Promise((resolve) => {
       release = () => resolve(undefined);
@@ -1207,6 +893,18 @@ describe('direction-inquiry launch', () => {
     });
   });
 
+  test('refuses an input that is neither a park nor a recovery', async () => {
+    const { inquiry } = makeInquiry();
+
+    const outcome = await inquiry.launchForClick(
+      parkedInput({ awaiting_user: null })
+    );
+
+    expect(outcome.reason).toBe('invalid_park');
+  });
+});
+
+describe('direction-inquiry tmux lifecycle', () => {
   test('lists, creates the session, opens the window, then confirms the marker', async () => {
     const tmux = makeTmux({
       panes: [['dev', '%1', '', '0']],
@@ -1215,9 +913,9 @@ describe('direction-inquiry launch', () => {
         ['bdui-inquiry', '%9', BEAD, '0']
       ]
     });
-    const { inquiry, awaitingUser } = makeInquiry({ tmux });
+    const { inquiry } = makeInquiry({ tmux });
 
-    await inquiry.onParkedAttempt(parkedInput());
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
 
     expect(tmux.names()).toEqual([
       'list-panes',
@@ -1225,18 +923,10 @@ describe('direction-inquiry launch', () => {
       'new-window',
       'list-panes'
     ]);
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({
-        bead_id: BEAD,
-        branch: 'stale',
-        session: 'launched',
-        tmux_session: 'bdui-inquiry',
-        tmux_window: BEAD
-      })
-    );
+    expect(outcome?.session).toBe('launched');
   });
 
-  test('skips new-session when the inquiry session already exists', async () => {
+  test('skips new-session when the conversation session already exists', async () => {
     const tmux = makeTmux({
       panes: [['bdui-inquiry', '%1', 'UI-other', '0']],
       panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
@@ -1248,75 +938,17 @@ describe('direction-inquiry launch', () => {
     expect(tmux.names()).toEqual(['list-panes', 'new-window', 'list-panes']);
   });
 
-  test('continues when another park won the race to create the session', async () => {
-    const tmux = makeTmux({
-      panes: [['dev', '%1', '', '0']],
-      panes_after: [
-        ['bdui-inquiry', '%1', 'UI-other', '0'],
-        ['bdui-inquiry', '%9', BEAD, '0']
-      ],
-      new_session: { code: 1, stderr: 'duplicate session: bdui-inquiry' }
-    });
-    const { inquiry, awaitingUser } = makeInquiry({ tmux });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(tmux.names()).toEqual([
-      'list-panes',
-      'new-session',
-      'list-panes',
-      'new-window',
-      'list-panes'
-    ]);
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ session: 'launched' })
-    );
-  });
-
-  test('notifies launch_failed:new_session when the session is still absent', async () => {
+  test('reports launch_failed:new_session when the session is still absent', async () => {
     const tmux = makeTmux({
       panes: [['dev', '%1', '', '0']],
       panes_after: [['dev', '%1', '', '0']],
       new_session: { code: 1, stderr: 'no server running' }
     });
-    const { inquiry, awaitingUser } = makeInquiry({ tmux });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(tmux.names()).toEqual(['list-panes', 'new-session', 'list-panes']);
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'launch_failed:new_session' })
-    );
-  });
-
-  test('passes the resolved checkout, window name and wrapper to new-window', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
     const { inquiry } = makeInquiry({ tmux });
 
-    await inquiry.onParkedAttempt(parkedInput());
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
 
-    const args = tmux.calls.find((c) => c[0] === 'new-window') || [];
-    expect(args.slice(0, 10)).toEqual([
-      'new-window',
-      '-d',
-      '-P',
-      '-F',
-      '#{pane_id}',
-      '-t',
-      'bdui-inquiry',
-      '-n',
-      BEAD,
-      '-c'
-    ]);
-    expect(args[10]).toBe('/repo');
-    expect(args[11]).toBe('--');
-    expect(args[12]).toContain(
-      'tmux set-option -p -t "$TMUX_PANE" @bdui_inquiry_bead'
-    );
-    expect(args[12]).toContain('- target_base 체크아웃: /repo');
+    expect(outcome?.reason).toBe('launch_failed:new_session');
   });
 
   test('reports launch_failed:exited when the new pane is already gone', async () => {
@@ -1324,42 +956,53 @@ describe('direction-inquiry launch', () => {
       panes: [['bdui-inquiry', '%1', '', '0']],
       panes_after: [['bdui-inquiry', '%1', '', '0']]
     });
-    const { inquiry, awaitingUser } = makeInquiry({ tmux });
+    const { inquiry } = makeInquiry({ tmux });
 
-    await inquiry.onParkedAttempt(parkedInput());
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
 
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({
-        session: 'not_launched',
-        reason: 'launch_failed:exited'
-      })
-    );
+    expect(outcome).toMatchObject({
+      session: 'not_launched',
+      reason: 'launch_failed:exited'
+    });
   });
 
-  test('reports launch_failed:exited when the confirmed pane is dead', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '1']]
+  test('skips recording a refused launch', async () => {
+    const recordInteractiveSession = vi.fn();
+    const { inquiry } = makeInquiry({
+      store: { recordInteractiveSession },
+      resolveRunner: () => null
     });
-    const { inquiry, awaitingUser } = makeInquiry({ tmux });
 
     await inquiry.onParkedAttempt(parkedInput());
 
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'launch_failed:exited' })
-    );
+    expect(recordInteractiveSession).not.toHaveBeenCalled();
+  });
+
+  test('keeps the launched outcome when the store rejects a record', async () => {
+    const { inquiry } = makeInquiry({
+      tmux: launchingTmux(),
+      store: {
+        recordInteractiveSession: () => {
+          throw new Error('unavailable');
+        }
+      }
+    });
+
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
+
+    expect(outcome?.session).toBe('launched');
   });
 });
 
 describe('direction-inquiry liveness', () => {
   test('does not relaunch while a live pane carries the same bead', async () => {
     const tmux = makeTmux({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
-    const { inquiry, awaitingUser } = makeInquiry({ tmux });
+    const { inquiry, conversationConfirm } = makeInquiry({ tmux });
 
     await inquiry.onParkedAttempt(parkedInput());
 
     expect(tmux.names()).toEqual(['list-panes']);
-    expect(awaitingUser).toHaveBeenCalledWith(
+    expect(conversationConfirm).toHaveBeenCalledWith(
       expect.objectContaining({ session: 'already_running' })
     );
   });
@@ -1369,236 +1012,92 @@ describe('direction-inquiry liveness', () => {
       panes: [['bdui-inquiry', '%1', BEAD, '1']],
       panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
     });
-    const { inquiry, awaitingUser } = makeInquiry({ tmux });
+    const { inquiry } = makeInquiry({ tmux });
 
     await inquiry.onParkedAttempt(parkedInput());
 
     expect(tmux.names()).toContain('new-window');
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ session: 'launched' })
-    );
-  });
-
-  test('ignores a live pane marked for another bead', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', 'UI-other', '0']],
-      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-    });
-    const { inquiry, awaitingUser } = makeInquiry({ tmux });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ session: 'launched' })
-    );
   });
 
   test('refuses to launch when tmux cannot be reached', async () => {
     const tmux = makeTmux({ list_code: 1 });
-    const { inquiry, awaitingUser } = makeInquiry({ tmux });
+    const { inquiry } = makeInquiry({ tmux });
 
-    await inquiry.onParkedAttempt(parkedInput());
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
 
     expect(tmux.names()).toEqual(['list-panes']);
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'tmux_unavailable' })
-    );
+    expect(outcome?.reason).toBe('tmux_unavailable');
   });
 
   test('refuses to launch when the tmux runner throws', async () => {
     const tmux = makeTmux({ throw_on: 'list-panes' });
-    const { inquiry, awaitingUser } = makeInquiry({ tmux });
+    const { inquiry } = makeInquiry({ tmux });
 
-    await inquiry.onParkedAttempt(parkedInput());
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
 
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'tmux_unavailable' })
-    );
+    expect(outcome?.reason).toBe('tmux_unavailable');
   });
 });
 
 describe('direction-inquiry refusals', () => {
-  test('notifies attempt_unavailable for an implementation conflict without its worktree record', async () => {
-    const { inquiry, tmux, awaitingUser } = makeInquiry({
-      readAttempt: async () => null,
-      readIssue: async () =>
-        issue({
-          notes:
-            'park: impl_review_conflict:design — 대상: ADR 12 — finding: major | file | mismatch | fix'
-        })
-    });
+  test('refuses attempt_unavailable without touching tmux', async () => {
+    const { inquiry, tmux } = makeInquiry({ readAttempt: async () => null });
 
-    await inquiry.onParkedAttempt(
-      parkedInput({ awaiting_user: 'impl_review_conflict:design' })
-    );
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
 
     expect(tmux.calls).toHaveLength(0);
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({
-        branch: 'impl_conflict',
-        session: 'not_launched',
-        reason: 'attempt_unavailable'
-      })
-    );
+    expect(outcome?.reason).toBe('attempt_unavailable');
   });
 
-  test('notifies park_facts_missing for an incomplete implementation conflict', async () => {
-    const { inquiry, tmux, awaitingUser } = makeInquiry();
-
-    await inquiry.onParkedAttempt(
-      parkedInput({ awaiting_user: 'impl_review_conflict:design' })
-    );
-
-    expect(tmux.calls).toHaveLength(0);
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({
-        branch: 'impl_conflict',
-        reason: 'park_facts_missing'
-      })
-    );
-  });
-
-  test('notifies bd_unavailable without touching tmux', async () => {
-    const { inquiry, tmux, awaitingUser } = makeInquiry({
+  test('refuses bd_unavailable without touching tmux', async () => {
+    const { inquiry, tmux } = makeInquiry({
       readIssue: async () => {
         throw new Error('bd down');
       }
     });
 
-    await inquiry.onParkedAttempt(parkedInput());
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
 
     expect(tmux.calls).toHaveLength(0);
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'bd_unavailable' })
-    );
+    expect(outcome?.reason).toBe('bd_unavailable');
   });
 
-  test.each(['spec_review_stale:revise', 'plan_approval_stale:revise'])(
-    'launches a generic inquiry for %s without a stale kind',
-    async (awaiting_user) => {
-      const tmux = makeTmux({
-        panes: [['bdui-inquiry', '%1', '', '0']],
-        panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
-      });
-      const { inquiry, awaitingUser } = makeInquiry({
-        tmux,
-        readIssue: async () => issue({ notes: '재리뷰 메모만 있다' })
-      });
+  test('refuses launch_failed:codex_not_found when codex is off PATH', async () => {
+    const tmux = makeTmux({ panes: [['bdui-inquiry', '%1', '', '0']] });
+    const { inquiry } = makeInquiry({ tmux, resolveRunner: () => null });
 
-      await inquiry.onParkedAttempt(parkedInput({ awaiting_user }));
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
 
-      expect(awaitingUser).toHaveBeenCalledWith(
-        expect.objectContaining({
-          branch: 'generic',
-          session: 'launched',
-          stale_kind: null
-        })
-      );
-      const wrapper = tmux.calls.find((call) => call[0] === 'new-window')?.[12];
-      expect(wrapper).toContain(`awaiting_user=${awaiting_user}`);
-    }
-  );
-
-  test('opens a clicked stale inquiry without a kind when automatic launch is disabled', async () => {
-    const tmux = makeTmux({
-      panes_seq: [
-        [['bdui-inquiry', '%1', '', '0']],
-        [['bdui-inquiry', '%1', '', '0']],
-        [['bdui-inquiry', '%9', BEAD, '0']]
-      ]
-    });
-    const { inquiry } = makeInquiry({
-      tmux,
-      enabled: false,
-      readIssue: async () => issue({ notes: '' })
-    });
-
-    const outcome = await inquiry.launchForClick(parkedInput());
-
-    expect(outcome.session).toBe('launched');
-    expect(tmux.calls.find((call) => call[0] === 'new-window')?.[12]).toContain(
-      `awaiting_user=${AWAITING}`
-    );
-  });
-
-  test('notifies disabled without touching tmux when the config is off', async () => {
-    const { inquiry, tmux, awaitingUser } = makeInquiry({ enabled: false });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(tmux.calls).toHaveLength(0);
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({
-        session: 'not_launched',
-        reason: 'disabled',
-        stale_kind: 'adr_conflict'
-      })
-    );
-  });
-
-  test('notifies launch_failed:claude_not_found when claude is off PATH', async () => {
-    const tmux = makeTmux({
-      panes: [['bdui-inquiry', '%1', '', '0']]
-    });
-    const { inquiry, awaitingUser } = makeInquiry({
-      tmux,
-      resolveClaude: () => null
-    });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(tmux.names()).toEqual(['list-panes']);
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: 'launch_failed:claude_not_found' })
-    );
+    expect(outcome?.reason).toBe('launch_failed:codex_not_found');
   });
 });
 
 describe('direction-inquiry bridge observation', () => {
   test('reports the bridge active on a fresh heartbeat', async () => {
     const tmux = makeTmux({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
-    const { inquiry, awaitingUser } = makeInquiry({
+    const { inquiry } = makeInquiry({
       tmux,
       statFile: () => ({ mtimeMs: 90_000 }),
       now: () => 100_000
     });
 
-    await inquiry.onParkedAttempt(parkedInput());
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
 
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ bridge_active: true })
-    );
-  });
-
-  test('reports the bridge inactive on a stale heartbeat', async () => {
-    const tmux = makeTmux({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
-    const { inquiry, awaitingUser } = makeInquiry({
-      tmux,
-      statFile: () => ({ mtimeMs: 10_000 }),
-      now: () => 100_000
-    });
-
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ bridge_active: false })
-    );
+    expect(outcome?.bridge_active).toBe(true);
   });
 
   test('reports the bridge inactive when the heartbeat cannot be read', async () => {
     const tmux = makeTmux({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
-    const { inquiry, awaitingUser } = makeInquiry({
+    const { inquiry } = makeInquiry({
       tmux,
       statFile: () => {
         throw new Error('ENOENT');
       }
     });
 
-    await inquiry.onParkedAttempt(parkedInput());
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
 
-    expect(awaitingUser).toHaveBeenCalledWith(
-      expect.objectContaining({ bridge_active: false })
-    );
+    expect(outcome?.bridge_active).toBe(false);
   });
 });
 
@@ -1608,7 +1107,7 @@ describe('direction-inquiry concurrency', () => {
       panes: [['bdui-inquiry', '%1', '', '0']],
       panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
     });
-    const { inquiry, awaitingUser } = makeInquiry({ tmux });
+    const { inquiry, conversationConfirm } = makeInquiry({ tmux });
 
     await Promise.all([
       inquiry.onParkedAttempt(parkedInput()),
@@ -1616,17 +1115,7 @@ describe('direction-inquiry concurrency', () => {
     ]);
 
     expect(tmux.names().filter((n) => n === 'new-window')).toHaveLength(1);
-    expect(awaitingUser).toHaveBeenCalledTimes(1);
-  });
-
-  test('lets a later call for the same bead run once the first finished', async () => {
-    const tmux = makeTmux({ panes: [['bdui-inquiry', '%1', BEAD, '0']] });
-    const { inquiry, awaitingUser } = makeInquiry({ tmux });
-
-    await inquiry.onParkedAttempt(parkedInput());
-    await inquiry.onParkedAttempt(parkedInput());
-
-    expect(awaitingUser).toHaveBeenCalledTimes(2);
+    expect(conversationConfirm).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1637,7 +1126,8 @@ describe('direction-inquiry no-throw contract', () => {
         throw new Error('config exploded');
       },
       bd: { readIssue: async () => issue() },
-      notifier: { awaitingUser: async () => {} },
+      notifier: { conversationConfirm: async () => {} },
+      readAttempt: async () => attempt(),
       runTmux: async () => ({ code: 0, stdout: '', stderr: '' }),
       resolveClaude: () => '/bin/claude',
       statFile: () => ({ mtimeMs: 0 }),
@@ -1645,9 +1135,9 @@ describe('direction-inquiry no-throw contract', () => {
       log: () => {}
     });
 
-    await expect(
-      inquiry.onParkedAttempt(parkedInput())
-    ).resolves.toBeUndefined();
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
+
+    expect(outcome?.reason).toBe('disabled');
   });
 
   test('resolves when the notifier throws', async () => {
@@ -1655,10 +1145,11 @@ describe('direction-inquiry no-throw contract', () => {
       getConfig: () => ({ worker_direction_inquiry: { enabled: false } }),
       bd: { readIssue: async () => issue() },
       notifier: {
-        awaitingUser: async () => {
+        conversationConfirm: async () => {
           throw new Error('notify exploded');
         }
       },
+      readAttempt: async () => attempt(),
       runTmux: async () => ({ code: 0, stdout: '', stderr: '' }),
       resolveClaude: () => '/bin/claude',
       statFile: () => ({ mtimeMs: 0 }),
@@ -1666,9 +1157,9 @@ describe('direction-inquiry no-throw contract', () => {
       log: () => {}
     });
 
-    await expect(
-      inquiry.onParkedAttempt(parkedInput())
-    ).resolves.toBeUndefined();
+    await expect(inquiry.onParkedAttempt(parkedInput())).resolves.toMatchObject(
+      { reason: 'disabled' }
+    );
   });
 
   test('resolves on a malformed input', async () => {
@@ -1690,7 +1181,7 @@ describe('direction-inquiry probeTmux', () => {
     const inquiry = createDirectionInquiry({
       getConfig: () => ({ worker_direction_inquiry: { enabled: true } }),
       bd: { readIssue: async () => issue() },
-      notifier: { awaitingUser: async () => {} },
+      notifier: {},
       runTmux: tmux.runTmux,
       resolveClaude: () => '/bin/claude',
       statFile: () => ({ mtimeMs: 0 }),
@@ -1707,33 +1198,12 @@ describe('direction-inquiry probeTmux', () => {
     printed.mockRestore();
   });
 
-  test('logs unreachable instead of throwing when tmux is down', async () => {
-    const tmux = makeTmux({ list_code: 1 });
-    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const inquiry = createDirectionInquiry({
-      getConfig: () => ({ worker_direction_inquiry: { enabled: true } }),
-      bd: { readIssue: async () => issue() },
-      notifier: { awaitingUser: async () => {} },
-      runTmux: tmux.runTmux,
-      resolveClaude: () => '/bin/claude',
-      statFile: () => ({ mtimeMs: 0 }),
-      now: () => 0,
-      log: () => {}
-    });
-
-    await expect(inquiry.probeTmux()).resolves.toBeUndefined();
-    expect(warned).toHaveBeenCalledWith(
-      expect.stringContaining('direction_inquiry: tmux unreachable:')
-    );
-    warned.mockRestore();
-  });
-
   test('touches nothing when the feature is off', async () => {
     const tmux = makeTmux();
     const inquiry = createDirectionInquiry({
       getConfig: () => ({ worker_direction_inquiry: { enabled: false } }),
       bd: { readIssue: async () => issue() },
-      notifier: { awaitingUser: async () => {} },
+      notifier: {},
       runTmux: tmux.runTmux,
       resolveClaude: () => '/bin/claude',
       statFile: () => ({ mtimeMs: 0 }),
@@ -1744,5 +1214,30 @@ describe('direction-inquiry probeTmux', () => {
     await inquiry.probeTmux();
 
     expect(tmux.calls).toHaveLength(0);
+  });
+});
+
+describe('direction-inquiry shell quoting', () => {
+  test('wraps a plain value in single quotes', () => {
+    expect(shellQuote('UI-7uid')).toBe("'UI-7uid'");
+  });
+
+  test('escapes an embedded single quote by closing and reopening', () => {
+    expect(shellQuote("it's")).toBe("'it'\\''s'");
+  });
+});
+
+describe('direction-inquiry wrapper', () => {
+  test('writes the pane marker before it execs the runner', () => {
+    const wrapper = inquiryWrapper({
+      bead_id: BEAD,
+      claude: '/opt/homebrew/bin/claude',
+      prompt: '프롬프트'
+    });
+
+    expect(wrapper).toBe(
+      `tmux set-option -p -t "$TMUX_PANE" @bdui_inquiry_bead 'UI-7uid' && ` +
+        "exec '/opt/homebrew/bin/claude' '프롬프트'"
+    );
   });
 });

@@ -71,17 +71,23 @@ describe('wait notification suppression', () => {
       { enabled, cmd: ['discord'] },
       { spawnImpl: spawn.spawnImpl }
     );
+    // A failed operation's recovery decision: an action_required reason that
+    // is no conversation target, so it still speaks through `⚠ … 지연`.
     const wait_reasons = judgeWaitReasons({
       root_dir: '/repo',
       now: 1000,
       queue: {
-        attempts: {
-          a: {
-            attempt_id: 'a',
-            bead_id: 'UI-a',
-            status: 'parked',
+        repo_operations: {
+          op: {
+            state: 'failed',
+            subjects: [{ bead_id: 'UI-a' }],
             finished_at: 1000,
-            cause_detail: { awaiting_user: '다음 방향 확인' }
+            failure: { code: 'script_failed', summary: '배포 스크립트 실패' },
+            recovery: {
+              disposition: 'wait',
+              reason: 'unclassified',
+              handoff: null
+            }
           }
         }
       }
@@ -117,18 +123,37 @@ describe('wait notification suppression', () => {
     expect(store.snapshot('/repo').wait_notified).toEqual({ [key]: 500 });
   });
 
-  test.each([
-    [
-      { session: 'launched', mode: 'fork', session_id: '1234567890' },
-      'launched · fork 12345678'
-    ],
-    [
-      { session: 'not_launched', reason: 'tmux_unavailable' },
-      'not_launched · tmux_unavailable'
-    ]
-  ])(
-    'adds a recovery inquiry outcome to one decision notification: %j',
-    async (inquiry, line) => {
+  test('sends no park or delay push for a parked decision', async () => {
+    const { input, store, spawn } = fixture();
+    const wait_reasons = judgeWaitReasons({
+      root_dir: '/repo',
+      now: 1000,
+      queue: {
+        attempts: {
+          a: {
+            attempt_id: 'a',
+            bead_id: 'UI-a',
+            status: 'parked',
+            finished_at: 1000,
+            cause_detail: { awaiting_user: '다음 방향 확인' }
+          }
+        }
+      }
+    }).wait_reasons;
+
+    await notifyWaitReasons({ ...input, wait_reasons });
+
+    expect(wait_reasons[0]).toMatchObject({
+      kind: 'awaiting_user',
+      verdict: 'action_required'
+    });
+    expect(spawn.calls).toHaveLength(0);
+    expect(store.snapshot('/repo').wait_notified).toEqual({});
+  });
+
+  test.each(['authority', 'no_progress', 'verification'])(
+    'sends no delay push for a %s conversation stop across its turns',
+    async (reason) => {
       const { input, store, spawn } = fixture();
       store.appendAttempt('/repo', {
         expected_revision: store.snapshot('/repo').revision,
@@ -138,32 +163,70 @@ describe('wait notification suppression', () => {
           status: 'waiting',
           finished_at: 1000,
           cause_detail: {
-            recovery: {
-              reason: 'verification',
-              classification: 'session_recovery_wait'
-            },
-            inquiry
+            recovery: { reason, classification: 'session_recovery_wait' }
           }
         }
       });
-      input.wait_reasons = judgeWaitReasons({
-        root_dir: '/repo',
-        queue: store.snapshot('/repo'),
-        now: 1000
-      }).wait_reasons;
+      store.recordInteractiveSession('/repo', {
+        bead_id: 'UI-a',
+        kind: 'inquiry',
+        provider: 'codex',
+        pane_id: '%1',
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'UI-a',
+        launched_at: 1000,
+        state: 'live',
+        conversation: { stop: `recovery:${reason}` }
+      });
 
-      await notifyWaitReasons(input);
-      await notifyWaitReasons(input);
+      for (const turn_state of ['question', 'running', 'idle']) {
+        store.updateInteractiveSession('/repo', 'UI-a:inquiry', {
+          turn_state: /** @type {any} */ (turn_state)
+        });
+        await notifyWaitReasons({
+          ...input,
+          wait_reasons: judgeWaitReasons({
+            root_dir: '/repo',
+            queue: store.snapshot('/repo'),
+            now: 1000
+          }).wait_reasons
+        });
+      }
+      store.removeInteractiveSession('/repo', 'UI-a:inquiry');
+      await notifyWaitReasons({
+        ...input,
+        wait_reasons: judgeWaitReasons({
+          root_dir: '/repo',
+          queue: store.snapshot('/repo'),
+          now: 1000
+        }).wait_reasons
+      });
 
-      expect(spawn.calls).toHaveLength(1);
-      expect(messageOf(spawn.last())).toContain(`\n질의 세션: ${line}`);
-      expect(store.snapshot('/repo').wait_notified).toHaveProperty(
-        '["UI-a","recovery","decision"]'
-      );
+      expect(spawn.calls).toHaveLength(0);
     }
   );
 
-  test('notifies each inquiry question and the later inquiry death once', async () => {
+  /**
+   * A fork inquiry launched before UI-nuwy: no `conversation`, still live.
+   *
+   * @param {ReturnType<typeof fixture>['store']} store
+   */
+  function recordLegacyInquiry(store) {
+    store.recordInteractiveSession('/repo', {
+      bead_id: 'UI-a',
+      kind: 'inquiry',
+      provider: 'codex',
+      pane_id: '%1',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'UI-a',
+      launched_at: 1000,
+      state: 'live',
+      mode: 'fork',
+      turn_state: 'question'
+    });
+  }
+
+  test('keeps the old delay push and inquiry line for a live legacy fork inquiry', async () => {
     const { input, store, spawn } = fixture();
     store.appendAttempt('/repo', {
       expected_revision: store.snapshot('/repo').revision,
@@ -177,52 +240,57 @@ describe('wait notification suppression', () => {
             reason: 'verification',
             classification: 'session_recovery_wait'
           },
-          inquiry: { session: 'launched', mode: 'fork', session_id: 'abc' }
+          inquiry: {
+            session: 'launched',
+            mode: 'fork',
+            session_id: 'abcdef1234'
+          }
         }
       }
     });
-    store.recordInteractiveSession('/repo', {
-      bead_id: 'UI-a',
-      kind: 'inquiry',
-      provider: 'codex',
-      pane_id: '%1',
-      tmux_session: 'bdui-inquiry',
-      tmux_window: 'UI-a',
-      launched_at: 1000,
-      state: 'live'
+    recordLegacyInquiry(store);
+
+    await notifyWaitReasons({
+      ...input,
+      wait_reasons: judgeWaitReasons({
+        root_dir: '/repo',
+        queue: store.snapshot('/repo'),
+        now: 1000
+      }).wait_reasons
     });
-    /** @type {number[]} */
-    const counts = [];
-    /** @param {'running'|'question'|null} turn_state */
-    const step = async (turn_state) => {
-      if (turn_state === null) {
-        store.removeInteractiveSession('/repo', 'UI-a:inquiry');
-      } else {
-        store.updateInteractiveSession('/repo', 'UI-a:inquiry', {
-          turn_state
-        });
-      }
-      const before = spawn.calls.length;
-      await notifyWaitReasons({
-        ...input,
-        wait_reasons: judgeWaitReasons({
-          root_dir: '/repo',
-          queue: store.snapshot('/repo'),
-          now: 1000
-        }).wait_reasons
-      });
-      counts.push(spawn.calls.length - before);
-    };
 
-    await step('question');
-    await step('running');
-    await step('question');
-    await step('running');
-    await step(null);
-
-    expect(counts).toEqual([1, 0, 1, 0, 1]);
+    expect(spawn.calls).toHaveLength(1);
     expect(messageOf(spawn.last())).toContain('세션이 멈춤');
-    expect(messageOf(spawn.last())).toContain('\n질의 세션: ');
+    expect(messageOf(spawn.last())).toContain(
+      '\n질의 세션: launched · fork abcdef12'
+    );
+  });
+
+  test('keeps the park delay push while a live legacy fork inquiry asks', async () => {
+    const { input, store, spawn } = fixture();
+    store.appendAttempt('/repo', {
+      expected_revision: store.snapshot('/repo').revision,
+      attempt: {
+        attempt_id: 'parked',
+        bead_id: 'UI-a',
+        status: 'parked',
+        finished_at: 1000,
+        cause_detail: { awaiting_user: '다음 방향 확인' }
+      }
+    });
+    recordLegacyInquiry(store);
+
+    await notifyWaitReasons({
+      ...input,
+      wait_reasons: judgeWaitReasons({
+        root_dir: '/repo',
+        queue: store.snapshot('/repo'),
+        now: 1000
+      }).wait_reasons
+    });
+
+    expect(spawn.calls).toHaveLength(1);
+    expect(messageOf(spawn.last())).toContain('⚠ repo UI-a 지연');
   });
 
   test('notifies external completion once across overdue scans and reload', async () => {
@@ -341,7 +409,7 @@ describe('wait notification suppression', () => {
                 classification: 'session_recovery_wait',
                 disposition: 'wait',
                 reason,
-                policy_schema: 1
+                policy_schema: 2
               },
               ...extra_detail
             }
@@ -351,50 +419,31 @@ describe('wait notification suppression', () => {
     }).wait_reasons;
   }
 
-  test('claims a stalled recovery once across repeated observations and reload', async () => {
+  test('keeps a stalled recovery without a live conversation out of the suppression keys', async () => {
     const { input, spawn, store } = fixture();
-    const wait_reasons = recoveryWaitReasons('authority', {
-      inquiry: { session: 'launched', mode: 'fork', session_id: 'abcdef1234' }
-    });
-    const queue_attempts = {
-      a: {
-        attempt_id: 'a',
-        bead_id: 'UI-a',
-        status: 'waiting',
-        cause_detail: {
-          recovery: { reason: 'authority' },
-          inquiry: {
-            session: 'launched',
-            mode: 'fork',
-            session_id: 'abcdef1234'
-          }
-        }
-      }
-    };
+    const wait_reasons = recoveryWaitReasons('authority');
     const stored = /** @type {typeof store} */ (
       /** @type {unknown} */ ({
         ...store,
         snapshot: (/** @type {string} */ workspace) => ({
           ...store.snapshot(workspace),
-          attempts: queue_attempts
+          attempts: {
+            a: {
+              attempt_id: 'a',
+              bead_id: 'UI-a',
+              status: 'waiting',
+              cause_detail: { recovery: { reason: 'authority' } }
+            }
+          }
         })
       })
     );
 
     await notifyWaitReasons({ ...input, store: stored, wait_reasons });
-    await notifyWaitReasons({
-      ...input,
-      store: stored,
-      wait_reasons,
-      now: 2000
-    });
 
-    expect(Object.keys(store.snapshot('/repo').wait_notified)).toHaveLength(1);
-    expect(spawn.calls).toHaveLength(1);
-    expect(spawn.last().args[0]).toContain('세션이 멈춤');
-    expect(spawn.last().args[0]).toContain(
-      '질의 세션: launched · fork abcdef12'
-    );
+    expect(wait_reasons[0].verdict).toBe('action_required');
+    expect(store.snapshot('/repo').wait_notified).toEqual({});
+    expect(spawn.calls).toHaveLength(0);
   });
 
   test('sends no wait notification for a provider recovery wait', async () => {
@@ -457,7 +506,7 @@ describe('wait notification suppression', () => {
         kind: 'wait_notified',
         bead_id: 'UI-a',
         at: 1000,
-        detail: 'awaiting_user:decision'
+        detail: 'recovery:decision'
       })
     );
   });
@@ -474,7 +523,7 @@ describe('wait notification suppression', () => {
         kind: 'wait_notified',
         bead_id: 'UI-a',
         at: 1000,
-        detail: 'awaiting_user:decision'
+        detail: 'recovery:decision'
       })
     });
   });
@@ -1076,6 +1125,165 @@ describe('worker/notify fail-quiet', () => {
         )
     ).not.toThrow();
     expect(log).toHaveBeenCalled();
+  });
+});
+
+describe('worker/notify conversation stages (UI-nuwy §3.7)', () => {
+  test('sends the confirm push with the reason, sentence, window and repo', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.conversationConfirm({
+      bead_id: 'UI-7uid',
+      title: '방향 질의 트리거',
+      stop: 'awaiting_user=impl_review_conflict:design',
+      sentence: 'park: impl_review_conflict:design — 대상: ADR 12',
+      session: 'launched',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'UI-7uid',
+      repo: '/Users/me/GitHub/beads-ui'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      [
+        '🙋 확인 필요 — UI-7uid 방향 질의 트리거',
+        '이유: 설계 충돌 · impl_review_conflict:design',
+        '세션: park: impl_review_conflict:design — 대상: ADR 12',
+        '대화: Discord 스레드 · tmux bdui-inquiry:UI-7uid',
+        '리포: beads-ui'
+      ].join('\n')
+    );
+  });
+
+  test.each([
+    ['recovery:authority', '이유: 범위 충돌'],
+    ['recovery:no_progress', '이유: 같은 원인 반복'],
+    ['recovery:verification (옛 기록)', '이유: 옛 기록 · recovery:verification']
+  ])('names the %s stop as %s', async (stop, line) => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.conversationConfirm({
+      bead_id: 'UI-1',
+      stop,
+      session: 'launched',
+      tmux_session: 's',
+      tmux_window: 'UI-1'
+    });
+
+    expect(messageOf(spawn.last()).split('\n')[1]).toBe(line);
+  });
+
+  test('points at the click exit when no conversation opened', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.conversationConfirm({
+      bead_id: 'UI-1',
+      stop: 'recovery:authority',
+      session: 'not_launched',
+      reason: 'tmux_unavailable'
+    });
+
+    expect(messageOf(spawn.last())).toContain(
+      '\n대화를 열지 못함 · tmux_unavailable — Worker 탭 [세션에서 해결]'
+    );
+  });
+
+  test('carries no sender mark on the confirm headline', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.conversationConfirm({ bead_id: 'UI-1', stop: 's' });
+
+    expect(messageOf(spawn.last()).startsWith('🙋 확인 필요 — UI-1')).toBe(
+      true
+    );
+  });
+
+  test('sends the answer-wait push with the excerpt and the window', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.conversationAnswer({
+      bead_id: 'UI-1',
+      excerpt: 'A와 B 중 어느 쪽으로 갈까요? 권고는 A입니다.',
+      tmux_window: 'UI-1'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      [
+        '❓ 답 대기 — UI-1',
+        'A와 B 중 어느 쪽으로 갈까요? 권고는 A입니다.',
+        '답: Discord 스레드 · tmux UI-1'
+      ].join('\n')
+    );
+  });
+
+  test('sends the takeover push', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.conversationTakeover({ bead_id: 'UI-1' });
+
+    expect(messageOf(spawn.last())).toBe(
+      '🙋 사람 인수 — UI-1\nWorker는 정산만 관찰'
+    );
+  });
+
+  test('names a conversation return launch with its decision and exec', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(ENABLED, { spawnImpl: spawn.spawnImpl });
+
+    await notifier.attemptStarted({
+      bead_id: 'UI-1',
+      title: '워커 알림',
+      runner: 'codex',
+      model: 'sol',
+      effort: 'high',
+      speed: 'default',
+      repo: '/r/proj',
+      kind: 'conversation_return',
+      decision: '인계 · 범위 확장 승인'
+    });
+
+    expect(messageOf(spawn.last())).toBe(
+      [
+        '↪ Worker가 이어감 — UI-1 워커 알림',
+        '결정: 인계 · 범위 확장 승인',
+        '실행: codex sol / high / default',
+        '리포: proj'
+      ].join('\n')
+    );
+  });
+
+  test('sends nothing from the conversation pushes when notifications are off', async () => {
+    const spawn = makeFakeSpawn();
+    const notifier = makeNotifier(
+      { enabled: false, cmd: ['discord'] },
+      { spawnImpl: spawn.spawnImpl }
+    );
+
+    const sent = await Promise.all([
+      notifier.conversationConfirm({ bead_id: 'UI-1' }),
+      notifier.conversationAnswer({ bead_id: 'UI-1' }),
+      notifier.conversationTakeover({ bead_id: 'UI-1' })
+    ]);
+
+    expect(sent).toEqual([false, false, false]);
+    expect(spawn.calls).toHaveLength(0);
+  });
+
+  test('resolves a conversation push after spawn throws', async () => {
+    const notifier = makeNotifier(ENABLED, {
+      spawnImpl: () => {
+        throw new Error('spawn exploded');
+      }
+    });
+
+    const sent = await notifier.conversationAnswer({ bead_id: 'UI-1' });
+
+    expect(sent).toBe(false);
   });
 });
 

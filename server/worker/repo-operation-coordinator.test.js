@@ -427,7 +427,7 @@ describe('repo operation after-ladder recovery', () => {
     ['Error: not authenticated', 'env_or_auth_pattern'],
     ['same failure', 'no_script_failure_line']
   ])(
-    'keeps reproduced %s waiting with its proof gap',
+    'keeps reproduced %s out of the repair handoff with its proof gap',
     async (summary, proof_gap) => {
       const repairHandoff = adapter();
       const { coordinator, store } = coordinatorFor({ repairHandoff });
@@ -439,8 +439,9 @@ describe('repo operation after-ladder recovery', () => {
         store.snapshot(root).repo_operations['op-1'].recovery
       ).toMatchObject({
         classification: 'verification_failure',
-        disposition: 'wait',
-        reason: 'verification',
+        disposition: 'repair',
+        reason: null,
+        code_defect: false,
         prover: null,
         proof_gap
       });

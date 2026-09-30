@@ -634,7 +634,8 @@ describe('interactive session projection', () => {
   const NO_TURN = {
     turn_state: null,
     turn_state_since: null,
-    last_message: null
+    last_message: null,
+    conversation: null
   };
   const record = {
     bead_id: 'A-1',
@@ -2733,7 +2734,7 @@ describe('monitor 대기 attempt 투영 (UI-5ym8 §3.1·§3.3·§6)', () => {
     );
 
     expect(map.get('A-1')?.failure?.resume_reason).toBe(
-      '세션이 멈춤 — [세션에서 해결]로 문의를 이어갑니다'
+      '확인 필요 — [세션에서 해결]로 같은 세션과 대화합니다'
     );
   });
 
@@ -2836,7 +2837,7 @@ describe('monitor 대기 attempt 투영 (UI-5ym8 §3.1·§3.3·§6)', () => {
     const row = lanes.running.find((item) => item.id === 'A-1');
     expect(row?.run_state).toBe('parked');
     expect(row?.alert).toBe(false);
-    expect(row?.badges).toEqual(['⏸ 세션이 멈춤']);
+    expect(row?.badges).toEqual(['⏸ 확인 필요']);
   });
 });
 
@@ -2881,7 +2882,7 @@ describe('recovery wait projection', () => {
           classification: 'unknown',
           disposition: 'wait',
           reason: 'unclassified',
-          label: '세션이 멈춤',
+          label: '확인 필요',
           no_progress: { count: 1, key: 'same-error' }
         }
       }
@@ -2950,7 +2951,7 @@ describe('recovery wait projection', () => {
       expect(lanes.running).toHaveLength(1);
       expect(lanes.running[0]).toMatchObject({
         run_state: 'waiting',
-        badges: ['⏸ 세션이 멈춤'],
+        badges: ['⏸ 확인 필요'],
         alert: false,
         failure: null
       });

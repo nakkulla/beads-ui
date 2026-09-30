@@ -14,6 +14,7 @@ import {
   mergeWaitingText,
   prStatusBadge,
   receiptWarningCodes,
+  resolveSessionToast,
   resolveSessionTone
 } from './index.js';
 import { providerProbeRefusalText } from './lanes.js';
@@ -1767,7 +1768,7 @@ describe('views/worker', () => {
     expect(tiles[2].querySelector('.rtile__elapsed')).toBeNull();
     expect(
       tiles[2].querySelector('.wait-verdict summary')?.textContent?.trim()
-    ).toBe('⛔ 세션이 멈춤 · 조치 필요');
+    ).toBe('⛔ 확인 필요 · 조치 필요');
     expect(tiles[2].querySelector('.op-btn.rtile__resolve')).not.toBeNull();
     expect(
       tiles[2].querySelector('.rtile__foot .rtile__discard')
@@ -2902,7 +2903,7 @@ describe('views/worker', () => {
     );
     expect(
       tile.querySelector('.wait-verdict summary')?.textContent?.trim()
-    ).toBe('⏸ 세션이 멈춤');
+    ).toBe('⏸ 확인 필요');
     expect(tile.querySelector('.rtile__held-summary')?.textContent).toContain(
       'REVISE 판정'
     );
@@ -2946,6 +2947,80 @@ describe('views/worker', () => {
     expect(document.querySelector('.toast')?.textContent).toBe(
       'codex 새 세션으로 시작 (attempt_transcript_missing)'
     );
+  });
+
+  test('reports no caveat for a same-session conversation launch', () => {
+    const message = resolveSessionToast({
+      launched: true,
+      session: 'launched',
+      mode: 'resume',
+      runner: 'codex'
+    });
+
+    expect(message).toBeNull();
+  });
+
+  test('hands a conversation stop back to the Worker from its tile', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      ok: true,
+      resumed: true,
+      pending: false,
+      conflict: false,
+      reason: null
+    });
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          parked: {
+            attempt_id: 'parked',
+            bead_id: 'PARKED',
+            status: 'parked',
+            cause: 'session_parked',
+            cause_detail: { summary: '결정 대기', awaiting_user: 'x' }
+          }
+        },
+        wait_reasons: [
+          {
+            kind: 'awaiting_user',
+            subject: { bead_id: 'PARKED', root_dir: '/repo' },
+            headline: '사용자 결정 대기 · x',
+            release: '',
+            verdict: 'action_required',
+            targets: [],
+            actions: [
+              {
+                op: 'worker-conversation-handoff',
+                label: '[워커로 이어가기]',
+                payload: {
+                  bead_id: 'PARKED',
+                  root_dir: '/repo',
+                  attempt_id: 'parked'
+                }
+              }
+            ]
+          }
+        ]
+      })
+    );
+    const view = createWorkerView(mount, {
+      queueStore,
+      getWorkspacePath: () => '/repo',
+      transport
+    });
+
+    mount
+      .querySelector('.rtile[data-attempt-id="parked"] .rtile__handoff')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-conversation-handoff', {
+      bead_id: 'PARKED',
+      attempt_id: 'parked',
+      expected_revision: 1
+    });
+    view.destroy();
   });
 
   test('renders a retry_wait attempt as a countdown badge with no actions', () => {

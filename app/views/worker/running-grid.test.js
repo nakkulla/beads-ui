@@ -2570,7 +2570,7 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
         quickfix_lane: false,
         quickfix_landing: null,
         resume_eligible: false,
-        resume_reason: '세션이 멈춤 — [세션에서 해결]로 문의를 이어갑니다',
+        resume_reason: '확인 필요 — [세션에서 해결]로 같은 세션과 대화합니다',
         landed: false,
         confirmation: 'unmerged'
       },
@@ -2595,7 +2595,7 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
       tile
         .querySelector('.rtile__hd .wait-verdict summary')
         ?.textContent?.trim()
-    ).toBe('⏸ 세션이 멈춤');
+    ).toBe('⏸ 확인 필요');
     expect(tile.classList.contains('rtile--parked')).toBe(true);
     expect(tile.classList.contains('rtile--failed')).toBe(false);
   });
@@ -2996,8 +2996,8 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
   });
 
   test.each([
-    ['authority', '세션이 멈춤'],
-    ['unclassified', '세션이 멈춤']
+    ['authority', '확인 필요'],
+    ['unclassified', '확인 필요']
   ])(
     'renders recovery %s with one session resolution and discard control',
     (reason, label) => {
@@ -3039,6 +3039,40 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
       expect(mount.querySelector('.rtile__pause')).toBeNull();
     }
   );
+
+  test('draws the handoff button right after the resolve action', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        waitTile({
+          status_label: undefined,
+          resolve_action: true,
+          handoff_action: true,
+          handoff_attempt_id: 'a1',
+          wait: {
+            summary: 'summary',
+            blockers: [],
+            since: 4000,
+            cause: 'session_ended_unresolved',
+            recovery: {
+              reason: 'authority',
+              label: '확인 필요',
+              sentence: '범위 밖',
+              no_progress: null
+            }
+          }
+        })
+      ]),
+      mount
+    );
+
+    const button = /** @type {HTMLElement|null} */ (
+      mount.querySelector('.rtile__foot .rtile__resolve + .rtile__handoff')
+    );
+    expect(button?.textContent?.trim()).toBe('워커로 이어가기');
+    expect(button?.dataset.attemptId).toBe('a1');
+  });
 
   test('draws no resolve button on a recovery tile without resolve_action', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));

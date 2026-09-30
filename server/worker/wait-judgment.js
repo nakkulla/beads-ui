@@ -184,37 +184,124 @@ function judge(result, verdict, code) {
   result.verdict_reason = { code, message: VERDICT_MESSAGES[code] };
 }
 
+/**
+ * Release sentences for an operation recovery whose schema-2 entry carries no
+ * reason: the disposition alone says what the person decides.
+ *
+ * @type {Record<string, string>}
+ */
+const OPERATION_RECOVERY_RELEASE = {
+  repair:
+    '검증 실패를 세션에서 고친 뒤 [정리 재시도] — 이어갈 지시 또는 폐기를 결정합니다.',
+  reconcile: RECOVERY_WAIT_SENTENCES.reconcile
+};
+
 const INQUIRY_WAITING_MESSAGE =
   '문의 세션이 답을 기다림 — Discord 스레드 또는 tmux 창에서 답';
+const CONVERSATION_WAITING_MESSAGE =
+  '답 대기 — Discord 스레드 또는 tmux 창에서 답';
+
+/** The `[워커로 이어가기]` op for a conversation-stop wait (UI-nuwy §3.6). */
+export const CONVERSATION_HANDOFF_OP = 'worker-conversation-handoff';
 
 /**
- * Judge a session-stalled wait by its live inquiry session, if any (UI-ri8n
- * §3.2): without one the human decision stands; a live one asking or limited
- * still needs the human, and one working or idle leaves only `discard`.
+ * @param {WaitReason} result
+ * @param {string|undefined} attempt_id
+ */
+function handoffAction(result, attempt_id) {
+  result.actions.push({
+    op: CONVERSATION_HANDOFF_OP,
+    label: '[워커로 이어가기]',
+    title:
+      '대화 창을 닫고 Worker가 같은 세션을 무인으로 이어간다 — 결과 줄 자리에 "사용자가 [워커로 이어가기]로 인계"를 싣는다',
+    payload: { ...result.subject, ...(attempt_id ? { attempt_id } : {}) }
+  });
+}
+
+/**
+ * @param {WaitReason} result
+ * @param {string|undefined} attempt_id
+ */
+function discardAction(result, attempt_id) {
+  const payload = { ...result.subject, ...(attempt_id ? { attempt_id } : {}) };
+  result.actions.push({ op: 'worker-discard', label: '폐기', payload });
+}
+
+/**
+ * Judge a conversation-stop wait by its inquiry record (UI-nuwy §3.3 표,
+ * §3.6, §3.8). Without a live conversation the human decision stands. A
+ * conversation record (`conversation` present) follows the message-unit
+ * table: a working or starting turn is `normal`, a turn that ended with a
+ * non-result-line message is the person's turn (`action_required`). A legacy
+ * fork record keeps the UI-ri8n rule it was launched under.
  *
  * @param {WaitReason} result
  * @param {Record<string, any>} queue
  * @param {string} bead_id
- * @param {string|undefined} attempt_id
+ * @param {Record<string, any>|undefined} attempt
  */
-function judgeStalledSession(result, queue, bead_id, attempt_id) {
+function judgeStalledSession(result, queue, bead_id, attempt) {
+  const attempt_id = attempt?.attempt_id;
   const inquiry = queue.interactive_sessions?.[`${bead_id}:inquiry`];
-  const live =
-    !!inquiry && inquiry.state === 'live' && inquiry.settled_at === null;
+  const unsettled = !!inquiry && inquiry.settled_at === null;
+  const conversation = unsettled ? inquiry.conversation : null;
+  if (conversation && (conversation.handoff || conversation.result)) {
+    const kind = conversation.handoff ? 'handoff' : conversation.result.kind;
+    if (kind === 'handoff' || kind === 'takeover') {
+      discardAction(result, attempt_id);
+      return;
+    }
+  }
+  const live = unsettled && inquiry.state === 'live' && !conversation?.result;
   if (!live) {
     judge(result, 'action_required', 'decision');
-    sessionActions(result, attempt_id);
+    const refusal = line(attempt?.cause_detail?.conversation?.refusal);
+    if (refusal) {
+      result.verdict_reason = {
+        code: 'decision',
+        message: `${VERDICT_MESSAGES.decision} · 이어가기 거절: ${refusal}`
+      };
+    }
+    const payload = {
+      ...result.subject,
+      ...(attempt_id ? { attempt_id } : {})
+    };
+    result.actions.push({
+      op: 'worker-resolve-in-session',
+      label: '[세션에서 해결]',
+      payload
+    });
+    if (attempt?.cause_detail?.conversation?.ended_by === 'pane_gone') {
+      handoffAction(result, attempt_id);
+    }
+    discardAction(result, attempt_id);
     return;
   }
-  if (inquiry.turn_state === 'question' || inquiry.turn_state === 'limit') {
+  if (!conversation) {
+    if (inquiry.turn_state === 'question' || inquiry.turn_state === 'limit') {
+      result.verdict = 'action_required';
+      result.verdict_reason = {
+        code: 'decision',
+        message: INQUIRY_WAITING_MESSAGE
+      };
+    }
+    discardAction(result, attempt_id);
+    return;
+  }
+  const turn = inquiry.turn_state;
+  const answered =
+    turn === 'question' ||
+    turn === 'limit' ||
+    (turn === 'idle' && typeof conversation.processed_message_at === 'number');
+  if (turn !== 'running' && answered) {
     result.verdict = 'action_required';
     result.verdict_reason = {
       code: 'decision',
-      message: INQUIRY_WAITING_MESSAGE
+      message: CONVERSATION_WAITING_MESSAGE
     };
+    handoffAction(result, attempt_id);
   }
-  const payload = { ...result.subject, ...(attempt_id ? { attempt_id } : {}) };
-  result.actions.push({ op: 'worker-discard', label: '폐기', payload });
+  discardAction(result, attempt_id);
 }
 
 /**
@@ -518,7 +605,7 @@ export function judgeWaitReasons(input) {
       );
       addClocks(result, { since: attempt.finished_at });
       if (isSessionStalledRecovery(recovery, recovery_blockers)) {
-        judgeStalledSession(result, queue, bead_id, attempt.attempt_id);
+        judgeStalledSession(result, queue, bead_id, attempt);
       } else {
         sessionActions(result, attempt.attempt_id);
       }
@@ -615,9 +702,9 @@ export function judgeWaitReasons(input) {
           bead_id,
           root_dir,
           `사용자 결정 대기 · ${value}`,
-          '문의 세션에서 답하면 해제'
+          '같은 세션과의 대화에서 답하고 인계하면 Worker가 이어간다'
         );
-        judgeStalledSession(result, queue, bead_id, attempt.attempt_id);
+        judgeStalledSession(result, queue, bead_id, attempt);
         addClocks(result, { since: attempt.finished_at });
         wait_reasons.push(result);
       }
@@ -685,16 +772,24 @@ export function judgeWaitReasons(input) {
         result.targets.push({ id: handoff_bead_id, kind: 'issue' });
         addClocks(result, { since: handoff.recorded_at });
         wait_reasons.push(result);
-      } else if (['wait', 'reconcile'].includes(recovery.disposition)) {
+      } else if (
+        ['wait', 'reconcile'].includes(recovery.disposition) ||
+        (recovery.disposition === 'repair' && recovery.code_defect !== true)
+      ) {
+        // Schema 2 reads `verification_failure` as a `repair` with no reason
+        // and `unknown_outcome`/`ownership_uncertain` as a reasonless
+        // `reconcile`: without a handoff Bead nothing repairs them
+        // automatically, so the row still asks a person.
         const token = line(recovery.reason);
         const result = reason(
           'recovery',
           bead_id,
           root_dir,
-          recoveryHeadline(operation.failure?.summary, token),
+          recoveryHeadline(operation.failure?.summary, token) ||
+            line(operation.failure?.code),
           Object.hasOwn(RECOVERY_WAIT_SENTENCES, token)
             ? RECOVERY_WAIT_SENTENCES[token]
-            : token
+            : token || OPERATION_RECOVERY_RELEASE[recovery.disposition] || ''
         );
         addClocks(result, { since: operation.finished_at });
         judge(result, 'action_required', 'decision');

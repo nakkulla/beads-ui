@@ -1,21 +1,33 @@
 import { describe, expect, test } from 'vitest';
-import { isSessionStalledRecovery } from './session-stall.js';
+import {
+  CONVERSATION_RECOVERY_REASONS,
+  conversationStopLabel,
+  isSessionStalledRecovery
+} from './session-stall.js';
+import { loadWorkRecoveryPolicy } from './work-recovery-policy.js';
 
 describe('session stall recovery', () => {
-  test.each([
-    'authority',
-    'verification',
-    'no_progress',
-    'reconcile',
-    'unclassified',
-    'prerequisite'
-  ])('identifies a session-declared %s stall', (reason) => {
-    const recovery = { reason, classification: 'session_recovery_wait' };
+  test.each(['authority', 'no_progress'])(
+    'identifies a current %s stall',
+    (reason) => {
+      const recovery = { reason, classification: 'session_recovery_wait' };
 
-    const result = isSessionStalledRecovery(recovery, []);
+      const result = isSessionStalledRecovery(recovery, []);
 
-    expect(result).toBe(true);
-  });
+      expect(result).toBe(true);
+    }
+  );
+
+  test.each(['verification', 'reconcile', 'unclassified', 'prerequisite'])(
+    'keeps a recorded legacy %s stall read-compatible',
+    (reason) => {
+      const recovery = { reason, classification: 'session_recovery_wait' };
+
+      const result = isSessionStalledRecovery(recovery, []);
+
+      expect(result).toBe(true);
+    }
+  );
 
   test('excludes a policy-classified unknown failure', () => {
     const recovery = {
@@ -37,5 +49,48 @@ describe('session stall recovery', () => {
 
   test.each(['provider', 'credential'])('excludes %s recovery', (reason) => {
     expect(isSessionStalledRecovery({ reason }, [])).toBe(false);
+  });
+
+  test('matches the pinned result-line reasons that need a person', () => {
+    const pinned = loadWorkRecoveryPolicy().policy?.result_line_reasons || [];
+
+    const expected = pinned.filter(
+      (/** @type {string} */ reason) =>
+        !['provider', 'credential', 'prerequisite'].includes(reason)
+    );
+
+    expect([...CONVERSATION_RECOVERY_REASONS].sort()).toEqual(expected.sort());
+  });
+});
+
+describe('conversation stop label', () => {
+  test('labels a park by its awaiting_user value', () => {
+    const label = conversationStopLabel({
+      awaiting_user: 'impl_review_conflict:design'
+    });
+
+    expect(label).toBe('awaiting_user=impl_review_conflict:design');
+  });
+
+  test('labels a current recovery by its reason', () => {
+    const label = conversationStopLabel({
+      recovery: { reason: 'no_progress' }
+    });
+
+    expect(label).toBe('recovery:no_progress');
+  });
+
+  test('marks a legacy recovery as an old record', () => {
+    const label = conversationStopLabel({
+      recovery: { reason: 'verification' }
+    });
+
+    expect(label).toBe('recovery:verification (옛 기록)');
+  });
+
+  test('returns null for a recovery that is no conversation target', () => {
+    const label = conversationStopLabel({ recovery: { reason: 'provider' } });
+
+    expect(label).toBeNull();
   });
 });

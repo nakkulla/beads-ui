@@ -97,6 +97,57 @@ describe('operation recovery wait reasons', () => {
     );
   });
 
+  test('keeps a schema-2 verification repair without a handoff visible', () => {
+    const result = run({
+      queue: queue({
+        repo_operations: {
+          op: operation({
+            failure: { code: 'script_failed', summary: 'npm test 실패\n상세' },
+            recovery: {
+              classification: 'verification_failure',
+              disposition: 'repair',
+              reason: null,
+              code_defect: false,
+              handoff: null
+            }
+          })
+        }
+      })
+    });
+
+    expect(result.wait_reasons).toContainEqual(
+      expect.objectContaining({
+        kind: 'recovery',
+        headline: 'npm test 실패',
+        release: expect.stringContaining('[정리 재시도]'),
+        verdict: 'action_required',
+        actions: [
+          expect.objectContaining({ op: 'worker-resolve-in-session' }),
+          expect.objectContaining({ op: 'worker-discard' })
+        ]
+      })
+    );
+  });
+
+  test('leaves a code-defect repair to its handoff Bead', () => {
+    const result = run({
+      queue: queue({
+        repo_operations: {
+          op: operation({
+            recovery: {
+              disposition: 'repair',
+              reason: null,
+              code_defect: true,
+              handoff: null
+            }
+          })
+        }
+      })
+    });
+
+    expect(result.wait_reasons).toEqual([]);
+  });
+
   test.each([
     { cause_detail: { recovery: { reason: 'unclassified' } } },
     {
@@ -419,6 +470,218 @@ describe('recovery wait judgment', () => {
       'worker-resolve-in-session',
       'worker-discard'
     ]);
+  });
+
+  /**
+   * @param {Record<string, any>} [record]
+   * @param {Record<string, any>} [conversation]
+   */
+  function conversationQueue(record = {}, conversation = {}) {
+    return queue({
+      attempts: { a: recoveryAttempt('authority') },
+      interactive_sessions: liveInquiry({
+        attempt_id: 'a',
+        mode: 'resume',
+        launched_at: NOW - 10 * MINUTE,
+        conversation: {
+          stop: 'recovery:authority',
+          processed_message_at: null,
+          message_excerpt: null,
+          result: null,
+          handoff: null,
+          takeover_notified_at: null,
+          ...conversation
+        },
+        ...record
+      })
+    });
+  }
+
+  /** @param {any} result */
+  const ops = (result) =>
+    result.actions.map((/** @type {any} */ action) => action.op);
+
+  test('judges a running conversation turn normal with discard only', () => {
+    const material = conversationQueue(
+      { turn_state: 'running' },
+      { processed_message_at: NOW - MINUTE }
+    );
+
+    const result = run({ queue: material }).wait_reasons[0];
+
+    expect(result.verdict).toBe('normal');
+    expect(ops(result)).toEqual(['worker-discard']);
+  });
+
+  test.each(['idle', null])(
+    'judges a starting conversation at %s normal before any message',
+    (turn_state) => {
+      const material = conversationQueue({ turn_state });
+
+      const result = run({ queue: material }).wait_reasons[0];
+
+      expect(result.verdict).toBe('normal');
+      expect(ops(result)).toEqual(['worker-discard']);
+    }
+  );
+
+  test('asks for the answer once an idle turn left a processed message', () => {
+    const material = conversationQueue(
+      { turn_state: 'idle' },
+      { processed_message_at: NOW - MINUTE, message_excerpt: '어느 쪽?' }
+    );
+
+    const result = run({ queue: material }).wait_reasons[0];
+
+    expect(result).toMatchObject({
+      verdict: 'action_required',
+      verdict_reason: {
+        code: 'decision',
+        message: '답 대기 — Discord 스레드 또는 tmux 창에서 답'
+      }
+    });
+    expect(ops(result)).toEqual([
+      'worker-conversation-handoff',
+      'worker-discard'
+    ]);
+  });
+
+  test.each(['question', 'limit'])(
+    'asks for the answer while the conversation is at %s',
+    (turn_state) => {
+      const material = conversationQueue({ turn_state });
+
+      const result = run({ queue: material }).wait_reasons[0];
+
+      expect(result.verdict).toBe('action_required');
+      expect(result.actions[0]).toMatchObject({
+        op: 'worker-conversation-handoff',
+        label: '[워커로 이어가기]',
+        payload: { root_dir: ROOT, bead_id: 'UI-consumer', attempt_id: 'a' }
+      });
+    }
+  );
+
+  test('judges a reserved handoff normal with discard only', () => {
+    const material = conversationQueue(
+      { state: 'exiting', turn_state: 'idle' },
+      {
+        processed_message_at: NOW - MINUTE,
+        result: { kind: 'handoff', line: '인계 · 승인', at: NOW },
+        handoff: {
+          line: '인계 · 승인',
+          source: 'result_line',
+          message_at: NOW - MINUTE,
+          reserved_at: NOW
+        }
+      }
+    );
+
+    const result = run({ queue: material }).wait_reasons[0];
+
+    expect(result.verdict).toBe('normal');
+    expect(ops(result)).toEqual(['worker-discard']);
+  });
+
+  test('judges a takeover normal with discard only', () => {
+    const material = conversationQueue(
+      { turn_state: 'running' },
+      { result: { kind: 'takeover', line: '인수 · 끝까지 간다', at: NOW } }
+    );
+
+    const result = run({ queue: material }).wait_reasons[0];
+
+    expect(result.verdict).toBe('normal');
+    expect(ops(result)).toEqual(['worker-discard']);
+  });
+
+  test('offers the handoff button after the window vanished without a result line', () => {
+    const attempt = recoveryAttempt('authority');
+    attempt.cause_detail.conversation = {
+      launched_at: NOW - 10 * MINUTE,
+      ended_at: NOW,
+      ended_by: 'pane_gone',
+      refusal: null
+    };
+
+    const result = run({ queue: queue({ attempts: { a: attempt } }) })
+      .wait_reasons[0];
+
+    expect(result.verdict).toBe('action_required');
+    expect(ops(result)).toEqual([
+      'worker-resolve-in-session',
+      'worker-conversation-handoff',
+      'worker-discard'
+    ]);
+  });
+
+  test.each(['hold', 'handoff', 'takeover'])(
+    'withholds the handoff button after a conversation ended by %s',
+    (ended_by) => {
+      const attempt = recoveryAttempt('authority');
+      attempt.cause_detail.conversation = {
+        launched_at: NOW - 10 * MINUTE,
+        ended_at: NOW,
+        ended_by,
+        refusal: null
+      };
+
+      const result = run({ queue: queue({ attempts: { a: attempt } }) })
+        .wait_reasons[0];
+
+      expect(ops(result)).toEqual([
+        'worker-resolve-in-session',
+        'worker-discard'
+      ]);
+    }
+  );
+
+  test('names a handoff refusal on the returned decision', () => {
+    const attempt = recoveryAttempt('authority');
+    attempt.cause_detail.conversation = {
+      launched_at: NOW - 10 * MINUTE,
+      ended_at: NOW,
+      ended_by: 'handoff',
+      refusal: 'worktree_missing'
+    };
+
+    const result = run({ queue: queue({ attempts: { a: attempt } }) })
+      .wait_reasons[0];
+
+    expect(result.verdict_reason).toEqual({
+      code: 'decision',
+      message: '사용자의 답변이 필요함 · 이어가기 거절: worktree_missing'
+    });
+  });
+
+  test('judges a parked conversation by the same table', () => {
+    const material = queue({
+      attempts: {
+        a: waiting({
+          status: 'parked',
+          cause_detail: { awaiting_user: 'impl_review_conflict:design' }
+        })
+      },
+      interactive_sessions: liveInquiry({
+        turn_state: 'idle',
+        conversation: {
+          stop: 'awaiting_user=impl_review_conflict:design',
+          processed_message_at: NOW - MINUTE,
+          message_excerpt: '어느 쪽?',
+          result: null,
+          handoff: null,
+          takeover_notified_at: null
+        }
+      })
+    });
+
+    const result = run({ queue: material }).wait_reasons[0];
+
+    expect(result).toMatchObject({
+      kind: 'awaiting_user',
+      verdict: 'action_required'
+    });
+    expect(ops(result)).toContain('worker-conversation-handoff');
   });
 
   test('uses only the first session blocker sentence as the headline', () => {
@@ -1315,7 +1578,7 @@ describe('wait judgment holds and manual waits', () => {
     expect(result.wait_reasons[0]).toMatchObject({
       kind: 'awaiting_user',
       headline: '사용자 결정 대기 · 방향 선택',
-      release: '문의 세션에서 답하면 해제',
+      release: '같은 세션과의 대화에서 답하고 인계하면 Worker가 이어간다',
       verdict_reason: { code: 'decision' }
     });
   });

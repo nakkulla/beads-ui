@@ -84,11 +84,7 @@ describe('work recovery classification', () => {
     'credential',
     'prerequisite',
     'authority',
-    'verification',
-    'no_progress',
-    'unclassified',
-    'reconcile',
-    'invented'
+    'no_progress'
   ])('classifies declared recovery token %s', (token) => {
     const classified = classifyFailure({
       cause: 'session_recovery_wait',
@@ -99,13 +95,32 @@ describe('work recovery classification', () => {
     expect(classified).toMatchObject({
       tier: 'waiting',
       recovery: {
-        classification:
-          token === 'invented' ? 'unknown_error' : 'session_recovery_wait',
-        disposition: token === 'reconcile' ? 'reconcile' : 'wait',
-        reason: token === 'invented' ? 'unclassified' : token
+        classification: 'session_recovery_wait',
+        disposition: 'wait',
+        reason: token
       }
     });
   });
+
+  test.each(['verification', 'unclassified', 'reconcile', 'invented'])(
+    'reads an unadvertised recovery token %s as an unknown error',
+    (token) => {
+      const classified = classifyFailure({
+        cause: 'session_recovery_wait',
+        recovery,
+        cause_detail: { reason_token: token }
+      });
+
+      expect(classified).toMatchObject({
+        tier: 'waiting',
+        recovery: {
+          classification: 'unknown_error',
+          disposition: 'wait',
+          reason: 'unclassified'
+        }
+      });
+    }
+  );
 
   test('ignores a declared token when the reason list is not injected', () => {
     const classified = classifyFailure({

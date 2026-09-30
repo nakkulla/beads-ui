@@ -1,7 +1,8 @@
 ---
 id: UI-u6ud-6
 title: Worker 이력 기록과 세션 생존 소유
-status: accepted
+status: superseded
+superseded_by: UI-nuwy-2
 date: 2026-09-23
 summary: "Worker 이력의 SoT는 bead별 append-only events.jsonl이고 queue.json은 살아 있는 상태만 담으며 살아 있는 queue.attempts는 bead 이력의 최신 접미다; 구현·리뷰 attempt의 생존·슬롯 점유·정산 시작은 scheduler reconcile이, 결과 판정은 큐가 소유한다; beads-ui가 띄운 대화형 세션은 슬롯을 점유하지 않는 별도 큐 레코드로 투영되고 그 생존·종료만 reconcile이 소유한다; Worker는 구현 attempt dispatch에서만 open Bead를 in_progress로 선점하고 session_ref는 쓰지 않는다"
 supersedes: [27, 29, 21, "UI-6pif", 50]

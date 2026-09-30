@@ -331,6 +331,49 @@ export function recordedSessionProvider(metadata) {
 }
 
 /**
+ * Whether an attempt's OWN recorded runner session can be reopened on this
+ * machine: a known runner, a recorded session id, and its transcript found
+ * locally. The refusal names which of the three failed; a transcript found
+ * nowhere under a mismatched host label reads `other_host`.
+ *
+ * @param {{ attempt?: { runner?: string, session_id?: string|null }|null, hostname?: string, options?: Parameters<typeof resolveSessionFile>[1] }} input
+ * @returns {{ ok: true, session_id: string, provider: 'claude'|'codex' }|{ ok: false, provider: 'claude'|'codex'|null, reason: 'runner_unknown'|'attempt_session_missing'|'attempt_transcript_missing'|'other_host' }}
+ */
+export function qualifyAttemptSession({ attempt, hostname, options = {} }) {
+  const provider =
+    attempt?.runner === 'claude' || attempt?.runner === 'codex'
+      ? attempt.runner
+      : null;
+  if (provider === null) {
+    return { ok: false, provider: null, reason: 'runner_unknown' };
+  }
+  const session_id = attempt?.session_id;
+  if (typeof session_id !== 'string' || session_id.length === 0) {
+    return { ok: false, provider, reason: 'attempt_session_missing' };
+  }
+  const located = resolveSessionFile(
+    {
+      index: 0,
+      provider,
+      session_id,
+      host: hostname || options.hostname || os.hostname()
+    },
+    options
+  );
+  if (located.locality === 'local') {
+    return { ok: true, session_id, provider };
+  }
+  return {
+    ok: false,
+    provider,
+    reason:
+      located.locality === 'remote'
+        ? 'other_host'
+        : 'attempt_transcript_missing'
+  };
+}
+
+/**
  * Select the attempt transcript, then the recorded ref, then a fresh session.
  * An attempt without a recorded session is not a fork source.
  *
@@ -343,29 +386,16 @@ export function qualifyInteractiveForkSource({
   hostname,
   options = {}
 }) {
-  const attempt_runner =
-    attempt?.runner === 'claude' || attempt?.runner === 'codex'
-      ? attempt.runner
-      : null;
+  const own = qualifyAttemptSession({ attempt, hostname, options });
+  const attempt_runner = own.provider;
   const has_attempt_source =
-    attempt_runner !== null &&
-    typeof attempt?.session_id === 'string' &&
-    attempt.session_id.length > 0;
-  if (
-    has_attempt_source &&
-    resolveSessionFile(
-      {
-        index: 0,
-        provider: attempt_runner,
-        session_id: /** @type {string} */ (attempt.session_id),
-        host: hostname || options.hostname || os.hostname()
-      },
-      options
-    ).locality === 'local'
-  ) {
+    own.ok ||
+    own.reason === 'attempt_transcript_missing' ||
+    own.reason === 'other_host';
+  if (own.ok) {
     return {
-      session_id: /** @type {string} */ (attempt.session_id),
-      provider: attempt_runner,
+      session_id: own.session_id,
+      provider: own.provider,
       source: 'attempt',
       fallback_reason: null
     };

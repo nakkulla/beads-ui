@@ -36,7 +36,11 @@ import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
 import { createNotifier } from './notify.js';
 import { createPrObservationStore } from './pr-observations.js';
-import { MANUAL_MERGE_CONTINUATION, createQueueStore } from './queue-store.js';
+import {
+  MANUAL_MERGE_CONTINUATION,
+  createQueueStore,
+  holdsHandoffReservation
+} from './queue-store.js';
 import { createResolveSession } from './resolve-session.js';
 import { createReviseParkedStore } from './revise-parked.js';
 import { createRunnableCache } from './runnable-cache.js';
@@ -212,12 +216,13 @@ export function createWorkerRuntime() {
       return null;
     }
   }
-  // Process-wide parked-attempt inquiry trigger (UI-gjp2 §1). Process-wide
-  // rather than per-attachment because its duplicate guard is a tmux pane
-  // marker, which is one truth for the whole machine; the workspace it acts on
-  // rides each call. Its own notifier instance carries the `awaitingUser`
-  // transition — the title comes from the `bd show` the trigger already makes,
-  // so no title cache has to be bound to it.
+  // Process-wide same-session conversation launcher (UI-nuwy §3.2, formerly
+  // the UI-gjp2 inquiry trigger). Process-wide rather than per-attachment
+  // because its duplicate guard is a tmux pane marker, which is one truth for
+  // the whole machine; the workspace it acts on rides each call. Its own
+  // notifier instance carries the `🙋 확인 필요` transition — the title comes
+  // from the `bd show` the launcher already makes, so no title cache has to be
+  // bound to it.
   const directionInquiry = createDirectionInquiry({
     getConfig,
     currentRunner,
@@ -229,6 +234,12 @@ export function createWorkerRuntime() {
     },
     readAttempt: (workspace, attempt_id) =>
       queueStore.snapshot(workspace).attempts?.[attempt_id] ?? null,
+    handoffPending: (workspace, bead_id) =>
+      holdsHandoffReservation(
+        queueStore.snapshot(workspace).interactive_sessions?.[
+          `${bead_id}:inquiry`
+        ]
+      ),
     bd: {
       readIssue: async (workspace, bead_id) => {
         const result = await runBdJsonProjected(

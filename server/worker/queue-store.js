@@ -219,6 +219,11 @@
  * context from, and without this field the relationship is unrecoverable from
  * the record. Distinct from `resumed_from`, which names a prior ATTEMPT rather
  * than a session and implies the same transcript continued.
+ * @property {{ line: string, source: 'result_line'|'button' }|null} conversation_return -
+ * Set only on the child a conversation handoff resumed (UI-nuwy §3.4): the
+ * result line it was handed and where that line came from. It is the durable
+ * boundary two judgments read — a handed-back stale park settles without
+ * failing, and the same-cause count does not carry across it. Null elsewhere.
  * @property {'session'|'fresh'|null} continuation_mode - Whether this child
  * reused the provider session or started a replacement session. Null keeps
  * legacy history neutral.
@@ -516,8 +521,41 @@
  * @property {number|null} defer_since
  * @property {'running'|'question'|'limit'|'idle'|null} turn_state
  * @property {number|null} turn_state_since
- * @property {{ text: string, at: number|null }|null} last_message
+ * @property {InteractiveLastMessage|null} last_message
  * @property {number|null} last_message_read_at
+ * @property {ConversationState|null} conversation - Present only on an
+ * inquiry launched as a same-session conversation (UI-nuwy §3.2). A record
+ * without it is a legacy fork/fresh inquiry and keeps the old rules.
+ */
+/**
+ * The last assistant message a reconcile pass read. `excerpt` (≤400 code
+ * points), `first_line` (uncut) and `event_at` (the transcript mtime used as
+ * the message identity when the record carries no timestamp) are written only
+ * by the conversation observation (UI-nuwy §3.3).
+ *
+ * @typedef {Object} InteractiveLastMessage
+ * @property {string} text
+ * @property {number|null} at
+ * @property {string|null} [excerpt]
+ * @property {string|null} [first_line]
+ * @property {number|null} [event_at]
+ */
+/**
+ * @typedef {'handoff'|'takeover'|'hold'} ConversationResultKind
+ */
+/**
+ * Message-unit processing state of one same-session conversation
+ * (UI-nuwy §3.3-§3.6). `processed_message_at` is the identity of the last
+ * message handled exactly once; `handoff` is the reservation the pass turns
+ * into the Worker resume only after the window is confirmed gone.
+ *
+ * @typedef {Object} ConversationState
+ * @property {string} stop - The stop label the entry block printed.
+ * @property {number|null} processed_message_at
+ * @property {string|null} message_excerpt
+ * @property {{ kind: ConversationResultKind, line: string, at: number }|null} result
+ * @property {{ line: string, source: 'result_line'|'button', message_at: number|null, reserved_at: number }|null} handoff
+ * @property {number|null} takeover_notified_at
  */
 /**
  * @typedef {Object} Queue
@@ -3072,16 +3110,109 @@ function normalizeDiscardOperations(raw) {
  * value reads as null.
  *
  * @param {unknown} raw
- * @returns {{ text: string, at: number|null }|null}
+ * @returns {InteractiveLastMessage|null}
  */
 function normalizeLastMessage(raw) {
   if (!isRecord(raw) || typeof raw.text !== 'string' || raw.text.length === 0) {
     return null;
   }
-  return {
+  /** @type {InteractiveLastMessage} */
+  const message = {
     text: raw.text,
-    at: typeof raw.at === 'number' && Number.isFinite(raw.at) ? raw.at : null
+    at: finiteOrNull(raw.at)
   };
+  // The conversation fields ride only when a conversation pass wrote them,
+  // so a legacy record normalizes to exactly its old shape.
+  if (Object.hasOwn(raw, 'excerpt')) {
+    message.excerpt = stringOrNullValue(raw.excerpt);
+  }
+  if (Object.hasOwn(raw, 'first_line')) {
+    message.first_line = stringOrNullValue(raw.first_line);
+  }
+  if (Object.hasOwn(raw, 'event_at')) {
+    message.event_at = finiteOrNull(raw.event_at);
+  }
+  return message;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function finiteOrNull(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function stringOrNullValue(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * Normalize a conversation's processing state; a record without a stop label
+ * is no conversation, and each malformed sub-object reads as null.
+ *
+ * @param {unknown} raw
+ * @returns {ConversationState|null}
+ */
+function normalizeConversation(raw) {
+  if (!isRecord(raw) || typeof raw.stop !== 'string' || !raw.stop) {
+    return null;
+  }
+  const result_raw = raw.result;
+  const result =
+    isRecord(result_raw) &&
+    (result_raw.kind === 'handoff' ||
+      result_raw.kind === 'takeover' ||
+      result_raw.kind === 'hold') &&
+    stringOrNullValue(result_raw.line) !== null &&
+    finiteOrNull(result_raw.at) !== null
+      ? {
+          kind: /** @type {ConversationResultKind} */ (result_raw.kind),
+          line: String(result_raw.line),
+          at: /** @type {number} */ (result_raw.at)
+        }
+      : null;
+  const handoff_raw = raw.handoff;
+  const handoff =
+    isRecord(handoff_raw) &&
+    stringOrNullValue(handoff_raw.line) !== null &&
+    (handoff_raw.source === 'result_line' || handoff_raw.source === 'button') &&
+    finiteOrNull(handoff_raw.reserved_at) !== null
+      ? {
+          line: String(handoff_raw.line),
+          source: /** @type {'result_line'|'button'} */ (handoff_raw.source),
+          message_at: finiteOrNull(handoff_raw.message_at),
+          reserved_at: /** @type {number} */ (handoff_raw.reserved_at)
+        }
+      : null;
+  return {
+    stop: raw.stop,
+    processed_message_at: finiteOrNull(raw.processed_message_at),
+    message_excerpt: stringOrNullValue(raw.message_excerpt),
+    result,
+    handoff,
+    takeover_notified_at: finiteOrNull(raw.takeover_notified_at)
+  };
+}
+
+/**
+ * Whether an interactive record is an unsettled conversation holding a
+ * handoff reservation (UI-nuwy §3.4) — the one record no launch may replace.
+ *
+ * @param {InteractiveSession|undefined} record
+ * @returns {boolean}
+ */
+export function holdsHandoffReservation(record) {
+  return (
+    !!record &&
+    record.kind === 'inquiry' &&
+    record.settled_at === null &&
+    !!record.conversation?.handoff
+  );
 }
 
 /**
@@ -3175,7 +3306,8 @@ function normalizeInteractiveSessions(raw) {
           : null,
       turn_state_since: numberOrNull('turn_state_since'),
       last_message: normalizeLastMessage(value.last_message),
-      last_message_read_at: numberOrNull('last_message_read_at')
+      last_message_read_at: numberOrNull('last_message_read_at'),
+      conversation: normalizeConversation(value.conversation)
     };
   }
   return sessions;
@@ -3433,6 +3565,16 @@ export function makeAttempt(fields) {
       ? clone(fields.continuation_action)
       : null,
     resumed_from: fields.resumed_from ?? null,
+    conversation_return:
+      isRecord(fields.conversation_return) &&
+      typeof fields.conversation_return.line === 'string' &&
+      (fields.conversation_return.source === 'result_line' ||
+        fields.conversation_return.source === 'button')
+        ? {
+            line: fields.conversation_return.line,
+            source: fields.conversation_return.source
+          }
+        : null,
     forked_from_session_id:
       typeof fields.forked_from_session_id === 'string' &&
       fields.forked_from_session_id.length > 0
@@ -6270,6 +6412,16 @@ export function createQueueStore(options = {}) {
       return applyUnconditional(workspace, (next) => {
         const records = normalizeInteractiveSessions({ record });
         if (Object.keys(records).length === 0) {
+          return false;
+        }
+        // An unsettled conversation holding a handoff reservation is ended
+        // only by the reconcile pass that continues it (UI-nuwy §3.4): no new
+        // launch may overwrite the reservation before that settlement.
+        if (
+          Object.keys(records).some((key) =>
+            holdsHandoffReservation(next.interactive_sessions[key])
+          )
+        ) {
           return false;
         }
         Object.assign(next.interactive_sessions, records);

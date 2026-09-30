@@ -99,6 +99,7 @@ import {
   handleWorkerAttemptStop,
   handleWorkerAutomationToggle,
   handleWorkerCleanupRetry,
+  handleWorkerConversationHandoff,
   handleWorkerDiscard,
   handleWorkerDiscardAbandon,
   handleWorkerExternalWait,
@@ -628,6 +629,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-resolve-in-session':
       await handleWorkerResolveInSession(ws, req);
+      return;
+    case 'worker-conversation-handoff':
+      await handleWorkerConversationHandoff(ws, req);
       return;
     case 'worker-merge-queue-add':
       handleWorkerMergeQueueAdd(ws, req);

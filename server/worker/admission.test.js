@@ -270,6 +270,80 @@ describe('worker/admission fail-closed validator', () => {
     expect(result).toEqual({ ok: false, reason: 'gh_unavailable' });
   });
 
+  test('admits a parked bead for the conversation return', async () => {
+    const gitRun = makeGitRun();
+
+    const result = await validateAdmission({
+      gitRun,
+      repo: '/repo',
+      base: BASE,
+      bead: { ...makeBead(), awaiting_user: 'impl_review_conflict:design' },
+      allow_conversation_return: true
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(gitRun).toHaveBeenCalled();
+  });
+
+  test.each([false, undefined, 'true', 1])(
+    'requires literal true to skip the awaiting_user refusal %j',
+    async (option) => {
+      const result = await validateAdmission({
+        gitRun: makeGitRun(),
+        repo: '/repo',
+        base: BASE,
+        bead: { ...makeBead(), awaiting_user: 'x' },
+        allow_conversation_return: /** @type {any} */ (option)
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'awaiting_user' });
+    }
+  );
+
+  test('keeps the external wait refusal for a conversation return', async () => {
+    const result = await validateAdmission({
+      gitRun: makeGitRun(),
+      repo: '/repo',
+      base: BASE,
+      bead: {
+        ...makeBead(),
+        awaiting_user: 'x',
+        external_wait: 'w-012345abcdef'
+      },
+      allow_conversation_return: true
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'external_wait' });
+  });
+
+  test('keeps the ineligible refusal for a conversation return', async () => {
+    const result = await validateAdmission({
+      gitRun: makeGitRun(),
+      repo: '/repo',
+      base: BASE,
+      bead: {
+        ...makeBead({ labels: ['worker-ineligible'] }),
+        awaiting_user: 'x'
+      },
+      allow_conversation_return: true
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'worker_ineligible' });
+  });
+
+  test('keeps the environment refusal for a conversation return', async () => {
+    const result = await validateAdmission({
+      gitRun: makeGitRun(),
+      ghAvailable: async () => false,
+      repo: '/repo',
+      base: BASE,
+      bead: { ...makeBead(), awaiting_user: 'x' },
+      allow_conversation_return: true
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'gh_unavailable' });
+  });
+
   test('admits a bead that carries no awaiting_user key', async () => {
     const bead = makeBead();
 

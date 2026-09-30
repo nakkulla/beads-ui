@@ -497,6 +497,8 @@ export function createMonitorView(mount_element, options) {
   const exec_adopted = new Map();
   /** @type {Set<string>} */
   const resolve_pending = new Set();
+  /** @type {Set<string>} */
+  const handoff_pending = new Set();
 
   /** @type {null | (() => void)} */
   let unsubscribe_pipeline = null;
@@ -793,7 +795,7 @@ export function createMonitorView(mount_element, options) {
         showToast(`이미 열려 있습니다 · ${res.tmux_window || '?'}`, 'info');
       } else if (res?.launched !== true) {
         showToast(`세션 기동 실패: ${res?.reason || 'unknown'}`, 'error');
-      } else if (res.mode !== 'fork') {
+      } else if (res.mode !== 'fork' && res.mode !== 'resume') {
         showToast(
           `${typeof res.runner === 'string' ? res.runner : 'claude'} 새 세션으로 시작 (${res.fallback_reason || 'unknown'})`,
           'success'
@@ -801,6 +803,38 @@ export function createMonitorView(mount_element, options) {
       }
     } finally {
       resolve_pending.delete(bead_id);
+      doRender();
+    }
+  }
+
+  /**
+   * `[워커로 이어가기]` (UI-nuwy §3.6), the Monitor twin of the Worker tab's
+   * click: the server reserves the handoff or continues directly.
+   *
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   * @param {string} root_dir
+   * @param {number} revision
+   */
+  async function handoffToWorker(bead_id, attempt_id, root_dir, revision) {
+    if (!attempt_id || handoff_pending.has(bead_id)) {
+      return;
+    }
+    handoff_pending.add(bead_id);
+    doRender();
+    try {
+      const res = await sendCas(
+        'worker-conversation-handoff',
+        { bead_id, attempt_id },
+        root_dir,
+        revision,
+        false
+      );
+      if (res && !res.conflict && !res.resumed) {
+        showToast(`워커로 이어가기 거부: ${res.reason || 'unknown'}`, 'error');
+      }
+    } finally {
+      handoff_pending.delete(bead_id);
       doRender();
     }
   }
@@ -1072,7 +1106,11 @@ export function createMonitorView(mount_element, options) {
       ${miniRow(
         {
           ...withOverlaps(item),
-          ...tileResolveFields(item, resolve_pending.has(item.id))
+          ...tileResolveFields(
+            item,
+            resolve_pending.has(item.id),
+            handoff_pending.has(item.id)
+          )
         },
         { actions: queueRowOps(item, { nudgeable: true }) }
       )}
@@ -1100,7 +1138,11 @@ export function createMonitorView(mount_element, options) {
       ${miniRow(
         {
           ...withOverlaps(item),
-          ...tileResolveFields(item, resolve_pending.has(item.id))
+          ...tileResolveFields(
+            item,
+            resolve_pending.has(item.id),
+            handoff_pending.has(item.id)
+          )
         },
         { actions: queueRowOps(item) }
       )}
@@ -1355,7 +1397,11 @@ export function createMonitorView(mount_element, options) {
                       open: open_failure_detail === item.attempt_id
                     }
                   : null,
-                ...tileResolveFields(item, resolve_pending.has(item.id))
+                ...tileResolveFields(
+                  item,
+                  resolve_pending.has(item.id),
+                  handoff_pending.has(item.id)
+                )
               },
               now,
               selected_attempt,
@@ -2312,6 +2358,18 @@ export function createMonitorView(mount_element, options) {
     if (cls.contains('rtile__resolve')) {
       void resolveInSession(
         bead_id,
+        root_dir,
+        exec_adopted.get(root_dir)?.revision ?? casOf(bead_id).revision
+      );
+      return;
+    }
+    if (
+      cls.contains('rtile__handoff') ||
+      cls.contains('worker-mini__handoff')
+    ) {
+      void handoffToWorker(
+        bead_id,
+        button.dataset.attemptId || '',
         root_dir,
         exec_adopted.get(root_dir)?.revision ?? casOf(bead_id).revision
       );

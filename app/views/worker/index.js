@@ -521,7 +521,9 @@ export function resolveSessionToast(res) {
   // the recorded session's provider, so the person is about to work in whatever
   // this line says (codex-orchestration-parity §4.2).
   const runner = typeof res.runner === 'string' ? res.runner : 'claude';
-  return res.mode === 'fork'
+  // A same-session conversation (`resume`, UI-nuwy §3.2) reopened exactly the
+  // session the card names, so it needs no caveat either.
+  return res.mode === 'fork' || res.mode === 'resume'
     ? null
     : `${runner} 새 세션으로 시작 (${res.fallback_reason || 'unknown'})`;
 }
@@ -1965,6 +1967,13 @@ export function createWorkerView(mount_element, options = {}) {
    */
   const resolve_pending = new Set();
   /**
+   * Beads whose `[워커로 이어가기]` click is in flight (UI-nuwy §3.6), so a
+   * second click cannot race the first reservation.
+   *
+   * @type {Set<string>}
+   */
+  const handoff_pending = new Set();
+  /**
    * Beads whose REVISE-disposition click is in flight (UI-hs11 §3.5). It covers
    * the same gap `merge_pending` covers — the window between the click and the
    * reply — so a second click cannot be issued while the first is still being
@@ -2458,6 +2467,54 @@ export function createWorkerView(mount_element, options = {}) {
       }
     } finally {
       resolve_pending.delete(bead_id);
+      doRender();
+    }
+  }
+
+  /**
+   * `[워커로 이어가기]` (UI-nuwy §3.6): hand a conversation stop back to the
+   * Worker. The server decides — a reservation while the window closes, a
+   * direct resume after it vanished, or a refusal with its reason.
+   *
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   */
+  async function handoffToWorker(bead_id, attempt_id) {
+    if (!transport || !bead_id || !attempt_id || handoff_pending.has(bead_id)) {
+      return;
+    }
+    handoff_pending.add(bead_id);
+    doRender();
+    try {
+      const res = /** @type {any} */ (
+        await transport('worker-conversation-handoff', {
+          bead_id,
+          attempt_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+      if (res && res.conflict) {
+        showToast(
+          '큐가 바뀌어 클릭이 적용되지 않았습니다 — 다시 눌러주세요',
+          'error',
+          2800
+        );
+      } else if (res && !res.resumed) {
+        showToast(
+          `워커로 이어가기 거부: ${res.reason || 'unknown'}`,
+          'error',
+          2800
+        );
+      } else if (res && res.pending) {
+        showToast(
+          '대화 창을 닫는 중 — 창이 닫히면 Worker가 이어갑니다',
+          'info',
+          2800
+        );
+      }
+    } finally {
+      handoff_pending.delete(bead_id);
       doRender();
     }
   }
@@ -3175,7 +3232,7 @@ export function createWorkerView(mount_element, options = {}) {
                   ? '중단됨'
                   : '실패'
                 : item.run_state === 'parked'
-                  ? '세션이 멈춤'
+                  ? '확인 필요'
                   : item.run_state === 'retry_wait'
                     ? '재시도 대기'
                     : item.run_state === 'waiting'
@@ -3197,7 +3254,11 @@ export function createWorkerView(mount_element, options = {}) {
                   open: open_failure_detail === item.attempt_id
                 }
               : null,
-            ...tileResolveFields(item, resolve_pending.has(item.id))
+            ...tileResolveFields(
+              item,
+              resolve_pending.has(item.id),
+              handoff_pending.has(item.id)
+            )
           })
       );
     // 사람이 결정할 것이 먼저 보여야 한다: 실패, 그 다음 파킹(사용자 결정을
@@ -4099,7 +4160,11 @@ export function createWorkerView(mount_element, options = {}) {
       ${miniRow(
         {
           ...item,
-          ...tileResolveFields(item, resolve_pending.has(item.id))
+          ...tileResolveFields(
+            item,
+            resolve_pending.has(item.id),
+            handoff_pending.has(item.id)
+          )
         },
         { actions: queueRowOps(item) }
       )}
@@ -4150,7 +4215,11 @@ export function createWorkerView(mount_element, options = {}) {
               miniRow(
                 {
                   ...it,
-                  ...tileResolveFields(it, resolve_pending.has(it.id))
+                  ...tileResolveFields(
+                    it,
+                    resolve_pending.has(it.id),
+                    handoff_pending.has(it.id)
+                  )
                 },
                 { actions: queueRowOps(it) }
               )
@@ -5263,6 +5332,21 @@ export function createWorkerView(mount_element, options = {}) {
         tileResolveBtn.closest('.rtile')
       );
       void resolveInSession(tile?.dataset.beadId || '');
+      return;
+    }
+    // [워커로 이어가기] (UI-nuwy §3.6): the row carries its bead on the button,
+    // the tile on the outer `.rtile`; both carry the stopped attempt.
+    const handoffBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__handoff, .rtile__handoff')
+    );
+    if (handoffBtn) {
+      const tile = /** @type {HTMLElement|null} */ (
+        handoffBtn.closest('.rtile')
+      );
+      void handoffToWorker(
+        handoffBtn.dataset.beadId || tile?.dataset.beadId || '',
+        handoffBtn.dataset.attemptId || ''
+      );
       return;
     }
     const discardBtn = /** @type {HTMLElement|null} */ (
