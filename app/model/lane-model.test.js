@@ -1,11 +1,12 @@
 import { render } from 'lit-html';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { normalizeCandidateSort } from '../views/worker/candidate-sort.js';
 import { candidateCard, setChipPresetContext } from '../views/worker/lanes.js';
 import { createWorkspaceAdapter } from '../views/worker/workspace-adapter.js';
 import {
   CANDIDATE_FILTER_DEFAULT,
   MIN_SLOTS,
+  QUEUE_GRACE_MS,
   activeByBead,
   buildLanes,
   lastImplementationStatus,
@@ -8068,5 +8069,61 @@ describe('칩 바인딩 판정 재료 (UI-wg68 §5.1)', () => {
     );
 
     expect(chip.dataset.state).toBe('unapplied');
+  });
+});
+
+describe('next time boundary (UI-dbn6 §3.4)', () => {
+  const NOW = new Date(2026, 8, 30, 12, 0, 0).getTime();
+
+  test('reports the earliest grace expiry among waiting rows', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [
+            { bead_id: 'A-1', added_at: NOW - 5_000 },
+            { bead_id: 'A-2', added_at: NOW - 15_000 }
+          ]
+        })
+      ],
+      [state({ auto_advance: true })]
+    );
+    vi.useRealTimers();
+
+    expect(lanes.next_boundary_at).toBe(NOW - 15_000 + QUEUE_GRACE_MS);
+  });
+
+  test('reports null when no waiting row is inside its grace period', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+
+    const lanes = buildLanes(
+      [workspace({ queue: [{ bead_id: 'A-1', added_at: NOW - 60_000 }] })],
+      [state({ auto_advance: true })]
+    );
+    vi.useRealTimers();
+
+    expect(lanes.next_boundary_at).toBeNull();
+  });
+
+  test('ignores the grace of a repository whose automation is off', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+
+    const lanes = buildLanes(
+      [workspace({ queue: [{ bead_id: 'A-1', added_at: NOW - 1_000 }] })],
+      [state({ auto_advance: false })]
+    );
+    vi.useRealTimers();
+
+    expect(lanes.next_boundary_at).toBeNull();
+  });
+
+  test('reports null for an empty snapshot', () => {
+    const lanes = buildLanes(null, null);
+
+    expect(lanes.next_boundary_at).toBeNull();
   });
 });

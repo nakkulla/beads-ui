@@ -1,5 +1,11 @@
 /**
- * Minimal app state store with subscription.
+ * Minimal app state store with subscription, plus the shell's persisted
+ * preferences (UI-dbn6 §3.2·§3.3).
+ *
+ * The DISPLAY scope (`beads-ui.scope`: `*` or a root_dir) and the CONNECTED
+ * workspace (`beads-ui.workspace`: always a real root_dir) are separate facts.
+ * The "hidden or unregistered → remove" rule applies to the connected
+ * workspace alone; a scope naming a repo that is gone simply reads as 전체.
  */
 import { debug } from '../utils/logging.js';
 
@@ -12,7 +18,11 @@ import { debug } from '../utils/logging.js';
  */
 
 /**
- * @typedef {'worker'|'monitor'|'compare'|'adr'} ViewName
+ * The screen on display. `pipeline`·`compare`·`adr` are the shell's screens;
+ * the legacy names remain in the union only for bridged components that still
+ * type against them until Phase 4 removes those components.
+ *
+ * @typedef {'pipeline'|'compare'|'adr'|'worker'|'monitor'} ViewName
  */
 
 /**
@@ -43,8 +53,13 @@ import { debug } from '../utils/logging.js';
  */
 
 /**
- * @typedef {{ selected_id: string | null, view: ViewName, filters: Filters, worker: WorkerState, workspace: WorkspaceState, config: { workspace_config: WorkspaceConfig } }} AppState
+ * @typedef {{ selected_id: string | null, detail_root: string | null, scope: string, view: ViewName, filters: Filters, worker: WorkerState, workspace: WorkspaceState, config: { workspace_config: WorkspaceConfig } }} AppState
+ * @typedef {{ selected_id?: string | null, detail_root?: string | null, scope?: string, view?: ViewName, filters?: Partial<Filters>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState>, config?: AppConfig }} AppStatePatch
  */
+
+export const SCOPE_KEY = 'beads-ui.scope';
+export const WORKSPACE_KEY = 'beads-ui.workspace';
+export const ALL_SCOPE = '*';
 
 const DEFAULT_CONFIG = Object.freeze({
   workspace_config: {
@@ -71,17 +86,27 @@ function normalizeConfig(input) {
 }
 
 /**
+ * @param {string[]} a
+ * @param {string[]} b
+ */
+function sameList(a, b) {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/**
  * Create a simple store for application state.
  *
- * @param {{ selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState>, config?: AppConfig }} [initial]
- * @returns {{ getState: () => AppState, setState: (patch: { selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState>, config?: AppConfig }) => void, subscribe: (fn: (s: AppState) => void) => () => void }}
+ * @param {AppStatePatch} [initial]
+ * @returns {{ getState: () => AppState, setState: (patch: AppStatePatch) => void, subscribe: (fn: (s: AppState) => void) => () => void }}
  */
 export function createStore(initial = {}) {
   const log = debug('state');
   /** @type {AppState} */
   let state = {
     selected_id: initial.selected_id ?? null,
-    view: initial.view ?? 'worker',
+    detail_root: initial.detail_root ?? null,
+    scope: initial.scope ?? ALL_SCOPE,
+    view: initial.view ?? 'pipeline',
     filters: {
       status: initial.filters?.status ?? 'all',
       search: initial.filters?.search ?? '',
@@ -122,7 +147,7 @@ export function createStore(initial = {}) {
     /**
      * Update state. Nested filters can be partial.
      *
-     * @param {{ selected_id?: string | null, view?: ViewName, filters?: Partial<Filters>, worker?: Partial<WorkerState>, workspace?: Partial<WorkspaceState>, config?: AppConfig }} patch
+     * @param {AppStatePatch} patch
      */
     setState(patch) {
       /** @type {AppState} */
@@ -153,24 +178,22 @@ export function createStore(initial = {}) {
       const workspace_changed =
         next.workspace.current?.path !== state.workspace.current?.path ||
         next.workspace.available.length !== state.workspace.available.length ||
-        next.workspace.hidden.length !== state.workspace.hidden.length ||
-        next.workspace.hidden.some(
-          (path, index) => path !== state.workspace.hidden[index]
-        );
+        !sameList(next.workspace.hidden, state.workspace.hidden);
       const config_changed =
         next.config.workspace_config.default_workspace !==
         state.config.workspace_config.default_workspace;
       if (
         next.selected_id === state.selected_id &&
+        next.detail_root === state.detail_root &&
+        next.scope === state.scope &&
         next.view === state.view &&
         next.filters.status === state.filters.status &&
         next.filters.search === state.filters.search &&
         next.filters.type === state.filters.type &&
         next.worker.selected_parent_id === state.worker.selected_parent_id &&
-        next.worker.show_closed_children.length ===
-          state.worker.show_closed_children.length &&
-        next.worker.show_closed_children.every(
-          (id, index) => id === state.worker.show_closed_children[index]
+        sameList(
+          next.worker.show_closed_children,
+          state.worker.show_closed_children
         ) &&
         !workspace_changed &&
         !config_changed
@@ -180,19 +203,277 @@ export function createStore(initial = {}) {
       state = next;
       log('state change %o', {
         selected_id: state.selected_id,
+        detail_root: state.detail_root,
+        scope: state.scope,
         view: state.view,
-        filters: state.filters,
-        worker: state.worker,
-        workspace: state.workspace.current?.path,
-        config: {
-          default_workspace: state.config.workspace_config.default_workspace
-        }
+        workspace: state.workspace.current?.path
       });
       emit();
     },
     subscribe(fn) {
       subs.add(fn);
       return () => subs.delete(fn);
+    }
+  };
+}
+
+/**
+ * @typedef {{ getItem: (key: string) => string|null, setItem: (key: string, value: string) => void, removeItem: (key: string) => void }} KeyStorage
+ */
+
+/**
+ * @param {KeyStorage|null|undefined} storage
+ * @param {string} key
+ * @returns {string|null}
+ */
+function readKey(storage, key) {
+  try {
+    return storage ? storage.getItem(key) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {KeyStorage|null|undefined} storage
+ * @param {string} key
+ * @param {string|null} value - `null` removes the key.
+ */
+function writeKey(storage, key, value) {
+  try {
+    if (!storage) {
+      return;
+    }
+    if (value === null) {
+      storage.removeItem(key);
+    } else {
+      storage.setItem(key, value);
+    }
+  } catch {
+    // storage denial must not break the shell
+  }
+}
+
+/**
+ * @param {KeyStorage|null|undefined} storage
+ * @returns {string} `*` or a root_dir.
+ */
+export function readScope(storage) {
+  const raw = readKey(storage, SCOPE_KEY);
+  return raw && raw.length > 0 ? raw : ALL_SCOPE;
+}
+
+/**
+ * @param {KeyStorage|null|undefined} storage
+ * @param {string} scope
+ */
+export function writeScope(storage, scope) {
+  writeKey(storage, SCOPE_KEY, scope || ALL_SCOPE);
+}
+
+/**
+ * @param {KeyStorage|null|undefined} storage
+ * @returns {string|null}
+ */
+export function readSavedWorkspace(storage) {
+  const raw = readKey(storage, WORKSPACE_KEY);
+  return raw && raw.length > 0 ? raw : null;
+}
+
+/**
+ * @param {KeyStorage|null|undefined} storage
+ * @param {string} root_dir
+ */
+export function writeSavedWorkspace(storage, root_dir) {
+  writeKey(storage, WORKSPACE_KEY, root_dir);
+}
+
+/**
+ * The saved connected workspace when it is still registered and visible;
+ * otherwise the key is removed and `null` returned (spec
+ * 2026-07-20-hidden-workspace-restore-guard). The scope key is never touched.
+ *
+ * @param {KeyStorage|null|undefined} storage
+ * @param {string[]} available_paths
+ * @param {string[]} hidden
+ * @returns {string|null}
+ */
+export function pruneSavedWorkspace(storage, available_paths, hidden) {
+  const saved = readSavedWorkspace(storage);
+  if (!saved) {
+    return null;
+  }
+  if (!available_paths.includes(saved) || hidden.includes(saved)) {
+    writeKey(storage, WORKSPACE_KEY, null);
+    return null;
+  }
+  return saved;
+}
+
+/** Lane collapse keys, one per scope kind (the old Monitor / Worker keys). */
+const LANE_COLLAPSE_KEYS = {
+  all: 'beads-ui.monitor.lane-collapsed',
+  repo: 'beads-ui.worker.lane-collapsed'
+};
+const SECTIONS_KEY = 'beads-ui.monitor.sections';
+const CANDIDATE_FILTER_KEY = 'beads-ui.monitor.candidate-filter';
+const CANDIDATE_SORT_KEY = 'bdui.worker.candidate_sort';
+const RUNNING_SORT_KEY = 'bdui.monitor.running_sort';
+const DONE_RANGE_KEY = 'bdui.worker.done-range';
+const ONLY_SHOWN_KEY = 'beads-ui.pipeline.only-shown';
+const MOBILE_LANE_KEY = 'beads-ui.pipeline.mobile-lane';
+
+/**
+ * @param {string|null} raw
+ * @returns {any}
+ */
+function parseJson(raw) {
+  if (!raw) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The pipeline screen's persisted view preferences. Keys continue the old
+ * Worker/Monitor keys so a user's stored choices carry over.
+ *
+ * @param {KeyStorage|null|undefined} storage
+ */
+export function createPipelinePrefs(storage) {
+  /**
+   * @param {'all'|'repo'} kind
+   * @returns {{ lanes: Record<string, boolean>, areas: Record<string, boolean> }}
+   */
+  function collapseState(kind) {
+    const parsed = parseJson(readKey(storage, LANE_COLLAPSE_KEYS[kind]));
+    if (parsed && typeof parsed === 'object' && parsed.lanes) {
+      return {
+        lanes: { ...parsed.lanes },
+        areas: { ...(parsed.areas || {}) }
+      };
+    }
+    return { lanes: { done: true }, areas: {} };
+  }
+
+  /** @returns {Record<string, Record<string, boolean>>} */
+  function sections() {
+    const parsed = parseJson(readKey(storage, SECTIONS_KEY));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  }
+
+  return {
+    /**
+     * @param {'all'|'repo'} kind
+     * @param {string} lane
+     * @returns {boolean}
+     */
+    laneCollapsed(kind, lane) {
+      return collapseState(kind).lanes[lane] === true;
+    },
+    /**
+     * @param {'all'|'repo'} kind
+     * @param {string} lane
+     * @param {boolean} value
+     */
+    setLaneCollapsed(kind, lane, value) {
+      const next = collapseState(kind);
+      next.lanes[lane] = value;
+      writeKey(storage, LANE_COLLAPSE_KEYS[kind], JSON.stringify(next));
+    },
+    /**
+     * @param {'all'|'repo'} kind
+     * @param {'parallel'|'serial'} area
+     * @returns {boolean}
+     */
+    areaCollapsed(kind, area) {
+      return collapseState(kind).areas[area] === true;
+    },
+    /**
+     * @param {'all'|'repo'} kind
+     * @param {'parallel'|'serial'} area
+     * @param {boolean} value
+     */
+    setAreaCollapsed(kind, area, value) {
+      const next = collapseState(kind);
+      next.areas[area] = value;
+      writeKey(storage, LANE_COLLAPSE_KEYS[kind], JSON.stringify(next));
+    },
+    /**
+     * @param {string} root_dir
+     * @param {string} lane - `runnable` for the candidate lane, else the lane id.
+     * @returns {boolean}
+     */
+    bundleCollapsed(root_dir, lane) {
+      return sections()[root_dir]?.[lane] === true;
+    },
+    /**
+     * @param {string} root_dir
+     * @param {string} lane
+     * @param {boolean} value
+     */
+    setBundleCollapsed(root_dir, lane, value) {
+      const all = sections();
+      all[root_dir] = { ...(all[root_dir] || {}), [lane]: value };
+      writeKey(storage, SECTIONS_KEY, JSON.stringify(all));
+    },
+    /** @returns {any} Raw stored candidate filter (normalized by the caller). */
+    candidateFilter() {
+      return parseJson(readKey(storage, CANDIDATE_FILTER_KEY));
+    },
+    /** @param {Record<string, unknown>} filter */
+    setCandidateFilter(filter) {
+      writeKey(storage, CANDIDATE_FILTER_KEY, JSON.stringify(filter));
+    },
+    /** @returns {string} A candidate sort preset id. */
+    candidateSort() {
+      const raw = readKey(storage, CANDIDATE_SORT_KEY);
+      const parsed = parseJson(raw);
+      const preset =
+        parsed && typeof parsed === 'object' ? parsed.preset : raw || '';
+      return typeof preset === 'string' ? preset : '';
+    },
+    /** @param {string} preset */
+    setCandidateSort(preset) {
+      writeKey(storage, CANDIDATE_SORT_KEY, JSON.stringify({ preset }));
+    },
+    /** @returns {'started'|'elapsed'} */
+    runningSort() {
+      return readKey(storage, RUNNING_SORT_KEY) === 'elapsed'
+        ? 'elapsed'
+        : 'started';
+    },
+    /** @param {'started'|'elapsed'} value */
+    setRunningSort(value) {
+      writeKey(storage, RUNNING_SORT_KEY, value);
+    },
+    /** @returns {string|null} Raw stored done range. */
+    doneRange() {
+      return readKey(storage, DONE_RANGE_KEY);
+    },
+    /** @param {string} value */
+    setDoneRange(value) {
+      writeKey(storage, DONE_RANGE_KEY, value);
+    },
+    /** @returns {boolean} */
+    onlyShown() {
+      return readKey(storage, ONLY_SHOWN_KEY) === 'true';
+    },
+    /** @param {boolean} value */
+    setOnlyShown(value) {
+      writeKey(storage, ONLY_SHOWN_KEY, value ? 'true' : 'false');
+    },
+    /** @returns {string|null} */
+    mobileLane() {
+      return readKey(storage, MOBILE_LANE_KEY);
+    },
+    /** @param {string} lane */
+    setMobileLane(lane) {
+      writeKey(storage, MOBILE_LANE_KEY, lane);
     }
   };
 }

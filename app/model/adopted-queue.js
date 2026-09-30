@@ -57,3 +57,71 @@ export function pruneAdopted(adopted, rows) {
     }
   }
 }
+
+/**
+ * Per-repo adoption of mutation-response queues for the 전체 scope (UI-dbn6
+ * §4.2). One rule, per repository: a response older than the last revision
+ * this client observed (monitor row) or adopted is dropped; adopting never
+ * touches the monitor store or its `seq`; and a held queue is pruned once the
+ * monitor row's revision reaches it.
+ *
+ * @returns {{ adopt: (root_dir: string, queue: any) => boolean, observe: (rows: Array<Record<string, any>>) => void, get: (root_dir: string) => any, overlay: (rows: Array<Record<string, any>>) => Array<Record<string, any>>, key: () => string }}
+ */
+export function createAdoptedQueues() {
+  /** @type {Map<string, any>} */
+  const held = new Map();
+  /** @type {Map<string, number>} */
+  const floor = new Map();
+
+  return {
+    adopt(root_dir, queue) {
+      if (
+        typeof root_dir !== 'string' ||
+        root_dir.length === 0 ||
+        !isRecord(queue) ||
+        typeof queue.revision !== 'number'
+      ) {
+        return false;
+      }
+      const min = floor.get(root_dir);
+      if (typeof min === 'number' && queue.revision < min) {
+        return false;
+      }
+      held.set(root_dir, queue);
+      floor.set(root_dir, queue.revision);
+      return true;
+    },
+    observe(rows) {
+      const list = Array.isArray(rows) ? rows : [];
+      for (const row of list) {
+        if (
+          isRecord(row) &&
+          typeof row.root_dir === 'string' &&
+          typeof row.revision === 'number'
+        ) {
+          floor.set(
+            row.root_dir,
+            Math.max(floor.get(row.root_dir) ?? row.revision, row.revision)
+          );
+        }
+      }
+      pruneAdopted(held, list);
+    },
+    get(root_dir) {
+      return held.get(root_dir);
+    },
+    overlay(rows) {
+      return (Array.isArray(rows) ? rows : []).map((row) =>
+        isRecord(row) && held.has(row.root_dir)
+          ? mergeQueue(row, held.get(row.root_dir))
+          : row
+      );
+    },
+    key() {
+      return [...held]
+        .map(([root_dir, queue]) => `${root_dir}:${queue.revision}`)
+        .sort()
+        .join('|');
+    }
+  };
+}

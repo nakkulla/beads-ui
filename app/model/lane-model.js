@@ -606,6 +606,8 @@ const DONE_KIND_LABELS = {
  * 서버 배열의 entry 수 (§5.1). 통합 pane은 단일 `data-lane-length`를 가질 수
  * 없으므로 드롭 좌표는 이 값에서만 나온다.
  * @property {Record<string, string>} owner_of - bead_id → root_dir.
+ * @property {number|null} next_boundary_at - The earliest grace expiry among
+ * waiting rows (epoch ms), or `null` when none is pending (UI-dbn6 §3.4).
  */
 
 /**
@@ -4744,7 +4746,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
     done,
     parallel_rows: [],
     parallel_raw_length: Object.fromEntries(raw_queue_length_by_root),
-    owner_of: {}
+    owner_of: {},
+    next_boundary_at: null
   };
 
   for (const item of [
@@ -4763,6 +4766,22 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // 직렬 레인 행 전부다. 유예 칩과 유예로 서는 `[지금 시작]`이 이 값을 읽는다.
   for (const item of model.queue) {
     item.manual_only = manual_only_roots.has(item.root_dir);
+  }
+
+  // 다음 시간 경계 (UI-dbn6 §3.4): 유예 칩과 유예로 서는 `[지금 시작]`은 시계가
+  // 지나는 것만으로 사라지므로, 화면은 가장 이른 유예 만료 시각에 한 번 다시
+  // 그린다. 같은 `now`로 판정해 칩과 경계가 어긋나지 않는다.
+  for (const item of model.queue) {
+    if (item.manual_only === true || typeof item.added_at !== 'number') {
+      continue;
+    }
+    const expiry = item.added_at + QUEUE_GRACE_MS;
+    if (
+      expiry > now &&
+      (model.next_boundary_at === null || expiry < model.next_boundary_at)
+    ) {
+      model.next_boundary_at = expiry;
+    }
   }
 
   /** @type {Map<string, import('../protocol.js').WaitReason[]>} */
