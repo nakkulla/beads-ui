@@ -1001,9 +1001,9 @@ describe('createBulkPane account tab (UI-628r §3.3)', () => {
 });
 
 describe('bulk pane narrow width (UI-nu43 §3.2)', () => {
-  test('stacks the head and wraps the checkboxes at 640px or below', () => {
+  test('stacks the head and wraps the checkboxes below 720px', () => {
     const css = readFileSync(
-      path.resolve(process.cwd(), 'app/styles.css'),
+      path.resolve(process.cwd(), 'app/screens/settings/settings.css'),
       'utf8'
     );
     const targets_rule = css.slice(

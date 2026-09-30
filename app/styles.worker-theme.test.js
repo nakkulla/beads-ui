@@ -27,6 +27,11 @@ const DETAIL_HISTORY = readFileSync(
 );
 // The repo-ops timeline drawer moved onto its own overlay host with its
 // screen sheet in UI-dbn6 Phase 3.
+// The settings dialog rules moved to the settings screen sheet (Phase 3).
+const SETTINGS = readFileSync(
+  path.resolve(process.cwd(), 'app/screens/settings/settings.css'),
+  'utf8'
+);
 const REPO_OPS = readFileSync(
   path.resolve(process.cwd(), 'app/screens/repo-ops/repo-ops.css'),
   'utf8'
@@ -76,9 +81,10 @@ describe('worker console styles', () => {
 
   test('applies the settings dialog grid only while open', () => {
     const baseRule =
-      CSS.match(/(?:^|\n)\.settings-dialog\s*{([^}]*)}/)?.[1] || '';
+      SETTINGS.match(/(?:^|\n)\.settings-dialog\s*{([^}]*)}/)?.[1] || '';
     const openRule =
-      CSS.match(/(?:^|\n)\.settings-dialog\[open\]\s*{([^}]*)}/)?.[1] || '';
+      SETTINGS.match(/(?:^|\n)\.settings-dialog\[open\]\s*{([^}]*)}/)?.[1] ||
+      '';
 
     expect(baseRule).not.toContain('display:');
     expect(openRule).toContain('display: grid');

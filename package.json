@@ -81,6 +81,7 @@
     "app/screens/doc-viewer/doc-viewer.css",
     "app/screens/new-issue/new-issue.css",
     "app/screens/dialogs/dialogs.css",
+    "app/screens/settings/settings.css",
     "app/screens/adr/adr.css",
     "app/screens/compare/compare.css",
     "app/screens/usage/usage.css",

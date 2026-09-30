@@ -167,18 +167,6 @@ button.interactive-session-badge {
 }
 
 /* `칩` 탭의 행 (UI-wg68 §6): 라벨 하나와 select 하나짜리 줄이다. */
-.settings-chips__row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 6px 0;
-}
-.settings-chips__label {
-  min-width: 6rem;
-}
-.settings-chips__error {
-  color: var(--chip-alert, inherit);
-}
 
 .ctl-chip--from {
   color: var(--chip-from);
