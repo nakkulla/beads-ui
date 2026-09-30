@@ -120,8 +120,9 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * @property {HoldTile|null} [hold] - 슬롯 1 판정과 상세 팝오버에만 쓰는 hold 재료.
  * `retry_wait` 타일 foot의 `↻ 지금 재시도`가 쓰는 CAS 재료이고, 보류가 없으면
  * 키 자체가 없어 버튼이 서지 않는다 (fail-quiet).
- * @property {'running'|'paused'|'failed'|'orphaned'|'parked'|'retry_wait'|'waiting'|'provider_hold'} [status] - Raw
- * attempt status, used to distinguish failure from orphan interruption.
+ * @property {'running'|'paused'|'failed'|'orphaned'|'parked'|'retry_wait'|'waiting'|'provider_hold'|'in_progress'|'open'} [status] - Raw
+ * attempt status, used to distinguish failure from orphan interruption. A
+ * session tile carries the Bead status (`in_progress` or `open`) instead.
  * @property {string} [status_label] - Recovery label shown alongside elapsed time
  * while running, or terminal status label shown instead of elapsed time.
  * @property {boolean} [can_pause] - Running attempt whose session id is already
@@ -1445,7 +1446,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         : ''}${session && !external_wait
         ? html`<span
             class="rtile__session-badge"
-            title="Worker가 아닌 세션이 in_progress로 잡은 이슈"
+            title=${tile.status === 'open'
+              ? 'Worker가 아닌 세션 창이 열려 있는 이슈 · 아직 클레임 전'
+              : 'Worker가 아닌 세션이 in_progress로 잡은 이슈'}
             >직접 세션</span
           >`
         : ''}${status_badges}${interactiveSessionBadgesTemplate(

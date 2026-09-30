@@ -1273,6 +1273,17 @@ describe('session tile (UI-yrzu §6)', () => {
     );
   });
 
+  test('tells an unclaimed open session tile that its window is open', () => {
+    const tile = renderSession({ status: 'open' });
+
+    const badge = tile.querySelector('.rtile__session-badge');
+
+    expect(badge?.textContent).toBe('직접 세션');
+    expect(badge?.getAttribute('title')).toBe(
+      'Worker가 아닌 세션 창이 열려 있는 이슈 · 아직 클레임 전'
+    );
+  });
+
   test('renders no worker operation control and no session drawer', () => {
     const tile = renderSession();
 
