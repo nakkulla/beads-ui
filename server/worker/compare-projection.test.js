@@ -2570,6 +2570,12 @@ describe('worker/compare-projection grouping and summary', () => {
     ).toEqual([]);
   });
 
+  test('keeps the is_bench field false on every forwarded row', () => {
+    const model = projectAttempts([makeAttempt()]);
+
+    expect(model.rows.map((row) => row.is_bench)).toEqual([false]);
+  });
+
   test('removes obsolete main-table fields from rows and groups', () => {
     const model = projectAttempts([makeAttempt()]);
 
@@ -2577,7 +2583,6 @@ describe('worker/compare-projection grouping and summary', () => {
       'signature',
       'signature_parts',
       'verify_source',
-      'is_bench',
       'attempt',
       'representative'
     ]) {

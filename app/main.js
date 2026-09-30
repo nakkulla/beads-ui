@@ -716,6 +716,37 @@ export function bootstrap(root_element) {
     }
   }
 
+  /** The detail root a switch is already carrying the connection to. */
+  let detail_switch_root = '';
+
+  /**
+   * A detail route names its repo (`detail_root`). History navigation can land
+   * on one the connection has left, so connect it first: the detail
+   * subscription waits for the switch (`wants().enabled`) and `setWorkspace`
+   * drops a reply a newer switch overtook.
+   *
+   * @param {string|null} root
+   */
+  function followDetailRoot(root) {
+    const state = store.getState();
+    if (
+      !boot_done ||
+      !root ||
+      root === connectedPath() ||
+      root === detail_switch_root ||
+      !state.workspace.available.some((ws) => ws.path === root) ||
+      state.workspace.hidden.includes(root)
+    ) {
+      return;
+    }
+    detail_switch_root = root;
+    void setWorkspace(root).finally(() => {
+      if (detail_switch_root === root) {
+        detail_switch_root = '';
+      }
+    });
+  }
+
   // --- route ----------------------------------------------------------------------
 
   let last_view = '';
@@ -734,6 +765,7 @@ export function bootstrap(root_element) {
     }
     if (state.selected_id) {
       detail_mount.hidden = false;
+      followDetailRoot(state.detail_root);
       detail_panel.load(state.selected_id);
     } else if (!detail_mount.hidden) {
       detail_mount.hidden = true;

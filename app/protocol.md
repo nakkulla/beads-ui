@@ -1422,6 +1422,7 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
   sessions, retired kinds and bench clone attempts (a `bench`-labelled bead or
   an attempt carrying `bench_verify`). It retains identity, issue, route,
   status, cause, `verify`, `review`, `usage`, `duration_ms`, `is_retry`,
+  `is_bench` (always `false` now that bench clone attempts are excluded),
   `started_at` and `finished_at`. It adds:
   - `outcome: { kind, evidence, head_sha?, pr_url? }`, where kind is
     `landed|failed|aborted|parked|superseded|waiting|unknown|in_flight`.
@@ -1450,8 +1451,8 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
     `impl_actor: { kind, label, model, effort, parts? }` with `kind` one of
     `delegated`, `main`, `missing` or `mixed` and `parts` present only on
     `mixed`, and `composition: "<model>/<effort> → <impl_actor.label>"` with
-    missing axes labeled `미기록`. Rows omit `signature`, `signature_parts`,
-    `verify_source` and `is_bench`.
+    missing axes labeled `미기록`. Rows omit `signature`, `signature_parts` and
+    `verify_source`.
 - Groups use `preset:<id>` or `sig:<composition>` keys on the preset axis,
   `<model>/<effort>` on orchestration, and `main`, executor label, `미기록`, or
   `mixed:<distinct unit executor labels sorted and joined with +>` on

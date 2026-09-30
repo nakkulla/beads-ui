@@ -241,6 +241,8 @@ export function createCompareView(root, options = {}) {
         root_dirs: filters.root_dir ? [filters.root_dir] : [],
         routes: filters.route ? [filters.route] : [],
         group_by,
+        // Fixed by the spec (§3.9): this screen has no experiment half.
+        include_bench: false,
         ...(saved_criteria === null
           ? {}
           : { problem_criteria: saved_criteria }),

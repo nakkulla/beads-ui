@@ -59,6 +59,9 @@ export const BULK_SETTINGS_TABS = [
 ];
 
 /** Bulk-mode pane heading shared by every tab. */
+/** `history.state` mark of the entry an open settings window pushed. */
+const HISTORY_MARK = 'settings';
+
 const BULK_TITLE = '여러 저장소 설정';
 
 /** Bulk-mode one-line subtitle per tab. */
@@ -503,8 +506,41 @@ export function createSettingsDialog(mount_element, options) {
     doRender();
   }
 
+  /** Whether the open window pushed a history entry not yet popped. */
+  let pushed = false;
+
+  /**
+   * @param {unknown} state
+   * @returns {boolean}
+   */
+  const isOwnEntry = (state) =>
+    Boolean(state) &&
+    typeof state === 'object' &&
+    /** @type {any} */ (state).bdui_overlay === HISTORY_MARK;
+
+  /** A close from the window itself takes back the entry its open pushed. */
+  const releaseHistory = () => {
+    if (!pushed) {
+      return;
+    }
+    pushed = false;
+    if (isOwnEntry(window.history.state)) {
+      window.history.back();
+    }
+  };
+
+  // Back navigation closes the window like the transcript sheet (§3.6).
+  const onPopState = () => {
+    if (is_open && !isOwnEntry(window.history.state)) {
+      pushed = false;
+      close();
+    }
+  };
+  window.addEventListener('popstate', onPopState);
+
   const onDialogClose = () => {
     is_open = false;
+    releaseHistory();
     // `cancel` fires while the dialog is still open, and a queued `close` may
     // land after a reopen — only a dialog that is really shut drops its pane.
     if (!dialog.open) {
@@ -589,6 +625,10 @@ export function createSettingsDialog(mount_element, options) {
     } else {
       dialog.setAttribute('open', '');
     }
+    if (!pushed) {
+      window.history.pushState({ bdui_overlay: HISTORY_MARK }, '');
+      pushed = true;
+    }
     if (scope !== 'monitor') {
       void ensureExecutionPane()?.load();
     }
@@ -599,6 +639,7 @@ export function createSettingsDialog(mount_element, options) {
       return;
     }
     is_open = false;
+    releaseHistory();
     destroyBulkPane();
     options.onOpenChange?.(false);
     if (typeof dialog.close === 'function') {
@@ -624,6 +665,7 @@ export function createSettingsDialog(mount_element, options) {
     sessionDraft: () => execution_pane?.sessionDraft() ?? {},
     destroy() {
       is_open = false;
+      window.removeEventListener('popstate', onPopState);
       dialog.removeEventListener('close', onDialogClose);
       dialog.removeEventListener('cancel', onDialogClose);
       dialog.removeEventListener('click', onBackdropClick);

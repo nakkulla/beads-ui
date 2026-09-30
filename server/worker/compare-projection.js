@@ -1262,7 +1262,6 @@ function wireRows(rows) {
     delete rest.human_summaries;
     delete rest.representative;
     delete rest.verify_source;
-    delete rest.is_bench;
     return rest;
   });
 }

@@ -253,6 +253,31 @@ describe('createSettingsDialog tabs', () => {
   });
 });
 
+describe('createSettingsDialog history (UI-dbn6 §3.6)', () => {
+  test('closes the window on back navigation', async () => {
+    const { dialog } = mount();
+    dialog.open();
+    await settle();
+
+    window.history.replaceState(null, '');
+    window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+
+    expect(dialog.isOpen()).toBe(false);
+  });
+
+  test('pops its own history entry when closed from the window', async () => {
+    const { dialog } = mount();
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {});
+    dialog.open();
+    await settle();
+
+    dialog.close();
+
+    expect(back).toHaveBeenCalledTimes(1);
+    back.mockRestore();
+  });
+});
+
 describe('createSettingsDialog repo scope (UI-e1ta §7)', () => {
   const REPO_ROWS = [
     {

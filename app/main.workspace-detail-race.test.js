@@ -190,4 +190,71 @@ describe('main workspace detail race', () => {
       );
     expect(detail_ops.at(-1)?.type).toBe('subscribe-list');
   });
+
+  test('reconnects to the detail root before subscribing a history-restored detail', async () => {
+    window.location.hash = '#/pipeline?issue=A-1&root=%2Frepo-a';
+    /** @type {any} */ (window).__BDUI_BOOTSTRAP__ = {
+      workspace_config: { default_workspace: null }
+    };
+    const calls = /** @type {{ type: string, payload: any }[]} */ ([]);
+    CLIENT = {
+      send: vi.fn(async (type, payload) => {
+        calls.push({ type, payload });
+        if (type === 'list-workspaces') {
+          return {
+            workspaces: [
+              { path: '/repo-a', database: '/repo-a/.beads/ui.db' },
+              { path: '/repo-b', database: '/repo-b/.beads/ui.db' }
+            ],
+            current: {
+              root_dir: '/repo-a',
+              db_path: '/repo-a/.beads/ui.db'
+            }
+          };
+        }
+        if (type === 'set-workspace') {
+          return {
+            changed: true,
+            workspace: {
+              root_dir: payload.path,
+              db_path: `${payload.path}/.beads/ui.db`
+            }
+          };
+        }
+        if (type === 'subscribe-list') {
+          return { id: payload.id, key: payload.type };
+        }
+        return null;
+      }),
+      on() {
+        return () => {};
+      },
+      close() {},
+      getState() {
+        return 'open';
+      }
+    };
+    const root = setupShell();
+    bootstrap(root);
+    await flushPromises();
+    const before = calls.length;
+
+    window.location.hash = '#/pipeline?issue=B-1&root=%2Frepo-b';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await flushPromises();
+
+    const after = calls.slice(before);
+    const set_index = after.findIndex(
+      (call) =>
+        call.type === 'set-workspace' && call.payload?.path === '/repo-b'
+    );
+    const detail_index = after.findIndex(
+      (call) =>
+        call.type === 'subscribe-list' &&
+        call.payload?.type === 'issue-detail' &&
+        call.payload?.params?.id === 'B-1'
+    );
+    expect(set_index).toBeGreaterThanOrEqual(0);
+    expect(detail_index).toBeGreaterThan(set_index);
+  });
 });
