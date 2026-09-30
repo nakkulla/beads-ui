@@ -147,10 +147,12 @@ PR 대기 레인은 `[일괄 머지]`/`[일괄 머지 중단]`, 완료 레인은
 `2026-08-25-card-header-grammar-unify-design.md` §2 줄 순서와 §5.1 슬롯 표,
 `2026-08-28-chip-grammar-unify-design.md` 칩 클릭 의미, `2026-09-02-worker-
 operation-surface-unify-design.md` §3.2 `.op-btn` 자리 규칙, 대기 어휘 4종(UI-a5l2
-§3.1)을 승계한다. 이 문서 기준 이후 착지한 카드 동작 — 문의 세션이 살아 있는 동안의
-배지와 `[세션에서 해결]` 표시 규칙(ADR UI-ri8n, `tile-resolve.js`), 외부 대기 조작의
-서버 `actions[]`가 싣는 `placement`(`card`|`detail`)·`confirm`(UI-r6xq) — 도 그대로
-승계한다. 바꾸는 것은 셋뿐이며 각각 이 문서가 슬롯을 정한다.
+§3.1)을 승계한다. 이 문서 기준 이후 착지한 카드 동작 — 같은 Worker 세션 대화의 배지
+꼬리(`대화 중 <경과>`·`답 대기`·`사람 인수`)와 `⏸ 확인 필요` 행의 `[세션에서 해결]`·
+`[워커로 이어가기]` 표시 규칙(ADR UI-nuwy, `tile-resolve.js` `tileResolveFields`; 이
+판정과 출구 조항의 정본은 UI-nuwy이고 새 카드는 서버 투영 결과를 그리기만 한다), 외부
+대기 조작의 서버 `actions[]`가 싣는 `placement`(`card`|`detail`)·`confirm`(UI-r6xq)
+— 도 그대로 승계한다. 바꾸는 것은 셋뿐이며 각각 이 문서가 슬롯을 정한다.
 
 1. **진행 띠**: 슬롯 3의 stepper는 카드 상단 가장자리의 5칸 띠로 그린다(spec·
    plan·구현·PR·머지, 산출물 있음 = 어두운 단계색, 리뷰·현재 = 밝은 단계색,
@@ -452,7 +454,8 @@ minify 350KB 이하(gzip 120KB 이하, 압축은 UI-j2h3). 라이브 모드
 lane-count` · `worker-queue-set-orchestration-defaults`(설정) · `worker-automation-
 toggle`(툴바·레포 띠) · `worker-merge-auto-toggle` · `worker-merge-queue-add`(머지) ·
 `worker-merge-queue-add-all`(일괄 머지) · `worker-merge-queue-remove`(취소·일괄 중단)
-· `worker-cleanup-retry` · `worker-resolve-in-session` · `worker-discard` ·
+· `worker-cleanup-retry` · `worker-resolve-in-session` ·
+`worker-conversation-handoff`(`[워커로 이어가기]`, UI-nuwy) · `worker-discard` ·
 `worker-discard-abandon` · `worker-revise-fix` · `worker-revise-approve` ·
 `worker-attempt-pause` · `worker-attempt-resume`(이어하기·⋯ 다른 방법으로·지시 입력)
 · `worker-provider-probe-now` · `external_wait_check`/`_stop`/`_resume`와 서버가
@@ -520,10 +523,12 @@ claude-account/switch`·`/api/codex-account/switch`) · 사용량 폴링(화면 
   범위 모두 monitor-pipeline 채널의 같은 행으로 5레인을 조립하고 레포 범위만
   worker-queue 채널을 더한다; 카드는 슬롯 표를 승계하되 진행은 상단 5칸 띠이고
   굵은 포인터의 대기 행 조작은 이동 시트 하나이며 모바일은 레인 하나씩 보인다".
-  대체 대상: UI-ri8n은 UI-l48z를 대체하며 그 조항을 승계한 현재 결정이다. UI-ri8n이
-  새로 정한 조항(문의 세션 단계가 정하는 멈춤 판정, 살아 있는 문의·해결 세션이 없을
-  때만 서는 `[세션에서 해결]`)은 새 ADR이 그대로 승계한다
-  → ADR, supersede UI-ri8n
+  대체 대상: UI-nuwy는 UI-ri8n(UI-l48z를 대체하며 그 조항을 승계)을 대체하며 나머지
+  조항을 승계한 현재 결정이다. 사람 대화(문의) 세션의 멈춤 판정과 `[세션에서 해결]`·
+  `[워커로 이어가기]` 출구 조항은 UI-nuwy가 정본이고(사용자 결정 2026-09-30: 나중에
+  착지하는 쪽이 앞서 착지한 쪽의 ADR을 승계한다), 새 ADR은 UI-nuwy의 조항을 그대로
+  승계한다
+  → ADR, supersede UI-nuwy
 - 도움말 범례·실험 벤치·표시 정책·정렬 체인 편집기 제거. 되돌리기 쉬움: 사용자
   결정이며 프로토콜 Removed 목록과 git 이력이 근거를 남긴다. 맥락 필요 낮음
   → ADR 아님
