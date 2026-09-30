@@ -425,7 +425,6 @@ export function createPipelineScreen(mount, deps) {
     return {
       now: now(),
       chips: chipContext(),
-      show_repo: scopeKind() === 'all',
       coarse: viewport.coarse,
       selected_attempt: ui.selected_attempt,
       open_failure: ui.open_failure

@@ -25,7 +25,6 @@ import {
   popoverChip,
   prLink,
   priorityBadge,
-  repoBadge,
   routeChip,
   sourceChips,
   timeSpan,
@@ -535,8 +534,6 @@ export function miniRow(item, ctx, options = {}) {
         ? html`<span class="pl-grip" aria-hidden="true">⠿</span>`
         : ''}${typeof item.seq === 'number'
         ? html`<span class="pl-seq" aria-hidden="true">${item.seq}</span>`
-        : ''}${ctx.show_repo
-        ? repoBadge(item.workspace_name, item.root_dir)
         : ''}${idChip(item.id)}${priorityBadge(item.priority)}${prLink(
         item.pr_url,
         item.pr_number
@@ -641,7 +638,6 @@ function doneRow(item, ctx) {
     data-lane="done"
   >
     <div class="pl-line1">
-      ${ctx.show_repo ? repoBadge(item.workspace_name, item.root_dir) : ''}
       ${idChip(item.id)}${priorityBadge(item.priority)}${prLink(
         item.pr_url,
         item.pr_number

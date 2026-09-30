@@ -28,7 +28,6 @@ import {
   laneOriginChip,
   popoverBody,
   priorityBadge,
-  repoBadge,
   routeChip,
   sourceChips,
   timeSpan,
@@ -757,7 +756,6 @@ export function runningTile(item, ctx) {
             : ' is-live'}"
         aria-hidden="true"
       ></span>
-      ${ctx.show_repo ? repoBadge(item.workspace_name, item.root_dir) : ''}
       ${idChip(item.id)}${priorityBadge(item.priority)}${lineage
         ? html`<span class="pl-badge pl-badge--quiet" title=${lineage}>↻</span>`
         : ''}${session && !external_wait

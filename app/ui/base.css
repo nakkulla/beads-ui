@@ -1762,7 +1762,7 @@ select.detail-kv__v:disabled {
 }
 
 .ui-brand {
-  color: var(--h1-md);
+  color: var(--text-title);
   font-size: var(--fs-lg);
   font-weight: 800;
   letter-spacing: -0.02em;
@@ -1782,7 +1782,7 @@ select.detail-kv__v:disabled {
 }
 
 .ui-nav__link.is-on {
-  color: var(--h1-md);
+  color: var(--text-title);
   background: var(--bg-card);
 }
 
@@ -1808,7 +1808,7 @@ select.detail-kv__v:disabled {
   border: 1px solid var(--border-chip);
   border-radius: 999px;
   background: var(--bg-card);
-  color: var(--h1-md);
+  color: var(--text-title);
   font: inherit;
   font-size: var(--fs-md);
   cursor: pointer;
@@ -1881,7 +1881,7 @@ select.detail-kv__v:disabled {
 
 .ui-scope__item.is-on {
   background: var(--bg-card);
-  color: var(--h1-md);
+  color: var(--text-title);
 }
 
 .ui-scope__sub {
@@ -1917,7 +1917,7 @@ select.detail-kv__v:disabled {
   border: 1px solid var(--border-chip);
   border-radius: 8px;
   background: var(--bg-card);
-  color: var(--h1-md);
+  color: var(--text-title);
   font: inherit;
   font-size: var(--fs-md);
   font-weight: 600;
@@ -1963,7 +1963,7 @@ select.detail-kv__v:disabled {
 
 .ui-chip.is-on {
   border-color: var(--text-muted);
-  color: var(--h1-md);
+  color: var(--text-title);
 }
 
 .ui-select,
@@ -1973,7 +1973,7 @@ select.detail-kv__v:disabled {
   border: 1px solid var(--border-chip);
   border-radius: 7px;
   background: var(--bg-panel);
-  color: var(--h1-md);
+  color: var(--text-title);
   font: inherit;
   font-size: var(--fs-sm);
   line-height: 1.4;
@@ -2041,7 +2041,7 @@ select.detail-kv__v:disabled {
 .ui-sheet__title {
   flex: 1 1 auto;
   margin: 0;
-  color: var(--h1-md);
+  color: var(--text-title);
   font-size: var(--fs-lg);
   overflow-wrap: anywhere;
 }

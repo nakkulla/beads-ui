@@ -643,17 +643,6 @@
   font-weight: 600;
 }
 
-.pl-repo {
-  background: var(--bg-panel);
-  border: 0;
-  border-radius: 999px;
-  padding: 1px 7px;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-}
-
 .pl-grip {
   color: var(--text-gripline);
   cursor: grab;
@@ -693,7 +682,7 @@
 
 .pl-title {
   margin: 5px 0 6px;
-  color: var(--h1-md);
+  color: var(--text-title);
   font-size: 13.5px;
   font-weight: 500;
   line-height: 1.4;

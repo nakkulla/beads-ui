@@ -23,7 +23,6 @@ import {
   popoverChip,
   priorityBadge,
   progressBand,
-  repoBadge,
   routeChip,
   sourceChips,
   timesLine
@@ -35,7 +34,7 @@ import { externalWaitParts, interactiveBadges } from './wait.js';
  * @import { ChipPresetContext } from '../../model/chip-preset-binding.js'
  * @import { OpDef } from './chips.js'
  * @typedef {import('lit-html').TemplateResult} TemplateResult
- * @typedef {{ now: number, chips: ChipPresetContext|null, show_repo: boolean }} CardContext
+ * @typedef {{ now: number, chips: ChipPresetContext|null }} CardContext
  */
 
 /** Tooltip sentence of a valid `session-preferred` reason (UI-49mc §4.4). */
@@ -208,7 +207,6 @@ export function candidateCard(item, ctx, options = {}) {
   >
     ${progressBand(item.workflow, item.status)}
     <div class="pl-line1">
-      ${ctx.show_repo ? repoBadge(item.workspace_name, item.root_dir) : ''}
       ${idChip(item.id)}${priorityBadge(
         item.priority
       )}${item.rereview_required === true

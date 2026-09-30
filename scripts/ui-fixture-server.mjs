@@ -267,6 +267,7 @@ export function buildPipelineFixture(options = {}) {
       serial_lane_count: index === 0 ? 1 : 0,
       counts: { running: 1, pr_wait: 1, queue: 3, runnable: 3 },
       orchestration_model: 'sonnet',
+      runner_catalog: { runtimes: {} },
       session_defaults: {},
       execution_defaults: {
         supported: true,

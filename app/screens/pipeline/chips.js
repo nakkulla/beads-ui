@@ -50,7 +50,9 @@ import {
 
 /**
  * A `[data-ts]` span. The first paint is computed here so the text is right
- * before the ticker's first beat.
+ * before the ticker's first beat. The text is a `.textContent` property
+ * binding, not a child part: the ticker rewrites `textContent`, which would
+ * eject a child part's marker nodes and break the next render.
  *
  * @param {number|null|undefined} ts
  * @param {string} fmt
@@ -69,8 +71,10 @@ export function timeSpan(ts, fmt, options = {}) {
     data-ts-pre=${ifDefined(options.pre)}
     data-ts-post=${ifDefined(options.post)}
     title=${ifDefined(options.title)}
-    >${value ? `${options.pre || ''}${value}${options.post || ''}` : ''}</span
-  >`;
+    .textContent=${value
+      ? `${options.pre || ''}${value}${options.post || ''}`
+      : ''}
+  ></span>`;
 }
 
 /**
@@ -198,28 +202,6 @@ export function priorityBadge(priority) {
   return html`<span class="pl-pri" title=${`우선순위 P${level}`}
     >P${level}</span
   >`;
-}
-
-/**
- * The repo badge (slot 1, 전체 scope only). Click narrows the scope to it.
- *
- * @param {string|undefined} name
- * @param {string|undefined} root_dir
- * @returns {TemplateResult|''}
- */
-export function repoBadge(name, root_dir) {
-  if (!name || !root_dir) {
-    return '';
-  }
-  return html`<button
-    type="button"
-    class="pl-repo"
-    data-op="scope-repo"
-    data-root-dir=${root_dir}
-    title=${`${root_dir} — 이 레포로 좁히기`}
-  >
-    ${name}
-  </button>`;
 }
 
 /**
