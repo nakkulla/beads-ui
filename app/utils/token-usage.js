@@ -8,9 +8,9 @@
  * output. The aggregate below therefore exposes provider subtotals instead of
  * one cross-provider grand total.
  *
- * This module lives in `app/utils` rather than `app/views/worker` because it
- * has two consumers: the worker lanes/tiles and the detail panel's session
- * history (UI-d7pw §1.3).
+ * This module lives in `app/utils` rather than `app/model` because the server
+ * imports it by this path (UI-dbn6 §4.1); its client consumers are the
+ * pipeline lanes/tiles and the detail panel's session history (UI-d7pw §1.3).
  *
  * Cost is priced per leg from the runner catalog (preset-compare §1.3), so a
  * Codex leg no longer erases the whole attempt's price. The aggregate is the

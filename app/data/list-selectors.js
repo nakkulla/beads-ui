@@ -12,7 +12,7 @@ import {
   cmpCreatedDescThenPriority,
   cmpPriorityThenCreatedDesc,
   cmpUpdatedDesc
-} from './sort.js';
+} from '../model/sort.js';
 
 /**
  * Column sort modes (UX v3 spec §3). All of them are pure comparators; omitting

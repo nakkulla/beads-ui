@@ -59,7 +59,8 @@ export async function handleGetCompare(ws, req, seams = {}) {
           ? payload.group_by
           : 'preset',
       routes: payload.routes,
-      include_bench: payload.include_bench,
+      // An old client's `include_bench` is accepted and ignored — never a
+      // `bad_request` (UI-dbn6 §4.5): bench rows are simply not forwarded.
       problem_criteria: payload.problem_criteria,
       since: bounds.since,
       until: bounds.until

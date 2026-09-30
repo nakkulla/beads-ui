@@ -24,9 +24,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { providerClock } from '../../app/views/worker/gate-labels.js';
-import { buildLanes } from '../../app/views/worker/lane-model.js';
-import { prWaitProgress } from '../../app/views/worker/pr-wait-progress.js';
+import { providerClock } from '../../app/model/gate-labels.js';
+import { buildLanes } from '../../app/model/lane-model.js';
+import { prWaitProgress } from '../../app/model/pr-wait-progress.js';
 import { validateAdmission } from '../worker/admission.js';
 import { createAutoMerge } from '../worker/auto-merge.js';
 import {

@@ -13,7 +13,8 @@
  *   (2) the same round trips once no push arrived for `--idle-ms`;
  *   (3) the first snapshot's JSON bytes versus the socket bytes received for it
  *       (raw TCP client negotiating permessage-deflate, `net.Socket.bytesRead`);
- *   (4) `GET /main.bundle.js` and `/styles.css` with `Accept-Encoding: gzip`;
+ *   (4) `GET /main.bundle.js` and `/ui/primitives.css` with
+ *       `Accept-Encoding: gzip`;
  *   (5) `ping` round trips every 250ms during the idle wait (p50/p99/max).
  *
  * Write mode (`--apply-preset` with `--repos`) sends `apply-impl-preset-global`
@@ -557,7 +558,7 @@ async function main() {
     report.snapshot_bytes = await measureSnapshotBytes(args.target);
     report.assets = [
       await measureAsset(args.target, '/main.bundle.js'),
-      await measureAsset(args.target, '/styles.css')
+      await measureAsset(args.target, '/ui/primitives.css')
     ];
 
     if (args.apply_preset !== null) {

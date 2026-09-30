@@ -256,8 +256,8 @@ export const QUICK_FIX_ORCHESTRATION_KEYS = [
  *
  * This is a storage-name mapping, not a preset profile mapping. An execution
  * preset carries canonical names in both profiles (design §3.2), and it is the
- * workspace apply path and `bench-runs.js` that still need the prefixed names
- * because the kv object and the queue keep them.
+ * workspace apply path that still needs the prefixed names because the kv
+ * object and the queue keep them.
  *
  * @type {Readonly<Record<string, string>>}
  */

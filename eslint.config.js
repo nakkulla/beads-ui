@@ -4,6 +4,13 @@ import plugin_n from 'eslint-plugin-n';
 import { defineConfig } from 'eslint/config';
 import globals from 'globals';
 
+/** lit-html `render` outside the render-count wrapper (UI-dbn6 §4.1). */
+const LIT_RENDER_RESTRICTION = {
+  name: 'lit-html',
+  importNames: ['render'],
+  message: 'Render through app/ui/render.js (render_count).'
+};
+
 export default defineConfig([
   {
     ignores: [
@@ -66,6 +73,20 @@ export default defineConfig([
     files: ['app/**/*.js'],
     languageOptions: {
       globals: globals.browser
+    }
+  },
+  {
+    // UI-dbn6: every mounted root renders through app/ui/render.js so
+    // window.__bdui.render_count sees it; tests render detached fixtures.
+    files: ['app/**/*.js'],
+    ignores: ['app/ui/render.js', '**/*.test.js'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [LIT_RENDER_RESTRICTION]
+        }
+      ]
     }
   }
 ]);

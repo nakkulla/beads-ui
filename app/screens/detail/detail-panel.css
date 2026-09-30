@@ -1,0 +1,886 @@
+/*
+ * Issue detail panel sections (moved out of `ui/base.css` in the UI-dbn6
+ * design-system round): overlay frame, fields, dependencies, artifacts,
+ * key/value rows and inline editing.
+ */
+
+/* --- detail overlay (minimal; Phase 8 expands) --- */
+.detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-drawer);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.detail-overlay__backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--overlay);
+}
+
+.detail-overlay__panel {
+  position: relative;
+  width: min(720px, 94vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  padding: 12px 14px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-4);
+  box-shadow: var(--e3);
+}
+
+/* ID + ✕ 한 줄. 패널 스크롤 컨테이너에 sticky로 붙어 긴 상세에서도 닫기가 항상
+   보인다. 음수 margin으로 패널 padding을 덮어 바 배경이 가장자리까지 닿는다. */
+.detail-overlay__bar {
+  position: sticky;
+  top: calc(-1 * 12px);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: calc(-1 * 12px) calc(-1 * 14px) 0;
+  padding: 6px 8px 4px 14px;
+  background: var(--raised);
+}
+
+.detail-overlay__close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-3);
+  background: none;
+  color: var(--ink-3);
+  font-size: var(--t-15);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.detail-overlay__close:hover {
+  color: var(--ink);
+  background: var(--card);
+}
+
+.detail-overlay__id {
+  font-family: var(--font-mono);
+  font-size: var(--t-14);
+  color: var(--ink-2);
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+  border-bottom: 1px dotted var(--ink-2);
+}
+
+.detail-overlay__title {
+  font-size: var(--t-15);
+  color: var(--ink);
+  font-weight: 600;
+  margin: 6px 0 10px;
+}
+
+.detail-overlay__meta {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.detail-overlay__desc {
+  font-size: var(--t-12);
+  color: var(--ink-2);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* notes는 줄 단위 계보 텍스트(게이트 영수증·REVISE findings)라 마크다운으로
+   렌더하지 않고 원문 줄바꿈을 그대로 보존한다 (UI-yp64 §4). */
+.detail-overlay__notes {
+  font-size: var(--t-12);
+  color: var(--ink-2);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.detail-overlay__section-label {
+  font-size: var(--t-11);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 12px 0 6px;
+}
+
+/* --- detail panel: shared section primitives (detail-panel.html) --- */
+.detail-section-label {
+  font-size: var(--t-11);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 12px 0 6px;
+}
+
+.detail-empty {
+  font-size: var(--t-12);
+  color: var(--ink-3);
+  padding: 2px 0;
+}
+
+/* dependencies */
+.detail-deps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.detail-dep {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--t-12);
+  color: var(--ink-2);
+  padding: 1.5px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  background: none;
+}
+
+.detail-dep__link {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+  padding: 0;
+}
+
+.detail-dep--link,
+.detail-dep--link .detail-dep__link {
+  cursor: pointer;
+}
+.detail-dep--link:hover {
+  border-color: var(--blue-bg);
+}
+
+/* 후행·나머지는 읽기 전용이다 — 편집할 수 있는 선행 칩만 본색을 쓴다
+   (UI-lx45 §4.1). 새 색 토큰 없이 기존 muted 토큰만으로 티어를 만든다. */
+.detail-dep--succ,
+.detail-dep--other {
+  color: var(--ink-3);
+  border-color: var(--line);
+}
+
+.detail-dep__unlink {
+  border: none;
+  background: none;
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.detail-dep__unlink:hover {
+  color: var(--red-fg);
+}
+
+.detail-dep-add {
+  position: relative;
+  margin-top: 4px;
+}
+
+.detail-dep-add__input {
+  width: 100%;
+  font-family: var(--font-sans);
+  font-size: var(--t-12);
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  padding: 1.5px 7px;
+}
+
+.detail-dep-add__list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 3px;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  background: var(--card);
+}
+
+.detail-dep-add__cand {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  text-align: left;
+  font-size: var(--t-12);
+  color: var(--ink-2);
+  border: none;
+  background: none;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+.detail-dep-add__cand:hover:not(:disabled) {
+  background: var(--card);
+}
+.detail-dep-add__cand:disabled {
+  color: var(--ink-3);
+  cursor: not-allowed;
+}
+
+.detail-dep-add__repo {
+  flex: none;
+  font-size: var(--t-11);
+  color: var(--ink-3);
+}
+
+.detail-dep-add__id {
+  flex: none;
+  font-family: var(--font-mono);
+  color: var(--ink-2);
+}
+
+.detail-dep-add__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-dep-add__empty {
+  font-size: var(--t-12);
+  color: var(--ink-3);
+  padding: 3px 7px;
+}
+
+/* artifacts */
+.detail-art {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  padding: 6px 8px;
+  margin-bottom: 5px;
+}
+
+.detail-art__ic {
+  color: var(--blue-fg);
+  font-size: var(--t-13);
+}
+
+.detail-art__path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--t-12);
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* authoring-time spec draft (UI-fqwn): the path is pinned before publication,
+   so the row reads as openable-but-unpublished rather than as a spec_id. */
+.detail-art__badge {
+  flex: 0 0 auto;
+  font-size: var(--t-11);
+  color: var(--ink-3);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-2);
+  padding: 0 5px;
+}
+
+.detail-art__op {
+  font-size: var(--t-11);
+  color: var(--green-fg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  padding: 1px 7px;
+  background: none;
+  cursor: pointer;
+}
+
+.detail-art__cap {
+  font-size: var(--t-11);
+  color: var(--ink-3);
+  margin: 2px 0 0 4px;
+}
+
+/* key/value rows (workflow summary + exec settings) */
+.detail-kv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.detail-kv__k {
+  font-size: var(--t-12);
+  color: var(--ink-3);
+  flex: 0 0 auto;
+}
+
+[data-exec-setting-label] {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-width: 24rem;
+}
+
+[data-exec-setting-title] {
+  color: var(--ink-2);
+  font-family: var(--font-sans);
+}
+
+[data-exec-setting-key] {
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  font-weight: 400;
+}
+
+[data-exec-setting-help] {
+  margin-top: 2px;
+  color: var(--ink-3);
+  font-family: var(--font-sans);
+  font-size: var(--t-11);
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.detail-exec-presets {
+  margin-top: 12px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  background: var(--card);
+}
+
+.detail-exec-presets .detail-section-label {
+  margin-top: 0;
+}
+
+.detail-exec-presets__controls {
+  display: flex;
+  gap: 6px;
+}
+
+.detail-exec-presets__controls select {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.detail-exec-presets p {
+  margin: 6px 0 0;
+  color: var(--ink-3);
+  font-size: var(--t-11);
+}
+
+.detail-exec-presets button {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background: var(--raised);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.detail-exec-presets button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.detail-kv__v {
+  font-size: var(--t-12);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  padding: 1px 8px;
+  background: var(--raised);
+  max-width: 60%;
+}
+
+.detail-kv__v--sel {
+  color: var(--blue-fg);
+}
+
+.detail-kv__v--wrap {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 충돌 해소 파생 행: 머지 경로가 매끄럽지 않았다는 주의 신호라서 blocked 계열의
+   경고 색을 그대로 쓴다 — 새 토큰을 만들면 같은 의미의 색이 둘로 갈린다. */
+.detail-kv__v--resolver {
+  color: var(--amber-fg);
+  border-color: var(--amber-bg);
+}
+
+/* derived (unpinned) route value — inferred, not a settled pin (§6) */
+.detail-kv__v--derived {
+  opacity: 0.55;
+  border-style: dashed;
+}
+
+/* read-only created/updated rows (UX v3 spec §1): plain value, no chip box */
+.detail-kv__v--time {
+  border-color: transparent;
+  background: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+
+select.detail-kv__v {
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+/* An exec row whose value cannot apply — a `self`/`skip` review step dispatches
+   no separate leg, so its effort is inert rather than merely unset (mqcj §4.4).
+   The gate has to READ as a gate, not as an empty choice. */
+select.detail-kv__v:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Model row: the select plus its derived-runner badge (UI-jrb3). The group owns
+   the row's value-side width so the select keeps its old 60% cap. */
+.detail-kv__vgroup {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  max-width: 60%;
+}
+
+.detail-kv__vgroup .detail-kv__v {
+  max-width: 100%;
+}
+
+.detail-kv__note {
+  flex: 0 0 auto;
+  font-size: var(--t-11);
+  font-family: var(--font-mono);
+  color: var(--ink-3);
+}
+
+/* --- detail panel: inline editing (title / description / labels) --- */
+.detail-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.detail-edit-btn {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: var(--ink-3);
+  font-size: var(--t-13);
+  cursor: pointer;
+  padding: 0 2px;
+}
+.detail-edit-btn:hover {
+  color: var(--blue-fg);
+}
+
+.detail-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 10px;
+}
+
+.detail-edit__input,
+.detail-edit__textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-sans);
+  font-size: var(--t-12);
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  padding: 6px 8px;
+}
+
+.detail-edit__textarea {
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.detail-edit__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.detail-edit__save,
+.detail-edit__cancel {
+  font-size: var(--t-11);
+  border-radius: var(--radius-2);
+  padding: 3px 8px;
+  background: none;
+  cursor: pointer;
+}
+
+.detail-edit__save {
+  color: var(--green-fg);
+  border: 1px solid var(--line);
+}
+
+.detail-edit__cancel {
+  color: var(--ink-3);
+  border: 1px solid var(--line);
+}
+
+.detail-labels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.detail-label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--t-12);
+  color: var(--ink-2);
+  padding: 1.5px 4px 1.5px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+}
+
+.detail-label-chip__x {
+  border: none;
+  background: none;
+  color: var(--ink-3);
+  font-size: var(--t-13);
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.detail-label-chip__x:hover {
+  color: var(--red-fg);
+}
+
+.detail-label-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.detail-label-add__input {
+  width: 96px;
+  font-family: var(--font-sans);
+  font-size: var(--t-12);
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  padding: 1.5px 7px;
+}
+
+.detail-label-add__btn {
+  font-size: var(--t-11);
+  color: var(--blue-fg);
+  border: 1px solid var(--blue-bg);
+  border-radius: var(--radius-2);
+  padding: 1.5px 7px;
+  background: none;
+  cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  /* detail panel + md viewer go fullscreen on mobile */
+  .detail-overlay {
+    align-items: stretch;
+  }
+
+  .detail-overlay__panel {
+    width: 100vw;
+    max-height: 100dvh;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  /* 손가락 표적: ✕를 44px 박스로 키운다. */
+  .detail-overlay__close {
+    min-width: 44px;
+    min-height: 44px;
+    font-size: var(--t-17);
+  }
+
+  .detail-overlay__bar {
+    padding-right: 4px;
+  }
+
+  .detail-kv {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .detail-kv__vgroup {
+    width: 100%;
+    max-width: none;
+  }
+
+  .detail-kv__vgroup .detail-kv__v {
+    flex: 1 1 auto;
+  }
+}
+
+/* ---------- dependency waits, effective settings, accounts (moved from
+   styles.css in the UI-dbn6 design-system round, retokenized) ---------- */
+
+.detail-dep__wait {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.detail-dep__ref {
+  margin-top: 6px;
+  font-size: var(--t-11);
+  color: var(--ink-3);
+}
+
+@media (any-pointer: coarse), (max-width: 640px) {
+  .detail-effective__edit {
+    padding: 5px 9px;
+    font-size: var(--t-12);
+  }
+}
+
+.detail-effective {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-4);
+  background: var(--card);
+  overflow: hidden;
+}
+
+.detail-effective__head {
+  display: flex;
+  gap: 6px 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  list-style: none;
+}
+
+.detail-effective__head::-webkit-details-marker {
+  display: none;
+}
+
+.detail-effective__t {
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* 값 줄은 머리에서 제 줄을 차지하고, 좁은 폭에서는 역할 묶음 단위로 접힌다. */
+.detail-effective__summary {
+  display: flex;
+  gap: 4px 16px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  flex-basis: 100%;
+  min-width: 0;
+  color: var(--ink);
+  font-size: var(--t-12);
+}
+
+.detail-effective__grp {
+  min-width: 0;
+}
+
+.detail-effective__role {
+  margin-right: 4px;
+  color: var(--ink-3);
+}
+
+.detail-effective__mode {
+  color: var(--ink-3);
+}
+
+.detail-effective__applied {
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-4);
+  color: var(--ink-3);
+  font-size: var(--t-11);
+}
+
+.detail-effective__counts {
+  display: flex;
+  gap: 5px;
+  margin-left: auto;
+}
+
+.detail-effective__count {
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-4);
+  font-size: var(--t-11);
+}
+
+.detail-effective__count--pin {
+  border-color: var(--teal-bg);
+  color: var(--teal-fg);
+}
+
+.detail-effective__count--global {
+  border-color: var(--blue-bg);
+  color: var(--blue-fg);
+}
+
+.detail-effective__count--base {
+  border-style: dashed;
+  color: var(--ink-3);
+}
+
+.detail-effective__chev {
+  color: var(--ink-3);
+  font-size: var(--t-11);
+}
+
+.detail-effective[open] .detail-effective__chev {
+  transform: rotate(90deg);
+}
+
+.detail-effective__body {
+  border-top: 1px solid var(--line);
+}
+
+.detail-effective__subhead {
+  padding: 7px 12px 3px;
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.detail-effective__row {
+  display: grid;
+  grid-template-columns: 14px 130px minmax(0, 1fr) auto auto;
+  gap: 0 10px;
+  align-items: center;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.detail-effective__k {
+  color: var(--ink-3);
+  font-size: var(--t-12);
+}
+
+.detail-effective__v {
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--t-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-effective__v--dim {
+  color: var(--ink-3);
+}
+
+/* 시그니처: 해석 층 레일 — 세 눈금 중 값을 공급하는 층만 켜진다. */
+.detail-layer-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+}
+
+.detail-layer-rail i {
+  width: 5px;
+  height: 5px;
+  border-radius: 1.5px;
+  background: var(--line);
+}
+
+.detail-effective__badge {
+  padding: 1px 7px;
+  border-radius: var(--radius-2);
+  font-size: var(--t-11);
+  letter-spacing: 0.06em;
+}
+
+.detail-effective__edit {
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background: var(--well);
+  color: var(--ink);
+  font-size: var(--t-11);
+}
+
+.detail-effective__preset {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.detail-effective__hint {
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: var(--t-11);
+}
+
+/* The account rows wrap their hint under the value (moved from the retired
+   `styles.css`, UI-dbn6 Phase 4). */
+.exec-accounts .detail-kv__vgroup {
+  flex-wrap: wrap;
+}
+
+.exec-accounts .detail-effective__hint {
+  flex: 1 0 100%;
+  margin-left: 0;
+  text-align: right;
+}
+
+@media (max-width: 640px) {
+  .detail-effective__row {
+    grid-template-columns: 14px 84px minmax(0, 1fr) auto auto;
+    gap: 0 6px;
+    padding: 6px 8px;
+  }
+
+  .detail-effective__k {
+    font-size: var(--t-12);
+  }
+}

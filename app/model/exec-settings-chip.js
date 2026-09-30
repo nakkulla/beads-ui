@@ -1,0 +1,373 @@
+/**
+ * Execution-settings chips for the Worker console (worker-card-exec-chips §1).
+ *
+ * Pure formatter: it turns `resolveExecutionSettings` rows — or an attempt's
+ * recorded tuple — into a one-line chip text plus a multi-line tooltip. It owns
+ * no vocabulary of its own; the key and source labels are imported from the
+ * issue detail's effective-settings card so the two surfaces cannot drift.
+ *
+ * A chip is `null` rather than empty whenever the underlying rows cannot say
+ * anything true — a missing chip is preferable to a wrong one.
+ *
+ * @import { ExecutionValue } from '../utils/execution-defaults.js'
+ * @typedef {{ text: string, title: string }} ExecChip
+ * @typedef {{ orchestration: ExecChip|null, worker: ExecChip|null }} ExecChips
+ */
+import { formatAttemptTuple } from '../utils/attempt-display.js';
+import { SETTING_LABELS, SOURCE_LABELS } from './effective-settings.js';
+import { modelRunnerOf } from './runner-catalog.js';
+
+/** Resolutions that carry no value worth showing as a chip token. */
+const EMPTY_RESOLUTIONS = new Set(['unavailable', 'not_applicable']);
+
+/**
+ * One resolver row, or null when the caller handed in rows that lack the key.
+ *
+ * @param {Record<string, ExecutionValue>|null|undefined} rows
+ * @param {string} key
+ * @returns {ExecutionValue|null}
+ */
+function rowOf(rows, key) {
+  if (typeof rows !== 'object' || rows === null) {
+    return null;
+  }
+  const row = rows[key];
+  return typeof row === 'object' && row !== null ? row : null;
+}
+
+/**
+ * @param {Array<string|null>} tokens
+ * @returns {string}
+ */
+function joinTokens(tokens) {
+  return tokens.filter((token) => token !== null).join(' · ');
+}
+
+/**
+ * A tooltip line naming which layer supplied the value.
+ *
+ * @param {string} key
+ * @param {ExecutionValue|null} row
+ * @returns {string|null}
+ */
+function layerLine(key, row) {
+  return row === null
+    ? null
+    : `${SETTING_LABELS[key]}: ${row.display} (${SOURCE_LABELS[row.source]})`;
+}
+
+/**
+ * @param {Array<string|null>} lines
+ * @returns {string}
+ */
+function joinLines(lines) {
+  return lines.filter((line) => line !== null).join('\n');
+}
+
+/**
+ * The running tile's orchestration chip: what this attempt actually ran with.
+ * Immutable, so no source layer is named.
+ *
+ * @param {{ runner?: unknown, model?: unknown, effort?: unknown, speed?: unknown }|null|undefined} attempt
+ * @returns {ExecChip|null}
+ */
+export function formatAttemptOrchestrationChip(attempt) {
+  if (typeof attempt !== 'object' || attempt === null) {
+    return null;
+  }
+  const text = formatAttemptTuple(attempt);
+  if (text === '') {
+    return null;
+  }
+  /**
+   * @param {string} label
+   * @param {unknown} value
+   * @returns {string|null}
+   */
+  const line = (label, value) =>
+    typeof value === 'string' && value.length > 0 ? `${label}: ${value}` : null;
+  return {
+    text,
+    title: joinLines([
+      '오케스트레이션 — 이 attempt에 기록된 실행값',
+      line('runner', attempt.runner),
+      line(SETTING_LABELS.orchestration_model, attempt.model),
+      line(SETTING_LABELS.orchestration_effort, attempt.effort),
+      line(SETTING_LABELS.orchestration_speed, attempt.speed)
+    ])
+  };
+}
+
+/**
+ * Which runner these resolved rows would launch on: `modelRunnerOf` applied to
+ * the resolved `orchestration_model`. The slot-5 exec chip and the waiting
+ * row's gate judgment (UI-01wh §3.1) must not derive it twice, or a row could
+ * name one runner in its chip and be judged against another.
+ *
+ * `null` when the rows say nothing about the model or the catalog does not
+ * place it — the caller then draws nothing (fail-quiet).
+ *
+ * @param {Record<string, ExecutionValue>|null|undefined} rows
+ * @param {any} runner_catalog
+ * @returns {string|null}
+ */
+export function resolvedRunnerOf(rows, runner_catalog) {
+  const model = rowOf(rows, 'orchestration_model');
+  if (model === null || model.resolution === 'unavailable') {
+    return null;
+  }
+  return modelRunnerOf(runner_catalog, model.value ?? '');
+}
+
+/**
+ * The waiting row / candidate card orchestration chip: what the bead WOULD run
+ * with, resolved from pin over queue defaults. The runner is derived from the
+ * model token because the resolver stores no runner of its own.
+ *
+ * @param {Record<string, ExecutionValue>|null|undefined} rows
+ * @param {any} runner_catalog
+ * @returns {ExecChip|null}
+ */
+export function formatOrchestrationChip(rows, runner_catalog) {
+  const model = rowOf(rows, 'orchestration_model');
+  if (model === null || model.resolution === 'unavailable') {
+    return null;
+  }
+  const effort = rowOf(rows, 'orchestration_effort');
+  const speed = rowOf(rows, 'orchestration_speed');
+  const text = joinTokens([
+    resolvedRunnerOf(rows, runner_catalog),
+    model.display,
+    effort !== null && effort.value !== null ? effort.display : null,
+    speed !== null && speed.value === 'fast' ? 'Fast' : null
+  ]);
+  if (text === '') {
+    return null;
+  }
+  return {
+    text,
+    title: joinLines([
+      '오케스트레이션 — 현재 해석값 (핀 > 큐 기본값)',
+      layerLine('orchestration_model', model),
+      layerLine('orchestration_effort', effort),
+      layerLine('orchestration_speed', speed)
+    ])
+  };
+}
+
+/**
+ * `impl_runtime` as a chip token: `inherit` names its controller when one is
+ * known, and says nothing more when it is not.
+ *
+ * @param {ExecutionValue|null} row
+ * @param {string|null} controller_runtime
+ * @returns {string|null}
+ */
+function runtimeToken(row, controller_runtime) {
+  if (
+    row === null ||
+    row.value === null ||
+    EMPTY_RESOLUTIONS.has(row.resolution)
+  ) {
+    return null;
+  }
+  if (row.value !== 'inherit') {
+    return row.value;
+  }
+  return controller_runtime ? `inherit→${controller_runtime}` : 'inherit';
+}
+
+/**
+ * `impl_model` as a chip token. `auto` is shortened; every other value keeps the
+ * resolver's own display, so `compactModelId` shortening and the ` (비호환)`
+ * marker survive verbatim.
+ *
+ * @param {ExecutionValue|null} row
+ * @returns {string|null}
+ */
+function modelToken(row) {
+  if (row === null || EMPTY_RESOLUTIONS.has(row.resolution)) {
+    return null;
+  }
+  return row.value === 'auto' ? 'auto' : row.display;
+}
+
+/**
+ * `impl_effort` as a chip token; the resolver's `auto (실행 시 결정)` is too
+ * long for one line.
+ *
+ * @param {ExecutionValue|null} row
+ * @returns {string|null}
+ */
+function effortToken(row) {
+  if (row === null) {
+    return null;
+  }
+  if (row.value === 'auto') {
+    return 'auto';
+  }
+  return EMPTY_RESOLUTIONS.has(row.resolution) ? null : row.display;
+}
+
+/**
+ * The worker (implementation delegation) chip, shared by the running tile,
+ * waiting rows and candidate cards.
+ *
+ * `main` collapses to a single token: nothing is delegated, so runtime, model,
+ * effort and speed are all `해당 없음`.
+ *
+ * @param {Record<string, ExecutionValue>|null|undefined} rows
+ * @param {string|null|undefined} controller_runtime
+ * @returns {ExecChip|null}
+ */
+export function formatWorkerChip(rows, controller_runtime) {
+  if (typeof rows !== 'object' || rows === null) {
+    return null;
+  }
+  const dispatch = rowOf(rows, 'impl_dispatch');
+  const runtime = rowOf(rows, 'impl_runtime');
+  const model = rowOf(rows, 'impl_model');
+  const effort = rowOf(rows, 'impl_effort');
+  const speed = rowOf(rows, 'impl_speed');
+  const text =
+    dispatch !== null && dispatch.value === 'main'
+      ? '메인'
+      : joinTokens([
+          runtimeToken(runtime, controller_runtime ?? null),
+          modelToken(model),
+          effortToken(effort),
+          speed !== null && speed.value === 'fast' ? 'Fast' : null
+        ]);
+  if (text === '') {
+    return null;
+  }
+  return {
+    text,
+    title: joinLines([
+      '워커(구현 위임) — 현재 해석값 (핀 > 전역 kv > 기본). 실행 중이면 세션이 시작 시 고정한 값과 다를 수 있음',
+      layerLine('impl_dispatch', dispatch),
+      layerLine('impl_runtime', runtime),
+      layerLine('impl_model', model),
+      layerLine('impl_effort', effort),
+      layerLine('impl_speed', speed)
+    ])
+  };
+}
+
+/**
+ * The implementation-review defaults a repository will use for its next gate.
+ *
+ * @param {Record<string, ExecutionValue>|null|undefined} rows
+ * @returns {ExecChip|null}
+ */
+export function formatImplReviewChip(rows) {
+  const model = rowOf(rows, 'impl_review_model');
+  if (model === null || EMPTY_RESOLUTIONS.has(model.resolution)) {
+    return null;
+  }
+  if (model.value === 'self') {
+    return {
+      text: '자체 검토',
+      title: joinLines([
+        '구현 리뷰 — 이 저장소의 다음 구현 리뷰 기본값',
+        layerLine('impl_review_model', model)
+      ])
+    };
+  }
+  if (model.value === 'skip') {
+    return {
+      text: '생략',
+      title: joinLines([
+        '구현 리뷰 — 이 저장소의 다음 구현 리뷰 기본값',
+        layerLine('impl_review_model', model)
+      ])
+    };
+  }
+  const effort = rowOf(rows, 'impl_review_effort');
+  const text = joinTokens([
+    model.display,
+    effort !== null &&
+    effort.value !== null &&
+    !EMPTY_RESOLUTIONS.has(effort.resolution)
+      ? effort.display
+      : null
+  ]);
+  if (text === '') {
+    return null;
+  }
+  return {
+    text,
+    title: joinLines([
+      '구현 리뷰 — 이 저장소의 다음 구현 리뷰 기본값',
+      layerLine('impl_review_model', model),
+      model.full_value && model.full_value !== model.display
+        ? `전체 모델명: ${model.full_value}`
+        : null,
+      layerLine('impl_review_effort', effort)
+    ])
+  };
+}
+
+/**
+ * `impl_actor` 하나로 서는 완료 행의 워커(구현 위임) 칩 (UI-ys18 §5.2). 재료는 그 완료를 만든 attempt가
+ * 보존한 영수증에서 서버가 해석한 `impl_actor` 하나뿐이다 — 현재 핀·전역
+ * 기본값·프리셋은 실행 뒤에도 계속 움직이므로 과거 실행 주체를 말할 수 없다.
+ *
+ * `delegated`는 기록된 모델과 effort를, `main`은 직접 구현 표현을 쓴다.
+ * 유닛 실행자가 갈린 `mixed`는 서버가 지은 라벨(`<actor>/혼합` 또는 `혼합 n종`)로 서고
+ * 툴팁이 `parts`의 유닛별 실행자를 적는다 (UI-obl0 §2.5).
+ * `missing`과 필드 부재(옛 서버)는 `null`이고 그때 칩은 서지 않는다.
+ *
+ * @param {{ kind?: unknown, model?: unknown, effort?: unknown, label?: unknown, parts?: unknown }|null|undefined} impl_actor
+ * @returns {ExecChip|null}
+ */
+export function formatImplActorChip(impl_actor) {
+  if (typeof impl_actor !== 'object' || impl_actor === null) {
+    return null;
+  }
+  if (impl_actor.kind === 'main') {
+    return {
+      text: '메인',
+      title: joinLines([
+        '워커(구현 위임) — 이 attempt의 보존 영수증에 기록된 실제 구현 주체',
+        '구현: 컨트롤러 직접(main)'
+      ])
+    };
+  }
+  if (impl_actor.kind === 'mixed') {
+    const label = typeof impl_actor.label === 'string' ? impl_actor.label : '';
+    if (label === '') {
+      return null;
+    }
+    const parts = Array.isArray(impl_actor.parts) ? impl_actor.parts : [];
+    return {
+      text: label,
+      title: joinLines([
+        '워커(구현 위임) — 이 attempt의 보존 영수증에 기록된 실제 구현 주체',
+        ...parts.map((part) =>
+          typeof part === 'object' && part !== null
+            ? `${part.unit}: ${part.label}`
+            : null
+        )
+      ])
+    };
+  }
+  if (impl_actor.kind !== 'delegated') {
+    return null;
+  }
+  const model = typeof impl_actor.model === 'string' ? impl_actor.model : null;
+  const effort =
+    typeof impl_actor.effort === 'string' ? impl_actor.effort : null;
+  const text = joinTokens([model, effort]);
+  if (text === '') {
+    return null;
+  }
+  return {
+    text,
+    title: joinLines([
+      '워커(구현 위임) — 이 attempt의 보존 영수증에 기록된 실제 구현 주체',
+      model === null ? null : `${SETTING_LABELS.impl_model}: ${model}`,
+      effort === null ? null : `${SETTING_LABELS.impl_effort}: ${effort}`
+    ])
+  };
+}

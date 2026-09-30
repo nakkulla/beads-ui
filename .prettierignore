@@ -9,6 +9,9 @@ CHANGES.md
 app/main.bundle.js
 app/main.bundle.js.map
 
+# Vendored third-party assets stay byte-identical to their published package.
+app/vendor/
+
 # Pinned byte-exact contract copies from dotfiles. Reformatting them would
 # break the digest the contract test pins, which is the point of the pin.
 generated/contracts/

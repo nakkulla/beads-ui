@@ -5,7 +5,7 @@ import {
   QUICK_FIX_LANE_MAP as CLIENT_QUICK_FIX_LANE_MAP,
   QUICK_FIX_ORCHESTRATION_KEYS as CLIENT_QUICK_FIX_ORCHESTRATION_KEYS,
   isHttpOriginValue as clientIsHttpOriginValue
-} from '../../app/views/settings-dialog/session-model.js';
+} from '../../app/model/session-model.js';
 import {
   isHttpOriginValue,
   validateSessionDefaultsPatch

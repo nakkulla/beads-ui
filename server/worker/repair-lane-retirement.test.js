@@ -390,8 +390,8 @@ describe('retired repair-lane identifier gate (UI-8w4t §검증)', () => {
       path.relative(REPO_ROOT, file)
     );
 
-    expect(scanned).toContain('app/views/worker/index.js');
-    expect(scanned).toContain('app/views/worker/lanes.js');
-    expect(scanned).toContain('app/data/worker-queue-store.js');
+    expect(scanned).toContain('app/model/lane-model.js');
+    expect(scanned).toContain('app/screens/pipeline/card.js');
+    expect(scanned).toContain('app/model/worker-queue-store.js');
   });
 });

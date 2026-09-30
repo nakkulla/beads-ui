@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
+import { createSubscriptionIssueStore } from '../model/subscription-issue-store.js';
+import { createSubscriptionIssueStores } from '../model/subscription-issue-stores.js';
 import { createListSelectors } from './list-selectors.js';
-import { createSubscriptionIssueStore } from './subscription-issue-store.js';
-import { createSubscriptionIssueStores } from './subscription-issue-stores.js';
 
 /**
  * Minimal per-subscription stores facade for tests.

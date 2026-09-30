@@ -280,7 +280,7 @@ interactive SESSION holds: rows the shared `bd list --all` snapshot reports as
 `status: 'in_progress'` with no active worker attempt and no membership in
 `queue` ∪ serial lanes ∪ `pr_wait`. `done` membership does NOT remove a row — a
 bead a session reopened is being worked on now. Each row carries
-`{ bead_id, title, status: 'in_progress', route, spec_id, plan_path, labels, created_at, updated_at, started_at, workflow, blocked, blocked_by, session_refs, session_observation? }`.
+`{ bead_id, title, status: 'in_progress', route, spec_id, plan_path, labels, created_at, updated_at, started_at, workflow, blocked, blocked_by, session_refs, session_observation?, priority, issue_type }`.
 `route` is `metadata.route` or `''` when unpinned, `spec_id` is `''` when absent
 or in conflict, and `workflow` / `blocked` / `blocked_by` follow the same rules
 as the runnable rows below. `plan_path` (UI-anna §3.1) is `metadata.plan_path`
@@ -323,6 +323,23 @@ timestamps and per-child usage. Transcript text and paths never travel. Pricing
 is absent from this observation and is recomputed from the snapshot's current
 `runner_catalog`. Older servers and unreadable, remote or missing references
 omit the field; consumers draw no usage or delegation row in that case.
+
+Since UI-dbn6 §4.2 two additive, non-durable display projections replace the
+Worker tab's boot list subscriptions (all fail-quiet; an older server omits them
+and the client draws no chip and applies no such filter):
+
+- `workspaces[].runnable[]` and `workspaces[].session_active[]` rows carry
+  `priority: number|null` and `issue_type: string|null`, read from the SAME
+  `bd list` row (no extra bd call). `null` means the row carried no finite
+  number / no non-empty string.
+- `workspaces[].bead_overlay[id]` additionally carries `priority?: number`,
+  `issue_type?: string`, `labels?: string[]` and `from_id?: string` (the first
+  `discovered-from` dependency), read from the title cache's SAME `bd show`
+  payload. The target id set is unchanged: lane members ∪ `done` ∪ `runnable` ∪
+  `pr_wait` ∪ `session_active`. A cold record omits the entry as before; a
+  failed read omits these four fields only, while the rest of the overlay and
+  the row still ship. `labels` is present (possibly `[]`) whenever the record
+  landed — an empty array is a confirmed "no labels", absence is unknown.
 
 `workspaces[].bead_blocked_by` is the worker snapshot's map with one more
 filter: a blocker id whose prefix belongs to ANOTHER visible workspace is looked
@@ -1384,9 +1401,9 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
 ## Preset comparison channel (preset-compare §3.5)
 
 - `get-compare` payload:
-  `{ range?, since?, until?, root_dirs?, routes?, include_bench?, group_by?, problem_criteria? }`
+  `{ range?, since?, until?, root_dirs?, routes?, group_by?, problem_criteria? }`
   — replies with a `compare-snapshot` envelope carrying
-  `{ summary, groups, rows, workspaces, runs, bench_rows, warnings, criteria }`.
+  `{ summary, groups, rows, workspaces, warnings, criteria }`.
   `problem_criteria` may be a partial object; malformed or absent values are
   normalized to server defaults without a `bad_request`. This request/response
   pair reads attempts, workspace issue snapshots and one timeline per bead on
@@ -1397,12 +1414,15 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
   absent or non-finite boundary is unrestricted. The client converts chosen
   dates at local midnight and sends the midnight after the end date as `until`.
   Preset ranges ignore carried `since` and `until` values. `root_dirs` are
-  absolute registry paths, `routes` restricts routes, and `include_bench`
-  defaults to false. Legacy `issue_types` is accepted and ignored. `group_by` is
-  `preset` (default, also for invalid values), `orchestration`, or `impl_actor`.
+  absolute registry paths and `routes` restricts routes. Legacy `issue_types`
+  and `include_bench` are accepted and ignored (never a `bad_request`).
+  `group_by` is `preset` (default, also for invalid values), `orchestration`, or
+  `impl_actor`.
 - One `rows[]` entry is one terminal implementation attempt, excluding review
-  sessions and retired kinds. It retains identity, issue, route, status, cause,
-  `verify`, `review`, `usage`, `duration_ms`, `is_retry`, `is_bench`,
+  sessions, retired kinds and bench clone attempts (a `bench`-labelled bead or
+  an attempt carrying `bench_verify`). It retains identity, issue, route,
+  status, cause, `verify`, `review`, `usage`, `duration_ms`, `is_retry`,
+  `is_bench` (always `false` now that bench clone attempts are excluded),
   `started_at` and `finished_at`. It adds:
   - `outcome: { kind, evidence, head_sha?, pr_url? }`, where kind is
     `landed|failed|aborted|parked|superseded|waiting|unknown|in_flight`.
@@ -1424,16 +1444,15 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
     `(삭제됨)` when deleted, and `deviated_keys` walks the key set of the
     recorded preset's own profile. Inference compares the orchestration and
     delegated executor axes by the preset's CANONICAL keys, using
-    catalog-normalized model names, and no candidate is filtered by profile: a
-    bench clone runs under `route=quick_fix` whatever profile the preset it
-    measures belongs to. Equally specific matches remain null. Unmatched rows
-    additionally carry `preset_candidates: string[]`.
+    catalog-normalized model names, and no candidate is filtered by profile.
+    Equally specific matches remain null. Unmatched rows additionally carry
+    `preset_candidates: string[]`.
   - `orchestration: { model, effort }`,
     `impl_actor: { kind, label, model, effort, parts? }` with `kind` one of
     `delegated`, `main`, `missing` or `mixed` and `parts` present only on
     `mixed`, and `composition: "<model>/<effort> → <impl_actor.label>"` with
-    missing axes labeled `미기록`. Main rows omit `signature`, `signature_parts`
-    and `verify_source`.
+    missing axes labeled `미기록`. Rows omit `signature`, `signature_parts` and
+    `verify_source`.
 - Groups use `preset:<id>` or `sig:<composition>` keys on the preset axis,
   `<model>/<effort>` on orchestration, and `main`, executor label, `미기록`, or
   `mixed:<distinct unit executor labels sorted and joined with +>` on
@@ -1466,58 +1485,27 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
   normalized criteria used by the projection. `baselines` is
   `{ duration_ms: { median, sample, active }, cost_usd: { median, sample, active, partial_count } }`;
   both medians use the filtered main rows and become active at five
-  value-bearing rows. Bench rows use those same baselines.
-- `runs[]` and `bench_rows[]` are the experiment half of the same answer (§4.7).
-  `runs` is every visible workspace's run manifests, newest first; `bench_rows`
-  is every bench clone row of every visible workspace, deliberately NOT narrowed
-  by the request's filters, so choosing an experiment can never show an empty
-  table because the main table's period was narrower. There is no second op and
-  no second call: §3.5 enumerates the three ops this design adds.
-- One `runs[]` entry is its immutable manifest (`run_id`, `source_bead_id`,
-  `base_sha`, `presets` with their `resolved_tuple`, `repeats`, `reviewer_mode`,
-  `reviewer`, `delegate_forced`, `created_at`) plus `root_dir`, `cell_count` /
-  `terminal_count` and a `cells[]` whose per-cell `status`, `attempt_id`,
-  `done_kind`, `bench_verify` and `terminal` are PROJECTED from that clone
-  bead's attempt records on every read. `terminal` is the shared §4.6 judgment:
-  the clone bead is closed AND no attempt sits in a resumable status. The
-  manifest itself is never rewritten, so there is no second result ledger to
-  keep in step with attempt history.
-
-## Bench experiment creation (preset-compare §4.3)
-
-- `bench-run-create` payload:
-  `{ source_id, preset_ids: string[], repeats: 1..5, reviewer_mode: 'fixed'|'preset', reviewer?, root_dir? }`
-  — replies `ok` with `{ run }`, the run manifest that was just written. The
-  source must be a `route=quick_fix` bead carrying `quick_fix_review`; anything
-  else is refused rather than cloned (§4.1·§6). `reviewer_mode: 'fixed'`
-  requires `reviewer.impl_review_model` / `impl_review_effort` /
-  `impl_review_speed`, which overwrite that triple on every cell; `'preset'`
-  leaves each preset's own reviewer keys in place. A preset of either profile is
-  read by its canonical keys, and a `quick_fix` preset carries no reviewer key
-  at all, so under `'preset'` that triple resolves from the workspace kv layers
-  and the harness projection like every other axis the preset does not name.
-- `root_dir` is optional and, when present, must be the connection's own
-  workspace: this op WRITES beads, so it may not be steered at a workspace the
-  connection did not select.
-- Creation is one fail-closed unit. The workspace base tip is read first
-  (`bench_base_unreadable` when it cannot be), each preset is resolved into a
-  complete execution tuple and checked for completeness and vocabulary
-  (`bench_tuple_unresolved` when it cannot be), and a clone that cannot be
-  created, stamped or QUEUED into the parallel lane aborts the experiment: every
-  clone already created is closed with `bench:<run_id>:aborted`, no manifest is
-  written, the error's `details.aborted` names the beads whose close was
-  confirmed by readback, and `details.residue` names the ones that could not be
-  confirmed and are left for the operator.
-- Each created clone is placed into the workspace's parallel waiting lane
-  through the same `worker-queue-place` body a person's click uses (§4.4), so an
-  admission refusal aborts the experiment rather than leaving a cell that will
-  never run.
+  value-bearing rows.
 
 ## Removed (historical)
 
 `list-issues`, `epic-status`, `list-ready`, `subscribe-updates` /
 `issues-changed`, and `update-workflow-settings` were removed. Use the
 subscription push protocol and `update-exec-settings` instead.
+
+Removed with the frontend rewrite (UI-dbn6 §4.5); each now answers
+`unknown_type`:
+
+- `subscribe-display-policy` / `unsubscribe-display-policy` /
+  `display-policy-set` and the `display-policy-snapshot` push — the
+  per-workspace label/metadata display policy. Label display is a fixed client
+  rule (`app/model/label-policy.js`).
+- `bench-run-create` — bench experiment creation. `compare-snapshot` no longer
+  carries the experiment half (`runs`, `bench_rows`), and `get-compare` ignores
+  a legacy `include_bench`. Run manifests that already exist are still read by
+  the Worker to sweep their cells.
+- `monitor-auto-toggle` — the cross-workspace master automation switch. Each
+  workspace keeps `worker-automation-toggle`.
 
 ## Errors
 

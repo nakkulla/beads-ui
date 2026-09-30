@@ -70,7 +70,7 @@ export function isHttpOriginValue(value) {
  * check meaningless. The read and the write path both go through
  * {@link isValidSessionDefaultValue}, so one rule serves both.
  *
- * The client mirrors this in `app/views/settings-dialog/session-model.js`; the
+ * The client mirrors this in `app/model/session-model.js`; the
  * two runtimes share no module, so the equality is asserted from both test
  * files instead.
  *

@@ -1,0 +1,703 @@
+/*
+ * Pipeline screen, part 1 (UI-dbn6 §4.4, design-system round): the screen
+ * frame, the toolbars, the repo strip and the board — lanes, heads, the
+ * candidate filter, repo bundles and waiting areas. Cards, rows, tiles,
+ * ops, popovers, sheets and the lane bar are part 2 (`pipeline-cards.css`).
+ *
+ * Mobile first: one lane per screen below 720px, two lane columns plus a
+ * vertical 완료 from 720px, and from 1100px the catalog §07 board — each open
+ * lane `minmax(312px, 420px)`, a folded lane 44px, and when they do not fit
+ * the BOARD scrolls sideways with lane snap while the page never does.
+ * Surfaces rise bg → lane → card; colour comes from `ui/tokens.css` only.
+ */
+
+.pl-host {
+  min-width: 0;
+}
+
+.pl-screen {
+  padding-bottom: var(--s-8);
+}
+
+/* ---------- toolbar ---------- */
+
+.pl-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-4) var(--s-6);
+  min-width: 0;
+  padding: var(--s-4) var(--s-8);
+  border-bottom: 1px solid var(--line);
+  background: var(--lane);
+  color: var(--ink-2);
+  font-size: var(--t-12);
+}
+
+.pl-toolbar__stats,
+.pl-toolbar__ops,
+.pl-toolbar__repo-ops {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-6);
+  min-width: 0;
+}
+
+.pl-toolbar__stats,
+.pl-toolbar__repo-ops {
+  margin-left: auto;
+}
+
+.pl-toolbar--all .pl-toolbar__stats {
+  margin-left: 0;
+}
+
+.pl-stat {
+  white-space: nowrap;
+}
+
+.pl-stat b {
+  color: var(--ink);
+  font-weight: var(--w-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-stat--tok,
+.pl-stat--presets {
+  color: var(--ink-3);
+}
+
+.pl-stat--presets {
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.pl-stat--overcap {
+  --c-bg: var(--role-failed-bg);
+  --c-fg: var(--role-failed-fg);
+  padding: 2px var(--s-3);
+  border-radius: var(--r-chip);
+  background: var(--c-bg);
+  color: var(--c-fg);
+  font-size: var(--t-chip);
+  font-weight: var(--w-medium);
+}
+
+.pl-stat--blocked {
+  --c-bg: var(--role-wait-bg);
+  --c-fg: var(--role-wait-fg);
+}
+
+.pl-stat__alert {
+  margin-left: var(--s-1);
+  color: var(--red-fg);
+  font-weight: var(--w-semibold);
+}
+
+.pl-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.pl-search {
+  flex: 1 1 140px;
+  min-width: 120px;
+  max-width: 260px;
+}
+
+/* The 저장소 작업 line wraps whole parts (the label, the deploy fact, the
+   badge) rather than breaking the label in the middle on a phone. */
+.pl-opsline {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.pl-opsline code {
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: var(--t-11);
+}
+
+.pl-opsline__ok {
+  color: var(--green-fg);
+}
+
+/* ---------- repo strip (전체) ----------
+   Bounded cells (never wider than --repo-cell-w) whose content wraps onto
+   more lines instead of growing: line 1 name · load · switches · ⚙ (the
+   switches drop to their own line when the name is long), line 2 the preset
+   pill and the 오케/워커/qf units, each unit kept whole unless it alone is
+   wider than the cell. A fine pointer wraps the cells into rows; a coarse
+   pointer keeps one horizontally scrolling strip. */
+
+.pl-toolbar--all .pl-strip {
+  flex: 1 1 100%;
+}
+
+.pl-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--s-4);
+  min-width: 0;
+  padding: var(--s-1) 0;
+}
+
+.pl-strip.is-coarse {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: var(--s-8);
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+}
+
+.pl-strip__chip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  flex: 0 0 var(--repo-cell-w);
+  width: var(--repo-cell-w);
+  max-width: 100%;
+  min-width: 0;
+  padding: var(--s-3) var(--s-3) var(--s-3) var(--s-5);
+  border-radius: var(--r-card);
+  background: var(--card);
+  box-shadow: var(--e1);
+  color: var(--ink-2);
+  font-size: var(--t-12);
+  scroll-snap-align: start;
+}
+
+.pl-strip__r1,
+.pl-strip__r2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+}
+
+.pl-strip__r1 {
+  gap: var(--s-1) var(--s-4);
+}
+
+.pl-strip__r2 {
+  gap: var(--s-2) var(--s-4);
+  font-size: var(--t-11);
+  line-height: var(--lh-tight);
+}
+
+.pl-strip__name {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--h-sm);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-12);
+  font-weight: var(--w-semibold);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pl-strip__name:hover .pl-strip__label {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.pl-strip__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pl-strip__load {
+  flex: none;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-11);
+  font-weight: var(--w-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-strip__load.is-full {
+  color: var(--amber-fg);
+  font-weight: var(--w-semibold);
+}
+
+.pl-strip__toggles {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-4);
+  flex: none;
+}
+
+.pl-strip__gear {
+  flex: none;
+  margin-left: auto;
+}
+
+.pl-strip__preset {
+  font-size: var(--t-11);
+}
+
+.pl-strip__kv {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+.pl-strip__kv b {
+  color: var(--ink-2);
+  font-weight: var(--w-medium);
+}
+
+@media (pointer: coarse) {
+  .pl-strip__name {
+    min-height: var(--h-touch);
+  }
+}
+
+/* ---------- board and lanes ---------- */
+
+.pl-lanes {
+  display: grid;
+  gap: var(--s-5);
+  align-items: start;
+  min-width: 0;
+  padding: var(--s-6) var(--s-8) var(--s-8);
+}
+
+/* catalog §07: the columns come from `lanesFrame` (`--lane-min`…`--lane-max`
+   per open lane, `--lane-folded` per folded one); only the board scrolls. */
+.pl-lanes--wide {
+  justify-content: start;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: var(--s-8);
+  scrollbar-width: thin;
+}
+
+.pl-lanes--wide > .pl-lane {
+  scroll-snap-align: start;
+}
+
+.pl-lanes--narrow {
+  display: block;
+  padding: var(--s-4) var(--s-6) 96px;
+}
+
+.pl-lanes--medium .pl-lane--candidate {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.pl-lanes--medium .pl-lane--queue {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.pl-lanes--medium .pl-lane--running {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.pl-lanes--medium .pl-lane--pr_wait {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.pl-lanes--medium .pl-lane--done {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+}
+
+.pl-lane {
+  --stage: var(--st-cand);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--s-4);
+  border-radius: var(--r-lane);
+  background: var(--lane);
+}
+
+.pl-lanes--narrow .pl-lane {
+  padding: 0;
+  background: transparent;
+}
+
+.pl-lane[data-stage='plan'] {
+  --stage: var(--st-queue);
+}
+
+.pl-lane[data-stage='impl'] {
+  --stage: var(--st-run);
+}
+
+.pl-lane[data-stage='pr'] {
+  --stage: var(--st-pr);
+}
+
+.pl-lane[data-stage='merge'] {
+  --stage: var(--st-done);
+}
+
+.pl-lane__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3) var(--s-4);
+  min-width: 0;
+  min-height: 36px;
+  padding: var(--s-1) var(--s-2) var(--s-4);
+}
+
+.pl-lanes--narrow .pl-lane__head {
+  padding: var(--s-3) var(--s-1) var(--s-2);
+}
+
+.pl-lane__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-4);
+  min-width: 0;
+  padding: var(--s-1) 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-lane);
+  font-weight: var(--w-semibold);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pl-lanes--narrow .pl-lane__toggle {
+  font-size: var(--t-15);
+  pointer-events: none;
+}
+
+.pl-lane__spine {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--stage);
+}
+
+.pl-lane__count {
+  color: var(--ink-3);
+  font-weight: var(--w-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-lane__ctl {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  margin-left: auto;
+}
+
+.pl-lane__ctl .ui-select {
+  min-height: var(--h-sm);
+}
+
+.pl-lane__sub,
+.pl-lane__match {
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  white-space: nowrap;
+}
+
+.pl-lane__match {
+  --c-bg: var(--role-external-bg);
+  --c-fg: var(--role-external-fg);
+  padding: 2px var(--s-3);
+  border-radius: var(--r-chip);
+  background: var(--c-bg);
+  color: var(--c-fg);
+  font-weight: var(--w-medium);
+}
+
+.pl-lane__filters {
+  display: none;
+}
+
+.pl-lanes--narrow .pl-lane__filters,
+.pl-lanes--medium .pl-lane__filters {
+  display: inline-flex;
+}
+
+.pl-lane__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  min-width: 0;
+}
+
+.pl-lanes--wide .pl-lane__body,
+.pl-lanes--medium .pl-lane__body {
+  max-height: calc(100dvh - var(--app-header-h, 53px) - 150px);
+  margin: 0 calc(-1 * var(--s-2));
+  padding: 0 var(--s-2) var(--s-2);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.pl-lanes--narrow .pl-lane__body {
+  padding: var(--s-2) 0 var(--s-6);
+}
+
+/* A folded lane is a 44px vertical strip on the wide layouts. */
+.pl-lane.is-collapsed {
+  align-items: center;
+  padding: var(--s-4) 0;
+}
+
+.pl-lane.is-collapsed .pl-lane__head {
+  flex-direction: column;
+  padding: 0;
+}
+
+.pl-lanes--wide .pl-lane.is-collapsed .pl-lane__toggle,
+.pl-lanes--medium .pl-lane.is-collapsed .pl-lane__toggle {
+  min-height: 180px;
+  color: var(--ink-2);
+  writing-mode: vertical-rl;
+}
+
+.pl-lanes--wide .pl-lane.is-collapsed .pl-lane__toggle:hover,
+.pl-lanes--medium .pl-lane.is-collapsed .pl-lane__toggle:hover {
+  color: var(--ink);
+}
+
+.pl-empty {
+  padding: var(--s-10) var(--s-4);
+  color: var(--ink-3);
+  font-size: var(--t-12);
+  text-align: center;
+  word-break: keep-all;
+}
+
+.pl-zone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  min-height: 12px;
+  min-width: 0;
+  border-radius: var(--r-card);
+}
+
+.pl-zone.is-drop-over {
+  outline: 2px dashed var(--accent-solid);
+  outline-offset: 2px;
+}
+
+/* ---------- candidate filter ---------- */
+
+.pl-filter {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  min-width: 0;
+  padding: 0 var(--s-1) var(--s-4);
+  color: var(--ink-3);
+  font-size: var(--t-12);
+}
+
+.pl-filter__group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.pl-filter__group .ui-chip {
+  --c-bg: transparent;
+  --c-fg: var(--ink-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.pl-filter__group .ui-chip.is-on {
+  --c-bg: var(--accent-soft);
+  --c-fg: var(--accent-text);
+  box-shadow: none;
+}
+
+.pl-filter__hidden {
+  color: var(--ink-3);
+  font-size: var(--t-11);
+}
+
+.pl-filter__labels {
+  position: relative;
+}
+
+.pl-filter__label-pop {
+  position: absolute;
+  z-index: var(--z-dropdown);
+  top: calc(100% + var(--s-2));
+  left: 0;
+  min-width: 180px;
+  max-width: calc(100vw - 32px);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.pl-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: var(--h-md);
+  color: var(--ink-2);
+}
+
+.pl-check input {
+  accent-color: var(--accent-solid);
+}
+
+/* ---------- repo bundles, waiting areas ---------- */
+
+.pl-bundle {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  min-width: 0;
+}
+
+.pl-bundle + .pl-bundle {
+  margin-top: var(--s-2);
+}
+
+.pl-bundle__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1) var(--s-4);
+  min-width: 0;
+}
+
+.pl-bundle__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  min-height: var(--h-sm);
+  padding: var(--s-2) var(--s-1) var(--s-1);
+  border: 0;
+  border-radius: var(--r-btn);
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: var(--t-12);
+  cursor: pointer;
+}
+
+.pl-bundle__name {
+  min-width: 0;
+  color: var(--ink-2);
+  font-weight: var(--w-semibold);
+  overflow-wrap: anywhere;
+}
+
+.pl-bundle__toggle:hover .pl-bundle__name {
+  color: var(--ink);
+}
+
+.pl-bundle__count,
+.pl-bundle__sub {
+  color: var(--ink-3);
+  font-weight: var(--w-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-bundle__sub {
+  margin-left: auto;
+  font-size: var(--t-11);
+  white-space: nowrap;
+}
+
+.pl-area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  min-width: 0;
+}
+
+.pl-area__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  min-width: 0;
+  padding: 0 var(--s-1);
+  color: var(--ink-3);
+  font-size: var(--t-11);
+}
+
+.pl-area__toggle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-weight: var(--w-semibold);
+  cursor: pointer;
+}
+
+.pl-area__toggle b {
+  color: var(--ink-3);
+  font-weight: var(--w-medium);
+}
+
+.pl-area__sub {
+  color: var(--ink-3);
+}
+
+.pl-shelf {
+  margin-top: var(--s-2);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line);
+}
+
+.pl-shelf > summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--h-lg);
+  color: var(--ink-3);
+  font-size: var(--t-12);
+  font-weight: var(--w-semibold);
+  cursor: pointer;
+}
+
+.pl-shelf[open] > summary {
+  margin-bottom: var(--s-4);
+}
+
+@media (pointer: coarse) {
+  .pl-bundle__toggle,
+  .pl-shelf > summary,
+  .pl-area__toggle {
+    min-height: var(--h-touch);
+  }
+}

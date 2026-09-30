@@ -5,7 +5,7 @@
  * 여기로 뽑아냈다. 순수 모듈이므로 브라우저 렌더러도, 구독 store도, node 전용
  * API도 import하지 않는다 — 서버 캐시가 이 파일을 직접 읽는다.
  */
-import { blockerIdsOf } from '../views/worker/blocker-ids.js';
+import { blockerIdsOf } from './blocker-ids.js';
 
 /**
  * @param {unknown} value

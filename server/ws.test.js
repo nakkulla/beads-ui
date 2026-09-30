@@ -54,6 +54,32 @@ describe('ws message handling', () => {
     expect(obj.error.code).toBe('unknown_type');
   });
 
+  test.each([
+    'subscribe-display-policy',
+    'unsubscribe-display-policy',
+    'display-policy-set',
+    'bench-run-create',
+    'monitor-auto-toggle'
+  ])(
+    'rejects the removed %s op as unknown_type (UI-dbn6 §4.5)',
+    async (type) => {
+      const ws = makeStubSocket();
+      const req = { id: 'removed-op', type, payload: {} };
+
+      await handleMessage(
+        /** @type {any} */ (ws),
+        Buffer.from(JSON.stringify(req))
+      );
+
+      const replies = ws.sent.map((/** @type {string} */ raw) =>
+        JSON.parse(raw)
+      );
+      expect(
+        replies.map((/** @type {any} */ reply) => reply.error?.code)
+      ).toEqual(['unknown_type']);
+    }
+  );
+
   test('set-workspace rejects paths outside the available workspace list', async () => {
     const ws = makeStubSocket();
     const req = {

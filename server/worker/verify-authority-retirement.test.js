@@ -31,7 +31,7 @@ function activeJavaScript(root) {
 test('keeps retired home verify authority out of active source', () => {
   const files = [
     ...activeJavaScript(path.resolve('server')),
-    ...activeJavaScript(path.resolve('app/views'))
+    ...activeJavaScript(path.resolve('app'))
   ];
   const source = files.map((file) => fs.readFileSync(file, 'utf8')).join('\n');
 

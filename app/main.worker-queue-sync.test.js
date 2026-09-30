@@ -4,7 +4,7 @@ import { bootstrap } from './main.js';
 /** @type {any} */
 let CLIENT = null;
 
-vi.mock('./ws.js', () => ({
+vi.mock('./core/ws.js', () => ({
   createWsClient: () => CLIENT
 }));
 
@@ -136,9 +136,9 @@ function queueSnapshotFor(root_dir) {
 
 /** @returns {number} Waiting-lane rows currently rendered. */
 function waitingRowCount() {
-  // 대기 pane은 직렬 레인까지 품는다 (UI-5ksp §4.2) — 병렬 영역만 센다.
+  // 대기 레인은 직렬 레인까지 품는다 (UI-5ksp §4.2) — 병렬 영역만 센다.
   return document.querySelectorAll(
-    '#worker-pane-queue .worker-wait__area--parallel .worker-mini'
+    '[data-lane-body="queue"] [data-drop="parallel"] .pl-row'
   ).length;
 }
 
@@ -150,8 +150,9 @@ async function settle() {
 
 beforeEach(() => {
   window.localStorage.clear();
-  window.localStorage.setItem('beads-ui.view', 'worker');
-  window.location.hash = '#/worker';
+  // UI-dbn6 §5.1: the worker queue is the 레포 scope's channel.
+  window.localStorage.setItem('beads-ui.scope', '/repo-a');
+  window.location.hash = '#/pipeline';
   delete (/** @type {any} */ (window).__BDUI_BOOTSTRAP__);
 });
 
@@ -197,20 +198,9 @@ describe('worker-queue snapshot workspace guard', () => {
     expect(waitingRowCount()).toBe(1);
     expect(
       document.querySelector(
-        '#worker-pane-queue .worker-wait__area--parallel .exec-chip'
+        '[data-lane-body="queue"] [data-drop="parallel"] .pl-row .pl-fact'
       )
     ).toBeNull();
-  });
-
-  test('applies the bootstrap snapshot that arrives before a workspace is known', async () => {
-    CLIENT = makeClient({ current: null });
-    bootstrap(setupShell());
-    await settle();
-
-    CLIENT.trigger('worker-queue-snapshot', queueSnapshotFor('/repo-a'));
-    await settle();
-
-    expect(waitingRowCount()).toBe(1);
   });
 });
 
@@ -275,7 +265,7 @@ describe('worker-queue resubscribe after reconnect', () => {
 });
 
 describe('worker-queue keyed patches', () => {
-  test.each(['/repo-a', null])(
+  test.each(['/repo-a'])(
     'renders a patch with workspace selection %s',
     async (current) => {
       CLIENT = makeClient({ current });

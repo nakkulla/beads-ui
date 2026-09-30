@@ -234,15 +234,14 @@ function readRuntimeConfig(config_path) {
       );
     }
 
-    // The `[labels]` section is obsolete: label visibility now lives in the
-    // per-workspace display-policy store, editable from the UI settings panel
-    // and pushed over the `display-policy` channel. `getConfig()` runs more than
-    // once per process (CLI entry + server entry), so the warning is latched to
-    // stay a single startup line.
+    // The `[labels]` section is obsolete: label visibility is a fixed client
+    // rule (`app/model/label-policy.js`). `getConfig()` runs more than once per
+    // process (CLI entry + server entry), so the warning is latched to stay a
+    // single startup line.
     if (parsed?.labels !== undefined && !labels_deprecation_warned) {
       labels_deprecation_warned = true;
       console.warn(
-        'config.toml 의 [labels] 섹션은 더 이상 사용되지 않습니다(표시 정책은 UI 설정 패널에서 관리). 무시하고 계속합니다.'
+        'config.toml 의 [labels] 섹션은 더 이상 사용되지 않습니다(라벨 표시는 고정 규칙). 무시하고 계속합니다.'
       );
     }
 

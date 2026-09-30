@@ -55,10 +55,28 @@ describe('ws/compare-handlers', () => {
     expect(passed.root_dirs).toEqual(['/repo/one']);
     expect(passed).not.toHaveProperty('issue_types');
     expect(passed.group_by).toBe('preset');
-    expect(passed.include_bench).toBe(true);
     expect(passed.problem_criteria).toEqual({ failed: { on: false } });
     expect(typeof passed.since).toBe('number');
     expect(passed.until).toBeNull();
+  });
+
+  test('ignores include_bench instead of refusing it (UI-dbn6 §4.5)', async () => {
+    const ws = makeSocket();
+    const snapshot = vi.fn(() => ({ rows: [], groups: [], workspaces: [] }));
+
+    await handleGetCompare(
+      /** @type {any} */ (ws),
+      /** @type {any} */ ({
+        id: 'bench-ignored',
+        type: 'get-compare',
+        payload: { include_bench: true }
+      }),
+      { snapshot: /** @type {any} */ (snapshot) }
+    );
+
+    const passed = /** @type {any} */ (snapshot.mock.calls[0])[0];
+    expect(passed).not.toHaveProperty('include_bench');
+    expect(ws.sent[0].ok).toBe(true);
   });
 
   test('forwards both custom boundaries to the projection', async () => {

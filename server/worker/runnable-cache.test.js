@@ -378,7 +378,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         created_at: null,
         updated_at: null,
         workflow: { route: 'spec_backed' },
-        exec_pins: {}
+        exec_pins: {},
+        priority: null,
+        issue_type: null
       }
     ]);
   });
@@ -1533,7 +1535,9 @@ describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
         workflow: { route: 'spec_backed' },
         blocked: false,
         blocked_by: [],
-        session_refs: []
+        session_refs: [],
+        priority: null,
+        issue_type: null
       }
     ]);
   });
@@ -2331,4 +2335,59 @@ describe('plan review record discrimination (UI-y9hl U3)', () => {
       expect(out[0].plan_state).toBe(fixture.plan_state);
     });
   }
+});
+
+describe('runnable cache 우선순위·타입 투영 (UI-dbn6 §4.2)', () => {
+  test('carries priority and issue_type from the bd list row on a runnable item', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [row({ priority: 1, issue_type: 'feature' })]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0]).toMatchObject({ priority: 1, issue_type: 'feature' });
+  });
+
+  test('carries priority and issue_type from the bd list row on a session item', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [sessionRow({ priority: 0, issue_type: 'bug' })]
+      })
+    });
+
+    const out = await warmSession(cache, WS_A);
+
+    expect(out[0]).toMatchObject({ priority: 0, issue_type: 'bug' });
+  });
+
+  test('projects null priority and issue_type when the row omits them', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row(), sessionRow()] })
+    });
+
+    await warm(cache, WS_A);
+
+    expect(cache.runnableFor(WS_A)[0]).toMatchObject({
+      priority: null,
+      issue_type: null
+    });
+    expect(cache.sessionActiveFor(WS_A)[0]).toMatchObject({
+      priority: null,
+      issue_type: null
+    });
+  });
+
+  test('projects null for a malformed priority or an empty issue type', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [row({ priority: 'high', issue_type: '' })]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0]).toMatchObject({ priority: null, issue_type: null });
+  });
 });

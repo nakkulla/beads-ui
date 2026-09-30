@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { createWsClient } from './core/ws.js';
 import { closedRangeSince } from './data/closed-range.js';
 import { bootstrap } from './main.js';
-import { createWsClient } from './ws.js';
 
 const DAY_MS = 864e5;
 
 // Mock WS client that RECORDS every sent message so we can assert the Closed
 // subscription's `since` param and the re-subscription message sequence.
-vi.mock('./ws.js', () => {
+vi.mock('./core/ws.js', () => {
   /** @type {Record<string, (p: any) => void>} */
   const handlers = {};
   /** @type {Array<[string, any]>} */
@@ -19,6 +19,22 @@ vi.mock('./ws.js', () => {
      */
     async send(type, payload) {
       sent.push([String(type), payload]);
+      if (type === 'list-workspaces') {
+        return {
+          workspaces: [{ path: '/repo-a', database: '/repo-a/.beads' }],
+          current: { root_dir: '/repo-a', db_path: '/repo-a/.beads' },
+          hidden: []
+        };
+      }
+      if (type === 'set-workspace') {
+        return {
+          changed: false,
+          workspace: {
+            root_dir: payload.path,
+            db_path: `${payload.path}/.beads`
+          }
+        };
+      }
       return null;
     },
     /**
@@ -86,35 +102,38 @@ describe('closed-issues subscription period lifecycle', () => {
     window.localStorage.clear();
   });
 
-  test('Worker range change re-subscribes its own closed store', async () => {
+  test('레포 range change re-subscribes its own closed store', async () => {
     const client = /** @type {any} */ (createWsClient());
-    window.location.hash = '#/worker';
+    // UI-dbn6 §4.2: the closed list belongs to the 레포 scope and opens with
+    // the 완료 lane.
+    window.localStorage.setItem('beads-ui.scope', '/repo-a');
+    window.location.hash = '#/pipeline';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
 
     bootstrap(root);
     await flush();
 
+    // 완료 레인은 기본 접힘이다 (UI-5ksp §3-3): 접힌 레인은 목록을 구독하지
+    // 않고 기간 선택도 그리지 않는다.
+    /** @type {HTMLElement} */ (
+      document.querySelector('[data-op="lane-toggle"][data-lane="done"]')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
     const initial_idx = lastIndexOfSub(
       client._sent(),
       'subscribe-list',
-      'tab:worker:closed'
+      'pipeline:closed'
     );
     expect(initial_idx).toBeGreaterThanOrEqual(0);
     expect(client._sent()[initial_idx][1].params).toEqual({
       since: closedRangeSince('today')
     });
 
-    // 완료 레인은 기본 접힘이다 (UI-5ksp §3-3): 접힌 pane은 `header_control`을
-    // 그리지 않으므로 범위 선택은 레인을 펼친 뒤에야 DOM에 있다.
-    /** @type {HTMLElement} */ (
-      document.querySelector('#worker-pane-done .worker-pane__toggle')
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    await flush();
-
     client._reset();
     const select = /** @type {HTMLSelectElement} */ (
-      document.querySelector('#worker-pane-done .worker-done-range')
+      document.querySelector('select[data-op="done-range"]')
     );
     select.value = '7d';
     select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -124,13 +143,9 @@ describe('closed-issues subscription period lifecycle', () => {
     const unsub_idx = lastIndexOfSub(
       sent,
       'unsubscribe-list',
-      'tab:worker:closed'
+      'pipeline:closed'
     );
-    const resub_idx = lastIndexOfSub(
-      sent,
-      'subscribe-list',
-      'tab:worker:closed'
-    );
+    const resub_idx = lastIndexOfSub(sent, 'subscribe-list', 'pipeline:closed');
     expect(unsub_idx).toBeGreaterThanOrEqual(0);
     expect(resub_idx).toBeGreaterThan(unsub_idx);
     expect(sent[resub_idx][1].params.since).toBeGreaterThanOrEqual(

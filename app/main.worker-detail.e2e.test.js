@@ -1,10 +1,10 @@
 import { describe, expect, test, vi } from 'vitest';
+import { createWsClient } from './core/ws.js';
 import { bootstrap } from './main.js';
-import { createWsClient } from './ws.js';
 
 // Mock WS client (records sends, exposes push triggering) so we can drive the
-// Worker view and assert the shared detail overlay opens from it.
-vi.mock('./ws.js', () => {
+// pipeline screen and assert the shared detail overlay opens from it.
+vi.mock('./core/ws.js', () => {
   /** @type {Record<string, (p: any) => void>} */
   const handlers = {};
   /** @type {Array<[string, any]>} */
@@ -16,6 +16,15 @@ vi.mock('./ws.js', () => {
      */
     async send(type, payload) {
       sent.push([String(type), payload]);
+      if (type === 'set-workspace') {
+        return {
+          changed: false,
+          workspace: {
+            root_dir: payload.path,
+            db_path: `${payload.path}/.beads`
+          }
+        };
+      }
       return null;
     },
     /**
@@ -58,27 +67,42 @@ async function flush() {
   }
 }
 
-describe('worker → shared detail overlay', () => {
-  test('clicking a candidate opens the detail overlay (the Worker route zeroes selected_id, so routing alone cannot)', async () => {
+describe('pipeline → shared detail overlay', () => {
+  test('clicking a candidate opens the detail overlay on its repo', async () => {
     const client = /** @type {any} */ (createWsClient());
-    window.location.hash = '#/worker';
+    window.location.hash = '#/pipeline';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
 
     bootstrap(root);
     await flush();
 
-    // Feed one Ready candidate into the worker subscription store.
-    client._trigger('snapshot', {
-      type: 'snapshot',
-      id: 'tab:worker:ready',
-      revision: 1,
-      issues: [{ id: 'W1', title: '후보 하나', status: 'open', created_at: 1 }]
+    // UI-dbn6 §4.2: candidates arrive on the monitor pipeline channel.
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      seq: 1,
+      workspaces: [
+        {
+          root_dir: '/repo-a',
+          name: 'repo-a',
+          revision: 1,
+          queue: [],
+          serial_lanes: [],
+          pr_wait: [],
+          done: [],
+          attempts: {},
+          runnable: [{ bead_id: 'W1', title: '후보 하나', created_at: 1 }]
+        }
+      ],
+      workspaces_state: [
+        { root_dir: '/repo-a', name: 'repo-a', revision: 1, slots: 1 }
+      ]
     });
     await flush();
 
     const mini = /** @type {HTMLElement} */ (
-      document.querySelector('#worker-root .worker-card[data-bead-id="W1"]')
+      document.querySelector('#pipeline-root .pl-card[data-bead-id="W1"]')
     );
     expect(mini).not.toBeNull();
 
@@ -90,9 +114,9 @@ describe('worker → shared detail overlay', () => {
     mini.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await flush();
 
-    // The overlay must open even though the Worker route maps `?issue=` to a
-    // parent selection and zeroes `selected_id`.
+    // The overlay opens after the connection moves to the card's repo, and
+    // the hash keeps that repo (UI-dbn6 §3.1).
     expect(detail.hidden).toBe(false);
-    expect(window.location.hash).toBe('#/worker');
+    expect(window.location.hash).toBe('#/pipeline?issue=W1&root=%2Frepo-a');
   });
 });

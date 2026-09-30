@@ -1,0 +1,806 @@
+/*
+ * Pipeline screen, part 2 (UI-dbn6 §4.4, design-system round): cards, rows,
+ * tiles, their chips and ops, popovers, sheets, the mobile lane bar and the
+ * restored surfaces. Loaded right after `pipeline.css`.
+ *
+ * Chips and badges draw with `.ui-chip` and ops with `.ui-btn`
+ * (`ui/primitives.css`); this sheet only assigns each chip its ROLE
+ * (`--role-*` in `ui/tokens.css`) and places things. No-overflow rule:
+ * nothing extends past its card — head rows and chip rows wrap, sentences
+ * wrap (`word-break: keep-all`), IDs never break, file paths ellipsize with
+ * the full path in `title`.
+ */
+
+/* ---------- cards, rows, tiles ---------- */
+
+.pl-card,
+.pl-row,
+.pl-tile {
+  position: relative;
+  min-width: 0;
+  padding: var(--s-5) var(--s-6) var(--s-6);
+  border-radius: var(--r-card);
+  background: var(--card);
+  box-shadow: var(--e1);
+  color: var(--ink);
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  cursor: pointer;
+}
+
+.pl-tile.is-selected {
+  box-shadow:
+    var(--e1),
+    0 0 0 1.5px var(--accent-solid);
+}
+
+.pl-row.is-ghost {
+  opacity: var(--op-dim);
+  cursor: default;
+}
+
+.pl-row.is-external {
+  box-shadow:
+    var(--e1),
+    inset 3px 0 0 var(--live);
+}
+
+.pl-row.is-merging {
+  box-shadow:
+    var(--e1),
+    inset 3px 0 0 var(--st-pr);
+}
+
+.pl-row.is-merge-failed {
+  box-shadow:
+    var(--e1),
+    inset 3px 0 0 var(--danger);
+}
+
+/* 막힘·미룸 dim the whole card (catalog §06); a worker-ineligible card keeps
+   its colour and speaks through the disabled ↴ 대기로. */
+.pl-card.is-blocked,
+.pl-card--deferred {
+  opacity: var(--op-dim);
+}
+
+.is-dimmed {
+  opacity: var(--op-disabled);
+}
+
+.pl-card[data-drag-kind],
+.pl-row[data-drag-kind] {
+  touch-action: pan-y;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.is-dragging .pl-card,
+.is-dragging .pl-row {
+  touch-action: none;
+}
+
+.is-drag-source {
+  opacity: var(--op-disabled);
+}
+
+.pl-row.is-drop-before {
+  box-shadow:
+    var(--e1),
+    0 -2px 0 0 var(--accent-solid);
+}
+
+.pl-row.is-drop-after {
+  box-shadow:
+    var(--e1),
+    0 2px 0 0 var(--accent-solid);
+}
+
+.pl-drag-ghost {
+  position: fixed;
+  z-index: var(--z-drawer);
+  margin: 0;
+  pointer-events: none;
+  box-shadow:
+    var(--e3),
+    0 0 0 1.5px var(--accent-solid);
+  transform: rotate(-0.6deg);
+}
+
+/* ---------- progress strand (the card's five beads) ---------- */
+
+.pl-band {
+  margin: calc(-1 * var(--s-2)) 0 var(--s-1) calc(-1 * var(--s-3));
+}
+
+/* ---------- head line ---------- */
+
+.pl-line1 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  min-width: 0;
+}
+
+.pl-line1__ops,
+.pl-elapsed {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-left: auto;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-12);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pl-line1__ops {
+  font-family: inherit;
+}
+
+.pl-id {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: var(--t-id);
+  font-weight: var(--w-medium);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  cursor: copy;
+}
+
+.pl-id:hover {
+  color: var(--ink);
+}
+
+/* priority: P0 red (bold) · P1 orange · P2 gray · P3/P4 a ghost outline */
+.pl-pri {
+  flex: none;
+  white-space: nowrap;
+}
+
+.pl-pri[data-priority='0'] {
+  --c-bg: var(--role-p0-bg);
+  --c-fg: var(--role-p0-fg);
+  font-weight: var(--w-bold);
+}
+
+.pl-pri[data-priority='1'] {
+  --c-bg: var(--role-p1-bg);
+  --c-fg: var(--role-p1-fg);
+}
+
+.pl-pri[data-priority='2'] {
+  --c-bg: var(--role-p2-bg);
+  --c-fg: var(--role-p2-fg);
+}
+
+.pl-pri[data-priority='3'],
+.pl-pri[data-priority='4'] {
+  --c-bg: transparent;
+  --c-fg: var(--ink-3);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.pl-grip {
+  color: var(--ink-3);
+  cursor: grab;
+}
+
+.pl-seq {
+  color: var(--ink-3);
+  font-size: var(--t-12);
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-pr {
+  --c-bg: var(--role-pr-bg);
+  --c-fg: var(--role-pr-fg);
+  flex: none;
+  white-space: nowrap;
+}
+
+.pl-dot {
+  --c: var(--hold);
+  position: relative;
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--c);
+}
+
+.pl-dot.is-live {
+  --c: var(--live);
+}
+
+.pl-dot.is-live::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1.5px solid var(--c);
+  opacity: 0;
+  animation: ui-ping var(--dur-pulse) ease-out infinite;
+}
+
+.pl-dot.is-held {
+  --c: var(--warn);
+}
+
+.pl-dot.is-failed {
+  --c: var(--danger);
+}
+
+/* ---------- title and sentences ---------- */
+
+.pl-title {
+  margin: var(--s-3) 0 var(--s-2);
+  color: var(--ink);
+  font-size: var(--t-title);
+  font-weight: var(--w-semibold);
+  line-height: var(--lh-title);
+  letter-spacing: -0.005em;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.pl-title--quiet {
+  font-weight: var(--w-medium);
+}
+
+.pl-title__tail {
+  color: var(--ink-3);
+  font-weight: var(--w-regular);
+}
+
+.pl-reason,
+.pl-note,
+.pl-wait {
+  margin-top: var(--s-2);
+  color: var(--ink-2);
+  font-size: var(--t-12);
+  line-height: var(--lh-body);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.pl-reason {
+  color: var(--ink-3);
+}
+
+.pl-reason.is-danger,
+.pl-wait__error {
+  color: var(--red-fg);
+}
+
+.pl-note {
+  margin: var(--s-2) 0;
+}
+
+.pl-wait__head {
+  color: var(--ink);
+}
+
+.pl-wait__sub {
+  color: var(--ink-3);
+}
+
+/* ---------- activity well ---------- */
+
+.pl-activity {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  margin-top: var(--s-3);
+  padding: var(--s-3) var(--s-5);
+  border-radius: var(--r-well);
+  background: var(--well);
+  color: var(--ink-2);
+  font-size: var(--t-12);
+}
+
+.pl-activity__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* a tool call: one mono line, ellipsized, the whole call in `title` */
+code.pl-activity__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--t-11);
+}
+
+/* a sentence (the inquiry's last message): it wraps */
+span.pl-activity__text {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.pl-activity__age {
+  flex: none;
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  white-space: nowrap;
+}
+
+.pl-activity.is-paused .pl-dot {
+  --c: var(--hold);
+}
+
+.pl-activity.is-paused .pl-dot::after {
+  display: none;
+}
+
+.pl-activity.is-paused code.pl-activity__text {
+  color: var(--ink-3);
+}
+
+.pl-legs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  min-width: 0;
+  margin-top: var(--s-3);
+}
+
+.pl-legs__group {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pl-legs__group > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.pl-legs__group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.pl-legs__group ul {
+  margin: var(--s-2) 0 0;
+  padding-left: var(--s-8);
+  color: var(--ink-2);
+  font-size: var(--t-11);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- chip rows and chip roles ---------- */
+
+.pl-chips,
+.pl-facts,
+.pl-deps {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+  margin-top: var(--s-3);
+}
+
+/* The coordinate chips (route · provenance · labels) and the run facts share
+   one wrapping line when they fit, so a row stays compact; each keeps its own
+   wrapping box and never passes the card. */
+.pl-chips,
+.pl-facts {
+  display: inline-flex;
+  max-width: 100%;
+  margin-right: var(--s-2);
+  vertical-align: top;
+}
+
+.pl-chip,
+.pl-badge {
+  font-size: var(--t-chip);
+}
+
+button.pl-badge,
+summary.pl-badge {
+  cursor: pointer;
+}
+
+/* route */
+.pl-chip--route[data-route='spec_backed'] {
+  --c-bg: var(--role-route-spec_backed-bg);
+  --c-fg: var(--role-route-spec_backed-fg);
+}
+
+.pl-chip--route[data-route='quick_fix'] {
+  --c-bg: var(--role-route-quick_fix-bg);
+  --c-fg: var(--role-route-quick_fix-fg);
+}
+
+.pl-chip--route[data-route='full_plan'] {
+  --c-bg: var(--role-route-full_plan-bg);
+  --c-fg: var(--role-route-full_plan-fg);
+}
+
+.pl-chip--route[data-route='unset'] {
+  --c-bg: var(--role-route-unset-bg);
+  --c-fg: var(--role-route-unset-fg);
+  font-weight: var(--w-regular);
+}
+
+/* judgement and area labels */
+.pl-chip--judge[data-chip-key='complex'] {
+  --c-bg: var(--role-complex-bg);
+  --c-fg: var(--role-complex-fg);
+}
+
+.pl-chip--judge[data-chip-key='frontend'] {
+  --c-bg: var(--role-area-frontend-bg);
+  --c-fg: var(--role-area-frontend-fg);
+}
+
+.pl-chip--judge[data-chip-key='backend'] {
+  --c-bg: var(--role-area-backend-bg);
+  --c-fg: var(--role-area-backend-fg);
+}
+
+.pl-chip[data-chip-key='session_preferred'] {
+  --c-bg: var(--role-session-preferred-bg);
+  --c-fg: var(--role-session-preferred-fg);
+}
+
+.pl-chip[data-chip-key='ineligible'] {
+  --c-bg: var(--role-ineligible-bg);
+  --c-fg: var(--role-ineligible-fg);
+}
+
+.pl-chip[data-chip-key='spec_after_blocker'],
+.pl-chip[data-chip-key='readiness'] {
+  --c-bg: var(--role-spec-wait-bg);
+  --c-fg: var(--role-spec-wait-fg);
+}
+
+/* applied / diverged bound judgement: a solid fill of its own role */
+.pl-chip--judge.is-bound[data-state='applied'],
+.pl-chip--judge.is-bound[data-state='diverged'] {
+  background: var(--c-fg);
+  color: var(--card);
+}
+
+/* dependency */
+.pl-chip--dep,
+.pl-chip--gate {
+  --c-bg: var(--role-blocked-by-bg);
+  --c-fg: var(--role-blocked-by-fg);
+}
+
+.pl-chip--dep.is-foreign {
+  --c-bg: var(--role-foreign-bg);
+  --c-fg: var(--role-foreign-fg);
+}
+
+.pl-chip--next {
+  --c-bg: var(--role-dependents-bg);
+  --c-fg: var(--role-dependents-fg);
+}
+
+.pl-chip--released {
+  --c-bg: var(--role-released-bg);
+  --c-fg: var(--role-released-fg);
+}
+
+.pl-chip--overlap {
+  --c-bg: var(--role-overlap-bg);
+  --c-fg: var(--role-overlap-fg);
+}
+
+.pl-chip--quiet {
+  --c-fg: var(--ink-3);
+  padding: 1px calc(var(--s-3) - 1px);
+  border: 1px dashed var(--line-strong);
+  background: transparent;
+}
+
+.pl-chip--grace {
+  --c-bg: var(--role-wait-bg);
+  --c-fg: var(--role-wait-fg);
+}
+
+/* links and provenance */
+.pl-chip--link {
+  --c-bg: var(--role-origin-bg);
+  --c-fg: var(--role-origin-fg);
+}
+
+.pl-chip--label {
+  --c-bg: var(--role-fact-bg);
+  --c-fg: var(--role-fact-fg);
+}
+
+.pl-chip[data-chip-key='qfr'] {
+  --c-bg: var(--role-reviewed-bg);
+  --c-fg: var(--role-reviewed-fg);
+}
+
+.pl-chip--dep[data-chip-key='qfr'] {
+  --c-bg: var(--role-stale-bg);
+  --c-fg: var(--role-stale-fg);
+}
+
+/* delegation legs */
+.pl-chip--leg.is-live {
+  --c-bg: var(--role-live-bg);
+  --c-fg: var(--role-live-fg);
+}
+
+.pl-chip--leg.is-failed {
+  --c-bg: var(--role-failed-bg);
+  --c-fg: var(--role-failed-fg);
+}
+
+.pl-chip.is-disabled {
+  --c-fg: var(--ink-3);
+  cursor: default;
+}
+
+/* ---------- status badges (a leading dot) ---------- */
+
+.pl-badge--wait,
+.pl-badge--live,
+.pl-badge--alert {
+  gap: var(--s-2);
+}
+
+.pl-badge--wait {
+  --c-bg: var(--role-wait-bg);
+  --c-fg: var(--role-wait-fg);
+  list-style: none;
+}
+
+.pl-badge--wait::-webkit-details-marker {
+  display: none;
+}
+
+.pl-badge--wait::before,
+.pl-badge--alert::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.pl-badge--wait[data-wait-kind='external_job'] {
+  --c-bg: var(--role-external-bg);
+  --c-fg: var(--role-external-fg);
+}
+
+.pl-badge--wait[data-wait-kind='provider_hold'] {
+  --c-bg: var(--role-hold-bg);
+  --c-fg: var(--role-hold-fg);
+}
+
+.pl-badge--wait[data-wait-kind='retry_wait'] {
+  --c-bg: var(--role-retry-bg);
+  --c-fg: var(--role-retry-fg);
+}
+
+.pl-badge--wait[data-verdict='action_required'],
+.pl-badge--alert {
+  --c-bg: var(--role-failed-bg);
+  --c-fg: var(--role-failed-fg);
+}
+
+.pl-badge--live {
+  --c-bg: var(--role-live-bg);
+  --c-fg: var(--role-live-fg);
+}
+
+.pl-badge--live .pl-dot {
+  --c: currentColor;
+  width: 6px;
+  height: 6px;
+}
+
+.pl-badge--quiet {
+  --c-fg: var(--ink-3);
+}
+
+.pl-badge--session {
+  --c-bg: var(--role-session-bg);
+  --c-fg: var(--role-session-fg);
+}
+
+.pl-link {
+  color: var(--accent-text);
+  font-size: var(--t-11);
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
+/* ---------- facts ---------- */
+
+.pl-fact {
+  --c-bg: var(--role-fact-bg);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--h-chip);
+  padding: 2px var(--s-3);
+  border-radius: var(--r-chip);
+  background: var(--c-bg);
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.pl-fact b {
+  color: var(--ink-2);
+  font-weight: var(--w-medium);
+}
+
+.pl-fact.is-pin {
+  --c-bg: var(--role-pin-bg);
+}
+
+.pl-fact.is-pin b {
+  color: var(--role-pin-fg);
+}
+
+/* a log path: one ellipsized line, the whole path in `title` */
+.pl-fact--path {
+  flex: 1 1 100%;
+}
+
+.pl-fact--path code {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--t-11);
+}
+
+.pl-copy {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--h-sm);
+  min-height: var(--h-sm);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-btn);
+  background: transparent;
+  color: var(--ink-3);
+  cursor: copy;
+}
+
+.pl-copy:hover {
+  background: var(--btn-bg);
+  color: var(--ink);
+}
+
+.pl-times {
+  margin-top: var(--s-3);
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  word-break: keep-all;
+}
+
+/* ---------- merge strand (PR rows, the landing of a running tile) ---------- */
+
+.pl-step {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1) var(--s-4);
+  min-width: 0;
+  max-width: 100%;
+  color: var(--ink-2);
+  font-size: var(--t-12);
+}
+
+.pl-step__strand {
+  flex: none;
+}
+
+.pl-step__label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.pl-step.is-active .pl-step__label {
+  color: var(--ink);
+  font-weight: var(--w-medium);
+}
+
+.pl-step.is-failed .pl-step__label {
+  color: var(--red-fg);
+  font-weight: var(--w-semibold);
+}
+
+.pl-step__n {
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-landing {
+  margin-top: var(--s-3);
+}
+
+.pl-receipt {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-5);
+  min-width: 0;
+  margin-top: var(--s-3);
+  color: var(--ink-2);
+  font-size: var(--t-11);
+  overflow-wrap: anywhere;
+}
+
+.pl-receipt code {
+  font-family: var(--font-mono);
+}
+
+/* ---------- ops ---------- */
+
+.pl-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  margin-top: var(--s-5);
+}
+
+.pl-foot__ops {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s-3);
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+}
+
+.pl-op {
+  white-space: normal;
+}
+
+.pl-op--more {
+  font-size: var(--t-15);
+}
+
+@media (pointer: coarse) {
+  .pl-foot,
+  .pl-foot__ops {
+    gap: var(--s-4);
+  }
+
+  .pl-copy {
+    min-width: var(--h-touch);
+    min-height: var(--h-touch);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pl-dot.is-live::after {
+    animation: none;
+  }
+}

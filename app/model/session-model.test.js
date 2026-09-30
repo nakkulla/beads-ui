@@ -1,0 +1,1081 @@
+import { describe, expect, test } from 'vitest';
+import {
+  APPLIES_TO_VALUES as SERVER_APPLIES_TO_VALUES,
+  BEAD_PIN_KEYS as SERVER_BEAD_PIN_KEYS,
+  GENERAL_PRESET_KEYS as SERVER_GENERAL_PRESET_KEYS,
+  GENERAL_PRESET_KV_KEYS as SERVER_GENERAL_PRESET_KV_KEYS,
+  QUICK_FIX_IMPL_KEYS as SERVER_QUICK_FIX_IMPL_KEYS,
+  QUICK_FIX_PRESET_KEYS as SERVER_QUICK_FIX_PRESET_KEYS
+} from '../../server/worker/exec-enums.js';
+import {
+  APPLIES_TO_VALUES,
+  BEAD_APPLY_KEYS,
+  BEAD_PIN_KEYS,
+  BOOLEAN_DRAFT_ON,
+  GENERAL_PRESET_KEYS,
+  GENERAL_PRESET_KV_KEYS,
+  IMPL_DISPATCHES,
+  ORCHESTRATION_KEYS,
+  PLAN_REVIEW_MODELS,
+  QUICK_FIX_IMPL_KEYS,
+  QUICK_FIX_KV_KEYS,
+  QUICK_FIX_LANE_MAP,
+  QUICK_FIX_ORCHESTRATION_KEYS,
+  QUICK_FIX_PRESET_KEYS,
+  REVIEW_EFFORTS,
+  REVIEW_SPEEDS,
+  REVIEW_STEP_MODELS,
+  WORKSPACE_KV_KEYS,
+  adoptSessionDefaultValues,
+  adoptWorkerCommon,
+  buildExecutionOptionView,
+  buildOrchestrationPatch,
+  buildPresetDiff,
+  buildSessionDefaultsPatch,
+  implEffortOptions,
+  implModelOptions,
+  isDelegationDisabled,
+  isHttpOriginValue,
+  narrowImplTarget,
+  normalizeAppliesTo,
+  orchestrationEffortOptions,
+  orchestrationModelOptions,
+  orchestrationRuntimeInitial,
+  orchestrationRuntimeOptions,
+  presetKeysFor,
+  presetKvKeysFor,
+  speedVisible,
+  workerUrlMessage
+} from './session-model.js';
+
+const PROJECTION = {
+  supported: true,
+  session: {
+    workflow_mode_default: 'standard',
+    review: {
+      default: 'codex',
+      reviewers: {
+        codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+        astra: { model: 'gpt-6-astra', effort: 'xhigh' },
+        fable: { model: 'fable', effort: 'high' }
+      }
+    },
+    plan_review: {
+      standard_recommended: 'codex',
+      fast_track_default: 'fable'
+    },
+    implementation: {
+      default: {
+        dispatch: 'delegated',
+        runtime: 'codex',
+        model: 'sol',
+        model_id: 'gpt-5.6-sol',
+        effort: 'auto',
+        speed: 'default'
+      },
+      model_catalog: { codex: { sol: 'gpt-5.6-sol', terra: 'gpt-5.6-terra' } },
+      effort_by_transport: {}
+    }
+  },
+  orchestration: {
+    runtime: 'claude',
+    model: 'opus',
+    model_id: 'opus',
+    effort: null,
+    speed: 'default'
+  }
+};
+
+/** A minimal two-runner catalog in the worker snapshot's shape. */
+const CATALOG = {
+  runners: {
+    claude: {
+      models: {
+        opus: { efforts: ['low', 'high'] },
+        haiku: { efforts: ['low'] }
+      }
+    },
+    codex: {
+      models: {
+        sol: { efforts: ['medium', 'xhigh'] },
+        terra: { efforts: ['high'] }
+      }
+    }
+  }
+};
+
+/** The claude shape: efforts live on the runner, not on each model. */
+const RUNNER_LEVEL_CATALOG = {
+  runners: {
+    claude: {
+      models: { opus: {}, haiku: { efforts: ['low'] } },
+      efforts: ['low', 'medium', 'high', 'xhigh']
+    }
+  }
+};
+
+/** The outer Worker vocabulary differs per model from the inner one. */
+const ORCHESTRATION_CATALOG = {
+  runners: {
+    claude: { models: { opus: {} }, efforts: ['low', 'high'] },
+    codex: {
+      models: {
+        sol: {
+          efforts: ['low', 'xhigh'],
+          orchestration_efforts: ['low', 'xhigh', 'max', 'ultra']
+        },
+        terra: { efforts: ['high'] },
+        luna: {}
+      },
+      efforts: ['minimal']
+    }
+  }
+};
+
+/** The catalog shape the speed rule reads: only codex publishes a second tier. */
+const SPEED_CATALOG = {
+  runners: {
+    claude: {
+      models: { opus: { id: 'opus' }, fable: { id: 'fable' } }
+    },
+    codex: {
+      models: {
+        sol: { id: 'gpt-5.6-sol', speed_tiers: ['default', 'fast'] },
+        astra: { id: 'gpt-6-astra', speed_tiers: ['default', 'fast'] }
+      }
+    }
+  }
+};
+
+describe('speedVisible', () => {
+  test('hides the row for a runtime whose runner offers one tier', () => {
+    expect(speedVisible(SPEED_CATALOG, { runtime: 'claude' })).toBe(false);
+  });
+
+  test('shows the row for a runtime whose runner offers two tiers', () => {
+    expect(speedVisible(SPEED_CATALOG, { runtime: 'codex' })).toBe(true);
+  });
+
+  test('derives the runner from an exact model while the runtime is auto', () => {
+    expect(speedVisible(SPEED_CATALOG, { runtime: 'auto', model: 'sol' })).toBe(
+      true
+    );
+  });
+
+  test('hides the row when neither runtime nor model names a provider', () => {
+    expect(
+      speedVisible(SPEED_CATALOG, { runtime: 'auto', model: 'auto' })
+    ).toBe(false);
+  });
+
+  test('shows the row for a review model that belongs to codex', () => {
+    expect(speedVisible(SPEED_CATALOG, { model: 'astra' })).toBe(true);
+  });
+
+  test('hides the row for a review gate answered by self', () => {
+    expect(speedVisible(SPEED_CATALOG, { model: null })).toBe(false);
+  });
+
+  test('resolves a reviewer model id to its catalog runner', () => {
+    expect(speedVisible(SPEED_CATALOG, { model: 'gpt-5.6-sol' })).toBe(true);
+  });
+});
+
+describe('orchestration runtime row', () => {
+  test('offers every catalog runner and no 전체 option', () => {
+    expect(orchestrationRuntimeOptions(SPEED_CATALOG)).toEqual([
+      'claude',
+      'codex'
+    ]);
+  });
+
+  test('starts on the runner of the stored orchestration model', () => {
+    expect(orchestrationRuntimeInitial(SPEED_CATALOG, 'sol', 'opus')).toBe(
+      'codex'
+    );
+  });
+
+  test('falls back to the projection default model runner when unset', () => {
+    expect(orchestrationRuntimeInitial(SPEED_CATALOG, null, 'opus')).toBe(
+      'claude'
+    );
+  });
+
+  test('names no runtime for an empty catalog', () => {
+    expect(orchestrationRuntimeInitial({}, null, null)).toBe(null);
+  });
+});
+
+describe('session key lists', () => {
+  test('names the fourteen per-bead keys and no orchestration key', () => {
+    expect(BEAD_APPLY_KEYS).toHaveLength(14);
+    expect(BEAD_APPLY_KEYS).toContain('impl_dispatch');
+    expect(BEAD_APPLY_KEYS).toContain('impl_speed');
+    expect(
+      BEAD_APPLY_KEYS.some((key) => key.startsWith('orchestration_'))
+    ).toBe(false);
+  });
+
+  test('mirrors the 17 server pin keys with orchestration first', () => {
+    expect(BEAD_PIN_KEYS).toEqual([...ORCHESTRATION_KEYS, ...BEAD_APPLY_KEYS]);
+    expect(BEAD_PIN_KEYS).toEqual([...SERVER_BEAD_PIN_KEYS]);
+    expect(BEAD_PIN_KEYS).toHaveLength(17);
+  });
+
+  test('keeps workflow_mode out of the per-bead keys', () => {
+    expect(BEAD_APPLY_KEYS).not.toContain('workflow_mode');
+  });
+
+  test('names workflow_mode explicitly in the workspace kv keys', () => {
+    expect(WORKSPACE_KV_KEYS[0]).toBe('workflow_mode');
+  });
+
+  test('drops impl_dispatch from the twenty-one workspace kv keys', () => {
+    expect(WORKSPACE_KV_KEYS).toHaveLength(21);
+
+    expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
+  });
+
+  test('mirrors the quick_fix kv block after the per-bead keys', () => {
+    expect(WORKSPACE_KV_KEYS.slice(-7)).toEqual([
+      ...QUICK_FIX_KV_KEYS,
+      'base_sync_accept_local_commits',
+      'bdui_url'
+    ]);
+  });
+
+  test('keeps the kv-only keys out of both preset profiles', () => {
+    for (const key of ['bdui_url', 'base_sync_accept_local_commits']) {
+      expect(GENERAL_PRESET_KEYS).not.toContain(key);
+      expect(GENERAL_PRESET_KV_KEYS).not.toContain(key);
+      expect(QUICK_FIX_PRESET_KEYS).not.toContain(key);
+    }
+  });
+
+  test('keeps the quick_fix storage keys out of the general profile', () => {
+    for (const key of QUICK_FIX_KV_KEYS) {
+      expect(GENERAL_PRESET_KEYS).not.toContain(key);
+      expect(GENERAL_PRESET_KV_KEYS).not.toContain(key);
+    }
+  });
+
+  test('maps exactly eight preset fields onto the quick_fix lane', () => {
+    expect(QUICK_FIX_ORCHESTRATION_KEYS).toEqual([
+      'quick_fix_orchestration_model',
+      'quick_fix_orchestration_effort',
+      'quick_fix_orchestration_speed'
+    ]);
+    expect(QUICK_FIX_LANE_MAP).toEqual({
+      orchestration_model: 'quick_fix_orchestration_model',
+      orchestration_effort: 'quick_fix_orchestration_effort',
+      orchestration_speed: 'quick_fix_orchestration_speed',
+      impl_dispatch: 'quick_fix_impl_dispatch',
+      impl_runtime: 'quick_fix_impl_runtime',
+      impl_model: 'quick_fix_impl_model',
+      impl_effort: 'quick_fix_impl_effort',
+      impl_speed: 'quick_fix_impl_speed'
+    });
+  });
+
+  test('names the thirteen kv keys a general apply replaces', () => {
+    expect(GENERAL_PRESET_KV_KEYS).toEqual([
+      'spec_review_model',
+      'spec_review_effort',
+      'spec_review_speed',
+      'plan_review_model',
+      'plan_review_effort',
+      'plan_review_speed',
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_review_speed',
+      'impl_runtime',
+      'impl_model',
+      'impl_effort',
+      'impl_speed'
+    ]);
+  });
+
+  test('offers 위임 and 메인 as the two execution modes', () => {
+    expect(IMPL_DISPATCHES).toEqual(['delegated', 'main']);
+  });
+
+  test('carries the seventeen pin keys in the general profile', () => {
+    expect(GENERAL_PRESET_KEYS).toEqual([...BEAD_PIN_KEYS]);
+    expect(GENERAL_PRESET_KEYS).toHaveLength(17);
+  });
+
+  test('carries eight canonical keys in the quick_fix profile', () => {
+    expect(QUICK_FIX_PRESET_KEYS).toEqual([
+      ...ORCHESTRATION_KEYS,
+      ...QUICK_FIX_IMPL_KEYS
+    ]);
+    expect(QUICK_FIX_PRESET_KEYS).toHaveLength(8);
+  });
+
+  test('leaves the nine review keys out of the quick_fix profile', () => {
+    for (const key of BEAD_APPLY_KEYS.filter((entry) =>
+      entry.includes('_review_')
+    )) {
+      expect(QUICK_FIX_PRESET_KEYS).not.toContain(key);
+    }
+  });
+
+  test('names quick_fix storage keys nowhere in the quick_fix profile', () => {
+    expect(
+      QUICK_FIX_PRESET_KEYS.some((key) => key.startsWith('quick_fix_'))
+    ).toBe(false);
+  });
+
+  test('reads an absent or unknown applies_to as general', () => {
+    expect(normalizeAppliesTo(undefined)).toBe('general');
+    expect(normalizeAppliesTo('lane')).toBe('general');
+    expect(normalizeAppliesTo('quick_fix')).toBe('quick_fix');
+  });
+
+  test('selects each profile key set by applies_to', () => {
+    expect(presetKeysFor('general')).toEqual(GENERAL_PRESET_KEYS);
+    expect(presetKeysFor('quick_fix')).toEqual(QUICK_FIX_PRESET_KEYS);
+    expect(presetKvKeysFor('general')).toEqual(GENERAL_PRESET_KV_KEYS);
+    expect(presetKvKeysFor('quick_fix')).toEqual(QUICK_FIX_KV_KEYS);
+  });
+
+  test('matches the server profile key lists exactly', () => {
+    expect(APPLIES_TO_VALUES).toEqual([...SERVER_APPLIES_TO_VALUES]);
+    expect(GENERAL_PRESET_KEYS).toEqual([...SERVER_GENERAL_PRESET_KEYS]);
+    expect(QUICK_FIX_IMPL_KEYS).toEqual([...SERVER_QUICK_FIX_IMPL_KEYS]);
+    expect(QUICK_FIX_PRESET_KEYS).toEqual([...SERVER_QUICK_FIX_PRESET_KEYS]);
+    expect(GENERAL_PRESET_KV_KEYS).toEqual([...SERVER_GENERAL_PRESET_KV_KEYS]);
+  });
+
+  test('offers the fixed review speed vocabulary', () => {
+    expect(REVIEW_SPEEDS).toEqual(['default', 'fast']);
+  });
+});
+
+describe('isDelegationDisabled (per-bead drafts only)', () => {
+  test('disables the delegation rows when the mode is 메인', () => {
+    expect(isDelegationDisabled({ impl_dispatch: 'main' })).toBe(true);
+  });
+
+  test('keeps the delegation rows enabled for 위임', () => {
+    expect(isDelegationDisabled({ impl_dispatch: 'delegated' })).toBe(false);
+  });
+
+  test('keeps the delegation rows enabled when no mode is chosen', () => {
+    expect(isDelegationDisabled({})).toBe(false);
+  });
+});
+
+describe('implModelOptions', () => {
+  test('offers 자동 plus every model of the chosen delegation target', () => {
+    expect(implModelOptions(CATALOG, 'codex')).toEqual([
+      'auto',
+      'sol',
+      'terra'
+    ]);
+  });
+
+  test('offers every catalog model when the target is auto', () => {
+    expect(implModelOptions(CATALOG, 'auto')).toEqual([
+      'auto',
+      'opus',
+      'haiku',
+      'sol',
+      'terra'
+    ]);
+  });
+
+  test('offers only 자동 when the catalog is unknown', () => {
+    expect(implModelOptions(null, 'codex')).toEqual(['auto']);
+  });
+});
+
+describe('implEffortOptions', () => {
+  test('narrows the efforts to the chosen model', () => {
+    expect(implEffortOptions(CATALOG, 'codex', 'sol')).toEqual([
+      'auto',
+      'medium',
+      'xhigh'
+    ]);
+  });
+
+  test('falls back to the target runtime union when the model is 자동', () => {
+    expect(implEffortOptions(CATALOG, 'codex', 'auto')).toEqual([
+      'auto',
+      'medium',
+      'xhigh',
+      'high'
+    ]);
+  });
+
+  test('falls back to the runner efforts for a model that declares none', () => {
+    expect(implEffortOptions(RUNNER_LEVEL_CATALOG, 'claude', 'opus')).toEqual([
+      'auto',
+      'low',
+      'medium',
+      'high',
+      'xhigh'
+    ]);
+  });
+
+  test('prefers the model efforts over the runner list', () => {
+    expect(implEffortOptions(RUNNER_LEVEL_CATALOG, 'claude', 'haiku')).toEqual([
+      'auto',
+      'low'
+    ]);
+  });
+
+  test('unions both providers under auto while the model is unset', () => {
+    expect(implEffortOptions(CATALOG, 'auto', undefined)).toEqual([
+      'auto',
+      'low',
+      'high',
+      'medium',
+      'xhigh'
+    ]);
+  });
+
+  test('narrows to the exact model under auto', () => {
+    expect(implEffortOptions(CATALOG, 'auto', 'opus')).toEqual([
+      'auto',
+      'low',
+      'high'
+    ]);
+  });
+});
+
+describe('orchestrationEffortOptions', () => {
+  test('offers the outer worker vocabulary of the chosen model', () => {
+    expect(
+      orchestrationEffortOptions(ORCHESTRATION_CATALOG, 'codex', 'sol')
+    ).toEqual(['auto', 'low', 'xhigh', 'max', 'ultra']);
+  });
+
+  test('falls back to the model efforts without an orchestration list', () => {
+    expect(
+      orchestrationEffortOptions(ORCHESTRATION_CATALOG, 'codex', 'terra')
+    ).toEqual(['auto', 'high']);
+  });
+
+  test('falls back to the runner efforts when the model declares neither', () => {
+    expect(
+      orchestrationEffortOptions(ORCHESTRATION_CATALOG, 'codex', 'luna')
+    ).toEqual(['auto', 'minimal']);
+  });
+
+  test('unions every model of the runtime while the model is 자동', () => {
+    expect(
+      orchestrationEffortOptions(ORCHESTRATION_CATALOG, 'codex', 'auto')
+    ).toEqual(['auto', 'low', 'xhigh', 'max', 'ultra', 'high', 'minimal']);
+  });
+});
+
+describe('narrowImplTarget', () => {
+  test('drops a model and effort the new delegation target cannot run', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'claude', impl_model: 'sol', impl_effort: 'medium' },
+      CATALOG
+    );
+
+    expect(narrowed).toEqual({
+      impl_runtime: 'claude',
+      impl_model: undefined,
+      impl_effort: undefined
+    });
+  });
+
+  test('keeps 자동 on both dependent keys', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'codex', impl_model: 'auto', impl_effort: 'auto' },
+      CATALOG
+    );
+
+    expect(narrowed).toEqual({
+      impl_runtime: 'codex',
+      impl_model: 'auto',
+      impl_effort: 'auto'
+    });
+  });
+
+  test('changes nothing while no runtime is set', () => {
+    const narrowed = narrowImplTarget(
+      { impl_model: 'sol', impl_effort: 'medium' },
+      CATALOG
+    );
+
+    expect(narrowed).toEqual({
+      impl_runtime: undefined,
+      impl_model: 'sol',
+      impl_effort: 'medium'
+    });
+  });
+
+  test('keeps an exact model of either provider under auto', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'auto', impl_model: 'sol' },
+      CATALOG
+    );
+
+    expect(narrowed.impl_model).toBe('sol');
+  });
+
+  test('drops an effort the exact model under auto cannot run', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'auto', impl_model: 'opus', impl_effort: 'max' },
+      CATALOG
+    );
+
+    expect(narrowed).toEqual({
+      impl_runtime: 'auto',
+      impl_model: 'opus',
+      impl_effort: undefined
+    });
+  });
+
+  test('narrows nothing under auto while the model is auto', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'auto', impl_model: 'auto', impl_effort: 'max' },
+      CATALOG
+    );
+
+    expect(narrowed).toEqual({
+      impl_runtime: 'auto',
+      impl_model: 'auto',
+      impl_effort: 'max'
+    });
+  });
+
+  test('drops an effort outside the surviving model union', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'codex', impl_model: 'sol', impl_effort: 'high' },
+      CATALOG
+    );
+
+    expect(narrowed).toEqual({
+      impl_runtime: 'codex',
+      impl_model: 'sol',
+      impl_effort: undefined
+    });
+  });
+
+  test('keeps a runner-level effort the model itself does not declare', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'claude', impl_model: 'opus', impl_effort: 'high' },
+      RUNNER_LEVEL_CATALOG
+    );
+
+    expect(narrowed).toEqual({
+      impl_runtime: 'claude',
+      impl_model: 'opus',
+      impl_effort: 'high'
+    });
+  });
+});
+
+describe('buildPresetDiff', () => {
+  test('reports added, removed and changed keys and skips equal ones', () => {
+    const diff = buildPresetDiff(
+      { impl_runtime: 'claude', impl_model: 'opus', impl_speed: 'fast' },
+      { impl_runtime: 'codex', impl_model: 'opus', impl_effort: 'high' }
+    );
+
+    expect(diff.rows).toEqual([
+      {
+        key: 'impl_runtime',
+        label: '위임 대상',
+        before: 'claude',
+        after: 'codex',
+        kind: 'changed'
+      },
+      {
+        key: 'impl_effort',
+        label: '구현 effort',
+        before: null,
+        after: 'high',
+        kind: 'added'
+      },
+      {
+        key: 'impl_speed',
+        label: '구현 속도',
+        before: 'fast',
+        after: null,
+        kind: 'removed'
+      }
+    ]);
+  });
+
+  test('orders rows by the preset kv keys before the orchestration keys', () => {
+    const diff = buildPresetDiff(
+      {},
+      {
+        orchestration_model: 'sol',
+        impl_model: 'sol',
+        workflow_mode: 'fast_track'
+      }
+    );
+
+    expect(diff.rows.map((row) => row.key)).toEqual([
+      'impl_model',
+      'orchestration_model'
+    ]);
+  });
+
+  test('compares exactly the sixteen keys one general apply writes', () => {
+    const every_key = Object.fromEntries(
+      [
+        ...GENERAL_PRESET_KV_KEYS,
+        ...ORCHESTRATION_KEYS,
+        ...WORKSPACE_KV_KEYS,
+        'impl_dispatch'
+      ].map((key) => [key, 'x'])
+    );
+
+    const diff = buildPresetDiff({}, every_key, 'general');
+
+    expect(diff.rows.map((row) => row.key)).toEqual([
+      'spec_review_model',
+      'spec_review_effort',
+      'spec_review_speed',
+      'plan_review_model',
+      'plan_review_effort',
+      'plan_review_speed',
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_review_speed',
+      'impl_runtime',
+      'impl_model',
+      'impl_effort',
+      'impl_speed',
+      'orchestration_model',
+      'orchestration_effort',
+      'orchestration_speed'
+    ]);
+    expect(diff.ignored_keys).toEqual([
+      'impl_dispatch',
+      'workflow_mode',
+      ...QUICK_FIX_KV_KEYS,
+      'base_sync_accept_local_commits',
+      'bdui_url'
+    ]);
+  });
+
+  test('compares exactly the eight keys one quick_fix apply writes', () => {
+    const every_key = Object.fromEntries(
+      QUICK_FIX_PRESET_KEYS.map((key) => [key, 'x'])
+    );
+
+    const diff = buildPresetDiff({}, every_key, 'quick_fix');
+
+    expect(diff.rows.map((row) => row.key)).toEqual([...QUICK_FIX_PRESET_KEYS]);
+    expect(diff.ignored_keys).toEqual([]);
+  });
+
+  test('leaves the review keys out of a quick_fix comparison', () => {
+    const diff = buildPresetDiff(
+      { impl_review_model: 'astra' },
+      { impl_model: 'sol' },
+      'quick_fix'
+    );
+
+    expect(diff.rows.map((row) => row.key)).toEqual(['impl_model']);
+  });
+
+  test('returns impl_dispatch as ignored rather than comparing it', () => {
+    const diff = buildPresetDiff({}, { impl_dispatch: 'main' });
+
+    expect(diff.rows).toEqual([]);
+    expect(diff.ignored_keys).toEqual(['impl_dispatch']);
+  });
+
+  test('compares impl_dispatch in the quick_fix profile', () => {
+    const diff = buildPresetDiff({}, { impl_dispatch: 'main' }, 'quick_fix');
+
+    expect(diff.rows.map((row) => row.key)).toEqual(['impl_dispatch']);
+    expect(diff.ignored_keys).toEqual([]);
+  });
+
+  test('returns no rows for an empty preset against empty settings', () => {
+    const diff = buildPresetDiff({}, {});
+
+    expect(diff).toEqual({ rows: [], ignored_keys: [] });
+  });
+});
+
+describe('orchestrationModelOptions', () => {
+  test('filters the model list by the UI-only runtime choice', () => {
+    expect(orchestrationModelOptions(CATALOG, 'claude')).toEqual([
+      'opus',
+      'haiku'
+    ]);
+  });
+
+  test('lists every model when no runtime filter is chosen', () => {
+    expect(orchestrationModelOptions(CATALOG, null)).toEqual([
+      'opus',
+      'haiku',
+      'sol',
+      'terra'
+    ]);
+  });
+});
+
+describe('buildExecutionOptionView', () => {
+  test('offers Astra in both reviewer vocabularies', () => {
+    expect(REVIEW_STEP_MODELS).toEqual([
+      'codex',
+      'astra',
+      'opus',
+      'fable',
+      'self',
+      'skip'
+    ]);
+    expect(PLAN_REVIEW_MODELS).toEqual(['codex', 'astra', 'fable', 'skip']);
+  });
+
+  test('keeps a stored token the narrowed choice list no longer offers', () => {
+    const view = buildExecutionOptionView(
+      'impl_model',
+      ['auto', 'opus'],
+      { impl_runtime: 'claude', impl_model: 'sol' },
+      PROJECTION,
+      CATALOG
+    );
+
+    expect(view.options[0]).toEqual({
+      value: 'sol',
+      label: 'sol (비호환)',
+      full_value: 'sol'
+    });
+  });
+
+  test('keeps saved codex selected through the distinct Codex labels', () => {
+    const draft = { spec_review_model: 'codex' };
+    const view = buildExecutionOptionView(
+      'spec_review_model',
+      ['codex', 'astra', 'fable'],
+      draft,
+      PROJECTION,
+      CATALOG
+    );
+
+    expect(view.unset_label).toBe('기본값 사용 — 5.6-sol');
+    expect(view.options).toEqual([
+      {
+        value: 'codex',
+        label: 'Codex · Sol',
+        full_value: 'gpt-5.6-sol'
+      },
+      {
+        value: 'astra',
+        label: 'Codex · Astra',
+        full_value: 'gpt-6-astra'
+      },
+      { value: 'fable', label: 'fable', full_value: 'fable' }
+    ]);
+    expect(
+      view.options.find((option) => option.value === draft.spec_review_model)
+        ?.label
+    ).toBe('Codex · Sol');
+  });
+
+  test('recalculates dependent effort from the current reviewer draft', () => {
+    const codex = buildExecutionOptionView(
+      'plan_review_effort',
+      REVIEW_EFFORTS,
+      { plan_review_model: 'codex' },
+      PROJECTION,
+      CATALOG
+    );
+    const fable = buildExecutionOptionView(
+      'plan_review_effort',
+      REVIEW_EFFORTS,
+      { plan_review_model: 'fable' },
+      PROJECTION,
+      CATALOG
+    );
+
+    expect(codex.unset_label).toBe('기본값 사용 — xhigh');
+    expect(fable.unset_label).toBe('기본값 사용 — high');
+  });
+
+  test('recalculates implementation model label from runtime and model draft', () => {
+    const view = buildExecutionOptionView(
+      'impl_model',
+      ['auto', 'sol', 'terra'],
+      { impl_runtime: 'codex' },
+      PROJECTION,
+      CATALOG
+    );
+
+    expect(view.unset_label).toBe('기본값 사용 — 5.6-sol');
+    expect(view.options[2]).toEqual({
+      value: 'terra',
+      label: '5.6-terra',
+      full_value: 'gpt-5.6-terra'
+    });
+  });
+});
+
+describe('buildSessionDefaultsPatch', () => {
+  test('sends only the keys whose value changed', () => {
+    const patch = buildSessionDefaultsPatch(
+      {
+        workflow_mode: 'standard',
+        spec_review_speed: 'default',
+        impl_speed: 'fast'
+      },
+      {
+        workflow_mode: 'fast_track',
+        spec_review_speed: 'fast',
+        impl_speed: 'fast'
+      }
+    );
+
+    expect(patch).toEqual({
+      workflow_mode: 'fast_track',
+      spec_review_speed: 'fast'
+    });
+  });
+
+  test('never sends impl_dispatch to the workspace kv layer', () => {
+    const patch = buildSessionDefaultsPatch(
+      { impl_dispatch: 'delegated' },
+      { impl_dispatch: 'main' }
+    );
+
+    expect(patch).toEqual({});
+  });
+
+  test('sends null for a key the draft cleared back to (기본)', () => {
+    const patch = buildSessionDefaultsPatch({ impl_speed: 'fast' }, {});
+
+    expect(patch).toEqual({ impl_speed: null });
+  });
+
+  test('returns an empty patch when nothing changed', () => {
+    const patch = buildSessionDefaultsPatch(
+      { workflow_mode: 'standard' },
+      { workflow_mode: 'standard' }
+    );
+
+    expect(patch).toEqual({});
+  });
+
+  test('keeps workflow_mode=standard as an explicit value, not a deletion', () => {
+    const patch = buildSessionDefaultsPatch({}, { workflow_mode: 'standard' });
+
+    expect(patch).toEqual({ workflow_mode: 'standard' });
+  });
+
+  test('diffs quick_fix_impl_model like any other workspace kv key', () => {
+    const patch = buildSessionDefaultsPatch(
+      { quick_fix_impl_model: 'sol' },
+      { quick_fix_impl_model: 'terra' }
+    );
+
+    expect(patch).toEqual({ quick_fix_impl_model: 'terra' });
+  });
+
+  test('diffs bdui_url like any other workspace kv key', () => {
+    const patch = buildSessionDefaultsPatch(
+      { bdui_url: 'http://one:3000' },
+      { bdui_url: 'http://two:3000' }
+    );
+
+    expect(patch).toEqual({ bdui_url: 'http://two:3000' });
+  });
+
+  test('sends a dropped bdui_url as the null deletion request', () => {
+    const patch = buildSessionDefaultsPatch(
+      { bdui_url: 'http://one:3000' },
+      {}
+    );
+
+    expect(patch).toEqual({ bdui_url: null });
+  });
+
+  test('sends the checked bool key as a JSON boolean, not the draft marker', () => {
+    const patch = buildSessionDefaultsPatch(
+      {},
+      { base_sync_accept_local_commits: BOOLEAN_DRAFT_ON }
+    );
+
+    expect(patch).toEqual({ base_sync_accept_local_commits: true });
+  });
+
+  test('sends an unchecked bool key as the null deletion request', () => {
+    const patch = buildSessionDefaultsPatch(
+      { base_sync_accept_local_commits: BOOLEAN_DRAFT_ON },
+      {}
+    );
+
+    expect(patch).toEqual({ base_sync_accept_local_commits: null });
+  });
+
+  test('sends nothing while the bool key is unchanged', () => {
+    const patch = buildSessionDefaultsPatch(
+      { base_sync_accept_local_commits: BOOLEAN_DRAFT_ON },
+      { base_sync_accept_local_commits: BOOLEAN_DRAFT_ON }
+    );
+
+    expect(patch).toEqual({});
+  });
+});
+
+describe('adoptSessionDefaultValues', () => {
+  test('turns a stored true into the draft marker the checkbox reads', () => {
+    const values = adoptSessionDefaultValues({
+      base_sync_accept_local_commits: true,
+      workflow_mode: 'fast_track'
+    });
+
+    expect(values).toEqual({
+      base_sync_accept_local_commits: BOOLEAN_DRAFT_ON,
+      workflow_mode: 'fast_track'
+    });
+  });
+
+  test('drops a stored false, which means the same as absence', () => {
+    const values = adoptSessionDefaultValues({
+      base_sync_accept_local_commits: false
+    });
+
+    expect(values).toEqual({});
+  });
+
+  test('drops any non-string value on a non-bool key', () => {
+    const values = adoptSessionDefaultValues({ workflow_mode: 3 });
+
+    expect(values).toEqual({});
+  });
+
+  test('reads a missing map as the empty layer', () => {
+    expect(adoptSessionDefaultValues(null)).toEqual({});
+  });
+});
+
+describe('isHttpOriginValue', () => {
+  test('accepts an absolute http origin with a port', () => {
+    expect(isHttpOriginValue('http://100.64.0.1:3000')).toBe(true);
+  });
+
+  test('accepts an https origin without a port', () => {
+    expect(isHttpOriginValue('https://beads.example')).toBe(true);
+  });
+
+  test('rejects a trailing slash, which would concatenate into //api', () => {
+    expect(isHttpOriginValue('http://100.64.0.1:3000/')).toBe(false);
+  });
+
+  test('rejects a path, query, fragment, or userinfo', () => {
+    expect(isHttpOriginValue('http://host:3000/api')).toBe(false);
+    expect(isHttpOriginValue('http://host:3000?a=1')).toBe(false);
+    expect(isHttpOriginValue('http://host:3000#x')).toBe(false);
+    expect(isHttpOriginValue('http://user:pw@host:3000')).toBe(false);
+  });
+
+  test('rejects a scheme-less host and a non-http scheme', () => {
+    expect(isHttpOriginValue('100.64.0.1:3000')).toBe(false);
+    expect(isHttpOriginValue('ftp://host')).toBe(false);
+    expect(isHttpOriginValue('')).toBe(false);
+  });
+});
+
+describe('buildOrchestrationPatch', () => {
+  test('sends only the changed orchestration values', () => {
+    const patch = buildOrchestrationPatch(
+      { orchestration_model: 'opus', orchestration_effort: 'high' },
+      { orchestration_model: 'sol', orchestration_effort: 'high' }
+    );
+
+    expect(patch).toEqual({ orchestration_model: 'sol' });
+  });
+
+  test('never carries a session key into the orchestration payload', () => {
+    const patch = buildOrchestrationPatch(
+      {},
+      /** @type {any} */ ({ orchestration_model: 'sol', impl_model: 'sol' })
+    );
+
+    expect(patch).toEqual({ orchestration_model: 'sol' });
+  });
+
+  test('diffs quick_fix orchestration values with the general values', () => {
+    const patch = buildOrchestrationPatch(
+      { quick_fix_orchestration_model: 'opus' },
+      { quick_fix_orchestration_model: 'sol' }
+    );
+
+    expect(patch).toEqual({ quick_fix_orchestration_model: 'sol' });
+  });
+});
+describe('common Worker draft', () => {
+  test('adopts value and revision together while clean', () => {
+    const draft = { value: '', revision: null, dirty: false };
+
+    const next = adoptWorkerCommon(draft, {
+      value: 'http://common',
+      revision: 'new'
+    });
+
+    expect(next).toEqual({
+      value: 'http://common',
+      revision: 'new',
+      dirty: false
+    });
+  });
+
+  test('keeps a dirty value bound to its original revision', () => {
+    const draft = { value: 'http://draft', revision: 'old', dirty: true };
+
+    const next = adoptWorkerCommon(draft, {
+      value: 'http://common',
+      revision: 'new'
+    });
+
+    expect(next).toBe(draft);
+  });
+
+  test('rebinds only on explicit adoption of a dirty draft', () => {
+    const draft = { value: 'http://draft', revision: 'old', dirty: true };
+
+    const next = adoptWorkerCommon(
+      draft,
+      { value: 'http://common', revision: 'new' },
+      true
+    );
+
+    expect(next).toEqual({
+      value: 'http://common',
+      revision: 'new',
+      dirty: false
+    });
+  });
+
+  test.each([
+    ['workspace', '이 저장소의 예외'],
+    ['common', '공통 기본값'],
+    ['unset', '미설정']
+  ])('labels source %s', (source, label) => {
+    const message = workerUrlMessage({
+      status: 'ok',
+      source,
+      effective_url: source === 'unset' ? null : 'http://host'
+    });
+
+    expect(message).toContain(label);
+  });
+
+  test.each([
+    ['helper_unavailable', '도우미 설치/실행 필요'],
+    ['workspace_unavailable', '저장소 설정 읽기 오류']
+  ])('distinguishes %s from unset', (code, label) => {
+    const message = workerUrlMessage({
+      status: 'unavailable',
+      error: { code }
+    });
+
+    expect(message).toContain(label);
+    expect(message).not.toContain('미설정');
+  });
+});

@@ -1,0 +1,399 @@
+/*
+ * Design tokens (UI-dbn6 design-system round). The one colour and metric
+ * source of the rewritten screens; screen stylesheets read these variables
+ * and never write a raw hex.
+ *
+ * Skin: Radix Colors 3.0.0 (slate gray, indigo accent) with Radix Themes
+ * metrics — radii 3/4/6/8/12/16, control heights 24/28/32/40 and 44 on a
+ * coarse pointer, weights 400/500/600/700. Structure (chip roles, button
+ * tiers, bead strand, activity well, repo strip, board layout) follows the
+ * design-system catalog (`~/tmp/mockups/2026-09-30-ui-dbn6-design-system.html`).
+ *
+ * Theme: `:root` carries the DARK values; `:root[data-theme='light']` the
+ * light ones. `ui/theme.js` stamps `<html data-theme>` from the saved choice
+ * or the OS preference, so both sets resolve without a media query here.
+ */
+
+/* ---------- theme-independent ---------- */
+:root {
+  /* type: Pretendard for Korean, then the system stack */
+  --font-sans:
+    'Pretendard Variable', Pretendard, -apple-system, 'Apple SD Gothic Neo',
+    BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans KR', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  /* type scale — the only font sizes a screen uses */
+  --t-11: 11px;
+  --t-12: 12px;
+  --t-13: 13px;
+  --t-14: 14px;
+  --t-15: 15px;
+  --t-17: 17px;
+  --t-22: 22px;
+  --t-body: var(--t-13);
+  --t-title: var(--t-13);
+  --t-meta: var(--t-12);
+  --t-chip: var(--t-11);
+  --t-id: 11.5px;
+  --t-btn: var(--t-13);
+  --t-btn-sm: var(--t-12);
+  --t-lane: var(--t-13);
+  --t-section: var(--t-15);
+  --t-dialog: var(--t-17);
+  --lh-body: 1.45;
+  --lh-title: 1.4;
+  --lh-tight: 1.25;
+  --w-regular: 400;
+  --w-medium: 500;
+  --w-semibold: 600;
+  --w-bold: 700;
+
+  /* radii */
+  --radius-1: 3px;
+  --radius-2: 4px;
+  --radius-3: 6px;
+  --radius-4: 8px;
+  --radius-5: 12px;
+  --radius-6: 16px;
+  --radius-full: 999px;
+  --r-chip: var(--radius-2);
+  --r-btn: var(--radius-3);
+  --r-well: var(--radius-3);
+  --r-card: var(--radius-4);
+  --r-pop: var(--radius-4);
+  --r-lane: var(--radius-5);
+  --r-dialog: var(--radius-5);
+  --r-sheet: var(--radius-6);
+
+  /* control heights (fine pointer); `(pointer: coarse)` lifts them below */
+  --h-chip: 20px;
+  --h-sm: 24px;
+  --h-md: 28px;
+  --h-lg: 32px;
+  --h-xl: 40px;
+  --h-touch: 44px;
+  --h-btn: var(--h-md);
+  --h-btn-sm: var(--h-sm);
+
+  /* spacing: 4px grid (2 and 6 are the in-between steps) */
+  --s-1: 2px;
+  --s-2: 4px;
+  --s-3: 6px;
+  --s-4: 8px;
+  --s-5: 10px;
+  --s-6: 12px;
+  --s-7: 14px;
+  --s-8: 16px;
+  --s-10: 20px;
+  --s-12: 24px;
+  --s-16: 32px;
+
+  /* layers */
+  --z-sticky: 10;
+  --z-dropdown: 20;
+  --z-popover: 30;
+  --z-drawer: 40;
+  --z-dialog: 50;
+  --z-toast: 60;
+  --z-fatal: 70;
+
+  /* the only two translucencies */
+  --op-disabled: 0.45;
+  --op-dim: 0.6;
+
+  /* motion (prefers-reduced-motion switches it off where it is used) */
+  --dur-fast: 120ms;
+  --dur-open: 200ms;
+  --dur-pulse: 2.4s;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* board layout (catalog §07) */
+  --lane-min: 312px;
+  --lane-max: 420px;
+  --lane-folded: 44px;
+  --repo-cell-w: 264px;
+
+  /* stage hues: 후보 teal · 대기 blue · 실행 violet · PR pink · 완료 green
+     (Radix step 9, identical in both themes) — lane dots, the lane bar and
+     the bead strand only. */
+  --st-cand: #12a594;
+  --st-queue: #0090ff;
+  --st-run: #6e56cf;
+  --st-pr: #d6409f;
+  --st-done: #30a46c;
+  --info: #0090ff;
+  --danger-solid: #e5484d;
+  --on-solid: #ffffff;
+}
+
+/* A coarse pointer: every control 44px, type one step up for legibility. */
+@media (pointer: coarse) {
+  :root {
+    --t-title: var(--t-14);
+    --t-btn: var(--t-14);
+    --t-btn-sm: var(--t-13);
+    --h-btn: var(--h-touch);
+    --h-btn-sm: var(--h-touch);
+  }
+}
+
+/* ---------- dark (default) ---------- */
+:root {
+  color-scheme: dark;
+
+  /* surfaces, deepest → raised */
+  --canvas: #18191b;
+  --chrome: #18191b;
+  --chrome-line: #2e3135;
+  --lane: #212225;
+  --card: #2e3135;
+  --card-line: #363a3f;
+  --raised: #272a2d;
+  --raised-line: #43484e;
+  --well: #212225;
+  --field: #212225;
+  --field-line: #363a3f;
+  --overlay: rgb(0 0 0 / 55%);
+
+  /* elevation */
+  --e1: inset 0 1px 0 rgb(255 255 255 / 4%), 0 1px 2px rgb(0 0 0 / 25%);
+  --e2: 0 8px 24px rgb(0 0 0 / 45%), 0 0 0 1px var(--raised-line);
+  --e3: 0 16px 48px rgb(0 0 0 / 55%), 0 0 0 1px var(--raised-line);
+
+  /* ink */
+  --ink: #edeef0;
+  --ink-2: #b0b4ba;
+  --ink-3: #9a9ea6;
+  --ink-disabled: #696e77;
+
+  /* lines */
+  --line: #363a3f;
+  --line-strong: #696e77;
+
+  /* accent (indigo) */
+  --accent-solid: #3e63dd;
+  --accent-solid-hover: #5472e4;
+  --accent-text: #9eb1ff;
+  --accent-soft: #3566ff57;
+  --focus-ring: #5472e4;
+
+  /* semantic — dots, bars and rings; coloured text uses a hue's -fg */
+  --ok: #3dd68c;
+  --warn: #ffca16;
+  --danger: #ff9592;
+  --live: #baa7ff;
+  --hold: #777b84;
+
+  /* 11 categorical hues: Radix alpha step 4 tint, step 11 text */
+  --teal-bg: #00ffe92d;
+  --teal-fg: #0bd8b6;
+  --blue-bg: #0075ff57;
+  --blue-fg: #70b8ff;
+  --violet-bg: #7d51fd50;
+  --violet-fg: #baa7ff;
+  --pink-bg: #fc1ec43f;
+  --pink-fg: #ff8dcc;
+  --green-bg: #11ff992d;
+  --green-fg: #3dd68c;
+  --amber-bg: #fc820032;
+  --amber-fg: #ffca16;
+  --orange-bg: #ff590039;
+  --orange-fg: #ffa057;
+  --red-bg: #fe0a3b44;
+  --red-fg: #ff9592;
+  --sky-bg: #128fff49;
+  --sky-fg: #75c7f0;
+  --indigo-bg: #3566ff57;
+  --indigo-fg: #9eb1ff;
+  --gray-bg: #d3edf81d;
+  --gray-fg: #b0b4ba;
+
+  /* button tiers: primary solid indigo · default soft gray · quiet ghost ·
+     danger soft red */
+  --btn-bg: #363a3f;
+  --btn-fg: #edeef0;
+  --btn-hover: #43484e;
+  --btn-active: #4c5157;
+  --pri-bg: var(--accent-solid);
+  --pri-fg: #ffffff;
+  --pri-hover: var(--accent-solid-hover);
+  --danger-bg: #ff173f2d;
+  --danger-fg: #ff9592;
+  --danger-hover: #fe0a3b44;
+
+  /* segmented · switch */
+  --seg-bg: #212225;
+  --seg-on: #363a3f;
+  --seg-on-fg: #edeef0;
+  --seg-shadow: none;
+  --sw-on: var(--accent-solid);
+  --sw-off: #5a6169;
+  --knob: #ffffff;
+}
+
+/* ---------- light ---------- */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --canvas: #f9f9fb;
+  --chrome: #fcfcfd;
+  --chrome-line: #e0e1e6;
+  --lane: #f0f0f3;
+  --card: #ffffff;
+  --card-line: #e0e1e6;
+  --raised: #ffffff;
+  --raised-line: #d9d9e0;
+  --well: #f9f9fb;
+  --field: #f0f0f3;
+  --field-line: #e0e1e6;
+  --overlay: rgb(0 0 51 / 24%);
+
+  --e1: 0 1px 2px rgb(0 0 51 / 6%), 0 0 0 1px #e0e1e6;
+  --e2: 0 8px 24px rgb(0 0 51 / 12%), 0 0 0 1px var(--raised-line);
+  --e3: 0 16px 48px rgb(0 0 51 / 18%), 0 0 0 1px var(--raised-line);
+
+  --ink: #1c2024;
+  --ink-2: #60646c;
+  --ink-3: #6f727b;
+  --ink-disabled: #b9bbc6;
+
+  --line: #d9d9e0;
+  --line-strong: #b9bbc6;
+
+  --accent-solid: #3e63dd;
+  --accent-solid-hover: #3358d4;
+  --accent-text: #3a5bc7;
+  --accent-soft: #0047f112;
+  --focus-ring: #8da4ef;
+
+  --ok: #218358;
+  --warn: #ab6400;
+  --danger: #ce2c31;
+  --live: #6e56cf;
+  --hold: #8b8d98;
+
+  /* Radix alpha step 3 tint, step 11 text */
+  --teal-bg: #00c69d1f;
+  --teal-fg: #008573;
+  --blue-bg: #008ff519;
+  --blue-fg: #0d74ce;
+  --violet-bg: #4400ee0f;
+  --violet-fg: #6550b9;
+  --pink-bg: #f4008c16;
+  --pink-fg: #c2298a;
+  --green-bg: #00a43319;
+  --green-fg: #218358;
+  --amber-bg: #ffde003d;
+  --amber-fg: #ab6400;
+  --orange-bg: #ff9c0029;
+  --orange-fg: #cc4e00;
+  --red-bg: #f3000d14;
+  --red-fg: #ce2c31;
+  --sky-bg: #00b3ee1e;
+  --sky-fg: #00749e;
+  --indigo-bg: #0047f112;
+  --indigo-fg: #3a5bc7;
+  --gray-bg: #0000330f;
+  --gray-fg: #60646c;
+
+  --btn-bg: #f0f0f3;
+  --btn-fg: #1c2024;
+  --btn-hover: #e8e8ec;
+  --btn-active: #e0e1e6;
+  --pri-fg: #ffffff;
+  --danger-bg: #feebec;
+  --danger-fg: #ce2c31;
+  --danger-hover: #ffdbdc;
+
+  --seg-bg: #f0f0f3;
+  --seg-on: #ffffff;
+  --seg-on-fg: #1c2024;
+  --seg-shadow: 0 1px 2px rgb(0 0 51 / 10%), 0 0 0 1px rgb(0 0 51 / 6%);
+  --sw-off: #cdced6;
+  --knob: #ffffff;
+}
+
+/* ---------- role → hue: the one place a role picks its colour ----------
+   Screens map their chips and badges to these roles and never to a hue.
+   `--c-bg`/`--c-fg` on `.ui-chip` read them (primitives.css). */
+:root {
+  /* route */
+  --role-route-spec_backed-bg: var(--teal-bg);
+  --role-route-spec_backed-fg: var(--teal-fg);
+  --role-route-quick_fix-bg: var(--blue-bg);
+  --role-route-quick_fix-fg: var(--blue-fg);
+  --role-route-full_plan-bg: var(--violet-bg);
+  --role-route-full_plan-fg: var(--violet-fg);
+  --role-route-unset-bg: var(--gray-bg);
+  --role-route-unset-fg: var(--gray-fg);
+  /* area labels */
+  --role-area-frontend-bg: var(--sky-bg);
+  --role-area-frontend-fg: var(--sky-fg);
+  --role-area-backend-bg: var(--indigo-bg);
+  --role-area-backend-fg: var(--indigo-fg);
+  /* judgement */
+  --role-complex-bg: var(--red-bg);
+  --role-complex-fg: var(--red-fg);
+  --role-session-preferred-bg: var(--orange-bg);
+  --role-session-preferred-fg: var(--orange-fg);
+  --role-ineligible-bg: var(--gray-bg);
+  --role-ineligible-fg: var(--gray-fg);
+  --role-spec-wait-bg: var(--amber-bg);
+  --role-spec-wait-fg: var(--amber-fg);
+  /* priority (P3·P4 draw a ghost outline, no fill) */
+  --role-p0-bg: var(--red-bg);
+  --role-p0-fg: var(--red-fg);
+  --role-p1-bg: var(--orange-bg);
+  --role-p1-fg: var(--orange-fg);
+  --role-p2-bg: var(--gray-bg);
+  --role-p2-fg: var(--gray-fg);
+  /* dependency */
+  --role-blocked-by-bg: var(--amber-bg);
+  --role-blocked-by-fg: var(--amber-fg);
+  --role-blocked-dep-bg: var(--red-bg);
+  --role-blocked-dep-fg: var(--red-fg);
+  --role-foreign-bg: var(--indigo-bg);
+  --role-foreign-fg: var(--indigo-fg);
+  --role-released-bg: var(--green-bg);
+  --role-released-fg: var(--green-fg);
+  --role-dependents-bg: var(--gray-bg);
+  --role-dependents-fg: var(--gray-fg);
+  --role-overlap-bg: var(--pink-bg);
+  --role-overlap-fg: var(--pink-fg);
+  /* status chips and badges (they carry a dot) */
+  --role-live-bg: var(--violet-bg);
+  --role-live-fg: var(--violet-fg);
+  --role-wait-bg: var(--amber-bg);
+  --role-wait-fg: var(--amber-fg);
+  --role-external-bg: var(--blue-bg);
+  --role-external-fg: var(--blue-fg);
+  --role-failed-bg: var(--red-bg);
+  --role-failed-fg: var(--red-fg);
+  --role-hold-bg: var(--gray-bg);
+  --role-hold-fg: var(--gray-fg);
+  --role-retry-bg: var(--orange-bg);
+  --role-retry-fg: var(--orange-fg);
+  --role-done-bg: var(--green-bg);
+  --role-done-fg: var(--green-fg);
+  --role-session-bg: var(--blue-bg);
+  --role-session-fg: var(--blue-fg);
+  /* setting layers (base draws dashed) */
+  --role-pin-bg: var(--teal-bg);
+  --role-pin-fg: var(--teal-fg);
+  --role-global-bg: var(--blue-bg);
+  --role-global-fg: var(--blue-fg);
+  --role-base-bg: var(--gray-bg);
+  --role-base-fg: var(--gray-fg);
+  /* links */
+  --role-pr-bg: var(--pink-bg);
+  --role-pr-fg: var(--pink-fg);
+  --role-origin-bg: var(--teal-bg);
+  --role-origin-fg: var(--teal-fg);
+  /* achromatic facts; quick_fix self-review */
+  --role-fact-bg: var(--gray-bg);
+  --role-fact-fg: var(--gray-fg);
+  --role-reviewed-bg: var(--green-bg);
+  --role-reviewed-fg: var(--green-fg);
+  --role-stale-bg: var(--amber-bg);
+  --role-stale-fg: var(--amber-fg);
+}

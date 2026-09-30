@@ -1,0 +1,934 @@
+import { html } from 'lit-html';
+import { catalogRunners, modelRunnerOf } from '../../model/runner-catalog.js';
+import { IMPL_RUNTIMES } from '../../model/session-model.js';
+import {
+  IMPL_RUNTIME_OPTION_LABELS,
+  REVIEWER_OPTION_LABELS,
+  resolveExecutionSettings
+} from '../../utils/execution-defaults.js';
+
+/**
+ * @typedef {import('lit-html').TemplateResult} TemplateResult
+ * @typedef {{ value: string, label: string }} SelectOption
+ * @typedef {{ label: string|null, options: SelectOption[] }} SelectGroup
+ * @typedef {{
+ *   key: string,
+ *   groups: SelectGroup[],
+ *   selected: string,
+ *   disabled: boolean,
+ *   runner: string|null
+ * }} ExecRow
+ */
+
+/**
+ * `spec_review_model` / `impl_review_model` options. Contract-fixed rather than
+ * catalog-derived (mirrors server/worker/exec-enums.js REVIEW_STEP_MODELS): the
+ * review legs are dispatched by the session, and `self`/`skip` are verbs, not
+ * models.
+ */
+export const REVIEW_STEP_MODELS = [
+  'codex',
+  'astra',
+  'opus',
+  'fable',
+  'self',
+  'skip'
+];
+
+/** `plan_review_model` options — narrower by contract: no `self`, no `opus`. */
+export const PLAN_REVIEW_MODELS = ['codex', 'astra', 'fable', 'skip'];
+
+/** Effort vocabulary shared by all three review steps. */
+export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
+
+/** Stored workflow_mode values; `standard` records as key removal (unset). */
+export const WORKFLOW_MODES = ['standard', 'fast_track'];
+
+/**
+ * The 15 workspace-global-capable exec keys, in display order. Mirrors the
+ * server table in server/worker/exec-enums.js; `workflow_mode` is per-bead only
+ * and therefore not part of it.
+ */
+export const EXEC_KEYS = [
+  'orchestration_model',
+  'orchestration_effort',
+  'orchestration_speed',
+  'spec_review_model',
+  'spec_review_effort',
+  'spec_review_speed',
+  'plan_review_model',
+  'plan_review_effort',
+  'plan_review_speed',
+  'impl_review_model',
+  'impl_review_effort',
+  'impl_review_speed',
+  'impl_runtime',
+  'impl_model',
+  'impl_effort'
+];
+
+/** Core exec keys shared by detail-panel and preset editors. */
+export const EXEC_CORE_KEYS = ['impl_runtime', 'orchestration_model'];
+
+/** Advanced groups shared by detail-panel and preset editors. */
+export const EXEC_ADVANCED_GROUPS = [
+  {
+    id: 'worker-detail',
+    label: '워커 상세',
+    keys: ['orchestration_effort', 'orchestration_speed']
+  },
+  {
+    id: 'implementation-detail',
+    label: '구현 상세',
+    keys: ['impl_model', 'impl_effort']
+  },
+  {
+    id: 'review',
+    label: '리뷰',
+    keys: [
+      'spec_review_model',
+      'spec_review_effort',
+      'spec_review_speed',
+      'plan_review_model',
+      'plan_review_effort',
+      'plan_review_speed',
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_review_speed'
+    ]
+  }
+];
+
+/**
+ * User-facing execution-setting names and the two non-obvious fallback hints.
+ * Every execution-settings surface renders this table so labels cannot drift.
+ *
+ * @type {Record<string, { title: string, help?: string }>}
+ */
+export const EXEC_SETTING_PRESENTATION = {
+  orchestration_model: { title: '워커 실행 모델' },
+  orchestration_effort: { title: '워커 reasoning effort' },
+  orchestration_speed: {
+    title: '워커 실행 속도',
+    help: 'Fast는 지원 모델을 더 빠르게 실행하며 사용량 비용이 증가합니다.'
+  },
+  spec_review_model: { title: '스펙 리뷰어' },
+  spec_review_effort: { title: '스펙 리뷰 reasoning effort' },
+  spec_review_speed: { title: '스펙 리뷰 속도' },
+  plan_review_model: { title: '계획 리뷰어' },
+  plan_review_effort: { title: '계획 리뷰 reasoning effort' },
+  plan_review_speed: { title: '계획 리뷰 속도' },
+  impl_review_model: { title: '구현 리뷰어' },
+  impl_review_effort: { title: '구현 리뷰 reasoning effort' },
+  impl_review_speed: { title: '구현 리뷰 속도' },
+  impl_runtime: { title: '구현 runtime' },
+  impl_model: {
+    title: '구현 모델',
+    help: '워크플로가 복잡 구현인지, 범위가 한정된 구현인지 판단해 현재 runtime의 구현용 모델을 선택합니다.'
+  },
+  impl_effort: {
+    title: '구현 reasoning effort',
+    help: '자동 선택이면 workflow tier에 선언된 effort를, 모델만 직접 지정했으면 해당 하위 에이전트 호출의 기본 effort를 사용합니다.'
+  },
+  workflow_mode: { title: '워크플로 모드' }
+};
+
+/**
+ * Which `*_review_model` key gates each `*_review_effort` key (mqcj §4.4).
+ *
+ * @type {Record<string, string>}
+ */
+const REVIEW_EFFORT_PAIR = {
+  spec_review_effort: 'spec_review_model',
+  impl_review_effort: 'impl_review_model',
+  plan_review_effort: 'plan_review_model'
+};
+
+/**
+ * Which review-model row determines each review-speed row's catalog tiers.
+ *
+ * @type {Record<string, string>}
+ */
+const REVIEW_SPEED_PAIR = {
+  spec_review_speed: 'spec_review_model',
+  impl_review_speed: 'impl_review_model',
+  plan_review_speed: 'plan_review_model'
+};
+
+/**
+ * Review-model values that dispatch no separate leg, so there is no effort to
+ * choose: `self` runs inside the session and `skip` runs nothing at all.
+ */
+const EFFORT_GATING_MODELS = ['self', 'skip'];
+
+/**
+ * Shared semantic label for an execution-setting row.
+ *
+ * @param {string} key
+ * @returns {TemplateResult}
+ */
+export function execSettingLabelTemplate(key) {
+  const presentation = EXEC_SETTING_PRESENTATION[key] || { title: key };
+  return html`<span data-exec-setting-label>
+    <span data-exec-setting-title>${presentation.title}</span>
+    <code data-exec-setting-key>${key}</code>
+    ${presentation.help
+      ? html`<small data-exec-setting-help=${key}>${presentation.help}</small>`
+      : ''}
+  </span>`;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, any>}
+ */
+function isRecord(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * @param {string} value
+ * @returns {SelectOption}
+ */
+function plainOption(value) {
+  return { value, label: value };
+}
+
+/**
+ * A stored value that is not in the current vocabulary renders as its OWN
+ * selected `(비호환)` option — never hidden behind `(기본)`. That both surfaces
+ * the real saved state and keeps `(기본)` a live target: selecting it fires a
+ * change that unsets.
+ *
+ * @param {string} selected
+ * @returns {SelectGroup}
+ */
+function incompatibleGroup(selected) {
+  return {
+    label: null,
+    options: [{ value: selected, label: `${selected} (비호환)` }]
+  };
+}
+
+/**
+ * Grouped options for a catalog-driven MODEL selector: one `<optgroup>` per
+ * runner, so a globally-unique model name still shows which runner will spawn
+ * it. Without a catalog the stored value stands alone and unjudged — we cannot
+ * call it incompatible with a table we never received.
+ *
+ * @param {any} runner_catalog
+ * @param {string} selected
+ * @param {string|null} [runner_filter]
+ * @returns {SelectGroup[]}
+ */
+export function modelGroups(runner_catalog, selected, runner_filter = null) {
+  const runners = catalogRunners(runner_catalog);
+  if (!runners) {
+    return selected ? [{ label: null, options: [plainOption(selected)] }] : [];
+  }
+  const groups = runners
+    .filter(([name]) => runner_filter === null || name === runner_filter)
+    .map(([name, entry]) => ({
+      label: name,
+      options: Object.keys(entry.models).map(plainOption)
+    }));
+  const known = groups.some((g) => g.options.some((o) => o.value === selected));
+  return selected && !known ? [incompatibleGroup(selected), ...groups] : groups;
+}
+
+/**
+ * Ungrouped options for a fixed vocabulary, with the same `(비호환)` rule.
+ *
+ * @param {ReadonlyArray<string>} values
+ * @param {string} selected
+ * @param {Readonly<Record<string, string>>} [labels]
+ * @returns {SelectGroup[]}
+ */
+export function valueGroups(values, selected, labels = {}) {
+  const group = {
+    label: null,
+    options: values.map((value) => ({ value, label: labels[value] ?? value }))
+  };
+  return selected && !values.includes(selected)
+    ? [incompatibleGroup(selected), group]
+    : [group];
+}
+
+/**
+ * @param {any} entry - A catalog runner entry.
+ * @param {any} model_entry
+ * @returns {string[]}
+ */
+function effortsOf(entry, model_entry) {
+  if (isRecord(model_entry) && Array.isArray(model_entry.efforts)) {
+    return model_entry.efforts.slice();
+  }
+  return Array.isArray(entry.efforts) ? entry.efforts.slice() : [];
+}
+
+/**
+ * Outer Worker effort vocabulary for one model. The nested capability is
+ * additive: legacy catalog entries continue to use their implementation
+ * `efforts` list as the outer fallback.
+ *
+ * @param {any} entry - A catalog runner entry.
+ * @param {any} model_entry
+ * @returns {string[]}
+ */
+function orchestrationEffortsOf(entry, model_entry) {
+  if (
+    isRecord(model_entry) &&
+    Array.isArray(model_entry.orchestration_efforts)
+  ) {
+    return model_entry.orchestration_efforts.slice();
+  }
+  return effortsOf(entry, model_entry);
+}
+
+/**
+ * Outer Worker effort vocabulary accepted by `model`.
+ *
+ * @param {any} runner_catalog
+ * @param {string} model
+ * @returns {string[]}
+ */
+export function orchestrationEffortsForModel(runner_catalog, model) {
+  const runners = catalogRunners(runner_catalog);
+  if (!runners || !model) {
+    return [];
+  }
+  for (const [, entry] of runners) {
+    if (Object.hasOwn(entry.models, model)) {
+      return orchestrationEffortsOf(entry, entry.models[model]);
+    }
+  }
+  return [];
+}
+
+/**
+ * Speed vocabulary accepted by `model`. Legacy entries are Standard-only.
+ *
+ * @param {any} runner_catalog
+ * @param {string} model
+ * @returns {string[]}
+ */
+export function speedTiersForModel(runner_catalog, model) {
+  const runners = catalogRunners(runner_catalog);
+  if (!runners || !model) {
+    return [];
+  }
+  for (const [, entry] of runners) {
+    if (!Object.hasOwn(entry.models, model)) {
+      continue;
+    }
+    const model_entry = entry.models[model];
+    return Array.isArray(model_entry.speed_tiers)
+      ? model_entry.speed_tiers.slice()
+      : ['default'];
+  }
+  return [];
+}
+
+/**
+ * Speed vocabulary accepted by the catalog model whose declared `id` matches.
+ * Legacy entries are Standard-only; unknown ids have no available tier.
+ *
+ * @param {any} runner_catalog
+ * @param {string} model_id
+ * @returns {string[]}
+ */
+export function speedTiersForModelId(runner_catalog, model_id) {
+  const runners = catalogRunners(runner_catalog);
+  if (!runners || !model_id) {
+    return [];
+  }
+  for (const [, entry] of runners) {
+    for (const model_entry of Object.values(entry.models)) {
+      if (model_entry.id !== model_id) {
+        continue;
+      }
+      return Array.isArray(model_entry.speed_tiers)
+        ? model_entry.speed_tiers.slice()
+        : ['default'];
+    }
+  }
+  return [];
+}
+
+/**
+ * Effort vocabulary `model` accepts: its own list when it pins one, else the
+ * owning runner's. An unknown model (or an absent catalog) has none.
+ *
+ * @param {any} runner_catalog
+ * @param {string} model
+ * @returns {string[]}
+ */
+export function effortsForModel(runner_catalog, model) {
+  const runners = catalogRunners(runner_catalog);
+  if (!runners || !model) {
+    return [];
+  }
+  for (const [, entry] of runners) {
+    if (Object.hasOwn(entry.models, model)) {
+      return effortsOf(entry, entry.models[model]);
+    }
+  }
+  return [];
+}
+
+/**
+ * Every effort level ANY catalog model accepts — the vocabulary for a setting
+ * whose model is not yet chosen (`impl_effort` names a delegation leaf the
+ * session picks later).
+ *
+ * @param {any} runner_catalog
+ * @returns {string[]}
+ */
+export function catalogEffortUnion(runner_catalog) {
+  const runners = catalogRunners(runner_catalog);
+  if (!runners) {
+    return [];
+  }
+  /** @type {string[]} */
+  const out = [];
+  for (const [, entry] of runners) {
+    for (const model_entry of Object.values(entry.models)) {
+      for (const effort of effortsOf(entry, model_entry)) {
+        if (!out.includes(effort)) {
+          out.push(effort);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Every effort level accepted by at least one model of one implementation
+ * runtime. This is the legal auto-model vocabulary: when no exact model is
+ * selected, the runtime still narrows what an explicit effort can mean.
+ *
+ * @param {any} runner_catalog
+ * @param {string|null} runtime
+ * @returns {string[]}
+ */
+export function runtimeEffortUnion(runner_catalog, runtime) {
+  if (!runtime) {
+    return catalogEffortUnion(runner_catalog);
+  }
+  const runners = catalogRunners(runner_catalog);
+  const entry = runners?.find(([name]) => name === runtime)?.[1];
+  if (!entry) {
+    return [];
+  }
+  /** @type {string[]} */
+  const efforts = [];
+  for (const model of Object.keys(entry.models)) {
+    for (const effort of effortsForModel(runner_catalog, model)) {
+      if (!efforts.includes(effort)) {
+        efforts.push(effort);
+      }
+    }
+  }
+  return efforts;
+}
+
+/**
+ * Normalize the three coupled implementation settings after an editor change.
+ * `auto` derives no provider — the exact model token is what names one — so an
+ * exact model of EITHER provider survives it and only effort narrows, to that
+ * model's own list. A concrete runtime still drops a model it cannot run, and a
+ * model left on auto constrains effort to the provider-wide union.
+ *
+ * @param {{ impl_runtime: string, impl_model: string, impl_effort: string }} target
+ * @param {any} runner_catalog
+ * @returns {{ impl_runtime: string, impl_model: string, impl_effort: string }}
+ */
+export function normalizeImplTarget(target, runner_catalog) {
+  const normalized = {
+    impl_runtime: target.impl_runtime || '',
+    impl_model: target.impl_model || '',
+    impl_effort: target.impl_effort || ''
+  };
+  const effective_runtime =
+    normalized.impl_runtime === 'claude' || normalized.impl_runtime === 'codex'
+      ? normalized.impl_runtime
+      : null;
+  const model_runtime = modelRunnerOf(runner_catalog, normalized.impl_model);
+  // Only an explicit `auto` runtime keeps an exact model of either provider; a
+  // cleared runtime still drops the linked exact values, as it always did, so
+  // the server's `impl_runtime_required` cannot be reached from this surface.
+  const keeps_any_provider = normalized.impl_runtime === 'auto';
+  if (
+    normalized.impl_model &&
+    !keeps_any_provider &&
+    (!effective_runtime || model_runtime !== effective_runtime)
+  ) {
+    normalized.impl_model = '';
+    normalized.impl_effort = '';
+    return normalized;
+  }
+  const allowed_efforts = normalized.impl_model
+    ? effortsForModel(runner_catalog, normalized.impl_model)
+    : effective_runtime
+      ? runtimeEffortUnion(runner_catalog, effective_runtime)
+      : catalogEffortUnion(runner_catalog);
+  if (
+    normalized.impl_effort &&
+    allowed_efforts.length > 0 &&
+    !allowed_efforts.includes(normalized.impl_effort)
+  ) {
+    normalized.impl_effort = '';
+  }
+  return normalized;
+}
+
+/**
+ * Build the option model for all 15 exec rows — the SINGLE implementation both
+ * the per-bead detail panel and the ⚙ global dialog render, so the two surfaces
+ * cannot drift on grouping, effort narrowing or the self/skip gate.
+ *
+ * The two callbacks are deliberately separate. `selectedOf` is what THIS surface
+ * stores (bead metadata / exec_defaults) and decides which option is selected —
+ * an unset key must keep `(기본)` selected. `effectiveOf` is what would actually
+ * apply (bead > global on the detail panel, the global alone in the dialog) and
+ * decides the derived vocabulary and the gate, because those follow the value in
+ * force, not the value this one layer happens to hold.
+ *
+ * @param {{
+ *   selectedOf: (key: string) => string,
+ *   effectiveOf: (key: string) => string,
+ *   resolvedOf?: (key: string) => { resolution?: string, full_value?: string|null }|undefined,
+ *   runner_catalog: any
+ * }} input
+ * @returns {ExecRow[]}
+ */
+export function execSettingRows(input) {
+  const { selectedOf, effectiveOf, resolvedOf, runner_catalog } = input;
+  const orchestration_model = effectiveOf('orchestration_model');
+  const impl_model = effectiveOf('impl_model');
+  const requested_runtime = effectiveOf('impl_runtime');
+  const impl_runtime =
+    requested_runtime === 'claude' || requested_runtime === 'codex'
+      ? requested_runtime
+      : null;
+
+  return EXEC_KEYS.map((key) => {
+    const selected = selectedOf(key);
+    /** @type {SelectGroup[]} */
+    let groups;
+    let disabled = false;
+    if (key === 'orchestration_model') {
+      groups = modelGroups(runner_catalog, selected);
+    } else if (key === 'impl_runtime') {
+      groups = valueGroups(IMPL_RUNTIMES, selected, IMPL_RUNTIME_OPTION_LABELS);
+    } else if (key === 'impl_model') {
+      groups = impl_runtime
+        ? modelGroups(runner_catalog, selected, impl_runtime)
+        : requested_runtime === 'auto' || requested_runtime === ''
+          ? modelGroups(runner_catalog, selected)
+          : selected
+            ? [incompatibleGroup(selected)]
+            : [];
+    } else if (key === 'orchestration_effort') {
+      groups = valueGroups(
+        orchestrationEffortsForModel(runner_catalog, orchestration_model),
+        selected
+      );
+    } else if (key === 'orchestration_speed') {
+      groups = speedGroups(
+        speedTiersForModel(runner_catalog, orchestration_model),
+        selected
+      );
+    } else if (key === 'impl_effort') {
+      groups = valueGroups(
+        impl_model && impl_model !== 'auto'
+          ? effortsForModel(runner_catalog, impl_model)
+          : impl_runtime
+            ? runtimeEffortUnion(runner_catalog, impl_runtime)
+            : catalogEffortUnion(runner_catalog),
+        selected
+      );
+    } else if (key === 'plan_review_model') {
+      groups = valueGroups(
+        PLAN_REVIEW_MODELS,
+        selected,
+        REVIEWER_OPTION_LABELS
+      );
+    } else if (Object.hasOwn(REVIEW_SPEED_PAIR, key)) {
+      const model_key = REVIEW_SPEED_PAIR[key];
+      const model_row = resolvedOf?.(model_key);
+      const blocked =
+        model_row?.resolution === 'incompatible' ||
+        model_row?.resolution === 'unavailable';
+      const speed_tiers = blocked
+        ? []
+        : speedTiersForModelId(
+            runner_catalog,
+            model_row?.full_value || effectiveOf(model_key)
+          );
+      groups = speedGroups(speed_tiers, selected);
+      disabled = speed_tiers.length < 2;
+    } else if (Object.hasOwn(REVIEW_EFFORT_PAIR, key)) {
+      groups = valueGroups(REVIEW_EFFORTS, selected);
+      disabled = EFFORT_GATING_MODELS.includes(
+        effectiveOf(REVIEW_EFFORT_PAIR[key])
+      );
+    } else {
+      groups = valueGroups(
+        REVIEW_STEP_MODELS,
+        selected,
+        REVIEWER_OPTION_LABELS
+      );
+    }
+    return {
+      key,
+      groups,
+      selected,
+      disabled,
+      runner:
+        key === 'orchestration_model'
+          ? modelRunnerOf(runner_catalog, orchestration_model)
+          : null
+    };
+  });
+}
+
+/**
+ * The `<option>`/`<optgroup>` children of one exec `<select>`.
+ *
+ * @param {SelectGroup[]} groups
+ * @param {string} selected
+ * @param {string} [default_label] - Label for the leading unset option; omit for none.
+ * @returns {TemplateResult}
+ */
+export function selectOptionsTemplate(groups, selected, default_label) {
+  return html`
+    ${typeof default_label === 'string'
+      ? html`<option value="" ?selected=${!selected}>${default_label}</option>`
+      : ''}
+    ${groups.map((group) =>
+      group.label === null
+        ? group.options.map((opt) => optionTemplate(opt, selected))
+        : html`<optgroup label=${group.label}>
+            ${group.options.map((opt) => optionTemplate(opt, selected))}
+          </optgroup>`
+    )}
+  `;
+}
+
+/**
+ * User-facing labels for canonical orchestration speeds. Known stale values
+ * keep their Standard/Fast labels with `(비호환)`; unknown values stay verbatim.
+ *
+ * @param {ReadonlyArray<string>} values
+ * @param {string} selected
+ * @returns {SelectGroup[]}
+ */
+function speedGroups(values, selected) {
+  return valueGroups(values, selected).map((group) => ({
+    ...group,
+    options: group.options.map((option) => {
+      const incompatible = option.label.endsWith('(비호환)');
+      const known_label =
+        option.value === 'default'
+          ? 'Standard'
+          : option.value === 'fast'
+            ? 'Fast'
+            : null;
+      return {
+        ...option,
+        label: incompatible
+          ? known_label
+            ? `${known_label} (비호환)`
+            : option.label
+          : known_label || option.label
+      };
+    })
+  }));
+}
+
+/**
+ * @param {SelectOption} opt
+ * @param {string} selected
+ * @returns {TemplateResult}
+ */
+function optionTemplate(opt, selected) {
+  return html`<option value=${opt.value} ?selected=${opt.value === selected}>
+    ${opt.label}
+  </option>`;
+}
+
+/**
+ * @typedef {Object} ExecSettingsHandlers
+ * @property {(key: string, value: string) => void} onChange
+ * @property {(key: string, value: string) => void} [onImplTargetChange]
+ */
+
+/**
+ * Build one labelled `<select>` row (detail-panel.html `.kv`).
+ *
+ * @param {string} key
+ * @param {TemplateResult} options - The row's option children.
+ * @param {string} selected
+ * @param {boolean} highlight
+ * @param {boolean} disabled
+ * @param {string|null} runner - Derived runner badge, when the row has one.
+ * @param {ExecSettingsHandlers} handlers
+ * @returns {TemplateResult}
+ */
+function selectRow(
+  key,
+  options,
+  selected,
+  highlight,
+  disabled,
+  runner,
+  handlers
+) {
+  return html`
+    <div class="detail-kv">
+      <span class="detail-kv__k">${execSettingLabelTemplate(key)}</span>
+      <span class="detail-kv__vgroup">
+        <select
+          class=${highlight ? 'detail-kv__v detail-kv__v--sel' : 'detail-kv__v'}
+          aria-label=${key}
+          data-key=${key}
+          ?disabled=${disabled}
+          @change=${(/** @type {Event} */ ev) =>
+            (key === 'impl_runtime' ||
+              key === 'impl_model' ||
+              key === 'impl_effort') &&
+            handlers.onImplTargetChange
+              ? handlers.onImplTargetChange(
+                  key,
+                  /** @type {HTMLSelectElement} */ (ev.target).value
+                )
+              : handlers.onChange(
+                  key,
+                  /** @type {HTMLSelectElement} */ (ev.target).value
+                )}
+        >
+          ${options}
+        </select>
+        ${runner
+          ? html`<span class="detail-kv__note" data-runner-for=${key}
+              >${runner}</span
+            >`
+          : ''}
+      </span>
+    </div>
+  `;
+}
+
+/**
+ * Resolve the single source chip for a summary row. A row may cover several
+ * settings, so the highest-priority populated layer wins.
+ *
+ * @param {string[]} keys
+ * @param {Record<string, { source: string, display: string }>} resolved
+ * @param {string} default_source
+ * @returns {string}
+ */
+function summarySourceLabel(keys, resolved, default_source) {
+  if (keys.some((key) => resolved[key]?.source === 'pin')) {
+    return '이슈 핀';
+  }
+  if (keys.some((key) => resolved[key]?.source === 'global')) {
+    return `프리셋 「${default_source || '워크스페이스 프리셋'}」`;
+  }
+  return '기본';
+}
+
+/**
+ * Effective execution summary derived from the same selected/effective
+ * callbacks as the editor rows.
+ *
+ * @param {(key: string) => string} effectiveOf
+ * @param {string} default_source
+ * @param {Record<string, { source: string, display: string }>} resolved
+ * @returns {TemplateResult}
+ */
+function execSummaryTemplate(effectiveOf, default_source, resolved) {
+  const worker_parts = [resolved.orchestration_model.display];
+  const worker_effort = effectiveOf('orchestration_effort');
+  const worker_speed = effectiveOf('orchestration_speed');
+  if (worker_effort) {
+    worker_parts.push(`effort ${worker_effort}`);
+  }
+  if (worker_speed && worker_speed !== 'default') {
+    worker_parts.push(
+      `speed ${worker_speed === 'fast' ? 'Fast' : worker_speed}`
+    );
+  }
+
+  const impl_value = `${resolved.impl_runtime.display} · ${resolved.impl_model.display}`;
+  const review_steps = [
+    ['스펙', 'spec_review_model', 'spec_review_effort'],
+    ['계획', 'plan_review_model', 'plan_review_effort'],
+    ['구현', 'impl_review_model', 'impl_review_effort']
+  ].map(([label, model_key, effort_key]) => {
+    const model = resolved[model_key].display;
+    const effort = resolved[effort_key].display;
+    return `${label} ${model}${effort ? `/${effort}` : ''}`;
+  });
+  const summary_rows = [
+    {
+      id: 'worker',
+      label: '워커',
+      keys: EXEC_KEYS.slice(0, 3),
+      value: worker_parts.join(' · ')
+    },
+    {
+      id: 'implementation',
+      label: '구현',
+      keys: ['impl_runtime', 'impl_model', 'impl_effort'],
+      value: impl_value
+    },
+    {
+      id: 'review',
+      label: '리뷰',
+      keys: [
+        'spec_review_model',
+        'spec_review_effort',
+        'plan_review_model',
+        'plan_review_effort',
+        'impl_review_model',
+        'impl_review_effort'
+      ],
+      value: review_steps.join(' · ')
+    }
+  ];
+
+  return html`<section
+    class="detail-exec-presets exec-settings-summary"
+    data-exec-settings-summary
+  >
+    ${summary_rows.map(
+      (row) =>
+        html`<div
+          class="workflow-summary__row exec-settings-summary__row"
+          data-exec-summary=${row.id}
+        >
+          <span class="workflow-summary__label">${row.label}</span>
+          <span class="detail-kv__vgroup">
+            <span class="workflow-summary__value">${row.value}</span>
+            <span class="detail-kv__v" data-exec-source
+              >${summarySourceLabel(row.keys, resolved, default_source)}</span
+            >
+          </span>
+        </div>`
+    )}
+  </section>`;
+}
+
+/**
+ * Execution-settings editor (detail-panel.html "실행 설정"): the 15 exec keys +
+ * workflow_mode. Selecting `standard` for workflow_mode (or `(기본)` for a key)
+ * records an unset — the server mutation removes the metadata key.
+ *
+ * @param {{ metadata?: Record<string, any> }} effective_issue - Issue whose `metadata` carries the effective (metadata + in-flight edits) values.
+ * @param {ExecSettingsHandlers} handlers
+ * @param {Record<string, any>} [exec_defaults] - Selected workspace preset settings
+ * (queue snapshot). A bead-unset key resolves through these first, so they drive
+ * the `(기본)` label (§3.2) and the derived vocabularies.
+ * @param {any} [runner_catalog] - The snapshot's `runner_catalog` decoration.
+ * @param {string} [default_source] - Selected workspace preset name.
+ * @param {Record<string, any>|null} [execution_defaults] - Pinned default projection.
+ * Null/absent degrades the model selectors to the stored value (fail-quiet).
+ * @returns {TemplateResult}
+ */
+export function execSettingsTemplate(
+  effective_issue,
+  handlers,
+  exec_defaults,
+  runner_catalog,
+  default_source = '',
+  execution_defaults = null
+) {
+  const md = (effective_issue && effective_issue.metadata) || {};
+  const globals =
+    exec_defaults && typeof exec_defaults === 'object' ? exec_defaults : {};
+  /** @param {string} key */
+  const selectedOf = (key) => (typeof md[key] === 'string' ? md[key] : '');
+  const resolved = resolveExecutionSettings({
+    pin: md,
+    global: globals,
+    execution_defaults,
+    runner_catalog,
+    route: typeof md.route === 'string' ? md.route : null
+  });
+  /** @param {string} key */
+  const effectiveOf = (key) => resolved[key]?.value || '';
+  /** @param {string} key */
+  const resolvedOf = (key) => resolved[key];
+  const rows = execSettingRows({
+    selectedOf,
+    effectiveOf,
+    resolvedOf,
+    runner_catalog
+  });
+  const wf_mode = md.workflow_mode === 'fast_track' ? 'fast_track' : 'standard';
+  /** @type {Map<string, ExecRow>} */
+  const row_by_key = new Map(rows.map((row) => [row.key, row]));
+  const advanced_count = EXEC_ADVANCED_GROUPS.flatMap(
+    (group) => group.keys
+  ).filter((key) => selectedOf(key)).length;
+
+  /**
+   * @param {string} key
+   * @returns {TemplateResult|string}
+   */
+  const rowTemplate = (key) => {
+    const row = row_by_key.get(key);
+    if (!row) {
+      return '';
+    }
+    return selectRow(
+      row.key,
+      selectOptionsTemplate(
+        row.groups,
+        row.selected,
+        `기본값 사용 — ${resolved[row.key]?.display || '기본값 확인 불가'}`
+      ),
+      row.selected,
+      Boolean(row.selected),
+      row.disabled,
+      row.runner,
+      handlers
+    );
+  };
+
+  return html`
+    <div class="detail-section-label">실행 설정 (수정 가능)</div>
+    ${execSummaryTemplate(effectiveOf, default_source, resolved)}
+    <section class="exec-settings-core" data-exec-settings-core>
+      ${selectRow(
+        'workflow_mode',
+        selectOptionsTemplate(valueGroups(WORKFLOW_MODES, wf_mode), wf_mode),
+        wf_mode,
+        md.workflow_mode === 'fast_track',
+        false,
+        null,
+        handlers
+      )}
+      ${EXEC_CORE_KEYS.map(rowTemplate)}
+    </section>
+    <details
+      class="detail-exec-presets exec-settings-advanced"
+      data-exec-settings-advanced
+    >
+      <summary>고급 설정 — ${advanced_count}개 변경됨</summary>
+      ${EXEC_ADVANCED_GROUPS.map(
+        (group) =>
+          html`<section
+            class="exec-settings-advanced__group"
+            data-exec-settings-group=${group.id}
+          >
+            <h4>${group.label}</h4>
+            ${group.keys.map(rowTemplate)}
+          </section>`
+      )}
+    </details>
+  `;
+}

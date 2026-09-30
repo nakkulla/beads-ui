@@ -183,6 +183,10 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * enum — fail-quiet, like `spec_after_blocker`. Kept apart from `exec_pins`: a
  * pin is what the worker applies, a judgement is display only, and the worker
  * never reads this field.
+ * @property {number|null} priority - The `bd list` row's priority, `null` when
+ * absent or not a finite number (UI-dbn6 §4.2). Display-only filter material.
+ * @property {string|null} issue_type - The `bd list` row's issue type, `null`
+ * when absent or empty (UI-dbn6 §4.2).
  */
 
 /**
@@ -233,6 +237,9 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * malformed, or the projection failed.
  * @property {Record<string, unknown>} [session_observation] - Prepared local
  * usage and delegation facts for the current reference.
+ * @property {number|null} priority - Same projection as `RunnableItem.priority`.
+ * @property {string|null} issue_type - Same projection as
+ * `RunnableItem.issue_type`.
  */
 
 /**
@@ -300,6 +307,30 @@ function stampOf(value) {
 }
 
 /**
+ * The row's priority when it is a finite number, else null (UI-dbn6 §4.2).
+ *
+ * @param {Record<string, unknown>} row
+ * @returns {number|null}
+ */
+function priorityOf(row) {
+  return typeof row.priority === 'number' && Number.isFinite(row.priority)
+    ? row.priority
+    : null;
+}
+
+/**
+ * The row's issue type when it is a non-empty string, else null.
+ *
+ * @param {Record<string, unknown>} row
+ * @returns {string|null}
+ */
+function issueTypeOf(row) {
+  return typeof row.issue_type === 'string' && row.issue_type.length > 0
+    ? row.issue_type
+    : null;
+}
+
+/**
  * The bead's metadata bag from a `bd list --json` row, or an empty object.
  * `bd list` nests the durable workflow keys under `metadata` (same field
  * `bd-metadata.js` `scanBeads()` reads for `pr_url`).
@@ -317,8 +348,7 @@ function metadataOf(row) {
 /**
  * Whether a row is a full_plan phase child (`UI-xxxx.N`).
  *
- * Same predicate as `app/views/worker/index.js` `isPhaseChild()`: a phase child
- * is a sub-unit of its parent plan's execution, never a standalone worker
+ * A phase child is a sub-unit of its parent plan's execution, never a standalone worker
  * candidate. Judged by the flattened `parent` edge OR a dotted id suffix,
  * because a list row may omit `parent`.
  *
@@ -478,7 +508,9 @@ function qualify(row, blocked_by, context) {
     updated_at: stampOf(row.updated_at),
     workflow: null,
     exec_pins: execPinsOf(meta),
-    ...(complex_reason ? { complex_reason } : {})
+    ...(complex_reason ? { complex_reason } : {}),
+    priority: priorityOf(row),
+    issue_type: issueTypeOf(row)
   };
   if (scope_spec_id.length === 0) {
     item.description_scope = parseDescriptionScope(row.description);
@@ -552,7 +584,9 @@ function qualifySession(row, blocked_by = null) {
     workflow: null,
     blocked: blocked_by !== null,
     blocked_by: blocked_by || [],
-    session_refs: sessionRefsOf(meta)
+    session_refs: sessionRefsOf(meta),
+    priority: priorityOf(row),
+    issue_type: issueTypeOf(row)
   };
 }
 

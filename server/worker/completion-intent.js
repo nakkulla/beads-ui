@@ -907,7 +907,7 @@ function retryOutcomeText(operation) {
 
 /**
  * The cause sentence for a folded terminal reason, matched the way the client
- * card matches (`app/views/worker/failure-labels.js failureSentence`): by colon
+ * card matches (`app/model/failure-labels.js failureSentence`): by colon
  * segment, LAST match wins. Exact-key lookup stopped being enough once every
  * cause carries a family prefix — `cleanup_failed:cleanup_journal_conflict`
  * would otherwise render no sentence at all, and the comment and the card would

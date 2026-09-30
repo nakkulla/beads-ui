@@ -1,0 +1,1017 @@
+import { render } from 'lit-html';
+import { readFileSync } from 'node:fs';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+import {
+  EXEC_ADVANCED_GROUPS,
+  EXEC_KEYS,
+  EXEC_SETTING_PRESENTATION,
+  execSettingsTemplate,
+  normalizeImplTarget,
+  speedTiersForModel,
+  speedTiersForModelId
+} from './exec-settings.js';
+
+/**
+ * The catalog shape the server ships on the queue snapshot (`runner_catalog`).
+ *
+ * @returns {any}
+ */
+function catalogFixture() {
+  return {
+    runners: {
+      claude: {
+        command: 'claude',
+        models: {
+          opus: { id: 'opus' },
+          sonnet: { id: 'sonnet' },
+          haiku: { id: 'haiku' },
+          fable: { id: 'fable' }
+        },
+        efforts: ['low', 'medium', 'high', 'xhigh'],
+        default_model: 'opus'
+      },
+      codex: {
+        command: 'codex',
+        models: {
+          sol: {
+            id: 'gpt-5.6-sol',
+            efforts: ['low', 'medium', 'high'],
+            orchestration_efforts: [
+              'low',
+              'medium',
+              'high',
+              'xhigh',
+              'max',
+              'ultra'
+            ],
+            speed_tiers: ['default', 'fast']
+          },
+          terra: {
+            id: 'gpt-5.6-terra',
+            efforts: ['low', 'medium', 'high'],
+            orchestration_efforts: [
+              'low',
+              'medium',
+              'high',
+              'xhigh',
+              'max',
+              'ultra'
+            ],
+            speed_tiers: ['default', 'fast']
+          },
+          luna: {
+            id: 'gpt-5.6-luna',
+            efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+            orchestration_efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+            speed_tiers: ['default', 'fast']
+          }
+        },
+        efforts: ['minimal', 'low', 'medium', 'high', 'xhigh']
+      }
+    },
+    model_index: {
+      opus: 'claude',
+      sonnet: 'claude',
+      haiku: 'claude',
+      fable: 'claude',
+      sol: 'codex',
+      terra: 'codex',
+      luna: 'codex'
+    }
+  };
+}
+
+/**
+ * @returns {Record<string, any>}
+ */
+function projectionFixture() {
+  return {
+    supported: true,
+    schema_version: 1,
+    session: {
+      workflow_mode_default: 'standard',
+      review: {
+        default: 'codex',
+        reviewers: {
+          codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+          astra: { model: 'gpt-6-astra', effort: 'xhigh' },
+          opus: { model: 'opus', effort: 'high' },
+          fable: { model: 'fable', effort: 'high' }
+        }
+      },
+      plan_review: {
+        standard_recommended: 'codex',
+        fast_track_default: 'codex'
+      },
+      implementation: {
+        default: {
+          dispatch: 'delegated',
+          runtime: 'codex',
+          model: 'sol',
+          model_id: 'gpt-5.6-sol',
+          effort: 'auto',
+          speed: 'default'
+        },
+        model_catalog: {
+          claude: ['opus', 'sonnet', 'haiku', 'fable'],
+          codex: {
+            sol: 'gpt-5.6-sol',
+            terra: 'gpt-5.6-terra',
+            luna: 'gpt-5.6-luna'
+          }
+        },
+        effort_by_transport: {}
+      }
+    },
+    orchestration: {
+      runtime: 'claude',
+      model: 'opus',
+      model_id: 'opus',
+      effort: null,
+      speed: 'default'
+    }
+  };
+}
+
+/**
+ * @param {HTMLElement} mount
+ * @param {string} key
+ * @returns {HTMLSelectElement}
+ */
+function selectFor(mount, key) {
+  return /** @type {HTMLSelectElement} */ (
+    mount.querySelector(`select[data-key="${key}"]`)
+  );
+}
+
+/**
+ * @param {HTMLSelectElement} sel
+ * @returns {string[]}
+ */
+function optionValues(sel) {
+  return Array.from(sel.options).map((o) => o.value);
+}
+
+/**
+ * Optgroup labels → member option values, in DOM order.
+ *
+ * @param {HTMLSelectElement} sel
+ * @returns {{ label: string, values: string[] }[]}
+ */
+function optionGroups(sel) {
+  return Array.from(sel.querySelectorAll('optgroup')).map((g) => ({
+    label: g.getAttribute('label') || '',
+    values: Array.from(g.querySelectorAll('option')).map((o) => o.value)
+  }));
+}
+
+/**
+ * @param {Record<string, any>} [metadata]
+ * @param {Record<string, any>} [exec_defaults]
+ * @param {any} [catalog]
+ * @param {{ onChange: (key: string, value: string) => void }} [handlers]
+ * @param {string} [default_source]
+ * @returns {HTMLElement}
+ */
+function mountTemplate(
+  metadata,
+  exec_defaults,
+  catalog,
+  handlers,
+  default_source = ''
+) {
+  const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+  render(
+    execSettingsTemplate(
+      { metadata: metadata || {} },
+      handlers || { onChange: vi.fn() },
+      exec_defaults || {},
+      catalog === undefined ? catalogFixture() : catalog,
+      default_source,
+      projectionFixture()
+    ),
+    mount
+  );
+  return mount;
+}
+
+describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  test('labels summary sources as issue pin, preset, and default', () => {
+    const mount = mountTemplate(
+      { orchestration_model: 'sonnet' },
+      { impl_runtime: 'codex' },
+      undefined,
+      undefined,
+      '개발'
+    );
+
+    expect(
+      mount.querySelector('[data-exec-summary="worker"] [data-exec-source]')
+        ?.textContent
+    ).toBe('이슈 핀');
+    expect(
+      mount.querySelector(
+        '[data-exec-summary="implementation"] [data-exec-source]'
+      )?.textContent
+    ).toBe('프리셋 「개발」');
+    expect(
+      mount.querySelector('[data-exec-summary="review"] [data-exec-source]')
+        ?.textContent
+    ).toBe('기본');
+    expect(
+      mount.querySelector('[data-exec-summary="worker"]')?.textContent
+    ).toContain('sonnet');
+    expect(
+      mount.querySelector('[data-exec-summary="implementation"]')?.textContent
+    ).toContain('codex · 5.6-sol');
+    expect(
+      mount.querySelector('[data-exec-summary="review"]')?.textContent
+    ).toContain('스펙 5.6-sol/xhigh · 계획 5.6-sol/xhigh · 구현 5.6-sol/xhigh');
+  });
+
+  test('groups three core keys above thirteen advanced keys', () => {
+    const mount = mountTemplate();
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('[data-exec-settings-core] select[data-key]')
+      ).map((select) => select.getAttribute('data-key'))
+    ).toEqual(['workflow_mode', 'impl_runtime', 'orchestration_model']);
+    expect(
+      Array.from(
+        mount.querySelectorAll(
+          '[data-exec-settings-group="worker-detail"] select[data-key]'
+        )
+      ).map((select) => select.getAttribute('data-key'))
+    ).toEqual(['orchestration_effort', 'orchestration_speed']);
+    expect(
+      Array.from(
+        mount.querySelectorAll(
+          '[data-exec-settings-group="implementation-detail"] select[data-key]'
+        )
+      ).map((select) => select.getAttribute('data-key'))
+    ).toEqual(['impl_model', 'impl_effort']);
+    expect(
+      Array.from(
+        mount.querySelectorAll(
+          '[data-exec-settings-group="review"] select[data-key]'
+        )
+      ).map((select) => select.getAttribute('data-key'))
+    ).toEqual([
+      'spec_review_model',
+      'spec_review_effort',
+      'spec_review_speed',
+      'plan_review_model',
+      'plan_review_effort',
+      'plan_review_speed',
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_review_speed'
+    ]);
+    expect(
+      mount.querySelectorAll('[data-exec-settings-advanced] select[data-key]')
+    ).toHaveLength(13);
+    expect(EXEC_KEYS).toHaveLength(15);
+    expect(
+      EXEC_ADVANCED_GROUPS.find((group) => group.id === 'review')?.keys
+    ).toHaveLength(9);
+    // 16, not 15: the label table also carries the per-bead-only workflow_mode.
+    expect(Object.keys(EXEC_SETTING_PRESENTATION)).toHaveLength(16);
+  });
+
+  test('counts non-default advanced values in the fold summary', () => {
+    const mount = mountTemplate(
+      {
+        workflow_mode: 'fast_track',
+        orchestration_model: 'sol',
+        orchestration_effort: 'high',
+        impl_model: 'terra'
+      },
+      { impl_effort: 'medium' }
+    );
+
+    expect(
+      mount.querySelector('[data-exec-settings-advanced] > summary')
+        ?.textContent
+    ).toContain('고급 설정 — 2개 변경됨');
+  });
+
+  test('renders the 15 exec keys plus workflow_mode and drops review_model', () => {
+    const mount = mountTemplate();
+
+    for (const key of [
+      'orchestration_model',
+      'orchestration_effort',
+      'orchestration_speed',
+      'spec_review_model',
+      'spec_review_effort',
+      'spec_review_speed',
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_review_speed',
+      'impl_runtime',
+      'plan_review_model',
+      'plan_review_effort',
+      'plan_review_speed',
+      'impl_model',
+      'impl_effort',
+      'workflow_mode'
+    ]) {
+      expect(selectFor(mount, key)).not.toBeNull();
+    }
+    expect(selectFor(mount, 'review_model')).toBe(null);
+    expect(selectFor(mount, 'worker_runner')).toBe(null);
+  });
+
+  test('renders semantic Korean labels in workflow order with code keys', () => {
+    const mount = mountTemplate();
+
+    const labels = Array.from(
+      mount.querySelectorAll('[data-exec-setting-label]')
+    ).map((node) => ({
+      label: node.querySelector('[data-exec-setting-title]')?.textContent,
+      key: node.querySelector('[data-exec-setting-key]')?.textContent
+    }));
+
+    expect(labels).toEqual([
+      { label: '워크플로 모드', key: 'workflow_mode' },
+      { label: '구현 runtime', key: 'impl_runtime' },
+      { label: '워커 실행 모델', key: 'orchestration_model' },
+      { label: '워커 reasoning effort', key: 'orchestration_effort' },
+      { label: '워커 실행 속도', key: 'orchestration_speed' },
+      { label: '구현 모델', key: 'impl_model' },
+      { label: '구현 reasoning effort', key: 'impl_effort' },
+      { label: '스펙 리뷰어', key: 'spec_review_model' },
+      { label: '스펙 리뷰 reasoning effort', key: 'spec_review_effort' },
+      { label: '스펙 리뷰 속도', key: 'spec_review_speed' },
+      { label: '계획 리뷰어', key: 'plan_review_model' },
+      { label: '계획 리뷰 reasoning effort', key: 'plan_review_effort' },
+      { label: '계획 리뷰 속도', key: 'plan_review_speed' },
+      { label: '구현 리뷰어', key: 'impl_review_model' },
+      { label: '구현 리뷰 reasoning effort', key: 'impl_review_effort' },
+      { label: '구현 리뷰 속도', key: 'impl_review_speed' }
+    ]);
+  });
+
+  test('the review model vocabularies follow the contract, plan narrowed', () => {
+    const mount = mountTemplate();
+
+    expect(optionValues(selectFor(mount, 'spec_review_model'))).toEqual([
+      '',
+      'codex',
+      'astra',
+      'opus',
+      'fable',
+      'self',
+      'skip'
+    ]);
+    expect(optionValues(selectFor(mount, 'impl_review_model'))).toEqual([
+      '',
+      'codex',
+      'astra',
+      'opus',
+      'fable',
+      'self',
+      'skip'
+    ]);
+    expect(optionValues(selectFor(mount, 'plan_review_model'))).toEqual([
+      '',
+      'codex',
+      'astra',
+      'fable',
+      'skip'
+    ]);
+  });
+
+  test('labels both Codex reviewer options distinctly', () => {
+    const mount = mountTemplate();
+    const options = Array.from(selectFor(mount, 'spec_review_model').options);
+
+    expect(
+      options
+        .filter((option) => ['codex', 'astra'].includes(option.value))
+        .map((option) => [option.value, option.textContent?.trim()])
+    ).toEqual([
+      ['codex', 'Codex · Sol'],
+      ['astra', 'Codex · Astra']
+    ]);
+  });
+
+  test('keeps a saved codex reviewer selected as Codex Sol', () => {
+    const mount = mountTemplate({ spec_review_model: 'codex' });
+    const select = selectFor(mount, 'spec_review_model');
+
+    expect(select.value).toBe('codex');
+    expect(select.options[select.selectedIndex].textContent?.trim()).toBe(
+      'Codex · Sol'
+    );
+  });
+
+  test('every review effort selector offers the fixed four levels', () => {
+    const mount = mountTemplate();
+
+    for (const key of [
+      'spec_review_effort',
+      'impl_review_effort',
+      'plan_review_effort'
+    ]) {
+      expect(optionValues(selectFor(mount, key))).toEqual([
+        '',
+        'low',
+        'medium',
+        'high',
+        'xhigh'
+      ]);
+    }
+  });
+
+  test('each editable key emits its own mutation', () => {
+    const onChange = vi.fn();
+    const mount = mountTemplate(
+      { impl_runtime: 'codex', orchestration_model: 'sol' },
+      {},
+      undefined,
+      { onChange }
+    );
+
+    for (const [key, value] of [
+      ['workflow_mode', 'fast_track'],
+      ['impl_runtime', 'codex'],
+      ['orchestration_model', 'luna'],
+      ['orchestration_effort', 'high'],
+      ['orchestration_speed', 'fast'],
+      ['impl_model', 'sol'],
+      ['impl_effort', 'medium'],
+      ['spec_review_model', 'codex'],
+      ['spec_review_effort', 'high'],
+      ['spec_review_speed', 'fast'],
+      ['plan_review_model', 'skip'],
+      ['plan_review_effort', 'xhigh'],
+      ['plan_review_speed', 'fast'],
+      ['impl_review_model', 'self'],
+      ['impl_review_effort', 'low'],
+      ['impl_review_speed', 'fast']
+    ]) {
+      const sel = selectFor(mount, key);
+      sel.value = value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      expect(onChange).toHaveBeenCalledWith(key, value);
+    }
+  });
+});
+
+describe('views/detail-panel/exec-settings catalog-driven selectors', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  test('groups the orchestration models by their runner', () => {
+    const mount = mountTemplate();
+
+    expect(optionGroups(selectFor(mount, 'orchestration_model'))).toEqual([
+      { label: 'claude', values: ['opus', 'sonnet', 'haiku', 'fable'] },
+      { label: 'codex', values: ['sol', 'terra', 'luna'] }
+    ]);
+  });
+
+  test('impl_model renders the explicit runtime catalog', () => {
+    const mount = mountTemplate({ impl_runtime: 'codex' });
+
+    expect(optionGroups(selectFor(mount, 'impl_model'))).toEqual([
+      { label: 'codex', values: ['sol', 'terra', 'luna'] }
+    ]);
+  });
+
+  test('shows the runner derived from the selected orchestration model', () => {
+    const claude_row = mountTemplate();
+    expect(
+      claude_row.querySelector('[data-runner-for="orchestration_model"]')
+        ?.textContent
+    ).toContain('claude');
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const codex_row = mountTemplate({ orchestration_model: 'luna' });
+    expect(
+      codex_row.querySelector('[data-runner-for="orchestration_model"]')
+        ?.textContent
+    ).toContain('codex');
+  });
+
+  test('the orchestration_effort vocabulary follows the resolved model', () => {
+    const fallback = mountTemplate();
+    // Nothing set anywhere → the hardcoded `opus` fallback's claude efforts.
+    expect(optionValues(selectFor(fallback, 'orchestration_effort'))).toEqual([
+      '',
+      'low',
+      'medium',
+      'high',
+      'xhigh'
+    ]);
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const luna = mountTemplate({ orchestration_model: 'luna' });
+    expect(optionValues(selectFor(luna, 'orchestration_effort'))).toContain(
+      'max'
+    );
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const from_global = mountTemplate({}, { orchestration_model: 'sol' });
+    // sol's outer capability is wider than its implementation effort list.
+    expect(
+      optionValues(selectFor(from_global, 'orchestration_effort'))
+    ).toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+  });
+
+  test('keeps outer effort capability separate from implementation effort', () => {
+    const mount = mountTemplate({
+      orchestration_model: 'sol',
+      impl_model: 'sol'
+    });
+
+    expect(optionValues(selectFor(mount, 'orchestration_effort'))).toEqual([
+      '',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra'
+    ]);
+    expect(optionValues(selectFor(mount, 'impl_effort'))).toEqual([
+      '',
+      'low',
+      'medium',
+      'high'
+    ]);
+  });
+
+  test('keeps Luna outer effort below ultra', () => {
+    const mount = mountTemplate({ orchestration_model: 'luna' });
+
+    expect(optionValues(selectFor(mount, 'orchestration_effort'))).toEqual([
+      '',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max'
+    ]);
+    expect(
+      optionValues(selectFor(mount, 'orchestration_effort'))
+    ).not.toContain('ultra');
+  });
+
+  test('narrows speed options to the selected model and labels them', () => {
+    const claude = mountTemplate({ orchestration_model: 'opus' });
+    expect(optionValues(selectFor(claude, 'orchestration_speed'))).toEqual([
+      '',
+      'default'
+    ]);
+    expect(
+      selectFor(claude, 'orchestration_speed').options[1].textContent?.trim()
+    ).toBe('Standard');
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const codex = mountTemplate({ orchestration_model: 'sol' });
+    expect(optionValues(selectFor(codex, 'orchestration_speed'))).toEqual([
+      '',
+      'default',
+      'fast'
+    ]);
+    expect(
+      Array.from(selectFor(codex, 'orchestration_speed').options).map(
+        (option) => option.textContent?.trim()
+      )
+    ).toEqual(['기본값 사용 — default (일반)', 'Standard', 'Fast']);
+  });
+
+  test('finds review speed tiers by model id in the real catalog shape', () => {
+    const catalog = catalogFixture();
+
+    expect(speedTiersForModel(catalog, 'gpt-5.6-sol')).toEqual([]);
+    expect(speedTiersForModelId(catalog, 'gpt-5.6-sol')).toEqual([
+      'default',
+      'fast'
+    ]);
+    expect(speedTiersForModelId(catalog, 'opus')).toEqual(['default']);
+  });
+
+  test('gates review speed from resolved reviewer model ids', () => {
+    const codex = mountTemplate();
+
+    expect(optionValues(selectFor(codex, 'spec_review_speed'))).toEqual([
+      '',
+      'default',
+      'fast'
+    ]);
+    expect(selectFor(codex, 'spec_review_speed').disabled).toBe(false);
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const gated = mountTemplate({
+      spec_review_model: 'opus',
+      plan_review_model: 'fable',
+      impl_review_model: 'self',
+      impl_review_speed: 'fast'
+    });
+
+    expect(selectFor(gated, 'spec_review_speed').disabled).toBe(true);
+    expect(selectFor(gated, 'plan_review_speed').disabled).toBe(true);
+    expect(selectFor(gated, 'impl_review_speed').disabled).toBe(true);
+    expect(selectFor(gated, 'impl_review_speed').value).toBe('fast');
+    expect(
+      selectFor(gated, 'impl_review_speed').options[
+        selectFor(gated, 'impl_review_speed').selectedIndex
+      ].textContent?.trim()
+    ).toBe('Fast (비호환)');
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const skipped = mountTemplate({ plan_review_model: 'skip' });
+
+    expect(selectFor(skipped, 'plan_review_speed').disabled).toBe(true);
+  });
+
+  test('disables review speed for incompatible and unavailable reviewers', () => {
+    const incompatible = mountTemplate({ spec_review_model: 'removed' });
+
+    expect(selectFor(incompatible, 'spec_review_speed').disabled).toBe(true);
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const unavailable_mount = /** @type {HTMLElement} */ (
+      document.getElementById('m')
+    );
+    render(
+      execSettingsTemplate(
+        { metadata: {} },
+        { onChange: vi.fn() },
+        {},
+        catalogFixture(),
+        '',
+        { supported: false }
+      ),
+      unavailable_mount
+    );
+
+    expect(selectFor(unavailable_mount, 'spec_review_speed').disabled).toBe(
+      true
+    );
+  });
+
+  test('does not borrow Sol speed tiers for Astra review', () => {
+    const mount = mountTemplate({ spec_review_model: 'astra' });
+    const speed = selectFor(mount, 'spec_review_speed');
+
+    expect(optionValues(speed)).toEqual(['']);
+    expect(speed.disabled).toBe(true);
+  });
+
+  test('keeps a stale speed value selected as incompatible', () => {
+    const mount = mountTemplate({
+      orchestration_model: 'opus',
+      orchestration_speed: 'fast'
+    });
+
+    const speed = selectFor(mount, 'orchestration_speed');
+    expect(speed.value).toBe('fast');
+    expect(speed.options[speed.selectedIndex].textContent?.trim()).toBe(
+      'Fast (비호환)'
+    );
+  });
+
+  test('preserves an unknown stale speed label verbatim', () => {
+    const mount = mountTemplate({
+      orchestration_model: 'opus',
+      orchestration_speed: 'turbo'
+    });
+
+    const speed = selectFor(mount, 'orchestration_speed');
+    expect(speed.value).toBe('turbo');
+    expect(speed.options[speed.selectedIndex].textContent?.trim()).toBe(
+      'turbo (비호환)'
+    );
+  });
+
+  test('impl_effort is the catalog union until an impl model is chosen', () => {
+    const unpinned = mountTemplate();
+    // The union is what any MODEL accepts; `minimal` sits on the codex
+    // runner-wide list that every codex model in the fixture overrides.
+    expect(optionValues(selectFor(unpinned, 'impl_effort'))).toEqual([
+      '',
+      'low',
+      'medium',
+      'high'
+    ]);
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const pinned = mountTemplate({ impl_model: 'opus' });
+    expect(optionValues(selectFor(pinned, 'impl_effort'))).toEqual([
+      '',
+      'low',
+      'medium',
+      'high',
+      'xhigh'
+    ]);
+  });
+
+  test('impl_effort keeps the catalog union under an auto runtime and auto model', () => {
+    const mount = mountTemplate({ impl_runtime: 'auto', impl_model: 'auto' });
+
+    // Both providers' lists, not one runner's: `xhigh`/`max` come from claude.
+    expect(optionValues(selectFor(mount, 'impl_effort'))).toEqual([
+      '',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max'
+    ]);
+  });
+
+  test('a stored value outside the current vocabulary shows as (비호환)', () => {
+    const mount = mountTemplate({ orchestration_effort: 'max' });
+
+    const sel = selectFor(mount, 'orchestration_effort');
+    expect(sel.value).toBe('max');
+    expect(sel.options[sel.selectedIndex].textContent).toContain('비호환');
+  });
+
+  test('an absent catalog degrades to the stored value plus (기본) — fail-quiet', () => {
+    const mount = mountTemplate({ orchestration_model: 'sol' }, {}, null);
+
+    const sel = selectFor(mount, 'orchestration_model');
+    expect(optionValues(sel)).toEqual(['', 'sol']);
+    expect(sel.querySelector('optgroup')).toBe(null);
+    expect(mount.querySelector('[data-runner-for="orchestration_model"]')).toBe(
+      null
+    );
+  });
+});
+
+describe('views/detail-panel/exec-settings self/skip effort gating (mqcj §4.4)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  test('disables the paired effort when the review model is self', () => {
+    const mount = mountTemplate({ spec_review_model: 'self' });
+
+    expect(selectFor(mount, 'spec_review_effort').disabled).toBe(true);
+    expect(selectFor(mount, 'impl_review_effort').disabled).toBe(false);
+  });
+
+  test('disables the paired effort when the review model is skip', () => {
+    const mount = mountTemplate({
+      impl_review_model: 'skip',
+      plan_review_model: 'skip'
+    });
+
+    expect(selectFor(mount, 'impl_review_effort').disabled).toBe(true);
+    expect(selectFor(mount, 'plan_review_effort').disabled).toBe(true);
+  });
+
+  test('a workspace-global self/skip gates the effort too', () => {
+    const mount = mountTemplate({}, { spec_review_model: 'skip' });
+
+    expect(selectFor(mount, 'spec_review_effort').disabled).toBe(true);
+  });
+
+  test('a bead value overrides a self/skip global and re-enables the effort', () => {
+    const mount = mountTemplate(
+      { spec_review_model: 'codex' },
+      { spec_review_model: 'skip' }
+    );
+
+    expect(selectFor(mount, 'spec_review_effort').disabled).toBe(false);
+  });
+});
+
+describe('views/detail-panel/exec-settings projected default labels', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  test('uses projected concrete values without a static default map', () => {
+    const mount = mountTemplate();
+
+    /** @type {[string, string][]} */
+    const expected = [
+      ['orchestration_model', '기본값 사용 — opus'],
+      ['orchestration_effort', '기본값 사용 — CLI 기본 (미지정)'],
+      ['orchestration_speed', '기본값 사용 — default (일반)'],
+      ['spec_review_model', '기본값 사용 — 5.6-sol'],
+      ['impl_review_model', '기본값 사용 — 5.6-sol'],
+      ['plan_review_model', '기본값 사용 — 5.6-sol'],
+      ['spec_review_effort', '기본값 사용 — xhigh'],
+      ['spec_review_speed', '기본값 사용 — default (일반)'],
+      ['impl_review_effort', '기본값 사용 — xhigh'],
+      ['impl_review_speed', '기본값 사용 — default (일반)'],
+      ['plan_review_effort', '기본값 사용 — xhigh'],
+      ['plan_review_speed', '기본값 사용 — default (일반)'],
+      ['impl_model', '기본값 사용 — 5.6-sol'],
+      ['impl_effort', '기본값 사용 — auto (실행 시 결정)']
+    ];
+    for (const [key, label] of expected) {
+      const sel = selectFor(mount, key);
+      expect(sel.options[0].value).toBe('');
+      expect(sel.options[0].textContent).toContain(label);
+    }
+    const source = readFileSync('app/screens/detail/exec-settings.js', 'utf8');
+    expect(source).not.toContain('DEFAULT_LABELS');
+  });
+
+  test('explains how the workflow chooses implementation model and effort', () => {
+    const mount = mountTemplate();
+
+    expect(
+      mount.querySelector('[data-exec-setting-help="impl_model"]')?.textContent
+    ).toContain(
+      '워크플로가 복잡 구현인지, 범위가 한정된 구현인지 판단해 현재 runtime의 구현용 모델을 선택합니다.'
+    );
+    expect(
+      mount.querySelector('[data-exec-setting-help="impl_effort"]')?.textContent
+    ).toContain(
+      '자동 선택이면 workflow tier에 선언된 effort를, 모델만 직접 지정했으면 해당 하위 에이전트 호출의 기본 effort를 사용합니다.'
+    );
+  });
+
+  test('a selected workspace value supplies the concrete default label', () => {
+    const mount = mountTemplate({}, { spec_review_model: 'opus' });
+
+    const sel = selectFor(mount, 'spec_review_model');
+    expect(sel.options[0].textContent).toContain('기본값 사용 — opus');
+  });
+});
+
+describe('views/detail-panel/exec-settings implementation runtime target', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  test('narrows exact models to the explicit implementation runtime', () => {
+    const mount = mountTemplate({ impl_runtime: 'codex' });
+
+    expect(optionGroups(selectFor(mount, 'impl_model'))).toEqual([
+      { label: 'codex', values: ['sol', 'terra', 'luna'] }
+    ]);
+  });
+
+  test('offers both providers and stays enabled when runtime is auto', () => {
+    const mount = mountTemplate({
+      impl_runtime: 'auto',
+      orchestration_model: 'opus'
+    });
+
+    const model = selectFor(mount, 'impl_model');
+    expect(model.disabled).toBe(false);
+    expect(optionGroups(model)).toEqual([
+      { label: 'claude', values: ['opus', 'sonnet', 'haiku', 'fable'] },
+      { label: 'codex', values: ['sol', 'terra', 'luna'] }
+    ]);
+  });
+
+  test('labels the auto delegation target as decided at run time', () => {
+    const mount = mountTemplate({ impl_runtime: 'auto' });
+
+    const runtime = selectFor(mount, 'impl_runtime');
+    const auto_option = Array.from(runtime.options).find(
+      (option) => option.value === 'auto'
+    );
+    expect(auto_option?.textContent?.trim()).toBe('auto (실행 시 결정)');
+  });
+
+  test('preserves an unknown stored implementation model as incompatible', () => {
+    const mount = mountTemplate({
+      impl_runtime: 'codex',
+      impl_model: 'retired'
+    });
+
+    const model = selectFor(mount, 'impl_model');
+    expect(model.value).toBe('retired');
+    expect(model.options[model.selectedIndex].textContent).toContain('비호환');
+  });
+
+  test('resets an exact model and effort when the explicit provider changes', () => {
+    expect(
+      normalizeImplTarget(
+        {
+          impl_runtime: 'claude',
+          impl_model: 'terra',
+          impl_effort: 'high'
+        },
+        catalogFixture()
+      )
+    ).toEqual({
+      impl_runtime: 'claude',
+      impl_model: '',
+      impl_effort: ''
+    });
+  });
+
+  test('keeps an exact model of either provider under auto', () => {
+    expect(
+      normalizeImplTarget(
+        {
+          impl_runtime: 'auto',
+          impl_model: 'terra',
+          impl_effort: 'high'
+        },
+        catalogFixture()
+      )
+    ).toEqual({
+      impl_runtime: 'auto',
+      impl_model: 'terra',
+      impl_effort: 'high'
+    });
+  });
+
+  test('clears nothing under auto while the model is auto', () => {
+    expect(
+      normalizeImplTarget(
+        {
+          impl_runtime: 'auto',
+          impl_model: '',
+          impl_effort: 'high'
+        },
+        catalogFixture()
+      )
+    ).toEqual({
+      impl_runtime: 'auto',
+      impl_model: '',
+      impl_effort: 'high'
+    });
+  });
+
+  test('drops an exact model when the runtime is cleared to the default', () => {
+    expect(
+      normalizeImplTarget(
+        {
+          impl_runtime: '',
+          impl_model: 'opus',
+          impl_effort: 'high'
+        },
+        catalogFixture()
+      )
+    ).toEqual({
+      impl_runtime: '',
+      impl_model: '',
+      impl_effort: ''
+    });
+  });
+
+  test('resets auto-model effort outside the effective provider union', () => {
+    expect(
+      normalizeImplTarget(
+        {
+          impl_runtime: 'claude',
+          impl_model: '',
+          impl_effort: 'max'
+        },
+        catalogFixture()
+      )
+    ).toEqual({
+      impl_runtime: 'claude',
+      impl_model: '',
+      impl_effort: ''
+    });
+  });
+});
+
+describe('views/detail-panel/exec-settings workflow_mode', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  test('defaults to standard and emits standard/fast_track', () => {
+    const onChange = vi.fn();
+    const mount = mountTemplate({}, {}, undefined, { onChange });
+
+    const wfSel = selectFor(mount, 'workflow_mode');
+    expect(wfSel.value).toBe('standard');
+    expect(optionValues(wfSel)).toEqual(['standard', 'fast_track']);
+
+    wfSel.value = 'fast_track';
+    wfSel.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onChange).toHaveBeenCalledWith('workflow_mode', 'fast_track');
+  });
+
+  test('a set metadata value pre-selects and highlights', () => {
+    const mount = mountTemplate({ workflow_mode: 'fast_track' });
+
+    const wfSel = selectFor(mount, 'workflow_mode');
+    expect(wfSel.value).toBe('fast_track');
+    expect(wfSel.classList.contains('detail-kv__v--sel')).toBe(true);
+  });
+
+  test('an orchestration edit emits the key/value pair for the server mutation', () => {
+    const onChange = vi.fn();
+    const mount = mountTemplate({}, {}, undefined, { onChange });
+
+    const model = selectFor(mount, 'orchestration_model');
+    model.value = 'sonnet';
+    model.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(onChange).toHaveBeenCalledWith('orchestration_model', 'sonnet');
+  });
+});

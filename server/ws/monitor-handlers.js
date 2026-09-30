@@ -22,7 +22,7 @@ import {
   canonicalJson,
   splitMonitorPipeline
 } from '../../app/data/keyed-patch.js';
-import { makeError, makeOk } from '../../app/protocol.js';
+import { makeOk } from '../../app/protocol.js';
 import {
   activeBeadIds,
   isImplementationAttempt
@@ -35,13 +35,7 @@ import {
   normalizeSessionDefaults
 } from '../session-defaults.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
-import {
-  enrollWorkerMergeCandidates,
-  observeWorkerPrs,
-  refreshWorkerExternalPrs,
-  tickWorkerQueue,
-  workerMergeQueueState
-} from '../worker/attach.js';
+import { refreshWorkerExternalPrs } from '../worker/attach.js';
 import { projectExecutionDefaults } from '../worker/execution-defaults.js';
 import {
   __resetForeignBlockerCachesForTest,
@@ -882,7 +876,7 @@ function laneMemberIds(snapshot) {
  * @param {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null} cache
  * @param {((workspace_key: string, parent_ids: Iterable<string>) => Record<string, string[]>)|null} [carriedToFor]
  * @param {string[]} [workspace_roots]
- * @returns {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string }>}
+ * @returns {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string, priority?: number, issue_type?: string, labels?: string[], from_id?: string }>}
  */
 function beadOverlayFor(
   root_dir,
@@ -891,7 +885,7 @@ function beadOverlayFor(
   carriedToFor = null,
   workspace_roots = []
 ) {
-  /** @type {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string }>} */
+  /** @type {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string, priority?: number, issue_type?: string, labels?: string[], from_id?: string }>} */
   const overlay = {};
   const done_ids = [...laneBeadIds(snapshot, ['done'])];
   if (carriedToFor && done_ids.length > 0) {
@@ -930,6 +924,19 @@ function beadOverlayFor(
   ];
   if (ids.length === 0) {
     return overlay;
+  }
+  // 표시 필드 (UI-dbn6 §4.2): 우선순위·타입·라벨·출처. 같은 `bd show` 기록에서
+  // 읽고, 읽기가 실패해도 이 네 필드만 빠질 뿐 나머지 오버레이와 행은 나간다.
+  if (typeof cache.overlayFieldsFor === 'function') {
+    try {
+      for (const [bead_id, fields] of Object.entries(
+        cache.overlayFieldsFor(root_dir, ids)
+      )) {
+        Object.assign(overlay[bead_id] || (overlay[bead_id] = {}), fields);
+      }
+    } catch (err) {
+      log('monitor: overlay display fields failed for %s: %o', root_dir, err);
+    }
   }
   for (const [bead_id, workflow] of Object.entries(
     cache.workflowFor(root_dir, ids)
@@ -1192,11 +1199,10 @@ function laneCountsFor(root_dir, queue, runnableFor, sessionActiveFor) {
  * Build the per-workspace CONTROL state that rides beside the heavy pipeline
  * array (UI-qrfo §4 집계 payload 구조).
  *
- * Covers EVERY visible workspace, pipeline-empty ones included, because three
- * things need a repo that has nothing in flight: the master automation toggle's
- * denominator, the waiting lane's group header for an empty queue, and that
- * header's CAS controls — which cannot send `expected_revision` for a workspace
- * the payload never mentions.
+ * Covers EVERY visible workspace, pipeline-empty ones included, because two
+ * things need a repo that has nothing in flight: the waiting lane's group
+ * header for an empty queue, and that header's CAS controls — which cannot send
+ * `expected_revision` for a workspace the payload never mentions.
  *
  * Reads the RAW queue snapshot, not the decorated one: the seven fields here are
  * all plain `Queue` state, and the decoration is the expensive part.
@@ -1940,146 +1946,6 @@ export function handleUnsubscribeMonitorPipeline(ws, req) {
   ws.send(
     JSON.stringify(makeOk(req, { id: client_id, unsubscribed: removed }))
   );
-}
-
-/**
- * Handle `monitor-auto-toggle`. Payload: `{ on: boolean }` (UI-qrfo §6).
- *
- * The master automation switch. It takes NO `root_dir`: the target is always
- * every VISIBLE workspace, which is also the master button's denominator.
- *
- * Both axes go through the same integrated USER mutation as the workspace
- * automation button. What this removes is the CLIENT's CAS precondition, not
- * CAS: the server reads each workspace's own current revision, because
- * `expected_revision` differs per repo and no client can know twenty of them.
- *
- * The single-workspace effects are reproduced exactly: ON kicks that
- * workspace's dispatch loop, observes PRs, and conditionally enrolls while
- * auto-merge remains enabled. OFF empties the waiting merge queue in the SAME
- * write that clears both flags (a restart between two writes would leave
- * "stopped" with a full queue for the boot-resume driver).
- *
- * Partial failure PROCEEDS (§10): one unreadable repo must not veto the other
- * nineteen, so the reply names the ones that failed instead.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- * @param {{
- *   queueStore?: () => ReturnType<typeof getWorkerRuntime>['queueStore'],
- *   listWorkspaces?: () => Array<{ path: string }>,
- *   listHidden?: () => string[],
- *   listRoots?: () => string[],
- *   tick?: (workspace_key: string) => unknown,
- *   observe?: (workspace_key: string) => unknown,
- *   enroll?: (workspace_key: string) => unknown,
- *   mergeQueueState?: (workspace_key: string) => { active: string|null } | null,
- *   onApplied?: () => void
- * }} [options] - Test seams; each defaults to the live server source.
- */
-export function handleMonitorAutoToggle(ws, req, options = {}) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.on !== 'boolean') {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { on: boolean }')
-      )
-    );
-    return;
-  }
-  const on = /** @type {boolean} */ (p.on);
-  const storeOf = options.queueStore || (() => getWorkerRuntime().queueStore);
-  const listRoots = options.listRoots || (() => visibleWorkspaceRoots(options));
-  const kick = options.tick || tickWorkerQueue;
-  const observe = options.observe || observeWorkerPrs;
-  const enroll = options.enroll || enrollWorkerMergeCandidates;
-  const mergeStateOf = options.mergeQueueState || workerMergeQueueState;
-  const onApplied = options.onApplied || schedulePush;
-
-  let applied = 0;
-  /** @type {Array<{ root_dir: string, reason: string }>} */
-  const failed = [];
-  /** @type {string[]} */
-  let roots = [];
-  try {
-    roots = listRoots();
-  } catch (err) {
-    log('monitor: master toggle could not list workspaces: %o', err);
-    roots = [];
-  }
-
-  for (const root_dir of roots) {
-    try {
-      const store = storeOf();
-      const state = on === false ? mergeStateOf(root_dir) : null;
-      const result = store.toggleAutomation(root_dir, {
-        expected_revision: /** @type {any} */ (store.snapshot(root_dir))
-          .revision,
-        on,
-        keep: state ? state.active : null
-      });
-      if (!result.ok) {
-        failed.push({ root_dir, reason: reasonOf(result) });
-        continue;
-      }
-      applied += 1;
-      if (on === true) {
-        // Both pipelines are fire-and-forget: session dispatch and PR
-        // observation must not hold the cross-workspace reply.
-        Promise.resolve()
-          .then(() => kick(root_dir))
-          .catch((err) => {
-            log(
-              'monitor: tick after master toggle failed for %s: %o',
-              root_dir,
-              err
-            );
-          });
-        Promise.resolve()
-          .then(() => observe(root_dir))
-          .catch((err) => {
-            log(
-              'monitor: observation after master toggle failed for %s: %o',
-              root_dir,
-              err
-            );
-          })
-          .then(() => {
-            if (store.snapshot(root_dir).auto_merge !== true) {
-              return;
-            }
-            return enroll(root_dir);
-          })
-          .catch((err) => {
-            log(
-              'monitor: enrolment after master toggle failed for %s: %o',
-              root_dir,
-              err
-            );
-          });
-      }
-    } catch (err) {
-      log('monitor: master toggle failed for %s: %o', root_dir, err);
-      failed.push({ root_dir, reason: 'error' });
-    }
-  }
-
-  ws.send(JSON.stringify(makeOk(req, { on, applied, failed })));
-  // ONE push for the whole sweep — `schedulePush` coalesces, so the per-workspace
-  // queue-changed events and this land as a single rebuild.
-  onApplied();
-}
-
-/**
- * Why a queue mutation did not apply, in the master toggle's vocabulary.
- *
- * @param {import('../worker/queue-store.js').QueueOpResult} result
- * @returns {string}
- */
-function reasonOf(result) {
-  if (result.conflict) {
-    return 'conflict';
-  }
-  return result.reason || 'rejected';
 }
 
 /**

@@ -17,7 +17,7 @@ const RUNTIME_JS_ROOTS = ['server/', 'bin/', 'app/'];
 const REQUIRED_ENTRIES = [
   'bin/bdui.js',
   'app/index.html',
-  'app/styles.css',
+  'app/ui/base.css',
   'app/protocol.js',
   'server/index.js',
   // Read with fs at runtime (server/worker/*), invisible to the import walk.

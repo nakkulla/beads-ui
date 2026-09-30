@@ -16,7 +16,7 @@ if (typeof HTMLDialogElement !== 'undefined') {
 
 // Capture calls and provide simple responses
 const calls = /** @type {Array<{ type: string, payload: any }>} */ ([]);
-vi.mock('./ws.js', () => ({
+vi.mock('./core/ws.js', () => ({
   createWsClient: () => ({
     /**
      * @param {string} type
@@ -41,13 +41,13 @@ vi.mock('./ws.js', () => ({
 
 describe('UI-106 new issue flow', () => {
   test('button opens dialog', async () => {
-    document.body.innerHTML =
-      '<header class="app-header"><div class="header-actions"><button id="new-issue-btn">New issue</button></div></header><main id="app"></main>';
+    document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
     bootstrap(root);
     await Promise.resolve();
+    // UI-dbn6 §3.1: the shell header owns the 새 이슈 button.
     const btn = /** @type {HTMLButtonElement} */ (
-      document.getElementById('new-issue-btn')
+      document.querySelector('#app-header [data-op="new-issue"]')
     );
     btn.click();
     await Promise.resolve();
@@ -59,8 +59,7 @@ describe('UI-106 new issue flow', () => {
   });
 
   test('Ctrl+N opens dialog', async () => {
-    document.body.innerHTML =
-      '<header class="app-header"><div class="header-actions"><button id="new-issue-btn">New issue</button></div></header><main id="app"></main>';
+    document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
     bootstrap(root);
     await Promise.resolve();
@@ -76,15 +75,15 @@ describe('UI-106 new issue flow', () => {
 
   test('submit dispatches create-issue', async () => {
     calls.length = 0;
-    document.body.innerHTML =
-      '<header class="app-header"><div class="header-actions"><button id="new-issue-btn">New issue</button></div></header><main id="app"></main>';
+    document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
     bootstrap(root);
     await Promise.resolve();
 
     // Open dialog
+    // UI-dbn6 §3.1: the shell header owns the 새 이슈 button.
     const btn = /** @type {HTMLButtonElement} */ (
-      document.getElementById('new-issue-btn')
+      document.querySelector('#app-header [data-op="new-issue"]')
     );
     btn.click();
     await Promise.resolve();

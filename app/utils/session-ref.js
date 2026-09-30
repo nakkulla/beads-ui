@@ -14,7 +14,6 @@
 
 /**
  * @import { SessionRefView } from '../../server/worker/session-ref.js'
- * @import { DrawerMeta } from '../views/worker/transcript-drawer.js'
  */
 
 /**
@@ -94,3 +93,21 @@ export function sessionRefDrawerInput(view, bead_id, bead_status, root_dir) {
     }
   };
 }
+
+/**
+ * @typedef {Object} DrawerMeta
+ * @property {string} [runner] - claude/codex/ccx.
+ * @property {string} [model]
+ * @property {string} [role]
+ * @property {string} [agent_type] - Claude subagent type (UI-2mpn §6.1).
+ * @property {string} [effort]
+ * @property {string} [worktree] - Worktree path shown in the bar.
+ * @property {string} [status] - running/done/failed (for the bar label).
+ * @property {string} [session_id] - Runner session id (claude session_id /
+ * codex thread_id) for `--resume`; shown short (first 8) + click-to-copy (§2).
+ * @property {string} [label] - Bar text replacing the attempt id (UI-4xzk
+ * §6.2). An interactive session's key is a synthetic `session:…` string, which
+ * says less to a reader than `claude · a1b2c3d4`.
+ * @property {string} [resume_command] - Terminal command that reattaches to
+ * this session; adds a copy button beside the session id.
+ */

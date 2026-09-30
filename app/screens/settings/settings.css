@@ -1,0 +1,826 @@
+/* Settings screen (UI-dbn6 §3.7, catalog form-rail · forms): a centred
+   dialog with a vertical rail from 720px, a full-screen sheet with a
+   horizontal tab strip below it. Rows are label · controls on the raised
+   surface, groups are hairline-separated blocks. Controls are the shared
+   primitives (ui-btn · ui-select · ui-input · ui-seg · ui-toggle · ui-chip);
+   this sheet only places them. Tokens only. */
+.settings-dialog {
+  width: min(880px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--r-dialog);
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: var(--e3);
+  font-size: var(--t-13);
+}
+
+.settings-dialog[open] {
+  display: grid;
+}
+
+.settings-dialog::backdrop {
+  background: var(--overlay);
+}
+
+.settings-dialog__container {
+  display: grid;
+  grid-template-columns: 164px minmax(0, 1fr);
+  min-height: min(520px, calc(100dvh - 32px));
+  max-height: inherit;
+  min-width: 0;
+}
+
+/* ---------- rail ---------- */
+.settings-dialog__rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  padding: var(--s-6) var(--s-4);
+  border-right: 1px solid var(--line);
+  background: var(--lane);
+}
+
+.settings-dialog__rail-title {
+  padding: var(--s-1) var(--s-4) var(--s-5);
+  color: var(--ink);
+  font-size: var(--t-15);
+  font-weight: var(--w-semibold);
+}
+
+.settings-dialog__tab {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  width: 100%;
+  min-height: var(--h-lg);
+  padding: 0 var(--s-5);
+  border: 0;
+  border-radius: var(--r-btn);
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--t-13);
+  text-align: start;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.settings-dialog__tab:hover {
+  background: var(--btn-bg);
+  color: var(--ink);
+}
+
+.settings-dialog__tab[aria-selected='true'] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: var(--w-semibold);
+}
+
+.settings-dialog__glyph {
+  width: 14px;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.settings-dialog__tab[aria-selected='true'] .settings-dialog__glyph {
+  color: inherit;
+}
+
+.settings-dialog__close {
+  margin-top: auto;
+  align-self: flex-start;
+}
+
+/* ---------- panes ---------- */
+.settings-dialog__panes {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.settings-dialog__pane {
+  display: none;
+  min-width: 0;
+  padding: var(--s-8) var(--s-10) var(--s-12);
+}
+
+.settings-dialog__pane--active {
+  display: block;
+}
+
+.settings-dialog__pane-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  min-width: 0;
+}
+
+.settings-dialog__pane-head h2 {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--t-dialog);
+  font-weight: var(--w-semibold);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+}
+
+.settings-dialog__pane-sub {
+  margin: var(--s-2) 0 var(--s-8);
+  color: var(--ink-3);
+  font-size: var(--t-12);
+  line-height: var(--lh-body);
+}
+
+.settings-dialog__pane-body,
+.settings-dialog__pane-host {
+  min-width: 0;
+}
+
+/* ---------- banners and notes ---------- */
+.settings-dialog__banner {
+  display: block;
+  margin-bottom: var(--s-6);
+  padding: var(--s-4) var(--s-5);
+  border-radius: var(--r-card);
+  background: var(--amber-bg);
+  color: var(--ink);
+  font-size: var(--t-12);
+  line-height: var(--lh-body);
+  overflow-wrap: anywhere;
+}
+
+.settings-dialog__banner--projection {
+  background: var(--blue-bg);
+}
+
+.settings-dialog__note {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-4) var(--s-5);
+  border-radius: var(--r-card);
+  background: var(--blue-bg);
+  color: var(--ink-2);
+  font-size: var(--t-12);
+}
+
+.settings-dialog__empty {
+  padding: var(--s-5) 0;
+  color: var(--ink-3);
+  font-size: var(--t-12);
+}
+
+/* ---------- groups and rows ---------- */
+.settings-dialog__group {
+  min-width: 0;
+  margin-bottom: var(--s-8);
+  padding: var(--s-5) var(--s-6) var(--s-4);
+  border-radius: var(--r-card);
+  background: var(--card);
+  box-shadow: var(--e1);
+}
+
+.settings-dialog__group-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-4);
+  margin-bottom: var(--s-3);
+  color: var(--ink);
+  font-size: var(--t-13);
+  font-weight: var(--w-semibold);
+}
+
+.settings-dialog__hint {
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  font-weight: var(--w-regular);
+  line-height: var(--lh-body);
+}
+
+.settings-dialog__controls .settings-dialog__hint,
+p.settings-dialog__hint {
+  margin-left: 0;
+}
+
+p.settings-dialog__hint {
+  margin-top: 0;
+  margin-bottom: var(--s-4);
+}
+
+.settings-dialog__hint-block {
+  margin: 0 0 var(--s-4);
+  color: var(--ink-3);
+  font-size: var(--t-11);
+}
+
+.settings-dialog__obs {
+  flex: none;
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  font-weight: var(--w-regular);
+  white-space: nowrap;
+}
+
+.settings-dialog__obs--mixed,
+.settings-dialog__obs--pending {
+  color: var(--amber-fg);
+}
+
+.settings-dialog__obs--edited {
+  color: var(--accent-text);
+}
+
+.settings-dialog__row {
+  display: grid;
+  grid-template-columns: 128px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--s-2) var(--s-6);
+  min-width: 0;
+  padding: var(--s-3) 0;
+}
+
+.settings-dialog__row + .settings-dialog__row {
+  border-top: 1px solid var(--line);
+}
+
+.settings-dialog__row--off {
+  opacity: var(--op-disabled);
+}
+
+.settings-dialog__row-label {
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: var(--t-12);
+  overflow-wrap: anywhere;
+}
+
+.settings-dialog__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3) var(--s-4);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-dialog__controls .ui-select {
+  min-width: 0;
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+
+.settings-dialog__check,
+.settings-dialog__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: var(--t-12);
+  overflow-wrap: anywhere;
+}
+
+.settings-dialog__check input,
+.settings-dialog__toggle input,
+.settings-dialog__bulk-repo input {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent-solid);
+}
+
+.settings-dialog__text {
+  flex: 1 1 200px;
+  min-width: 0;
+  max-width: 280px;
+}
+
+.settings-dialog__text--invalid {
+  border-color: var(--danger);
+  color: var(--red-fg);
+}
+
+.settings-dialog__unset {
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.settings-dialog__source-badge {
+  padding: 1px var(--s-3);
+  border: 1px dashed color-mix(in srgb, var(--role-base-fg) 50%, transparent);
+  border-radius: var(--r-chip);
+  background: color-mix(in srgb, var(--role-base-bg) 55%, transparent);
+  color: var(--role-base-fg);
+  font-size: var(--t-11);
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.settings-dialog__stage-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: var(--s-3);
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.settings-dialog__toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3) var(--s-6);
+}
+
+.settings-dialog__model-runner + .settings-dialog__model-runner {
+  margin-top: var(--s-4);
+}
+
+.settings-dialog__model-runner-title {
+  margin-bottom: var(--s-2);
+  color: var(--ink-2);
+  font-size: var(--t-11);
+  font-weight: var(--w-semibold);
+}
+
+/* ---------- preset bar and diff ---------- */
+.settings-dialog__preset-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3) var(--s-4);
+  min-width: 0;
+  margin-bottom: var(--s-6);
+  padding: var(--s-5) var(--s-6);
+  border-radius: var(--r-card);
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.settings-dialog__preset-bar .ui-select {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.settings-dialog__preset-name {
+  flex: 1 1 160px;
+  min-width: 0;
+  max-width: 220px;
+}
+
+.settings-dialog__preset-bar .settings-dialog__hint {
+  flex-basis: 100%;
+  margin-left: 0;
+}
+
+.settings-dialog__preset-diff {
+  margin: calc(-1 * var(--s-3)) 0 var(--s-6);
+  padding: var(--s-4) var(--s-5);
+  border-radius: var(--r-card);
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.settings-dialog__preset-diff-head {
+  margin-bottom: var(--s-3);
+  color: var(--ink-2);
+  font-size: var(--t-12);
+  font-weight: var(--w-medium);
+}
+
+.settings-dialog__preset-diff-row {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--s-3);
+  padding: var(--s-1) 0;
+  font-size: var(--t-12);
+}
+
+.settings-dialog__preset-diff-label {
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.settings-dialog__preset-diff-value {
+  min-width: 0;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-11);
+  overflow-wrap: anywhere;
+}
+
+.settings-dialog__preset-diff-arrow {
+  color: var(--ink-3);
+}
+
+.settings-dialog__preset-diff-row[data-diff-kind='added']
+  .settings-dialog__preset-diff-after,
+.settings-dialog__preset-diff-row[data-diff-kind='changed']
+  .settings-dialog__preset-diff-after {
+  color: var(--green-fg);
+}
+
+.settings-dialog__preset-diff-row[data-diff-kind='removed']
+  .settings-dialog__preset-diff-after {
+  color: var(--red-fg);
+  text-decoration: line-through;
+}
+
+.settings-dialog__preset-diff-note {
+  margin-top: var(--s-3);
+  color: var(--ink-3);
+  font-size: var(--t-11);
+}
+
+/* ---------- worker system prompt ---------- */
+.settings-dialog__sp-body {
+  margin-top: var(--s-4);
+}
+
+.settings-dialog__sp-variant + .settings-dialog__sp-variant {
+  margin-top: var(--s-6);
+}
+
+.settings-dialog__sp-cond {
+  margin-bottom: var(--s-2);
+  color: var(--ink-3);
+  font-size: var(--t-11);
+}
+
+/* ---------- 일괄 (bulk) pane ---------- */
+.settings-dialog__bulk {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  min-width: 0;
+  color: var(--ink-2);
+  font-size: var(--t-12);
+}
+
+.settings-dialog__bulk-loading {
+  margin: 0;
+  color: var(--ink-3);
+}
+
+.settings-dialog__bulk-targets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-5);
+  min-width: 0;
+  margin: 0;
+  padding: var(--s-4) var(--s-5);
+  border: 0;
+  border-radius: var(--r-card);
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.settings-dialog__bulk-targets legend {
+  float: left;
+  width: 100%;
+  margin-bottom: var(--s-2);
+  padding: 0;
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  font-weight: var(--w-semibold);
+}
+
+.settings-dialog__bulk-repo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.settings-dialog__bulk-repo:has(input:disabled) {
+  color: var(--ink-3);
+  cursor: default;
+}
+
+.settings-dialog__bulk-repo--all {
+  font-weight: var(--w-semibold);
+}
+
+.settings-dialog__bulk-hd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+}
+
+.settings-dialog__bulk-preset {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+
+.settings-dialog__bulk-apply,
+.settings-dialog__bulk-retry {
+  flex: none;
+  max-width: 100%;
+}
+
+.settings-dialog__bulk-foot {
+  justify-content: space-between;
+}
+
+.settings-dialog__bulk-count {
+  color: var(--ink-3);
+}
+
+.settings-dialog__bulk .settings-dialog__banner {
+  margin-bottom: 0;
+}
+
+.settings-dialog__bulk-reason {
+  margin: 0;
+  color: var(--amber-fg);
+}
+
+.settings-dialog__bulk-row {
+  gap: var(--s-4) var(--s-8);
+}
+
+.settings-dialog__bulk-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.settings-dialog__bulk-accounts .settings-dialog__check {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-dialog__bulk-pct {
+  flex: 0 1 72px;
+  width: 72px;
+}
+
+.settings-dialog__bulk-results {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-5);
+  min-width: 0;
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--line);
+}
+
+.settings-dialog__bulk-result {
+  overflow-wrap: anywhere;
+}
+
+.settings-dialog__bulk-result.is-applied {
+  color: var(--green-fg);
+}
+
+.settings-dialog__bulk-result.is-partial {
+  color: var(--amber-fg);
+}
+
+.settings-dialog__bulk-result.is-failed {
+  color: var(--red-fg);
+}
+
+.settings-dialog__bulk-result.is-skipped {
+  color: var(--ink-3);
+}
+
+/* ---------- 전역: judgement chips and registered repositories ---------- */
+.settings-chips {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.settings-chips__intro {
+  margin: 0 0 var(--s-3);
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  line-height: var(--lh-body);
+}
+
+.settings-chips__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-4);
+  min-width: 0;
+}
+
+.settings-chips__label {
+  min-width: 7rem;
+  color: var(--ink-2);
+  font-size: var(--t-12);
+}
+
+.settings-chips__select {
+  flex: 1 1 180px;
+  min-width: 0;
+  max-width: 280px;
+}
+
+.settings-chips__error {
+  margin: var(--s-3) 0 0;
+  color: var(--red-fg);
+  font-size: var(--t-12);
+}
+
+.st-repos {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.st-repos__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-5);
+  min-width: 0;
+  padding: var(--s-3) 0;
+}
+
+.st-repos__row + .st-repos__row {
+  border-top: 1px solid var(--line);
+}
+
+.st-repos__name {
+  display: flex;
+  flex: 1 1 220px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-3);
+  min-width: 0;
+}
+
+.st-repos__name b {
+  color: var(--ink);
+  font-weight: var(--w-semibold);
+}
+
+.st-repos__tag {
+  --c-bg: var(--role-live-bg);
+  --c-fg: var(--role-live-fg);
+}
+
+.st-repos__path {
+  flex-basis: 100%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-11);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.st-repos__ops {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin-left: auto;
+}
+
+/* ---------- phone: full-screen sheet, rail → top tab strip ---------- */
+@media (max-width: 719px) {
+  .settings-dialog {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .settings-dialog__container {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100dvh;
+    min-height: 0;
+  }
+
+  .settings-dialog__rail {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--s-1);
+    padding: var(--s-3) var(--s-4) var(--s-3) var(--s-8);
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+    scrollbar-width: none;
+  }
+
+  .settings-dialog__rail-title {
+    display: none;
+  }
+
+  .settings-dialog__tab {
+    flex: none;
+    width: auto;
+    padding: 0 var(--s-4);
+  }
+
+  .settings-dialog__glyph {
+    display: none;
+  }
+
+  .settings-dialog__close {
+    position: sticky;
+    right: 0;
+    margin: 0 0 0 auto;
+    flex: none;
+    background: var(--lane);
+  }
+
+  .settings-dialog__pane {
+    padding: var(--s-6) var(--s-8)
+      calc(var(--s-16) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .settings-dialog__row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-2);
+    padding: var(--s-4) 0;
+  }
+
+  .settings-dialog__group {
+    padding: var(--s-5) var(--s-5) var(--s-3);
+  }
+
+  .settings-dialog__text,
+  .settings-dialog__preset-name {
+    max-width: none;
+  }
+
+  .settings-dialog__bulk-hd {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .settings-dialog__bulk-preset,
+  .settings-dialog__bulk-apply,
+  .settings-dialog__bulk-retry {
+    width: 100%;
+  }
+
+  .settings-dialog__bulk-field {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .settings-dialog__bulk-field .ui-select {
+    flex: 1 1 auto;
+  }
+
+  .settings-dialog__preset-diff-row {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .settings-dialog__preset-diff-label {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (pointer: coarse) {
+  .settings-dialog__tab,
+  .settings-dialog .ui-seg > button,
+  .settings-dialog summary {
+    min-height: var(--h-touch);
+  }
+
+  .settings-dialog .ui-select,
+  .settings-dialog .ui-input {
+    min-height: var(--h-touch);
+    font-size: var(--t-14);
+  }
+
+  .settings-dialog__check,
+  .settings-dialog__toggle,
+  .settings-dialog__bulk-repo,
+  .settings-dialog .ui-toggle {
+    min-height: var(--h-touch);
+  }
+}
