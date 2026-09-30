@@ -21,7 +21,8 @@ scope:
 # 외부 작업 카드는 잡마다 한 줄로 진행을 말하고, 사람이 누른 세션 창은 사용자의 tmux 세션에 활성 창으로 열린다
 
 - Bead: UI-a119 (`spec_backed`)
-- 작성: 2026-09-30 · r0
+- 작성: 2026-09-30 · r1 (spec_review r1 astra REVISE b1/m3 반영 — 종결 잡 경과는 잡별 고정
+  `observed_at`, `[세션에서 해결]` 두 경로의 프롬프트 구분, stop 훅 알림 주장 정정, dotfiles 인용 경로)
 - 사용자 결정: 2026-09-30 대화 — 클릭 기동 자리(사용자 tmux 세션·활성 창), 대체 없이도 Terminus로
   보이면 된다(붙은 클라이언트 불필요), 재개 첫 프롬프트(요약 뒤 지시 대기), `[세션에서 해결]`도
   같은 규칙과 성공 표시, 잡 줄 형태(잡마다 한 줄), 카드 안내 줄 제거
@@ -62,7 +63,10 @@ scope:
 - 재개 프롬프트 머리는 "워크플로 절차대로 in_progress를 클레임한다"로 자동 진행을 지시하고,
   서버는 창 확인 뒤 키를 지운다 — server/worker/external-wait/session-resume.js:40-41, server/worker/external-wait/session-resume.js:282
 - dotfiles 계약은 첫 프롬프트가 완료 블록이고 첫 편집 전 키 부재 확인·클레임만 요구한다 — dotfiles
-  src/claude/skills/workflow/references/external-wait.md:67-72
+  src/shared/skills/flow/workflow/references/external-wait.md:67-72
+- 파킹·복구의 `[세션에서 해결]`은 dotfiles 진입 블록 하나(`CONVERSATION_ENTRY_BLOCK`)로 같은 세션
+  대화를 열고, 그 밖 실패의 `[세션에서 해결]`은 자체 프롬프트(`buildResolvePrompt`)로 수정·push를
+  지시한다 — server/worker/direction-inquiry.js:104-124, server/worker/resolve-session.js:235-278
 - 키가 없는 `open` 행은 `qualifySession` 대상이 아니라 후보가 된다 — server/worker/runnable-cache.js:523-536
 - 대화형 세션 레코드는 후보를 포함한 모든 항목에 bead별로 붙는다 — app/views/worker/lane-model.js:2917-2941, app/views/worker/lane-model.js:4751-4760
 - 대화형 세션 배지 라벨은 종류·모드·꼬리이고 창 자리는 `title`에만 있다 — app/views/worker/lanes.js:1647-1685
@@ -70,7 +74,11 @@ scope:
 - 외부 대기 재개 토스트는 창 자리를 4초 보인다 — app/views/worker/external-wait-action.js:27-60
 - 카드 슬롯 3은 headline 뒤에 외부 대기의 `release` 줄을 그린다 — app/views/worker/lanes.js:2634-2656
 - 서버 headline은 잡 1건이면 `<host> 작업 <id> · <STATE> · 경과`, 여러 건이면 개수 요약이다 — server/worker/wait-judgment.js:332-360
-- 카드에 붙는 레코드 투영은 `jobs`·`completion`을 싣는다 — app/protocol.js:115-129
+- 카드에 붙는 레코드 투영은 `jobs`·`completion`을 싣고, 잡마다 `submitted_at`·`state`·`observed_at`과
+  `terminal`(exit·근거·`recovery_needed`·기대 산출물, 잡별 `completed_at`은 없음)을 싣는다 —
+  app/protocol.js:115-129, server/worker/attach.js:145-163
+- 관찰기는 종결된 잡을 다시 관찰하지 않으므로 잡의 `observed_at`은 종결을 관찰한 시각에 고정된다
+  (그 시각이 `terminal.completed_at`이다) — server/worker/external-wait/observer.js:81-83, server/worker/external-wait/observer.js:101-116
 - 잡 상태 어휘: slurm 종결 상태 11종, process는 `RUNNING`·`UNKNOWN`·`COMPLETED`·`FAILED`·`VANISHED` —
   server/worker/external-wait/adapters/slurm.js:1-13, server/worker/external-wait/adapters/process.js:39-63, server/worker/external-wait/adapters/process.js:92-99
 - 완료 배지는 `✅ 완료 · 이어하기 대기`, 진행 배지는 `⏳ 외부 작업`이다 — app/views/worker/lanes.js:3859-3867
@@ -79,8 +87,8 @@ scope:
   docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md:437-444, docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md:484-496
 - ADR UI-nuwy는 기동 조건(게이트·tmux fail-closed·Bead당 하나)을 정하지만 창을 여는 tmux 세션은
   정하지 않는다 — docs/adr/UI-nuwy-same-worker-session-conversation-and-return.md:60-61, docs/adr/UI-nuwy-same-worker-session-conversation-and-return.md:239-241
-- dotfiles stop 훅은 pane이 붙은 세션의 활성 창이면 보이는 것으로 보고 Discord 알림을 건너뛴다 —
-  dotfiles src/claude/hooks/stop-hook.sh:320-331
+- dotfiles stop 훅은 창 가시성을 로그 라벨에만 쓰고 Discord 알림은 가시성과 무관하게 쿨다운으로만
+  거른다 — dotfiles src/claude/hooks/stop-hook.sh:320-339
 - 재작성 UI-dbn6는 이 문서 이후 착지한 카드 동작을 승계하고 `lane-model.js`를 `app/model/`로 옮긴다 —
   docs/superpowers/specs/2026-09-23-frontend-rewrite-unified-pipeline-design.md:146-155(origin/main), docs/superpowers/plans/2026-09-29-frontend-rewrite-unified-pipeline.md:203(origin/main)
 
@@ -104,8 +112,8 @@ scope:
 - 이미 열린 창(`already_running`)을 클릭이 다시 가리키면 새 창을 만들지 않고 그 창을 그 세션의
   활성 창으로 만든다(`select-window`, 실패는 기록만 하고 응답은 그대로). 창을 다른 세션으로 옮기지
   않는다.
-- 결과: 데스크톱에서 `dev`에 붙어 있으면 클릭한 창이 바로 보이고, stop 훅은 그 pane을 보이는
-  것으로 판정해 Discord 알림을 건너뛴다. detached면 알림은 지금처럼 간다(§2 stop 훅 줄).
+- 결과: 데스크톱에서 `dev`에 붙어 있으면 클릭한 창이 바로 보인다. Discord 알림은 창 자리와
+  무관하게 지금과 같다(§2 stop 훅 줄).
 
 ### 3.2 `[세션에서 이어가기]`의 첫 프롬프트
 
@@ -117,8 +125,9 @@ scope:
   클레임한다.
 - 이 문장은 dotfiles `external-wait.md`의 조항(첫 프롬프트 = 완료 블록, 첫 편집 전 키 확인·클레임)과
   모순되지 않으므로 dotfiles는 바꾸지 않는다.
-- `[세션에서 해결]`의 진입 블록은 dotfiles가 소유하고 다이제스트로 고정된 대화 블록이라 바꾸지
-  않는다 — 그 세션은 원래 사람 답을 기다린다. 바뀌는 것은 창 자리뿐이다.
+- `[세션에서 해결]`의 프롬프트는 두 경로 모두 바꾸지 않는다(§2 해당 줄). 파킹·복구 경로는 dotfiles
+  진입 블록 하나로 같은 세션 대화를 열어 사람 답을 기다리고, 그 밖 실패 경로는 지금의
+  `buildResolvePrompt` 지시(수정·push)를 그대로 쓴다. 두 경로에서 바뀌는 것은 창 자리뿐이다.
 - 원래 세션이 살아 있거나 확인되지 않을 때 창을 열지 않고 재개 명령을 복사하는 동작은 그대로다.
 
 ### 3.3 창이 열렸다는 표시와 레인 자리
@@ -157,7 +166,9 @@ scope:
 | 비종결 `UNKNOWN` | `·` | 확인 중 |
 | 그 밖 | `·` | 원래 state |
 
-- 경과: 비종결은 `now − submitted_at`, 종결은 `completed_at − submitted_at`. 형식은 1시간 이상
+- 경과: 비종결은 `now − submitted_at`, 종결은 그 잡의 `observed_at − submitted_at`이다 — 종결 잡의
+  `observed_at`은 종결을 관찰한 시각에 고정된다(§2 관찰기 줄). 레코드 전체의 `completion.completed_at`은
+  마지막 잡이 끝난 시각이라 잡별 경과에 쓰지 않는다. 형식은 1시간 이상
   `1h29m`, 1분 이상 `19m`, 그 아래 `<1m`, 재료가 없으면 칸을 생략한다.
 - 정렬: 실행 중 → 대기 중·확인 중·그 밖 비종결 → 실패·결과 모름 → 완료, 같은 묶음 안에서는
   `submitted_at` 오름차순. 줄은 최대 4줄이고, 잡이 5건 이상이면 앞 3줄 뒤에
@@ -228,7 +239,9 @@ scope:
   inquiry `-d`. `server/worker/resolve-session.test.js`: `resolve`는 사용자 자리.
 - `app/views/worker/lane-model.test.js`: `live` `external_resume` 레코드가 있는 키 없는 `open`
   항목 → 실행 중 세션 타일, 정산된 레코드 → 후보.
-- 잡 줄 순수 함수 테스트: 상태어 표 각 행, 정렬, 4줄 상한과 `외 n건`, 경과 형식, `로컬`·`pid`.
+- 잡 줄 순수 함수 테스트: 상태어 표 각 행, 정렬, 4줄 상한과 `외 n건`, 경과 형식, `로컬`·`pid`,
+  종료 시각이 다른 두 종결 잡의 경과가 각자의 `observed_at`으로 갈리는 경우, 일부만 종결된 레코드
+  (종결 잡은 고정 경과, 비종결 잡은 `now` 기준).
 - `app/views/worker/lanes.test.js`·`running-grid.test.js`·`app/views/monitor/index.test.js`: 슬롯 3
   잡 줄, `release` 줄 부재, 배지 꼬리, 대화형 세션 배지 라벨의 자리. 카드에 `release` 줄이
   있다고 단언하던 기존 테스트는 이 스펙의 동작으로 갱신한다.
