@@ -35,7 +35,7 @@ import {
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
-import { runResumeFlow } from '../../utils/resume-flow.js';
+import { runResumeFlow } from '../../screens/dialogs/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import {

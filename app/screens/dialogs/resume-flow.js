@@ -1,7 +1,7 @@
 import { resolveContinuationMismatch } from './continuation-dialog.js';
-import { RESUME_REFUSALS } from './failure-sentences.js';
+import { RESUME_REFUSALS } from '../../utils/failure-sentences.js';
 import { requestResumeInstructions } from './resume-instructions-dialog.js';
-import { showToast } from './toast.js';
+import { showToast } from '../../ui/toast.js';
 
 /**
  * Run the whole manual resume flow once (UI-6g3t §5.1): ask for instructions,

@@ -11,6 +11,7 @@
  */
 import { html } from 'lit-html';
 import { visibleModelChoices } from '../../model/model-visibility.js';
+import { showDialog } from '../../ui/dialog.js';
 
 /**
  * @typedef {Object} ProviderResumeDraft
@@ -482,9 +483,5 @@ export function showProviderResumeDialog(root) {
   if (!dialog || dialog.open) {
     return;
   }
-  if (typeof dialog.showModal === 'function') {
-    dialog.showModal();
-  } else {
-    dialog.setAttribute('open', '');
-  }
+  showDialog(dialog);
 }

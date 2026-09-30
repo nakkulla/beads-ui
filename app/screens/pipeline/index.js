@@ -32,7 +32,7 @@ import {
   providerResumeDialogTemplate,
   providerResumeOverride,
   showProviderResumeDialog
-} from '../../views/worker/provider-resume-dialog.js';
+} from '../dialogs/provider-resume-dialog.js';
 import { createPipelineActions } from './actions.js';
 import { cardOps } from './card.js';
 import { createPointerDrag, dropRequest } from './drag.js';

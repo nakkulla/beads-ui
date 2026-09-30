@@ -91,8 +91,8 @@ import {
 } from '../../utils/active-attempts.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
-import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
-import { runResumeFlow } from '../../utils/resume-flow.js';
+import { resolveContinuationMismatch } from '../../screens/dialogs/continuation-dialog.js';
+import { runResumeFlow } from '../../screens/dialogs/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
@@ -134,7 +134,7 @@ import {
   providerResumeDraftChange,
   providerResumeOverride,
   showProviderResumeDialog
-} from './provider-resume-dialog.js';
+} from '../../screens/dialogs/provider-resume-dialog.js';
 import { deriveWorkerOverlaps } from './queue-overlaps.js';
 import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
@@ -145,7 +145,7 @@ import { createWorkspaceAdapter } from './workspace-adapter.js';
 
 /**
  * @import { CandidateFilter, LaneItem, LaneModel, LaneQueueGroup } from '../../model/lane-model.js'
- * @import { ProviderResumeDraft } from './provider-resume-dialog.js'
+ * @import { ProviderResumeDraft } from '../../screens/dialogs/provider-resume-dialog.js'
  */
 
 export { mergeStepView } from '../../model/merge-steps.js';

@@ -18,8 +18,8 @@ import {
 } from '../../model/discard.js';
 import { providerProbeRefusalText } from '../../model/gate-labels.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
-import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
-import { runResumeFlow } from '../../utils/resume-flow.js';
+import { resolveContinuationMismatch } from '../dialogs/continuation-dialog.js';
+import { runResumeFlow } from '../dialogs/resume-flow.js';
 import { runExternalWaitAction } from './external-wait-action.js';
 
 /**

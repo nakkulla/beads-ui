@@ -1,3 +1,5 @@
+import { closeDialog, createDialog, showDialog } from '../../ui/dialog.js';
+
 /**
  * Ask how a Worker attempt should be resumed (UI-6icf §4).
  *
@@ -30,8 +32,7 @@ export function requestResumeInstructions(context, doc = document) {
         instruct: '✎ 지시 입력 후 이어하기',
         confirm: '이어하기'
       };
-  const dialog = doc.createElement('dialog');
-  dialog.className = 'op-dialog resume-instructions-dialog';
+  const dialog = createDialog(doc, 'resume-instructions-dialog');
   const title = doc.createElement('h2');
   title.textContent = labels.title;
   dialog.append(title);
@@ -80,8 +81,6 @@ export function requestResumeInstructions(context, doc = document) {
   cancel_input.textContent = '취소';
   actions.append(confirm, cancel_input);
 
-  doc.body.append(dialog);
-
   return new Promise((resolve) => {
     let finished = false;
     /** @param {string|null} instructions */
@@ -90,10 +89,7 @@ export function requestResumeInstructions(context, doc = document) {
         return;
       }
       finished = true;
-      if (typeof dialog.close === 'function') {
-        dialog.close();
-      }
-      dialog.remove();
+      closeDialog(dialog, { remove: true });
       resolve(instructions);
     };
     /** Keep the confirm button in step with the typed value. false when empty. */
@@ -133,11 +129,7 @@ export function requestResumeInstructions(context, doc = document) {
       event.preventDefault();
       finish(null);
     });
-    if (typeof dialog.showModal === 'function') {
-      dialog.showModal();
-    } else {
-      dialog.setAttribute('open', '');
-    }
+    showDialog(dialog);
     immediate.focus();
   });
 }

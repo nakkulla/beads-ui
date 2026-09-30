@@ -1,4 +1,5 @@
-import { formatAttemptTuple } from './attempt-display.js';
+import { closeDialog, createDialog, showDialog } from '../../ui/dialog.js';
+import { formatAttemptTuple } from '../../utils/attempt-display.js';
 
 /**
  * Ask the user how to cross a provider boundary. The server descriptor is the
@@ -9,8 +10,7 @@ import { formatAttemptTuple } from './attempt-display.js';
  * @returns {Promise<'prior_session'|'fresh_current'|null>}
  */
 export function chooseContinuation(mismatch, doc = document) {
-  const dialog = doc.createElement('dialog');
-  dialog.className = 'op-dialog continuation-dialog';
+  const dialog = createDialog(doc, 'continuation-dialog');
   const prior = doc.createElement('button');
   const fresh = doc.createElement('button');
   const cancel = doc.createElement('button');
@@ -32,15 +32,11 @@ export function chooseContinuation(mismatch, doc = document) {
   cancel.textContent = '취소';
   actions.append(prior, fresh, cancel);
   dialog.append(title, copy, actions);
-  doc.body.append(dialog);
 
   return new Promise((resolve) => {
     /** @param {'prior_session'|'fresh_current'|null} decision */
     const finish = (decision) => {
-      if (typeof dialog.close === 'function') {
-        dialog.close();
-      }
-      dialog.remove();
+      closeDialog(dialog, { remove: true });
       resolve(decision);
     };
     prior.addEventListener('click', () => finish('prior_session'));
@@ -50,11 +46,7 @@ export function chooseContinuation(mismatch, doc = document) {
       event.preventDefault();
       finish(null);
     });
-    if (typeof dialog.showModal === 'function') {
-      dialog.showModal();
-    } else {
-      dialog.setAttribute('open', '');
-    }
+    showDialog(dialog);
   });
 }
 

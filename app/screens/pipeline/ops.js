@@ -16,7 +16,7 @@ import { copyToClipboard } from '../../utils/clipboard.js';
 import {
   providerResumeDraft,
   providerResumeDraftChange
-} from '../../views/worker/provider-resume-dialog.js';
+} from '../dialogs/provider-resume-dialog.js';
 import { queueRequestOf } from './move-sheet.js';
 
 /**

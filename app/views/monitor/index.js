@@ -46,9 +46,9 @@ import { tileResolveFields } from '../../model/tile-resolve.js';
 import { runExternalWaitAction } from '../../screens/pipeline/external-wait-action.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
-import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
+import { resolveContinuationMismatch } from '../../screens/dialogs/continuation-dialog.js';
 import { debug } from '../../utils/logging.js';
-import { runResumeFlow } from '../../utils/resume-flow.js';
+import { runResumeFlow } from '../../screens/dialogs/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { watchMobile } from '../../utils/viewport.js';
@@ -73,7 +73,7 @@ import {
   providerResumeDraftChange,
   providerResumeOverride,
   showProviderResumeDialog
-} from '../worker/provider-resume-dialog.js';
+} from '../../screens/dialogs/provider-resume-dialog.js';
 import { runningTile } from '../worker/running-grid.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
@@ -81,7 +81,7 @@ import { createRepoDeck } from './deck.js';
 /**
  * @import { CandidateFilter, LaneItem, LaneModel, MonitorOccupant, LaneQueueGroup, MonitorSerialSublane } from '../../model/lane-model.js'
  * @import { DependencyChips } from '../worker/lanes.js'
- * @import { ProviderResumeDraft } from '../worker/provider-resume-dialog.js'
+ * @import { ProviderResumeDraft } from '../../screens/dialogs/provider-resume-dialog.js'
  * @import { DropDrag, DropTarget } from '../worker/lane-drag.js'
  */
 
