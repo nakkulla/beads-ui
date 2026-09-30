@@ -32,9 +32,10 @@
 `docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md`(§2 줄
 순서, §5.1 슬롯 표), `2026-08-28-chip-grammar-unify-design.md`(칩 클릭 의미),
 `2026-09-02-worker-operation-surface-unify-design.md`(§3.2 `.op-btn`). 슬롯이
-없는 새 라벨·칩·버튼은 스펙을 먼저 갱신해 슬롯을 정한 뒤 단다(ADR UI-ri8n).
-재료가 없는 줄은 그리지 않는다(fail-quiet). `[세션에서 해결]`의 유무는
-`tileResolveFields` 하나가 정한다 — 렌더러는 다시 판정하지 않는다.
+없는 새 라벨·칩·버튼은 스펙을 먼저 갱신해 슬롯을 정한 뒤 단다(ADR UI-nuwy).
+재료가 없는 줄은 그리지 않는다(fail-quiet).
+`[세션에서 해결]`·`[워커로 이어가기]`의 유무는 `tileResolveFields` 하나가 정한다
+— 렌더러는 다시 판정하지 않는다.
 
 - 공급자 보류의 해제는 프로브가 판정하고 `↻ 지금 프로브`는 그 판정을 앞당기는
   조작이다 — 카드 위의 조작은 target을 지우지 않는다
