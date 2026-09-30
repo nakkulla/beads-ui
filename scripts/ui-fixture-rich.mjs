@@ -595,7 +595,9 @@ export function enrichFixture(fixture, now) {
   Object.assign(attempt(d), {
     status: 'failed',
     cause: 'session_failed:exit_1',
-    finished_at: now - 200_000
+    finished_at: now - 200_000,
+    // a recorded session makes ↻ 이어하기 open the resume-instructions dialog
+    session_id: '5f0c2a9e-7d41-4c3b-9a8e-2b6d1f0e4c77'
   });
 
   // Applied presets: named, null and absent; repo-a runs automation.

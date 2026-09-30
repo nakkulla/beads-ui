@@ -264,7 +264,7 @@ export const PIPELINE_PROBE =
 
 /** The containers the no-overflow probe measures on the Phase 2 surfaces. */
 export const SURFACE_PROBE =
-  '.dt-panel, .dt-section, .sv, .new-issue, .mv, dialog.op-dialog[open], .ui-sheet__panel';
+  '.dt-panel, .dt-section, .sv, .new-issue__container, .mv, dialog.op-dialog[open], .ui-sheet__panel';
 
 /**
  * The no-overflow probe (UI-dbn6 design-system round): inside every visible

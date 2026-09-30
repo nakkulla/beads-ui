@@ -21,6 +21,12 @@
  *      bead buttons inside the 390 44px check, and the 막힘 sheet, a PR row's
  *      live-badge evidence and chip popover and the usage card in both
  *      schemes at 1280 and 390;
+ *   9. (design-system round, `ui-shots-design.mjs`) captures of the pipeline
+ *      (전체 + 레포) and the issue detail, transcript, new issue, document
+ *      viewer and resume-instructions dialog in both schemes at 390 · 1280 ·
+ *      1374 · 1600 · 1920, each with the no-overflow probe — every count 0 —
+ *      and the 390 page `scrollWidth - innerWidth` 0; `--design-only` runs
+ *      this pass alone;
  *   8. the issue detail (1280 panel, 390 full-screen sheet) and the transcript
  *      (1280 window, 390 sheet): captures, `scrollWidth` overflow 0, every
  *      visible button/select ≥ 44px at 390, opening the detail adds only
@@ -34,6 +40,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { DONE_ATTEMPT, designChecks, openDetail } from './ui-shots-design.mjs';
 import {
   FIRST_RENDER_BUDGET_MS,
   IDLE_MS,
@@ -431,7 +438,19 @@ async function touchDrag(browser, base, out) {
     await context.close();
     return;
   }
-  await source.scrollIntoViewIfNeeded();
+  // Put the target row right under the sticky header so the source row below
+  // it is in view too: a centred scroll to the source (the design round's
+  // 44px coarse rows are taller) would push the target above the viewport,
+  // where no touch point can reach it.
+  await target.evaluate((/** @type {HTMLElement} */ row) => {
+    const header = document.querySelector('.ui-header');
+    const offset = header ? header.getBoundingClientRect().height + 8 : 8;
+    window.scrollTo(
+      0,
+      row.getBoundingClientRect().top + window.scrollY - offset
+    );
+  });
+  await page.waitForTimeout(100);
   const from = await source.boundingBox();
   const to = await target.boundingBox();
   const cdp = await context.newCDPSession(page);
@@ -493,32 +512,6 @@ async function moveSheet(browser, base, out) {
     `fixture ${before.join(',')} → ${after.join(',')} · DOM ${dom.join(',')}`
   );
   await context.close();
-}
-
-/** The running bead whose detail the checks open, and its finished attempt. */
-const DETAIL_BEAD = 'A-4';
-const DONE_ATTEMPT = 'A-4-1699990000-0';
-
-/**
- * Open the running tile's detail from the lanes.
- *
- * @param {any} page
- * @param {number} width
- */
-async function openDetail(page, width) {
-  if (width < 720) {
-    await showLane(page, 'running');
-  }
-  await page.click(
-    `.pl-tile[data-bead-id="${DETAIL_BEAD}"][data-root-dir="${REPO_A}"] .pl-title`
-  );
-  await page.waitForSelector(
-    '#detail-panel .dt-panel [data-section="history"]'
-  );
-  await page.waitForSelector(
-    `#detail-panel button.detail-session[data-attempt-id="${DONE_ATTEMPT}"]`
-  );
-  await page.waitForTimeout(300);
 }
 
 /**
@@ -687,7 +680,12 @@ async function main() {
   }
   fs.mkdirSync(out, { recursive: true });
   const browser = await playwright.chromium.launch();
+  const only = process.argv.includes('--design-only');
   try {
+    if (only) {
+      await designChecks(browser, base, out);
+      return;
+    }
     await captures(browser, base, out);
     await restoredSurfaces(browser, base, out);
     await firstRender(browser, base);
@@ -695,16 +693,18 @@ async function main() {
     await touchDrag(browser, base, out);
     await moveSheet(browser, base, out);
     await detailAndTranscript(browser, base, out);
+    await designChecks(browser, base, out);
     await idle(browser, base);
     await detailIdle(browser, base);
   } finally {
     await browser.close();
+    const failed = results.filter((entry) => !entry.ok);
+    process.stdout.write(
+      `\n${results.length - failed.length}/${results.length} checks passed · captures in ${out}\n`
+    );
+    process.exitCode = failed.length > 0 ? 1 : 0;
   }
-  const failed = results.filter((entry) => !entry.ok);
-  process.stdout.write(
-    `\n${results.length - failed.length}/${results.length} checks passed · captures in ${out}\n`
-  );
-  process.exit(failed.length > 0 ? 1 : 0);
 }
 
 await main();
+process.exit(process.exitCode ?? 0);
