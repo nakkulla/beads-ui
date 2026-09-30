@@ -43,6 +43,10 @@ UI-dbn6(PR #338)를 머지하지 않고 보류하려 하는데, 자동 진행을
 - `자동 머지` 토글은 독립 경로다: 켜기는 저장·관측·enroll, 끄기는 플래그와 대기열 비우기를
   한 write로 한다 — server/ws/worker-handlers.js:5660, server/worker/queue-store.js:11589,
   :11592
+- `자동 머지` 끄기가 비우는 것은 자동 등록된 대기 항목뿐이고 활성 항목(`keep`)·해소
+  journal·수동 권한 항목은 남는다 — server/worker/queue-store.js:11593-11602
+- 이미 실행 중인 머지의 `[취소]`는 `merge_active`로 거부된다 —
+  server/ws/worker-handlers.js:5840
 - auto-merge enroller는 자기 타이머 없이 `queue-changed`를 타고 자격을 다시 판정한다 —
   server/worker/auto-merge.js:7-13
 - 화면의 `자동화` 버튼은 `worker-automation-toggle`을 보내고 `자동 머지`는
@@ -50,8 +54,15 @@ UI-dbn6(PR #338)를 머지하지 않고 보류하려 하는데, 자동 진행을
   :5123-5125; app/views/monitor/deck.js:709-719
 - main의 프런트엔드에는 모니터 전체 스위치가 없고 `monitor-auto-toggle`은 서버 op로만
   남아 있다 — app/views/monitor/deck.js:11, app/protocol.js:359-362
+- 화면 문구는 결합을 말하지 않는다: `자동화` 버튼은 `▶ 자동화`/`⏸ 자동화 멈춤`만,
+  `자동 머지` 토스트·툴팁은 자동 머지만, 레포 데크 스위치 툴팁은 각자 자기 축만 말한다 —
+  app/views/worker/index.js:2622-2637, :2860-2877, :3628-3631, :4103-4140;
+  app/views/monitor/deck.js:317-340
 - UI-dbn6 PR #338 head의 재작성 프런트엔드는 `worker-automation-toggle`을 보낸다 —
   `git grep` at `be0892764ad467650831849b9f9fcf9e20d2e271`: app/screens/pipeline/actions.js:650
+- UI-dbn6 스펙은 새 화면에 모니터 전체 스위치를 만들지 않고(§4.3) 마지막 Phase에서
+  `monitor-auto-toggle` 라우트와 프로토콜 등록을 지운다(§4.5) —
+  docs/superpowers/specs/2026-09-23-frontend-rewrite-unified-pipeline-design.md:345, :366
 - 결합의 정본은 Accepted ADR UI-u6ud-3이다 — docs/adr/UI-u6ud-3-worker-merge-queue.md:30-31
 - 그 ADR이 흡수한 0011은 "단일 자동화 스위치"를 되돌릴 수 없는 머지를 되돌릴 수 있는
   자동 진행과 한 클릭에 묶는다는 이유로 기각했다 —
@@ -66,8 +77,10 @@ UI-dbn6(PR #338)를 머지하지 않고 보류하려 하는데, 자동 진행을
   쓰지도 않는다. `auto_advance_at_shutdown` 소비는 지금과 같다.
 - 켜기의 부수효과는 dispatch tick 하나다. PR 관측과 enroll은 시작하지 않는다. 자동 머지가
   이미 켜진 워크스페이스는 enroller가 `queue-changed`와 PR poller의 기존 경로로 계속 돈다.
-- 끄기는 머지 대기열을 건드리지 않는다. 대기·진행 중인 머지는 `자동 머지` 끄기(대기열
-  비움)나 항목 `[취소]`로만 멈춘다.
+- 끄기는 머지 대기열을 건드리지 않는다. 머지를 멈추는 길은 지금과 같다: `자동 머지`
+  끄기는 자동 등록된 대기 항목을 비우고 활성 항목·해소 journal·수동으로 넣은 항목은
+  남긴다. 대기 항목은 `[취소]`로 뺄 수 있고, 이미 실행 중인 머지는 `[취소]`도
+  `merge_active`로 거부되어 끝까지 간다.
 - 결과적으로 `worker-queue-toggle`과 같은 동작이 된다. 예: 두 핸들러가 같은
   `toggleAutoAdvance`를 부르고 결합 mutation `toggleAutomation`은 지운다.
 
@@ -79,6 +92,11 @@ UI-dbn6(PR #338)를 머지하지 않고 보류하려 하는데, 자동 진행을
   없어진다.
 - 여러 저장소의 자동 머지를 한 클릭으로 켜는 경로는 두지 않는다. 자동 머지는 저장소별
   토글로만 켠다.
+- UI-dbn6와의 관계: 이 변경은 PR #338 보류와 무관하게 지금 main에 착지한다(op가 main에
+  남아 있는 동안 결합 mutation을 부르지 않게 하기 위해서다). UI-dbn6가 나중에 착지하면 그
+  스펙 §4.5대로 `monitor-auto-toggle` 라우트와 등록은 삭제되고 이 절의 변경도 함께
+  사라진다 — 삭제가 이긴다. `worker-automation-toggle`의 새 의미와 `app/protocol.md`
+  문구는 UI-dbn6가 base 동기화에서 이 변경 쪽으로 승계한다.
 
 ### 3.3 바뀌지 않는 것
 
@@ -104,6 +122,8 @@ UI-dbn6(PR #338)를 머지하지 않고 보류하려 하는데, 자동 진행을
 2. `auto_merge=true`이고 대기 항목이 있는 워크스페이스에서 끄기 → `auto_advance=false`,
    `auto_merge=true`, `merge_queue` 불변.
 3. `monitor-auto-toggle` 켜기·끄기가 보이는 모든 워크스페이스에 1·2와 같은 결과를 낸다.
+   이 기준은 UI-dbn6 착지 전 main에서 판정하고, UI-dbn6 착지로 op가 삭제되면 op와 함께
+   소멸한다.
 4. stale revision은 지금처럼 conflict로 거부되고 상태를 바꾸지 않는다.
 5. `worker-merge-auto-toggle`의 기존 테스트가 그대로 통과한다.
 
@@ -142,3 +162,8 @@ UI-dbn6(PR #338)를 머지하지 않고 보류하려 하는데, 자동 진행을
 
 다른 저장소에서 할 작업과 형제 Bead는 없다. 착지 뒤 공유 서버 배포는 이 저장소의
 Post-Merge Runtime Validation을 따른다.
+
+이 변경은 UI-dbn6를 기다리지 않고 UI-dbn6도 이 변경을 전제로 삼지 않는다(두 Bead 사이에
+`blocks` 엣지를 두지 않는다). 이 변경이 먼저 착지하면 PR #338의 base 동기화에서
+`server/ws/monitor-handlers.js`의 `monitor-auto-toggle` 라우트는 삭제를,
+`app/protocol.md`의 `worker-automation-toggle` 항목은 이 변경의 문구를 채택한다.
