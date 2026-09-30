@@ -815,10 +815,29 @@ describe('design token definitions', () => {
     path.resolve(process.cwd(), 'app/ui/tokens.css'),
     'utf8'
   );
+  // The legacy control-tower chips moved verbatim from `ui/base.css` to
+  // `ui/legacy.css` in the UI-dbn6 design-system round.
   const BASE = readFileSync(
-    path.resolve(process.cwd(), 'app/ui/base.css'),
+    path.resolve(process.cwd(), 'app/ui/legacy.css'),
     'utf8'
   );
+  /**
+   * Every local stylesheet `app/index.html` links, vendored fonts aside.
+   *
+   * @returns {string[]}
+   */
+  function linkedStylesheets() {
+    const index = readFileSync(
+      path.resolve(process.cwd(), 'app/index.html'),
+      'utf8'
+    );
+    return [...index.matchAll(/href="\.\/([^"]+\.css)"/g)]
+      .map((m) => m[1])
+      .filter((ref) => !ref.startsWith('vendor/'))
+      .map((ref) =>
+        readFileSync(path.resolve(process.cwd(), 'app', ref), 'utf8')
+      );
+  }
 
   /** Custom properties stamped onto elements from JS, never declared in CSS. */
   const RUNTIME_INJECTED = new Set(['--progress']);
@@ -1021,7 +1040,7 @@ describe('design token definitions', () => {
   });
 
   test('leaves no var() reference without a definition or a fallback', () => {
-    const all_css = [BASE, TOKENS, CSS].join('\n');
+    const all_css = linkedStylesheets().join('\n');
     /** @type {Set<string>} */
     const defined = new Set();
     for (const m of all_css.matchAll(/(--[a-z0-9-]+)\s*:/g)) {

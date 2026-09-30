@@ -5,12 +5,13 @@ import { describe, expect, test } from 'vitest';
 
 /**
  * Header scope split (UI-o4m1 §4). The repo scope capsule and the global
- * Monitor link live in the base.css nav block; token-only colour and the
- * longhand border/background overrides inside the capsule are the regression
- * guards.
+ * Monitor link live in the legacy nav block (`ui/legacy.css`, split verbatim
+ * out of `ui/base.css` in the UI-dbn6 design-system round); token-only
+ * colour and the longhand border/background overrides inside the capsule are
+ * the regression guards.
  */
 const BASE_CSS = readFileSync(
-  path.resolve(process.cwd(), 'app/ui/base.css'),
+  path.resolve(process.cwd(), 'app/ui/legacy.css'),
   'utf8'
 );
 const APP_CSS = readFileSync(

@@ -1,9 +1,749 @@
-/* Phase 2 primitives (UI-dbn6 §4.4) the detail and transcript screens draw
-   with, beside the Phase 1 ones in base.css: the overlay host
-   (ui/overlay.js), the copy button (ui/copy.js) and the markdown block
-   (ui/markdown.js). Visual values come from tokens.css only. */
+/*
+ * Shared primitives (UI-dbn6 design-system round; structure from the
+ * design-system catalog, skin from Radix). Every screen draws its controls
+ * with these classes; the values come from `ui/tokens.css` only.
+ *
+ *   .ui-icon      16px SVG in currentColor (ui/icons.js)
+ *   .ui-btn       button tiers: primary · plain (soft gray) · ghost · icon ·
+ *                 danger (soft red) · danger-fill (confirm dialogs only)
+ *   .ui-chip      a value chip; its colour is `--c-bg`/`--c-fg`, which a
+ *                 screen sets from a `--role-*` token (never from a hue)
+ *   .ui-seg       segmented choice
+ *   .ui-toggle    labelled switch (ui/switch.js); `.is-state` is the
+ *                 state-only dot a coarse pointer gets instead
+ *   .ui-kv        key / value grid
+ *   .ui-tip       custom tooltip bubble (`[data-tip]` shows it on hover)
+ *   .ui-strand    bead strand — 11px dot in a 24px hit box, 14px in 44px on
+ *                 a coarse pointer with the stage name under it
+ *   .ui-well      activity well: tool verb · target · age
+ *   .ui-dot       status dot (`.is-live` pulses)
+ *   .ui-select · .ui-input · .ui-popover · .ui-sheet · .ui-overlay ·
+ *   .ui-copy · .ui-markdown · .ui-spinner
+ */
 
-/* Overlay host (ui/overlay.js): a full-viewport layer over the lanes. */
+/* ---------- icon ---------- */
+.ui-icon {
+  width: 1em;
+  height: 1em;
+  flex: none;
+  vertical-align: -0.125em;
+}
+
+/* ---------- button ---------- */
+.ui-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  min-height: var(--h-btn);
+  max-width: 100%;
+  padding: 0 var(--s-5);
+  border: 0;
+  border-radius: var(--r-btn);
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  font: inherit;
+  font-size: var(--t-btn);
+  font-weight: var(--w-medium);
+  line-height: var(--lh-tight);
+  text-align: center;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.ui-btn:hover {
+  background: var(--btn-hover);
+}
+
+.ui-btn:active {
+  background: var(--btn-active);
+}
+
+.ui-btn--primary {
+  background: var(--pri-bg);
+  color: var(--pri-fg);
+}
+
+.ui-btn--primary:hover,
+.ui-btn--primary:active {
+  background: var(--pri-hover);
+}
+
+.ui-btn--ghost,
+.ui-btn--icon {
+  background: transparent;
+  color: var(--ink-2);
+}
+
+.ui-btn--ghost:hover,
+.ui-btn--icon:hover {
+  background: var(--btn-bg);
+  color: var(--ink);
+}
+
+.ui-btn--icon {
+  width: var(--h-btn);
+  padding: 0;
+  font-size: var(--t-15);
+}
+
+.ui-btn--danger {
+  background: var(--danger-bg);
+  color: var(--danger-fg);
+}
+
+.ui-btn--danger:hover,
+.ui-btn--danger:active {
+  background: var(--danger-hover);
+}
+
+.ui-btn--danger-fill {
+  background: var(--danger-solid);
+  color: var(--on-solid);
+}
+
+.ui-btn--sm {
+  min-height: var(--h-btn-sm);
+  padding: 0 var(--s-4);
+  font-size: var(--t-btn-sm);
+}
+
+.ui-btn:disabled,
+.ui-btn[aria-disabled='true'] {
+  opacity: var(--op-disabled);
+  cursor: not-allowed;
+}
+
+.ui-btn:disabled:hover,
+.ui-btn[aria-disabled='true']:hover {
+  background: var(--btn-bg);
+}
+
+.ui-btn--primary:disabled:hover {
+  background: var(--pri-bg);
+}
+
+.ui-btn--ghost:disabled:hover,
+.ui-btn--icon:disabled:hover {
+  background: transparent;
+}
+
+.ui-btn[aria-busy='true'] {
+  cursor: progress;
+}
+
+.ui-btn .ui-icon {
+  font-size: 15px;
+}
+
+/* ---------- chip ---------- */
+.ui-chip {
+  --c-bg: var(--role-fact-bg);
+  --c-fg: var(--role-fact-fg);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--h-chip);
+  padding: 2px var(--s-3);
+  border: 0;
+  border-radius: var(--r-chip);
+  background: var(--c-bg);
+  color: var(--c-fg);
+  font: inherit;
+  font-size: var(--t-chip);
+  font-weight: var(--w-medium);
+  line-height: 1.2;
+  text-align: start;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+button.ui-chip,
+a.ui-chip {
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+button.ui-chip:hover,
+a.ui-chip:hover {
+  background: color-mix(in srgb, var(--c-bg), var(--c-fg) 14%);
+}
+
+.ui-chip.is-on,
+.ui-chip[aria-pressed='true'] {
+  --c-bg: var(--accent-soft);
+  --c-fg: var(--accent-text);
+  font-weight: var(--w-semibold);
+}
+
+.ui-chip--dot::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.ui-chip--ghost {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--ink-2);
+}
+
+.ui-chip--dashed {
+  padding: 1px calc(var(--s-3) - 1px);
+  border: 1px dashed color-mix(in srgb, var(--c-fg) 50%, transparent);
+  background: color-mix(in srgb, var(--c-bg) 55%, transparent);
+}
+
+.ui-chip[aria-busy='true'] {
+  opacity: var(--op-dim);
+  cursor: progress;
+}
+
+/* ---------- segmented ---------- */
+.ui-seg {
+  display: inline-flex;
+  gap: var(--s-1);
+  max-width: 100%;
+  padding: var(--s-1);
+  border-radius: calc(var(--r-btn) + 2px);
+  background: var(--seg-bg);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.ui-seg > button {
+  min-height: var(--h-sm);
+  padding: 0 var(--s-4);
+  border: 0;
+  border-radius: var(--r-btn);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--t-12);
+  font-weight: var(--w-medium);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ui-seg > button:hover {
+  color: var(--ink);
+}
+
+.ui-seg > button[aria-pressed='true'] {
+  background: var(--seg-on);
+  color: var(--seg-on-fg);
+  box-shadow: var(--seg-shadow);
+  font-weight: var(--w-semibold);
+}
+
+/* ---------- switch ---------- */
+.ui-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: var(--h-sm);
+  padding: 0 var(--s-1);
+  border: 0;
+  border-radius: var(--r-btn);
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: var(--t-12);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+button.ui-toggle:hover {
+  color: var(--ink);
+}
+
+.ui-toggle.is-on {
+  color: var(--ink);
+}
+
+.ui-toggle__track {
+  position: relative;
+  width: 24px;
+  height: 14px;
+  flex: none;
+  border-radius: var(--radius-full);
+  background: var(--sw-off);
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+.ui-toggle__track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--knob);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.ui-toggle.is-on .ui-toggle__track {
+  background: var(--sw-on);
+}
+
+.ui-toggle.is-on .ui-toggle__track::after {
+  transform: translateX(10px);
+}
+
+/* The coarse-pointer state mark: a dot, no track. */
+.ui-toggle.is-state {
+  cursor: default;
+}
+
+.ui-toggle.is-state .ui-toggle__track {
+  display: none;
+}
+
+.ui-toggle.is-state::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--sw-off);
+}
+
+.ui-toggle.is-state.is-on::before {
+  background: var(--ok);
+}
+
+/* ---------- key / value ---------- */
+.ui-kv {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--s-1) var(--s-5);
+  margin: 0;
+  font-size: var(--t-12);
+}
+
+.ui-kv dt {
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.ui-kv dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- tooltip ---------- */
+.ui-tip {
+  display: inline-block;
+  max-width: 260px;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-btn);
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: var(--e2);
+  font-size: var(--t-12);
+  font-weight: var(--w-regular);
+  line-height: var(--lh-body);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+[data-tip] {
+  position: relative;
+}
+
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  z-index: var(--z-popover);
+  bottom: calc(100% + 6px);
+  left: 50%;
+  width: max-content;
+  max-width: 240px;
+  padding: var(--s-2) var(--s-4);
+  border-radius: var(--r-btn);
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: var(--e2);
+  font-size: var(--t-12);
+  font-weight: var(--w-medium);
+  line-height: var(--lh-tight);
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%);
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+[data-tip]:hover::after,
+[data-tip]:focus-visible::after {
+  opacity: 1;
+}
+
+/* ---------- bead strand ----------
+   `.ui-strand__bead` is a 24px hit box (44px under a coarse pointer) around
+   an 11px (14px) dot; `--c` is the bead's stage hue. States: none (hollow
+   ring) · done (tint) · lit (filled) · current (ring, pulsing while live) ·
+   failed (danger). A wire joins the dots behind them. */
+.ui-strand {
+  --bead-box: 24px;
+  --bead-dot: 11px;
+  position: relative;
+  display: inline-flex;
+  align-items: flex-start;
+  flex: none;
+  max-width: 100%;
+}
+
+.ui-strand::before {
+  content: '';
+  position: absolute;
+  top: calc(var(--bead-box) / 2 - 0.5px);
+  left: calc(var(--bead-box) / 2);
+  right: calc(var(--bead-box) / 2);
+  height: 1px;
+  background: var(--line-strong);
+}
+
+.ui-strand__bead {
+  --c: var(--line-strong);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  width: var(--bead-box);
+  min-width: var(--bead-box);
+  min-height: var(--bead-box);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-btn);
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  text-decoration: none;
+  cursor: default;
+}
+
+.ui-strand__dot {
+  position: relative;
+  display: block;
+  width: var(--bead-dot);
+  height: var(--bead-dot);
+  margin-top: calc((var(--bead-box) - var(--bead-dot)) / 2);
+  flex: none;
+  border-radius: 50%;
+  background: var(--card);
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  transition: transform var(--dur-fast) var(--ease);
+}
+
+.ui-strand__name {
+  display: block;
+  margin-top: 5px;
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  font-weight: var(--w-medium);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ui-strand__bead.is-done .ui-strand__dot {
+  background: color-mix(in srgb, var(--c) 45%, var(--card));
+  box-shadow: none;
+}
+
+.ui-strand__bead.is-lit .ui-strand__dot {
+  background: var(--c);
+  box-shadow: none;
+}
+
+.ui-strand__bead.is-current .ui-strand__dot {
+  background: var(--card);
+  box-shadow: inset 0 0 0 2.5px var(--c);
+}
+
+.ui-strand__bead.is-current .ui-strand__name {
+  color: var(--ink);
+  font-weight: var(--w-semibold);
+}
+
+.ui-strand__bead.is-live .ui-strand__dot::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1.5px solid var(--c);
+  opacity: 0;
+  animation: ui-ping var(--dur-pulse) ease-out infinite;
+}
+
+.ui-strand__bead.is-failed {
+  --c: var(--danger);
+}
+
+.ui-strand__bead.is-failed .ui-strand__dot {
+  background: var(--danger);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
+.ui-strand__bead.is-failed .ui-strand__name {
+  color: var(--red-fg);
+  font-weight: var(--w-semibold);
+}
+
+button.ui-strand__bead,
+a.ui-strand__bead {
+  cursor: pointer;
+}
+
+button.ui-strand__bead .ui-strand__dot::before,
+a.ui-strand__bead .ui-strand__dot::before {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+button.ui-strand__bead:hover .ui-strand__dot::before,
+a.ui-strand__bead:hover .ui-strand__dot::before {
+  border-color: color-mix(in srgb, var(--c) 55%, transparent);
+}
+
+button.ui-strand__bead:active .ui-strand__dot,
+a.ui-strand__bead:active .ui-strand__dot {
+  transform: scale(0.8);
+}
+
+button.ui-strand__bead:focus-visible,
+a.ui-strand__bead:focus-visible {
+  outline: none;
+}
+
+button.ui-strand__bead:focus-visible .ui-strand__dot::before,
+a.ui-strand__bead:focus-visible .ui-strand__dot::before {
+  border-color: var(--focus-ring);
+}
+
+@media (pointer: coarse) {
+  .ui-strand {
+    --bead-box: 44px;
+    --bead-dot: 14px;
+  }
+
+  /* the dot sits 7px from the top so the stage name fits under it */
+  .ui-strand::before {
+    top: 13.5px;
+  }
+
+  .ui-strand__dot {
+    margin-top: 7px;
+  }
+}
+
+/* ---------- activity well ---------- */
+.ui-well {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  padding: var(--s-3) var(--s-5);
+  border-radius: var(--r-well);
+  background: var(--well);
+  color: var(--ink-2);
+  font-size: var(--t-12);
+}
+
+.ui-well__target {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--t-11);
+}
+
+.ui-well__age {
+  flex: none;
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  white-space: nowrap;
+}
+
+/* ---------- status dot ---------- */
+.ui-dot {
+  --c: var(--hold);
+  position: relative;
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--c);
+}
+
+.ui-dot.is-live {
+  --c: var(--live);
+}
+
+.ui-dot.is-live::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1.5px solid var(--c);
+  opacity: 0;
+  animation: ui-ping var(--dur-pulse) ease-out infinite;
+}
+
+.ui-dot.is-ok {
+  --c: var(--ok);
+}
+
+.ui-dot.is-warn {
+  --c: var(--warn);
+}
+
+.ui-dot.is-danger {
+  --c: var(--danger);
+}
+
+.ui-dot.is-info {
+  --c: var(--info);
+}
+
+/* ---------- fields ---------- */
+.ui-select,
+.ui-input {
+  min-height: var(--h-btn);
+  max-width: 100%;
+  padding: 0 var(--s-4);
+  border: 1px solid var(--field-line);
+  border-radius: var(--r-btn);
+  background: var(--field);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-12);
+  line-height: var(--lh-tight);
+}
+
+.ui-select:hover,
+.ui-input:hover {
+  border-color: var(--line-strong);
+}
+
+.ui-select:focus-visible,
+.ui-input:focus-visible {
+  border-color: var(--accent-solid);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 0;
+}
+
+.ui-input::placeholder {
+  color: var(--ink-3);
+}
+
+.ui-select {
+  padding-right: var(--s-6);
+}
+
+.ui-input--num {
+  width: 64px;
+}
+
+/* ---------- popover ---------- */
+.ui-popover {
+  padding: var(--s-4);
+  border-radius: var(--r-pop);
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: var(--e2);
+  font-size: var(--t-13);
+}
+
+/* ---------- sheet (move / ops / 막힘) ---------- */
+.ui-sheet {
+  position: fixed;
+  z-index: var(--z-drawer);
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.ui-sheet__backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--overlay);
+}
+
+.ui-sheet__panel {
+  position: relative;
+  width: 100%;
+  max-height: 80dvh;
+  overflow-y: auto;
+  padding: var(--s-5) var(--s-8)
+    calc(var(--s-10) + env(safe-area-inset-bottom, 0px));
+  border-radius: var(--r-sheet) var(--r-sheet) 0 0;
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: var(--e3);
+  animation: ui-sheet-in var(--dur-open) var(--ease);
+}
+
+.ui-sheet__grab {
+  width: 36px;
+  height: 4px;
+  margin: 0 auto var(--s-5);
+  border-radius: var(--radius-full);
+  background: var(--line-strong);
+}
+
+.ui-sheet__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  margin-bottom: var(--s-5);
+}
+
+.ui-sheet__title {
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--t-15);
+  font-weight: var(--w-semibold);
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 720px) {
+  .ui-sheet {
+    align-items: center;
+  }
+
+  .ui-sheet__panel {
+    width: min(480px, calc(100vw - 32px));
+    border-radius: var(--r-dialog);
+  }
+
+  .ui-sheet__grab {
+    display: none;
+  }
+}
+
+/* ---------- overlay host (ui/overlay.js) ---------- */
 .ui-overlay {
   position: fixed;
   inset: 0;
@@ -19,7 +759,7 @@
 .ui-overlay__backdrop {
   position: absolute;
   inset: 0;
-  background: var(--scrim);
+  background: var(--overlay);
 }
 
 .ui-overlay__host {
@@ -37,7 +777,7 @@
   height: 100dvh;
 }
 
-/* Copy button (ui/copy.js): the value itself, underlined as copyable. */
+/* ---------- copy value (ui/copy.js) ---------- */
 .ui-copy {
   padding: 0;
   border: 0;
@@ -48,11 +788,12 @@
   cursor: copy;
 }
 
-/* Markdown block (ui/markdown.js). */
+/* ---------- markdown block (ui/markdown.js) ---------- */
 .ui-markdown {
   line-height: 1.6;
   overflow-wrap: anywhere;
   white-space: normal;
+  word-break: keep-all;
 }
 
 .ui-markdown > :first-child {
@@ -61,4 +802,62 @@
 
 .ui-markdown > :last-child {
   margin-bottom: 0;
+}
+
+/* ---------- spinner ---------- */
+.ui-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: ui-spin 0.8s linear infinite;
+}
+
+@keyframes ui-ping {
+  0% {
+    transform: scale(0.55);
+    opacity: 0.75;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ui-sheet-in {
+  from {
+    transform: translateY(24px);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-sheet__panel,
+  .ui-spinner,
+  .ui-dot.is-live::after,
+  .ui-strand__bead.is-live .ui-strand__dot::after {
+    animation: none;
+  }
+
+  .ui-btn,
+  .ui-chip,
+  .ui-toggle__track,
+  .ui-toggle__track::after,
+  .ui-strand__dot,
+  [data-tip]::after {
+    transition: none;
+  }
 }

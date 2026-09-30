@@ -1,0 +1,652 @@
+/*
+ * Issue detail panel sections (moved out of `ui/base.css` in the UI-dbn6
+ * design-system round): overlay frame, fields, dependencies, artifacts,
+ * key/value rows and inline editing.
+ */
+
+/* --- detail overlay (minimal; Phase 8 expands) --- */
+.detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.detail-overlay__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.detail-overlay__panel {
+  position: relative;
+  width: min(720px, 94vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  padding: var(--sp-12) var(--sp-14);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-panel);
+  border-radius: var(--r-10);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+}
+
+/* ID + ✕ 한 줄. 패널 스크롤 컨테이너에 sticky로 붙어 긴 상세에서도 닫기가 항상
+   보인다. 음수 margin으로 패널 padding을 덮어 바 배경이 가장자리까지 닿는다. */
+.detail-overlay__bar {
+  position: sticky;
+  top: calc(-1 * var(--sp-12));
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  margin: calc(-1 * var(--sp-12)) calc(-1 * var(--sp-14)) 0;
+  padding: var(--sp-6) var(--sp-8) var(--sp-4) var(--sp-14);
+  background: var(--bg-panel);
+}
+
+.detail-overlay__close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-6);
+  background: none;
+  color: var(--text-dim);
+  font-size: var(--fs-title);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.detail-overlay__close:hover {
+  color: var(--text-primary);
+  background: var(--bg-card);
+}
+
+.detail-overlay__id {
+  font-family: var(--font-mono);
+  font-size: var(--fs-body-lg);
+  color: var(--text-id-mono);
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+  border-bottom: 1px dotted var(--text-id-mono);
+}
+
+.detail-overlay__title {
+  font-size: var(--fs-title);
+  color: var(--text-title);
+  font-weight: 600;
+  margin: var(--sp-6) 0 var(--sp-10);
+}
+
+.detail-overlay__meta {
+  display: flex;
+  gap: var(--sp-8);
+  margin-bottom: var(--sp-10);
+}
+
+.detail-overlay__desc {
+  font-size: var(--fs-body-sm);
+  color: var(--text-secondary);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* notes는 줄 단위 계보 텍스트(게이트 영수증·REVISE findings)라 마크다운으로
+   렌더하지 않고 원문 줄바꿈을 그대로 보존한다 (UI-yp64 §4). */
+.detail-overlay__notes {
+  font-size: var(--fs-body-sm);
+  color: var(--text-secondary);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.detail-overlay__section-label {
+  font-size: var(--fs-chip);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: var(--sp-12) 0 var(--sp-6);
+}
+
+/* --- detail panel: shared section primitives (detail-panel.html) --- */
+.detail-section-label {
+  font-size: var(--fs-chip);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: var(--sp-12) 0 var(--sp-6);
+}
+
+.detail-empty {
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+  padding: var(--sp-2) 0;
+}
+
+/* dependencies */
+.detail-deps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+}
+
+.detail-dep {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip-lg);
+  color: var(--text-id-mono);
+  padding: 1.5px var(--sp-7);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: none;
+}
+
+.detail-dep__link {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+  padding: 0;
+}
+
+.detail-dep--link,
+.detail-dep--link .detail-dep__link {
+  cursor: pointer;
+}
+.detail-dep--link:hover {
+  border-color: var(--border-route);
+}
+
+/* 후행·나머지는 읽기 전용이다 — 편집할 수 있는 선행 칩만 본색을 쓴다
+   (UI-lx45 §4.1). 새 색 토큰 없이 기존 muted 토큰만으로 티어를 만든다. */
+.detail-dep--succ,
+.detail-dep--other {
+  color: var(--text-dim);
+  border-color: var(--border-panel);
+}
+
+.detail-dep__unlink {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 var(--sp-2);
+}
+.detail-dep__unlink:hover {
+  color: var(--accent-danger);
+}
+
+.detail-dep-add {
+  position: relative;
+  margin-top: var(--sp-4);
+}
+
+.detail-dep-add__input {
+  width: 100%;
+  font-family: var(--font-sans);
+  font-size: var(--fs-chip-lg);
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  padding: 1.5px var(--sp-7);
+}
+
+.detail-dep-add__list {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--sp-3);
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border-panel);
+  border-radius: var(--r-6);
+  background: var(--bg-card);
+}
+
+.detail-dep-add__cand {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  text-align: left;
+  font-size: var(--fs-small);
+  color: var(--text-secondary);
+  border: none;
+  background: none;
+  padding: var(--sp-3) var(--sp-7);
+  cursor: pointer;
+}
+.detail-dep-add__cand:hover:not(:disabled) {
+  background: var(--bg-candidate);
+}
+.detail-dep-add__cand:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.detail-dep-add__repo {
+  flex: none;
+  font-size: var(--fs-chip);
+  color: var(--text-dim);
+}
+
+.detail-dep-add__id {
+  flex: none;
+  font-family: var(--font-mono);
+  color: var(--text-id-mono);
+}
+
+.detail-dep-add__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-dep-add__empty {
+  font-size: var(--fs-small);
+  color: var(--text-dim);
+  padding: var(--sp-3) var(--sp-7);
+}
+
+/* artifacts */
+.detail-art {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  padding: var(--sp-6) var(--sp-8);
+  margin-bottom: var(--sp-5);
+}
+
+.detail-art__ic {
+  color: var(--chip-route);
+  font-size: var(--fs-body);
+}
+
+.detail-art__path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip-lg);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* authoring-time spec draft (UI-fqwn): the path is pinned before publication,
+   so the row reads as openable-but-unpublished rather than as a spec_id. */
+.detail-art__badge {
+  flex: 0 0 auto;
+  font-size: var(--fs-caption);
+  color: var(--text-dim);
+  border: 1px dashed var(--border-card);
+  border-radius: var(--r-4);
+  padding: 0 var(--sp-5);
+}
+
+.detail-art__op {
+  font-size: var(--fs-chip);
+  color: var(--accent-success);
+  border: 1px solid var(--border-tile-run);
+  border-radius: var(--r-5);
+  padding: 1px var(--sp-7);
+  background: none;
+  cursor: pointer;
+}
+
+.detail-art__cap {
+  font-size: var(--fs-caption);
+  color: var(--text-dim);
+  margin: var(--sp-2) 0 0 var(--sp-4);
+}
+
+/* key/value rows (workflow summary + exec settings) */
+.detail-kv {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--border-kv-row);
+}
+
+.detail-kv__k {
+  font-size: var(--fs-small);
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+[data-exec-setting-label] {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-width: 24rem;
+}
+
+[data-exec-setting-title] {
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+}
+
+[data-exec-setting-key] {
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+  font-weight: 400;
+}
+
+[data-exec-setting-help] {
+  margin-top: var(--sp-2);
+  color: var(--text-dim);
+  font-family: var(--font-sans);
+  font-size: var(--fs-caption);
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.detail-exec-presets {
+  margin-top: var(--sp-12);
+  padding: var(--sp-8);
+  border: 1px solid var(--border-kv-row);
+  border-radius: var(--r-6);
+  background: var(--bg-card);
+}
+
+.detail-exec-presets .detail-section-label {
+  margin-top: 0;
+}
+
+.detail-exec-presets__controls {
+  display: flex;
+  gap: var(--sp-6);
+}
+
+.detail-exec-presets__controls select {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.detail-exec-presets p {
+  margin: var(--sp-6) 0 0;
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+}
+
+.detail-exec-presets button {
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.detail-exec-presets button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.detail-kv__v {
+  font-size: var(--fs-small);
+  color: var(--text-primary);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  padding: 1px var(--sp-8);
+  background: var(--bg-panel);
+  max-width: 60%;
+}
+
+.detail-kv__v--sel {
+  color: var(--chip-route);
+}
+
+.detail-kv__v--wrap {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 충돌 해소 파생 행: 머지 경로가 매끄럽지 않았다는 주의 신호라서 blocked 계열의
+   경고 색을 그대로 쓴다 — 새 토큰을 만들면 같은 의미의 색이 둘로 갈린다. */
+.detail-kv__v--resolver {
+  color: var(--chip-blocked);
+  border-color: var(--border-blocked);
+}
+
+/* derived (unpinned) route value — inferred, not a settled pin (§6) */
+.detail-kv__v--derived {
+  opacity: 0.55;
+  border-style: dashed;
+}
+
+/* read-only created/updated rows (UX v3 spec §1): plain value, no chip box */
+.detail-kv__v--time {
+  border-color: transparent;
+  background: none;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+select.detail-kv__v {
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+/* An exec row whose value cannot apply — a `self`/`skip` review step dispatches
+   no separate leg, so its effort is inert rather than merely unset (mqcj §4.4).
+   The gate has to READ as a gate, not as an empty choice. */
+select.detail-kv__v:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Model row: the select plus its derived-runner badge (UI-jrb3). The group owns
+   the row's value-side width so the select keeps its old 60% cap. */
+.detail-kv__vgroup {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-6);
+  min-width: 0;
+  max-width: 60%;
+}
+
+.detail-kv__vgroup .detail-kv__v {
+  max-width: 100%;
+}
+
+.detail-kv__note {
+  flex: 0 0 auto;
+  font-size: var(--fs-chip);
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted);
+}
+
+/* --- detail panel: inline editing (title / description / labels) --- */
+.detail-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-8);
+}
+
+.detail-edit-btn {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: var(--fs-body);
+  cursor: pointer;
+  padding: 0 var(--sp-2);
+}
+.detail-edit-btn:hover {
+  color: var(--chip-route);
+}
+
+.detail-edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  margin: var(--sp-6) 0 var(--sp-10);
+}
+
+.detail-edit__input,
+.detail-edit__textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-sans);
+  font-size: var(--fs-body-sm);
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  padding: var(--sp-6) var(--sp-8);
+}
+
+.detail-edit__textarea {
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.detail-edit__actions {
+  display: flex;
+  gap: var(--sp-6);
+}
+
+.detail-edit__save,
+.detail-edit__cancel {
+  font-size: var(--fs-chip);
+  border-radius: var(--r-5);
+  padding: var(--sp-3) var(--sp-8);
+  background: none;
+  cursor: pointer;
+}
+
+.detail-edit__save {
+  color: var(--accent-success);
+  border: 1px solid var(--border-tile-run);
+}
+
+.detail-edit__cancel {
+  color: var(--text-dim);
+  border: 1px solid var(--border-chip);
+}
+
+.detail-labels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.detail-label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--fs-chip-lg);
+  color: var(--text-secondary);
+  padding: 1.5px var(--sp-4) 1.5px var(--sp-7);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+}
+
+.detail-label-chip__x {
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  font-size: var(--fs-body);
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 var(--sp-2);
+}
+.detail-label-chip__x:hover {
+  color: var(--accent-danger);
+}
+
+.detail-label-add {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.detail-label-add__input {
+  width: 96px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-chip-lg);
+  color: var(--text-primary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  padding: 1.5px var(--sp-7);
+}
+
+.detail-label-add__btn {
+  font-size: var(--fs-chip);
+  color: var(--chip-route);
+  border: 1px solid var(--border-route);
+  border-radius: var(--r-5);
+  padding: 1.5px var(--sp-7);
+  background: none;
+  cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  /* detail panel + md viewer go fullscreen on mobile */
+  .detail-overlay {
+    align-items: stretch;
+  }
+
+  .detail-overlay__panel {
+    width: 100vw;
+    max-height: 100dvh;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  /* 손가락 표적: ✕를 44px 박스로 키운다. */
+  .detail-overlay__close {
+    min-width: 44px;
+    min-height: 44px;
+    font-size: var(--fs-title-lg);
+  }
+
+  .detail-overlay__bar {
+    padding-right: var(--sp-4);
+  }
+
+  .detail-kv {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .detail-kv__vgroup {
+    width: 100%;
+    max-width: none;
+  }
+
+  .detail-kv__vgroup .detail-kv__v {
+    flex: 1 1 auto;
+  }
+}
