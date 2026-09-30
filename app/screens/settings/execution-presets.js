@@ -25,7 +25,11 @@ import {
   buildPresetDiff,
   normalizeAppliesTo
 } from '../../model/session-model.js';
-import { QUICK_FIX_UNSUPPORTED, isRecord } from './execution-shared.js';
+import {
+  QUICK_FIX_UNSUPPORTED,
+  errorText,
+  isRecord
+} from './execution-shared.js';
 
 /**
  * What every preset bar says about the list it edits: one list lives on the
@@ -236,9 +240,7 @@ export function createPresetBar(ctx) {
         doRender();
       }
     } catch (err) {
-      notify(
-        `프리셋 저장 실패: ${err instanceof Error ? err.message : String(err)}`
-      );
+      notify(`프리셋 저장 실패: ${errorText(err)}`);
     }
   }
 
@@ -266,9 +268,7 @@ export function createPresetBar(ctx) {
         doRender();
       }
     } catch (err) {
-      notify(
-        `프리셋 삭제 실패: ${err instanceof Error ? err.message : String(err)}`
-      );
+      notify(`프리셋 삭제 실패: ${errorText(err)}`);
     }
   }
 
@@ -327,9 +327,7 @@ export function createPresetBar(ctx) {
         notify('실행 프리셋 적용 실패: 프리셋이 방금 변경되었습니다');
       }
     } catch (err) {
-      notify(
-        `실행 프리셋 적용 실패: ${err instanceof Error ? err.message : String(err)}`
-      );
+      notify(`실행 프리셋 적용 실패: ${errorText(err)}`);
     }
     doRender();
   }

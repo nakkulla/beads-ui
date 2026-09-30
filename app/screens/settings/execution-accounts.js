@@ -21,7 +21,7 @@ import {
   accountRowLabel,
   loadAccountCatalog as readAccountCatalog
 } from './account-catalog.js';
-import { UNSET, isRecord } from './execution-shared.js';
+import { UNSET, errorText, isRecord } from './execution-shared.js';
 
 /** The two repo-scoped account keys the `실행 계정` section edits. */
 const ACCOUNT_ROW_KEYS = ['claude_account', 'codex_account'];
@@ -153,9 +153,7 @@ export function createAccountSection(ctx) {
       };
       account_baseline = {};
       account_draft = {};
-      notify(
-        `실행 계정 기본값을 읽지 못했습니다: ${err instanceof Error ? err.message : String(err)}`
-      );
+      notify(`실행 계정 기본값을 읽지 못했습니다: ${errorText(err)}`);
     }
     doRender();
   }
@@ -213,9 +211,7 @@ export function createAccountSection(ctx) {
         false
       );
     } catch (err) {
-      notify(
-        `실행 계정 기본값 저장 실패: ${err instanceof Error ? err.message : String(err)}`
-      );
+      notify(`실행 계정 기본값 저장 실패: ${errorText(err)}`);
     }
     doRender();
   }
@@ -279,9 +275,7 @@ export function createAccountSection(ctx) {
     try {
       await sendQueueCas('worker-provider-limit-policy-set', { runner, patch });
     } catch (err) {
-      notify(
-        `자동화 설정 저장 실패: ${err instanceof Error ? err.message : String(err)}`
-      );
+      notify(`자동화 설정 저장 실패: ${errorText(err)}`);
     }
     doRender();
   }

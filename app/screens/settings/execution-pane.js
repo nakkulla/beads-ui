@@ -48,6 +48,7 @@ import { createExecutionSections } from './execution-sections.js';
 import {
   PANE_SECTIONS,
   UNSET,
+  errorText,
   isRecord,
   reconcileSessionDraft
 } from './execution-shared.js';
@@ -399,7 +400,7 @@ export function createExecutionPane(mount_element, binding) {
       notify(
         code === 'revision_conflict'
           ? '다른 창에서 변경됨 — 새로고침 후 다시 시도'
-          : `공통 기본값 저장 실패: ${err instanceof Error ? err.message : String(err)}`
+          : `공통 기본값 저장 실패: ${errorText(err)}`
       );
     } finally {
       if (isCurrent(request_generation, request_root)) {
@@ -518,9 +519,7 @@ export function createExecutionPane(mount_element, binding) {
         error: { code: 'workspace_unavailable' }
       });
       session_warnings = ['kv_read_failed'];
-      notify(
-        `세션 기본값을 읽지 못했습니다: ${err instanceof Error ? err.message : String(err)}`
-      );
+      notify(`세션 기본값을 읽지 못했습니다: ${errorText(err)}`);
     } finally {
       if (
         isCurrent(request_generation, request_root) &&
@@ -590,9 +589,7 @@ export function createExecutionPane(mount_element, binding) {
       }
       // Keep `session_draft` exactly as the user left it so a retry does not
       // ask them to re-enter anything.
-      notify(
-        `세션 기본값 저장 실패: ${err instanceof Error ? err.message : String(err)}`
-      );
+      notify(`세션 기본값 저장 실패: ${errorText(err)}`);
     }
     doRender();
   }
@@ -743,9 +740,7 @@ export function createExecutionPane(mount_element, binding) {
       }
       worker_draft = {};
     } catch (err) {
-      notify(
-        `Worker 설정 저장 실패: ${err instanceof Error ? err.message : String(err)}`
-      );
+      notify(`Worker 설정 저장 실패: ${errorText(err)}`);
     }
     doRender();
   }

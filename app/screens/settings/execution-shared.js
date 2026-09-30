@@ -99,3 +99,23 @@ export function reconcileSessionDraft(current, sent, baseline) {
   }
   return next;
 }
+
+/**
+ * The text of a failed request: an `Error`'s message, the `message` of the
+ * server's refusal object (`{ code, message }` — a strict validation names its
+ * reason there), or the value itself.
+ *
+ * @param {unknown} err
+ * @returns {string}
+ */
+export function errorText(err) {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  const message = /** @type {any} */ (err)?.message;
+  if (typeof message === 'string' && message.length > 0) {
+    return message;
+  }
+  const code = /** @type {any} */ (err)?.code;
+  return typeof code === 'string' && code.length > 0 ? code : String(err);
+}

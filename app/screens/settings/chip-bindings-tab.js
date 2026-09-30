@@ -16,6 +16,7 @@ import {
   normalizeAppliesTo
 } from '../../model/session-model.js';
 import { render } from '../../ui/render.js';
+import { errorText } from './execution-shared.js';
 
 /** The one-line header every row reads under. */
 export const CHIP_TAB_INTRO =
@@ -106,7 +107,7 @@ export function createChipBindingsTab(host, options) {
         options.toast?.(error, 'error');
       }
     } catch (err) {
-      error = `바인딩 실패: ${err instanceof Error ? err.message : String(err)}`;
+      error = `바인딩 실패: ${errorText(err)}`;
     } finally {
       busy.delete(chip);
       doRender();
