@@ -1728,6 +1728,57 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     );
   });
 
+  test('hands a conversation stop back to the Worker from the monitor tile', async () => {
+    const { mount, view, sent } = setup({
+      transport: async () => ({ resumed: true, pending: true, reason: null }),
+      workspaces: [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'parked',
+              cause: 'session_parked',
+              cause_detail: { summary: '사용자 결정 대기', awaiting_user: 'x' }
+            }
+          },
+          wait_reasons: [
+            {
+              kind: 'awaiting_user',
+              subject: { bead_id: 'A-1', root_dir: WS_A },
+              headline: '사용자 결정 대기 · x',
+              release: '',
+              verdict: 'action_required',
+              targets: [],
+              actions: [
+                {
+                  op: 'worker-conversation-handoff',
+                  label: '[워커로 이어가기]',
+                  payload: { bead_id: 'A-1', root_dir: WS_A, attempt_id: 't1' }
+                }
+              ]
+            }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.rtile__handoff');
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    expect(sent[0]).toMatchObject({
+      type: 'worker-conversation-handoff',
+      payload: {
+        bead_id: 'A-1',
+        attempt_id: 't1',
+        root_dir: WS_A,
+        expected_revision: 1
+      }
+    });
+  });
+
   test('badges a retry_wait attempt with its backoff counts', () => {
     const { mount, view } = setup({
       workspaces: [
