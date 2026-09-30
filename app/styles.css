@@ -410,85 +410,9 @@ a {
 }
 
 /* Provider usage meters: active account windows, in source order. */
-.usage-meter-mount,
-.usage-meter {
+.usage-meter-mount {
   display: inline-flex;
   align-items: center;
-}
-
-.usage-meter {
-  gap: var(--sp-12);
-  margin-right: var(--sp-4);
-}
-
-.usage-meter__group {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-8);
-}
-
-.usage-meter__group + .usage-meter__group {
-  padding-left: var(--sp-12);
-  border-left: 1px solid var(--border-chip);
-}
-
-.usage-meter__group--stale {
-  opacity: 0.55;
-}
-
-.usage-meter__provider {
-  color: var(--text-secondary);
-  font-size: var(--fs-chip);
-  font-weight: 700;
-}
-
-.usage-meter__window {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-5);
-  color: var(--text-primary);
-  cursor: default;
-  white-space: nowrap;
-}
-
-.usage-meter__window--success {
-  --usage-meter-color: var(--accent-success);
-}
-
-.usage-meter__window--warn {
-  --usage-meter-color: var(--accent-warn);
-}
-
-.usage-meter__window--danger {
-  --usage-meter-color: var(--accent-danger);
-}
-
-.usage-meter__label {
-  color: var(--text-muted);
-  font-size: var(--fs-chip);
-  font-weight: 600;
-}
-
-.usage-meter__track {
-  width: 52px;
-  height: var(--sp-6);
-  overflow: hidden;
-  border-radius: var(--r-10);
-  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
-}
-
-.usage-meter__fill {
-  display: block;
-  width: var(--progress);
-  height: 100%;
-  border-radius: inherit;
-  background: var(--usage-meter-color);
-}
-
-.usage-meter__pct {
-  color: var(--text-primary);
-  font-size: var(--fs-chip-lg);
-  font-variant-numeric: tabular-nums;
 }
 
 /* 좁은 화면에서는 막대만 접고 provider·창 라벨·%는 남긴다. 헤더가 감당할 수
@@ -502,74 +426,15 @@ a {
     min-width: 0;
     max-width: 100%;
   }
-
-  .usage-meter {
-    flex-wrap: wrap;
-    gap: var(--sp-4) var(--sp-14);
-    margin-right: 0;
-  }
-
-  .usage-meter__group {
-    gap: var(--sp-5);
-  }
-
-  .usage-meter__group + .usage-meter__group {
-    padding-left: 0;
-    border-left: 0;
-  }
-
-  .usage-meter__window {
-    gap: var(--sp-4);
-  }
-
-  .usage-meter__track {
-    display: none;
-  }
 }
 
 /* 다계정 카드: accounts[]가 있는 provider 그룹이 각자 토글 버튼이 되고, 그
    아래에 그 provider의 계정 목록 카드를 띄운다. 버튼 크롬은 지우고 그룹
    레이아웃만 남긴다(그룹 사이 구분선 padding은 `__group + __group`이 보존). */
-.usage-meter__toggle {
-  display: inline-flex;
-  align-items: center;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: var(--r-6);
-  background: none;
-  color: inherit;
-  font: inherit;
-  cursor: pointer;
-
-  &:hover .usage-meter__provider {
-    color: var(--text-primary);
-  }
-
-  &:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px
-      color-mix(in srgb, var(--text-secondary) 40%, transparent);
-  }
-}
 
 /* 활성이 아닌 관리 계정 수(+N). */
-.usage-meter__badge {
-  padding: 0 var(--sp-5);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-8);
-  background: color-mix(in srgb, var(--text-muted) 14%, transparent);
-  color: var(--text-secondary);
-  font-size: var(--fs-label-tiny);
-  font-weight: 700;
-  line-height: 15px;
-}
 
 /* 활성 계정 usage가 없어도 accounts[]가 있으면 그룹을 지우지 않는다. */
-.usage-meter__empty {
-  color: var(--text-muted);
-  font-size: var(--fs-chip);
-}
 
 /* 카드·스크림은 헤더 안이 아니라 body 직속 레이어(.usage-meter__layer)에
    렌더된다. 헤더의 backdrop-filter가 fixed 자손의 containing block이 되어,
@@ -577,238 +442,17 @@ a {
    데스크톱: 마운트의 뷰포트 rect를 앵커(--usage-meter-anchor-*)로 받는
    fixed 팝오버. 그림자는 헤더의 다른 팝오버
    (.workspace-picker__manage-popover)와 같은 --fg 규약을 따른다. */
-.usage-meter__card {
-  position: fixed;
-  top: calc(var(--usage-meter-anchor-top, 0px) + var(--sp-8));
-  right: var(--usage-meter-anchor-right, 0px);
-  z-index: 60;
-  width: 380px;
-  max-width: calc(100vw - 24px);
-  max-height: 70vh;
-  overflow-y: auto;
-  padding: var(--sp-10);
-  border: 1px solid var(--border-card);
-  border-radius: var(--r-10);
-  background: var(--bg-card);
-  box-shadow: 0 10px 28px color-mix(in srgb, var(--fg) 22%, transparent);
-  text-align: left;
-}
 
 /* 스크림은 하단 시트에서만 보인다. */
-.usage-meter__scrim {
-  display: none;
-}
-
-.usage-meter__section + .usage-meter__section {
-  margin-top: var(--sp-10);
-  padding-top: var(--sp-10);
-  border-top: 1px solid var(--border-chip);
-}
-
-.usage-meter__section-title {
-  margin: 0 0 var(--sp-8);
-  color: var(--text-secondary);
-  font-size: var(--fs-chip);
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
-
-.usage-meter__account {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-5);
-  padding: var(--sp-8);
-  border: 1px solid transparent;
-  border-radius: var(--r-8);
-}
-
-.usage-meter__account + .usage-meter__account {
-  margin-top: var(--sp-5);
-}
-
-.usage-meter__account--active {
-  border-color: var(--border-chip);
-  background: color-mix(in srgb, var(--accent-success) 10%, transparent);
-}
-
-.usage-meter__account--unavailable .usage-meter__account-label {
-  color: var(--text-muted);
-}
 
 /* 600초 초과는 측정값만 흐리게 한다. [전환]은 비활성처럼 보이면 안 된다. */
-.usage-meter__account--stale .usage-meter__account-windows,
-.usage-meter__account--stale .usage-meter__account-age {
-  opacity: 0.55;
-}
-
-.usage-meter__account-head {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-6);
-}
-
-.usage-meter__account-label {
-  overflow: hidden;
-  flex: 1 1 auto;
-  min-width: 0;
-  color: var(--text-primary);
-  font-size: var(--fs-body-sm);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.usage-meter__account-tag {
-  flex: 0 0 auto;
-  padding: 0 var(--sp-5);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
-  color: var(--text-muted);
-  font-size: var(--fs-label-tiny);
-  font-weight: 600;
-  line-height: 15px;
-}
-
-.usage-meter__account-tag--active {
-  border-color: color-mix(
-    in srgb,
-    var(--accent-success) 45%,
-    var(--border-chip)
-  );
-  color: var(--accent-success);
-}
-
-.usage-meter__account-age {
-  flex: 0 0 auto;
-  color: var(--text-dim);
-  font-size: var(--fs-label-tiny);
-}
-
-.usage-meter__switch {
-  flex: 0 0 auto;
-  padding: var(--sp-2) var(--sp-8);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: var(--fs-chip);
-  font-weight: 600;
-  cursor: pointer;
-
-  &:hover:not(:disabled) {
-    border-color: var(--text-muted);
-    color: var(--text-primary);
-  }
-
-  &:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-}
 
 /* 카드 안의 막대는 900px 축약 규칙에 걸리지 않도록 헤더와 별도 클래스를 쓰고,
    색 modifier(--usage-meter-color)만 헤더와 공유한다. 창은 한 줄에 하나씩
    쌓고 키·막대·%·리셋을 subgrid 열로 맞춘다 — 리셋 문구가 붙으면 창 하나가
    카드 반폭을 넘겨 flex-wrap으로는 열이 어긋난다. */
-.usage-meter__account-windows {
-  display: grid;
-  grid-template-columns: auto auto auto minmax(0, 1fr);
-  align-items: center;
-  gap: var(--sp-4) var(--sp-8);
-}
-
-.usage-meter__account-window {
-  display: grid;
-  grid-template-columns: subgrid;
-  grid-column: 1 / -1;
-  align-items: center;
-  color: var(--text-primary);
-  white-space: nowrap;
-}
-
-.usage-meter__account-key {
-  color: var(--text-muted);
-  font-size: var(--fs-chip);
-  font-weight: 600;
-}
-
-.usage-meter__account-track {
-  width: 68px;
-  height: var(--sp-6);
-  overflow: hidden;
-  border-radius: var(--r-10);
-  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
-}
-
-.usage-meter__account-fill {
-  display: block;
-  width: var(--progress);
-  height: 100%;
-  border-radius: inherit;
-  background: var(--usage-meter-color);
-}
-
-.usage-meter__account-pct {
-  color: var(--text-primary);
-  font-size: var(--fs-chip-lg);
-  font-variant-numeric: tabular-nums;
-}
-
-.usage-meter__account-reset {
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: var(--fs-chip);
-  font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-}
-
-.usage-meter__account-status {
-  color: var(--text-muted);
-  font-size: var(--fs-chip);
-}
-
-.usage-meter__account-message {
-  font-size: var(--fs-chip);
-}
-
-.usage-meter__account-message--warn {
-  color: var(--accent-warn);
-}
-
-.usage-meter__account-message--error {
-  color: var(--accent-danger);
-}
-
-.usage-meter__note {
-  margin: var(--sp-10) 0 0;
-  padding-top: var(--sp-8);
-  border-top: 1px solid var(--border-chip);
-  color: var(--text-dim);
-  font-size: var(--fs-label-tiny);
-}
 
 /* 모바일: 같은 카드를 스크림 위 하단 시트로 올린다. */
-@media (max-width: 640px) {
-  .usage-meter__scrim {
-    display: block;
-    position: fixed;
-    inset: 0;
-    z-index: 59;
-    background: color-mix(in srgb, var(--bg-app) 62%, transparent);
-  }
-
-  .usage-meter__card {
-    position: fixed;
-    top: auto;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    width: auto;
-    max-width: none;
-    max-height: 78vh;
-    border-width: 1px 0 0;
-    border-radius: var(--r-10) var(--r-10) 0 0;
-  }
-}
 
 .header-loading {
   display: inline-flex;

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { renderCount } from '../../ui/render.js';
 import { createUsageMeter, formatResetTime } from './usage-meter.js';
 
 /**
@@ -159,8 +160,8 @@ describe('usage meter rendering', () => {
     );
 
     const labels = Array.from(
-      mount.querySelectorAll('.usage-meter__label'),
-      (label) => label.textContent
+      mount.querySelectorAll('.usage-meter__window'),
+      (bar) => bar.getAttribute('data-key')
     );
     expect(labels).toEqual(['5h', '7d', 'Fable', 'Sonnet']);
     meter.destroy();
@@ -312,15 +313,15 @@ describe('usage meter rendering', () => {
 
     const meter = createUsageMeter(mount);
     await vi.waitFor(() =>
-      expect(mount.querySelectorAll('.usage-meter__pct')).toHaveLength(2)
+      expect(mount.querySelectorAll('.usage-meter__window')).toHaveLength(2)
     );
 
     expect(
-      Array.from(
-        mount.querySelectorAll('.usage-meter__pct'),
-        (value) => value.textContent
+      Array.from(mount.querySelectorAll('.usage-meter__window'), (bar) =>
+        /** @type {HTMLElement} */ (bar).style.getPropertyValue('--progress')
       )
     ).toEqual(['0%', '100%']);
+    expect(mount.querySelector('.usage-meter__pct')?.textContent).toBe('100%');
     meter.destroy();
   });
 
@@ -352,17 +353,38 @@ describe('usage meter rendering', () => {
     expect(mount.querySelector('.usage-meter')).toBeNull();
   });
 
-  test('keeps provider layout and compacts the meter on narrow screens', () => {
-    const styles = fs.readFileSync('app/styles.css', 'utf8');
+  test('keeps provider groups and drops their label below 720px', () => {
+    const styles = fs.readFileSync('app/screens/usage/usage.css', 'utf8');
 
     expect(styles).toMatch(/\.usage-meter__group\s*{/);
     expect(styles).toMatch(/\.usage-meter__provider\s*{/);
-    expect(styles).not.toMatch(
-      /@media \(max-width: 900px\)[\s\S]*?\.usage-meter-mount\s*{[^}]*display: none;/
-    );
     expect(styles).toMatch(
-      /@media \(max-width: 900px\)[\s\S]*?\.usage-meter__track\s*{[\s\S]*?display: none;/
+      /@media \(max-width: 719px\)[\s\S]*?\.usage-meter__provider\s*{[^}]*display: none;/
     );
+  });
+
+  test('shows the highest window percentage once per provider', async () => {
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    stubFetch(
+      usageResponse([
+        { key: '5h', pct: 26, resetsAt: reset_at },
+        { key: '7d', pct: 74, resetsAt: reset_at }
+      ])
+    );
+
+    const meter = createUsageMeter(mount);
+    await vi.waitFor(() =>
+      expect(mount.querySelector('.usage-meter__pct')).not.toBeNull()
+    );
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('.usage-meter__pct'),
+        (value) => value.textContent
+      )
+    ).toEqual(['74%']);
+    meter.destroy();
   });
 });
 
@@ -928,13 +950,13 @@ describe('usage meter account card', () => {
   });
 
   test('declares the mobile bottom sheet and scrim rules', () => {
-    const styles = fs.readFileSync('app/styles.css', 'utf8');
+    const styles = fs.readFileSync('app/screens/usage/usage.css', 'utf8');
 
     expect(styles).toMatch(
-      /@media \(max-width: 640px\)[\s\S]*?\.usage-meter__scrim\s*{[\s\S]*?display: block;/
+      /@media \(max-width: 719px\)[\s\S]*?\.usage-meter__scrim\s*{[\s\S]*?display: block;/
     );
     expect(styles).toMatch(
-      /@media \(max-width: 640px\)[\s\S]*?\.usage-meter__card\s*{[\s\S]*?position: fixed;/
+      /@media \(max-width: 719px\)[\s\S]*?\.usage-meter__card\s*{[\s\S]*?bottom: 0;/
     );
   });
 });
@@ -1206,6 +1228,76 @@ describe('usage meter account switch', () => {
         '.usage-meter__account--active .usage-meter__account-label'
       )?.textContent
     ).toBe('account-3@example.com');
+    meter.destroy();
+  });
+});
+
+describe('usage meter polling while shown', () => {
+  /**
+   * @param {'visible'|'hidden'} state
+   */
+  function setVisibility(state) {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => state
+    });
+  }
+
+  afterEach(() => {
+    setVisibility('visible');
+  });
+
+  test('skips the poll while the page is hidden', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    const { fetchMock } = stubFetch(
+      usageResponse([{ key: '5h', pct: 26, resetsAt: reset_at }])
+    );
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    const before = fetchMock.mock.calls.length;
+
+    setVisibility('hidden');
+    await vi.advanceTimersByTimeAsync(3 * 60_000);
+
+    expect(fetchMock.mock.calls.length).toBe(before);
+    meter.destroy();
+  });
+
+  test('reads usage again when the page is shown after a missed poll', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    const { fetchMock } = stubFetch(
+      usageResponse([{ key: '5h', pct: 26, resetsAt: reset_at }])
+    );
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    setVisibility('hidden');
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    const before = fetchMock.mock.calls.length;
+
+    setVisibility('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(fetchMock.mock.calls.length).toBe(before + 2);
+    meter.destroy();
+  });
+
+  test('redraws nothing on a poll that changes nothing', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    stubFetch(usageResponse([{ key: '5h', pct: 26, resetsAt: reset_at }]));
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    const before = renderCount();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(renderCount()).toBe(before);
     meter.destroy();
   });
 });

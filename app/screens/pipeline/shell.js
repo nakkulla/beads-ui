@@ -7,7 +7,7 @@
  *
  * The activity indicator and the usage meter are static containers the shell
  * never re-renders: `utils/activity-indicator.js` toggles its own element and
- * the legacy usage meter (bridged until Phase 3) owns its own lit root.
+ * the usage meter (`screens/usage/usage-meter.js`) owns its own render root.
  */
 import { html } from 'lit-html';
 import { gearIcon, moonIcon, sunIcon } from '../../ui/icons.js';

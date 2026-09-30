@@ -43,6 +43,7 @@ import { createPipelineScreen } from './screens/pipeline/index.js';
 import { nameOf } from './screens/pipeline/scope.js';
 import { createShell } from './screens/pipeline/shell.js';
 import { createTranscriptScreen } from './screens/transcript/index.js';
+import { createUsageMeter } from './screens/usage/usage-meter.js';
 import { render } from './ui/render.js';
 import { applyTheme, initialTheme, toggleTheme } from './ui/theme.js';
 import { showToast } from './ui/toast.js';
@@ -50,7 +51,6 @@ import { viewportOf, watchViewport } from './ui/viewport.js';
 import { createActivityIndicator } from './utils/activity-indicator.js';
 import { debug } from './utils/logging.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
-import { createUsageMeter } from './views/usage-meter.js';
 
 export { MONITOR_PIPELINE_KEY } from './core/channels.js';
 

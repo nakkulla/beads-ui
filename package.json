@@ -83,6 +83,7 @@
     "app/screens/dialogs/dialogs.css",
     "app/screens/adr/adr.css",
     "app/screens/compare/compare.css",
+    "app/screens/usage/usage.css",
     "app/main.bundle.js",
     "app/main.bundle.js.map",
     "app/protocol.js",

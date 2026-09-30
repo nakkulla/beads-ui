@@ -1,0 +1,339 @@
+/* Header usage meter and its account card (UI-dbn6 §3.6, catalog
+   prog-meter): per provider a small group — name (from 720px), one 3px bar
+   per window stacked in a 34px column, the highest percentage — and the card
+   with the full window meters. Tone: ok · warn (≥60) · danger (≥85) · stale
+   (hatched). Tokens and primitives only. */
+.usage-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.usage-meter__group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: var(--h-btn);
+  padding: 0 var(--s-4);
+  border: 0;
+  border-radius: var(--r-btn);
+  background: transparent;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--t-12);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+button.usage-meter__group {
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+button.usage-meter__group:hover,
+button.usage-meter__group[aria-expanded='true'] {
+  background: var(--btn-bg);
+  color: var(--ink);
+}
+
+.usage-meter__provider {
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  font-weight: var(--w-semibold);
+}
+
+.usage-meter__bars {
+  display: grid;
+  gap: 2px;
+  width: 34px;
+}
+
+.usage-meter__window {
+  --c: var(--ok);
+  position: relative;
+  display: block;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.usage-meter__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--progress, 0%);
+  border-radius: 2px;
+  background: var(--c);
+}
+
+.usage-meter__window--success {
+  --c: var(--ok);
+}
+
+.usage-meter__window--warn {
+  --c: var(--warn);
+}
+
+.usage-meter__window--danger {
+  --c: var(--danger);
+}
+
+.usage-meter__group--stale .usage-meter__fill {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--hold) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+.usage-meter__pct {
+  color: var(--ink);
+  font-weight: var(--w-semibold);
+}
+
+.usage-meter__pct--warn {
+  color: var(--amber-fg);
+}
+
+.usage-meter__pct--danger {
+  color: var(--red-fg);
+}
+
+.usage-meter__group--stale .usage-meter__pct {
+  color: var(--ink-3);
+  font-weight: var(--w-medium);
+}
+
+.usage-meter__empty {
+  color: var(--ink-3);
+  font-size: var(--t-11);
+}
+
+.usage-meter__badge {
+  min-width: 18px;
+  padding: 0 var(--s-2);
+  border-radius: var(--radius-full);
+  background: var(--gray-bg);
+  color: var(--gray-fg);
+  font-size: var(--t-11);
+  font-weight: var(--w-semibold);
+  line-height: 16px;
+  text-align: center;
+}
+
+/* ---------- account card (desktop popover under the meter) ---------- */
+.usage-meter__scrim {
+  display: none;
+}
+
+.usage-meter__card {
+  position: fixed;
+  z-index: var(--z-popover);
+  top: calc(var(--usage-meter-anchor-top, 52px) + var(--s-2));
+  right: max(var(--s-8), var(--usage-meter-anchor-right, 16px));
+  width: min(400px, calc(100vw - 32px));
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+  padding: var(--s-6);
+}
+
+.usage-meter__section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  margin-bottom: var(--s-4);
+}
+
+.usage-meter__section-title {
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--t-13);
+  font-weight: var(--w-semibold);
+}
+
+.usage-meter__account {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-5) 0;
+  border-top: 1px solid var(--line);
+}
+
+.usage-meter__account-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  min-width: 0;
+}
+
+.usage-meter__account-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--t-13);
+  font-weight: var(--w-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-meter__account--active .usage-meter__account-label {
+  font-weight: var(--w-semibold);
+}
+
+.usage-meter__account--unavailable .usage-meter__account-label {
+  color: var(--ink-3);
+}
+
+.usage-meter__account-tag--active {
+  --c-bg: var(--role-done-bg);
+  --c-fg: var(--role-done-fg);
+}
+
+.usage-meter__account-age {
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  white-space: nowrap;
+}
+
+.usage-meter__account--stale .usage-meter__account-windows,
+.usage-meter__account--stale .usage-meter__account-age {
+  opacity: var(--op-dim);
+}
+
+.usage-meter__account-windows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.usage-meter__account-window {
+  --c: var(--ok);
+  display: grid;
+  grid-template-columns: minmax(40px, auto) minmax(60px, 1fr) 40px;
+  align-items: center;
+  gap: var(--s-2) var(--s-5);
+  font-size: var(--t-12);
+}
+
+.usage-meter__account-key {
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+
+.usage-meter__account-track {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.usage-meter__account-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--progress, 0%);
+  border-radius: 3px;
+  background: var(--c);
+}
+
+.usage-meter__account-pct {
+  color: var(--ink);
+  font-weight: var(--w-semibold);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.usage-meter__window--warn .usage-meter__account-pct {
+  color: var(--amber-fg);
+}
+
+.usage-meter__window--danger .usage-meter__account-pct {
+  color: var(--red-fg);
+}
+
+.usage-meter__account-reset {
+  grid-column: 2 / -1;
+  margin-top: calc(-1 * var(--s-2));
+  color: var(--ink-3);
+  font-size: var(--t-11);
+}
+
+.usage-meter__account-reset:empty {
+  display: none;
+}
+
+.usage-meter__account-status {
+  color: var(--ink-3);
+  font-size: var(--t-12);
+}
+
+.usage-meter__account-message {
+  font-size: var(--t-12);
+  overflow-wrap: anywhere;
+}
+
+.usage-meter__account-message--warn {
+  color: var(--amber-fg);
+}
+
+.usage-meter__account-message--error {
+  color: var(--red-fg);
+}
+
+.usage-meter__note {
+  margin: var(--s-2) 0 0;
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--line);
+  color: var(--ink-3);
+  font-size: var(--t-11);
+}
+
+/* ---------- phone: no provider label, the card is a bottom sheet ---------- */
+@media (max-width: 719px) {
+  .usage-meter__group {
+    gap: var(--s-2);
+    padding: 0 var(--s-2);
+  }
+
+  .usage-meter__provider {
+    display: none;
+  }
+
+  .usage-meter__bars {
+    width: 24px;
+  }
+
+  .usage-meter__scrim {
+    position: fixed;
+    z-index: var(--z-drawer);
+    inset: 0;
+    display: block;
+    background: var(--overlay);
+  }
+
+  .usage-meter__card {
+    z-index: var(--z-drawer);
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    max-height: 80dvh;
+    padding: var(--s-6) var(--s-8)
+      calc(var(--s-10) + env(safe-area-inset-bottom, 0px));
+    border-radius: var(--r-sheet) var(--r-sheet) 0 0;
+    box-shadow: var(--e3);
+  }
+}
+
+@media (pointer: coarse) {
+  .usage-meter__group {
+    min-height: var(--h-touch);
+  }
+}
