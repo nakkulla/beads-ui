@@ -4,6 +4,13 @@ import plugin_n from 'eslint-plugin-n';
 import { defineConfig } from 'eslint/config';
 import globals from 'globals';
 
+/** lit-html `render` outside the render-count wrapper (UI-dbn6 §4.1). */
+const LIT_RENDER_RESTRICTION = {
+  name: 'lit-html',
+  importNames: ['render'],
+  message: 'Render through app/ui/render.js (render_count).'
+};
+
 export default defineConfig([
   {
     ignores: [
@@ -72,21 +79,35 @@ export default defineConfig([
     // UI-dbn6: every mounted root renders through app/ui/render.js so
     // window.__bdui.render_count sees it; the old views keep their own
     // render until they are deleted, and tests render detached fixtures.
+    // New code never imports the old views (Phase 2): a helper they share
+    // moves out of app/views/ and the old view imports it from there.
     files: ['app/**/*.js'],
     ignores: ['app/ui/render.js', 'app/views/**', '**/*.test.js'],
     rules: {
       'no-restricted-imports': [
         'error',
         {
-          paths: [
+          paths: [LIT_RENDER_RESTRICTION],
+          patterns: [
             {
-              name: 'lit-html',
-              importNames: ['render'],
-              message: 'Render through app/ui/render.js (render_count).'
+              group: ['**/views/**'],
+              message:
+                'New code does not import app/views/** (UI-dbn6) — move the helper out.'
             }
           ]
         }
       ]
+    }
+  },
+  {
+    // The shell's remaining bridge mounts until Phases 3–4 retire them.
+    files: [
+      'app/main.js',
+      'app/screens/bridges.js',
+      'app/screens/pipeline/drawers.js'
+    ],
+    rules: {
+      'no-restricted-imports': ['error', { paths: [LIT_RENDER_RESTRICTION] }]
     }
   }
 ]);

@@ -22,6 +22,7 @@
 
 .dt-head {
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-start;
   row-gap: var(--sp-4);
 }
@@ -35,6 +36,7 @@
 }
 
 .dt-head__chips .detail-summary__chips {
+  align-items: center;
   margin: 0;
 }
 
@@ -67,17 +69,30 @@
   margin-top: var(--sp-6);
 }
 
+/* Long raw values (receipts, paths) wrap inside the panel width. */
+.dt-overlay .detail-kv__v {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .dt-overlay .detail-external-wait__jobs {
   display: block;
   max-width: 100%;
   overflow-x: auto;
 }
 
-/* Full-screen sheet: no border, and every control is a 44px finger target. */
+/* Full-screen sheet: no border, the chips on their own row under ID · 대기로
+   · ✕, and every control a 44px finger target. */
 .dt-overlay--sheet .dt-panel {
   width: 100vw;
   border: 0;
   box-shadow: none;
+}
+
+.dt-overlay--sheet .dt-head__chips {
+  order: 1;
+  flex: 1 1 100%;
 }
 
 @media (pointer: coarse) {

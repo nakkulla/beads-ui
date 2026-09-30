@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * UI verification against the fixture server (UI-dbn6 Phase 1, pipeline
- * page). Uses a Playwright from the npx cache — it is NOT a dependency.
+ * UI verification against the fixture server (UI-dbn6 Phase 1 pipeline page,
+ * Phase 2 issue detail and transcript). Uses a Playwright from the npx cache
+ * — it is NOT a dependency.
  *
  * Checks, each reported PASS/FAIL (exit 1 on any FAIL, 2 when Playwright is
  * unavailable):
@@ -15,7 +16,13 @@
  *      at 1280 (`performance.measure('bdui:first-render')`);
  *   5. 60 idle seconds add 0 to `window.__bdui.render_count`;
  *   6. boot WS subscriptions are exactly monitor-pipeline + impl-presets +
- *      model-visibility (레포 scope: + worker-queue).
+ *      model-visibility (레포 scope: + worker-queue);
+ *   7. the issue detail (1280 panel, 390 full-screen sheet) and the transcript
+ *      (1280 window, 390 sheet): captures, `scrollWidth` overflow 0, every
+ *      visible button/select ≥ 44px at 390, opening the detail adds only
+ *      `subscribe-list issue-detail` and the transcript only
+ *      `subscribe-session-log`, closing releases them, the browser back closes
+ *      both at 390, and 60 idle seconds with the detail open add no render.
  *
  * Usage: node scripts/ui-shots.mjs http://127.0.0.1:3101 --out <dir>
  */
@@ -100,7 +107,13 @@ function initScript(scope) {
     WebSocket.prototype.send = function (data) {
       try {
         const msg = JSON.parse(String(data));
-        if (msg && typeof msg.type === 'string') shots.sent.push(msg.type);
+        if (msg && typeof msg.type === 'string') {
+          shots.sent.push(
+            msg.type === 'subscribe-list' || msg.type === 'unsubscribe-list'
+              ? msg.type + ':' + String((msg.payload && (msg.payload.type || msg.payload.id)) || '')
+              : msg.type
+          );
+        }
       } catch {}
       return send.call(this, data);
     };
@@ -631,6 +644,230 @@ async function moveSheet(browser, base, out) {
   await context.close();
 }
 
+/** The running bead whose detail the checks open, and its finished attempt. */
+const DETAIL_BEAD = 'A-4';
+const DONE_ATTEMPT = 'A-4-1699990000-0';
+
+/**
+ * WS types the page sent since `from`.
+ *
+ * @param {any} page
+ * @param {number} from
+ * @returns {Promise<string[]>}
+ */
+async function sentSince(page, from) {
+  const sent = await page.evaluate(
+    () => /** @type {any} */ (window).__shots.sent
+  );
+  return sent.slice(from);
+}
+
+/**
+ * @param {any} page
+ * @returns {Promise<number>}
+ */
+function sentCount(page) {
+  return page.evaluate(() => /** @type {any} */ (window).__shots.sent.length);
+}
+
+/**
+ * Open the running tile's detail from the lanes.
+ *
+ * @param {any} page
+ * @param {number} width
+ */
+async function openDetail(page, width) {
+  if (width < 720) {
+    await showLane(page, 'running');
+  }
+  await page.click(
+    `.pl-tile[data-bead-id="${DETAIL_BEAD}"][data-root-dir="${REPO_A}"] .pl-title`
+  );
+  await page.waitForSelector(
+    '#detail-panel .dt-panel [data-section="history"]'
+  );
+  await page.waitForSelector(
+    `#detail-panel button.detail-session[data-attempt-id="${DONE_ATTEMPT}"]`
+  );
+  await page.waitForTimeout(300);
+}
+
+/**
+ * @param {any} page
+ * @param {string} label
+ * @param {string} scope - A selector the measured buttons live under.
+ */
+async function reportButtons(page, label, scope) {
+  const buttons = await shortButtons(page, `${scope} button, ${scope} select`);
+  report(
+    `buttons ≥ 44px (${label})`,
+    buttons.short.length === 0 && buttons.count > 0,
+    `${buttons.count} measured${
+      buttons.short.length > 0 ? ` · short: ${buttons.short.join(' ')}` : ''
+    }`
+  );
+}
+
+/**
+ * @param {any} page
+ * @param {string} label
+ */
+async function reportOverflow(page, label) {
+  const overflow = await overflowOf(page);
+  report(
+    `no horizontal overflow (${label})`,
+    !overflow.over,
+    `scrollWidth ${overflow.scroll} / innerWidth ${overflow.inner}${
+      overflow.wide.length > 0 ? ` · wide: ${overflow.wide.join(' ')}` : ''
+    }`
+  );
+}
+
+/**
+ * @param {any} browser
+ * @param {string} base
+ * @param {string} out
+ */
+async function detailAndTranscript(browser, base, out) {
+  for (const width of [1280, 390]) {
+    const { context, page, errors } = await openPage(browser, base, {
+      scope: '*',
+      width
+    });
+    const tag = width === 390 ? '390' : '1280';
+    let mark = await sentCount(page);
+    await openDetail(page, width);
+    const detail_subs = (await sentSince(page, mark)).filter((type) =>
+      type.startsWith('subscribe-')
+    );
+    report(
+      `opening the detail adds only issue-detail (${tag})`,
+      JSON.stringify(detail_subs) ===
+        JSON.stringify(['subscribe-list:issue-detail']),
+      detail_subs.join(', ') || 'none'
+    );
+    const sheet = await page.evaluate(
+      () =>
+        document
+          .querySelector('.dt-overlay')
+          ?.classList.contains('dt-overlay--sheet') === true
+    );
+    report(
+      `detail layout (${tag})`,
+      width === 390 ? sheet : !sheet,
+      width === 390 ? 'full-screen sheet' : 'right panel'
+    );
+    await page.screenshot({ path: path.join(out, `detail-${tag}.png`) });
+    await page.evaluate(() => {
+      const panel = document.querySelector('#detail-panel .dt-panel');
+      if (panel) {
+        panel.scrollTop = panel.scrollHeight;
+      }
+    });
+    await page.waitForTimeout(150);
+    await page.screenshot({ path: path.join(out, `detail-${tag}-end.png`) });
+    await reportOverflow(page, `detail ${tag}`);
+    if (width === 390) {
+      await reportButtons(page, 'detail 390', '#detail-panel .dt-panel');
+    }
+
+    mark = await sentCount(page);
+    await page.click(
+      `#detail-panel button.detail-session[data-attempt-id="${DONE_ATTEMPT}"]`
+    );
+    await page.waitForSelector('.tr-overlay:not([hidden]) .sv__work');
+    await page.waitForTimeout(300);
+    const log_subs = (await sentSince(page, mark)).filter((type) =>
+      type.startsWith('subscribe-')
+    );
+    report(
+      `opening the transcript adds only session-log (${tag})`,
+      JSON.stringify(log_subs) === JSON.stringify(['subscribe-session-log']),
+      log_subs.join(', ') || 'none'
+    );
+    await page.screenshot({ path: path.join(out, `transcript-${tag}.png`) });
+    await reportOverflow(page, `transcript ${tag}`);
+    if (width === 390) {
+      await reportButtons(page, 'transcript 390', '.tr-overlay .sv');
+    }
+
+    mark = await sentCount(page);
+    if (width === 390) {
+      await page.goBack();
+    } else {
+      await page.click('.tr-overlay .sv__close');
+    }
+    await page.waitForSelector('.tr-overlay', { state: 'hidden' });
+    const log_release = (await sentSince(page, mark)).includes(
+      'unsubscribe-session-log'
+    );
+    report(
+      `closing the transcript releases session-log (${tag}${width === 390 ? ' back' : ' ✕'})`,
+      log_release,
+      String(log_release)
+    );
+
+    mark = await sentCount(page);
+    if (width === 390) {
+      await page.goBack();
+    } else {
+      await page.click('#detail-panel .detail-overlay__close');
+    }
+    await page.waitForFunction(
+      () =>
+        /** @type {HTMLElement} */ (document.getElementById('detail-panel'))
+          .hidden
+    );
+    const detail_release = (await sentSince(page, mark)).some((type) =>
+      type.startsWith('unsubscribe-list:detail:')
+    );
+    report(
+      `closing the detail releases issue-detail (${tag}${width === 390 ? ' back' : ' ✕'})`,
+      detail_release,
+      String(detail_release)
+    );
+    report(
+      `no page errors (detail ${tag})`,
+      errors.length === 0,
+      errors.slice(0, 3).join(' | ') || 'none'
+    );
+    await context.close();
+  }
+}
+
+/**
+ * @param {any} browser
+ * @param {string} base
+ */
+async function detailIdle(browser, base) {
+  const { context, page } = await openPage(browser, base, {
+    scope: '*',
+    width: 1280
+  });
+  await page
+    .waitForFunction(
+      () => document.querySelectorAll('.pl-chip--grace').length === 0,
+      null,
+      { timeout: 40_000 }
+    )
+    .catch(() => {});
+  await openDetail(page, 1280);
+  await page.waitForTimeout(1500);
+  const before = await page.evaluate(
+    () => /** @type {any} */ (window).__bdui.render_count
+  );
+  await page.waitForTimeout(IDLE_MS);
+  const after = await page.evaluate(
+    () => /** @type {any} */ (window).__bdui.render_count
+  );
+  report(
+    'idle 60s with the detail open adds no render (1280)',
+    after - before === 0,
+    `render_count ${before} → ${after}`
+  );
+  await context.close();
+}
+
 async function main() {
   const base = (process.argv[2] || '').replace(/\/+$/, '');
   const flag = process.argv.indexOf('--out');
@@ -658,7 +895,9 @@ async function main() {
     await mouseDrag(browser, base, out);
     await touchDrag(browser, base, out);
     await moveSheet(browser, base, out);
+    await detailAndTranscript(browser, base, out);
     await idle(browser, base);
+    await detailIdle(browser, base);
   } finally {
     await browser.close();
   }

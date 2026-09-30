@@ -70,9 +70,12 @@ import {
   workerUrlMessage,
   workerUrlWarning
 } from '../../model/session-model.js';
+import {
+  promptBlockTemplate,
+  promptStatusTemplate
+} from '../../ui/prompt-block.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
-import { promptBlockTemplate, promptStatusTemplate } from '../../ui/prompt-block.js';
 import {
   accountDefaultLabel,
   accountRowLabel,

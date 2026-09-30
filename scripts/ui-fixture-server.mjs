@@ -8,8 +8,14 @@
  * Queue mutations (`worker-queue-reorder`·`-place`·`-remove`·`-start-now`)
  * change the fixture queue, bump that repo's `revision`, reply with the new
  * queue and push keyed patches exactly like the server (`*-snapshot` first,
- * `*-patch` with `seq` after). Every other op answers `ok`. It never runs
- * `bd`, never reads `~/.local/state`, and never starts a Worker.
+ * `*-patch` with `seq` after). The issue detail's reads (Phase 2) answer from
+ * the same fixture: the `issue-detail` list snapshot, `get-comments`,
+ * `get-bead-prompt`, `get-session-refs`, `get-bead-timeline` (with a finished
+ * attempt), `get-session-defaults`, `get-workspace-accounts`,
+ * `get-attempt-prompt`, `subscribe-session-log` (a finished transcript) and
+ * `GET /api/doc`·`/api/claude-usage`·`/api/codex-usage`. Every other op
+ * answers `ok`. It never runs `bd`, never reads `~/.local/state`, and never
+ * starts a Worker.
  *
  * Usage: node scripts/ui-fixture-server.mjs [--port 3101]
  * Binds 127.0.0.1 only.
@@ -385,25 +391,93 @@ export function applyQueueOp(row, type, payload) {
   return false;
 }
 
+/** A 40-hex receipt sha for the fixture's review stamps. */
+const RECEIPT_SHA = 'a'.repeat(40);
+
 /**
- * @param {Record<string, any>} issue
+ * The `issue-detail` record of one fixture bead: its lane title and workflow,
+ * a markdown description, a blocking edge to its sibling and review receipts.
+ *
+ * @param {{ id: string, title: string, workflow?: Record<string, any>, labels?: string[] }} issue
  * @returns {Record<string, any>}
  */
 function detailIssue(issue) {
+  const [letter, number] = issue.id.split('-');
+  const blocker = `${letter}-${Number(number) === 3 ? 2 : 3}`;
   return {
     id: issue.id,
     title: issue.title,
-    status: 'open',
+    status: 'in_progress',
     priority: 2,
     issue_type: 'task',
-    description: '픽스처 이슈',
-    labels: [],
-    dependencies: [],
+    description:
+      '## 목적\n\n픽스처 이슈의 **설명**입니다.\n\n- 첫째 항목\n- 둘째 항목\n',
+    notes: 'spec_review codex 승인 · 구현 착수',
+    labels: issue.labels || ['frontend'],
+    dependencies: [
+      {
+        id: blocker,
+        dependency_type: 'blocks',
+        status: 'open',
+        title: `${blocker} 선행`
+      }
+    ],
     dependents: [],
-    comments: [],
-    created_at: new Date().toISOString(),
+    comment_count: 2,
+    metadata: {
+      route: 'spec_backed',
+      spec_review: `codex@${RECEIPT_SHA}`,
+      impl_runtime: 'claude'
+    },
+    workflow: issue.workflow || workflowAt('impl'),
+    created_at: new Date(Date.now() - 86_400_000).toISOString(),
     updated_at: new Date().toISOString()
   };
+}
+
+/**
+ * A finished attempt's transcript: narrative, a work bundle, and the result.
+ *
+ * @returns {Array<Record<string, any>>}
+ */
+function transcriptLines() {
+  /** @param {string} id */
+  const read = (id) => ({
+    type: 'assistant',
+    message: {
+      content: [
+        {
+          type: 'tool_use',
+          id,
+          name: 'Read',
+          input: { file_path: `/fixture/repo-a/app/${id}.js` }
+        }
+      ]
+    }
+  });
+  /** @param {string} id */
+  const done = (id) => ({
+    type: 'user',
+    message: {
+      content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }]
+    }
+  });
+  /** @param {string} text */
+  const say = (text) => ({
+    type: 'assistant',
+    message: { content: [{ type: 'text', text }] }
+  });
+  return [
+    say('레인 모델을 **세 모듈**로 나눕니다.'),
+    ...['t1', 't2', 't3', 't4'].flatMap((id) => [read(id), done(id)]),
+    say('검증을 돌리고 결과를 보고합니다.'),
+    {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: '## 결과\n\n- 테스트 통과\n- PR 준비 완료'
+    }
+  ];
 }
 
 /**
@@ -641,7 +715,9 @@ export async function startFixtureServer(options = {}) {
           issues = [
             detailIssue({
               id: bead_id,
-              title: row?.bead_titles?.[bead_id] || bead_id
+              title: row?.bead_titles?.[bead_id] || bead_id,
+              workflow: row?.bead_workflow?.[bead_id],
+              labels: row?.bead_overlay?.[bead_id]?.labels
             })
           ];
         }
@@ -650,8 +726,77 @@ export async function startFixtureServer(options = {}) {
         return;
       }
       case 'get-comments':
-        ok([]);
+        ok(
+          [
+            [
+              'worker',
+              '구현을 시작합니다. 레인 모델 분할부터 봅니다.',
+              3_600_000
+            ],
+            ['ilsun', '모바일 캡처도 같이 부탁합니다.', 600_000]
+          ].map(([author, text, ago], index) => ({
+            id: `c-${index + 1}`,
+            issue_id: String(payload.id || ''),
+            author,
+            text,
+            created_at: new Date(Date.now() - Number(ago)).toISOString()
+          }))
+        );
         return;
+      case 'get-bead-prompt':
+        ok({
+          recorded_at: Date.now() - 1_500_000,
+          task_prompt: `과업: ${String(payload.bead_id || '')} 구현`,
+          system_prompt: '시스템 계약 (fixture)'
+        });
+        return;
+      case 'get-session-refs':
+        ok({ sessions: [] });
+        return;
+      case 'get-bead-timeline': {
+        const bead_id = String(payload.bead_id || '');
+        ok({
+          events: [
+            {
+              at: Date.now() - 3e6,
+              kind: 'attempt_started',
+              text: '구현 시작'
+            },
+            { at: Date.now() - 2e6, kind: 'attempt_finished', text: '완료' }
+          ],
+          attempts: [
+            {
+              attempt_id: `${bead_id}-1699990000-0`,
+              bead_id,
+              status: 'done',
+              started_at: Date.now() - 3_000_000,
+              runner: 'claude',
+              model: 'opus',
+              effort: 'high',
+              session_id: 'sess-fixture-0001'
+            }
+          ]
+        });
+        return;
+      }
+      case 'get-session-defaults':
+        ok({ values: {}, warnings: [], state: 'ready' });
+        return;
+      case 'get-workspace-accounts':
+        ok({ state: 'absent', values: {}, warnings: [] });
+        return;
+      case 'get-attempt-prompt':
+        ok({ missing: true });
+        return;
+      case 'subscribe-session-log': {
+        const client_id = String(payload.id || '');
+        ok({ id: client_id });
+        push(ws, client_id, 'session-log-snapshot', {
+          lines: transcriptLines(),
+          last_event_at: Date.now() - 60_000
+        });
+        return;
+      }
       case 'worker-queue-reorder':
       case 'worker-queue-place':
       case 'worker-queue-remove':
@@ -731,6 +876,24 @@ export async function startFixtureServer(options = {}) {
         'Cache-Control': 'no-store'
       });
       res.end(html);
+      return;
+    }
+    if (url.pathname === '/api/doc') {
+      res.writeHead(200, { 'Content-Type': MIME['.json'] });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          content: `---\nstatus: approved\n---\n# ${url.searchParams.get('path') || '문서'}\n\n픽스처 문서 본문.\n`
+        })
+      );
+      return;
+    }
+    if (
+      url.pathname === '/api/claude-usage' ||
+      url.pathname === '/api/codex-usage'
+    ) {
+      res.writeHead(200, { 'Content-Type': MIME['.json'] });
+      res.end(JSON.stringify({ accounts: [] }));
       return;
     }
     if (url.pathname === '/api/config') {

@@ -1,0 +1,64 @@
+/* Phase 2 primitives (UI-dbn6 §4.4) the detail and transcript screens draw
+   with, beside the Phase 1 ones in base.css: the overlay host
+   (ui/overlay.js), the copy button (ui/copy.js) and the markdown block
+   (ui/markdown.js). Visual values come from tokens.css only. */
+
+/* Overlay host (ui/overlay.js): a full-viewport layer over the lanes. */
+.ui-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ui-overlay[hidden] {
+  display: none;
+}
+
+.ui-overlay__backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+}
+
+.ui-overlay__host {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.ui-overlay__host:empty {
+  display: none;
+}
+
+.ui-overlay--sheet .ui-overlay__host {
+  width: 100vw;
+  height: 100dvh;
+}
+
+/* Copy button (ui/copy.js): the value itself, underlined as copyable. */
+.ui-copy {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px dotted currentColor;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: copy;
+}
+
+/* Markdown block (ui/markdown.js). */
+.ui-markdown {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.ui-markdown > :first-child {
+  margin-top: 0;
+}
+
+.ui-markdown > :last-child {
+  margin-bottom: 0;
+}

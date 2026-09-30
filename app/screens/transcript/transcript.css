@@ -22,10 +22,14 @@
   border-radius: 0;
 }
 
+/* Full-screen sheet: every control is a 44px finger target. */
 @media (pointer: coarse) {
+  .tr-overlay--sheet .sv button {
+    min-height: 44px;
+  }
+
   .tr-overlay--sheet .sv__close,
   .tr-overlay--sheet .sv__follow {
     min-width: 44px;
-    min-height: 44px;
   }
 }

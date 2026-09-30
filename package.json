@@ -67,6 +67,7 @@
     "app/styles.css",
     "app/ui/tokens.css",
     "app/ui/base.css",
+    "app/ui/primitives.css",
     "app/screens/pipeline/pipeline.css",
     "app/screens/detail/detail.css",
     "app/screens/transcript/transcript.css",
