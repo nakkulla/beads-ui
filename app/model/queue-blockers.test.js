@@ -10,8 +10,8 @@ import {
 import { formatTimestampLocal } from './relative-time.js';
 
 /**
- * @param {Partial<import('../views/worker/queue-overlaps.js').LaneMember>} over
- * @returns {import('../views/worker/queue-overlaps.js').LaneMember}
+ * @param {Partial<import('./queue-blockers.js').LaneMember>} over
+ * @returns {import('./queue-blockers.js').LaneMember}
  */
 function member(over) {
   const id = over.id || 'A-1';

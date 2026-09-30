@@ -1,5 +1,22 @@
 import { describe, expect, test } from 'vitest';
-import { formatRelativeTime, formatTimestampTitle } from './relative-time.js';
+import {
+  formatClock,
+  formatRelativeTime,
+  formatTimestampTitle
+} from './relative-time.js';
+
+// Moved from the retired `views/worker/lanes.test.js` (UI-dbn6 Phase 4).
+describe('formatClock', () => {
+  test('renders a timestamp as local HH:MM', () => {
+    const at = new Date(2026, 7, 14, 16, 29).getTime();
+
+    expect(formatClock(at)).toBe('16:29');
+  });
+
+  test('renders nothing for an absent timestamp', () => {
+    expect(formatClock(null)).toBe('');
+  });
+});
 
 describe('utils/relative-time', () => {
   const NOW = 1712100000000;

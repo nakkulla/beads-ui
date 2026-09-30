@@ -78,6 +78,43 @@ describe('mergeStepView', () => {
   test('returns null for an absent step', () => {
     expect(mergeStepView(null)).toBeNull();
   });
+
+  // Moved from the retired `views/worker/index.test.js` (UI-dbn6 Phase 4).
+  test('labels the first step as 1 of 7', () => {
+    expect(mergeStepView('merging')).toEqual({
+      label: '머지 중',
+      index: 1,
+      total: 7,
+      percent: 14
+    });
+  });
+
+  test('labels the last step as 7 of 7', () => {
+    expect(mergeStepView('parent_close')).toMatchObject({
+      label: '부모 close 중',
+      index: 7,
+      total: 7,
+      percent: 100
+    });
+  });
+
+  test('translates every cleanup step to Korean', () => {
+    const labels = [
+      'base_containment',
+      'repo_operations',
+      'child_sweep',
+      'branch_cleanup',
+      'parent_close'
+    ].map((s) => mergeStepView(s)?.label);
+
+    expect(labels).toEqual([
+      'base 확인 중',
+      '저장소 작업',
+      '자식 정리 중',
+      '브랜치 정리 중',
+      '부모 close 중'
+    ]);
+  });
 });
 
 describe('cleanupStepperView', () => {

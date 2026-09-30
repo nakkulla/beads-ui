@@ -107,6 +107,15 @@ describe('failureSentence', () => {
     );
   });
 
+  // Moved from the retired `views/worker/index.test.js` (UI-dbn6 Phase 4).
+  test('explains the pre_merge_hold failure class', () => {
+    const sentence = failureSentence('pre_merge_hold');
+
+    expect(sentence).toBe(
+      '머지 전 검증이 실패했습니다 — 수정 커밋을 push하면 자동으로 다시 검증합니다.'
+    );
+  });
+
   test('takes the last matching segment of a composite code', () => {
     expect(failureSentence('verify_failed:gh_observation_failed')).toBe(
       'GitHub에서 PR 상태를 읽지 못했습니다.'

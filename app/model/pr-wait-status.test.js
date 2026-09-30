@@ -1,11 +1,104 @@
 import { describe, expect, test } from 'vitest';
 import {
   activityBadge,
+  autoResolutionBadge,
   mergeFailureText,
   mergeQueueRefusalText,
+  mergeWaitingText,
   prStatusBadge,
   receiptWarningCodes
 } from './pr-wait-status.js';
+
+// `mergeWaitingText` and `autoResolutionBadge` cases moved from the retired
+// `views/worker/index.test.js` (UI-dbn6 Phase 4).
+
+describe('mergeWaitingText completion waits', () => {
+  test('renders a clear label for a completion wait needing attention', () => {
+    const label = mergeWaitingText('completion_waiting:needs_human');
+
+    expect(label).toBe('확인 필요');
+  });
+
+  test('hides an unknown internal completion phase', () => {
+    const label = mergeWaitingText('completion_waiting:future_phase');
+
+    expect(label).toBe(null);
+  });
+
+  test('names a holding completion wait', () => {
+    const label = mergeWaitingText('completion_waiting:holding');
+
+    expect(label).toBe('검증 실패 — 수정 push 대기');
+  });
+});
+
+describe('autoResolutionBadge', () => {
+  test('returns the receipt wait label with two details and no live pulse', () => {
+    const result = autoResolutionBadge(
+      /** @type {any} */ ({
+        phase: 'waiting_metadata',
+        auto_resolution: {
+          class: 'metadata_watch',
+          origin_reason: 'receipt_unbacked:approval_forged',
+          attempts: 0,
+          next_at: null,
+          last_error: null
+        }
+      })
+    );
+
+    expect(result).toEqual({
+      label: '영수증 대기 — approval_forged',
+      details: [
+        '원 사유: receipt_unbacked:approval_forged',
+        '새 커밋·새 영수증·재관측이 오면 자동 재개'
+      ],
+      live: false
+    });
+  });
+
+  test('keeps 정정 대기 for a non-receipt origin reason', () => {
+    const result = autoResolutionBadge(
+      /** @type {any} */ ({
+        phase: 'waiting_metadata',
+        auto_resolution: {
+          class: 'metadata_watch',
+          origin_reason: 'review_receipt_missing',
+          attempts: 0,
+          next_at: null,
+          last_error: null
+        }
+      })
+    );
+
+    expect(result?.label).toBe('정정 대기');
+  });
+
+  test('returns null when the resolution record is absent', () => {
+    const result = autoResolutionBadge(
+      /** @type {any} */ ({ phase: 'waiting_metadata', auto_resolution: null })
+    );
+
+    expect(result).toBeNull();
+  });
+
+  test('drops the retry denominator when the server sent no budget', () => {
+    const result = autoResolutionBadge(
+      /** @type {any} */ ({
+        phase: 'retrying',
+        auto_resolution: {
+          class: 'retry',
+          origin_reason: 'verify_cmd_failed',
+          attempts: 2,
+          next_at: null,
+          last_error: null
+        }
+      })
+    );
+
+    expect(result?.label).toBe('재시도 2');
+  });
+});
 
 describe('poller activity badge — projection (UI-raqh §3)', () => {
   test('renames 관측 대기 to 확인중 while an observation runs', () => {

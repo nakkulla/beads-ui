@@ -1,19 +1,13 @@
 import { describe, expect, test } from 'vitest';
-import { normalizeCandidateSort } from '../views/worker/candidate-sort.js';
-import { createWorkspaceAdapter } from '../views/worker/workspace-adapter.js';
 import {
   candidatePlacement,
   placeMenuLanes,
   placementFromFacts,
   placementTitle
 } from './placement.js';
-import { createSubscriptionIssueStore } from './subscription-issue-store.js';
-import { createWorkerQueueStore } from './worker-queue-store.js';
 
 /** A format-valid spec review receipt (`<reviewer>@<40-hex>`). */
 const RECEIPT = 'codex@' + 'a'.repeat(40);
-
-const SORT = normalizeCandidateSort(null);
 
 /**
  * @param {Partial<any>} [over]
@@ -33,40 +27,6 @@ function queueOf(over = {}) {
     attempts: {},
     ...over
   };
-}
-
-/**
- * The candidate row the Worker adapter builds for one issue, so the table can
- * compare `eligible` against `candidatePlacement`.
- *
- * @param {any} issue
- * @param {any} queue
- * @returns {any}
- */
-function adapterRowFor(issue, queue) {
-  const ready = createSubscriptionIssueStore('tab:worker:ready');
-  ready.applyPush({
-    type: 'snapshot',
-    id: 'tab:worker:ready',
-    revision: 1,
-    issues: [issue]
-  });
-  /** @type {Map<string, any>} */
-  const stores = new Map([['tab:worker:ready', ready]]);
-  const queue_store = createWorkerQueueStore();
-  queue_store.set(queue);
-  const adapter = createWorkspaceAdapter({
-    queueStore: queue_store,
-    issueStores: {
-      /** @param {string} id */
-      getStore: (id) => stores.get(id) || createSubscriptionIssueStore(id),
-      /** @param {string} id */
-      snapshotFor: (id) => (stores.get(id)?.snapshot() || []).slice(),
-      subscribe: () => () => {}
-    },
-    getWorkspacePath: () => '/repos/beads-ui'
-  });
-  return adapter.read({ candidate_sort: SORT }).workspaces[0].runnable[0];
 }
 
 /**
@@ -158,21 +118,13 @@ const ELIGIBILITY_TABLE = [
 
 describe('worker placement', () => {
   for (const row of ELIGIBILITY_TABLE) {
-    test(`agrees with the adapter facts for ${row.name}`, () => {
+    test(`judges placement and spec state for ${row.name}`, () => {
       const queue = queueOf();
 
       const placement = candidatePlacement(row.issue, queue);
-      const adapter_row = adapterRowFor(row.issue, queue);
 
       expect(placement.placeable).toBe(row.placeable);
       expect(placement.spec).toBe(row.spec);
-      expect(adapter_row.observation).toBe(true);
-      expect(adapter_row.spec_state).toBe(placement.spec);
-      expect(adapter_row.has_description).toBe(!placement.missing_description);
-      expect(adapter_row.awaiting_user).toBe(placement.awaiting_user);
-      expect(adapter_row.worker_ineligible).toBe(placement.worker_ineligible);
-      expect(adapter_row).not.toHaveProperty('eligible');
-      expect(adapter_row).not.toHaveProperty('reason');
     });
   }
 

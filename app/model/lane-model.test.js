@@ -1,8 +1,4 @@
-import { render } from 'lit-html';
 import { describe, expect, test, vi } from 'vitest';
-import { normalizeCandidateSort } from '../views/worker/candidate-sort.js';
-import { candidateCard, setChipPresetContext } from '../views/worker/lanes.js';
-import { createWorkspaceAdapter } from '../views/worker/workspace-adapter.js';
 import {
   CANDIDATE_FILTER_DEFAULT,
   MIN_SLOTS,
@@ -15,7 +11,6 @@ import {
   routeChipValue,
   validTime
 } from './lane-model.js';
-import { createWorkerQueueStore } from './worker-queue-store.js';
 
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
@@ -4673,13 +4668,16 @@ const ROUTED_EXECUTION_DEFAULTS = {
 
 const MERGE_SHA = 'a'.repeat(40);
 
-describe('candidate facts parity', () => {
+// The old client-side Worker adapter (a second source of these facts) retired
+// with the old views in UI-dbn6 Phase 4; the server runnable row is the one
+// source, and the values the parity test proved equal are asserted on it.
+describe('candidate facts from the server runnable row', () => {
   test.each([
     'defaults',
     'one pin',
     'released predecessor',
     'blocked without ids'
-  ])('projects identical card materials from both sources: %s', (scenario) => {
+  ])('projects the card materials: %s', (scenario) => {
     const now = Date.now();
     const blocked_without_ids = scenario === 'blocked without ids';
     const blocked_by = blocked_without_ids ? [] : ['A-2'];
@@ -4713,19 +4711,6 @@ describe('candidate facts parity', () => {
       release_info,
       dependents_info: { count: 1, ids: ['A-3'] }
     };
-    const queue_store = createWorkerQueueStore();
-    queue_store.set(/** @type {any} */ (workspace()));
-    const adapter = createWorkspaceAdapter({
-      queueStore: queue_store,
-      issueStores: {
-        snapshotFor: (/** @type {string} */ key) =>
-          key === 'tab:worker:blocked' ? [issue] : []
-      },
-      getWorkspacePath: () => WS_A
-    });
-    const input = adapter.read({
-      candidate_sort: normalizeCandidateSort(null)
-    });
     const states = [
       state({
         execution_defaults: ROUTED_EXECUTION_DEFAULTS,
@@ -4754,25 +4739,9 @@ describe('candidate facts parity', () => {
       dependents_info: issue.dependents_info
     });
 
-    const observed = buildLanes(input.workspaces, states).runnable[0];
-    const server = buildLanes([workspace({ runnable: [server_row] })], states)
+    const observed = buildLanes([workspace({ runnable: [server_row] })], states)
       .runnable[0];
 
-    for (const key of [
-      'queue_placeable',
-      'route_ok',
-      'placement_spec',
-      'session_preferred',
-      'session_preferred_reason',
-      'spec_after_blocker',
-      'reason',
-      'exec_chips',
-      'dependency_chips'
-    ]) {
-      expect(/** @type {any} */ (observed)[key], key).toEqual(
-        /** @type {any} */ (server)[key]
-      );
-    }
     expect(observed.reason).toBe(
       blocked_without_ids ? '🔒 blocked' : '사용자 리뷰 필요: spec_review_stale'
     );
@@ -4792,7 +4761,6 @@ describe('candidate facts parity', () => {
     if (release_info) {
       expect(observed.dependency_chips?.released?.[0].label).toContain('🔓');
     }
-    adapter.destroy();
   });
 
   test('marks a stale waiting admission separately from its reason', () => {
@@ -7991,19 +7959,9 @@ describe('보류 선반과 세 필터 축 (UI-p7s2 §3·§6)', () => {
   });
 });
 
+// The chip's drawn applied/unapplied state is the pipeline card's
+// (`screens/pipeline/chips.test.js`); this block pins the material it reads.
 describe('칩 바인딩 판정 재료 (UI-wg68 §5.1)', () => {
-  const PRESET = {
-    id: 'p1',
-    name: '오퍼스 → 클로드',
-    applies_to: 'general',
-    settings: { impl_runtime: 'claude' }
-  };
-  const CHIP_PRESETS = {
-    bindings: { complex: 'p1', frontend: null, backend: null },
-    presets: [PRESET],
-    revision: 4
-  };
-
   /**
    * @param {Record<string, string>} exec_pins
    * @returns {any}
@@ -8027,48 +7985,24 @@ describe('칩 바인딩 판정 재료 (UI-wg68 §5.1)', () => {
     return lanes.runnable[0];
   }
 
-  /**
-   * @param {any} item
-   * @returns {HTMLElement}
-   */
-  function renderCard(item) {
-    const host = document.createElement('div');
-    setChipPresetContext(CHIP_PRESETS);
-    render(candidateCard(item), host);
-    setChipPresetContext(null);
-    return host;
-  }
-
   test('reads the row exec_pins as the chip material when no overlay metadata is observed', () => {
     const item = candidateWithPins({ impl_runtime: 'claude' });
 
     expect(item.chip_metadata).toEqual({ impl_runtime: 'claude' });
   });
 
-  test('draws the applied state from the row exec_pins alone', () => {
-    const card = renderCard(
-      candidateWithPins({
-        impl_runtime: 'claude',
-        applied_exec_preset: 'p1',
-        chip_preset_source: 'complex'
-      })
-    );
+  test('carries the preset identity keys of the row exec_pins into the chip material', () => {
+    const item = candidateWithPins({
+      impl_runtime: 'claude',
+      applied_exec_preset: 'p1',
+      chip_preset_source: 'complex'
+    });
 
-    const chip = /** @type {HTMLElement} */ (
-      card.querySelector('.judgement-chip--bound')
-    );
-
-    expect(chip.dataset.state).toBe('applied');
-  });
-
-  test('draws the unapplied state when the identity keys are absent', () => {
-    const card = renderCard(candidateWithPins({ impl_runtime: 'claude' }));
-
-    const chip = /** @type {HTMLElement} */ (
-      card.querySelector('.judgement-chip--bound')
-    );
-
-    expect(chip.dataset.state).toBe('unapplied');
+    expect(item.chip_metadata).toEqual({
+      impl_runtime: 'claude',
+      applied_exec_preset: 'p1',
+      chip_preset_source: 'complex'
+    });
   });
 });
 
