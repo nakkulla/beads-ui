@@ -1061,7 +1061,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 환경 · <오류 문장 원문>
 대기 · blocks:<ID>[, …]
 대기 · external:<wait_id>
-대기 · recovery:<provider|credential|prerequisite|authority|verification|no_progress|unclassified|reconcile>
+대기 · recovery:<provider|credential|prerequisite|authority|no_progress>
 \`\`\`
 
 이 문법의 정본은 dotfiles \`finishing.md\`이고 위는 사본이다.

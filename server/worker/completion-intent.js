@@ -1006,7 +1006,9 @@ export function completionFailureComment(
     logRow(terminal.log_path),
     `- 재시도: ${retryOutcomeText(operation)}`,
     ...(recovery
-      ? [`- 복구: ${recovery.disposition}:${recovery.reason || 'repair'}`]
+      ? [
+          `- 복구: ${recovery.disposition}:${recovery.reason || recovery.disposition}`
+        ]
       : []),
     next
   ].join('\n');

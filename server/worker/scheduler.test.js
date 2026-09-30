@@ -1789,14 +1789,32 @@ function setup(opts) {
 }
 
 describe('scheduler work recovery waits', () => {
-  test.each([
-    'authority',
-    'verification',
-    'no_progress',
-    'reconcile',
-    'unclassified',
-    'prerequisite'
-  ])(
+  test.each(['verification', 'reconcile', 'unclassified'])(
+    'keeps an unadvertised %s token out of the conversation',
+    async (reason) => {
+      const onParkedAttempt = vi.fn(async () => ({
+        session: 'not_launched',
+        reason: 'disabled'
+      }));
+      const env = recoveryEnv({ directionInquiry: { onParkedAttempt } });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+
+      const attempt = await endSession(env, {
+        success: true,
+        summary: 'blocker: 확인 필요',
+        terminal_result: { kind: 'recovery_wait', reason }
+      });
+
+      expect(onParkedAttempt).not.toHaveBeenCalled();
+      expect(attempt.cause_detail.recovery).toMatchObject({
+        classification: 'unknown_error',
+        reason: 'unclassified'
+      });
+    }
+  );
+
+  test.each(['authority', 'no_progress', 'prerequisite'])(
     'launches an inquiry immediately after recording %s recovery',
     async (reason) => {
       const onParkedAttempt = vi.fn(async () => ({
@@ -2018,12 +2036,12 @@ describe('scheduler work recovery waits', () => {
       'unclassified'
     ],
     [
-      'reconciliation',
+      'retired reconciliation token',
       '대기 · recovery:reconcile',
       { kind: 'recovery_wait', reason: 'reconcile' },
       'session_recovery_wait',
-      'session_recovery_wait',
-      'reconcile'
+      'unknown_error',
+      'unclassified'
     ]
   ])(
     'preserves %s evidence without a failure event',
@@ -2049,9 +2067,9 @@ describe('scheduler work recovery waits', () => {
             ? {
                 recovery: {
                   classification,
-                  disposition: reason === 'reconcile' ? 'reconcile' : 'wait',
+                  disposition: 'wait',
                   reason,
-                  policy_schema: 1
+                  policy_schema: 2
                 }
               }
             : { env_pattern: 'unknown' })

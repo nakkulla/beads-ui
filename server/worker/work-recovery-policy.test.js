@@ -8,16 +8,17 @@ import {
   loadWorkRecoveryPolicy,
   recoveryResultLineReasons,
   workRecoveryClassification,
+  workRecoveryPolicySchema,
   workRecoveryPolicySupported,
   workRecoveryReadinessEnv,
   workRecoveryReady
 } from './work-recovery-policy.js';
 
-const APPROVED_SOURCE_COMMIT = '5cc243221bcf5af59c0831989ebf646f56878e06';
-const APPROVED_BLOB = '184031cd62f5e6cb5223100f684fd9700e90b552';
+const APPROVED_SOURCE_COMMIT = 'f031c9853f536c1478e9d1129b8c69628be27ef8';
+const APPROVED_BLOB = '3d274eb4af16b799a8e307f6224385fca242778f';
 const APPROVED_DIGEST =
-  'fc38e61207ba217e49102626fc4d38c9192337f1c65304bbef4d1d69b1a62dc3';
-const APPROVED_BYTES = 4638;
+  '3eb106150a71d24a21ff36ffaaab21d8516684a1547549289a7f84cc57735498';
+const APPROVED_BYTES = 5258;
 
 /**
  * @param {Record<string, any>} [artifact_patch]
@@ -97,10 +98,52 @@ describe('pinned work-recovery policy', () => {
 
     expect(loaded).toMatchObject({
       supported: true,
-      schema_version: 1,
+      schema_version: 2,
       source_commit: APPROVED_SOURCE_COMMIT,
       policy: { readiness_value: '1' }
     });
+  });
+
+  test('rejects a schema 1 pin despite valid provenance', () => {
+    const injected = fixture({ schema_version: 1 });
+
+    const loaded = loadWorkRecoveryPolicy({ fs: injected });
+
+    expect(loaded).toMatchObject({
+      supported: false,
+      schema_version: 1,
+      policy: null
+    });
+  });
+
+  test('rejects the schema 1 derived result-line token', () => {
+    const policy = loadWorkRecoveryPolicy().policy;
+    const injected = fixture({
+      work_recovery: {
+        ...policy,
+        result_line_reasons: 'wait_reasons_plus_reconcile'
+      }
+    });
+
+    const loaded = loadWorkRecoveryPolicy({ fs: injected });
+
+    expect(loaded).toMatchObject({ supported: false, policy: null });
+  });
+
+  test('accepts a reconcile entry that names only its next step', () => {
+    const policy = loadWorkRecoveryPolicy().policy;
+    const injected = fixture({
+      work_recovery: {
+        ...policy,
+        classification: {
+          probe: { disposition: 'reconcile', next: 'confirm_effects_by_read' }
+        }
+      }
+    });
+
+    const loaded = loadWorkRecoveryPolicy({ fs: injected });
+
+    expect(loaded.supported).toBe(true);
   });
 
   test('rejects an unknown schema despite valid provenance', () => {
@@ -131,12 +174,14 @@ describe('pinned work-recovery policy', () => {
     { classification: [] },
     { classification: { broken: { disposition: 'invented' } } },
     { classification: { broken: { disposition: 'wait' } } },
-    { classification: { broken: { disposition: 'reconcile', reason: '' } } },
+    { classification: { broken: { disposition: 'reconcile', reason: 'x' } } },
     { dispositions: [] },
     { wait_reasons: [''] },
     { readiness_env: '' },
     { readiness_value: ' ' },
-    { result_line_reasons: 'other' }
+    { result_line_reasons: 'other' },
+    { result_line_reasons: [] },
+    { result_line_reasons: ['provider', 'reconcile'] }
   ])('rejects malformed contract structure %j', (patch) => {
     const policy = loadWorkRecoveryPolicy().policy;
     const injected = fixture({ work_recovery: { ...policy, ...patch } });
@@ -183,15 +228,40 @@ describe('pinned work-recovery policy', () => {
     expect(workRecoveryClassification('toString')).toBeNull();
   });
 
-  test('derives readiness and result reasons from the supported contract', () => {
+  test('derives readiness from the supported contract', () => {
     const policy = loadWorkRecoveryPolicy().policy;
 
     expect(workRecoveryReadinessEnv()).toEqual({
       [policy?.readiness_env]: policy?.readiness_value
     });
-    expect(recoveryResultLineReasons()).toEqual([
-      ...(policy?.wait_reasons || []),
-      'reconcile'
+  });
+
+  test('advertises the explicit result-line reason list verbatim', () => {
+    const reasons = recoveryResultLineReasons();
+
+    expect(reasons).toEqual([
+      'provider',
+      'credential',
+      'prerequisite',
+      'authority',
+      'no_progress'
     ]);
+  });
+
+  test('stamps the supported schema version', () => {
+    const schema = workRecoveryPolicySchema();
+
+    expect(schema).toBe(2);
+  });
+
+  test('reads verification_failure as an in-session repair', () => {
+    const entry = workRecoveryClassification('verification_failure');
+
+    expect(entry).toEqual({
+      classification: 'verification_failure',
+      disposition: 'repair',
+      reason: null,
+      next: 'correct_in_session_including_fix_now'
+    });
   });
 });

@@ -21,6 +21,8 @@ export const WORK_RECOVERY_POLICY_PROVENANCE_PATH = path.join(
   'work-recovery-policy.provenance.json'
 );
 export const WORK_RECOVERY_RESULT_LINE_PREFIX = '대기 · recovery:';
+/** The only projection schema this consumer reads; others fail closed. */
+export const SUPPORTED_SCHEMA_VERSION = 2;
 
 /** @typedef {{ readFileSync: (path: string, encoding?: string) => Buffer|string }} WorkRecoveryFs */
 /**
@@ -112,6 +114,10 @@ function provenanceMatches(provenance, bytes, digest) {
 }
 
 /**
+ * Validate the schema-2 projection: `result_line_reasons` is an explicit list
+ * drawn from `wait_reasons`, a `wait` entry names its reason, and a
+ * `reconcile` entry names its `next` step instead of a reason.
+ *
  * @param {unknown} policy
  * @returns {policy is Record<string, any>}
  */
@@ -123,7 +129,10 @@ function validPolicy(policy) {
     !isRecord(policy.classification) ||
     !nonEmptyString(policy.readiness_env) ||
     !nonEmptyString(policy.readiness_value) ||
-    policy.result_line_reasons !== 'wait_reasons_plus_reconcile'
+    !stringList(policy.result_line_reasons) ||
+    !policy.result_line_reasons.every((/** @type {string} */ reason) =>
+      policy.wait_reasons.includes(reason)
+    )
   ) {
     return false;
   }
@@ -131,8 +140,8 @@ function validPolicy(policy) {
     (entry) =>
       isRecord(entry) &&
       policy.dispositions.includes(entry.disposition) &&
-      (!['wait', 'reconcile'].includes(entry.disposition) ||
-        nonEmptyString(entry.reason))
+      (entry.disposition !== 'wait' || nonEmptyString(entry.reason)) &&
+      (entry.disposition !== 'reconcile' || nonEmptyString(entry.next))
   );
 }
 
@@ -163,7 +172,7 @@ export function loadWorkRecoveryPolicy(deps = {}) {
       : null;
     loaded =
       isRecord(artifact) &&
-      schema_version === 1 &&
+      schema_version === SUPPORTED_SCHEMA_VERSION &&
       provenanceMatches(provenance, bytes, digest) &&
       validPolicy(artifact.work_recovery)
         ? {
@@ -222,15 +231,27 @@ export function workRecoveryClassification(key) {
 }
 
 /**
- * Read the result-line tokens from the pinned contract.
+ * Read the result-line tokens the pinned contract advertises, verbatim.
  *
  * @returns {string[]}
  */
 export function recoveryResultLineReasons() {
   const loaded = loadWorkRecoveryPolicy();
   return loaded.supported && loaded.policy
-    ? [...loaded.policy.wait_reasons, 'reconcile']
+    ? [...loaded.policy.result_line_reasons]
     : [];
+}
+
+/**
+ * The schema version of the validated pin, or null while it is unsupported.
+ * Recovery records stamp this so a later reader knows which projection
+ * classified them.
+ *
+ * @returns {number|null}
+ */
+export function workRecoveryPolicySchema() {
+  const loaded = loadWorkRecoveryPolicy();
+  return loaded.supported ? loaded.schema_version : null;
 }
 
 /**

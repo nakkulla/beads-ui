@@ -5351,7 +5351,10 @@ export function createScheduler(deps) {
    * @returns {Record<string, any>}
    */
   function recoveryDetail(workspace, attempt_id, classification) {
-    const recovery = { ...classification.recovery, policy_schema: 1 };
+    const recovery = {
+      ...classification.recovery,
+      policy_schema: default_work_recovery_policy.workRecoveryPolicySchema()
+    };
     const attempts = deps.store.snapshot(workspace).attempts;
     const current = attempts[attempt_id];
     const key = recoveryProgressKey(
@@ -9596,7 +9599,8 @@ export function createScheduler(deps) {
             ...cause_detail,
             recovery: {
               ...classification.recovery,
-              policy_schema: 1,
+              policy_schema:
+                default_work_recovery_policy.workRecoveryPolicySchema(),
               reclassified_from: 'failed',
               reclassified_at: at
             }

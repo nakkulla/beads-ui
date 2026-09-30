@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "work_recovery": {
     "dispositions": [
       "repair",
@@ -12,7 +12,6 @@
       "credential",
       "prerequisite",
       "authority",
-      "verification",
       "no_progress",
       "unclassified"
     ],
@@ -26,8 +25,10 @@
         "next": "fix_smallest_authorized_cause_and_verify"
       },
       "verification_failure": {
-        "disposition": "wait",
-        "reason": "verification"
+        "disposition": "repair",
+        "next": "correct_in_session_including_fix_now",
+        "external_cause": "target_rig_repair_bead_then_blocks_wait",
+        "unresolved": "two_no_progress_repeats"
       },
       "two_no_progress_repeats": {
         "disposition": "wait",
@@ -52,19 +53,28 @@
       },
       "authority_required": {
         "disposition": "wait",
-        "reason": "authority"
+        "reason": "authority",
+        "scope": "outside_approved_scope"
+      },
+      "rereview_errors_blocked": {
+        "disposition": "repair",
+        "next": "recollect_inputs_and_correct",
+        "unresolved": "two_no_progress_repeats"
       },
       "original_writer_live": {
         "disposition": "reconcile",
-        "reason": "reconcile"
+        "next": "finite_foreground_wait_for_writer_termination",
+        "unresolved": "two_no_progress_repeats"
       },
       "unknown_outcome": {
         "disposition": "reconcile",
-        "reason": "reconcile"
+        "next": "confirm_effects_by_read",
+        "unresolved": "two_no_progress_repeats"
       },
       "ownership_uncertain": {
         "disposition": "reconcile",
-        "reason": "reconcile"
+        "next": "confirm_ownership_by_read",
+        "unresolved": "two_no_progress_repeats"
       },
       "past_failure_line": {
         "disposition": "wait",
@@ -112,7 +122,13 @@
       "human_decision": "explicit_request_and_evidence_not_auto_resume"
     },
     "result_line": "대기 · recovery:<reason>",
-    "result_line_reasons": "wait_reasons_plus_reconcile",
+    "result_line_reasons": [
+      "provider",
+      "credential",
+      "prerequisite",
+      "authority",
+      "no_progress"
+    ],
     "readiness_env": "BDUI_WORK_RECOVERY_SCHEMA",
     "readiness_value": "1",
     "worker_emission": "exact_readiness_value_only",
