@@ -250,6 +250,57 @@ describe('inquiry session live card (UI-ri8n)', () => {
     ).toBe(label);
   });
 
+  test.each([
+    ['running', null, null, '대화 중 8분'],
+    ['idle', 5, null, '답 대기'],
+    ['question', null, null, '답 대기'],
+    ['running', 5, 'takeover', '사람 인수']
+  ])(
+    'renders a %s conversation turn with processed %s and result %s as %s',
+    (turn_state, processed_message_at, result_kind, tail) => {
+      const view = interactiveView({
+        kind: 'inquiry',
+        turn_state: /** @type {any} */ (turn_state),
+        turn_state_since: 2 * 60_000,
+        conversation: {
+          processed_message_at,
+          result: result_kind ? { kind: result_kind } : null
+        }
+      });
+
+      render(
+        interactiveSessionBadgesTemplate([view], {
+          bead_id: 'UI-x1',
+          now: NOW
+        }),
+        mount
+      );
+
+      expect(
+        mount.querySelector('.interactive-session-badge')?.textContent?.trim()
+      ).toMatch(new RegExp(` · ${tail}$`));
+    }
+  );
+
+  test('draws the handoff button beside the resolve action', () => {
+    const item = {
+      lane: 'queue',
+      done: false,
+      resolve_action: true,
+      handoff_action: true,
+      handoff_attempt_id: 'a1',
+      wait_reasons: [waitReason({ kind: 'recovery' })]
+    };
+
+    const row = renderRow(/** @type {any} */ (item));
+
+    const button = /** @type {HTMLElement|null} */ (
+      row.querySelector('.worker-mini__resolve + .worker-mini__handoff')
+    );
+    expect(button?.textContent?.trim()).toBe('워커로 이어가기');
+    expect(button?.dataset.attemptId).toBe('a1');
+  });
+
   test('draws the progress line under the reason of a waiting row', () => {
     const item = {
       lane: 'queue',
@@ -442,7 +493,7 @@ describe('server wait judgment rendering', () => {
 
     expect(summary.count).toBe(1);
     expect(summary.action_count).toBe(1);
-    expect(summary.groups.map((group) => group.label)).toEqual(['세션이 멈춤']);
+    expect(summary.groups.map((group) => group.label)).toEqual(['확인 필요']);
     expect(summary.groups[0].entries[0].id).toBe('A-1');
   });
 
@@ -529,7 +580,7 @@ describe('server wait judgment rendering', () => {
       summary.groups.map((group) => [group.label, group.entries.length])
     ).toEqual([
       ['공급자', 1],
-      ['세션이 멈춤', 2]
+      ['확인 필요', 2]
     ]);
   });
 
@@ -1071,7 +1122,7 @@ describe('요약 칩 묶음 (UI-8gem §8)', () => {
 
     expect(
       row.querySelector('.wait-verdict summary')?.textContent?.trim()
-    ).toBe('⏸ 세션이 멈춤');
+    ).toBe('⏸ 확인 필요');
   });
 
   test('draws both token chip forms from one label', () => {
@@ -6968,9 +7019,7 @@ describe('대기 카드 표면 정리 2차 (UI-0bvr)', () => {
   test('lists an upstream-covered issue under its remaining kind', () => {
     const summary = blockedSummary(mixedReasonWorkspaces());
 
-    const people = summary.groups.find(
-      (group) => group.label === '세션이 멈춤'
-    );
+    const people = summary.groups.find((group) => group.label === '확인 필요');
 
     expect(people?.entries.map((entry) => entry.id)).toEqual(['A-2']);
   });

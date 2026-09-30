@@ -1574,8 +1574,10 @@ export function liveInquiryView(views) {
 
 /**
  * The turn-state tail of an interactive session badge (UI-ri8n §3.3):
- * `작업 중 <경과>` · `질문 대기` · `한도 대기` · `턴 종료 <경과>`. A null
- * `turn_state` draws nothing (fail-quiet).
+ * `작업 중 <경과>` · `질문 대기` · `한도 대기` · `턴 종료 <경과>`. A
+ * same-session conversation (UI-nuwy §3.8) reads its server record instead:
+ * `대화 중 <경과>` · `답 대기` · `사람 인수`. A null `turn_state` draws
+ * nothing (fail-quiet).
  *
  * @param {import('./lane-model.js').InteractiveSessionView} view
  * @param {number} [now]
@@ -1586,6 +1588,21 @@ export function interactiveTurnTail(view, now = Date.now()) {
     /째$/,
     ''
   );
+  const conversation = view.conversation;
+  if (conversation) {
+    if (conversation.result?.kind === 'takeover') {
+      return '사람 인수';
+    }
+    if (view.turn_state === 'running') {
+      return elapsed ? `대화 중 ${elapsed}` : '대화 중';
+    }
+    return view.turn_state === 'question' ||
+      view.turn_state === 'limit' ||
+      (view.turn_state === 'idle' &&
+        typeof conversation.processed_message_at === 'number')
+      ? '답 대기'
+      : '';
+  }
   switch (view.turn_state) {
     case 'running':
       return elapsed ? `작업 중 ${elapsed}` : '작업 중';
@@ -1754,6 +1771,12 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {boolean} [resolve_enabled] - Whether [세션에서 해결] may be
  * clicked; false while this row's own click is in flight.
  * @property {string} [resolve_title] - Tooltip: what the click starts.
+ * @property {boolean} [handoff_action] - Render [워커로 이어가기] (UI-nuwy
+ * §3.6) beside [세션에서 해결]; set by `tileResolveFields` from the server
+ * projection only.
+ * @property {boolean} [handoff_enabled] - false while this row's click waits.
+ * @property {string} [handoff_title] - Tooltip.
+ * @property {string|null} [handoff_attempt_id] - The stopped attempt handed back.
  * @property {ReturnType<typeof discardProjection>} [discard] - Shared durable
  * discard eligibility, phase, error, archive, and PR-receipt projection.
  * @property {boolean} [merge_enabled] - Whether the gate lets [머지] be clicked.
@@ -2834,7 +2857,7 @@ export function blockedSummary(workspaces) {
     { label: '외부 작업', kinds: ['external_job'] },
     { label: '선행', kinds: ['prerequisite', 'prerequisite_foreign'] },
     { label: '공급자', kinds: ['provider_hold'] },
-    { label: '세션이 멈춤', kinds: ['awaiting_user', 'recovery'] },
+    { label: '확인 필요', kinds: ['awaiting_user', 'recovery'] },
     { label: '재시도', kinds: ['retry_wait'] }
   ]
     .map((group) => ({
@@ -3575,7 +3598,7 @@ export function miniRow(item, options = {}) {
   // [세션에서 해결] (UI-jw27 §4). 평소에는 아무것도 되돌리지 않으므로 [폐기]
   // 앞에 선다. requested 실패에서는 더 약한 복구부터 읽히도록 재시도와 포기 뒤로
   // 이동한다 (discard-abandon §3.1).
-  const resolve_el = item.resolve_action
+  const resolve_only = item.resolve_action
     ? html`<button
         type="button"
         class="op-btn worker-mini__resolve"
@@ -3587,6 +3610,23 @@ export function miniRow(item, options = {}) {
         세션에서 해결
       </button>`
     : '';
+  // [워커로 이어가기] (UI-nuwy §3.6) takes the same `.op-btn` slot right after
+  // [세션에서 해결]; `tileResolveFields` alone decides whether it stands.
+  const handoff_el = item.handoff_action
+    ? html`<button
+        type="button"
+        class="op-btn worker-mini__handoff"
+        data-bead-id=${item.id}
+        data-attempt-id=${item.handoff_attempt_id || ''}
+        ?disabled=${item.handoff_enabled === false}
+        title=${item.handoff_title ||
+        '대화 창을 닫고 Worker가 같은 세션을 무인으로 이어갑니다'}
+      >
+        워커로 이어가기
+      </button>`
+    : '';
+  const resolve_el =
+    resolve_only || handoff_el ? html`${resolve_only}${handoff_el}` : '';
   const discard_actions_el = discard?.abandon.action
     ? html`${discard_el}${abandon_el}${resolve_el}`
     : html`${resolve_el}${discard_el}`;
@@ -3696,6 +3736,7 @@ export function miniRow(item, options = {}) {
     item.merge_action ||
     item.cancel_action ||
     item.resolve_action ||
+    item.handoff_action ||
     item.discard_action ||
     discard?.operation ||
     item.revise_action

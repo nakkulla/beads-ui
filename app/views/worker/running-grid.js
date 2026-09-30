@@ -159,6 +159,12 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * 응답을 기다리는 중이라 버튼이 잠긴다.
  * @property {string} [resolve_title] - hover 문구: 이 클릭이 무엇을 띄우는지.
  * 없으면 렌더러의 기본 문장이 대신 선다.
+ * @property {boolean} [handoff_action] - Render `[워커로 이어가기]`
+ * (UI-nuwy §3.6); `tileResolveFields` sets it from the server projection.
+ * @property {boolean} [handoff_enabled] - false while this tile's click waits.
+ * @property {string} [handoff_title] - hover 문구.
+ * @property {string|null} [handoff_attempt_id] - The stopped attempt the click
+ * hands back.
  * @property {string} [id] - 이 타일이 그리는 bead의 id. 판정 칩이 `data-bead-id`로
  * 싣는 값이라 `bead_id`와 같되, 두 탭이 같은 칩 렌더러를 쓰므로 레인 항목과 같은
  * 이름으로도 읽힌다 (UI-wg68 §5.3).
@@ -1337,7 +1343,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 실패한 폐기 작업의 두 번째 출구 (UI-jw27 §4). 폐기 실패는 실행 중·held·
   // 파킹 타일 어디서나 날 수 있으므로 상태 분기 밖에서 한 번만 만들고, 자리는
   // `[폐기]`와 같은 슬롯 1 오른쪽 끝이다 — 같은 실패가 내는 두 조작이다.
-  const resolve_button = tile.resolve_action
+  const resolve_only = tile.resolve_action
     ? html`<button
         type="button"
         class="op-btn rtile__resolve"
@@ -1349,6 +1355,25 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         세션에서 해결
       </button>`
     : '';
+  // [워커로 이어가기] (UI-nuwy §3.6) stands in the same `.op-btn` slot right
+  // after [세션에서 해결]; `tileResolveFields` alone decides whether it does.
+  const handoff_button = tile.handoff_action
+    ? html`<button
+        type="button"
+        class="op-btn rtile__handoff"
+        data-attempt-id=${tile.handoff_attempt_id || ''}
+        ?disabled=${tile.handoff_enabled === false}
+        title=${tile.handoff_title ||
+        '대화 창을 닫고 Worker가 같은 세션을 무인으로 이어갑니다'}
+        aria-label="워커로 이어가기"
+      >
+        워커로 이어가기
+      </button>`
+    : '';
+  const resolve_button =
+    resolve_only || handoff_button
+      ? html`${resolve_only}${handoff_button}`
+      : '';
   const discard_button =
     tile.discard?.action && !(failed && failure?.landed === true)
       ? html`<button

@@ -414,6 +414,9 @@ const DONE_KIND_LABELS = {
  * @property {'running'|'question'|'limit'|'idle'|null} turn_state
  * @property {number|null} turn_state_since
  * @property {{ text: string, at: number|null }|null} last_message
+ * @property {{ processed_message_at: number|null, result: { kind: string }|null }|null} [conversation]
+ * - The server's same-session conversation state (UI-nuwy §3.3), read only
+ * by the badge tail.
  */
 
 /**
@@ -799,11 +802,11 @@ export function activeByBead(attempts, done_at_by_bead, input = {}) {
       ...(held.run_state === 'parked'
         ? {
             failure: failureProjection(a, {
-              // 파킹 출구는 새 attempt나 원 세션 재개가 아니라 문의 세션이다:
-              // 사용자가 결정을 내릴 대화만 이어지고 구현 재디스패치는 없다.
+              // 파킹 출구는 `↻` 재개가 아니라 같은 세션과의 대화다 (UI-nuwy
+              // §3.2): 대화가 인계하면 Worker가 그 세션을 이어간다.
               resume_eligible: false,
               resume_reason:
-                '세션이 멈춤 — [세션에서 해결]로 문의를 이어갑니다',
+                '확인 필요 — [세션에서 해결]로 같은 세션과 대화합니다',
               confirmation: discard.confirmation,
               history: input.bead_timelines?.[bead_id]
             })
@@ -2934,6 +2937,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         turn_state: record.turn_state ?? null,
         turn_state_since: record.turn_state_since ?? null,
         last_message: record.last_message ?? null,
+        conversation: record.conversation ?? null,
         closing: record.state === 'exiting' || record.settled_at !== null
       });
       interactive_by_bead.set(identity, views);
@@ -3450,7 +3454,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
             : live.run_state === 'failed'
               ? ['⚠ 실패']
               : live.run_state === 'parked'
-                ? ['⏸ 세션이 멈춤']
+                ? ['⏸ 확인 필요']
                 : live.run_state === 'retry_wait'
                   ? ['↻ 재시도 대기']
                   : live.run_state === 'waiting'

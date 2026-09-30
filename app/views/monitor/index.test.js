@@ -1679,7 +1679,7 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     const tile = el(mount, '.rtile[data-attempt-id="t1"]');
     expect(
       tile?.querySelector('.wait-verdict summary')?.textContent?.trim()
-    ).toBe('⏸ 세션이 멈춤');
+    ).toBe('⏸ 확인 필요');
     expect(tile?.querySelector('.rtile__held-summary')?.textContent).toBe(
       '사용자 결정 대기'
     );
@@ -1806,7 +1806,7 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     expect(tile?.querySelector('.rtile__elapsed')).toBeNull();
     expect(
       tile?.querySelector('.wait-verdict summary')?.textContent?.trim()
-    ).toBe('⛔ 세션이 멈춤 · 조치 필요');
+    ).toBe('⛔ 확인 필요 · 조치 필요');
     expect(tile?.querySelector('.op-btn.rtile__resolve')).not.toBeNull();
     expect(tile?.querySelector('.rtile__foot .rtile__discard')).not.toBeNull();
     expect(mount.querySelectorAll('.rtile--failed')).toHaveLength(0);

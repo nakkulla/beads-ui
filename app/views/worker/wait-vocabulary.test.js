@@ -278,8 +278,8 @@ test('shares one session label across parked and recovery kinds', () => {
   );
 
   expect(rows.map((row) => waitBadgeText(row, 'action_required'))).toEqual([
-    '⛔ 세션이 멈춤 · 조치 필요',
-    '⛔ 세션이 멈춤 · 조치 필요'
+    '⛔ 확인 필요 · 조치 필요',
+    '⛔ 확인 필요 · 조치 필요'
   ]);
 });
 
