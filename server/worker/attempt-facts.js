@@ -344,7 +344,7 @@ export function buildScriptCalls(input, deps) {
  * Build stage reads only from installed references with unique start lines.
  *
  * @param {{ route: string|null, quickfix_lane: boolean, continuation?: boolean }} input
- * @param {{ script_dir: string, fs?: { existsSync: (p: string) => boolean, readFileSync: (p: string, encoding: string) => string } }} deps
+ * @param {{ script_dir: string, fs?: { existsSync: (p: string) => boolean, readFileSync: (p: string, encoding: string) => string, readdirSync: (p: string) => string[] } }} deps
  * @returns {StageRead[]}
  */
 function buildStageReads(input, deps) {
@@ -368,21 +368,50 @@ function buildStageReads(input, deps) {
       return null;
     }
   };
+  /** @type {Array<{ file: string, lines: string[] }>} */
+  const references = [];
+  try {
+    for (const name of fs.readdirSync(
+      path.join(deps.script_dir, '../references')
+    )) {
+      if (name.endsWith('.md')) {
+        const ref = reference(name);
+        if (ref) {
+          references.push(ref);
+        }
+      }
+    }
+  } catch {
+    // No directory listing means no evidence of a unique heading.
+  }
+  /**
+   * Escape a literal heading for a sed basic regular expression.
+   *
+   * @param {string} heading
+   */
+  const escapeHeading = (heading) => heading.replace(/[\\^$.*[/]/g, '\\$&');
   /**
    * Assemble a sed range after checking literal whole-line headings.
    *
-   * @param {string} name
    * @param {string} start
-   * @param {string|null} end
    * @returns {string|null}
    */
-  const range = (name, start, end) => {
-    const ref = reference(name);
-    if (!ref || ref.lines.filter((line) => line === start).length !== 1) {
+  const range = (start) => {
+    const matches = references.flatMap((ref) =>
+      ref.lines.flatMap((line, index) =>
+        line === start ? [{ ref, index }] : []
+      )
+    );
+    if (matches.length !== 1) {
       return null;
     }
-    const stop = end && ref.lines.includes(end) ? `/^${end}$/` : '$';
-    return `sed -n '/^${start}$/,${stop}p' ${shellQuote(ref.file)}`;
+    const { ref, index } = matches[0];
+    const level = start.indexOf(' ');
+    const heading = new RegExp(`^#{${level}}\\s`);
+    const end = ref.lines.slice(index + 1).find((line) => heading.test(line));
+    const stop = end ? `/^${escapeHeading(end)}$/` : '$';
+    const expression = `/^${escapeHeading(start)}$/,${stop}p`;
+    return `sed -n ${shellQuote(expression)} ${shellQuote(ref.file)}`;
   };
   /**
    * Append one available stage command.
@@ -396,49 +425,20 @@ function buildStageReads(input, deps) {
       reads.push({ stage, command, note });
     }
   };
-  const spec_reference = 'execution-spec-backed.md';
   if (input.route === 'spec_backed') {
-    add(
-      '진입·선택·dispatch',
-      range(spec_reference, '## Selector and dispatch', '## Prerequisite gate')
-    );
+    add('진입·선택·dispatch', range('## Selector and dispatch'));
     if (input.continuation === true) {
-      add(
-        '이어하기',
-        range(
-          spec_reference,
-          '## Attempt continuation',
-          '## Staleness re-review'
-        )
-      );
+      add('이어하기', range('## Attempt continuation'));
     }
-    add(
-      'push 전',
-      range(
-        'execution-common.md',
-        '## Push safety',
-        '## 탐색 지도 (recommended)'
-      )
-    );
-    add('인도', range('finishing.md', '## Final PR delivery', '## Merge tail'));
+    add('push 전', range('## Push safety'));
+    add('인도', range('## Final PR delivery'));
   }
   if (input.quickfix_lane || input.route === 'quick_fix') {
-    add('착지', range('execution-quick-fix.md', '## quick_fix landing', null));
-    add(
-      '마무리',
-      range(
-        'finishing.md',
-        '### Worker-dispatched quick_fix',
-        '### No-change close (refuted or no-delta)'
-      )
-    );
+    add('착지', range('## quick_fix landing'));
+    add('마무리', range('### Worker-dispatched quick_fix'));
   }
-  const terminal = range(
-    'finishing.md',
-    '## Terminal result line',
-    '## Completion report'
-  );
-  const report = range('finishing.md', '## Completion report', null);
+  const terminal = range('## Terminal result line');
+  const report = range('## Completion report');
   add('종료 보고', [terminal, report].filter(Boolean).join(' && '));
   const waits = reference('unattended-waits.md');
   if (waits) {
@@ -455,11 +455,7 @@ function buildStageReads(input, deps) {
   if (stale_installed) {
     add(
       '재검토',
-      range(
-        spec_reference,
-        '## Staleness re-review',
-        '## Selector and dispatch'
-      ),
+      range('## Staleness re-review'),
       'workflow `Staleness re-review` 절차를 읽고 재검토 입력 전체를 파일에 저장한 뒤 로컬에서 파싱한다. `needs_judgment`는 최종 판정이 아니며 `verdict_draft_blockers`가 지정한 항목을 비교한 뒤 정본 절차로 분류·기록한다.'
     );
   }

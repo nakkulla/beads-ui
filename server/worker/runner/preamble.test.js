@@ -373,7 +373,7 @@ describe('runner/preamble PR-submit directive (worker-phase2 §1)', () => {
       expect(directive).toContain('종료 메시지의 첫 줄은 결과 줄 하나다.');
       expect(directive).not.toContain('마지막 줄은 결과 줄 하나다.');
       expect(directive).toContain(
-        '이 문법의 정본은 dotfiles `finishing.md`이고 위는 사본이다.'
+        '이 문법의 정본은 dotfiles workflow 참조의 `## Terminal result line` 절이고 위는 사본이다.'
       );
     }
   );
@@ -778,7 +778,7 @@ describe('runner/preamble result line grammar (spec D1)', () => {
 
   test('declares the grammar a copy of the dotfiles canonical source', () => {
     expect(PR_SUBMIT_DIRECTIVE).toContain(
-      '이 문법의 정본은 dotfiles `finishing.md`이고 위는 사본이다'
+      '이 문법의 정본은 dotfiles workflow 참조의 `## Terminal result line` 절이고 위는 사본이다'
     );
   });
 });

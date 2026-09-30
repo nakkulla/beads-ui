@@ -123,7 +123,8 @@ export const FAST_TRACK_DIRECTIVE = [
  * The standard result-line forms; recoveryDirective adds a recovery wait only
  * for a session launched with validated recovery readiness.
  *
- * CANONICAL SOURCE is dotfiles `finishing.md`; this is a copy (harness-reduction
+ * CANONICAL SOURCE is the dotfiles workflow `## Terminal result line` section;
+ * this is a copy (harness-reduction
  * spec D1), inlined because the line is the ONE thing the failure classifier
  * reads and a session that invents its own shape is classified by accident. The
  * copy is declared as a copy in the block itself, which is what makes dotfiles
@@ -143,7 +144,7 @@ const RESULT_LINE_GRAMMAR = [
   `${RESULT_LINE_PREFIX}<wait_id>`,
   '```',
   '',
-  '이 문법의 정본은 dotfiles `finishing.md`이고 위는 사본이다.'
+  '이 문법의 정본은 dotfiles workflow 참조의 `## Terminal result line` 절이고 위는 사본이다.'
 ].join('\n');
 
 /**

@@ -12,19 +12,19 @@ const REFERENCES = path.join(
 );
 
 const HEADINGS = [
-  ['execution-spec-backed.md', '## Selector and dispatch'],
-  ['execution-spec-backed.md', '## Prerequisite gate'],
-  ['execution-spec-backed.md', '## Attempt continuation'],
-  ['execution-spec-backed.md', '## Staleness re-review'],
-  ['execution-common.md', '## Push safety'],
-  ['execution-common.md', '## 탐색 지도 (recommended)'],
-  ['finishing.md', '## Final PR delivery'],
-  ['finishing.md', '## Merge tail'],
-  ['execution-quick-fix.md', '## quick_fix landing'],
-  ['finishing.md', '### Worker-dispatched quick_fix'],
-  ['finishing.md', '### No-change close (refuted or no-delta)'],
-  ['finishing.md', '## Terminal result line'],
-  ['finishing.md', '## Completion report']
+  '## Selector and dispatch',
+  '## Prerequisite gate',
+  '## Attempt continuation',
+  '## Staleness re-review',
+  '## Push safety',
+  '## 탐색 지도 (recommended)',
+  '## Final PR delivery',
+  '## Merge tail',
+  '## quick_fix landing',
+  '### Worker-dispatched quick_fix',
+  '### No-change close (refuted or no-delta)',
+  '## Terminal result line',
+  '## Completion report'
 ];
 
 const describeCrossRuntime = fs.existsSync(DOTFILES_ROOT)
@@ -32,13 +32,21 @@ const describeCrossRuntime = fs.existsSync(DOTFILES_ROOT)
   : describe.skip;
 
 describeCrossRuntime('attempt stage-read reference headings', () => {
-  test.each(HEADINGS)('finds exactly one %s line for %s', (file, heading) => {
-    const content = fs.readFileSync(path.join(REFERENCES, file), 'utf8');
+  test.each(HEADINGS)(
+    'finds exactly one %s line across references',
+    (heading) => {
+      const lines = fs
+        .readdirSync(REFERENCES)
+        .filter((file) => file.endsWith('.md'))
+        .flatMap((file) =>
+          fs.readFileSync(path.join(REFERENCES, file), 'utf8').split(/\r?\n/)
+        );
 
-    const matches = content.split(/\r?\n/).filter((line) => line === heading);
+      const matches = lines.filter((line) => line === heading);
 
-    expect(matches).toHaveLength(1);
-  });
+      expect(matches).toHaveLength(1);
+    }
+  );
 
   test('finds the whole-file unattended wait reference', () => {
     const file = path.join(REFERENCES, 'unattended-waits.md');

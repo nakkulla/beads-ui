@@ -1,3 +1,6 @@
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import {
@@ -37,6 +40,24 @@ const REFERENCES = {
   [path.join(SCRIPTS, '../references/unattended-waits.md')]: '# Waits'
 };
 
+const SPLIT_REFERENCES = {
+  ...REFERENCES,
+  [path.join(SCRIPTS, '../references/execution-spec-backed.md')]:
+    '## Staleness re-review',
+  [path.join(SCRIPTS, '../references/execution-dispatch.md')]:
+    '## Selector and dispatch\n## Attempt continuation',
+  [path.join(SCRIPTS, '../references/execution-worker-lane.md')]:
+    '## Worker lane placement\n## Prerequisite gate',
+  [path.join(SCRIPTS, '../references/finishing.md')]: [
+    '## Final PR delivery',
+    '## Merge tail',
+    '### Worker-dispatched quick_fix',
+    '### No-change close (refuted or no-delta)'
+  ].join('\n'),
+  [path.join(SCRIPTS, '../references/completion-report.md')]:
+    '## Terminal result line\n## Completion report'
+};
+
 /**
  * A filesystem stub over an explicit path→content map. Any path outside the map
  * is absent, which is what makes every fail-quiet case expressible.
@@ -45,6 +66,10 @@ const REFERENCES = {
  */
 function fakeFs(files) {
   return {
+    readdirSync: (/** @type {string} */ p) =>
+      Object.keys(files)
+        .filter((file) => path.dirname(file) === p)
+        .map((file) => path.basename(file)),
     existsSync: (/** @type {string} */ p) =>
       Object.prototype.hasOwnProperty.call(files, p),
     readFileSync: (/** @type {string} */ p) => {
@@ -526,6 +551,131 @@ describe('worker/attempt-facts shell quoting (spec D1)', () => {
 });
 
 describe('worker/attempt-facts collection (spec D1)', () => {
+  test.each([
+    {
+      name: 'before split',
+      files: REFERENCES,
+      dispatch: 'execution-spec-backed.md',
+      report: 'finishing.md'
+    },
+    {
+      name: 'after split',
+      files: SPLIT_REFERENCES,
+      dispatch: 'execution-dispatch.md',
+      report: 'completion-report.md'
+    }
+  ])('finds the same stages $name', async ({ files, dispatch, report }) => {
+    const facts = await buildAttemptFacts(factsInput({ continuation: true }), {
+      homeDir: HOME,
+      fs: fakeFs(files)
+    });
+
+    expect(facts.stage_reads.map((read) => read.stage)).toEqual([
+      '진입·선택·dispatch',
+      '이어하기',
+      'push 전',
+      '인도',
+      '종료 보고',
+      '무인 대기'
+    ]);
+    expect(facts.stage_reads[0].command).toContain(`/references/${dispatch}`);
+    expect(facts.stage_reads[1].command).toContain(`/references/${dispatch}`);
+    expect(facts.stage_reads[4].command).toContain(`/references/${report}`);
+  });
+
+  test('omits a heading duplicated across different reference files', async () => {
+    const files = {
+      ...SPLIT_REFERENCES,
+      [path.join(SCRIPTS, '../references/duplicate.md')]:
+        '## Selector and dispatch'
+    };
+
+    const facts = await buildAttemptFacts(factsInput({ continuation: true }), {
+      homeDir: HOME,
+      fs: fakeFs(files)
+    });
+
+    expect(facts.stage_reads.map((read) => read.stage)).toEqual([
+      '이어하기',
+      'push 전',
+      '인도',
+      '종료 보고',
+      '무인 대기'
+    ]);
+  });
+
+  test('ignores matching headings outside markdown reference files', async () => {
+    const facts = await buildAttemptFacts(factsInput(), {
+      homeDir: HOME,
+      fs: fakeFs({
+        ...SPLIT_REFERENCES,
+        [path.join(SCRIPTS, '../references/duplicate.txt')]:
+          '## Selector and dispatch'
+      })
+    });
+
+    expect(facts.stage_reads[0].stage).toBe('진입·선택·dispatch');
+  });
+
+  test('reads nested content through the next same-level heading in a renamed file', async () => {
+    const home_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'attempt-facts-'));
+    const reference_dir = path.join(
+      workflowScriptDir(home_dir),
+      '../references'
+    );
+    const file = path.join(reference_dir, "renamed 'reference.md");
+    const content = [
+      '## Before',
+      'excluded before',
+      '## Selector and dispatch',
+      'included',
+      '### Nested',
+      'nested body',
+      "## Next [literal].* / 'section'",
+      'excluded after'
+    ].join('\n');
+    fs.mkdirSync(reference_dir, { recursive: true });
+    fs.writeFileSync(file, content);
+    try {
+      const facts = await buildAttemptFacts(factsInput(), {
+        homeDir: home_dir
+      });
+
+      const output = execFileSync(
+        '/bin/sh',
+        ['-c', facts.stage_reads[0].command],
+        { encoding: 'utf8' }
+      );
+
+      expect(output).toBe(
+        [
+          '## Selector and dispatch',
+          'included',
+          '### Nested',
+          'nested body',
+          "## Next [literal].* / 'section'",
+          ''
+        ].join('\n')
+      );
+    } finally {
+      fs.rmSync(home_dir, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps whole-file waits when the reference directory cannot be listed', async () => {
+    const files = fakeFs(REFERENCES);
+    files.readdirSync = () => {
+      throw new Error('EACCES');
+    };
+
+    const facts = await buildAttemptFacts(factsInput(), {
+      homeDir: HOME,
+      fs: files
+    });
+
+    expect(facts.stage_reads.map((read) => read.stage)).toEqual(['무인 대기']);
+  });
+
   test('adds continuation reading to a restarted attempt', async () => {
     const input = factsInput({ continuation: true });
 
