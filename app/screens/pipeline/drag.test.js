@@ -107,6 +107,33 @@ describe('pipeline pointer drag (UI-dbn6 §3.6)', () => {
     ]);
   });
 
+  test('holds the lane still after a long press until the finger moves', () => {
+    vi.useFakeTimers({ now: NOW });
+    /** @type {{ current: Element|null }} */
+    const hit = { current: null };
+    const { mount: root } = mount({}, hit);
+    const source = rowOf(root, 'A-3');
+    const scroller = /** @type {HTMLElement} */ (
+      source.closest('[data-lane-body]')
+    );
+    const writes = vi.fn();
+    scroller.style.overflowY = 'auto';
+    Object.defineProperties(scroller, {
+      scrollHeight: { configurable: true, get: () => 2000 },
+      clientHeight: { configurable: true, get: () => 800 },
+      scrollTop: { configurable: true, get: () => 400, set: writes }
+    });
+    scroller.getBoundingClientRect = () =>
+      /** @type {DOMRect} */ ({ top: 0, bottom: 800, left: 0, right: 400 });
+    hit.current = source;
+    pointer(source, 'pointerdown', { pointerType: 'touch', x: 10, y: 400 });
+
+    vi.advanceTimersByTime(360 + 160);
+
+    expect(root.classList.contains('is-dragging')).toBe(true);
+    expect(writes).not.toHaveBeenCalled();
+  });
+
   test('sends worker-queue-reorder for a mouse drag onto an earlier row', async () => {
     /** @type {{ current: Element|null }} */
     const hit = { current: null };

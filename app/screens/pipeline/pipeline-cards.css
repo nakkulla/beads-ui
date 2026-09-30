@@ -389,6 +389,17 @@ span.pl-activity__text {
   margin-top: var(--s-3);
 }
 
+/* The coordinate chips (route · provenance · labels) and the run facts share
+   one wrapping line when they fit, so a row stays compact; each keeps its own
+   wrapping box and never passes the card. */
+.pl-chips,
+.pl-facts {
+  display: inline-flex;
+  max-width: 100%;
+  margin-right: var(--s-2);
+  vertical-align: top;
+}
+
 .pl-chip,
 .pl-badge {
   font-size: var(--t-chip);

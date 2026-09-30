@@ -258,6 +258,11 @@ export function createPointerDrag(options) {
     }
     dragging = true;
     suppress_click = true;
+    // The auto-scroll loop reads the last pointer position; until the finger
+    // moves that is where it pressed, not the previous drag's (or 0,0, which
+    // scrolled the page up while a long press held still).
+    last_x = press.x;
+    last_y = press.y;
     root.classList.add('is-dragging');
     press.el.classList.add('is-drag-source');
     const rect = press.el.getBoundingClientRect();
