@@ -278,7 +278,10 @@ export function prWaitRowFields(input) {
     discard_enabled: discard.enabled,
     discard_title: discard.title,
     merge_enabled:
-      !merge_step &&
+      // A stalled verify/deploy script leaves its failed step on the row; that
+      // is the very state the `… 재시도 후 정리` click exists for, not a step in
+      // flight.
+      (!merge_step || stalled_script !== null) &&
       !queueing &&
       !conflict_session &&
       !discard_blocks_merge &&

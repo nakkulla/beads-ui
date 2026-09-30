@@ -295,6 +295,57 @@ describe('PR 대기 행 — Worker 투영 (UI-dbn6 P1-r2)', () => {
     expect(pr.cleanup_failed).toMatchObject({ step: 'repo_operations' });
   });
 
+  test('enables the cleanup click whose label names the stalled script', () => {
+    const pr = row({
+      pr_wait: [{ bead_id: 'UI-dbn6', added_at: 1, merge_sha: MERGE_SHA }],
+      pr_observations: {
+        'UI-dbn6': observed({ tier: 'merged', gate_badge: '머지됨' })
+      },
+      cleanup_failed: {
+        'UI-dbn6': { step: 'repo_operations', reason: 'deploy failed' }
+      },
+      repo_operations: [
+        {
+          operation_id: 'op-1',
+          kind: 'deploy',
+          state: 'failed',
+          subjects: [{ bead_id: 'UI-dbn6', merged_sha: MERGE_SHA }]
+        }
+      ]
+    });
+
+    expect(pr.merge_enabled).toBe(true);
+  });
+
+  test('keeps the click locked while a stalled script operation runs again', () => {
+    const pr = row({
+      pr_wait: [
+        {
+          bead_id: 'UI-dbn6',
+          added_at: 1,
+          merge_sha: MERGE_SHA,
+          cleanup_cursor: 'repo_operations'
+        }
+      ],
+      pr_observations: {
+        'UI-dbn6': observed({ tier: 'merged', gate_badge: '머지됨' })
+      },
+      cleanup_failed: {
+        'UI-dbn6': { step: 'repo_operations', reason: 'deploy failed' }
+      },
+      repo_operations: [
+        {
+          operation_id: 'op-2',
+          kind: 'deploy',
+          state: 'running',
+          subjects: [{ bead_id: 'UI-dbn6', merged_sha: MERGE_SHA }]
+        }
+      ]
+    });
+
+    expect(pr.merge_enabled).toBe(false);
+  });
+
   test('keeps the coarse gate badge without the Worker projection option', () => {
     const lanes = buildLanes(
       [
