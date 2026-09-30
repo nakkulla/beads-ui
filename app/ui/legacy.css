@@ -1,8 +1,8 @@
 /*
  * Legacy control-tower rules (Phase 7) split out of `ui/base.css` in the
- * UI-dbn6 design-system round, verbatim. They serve the Phase 3 bridges
- * (settings dialog, ADR, compare) and the detail chips that still borrow
- * `ctl-chip` / `judgement-chip--bound`; they read the LEGACY tokens only.
+ * UI-dbn6 design-system round, verbatim. They serve the unmounted old views
+ * and the detail chips that still borrow `ctl-chip` /
+ * `judgement-chip--bound`; they read the LEGACY tokens only.
  * Phase 4 deletes this file with its last reader.
  */
 

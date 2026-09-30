@@ -13,16 +13,16 @@
  * light ones. `ui/theme.js` stamps `<html data-theme>` from the saved choice
  * or the OS preference, so both sets resolve without a media query here.
  *
- * The first two blocks are the LEGACY tokens the Phase 3 bridges (settings
- * dialog, ADR, compare, usage meter, fatal error), `styles.css` and
- * `ui/legacy.css` still read. Their names and values are unchanged, no name
- * is shared with the new system below, and nothing new reads them.
+ * The first two blocks are the LEGACY tokens only `styles.css` and
+ * `ui/legacy.css` (the unmounted old views and a few detail chips) still
+ * read. Their names and values are unchanged, no name is shared with the new
+ * system below, and no new stylesheet reads them.
  */
 
 /* =====================================================================
- * LEGACY tokens — read by `styles.css`, `ui/legacy.css` and the Phase 3
- * bridges only. Unchanged names and values (Phase 7 control tower,
- * UI-kyky §3.2); Phase 4 deletes them with their last reader.
+ * LEGACY tokens — read by `styles.css` and `ui/legacy.css` only. Unchanged
+ * names and values (Phase 7 control tower, UI-kyky §3.2); Phase 4 deletes
+ * them with their last reader.
  * ===================================================================== */
 :root {
   --bg-app: #0b0e14;

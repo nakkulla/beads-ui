@@ -17,7 +17,7 @@
 }
 
 /* `html > body` outranks the legacy `styles.css` body rule (which still
-   ships its own palette for the Phase 3 bridges) whatever the load order. */
+   ships its own palette for the old views) whatever the load order. */
 html > body {
   margin: 0;
   background: var(--canvas);

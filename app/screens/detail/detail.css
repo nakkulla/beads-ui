@@ -469,7 +469,7 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 
 /* ---------- borrowed shared classes, restyled inside the detail ----------
    `chip-popover` (ui/chip-popover.js), `ctl-chip` (exec-format.js) and
-   `prompt-block__meta` also serve the Phase 3 bridges from `styles.css` /
+   `prompt-block__meta` also serve the old views from `styles.css` /
    `ui/legacy.css`; inside the detail panel they take the new skin. */
 .dt-panel .chip-popover {
   border: 0;
