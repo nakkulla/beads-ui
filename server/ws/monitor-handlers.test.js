@@ -1016,7 +1016,10 @@ describe('buildMonitorPipeline bead overlay (UI-q1tg §3.1)', () => {
       ])
     });
 
-    expect(overlayOf(out)['A-done']).toEqual({ route: 'quick_fix' });
+    expect(overlayOf(out)['A-done']).toEqual({
+      route: 'quick_fix',
+      labels: []
+    });
     expect(overlayOf(out)['A-q'].metadata).toEqual({
       impl_runtime: 'codex'
     });
@@ -2513,5 +2516,76 @@ describe('prewarmWorkspaceKv (UI-j2h3 §4.3)', () => {
       'ready',
       'absent'
     ]);
+  });
+});
+
+describe('buildMonitorPipeline overlay display fields (UI-dbn6 §4.2)', () => {
+  test('passes priority, issue_type, labels and from_id through the overlay', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ queue: [{ bead_id: 'A-q', added_at: NOW }] })
+      },
+      titleCache: warmCache(WS_A, [
+        {
+          id: 'A-q',
+          title: '대기',
+          priority: 1,
+          issue_type: 'bug',
+          labels: ['frontend'],
+          dependencies: [{ id: 'A-origin', dependency_type: 'discovered-from' }]
+        }
+      ])
+    });
+
+    expect(overlayOf(out)['A-q']).toMatchObject({
+      priority: 1,
+      issue_type: 'bug',
+      labels: ['frontend'],
+      from_id: 'A-origin'
+    });
+  });
+
+  test('carries the display fields for a runnable candidate', () => {
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [candidate('A-candidate')] },
+      titleCache: warmCache(WS_A, [
+        { id: 'A-candidate', title: '후보', priority: 3, issue_type: 'task' }
+      ])
+    });
+
+    expect(overlayOf(out)['A-candidate']).toMatchObject({
+      priority: 3,
+      issue_type: 'task',
+      labels: []
+    });
+  });
+
+  test('ships the row with the display fields omitted when the cache read throws', () => {
+    const cache = warmCache(WS_A, [
+      {
+        id: 'A-q',
+        title: '대기',
+        priority: 1,
+        workflow: { route: 'quick_fix' }
+      }
+    ]);
+    cache.overlayFieldsFor = () => {
+      throw new Error('overlay boom');
+    };
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ queue: [{ bead_id: 'A-q', added_at: NOW }] })
+      },
+      titleCache: cache
+    });
+
+    expect(out.map((workspace) => workspace.root_dir)).toEqual([WS_A]);
+    expect(overlayOf(out)['A-q']).toEqual({
+      route: 'quick_fix',
+      metadata: {}
+    });
   });
 });

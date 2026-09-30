@@ -1103,3 +1103,62 @@ describe('title cache description scope (UI-f1qy §4.2)', () => {
     });
   });
 });
+
+describe('overlay field projection (UI-dbn6 §4.2)', () => {
+  test('fills priority, issue_type, labels and from_id from the same bd show payload', async () => {
+    const bd = fakeBd({
+      'UI-1': {
+        title: '필드 있는 이슈',
+        priority: 2,
+        issue_type: 'task',
+        labels: ['frontend', 'pr'],
+        dependencies: [
+          { id: 'UI-0', dependency_type: 'discovered-from' },
+          { id: 'UI-9', dependency_type: 'blocks', status: 'open' }
+        ]
+      }
+    });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      enrichWorkflow: () => null
+    });
+
+    cache.overlayFieldsFor('/ws', ['UI-1']);
+    await bd.settled();
+
+    expect(cache.overlayFieldsFor('/ws', ['UI-1'])).toEqual({
+      'UI-1': {
+        priority: 2,
+        issue_type: 'task',
+        labels: ['frontend', 'pr'],
+        from_id: 'UI-0'
+      }
+    });
+    expect(bd.runJson).toHaveBeenCalledTimes(1);
+  });
+
+  test('omits priority, issue_type and from_id when the payload lacks them', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '필드 없는 이슈',
+      priority: 'high',
+      issue_type: ''
+    });
+
+    const out = cache.overlayFieldsFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({ 'UI-1': { labels: [] } });
+  });
+
+  test('omits a bead whose record has not landed from the overlay fields', () => {
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (fakeBd({}).runJson),
+      enrichWorkflow: () => null
+    });
+
+    const out = cache.overlayFieldsFor('/ws', ['UI-cold']);
+
+    expect(out).toEqual({});
+  });
+});

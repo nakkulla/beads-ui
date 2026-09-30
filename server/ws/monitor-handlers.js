@@ -882,7 +882,7 @@ function laneMemberIds(snapshot) {
  * @param {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null} cache
  * @param {((workspace_key: string, parent_ids: Iterable<string>) => Record<string, string[]>)|null} [carriedToFor]
  * @param {string[]} [workspace_roots]
- * @returns {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string }>}
+ * @returns {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string, priority?: number, issue_type?: string, labels?: string[], from_id?: string }>}
  */
 function beadOverlayFor(
   root_dir,
@@ -891,7 +891,7 @@ function beadOverlayFor(
   carriedToFor = null,
   workspace_roots = []
 ) {
-  /** @type {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string }>} */
+  /** @type {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string, priority?: number, issue_type?: string, labels?: string[], from_id?: string }>} */
   const overlay = {};
   const done_ids = [...laneBeadIds(snapshot, ['done'])];
   if (carriedToFor && done_ids.length > 0) {
@@ -930,6 +930,19 @@ function beadOverlayFor(
   ];
   if (ids.length === 0) {
     return overlay;
+  }
+  // 표시 필드 (UI-dbn6 §4.2): 우선순위·타입·라벨·출처. 같은 `bd show` 기록에서
+  // 읽고, 읽기가 실패해도 이 네 필드만 빠질 뿐 나머지 오버레이와 행은 나간다.
+  if (typeof cache.overlayFieldsFor === 'function') {
+    try {
+      for (const [bead_id, fields] of Object.entries(
+        cache.overlayFieldsFor(root_dir, ids)
+      )) {
+        Object.assign(overlay[bead_id] || (overlay[bead_id] = {}), fields);
+      }
+    } catch (err) {
+      log('monitor: overlay display fields failed for %s: %o', root_dir, err);
+    }
   }
   for (const [bead_id, workflow] of Object.entries(
     cache.workflowFor(root_dir, ids)

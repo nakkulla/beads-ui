@@ -126,8 +126,62 @@ function execPinFromMetadata(metadata) {
  * issue description (UI-f1qy §4.2), read off the SAME `bd show` payload so the
  * fallback declaration costs no extra process. `null` means the description
  * declares no section at all (미선언), which an empty array does NOT.
+ * @property {number} [priority] - The payload's priority when it is a finite
+ * number (UI-dbn6 §4.2); absent otherwise.
+ * @property {string} [issue_type] - The payload's issue type when non-empty.
+ * @property {string} [from_id] - The first `discovered-from` dependency id.
  * @property {number} at - Epoch ms this record was read, for {@link POSITIVE_TTL_MS}.
  */
+
+/**
+ * The display-only issue fields the monitor overlay carries (UI-dbn6 §4.2),
+ * read off the SAME `bd show` payload. Fail-quiet: a field whose value is
+ * missing or malformed is simply absent, and a throwing read yields `{}`.
+ *
+ * @param {any} raw_issue
+ * @returns {{ priority?: number, issue_type?: string, from_id?: string }}
+ */
+function overlayFieldsFromIssue(raw_issue) {
+  try {
+    /** @type {{ priority?: number, issue_type?: string, from_id?: string }} */
+    const out = {};
+    if (
+      typeof raw_issue.priority === 'number' &&
+      Number.isFinite(raw_issue.priority)
+    ) {
+      out.priority = raw_issue.priority;
+    }
+    if (
+      typeof raw_issue.issue_type === 'string' &&
+      raw_issue.issue_type.length > 0
+    ) {
+      out.issue_type = raw_issue.issue_type;
+    }
+    for (const dep of Array.isArray(raw_issue.dependencies)
+      ? raw_issue.dependencies
+      : []) {
+      if (!dep || typeof dep !== 'object') {
+        continue;
+      }
+      if ((dep.dependency_type ?? dep.type) !== 'discovered-from') {
+        continue;
+      }
+      const id =
+        typeof dep.depends_on_id === 'string' && dep.depends_on_id.length > 0
+          ? dep.depends_on_id
+          : typeof dep.id === 'string'
+            ? dep.id
+            : '';
+      if (id.length > 0) {
+        out.from_id = id;
+        break;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
 
 /**
  * Create a bead title cache. One instance is held process-wide by the worker
@@ -346,6 +400,7 @@ export function createTitleCache(options = {}) {
       description_scope: parseDescriptionScope(
         raw_issue && raw_issue.description
       ),
+      ...overlayFieldsFromIssue(raw_issue),
       at: now()
     };
   }
@@ -744,6 +799,25 @@ export function createTitleCache(options = {}) {
      */
     execPinFor(workspace, ids) {
       return collect(workspace, ids, (rec) => rec.exec_pin);
+    },
+
+    /**
+     * Cache hits for `ids` as the monitor overlay's display fields (UI-dbn6
+     * §4.2): `labels` always, and `priority`·`issue_type`·`from_id` only when
+     * the `bd show` payload carried them. Same partiality contract as the
+     * projections above, and no `bd` process of its own.
+     *
+     * @param {string} workspace
+     * @param {string[]} ids
+     * @returns {Record<string, { labels: string[], priority?: number, issue_type?: string, from_id?: string }>}
+     */
+    overlayFieldsFor(workspace, ids) {
+      return collect(workspace, ids, (rec) => ({
+        ...(typeof rec.priority === 'number' ? { priority: rec.priority } : {}),
+        ...(rec.issue_type ? { issue_type: rec.issue_type } : {}),
+        labels: rec.labels,
+        ...(rec.from_id ? { from_id: rec.from_id } : {})
+      }));
     },
 
     /**

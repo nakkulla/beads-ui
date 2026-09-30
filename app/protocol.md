@@ -280,7 +280,7 @@ interactive SESSION holds: rows the shared `bd list --all` snapshot reports as
 `status: 'in_progress'` with no active worker attempt and no membership in
 `queue` ∪ serial lanes ∪ `pr_wait`. `done` membership does NOT remove a row — a
 bead a session reopened is being worked on now. Each row carries
-`{ bead_id, title, status: 'in_progress', route, spec_id, plan_path, labels, created_at, updated_at, started_at, workflow, blocked, blocked_by, session_refs, session_observation? }`.
+`{ bead_id, title, status: 'in_progress', route, spec_id, plan_path, labels, created_at, updated_at, started_at, workflow, blocked, blocked_by, session_refs, session_observation?, priority, issue_type }`.
 `route` is `metadata.route` or `''` when unpinned, `spec_id` is `''` when absent
 or in conflict, and `workflow` / `blocked` / `blocked_by` follow the same rules
 as the runnable rows below. `plan_path` (UI-anna §3.1) is `metadata.plan_path`
@@ -323,6 +323,23 @@ timestamps and per-child usage. Transcript text and paths never travel. Pricing
 is absent from this observation and is recomputed from the snapshot's current
 `runner_catalog`. Older servers and unreadable, remote or missing references
 omit the field; consumers draw no usage or delegation row in that case.
+
+Since UI-dbn6 §4.2 two additive, non-durable display projections replace the
+Worker tab's boot list subscriptions (all fail-quiet; an older server omits them
+and the client draws no chip and applies no such filter):
+
+- `workspaces[].runnable[]` and `workspaces[].session_active[]` rows carry
+  `priority: number|null` and `issue_type: string|null`, read from the SAME
+  `bd list` row (no extra bd call). `null` means the row carried no finite
+  number / no non-empty string.
+- `workspaces[].bead_overlay[id]` additionally carries `priority?: number`,
+  `issue_type?: string`, `labels?: string[]` and `from_id?: string` (the first
+  `discovered-from` dependency), read from the title cache's SAME `bd show`
+  payload. The target id set is unchanged: lane members ∪ `done` ∪ `runnable` ∪
+  `pr_wait` ∪ `session_active`. A cold record omits the entry as before; a
+  failed read omits these four fields only, while the rest of the overlay and
+  the row still ship. `labels` is present (possibly `[]`) whenever the record
+  landed — an empty array is a confirmed "no labels", absence is unknown.
 
 `workspaces[].bead_blocked_by` is the worker snapshot's map with one more
 filter: a blocker id whose prefix belongs to ANOTHER visible workspace is looked
