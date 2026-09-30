@@ -399,22 +399,21 @@ export function lanesFrame(model, view) {
     view.size === 'narrow'
       ? LANES.filter((lane) => lane.id === view.mobile_lane)
       : LANES;
-  /** @type {Record<LaneId, number>} */
-  const weights = {
-    candidate: 1.15,
-    queue: 1,
-    running: 1.25,
-    pr_wait: 1,
-    done: 1
-  };
+  // Catalog §07: an open lane is `minmax(312px, 420px)` on the wide board
+  // (the board, not the page, scrolls when they do not fit); a folded lane
+  // is a 44px strip.
   /** @param {LaneId} lane */
   const column = (lane) =>
-    view.collapsed(lane) ? '44px' : `minmax(0, ${weights[lane]}fr)`;
+    view.collapsed(lane)
+      ? 'var(--lane-folded)'
+      : 'minmax(var(--lane-min), var(--lane-max))';
   const columns =
     view.size === 'wide'
       ? `grid-template-columns: ${LANES.map((lane) => column(lane.id)).join(' ')}`
       : view.size === 'medium'
-        ? `grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) ${column('done')}`
+        ? `grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) ${
+            view.collapsed('done') ? 'var(--lane-folded)' : 'minmax(0, 1fr)'
+          }`
         : '';
   return html`<div
     class="pl-lanes pl-lanes--${view.size}"
@@ -600,7 +599,7 @@ function queueGroupBody(group, view, ctx) {
               : ''}
             ${(lane.cross_wait_peers || []).map(
               (peer) =>
-                html`<span class="pl-badge pl-badge--alert"
+                html`<span class="ui-chip pl-badge pl-badge--alert"
                   >⚠ 상호 정지 — ${peer.workspace_name}·${peer.lane}</span
                 >`
             )}

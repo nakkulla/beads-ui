@@ -153,6 +153,22 @@ html > body {
   overflow: hidden;
 }
 
+/* Theme toggle: the sun while dark is on (click → light), the moon while
+   light is on (click → dark). */
+.ui-theme-toggle__sun,
+.ui-theme-toggle__moon {
+  display: inline-flex;
+}
+
+.ui-theme-toggle__moon,
+:root[data-theme='light'] .ui-theme-toggle__sun {
+  display: none;
+}
+
+:root[data-theme='light'] .ui-theme-toggle__moon {
+  display: inline-flex;
+}
+
 /* ---------- scope selector ---------- */
 
 .ui-scope {

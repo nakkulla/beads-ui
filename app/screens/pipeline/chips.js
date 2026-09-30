@@ -96,6 +96,20 @@ export function epochOf(value) {
 }
 
 /**
+ * The button tier (`ui/primitives.css`) each op tone draws with: primary is
+ * the solid accent, plain the soft gray default, ghost the quiet one, danger
+ * the soft red.
+ *
+ * @type {Record<string, string>}
+ */
+const BUTTON_TIER = {
+  primary: ' ui-btn--primary',
+  danger: ' ui-btn--danger',
+  ghost: ' ui-btn--ghost',
+  plain: ''
+};
+
+/**
  * One op button.
  *
  * @param {OpDef} op
@@ -103,6 +117,7 @@ export function epochOf(value) {
  */
 export function opButton(op) {
   const data = op.data || {};
+  const tone = op.tone || 'plain';
   /** @param {string} key */
   const attr = (key) =>
     data[key] === undefined || data[key] === null
@@ -110,7 +125,7 @@ export function opButton(op) {
       : String(data[key]);
   return html`<button
     type="button"
-    class="pl-op pl-op--${op.tone || 'plain'}"
+    class="ui-btn${BUTTON_TIER[tone] || ''} pl-op pl-op--${tone}"
     data-op=${op.op}
     data-bead-id=${ifDefined(attr('bead_id'))}
     data-root-dir=${ifDefined(attr('root_dir'))}
@@ -161,7 +176,7 @@ export function footTemplate(ops, coord, extra = '') {
       ${rest.length > 0
         ? html`<button
             type="button"
-            class="pl-op pl-op--ghost pl-op--more"
+            class="ui-btn ui-btn--icon pl-op pl-op--ghost pl-op--more"
             data-op="ops-sheet"
             data-bead-id=${coord.bead_id}
             data-root-dir=${coord.root_dir}
@@ -200,7 +215,10 @@ export function priorityBadge(priority) {
     return '';
   }
   const level = Math.max(0, Math.min(4, Math.trunc(priority)));
-  return html`<span class="pl-pri" title=${`우선순위 P${level}`}
+  return html`<span
+    class="ui-chip pl-pri"
+    data-priority=${String(level)}
+    title=${`우선순위 P${level}`}
     >P${level}</span
   >`;
 }
@@ -228,7 +246,7 @@ export function prLink(pr_url, pr_number) {
     return '';
   }
   return html`<a
-    class="pl-pr"
+    class="ui-chip pl-pr"
     href=${pr_url}
     target="_blank"
     rel="noreferrer noopener"
@@ -244,7 +262,7 @@ export function prLink(pr_url, pr_number) {
 export function foreignRepoBadge(slug) {
   return slug
     ? html`<span
-        class="pl-badge pl-badge--quiet"
+        class="ui-chip pl-badge pl-badge--quiet"
         title="다른 저장소의 PR입니다. 이 워크스페이스에서는 상태를 관측·머지·정리하지 않습니다."
         >↗ ${slug}</span
       >`
@@ -261,7 +279,9 @@ export function routeChip(workflow) {
     return '';
   }
   return html`<span
-    class="pl-chip pl-chip--route${value === 'unset' ? ' is-derived' : ''}"
+    class="ui-chip pl-chip pl-chip--route${value === 'unset'
+      ? ' is-derived'
+      : ''}"
     data-route=${value}
     title=${value === 'unset' ? 'route 미핀 (metadata unset)' : 'route'}
     >${value}</span
@@ -278,7 +298,7 @@ export function laneOriginChip(origin) {
   }
   const serial = origin.kind === 'serial';
   return html`<span
-    class="pl-chip"
+    class="ui-chip pl-chip"
     title=${serial
       ? `직렬 레인 ${origin.index} — 이 레인은 이 일감이 끝날 때까지 다음 항목을 내보내지 않는다`
       : '병렬 큐 — 슬롯이 남는 한 다른 항목과 함께 실행된다'}
@@ -306,7 +326,7 @@ export function sourceChips(item, options = {}) {
     options.include_from !== false && item.from_id && item.from_id !== source_id
       ? html`<button
           type="button"
-          class="pl-chip pl-chip--link"
+          class="ui-chip pl-chip pl-chip--link"
           data-op="open-issue"
           data-bead-id=${item.from_id}
           data-root-dir=${item.root_dir || ''}
@@ -319,13 +339,13 @@ export function sourceChips(item, options = {}) {
     return from;
   }
   return html`<span
-      class="pl-chip"
+      class="ui-chip pl-chip"
       title=${`Worker가 ${source_id}에서 새로 만든 이슈입니다`}
       >워커 생성</span
     >${source_root.length > 0
       ? html`<button
           type="button"
-          class="pl-chip pl-chip--link"
+          class="ui-chip pl-chip pl-chip--link"
           data-op="open-issue"
           data-bead-id=${source_id}
           data-root-dir=${source_root}
@@ -334,7 +354,7 @@ export function sourceChips(item, options = {}) {
           ↩ 생성 원본 ${source_id}
         </button>`
       : html`<span
-          class="pl-chip is-disabled"
+          class="ui-chip pl-chip is-disabled"
           title="원본 저장소를 확인할 수 없음"
           >↩ 생성 원본 ${source_id}</span
         >`}${from}`;
@@ -352,7 +372,7 @@ export function labelChips(labels) {
   return plain.length > 0
     ? html`${plain.map(
         (label) =>
-          html`<span class="pl-chip pl-chip--label" title="라벨"
+          html`<span class="ui-chip pl-chip pl-chip--label" title="라벨"
             >${label}</span
           >`
       )}`
@@ -453,7 +473,7 @@ export function judgementChip(input) {
   if (!binding) {
     return html`<button
       type="button"
-      class="pl-chip pl-chip--judge"
+      class="ui-chip pl-chip pl-chip--judge"
       data-op="chip-popover"
       data-chip-key=${chip_key}
       data-bead-id=${item.id}
@@ -466,7 +486,7 @@ export function judgementChip(input) {
   }
   return html`<button
     type="button"
-    class="pl-chip pl-chip--judge is-bound"
+    class="ui-chip pl-chip pl-chip--judge is-bound"
     data-op="chip-preset"
     data-chip-key=${chip_key}
     data-bead-id=${item.id}
@@ -526,7 +546,7 @@ export function judgementChips(item, ctx) {
 export function popoverChip(item, chip_key, label, title, tone = 'judge') {
   return html`<button
     type="button"
-    class="pl-chip pl-chip--${tone}"
+    class="ui-chip pl-chip pl-chip--${tone}"
     data-op="chip-popover"
     data-chip-key=${chip_key}
     data-bead-id=${item.id}
@@ -547,7 +567,7 @@ export function popoverChip(item, chip_key, label, title, tone = 'judge') {
  * @returns {TemplateResult}
  */
 function depChip(chip, kind, fallback_root) {
-  const cls = `pl-chip pl-chip--${kind}${chip.foreign ? ' is-foreign' : ''}`;
+  const cls = `ui-chip pl-chip pl-chip--${kind}${chip.foreign ? ' is-foreign' : ''}`;
   return chip.openable === true
     ? html`<button
         type="button"
@@ -625,7 +645,7 @@ export function depLines(chips, options) {
           )
         )}${scope_missing
           ? html`<span
-              class="pl-chip pl-chip--quiet"
+              class="ui-chip pl-chip pl-chip--quiet"
               title="겹침 판정 불가 — 아티팩트가 있으면 스펙/플랜 front-matter, 없으면 description \`## scope\`에 선언 필요"
               >scope 없음</span
             >`
@@ -647,7 +667,7 @@ export function gateChip(item) {
   }
   return html`<button
     type="button"
-    class="pl-chip pl-chip--gate"
+    class="ui-chip pl-chip pl-chip--gate"
     data-op="chip-popover"
     data-chip-key="gate"
     data-bead-id=${item.id}
@@ -677,7 +697,7 @@ export function graceChip(item, grace_ms, now) {
     return '';
   }
   return html`<span
-    class="pl-chip pl-chip--grace"
+    class="ui-chip pl-chip pl-chip--grace"
     title="대기에 막 들어온 항목입니다 — 남은 시간 동안 자동 실행이 미뤄집니다"
     >⏳ ${timeSpan(expiry, 'countdown', { now })}</span
   >`;
@@ -737,22 +757,25 @@ export function progressBand(workflow, status, options = {}) {
       `${bead.key} ${bead.fill === 'none' ? '미도달' : bead.fill === 'lit' ? '완료·현재' : '진행'}`
   );
   return html`<div
-    class="pl-band"
+    class="ui-strand pl-band"
     role="group"
     aria-label=${labels.join(' · ')}
   >
     ${beads.map((bead) => {
+      const state = `is-${bead.fill}${bead.current ? ' is-current' : ''}`;
       const cell = html`<i
-          class="pl-band__cell pl-band__cell--${bead.key} is-${bead.fill}${bead.current
-            ? ' is-current'
-            : ''}"
+          class="ui-strand__dot pl-band__cell pl-band__cell--${bead.key} ${state}"
         ></i
-        >${coarse ? html`<span class="pl-band__name">${bead.name}</span>` : ''}`;
+        >${coarse
+          ? html`<span class="ui-strand__name pl-band__name"
+              >${bead.name}</span
+            >`
+          : ''}`;
       if (bead.doc) {
         const label = `${bead.key} 문서 열기`;
         return html`<button
           type="button"
-          class="pl-band__bead is-open"
+          class="ui-strand__bead pl-band__bead is-open ${state}"
           data-op="open-doc"
           data-stage=${bead.key}
           data-doc-path=${bead.doc.path}
@@ -766,7 +789,7 @@ export function progressBand(workflow, status, options = {}) {
       }
       if (bead.pr) {
         return html`<a
-          class="pl-band__bead is-open"
+          class="ui-strand__bead pl-band__bead is-open ${state}"
           data-stage=${bead.key}
           href=${bead.pr.url}
           target="_blank"
@@ -776,7 +799,9 @@ export function progressBand(workflow, status, options = {}) {
           >${cell}</a
         >`;
       }
-      return html`<span class="pl-band__bead" data-stage=${bead.key}
+      return html`<span
+        class="ui-strand__bead pl-band__bead ${state}"
+        data-stage=${bead.key}
         >${cell}</span
       >`;
     })}

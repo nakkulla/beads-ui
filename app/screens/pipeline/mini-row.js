@@ -8,6 +8,7 @@
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
 import { QUEUE_GRACE_MS } from '../../model/lane-model.js';
+import { MERGE_STEPS } from '../../model/merge-steps.js';
 import { representativeWaitReason } from '../../model/wait-vocabulary.js';
 import { copyIcon } from '../../ui/icons.js';
 import {
@@ -252,21 +253,78 @@ export function rowOps(item, wait_ops, now) {
 }
 
 /**
- * The merge-step gauge that sits beside the ops (UI-raqh §4).
+ * One merge-card bead's state word (its tooltip and accessible name).
+ *
+ * @param {number} position
+ * @param {{ index: number, active?: boolean, failed?: boolean }} step
+ * @returns {string}
+ */
+function mergeBeadWord(position, step) {
+  if (position < step.index) {
+    return '완료';
+  }
+  if (position > step.index) {
+    return '남음';
+  }
+  return step.failed ? '실패' : step.active ? '진행 중' : '멈춤';
+}
+
+/**
+ * The merge-step strand that sits beside the ops (UI-raqh §4, design-system
+ * round): the seven fixed `MERGE_STEPS` beads — the ones before the current
+ * position filled, the current one a ring (pulsing while `active`, red when
+ * `failed`), the later ones hollow — then the step label and `n/7`. Every
+ * bead names its step in `title`; a coarse pointer also prints it under the
+ * bead. An unpositioned step (index 0: the repo-operations and post-merge job
+ * cursor steps) keeps the label alone.
  *
  * @param {any} step
+ * @param {{ coarse?: boolean }} [options]
  * @returns {TemplateResult|''}
  */
-export function mergeStepGauge(step) {
+export function mergeStepGauge(step, options = {}) {
   if (!step) {
     return '';
   }
+  const positioned = typeof step.index === 'number' && step.index > 0;
+  const coarse = options.coarse === true;
   return html`<span
-    class="pl-step${step.failed ? ' is-failed' : ''}"
+    class="pl-step${step.failed ? ' is-failed' : ''}${step.active
+      ? ' is-active'
+      : ''}"
     style=${`--progress: ${step.percent}%`}
-    >${step.label}${step.index > 0
-      ? html`<span class="pl-step__n">${step.index}/${step.total}</span>`
-      : ''}</span
+    >${positioned
+      ? html`<span
+          class="ui-strand pl-step__strand"
+          role="list"
+          aria-label=${`머지 단계 ${step.index}/${step.total}`}
+          >${MERGE_STEPS.map((entry) => {
+            const word = mergeBeadWord(entry.index, step);
+            const state =
+              entry.index < step.index
+                ? ' is-lit'
+                : entry.index > step.index
+                  ? ''
+                  : step.failed
+                    ? ' is-failed'
+                    : ` is-current${step.active ? ' is-live' : ''}`;
+            return html`<span
+              class="ui-strand__bead${state}"
+              data-stage="pr"
+              role="listitem"
+              aria-label=${`${entry.label} ${word}`}
+              title=${`${entry.label} · ${word}`}
+              ><i class="ui-strand__dot" aria-hidden="true"></i>${coarse
+                ? html`<span class="ui-strand__name">${entry.label}</span>`
+                : ''}</span
+            >`;
+          })}</span
+        >`
+      : ''}<span class="pl-step__label"
+      >${step.label}${positioned
+        ? html`<span class="pl-step__n">${step.index}/${step.total}</span>`
+        : ''}</span
+    ></span
   >`;
 }
 
@@ -329,7 +387,7 @@ export function logPathFact(path) {
     return '';
   }
   return html`<span class="pl-fact pl-fact--path"
-    ><code>${path}</code
+    ><code title=${path}>${path}</code
     ><button
       type="button"
       class="pl-copy"
@@ -379,13 +437,13 @@ export function receiptChip(item) {
 function statusBadge(item, badge) {
   if (badge === item.live_badge) {
     return html`<span
-      class="pl-badge pl-badge--live"
+      class="ui-chip pl-badge pl-badge--live"
       title=${item.live_title || '서버가 이 PR을 처리하는 중입니다'}
       ><span class="pl-dot is-live" aria-hidden="true"></span>${badge}</span
     >`;
   }
   return html`<span
-    class="pl-badge${item.alert ? ' pl-badge--alert' : ''}"
+    class="ui-chip pl-badge${item.alert ? ' pl-badge--alert' : ''}"
     title=${badge === item.completion_badge ? item.completion_title || '' : ''}
     >${badge}</span
   >`;
@@ -542,7 +600,7 @@ export function miniRow(item, ctx, options = {}) {
         (/** @type {string} */ entry) => statusBadge(item, entry)
       )}${item.rereview_required === true
         ? html`<span
-            class="pl-badge pl-badge--wait"
+            class="ui-chip pl-badge pl-badge--wait"
             title="stale 판정 — 디스패치가 세션 내 재리뷰를 요구합니다. 실행은 admit됐고 거절이 아닙니다"
             >♻ 재리뷰 필요</span
           >`
@@ -556,7 +614,7 @@ export function miniRow(item, ctx, options = {}) {
             ${ctx.coarse
               ? html`<button
                   type="button"
-                  class="pl-op pl-op--ghost pl-op--icon"
+                  class="ui-btn ui-btn--icon pl-op pl-op--ghost pl-op--icon"
                   data-op="move-sheet"
                   data-bead-id=${item.id}
                   data-root-dir=${item.root_dir}
@@ -567,7 +625,7 @@ export function miniRow(item, ctx, options = {}) {
                 </button>`
               : html`<button
                   type="button"
-                  class="pl-op pl-op--ghost pl-op--icon"
+                  class="ui-btn ui-btn--icon pl-op pl-op--ghost pl-op--icon"
                   data-op="queue-remove"
                   data-bead-id=${item.id}
                   data-root-dir=${item.root_dir}
@@ -610,7 +668,9 @@ export function miniRow(item, ctx, options = {}) {
     ${footTemplate(
       ops,
       { bead_id: item.id, root_dir: item.root_dir },
-      html`${mergeStepGauge(item.merge_step)}${discardReceipt(item)}`
+      html`${mergeStepGauge(item.merge_step, {
+        coarse: ctx.coarse
+      })}${discardReceipt(item)}`
     )}
     ${lines.times}${timesLine(item, now)}
   </div>`;

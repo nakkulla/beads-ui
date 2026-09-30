@@ -4,7 +4,7 @@
  * Playwright loader, the page instrumentation, the fixture queue read-back
  * and the overflow / 44px measurements.
  */
-/* global window, document, getComputedStyle */
+/* global window, document, getComputedStyle, NodeFilter */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -256,6 +256,137 @@ export function overflowOf(page) {
     }
     return { over: scroll > inner, scroll, inner, wide };
   });
+}
+
+/** The containers the no-overflow probe measures on the pipeline screen. */
+export const PIPELINE_PROBE =
+  '.pl-card, .pl-row, .pl-tile, .pl-lane, .pl-strip__chip';
+
+/** The containers the no-overflow probe measures on the Phase 2 surfaces. */
+export const SURFACE_PROBE =
+  '.dt-panel, .dt-section, .sv, .new-issue, .mv, dialog.op-dialog[open], .ui-sheet__panel';
+
+/**
+ * The no-overflow probe (UI-dbn6 design-system round): inside every visible
+ * container matching `selector`, any descendant box — and any run of text —
+ * whose left or right edge passes the container's by more than 0.5px is a
+ * failure, clipped or not. Out of scope: descendants of an absolutely/fixed
+ * positioned element (popovers, tooltips), of an intentional horizontal
+ * scroller (`overflow-x: auto|scroll` between the element and the
+ * container), and text an ancestor ellipsizes (`text-overflow: ellipsis`).
+ *
+ * @param {any} page
+ * @param {string} selector
+ * @returns {Promise<{ containers: number, count: number, failures: string[] }>}
+ */
+export function overflowProbe(page, selector) {
+  return page.evaluate((sel) => {
+    /** @type {string[]} */
+    const failures = [];
+    let containers = 0;
+    let count = 0;
+    /** @param {Element} node */
+    const name = (node) => {
+      const cls = String(/** @type {HTMLElement} */ (node).className || '')
+        .split(/\s+/)
+        .filter((c) => c && !c.startsWith('is-'))
+        .slice(0, 2)
+        .join('.');
+      const id = /** @type {HTMLElement} */ (node).dataset?.beadId;
+      return `${node.tagName.toLowerCase()}${cls ? `.${cls}` : ''}${id ? `[${id}]` : ''}`;
+    };
+    /**
+     * @param {Element} el
+     * @param {Element} root
+     */
+    const outOfScope = (el, root) => {
+      for (let node = el; node && node !== root; node = node.parentElement) {
+        const cs = getComputedStyle(node);
+        if (cs.position === 'absolute' || cs.position === 'fixed') {
+          return true;
+        }
+        if (
+          node !== el &&
+          (cs.overflowX === 'auto' || cs.overflowX === 'scroll')
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+    /**
+     * @param {Node} text
+     * @param {Element} root
+     */
+    const ellipsized = (text, root) => {
+      for (
+        let node = text.parentElement;
+        node && node !== root.parentElement;
+        node = node.parentElement
+      ) {
+        const cs = getComputedStyle(node);
+        if (cs.textOverflow === 'ellipsis' && cs.overflowX !== 'visible') {
+          return true;
+        }
+        if (node.tagName === 'SELECT' || node.tagName === 'OPTION') {
+          return true;
+        }
+      }
+      return false;
+    };
+    const range = document.createRange();
+    for (const root of Array.from(document.querySelectorAll(sel))) {
+      const box = root.getBoundingClientRect();
+      const root_cs = getComputedStyle(root);
+      if (
+        box.width === 0 ||
+        box.height === 0 ||
+        root_cs.visibility === 'hidden'
+      ) {
+        continue;
+      }
+      containers += 1;
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) {
+          continue;
+        }
+        const over = Math.max(box.left - rect.left, rect.right - box.right);
+        if (over <= 0.5 || outOfScope(el, root)) {
+          continue;
+        }
+        count += 1;
+        if (failures.length < 12) {
+          failures.push(`${name(root)} > ${name(el)} +${over.toFixed(1)}px`);
+        }
+      }
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+        if (!text.textContent || !text.textContent.trim()) {
+          continue;
+        }
+        const parent = /** @type {Element} */ (text.parentElement);
+        if (outOfScope(parent, root) || ellipsized(text, root)) {
+          continue;
+        }
+        range.selectNodeContents(text);
+        for (const rect of Array.from(range.getClientRects())) {
+          const over = Math.max(box.left - rect.left, rect.right - box.right);
+          if (rect.width === 0 || over <= 0.5) {
+            continue;
+          }
+          count += 1;
+          if (failures.length < 12) {
+            failures.push(
+              `${name(root)} > ${name(parent)} "${text.textContent.trim().slice(0, 24)}" +${over.toFixed(1)}px`
+            );
+          }
+          break;
+        }
+      }
+    }
+    return { containers, count, failures };
+  }, selector);
 }
 
 /**

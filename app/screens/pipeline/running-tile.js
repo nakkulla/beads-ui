@@ -264,7 +264,7 @@ function activityBody(item, now, session_current) {
     return list.length === 0
       ? ''
       : html`<details class="pl-legs__group">
-          <summary class="pl-chip pl-chip--leg is-${state}">
+          <summary class="ui-chip pl-chip pl-chip--leg is-${state}">
             위임 ${label} ${list.length}
           </summary>
           <ul>
@@ -280,7 +280,7 @@ function activityBody(item, now, session_current) {
         class="pl-activity${item.run_state === 'paused' ? ' is-paused' : ''}"
       >
         <span class="pl-dot is-live" aria-hidden="true"></span>
-        <code class="pl-activity__text">${text}</code>
+        <code class="pl-activity__text" title=${text}>${text}</code>
         ${at !== null
           ? timeSpan(at, 'rel', { now, cls: 'pl-ts pl-activity__age' })
           : ''}
@@ -299,7 +299,7 @@ function activityBody(item, now, session_current) {
           .map(
             (/** @type {any} */ leg) =>
               html`<span
-                class="pl-chip pl-chip--leg is-live"
+                class="ui-chip pl-chip pl-chip--leg is-live"
                 title="이 세션이 띄운 서브에이전트/Codex 세션이 실행 중입니다"
                 >위임 중 · ${leg.label}${legUsage(leg)}</span
               >`
@@ -497,7 +497,7 @@ function failurePopover(failure, item, now) {
     ${failure.attempt_id
       ? html`<button
           type="button"
-          class="pl-op pl-op--plain"
+          class="ui-btn ui-btn--sm pl-op pl-op--plain"
           data-op="session-open"
           data-bead-id=${item.id}
           data-root-dir=${item.root_dir}
@@ -792,7 +792,7 @@ export function runningTile(item, ctx) {
     session_current
       ? html`<button
           type="button"
-          class="pl-chip pl-chip--link"
+          class="ui-chip pl-chip pl-chip--link"
           data-op="copy-text"
           data-copy=${session_current.session_id}
           title=${`${session_current.provider}:${session_current.session_id}@${session_current.host} · 클릭하면 세션 ID 복사`}
@@ -802,7 +802,7 @@ export function runningTile(item, ctx) {
       : '',
     receipt
       ? html`<span
-          class="pl-chip"
+          class="ui-chip pl-chip"
           title=${`exec_receipt ${receipt.kind}:${receiptActor(receipt)}@${receipt.sha}`}
           >${receipt.kind}:${receiptActor(receipt)}</span
         >`
@@ -841,27 +841,29 @@ export function runningTile(item, ctx) {
         aria-hidden="true"
       ></span>
       ${idChip(item.id)}${priorityBadge(item.priority)}${lineage
-        ? html`<span class="pl-badge pl-badge--quiet" title=${lineage}>↻</span>`
+        ? html`<span class="ui-chip pl-badge pl-badge--quiet" title=${lineage}
+            >↻</span
+          >`
         : ''}${session && !external_wait
         ? html`<span
-            class="pl-badge pl-badge--quiet"
+            class="ui-chip pl-badge pl-badge--quiet"
             title="Worker가 아닌 세션이 in_progress로 잡은 이슈"
             >직접 세션</span
           >`
         : ''}${item.conflict_resolution
-        ? html`<span class="pl-badge"
+        ? html`<span class="ui-chip pl-badge"
             >${paused ? '충돌 해소 일시정지' : '충돌 해소'}</span
           >`
         : ''}${item.base_exception
         ? html`<span
-            class="pl-badge"
+            class="ui-chip pl-badge"
             title="이 세션의 target base가 워크스페이스 선언 base와 다릅니다"
             >${item.base_exception}</span
           >`
         : ''}${failure
         ? html`<button
               type="button"
-              class="pl-badge pl-badge--alert"
+              class="ui-chip pl-badge pl-badge--alert"
               data-op="failure-detail"
               data-attempt-id=${failure.attempt_id}
               aria-expanded=${ctx.open_failure === failure.attempt_id
@@ -872,7 +874,7 @@ export function runningTile(item, ctx) {
               ⛔ ${failureCategory(failure.cause) || '실패'}
             </button>
             ${failure.halted_auto_advance
-              ? html`<span class="pl-badge pl-badge--quiet"
+              ? html`<span class="ui-chip pl-badge pl-badge--quiet"
                   >자동 진행 꺼짐</span
                 >`
               : ''}`
@@ -903,7 +905,11 @@ export function runningTile(item, ctx) {
       ? heldHistory(item.failure)
       : ''}
     ${item.landing
-      ? html`<div class="pl-landing">${mergeStepGauge(item.landing)}</div>`
+      ? html`<div class="pl-landing">
+          ${mergeStepGauge(item.landing, {
+            coarse: /** @type {any} */ (ctx).coarse === true
+          })}
+        </div>`
       : ''}
     ${depLines(item.dependency_chips, { root_dir: item.root_dir })}
     ${coord_parts.some((part) => part !== '')

@@ -415,14 +415,8 @@ export function enrichFixture(fixture, now) {
     gate_badge: '',
     reason: 'review_receipt_missing'
   });
-  e.attempts['E-5-review-1'] = {
-    attempt_id: 'E-5-review-1',
-    bead_id: 'E-5',
-    kind: 'review_session',
-    status: 'running',
-    origin: 'auto',
-    started_at: now - 240_000
-  };
+  // No review session runs for E-5: the only review wording in the PR lane is
+  // the receipt-missing recovery hold (a running review would read as normal).
   e.external_waits = [
     {
       wait_id: 'w-e2-completed',
@@ -497,6 +491,63 @@ export function enrichFixture(fixture, now) {
       at: now - 900_000
     }
   };
+  // Merge strands (design-system round): 검증 중 (active), 배포 실패 (failed)
+  // and a later cleanup step, each bound to its merged sha.
+  addPr(
+    b,
+    'B-7',
+    'PR 대기 — 머지 뒤 검증 중 (repo-b)',
+    { tier: 'merged', gate_badge: '머지됨' },
+    { merge_sha: MERGE_SHA, cleanup_cursor: 'repo_operations' }
+  );
+  b.repo_operations = [
+    {
+      operation_id: 'verify-b-7',
+      kind: 'verify',
+      state: 'running',
+      requested_at: now - 90_000,
+      subjects: [{ bead_id: 'B-7', merged_sha: MERGE_SHA }]
+    }
+  ];
+  addPr(
+    c,
+    'C-7',
+    'PR 대기 — 머지 뒤 배포 실패 (repo-c)',
+    { tier: 'merged', gate_badge: '머지됨' },
+    { merge_sha: MERGE_SHA, cleanup_cursor: 'repo_operations' }
+  );
+  c.repo_operations = [
+    {
+      operation_id: 'deploy-c-7',
+      kind: 'deploy',
+      state: 'failed',
+      requested_at: now - 600_000,
+      subjects: [{ bead_id: 'C-7', merged_sha: MERGE_SHA }]
+    }
+  ];
+  c.cleanup_failed = {
+    'C-7': {
+      step: 'repo_operations',
+      reason: 'deploy exit 1',
+      at: now - 480_000
+    }
+  };
+  // A quick_fix tile landing on its own: the same strand on the running tile.
+  Object.assign(attempt(e), {
+    quickfix_lane: true,
+    quickfix_landing: {
+      cursor: 'child_sweep',
+      head_sha: MERGE_SHA,
+      reason: null
+    }
+  });
+  addPr(
+    d,
+    'D-7',
+    'PR 대기 — 머지 뒤 브랜치 정리 중 (repo-d)',
+    { tier: 'merged', gate_badge: '머지됨' },
+    { merge_sha: MERGE_SHA, cleanup_cursor: 'branch_cleanup' }
+  );
   addPr(
     h,
     'H-5',

@@ -207,7 +207,7 @@ export function candidateCard(item, ctx, options = {}) {
         item.priority
       )}${item.rereview_required === true
         ? html`<span
-            class="pl-badge pl-badge--wait"
+            class="ui-chip pl-badge pl-badge--wait"
             title="stale 판정 — 디스패치가 세션 내 재리뷰를 요구합니다. 실행은 admit됐고 거절이 아닙니다"
             >♻ 재리뷰 필요</span
           >`

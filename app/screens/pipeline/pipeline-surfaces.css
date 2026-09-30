@@ -1,0 +1,247 @@
+/*
+ * Pipeline screen, part 3 (UI-dbn6 design-system round, split from
+ * `pipeline-cards.css` to keep each sheet under its line budget): the chip
+ * and failure popovers, key/value and history lists, the move/ops sheets,
+ * the mobile lane bar and the restored surfaces (막힘 sheet, cycle note).
+ * Loaded right after `pipeline-cards.css`.
+ */
+
+/* ---------- popovers ---------- */
+
+.pl-verdict {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pl-verdict > summary {
+  list-style: none;
+}
+
+.pl-verdict > summary::-webkit-details-marker {
+  display: none;
+}
+
+.pl-verdict[open] > .pl-pop {
+  position: absolute;
+  z-index: var(--z-popover);
+  left: var(--s-4);
+  right: var(--s-4);
+}
+
+.pl-pop {
+  margin-top: var(--s-3);
+  padding: var(--s-5) var(--s-6);
+  border-radius: var(--r-pop);
+  background: var(--raised);
+  color: var(--ink-2);
+  box-shadow: var(--e2);
+  font-size: var(--t-12);
+  line-height: var(--lh-body);
+  cursor: default;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.pl-pop__title {
+  margin-bottom: var(--s-2);
+  color: var(--ink);
+  font-size: var(--t-13);
+  font-weight: var(--w-semibold);
+}
+
+.pl-pop__lines {
+  margin: 0;
+  padding-left: var(--s-8);
+}
+
+.pl-pop__exit {
+  margin-top: var(--s-4);
+}
+
+.pl-kv {
+  display: grid;
+  gap: var(--s-2);
+  margin: 0;
+}
+
+.pl-kv > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: var(--s-4);
+}
+
+.pl-kv dt {
+  color: var(--ink-3);
+}
+
+.pl-kv dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.pl-kv code {
+  font-family: var(--font-mono);
+  font-size: var(--t-11);
+}
+
+.pl-history {
+  margin: var(--s-2) 0 0;
+  padding-left: var(--s-8);
+  color: var(--ink-2);
+  font-size: var(--t-12);
+  overflow-wrap: anywhere;
+}
+
+.pl-history__at {
+  margin-right: var(--s-3);
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-held-log {
+  min-width: 0;
+  margin: var(--s-3) 0 0;
+  color: var(--ink-3);
+  font-size: var(--t-12);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- sheets ---------- */
+
+.pl-sheet__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+  margin-bottom: var(--s-4);
+}
+
+.pl-sheet__row .pl-op {
+  flex: 1 1 30%;
+  min-height: var(--h-touch);
+}
+
+/* ---------- mobile lane bar ---------- */
+
+.pl-lanebar {
+  position: fixed;
+  z-index: var(--z-sticky);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--s-1);
+  padding: var(--s-3) var(--s-2)
+    calc(var(--s-5) + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--line);
+  background: var(--lane);
+}
+
+.pl-lanebar__item {
+  --stage: var(--st-cand);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  min-height: 48px;
+  padding: var(--s-2) 0;
+  border: 0;
+  border-radius: var(--r-btn);
+  background: transparent;
+  color: var(--ink-3);
+  font: inherit;
+  font-size: var(--t-11);
+  cursor: pointer;
+}
+
+.pl-lanebar__item[data-stage='plan'] {
+  --stage: var(--st-queue);
+}
+
+.pl-lanebar__item[data-stage='impl'] {
+  --stage: var(--st-run);
+}
+
+.pl-lanebar__item[data-stage='pr'] {
+  --stage: var(--st-pr);
+}
+
+.pl-lanebar__item[data-stage='merge'] {
+  --stage: var(--st-done);
+}
+
+.pl-lanebar__item i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--stage);
+}
+
+.pl-lanebar__item b {
+  color: var(--ink-2);
+  font-size: var(--t-15);
+  font-weight: var(--w-bold);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-lanebar__item.is-on {
+  background: var(--card);
+  box-shadow: var(--e1);
+  color: var(--ink);
+}
+
+.pl-lanebar__item.is-on b {
+  color: var(--ink);
+}
+
+/* ---------- restored surfaces (P1-r2) ---------- */
+
+.pl-blocked__group {
+  display: grid;
+  gap: var(--s-3);
+  margin-bottom: var(--s-6);
+}
+
+.pl-blocked__group-head {
+  margin: 0;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: var(--t-12);
+  font-weight: var(--w-semibold);
+}
+
+.pl-blocked__item {
+  display: block;
+  width: 100%;
+  min-height: var(--h-touch);
+  padding: var(--s-3) var(--s-5);
+  text-align: left;
+  white-space: normal;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.is-highlight {
+  outline: 2px solid var(--accent-solid);
+  outline-offset: 2px;
+}
+
+.pl-cycle {
+  margin-top: var(--s-3);
+  color: var(--amber-fg);
+  font-size: var(--t-12);
+  word-break: keep-all;
+}
+
+.pl-opsline__ok,
+.pl-opsline__ago {
+  white-space: nowrap;
+}

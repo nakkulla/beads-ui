@@ -98,7 +98,7 @@ export function moveSheetModel(item, group, now) {
         },
         {
           op: 'queue-op',
-          label: '맨 앞으로',
+          label: '⤒ 맨 앞으로',
           disabled: index <= 0,
           data: queueData(item, 'reorder', { lane, to_index: 0 })
         }

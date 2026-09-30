@@ -160,7 +160,7 @@ export function interactiveBadges(views, options) {
     return html`${view.session_id
       ? html`<button
           type="button"
-          class="pl-badge pl-badge--session"
+          class="ui-chip pl-badge pl-badge--session"
           data-op="session-log"
           data-session-provider=${view.provider}
           data-session-id=${view.session_id}
@@ -170,7 +170,7 @@ export function interactiveBadges(views, options) {
         >
           ${body}
         </button>`
-      : html`<span class="pl-badge pl-badge--session" title=${title}
+      : html`<span class="ui-chip pl-badge pl-badge--session" title=${title}
           >${body}</span
         >`}${view.discord_url
       ? html`<a
@@ -182,7 +182,7 @@ export function interactiveBadges(views, options) {
         >`
       : ''}`;
   })}${list.some((view) => view.closing)
-    ? html`<span class="pl-badge pl-badge--quiet">세션 닫는 중</span>`
+    ? html`<span class="ui-chip pl-badge pl-badge--quiet">세션 닫는 중</span>`
     : ''}`;
 }
 
@@ -328,7 +328,8 @@ function badgeTemplate(row, reason, others, hold, now, overrides = {}) {
     : [row.release, ...provider_lines].filter(Boolean);
   return html`<details class="pl-verdict" @click=${stopClick}>
     <summary
-      class="pl-badge pl-badge--wait"
+      class="ui-chip pl-badge pl-badge--wait"
+      data-wait-kind=${ifDefined(row.kind)}
       data-verdict=${ifDefined(reason ? reason.verdict : undefined)}
       title=${row.when}
     >
@@ -615,7 +616,8 @@ export function waitLines(reason, options) {
       ? ''
       : evidence.length === 0
         ? html`<span
-            class="pl-badge pl-badge--wait"
+            class="ui-chip pl-badge pl-badge--wait"
+            data-wait-kind=${reason.kind}
             data-verdict=${reason.verdict}
             >${external || !row
               ? label
@@ -623,7 +625,8 @@ export function waitLines(reason, options) {
           >`
         : html`<details class="pl-verdict" @click=${stopClick}>
             <summary
-              class="pl-badge pl-badge--wait"
+              class="ui-chip pl-badge pl-badge--wait"
+              data-wait-kind=${reason.kind}
               data-verdict=${reason.verdict}
             >
               ${external || !row

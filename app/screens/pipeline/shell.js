@@ -1,6 +1,7 @@
 /**
  * The one-line header of the shell (UI-dbn6 §3.1): brand · scope selector ·
- * screen nav · (right) request activity · usage meter · theme · ⚙ · 새 이슈.
+ * screen nav · (right) request activity · usage meter · theme (sun/moon) ·
+ * ⚙ · 새 이슈.
  * On a phone only brand · scope · usage · ⚙ remain; the nav and 새 이슈 move
  * into the scope popover.
  *
@@ -9,6 +10,7 @@
  * the legacy usage meter (bridged until Phase 3) owns its own lit root.
  */
 import { html } from 'lit-html';
+import { gearIcon, moonIcon, sunIcon } from '../../ui/icons.js';
 import { watchOutside } from '../../ui/popover.js';
 import { render } from '../../ui/render.js';
 import { SCREENS, scopeSelector } from './scope.js';
@@ -87,12 +89,13 @@ export function createShell(mount, deps) {
           ? ''
           : html`<button
               type="button"
-              class="ui-btn ui-btn--icon"
+              class="ui-btn ui-btn--icon ui-theme-toggle"
               data-op="theme"
               aria-label="테마 전환"
               title="테마 전환"
             >
-              ◐
+              <span class="ui-theme-toggle__sun">${sunIcon()}</span
+              ><span class="ui-theme-toggle__moon">${moonIcon()}</span>
             </button>`}
         <button
           type="button"
@@ -102,7 +105,7 @@ export function createShell(mount, deps) {
           aria-label="설정"
           title="설정"
         >
-          ⚙
+          ${gearIcon()}
         </button>
         ${current.narrow
           ? ''

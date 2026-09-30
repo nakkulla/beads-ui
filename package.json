@@ -72,6 +72,7 @@
     "app/ui/legacy.css",
     "app/screens/pipeline/pipeline.css",
     "app/screens/pipeline/pipeline-cards.css",
+    "app/screens/pipeline/pipeline-surfaces.css",
     "app/screens/detail/detail-panel.css",
     "app/screens/detail/detail.css",
     "app/screens/transcript/transcript.css",

@@ -315,7 +315,7 @@ export function repoToolbar(input) {
                   >`
               : ''}
             <span
-              class="pl-badge${strip.badge.tone === 'act'
+              class="ui-chip pl-badge${strip.badge.tone === 'act'
                 ? ' pl-badge--alert'
                 : ''}"
               >${strip.badge.label}</span

@@ -435,6 +435,27 @@ button.ui-toggle:hover {
   cursor: default;
 }
 
+/* stage hue of a bead: spec · plan · 구현 · PR · 머지 */
+.ui-strand__bead[data-stage='spec'] {
+  --c: var(--st-cand);
+}
+
+.ui-strand__bead[data-stage='plan'] {
+  --c: var(--st-queue);
+}
+
+.ui-strand__bead[data-stage='impl'] {
+  --c: var(--st-run);
+}
+
+.ui-strand__bead[data-stage='pr'] {
+  --c: var(--st-pr);
+}
+
+.ui-strand__bead[data-stage='merge'] {
+  --c: var(--st-done);
+}
+
 .ui-strand__dot {
   position: relative;
   display: block;
@@ -488,7 +509,8 @@ button.ui-toggle:hover {
   animation: ui-ping var(--dur-pulse) ease-out infinite;
 }
 
-.ui-strand__bead.is-failed {
+.ui-strand__bead.is-failed,
+.ui-strand__bead.is-failed[data-stage] {
   --c: var(--danger);
 }
 
