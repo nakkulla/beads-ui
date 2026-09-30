@@ -69,6 +69,7 @@
     "app/ui/base.css",
     "app/ui/primitives.css",
     "app/screens/pipeline/pipeline.css",
+    "app/screens/pipeline/pipeline-cards.css",
     "app/screens/detail/detail.css",
     "app/screens/transcript/transcript.css",
     "app/main.bundle.js",
