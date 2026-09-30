@@ -3,7 +3,7 @@ import {
   formatRecordedAt,
   promptBlockTemplate,
   promptStatusTemplate
-} from '../prompt-block.js';
+} from '../../ui/prompt-block.js';
 
 /**
  * The issue detail panel's "과업 프롬프트" section (UI-rxp3 §5): what the worker

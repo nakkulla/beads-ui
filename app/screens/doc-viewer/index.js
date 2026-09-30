@@ -1,11 +1,12 @@
-import { html, render } from 'lit-html';
+import { html } from 'lit-html';
+import { render } from '../../ui/render.js';
 import { renderMarkdown } from '../../utils/markdown.js';
 
 /**
- * Markdown document viewer (detail-panel.html `.mv`). Fetches a `docs/*.md`
- * file from `GET /api/doc` (no auth, spec §8) and renders it with
+ * Document viewer screen (UI-dbn6 §3.1 오버레이 — 스펙·ADR·플랜 공통). Fetches a
+ * `docs/*.md` file from `GET /api/doc` (no auth, spec §8) and renders it with
  * marked+dompurify. Appears as a centered overlay; fullscreen ≤640px. Closes on
- * ✕, backdrop, Esc.
+ * ✕, backdrop, Esc. Drawn through `ui/render.js` (render_count).
  *
  * @typedef {Object} MdViewerOptions
  * @property {() => string | null | undefined} getWorkspacePath - Current workspace abs path.

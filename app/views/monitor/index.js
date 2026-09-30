@@ -75,7 +75,7 @@ import {
   showProviderResumeDialog
 } from '../../screens/dialogs/provider-resume-dialog.js';
 import { runningTile } from '../worker/running-grid.js';
-import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
+import { createTranscriptDrawer } from '../../screens/transcript/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
 
 /**
@@ -2084,7 +2084,7 @@ export function createMonitorView(mount_element, options) {
 
   /**
    * @param {LaneItem} item
-   * @returns {import('../worker/transcript-drawer.js').DrawerMeta}
+   * @returns {import('../../screens/transcript/transcript-drawer.js').DrawerMeta}
    */
   function drawerMeta(item) {
     return {

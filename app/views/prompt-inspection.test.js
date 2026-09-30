@@ -7,7 +7,7 @@ import { createSessionLogStore } from '../model/session-log-store.js';
 import { createWorkerQueueStore } from '../model/worker-queue-store.js';
 import { createDetailPanel } from './detail-panel/index.js';
 import { createSettingsDialog } from './settings-dialog/index.js';
-import { createTranscriptDrawer } from './worker/transcript-drawer.js';
+import { createTranscriptDrawer } from '../screens/transcript/transcript-drawer.js';
 
 /**
  * @param {HTMLElement} root

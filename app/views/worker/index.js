@@ -140,7 +140,7 @@ import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
 import { createRepoOpsDrawer } from './repo-ops-timeline.js';
 import { runningGridTemplate } from './running-grid.js';
-import { createTranscriptDrawer } from './transcript-drawer.js';
+import { createTranscriptDrawer } from '../../screens/transcript/transcript-drawer.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
 
 /**
@@ -4752,7 +4752,7 @@ export function createWorkerView(mount_element, options = {}) {
    * Project an attempt record into the drawer meta shape (spec §2/§5.6).
    *
    * @param {any} a
-   * @returns {import('./transcript-drawer.js').DrawerMeta}
+   * @returns {import('../../screens/transcript/transcript-drawer.js').DrawerMeta}
    */
   function metaForAttempt(a) {
     return a

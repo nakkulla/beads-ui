@@ -39,6 +39,7 @@ import { runGitPull } from './screens/pipeline/git-pull.js';
 import { createPipelineScreen } from './screens/pipeline/index.js';
 import { nameOf } from './screens/pipeline/scope.js';
 import { createShell } from './screens/pipeline/shell.js';
+import { createTranscriptScreen } from './screens/transcript/index.js';
 import { render } from './ui/render.js';
 import { applyTheme, initialTheme, toggleTheme } from './ui/theme.js';
 import { showToast } from './ui/toast.js';
@@ -566,12 +567,18 @@ export function bootstrap(root_element) {
 
   // --- pipeline ----------------------------------------------------------------
 
+  const transcript = createTranscriptScreen({
+    send: (type, payload) => tracked_send(type, payload),
+    sessionLogStore: session_log_store
+  });
+
   screen = createPipelineScreen(pipeline_root, {
     monitorStore: monitor_store,
     queueStore: worker_queue_store,
     presetStore: exec_preset_store,
     modelVisibilityStore: model_visibility_store,
     sessionLogStore: session_log_store,
+    transcript,
     lists: channels.lists,
     getScope: effectiveScope,
     setScope: (scope) => void setScope(scope),

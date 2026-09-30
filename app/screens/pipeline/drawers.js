@@ -1,14 +1,14 @@
 /**
- * The Worker drawers the pipeline screen bridge-mounts (UI-dbn6 §4.4): the
- * attempt/session transcript drawer, the repo-ops timeline drawer with its
- * dismiss / cleanup controls, and the repo-ops settings strip with its script
- * viewer. They keep their own markup until a later phase replaces them.
+ * The Worker drawers the pipeline screen mounts (UI-dbn6 §4.4): the shared
+ * transcript screen (`screens/transcript/`, Phase 2), and the bridged repo-ops
+ * timeline drawer with its dismiss / cleanup controls and the repo-ops
+ * settings strip with its script viewer — those two keep their own markup
+ * until a later phase replaces them.
  */
-import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { createRepoOpsScriptViewer } from '../../views/worker/repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from '../../views/worker/repo-ops-settings.js';
 import { createRepoOpsDrawer } from '../../views/worker/repo-ops-timeline.js';
-import { createTranscriptDrawer } from '../../views/worker/transcript-drawer.js';
+import { createTranscriptScreen } from '../transcript/index.js';
 
 /**
  * @typedef {Object} DrawerDeps
@@ -19,6 +19,8 @@ import { createTranscriptDrawer } from '../../views/worker/transcript-drawer.js'
  * @property {() => string} getScope
  * @property {() => any} repoInput - The repo-ops timeline input of the scope.
  * @property {() => void} onTranscriptClose
+ * @property {ReturnType<typeof createTranscriptScreen>} [transcript] - The
+ * shell's shared transcript screen; a screen of its own when absent.
  * @property {() => void} onChanged
  * @property {{ dismissRepoOperation: (operation_id: string, root_dir: string) => Promise<unknown>, cleanupRetry: (bead_id: string, root_dir: string) => Promise<unknown>, resolve: (bead_id: string, root_dir: string) => Promise<unknown> }} actions
  */
@@ -33,19 +35,26 @@ export function createDrawers(mount, deps) {
   overlay_el.hidden = true;
   const backdrop_el = document.createElement('div');
   backdrop_el.className = 'worker-drawer-overlay__backdrop';
-  const drawer_el = document.createElement('div');
-  drawer_el.className = 'worker-drawer-host';
   const repo_drawer_el = document.createElement('div');
   repo_drawer_el.className = 'worker-drawer-host worker-repo-drawer-host';
   repo_drawer_el.hidden = true;
-  overlay_el.append(backdrop_el, drawer_el, repo_drawer_el);
+  overlay_el.append(backdrop_el, repo_drawer_el);
   mount.appendChild(overlay_el);
 
-  const drawer = createTranscriptDrawer(drawer_el, {
-    transport: deps.send,
-    sessionLogStore: deps.sessionLogStore,
-    onClose: () => {
-      overlay_el.hidden = true;
+  const own_transcript = deps.transcript
+    ? null
+    : createTranscriptScreen({
+        send: deps.send,
+        sessionLogStore: deps.sessionLogStore
+      });
+  const transcript = /** @type {ReturnType<typeof createTranscriptScreen>} */ (
+    deps.transcript || own_transcript
+  );
+  /** Whether the transcript shown is one this screen opened. */
+  let transcript_mine = false;
+  const off_transcript_close = transcript.onClose(() => {
+    if (transcript_mine) {
+      transcript_mine = false;
       deps.onTranscriptClose();
     }
   });
@@ -100,9 +109,10 @@ export function createDrawers(mount, deps) {
    * @param {any} input - A `sessionRefDrawerInput` or an attempt input.
    */
   function openTranscript(input) {
-    overlay_el.hidden = false;
+    overlay_el.hidden = true;
     repo_drawer_el.hidden = true;
-    drawer.open(input);
+    transcript.open(input);
+    transcript_mine = transcript.isOpen();
   }
 
   return {
@@ -116,26 +126,13 @@ export function createDrawers(mount, deps) {
      * @param {string} root_dir
      */
     openSessionLog(provider, session_id, bead_id, root_dir) {
-      openTranscript(
-        sessionRefDrawerInput(
-          {
-            provider,
-            session_id,
-            current: true,
-            locality: 'local',
-            index: 0,
-            host: '',
-            last_event_at: null,
-            resume_command: null
-          },
-          bead_id,
-          'in_progress',
-          root_dir
-        )
-      );
+      overlay_el.hidden = true;
+      repo_drawer_el.hidden = true;
+      transcript.openSessionLog(provider, session_id, bead_id, root_dir);
+      transcript_mine = transcript.isOpen();
     },
     openRepo() {
-      drawer.close();
+      transcript.close();
       overlay_el.hidden = false;
       repo_drawer_el.hidden = false;
       repo_drawer.open(deps.repoInput());
@@ -149,7 +146,8 @@ export function createDrawers(mount, deps) {
     settingsTemplate: () => repo_ops_settings.template(),
     destroy() {
       repo_drawer_el.removeEventListener('click', onRepoDrawerClick);
-      drawer.destroy();
+      off_transcript_close();
+      own_transcript?.destroy();
     }
   };
 }

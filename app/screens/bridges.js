@@ -10,7 +10,7 @@ import { depCandidateModel } from '../model/dep-candidates.js';
 import { createAdrView } from '../views/adr/index.js';
 import { createCompareView } from '../views/compare/index.js';
 import { createDetailPanel } from '../views/detail-panel/index.js';
-import { createMdViewer } from '../views/detail-panel/md-viewer.js';
+import { createMdViewer } from './doc-viewer/index.js';
 import { createNewIssueDialog } from '../views/new-issue-dialog.js';
 import { createSettingsDialog } from '../views/settings-dialog/index.js';
 

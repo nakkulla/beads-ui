@@ -68,6 +68,7 @@
     "app/ui/tokens.css",
     "app/ui/base.css",
     "app/screens/pipeline/pipeline.css",
+    "app/screens/transcript/transcript.css",
     "app/main.bundle.js",
     "app/main.bundle.js.map",
     "app/protocol.js",

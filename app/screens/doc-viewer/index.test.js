@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { createMdViewer } from './md-viewer.js';
+import { createMdViewer } from './index.js';
 
 /**
  * @param {number} [ms]
@@ -151,7 +151,7 @@ describe('views/detail-panel/md-viewer', () => {
 
 describe('splitFrontmatter', () => {
   test('separates leading yaml block from body', async () => {
-    const { splitFrontmatter } = await import('./md-viewer.js');
+    const { splitFrontmatter } = await import('./index.js');
 
     const result = splitFrontmatter('---\nscope: x\n---\n# 제목\n본문');
 
@@ -159,7 +159,7 @@ describe('splitFrontmatter', () => {
   });
 
   test('returns body unchanged without frontmatter', async () => {
-    const { splitFrontmatter } = await import('./md-viewer.js');
+    const { splitFrontmatter } = await import('./index.js');
 
     const result = splitFrontmatter('# 제목\n---\n본문');
 

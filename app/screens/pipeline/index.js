@@ -75,6 +75,8 @@ import {
  * @property {{ get: () => any, set: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [presetStore]
  * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [modelVisibilityStore]
  * @property {any} [sessionLogStore]
+ * @property {ReturnType<typeof import('../transcript/index.js').createTranscriptScreen>} [transcript] - The
+ * shell's shared transcript screen.
  * @property {{ closed: () => any[], deferred: () => any[], subscribe: (fn: () => void) => () => void }} [lists]
  * @property {() => string} getScope - `*` or a root_dir.
  * @property {(scope: string) => void} setScope
@@ -522,6 +524,7 @@ export function createPipelineScreen(mount, deps) {
   const drawers = createDrawers(mount, {
     send: deps.send,
     sessionLogStore: deps.sessionLogStore,
+    transcript: deps.transcript,
     queueStore: deps.queueStore,
     getConnected: () => deps.getConnected(),
     getScope: () => deps.getScope(),

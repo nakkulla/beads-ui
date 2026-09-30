@@ -45,7 +45,7 @@ import {
 import { createChipPopover } from '../chip-popover.js';
 import { formatExecReceipt } from '../exec-format.js';
 import { placeMenuList, waitReasonLines } from '../worker/lanes.js';
-import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
+import { createTranscriptDrawer } from '../../screens/transcript/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
 import { commentsTemplate } from './comments.js';
 import {
@@ -54,7 +54,7 @@ import {
 } from './effective-settings-view.js';
 import { execAccountsTemplate } from './exec-accounts.js';
 import { EXEC_KEYS, normalizeImplTarget } from './exec-settings.js';
-import { createMdViewer } from './md-viewer.js';
+import { createMdViewer } from '../../screens/doc-viewer/index.js';
 import { sessionHistoryTemplate } from './session-history.js';
 import { taskPromptTemplate } from './task-prompt.js';
 import {

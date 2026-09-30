@@ -72,7 +72,7 @@ import {
 } from '../../model/session-model.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
-import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
+import { promptBlockTemplate, promptStatusTemplate } from '../../ui/prompt-block.js';
 import {
   accountDefaultLabel,
   accountRowLabel,
