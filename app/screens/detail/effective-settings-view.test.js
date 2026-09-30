@@ -100,7 +100,7 @@ describe('detail header 복잡 chip (UI-8x90 §5.1, UI-7nhi §4)', () => {
       '원인이 불명확하거나 재현이 불안정해 가설-검증 루프가 필요하다'
     );
     expect(popover.textContent).toContain(
-      '칩에 프리셋을 매려면 모니터 탭 ⚙ → 칩'
+      '칩에 프리셋을 매려면 전체 범위 ⚙ → 전역 탭'
     );
   });
 

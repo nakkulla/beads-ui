@@ -47,7 +47,7 @@ export function routeOf(item) {
 function chipBindingGuidance(item) {
   return routeOf(item) === 'quick_fix'
     ? 'quick fix 이슈에는 칩 적용이 없습니다 — 적용은 이슈 상세의 quick fix 프리셋에서'
-    : '칩에 프리셋을 매려면 모니터 탭 ⚙ → 칩';
+    : '칩에 프리셋을 매려면 전체 범위 ⚙ → 전역 탭';
 }
 
 /**
