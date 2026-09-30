@@ -68,6 +68,10 @@ beads-ui 기준은 `3cf13f3d`다.
 - 파킹 해제 전이 재디스패치: `onIssuesChanged`는 `awaiting_user_present:true`를 기록한 attempt의 키가 사라지면, 대화 생존과 무관하게 한 번(`parked_resumed_at`) 다시 dispatch한다 — server/worker/scheduler.js:16005-16016
 - `resume()`은 자식 attempt(`resumed_from`)를 launch 전에 기록한다. 자식이 있으면 원 attempt는 성공·실패와 무관하게 `already_resumed`로 소진된다 — server/worker/scheduler.js:12553-12560,14523,14593
 - 배포는 `[deploy]` 스크립트가 재시작 marker, `bdui-shared restart`, `healthz` 소스 확인으로 한다 — repo-ops/script/deploy:62,112,124
+- 진행 중인 UI-dbn6(프런트엔드 재작성)의 두 결정:
+  - "문의 세션이 살아 있는 동안의 배지와 `[세션에서 해결]` 표시 규칙(ADR UI-ri8n)"을 그대로 승계한다.
+  - 자기 ADR 후보로 `supersede UI-ri8n`을 둔다.
+  - 근거: docs/superpowers/specs/2026-09-23-frontend-rewrite-unified-pipeline-design.md:145-153,523-526 (base `01f9130a`)
 - `[세션에서 해결]` 유무는 `tileResolveFields` 하나가 정한다 — app/views/worker/tile-resolve.js:28
 - 대화형 레코드의 `settled_by`는 `done`·`discard`·`bd_closed`다 — server/worker/queue-store.js:513,3161
 - 핀 투영 검증은 `result_line_reasons === 'wait_reasons_plus_reconcile'`을 요구하고, 결과 줄 사유는 거기서 파생한다 — server/worker/work-recovery-policy.js:118-127,228-233
@@ -251,7 +255,13 @@ beads-ui 기준은 `3cf13f3d`다.
 | 형제 | dotfiles | user_request | 다음 소유자가 앞 결과의 수용을 필요로 함 — 이 저장소가 동기화할 정본(진입 블록·schema 2 투영)을 착지 | 없음 | dotfiles-dolcw |
 
 - 결정: 인수 세션에 가드 훅을 주입하지 않는다. 이유: 사람이 명시적으로 소유한 대화형 세션이고, 현행 문의 세션과 같다.
-- 관찰: `UI-dbn6`(프런트엔드 재작성)와 `app/views/worker/` 경로가 겹친다 — 표면 판정을 서버 투영에 두어 렌더러 변경을 라벨·버튼 두 개로 줄인다.
+- 결정: UI-dbn6와 순서 없이 병행한다. 문의(대화) 세션의 멈춤 판정과 `[세션에서 해결]`·`[워커로 이어가기]` 출구 조항은 이 스펙이 정본이다(사용자 결정 2026-09-30).
+  - UI-dbn6가 UI-ri8n에서 승계하려던 그 두 조항은 이 스펙의 조항으로 대체된다.
+  - 나중에 착지하는 쪽이 앞서 착지한 쪽의 ADR을 승계하고 supersede 대상을 그 ADR로 정정한다(staleness 정정).
+    - UI-dbn6가 먼저 착지하면, 이 스펙의 ADR 후보 대상은 UI-dbn6의 ADR이 된다.
+    - 이 스펙이 먼저 착지하면, UI-dbn6가 이 스펙의 ADR을 승계한다.
+  - 표면 판정은 서버 투영에 둔다(3.8). 겹치는 `app/views/worker/` 렌더러 변경은 라벨·버튼 둘로 줄이고, 나중 쪽이 rebase로 합친다.
+  - 이 결정은 UI-dbn6 notes에 `rereview: intent_conflict` 줄로 남긴다.
 - 관찰: 외부 대기 [세션에서 이어가기]·`[워커로 이어가기]`는 바꾸지 않는다 — 같은 라벨의 버튼이 대기 종류별로 다른 경로를 탄다.
 
 ## 7. 결정 (ADR 후보)
