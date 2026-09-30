@@ -219,6 +219,11 @@
  * context from, and without this field the relationship is unrecoverable from
  * the record. Distinct from `resumed_from`, which names a prior ATTEMPT rather
  * than a session and implies the same transcript continued.
+ * @property {{ line: string, source: 'result_line'|'button' }|null} conversation_return -
+ * Set only on the child a conversation handoff resumed (UI-nuwy §3.4): the
+ * result line it was handed and where that line came from. It is the durable
+ * boundary two judgments read — a handed-back stale park settles without
+ * failing, and the same-cause count does not carry across it. Null elsewhere.
  * @property {'session'|'fresh'|null} continuation_mode - Whether this child
  * reused the provider session or started a replacement session. Null keeps
  * legacy history neutral.
@@ -3195,6 +3200,22 @@ function normalizeConversation(raw) {
 }
 
 /**
+ * Whether an interactive record is an unsettled conversation holding a
+ * handoff reservation (UI-nuwy §3.4) — the one record no launch may replace.
+ *
+ * @param {InteractiveSession|undefined} record
+ * @returns {boolean}
+ */
+export function holdsHandoffReservation(record) {
+  return (
+    !!record &&
+    record.kind === 'inquiry' &&
+    record.settled_at === null &&
+    !!record.conversation?.handoff
+  );
+}
+
+/**
  * Normalize durable interactive panes, dropping records without an identity.
  *
  * @param {unknown} raw
@@ -3544,6 +3565,16 @@ export function makeAttempt(fields) {
       ? clone(fields.continuation_action)
       : null,
     resumed_from: fields.resumed_from ?? null,
+    conversation_return:
+      isRecord(fields.conversation_return) &&
+      typeof fields.conversation_return.line === 'string' &&
+      (fields.conversation_return.source === 'result_line' ||
+        fields.conversation_return.source === 'button')
+        ? {
+            line: fields.conversation_return.line,
+            source: fields.conversation_return.source
+          }
+        : null,
     forked_from_session_id:
       typeof fields.forked_from_session_id === 'string' &&
       fields.forked_from_session_id.length > 0
@@ -6381,6 +6412,16 @@ export function createQueueStore(options = {}) {
       return applyUnconditional(workspace, (next) => {
         const records = normalizeInteractiveSessions({ record });
         if (Object.keys(records).length === 0) {
+          return false;
+        }
+        // An unsettled conversation holding a handoff reservation is ended
+        // only by the reconcile pass that continues it (UI-nuwy §3.4): no new
+        // launch may overwrite the reservation before that settlement.
+        if (
+          Object.keys(records).some((key) =>
+            holdsHandoffReservation(next.interactive_sessions[key])
+          )
+        ) {
           return false;
         }
         Object.assign(next.interactive_sessions, records);

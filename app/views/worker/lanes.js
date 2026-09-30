@@ -1648,12 +1648,16 @@ export function interactiveSessionBadgesTemplate(views, options) {
   const now = options.now ?? Date.now();
   return (views || []).map((view) => {
     const tail = interactiveTurnTail(view, now);
+    // A same-session conversation reopens the attempt's own session, so it is
+    // neither a fork nor a new session (UI-nuwy §3.2).
     const mode =
       view.mode === 'fork'
         ? 'fork'
         : view.source === 'recovered'
           ? '복구'
-          : '새 세션';
+          : view.mode === 'resume'
+            ? '같은 세션'
+            : '새 세션';
     const origin =
       mode === 'fork'
         ? view.source === 'attempt'
@@ -1661,7 +1665,9 @@ export function interactiveSessionBadgesTemplate(views, options) {
           : 'fork · session_ref'
         : mode === '복구'
           ? '복구'
-          : `새 세션 · ${view.fallback_reason || ''}`;
+          : mode === '같은 세션'
+            ? `같은 세션 · attempt ${(view.attempt_id || '').slice(0, 8)}`
+            : `새 세션 · ${view.fallback_reason || ''}`;
     // 외부 대기 완료 재개는 fork·새 세션이 아니라 같은 세션 `--resume`이다 (UI-r6xq §4.3).
     const resumed = view.kind === 'external_resume';
     const title = resumed

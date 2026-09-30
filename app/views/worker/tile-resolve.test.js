@@ -76,6 +76,61 @@ describe('tileResolveFields', () => {
     expect(fields.resolve_action).toBe(true);
   });
 
+  test('hides the action while a closing conversation holds a handoff reservation', () => {
+    const item = {
+      id: 'UI-1',
+      run_state: 'parked',
+      interactive_sessions: [
+        session('inquiry', {
+          state: 'exiting',
+          closing: true,
+          conversation: {
+            handoff: { line: '인계 · 승인', source: 'result_line' },
+            result: { kind: 'handoff' }
+          }
+        })
+      ]
+    };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields.resolve_action).toBeUndefined();
+  });
+
+  test('hides the action while a closing conversation holds a takeover', () => {
+    const item = {
+      id: 'UI-1',
+      ...MATERIALS.recovery_tile,
+      interactive_sessions: [
+        session('inquiry', {
+          closing: true,
+          conversation: { handoff: null, result: { kind: 'takeover' } }
+        })
+      ]
+    };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields.resolve_action).toBeUndefined();
+  });
+
+  test('keeps the action beside a closing conversation that ended on hold', () => {
+    const item = {
+      id: 'UI-1',
+      ...MATERIALS.recovery_tile,
+      interactive_sessions: [
+        session('inquiry', {
+          closing: true,
+          conversation: { handoff: null, result: { kind: 'hold' } }
+        })
+      ]
+    };
+
+    const fields = tileResolveFields(item, false);
+
+    expect(fields.resolve_action).toBe(true);
+  });
+
   test('uses the same-session conversation title for a recovery tile', () => {
     const item = { id: 'UI-1', ...MATERIALS.recovery_tile };
 

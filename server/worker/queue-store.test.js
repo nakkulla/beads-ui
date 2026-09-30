@@ -280,6 +280,79 @@ describe('interactive session persistence', () => {
     ).toMatchObject({ pane_id: '%2', launched_at: 20 });
   });
 
+  /** @param {Record<string, unknown>} [patch] */
+  function reservedConversation(patch = {}) {
+    return record({
+      kind: 'inquiry',
+      mode: 'resume',
+      conversation: {
+        stop: 'recovery:authority',
+        handoff: {
+          line: '인계 · 범위 확장 승인',
+          source: 'result_line',
+          message_at: 40,
+          reserved_at: 41
+        }
+      },
+      ...patch
+    });
+  }
+
+  test('refuses a new launch over an unsettled handoff reservation', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(WS, reservedConversation());
+
+    const result = store.recordInteractiveSession(
+      WS,
+      record({
+        kind: 'inquiry',
+        pane_id: '%2',
+        launched_at: 20,
+        conversation: { stop: 'recovery:authority' }
+      })
+    );
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).interactive_sessions['B1:inquiry']).toMatchObject(
+      { pane_id: '%1', conversation: { handoff: { source: 'result_line' } } }
+    );
+  });
+
+  test('replaces a handoff reservation once it is settled', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(
+      WS,
+      reservedConversation({ settled_at: 30, settled_by: 'bd_closed' })
+    );
+
+    const result = store.recordInteractiveSession(
+      WS,
+      record({ kind: 'inquiry', pane_id: '%2', launched_at: 20 })
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  test('persists a conversation-return child marker through cold reload', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'child',
+        bead_id: 'B1',
+        resumed_from: 'parent',
+        conversation_return: { line: '인계 · 승인', source: 'button' }
+      }
+    });
+
+    const attempt = createQueueStore().load(WS).attempts.child;
+
+    expect(attempt.conversation_return).toEqual({
+      line: '인계 · 승인',
+      source: 'button'
+    });
+  });
+
   test('persists a session patch across restart', () => {
     const store = createQueueStore();
     store.recordInteractiveSession(WS, record());

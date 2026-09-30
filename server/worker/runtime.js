@@ -36,7 +36,11 @@ import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
 import { createNotifier } from './notify.js';
 import { createPrObservationStore } from './pr-observations.js';
-import { MANUAL_MERGE_CONTINUATION, createQueueStore } from './queue-store.js';
+import {
+  MANUAL_MERGE_CONTINUATION,
+  createQueueStore,
+  holdsHandoffReservation
+} from './queue-store.js';
 import { createResolveSession } from './resolve-session.js';
 import { createReviseParkedStore } from './revise-parked.js';
 import { createRunnableCache } from './runnable-cache.js';
@@ -230,6 +234,12 @@ export function createWorkerRuntime() {
     },
     readAttempt: (workspace, attempt_id) =>
       queueStore.snapshot(workspace).attempts?.[attempt_id] ?? null,
+    handoffPending: (workspace, bead_id) =>
+      holdsHandoffReservation(
+        queueStore.snapshot(workspace).interactive_sessions?.[
+          `${bead_id}:inquiry`
+        ]
+      ),
     bd: {
       readIssue: async (workspace, bead_id) => {
         const result = await runBdJsonProjected(

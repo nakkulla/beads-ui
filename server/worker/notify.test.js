@@ -206,6 +206,93 @@ describe('wait notification suppression', () => {
     }
   );
 
+  /**
+   * A fork inquiry launched before UI-nuwy: no `conversation`, still live.
+   *
+   * @param {ReturnType<typeof fixture>['store']} store
+   */
+  function recordLegacyInquiry(store) {
+    store.recordInteractiveSession('/repo', {
+      bead_id: 'UI-a',
+      kind: 'inquiry',
+      provider: 'codex',
+      pane_id: '%1',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'UI-a',
+      launched_at: 1000,
+      state: 'live',
+      mode: 'fork',
+      turn_state: 'question'
+    });
+  }
+
+  test('keeps the old delay push and inquiry line for a live legacy fork inquiry', async () => {
+    const { input, store, spawn } = fixture();
+    store.appendAttempt('/repo', {
+      expected_revision: store.snapshot('/repo').revision,
+      attempt: {
+        attempt_id: 'recovery',
+        bead_id: 'UI-a',
+        status: 'waiting',
+        finished_at: 1000,
+        cause_detail: {
+          recovery: {
+            reason: 'verification',
+            classification: 'session_recovery_wait'
+          },
+          inquiry: {
+            session: 'launched',
+            mode: 'fork',
+            session_id: 'abcdef1234'
+          }
+        }
+      }
+    });
+    recordLegacyInquiry(store);
+
+    await notifyWaitReasons({
+      ...input,
+      wait_reasons: judgeWaitReasons({
+        root_dir: '/repo',
+        queue: store.snapshot('/repo'),
+        now: 1000
+      }).wait_reasons
+    });
+
+    expect(spawn.calls).toHaveLength(1);
+    expect(messageOf(spawn.last())).toContain('세션이 멈춤');
+    expect(messageOf(spawn.last())).toContain(
+      '\n질의 세션: launched · fork abcdef12'
+    );
+  });
+
+  test('keeps the park delay push while a live legacy fork inquiry asks', async () => {
+    const { input, store, spawn } = fixture();
+    store.appendAttempt('/repo', {
+      expected_revision: store.snapshot('/repo').revision,
+      attempt: {
+        attempt_id: 'parked',
+        bead_id: 'UI-a',
+        status: 'parked',
+        finished_at: 1000,
+        cause_detail: { awaiting_user: '다음 방향 확인' }
+      }
+    });
+    recordLegacyInquiry(store);
+
+    await notifyWaitReasons({
+      ...input,
+      wait_reasons: judgeWaitReasons({
+        root_dir: '/repo',
+        queue: store.snapshot('/repo'),
+        now: 1000
+      }).wait_reasons
+    });
+
+    expect(spawn.calls).toHaveLength(1);
+    expect(messageOf(spawn.last())).toContain('⚠ repo UI-a 지연');
+  });
+
   test('notifies external completion once across overdue scans and reload', async () => {
     const { input, store, spawn, recordTimelineEvent } = fixture();
     const record = /** @type {any} */ ({

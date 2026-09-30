@@ -91,6 +91,21 @@ describe('interactive session badges', () => {
       '▤ 해결 세션 · 새 세션',
       '새 세션 · no_session_ref'
     ],
+    [
+      { kind: 'inquiry', mode: 'resume', source: 'attempt' },
+      '▤ 문의 세션 · 같은 세션',
+      '같은 세션 · attempt 12345678'
+    ],
+    [
+      {
+        kind: 'inquiry',
+        mode: 'fresh',
+        source: 'fresh',
+        fallback_reason: 'no_session_id'
+      },
+      '▤ 문의 세션 · 새 세션',
+      '새 세션 · no_session_id'
+    ],
     [{ mode: null, source: 'recovered' }, '▤ 해결 세션 · 복구', '복구']
   ])('renders the label and provenance for %j', (patch, label, title) => {
     const view = interactiveView(/** @type {any} */ (patch));
@@ -281,6 +296,26 @@ describe('inquiry session live card (UI-ri8n)', () => {
       ).toMatch(new RegExp(` · ${tail}$`));
     }
   );
+
+  test('renders the full badge of a same-session conversation turn', () => {
+    const view = interactiveView({
+      kind: 'inquiry',
+      mode: 'resume',
+      source: 'attempt',
+      turn_state: 'running',
+      turn_state_since: 2 * 60_000,
+      conversation: { processed_message_at: null, result: null }
+    });
+
+    render(
+      interactiveSessionBadgesTemplate([view], { bead_id: 'UI-x1', now: NOW }),
+      mount
+    );
+
+    expect(
+      mount.querySelector('.interactive-session-badge')?.textContent?.trim()
+    ).toBe('▤ 문의 세션 · 같은 세션 · 대화 중 8분');
+  });
 
   test('draws the handoff button beside the resolve action', () => {
     const item = {

@@ -5395,6 +5395,13 @@ export function createScheduler(deps) {
       typeof cursor.resumed_from === 'string' &&
       !visited.has(cursor.resumed_from)
     ) {
+      // A conversation return is new input from the person, so the
+      // same-cause count does not carry across it (UI-nuwy §3.4; dotfiles
+      // `Resume after 인계`, `recovery:no_progress`). Retry budgets live on
+      // `retry`, not here, and are untouched.
+      if (cursor.conversation_return) {
+        break;
+      }
       visited.add(cursor.resumed_from);
       cursor = attempts[cursor.resumed_from];
       if (!cursor || cursor.bead_id !== current.bead_id) {
@@ -6237,6 +6244,123 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Whether an attempt is a conversation-return child already settled as a
+   * handed-back stale park by {@link settleConversationHandback}.
+   *
+   * @param {any} attempt
+   * @returns {boolean}
+   */
+  function isHandedBackChild(attempt) {
+    return (
+      attempt?.status === 'superseded' &&
+      !!attempt.conversation_return &&
+      !!attempt.cause_detail?.conversation_handback
+    );
+  }
+
+  /**
+   * The stale park a conversation-return child hands back by ending without
+   * delivery, or null (UI-nuwy §3.4 step 2, third bullet). The canonical
+   * resume of a `spec_review_stale`/`plan_approval_stale` stop publishes the
+   * fixed artifact, writes its receipt together with the `awaiting_user`
+   * clear, and ends without implementing — the Worker's ordinary lane then
+   * redispatches. The proof is all read here: this child carries the
+   * conversation-return boundary, its parent is that stale park still
+   * unresumed, the session exited 0 without a PR or a hard stop, the Bead is
+   * not landed, and the settlement readback found the key absent.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id - The child that just ended.
+   * @param {{ reason: string, bead_status?: string|null, awaiting_user?: string|null }} vr
+   * @param {unknown} hard_stop
+   * @returns {any} The parked parent record, or null.
+   */
+  function conversationHandbackParent(workspace, attempt_id, vr, hard_stop) {
+    if (
+      vr.reason !== 'no_pr' ||
+      vr.awaiting_user != null ||
+      hard_stop != null ||
+      vr.bead_status === 'resolved' ||
+      vr.bead_status === 'closed'
+    ) {
+      return null;
+    }
+    const attempts = deps.store.snapshot(workspace).attempts || {};
+    const child = attempts[attempt_id];
+    if (!child?.conversation_return || typeof child.resumed_from !== 'string') {
+      return null;
+    }
+    const parent = attempts[child.resumed_from];
+    return parent &&
+      parent.bead_id === child.bead_id &&
+      parent.status === 'parked' &&
+      parent.awaiting_user_present === true &&
+      typeof parent.parked_resumed_at !== 'number' &&
+      STALE_PARK_REASONS.has(parent.cause_detail?.awaiting_user)
+      ? parent
+      : null;
+  }
+
+  /**
+   * Settle a conversation-return child that handed its stale park back
+   * (UI-nuwy §3.4 step 2): not a failure. `superseded` is the existing
+   * terminal for an attempt a later dispatch replaces — it starts no retry
+   * ladder, draws no failure tile, sends no `❌ 실패`, and
+   * `settledAttemptFence` lets the Bead through. The claim and this attempt's
+   * stamps come back exactly as on any other ending. The parent's
+   * clear-transition redispatch is the CALLER's, once this settlement and its
+   * fences have fully returned.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {string|null} prior - `workflow_mode` before the launch.
+   * @param {string} parent_attempt_id
+   */
+  async function settleConversationHandback(
+    workspace,
+    attempt_id,
+    bead_id,
+    prior,
+    parent_attempt_id
+  ) {
+    const at = now();
+    const current = deps.store.snapshot(workspace).attempts[attempt_id];
+    appendSessionEnded(
+      bead_id,
+      attempt_id,
+      '대화 복귀 정산 · awaiting_user 해제 확인 — 일반 레인이 다시 dispatch'
+    );
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: {
+        status: 'superseded',
+        finished_at: at,
+        cause_detail: {
+          ...(current?.cause_detail || {}),
+          conversation_handback: { parent_attempt_id, at }
+        }
+      }
+    });
+    closeRetryLineage(workspace, bead_id);
+    try {
+      await revertWorkflowMode(
+        bead_id,
+        prior,
+        workflowModeSourcePriorOf(workspace, attempt_id)
+      );
+    } catch (err) {
+      log('workflow_mode revert failed on handback for %s: %o', bead_id, err);
+    }
+    await revertExecStamps(
+      bead_id,
+      execStampedKeysOf(workspace, attempt_id),
+      execRestoreValuesOf(workspace, attempt_id)
+    );
+    await releaseBeadClaim(bead_id, { workspace, attempt_id });
+  }
+
+  /**
    * Handle a finished session: SERVER-OBSERVED PR verdict → `pr_wait`, else the
    * failure path (auto_advance OFF + banner).
    *
@@ -6269,6 +6393,13 @@ export function createScheduler(deps) {
     prior,
     verdict
   ) {
+    /**
+     * The stale park a handed-back child leaves for the redispatch below the
+     * settlement fence (UI-nuwy §3.4 step 2).
+     *
+     * @type {string|null}
+     */
+    let handback_parent_id = null;
     settling.add(attempt_id);
     try {
       running.delete(attempt_id);
@@ -6744,29 +6875,48 @@ export function createScheduler(deps) {
           vr.reason === 'no_pr' && vr.awaiting_user == null
             ? sessionHardStop(verdict.raw)
             : null;
-        await failAttempt(
+        const handback = conversationHandbackParent(
           workspace,
           attempt_id,
-          bead_id,
-          prior,
-          // `no_pr` is an OBSERVATION, not a verdict (spec §3.1-§3.3): it is
-          // handed in as "no cause yet" so the classifier decides between
-          // `parked`, `session_ended_unresolved` and an env pattern from the
-          // readbacks below. Every other reason is already a cause.
-          vr.reason === 'no_pr'
-            ? (hard_stop?.cause ?? null)
-            : `verify_failed:${vr.reason}`,
-          hard_stop?.detail,
-          {
-            verdict,
-            bead_status: vr.bead_status ?? null,
-            awaiting_user: vr.awaiting_user ?? null,
-            pr_url: vr.pr_url ?? null
-          }
+          vr,
+          hard_stop
         );
+        if (handback) {
+          await settleConversationHandback(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            handback.attempt_id
+          );
+          handback_parent_id = handback.attempt_id;
+        } else {
+          await failAttempt(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            // `no_pr` is an OBSERVATION, not a verdict (spec §3.1-§3.3): it
+            // is handed in as "no cause yet" so the classifier decides
+            // between `parked`, `session_ended_unresolved` and an env pattern
+            // from the readbacks below. Every other reason is already a cause.
+            vr.reason === 'no_pr'
+              ? (hard_stop?.cause ?? null)
+              : `verify_failed:${vr.reason}`,
+            hard_stop?.detail,
+            {
+              verdict,
+              bead_status: vr.bead_status ?? null,
+              awaiting_user: vr.awaiting_user ?? null,
+              pr_url: vr.pr_url ?? null
+            }
+          );
+        }
       }
-      notifyChanged(workspace);
-      await tick(workspace);
+      if (handback_parent_id === null) {
+        notifyChanged(workspace);
+        await tick(workspace);
+      }
     } finally {
       settling.delete(attempt_id);
       // The single common exit of every LIVE termination — success, failure,
@@ -6792,6 +6942,30 @@ export function createScheduler(deps) {
         await consumeProviderAutoResume(workspace);
       }
     }
+    if (handback_parent_id !== null) {
+      await continueHandedBackPark(workspace, bead_id, handback_parent_id);
+    }
+  }
+
+  /**
+   * The parent's clear-transition redispatch after a handed-back child
+   * (UI-nuwy §3.4 step 2, third bullet): run ONCE, only after the child's
+   * settlement — claim and `settling` fence included — has fully returned,
+   * never waiting on a later bd-change signal. A refusal leaves the parent
+   * unstamped, and {@link onIssuesChanged} re-asks it on the next signal.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} parent_attempt_id
+   */
+  async function continueHandedBackPark(workspace, bead_id, parent_attempt_id) {
+    try {
+      await resumeParkedAttempt(workspace, bead_id, parent_attempt_id);
+    } catch (err) {
+      log('handback redispatch failed for %s: %o', bead_id, err);
+    }
+    notifyChanged(workspace);
+    await tick(workspace);
   }
 
   /**
@@ -8328,8 +8502,14 @@ export function createScheduler(deps) {
     // (`canDiscardAttempt`) instead of racing that write — the reverse order of
     // the race `reconcile`'s own discard fence closes.
     settling.add(attempt_id);
+    /** @type {string|null|undefined} */
+    let handback_parent_id = null;
     try {
-      await disposeDeadAttemptSettlement(workspace, attempt_id, attempt);
+      handback_parent_id = await disposeDeadAttemptSettlement(
+        workspace,
+        attempt_id,
+        attempt
+      );
     } finally {
       settling.delete(attempt_id);
       removeGuardHook(workspace, attempt_id);
@@ -8340,6 +8520,13 @@ export function createScheduler(deps) {
         notifyChanged(workspace);
       }
     }
+    if (typeof handback_parent_id === 'string') {
+      await continueHandedBackPark(
+        workspace,
+        attempt.bead_id,
+        handback_parent_id
+      );
+    }
   }
 
   /**
@@ -8349,6 +8536,8 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {any} attempt
+   * @returns {Promise<string|null|undefined>} The stale park a handed-back
+   * child leaves for {@link disposeDeadAttempt} to redispatch past its fence.
    */
   async function disposeDeadAttemptSettlement(workspace, attempt_id, attempt) {
     const bead_id = attempt.bead_id;
@@ -8695,6 +8884,8 @@ export function createScheduler(deps) {
      * @type {string|null}
      */
     let sweep_run = null;
+    /** @type {string|null} */
+    let handback_parent_id = null;
     try {
       if (quickfixLaneOf(workspace, attempt_id)) {
         deps.store.updateAttempt(workspace, {
@@ -8914,25 +9105,43 @@ export function createScheduler(deps) {
           vr.reason === 'no_pr' && vr.awaiting_user == null
             ? sessionHardStop(persisted_raw ?? [])
             : null;
-        await failAttempt(
+        const handback = conversationHandbackParent(
           workspace,
           attempt_id,
-          bead_id,
-          prior,
-          // A DETACHED dead attempt has no verdict to classify by, so `no_pr`
-          // is named directly for what it is here: a session that ended without
-          // delivering (UI-5ym8 §3.2). Every other reason is already a cause.
-          vr.reason === 'no_pr'
-            ? (hard_stop?.cause ?? null)
-            : `verify_failed:${vr.reason}`,
-          hard_stop?.detail,
-          {
-            verdict: reconciled_verdict,
-            bead_status: vr.bead_status ?? null,
-            awaiting_user: vr.awaiting_user ?? null,
-            pr_url: vr.pr_url ?? null
-          }
+          vr,
+          hard_stop
         );
+        if (handback) {
+          await settleConversationHandback(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            handback.attempt_id
+          );
+          handback_parent_id = handback.attempt_id;
+        } else {
+          await failAttempt(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            // A DETACHED dead attempt has no verdict to classify by, so
+            // `no_pr` is named directly for what it is here: a session that
+            // ended without delivering (UI-5ym8 §3.2). Every other reason is
+            // already a cause.
+            vr.reason === 'no_pr'
+              ? (hard_stop?.cause ?? null)
+              : `verify_failed:${vr.reason}`,
+            hard_stop?.detail,
+            {
+              verdict: reconciled_verdict,
+              bead_status: vr.bead_status ?? null,
+              awaiting_user: vr.awaiting_user ?? null,
+              pr_url: vr.pr_url ?? null
+            }
+          );
+        }
       }
     } finally {
       // Never leak the claim: an unexpected throw here would otherwise fence
@@ -8941,6 +9150,9 @@ export function createScheduler(deps) {
       if (sweep_run !== null) {
         await sweepBenchRun(workspace, sweep_run);
       }
+    }
+    if (handback_parent_id !== null) {
+      return handback_parent_id;
     }
     notifyChanged(workspace);
     await tick(workspace);
@@ -9427,11 +9639,19 @@ export function createScheduler(deps) {
             );
       }
     }
+    // A parent with no recorded session (its conversation opened on a fresh
+    // same-provider session) takes the resume ladder's explicit fresh rung:
+    // recorded settings, the same provider, and the `## 대화 결과` block as
+    // this conversation's only carrier (§3.2). Asking for the prior session
+    // would only be refused `no_session_id`. A recorded session whose
+    // transcript is gone still asks for it, and the ladder substitutes.
+    const session_recorded =
+      typeof attempt.session_id === 'string' && attempt.session_id.length > 0;
     /** @type {{ ok: boolean, reason?: string }} */
     let result;
     try {
       result = await resume(workspace, attempt_id, {
-        continuation: 'prior_session',
+        continuation: session_recorded ? 'prior_session' : 'fresh_current',
         conversation_return: { line: input.line, source: input.source }
       });
     } catch (err) {
@@ -9910,6 +10130,13 @@ export function createScheduler(deps) {
           pane.dead === '0'
       );
       if (!pane_row) {
+        // The pass-start copy predates a settlement written earlier in this
+        // same pass (the bd `closed` read above). A settled record is only
+        // removed: its handoff reservation must not resume a closed Bead.
+        Object.assign(
+          record,
+          deps.store.snapshot(workspace).interactive_sessions[key]
+        );
         if (isOpenConversation(record)) {
           await finishConversation(key, record);
           continue;
@@ -13318,7 +13545,8 @@ export function createScheduler(deps) {
       ...(conversation_return
         ? {
             conversation_return: true,
-            conversation_line: conversation_return.line
+            conversation_line: conversation_return.line,
+            conversation_source: conversation_return.source
           }
         : {}),
       conflict_resolution: prior.conflict_resolution === true,
@@ -15073,6 +15301,14 @@ export function createScheduler(deps) {
       quickfix_lane,
       bench_run: prior.bench_run ?? null,
       resumed_from: attempt_id,
+      ...(options.conversation_return === true
+        ? {
+            conversation_return: {
+              line: options.conversation_line ?? '',
+              source: options.conversation_source ?? 'result_line'
+            }
+          }
+        : {}),
       ...(options.fork_session === true
         ? { forked_from_session_id: prior.session_id }
         : {}),
@@ -16654,9 +16890,15 @@ export function createScheduler(deps) {
       ) {
         continue;
       }
+      // A conversation-return child that handed this stale park back stands
+      // in front of it without replacing it (UI-nuwy §3.4 step 2): its refused
+      // redispatch is re-asked here exactly like a bare park's.
+      const latest = latestImplementationAttempt(q, record.bead_id);
       if (
-        latestImplementationAttempt(q, record.bead_id)?.attempt_id !==
-        record.attempt_id
+        latest?.attempt_id !== record.attempt_id &&
+        !(
+          isHandedBackChild(latest) && latest.resumed_from === record.attempt_id
+        )
       ) {
         continue;
       }
@@ -16744,6 +16986,11 @@ export function createScheduler(deps) {
     ) {
       return false;
     }
+    // A handed-back child may stand in front of the park (UI-nuwy §3.4), so a
+    // launch is a NEW latest attempt, not merely one other than the park.
+    const before =
+      latestImplementationAttempt(deps.store.snapshot(workspace), bead_id)
+        ?.attempt_id ?? null;
     claimed.add(bead_id);
     try {
       await dispatch(workspace, bead_id);
@@ -16755,7 +17002,7 @@ export function createScheduler(deps) {
     const launched =
       latestImplementationAttempt(deps.store.snapshot(workspace), bead_id)
         ?.attempt_id ?? null;
-    if (launched === null || launched === attempt_id) {
+    if (launched === null || launched === before) {
       const refusal =
         deps.store.snapshot(workspace).admission?.[bead_id]?.reason;
       if (

@@ -137,8 +137,25 @@ const TITLE_MAX = 60;
  */
 
 /**
- * @typedef {{ bead_id: string, kind: string, headline: string, verdict_reason: import('./wait-judgment.js').VerdictReason, repo: string }} WaitNotificationInput
+ * @typedef {{ bead_id: string, kind: string, headline: string, verdict_reason: import('./wait-judgment.js').VerdictReason, repo: string, inquiry?: any }} WaitNotificationInput
  */
+
+/**
+ * Whether a Bead's inquiry record is a live legacy fork inquiry (no
+ * `conversation`, not yet settled) — the one record that keeps its
+ * pre-UI-nuwy pushes (§3.2).
+ *
+ * @param {any} record
+ * @returns {boolean}
+ */
+function isLegacyInquiry(record) {
+  return (
+    !!record &&
+    record.kind === 'inquiry' &&
+    record.settled_at === null &&
+    !record.conversation
+  );
+}
 
 /**
  * The `🙋 확인 필요` push (UI-nuwy §3.7): sent once per stopped attempt, after
@@ -173,13 +190,21 @@ const TITLE_MAX = 60;
  */
 export async function notifyWaitReasons(input) {
   const queue = input.store.snapshot?.(input.workspace);
+  /** @type {Map<string, any>} */
+  const inquiries = new Map();
   /** @type {Map<string, import('./wait-judgment.js').WaitReason & { verdict_reason: import('./wait-judgment.js').VerdictReason }>} */
   const by_key = new Map();
-  for (const item of input.wait_reasons) {
+  for (let item of input.wait_reasons) {
+    // A fork inquiry launched before UI-nuwy is no conversation: no
+    // `❓ 답 대기` will ever speak for it, so until it settles its Bead keeps
+    // the pushes it was launched under (§3.2, UI-ri8n).
+    const legacy = isLegacyInquiry(
+      queue?.interactive_sessions?.[`${item.subject.bead_id}:inquiry`]
+    );
     // A conversation target speaks through its own four pushes (UI-nuwy
     // §3.7): `🙋 확인 필요` replaces both the park push and this `⚠ … 지연`
     // line, and each later turn is a `❓ 답 대기`.
-    if (item.kind === 'awaiting_user') {
+    if (item.kind === 'awaiting_user' && !legacy) {
       continue;
     }
     if (item.kind === 'recovery') {
@@ -191,7 +216,13 @@ export async function notifyWaitReasons(input) {
         );
       const detail = /** @type {any} */ (attempt?.cause_detail);
       if (isSessionStalledRecovery(detail?.recovery, detail?.blockers || [])) {
-        continue;
+        if (!legacy || !detail.inquiry) {
+          continue;
+        }
+        inquiries.set(item.subject.bead_id, detail.inquiry);
+        // The judge's verdict stands: a working inquiry session is `normal`,
+        // which drops the key and rearms it for the next question (UI-ri8n).
+        item = { ...item, headline: '세션이 멈춤' };
       }
     }
     if (
@@ -230,7 +261,10 @@ export async function notifyWaitReasons(input) {
       kind: item.kind,
       headline: item.headline,
       verdict_reason: item.verdict_reason,
-      repo: input.repo
+      repo: input.repo,
+      ...(inquiries.has(item.subject.bead_id)
+        ? { inquiry: inquiries.get(item.subject.bead_id) }
+        : {})
     };
     const sent =
       item.verdict === 'action_required'
@@ -609,7 +643,11 @@ export function createNotifier(deps) {
         .filter(Boolean)
         .join(' ');
       const message = `⚠ ${subject} 지연 · ${input.headline} · ${input.verdict_reason.message}`;
-      return send(cmd, message.replace(/\s+/g, ' ').trim());
+      // Only a legacy fork inquiry still carries this line (UI-nuwy §3.2).
+      const inquiry = input.inquiry
+        ? `\n질의 세션: ${inquirySessionLine(input.inquiry)}`
+        : '';
+      return send(cmd, message.replace(/\s+/g, ' ').trim() + inquiry);
     } catch (err) {
       log('wait notification failed: %o', err);
       return false;

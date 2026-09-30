@@ -212,7 +212,8 @@ function attempt(over = {}) {
  *   sessionRefOptions?: any,
  *   observeProcess?: any,
  *   existsSync?: (file_path: string) => boolean,
- *   now?: () => number
+ *   now?: () => number,
+ *   handoffPending?: (workspace: string, bead_id: string) => boolean
  * }} [over]
  */
 function makeInquiry(over = {}) {
@@ -247,6 +248,7 @@ function makeInquiry(over = {}) {
     sessionRefOptions: over.sessionRefOptions || SESSION_OPTIONS,
     observeProcess: over.observeProcess,
     existsSync: over.existsSync || (() => true),
+    handoffPending: over.handoffPending,
     log: () => {}
   });
   return { inquiry, tmux, conversationConfirm };
@@ -687,6 +689,55 @@ describe('direction-inquiry runner liveness', () => {
         ok: true,
         identity: { pid: 42, process_started_at: 60_000 }
       })
+    });
+
+    const outcome = await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(outcome?.session).toBe('launched');
+  });
+});
+
+describe('direction-inquiry handoff reservation', () => {
+  test('refuses a click while the bead holds a handoff reservation', async () => {
+    const tmux = makeTmux({
+      panes_seq: [[], [], [['bdui-inquiry', '%9', BEAD, '0']]]
+    });
+    const recordInteractiveSession = vi.fn();
+    const handoffPending = vi.fn(() => true);
+    const { inquiry } = makeInquiry({
+      tmux,
+      handoffPending,
+      store: { recordInteractiveSession }
+    });
+
+    const outcome = await inquiry.launchForClick(parkedInput());
+
+    expect(outcome).toMatchObject({
+      session: 'not_launched',
+      reason: 'handoff_pending'
+    });
+    expect(handoffPending).toHaveBeenCalledWith('/ws', BEAD);
+    expect(tmux.names()).not.toContain('new-window');
+    expect(recordInteractiveSession).not.toHaveBeenCalled();
+  });
+
+  test('refuses an automatic launch while the bead holds a handoff reservation', async () => {
+    const tmux = launchingTmux();
+    const { inquiry } = makeInquiry({ tmux, handoffPending: () => true });
+
+    const outcome = await inquiry.onParkedAttempt(recoveryInput());
+
+    expect(outcome).toMatchObject({
+      session: 'not_launched',
+      reason: 'handoff_pending'
+    });
+    expect(tmux.names()).not.toContain('new-window');
+  });
+
+  test('launches once no handoff reservation is pending', async () => {
+    const { inquiry } = makeInquiry({
+      tmux: launchingTmux(),
+      handoffPending: () => false
     });
 
     const outcome = await inquiry.onParkedAttempt(recoveryInput());

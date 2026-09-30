@@ -220,6 +220,7 @@ export function inquiryWrapper(input) {
  * @property {string} [heartbeatPath]
  * @property {{ home_dir?: string, hostname?: string, fs?: any, now?: () => number }} [sessionRefOptions]
  * @property {(workspace: string, attempt_id: string) => any|Promise<any>} [readAttempt] - Injected queue-store lookup; omission reads as unavailable rather than importing the runtime back through a cycle.
+ * @property {(workspace: string, bead_id: string) => boolean} [handoffPending] - Injected queue-store judgment (`holdsHandoffReservation`): whether this Bead's inquiry record still holds an unsettled handoff reservation. Omission reads as none pending; the store's own write guard still refuses the overwrite.
  * @property {(pid: number) => { ok: true, identity: { pid: number, process_started_at: number } }|{ ok: false, reason: string }} [observeProcess]
  * @property {(file_path: string) => boolean} [existsSync]
  */
@@ -503,6 +504,20 @@ export function createDirectionInquiry(deps) {
           stop
         };
       }
+    }
+    // A handoff reservation belongs to the reconcile pass that continues it
+    // (UI-nuwy §3.4). Checked with no await left before the launch, so a new
+    // window can neither reopen the handed-off session nor replace the record.
+    if (deps.handoffPending?.(workspace, bead_id) === true) {
+      return {
+        outcome: refusal('handoff_pending', {
+          ...facts,
+          runner: target.runner
+        }),
+        title,
+        repo,
+        stop
+      };
     }
     const block = fillConversationEntry({
       stop,

@@ -20,6 +20,26 @@ export function hasLiveResolveSession(interactive_sessions) {
 }
 
 /**
+ * Whether an inquiry view still carries a decided conversation outcome
+ * (UI-nuwy §3.4-§3.5): a handoff reservation or a takeover. It holds while
+ * the window closes too — until the reconcile pass settles the record, a
+ * reopened conversation would replace that outcome.
+ *
+ * @param {any[]|null|undefined} interactive_sessions
+ * @returns {boolean}
+ */
+function holdsConversationOutcome(interactive_sessions) {
+  return (Array.isArray(interactive_sessions) ? interactive_sessions : []).some(
+    (view) =>
+      !!view &&
+      view.kind === 'inquiry' &&
+      !!view.conversation &&
+      (!!view.conversation.handoff ||
+        view.conversation.result?.kind === 'takeover')
+  );
+}
+
+/**
  * The server-projected `[워커로 이어가기]` action of an item, if any
  * (UI-nuwy §3.6). The server decides when it stands; this only finds it.
  *
@@ -84,7 +104,11 @@ export function tileResolveFields(
     !!item.wait?.recovery ||
     reasons.some((/** @type {any} */ r) => r && r.kind === 'recovery') ||
     discard_failed;
-  if (!eligible || hasLiveResolveSession(item.interactive_sessions)) {
+  if (
+    !eligible ||
+    hasLiveResolveSession(item.interactive_sessions) ||
+    holdsConversationOutcome(item.interactive_sessions)
+  ) {
     return handoff_fields;
   }
   return {
