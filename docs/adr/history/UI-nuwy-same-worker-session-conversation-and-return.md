@@ -1,7 +1,8 @@
 ---
 id: UI-nuwy
 title: 사람 대화는 같은 Worker 세션에서 하고 인계 뒤 Worker가 이어간다
-status: accepted
+status: superseded
+superseded_by: UI-dbn6
 date: 2026-09-30
 summary: "사람이 필요한 멈춤(파킹, recovery authority·no_progress, 옛 사유 읽기 호환)은 같은 Worker 세션을 fork 없이 tmux 대화형으로 열어 해결한다; 대화 턴 종료는 답 대기(action_required)이고 첫 줄 인계를 관측하면 창 소멸 확인 뒤 같은 attempt를 같은 세션·기록 실행 설정으로 재개하며(parked·awaiting_user 예외는 이 경로뿐, 사람 ↻·자동 재디스패치는 없음) 인수면 관찰만, 보류면 대기로 남는다; 알림은 확인 필요·답 대기·Worker가 이어감·사람 인수 넷이다"
 supersedes: ["UI-ri8n"]
