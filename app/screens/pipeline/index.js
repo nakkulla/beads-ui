@@ -14,10 +14,12 @@
 import { html } from 'lit-html';
 import { ALL_SCOPE, createPipelinePrefs } from '../../core/state.js';
 import {
+  DONE_RANGE_OPTIONS,
   closedRangeSince,
   normalizeDoneRange
 } from '../../data/closed-range.js';
 import { createAdoptedQueues, mergeQueue } from '../../model/adopted-queue.js';
+import { scopedBlockedSummary } from '../../model/blocked-summary.js';
 import { createChipPresetToggle } from '../../model/chip-preset-binding.js';
 import { buildLanes as defaultBuildLanes } from '../../model/lane-model.js';
 import { disabledModelsOf } from '../../model/model-visibility.js';
@@ -34,7 +36,9 @@ import {
   showProviderResumeDialog
 } from '../dialogs/provider-resume-dialog.js';
 import { createPipelineActions } from './actions.js';
+import { blockedSheet, revealSubject } from './blocked.js';
 import { cardOps } from './card.js';
+import { createDismissers } from './dismiss.js';
 import { createPointerDrag, dropRequest } from './drag.js';
 import { createDrawers } from './drawers.js';
 import { laneBar } from './lane-bar.js';
@@ -466,6 +470,9 @@ export function createPipelineScreen(mount, deps) {
    */
   function sheetTemplate(vm) {
     const sheet = ui.sheet;
+    if (sheet && sheet.kind === 'blocked') {
+      return blockedSheet(blockedOf(), now());
+    }
     const item = sheet
       ? item_by_key.get(itemKey(sheet.root_dir, sheet.bead_id))
       : null;
@@ -489,8 +496,11 @@ export function createPipelineScreen(mount, deps) {
    */
   function toolbarTemplate(vm) {
     if (scopeKind() === 'all') {
-      return allToolbar(vm, monitorStates(), (root_dir) =>
-        adopted.get(root_dir)
+      return allToolbar(
+        vm,
+        monitorStates(),
+        (root_dir) => adopted.get(root_dir),
+        { blocked: blockedOf() }
       );
     }
     const root_dir = deps.getScope();
@@ -500,8 +510,18 @@ export function createPipelineScreen(mount, deps) {
       queue: queueOf(root_dir),
       search: vs.search,
       repo_ops_settings:
-        deps.getConnected() === root_dir ? drawers.settingsTemplate() : ''
+        deps.getConnected() === root_dir ? drawers.settingsTemplate() : '',
+      blocked: blockedOf(),
+      range_label:
+        DONE_RANGE_OPTIONS.find((o) => o.value === vs.done_range)?.label ||
+        '오늘',
+      pr_rows: vm.pr_wait.filter((row) => row.root_dir === root_dir)
     });
+  }
+
+  /** @returns {ReturnType<typeof scopedBlockedSummary>} */
+  function blockedOf() {
+    return scopedBlockedSummary(monitorRows(), deps.getScope());
   }
 
   /**
@@ -702,7 +722,21 @@ export function createPipelineScreen(mount, deps) {
     openSession,
     openSessionLog: (provider, session_id, bead_id, root_dir) =>
       drawers.openSessionLog(provider, session_id, bead_id, root_dir),
-    openRepoDrawer: () => drawers.openRepo()
+    openRepoDrawer: () => drawers.openRepo(),
+    reveal: (root_dir, bead_id) =>
+      revealSubject(
+        {
+          model: computeModel,
+          prefs,
+          vs,
+          ui,
+          scopeKind,
+          render: renderAll,
+          root: frame_host
+        },
+        root_dir,
+        bead_id
+      )
   };
 
   /**
@@ -793,59 +827,7 @@ export function createPipelineScreen(mount, deps) {
     }
   }
 
-  /**
-   * Close an open popover, failure popover or label menu on an outside press.
-   *
-   * @param {PointerEvent} ev
-   */
-  function onDocumentPointer(ev) {
-    const target = /** @type {Element|null} */ (ev.target);
-    if (!target || typeof target.closest !== 'function') {
-      return;
-    }
-    let changed = false;
-    if (ui.popover && !target.closest('.pl-pop, [data-op="chip-popover"]')) {
-      ui.popover = null;
-      changed = true;
-    }
-    if (
-      ui.open_failure &&
-      !target.closest('.pl-pop--failure, [data-op="failure-detail"]')
-    ) {
-      ui.open_failure = null;
-      changed = true;
-    }
-    if (ui.label_menu_open && !target.closest('.pl-filter__labels')) {
-      ui.label_menu_open = false;
-      changed = true;
-    }
-    if (changed) {
-      renderAll();
-    }
-  }
-
-  /**
-   * @param {KeyboardEvent} ev
-   */
-  function onDocumentKey(ev) {
-    if (ev.key !== 'Escape') {
-      return;
-    }
-    if (
-      ui.sheet ||
-      ui.popover ||
-      ui.open_failure ||
-      ui.provider_resume ||
-      ui.label_menu_open
-    ) {
-      ui.sheet = null;
-      ui.popover = null;
-      ui.open_failure = null;
-      ui.provider_resume = null;
-      ui.label_menu_open = false;
-      renderAll();
-    }
-  }
+  const dismiss = createDismissers(ui, () => renderAll());
 
   const drag = createPointerDrag({
     root: mount,
@@ -866,8 +848,8 @@ export function createPipelineScreen(mount, deps) {
   mount.addEventListener('click', onClick);
   mount.addEventListener('change', onChange);
   mount.addEventListener('input', onInput);
-  document.addEventListener('pointerdown', onDocumentPointer);
-  document.addEventListener('keydown', onDocumentKey);
+  document.addEventListener('pointerdown', dismiss.onPointer);
+  document.addEventListener('keydown', dismiss.onKey);
   drag.attach();
 
   const ticker = createTicker({ root: () => mount, now });
@@ -977,8 +959,8 @@ export function createPipelineScreen(mount, deps) {
       mount.removeEventListener('click', onClick);
       mount.removeEventListener('change', onChange);
       mount.removeEventListener('input', onInput);
-      document.removeEventListener('pointerdown', onDocumentPointer);
-      document.removeEventListener('keydown', onDocumentKey);
+      document.removeEventListener('pointerdown', dismiss.onPointer);
+      document.removeEventListener('keydown', dismiss.onKey);
       drawers.destroy();
       mount.replaceChildren();
     }

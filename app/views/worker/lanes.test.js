@@ -1,6 +1,7 @@
 import { html, render } from 'lit-html';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { formatElapsed, sumAttemptWorkMs } from '../../model/attempt-facts.js';
+import { blockedSummary } from '../../model/blocked-summary.js';
 import {
   discardAbandonCompletionMessage,
   discardAbandonConfirmationMessage,
@@ -20,7 +21,6 @@ import { SUMMARY_CHIPS } from '../../model/wait-vocabulary.js';
 import { chipPopoverTemplate } from '../../ui/chip-popover.js';
 import {
   JUDGEMENT_CHIP_KEYS,
-  blockedSummary,
   blockedSummaryTemplate,
   candidateCard,
   discardReceiptTemplate,

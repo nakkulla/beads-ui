@@ -30,7 +30,7 @@ import { queueRequestOf } from './move-sheet.js';
  * @property {boolean} filters_open
  * @property {boolean} label_menu_open
  * @property {boolean} shelf_open
- * @property {{ kind: 'move'|'place'|'ops', bead_id: string, root_dir: string }|null} sheet
+ * @property {{ kind: 'move'|'place'|'ops'|'blocked', bead_id: string, root_dir: string }|null} sheet
  * @property {{ bead_id: string, root_dir: string, chip_key: string }|null} popover
  * @property {string|null} open_failure
  * @property {string|null} selected_attempt
@@ -71,6 +71,8 @@ import { queueRequestOf } from './move-sheet.js';
  * @property {(item: any, attempt_id: string) => void} openSession
  * @property {(provider: 'claude'|'codex', session_id: string, bead_id: string, root_dir: string) => void} openSessionLog
  * @property {() => void} openRepoDrawer
+ * @property {(root_dir: string, bead_id: string) => void} reveal - Unfold and
+ * highlight a 막힘 subject's card.
  */
 
 /** @type {ReadonlyArray<LaneId>} */
@@ -157,6 +159,13 @@ function runScreenOp(env, op, data) {
     case 'sheet-close':
       ui.sheet = null;
       env.render();
+      return true;
+    case 'blocked-open':
+      ui.sheet = { kind: 'blocked', bead_id: '', root_dir: '' };
+      env.render();
+      return true;
+    case 'blocked-pick':
+      env.reveal(root_dir, bead_id);
       return true;
     case 'lane-toggle': {
       const lane = /** @type {LaneId} */ (data.lane || '');
