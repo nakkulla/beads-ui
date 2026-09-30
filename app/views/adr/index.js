@@ -12,14 +12,6 @@ import { html, render } from 'lit-html';
 import { debug } from '../../utils/logging.js';
 
 /**
- * `subscribe-adr` / `unsubscribe-adr` payload id. main.js가 이 상수로 채널을
- * 열고 닫는다.
- *
- * @type {string}
- */
-export const ADR_SNAPSHOT_KEY = 'adr:snapshot';
-
-/**
  * ADR 현재표·이력의 행 순서(UI-rsjb D3). legacy 번호 id는 지금처럼 번호 내림차순으로
  * 앞에 서고, 문자열 id는 그 뒤에서 `date` 내림차순·같은 날은 id 문자열 오름차순으로
  * 잇는다. id 종류로 먼저 갈라 `NaN` 비교를 막는다. 서버

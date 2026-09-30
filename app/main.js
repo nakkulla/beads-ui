@@ -13,6 +13,7 @@
  * @import { MessageType } from './protocol.js'
  */
 import { html } from 'lit-html';
+import { createChannels } from './core/channels.js';
 import { createHashRouter } from './core/router.js';
 import {
   ALL_SCOPE,
@@ -25,7 +26,7 @@ import {
 } from './core/state.js';
 import { createWsClient } from './core/ws.js';
 import { createDisplayPolicyStore } from './data/display-policy-store.js';
-import { depCandidateModel } from './model/dep-candidates.js';
+import { createAdrStore } from './model/adr-store.js';
 import { createExecPresetStore } from './model/exec-preset-store.js';
 import { createModelVisibilityStore } from './model/model-visibility-store.js';
 import { createMonitorPipelineStore } from './model/monitor-pipeline-store.js';
@@ -33,6 +34,8 @@ import { createSessionLogStore } from './model/session-log-store.js';
 import { createSubscriptionIssueStores } from './model/subscription-issue-stores.js';
 import { createSubscriptionStore } from './model/subscriptions-store.js';
 import { createWorkerQueueStore } from './model/worker-queue-store.js';
+import { mountBridges } from './screens/bridges.js';
+import { runGitPull } from './screens/pipeline/git-pull.js';
 import { createPipelineScreen } from './screens/pipeline/index.js';
 import { nameOf } from './screens/pipeline/scope.js';
 import { createShell } from './screens/pipeline/shell.js';
@@ -42,22 +45,10 @@ import { showToast } from './ui/toast.js';
 import { viewportOf, watchViewport } from './ui/viewport.js';
 import { createActivityIndicator } from './utils/activity-indicator.js';
 import { debug } from './utils/logging.js';
-import { ADR_SNAPSHOT_KEY, createAdrView } from './views/adr/index.js';
-import { createCompareView } from './views/compare/index.js';
-import { createDetailPanel } from './views/detail-panel/index.js';
-import { createMdViewer } from './views/detail-panel/md-viewer.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
-import { createNewIssueDialog } from './views/new-issue-dialog.js';
-import { createSettingsDialog } from './views/settings-dialog/index.js';
 import { createUsageMeter } from './views/usage-meter.js';
 
-/** Client id of the server-global monitor pipeline subscription. */
-export const MONITOR_PIPELINE_KEY = 'tab:monitor:pipeline';
-const WORKER_QUEUE_CLIENT_ID = 'worker:queue';
-const EXEC_PRESETS_CLIENT_ID = 'exec:presets';
-const MODEL_VISIBILITY_CLIENT_ID = 'model-visibility';
-const CLOSED_CLIENT_ID = 'pipeline:closed';
-const DEFERRED_CLIENT_ID = 'pipeline:deferred';
+export { MONITOR_PIPELINE_KEY } from './core/channels.js';
 
 /**
  * Read the server-rendered bootstrap config.
@@ -87,35 +78,6 @@ export async function refreshConfigSnapshot(store, log_error) {
   } catch (err) {
     log_error('config refresh failed', err);
   }
-}
-
-/**
- * A replace-only store for the ADR snapshot (no partial patches).
- *
- * @returns {{ get: () => ({ workspaces: any[] }|null), set: (value: { workspaces: any[] }) => void, subscribe: (fn: () => void) => () => void }}
- */
-function createAdrStore() {
-  /** @type {{ workspaces: any[] }|null} */
-  let value = null;
-  /** @type {Set<() => void>} */
-  const listeners = new Set();
-  return {
-    get: () => value,
-    set(next) {
-      value = next;
-      for (const fn of Array.from(listeners)) {
-        try {
-          fn();
-        } catch {
-          // a broken subscriber must not stop the others
-        }
-      }
-    },
-    subscribe(fn) {
-      listeners.add(fn);
-      return () => listeners.delete(fn);
-    }
-  };
 }
 
 /**
@@ -257,130 +219,37 @@ export function bootstrap(root_element) {
     );
   }
 
-  // --- push routing ---------------------------------------------------------
-
-  let monitor_recovering = false;
-  let queue_recovering = false;
-  client.on('monitor-pipeline-snapshot', (payload) => {
-    const p = /** @type {any} */ (payload);
-    if (p && Array.isArray(p.workspaces)) {
-      monitor_store.set(p.workspaces, p.workspaces_state, p.seq);
-      monitor_recovering = false;
-    }
+  let settings_open = false;
+  const channels = createChannels({
+    client,
+    send: tracked_send,
+    subscriptions,
+    stores: {
+      monitor: monitor_store,
+      queue: worker_queue_store,
+      presets: exec_preset_store,
+      visibility: model_visibility_store,
+      sessionLog: session_log_store,
+      issues: sub_issue_stores,
+      adr: adr_store
+    },
+    connectedPath: () => connectedPath(),
+    selectedId: () => store.getState().selected_id,
+    wants: () => {
+      const state = store.getState();
+      const scope = effectiveScope();
+      const repo = scope !== ALL_SCOPE && scope === connectedPath();
+      return {
+        enabled: boot_done && switches_in_flight === 0,
+        repo,
+        queue: repo || Boolean(state.selected_id) || settings_open,
+        adr: state.view === 'adr',
+        detail_id: state.selected_id
+      };
+    },
+    showFatal,
+    log
   });
-  client.on('monitor-pipeline-patch', (payload) => {
-    const p = /** @type {any} */ (payload);
-    if (!p || monitor_recovering) {
-      return;
-    }
-    if (!monitor_store.applyPatch(p)) {
-      log('monitor-pipeline patch sequence mismatch; resubscribing');
-      if (monitor_sub) {
-        monitor_sub = false;
-        monitor_generation += 1;
-        void tracked_send('unsubscribe-monitor-pipeline', {
-          id: MONITOR_PIPELINE_KEY
-        }).catch(() => {});
-      }
-      monitor_recovering = true;
-      ensureMonitorPipeline();
-    }
-  });
-  client.on('worker-queue-snapshot', (payload) => {
-    const p = /** @type {any} */ (payload);
-    const current = connectedPath();
-    if (!p || !p.queue || (current && p.root_dir !== current)) {
-      return;
-    }
-    worker_queue_store.setSnapshot(p);
-    queue_recovering = false;
-  });
-  client.on('worker-queue-patch', (payload) => {
-    const p = /** @type {any} */ (payload);
-    const current = connectedPath();
-    if (!p || queue_recovering || (current && p.root_dir !== current)) {
-      return;
-    }
-    if (!worker_queue_store.applyPatch(p)) {
-      log('worker-queue patch sequence mismatch; resubscribing');
-      if (queue_sub) {
-        queue_sub = false;
-        queue_generation += 1;
-        void tracked_send('unsubscribe-worker-queue', {
-          id: WORKER_QUEUE_CLIENT_ID
-        }).catch(() => {});
-      }
-      queue_recovering = true;
-      syncSurfaces();
-    }
-  });
-  client.on('impl-presets-snapshot', (payload) => {
-    const p = /** @type {any} */ (payload);
-    if (p && typeof p.revision === 'number' && Array.isArray(p.presets)) {
-      exec_preset_store.set({
-        revision: p.revision,
-        presets: p.presets,
-        chip_bindings: p.chip_bindings
-      });
-    }
-  });
-  client.on('model-visibility-snapshot', (payload) => {
-    const p = /** @type {any} */ (payload);
-    if (
-      p &&
-      typeof p.revision === 'number' &&
-      Array.isArray(p.disabled_models) &&
-      p.runners &&
-      typeof p.runners === 'object'
-    ) {
-      model_visibility_store.set({
-        revision: p.revision,
-        disabled_models: p.disabled_models,
-        runners: p.runners
-      });
-    }
-  });
-  client.on('adr-snapshot', (payload) => {
-    const p = /** @type {any} */ (payload);
-    if (p && Array.isArray(p.workspaces)) {
-      adr_store.set({ workspaces: p.workspaces });
-    }
-  });
-  client.on('session-log-snapshot', (payload) => {
-    const p = /** @type {any} */ (payload);
-    if (p && typeof p.id === 'string') {
-      session_log_store.set(
-        p.id,
-        Array.isArray(p.lines) ? p.lines : [],
-        typeof p.last_event_at === 'number' ? p.last_event_at : null
-      );
-    }
-  });
-  client.on('session-log-append', (payload) => {
-    const p = /** @type {any} */ (payload);
-    if (p && typeof p.id === 'string') {
-      session_log_store.append(p.id, p.event);
-    }
-  });
-  // One handler per list push type: it feeds the subscription's store and,
-  // for the pipeline's closed/deferred lists, tells the screen to re-read.
-  for (const type of ['snapshot', 'upsert', 'delete']) {
-    client.on(/** @type {any} */ (type), (payload) => {
-      const p = /** @type {any} */ (payload);
-      const id = p && typeof p.id === 'string' ? p.id : '';
-      const target = id ? sub_issue_stores.getStore(id) : null;
-      if (target && p.type === type) {
-        try {
-          target.applyPush(p);
-        } catch {
-          // ignore
-        }
-      }
-      if (id === CLOSED_CLIENT_ID || id === DEFERRED_CLIENT_ID) {
-        notifyLists();
-      }
-    });
-  }
 
   // --- workspace -----------------------------------------------------------
 
@@ -469,7 +338,7 @@ export function bootstrap(root_element) {
       });
       writeSavedWorkspace(storage, path);
       if (res.changed) {
-        releaseWorkspaceSurfaces();
+        channels.releaseWorkspace();
       }
       return 'ok';
     } catch (err) {
@@ -483,20 +352,6 @@ export function bootstrap(root_element) {
       switches_in_flight -= 1;
       syncSurfaces();
     }
-  }
-
-  /**
-   * The server dropped the workspace-bound subscriptions with the old
-   * workspace: forget them so the next sync reopens what is still open.
-   */
-  function releaseWorkspaceSurfaces() {
-    worker_queue_store.clear();
-    queue_sub = false;
-    resetDetail();
-    closed_sub = null;
-    deferred_sub = false;
-    deferred_unsub = null;
-    notifyLists();
   }
 
   /**
@@ -541,266 +396,8 @@ export function bootstrap(root_element) {
     }
   }
 
-  // --- subscriptions --------------------------------------------------------
-
-  let monitor_sub = false;
-  let monitor_generation = 0;
-  let presets_sub = false;
-  let visibility_sub = false;
-  let queue_sub = false;
-  let queue_generation = 0;
-  let adr_sub = false;
-  /** @type {null|{ since: number|undefined, unsub: () => Promise<void> }} */
-  let closed_sub = null;
-  let deferred_sub = false;
-  /** @type {(() => Promise<void>)|null} */
-  let deferred_unsub = null;
-  /** @type {{ closed: boolean, closed_since: number|null|undefined, deferred: boolean }} */
-  let list_wants = { closed: false, closed_since: null, deferred: false };
-  /** @type {Set<() => void>} */
-  const list_listeners = new Set();
-  let settings_open = false;
-
-  function notifyLists() {
-    for (const fn of Array.from(list_listeners)) {
-      try {
-        fn();
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  function ensureMonitorPipeline() {
-    if (monitor_sub) {
-      return;
-    }
-    monitor_sub = true;
-    const recovering = monitor_recovering;
-    const generation = (monitor_generation += 1);
-    void tracked_send('subscribe-monitor-pipeline', {
-      id: MONITOR_PIPELINE_KEY
-    }).catch((err) => {
-      log('subscribe-monitor-pipeline failed: %o', err);
-      if (generation === monitor_generation) {
-        monitor_sub = false;
-        if (recovering) {
-          showFatal(err, 'pipeline');
-        }
-      }
-    });
-  }
-
-  function ensureGlobalChannels() {
-    if (!presets_sub) {
-      presets_sub = true;
-      void tracked_send('subscribe-impl-presets', {
-        id: EXEC_PRESETS_CLIENT_ID
-      }).catch(() => {
-        presets_sub = false;
-      });
-    }
-    if (!visibility_sub) {
-      visibility_sub = true;
-      void tracked_send('subscribe-model-visibility', {
-        id: MODEL_VISIBILITY_CLIENT_ID
-      }).catch(() => {
-        model_visibility_store.clear();
-        visibility_sub = false;
-      });
-    }
-  }
-
-  /** @param {boolean} wanted */
-  function setWorkerQueue(wanted) {
-    if (wanted && !queue_sub) {
-      queue_sub = true;
-      const recovering = queue_recovering;
-      const generation = (queue_generation += 1);
-      void tracked_send('subscribe-worker-queue', {
-        id: WORKER_QUEUE_CLIENT_ID
-      }).catch((err) => {
-        log('subscribe-worker-queue failed: %o', err);
-        if (generation === queue_generation) {
-          queue_sub = false;
-          if (recovering) {
-            showFatal(err, 'worker');
-          }
-        }
-      });
-    } else if (!wanted && queue_sub) {
-      queue_sub = false;
-      queue_recovering = false;
-      queue_generation += 1;
-      void tracked_send('unsubscribe-worker-queue', {
-        id: WORKER_QUEUE_CLIENT_ID
-      }).catch(() => {});
-      worker_queue_store.clear();
-    }
-  }
-
-  /** @param {boolean} wanted */
-  function setAdr(wanted) {
-    if (wanted && !adr_sub) {
-      adr_sub = true;
-      void tracked_send('subscribe-adr', { id: ADR_SNAPSHOT_KEY }).catch(() => {
-        adr_sub = false;
-      });
-    } else if (!wanted && adr_sub) {
-      adr_sub = false;
-      void tracked_send('unsubscribe-adr', { id: ADR_SNAPSHOT_KEY }).catch(
-        () => {}
-      );
-    }
-  }
-
-  /**
-   * @param {string} client_id
-   * @param {{ type: string, params?: Record<string, string|number|boolean> }} spec
-   * @returns {Promise<(() => Promise<void>)|null>}
-   */
-  async function openList(client_id, spec) {
-    try {
-      sub_issue_stores.register(client_id, spec);
-      const unsub = await subscriptions.subscribeList(client_id, spec);
-      notifyLists();
-      return unsub;
-    } catch (err) {
-      log('subscribe %s failed: %o', client_id, err);
-      return null;
-    }
-  }
-
-  /**
-   * @param {string} client_id
-   * @param {(() => Promise<void>)|null} unsub
-   */
-  function closeList(client_id, unsub) {
-    if (unsub) {
-      void unsub().catch(() => {});
-    }
-    try {
-      sub_issue_stores.unregister(client_id);
-    } catch {
-      // ignore
-    }
-    notifyLists();
-  }
-
-  async function syncLists() {
-    const scope = effectiveScope();
-    const repo = scope !== ALL_SCOPE && scope === connectedPath();
-    const closed_since = list_wants.closed_since ?? undefined;
-    const want_closed = repo && list_wants.closed;
-    if (closed_sub && (!want_closed || closed_sub.since !== closed_since)) {
-      const current = closed_sub;
-      closed_sub = null;
-      closeList(CLOSED_CLIENT_ID, current.unsub);
-    }
-    if (want_closed && !closed_sub) {
-      const marker = { since: closed_since, unsub: async () => {} };
-      closed_sub = marker;
-      const spec =
-        closed_since === undefined
-          ? { type: 'closed-issues' }
-          : { type: 'closed-issues', params: { since: closed_since } };
-      const unsub = await openList(CLOSED_CLIENT_ID, spec);
-      if (closed_sub === marker && unsub) {
-        marker.unsub = unsub;
-      } else if (unsub) {
-        void unsub().catch(() => {});
-      }
-    }
-    const want_deferred = repo && list_wants.deferred;
-    if (deferred_sub && !want_deferred) {
-      deferred_sub = false;
-      closeList(DEFERRED_CLIENT_ID, deferred_unsub);
-      deferred_unsub = null;
-    }
-    if (want_deferred && !deferred_sub) {
-      deferred_sub = true;
-      const unsub = await openList(DEFERRED_CLIENT_ID, {
-        type: 'deferred-issues'
-      });
-      if (deferred_sub) {
-        deferred_unsub = unsub;
-      } else if (unsub) {
-        void unsub().catch(() => {});
-      }
-    }
-  }
-
   function syncSurfaces() {
-    if (!boot_done || switches_in_flight > 0) {
-      return;
-    }
-    const state = store.getState();
-    const scope = effectiveScope();
-    const repo = scope !== ALL_SCOPE && scope === connectedPath();
-    setWorkerQueue(repo || Boolean(state.selected_id) || settings_open);
-    setAdr(state.view === 'adr');
-    if (state.selected_id) {
-      scheduleDetail(state.selected_id);
-    }
-    void syncLists();
-  }
-
-  // --- detail subscription ----------------------------------------------------
-
-  /** @type {null|(() => Promise<void>)} */
-  let detail_unsub = null;
-  /** @type {string|null} */
-  let detail_key = null;
-
-  function resetDetail() {
-    if (detail_unsub) {
-      void detail_unsub().catch(() => {});
-      detail_unsub = null;
-    }
-    const id = store.getState().selected_id;
-    if (id) {
-      try {
-        sub_issue_stores.unregister(`detail:${id}`);
-      } catch {
-        // ignore
-      }
-    }
-    detail_key = null;
-  }
-
-  /** @param {string} id */
-  function scheduleDetail(id) {
-    const key = `${connectedPath() || ''}\u0000${id}`;
-    if (key === detail_key) {
-      return;
-    }
-    detail_key = key;
-    const client_id = `detail:${id}`;
-    const spec = { type: 'issue-detail', params: { id } };
-    try {
-      sub_issue_stores.register(client_id, spec);
-    } catch (err) {
-      log('register detail store failed: %o', err);
-    }
-    void subscriptions
-      .subscribeList(client_id, spec)
-      .then(async (unsub) => {
-        if (detail_key !== key || store.getState().selected_id !== id) {
-          await unsub().catch(() => {});
-          return;
-        }
-        if (detail_unsub) {
-          await detail_unsub().catch(() => {});
-        }
-        detail_unsub = unsub;
-      })
-      .catch((err) => {
-        log('detail subscribe failed: %o', err);
-        if (detail_key === key) {
-          detail_key = null;
-        }
-        showFatal(err, 'issue details');
-      });
+    channels.sync();
   }
 
   // --- navigation -------------------------------------------------------------
@@ -879,58 +476,6 @@ export function bootstrap(root_element) {
 
   let viewport = viewportOf();
 
-  /**
-   * @param {string} root_dir
-   * @returns {Promise<void>}
-   */
-  async function gitPull(root_dir) {
-    try {
-      const result = /** @type {any} */ (
-        await client.send('git-pull-workspace', {})
-      );
-      const status = result?.status;
-      if (status === 'up_to_date') {
-        showToast('Already up to date', 'success', 2000);
-      } else if (status === 'stash_pop_conflict') {
-        showToast(
-          'Git pulled, but stash pop conflicted (check git stash list)',
-          'warning',
-          4000
-        );
-      } else {
-        showToast(`Git pulled ${nameOf(root_dir)}`, 'success', 2000);
-      }
-    } catch (err) {
-      const code = /** @type {any} */ (err)?.code;
-      const detail = /** @type {any} */ (err)?.message;
-      if (code === 'rebase_conflict') {
-        showToast(
-          'Git pull conflicts — reverted (manual resolve required)',
-          'error',
-          4000
-        );
-      } else if (code === 'rebase_conflict_abort_failed') {
-        showToast(
-          "Git pull conflicts AND rebase --abort failed — repo left mid-rebase, run 'git rebase --abort' manually",
-          'error',
-          6000
-        );
-      } else if (code === 'busy') {
-        showToast(
-          'Git pull skipped: another operation is running',
-          'warning',
-          3000
-        );
-      } else {
-        showToast(
-          `Git pull failed${detail ? `: ${detail}` : ''}`,
-          'error',
-          3000
-        );
-      }
-    }
-  }
-
   const shell = createShell(header_el, {
     scopeView: () => ({
       scope: effectiveScope(),
@@ -959,7 +504,12 @@ export function bootstrap(root_element) {
       }
     },
     onNewIssue: () => new_issue_dialog.open(),
-    onGitPull: (root_dir) => gitPull(root_dir),
+    onGitPull: (root_dir) =>
+      runGitPull(
+        (type, payload) =>
+          client.send(/** @type {MessageType} */ (type), payload),
+        root_dir
+      ),
     onVisibility: (path, visible) => {
       void client
         .send('set-workspace-visibility', { path, visible })
@@ -983,98 +533,36 @@ export function bootstrap(root_element) {
 
   // --- bridges ----------------------------------------------------------------
 
-  const md_mount = document.createElement('div');
-  md_mount.className = 'md-viewer-root';
-  document.body.appendChild(md_mount);
-  const md_viewer = createMdViewer(md_mount, {
-    getWorkspacePath: () => connectedPath() || undefined
-  });
-  /**
-   * @param {{ path: string, missing_state?: any }} doc
-   * @param {string} [root_dir]
-   */
-  function openDoc(doc, root_dir) {
-    void md_viewer.open(doc.path, {
-      missing_state: doc.missing_state,
-      ...(root_dir ? { workspace: root_dir } : {})
+  const { new_issue_dialog, settings_dialog, compare_view, detail_panel } =
+    mountBridges({
+      root: root_element,
+      compare_root,
+      adr_root,
+      detail_mount,
+      send: tracked_send,
+      transport,
+      stores: {
+        monitor: monitor_store,
+        queue: worker_queue_store,
+        presets: exec_preset_store,
+        visibility: model_visibility_store,
+        sessionLog: session_log_store,
+        issues: sub_issue_stores,
+        displayPolicy: display_policy_store,
+        adr: adr_store
+      },
+      connectedPath,
+      effectiveScope,
+      openIssue: (id, root_dir) => void openIssue(id, root_dir),
+      switchWorkspace: async (root_dir) =>
+        (await setWorkspace(root_dir)) === 'ok',
+      closeIssue: () => router.closeIssue(),
+      subscribeWorkspace: (fn) => store.subscribe(() => fn()),
+      onSettingsOpenChange: (open) => {
+        settings_open = open;
+        syncSurfaces();
+      }
     });
-  }
-
-  const new_issue_dialog = createNewIssueDialog(root_element, (type, payload) =>
-    tracked_send(type, payload)
-  );
-
-  const settings_dialog = createSettingsDialog(root_element, {
-    policyStore: display_policy_store,
-    queueStore: worker_queue_store,
-    implPresetStore: exec_preset_store,
-    modelVisibilityStore: model_visibility_store,
-    transport: (type, payload) => tracked_send(type, payload),
-    monitorRows: () => monitor_store.getWorkspacesState(),
-    subscribeMonitorRows: (fn) => monitor_store.subscribe(fn),
-    onOpenChange: (open) => {
-      settings_open = open;
-      syncSurfaces();
-    },
-    labelOptions: () => {
-      /** @type {Set<string>} */
-      const seen = new Set();
-      for (const row of monitor_store.get() || []) {
-        for (const entry of Array.isArray(row.runnable) ? row.runnable : []) {
-          for (const label of Array.isArray(entry.labels) ? entry.labels : []) {
-            if (typeof label === 'string' && label) {
-              seen.add(label);
-            }
-          }
-        }
-      }
-      return [...seen].sort();
-    }
-  });
-
-  const compare_view = createCompareView(compare_root, {
-    transport,
-    gotoIssue: (id) => void openIssue(id, ''),
-    execPresetStore: exec_preset_store,
-    sourceCandidates: () => []
-  });
-  createAdrView(adr_root, {
-    adrStore: adr_store,
-    gotoIssue: (id) => void openIssue(id, ''),
-    getWorkspacePath: () => connectedPath() || undefined,
-    subscribeWorkspace: (fn) => store.subscribe(() => fn()),
-    switchWorkspace: async (root_dir) =>
-      (await setWorkspace(root_dir)) === 'ok',
-    openDoc
-  });
-
-  const detail_panel = createDetailPanel(detail_mount, {
-    issueStores: sub_issue_stores,
-    transport,
-    queueStore: worker_queue_store,
-    pipelineStore: monitor_store,
-    execPresetStore: exec_preset_store,
-    modelVisibilityStore: model_visibility_store,
-    sessionLogStore: session_log_store,
-    getWorkspacePath: () => connectedPath() || undefined,
-    mdViewer: md_viewer,
-    depCandidates: () => {
-      const workspaces = monitor_store.get();
-      if (workspaces === null) {
-        return null;
-      }
-      const scope = effectiveScope();
-      return scope === ALL_SCOPE
-        ? depCandidateModel(workspaces, monitor_store.getWorkspacesState())
-        : depCandidateModel(workspaces, monitor_store.getWorkspacesState(), {
-            root_dir: scope
-          });
-    },
-    subscribeCandidates: (fn) => monitor_store.subscribe(fn),
-    onNavigate: (id, root_dir) => void openIssue(id, root_dir || ''),
-    onClose: () => router.closeIssue(),
-    onOpenExecPresets: () => settings_dialog.open('execution')
-  });
 
   // --- pipeline ----------------------------------------------------------------
 
@@ -1084,20 +572,7 @@ export function bootstrap(root_element) {
     presetStore: exec_preset_store,
     modelVisibilityStore: model_visibility_store,
     sessionLogStore: session_log_store,
-    lists: {
-      closed: () =>
-        /** @type {any[]} */ (
-          sub_issue_stores.snapshotFor(CLOSED_CLIENT_ID) || []
-        ),
-      deferred: () =>
-        /** @type {any[]} */ (
-          sub_issue_stores.snapshotFor(DEFERRED_CLIENT_ID) || []
-        ),
-      subscribe: (fn) => {
-        list_listeners.add(fn);
-        return () => list_listeners.delete(fn);
-      }
-    },
+    lists: channels.lists,
     getScope: effectiveScope,
     setScope: (scope) => void setScope(scope),
     getConnected: connectedPath,
@@ -1113,10 +588,7 @@ export function bootstrap(root_element) {
         });
       }
     },
-    setListWants: (wants) => {
-      list_wants = wants;
-      void syncLists();
-    }
+    setListWants: (wants) => channels.setListWants(wants)
   });
   monitor_store.subscribe(() => shell.render());
 
@@ -1142,7 +614,7 @@ export function bootstrap(root_element) {
     } else if (!detail_mount.hidden) {
       detail_mount.hidden = true;
       detail_panel.clear();
-      resetDetail();
+      channels.resetDetail();
     }
     syncSurfaces();
   });
@@ -1166,17 +638,7 @@ export function bootstrap(root_element) {
   });
 
   async function resubscribe() {
-    monitor_sub = false;
-    presets_sub = false;
-    visibility_sub = false;
-    queue_sub = false;
-    adr_sub = false;
-    closed_sub = null;
-    deferred_sub = false;
-    deferred_unsub = null;
-    detail_key = null;
-    detail_unsub = null;
-    exec_preset_store.clear();
+    channels.forgetAll();
     const target = connectedPath();
     if (target) {
       try {
@@ -1186,8 +648,7 @@ export function bootstrap(root_element) {
         return;
       }
     }
-    ensureMonitorPipeline();
-    ensureGlobalChannels();
+    channels.openGlobal();
     syncSurfaces();
   }
 
@@ -1200,7 +661,7 @@ export function bootstrap(root_element) {
       store.setState({
         workspace: { current: { path: p.root_dir, database: p.db_path } }
       });
-      releaseWorkspaceSurfaces();
+      channels.releaseWorkspace();
       if (store.getState().scope !== ALL_SCOPE) {
         writeScope(storage, p.root_dir);
         store.setState({ scope: p.root_dir });
@@ -1245,8 +706,7 @@ export function bootstrap(root_element) {
       store.setState({ scope: ALL_SCOPE });
     }
     boot_done = true;
-    ensureMonitorPipeline();
-    ensureGlobalChannels();
+    channels.openGlobal();
     syncSurfaces();
     // The effective scope may only now resolve (the workspace list arrived):
     // redraw so the screen states the list surfaces it wants.
