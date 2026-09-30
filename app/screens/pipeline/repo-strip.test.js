@@ -168,7 +168,7 @@ describe('pipeline repo strip exec line (UI-dbn6 P1-r3)', () => {
     ]);
   });
 
-  test('names the preset, 총괄, 워커 and qf on the second line', () => {
+  test('names the preset, 오케, 워커 and qf on the second line', () => {
     const { mount: root } = mountExecLine();
 
     const line = cellOf(root, REPO_A).querySelector('.pl-strip__r2');
@@ -176,7 +176,7 @@ describe('pipeline repo strip exec line (UI-dbn6 P1-r3)', () => {
 
     expect(parts).toEqual([
       '클로드',
-      '총괄 claude · opus · high',
+      '오케 claude · opus · high',
       '워커 codex · 5.6-sol · medium',
       'qf astra'
     ]);

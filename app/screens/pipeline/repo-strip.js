@@ -2,7 +2,7 @@
  * The repo strip of the 전체 toolbar (UI-dbn6 §3.3) — the retired repo deck
  * folded into bounded cells (design-system round). Line 1: name · running
  * `n/slots` · 자동 진행 switch · 자동 머지 switch · ⚙. Line 2: the applied
- * general preset (a gray pill), `총괄 <orchestration>`, `워커 <worker>` and
+ * general preset (a gray pill), `오케 <orchestration>`, `워커 <worker>` and
  * `qf <quick-fix preset>`, each with its formatter title as the tooltip; a
  * part without material draws nothing, and a cell with no part draws no
  * second line (fail-quiet).
@@ -106,7 +106,7 @@ function execLine(chip) {
       : ''}${chip.orchestration
       ? kvPart(
           'orchestration',
-          '총괄',
+          '오케',
           chip.orchestration.text,
           chip.orchestration.title
         )
