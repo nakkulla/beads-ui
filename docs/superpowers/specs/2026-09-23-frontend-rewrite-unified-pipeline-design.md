@@ -19,7 +19,8 @@ scope:
 
 # beads-ui 프런트엔드 재작성 — 통합 파이프라인 화면과 모바일 우선 (UI-dbn6)
 
-- Bead: UI-dbn6 · route: full_plan — 같은 저장소 안의 Phase 4개(§7).
+- Bead: UI-dbn6 · route: full_plan — 같은 저장소 안의 Phase 4개, 착지 묶음 하나(이슈
+  하나·PR 하나, §7).
 - 형제: UI-j2h3(서버 핫픽스) · UI-7xrf(스냅샷·이벤트루프, 이 Bead 뒤). §8.
 - 선행 의존: UI-j2h3(`blocks`) — §3.7이 그 설계의 병렬 일괄 러너와 §4.5 압축
   빌드 규칙을 소비한다. 엣지는 구현 진입만 막고 이 문서와 계획서 작성은 병행한다.
@@ -73,7 +74,7 @@ scope:
 | 화면 | 비교 | `#/compare` | 프리셋·오케스트레이션·구현자 비교표 |
 | 화면 | ADR | `#/adr` | 레포별 현재 결정 목록 |
 | 오버레이 | 이슈 상세 | `?issue=<id>` | 어느 화면 위에서든 |
-| 오버레이 | 전사 드로어 | — | attempt·session_ref 전사 |
+| 오버레이 | 전사 드로어 | — | attempt·session_ref 전사. 표시 문법은 `2026-09-29-transcript-drawer-conversation-view-design.md`(UI-2dbn) §4.2~§4.5가 정본 |
 | 오버레이 | 설정 | — | 레포 모드 / 일괄 모드 |
 | 오버레이 | 새 이슈, 문서 뷰어, 재개·계속 다이얼로그, 복구 선택 다이얼로그 | — | 현행 유지 |
 
@@ -146,11 +147,14 @@ PR 대기 레인은 `[일괄 머지]`/`[일괄 머지 중단]`, 완료 레인은
 `2026-08-25-card-header-grammar-unify-design.md` §2 줄 순서와 §5.1 슬롯 표,
 `2026-08-28-chip-grammar-unify-design.md` 칩 클릭 의미, `2026-09-02-worker-
 operation-surface-unify-design.md` §3.2 `.op-btn` 자리 규칙, 대기 어휘 4종(UI-a5l2
-§3.1)을 승계한다. 바꾸는 것은 셋뿐이며 각각 이 문서가 슬롯을 정한다.
+§3.1)을 승계한다. 이 문서 기준 이후 착지한 카드 동작 — 문의 세션이 살아 있는 동안의
+배지와 `[세션에서 해결]` 표시 규칙(ADR UI-ri8n, `tile-resolve.js`), 외부 대기 조작의
+서버 `actions[]`가 싣는 `placement`(`card`|`detail`)·`confirm`(UI-r6xq) — 도 그대로
+승계한다. 바꾸는 것은 셋뿐이며 각각 이 문서가 슬롯을 정한다.
 
 1. **진행 띠**: 슬롯 3의 stepper는 카드 상단 가장자리의 5칸 띠로 그린다(spec·
    plan·구현·PR·머지, 산출물 있음 = 어두운 단계색, 리뷰·현재 = 밝은 단계색,
-   없음 = 선색). 슬롯 3에는 활동 줄·위임 접기·자식 롤업만 남는다. 라벨 달린
+   없음 = 선색). 슬롯 3에는 활동 줄·위임 접기만 남는다. 라벨 달린
    stepper는 이슈 상세 상단에만 있다. 띠는 카드 전체를 묶는 유일한 시각 장치다.
 2. **대기 행 조작**: 굵은 포인터(터치)에서는 `↑ ↓ ✕` 대신 `⋯` 하나가 이동 시트를
    연다(§3.6). 가는 포인터(마우스)에서는 `✕`와 드래그가 지금처럼 남고 `↑↓`는
@@ -161,6 +165,11 @@ operation-surface-unify-design.md` §3.2 `.op-btn` 자리 규칙, 대기 어휘 
    조건 — 는 텍스트 갱신으로 끝나지 않으므로, 레인 조립이 다음 시간 경계(가장
    이른 유예 만료 시각)를 함께 돌려주고 화면은 그 시각에 한 번 해당 레인만 다시
    렌더한다. 매초 전체 재렌더는 없다.
+
+승계하지 않는 것: Phase 자식 롤업(슬롯 3)과 이월 칩 `이월 → <ID>`(슬롯 4b).
+dotfiles-b0xsk가 Phase 자식과 이월을 폐지했으므로 새 카드는 둘을 그리지 않는다.
+카드 문법 스펙 §5.1 표의 정리와 서버 쪽 은퇴(`carryover-index`·`child_sweep`)는
+UI-ruwu가 이 이슈 뒤에서 맡는다.
 
 칩·배지의 뜻은 `title` 툴팁(모바일은 길게 눌러 팝업)으로 보인다. 도움말 다이얼로그는
 없고, 범례 문장은 `wait-vocabulary.js`의 표를 그대로 쓴다.
@@ -173,7 +182,9 @@ operation-surface-unify-design.md` §3.2 `.op-btn` 자리 규칙, 대기 어휘 
 (markdown) → 외부 작업(있을 때) → Worker 이력(세션 행: 전사·이어하기·재개 명령
 복사·토큰 사용량 상세 펼치기; 문의·해결 세션 배지의 Discord 링크) → 댓글 →
 과업 프롬프트(펼침). 3층 유효 설정 편집기의 값 해석은 `execution-defaults.js`를
-그대로 쓴다.
+그대로 쓴다. 모델 선택지(구현·오케스트레이션 모델, 공급자 재개 대화상자)는 활성 모델
+필터(`visibleModelChoices`·`visibleReviewerChoices`, ADR UI-ooc0)를 그대로 건다 — 꺼 둔
+모델은 선택지에서만 빠지고 저장된 값은 `(비활성)`으로 남는다.
 
 ### 3.6 모바일
 
@@ -196,7 +207,11 @@ operation-surface-unify-design.md` §3.2 `.op-btn` 자리 규칙, 대기 어휘 
 | 모드 | 진입 | 탭 |
 | --- | --- | --- |
 | 레포 | 레포 범위 ⚙, 레포 띠 ⚙, 상세의 프리셋 바꾸기 | 워커 프리셋 · 세션 · 계정 |
-| 일괄 | 전체 범위 ⚙ | 워커 프리셋 · 세션 · 계정 · 칩 바인딩(서버 전역) + 대상 레포 체크 |
+| 일괄 | 전체 범위 ⚙ | 워커 프리셋 · 세션 · 계정 · 전역(판정 칩 프리셋 바인딩·활성 모델, 서버 전역) + 대상 레포 체크 |
+
+전역 탭은 UI-ooc0이 `칩`에서 이름을 바꾼 서버 전역 탭 하나이고(ADR UI-u6ud-10의
+"그 탭만", ADR UI-ooc0), 판정 칩 프리셋 묶음과 활성 모델 묶음(`model-visibility-set`)을
+둔다. 설정 창의 모델 묶음·리뷰 행 선택지도 활성 모델 필터를 건다(§3.5).
 
 표시 정책 탭은 없다. 워커 프리셋 탭은 UI-7yh2 설계(2026-09-10)의 **배치와
 모양**(맨 위 적용 바, 구분선 기반 그룹, 접힌 리뷰·지침)만 승계하고, 프리셋 의미는
@@ -235,11 +250,12 @@ app/
               queue-blockers blocker-scope token-usage execution-defaults
               exec-settings-chip chip-preset-binding transcript-lines report-marker
               relative-time sort closed-range active-attempts failure-labels
-              failure-sentences merge-steps child-rollup carryover-index scope-overlap
-              keyed-patch stores(subscription-issue-store·subscriptions-store·
-              monitor-pipeline-store·worker-queue-store·exec-preset-store·
-              session-log-store) session-model bulk-observation bulk-preset-apply
-              bulk-account-apply blockers dep-candidates
+              failure-sentences merge-steps scope-overlap tile-resolve
+              model-visibility keyed-patch stores(subscription-issue-store·
+              subscriptions-store·monitor-pipeline-store·worker-queue-store·
+              exec-preset-store·session-log-store·model-visibility-store)
+              session-model bulk-observation bulk-preset-apply bulk-account-apply
+              blockers dep-candidates
   ui/         tokens.css base.css primitives(button chip sheet popover toast dialog
               ticker viewport)
   screens/    pipeline/ (shell scope toolbar repo-strip lanes card mini-row
@@ -272,6 +288,7 @@ app/
 | 레포 범위 보류 선반 펼침 | `subscribe-list deferred-issues` |
 | 이슈 상세 | `subscribe-list issue-detail`(`detail:<id>`) + 요청형 읽기(댓글·프롬프트·이력·세션 참조) |
 | 설정·상세 | `subscribe-impl-presets`(부팅 시 1회, 5KB) |
+| 모델 선택지(상세·설정·공급자 재개 대화상자) | `subscribe-model-visibility`(부팅 시 1회, 서버 전역 — ADR UI-ooc0) |
 | 비교·ADR | 현행(`get-compare` 요청형, `subscribe-adr` 화면 표시 중만) |
 | 전사 | `subscribe-session-log` 드로어 표시 중만 |
 
@@ -298,10 +315,8 @@ app/
   - `bead_overlay[id]`(모니터 행): `priority`, `issue_type`, `labels`, `from_id`
     — title-cache의 같은 `bd show` 페이로드에서 읽어 `BeadRecord`에 더한다. 대상
     id 집합은 지금과 같다(레인 구성원 ∪ done ∪ runnable ∪ pr_wait ∪ session_active).
-  - `bead_children: Record<parent_id, { ids: string[], closed: string[] }>`(모니터
-    행): 자식 롤업 재료. `bead_dependents`와 같은 워크스페이스 목록 스냅샷에서
-    `parent`로 색인하며 `runnable-cache`가 그 스냅샷을 이미 갖는다.
-  - `worker_created_from`·`carried_to`는 지금 서버 투영에 이미 있다.
+  - `worker_created_from`은 지금 서버 투영에 이미 있다. `carried_to`(이월)와 Phase
+    자식 색인은 새 화면이 읽지 않는다(dotfiles-b0xsk 폐지, 서버 쪽 은퇴는 UI-ruwu).
   후보 필터(route·준비도·우선순위·타입·라벨·blocked·표시된 것만)와 정렬은
   클라이언트가 이 행들에서 한다. 서버 변경 파일: `server/worker/runnable-cache.js`,
   `server/worker/title-cache.js`, `server/ws/monitor-handlers.js`, `app/protocol.md`.
@@ -387,7 +402,7 @@ minify 350KB 이하(gzip 120KB 이하, 압축은 UI-j2h3). 라이브 모드
 | 조작 보존 | 부록 A의 모든 행이 새 화면에서 도달 가능(체크리스트를 PR에 첨부) |
 | 모바일 | 390px에서 모든 화면·시트의 `scrollWidth === innerWidth`, 조작 버튼 높이 ≥ 44px, 드래그·이동 시트로 대기열 재배치 가능 |
 | 렌더 | 패치·입력 변화·시간 경계가 없는 유휴 60초 동안 lit-html 렌더 0회(티커만), 8개 레포 첫 스냅샷 렌더 100ms 이하(데스크톱) |
-| 구독 | 기본 상태(전체 범위, 아무 표면도 열지 않음)의 WS 구독은 monitor-pipeline + impl-presets 둘; 레포 범위는 worker-queue 하나 추가, 열린 표면마다 그 표면의 구독(완료·보류 목록, issue-detail, session-log, adr)만 추가 |
+| 구독 | 기본 상태(전체 범위, 아무 표면도 열지 않음)의 WS 구독은 monitor-pipeline + impl-presets + model-visibility 셋(뒤 둘은 서버 전역 단발 구독); 레포 범위는 worker-queue 하나 추가, 열린 표면마다 그 표면의 구독(완료·보류 목록, issue-detail, session-log, adr)만 추가 |
 | 코드 | `app/` 비테스트 2만 줄 이하, CSS 4,000줄 이하, 파일당 1,000줄 이하(`buildLanes` 예외) |
 | 제거 | 도움말·벤치·표시 정책·정렬 체인의 클라이언트·서버 코드와 프로토콜 항목 없음 |
 
@@ -398,20 +413,23 @@ minify 350KB 이하(gzip 120KB 이하, 압축은 UI-j2h3). 라이브 모드
   클릭이 정확한 WS 타입·payload를 보내는지, (3) 모바일 뷰포트 분기.
 - 화면: `scripts/ui-shots.mjs <url>`이 npx 캐시의 Playwright로 390·1280 폭에서
   파이프라인(전체·레포)·상세·설정·ADR·비교를 캡처하고 `scrollWidth` 초과를
-  보고한다(의존성 추가 없음, Playwright 부재 시 안내 종료). 각 Phase PR은 캡처를
-  첨부하고 사용자가 확인한다.
+  보고한다(의존성 추가 없음, Playwright 부재 시 안내 종료). 각 Phase를 봉인할 때
+  캡처를 공유해 사용자가 확인하고, 최종 PR 하나에 모아 첨부한다.
 - Pre-Handoff Validation 전부(`tsc`·`lint`·`prettier`·`vitest`).
 
 ## 7. Phase 후보(full_plan)
 
-각 Phase는 배포 가능한 완결 상태로 착지한다. 새 shell이 아직 안 바꾼 표면은 기존
+각 Phase는 배포 가능한 완결 상태로 봉인한다. 새 shell이 아직 안 바꾼 표면은 기존
 컴포넌트를 같은 옵션으로 마운트해 유지한다(기존 CSS는 마지막 Phase까지 남긴다).
+착지는 네 Phase를 묶어 한 번이다: 착지 묶음 하나 = 이슈 UI-dbn6 하나 = PR 하나이고,
+네 Phase는 그 이슈 안의 실행 unit이다(dotfiles-b0xsk 착지 모델, plan 착지 줄
+`다음과 함께`×3 + `단독`).
 
 | Phase | 내용 | 검증 |
 | --- | --- | --- |
-| 1 기반과 파이프라인 | `core/`·`ui/`·`model/` 이동(서버 import 모듈 제외), 새 shell(헤더·범위·라우터·티커), 파이프라인 화면(레인·레포별 묶음·카드·툴바·레포 띠·모바일 레인 바·드래그·이동 시트), 서버 투영 추가(`runnable` 필드·`bead_overlay` 필드·`bead_children`), Worker·Monitor 탭 제거. 상세·설정·전사·ADR·비교는 기존 컴포넌트를 같은 옵션(연결 저장소의 워커 큐 store 포함)으로 마운트 | 부록 A의 파이프라인·데크·Worker 툴바 행, 모바일 캡처 |
-| 2 상세와 전사 | 이슈 상세(패널·시트), 전사 드로어, 새 이슈, 문서 뷰어 | 부록 A의 상세·전사 행 |
-| 3 설정·ADR·비교 | 설정(레포·일괄), 사용량 팝업, ADR 목록, 비교표(실험 없음) | 부록 A의 설정·ADR·비교 행 |
+| 1 기반과 파이프라인 | `core/`·`ui/`·`model/` 이동(서버 import 모듈 제외), 새 shell(헤더·범위·라우터·티커), 파이프라인 화면(레인·레포별 묶음·카드·툴바·레포 띠·모바일 레인 바·드래그·이동 시트), 서버 투영 추가(`runnable` 필드·`bead_overlay` 필드), Worker·Monitor 탭 제거. 상세·설정·전사·ADR·비교는 기존 컴포넌트를 같은 옵션(연결 저장소의 워커 큐 store 포함)으로 마운트 | 부록 A의 파이프라인·데크·Worker 툴바 행, 모바일 캡처 |
+| 2 상세와 전사 | 이슈 상세(패널·시트), 전사 드로어(UI-2dbn 표시 문법을 옮기고 호스트만 교체), 새 이슈, 문서 뷰어 | 부록 A의 상세·전사 행 |
+| 3 설정·ADR·비교 | 설정(레포·일괄, 전역 탭의 활성 모델 포함), 사용량 팝업, ADR 목록, 비교표(실험 없음) | 부록 A의 설정·ADR·비교 행 |
 | 4 정리 | §4.5 서버 정리, 옛 뷰·CSS 삭제, protocol.md, ADR 착지, 코드 예산 확인 | §6 코드·제거 기준 |
 
 ## 8. 경계·후속
@@ -437,11 +455,12 @@ toggle`(툴바·레포 띠) · `worker-merge-auto-toggle` · `worker-merge-queue
 · `worker-cleanup-retry` · `worker-resolve-in-session` · `worker-discard` ·
 `worker-discard-abandon` · `worker-revise-fix` · `worker-revise-approve` ·
 `worker-attempt-pause` · `worker-attempt-resume`(이어하기·⋯ 다른 방법으로·지시 입력)
-· `worker-provider-probe-now` · `external_wait_check`/`_stop`/`_resume` ·
+· `worker-provider-probe-now` · `external_wait_check`/`_stop`/`_resume`와 서버가
+싣는 외부 대기 `actions[]`(`placement: card|detail`·`confirm`, UI-r6xq) ·
 `worker-repo-operation-dismiss` · `worker-repo-operation-deploy-run` ·
 `worker-repo-ops-opt-out-toggle` · 검증/배포 스크립트 뷰어(`GET /api/repo-ops-
 script`, 복사) · `chip-preset-toggle` · 판정 칩 사유 팝업 · 의존 칩 이동(타 레포는
-`set-workspace` 선행) · ID 복사 · 실패 배지 상세 · 자식 롤업 · 검색·필터(route·
+`set-workspace` 선행) · ID 복사 · 실패 배지 상세 · 검색·필터(route·
 준비도·우선순위·타입·라벨·blocked 표시·표시된 것만)·정렬 프리셋 4종·실행 중
 정렬·완료 기간·보류 선반·레인 접힘·레포별 묶음 접기 · 세션 배지 → 전사(Discord
 링크 포함).
@@ -459,7 +478,9 @@ session_ref) · `get-attempt-prompt` · 따라가기 · 접기 · 복사.
 
 설정: `set-session-defaults` · `set-worker-url-common` · `set-workspace-accounts` ·
 `worker-provider-limit-policy-set` · `impl-preset-create`/`-update`/`-delete` ·
-`apply-impl-preset-global`(계열별) · `impl-preset-bind`(일괄 모드 칩 탭) ·
+`apply-impl-preset-global`(계열별) · `impl-preset-bind`(일괄 모드 전역 탭) ·
+`model-visibility-set`(일괄 모드 전역 탭의 활성 모델 체크) · 모델 선택지의 활성 모델
+필터와 `(비활성)` 표시(상세·설정·공급자 재개 대화상자) ·
 `get-worker-system-prompt` · 계정 카탈로그(`GET /api/claude-usage`·`/api/codex-
 usage`) · 일괄 대상 선택·실패만 재선택·취소 · 일괄 세션 탭(`workflow_mode`·
 `bdui_url`·`base_sync_accept_local_commits`).
@@ -484,20 +505,25 @@ claude-account/switch`·`/api/codex-account/switch`) · 사용량 폴링(화면 
 - 전제: ADR UI-u6ud-3, UI-u6ud-4, UI-u6ud-5 — 머지·게이트·배포 조작의 의미와 버튼
   집합은 바꾸지 않는다.
 - 전제: ADR UI-a5l2 — 가드·대기 어휘 4종은 그대로다.
+- 전제: ADR UI-ooc0 — 모델 선택지는 서버 전역 활성 모델 필터를 거치고, 편집 위치는 일괄
+  창의 서버 전역 탭 하나다.
 - 파이프라인 화면은 하나이고 범위(전체·레포)는 필터이며, 두 범위 모두
   monitor-pipeline 채널의 같은 행으로 레인을 조립하고 레포 범위만 worker-queue
   채널을 더한다; 카드는 슬롯 표를 승계하되 진행은 상단 5칸 띠로 그리고 대기 행
   조작은 굵은 포인터에서 이동 시트 하나다; 모바일은 레인 하나씩 보인다. 되돌리기
   어려움: 라우터·구독·카드 렌더러·설정 진입·모바일 조작이 함께 움직이고 Worker
-  탭의 목록 구독 6개가 서버 투영(`bead_overlay` 필드·`bead_children`)으로
+  탭의 목록 구독 6개가 서버 투영(`bead_overlay` 필드·`runnable` 필드)으로
   대체된다. 맥락 필요: 왜 두 탭을 합쳤는지(같은 5레인의 이중 조립, 사용자 결정)와
   왜 목록 구독 대신 서버 투영인지가 코드에 남지 않는다. 실제 절충: 레포 전용
   재료(완료 기간·보류)를 펼칠 때만 목록 구독으로 보충하는 대신 부팅 구독을
   줄였다. `summary`: "파이프라인 화면은 하나이고 범위(전체·레포)는 필터이며 두
   범위 모두 monitor-pipeline 채널의 같은 행으로 5레인을 조립하고 레포 범위만
   worker-queue 채널을 더한다; 카드는 슬롯 표를 승계하되 진행은 상단 5칸 띠이고
-  굵은 포인터의 대기 행 조작은 이동 시트 하나이며 모바일은 레인 하나씩 보인다"
-  → ADR, supersede UI-l48z
+  굵은 포인터의 대기 행 조작은 이동 시트 하나이며 모바일은 레인 하나씩 보인다".
+  대체 대상: UI-ri8n은 UI-l48z를 대체하며 그 조항을 승계한 현재 결정이다. UI-ri8n이
+  새로 정한 조항(문의 세션 단계가 정하는 멈춤 판정, 살아 있는 문의·해결 세션이 없을
+  때만 서는 `[세션에서 해결]`)은 새 ADR이 그대로 승계한다
+  → ADR, supersede UI-ri8n
 - 도움말 범례·실험 벤치·표시 정책·정렬 체인 편집기 제거. 되돌리기 쉬움: 사용자
   결정이며 프로토콜 Removed 목록과 git 이력이 근거를 남긴다. 맥락 필요 낮음
   → ADR 아님
