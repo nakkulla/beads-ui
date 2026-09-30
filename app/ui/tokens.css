@@ -48,7 +48,6 @@
   --text-muted: #8b96a8;
   --text-dim: #5c6778;
   --text-id-mono: #7ee2d8;
-  --text-tool-mono: #7a8699;
   --text-gripline: #3a4356;
   --h1-md: #e8eef8;
 
@@ -109,7 +108,8 @@
 
   /* --- font families --- */
   --font-sans:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -apple-system, 'Apple SD Gothic Neo', BlinkMacSystemFont, 'Segoe UI',
+    Roboto, 'Noto Sans KR', sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'Menlo', monospace;
 
   /* --- radii --- */
@@ -151,10 +151,17 @@
   --fs-title: 16px;
   --fs-title-lg: 17px;
 
+  /* --- UI-dbn6 type scale: 11 · 12 · 13.5 · 15 · 17 · 22 --- */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13.5px;
+  --fs-lg: 15px;
+  --fs-xl: 17px;
+  --fs-2xl: 22px;
+
   /* --- glows / accent shadows (flat design; no elevation shadows) --- */
   --glow-current: 0 0 8px currentColor;
   --glow-dot: 0 0 6px #5ad198;
-  --glow-stage-cur: 0 0 5px #60a5fa88;
   --ring-selected: 0 0 0 1px #5ad19855;
 }
 

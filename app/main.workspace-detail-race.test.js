@@ -169,12 +169,13 @@ describe('main workspace detail race', () => {
     const root = setupShell();
     bootstrap(root);
     await flushPromises();
-    const select = /** @type {HTMLSelectElement} */ (
-      document.querySelector('.workspace-picker__select')
-    );
-
-    select.value = '/repo-b';
-    select.dispatchEvent(new Event('change'));
+    // UI-dbn6 §3.2: the scope selector replaces the workspace picker.
+    /** @type {HTMLElement} */ (
+      document.querySelector('[data-op="scope-menu"]')
+    ).click();
+    /** @type {HTMLElement} */ (
+      document.querySelector('[data-op="scope-pick"][data-value="/repo-b"]')
+    ).click();
     await flushPromises();
 
     const set_index = calls.findIndex((call) => call.type === 'set-workspace');

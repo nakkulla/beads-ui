@@ -125,7 +125,9 @@ describe('main config refresh', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(fetch_mock).not.toHaveBeenCalled();
+    // The shell's usage meter polls its own endpoints from boot (UI-dbn6
+    // §3.1); only the config endpoint waits for a reconnect.
+    expect(fetch_mock).not.toHaveBeenCalledWith('/api/config');
 
     CLIENT.triggerConn('reconnecting');
     await Promise.resolve();
@@ -137,7 +139,9 @@ describe('main config refresh', () => {
   });
 });
 
-describe('display-policy resubscribe after reconnect', () => {
+// UI-dbn6 §5.1: display policy is no longer a boot channel; the global
+// pipeline channel carries the same restore-then-resubscribe ordering.
+describe('global channel resubscribe after reconnect', () => {
   /**
    * @param {string|null} current_workspace
    * @returns {any}
@@ -225,7 +229,7 @@ describe('display-policy resubscribe after reconnect', () => {
     }
   }
 
-  test('repoints the workspace before resubscribing the policy', async () => {
+  test('repoints the workspace before resubscribing the pipeline', async () => {
     const client = makeClient('/repo-a');
 
     await bootAndReconnect(client);
@@ -234,10 +238,10 @@ describe('display-policy resubscribe after reconnect', () => {
       .map((/** @type {any} */ m) => m.type)
       .filter(
         (/** @type {string} */ t) =>
-          t === 'set-workspace' || t === 'subscribe-display-policy'
+          t === 'set-workspace' || t === 'subscribe-monitor-pipeline'
       );
     expect(order[0]).toBe('set-workspace');
-    expect(order).toContain('subscribe-display-policy');
+    expect(order).toContain('subscribe-monitor-pipeline');
   });
 
   test('restores the selected workspace, not the server default', async () => {
@@ -258,7 +262,7 @@ describe('display-policy resubscribe after reconnect', () => {
 
     expect(
       client.sent.some(
-        (/** @type {any} */ m) => m.type === 'subscribe-display-policy'
+        (/** @type {any} */ m) => m.type === 'subscribe-monitor-pipeline'
       )
     ).toBe(true);
     expect(

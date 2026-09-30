@@ -67,5 +67,26 @@ export default defineConfig([
     languageOptions: {
       globals: globals.browser
     }
+  },
+  {
+    // UI-dbn6: every mounted root renders through app/ui/render.js so
+    // window.__bdui.render_count sees it; the old views keep their own
+    // render until they are deleted, and tests render detached fixtures.
+    files: ['app/**/*.js'],
+    ignores: ['app/ui/render.js', 'app/views/**', '**/*.test.js'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'lit-html',
+              importNames: ['render'],
+              message: 'Render through app/ui/render.js (render_count).'
+            }
+          ]
+        }
+      ]
+    }
   }
 ]);

@@ -48,8 +48,12 @@ async function setupAndClickGitPull() {
   bootstrap(root);
   await Promise.resolve();
   await Promise.resolve();
+  // UI-dbn6 §3.2: git pull lives in the scope selector's footer.
+  /** @type {HTMLElement|null} */ (
+    document.querySelector('[data-op="scope-menu"]')
+  )?.click();
   const btn = /** @type {HTMLButtonElement} */ (
-    document.querySelector('.workspace-picker__git-pull-button')
+    document.querySelector('[data-op="git-pull"]')
   );
   if (!btn) {
     throw new Error('git-pull button not rendered');

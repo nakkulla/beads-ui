@@ -2925,7 +2925,9 @@ describe('integrated Worker address repairs', () => {
     });
   });
 
-  test('propagates a common revision conflict through the monitor transport', async () => {
+  // UI-dbn6: the pipeline screen replaced the monitor view as the mounted
+  // consumer of main's transport; the seam is its `send`.
+  test('propagates a common revision conflict through the pipeline transport', async () => {
     /** @type {any} */
     let monitor_transport;
     const client = {
@@ -2944,16 +2946,21 @@ describe('integrated Worker address repairs', () => {
       getState: () => 'open'
     };
     vi.doMock('../../core/ws.js', () => ({ createWsClient: () => client }));
-    vi.doMock('../monitor/index.js', async () => {
-      const actual = await vi.importActual('../monitor/index.js');
+    vi.doMock('../../screens/pipeline/index.js', async () => {
+      const actual = await vi.importActual('../../screens/pipeline/index.js');
       return {
         ...actual,
-        createMonitorView: (
+        createPipelineScreen: (
           /** @type {HTMLElement} */ _root,
           /** @type {any} */ options
         ) => {
-          monitor_transport = options.transport;
-          return { load() {}, pause() {} };
+          monitor_transport = options.send;
+          return {
+            refresh() {},
+            model() {},
+            openSheet: () => null,
+            destroy() {}
+          };
         }
       };
     });
@@ -2985,7 +2992,7 @@ describe('integrated Worker address repairs', () => {
       ).toHaveLength(1);
     } finally {
       vi.doUnmock('../../core/ws.js');
-      vi.doUnmock('../monitor/index.js');
+      vi.doUnmock('../../screens/pipeline/index.js');
     }
   });
 });

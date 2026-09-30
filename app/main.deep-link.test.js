@@ -40,7 +40,7 @@ vi.mock('./core/ws.js', () => {
 });
 
 describe('deep link on initial load (UI-44)', () => {
-  test('redirects the legacy issue hash to worker and opens the detail overlay', async () => {
+  test('redirects the legacy issue hash to the pipeline and opens the detail overlay', async () => {
     window.location.hash = '#/issue/UI-2';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
@@ -52,11 +52,12 @@ describe('deep link on initial load (UI-44)', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    // Legacy #/issue/<id> normalizes to the canonical worker hash.
-    expect(window.location.hash).toBe('#/worker?issue=UI-2');
+    // Legacy #/issue/<id> normalizes to the canonical pipeline hash
+    // (UI-dbn6 §3.1).
+    expect(window.location.hash).toBe('#/pipeline?issue=UI-2');
 
-    // The normalized worker deep link opens the shared detail overlay on
-    // the linked issue (UI-p7s2 §7.1).
+    // The normalized deep link opens the shared detail overlay on the linked
+    // issue (UI-p7s2 §7.1).
     const detail = /** @type {HTMLElement} */ (
       document.getElementById('detail-panel')
     );

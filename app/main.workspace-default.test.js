@@ -86,21 +86,16 @@ afterEach(() => {
 });
 
 describe('main workspace restore precedence', () => {
+  // UI-dbn6 §5.1: both legacy tabs open the one pipeline (`#/worker` in the
+  // saved repo's scope, `#/monitor` in 전체) and boot subscribes no issue
+  // lists; the worker queue follows the 레포 scope or an open settings dialog.
   test.each([
-    [
-      'worker',
-      ['ready', 'blocked', 'in-progress', 'resolved', 'closed', 'deferred'],
-      false
-    ],
-    [
-      'worker',
-      ['ready', 'blocked', 'in-progress', 'resolved', 'closed', 'deferred'],
-      true
-    ],
-    ['monitor', [], true]
+    ['worker', 1, false],
+    ['worker', 1, true],
+    ['monitor', 1, true]
   ])(
-    'subscribes %s once after restore (lanes=%j, settings=%s)',
-    async (view, lanes, open_settings) => {
+    'subscribes the %s entry once after restore (queue=%j, settings=%s)',
+    async (view, queue_subs, open_settings) => {
       window.location.hash = `#/${view}`;
       window.localStorage.setItem('beads-ui.workspace', '/repo-b');
       /** @type {() => void} */
@@ -124,7 +119,9 @@ describe('main workspace restore precedence', () => {
       bootstrap(root);
       await settle();
       if (open_settings) {
-        document.getElementById('display-settings-btn')?.click();
+        /** @type {HTMLElement|null} */ (
+          document.querySelector('#app-header [data-op="settings"]')
+        )?.click();
         await settle();
         expect(
           document.getElementById('settings-dialog')?.hasAttribute('open')
@@ -132,7 +129,11 @@ describe('main workspace restore precedence', () => {
       }
 
       expect(CLIENT.send).toHaveBeenCalledWith('list-workspaces', {});
-      expect(document.getElementById(`${view}-root`)?.hidden).toBe(false);
+      expect(document.getElementById('pipeline-root')?.hidden).toBe(false);
+      expect(CLIENT.send).not.toHaveBeenCalledWith(
+        'subscribe-monitor-pipeline',
+        expect.anything()
+      );
       expect(CLIENT.send).not.toHaveBeenCalledWith(
         'subscribe-list',
         expect.anything()
@@ -164,29 +165,19 @@ describe('main workspace restore precedence', () => {
       const list_calls = CLIENT.send.mock.calls.filter(
         (/** @type {[string, any]} */ [type]) => type === 'subscribe-list'
       );
+      expect(list_calls).toEqual([]);
       expect(
-        list_calls.map((/** @type {[string, any]} */ [, payload]) => payload.id)
-      ).toEqual(lanes.map((lane) => `tab:${view}:${lane}`));
-      // 구독 종류도 같은 순서로 선다 — 보류 선반의 `deferred-issues`가 워커 탭
-      // 구독에 실제로 들어 있는지는 id가 아니라 이 줄이 말한다 (UI-p7s2 §3.1).
-      expect(
-        list_calls.map(
-          (/** @type {[string, any]} */ [, payload]) => payload.type
+        CLIENT.send.mock.calls.filter(
+          (/** @type {[string, any]} */ [type]) =>
+            type === 'subscribe-monitor-pipeline'
         )
-      ).toEqual(lanes.map((lane) => `${lane}-issues`));
+      ).toHaveLength(1);
       expect(
         CLIENT.send.mock.calls.filter(
           (/** @type {[string, any]} */ [type]) =>
             type === 'subscribe-worker-queue'
         )
-      ).toHaveLength(1);
-      // Board가 퇴역했으므로 어떤 진입에서도 `tab:board:*` 구독이 서지 않는다
-      // (UI-p7s2 §7.1·§8).
-      expect(
-        list_calls.filter((/** @type {[string, any]} */ [, payload]) =>
-          String(payload.id).startsWith('tab:board:')
-        )
-      ).toEqual([]);
+      ).toHaveLength(queue_subs);
     }
   );
 
@@ -241,9 +232,10 @@ describe('main workspace restore precedence', () => {
       );
       expect(
         CLIENT.send.mock.calls.filter(
-          (/** @type {[string, any]} */ [type]) => type === 'subscribe-list'
+          (/** @type {[string, any]} */ [type]) =>
+            type === 'subscribe-monitor-pipeline'
         )
-      ).toHaveLength(6);
+      ).toHaveLength(1);
     }
   );
 

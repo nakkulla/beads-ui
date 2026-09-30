@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="ko">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -7,73 +7,10 @@
     <link rel="stylesheet" href="./ui/tokens.css" />
     <link rel="stylesheet" href="./ui/base.css" />
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./screens/pipeline/pipeline.css" />
   </head>
   <body>
-    <header class="app-header">
-      <div class="header-left">
-        <h1 class="app-title">Beads</h1>
-        <nav
-          id="global-nav"
-          class="header-nav header-nav--global"
-          aria-label="Global"
-        ></nav>
-        <span class="header-divider" aria-hidden="true"></span>
-        <div id="repo-scope" class="repo-scope">
-          <div id="workspace-picker" class="header-workspace"></div>
-          <span class="repo-scope__sep" aria-hidden="true"></span>
-          <nav id="top-nav" class="header-nav" aria-label="Repository"></nav>
-        </div>
-      </div>
-      <div class="header-actions">
-        <div id="usage-meter" class="usage-meter-mount"></div>
-        <div
-          id="header-loading"
-          class="header-loading"
-          role="status"
-          aria-live="polite"
-          aria-label="Loading"
-          hidden
-        >
-          <span class="header-loading__spinner" aria-hidden="true"></span>
-          <span class="visually-hidden">Loading</span>
-        </div>
-        <label class="theme-toggle" title="Toggle dark mode">
-          <span>Dark</span>
-          <input
-            id="theme-switch"
-            type="checkbox"
-            aria-label="Toggle dark mode"
-          />
-        </label>
-        <button
-          id="help-btn"
-          type="button"
-          aria-haspopup="dialog"
-          aria-label="도움말"
-          title="도움말 · 칩과 배지의 뜻"
-        >
-          ?
-        </button>
-        <button
-          id="display-settings-btn"
-          type="button"
-          aria-haspopup="dialog"
-          aria-label="표시 설정"
-          title="표시 설정"
-        >
-          ⚙
-        </button>
-        <button
-          id="new-issue-btn"
-          type="button"
-          aria-haspopup="dialog"
-          title="Create a new issue (Ctrl/Cmd+N)"
-        >
-          New issue
-        </button>
-      </div>
-    </header>
-    <main id="app" class="app-shell" aria-live="polite"></main>
+    <div id="app" aria-live="polite"></div>
     <script type="module" src="/main.bundle.js"></script>
   </body>
 </html>

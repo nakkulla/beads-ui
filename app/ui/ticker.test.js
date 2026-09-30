@@ -21,6 +21,18 @@ describe('time text ticker (UI-dbn6 §3.4)', () => {
     expect(text).toBe('2m 05s');
   });
 
+  test('formats a duration without the running suffix', () => {
+    const text = formatTs('dur', NOW - 7 * 60_000, NOW);
+
+    expect(text).toBe('7분');
+  });
+
+  test('formats an hour-minute span', () => {
+    const text = formatTs('hm', NOW - 62 * 60_000, NOW);
+
+    expect(text).toBe('1h02m');
+  });
+
   test('formats a countdown and blanks it once it passes', () => {
     const live = formatTs('countdown', NOW + 4_200, NOW);
     const over = formatTs('countdown', NOW - 1, NOW);

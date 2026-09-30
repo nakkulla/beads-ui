@@ -22,7 +22,7 @@ vi.mock('./core/ws.js', () => ({
 }));
 
 describe('initial view sync on reload', () => {
-  test('shows the Worker view when hash is #/worker', async () => {
+  test('shows the pipeline view when the legacy hash is #/worker', async () => {
     window.location.hash = '#/worker';
     document.body.innerHTML = '<main id="app"></main>';
     const root = /** @type {HTMLElement} */ (document.getElementById('app'));
@@ -30,11 +30,13 @@ describe('initial view sync on reload', () => {
     bootstrap(root);
     await Promise.resolve();
 
-    const workerRoot = /** @type {HTMLElement} */ (
-      document.getElementById('worker-root')
+    const pipeline_root = /** @type {HTMLElement} */ (
+      document.getElementById('pipeline-root')
     );
 
-    expect(document.getElementById('board-root')).toBeNull();
-    expect(workerRoot.hidden).toBe(false);
+    // UI-dbn6 §3.1: the Worker tab is the pipeline in the 레포 scope.
+    expect(document.getElementById('worker-root')).toBeNull();
+    expect(pipeline_root.hidden).toBe(false);
+    expect(window.location.hash).toBe('#/pipeline');
   });
 });

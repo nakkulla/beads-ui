@@ -109,16 +109,18 @@ export function createHashRouter(store, options = {}) {
   }
 
   /**
+   * Write the hash and apply its state now; the `hashchange` that follows a
+   * changed hash re-applies the same state (idempotent), so a click answers
+   * without waiting for that event.
+   *
    * @param {string} next
-   * @param {Record<string, unknown>} patch - Applied directly when the hash
-   * does not change (no hashchange event would fire).
+   * @param {Record<string, unknown>} patch
    */
   function go(next, patch) {
     if (window.location.hash !== next) {
       window.location.hash = next;
-    } else {
-      store.setState(patch);
     }
+    store.setState(patch);
   }
 
   /**

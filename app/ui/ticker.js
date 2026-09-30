@@ -41,7 +41,7 @@ function clockText(ms) {
 /**
  * Format one timestamp for the ticker. Unknown formats fall back to `rel`.
  *
- * @param {string} fmt - `rel` · `since` · `elapsed` · `countdown` · `min` ·
+ * @param {string} fmt - `rel` · `since` · `dur` · `hm` · `elapsed` · `countdown` · `min` ·
  * `until-min`.
  * @param {number} ts
  * @param {number} now
@@ -54,6 +54,12 @@ export function formatTs(fmt, ts, now) {
   switch (fmt) {
     case 'since':
       return formatElapsedSince(ts, now);
+    case 'dur':
+      return formatElapsedSince(ts, now).replace(/째$/, '');
+    case 'hm': {
+      const minutes = Math.max(0, Math.floor((now - ts) / 60_000));
+      return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`;
+    }
     case 'elapsed':
       return clockText(now - ts);
     case 'countdown': {
