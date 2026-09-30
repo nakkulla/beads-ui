@@ -283,4 +283,70 @@ describe('pipeline card operations (UI-dbn6 §3.4·§5)', () => {
 
     expect(row.textContent).toContain('codex · sonnet');
   });
+
+  test.each([
+    ['queue', '.pl-row', 'B-2'],
+    ['running', '.pl-tile', 'B-4']
+  ])(
+    'draws external work on the %s consumer without a lane of its own',
+    (_lane, selector, bead_id) => {
+      const { mount: root } = mount({
+        edit: (fixture) => {
+          const row = fixture.workspaces[1];
+          row.external_waits[0].bead_id = bead_id;
+          row.wait_reasons[0].subject.bead_id = bead_id;
+        }
+      });
+
+      const consumer = el(root, `${selector}[data-bead-id="${bead_id}"]`);
+
+      expect(consumer.textContent).toContain('⏳ 외부 작업');
+      expect(consumer.textContent).toContain('wallace 작업 42');
+      expect(consumer.textContent).not.toContain('ssh wallace');
+      expect(root.querySelector('[data-lane="external_wait"]')).toBeNull();
+    }
+  );
+
+  test('redraws the orchestration fact when a push carries new session defaults', () => {
+    const handle = mount({
+      edit: (fixture) => {
+        fixture.workspaces[0].bead_overlay['A-1'] = {
+          route: 'spec_backed',
+          metadata: {}
+        };
+      }
+    });
+    const rows = /** @type {Array<Record<string, any>>} */ (
+      handle.monitor.get()
+    );
+    const states = handle.monitor.getWorkspacesState();
+    const before = el(
+      handle.mount,
+      '.pl-row[data-bead-id="A-1"] .pl-facts'
+    ).textContent;
+
+    handle.monitor.set(
+      rows,
+      [
+        {
+          ...states[0],
+          orchestration_model: 'opus',
+          execution_defaults: {
+            ...states[0].execution_defaults,
+            orchestration: {
+              ...states[0].execution_defaults.orchestration,
+              model: 'opus',
+              model_id: 'claude-opus'
+            }
+          }
+        },
+        ...states.slice(1)
+      ],
+      2
+    );
+
+    const facts = el(handle.mount, '.pl-row[data-bead-id="A-1"] .pl-facts');
+    expect(before).toContain('sonnet');
+    expect(facts.textContent).toContain('opus');
+  });
 });

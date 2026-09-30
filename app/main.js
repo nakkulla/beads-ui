@@ -362,6 +362,8 @@ export function bootstrap(root_element) {
       session_log_store.append(p.id, p.event);
     }
   });
+  // One handler per list push type: it feeds the subscription's store and,
+  // for the pipeline's closed/deferred lists, tells the screen to re-read.
   for (const type of ['snapshot', 'upsert', 'delete']) {
     client.on(/** @type {any} */ (type), (payload) => {
       const p = /** @type {any} */ (payload);
@@ -373,6 +375,9 @@ export function bootstrap(root_element) {
         } catch {
           // ignore
         }
+      }
+      if (id === CLOSED_CLIENT_ID || id === DEFERRED_CLIENT_ID) {
+        notifyLists();
       }
     });
   }
@@ -428,49 +433,70 @@ export function bootstrap(root_element) {
   }
 
   let boot_done = false;
-  let switching = false;
+  /** Sequence of the latest `set-workspace` request; older replies are stale. */
+  let switch_seq = 0;
+  /** `set-workspace` requests still in flight. */
+  let switches_in_flight = 0;
 
   /**
    * `set-workspace` and, on `changed: true`, reopen the surfaces whose list
-   * subscriptions the server released.
+   * subscriptions the server released. Only the LATEST request's reply is
+   * applied: the server processes requests in order, so an older reply that
+   * lands after a newer one would name a workspace the connection has left.
    *
    * @param {string} path
-   * @returns {Promise<boolean>}
+   * @returns {Promise<'ok'|'failed'|'stale'>}
    */
   async function setWorkspace(path) {
-    switching = true;
+    const seq = (switch_seq += 1);
+    switches_in_flight += 1;
     try {
       const res = /** @type {any} */ (
         await client.send('set-workspace', { path })
       );
+      if (seq !== switch_seq) {
+        return 'stale';
+      }
       if (
         res?.workspace?.root_dir !== path ||
         typeof res.workspace.db_path !== 'string'
       ) {
-        return false;
+        showToast('Failed to switch workspace', 'error', 3000);
+        return 'failed';
       }
       store.setState({
         workspace: { current: { path, database: res.workspace.db_path } }
       });
       writeSavedWorkspace(storage, path);
       if (res.changed) {
-        worker_queue_store.clear();
-        queue_sub = false;
-        resetDetail();
-        closed_sub = null;
-        deferred_sub = false;
-        deferred_unsub = null;
-        notifyLists();
+        releaseWorkspaceSurfaces();
       }
-      return true;
+      return 'ok';
     } catch (err) {
+      if (seq !== switch_seq) {
+        return 'stale';
+      }
       log('workspace switch failed: %o', err);
       showToast('Failed to switch workspace', 'error', 3000);
-      return false;
+      return 'failed';
     } finally {
-      switching = false;
+      switches_in_flight -= 1;
       syncSurfaces();
     }
+  }
+
+  /**
+   * The server dropped the workspace-bound subscriptions with the old
+   * workspace: forget them so the next sync reopens what is still open.
+   */
+  function releaseWorkspaceSurfaces() {
+    worker_queue_store.clear();
+    queue_sub = false;
+    resetDetail();
+    closed_sub = null;
+    deferred_sub = false;
+    deferred_unsub = null;
+    notifyLists();
   }
 
   /**
@@ -704,18 +730,8 @@ export function bootstrap(root_element) {
     }
   }
 
-  // List pushes land in `sub_issue_stores`; the pipeline re-reads them.
-  for (const type of ['snapshot', 'upsert', 'delete']) {
-    client.on(/** @type {any} */ (type), (payload) => {
-      const p = /** @type {any} */ (payload);
-      if (p && (p.id === CLOSED_CLIENT_ID || p.id === DEFERRED_CLIENT_ID)) {
-        notifyLists();
-      }
-    });
-  }
-
   function syncSurfaces() {
-    if (!boot_done || switching) {
+    if (!boot_done || switches_in_flight > 0) {
       return;
     }
     const state = store.getState();
@@ -804,6 +820,9 @@ export function bootstrap(root_element) {
 
   /** @type {ReturnType<typeof createPipelineScreen>|null} */
   let screen = null;
+  /** Sequence of the latest scope choice; a failed switch of an older one
+   * must not undo it. */
+  let scope_intent = 0;
 
   /**
    * Narrow or widen the display scope; a repo scope connects to that repo.
@@ -811,10 +830,24 @@ export function bootstrap(root_element) {
    * @param {string} scope
    */
   async function setScope(scope) {
+    const previous = store.getState().scope;
+    const intent = (scope_intent += 1);
     writeScope(storage, scope);
     store.setState({ scope });
-    if (scope !== ALL_SCOPE && boot_done && scope !== connectedPath()) {
-      await setWorkspace(scope);
+    // A switch still in flight may land after this one on the server, so a
+    // repo scope re-sends even when the connection names it already.
+    if (
+      scope !== ALL_SCOPE &&
+      boot_done &&
+      (scope !== connectedPath() || switches_in_flight > 0)
+    ) {
+      const result = await setWorkspace(scope);
+      // A repo scope stands only on a connected repo: a failed switch puts
+      // back the scope it replaced, unless a newer choice already did.
+      if (result === 'failed' && intent === scope_intent) {
+        writeScope(storage, previous);
+        store.setState({ scope: previous });
+      }
     }
     syncSurfaces();
     screen?.refresh();
@@ -833,9 +866,9 @@ export function bootstrap(root_element) {
     }
     const target = root_dir || connectedPath() || '';
     if (target && target !== connectedPath()) {
-      const ok = await setWorkspace(target);
-      if (!ok) {
-        showToast('레포 전환에 실패했습니다', 'error', 2400);
+      // `setWorkspace` toasts its own failure; a stale reply means a newer
+      // switch owns the connection now.
+      if ((await setWorkspace(target)) !== 'ok') {
         return;
       }
     }
@@ -1010,7 +1043,8 @@ export function bootstrap(root_element) {
     gotoIssue: (id) => void openIssue(id, ''),
     getWorkspacePath: () => connectedPath() || undefined,
     subscribeWorkspace: (fn) => store.subscribe(() => fn()),
-    switchWorkspace: (root_dir) => setWorkspace(root_dir),
+    switchWorkspace: async (root_dir) =>
+      (await setWorkspace(root_dir)) === 'ok',
     openDoc
   });
 
@@ -1157,17 +1191,24 @@ export function bootstrap(root_element) {
     syncSurfaces();
   }
 
+  // The server moved this connection to another workspace: the 레포 scope
+  // follows it (it stands only on the connected repo), and the list surfaces
+  // the old workspace held are reopened for the new one.
   client.on('workspace-changed', (payload) => {
     const p = /** @type {any} */ (payload);
     if (p && p.root_dir) {
       store.setState({
         workspace: { current: { path: p.root_dir, database: p.db_path } }
       });
-      worker_queue_store.clear();
-      queue_sub = false;
-      resetDetail();
-      void loadWorkspaces();
+      releaseWorkspaceSurfaces();
+      if (store.getState().scope !== ALL_SCOPE) {
+        writeScope(storage, p.root_dir);
+        store.setState({ scope: p.root_dir });
+      }
+      void loadWorkspaces().then(() => shell.render());
       syncSurfaces();
+      screen?.refresh();
+      shell.render();
     }
   });
 
@@ -1193,8 +1234,15 @@ export function bootstrap(root_element) {
       null;
     // The connection already points at the workspace `list-workspaces`
     // reported; only a different target costs the one `set-workspace`.
-    if (target && target !== connectedPath()) {
-      await setWorkspace(target);
+    if (
+      target &&
+      target !== connectedPath() &&
+      (await setWorkspace(target)) === 'failed' &&
+      store.getState().scope === target
+    ) {
+      // The stored repo scope could not be connected: show 전체 instead.
+      writeScope(storage, ALL_SCOPE);
+      store.setState({ scope: ALL_SCOPE });
     }
     boot_done = true;
     ensureMonitorPipeline();

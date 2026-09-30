@@ -100,6 +100,13 @@ vi.mock('./core/ws.js', () => {
       fail_once.set(type, error);
     },
     /**
+     * @param {string} type
+     * @param {any} reply - A value, or a function of the payload.
+     */
+    _reply(type, reply) {
+      replies.set(type, reply);
+    },
+    /**
      * @param {(s: 'connecting'|'open'|'closed'|'reconnecting') => void} fn
      */
     onConnection(fn) {
@@ -135,6 +142,22 @@ vi.mock('./model/monitor-pipeline-store.js', async (importOriginal) => {
       return instance;
     },
     __currentMonitorPipelineStore: () => instance
+  };
+});
+
+/**
+ * The REAL worker-queue store, with a handle on the instance `bootstrap` built.
+ */
+vi.mock('./model/worker-queue-store.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  /** @type {any} */
+  let instance = null;
+  return {
+    createWorkerQueueStore: () => {
+      instance = actual.createWorkerQueueStore();
+      return instance;
+    },
+    __currentWorkerQueueStore: () => instance
   };
 });
 
@@ -486,5 +509,318 @@ describe('subscription lifecycle after a reconnect', () => {
     await flush();
 
     expect(sentTypes(client)).toContain('subscribe-worker-queue');
+  });
+});
+
+/**
+ * Pick a scope from the header's scope selector.
+ *
+ * @param {string} value - `*` or a root_dir.
+ */
+function pickScope(value) {
+  /** @type {HTMLElement} */ (
+    document.querySelector('[data-op="scope-menu"]')
+  ).click();
+  /** @type {HTMLElement} */ (
+    document.querySelector(`[data-op="scope-pick"][data-value="${value}"]`)
+  ).click();
+}
+
+/** @returns {string} The scope selector's trigger label. */
+function scopeLabel() {
+  return document.querySelector('.ui-scope__label')?.textContent?.trim() || '';
+}
+
+/** @returns {string} The connected repo the git-pull footer names. */
+function connectedLabel() {
+  /** @type {HTMLElement} */ (
+    document.querySelector('[data-op="scope-menu"]')
+  ).click();
+  const text =
+    document.querySelector('[data-op="git-pull"]')?.textContent?.trim() || '';
+  /** @type {HTMLElement} */ (
+    document.querySelector('[data-op="scope-menu"]')
+  ).click();
+  return text;
+}
+
+describe('scope switch ordering (UI-dbn6 §3.2, base UI-nprg picker)', () => {
+  test('keeps the latest scope selection when set-workspace replies arrive in reverse', async () => {
+    const { client } = await boot();
+    /** @type {Record<string, (value: any) => void>} */
+    const finish = {};
+    client._reply(
+      'set-workspace',
+      (/** @type {any} */ payload) =>
+        new Promise((resolve) => (finish[payload.path] = resolve))
+    );
+
+    pickScope('/repo-b');
+    pickScope('/repo-a');
+    finish['/repo-a']({
+      changed: true,
+      workspace: { root_dir: '/repo-a', db_path: '/repo-a/.beads' }
+    });
+    await flush();
+    finish['/repo-b']({
+      changed: true,
+      workspace: { root_dir: '/repo-b', db_path: '/repo-b/.beads' }
+    });
+    await flush();
+
+    expect(
+      sentTypes(client).filter((type) => type === 'set-workspace')
+    ).toHaveLength(2);
+    expect(scopeLabel()).toBe('repo-a');
+    expect(connectedLabel()).toContain('repo-a');
+  });
+
+  test('keeps a newer 전체 intent while a repo switch is pending', async () => {
+    const { client } = await boot();
+    /** @type {(value: any) => void} */
+    let finish = () => {};
+    client._reply(
+      'set-workspace',
+      () => new Promise((resolve) => (finish = resolve))
+    );
+
+    pickScope('/repo-b');
+    pickScope('*');
+    finish({
+      changed: true,
+      workspace: { root_dir: '/repo-b', db_path: '/repo-b/.beads' }
+    });
+    await flush();
+
+    expect(scopeLabel()).toBe('전체 2개 레포');
+  });
+});
+
+describe('failed scope switch (UI-dbn6 §3.2, base picker failure)', () => {
+  test.each([
+    ['a rejected request', 'reject'],
+    ['a null reply', null],
+    [
+      'a reply for another workspace',
+      { changed: true, workspace: { root_dir: '/repo-x', db_path: '/x' } }
+    ]
+  ])('returns to the previous scope after %s', async (_label, reply) => {
+    const { client } = await boot();
+    if (reply === 'reject') {
+      client._failOnce('set-workspace', new Error('switch failed'));
+    } else {
+      client._reply('set-workspace', reply);
+    }
+    client._clearSent();
+
+    pickScope('/repo-b');
+    await flush();
+
+    expect(scopeLabel()).toBe('전체 2개 레포');
+    expect(window.localStorage.getItem('beads-ui.scope')).not.toBe('/repo-b');
+    expect(sentTypes(client)).not.toContain('subscribe-worker-queue');
+  });
+});
+
+describe('server-pushed workspace change (UI-dbn6 §4.2)', () => {
+  test('restores the 레포 closed subscription after a workspace event', async () => {
+    window.localStorage.setItem(
+      'beads-ui.worker.lane-collapsed',
+      JSON.stringify({ lanes: { done: false }, areas: {} })
+    );
+    const { client } = await boot({ scope: '/repo-a' });
+    client._clearSent();
+
+    client._trigger('workspace-changed', {
+      root_dir: '/repo-b',
+      db_path: '/repo-b/.beads'
+    });
+    await flush();
+
+    expect(subscribedListIds(client)).toContain('pipeline:closed');
+  });
+
+  test('moves the 레포 scope to the workspace the server switched to', async () => {
+    const { client } = await boot({ scope: '/repo-a' });
+
+    client._trigger('workspace-changed', {
+      root_dir: '/repo-b',
+      db_path: '/repo-b/.beads'
+    });
+    await flush();
+
+    expect(scopeLabel()).toBe('repo-b');
+  });
+});
+
+describe('dependency chip into another repo (부록 A, base UI-lx45 §4.1)', () => {
+  test('switches workspace before opening a pipeline chip from another repo', async () => {
+    const { client } = await boot();
+    client._trigger('monitor-pipeline-snapshot', {
+      seq: 1,
+      workspaces: [
+        {
+          root_dir: '/repo-a',
+          name: 'repo-a',
+          revision: 1,
+          queue: [{ bead_id: 'A-2', added_at: NOW }],
+          pr_wait: [],
+          done: [],
+          attempts: {},
+          bead_titles: { 'A-2': '뒤' },
+          bead_blocked_by: { 'A-2': ['B-1'] },
+          pr_observations: {}
+        },
+        {
+          root_dir: '/repo-b',
+          name: 'repo-b',
+          revision: 1,
+          queue: [],
+          pr_wait: [],
+          done: [],
+          attempts: {},
+          runnable: [{ bead_id: 'B-1', title: '타 레포 선행' }],
+          bead_titles: {},
+          pr_observations: {}
+        }
+      ],
+      workspaces_state: [
+        { root_dir: '/repo-a', name: 'repo-a', revision: 1, slots: 1 },
+        { root_dir: '/repo-b', name: 'repo-b', revision: 1, slots: 1 }
+      ]
+    });
+    await flush();
+    client._clearSent();
+
+    /** @type {HTMLElement} */ (
+      document.querySelector(
+        '.pl-row[data-bead-id="A-2"] [data-op="open-issue"][data-bead-id="B-1"]'
+      )
+    ).click();
+    const before_reply = window.location.hash;
+    await flush();
+
+    expect(
+      client
+        ._sent()
+        .filter((/** @type {any} */ m) => m.type === 'set-workspace')
+        .map((/** @type {any} */ m) => m.payload.path)
+    ).toEqual(['/repo-b']);
+    expect(before_reply).toBe('#/pipeline');
+    expect(window.location.hash).toBe('#/pipeline?issue=B-1&root=%2Frepo-b');
+  });
+
+  test('switches workspace before navigating to a detail chip from another repo', async () => {
+    const { client } = await boot({ hash: '#/pipeline?issue=UI-1' });
+    await flush();
+    client._trigger('monitor-pipeline-snapshot', {
+      seq: 1,
+      workspaces: [
+        {
+          root_dir: '/repo-b',
+          name: 'repo-b',
+          queue: [],
+          pr_wait: [],
+          runnable: [{ bead_id: 'UI-0', title: '타 레포 선행' }],
+          attempts: {},
+          bead_titles: {},
+          pr_observations: {}
+        }
+      ]
+    });
+    client._trigger('snapshot', {
+      type: 'snapshot',
+      id: 'detail:UI-1',
+      revision: 1,
+      issues: [
+        {
+          id: 'UI-1',
+          title: '상세',
+          dependencies: [{ id: 'UI-0', dependency_type: 'blocks' }]
+        }
+      ]
+    });
+    await flush();
+    client._clearSent();
+
+    const chip = /** @type {HTMLElement} */ (
+      document.querySelector(
+        '#detail-panel .detail-dep--pred .detail-dep__link'
+      )
+    );
+    chip.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(
+      client
+        ._sent()
+        .filter((/** @type {any} */ m) => m.type === 'set-workspace')
+        .map((/** @type {any} */ m) => m.payload.path)
+    ).toEqual(['/repo-b']);
+    expect(window.location.hash).toBe('#/pipeline?issue=UI-1');
+
+    await flush();
+
+    expect(window.location.hash).toBe('#/pipeline?issue=UI-0&root=%2Frepo-b');
+  });
+});
+
+describe('pushed workspaces_state (base UI-q1tg §3.1 wiring)', () => {
+  test('keeps the pushed workspaces_state in the pipeline store', async () => {
+    const { client, store } = await boot();
+    const state = [
+      {
+        root_dir: '/tmp/ws-idle',
+        name: 'ws-idle',
+        auto_advance: false,
+        auto_merge: false,
+        slots: 2,
+        revision: 7,
+        exec_defaults: { orchestration_model: 'opus' }
+      }
+    ];
+
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: [],
+      workspaces_state: state
+    });
+    await flush();
+
+    expect(store.getWorkspacesState()).toEqual(state);
+  });
+
+  test('leaves the workspaces_state empty when the server omits it', async () => {
+    const { client, store } = await boot();
+
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: []
+    });
+    await flush();
+
+    expect(store.getWorkspacesState()).toEqual([]);
+  });
+});
+
+describe('worker-queue snapshot before a workspace is known (base worker-queue-sync)', () => {
+  test('applies a worker-queue snapshot that arrives before a workspace is known', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    client._reply('list-workspaces', null);
+    await boot();
+    const queue_store = /** @type {any} */ (
+      await import('./model/worker-queue-store.js')
+    ).__currentWorkerQueueStore();
+
+    client._trigger('worker-queue-snapshot', {
+      type: 'worker-queue-snapshot',
+      id: 'worker:queue',
+      root_dir: '/repo-a',
+      queue: { revision: 1, queue: [{ bead_id: 'W1' }], attempts: {} }
+    });
+    await flush();
+
+    expect(queue_store.get()?.queue).toEqual([{ bead_id: 'W1' }]);
   });
 });
