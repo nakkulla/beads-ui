@@ -73,3 +73,20 @@ export function repoOpsStripModel(operations, cleanup_failures) {
         : { tone: 'quiet', label: '모두 정상' }
   };
 }
+
+/**
+ * Local wall-clock `HH:MM` of the current deployment, or '' without one — the
+ * strip says WHEN it landed; the full timestamp is the title.
+ *
+ * @param {unknown} at
+ * @returns {string}
+ */
+export function deployClock(at) {
+  if (typeof at !== 'number' || !Number.isFinite(at) || at <= 0) {
+    return '';
+  }
+  const date = new Date(at);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(
+    date.getMinutes()
+  ).padStart(2, '0')}`;
+}

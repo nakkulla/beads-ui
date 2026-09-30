@@ -94,6 +94,8 @@ export const CANDIDATE_SORT_PRESETS = [
  * @property {boolean} shelf_open
  * @property {boolean} parallel_collapsed
  * @property {boolean} serial_collapsed
+ * @property {boolean} [searching] - A 레포 search is active: lane heads count
+ * the matches (UI-6g3t §7).
  */
 
 /**
@@ -116,6 +118,44 @@ export function laneCount(model, lane) {
     default:
       return model.done.length;
   }
+}
+
+/**
+ * The search matches of one lane (`일치 N`, UI-6g3t §7).
+ *
+ * @param {LaneModel} model
+ * @param {LaneId} lane
+ * @returns {number}
+ */
+export function laneMatchCount(model, lane) {
+  const items =
+    lane === 'candidate'
+      ? model.runnable
+      : lane === 'queue'
+        ? model.queue
+        : lane === 'running'
+          ? model.running.filter((item) => !item.non_occupying)
+          : lane === 'pr_wait'
+            ? model.pr_wait
+            : model.done;
+  return items.filter((item) => item.search_match === true).length;
+}
+
+/**
+ * The parallel-slot load (`슬롯 live/cap`), marked `⚠` once saturated: the
+ * repo's parallel rows wait until a slot frees up.
+ *
+ * @param {{ live_count: number, slots: number }} group
+ * @param {string} cls
+ * @returns {TemplateResult}
+ */
+function slotLoad(group, cls) {
+  const saturated = group.live_count >= group.slots;
+  return html`<span
+    class=${cls}
+    title=${`실행 중 ${group.live_count} / 슬롯 ${group.slots} — 슬롯이 빌 때까지 이 레포의 병렬 항목은 나가지 않는다`}
+    >슬롯 ${group.live_count}/${group.slots}${saturated ? ' ⚠' : ''}</span
+  >`;
 }
 
 /**
@@ -341,11 +381,7 @@ function headControls(lane, model, view) {
   }
   if (lane === 'queue' && view.scope_kind === 'repo') {
     const group = model.queue_groups[0];
-    return group
-      ? html`<span class="pl-lane__sub" title="실행 중 / 동시 실행 슬롯"
-          >슬롯 ${group.live_count}/${group.slots}</span
-        >`
-      : '';
+    return group ? slotLoad(group, 'pl-lane__sub') : '';
   }
   return '';
 }
@@ -406,6 +442,11 @@ export function lanesFrame(model, view) {
             <span class="pl-lane__title">${lane.title}</span>
             <span class="pl-lane__count">${count}</span>
           </button>
+          ${view.searching && !collapsed
+            ? html`<span class="pl-lane__match"
+                >일치 ${laneMatchCount(model, lane.id)}</span
+              >`
+            : ''}
           ${collapsed
             ? ''
             : html`<span class="pl-lane__ctl"
@@ -513,9 +554,7 @@ function queueGroupBody(group, view, ctx) {
         >
           병렬 <b>${parallel.length}</b>
         </button>
-        <span class="pl-area__sub"
-          >슬롯 ${group.live_count}/${group.slots}</span
-        >
+        ${slotLoad(group, 'pl-area__sub')}
       </div>
       ${view.parallel_collapsed
         ? ''
@@ -600,6 +639,11 @@ function queueGroupBody(group, view, ctx) {
                       })
                     )}
               </div>`}
+          ${lane.cycle
+            ? html`<div class="pl-cycle" role="note">
+                ⚠ blocks 순환 감지 — 자동 정렬을 생략했습니다
+              </div>`
+            : ''}
         </div>`
     )}`;
 }
@@ -680,8 +724,8 @@ export function laneBody(lane, model, view, ctx, order) {
           group.items.length,
           collapsed,
           html`<span class="pl-bundle__sub"
-            >${group.auto_advance ? '자동' : '수동'} · 슬롯
-            ${group.live_count}/${group.slots}</span
+            >${group.auto_advance ? '자동' : '수동'} ·
+            ${slotLoad(group, 'pl-bundle__load')}</span
           >`
         )}
         ${collapsed ? '' : queueGroupBody(group, view, ctx)}

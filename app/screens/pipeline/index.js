@@ -415,7 +415,8 @@ export function createPipelineScreen(mount, deps) {
       done_range: vs.done_range,
       shelf_open: ui.shelf_open,
       parallel_collapsed: prefs.areaCollapsed(kind, 'parallel'),
-      serial_collapsed: prefs.areaCollapsed(kind, 'serial')
+      serial_collapsed: prefs.areaCollapsed(kind, 'serial'),
+      searching: kind === 'repo' && vs.search.trim().length > 0
     };
   }
 

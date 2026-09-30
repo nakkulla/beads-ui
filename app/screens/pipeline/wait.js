@@ -18,6 +18,7 @@ import {
 } from '../../model/gate-labels.js';
 import {
   formatClockLocal,
+  formatElapsedSince,
   formatRelativeTime,
   formatTimestampLocal
 } from '../../model/relative-time.js';
@@ -90,6 +91,25 @@ function turnTail(view, now) {
     default:
       return { word: '', since: null };
   }
+}
+
+/**
+ * The turn tail as fixed text, for a popover line (`작업 중 2분`).
+ *
+ * @param {InteractiveSessionView} view
+ * @param {number} now
+ * @returns {string}
+ */
+function turnTailText(view, now) {
+  const tail = turnTail(view, now);
+  if (!tail.word) {
+    return '';
+  }
+  const elapsed =
+    tail.since === null
+      ? ''
+      : formatElapsedSince(tail.since, now).replace(/째$/, '');
+  return elapsed ? `${tail.word} ${elapsed}` : tail.word;
 }
 
 /**
@@ -283,8 +303,10 @@ function badgeTemplate(row, reason, others, hold, now, overrides = {}) {
         ].filter(Boolean)
       : [];
   const inquiry = overrides.inquiry || null;
+  const inquiry_tail = inquiry ? turnTailText(inquiry, now) : '';
+  // 살아 있는 문의 세션이 이 대기에 이미 답하고 있다 (UI-ri8n §3.3).
   const inquiry_line = inquiry
-    ? `문의 세션 ${inquiry.tmux_session}:${inquiry.tmux_window}`
+    ? `문의 세션 ${inquiry.tmux_session}:${inquiry.tmux_window}${inquiry_tail ? ` · ${inquiry_tail}` : ''}`
     : '';
   const lines = reason
     ? [

@@ -1271,3 +1271,27 @@ button.pl-badge {
 .pl-title__tail {
   color: var(--text-muted);
 }
+
+.pl-held-log {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.pl-history__at {
+  margin-right: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pl-cycle {
+  margin-top: 6px;
+}
+
+.pl-lane__match {
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+.pl-opsline__ok,
+.pl-opsline__ago {
+  white-space: nowrap;
+}

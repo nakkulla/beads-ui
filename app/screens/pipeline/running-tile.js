@@ -18,6 +18,7 @@ import { representativeWaitReason } from '../../model/wait-vocabulary.js';
 import { formatContinuationLineage } from '../../utils/attempt-display.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
 import { sessionRefLabel } from '../../utils/session-ref.js';
+import { formatUsageTotalWithCost } from '../../utils/token-usage.js';
 import {
   depLines,
   execChips,
@@ -37,6 +38,7 @@ import {
 import {
   discardOps,
   discardReceipt,
+  logPathFact,
   mergeStepGauge,
   resolveOps
 } from './mini-row.js';
@@ -63,6 +65,71 @@ const RESUME_LABELS = Object.freeze({
 
 /** Codex forwarder subagents hidden from the delegation chips. */
 const FORWARDER_AGENT_TYPES = new Set(['codex-runner']);
+
+/** A held tile's session line, clamped like the record side (UI-5ym8 §6). */
+const SUMMARY_MAX = 200;
+
+/**
+ * @param {unknown} summary
+ * @returns {string}
+ */
+function summaryText(summary) {
+  if (typeof summary !== 'string' || summary.length === 0) {
+    return '';
+  }
+  return summary.length > SUMMARY_MAX
+    ? `${summary.slice(0, SUMMARY_MAX)}…`
+    : summary;
+}
+
+/**
+ * The parked tile's history block (record-timeline-retention §9): the recent
+ * events newest first, then the log — `만료됨` once retention removed it,
+ * `읽기 실패` when it could not be read. No material draws nothing.
+ *
+ * @param {any} failure
+ * @returns {TemplateResult|''}
+ */
+function heldHistory(failure) {
+  if (!failure) {
+    return '';
+  }
+  const rows = Array.isArray(failure.timeline) ? failure.timeline : [];
+  const log_path = typeof failure.log_path === 'string' ? failure.log_path : '';
+  const log =
+    failure.log_unreadable === true
+      ? html`<p
+          class="pl-held-log"
+          title="로그 파일을 읽을 수 없습니다 — 삭제된 것이 아닙니다"
+        >
+          읽기 실패
+        </p>`
+      : failure.log_expired === true
+        ? html`<p class="pl-held-log" title="180일 보존 정책으로 삭제됨">
+            만료됨
+          </p>`
+        : log_path
+          ? html`<p class="pl-held-log">${logPathFact(log_path)}</p>`
+          : '';
+  return html`${rows.length > 0
+    ? html`<ol class="pl-history">
+        ${rows.map(
+          (/** @type {any} */ row) =>
+            html`<li>
+              ${typeof row.at === 'number' && Number.isFinite(row.at)
+                ? html`<span class="pl-history__at"
+                    >${new Date(row.at).toLocaleTimeString('ko-KR', {
+                      hour: '2-digit',
+                      minute: '2-digit'
+                    })}</span
+                  >`
+                : ''}
+              ${row.summary}
+            </li>`
+        )}
+      </ol>`
+    : ''}${log}`;
+}
 
 /**
  * The status label a held/failed tile reads (the Monitor mapping, kept).
@@ -132,13 +199,18 @@ function legUsage(leg) {
     (leg?.native || leg?.runtime === 'codex') && usage
       ? Number.isFinite(usage.total_tokens)
         ? usage.total_tokens
-        : (Number.isFinite(usage.input_tokens) ? usage.input_tokens : 0) +
-          (Number.isFinite(usage.output_tokens) ? usage.output_tokens : 0)
+        : Number.isFinite(usage.input_tokens) ||
+            Number.isFinite(usage.output_tokens)
+          ? (Number.isFinite(usage.input_tokens) ? usage.input_tokens : 0) +
+            (Number.isFinite(usage.output_tokens) ? usage.output_tokens : 0)
+          : null
       : null;
+  // A Claude (non-native) leg reports its own usage record: its token/cost
+  // total, the same text the tile's usage fact uses.
   const tokens =
-    codex_total !== null && codex_total > 0
+    codex_total !== null
       ? `τ ${codex_total.toLocaleString('en-US')}`
-      : '';
+      : formatUsageTotalWithCost(usage) || '';
   const price =
     typeof leg?.price_usd === 'number' && Number.isFinite(leg.price_usd)
       ? `$${leg.price_usd.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}${
@@ -671,6 +743,17 @@ export function runningTile(item, ctx) {
         })
       : { badge: '', body: '', ops: [], times: '' };
   const status_label = statusLabelOf(item);
+  // The held body's one sentence (UI-5ym8 §6): a recovery wait says its
+  // sentence, a plain wait or a park its clamped session line — none of it
+  // when a wait reason already speaks for the tile.
+  const held_note =
+    waiting && wait_reasons.length === 0 && item.wait
+      ? item.wait.recovery
+        ? item.wait.recovery.sentence || ''
+        : summaryText(item.wait.summary)
+      : parked && representative?.kind !== 'awaiting_user'
+        ? summaryText(item.failure?.summary)
+        : '';
   const started = typeof item.started_at === 'number' ? item.started_at : null;
   const elapsed =
     failed || held
@@ -815,12 +898,8 @@ export function runningTile(item, ctx) {
     ${body_lines.body}${parked || waiting
       ? inquiryLine(item.interactive_sessions, now)
       : ''}${!held && !failed ? activityBody(item, now, session_current) : ''}
-    ${waiting && item.wait?.summary && wait_reasons.length === 0
-      ? html`<p class="pl-note">${item.wait.summary}</p>`
-      : ''}${parked &&
-    item.failure?.summary &&
-    representative?.kind !== 'awaiting_user'
-      ? html`<p class="pl-note">${item.failure.summary}</p>`
+    ${held_note ? html`<p class="pl-note">${held_note}</p>` : ''}${parked
+      ? heldHistory(item.failure)
       : ''}
     ${item.landing
       ? html`<div class="pl-landing">${mergeStepGauge(item.landing)}</div>`

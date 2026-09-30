@@ -671,6 +671,7 @@ function doneRow(item, ctx) {
         : ''}
     </div>
     ${footTemplate(ops, { bead_id: item.id, root_dir: item.root_dir })}
+    ${timesLine(item, now)}
   </div>`;
 }
 

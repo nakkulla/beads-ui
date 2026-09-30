@@ -10,8 +10,9 @@
  * is bridged as-is (배포 실행 · 스크립트 보기 · `이 workspace에서 실행`).
  */
 import { html } from 'lit-html';
+import { formatElapsed } from '../../model/attempt-facts.js';
 import { formatTimestampLocal } from '../../model/relative-time.js';
-import { repoOpsStripModel } from '../../model/repo-ops-strip.js';
+import { deployClock, repoOpsStripModel } from '../../model/repo-ops-strip.js';
 import {
   crossRepoTokenTotal,
   tokenTotalTooltip
@@ -294,12 +295,18 @@ export function repoToolbar(input) {
           >
             저장소 작업
             ${strip.deploy
-              ? html`<code
-                  title=${strip.deploy.at
-                    ? formatTimestampLocal(strip.deploy.at)
-                    : ''}
-                  >배포 ${strip.deploy.sha}</code
-                >`
+              ? html`<code>배포 ${strip.deploy.sha}</code>
+                  <span class="pl-opsline__ok">✓ 최신</span>
+                  <span
+                    class="pl-opsline__ago"
+                    title=${strip.deploy.at
+                      ? formatTimestampLocal(strip.deploy.at)
+                      : ''}
+                    >${deployClock(strip.deploy.at)}${strip.deploy
+                      .elapsed_ms !== null
+                      ? ` · ${formatElapsed(strip.deploy.elapsed_ms)}`
+                      : ''}</span
+                  >`
               : ''}
             <span
               class="pl-badge${strip.badge.tone === 'act'
