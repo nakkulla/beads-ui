@@ -19,6 +19,57 @@ export function defaultExternalWaitConfirm(message) {
 }
 
 /**
+ * Where a click-started session window is (UI-a119 §3.3), in the one sentence
+ * the three session clicks share: `dev:7에 열었습니다 · 활성 창`, the inquiry
+ * fallback `bdui-inquiry:3에 열었습니다 · 사용자 tmux 세션을 찾지 못함`, and
+ * `이미 열려 있습니다 · dev:7`. Any other reply is not a window and answers null.
+ *
+ * @param {Record<string, any>} res - A launch reply carrying `session`,
+ * `placement`, `tmux_session` and `tmux_window`.
+ * @returns {string|null}
+ */
+export function sessionWindowText(res) {
+  const place = [res.tmux_session, res.tmux_window]
+    .filter((part) => typeof part === 'string' && part.length > 0)
+    .join(':');
+  if (res.session === 'already_running') {
+    return place ? `이미 열려 있습니다 · ${place}` : '이미 열려 있습니다';
+  }
+  if (res.session !== 'launched') {
+    return null;
+  }
+  const opened = place ? `${place}에 열었습니다` : '세션을 열었습니다';
+  if (res.placement === 'user') {
+    return `${opened} · 활성 창`;
+  }
+  if (res.placement === 'inquiry') {
+    return `${opened} · 사용자 tmux 세션을 찾지 못함`;
+  }
+  return opened;
+}
+
+/**
+ * The success sentence of a `[세션에서 해결]` launch, shared by the Worker and
+ * Monitor tabs: the window sentence, then the fresh-session caveat when the
+ * recorded session was not reopened. The caveat stays on purpose — a fresh
+ * session and a fork look the same from outside. The runner is the RESULT's,
+ * never the current global setting (codex-orchestration-parity §4.2).
+ *
+ * @param {Record<string, any>} res - A `launched` reply.
+ * @returns {string}
+ */
+export function resolveLaunchText(res) {
+  const opened = sessionWindowText(res) ?? '세션을 열었습니다';
+  // A fork or a same-session conversation (`resume`, UI-nuwy §3.2) reopened
+  // exactly the session the card names, so it needs no caveat.
+  if (res.mode === 'fork' || res.mode === 'resume') {
+    return opened;
+  }
+  const runner = typeof res.runner === 'string' ? res.runner : 'claude';
+  return `${opened} · ${runner} 새 세션으로 시작 (${res.fallback_reason || 'unknown'})`;
+}
+
+/**
  * Toast text for a `mode: 'session'` resume response. The `not_launched`
  * owner cases copy the resume command first.
  *
@@ -26,15 +77,14 @@ export function defaultExternalWaitConfirm(message) {
  * @returns {Promise<{ text: string, variant: 'success'|'error' }>}
  */
 async function sessionResumeToast(res) {
-  const tmux = `tmux ${res.tmux_session}:${res.tmux_window}`;
   if (res.session === 'launched') {
     return {
-      text: `세션을 열었습니다 · ${tmux}${res.bridge_active ? ' · Discord 브리지 활성' : ''}`,
+      text: `${sessionWindowText(res)}${res.bridge_active ? ' · Discord 브리지 활성' : ''}`,
       variant: 'success'
     };
   }
   if (res.session === 'already_running') {
-    return { text: `이미 열려 있습니다 · ${tmux}`, variant: 'success' };
+    return { text: String(sessionWindowText(res)), variant: 'success' };
   }
   if (res.reason === 'owner_alive' || res.reason === 'owner_unverified') {
     const copied =

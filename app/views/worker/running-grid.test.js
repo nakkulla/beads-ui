@@ -56,7 +56,7 @@ describe('worker failed running tile template', () => {
         mount
           .querySelector('.rtile__hd > .interactive-session-badge')
           ?.textContent?.trim()
-      ).toBe('▤ 해결 세션 · fork');
+      ).toBe('▤ 해결 세션 · fork · bdui-inquiry:resolve-UI-1');
       expect(
         mount.querySelector('.rtile__hd-actions .interactive-session-closing')
           ?.textContent
@@ -83,8 +83,8 @@ describe('worker failed running tile template', () => {
           source: 'session_ref',
           attempt_id: null,
           fallback_reason: null,
-          tmux_session: 'bdui-inquiry',
-          tmux_window: 'resume-UI-1',
+          tmux_session: 'dev',
+          tmux_window: 'UI-1',
           state: 'live',
           settled_at: null,
           launched_at: 1,
@@ -106,7 +106,7 @@ describe('worker failed running tile template', () => {
       mount
         .querySelector('.rtile__hd > .interactive-session-badge')
         ?.textContent?.trim()
-    ).toBe('▤ 재개 세션');
+    ).toBe('▤ 재개 세션 · dev:UI-1');
   });
 
   test('renders the categorized cause badge without dismiss', () => {
@@ -977,7 +977,8 @@ describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', 
 
     expect(tile).toContain('⏳ 외부 작업');
     expect(tile).not.toContain('ssh wallace');
-    expect(tile).toContain('경과 3h12m');
+    expect(tile).toContain('3h12m');
+    expect(tile).not.toContain('wait-reason__release');
   });
 
   test('renders no repo badge, stepper, activity or delegation line', () => {
@@ -2111,15 +2112,68 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
     ).not.toBeNull();
   });
 
-  test('draws the external headline and times on an external wait tile', () => {
+  test('draws the job lines and times on an external wait tile', () => {
     const tile = renderExternalSession();
 
-    expect(tile.querySelector('.wait-reason__headline')?.textContent).toContain(
-      'wallace 작업 42'
-    );
+    expect(
+      Array.from(tile.querySelectorAll('.external-job span')).map((cell) =>
+        (cell.textContent || '').trim()
+      )
+    ).toEqual(['◐', 'wallace', '42', '실행 중', expect.any(String)]);
     expect(tile.querySelector('.wait-reason__times')?.textContent).toContain(
       '마지막 확인'
     );
+  });
+
+  test('draws no release line on an external wait tile', () => {
+    const tile = renderExternalSession();
+
+    const body = tile.querySelector('.rtile__title + .wait-reason__lines');
+
+    expect(tile.querySelector('.wait-reason__release')).toBeNull();
+    expect(body?.textContent).not.toContain('완료되면 같은 세션');
+  });
+
+  test('tails the external wait badge with the ended job count', () => {
+    const tile = renderExternalSession({
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '42',
+          submitted_at: '2026-09-21T00:00:00Z',
+          log_path: '/logs/job.log',
+          state: 'RUNNING',
+          observed_at: '2026-09-21T03:12:00Z',
+          terminal: null
+        },
+        {
+          adapter: 'process',
+          pid: 777,
+          submitted_at: '2026-09-21T00:00:00Z',
+          log_path: '/logs/p.log',
+          state: 'COMPLETED',
+          observed_at: '2026-09-21T00:30:00Z',
+          terminal: {
+            exit_code: 0,
+            evidence: 'rc=0',
+            recovery_needed: false,
+            expected_results: []
+          }
+        }
+      ]
+    });
+
+    expect(
+      tile
+        .querySelector('.rtile__hd .wait-verdict summary')
+        ?.textContent?.trim()
+    ).toBe('⏳ 외부 작업 · 1/2 완료');
+    expect(
+      tile
+        .querySelectorAll('.external-job')[1]
+        ?.querySelector('.external-job__host')?.textContent
+    ).toBe('로컬');
   });
 
   test('keeps the session identity chip on an external wait tile', () => {
@@ -3149,7 +3203,7 @@ describe('worker 선행 대기 타일 (선행 대기 계층 §5.2)', () => {
     );
     expect(
       tile.querySelector('.interactive-session-badge')?.textContent?.trim()
-    ).toBe('▤ 문의 세션 · fork · 작업 중 8분');
+    ).toBe('▤ 문의 세션 · fork · bdui-inquiry:UI-w1 · 작업 중 8분');
     expect(tile.querySelector('.wait-reason__times')?.textContent?.trim()).toBe(
       '문의 세션 7분째'
     );

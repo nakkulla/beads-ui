@@ -5,6 +5,7 @@ import {
   SUMMARY_CHIPS,
   WAIT_KINDS,
   WAIT_VERDICTS,
+  externalJobRows,
   representativeWaitReason,
   waitBadgeText,
   waitKindRow,
@@ -298,4 +299,273 @@ test('pins the representative reason order', () => {
     'prerequisite',
     'retry_wait'
   ]);
+});
+
+describe('externalJobRows (UI-a119 §3.4)', () => {
+  const SUBMITTED = '2026-09-30T00:00:00Z';
+  const NOW = Date.parse('2026-09-30T01:29:40Z');
+
+  /**
+   * One slurm job of the card projection.
+   *
+   * @param {Record<string, any>} [patch]
+   * @returns {any}
+   */
+  function slurm(patch = {}) {
+    return {
+      adapter: 'slurm',
+      ssh_host: 'wallace',
+      job_id: '42',
+      submitted_at: SUBMITTED,
+      log_path: '/logs/42.log',
+      state: 'RUNNING',
+      observed_at: '2026-09-30T01:20:00Z',
+      terminal: null,
+      ...patch
+    };
+  }
+
+  /**
+   * A terminal observation.
+   *
+   * @param {Record<string, any>} [patch]
+   * @returns {any}
+   */
+  function ended(patch = {}) {
+    return {
+      exit_code: 0,
+      evidence: 'sacct',
+      recovery_needed: false,
+      expected_results: [],
+      ...patch
+    };
+  }
+
+  /**
+   * @param {any[]} jobs
+   * @returns {any}
+   */
+  function record(jobs) {
+    return { jobs, completion: null };
+  }
+
+  test.each([
+    [
+      'completed with exit 0',
+      { state: 'COMPLETED', terminal: ended() },
+      '✓',
+      '완료',
+      'success'
+    ],
+    [
+      'completed without an exit code',
+      { state: 'COMPLETED', terminal: ended({ exit_code: null }) },
+      '✓',
+      '완료',
+      'success'
+    ],
+    [
+      'vanished',
+      { state: 'VANISHED', terminal: ended({ exit_code: null }) },
+      '?',
+      '결과 모름',
+      'neutral'
+    ],
+    [
+      'failed',
+      { state: 'FAILED', terminal: ended({ exit_code: 1 }) },
+      '✕',
+      '실패',
+      'danger'
+    ],
+    [
+      'completed with a nonzero exit',
+      { state: 'COMPLETED', terminal: ended({ exit_code: 2 }) },
+      '✕',
+      '실패',
+      'danger'
+    ],
+    [
+      'completed but needing recovery',
+      { state: 'COMPLETED', terminal: ended({ recovery_needed: true }) },
+      '✕',
+      '실패',
+      'danger'
+    ],
+    ['running', { state: 'RUNNING' }, '◐', '실행 중', 'progress'],
+    ['pending', { state: 'PENDING' }, '○', '대기 중', 'neutral'],
+    ['configuring', { state: 'CONFIGURING' }, '○', '대기 중', 'neutral'],
+    ['requeued', { state: 'REQUEUED' }, '○', '대기 중', 'neutral'],
+    ['unknown', { state: 'UNKNOWN' }, '·', '확인 중', 'neutral'],
+    ['another state', { state: 'SUSPENDED' }, '·', 'SUSPENDED', 'neutral']
+  ])('words a %s job', (_case, patch, glyph, state, tone) => {
+    const jobs = [slurm(patch)];
+
+    const { rows } = externalJobRows(record(jobs), NOW);
+
+    expect(rows[0]).toMatchObject({ glyph, state, tone });
+  });
+
+  test('orders running, other waiting, failed or unknown, then completed', () => {
+    const jobs = [
+      slurm({ job_id: 'done', state: 'COMPLETED', terminal: ended() }),
+      slurm({ job_id: 'lost', state: 'VANISHED', terminal: ended() }),
+      slurm({ job_id: 'queued', state: 'PENDING' }),
+      slurm({ job_id: 'run', state: 'RUNNING' })
+    ];
+
+    const { rows } = externalJobRows(record(jobs), NOW);
+
+    expect(rows.map((row) => row.id)).toEqual([
+      'run',
+      'queued',
+      'lost',
+      'done'
+    ]);
+  });
+
+  test('orders one group by submission time', () => {
+    const jobs = [
+      slurm({ job_id: 'late', submitted_at: '2026-09-30T00:30:00Z' }),
+      slurm({ job_id: 'early', submitted_at: '2026-09-29T23:00:00Z' })
+    ];
+
+    const { rows } = externalJobRows(record(jobs), NOW);
+
+    expect(rows.map((row) => row.id)).toEqual(['early', 'late']);
+  });
+
+  test('draws every job up to four', () => {
+    const jobs = ['1', '2', '3', '4'].map((job_id) => slurm({ job_id }));
+
+    const result = externalJobRows(record(jobs), NOW);
+
+    expect(result.rows).toHaveLength(4);
+    expect(result.more).toBe('');
+  });
+
+  test('keeps three lines and counts the rest from five jobs', () => {
+    const jobs = ['1', '2', '3', '4', '5', '6'].map((job_id) =>
+      slurm({ job_id })
+    );
+
+    const result = externalJobRows(record(jobs), NOW);
+
+    expect(result.rows.map((row) => row.id)).toEqual(['1', '2', '3']);
+    expect(result.more).toBe('외 3건 · 전체는 상세의 잡 표');
+  });
+
+  test.each([
+    ['2026-09-29T22:30:00Z', '2h59m'],
+    ['2026-09-30T00:10:00Z', '1h19m'],
+    ['2026-09-30T01:10:40Z', '19m'],
+    ['2026-09-30T01:29:10Z', '<1m'],
+    ['not a time', '']
+  ])(
+    'formats the elapsed of a job submitted at %s as %j',
+    (submitted_at, elapsed) => {
+      const jobs = [slurm({ submitted_at })];
+
+      const { rows } = externalJobRows(record(jobs), NOW);
+
+      expect(rows[0].elapsed).toBe(elapsed);
+    }
+  );
+
+  test('names a hostless process job local with its pid', () => {
+    const jobs = [
+      {
+        adapter: 'process',
+        pid: 4242,
+        submitted_at: SUBMITTED,
+        log_path: '/wt/job.log',
+        state: 'RUNNING',
+        observed_at: '2026-09-30T01:20:00Z',
+        terminal: null
+      }
+    ];
+
+    const { rows } = externalJobRows(/** @type {any} */ (record(jobs)), NOW);
+
+    expect(rows[0]).toMatchObject({ host: '로컬', id: 'pid 4242' });
+  });
+
+  test('ends each terminal job at its own observation time', () => {
+    const jobs = [
+      slurm({
+        job_id: 'a',
+        state: 'COMPLETED',
+        observed_at: '2026-09-30T00:19:00Z',
+        terminal: ended()
+      }),
+      slurm({
+        job_id: 'b',
+        state: 'COMPLETED',
+        observed_at: '2026-09-30T01:05:00Z',
+        terminal: ended()
+      })
+    ];
+
+    const { rows } = externalJobRows(
+      /** @type {any} */ ({
+        jobs,
+        completion: { completed_at: '2026-09-30T01:05:00Z' }
+      }),
+      NOW
+    );
+
+    expect(rows.map((row) => [row.id, row.elapsed])).toEqual([
+      ['a', '19m'],
+      ['b', '1h05m']
+    ]);
+  });
+
+  test('freezes an ended job while a running one follows now', () => {
+    const jobs = [
+      slurm({
+        job_id: 'ended',
+        state: 'COMPLETED',
+        observed_at: '2026-09-30T00:19:00Z',
+        terminal: ended()
+      }),
+      slurm({ job_id: 'running' })
+    ];
+
+    const { rows } = externalJobRows(record(jobs), NOW);
+
+    expect(rows.map((row) => [row.id, row.elapsed])).toEqual([
+      ['running', '1h29m'],
+      ['ended', '19m']
+    ]);
+  });
+
+  test('carries the raw state, exit code and evidence in the title', () => {
+    const jobs = [
+      slurm({
+        state: 'FAILED',
+        terminal: ended({ exit_code: 3, evidence: 'sacct FAILED 3:0' })
+      })
+    ];
+
+    const { rows } = externalJobRows(record(jobs), NOW);
+
+    expect(rows[0].title).toBe('FAILED · exit 3 · sacct FAILED 3:0');
+  });
+
+  test('omits a job line with no id, state or elapsed material', () => {
+    const jobs = [
+      slurm({ job_id: undefined, state: undefined, submitted_at: 'x' }),
+      slurm({ job_id: '7' })
+    ];
+
+    const { rows } = externalJobRows(record(jobs), NOW);
+
+    expect(rows.map((row) => row.id)).toEqual(['7']);
+  });
+
+  test('draws nothing without a record', () => {
+    const result = externalJobRows(undefined, NOW);
+
+    expect(result).toEqual({ rows: [], more: '' });
+  });
 });

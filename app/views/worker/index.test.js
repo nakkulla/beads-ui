@@ -2918,7 +2918,10 @@ describe('views/worker', () => {
       session: 'launched',
       mode: 'fresh',
       runner: 'codex',
-      fallback_reason: 'attempt_transcript_missing'
+      fallback_reason: 'attempt_transcript_missing',
+      placement: 'user',
+      tmux_session: 'dev',
+      tmux_window: 'PARKED'
     });
     const mount = mountAttemptTiles(
       {
@@ -2945,19 +2948,49 @@ describe('views/worker', () => {
       expected_revision: 1
     });
     expect(document.querySelector('.toast')?.textContent).toBe(
-      'codex 새 세션으로 시작 (attempt_transcript_missing)'
+      'dev:PARKED에 열었습니다 · 활성 창 · codex 새 세션으로 시작 (attempt_transcript_missing)'
     );
   });
 
-  test('reports no caveat for a same-session conversation launch', () => {
+  test('reports the window of a same-session conversation launch without a caveat', () => {
     const message = resolveSessionToast({
       launched: true,
       session: 'launched',
       mode: 'resume',
-      runner: 'codex'
+      runner: 'codex',
+      placement: 'user',
+      tmux_session: 'dev',
+      tmux_window: 'PARKED'
     });
 
-    expect(message).toBeNull();
+    expect(message).toBe('dev:PARKED에 열었습니다 · 활성 창');
+  });
+
+  test('says the resolve window fell back to the inquiry session', () => {
+    const message = resolveSessionToast({
+      launched: true,
+      session: 'launched',
+      mode: 'fork',
+      placement: 'inquiry',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'resolve-X1'
+    });
+
+    expect(message).toBe(
+      'bdui-inquiry:resolve-X1에 열었습니다 · 사용자 tmux 세션을 찾지 못함'
+    );
+  });
+
+  test('names the session of an already open resolve window', () => {
+    const message = resolveSessionToast({
+      launched: false,
+      session: 'already_running',
+      placement: 'user',
+      tmux_session: 'dev',
+      tmux_window: 'resolve-X1'
+    });
+
+    expect(message).toBe('이미 열려 있습니다 · dev:resolve-X1');
   });
 
   test('hands a conversation stop back to the Worker from its tile', async () => {
@@ -17698,7 +17731,8 @@ describe('external wait confirm and session resume (UI-r6xq §4.4)', () => {
       reason: null,
       command: null,
       owner_tmux: null,
-      tmux_session: 'bdui',
+      placement: 'user',
+      tmux_session: 'dev',
       tmux_window: 'A-1',
       pane_id: '%1',
       bridge_active: false
@@ -17722,10 +17756,56 @@ describe('external wait confirm and session resume (UI-r6xq §4.4)', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(document.querySelector('.toast')?.textContent).toBe(
-      '이미 열려 있습니다 · tmux bdui:A-1'
+      '이미 열려 있습니다 · dev:A-1'
     );
     view.destroy();
   });
+
+  test.each([
+    ['user', 'dev', 'dev:A-1에 열었습니다 · 활성 창'],
+    [
+      'inquiry',
+      'bdui-inquiry',
+      'bdui-inquiry:A-1에 열었습니다 · 사용자 tmux 세션을 찾지 못함'
+    ]
+  ])(
+    'says where a %s-placed session resume window opened',
+    async (placement, tmux_session, text) => {
+      const transport = vi.fn(async () => ({
+        ok: true,
+        mode: 'session',
+        session: 'launched',
+        reason: null,
+        command: null,
+        owner_tmux: null,
+        placement,
+        tmux_session,
+        tmux_window: 'A-1',
+        pane_id: '%1',
+        bridge_active: false
+      }));
+      const { mount, view } = mountExternalWait(
+        {
+          op: 'external_wait_resume',
+          label: '[세션에서 이어가기]',
+          payload: {
+            root_dir: '/repo',
+            wait_id: 'w-0123456789ab',
+            mode: 'session'
+          }
+        },
+        transport
+      );
+
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('[data-external-wait-op]')
+      ).click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(document.querySelector('.toast')?.textContent).toBe(text);
+      view.destroy();
+    }
+  );
 
   test('copies the resume command when the owner session is unverified', async () => {
     const writeText = vi.fn(() => Promise.resolve());

@@ -49,6 +49,7 @@ import { placementTitle } from './placement.js';
 import {
   SUMMARY_CHIPS,
   WAIT_KINDS,
+  externalJobRows,
   representativeWaitReason,
   waitBadgeText,
   waitKindRow,
@@ -1670,14 +1671,35 @@ export function interactiveSessionBadgesTemplate(views, options) {
             : `새 세션 · ${view.fallback_reason || ''}`;
     // 외부 대기 완료 재개는 fork·새 세션이 아니라 같은 세션 `--resume`이다 (UI-r6xq §4.3).
     const resumed = view.kind === 'external_resume';
-    const title = resumed
-      ? `resume · ${view.source === 'recovered' ? '복구' : 'session_ref'} · ${view.tmux_session}:${view.tmux_window}`
-      : `${origin} · ${view.tmux_session}:${view.tmux_window}`;
-    const label = `${
+    const place =
+      view.tmux_session && view.tmux_window
+        ? `${view.tmux_session}:${view.tmux_window}`
+        : '';
+    const title = [
       resumed
-        ? `▤ 재개 세션${view.source === 'recovered' ? ' · 복구' : ''}`
-        : `▤ ${view.kind === 'resolve' ? '해결' : '문의'} 세션 · ${mode}`
-    }${tail ? ` · ${tail}` : ''}`;
+        ? `resume · ${view.source === 'recovered' ? '복구' : 'session_ref'}`
+        : origin,
+      place
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    // 창 자리는 라벨이 말한다 (UI-a119 §3.3): 같은 세션(`resume`)은 모드 낱말 없이
+    // title로 가고, fork·새 세션·복구만 라벨에 남는다.
+    const mode_word = resumed
+      ? view.source === 'recovered'
+        ? '복구'
+        : ''
+      : mode === '같은 세션'
+        ? ''
+        : mode;
+    const label = [
+      `▤ ${resumed ? '재개' : view.kind === 'resolve' ? '해결' : '문의'} 세션`,
+      mode_word,
+      place,
+      tail
+    ]
+      .filter(Boolean)
+      .join(' · ');
     return html`${view.session_id
       ? html`<button
           type="button"
@@ -2532,8 +2554,14 @@ export function waitReasonLines(reason, options = {}) {
     reason.resets_at > (options.now ?? Date.now())
       ? ` · 리셋까지 ${Math.ceil((reason.resets_at - (options.now ?? Date.now())) / 60000)}분`
       : '';
+  const item = options.item;
+  const surface = options.surface || 'card';
+  // 외부 작업 카드는 `release`를 슬롯 3에 그리지 않고 이 팝업에만 싣는다
+  // (UI-a119 §3.4 · UI-8gem): 상세 패널은 종전처럼 본문에 그대로 둔다.
+  const card_external = external && surface === 'card';
   const evidence = [
     reason.verdict_reason?.message,
+    card_external ? reason.release : '',
     since ? `대기 시작 ${since}` : '',
     next ? `다음 확인 ${next}` : '',
     reset ? `리셋 ${reset}` : ''
@@ -2564,8 +2592,6 @@ export function waitReasonLines(reason, options = {}) {
     !observed_line && reason.since
       ? `대기 시작 ${formatTimestampLocal(reason.since)}`
       : '';
-  const item = options.item;
-  const surface = options.surface || 'card';
   // `placement: 'detail'` 조작은 카드에서 빠지고 상세 패널에만 선다 (UI-r6xq §4.1).
   const visible_actions = (reason.actions || []).filter(
     (action) => surface === 'detail' || action.placement !== 'detail'
@@ -2631,8 +2657,10 @@ export function waitReasonLines(reason, options = {}) {
         </details>`
       : '',
     // 슬롯 3은 headline 한 줄이다 (§6.3): `release`와 안내문은 배지 팝업이 싣는다.
-    body:
-      reason.headline || (external && (reason.release || reason.error))
+    // 외부 작업 카드는 headline 대신 잡 줄이다 (UI-a119 §3.4).
+    body: card_external
+      ? externalJobLinesTemplate(reason, record, now_ms)
+      : reason.headline || (external && (reason.release || reason.error))
         ? html`<div class="wait-reason__lines">
             ${reason.headline
               ? html`<div class="wait-reason__headline">
@@ -3848,6 +3876,10 @@ export function externalWaitCardParts(item, now = Date.now()) {
   });
 }
 /**
+ * The slot-1 external-work badge. Verdict badges win and carry no tail; the
+ * others count jobs when there are two or more (UI-a119 §3.4) — the count says
+ * how many ENDED, failed and unknown included, and the job lines say how.
+ *
  * @param {import('../../protocol.js').WaitReason} reason
  * @param {import('../../protocol.js').ExternalWaitObservation|undefined} record
  */
@@ -3858,12 +3890,65 @@ function externalWaitBadgeText(reason, record) {
   if (reason.verdict === 'overdue') {
     return `⚠ 지연 · ${reason.verdict_reason?.message || '관찰 지연'}`;
   }
+  const jobs = record ? record.jobs : [];
   if (record?.stage === 'completing') {
-    return record.owner_kind === 'session'
-      ? '✅ 완료 · 이어하기 대기'
-      : '↻ 재개 중';
+    if (record.owner_kind !== 'session') {
+      return '↻ 재개 중';
+    }
+    return `✅ 외부 작업 완료${jobs.length >= 2 ? ` · ${jobs.length}건` : ''}`;
   }
-  return '⏳ 외부 작업';
+  const ended = jobs.filter((job) => job.terminal).length;
+  return `⏳ 외부 작업${jobs.length >= 2 ? ` · ${ended}/${jobs.length} 완료` : ''}`;
+}
+
+/**
+ * Slot 3 of an external-work card (UI-a119 §3.4): the job lines drawn from
+ * {@link externalJobRows}, then the observation-error line. `release` is not
+ * drawn here — it lives in the badge popup. No drawable job falls back to the
+ * server headline.
+ *
+ * @param {import('../../protocol.js').WaitReason} reason
+ * @param {import('../../protocol.js').ExternalWaitObservation|undefined} record
+ * @param {number} now
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function externalJobLinesTemplate(reason, record, now) {
+  const { rows, more } = externalJobRows(record, now);
+  const jobs =
+    rows.length > 0
+      ? html`<div class="external-jobs">
+          ${rows.map(
+            (row) =>
+              html`<div
+                class="external-job"
+                data-tone=${row.tone}
+                title=${ifDefined(row.title || undefined)}
+              >
+                <span class="external-job__glyph" aria-hidden="true"
+                  >${row.glyph}</span
+                ><span class="external-job__host">${row.host}</span>${row.id
+                  ? html`<span class="external-job__id">${row.id}</span>`
+                  : ''}${row.state
+                  ? html`<span class="external-job__state">${row.state}</span>`
+                  : ''}${row.elapsed
+                  ? html`<span class="external-job__elapsed"
+                      >${row.elapsed}</span
+                    >`
+                  : ''}
+              </div>`
+          )}${more ? html`<div class="external-jobs__more">${more}</div>` : ''}
+        </div>`
+      : reason.headline
+        ? html`<div class="wait-reason__headline">${reason.headline}</div>`
+        : '';
+  if (!jobs && !reason.error) {
+    return '';
+  }
+  return html`<div class="wait-reason__lines">
+    ${jobs}${reason.error
+      ? html`<div class="wait-reason__error">${reason.error}</div>`
+      : ''}
+  </div>`;
 }
 
 /**

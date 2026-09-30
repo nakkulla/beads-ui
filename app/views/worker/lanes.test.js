@@ -80,20 +80,24 @@ function interactiveView(patch = {}) {
 
 describe('interactive session badges', () => {
   test.each([
-    [{}, '▤ 해결 세션 · fork', 'fork · attempt 12345678'],
+    [
+      {},
+      '▤ 해결 세션 · fork · bdui-inquiry:resolve-UI-x1',
+      'fork · attempt 12345678'
+    ],
     [
       { source: 'session_ref', kind: 'inquiry' },
-      '▤ 문의 세션 · fork',
+      '▤ 문의 세션 · fork · bdui-inquiry:resolve-UI-x1',
       'fork · session_ref'
     ],
     [
       { mode: 'fresh', source: 'fresh', fallback_reason: 'no_session_ref' },
-      '▤ 해결 세션 · 새 세션',
+      '▤ 해결 세션 · 새 세션 · bdui-inquiry:resolve-UI-x1',
       '새 세션 · no_session_ref'
     ],
     [
       { kind: 'inquiry', mode: 'resume', source: 'attempt' },
-      '▤ 문의 세션 · 같은 세션',
+      '▤ 문의 세션 · bdui-inquiry:resolve-UI-x1',
       '같은 세션 · attempt 12345678'
     ],
     [
@@ -103,10 +107,14 @@ describe('interactive session badges', () => {
         source: 'fresh',
         fallback_reason: 'no_session_id'
       },
-      '▤ 문의 세션 · 새 세션',
+      '▤ 문의 세션 · 새 세션 · bdui-inquiry:resolve-UI-x1',
       '새 세션 · no_session_id'
     ],
-    [{ mode: null, source: 'recovered' }, '▤ 해결 세션 · 복구', '복구']
+    [
+      { mode: null, source: 'recovered' },
+      '▤ 해결 세션 · 복구 · bdui-inquiry:resolve-UI-x1',
+      '복구'
+    ]
   ])('renders the label and provenance for %j', (patch, label, title) => {
     const view = interactiveView(/** @type {any} */ (patch));
 
@@ -243,11 +251,14 @@ describe('inquiry session live card (UI-ri8n)', () => {
   const NOW = 10 * 60_000;
 
   test.each([
-    ['running', '▤ 문의 세션 · fork · 작업 중 8분'],
-    ['question', '▤ 문의 세션 · fork · 질문 대기'],
-    ['limit', '▤ 문의 세션 · fork · 한도 대기'],
-    ['idle', '▤ 문의 세션 · fork · 턴 종료 8분'],
-    [null, '▤ 문의 세션 · fork']
+    [
+      'running',
+      '▤ 문의 세션 · fork · bdui-inquiry:resolve-UI-x1 · 작업 중 8분'
+    ],
+    ['question', '▤ 문의 세션 · fork · bdui-inquiry:resolve-UI-x1 · 질문 대기'],
+    ['limit', '▤ 문의 세션 · fork · bdui-inquiry:resolve-UI-x1 · 한도 대기'],
+    ['idle', '▤ 문의 세션 · fork · bdui-inquiry:resolve-UI-x1 · 턴 종료 8분'],
+    [null, '▤ 문의 세션 · fork · bdui-inquiry:resolve-UI-x1']
   ])('renders the %s turn tail on the badge', (turn_state, label) => {
     const view = interactiveView({
       kind: 'inquiry',
@@ -314,7 +325,60 @@ describe('inquiry session live card (UI-ri8n)', () => {
 
     expect(
       mount.querySelector('.interactive-session-badge')?.textContent?.trim()
-    ).toBe('▤ 문의 세션 · 같은 세션 · 대화 중 8분');
+    ).toBe('▤ 문의 세션 · bdui-inquiry:resolve-UI-x1 · 대화 중 8분');
+  });
+
+  test.each([
+    [{ kind: 'external_resume', mode: 'resume' }, '▤ 재개 세션 · dev:7'],
+    [
+      {
+        kind: 'inquiry',
+        mode: 'resume',
+        turn_state: 'running',
+        turn_state_since: 5 * 60_000,
+        conversation: { processed_message_at: null, result: null }
+      },
+      '▤ 문의 세션 · dev:7 · 대화 중 5분'
+    ],
+    [
+      { kind: 'resolve', mode: 'fresh', source: 'fresh' },
+      '▤ 해결 세션 · 새 세션 · dev:7'
+    ]
+  ])('puts the window place on the badge label for %j', (patch, label) => {
+    const view = interactiveView({
+      tmux_session: 'dev',
+      tmux_window: '7',
+      .../** @type {any} */ (patch)
+    });
+
+    render(
+      interactiveSessionBadgesTemplate([view], { bead_id: 'UI-x1', now: NOW }),
+      mount
+    );
+
+    expect(
+      mount.querySelector('.interactive-session-badge')?.textContent?.trim()
+    ).toBe(label);
+  });
+
+  test('keeps the same-session mode word in the badge title', () => {
+    const view = interactiveView({
+      kind: 'inquiry',
+      mode: 'resume',
+      tmux_session: 'dev',
+      tmux_window: '7'
+    });
+
+    render(
+      interactiveSessionBadgesTemplate([view], { bead_id: 'UI-x1', now: NOW }),
+      mount
+    );
+
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('.interactive-session-badge')
+      ).title
+    ).toBe('같은 세션 · attempt 12345678 · dev:7');
   });
 
   test('draws the handoff button beside the resolve action', () => {
@@ -1216,7 +1280,7 @@ describe('consumer external work slots', () => {
         completion: { completed_at: '2026-09-21T03:12:00Z' }
       },
       {},
-      '✅ 완료 · 이어하기 대기'
+      '✅ 외부 작업 완료'
     ],
     [
       {},
@@ -1271,9 +1335,7 @@ describe('consumer external work slots', () => {
     expect(row.querySelector('.wait-reason__times')?.textContent).toContain(
       '다음'
     );
-    expect(row.querySelector('.wait-reason__release')?.textContent).toContain(
-      '완료되면 같은 세션'
-    );
+    expect(row.querySelector('.wait-reason__release')).toBeNull();
   });
 
   test('replaces observation clocks with completion time', () => {
@@ -1293,6 +1355,213 @@ describe('consumer external work slots', () => {
     expect(row.querySelector('.wait-reason__times')?.textContent).not.toContain(
       '다음'
     );
+  });
+});
+
+/**
+ * One slurm job of the card projection.
+ *
+ * @param {Record<string, any>} [patch]
+ * @returns {any}
+ */
+function slurmJob(patch = {}) {
+  return {
+    adapter: 'slurm',
+    ssh_host: 'wallace',
+    job_id: '42',
+    submitted_at: '2026-09-21T00:00:00Z',
+    log_path: '/logs/job.log',
+    state: 'RUNNING',
+    observed_at: '2026-09-21T03:12:00Z',
+    terminal: null,
+    ...patch
+  };
+}
+
+/**
+ * A terminal observation of one job.
+ *
+ * @param {Record<string, any>} [patch]
+ * @returns {any}
+ */
+function jobEnd(patch = {}) {
+  return {
+    exit_code: 0,
+    evidence: 'sacct COMPLETED',
+    recovery_needed: false,
+    expected_results: [],
+    ...patch
+  };
+}
+
+describe('external job lines (UI-a119 §3.4)', () => {
+  const NOW = Date.parse('2026-09-21T01:29:30Z');
+
+  /**
+   * @param {any[]} jobs
+   * @param {Record<string, any>} [record]
+   * @param {Record<string, any>} [reason]
+   */
+  function renderJobs(jobs, record = {}, reason = {}) {
+    render(
+      externalWaitCardParts(
+        {
+          external_wait: externalWait({ jobs, ...record }),
+          wait_reasons: [
+            waitReason(
+              /** @type {any} */ ({
+                kind: 'external_job',
+                headline: '잡 2건 · 완료 1 · 실행 1',
+                release: '완료되면 같은 세션을 이어간다',
+                ...reason
+              })
+            )
+          ]
+        },
+        NOW
+      ).body,
+      mount
+    );
+    return Array.from(mount.querySelectorAll('.external-job')).map((row) =>
+      Array.from(row.querySelectorAll('span')).map((cell) =>
+        (cell.textContent || '').trim()
+      )
+    );
+  }
+
+  test('draws one line per job in slot three', () => {
+    const rows = renderJobs([
+      slurmJob(),
+      slurmJob({
+        job_id: '43',
+        state: 'COMPLETED',
+        observed_at: '2026-09-21T00:19:00Z',
+        terminal: jobEnd()
+      })
+    ]);
+
+    expect(rows).toEqual([
+      ['◐', 'wallace', '42', '실행 중', '1h29m'],
+      ['✓', 'wallace', '43', '완료', '19m']
+    ]);
+  });
+
+  test('keeps the release sentence off the card body', () => {
+    renderJobs([slurmJob()]);
+
+    expect(mount.textContent).not.toContain('완료되면 같은 세션');
+    expect(mount.querySelector('.wait-reason__headline')).toBeNull();
+  });
+
+  test('moves the release sentence into the badge popup', () => {
+    const parts = externalWaitCardParts(
+      {
+        external_wait: externalWait(),
+        wait_reasons: [
+          waitReason({
+            kind: 'external_job',
+            release: '완료되면 같은 세션을 이어간다'
+          })
+        ]
+      },
+      NOW
+    );
+
+    render(parts.badge, mount);
+
+    expect(mount.querySelector('.wait-verdict')?.textContent).toContain(
+      '완료되면 같은 세션을 이어간다'
+    );
+  });
+
+  test('keeps the observation error line after the job lines', () => {
+    renderJobs([slurmJob()], {}, { error: '관찰 오류 2회 · ssh timeout' });
+
+    expect(
+      mount.querySelector('.external-jobs + .wait-reason__error')?.textContent
+    ).toBe('관찰 오류 2회 · ssh timeout');
+  });
+
+  test('stops at three lines and an overflow line from five jobs', () => {
+    renderJobs(['1', '2', '3', '4', '5'].map((job_id) => slurmJob({ job_id })));
+
+    expect(mount.querySelectorAll('.external-job')).toHaveLength(3);
+    expect(mount.querySelector('.external-jobs__more')?.textContent).toBe(
+      '외 2건 · 전체는 상세의 잡 표'
+    );
+  });
+
+  test('falls back to the server headline without a record', () => {
+    render(
+      externalWaitCardParts(
+        {
+          wait_reasons: [
+            waitReason({
+              kind: 'external_job',
+              headline: 'wallace 작업 42 · RUNNING · 경과 1h29m',
+              release: '관찰 중단으로 대기 키를 해제한다'
+            })
+          ]
+        },
+        NOW
+      ).body,
+      mount
+    );
+
+    expect(
+      mount.querySelector('.wait-reason__headline')?.textContent?.trim()
+    ).toBe('wallace 작업 42 · RUNNING · 경과 1h29m');
+    expect(mount.textContent).not.toContain('관찰 중단으로');
+  });
+
+  test('draws the job lines on a candidate card', () => {
+    const card = renderCandidate({
+      external_wait: externalWait(),
+      wait_reasons: [waitReason({ kind: 'external_job' })]
+    });
+
+    expect(card.querySelectorAll('.external-job')).toHaveLength(1);
+  });
+
+  test.each([
+    [
+      [slurmJob(), slurmJob({ job_id: '43', terminal: jobEnd() })],
+      {},
+      {},
+      '⏳ 외부 작업 · 1/2 완료'
+    ],
+    [[slurmJob()], {}, {}, '⏳ 외부 작업'],
+    [
+      [
+        slurmJob({ state: 'COMPLETED', terminal: jobEnd() }),
+        slurmJob({ job_id: '43', state: 'FAILED', terminal: jobEnd() })
+      ],
+      { owner_kind: 'session', stage: 'completing' },
+      {},
+      '✅ 외부 작업 완료 · 2건'
+    ],
+    [
+      [slurmJob(), slurmJob({ job_id: '43', terminal: jobEnd() })],
+      {},
+      {
+        verdict: 'overdue',
+        verdict_reason: { code: 'check_overdue', message: '관찰 지연' }
+      },
+      '⚠ 지연 · 관찰 지연'
+    ]
+  ])('labels the slot-one badge for case %#', (jobs, record, reason, label) => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      external_wait: externalWait({ jobs, ...record }),
+      wait_reasons: [
+        waitReason(/** @type {any} */ ({ kind: 'external_job', ...reason }))
+      ]
+    });
+
+    expect(
+      row.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe(label);
   });
 });
 
