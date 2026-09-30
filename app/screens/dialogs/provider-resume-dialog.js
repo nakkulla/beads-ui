@@ -452,12 +452,12 @@ export function providerResumeDialogTemplate(
         </p>`
       : ''}
     <div class="op-dialog__actions provider-resume-dialog__actions">
-      <button type="button" class="op-btn provider-resume-dialog__cancel">
+      <button type="button" class="ui-btn provider-resume-dialog__cancel">
         취소
       </button>
       <button
         type="button"
-        class="op-btn op-btn--primary provider-resume-dialog__confirm"
+        class="ui-btn ui-btn--primary provider-resume-dialog__confirm"
         ?disabled=${runnerNeedsAccount(draft.runner) && !draft.account}
         title=${runnerNeedsAccount(draft.runner) && !draft.account
           ? '계정을 먼저 고르세요'

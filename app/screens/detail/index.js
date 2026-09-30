@@ -614,7 +614,7 @@ export function createDetailPanel(mount_element, options) {
         ${placement
           ? html`<button
               type="button"
-              class="op-btn op-btn--primary detail-overlay__place dt-head__place"
+              class="ui-btn ui-btn--primary ui-btn--sm detail-overlay__place dt-head__place"
               data-bead-id=${id}
               ?disabled=${!placement.placeable}
               title=${placementTitle(placement)}
@@ -641,7 +641,7 @@ export function createDetailPanel(mount_element, options) {
             ${placeMenuList(place_lanes, id)}
             <button
               type="button"
-              class="op-btn op-btn--icon worker-card__place-cancel"
+              class="ui-btn ui-btn--icon ui-btn--sm worker-card__place-cancel"
               data-bead-id=${id}
               title="레인 선택 취소"
               aria-label="레인 선택 취소"

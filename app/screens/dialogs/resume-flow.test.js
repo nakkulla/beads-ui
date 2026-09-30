@@ -37,7 +37,7 @@ function submitInstructions(instructions) {
   textarea.value = instructions;
   textarea.dispatchEvent(new Event('input'));
   /** @type {HTMLButtonElement} */ (
-    document.querySelector('.resume-instructions-dialog .op-btn--primary')
+    document.querySelector('.resume-instructions-dialog .ui-btn--primary')
   ).click();
 }
 

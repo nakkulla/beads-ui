@@ -1313,7 +1313,7 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     textarea.value = '이어서 고쳐라';
     textarea.dispatchEvent(new Event('input'));
     /** @type {HTMLButtonElement} */ (
-      document.querySelector('.resume-instructions-dialog .op-btn--primary')
+      document.querySelector('.resume-instructions-dialog .ui-btn--primary')
     ).click();
     await vi.waitFor(() => expect(sent.length).toBe(1));
 

@@ -704,7 +704,12 @@ describe('session-history delegation monitors', () => {
   });
 
   test('keeps delegation rows responsive at narrow viewport', () => {
-    const css = readFileSync(`${process.cwd()}/app/styles.css`, 'utf8');
+    // The detail history rules moved from styles.css to their screen sheet
+    // in the UI-dbn6 design-system round.
+    const css = readFileSync(
+      `${process.cwd()}/app/screens/detail/detail-history.css`,
+      'utf8'
+    );
 
     const responsive =
       /@media \(max-width: 640px\)[\s\S]*?\.detail-session__leg\s*\{[\s\S]*?flex-wrap:\s*wrap/;
@@ -1247,7 +1252,7 @@ describe('session-history 세션 행 (UI-4xzk §6.5)', () => {
     expect(opened[0].session_id).toBe('a1b2c3d4-5e6f');
   });
 
-  test('copies the provider resume command from the ⧉ 재개 sibling', () => {
+  test('copies the provider resume command from the 재개 copy sibling', () => {
     /** @type {string[]} */
     const copied = [];
     const host = mount(
@@ -1268,7 +1273,7 @@ describe('session-history 세션 행 (UI-4xzk §6.5)', () => {
     expect(copied).toEqual(["codex resume 'sid-7'"]);
   });
 
-  test('omits the ⧉ 재개 button for an id no safe command could be built from', () => {
+  test('omits the 재개 copy button for an id no safe command could be built from', () => {
     const host = mount(
       sessionHistoryTemplate([], {}, {}, [view({ resume_command: null })])
     );
@@ -1323,7 +1328,7 @@ describe('세션 이력 행 조작 형태 (UI-6g3t §3.2)', () => {
       host.querySelector('.detail-session__resume')
     );
 
-    expect(resume.classList.contains('op-btn')).toBe(true);
+    expect(resume.classList.contains('ui-btn')).toBe(true);
   });
 
   test('gives the 재개 명령 복사 button the same op token', () => {
@@ -1346,7 +1351,7 @@ describe('세션 이력 행 조작 형태 (UI-6g3t §3.2)', () => {
       host.querySelector('.detail-session__resume-cmd')
     );
 
-    expect(copy.classList.contains('op-btn')).toBe(true);
+    expect(copy.classList.contains('ui-btn')).toBe(true);
   });
 });
 

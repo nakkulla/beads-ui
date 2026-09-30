@@ -188,11 +188,15 @@ export function summaryChipsTemplate(data, handlers = {}) {
       )
     : null;
   return html`<div class="detail-summary__chips">
-      <span class="detail-summary__chip detail-summary__chip--status"
+      <span
+        class="detail-summary__chip detail-summary__chip--status"
+        data-status=${data?.status || ''}
         >${data?.status || '—'}</span
       >
       ${route
-        ? html`<span class="detail-summary__chip detail-summary__chip--route"
+        ? html`<span
+            class="detail-summary__chip detail-summary__chip--route"
+            data-route=${route}
             >${route}</span
           >`
         : ''}

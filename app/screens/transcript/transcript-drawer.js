@@ -25,6 +25,7 @@
  */
 import { html } from 'lit-html';
 import { copyWithToast } from '../../ui/copy.js';
+import { copyIcon } from '../../ui/icons.js';
 import {
   formatRecordedAt,
   promptBlockTemplate,
@@ -398,7 +399,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
                     aria-label=${`세션 ID 복사: ${session_id}`}
                     @click=${() => copyValue(session_id)}
                   >
-                    ⧉ ${session_id.slice(0, 8)}
+                    ${copyIcon()} ${session_id.slice(0, 8)}
                   </button>`
                 : ''}
               ${meta.resume_command
@@ -409,7 +410,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
                     aria-label=${`재개 명령 복사: ${meta.resume_command}`}
                     @click=${() => copyValue(meta.resume_command || '')}
                   >
-                    ⧉ 재개 명령
+                    ${copyIcon()} 재개 명령
                   </button>`
                 : ''}
               ${show_prompt

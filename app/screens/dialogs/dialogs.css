@@ -1,0 +1,135 @@
+/*
+ * Operation dialogs (`screens/dialogs/`, UI-dbn6 design-system round): the
+ * native `<dialog class="op-dialog">` frame (UI-6g3t §5.3) on the raised
+ * surface and the continuation, resume-instructions and provider-resume
+ * bodies. The buttons are the `ui-btn` tiers — the confirming one primary,
+ * the rest plain, cancel quiet.
+ */
+
+.op-dialog {
+  width: min(32rem, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  padding: var(--s-8);
+  border: 0;
+  border-radius: var(--r-dialog);
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: var(--e3);
+  font-size: var(--t-13);
+  line-height: var(--lh-body);
+  overflow-wrap: anywhere;
+}
+
+.op-dialog::backdrop {
+  background: var(--overlay);
+}
+
+.op-dialog h2 {
+  margin: 0 0 var(--s-4);
+  color: var(--ink);
+  font-size: var(--t-dialog);
+  font-weight: var(--w-semibold);
+  line-height: var(--lh-tight);
+  word-break: keep-all;
+}
+
+.op-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  margin-top: var(--s-6);
+}
+
+.continuation-dialog p {
+  margin: 0 0 var(--s-8);
+  color: var(--ink-2);
+  word-break: keep-all;
+}
+
+/* 무엇을 이어가는지 말하는 한 줄 (§5.2). 재료가 없으면 줄 자체를 그리지 않는다. */
+.resume-instructions-dialog__target {
+  margin: 0 0 var(--s-4);
+  color: var(--ink-2);
+  font-size: var(--t-12);
+}
+
+/* 갈래 버튼 줄 (UI-6icf §4): 좁은 화면에서는 줄바꿈으로 흘려보낸다. */
+.resume-instructions-dialog__choices {
+  flex-wrap: wrap;
+}
+
+.resume-instructions-dialog textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 8rem;
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--field-line);
+  border-radius: var(--r-btn);
+  background: var(--field);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-13);
+  line-height: var(--lh-body);
+  resize: vertical;
+}
+
+.resume-instructions-dialog textarea:focus-visible {
+  border-color: var(--accent-solid);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 0;
+}
+
+/* 이 다이얼로그에만 있는 본문 — 필드 격자, 선택기, 인계 안내 줄. */
+.provider-resume-dialog__fields {
+  display: grid;
+  gap: var(--s-5);
+}
+
+.provider-resume-dialog__fields > label {
+  display: grid;
+  gap: var(--s-2);
+  color: var(--ink-2);
+  font-size: var(--t-12);
+}
+
+.provider-resume-dialog select {
+  min-width: 0;
+  min-height: var(--h-btn);
+  padding: 0 var(--s-4);
+  border: 1px solid var(--field-line);
+  border-radius: var(--r-btn);
+  background: var(--field);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-12);
+}
+
+.provider-resume-dialog option:disabled {
+  color: var(--ink-disabled);
+}
+
+.provider-resume-dialog__fields > .provider-resume-dialog__fresh {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.provider-resume-dialog__notice {
+  margin: var(--s-5) 0 0;
+  color: var(--amber-fg);
+  font-size: var(--t-12);
+  word-break: keep-all;
+}
+
+/* 확인·취소만 오른쪽 끝으로 덮는다. */
+.provider-resume-dialog__actions {
+  justify-content: flex-end;
+}
+
+@media (max-width: 640px) {
+  .op-dialog {
+    width: calc(100vw - 24px);
+    max-width: calc(100vw - 24px);
+    padding: var(--s-6);
+  }
+}

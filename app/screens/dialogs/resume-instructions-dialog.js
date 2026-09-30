@@ -52,16 +52,16 @@ export function requestResumeInstructions(context, doc = document) {
     'op-dialog__actions resume-instructions-dialog__actions resume-instructions-dialog__choices';
   const immediate = doc.createElement('button');
   immediate.type = 'button';
-  immediate.className = 'op-btn op-btn--primary';
+  immediate.className = 'ui-btn ui-btn--primary';
   immediate.textContent = labels.immediate;
   const instruct = doc.createElement('button');
   instruct.type = 'button';
-  instruct.className = 'op-btn';
+  instruct.className = 'ui-btn';
   instruct.textContent = labels.instruct;
   instruct.setAttribute('aria-expanded', 'false');
   const cancel_choice = doc.createElement('button');
   cancel_choice.type = 'button';
-  cancel_choice.className = 'op-btn';
+  cancel_choice.className = 'ui-btn ui-btn--ghost';
   cancel_choice.textContent = '취소';
   choices.append(immediate, instruct, cancel_choice);
   dialog.append(choices);
@@ -73,11 +73,11 @@ export function requestResumeInstructions(context, doc = document) {
   actions.className = 'op-dialog__actions resume-instructions-dialog__actions';
   const confirm = doc.createElement('button');
   confirm.type = 'button';
-  confirm.className = 'op-btn op-btn--primary';
+  confirm.className = 'ui-btn ui-btn--primary';
   confirm.textContent = labels.confirm;
   const cancel_input = doc.createElement('button');
   cancel_input.type = 'button';
-  cancel_input.className = 'op-btn';
+  cancel_input.className = 'ui-btn ui-btn--ghost';
   cancel_input.textContent = '취소';
   actions.append(confirm, cancel_input);
 

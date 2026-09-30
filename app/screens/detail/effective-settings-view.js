@@ -433,6 +433,7 @@ export function effectiveSettingsCardTemplate(model, handlers) {
         </select>
         <button
           type="button"
+          class="ui-btn ui-btn--sm"
           data-apply-impl-preset
           ?disabled=${model.preset_id.length === 0 || model.preset_busy}
           @click=${(/** @type {Event} */ event) => {

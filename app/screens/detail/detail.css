@@ -14,7 +14,7 @@
   width: min(560px, 100vw);
   height: 100dvh;
   max-height: none;
-  padding-bottom: var(--sp-16, 16px);
+  padding-bottom: 16px;
   border-width: 0 0 0 1px;
   border-radius: 0;
   overflow-x: hidden;
@@ -24,7 +24,7 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-start;
-  row-gap: var(--sp-4);
+  row-gap: 4px;
 }
 
 .dt-head__chips {
@@ -46,8 +46,8 @@
 
 .dt-section {
   min-width: 0;
-  padding-top: var(--sp-4);
-  border-top: 1px solid var(--border-kv-row);
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
 }
 
 .dt-section[data-section='title'] {
@@ -55,18 +55,18 @@
 }
 
 .dt-section[data-section='stepper'] .detail-summary__gates {
-  margin: var(--sp-6) 0 var(--sp-4);
+  margin: 6px 0 4px;
 }
 
 .dt-sessions {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sp-6);
-  margin: var(--sp-8) 0 var(--sp-4);
+  gap: 6px;
+  margin: 8px 0 4px;
 }
 
 .dt-exec__more {
-  margin-top: var(--sp-6);
+  margin-top: 6px;
 }
 
 /* Long raw values (receipts, paths) wrap inside the panel width. */
@@ -110,5 +110,500 @@
 
   .dt-overlay--sheet .dt-head__close {
     min-width: 44px;
+  }
+}
+
+/* ---------- summary header, gates, place menu (moved from styles.css in
+   the UI-dbn6 design-system round, retokenized) ---------- */
+
+#detail-root .workflow-summary__row {
+  display: grid;
+  grid-template-columns: minmax(84px, max-content) minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+#detail-root .workflow-summary__label {
+  font-size: var(--t-12);
+  color: var(--ink-3);
+}
+
+#detail-root .workflow-summary__value {
+  min-width: 0;
+  font-size: var(--t-13);
+  overflow-wrap: anywhere;
+}
+
+#detail-root .workflow-summary__row.is-invalid .workflow-summary__value {
+  color: var(--red-fg);
+}
+
+.worker-card__place-group {
+  padding: 3px 2px 0;
+  color: var(--ink-3);
+  font-size: var(--t-12);
+}
+
+.worker-card__place-lane {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--blue-bg);
+  border-radius: var(--radius-2);
+  background: transparent;
+  color: var(--blue-fg);
+  font-size: var(--t-11);
+  text-align: left;
+  cursor: pointer;
+}
+
+.worker-card__place-lane--nested {
+  padding-left: 10px;
+}
+
+.worker-card__place-lane:disabled {
+  border-color: var(--line);
+  color: var(--ink-3);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.worker-card__place-count {
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+}
+
+/* 이슈 상세 상단 바의 `[↴ 대기로]` (UI-6g3t §6.2). 바는 카드 1번 줄과 같은 문법
+   (왼쪽 정체성 · 오른쪽 조작)이라 auto margin이 ID와 조작 묶음을 가른다 — 닫기
+   `✕`는 그대로 오른쪽 끝이다. 모양은 `.op-btn`이 정하므로 여기는 자리만 정한다. */
+.detail-overlay__place {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.detail-overlay__place:disabled {
+  border-color: var(--line);
+  color: var(--ink-3);
+}
+
+/* 레인 메뉴는 바 바로 아래 줄이다: 바가 sticky라 그 안에 넣으면 목록이 스크롤을
+   따라다니며 본문을 덮는다. */
+.detail-overlay__place-menu {
+  margin: 4px 0 2px;
+}
+
+/* ============================================================================
+   이슈 상세 — 요약 헤더 + 유효 실행 설정 카드 (spec §E)
+   ========================================================================== */
+/* `position`은 판정 칩 사유 팝업의 기준이다 (UI-8x90 §5.1): 팝업은 칩이 선 줄
+   바로 아래 절대 배치인데, 여기서 기준을 잡지 않으면 오버레이 패널 전체를
+   기준으로 삼아 상세 맨 아래에 그려진다. */
+.detail-summary {
+  position: relative;
+  margin: 8px 0 4px;
+}
+
+.detail-summary__chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Summary chips: the chip look (`ui/primitives.css` .ui-chip), each chip's
+   colour from its role (`--role-*`, ui/tokens.css) — never a hue here. */
+.detail-summary__chip {
+  --c-bg: var(--role-fact-bg);
+  --c-fg: var(--role-fact-fg);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--h-chip);
+  padding: 2px var(--s-3);
+  border: 0;
+  border-radius: var(--r-chip);
+  background: var(--c-bg);
+  color: var(--c-fg);
+  font: inherit;
+  font-size: var(--t-chip);
+  font-weight: var(--w-medium);
+  line-height: 1.2;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+button.detail-summary__chip,
+a.detail-summary__chip {
+  cursor: pointer;
+}
+
+button.detail-summary__chip:hover,
+a.detail-summary__chip:hover {
+  background: color-mix(in srgb, var(--c-bg), var(--c-fg) 14%);
+}
+
+.detail-summary__chip--status[data-status='in_progress'] {
+  --c-bg: var(--role-live-bg);
+  --c-fg: var(--role-live-fg);
+}
+
+.detail-summary__chip--status[data-status='closed'] {
+  --c-bg: var(--role-done-bg);
+  --c-fg: var(--role-done-fg);
+}
+
+.detail-summary__chip--status[data-status='blocked'] {
+  --c-bg: var(--role-failed-bg);
+  --c-fg: var(--role-failed-fg);
+}
+
+.detail-summary__chip--route[data-route='spec_backed'] {
+  --c-bg: var(--role-route-spec_backed-bg);
+  --c-fg: var(--role-route-spec_backed-fg);
+}
+
+.detail-summary__chip--route[data-route='quick_fix'] {
+  --c-bg: var(--role-route-quick_fix-bg);
+  --c-fg: var(--role-route-quick_fix-fg);
+}
+
+.detail-summary__chip--route[data-route='full_plan'] {
+  --c-bg: var(--role-route-full_plan-bg);
+  --c-fg: var(--role-route-full_plan-fg);
+}
+
+.detail-summary__chip--pr {
+  --c-bg: var(--role-pr-bg);
+  --c-fg: var(--role-pr-fg);
+}
+
+.detail-summary__chip--receipt {
+  font-family: var(--font-mono);
+}
+
+.detail-summary__chip-effort {
+  margin-left: var(--s-1);
+  padding-left: var(--s-2);
+  border-left: 1px solid var(--line-strong);
+}
+
+.detail-summary__chip.ctl-chip--planned[data-kind='delegated'] {
+  --c-bg: var(--role-global-bg);
+  --c-fg: var(--role-global-fg);
+}
+
+.detail-summary__chip.ctl-chip--planned[data-kind='main'] {
+  --c-bg: var(--role-live-bg);
+  --c-fg: var(--role-live-fg);
+}
+
+/* judgement chips: the same roles as the pipeline card */
+.detail-summary__chip[data-chip-key='complex'] {
+  --c-bg: var(--role-complex-bg);
+  --c-fg: var(--role-complex-fg);
+}
+
+.detail-summary__chip[data-chip-key='frontend'] {
+  --c-bg: var(--role-area-frontend-bg);
+  --c-fg: var(--role-area-frontend-fg);
+}
+
+.detail-summary__chip[data-chip-key='backend'] {
+  --c-bg: var(--role-area-backend-bg);
+  --c-fg: var(--role-area-backend-fg);
+}
+
+.detail-summary__chip[data-chip-key='session_preferred'] {
+  --c-bg: var(--role-session-preferred-bg);
+  --c-fg: var(--role-session-preferred-fg);
+}
+
+.detail-summary__chip[data-chip-key='ineligible'] {
+  --c-bg: var(--role-ineligible-bg);
+  --c-fg: var(--role-ineligible-fg);
+}
+
+.detail-summary__chip.judgement-chip--bound[data-state='applied'],
+.detail-summary__chip.judgement-chip--bound[data-state='diverged'] {
+  background: var(--c-fg);
+  color: var(--raised);
+}
+
+.detail-summary__chip[aria-busy='true'] {
+  opacity: var(--op-dim);
+  cursor: progress;
+}
+
+/* --- issue detail: the gate stepper ---------------------------------------
+   Equal-width segments, the same vocabulary the board card's `.stp` stepper
+   already speaks, so one workflow does not get drawn two different ways. The
+   detail header's own addition is the receipt: where a review was stamped, a
+   short nail drops off the rail and hangs the commit under it. */
+.detail-summary__gates {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(56px, 1fr);
+  gap: 2px;
+  margin-top: 14px;
+  overflow-x: auto;
+}
+
+/* Label, rail, and receipt are reserved on EVERY gate. A gate without a
+   receipt still occupies that third row, which is what keeps the labels on one
+   line — the old centred flex column let a receipt push its own pill up. */
+.detail-summary__gate {
+  display: grid;
+  grid-template-rows: auto 4px 14px;
+  gap: 4px;
+  align-content: start;
+  min-width: 0;
+  text-align: center;
+  text-decoration: none;
+}
+
+.detail-summary__gate[data-hue='spec'] {
+  --gate-on: var(--teal-fg);
+  --gate-dim: var(--teal-bg);
+}
+
+.detail-summary__gate[data-hue='plan'] {
+  --gate-on: var(--blue-fg);
+  --gate-dim: var(--blue-bg);
+}
+
+.detail-summary__gate[data-hue='impl'] {
+  --gate-on: var(--violet-fg);
+  --gate-dim: var(--violet-bg);
+}
+
+.detail-summary__gate[data-hue='pr'] {
+  --gate-on: var(--pink-fg);
+  --gate-dim: var(--pink-bg);
+}
+
+.detail-summary__gate-label {
+  color: var(--ink-3);
+  font-size: var(--t-11);
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.detail-summary__gate-rail {
+  border-radius: var(--radius-1);
+  background: var(--line);
+}
+
+.detail-summary__gate-sha {
+  position: relative;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-11);
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The nail. Only a gate that actually carries a receipt grows one. */
+.detail-summary__gate--receipt .detail-summary__gate-sha::before {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  width: 1px;
+  height: 4px;
+  background: var(--line);
+}
+
+.detail-summary__gate--on .detail-summary__gate-rail {
+  background: var(--gate-on);
+}
+
+.detail-summary__gate--on .detail-summary__gate-label {
+  color: var(--gate-on);
+}
+
+.detail-summary__gate--on .detail-summary__gate-sha {
+  color: var(--ink-3);
+}
+
+.detail-summary__gate--current .detail-summary__gate-rail {
+  background: var(--gate-dim);
+  animation: detail-gate-breathe 1.8s ease-in-out infinite;
+}
+
+.detail-summary__gate--current .detail-summary__gate-label {
+  color: var(--ink-2);
+}
+
+/* stale: the server already downgraded the fill, so the rail keeps its faded
+   stage color and the amber underline carries the freshness axis — the same
+   split the board stepper uses. */
+.detail-summary__gate--stale .detail-summary__gate-rail {
+  background: var(--gate-dim);
+  box-shadow: inset 0 -2px 0 var(--warn);
+  animation: none;
+}
+
+.detail-summary__gate--stale .detail-summary__gate-label,
+.detail-summary__gate--stale .detail-summary__gate-sha {
+  color: var(--amber-fg);
+}
+
+a.detail-summary__gate:hover .detail-summary__gate-label,
+a.detail-summary__gate:focus-visible .detail-summary__gate-label {
+  color: var(--gate-on);
+  text-decoration: underline;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .detail-summary__gate--current .detail-summary__gate-rail {
+    animation: none;
+    box-shadow: 0 0 6px var(--gate-dim);
+  }
+}
+
+/* ---------- borrowed shared classes, restyled inside the detail ----------
+   `chip-popover` (ui/chip-popover.js), `ctl-chip` (exec-format.js) and
+   `prompt-block__meta` also serve the Phase 3 bridges from `styles.css` /
+   `ui/legacy.css`; inside the detail panel they take the new skin. */
+.dt-panel .chip-popover {
+  border: 0;
+  border-radius: var(--r-pop);
+  background: var(--raised);
+  color: var(--ink-2);
+  box-shadow: var(--e2);
+  font-size: var(--t-12);
+  word-break: keep-all;
+}
+
+.dt-panel .chip-popover__title {
+  color: var(--ink);
+  font-weight: var(--w-semibold);
+}
+
+.dt-panel .chip-popover__lines {
+  color: var(--ink-2);
+  font-size: var(--t-12);
+}
+
+.dt-panel .ctl-chip {
+  --c-bg: var(--role-fact-bg);
+  --c-fg: var(--role-fact-fg);
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--h-chip);
+  max-width: 100%;
+  padding: 2px var(--s-3);
+  border: 0;
+  border-radius: var(--r-chip);
+  background: var(--c-bg);
+  color: var(--c-fg);
+  font-size: var(--t-chip);
+  font-weight: var(--w-medium);
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.dt-panel .ctl-chip--planned[data-kind='delegated'] {
+  --c-bg: var(--role-global-bg);
+  --c-fg: var(--role-global-fg);
+}
+
+.dt-panel .ctl-chip--planned[data-kind='main'] {
+  --c-bg: var(--role-live-bg);
+  --c-fg: var(--role-live-fg);
+}
+
+.dt-panel .ctl-chip--exec-receipt {
+  font-family: var(--font-mono);
+}
+
+.dt-panel .worker-card__roll-child-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  min-width: 0;
+}
+
+.dt-panel .prompt-block__meta,
+.sv .prompt-block__meta {
+  color: var(--ink-3);
+  font-size: var(--t-11);
+}
+
+/* Form fields without a primitive class (the legacy element rules of
+   styles.css would otherwise paint them): the field tokens inside the panel. */
+.dt-panel select,
+.dt-panel textarea,
+.dt-panel input[type='text'],
+.dt-panel input[type='search'],
+.dt-panel input[type='number'] {
+  border: 1px solid var(--field-line);
+  border-radius: var(--r-btn);
+  background-color: var(--field);
+  color: var(--ink);
+  font-size: var(--t-12);
+}
+
+.dt-panel select {
+  padding-right: var(--s-10);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ink-3) 50%),
+    linear-gradient(135deg, var(--ink-3) 50%, transparent 50%);
+  background-position:
+    calc(100% - 13px) 50%,
+    calc(100% - 9px) 50%;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+}
+
+.dt-panel select:focus,
+.dt-panel textarea:focus,
+.dt-panel input:focus {
+  border-color: var(--accent-solid);
+  box-shadow: none;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 0;
+}
+
+.dt-panel textarea::placeholder,
+.dt-panel input::placeholder {
+  color: var(--ink-3);
+}
+
+/* A coarse pointer makes every panel button a 44px target; a chip that is a
+   button keeps its 20px pill drawn behind the text inside that box. */
+@media (pointer: coarse) {
+  .dt-overlay--sheet .dt-panel button.detail-summary__chip {
+    position: relative;
+    z-index: 0;
+    background: transparent;
+  }
+
+  .dt-overlay--sheet .dt-panel button.detail-summary__chip::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    top: 50%;
+    left: 0;
+    right: 0;
+    height: var(--h-chip);
+    border-radius: var(--r-chip);
+    background: var(--c-bg);
+    transform: translateY(-50%);
+  }
+
+  .dt-overlay--sheet
+    .dt-panel
+    button.detail-summary__chip.judgement-chip--bound[data-state='applied']::before,
+  .dt-overlay--sheet
+    .dt-panel
+    button.detail-summary__chip.judgement-chip--bound[data-state='diverged']::before {
+    background: var(--c-fg);
   }
 }

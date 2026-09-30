@@ -64,7 +64,7 @@ describe('requestResumeInstructions 상태 A', () => {
     requestResumeInstructions();
 
     const primary = document.querySelector(
-      '.resume-instructions-dialog .op-btn--primary'
+      '.resume-instructions-dialog .ui-btn--primary'
     );
 
     expect(primary?.textContent).toBe('▶ 바로 이어하기');
@@ -102,7 +102,7 @@ describe('requestResumeInstructions 상태 B', () => {
 
     expect(
       /** @type {HTMLButtonElement} */ (
-        document.querySelector('.resume-instructions-dialog .op-btn--primary')
+        document.querySelector('.resume-instructions-dialog .ui-btn--primary')
       ).disabled
     ).toBe(true);
   });
@@ -117,7 +117,7 @@ describe('requestResumeInstructions 상태 B', () => {
     textarea.value = '  실패 로그부터 확인  ';
     textarea.dispatchEvent(new Event('input'));
     /** @type {HTMLButtonElement} */ (
-      document.querySelector('.resume-instructions-dialog .op-btn--primary')
+      document.querySelector('.resume-instructions-dialog .ui-btn--primary')
     ).click();
 
     await expect(result).resolves.toBe('실패 로그부터 확인');

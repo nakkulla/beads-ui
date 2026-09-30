@@ -10,6 +10,22 @@ import { describe, expect, test } from 'vitest';
  */
 const CSS = readFileSync(path.resolve(process.cwd(), 'app/styles.css'), 'utf8');
 
+// The transcript drawer and detail history rules moved from styles.css to
+// their screen sheets in the UI-dbn6 design-system round; the contracts these
+// tests guard now live there.
+const TRANSCRIPT = readFileSync(
+  path.resolve(process.cwd(), 'app/screens/transcript/transcript.css'),
+  'utf8'
+);
+const TRANSCRIPT_BODY = readFileSync(
+  path.resolve(process.cwd(), 'app/screens/transcript/transcript-body.css'),
+  'utf8'
+);
+const DETAIL_HISTORY = readFileSync(
+  path.resolve(process.cwd(), 'app/screens/detail/detail-history.css'),
+  'utf8'
+);
+
 /**
  * Every `@media (any-pointer: coarse), (max-width: 640px)` block body, matched by
  * counting braces rather than slicing to a later marker: the file carries more
@@ -101,20 +117,20 @@ describe('worker console styles', () => {
   });
 
   test('styles the transcript drawer + tile selection ring', () => {
-    expect(workerBlock).toContain('.sv__body');
+    expect(TRANSCRIPT_BODY).toContain('.sv__body');
     expect(workerBlock).toContain('.rtile--sel');
-    expect(workerBlock).toContain('.detail-session');
+    expect(DETAIL_HISTORY).toContain('.detail-session');
   });
 
   // 도구 줄은 한 줄이다 (UI-2dbn §4.3): 세부는 말줄임으로 자르고 전문은 펼침
   // 칸이 싣는다. 줄바꿈 계약이던 시절에는 긴 Bash 한 줄이 5~10줄로 늘어났다.
   test('keeps a transcript tool line on one line inside the drawer', () => {
     const bodyRule =
-      workerBlock.match(/(?:^|\n)\.sv__body\s*{([^}]*)}/)?.[1] || '';
+      TRANSCRIPT_BODY.match(/(?:^|\n)\.sv__body\s*{([^}]*)}/)?.[1] || '';
     const detailRule =
-      workerBlock.match(/(?:^|\n)\.sv__tool-detail\s*{([^}]*)}/)?.[1] || '';
+      TRANSCRIPT_BODY.match(/(?:^|\n)\.sv__tool-detail\s*{([^}]*)}/)?.[1] || '';
     const expandRule =
-      workerBlock.match(/(?:^|\n)\.sv__tool-expand\s*{([^}]*)}/)?.[1] || '';
+      TRANSCRIPT_BODY.match(/(?:^|\n)\.sv__tool-expand\s*{([^}]*)}/)?.[1] || '';
 
     expect(bodyRule).toContain('overflow-x: hidden');
     expect(detailRule).toContain('white-space: nowrap');
@@ -131,7 +147,8 @@ describe('worker console styles', () => {
         /(?:^|\n)\.worker-drawer-overlay \.worker-drawer-host\s*{([^}]*)}/
       )?.[1] || '';
     const detailRule =
-      CSS.match(/(?:^|\n)\.session-log-root \.sv\s*{([^}]*)}/)?.[1] || '';
+      TRANSCRIPT.match(/(?:^|\n)\.session-log-root \.sv\s*{([^}]*)}/)?.[1] ||
+      '';
 
     expect(hostRule).toContain('height: min(88vh, 1000px)');
     expect(detailRule).toContain('height: min(88vh, 1000px)');
@@ -145,8 +162,11 @@ describe('worker console styles', () => {
       mq.match(
         /(?:^|\n)\s*\.worker-drawer-overlay \.worker-drawer-host\s*{([^}]*)}/
       )?.[1] || '';
+    const sheet = TRANSCRIPT.slice(
+      TRANSCRIPT.indexOf('@media (max-width: 640px)')
+    );
     const detailRule =
-      mq.match(/(?:^|\n)\s*\.session-log-root \.sv\s*{([^}]*)}/)?.[1] || '';
+      sheet.match(/(?:^|\n)\s*\.session-log-root \.sv\s*{([^}]*)}/)?.[1] || '';
 
     expect(hostRule).toContain('width: 100%');
     expect(hostRule).toContain('height: 100dvh');
@@ -159,8 +179,8 @@ describe('worker console styles', () => {
   // 모바일 도구 줄은 결과 요약만 둘째 줄로 내려간다 (UI-2dbn §4.3): 긴 도구
   // 이름이 따로 한 줄을 차지하면 세 줄이 된다.
   test('caps the tool name so only the result wraps below 640px', () => {
-    const mq = CSS.slice(
-      CSS.indexOf('/* ---------- Worker responsive (<=640px)')
+    const mq = TRANSCRIPT_BODY.slice(
+      TRANSCRIPT_BODY.indexOf('@media (max-width: 640px)')
     );
     const nameRule =
       mq.match(/(?:^|\n)\s*\.sv__tool-name\s*{([^}]*)}/)?.[1] || '';

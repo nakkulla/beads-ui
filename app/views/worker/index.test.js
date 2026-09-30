@@ -3233,7 +3233,7 @@ describe('views/worker', () => {
     textarea.value = '  로그부터 확인  ';
     textarea.dispatchEvent(new Event('input'));
     /** @type {HTMLButtonElement} */ (
-      document.querySelector('.resume-instructions-dialog .op-btn--primary')
+      document.querySelector('.resume-instructions-dialog .ui-btn--primary')
     ).click();
     await flush();
     expect(transport).toHaveBeenCalledTimes(2);
@@ -3649,7 +3649,7 @@ describe('views/worker', () => {
     textarea.value = '테스트부터 고쳐라';
     textarea.dispatchEvent(new Event('input'));
     /** @type {HTMLButtonElement} */ (
-      document.querySelector('.resume-instructions-dialog .op-btn--primary')
+      document.querySelector('.resume-instructions-dialog .ui-btn--primary')
     ).click();
     await flush();
 

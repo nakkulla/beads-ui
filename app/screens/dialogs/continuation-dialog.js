@@ -21,14 +21,14 @@ export function chooseContinuation(mismatch, doc = document) {
   title.textContent = '실행 provider가 변경되었습니다';
   copy.textContent = `${formatAttemptTuple(mismatch.prior || {}) || '이전 설정'} → ${formatAttemptTuple(mismatch.current || {}) || '현재 설정'}`;
   prior.type = 'button';
-  prior.className = 'op-btn';
+  prior.className = 'ui-btn';
   prior.textContent = '기존 session 이어하기';
   prior.disabled = mismatch.prior_available === false;
   fresh.type = 'button';
-  fresh.className = 'op-btn';
+  fresh.className = 'ui-btn';
   fresh.textContent = '현재 preset으로 새 session';
   cancel.type = 'button';
-  cancel.className = 'op-btn';
+  cancel.className = 'ui-btn ui-btn--ghost';
   cancel.textContent = '취소';
   actions.append(prior, fresh, cancel);
   dialog.append(title, copy, actions);

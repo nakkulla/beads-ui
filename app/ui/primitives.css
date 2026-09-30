@@ -647,15 +647,21 @@ a.ui-strand__bead:focus-visible .ui-strand__dot::before {
   --c: var(--info);
 }
 
-/* ---------- fields ---------- */
+/* ---------- fields ----------
+   `input.ui-input` / `textarea.ui-input` match the legacy `input[type=…]`
+   element rules of styles.css in specificity and win by order (this sheet
+   loads after it). */
 .ui-select,
-.ui-input {
+.ui-input,
+input.ui-input,
+textarea.ui-input,
+select.ui-select {
   min-height: var(--h-btn);
   max-width: 100%;
   padding: 0 var(--s-4);
   border: 1px solid var(--field-line);
   border-radius: var(--r-btn);
-  background: var(--field);
+  background-color: var(--field);
   color: var(--ink);
   font: inherit;
   font-size: var(--t-12);
@@ -663,12 +669,15 @@ a.ui-strand__bead:focus-visible .ui-strand__dot::before {
 }
 
 .ui-select:hover,
-.ui-input:hover {
+.ui-input:hover,
+input.ui-input:hover {
   border-color: var(--line-strong);
 }
 
 .ui-select:focus-visible,
-.ui-input:focus-visible {
+.ui-input:focus-visible,
+.ui-select:focus,
+.ui-input:focus {
   border-color: var(--accent-solid);
   outline: 2px solid var(--focus-ring);
   outline-offset: 0;
@@ -678,8 +687,18 @@ a.ui-strand__bead:focus-visible .ui-strand__dot::before {
   color: var(--ink-3);
 }
 
-.ui-select {
-  padding-right: var(--s-6);
+.ui-select,
+select.ui-select {
+  padding-right: var(--s-10);
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ink-3) 50%),
+    linear-gradient(135deg, var(--ink-3) 50%, transparent 50%);
+  background-position:
+    calc(100% - 13px) 50%,
+    calc(100% - 9px) 50%;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
 }
 
 .ui-input--num {
