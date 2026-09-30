@@ -30,19 +30,11 @@
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
-import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import { appliedPresetFieldFor } from '../../model/bulk-observation.js';
 import {
   disabledModelsOf,
   visibleChoicesForKey
-} from '../../utils/model-visibility.js';
-import { showToast } from '../../utils/toast.js';
-import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
-import {
-  accountDefaultLabel,
-  accountRowLabel,
-  loadAccountCatalog as readAccountCatalog
-} from './account-catalog.js';
-import { appliedPresetFieldFor } from './bulk-observation.js';
+} from '../../model/model-visibility.js';
 import {
   AUTO_LITERAL,
   BOOLEAN_DRAFT_ON,
@@ -77,7 +69,15 @@ import {
   speedVisible,
   workerUrlMessage,
   workerUrlWarning
-} from './session-model.js';
+} from '../../model/session-model.js';
+import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import { showToast } from '../../utils/toast.js';
+import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
+import {
+  accountDefaultLabel,
+  accountRowLabel,
+  loadAccountCatalog as readAccountCatalog
+} from './account-catalog.js';
 
 /** The `(기본)` sentinel a select uses for "no explicit value". */
 const UNSET = '';
@@ -2325,7 +2325,7 @@ export function createExecutionPane(mount_element, binding) {
    * change. One apply REPLACES the compared keys, so a key the preset omits
    * reads as `기본(해제)`.
    *
-   * @param {{ rows: import('./session-model.js').PresetDiffRow[], ignored_keys: string[] }} diff
+   * @param {{ rows: import('../../model/session-model.js').PresetDiffRow[], ignored_keys: string[] }} diff
    * @returns {TemplateResult}
    */
   function presetDiffTemplate(diff) {

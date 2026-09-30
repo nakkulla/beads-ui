@@ -1,10 +1,10 @@
 import { describe, expect, test, vi } from 'vitest';
+import { createWsClient } from './core/ws.js';
 import { bootstrap } from './main.js';
-import { createWsClient } from './ws.js';
 
 // Mock WS client before importing the app
 const calls = [];
-vi.mock('./ws.js', () => {
+vi.mock('./core/ws.js', () => {
   /** @type {Record<string, (p:any)=>void>} */
   const handlers = {};
   const singleton = {

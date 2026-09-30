@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   formatAttemptOrchestrationChip,
   formatWorkerChip
-} from '../../utils/exec-settings-chip.js';
+} from '../../model/exec-settings-chip.js';
 import { runningGridTemplate, runningTile } from './running-grid.js';
 
 describe('worker failed running tile template', () => {

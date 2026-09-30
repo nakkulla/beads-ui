@@ -15,18 +15,21 @@
  * @import { TemplateResult } from 'lit-html'
  */
 import { html, render } from 'lit-html';
-import { formatTimestampLocal } from '../../utils/relative-time.js';
 import {
   failureText,
   operationFailureText,
   retryOutcomeText,
   terminationText
-} from './failure-labels.js';
+} from '../../model/failure-labels.js';
+import {
+  cleanupStepLabel,
+  cleanupStepperView
+} from '../../model/merge-steps.js';
+import { formatTimestampLocal } from '../../model/relative-time.js';
 import { formatClock, formatElapsed, shortSha } from './lanes.js';
 // One template for the log path, shared with the Worker row's completion card
 // (UI-8w4t §4) so both surfaces offer the same affordance and the same toast.
 import { logPathTemplate } from './log-path.js';
-import { cleanupStepLabel, cleanupStepperView } from './merge-steps.js';
 
 /**
  * How many events the drawer shows. The rail is a "what just happened" surface,

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { buildLanes } from '../../app/views/worker/lane-model.js';
+import { buildLanes } from '../../app/model/lane-model.js';
 import {
   __resetScopeCacheForTest,
   __setScopeCacheForTest,

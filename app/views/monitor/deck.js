@@ -28,20 +28,23 @@
  */
 import { html, render } from 'lit-html';
 import {
+  pruneAdopted as dropCaughtUp,
+  mergeQueue
+} from '../../model/adopted-queue.js';
+import {
   formatImplReviewChip,
   formatOrchestrationChip,
   formatWorkerChip
-} from '../../utils/exec-settings-chip.js';
+} from '../../model/exec-settings-chip.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
 import { modelRunnerOf } from '../detail-panel/exec-settings.js';
 import { summaryChipsTemplate, tokenChipTemplate } from '../worker/lanes.js';
-import { pruneAdopted as dropCaughtUp, mergeQueue } from './adopted-queue.js';
 import { iconGear, iconMerge, iconPause, iconPlay } from './icons.js';
 import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
 
 /**
- * @import { LaneItem } from '../worker/lane-model.js'
+ * @import { LaneItem } from '../../model/lane-model.js'
  */
 
 /**

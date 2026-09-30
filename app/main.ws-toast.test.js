@@ -4,7 +4,7 @@ import { bootstrap } from './main.js';
 // Mock ws client factory to inject a controllable client
 /** @type {any} */
 let CLIENT = null;
-vi.mock('./ws.js', () => ({
+vi.mock('./core/ws.js', () => ({
   createWsClient: () => CLIENT
 }));
 

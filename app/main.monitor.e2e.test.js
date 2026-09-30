@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { createWsClient } from './core/ws.js';
 import { bootstrap } from './main.js';
-import { createWsClient } from './ws.js';
 
 /**
  * 모니터 탭·Worker 탭 단독 진입 배선 (UI-53es §2, UI-nprg).
@@ -10,7 +10,7 @@ import { createWsClient } from './ws.js';
  * 구독이 해제되어야 한다. 여기서 검증하는 것은 "구독이 나갔는가"만이 아니라 "그
  * 구독으로 들어온 데이터가 실제로 렌더되는가"다.
  */
-vi.mock('./ws.js', () => {
+vi.mock('./core/ws.js', () => {
   /** @type {Record<string, (p: any) => void>} */
   const handlers = {};
   /** @type {Set<(s: 'connecting'|'open'|'closed'|'reconnecting') => void>} */
@@ -116,7 +116,7 @@ vi.mock('./ws.js', () => {
  * handler actually forwarded — mocking the store's behaviour instead would test
  * the mock, not the wiring (UI-qrfo §4 전송 경로).
  */
-vi.mock('./data/monitor-pipeline-store.js', async (importOriginal) => {
+vi.mock('./model/monitor-pipeline-store.js', async (importOriginal) => {
   const actual = /** @type {any} */ (await importOriginal());
   /** @type {any} */
   let instance = null;
@@ -667,7 +667,7 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     await Promise.resolve();
 
     const store = /** @type {any} */ (
-      await import('./data/monitor-pipeline-store.js')
+      await import('./model/monitor-pipeline-store.js')
     ).__currentMonitorPipelineStore();
     expect(store.getWorkspacesState()).toEqual([
       {
@@ -698,7 +698,7 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     await Promise.resolve();
 
     const store = /** @type {any} */ (
-      await import('./data/monitor-pipeline-store.js')
+      await import('./model/monitor-pipeline-store.js')
     ).__currentMonitorPipelineStore();
     expect(store.getWorkspacesState()).toEqual([]);
   });
@@ -856,7 +856,7 @@ describe('monitor keyed patch lifecycle', () => {
     bootstrap(/** @type {HTMLElement} */ (document.getElementById('app')));
     await flush();
     const store = /** @type {any} */ (
-      await import('./data/monitor-pipeline-store.js')
+      await import('./model/monitor-pipeline-store.js')
     ).__currentMonitorPipelineStore();
     return { client, store };
   }

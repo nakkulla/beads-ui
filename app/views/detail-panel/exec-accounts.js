@@ -1,5 +1,5 @@
 import { html } from 'lit-html';
-import { formatRelativeTime } from '../../utils/relative-time.js';
+import { formatRelativeTime } from '../../model/relative-time.js';
 
 const SWITCH_REASONS = {
   outage_switch: '한도 도달 뒤 전환',

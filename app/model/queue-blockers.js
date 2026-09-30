@@ -13,15 +13,15 @@
  * (`LaneMember`)에서 읽고, 그 목록에 없는 blocker는 `미적재`로 접는다 — 두
  * 탭의 괄호 안 위치가 같은 값이 되지 않는 경계는 UI-anna §5.1이 정한다.
  *
- * @import { DependencyChip, DependentsChip, ReleasedChip } from './lanes.js'
- * @import { LaneMember } from './queue-overlaps.js'
+ * @import { DependencyChip, DependentsChip, ReleasedChip } from '../views/worker/lanes.js'
+ * @import { LaneMember } from '../views/worker/queue-overlaps.js'
  */
-import { isForeignBlocker } from '../../utils/blocker-scope.js';
-import { formatTimestampLocal } from '../../utils/relative-time.js';
+import { isForeignBlocker } from './blocker-scope.js';
+import { formatTimestampLocal } from './relative-time.js';
 
 /**
  * One blocker as the chip needs it. 모니터의
- * `import('../monitor/blockers.js').BlockerDisplay`가 이 모양을 만족하므로 두
+ * `import('./blockers.js').BlockerDisplay`가 이 모양을 만족하므로 두
  * 탭이 같은 함수를 부를 수 있다.
  *
  * @typedef {Object} BlockerFact

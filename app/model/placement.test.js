@@ -1,14 +1,14 @@
 import { describe, expect, test } from 'vitest';
-import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
-import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
-import { normalizeCandidateSort } from './candidate-sort.js';
+import { normalizeCandidateSort } from '../views/worker/candidate-sort.js';
+import { createWorkspaceAdapter } from '../views/worker/workspace-adapter.js';
 import {
   candidatePlacement,
   placeMenuLanes,
   placementFromFacts,
   placementTitle
 } from './placement.js';
-import { createWorkspaceAdapter } from './workspace-adapter.js';
+import { createSubscriptionIssueStore } from './subscription-issue-store.js';
+import { createWorkerQueueStore } from './worker-queue-store.js';
 
 /** A format-valid spec review receipt (`<reviewer>@<40-hex>`). */
 const RECEIPT = 'codex@' + 'a'.repeat(40);

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { resolveExecutionSettings } from '../utils/execution-defaults.js';
 import {
   formatAttemptOrchestrationChip,
   formatImplActorChip,
@@ -6,7 +7,6 @@ import {
   formatOrchestrationChip,
   formatWorkerChip
 } from './exec-settings-chip.js';
-import { resolveExecutionSettings } from './execution-defaults.js';
 
 const PROJECTION = {
   supported: true,
@@ -61,7 +61,7 @@ const RUNNER_CATALOG = {
 
 /**
  * @param {Record<string, any>} input
- * @returns {Record<string, import('./execution-defaults.js').ExecutionValue>}
+ * @returns {Record<string, import('../utils/execution-defaults.js').ExecutionValue>}
  */
 function resolve(input) {
   return resolveExecutionSettings({
@@ -282,8 +282,8 @@ describe('formatImplReviewChip', () => {
   /**
    * @param {string|null} value
    * @param {string} [display]
-   * @param {import('./execution-defaults.js').ExecutionValue['resolution']} [resolution]
-   * @returns {import('./execution-defaults.js').ExecutionValue}
+   * @param {import('../utils/execution-defaults.js').ExecutionValue['resolution']} [resolution]
+   * @returns {import('../utils/execution-defaults.js').ExecutionValue}
    */
   const row = (value, display = value ?? '', resolution = 'default') => ({
     value,

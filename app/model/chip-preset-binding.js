@@ -30,7 +30,7 @@ import {
   APPLIED_EXEC_PRESET_KEY,
   CHIP_BINDING_KEYS,
   CHIP_PRESET_SOURCE_KEY
-} from '../views/settings-dialog/session-model.js';
+} from './session-model.js';
 
 /**
  * Whether one chip's click writes the issue instead of opening the 사유 팝업.

@@ -1,7 +1,7 @@
 import { render } from 'lit-html';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { WAIT_KINDS } from '../../model/wait-vocabulary.js';
 import { waitStatusBadge } from '../worker/lanes.js';
-import { WAIT_KINDS } from '../worker/wait-vocabulary.js';
 import { createHelpDialog, installHelpAnchorDelegation } from './index.js';
 
 // jsdom has no <dialog> behavior: the fallback path in the dialog sets the

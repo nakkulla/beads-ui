@@ -2,17 +2,19 @@
  * @import { MessageType } from './protocol.js'
  */
 import { html, render } from 'lit-html';
+import { createHashRouter } from './core/router.js';
+import { createStore } from './core/state.js';
+import { createWsClient } from './core/ws.js';
 import { closedRangeSince, normalizeDoneRange } from './data/closed-range.js';
 import { createDisplayPolicyStore } from './data/display-policy-store.js';
-import { createExecPresetStore } from './data/exec-preset-store.js';
-import { createModelVisibilityStore } from './data/model-visibility-store.js';
-import { createMonitorPipelineStore } from './data/monitor-pipeline-store.js';
-import { createSessionLogStore } from './data/session-log-store.js';
-import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
-import { createSubscriptionStore } from './data/subscriptions-store.js';
-import { createWorkerQueueStore } from './data/worker-queue-store.js';
-import { createHashRouter } from './router.js';
-import { createStore } from './state.js';
+import { depCandidateModel } from './model/dep-candidates.js';
+import { createExecPresetStore } from './model/exec-preset-store.js';
+import { createModelVisibilityStore } from './model/model-visibility-store.js';
+import { createMonitorPipelineStore } from './model/monitor-pipeline-store.js';
+import { createSessionLogStore } from './model/session-log-store.js';
+import { createSubscriptionIssueStores } from './model/subscription-issue-stores.js';
+import { createSubscriptionStore } from './model/subscriptions-store.js';
+import { createWorkerQueueStore } from './model/worker-queue-store.js';
 import { createActivityIndicator } from './utils/activity-indicator.js';
 import { debug } from './utils/logging.js';
 import { showToast } from './utils/toast.js';
@@ -22,7 +24,6 @@ import { createDetailPanel } from './views/detail-panel/index.js';
 import { createMdViewer } from './views/detail-panel/md-viewer.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
 import { createHelpDialog } from './views/help-dialog/index.js';
-import { depCandidateModel } from './views/monitor/dep-candidates.js';
 import {
   MONITOR_PIPELINE_KEY,
   createMonitorView
@@ -33,7 +34,6 @@ import { createSettingsDialog } from './views/settings-dialog/index.js';
 import { createUsageMeter } from './views/usage-meter.js';
 import { createWorkerView } from './views/worker.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
-import { createWsClient } from './ws.js';
 
 /**
  * Read the server-rendered bootstrap config. Label visibility is NOT part of

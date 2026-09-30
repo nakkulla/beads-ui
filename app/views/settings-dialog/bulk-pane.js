@@ -28,18 +28,24 @@
  * or destroying the pane stops a run from sending its remaining targets.
  *
  * @typedef {import('lit-html').TemplateResult} TemplateResult
- * @typedef {import('../monitor/bulk-preset-apply.js').BulkResult} BulkResult
+ * @typedef {import('../../model/bulk-preset-apply.js').BulkResult} BulkResult
  * @typedef {import('./account-catalog.js').AccountCatalog} AccountCatalog
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
-import { disabledModelsOf } from '../../utils/model-visibility.js';
-import { mergeQueue, pruneAdopted } from '../monitor/adopted-queue.js';
+import { mergeQueue, pruneAdopted } from '../../model/adopted-queue.js';
 import {
   CATALOG_REASON,
   planBulkAccountApply,
   runBulkAccountApply
-} from '../monitor/bulk-account-apply.js';
+} from '../../model/bulk-account-apply.js';
+import {
+  appliedPresetProjected,
+  observationBadge,
+  observeAppliedPreset,
+  observeKey,
+  observeSet
+} from '../../model/bulk-observation.js';
 import {
   defaultSelectedRoots,
   formatBulkResult,
@@ -48,25 +54,22 @@ import {
   retryRootsOf,
   runBulkApply,
   supportsQuickFixLane
-} from '../monitor/bulk-preset-apply.js';
+} from '../../model/bulk-preset-apply.js';
+import { disabledModelsOf } from '../../model/model-visibility.js';
+import {
+  WORKFLOW_MODES,
+  normalizeAppliesTo
+} from '../../model/session-model.js';
 import {
   accountDefaultLabel,
   accountRowLabel,
   loadAccountCatalog
 } from './account-catalog.js';
 import {
-  appliedPresetProjected,
-  observationBadge,
-  observeAppliedPreset,
-  observeKey,
-  observeSet
-} from './bulk-observation.js';
-import {
   bulkFormKeysFor,
   bulkFormRowKeysFor,
   createBulkWorkerForm
 } from './bulk-worker-form.js';
-import { WORKFLOW_MODES, normalizeAppliesTo } from './session-model.js';
 
 /** Select value for `기본값 사용` (sent as `null`). */
 const USE_DEFAULT = '__bulk_use_default__';
@@ -351,7 +354,7 @@ export function createBulkPane(host, options) {
    * Observe one account-layer key across the ticked repos (§6).
    *
    * @param {'claude_account'|'codex_account'} key
-   * @returns {import('./bulk-observation.js').Observation}
+   * @returns {import('../../model/bulk-observation.js').Observation}
    */
   function observeAccount(key) {
     return observeKey(selectedRows(), key, 'workspace_accounts');
@@ -378,7 +381,7 @@ export function createBulkPane(host, options) {
    *
    * @param {'claude'|'codex'} runner
    * @param {'mode'|'preempt'} field
-   * @returns {import('./bulk-observation.js').Observation}
+   * @returns {import('../../model/bulk-observation.js').Observation}
    */
   function observeLimitField(runner, field) {
     const projected = selectedRows().map((row) => {
@@ -420,7 +423,7 @@ export function createBulkPane(host, options) {
    * repo that has not read that layer makes the row `미확인` (§5).
    *
    * @param {string} key
-   * @returns {import('./bulk-observation.js').Observation}
+   * @returns {import('../../model/bulk-observation.js').Observation}
    */
   function observeSession(key) {
     return observeKey(selectedRows(), key, 'session_defaults');
@@ -578,10 +581,10 @@ export function createBulkPane(host, options) {
    * each repo's own value alone (§3.2). The edit type is already partial, so
    * omission needs no new wire shape.
    *
-   * @returns {import('../monitor/bulk-account-apply.js').BulkAccountEdit}
+   * @returns {import('../../model/bulk-account-apply.js').BulkAccountEdit}
    */
   function accountEdit() {
-    /** @type {import('../monitor/bulk-account-apply.js').BulkAccountEdit} */
+    /** @type {import('../../model/bulk-account-apply.js').BulkAccountEdit} */
     const edit = { values: {}, patches: {} };
     for (const [key] of ACCOUNT_FIELDS) {
       if (holdOf(key, observeAccount(key)) !== null) {
@@ -593,7 +596,7 @@ export function createBulkPane(host, options) {
     for (const runner of RUNNERS) {
       const form = runner_forms[runner];
       const text = form.pct_text.trim();
-      /** @type {Partial<import('../monitor/bulk-account-apply.js').LimitPatch>} */
+      /** @type {Partial<import('../../model/bulk-account-apply.js').LimitPatch>} */
       const patch = {};
       if (
         holdOf(`${runner}.mode`, observeLimitField(runner, 'mode')) === null
@@ -636,7 +639,7 @@ export function createBulkPane(host, options) {
    * preset chosen on the other tab makes no targets here (§6.2).
    *
    * @param {'worker'|'quick_fix'} tab
-   * @returns {import('../monitor/bulk-preset-apply.js').BulkPlan}
+   * @returns {import('../../model/bulk-preset-apply.js').BulkPlan}
    */
   function presetPlan(tab) {
     const preset = chosenPreset(tab);
@@ -656,7 +659,7 @@ export function createBulkPane(host, options) {
     });
   }
 
-  /** @returns {import('../monitor/bulk-account-apply.js').BulkAccountPlan} */
+  /** @returns {import('../../model/bulk-account-apply.js').BulkAccountPlan} */
   function accountPlan() {
     return planBulkAccountApply({
       rows: mergedRows(),
@@ -963,7 +966,7 @@ export function createBulkPane(host, options) {
    * value with nothing to explain (§3).
    *
    * @param {string} id - The row's edit id.
-   * @param {import('./bulk-observation.js').Observation|{ state: string, value: any, per_repo: any[], pending_count?: number }} observation
+   * @param {import('../../model/bulk-observation.js').Observation|{ state: string, value: any, per_repo: any[], pending_count?: number }} observation
    * @param {(value: string|null) => string} [labelOf]
    * @returns {TemplateResult|''}
    */

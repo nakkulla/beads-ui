@@ -2943,7 +2943,7 @@ describe('integrated Worker address repairs', () => {
       close: () => {},
       getState: () => 'open'
     };
-    vi.doMock('../../ws.js', () => ({ createWsClient: () => client }));
+    vi.doMock('../../core/ws.js', () => ({ createWsClient: () => client }));
     vi.doMock('../monitor/index.js', async () => {
       const actual = await vi.importActual('../monitor/index.js');
       return {
@@ -2984,7 +2984,7 @@ describe('integrated Worker address repairs', () => {
         )
       ).toHaveLength(1);
     } finally {
-      vi.doUnmock('../../ws.js');
+      vi.doUnmock('../../core/ws.js');
       vi.doUnmock('../monitor/index.js');
     }
   });

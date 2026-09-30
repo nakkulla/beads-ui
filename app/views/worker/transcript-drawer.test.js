@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { createSessionLogStore } from '../../data/session-log-store.js';
+import { createSessionLogStore } from '../../model/session-log-store.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
 
 /** @type {HTMLElement} */

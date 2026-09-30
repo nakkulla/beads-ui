@@ -16,7 +16,7 @@ if (typeof HTMLDialogElement !== 'undefined') {
 
 // Capture calls and provide simple responses
 const calls = /** @type {Array<{ type: string, payload: any }>} */ ([]);
-vi.mock('./ws.js', () => ({
+vi.mock('./core/ws.js', () => ({
   createWsClient: () => ({
     /**
      * @param {string} type

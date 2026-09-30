@@ -24,20 +24,7 @@ import {
   closedRangeSince,
   normalizeDoneRange
 } from '../../data/closed-range.js';
-import { formatAttemptTuple } from '../../utils/attempt-display.js';
-import { createChipPresetToggle } from '../../utils/chip-preset-binding.js';
-import { copyToClipboard } from '../../utils/clipboard.js';
-import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
-import { debug } from '../../utils/logging.js';
-import { disabledModelsOf } from '../../utils/model-visibility.js';
-import { runResumeFlow } from '../../utils/resume-flow.js';
-import { sessionRefDrawerInput } from '../../utils/session-ref.js';
-import { showToast } from '../../utils/toast.js';
-import { watchMobile } from '../../utils/viewport.js';
-import { createChipPopover } from '../chip-popover.js';
-import { runExternalWaitAction } from '../worker/external-wait-action.js';
-import { createLaneCollapse } from '../worker/lane-collapse.js';
-import { createLaneDrag } from '../worker/lane-drag.js';
+import { createChipPresetToggle } from '../../model/chip-preset-binding.js';
 import {
   CANDIDATE_FILTER_DEFAULT,
   CANDIDATE_SORT_OPTIONS,
@@ -46,7 +33,21 @@ import {
   buildLanes,
   normalizeRouteFilter,
   toggleRouteFilter
-} from '../worker/lane-model.js';
+} from '../../model/lane-model.js';
+import { disabledModelsOf } from '../../model/model-visibility.js';
+import { tileResolveFields } from '../../model/tile-resolve.js';
+import { formatAttemptTuple } from '../../utils/attempt-display.js';
+import { copyToClipboard } from '../../utils/clipboard.js';
+import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
+import { debug } from '../../utils/logging.js';
+import { runResumeFlow } from '../../utils/resume-flow.js';
+import { sessionRefDrawerInput } from '../../utils/session-ref.js';
+import { showToast } from '../../utils/toast.js';
+import { watchMobile } from '../../utils/viewport.js';
+import { createChipPopover } from '../chip-popover.js';
+import { runExternalWaitAction } from '../worker/external-wait-action.js';
+import { createLaneCollapse } from '../worker/lane-collapse.js';
+import { createLaneDrag } from '../worker/lane-drag.js';
 import {
   SERIAL_LANE_LABEL,
   candidateCard,
@@ -72,12 +73,11 @@ import {
   showProviderResumeDialog
 } from '../worker/provider-resume-dialog.js';
 import { runningTile } from '../worker/running-grid.js';
-import { tileResolveFields } from '../worker/tile-resolve.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
 
 /**
- * @import { CandidateFilter, LaneItem, LaneModel, MonitorOccupant, LaneQueueGroup, MonitorSerialSublane } from '../worker/lane-model.js'
+ * @import { CandidateFilter, LaneItem, LaneModel, MonitorOccupant, LaneQueueGroup, MonitorSerialSublane } from '../../model/lane-model.js'
  * @import { DependencyChips } from '../worker/lanes.js'
  * @import { ProviderResumeDraft } from '../worker/provider-resume-dialog.js'
  * @import { DropDrag, DropTarget } from '../worker/lane-drag.js'
@@ -901,7 +901,7 @@ export function createMonitorView(mount_element, options) {
   /**
    * Merge the 겹침 파생값 into the dependency chips a card already carries.
    *
-   * @param {{ id: string, overlap_chips?: import('../worker/lane-model.js').OverlapChip[], scope_state?: 'declared'|'missing', dependency_chips?: DependencyChips|null }} row
+   * @param {{ id: string, overlap_chips?: import('../../model/lane-model.js').OverlapChip[], scope_state?: 'declared'|'missing', dependency_chips?: DependencyChips|null }} row
    * @returns {DependencyChips|null}
    */
   function chipsWithOverlaps(row) {
@@ -1701,7 +1701,7 @@ export function createMonitorView(mount_element, options) {
    * 카탈로그가 다르므로 `catalogOf`가 행의 `root_dir`로 고른다 — 틀린 판정보다
    * 없는 판정이 낫다.
    *
-   * @returns {import('../../utils/chip-preset-binding.js').ChipPresetContext|null}
+   * @returns {import('../../model/chip-preset-binding.js').ChipPresetContext|null}
    */
   function chipPresetContext() {
     const state = options.execPresetStore?.get() || null;

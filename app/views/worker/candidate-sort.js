@@ -7,9 +7,13 @@
  * is a purely CLIENT-side preference — the server sends one candidate feed and
  * the lane decides how to read it.
  *
- * @import { SortKey, SortStep } from '../../data/sort.js'
+ * @import { SortKey, SortStep } from '../../model/sort.js'
  */
-import { SORT_KEY_DEFAULT_DIR, cmpChain, isSortStep } from '../../data/sort.js';
+import {
+  SORT_KEY_DEFAULT_DIR,
+  cmpChain,
+  isSortStep
+} from '../../model/sort.js';
 import { blockerIdsOf } from './blocker-ids.js';
 
 /**

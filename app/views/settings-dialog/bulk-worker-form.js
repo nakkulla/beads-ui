@@ -22,14 +22,13 @@
  */
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
-import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
-import { visibleChoicesForKey } from '../../utils/model-visibility.js';
-import { supportsQuickFixLane } from '../monitor/bulk-preset-apply.js';
 import {
   observationApplies,
   observationBadge,
   observeKey
-} from './bulk-observation.js';
+} from '../../model/bulk-observation.js';
+import { supportsQuickFixLane } from '../../model/bulk-preset-apply.js';
+import { visibleChoicesForKey } from '../../model/model-visibility.js';
 import {
   AUTO_LITERAL,
   GENERAL_PRESET_KEYS,
@@ -56,7 +55,8 @@ import {
   orchestrationRuntimeInitial,
   orchestrationRuntimeOptions,
   speedVisible
-} from './session-model.js';
+} from '../../model/session-model.js';
+import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 
 /** The `기본값 사용` sentinel every select carries as its first option. */
 const UNSET = '';
@@ -134,7 +134,7 @@ export function bulkFormKeysFor(applies_to) {
  *
  * @param {string} key
  * @param {unknown} applies_to
- * @returns {import('./bulk-observation.js').ObservationLayer|null}
+ * @returns {import('../../model/bulk-observation.js').ObservationLayer|null}
  */
 function layerOf(key, applies_to) {
   const profile = normalizeAppliesTo(applies_to);
@@ -217,7 +217,7 @@ export function createBulkWorkerForm({
   const edited = new Set();
 
   /** The last observation per key, `null` for a key nothing observes. */
-  /** @type {Record<string, import('./bulk-observation.js').Observation|null>} */
+  /** @type {Record<string, import('../../model/bulk-observation.js').Observation|null>} */
   const observations = {};
 
   /** The UI-only orchestration provider axis; `null` = derive it. */
@@ -279,7 +279,7 @@ export function createBulkWorkerForm({
    * The observation a row stands on, or `null` when nothing observes it.
    *
    * @param {string} key
-   * @returns {import('./bulk-observation.js').Observation|null}
+   * @returns {import('../../model/bulk-observation.js').Observation|null}
    */
   function observationOf(key) {
     return observations[key] ?? null;

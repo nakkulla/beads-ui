@@ -14,7 +14,7 @@ if (typeof HTMLDialogElement !== 'undefined') {
   }
 }
 
-vi.mock('./ws.js', () => ({
+vi.mock('./core/ws.js', () => ({
   createWsClient: () => ({
     async send() {
       return null;

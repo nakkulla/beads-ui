@@ -18,28 +18,18 @@
  * 레포 섹션은 **`workspaces_state`를 돌며** 만든다: 큐가 빈 레포에도 후보가
  * 있으면 드롭 타깃이 필요하고 (§6), 순서는 데크 순서와 같아야 한다.
  */
-import { priceUsage } from '../../../server/worker/usage-pricing.js';
-import { isExternalWaitObservation } from '../../protocol.js';
+import { priceUsage } from '../../server/worker/usage-pricing.js';
+import { isExternalWaitObservation } from '../protocol.js';
 import {
   activeAttemptStates,
   isImplementationAttempt,
   latestImplementationAttempts,
   reviewSessionAttemptStates
-} from '../../utils/active-attempts.js';
-import { isForeignBlocker } from '../../utils/blocker-scope.js';
-import { complexReason } from '../../utils/complex-judgement.js';
-import {
-  formatAttemptOrchestrationChip,
-  formatImplActorChip,
-  formatOrchestrationChip,
-  formatWorkerChip,
-  resolvedRunnerOf
-} from '../../utils/exec-settings-chip.js';
-import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
-import { RESUME_REFUSALS } from '../../utils/failure-sentences.js';
-import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
-import { formatClockLocal } from '../../utils/relative-time.js';
-import { overlapPrefixes } from '../../utils/scope-overlap.js';
+} from '../utils/active-attempts.js';
+import { complexReason } from '../utils/complex-judgement.js';
+import { resolveExecutionSettings } from '../utils/execution-defaults.js';
+import { RESUME_REFUSALS } from '../utils/failure-sentences.js';
+import { resumeKindOf } from '../utils/quickfix-resume-kind.js';
 import {
   SUM_FIELDS,
   formatUsageTotalWithCost,
@@ -47,8 +37,15 @@ import {
   projectAttemptUsage,
   providerUsageBadges,
   sumAttemptUsage
-} from '../../utils/token-usage.js';
-import { modelRunnerOf } from '../detail-panel/exec-settings.js';
+} from '../utils/token-usage.js';
+import { modelRunnerOf } from '../views/detail-panel/exec-settings.js';
+import {
+  discardProjection,
+  quickFixLanded,
+  reviewSessionAttemptBadges,
+  sumAttemptWorkMs
+} from '../views/worker/lanes.js';
+import { isForeignBlocker } from './blocker-scope.js';
 import {
   blockerLocationLabel,
   buildBlockerLocationMap,
@@ -56,15 +53,16 @@ import {
   describeBlocker,
   detectSerialLaneHeadCycles,
   serialCycleKey
-} from '../monitor/blockers.js';
+} from './blockers.js';
+import {
+  formatAttemptOrchestrationChip,
+  formatImplActorChip,
+  formatOrchestrationChip,
+  formatWorkerChip,
+  resolvedRunnerOf
+} from './exec-settings-chip.js';
 import { recoveryWaitSentence } from './failure-labels.js';
 import { autoSwitchText, providerHoldBadgeText } from './gate-labels.js';
-import {
-  discardProjection,
-  quickFixLanded,
-  reviewSessionAttemptBadges,
-  sumAttemptWorkMs
-} from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
 import { placementFromFacts } from './placement.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
@@ -76,10 +74,12 @@ import {
   releasedChip,
   resolvedBlockerChip
 } from './queue-blockers.js';
+import { formatClockLocal } from './relative-time.js';
+import { overlapPrefixes } from './scope-overlap.js';
 import { waitKindRow } from './wait-vocabulary.js';
 
 /**
- * @import { DependencyChip, DependencyChips, MiniItem } from './lanes.js'
+ * @import { DependencyChip, DependencyChips, MiniItem } from '../views/worker/lanes.js'
  */
 
 /**
@@ -442,13 +442,13 @@ const DONE_KIND_LABELS = {
  *   resumed_from?: string|null,
  *   continuation_mode?: 'session'|'fresh'|null,
  *   continuation_mismatch?: any,
- *   failure?: import('./running-grid.js').FailureTile|null,
- *   hold?: import('./running-grid.js').HoldTile|null,
- *   wait?: import('./running-grid.js').WaitTile|null,
- *   retry?: import('./running-grid.js').RetryTile|null,
+ *   failure?: import('../views/worker/running-grid.js').FailureTile|null,
+ *   hold?: import('../views/worker/running-grid.js').HoldTile|null,
+ *   wait?: import('../views/worker/running-grid.js').WaitTile|null,
+ *   retry?: import('../views/worker/running-grid.js').RetryTile|null,
  *   conflict_resolution?: boolean,
  *   base_exception?: string|null,
- *   rollup?: import('../../utils/child-rollup.js').ChildRollup|null,
+ *   rollup?: import('../utils/child-rollup.js').ChildRollup|null,
  *   landing?: { step: string, label: string, index: number, total: number, percent: number, active: boolean, failed: boolean },
  *   added_at?: number,
  *   queue_position?: number,
@@ -460,7 +460,7 @@ const DONE_KIND_LABELS = {
  *   blocked?: boolean,
  *   blocked_by?: string[],
  *   carried_to?: string[],
- *   blockers?: import('../monitor/blockers.js').BlockerDisplay[],
+ *   blockers?: import('./blockers.js').BlockerDisplay[],
  *   done_kind?: string|null,
  *   spec_id?: string,
  *   published?: boolean,
@@ -469,9 +469,9 @@ const DONE_KIND_LABELS = {
  *   dependents_info?: import('./queue-blockers.js').DependentsInfo,
  *   overlap_chips?: OverlapChip[],
  *   scope_state?: 'declared'|'missing',
- *   session_refs?: import('../../../server/worker/session-ref.js').SessionRefView[],
+ *   session_refs?: import('../../server/worker/session-ref.js').SessionRefView[],
  *   interactive_sessions?: InteractiveSessionView[],
- *   external_wait?: import('../../protocol.js').ExternalWaitObservation,
+ *   external_wait?: import('../protocol.js').ExternalWaitObservation,
  *   watch_id?: string|null,
  *   gate_id?: string,
  *   gate_open?: boolean,
@@ -489,7 +489,7 @@ const DONE_KIND_LABELS = {
  * 선언 scope를 읽지 않는다. 칩 모양은 Worker 템플릿이 소유하므로 형태도
  * 거기서 온다.
  *
- * @typedef {import('./lanes.js').OverlapChip} OverlapChip
+ * @typedef {import('../views/worker/lanes.js').OverlapChip} OverlapChip
  */
 
 /**
@@ -1039,7 +1039,7 @@ function directSessionUsage(observation, catalog) {
  *
  * @param {any} a
  * @param {{ resume_eligible: boolean, resume_reason: string|null, confirmation: 'merged'|'unmerged', history?: any }} ctx
- * @returns {import('./running-grid.js').FailureTile}
+ * @returns {import('../views/worker/running-grid.js').FailureTile}
  */
 function failureProjection(a, ctx) {
   const cause_detail =
@@ -1112,14 +1112,14 @@ function routeChangeOf(resume_refused) {
  * empty 이력 block for every bead whose timeline predates this spec.
  *
  * @param {any} history - One `bead_timelines` entry, or undefined.
- * @returns {{ timeline?: import('./running-grid.js').TimelineRow[], log_path?: string, log_expired?: boolean, log_unreadable?: boolean }}
+ * @returns {{ timeline?: import('../views/worker/running-grid.js').TimelineRow[], log_path?: string, log_expired?: boolean, log_unreadable?: boolean }}
  */
 function timelineFields(history) {
   if (!history || typeof history !== 'object') {
     return {};
   }
   const events = Array.isArray(history.events) ? history.events : [];
-  /** @type {import('./running-grid.js').TimelineRow[]} */
+  /** @type {import('../views/worker/running-grid.js').TimelineRow[]} */
   const rows = [];
   for (const event of events) {
     if (
@@ -1159,7 +1159,7 @@ function timelineFields(history) {
  * written without it simply carry none (fail-quiet).
  *
  * @param {any} a
- * @returns {import('./running-grid.js').WaitTile}
+ * @returns {import('../views/worker/running-grid.js').WaitTile}
  */
 function waitProjection(a) {
   const cause_detail =
@@ -1343,7 +1343,7 @@ function providerAutoResumeState(attempt, target, last_error, input) {
  *
  * @param {any} attempt
  * @param {{ provider_hold?: Record<string, any>, auto_resume_pending?: any[], account_catalog?: Record<string, any>, attempts: Record<string, any>, history?: any }} input
- * @returns {import('./running-grid.js').HoldTile}
+ * @returns {import('../views/worker/running-grid.js').HoldTile}
  */
 function providerHoldProjection(attempt, input) {
   const detail = attempt.cause.slice('provider_outage:'.length);
@@ -1423,7 +1423,7 @@ function providerHoldProjection(attempt, input) {
  * and the popover's 이력 row simply do not render.
  *
  * @param {any} attempt
- * @returns {import('./running-grid.js').RetryTile|null}
+ * @returns {import('../views/worker/running-grid.js').RetryTile|null}
  */
 function retryProjection(attempt) {
   const retry =
@@ -1533,7 +1533,7 @@ function providerGateOf(runner, entry, target, account_catalog, extra_lines) {
       : {})
   };
   const label = providerHoldBadgeText(
-    /** @type {import('./running-grid.js').HoldTile} */ (
+    /** @type {import('../views/worker/running-grid.js').HoldTile} */ (
       /** @type {unknown} */ (tile)
     )
   );
@@ -1934,7 +1934,7 @@ function receiptBadgeCodesOf(summary) {
  * @param {Record<string, any>} state - The repo's `workspaces_state` row.
  * @param {Record<string, string>|null|undefined} exec_pins
  * @param {string|null} route
- * @returns {import('./lanes.js').LaneExecChips|null}
+ * @returns {import('../views/worker/lanes.js').LaneExecChips|null}
  */
 function execChipsFor(state, exec_pins, route) {
   const execution_defaults = state.execution_defaults;
@@ -1955,7 +1955,7 @@ function execChipsFor(state, exec_pins, route) {
       route,
       controller_runtime
     });
-  /** @type {Record<string, import('../../utils/execution-defaults.js').ExecutionValue>} */
+  /** @type {Record<string, import('../utils/execution-defaults.js').ExecutionValue>} */
   let rows;
   /** @type {string|null} */
   let controller_runtime;
@@ -1972,9 +1972,9 @@ function execChipsFor(state, exec_pins, route) {
     return null;
   }
   /**
-   * @param {import('../../utils/exec-settings-chip.js').ExecChip|null} chip
+   * @param {import('./exec-settings-chip.js').ExecChip|null} chip
    * @param {string[]} keys
-   * @returns {import('./lanes.js').LaneExecChip|null}
+   * @returns {import('../views/worker/lanes.js').LaneExecChip|null}
    */
   const markPin = (chip, keys) => {
     if (!chip) {
@@ -2011,7 +2011,7 @@ function execChipsFor(state, exec_pins, route) {
  * @param {string} bead_id
  * @param {any} release_info
  * @param {number} now
- * @returns {import('./lanes.js').ReleasedChip[]|null}
+ * @returns {import('../views/worker/lanes.js').ReleasedChip[]|null}
  */
 export function releasedChipsFor(bead_id, release_info, now) {
   const released_by =
@@ -2031,7 +2031,7 @@ export function releasedChipsFor(bead_id, release_info, now) {
         (typeof b.closed_at === 'number' ? b.closed_at : 0) -
         (typeof a.closed_at === 'number' ? a.closed_at : 0)
     );
-  /** @type {import('./lanes.js').ReleasedChip[]} */
+  /** @type {import('../views/worker/lanes.js').ReleasedChip[]} */
   const chips = [];
   for (const entry of ordered) {
     const workspace_name =
@@ -2130,7 +2130,7 @@ function execGlobalValues(state) {
  * @param {Record<string, any>} state - The repo's `workspaces_state` row.
  * @param {Record<string, any>|null|undefined} overlay - The bead's `bead_overlay` entry.
  * @param {string|null} controller_runtime - The attempt's own runner.
- * @returns {import('../../utils/exec-settings-chip.js').ExecChip|null}
+ * @returns {import('./exec-settings-chip.js').ExecChip|null}
  */
 function attemptWorkerChip(state, overlay, controller_runtime) {
   if (!overlay || !Object.hasOwn(overlay, 'metadata')) {
@@ -2162,7 +2162,7 @@ function attemptWorkerChip(state, overlay, controller_runtime) {
  * Display the last implementation attempt's recorded execution facts (UI-j10d).
  *
  * @param {any} attempt
- * @returns {import('../../utils/exec-settings-chip.js').ExecChips|null}
+ * @returns {import('./exec-settings-chip.js').ExecChips|null}
  */
 function attemptExecChips(attempt) {
   if (!attempt) {
@@ -2315,7 +2315,7 @@ function scopeLocationLabel(bead_id, states) {
  * 같은 사실에 새 문자열을 발명하지 않는다.
  *
  * @param {string} bead_id
- * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} locations
+ * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
  * @param {Array<Record<string, any>>} states
  * @returns {string}
  */
@@ -2401,7 +2401,7 @@ function declaredScopeOf(item, bead_scope_by_root, runnable_scope_by_bead) {
  * @param {LaneModel} model
  * @param {Map<string, Record<string, any>>} bead_scope_by_root
  * @param {Map<string, string[]>} runnable_scope_by_bead
- * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} locations
+ * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
  * @param {Array<Record<string, any>>} states
  */
 function applyScopeOverlaps(
@@ -2528,7 +2528,7 @@ function applyScopeOverlaps(
  *
  * @param {{ id: string, root_dir?: string }} card
  * @param {string} other_id
- * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} [locations]
+ * @param {Map<string, import('./blockers.js').BlockerLocation>} [locations]
  * @param {Record<string, string>} [owner_roots]
  * @returns {{ openable?: true, root_dir?: string }}
  */
@@ -2567,7 +2567,7 @@ function openTarget(card, other_id, locations, owner_roots) {
  * @param {{ ids: Set<string>, root_dirs: Record<string, string> }|undefined} decoration
  * @param {import('./queue-blockers.js').DependentsInfo|undefined} info
  * @param {LaneItem} item
- * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} locations
+ * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
  * @returns {import('./queue-blockers.js').DependentsInfo}
  */
 function unionDependents(decoration, info, item, locations) {
@@ -2886,7 +2886,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const runnable_scope_by_bead = new Map();
   // 살아 있는 외부 대기 레코드 (UI-l48z §4.1). 세션 타일 조립이 레코드 유무로
   // 필드를 정하므로 레인 루프보다 먼저 모은다; 뒤의 부착 루프도 같은 표를 읽는다.
-  /** @type {Map<string, import('../../protocol.js').ExternalWaitObservation>} */
+  /** @type {Map<string, import('../protocol.js').ExternalWaitObservation>} */
   const external_by_bead = new Map();
   for (const workspace of list) {
     for (const wait of workspace.external_waits || []) {
@@ -3259,9 +3259,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
      * 판정식은 타일과 같다.
      *
      * @param {string} bead_id
-     * @param {import('./running-grid.js').WaitTile|null|undefined} wait
+     * @param {import('../views/worker/running-grid.js').WaitTile|null|undefined} wait
      * @param {Array<{ id: string }>|null} [frozen_blockers]
-     * @returns {{ blocked_by?: string[], wait?: import('./running-grid.js').WaitTile }}
+     * @returns {{ blocked_by?: string[], wait?: import('../views/worker/running-grid.js').WaitTile }}
      */
     const blockedByFields = (bead_id, wait, frozen_blockers = null) => {
       const decorated = decoratedBlockedBy(bead_id);
@@ -4493,7 +4493,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       overlay.route.length > 0
         ? overlay.route
         : objectOf(item.workflow).route;
-    /** @type {Record<string, import('../../utils/execution-defaults.js').ExecutionValue>|null} */
+    /** @type {Record<string, import('../utils/execution-defaults.js').ExecutionValue>|null} */
     let rows = null;
     if (metadata_observed) {
       try {
@@ -4765,7 +4765,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     item.manual_only = manual_only_roots.has(item.root_dir);
   }
 
-  /** @type {Map<string, import('../../protocol.js').WaitReason[]>} */
+  /** @type {Map<string, import('../protocol.js').WaitReason[]>} */
   const reasons_by_subject = new Map();
   for (const workspace of list) {
     for (const reason of workspace.wait_reasons || []) {

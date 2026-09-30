@@ -20,6 +20,8 @@ import {
   isCompareRange,
   localDayStartMs
 } from '../../data/closed-range.js';
+import { ROUTE_FILTER_OPTIONS } from '../../model/lane-model.js';
+import { formatTimestampLocal } from '../../model/relative-time.js';
 import {
   DEFAULT_PROBLEM_CRITERIA,
   PROBLEM_CRITERIA_LIMITS,
@@ -28,9 +30,7 @@ import {
   normalizeProblemCriteria
 } from '../../utils/compare-problem-criteria.js';
 import { debug } from '../../utils/logging.js';
-import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { costTooltipLines } from '../../utils/token-usage.js';
-import { ROUTE_FILTER_OPTIONS } from '../worker/lane-model.js';
 import {
   BENCH_REVIEWER_KEYS,
   benchErrorMessage,

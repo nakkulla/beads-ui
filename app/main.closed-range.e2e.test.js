@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { createWsClient } from './core/ws.js';
 import { closedRangeSince } from './data/closed-range.js';
 import { bootstrap } from './main.js';
-import { createWsClient } from './ws.js';
 
 const DAY_MS = 864e5;
 
 // Mock WS client that RECORDS every sent message so we can assert the Closed
 // subscription's `since` param and the re-subscription message sequence.
-vi.mock('./ws.js', () => {
+vi.mock('./core/ws.js', () => {
   /** @type {Record<string, (p: any) => void>} */
   const handlers = {};
   /** @type {Array<[string, any]>} */

@@ -10,11 +10,11 @@
  * admission 자체는 서버(`checkWorkerQueueAdmission`)가 그대로 소유한다 (§6.4).
  * 이 모듈이 정하는 것은 버튼을 활성으로 그릴지와 그 title 문장뿐이다.
  *
- * @import { PlaceMenuEntry } from './lanes.js'
+ * @import { PlaceMenuEntry } from '../views/worker/lanes.js'
  */
-import { resolveSpecEvidence } from '../../../server/spec-id.js';
-import { WORKFLOW_ROUTES } from '../../../server/worker/routes.js';
-import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
+import { resolveSpecEvidence } from '../../server/spec-id.js';
+import { WORKFLOW_ROUTES } from '../../server/worker/routes.js';
+import { isWorkerIneligible } from '../utils/worker-eligibility.js';
 import { runningLaneBeadIds } from './lane-model.js';
 
 /**

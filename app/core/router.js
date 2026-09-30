@@ -1,5 +1,5 @@
-import { issueHashFor } from './utils/issue-url.js';
-import { debug } from './utils/logging.js';
+import { issueHashFor } from '../utils/issue-url.js';
+import { debug } from '../utils/logging.js';
 
 /**
  * Hash-based router for the four-tab shell (worker/monitor/compare/adr) and

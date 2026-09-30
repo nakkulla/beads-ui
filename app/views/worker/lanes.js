@@ -14,38 +14,20 @@
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
 import { discardOperationActive } from '../../../server/worker/discard-phase.js';
+import { chipPresetBinding } from '../../model/chip-preset-binding.js';
 import {
-  AREA_LABELS,
-  areaLabels,
-  areaTooltip
-} from '../../utils/area-judgement.js';
-import { chipPresetBinding } from '../../utils/chip-preset-binding.js';
-import {
-  COMPLEX_CHIP_LABEL,
-  complexReasonSentences,
-  complexTooltip
-} from '../../utils/complex-judgement.js';
+  autoResumeText,
+  autoSwitchText,
+  providerClock
+} from '../../model/gate-labels.js';
+import { QUEUE_GRACE_MS, routeChipValue } from '../../model/lane-model.js';
+import { placementTitle } from '../../model/placement.js';
 import {
   formatClockLocal,
   formatElapsedSince,
   formatRelativeTime,
   formatTimestampLocal
-} from '../../utils/relative-time.js';
-import {
-  formatUsageTotalWithCost,
-  providerUsageBadges,
-  usageTooltip
-} from '../../utils/token-usage.js';
-import { chipPopoverTemplate } from '../chip-popover.js';
-import { stepperTemplate } from '../stepper.js';
-import {
-  autoResumeText,
-  autoSwitchText,
-  providerClock
-} from './gate-labels.js';
-import { QUEUE_GRACE_MS, routeChipValue } from './lane-model.js';
-import { logPathTemplate } from './log-path.js';
-import { placementTitle } from './placement.js';
+} from '../../model/relative-time.js';
 import {
   SUMMARY_CHIPS,
   WAIT_KINDS,
@@ -53,7 +35,25 @@ import {
   waitBadgeText,
   waitKindRow,
   waitScopeOf
-} from './wait-vocabulary.js';
+} from '../../model/wait-vocabulary.js';
+import {
+  AREA_LABELS,
+  areaLabels,
+  areaTooltip
+} from '../../utils/area-judgement.js';
+import {
+  COMPLEX_CHIP_LABEL,
+  complexReasonSentences,
+  complexTooltip
+} from '../../utils/complex-judgement.js';
+import {
+  formatUsageTotalWithCost,
+  providerUsageBadges,
+  usageTooltip
+} from '../../utils/token-usage.js';
+import { chipPopoverTemplate } from '../chip-popover.js';
+import { stepperTemplate } from '../stepper.js';
+import { logPathTemplate } from './log-path.js';
 
 /**
  * @param {unknown} sha
@@ -696,7 +696,7 @@ export function discardReceiptTemplate(item) {
  * The prefix label lives here rather than in the formatter: the formatter owns
  * the settings text, the template owns how that text is introduced.
  *
- * @typedef {import('../../utils/exec-settings-chip.js').ExecChip & { pinned?: boolean }} LaneExecChip
+ * @typedef {import('../../model/exec-settings-chip.js').ExecChip & { pinned?: boolean }} LaneExecChip
  * @typedef {{ orchestration: LaneExecChip|null, worker: LaneExecChip|null }} LaneExecChips
  */
 
@@ -1253,7 +1253,7 @@ export function creationSourceChipsTemplate(item, options = {}) {
  * 있는지. `aria-expanded`가 되는 값이다.
  * @param {MiniItem|null} [item] - 바인딩 판정의 재료를 실은 행 (`null`이면 팝업
  * 칩 그대로다).
- * @param {import('../../utils/chip-preset-binding.js').ChipPresetContext|null} [ctx]
+ * @param {import('../../model/chip-preset-binding.js').ChipPresetContext|null} [ctx]
  * - 프리셋 스냅샷 맥락. 없으면 상태도 클릭 의미도 바뀌지 않는다 (fail-quiet).
  * @returns {import('lit-html').TemplateResult|''}
  */
@@ -1287,7 +1287,7 @@ export function complexChipTemplate(
  * value in a dozen signatures. Each tab sets it before it renders; the only
  * per-tab parts are `catalogOf` and `isBusy`.
  *
- * @type {import('../../utils/chip-preset-binding.js').ChipPresetContext|null}
+ * @type {import('../../model/chip-preset-binding.js').ChipPresetContext|null}
  */
 let chip_preset_ctx = null;
 
@@ -1295,7 +1295,7 @@ let chip_preset_ctx = null;
  * Install the render-scoped preset context. `null` restores the pre-binding
  * behaviour — every judgement chip is a 사유 팝업 (fail-quiet).
  *
- * @param {import('../../utils/chip-preset-binding.js').ChipPresetContext|null} ctx
+ * @param {import('../../model/chip-preset-binding.js').ChipPresetContext|null} ctx
  */
 export function setChipPresetContext(ctx) {
   chip_preset_ctx = ctx || null;
@@ -1307,7 +1307,7 @@ export function setChipPresetContext(ctx) {
  * 이슈마다 다른 의미를 갖기 때문이다: `route=quick_fix` 이슈나 바인딩 없는 칩은
  * 언제나 팝업이다.
  *
- * @param {{ chip_key: string, label: string, title: string, extra_class: string, open: boolean, item: MiniItem|null, ctx: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} input
+ * @param {{ chip_key: string, label: string, title: string, extra_class: string, open: boolean, item: MiniItem|null, ctx: import('../../model/chip-preset-binding.js').ChipPresetContext|null }} input
  * @returns {import('lit-html').TemplateResult}
  */
 function judgementChipTemplate(input) {
@@ -1371,7 +1371,7 @@ function routeOf(item) {
  * `복잡`과 같은 클릭을 한다. 자리도 `복잡` 바로 뒤다.
  *
  * @param {MiniItem|null} item
- * @param {import('../../utils/chip-preset-binding.js').ChipPresetContext|null} [ctx]
+ * @param {import('../../model/chip-preset-binding.js').ChipPresetContext|null} [ctx]
  * @returns {import('lit-html').TemplateResult|''}
  */
 export function areaChipsTemplate(item, ctx = null) {
@@ -1539,7 +1539,7 @@ export const SERIAL_LANE_LABEL = '직렬';
 /**
  * Shared dispatch origin chip for running tiles and PR rows.
  *
- * @param {import('./lane-model.js').LaneOrigin|undefined} origin
+ * @param {import('../../model/lane-model.js').LaneOrigin|undefined} origin
  * @returns {import('lit-html').TemplateResult|''}
  */
 export function laneOriginChipTemplate(origin) {
@@ -1560,8 +1560,8 @@ export function laneOriginChipTemplate(origin) {
  * The live inquiry session of a card (UI-ri8n §3.3): `inquiry`, `live`, not
  * closing. `null` when there is none.
  *
- * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
- * @returns {import('./lane-model.js').InteractiveSessionView|null}
+ * @param {import('../../model/lane-model.js').InteractiveSessionView[]|undefined} views
+ * @returns {import('../../model/lane-model.js').InteractiveSessionView|null}
  */
 export function liveInquiryView(views) {
   return (
@@ -1579,7 +1579,7 @@ export function liveInquiryView(views) {
  * `대화 중 <경과>` · `답 대기` · `사람 인수`. A null `turn_state` draws
  * nothing (fail-quiet).
  *
- * @param {import('./lane-model.js').InteractiveSessionView} view
+ * @param {import('../../model/lane-model.js').InteractiveSessionView} view
  * @param {number} [now]
  * @returns {string}
  */
@@ -1621,7 +1621,7 @@ export function interactiveTurnTail(view, now = Date.now()) {
  * The inquiry progress line (UI-ri8n §3.3 slot 3): `▤ <last_message>` with its
  * age on the right. No live inquiry or no message draws nothing.
  *
- * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
+ * @param {import('../../model/lane-model.js').InteractiveSessionView[]|undefined} views
  * @param {number} [now]
  * @returns {import('lit-html').TemplateResult|''}
  */
@@ -1641,7 +1641,7 @@ export function interactiveProgressLineTemplate(views, now = Date.now()) {
 }
 
 /**
- * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
+ * @param {import('../../model/lane-model.js').InteractiveSessionView[]|undefined} views
  * @param {{ bead_id: string, now?: number }} options
  */
 export function interactiveSessionBadgesTemplate(views, options) {
@@ -1704,7 +1704,7 @@ export function interactiveSessionBadgesTemplate(views, options) {
 }
 
 /**
- * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
+ * @param {import('../../model/lane-model.js').InteractiveSessionView[]|undefined} views
  */
 export function interactiveSessionClosingTemplate(views) {
   return (views || []).some((view) => view.closing)
@@ -1714,8 +1714,8 @@ export function interactiveSessionClosingTemplate(views) {
 
 /**
  * @typedef {Object} MiniItem
- * @property {import('./lane-model.js').InteractiveSessionView[]} [interactive_sessions]
- * @property {import('./lane-model.js').LaneOrigin} [lane_origin]
+ * @property {import('../../model/lane-model.js').InteractiveSessionView[]} [interactive_sessions]
+ * @property {import('../../model/lane-model.js').LaneOrigin} [lane_origin]
  * @property {string} id - Bead id.
  * @property {string} title - Bead title (falls back to id).
  * @property {string|import('../../protocol.js').WaitReason} [reason] - Candidate reason chip or external wait judgment (missing_description /
@@ -1825,7 +1825,7 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {number} [done_at] - 완료 레인 진입 시각 = 완료 시각 (UI-rkly §3).
  * @property {number} [added_at] - 대기 레인 진입 시각 (UI-q1tg §3.3). 유예 칩과
  * `[지금 시작]`의 유일한 판정 재료이고, 대기 행이 아니면 필드 자체가 없다.
- * @property {import('./lane-model.js').LaneGate} [gate] - 이 행의 자동 디스패치를
+ * @property {import('../../model/lane-model.js').LaneGate} [gate] - 이 행의 자동 디스패치를
  * 막고 있는 게이트 (UI-01wh §3.1). 슬롯 4a 게이트 칩과 `▶ 재개`·`[지금 시작]`의
  * 유일한 재료이고, 막혀 있지 않으면 필드 자체가 없다 (fail-quiet).
  * @property {boolean} [manual_only] - 이 대기 행의 저장소가 자동 진행을 꺼 두었다
@@ -2023,7 +2023,7 @@ export function graceRemainingMs(added_at, now) {
  * 가장 바깥 사정이 큐 전체의 사정이기 때문이다. 클릭은 사유 팝업이고 칩은 상태를
  * 쓰지 않는다 (칩 문법 §4.5). 재료가 없으면 그리지 않는다 (fail-quiet).
  *
- * @param {import('./lane-model.js').LaneGate|null|undefined} gate - 이 행을 막고
+ * @param {import('../../model/lane-model.js').LaneGate|null|undefined} gate - 이 행을 막고
  * 있는 게이트 투영, 막혀 있지 않으면 null.
  * @param {string} bead_id - 이 행의 이슈 ID. 팝업 열림 키의 한 축이고 클릭
  * 핸들러가 `closest('[data-bead-id]')`로 읽는 좌표다.
@@ -2094,7 +2094,7 @@ export function graceChipTemplate(item, now = Date.now()) {
  * `serial_lane_not_head`로 거절할 자리다. 순번을 모르면 지우지 않는다
  * (fail-closed). 유예 칩·게이트 칩 자체는 그대로 그린다.
  *
- * @param {{ id: string, added_at?: number, lane?: string, queue_index?: number, manual_only?: boolean, gate?: import('./lane-model.js').LaneGate }} item
+ * @param {{ id: string, added_at?: number, lane?: string, queue_index?: number, manual_only?: boolean, gate?: import('../../model/lane-model.js').LaneGate }} item
  * @param {number} [now]
  * @returns {import('lit-html').TemplateResult|''}
  */
@@ -2156,7 +2156,7 @@ export function providerProbeRefusalText(reason) {
  * 여는 팝업의 출구 줄이다 (UI-pw2g §3.4). 실행 중 타일은 게이트 칩이 없으므로
  * `wait_reasons`의 `probe_now` 조작을 그대로 머리줄에 싣는다.
  *
- * @param {{ gate?: Pick<import('./lane-model.js').LaneGate, 'kind'|'since'|'runner'|'probe_ready'> }} item
+ * @param {{ gate?: Pick<import('../../model/lane-model.js').LaneGate, 'kind'|'since'|'runner'|'probe_ready'> }} item
  * @returns {import('lit-html').TemplateResult|''}
  */
 export function providerProbeButtonTemplate(item) {
@@ -2249,7 +2249,7 @@ function waitPopoverTemplate(title, lines, anchor_id) {
  * explicit reason that bypasses the representative rule (외부 작업 행).
  * @property {string} [label] - A label the card knows better than the table
  * (`retry_wait`의 회차·예약 시각).
- * @property {import('./lane-model.js').InteractiveSessionView[]} [interactive_sessions]
+ * @property {import('../../model/lane-model.js').InteractiveSessionView[]} [interactive_sessions]
  * - The card's interactive sessions; a live inquiry adds one popup line.
  * @property {number} [now]
  */
@@ -2307,7 +2307,7 @@ export function waitStatusBadge(material) {
   const held_row = held_row_id ? waitKindRow({ kind: held_row_id }) : null;
   /** @type {import('../../protocol.js').WaitReason|null} */
   let reason = null;
-  /** @type {import('./wait-vocabulary.js').WaitKindRow|null} */
+  /** @type {import('../../model/wait-vocabulary.js').WaitKindRow|null} */
   let badge_row = held_row;
   if (held_row) {
     const same_kind = reasons.filter(
@@ -2362,14 +2362,14 @@ function externalGuidanceLines(reason) {
 /**
  * Draw one `.wait-verdict` badge and its popup from an already chosen row.
  *
- * @param {import('./wait-vocabulary.js').WaitKindRow} row
+ * @param {import('../../model/wait-vocabulary.js').WaitKindRow} row
  * @param {import('../../protocol.js').WaitReason|null} reason - The verdict
  * source; `null` draws the kind alone with the 대기 종류 popup (§6.2).
  * @param {import('../../protocol.js').WaitReason[]} others - The other
  * bead-scope reasons this card carries, one popup line each.
  * @param {Record<string, any>|null} hold - `HoldTile` for provider holds.
  * @param {number} now
- * @param {{ label?: string, release?: string, inquiry?: import('./lane-model.js').InteractiveSessionView|null }} [overrides]
+ * @param {{ label?: string, release?: string, inquiry?: import('../../model/lane-model.js').InteractiveSessionView|null }} [overrides]
  * @returns {import('lit-html').TemplateResult|''}
  */
 function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
@@ -2506,7 +2506,7 @@ function waitTimesText(reason, now_ms) {
  * need their original projection; missing operation material stays absent.
  *
  * @param {import('../../protocol.js').WaitReason|null|undefined} reason
- * @param {{ item?: MiniItem, interactive_sessions?: import('./lane-model.js').InteractiveSessionView[], external_wait?: import('../../protocol.js').ExternalWaitObservation, now?: number, last_observed_at?: number|null, session_preferred?: boolean, surface?: 'card'|'detail' }} [options]
+ * @param {{ item?: MiniItem, interactive_sessions?: import('../../model/lane-model.js').InteractiveSessionView[], external_wait?: import('../../protocol.js').ExternalWaitObservation, now?: number, last_observed_at?: number|null, session_preferred?: boolean, surface?: 'card'|'detail' }} [options]
  */
 export function waitReasonLines(reason, options = {}) {
   if (!reason) {
@@ -3178,7 +3178,7 @@ export function tokenChipTemplate(label, narrow_source) {
 /**
  * Expand only the lane and area containing a summary subject before rendering.
  *
- * @param {import('./lane-model.js').LaneModel} model
+ * @param {import('../../model/lane-model.js').LaneModel} model
  * @param {ReturnType<import('./lane-collapse.js').createLaneCollapse>} collapse
  * @param {string} root_dir
  * @param {string} bead_id
@@ -3355,7 +3355,7 @@ function chipsWithBlockerStatus(chips, wait_reasons) {
  * 않으면 렌더가 그대로다.
  *
  * @param {MiniItem} item
- * @param {{ actions?: import('lit-html').TemplateResult, chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} [options]
+ * @param {{ actions?: import('lit-html').TemplateResult, chipPresets?: import('../../model/chip-preset-binding.js').ChipPresetContext|null }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function miniRow(item, options = {}) {
@@ -4229,7 +4229,7 @@ export { AWAITING_USER_REASON_PREFIX } from '../../utils/awaiting-user-reason.js
  *
  * @param {MiniItem} item
  * @param {PlaceMenu|null} [place_menu]
- * @param {{ onOpenDoc?: import('../stepper.js').OpenDocHandler, variant?: 'deferred', chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} [options]
+ * @param {{ onOpenDoc?: import('../stepper.js').OpenDocHandler, variant?: 'deferred', chipPresets?: import('../../model/chip-preset-binding.js').ChipPresetContext|null }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function candidateCard(item, place_menu = null, options = {}) {

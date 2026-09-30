@@ -19,8 +19,8 @@ import {
   FAILURE_NEXT_ACTIONS,
   FAILURE_SENTENCES,
   RECOVERY_WAIT_SENTENCES
-} from '../../utils/failure-sentences.js';
-import { formatElapsed } from './lanes.js';
+} from '../utils/failure-sentences.js';
+import { formatElapsed } from '../views/worker/lanes.js';
 
 /**
  * @param {unknown} reason

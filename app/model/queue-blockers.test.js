@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'vitest';
-import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { buildLanes } from './lane-model.js';
 import {
   dependentsChip,
@@ -8,10 +7,11 @@ import {
   releasedChip,
   resolvedBlockerChip
 } from './queue-blockers.js';
+import { formatTimestampLocal } from './relative-time.js';
 
 /**
- * @param {Partial<import('./queue-overlaps.js').LaneMember>} over
- * @returns {import('./queue-overlaps.js').LaneMember}
+ * @param {Partial<import('../views/worker/queue-overlaps.js').LaneMember>} over
+ * @returns {import('../views/worker/queue-overlaps.js').LaneMember}
  */
 function member(over) {
   const id = over.id || 'A-1';

@@ -10,7 +10,7 @@
  * 뿐이므로, 그 둘만 호출자가 넘긴다.
  */
 import { html } from 'lit-html';
-import { visibleModelChoices } from '../../utils/model-visibility.js';
+import { visibleModelChoices } from '../../model/model-visibility.js';
 
 /**
  * @typedef {Object} ProviderResumeDraft

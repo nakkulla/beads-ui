@@ -3,7 +3,7 @@ import { live } from 'lit-html/directives/live.js';
 import { debug } from '../utils/logging.js';
 
 /**
- * @typedef {import('../state.js').WorkspaceInfo} WorkspaceInfo
+ * @typedef {import('../core/state.js').WorkspaceInfo} WorkspaceInfo
  */
 
 /**

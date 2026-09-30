@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
-import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
+import { createSubscriptionIssueStore } from '../../model/subscription-issue-store.js';
+import { createWorkerQueueStore } from '../../model/worker-queue-store.js';
 import { createWorkerView } from './index.js';
 
 function issueStores() {

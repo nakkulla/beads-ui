@@ -2,7 +2,7 @@ import { html, render } from 'lit-html';
 import { debug } from '../utils/logging.js';
 
 /**
- * @import { ViewName } from '../state.js'
+ * @import { ViewName } from '../core/state.js'
  */
 
 /**

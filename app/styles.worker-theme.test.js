@@ -812,11 +812,11 @@ describe('worker console styles', () => {
  */
 describe('design token definitions', () => {
   const TOKENS = readFileSync(
-    path.resolve(process.cwd(), 'app/styles/tokens.css'),
+    path.resolve(process.cwd(), 'app/ui/tokens.css'),
     'utf8'
   );
   const BASE = readFileSync(
-    path.resolve(process.cwd(), 'app/styles/base.css'),
+    path.resolve(process.cwd(), 'app/ui/base.css'),
     'utf8'
   );
 

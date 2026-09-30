@@ -12,10 +12,17 @@
  */
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
+import {
+  failureCategory,
+  failureNextAction,
+  failureSentence,
+  failureText
+} from '../../model/failure-labels.js';
+import { formatRelativeTime } from '../../model/relative-time.js';
+import { representativeWaitReason } from '../../model/wait-vocabulary.js';
 import { formatContinuationLineage } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
-import { formatRelativeTime } from '../../utils/relative-time.js';
 import { sessionRefLabel } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import {
@@ -30,12 +37,6 @@ import {
   execReceiptActor,
   formatExecReceipt
 } from '../exec-format.js';
-import {
-  failureCategory,
-  failureNextAction,
-  failureSentence,
-  failureText
-} from './failure-labels.js';
 import {
   areaChipsTemplate,
   complexChipTemplate,
@@ -56,7 +57,6 @@ import {
   waitStatusBadge
 } from './lanes.js';
 import { logPathTemplate } from './log-path.js';
-import { representativeWaitReason } from './wait-vocabulary.js';
 
 /**
  * @import { SessionRefView } from '../../../server/worker/session-ref.js'
@@ -65,8 +65,8 @@ import { representativeWaitReason } from './wait-vocabulary.js';
 /**
  * @typedef {Object} RunningTile
  * @property {string} bead_id
- * @property {import('./lane-model.js').InteractiveSessionView[]} [interactive_sessions]
- * @property {import('./lane-model.js').LaneOrigin} [lane_origin]
+ * @property {import('../../model/lane-model.js').InteractiveSessionView[]} [interactive_sessions]
+ * @property {import('../../model/lane-model.js').LaneOrigin} [lane_origin]
  * @property {string} [root_dir] - Workspace owning this tile.
  * @property {string} attempt_id
  * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
@@ -137,7 +137,7 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * child가 없는 bead는 null이고 블록 자체가 생략된다 (fail-quiet).
  * @property {boolean} [rollup_expanded] - 이 bead의 child 목록이 펼쳐져 있는지.
  * 기본은 접힘이고, 펼침 상태는 뷰가 소유한다.
- * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} [exec_chips] -
+ * @property {import('../../model/exec-settings-chip.js').ExecChips|null} [exec_chips] -
  * 오케(이 attempt의 기록값) + 워커(현재 해석값) 실행 설정 칩 (§2.2); 둘 다
  * 없으면 null이고 meta 줄이 그만큼 짧아진다.
  * @property {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} [usage] - Live token usage
@@ -1033,7 +1033,7 @@ function heldBodyTemplate(
  * @param {RunningTile} tile
  * @param {number} now
  * @param {string|null} [selected_attempt]
- * @param {{ monitor?: MonitorTileOverlay|null, chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} [options]
+ * @param {{ monitor?: MonitorTileOverlay|null, chipPresets?: import('../../model/chip-preset-binding.js').ChipPresetContext|null }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function runningTile(tile, now, selected_attempt = null, options = {}) {

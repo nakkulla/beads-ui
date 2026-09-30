@@ -1,17 +1,17 @@
 import { html } from 'lit-html';
+import { parseReport, parseReviewComment } from '../../model/report-marker.js';
 import { renderMarkdown } from '../../utils/markdown.js';
-import { parseReport, parseReviewComment } from '../../utils/report-marker.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
  */
 
 /**
- * @typedef {import('../../utils/report-marker.js').ParsedReport} ParsedReport
+ * @typedef {import('../../model/report-marker.js').ParsedReport} ParsedReport
  */
 
 /**
- * @typedef {import('../../utils/report-marker.js').ParsedReviewComment} ParsedReviewComment
+ * @typedef {import('../../model/report-marker.js').ParsedReviewComment} ParsedReviewComment
  */
 
 /**

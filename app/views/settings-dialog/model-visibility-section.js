@@ -8,7 +8,7 @@
  * re-applies the same toggle once on the snapshot the server answered with.
  *
  * @typedef {import('lit-html').TemplateResult} TemplateResult
- * @typedef {import('../../data/model-visibility-store.js').ModelVisibilityState} ModelVisibilityState
+ * @typedef {import('../../model/model-visibility-store.js').ModelVisibilityState} ModelVisibilityState
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';

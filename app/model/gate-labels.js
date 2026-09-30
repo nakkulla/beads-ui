@@ -9,7 +9,7 @@
  * Pure: it reads its argument and nothing else — no DOM, no clock beyond the
  * timestamps it is handed.
  *
- * @import { HoldTile } from './running-grid.js'
+ * @import { HoldTile } from '../views/worker/running-grid.js'
  */
 
 /**

@@ -1,15 +1,15 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { createStore } from './core/state.js';
 import {
   bootstrap,
   readBootstrapConfig,
   refreshConfigSnapshot
 } from './main.js';
-import { createStore } from './state.js';
 
 /** @type {any} */
 let CLIENT = null;
 
-vi.mock('./ws.js', () => ({
+vi.mock('./core/ws.js', () => ({
   createWsClient: () => CLIENT
 }));
 

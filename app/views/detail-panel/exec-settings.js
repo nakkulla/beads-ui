@@ -1,10 +1,10 @@
 import { html } from 'lit-html';
+import { IMPL_RUNTIMES } from '../../model/session-model.js';
 import {
   IMPL_RUNTIME_OPTION_LABELS,
   REVIEWER_OPTION_LABELS,
   resolveExecutionSettings
 } from '../../utils/execution-defaults.js';
-import { IMPL_RUNTIMES } from '../settings-dialog/session-model.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult

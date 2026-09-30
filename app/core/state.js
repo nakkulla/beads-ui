@@ -1,7 +1,7 @@
 /**
  * Minimal app state store with subscription.
  */
-import { debug } from './utils/logging.js';
+import { debug } from '../utils/logging.js';
 
 /**
  * @typedef {'all'|'open'|'in_progress'|'deferred'|'resolved'|'closed'|'ready'|string[]} StatusFilter

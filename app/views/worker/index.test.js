@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createSessionLogStore } from '../../data/session-log-store.js';
-import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
-import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
-import { formatTimestampLocal } from '../../utils/relative-time.js';
-import { failureSentence } from './failure-labels.js';
+import { failureSentence } from '../../model/failure-labels.js';
+import { formatTimestampLocal } from '../../model/relative-time.js';
+import { createSessionLogStore } from '../../model/session-log-store.js';
+import { createSubscriptionIssueStore } from '../../model/subscription-issue-store.js';
+import { createWorkerQueueStore } from '../../model/worker-queue-store.js';
 import {
   activityBadge,
   autoResolutionBadge,

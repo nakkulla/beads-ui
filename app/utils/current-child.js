@@ -6,7 +6,7 @@
  * 한 곳에서만 정의한다: in_progress child 중 `updated_at` 내림차순 최상위,
  * 동률이면 id 오름차순(결정적).
  */
-import { coerceTimestampMs } from './relative-time.js';
+import { coerceTimestampMs } from '../model/relative-time.js';
 
 /**
  * @typedef {{ id: string, title?: string, status?: string, updated_at?: number|string }} ChildLike

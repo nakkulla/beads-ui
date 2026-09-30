@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createExecPresetStore } from '../../data/exec-preset-store.js';
-import { createSessionLogStore } from '../../data/session-log-store.js';
-import { createSubscriptionIssueStores } from '../../data/subscription-issue-stores.js';
-import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
+import { createExecPresetStore } from '../../model/exec-preset-store.js';
+import { createSessionLogStore } from '../../model/session-log-store.js';
+import { createSubscriptionIssueStores } from '../../model/subscription-issue-stores.js';
+import { createWorkerQueueStore } from '../../model/worker-queue-store.js';
 import { createDetailPanel } from './index.js';
 
 /**
@@ -2193,7 +2193,7 @@ describe('views/detail-panel created/updated rows (UX v3 spec §1)', () => {
 
   test('renders read-only 생성/수정 rows with local YYYY-MM-DD HH:mm values', async () => {
     const { formatTimestampLocal } =
-      await import('../../utils/relative-time.js');
+      await import('../../model/relative-time.js');
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const issueStores = createSubscriptionIssueStores();
     const panel = createDetailPanel(mount, {

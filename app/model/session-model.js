@@ -9,7 +9,7 @@
  *
  * @typedef {{ key: string, label: string, before: string|null, after: string|null, kind: 'added'|'removed'|'changed' }} PresetDiffRow
  */
-import { buildOptionView } from '../../utils/execution-defaults.js';
+import { buildOptionView } from '../utils/execution-defaults.js';
 
 /**
  * The fourteen session keys a PER-BEAD write may carry — the per-bead preset

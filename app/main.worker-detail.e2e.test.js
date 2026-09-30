@@ -1,10 +1,10 @@
 import { describe, expect, test, vi } from 'vitest';
+import { createWsClient } from './core/ws.js';
 import { bootstrap } from './main.js';
-import { createWsClient } from './ws.js';
 
 // Mock WS client (records sends, exposes push triggering) so we can drive the
 // Worker view and assert the shared detail overlay opens from it.
-vi.mock('./ws.js', () => {
+vi.mock('./core/ws.js', () => {
   /** @type {Record<string, (p: any) => void>} */
   const handlers = {};
   /** @type {Array<[string, any]>} */

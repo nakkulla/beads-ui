@@ -15,7 +15,7 @@ import {
 } from '../../utils/token-usage.js';
 
 /**
- * @import { LaneItem } from '../worker/lane-model.js'
+ * @import { LaneItem } from '../../model/lane-model.js'
  */
 
 /**

@@ -4,7 +4,7 @@ import { bootstrap } from './main.js';
 /** Every ws op the shell sent, in order. */
 const sent = /** @type {string[]} */ ([]);
 
-vi.mock('./ws.js', () => ({
+vi.mock('./core/ws.js', () => ({
   createWsClient: () => ({
     /**
      * @param {string} type

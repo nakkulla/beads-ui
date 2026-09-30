@@ -30,19 +30,19 @@
  * @property {number|null} settled_at
  * @typedef {Omit<Queue, 'completion_intents'|'merge_queue'> & { merge_queue: Array<{ bead_id: string, resolution_rounds: number, resolution?: ResolutionProjection|null, authority?: import('../../server/worker/queue-store.js').MergeAuthority|null, hold?: import('../../server/worker/queue-store.js').MergeHold|null, review_dispatch?: import('../../server/worker/queue-store.js').ReviewDispatchClaim|null }>, completion_status?: Record<string, CompletionStatus>, manual_merge_continuation?: { schema_version: number }, execution_defaults?: { supported: boolean, schema_version: number|null, source_commit: string|null, digest: string|null, session: Record<string, any>|null, orchestration: Record<string, any>|null }, bead_scope?: Record<string, { scope: string[], artifacts: string[] }|null> }} WorkerQueueSnapshot
  */
-import { createBeadTitleMemory } from './bead-title-memory.js';
+import { createBeadTitleMemory } from '../data/bead-title-memory.js';
 import {
   applyPatch as applyKeyedPatch,
   assembleWorkerQueue,
   canonicalJson,
   splitWorkerQueue
-} from './keyed-patch.js';
+} from '../data/keyed-patch.js';
 
 /**
- * @returns {{ get: () => WorkerQueueSnapshot|null, setSnapshot: (body: import('./keyed-patch.js').WorkerQueueBody & { seq?: number }) => void, set: (q: WorkerQueueSnapshot|null) => void, applyPatch: (patch: import('./keyed-patch.js').KeyedPatch & { seq: number }) => boolean, clear: () => void, subscribe: (fn: () => void) => () => void }}
+ * @returns {{ get: () => WorkerQueueSnapshot|null, setSnapshot: (body: import('../data/keyed-patch.js').WorkerQueueBody & { seq?: number }) => void, set: (q: WorkerQueueSnapshot|null) => void, applyPatch: (patch: import('../data/keyed-patch.js').KeyedPatch & { seq: number }) => boolean, clear: () => void, subscribe: (fn: () => void) => () => void }}
  */
 export function createWorkerQueueStore() {
-  /** @type {import('./keyed-patch.js').KeyedMap} */
+  /** @type {import('../data/keyed-patch.js').KeyedMap} */
   let keyed = new Map();
   /** @type {number|null} */
   let last_seq = null;
@@ -65,7 +65,7 @@ export function createWorkerQueueStore() {
     }
   }
 
-  /** @param {import('./keyed-patch.js').KeyedMap} next */
+  /** @param {import('../data/keyed-patch.js').KeyedMap} next */
   function adopt(next) {
     const raw = /** @type {WorkerQueueSnapshot & { bead_titles?: unknown }} */ (
       assembleWorkerQueue(next).queue
@@ -95,7 +95,7 @@ export function createWorkerQueueStore() {
     get() {
       return queue;
     },
-    /** @param {import('./keyed-patch.js').WorkerQueueBody & { seq?: number }} body */
+    /** @param {import('../data/keyed-patch.js').WorkerQueueBody & { seq?: number }} body */
     setSnapshot(body) {
       const next = splitWorkerQueue(body);
       last_seq = body.seq ?? 1;
@@ -112,7 +112,7 @@ export function createWorkerQueueStore() {
       });
       adopt(new Map([...keyed, ...overlay]));
     },
-    /** @param {import('./keyed-patch.js').KeyedPatch & { seq: number }} patch */
+    /** @param {import('../data/keyed-patch.js').KeyedPatch & { seq: number }} patch */
     applyPatch(patch) {
       if (last_seq === null || patch.seq !== last_seq + 1) {
         clear();

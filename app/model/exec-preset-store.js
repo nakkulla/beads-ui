@@ -20,7 +20,7 @@
  * @property {ExecPreset[]} presets
  * @property {Record<string, string|null>} [chip_bindings]
  */
-import { CHIP_BINDING_KEYS } from '../views/settings-dialog/session-model.js';
+import { CHIP_BINDING_KEYS } from './session-model.js';
 
 /**
  * The snapshot's `chip_bindings`, narrowed to the chip vocabulary. An absent

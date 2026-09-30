@@ -1,18 +1,33 @@
 import { html, render } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
+import { createChipPresetToggle } from '../../model/chip-preset-binding.js';
+import {
+  depCandidates as depCandidatesOf,
+  filterDepCandidates,
+  isBeadIdLike
+} from '../../model/dep-candidates.js';
+import { disabledModelsOf } from '../../model/model-visibility.js';
+import {
+  candidatePlacement,
+  placeLaneLabel,
+  placeMenuLanes,
+  placementTitle
+} from '../../model/placement.js';
+import {
+  coerceTimestampMs,
+  formatTimestampLocal
+} from '../../model/relative-time.js';
+import {
+  ORCHESTRATION_KEYS,
+  QUICK_FIX_ORCHESTRATION_KEYS
+} from '../../model/session-model.js';
 import {
   isImplementationAttempt,
   latestImplementationAttempts
 } from '../../utils/active-attempts.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
-import { createChipPresetToggle } from '../../utils/chip-preset-binding.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
-import { disabledModelsOf } from '../../utils/model-visibility.js';
-import {
-  coerceTimestampMs,
-  formatTimestampLocal
-} from '../../utils/relative-time.js';
 import { runResumeFlow } from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
@@ -22,27 +37,12 @@ import {
 } from '../../utils/token-usage.js';
 import { createChipPopover } from '../chip-popover.js';
 import { formatExecReceipt } from '../exec-format.js';
-import {
-  depCandidates as depCandidatesOf,
-  filterDepCandidates,
-  isBeadIdLike
-} from '../monitor/dep-candidates.js';
-import {
-  ORCHESTRATION_KEYS,
-  QUICK_FIX_ORCHESTRATION_KEYS
-} from '../settings-dialog/session-model.js';
 import { runExternalWaitAction } from '../worker/external-wait-action.js';
 import {
   formatElapsed,
   placeMenuList,
   waitReasonLines
 } from '../worker/lanes.js';
-import {
-  candidatePlacement,
-  placeLaneLabel,
-  placeMenuLanes,
-  placementTitle
-} from '../worker/placement.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
 import { commentsTemplate } from './comments.js';
@@ -70,7 +70,7 @@ import {
 
 /**
  * @import { SessionRefView } from '../../../server/worker/session-ref.js'
- * @import { DepCandidate, DepCandidateModel } from '../monitor/dep-candidates.js'
+ * @import { DepCandidate, DepCandidateModel } from '../../model/dep-candidates.js'
  */
 
 /**
@@ -1227,7 +1227,7 @@ export function createDetailPanel(mount_element, options) {
    * The preset context this issue's 판정 칩 reads (UI-wg68 §5.1). 상세는 언제나
    * 연결된 워크스페이스의 이슈이므로 카탈로그도 그 하나다.
    *
-   * @returns {import('../../utils/chip-preset-binding.js').ChipPresetContext|null}
+   * @returns {import('../../model/chip-preset-binding.js').ChipPresetContext|null}
    */
   function chipPresetContext() {
     const state = execPresetStore ? execPresetStore.get() : null;

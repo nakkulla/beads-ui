@@ -11,7 +11,7 @@
  *
  * @import { OverlapChip } from './lanes.js'
  */
-import { overlapPrefixes } from '../../utils/scope-overlap.js';
+import { overlapPrefixes } from '../../model/scope-overlap.js';
 
 /**
  * One 화면 사실 항목: 후보·병렬 대기·직렬 레인·실행 중·PR 대기 어딘가에 서 있는

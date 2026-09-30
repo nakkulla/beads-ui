@@ -1,5 +1,5 @@
 /**
- * @import { MessageType } from './protocol.js'
+ * @import { MessageType } from '../protocol.js'
  */
 /**
  * Persistent WebSocket client with reconnect, request/response correlation,
@@ -10,8 +10,8 @@
  *   const data = await ws.send('update-status', { id, status: 'open' });
  *   const off = ws.on('snapshot', (payload) => { <push event> });
  */
-import { MESSAGE_TYPES, makeRequest, nextId } from './protocol.js';
-import { debug } from './utils/logging.js';
+import { MESSAGE_TYPES, makeRequest, nextId } from '../protocol.js';
+import { debug } from '../utils/logging.js';
 
 /**
  * @typedef {'connecting'|'open'|'closed'|'reconnecting'} ConnectionState

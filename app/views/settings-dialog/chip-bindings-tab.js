@@ -10,8 +10,11 @@
  * @typedef {import('lit-html').TemplateResult} TemplateResult
  */
 import { html, render } from 'lit-html';
-import { chipDisplayName } from '../../utils/chip-preset-binding.js';
-import { CHIP_BINDING_KEYS, normalizeAppliesTo } from './session-model.js';
+import { chipDisplayName } from '../../model/chip-preset-binding.js';
+import {
+  CHIP_BINDING_KEYS,
+  normalizeAppliesTo
+} from '../../model/session-model.js';
 
 /** The one-line header every row reads under. */
 export const CHIP_TAB_INTRO =

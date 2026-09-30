@@ -24,9 +24,9 @@
  * bundle whose summary a past bundle collapses to (see {@link blocksOf}).
  */
 import { html, render } from 'lit-html';
+import { formatRelativeTime } from '../../model/relative-time.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { renderMarkdown } from '../../utils/markdown.js';
-import { formatRelativeTime } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
 import {
   formatRecordedAt,

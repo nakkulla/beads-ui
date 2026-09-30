@@ -9,16 +9,16 @@
  * A chip is `null` rather than empty whenever the underlying rows cannot say
  * anything true — a missing chip is preferable to a wrong one.
  *
- * @import { ExecutionValue } from './execution-defaults.js'
+ * @import { ExecutionValue } from '../utils/execution-defaults.js'
  * @typedef {{ text: string, title: string }} ExecChip
  * @typedef {{ orchestration: ExecChip|null, worker: ExecChip|null }} ExecChips
  */
+import { formatAttemptTuple } from '../utils/attempt-display.js';
 import {
   SETTING_LABELS,
   SOURCE_LABELS
 } from '../views/detail-panel/effective-settings.js';
 import { modelRunnerOf } from '../views/detail-panel/exec-settings.js';
-import { formatAttemptTuple } from './attempt-display.js';
 
 /** Resolutions that carry no value worth showing as a chip token. */
 const EMPTY_RESOLUTIONS = new Set(['unavailable', 'not_applicable']);

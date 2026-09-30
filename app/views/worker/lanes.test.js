@@ -1,11 +1,12 @@
 import { html, render } from 'lit-html';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { providerHoldBadgeText } from '../../model/gate-labels.js';
 import {
   formatClockLocal,
   formatTimestampLocal
-} from '../../utils/relative-time.js';
+} from '../../model/relative-time.js';
+import { SUMMARY_CHIPS } from '../../model/wait-vocabulary.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
-import { providerHoldBadgeText } from './gate-labels.js';
 import {
   JUDGEMENT_CHIP_KEYS,
   blockedSummary,
@@ -45,14 +46,13 @@ import {
   waitStatusBadge
 } from './lanes.js';
 import { runningTile } from './running-grid.js';
-import { SUMMARY_CHIPS } from './wait-vocabulary.js';
 
 /** @type {HTMLElement} */
 let mount;
 
 /**
- * @param {Partial<import('./lane-model.js').InteractiveSessionView>} [patch]
- * @returns {import('./lane-model.js').InteractiveSessionView}
+ * @param {Partial<import('../../model/lane-model.js').InteractiveSessionView>} [patch]
+ * @returns {import('../../model/lane-model.js').InteractiveSessionView}
  */
 function interactiveView(patch = {}) {
   return {
@@ -6599,7 +6599,7 @@ describe('대기 진입 유예 (UI-q1tg §3.3)', () => {
 // 유일한 자리이므로 칩의 자리(4a 맨 앞)와 조작의 순서가 이 블록의 주제다.
 describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
   /**
-   * @param {Partial<import('./lane-model.js').LaneGate>} [patch]
+   * @param {Partial<import('../../model/lane-model.js').LaneGate>} [patch]
    * @returns {any}
    */
   function gate(patch = {}) {

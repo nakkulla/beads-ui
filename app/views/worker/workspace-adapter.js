@@ -12,26 +12,26 @@
  */
 import { resolveSpecEvidence } from '../../../server/spec-id.js';
 import { createListSelectors } from '../../data/list-selectors.js';
-import { awaitingUserReason } from '../../utils/awaiting-user-reason.js';
-import { buildCarryoverIndex } from '../../utils/carryover-index.js';
-import { buildChildrenIndex, rollupFor } from '../../utils/child-rollup.js';
-import { debug } from '../../utils/logging.js';
-import { coerceTimestampMs } from '../../utils/relative-time.js';
-import { parseReport } from '../../utils/report-marker.js';
-import { sessionPreferredReason } from '../../utils/session-preferred.js';
-import { specAfterBlockerActive } from '../../utils/spec-after-blocker.js';
+import { MIN_SLOTS } from '../../model/lane-model.js';
+import { candidatePlacement } from '../../model/placement.js';
+import { coerceTimestampMs } from '../../model/relative-time.js';
+import { parseReport } from '../../model/report-marker.js';
 import {
   APPLIED_EXEC_PRESET_KEY,
   BEAD_PIN_KEYS,
   CHIP_PRESET_SOURCE_KEY
-} from '../settings-dialog/session-model.js';
+} from '../../model/session-model.js';
+import { awaitingUserReason } from '../../utils/awaiting-user-reason.js';
+import { buildCarryoverIndex } from '../../utils/carryover-index.js';
+import { buildChildrenIndex, rollupFor } from '../../utils/child-rollup.js';
+import { debug } from '../../utils/logging.js';
+import { sessionPreferredReason } from '../../utils/session-preferred.js';
+import { specAfterBlockerActive } from '../../utils/spec-after-blocker.js';
 import { blockerIdsOf } from './blocker-ids.js';
 import {
   applyCandidateSort,
   normalizeCandidateSort
 } from './candidate-sort.js';
-import { MIN_SLOTS } from './lane-model.js';
-import { candidatePlacement } from './placement.js';
 
 const log = debug('views:worker:adapter');
 
@@ -344,7 +344,7 @@ export function createWorkspaceAdapter(options = {}) {
     /**
      * 이 렌더의 배치 판정 — 후보 제외와 자격·사유가 같은 값을 읽는다 (§6.1).
      *
-     * @type {Map<string, import('./placement.js').Placement>}
+     * @type {Map<string, import('../../model/placement.js').Placement>}
      */
     const placements = new Map();
     /** @type {any[]} */
@@ -375,9 +375,10 @@ export function createWorkspaceAdapter(options = {}) {
     const bead_scope = objectOf(q.bead_scope);
     return sorted.map((/** @type {any} */ it) => {
       // 위 루프가 `merged`에 넣은 행만 여기 오므로 판정은 언제나 있다.
-      const placement = /** @type {import('./placement.js').Placement} */ (
-        placements.get(it.id)
-      );
+      const placement =
+        /** @type {import('../../model/placement.js').Placement} */ (
+          placements.get(it.id)
+        );
       const spec = resolveSpecEvidence(it);
       const has_spec = spec.evidence === 'published';
       const route =

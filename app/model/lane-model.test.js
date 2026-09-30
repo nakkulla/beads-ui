@@ -1,7 +1,8 @@
 import { render } from 'lit-html';
 import { describe, expect, test } from 'vitest';
-import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
-import { normalizeCandidateSort } from './candidate-sort.js';
+import { normalizeCandidateSort } from '../views/worker/candidate-sort.js';
+import { candidateCard, setChipPresetContext } from '../views/worker/lanes.js';
+import { createWorkspaceAdapter } from '../views/worker/workspace-adapter.js';
 import {
   CANDIDATE_FILTER_DEFAULT,
   MIN_SLOTS,
@@ -13,8 +14,7 @@ import {
   routeChipValue,
   validTime
 } from './lane-model.js';
-import { candidateCard, setChipPresetContext } from './lanes.js';
-import { createWorkspaceAdapter } from './workspace-adapter.js';
+import { createWorkerQueueStore } from './worker-queue-store.js';
 
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';

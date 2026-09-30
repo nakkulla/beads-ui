@@ -14,17 +14,8 @@
  */
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
-import { areaLabels, areaTooltip } from '../../utils/area-judgement.js';
-import { chipPresetBinding } from '../../utils/chip-preset-binding.js';
-import {
-  COMPLEX_CHIP_LABEL,
-  complexReason,
-  complexTooltip
-} from '../../utils/complex-judgement.js';
-import { buildOptionView } from '../../utils/execution-defaults.js';
-import { visibleChoicesForKey } from '../../utils/model-visibility.js';
-import { chipPopoverTemplate } from '../chip-popover.js';
-import { formatExecReceipt, formatPlannedExecution } from '../exec-format.js';
+import { chipPresetBinding } from '../../model/chip-preset-binding.js';
+import { visibleChoicesForKey } from '../../model/model-visibility.js';
 import {
   APPLIED_EXEC_PRESET_KEY,
   AUTO_LITERAL,
@@ -41,7 +32,16 @@ import {
   normalizeAppliesTo,
   orchestrationModelOptions,
   speedVisible
-} from '../settings-dialog/session-model.js';
+} from '../../model/session-model.js';
+import { areaLabels, areaTooltip } from '../../utils/area-judgement.js';
+import {
+  COMPLEX_CHIP_LABEL,
+  complexReason,
+  complexTooltip
+} from '../../utils/complex-judgement.js';
+import { buildOptionView } from '../../utils/execution-defaults.js';
+import { chipPopoverTemplate } from '../chip-popover.js';
+import { formatExecReceipt, formatPlannedExecution } from '../exec-format.js';
 import { judgementPopoverContent } from '../worker/lanes.js';
 import {
   EFFECTIVE_GROUPS,
@@ -776,7 +776,7 @@ function detailJudgementChip(input) {
  * 밖에는 UI-8x90 §5.1 그대로 사유 팝업을 연다.
  *
  * @param {any} data - The bd issue payload.
- * @param {{ onChipToggle?: (chip_key: string) => void, isChipOpen?: (chip_key: string) => boolean, onChipPresetToggle?: (chip_key: string) => void, chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} [handlers]
+ * @param {{ onChipToggle?: (chip_key: string) => void, isChipOpen?: (chip_key: string) => boolean, onChipPresetToggle?: (chip_key: string) => void, chipPresets?: import('../../model/chip-preset-binding.js').ChipPresetContext|null }} [handlers]
  * @returns {TemplateResult}
  */
 export function summaryHeaderTemplate(data, handlers = {}) {

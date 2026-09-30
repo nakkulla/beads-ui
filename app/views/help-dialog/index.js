@@ -4,7 +4,7 @@
  * 표가 바뀌면 범례도 같이 바뀌므로 문구를 여기에 복사하지 않는다.
  *
  * @typedef {import('lit-html').TemplateResult} TemplateResult
- * @typedef {import('../worker/wait-vocabulary.js').WaitKindRow} WaitKindRow
+ * @typedef {import('../../model/wait-vocabulary.js').WaitKindRow} WaitKindRow
  */
 import { html, render } from 'lit-html';
 import {
@@ -13,7 +13,7 @@ import {
   WAIT_KINDS,
   WAIT_VERDICTS,
   waitBadgeText
-} from '../worker/wait-vocabulary.js';
+} from '../../model/wait-vocabulary.js';
 
 /** 제목 줄에 쓰는 이 다이얼로그의 이름. `aria-label`도 같은 문자열이다. */
 const DIALOG_TITLE = '도움말 · 칩과 배지의 뜻';

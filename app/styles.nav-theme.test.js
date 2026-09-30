@@ -10,7 +10,7 @@ import { describe, expect, test } from 'vitest';
  * guards.
  */
 const BASE_CSS = readFileSync(
-  path.resolve(process.cwd(), 'app/styles/base.css'),
+  path.resolve(process.cwd(), 'app/ui/base.css'),
   'utf8'
 );
 const APP_CSS = readFileSync(

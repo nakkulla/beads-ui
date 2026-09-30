@@ -41,16 +41,48 @@ import {
   normalizeDoneRange
 } from '../../data/closed-range.js';
 import { createListSelectors } from '../../data/list-selectors.js';
+import { createChipPresetToggle } from '../../model/chip-preset-binding.js';
+import { failureSentence } from '../../model/failure-labels.js';
+import {
+  PRIORITY_FILTER_OPTIONS,
+  READINESS_FILTER_OPTIONS,
+  ROUTE_FILTER_OPTIONS,
+  TYPE_FILTER_OPTIONS,
+  baseException,
+  buildLanes,
+  normalizeLabelFilter,
+  normalizePriorityFilter,
+  normalizeRouteFilter,
+  normalizeTypeFilter,
+  prWaitLaneOriginFields,
+  resolvesConflict,
+  toggleLabelFilter,
+  togglePriorityFilter,
+  toggleRouteFilter
+} from '../../model/lane-model.js';
+import {
+  cleanupStalledReason,
+  cleanupStepLabel
+} from '../../model/merge-steps.js';
+import { disabledModelsOf } from '../../model/model-visibility.js';
+import { placeMenuLanes } from '../../model/placement.js';
+import {
+  isPrWaitCleanupActive,
+  prWaitProgress
+} from '../../model/pr-wait-progress.js';
+import { deriveWorkerBlockers } from '../../model/queue-blockers.js';
+import { formatTimestampLocal } from '../../model/relative-time.js';
+import {
+  hasLiveResolveSession,
+  tileResolveFields
+} from '../../model/tile-resolve.js';
 import {
   isImplementationAttempt,
   latestImplementationAttempts
 } from '../../utils/active-attempts.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
-import { createChipPresetToggle } from '../../utils/chip-preset-binding.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
-import { disabledModelsOf } from '../../utils/model-visibility.js';
-import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { runResumeFlow } from '../../utils/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
@@ -69,26 +101,8 @@ import {
   setChainStepKey
 } from './candidate-sort.js';
 import { runExternalWaitAction } from './external-wait-action.js';
-import { failureSentence } from './failure-labels.js';
 import { createLaneCollapse } from './lane-collapse.js';
 import { createLaneDrag } from './lane-drag.js';
-import {
-  PRIORITY_FILTER_OPTIONS,
-  READINESS_FILTER_OPTIONS,
-  ROUTE_FILTER_OPTIONS,
-  TYPE_FILTER_OPTIONS,
-  baseException,
-  buildLanes,
-  normalizeLabelFilter,
-  normalizePriorityFilter,
-  normalizeRouteFilter,
-  normalizeTypeFilter,
-  prWaitLaneOriginFields,
-  resolvesConflict,
-  toggleLabelFilter,
-  togglePriorityFilter,
-  toggleRouteFilter
-} from './lane-model.js';
 import {
   SERIAL_LANE_LABEL,
   candidateCard,
@@ -112,9 +126,6 @@ import {
   tokenChipTemplate,
   waitBody
 } from './lanes.js';
-import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
-import { placeMenuLanes } from './placement.js';
-import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
 import {
   providerResumeDialogTemplate,
   providerResumeDraft,
@@ -122,22 +133,20 @@ import {
   providerResumeOverride,
   showProviderResumeDialog
 } from './provider-resume-dialog.js';
-import { deriveWorkerBlockers } from './queue-blockers.js';
 import { deriveWorkerOverlaps } from './queue-overlaps.js';
 import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
 import { createRepoOpsDrawer } from './repo-ops-timeline.js';
 import { runningGridTemplate } from './running-grid.js';
-import { hasLiveResolveSession, tileResolveFields } from './tile-resolve.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
 
 /**
- * @import { CandidateFilter, LaneItem, LaneModel, LaneQueueGroup } from './lane-model.js'
+ * @import { CandidateFilter, LaneItem, LaneModel, LaneQueueGroup } from '../../model/lane-model.js'
  * @import { ProviderResumeDraft } from './provider-resume-dialog.js'
  */
 
-export { mergeStepView } from './merge-steps.js';
+export { mergeStepView } from '../../model/merge-steps.js';
 
 /**
  * Lower bound on the concurrency cap, mirroring the server's `MIN_SLOTS`
@@ -596,7 +605,7 @@ export function mergeWaitingText(reason, hold_reason = null) {
  * Unknown and malformed states stay invisible: the server owns fail-closed
  * execution, while this projection must remain compatible with older snapshots.
  *
- * @param {import('../../data/worker-queue-store.js').ResolutionProjection|null|undefined} resolution
+ * @param {import('../../model/worker-queue-store.js').ResolutionProjection|null|undefined} resolution
  * @returns {{ badge: string, live: boolean }|null}
  */
 function resolutionView(resolution) {
@@ -674,7 +683,7 @@ const REVIEW_AFTER_MERGE_GATE_REASONS = new Set([
  * is gone, so the only phases a person can find a row parked in are the
  * metadata watch and the retry ladder.
  *
- * @param {import('../../data/worker-queue-store.js').CompletionStatus|null|undefined} completion
+ * @param {import('../../model/worker-queue-store.js').CompletionStatus|null|undefined} completion
  * @returns {{ label: string, details: string[], live: boolean }|null}
  */
 export function autoResolutionBadge(completion) {
@@ -782,7 +791,7 @@ function exhaustedOriginReason(terminal_reason) {
  * Missing or unfamiliar optional projection stays invisible; malformed durable
  * intents are normalized server-side to the explicit `needs_human` phase.
  *
- * @param {import('../../data/worker-queue-store.js').CompletionStatus|null|undefined} completion
+ * @param {import('../../model/worker-queue-store.js').CompletionStatus|null|undefined} completion
  * @param {{ label: string, details: string[], live: boolean }|null} [auto_resolution] - The
  * precomputed {@link autoResolutionBadge} for the same row.
  * @returns {{ badge: string, title: string, alert: boolean, lock_actions: boolean }|null}
@@ -1239,7 +1248,7 @@ export function prStatusBadge(input) {
  * durable lane membership an external row does not have), and a MERGED row
  * becomes a [정리 재시도] button because nothing auto-cleans it. 충돌 해소 is NOT one
  * of them any more — the attempt-less dispatch (UI-w0hi §1) runs it.
- * @param {{ position: number, active: boolean, failure: string|null, waiting?: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null, continuation_action?: any, hold?: any, authority?: any, review_dispatch?: any }|null} [merge_queue]
+ * @param {{ position: number, active: boolean, failure: string|null, waiting?: string|null, resolution?: import('../../model/worker-queue-store.js').ResolutionProjection|null, continuation_action?: any, hold?: any, authority?: any, review_dispatch?: any }|null} [merge_queue]
  * This row's place in the sequential merge queue (UI-5v7d §4): a 1-based
  * `position` while it waits (0 = not queued), whether the driver is on it right
  * now, and the reason it was skipped, if any.
@@ -1252,7 +1261,7 @@ export function prStatusBadge(input) {
  * still, and a badge saying otherwise would be a lie.
  * @param {string|null} [base_exception] - `→ <target_base>` when the attempt
  * behind this row targets a base other than the declared one (UI-j6wa §3).
- * @param {import('../../data/worker-queue-store.js').CompletionStatus|null} [completion] - Bounded root completion status;
+ * @param {import('../../model/worker-queue-store.js').CompletionStatus|null} [completion] - Bounded root completion status;
  * @param {Record<string, any>} [discard_operations] - UI-safe durable discard projection.
  * the durable journal itself never reaches the client (UI-x9tu §10).
  * @param {boolean} [auto_merge_on] - The workspace's global auto-merge toggle
@@ -4490,7 +4499,7 @@ export function createWorkerView(mount_element, options = {}) {
    * `null`이라 칩은 지금까지의 사유 팝업 그대로다 (fail-quiet).
    *
    * @param {LaneModel} m
-   * @returns {import('../../utils/chip-preset-binding.js').ChipPresetContext|null}
+   * @returns {import('../../model/chip-preset-binding.js').ChipPresetContext|null}
    */
   function chipPresetContext(m) {
     const state = execPresetStore ? execPresetStore.get() : null;
@@ -4586,7 +4595,7 @@ export function createWorkerView(mount_element, options = {}) {
    * row has no commit button, so the lane IS the preview. The row stays open:
    * only a preset pick folds it.
    *
-   * @param {import('../../data/sort.js').SortStep[]} chain
+   * @param {import('../../model/sort.js').SortStep[]} chain
    */
   function setCandidateSortChain(chain) {
     candidate_sort = normalizeCandidateSort({ chain });

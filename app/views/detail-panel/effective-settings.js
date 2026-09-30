@@ -10,12 +10,12 @@
  * @typedef {{ value: string|null, source: SettingSource, display: string, full_value: string|null, resolution: string }} SettingLayer
  * @typedef {{ key: string, value: string|null, source: SettingSource, display: string, full_value: string|null, resolution: string }} EffectiveRow
  */
-import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import {
   BEAD_APPLY_KEYS,
   ORCHESTRATION_KEYS,
   presetKeysFor
-} from '../settings-dialog/session-model.js';
+} from '../../model/session-model.js';
+import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { modelRunnerOf } from './exec-settings.js';
 
 /**

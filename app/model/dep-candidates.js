@@ -9,7 +9,7 @@
  * 순수 함수만 내보낸다 — 후보 목록은 스냅샷 하나에서 나오는 파생값이고, 검색은
  * 그 목록 위의 필터일 뿐이다.
  */
-import { buildLanes } from '../worker/lane-model.js';
+import { buildLanes } from './lane-model.js';
 
 /**
  * @param {Map<string, string[]>} graph

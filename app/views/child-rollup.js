@@ -6,7 +6,7 @@
  * Board 시절 이름 그대로 두고(전역 CSS가 이미 그 이름을 쓴다) 마크업만 공유한다.
  */
 import { html } from 'lit-html';
-import { cmpChildOrder } from '../data/sort.js';
+import { cmpChildOrder } from '../model/sort.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult

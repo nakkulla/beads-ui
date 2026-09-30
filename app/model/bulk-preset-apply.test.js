@@ -1,10 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
-  ORCHESTRATION_KEYS,
-  QUICK_FIX_ORCHESTRATION_KEYS,
-  presetKvKeysFor
-} from '../settings-dialog/session-model.js';
-import {
   BULK_PARALLEL,
   defaultSelectedRoots,
   formatBulkResult,
@@ -12,6 +7,11 @@ import {
   retryRootsOf,
   runBulkApply
 } from './bulk-preset-apply.js';
+import {
+  ORCHESTRATION_KEYS,
+  QUICK_FIX_ORCHESTRATION_KEYS,
+  presetKvKeysFor
+} from './session-model.js';
 
 /**
  * Minimal deck row shape the module reads.

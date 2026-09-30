@@ -6,7 +6,7 @@ import { createTitleCache } from './title-cache.js';
  * id absent from the map exits non-zero, which is the "cannot read this bead"
  * failure the cache negative-caches.
  *
- * @param {Record<string, string | { title: string, labels?: unknown, dependencies?: unknown, spec_id?: unknown, description?: unknown, metadata?: unknown }>} titles
+ * @param {Record<string, string | { title: string, labels?: unknown, dependencies?: unknown, spec_id?: unknown, description?: unknown, metadata?: unknown, priority?: unknown, issue_type?: unknown }>} titles
  * @param {{ deferred?: boolean }} [options]
  */
 function fakeBd(titles, options = {}) {

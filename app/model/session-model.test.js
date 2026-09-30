@@ -6,7 +6,7 @@ import {
   GENERAL_PRESET_KV_KEYS as SERVER_GENERAL_PRESET_KV_KEYS,
   QUICK_FIX_IMPL_KEYS as SERVER_QUICK_FIX_IMPL_KEYS,
   QUICK_FIX_PRESET_KEYS as SERVER_QUICK_FIX_PRESET_KEYS
-} from '../../../server/worker/exec-enums.js';
+} from '../../server/worker/exec-enums.js';
 import {
   APPLIES_TO_VALUES,
   BEAD_APPLY_KEYS,

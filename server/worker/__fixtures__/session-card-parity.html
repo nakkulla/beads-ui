@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>UI-42l2 카드 관측 fixture</title>
-    <link rel="stylesheet" href="/app/styles/tokens.css" />
-    <link rel="stylesheet" href="/app/styles/base.css" />
+    <link rel="stylesheet" href="/app/ui/tokens.css" />
+    <link rel="stylesheet" href="/app/ui/base.css" />
     <link rel="stylesheet" href="/app/styles.css" />
     <script type="importmap">
       {
@@ -45,7 +45,7 @@
     </main>
     <script type="module">
       import { render } from 'lit-html';
-      import { buildLanes } from '/app/views/worker/lane-model.js';
+      import { buildLanes } from '/app/model/lane-model.js';
       import { runningGridTemplate } from '/app/views/worker/running-grid.js';
       import { resolveCatalog } from '/server/worker/runner-catalog.js';
 

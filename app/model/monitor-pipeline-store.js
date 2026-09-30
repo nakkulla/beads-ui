@@ -22,19 +22,19 @@
  * (UI-uhfj, `bead-title-memory.js`), so a title the server omits for a moment
  * does not turn a card heading into its bead id.
  */
-import { createBeadTitleMemory } from './bead-title-memory.js';
+import { createBeadTitleMemory } from '../data/bead-title-memory.js';
 import {
   applyPatch as applyKeyedPatch,
   assembleMonitorPipeline,
   canonicalJson,
   splitMonitorPipeline
-} from './keyed-patch.js';
+} from '../data/keyed-patch.js';
 
 /**
- * @returns {{ get: () => Array<Record<string, any>>|null, getWorkspacesState: () => Array<Record<string, any>>, set: (list: Array<Record<string, any>>|null, state?: Array<Record<string, any>>|null, seq?: number) => void, applyPatch: (patch: import('./keyed-patch.js').KeyedPatch & { seq: number }) => boolean, clear: () => void, subscribe: (fn: () => void) => () => void }}
+ * @returns {{ get: () => Array<Record<string, any>>|null, getWorkspacesState: () => Array<Record<string, any>>, set: (list: Array<Record<string, any>>|null, state?: Array<Record<string, any>>|null, seq?: number) => void, applyPatch: (patch: import('../data/keyed-patch.js').KeyedPatch & { seq: number }) => boolean, clear: () => void, subscribe: (fn: () => void) => () => void }}
  */
 export function createMonitorPipelineStore() {
-  /** @type {import('./keyed-patch.js').KeyedMap} */
+  /** @type {import('../data/keyed-patch.js').KeyedMap} */
   let keyed = new Map();
   /** @type {number|null} */
   let last_seq = null;
@@ -124,7 +124,7 @@ export function createMonitorPipelineStore() {
         body.workspaces_state
       );
     },
-    /** @param {import('./keyed-patch.js').KeyedPatch & { seq: number }} patch */
+    /** @param {import('../data/keyed-patch.js').KeyedPatch & { seq: number }} patch */
     applyPatch(patch) {
       if (last_seq === null || patch.seq !== last_seq + 1) {
         clear();

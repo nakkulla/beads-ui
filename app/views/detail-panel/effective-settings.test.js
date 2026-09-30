@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { APPLIED_EXEC_PRESET_KEY as SERVER_APPLIED_EXEC_PRESET_KEY } from '../../../server/worker/exec-enums.js';
-import { APPLIED_EXEC_PRESET_KEY } from '../settings-dialog/session-model.js';
+import { APPLIED_EXEC_PRESET_KEY } from '../../model/session-model.js';
 import {
   EFFECTIVE_GROUPS,
   buildImplPresetApplyPayload,

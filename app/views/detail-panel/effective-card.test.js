@@ -5,9 +5,9 @@
  * and what each control sends.
  */
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { createExecPresetStore } from '../../data/exec-preset-store.js';
-import { createSubscriptionIssueStores } from '../../data/subscription-issue-stores.js';
-import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
+import { createExecPresetStore } from '../../model/exec-preset-store.js';
+import { createSubscriptionIssueStores } from '../../model/subscription-issue-stores.js';
+import { createWorkerQueueStore } from '../../model/worker-queue-store.js';
 import { createDetailPanel } from './index.js';
 
 const CATALOG = {

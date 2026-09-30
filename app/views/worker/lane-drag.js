@@ -6,7 +6,7 @@
  * @typedef {Object} LaneDragOptions
  * @property {((type: string, payload?: unknown) => Promise<any>)|undefined} transport
  * @property {HTMLElement} console_el
- * @property {() => import('./lane-model.js').LaneModel} getLanes
+ * @property {() => import('../../model/lane-model.js').LaneModel} getLanes
  * @property {() => Array<Record<string, any>>|null} getWorkspaces
  * @property {(message: string, kind?: 'error'|'success'|'info'|'warning', ms?: number) => void} showToast
  * @property {() => void} requestRender
