@@ -141,11 +141,8 @@ function daysOr(value, fallback) {
 }
 
 /**
- * The workspace's retention horizons (§8.1).
- *
- * A file of its own rather than a `display-policy.json` field: that store drops
- * unknown fields when it normalizes, so a horizon stored there would disappear
- * the first time any display policy was written.
+ * The workspace's retention horizons (§8.1), read from a policy file of its
+ * own.
  *
  * @param {string} workspace_root
  * @param {{ fs?: typeof import('node:fs') }} [options]

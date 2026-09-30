@@ -12,7 +12,6 @@ import {
   handleSubscribeAdr,
   handleUnsubscribeAdr
 } from './adr-handlers.js';
-import { handleBenchRunCreate } from './bench-handlers.js';
 import { handleGetCompare } from './compare-handlers.js';
 import {
   detachConnectionFromAllRegistries,
@@ -23,12 +22,6 @@ import {
   setCurrentWss,
   setDefaultWorkspace
 } from './context.js';
-import {
-  detachDisplayPolicy,
-  handleDisplayPolicySet,
-  handleSubscribeDisplayPolicy,
-  handleUnsubscribeDisplayPolicy
-} from './display-policy-handlers.js';
 import {
   detachImplPresets,
   handleApplyImplPreset,
@@ -50,7 +43,6 @@ import {
 import {
   detachMonitorPipeline,
   ensureRunnableScanWired,
-  handleMonitorAutoToggle,
   handleSubscribeMonitorPipeline,
   handleUnsubscribeMonitorPipeline
 } from './monitor-handlers.js';
@@ -299,7 +291,6 @@ export function attachWsServer(http_server, options = {}) {
         detachWorkerQueue(ws);
         detachMonitorPipeline(ws);
         detachAdr(ws);
-        detachDisplayPolicy(ws);
         detachImplPresets(ws);
         detachModelVisibility(ws);
       } catch {
@@ -565,9 +556,6 @@ export async function handleMessage(ws, data) {
     case 'apply-impl-preset-global':
       await handleApplyImplPresetGlobal(ws, req);
       return;
-    case 'monitor-auto-toggle':
-      handleMonitorAutoToggle(ws, req);
-      return;
     case 'worker-queue-place':
       await handleWorkerQueuePlace(ws, req);
       return;
@@ -660,15 +648,6 @@ export async function handleMessage(ws, data) {
     case 'worker-revise-approve':
       await handleWorkerReviseApprove(ws, req);
       return;
-    case 'subscribe-display-policy':
-      handleSubscribeDisplayPolicy(ws, req);
-      return;
-    case 'unsubscribe-display-policy':
-      handleUnsubscribeDisplayPolicy(ws, req);
-      return;
-    case 'display-policy-set':
-      handleDisplayPolicySet(ws, req);
-      return;
     case 'subscribe-session-log':
       await handleSubscribeSessionLog(ws, req);
       return;
@@ -689,9 +668,6 @@ export async function handleMessage(ws, data) {
       return;
     case 'get-compare':
       await handleGetCompare(ws, req);
-      return;
-    case 'bench-run-create':
-      void handleBenchRunCreate(ws, req);
       return;
     case 'unsubscribe-session-log':
       handleUnsubscribeSessionLog(ws, req);

@@ -3,8 +3,8 @@
  * channel is retired; the stored policy it served is kept here as constants so
  * cards show the same labels without a subscription.
  *
- * `reviewed:`·`skipped:` mirror the server's `RETIRED_MIRROR_LABEL_PREFIXES`
- * (`server/display-policy-store.js`, removed in Phase 4). The six judgement
+ * `reviewed:`·`skipped:` are the retired review mirror label prefixes the
+ * server's old label store (removed in UI-dbn6 Phase 4) hid. The six judgement
  * labels are drawn as judgement chips by their own card fragments, so they are
  * split out of the plain label chips.
  */

@@ -879,7 +879,6 @@ describe('compare table', () => {
         range: '30d',
         root_dirs: [],
         routes: [],
-        include_bench: false,
         group_by: 'preset'
       }
     ]);
@@ -1128,7 +1127,7 @@ describe('compare table', () => {
     expect(root.querySelector('.cmp-warning')).toBeNull();
   });
 
-  test('fixes include_bench to false on every request', async () => {
+  test('sends no include_bench on any request (UI-dbn6 §4.5)', async () => {
     const { root, view, transport } = mountComparison();
     await view.refresh();
 
@@ -1138,7 +1137,7 @@ describe('compare table', () => {
     expect(
       transport.mock.calls.map((/** @type {any[]} */ call) => [
         call[0],
-        call[1].include_bench
+        'include_bench' in call[1]
       ])
     ).toEqual([
       ['get-compare', false],

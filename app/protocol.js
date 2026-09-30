@@ -12,7 +12,7 @@
 /** @typedef {{ provider: 'claude'|'codex', role: string, scope_id?: string, turn_id: string, model: string|null, usage: Record<string, number>, observed_from?: number|null, observed_through?: number|null, partial?: boolean, partial_reasons?: string[], cost_covered?: boolean }} UsageSegment */
 /** @typedef {{ provider: 'claude'|'codex', session_id: string|null, observed_at: number, model: string|null, usage: Record<string, number>|null, usage_legs: UsageSegment[], delegations: Array<Record<string, unknown>>, partial?: boolean }} SessionObservation */
 
-/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'update-assignee'|'dep-add'|'dep-remove'|'update-exec-settings'|'update-impl-target'|'get-session-defaults'|'set-session-defaults'|'set-worker-url-common'|'get-workspace-accounts'|'set-workspace-accounts'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-patch'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-automation-toggle'|'worker-provider-limit-policy-set'|'worker-repo-ops-opt-out-toggle'|'worker-repo-operation-dismiss'|'worker-repo-operation-deploy-run'|'worker-queue-set-slots'|'worker-queue-set-serial-lane-count'|'worker-queue-set-orchestration-defaults'|'worker-queue-remove'|'worker-queue-start-now'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-cleanup-retry'|'worker-resolve-in-session'|'worker-conversation-handoff'|'worker-provider-probe-now'|'external_wait_check'|'external_wait_stop'|'external_wait_resume'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-discard'|'worker-discard-abandon'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-display-policy'|'unsubscribe-display-policy'|'display-policy-set'|'display-policy-snapshot'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'get-attempt-prompt'|'get-bead-prompt'|'get-bead-timeline'|'get-session-refs'|'get-worker-system-prompt'|'subscribe-adr'|'unsubscribe-adr'|'adr-snapshot'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'|'monitor-pipeline-patch'|'monitor-auto-toggle'|'subscribe-impl-presets'|'unsubscribe-impl-presets'|'impl-presets-snapshot'|'impl-preset-create'|'impl-preset-update'|'impl-preset-delete'|'impl-preset-bind'|'chip-preset-toggle'|'apply-impl-preset'|'apply-impl-preset-global'|'subscribe-model-visibility'|'unsubscribe-model-visibility'|'model-visibility-set'|'model-visibility-snapshot'|'get-compare'|'compare-snapshot'|'bench-run-create'} MessageType */
+/** @typedef {'update-status'|'edit-text'|'update-priority'|'create-issue'|'update-assignee'|'dep-add'|'dep-remove'|'update-exec-settings'|'update-impl-target'|'get-session-defaults'|'set-session-defaults'|'set-worker-url-common'|'get-workspace-accounts'|'set-workspace-accounts'|'update-workflow-meta'|'label-add'|'label-remove'|'subscribe-list'|'unsubscribe-list'|'snapshot'|'upsert'|'delete'|'get-comments'|'add-comment'|'delete-issue'|'list-workspaces'|'set-workspace'|'set-workspace-visibility'|'get-workspace'|'workspace-changed'|'git-pull-workspace'|'subscribe-worker-queue'|'unsubscribe-worker-queue'|'worker-queue-snapshot'|'worker-queue-patch'|'worker-queue-place'|'worker-queue-reorder'|'worker-queue-toggle'|'worker-automation-toggle'|'worker-provider-limit-policy-set'|'worker-repo-ops-opt-out-toggle'|'worker-repo-operation-dismiss'|'worker-repo-operation-deploy-run'|'worker-queue-set-slots'|'worker-queue-set-serial-lane-count'|'worker-queue-set-orchestration-defaults'|'worker-queue-remove'|'worker-queue-start-now'|'worker-attempt-pause'|'worker-attempt-stop'|'worker-attempt-resume'|'worker-cleanup-retry'|'worker-resolve-in-session'|'worker-conversation-handoff'|'worker-provider-probe-now'|'external_wait_check'|'external_wait_stop'|'external_wait_resume'|'worker-merge-queue-add'|'worker-merge-queue-add-all'|'worker-merge-auto-toggle'|'worker-merge-queue-remove'|'worker-discard'|'worker-discard-abandon'|'worker-pr-discard'|'worker-revise-fix'|'worker-revise-approve'|'subscribe-session-log'|'unsubscribe-session-log'|'session-log-snapshot'|'session-log-append'|'get-attempt-prompt'|'get-bead-prompt'|'get-bead-timeline'|'get-session-refs'|'get-worker-system-prompt'|'subscribe-adr'|'unsubscribe-adr'|'adr-snapshot'|'subscribe-monitor-pipeline'|'unsubscribe-monitor-pipeline'|'monitor-pipeline-snapshot'|'monitor-pipeline-patch'|'subscribe-impl-presets'|'unsubscribe-impl-presets'|'impl-presets-snapshot'|'impl-preset-create'|'impl-preset-update'|'impl-preset-delete'|'impl-preset-bind'|'chip-preset-toggle'|'apply-impl-preset'|'apply-impl-preset-global'|'subscribe-model-visibility'|'unsubscribe-model-visibility'|'model-visibility-set'|'model-visibility-snapshot'|'get-compare'|'compare-snapshot'} MessageType */
 
 /**
  * @typedef {Object} WorkerQueueSnapshotPayload
@@ -299,13 +299,6 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   // the repair session, delta approval refreshes the receipt server-side.
   'worker-revise-fix',
   'worker-revise-approve',
-  // Manual UI-order channel: subscription + CAS-guarded set + push snapshot (§2)
-  // Label/metadata display-policy channel: subscription + CAS-guarded set +
-  // push snapshot. Replaces the one-shot `config.toml [labels]` bootstrap.
-  'subscribe-display-policy',
-  'unsubscribe-display-policy',
-  'display-policy-set',
-  'display-policy-snapshot',
   // Session-log (transcript) channel: subscribe → snapshot + live appends (§5.6)
   'subscribe-session-log',
   'unsubscribe-session-log',
@@ -356,19 +349,11 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'unsubscribe-model-visibility',
   'model-visibility-set',
   'model-visibility-snapshot',
-  // Master automation switch (UI-qrfo §6): turns `auto_advance` + `auto_merge`
-  // on/off across EVERY visible workspace at once. No `root_dir` — the target
-  // is the whole visible set, which is also the button's denominator.
-  'monitor-auto-toggle',
   // Preset comparison table (preset-compare §3.5). A request/response pair, not
   // a subscription: the answer is read from dozens of attempt record files and
   // nothing a Worker tick changes needs to redraw it.
   'get-compare',
-  'compare-snapshot',
-  // Bench experiment creation (preset-compare §4.3). The one-shot write; the
-  // experiment LIST is not an op of its own — §3.5 enumerates the three ops
-  // this design adds, so the manifests ride `compare-snapshot`.
-  'bench-run-create'
+  'compare-snapshot'
 ]);
 
 /**

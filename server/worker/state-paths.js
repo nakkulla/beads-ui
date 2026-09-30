@@ -112,18 +112,6 @@ export function externalWaitFilePath(workspace_root) {
 }
 
 /**
- * Absolute path to a workspace's label/metadata display-policy file. Shares the
- * per-workspace state dir with the queue file so the display policy
- * survives `git clean`, branch switches, and worktree churn.
- *
- * @param {string} workspace_root - Workspace root (relative or absolute).
- * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/display-policy.json`.
- */
-export function displayPolicyFilePath(workspace_root) {
-  return path.join(workspaceStateDir(workspace_root), 'display-policy.json');
-}
-
-/**
  * Absolute path to the SERVER-GLOBAL visible-workspaces state file. Unlike the
  * per-workspace queue file this is a single file for the whole server
  * (spec §6): the hidden-workspace set is global, not scoped to one workspace, so
@@ -553,8 +541,7 @@ export function recordMigrationMarkerPath(workspace_root) {
 
 /**
  * Absolute path to the per-workspace retention policy `{archive_days,
- * delete_days}` (§8.1). A file of its own rather than a `display-policy.json`
- * field, because that store drops unknown fields when it normalizes.
+ * delete_days}` (§8.1).
  *
  * @param {string} workspace_root
  * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/retention-policy.json`.

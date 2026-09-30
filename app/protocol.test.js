@@ -227,6 +227,22 @@ describe('server/protocol', () => {
     );
   });
 
+  test('drops the message types retired with the frontend rewrite (UI-dbn6 §4.5)', () => {
+    const retired = [
+      'subscribe-display-policy',
+      'unsubscribe-display-policy',
+      'display-policy-set',
+      'display-policy-snapshot',
+      'bench-run-create',
+      'monitor-auto-toggle'
+    ];
+    const known = /** @type {ReadonlyArray<string>} */ (MESSAGE_TYPES);
+
+    const registered = retired.filter((type) => known.includes(type));
+
+    expect(registered).toEqual([]);
+  });
+
   test('registers the queue start-now message type', () => {
     expect(MESSAGE_TYPES).toContain('worker-queue-start-now');
   });

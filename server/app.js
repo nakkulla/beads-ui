@@ -29,8 +29,7 @@ import {
 
 /**
  * Bootstrap config handed to the client in the served HTML. Label visibility is
- * NOT part of it: that policy is per-workspace, editable at runtime, and
- * delivered over the `display-policy` subscription instead.
+ * NOT part of it: the client applies a fixed rule (`app/model/label-policy.js`).
  *
  * @param {{ workspace_config?: { default_workspace: string | null } }} config
  * @returns {{ workspace_config: { default_workspace: string | null } }}

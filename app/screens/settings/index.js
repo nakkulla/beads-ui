@@ -14,7 +14,7 @@
  * `createExecutionPane` (레포) and `createBulkPane` (일괄), mounted ONCE per
  * open and asked for one section at a time. Only the ACTIVE tab is in the DOM;
  * the pane's own host element moves between the tabs' bodies so its state
- * machine survives a tab switch. There is no display-policy tab (spec §3.7).
+ * machine survives a tab switch. There is no label display tab (spec §3.7).
  *
  * From 720px the dialog is a centred panel with a vertical rail; below it the
  * dialog is a full-screen sheet and the rail becomes a horizontal tab strip

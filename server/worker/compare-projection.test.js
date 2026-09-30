@@ -12,7 +12,6 @@ import { createBeadTimeline } from './bead-timeline.js';
 import {
   buildCompareModel,
   collectCompareWorkspaces,
-  compareBenchRuns,
   compareIssueIndex,
   compareSnapshot,
   compareVerifyReceipts,
@@ -23,7 +22,6 @@ import {
   passCaret,
   prepareCompareSnapshot,
   presetMatch,
-  projectBenchRun,
   retryKindOf
 } from './compare-projection.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
@@ -661,126 +659,6 @@ describe('worker/compare-projection merge-candidate verify receipts', () => {
   });
 });
 
-describe('worker/compare-projection bench runs', () => {
-  const MANIFEST = {
-    run_id: 'bench-1',
-    source_bead_id: 'UI-src',
-    created_at: 10,
-    cells: [
-      { preset_id: 'p1', k: 1, bead_id: 'UI-c1' },
-      { preset_id: 'p1', k: 2, bead_id: 'UI-c2' }
-    ]
-  };
-
-  /**
-   * @param {Record<string, any[]>} rows
-   */
-  function fakeStore(rows) {
-    return {
-      /**
-       * @param {string} root_dir
-       * @param {string} bead_id
-       */
-      readAttemptsForBead(root_dir, bead_id) {
-        return rows[bead_id] ?? [];
-      }
-    };
-  }
-
-  test('counts only the cells whose bead is closed and whose lineage ended', () => {
-    const run = projectBenchRun(MANIFEST, '/repo', {
-      queueStore: fakeStore({
-        'UI-c1': [{ attempt_id: 'a1', status: 'done', done_kind: 'bench' }],
-        'UI-c2': [{ attempt_id: 'a2', status: 'running' }]
-      }),
-      issues: {
-        'UI-c1': makeIssue({ status: 'closed' }),
-        'UI-c2': makeIssue({ status: 'open' })
-      }
-    });
-
-    expect(run.cell_count).toBe(2);
-    expect(run.terminal_count).toBe(1);
-    expect(run.cells[0]).toMatchObject({
-      bead_id: 'UI-c1',
-      attempt_id: 'a1',
-      status: 'done',
-      terminal: true
-    });
-  });
-
-  test('reports a parked cell as still running even with a closed bead', () => {
-    const run = projectBenchRun(MANIFEST, '/repo', {
-      queueStore: fakeStore({
-        'UI-c1': [{ attempt_id: 'a1', status: 'parked' }]
-      }),
-      issues: { 'UI-c1': makeIssue({ status: 'closed' }) }
-    });
-
-    expect(run.cells[0].terminal).toBe(false);
-  });
-
-  test('ignores a review session when picking the cell attempt', () => {
-    const run = projectBenchRun(MANIFEST, '/repo', {
-      queueStore: fakeStore({
-        'UI-c1': [
-          { attempt_id: 'a1', status: 'done' },
-          { attempt_id: 'r1', status: 'done', kind: 'review_session' }
-        ]
-      })
-    });
-
-    expect(run.cells[0].attempt_id).toBe('a1');
-  });
-
-  test('carries the cell verify score and the manifest fields it was given', () => {
-    const run = projectBenchRun(MANIFEST, '/repo', {
-      queueStore: fakeStore({
-        'UI-c1': [
-          {
-            attempt_id: 'a1',
-            status: 'done',
-            bench_verify: { ok: false, exit: 1, duration_ms: 5, head_sha: 'a' }
-          }
-        ]
-      })
-    });
-
-    expect(run.cells[0].bench_verify).toEqual({
-      ok: false,
-      exit: 1,
-      duration_ms: 5,
-      head_sha: 'a'
-    });
-    expect(run.run_id).toBe('bench-1');
-    expect(run.root_dir).toBe('/repo');
-  });
-
-  test('lists every workspace manifest newest first', () => {
-    const runs = compareBenchRuns(
-      [makeWorkspace(), makeWorkspace({ root_dir: '/repo/two', name: 'two' })],
-      {
-        queueStore: fakeStore({}),
-        /**
-         * @param {string} root_dir
-         */
-        list: (root_dir) => [
-          {
-            ...MANIFEST,
-            run_id: `run-${root_dir}`,
-            created_at: root_dir.endsWith('two') ? 99 : 10
-          }
-        ]
-      }
-    );
-
-    expect(runs.map((run) => run.run_id)).toEqual([
-      'run-/repo/two',
-      'run-/repo/one'
-    ]);
-  });
-});
-
 describe('worker/compare-projection verify source', () => {
   test('takes 통과 from the merge candidate [verify] receipt of the last success', () => {
     const model = buildCompareModel({
@@ -798,7 +676,7 @@ describe('worker/compare-projection verify source', () => {
     expect(model.rows[0]).not.toHaveProperty('verify_source');
   });
 
-  test('takes a bench clone verdict from bench_verify', () => {
+  test('drops a clone row that only carries bench_verify', () => {
     const model = buildCompareModel({
       workspaces: [
         makeWorkspace({
@@ -809,9 +687,7 @@ describe('worker/compare-projection verify source', () => {
       filters: { include_bench: true }
     });
 
-    expect(model.rows[0].verify).toBe('fail');
-    expect(model.bench_rows[0].verify_source).toBe('bench_verify');
-    expect(model.bench_rows[0].verify).toBe('fail');
+    expect(model.rows).toEqual([]);
   });
 
   test('keeps verification evidence separate from landing evidence', () => {
@@ -1249,7 +1125,7 @@ describe('worker/compare-projection configurable problems', () => {
     expect(recent.criteria.baselines.duration_ms.median).toBe(9000);
   });
 
-  test('judges bench rows against the main table baselines', () => {
+  test('keeps a bench clone out of the main table baselines', () => {
     const attempts = [0, 1, 2, 3, 4].map((index) =>
       makeAttempt({
         attempt_id: `at-${index}`,
@@ -1265,10 +1141,11 @@ describe('worker/compare-projection configurable problems', () => {
       finished_at: 10_000,
       bench_verify: { ok: true }
     });
+
     const model = projectAttempts([...attempts, bench]);
 
     expect(model.criteria.baselines.duration_ms.median).toBe(1000);
-    expect(model.bench_rows[0].problems.duration).toBe(true);
+    expect(model.rows.map((row) => row.attempt_id)).not.toContain('at-bench');
   });
 
   test('returns normalized effective criteria and default state', () => {
@@ -1571,8 +1448,7 @@ describe('worker/compare-projection filters', () => {
         ],
         observations: /** @type {any} */ (observations),
         presets: [],
-        catalog: null,
-        listRuns: () => []
+        catalog: null
       }
     );
 
@@ -1597,36 +1473,20 @@ describe('worker/compare-projection filters', () => {
           get: () => null
         }),
         presets: [],
-        catalog: null,
-        listRuns: () => []
+        catalog: null
       }
     );
 
     expect(prepareHistorical).not.toHaveBeenCalled();
   });
 
-  test('defaults to excluding bench experiment rows', () => {
-    const filters = normalizeCompareFilters({});
+  test('ignores include_bench when normalizing filters (UI-dbn6 §4.5)', () => {
+    const filters = normalizeCompareFilters({ include_bench: true });
 
-    expect(filters.include_bench).toBe(false);
+    expect(filters).not.toHaveProperty('include_bench');
   });
 
-  test('drops a bench-labelled bead unless bench is explicitly included', () => {
-    const workspace = makeWorkspace({
-      attempts: [makeAttempt()],
-      issues: { 'UI-1': makeIssue({ labels: ['bench'] }) }
-    });
-
-    expect(buildCompareModel({ workspaces: [workspace] }).rows).toEqual([]);
-    expect(
-      buildCompareModel({
-        workspaces: [workspace],
-        filters: { include_bench: true }
-      }).rows
-    ).toHaveLength(1);
-  });
-
-  test('carries bench rows regardless of the filters the main table used', () => {
+  test('drops a bench-labelled bead even when include_bench is true', () => {
     const workspace = makeWorkspace({
       attempts: [makeAttempt()],
       issues: { 'UI-1': makeIssue({ labels: ['bench'] }) }
@@ -1634,12 +1494,24 @@ describe('worker/compare-projection filters', () => {
 
     const model = buildCompareModel({
       workspaces: [workspace],
-      filters: { root_dirs: ['/repo/elsewhere'], since: 9_000_000 }
+      filters: { include_bench: true }
     });
 
     expect(model.rows).toEqual([]);
-    expect(model.bench_rows).toHaveLength(1);
-    expect(model.bench_rows[0].bead_id).toBe('UI-1');
+  });
+
+  test('assembles no bench_rows half of the model', () => {
+    const workspace = makeWorkspace({
+      attempts: [makeAttempt()],
+      issues: { 'UI-1': makeIssue({ labels: ['bench'] }) }
+    });
+
+    const model = buildCompareModel({
+      workspaces: [workspace],
+      filters: { include_bench: true }
+    });
+
+    expect(model).not.toHaveProperty('bench_rows');
   });
 
   test('filters by workspace and route while ignoring issue type', () => {
@@ -1727,21 +1599,6 @@ describe('worker/compare-projection filters', () => {
     );
 
     expect(model.rows).toEqual([]);
-  });
-
-  test('keeps bench rows when an upper bound excludes the main table', () => {
-    const workspace = makeWorkspace({
-      attempts: [makeAttempt({ finished_at: 200 })],
-      issues: { 'UI-1': makeIssue({ labels: ['bench'] }) }
-    });
-
-    const model = buildCompareModel({
-      workspaces: [workspace],
-      filters: { until: 100 }
-    });
-
-    expect(model.rows).toEqual([]);
-    expect(model.bench_rows).toHaveLength(1);
   });
 });
 
@@ -2713,17 +2570,14 @@ describe('worker/compare-projection grouping and summary', () => {
     ).toEqual([]);
   });
 
-  test('removes obsolete main-table fields while preserving bench verification', () => {
-    const model = projectAttempts(
-      [makeAttempt({ bench_verify: { ok: true } })],
-      {},
-      { include_bench: true }
-    );
+  test('removes obsolete main-table fields from rows and groups', () => {
+    const model = projectAttempts([makeAttempt()]);
 
     for (const field of [
       'signature',
       'signature_parts',
       'verify_source',
+      'is_bench',
       'attempt',
       'representative'
     ]) {
@@ -2742,7 +2596,6 @@ describe('worker/compare-projection grouping and summary', () => {
     ]) {
       expect(model.groups[0]).not.toHaveProperty(field);
     }
-    expect(model.bench_rows[0].verify).toBe('pass');
   });
 });
 
@@ -2985,8 +2838,7 @@ describe('worker/compare-projection collection', () => {
                 ]
               })
             ],
-            catalog: null,
-            listRuns: () => []
+            catalog: null
           }
         );
 
@@ -3025,8 +2877,7 @@ describe('worker/compare-projection collection', () => {
         {},
         {
           workspaces: [makeWorkspace({ attempts: [makeAttempt()] })],
-          catalog: null,
-          listRuns: () => []
+          catalog: null
         }
       );
 
@@ -3036,6 +2887,19 @@ describe('worker/compare-projection collection', () => {
     } finally {
       runtime_spy.mockRestore();
     }
+  });
+
+  test('answers without a bench runs list (UI-dbn6 §4.5)', () => {
+    const model = compareSnapshot(
+      { include_bench: true },
+      {
+        workspaces: [makeWorkspace({ attempts: [makeAttempt()] })],
+        presets: [],
+        catalog: null
+      }
+    );
+
+    expect(model).not.toHaveProperty('runs');
   });
 
   test('ignores issue_types during historical preparation as well as row filtering', async () => {
@@ -3052,7 +2916,6 @@ describe('worker/compare-projection collection', () => {
         ],
         presets: [],
         catalog: null,
-        listRuns: () => [],
         observations: /** @type {any} */ ({
           prepareHistorical,
           get: () => null
@@ -3083,7 +2946,6 @@ describe('worker/compare-projection collection', () => {
         ],
         presets: [],
         catalog: null,
-        listRuns: () => [],
         observations: /** @type {any} */ ({
           prepareHistorical,
           get: () => null

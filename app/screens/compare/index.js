@@ -9,8 +9,7 @@
  *
  * The data is one `get-compare` request/reply — no push: it is read when the
  * screen opens, when a filter or the criteria change and on `새로고침`.
- * `include_bench` is always `false` and the reply's experiment material
- * (`runs`, `bench_rows`) is never read: the experiment section is gone.
+ * There is no experiment section: bench clone rows never reach the table.
  */
 import { html, nothing } from 'lit-html';
 import {
@@ -241,7 +240,6 @@ export function createCompareView(root, options = {}) {
         range: filters.range,
         root_dirs: filters.root_dir ? [filters.root_dir] : [],
         routes: filters.route ? [filters.route] : [],
-        include_bench: false,
         group_by,
         ...(saved_criteria === null
           ? {}
