@@ -54,6 +54,7 @@ afterEach(() => {
  *   list_code?: number,
  *   new_session?: { code: number, stdout?: string, stderr?: string },
  *   new_window?: { code: number, stdout?: string, stderr?: string },
+ *   sessions?: string,
  *   throw_on?: string
  * }} [script]
  */
@@ -104,6 +105,12 @@ function makeTmux(script = {}) {
         stderr: '',
         ...(script.new_window ?? {})
       };
+    }
+    if (args[0] === 'list-sessions' && script.sessions !== undefined) {
+      return { code: 0, stdout: script.sessions, stderr: '' };
+    }
+    if (args[0] === 'select-window') {
+      return { code: 0, stdout: '', stderr: '' };
     }
     return { code: 1, stdout: '', stderr: 'unknown command' };
   };
@@ -848,6 +855,60 @@ describe('direction-inquiry click', () => {
       tmux_window: BEAD
     });
     expect(readIssue).not.toHaveBeenCalled();
+  });
+
+  test('opens a clicked conversation as the user session current window', async () => {
+    const tmux = makeTmux({
+      sessions: ':bdui-inquiry\n300:dev\n',
+      panes_seq: [[], [], [['dev', '%9', BEAD, '0']]]
+    });
+    const { inquiry } = makeInquiry({ tmux });
+
+    const outcome = await inquiry.launchForClick(parkedInput());
+
+    const args = tmux.calls.find((call) => call[0] === 'new-window') || [];
+    expect(args[args.indexOf('-t') + 1]).toBe('dev');
+    expect(args).not.toContain('-d');
+    expect(outcome).toMatchObject({
+      session: 'launched',
+      placement: 'user',
+      tmux_session: 'dev',
+      tmux_window: BEAD
+    });
+  });
+
+  test('keeps the automatic conversation in the inquiry session background', async () => {
+    const tmux = makeTmux({
+      sessions: '300:dev\n',
+      panes: [['bdui-inquiry', '%1', '', '0']],
+      panes_after: [['bdui-inquiry', '%9', BEAD, '0']]
+    });
+    const { inquiry } = makeInquiry({ tmux });
+
+    const outcome = await inquiry.onParkedAttempt(parkedInput());
+
+    const args = tmux.calls.find((call) => call[0] === 'new-window') || [];
+    expect(args[args.indexOf('-t') + 1]).toBe('bdui-inquiry');
+    expect(args).toContain('-d');
+    expect(tmux.names()).not.toContain('list-sessions');
+    expect(outcome).toMatchObject({
+      placement: 'inquiry',
+      tmux_session: 'bdui-inquiry'
+    });
+  });
+
+  test('makes the live conversation window current on a click', async () => {
+    const tmux = makeTmux({ panes: [['dev', '%1', BEAD, '0']] });
+    const { inquiry } = makeInquiry({ tmux });
+
+    const outcome = await inquiry.launchForClick(parkedInput());
+
+    expect(tmux.calls).toContainEqual(['select-window', '-t', '%1']);
+    expect(outcome).toMatchObject({
+      session: 'already_running',
+      placement: 'user',
+      tmux_session: 'dev'
+    });
   });
 
   test('refuses a click when the pane marker cannot be read', async () => {

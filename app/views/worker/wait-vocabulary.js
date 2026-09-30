@@ -317,6 +317,159 @@ export const RELATION_CHIPS = Object.freeze(
 );
 
 /**
+ * @typedef {'success'|'danger'|'progress'|'neutral'} ExternalJobTone
+ * @typedef {Object} ExternalJobRow
+ * @property {string} glyph
+ * @property {string} host - `로컬` when the job names no host.
+ * @property {string} id - Slurm `job_id` or `pid <n>`; `''` without material.
+ * @property {string} state - The state word; `''` without material.
+ * @property {ExternalJobTone} tone
+ * @property {string} elapsed - `1h29m` · `19m` · `<1m`; `''` without material.
+ * @property {string} title - The raw state, exit code and evidence.
+ * @typedef {Object} ExternalJobRows
+ * @property {ExternalJobRow[]} rows - At most four lines, overflow included.
+ * @property {string} more - `외 <n>건 · 전체는 상세의 잡 표`, or `''`.
+ */
+
+/** Slurm states of a job that is still queued (UI-a119 §3.4). */
+const QUEUED_JOB_STATES = Object.freeze(['PENDING', 'CONFIGURING', 'REQUEUED']);
+
+/** Lines an external-work card gives its jobs, the overflow line included. */
+const EXTERNAL_JOB_LINE_LIMIT = 4;
+
+/**
+ * One job's glyph, state word, tone and sort group (UI-a119 §3.4 table). The
+ * group orders running → other waiting → failed/unknown → completed.
+ *
+ * @param {import('../../protocol.js').ExternalWaitObservation['jobs'][number]} job
+ * @returns {{ glyph: string, state: string, tone: ExternalJobTone, group: number }}
+ */
+function externalJobState(job) {
+  const state = typeof job.state === 'string' ? job.state : '';
+  const terminal = job.terminal;
+  if (terminal) {
+    if (
+      state === 'COMPLETED' &&
+      (typeof terminal.exit_code !== 'number' || terminal.exit_code === 0) &&
+      terminal.recovery_needed !== true
+    ) {
+      return { glyph: '✓', state: '완료', tone: 'success', group: 3 };
+    }
+    if (state === 'VANISHED') {
+      return { glyph: '?', state: '결과 모름', tone: 'neutral', group: 2 };
+    }
+    return { glyph: '✕', state: '실패', tone: 'danger', group: 2 };
+  }
+  if (state === 'RUNNING') {
+    return { glyph: '◐', state: '실행 중', tone: 'progress', group: 0 };
+  }
+  if (QUEUED_JOB_STATES.includes(state)) {
+    return { glyph: '○', state: '대기 중', tone: 'neutral', group: 1 };
+  }
+  if (state === 'UNKNOWN') {
+    return { glyph: '·', state: '확인 중', tone: 'neutral', group: 1 };
+  }
+  return { glyph: '·', state, tone: 'neutral', group: 1 };
+}
+
+/**
+ * A job's elapsed cell: `1h29m` from an hour, `19m` from a minute, `<1m`
+ * below, and `''` when either instant is missing.
+ *
+ * @param {number} from
+ * @param {number} to
+ * @returns {string}
+ */
+function externalJobElapsed(from, to) {
+  if (!Number.isFinite(from) || !Number.isFinite(to)) {
+    return '';
+  }
+  const minutes = Math.floor(Math.max(0, to - from) / 60_000);
+  if (minutes >= 60) {
+    return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`;
+  }
+  return minutes >= 1 ? `${minutes}m` : '<1m';
+}
+
+/**
+ * The job lines of one external-work card (UI-a119 §3.4). Renderers only draw
+ * this result. A terminal job's elapsed ends at its own `observed_at` — the
+ * observer stops re-reading a job once it has seen it end — never at the
+ * record-wide `completion.completed_at`, which is the LAST job's end. A row
+ * with no id, state or elapsed material is dropped; no rows means the caller
+ * falls back to the server headline.
+ *
+ * @param {import('../../protocol.js').ExternalWaitObservation|null|undefined} record
+ * @param {number} now
+ * @returns {ExternalJobRows}
+ */
+export function externalJobRows(record, now) {
+  const jobs = Array.isArray(record?.jobs) ? record.jobs : [];
+  const rows = jobs
+    .map((job, index) => {
+      const judged = externalJobState(job);
+      const submitted = Date.parse(job.submitted_at);
+      const end = job.terminal ? Date.parse(job.observed_at || '') : now;
+      const host =
+        job.adapter === 'slurm' &&
+        typeof job.ssh_host === 'string' &&
+        job.ssh_host.length > 0
+          ? job.ssh_host
+          : '로컬';
+      const id =
+        job.adapter === 'slurm'
+          ? typeof job.job_id === 'string'
+            ? job.job_id
+            : ''
+          : Number.isInteger(job.pid)
+            ? `pid ${job.pid}`
+            : '';
+      const exit_code = job.terminal?.exit_code;
+      return {
+        row: {
+          glyph: judged.glyph,
+          host,
+          id,
+          state: judged.state,
+          tone: judged.tone,
+          elapsed: externalJobElapsed(submitted, end),
+          title: [
+            job.state || '',
+            typeof exit_code === 'number' ? `exit ${exit_code}` : '',
+            job.terminal?.recovery_needed === true ? 'recovery_needed' : '',
+            job.terminal?.evidence || ''
+          ]
+            .filter(Boolean)
+            .join(' · ')
+        },
+        group: judged.group,
+        submitted: Number.isFinite(submitted) ? submitted : Infinity,
+        index
+      };
+    })
+    .filter((entry) => entry.row.id || entry.row.state || entry.row.elapsed)
+    .sort(
+      (a, b) =>
+        a.group - b.group ||
+        (a.submitted === b.submitted
+          ? 0
+          : a.submitted < b.submitted
+            ? -1
+            : 1) ||
+        a.index - b.index
+    )
+    .map((entry) => entry.row);
+  if (rows.length <= EXTERNAL_JOB_LINE_LIMIT) {
+    return { rows, more: '' };
+  }
+  const shown = EXTERNAL_JOB_LINE_LIMIT - 1;
+  return {
+    rows: rows.slice(0, shown),
+    more: `외 ${rows.length - shown}건 · 전체는 상세의 잡 표`
+  };
+}
+
+/**
  * Summary chips shared by the Worker KPI line and the Monitor total line (§8).
  *
  * `prefix` is the word the real chip draws before its count; `label` is the

@@ -314,14 +314,18 @@ export function buildResolvePrompt(input) {
  * session at all follows current execution settings.
  * @property {string|null} command
  * @property {boolean} bridge_active
+ * @property {import('./tmux-launcher.js').LaunchPlacement|null} placement -
+ * Where the launcher opened or found the window; null when not launched.
  * @property {string|null} tmux_session
  * @property {string|null} tmux_window
  */
 
 /**
- * The tmux session every click-started interactive window opens in: the
- * `worker_direction_inquiry.tmux_session` config value, else the default. The
- * resolution launcher and the external-wait session resume share it.
+ * The configured inquiry tmux session: the
+ * `worker_direction_inquiry.tmux_session` config value, else the default. A
+ * click-started window opens in the user's own session and falls back to this
+ * one (UI-a119 §3.1); the resolution launcher and the external-wait session
+ * resume share the name.
  *
  * @param {() => any} getConfig
  * @param {(...args: any[]) => void} log
@@ -474,7 +478,8 @@ export function createResolveSession(deps) {
         window_name: `resolve-${input.bead_id}`,
         cwd: checkout,
         commandArgs: command_args,
-        runner
+        runner,
+        placement: 'user'
       });
       if (outcome.session === 'launched') {
         try {
@@ -531,9 +536,18 @@ export function createResolveSession(deps) {
               : runner
             : forkCommand(runner, session_id, launch_session_id),
         bridge_active: launcher.bridgeActive(),
+        placement:
+          outcome.session === 'not_launched'
+            ? null
+            : (outcome.placement ?? null),
         tmux_session:
-          outcome.session === 'launched' ? outcome.tmux_session : null,
-        tmux_window: outcome.session === 'launched' ? outcome.tmux_window : null
+          outcome.session === 'not_launched'
+            ? null
+            : (outcome.tmux_session ?? null),
+        tmux_window:
+          outcome.session === 'not_launched'
+            ? null
+            : (outcome.tmux_window ?? null)
       };
     }
   };

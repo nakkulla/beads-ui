@@ -792,6 +792,102 @@ describe('interactive session projection', () => {
   });
 });
 
+describe('live resume window lane (UI-a119 §3.3)', () => {
+  const resume_record = {
+    bead_id: 'A-1',
+    kind: 'external_resume',
+    provider: 'claude',
+    session_id: 'sid',
+    mode: 'resume',
+    source: 'session_ref',
+    fallback_reason: null,
+    attempt_id: null,
+    tmux_session: 'dev',
+    tmux_window: 'A-1',
+    state: 'live',
+    settled_at: null,
+    launched_at: 1_000,
+    discord_url: null
+  };
+
+  /**
+   * @param {Record<string, any>} [record_patch]
+   * @param {Record<string, any>} [patch]
+   */
+  function withResume(record_patch = {}, patch = {}) {
+    return buildLanes(
+      [
+        workspace({
+          runnable: [{ bead_id: 'A-1', title: 'consumer', status: 'open' }],
+          interactive_sessions: {
+            'A-1:external_resume': { ...resume_record, ...record_patch }
+          },
+          ...patch
+        })
+      ],
+      [state()]
+    );
+  }
+
+  test('stands a keyless open bead with a live resume window as a session tile', () => {
+    const lanes = withResume();
+
+    expect(lanes.runnable).toHaveLength(0);
+    expect(lanes.running).toHaveLength(1);
+    expect(lanes.running[0]).toMatchObject({
+      id: 'A-1',
+      title: 'consumer',
+      lane: 'running',
+      kind: 'session',
+      status: 'open',
+      started_at: 1_000
+    });
+  });
+
+  test('carries the resume window onto the session tile', () => {
+    const lanes = withResume();
+
+    expect(lanes.running[0].interactive_sessions?.[0]).toMatchObject({
+      kind: 'external_resume',
+      tmux_session: 'dev',
+      tmux_window: 'A-1'
+    });
+  });
+
+  test.each([
+    ['a settled record', { settled_at: 2_000 }],
+    ['an exiting record', { state: 'exiting' }]
+  ])('returns the bead to the candidates with %s', (_case, record_patch) => {
+    const lanes = withResume(record_patch);
+
+    expect(lanes.running).toHaveLength(0);
+    expect(lanes.runnable.map((item) => item.id)).toEqual(['A-1']);
+  });
+
+  test('leaves a candidate with another kind of live session in place', () => {
+    const lanes = withResume({ kind: 'resolve' });
+
+    expect(lanes.runnable.map((item) => item.id)).toEqual(['A-1']);
+  });
+
+  test('hands a claimed bead to the in_progress session tile', () => {
+    const lanes = withResume(
+      {},
+      {
+        session_active: [
+          { bead_id: 'A-1', status: 'in_progress', updated_at: 5 }
+        ]
+      }
+    );
+
+    expect(lanes.running).toHaveLength(1);
+    expect(lanes.running[0]).toMatchObject({
+      kind: 'session',
+      status: 'in_progress'
+    });
+  });
+});
+
 describe('monitor 실행가능 repo sections (UI-eey2 §5)', () => {
   test('groups candidates per repo in workspaces_state order', () => {
     const lanes = buildLanes(

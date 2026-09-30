@@ -4313,6 +4313,108 @@ function setupExternalWait(action, input = {}) {
   });
 }
 
+describe('views/monitor external job lines and resume window (UI-a119)', () => {
+  test('draws the job lines on a monitor wait row without the release line', () => {
+    const { mount, view } = setupExternalWait({
+      op: 'external_wait_check',
+      label: '[지금 확인]',
+      payload: { root_dir: '/repo', wait_id: 'w-0123456789ab' }
+    });
+
+    view.load();
+
+    const row = el(mount, '.worker-mini[data-bead-id="A-1"]');
+    expect(row.querySelectorAll('.external-job')).toHaveLength(1);
+    expect(row.querySelector('.external-job__host')?.textContent).toBe(
+      'wallace'
+    );
+    expect(row.querySelector('.wait-reason__release')).toBeNull();
+  });
+
+  test('tails the monitor wait badge with the ended job count', () => {
+    const row = externalWait({
+      jobs: [
+        externalWait().jobs[0],
+        {
+          ...externalWait().jobs[0],
+          job_id: '43',
+          state: 'COMPLETED',
+          terminal: {
+            exit_code: 0,
+            evidence: 'sacct',
+            recovery_needed: false,
+            expected_results: []
+          }
+        }
+      ]
+    });
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          root_dir: '/repo',
+          queue: [{ bead_id: 'A-1' }],
+          external_waits: [row],
+          wait_reasons: [
+            externalWaitReason({
+              op: 'external_wait_check',
+              label: '[지금 확인]',
+              payload: { root_dir: '/repo', wait_id: row.wait_id }
+            })
+          ]
+        })
+      ],
+      workspaces_state: [state({ root_dir: '/repo' })]
+    });
+
+    view.load();
+
+    expect(
+      el(
+        mount,
+        '.worker-mini[data-bead-id="A-1"] .wait-verdict summary'
+      ).textContent?.trim()
+    ).toBe('⏳ 외부 작업 · 1/2 완료');
+  });
+
+  test('stands a live resume window bead in the monitor running lane', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-1', title: 'consumer', status: 'open' }],
+          interactive_sessions: {
+            'A-1:external_resume': {
+              bead_id: 'A-1',
+              kind: 'external_resume',
+              provider: 'claude',
+              session_id: 'sid',
+              mode: 'resume',
+              source: 'session_ref',
+              fallback_reason: null,
+              attempt_id: null,
+              tmux_session: 'dev',
+              tmux_window: 'A-1',
+              state: 'live',
+              settled_at: null,
+              launched_at: 1_000
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(mount.querySelector('.worker-card[data-bead-id="A-1"]')).toBeNull();
+    expect(
+      el(
+        mount,
+        '.rtile[data-bead-id="A-1"] .interactive-session-badge'
+      ).textContent?.trim()
+    ).toBe('▤ 재개 세션 · dev:A-1');
+  });
+});
+
 describe('views/monitor external wait confirm and session resume (UI-r6xq §4.4)', () => {
   test('sends nothing when the stop confirm is cancelled', async () => {
     const confirm = vi.fn(() => false);
@@ -4343,7 +4445,8 @@ describe('views/monitor external wait confirm and session resume (UI-r6xq §4.4)
       reason: null,
       command: 'claude --resume s-1',
       owner_tmux: null,
-      tmux_session: 'bdui',
+      placement: 'user',
+      tmux_session: 'dev',
       tmux_window: 'A-1',
       pane_id: '%1',
       bridge_active: true
@@ -4371,7 +4474,7 @@ describe('views/monitor external wait confirm and session resume (UI-r6xq §4.4)
       mode: 'session'
     });
     expect(document.querySelector('.toast')?.textContent).toBe(
-      '세션을 열었습니다 · tmux bdui:A-1 · Discord 브리지 활성'
+      'dev:A-1에 열었습니다 · 활성 창 · Discord 브리지 활성'
     );
   });
 

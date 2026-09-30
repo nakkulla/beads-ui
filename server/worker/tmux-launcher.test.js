@@ -12,7 +12,8 @@ import {
   createTmuxLauncher,
   defaultResolveRunner,
   markerWrapper,
-  paneFormatExtended
+  paneFormatExtended,
+  pickUserSession
 } from './tmux-launcher.js';
 
 /**
@@ -100,7 +101,13 @@ describe('tmux-launcher C-locale pane listing', () => {
         commandArgs: []
       });
 
-      expect(result).toEqual({ session: 'already_running' });
+      expect(result).toEqual({
+        session: 'already_running',
+        placement: 'inquiry',
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'test',
+        pane_id: '%1'
+      });
     }
   );
 
@@ -192,11 +199,300 @@ describe('tmux-launcher C-locale pane listing', () => {
 
     expect(result).toEqual({
       session: 'launched',
+      placement: 'inquiry',
       tmux_session: 'bdui-inquiry',
       tmux_window: 'test',
       pane_id: '%2'
     });
     expect(calls).toEqual(['list-panes', 'new-window', 'list-panes']);
+  });
+});
+
+describe('pickUserSession (UI-a119 §3.1)', () => {
+  test('picks the most recently attached session', () => {
+    const stdout = '100:work\n300:dev\n200:notes\n';
+
+    const picked = pickUserSession(stdout, 'bdui-inquiry');
+
+    expect(picked).toBe('dev');
+  });
+
+  test('skips a session that was never attached', () => {
+    const stdout = ':claude-retry-1\n100:work\n';
+
+    const picked = pickUserSession(stdout, 'bdui-inquiry');
+
+    expect(picked).toBe('work');
+  });
+
+  test('excludes the configured inquiry session', () => {
+    const stdout = '900:bdui-inquiry\n100:work\n';
+
+    const picked = pickUserSession(stdout, 'bdui-inquiry');
+
+    expect(picked).toBe('work');
+  });
+
+  test('breaks a last-attached tie by the first name', () => {
+    const stdout = '500:zeta\n500:alpha\n';
+
+    const picked = pickUserSession(stdout, 'bdui-inquiry');
+
+    expect(picked).toBe('alpha');
+  });
+
+  test('finds no candidate when only unattached sessions exist', () => {
+    const stdout = ':bdui-inquiry\n:claude-retry-1\n';
+
+    const picked = pickUserSession(stdout, 'bdui-inquiry');
+
+    expect(picked).toBeNull();
+  });
+});
+
+/**
+ * A fake tmux for placement tests: `list-sessions` answers `sessions` (or
+ * fails when it is null), and an opened window joins the pane listing.
+ *
+ * @param {{ sessions?: string|null, panes?: Record<string, string>[], select_code?: number }} [script]
+ */
+function placementTmux(script = {}) {
+  /** @type {Record<string, string>[]} */
+  const panes = [...(script.panes ?? [])];
+  /** @type {string[][]} */
+  const calls = [];
+  const runTmux = async (/** @type {string[]} */ args) => {
+    calls.push(args);
+    if (args[0] === 'list-panes') {
+      return { code: 0, stdout: renderPanes(args[3], panes), stderr: '' };
+    }
+    if (args[0] === 'list-sessions') {
+      return script.sessions === null
+        ? { code: 1, stdout: '', stderr: 'no server running' }
+        : { code: 0, stdout: script.sessions ?? '', stderr: '' };
+    }
+    if (args[0] === 'select-window') {
+      return {
+        code: script.select_code ?? 0,
+        stdout: '',
+        stderr: script.select_code ? "can't find window" : ''
+      };
+    }
+    if (args[0] === 'new-window') {
+      const target = args[args.indexOf('-t') + 1];
+      panes.push({
+        session_name: target,
+        pane_id: '%7',
+        pane_dead: '0',
+        [INQUIRY_PANE_MARKER]: 'UI-a119'
+      });
+      return { code: 0, stdout: '%7\n', stderr: '' };
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  const launcher = createTmuxLauncher({
+    runTmux,
+    resolveRunner: () => '/usr/bin/true',
+    log: () => {}
+  });
+  /** @param {'user'|'inquiry'} [placement] */
+  const launch = (placement) =>
+    launcher.launch({
+      marker: INQUIRY_PANE_MARKER,
+      key: 'UI-a119',
+      tmux_session: 'bdui-inquiry',
+      window_name: 'UI-a119',
+      cwd: '/tmp',
+      commandArgs: [],
+      ...(placement ? { placement } : {})
+    });
+  return {
+    calls,
+    launcher,
+    launch,
+    newWindow: () => calls.find((call) => call[0] === 'new-window') ?? []
+  };
+}
+
+describe('tmux-launcher user placement (UI-a119 §3.1)', () => {
+  test('opens a click window in the most recently attached user session', async () => {
+    const tmux = placementTmux({
+      sessions: ':bdui-inquiry\n100:work\n300:dev\n',
+      panes: [{ session_name: 'bdui-inquiry', pane_id: '%1', pane_dead: '0' }]
+    });
+
+    const result = await tmux.launch('user');
+
+    expect(result).toEqual({
+      session: 'launched',
+      placement: 'user',
+      tmux_session: 'dev',
+      tmux_window: 'UI-a119',
+      pane_id: '%7'
+    });
+    expect(tmux.newWindow()[tmux.newWindow().indexOf('-t') + 1]).toBe('dev');
+  });
+
+  test('makes the user window current by omitting -d', async () => {
+    const tmux = placementTmux({ sessions: '300:dev\n' });
+
+    await tmux.launch('user');
+
+    expect(tmux.newWindow()).not.toContain('-d');
+  });
+
+  test('never creates or switches a session for a user window', async () => {
+    const tmux = placementTmux({ sessions: '300:dev\n' });
+
+    await tmux.launch('user');
+
+    expect(tmux.calls.map((call) => call[0])).toEqual([
+      'list-panes',
+      'list-sessions',
+      'new-window',
+      'list-panes'
+    ]);
+  });
+
+  test.each([
+    ['no attached user session', ':bdui-inquiry\n:claude-retry-1\n'],
+    ['a failed session listing', null]
+  ])(
+    'falls back to the inquiry session in the background on %s',
+    async (_case, sessions) => {
+      const tmux = placementTmux({
+        sessions,
+        panes: [{ session_name: 'bdui-inquiry', pane_id: '%1', pane_dead: '0' }]
+      });
+
+      const result = await tmux.launch('user');
+
+      expect(result).toMatchObject({
+        session: 'launched',
+        placement: 'inquiry',
+        tmux_session: 'bdui-inquiry'
+      });
+      expect(tmux.newWindow()).toContain('-d');
+      expect(tmux.newWindow()[tmux.newWindow().indexOf('-t') + 1]).toBe(
+        'bdui-inquiry'
+      );
+    }
+  );
+
+  test('keeps an automatic launch off the session listing', async () => {
+    const tmux = placementTmux({
+      sessions: '300:dev\n',
+      panes: [{ session_name: 'bdui-inquiry', pane_id: '%1', pane_dead: '0' }]
+    });
+
+    const result = await tmux.launch();
+
+    expect(result).toMatchObject({
+      placement: 'inquiry',
+      tmux_session: 'bdui-inquiry'
+    });
+    expect(tmux.calls.map((call) => call[0])).not.toContain('list-sessions');
+    expect(tmux.newWindow()).toContain('-d');
+  });
+
+  test('selects the live window a click points at instead of opening one', async () => {
+    const tmux = placementTmux({
+      sessions: '300:dev\n',
+      panes: [
+        {
+          session_name: 'dev',
+          pane_id: '%4',
+          pane_dead: '0',
+          [INQUIRY_PANE_MARKER]: 'UI-a119'
+        }
+      ]
+    });
+
+    const result = await tmux.launch('user');
+
+    expect(result).toEqual({
+      session: 'already_running',
+      placement: 'user',
+      tmux_session: 'dev',
+      tmux_window: 'UI-a119',
+      pane_id: '%4'
+    });
+    expect(tmux.calls).toEqual([
+      ['list-panes', '-a', '-F', expect.any(String)],
+      ['select-window', '-t', '%4']
+    ]);
+  });
+
+  test('keeps the already-running reply when select-window fails', async () => {
+    const tmux = placementTmux({
+      select_code: 1,
+      panes: [
+        {
+          session_name: 'dev',
+          pane_id: '%4',
+          pane_dead: '0',
+          [INQUIRY_PANE_MARKER]: 'UI-a119'
+        }
+      ]
+    });
+
+    const result = await tmux.launch('user');
+
+    expect(result).toMatchObject({
+      session: 'already_running',
+      tmux_session: 'dev',
+      pane_id: '%4'
+    });
+  });
+
+  test('leaves the active window alone for an automatic duplicate', async () => {
+    const tmux = placementTmux({
+      panes: [
+        {
+          session_name: 'bdui-inquiry',
+          pane_id: '%4',
+          pane_dead: '0',
+          [INQUIRY_PANE_MARKER]: 'UI-a119'
+        }
+      ]
+    });
+
+    await tmux.launch();
+
+    expect(tmux.calls.map((call) => call[0])).toEqual(['list-panes']);
+  });
+
+  test('focuses a live window for a caller answering a click', async () => {
+    const tmux = placementTmux({
+      panes: [
+        {
+          session_name: 'bdui-inquiry',
+          pane_id: '%4',
+          pane_dead: '0',
+          [INQUIRY_PANE_MARKER]: 'UI-a119'
+        }
+      ]
+    });
+
+    const focused = await tmux.launcher.focusRunning({
+      marker: INQUIRY_PANE_MARKER,
+      key: 'UI-a119',
+      tmux_session: 'bdui-inquiry',
+      window_name: 'UI-a119',
+      placement: 'user'
+    });
+
+    expect(focused).toEqual({
+      ok: true,
+      outcome: {
+        session: 'already_running',
+        placement: 'inquiry',
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'UI-a119',
+        pane_id: '%4'
+      }
+    });
+    expect(tmux.calls.at(-1)).toEqual(['select-window', '-t', '%4']);
   });
 });
 

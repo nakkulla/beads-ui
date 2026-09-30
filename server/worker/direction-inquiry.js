@@ -176,6 +176,8 @@ export function recoverySentence(summary) {
  * keeps the same provider.
  * @property {string|null} command
  * @property {boolean} bridge_active
+ * @property {import('./tmux-launcher.js').LaunchPlacement|null} [placement] -
+ * Where the window actually opened or was found; null when not launched.
  * @property {string|null} tmux_session
  * @property {string|null} tmux_window
  * @property {string|null} [stop] - The stop label the entry block printed.
@@ -378,6 +380,7 @@ export function createDirectionInquiry(deps) {
       runner: facts.runner ?? 'claude',
       command: null,
       bridge_active: launcher.bridgeActive(),
+      placement: null,
       tmux_session: null,
       tmux_window: null,
       stop: facts.stop ?? null,
@@ -386,9 +389,10 @@ export function createDirectionInquiry(deps) {
   }
 
   /**
-   * Map the shared launcher result to the click response contract.
+   * Map the shared launcher result to the click response contract. The window
+   * coordinates are the launcher's, since it alone chose the session.
    *
-   * @param {any} outcome
+   * @param {import('./tmux-launcher.js').LaunchOutcome} outcome
    * @param {{ session_id: string|null, runner: 'claude'|'codex', source: 'attempt'|'fresh', fallback_reason: string|null }} target
    * @param {{ tmux_session: string, bead_id: string, stop: string, sentence: string|null }} place
    * @param {string|null} launch_session_id
@@ -413,9 +417,16 @@ export function createDirectionInquiry(deps) {
           ? `claude --session-id ${shellQuote(/** @type {string} */ (launch_session_id))}`
           : target.runner,
       bridge_active: launcher.bridgeActive(),
+      placement:
+        outcome.session === 'not_launched' ? null : (outcome.placement ?? null),
       tmux_session:
-        outcome.session === 'not_launched' ? null : place.tmux_session,
-      tmux_window: outcome.session === 'not_launched' ? null : place.bead_id,
+        outcome.session === 'not_launched'
+          ? null
+          : (outcome.tmux_session ?? place.tmux_session),
+      tmux_window:
+        outcome.session === 'not_launched'
+          ? null
+          : (outcome.tmux_window ?? place.bead_id),
       stop: place.stop,
       sentence: place.sentence
     };
@@ -538,6 +549,8 @@ export function createDirectionInquiry(deps) {
           ? ['--session-id', /** @type {string} */ (launch_session_id), block]
           : [block];
     const cwd = worktree_present ? worktree : checkout;
+    // A click opens in the person's own tmux session; the automatic trigger
+    // stays in the background inquiry session (UI-a119 §3.1).
     const launched = await launcher.launch({
       marker: PANE_MARKER,
       key: bead_id,
@@ -545,7 +558,8 @@ export function createDirectionInquiry(deps) {
       window_name: bead_id,
       cwd,
       commandArgs: command_args,
-      runner: target.runner
+      runner: target.runner,
+      placement: automatic ? 'inquiry' : 'user'
     });
     if (launched.session === 'launched') {
       try {
@@ -697,20 +711,25 @@ export function createDirectionInquiry(deps) {
       ) {
         return refusal('invalid_park');
       }
-      const listed = await launcher.listPanes(PANE_MARKER);
-      if (!listed.ok) {
+      const focused = await launcher.focusRunning({
+        marker: PANE_MARKER,
+        key: bead_id,
+        tmux_session: readInquiryConfig().tmux_session,
+        window_name: bead_id,
+        placement: 'user'
+      });
+      if (!focused.ok) {
         return refusal('tmux_unavailable');
       }
-      const live = listed.rows.find(
-        (row) => row.key === bead_id && row.dead === '0'
-      );
-      if (live) {
+      const live = focused.outcome;
+      if (live && live.session === 'already_running') {
         return {
           ...refusal('already_running'),
           session: 'already_running',
           reason: null,
-          tmux_session: live.session,
-          tmux_window: bead_id
+          placement: live.placement ?? null,
+          tmux_session: live.tmux_session ?? null,
+          tmux_window: live.tmux_window ?? bead_id
         };
       }
       if (in_flight.has(bead_id)) {

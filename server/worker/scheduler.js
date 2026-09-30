@@ -780,9 +780,10 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * attachment built without it (every hermetic test) refuses the dispatch as
  * `not_external` rather than launching against an unverified bead.
  * @property {{ existsSync: (path: string) => boolean }} [fs]
- * @property {() => string} [interactiveTmuxSession] - The tmux session a
- * click-started interactive window opens in (resolve-session
- * `interactiveTmuxSessionName`); the default name when unwired.
+ * @property {() => string} [interactiveTmuxSession] - The configured inquiry
+ * tmux session (resolve-session `interactiveTmuxSessionName`): a click-started
+ * window falls back to it when no user session qualifies (UI-a119 §3.1); the
+ * default name when unwired.
  * @property {Partial<import('./external-wait/session-resume.js').SessionResumeDeps>} [externalWaitSessionResume]
  * Overrides for the `[세션에서 이어가기]` launcher's IO (registry fs, ps
  * probe, session-ref options); production passes none.

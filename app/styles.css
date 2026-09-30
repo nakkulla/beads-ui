@@ -2920,6 +2920,77 @@ html[data-theme='dark'] {
   margin-block: var(--sp-4);
 }
 
+/* 외부 작업 카드의 잡 줄 (UI-a119 §3.4): 글리프·호스트·번호·상태어·경과 5열.
+   칸마다 자기 열에 고정돼 빠진 칸이 이웃을 끌어오지 않고, 호스트 칸만 줄을
+   넘겨 390px 폭에서도 가로 스크롤이 없다. */
+.external-jobs {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  column-gap: var(--sp-6);
+  row-gap: var(--sp-2);
+  align-items: baseline;
+}
+
+.external-job {
+  display: contents;
+}
+
+.external-job > span {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.external-job__glyph {
+  grid-column: 1;
+}
+
+.external-job > .external-job__host {
+  grid-column: 2;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.external-job__id {
+  grid-column: 3;
+  font-variant-numeric: tabular-nums;
+}
+
+.external-job__state {
+  grid-column: 4;
+}
+
+.external-job__elapsed {
+  grid-column: 5;
+  justify-self: end;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.external-jobs__more {
+  grid-column: 1 / -1;
+}
+
+.external-job[data-tone='success']
+  :is(.external-job__glyph, .external-job__state) {
+  color: var(--accent-success);
+}
+
+.external-job[data-tone='danger']
+  :is(.external-job__glyph, .external-job__state) {
+  color: var(--accent-danger);
+}
+
+.external-job[data-tone='progress']
+  :is(.external-job__glyph, .external-job__state) {
+  color: var(--accent);
+}
+
+.external-job[data-tone='neutral']
+  :is(.external-job__glyph, .external-job__state) {
+  color: var(--text-muted);
+}
+
 .wait-verdict,
 .wait-summary {
   position: relative;

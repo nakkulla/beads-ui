@@ -35,7 +35,11 @@ import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { watchMobile } from '../../utils/viewport.js';
 import { createChipPopover } from '../chip-popover.js';
-import { runExternalWaitAction } from '../worker/external-wait-action.js';
+import {
+  resolveLaunchText,
+  runExternalWaitAction,
+  sessionWindowText
+} from '../worker/external-wait-action.js';
 import { createLaneCollapse } from '../worker/lane-collapse.js';
 import { createLaneDrag } from '../worker/lane-drag.js';
 import {
@@ -791,15 +795,13 @@ export function createMonitorView(mount_element, options) {
         revision,
         false
       );
+      // 성공은 언제나 창 자리를 말한다 (UI-a119 §3.3) — Worker 탭과 같은 문장이다.
       if (res?.session === 'already_running') {
-        showToast(`이미 열려 있습니다 · ${res.tmux_window || '?'}`, 'info');
+        showToast(String(sessionWindowText(res)), 'info');
       } else if (res?.launched !== true) {
         showToast(`세션 기동 실패: ${res?.reason || 'unknown'}`, 'error');
-      } else if (res.mode !== 'fork' && res.mode !== 'resume') {
-        showToast(
-          `${typeof res.runner === 'string' ? res.runner : 'claude'} 새 세션으로 시작 (${res.fallback_reason || 'unknown'})`,
-          'success'
-        );
+      } else {
+        showToast(resolveLaunchText(res), 'success');
       }
     } finally {
       resolve_pending.delete(bead_id);

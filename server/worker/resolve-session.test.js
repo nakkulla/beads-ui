@@ -30,7 +30,7 @@ afterEach(() => {
  * SAME marker — which is what makes "the two session kinds do not share a
  * duplicate guard" testable at all.
  *
- * @param {{ panes?: Array<{ session?: string, pane?: string, marker?: string, key?: string, dead?: string }>, new_window?: { code: number, stdout?: string } }} [script]
+ * @param {{ panes?: Array<{ session?: string, pane?: string, marker?: string, key?: string, dead?: string }>, new_window?: { code: number, stdout?: string }, sessions?: string }} [script]
  */
 function makeTmux(script = {}) {
   /** @type {string[][]} */
@@ -81,6 +81,9 @@ function makeTmux(script = {}) {
         });
       }
       return { ...opened, stderr: '' };
+    }
+    if (args[0] === 'list-sessions' && script.sessions !== undefined) {
+      return { code: 0, stdout: script.sessions, stderr: '' };
     }
     return { code: 1, stdout: '', stderr: 'unknown command' };
   };
@@ -919,7 +922,60 @@ describe('createResolveSession (UI-jw27 §4)', () => {
     });
 
     expect(outcome.session).toBe('already_running');
-    expect(tmux.names()).toEqual(['list-panes']);
+    expect(tmux.names()).toEqual(['list-panes', 'select-window']);
+  });
+
+  test('opens the resolution window in the most recently attached user session', async () => {
+    const { tmux, resolver } = makeLauncher({
+      tmux: makeTmux({ sessions: ':bdui-inquiry\n120:work\n300:dev\n' })
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    const args = tmux.calls.find((call) => call[0] === 'new-window') || [];
+    expect(args[args.indexOf('-t') + 1]).toBe('dev');
+    expect(args).not.toContain('-d');
+    expect(outcome).toMatchObject({
+      launched: true,
+      placement: 'user',
+      tmux_session: 'dev',
+      tmux_window: `resolve-${BEAD}`
+    });
+  });
+
+  test('reports where the live resolution window a click points at is', async () => {
+    const { resolver } = makeLauncher({
+      tmux: makeTmux({
+        panes: [
+          {
+            session: 'dev',
+            pane: '%3',
+            marker: '@bdui_resolve_bead',
+            key: BEAD,
+            dead: '0'
+          }
+        ]
+      })
+    });
+
+    const outcome = await resolver.resolve({
+      workspace: REPO,
+      repo: REPO,
+      bead_id: BEAD,
+      failure: FAILURE
+    });
+
+    expect(outcome).toMatchObject({
+      session: 'already_running',
+      placement: 'user',
+      tmux_session: 'dev',
+      tmux_window: `resolve-${BEAD}`
+    });
   });
 
   test('opens one window for two concurrent clicks on the same bead', async () => {

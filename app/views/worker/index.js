@@ -68,7 +68,11 @@ import {
   saveCandidateSort,
   setChainStepKey
 } from './candidate-sort.js';
-import { runExternalWaitAction } from './external-wait-action.js';
+import {
+  resolveLaunchText,
+  runExternalWaitAction,
+  sessionWindowText
+} from './external-wait-action.js';
 import { failureSentence } from './failure-labels.js';
 import { createLaneCollapse } from './lane-collapse.js';
 import { createLaneDrag } from './lane-drag.js';
@@ -495,14 +499,15 @@ export function mergeQueueRefusalText(reason) {
 }
 
 /**
- * The one sentence a `[세션에서 해결]` reply becomes on screen.
+ * The one sentence a `[세션에서 해결]` reply becomes on screen: where the
+ * window is (UI-a119 §3.3), then any fallback caveat.
  *
  * The fallback reason is carried into the toast on purpose: a fresh session and
  * a fork look the same from outside, and the person is about to work inside the
  * difference (spec §4 — fail-quiet 은폐 금지).
  *
  * @param {any} res
- * @returns {string|null}
+ * @returns {string}
  */
 export function resolveSessionToast(res) {
   if (!res || typeof res !== 'object') {
@@ -512,20 +517,12 @@ export function resolveSessionToast(res) {
     return '큐가 바뀌어 클릭이 적용되지 않았습니다 — 다시 눌러주세요';
   }
   if (res.session === 'already_running') {
-    return `이미 열려 있습니다 · ${res.tmux_window || '?'}`;
+    return String(sessionWindowText(res));
   }
   if (res.launched !== true) {
     return `세션 기동 실패: ${res.reason || 'unknown'}`;
   }
-  // The runner is the RESULT's, never the current global setting: a fork keeps
-  // the recorded session's provider, so the person is about to work in whatever
-  // this line says (codex-orchestration-parity §4.2).
-  const runner = typeof res.runner === 'string' ? res.runner : 'claude';
-  // A same-session conversation (`resume`, UI-nuwy §3.2) reopened exactly the
-  // session the card names, so it needs no caveat either.
-  return res.mode === 'fork' || res.mode === 'resume'
-    ? null
-    : `${runner} 새 세션으로 시작 (${res.fallback_reason || 'unknown'})`;
+  return resolveLaunchText(res);
 }
 
 /**
@@ -2461,10 +2458,7 @@ export function createWorkerView(mount_element, options = {}) {
         })
       );
       adopt(res);
-      const message = resolveSessionToast(res);
-      if (message !== null) {
-        showToast(message, resolveSessionTone(res), 4000);
-      }
+      showToast(resolveSessionToast(res), resolveSessionTone(res), 4000);
     } finally {
       resolve_pending.delete(bead_id);
       doRender();

@@ -4032,6 +4032,51 @@ export function buildLanes(workspaces, workspaces_state, options) {
         entry.workflow && typeof entry.workflow === 'object'
           ? entry.workflow
           : null;
+      // 재개 창이 살아 있는 키 없는 `open` Bead는 후보가 아니라 실행 중 레인의
+      // 세션 타일이다 (UI-a119 §3.3). 세션이 클레임하면 앞의 `session_active`
+      // 규칙이 이어받고, 레코드가 정산되면 이 규칙이 풀려 후보로 돌아간다.
+      const resume_window = (
+        interactive_by_bead.get(`${root_dir}\u0000${bead_id}`) || []
+      ).find(
+        (view) =>
+          view.kind === 'external_resume' &&
+          view.state === 'live' &&
+          view.settled_at === null
+      );
+      if (resume_window) {
+        const updated_at = validTime(entry.updated_at);
+        running.push({
+          ...base(bead_id),
+          title: entry.title || titles[bead_id] || bead_id,
+          lane: 'running',
+          kind: 'session',
+          status: 'open',
+          started_at: validTime(resume_window.launched_at) ?? undefined,
+          ...(updated_at !== null ? { updated_at } : {}),
+          workflow: /** @type {any} */ (workflow),
+          labels: Array.isArray(entry.labels) ? entry.labels : [],
+          spec_id: typeof entry.spec_id === 'string' ? entry.spec_id : '',
+          blocked: entry.blocked === true,
+          ...(Array.isArray(entry.blocked_by)
+            ? {
+                blocked_by: entry.blocked_by.filter(
+                  (/** @type {unknown} */ blocker_id) =>
+                    typeof blocker_id === 'string' && blocker_id.length > 0
+                )
+              }
+            : {}),
+          draggable: false,
+          can_pause: false,
+          can_resume: false,
+          exec_chips: null,
+          legs: [],
+          last_activity: null,
+          session_refs: [],
+          badges: [],
+          alert: false
+        });
+        continue;
+      }
       const route =
         (workflow && typeof workflow.route === 'string' && workflow.route) ||
         (typeof entry.route === 'string' ? entry.route : null);

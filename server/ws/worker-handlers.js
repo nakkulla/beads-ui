@@ -6428,6 +6428,9 @@ export async function handleWorkerResolveInSession(ws, req) {
         // execution setting: a codex fork opened while the default reads
         // claude is the interesting case, not the one to paper over.
         runner: result.runner || null,
+        // Which session the launcher chose (UI-a119 §3.3): the toast says
+        // whether the window is the user's current one or the inquiry fallback.
+        placement: result.placement || null,
         tmux_session: result.tmux_session || null,
         tmux_window: result.tmux_window || null,
         failure_class: failure.failure_class,

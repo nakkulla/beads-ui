@@ -77,10 +77,64 @@ export const BRIDGE_MAX_AGE_MS = 15_000;
  */
 
 /**
- * @typedef {{ session: 'launched', tmux_session: string, tmux_window: string, pane_id: string }
- *   | { session: 'already_running' }
+ * Where a window opens (UI-a119 §3.1). `user` is a person's click: the most
+ * recently attached user tmux session, as that session's current window.
+ * `inquiry` is the configured inquiry session, in the background — every
+ * automatic launch, and the click's fallback when no user session qualifies.
+ *
+ * @typedef {'user'|'inquiry'} LaunchPlacement
+ */
+
+/**
+ * @typedef {{ session: 'launched', placement: LaunchPlacement, tmux_session: string, tmux_window: string, pane_id: string }
+ *   | { session: 'already_running', placement?: LaunchPlacement, tmux_session?: string, tmux_window?: string, pane_id?: string }
  *   | { session: 'not_launched', reason: string }} LaunchOutcome
  */
+
+/**
+ * @typedef {Object} LaunchInput
+ * @property {string} marker
+ * @property {string} key
+ * @property {string} tmux_session - The configured inquiry session: the
+ * `inquiry` placement's target, and the one name a `user` placement never picks.
+ * @property {string} window_name
+ * @property {string} cwd
+ * @property {string[]} commandArgs - The arguments AFTER the resolved
+ * executable.
+ * @property {string} [runner] - Which executable (default `claude`).
+ * @property {LaunchPlacement} [placement] - Default `inquiry`.
+ */
+
+/**
+ * The user session a click opens its window in (UI-a119 §3.1): among the
+ * `list-sessions` rows whose `session_last_attached` is set, the largest value,
+ * ties broken by the lexicographically first name. The inquiry session is never
+ * a candidate. Whether a client is attached right now is deliberately not read —
+ * a detached session still shows the window once someone attaches.
+ *
+ * @param {string} stdout - `#{session_last_attached}:#{session_name}` lines.
+ * @param {string} inquiry_session
+ * @returns {string|null}
+ */
+export function pickUserSession(stdout, inquiry_session) {
+  /** @type {{ name: string, at: number }|null} */
+  let best = null;
+  for (const line of stdout.split('\n')) {
+    const colon = line.indexOf(':');
+    if (colon <= 0) {
+      continue;
+    }
+    const at = Number(line.slice(0, colon));
+    const name = line.slice(colon + 1);
+    if (!Number.isFinite(at) || name.length === 0 || name === inquiry_session) {
+      continue;
+    }
+    if (best === null || at > best.at || (at === best.at && name < best.name)) {
+      best = { name, at };
+    }
+  }
+  return best === null ? null : best.name;
+}
 
 /**
  * The pane listing format for one marker. Its three trailing fields are the
@@ -527,6 +581,72 @@ export function createTmuxLauncher(deps = {}) {
   }
 
   /**
+   * The `already_running` outcome for a live pane of this marker/key, or null
+   * when none is alive. A click (`placement: 'user'`) also makes that window its
+   * own session's current window; the window is never moved to another
+   * session, and a failed `select-window` is logged without changing the
+   * outcome (UI-a119 §3.1).
+   *
+   * @param {PaneRow[]} rows
+   * @param {Pick<LaunchInput, 'key'|'tmux_session'|'window_name'|'placement'>} input
+   * @returns {Promise<LaunchOutcome|null>}
+   */
+  async function adoptLive(rows, input) {
+    const row = rows.find((r) => r.key === input.key && r.dead === '0');
+    if (!row) {
+      return null;
+    }
+    if (input.placement === 'user') {
+      const selected = await runChecked(['select-window', '-t', row.pane]);
+      if (!selected.ok) {
+        log('tmux select-window failed for %s: %s', input.key, selected.error);
+      }
+    }
+    return {
+      session: 'already_running',
+      placement: row.session === input.tmux_session ? 'inquiry' : 'user',
+      tmux_session: row.session,
+      tmux_window: input.window_name,
+      pane_id: row.pane
+    };
+  }
+
+  /**
+   * The live window of one marker/key pair, focused the way {@link launch}
+   * focuses it, for a caller that must answer a click before building one.
+   *
+   * @param {Pick<LaunchInput, 'marker'|'key'|'tmux_session'|'window_name'|'placement'>} input
+   * @returns {Promise<{ ok: true, outcome: LaunchOutcome|null }|{ ok: false, error: string }>}
+   */
+  async function focusRunning(input) {
+    const listed = await listPanes(input.marker);
+    if (!listed.ok) {
+      return listed;
+    }
+    return { ok: true, outcome: await adoptLive(listed.rows, input) };
+  }
+
+  /**
+   * The session a `user` placement opens in, or null when none qualifies or
+   * `list-sessions` fails — both fall back to the inquiry session.
+   *
+   * @param {string} inquiry_session
+   * @returns {Promise<string|null>}
+   */
+  async function userSession(inquiry_session) {
+    const listed = await runChecked([
+      'list-sessions',
+      '-F',
+      '#{session_last_attached}:#{session_name}'
+    ]);
+    if (!listed.ok) {
+      log('tmux list-sessions failed: %s', listed.error);
+      return null;
+    }
+    return pickUserSession(listed.stdout, inquiry_session);
+  }
+
+  /**
    * Start one marked interactive window, unless one is already alive for this
    * marker/key pair.
    *
@@ -536,9 +656,7 @@ export function createTmuxLauncher(deps = {}) {
    * marked is a LAUNCH: the wrapper writes the marker before it execs, so the
    * mark is in flight, and the pane could not be running the CLI without it.
    *
-   * @param {{ marker: string, key: string, tmux_session: string, window_name: string, cwd: string, commandArgs: string[], runner?: string }} input
-   * `commandArgs` are the arguments AFTER the resolved executable, and `runner`
-   * names which executable that is (default `claude`).
+   * @param {LaunchInput} input
    * @returns {Promise<LaunchOutcome>}
    */
   async function launch(input) {
@@ -559,7 +677,7 @@ export function createTmuxLauncher(deps = {}) {
   /**
    * The launch itself, run under the reservation above.
    *
-   * @param {{ marker: string, key: string, tmux_session: string, window_name: string, cwd: string, commandArgs: string[], runner?: string }} input
+   * @param {LaunchInput} input
    * @returns {Promise<LaunchOutcome>}
    */
   async function launchLocked(input) {
@@ -568,8 +686,9 @@ export function createTmuxLauncher(deps = {}) {
       log('tmux list failed for %s: %s', input.key, listed.error);
       return { session: 'not_launched', reason: 'tmux_unavailable' };
     }
-    if (listed.rows.some((row) => row.key === input.key && row.dead === '0')) {
-      return { session: 'already_running' };
+    const live = await adoptLive(listed.rows, input);
+    if (live !== null) {
+      return live;
     }
     // An unknown runner is refused by its OWN name rather than run as claude
     // (§4.2): substituting a provider would start a session on a transcript and
@@ -598,7 +717,15 @@ export function createTmuxLauncher(deps = {}) {
         };
       }
     }
-    if (!listed.rows.some((row) => row.session === input.tmux_session)) {
+    const user_session =
+      input.placement === 'user' ? await userSession(input.tmux_session) : null;
+    /** @type {LaunchPlacement} */
+    const placement = user_session === null ? 'inquiry' : 'user';
+    const target_session = user_session ?? input.tmux_session;
+    if (
+      placement === 'inquiry' &&
+      !listed.rows.some((row) => row.session === input.tmux_session)
+    ) {
       /** @type {{ code: number }} */
       let created;
       try {
@@ -638,14 +765,16 @@ export function createTmuxLauncher(deps = {}) {
     /** @type {{ code: number, stdout: string }} */
     let opened;
     try {
+      // Without `-d` the new window becomes the user session's current window;
+      // the client is never switched to another session (UI-a119 §3.1).
       opened = await runTmux([
         'new-window',
-        '-d',
+        ...(placement === 'user' ? [] : ['-d']),
         '-P',
         '-F',
         '#{pane_id}',
         '-t',
-        input.tmux_session,
+        target_session,
         '-n',
         input.window_name,
         '-c',
@@ -672,7 +801,8 @@ export function createTmuxLauncher(deps = {}) {
     }
     return {
       session: 'launched',
-      tmux_session: input.tmux_session,
+      placement,
+      tmux_session: target_session,
       tmux_window: input.window_name,
       pane_id
     };
@@ -705,6 +835,7 @@ export function createTmuxLauncher(deps = {}) {
     capturePaneTail,
     readBridgeThreads,
     launch,
+    focusRunning,
     bridgeActive
   };
 }

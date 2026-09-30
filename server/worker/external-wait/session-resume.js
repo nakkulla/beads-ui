@@ -33,12 +33,14 @@ import { externalWaitCompletionPrompt } from './completion-prompt.js';
 const default_log = debug('worker:external-wait-session-resume');
 
 /**
- * The line the resumed session reads before the completion block.
+ * The line the resumed session reads before the completion block. A person
+ * clicked, so the session reports and waits instead of proceeding on its own
+ * (UI-a119 §3.2) — the difference from `[워커로 이어가기]`.
  *
  * @type {string}
  */
 export const SESSION_RESUME_PROMPT_LEAD =
-  '사람이 beads-ui [세션에서 이어가기]로 이 세션을 재개했다 · 대기 키는 서버가 이 창의 기동을 확인한 뒤 해제한다 · 첫 편집 전에 bd show --json으로 external_wait 키가 없음을 확인하고 워크플로 절차대로 in_progress를 클레임한다';
+  '사람이 beads-ui [세션에서 이어가기]로 이 세션을 사용자의 tmux 창에서 재개했다 · 아래 완료 블록을 몇 줄로 요약하고 사람의 지시를 기다린다 · 지시 전에는 클레임·파일 편집·잡 제출을 하지 않는다 · 대기 키는 서버가 이 창의 기동을 확인한 뒤 해제한다 · 지시를 받아 작업을 시작할 때 첫 편집 전에 bd show --json으로 external_wait 키가 없음을 확인하고 워크플로 절차대로 in_progress를 클레임한다';
 
 /**
  * @typedef {'alive'|'dead'|'unverified'} OwnerLivenessState
@@ -52,6 +54,8 @@ export const SESSION_RESUME_PROMPT_LEAD =
  * @property {string|null} reason
  * @property {string|null} command
  * @property {string|null} owner_tmux
+ * @property {import('../tmux-launcher.js').LaunchPlacement|null} placement -
+ * Where the launcher actually opened (or found) the window; null when unknown.
  * @property {string|null} tmux_session
  * @property {string|null} tmux_window
  * @property {string|null} pane_id
@@ -60,7 +64,7 @@ export const SESSION_RESUME_PROMPT_LEAD =
 
 /**
  * @typedef {Object} SessionResumeDeps
- * @property {Pick<ReturnType<typeof import('../tmux-launcher.js').createTmuxLauncher>, 'launch'|'listPanesExtended'|'bridgeActive'>} launcher
+ * @property {Pick<ReturnType<typeof import('../tmux-launcher.js').createTmuxLauncher>, 'launch'|'focusRunning'|'listPanesExtended'|'bridgeActive'>} launcher
  * @property {{ get: (workspace: string, wait_id: string) => WaitRecord|null, update: (workspace: string, wait_id: string, mutate: (record: WaitRecord) => void) => unknown }} externalWait
  * @property {(workspace: string, record: Record<string, unknown>) => unknown} recordInteractiveSession
  * @property {(bead_id: string) => Promise<void>} unsetExternalWait - Unset the
@@ -326,6 +330,7 @@ export function createExternalWaitSessionResume(deps) {
       reason,
       command: extra.command ?? null,
       owner_tmux: extra.owner_tmux ?? null,
+      placement: null,
       tmux_session: null,
       tmux_window: null,
       pane_id: null,
@@ -341,15 +346,53 @@ export function createExternalWaitSessionResume(deps) {
       // Launch evidence already exists and only the key settlement failed
       // (UI-r6xq §5): retry that settlement alone. Re-entering the launch path
       // would read the window this launch opened as the live owner.
-      const found = await findPane(record.bead_id);
-      const pane =
-        found.ok && found.pane
-          ? {
-              tmux_session: found.pane.session,
-              tmux_window: found.pane.window,
-              pane_id: found.pane.pane
-            }
-          : null;
+      // The click still makes that open window current (UI-a119 §3.1); a
+      // focus that fails or finds no window changes nothing else.
+      const focused = await deps.launcher.focusRunning({
+        marker: EXTERNAL_RESUME_PANE_MARKER,
+        key: record.bead_id,
+        tmux_session: deps.tmuxSession(),
+        window_name: record.bead_id,
+        placement: 'user'
+      });
+      /** @type {Extract<import('../tmux-launcher.js').LaunchOutcome, { session: 'already_running' }>|null} */
+      let live = null;
+      if (!focused.ok) {
+        log(
+          'external wait resume window focus failed for %s: %s',
+          record.bead_id,
+          focused.error
+        );
+      } else if (focused.outcome?.session === 'already_running') {
+        live = focused.outcome;
+      } else {
+        log('external wait resume window not found for %s', record.bead_id);
+      }
+      /** @type {{ placement: import('../tmux-launcher.js').LaunchPlacement|null, tmux_session: string|null, tmux_window: string|null, pane_id: string|null }} */
+      let where = {
+        placement: null,
+        tmux_session: null,
+        tmux_window: null,
+        pane_id: null
+      };
+      if (live) {
+        where = {
+          placement: live.placement ?? null,
+          tmux_session: live.tmux_session ?? null,
+          tmux_window: live.tmux_window ?? null,
+          pane_id: live.pane_id ?? null
+        };
+      } else {
+        const found = await findPane(record.bead_id);
+        if (found.ok && found.pane) {
+          where = {
+            placement: null,
+            tmux_session: found.pane.session,
+            tmux_window: found.pane.window,
+            pane_id: found.pane.pane
+          };
+        }
+      }
       try {
         await settleLaunch(workspace, record, {
           source: 'session_ref',
@@ -370,9 +413,7 @@ export function createExternalWaitSessionResume(deps) {
         reason: null,
         command: null,
         owner_tmux: null,
-        tmux_session: pane?.tmux_session ?? null,
-        tmux_window: pane?.tmux_window ?? null,
-        pane_id: pane?.pane_id ?? null,
+        ...where,
         bridge_active: deps.launcher.bridgeActive()
       };
     }
@@ -431,7 +472,8 @@ export function createExternalWaitSessionResume(deps) {
       window_name: record.bead_id,
       cwd: record.worktree,
       commandArgs: ['--resume', session_id, prompt],
-      runner: 'claude'
+      runner: 'claude',
+      placement: 'user'
     });
     if (outcome.session === 'not_launched') {
       recordFailure(workspace, record, outcome.reason, session_id);
@@ -477,6 +519,7 @@ export function createExternalWaitSessionResume(deps) {
       reason: null,
       command,
       owner_tmux: null,
+      placement: outcome.placement ?? null,
       tmux_session: pane?.tmux_session ?? null,
       tmux_window: pane?.tmux_window ?? null,
       pane_id: pane?.pane_id ?? null,
