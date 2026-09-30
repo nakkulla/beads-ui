@@ -40,7 +40,8 @@ describe('검증 픽스처가 복원 표면을 모두 그린다 (UI-dbn6 P1-r2 i
     const missing = [
       '[data-op="blocked-open"]',
       '.pl-stat--session',
-      '.pl-strip__presets',
+      '.pl-strip__r2 [data-kind="preset"]',
+      '.pl-strip__r2 [data-kind="worker"]',
       '.pl-strip__merge.is-on',
       '[data-lane-body="pr_wait"] .pl-badge--live',
       '[data-lane-body="pr_wait"] .pl-title__tail',

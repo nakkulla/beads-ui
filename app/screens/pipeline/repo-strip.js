@@ -1,23 +1,34 @@
 /**
  * The repo strip of the 전체 toolbar (UI-dbn6 §3.3) — the retired repo deck
- * folded into chips: name · running n/slots · automation dot · auto-merge mark
- * · ⚙, with the applied presets on a second line (P1-r2 item 14).
- * Chip click narrows the scope to that repo, the dot sends
- * `worker-automation-toggle` for that repo (its own revision), ⚙ opens that
- * repo's settings. On a phone the strip scrolls horizontally.
+ * folded into bounded cells (design-system round). Line 1: name · running
+ * `n/slots` · 자동 진행 switch · 자동 머지 switch · ⚙. Line 2: the applied
+ * general preset (a gray pill), `총괄 <orchestration>`, `워커 <worker>` and
+ * `qf <quick-fix preset>`, each with its formatter title as the tooltip; a
+ * part without material draws nothing, and a cell with no part draws no
+ * second line (fail-quiet).
+ *
+ * The name narrows the scope to that repo, the 진행 switch sends
+ * `worker-automation-toggle` for that repo (its own revision), the 머지 switch
+ * `worker-merge-auto-toggle`, ⚙ opens that repo's settings. A coarse pointer
+ * gets state-only switch dots — a 44px target does not fit inside the cell,
+ * so touch toggles from the 레포 toolbar after narrowing the scope.
  */
 import { html } from 'lit-html';
-import { appliedPresetLine } from '../../model/repo-presets.js';
+import { deckExecChips } from '../../model/deck-exec-chips.js';
+import { appliedPresetName } from '../../model/repo-presets.js';
+import { gearIcon } from '../../ui/icons.js';
+import { uiToggle } from '../../ui/switch.js';
 
 /**
- * @typedef {{ root_dir: string, name: string, auto_advance: boolean, auto_merge: boolean, running: number, slots: number, presets: string|null }} RepoChip
+ * @typedef {{ text: string, title: string }} ExecPart
+ * @typedef {{ root_dir: string, name: string, auto_advance: boolean, auto_merge: boolean, running: number, slots: number, preset: string|null, qf: string|null, orchestration: ExecPart|null, worker: ExecPart|null }} RepoChip
  */
 
 /**
- * The chip material of every visible repo, in `workspaces_state` order. The
+ * The cell material of every visible repo, in `workspaces_state` order. The
  * automation and auto-merge states and the applied presets read an adopted
  * mutation reply before the row when one is held (the row catches up on the
- * next push).
+ * next push); the exec parts read the row projections.
  *
  * @param {Array<Record<string, any>>} states
  * @param {(root_dir: string) => any} adoptedOf
@@ -32,6 +43,7 @@ export function repoChips(states, adoptedOf, presets = []) {
       const adopted = adoptedOf(row.root_dir);
       const counts =
         row.counts && typeof row.counts === 'object' ? row.counts : {};
+      const exec = deckExecChips(row);
       return {
         root_dir: row.root_dir,
         name: row.name || row.root_dir,
@@ -45,40 +57,72 @@ export function repoChips(states, adoptedOf, presets = []) {
             : row.auto_merge === true,
         running: typeof counts.running === 'number' ? counts.running : 0,
         slots: typeof row.slots === 'number' ? row.slots : 1,
-        presets: appliedPresetLine(row, adopted, presets)
+        preset: appliedPresetName(row, adopted, presets, 'applied_exec_preset'),
+        qf: appliedPresetName(
+          row,
+          adopted,
+          presets,
+          'applied_quick_fix_preset'
+        ),
+        orchestration: exec ? exec.orchestration : null,
+        worker: exec ? exec.worker : null
       };
     });
 }
 
 /**
- * One state mark of a chip: a toggle on a fine pointer, a state-only mark on
- * a coarse one — a 44px target does not fit inside the chip, so touch toggles
- * from the 레포 toolbar after narrowing the scope.
- *
- * @param {{ op: string, cls: string, on: boolean, root_dir: string, label: string, title: string, body: unknown, coarse: boolean }} mark
+ * @param {string} kind
+ * @param {string} key
+ * @param {string} value
+ * @param {string} title
  * @returns {import('lit-html').TemplateResult}
  */
-function stateMark(mark) {
-  if (mark.coarse) {
-    return html`<span
-      class="${mark.cls}${mark.on ? ' is-on' : ''}"
-      role="img"
-      aria-label=${mark.label}
-      title=${mark.title}
-      >${mark.body}</span
-    >`;
+function kvPart(kind, key, value, title) {
+  return html`<span class="pl-strip__kv" data-kind=${kind} title=${title}
+    ><span class="pl-strip__k">${key}</span> <b>${value}</b></span
+  >`;
+}
+
+/**
+ * Line 2 of one cell, or '' when the repo carries none of its material.
+ *
+ * @param {RepoChip} chip
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function execLine(chip) {
+  if (!chip.preset && !chip.orchestration && !chip.worker && !chip.qf) {
+    return '';
   }
-  return html`<button
-    type="button"
-    class="${mark.cls}${mark.on ? ' is-on' : ''}"
-    data-op=${mark.op}
-    data-root-dir=${mark.root_dir}
-    aria-pressed=${mark.on ? 'true' : 'false'}
-    aria-label=${mark.label}
-    title=${mark.title}
-  >
-    ${mark.body}
-  </button>`;
+  return html`<span class="pl-strip__r2">
+    ${chip.preset
+      ? html`<span
+          class="ui-chip pl-strip__preset"
+          data-kind="preset"
+          title=${chip.preset === '프리셋 없음'
+            ? '적용된 구현 프리셋 없음'
+            : `적용된 구현 프리셋 · ${chip.preset}`}
+          >${chip.preset}</span
+        >`
+      : ''}${chip.orchestration
+      ? kvPart(
+          'orchestration',
+          '총괄',
+          chip.orchestration.text,
+          chip.orchestration.title
+        )
+      : ''}${chip.worker
+      ? kvPart('worker', '워커', chip.worker.text, chip.worker.title)
+      : ''}${chip.qf
+      ? kvPart(
+          'qf',
+          'qf',
+          chip.qf,
+          chip.qf === '프리셋 없음'
+            ? '적용된 quick fix 프리셋 없음'
+            : `적용된 quick fix 프리셋 · ${chip.qf}`
+        )
+      : ''}
+  </span>`;
 }
 
 /**
@@ -88,11 +132,15 @@ function stateMark(mark) {
  */
 export function repoStrip(chips, options = {}) {
   const coarse = options.coarse === true;
-  return html`<div class="pl-strip" role="list" aria-label="레포">
+  return html`<div
+    class="pl-strip${coarse ? ' is-coarse' : ''}"
+    role="list"
+    aria-label="레포"
+  >
     ${chips.map(
       (chip) =>
         html`<span class="pl-strip__chip" role="listitem">
-          <span class="pl-strip__row">
+          <span class="pl-strip__r1">
             <button
               type="button"
               class="pl-strip__name"
@@ -100,55 +148,58 @@ export function repoStrip(chips, options = {}) {
               data-root-dir=${chip.root_dir}
               title=${`${chip.root_dir} — 이 레포로 좁히기`}
             >
-              ${chip.name}
-              <span class="pl-strip__load" title="실행 중 / 동시 실행 슬롯"
+              <span class="pl-strip__label">${chip.name}</span>
+              <span
+                class="pl-strip__load${chip.slots > 0 &&
+                chip.running >= chip.slots
+                  ? ' is-full'
+                  : ''}"
+                title="실행 중 / 동시 실행 슬롯"
                 >${chip.running}/${chip.slots}</span
               >
             </button>
-            ${stateMark({
-              op: 'repo-automation',
-              cls: 'pl-strip__dot',
-              on: chip.auto_advance,
-              root_dir: chip.root_dir,
-              coarse,
-              label: coarse
-                ? `${chip.name} 자동 진행 ${chip.auto_advance ? '켜짐' : '꺼짐'}`
-                : `${chip.name} 자동화 ${chip.auto_advance ? '끄기' : '켜기'}`,
-              title: chip.auto_advance
-                ? '자동화 켜짐 — 슬롯이 비면 다음 행이 출발합니다'
-                : '자동화 꺼짐 — 다음 행은 수동으로만 출발합니다',
-              body: html`<i aria-hidden="true"></i>`
-            })}
-            ${stateMark({
-              op: 'auto-merge',
-              cls: 'pl-strip__merge',
-              on: chip.auto_merge,
-              root_dir: chip.root_dir,
-              coarse,
-              label: coarse
-                ? `${chip.name} 자동 머지 ${chip.auto_merge ? '켜짐' : '꺼짐'}`
-                : `${chip.name} 자동 머지 ${chip.auto_merge ? '끄기' : '켜기'}`,
-              title: chip.auto_merge
-                ? '자동 머지 켜짐 — 자격이 생기는 PR을 계속 머지합니다'
-                : '자동 머지 꺼짐',
-              body: '머지'
-            })}
+            <span class="pl-strip__toggles">
+              ${uiToggle({
+                label: '진행',
+                on: chip.auto_advance,
+                op: 'repo-automation',
+                root_dir: chip.root_dir,
+                cls: 'pl-strip__auto',
+                state_only: coarse,
+                aria_label: coarse
+                  ? `${chip.name} 자동 진행 ${chip.auto_advance ? '켜짐' : '꺼짐'}`
+                  : `${chip.name} 자동화 ${chip.auto_advance ? '끄기' : '켜기'}`,
+                title: chip.auto_advance
+                  ? '자동화 켜짐 — 슬롯이 비면 다음 행이 출발합니다'
+                  : '자동화 꺼짐 — 다음 행은 수동으로만 출발합니다'
+              })}
+              ${uiToggle({
+                label: '머지',
+                on: chip.auto_merge,
+                op: 'auto-merge',
+                root_dir: chip.root_dir,
+                cls: 'pl-strip__merge',
+                state_only: coarse,
+                aria_label: coarse
+                  ? `${chip.name} 자동 머지 ${chip.auto_merge ? '켜짐' : '꺼짐'}`
+                  : `${chip.name} 자동 머지 ${chip.auto_merge ? '끄기' : '켜기'}`,
+                title: chip.auto_merge
+                  ? '자동 머지 켜짐 — 자격이 생기는 PR을 계속 머지합니다'
+                  : '자동 머지 꺼짐'
+              })}
+            </span>
             <button
               type="button"
-              class="pl-strip__gear"
+              class="ui-btn ui-btn--icon ui-btn--sm pl-strip__gear"
               data-op="repo-settings"
               data-root-dir=${chip.root_dir}
               aria-label=${`${chip.name} 설정`}
               title="이 레포의 설정"
             >
-              ⚙
+              ${gearIcon()}
             </button>
           </span>
-          ${chip.presets
-            ? html`<span class="pl-strip__presets" title=${chip.presets}
-                >${chip.presets}</span
-              >`
-            : ''}
+          ${execLine(chip)}
         </span>`
     )}
   </div>`;

@@ -560,6 +560,47 @@ export function enrichFixture(fixture, now) {
     applied_exec_preset: null,
     applied_quick_fix_preset: null
   });
+  // Repo-strip exec line (design-system round): a runner catalog that names
+  // the runners, per-repo orchestration and worker defaults, and one repo
+  // without the projections (its cell draws no second line).
+  const catalog = {
+    runners: {
+      claude: {
+        models: {
+          opus: { id: 'opus', efforts: ['medium', 'high', 'xhigh'] },
+          sonnet: { id: 'sonnet', efforts: ['medium', 'high'] }
+        }
+      },
+      codex: {
+        models: { 'gpt-5.5': { id: 'gpt-5.5', efforts: ['high', 'xhigh'] } }
+      }
+    },
+    model_index: { opus: 'claude', sonnet: 'claude', 'gpt-5.5': 'codex' }
+  };
+  Object.assign(states[0], {
+    runner_catalog: catalog,
+    orchestration_model: 'opus',
+    orchestration_effort: 'xhigh',
+    session_defaults: {
+      impl_runtime: 'claude',
+      impl_model: 'sonnet',
+      impl_effort: 'high'
+    }
+  });
+  Object.assign(states[1], {
+    runner_catalog: catalog,
+    orchestration_model: 'opus',
+    orchestration_effort: 'high',
+    session_defaults: {
+      impl_runtime: 'codex',
+      impl_model: 'gpt-5.5',
+      impl_effort: 'xhigh'
+    }
+  });
+  Object.assign(states[2], { runner_catalog: catalog });
+  delete states[3].execution_defaults;
+  delete states[3].runner_catalog;
+  delete states[3].session_defaults;
   states[0].counts = { ...states[0].counts, running: 1 };
   return fixture;
 }

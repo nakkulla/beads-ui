@@ -73,69 +73,146 @@
   color: var(--text-secondary);
 }
 
-/* ---------- repo strip (전체) ---------- */
+/* ---------- repo strip (전체) ----------
+   Bounded cells (never wider than --repo-cell-w) whose content wraps onto
+   more lines instead of growing: line 1 name · load · switches · ⚙ (the
+   switches drop to their own line when the name is long), line 2 the preset
+   pill and the 총괄/워커/qf units, each unit kept whole unless it alone is
+   wider than the cell. A fine pointer wraps the cells into rows; a coarse
+   pointer keeps one horizontally scrolling strip. */
+
+.pl-toolbar--all .pl-strip {
+  flex: 1 1 100%;
+}
 
 .pl-strip {
   display: flex;
-  gap: 8px;
-  flex: 1 1 420px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--s-4);
   min-width: 0;
+  padding: var(--s-1) 0;
+}
+
+.pl-strip.is-coarse {
+  flex-wrap: nowrap;
   overflow-x: auto;
-  scrollbar-width: thin;
-  padding: 2px 0;
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: var(--s-8);
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
 }
 
 .pl-strip__chip {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  border-radius: 999px;
-  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  flex: 0 0 var(--repo-cell-w);
+  width: var(--repo-cell-w);
+  max-width: 100%;
+  min-width: 0;
+  padding: var(--s-3) var(--s-3) var(--s-3) var(--s-5);
+  border-radius: var(--r-card);
+  background: var(--card);
+  box-shadow: var(--e1);
+  color: var(--ink-2);
+  font-size: var(--t-12);
+  scroll-snap-align: start;
 }
 
-.pl-strip__name,
-.pl-strip__dot,
-.pl-strip__gear {
-  background: transparent;
-  border: 0;
-  color: var(--text-primary);
-  padding: 4px 8px;
-  font: inherit;
-  cursor: pointer;
-  min-height: 32px;
+.pl-strip__r1,
+.pl-strip__r2 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+}
+
+.pl-strip__r1 {
+  gap: var(--s-1) var(--s-4);
+}
+
+.pl-strip__r2 {
+  gap: var(--s-2) var(--s-4);
+  font-size: var(--t-11);
+  line-height: var(--lh-tight);
 }
 
 .pl-strip__name {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding-left: 11px;
-  font-weight: 600;
+  align-items: baseline;
+  gap: var(--s-3);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--h-sm);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-12);
+  font-weight: var(--w-semibold);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pl-strip__name:hover .pl-strip__label {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.pl-strip__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .pl-strip__load {
-  color: var(--text-muted);
-  font-weight: 500;
+  flex: none;
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-11);
+  font-weight: var(--w-medium);
   font-variant-numeric: tabular-nums;
 }
 
-.pl-strip__dot i {
-  display: block;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--text-dim);
+.pl-strip__load.is-full {
+  color: var(--amber-fg);
+  font-weight: var(--w-semibold);
 }
 
-.pl-strip__dot.is-on i {
-  background: var(--accent-success);
-  box-shadow: 0 0 0 3px
-    color-mix(in srgb, var(--accent-success) 22%, transparent);
+.pl-strip__toggles {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-4);
+  flex: none;
 }
 
 .pl-strip__gear {
-  color: var(--text-muted);
-  padding-right: 11px;
+  flex: none;
+  margin-left: auto;
+}
+
+.pl-strip__preset {
+  font-size: var(--t-11);
+}
+
+.pl-strip__kv {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+.pl-strip__kv b {
+  color: var(--ink-2);
+  font-weight: var(--w-medium);
+}
+
+@media (pointer: coarse) {
+  .pl-strip__name {
+    min-height: var(--h-touch);
+  }
 }
 
 /* ---------- lanes ---------- */

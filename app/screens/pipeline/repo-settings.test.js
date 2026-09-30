@@ -82,37 +82,40 @@ function text(node) {
 }
 
 describe('레포 띠의 설정 요약 (UI-dbn6 P1-r2 item 14)', () => {
-  test('names the applied worker and quick-fix presets on the chip', () => {
+  test('names the applied general and quick-fix presets on the chip', () => {
     const { mount: root } = mountPresets();
 
-    const line = chipOf(root, REPO_A).querySelector('.pl-strip__presets');
+    const chip = chipOf(root, REPO_A);
 
-    expect(text(line)).toBe(
-      '워커 클로드 구현 · qf 빠른 수정 아주 긴 이름의 프리셋'
+    expect(text(chip.querySelector('[data-kind="preset"]'))).toBe(
+      '클로드 구현'
     );
-    expect(line?.getAttribute('title')).toBe(
-      '워커 클로드 구현 · qf 빠른 수정 아주 긴 이름의 프리셋'
+    expect(text(chip.querySelector('[data-kind="qf"]'))).toBe(
+      'qf 빠른 수정 아주 긴 이름의 프리셋'
     );
   });
 
   test('says 프리셋 없음 for a present and null preset field', () => {
     const { mount: root } = mountPresets();
 
-    const line = chipOf(root, REPO_B).querySelector('.pl-strip__presets');
+    const chip = chipOf(root, REPO_B);
 
-    expect(text(line)).toBe('워커 프리셋 없음 · qf 프리셋 없음');
+    expect(text(chip.querySelector('[data-kind="preset"]'))).toBe(
+      '프리셋 없음'
+    );
+    expect(text(chip.querySelector('[data-kind="qf"]'))).toBe('qf 프리셋 없음');
   });
 
   test('omits a preset it cannot name or that the row does not carry', () => {
     const { mount: root } = mountPresets();
 
-    const line = chipOf(root, REPO_C).querySelector('.pl-strip__presets');
-    const none = chipOf(root, '/fixture/repo-d').querySelector(
-      '.pl-strip__presets'
-    );
+    const unknown = chipOf(root, REPO_C);
+    const absent = chipOf(root, '/fixture/repo-d');
 
-    expect(line).toBeNull();
-    expect(none).toBeNull();
+    expect(unknown.querySelector('[data-kind="preset"]')).toBeNull();
+    expect(unknown.querySelector('[data-kind="qf"]')).toBeNull();
+    expect(absent.querySelector('[data-kind="preset"]')).toBeNull();
+    expect(absent.querySelector('[data-kind="qf"]')).toBeNull();
   });
 
   test('marks the auto-merge state of each repo', () => {

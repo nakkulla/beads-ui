@@ -31,17 +31,11 @@ import {
   pruneAdopted as dropCaughtUp,
   mergeQueue
 } from '../../model/adopted-queue.js';
-import {
-  formatImplReviewChip,
-  formatOrchestrationChip,
-  formatWorkerChip
-} from '../../model/exec-settings-chip.js';
-import { modelRunnerOf } from '../../model/runner-catalog.js';
+import { deckExecChips } from '../../model/deck-exec-chips.js';
 import {
   crossRepoTokenTotal,
   tokenTotalTooltip
 } from '../../model/usage-total.js';
-import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
 import { summaryChipsTemplate, tokenChipTemplate } from '../worker/lanes.js';
 import { iconGear, iconMerge, iconPause, iconPlay } from './icons.js';
@@ -75,49 +69,6 @@ function countOf(row, key) {
     return count + row.external_wait_count;
   }
   return count;
-}
-
-/**
- * One repo's 오케/워커 exec chips. 재료(투영 3종)가 하나라도 없으면 `null`이다.
- *
- * @param {any} row
- * @returns {{ orchestration: { text: string, title: string }|null, worker: { text: string, title: string }|null, review: { text: string, title: string }|null }|null}
- */
-export function deckExecChips(row) {
-  if (
-    !isRecord(row) ||
-    !isRecord(row.execution_defaults) ||
-    !isRecord(row.runner_catalog) ||
-    !isRecord(row.session_defaults)
-  ) {
-    return null;
-  }
-  /** @type {Record<string, unknown>} */
-  const global_values = { ...row.session_defaults };
-  for (const key of [
-    'orchestration_model',
-    'orchestration_effort',
-    'orchestration_speed'
-  ]) {
-    if (typeof row[key] === 'string' && row[key].length > 0) {
-      global_values[key] = row[key];
-    }
-  }
-  const rows = resolveExecutionSettings({
-    global: global_values,
-    execution_defaults: row.execution_defaults,
-    runner_catalog: row.runner_catalog
-  });
-  const controller_runtime = modelRunnerOf(
-    row.runner_catalog,
-    rows.orchestration_model.value ?? ''
-  );
-  const orchestration = formatOrchestrationChip(rows, row.runner_catalog);
-  const worker = formatWorkerChip(rows, controller_runtime);
-  const review = formatImplReviewChip(rows);
-  return orchestration === null && worker === null && review === null
-    ? null
-    : { orchestration, worker, review };
 }
 
 /**
