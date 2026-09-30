@@ -26,9 +26,9 @@ scope:
 ## Context
 
 - 승인 스펙: `docs/superpowers/specs/2026-09-23-frontend-rewrite-unified-pipeline-design.md`
-  @ `3a391c4eedb8f119757ecaa39c6530182eb64831`
-  (`spec_review=self@3a391c4e…`, r3 — staleness 정정; 원 게이트는 astra r2 APPROVE
-  @ `27e52429`). 목업
+  @ `353e7ea60b2a7ad39a2396b0259806cbd31d7c23`
+  (`spec_review=self@353e7ea6…`, r4 — staleness 정정 두 번째(UI-nuwy 승계); r3
+  `self@3a391c4e`, 원 게이트는 astra r2 APPROVE @ `27e52429`). 목업
   `~/tmp/mockups/2026-09-23-beads-ui-redesign.html`
   (`http://100.122.98.8:9000/2026-09-23-beads-ui-redesign.html`) — 예시 데이터의
   시각 산출물이며 동작의 정본은 스펙이다. 스테일 재검토(2026-09-29, base
@@ -38,7 +38,11 @@ scope:
   `84c3d4da589dd16e10c92f8935c57d4ee1a1f32e`): `correction` — dotfiles-b0xsk 착지
   모델 정렬(착지 줄, Phase 자식 롤업·이월·`bead_children` 제거), ADR UI-l48z가
   UI-ri8n으로 대체됨, addendum UI-ooc0(활성 모델)·UI-2dbn(전사 드로어) 반영, 기준
-  이후 착지한 UI-r6xq·UI-ri8n 카드 동작 승계.
+  이후 착지한 UI-r6xq·UI-ri8n 카드 동작 승계. 재검토(2026-09-30, base
+  `f2cf808097677aea2269497186e83887634d2bdc`): `correction` — UI-nuwy 착지(#337,
+  ADR UI-nuwy가 UI-ri8n을 대체); 사용자 결정(2026-09-30)대로 대화(문의) 세션의 멈춤
+  판정과 `[세션에서 해결]`·`[워커로 이어가기]` 출구 조항은 UI-nuwy를 승계하고
+  supersede 대상을 UI-ri8n에서 UI-nuwy로 정정.
 - 문제와 목표: `app/` 비테스트 약 4만 줄 + CSS 1만 3천 줄이 4탭(Worker·Monitor·
   비교·ADR)과 설정·상세·전사 드로어를 담고, Monitor는 1초마다 전체 레인을
   재계산·재렌더하며, 모바일에서 드래그 재배치가 안 된다. 서버 코어와
@@ -89,6 +93,11 @@ scope:
     `visibleModelChoices`·`visibleReviewerChoices`, `app/data/model-visibility-store.js`,
     `main.js`가 부팅 때 `subscribe-model-visibility`를 서버 전역 단발로 연다),
     UI-2dbn(전사 드로어 대화 중심 재설계 — `app/views/worker/transcript-drawer.js`).
+    이어서 base `f2cf8080`: UI-nuwy(같은 Worker 세션 대화와 무인 복귀 — `tileResolveFields`가
+    `[워커로 이어가기]`(`handoff_action`, op `worker-conversation-handoff`)를 함께 내고,
+    대기 어휘 `⏸ 세션이 멈춤`이 `⏸ 확인 필요`로, 배지 꼬리가 `대화 중 <경과>`·`답 대기`·
+    `사람 인수`로 바뀜; 렌더는 `lanes.js`·`running-grid.js`·`app/views/worker/index.js`·
+    `app/views/monitor/index.js`).
     `tile-resolve.js`·`model-visibility.js`·`model-visibility-store.js`는 브라우저
     전역을 읽지 않고 서버가 import하지 않는다.
   - `RETIRED_MIRROR_LABEL_PREFIXES = ['reviewed:', 'skipped:']`는
@@ -164,12 +173,12 @@ scope:
   마운트가 이 래퍼로 그린다. 래퍼는 호출 수를 세어 `window.__bdui.render_count`
   로 노출하며 jsdom 테스트와 ui-shots가 같은 값을 본다.
 - 겹침 관찰: UI-r6xq는 착지했다(`25a71e70`) — Phase 1·2는 그 버튼 집합과
-  `actions[].placement`·`confirm`을 옮긴다. in-flight 둘: UI-nuwy(같은 Worker 세션
-  대화와 무인 복귀, 스펙 `84c3d4da`, scope `app/views/worker/`)는 표면 판정을 서버
-  투영(`wait-judgment` actions·`tileResolveFields`)에만 두므로 새 카드는 그 결과를
-  그리기만 하고 다시 판정하지 않는다; UI-ruwu(plan 묶음 표시·자식 롤업/이월 은퇴)는
-  이 이슈 뒤(`blocks`)에서 새 프런트엔드 위에 얹는다. 둘 다 이 설계의 전제가 아니며
-  착지 순서는 큐가 정한다. 각 Phase가 기존 동작을 옮길 때 **그 시점 base**의 버튼
+  `actions[].placement`·`confirm`을 옮긴다. UI-nuwy(같은 Worker 세션 대화와 무인
+  복귀)도 착지했다(`f2cf8080`, #337) — 표면 판정을 서버 투영(`wait-judgment`
+  actions·`tileResolveFields`)에만 두므로 새 카드는 그 결과(`[세션에서 해결]`·
+  `[워커로 이어가기]`)를 그리기만 하고 다시 판정하지 않는다. in-flight UI-ruwu(plan
+  묶음 표시·자식 롤업/이월 은퇴)는 이 이슈 뒤(`blocks`)에서 새 프런트엔드 위에
+  얹으며 이 설계의 전제가 아니다. 각 Phase가 기존 동작을 옮길 때 **그 시점 base**의 버튼
   집합·확인 문구·판정 결과를 기준으로 옮기고, 나중에 착지하는 쪽이 base 동기화에서
   충돌을 해소한다.
 - 만들지 않는 것: `delete-issue`·`update-assignee`·`worker-queue-toggle`·
@@ -270,9 +279,9 @@ scope:
   진행 띠로, 굵은 포인터의 대기 행 조작은 `⋯` 하나, 슬롯 7 시각 줄은
   `data-ts`; 라벨 칩은 `model/label-policy.js`; foot 버튼 44px, 둘 넘는 조작은
   `⋯` 시트로, 파괴적 조작은 항상 시트 안 + 확인 문구 유지; 자식 롤업(슬롯 3)·
-  이월 칩(슬롯 4b)은 그리지 않는다; 문의 세션 배지 단계 꼬리·`⏸ 세션이 멈춤`·
-  `[세션에서 해결]` 유무는 `model/tile-resolve.js`와 서버 판정 결과를 그리기만
-  한다(ADR UI-ri8n); 외부 대기 `actions[]`는 `placement: card`인 것만 카드에 두고
+  이월 칩(슬롯 4b)은 그리지 않는다; 대화 세션 배지 꼬리·`⏸ 확인 필요`·
+  `[세션에서 해결]`·`[워커로 이어가기]` 유무는 `model/tile-resolve.js`와 서버 판정
+  결과를 그리기만 한다(ADR UI-nuwy); 외부 대기 `actions[]`는 `placement: card`인 것만 카드에 두고
   `confirm`이 있으면 확인 뒤 보낸다(UI-r6xq)), `lane-bar.js`
   (모바일 하단 레인 바, 카운트·단계색 점), `move-sheet.js`(`↑ 위로`·`↓ 아래로`·
   `맨 앞으로`·`병렬로`·`직렬 n`·`지금 시작`·`대기에서 빼기` — 각각 기존 op
@@ -437,8 +446,9 @@ Phase 4 삭제의 입력), 계열별 프리셋 적용·차이 판정 테스트 �
   `## Bench experiment creation` 섹션·표시 정책 항목·`include_bench` 설명을
   정리한다.
 - **ADR 착지**(`adr` 스킬): 스펙 `## 결정 (ADR 후보)`의 후보 1을 materialize하고
-  UI-ri8n을 supersede한다(UI-ri8n이 UI-l48z를 대체하며 그 조항을 승계했고, 새 ADR은
-  UI-ri8n의 문의 세션 조항을 승계한다; 스펙 §7이 정리 Phase에 두었다).
+  UI-nuwy를 supersede한다(UI-nuwy가 UI-l48z를 승계한 UI-ri8n을 대체하며 나머지
+  조항을 승계했고, 새 ADR은 UI-nuwy의 대화 세션 판정·출구 조항을 승계한다; 스펙
+  §7이 정리 Phase에 두었다).
   `check-adr-candidates.py --spec <상대경로> --adr-dir docs/adr`가 `ok`.
 - **코드 예산 테스트** `test/frontend-budget.test.js`(node 프로젝트): `app/`
   비테스트 `.js` 2만 줄 이하, CSS 4,000줄 이하, 파일당 1,000줄 이하(예외 목록:
