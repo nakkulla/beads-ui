@@ -82,6 +82,7 @@
     "app/screens/new-issue/new-issue.css",
     "app/screens/dialogs/dialogs.css",
     "app/screens/adr/adr.css",
+    "app/screens/compare/compare.css",
     "app/main.bundle.js",
     "app/main.bundle.js.map",
     "app/protocol.js",

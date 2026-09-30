@@ -4,8 +4,8 @@
  * plus the settings screen (`screens/settings/`). Each gets the same options
  * it had, fed from the shell's stores.
  */
-import { createCompareView } from '../views/compare/index.js';
 import { createAdrView } from './adr/index.js';
+import { createCompareView } from './compare/index.js';
 import { createSettingsDialog } from './settings/index.js';
 
 /**
@@ -44,9 +44,7 @@ export function mountBridges(deps) {
 
   const compare_view = createCompareView(deps.compare_root, {
     transport: deps.transport,
-    gotoIssue: (id) => deps.openIssue(id, ''),
-    execPresetStore: stores.presets,
-    sourceCandidates: () => []
+    gotoIssue: (id, root_dir) => deps.openIssue(id, root_dir || '')
   });
 
   createAdrView(deps.adr_root, {

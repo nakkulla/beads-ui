@@ -8,120 +8,6 @@ function settle() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-const RUN = {
-  run_id: 'bench-1',
-  source_bead_id: 'UI-src',
-  base_sha: 'a'.repeat(40),
-  repeats: 3,
-  reviewer_mode: 'fixed',
-  reviewer: {
-    impl_review_model: 'sonnet',
-    impl_review_effort: 'high',
-    impl_review_speed: 'default'
-  },
-  delegate_forced: true,
-  created_at: 1750000000000,
-  root_dir: '/repo',
-  cell_count: 9,
-  terminal_count: 3,
-  presets: [{ id: 'p1', name: '프리셋 A' }],
-  cells: [
-    {
-      preset_id: 'p1',
-      k: 1,
-      bead_id: 'UI-c1',
-      attempt_id: 'a1',
-      status: 'done',
-      terminal: true,
-      bench_verify: { ok: true }
-    },
-    {
-      preset_id: 'p1',
-      k: 2,
-      bead_id: 'UI-c2',
-      attempt_id: 'a2',
-      status: 'done',
-      terminal: true,
-      bench_verify: { ok: true }
-    }
-  ]
-};
-
-const ISSUES = [
-  {
-    id: 'UI-src',
-    title: '원본 이슈',
-    metadata: { route: 'quick_fix', quick_fix_review: 'self@abcdef123456' }
-  },
-  {
-    id: 'UI-spec',
-    title: '스펙 이슈',
-    metadata: { route: 'spec_backed' }
-  }
-];
-
-/**
- * @param {{ runs?: any[], benchRows?: any[], onCreate?: (payload: any) => any }} [options]
- */
-function mountView(options = {}) {
-  const root = document.createElement('div');
-  document.body.appendChild(root);
-  const calls = /** @type {Array<{ type: string, payload: any }>} */ ([]);
-  const transport = vi.fn(async (type, payload) => {
-    calls.push({ type, payload });
-    if (type === 'get-compare') {
-      const bench_rows = options.benchRows ?? [
-        {
-          attempt_id: 'a1',
-          bead_id: 'UI-c1',
-          status: 'done',
-          verify: 'pass',
-          duration_ms: 1000
-        },
-        {
-          attempt_id: 'a2',
-          bead_id: 'UI-c2',
-          status: 'done',
-          verify: 'pass',
-          duration_ms: 3000
-        }
-      ];
-      return {
-        payload: {
-          rows: bench_rows,
-          groups: [],
-          workspaces: [],
-          runs: options.runs ?? [RUN],
-          bench_rows
-        }
-      };
-    }
-    if (type === 'bench-run-create') {
-      return options.onCreate
-        ? options.onCreate(payload)
-        : { payload: { run: RUN } };
-    }
-    return { payload: {} };
-  });
-  const view = createCompareView(root, {
-    transport,
-    execPresetStore: {
-      get: () => ({ presets: [{ id: 'p1', name: '프리셋 A', settings: {} }] })
-    },
-    sourceCandidates: () => ISSUES
-  });
-  return { root, view, transport, calls };
-}
-
-/**
- * @param {HTMLElement} root
- */
-function openForm(root) {
-  /** @type {HTMLButtonElement} */ (
-    root.querySelector('.cmp-bench__new')
-  ).click();
-}
-
 /** @param {Record<string, any>} [overrides] */
 function comparisonGroup(overrides = {}) {
   return {
@@ -241,7 +127,7 @@ function changeDate(root, label, value) {
   input.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-describe('compare group cards', () => {
+describe('compare table', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
     localStorage.clear();
@@ -301,7 +187,7 @@ describe('compare group cards', () => {
     expect(root.querySelector('.cmp-filter__error')?.textContent).toContain(
       '시작일이 종료일보다 늦습니다'
     );
-    expect(root.querySelector('.cmp-card')).not.toBeNull();
+    expect(root.querySelector('.cmp-group')).not.toBeNull();
   });
 
   test('sends valid custom dates as epoch boundaries', async () => {
@@ -833,12 +719,12 @@ describe('compare group cards', () => {
     );
   });
 
-  test('renders the server metrics and best markers on a group card', async () => {
+  test('renders the server metrics and best markers on a group row', async () => {
     const { root, view } = mountComparison();
 
     await view.refresh();
 
-    const card = /** @type {HTMLElement} */ (root.querySelector('.cmp-card'));
+    const card = /** @type {HTMLElement} */ (root.querySelector('.cmp-group'));
     expect(card.querySelector('.cmp-badge')?.textContent).toBe('프리셋');
     expect(
       card.querySelector('[data-metric="landing"]')?.textContent
@@ -861,7 +747,7 @@ describe('compare group cards', () => {
     expect(card.querySelector('.cmp-chip.is-zero')?.textContent).toContain(
       '리뷰 지적 0'
     );
-    expect(root.querySelector('table')).toBeNull();
+    expect(root.querySelector('table.cmp-table')).not.toBeNull();
   });
 
   test('keeps a null landing rate unjudged and without a bar', async () => {
@@ -872,13 +758,14 @@ describe('compare group cards', () => {
     await view.refresh();
 
     expect(
-      root.querySelector('.cmp-card [data-metric="landing"] .cmp-kpi__value')
-        ?.textContent
+      root.querySelector(
+        '.cmp-group [data-metric="landing"] .cmp-metric__value'
+      )?.textContent
     ).toBe('—');
     expect(
-      root.querySelector('.cmp-card [data-metric="landing"] .cmp-bar')
+      root.querySelector('.cmp-group [data-metric="landing"] .cmp-bar')
     ).toBeNull();
-    expect(root.querySelector('.cmp-card .is-best')).toBeNull();
+    expect(root.querySelector('.cmp-group .is-best')).toBeNull();
   });
 
   test('renders all five summary tiles and the selected workspace heading', async () => {
@@ -912,9 +799,9 @@ describe('compare group cards', () => {
     ).click();
     await settle();
 
-    expect(root.querySelector('.cmp-card')?.classList.contains('is-open')).toBe(
-      true
-    );
+    expect(
+      root.querySelector('.cmp-group')?.classList.contains('is-open')
+    ).toBe(true);
     expect(
       root.querySelector('.cmp-expand')?.getAttribute('aria-expanded')
     ).toBe('true');
@@ -963,7 +850,7 @@ describe('compare group cards', () => {
     changeSelect(root, '정렬', sort);
 
     expect(
-      Array.from(root.querySelectorAll('.cmp-card')).map((card) =>
+      Array.from(root.querySelectorAll('.cmp-group')).map((card) =>
         card.getAttribute('data-group-key')
       )
     ).toEqual(expected);
@@ -1017,6 +904,21 @@ describe('compare group cards', () => {
       '착지 · PR #291 · verify 통과'
     );
     expect(row.querySelector('.cmp-dot--landed')).not.toBeNull();
+  });
+
+  test('opens a session of another repository in that repository', async () => {
+    const { root, view, gotoIssue, snapshot } = mountComparison();
+    /** @type {any} */ (snapshot.rows[0]).root_dir = '/repo/b';
+
+    await view.refresh();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-expand')
+    ).click();
+    /** @type {HTMLAnchorElement} */ (
+      root.querySelector('.cmp-session')
+    ).click();
+
+    expect(gotoIssue).toHaveBeenCalledWith('UI-one', '/repo/b');
   });
 
   test('renders problem evidence and adjusted pins as session chips', async () => {
@@ -1214,7 +1116,7 @@ describe('compare group cards', () => {
       '프리셋 저장소를 읽지 못해 프리셋 대조를 건너뛰었습니다'
     );
     expect(
-      root.querySelector('.cmp-grid')?.previousElementSibling?.className
+      root.querySelector('.cmp-tablewrap')?.previousElementSibling?.className
     ).toBe('cmp-warning');
   });
 
@@ -1226,345 +1128,65 @@ describe('compare group cards', () => {
     expect(root.querySelector('.cmp-warning')).toBeNull();
   });
 
-  test('keeps an empty experiment section collapsed below the cards', async () => {
+  test('fixes include_bench to false on every request', async () => {
+    const { root, view, transport } = mountComparison();
+    await view.refresh();
+
+    changeSelect(root, 'route', 'quick_fix');
+    await settle();
+
+    expect(
+      transport.mock.calls.map((/** @type {any[]} */ call) => [
+        call[0],
+        call[1].include_bench
+      ])
+    ).toEqual([
+      ['get-compare', false],
+      ['get-compare', false]
+    ]);
+  });
+
+  test('draws no experiment section and ignores runs and bench_rows', async () => {
+    const { root, view } = mountComparison({
+      runs: [{ run_id: 'bench-1', presets: [], cells: [] }],
+      bench_rows: [
+        { attempt_id: 'bench-a', bead_id: 'UI-bench', title: '실험 세션' }
+      ]
+    });
+
+    await view.refresh();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('.cmp-expand')
+    ).click();
+
+    expect(root.querySelector('.cmp-bench')).toBeNull();
+    expect(root.textContent).not.toContain('실험');
+    expect(root.textContent).not.toContain('UI-bench');
+  });
+
+  test('folds the 판정 기준 legend closed under the table', async () => {
     const { root, view } = mountComparison();
 
     await view.refresh();
 
-    const bench = /** @type {HTMLDetailsElement} */ (
-      root.querySelector('.cmp-bench')
+    const legend = /** @type {HTMLDetailsElement} */ (
+      root.querySelector('details.cmp-legend')
     );
-    expect(bench.open).toBe(false);
-    expect(bench.querySelector('summary')?.textContent).toBe(
-      '실험 (bench 클론 실행) · 0건'
+    expect(legend.open).toBe(false);
+    expect(legend.querySelector('summary')?.textContent?.trim()).toBe(
+      '판정 기준'
     );
-    expect(bench.querySelector('.cmp-bench__new')).not.toBeNull();
-    expect(bench.previousElementSibling?.className).toBe('cmp-legend');
+    expect(legend.previousElementSibling?.className).toBe('cmp-tablewrap');
   });
 
-  test('keeps the form and experiment list inside the details section', async () => {
-    const { root, view } = mountView();
+  test('draws one table row per group with its session rows folded', async () => {
+    const { root, view } = mountComparison({
+      groups: [comparisonGroup(), comparisonGroup({ key: 'preset:p2' })]
+    });
 
     await view.refresh();
-    openForm(root);
 
-    expect(root.querySelector('.cmp-bench .cmp-form')).not.toBeNull();
-    expect(root.querySelector('.cmp-bench .cmp-runs')).not.toBeNull();
-    expect(root.querySelector('.cmp-bench')?.hasAttribute('open')).toBe(false);
-  });
-
-  test('requests experiment inclusion from the collapsed section checkbox', async () => {
-    const { root, view, transport } = mountComparison();
-
-    await view.refresh();
-    /** @type {HTMLInputElement} */ (
-      root.querySelector('.cmp-bench input[type="checkbox"]')
-    ).click();
-    await settle();
-
-    expect(transport).toHaveBeenLastCalledWith(
-      'get-compare',
-      expect.objectContaining({ include_bench: true })
-    );
-    expect(
-      root.querySelector('.cmp-filters input[type="checkbox"]')
-    ).toBeNull();
-  });
-});
-
-describe('compare view experiment list', () => {
-  beforeEach(() => {
-    document.body.innerHTML = '';
-    localStorage.clear();
-  });
-
-  test('lists an experiment with its progress fraction', async () => {
-    const { root, view } = mountView();
-
-    view.load();
-    await settle();
-
-    expect(root.querySelector('.cmp-run__progress')?.textContent?.trim()).toBe(
-      '3/9'
-    );
-  });
-
-  test('names the source issue by title when it is loaded', async () => {
-    const { root, view } = mountView();
-
-    view.load();
-    await settle();
-
-    expect(root.querySelector('.cmp-run__title')?.textContent).toContain(
-      '원본 이슈'
-    );
-  });
-
-  test('writes pass^k next to the success rate of a repeated preset', async () => {
-    const { root, view } = mountView();
-
-    view.load();
-    await settle();
-    /** @type {HTMLButtonElement} */ (root.querySelector('.cmp-run')).click();
-    await settle();
-
-    const table = /** @type {HTMLElement} */ (
-      root.querySelector('.cmp-table--bench')
-    );
-    expect(table.textContent).toContain('pass^2');
-  });
-
-  test('marks a partial benchmark cost median', async () => {
-    const { root, view } = mountView({
-      benchRows: [
-        {
-          attempt_id: 'a1',
-          bead_id: 'UI-c1',
-          status: 'done',
-          verify: 'pass',
-          usage: { tokens: 1000, total_cost_usd: 1, partial: true }
-        },
-        {
-          attempt_id: 'a2',
-          bead_id: 'UI-c2',
-          status: 'done',
-          verify: 'pass',
-          usage: { tokens: 1000, total_cost_usd: 1 }
-        }
-      ]
-    });
-
-    view.load();
-    await settle();
-    /** @type {HTMLButtonElement} */ (root.querySelector('.cmp-run')).click();
-    await settle();
-
-    expect(root.querySelector('.cmp-table--bench')?.textContent).toContain(
-      '부분 집계'
-    );
-  });
-
-  test('marks the experiment table as delegate-forced', async () => {
-    const { root, view } = mountView();
-
-    view.load();
-    await settle();
-    /** @type {HTMLButtonElement} */ (root.querySelector('.cmp-run')).click();
-    await settle();
-
-    expect(root.querySelector('.cmp-run-detail__flag')?.textContent).toContain(
-      '구현 위임 강제'
-    );
-  });
-
-  test('reads the experiment list from the one compare request', async () => {
-    const { view, calls } = mountView();
-
-    view.load();
-    await settle();
-
-    expect(calls.map((call) => call.type)).toEqual(['get-compare']);
-  });
-
-  test('keeps the experiment rows when the main filter narrows', async () => {
-    const { root, view } = mountView();
-
-    view.load();
-    await settle();
-    /** @type {HTMLButtonElement} */ (root.querySelector('.cmp-run')).click();
-    await settle();
-
-    const table = /** @type {HTMLElement} */ (
-      root.querySelector('.cmp-table--bench')
-    );
-    expect(table.textContent).toContain('pass^2');
-  });
-
-  test('shows a read failure with a retry button', async () => {
-    const root = document.createElement('div');
-    document.body.appendChild(root);
-    const failing = createCompareView(root, {
-      transport: vi.fn(async () => {
-        throw { code: 'compare_projection_failed', message: 'boom' };
-      })
-    });
-
-    failing.load();
-    await settle();
-
-    expect(root.querySelector('.cmp-error')?.textContent).toContain(
-      '비교 데이터'
-    );
-    failing.destroy();
-  });
-});
-
-describe('compare view new-experiment form', () => {
-  beforeEach(() => {
-    document.body.innerHTML = '';
-    localStorage.clear();
-  });
-
-  test('offers an eligible quick_fix source', async () => {
-    const { root, view } = mountView();
-
-    view.load();
-    await settle();
-    openForm(root);
-
-    const option = /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-source-id="UI-src"]')
-    );
-    expect(option.disabled).toBe(false);
-  });
-
-  test('refuses a non quick_fix source and shows the reason', async () => {
-    const { root, view } = mountView();
-
-    view.load();
-    await settle();
-    openForm(root);
-
-    const option = /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-source-id="UI-spec"]')
-    );
-    expect(option.disabled).toBe(true);
-    expect(option.textContent).toContain('quick_fix');
-  });
-
-  test('seeds the fixed reviewer from the previous experiment', async () => {
-    const { root, view } = mountView();
-
-    view.load();
-    await settle();
-    openForm(root);
-
-    const input = /** @type {HTMLInputElement} */ (
-      root.querySelector('[data-reviewer-key="impl_review_model"]')
-    );
-    expect(input.value).toBe('sonnet');
-  });
-
-  test('falls back to the documented reviewer triple without experiments', async () => {
-    const { root, view } = mountView({ runs: [] });
-
-    view.load();
-    await settle();
-    openForm(root);
-
-    const input = /** @type {HTMLInputElement} */ (
-      root.querySelector('[data-reviewer-key="impl_review_effort"]')
-    );
-    expect(input.value).toBe('xhigh');
-  });
-
-  test('hides the fixed reviewer inputs in preset reviewer mode', async () => {
-    const { root, view } = mountView();
-
-    view.load();
-    await settle();
-    openForm(root);
-    const radio = /** @type {HTMLInputElement} */ (
-      root.querySelector('input[name="cmp-reviewer-mode"][value="preset"]')
-    );
-    radio.checked = true;
-    radio.dispatchEvent(new Event('change'));
-
-    expect(
-      root.querySelector('[data-reviewer-key="impl_review_model"]')
-    ).toBeNull();
-  });
-
-  test('clamps a repeat count above the maximum', async () => {
-    const { root, view } = mountView();
-
-    view.load();
-    await settle();
-    openForm(root);
-    const input = /** @type {HTMLInputElement} */ (
-      root.querySelector('.cmp-form__input--repeats')
-    );
-    input.value = '9';
-    input.dispatchEvent(new Event('change'));
-
-    expect(
-      /** @type {HTMLInputElement} */ (
-        root.querySelector('.cmp-form__input--repeats')
-      ).value
-    ).toBe('5');
-  });
-
-  test('keeps submit disabled until a source and a preset are chosen', async () => {
-    const { root, view } = mountView();
-
-    view.load();
-    await settle();
-    openForm(root);
-
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        root.querySelector('.cmp-form__actions button[type="submit"]')
-      ).disabled
-    ).toBe(true);
-  });
-
-  test('sends the chosen inputs to bench-run-create', async () => {
-    const { root, view, calls } = mountView();
-
-    view.load();
-    await settle();
-    openForm(root);
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-source-id="UI-src"]')
-    ).click();
-    const preset = /** @type {HTMLInputElement} */ (
-      root.querySelector('[data-preset-id="p1"]')
-    );
-    preset.checked = true;
-    preset.dispatchEvent(new Event('change'));
-    /** @type {HTMLFormElement} */ (
-      root.querySelector('.cmp-form')
-    ).dispatchEvent(new Event('submit'));
-    await settle();
-
-    const created = calls.find((call) => call.type === 'bench-run-create');
-    expect(created?.payload).toMatchObject({
-      source_id: 'UI-src',
-      preset_ids: ['p1'],
-      repeats: 1,
-      reviewer_mode: 'fixed'
-    });
-  });
-
-  test('reports an aborted creation with the closed clone ids', async () => {
-    const { root, view } = mountView({
-      onCreate: () => {
-        throw {
-          code: 'bench_run_create_failed',
-          message: 'clone_create_failed',
-          details: { aborted: ['UI-x1'] }
-        };
-      }
-    });
-
-    view.load();
-    await settle();
-    openForm(root);
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-source-id="UI-src"]')
-    ).click();
-    const preset = /** @type {HTMLInputElement} */ (
-      root.querySelector('[data-preset-id="p1"]')
-    );
-    preset.checked = true;
-    preset.dispatchEvent(new Event('change'));
-    /** @type {HTMLFormElement} */ (
-      root.querySelector('.cmp-form')
-    ).dispatchEvent(new Event('submit'));
-    await settle();
-
-    expect(root.querySelector('.cmp-form .cmp-error')?.textContent).toContain(
-      'UI-x1'
-    );
+    expect(root.querySelectorAll('tbody tr.cmp-group')).toHaveLength(2);
+    expect(root.querySelector('.cmp-session')).toBeNull();
   });
 });
