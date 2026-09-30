@@ -1447,7 +1447,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         ? html`<span
             class="rtile__session-badge"
             title=${tile.status === 'open'
-              ? 'Worker가 아닌 세션 창이 열려 있는 이슈 · 아직 클레임 전'
+              ? 'Worker가 아닌 세션이 맡은 이슈 · 아직 in_progress 클레임 전'
               : 'Worker가 아닌 세션이 in_progress로 잡은 이슈'}
             >직접 세션</span
           >`
