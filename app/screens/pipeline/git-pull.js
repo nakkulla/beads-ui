@@ -1,5 +1,5 @@
 /**
- * The scope selector's `⟳ git pull` (부록 A 전역 `git-pull-workspace`): one
+ * The scope selector's `↻ git pull` (부록 A 전역 `git-pull-workspace`): one
  * request for the connected repo and one toast naming what happened, in the
  * wording the base header used.
  */

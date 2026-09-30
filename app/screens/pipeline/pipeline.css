@@ -111,6 +111,15 @@
   max-width: 260px;
 }
 
+/* The 저장소 작업 line wraps whole parts (the label, the deploy fact, the
+   badge) rather than breaking the label in the middle on a phone. */
+.pl-opsline {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
 .pl-opsline code {
   color: var(--ink-2);
   font-family: var(--font-mono);
@@ -125,7 +134,7 @@
    Bounded cells (never wider than --repo-cell-w) whose content wraps onto
    more lines instead of growing: line 1 name · load · switches · ⚙ (the
    switches drop to their own line when the name is long), line 2 the preset
-   pill and the 총괄/워커/qf units, each unit kept whole unless it alone is
+   pill and the 오케/워커/qf units, each unit kept whole unless it alone is
    wider than the cell. A fine pointer wraps the cells into rows; a coarse
    pointer keeps one horizontally scrolling strip. */
 

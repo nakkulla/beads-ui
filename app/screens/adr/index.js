@@ -722,9 +722,10 @@ export function createAdrView(root, options = {}) {
           : html`<span class="adr-badges"
               >${badgeTemplate(ws, 'index')}${badgeTemplate(ws, 'cite')}</span
             >`}
+        ${popup ? popupTemplate(ws, popup) : ''}
       </header>
-      ${popup ? popupTemplate(ws, popup) : ''} ${currentList(ws, all)}
-      ${historySection(ws)} ${missing ? '' : inspectSection(ws)}
+      ${currentList(ws, all)} ${historySection(ws)}
+      ${missing ? '' : inspectSection(ws)}
     </section>`;
   }
 

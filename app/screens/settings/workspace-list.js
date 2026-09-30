@@ -2,7 +2,7 @@
  * The 전역 tab's `저장소` group (UI-dbn6 §3.7, 부록 A 전역): every registered
  * repository (`list-workspaces`, read again when the tab opens) with its
  * visibility switch (`set-workspace-visibility`) and, on the connected one,
- * `⟳ git pull` (`git-pull-workspace` reads the connection, so only that repo
+ * `↻ git pull` (`git-pull-workspace` reads the connection, so only that repo
  * can be pulled from here). The list is server-global like the rest of the
  * tab, so the `적용 대상` checks do not narrow it.
  *
@@ -102,7 +102,7 @@ export function createWorkspaceListSection(host, workspaces) {
                       title="git pull --rebase (필요하면 stash)"
                       @click=${() => onPull(workspace.path)}
                     >
-                      ⟳ git pull
+                      ↻ git pull
                     </button>`
                   : ''}
                 <button

@@ -58,6 +58,7 @@
 }
 
 .adr-ws__hd {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -155,6 +156,7 @@
 }
 
 .adr-num {
+  min-width: 9ch;
   color: var(--ink-3);
   font-family: var(--font-mono);
   font-size: var(--t-id);
@@ -438,8 +440,12 @@
 
 /* ---------- badge popup ---------- */
 .adr-pop-anchor {
-  position: relative;
+  position: absolute;
   z-index: var(--z-popover);
+  top: calc(100% + var(--s-2));
+  right: 0;
+  left: 0;
+  height: 0;
 }
 
 .adr-pop {

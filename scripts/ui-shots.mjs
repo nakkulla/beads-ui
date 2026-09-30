@@ -27,6 +27,13 @@
  *      1374 · 1600 · 1920, each with the no-overflow probe — every count 0 —
  *      and the 390 page `scrollWidth - innerWidth` 0; `--design-only` runs
  *      this pass alone;
+ *  10. (Phase 3, `ui-shots-p3.mjs`) the settings screen (레포 + 일괄, every
+ *      tab), the usage popup, the ADR screen and its badge popup, the compare
+ *      screen with a group opened and the 문제 기준 popover, the repo-ops
+ *      declaration, script viewer and timeline drawer, and the fatal error
+ *      dialog in both schemes at 390 · 1280 (· 1374 for settings/ADR/compare)
+ *      with the no-overflow probe, 44px buttons/summaries at 390, ADR's
+ *      subscribe/unsubscribe and no page errors; `--p3-only` runs it alone;
  *   8. the issue detail (1280 panel, 390 full-screen sheet) and the transcript
  *      (1280 window, 390 sheet): captures, `scrollWidth` overflow 0, every
  *      visible button/select ≥ 44px at 390, opening the detail adds only
@@ -60,6 +67,7 @@ import {
   showLane,
   waitDomQueue
 } from './ui-shots-lib.mjs';
+import { p3Checks } from './ui-shots-p3.mjs';
 
 /**
  * @param {any} browser
@@ -681,9 +689,14 @@ async function main() {
   fs.mkdirSync(out, { recursive: true });
   const browser = await playwright.chromium.launch();
   const only = process.argv.includes('--design-only');
+  const p3_only = process.argv.includes('--p3-only');
   try {
     if (only) {
       await designChecks(browser, base, out);
+      return;
+    }
+    if (p3_only) {
+      await p3Checks(browser, base, out);
       return;
     }
     await captures(browser, base, out);
@@ -694,6 +707,7 @@ async function main() {
     await moveSheet(browser, base, out);
     await detailAndTranscript(browser, base, out);
     await designChecks(browser, base, out);
+    await p3Checks(browser, base, out);
     await idle(browser, base);
     await detailIdle(browser, base);
   } finally {

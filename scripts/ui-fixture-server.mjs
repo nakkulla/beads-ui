@@ -18,9 +18,15 @@
  * `get-attempt-prompt`, `subscribe-session-log` (a finished transcript) and
  * `GET /api/doc`·`/api/claude-usage`·`/api/codex-usage` (two accounts each,
  * one near its limit) and `POST /api/{claude,codex}-account/switch` (`ok`).
- * `subscribe-impl-presets` answers three named presets. Every other op
- * answers `ok`. It never runs `bd`, never reads `~/.local/state`, and never
- * starts a Worker.
+ * `subscribe-impl-presets` answers three named presets. Phase 3
+ * (`ui-fixture-p3.mjs`): the settings reads and writes (`get-session-defaults`
+ * with a Worker address, `get-workspace-accounts`, `set-session-defaults`,
+ * `set-worker-url-common`, `impl-preset-*`, `apply-impl-preset-global`,
+ * `get-worker-system-prompt`, `model-visibility-set` with its CAS and
+ * refusals, `set-workspace-visibility` over a registry with one hidden repo),
+ * `subscribe-adr` (an `adr-snapshot` push), `get-compare` and the repo-ops
+ * declaration / timeline of the queue view. Every other op answers `ok`. It
+ * never runs `bd`, never reads `~/.local/state`, and never starts a Worker.
  *
  * Usage: node scripts/ui-fixture-server.mjs [--port 3101]
  * Binds 127.0.0.1 only.
@@ -36,6 +42,7 @@ import {
   splitMonitorPipeline,
   splitWorkerQueue
 } from '../app/data/keyed-patch.js';
+import { DEFAULT_PROBLEM_CRITERIA } from '../app/utils/compare-problem-criteria.js';
 import {
   applyQueueOp,
   detailIssue,
@@ -43,10 +50,16 @@ import {
   transcriptLines
 } from './ui-fixture-data.mjs';
 import {
-  buildRichFixture,
-  presetSnapshot,
-  usageSnapshot
-} from './ui-fixture-rich.mjs';
+  adrSnapshot,
+  compareSnapshot,
+  createModelVisibility,
+  enrichRepoOps,
+  presetSnapshotP3,
+  sessionDefaultsReply,
+  withRepoOps,
+  workspaceAccountsReply
+} from './ui-fixture-p3.mjs';
+import { buildRichFixture, usageSnapshot } from './ui-fixture-rich.mjs';
 
 const REPO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const APP_DIR = path.join(REPO_ROOT, 'app');
@@ -73,8 +86,22 @@ const MIME = {
  * @returns {Promise<{ port: number, close: () => Promise<void>, state: () => ReturnType<typeof buildRichFixture> }>}
  */
 export async function startFixtureServer(options = {}) {
+  const started_at = typeof options.now === 'number' ? options.now : Date.now();
   const fixture = buildRichFixture({ now: options.now });
+  enrichRepoOps(fixture, started_at);
   let current = fixture.workspaces[0].root_dir;
+  const model_visibility = createModelVisibility();
+  /** @type {Set<{ ws: import('ws').WebSocket, client_id: string }>} */
+  const visibility_subs = new Set();
+  let presets = presetSnapshotP3();
+  const worker_common = {
+    value: 'http://100.64.0.12:3000',
+    revision: 'rev-1'
+  };
+  /** A registered repository the fixture keeps hidden (settings 저장소 list). */
+  const HIDDEN_REPO = '/fixture/repo-archive';
+  /** @type {Set<string>} */
+  const hidden = new Set([HIDDEN_REPO]);
   /** @type {Set<{ ws: import('ws').WebSocket, client_id: string, seq?: number, last?: Map<string, string|undefined> }>} */
   const monitor_subs = new Set();
   /** @type {Set<{ ws: import('ws').WebSocket, client_id: string, root_dir: string, seq?: number, last?: Map<string, string|undefined> }>} */
@@ -150,7 +177,10 @@ export async function startFixtureServer(options = {}) {
     if (!row || !state) {
       return;
     }
-    const body = { root_dir: row.root_dir, queue: queueViewOf(row, state) };
+    const body = {
+      root_dir: row.root_dir,
+      queue: withRepoOps(queueViewOf(row, state), row)
+    };
     pushKeyed(sub, 'worker-queue', body, splitWorkerQueue(body));
   }
 
@@ -195,14 +225,27 @@ export async function startFixtureServer(options = {}) {
     switch (req.type) {
       case 'list-workspaces':
         ok({
-          workspaces: fixture.workspaces.map((row) => ({
-            path: row.root_dir,
-            database: `${row.root_dir}/.beads`
+          workspaces: [
+            ...fixture.workspaces.map((row) => row.root_dir),
+            HIDDEN_REPO
+          ].map((root_dir) => ({
+            path: root_dir,
+            database: `${root_dir}/.beads`
           })),
           current: { root_dir: current, db_path: `${current}/.beads` },
-          hidden: []
+          hidden: [...hidden]
         });
         return;
+      case 'set-workspace-visibility': {
+        const target = String(payload.path || '');
+        if (payload.visible === false) {
+          hidden.add(target);
+        } else {
+          hidden.delete(target);
+        }
+        ok({ hidden: [...hidden] });
+        return;
+      }
       case 'set-workspace': {
         const next = String(payload.path || '');
         const changed = next !== current;
@@ -261,29 +304,119 @@ export async function startFixtureServer(options = {}) {
           ws,
           String(payload.id || 'exec:presets'),
           'impl-presets-snapshot',
-          presetSnapshot()
+          presets
         );
         return;
-      case 'subscribe-model-visibility':
+      case 'subscribe-model-visibility': {
+        const client_id = String(payload.id || 'model-visibility');
+        visibility_subs.add({ ws, client_id });
         ok({});
         push(
           ws,
-          String(payload.id || 'model-visibility'),
+          client_id,
           'model-visibility-snapshot',
-          {
-            revision: 1,
-            disabled_models: ['haiku'],
-            runners: {
-              claude: [
-                { name: 'opus', id: 'claude-opus' },
-                { name: 'sonnet', id: 'claude-sonnet' },
-                { name: 'haiku', id: 'claude-haiku' }
-              ],
-              codex: [{ name: 'gpt-5', id: 'gpt-5' }]
-            }
-          }
+          model_visibility.get()
         );
         return;
+      }
+      case 'model-visibility-set': {
+        const result = model_visibility.set(payload);
+        if (!result.ok) {
+          ws.send(
+            JSON.stringify({
+              id: req.id,
+              ok: false,
+              type: req.type,
+              error: {
+                code: result.code,
+                message: `model-visibility-set: ${result.code}`,
+                details: { snapshot: result.snapshot }
+              }
+            })
+          );
+          return;
+        }
+        ok({ snapshot: result.snapshot });
+        for (const sub of visibility_subs) {
+          push(
+            sub.ws,
+            sub.client_id,
+            'model-visibility-snapshot',
+            result.snapshot
+          );
+        }
+        return;
+      }
+      case 'impl-preset-create':
+      case 'impl-preset-update':
+      case 'impl-preset-delete':
+      case 'impl-preset-bind':
+        presets = { ...presets, revision: presets.revision + 1 };
+        ok(presets);
+        return;
+      case 'subscribe-adr':
+        ok({ id: String(payload.id || 'adr:snapshot') });
+        push(
+          ws,
+          String(payload.id || 'adr:snapshot'),
+          'adr-snapshot',
+          adrSnapshot(fixture.workspaces, started_at)
+        );
+        return;
+      case 'get-compare':
+        ok(
+          compareSnapshot(
+            payload,
+            fixture.workspaces,
+            started_at,
+            DEFAULT_PROBLEM_CRITERIA
+          )
+        );
+        return;
+      case 'get-worker-system-prompt':
+        ok({
+          target_base_placeholder: '{target_base}',
+          variants: [
+            {
+              key: 'standard',
+              condition: 'workflow_mode = standard',
+              text: '너는 이 저장소의 Worker다. 과업 프롬프트의 Bead를 구현한다… (fixture)'
+            },
+            {
+              key: 'quick_fix',
+              condition: 'route = quick_fix',
+              text: 'quick fix 경로: 스펙 없이 바로 고친다… (fixture)'
+            }
+          ]
+        });
+        return;
+      case 'set-session-defaults': {
+        const state = fixture.workspaces_state.find(
+          (entry) => entry.root_dir === String(payload.root_dir || current)
+        );
+        if (state) {
+          state.session_defaults = {
+            ...(state.session_defaults || {}),
+            ...(payload.values || {})
+          };
+        }
+        ok(sessionDefaultsReply(state, worker_common));
+        return;
+      }
+      case 'set-worker-url-common': {
+        worker_common.value = String(payload.value || '');
+        worker_common.revision = `rev-${Date.now()}`;
+        const state = fixture.workspaces_state.find(
+          (entry) => entry.root_dir === String(payload.root_dir || current)
+        );
+        const reply = sessionDefaultsReply(state, worker_common);
+        ok({
+          common_saved: true,
+          common: reply.worker_url.common,
+          worker_url: reply.worker_url
+        });
+        return;
+      }
       case 'subscribe-list': {
         const client_id = String(payload.id || '');
         const kind = String(payload.type || '');
@@ -361,11 +494,15 @@ export async function startFixtureServer(options = {}) {
         });
         return;
       }
-      case 'get-session-defaults':
-        ok({ values: {}, warnings: [], state: 'ready' });
+      case 'get-session-defaults': {
+        const state = fixture.workspaces_state.find(
+          (entry) => entry.root_dir === String(payload.root_dir || current)
+        );
+        ok({ ...sessionDefaultsReply(state, worker_common), state: 'ready' });
         return;
+      }
       case 'get-workspace-accounts':
-        ok({ state: 'absent', values: {}, warnings: [] });
+        ok(workspaceAccountsReply());
         return;
       case 'get-attempt-prompt':
         ok({ missing: true });
@@ -408,7 +545,7 @@ export async function startFixtureServer(options = {}) {
           ok({
             applied: false,
             conflict: true,
-            queue: queueViewOf(row, state)
+            queue: withRepoOps(queueViewOf(row, state), row)
           });
           return;
         }
@@ -427,7 +564,7 @@ export async function startFixtureServer(options = {}) {
               )
           };
         }
-        ok({ applied, queue: queueViewOf(row, state) });
+        ok({ applied, queue: withRepoOps(queueViewOf(row, state), row) });
         if (applied) {
           fanout();
         }
@@ -477,9 +614,11 @@ export async function startFixtureServer(options = {}) {
       res.writeHead(200, { 'Content-Type': MIME['.json'] });
       res.end(
         JSON.stringify(
+          // anchored at the server start so the reset instants hold still
+          // (an idle page must not redraw on an unchanged poll)
           usageSnapshot(
             url.pathname === '/api/claude-usage' ? 'claude' : 'codex',
-            Date.now()
+            started_at
           )
         )
       );
@@ -493,6 +632,30 @@ export async function startFixtureServer(options = {}) {
       req.resume();
       res.writeHead(200, { 'Content-Type': MIME['.json'] });
       res.end(JSON.stringify({ ok: true, warnings: [] }));
+      return;
+    }
+    if (url.pathname === '/api/repo-ops-script') {
+      const lane =
+        url.searchParams.get('lane') === 'verify' ? 'verify' : 'deploy';
+      res.writeHead(200, { 'Content-Type': MIME['.json'] });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          lane,
+          base_sha: url.searchParams.get('base_sha') || '',
+          base_ref: 'main',
+          path: `repo-ops/script/${lane}`,
+          content: [
+            '#!/usr/bin/env bash',
+            '# 머지 직전 candidate에서 도는 안전망 (fixture)',
+            'set -euo pipefail',
+            'NODE_MIN="$(jq -r .engines.node package.json)"',
+            'if [ -n "${CI:-}" ]; then echo "ci"; fi',
+            'npm run tsc && npm run lint',
+            "npx vitest run --reporter=dot --testTimeout=120000 # 'quoted'"
+          ].join('\n')
+        })
+      );
       return;
     }
     if (url.pathname === '/api/config') {
@@ -548,6 +711,11 @@ export async function startFixtureServer(options = {}) {
       for (const sub of queue_subs) {
         if (sub.ws === ws) {
           queue_subs.delete(sub);
+        }
+      }
+      for (const sub of visibility_subs) {
+        if (sub.ws === ws) {
+          visibility_subs.delete(sub);
         }
       }
     });

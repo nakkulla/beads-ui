@@ -275,7 +275,7 @@ export function createSettingsDialog(mount_element, options) {
   }
 
   /**
-   * The pane head: title and, on the connected repo, `⟳ git pull`.
+   * The pane head: title and, on the connected repo, `↻ git pull`.
    *
    * @param {string} title
    * @returns {TemplateResult}
@@ -293,7 +293,7 @@ export function createSettingsDialog(mount_element, options) {
             title="이 저장소에서 git pull --rebase (필요하면 stash)"
             @click=${onGitPull}
           >
-            ⟳ git pull
+            ↻ git pull
           </button>`
         : ''}
     </header>`;

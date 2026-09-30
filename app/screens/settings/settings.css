@@ -740,7 +740,11 @@ p.settings-dialog__hint {
   .settings-dialog__tab {
     flex: none;
     width: auto;
-    padding: 0 var(--s-5);
+    padding: 0 var(--s-4);
+  }
+
+  .settings-dialog__glyph {
+    display: none;
   }
 
   .settings-dialog__close {

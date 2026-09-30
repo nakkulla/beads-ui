@@ -5862,37 +5862,37 @@ html[data-theme='dark'] {
     min-width: 0;
   }
 
-  .usage-meter {
+  .usage-meter-mount .usage-meter {
     display: flex;
     flex-direction: column;
     width: 100%;
     gap: var(--sp-3);
   }
 
-  .usage-meter__group {
+  .usage-meter-mount .usage-meter__group {
     display: flex;
     width: 100%;
     min-width: 0;
     gap: var(--sp-6);
   }
 
-  .usage-meter__provider {
+  .usage-meter-mount .usage-meter__provider {
     flex: 0 0 44px;
   }
 
-  .usage-meter__window {
+  .usage-meter-mount .usage-meter__window {
     flex: 1 1 0;
     min-width: 0;
   }
 
-  .usage-meter__track {
+  .usage-meter-mount .usage-meter__track {
     display: block;
     flex: 1 1 20px;
     min-width: 16px;
     width: auto;
   }
 
-  .usage-meter__badge {
+  .usage-meter-mount .usage-meter__badge {
     flex: 0 0 auto;
   }
 }
@@ -6191,7 +6191,6 @@ html[data-theme='dark'] {
    (부모의 gap이 간격을 정한다, UI-628r §3.1). */
 
 @media (max-width: 640px) {
-
   /* 좁은 화면에서는 라벨을 컨트롤 위로 쌓아 값 영역을 전폭으로 쓴다. */
 
   /* 가로 레일에서는 탭이 내용 폭만 차지해야 한 줄에 놓인다. */

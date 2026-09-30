@@ -298,15 +298,20 @@ button.usage-meter__group[aria-expanded='true'] {
 @media (max-width: 719px) {
   .usage-meter__group {
     gap: var(--s-2);
-    padding: 0 var(--s-2);
+    padding: 0 var(--s-1);
   }
 
   .usage-meter__provider {
     display: none;
   }
 
+  /* the +n of inactive accounts moves into the card on a phone */
+  .usage-meter__badge {
+    display: none;
+  }
+
   .usage-meter__bars {
-    width: 24px;
+    width: 20px;
   }
 
   .usage-meter__scrim {

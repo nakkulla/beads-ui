@@ -156,7 +156,7 @@ function scopeMenu(view) {
             ?disabled=${view.pulling}
             title=${`${nameOf(view.connected)}에서 git pull --rebase (필요하면 stash)`}
           >
-            ⟳ git pull · ${nameOf(view.connected)}
+            ↻ git pull · ${nameOf(view.connected)}
           </button>`
         : ''}
       <button
