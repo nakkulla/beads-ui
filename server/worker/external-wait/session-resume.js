@@ -64,7 +64,7 @@ export const SESSION_RESUME_PROMPT_LEAD =
 
 /**
  * @typedef {Object} SessionResumeDeps
- * @property {Pick<ReturnType<typeof import('../tmux-launcher.js').createTmuxLauncher>, 'launch'|'listPanesExtended'|'bridgeActive'>} launcher
+ * @property {Pick<ReturnType<typeof import('../tmux-launcher.js').createTmuxLauncher>, 'launch'|'focusRunning'|'listPanesExtended'|'bridgeActive'>} launcher
  * @property {{ get: (workspace: string, wait_id: string) => WaitRecord|null, update: (workspace: string, wait_id: string, mutate: (record: WaitRecord) => void) => unknown }} externalWait
  * @property {(workspace: string, record: Record<string, unknown>) => unknown} recordInteractiveSession
  * @property {(bead_id: string) => Promise<void>} unsetExternalWait - Unset the
@@ -346,15 +346,53 @@ export function createExternalWaitSessionResume(deps) {
       // Launch evidence already exists and only the key settlement failed
       // (UI-r6xq §5): retry that settlement alone. Re-entering the launch path
       // would read the window this launch opened as the live owner.
-      const found = await findPane(record.bead_id);
-      const pane =
-        found.ok && found.pane
-          ? {
-              tmux_session: found.pane.session,
-              tmux_window: found.pane.window,
-              pane_id: found.pane.pane
-            }
-          : null;
+      // The click still makes that open window current (UI-a119 §3.1); a
+      // focus that fails or finds no window changes nothing else.
+      const focused = await deps.launcher.focusRunning({
+        marker: EXTERNAL_RESUME_PANE_MARKER,
+        key: record.bead_id,
+        tmux_session: deps.tmuxSession(),
+        window_name: record.bead_id,
+        placement: 'user'
+      });
+      /** @type {Extract<import('../tmux-launcher.js').LaunchOutcome, { session: 'already_running' }>|null} */
+      let live = null;
+      if (!focused.ok) {
+        log(
+          'external wait resume window focus failed for %s: %s',
+          record.bead_id,
+          focused.error
+        );
+      } else if (focused.outcome?.session === 'already_running') {
+        live = focused.outcome;
+      } else {
+        log('external wait resume window not found for %s', record.bead_id);
+      }
+      /** @type {{ placement: import('../tmux-launcher.js').LaunchPlacement|null, tmux_session: string|null, tmux_window: string|null, pane_id: string|null }} */
+      let where = {
+        placement: null,
+        tmux_session: null,
+        tmux_window: null,
+        pane_id: null
+      };
+      if (live) {
+        where = {
+          placement: live.placement ?? null,
+          tmux_session: live.tmux_session ?? null,
+          tmux_window: live.tmux_window ?? null,
+          pane_id: live.pane_id ?? null
+        };
+      } else {
+        const found = await findPane(record.bead_id);
+        if (found.ok && found.pane) {
+          where = {
+            placement: null,
+            tmux_session: found.pane.session,
+            tmux_window: found.pane.window,
+            pane_id: found.pane.pane
+          };
+        }
+      }
       try {
         await settleLaunch(workspace, record, {
           source: 'session_ref',
@@ -375,10 +413,7 @@ export function createExternalWaitSessionResume(deps) {
         reason: null,
         command: null,
         owner_tmux: null,
-        placement: null,
-        tmux_session: pane?.tmux_session ?? null,
-        tmux_window: pane?.tmux_window ?? null,
-        pane_id: pane?.pane_id ?? null,
+        ...where,
         bridge_active: deps.launcher.bridgeActive()
       };
     }

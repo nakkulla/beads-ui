@@ -13,6 +13,14 @@ const WAIT = 'w-0123456789ab';
 const AT = '2026-09-23T00:00:00.000Z';
 const SESSION = 'user-session';
 const PROC_START = 'Tue Sep 22 20:45:09 2026';
+const LAUNCHED_RESUME = {
+  mode: 'session',
+  attempt_id: null,
+  reserved_at: AT,
+  launched_at: AT,
+  session_id: SESSION,
+  error: null
+};
 
 /** @type {string} */
 let root;
@@ -41,7 +49,7 @@ function writeRegistry(name, entry) {
 }
 
 /**
- * @param {{ record?: Record<string, any>, launch?: any, panes?: any, run?: any, unset?: any, sessionsDir?: string }} [options]
+ * @param {{ record?: Record<string, any>, launch?: any, focus?: any, panes?: any, run?: any, unset?: any, sessionsDir?: string }} [options]
  */
 function fixture(options = {}) {
   /** @type {any} */
@@ -108,6 +116,9 @@ function fixture(options = {}) {
           tmux_window: 'B1',
           pane_id: '%7'
         }
+    ),
+    focusRunning: vi.fn(
+      async () => options.focus || { ok: true, outcome: null }
     ),
     listPanesExtended: vi.fn(
       async () => options.panes || { ok: true, rows: [] }
@@ -564,6 +575,60 @@ describe('session resume launch', () => {
       stage: 'completing',
       resume: { launched_at: AT, error: null }
     });
+  });
+
+  test('makes the open window current on a settlement retry click', async () => {
+    const env = fixture({ record: { resume: LAUNCHED_RESUME } });
+
+    await env.resume();
+
+    expect(env.launcher.focusRunning).toHaveBeenCalledWith({
+      marker: EXTERNAL_RESUME_PANE_MARKER,
+      key: 'B1',
+      tmux_session: 'bdui-inquiry',
+      window_name: 'B1',
+      placement: 'user'
+    });
+    expect(env.launcher.launch).not.toHaveBeenCalled();
+  });
+
+  test('reports the focused window on a settlement retry click', async () => {
+    const env = fixture({
+      record: { resume: LAUNCHED_RESUME },
+      focus: {
+        ok: true,
+        outcome: {
+          session: 'already_running',
+          placement: 'user',
+          tmux_session: 'dev',
+          tmux_window: 'B1',
+          pane_id: '%4'
+        }
+      }
+    });
+
+    const result = await env.resume();
+
+    expect(result).toMatchObject({
+      session: 'already_running',
+      placement: 'user',
+      tmux_session: 'dev',
+      tmux_window: 'B1',
+      pane_id: '%4'
+    });
+  });
+
+  test('still settles the key when focusing the open window fails', async () => {
+    const env = fixture({
+      record: { resume: LAUNCHED_RESUME },
+      focus: { ok: false, error: 'no server running' }
+    });
+
+    const result = await env.resume();
+
+    expect(result).toMatchObject({ session: 'already_running', reason: null });
+    expect(env.unsetExternalWait).toHaveBeenCalledWith('B1');
+    expect(env.recordOf().stage).toBe('resumed');
   });
 
   test('does not launch when a registry entry cannot be read', async () => {
