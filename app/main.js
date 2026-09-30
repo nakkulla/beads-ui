@@ -6,9 +6,10 @@
  * first snapshot's lanes → render. There are no boot list subscriptions; an
  * open surface adds only its own (issue detail, closed/deferred lists, ADR).
  *
- * The issue detail, transcript, document viewer and new-issue dialog are the
- * Phase 2 screens; settings, ADR and compare are the existing components
- * mounted as bridges with the same options until Phase 3 replaces them.
+ * Every surface is a screen of its own: the pipeline, the issue detail,
+ * transcript, document viewer and new-issue dialog, the settings, ADR and
+ * compare screens (`screens/surfaces.js`), the usage meter and the fatal
+ * error dialog.
  *
  * @import { MessageType } from './protocol.js'
  */
@@ -34,7 +35,6 @@ import { createSessionLogStore } from './model/session-log-store.js';
 import { createSubscriptionIssueStores } from './model/subscription-issue-stores.js';
 import { createSubscriptionStore } from './model/subscriptions-store.js';
 import { createWorkerQueueStore } from './model/worker-queue-store.js';
-import { mountBridges } from './screens/bridges.js';
 import { createDetailPanel } from './screens/detail/index.js';
 import { createFatalErrorDialog } from './screens/dialogs/fatal-error-dialog.js';
 import { createMdViewer } from './screens/doc-viewer/index.js';
@@ -43,6 +43,7 @@ import { runGitPull } from './screens/pipeline/git-pull.js';
 import { createPipelineScreen } from './screens/pipeline/index.js';
 import { nameOf } from './screens/pipeline/scope.js';
 import { createShell } from './screens/pipeline/shell.js';
+import { mountSurfaces } from './screens/surfaces.js';
 import { createTranscriptScreen } from './screens/transcript/index.js';
 import { createUsageMeter } from './screens/usage/usage-meter.js';
 import { render } from './ui/render.js';
@@ -548,7 +549,7 @@ export function bootstrap(root_element) {
     shell.render();
   });
 
-  // --- overlays and bridges ----------------------------------------------------
+  // --- overlays and surfaces ---------------------------------------------------
 
   const doc_mount = document.createElement('div');
   doc_mount.className = 'md-viewer-root';
@@ -568,7 +569,7 @@ export function bootstrap(root_element) {
     }
   );
 
-  const { settings_dialog, compare_view } = mountBridges({
+  const { settings_dialog, compare_view } = mountSurfaces({
     root: root_element,
     compare_root,
     adr_root,

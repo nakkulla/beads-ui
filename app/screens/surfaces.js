@@ -1,15 +1,15 @@
 /**
- * The existing surfaces the unified shell mounts unchanged until Phase 3
- * replaces them (UI-dbn6 §4.1 bridges): the compare view and the ADR view,
- * plus the settings screen (`screens/settings/`). Each gets the same options
- * it had, fed from the shell's stores.
+ * The screens the shell mounts next to the pipeline (UI-dbn6 §3.7–§3.9): the
+ * settings dialog (`screens/settings/`), the compare screen
+ * (`screens/compare/`) and the ADR screen (`screens/adr/`), each fed from the
+ * shell's stores. No old view is mounted any more.
  */
 import { createAdrView } from './adr/index.js';
 import { createCompareView } from './compare/index.js';
 import { createSettingsDialog } from './settings/index.js';
 
 /**
- * @typedef {Object} BridgeDeps
+ * @typedef {Object} SurfaceDeps
  * @property {HTMLElement} root - The shell root (dialogs attach here).
  * @property {HTMLElement} compare_root
  * @property {HTMLElement} adr_root
@@ -26,9 +26,9 @@ import { createSettingsDialog } from './settings/index.js';
  */
 
 /**
- * @param {BridgeDeps} deps
+ * @param {SurfaceDeps} deps
  */
-export function mountBridges(deps) {
+export function mountSurfaces(deps) {
   const { stores } = deps;
 
   const settings_dialog = createSettingsDialog(deps.root, {

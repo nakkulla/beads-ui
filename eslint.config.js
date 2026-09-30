@@ -98,16 +98,5 @@ export default defineConfig([
         }
       ]
     }
-  },
-  {
-    // The shell's remaining bridge mounts until Phases 3–4 retire them.
-    files: [
-      'app/main.js',
-      'app/screens/bridges.js',
-      'app/screens/pipeline/drawers.js'
-    ],
-    rules: {
-      'no-restricted-imports': ['error', { paths: [LIT_RENDER_RESTRICTION] }]
-    }
   }
 ]);
