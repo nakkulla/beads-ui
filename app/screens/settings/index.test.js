@@ -1,28 +1,9 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { createDisplayPolicyStore } from '../../data/display-policy-store.js';
 import {
   BULK_SETTINGS_TABS,
   SETTINGS_TABS,
   createSettingsDialog
 } from './index.js';
-
-/** @returns {import('../../utils/label-policy.js').DisplayPolicy} */
-function makePolicy() {
-  return {
-    revision: 0,
-    hidden_labels: [],
-    hidden_prefixes: [],
-    visible_labels: [],
-    chips: {
-      route: true,
-      fast_track: true,
-      pr: true,
-      from: true,
-      blocked: true,
-      stepper: true
-    }
-  };
-}
 
 const CATALOG = {
   runners: {
@@ -93,13 +74,11 @@ const EXECUTION_DEFAULTS = {
 };
 
 /**
- * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, modelVisibility?: any }} [options]
+ * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, modelVisibility?: any, workspaces?: any }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
   document.body.appendChild(root);
-  const policy_store = createDisplayPolicyStore();
-  policy_store.set(makePolicy());
   const notify = vi.fn();
   const transport =
     options.transport ||
@@ -126,7 +105,6 @@ function mount(options = {}) {
   };
   const dialog = createSettingsDialog(root, {
     transport,
-    policyStore: policy_store,
     queueStore: {
       get: () => queue_state,
       set: (queue) => {
@@ -140,11 +118,11 @@ function mount(options = {}) {
       get: () => options.modelVisibility ?? null,
       set: () => {}
     },
-    labelOptions: () => ['worker-serial'],
     notify,
-    monitorRows: () => options.monitorRows || []
+    monitorRows: () => options.monitorRows || [],
+    ...(options.workspaces ? { workspaces: options.workspaces } : {})
   });
-  return { root, dialog, transport, notify, policy_store };
+  return { root, dialog, transport, notify };
 }
 
 /** Let the dialog's `open()` load finish. */
@@ -159,7 +137,7 @@ beforeEach(() => {
 });
 
 describe('createSettingsDialog tabs', () => {
-  test('renders the five rail tabs in contract order', async () => {
+  test('renders the four rail tabs in contract order', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
@@ -168,19 +146,12 @@ describe('createSettingsDialog tabs', () => {
       tab.getAttribute('data-tab')
     );
 
-    expect(tabs).toEqual([
-      'worker',
-      'quick_fix',
-      'session',
-      'account',
-      'display'
-    ]);
+    expect(tabs).toEqual(['worker', 'quick_fix', 'session', 'account']);
     expect(SETTINGS_TABS.map((tab) => tab.label)).toEqual([
       '워커',
       'quick fix',
       '세션',
-      '계정',
-      '표시'
+      '계정'
     ]);
   });
 
@@ -222,11 +193,11 @@ describe('createSettingsDialog tabs', () => {
     await settle();
 
     /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-tab="display"]')
+      root.querySelector('[data-tab="session"]')
     ).click();
 
     expect(root.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
-    expect(root.querySelector('#settings-pane-display')).not.toBe(null);
+    expect(root.querySelector('#settings-pane-session')).not.toBe(null);
     expect(root.querySelector('#settings-pane-worker')).toBe(null);
   });
 
@@ -393,6 +364,153 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
   });
 });
 
+describe('createSettingsDialog repositories (UI-dbn6 §3.7)', () => {
+  const MONITOR_ROWS = [
+    { root_dir: '/tmp/example/repo-a', name: 'repo-a', revision: 1 },
+    { root_dir: '/tmp/example/repo-b', name: 'repo-b', revision: 1 }
+  ];
+
+  function workspaces() {
+    return {
+      list: () => ({
+        available: [
+          { path: '/tmp/example/repo-a' },
+          { path: '/tmp/example/repo-b' }
+        ],
+        hidden: ['/tmp/example/repo-b'],
+        connected: '/tmp/example/repo-a'
+      }),
+      refresh: vi.fn(async () => {}),
+      setVisible: vi.fn(async () => {}),
+      gitPull: vi.fn(async () => {})
+    };
+  }
+
+  /**
+   * @param {ReturnType<typeof workspaces>} list
+   */
+  async function openGlobal(list) {
+    const mounted = mount({
+      monitorRows: MONITOR_ROWS,
+      workspaces: list,
+      modelVisibility: {
+        revision: 1,
+        disabled_models: [],
+        runners: { claude: [{ name: 'opus', id: 'opus' }] }
+      }
+    });
+    mounted.dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+    /** @type {HTMLButtonElement} */ (
+      mounted.root.querySelector('[data-tab="global"]')
+    ).click();
+    await settle();
+    return mounted;
+  }
+
+  test('lists every registered repository under 저장소 in the 전역 tab', async () => {
+    const list = workspaces();
+
+    const { root, dialog } = await openGlobal(list);
+
+    const titles = Array.from(
+      root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
+    ).map((title) => title.textContent?.trim());
+    const rows = Array.from(root.querySelectorAll('[data-workspace-row]')).map(
+      (row) => row.getAttribute('data-workspace-row')
+    );
+    expect(titles).toEqual(['판정 칩 프리셋', '활성 모델', '저장소']);
+    expect(rows).toEqual(['/tmp/example/repo-a', '/tmp/example/repo-b']);
+    dialog.destroy();
+  });
+
+  test('reads the registered repositories again when the 전역 tab opens', async () => {
+    const list = workspaces();
+
+    const { dialog } = await openGlobal(list);
+
+    expect(list.refresh).toHaveBeenCalledTimes(1);
+    dialog.destroy();
+  });
+
+  test('shows a hidden repository with its visibility switch off', async () => {
+    const list = workspaces();
+
+    const { root, dialog } = await openGlobal(list);
+
+    const hidden = root.querySelector(
+      '[data-workspace-row="/tmp/example/repo-b"] [data-workspace-visible]'
+    );
+    expect(hidden?.getAttribute('aria-pressed')).toBe('false');
+    dialog.destroy();
+  });
+
+  test('sends the visibility change of one repository', async () => {
+    const list = workspaces();
+    const { root, dialog } = await openGlobal(list);
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector(
+        '[data-workspace-row="/tmp/example/repo-b"] [data-workspace-visible]'
+      )
+    ).click();
+    await settle();
+
+    expect(list.setVisible).toHaveBeenCalledWith('/tmp/example/repo-b', true);
+    dialog.destroy();
+  });
+
+  test('pulls the connected repository from its own row only', async () => {
+    const list = workspaces();
+    const { root, dialog } = await openGlobal(list);
+    const pulls = root.querySelectorAll('[data-workspace-pull]');
+
+    /** @type {HTMLButtonElement} */ (pulls[0]).click();
+    await settle();
+
+    expect(pulls).toHaveLength(1);
+    expect(
+      pulls[0]
+        .closest('[data-workspace-row]')
+        ?.getAttribute('data-workspace-row')
+    ).toBe('/tmp/example/repo-a');
+    expect(list.gitPull).toHaveBeenCalledWith('/tmp/example/repo-a');
+    dialog.destroy();
+  });
+
+  test('offers git pull in the 레포 window of the connected repository', async () => {
+    const list = workspaces();
+    const { root, dialog } = mount({
+      monitorRows: MONITOR_ROWS,
+      workspaces: list
+    });
+    dialog.open(undefined, { scope: 'repo', root_dir: '/tmp/example/repo-a' });
+    await settle();
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-settings-git-pull]')
+    ).click();
+    await settle();
+
+    expect(list.gitPull).toHaveBeenCalledWith('/tmp/example/repo-a');
+    dialog.destroy();
+  });
+
+  test('offers no git pull in the 레포 window of another repository', async () => {
+    const list = workspaces();
+    const { root, dialog } = mount({
+      monitorRows: MONITOR_ROWS,
+      workspaces: list
+    });
+
+    dialog.open(undefined, { scope: 'repo', root_dir: '/tmp/example/repo-b' });
+    await settle();
+
+    expect(root.querySelector('[data-settings-git-pull]')).toBe(null);
+    dialog.destroy();
+  });
+});
+
 describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
   const MONITOR_ROWS = [
     {
@@ -480,13 +598,13 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
     dialog.destroy();
   });
 
-  test('keeps the five tabs and the connected workspace reads when opened without a scope', async () => {
+  test('keeps the four tabs and the connected workspace reads when opened without a scope', async () => {
     const { root, dialog, transport } = mount({ monitorRows: MONITOR_ROWS });
 
     dialog.open();
     await settle();
 
-    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(5);
+    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(4);
     expect(requestTypes(transport)).toEqual(
       expect.arrayContaining(['get-session-defaults', 'get-workspace-accounts'])
     );
@@ -503,7 +621,7 @@ describe('createSettingsDialog bulk mode (UI-nu43 §3.1)', () => {
     dialog.open('quick_fix');
     await settle();
 
-    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(5);
+    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(4);
     expect(root.querySelector('[data-quick-fix-group]')).not.toBe(null);
     dialog.destroy();
   });
@@ -981,23 +1099,6 @@ describe('createSettingsDialog execution tab orchestration', () => {
     expect(keys).toContain('orchestration_model');
     expect(keys).toContain('impl_runtime');
     expect(keys).toContain('spec_review_model');
-  });
-});
-
-describe('createSettingsDialog display tab', () => {
-  test('ports the label pills into the 표시 tab', async () => {
-    const { root, dialog } = mount();
-    dialog.open();
-    await settle();
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-tab="display"]')
-    ).click();
-
-    const pill = root.querySelector(
-      '#settings-pane-display [data-label="worker-serial"]'
-    );
-
-    expect(pill).not.toBe(null);
   });
 });
 

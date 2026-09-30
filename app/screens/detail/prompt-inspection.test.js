@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createSessionLogStore } from '../../model/session-log-store.js';
 import { createWorkerQueueStore } from '../../model/worker-queue-store.js';
-import { createSettingsDialog } from '../../views/settings-dialog/index.js';
+import { createSettingsDialog } from '../settings/index.js';
 import { createTranscriptDrawer } from '../transcript/transcript-drawer.js';
 import { createDetailPanel } from './index.js';
 
@@ -283,9 +283,7 @@ describe('settings dialog worker system prompt (UI-rxp3 §4)', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const dialog = createSettingsDialog(mount, {
       transport,
-      policyStore: { get: () => null, set: () => {} },
       queueStore: createWorkerQueueStore(),
-      labelOptions: () => [],
       notify: () => {}
     });
     dialog.open();

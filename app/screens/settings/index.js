@@ -1,34 +1,35 @@
 /**
- * The unified settings dialog — the ONE entry point behind the nav-bar ⚙
- * (spec §D).
+ * The settings screen (UI-dbn6 §3.7): one native `<dialog>` in two modes.
  *
- * The `워커`·`quick fix`·`세션`·`계정` tabs are NOT built here: they are the four
- * sections of `createExecutionPane`, which this dialog mounts ONCE and asks for one
- * section at a time (`render(section)`). The monitor deck's per-repo `⚙` panel
- * mounts the same module (UI-eey2 §4.4). This dialog binds it to the CONNECTED
- * workspace (`root_dir: null`), so its wire format is unchanged.
- * - `표시` edits the per-workspace label/chip display policy.
+ * - 레포 mode — the 레포 scope ⚙, a repo-strip cell's ⚙ and the detail's
+ *   `프리셋 바꾸기`: the `워커`·`quick fix`·`세션`·`계정` tabs of ONE repo.
+ *   Opened without a scope the same tabs bind the connected workspace (no
+ *   `root_dir` on the wire).
+ * - 일괄 mode — the 전체 scope ⚙ (`{ scope: 'monitor' }`): the same four
+ *   tabs over the repos ticked in the pane's `적용 대상` list, plus `전역`
+ *   (judgement-chip preset bindings, the active-model checks and the
+ *   registered repositories — all server-global).
  *
- * Only the ACTIVE tab is in the DOM (UI-7yh2 §3.1); the pane's own host element
- * moves between the execution tabs' bodies so the state machine survives a tab
- * switch.
+ * The four execution tabs are NOT built here: they are the sections of
+ * `createExecutionPane` (레포) and `createBulkPane` (일괄), mounted ONCE per
+ * open and asked for one section at a time. Only the ACTIVE tab is in the DOM;
+ * the pane's own host element moves between the tabs' bodies so its state
+ * machine survives a tab switch. There is no display-policy tab (spec §3.7).
  *
- * Opened with `{ scope: 'monitor' }` (the header ⚙ on the monitor tab) the
- * dialog is in bulk mode (UI-nu43 §3.1): the rail drops `표시`,
- * the execution pane is never created, and `createBulkPane` edits the repos
- * ticked in its own target list instead of the connected workspace. The mode
- * is fixed from `open` until the dialog closes.
+ * From 720px the dialog is a centred panel with a vertical rail; below it the
+ * dialog is a full-screen sheet and the rail becomes a horizontal tab strip
+ * (`settings.css`).
  *
  * @typedef {import('lit-html').TemplateResult} TemplateResult
- * @typedef {import('../../utils/label-policy.js').DisplayPolicy} DisplayPolicy
  */
-import { html, render } from 'lit-html';
-import { showToast } from '../../utils/toast.js';
+import { html } from 'lit-html';
+import { render } from '../../ui/render.js';
+import { showToast } from '../../ui/toast.js';
 import { createBulkPane } from './bulk-pane.js';
 import { createChipBindingsTab } from './chip-bindings-tab.js';
-import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import { createExecutionPane } from './execution-pane.js';
 import { createModelVisibilitySection } from './model-visibility-section.js';
+import { createWorkspaceListSection } from './workspace-list.js';
 
 /**
  * The rail's tabs, in display order. `quick fix` carries `◈` — the same
@@ -39,23 +40,16 @@ export const SETTINGS_TABS = [
   { id: 'worker', label: '워커', glyph: '◆' },
   { id: 'quick_fix', label: 'quick fix', glyph: '◈' },
   { id: 'session', label: '세션', glyph: '◇' },
-  { id: 'account', label: '계정', glyph: '◎' },
-  { id: 'display', label: '표시', glyph: '◫' }
+  { id: 'account', label: '계정', glyph: '◎' }
 ];
 
-/**
- * The tabs of the two monitor-tab modes, in display order. `표시` is a
- * workspace-global policy, so it stays on the connected-workspace window
- * (UI-e1ta §5, §7).
- */
-export const REPO_SETTINGS_TABS = SETTINGS_TABS.filter(
-  (tab) => tab.id !== 'display'
-);
+/** The 레포 mode tabs — the four execution sections. */
+export const REPO_SETTINGS_TABS = SETTINGS_TABS;
 
 /**
- * 일괄 모드(모니터 탭 헤더 `⚙`)만 다섯 번째 탭 `전역`을 갖는다 (UI-wg68 §6,
- * UI-ooc0 §5). 판정 칩 프리셋과 활성 모델은 서버 전역이라 `적용 대상` 저장소
- * 선택과 무관하고, 그래서 저장소 하나를 편집하는 전체 설정 창·레포 카드 창에는
+ * 일괄 모드(전체 범위 `⚙`)만 다섯 번째 탭 `전역`을 갖는다 (UI-wg68 §6,
+ * UI-ooc0 §5). 판정 칩 프리셋·활성 모델·저장소 목록은 서버 전역이라 `적용
+ * 대상` 저장소 선택과 무관하고, 그래서 저장소 하나를 편집하는 레포 창에는
  * 없다 — 두 배열이 갈라지는 유일한 이유다. `⬡`는 `quick fix`의 `◈`와 겹치지
  * 않는 글리프다.
  */
@@ -64,7 +58,7 @@ export const BULK_SETTINGS_TABS = [
   { id: 'global', label: '전역', glyph: '⬡' }
 ];
 
-/** Bulk-mode pane heading shared by both tabs. */
+/** Bulk-mode pane heading shared by every tab. */
 const BULK_TITLE = '여러 저장소 설정';
 
 /** Bulk-mode one-line subtitle per tab. */
@@ -103,25 +97,32 @@ const TAB_COPY = {
 };
 
 /**
- * Create the unified settings dialog (native `<dialog>`).
+ * @typedef {Object} SettingsWorkspaces
+ * @property {() => { available: Array<{ path: string }>, hidden: string[], connected: string|null }} list
+ * @property {() => Promise<void>} [refresh] - `list-workspaces` again.
+ * @property {(path: string, visible: boolean) => Promise<void>} [setVisible]
+ * @property {(root_dir: string) => Promise<void>} [gitPull] - The connected repo's `git-pull-workspace`.
+ */
+
+/**
+ * Create the settings dialog (native `<dialog>`).
  *
  * @param {HTMLElement} mount_element
  * @param {{
  *   transport: (type: import('../../protocol.js').MessageType, payload?: unknown) => Promise<any>,
- *   policyStore: { get: () => DisplayPolicy|null, set: (p: DisplayPolicy|null) => void, subscribe?: (fn: () => void) => () => void },
  *   queueStore?: { get: () => any, set?: (queue: any) => void },
  *   implPresetStore?: { get: () => any, subscribe?: (fn: () => void) => () => void },
  *   modelVisibilityStore?: { get: () => any, set?: (state: any) => void, subscribe?: (fn: () => void) => () => void },
- *   labelOptions: () => string[],
  *   notify?: (message: string) => void,
  *   onOpenChange?: (open: boolean) => void,
  *   monitorRows?: () => Array<Record<string, any>>,
  *   subscribeMonitorRows?: (fn: () => void) => () => void,
- *   onBulkApplied?: (root_dirs: string[]) => void
+ *   onBulkApplied?: (root_dirs: string[]) => void,
+ *   workspaces?: SettingsWorkspaces
  * }} options
  */
 export function createSettingsDialog(mount_element, options) {
-  const { transport, policyStore, labelOptions } = options;
+  const { transport } = options;
   const notify =
     options.notify || ((message) => showToast(message, 'error', 4000));
 
@@ -129,7 +130,7 @@ export function createSettingsDialog(mount_element, options) {
     document.createElement('dialog')
   );
   dialog.id = 'settings-dialog';
-  dialog.className = 'settings-dialog';
+  dialog.className = 'settings-dialog st-dialog';
   dialog.setAttribute('role', 'dialog');
   dialog.setAttribute('aria-modal', 'true');
   dialog.setAttribute('aria-label', '설정');
@@ -137,10 +138,10 @@ export function createSettingsDialog(mount_element, options) {
 
   let active_tab = 'worker';
   let is_open = false;
-  let prefix_draft = '';
+  let pulling = false;
   /**
-   * `'monitor'` = bulk mode, `'repo'` = ONE monitor repo (UI-e1ta §7); fixed
-   * from `open` until close.
+   * `'monitor'` = 일괄 mode, `'repo'` = ONE repo, `'single'` = the connected
+   * workspace; fixed from `open` until close.
    *
    * @type {'single'|'monitor'|'repo'}
    */
@@ -162,10 +163,13 @@ export function createSettingsDialog(mount_element, options) {
   let chip_tab = null;
   /** @type {ReturnType<typeof createModelVisibilitySection>|null} */
   let model_section = null;
+  /** @type {ReturnType<typeof createWorkspaceListSection>|null} */
+  let workspace_section = null;
   /**
    * The `전역` 탭's own host — 서버 전역 값이라 일괄 pane과 섞지 않는다 (§6).
-   * It holds two groups: the chip bindings under their own title, then the
-   * model-visibility section, each drawn into its own child host.
+   * It holds three groups: the chip bindings under their own title, the
+   * model-visibility section and the registered repositories, each drawn into
+   * its own child host.
    */
   const global_host = document.createElement('div');
   global_host.className = 'settings-dialog__pane-host';
@@ -177,7 +181,8 @@ export function createSettingsDialog(mount_element, options) {
   const chip_host = document.createElement('div');
   chip_group.append(chip_title, chip_host);
   const model_host = document.createElement('div');
-  global_host.append(chip_group, model_host);
+  const workspace_host = document.createElement('div');
+  global_host.append(chip_group, model_host, workspace_host);
 
   /** @type {ReturnType<typeof createExecutionPane>|null} */
   let execution_pane = null;
@@ -191,9 +196,9 @@ export function createSettingsDialog(mount_element, options) {
   pane_host.className = 'settings-dialog__pane-host';
 
   /**
-   * Attach the shared `실행` pane to the tab body once the dialog's own render
-   * has created it. The body holds no bindings of its own, so lit never
-   * re-creates it and the pane's DOM survives every dialog re-render.
+   * Attach the shared execution pane to the tab body once the dialog's own
+   * render has created it. The body holds no bindings of its own, so lit
+   * never re-creates it and the pane's DOM survives every dialog re-render.
    */
   function ensureExecutionPane() {
     if (execution_pane) {
@@ -201,7 +206,7 @@ export function createSettingsDialog(mount_element, options) {
     }
     // `scope: 'repo'` binds the SAME pane to one monitor repo instead of the
     // connected workspace; its queue is that repo's monitor row, laid over by
-    // whatever a mutation response adopts (§7).
+    // whatever a mutation response adopts (UI-e1ta §7).
     const bound_root = scope === 'repo' ? repo_root_dir : null;
     execution_pane = createExecutionPane(pane_host, {
       root_dir: bound_root,
@@ -238,6 +243,63 @@ export function createSettingsDialog(mount_element, options) {
   }
 
   /**
+   * The repo the 레포 window edits when it is also the connected one — the
+   * only repo `git-pull-workspace` can pull (the op reads the connection).
+   *
+   * @returns {string|null}
+   */
+  function pullableRepo() {
+    const connected = options.workspaces?.list().connected ?? null;
+    if (!connected || !options.workspaces?.gitPull) {
+      return null;
+    }
+    if (scope === 'repo') {
+      return repo_root_dir === connected ? connected : null;
+    }
+    return scope === 'single' ? connected : null;
+  }
+
+  function onGitPull() {
+    const root_dir = pullableRepo();
+    if (!root_dir || pulling || !options.workspaces?.gitPull) {
+      return;
+    }
+    pulling = true;
+    doRender();
+    void options.workspaces.gitPull(root_dir).finally(() => {
+      pulling = false;
+      if (is_open) {
+        doRender();
+      }
+    });
+  }
+
+  /**
+   * The pane head: title and, on the connected repo, `⟳ git pull`.
+   *
+   * @param {string} title
+   * @returns {TemplateResult}
+   */
+  function paneHead(title) {
+    const pullable = pullableRepo();
+    return html`<header class="settings-dialog__pane-head">
+      <h2>${title}</h2>
+      ${pullable
+        ? html`<button
+            type="button"
+            class="ui-btn ui-btn--ghost ui-btn--sm settings-dialog__pull"
+            data-settings-git-pull
+            ?disabled=${pulling}
+            title="이 저장소에서 git pull --rebase (필요하면 stash)"
+            @click=${onGitPull}
+          >
+            ⟳ git pull
+          </button>`
+        : ''}
+    </header>`;
+  }
+
+  /**
    * The active execution tab's pane. The body is an empty slot: the pane's own
    * host is appended into it after the render (`mountExecutionHost`).
    *
@@ -253,9 +315,7 @@ export function createSettingsDialog(mount_element, options) {
         id=${`settings-pane-${active_tab}`}
         aria-label=${title}
       >
-        <header class="settings-dialog__pane-head">
-          <h2>${title}</h2>
-        </header>
+        ${paneHead(title)}
         <p class="settings-dialog__pane-sub">${copy.sub}</p>
         <div class="settings-dialog__pane-body" data-pane="execution"></div>
       </section>
@@ -264,7 +324,7 @@ export function createSettingsDialog(mount_element, options) {
 
   /**
    * Move the pane's host into the active tab's body and ask the pane for that
-   * tab's section. A no-op when the display tab is active.
+   * tab's section.
    */
   function mountExecutionHost() {
     if (!EXECUTION_TABS.includes(active_tab)) {
@@ -283,7 +343,7 @@ export function createSettingsDialog(mount_element, options) {
   }
 
   /**
-   * The bulk mode's pane: one heading for both tabs and an empty body slot the
+   * The bulk mode's pane: one heading for every tab and an empty body slot the
    * bulk pane's host is appended into (`mountBulkHost`).
    *
    * @returns {TemplateResult}
@@ -297,9 +357,7 @@ export function createSettingsDialog(mount_element, options) {
         id=${`settings-pane-${active_tab}`}
         aria-label=${BULK_TITLE}
       >
-        <header class="settings-dialog__pane-head">
-          <h2>${BULK_TITLE}</h2>
-        </header>
+        ${paneHead(BULK_TITLE)}
         <p class="settings-dialog__pane-sub">${sub}</p>
         <div class="settings-dialog__pane-body" data-pane="bulk"></div>
       </section>
@@ -335,6 +393,16 @@ export function createSettingsDialog(mount_element, options) {
         });
       }
       model_section.render();
+      if (!workspace_section && options.workspaces) {
+        workspace_section = createWorkspaceListSection(
+          workspace_host,
+          options.workspaces
+        );
+        void options.workspaces.refresh?.().then(() => {
+          workspace_section?.render();
+        });
+      }
+      workspace_section?.render();
       return;
     }
     global_host.remove();
@@ -364,147 +432,18 @@ export function createSettingsDialog(mount_element, options) {
     chip_tab = null;
     model_section?.destroy();
     model_section = null;
+    workspace_section?.destroy();
+    workspace_section = null;
     global_host.remove();
   }
 
   /**
-   * @returns {TemplateResult}
-   */
-  function displayPane() {
-    const policy = policyStore.get();
-    return html`
-      <section
-        class="settings-dialog__pane settings-dialog__pane--active"
-        role="tabpanel"
-        id="settings-pane-display"
-        aria-label="표시 설정"
-      >
-        <header class="settings-dialog__pane-head"><h2>표시 설정</h2></header>
-        <p class="settings-dialog__pane-sub">
-          이 워크스페이스의 라벨·칩 표시 정책입니다.
-        </p>
-        ${policy
-          ? html`
-              ${labelsSection(policy, labelOptions(), onLabelPillClick)}
-              ${prefixesSection(policy, prefix_draft, {
-                onDraft: (value) => {
-                  prefix_draft = value;
-                },
-                onAdd: onPrefixAdd,
-                onRemove: onPrefixRemove
-              })}
-              ${chipsSection(policy, onChipToggle)}
-            `
-          : html`<div class="settings-dialog__empty">
-              표시 정책을 불러오는 중…
-            </div>`}
-      </section>
-    `;
-  }
-
-  /**
-   * Send a display-policy patch with a CAS guard, retrying ONCE on conflict.
-   *
-   * @param {(policy: DisplayPolicy) => Record<string, unknown>} buildPatch
-   */
-  async function savePolicy(buildPatch) {
-    const current = policyStore.get();
-    if (!current) {
-      return;
-    }
-    try {
-      let res = await transport('display-policy-set', {
-        expected_revision: current.revision,
-        policy: buildPatch(current)
-      });
-      adoptPolicy(res);
-      if (res && res.conflict && res.policy) {
-        res = await transport('display-policy-set', {
-          expected_revision: res.policy.revision,
-          policy: buildPatch(res.policy)
-        });
-        adoptPolicy(res);
-      }
-      if (res && res.conflict) {
-        notify('표시 설정 저장 실패: 다른 클라이언트와 충돌');
-      }
-    } catch {
-      notify('표시 설정 저장 실패');
-    }
-  }
-
-  /** @param {any} res */
-  function adoptPolicy(res) {
-    if (res && res.policy && typeof res.policy === 'object') {
-      policyStore.set(res.policy);
-    }
-  }
-
-  /** @param {(policy: DisplayPolicy) => Record<string, unknown>} buildPatch */
-  function onPolicyPatch(buildPatch) {
-    void savePolicy(buildPatch);
-  }
-
-  /** @param {string} label */
-  function onLabelPillClick(label) {
-    const current = policyStore.get();
-    if (!current) {
-      return;
-    }
-    const desired_visible = !labelIsVisible(label, current);
-    onPolicyPatch((policy) => labelPatch(label, policy, desired_visible));
-  }
-
-  function onPrefixAdd() {
-    const prefix = prefix_draft.trim();
-    if (prefix.length === 0) {
-      return;
-    }
-    prefix_draft = '';
-    onPolicyPatch((policy) =>
-      policy.hidden_prefixes.includes(prefix)
-        ? { hidden_prefixes: policy.hidden_prefixes }
-        : { hidden_prefixes: [...policy.hidden_prefixes, prefix] }
-    );
-    doRender();
-  }
-
-  /** @param {string} prefix */
-  function onPrefixRemove(prefix) {
-    onPolicyPatch((policy) => ({
-      hidden_prefixes: policy.hidden_prefixes.filter((it) => it !== prefix)
-    }));
-  }
-
-  /** @param {string} chip */
-  function onChipToggle(chip) {
-    const current = policyStore.get();
-    if (!current) {
-      return;
-    }
-    const desired = /** @type {any} */ (current.chips)[chip] === false;
-    onPolicyPatch(() => ({ chips: { [chip]: desired } }));
-  }
-
-  /**
-   * The rail this scope carries. Both monitor-tab scopes drop `표시`, which is
-   * a workspace-global policy rather than a repo's setting (§7).
+   * The rail this scope carries.
    *
    * @returns {Array<{ id: string, label: string, glyph: string }>}
    */
   function tabsForScope() {
-    if (scope === 'monitor') {
-      return BULK_SETTINGS_TABS;
-    }
-    return scope === 'repo' ? REPO_SETTINGS_TABS : SETTINGS_TABS;
-  }
-
-  /** @returns {TemplateResult} */
-  function panesTemplate() {
-    if (scope === 'monitor') {
-      return bulkPaneSection();
-    }
-    return active_tab === 'display' ? displayPane() : executionPaneSection();
+    return scope === 'monitor' ? BULK_SETTINGS_TABS : REPO_SETTINGS_TABS;
   }
 
   function doRender() {
@@ -516,6 +455,7 @@ export function createSettingsDialog(mount_element, options) {
             class="settings-dialog__rail"
             role="tablist"
             aria-orientation="vertical"
+            aria-label="설정"
           >
             <div class="settings-dialog__rail-title">설정</div>
             ${tabs.map(
@@ -535,14 +475,17 @@ export function createSettingsDialog(mount_element, options) {
             )}
             <button
               type="button"
-              class="settings-dialog__close"
+              class="ui-btn ui-btn--icon settings-dialog__close"
               aria-label="닫기"
+              title="닫기"
               @click=${close}
             >
-              닫기
+              ✕
             </button>
           </nav>
-          <div class="settings-dialog__panes">${panesTemplate()}</div>
+          <div class="settings-dialog__panes">
+            ${scope === 'monitor' ? bulkPaneSection() : executionPaneSection()}
+          </div>
         </div>
       `,
       dialog
@@ -580,15 +523,6 @@ export function createSettingsDialog(mount_element, options) {
   };
   dialog.addEventListener('click', onBackdropClick);
 
-  /** @type {null | (() => void)} */
-  let unsubscribe_policy = null;
-  if (policyStore.subscribe) {
-    unsubscribe_policy = policyStore.subscribe(() => {
-      if (is_open) {
-        doRender();
-      }
-    });
-  }
   /** @type {null | (() => void)} */
   let unsubscribe_presets = null;
   if (options.implPresetStore?.subscribe) {
@@ -647,7 +581,6 @@ export function createSettingsDialog(mount_element, options) {
     options.onOpenChange?.(true);
     const tabs = tabsForScope();
     active_tab = tabs.some((tab) => tab.id === tab_id) ? tab_id : 'worker';
-    prefix_draft = '';
     // A bulk pane is per open: its selection and form start fresh each time.
     destroyBulkPane();
     doRender();
@@ -679,13 +612,14 @@ export function createSettingsDialog(mount_element, options) {
     open,
     close,
     /**
-     * Which repo the window is bound to right now, or `null`. The deck reads
-     * it to toggle its own `⚙` and to close the window when that repo leaves
-     * the list (§7).
+     * Which repo the window is bound to right now, or `null`. The repo strip
+     * reads it to close the window when that repo leaves the list (§7).
      *
      * @returns {string|null}
      */
     repoRoot: () => (is_open && scope === 'repo' ? repo_root_dir : null),
+    /** @returns {boolean} */
+    isOpen: () => is_open,
     /** Test/inspection seam: the draft the dialog would save. */
     sessionDraft: () => execution_pane?.sessionDraft() ?? {},
     destroy() {
@@ -693,10 +627,6 @@ export function createSettingsDialog(mount_element, options) {
       dialog.removeEventListener('close', onDialogClose);
       dialog.removeEventListener('cancel', onDialogClose);
       dialog.removeEventListener('click', onBackdropClick);
-      if (unsubscribe_policy) {
-        unsubscribe_policy();
-        unsubscribe_policy = null;
-      }
       if (unsubscribe_presets) {
         unsubscribe_presets();
         unsubscribe_presets = null;
@@ -710,56 +640,5 @@ export function createSettingsDialog(mount_element, options) {
       destroyBulkPane();
       dialog.remove();
     }
-  };
-}
-
-/**
- * Whether a label survives the policy's three rule levels.
- *
- * @param {string} label
- * @param {DisplayPolicy} policy
- * @returns {boolean}
- */
-function labelIsVisible(label, policy) {
-  if (policy.visible_labels.includes(label)) {
-    return true;
-  }
-  if (policy.hidden_labels.includes(label)) {
-    return false;
-  }
-  return !policy.hidden_prefixes.some(
-    (prefix) => prefix.length > 0 && label.startsWith(prefix)
-  );
-}
-
-/**
- * The idempotent patch that puts `label` into a DESIRED visibility.
- *
- * @param {string} label
- * @param {DisplayPolicy} policy
- * @param {boolean} desired_visible
- * @returns {{ hidden_labels?: string[], visible_labels?: string[] }}
- */
-function labelPatch(label, policy, desired_visible) {
-  if (!desired_visible) {
-    return {
-      hidden_labels: policy.hidden_labels.includes(label)
-        ? policy.hidden_labels
-        : [...policy.hidden_labels, label],
-      visible_labels: policy.visible_labels.filter((it) => it !== label)
-    };
-  }
-  const hidden_labels = policy.hidden_labels.filter((it) => it !== label);
-  const still_hidden = policy.hidden_prefixes.some(
-    (prefix) => prefix.length > 0 && label.startsWith(prefix)
-  );
-  if (!still_hidden) {
-    return { hidden_labels };
-  }
-  return {
-    hidden_labels,
-    visible_labels: policy.visible_labels.includes(label)
-      ? policy.visible_labels
-      : [...policy.visible_labels, label]
   };
 }

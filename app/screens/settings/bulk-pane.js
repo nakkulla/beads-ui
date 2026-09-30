@@ -31,7 +31,7 @@
  * @typedef {import('../../model/bulk-preset-apply.js').BulkResult} BulkResult
  * @typedef {import('./account-catalog.js').AccountCatalog} AccountCatalog
  */
-import { html, render } from 'lit-html';
+import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { mergeQueue, pruneAdopted } from '../../model/adopted-queue.js';
 import {
@@ -60,6 +60,7 @@ import {
   WORKFLOW_MODES,
   normalizeAppliesTo
 } from '../../model/session-model.js';
+import { render } from '../../ui/render.js';
 import {
   accountDefaultLabel,
   accountRowLabel,

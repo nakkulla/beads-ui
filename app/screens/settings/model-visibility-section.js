@@ -10,8 +10,9 @@
  * @typedef {import('lit-html').TemplateResult} TemplateResult
  * @typedef {import('../../model/model-visibility-store.js').ModelVisibilityState} ModelVisibilityState
  */
-import { html, render } from 'lit-html';
+import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
+import { render } from '../../ui/render.js';
 
 /** The info line under the group title. */
 export const MODEL_VISIBILITY_INTRO =

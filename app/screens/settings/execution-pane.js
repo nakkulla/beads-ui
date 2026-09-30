@@ -28,7 +28,7 @@
  *
  * @typedef {import('lit-html').TemplateResult} TemplateResult
  */
-import { html, render } from 'lit-html';
+import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { appliedPresetFieldFor } from '../../model/bulk-observation.js';
 import {
@@ -74,6 +74,7 @@ import {
   promptBlockTemplate,
   promptStatusTemplate
 } from '../../ui/prompt-block.js';
+import { render } from '../../ui/render.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
 import {

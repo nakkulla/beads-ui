@@ -25,7 +25,6 @@ import {
   writeScope
 } from './core/state.js';
 import { createWsClient } from './core/ws.js';
-import { createDisplayPolicyStore } from './data/display-policy-store.js';
 import { createAdrStore } from './model/adr-store.js';
 import { depCandidateModel } from './model/dep-candidates.js';
 import { createExecPresetStore } from './model/exec-preset-store.js';
@@ -156,7 +155,6 @@ export function bootstrap(root_element) {
   const model_visibility_store = createModelVisibilityStore();
   const session_log_store = createSessionLogStore();
   const sub_issue_stores = createSubscriptionIssueStores();
-  const display_policy_store = createDisplayPolicyStore();
   const adr_store = createAdrStore();
   const fatal_dialog = createFatalErrorDialog(root_element);
 
@@ -518,15 +516,27 @@ export function bootstrap(root_element) {
         root_dir
       ),
     onVisibility: (path, visible) => {
-      void client
-        .send('set-workspace-visibility', { path, visible })
-        .then(() => loadWorkspaces())
-        .then(() => shell.render())
-        .catch(() =>
-          showToast('Failed to update project visibility', 'error', 3000)
-        );
+      void setWorkspaceVisible(path, visible);
     }
   });
+
+  /**
+   * `set-workspace-visibility`, then the registered list again (the scope
+   * selector and the settings `저장소` group both read it).
+   *
+   * @param {string} path
+   * @param {boolean} visible
+   * @returns {Promise<void>}
+   */
+  async function setWorkspaceVisible(path, visible) {
+    try {
+      await client.send('set-workspace-visibility', { path, visible });
+      await loadWorkspaces();
+      shell.render();
+    } catch {
+      showToast('Failed to update project visibility', 'error', 3000);
+    }
+  }
   activity = createActivityIndicator(shell.loadingElement());
   const usage_el = shell.usageElement();
   if (usage_el) {
@@ -569,8 +579,22 @@ export function bootstrap(root_element) {
       queue: worker_queue_store,
       presets: exec_preset_store,
       visibility: model_visibility_store,
-      displayPolicy: display_policy_store,
       adr: adr_store
+    },
+    workspaces: {
+      list: () => ({
+        available: store.getState().workspace.available,
+        hidden: store.getState().workspace.hidden,
+        connected: connectedPath()
+      }),
+      refresh: () => loadWorkspaces(),
+      setVisible: (path, visible) => setWorkspaceVisible(path, visible),
+      gitPull: (root_dir) =>
+        runGitPull(
+          (type, payload) =>
+            client.send(/** @type {MessageType} */ (type), payload),
+          root_dir
+        )
     },
     docViewer: doc_viewer,
     connectedPath,
