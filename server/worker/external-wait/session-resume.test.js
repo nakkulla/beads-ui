@@ -103,7 +103,8 @@ function fixture(options = {}) {
       async () =>
         options.launch || {
           session: 'launched',
-          tmux_session: 'bdui-inquiry',
+          placement: 'user',
+          tmux_session: 'dev',
           tmux_window: 'B1',
           pane_id: '%7'
         }
@@ -364,6 +365,50 @@ describe('session resume launch', () => {
     expect(input.commandArgs[2]).toContain('## 외부 작업 완료');
   });
 
+  test('asks the launcher for the user placement', async () => {
+    const env = fixture();
+
+    await env.resume();
+
+    /** @type {any} */
+    const input = /** @type {any[][]} */ (env.launcher.launch.mock.calls)[0][0];
+    expect(input.placement).toBe('user');
+  });
+
+  test('tells the resumed session to summarize and wait for instructions', () => {
+    const lead = SESSION_RESUME_PROMPT_LEAD;
+
+    const clauses = lead.split(' · ');
+
+    expect(clauses).toEqual([
+      '사람이 beads-ui [세션에서 이어가기]로 이 세션을 사용자의 tmux 창에서 재개했다',
+      '아래 완료 블록을 몇 줄로 요약하고 사람의 지시를 기다린다',
+      '지시 전에는 클레임·파일 편집·잡 제출을 하지 않는다',
+      '대기 키는 서버가 이 창의 기동을 확인한 뒤 해제한다',
+      '지시를 받아 작업을 시작할 때 첫 편집 전에 bd show --json으로 external_wait 키가 없음을 확인하고 워크플로 절차대로 in_progress를 클레임한다'
+    ]);
+  });
+
+  test('reports the placement the launcher actually used', async () => {
+    const env = fixture({
+      launch: {
+        session: 'launched',
+        placement: 'inquiry',
+        tmux_session: 'bdui-inquiry',
+        tmux_window: 'B1',
+        pane_id: '%7'
+      }
+    });
+
+    const result = await env.resume();
+
+    expect(result).toMatchObject({
+      placement: 'inquiry',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'B1'
+    });
+  });
+
   test('turns the reservation into a failure record when the launcher refuses', async () => {
     const env = fixture({
       launch: { session: 'not_launched', reason: 'tmux_unavailable' }
@@ -394,7 +439,8 @@ describe('session resume launch', () => {
       reason: null,
       command: `claude --resume '${SESSION}'`,
       owner_tmux: null,
-      tmux_session: 'bdui-inquiry',
+      placement: 'user',
+      tmux_session: 'dev',
       tmux_window: 'B1',
       pane_id: '%7',
       bridge_active: true

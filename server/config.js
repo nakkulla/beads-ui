@@ -12,7 +12,9 @@ const DEFAULT_NOTIFY_CMD = ['discord'];
 /**
  * The tmux session direction-inquiry windows are opened in when
  * `[worker.direction_inquiry]` pins no name (UI-7uid §3.6). Its own session on
- * purpose: an inquiry window must not be wedged into the user's work session.
+ * purpose: an AUTOMATIC window must not be wedged into the user's work session.
+ * A person's click opens in their own session instead, and falls back here when
+ * none qualifies (UI-a119 §3.1).
  */
 export const DEFAULT_INQUIRY_TMUX_SESSION = 'bdui-inquiry';
 const DEFAULT_WORKSPACE_CONFIG = {

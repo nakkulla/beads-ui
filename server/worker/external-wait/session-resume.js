@@ -33,12 +33,14 @@ import { externalWaitCompletionPrompt } from './completion-prompt.js';
 const default_log = debug('worker:external-wait-session-resume');
 
 /**
- * The line the resumed session reads before the completion block.
+ * The line the resumed session reads before the completion block. A person
+ * clicked, so the session reports and waits instead of proceeding on its own
+ * (UI-a119 §3.2) — the difference from `[워커로 이어가기]`.
  *
  * @type {string}
  */
 export const SESSION_RESUME_PROMPT_LEAD =
-  '사람이 beads-ui [세션에서 이어가기]로 이 세션을 재개했다 · 대기 키는 서버가 이 창의 기동을 확인한 뒤 해제한다 · 첫 편집 전에 bd show --json으로 external_wait 키가 없음을 확인하고 워크플로 절차대로 in_progress를 클레임한다';
+  '사람이 beads-ui [세션에서 이어가기]로 이 세션을 사용자의 tmux 창에서 재개했다 · 아래 완료 블록을 몇 줄로 요약하고 사람의 지시를 기다린다 · 지시 전에는 클레임·파일 편집·잡 제출을 하지 않는다 · 대기 키는 서버가 이 창의 기동을 확인한 뒤 해제한다 · 지시를 받아 작업을 시작할 때 첫 편집 전에 bd show --json으로 external_wait 키가 없음을 확인하고 워크플로 절차대로 in_progress를 클레임한다';
 
 /**
  * @typedef {'alive'|'dead'|'unverified'} OwnerLivenessState
@@ -52,6 +54,8 @@ export const SESSION_RESUME_PROMPT_LEAD =
  * @property {string|null} reason
  * @property {string|null} command
  * @property {string|null} owner_tmux
+ * @property {import('../tmux-launcher.js').LaunchPlacement|null} placement -
+ * Where the launcher actually opened (or found) the window; null when unknown.
  * @property {string|null} tmux_session
  * @property {string|null} tmux_window
  * @property {string|null} pane_id
@@ -326,6 +330,7 @@ export function createExternalWaitSessionResume(deps) {
       reason,
       command: extra.command ?? null,
       owner_tmux: extra.owner_tmux ?? null,
+      placement: null,
       tmux_session: null,
       tmux_window: null,
       pane_id: null,
@@ -370,6 +375,7 @@ export function createExternalWaitSessionResume(deps) {
         reason: null,
         command: null,
         owner_tmux: null,
+        placement: null,
         tmux_session: pane?.tmux_session ?? null,
         tmux_window: pane?.tmux_window ?? null,
         pane_id: pane?.pane_id ?? null,
@@ -431,7 +437,8 @@ export function createExternalWaitSessionResume(deps) {
       window_name: record.bead_id,
       cwd: record.worktree,
       commandArgs: ['--resume', session_id, prompt],
-      runner: 'claude'
+      runner: 'claude',
+      placement: 'user'
     });
     if (outcome.session === 'not_launched') {
       recordFailure(workspace, record, outcome.reason, session_id);
@@ -477,6 +484,7 @@ export function createExternalWaitSessionResume(deps) {
       reason: null,
       command,
       owner_tmux: null,
+      placement: outcome.placement ?? null,
       tmux_session: pane?.tmux_session ?? null,
       tmux_window: pane?.tmux_window ?? null,
       pane_id: pane?.pane_id ?? null,
