@@ -8,6 +8,7 @@ import { ALL_SCOPE } from '../../core/state.js';
 import { closedRangeSince } from '../../data/closed-range.js';
 import { mergeQueue } from '../../model/adopted-queue.js';
 import { orderCandidates, orderRunning } from '../../model/candidate-order.js';
+import { foreignLocations } from '../../model/foreign-locations.js';
 import { judgementPopoverLines } from '../../model/judgement-popover.js';
 import { isHiddenLabel } from '../../model/label-policy.js';
 import {
@@ -206,7 +207,13 @@ export function laneInputsOf(env) {
   return {
     rows: row ? [row] : [],
     states: [state_row],
-    options: { ...base_options, done_since, groups: 'all', search: env.search }
+    options: {
+      ...base_options,
+      done_since,
+      groups: 'all',
+      search: env.search,
+      extra_locations: foreignLocations(env.rows, env.states, scope)
+    }
   };
 }
 

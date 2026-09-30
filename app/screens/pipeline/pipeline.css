@@ -1295,3 +1295,100 @@ button.pl-badge {
 .pl-opsline__ago {
   white-space: nowrap;
 }
+
+/* Progress band beads (P1-r2 item 13): a bead with a document or PR link is
+   a hit box of 24px (44px on a coarse pointer); the stage strip keeps its
+   height and the design round owns the visual. */
+
+.pl-band {
+  height: auto;
+  align-items: start;
+  overflow: visible;
+}
+
+.pl-band__bead {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-decoration: none;
+}
+
+.pl-band__cell {
+  display: block;
+  height: 3px;
+}
+
+.pl-band__bead.is-open {
+  min-height: 24px;
+  cursor: pointer;
+}
+
+.pl-band__name {
+  padding-top: 2px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--text-muted);
+}
+
+@media (pointer: coarse) {
+  .pl-band__bead.is-open {
+    min-height: 44px;
+  }
+}
+
+/* Repo strip settings (P1-r2 item 14): the chip's second line names the
+   applied presets; the state marks are toggles with a 24px box on a fine
+   pointer and plain marks on a coarse one. */
+
+.pl-strip__chip {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.pl-strip__row {
+  display: inline-flex;
+  align-items: center;
+}
+
+.pl-strip__merge {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  padding: 4px 6px;
+  font: inherit;
+  cursor: pointer;
+  min-height: 32px;
+}
+
+.pl-strip__merge.is-on {
+  color: var(--accent-success);
+}
+
+.pl-strip__dot,
+.pl-strip__merge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+}
+
+span.pl-strip__dot,
+span.pl-strip__merge {
+  cursor: default;
+}
+
+.pl-strip__presets {
+  max-width: 220px;
+  padding: 0 11px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+}

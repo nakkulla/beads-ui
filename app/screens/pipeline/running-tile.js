@@ -15,6 +15,7 @@ import {
   failureText
 } from '../../model/failure-labels.js';
 import { representativeWaitReason } from '../../model/wait-vocabulary.js';
+import { copyIcon } from '../../ui/icons.js';
 import { formatContinuationLineage } from '../../utils/attempt-display.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
 import { sessionRefLabel } from '../../utils/session-ref.js';
@@ -466,7 +467,7 @@ function failurePopover(failure, item, now) {
           title="attempt id 복사"
           aria-label="attempt id 복사"
         >
-          ⧉
+          ${copyIcon()}
         </button>`
     ]);
   }

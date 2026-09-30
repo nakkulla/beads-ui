@@ -111,6 +111,7 @@ function memoryStorage() {
  * @property {any} [buildLanes]
  * @property {(x: number, y: number) => Element|null} [hitTest]
  * @property {(fixture: ReturnType<typeof buildPipelineFixture>) => void} [edit]
+ * @property {any} [presetStore] - The impl-presets store (preset names).
  */
 
 /**
@@ -153,6 +154,7 @@ export function mountPipeline(options = {}) {
   const setScope = vi.fn();
   const openIssue = vi.fn();
   const openSettings = vi.fn();
+  const openDoc = vi.fn();
   const toast = vi.fn();
   const confirm = vi.fn(options.confirm || (() => true));
   const mount = document.createElement('div');
@@ -166,6 +168,8 @@ export function mountPipeline(options = {}) {
     send,
     openIssue,
     openSettings,
+    openDoc,
+    presetStore: options.presetStore,
     confirm,
     toast,
     now:
@@ -188,6 +192,7 @@ export function mountPipeline(options = {}) {
     setScope,
     openIssue,
     openSettings,
+    openDoc,
     toast,
     confirm,
     monitor,

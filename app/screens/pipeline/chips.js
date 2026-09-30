@@ -12,6 +12,7 @@
  */
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
+import { bandBeads } from '../../model/band-beads.js';
 import { chipPresetBinding } from '../../model/chip-preset-binding.js';
 import { splitLabels } from '../../model/label-policy.js';
 import { routeChipValue } from '../../model/lane-model.js';
@@ -714,77 +715,71 @@ export function timesLine(item, now) {
   </div>`;
 }
 
-/** Five fixed progress cells of the top band (UI-dbn6 §3.4 change 1). */
-const BAND_STAGES = /** @type {const} */ ([
-  'spec',
-  'plan',
-  'impl',
-  'pr',
-  'merge'
-]);
-
 /**
- * The fill of one band cell: `done` (산출물 있음 · dark stage colour),
- * `lit` (reviewed or current · bright stage colour), `none` (line colour).
- *
- * @param {any} stage
- * @param {boolean} current
- * @returns {'none'|'done'|'lit'}
- */
-function bandFill(stage, current) {
-  const fill = stage && stage.fill ? stage.fill : 'none';
-  if (fill === 'none') {
-    return 'none';
-  }
-  if (current || stage.glyph === 'review' || stage.glyph === 'skip') {
-    return 'lit';
-  }
-  return 'done';
-}
-
-/**
- * The top-edge 5-cell progress band replacing the slot-3 stepper. `close`
- * (quick_fix) fills the merge cell; a route without plan leaves that cell at
- * the line colour. No workflow material draws no band (fail-quiet).
+ * The top-edge 5-bead progress band replacing the slot-3 stepper. A bead whose
+ * stage has a document is a button opening it in the card's repo, the PR bead
+ * with a PR link is that link, the rest are plain; a coarse pointer names each
+ * stage under its bead (P1-r2 item 13). No workflow material draws no band.
  *
  * @param {any} workflow
  * @param {string|undefined} status
+ * @param {{ root_dir?: string, coarse?: boolean }} [options]
  * @returns {TemplateResult|''}
  */
-export function progressBand(workflow, status) {
-  const stages =
-    workflow && workflow.stages && typeof workflow.stages === 'object'
-      ? workflow.stages
-      : null;
-  if (!stages) {
+export function progressBand(workflow, status, options = {}) {
+  const beads = bandBeads(workflow, status);
+  if (!beads) {
     return '';
   }
-  const active = status === 'in_progress' || status === 'resolved';
-  let current_marked = !active;
-  /** @type {string[]} */
-  const labels = [];
-  const cells = BAND_STAGES.map((key) => {
-    const stage = key === 'merge' ? stages.merge || stages.close : stages[key];
-    const is_current =
-      !current_marked &&
-      !!stage &&
-      stage.fill === 'dim' &&
-      stage.stale !== true;
-    if (is_current) {
-      current_marked = true;
-    }
-    const fill = bandFill(stage, is_current);
-    labels.push(
-      `${key} ${fill === 'none' ? '미도달' : fill === 'lit' ? '완료·현재' : '진행'}`
-    );
-    return html`<i
-      class="pl-band__cell pl-band__cell--${key} is-${fill}${is_current
-        ? ' is-current'
-        : ''}"
-    ></i>`;
-  });
-  return html`<div class="pl-band" role="img" aria-label=${labels.join(' · ')}>
-    ${cells}
+  const coarse = options.coarse === true;
+  const labels = beads.map(
+    (bead) =>
+      `${bead.key} ${bead.fill === 'none' ? '미도달' : bead.fill === 'lit' ? '완료·현재' : '진행'}`
+  );
+  return html`<div
+    class="pl-band"
+    role="group"
+    aria-label=${labels.join(' · ')}
+  >
+    ${beads.map((bead) => {
+      const cell = html`<i
+          class="pl-band__cell pl-band__cell--${bead.key} is-${bead.fill}${bead.current
+            ? ' is-current'
+            : ''}"
+        ></i
+        >${coarse ? html`<span class="pl-band__name">${bead.name}</span>` : ''}`;
+      if (bead.doc) {
+        const label = `${bead.key} 문서 열기`;
+        return html`<button
+          type="button"
+          class="pl-band__bead is-open"
+          data-op="open-doc"
+          data-stage=${bead.key}
+          data-doc-path=${bead.doc.path}
+          data-doc-missing=${bead.doc.missing_state || ''}
+          data-root-dir=${options.root_dir || ''}
+          aria-label=${label}
+          title=${`${label} · ${bead.doc.path}`}
+        >
+          ${cell}
+        </button>`;
+      }
+      if (bead.pr) {
+        return html`<a
+          class="pl-band__bead is-open"
+          data-stage=${bead.key}
+          href=${bead.pr.url}
+          target="_blank"
+          rel="noreferrer noopener"
+          aria-label="PR 열기"
+          title=${`PR #${bead.pr.number} 열기 · ${bead.pr.url}`}
+          >${cell}</a
+        >`;
+      }
+      return html`<span class="pl-band__bead" data-stage=${bead.key}
+        >${cell}</span
+      >`;
+    })}
   </div>`;
 }
 

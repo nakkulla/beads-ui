@@ -2815,9 +2815,12 @@ function chipPinsOf(entry) {
  * 조립하고 `options.pr_pending`(`root_dir\0bead_id` → 클릭 응답 대기 종류)을
  * 읽는다 (UI-dbn6 P1-r2).
  *
+ * `options.extra_locations`는 이 조립 밖(다른 레포)의 이슈 위치다 — 레포 범위의
+ * 의존 칩이 타 레포 선행·후속의 자리를 말하고 열린다 (UI-dbn6 P1-r2).
+ *
  * @param {Array<Record<string, any>>|null|undefined} workspaces
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state]
- * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', groups?: 'nonempty'|'all', search?: string, pr_wait_detail?: boolean, pr_pending?: Map<string, 'merge'|'cleanup'> }} [options]
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', groups?: 'nonempty'|'all', search?: string, pr_wait_detail?: boolean, pr_pending?: Map<string, 'merge'|'cleanup'>, extra_locations?: Map<string, import('./blockers.js').BlockerLocation> }} [options]
  * @returns {LaneModel}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
@@ -4990,6 +4993,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
         lane: 'done',
         state: 'done'
       });
+    }
+  }
+  if (options && options.extra_locations instanceof Map) {
+    for (const [id, location] of options.extra_locations) {
+      if (!locations.has(id)) {
+        locations.set(id, location);
+      }
     }
   }
 

@@ -9,6 +9,7 @@ import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
 import { QUEUE_GRACE_MS } from '../../model/lane-model.js';
 import { representativeWaitReason } from '../../model/wait-vocabulary.js';
+import { copyIcon } from '../../ui/icons.js';
 import {
   depLines,
   execChips,
@@ -337,7 +338,7 @@ export function logPathFact(path) {
       title="로그 경로 복사"
       aria-label="로그 경로 복사"
     >
-      ⧉
+      ${copyIcon()}
     </button></span
   >`;
 }

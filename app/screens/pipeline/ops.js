@@ -73,6 +73,7 @@ import { queueRequestOf } from './move-sheet.js';
  * @property {() => void} openRepoDrawer
  * @property {(root_dir: string, bead_id: string) => void} reveal - Unfold and
  * highlight a 막힘 subject's card.
+ * @property {((path: string, missing_state: string, root_dir: string) => void)|undefined} openDoc
  */
 
 /** @type {ReadonlyArray<LaneId>} */
@@ -166,6 +167,11 @@ function runScreenOp(env, op, data) {
       return true;
     case 'blocked-pick':
       env.reveal(root_dir, bead_id);
+      return true;
+    case 'open-doc':
+      if (data.docPath) {
+        env.openDoc?.(data.docPath, data.docMissing || '', root_dir);
+      }
       return true;
     case 'lane-toggle': {
       const lane = /** @type {LaneId} */ (data.lane || '');

@@ -66,14 +66,16 @@ function sessionStat(states) {
  * @param {LaneModel} model
  * @param {Array<Record<string, any>>} states
  * @param {(root_dir: string) => any} adoptedOf
- * @param {{ blocked?: BlockedSummary|null }} [extra]
+ * @param {{ blocked?: BlockedSummary|null, presets?: Array<{ id: string, name: string }>, coarse?: boolean }} [extra]
  * @returns {TemplateResult}
  */
 export function allToolbar(model, states, adoptedOf, extra = {}) {
   const total = crossRepoTokenTotal(model.done);
   const running = model.running.filter((item) => !item.non_occupying).length;
   return html`<div class="pl-toolbar pl-toolbar--all">
-    ${repoStrip(repoChips(states, adoptedOf))}
+    ${repoStrip(repoChips(states, adoptedOf, extra.presets || []), {
+      coarse: extra.coarse === true
+    })}
     <div class="pl-toolbar__stats">
       ${stat('실행', running)}${stat('PR 대기', model.pr_wait.length)}${stat(
         '오늘 완료',
@@ -159,7 +161,7 @@ function autoMergeButton(root_dir, auto, group, pr_rows) {
  * token total for the chosen period and `다음 <first parallel row>`.
  *
  * @param {LaneQueueGroup|null} group
- * @param {{ blocked?: BlockedSummary|null, range_label?: string }} input
+ * @param {{ blocked?: BlockedSummary|null, range_label?: string, presets_line?: string|null }} input
  * @returns {TemplateResult}
  */
 function repoKpis(group, input) {
@@ -171,7 +173,11 @@ function repoKpis(group, input) {
       ? [{ label: total, tooltip: tokenTotalTooltip(range) }]
       : [];
   const next = group ? group.sublanes.parallel[0] : null;
-  return html`${group && group.over_cap
+  return html`${input.presets_line
+      ? html`<span class="pl-stat pl-stat--presets" title=${input.presets_line}
+          >${input.presets_line}</span
+        >`
+      : ''}${group && group.over_cap
       ? html`<span
           class="pl-stat pl-stat--overcap pl-badge--alert"
           title="수동 재개(▶)는 슬롯 cap을 초과할 수 있습니다 — 자동 진행은 cap을 지킵니다"
@@ -191,7 +197,7 @@ function repoKpis(group, input) {
  * The 레포-scope toolbar: automation, auto-merge, slots, serial lanes,
  * search, the KPIs, base branch and the repo-ops timeline and settings.
  *
- * @param {{ group: LaneQueueGroup|null, queue: any, search: string, repo_ops_settings: TemplateResult|'', blocked?: BlockedSummary|null, range_label?: string, pr_rows?: any[] }} input
+ * @param {{ group: LaneQueueGroup|null, queue: any, search: string, repo_ops_settings: TemplateResult|'', blocked?: BlockedSummary|null, range_label?: string, pr_rows?: any[], presets_line?: string|null }} input
  * @returns {TemplateResult}
  */
 export function repoToolbar(input) {

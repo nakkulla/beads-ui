@@ -23,6 +23,7 @@ import { scopedBlockedSummary } from '../../model/blocked-summary.js';
 import { createChipPresetToggle } from '../../model/chip-preset-binding.js';
 import { buildLanes as defaultBuildLanes } from '../../model/lane-model.js';
 import { disabledModelsOf } from '../../model/model-visibility.js';
+import { appliedPresetLine } from '../../model/repo-presets.js';
 import { createClosedRows } from '../../model/repo-rows.js';
 import { createConfirm } from '../../ui/dialog.js';
 import { render } from '../../ui/render.js';
@@ -88,6 +89,8 @@ import {
  * @property {(type: string, payload?: unknown) => Promise<any>} send
  * @property {(id: string, root_dir: string) => void} openIssue
  * @property {(options: { scope: 'repo'|'monitor', root_dir?: string }) => void} [openSettings]
+ * @property {(path: string, missing_state: string, root_dir: string) => void} [openDoc] - Open
+ * a stage document in its card's repo (the shared doc viewer).
  * @property {(wants: { closed_since: number|null|undefined, closed: boolean, deferred: boolean }) => void} [setListWants]
  * @property {(message: string) => boolean} [confirm]
  * @property {(message: string, kind?: any, ms?: number) => void} [toast]
@@ -501,7 +504,7 @@ export function createPipelineScreen(mount, deps) {
         vm,
         monitorStates(),
         (root_dir) => adopted.get(root_dir),
-        { blocked: blockedOf() }
+        { blocked: blockedOf(), presets: presetList(), coarse: viewport.coarse }
       );
     }
     const root_dir = deps.getScope();
@@ -516,8 +519,19 @@ export function createPipelineScreen(mount, deps) {
       range_label:
         DONE_RANGE_OPTIONS.find((o) => o.value === vs.done_range)?.label ||
         '오늘',
-      pr_rows: vm.pr_wait.filter((row) => row.root_dir === root_dir)
+      pr_rows: vm.pr_wait.filter((row) => row.root_dir === root_dir),
+      presets_line: appliedPresetLine(
+        monitorStates().find((row) => row.root_dir === root_dir),
+        adopted.get(root_dir),
+        presetList()
+      )
     });
+  }
+
+  /** @returns {Array<{ id: string, name: string }>} */
+  function presetList() {
+    const state = deps.presetStore?.get();
+    return state && Array.isArray(state.presets) ? state.presets : [];
   }
 
   /** @returns {ReturnType<typeof scopedBlockedSummary>} */
@@ -711,6 +725,7 @@ export function createPipelineScreen(mount, deps) {
     getScope: () => deps.getScope(),
     openIssue: (id, root_dir) => deps.openIssue(id, root_dir),
     openSettings: deps.openSettings,
+    openDoc: deps.openDoc,
     modelVisibilityStore: deps.modelVisibilityStore,
     itemOf: (bead_id, root_dir) =>
       item_by_key.get(itemKey(root_dir, bead_id)) || null,

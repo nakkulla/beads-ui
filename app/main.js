@@ -604,6 +604,13 @@ export function bootstrap(root_element) {
     getConnected: connectedPath,
     send: (type, payload) => tracked_send(type, payload),
     openIssue: (id, root_dir) => void openIssue(id, root_dir),
+    // A stage document opens from its card's repo: `/api/doc` reads the
+    // workspace it is given, so no set-workspace is needed (UI-ajkn §5).
+    openDoc: (path, missing_state, root_dir) =>
+      void doc_viewer.open(path, {
+        missing_state: /** @type {any} */ (missing_state || null),
+        ...(root_dir ? { workspace: root_dir } : {})
+      }),
     openSettings: (options) => {
       if (options.scope === 'monitor') {
         settings_dialog.open(undefined, { scope: 'monitor' });

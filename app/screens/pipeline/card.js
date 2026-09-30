@@ -198,7 +198,10 @@ export function candidateCard(item, ctx, options = {}) {
     data-lane="runnable"
     data-drag-kind=${ifDefined(draggable ? 'candidate' : undefined)}
   >
-    ${progressBand(item.workflow, item.status)}
+    ${progressBand(item.workflow, item.status, {
+      root_dir: item.root_dir,
+      coarse: /** @type {any} */ (ctx).coarse === true
+    })}
     <div class="pl-line1">
       ${idChip(item.id)}${priorityBadge(
         item.priority
