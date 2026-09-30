@@ -7,7 +7,7 @@
  */
 import { execFileSync } from 'node:child_process';
 
-const DEFAULT_START_TOLERANCE_MS = 2_000;
+export const DEFAULT_START_TOLERANCE_MS = 2_000;
 const DEFAULT_TERM_GRACE_MS = 5_000;
 const DEFAULT_KILL_GRACE_MS = 1_000;
 

@@ -4,8 +4,33 @@ import path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import {
   PROGRESS_TAIL_BYTES,
+  parseConversationResult,
   readLastAssistantMessage
 } from './interactive-progress.js';
+
+describe('parseConversationResult', () => {
+  test.each([
+    ['인계 · 범위 확장 승인', 'handoff'],
+    ['인수 · 내가 끝까지 간다', 'takeover'],
+    ['보류 · 내일 본다', 'hold']
+  ])('reads %s as a %s result line', (line, kind) => {
+    const result = parseConversationResult(line);
+
+    expect(result).toEqual({ kind, line });
+  });
+
+  test('returns null for a prose question', () => {
+    const result = parseConversationResult('어느 쪽으로 갈까요?');
+
+    expect(result).toBeNull();
+  });
+
+  test('ignores a result word that is not the line prefix', () => {
+    const result = parseConversationResult('다음 턴에 인계 · 하겠습니다');
+
+    expect(result).toBeNull();
+  });
+});
 
 /** @type {string[]} */
 const roots = [];
@@ -70,7 +95,9 @@ describe('readLastAssistantMessage', () => {
 
     expect(result).toEqual({
       text: 'make test 재실행 중',
-      at: Date.parse('2026-09-29T08:01:00.000Z')
+      at: Date.parse('2026-09-29T08:01:00.000Z'),
+      first_line: 'make test 재실행 중',
+      excerpt: 'make test 재실행 중 둘째 줄'
     });
   });
 
@@ -90,7 +117,9 @@ describe('readLastAssistantMessage', () => {
 
     expect(result).toEqual({
       text: '검증을 다시 돌립니다',
-      at: Date.parse('2026-09-29T08:05:00.000Z')
+      at: Date.parse('2026-09-29T08:05:00.000Z'),
+      first_line: '검증을 다시 돌립니다',
+      excerpt: '검증을 다시 돌립니다'
     });
   });
 
@@ -100,6 +129,26 @@ describe('readLastAssistantMessage', () => {
     const result = readLastAssistantMessage({ provider: 'claude', file });
 
     expect(result?.text).toBe('가'.repeat(160));
+  });
+
+  test('keeps the first line whole for a long result line', () => {
+    const line = `인계 · ${'결'.repeat(300)}`;
+    const file = transcriptFile(`${claudeAssistant(`${line}\n근거`)}\n`);
+
+    const result = readLastAssistantMessage({ provider: 'claude', file });
+
+    expect(result?.first_line).toBe(line);
+  });
+
+  test('collapses whitespace and cuts the excerpt to 400 code points', () => {
+    const file = transcriptFile(
+      `${claudeAssistant(`질문\n\n  ${'😀'.repeat(500)}`)}\n`
+    );
+
+    const result = readLastAssistantMessage({ provider: 'claude', file });
+
+    expect(Array.from(result?.excerpt || '')).toHaveLength(400);
+    expect(result?.excerpt.startsWith('질문 😀')).toBe(true);
   });
 
   test('returns null when the tail has no assistant message', () => {

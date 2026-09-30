@@ -998,7 +998,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     /**
      * @param {import('./scheduler.js').BeadSnapshot} snap
      * @param {string} [base]
-     * @param {{ allow_external_wait_resume?: boolean }} [resume_options]
+     * @param {{ allow_external_wait_resume?: boolean, allow_conversation_return?: boolean }} [resume_options]
      */
     validate(snap, base, resume_options = {}) {
       // An unresolvable declaration is refused BEFORE any git probe: the base is
@@ -1013,6 +1013,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       return validateAdmission({
         allow_external_wait_resume:
           resume_options.allow_external_wait_resume === true,
+        allow_conversation_return:
+          resume_options.allow_conversation_return === true,
         gitRun,
         ghAvailable,
         repo: snap.repo,
@@ -3408,6 +3410,22 @@ export async function resumeWorkerAttempt(
     return { ok: false, reason: 'no_attachment' };
   }
   return att.scheduler.resume(keyFor(workspace_root), attempt_id, continuation);
+}
+
+/**
+ * `[워커로 이어가기]` for a conversation stop (UI-nuwy §3.6), IF an attachment
+ * is registered. Inert (`{ ok: false, reason: 'no_attachment' }`) without one.
+ *
+ * @param {string} workspace_root
+ * @param {{ bead_id: string, attempt_id: string }} input
+ * @returns {Promise<{ ok: boolean, reason: string|null, pending?: boolean }>}
+ */
+export async function conversationHandoffWorker(workspace_root, input) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.conversationHandoff(keyFor(workspace_root), input);
 }
 
 /**

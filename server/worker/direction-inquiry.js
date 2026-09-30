@@ -1,20 +1,16 @@
 /**
- * Parked-attempt inquiry session trigger (UI-gjp2).
+ * Same-session conversation launcher for a stopped Worker attempt (UI-nuwy
+ * §3.2, superseding the UI-gjp2 fork inquiry).
  *
- * Every string-valued `awaiting_user` park and stalled recovery reaches this
- * module and selects stale artifact review, implementation/design conflict,
- * a generic unknown value, or recovery. `onParkedAttempt` is the automatic
- * trigger and obeys `worker_direction_inquiry.enabled`; `launchForClick` is the
- * user's explicit `[세션에서 해결]` action and deliberately ignores that
- * automatic-launch gate. Both start an INTERACTIVE `claude` session in tmux so
- * `AskUserQuestion` reaches the user through `claude-discord-bridge`, with at
- * most one live inquiry pane per Bead.
+ * Every string-valued `awaiting_user` park and every conversation-target
+ * recovery wait (`session-stall.js`) reaches this module. `onParkedAttempt` is
+ * the automatic trigger and obeys `worker_direction_inquiry.enabled`;
+ * `launchForClick` is the user's explicit `[세션에서 해결]` action and
+ * deliberately ignores that automatic-launch gate. Both reopen the attempt's
+ * OWN runner session interactively in tmux — no fork — with the one dotfiles
+ * entry block as its first input, at most one live conversation pane per Bead.
  *
- * The four inquiry prompts are byte-for-byte copies of canonical dotfiles
- * prompt blocks. Unit tests pin all four SHA-256 digests because this
- * runtime must not read the sibling repository's contract file.
- *
- * Three properties are load-bearing:
+ * Four properties are load-bearing:
  *
  *   - NO-THROW. `onParkedAttempt` is called fire-and-forget from a queue
  *     transition, so every path is wrapped and the returned promise ALWAYS
@@ -22,20 +18,28 @@
  *   - FAIL-CLOSED ON TMUX. A tmux that cannot be reached means liveness cannot
  *     be judged, and a duplicate nobody could rule out is worse than no
  *     session: the launch is skipped and the notification says why.
- *   - THE MARKER PRECEDES `claude`. The pane's `@bdui_inquiry_bead` option is
- *     written by the wrapper BEFORE it execs `claude`, so a marker-less live
- *     inquiry session cannot exist and pane liveness stays a sound duplicate
- *     guard across a server restart (spec §3.3).
- *
+ *   - ONE PROCESS PER SESSION ID. The attempt's runner process must be proven
+ *     gone before its session is reopened; an alive or unobservable runner
+ *     refuses the launch instead of letting two processes write one session.
+ *   - THE MARKER PRECEDES THE CLI. The pane's `@bdui_inquiry_bead` option is
+ *     written by the wrapper BEFORE it execs the runner, so a marker-less live
+ *     conversation cannot exist and pane liveness stays a sound duplicate
+ *     guard across a server restart.
  */
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
-import { qualifyInteractiveForkSource } from './session-ref.js';
-// The tmux launch primitives moved out to be shared with the `[세션에서 해결]`
-// click (UI-jw27 §4). Nothing about this lane's behaviour moved with them: the
-// marker option, the prompt, and the launch reason all stay this module's.
+import {
+  DEFAULT_START_TOLERANCE_MS,
+  observeProcessIdentity
+} from './process-controller.js';
+import { qualifyAttemptSession } from './session-ref.js';
+import { conversationStopLabel } from './session-stall.js';
+// The tmux launch primitives are shared with the `[세션에서 해결]` resolve
+// session (UI-jw27 §4). The marker option, the entry block, and the launch
+// reason all stay this module's.
 import {
   INQUIRY_PANE_MARKER,
   createTmuxLauncher,
@@ -45,159 +49,117 @@ import {
 
 const default_log = debug('worker:direction-inquiry');
 
-/** Stale inquiries publish an artifact and leave implementation to Worker. */
-const STALE_REASONS = new Set([
-  'spec_review_stale:revise',
-  'plan_approval_stale:revise'
-]);
-const IMPL_CONFLICT_REASON = 'impl_review_conflict:design';
-
-/** The pane option that names the Bead an inquiry session belongs to. */
+/** The pane option that names the Bead a conversation window belongs to. */
 const PANE_MARKER = INQUIRY_PANE_MARKER;
-
-/** The last `stale_kind=` in the notes. A notes LINE, never a metadata key. */
-const STALE_KIND_RE = /stale_kind=(adr_conflict|intent_conflict)/;
-
-/** The last direction-conflict re-review line, whose tail is the reason. */
-const REREVIEW_RE = /^\s*rereview:\s*direction_conflict\s*—\s*(.+)$/;
-
-/** The last implementation-conflict park line and its two required facts. */
-const PARK_RE =
-  /^park: impl_review_conflict:design — 대상: (.+?) — finding: (.+)$/;
-
-/** The five slots this module fills; every other `<…>` belongs to the session. */
-const SLOT_BEAD = '<bead-id>';
-const SLOT_STALE_RECEIPT = '<spec_review=… | plan_approval=…>';
-const SLOT_STALE_KIND = '<adr_conflict | intent_conflict>';
-const SLOT_STALE_SUMMARY = '<ADR 번호, 또는 겹치는 Bead ID·spec 경로>';
-const SLOT_CHECKOUT = '<path>';
-const SLOT_IMPL_RECEIPT = 'spec_review=<…>';
-const SLOT_IMPL_TARGET = '<ADR <번호> | 스펙 `결정:` 줄 원문>';
-const SLOT_IMPL_FINDING =
-  '<리뷰어 출력 한 줄 — severity | location | what is wrong | fix>';
-const SLOT_SESSION = '<fork 대상 세션 id 또는 없음>';
-const SLOT_GENERIC_VALUE = '<값>';
-const SLOT_GENERIC_RECEIPT = '<spec_review=… | plan_approval=… | 없음>';
 
 /** What a field with nothing behind it prints, rather than an empty slot. */
 const ABSENT = '(없음)';
-const PLAIN_ABSENT = '없음';
 
 /**
- * The first input of a direction inquiry session, quoted verbatim from dotfiles
- * `src/shared/skills/flow/workflow/references/execution-common.md` ("Direction
- * inquiry session", commit `88411f326f5620d47c4d5f672ba4135944d6145c`). This is
- * the TEMPLATE: the five slots above are
- * filled per Bead and the rest belong to the session. beads-ui adds no
+ * The first input of a same-session conversation, quoted verbatim from dotfiles
+ * `src/shared/skills/flow/workflow/references/execution-common.md`
+ * (`## Worker 세션 대화`, commit `f031c9853f536c1478e9d1129b8c69628be27ef8`),
+ * with no trailing newline. This is the TEMPLATE: beads-ui fills only the
+ * stop label, the session's sentence, and the two paths; `<원문>`,
+ * `<결정 한 줄>` and `<한 줄>` belong to the session. beads-ui adds no
  * procedure and no prohibition of its own.
  *
  * @type {string}
  */
-export const STALE_INQUIRY_PROMPT =
-  [
-    'Bead <bead-id>의 stale 재리뷰가 방향성 충돌로 파킹됐습니다. 사용자에게 방향을 물어 처분하세요.',
-    '- 원 영수증: <spec_review=… | plan_approval=…>',
-    '- stale_kind: <adr_conflict | intent_conflict>',
-    '- 충돌 요약: <ADR 번호, 또는 겹치는 Bead ID·spec 경로>',
-    '- target_base 체크아웃: <path>',
-    '',
-    '절차',
-    '1. workflow의 `references/execution-spec-backed.md` `Staleness re-review`에 따라 재검토 입력을 파일에 저장하고 읽는다. 그 입력과 notes의 `rereview:` 줄로 충돌을 한 문단으로 요약한다.',
-    '2. `AskUserQuestion`을 1회 부른다. 선택지는 `stale_kind`별 고정 2개 + 자유 입력이다.',
-    '   - adr_conflict: "ADR <번호>에 맞춰 이 아티팩트 수정" / "이 아티팩트 방향 유지 — `결정 (ADR 후보)` 절에 ADR <번호> supersede 후보 추가"',
-    '   - intent_conflict: "상대 spec(<Bead ID>)이 권위 — 이 아티팩트를 맞춰 수정" / "이 아티팩트가 권위 — `bd dep add <상대> <this> --json` 엣지를 쓰고 상대 notes에 `rereview: intent_conflict — 사용자 결정: <요약>` 줄을 남긴다". 상대가 Bead 없는 착지 spec이면 뒤 선택지는 "이 아티팩트가 권위 — supersede·정정 대상 spec 경로를 `경계·후속`에 관찰 줄로 기록"이다.',
-    '   - 답이 중단·폐기류이면 아무것도 쓰지 않고 답 원문만 notes에 남긴 채 끝낸다. `awaiting_user`는 유지하고 close는 사람이 한다.',
-    '3. 답에 따라 target_base 체크아웃에서 아티팩트를 고치고, full-artifact self-review(리뷰 스킬 `spec-gate-probes.md`의 scope overlap 프로브 포함)를 거쳐 `land-reviewed-artifact.py`로 발행한다.',
-    '   - spec: 그 full-artifact self-review는 리뷰 라운드이므로 리뷰 스킬의 댓글-우선 순서대로 라운드 댓글과 `spec_review_stats`를 먼저 쓴 뒤, 한 `bd update`로 영수증 + notes 계보(질문 요약·사용자 답 원문·수정 SHA) + `awaiting_user` 해제를 쓰고 readback한다. 원 영수증이 리뷰된 것이면 `spec_review=self@<contained_sha>`, `skipped@`였으면 `skipped@<contained_sha>`다.',
-    '   - plan: 방향성 충돌은 bounded correction이 아니므로 `plan_review`+`last_checked_sha`로 해제하지 않는다. 발행 뒤 plan-authoring authorize 흐름대로 승인 질문을 하고(2번째 `AskUserQuestion`), 그 답 턴에서 `plan_approval=user@<contained_sha>` + `awaiting_user` 해제를 같은 쓰기로 기록한다. 승인이 아니면 `awaiting_user`를 남기고 종료한다.',
-    '4. 구현은 착수하지 않는다. Worker 일반 레인이 재디스패치한다.',
-    '',
-    '금지: 재리뷰 디스패치(외부 리뷰어) · 구현 착수 · PR 생성 · `awaiting_user` 단독 해제 · Bead 상태 변경.'
-  ].join('\n') + '\n';
+export const CONVERSATION_ENTRY_BLOCK = [
+  '이 세션은 방금까지 무인 Worker attempt였고 <멈춤 사유>로 멈춰, 지금 사용자와 대화하도록 다시 열렸다. 사용자는 이 tmux 창이나 Discord 스레드에서 답한다.',
+  '- 멈춤 사유: <awaiting_user=<값> | recovery:<authority|no_progress> | recovery:<옛 사유> (옛 기록)>',
+  '- 세션이 남긴 문장: <blocker 문장>',
+  '- 구현 워크트리: <path>',
+  '- target_base 체크아웃: <path>',
+  '',
+  '절차',
+  '1. 무엇이 막혔고 사용자가 무엇을 정해야 하는지 한 문단으로 요약하고, 선택지와 권고를 붙여 묻는다. 질문 도구가 있으면 쓰고, 없으면 산문으로 묻고 턴을 끝낸다. 턴이 끝나면 사용자 차례다.',
+  '2. 답이 결정을 주면 notes에 `대화 결정: <멈춤 사유> — 사용자 답: <원문>` 한 줄을 남긴다. 결정을 확인하는 데 필요한 읽기·진단·워크트리 안 로컬 수정·로컬 검증은 이 대화에서 해도 된다.',
+  '3. 대화를 끝내는 턴의 마지막 메시지 첫 줄에 결과 줄 하나를 쓴다.',
+  '   - `인계 · <결정 한 줄>`: Worker가 이 세션을 무인으로 이어받아 결정의 적용·영수증·해제·발행·push·보고를 한다.',
+  '   - `인수 · <한 줄>`: 사용자가 이 대화에서 끝까지 가겠다고 명시했을 때만. 그 뒤 이 세션은 대화형 세션 규칙으로 finish까지 간다.',
+  '   - `보류 · <한 줄>`: 사용자가 나중에 보겠다고 했을 때. 대화를 끝내고 attempt는 대기로 남는다.',
+  '   결과 줄 없이 끝난 턴은 사용자 답을 기다리는 턴이다.',
+  '',
+  '금지(인수 전): push·PR·발행·배포·릴리스 · Bead 상태 변경 · metadata 영수증 쓰기와 `awaiting_user` 해제(예외: 사용자 답 턴에서만 쓸 수 있는 `plan_approval=user@<sha>`와, 그와 같은 쓰기로 하는 `awaiting_user` 해제) · 외부 리뷰어 dispatch · 공급자 세션 상태 파일 직접 수정 · 중첩 헤드리스 세션 기동.'
+].join('\n');
+
+/** The server-owned slots; every other `<…>` belongs to the session. */
+const SLOT_STOP_LINE =
+  '<awaiting_user=<값> | recovery:<authority|no_progress> | recovery:<옛 사유> (옛 기록)>';
+const SLOT_STOP = '<멈춤 사유>';
+const SLOT_SENTENCE = '<blocker 문장>';
+const SLOT_WORKTREE = '- 구현 워크트리: <path>';
+const SLOT_CHECKOUT = '- target_base 체크아웃: <path>';
 
 /**
- * Implementation-conflict prompt copied byte-for-byte from dotfiles §3.2.
+ * Fill the entry block's server-owned slots in ONE pass, so an inserted value
+ * that quotes a slot is never rescanned. The two `<path>` slots are told
+ * apart by their line prefix.
  *
- * @type {string}
+ * @param {{ stop: string|null, sentence: string|null, worktree: string|null, checkout: string|null }} input
+ * @returns {string}
  */
-export const IMPL_CONFLICT_INQUIRY_PROMPT =
-  [
-    'Bead <bead-id>의 구현 게이트가 설계 갈래로 파킹됐습니다. 사용자에게 방향을 물어 처분하고 구현을 마무리하세요.',
-    '- 원 영수증: spec_review=<…>',
-    '- 충돌 대상: <ADR <번호> | 스펙 `결정:` 줄 원문>',
-    '- finding: <리뷰어 출력 한 줄 — severity | location | what is wrong | fix>',
-    '- 구현 워크트리: <path>',
-    '- 기록 세션: <fork 대상 세션 id 또는 없음>',
-    '',
-    '절차',
-    '1. `bd show <bead-id> --json`과 notes의 `park:` 줄, 구현 게이트 라운드 댓글(`## 🔎 리뷰 결과 · impl · r<n>`)을 읽고 충돌을 한 문단으로 요약한다. 구현 워크트리의 후보 커밋은 그대로 이어받는다.',
-    '2. `AskUserQuestion`을 1회 부른다. 선택지는 고정 2개 + 자유 입력이다.',
-    '   - "충돌 대상에 맞춰 finding 처분(구현 수정)": 처분·일괄 수정·controller exact-delta self-review 뒤, 한 `bd update`로 `impl_review=self@<head>` + notes 계보(질문 요약·사용자 답 원문·수정 SHA) + `awaiting_user` 해제를 쓰고 readback한다. 이 self-review가 구현 게이트 lineage의 종결이다.',
-    '   - "구현 방향 유지 — 스펙 수정(ADR이면 `결정 (ADR 후보)` 절에 supersede 후보 추가, `결정:` 줄이면 그 줄 정정)": target_base 체크아웃에서 스펙을 고치고 full-artifact self-review를 거쳐 `land-reviewed-artifact.py`로 발행한 뒤, 한 `bd update`로 `spec_review=self@<contained_sha>` + notes 계보 + `awaiting_user` 해제를 쓰고 readback한다. 이어서 새 스펙에 대한 controller full-artifact 구현 self-review로 `impl_review=self@<head>`를 쓴다. ADR supersede 자체는 Finish의 `adr` 스킬이 처리한다.',
-    '   - 답이 중단·폐기류이면 아무것도 쓰지 않고 답 원문만 notes에 남긴 채 끝낸다. `awaiting_user`는 유지하고 close는 사람이 한다.',
-    '3. 해제 뒤 같은 세션이 finish까지 간다: 검증 bundle, PR, 완료 보고서(`스펙 이탈:` 줄 포함), `resolved`. 외부 리뷰어는 다시 dispatch하지 않는다 — 파킹을 만든 외부 리뷰 1회가 lineage의 cap이다.',
-    '',
-    '금지: 외부 리뷰어 재디스패치 · `awaiting_user` 단독 해제 · Bead 상태 직접 변경 · 새 워크트리 생성(기존 워크트리를 잇는다).'
-  ].join('\n') + '\n';
+export function fillConversationEntry(input) {
+  const stop = input.stop || ABSENT;
+  /** @type {Map<string, string>} */
+  const values = new Map([
+    [SLOT_STOP_LINE, stop],
+    [SLOT_STOP, stop],
+    [SLOT_SENTENCE, input.sentence || ABSENT],
+    [SLOT_WORKTREE, `- 구현 워크트리: ${input.worktree || ABSENT}`],
+    [SLOT_CHECKOUT, `- target_base 체크아웃: ${input.checkout || ABSENT}`]
+  ]);
+  const pattern = new RegExp(
+    [...values.keys()]
+      .map((slot) => slot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('|'),
+    'g'
+  );
+  return CONVERSATION_ENTRY_BLOCK.replace(
+    pattern,
+    (slot) => values.get(slot) ?? slot
+  );
+}
 
 /**
- * Generic unknown-value prompt copied byte-for-byte from dotfiles §3.2.
+ * The sentence a park left: the last notes line naming this park's value,
+ * else the last `park:` line, printed as-is.
  *
- * @type {string}
+ * @param {unknown} notes
+ * @param {string} awaiting_user
+ * @returns {string|null}
  */
-export const GENERIC_INQUIRY_PROMPT =
-  [
-    'Bead <bead-id>가 awaiting_user=<값>으로 파킹됐습니다. 이 값은 계약 어휘에 없습니다. 사용자에게 처분을 물어 기록하세요.',
-    '- 원 영수증: <spec_review=… | plan_approval=… | 없음>',
-    '- 기록 세션: <fork 대상 세션 id 또는 없음>',
-    '- target_base 체크아웃: <path>',
-    '',
-    '절차',
-    '1. `bd show <bead-id> --json`의 metadata·notes·최근 댓글을 읽고 무엇이 파킹을 썼는지 한 문단으로 요약한다.',
-    '2. `AskUserQuestion`을 1회 부른다. 선택지는 "이 세션에서 계속 처리 — 처분 지시를 자유 입력으로" / "파킹 유지 — 사람이 직접 본다" + 자유 입력이다.',
-    '3. 답 원문을 notes에 `park-inquiry: <값> — 사용자 답: <원문>` 줄로 남긴다. 계속 처리 지시가 있으면 그 지시대로 진행하되 `awaiting_user`는 지시가 명시한 write에서만 함께 해제한다.',
-    '',
-    '금지: `awaiting_user` 단독 해제 · Bead 상태 직접 변경 · 외부 리뷰어 dispatch.'
-  ].join('\n') + '\n';
-
-/** Recovery prompt copied byte-for-byte from the approved dotfiles block. */
-export const RECOVERY_INQUIRY_PROMPT =
-  [
-    'Bead <bead-id>가 recovery:<reason>으로 멈췄습니다. 세션이 남긴 사유를 읽고 사용자에게 처분을 물어 기록하세요.',
-    '- blocker: <blocker 문장>',
-    '- 기록 세션: <기록 세션>',
-    '- 구현 워크트리: <구현 워크트리>',
-    '- target_base 체크아웃: <target_base 체크아웃>',
-    '',
-    '절차',
-    '1. `bd show <bead-id> --json`의 metadata·notes·최근 댓글과 attempt 결과 줄을 읽고 무엇이 멈췄는지 한 문단으로 요약한다.',
-    '2. `AskUserQuestion`을 1회 부른다. 선택지는 "이어가기 — 처분 지시를 자유 입력으로" / "폐기" / "사람이 직접 본다"다.',
-    '3. 답 원문을 notes에 `recovery-inquiry: <reason> — 사용자 답: <원문>` 줄로 남긴다. 이어가기 지시면 이미 기록 세션을 fork해 뜬 세션은 이 세션에서 그대로 지시대로 계속하고, fresh 세션만 기록 세션을 fork해 계속하며, 둘 다 Worker resume 경로로 넘기지 않는다.',
-    '',
-    '금지: `awaiting_user` 단독 해제 · Bead 상태 직접 변경 · 외부 리뷰어 dispatch · 공급자 세션 상태 파일(`~/.codex`·`~/.claude` 아래 sqlite·세션 등록 파일) 직접 수정 · 중첩 헤드리스 세션(`codex exec`·`claude -p`) 기동.'
-  ].join('\n') + '\n';
+export function parkSentence(notes, awaiting_user) {
+  if (typeof notes !== 'string' || notes.length === 0) {
+    return null;
+  }
+  const lines = notes.split('\n').map((line) => line.trim());
+  const own = lines.filter((line) => line.startsWith(`park: ${awaiting_user}`));
+  if (own.length > 0) {
+    return own[own.length - 1];
+  }
+  const any = lines.filter((line) => line.startsWith('park:'));
+  return any.length > 0 ? any[any.length - 1] : null;
+}
 
 /**
- * @param {{ bead_id: string, reason: string, summary?: string|null, session_id: string|null, worktree: string, checkout: string }} input
+ * The blocker sentence a recovery wait left: the summary's first line without
+ * its leading `blocker:`.
+ *
+ * @param {unknown} summary
+ * @returns {string|null}
  */
-export function fillRecoveryPrompt(input) {
-  const blocker = (input.summary || '')
+export function recoverySentence(summary) {
+  if (typeof summary !== 'string') {
+    return null;
+  }
+  const first = summary
     .split('\n')[0]
     .replace(/^blocker:\s*/, '')
     .trim();
-  /** @type {Record<string, string>} */
-  const slots = {
-    '<bead-id>': input.bead_id,
-    '<reason>': input.reason,
-    '<blocker 문장>': blocker || ABSENT,
-    '<기록 세션>': input.session_id || ABSENT,
-    '<구현 워크트리>': input.worktree,
-    '<target_base 체크아웃>': input.checkout
-  };
-  return RECOVERY_INQUIRY_PROMPT.replace(
-    /<bead-id>|<reason>|<blocker 문장>|<기록 세션>|<구현 워크트리>|<target_base 체크아웃>/g,
-    (slot) => slots[slot]
-  );
+  return first.length > 0 ? first : null;
 }
 
 /**
@@ -205,94 +167,31 @@ export function fillRecoveryPrompt(input) {
  * @property {boolean} launched
  * @property {'launched'|'already_running'|'not_launched'} session
  * @property {string|null} reason
- * @property {'fork'|'fresh'} mode
- * @property {'attempt'|'session_ref'|'fresh'} [source]
+ * @property {'resume'|'fresh'} mode
+ * @property {'attempt'|'fresh'} [source]
  * @property {string|null} fallback_reason
  * @property {string|null} session_id
- * @property {'claude'|'codex'} runner - The provider the window actually runs
- * (codex-orchestration-parity §4.2). A fork keeps the chosen attempt's or the
- * recorded ref's provider; a fresh session uses claude.
+ * @property {'claude'|'codex'} runner - The provider the window actually runs.
+ * The attempt's own runner for a same-session conversation; a fresh fallback
+ * keeps the same provider.
  * @property {string|null} command
  * @property {boolean} bridge_active
  * @property {string|null} tmux_session
  * @property {string|null} tmux_window
+ * @property {string|null} [stop] - The stop label the entry block printed.
+ * @property {string|null} [sentence] - The session's own sentence.
  */
 
-/**
- * The receipt key a park value belongs to — the prompt names the ORIGINAL
- * receipt, and a plan park was never carried by `spec_review`.
- *
- * @param {string} awaiting_user
- * @returns {'spec_review'|'plan_approval'}
- */
-export function receiptKeyFor(awaiting_user) {
-  return awaiting_user === 'plan_approval_stale:revise'
-    ? 'plan_approval'
-    : 'spec_review';
-}
-
-/**
- * The direction-conflict facts the parking session left in the Bead notes: the
- * kind, and the reason it recorded. Each is scanned INDEPENDENTLY and the LAST
- * match wins — a Bead can be re-reviewed more than once, and the newest line is
- * the one describing the park being disposed of.
- *
- * @param {unknown} notes
- * @returns {{ stale_kind: string|null, summary: string|null }}
- */
-export function parseStaleNotes(notes) {
-  /** @type {{ stale_kind: string|null, summary: string|null }} */
-  const out = { stale_kind: null, summary: null };
-  if (typeof notes !== 'string' || notes.length === 0) {
-    return out;
-  }
-  for (const line of notes.split('\n')) {
-    const kind = STALE_KIND_RE.exec(line);
-    if (kind) {
-      out.stale_kind = kind[1];
-    }
-    const reason = REREVIEW_RE.exec(line);
-    if (reason) {
-      out.summary = reason[1].trim();
-    }
-  }
-  return out;
-}
-
-/**
- * Parse the last implementation-conflict park facts from notes.
- *
- * @param {unknown} notes
- * @returns {{ target: string|null, finding: string|null }}
- */
-export function parseParkNotes(notes) {
-  /** @type {{ target: string|null, finding: string|null }} */
-  const out = { target: null, finding: null };
-  if (typeof notes !== 'string' || notes.length === 0) {
-    return out;
-  }
-  for (const line of notes.split('\n')) {
-    const match = PARK_RE.exec(line);
-    if (match) {
-      out.target = match[1].trim();
-      out.finding = match[2].trim();
-    }
-  }
-  return out;
-}
-
-// Re-exported rather than re-implemented: the wrapper's quoting is now the
-// shared launcher's, and this module's own tests still assert it here because
-// this is the surface UI-7uid pinned.
+// Re-exported rather than re-implemented: the wrapper's quoting is the shared
+// launcher's, and this module's own tests still assert it here.
 export { shellQuote };
 
 /**
- * The one-line shell command the inquiry pane runs.
+ * The one-line shell command the conversation pane runs.
  *
  * `set-option` comes FIRST and the two commands are joined by `&&`: a marker
- * that cannot be written never reaches the `exec`, so `claude` does not start
- * and the pane closes. That ordering is what makes "a live pane carrying this
- * Bead" an exact test for "an inquiry session is running" (spec §3.4).
+ * that cannot be written never reaches the `exec`, so the runner does not
+ * start and the pane closes.
  *
  * @param {{ bead_id: string, claude: string, prompt: string }} input
  * @returns {string}
@@ -306,95 +205,10 @@ export function inquiryWrapper(input) {
 }
 
 /**
- * Replace prompt slots in one pass so inserted values are not rescanned.
- *
- * @param {string} prompt
- * @param {Map<string, string>} values
- */
-function fillPrompt(prompt, values) {
-  const pattern = new RegExp(
-    [...values.keys()]
-      .map((slot) => slot.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-      .join('|'),
-    'g'
-  );
-  return prompt.replace(pattern, (slot) => values.get(slot) ?? slot);
-}
-
-/**
- * Fill the stale prompt's server-owned slots.
- *
- * @param {{ bead_id: string, receipt_key: string, receipt: string|null, stale_kind: string, summary: string|null, checkout: string }} input
- */
-export function fillStalePrompt(input) {
-  return fillPrompt(
-    STALE_INQUIRY_PROMPT,
-    new Map([
-      [SLOT_BEAD, input.bead_id],
-      [SLOT_STALE_RECEIPT, `${input.receipt_key}=${input.receipt ?? ABSENT}`],
-      [SLOT_STALE_KIND, input.stale_kind],
-      [SLOT_STALE_SUMMARY, input.summary ?? ABSENT],
-      [SLOT_CHECKOUT, input.checkout]
-    ])
-  );
-}
-
-/**
- * Fill the implementation-conflict prompt's server-owned slots.
- *
- * @param {{ bead_id: string, receipt: string|null, target: string, finding: string, checkout: string, session_id: string|null }} input
- */
-export function fillImplConflictPrompt(input) {
-  return fillPrompt(
-    IMPL_CONFLICT_INQUIRY_PROMPT,
-    new Map([
-      [SLOT_BEAD, input.bead_id],
-      [SLOT_IMPL_RECEIPT, `spec_review=${input.receipt ?? PLAIN_ABSENT}`],
-      [SLOT_IMPL_TARGET, input.target],
-      [SLOT_IMPL_FINDING, input.finding],
-      [SLOT_CHECKOUT, input.checkout],
-      [SLOT_SESSION, input.session_id ?? PLAIN_ABSENT]
-    ])
-  );
-}
-
-/**
- * Fill the generic prompt's server-owned slots.
- *
- * @param {{ bead_id: string, awaiting_user: string, receipt: string, checkout: string, session_id: string|null }} input
- */
-export function fillGenericPrompt(input) {
-  return fillPrompt(
-    GENERIC_INQUIRY_PROMPT,
-    new Map([
-      [SLOT_BEAD, input.bead_id],
-      [SLOT_GENERIC_VALUE, input.awaiting_user],
-      [SLOT_GENERIC_RECEIPT, input.receipt],
-      [SLOT_SESSION, input.session_id ?? PLAIN_ABSENT],
-      [SLOT_CHECKOUT, input.checkout]
-    ])
-  );
-}
-
-/**
- * Add a fork fallback fact after the copied prompt's first line.
- *
- * @param {string} prompt
- * @param {string|null} fallback_reason
- */
-function withFallbackReason(prompt, fallback_reason) {
-  if (fallback_reason === null) {
-    return prompt;
-  }
-  const newline = prompt.indexOf('\n');
-  return `${prompt.slice(0, newline + 1)}- 기록 세션 fork 실패: ${fallback_reason}\n${prompt.slice(newline + 1)}`;
-}
-
-/**
  * @typedef {Object} DirectionInquiryDeps
  * @property {() => any} getConfig - Runtime config accessor (server/config.js).
  * @property {{ readIssue: (workspace: string, bead_id: string) => Promise<any> }} bd
- * @property {{ awaitingUser: (input: any) => Promise<void>|void }} notifier
+ * @property {{ conversationConfirm?: (input: any) => Promise<unknown>|unknown }} notifier
  * @property {(args: string[]) => Promise<{ code: number, stdout: string, stderr: string }>} [runTmux]
  * @property {() => string|null} [resolveClaude]
  * @property {(runner: string) => string|null} [resolveRunner]
@@ -406,15 +220,20 @@ function withFallbackReason(prompt, fallback_reason) {
  * @property {string} [heartbeatPath]
  * @property {{ home_dir?: string, hostname?: string, fs?: any, now?: () => number }} [sessionRefOptions]
  * @property {(workspace: string, attempt_id: string) => any|Promise<any>} [readAttempt] - Injected queue-store lookup; omission reads as unavailable rather than importing the runtime back through a cycle.
+ * @property {(pid: number) => { ok: true, identity: { pid: number, process_started_at: number } }|{ ok: false, reason: string }} [observeProcess]
+ * @property {(file_path: string) => boolean} [existsSync]
  */
 
 /**
- * Build the parked-attempt inquiry launcher.
+ * Build the conversation launcher.
  *
  * @param {DirectionInquiryDeps} deps
  */
 export function createDirectionInquiry(deps) {
   const log = deps.log || default_log;
+  const observeProcess = deps.observeProcess || observeProcessIdentity;
+  const existsSync =
+    deps.existsSync || ((/** @type {string} */ p) => fs.existsSync(p));
   const launcher = createTmuxLauncher({
     ...(deps.runTmux ? { runTmux: deps.runTmux } : {}),
     ...(deps.resolveClaude ? { resolveClaude: deps.resolveClaude } : {}),
@@ -471,34 +290,83 @@ export function createDirectionInquiry(deps) {
   }
 
   /**
-   * Choose the attempt transcript, then session_ref, then fresh mode.
+   * Choose the attempt's own session, else a fresh session of the same
+   * provider. The worktree must exist too: Claude resolves `--resume` by the
+   * cwd's project, so the session cannot be reopened anywhere else.
    *
    * @param {string} workspace
    * @param {any} issue
    * @param {any} attempt
+   * @param {boolean} worktree_present
+   * @returns {{ session_id: string|null, runner: 'claude'|'codex', source: 'attempt'|'fresh', fallback_reason: string|null }}
    */
-  function forkTarget(workspace, issue, attempt) {
-    const source = qualifyInteractiveForkSource({
+  function conversationTarget(workspace, issue, attempt, worktree_present) {
+    const own = qualifyAttemptSession({
       attempt,
-      metadata: issue?.metadata,
       options: deps.sessionRefOptions || {}
     });
+    const runner =
+      own.provider ?? deps.currentRunner?.(workspace, issue) ?? 'claude';
+    if (own.ok && worktree_present) {
+      return {
+        session_id: own.session_id,
+        runner,
+        source: 'attempt',
+        fallback_reason: null
+      };
+    }
     return {
-      session_id: source.session_id,
-      runner:
-        source.provider ?? deps.currentRunner?.(workspace, issue) ?? 'claude',
-      source: source.source,
-      fallback_reason: source.fallback_reason
+      session_id: null,
+      runner,
+      source: 'fresh',
+      fallback_reason: own.ok ? 'worktree_missing' : own.reason
     };
+  }
+
+  /**
+   * One process per session id: the attempt's runner must be proven gone.
+   * A recycled pid (different start time) is gone too.
+   *
+   * @param {any} attempt
+   * @returns {string|null} The refusal reason, or null when the launch may go.
+   */
+  function runnerLivenessRefusal(attempt) {
+    const identity = attempt?.process_identity;
+    if (!identity || typeof identity.pid !== 'number') {
+      return null;
+    }
+    /** @type {ReturnType<typeof observeProcessIdentity>} */
+    let observed;
+    try {
+      observed = observeProcess(identity.pid);
+    } catch (err) {
+      log('runner observation failed for %s: %o', attempt.attempt_id, err);
+      return 'runner_liveness_unknown';
+    }
+    if (!observed.ok) {
+      return observed.reason === 'process_gone'
+        ? null
+        : 'runner_liveness_unknown';
+    }
+    const started_at = identity.started_at;
+    if (
+      typeof started_at === 'number' &&
+      Math.abs(observed.identity.process_started_at - started_at) >
+        DEFAULT_START_TOLERANCE_MS
+    ) {
+      return null;
+    }
+    return 'runner_alive';
   }
 
   /**
    * Create a uniform not-launched response.
    *
    * @param {string} reason
+   * @param {{ stop?: string|null, sentence?: string|null, runner?: 'claude'|'codex' }} [facts]
    * @returns {InquiryOutcome}
    */
-  function refusal(reason) {
+  function refusal(reason, facts = {}) {
     return {
       launched: false,
       session: 'not_launched',
@@ -506,11 +374,13 @@ export function createDirectionInquiry(deps) {
       mode: 'fresh',
       fallback_reason: null,
       session_id: null,
-      runner: /** @type {'claude'} */ ('claude'),
+      runner: facts.runner ?? 'claude',
       command: null,
       bridge_active: launcher.bridgeActive(),
       tmux_session: null,
-      tmux_window: null
+      tmux_window: null,
+      stop: facts.stop ?? null,
+      sentence: facts.sentence ?? null
     };
   }
 
@@ -518,42 +388,44 @@ export function createDirectionInquiry(deps) {
    * Map the shared launcher result to the click response contract.
    *
    * @param {any} outcome
-   * @param {{ session_id: string|null, runner: 'claude'|'codex', source: 'attempt'|'session_ref'|'fresh', fallback_reason: string|null }} fork
-   * @param {{ tmux_session: string, bead_id: string }} place
+   * @param {{ session_id: string|null, runner: 'claude'|'codex', source: 'attempt'|'fresh', fallback_reason: string|null }} target
+   * @param {{ tmux_session: string, bead_id: string, stop: string, sentence: string|null }} place
    * @param {string|null} launch_session_id
    * @returns {InquiryOutcome}
    */
-  function inquiryOutcome(outcome, fork, place, launch_session_id) {
+  function inquiryOutcome(outcome, target, place, launch_session_id) {
+    const same = target.session_id !== null;
     return {
       launched: outcome.session === 'launched',
       session: outcome.session,
       reason: outcome.session === 'not_launched' ? outcome.reason : null,
-      mode: fork.session_id === null ? 'fresh' : 'fork',
-      source: fork.source,
-      fallback_reason: fork.fallback_reason,
-      session_id: fork.session_id,
-      runner: fork.runner,
-      command:
-        fork.session_id === null
-          ? fork.runner === 'claude'
-            ? `claude --session-id ${shellQuote(/** @type {string} */ (launch_session_id))}`
-            : fork.runner
-          : fork.runner === 'codex'
-            ? `codex fork ${shellQuote(fork.session_id)}`
-            : `claude --resume ${shellQuote(fork.session_id)} --fork-session --session-id ${shellQuote(/** @type {string} */ (launch_session_id))}`,
+      mode: same ? 'resume' : 'fresh',
+      source: target.source,
+      fallback_reason: target.fallback_reason,
+      session_id: same ? target.session_id : launch_session_id,
+      runner: target.runner,
+      command: same
+        ? target.runner === 'codex'
+          ? `codex resume ${shellQuote(/** @type {string} */ (target.session_id))}`
+          : `claude --resume ${shellQuote(/** @type {string} */ (target.session_id))}`
+        : target.runner === 'claude'
+          ? `claude --session-id ${shellQuote(/** @type {string} */ (launch_session_id))}`
+          : target.runner,
       bridge_active: launcher.bridgeActive(),
       tmux_session:
         outcome.session === 'not_launched' ? null : place.tmux_session,
-      tmux_window: outcome.session === 'not_launched' ? null : place.bead_id
+      tmux_window: outcome.session === 'not_launched' ? null : place.bead_id,
+      stop: place.stop,
+      sentence: place.sentence
     };
   }
 
   /**
-   * Build and launch one parked-attempt inquiry.
+   * Build and launch one conversation.
    *
    * @param {any} input
    * @param {boolean} automatic
-   * @returns {Promise<{ outcome: InquiryOutcome, branch: 'stale'|'impl_conflict'|'generic'|'recovery', stale_kind: string|null, title: string|null, repo: string }>}
+   * @returns {Promise<{ outcome: InquiryOutcome, title: string|null, repo: string, stop: string|null }>}
    */
   async function dispose(input, automatic) {
     const workspace = String(input.workspace ?? '');
@@ -564,6 +436,18 @@ export function createDirectionInquiry(deps) {
       typeof input.repo === 'string' && input.repo.length > 0
         ? input.repo
         : workspace;
+    const attempt = await readAttempt(workspace, attempt_id);
+    const recovery = input.recovery ?? attempt?.cause_detail?.recovery ?? null;
+    const stop =
+      conversationStopLabel({
+        awaiting_user,
+        recovery,
+        blockers: attempt?.cause_detail?.blockers || []
+      }) ??
+      // A click may open any recovery wait; its label names the reason as is.
+      (typeof recovery?.reason === 'string'
+        ? `recovery:${recovery.reason}`
+        : null);
     /** @type {any} */
     let issue = null;
     try {
@@ -571,177 +455,119 @@ export function createDirectionInquiry(deps) {
     } catch (err) {
       log('bd read failed for %s: %o', bead_id, err);
     }
-    const stale = parseStaleNotes(issue?.notes);
-    const branch =
-      STALE_REASONS.has(awaiting_user) && stale.stale_kind !== null
-        ? 'stale'
-        : awaiting_user === IMPL_CONFLICT_REASON
-          ? 'impl_conflict'
-          : !awaiting_user && input.recovery?.reason
-            ? 'recovery'
-            : 'generic';
+    const sentence = awaiting_user
+      ? parkSentence(issue?.notes, awaiting_user)
+      : recoverySentence(attempt?.cause_detail?.summary);
+    const facts = { stop, sentence };
     if (!issue || typeof issue !== 'object') {
       return {
-        outcome: refusal('bd_unavailable'),
-        branch,
-        stale_kind: null,
+        outcome: refusal('bd_unavailable', facts),
         title: null,
-        repo
+        repo,
+        stop
       };
     }
     const title = typeof issue.title === 'string' ? issue.title : null;
-    const metadata =
-      issue.metadata && typeof issue.metadata === 'object'
-        ? issue.metadata
-        : {};
-    const attempt = await readAttempt(workspace, attempt_id);
     const attempt_repo =
       typeof attempt?.repo === 'string' && attempt.repo.length > 0
         ? attempt.repo
         : null;
-    if (
-      ['impl_conflict', 'recovery'].includes(branch) &&
-      (!attempt || attempt_repo === null)
-    ) {
+    if (!attempt || attempt_repo === null) {
       return {
-        outcome: refusal('attempt_unavailable'),
-        branch,
-        stale_kind: null,
+        outcome: refusal('attempt_unavailable', facts),
         title,
-        repo
+        repo,
+        stop
       };
     }
-    // Stale/generic dispositions edit the target-base checkout. An
-    // implementation conflict must inherit the existing Bead worktree where
-    // the reviewed candidate commit and uncommitted state live.
-    const checkout = ['impl_conflict', 'recovery'].includes(branch)
-      ? path.join(/** @type {string} */ (attempt_repo), '.worktrees', bead_id)
-      : (attempt_repo ?? repo);
+    const worktree = path.join(attempt_repo, '.worktrees', bead_id);
+    const checkout = attempt_repo;
     const config = readInquiryConfig();
-    const stale_kind = branch === 'stale' ? stale.stale_kind : null;
-    /** @type {string} */
-    let prompt;
-    const fork = forkTarget(workspace, issue, attempt);
-    if (stale_kind !== null) {
-      const receipt_key = receiptKeyFor(awaiting_user);
-      const receipt = metadata[receipt_key];
-      prompt = fillStalePrompt({
-        bead_id,
-        receipt_key,
-        receipt: typeof receipt === 'string' ? receipt : null,
-        stale_kind,
-        summary: stale.summary,
-        checkout
-      });
-    } else if (branch === 'impl_conflict') {
-      const parked = parseParkNotes(issue.notes);
-      if (parked.target === null || parked.finding === null) {
+    if (automatic && !config.enabled) {
+      return { outcome: refusal('disabled', facts), title, repo, stop };
+    }
+    const worktree_present = existsSync(worktree);
+    const target = conversationTarget(
+      workspace,
+      issue,
+      attempt,
+      worktree_present
+    );
+    if (target.session_id !== null) {
+      const refused = runnerLivenessRefusal(attempt);
+      if (refused !== null) {
         return {
-          outcome: refusal('park_facts_missing'),
-          branch,
-          stale_kind,
+          outcome: refusal(refused, { ...facts, runner: target.runner }),
           title,
-          repo
+          repo,
+          stop
         };
       }
-      prompt = fillImplConflictPrompt({
-        bead_id,
-        receipt:
-          typeof metadata.spec_review === 'string'
-            ? metadata.spec_review
-            : null,
-        target: parked.target,
-        finding: parked.finding,
-        checkout,
-        session_id: fork.session_id
-      });
-    } else if (branch === 'recovery') {
-      prompt = fillRecoveryPrompt({
-        bead_id,
-        reason: input.recovery.reason,
-        summary: attempt.cause_detail?.summary,
-        session_id: attempt.session_id,
-        worktree: checkout,
-        checkout: attempt_repo ?? repo
-      });
-    } else {
-      const receipt =
-        typeof metadata.spec_review === 'string'
-          ? `spec_review=${metadata.spec_review}`
-          : typeof metadata.plan_approval === 'string'
-            ? `plan_approval=${metadata.plan_approval}`
-            : PLAIN_ABSENT;
-      prompt = fillGenericPrompt({
-        bead_id,
-        awaiting_user,
-        receipt,
-        checkout,
-        session_id: fork.session_id
-      });
     }
-    if (automatic && !config.enabled) {
-      return {
-        outcome: refusal('disabled'),
-        branch,
-        stale_kind,
-        title,
-        repo
-      };
-    }
-    const seeded = `${withFallbackReason(prompt, fork.fallback_reason)}\n이 Bead가 머지·close·폐기로 정산되면 Worker가 이 세션을 닫고(claude: \`/exit\`) Discord 스레드는 아카이브된다.\n`;
-    const launch_session_id = fork.runner === 'claude' ? randomUUID() : null;
-    // Codex's measured interactive fork form, passed as argv (§4.2).
+    const block = fillConversationEntry({
+      stop,
+      sentence,
+      worktree,
+      checkout
+    });
+    const launch_session_id =
+      target.session_id === null && target.runner === 'claude'
+        ? randomUUID()
+        : null;
     const command_args =
-      fork.session_id === null
-        ? fork.runner === 'claude'
-          ? ['--session-id', /** @type {string} */ (launch_session_id), seeded]
-          : [seeded]
-        : fork.runner === 'codex'
-          ? ['fork', fork.session_id, seeded]
-          : [
-              '--resume',
-              fork.session_id,
-              '--fork-session',
-              '--session-id',
-              /** @type {string} */ (launch_session_id),
-              seeded
-            ];
+      target.session_id !== null
+        ? target.runner === 'codex'
+          ? ['resume', target.session_id, block]
+          : ['--resume', target.session_id, block]
+        : target.runner === 'claude'
+          ? ['--session-id', /** @type {string} */ (launch_session_id), block]
+          : [block];
+    const cwd = worktree_present ? worktree : checkout;
     const launched = await launcher.launch({
       marker: PANE_MARKER,
       key: bead_id,
       tmux_session: config.tmux_session,
       window_name: bead_id,
-      cwd: checkout,
+      cwd,
       commandArgs: command_args,
-      runner: fork.runner
+      runner: target.runner
     });
     if (launched.session === 'launched') {
       try {
         const launched_at = deps.now ? deps.now() : Date.now();
+        const session_id = target.session_id ?? launch_session_id;
         if (deps.store) {
           deps.store.recordInteractiveSession(workspace, {
             bead_id,
             kind: 'inquiry',
-            provider: fork.runner,
-            session_id: launch_session_id,
-            session_id_source: launch_session_id === null ? null : 'launch',
-            mode: fork.session_id === null ? 'fresh' : 'fork',
-            source: fork.source,
-            forked_from: fork.session_id,
-            fallback_reason: fork.fallback_reason,
+            provider: target.runner,
+            session_id,
+            session_id_source: session_id === null ? null : 'launch',
+            mode: target.session_id === null ? 'fresh' : 'resume',
+            source: target.source,
+            forked_from: null,
+            fallback_reason: target.fallback_reason,
             attempt_id: attempt_id || null,
             failure_class: null,
             tmux_session: launched.tmux_session,
             tmux_window: launched.tmux_window,
             pane_id: launched.pane_id,
-            cwd: checkout,
+            cwd,
             launched_at,
             last_seen_alive_at: launched_at,
             settled_at: null,
             settled_by: null,
             state: 'live',
             exit_requested_at: null,
-            defer_since: null
+            defer_since: null,
+            conversation: {
+              stop: stop ?? ABSENT,
+              processed_message_at: null,
+              message_excerpt: null,
+              result: null,
+              handoff: null,
+              takeover_notified_at: null
+            }
           });
         } else {
           log('interactive session store unavailable for %s', bead_id);
@@ -753,40 +579,44 @@ export function createDirectionInquiry(deps) {
     return {
       outcome: inquiryOutcome(
         launched,
-        fork,
+        target,
         {
           tmux_session: config.tmux_session,
-          bead_id
+          bead_id,
+          stop: stop ?? ABSENT,
+          sentence
         },
         launch_session_id
       ),
-      branch,
-      stale_kind,
       title,
-      repo
+      repo,
+      stop
     };
   }
 
   /**
-   * Send one no-throw parking notification.
+   * Send the one `🙋 확인 필요` notification, no-throw.
    *
    * @param {Record<string, unknown>} input
    */
   async function announce(input) {
     try {
-      await deps.notifier.awaitingUser(input);
+      await deps.notifier.conversationConfirm?.(input);
     } catch (err) {
       // Production notifier is no-throw; injected test/embedding fakes are not
       // bound by that contract and still must not fail attempt settlement.
-      log('awaiting_user notify failed: %o', err);
+      log('conversation confirm notify failed: %o', err);
     }
   }
 
   return {
     /**
-     * Launch automatically after the parked record is durable.
+     * Launch automatically after the stopped record is durable, then send the
+     * `🙋 확인 필요` notification unless the caller already spent it for this
+     * attempt (`confirm: false`).
      *
-     * @param {{ workspace: string, bead_id: string, attempt_id: string, repo: string|null, target_base: string|null, awaiting_user: string|null, recovery?: { reason: string } }} input
+     * @param {{ workspace: string, bead_id: string, attempt_id: string, repo: string|null, target_base: string|null, awaiting_user: string|null, recovery?: { reason: string }, confirm?: boolean }} input
+     * @returns {Promise<InquiryOutcome|undefined>}
      */
     async onParkedAttempt(input) {
       const bead_id =
@@ -799,44 +629,42 @@ export function createDirectionInquiry(deps) {
         bead_id.length === 0 ||
         (awaiting_user.length === 0 && !input.recovery?.reason)
       ) {
-        return;
+        return undefined;
       }
       if (in_flight.has(bead_id)) {
-        return input.recovery ? refusal('inquiry_in_flight') : undefined;
+        return refusal('inquiry_in_flight');
       }
       in_flight.add(bead_id);
       try {
         const result = await dispose(input, true);
-        if (result.branch === 'recovery') {
-          return result.outcome;
+        if (input.confirm !== false) {
+          await announce({
+            bead_id,
+            title: result.title,
+            awaiting_user: awaiting_user || null,
+            repo: result.repo,
+            ...result.outcome,
+            stop: result.stop
+          });
         }
-        await announce({
-          bead_id,
-          title: result.title,
-          awaiting_user,
-          stale_kind: result.stale_kind,
-          branch: result.branch,
-          repo: result.repo,
-          ...result.outcome
-        });
+        return result.outcome;
       } catch (err) {
-        log('direction inquiry failed for %s: %o', bead_id, err);
-        return input.recovery ? refusal('error') : undefined;
+        log('conversation launch failed for %s: %o', bead_id, err);
+        return refusal('error');
       } finally {
         in_flight.delete(bead_id);
       }
     },
 
     /**
-     * Launch from the parked tile without consulting `enabled`.
+     * Launch from the stopped tile without consulting `enabled`.
      *
      * The liveness question is answered by the pane marker BEFORE any Bead or
-     * attempt read (spec §3.3: 중복 판정은 `INQUIRY_PANE_MARKER`만 본다). A `bd`
-     * that cannot be reached must not hide a session that is already up, and
-     * the module reservation is not that evidence — it is held while the
-     * prompt is still being built, and that disposal can still end in a
-     * refusal, so answering `already_running` from it would name a window
-     * nobody opened.
+     * attempt read: a `bd` that cannot be reached must not hide a session
+     * that is already up, and the module reservation is not that evidence —
+     * it is held while the launch is still being built, and that can still
+     * end in a refusal, so answering `already_running` from it would name a
+     * window nobody opened.
      *
      * @param {{ workspace: string, bead_id: string, attempt_id: string, repo: string|null, awaiting_user: string|null, recovery?: { reason: string } }} input
      * @returns {Promise<InquiryOutcome>}
@@ -871,7 +699,7 @@ export function createDirectionInquiry(deps) {
         };
       }
       if (in_flight.has(bead_id)) {
-        // A disposal is mid-flight and its pane has not appeared yet. Saying
+        // A launch is mid-flight and its pane has not appeared yet. Saying
         // `already_running` would point at nothing; the honest answer lets the
         // next click read the settled state.
         return refusal('inquiry_in_flight');
@@ -880,7 +708,7 @@ export function createDirectionInquiry(deps) {
       try {
         return (await dispose(input, false)).outcome;
       } catch (err) {
-        log('direction inquiry click failed for %s: %o', bead_id, err);
+        log('conversation click failed for %s: %o', bead_id, err);
         return refusal('error');
       } finally {
         in_flight.delete(bead_id);

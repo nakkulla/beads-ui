@@ -110,7 +110,10 @@ import {
   processIdentityOf,
   recordedExecutionEligibility
 } from './instructions-restart.js';
-import { readLastAssistantMessage as defaultReadLastAssistantMessage } from './interactive-progress.js';
+import {
+  readLastAssistantMessage as defaultReadLastAssistantMessage,
+  parseConversationResult
+} from './interactive-progress.js';
 import { dueRetries, earliestRetryAt } from './queue-hold.js';
 import {
   DEFAULT_SLOTS,
@@ -746,7 +749,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * the cut and the attempt's recorded `target_base` come from a base read at
  * dispatch time rather than one captured earlier. Absent wiring falls back to
  * the snapshot's own resolution.
- * @property {{ validate: (snap: BeadSnapshot, base?: string, options?: { allow_external_wait_resume?: boolean }) => Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha?: string, delta_shas?: string[], changed_paths?: string[], plan?: { receipt_sha: string, delta_shas: string[], changed_paths: string[] } } }> }} [admission]
+ * @property {{ validate: (snap: BeadSnapshot, base?: string, options?: { allow_external_wait_resume?: boolean, allow_conversation_return?: boolean }) => Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha?: string, delta_shas?: string[], changed_paths?: string[], plan?: { receipt_sha: string, delta_shas: string[], changed_paths: string[] } } }> }} [admission]
  * Auto-run admission validator (worker-autorun-policy §1). When present, the
  * tick candidate scan AND the dispatch re-check (against the pinned worktree
  * base_oid) both gate on it; refusals are recorded in `Queue.admission`. An
@@ -759,7 +762,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * ends with would fail it as `no_pr`; this dep judges the disposition's own
  * durable result instead. Absent wiring simply means no disposition can be
  * dispatched (the entry point refuses).
- * @property {{ onParkedAttempt: (input: { workspace: string, bead_id: string, attempt_id: string, repo: string|null, target_base: string|null, awaiting_user: string|null, recovery?: any }) => Promise<any> }} [directionInquiry]
+ * @property {{ onParkedAttempt: (input: { workspace: string, bead_id: string, attempt_id: string, repo: string|null, target_base: string|null, awaiting_user: string|null, recovery?: any, confirm?: boolean }) => Promise<any> }} [directionInquiry]
  * @property {(identity: StaleWorkIdentity, input: { bead_id: string }) => Promise<any>} [backupFreshResidue]
  * Direction-conflict park trigger (UI-7uid §3.1). Called fire-and-forget right
  * after a `parked` record whose attempt came from the stale re-review lane.
@@ -831,6 +834,8 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   attemptFailed: (i: any) => void,
  *   attemptParked?: (i: any) => void,
  *   awaitingUser?: (i: any) => void,
+ *   conversationAnswer?: (i: any) => void,
+ *   conversationTakeover?: (i: any) => void,
  *   providerHoldEntered?: (i: any) => void,
  *   providerRecovered?: (i: any) => void,
  *   providerLivePreempt?: (i: any) => void,
@@ -1351,6 +1356,7 @@ export function interactiveTurnState(running, attention) {
  *   rescanWaiting: (workspace: string) => Promise<{ checked: number, returned: number }>,
  *   reconcile: (workspace: string) => Promise<void>,
  *   reconcileInteractiveSessions: (workspace: string) => Promise<void>,
+ *   conversationHandoff: (workspace: string, input: { bead_id: string, attempt_id: string }) => Promise<{ ok: boolean, reason: string|null, pending?: boolean }>,
  *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
  *   activeBeadIds: (workspace: string) => Set<string>,
  *   externalProtectedBeadIds: (workspace: string) => Set<string>,
@@ -1721,7 +1727,7 @@ export function createScheduler(deps) {
    * contract; this guard exists so a broken injected fake still cannot turn a
    * notification into a queue-transition failure.
    *
-   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerLivePreempt'} event
+   * @param {'attemptStarted'|'attemptFailed'|'attemptParked'|'awaitingUser'|'conversationAnswer'|'conversationTakeover'|'prWaitEntered'|'providerHoldEntered'|'providerRecovered'|'providerLivePreempt'} event
    * @param {any} input
    */
   function notifyLifecycle(event, input) {
@@ -4646,7 +4652,7 @@ export function createScheduler(deps) {
    *
    * @param {BeadSnapshot} snap
    * @param {string} [base]
-   * @param {{ allow_external_wait_resume?: boolean }} [options]
+   * @param {{ allow_external_wait_resume?: boolean, allow_conversation_return?: boolean }} [options]
    * @returns {Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha?: string, delta_shas?: string[], changed_paths?: string[], plan?: { receipt_sha: string, delta_shas: string[], changed_paths: string[] } } }>}
    */
   async function checkAdmission(snap, base, options = {}) {
@@ -5248,6 +5254,23 @@ export function createScheduler(deps) {
       if (dispositionKindOf(workspace, attempt_id)) {
         return;
       }
+      // `🙋 확인 필요` goes out once per stopped attempt (UI-nuwy §3.7). The
+      // durable stamp lands BEFORE the trigger can send, so a restart or a
+      // later reclassification of the same attempt never repeats it.
+      const confirm =
+        !!deps.directionInquiry &&
+        typeof attempt.cause_detail?.confirm_notified_at !== 'number';
+      if (confirm) {
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: {
+            cause_detail: {
+              ...(attempt.cause_detail || {}),
+              confirm_notified_at: now()
+            }
+          }
+        });
+      }
       void Promise.resolve()
         .then(() =>
           deps.directionInquiry?.onParkedAttempt({
@@ -5260,6 +5283,7 @@ export function createScheduler(deps) {
                 ? attempt.target_base
                 : null,
             awaiting_user,
+            confirm,
             ...(recovery ? { recovery } : {})
           })
         )
@@ -9123,8 +9147,29 @@ export function createScheduler(deps) {
     }
   }
 
-  /** @type {Map<string, Promise<void>>} */
+  /** @type {Map<string, Promise<unknown>>} */
   const interactive_passes = new Map();
+
+  /**
+   * Run one interactive-session step behind every earlier one for this
+   * workspace: the periodic pass, a settlement-triggered pass, and the
+   * `[워커로 이어가기]` click all read and write the same records.
+   *
+   * @template T
+   * @param {string} workspace
+   * @param {() => Promise<T>} step
+   * @returns {Promise<T>}
+   */
+  function withInteractiveLock(workspace, step) {
+    const prior = interactive_passes.get(workspace) || Promise.resolve();
+    const pass = prior.catch(() => {}).then(step);
+    interactive_passes.set(workspace, pass);
+    return pass.finally(() => {
+      if (interactive_passes.get(workspace) === pass) {
+        interactive_passes.delete(workspace);
+      }
+    });
+  }
 
   /**
    * Serialize periodic and settlement-triggered passes, preserving both calls.
@@ -9136,15 +9181,343 @@ export function createScheduler(deps) {
     if (!deps.interactiveLauncher) {
       return Promise.resolve();
     }
-    const prior = interactive_passes.get(workspace) || Promise.resolve();
-    const pass = prior
-      .catch(() => {})
-      .then(() => reconcileInteractivePass(workspace));
-    interactive_passes.set(workspace, pass);
-    return pass.finally(() => {
-      if (interactive_passes.get(workspace) === pass) {
-        interactive_passes.delete(workspace);
+    return withInteractiveLock(workspace, () =>
+      reconcileInteractivePass(workspace)
+    );
+  }
+
+  /** The result-line stand-in the `[워커로 이어가기]` click carries (§3.6). */
+  const CONVERSATION_BUTTON_LINE = '사용자가 [워커로 이어가기]로 인계';
+
+  /**
+   * Whether an interactive record is a same-session conversation still owned
+   * by the reconcile pass (UI-nuwy §3.3). A legacy fork record has no
+   * `conversation` and keeps the old rules everywhere.
+   *
+   * @param {import('./queue-store.js').InteractiveSession|undefined|null} record
+   * @returns {record is import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }}
+   */
+  function isOpenConversation(record) {
+    return (
+      !!record &&
+      record.kind === 'inquiry' &&
+      record.settled_at === null &&
+      !!record.conversation
+    );
+  }
+
+  /**
+   * Whether a live conversation is the person's turn (§3.3 표): a question or
+   * limit prompt, or an idle turn after a processed non-result message.
+   *
+   * @param {import('./queue-store.js').InteractiveSession} record
+   */
+  function conversationAwaitsAnswer(record) {
+    const conversation = record.conversation;
+    if (
+      !conversation ||
+      record.state !== 'live' ||
+      conversation.handoff ||
+      conversation.result
+    ) {
+      return false;
+    }
+    return (
+      record.turn_state === 'question' ||
+      record.turn_state === 'limit' ||
+      (record.turn_state === 'idle' &&
+        typeof conversation.processed_message_at === 'number')
+    );
+  }
+
+  /**
+   * Patch one interactive record only while it is still the same launch.
+   *
+   * @param {string} workspace
+   * @param {string} key
+   * @param {import('./queue-store.js').InteractiveSession} record
+   * @param {Partial<import('./queue-store.js').InteractiveSession>} patch
+   * @returns {boolean} Whether the write landed.
+   */
+  function patchInteractiveRecord(workspace, key, record, patch) {
+    const current = deps.store.snapshot(workspace).interactive_sessions[key];
+    if (
+      current?.pane_id !== record.pane_id ||
+      current.launched_at !== record.launched_at ||
+      !deps.store.updateInteractiveSession(workspace, key, patch).ok
+    ) {
+      return false;
+    }
+    Object.assign(record, patch);
+    notifyChanged(workspace);
+    return true;
+  }
+
+  /**
+   * Stamp how a conversation ended on its attempt (`cause_detail.conversation`,
+   * UI-nuwy §3.8), the durable fact the card reads after the record is gone:
+   * `pane_gone` offers `[워커로 이어가기]`, `hold`/`takeover`/`handoff` do not.
+   * A `refusal` names why a handoff did not continue.
+   *
+   * @param {string} workspace
+   * @param {string|null} attempt_id
+   * @param {number} launched_at
+   * @param {'pane_gone'|'hold'|'handoff'|'takeover'} ended_by
+   * @param {string|null} [refusal]
+   */
+  function stampConversationEnd(
+    workspace,
+    attempt_id,
+    launched_at,
+    ended_by,
+    refusal = null
+  ) {
+    if (!attempt_id) {
+      return;
+    }
+    const current = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    if (!current) {
+      return;
+    }
+    const previous = current.cause_detail?.conversation;
+    if (
+      previous?.launched_at === launched_at &&
+      previous.ended_by === ended_by &&
+      (previous.refusal ?? null) === refusal
+    ) {
+      return;
+    }
+    const updated = deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: {
+        cause_detail: {
+          ...(current.cause_detail || {}),
+          conversation: {
+            launched_at,
+            ended_at: now(),
+            ended_by,
+            refusal
+          }
+        }
       }
+    });
+    if (updated.ok) {
+      notifyChanged(workspace);
+    }
+  }
+
+  /**
+   * Close a conversation window after a result line or the click (§3.4-§3.6):
+   * Claude gets `/exit`, a Codex window is killed. The record turns `exiting`;
+   * only a later pass that sees the pane gone continues the handoff.
+   *
+   * @param {string} workspace
+   * @param {string} key
+   * @param {import('./queue-store.js').InteractiveSession} record
+   * @returns {Promise<boolean>}
+   */
+  async function closeConversationWindow(workspace, key, record) {
+    const launcher = deps.interactiveLauncher;
+    if (!launcher) {
+      return false;
+    }
+    const result =
+      record.provider === 'codex'
+        ? await launcher.killWindow(record.tmux_session, record.tmux_window)
+        : await launcher.sendExit(record.pane_id);
+    if (!result.ok) {
+      log('conversation close failed for %s/%s: %o', workspace, key, result);
+      return false;
+    }
+    return patchInteractiveRecord(workspace, key, record, {
+      state: 'exiting',
+      exit_requested_at: now()
+    });
+  }
+
+  /**
+   * Continue a conversation handoff once its window is confirmed gone (UI-nuwy
+   * §3.4). The single continuing path: a park whose key was already cleared in
+   * the conversation takes the existing clear-transition redispatch once;
+   * every other stop resumes the same attempt's session through `resume()`.
+   * `done: false` keeps the reservation for the next pass (bd unreadable).
+   *
+   * A refusal BEFORE a child attempt exists returns the Bead to 확인 필요 with
+   * its reason on the card; once a child carries `resumed_from`, that child's
+   * own settlement owns every later failure.
+   *
+   * @param {string} workspace
+   * @param {{ bead_id: string, attempt_id: string|null, launched_at: number, line: string, source: 'result_line'|'button' }} input
+   * @returns {Promise<{ done: boolean, ok: boolean, reason: string|null }>}
+   */
+  async function continueConversationHandoff(workspace, input) {
+    const { bead_id, attempt_id, launched_at } = input;
+    const spent = () =>
+      Object.values(deps.store.snapshot(workspace).attempts || {}).some(
+        (attempt) => attempt.resumed_from === attempt_id
+      );
+    /**
+     * @param {string} reason
+     */
+    const refuse = (reason) => {
+      stampConversationEnd(
+        workspace,
+        attempt_id,
+        launched_at,
+        'handoff',
+        reason
+      );
+      appendTimeline({
+        bead_id,
+        ...(attempt_id ? { attempt_id } : {}),
+        kind: 'interactive_session',
+        seq: `inquiry:${launched_at}:handoff_refused`,
+        summary: `대화 인계 거절 · ${reason}`
+      });
+      return { done: true, ok: false, reason };
+    };
+    if (!attempt_id) {
+      return refuse('attempt_unavailable');
+    }
+    if (spent()) {
+      return { done: true, ok: false, reason: 'already_resumed' };
+    }
+    const q = deps.store.snapshot(workspace);
+    const attempt = q.attempts?.[attempt_id];
+    const resumable =
+      !!attempt &&
+      latestImplementationAttempt(q, bead_id)?.attempt_id === attempt_id &&
+      ((attempt.status === 'waiting' && !!attempt.cause_detail?.recovery) ||
+        attempt.status === 'parked');
+    if (!resumable) {
+      return refuse('not_resumable');
+    }
+    if (attempt.status === 'parked') {
+      if (typeof attempt.parked_resumed_at === 'number') {
+        return { done: true, ok: false, reason: 'already_resumed' };
+      }
+      /** @type {string|null} */
+      let awaiting_user;
+      try {
+        awaiting_user = await deps.bd.readMetadata(bead_id, 'awaiting_user');
+      } catch (err) {
+        // Fail-QUIET: an unreadable bd is not evidence either way; the
+        // reservation stays and the next pass asks again.
+        log('conversation handoff readback failed for %s: %o', bead_id, err);
+        return { done: false, ok: false, reason: 'bd_unavailable' };
+      }
+      if (
+        typeof awaiting_user !== 'string' &&
+        attempt.awaiting_user_present === true &&
+        STALE_PARK_REASONS.has(attempt.cause_detail?.awaiting_user)
+      ) {
+        // The conversation's answer turn already wrote the clear (e.g.
+        // `plan_approval=user@…`): the existing clear-transition redispatch is
+        // the one path, and `resume()` is not called (§3.4 step 2).
+        const resumed = await resumeParkedAttempt(
+          workspace,
+          bead_id,
+          attempt_id
+        );
+        return resumed
+          ? { done: true, ok: true, reason: null }
+          : refuse(
+              deps.store.snapshot(workspace).admission?.[bead_id]?.reason ||
+                'redispatch_refused'
+            );
+      }
+    }
+    /** @type {{ ok: boolean, reason?: string }} */
+    let result;
+    try {
+      result = await resume(workspace, attempt_id, {
+        continuation: 'prior_session',
+        conversation_return: { line: input.line, source: input.source }
+      });
+    } catch (err) {
+      log('conversation handoff resume failed for %s: %o', bead_id, err);
+      result = { ok: false, reason: 'error' };
+    }
+    if (result.ok) {
+      return { done: true, ok: true, reason: null };
+    }
+    if (spent()) {
+      return { done: true, ok: false, reason: result.reason || null };
+    }
+    return refuse(result.reason || 'resume_refused');
+  }
+
+  /**
+   * `[워커로 이어가기]` (UI-nuwy §3.6): the fallback exit when the person ended
+   * the conversation without a result line. A live conversation waiting for
+   * the person gets a `button` handoff reservation and its window closed — the
+   * reconcile pass continues once the pane is gone. A conversation whose window
+   * already vanished without a result line continues directly.
+   *
+   * @param {string} workspace
+   * @param {{ bead_id: string, attempt_id: string }} input
+   * @returns {Promise<{ ok: boolean, reason: string|null, pending?: boolean }>}
+   */
+  function conversationHandoff(workspace, input) {
+    return withInteractiveLock(workspace, async () => {
+      const key = `${input.bead_id}:inquiry`;
+      const record = deps.store.snapshot(workspace).interactive_sessions?.[key];
+      if (isOpenConversation(record)) {
+        if (record.attempt_id !== input.attempt_id) {
+          return { ok: false, reason: 'attempt_mismatch' };
+        }
+        if (!conversationAwaitsAnswer(record)) {
+          return { ok: false, reason: 'not_awaiting_answer' };
+        }
+        const at = now();
+        const conversation = {
+          ...record.conversation,
+          result: {
+            kind: /** @type {const} */ ('handoff'),
+            line: CONVERSATION_BUTTON_LINE,
+            at
+          },
+          handoff: {
+            line: CONVERSATION_BUTTON_LINE,
+            source: /** @type {const} */ ('button'),
+            message_at: record.conversation.processed_message_at,
+            reserved_at: at
+          }
+        };
+        if (!patchInteractiveRecord(workspace, key, record, { conversation })) {
+          return { ok: false, reason: 'record_changed' };
+        }
+        appendTimeline({
+          bead_id: input.bead_id,
+          attempt_id: input.attempt_id,
+          kind: 'interactive_session',
+          seq: `inquiry:${record.launched_at}:handoff`,
+          summary: `대화 인계 예약 · ${CONVERSATION_BUTTON_LINE}`
+        });
+        await closeConversationWindow(workspace, key, record);
+        return { ok: true, reason: null, pending: true };
+      }
+      if (record && record.kind === 'inquiry' && record.settled_at === null) {
+        return { ok: false, reason: 'conversation_live' };
+      }
+      const attempt =
+        deps.store.snapshot(workspace).attempts?.[input.attempt_id];
+      const ended = attempt?.cause_detail?.conversation;
+      if (
+        !attempt ||
+        attempt.bead_id !== input.bead_id ||
+        ended?.ended_by !== 'pane_gone'
+      ) {
+        return { ok: false, reason: 'no_conversation_exit' };
+      }
+      const outcome = await continueConversationHandoff(workspace, {
+        bead_id: input.bead_id,
+        attempt_id: input.attempt_id,
+        launched_at: ended.launched_at,
+        line: CONVERSATION_BUTTON_LINE,
+        source: 'button'
+      });
+      return { ok: outcome.ok, reason: outcome.reason };
     });
   }
 
@@ -9212,7 +9585,7 @@ export function createScheduler(deps) {
     /**
      * @param {string} key
      * @param {import('./queue-store.js').InteractiveSession} record
-     * @param {'exit_sent'|'pane_gone'|'killed'} reason
+     * @param {'exit_sent'|'pane_gone'|'killed'|'handoff'} reason
      */
     function ended(key, record, reason) {
       if (!isCurrent(key, record)) {
@@ -9240,10 +9613,163 @@ export function createScheduler(deps) {
         record.tmux_session,
         record.tmux_window
       );
-      if (result.ok) {
-        ended(key, record, 'killed');
-      } else {
+      if (!result.ok) {
         log('interactive kill failed for %s/%s: %o', workspace, key, result);
+        return;
+      }
+      if (isOpenConversation(record)) {
+        // A conversation's result (a handoff above all) outlives the kill: the
+        // next pass sees the pane gone and settles it through
+        // `finishConversation`, never through a bare record removal.
+        return;
+      }
+      ended(key, record, 'killed');
+    }
+    /**
+     * Settle a conversation whose window is confirmed gone (UI-nuwy §3.4,
+     * §3.5): a handoff continues the attempt first and the record is removed
+     * only after that returns, so a restart mid-way re-runs it; without a
+     * result line the attempt is stamped `pane_gone` and the card offers the
+     * `[워커로 이어가기]` fallback.
+     *
+     * @param {string} key
+     * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
+     */
+    async function finishConversation(key, record) {
+      const conversation = record.conversation;
+      if (conversation.handoff) {
+        stampConversationEnd(
+          workspace,
+          record.attempt_id,
+          record.launched_at,
+          'handoff'
+        );
+        const outcome = await continueConversationHandoff(workspace, {
+          bead_id: record.bead_id,
+          attempt_id: record.attempt_id,
+          launched_at: record.launched_at,
+          line: conversation.handoff.line,
+          source: conversation.handoff.source
+        });
+        if (!outcome.done) {
+          return;
+        }
+        ended(key, record, 'handoff');
+        return;
+      }
+      const kind = conversation.result?.kind;
+      if (kind === 'takeover') {
+        stampConversationEnd(
+          workspace,
+          record.attempt_id,
+          record.launched_at,
+          'takeover'
+        );
+      } else if (kind !== 'hold') {
+        stampConversationEnd(
+          workspace,
+          record.attempt_id,
+          record.launched_at,
+          'pane_gone'
+        );
+      }
+      ended(
+        key,
+        record,
+        record.state === 'exiting' ? 'exit_sent' : 'pane_gone'
+      );
+    }
+    /**
+     * Process the newest assistant message of a live conversation exactly once
+     * (UI-nuwy §3.3). A message is new when it came after the launch and after
+     * the last processed one, and the turn is not running — which also catches
+     * a turn that started and ended between two passes. The processed id and
+     * excerpt land in the same record write as the outcome.
+     *
+     * @param {string} key
+     * @param {import('./queue-store.js').InteractiveSession & { conversation: import('./queue-store.js').ConversationState }} record
+     */
+    async function processConversationMessage(key, record) {
+      const conversation = record.conversation;
+      if (conversation.handoff || conversation.result) {
+        // A window that did not take the close is asked again.
+        if (
+          record.state === 'live' &&
+          (conversation.handoff || conversation.result?.kind === 'hold')
+        ) {
+          await closeConversationWindow(workspace, key, record);
+        }
+        return;
+      }
+      if (record.turn_state === 'running' || !record.last_message) {
+        return;
+      }
+      const message = record.last_message;
+      const message_at = message.at ?? message.event_at ?? null;
+      if (
+        message_at === null ||
+        message_at <= record.launched_at ||
+        (conversation.processed_message_at !== null &&
+          message_at <= conversation.processed_message_at)
+      ) {
+        return;
+      }
+      const at = now();
+      const parsed = parseConversationResult(
+        message.first_line ?? message.text
+      );
+      /** @type {import('./queue-store.js').ConversationState} */
+      const next = {
+        ...conversation,
+        processed_message_at: message_at,
+        message_excerpt: message.excerpt ?? message.text
+      };
+      if (parsed) {
+        next.result = { kind: parsed.kind, line: parsed.line, at };
+      }
+      if (parsed?.kind === 'handoff') {
+        next.handoff = {
+          line: parsed.line,
+          source: 'result_line',
+          message_at,
+          reserved_at: at
+        };
+      }
+      if (parsed?.kind === 'takeover') {
+        next.takeover_notified_at = at;
+      }
+      if (
+        !patchInteractiveRecord(workspace, key, record, { conversation: next })
+      ) {
+        return;
+      }
+      if (parsed) {
+        appendTimeline({
+          bead_id: record.bead_id,
+          ...(record.attempt_id ? { attempt_id: record.attempt_id } : {}),
+          kind: 'interactive_session',
+          seq: `inquiry:${record.launched_at}:${parsed.kind}`,
+          summary: `대화 결과 · ${parsed.line}`
+        });
+      }
+      if (parsed?.kind === 'handoff') {
+        await closeConversationWindow(workspace, key, record);
+      } else if (parsed?.kind === 'hold') {
+        stampConversationEnd(
+          workspace,
+          record.attempt_id,
+          record.launched_at,
+          'hold'
+        );
+        await closeConversationWindow(workspace, key, record);
+      } else if (parsed?.kind === 'takeover') {
+        notifyLifecycle('conversationTakeover', { bead_id: record.bead_id });
+      } else {
+        notifyLifecycle('conversationAnswer', {
+          bead_id: record.bead_id,
+          excerpt: next.message_excerpt,
+          tmux_window: record.tmux_window
+        });
       }
     }
     /**
@@ -9283,9 +9809,23 @@ export function createScheduler(deps) {
           provider: record.provider,
           file: location.file
         });
+        if (message === null) {
+          return { last_message_read_at: location.last_event_at };
+        }
+        // Only a conversation keeps the uncut first line, the excerpt, and
+        // the transcript mtime as the message identity (UI-nuwy §3.3); a
+        // legacy record stays the card's one progress line.
         return {
           last_message_read_at: location.last_event_at,
-          ...(message !== null ? { last_message: message } : {})
+          last_message: record.conversation
+            ? {
+                text: message.text,
+                at: message.at,
+                first_line: message.first_line ?? message.text,
+                excerpt: message.excerpt ?? message.text,
+                event_at: location.last_event_at
+              }
+            : { text: message.text, at: message.at }
         };
       } catch (err) {
         log(
@@ -9370,6 +9910,10 @@ export function createScheduler(deps) {
           pane.dead === '0'
       );
       if (!pane_row) {
+        if (isOpenConversation(record)) {
+          await finishConversation(key, record);
+          continue;
+        }
         ended(
           key,
           record,
@@ -9429,6 +9973,9 @@ export function createScheduler(deps) {
         continue;
       }
       if (record.settled_at === null) {
+        if (isOpenConversation(record)) {
+          await processConversationMessage(key, record);
+        }
         continue;
       }
       const running = await launcher.readPaneOption(
@@ -10878,7 +11425,8 @@ export function createScheduler(deps) {
    *   wt_path: string,
    *   spawnBead: any,
    *   title?: string|null,
-   *   launch_kind?: 'dispatch'|'stale_work_continue'|'resume'|'conflict'|'disposition'|'review',
+   *   launch_kind?: 'dispatch'|'stale_work_continue'|'resume'|'conversation_return'|'conflict'|'disposition'|'review',
+   *   conversation_decision?: string|null,
    *   resume_session_id?: string|null,
    *   fork_session?: boolean,
    *   verify_worktree?: boolean,
@@ -11252,7 +11800,10 @@ export function createScheduler(deps) {
         effort,
         speed,
         repo,
-        kind: input.launch_kind ?? 'dispatch'
+        kind: input.launch_kind ?? 'dispatch',
+        ...(input.launch_kind === 'conversation_return'
+          ? { decision: input.conversation_decision ?? null }
+          : {})
       });
     }
 
@@ -11692,6 +12243,25 @@ export function createScheduler(deps) {
       '같은 워크트리에서 세션을 이어 진행한다. 먼저 워크트리·bead 상태·PR/머지 현황을 직접 점검해 어디까지 진행됐는지 확인하라.',
       '이미 끝난 단계는 반복하지 말고, 남은 계약 단계만 마무리한 뒤 종료하라.'
     ].join(' ');
+  }
+
+  /**
+   * The `## 대화 결과` block a conversation return carries at the head of its
+   * resume prompt (UI-nuwy §3.4 step 5). It states three facts and grants no
+   * authority: the session came back from a conversation, this conversation's
+   * result line, and that the unattended rules apply again. Notes are not
+   * read — the same session knows its own conversation.
+   *
+   * @param {string} line
+   * @returns {string}
+   */
+  function conversationReturnBlock(line) {
+    return [
+      '## 대화 결과',
+      '- 이 세션은 사람과의 대화 뒤 무인 Worker attempt로 돌아왔다.',
+      `- 이번 대화의 결과 줄: ${line.replace(/\s+/g, ' ').trim()}`,
+      '- 대화 단계의 금지는 풀리고 무인 규칙·가드가 다시 적용된다. 남은 단계는 dotfiles `Worker 세션 대화` 절의 표 순서대로 한다.'
+    ].join('\n');
   }
 
   /**
@@ -12466,7 +13036,10 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' } }} [continuation]
+   * `conversation_return` is the UI-nuwy §3.4 handoff: it alone admits a
+   * `parked` prior, skips only admission's `awaiting_user` presence refusal,
+   * and puts the `## 대화 결과` block at the head of the resume prompt.
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, route_change?: { prior_lane: string, current_route: string|null }, fallback?: string|null }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
@@ -12475,6 +13048,16 @@ export function createScheduler(deps) {
 
     const recovery_wait =
       prior?.status === 'waiting' && !!prior.cause_detail?.recovery;
+    // The conversation return (UI-nuwy §3.4) is the ONLY caller that may
+    // resume a `parked` attempt; its caller already proved the conversation
+    // window of this same attempt is gone.
+    const conversation_return =
+      continuation.conversation_return &&
+      typeof continuation.conversation_return.line === 'string'
+        ? continuation.conversation_return
+        : null;
+    const conversation_parked =
+      conversation_return !== null && prior?.status === 'parked';
     if (
       recovery_wait &&
       continuation.provider_auto_resume === true &&
@@ -12497,6 +13080,7 @@ export function createScheduler(deps) {
         prior.status !== 'orphaned' &&
         prior.status !== 'paused' &&
         !recovery_wait &&
+        !conversation_parked &&
         !(
           prior.status === 'waiting' &&
           (prior.cause === 'base_moved' ||
@@ -12688,13 +13272,17 @@ export function createScheduler(deps) {
       snap,
       typeof prior.base_oid === 'string' && prior.base_oid.length > 0
         ? prior.base_oid
-        : undefined
+        : undefined,
+      conversation_return ? { allow_conversation_return: true } : {}
     );
     if (!adm.ok) {
       const reason = adm.reason || 'git_error';
       recordSkipReason(workspace, bead_id, reason);
       return { ok: false, reason };
     }
+    const conversation_block = conversation_return
+      ? conversationReturnBlock(conversation_return.line)
+      : null;
     const ancestor_facts = await resumeAncestorFacts(workspace, prior, bead_id);
     const prerequisite_return = isPrerequisiteWaitAttempt(prior);
     const prerequisite_block = prerequisite_return
@@ -12714,9 +13302,12 @@ export function createScheduler(deps) {
           ? { ...ancestor_facts, prior_final_message: null }
           : ancestor_facts
       );
-      const default_prompt = prerequisite_block
+      const prerequisite_prompt = prerequisite_block
         ? `${base_prompt}\n\n${prerequisite_block}`
         : base_prompt;
+      const default_prompt = conversation_block
+        ? `${conversation_block}\n\n${prerequisite_prompt}`
+        : prerequisite_prompt;
       return typeof continuation.instructions === 'string' &&
         continuation.instructions.length > 0
         ? `${default_prompt}\n\n사용자가 이번 재개에 추가 지침을 남겼다. 아래 지침이 위 기본 절차와 충돌하면 지침을 우선하라.\n${continuation.instructions}`
@@ -12724,6 +13315,12 @@ export function createScheduler(deps) {
     };
     const result = await relaunchFromAttempt(workspace, prior, {
       prompt,
+      ...(conversation_return
+        ? {
+            conversation_return: true,
+            conversation_line: conversation_return.line
+          }
+        : {}),
       conflict_resolution: prior.conflict_resolution === true,
       completion_resume: true,
       continuation: continuation.continuation,
@@ -13881,11 +14478,14 @@ export function createScheduler(deps) {
     if (lane_mismatch) {
       return lane_mismatch;
     }
+    // A conversation return keeps the recorded execution too (UI-nuwy §3.4):
+    // a parked attempt is no recovery wait, yet the same session goes on.
     const base_resolved =
       provider_auto_resume ||
       ladder_retry ||
       prior_attempt_choice ||
-      recovery_wait
+      recovery_wait ||
+      options.conversation_return === true
         ? recordedDispatchSettings(prior)
         : resolveDispatchSettings(
             workspace,
@@ -14709,9 +15309,14 @@ export function createScheduler(deps) {
       auto_resume_origin: options.auto_resume_origin,
       launch_kind: options.disposition
         ? 'disposition'
-        : options.conflict_resolution
-          ? 'conflict'
-          : 'resume',
+        : options.conversation_return === true
+          ? 'conversation_return'
+          : options.conflict_resolution
+            ? 'conflict'
+            : 'resume',
+      ...(options.conversation_return === true
+        ? { conversation_decision: options.conversation_line ?? null }
+        : {}),
       spawnBead: {
         id: bead_id,
         prompt
@@ -16055,6 +16660,16 @@ export function createScheduler(deps) {
       ) {
         continue;
       }
+      // A live conversation, or one holding a handoff reservation, owns what
+      // happens after the clear (UI-nuwy §3.4 step 2): once its window is
+      // gone, `continueConversationHandoff` is the one continuing path.
+      if (
+        isOpenConversation(
+          q.interactive_sessions?.[`${record.bead_id}:inquiry`]
+        )
+      ) {
+        continue;
+      }
       candidates.push(record);
     }
     for (const record of candidates) {
@@ -17286,6 +17901,7 @@ export function createScheduler(deps) {
     rescanWaiting,
     reconcile,
     reconcileInteractiveSessions,
+    conversationHandoff,
     sweepClosedQueue,
     activeBeadIds,
     externalProtectedBeadIds,

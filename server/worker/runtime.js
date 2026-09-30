@@ -212,12 +212,13 @@ export function createWorkerRuntime() {
       return null;
     }
   }
-  // Process-wide parked-attempt inquiry trigger (UI-gjp2 §1). Process-wide
-  // rather than per-attachment because its duplicate guard is a tmux pane
-  // marker, which is one truth for the whole machine; the workspace it acts on
-  // rides each call. Its own notifier instance carries the `awaitingUser`
-  // transition — the title comes from the `bd show` the trigger already makes,
-  // so no title cache has to be bound to it.
+  // Process-wide same-session conversation launcher (UI-nuwy §3.2, formerly
+  // the UI-gjp2 inquiry trigger). Process-wide rather than per-attachment
+  // because its duplicate guard is a tmux pane marker, which is one truth for
+  // the whole machine; the workspace it acts on rides each call. Its own
+  // notifier instance carries the `🙋 확인 필요` transition — the title comes
+  // from the `bd show` the launcher already makes, so no title cache has to be
+  // bound to it.
   const directionInquiry = createDirectionInquiry({
     getConfig,
     currentRunner,

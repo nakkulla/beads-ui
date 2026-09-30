@@ -1885,6 +1885,41 @@ describe('scheduler work recovery waits', () => {
     });
   });
 
+  test('never repeats the confirm notification for a reclassified attempt', async () => {
+    const onParkedAttempt = vi.fn(async () => ({
+      session: 'not_launched',
+      reason: 'disabled'
+    }));
+    const env = recoveryEnv({
+      directionInquiry: { onParkedAttempt },
+      workRecoveryPolicy: {
+        ...work_recovery_policy,
+        workRecoveryClassification: () => ({
+          disposition: 'wait',
+          reason: 'authority'
+        })
+      }
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'past',
+        bead_id: 'S1',
+        repo: '/repo',
+        status: 'failed',
+        cause: 'session_failed:reported_failure',
+        cause_detail: { summary: 'blocker: 권한 확인', confirm_notified_at: 5 }
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+    await flush();
+
+    expect(onParkedAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ confirm: false })
+    );
+  });
+
   test('keeps policy-classified unknown failures out of inquiry sessions', async () => {
     const onParkedAttempt = vi.fn();
     const env = recoveryEnv({ directionInquiry: { onParkedAttempt } });
@@ -2565,6 +2600,646 @@ describe('scheduler work recovery waits', () => {
       }
     }
   );
+});
+
+describe('same-session conversation return (UI-nuwy)', () => {
+  const PARK_VALUE = 'impl_review_conflict:design';
+  const STALE_VALUE = 'plan_approval_stale:revise';
+
+  /**
+   * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any }} [options]
+   */
+  function conversationEnv(options = {}) {
+    const pane = {
+      key: 'S1',
+      pane: '%5',
+      dead: '0',
+      session: 'bdui-inquiry',
+      window: 'S1',
+      cwd: WS,
+      agent_runtime: 'claude',
+      agent_running: '',
+      agent_attention: ''
+    };
+    const panes = { rows: [pane] };
+    const launcher = {
+      listPanesExtended: vi.fn(async (/** @type {string} */ marker) => ({
+        ok: true,
+        rows: marker === INQUIRY_PANE_MARKER ? panes.rows : []
+      })),
+      readPaneOption: vi.fn(async () => ({ ok: true, value: null })),
+      capturePaneTail: vi.fn(async () => ({ ok: true, line: '❯ ' })),
+      sendExit: vi.fn(async () => ({ ok: true })),
+      killWindow: vi.fn(async () => ({ ok: true }))
+    };
+    /** @type {{ current: any }} */
+    const message = { current: null };
+    const reader = vi.fn(() => message.current);
+    const transcript = {
+      location: { locality: 'local', file: '/t', last_event_at: 450 }
+    };
+    const notify = {
+      attemptStarted: vi.fn(),
+      attemptFailed: vi.fn(),
+      prWaitEntered: vi.fn(),
+      conversationAnswer: vi.fn(),
+      conversationTakeover: vi.fn()
+    };
+    /** @type {Record<string, any>} */
+    const config = {
+      S1: { status: 'open', model: 'opus', effort: 'high', ...options.bead }
+    };
+    const env = setup({
+      config,
+      slots: 1,
+      verify: options.park
+        ? {
+            verifyPrSubmitted: vi.fn(async () => ({
+              ok: false,
+              reason: 'no_pr',
+              pr_url: null,
+              bead_status: 'in_progress',
+              awaiting_user: options.park
+            }))
+          }
+        : undefined,
+      verifyOk: false,
+      notify,
+      timeline: { append: vi.fn() },
+      admission: options.admission,
+      directionInquiry: {
+        onParkedAttempt: vi.fn(async () => ({
+          session: 'not_launched',
+          reason: 'disabled'
+        }))
+      },
+      resolveSessionFile: () => transcript.location,
+      ...{ interactiveLauncher: launcher, readLastAssistantMessage: reader }
+    });
+    return {
+      ...env,
+      config,
+      launcher,
+      pane,
+      panes,
+      message,
+      transcript,
+      notify
+    };
+  }
+
+  /**
+   * Run S1 once and stop it for a conversation: an `authority` recovery wait,
+   * or a park when the env was built with one.
+   *
+   * @param {ReturnType<typeof conversationEnv>} env
+   * @returns {Promise<any>}
+   */
+  async function stopForConversation(env) {
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('S1').emit('session_id', 'session-original');
+    env.runner.finish('S1', {
+      success: true,
+      summary: 'blocker: 범위 밖 파일',
+      terminal_result: env.config.S1.park_run
+        ? null
+        : { kind: 'recovery_wait', reason: 'authority' }
+    });
+    await flush();
+    await flush();
+    const attempts = Object.values(env.store.snapshot(WS).attempts);
+    return attempts[attempts.length - 1];
+  }
+
+  /**
+   * @param {ReturnType<typeof conversationEnv>} env
+   * @param {any} prior
+   * @param {Record<string, any>} [patch]
+   */
+  function openConversation(env, prior, patch = {}) {
+    env.store.recordInteractiveSession(WS, {
+      bead_id: 'S1',
+      kind: 'inquiry',
+      provider: 'claude',
+      pane_id: '%5',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'S1',
+      cwd: WS,
+      launched_at: 500,
+      last_seen_alive_at: 500,
+      state: 'live',
+      mode: 'resume',
+      source: 'attempt',
+      session_id: 'session-original',
+      session_id_source: 'launch',
+      attempt_id: prior.attempt_id,
+      conversation: { stop: 'recovery:authority' },
+      ...patch
+    });
+  }
+
+  /**
+   * The conversation's newest assistant message, with a moved transcript.
+   *
+   * @param {ReturnType<typeof conversationEnv>} env
+   * @param {string} text
+   * @param {number} [at]
+   */
+  function say(env, text, at = 900) {
+    env.message.current = { text, at, first_line: text, excerpt: text };
+    env.transcript.location = {
+      ...env.transcript.location,
+      last_event_at: at + 50
+    };
+  }
+
+  /**
+   * @param {ReturnType<typeof conversationEnv>} env
+   * @returns {any}
+   */
+  const record = (env) =>
+    env.store.snapshot(WS).interactive_sessions['S1:inquiry'];
+
+  /**
+   * @param {ReturnType<typeof conversationEnv>} env
+   * @param {string} attempt_id
+   * @returns {any}
+   */
+  const attemptOf = (env, attempt_id) =>
+    env.store.snapshot(WS).attempts[attempt_id];
+
+  /** @param {ReturnType<typeof conversationEnv>} env */
+  const children = (env, /** @type {string} */ prior_id) =>
+    Object.values(env.store.snapshot(WS).attempts).filter(
+      (attempt) => attempt.resumed_from === prior_id
+    );
+
+  test('reserves the handoff and closes the window without resuming yet', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '인계 · 범위 확장 승인');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.launcher.sendExit).toHaveBeenCalledWith('%5');
+    expect(record(env)).toMatchObject({
+      state: 'exiting',
+      conversation: {
+        processed_message_at: 900,
+        result: { kind: 'handoff', line: '인계 · 범위 확장 승인' },
+        handoff: { line: '인계 · 범위 확장 승인', source: 'result_line' }
+      }
+    });
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+  });
+
+  test('resumes the same session after the window is confirmed gone', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '인계 · 범위 확장 승인');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(children(env, prior.attempt_id)).toHaveLength(1);
+    expect(env.runner.settingsFor('S1')).toMatchObject({
+      resume_session_id: 'session-original',
+      model: prior.model,
+      effort: prior.effort
+    });
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('puts the conversation result block at the head of the resume prompt', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '인계 · 범위 확장 승인');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    const prompt = String(env.runner.spawnedBead('S1').prompt);
+    const block = [
+      '## 대화 결과',
+      '- 이 세션은 사람과의 대화 뒤 무인 Worker attempt로 돌아왔다.',
+      '- 이번 대화의 결과 줄: 인계 · 범위 확장 승인',
+      '- 대화 단계의 금지는 풀리고 무인 규칙·가드가 다시 적용된다. 남은 단계는 dotfiles `Worker 세션 대화` 절의 표 순서대로 한다.'
+    ].join('\n');
+    expect(prompt).toContain(block);
+    expect(prompt.indexOf(block)).toBeLessThan(
+      prompt.indexOf('이전 무인 세션')
+    );
+  });
+
+  test('names the resumed launch as the Worker taking over with its decision', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '인계 · 범위 확장 승인');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.notify.attemptStarted).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        kind: 'conversation_return',
+        decision: '인계 · 범위 확장 승인'
+      })
+    );
+  });
+
+  test('processes a turn that started and ended between two passes', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    say(env, '인계 · 범위 확장 승인');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(record(env).conversation.handoff).toMatchObject({
+      source: 'result_line'
+    });
+  });
+
+  test('sends one answer wait per new non-result message', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, 'A와 B 중 어느 쪽으로 갈까요?');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    say(env, '그럼 C는 어떤가요?', 960);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.notify.conversationAnswer).toHaveBeenCalledTimes(2);
+    expect(env.notify.conversationAnswer).toHaveBeenLastCalledWith({
+      bead_id: 'S1',
+      excerpt: '그럼 C는 어떤가요?',
+      tmux_window: 'S1'
+    });
+    expect(record(env).conversation).toMatchObject({
+      processed_message_at: 960,
+      message_excerpt: '그럼 C는 어떤가요?'
+    });
+  });
+
+  test('waits for a running turn before processing its message', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    Object.assign(env.pane, { agent_running: '1' });
+    say(env, '작업 중입니다');
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.notify.conversationAnswer).not.toHaveBeenCalled();
+    expect(record(env).conversation.processed_message_at).toBeNull();
+  });
+
+  test('ignores the unattended run messages from before the launch', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '인계 · 옛 결과', 400);
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(record(env).conversation.result).toBeNull();
+    expect(env.launcher.sendExit).not.toHaveBeenCalled();
+  });
+
+  test('observes a takeover once and never resumes', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '인수 · 끝까지 내가 간다');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.notify.conversationTakeover).toHaveBeenCalledExactlyOnceWith({
+      bead_id: 'S1'
+    });
+    expect(env.launcher.sendExit).not.toHaveBeenCalled();
+    expect(children(env, prior.attempt_id)).toHaveLength(0);
+    expect(
+      attemptOf(env, prior.attempt_id).cause_detail.conversation.ended_by
+    ).toBe('takeover');
+  });
+
+  test('closes the window on a hold and keeps the attempt waiting', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '보류 · 내일 다시 본다');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    const current = attemptOf(env, prior.attempt_id);
+    expect(env.launcher.sendExit).toHaveBeenCalledOnce();
+    expect(current.status).toBe('waiting');
+    expect(current.cause_detail.conversation.ended_by).toBe('hold');
+    expect(env.notify.conversationAnswer).not.toHaveBeenCalled();
+    expect(children(env, prior.attempt_id)).toHaveLength(0);
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('stamps a window that vanished without a result line as pane_gone', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(record(env)).toBeUndefined();
+    expect(
+      attemptOf(env, prior.attempt_id).cause_detail.conversation
+    ).toMatchObject({ launched_at: 500, ended_by: 'pane_gone', refusal: null });
+    expect(children(env, prior.attempt_id)).toHaveLength(0);
+  });
+
+  test('continues a vanished conversation from the button', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    env.panes.rows = [];
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    const result = await env.scheduler.conversationHandoff(WS, {
+      bead_id: 'S1',
+      attempt_id: prior.attempt_id
+    });
+
+    expect(result).toEqual({ ok: true, reason: null });
+    expect(String(env.runner.spawnedBead('S1').prompt)).toContain(
+      '- 이번 대화의 결과 줄: 사용자가 [워커로 이어가기]로 인계'
+    );
+  });
+
+  test('reserves a button handoff on a conversation waiting for its answer', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '어느 쪽으로 갈까요?');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    const result = await env.scheduler.conversationHandoff(WS, {
+      bead_id: 'S1',
+      attempt_id: prior.attempt_id
+    });
+
+    expect(result).toEqual({ ok: true, reason: null, pending: true });
+    expect(env.launcher.sendExit).toHaveBeenCalledOnce();
+    expect(record(env).conversation.handoff).toMatchObject({
+      source: 'button',
+      line: '사용자가 [워커로 이어가기]로 인계',
+      message_at: 900
+    });
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+  });
+
+  test('refuses the button while the conversation turn is running', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    Object.assign(env.pane, { agent_running: '1' });
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    const result = await env.scheduler.conversationHandoff(WS, {
+      bead_id: 'S1',
+      attempt_id: prior.attempt_id
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'not_awaiting_answer' });
+    expect(env.launcher.sendExit).not.toHaveBeenCalled();
+  });
+
+  test('refuses the button without a conversation exit', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+
+    const result = await env.scheduler.conversationHandoff(WS, {
+      bead_id: 'S1',
+      attempt_id: prior.attempt_id
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'no_conversation_exit' });
+  });
+
+  test('returns a refusal before any child to the decision with its reason', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '인계 · 범위 확장 승인');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+    env.worktree.exists.mockReturnValue(false);
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(children(env, prior.attempt_id)).toHaveLength(0);
+    expect(record(env)).toBeUndefined();
+    expect(
+      attemptOf(env, prior.attempt_id).cause_detail.conversation
+    ).toMatchObject({ ended_by: 'handoff', refusal: 'worktree_missing' });
+  });
+
+  test('leaves a failure after the child to the child settlement', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '인계 · 범위 확장 승인');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    const [child] = children(env, prior.attempt_id);
+    expect(child.status).not.toBe('running');
+    expect(
+      attemptOf(env, prior.attempt_id).cause_detail.conversation.refusal
+    ).toBeNull();
+  });
+
+  test('consumes a replayed handoff once after a restart mid-way', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '인계 · 범위 확장 승인');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    const reserved = record(env);
+    env.panes.rows = [];
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+    env.store.recordInteractiveSession(WS, reserved);
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(children(env, prior.attempt_id)).toHaveLength(1);
+    expect(record(env)).toBeUndefined();
+  });
+
+  test('refuses a human resume of a parked attempt', async () => {
+    const env = conversationEnv({
+      park: PARK_VALUE,
+      bead: { park_run: true }
+    });
+    const prior = await stopForConversation(env);
+
+    const result = await env.scheduler.resume(WS, prior.attempt_id);
+
+    expect(prior.status).toBe('parked');
+    expect(result).toEqual({ ok: false, reason: 'not_failed' });
+  });
+
+  test('resumes a park whose awaiting_user remains through the conversation return only', async () => {
+    const validate = vi.fn(
+      async (
+        /** @type {any} */ snap,
+        /** @type {any} */ _base,
+        /** @type {any} */ options
+      ) =>
+        Object.hasOwn(snap, 'awaiting_user') &&
+        options?.allow_conversation_return !== true
+          ? { ok: false, reason: 'awaiting_user' }
+          : { ok: true }
+    );
+    const env = conversationEnv({
+      park: PARK_VALUE,
+      bead: { park_run: true },
+      admission: { validate }
+    });
+    const prior = await stopForConversation(env);
+    env.config.S1.awaiting_user = PARK_VALUE;
+    env.config.S1.metadata = { awaiting_user: PARK_VALUE };
+    openConversation(env, prior, {
+      conversation: { stop: `awaiting_user=${PARK_VALUE}` }
+    });
+    say(env, '인계 · ADR에 맞춰 구현 수정');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(children(env, prior.attempt_id)).toHaveLength(1);
+    expect(validate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ awaiting_user: PARK_VALUE }),
+      expect.anything(),
+      { allow_conversation_return: true }
+    );
+  });
+
+  test('keeps the ordinary scan from redispatching a stopped attempt during a conversation', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior);
+    say(env, '인계 · 범위 확장 승인');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    await env.scheduler.tick(WS);
+    await env.scheduler.onIssuesChanged(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+  });
+
+  test('holds the clear-transition redispatch while a conversation is live', async () => {
+    const env = conversationEnv({
+      park: STALE_VALUE,
+      bead: { park_run: true }
+    });
+    const prior = await stopForConversation(env);
+    openConversation(env, prior, {
+      conversation: { stop: `awaiting_user=${STALE_VALUE}` }
+    });
+
+    await env.scheduler.onIssuesChanged(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+    expect(attemptOf(env, prior.attempt_id).parked_resumed_at).toBeNull();
+  });
+
+  test('takes the clear-transition redispatch as the one path after the window is gone', async () => {
+    const env = conversationEnv({
+      park: STALE_VALUE,
+      bead: { park_run: true }
+    });
+    const prior = await stopForConversation(env);
+    openConversation(env, prior, {
+      conversation: { stop: `awaiting_user=${STALE_VALUE}` }
+    });
+    await env.scheduler.onIssuesChanged(WS);
+    say(env, '인계 · 승인 기록함');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await env.scheduler.onIssuesChanged(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['S1', 'S1']);
+    expect(children(env, prior.attempt_id)).toHaveLength(0);
+    expect(typeof attemptOf(env, prior.attempt_id).parked_resumed_at).toBe(
+      'number'
+    );
+  });
+
+  test('keeps a clear written by the resumed child from redispatching while it runs', async () => {
+    const env = conversationEnv({
+      park: STALE_VALUE,
+      bead: { park_run: true }
+    });
+    const prior = await stopForConversation(env);
+    env.config.S1.metadata = { awaiting_user: STALE_VALUE };
+    openConversation(env, prior, {
+      conversation: { stop: `awaiting_user=${STALE_VALUE}` }
+    });
+    say(env, '인계 · 스펙 수정 방향 확정');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.config.S1.metadata = {};
+
+    await env.scheduler.onIssuesChanged(WS);
+
+    expect(children(env, prior.attempt_id)).toHaveLength(1);
+    expect(env.runner.spawnOrder).toEqual(['S1', 'S1']);
+  });
+
+  test('settles a legacy fork inquiry by the old rules', async () => {
+    const env = conversationEnv();
+    const prior = await stopForConversation(env);
+    openConversation(env, prior, { mode: 'fork', conversation: null });
+    say(env, '인계 · 범위 확장 승인');
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    env.panes.rows = [];
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(env.launcher.sendExit).not.toHaveBeenCalled();
+    expect(record(env)).toBeUndefined();
+    expect(children(env, prior.attempt_id)).toHaveLength(0);
+    expect(attemptOf(env, prior.attempt_id).cause_detail).not.toHaveProperty(
+      'conversation'
+    );
+  });
 });
 
 describe('scheduler route change refusal', () => {
@@ -4172,6 +4847,40 @@ describe('scheduler provider hold and recovery', () => {
       auto_resume_kind: 'provider_outage'
     });
     expect(env.store.snapshot(WS).provider_hold).toEqual({});
+  });
+
+  test('refuses provider auto resume for a conversation-stop recovery wait', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedProviderAttempt(env.store, 'held-stop', 'B1', {
+      session_id: 'sid-stop'
+    });
+    const held = registerProviderHold(env.store, 'held-stop', 'outage', null);
+    env.store.recoverProviderTarget(WS, {
+      runner: 'claude',
+      generation: held.generation,
+      kind: 'outage',
+      model: 'opus',
+      account: null
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'held-stop',
+      patch: {
+        status: 'waiting',
+        cause: 'session_recovery_wait',
+        cause_detail: {
+          recovery: {
+            classification: 'session_recovery_wait',
+            disposition: 'wait',
+            reason: 'authority'
+          }
+        }
+      }
+    });
+
+    const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+    expect(result.refusals).toEqual(['B1:recovery_wait']);
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual(['held-stop']);
   });
 
   test('records a changed route after consuming provider recovery pending', async () => {
@@ -23849,8 +24558,23 @@ describe('scheduler 방향 질의 세션 훅 (UI-7uid §3.1)', () => {
       attempt_id,
       repo: '/repo',
       target_base: 'main',
-      awaiting_user: 'spec_review_stale:revise'
+      awaiting_user: 'spec_review_stale:revise',
+      confirm: true
     });
+  });
+
+  test('stamps the confirm notification on the parked attempt before the hook', async () => {
+    const directionInquiry = { onParkedAttempt: vi.fn(async () => {}) };
+
+    const { env, attempt_id } = await parkStale({
+      stale: true,
+      directionInquiry
+    });
+
+    expect(
+      env.store.snapshot(WS).attempts[attempt_id].cause_detail
+        ?.confirm_notified_at
+    ).toBe(1000);
   });
 
   test('calls the hook for a park without spec_review_stale', async () => {

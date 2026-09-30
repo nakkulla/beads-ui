@@ -86,9 +86,94 @@ describe('interactive session persistence', () => {
         turn_state: null,
         turn_state_since: null,
         last_message: null,
-        last_message_read_at: null
+        last_message_read_at: null,
+        conversation: null
       }
     });
+  });
+
+  test('persists a conversation state through a patch and cold reload', () => {
+    const store = createQueueStore();
+    store.recordInteractiveSession(
+      WS,
+      record({
+        kind: 'inquiry',
+        mode: 'resume',
+        conversation: { stop: 'recovery:authority' }
+      })
+    );
+    /** @type {import('./queue-store.js').ConversationState} */
+    const conversation = {
+      stop: 'recovery:authority',
+      processed_message_at: 40,
+      message_excerpt: '범위 밖입니다',
+      result: { kind: 'handoff', line: '인계 · 범위 확장 승인', at: 41 },
+      handoff: {
+        line: '인계 · 범위 확장 승인',
+        source: 'result_line',
+        message_at: 40,
+        reserved_at: 41
+      },
+      takeover_notified_at: null
+    };
+
+    store.updateInteractiveSession(WS, 'B1:inquiry', {
+      conversation,
+      last_message: {
+        text: '인계 · 범위 확장 승인',
+        at: 40,
+        excerpt: '인계 · 범위 확장 승인 나머지',
+        first_line: '인계 · 범위 확장 승인',
+        event_at: 39
+      }
+    });
+
+    expect(
+      createQueueStore().load(WS).interactive_sessions['B1:inquiry']
+    ).toMatchObject({
+      conversation,
+      last_message: {
+        excerpt: '인계 · 범위 확장 승인 나머지',
+        first_line: '인계 · 범위 확장 승인',
+        event_at: 39
+      }
+    });
+  });
+
+  test('initializes a launched conversation with empty processing fields', () => {
+    const store = createQueueStore();
+
+    store.recordInteractiveSession(
+      WS,
+      record({ kind: 'inquiry', conversation: { stop: 'awaiting_user=x' } })
+    );
+
+    expect(
+      store.snapshot(WS).interactive_sessions['B1:inquiry'].conversation
+    ).toEqual({
+      stop: 'awaiting_user=x',
+      processed_message_at: null,
+      message_excerpt: null,
+      result: null,
+      handoff: null,
+      takeover_notified_at: null
+    });
+  });
+
+  test('drops a malformed conversation result without dropping the record', () => {
+    const store = createQueueStore();
+
+    store.recordInteractiveSession(
+      WS,
+      record({
+        kind: 'inquiry',
+        conversation: { stop: 's', result: { kind: 'maybe', line: 'x', at: 1 } }
+      })
+    );
+
+    expect(
+      store.snapshot(WS).interactive_sessions['B1:inquiry'].conversation
+    ).toMatchObject({ stop: 's', result: null });
   });
 
   test.each([

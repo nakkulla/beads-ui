@@ -132,6 +132,12 @@ const PLAN_APPROVAL_RE = /^user@([0-9a-fA-F]{40})$/;
  * `allow_external_wait_resume` skips only the external-wait presence check.
  * The caller must prove a matching completed record before opting in.
  *
+ * `allow_conversation_return` skips only the `awaiting_user` presence check
+ * (UI-nuwy §3.4). The caller must be the conversation-return resume of the
+ * same attempt lineage, after that conversation's window is confirmed gone:
+ * the resumed session clears the key with its own receipt write, so the park
+ * it resumes still carries it.
+ *
  * @param {{
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   ghAvailable?: () => Promise<boolean>,
@@ -139,6 +145,7 @@ const PLAN_APPROVAL_RE = /^user@([0-9a-fA-F]{40})$/;
  *   base: string,
  *   base_label?: string,
  *   allow_external_wait_resume?: boolean,
+ *   allow_conversation_return?: boolean,
  *   bead: {
  *     route?: string|null,
  *     description?: string|null,
@@ -166,7 +173,11 @@ export async function validateAdmission(input) {
   // 계약상 `awaiting_user` 키의 존재 자체가 "사용자 결정 산출물이 아직 없다"이고,
   // 키 제거는 그 산출물을 쓰는 같은 `bd update`에서만 일어난다. 그래서 값 형식은
   // 보지 않고 presence 하나로 fail-closed 거부한다.
-  if (bead && Object.hasOwn(bead, 'awaiting_user')) {
+  if (
+    bead &&
+    Object.hasOwn(bead, 'awaiting_user') &&
+    input.allow_conversation_return !== true
+  ) {
     return { ok: false, reason: 'awaiting_user' };
   }
 
