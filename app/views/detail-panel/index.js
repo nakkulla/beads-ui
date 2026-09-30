@@ -1,11 +1,16 @@
 import { html, render } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
+import { formatElapsed } from '../../model/attempt-facts.js';
 import { createChipPresetToggle } from '../../model/chip-preset-binding.js';
 import {
   depCandidates as depCandidatesOf,
   filterDepCandidates,
   isBeadIdLike
 } from '../../model/dep-candidates.js';
+import {
+  buildImplPresetApplyPayload,
+  buildThreeStatePayload
+} from '../../model/effective-settings.js';
 import { disabledModelsOf } from '../../model/model-visibility.js';
 import {
   candidatePlacement,
@@ -17,10 +22,12 @@ import {
   coerceTimestampMs,
   formatTimestampLocal
 } from '../../model/relative-time.js';
+import { modelRunnerOf } from '../../model/runner-catalog.js';
 import {
   ORCHESTRATION_KEYS,
   QUICK_FIX_ORCHESTRATION_KEYS
 } from '../../model/session-model.js';
+import { runExternalWaitAction } from '../../screens/pipeline/external-wait-action.js';
 import {
   isImplementationAttempt,
   latestImplementationAttempts
@@ -37,12 +44,7 @@ import {
 } from '../../utils/token-usage.js';
 import { createChipPopover } from '../chip-popover.js';
 import { formatExecReceipt } from '../exec-format.js';
-import { runExternalWaitAction } from '../worker/external-wait-action.js';
-import {
-  formatElapsed,
-  placeMenuList,
-  waitReasonLines
-} from '../worker/lanes.js';
+import { placeMenuList, waitReasonLines } from '../worker/lanes.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
 import { commentsTemplate } from './comments.js';
@@ -50,16 +52,8 @@ import {
   effectiveSettingsCardTemplate,
   summaryHeaderTemplate
 } from './effective-settings-view.js';
-import {
-  buildImplPresetApplyPayload,
-  buildThreeStatePayload
-} from './effective-settings.js';
 import { execAccountsTemplate } from './exec-accounts.js';
-import {
-  EXEC_KEYS,
-  modelRunnerOf,
-  normalizeImplTarget
-} from './exec-settings.js';
+import { EXEC_KEYS, normalizeImplTarget } from './exec-settings.js';
 import { createMdViewer } from './md-viewer.js';
 import { sessionHistoryTemplate } from './session-history.js';
 import { taskPromptTemplate } from './task-prompt.js';

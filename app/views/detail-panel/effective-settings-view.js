@@ -9,12 +9,20 @@
  * is never copied here.
  *
  * @typedef {import('lit-html').TemplateResult} TemplateResult
- * @typedef {import('./effective-settings.js').EffectiveRow} EffectiveRow
+ * @typedef {import('../../model/effective-settings.js').EffectiveRow} EffectiveRow
  * @typedef {import('../exec-format.js').ExecReceipt} ExecReceipt
  */
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { chipPresetBinding } from '../../model/chip-preset-binding.js';
+import {
+  EFFECTIVE_GROUPS,
+  SETTING_LABELS,
+  SOURCE_LABELS,
+  effectiveRows,
+  layerSummary,
+  presetDeviation
+} from '../../model/effective-settings.js';
 import { visibleChoicesForKey } from '../../model/model-visibility.js';
 import {
   APPLIED_EXEC_PRESET_KEY,
@@ -43,14 +51,6 @@ import { buildOptionView } from '../../utils/execution-defaults.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
 import { formatExecReceipt, formatPlannedExecution } from '../exec-format.js';
 import { judgementPopoverContent } from '../worker/lanes.js';
-import {
-  EFFECTIVE_GROUPS,
-  SETTING_LABELS,
-  SOURCE_LABELS,
-  effectiveRows,
-  layerSummary,
-  presetDeviation
-} from './effective-settings.js';
 
 /**
  * The gate stages the stepper walks, in workflow order.

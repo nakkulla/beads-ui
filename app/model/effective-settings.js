@@ -10,13 +10,13 @@
  * @typedef {{ value: string|null, source: SettingSource, display: string, full_value: string|null, resolution: string }} SettingLayer
  * @typedef {{ key: string, value: string|null, source: SettingSource, display: string, full_value: string|null, resolution: string }} EffectiveRow
  */
+import { resolveExecutionSettings } from '../utils/execution-defaults.js';
+import { modelRunnerOf } from './runner-catalog.js';
 import {
   BEAD_APPLY_KEYS,
   ORCHESTRATION_KEYS,
   presetKeysFor
-} from '../../model/session-model.js';
-import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
-import { modelRunnerOf } from './exec-settings.js';
+} from './session-model.js';
 
 /**
  * The per-bead editor's four groups, in display order — the same role

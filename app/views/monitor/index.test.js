@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { providerProbeRefusalText } from '../worker/lanes.js';
+import { providerProbeRefusalText } from '../../model/gate-labels.js';
 import { createMonitorView } from './index.js';
 
 const NOW = 1_700_000_000_000;

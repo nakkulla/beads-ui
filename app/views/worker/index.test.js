@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { failureSentence } from '../../model/failure-labels.js';
+import { providerProbeRefusalText } from '../../model/gate-labels.js';
 import { formatTimestampLocal } from '../../model/relative-time.js';
 import { createSessionLogStore } from '../../model/session-log-store.js';
 import { createSubscriptionIssueStore } from '../../model/subscription-issue-store.js';
@@ -17,7 +18,6 @@ import {
   resolveSessionToast,
   resolveSessionTone
 } from './index.js';
-import { providerProbeRefusalText } from './lanes.js';
 
 /** A format-valid spec review receipt (`<reviewer>@<40-hex>`), which the
  * evidence predicate requires before a spec counts as PUBLISHED (UI-vb7u §2). */

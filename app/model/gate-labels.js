@@ -9,7 +9,6 @@
  * Pure: it reads its argument and nothing else — no DOM, no clock beyond the
  * timestamps it is handed.
  *
- * @import { HoldTile } from '../views/worker/running-grid.js'
  */
 
 /**
@@ -89,4 +88,45 @@ export function autoSwitchText(value) {
     return '계정 전환 안 함 · 기다림 모드';
   }
   return '';
+}
+
+/**
+ * 공급자 장애가 실패가 아니라는 판단과 복구 선택에 필요한 hold 표시 재료.
+ *
+ * @typedef {Object} HoldTile
+ * @property {'outage'|'usage_limit'} kind
+ * @property {string} detail
+ * @property {string} [message]
+ * @property {string} [summary]
+ * @property {{ model?: string, account?: string, account_alias?: string }} [target]
+ * @property {'pending'|'disarmed'|`refused:${string}`} [auto_resume]
+ * @property {'none'|'cap'|'unconfigured'|'disabled'} [auto_switch] - Why the
+ * limit hold did not move to another account (UI-13o1 §3.4). Absent when it did
+ * switch; `cap` is retired vocabulary that old queue files may still carry.
+ * @property {number} [resets_at]
+ * @property {number} [next_probe_at]
+ * @property {number} [live_preempt_skipped_at] - When the last live preempt
+ * pass found no switch candidate for this attempt (UI-inge §3.6).
+ * @property {string} [log_path]
+ * @property {boolean} [open]
+ */
+
+/**
+ * `↻ 지금 프로브` 거부 사유의 한 줄 (UI-o5ll §3.4) — Worker·Monitor 두 탭이 같은
+ * 문구를 쓴다. 모르는 토큰은 raw로 흘려보낸다.
+ *
+ * @param {unknown} reason
+ * @returns {string}
+ */
+export function providerProbeRefusalText(reason) {
+  if (reason === 'hold_changed') {
+    return '공급자 상태가 바뀌었습니다 — 다시 확인하세요';
+  }
+  if (reason === 'probe_in_flight') {
+    return '프로브가 이미 돌고 있습니다';
+  }
+  if (reason === 'probe_ineligible') {
+    return '지금 찌를 수 있는 대상이 없습니다';
+  }
+  return typeof reason === 'string' ? reason : '';
 }

@@ -12,10 +12,10 @@ import {
   formatUsageTotalWithCost,
   mergeUsageProjections,
   providerUsageBadges
-} from '../../utils/token-usage.js';
+} from '../utils/token-usage.js';
 
 /**
- * @import { LaneItem } from '../../model/lane-model.js'
+ * @import { LaneItem } from './lane-model.js'
  */
 
 /**
@@ -43,9 +43,9 @@ export function tokenTotalTooltip(range_label) {
  * @returns {string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null}
  */
 export function crossRepoTokenTotal(done_items) {
-  /** @type {import('../../utils/token-usage.js').UsageProjection[]} */
+  /** @type {import('../utils/token-usage.js').UsageProjection[]} */
   const projections =
-    /** @type {import('../../utils/token-usage.js').UsageProjection[]} */ (
+    /** @type {import('../utils/token-usage.js').UsageProjection[]} */ (
       (Array.isArray(done_items) ? done_items : [])
         .map((item) => item && item.usage)
         .filter(

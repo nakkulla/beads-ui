@@ -10,7 +10,6 @@
  * admission 자체는 서버(`checkWorkerQueueAdmission`)가 그대로 소유한다 (§6.4).
  * 이 모듈이 정하는 것은 버튼을 활성으로 그릴지와 그 title 문장뿐이다.
  *
- * @import { PlaceMenuEntry } from '../views/worker/lanes.js'
  */
 import { resolveSpecEvidence } from '../../server/spec-id.js';
 import { WORKFLOW_ROUTES } from '../../server/worker/routes.js';
@@ -339,3 +338,21 @@ export function placeMenuLanes(queue) {
 export function placeLaneLabel(lane) {
   return /^s[1-5]$/.test(lane) ? `직렬 ${lane.slice(1)}` : '병렬';
 }
+
+/**
+ * One `[대기로 ↴]` menu entry (UI-j92s §6.4). `id`는 뷰가 해석하는 좌표 문자열
+ * 이므로 여기서 어휘를 좁히지 않는다 — 모니터는 `lane:<lane_id>`처럼 서버 id를
+ * 싣고, Worker 콘솔은 `parallel`·`s1`..`s5`를 싣는다.
+ *
+ * @typedef {Object} PlaceMenuEntry
+ * @property {string} id - The coordinate a click hands back to the view.
+ * @property {string} label - Text on the left of the row.
+ * @property {number|null} [count] - Tally on the right. 없으면 자리 자체가 비어
+ * 있다.
+ * @property {string} [group] - Group this entry belongs to. 앞 항목과 다르면 그
+ * 자리에 그룹 헤더가 선다. 값이 없으면 헤더 없이 그린다 — Worker 콘솔은 그룹을
+ * 쓰지 않는다 (§6.4).
+ * @property {boolean} [disabled] - Refused entry: 레인 저장소를 읽을 수 없을 때의
+ * 연결 항목 (§7).
+ * @property {string} [title] - Tooltip sentence.
+ */

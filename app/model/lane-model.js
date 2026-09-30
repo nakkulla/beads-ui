@@ -38,13 +38,10 @@ import {
   providerUsageBadges,
   sumAttemptUsage
 } from '../utils/token-usage.js';
-import { modelRunnerOf } from '../views/detail-panel/exec-settings.js';
 import {
-  discardProjection,
-  quickFixLanded,
   reviewSessionAttemptBadges,
   sumAttemptWorkMs
-} from '../views/worker/lanes.js';
+} from './attempt-facts.js';
 import { isForeignBlocker } from './blocker-scope.js';
 import {
   blockerLocationLabel,
@@ -54,6 +51,7 @@ import {
   detectSerialLaneHeadCycles,
   serialCycleKey
 } from './blockers.js';
+import { discardProjection, quickFixLanded } from './discard.js';
 import {
   formatAttemptOrchestrationChip,
   formatImplActorChip,
@@ -75,12 +73,9 @@ import {
   resolvedBlockerChip
 } from './queue-blockers.js';
 import { formatClockLocal } from './relative-time.js';
+import { modelRunnerOf } from './runner-catalog.js';
 import { overlapPrefixes } from './scope-overlap.js';
 import { waitKindRow } from './wait-vocabulary.js';
-
-/**
- * @import { DependencyChip, DependencyChips, MiniItem } from '../views/worker/lanes.js'
- */
 
 /**
  * Lower bound on a repo's concurrency cap, mirroring the server's `MIN_SLOTS`
@@ -442,10 +437,10 @@ const DONE_KIND_LABELS = {
  *   resumed_from?: string|null,
  *   continuation_mode?: 'session'|'fresh'|null,
  *   continuation_mismatch?: any,
- *   failure?: import('../views/worker/running-grid.js').FailureTile|null,
- *   hold?: import('../views/worker/running-grid.js').HoldTile|null,
- *   wait?: import('../views/worker/running-grid.js').WaitTile|null,
- *   retry?: import('../views/worker/running-grid.js').RetryTile|null,
+ *   failure?: FailureTile|null,
+ *   hold?: import('./gate-labels.js').HoldTile|null,
+ *   wait?: WaitTile|null,
+ *   retry?: RetryTile|null,
  *   conflict_resolution?: boolean,
  *   base_exception?: string|null,
  *   rollup?: import('../utils/child-rollup.js').ChildRollup|null,
@@ -482,14 +477,6 @@ const DONE_KIND_LABELS = {
  *   deferred?: boolean,
  *   filter_match?: boolean
  * }} LaneItem
- */
-
-/**
- * One 겹침 상대 (UI-qm12 §5.2). 표시 전용 파생값이다 — 스케줄러도 admission도
- * 선언 scope를 읽지 않는다. 칩 모양은 Worker 템플릿이 소유하므로 형태도
- * 거기서 온다.
- *
- * @typedef {import('../views/worker/lanes.js').OverlapChip} OverlapChip
  */
 
 /**
@@ -1041,7 +1028,7 @@ function directSessionUsage(observation, catalog) {
  *
  * @param {any} a
  * @param {{ resume_eligible: boolean, resume_reason: string|null, confirmation: 'merged'|'unmerged', history?: any }} ctx
- * @returns {import('../views/worker/running-grid.js').FailureTile}
+ * @returns {FailureTile}
  */
 function failureProjection(a, ctx) {
   const cause_detail =
@@ -1114,14 +1101,14 @@ function routeChangeOf(resume_refused) {
  * empty 이력 block for every bead whose timeline predates this spec.
  *
  * @param {any} history - One `bead_timelines` entry, or undefined.
- * @returns {{ timeline?: import('../views/worker/running-grid.js').TimelineRow[], log_path?: string, log_expired?: boolean, log_unreadable?: boolean }}
+ * @returns {{ timeline?: TimelineRow[], log_path?: string, log_expired?: boolean, log_unreadable?: boolean }}
  */
 function timelineFields(history) {
   if (!history || typeof history !== 'object') {
     return {};
   }
   const events = Array.isArray(history.events) ? history.events : [];
-  /** @type {import('../views/worker/running-grid.js').TimelineRow[]} */
+  /** @type {TimelineRow[]} */
   const rows = [];
   for (const event of events) {
     if (
@@ -1161,7 +1148,7 @@ function timelineFields(history) {
  * written without it simply carry none (fail-quiet).
  *
  * @param {any} a
- * @returns {import('../views/worker/running-grid.js').WaitTile}
+ * @returns {WaitTile}
  */
 function waitProjection(a) {
   const cause_detail =
@@ -1345,7 +1332,7 @@ function providerAutoResumeState(attempt, target, last_error, input) {
  *
  * @param {any} attempt
  * @param {{ provider_hold?: Record<string, any>, auto_resume_pending?: any[], account_catalog?: Record<string, any>, attempts: Record<string, any>, history?: any }} input
- * @returns {import('../views/worker/running-grid.js').HoldTile}
+ * @returns {import('./gate-labels.js').HoldTile}
  */
 function providerHoldProjection(attempt, input) {
   const detail = attempt.cause.slice('provider_outage:'.length);
@@ -1425,7 +1412,7 @@ function providerHoldProjection(attempt, input) {
  * and the popover's 이력 row simply do not render.
  *
  * @param {any} attempt
- * @returns {import('../views/worker/running-grid.js').RetryTile|null}
+ * @returns {RetryTile|null}
  */
 function retryProjection(attempt) {
   const retry =
@@ -1535,7 +1522,7 @@ function providerGateOf(runner, entry, target, account_catalog, extra_lines) {
       : {})
   };
   const label = providerHoldBadgeText(
-    /** @type {import('../views/worker/running-grid.js').HoldTile} */ (
+    /** @type {import('./gate-labels.js').HoldTile} */ (
       /** @type {unknown} */ (tile)
     )
   );
@@ -1936,7 +1923,7 @@ function receiptBadgeCodesOf(summary) {
  * @param {Record<string, any>} state - The repo's `workspaces_state` row.
  * @param {Record<string, string>|null|undefined} exec_pins
  * @param {string|null} route
- * @returns {import('../views/worker/lanes.js').LaneExecChips|null}
+ * @returns {LaneExecChips|null}
  */
 function execChipsFor(state, exec_pins, route) {
   const execution_defaults = state.execution_defaults;
@@ -1976,7 +1963,7 @@ function execChipsFor(state, exec_pins, route) {
   /**
    * @param {import('./exec-settings-chip.js').ExecChip|null} chip
    * @param {string[]} keys
-   * @returns {import('../views/worker/lanes.js').LaneExecChip|null}
+   * @returns {LaneExecChip|null}
    */
   const markPin = (chip, keys) => {
     if (!chip) {
@@ -2013,7 +2000,7 @@ function execChipsFor(state, exec_pins, route) {
  * @param {string} bead_id
  * @param {any} release_info
  * @param {number} now
- * @returns {import('../views/worker/lanes.js').ReleasedChip[]|null}
+ * @returns {ReleasedChip[]|null}
  */
 export function releasedChipsFor(bead_id, release_info, now) {
   const released_by =
@@ -2033,7 +2020,7 @@ export function releasedChipsFor(bead_id, release_info, now) {
         (typeof b.closed_at === 'number' ? b.closed_at : 0) -
         (typeof a.closed_at === 'number' ? a.closed_at : 0)
     );
-  /** @type {import('../views/worker/lanes.js').ReleasedChip[]} */
+  /** @type {ReleasedChip[]} */
   const chips = [];
   for (const entry of ordered) {
     const workspace_name =
@@ -3261,9 +3248,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
      * 판정식은 타일과 같다.
      *
      * @param {string} bead_id
-     * @param {import('../views/worker/running-grid.js').WaitTile|null|undefined} wait
+     * @param {WaitTile|null|undefined} wait
      * @param {Array<{ id: string }>|null} [frozen_blockers]
-     * @returns {{ blocked_by?: string[], wait?: import('../views/worker/running-grid.js').WaitTile }}
+     * @returns {{ blocked_by?: string[], wait?: WaitTile }}
      */
     const blockedByFields = (bead_id, wait, frozen_blockers = null) => {
       const decorated = decoratedBlockedBy(bead_id);
@@ -5227,3 +5214,395 @@ export function buildLanes(workspaces, workspaces_state, options) {
 
   return model;
 }
+
+/*
+ * Lane item types — moved from `views/worker/lanes.js`, `running-grid.js`,
+ * `stepper.js` and `exec-format.js` (UI-dbn6 Phase 1) so the model owns the
+ * shapes it projects; the old views alias these names.
+ */
+
+/**
+ * @typedef {Object} DependencyChip
+ * @property {string} id - The bead on the other end of the edge.
+ * @property {string} label - Full chip text. The projection composes it because
+ * only the projection knows the 위치 vocabulary; the template never invents it.
+ * @property {string} [title] - Tooltip sentence.
+ * @property {boolean} [foreign] - blocker가 이 이슈와 다른 레포의 rig에 있다.
+ * 라벨은 owner workspace 이름을 문자로 싣고 색도 갈라진다.
+ * @property {string} [root_dir] - blocker를 소유한 workspace. 같은 레포면 생략.
+ * @property {boolean} [openable] - 이 칩을 눌러 blocker 이슈를 열 수 있다.
+ */
+
+/**
+ * One `🔓 해제: X` 칩 (UI-d13v §5.2). 모양은 `DependencyChip`과 같다 —
+ * 같은 슬롯에 같은 치수로 서고, 갈라지는 것은 색과 문장뿐이다.
+ *
+ * @typedef {DependencyChip} ReleasedChip
+ */
+
+/**
+ * One `→ <ID>` 칩 (UI-8x90 §3). 선행 칩과 같은 마크업·같은 클릭이므로 모양도
+ * `DependencyChip`과 같다 — 갈라지는 것은 색과 툴팁 첫 낱말뿐이다.
+ *
+ * @typedef {DependencyChip} DependentsChip
+ */
+
+/**
+ * One 겹침 상대 (UI-qm12 §5.2·§5.3). 선언 scope가 부딪히는 상대일 뿐, 순서를
+ * 주장하지 않는다 — 배치는 드래그와 `[대기로 ↴]` 배치 메뉴가 소유한다
+ * (UI-8x90 §9).
+ *
+ * @typedef {Object} OverlapChip
+ * @property {string} id - 상대 bead.
+ * @property {string} title
+ * @property {string} location_label - `실행중` · `#n` · `s1 #n` · `실행가능`.
+ * @property {string[]} prefixes - 두 선언이 부딪힌 자리 — 각 쌍에서 더 긴
+ * prefix를 채택한 사전순 목록. 팝오버가 보여 주던 목록이고 지금은 툴팁 재료다.
+ * @property {string} [root_dir] - 상대를 소유한 workspace. 겹침은 레포 안에서만
+ * 정의되지만 그 레포가 지금 활성 workspace라는 보장은 없다 (Monitor).
+ */
+
+/**
+ * 슬롯 4 두 줄의 재료 (UI-8x90 §4.1). 상단(`--primary`)은 행동을 바꾸는 사실,
+ * 하단(`--secondary`)은 정보다. 두 줄은 각자 재료로 판정한다 (fail-quiet).
+ *
+ * @typedef {Object} DependencyChips
+ * @property {DependencyChip[]} [predecessors] - `⛓ <ID>`. 칩에 해제
+ * 버튼은 없다: 끊는 일은 의존성 패널이 확인을 받고 처리한다. 누를 수 있는지는
+ * 칩마다 갈린다 (`DependencyChip.openable`, UI-u6zf §5.1) — 같은 카드 안에서도
+ * 열 수 있는 blocker와 owner를 모르는 blocker가 섞이므로 묶음 플래그로는 그것을
+ * 표현할 수 없다. 그 값을 렌더러 인자가 아니라 투영이 싣는 이유는
+ * `candidateCard`·`miniRow`를 두 탭이 함께 부르기 때문이다 — 호출 인자로 가르면
+ * 같은 템플릿을 탭마다 다르게 부르는 자리가 새로 생긴다.
+ * @property {ReleasedChip[]} [released] - `🔓 <ID>` (UI-d13v §5.2). 하단 줄에
+ * 서고 `openable` 규칙은 선행 칩과 같다.
+ * @property {DependentsChip[]} [dependents] - `→ <ID>` (UI-8x90 §3). ID마다 칩
+ * 하나이며 상단 줄에서 선행 칩 다음에 선다.
+ * @property {OverlapChip[]} [overlaps] - `⧉ <ID>` (UI-qm12 §5.3).
+ * @property {boolean} [scope_missing] - 선언 원천은 읽혔는데 scope 선언이
+ * 비었다 — 겹침을 판정할 수 없다는 사실 자체를 드러낸다.
+ */
+
+/**
+ * @typedef {Object} MiniItem
+ * @property {InteractiveSessionView[]} [interactive_sessions]
+ * @property {LaneOrigin} [lane_origin]
+ * @property {string} id - Bead id.
+ * @property {string} title - Bead title (falls back to id).
+ * @property {string|import('../protocol.js').WaitReason} [reason] - Candidate reason chip or external wait judgment (missing_description /
+ * spec 없음 / 🔒 target).
+ * @property {boolean} draggable - Whether this row can be dragged. 후보 카드는
+ * 언제나 `false`다 (UI-d13v §6): 후보 레인은 드래그 소스도 드롭 대상도 아니고,
+ * 이 값은 DOM `draggable` 속성과 `worker-card--static`/grip 판정에만 남는다.
+ * @property {boolean} [queue_placeable] - 후보 카드를 대기·직렬 레인에 넣을 수
+ * 있다 (UI-d13v §6). 배치 메뉴 열림·`[대기로 ↴]` 자격이 읽는 값이며, 예전에
+ * `draggable`이 지던 자격을 그대로 물려받는다 — 드래그가 사라져도 무엇을 막는지는
+ * 같아야 한다. 후보 카드 외의 행은 싣지 않는다.
+ * @property {boolean} [blocked] - Whether a dependency currently blocks it.
+ * @property {boolean} [route_ok] - Placement route validity, when facts exist.
+ * @property {boolean} [awaiting_user] - Placement waits for user input.
+ * @property {boolean} [missing_description] - quick_fix description is absent.
+ * @property {'published'|'draft'|'none'|'conflict'|'n/a'} [placement_spec] -
+ * Placement spec judgment, when facts exist.
+ * @property {'candidate'|'queue'|'running'|'runnable'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5'} lane -
+ * Owning lane. `running`/`runnable` exist only for the monitor tab, which mixes
+ * every repo into five lanes (UI-qrfo §8); the Worker console never sets them.
+ * `s1`..`s5` are the fixed serial waiting lanes (UI-04vo §1).
+ * @property {string} [workspace_name] - Owning workspace name. Present only on
+ * the monitor tab, where a card's repo is a coordinate rather than context
+ * (UI-qrfo §8) — absent, no badge is drawn and the Worker console renders
+ * exactly as before.
+ * @property {string} [root_dir] - Owning workspace root; the repo badge's
+ * tooltip.
+ * @property {'session'} [kind] - Session row kind.
+ * @property {boolean} [done] - Rendered dimmed with no grip.
+ * @property {boolean} [is_quick_fix] - Candidate route fallback when workflow
+ * enrichment is unavailable.
+ * @property {boolean} [external] - PR 대기 행이 외부 세션이 배달한 PR인지
+ * (UI-w0hi §4). 좌측 액센트 보더 + 미세 배경 틴트로 구분만 하고 행동은 바꾸지
+ * 않는다.
+ * @property {number|null} [pr_number] - Observed PR number (`pr_wait` rows).
+ * @property {string} [pr_url] - Observed PR URL; renders the `#N ↗` link.
+ * @property {string} [foreign_repo] - `OWNER/REPO` of a PR that lives in ANOTHER
+ * repository (UI-kyky §6.2). Only a row the server marked `foreign` carries it,
+ * and only when the slug is known — the badge says this workspace does not
+ * observe, merge or clean the PR up, so a guessed value would be a false
+ * promise. 같은 저장소의 `external` 행은 이 필드를 얻지 않는다.
+ * @property {string|null} [completion_badge] - Root completion status badge.
+ * @property {string} [completion_title] - Bounded completion evidence tooltip.
+ * @property {string|null} [log_path] - 완료 실패가 남긴 로그 파일의 절대 경로
+ * (UI-8w4t §4). 슬롯 5 (좌표·실행 사실)에 `<code>` + 복사 버튼으로 서고, 실행 전
+ * 실패라 로그가 없으면 요소 자체가 없다.
+ * @property {string[]} [badges] - Gate / base-state badges (worker-phase2 §5).
+ * @property {string|null} [live_badge] - Which of `badges`
+ * reports live server activity rather than a settled state (UI-raqh §3); it is
+ * drawn neutral with a breathing dot instead of the alert colour.
+ * @property {boolean} [alert] - Whether the badges report a state needing a
+ * human decision (PR closed, observation error) — rendered in the warn colour.
+ * @property {boolean} [merge_action] - Render the [머지] action (`pr_wait` rows
+ * only, worker-phase2 §6).
+ * @property {boolean} [discard_action] - Render the [폐기] action.
+ * @property {boolean} [resolve_action] - Render the [세션에서 해결] action
+ * (UI-jw27 §4). 슬롯 6 액션 foot의 [정리 재시도] 옆에 서고, 재료(=기동 가능한
+ * terminal 실패 행)가 없으면 필드도 없어 버튼 자체가 그려지지 않는다.
+ * @property {boolean} [resolve_enabled] - Whether [세션에서 해결] may be
+ * clicked; false while this row's own click is in flight.
+ * @property {string} [resolve_title] - Tooltip: what the click starts.
+ * @property {boolean} [handoff_action] - Render [워커로 이어가기] (UI-nuwy
+ * §3.6) beside [세션에서 해결]; set by `tileResolveFields` from the server
+ * projection only.
+ * @property {boolean} [handoff_enabled] - false while this row's click waits.
+ * @property {string} [handoff_title] - Tooltip.
+ * @property {string|null} [handoff_attempt_id] - The stopped attempt handed back.
+ * @property {ReturnType<typeof discardProjection>} [discard] - Shared durable
+ * discard eligibility, phase, error, archive, and PR-receipt projection.
+ * @property {boolean} [merge_enabled] - Whether the gate lets [머지] be clicked.
+ * @property {boolean} [discard_enabled] - Whether [폐기] may be clicked; false
+ * while a merge is in flight (UI-raqh §4) or a conflict-resolution session owns
+ * the bead (UI-dxgz §1).
+ * @property {string} [discard_title] - Tooltip for a refused [폐기]; absent
+ * keeps the merge-in-flight wording (UI-dxgz §1).
+ * @property {string} [merge_label] - Text of the [머지] button; absent renders
+ * 머지. A conflicting gate dispatches a resolution session instead of merging,
+ * so its button says so (UI-dxgz §2).
+ * @property {boolean} [cancel_action] - Render [취소] INSTEAD of [머지]
+ * (UI-5v7d §4): the row is already waiting its turn in the merge queue, so the
+ * only thing left to click is giving that turn up.
+ * @property {boolean} [cancel_enabled] - Whether [취소] may be clicked; false on
+ * the item the driver is actively merging.
+ * @property {string} [cancel_title] - Tooltip for [취소].
+ * @property {boolean} [revise_action] - Render the REVISE-disposition actions
+ * (`queue` rows parked at `spec_review_stale:revise`, UI-hs11 §3.5).
+ * @property {boolean} [revise_enabled] - Whether the two disposition buttons
+ * may be clicked; false while a disposition click of this row is in flight.
+ * @property {string} [revise_title] - Tooltip carrying the findings summary.
+ * @property {{ step?: string, label: string, index: number, total: number, percent: number, active?: boolean, failed?: boolean }|null} [merge_step] -
+ * The merge's current step, when one is running (UI-raqh §4).
+ * @property {string} [merge_title] - Tooltip: what the click is based on, or
+ * why it is refused.
+ * @property {(WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string, exec_receipt?: ExecReceipt|null }, quick_fix_review?: { state: 'reviewed'|'stale'|'unreviewed'|'unknown', missing: string[], digest: string|null } }) | null} [workflow] - Server-enriched workflow. 실행가능 카드는 stepper와 route
+ * 칩을, 대기·PR 대기 행은 route 칩을 여기서 얻는다 (UI-yrzu §7.2).
+ * `quick_fix_review`는 서버가 route pin이 `quick_fix`일 때만 붙이는 판정이며
+ * (UI-r7or §4) 클라이언트는 읽어 그리기만 한다. 완료 행은 싣지 않는다.
+ * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
+ * @property {import('../utils/token-usage.js').UsageRecord|import('../utils/token-usage.js').UsageProjection|null} [usage] - Token usage
+ * summed across the bead's attempts (UI-d7pw §1); absent/null renders nothing.
+ * @property {number|null} [work_ms] - 완료 행의 작업 시간; absent/null renders
+ * nothing. 무엇을 잰 값인지는 `work_kind`가 말한다.
+ * @property {'attempt'|'session'} [work_kind] - `work_ms`가 잰 구간. 기본은
+ * attempt 실행 시간 합산이고, 세션 작업 행만 `session`(in_progress~close 경과)이다.
+ * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4).
+ * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4).
+ * @property {number} [done_at] - 완료 레인 진입 시각 = 완료 시각 (UI-rkly §3).
+ * @property {number} [added_at] - 대기 레인 진입 시각 (UI-q1tg §3.3). 유예 칩과
+ * `[지금 시작]`의 유일한 판정 재료이고, 대기 행이 아니면 필드 자체가 없다.
+ * @property {LaneGate} [gate] - 이 행의 자동 디스패치를
+ * 막고 있는 게이트 (UI-01wh §3.1). 슬롯 4a 게이트 칩과 `▶ 재개`·`[지금 시작]`의
+ * 유일한 재료이고, 막혀 있지 않으면 필드 자체가 없다 (fail-quiet).
+ * @property {boolean} [manual_only] - 이 대기 행의 저장소가 자동 진행을 꺼 두었다
+ * (UI-3pu9 §4.1). `true`면 유예 칩과 유예로 서는 `[지금 시작]`을 그리지 않는다 —
+ * 스케줄러가 자동 출발을 하지 않아 "남은 시간 동안 미뤄진다"가 사실이 아니다.
+ * 대기 행이 아니거나 워크스페이스 상태를 읽지 못하면 `false`다.
+ * @property {boolean} [ghost] - Serial-lane occupancy row (UI-04vo §4): the
+ * lineage holding the lane, drawn dimmed and never draggable.
+ * @property {number} [seq] - 1-based execution order number in a serial lane.
+ * @property {boolean} [rereview_required] - An admitted stale receipt needs re-review.
+ * @property {LaneExecChips|null} [exec_chips] -
+ * 실행 설정 칩 (worker-card-exec-chips §2.2): 대기 행과 후보 카드가 "이 설정으로
+ * 돌아간다"를 적재 전에 미리 보여 준다. PR 대기 행은 싣지 않는다. 완료 행은
+ * 시제가 다르다 (UI-q1tg §3.4 / UI-j10d): 마지막 구현 attempt의 기록을 표시한다.
+ * @property {DependencyChips|null} [dependency_chips] - 슬롯 4 두 줄의 의존·
+ * 정보 칩 (UI-eey2 §5.1, 두 줄은 UI-8x90 §4.1).
+ * @property {{ chip_key: string, content: import('./judgement-popover.js').ChipPopoverContent }|null} [chip_popover] -
+ * 이 카드에서 열려 있는 판정 칩 사유 팝업 (UI-8x90 §4.5). 열림 상태는 뷰가
+ * 소유하고 (`app/views/chip-popover.js`), 템플릿은 어느 칩 아래에 무엇을 그릴지만
+ * 읽는다.
+ * @property {'three_line'} [done_layout] - 완료 행 변형 (UI-eey2 §8). The
+ * monitor's done row carries a repo badge as well, which squeezes the two-line
+ * variant's title down to a few characters, so the title moves onto its own
+ * line. Absent keeps the two-line variant.
+ * @property {boolean} [exec_chips_pinned] - Whether {@link MiniItem.exec_chips}
+ * are ISSUE PINS differing from the repo default (UI-eey2 §5) rather than the
+ * resolved settings — drawn in the pin colour.
+ * @property {boolean} [worker_ineligible] - Candidate carries the
+ * `worker-ineligible` label (UI-8881). Observation-only: the card is shaded,
+ * wears the ⛔ chip, and refuses drag and queue placement. The candidate
+ * projection computes it once; the template never re-reads label strings.
+ * @property {boolean} [session_preferred] - Candidate carries a VALID
+ * `session-preferred` attachment (UI-49mc §4.4): 워커로 돌릴 수는 있지만 세션이
+ * 낫다는 advisory. 투영이 `worker_ineligible` 우선순위를 이미 접었으므로 템플릿은
+ * 다시 판정하지 않고, 실행 자격·drag·적재는 건드리지 않는다.
+ * @property {string} [session_preferred_reason] - 계약 enum 안의 사유. 칩 툴팁
+ * 문구의 키이며, enum 밖 값은 투영에 도달하기 전에 걸러진다.
+ * @property {string[]} [blocked_by] - 지금 이 bead를 막는 선행 ID들. 칩은
+ * `dependency_chips.predecessors`가 그리고, 여기 배열은 판정 팝업의 문장이
+ * 읽는다.
+ * @property {import('../protocol.js').ExternalWaitObservation} [external_wait] - Consumer wait record.
+ * @property {import('../protocol.js').WaitReason[]} [wait_reasons] - Server display judgments for this issue.
+ * 대상을 함께 싣는 요약 칩 자료.
+ * @property {boolean} [spec_after_blocker] - 선행의 결과가 이 bead의 설계
+ * 전제라 spec까지 선행 뒤로 미룬다 (UI-svh6 §4.2). 투영이 `spec-after-blocker`
+ * 라벨과 지금의 blocker를 함께 읽어 접은 값이며, 자격·drag·적재 어디에도 들어가지
+ * 않는다.
+ * @property {string} [complex_reason] -
+ * 복잡 판정 (UI-7nhi §3): 라벨 `complex`와 metadata `complex_reason`이 함께
+ * 성립할 때의 신호 문자열이다. 표시 전용이고 자격·drag·적재 어디에도 들어가지
+ * 않는다. 생략·`''`는 판정 없음이다.
+ * @property {string} [route] - 이 bead의 관측된 `metadata.route`. 칩 클릭이
+ * quick fix 이슈에서 거부되는지의 유일한 재료다 (UI-wg68 §5.2).
+ * @property {string[]} [labels] - 이 bead의 라벨. `frontend`·`backend` 판정 칩의
+ * 재료이고, 계약 어휘 밖 라벨은 그리지 않는다 (UI-wg68 §5.4).
+ * @property {Record<string, any>} [chip_metadata] - 칩 바인딩 판정의 재료
+ * (UI-wg68 §5.1): 이 bead의 metadata 그대로다. `applied_exec_preset`·
+ * `chip_preset_source`·17핀을 한 객체에서 읽어야 `data-state`가 선다. 오버레이가
+ * 이 bead의 metadata를 모르면 필드도 없고, 그때 바인딩된 칩은 상태 없이 그려진다.
+ * @property {{ codes: string[] }} [receipt_badge] - 실행 영수증 회계 잔여
+ * (UI-h6t1 §4.3): dotfiles 계약이 `badge` 등급으로 확정한 코드들이다. 머지
+ * 판정을 바꾸지 않으므로 슬롯 5 판정 칩 하나로만 선다. 코드가 없으면 필드도
+ * 없다.
+ * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
+ * @property {string} [worker_created_from] - Immutable Worker creation source.
+ * @property {string} [worker_created_from_root_dir] - Confirmed source owner.
+ * @property {string[]} [carried_to] - 이 bead에서 이월된 후속 ID들 (UI-btj6 §3).
+ * 투영이 `carried_from` metadata와 이 bead를 가리키는 `blocks` 간선만으로 접은
+ * 값이며, 완료 행만 싣는다. 칩은 `carryoverChipsTemplate`이 슬롯 4b에
+ * 그리고, 재료가 없으면 필드도 없다.
+ * @property {number} [priority] - Bead 우선순위 0..4. 숫자가 아니면 배지를
+ * 그리지 않는다.
+ * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
+ * `false`인 행만 `is-dimmed`로 흐려지고, 검색 중이 아니면 키 자체가 없어 지금
+ * 그대로 그려진다 (fail-quiet). 숨김이 아니므로 순번·좌표·건수는 그대로다.
+ * @property {boolean} [filter_match] - 우선순위·타입·라벨 필터와의 일치
+ * (UI-p7s2 §6). 검색과 같은 자리·같은 흐림이다: 대기 행을 숨기면 직렬 순번과
+ * 큐 위치가 어긋나므로 이 레인들은 숨기지 않는다.
+ * @property {string} [issue_type] - bd `issue_type` (타입 필터의 재료).
+ * @property {boolean} [deferred] - 보류 선반의 행 (UI-p7s2 §3).
+ */
+
+/**
+ * One line of a bead's Worker history (record-timeline-retention §5), already
+ * projected: the renderer never sees a raw event, only what it draws.
+ *
+ * @typedef {Object} TimelineRow
+ * @property {string} event_id - lit-html의 반복 키.
+ * @property {string} kind
+ * @property {string} summary
+ * @property {number|null} at
+ */
+
+/**
+ * @typedef {Object} WorkflowStage
+ * @property {'none'|'dim'|'full'} [fill]
+ * @property {'review'|'skip'|null} [glyph]
+ * @property {boolean} [stale]
+ * @property {string | null} [receipt]
+ * @property {string | null} [approval_receipt]
+ * @property {'missing'|'fresh'|'stale'|'unknown'|'legacy'} [approval_state]
+ * @property {'review'|'incomplete'|null} [review_state] - Whether the plan cell
+ * stands on a complete D7 review pair, or on one whose stats anchor disagrees
+ * with the review anchor (UI-y9hl U3).
+ * @property {StepperDoc} [doc]
+ */
+
+/**
+ * The document a spec/plan cell stands for. The server sends it whenever a
+ * path exists, independent of `fill` — the viewer owns the "not authored yet"
+ * and "unreadable" distinction (spec §2).
+ *
+ * @typedef {Object} StepperDoc
+ * @property {string} path
+ * @property {'spec_draft'|'plan_pending'|null} missing_state
+ */
+
+/**
+ * @typedef {Object} WorkflowSummary
+ * @property {'quick_fix'|'spec_backed'|'full_plan'} route
+ * @property {Record<string, WorkflowStage>} stages
+ */
+
+/**
+ * @typedef {Object} ExecReceipt
+ * @property {string} kind
+ * @property {string} actor
+ * @property {string | null} effort - Resolved dispatch effort on a delegated
+ * receipt; `null` on `main:` receipts and on historical delegated ones written
+ * before the contract carried the segment.
+ * @property {string} sha
+ */
+
+/**
+ * The 오케/워커 execution-settings chips of a lane item (worker-card-exec-chips
+ * §4).
+ *
+ * @typedef {import('./exec-settings-chip.js').ExecChip & { pinned?: boolean }} LaneExecChip
+ * @typedef {{ orchestration: LaneExecChip|null, worker: LaneExecChip|null }} LaneExecChips
+ */
+
+/**
+ * One attempt's backoff record (UI-5ym8 §6). `attempts` counts the tries the
+ * lineage has spent INCLUDING this one, so `n/max` reads the way a person
+ * counts. `next_at` is absent when the retry is already due.
+ *
+ * @typedef {Object} RetryTile
+ * @property {string|null} cause
+ * @property {number} attempts
+ * @property {number} max
+ * @property {number|null} next_at
+ */
+
+/**
+ * 선행 대기 attempt의 결정 재료 (선행 대기 계층 §5.1).
+ *
+ * `blockers`는 서버가 판정 시점에 증명한 미해결 `blocks` 엣지이며 세션 결과줄이
+ * 아니다 (§4.2). `summary`는 세션의 마지막 문장이고, 없으면 본문 줄을 그리지
+ * 않는다 (fail-quiet).
+ *
+ * @typedef {Object} WaitTile
+ * @property {string|null} summary
+ * @property {Array<{ id: string, rig: string|null, status: string }>} blockers
+ * @property {number|null} since - 이 attempt가 대기로 마감된 시각.
+ * @property {string} [cause]
+ * @property {string|null} [resume_reason] - Why the preserved session cannot resume.
+ * @property {{ classification: string, disposition: string, reason: string, no_progress: { count: number, key: string }|null, label: string|null, sentence: string|null }} [recovery]
+ */
+
+/**
+ * @typedef {Object} FailureTile
+ * @property {string|null} cause
+ * @property {{ reason?: string|null, command?: string|null, summary?: string|null, message?: string|null, resets_at?: number|null }|null} cause_detail
+ * @property {string|null} [summary] - 세션의 마지막 오류/보고 한 줄 (UI-5ym8
+ * §6), `cause_detail`에서 끌어올린 값. 타일 본문과 팝오버 첫 줄이 같은 것을
+ * 읽는다. 옛 기록에는 없다 (fail-quiet).
+ * @property {string} [bead_id] - 이 시도가 속한 bead. Worker 액션이 CAS 명령의
+ * `bead_id`로 사용하므로 투영이 실어 나른다.
+ * @property {RetryTile|null} [retry] - 이 실패 앞에 있었던 backoff 이력 (§6).
+ * @property {number|null} finished_at
+ * @property {string|null} runner
+ * @property {string|null} model
+ * @property {string|null} effort
+ * @property {string|null} observed_effort
+ * @property {string|null} speed
+ * @property {string} attempt_id
+ * @property {import('../utils/token-usage.js').UsageRecord|import('../utils/token-usage.js').UsageProjection|null} usage
+ * @property {boolean} halted_auto_advance
+ * @property {boolean} quickfix_lane
+ * @property {{ cursor?: string|null, head_sha?: string|null, reason?: string|null }|null} quickfix_landing
+ * @property {boolean} resume_eligible
+ * @property {string|null} resume_reason
+ * @property {string} [resume_refused_sentence] - Guidance from a refused resume.
+ * @property {'prior_attempt'|null} [continuation_choice] - 이 자식이 시작된 재개
+ * 의미 (UI-qce9 §5.3). `prior_attempt`이면 재개 실패 문장이 '새 세션으로 대체'를
+ * 말하지 않는다 — 실제로 대체하지 않았기 때문이다.
+ * @property {boolean} landed
+ * @property {'merged'|'unmerged'} confirmation
+ * @property {TimelineRow[]} [timeline] - 이 bead의 최근 이력, 최신순
+ * (record-timeline-retention §9). `lane-model.js`가 스냅샷의 `bead_timelines`
+ * 에서 실어 나른 것이며, 이력이 없는 bead는 키 자체가 없다 (fail-quiet).
+ * @property {string} [log_path] - §4 해석 순서가 실제로 찾아낸 위치이므로
+ * 아카이브(`.gz`)일 수도 있고, 기록된 값과 다를 수도 있다. 없으면 줄이 빠진다.
+ * @property {boolean} [log_expired] - 보존 정책이 로그를 지웠다 (§4). 경로가
+ * 없다는 것과 다른 대답이므로 자기 키를 갖는다.
+ * @property {boolean} [log_unreadable] - 해석 사다리가 저장소 오류를 만났다
+ * (§4). 삭제된 것이 아니므로 만료됨과 다른 문구를 쓴다.
+ * @property {boolean} [open] - Ephemeral view state for this attempt's detail.
+ */

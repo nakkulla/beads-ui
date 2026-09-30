@@ -20,7 +20,7 @@ import {
   FAILURE_SENTENCES,
   RECOVERY_WAIT_SENTENCES
 } from '../utils/failure-sentences.js';
-import { formatElapsed } from '../views/worker/lanes.js';
+import { formatElapsed } from './attempt-facts.js';
 
 /**
  * @param {unknown} reason

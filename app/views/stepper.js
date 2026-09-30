@@ -2,36 +2,9 @@ import { html } from 'lit-html';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
- */
-
-/**
- * @typedef {Object} WorkflowStage
- * @property {'none'|'dim'|'full'} [fill]
- * @property {'review'|'skip'|null} [glyph]
- * @property {boolean} [stale]
- * @property {string | null} [receipt]
- * @property {string | null} [approval_receipt]
- * @property {'missing'|'fresh'|'stale'|'unknown'|'legacy'} [approval_state]
- * @property {'review'|'incomplete'|null} [review_state] - Whether the plan cell
- * stands on a complete D7 review pair, or on one whose stats anchor disagrees
- * with the review anchor (UI-y9hl U3).
- * @property {StepperDoc} [doc]
- */
-
-/**
- * The document a spec/plan cell stands for. The server sends it whenever a
- * path exists, independent of `fill` — the viewer owns the "not authored yet"
- * and "unreadable" distinction (spec §2).
- *
- * @typedef {Object} StepperDoc
- * @property {string} path
- * @property {'spec_draft'|'plan_pending'|null} missing_state
- */
-
-/**
- * @typedef {Object} WorkflowSummary
- * @property {'quick_fix'|'spec_backed'|'full_plan'} route
- * @property {Record<string, WorkflowStage>} stages
+ * @typedef {import('../model/lane-model.js').WorkflowStage} WorkflowStage
+ * @typedef {import('../model/lane-model.js').StepperDoc} StepperDoc
+ * @typedef {import('../model/lane-model.js').WorkflowSummary} WorkflowSummary
  */
 
 /**

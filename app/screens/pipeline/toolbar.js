@@ -11,8 +11,8 @@
  */
 import { html } from 'lit-html';
 import { formatTimestampLocal } from '../../model/relative-time.js';
-import { crossRepoTokenTotal } from '../../views/monitor/usage.js';
-import { repoOpsStripModel } from '../../views/worker/lanes.js';
+import { repoOpsStripModel } from '../../model/repo-ops-strip.js';
+import { crossRepoTokenTotal } from '../../model/usage-total.js';
 import { repoChips, repoStrip } from './repo-strip.js';
 
 /**

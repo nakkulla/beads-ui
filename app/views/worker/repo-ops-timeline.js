@@ -15,6 +15,7 @@
  * @import { TemplateResult } from 'lit-html'
  */
 import { html, render } from 'lit-html';
+import { formatElapsed } from '../../model/attempt-facts.js';
 import {
   failureText,
   operationFailureText,
@@ -26,7 +27,8 @@ import {
   cleanupStepperView
 } from '../../model/merge-steps.js';
 import { formatTimestampLocal } from '../../model/relative-time.js';
-import { formatClock, formatElapsed, shortSha } from './lanes.js';
+import { shortSha } from '../../model/repo-ops-strip.js';
+import { formatClock } from './lanes.js';
 // One template for the log path, shared with the Worker row's completion card
 // (UI-8w4t §4) so both surfaces offer the same affordance and the same toast.
 import { logPathTemplate } from './log-path.js';

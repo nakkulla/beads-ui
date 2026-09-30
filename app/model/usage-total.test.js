@@ -1,12 +1,12 @@
 import { describe, expect, test } from 'vitest';
-import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
+import { crossRepoTokenTotal, tokenTotalTooltip } from './usage-total.js';
 
 /**
  * One 완료 아이템's minimal shape `crossRepoTokenTotal()` reads — just the
  * `usage` field `buildLanes()` already attaches via `sumAttemptUsage()`.
  *
- * @param {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null|undefined} usage
- * @returns {{ usage: import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null|undefined }}
+ * @param {import('../utils/token-usage.js').UsageRecord|import('../utils/token-usage.js').UsageProjection|null|undefined} usage
+ * @returns {{ usage: import('../utils/token-usage.js').UsageRecord|import('../utils/token-usage.js').UsageProjection|null|undefined }}
  */
 function doneItem(usage) {
   return { usage };

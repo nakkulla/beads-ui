@@ -25,7 +25,7 @@
  * @property {string} title_suffix
  * @property {boolean} busy
  */
-import { presetDeviation } from '../views/detail-panel/effective-settings.js';
+import { presetDeviation } from './effective-settings.js';
 import {
   APPLIED_EXEC_PRESET_KEY,
   CHIP_BINDING_KEYS,

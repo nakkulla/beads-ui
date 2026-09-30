@@ -26,6 +26,13 @@ import {
 } from '../../data/closed-range.js';
 import { createChipPresetToggle } from '../../model/chip-preset-binding.js';
 import {
+  discardAbandonCompletionMessage,
+  discardAbandonConfirmationMessage,
+  discardCompletionMessage,
+  discardConfirmationMessage
+} from '../../model/discard.js';
+import { providerProbeRefusalText } from '../../model/gate-labels.js';
+import {
   CANDIDATE_FILTER_DEFAULT,
   CANDIDATE_SORT_OPTIONS,
   READINESS_FILTER_OPTIONS,
@@ -36,6 +43,7 @@ import {
 } from '../../model/lane-model.js';
 import { disabledModelsOf } from '../../model/model-visibility.js';
 import { tileResolveFields } from '../../model/tile-resolve.js';
+import { runExternalWaitAction } from '../../screens/pipeline/external-wait-action.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
@@ -45,22 +53,16 @@ import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { watchMobile } from '../../utils/viewport.js';
 import { createChipPopover } from '../chip-popover.js';
-import { runExternalWaitAction } from '../worker/external-wait-action.js';
 import { createLaneCollapse } from '../worker/lane-collapse.js';
 import { createLaneDrag } from '../worker/lane-drag.js';
 import {
   SERIAL_LANE_LABEL,
   candidateCard,
-  discardAbandonCompletionMessage,
-  discardAbandonConfirmationMessage,
-  discardCompletionMessage,
-  discardConfirmationMessage,
   expandWaitSubject,
   judgementPopoverOf,
   miniRow,
   nowPanel,
   paneTemplate,
-  providerProbeRefusalText,
   queueRowOps,
   setChipPresetContext,
   waitBody

@@ -14,11 +14,8 @@
  * @typedef {{ orchestration: ExecChip|null, worker: ExecChip|null }} ExecChips
  */
 import { formatAttemptTuple } from '../utils/attempt-display.js';
-import {
-  SETTING_LABELS,
-  SOURCE_LABELS
-} from '../views/detail-panel/effective-settings.js';
-import { modelRunnerOf } from '../views/detail-panel/exec-settings.js';
+import { SETTING_LABELS, SOURCE_LABELS } from './effective-settings.js';
+import { modelRunnerOf } from './runner-catalog.js';
 
 /** Resolutions that carry no value worth showing as a chip token. */
 const EMPTY_RESOLUTIONS = new Set(['unavailable', 'not_applicable']);

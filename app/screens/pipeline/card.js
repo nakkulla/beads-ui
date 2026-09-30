@@ -10,6 +10,7 @@
  */
 import { html } from 'lit-html';
 import { ifDefined } from 'lit-html/directives/if-defined.js';
+import { SESSION_PREFERRED_TOOLTIP } from '../../model/judgement-popover.js';
 import { placementTitle } from '../../model/placement.js';
 import {
   depLines,
@@ -36,14 +37,6 @@ import { externalWaitParts, interactiveBadges } from './wait.js';
  * @typedef {import('lit-html').TemplateResult} TemplateResult
  * @typedef {{ now: number, chips: ChipPresetContext|null }} CardContext
  */
-
-/** Tooltip sentence of a valid `session-preferred` reason (UI-49mc §4.4). */
-const SESSION_PREFERRED_TOOLTIP = /** @type {Record<string, string>} */ ({
-  external_roundtrip:
-    '하네스 밖 상대와 예측 불가 왕복 반복 — 다른 rig 세션·사람·외부 시스템',
-  user_feedback_loop:
-    '진행 중 사용자 피드백 없이는 품질이 낮음 — 문안·설계 세부·방향 선택'
-});
 
 /**
  * The first readiness judgment of an unready candidate (UI-ff10 §6.1).

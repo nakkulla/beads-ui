@@ -189,104 +189,11 @@ import { logPathTemplate } from './log-path.js';
  */
 
 /**
- * 공급자 장애가 실패가 아니라는 판단과 복구 선택에 필요한 hold 표시 재료.
- *
- * @typedef {Object} HoldTile
- * @property {'outage'|'usage_limit'} kind
- * @property {string} detail
- * @property {string} [message]
- * @property {string} [summary]
- * @property {{ model?: string, account?: string, account_alias?: string }} [target]
- * @property {'pending'|'disarmed'|`refused:${string}`} [auto_resume]
- * @property {'none'|'cap'|'unconfigured'|'disabled'} [auto_switch] - Why the
- * limit hold did not move to another account (UI-13o1 §3.4). Absent when it did
- * switch; `cap` is retired vocabulary that old queue files may still carry.
- * @property {number} [resets_at]
- * @property {number} [next_probe_at]
- * @property {number} [live_preempt_skipped_at] - When the last live preempt
- * pass found no switch candidate for this attempt (UI-inge §3.6).
- * @property {string} [log_path]
- * @property {boolean} [open]
- */
-
-/**
- * One attempt's backoff record (UI-5ym8 §6). `attempts` counts the tries the
- * lineage has spent INCLUDING this one, so `n/max` reads the way a person
- * counts. `next_at` is absent when the retry is already due.
- *
- * @typedef {Object} RetryTile
- * @property {string|null} cause
- * @property {number} attempts
- * @property {number} max
- * @property {number|null} next_at
- */
-
-/**
- * 선행 대기 attempt의 결정 재료 (선행 대기 계층 §5.1).
- *
- * `blockers`는 서버가 판정 시점에 증명한 미해결 `blocks` 엣지이며 세션 결과줄이
- * 아니다 (§4.2). `summary`는 세션의 마지막 문장이고, 없으면 본문 줄을 그리지
- * 않는다 (fail-quiet).
- *
- * @typedef {Object} WaitTile
- * @property {string|null} summary
- * @property {Array<{ id: string, rig: string|null, status: string }>} blockers
- * @property {number|null} since - 이 attempt가 대기로 마감된 시각.
- * @property {string} [cause]
- * @property {string|null} [resume_reason] - Why the preserved session cannot resume.
- * @property {{ classification: string, disposition: string, reason: string, no_progress: { count: number, key: string }|null, label: string|null, sentence: string|null }} [recovery]
- */
-
-/**
- * @typedef {Object} FailureTile
- * @property {string|null} cause
- * @property {{ reason?: string|null, command?: string|null, summary?: string|null, message?: string|null, resets_at?: number|null }|null} cause_detail
- * @property {string|null} [summary] - 세션의 마지막 오류/보고 한 줄 (UI-5ym8
- * §6), `cause_detail`에서 끌어올린 값. 타일 본문과 팝오버 첫 줄이 같은 것을
- * 읽는다. 옛 기록에는 없다 (fail-quiet).
- * @property {string} [bead_id] - 이 시도가 속한 bead. Worker 액션이 CAS 명령의
- * `bead_id`로 사용하므로 투영이 실어 나른다.
- * @property {RetryTile|null} [retry] - 이 실패 앞에 있었던 backoff 이력 (§6).
- * @property {number|null} finished_at
- * @property {string|null} runner
- * @property {string|null} model
- * @property {string|null} effort
- * @property {string|null} observed_effort
- * @property {string|null} speed
- * @property {string} attempt_id
- * @property {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} usage
- * @property {boolean} halted_auto_advance
- * @property {boolean} quickfix_lane
- * @property {{ cursor?: string|null, head_sha?: string|null, reason?: string|null }|null} quickfix_landing
- * @property {boolean} resume_eligible
- * @property {string|null} resume_reason
- * @property {string} [resume_refused_sentence] - Guidance from a refused resume.
- * @property {'prior_attempt'|null} [continuation_choice] - 이 자식이 시작된 재개
- * 의미 (UI-qce9 §5.3). `prior_attempt`이면 재개 실패 문장이 '새 세션으로 대체'를
- * 말하지 않는다 — 실제로 대체하지 않았기 때문이다.
- * @property {boolean} landed
- * @property {'merged'|'unmerged'} confirmation
- * @property {TimelineRow[]} [timeline] - 이 bead의 최근 이력, 최신순
- * (record-timeline-retention §9). `lane-model.js`가 스냅샷의 `bead_timelines`
- * 에서 실어 나른 것이며, 이력이 없는 bead는 키 자체가 없다 (fail-quiet).
- * @property {string} [log_path] - §4 해석 순서가 실제로 찾아낸 위치이므로
- * 아카이브(`.gz`)일 수도 있고, 기록된 값과 다를 수도 있다. 없으면 줄이 빠진다.
- * @property {boolean} [log_expired] - 보존 정책이 로그를 지웠다 (§4). 경로가
- * 없다는 것과 다른 대답이므로 자기 키를 갖는다.
- * @property {boolean} [log_unreadable] - 해석 사다리가 저장소 오류를 만났다
- * (§4). 삭제된 것이 아니므로 만료됨과 다른 문구를 쓴다.
- * @property {boolean} [open] - Ephemeral view state for this attempt's detail.
- */
-
-/**
- * One line of a bead's Worker history (record-timeline-retention §5), already
- * projected: the renderer never sees a raw event, only what it draws.
- *
- * @typedef {Object} TimelineRow
- * @property {string} event_id - lit-html의 반복 키.
- * @property {string} kind
- * @property {string} summary
- * @property {number|null} at
+ * @typedef {import('../../model/gate-labels.js').HoldTile} HoldTile
+ * @typedef {import('../../model/lane-model.js').TimelineRow} TimelineRow
+ * @typedef {import('../../model/lane-model.js').RetryTile} RetryTile
+ * @typedef {import('../../model/lane-model.js').WaitTile} WaitTile
+ * @typedef {import('../../model/lane-model.js').FailureTile} FailureTile
  */
 
 /**

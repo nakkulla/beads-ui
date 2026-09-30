@@ -22,12 +22,12 @@ import {
   CHIP_PRESET_SOURCE_KEY
 } from '../../model/session-model.js';
 import { awaitingUserReason } from '../../utils/awaiting-user-reason.js';
+import { blockerIdsOf } from '../../utils/blocker-ids.js';
 import { buildCarryoverIndex } from '../../utils/carryover-index.js';
 import { buildChildrenIndex, rollupFor } from '../../utils/child-rollup.js';
 import { debug } from '../../utils/logging.js';
 import { sessionPreferredReason } from '../../utils/session-preferred.js';
 import { specAfterBlockerActive } from '../../utils/spec-after-blocker.js';
-import { blockerIdsOf } from './blocker-ids.js';
 import {
   applyCandidateSort,
   normalizeCandidateSort

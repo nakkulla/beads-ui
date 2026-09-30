@@ -8,6 +8,7 @@ import { ALL_SCOPE } from '../../core/state.js';
 import { closedRangeSince } from '../../data/closed-range.js';
 import { mergeQueue } from '../../model/adopted-queue.js';
 import { orderCandidates, orderRunning } from '../../model/candidate-order.js';
+import { judgementPopoverLines } from '../../model/judgement-popover.js';
 import { isHiddenLabel } from '../../model/label-policy.js';
 import {
   CANDIDATE_FILTER_DEFAULT,
@@ -19,7 +20,6 @@ import {
 } from '../../model/lane-model.js';
 import { deferredRows } from '../../model/repo-rows.js';
 import { tileResolveFields } from '../../model/tile-resolve.js';
-import { judgementPopoverContent } from '../../views/worker/lanes.js';
 import { opButton } from './chips.js';
 import { isQueueRow } from './mini-row.js';
 
@@ -272,7 +272,7 @@ export function popoverOf(item, open) {
         }
       : null;
   }
-  const content = judgementPopoverContent(item, open.chip_key);
+  const content = judgementPopoverLines(item, open.chip_key);
   return content
     ? {
         chip_key: open.chip_key,

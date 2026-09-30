@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { APPLIED_EXEC_PRESET_KEY as SERVER_APPLIED_EXEC_PRESET_KEY } from '../../../server/worker/exec-enums.js';
-import { APPLIED_EXEC_PRESET_KEY } from '../../model/session-model.js';
+import { APPLIED_EXEC_PRESET_KEY as SERVER_APPLIED_EXEC_PRESET_KEY } from '../../server/worker/exec-enums.js';
 import {
   EFFECTIVE_GROUPS,
   buildImplPresetApplyPayload,
@@ -11,6 +10,7 @@ import {
   presetExpectationForIssue,
   resolveLayer
 } from './effective-settings.js';
+import { APPLIED_EXEC_PRESET_KEY } from './session-model.js';
 
 const PROJECTION = {
   supported: true,

@@ -16,14 +16,7 @@ import { html } from 'lit-html';
  */
 
 /**
- * One popup's content. The VIEW composes it — this module owns only when a
- * popup is open and how it is framed.
- *
- * `exit`는 마지막 줄에 서는 출구 조작이다 (UI-pw2g §3.4): 사실을 말하는 칩과 그
- * 사실을 앞당기는 조작이 한자리에 모인다. 재료가 없으면 undefined고 줄 자체를
- * 그리지 않는다 (fail-quiet).
- *
- * @typedef {{ title: string, lines: string[], exit?: import('lit-html').TemplateResult }} ChipPopoverContent
+ * @typedef {import('../model/judgement-popover.js').ChipPopoverContent} ChipPopoverContent
  */
 
 /**

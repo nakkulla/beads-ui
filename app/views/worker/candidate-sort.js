@@ -14,7 +14,7 @@ import {
   cmpChain,
   isSortStep
 } from '../../model/sort.js';
-import { blockerIdsOf } from './blocker-ids.js';
+import { blockerIdsOf } from '../../utils/blocker-ids.js';
 
 /**
  * @type {string}

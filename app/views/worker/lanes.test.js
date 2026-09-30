@@ -1,10 +1,21 @@
 import { html, render } from 'lit-html';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { formatElapsed, sumAttemptWorkMs } from '../../model/attempt-facts.js';
+import {
+  discardAbandonCompletionMessage,
+  discardAbandonConfirmationMessage,
+  discardCompletionMessage,
+  discardConfirmationMessage,
+  discardFailureGuidance,
+  discardPhaseLabel,
+  discardProjection
+} from '../../model/discard.js';
 import { providerHoldBadgeText } from '../../model/gate-labels.js';
 import {
   formatClockLocal,
   formatTimestampLocal
 } from '../../model/relative-time.js';
+import { repoOpsStripModel } from '../../model/repo-ops-strip.js';
 import { SUMMARY_CHIPS } from '../../model/wait-vocabulary.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
 import {
@@ -12,18 +23,10 @@ import {
   blockedSummary,
   blockedSummaryTemplate,
   candidateCard,
-  discardAbandonCompletionMessage,
-  discardAbandonConfirmationMessage,
-  discardCompletionMessage,
-  discardConfirmationMessage,
-  discardFailureGuidance,
-  discardPhaseLabel,
-  discardProjection,
   discardReceiptTemplate,
   execChipsTemplate,
   externalWaitCardParts,
   formatClock,
-  formatElapsed,
   interactiveSessionBadgesTemplate,
   interactiveSessionClosingTemplate,
   judgementPopoverContent,
@@ -33,12 +36,10 @@ import {
   paneTemplate,
   queueRowOps,
   quickFixReviewChipTemplate,
-  repoOpsStripModel,
   reviewSessionRowState,
   routeChipTemplate,
   setChipPresetContext,
   startNowButtonTemplate,
-  sumAttemptWorkMs,
   summaryChipsTemplate,
   tokenChipTemplate,
   waitBody,

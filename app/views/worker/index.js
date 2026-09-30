@@ -42,7 +42,15 @@ import {
 } from '../../data/closed-range.js';
 import { createListSelectors } from '../../data/list-selectors.js';
 import { createChipPresetToggle } from '../../model/chip-preset-binding.js';
+import {
+  discardAbandonCompletionMessage,
+  discardAbandonConfirmationMessage,
+  discardCompletionMessage,
+  discardConfirmationMessage,
+  discardProjection
+} from '../../model/discard.js';
 import { failureSentence } from '../../model/failure-labels.js';
+import { providerProbeRefusalText } from '../../model/gate-labels.js';
 import {
   PRIORITY_FILTER_OPTIONS,
   READINESS_FILTER_OPTIONS,
@@ -76,6 +84,7 @@ import {
   hasLiveResolveSession,
   tileResolveFields
 } from '../../model/tile-resolve.js';
+import { runExternalWaitAction } from '../../screens/pipeline/external-wait-action.js';
 import {
   isImplementationAttempt,
   latestImplementationAttempts
@@ -100,24 +109,17 @@ import {
   saveCandidateSort,
   setChainStepKey
 } from './candidate-sort.js';
-import { runExternalWaitAction } from './external-wait-action.js';
 import { createLaneCollapse } from './lane-collapse.js';
 import { createLaneDrag } from './lane-drag.js';
 import {
   SERIAL_LANE_LABEL,
   candidateCard,
-  discardAbandonCompletionMessage,
-  discardAbandonConfirmationMessage,
-  discardCompletionMessage,
-  discardConfirmationMessage,
-  discardProjection,
   expandWaitSubject,
   graceRemainingMs,
   judgementPopoverOf,
   miniRow,
   nowPanel,
   paneTemplate,
-  providerProbeRefusalText,
   queueRowOps,
   repoOpsStripTemplate,
   reviewSessionRowState,

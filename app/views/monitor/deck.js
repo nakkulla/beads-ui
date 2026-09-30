@@ -36,12 +36,15 @@ import {
   formatOrchestrationChip,
   formatWorkerChip
 } from '../../model/exec-settings-chip.js';
+import { modelRunnerOf } from '../../model/runner-catalog.js';
+import {
+  crossRepoTokenTotal,
+  tokenTotalTooltip
+} from '../../model/usage-total.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
-import { modelRunnerOf } from '../detail-panel/exec-settings.js';
 import { summaryChipsTemplate, tokenChipTemplate } from '../worker/lanes.js';
 import { iconGear, iconMerge, iconPause, iconPlay } from './icons.js';
-import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
 
 /**
  * @import { LaneItem } from '../../model/lane-model.js'

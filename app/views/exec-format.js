@@ -35,13 +35,7 @@ function executionKindLabel(kind) {
 }
 
 /**
- * @typedef {Object} ExecReceipt
- * @property {string} kind
- * @property {string} actor
- * @property {string | null} effort - Resolved dispatch effort on a delegated
- * receipt; `null` on `main:` receipts and on historical delegated ones written
- * before the contract carried the segment.
- * @property {string} sha
+ * @typedef {import('../model/lane-model.js').ExecReceipt} ExecReceipt
  */
 
 /**

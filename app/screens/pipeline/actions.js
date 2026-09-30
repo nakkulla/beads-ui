@@ -10,17 +10,17 @@
  * are the current base's, unchanged: they are imported from their owners
  * rather than re-worded here.
  */
-import { formatAttemptTuple } from '../../utils/attempt-display.js';
-import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
-import { runResumeFlow } from '../../utils/resume-flow.js';
-import { runExternalWaitAction } from '../../views/worker/external-wait-action.js';
 import {
   discardAbandonCompletionMessage,
   discardAbandonConfirmationMessage,
   discardCompletionMessage,
-  discardConfirmationMessage,
-  providerProbeRefusalText
-} from '../../views/worker/lanes.js';
+  discardConfirmationMessage
+} from '../../model/discard.js';
+import { providerProbeRefusalText } from '../../model/gate-labels.js';
+import { formatAttemptTuple } from '../../utils/attempt-display.js';
+import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
+import { runResumeFlow } from '../../utils/resume-flow.js';
+import { runExternalWaitAction } from './external-wait-action.js';
 
 /**
  * @typedef {Object} ActionDeps
