@@ -43,16 +43,24 @@ import {
 } from '../../model/lane-model.js';
 import { disabledModelsOf } from '../../model/model-visibility.js';
 import { tileResolveFields } from '../../model/tile-resolve.js';
+import { resolveContinuationMismatch } from '../../screens/dialogs/continuation-dialog.js';
+import {
+  providerResumeDialogTemplate,
+  providerResumeDraft,
+  providerResumeDraftChange,
+  providerResumeOverride,
+  showProviderResumeDialog
+} from '../../screens/dialogs/provider-resume-dialog.js';
+import { runResumeFlow } from '../../screens/dialogs/resume-flow.js';
 import { runExternalWaitAction } from '../../screens/pipeline/external-wait-action.js';
+import { createTranscriptDrawer } from '../../screens/transcript/transcript-drawer.js';
+import { createChipPopover } from '../../ui/chip-popover.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
-import { resolveContinuationMismatch } from '../../screens/dialogs/continuation-dialog.js';
 import { debug } from '../../utils/logging.js';
-import { runResumeFlow } from '../../screens/dialogs/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { watchMobile } from '../../utils/viewport.js';
-import { createChipPopover } from '../chip-popover.js';
 import { createLaneCollapse } from '../worker/lane-collapse.js';
 import { createLaneDrag } from '../worker/lane-drag.js';
 import {
@@ -67,15 +75,7 @@ import {
   setChipPresetContext,
   waitBody
 } from '../worker/lanes.js';
-import {
-  providerResumeDialogTemplate,
-  providerResumeDraft,
-  providerResumeDraftChange,
-  providerResumeOverride,
-  showProviderResumeDialog
-} from '../../screens/dialogs/provider-resume-dialog.js';
 import { runningTile } from '../worker/running-grid.js';
-import { createTranscriptDrawer } from '../../screens/transcript/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
 
 /**
@@ -925,7 +925,7 @@ export function createMonitorView(mount_element, options) {
    * 함수가 문장을 만든다.
    *
    * @param {{ id: string }} item
-   * @returns {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null}
+   * @returns {{ chip_key: string, content: import('../../ui/chip-popover.js').ChipPopoverContent }|null}
    */
   function popoverOf(item) {
     return judgementPopoverOf(/** @type {any} */ (item), (chip_key) =>

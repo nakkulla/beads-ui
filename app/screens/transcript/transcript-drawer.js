@@ -24,14 +24,13 @@
  * bundle whose summary a past bundle collapses to (see {@link blocksOf}).
  */
 import { html } from 'lit-html';
+import { copyWithToast } from '../../ui/copy.js';
 import {
   formatRecordedAt,
   promptBlockTemplate,
   promptStatusTemplate
 } from '../../ui/prompt-block.js';
 import { render } from '../../ui/render.js';
-import { showToast } from '../../ui/toast.js';
-import { copyToClipboard } from '../../utils/clipboard.js';
 import {
   finishedState,
   firstLineOf,
@@ -517,13 +516,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
    * @param {string} value
    */
   function copyValue(value) {
-    void copyToClipboard(value).then((ok) => {
-      if (ok) {
-        showToast('복사됨', 'success', 1200);
-      } else {
-        showToast('복사 실패', 'error', 1600);
-      }
-    });
+    void copyWithToast(value);
   }
 
   /**

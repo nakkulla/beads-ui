@@ -106,6 +106,9 @@
   --accent-warn: #e8b45a;
   --accent-child: #6cb6ff;
 
+  /* --- overlay scrim (sheet, overlay host backdrops) --- */
+  --scrim: rgb(5 8 12 / 55%);
+
   /* --- font families --- */
   --font-sans:
     -apple-system, 'Apple SD Gothic Neo', BlinkMacSystemFont, 'Segoe UI',

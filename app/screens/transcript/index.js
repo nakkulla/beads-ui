@@ -13,6 +13,7 @@
  * @import { DrawerOpenInput } from './transcript-drawer.js'
  * @import { MatchMedia } from '../../ui/viewport.js'
  */
+import { createOverlayHost } from '../../ui/overlay.js';
 import { viewportOf } from '../../ui/viewport.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
@@ -44,15 +45,7 @@ function isOwnEntry(state) {
  * @param {TranscriptDeps} deps
  */
 export function createTranscriptScreen(deps) {
-  const overlay = document.createElement('div');
-  overlay.className = 'tr-overlay';
-  overlay.hidden = true;
-  const backdrop = document.createElement('div');
-  backdrop.className = 'tr-overlay__backdrop';
-  const host = document.createElement('div');
-  host.className = 'tr-overlay__host';
-  overlay.append(backdrop, host);
-  document.body.appendChild(overlay);
+  const { overlay, host } = createOverlayHost(document, 'tr-overlay');
 
   /** Whether the open transcript pushed a history entry not yet popped. */
   let pushed = false;
@@ -90,6 +83,7 @@ export function createTranscriptScreen(deps) {
    */
   function open(input) {
     const narrow = viewportOf(deps.matchMedia).size === 'narrow';
+    overlay.classList.toggle('ui-overlay--sheet', narrow);
     overlay.classList.toggle('tr-overlay--sheet', narrow);
     overlay.hidden = false;
     drawer.open(input);

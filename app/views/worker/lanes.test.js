@@ -17,7 +17,7 @@ import {
 } from '../../model/relative-time.js';
 import { repoOpsStripModel } from '../../model/repo-ops-strip.js';
 import { SUMMARY_CHIPS } from '../../model/wait-vocabulary.js';
-import { chipPopoverTemplate } from '../chip-popover.js';
+import { chipPopoverTemplate } from '../../ui/chip-popover.js';
 import {
   JUDGEMENT_CHIP_KEYS,
   blockedSummary,

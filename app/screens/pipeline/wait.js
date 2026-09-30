@@ -431,14 +431,14 @@ function externalTimes(record, now) {
  * `⋯` sheet, confirmed before it is sent.
  *
  * @param {WaitReason} reason
- * @param {{ session_preferred?: boolean, include_probe?: boolean }} options
+ * @param {{ session_preferred?: boolean, include_probe?: boolean, surface?: 'card'|'detail' }} options
  * @returns {OpDef[]}
  */
 function reasonOps(reason, options) {
   /** @type {OpDef[]} */
   const ops = [];
   for (const action of reason.actions || []) {
-    if (action.placement === 'detail') {
+    if (action.placement === 'detail' && options.surface !== 'detail') {
       continue;
     }
     const payload = /** @type {Record<string, any>} */ (action.payload || {});
@@ -540,7 +540,8 @@ function reasonTimes(reason, options) {
  * (slot 6 foot) and times (slot 7).
  *
  * @param {WaitReason|null|undefined} reason
- * @param {{ external_wait?: ExternalWaitObservation, interactive_sessions?: InteractiveSessionView[], session_preferred?: boolean, include_probe?: boolean, now: number }} options
+ * @param {{ external_wait?: ExternalWaitObservation, interactive_sessions?: InteractiveSessionView[], session_preferred?: boolean, include_probe?: boolean, surface?: 'card'|'detail', now: number }} options - `surface:
+ * 'detail'` keeps the `placement: 'detail'` actions (UI-r6xq §4.1).
  * @returns {{ badge: TemplateResult|'', body: TemplateResult|'', ops: OpDef[], times: TemplateResult|'' }}
  */
 export function waitLines(reason, options) {

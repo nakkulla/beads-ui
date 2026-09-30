@@ -55,6 +55,9 @@ function isBlockedBy(graph, node, ancestor) {
  * @property {Map<string, string[]>} blocked_by_map - 열린 blocker만 실린 맵
  * (`app/protocol.md`). 이미 연결된 후보를 빼는 판정과 사이클 판정의 유일한
  * 원천이다.
+ * @property {DepCandidateIssue[]} [all_issues] - `root_dir`로 좁힌 모델의 좁히기
+ * 전 `issues`. 후보 모집단은 한 레포지만 의존 칩 이동은 다른 레포 이슈의 레포를
+ * 알아야 한다 (UI-dbn6 §3.2).
  */
 
 /**
@@ -171,11 +174,12 @@ export function depCandidateModel(workspaces, workspaces_state, options) {
     options && typeof options.root_dir === 'string' && options.root_dir.length
       ? options.root_dir
       : null;
+  if (root_dir === null) {
+    return { issues, blocked_by_map: blockedByMapOf(workspaces) };
+  }
   return {
-    issues:
-      root_dir === null
-        ? issues
-        : issues.filter((issue) => issue.root_dir === root_dir),
+    issues: issues.filter((issue) => issue.root_dir === root_dir),
+    all_issues: issues,
     blocked_by_map: blockedByMapOf(workspaces)
   };
 }

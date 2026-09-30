@@ -415,6 +415,39 @@ const DONE_KIND_LABELS = {
  */
 
 /**
+ * One `interactive_sessions` record projected for a card or the issue detail
+ * (UI-ri8n §3.3, UI-nuwy §3.8). Both surfaces read the same projection, so a
+ * badge never says one thing on the card and another in the detail.
+ *
+ * @param {string} key
+ * @param {Record<string, any>} record
+ * @returns {InteractiveSessionView}
+ */
+export function interactiveSessionViewOf(key, record) {
+  return {
+    key,
+    kind: record.kind,
+    provider: record.provider,
+    session_id: record.session_id,
+    mode: record.mode,
+    source: record.source,
+    fallback_reason: record.fallback_reason,
+    attempt_id: record.attempt_id,
+    tmux_session: record.tmux_session,
+    tmux_window: record.tmux_window,
+    state: record.state,
+    settled_at: record.settled_at,
+    launched_at: record.launched_at,
+    discord_url: record.discord_url ?? null,
+    turn_state: record.turn_state ?? null,
+    turn_state_since: record.turn_state_since ?? null,
+    last_message: record.last_message ?? null,
+    conversation: record.conversation ?? null,
+    closing: record.state === 'exiting' || record.settled_at !== null
+  };
+}
+
+/**
  * @typedef {MiniItem & {
  *   root_dir: string,
  *   workspace_name: string,
@@ -2908,27 +2941,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     )) {
       const identity = `${root_dir}\u0000${record.bead_id}`;
       const views = interactive_by_bead.get(identity) || [];
-      views.push({
-        key,
-        kind: record.kind,
-        provider: record.provider,
-        session_id: record.session_id,
-        mode: record.mode,
-        source: record.source,
-        fallback_reason: record.fallback_reason,
-        attempt_id: record.attempt_id,
-        tmux_session: record.tmux_session,
-        tmux_window: record.tmux_window,
-        state: record.state,
-        settled_at: record.settled_at,
-        launched_at: record.launched_at,
-        discord_url: record.discord_url ?? null,
-        turn_state: record.turn_state ?? null,
-        turn_state_since: record.turn_state_since ?? null,
-        last_message: record.last_message ?? null,
-        conversation: record.conversation ?? null,
-        closing: record.state === 'exiting' || record.settled_at !== null
-      });
+      views.push(interactiveSessionViewOf(key, record));
       interactive_by_bead.set(identity, views);
     }
     // The repo's own unit prices (preset-compare §1.3). Config, not code, owns

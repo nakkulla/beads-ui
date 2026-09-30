@@ -84,20 +84,28 @@ import {
   hasLiveResolveSession,
   tileResolveFields
 } from '../../model/tile-resolve.js';
+import { resolveContinuationMismatch } from '../../screens/dialogs/continuation-dialog.js';
+import {
+  providerResumeDialogTemplate,
+  providerResumeDraft,
+  providerResumeDraftChange,
+  providerResumeOverride,
+  showProviderResumeDialog
+} from '../../screens/dialogs/provider-resume-dialog.js';
+import { runResumeFlow } from '../../screens/dialogs/resume-flow.js';
 import { runExternalWaitAction } from '../../screens/pipeline/external-wait-action.js';
+import { createTranscriptDrawer } from '../../screens/transcript/transcript-drawer.js';
+import { createChipPopover } from '../../ui/chip-popover.js';
 import {
   isImplementationAttempt,
   latestImplementationAttempts
 } from '../../utils/active-attempts.js';
 import { formatAttemptTuple } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
-import { resolveContinuationMismatch } from '../../screens/dialogs/continuation-dialog.js';
-import { runResumeFlow } from '../../screens/dialogs/resume-flow.js';
 import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
 import { watchMobile } from '../../utils/viewport.js';
-import { createChipPopover } from '../chip-popover.js';
 import {
   CANDIDATE_SORT_PRESETS,
   SORT_KEY_OPTIONS,
@@ -128,19 +136,11 @@ import {
   tokenChipTemplate,
   waitBody
 } from './lanes.js';
-import {
-  providerResumeDialogTemplate,
-  providerResumeDraft,
-  providerResumeDraftChange,
-  providerResumeOverride,
-  showProviderResumeDialog
-} from '../../screens/dialogs/provider-resume-dialog.js';
 import { deriveWorkerOverlaps } from './queue-overlaps.js';
 import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
 import { createRepoOpsDrawer } from './repo-ops-timeline.js';
 import { runningGridTemplate } from './running-grid.js';
-import { createTranscriptDrawer } from '../../screens/transcript/transcript-drawer.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
 
 /**
@@ -3074,7 +3074,7 @@ export function createWorkerView(mount_element, options = {}) {
    * 문장은 `judgementPopoverContent`가 소유한다 — 두 탭이 같은 팝업을 낸다.
    *
    * @param {{ id: string }} item
-   * @returns {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null}
+   * @returns {{ chip_key: string, content: import('../../ui/chip-popover.js').ChipPopoverContent }|null}
    */
   function popoverOf(item) {
     return judgementPopoverOf(/** @type {any} */ (item), (chip_key) =>

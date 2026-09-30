@@ -3,11 +3,11 @@
  * reply and hold no prompt text of their own.
  */
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { createSessionLogStore } from '../model/session-log-store.js';
-import { createWorkerQueueStore } from '../model/worker-queue-store.js';
-import { createDetailPanel } from './detail-panel/index.js';
-import { createSettingsDialog } from './settings-dialog/index.js';
-import { createTranscriptDrawer } from '../screens/transcript/transcript-drawer.js';
+import { createSessionLogStore } from '../../model/session-log-store.js';
+import { createWorkerQueueStore } from '../../model/worker-queue-store.js';
+import { createSettingsDialog } from '../../views/settings-dialog/index.js';
+import { createTranscriptDrawer } from '../transcript/transcript-drawer.js';
+import { createDetailPanel } from './index.js';
 
 /**
  * @param {HTMLElement} root

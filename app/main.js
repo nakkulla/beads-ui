@@ -6,9 +6,9 @@
  * first snapshot's lanes → render. There are no boot list subscriptions; an
  * open surface adds only its own (issue detail, closed/deferred lists, ADR).
  *
- * Detail, settings, transcript, document viewer, new issue, ADR and compare
- * are the existing components mounted as bridges with the same options until
- * Phases 2–3 replace them.
+ * The issue detail, transcript, document viewer and new-issue dialog are the
+ * Phase 2 screens; settings, ADR and compare are the existing components
+ * mounted as bridges with the same options until Phase 3 replaces them.
  *
  * @import { MessageType } from './protocol.js'
  */
@@ -27,6 +27,7 @@ import {
 import { createWsClient } from './core/ws.js';
 import { createDisplayPolicyStore } from './data/display-policy-store.js';
 import { createAdrStore } from './model/adr-store.js';
+import { depCandidateModel } from './model/dep-candidates.js';
 import { createExecPresetStore } from './model/exec-preset-store.js';
 import { createModelVisibilityStore } from './model/model-visibility-store.js';
 import { createMonitorPipelineStore } from './model/monitor-pipeline-store.js';
@@ -35,6 +36,9 @@ import { createSubscriptionIssueStores } from './model/subscription-issue-stores
 import { createSubscriptionStore } from './model/subscriptions-store.js';
 import { createWorkerQueueStore } from './model/worker-queue-store.js';
 import { mountBridges } from './screens/bridges.js';
+import { createDetailPanel } from './screens/detail/index.js';
+import { createMdViewer } from './screens/doc-viewer/index.js';
+import { createNewIssueDialog } from './screens/new-issue/index.js';
 import { runGitPull } from './screens/pipeline/git-pull.js';
 import { createPipelineScreen } from './screens/pipeline/index.js';
 import { nameOf } from './screens/pipeline/scope.js';
@@ -243,7 +247,9 @@ export function bootstrap(root_element) {
       return {
         enabled: boot_done && switches_in_flight === 0,
         repo,
-        queue: repo || Boolean(state.selected_id) || settings_open,
+        // The detail reads its queue facts from the monitor rows (UI-dbn6
+        // §4.2): opening it adds only its `issue-detail` subscription.
+        queue: repo || settings_open,
         adr: state.view === 'adr',
         detail_id: state.selected_id
       };
@@ -532,38 +538,51 @@ export function bootstrap(root_element) {
     shell.render();
   });
 
-  // --- bridges ----------------------------------------------------------------
+  // --- overlays and bridges ----------------------------------------------------
 
-  const { new_issue_dialog, settings_dialog, compare_view, detail_panel } =
-    mountBridges({
-      root: root_element,
-      compare_root,
-      adr_root,
-      detail_mount,
-      send: tracked_send,
-      transport,
-      stores: {
-        monitor: monitor_store,
-        queue: worker_queue_store,
-        presets: exec_preset_store,
-        visibility: model_visibility_store,
-        sessionLog: session_log_store,
-        issues: sub_issue_stores,
-        displayPolicy: display_policy_store,
-        adr: adr_store
-      },
-      connectedPath,
-      effectiveScope,
-      openIssue: (id, root_dir) => void openIssue(id, root_dir),
+  const doc_mount = document.createElement('div');
+  doc_mount.className = 'md-viewer-root';
+  document.body.appendChild(doc_mount);
+  const doc_viewer = createMdViewer(doc_mount, {
+    getWorkspacePath: () => connectedPath() || undefined
+  });
+
+  const new_issue_dialog = createNewIssueDialog(
+    root_element,
+    (type, payload) => tracked_send(type, payload),
+    {
+      targets: () => (effectiveScope() === ALL_SCOPE ? scopeRepos() : null),
+      connected: () => connectedPath(),
       switchWorkspace: async (root_dir) =>
-        (await setWorkspace(root_dir)) === 'ok',
-      closeIssue: () => router.closeIssue(),
-      subscribeWorkspace: (fn) => store.subscribe(() => fn()),
-      onSettingsOpenChange: (open) => {
-        settings_open = open;
-        syncSurfaces();
-      }
-    });
+        (await setWorkspace(root_dir)) === 'ok'
+    }
+  );
+
+  const { settings_dialog, compare_view } = mountBridges({
+    root: root_element,
+    compare_root,
+    adr_root,
+    send: tracked_send,
+    transport,
+    stores: {
+      monitor: monitor_store,
+      queue: worker_queue_store,
+      presets: exec_preset_store,
+      visibility: model_visibility_store,
+      displayPolicy: display_policy_store,
+      adr: adr_store
+    },
+    docViewer: doc_viewer,
+    connectedPath,
+    openIssue: (id, root_dir) => void openIssue(id, root_dir),
+    switchWorkspace: async (root_dir) =>
+      (await setWorkspace(root_dir)) === 'ok',
+    subscribeWorkspace: (fn) => store.subscribe(() => fn()),
+    onSettingsOpenChange: (open) => {
+      settings_open = open;
+      syncSurfaces();
+    }
+  });
 
   // --- pipeline ----------------------------------------------------------------
 
@@ -599,6 +618,72 @@ export function bootstrap(root_element) {
   });
   monitor_store.subscribe(() => shell.render());
 
+  // --- issue detail ----------------------------------------------------------------
+
+  const detail_panel = createDetailPanel(detail_mount, {
+    issueStores: sub_issue_stores,
+    transport,
+    // The connected repo's queue facts over its monitor rows (no worker-queue
+    // channel of the detail's own); a mutation reply follows the pipeline's
+    // adoption rule.
+    queueStore: {
+      get: () => {
+        const root_dir = connectedPath();
+        return root_dir && screen ? screen.queueView(root_dir) : null;
+      },
+      set: (queue) => {
+        const root_dir = connectedPath();
+        if (root_dir && screen) {
+          screen.adoptQueue(root_dir, queue);
+        }
+      },
+      subscribe: (fn) => worker_queue_store.subscribe(fn)
+    },
+    pipelineStore: monitor_store,
+    execPresetStore: exec_preset_store,
+    modelVisibilityStore: model_visibility_store,
+    sessionLogStore: session_log_store,
+    transcript,
+    getWorkspacePath: () => connectedPath() || undefined,
+    mdViewer: doc_viewer,
+    depCandidates: () => {
+      const workspaces = monitor_store.get();
+      if (workspaces === null) {
+        return null;
+      }
+      const scope = effectiveScope();
+      const states = monitor_store.getWorkspacesState();
+      return scope === ALL_SCOPE
+        ? depCandidateModel(workspaces, states)
+        : depCandidateModel(workspaces, states, { root_dir: scope });
+    },
+    subscribeCandidates: (fn) => monitor_store.subscribe(fn),
+    onNavigate: (id, root_dir) => void openIssue(id, root_dir || ''),
+    onClose: () => router.closeIssue(),
+    onOpenExecPresets: () => {
+      const root_dir = connectedPath();
+      if (root_dir) {
+        settings_dialog.open('worker', { scope: 'repo', root_dir });
+      }
+    }
+  });
+
+  /**
+   * An issue of another repo was opened in the 레포 scope and is now closed:
+   * the scope stands only on its own connected repo (§3.2), so connect it back.
+   */
+  function restoreScopeConnection() {
+    const scope = store.getState().scope;
+    if (
+      boot_done &&
+      scope !== ALL_SCOPE &&
+      scope === effectiveScope() &&
+      scope !== connectedPath()
+    ) {
+      void setWorkspace(scope);
+    }
+  }
+
   // --- route ----------------------------------------------------------------------
 
   let last_view = '';
@@ -622,6 +707,7 @@ export function bootstrap(root_element) {
       detail_mount.hidden = true;
       detail_panel.clear();
       channels.resetDetail();
+      restoreScopeConnection();
     }
     syncSurfaces();
   });

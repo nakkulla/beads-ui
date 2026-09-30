@@ -5,7 +5,7 @@
  * server accepts the same keys. The execution pane and the bulk pane both read
  * the catalog through this module so their selects name accounts the same way.
  */
-import { claudeLabel, codexLabel } from '../detail-panel/exec-accounts.js';
+import { claudeLabel, codexLabel } from '../../screens/detail/exec-accounts.js';
 
 export { claudeLabel, codexLabel };
 

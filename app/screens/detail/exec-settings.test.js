@@ -818,10 +818,7 @@ describe('views/detail-panel/exec-settings projected default labels', () => {
       expect(sel.options[0].value).toBe('');
       expect(sel.options[0].textContent).toContain(label);
     }
-    const source = readFileSync(
-      'app/views/detail-panel/exec-settings.js',
-      'utf8'
-    );
+    const source = readFileSync('app/screens/detail/exec-settings.js', 'utf8');
     expect(source).not.toContain('DEFAULT_LABELS');
   });
 

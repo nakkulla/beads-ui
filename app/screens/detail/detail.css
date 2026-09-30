@@ -1,0 +1,99 @@
+/* Issue detail host (UI-dbn6 §3.5·§3.6). The section templates keep their
+   `detail-*` classes (app/styles.css, app/ui/base.css); this sheet only places
+   the screen: a 560px panel on the right edge over the lanes from 720px, a
+   full-screen sheet below it, the header sticky with the ✕ always in reach,
+   and one hairline between sections in the §3.5 order. */
+.dt-overlay {
+  justify-content: flex-end;
+  align-items: stretch;
+}
+
+.dt-overlay .dt-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 100vw);
+  height: 100dvh;
+  max-height: none;
+  padding-bottom: var(--sp-16, 16px);
+  border-width: 0 0 0 1px;
+  border-radius: 0;
+  overflow-x: hidden;
+}
+
+.dt-head {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  row-gap: var(--sp-4);
+}
+
+.dt-head__chips {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  min-width: 0;
+  margin: 0;
+}
+
+.dt-head__chips .detail-summary__chips {
+  margin: 0;
+}
+
+.dt-head__close {
+  margin-left: auto;
+}
+
+.dt-section {
+  min-width: 0;
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--border-kv-row);
+}
+
+.dt-section[data-section='title'] {
+  border-top: 0;
+}
+
+.dt-section[data-section='stepper'] .detail-summary__gates {
+  margin: var(--sp-6) 0 var(--sp-4);
+}
+
+.dt-sessions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  margin: var(--sp-8) 0 var(--sp-4);
+}
+
+.dt-exec__more {
+  margin-top: var(--sp-6);
+}
+
+.dt-overlay .detail-external-wait__jobs {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* Full-screen sheet: no border, and every control is a 44px finger target. */
+.dt-overlay--sheet .dt-panel {
+  width: 100vw;
+  border: 0;
+  box-shadow: none;
+}
+
+@media (pointer: coarse) {
+  .dt-overlay--sheet .dt-panel button,
+  .dt-overlay--sheet .dt-panel select,
+  .dt-overlay--sheet .dt-panel summary.detail-effective__head {
+    min-height: 44px;
+  }
+
+  .dt-overlay--sheet .dt-panel button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .dt-overlay--sheet .dt-head__close {
+    min-width: 44px;
+  }
+}

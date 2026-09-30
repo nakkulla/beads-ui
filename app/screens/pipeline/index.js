@@ -223,16 +223,25 @@ export function createPipelineScreen(mount, deps) {
     return candidates.length > 0 ? Math.max(...candidates) : 0;
   }
 
+  /**
+   * Adopt one mutation reply's queue: the 레포 scope's worker-queue store for
+   * the connected repo, the per-repo adoption rule otherwise (§4.2).
+   *
+   * @param {string} root_dir
+   * @param {any} queue
+   */
+  function adoptQueue(root_dir, queue) {
+    if (scopeKind() === 'repo' && deps.getConnected() === root_dir) {
+      deps.queueStore.set(queue);
+    } else {
+      adopted.adopt(root_dir, queue);
+    }
+    renderAll();
+  }
+
   const actions = createPipelineActions({
     send: deps.send,
-    adopt: (root_dir, queue) => {
-      if (scopeKind() === 'repo' && deps.getConnected() === root_dir) {
-        deps.queueStore.set(queue);
-      } else {
-        adopted.adopt(root_dir, queue);
-      }
-      renderAll();
-    },
+    adopt: adoptQueue,
     revisionOf,
     queueOf,
     confirm,
@@ -925,6 +934,28 @@ export function createPipelineScreen(mount, deps) {
     },
     /** @returns {LaneModel} */
     model: () => computeModel(),
+    /**
+     * The issue detail's queue view of one repo (UI-dbn6 §4.2): its control
+     * state row under the monitor row, with the connected worker-queue
+     * snapshot (레포 scope) or the adopted reply (전체 scope) on top — the
+     * detail needs no worker-queue channel of its own.
+     *
+     * @param {string} root_dir
+     * @returns {Record<string, any>|null} Null while nothing names the repo.
+     */
+    queueView(root_dir) {
+      const state = monitorStates().find((row) => row.root_dir === root_dir);
+      const row = monitorRows().find((entry) => entry.root_dir === root_dir);
+      const held =
+        scopeKind() === 'repo'
+          ? connectedQueue(root_dir)
+          : adopted.get(root_dir);
+      if (!state && !row && !held) {
+        return null;
+      }
+      return { ...(state || {}), ...queueOf(root_dir) };
+    },
+    adoptQueue,
     /**
      * Test and bridge seam: the kind of the open sheet, if any.
      *

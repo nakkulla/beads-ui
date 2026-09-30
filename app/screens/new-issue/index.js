@@ -1,14 +1,31 @@
-import { ISSUE_TYPES, typeLabel } from '../utils/issue-type.js';
-import { priority_levels } from '../utils/priority.js';
+import { closeDialog, showDialog } from '../../ui/dialog.js';
+import { ISSUE_TYPES, typeLabel } from '../../utils/issue-type.js';
+import { priority_levels } from '../../utils/priority.js';
+
+/**
+ * The new-issue screen (UI-dbn6 §3.1): the native `<dialog>` form (title,
+ * type, priority, labels, markdown description; Ctrl/Cmd+Enter submits, the
+ * last type and priority are remembered) plus, in the 전체 scope, the target
+ * repository picker. `create-issue` writes to the CONNECTED workspace, so a
+ * repo other than the connected one is connected first (`set-workspace`)
+ * and nothing is sent when that switch fails.
+ *
+ * @typedef {Object} NewIssueOptions
+ * @property {() => Array<{ root_dir: string, name: string }>|null} [targets] -
+ * The repos to offer (전체 scope), or null to hide the picker (레포 scope).
+ * @property {() => string|null} [connected] - The connected repo, the default.
+ * @property {(root_dir: string) => Promise<boolean>} [switchWorkspace]
+ */
 
 /**
  * Create and manage the New Issue dialog (native <dialog>).
  *
  * @param {HTMLElement} mount_element - Container to attach dialog (e.g., main#app)
- * @param {(type: import('../protocol.js').MessageType, payload?: unknown) => Promise<unknown>} sendFn - Transport function
+ * @param {(type: import('../../protocol.js').MessageType, payload?: unknown) => Promise<unknown>} sendFn - Transport function
+ * @param {NewIssueOptions} [options]
  * @returns {{ open: () => void, close: () => void }}
  */
-export function createNewIssueDialog(mount_element, sendFn) {
+export function createNewIssueDialog(mount_element, sendFn, options = {}) {
   const dialog = /** @type {HTMLDialogElement} */ (
     document.createElement('dialog')
   );
@@ -24,6 +41,10 @@ export function createNewIssueDialog(mount_element, sendFn) {
       </header>
       <div class="new-issue__body">
         <form id="new-issue-form" class="new-issue__form">
+          <div class="new-issue__repo" id="new-repo-row" hidden>
+            <label for="new-repo">Repository</label>
+            <select id="new-repo" name="repo" aria-label="Repository"></select>
+          </div>
           <label for="new-title">Title</label>
           <input id="new-title" name="title" type="text" required placeholder="Short summary" />
 
@@ -82,6 +103,37 @@ export function createNewIssueDialog(mount_element, sendFn) {
   const btn_close = /** @type {HTMLButtonElement} */ (
     dialog.querySelector('.new-issue__close')
   );
+  const repo_row = /** @type {HTMLDivElement} */ (
+    dialog.querySelector('#new-repo-row')
+  );
+  const sel_repo = /** @type {HTMLSelectElement} */ (
+    dialog.querySelector('#new-repo')
+  );
+
+  /**
+   * Fill the target picker for this open: every offered repo, the connected
+   * one chosen. No targets (레포 scope) hides the row.
+   */
+  function populateRepos() {
+    const targets = options.targets ? options.targets() : null;
+    sel_repo.replaceChildren();
+    if (!targets || targets.length === 0) {
+      repo_row.hidden = true;
+      return;
+    }
+    const connected = options.connected ? options.connected() : null;
+    for (const target of targets) {
+      const o = document.createElement('option');
+      o.value = target.root_dir;
+      o.textContent = target.name;
+      sel_repo.appendChild(o);
+    }
+    sel_repo.value =
+      connected && targets.some((target) => target.root_dir === connected)
+        ? connected
+        : targets[0].root_dir;
+    repo_row.hidden = false;
+  }
 
   // Populate selects
   function populateSelects() {
@@ -111,11 +163,7 @@ export function createNewIssueDialog(mount_element, sendFn) {
 
   function requestClose() {
     try {
-      if (typeof dialog.close === 'function') {
-        dialog.close();
-      } else {
-        dialog.removeAttribute('open');
-      }
+      closeDialog(dialog);
     } catch {
       dialog.removeAttribute('open');
     }
@@ -126,6 +174,7 @@ export function createNewIssueDialog(mount_element, sendFn) {
    */
   function setBusy(is_busy) {
     input_title.disabled = is_busy;
+    sel_repo.disabled = is_busy;
     sel_type.disabled = is_busy;
     sel_priority.disabled = is_busy;
     input_labels.disabled = is_busy;
@@ -212,6 +261,16 @@ export function createNewIssueDialog(mount_element, sendFn) {
     }
 
     setBusy(true);
+    const target = repo_row.hidden ? '' : sel_repo.value;
+    const connected = options.connected ? options.connected() : null;
+    if (target && target !== connected && options.switchWorkspace) {
+      const switched = await options.switchWorkspace(target);
+      if (!switched) {
+        setBusy(false);
+        setError('Failed to switch workspace');
+        return;
+      }
+    }
     try {
       await sendFn('create-issue', payload);
     } catch {
@@ -249,12 +308,9 @@ export function createNewIssueDialog(mount_element, sendFn) {
       form.reset();
       clearError();
       loadDefaults();
+      populateRepos();
       try {
-        if ('showModal' in dialog && typeof dialog.showModal === 'function') {
-          dialog.showModal();
-        } else {
-          dialog.setAttribute('open', '');
-        }
+        showDialog(dialog);
       } catch {
         dialog.setAttribute('open', '');
       }

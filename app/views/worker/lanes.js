@@ -45,6 +45,8 @@ import {
   waitKindRow,
   waitScopeOf
 } from '../../model/wait-vocabulary.js';
+import { placeMenuList } from '../../screens/detail/place-menu.js';
+import { chipPopoverTemplate } from '../../ui/chip-popover.js';
 import { areaLabels, areaTooltip } from '../../utils/area-judgement.js';
 import {
   COMPLEX_CHIP_LABEL,
@@ -55,7 +57,6 @@ import {
   providerUsageBadges,
   usageTooltip
 } from '../../utils/token-usage.js';
-import { chipPopoverTemplate } from '../chip-popover.js';
 import { stepperTemplate } from '../stepper.js';
 import { logPathTemplate } from './log-path.js';
 
@@ -3160,47 +3161,6 @@ function externalElapsed(submitted_at, completed_at, now) {
  */
 
 /**
- * The `[대기로 ↴]` 메뉴 본문 (UI-j92s §6.4): 한 줄에 하나, 라벨 왼쪽·건수
- * 오른쪽인 **세로** 목록. 가로 스크롤 알약이던 예전 모양은 항목이 늘어날수록
- * 화면 밖으로 밀려나 모바일에서 유일한 적재 경로를 감췄다.
- *
- * @param {PlaceMenuEntry[]} entries
- * @param {string} bead_id
- * @returns {import('lit-html').TemplateResult}
- */
-export function placeMenuList(entries, bead_id) {
-  /** @type {string|undefined} */
-  let current_group = undefined;
-  /** @type {Array<import('lit-html').TemplateResult>} */
-  const rows = [];
-  for (const entry of entries) {
-    const group = entry.group || '';
-    if (group.length > 0 && group !== current_group) {
-      rows.push(html`<div class="worker-card__place-group">${group}</div>`);
-    }
-    current_group = group;
-    rows.push(
-      html`<button
-        type="button"
-        class="worker-card__place-lane${group.length > 0
-          ? ' worker-card__place-lane--nested'
-          : ''}"
-        data-bead-id=${bead_id}
-        data-lane=${entry.id}
-        ?disabled=${entry.disabled === true}
-        title=${entry.title || `${entry.label} 대기 맨 뒤에 추가`}
-      >
-        <span>${entry.label}</span>
-        ${typeof entry.count === 'number'
-          ? html`<span class="worker-card__place-count">${entry.count}</span>`
-          : ''}
-      </button>`
-    );
-  }
-  return html`${rows}`;
-}
-
-/**
  * The 판정 칩 keys (UI-8x90 §4.5, UI-svh6 §4.3). `data-chip-key` carries them
  * into the DOM so one click handler per tab covers every surface.
  *
@@ -3213,7 +3173,7 @@ export function placeMenuList(entries, bead_id) {
  *
  * @param {MiniItem} item
  * @param {string} chip_key
- * @returns {import('../chip-popover.js').ChipPopoverContent|null}
+ * @returns {import('../../ui/chip-popover.js').ChipPopoverContent|null}
  */
 export function judgementPopoverContent(item, chip_key) {
   const content = judgementPopoverLines(item, chip_key);
@@ -3252,7 +3212,7 @@ export const JUDGEMENT_CHIP_KEYS = [
  *
  * @param {MiniItem} item
  * @param {(chip_key: string) => boolean} isOpen
- * @returns {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null}
+ * @returns {{ chip_key: string, content: import('../../ui/chip-popover.js').ChipPopoverContent }|null}
  */
 export function judgementPopoverOf(item, isOpen) {
   for (const chip_key of JUDGEMENT_CHIP_KEYS) {

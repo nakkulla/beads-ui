@@ -1417,7 +1417,7 @@ describe('views/detail-panel', () => {
       attempt_id: 'a7'
     });
     // The transcript drawer renders into its body-appended overlay mount.
-    const drawer = document.querySelector('.session-log-root .sv');
+    const drawer = document.querySelector('.tr-overlay .sv');
     expect(drawer).not.toBeNull();
     expect(drawer?.querySelector('.sv__result--ok')).not.toBeNull();
 
@@ -1633,9 +1633,9 @@ describe('views/detail-panel', () => {
       mount.querySelector('.detail-session__leg')
     ).click();
 
-    expect(
-      document.querySelector('.session-log-root .sv__meta')?.textContent
-    ).toBe('gpt-5.6-sol · high');
+    expect(document.querySelector('.tr-overlay .sv__meta')?.textContent).toBe(
+      'gpt-5.6-sol · high'
+    );
     panel.destroy();
   });
 
@@ -1731,7 +1731,7 @@ describe('views/detail-panel', () => {
       mount.querySelector('.detail-session[data-attempt-id="a8"]')
     ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
     const barSid = /** @type {HTMLElement} */ (
-      document.querySelector('.session-log-root .sv__session')
+      document.querySelector('.tr-overlay .sv__session')
     );
     expect(barSid).not.toBeNull();
     expect(barSid.getAttribute('title')).toBe('sid-999abc12');

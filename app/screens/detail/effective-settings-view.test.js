@@ -8,10 +8,8 @@
  */
 import { render } from 'lit-html';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import {
-  effectiveSettingsCardTemplate,
-  summaryHeaderTemplate
-} from './effective-settings-view.js';
+import { effectiveSettingsCardTemplate } from './effective-settings-view.js';
+import { summaryHeaderTemplate } from './summary-header.js';
 
 const COMPLEX_META = {
   complex_reason: 'hard_diagnosis+invariant_reasoning'

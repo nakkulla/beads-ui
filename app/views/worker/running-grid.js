@@ -20,6 +20,12 @@ import {
 } from '../../model/failure-labels.js';
 import { formatRelativeTime } from '../../model/relative-time.js';
 import { representativeWaitReason } from '../../model/wait-vocabulary.js';
+import {
+  childExecChips,
+  execReceiptActor,
+  formatExecReceipt
+} from '../../screens/detail/exec-format.js';
+import { chipPopoverTemplate } from '../../ui/chip-popover.js';
 import { formatContinuationLineage } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
@@ -31,12 +37,6 @@ import {
   usageTooltip
 } from '../../utils/token-usage.js';
 import { childRollupTemplate } from '../child-rollup.js';
-import { chipPopoverTemplate } from '../chip-popover.js';
-import {
-  childExecChips,
-  execReceiptActor,
-  formatExecReceipt
-} from '../exec-format.js';
 import {
   areaChipsTemplate,
   complexChipTemplate,
@@ -182,7 +182,7 @@ import { logPathTemplate } from './log-path.js';
  * 조립이 타일 밖 `Map`으로 같은 재료를 두 번 나르지 않는다.
  * @property {Array<{ label: string, state: 'live'|'done'|'failed'|'interrupted', agent_type?: string|null, model?: string|null, usage?: Record<string, number>|null, price_usd?: number|null, price_basis?: string, native?: boolean, usage_included?: boolean }>} [legs] -
  * 위임 leg. 끝난 것은 접혀 한 칩이 된다.
- * @property {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null} [chip_popover] -
+ * @property {{ chip_key: string, content: import('../../ui/chip-popover.js').ChipPopoverContent }|null} [chip_popover] -
  * 이 타일에서 열려 있는 판정 칩 사유 팝업 (UI-8x90 §4.5). 슬롯 5 줄이 싣는다.
  * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
  * 의존·겹침 칩 (슬롯 4). 재료가 없으면 줄이 통째로 빠진다 (fail-quiet).

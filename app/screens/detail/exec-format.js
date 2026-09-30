@@ -35,7 +35,7 @@ function executionKindLabel(kind) {
 }
 
 /**
- * @typedef {import('../model/lane-model.js').ExecReceipt} ExecReceipt
+ * @typedef {import('../../model/lane-model.js').ExecReceipt} ExecReceipt
  */
 
 /**
