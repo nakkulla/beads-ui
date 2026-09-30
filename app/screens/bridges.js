@@ -4,8 +4,8 @@
  * plus the settings screen (`screens/settings/`). Each gets the same options
  * it had, fed from the shell's stores.
  */
-import { createAdrView } from '../views/adr/index.js';
 import { createCompareView } from '../views/compare/index.js';
+import { createAdrView } from './adr/index.js';
 import { createSettingsDialog } from './settings/index.js';
 
 /**

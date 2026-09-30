@@ -76,20 +76,7 @@ function texts(root, selector) {
   );
 }
 
-/**
- * Rendered markup with lit's per-load random comment markers removed, so the
- * snapshot holds the bytes a user sees and stays stable across runs.
- *
- * @param {HTMLElement} el
- */
-function markup(el) {
-  return el.innerHTML
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-describe('views/adr toolbar', () => {
+describe('screens/adr toolbar', () => {
   test('filters the sections down to the pressed repository', () => {
     const { root } = mount([
       workspace({ current: [adr(1)] }),
@@ -228,7 +215,7 @@ describe('views/adr toolbar', () => {
     input.value = 'ui-8uz7';
     input.dispatchEvent(new Event('input'));
 
-    expect(texts(root, '.adr-table--current .adr-num')).toEqual(['2']);
+    expect(texts(root, '.adr-list--current .adr-num')).toEqual(['2']);
   });
 
   test('puts rows carrying a signal first while stale 우선 is pressed', () => {
@@ -247,12 +234,12 @@ describe('views/adr toolbar', () => {
       })
     ]);
 
-    expect(texts(root, '.adr-table--current .adr-num')).toEqual(['3', '9']);
+    expect(texts(root, '.adr-list--current .adr-num')).toEqual(['3', '9']);
 
     const toggle = /** @type {HTMLElement} */ (root.querySelector('.adr-sort'));
     toggle.click();
 
-    expect(texts(root, '.adr-table--current .adr-num')).toEqual(['9', '3']);
+    expect(texts(root, '.adr-list--current .adr-num')).toEqual(['9', '3']);
   });
 
   test('puts legacy numbers ahead of string ids in the current table', () => {
@@ -266,7 +253,7 @@ describe('views/adr toolbar', () => {
       })
     ]);
 
-    expect(texts(root, '.adr-table--current .adr-num')).toEqual([
+    expect(texts(root, '.adr-list--current .adr-num')).toEqual([
       '45',
       'dotfiles-60u8-2',
       'dotfiles-60u8'
@@ -283,7 +270,7 @@ describe('views/adr toolbar', () => {
       })
     ]);
 
-    expect(texts(root, '.adr-table--current .adr-num')).toEqual([
+    expect(texts(root, '.adr-list--current .adr-num')).toEqual([
       'dotfiles-60u8',
       'dotfiles-60u8-2'
     ]);
@@ -299,7 +286,7 @@ describe('views/adr toolbar', () => {
       })
     ]);
 
-    expect(texts(root, '.adr-table--history .adr-num')).toEqual([
+    expect(texts(root, '.adr-list--history .adr-num')).toEqual([
       '45',
       'dotfiles-60u8'
     ]);
@@ -321,7 +308,7 @@ describe('views/adr toolbar', () => {
       })
     ]);
 
-    expect(texts(root, '.adr-table--current .adr-num')).toEqual([
+    expect(texts(root, '.adr-list--current .adr-num')).toEqual([
       'dotfiles-60u8',
       '45'
     ]);
@@ -329,18 +316,33 @@ describe('views/adr toolbar', () => {
     const toggle = /** @type {HTMLElement} */ (root.querySelector('.adr-sort'));
     toggle.click();
 
-    expect(texts(root, '.adr-table--current .adr-num')).toEqual([
+    expect(texts(root, '.adr-list--current .adr-num')).toEqual([
       '45',
       'dotfiles-60u8'
     ]);
   });
 });
 
-describe('views/adr counts', () => {
-  test('omits every zero count chip', () => {
+describe('screens/adr counts', () => {
+  test('heads a repository with its current and history counts', () => {
+    const { root } = mount([
+      workspace({
+        current: [adr(1), adr(2)],
+        history: [adr(0, { status: 'superseded' })]
+      })
+    ]);
+
+    expect(texts(root, '.adr-ws__counts')).toEqual(['현재 2 · 이력 1']);
+  });
+
+  test('omits every zero count chip from the 인용 popup', () => {
     const { root } = mount([workspace({ current: [adr(1)] })]);
 
-    expect(texts(root, '.adr-counts .adr-chip')).toEqual(['현재 유효 1']);
+    /** @type {HTMLElement} */ (
+      root.querySelector('[data-signal="cite"]')
+    ).click();
+
+    expect(texts(root, '.adr-pop .adr-counts .adr-chip')).toEqual([]);
   });
 
   test('counts unknown and adr_status kinds under 기타', () => {
@@ -365,7 +367,11 @@ describe('views/adr counts', () => {
       })
     ]);
 
-    expect(texts(root, '.adr-counts .adr-chip')).toContain('기타 2');
+    /** @type {HTMLElement} */ (
+      root.querySelector('[data-signal="cite"]')
+    ).click();
+
+    expect(texts(root, '.adr-pop .adr-counts .adr-chip')).toContain('기타 2');
   });
 
   test('draws an unknown kind chip as 기타 and a file-less row without a link', () => {
@@ -399,11 +405,219 @@ describe('views/adr counts', () => {
   test('shows 계산 중 while a repository is computing', () => {
     const { root } = mount([workspace({ computing: true })]);
 
-    expect(texts(root, '.adr-counts .adr-chip')).toContain('계산 중');
+    expect(texts(root, '.adr-ws__state')).toEqual(['계산 중']);
   });
 });
 
-describe('views/adr signals', () => {
+describe('screens/adr signal badges', () => {
+  test('reads 색인 ✓ and 인용 ✓ on a clean repository', () => {
+    const { root } = mount([workspace({ current: [adr(1)] })]);
+
+    expect(texts(root, '.adr-ws__hd .adr-badge')).toEqual(['색인 ✓', '인용 ✓']);
+  });
+
+  test('warns on the 색인 badge while the index drifts', () => {
+    const { root } = mount([
+      workspace({ index_drift: { ok: false, detail: 'index is stale' } })
+    ]);
+
+    const badge = root.querySelector('[data-signal="index"]');
+    expect(badge?.textContent?.trim()).toBe('색인 ⚠');
+    expect(badge?.classList.contains('is-warn')).toBe(true);
+  });
+
+  test('marks a checker environment error on its badge', () => {
+    const { root } = mount([
+      workspace({
+        env_errors: {
+          index: 'adr-index.py: python3 not found',
+          citations: null,
+          candidates: null
+        }
+      })
+    ]);
+
+    expect(
+      root.querySelector('[data-signal="index"]')?.textContent?.trim()
+    ).toBe('색인 · 환경');
+  });
+
+  test('counts citation and candidate errors on the 인용 badge', () => {
+    const { root } = mount([
+      workspace({
+        current: [adr(3)],
+        citations_stale: [
+          { kind: 'retired', file: 'AGENTS.md', line: 4, adr: 3, detail: 'r' }
+        ],
+        candidates: [
+          {
+            spec: 'docs/superpowers/specs/s.md',
+            ok: false,
+            errors: [
+              {
+                kind: 'adr_missing',
+                file: 's.md',
+                line: 1,
+                adr: null,
+                detail: ''
+              }
+            ]
+          }
+        ]
+      })
+    ]);
+
+    expect(
+      root.querySelector('[data-signal="cite"]')?.textContent?.trim()
+    ).toBe('인용 ⚠ 2');
+  });
+
+  test('opens the checker errors of the 인용 badge in a popup', () => {
+    const { root } = mount([
+      workspace({
+        citations_stale: [
+          {
+            kind: 'missing',
+            file: 'AGENTS.md',
+            line: 12,
+            adr: 3,
+            detail: 'no such ADR'
+          }
+        ],
+        candidates: [
+          {
+            spec: 'docs/superpowers/specs/open.md',
+            ok: false,
+            errors: [
+              {
+                kind: 'adr_missing',
+                file: 'open.md',
+                line: 2,
+                adr: null,
+                detail: 'no ADR'
+              }
+            ]
+          }
+        ],
+        cross_citations: [
+          {
+            file: 'docs/adr/0001-a.md',
+            line: 1,
+            repo: 'dotfiles',
+            adr: 45,
+            target: null
+          }
+        ]
+      })
+    ]);
+
+    /** @type {HTMLElement} */ (
+      root.querySelector('[data-signal="cite"]')
+    ).click();
+
+    expect(texts(root, '.adr-pop .adr-err')).toEqual([
+      'AGENTS.md:12 ADR 3 missing no such ADR',
+      'docs/superpowers/specs/open.md adr_missing no ADR',
+      'docs/adr/0001-a.md:1 → ADR dotfiles/0045 미확인'
+    ]);
+  });
+
+  test('opens the drift detail and frontmatter errors of the 색인 badge', () => {
+    const { root } = mount([
+      workspace({
+        index_drift: { ok: false, detail: 'index is stale' },
+        frontmatter_errors: [{ file: '0009-old.md', error: 'bad date' }]
+      })
+    ]);
+
+    /** @type {HTMLElement} */ (
+      root.querySelector('[data-signal="index"]')
+    ).click();
+
+    expect(texts(root, '.adr-pop .adr-err')).toEqual([
+      'index is stale',
+      '0009-old.md bad date'
+    ]);
+  });
+
+  test('closes the popup on a second click of its badge', () => {
+    const { root } = mount([workspace({ current: [adr(1)] })]);
+    const badge = /** @type {HTMLElement} */ (
+      root.querySelector('[data-signal="cite"]')
+    );
+    badge.click();
+
+    /** @type {HTMLElement} */ (
+      root.querySelector('[data-signal="cite"]')
+    ).click();
+
+    expect(root.querySelector('.adr-pop')).toBeNull();
+  });
+
+  test('closes the popup on Escape', () => {
+    const { root } = mount([workspace({ current: [adr(1)] })]);
+    /** @type {HTMLElement} */ (
+      root.querySelector('[data-signal="cite"]')
+    ).click();
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(root.querySelector('.adr-pop')).toBeNull();
+  });
+
+  test('draws no badge for a repository without an ADR directory', () => {
+    const { root } = mount([workspace({ adr_dir_missing: true })]);
+
+    expect(root.querySelectorAll('.adr-badge').length).toBe(0);
+  });
+});
+
+describe('screens/adr current decisions', () => {
+  test('folds the history under 이력 n건 보기', () => {
+    const { root } = mount([
+      workspace({
+        current: [adr(2)],
+        history: [adr(1, { status: 'superseded', superseded_by: 2 })]
+      })
+    ]);
+
+    const history = /** @type {HTMLDetailsElement} */ (
+      root.querySelector('.adr-history')
+    );
+    expect(history.open).toBe(false);
+    expect(texts(root, '.adr-history > summary')).toEqual(['이력 1건 보기']);
+  });
+
+  test('opens the decision document from a click on its row', () => {
+    const openDoc = vi.fn();
+    const { root } = mount([workspace({ current: [adr(12)] })], { openDoc });
+
+    /** @type {HTMLElement} */ (
+      root.querySelector('.adr-item[data-adr="12"] .adr-date')
+    ).click();
+
+    expect(openDoc).toHaveBeenCalledWith(
+      { path: 'docs/adr/0012-decision.md', missing_state: null },
+      '/repo/a'
+    );
+  });
+
+  test('keeps ID, title, summary and date on one decision line', () => {
+    const { root } = mount([
+      workspace({ current: [adr(12, { date: '2026-09-03' })] })
+    ]);
+
+    const item = /** @type {HTMLElement} */ (
+      root.querySelector('.adr-list--current .adr-item')
+    );
+    expect(texts(item, '.adr-num')).toEqual(['12']);
+    expect(texts(item, '.adr-title__top')).toEqual(['결정 12']);
+    expect(texts(item, '.adr-title__summary')).toEqual(['summary 12']);
+    expect(texts(item, '.adr-date')).toEqual(['2026-09-03']);
+  });
+});
+
+describe('screens/adr signals', () => {
   test('joins signal chips onto the row with the same ADR number', () => {
     const { root } = mount([
       workspace({
@@ -435,7 +649,7 @@ describe('views/adr signals', () => {
       })
     ]);
 
-    const rows = root.querySelectorAll('.adr-table--current tbody tr');
+    const rows = root.querySelectorAll('.adr-list--current .adr-item');
     expect(rows[0].getAttribute('data-adr')).toBe('12');
     expect(texts(/** @type {HTMLElement} */ (rows[0]), '.adr-chip')).toEqual([
       '인용 stale 1',
@@ -483,20 +697,20 @@ describe('views/adr signals', () => {
         ]
       })
     ]);
-    expect(texts(root, '.adr-table--current .adr-title__top')).toEqual([
+    expect(texts(root, '.adr-list--current .adr-title__top')).toEqual([
       '결정 12 인용 stale 1'
     ]);
-    expect(texts(root, '.adr-table--current .adr-title__summary')).toEqual([
+    expect(texts(root, '.adr-list--current .adr-title__summary')).toEqual([
       'summary 12'
     ]);
-    expect(texts(root, '.adr-table--current .adr-spec')).toEqual([
+    expect(texts(root, '.adr-list--current .adr-spec')).toEqual([
       '2026-09-21-table-design.md'
     ]);
-    expect(root.querySelector('.adr-table--current .adr-summary')).toBeNull();
+    expect(root.querySelector('.adr-list--current .adr-summary')).toBeNull();
   });
 });
 
-describe('views/adr candidate section', () => {
+describe('screens/adr candidate section', () => {
   test('collapses specs that only carry section_missing', () => {
     const { root } = mount([
       workspace({
@@ -569,7 +783,7 @@ describe('views/adr candidate section', () => {
   });
 });
 
-describe('views/adr environment errors', () => {
+describe('screens/adr environment errors', () => {
   test('replaces only the failing checker section and keeps cross citations', () => {
     const { root } = mount([
       workspace({
@@ -611,11 +825,11 @@ describe('views/adr environment errors', () => {
     ]);
 
     expect(root.querySelectorAll('.adr-sec').length).toBe(0);
-    expect(root.querySelectorAll('.adr-table').length).toBe(0);
+    expect(root.querySelectorAll('.adr-list').length).toBe(0);
   });
 });
 
-describe('views/adr cross citations', () => {
+describe('screens/adr cross citations', () => {
   test('tones the status chip by the target ADR status', () => {
     const { root } = mount([
       workspace({
@@ -683,7 +897,7 @@ describe('views/adr cross citations', () => {
   });
 });
 
-describe('views/adr legacy-only regression', () => {
+describe('screens/adr legacy-only regression', () => {
   test('renders a numeric-only workspace with the compact current row', () => {
     const { root } = mount([
       workspace({
@@ -710,22 +924,17 @@ describe('views/adr legacy-only regression', () => {
       })
     ]);
 
-    const current = /** @type {HTMLElement} */ (
-      root.querySelector('.adr-table--current tbody')
-    );
-    const history = /** @type {HTMLElement} */ (
-      root.querySelector('.adr-history tbody')
-    );
-    expect(markup(current)).toMatchInlineSnapshot(
-      `"<tr data-adr="24"> <td class="adr-num">24</td> <td class="adr-title"> <div class="adr-title__top"> <span class="adr-doc adr-doc--plain">결정 24</span> <span class="adr-signals"> <span class="adr-chip adr-chip--signal">인용 stale 1</span> </span> </div> <span class="adr-title__summary">summary 24</span> </td> <td class="adr-date">2026-09-03</td> <td class="adr-spec"> </td> <td> </td> </tr> <tr data-adr="30"> <td class="adr-num">30</td> <td class="adr-title"> <div class="adr-title__top"> <span class="adr-doc adr-doc--plain">결정 30</span> <span class="adr-signals"> </span> </div> <span class="adr-title__summary">summary 30</span> </td> <td class="adr-date">2026-09-01</td> <td class="adr-spec"> </td> <td> </td> </tr>"`
-    );
-    expect(markup(history)).toMatchInlineSnapshot(
-      `"<tr data-adr="9"> <td class="adr-num">9</td> <td> <span class="adr-doc adr-doc--plain">결정 9</span> </td> <td class="adr-status">superseded</td> <td class="adr-superseded"> → <span class="adr-doc adr-doc--plain">24</span> </td> </tr>"`
-    );
+    expect(texts(root, '.adr-list--current .adr-item')).toEqual([
+      '24 결정 24 인용 stale 1 summary 24 2026-09-03',
+      '30 결정 30 summary 30 2026-09-01'
+    ]);
+    expect(texts(root, '.adr-list--history .adr-item')).toEqual([
+      '9 결정 9 superseded → 24'
+    ]);
   });
 });
 
-describe('views/adr links', () => {
+describe('screens/adr links', () => {
   test('opens a docs path through openDoc and leaves other paths unlinked', () => {
     const openDoc = vi.fn();
     const { root } = mount(
@@ -804,7 +1013,7 @@ describe('views/adr links', () => {
   });
 });
 
-describe('views/adr inspect section', () => {
+describe('screens/adr inspect section', () => {
   test('folds the checker signal sections into a closed 점검 details', () => {
     const { root } = mount([
       workspace({
@@ -833,7 +1042,7 @@ describe('views/adr inspect section', () => {
   });
 });
 
-describe('views/adr header', () => {
+describe('screens/adr header', () => {
   test('marks a duplicate repository name', () => {
     const { root } = mount([workspace({ name_duplicate: true })]);
 
@@ -841,7 +1050,7 @@ describe('views/adr header', () => {
   });
 });
 
-describe('views/adr history directory', () => {
+describe('screens/adr history directory', () => {
   test('links a history/ record and flags its frontmatter error in the history table', () => {
     const openDoc = vi.fn();
     const { root } = mount(
@@ -861,7 +1070,7 @@ describe('views/adr history directory', () => {
     );
 
     const link = /** @type {HTMLElement} */ (
-      root.querySelector('.adr-table--history .adr-doc--link')
+      root.querySelector('.adr-list--history .adr-doc--link')
     );
     link.click();
 
@@ -869,7 +1078,7 @@ describe('views/adr history directory', () => {
       { path: 'docs/adr/history/0009-old.md', missing_state: null },
       '/repo/a'
     );
-    expect(texts(root, '.adr-table--history .adr-chip--signal')).toEqual([
+    expect(texts(root, '.adr-list--history .adr-chip--signal')).toEqual([
       'frontmatter 오류'
     ]);
   });
@@ -897,7 +1106,7 @@ describe('views/adr history directory', () => {
       { openDoc }
     );
 
-    const cells = root.querySelectorAll('.adr-table--history .adr-superseded');
+    const cells = root.querySelectorAll('.adr-list--history .adr-superseded');
     /** @type {HTMLElement} */ (
       cells[0].querySelector('.adr-doc--link')
     ).click();
