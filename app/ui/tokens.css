@@ -111,8 +111,8 @@
 
   /* --- font families --- */
   --font-sans:
-    -apple-system, 'Apple SD Gothic Neo', BlinkMacSystemFont, 'Segoe UI',
-    Roboto, 'Noto Sans KR', sans-serif;
+    'Pretendard Variable', Pretendard, -apple-system, 'Apple SD Gothic Neo',
+    BlinkMacSystemFont, 'Segoe UI', Roboto, 'Noto Sans KR', sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'Menlo', monospace;
 
   /* --- radii --- */
