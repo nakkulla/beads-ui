@@ -7,7 +7,7 @@ import {
   repoOpsTimelineTemplate,
   timelineEvents,
   timelineView
-} from './repo-ops-timeline.js';
+} from './timeline.js';
 
 /**
  * @param {Record<string, any>} [patch]

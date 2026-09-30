@@ -153,3 +153,20 @@ export function formatClockLocal(timestamp_value, now_ms) {
     d.getDate() === reference.getDate();
   return same_day ? clock : `${d.getMonth() + 1}/${d.getDate()} ${clock}`;
 }
+
+/**
+ * `HH:MM` of an epoch-ms instant, or '' for a missing one (the repo-ops strip
+ * and timeline clock).
+ *
+ * @param {unknown} at
+ * @returns {string}
+ */
+export function formatClock(at) {
+  if (typeof at !== 'number' || !Number.isFinite(at) || at <= 0) {
+    return '';
+  }
+  const date = new Date(at);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(
+    date.getMinutes()
+  ).padStart(2, '0')}`;
+}

@@ -1,13 +1,13 @@
 /**
- * The Worker drawers the pipeline screen mounts (UI-dbn6 §4.4): the shared
- * transcript screen (`screens/transcript/`, Phase 2), and the bridged repo-ops
- * timeline drawer with its dismiss / cleanup controls and the repo-ops
- * settings strip with its script viewer — those two keep their own markup
- * until a later phase replaces them.
+ * The drawers the pipeline screen opens (UI-dbn6 §4.4): the shared transcript
+ * screen (`screens/transcript/`), the repo-ops timeline drawer
+ * (`screens/repo-ops/index.js`) with its dismiss / cleanup controls, and the
+ * 저장소 작업 declaration section of the repo toolbar with its script viewer
+ * (`screens/repo-ops/settings.js`, `script-viewer.js`).
  */
-import { createRepoOpsScriptViewer } from '../../views/worker/repo-ops-script-viewer.js';
-import { createRepoOpsSettings } from '../../views/worker/repo-ops-settings.js';
-import { createRepoOpsDrawer } from '../../views/worker/repo-ops-timeline.js';
+import { createRepoOpsDrawerScreen } from '../repo-ops/index.js';
+import { createRepoOpsScriptViewer } from '../repo-ops/script-viewer.js';
+import { createRepoOpsSettings } from '../repo-ops/settings.js';
 import { createTranscriptScreen } from '../transcript/index.js';
 
 /**
@@ -26,21 +26,10 @@ import { createTranscriptScreen } from '../transcript/index.js';
  */
 
 /**
- * @param {HTMLElement} mount
+ * @param {HTMLElement} _mount - The pipeline root (the drawers live on the body).
  * @param {DrawerDeps} deps
  */
-export function createDrawers(mount, deps) {
-  const overlay_el = document.createElement('div');
-  overlay_el.className = 'worker-drawer-overlay';
-  overlay_el.hidden = true;
-  const backdrop_el = document.createElement('div');
-  backdrop_el.className = 'worker-drawer-overlay__backdrop';
-  const repo_drawer_el = document.createElement('div');
-  repo_drawer_el.className = 'worker-drawer-host worker-repo-drawer-host';
-  repo_drawer_el.hidden = true;
-  overlay_el.append(backdrop_el, repo_drawer_el);
-  mount.appendChild(overlay_el);
-
+export function createDrawers(_mount, deps) {
   const own_transcript = deps.transcript
     ? null
     : createTranscriptScreen({
@@ -58,11 +47,9 @@ export function createDrawers(mount, deps) {
       deps.onTranscriptClose();
     }
   });
-  const repo_drawer = createRepoOpsDrawer(repo_drawer_el, {
-    onClose: () => {
-      repo_drawer_el.hidden = true;
-      overlay_el.hidden = true;
-    }
+  const repo_drawer = createRepoOpsDrawerScreen({
+    getRoot: () => deps.getScope(),
+    actions: deps.actions
   });
   const script_viewer = createRepoOpsScriptViewer({
     getWorkspacePath: () => deps.getConnected() || ''
@@ -77,40 +64,10 @@ export function createDrawers(mount, deps) {
   });
 
   /**
-   * @param {Event} ev
-   */
-  function onRepoDrawerClick(ev) {
-    const target = /** @type {HTMLElement|null} */ (ev.target);
-    const root_dir = deps.getScope();
-    /** @param {string} selector */
-    const hit = (selector) =>
-      /** @type {HTMLElement|null} */ (target?.closest?.(selector) || null);
-    const dismiss = hit('.worker-repo-op__dismiss');
-    if (dismiss) {
-      void deps.actions.dismissRepoOperation(
-        dismiss.dataset.operationId || '',
-        root_dir
-      );
-      return;
-    }
-    const resume = hit('.worker-cleanup__resume');
-    if (resume && resume.dataset.beadId) {
-      void deps.actions.cleanupRetry(resume.dataset.beadId, root_dir);
-      return;
-    }
-    const resolve = hit('.worker-cleanup__resolve');
-    if (resolve && resolve.dataset.beadId) {
-      void deps.actions.resolve(resolve.dataset.beadId, root_dir);
-    }
-  }
-  repo_drawer_el.addEventListener('click', onRepoDrawerClick);
-
-  /**
    * @param {any} input - A `sessionRefDrawerInput` or an attempt input.
    */
   function openTranscript(input) {
-    overlay_el.hidden = true;
-    repo_drawer_el.hidden = true;
+    repo_drawer.close();
     transcript.open(input);
     transcript_mine = transcript.isOpen();
   }
@@ -126,15 +83,12 @@ export function createDrawers(mount, deps) {
      * @param {string} root_dir
      */
     openSessionLog(provider, session_id, bead_id, root_dir) {
-      overlay_el.hidden = true;
-      repo_drawer_el.hidden = true;
+      repo_drawer.close();
       transcript.openSessionLog(provider, session_id, bead_id, root_dir);
       transcript_mine = transcript.isOpen();
     },
     openRepo() {
       transcript.close();
-      overlay_el.hidden = false;
-      repo_drawer_el.hidden = false;
       repo_drawer.open(deps.repoInput());
     },
     refreshRepo() {
@@ -145,9 +99,10 @@ export function createDrawers(mount, deps) {
     /** @returns {any} */
     settingsTemplate: () => repo_ops_settings.template(),
     destroy() {
-      repo_drawer_el.removeEventListener('click', onRepoDrawerClick);
       off_transcript_close();
       own_transcript?.destroy();
+      repo_drawer.destroy();
+      script_viewer.destroy();
     }
   };
 }

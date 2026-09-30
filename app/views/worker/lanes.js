@@ -36,6 +36,7 @@ import {
 import { QUEUE_GRACE_MS, routeChipValue } from '../../model/lane-model.js';
 import { placementTitle } from '../../model/placement.js';
 import {
+  formatClock,
   formatClockLocal,
   formatElapsedSince,
   formatRelativeTime,
@@ -51,6 +52,7 @@ import {
   waitScopeOf
 } from '../../model/wait-vocabulary.js';
 import { placeMenuList } from '../../screens/detail/place-menu.js';
+import { logPathTemplate } from '../../screens/repo-ops/log-path.js';
 import { chipPopoverTemplate } from '../../ui/chip-popover.js';
 import { areaLabels, areaTooltip } from '../../utils/area-judgement.js';
 import {
@@ -63,7 +65,6 @@ import {
   usageTooltip
 } from '../../utils/token-usage.js';
 import { stepperTemplate } from '../stepper.js';
-import { logPathTemplate } from './log-path.js';
 
 /**
  * Lane item shapes now owned by the model (UI-dbn6 Phase 1).
@@ -90,23 +91,9 @@ export function workTooltip(work_kind) {
     : 'attempt 실행 시간 합산 (재개 세션 포함)';
 }
 
-/**
- * Local wall-clock `HH:MM` for a timestamp, or '' when there is none. The strip
- * says WHEN the current deployment landed, and a date is noise for something
- * that happened today; the full timestamp lives in the title attribute.
- *
- * @param {unknown} at
- * @returns {string}
- */
-export function formatClock(at) {
-  if (typeof at !== 'number' || !Number.isFinite(at) || at <= 0) {
-    return '';
-  }
-  const date = new Date(at);
-  return `${String(date.getHours()).padStart(2, '0')}:${String(
-    date.getMinutes()
-  ).padStart(2, '0')}`;
-}
+// Local wall-clock `HH:MM` for a timestamp (moved to model/relative-time.js,
+// re-exported for the old lanes' own importers).
+export { formatClock };
 
 /**
  * The 저장소 작업 strip (UI-q0uy §4.1): one line that reads as a fact even while

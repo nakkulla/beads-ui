@@ -25,6 +25,7 @@ import {
   execReceiptActor,
   formatExecReceipt
 } from '../../screens/detail/exec-format.js';
+import { logPathTemplate } from '../../screens/repo-ops/log-path.js';
 import { chipPopoverTemplate } from '../../ui/chip-popover.js';
 import { formatContinuationLineage } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
@@ -56,7 +57,6 @@ import {
   waitReasonLines,
   waitStatusBadge
 } from './lanes.js';
-import { logPathTemplate } from './log-path.js';
 
 /**
  * @import { SessionRefView } from '../../../server/worker/session-ref.js'

@@ -1,6 +1,8 @@
 /**
- * The Worker screen's read-only viewer for one declared repo-operation script
- * (UI-k34k).
+ * The read-only viewer for one declared repo-operation script (UI-k34k),
+ * moved from `views/worker/repo-ops-script-viewer.js` (UI-dbn6 Phase 3): a
+ * centred code panel from 720px, a full-screen sheet below; line numbers and
+ * shell token colours from the tokens (`repo-ops.css`).
  *
  * The settings card shows the verify/deploy paths the Worker PINNED at a base
  * SHA, so this popup must show that same Git blob: it sends only workspace,
@@ -8,9 +10,11 @@
  * to decide which blob to read. There is no current-checkout fallback — showing
  * a working-tree file would claim a content the executor will never run.
  */
-import { html, render } from 'lit-html';
+import { html } from 'lit-html';
+import { copyIcon } from '../../ui/icons.js';
+import { render } from '../../ui/render.js';
+import { showToast } from '../../ui/toast.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
-import { showToast } from '../../utils/toast.js';
 
 /**
  * @typedef {Object} RepoOpsScriptOpenInput
@@ -202,15 +206,15 @@ export function createRepoOpsScriptViewer(options) {
           <div class="repo-ops-script-viewer__actions">
             <button
               type="button"
-              class="repo-ops-script-viewer__copy"
+              class="ui-btn ui-btn--sm ui-btn--ghost repo-ops-script-viewer__copy"
               ?disabled=${state !== 'ready'}
               @click=${() => void copyContent()}
             >
-              복사
+              ${copyIcon()} 복사
             </button>
             <button
               type="button"
-              class="repo-ops-script-viewer__close"
+              class="ui-btn ui-btn--icon repo-ops-script-viewer__close"
               aria-label="스크립트 팝업 닫기"
               @click=${() => close()}
             >

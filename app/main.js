@@ -36,6 +36,7 @@ import { createSubscriptionStore } from './model/subscriptions-store.js';
 import { createWorkerQueueStore } from './model/worker-queue-store.js';
 import { mountBridges } from './screens/bridges.js';
 import { createDetailPanel } from './screens/detail/index.js';
+import { createFatalErrorDialog } from './screens/dialogs/fatal-error-dialog.js';
 import { createMdViewer } from './screens/doc-viewer/index.js';
 import { createNewIssueDialog } from './screens/new-issue/index.js';
 import { runGitPull } from './screens/pipeline/git-pull.js';
@@ -50,7 +51,6 @@ import { showToast } from './ui/toast.js';
 import { viewportOf, watchViewport } from './ui/viewport.js';
 import { createActivityIndicator } from './utils/activity-indicator.js';
 import { debug } from './utils/logging.js';
-import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
 
 export { MONITOR_PIPELINE_KEY } from './core/channels.js';
 

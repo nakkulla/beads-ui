@@ -15,8 +15,9 @@
  * @import { TemplateResult } from 'lit-html'
  */
 import { html } from 'lit-html';
+import { copyIcon } from '../../ui/icons.js';
+import { showToast } from '../../ui/toast.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
-import { showToast } from '../../utils/toast.js';
 
 /**
  * Put one absolute path on the clipboard. Board's `복사됨`/`복사 실패` toast
@@ -54,13 +55,13 @@ export function logPathTemplate(value) {
     ><code class="worker-ev__path">${value}</code
     ><button
       type="button"
-      class="worker-ev__copy"
+      class="ui-btn ui-btn--icon ui-btn--sm worker-ev__copy"
       data-seam="log-path-copy"
       title="로그 경로 복사"
       aria-label=${`로그 경로 복사: ${value}`}
       @click=${() => void copyPath(value)}
     >
-      ⧉
+      ${copyIcon()}
     </button></span
   >`;
 }

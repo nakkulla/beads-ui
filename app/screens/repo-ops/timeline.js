@@ -1,5 +1,7 @@
 /**
- * The 저장소 작업 타임라인 drawer (UI-q0uy §4.2).
+ * The 저장소 작업 타임라인 drawer (UI-q0uy §4.2), moved from
+ * `views/worker/repo-ops-timeline.js` (UI-dbn6 Phase 3) and drawn with the
+ * shared primitives; `screens/repo-ops/index.js` hosts it.
  *
  * One time axis for everything the Worker did to this repository:
  * verify/deploy/job operations and stopped post-merge cleanups, merged
@@ -14,7 +16,7 @@
  *
  * @import { TemplateResult } from 'lit-html'
  */
-import { html, render } from 'lit-html';
+import { html } from 'lit-html';
 import { formatElapsed } from '../../model/attempt-facts.js';
 import {
   failureText,
@@ -26,9 +28,12 @@ import {
   cleanupStepLabel,
   cleanupStepperView
 } from '../../model/merge-steps.js';
-import { formatTimestampLocal } from '../../model/relative-time.js';
+import {
+  formatClock,
+  formatTimestampLocal
+} from '../../model/relative-time.js';
 import { shortSha } from '../../model/repo-ops-strip.js';
-import { formatClock } from './lanes.js';
+import { render } from '../../ui/render.js';
 // One template for the log path, shared with the Worker row's completion card
 // (UI-8w4t §4) so both surfaces offer the same affordance and the same toast.
 import { logPathTemplate } from './log-path.js';
@@ -421,7 +426,7 @@ function operationActionsTemplate(operation) {
   return html`<div class="worker-ev__acts">
     <button
       type="button"
-      class="worker-ev__btn worker-repo-op__dismiss"
+      class="ui-btn ui-btn--sm ui-btn--ghost worker-ev__btn worker-repo-op__dismiss"
       data-operation-id=${operation.operation_id}
       title="사람이 확인한 실패로 접수합니다 — 기록은 그대로 남고 해결 필요 집계에서만 빠집니다"
     >
@@ -465,18 +470,22 @@ function operationEventTemplate(event, repo_ops) {
             ? ` · ${formatElapsed(operation.elapsed_ms)}`
             : ''}</span
         >
-        <span class="worker-ev__st worker-ev__st--${toneOf(event)}"
+        <span class="ui-chip worker-ev__st worker-ev__st--${toneOf(event)}"
           >${stateWordOf(event)}</span
         >
         ${operation.dismissed
-          ? html`<span class="worker-ev__st worker-ev__st--quiet">접수됨</span>`
+          ? html`<span class="ui-chip worker-ev__st worker-ev__st--quiet"
+              >접수됨</span
+            >`
           : ''}
         ${operation.superseded_by
-          ? html`<span class="worker-ev__st worker-ev__st--quiet">덮임</span>`
+          ? html`<span class="ui-chip worker-ev__st worker-ev__st--quiet"
+              >덮임</span
+            >`
           : ''}
         ${operation.source === 'manual'
           ? html`<span
-              class="worker-ev__st worker-ev__st--manual"
+              class="ui-chip worker-ev__st worker-ev__st--manual"
               title="사람이 배포 실행을 눌러 시작한 작업입니다"
               >수동</span
             >`
@@ -544,7 +553,7 @@ function cleanupEventTemplate(event) {
     <div class="worker-ev__body">
       <div class="worker-ev__line1">
         <span class="worker-ev__what">${cleanup.bead_id} 머지 후 정리</span>
-        <span class="worker-ev__st worker-ev__st--warn">멈춤</span>
+        <span class="ui-chip worker-ev__st worker-ev__st--warn">멈춤</span>
       </div>
       <ol class="worker-stepper" aria-label="정리 단계">
         ${cleanupStepperView(cleanup.step).map(
@@ -568,14 +577,14 @@ function cleanupEventTemplate(event) {
       <div class="worker-ev__acts">
         <button
           type="button"
-          class="worker-ev__btn worker-ev__btn--warn worker-cleanup__resume"
+          class="ui-btn ui-btn--sm ui-btn--primary worker-ev__btn worker-ev__btn--warn worker-cleanup__resume"
           data-bead-id=${cleanup.bead_id}
         >
           정리 재시도${step_label ? ` — ${step_label} 단계부터` : ''}
         </button>
         <button
           type="button"
-          class="worker-ev__btn worker-cleanup__resolve"
+          class="ui-btn ui-btn--sm worker-ev__btn worker-cleanup__resolve"
           data-bead-id=${cleanup.bead_id}
           title="이 실패를 사람이 이어받는 대화형 세션을 띄웁니다 — 기록된 세션이 있으면 fork하고, 없으면 새 세션에 사유를 싣습니다"
         >
@@ -608,7 +617,7 @@ export function repoOpsTimelineTemplate(model) {
       <span class="worker-repo-drawer__spacer"></span>
       <button
         type="button"
-        class="worker-repo-drawer__close"
+        class="ui-btn ui-btn--icon worker-repo-drawer__close"
         aria-label="닫기"
         data-seam="repo-ops-close"
       >
@@ -628,7 +637,7 @@ export function repoOpsTimelineTemplate(model) {
       ? html`<div class="worker-repo-drawer__more">
           <button
             type="button"
-            class="worker-ev__btn"
+            class="ui-btn ui-btn--sm ui-btn--ghost worker-ev__btn"
             data-seam="repo-ops-more"
           >
             ${expanded ? '접기' : `이전 ${hidden}개 더 보기`}

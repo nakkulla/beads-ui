@@ -1,16 +1,18 @@
 /**
- * Worker-screen operational settings: the read-only repo-operation declaration
- * (verify / deploy) and the pinned automation policy it runs under.
+ * The repo scope's 저장소 작업 · 검증/배포 선언 section (UI-dbn6 §3.3 저장소
+ * 작업 줄): the read-only repo-operation declaration (verify / deploy) with its
+ * script viewer links, the per-lane 「이 workspace에서 실행」 opt-out, `배포
+ * 실행`, and the pinned automation policy lists. Moved from
+ * `views/worker/repo-ops-settings.js` with its behaviour unchanged; drawn with
+ * the shared primitives (`repo-ops.css`).
  *
- * These are OPERATIONAL controls, not preferences, so the spec keeps them
- * inline on the Worker screen rather than moving them into the unified settings
- * dialog (spec 비-목표). They were extracted verbatim from the retired
- * exec-defaults dialog when its preference half moved to the settings dialog.
+ * These are OPERATIONAL controls, not preferences, so they stay on the
+ * pipeline screen rather than in the settings dialog (spec 비-목표).
  *
  * @typedef {{ get: () => any, set: (q: any) => void, subscribe?: (fn: () => void) => () => void }} QueueStore
  */
 import { html } from 'lit-html';
-import { showToast } from '../../utils/toast.js';
+import { showToast } from '../../ui/toast.js';
 
 /**
  * What each refusal of 배포 실행 means, in the vocabulary the server sends
@@ -80,7 +82,7 @@ export function createRepoOpsSettings(options) {
    */
   function badge(modifier, label) {
     return html`<span
-      class="worker-repo-ops__vd-badge worker-repo-ops__vd-badge--${modifier}"
+      class="ui-chip worker-repo-ops__vd-badge worker-repo-ops__vd-badge--${modifier}"
       >${label}</span
     >`;
   }
@@ -193,7 +195,7 @@ export function createRepoOpsSettings(options) {
     const unnamed = currentRepoId() === null;
     return html`<button
       type="button"
-      class="worker-repo-ops__deploy-run"
+      class="ui-btn ui-btn--sm worker-repo-ops__deploy-run"
       data-seam="repo-ops-deploy-run"
       ?disabled=${blocked || unnamed}
       title=${blocked
@@ -232,6 +234,7 @@ export function createRepoOpsSettings(options) {
     return html`<label class="worker-repo-ops__lane-run">
       <input
         type="checkbox"
+        class="worker-repo-ops__lane-check"
         .checked=${!opted_out}
         @change=${(/** @type {Event} */ ev) =>
           void saveRepoOpsOptOut(
@@ -532,7 +535,9 @@ export function createRepoOpsSettings(options) {
         <summary class="worker-repo-ops-settings__summary">
           저장소 작업 · 검증/배포 선언
         </summary>
-        ${verifyDeploySection(currentWorkspaceInfo())} ${policySection()}
+        <div class="worker-repo-ops-settings__panel">
+          ${verifyDeploySection(currentWorkspaceInfo())} ${policySection()}
+        </div>
       </details>`;
     }
   };

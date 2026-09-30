@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
+import { createRepoOpsScriptViewer } from './script-viewer.js';
 
 const SHA = 'a'.repeat(40);
 

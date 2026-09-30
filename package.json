@@ -84,6 +84,7 @@
     "app/screens/adr/adr.css",
     "app/screens/compare/compare.css",
     "app/screens/usage/usage.css",
+    "app/screens/repo-ops/repo-ops.css",
     "app/main.bundle.js",
     "app/main.bundle.js.map",
     "app/protocol.js",

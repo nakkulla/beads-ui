@@ -25,6 +25,12 @@ const DETAIL_HISTORY = readFileSync(
   path.resolve(process.cwd(), 'app/screens/detail/detail-history.css'),
   'utf8'
 );
+// The repo-ops timeline drawer moved onto its own overlay host with its
+// screen sheet in UI-dbn6 Phase 3.
+const REPO_OPS = readFileSync(
+  path.resolve(process.cwd(), 'app/screens/repo-ops/repo-ops.css'),
+  'utf8'
+);
 
 /**
  * Every `@media (any-pointer: coarse), (max-width: 640px)` block body, matched by
@@ -209,13 +215,12 @@ describe('worker console styles', () => {
   // 걸려 배포 이력 뒤쪽이 스크롤 없이 잘렸다.
   test('gives the repo-ops drawer the same overlay contract as the transcript drawer', () => {
     const drawerRule =
-      CSS.match(
-        /(?:^|\n)\.worker-drawer-overlay \.worker-repo-drawer\s*{([^}]*)}/
+      REPO_OPS.match(
+        /(?:^|\n)\.ro-overlay \.worker-repo-drawer\s*{([^}]*)}/
       )?.[1] || '';
     const railRule =
-      CSS.match(
-        /(?:^|\n)\.worker-drawer-overlay \.worker-rail\s*{([^}]*)}/
-      )?.[1] || '';
+      REPO_OPS.match(/(?:^|\n)\.ro-overlay \.worker-rail\s*{([^}]*)}/)?.[1] ||
+      '';
 
     expect(drawerRule).toContain('width: 100%');
     expect(drawerRule).toContain('flex-direction: column');
@@ -262,9 +267,9 @@ describe('worker console styles', () => {
     expect(factRule).toContain('order: 3');
   });
 
-  test('narrows the repo-ops timeline gutters below 640px', () => {
-    const mq = CSS.slice(
-      CSS.indexOf('/* ---------- Worker responsive (<=640px)')
+  test('narrows the repo-ops timeline gutters below 720px', () => {
+    const mq = REPO_OPS.slice(
+      REPO_OPS.indexOf('@media (max-width: 719px) {\n  .worker-ev')
     );
     const eventRule = mq.match(/(?:^|\n)\s*\.worker-ev\s*{([^}]*)}/)?.[1] || '';
     const kvRule =

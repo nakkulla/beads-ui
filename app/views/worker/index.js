@@ -86,6 +86,9 @@ import {
 } from '../../screens/dialogs/provider-resume-dialog.js';
 import { runResumeFlow } from '../../screens/dialogs/resume-flow.js';
 import { runExternalWaitAction } from '../../screens/pipeline/external-wait-action.js';
+import { createRepoOpsScriptViewer } from '../../screens/repo-ops/script-viewer.js';
+import { createRepoOpsSettings } from '../../screens/repo-ops/settings.js';
+import { createRepoOpsDrawer } from '../../screens/repo-ops/timeline.js';
 import { createTranscriptDrawer } from '../../screens/transcript/transcript-drawer.js';
 import { createChipPopover } from '../../ui/chip-popover.js';
 import {
@@ -128,9 +131,6 @@ import {
   waitBody
 } from './lanes.js';
 import { deriveWorkerOverlaps } from './queue-overlaps.js';
-import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
-import { createRepoOpsSettings } from './repo-ops-settings.js';
-import { createRepoOpsDrawer } from './repo-ops-timeline.js';
 import { runningGridTemplate } from './running-grid.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
 
