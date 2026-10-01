@@ -960,6 +960,19 @@ export function createMergeQueue(deps) {
   }
 
   /**
+   * Whether a person shelved this bead out of every automatic merge path
+   * (UI-sd12 §3.1).
+   *
+   * @param {string} bead_id
+   * @returns {boolean}
+   */
+  function shelved(bead_id) {
+    const q = snapshot();
+    const shelf = (q && q.merge_shelved) || {};
+    return Object.hasOwn(shelf, bead_id);
+  }
+
+  /**
    * Dispose of an item as a FAILURE: record the exclusion and drop it from the
    * queue in ONE durable mutation (UI-yk55 §3.2).
    *
@@ -2053,6 +2066,15 @@ export function createMergeQueue(deps) {
         bead_id,
         fence.reason
       );
+      return;
+    }
+    // The shelf is checked before ANY effect, the completion branch included
+    // (UI-sd12 §3.3). The store never inserts a shelved bead; this is the
+    // defense for a queue state that holds one anyway. It leaves without a
+    // merge, base update, resolution or review dispatch.
+    if (shelved(bead_id)) {
+      log('merge queue: %s shelved — dequeued without effect', bead_id);
+      dequeue(bead_id);
       return;
     }
     // A retried item starts clean: the previous reason described a run that is

@@ -5755,6 +5755,37 @@ function stopCancelledReviewSessions(key, attempt_ids) {
 }
 
 /**
+ * Whether the driver holds this bead so that neither [취소] nor [보관] may take
+ * it out of the queue (`merge_active`, UI-sd12 §3.2 reuses the [취소] rule).
+ *
+ * Only an actual merge EFFECT in flight (the GitHub API window) locks the
+ * item (UI-d7fy §5.6). A running review session does NOT — reviewing is not
+ * merging, and the cancel is exactly what reclaims the authority that
+ * session was dispatched under, so refusing it would leave the one lever
+ * that stops it unusable.
+ *
+ * @param {string} key
+ * @param {string} bead_id
+ * @param {import('../worker/merge-queue.js').MergeQueueState|null} state - The
+ * driver's in-memory state.
+ * @returns {boolean}
+ */
+function mergeItemLocked(key, bead_id, state) {
+  if (!state || state.active !== bead_id) {
+    return false;
+  }
+  const review_session_running = Object.values(
+    /** @type {any} */ (queueStore().snapshot(key)).attempts || {}
+  ).some(
+    (/** @type {any} */ a) =>
+      a?.bead_id === bead_id &&
+      a.kind === 'review_session' &&
+      (a.status === 'running' || a.status === 'pending')
+  );
+  return !review_session_running || workerMergeEffectInFlight(key, bead_id);
+}
+
+/**
  * Handle `worker-merge-queue-remove`. Payload:
  * `{ bead_id, expected_revision }`, or `{ all: true, expected_revision }`.
  *
@@ -5813,24 +5844,7 @@ export function handleWorkerMergeQueueRemove(ws, req) {
     }
     return;
   }
-  // Only an actual merge EFFECT in flight (the GitHub API window) locks the
-  // item (UI-d7fy §5.6). A running review session does NOT — reviewing is not
-  // merging, and the cancel is exactly what reclaims the authority that
-  // session was dispatched under, so refusing it would leave the one lever
-  // that stops it unusable.
-  const review_session_running = Object.values(
-    /** @type {any} */ (queueStore().snapshot(key)).attempts || {}
-  ).some(
-    (/** @type {any} */ a) =>
-      a?.bead_id === p.bead_id &&
-      a.kind === 'review_session' &&
-      (a.status === 'running' || a.status === 'pending')
-  );
-  if (
-    state &&
-    state.active === p.bead_id &&
-    (!review_session_running || workerMergeEffectInFlight(key, p.bead_id))
-  ) {
+  if (mergeItemLocked(key, p.bead_id, state)) {
     ws.send(
       JSON.stringify(
         makeOk(req, {
@@ -5858,6 +5872,111 @@ export function handleWorkerMergeQueueRemove(ws, req) {
         applied: result.ok,
         conflict: result.conflict,
         reason: null,
+        queue: decorateQueue(key, /** @type {any} */ (result.queue))
+      })
+    )
+  );
+  if (result.ok) {
+    fanout(key, /** @type {any} */ (result.queue));
+    stopCancelledReviewSessions(key, result.cancelled_attempt_ids);
+  }
+}
+
+/**
+ * Handle `worker-merge-shelve`. Payload: `{ bead_id, on, expected_revision }`.
+ * Reply: `{ bead_id, applied, conflict, reason?, queue }`.
+ *
+ * [보관]/[보관 해제] on a local PR 대기 row (UI-sd12 §3.2). Shelving takes the
+ * row out of every automatic merge path and its queue entry out of line in one
+ * CAS write; the driver-held item is refused with `merge_active` by exactly the
+ * [취소] rule, and the review sessions the write settled are stopped afterwards
+ * as for [취소]. An external row is refused with `external` — it is a registry
+ * overlay the store cannot see, so that judgment is made here — and a bead with
+ * no PR 대기 row with `not_pr_wait`.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerMergeShelve(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (
+    typeof p.bead_id !== 'string' ||
+    p.bead_id.length === 0 ||
+    typeof p.on !== 'boolean'
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { bead_id: string, on: boolean }'
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  /**
+   * @param {string} reason
+   */
+  const refuse = (reason) => {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          applied: false,
+          conflict: false,
+          reason,
+          queue: decorateQueue(
+            key,
+            /** @type {any} */ (queueStore().snapshot(key))
+          )
+        })
+      )
+    );
+  };
+  if (p.on === true) {
+    const overlaid = withExternalPrWait(
+      key,
+      /** @type {any} */ (queueStore().snapshot(key))
+    );
+    const row = (
+      Array.isArray(overlaid.pr_wait)
+        ? /** @type {any[]} */ (overlaid.pr_wait)
+        : []
+    ).find((entry) => entry && entry.bead_id === p.bead_id);
+    if (row && row.external === true) {
+      refuse('external');
+      return;
+    }
+    if (mergeItemLocked(key, p.bead_id, workerMergeQueueState(key))) {
+      refuse('merge_active');
+      return;
+    }
+  }
+  const result = queueStore().setMergeShelved(key, {
+    expected_revision: revisionOf(p),
+    bead_id: p.bead_id,
+    on: p.on
+  });
+  if (result.ok) {
+    recordUserAction(
+      key,
+      p.bead_id,
+      p.on ? 'merge_shelve' : 'merge_unshelve',
+      p.on ? '[보관] 클릭' : '[보관 해제] 클릭'
+    );
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        applied: result.ok,
+        conflict: result.conflict,
+        ...(typeof result.reason === 'string' ? { reason: result.reason } : {}),
         queue: decorateQueue(key, /** @type {any} */ (result.queue))
       })
     )

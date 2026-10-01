@@ -14212,3 +14212,475 @@ describe('queue-store guard mirror fields (guard-hook-bypass-result-judgment §2
     );
   });
 });
+
+describe('worker/queue-store — PR 대기 보관 (UI-sd12)', () => {
+  const HEAD = 'a'.repeat(40);
+
+  /**
+   * Park beads in `pr_wait` the way a finished implementation attempt does.
+   *
+   * @param {string[]} bead_ids
+   */
+  function parkedStore(bead_ids) {
+    const store = createQueueStore({ now: () => 500 });
+    for (const bead_id of bead_ids) {
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: `att-${bead_id}`,
+          bead_id,
+          target_base: 'main',
+          base_oid: 'b'.repeat(40)
+        }
+      });
+      store.moveToPrWait(WS, {
+        bead_id,
+        attempt_id: `att-${bead_id}`,
+        patch: { status: 'done', finished_at: 1 }
+      });
+    }
+    return store;
+  }
+
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {string} bead_id
+   * @param {boolean} [on]
+   */
+  function shelve(store, bead_id, on = true) {
+    return store.setMergeShelved(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id,
+      on
+    });
+  }
+
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {string[]} bead_ids
+   */
+  function enrollAuto(store, bead_ids) {
+    return store.enqueueMergeAuto(WS, {
+      entries: bead_ids.map((bead_id) => ({
+        bead_id,
+        head_sha: HEAD,
+        target_base: 'main'
+      }))
+    });
+  }
+
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   */
+  function enqueueManual(store) {
+    return store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1', head_sha: HEAD, target_base: 'main' }]
+    });
+  }
+
+  /**
+   * A pr_wait root whose completion intent sits in the merge queue.
+   */
+  function completionStore() {
+    const store = parkedStore(['UI-1']);
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-1',
+      source_attempt_id: 'att-UI-1',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-1',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: HEAD,
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    return store;
+  }
+
+  test('defaults a legacy queue to nothing shelved', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({ revision: 2, pr_wait: [{ bead_id: 'UI-1' }] })
+    );
+
+    const q = createQueueStore().snapshot(WS);
+
+    expect(q.merge_shelved).toEqual({});
+  });
+
+  test('shelves an automatically queued row and drops its entry in one revision', () => {
+    const store = parkedStore(['UI-1', 'UI-2']);
+    enrollAuto(store, ['UI-1', 'UI-2']);
+    const revision = store.snapshot(WS).revision;
+
+    const result = shelve(store, 'UI-1');
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.merge_shelved).toEqual({ 'UI-1': { at: 500 } });
+    expect(result.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-2']);
+  });
+
+  test('refuses a stale revision and leaves the queue as it was', () => {
+    const store = parkedStore(['UI-1']);
+    enrollAuto(store, ['UI-1']);
+    const before = store.snapshot(WS);
+
+    const result = store.setMergeShelved(WS, {
+      expected_revision: before.revision - 1,
+      bead_id: 'UI-1',
+      on: true
+    });
+
+    expect(result.conflict).toBe(true);
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('drops a manual authority entry when shelving', () => {
+    const store = parkedStore(['UI-1']);
+    enqueueManual(store);
+
+    const result = shelve(store, 'UI-1');
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.merge_queue).toEqual([]);
+  });
+
+  test('settles the review session of the dropped entry in the same write', () => {
+    const store = parkedStore(['UI-1']);
+    enqueueManual(store);
+    store.upsertReviewSessionAttempt(WS, {
+      attempt_id: 'review:1',
+      patch: {
+        bead_id: 'UI-1',
+        kind: 'review_session',
+        status: 'running',
+        head_sha: HEAD
+      }
+    });
+
+    const result = shelve(store, 'UI-1');
+
+    expect(result.cancelled_attempt_ids).toEqual(['review:1']);
+    expect(result.queue.attempts['review:1']).toMatchObject({
+      status: 'failed',
+      cause: 'cancelled'
+    });
+  });
+
+  test('refuses a bead that has no pr_wait row as not_pr_wait', () => {
+    const store = parkedStore([]);
+    const revision = store.snapshot(WS).revision;
+
+    const result = shelve(store, 'UI-9');
+
+    expect(result).toMatchObject({ ok: false, reason: 'not_pr_wait' });
+    expect(store.snapshot(WS).revision).toBe(revision);
+  });
+
+  test('refuses a durable external row as external', () => {
+    const store = parkedStore([]);
+    store.promoteMergedExternal(WS, {
+      bead_id: 'EXT-1',
+      merge_sha: 'c'.repeat(40)
+    });
+
+    const result = shelve(store, 'EXT-1');
+
+    expect(result).toMatchObject({ ok: false, reason: 'external' });
+    expect(store.snapshot(WS).merge_shelved).toEqual({});
+  });
+
+  test('answers a repeated shelve with applied false and no reason', () => {
+    const store = parkedStore(['UI-1']);
+    shelve(store, 'UI-1');
+    const revision = store.snapshot(WS).revision;
+
+    const result = shelve(store, 'UI-1');
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBeUndefined();
+    expect(store.snapshot(WS).revision).toBe(revision);
+  });
+
+  test('unshelving drops only the record', () => {
+    const store = parkedStore(['UI-1']);
+    shelve(store, 'UI-1');
+    const before = store.snapshot(WS);
+
+    const result = shelve(store, 'UI-1', false);
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.merge_shelved).toEqual({});
+    expect(result.queue.merge_queue).toEqual(before.merge_queue);
+    expect(result.queue.pr_wait).toEqual(before.pr_wait);
+  });
+
+  test('refuses a manual enqueue of a shelved row with reason shelved', () => {
+    const store = parkedStore(['UI-1']);
+    shelve(store, 'UI-1');
+
+    const result = enqueueManual(store);
+
+    expect(result).toMatchObject({ ok: false, reason: 'shelved' });
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('refuses a [리뷰 후 머지] registration on a shelved row', () => {
+    const store = parkedStore(['UI-1']);
+    shelve(store, 'UI-1');
+
+    const result = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1', head_sha: HEAD, target_base: 'main' }],
+      review_session: { attempt_id: 'review:2' }
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'shelved',
+      review_session_registered: false
+    });
+    expect(store.snapshot(WS).attempts['review:2']).toBeUndefined();
+  });
+
+  test('passes a shelved row over during automatic enrolment', () => {
+    const store = parkedStore(['UI-1', 'UI-2']);
+    shelve(store, 'UI-1');
+
+    const result = enrollAuto(store, ['UI-1', 'UI-2']);
+
+    expect(result.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-2']);
+  });
+
+  test('passes a shelved row over when the enroller brings a completion seed', () => {
+    const store = parkedStore(['UI-1']);
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    shelve(store, 'UI-1');
+
+    const result = store.enqueueMergeAuto(WS, {
+      entries: [
+        {
+          bead_id: 'UI-1',
+          head_sha: HEAD,
+          completion: {
+            source_attempt_id: 'att-UI-1',
+            target_base: 'main',
+            subject: {
+              role: 'root',
+              bead_id: 'UI-1',
+              pr_url: 'https://github.com/o/r/pull/1',
+              head_sha: HEAD,
+              base_sha: 'b'.repeat(40),
+              merged_sha: null
+            }
+          }
+        }
+      ]
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(store.snapshot(WS).completion_intents).toEqual({});
+  });
+
+  test('keeps the shelf when the observed head moves', () => {
+    const store = parkedStore(['UI-1']);
+    shelve(store, 'UI-1');
+
+    store.enqueueMergeAuto(WS, {
+      entries: [{ bead_id: 'UI-1', head_sha: 'e'.repeat(40) }],
+      present_ids: ['UI-1']
+    });
+
+    expect(store.snapshot(WS).merge_shelved).toHaveProperty('UI-1');
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('keeps the shelf across a cold reload', () => {
+    const store = parkedStore(['UI-1']);
+    shelve(store, 'UI-1');
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(reloaded.merge_shelved).toEqual({ 'UI-1': { at: 500 } });
+  });
+
+  test('drops the shelf when the merged bead moves to done', () => {
+    const store = parkedStore(['UI-1']);
+    shelve(store, 'UI-1');
+
+    const result = store.moveToDone(WS, { bead_id: 'UI-1' });
+
+    expect(result.queue.merge_shelved).toEqual({});
+  });
+
+  test('drops the shelf when the row is discarded', () => {
+    const store = parkedStore(['UI-1']);
+    shelve(store, 'UI-1');
+
+    const result = store.removeFromPrWait(WS, { bead_id: 'UI-1' });
+
+    expect(result.queue.merge_shelved).toEqual({});
+  });
+
+  test('drops the shelf when the bead is placed back in a waiting lane', () => {
+    const store = parkedStore(['UI-1']);
+    shelve(store, 'UI-1');
+
+    const result = store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-1'
+    });
+
+    expect(result.queue.merge_shelved).toEqual({});
+  });
+
+  test('normalizes malformed shelf records on load', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 1,
+        merge_shelved: {
+          'UI-1': { at: 'yesterday' },
+          'UI-2': true,
+          'UI-3': { at: 7 }
+        }
+      })
+    );
+
+    const q = createQueueStore().snapshot(WS);
+
+    expect(q.merge_shelved).toEqual({ 'UI-1': { at: 0 }, 'UI-3': { at: 7 } });
+  });
+
+  test('ignores a shelf map that is not an object on load', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({ revision: 1, merge_shelved: ['UI-1'] })
+    );
+
+    const q = createQueueStore().snapshot(WS);
+
+    expect(q.merge_shelved).toEqual({});
+  });
+
+  test('keeps a paused completion intent paused while its root is shelved', () => {
+    const store = completionStore();
+    store.pauseCompletionIntent(WS, { root_bead_id: 'UI-1' });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    shelve(store, 'UI-1');
+
+    const result = store.resumeCompletionIntent(WS, { root_bead_id: 'UI-1' });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).completion_intents['UI-1'].phase).toBe('paused');
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('refuses the legacy adoption of a shelved root', () => {
+    const store = completionStore();
+    const failure_key = {
+      stage: 'merge_subject',
+      reason: 'merge_ready',
+      subject_sha: HEAD,
+      base_sha: 'b'.repeat(40),
+      result_digest: 'c'.repeat(64)
+    };
+    const op = {
+      op_id: 'merge-op',
+      kind: /** @type {const} */ ('merge_subject'),
+      failure_key,
+      attempt_id: null,
+      status: /** @type {const} */ ('prepared')
+    };
+    store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-1',
+      phase: 'merging',
+      op
+    });
+    store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-1',
+      terminal: {
+        reason: 'resolution_timeout',
+        stage: 'conflict_resolution',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 100
+      }
+    });
+    shelve(store, 'UI-1');
+
+    const result = store.adoptLegacyResolutionTimeout(WS, {
+      root_bead_id: 'UI-1',
+      subject: store.snapshot(WS).completion_intents['UI-1'].subject,
+      op,
+      resolution_attempt_id: null,
+      resolution_rounds: 0,
+      wait_ms: 100
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(store.snapshot(WS).completion_intents['UI-1'].phase).toBe(
+      'needs_human'
+    );
+  });
+
+  test('keeps a yielded item out of line when its resolution re-enters pr_wait', () => {
+    const store = parkedStore(['UI-1', 'UI-2']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }]
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'res-1',
+        bead_id: 'UI-1',
+        status: 'running',
+        conflict_resolution: true,
+        started_at: 100
+      }
+    });
+    store.bindResolutionWait(WS, {
+      dispatch_head_sha: HEAD,
+      base_ref: 'main',
+      head_ref: 'UI-1',
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      wait_ms: 100
+    });
+    store.yieldResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      yielded_at: 200
+    });
+    shelve(store, 'UI-1');
+
+    const result = store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      patch: { status: 'done', finished_at: 300 }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.merge_queue.map((e) => e.bead_id)).toEqual(['UI-2']);
+    expect(result.queue.merge_shelved).toEqual({ 'UI-1': { at: 500 } });
+  });
+});

@@ -209,11 +209,19 @@ export function mergeQueueCandidates(workspace_key, queue, verify_policy) {
   const cleanup_failed = /** @type {Record<string, any>} */ (
     queue.cleanup_failed || {}
   );
+  const merge_shelved = /** @type {Record<string, unknown>} */ (
+    queue.merge_shelved || {}
+  );
   /** @type {Array<{ bead_id: string, external: boolean, repairable?: boolean }>} */
   const out = [];
   for (const entry of lane) {
     const bead_id = entry && entry.bead_id;
     if (typeof bead_id !== 'string' || bead_id.length === 0) {
+      continue;
+    }
+    // A shelved row is out of every caller of this list — automatic enrolment,
+    // [일괄 머지] and the repairable red intake alike (UI-sd12 §3.3).
+    if (Object.hasOwn(merge_shelved, bead_id)) {
       continue;
     }
     if (hasConflictSession(queue, bead_id)) {

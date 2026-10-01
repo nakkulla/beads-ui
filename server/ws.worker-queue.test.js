@@ -2940,6 +2940,246 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     });
     expect(getWorkerRuntime().queueStore.snapshot('').merge_queue).toEqual([]);
   });
+
+  test('shelves a waiting row and drops its queue entry', async () => {
+    parkInPrWait('UI-1');
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const store = getWorkerRuntime().queueStore;
+    await send(sock, 'm1', 'worker-merge-queue-add', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision
+    });
+
+    await send(sock, 'm2', 'worker-merge-shelve', {
+      bead_id: 'UI-1',
+      on: true,
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm2').payload).toMatchObject({
+      bead_id: 'UI-1',
+      applied: true,
+      conflict: false
+    });
+    expect(replyFor(sock, 'm2').payload.queue.merge_shelved).toHaveProperty(
+      'UI-1'
+    );
+    expect(store.snapshot('').merge_queue).toEqual([]);
+  });
+
+  test('refuses a stale shelve revision as a conflict', async () => {
+    parkInPrWait('UI-1');
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-shelve', {
+      bead_id: 'UI-1',
+      on: true,
+      expected_revision: 99
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      applied: false,
+      conflict: true
+    });
+    expect(getWorkerRuntime().queueStore.snapshot('').merge_shelved).toEqual(
+      {}
+    );
+  });
+
+  test('refuses to shelve the item the driver is merging', async () => {
+    parkInPrWait('UI-1');
+    registerDriver({ active: 'UI-1' });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const store = getWorkerRuntime().queueStore;
+    await send(sock, 'm1', 'worker-merge-queue-add', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision
+    });
+
+    await send(sock, 'm2', 'worker-merge-shelve', {
+      bead_id: 'UI-1',
+      on: true,
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm2').payload).toMatchObject({
+      applied: false,
+      conflict: false,
+      reason: 'merge_active'
+    });
+    expect(store.snapshot('').merge_queue.length).toBe(1);
+    expect(store.snapshot('').merge_shelved).toEqual({});
+  });
+
+  test('shelves an active item that only waits on its review session', async () => {
+    parkInPrWait('UI-1');
+    registerDriver({ active: 'UI-1' });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const store = getWorkerRuntime().queueStore;
+    await send(sock, 'm1', 'worker-merge-queue-add', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision
+    });
+    store.upsertReviewSessionAttempt('', {
+      attempt_id: 'review:x',
+      patch: {
+        bead_id: 'UI-1',
+        kind: 'review_session',
+        status: 'running',
+        authority_id: store.snapshot('').merge_queue[0].authority?.id || '',
+        head_sha: 'f'.repeat(40)
+      }
+    });
+
+    await send(sock, 'm2', 'worker-merge-shelve', {
+      bead_id: 'UI-1',
+      on: true,
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm2').payload.applied).toBe(true);
+    expect(store.snapshot('').attempts['review:x']).toMatchObject({
+      status: 'failed',
+      cause: 'cancelled'
+    });
+    expect(stop_review_session).toHaveBeenCalledWith(process.cwd(), 'review:x');
+    expect(stop_attempt).not.toHaveBeenCalled();
+  });
+
+  test('refuses a bead without a PR 대기 row as not_pr_wait', async () => {
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-shelve', {
+      bead_id: 'UI-9',
+      on: true,
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      applied: false,
+      conflict: false,
+      reason: 'not_pr_wait'
+    });
+  });
+
+  test('refuses an external row as external', async () => {
+    getWorkerRuntime().externalPrs.replace('', [
+      {
+        bead_id: 'UI-EXT',
+        pr_url: 'https://github.com/o/r/pull/9',
+        pr_number: 9
+      }
+    ]);
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-shelve', {
+      bead_id: 'UI-EXT',
+      on: true,
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      applied: false,
+      conflict: false,
+      reason: 'external'
+    });
+    expect(getWorkerRuntime().queueStore.snapshot('').merge_shelved).toEqual(
+      {}
+    );
+  });
+
+  test('unshelves a row and keeps it out of the queue', async () => {
+    parkInPrWait('UI-1');
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const store = getWorkerRuntime().queueStore;
+    await send(sock, 'm1', 'worker-merge-shelve', {
+      bead_id: 'UI-1',
+      on: true,
+      expected_revision: store.snapshot('').revision
+    });
+
+    await send(sock, 'm2', 'worker-merge-shelve', {
+      bead_id: 'UI-1',
+      on: false,
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm2').payload.applied).toBe(true);
+    expect(store.snapshot('').merge_shelved).toEqual({});
+    expect(store.snapshot('').merge_queue).toEqual([]);
+  });
+
+  test('refuses a [머지] on a shelved row with reason shelved', async () => {
+    parkInPrWait('UI-1');
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const store = getWorkerRuntime().queueStore;
+    await send(sock, 'm1', 'worker-merge-shelve', {
+      bead_id: 'UI-1',
+      on: true,
+      expected_revision: store.snapshot('').revision
+    });
+
+    await send(sock, 'm2', 'worker-merge-queue-add', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm2').payload).toMatchObject({
+      applied: false,
+      conflict: false,
+      reason: 'shelved'
+    });
+    expect(store.snapshot('').merge_queue).toEqual([]);
+  });
+
+  test('add-all leaves out a shelved row', async () => {
+    parkInPrWait('UI-1');
+    parkInPrWait('UI-2');
+    observeGreen('UI-1');
+    observeGreen('UI-2');
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const store = getWorkerRuntime().queueStore;
+    await send(sock, 'm1', 'worker-merge-shelve', {
+      bead_id: 'UI-1',
+      on: true,
+      expected_revision: store.snapshot('').revision
+    });
+
+    await send(sock, 'm2', 'worker-merge-queue-add-all', {
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(
+      store.snapshot('').merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-2']);
+  });
+
+  test('rejects a shelve payload without a boolean on', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'm1', 'worker-merge-shelve', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'm1').ok).toBe(false);
+  });
 });
 
 describe('ws worker PR actions (worker-phase2 §6)', () => {

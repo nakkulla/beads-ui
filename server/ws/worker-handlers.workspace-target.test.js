@@ -178,6 +178,11 @@ const MUTATIONS = [
     payload: { bead_id: 'UI-1', expected_revision: 0 }
   },
   {
+    action: 'worker-merge-shelve',
+    run: handlers.handleWorkerMergeShelve,
+    payload: { bead_id: 'UI-1', on: true, expected_revision: 0 }
+  },
+  {
     action: 'worker-revise-fix',
     run: handlers.handleWorkerReviseFix,
     payload: { bead_id: 'UI-1', expected_revision: 0 }
@@ -283,6 +288,21 @@ test('forwards lane_occupied from manual merge placement', async () => {
     applied: false,
     conflict: false,
     reason: 'lane_occupied'
+  });
+});
+
+test('forwards shelved from manual merge placement', async () => {
+  state.merge_reason = 'shelved';
+  const row = /** @type {any} */ (
+    MUTATIONS.find((entry) => entry.action === 'worker-merge-queue-add')
+  );
+
+  const { replies } = await dispatch(row, row.payload);
+
+  expect(replies[0].payload).toMatchObject({
+    applied: false,
+    conflict: false,
+    reason: 'shelved'
   });
 });
 

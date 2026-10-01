@@ -66,6 +66,8 @@ import {
   providerProbeRefusalText,
   queueRowOps,
   setChipPresetContext,
+  shelveReplyToast,
+  shelvedSectionTemplate,
   waitBody
 } from '../worker/lanes.js';
 import {
@@ -262,6 +264,38 @@ function saveRunningSort(running_sort) {
   }
 }
 
+/**
+ * PR 대기 레인 아래 `보관 N` 묶음의 열림 상태 (UI-sd12 §3.4). Worker 탭과 다른
+ * 자기 키이고, 기본·읽기 실패는 접힘이다.
+ */
+const SHELVED_OPEN_KEY = 'bdui.monitor.shelved-open';
+
+/**
+ * @returns {boolean}
+ */
+function loadShelvedOpen() {
+  try {
+    return window.localStorage.getItem(SHELVED_OPEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * @param {boolean} open
+ */
+function saveShelvedOpen(open) {
+  try {
+    if (open) {
+      window.localStorage.setItem(SHELVED_OPEN_KEY, '1');
+    } else {
+      window.localStorage.removeItem(SHELVED_OPEN_KEY);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Client id of the monitor tab's aggregated pipeline subscription. */
 export const MONITOR_PIPELINE_KEY = 'tab:monitor:pipeline';
 
@@ -401,6 +435,8 @@ export function createMonitorView(mount_element, options) {
   let candidate_sort = loadCandidateSort();
   /** @type {Record<string, any>} */
   let sections_state = loadSections();
+  /** `보관 N` 묶음의 열림 상태 (UI-sd12 §3.4). */
+  let shelved_open = loadShelvedOpen();
   /**
    * 레인·영역 접힘 (UI-5ksp §4.4). 레포 섹션은 계속 `sections_state`가
    * 소유하지만, 다섯 레인과 대기 본문의 두 영역은 Worker 탭과 같은 스토어를
@@ -842,13 +878,36 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * Shelve or unshelve one PR 대기 row — [보관]/[보관 해제] (UI-sd12 §3.2).
+   * Worker 탭과 같은 op·같은 토스트다.
+   *
+   * @param {string} bead_id
+   * @param {boolean} on
+   * @param {string} root_dir
+   * @param {number} revision
+   */
+  async function shelveMerge(bead_id, on, root_dir, revision) {
+    const res = await sendCas(
+      'worker-merge-shelve',
+      { bead_id, on },
+      root_dir,
+      revision
+    );
+    const toast = shelveReplyToast(res, bead_id, on);
+    if (toast) {
+      showToast(toast.text, toast.type, 2800);
+    }
+  }
+
+  /**
    * The PR 대기 lane header's bulk button. 한 레포씩 순차로 보낸다 — workspace
    * 단위 액션이고 revision도 레포마다 다르다.
    */
   async function mergeQueueAddAll() {
     /** @type {Map<string, number>} */
     const targets = new Map();
-    for (const item of lanes.pr_wait) {
+    // 보관 행만 남은 레포에는 보낼 것이 없다 (UI-sd12 §3.3).
+    for (const item of lanes.pr_wait.filter((row) => !row.shelved)) {
       if (!targets.has(item.root_dir)) {
         targets.set(item.root_dir, item.expected_revision);
       }
@@ -1426,12 +1485,20 @@ export function createMonitorView(mount_element, options) {
    * @returns {import('lit-html').TemplateResult}
    */
   function monitorTemplate(now) {
+    // 보관 행은 레인 본문과 개수에서 빠져 `보관 N` 묶음에만 선다 (UI-sd12 §3.4).
+    const pr_wait_open = lanes.pr_wait.filter((item) => !item.shelved);
+    const pr_wait_shelved = shelvedSectionTemplate(
+      lanes.pr_wait
+        .filter((item) => item.shelved)
+        .map((item) => miniRow(withOverlaps(item))),
+      shelved_open
+    );
     /** @type {Record<string, LaneItem[]>} */
     const by_lane = {
       runnable: lanes.runnable,
       queue: lanes.queue,
       running: lanes.running,
-      pr_wait: lanes.pr_wait,
+      pr_wait: pr_wait_open,
       done: lanes.done
     };
     /**
@@ -1474,6 +1541,7 @@ export function createMonitorView(mount_element, options) {
         src: meta.lane === 'runnable',
         empty: meta.empty,
         body,
+        footer: meta.lane === 'pr_wait' ? pr_wait_shelved : undefined,
         live: meta.lane === 'running' && items.length > 0,
         collapsible: true,
         collapsed: collapse.isCollapsed(meta.pane),
@@ -1494,10 +1562,11 @@ export function createMonitorView(mount_element, options) {
             ${nowPanel({
               live: lanes.running.length > 0,
               running_body: lanes.running.length > 0 ? runningBody(now) : '',
-              pr_wait_rows: lanes.pr_wait.map((item) =>
+              pr_wait_rows: pr_wait_open.map((item) =>
                 miniRow(withOverlaps(item))
               ),
-              count: lanes.running.length + lanes.pr_wait.length
+              pr_wait_footer: pr_wait_shelved,
+              count: lanes.running.length + pr_wait_open.length
             })}
             ${mobile_metas.map((meta) => lanePane(meta))}
           </div>
@@ -2438,6 +2507,15 @@ export function createMonitorView(mount_element, options) {
       );
       return;
     }
+    if (cls.contains('worker-mini__shelve')) {
+      void shelveMerge(
+        bead_id,
+        button.dataset.shelve === 'on',
+        root_dir,
+        revision
+      );
+      return;
+    }
     if (cls.contains('worker-mini__discard-abandon')) {
       const operation = {
         kind: button.dataset.operationKind || '',
@@ -2628,6 +2706,14 @@ export function createMonitorView(mount_element, options) {
     if (target.closest('.mon-merge-all')) {
       ev.preventDefault();
       void mergeQueueAddAll();
+      return;
+    }
+
+    // `보관 N` 묶음의 열고 닫기 (UI-sd12 §3.4). `<details>`의 기본 동작이 실제로
+    // 열고, 여기서는 그 결과를 저장해 다음 렌더가 같은 상태로 선다.
+    if (target.closest('.worker-shelved__summary')) {
+      shelved_open = !shelved_open;
+      saveShelvedOpen(shelved_open);
       return;
     }
 

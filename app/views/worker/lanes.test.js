@@ -36,6 +36,8 @@ import {
   reviewSessionRowState,
   routeChipTemplate,
   setChipPresetContext,
+  shelveReplyToast,
+  shelvedSectionTemplate,
   startNowButtonTemplate,
   sumAttemptWorkMs,
   summaryChipsTemplate,
@@ -5935,6 +5937,63 @@ describe('nowPanel (UI-5ksp §4.7)', () => {
         .querySelector('.worker-now')
         ?.classList.contains('worker-pane--live')
     ).toBe(true);
+  });
+
+  test('stays up for the 보관 bundle alone without counting it', () => {
+    render(
+      nowPanel({
+        count: 0,
+        pr_wait_footer: shelvedSectionTemplate(
+          [html`<div class="pr-row"></div>`],
+          false
+        )
+      }),
+      mount
+    );
+
+    const now = /** @type {HTMLElement} */ (mount.querySelector('#worker-now'));
+
+    expect(now.querySelector('.worker-shelved .pr-row')).not.toBeNull();
+    expect(now.querySelector('.worker-now__count')?.textContent).toBe('0');
+  });
+});
+
+describe('shelvedSectionTemplate (UI-sd12 §3.4)', () => {
+  test('draws no bundle without shelved rows', () => {
+    expect(shelvedSectionTemplate([], true)).toBeUndefined();
+  });
+
+  test('draws a collapsed 보관 N bundle by default', () => {
+    render(
+      shelvedSectionTemplate(
+        [html`<div class="pr-row"></div>`, html`<div class="pr-row"></div>`],
+        false
+      ),
+      mount
+    );
+
+    const bundle = /** @type {HTMLDetailsElement} */ (
+      mount.querySelector('details.worker-shelved')
+    );
+    expect(bundle.open).toBe(false);
+    expect(
+      bundle.querySelector('.worker-shelved__summary')?.textContent?.trim()
+    ).toBe('보관 2');
+  });
+});
+
+describe('shelveReplyToast (UI-sd12 §3.4)', () => {
+  test('names the unshelve and what it re-enables', () => {
+    expect(shelveReplyToast({ applied: true }, 'UI-1', false)).toEqual({
+      text: 'UI-1 보관 해제 — 자동 머지가 켜져 있으면 다시 머지 대상이 됩니다',
+      type: 'info'
+    });
+  });
+
+  test('says nothing when the row already had the requested value', () => {
+    expect(
+      shelveReplyToast({ applied: false, conflict: false }, 'UI-1', true)
+    ).toBeNull();
   });
 });
 

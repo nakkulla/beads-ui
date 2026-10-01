@@ -4225,3 +4225,86 @@ describe('worker/merge-queue — 자기 알림 재드레인 고리 (UI-nfkp §4)
     mq.stop();
   });
 });
+
+describe('worker/merge-queue — 보관 방어 (UI-sd12 §3.3)', () => {
+  /**
+   * Write a shelf record straight into queue.json and cold-load it. The store
+   * never inserts a shelved bead, so this is the only way to reach the state
+   * the driver's defense exists for.
+   *
+   * @param {any} store
+   * @param {string} bead_id
+   */
+  function shelveOnDisk(store, bead_id) {
+    const raw = store.snapshot(WS);
+    raw.merge_shelved = { [bead_id]: { at: 1 } };
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+    return createQueueStore();
+  }
+
+  /**
+   * Spies on every effect the driver can reach from a queue head; `merged`
+   * lists the beads `merge` was called for, in order.
+   */
+  function effectSpies() {
+    /** @type {string[]} */
+    const merged = [];
+    return {
+      merged,
+      merge: vi.fn(async (/** @type {string} */ bead_id) => {
+        merged.push(bead_id);
+        return { ok: true, action: 'merged', reason: null };
+      }),
+      updateBase: vi.fn(async () => ({ ok: true })),
+      dispatchConflict: vi.fn(async () => ({ ok: false })),
+      reviewSession: { startAuto: vi.fn(async () => ({ ok: false })) }
+    };
+  }
+
+  test('dequeues a shelved head without any merge effect', async () => {
+    const store = shelveOnDisk(seed(['UI-1', 'UI-2']), 'UI-1');
+    const spies = effectSpies();
+    const mq = driver(store, spies);
+
+    await mq.kick();
+
+    expect(spies.merged).toEqual(['UI-2']);
+    expect(spies.updateBase).not.toHaveBeenCalled();
+    expect(spies.dispatchConflict).not.toHaveBeenCalled();
+    expect(spies.reviewSession.startAuto).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('dequeues a shelved completion root before the completion branch acts', async () => {
+    const seeded = seed(['UI-root', 'UI-next']);
+    seeded.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    seeded.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'merging',
+      subject: seeded.snapshot(WS).completion_intents['UI-root'].subject
+    });
+    const store = shelveOnDisk(seeded, 'UI-root');
+    const spies = effectSpies();
+    const mq = driver(store, spies);
+
+    await mq.kick();
+
+    expect(spies.merged).toEqual(['UI-next']);
+    expect(spies.updateBase).not.toHaveBeenCalled();
+    expect(spies.dispatchConflict).not.toHaveBeenCalled();
+    expect(spies.reviewSession.startAuto).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+});
