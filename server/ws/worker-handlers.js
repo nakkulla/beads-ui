@@ -5110,7 +5110,7 @@ export async function handleWorkerExternalWait(ws, req) {
           ? '[새 세션으로]'
           : p.mode === 'session'
             ? '[세션에서 이어가기]'
-            : '[이어하기]';
+            : '[워커로 이어가기]';
   if ('bead_id' in record) {
     queueStore().recordTimelineEvent(key, {
       bead_id: record.bead_id,

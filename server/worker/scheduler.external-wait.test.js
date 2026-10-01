@@ -263,6 +263,67 @@ function recordOf(env) {
   return env.externalWait.get(WS, WAIT);
 }
 
+/** @param {Record<string, any>} [options] */
+function heldAccountFixture(options = {}) {
+  const rows = [
+    {
+      key: 'held@example.com',
+      status: 'ok',
+      windows: [{ key: '5h', pct: 100 }]
+    },
+    {
+      key: 'ready@example.com',
+      status: 'ok',
+      windows: [{ key: '5h', pct: 10 }]
+    }
+  ];
+  const env = fixture({
+    ...options,
+    deps: {
+      kvGet: vi.fn(async () => ({
+        ok: true,
+        value: { schema: 1, claude_account: 'held@example.com' }
+      })),
+      accountCatalog: {
+        listClaude: vi.fn(async () => ({ ok: true, accounts: rows })),
+        resolveClaude: vi.fn(async () => ({ ok: true }))
+      },
+      resolveCswapPath: () => '/opt/bin/cswap',
+      acquireClaudeLaunch: async () => vi.fn(),
+      ...options.deps
+    }
+  });
+  env.store.appendAttempt(WS, {
+    expected_revision: env.store.snapshot(WS).revision,
+    attempt: { attempt_id: 'held', bead_id: 'H1' }
+  });
+  env.store.holdProviderAttempt(WS, {
+    attempt_id: 'held',
+    patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+    runner: 'claude',
+    target: {
+      kind: 'usage_limit',
+      model: 'opus',
+      account: 'held@example.com',
+      detail: 'usage_limit',
+      last_error: 'usage_limit',
+      resets_at: null,
+      rearm_count: 0,
+      attempt_ids: []
+    }
+  });
+  env.store.setProviderLimitPolicy(WS, {
+    expected_revision: env.store.snapshot(WS).revision,
+    runner: 'claude',
+    patch: {
+      mode: 'switch',
+      accounts: ['ready@example.com'],
+      ...options.policy
+    }
+  });
+  return { ...env, rows };
+}
+
 describe('external wait settlement', () => {
   test.each([true, false])(
     'uses the server record for a live exit with success=%s',
@@ -379,6 +440,208 @@ describe('external wait settlement', () => {
 });
 
 describe('external wait resume', () => {
+  test('switches a held default account before the external wait resume gate', async () => {
+    const env = heldAccountFixture();
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fork'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.launches[0].settings).toMatchObject({
+      claude_account: 'ready@example.com',
+      resume_session_id: 'prior-session',
+      fork_session: true
+    });
+    expect(
+      env.store.snapshot(WS).attempts[env.launches[0].reservation.attempt_id]
+    ).toMatchObject({
+      claude_account: 'ready@example.com',
+      account_sources: { claude: 'preempt_switch', codex: null },
+      account_switched_from: 'held@example.com'
+    });
+    expect(env.bd.setMetadata).not.toHaveBeenCalledWith(
+      'B1',
+      'claude_account',
+      expect.anything()
+    );
+  });
+
+  test.each(['fork', 'fresh'])(
+    'switches a held pin for a session-owned %s resume',
+    async (mode) => {
+      const transcript_dir = path.join(root, '.claude', 'projects', '-repo');
+      fs.mkdirSync(transcript_dir, { recursive: true });
+      fs.writeFileSync(path.join(transcript_dir, 'user-session.jsonl'), '{}\n');
+      const env = heldAccountFixture({
+        seed_prior: false,
+        snapshot: {
+          claude_account: 'held@example.com',
+          session_ref: 'claude:user-session@host'
+        },
+        record: {
+          owner: {
+            kind: 'session',
+            session_ref: 'claude:user-session@host',
+            session_pid: 3333,
+            session_start: AT
+          }
+        }
+      });
+
+      const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+        mode: /** @type {'fork'|'fresh'} */ (mode)
+      });
+
+      expect(result.ok).toBe(true);
+      expect(env.launches[0].settings.claude_account).toBe('ready@example.com');
+      expect(env.launches[0].settings.resume_session_id).toBe(
+        mode === 'fork' ? 'user-session' : undefined
+      );
+      expect(
+        env.store.snapshot(WS).attempts[env.launches[0].reservation.attempt_id]
+      ).toMatchObject({
+        claude_account: 'ready@example.com',
+        account_sources: { claude: 'preempt_switch', codex: null },
+        account_switched_from: 'held@example.com'
+      });
+      expect(env.bd.setMetadata).not.toHaveBeenCalledWith(
+        'B1',
+        'claude_account',
+        expect.anything()
+      );
+    }
+  );
+
+  test('switches the account for a fresh worker continuation', async () => {
+    const env = heldAccountFixture();
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fresh'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.launches[0].settings.claude_account).toBe('ready@example.com');
+    expect(env.launches[0].settings).not.toHaveProperty('resume_session_id');
+  });
+
+  test('rejects a switched continuation whose account changes during preflight', async () => {
+    const env = heldAccountFixture();
+    env.bd.readMetadata.mockImplementation(async (_id, key) => {
+      if (key === 'impl_entry') {
+        env.rows[1].windows[0].pct = 100;
+      }
+      return env.metadata[key] ?? null;
+    });
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fork'
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'continuation_settings_changed'
+    });
+    expect(env.launches).toHaveLength(0);
+    expect(recordOf(env)?.resume?.attempt_id).toBeNull();
+  });
+
+  test.each([{ accounts: [] }, { mode: 'wait' }])(
+    'keeps a repeated provider refusal unchanged under policy %j',
+    async (policy) => {
+      const env = heldAccountFixture({ policy });
+      const first = await env.scheduler.resumeExternalWait(WS, WAIT, {
+        mode: 'fork'
+      });
+      const before = recordOf(env);
+      const update = vi.spyOn(env.externalWait, 'update');
+
+      const second = await env.scheduler.resumeExternalWait(WS, WAIT, {
+        mode: 'fork'
+      });
+
+      expect(first).toEqual({ ok: false, reason: 'provider_held' });
+      expect(second).toEqual(first);
+      expect(before?.resume).toMatchObject({
+        attempt_id: null,
+        reserved_at: null,
+        error: 'provider_held'
+      });
+      expect(update).not.toHaveBeenCalled();
+      expect(recordOf(env)).toEqual(before);
+      expect(env.launches).toHaveLength(0);
+    }
+  );
+
+  test('keeps a refused session wait quiet until another manual resume', async () => {
+    const env = heldAccountFixture({
+      seed_prior: false,
+      policy: { accounts: [] },
+      record: {
+        owner: {
+          kind: 'session',
+          session_ref: 'missing',
+          session_pid: 3333,
+          session_start: AT
+        }
+      }
+    });
+    await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'fresh' });
+    const update = vi.spyOn(env.externalWait, 'update');
+
+    const result = await env.scheduler.resumeExternalWait(WS, WAIT, {
+      mode: 'fresh'
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'provider_held' });
+    expect(update).not.toHaveBeenCalled();
+    env.store.setProviderLimitPolicy(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: { accounts: ['ready@example.com'] }
+    });
+    await env.scheduler.reconcile(WS);
+    expect(env.launches).toHaveLength(0);
+
+    await env.scheduler.resumeExternalWait(WS, WAIT, { mode: 'fresh' });
+
+    expect(env.launches).toHaveLength(1);
+    expect(env.launches[0].settings.claude_account).toBe('ready@example.com');
+  });
+
+  test.each(['recovery', 'candidate'])(
+    'automatically retries a worker wait after account %s',
+    async (change) => {
+      const env = heldAccountFixture({ policy: { accounts: [] } });
+      await env.scheduler.reconcile(WS);
+      expect(recordOf(env)?.resume?.error).toBe('provider_held');
+      if (change === 'recovery') {
+        const hold = env.store.snapshot(WS).provider_hold.claude;
+        env.store.recoverProviderTarget(WS, {
+          runner: 'claude',
+          generation: hold.generation,
+          kind: 'usage_limit',
+          model: 'opus',
+          account: 'held@example.com'
+        });
+      } else {
+        env.store.setProviderLimitPolicy(WS, {
+          expected_revision: env.store.snapshot(WS).revision,
+          runner: 'claude',
+          patch: { accounts: ['ready@example.com'] }
+        });
+      }
+
+      await env.scheduler.reconcile(WS);
+
+      expect(recordOf(env)?.stage).toBe('resumed');
+      expect(env.launches).toHaveLength(1);
+      expect(env.launches[0].settings.claude_account).toBe(
+        change === 'recovery' ? 'held@example.com' : 'ready@example.com'
+      );
+    }
+  );
+
   test('forks a Codex thread with the same paired launch arguments', async () => {
     const env = fixture({
       model: 'sol',

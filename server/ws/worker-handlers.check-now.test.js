@@ -51,7 +51,7 @@ describe('external wait operations', () => {
     /** @type {const} */ ([
       ['external_wait_check', 'check', undefined, '[지금 확인] 클릭'],
       ['external_wait_stop', 'stop', undefined, '[관찰 중단] 클릭'],
-      ['external_wait_resume', 'resume', 'fork', '[이어하기] 클릭'],
+      ['external_wait_resume', 'resume', 'fork', '[워커로 이어가기] 클릭'],
       ['external_wait_resume', 'resume', 'fresh', '[새 세션으로] 클릭'],
       ['external_wait_resume', 'resume', 'session', '[세션에서 이어가기] 클릭']
     ])

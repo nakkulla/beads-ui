@@ -12587,6 +12587,10 @@ export function createScheduler(deps) {
    * @param {string} error
    */
   function externalWaitResumeError(workspace, wait_id, mode, error) {
+    const resume = deps.externalWait?.get(workspace, wait_id)?.resume;
+    if (resume?.error === error && resume.attempt_id === null) {
+      return { ok: /** @type {const} */ (false), reason: error };
+    }
     deps.externalWait?.update(workspace, wait_id, (record) => {
       record.resume = {
         mode,
@@ -12804,16 +12808,19 @@ export function createScheduler(deps) {
         );
       }
       const attempt_id = makeAttemptId(bead_id);
-      store.update(workspace, wait_id, (current) => {
-        current.resume = {
-          mode,
-          attempt_id,
-          reserved_at: new Date(now()).toISOString(),
-          launched_at: null,
-          session_id: null,
-          error: null
-        };
-      });
+      // Preserve the prior refusal until the selected account passes its gate.
+      const reserveResume = () => {
+        store.update(workspace, wait_id, (current) => {
+          current.resume = {
+            mode,
+            attempt_id,
+            reserved_at: new Date(now()).toISOString(),
+            launched_at: null,
+            session_id: null,
+            error: null
+          };
+        });
+      };
       const completion_prompt = externalWaitCompletionPrompt(record);
       let result;
       if (prior) {
@@ -12841,6 +12848,7 @@ export function createScheduler(deps) {
           resume: mode === 'fork',
           fork_session: mode === 'fork',
           external_wait_resume: true,
+          reserveExternalWait: reserveResume,
           bead_snapshot: snap,
           cwd:
             mode === 'fresh' && !fs.existsSync(record.worktree)
@@ -12870,7 +12878,8 @@ export function createScheduler(deps) {
           snap,
           attempt_id,
           mode,
-          completion_prompt
+          completion_prompt,
+          reserveResume
         );
       }
       if (!result.ok) {
@@ -12912,6 +12921,7 @@ export function createScheduler(deps) {
    * @param {string} attempt_id
    * @param {'fork'|'fresh'} mode
    * @param {string} completion_prompt
+   * @param {() => void} reserveResume
    */
   async function launchExternalWaitSession(
     workspace,
@@ -12919,7 +12929,8 @@ export function createScheduler(deps) {
     snap,
     attempt_id,
     mode,
-    completion_prompt
+    completion_prompt,
+    reserveResume
   ) {
     const qualified =
       mode === 'fork'
@@ -12950,6 +12961,7 @@ export function createScheduler(deps) {
     if (runner_name !== resolved.exec.runner) {
       return { ok: false, reason: 'provider_mismatch' };
     }
+    const preempt = await applyPreemptSwitch(workspace, runner_name, resolved);
     const provider = await providerDispatchHeld(
       workspace,
       runner_name,
@@ -12958,6 +12970,7 @@ export function createScheduler(deps) {
     if (provider.held) {
       return { ok: false, reason: 'provider_held' };
     }
+    reserveResume();
     const bead_id = record.bead_id;
     const repo = snap.repo;
     const target_base = snap.target_base;
@@ -13075,6 +13088,7 @@ export function createScheduler(deps) {
           claude_account: resolved.accounts.claude,
           codex_account: resolved.accounts.codex,
           account_sources: resolved.account_sources,
+          ...(preempt ? { account_switched_from: preempt.from } : {}),
           workflow_mode_prior: prior_wf,
           workflow_mode_source_prior: snap.workflow_mode_source ?? null,
           exec_values: execValuesFor(resolved.exec),
@@ -13113,6 +13127,7 @@ export function createScheduler(deps) {
       speed: resolved.exec.orchestration_speed ?? 'default',
       accounts: resolved.accounts,
       account_sources: resolved.account_sources,
+      ...(preempt ? { preempt } : {}),
       prior_wf,
       stamped_keys,
       wt_path: prepared_worktree.path,
@@ -14883,6 +14898,10 @@ export function createScheduler(deps) {
             : 'outage_switch'
       };
     }
+    const preempt =
+      options.external_wait_resume === true
+        ? await applyPreemptSwitch(workspace, resolved.exec.runner, resolved)
+        : null;
     const prior_runner = recorded_prior_runner ?? resolved.exec.runner;
     const requested_decision = options.continuation || 'auto';
     if (
@@ -15136,8 +15155,10 @@ export function createScheduler(deps) {
       exec_values,
       accounts: launch_accounts,
       account_sources: resolved.account_sources,
-      account_switched_from:
-        typeof options.account_switched_from === 'string'
+      preempt,
+      account_switched_from: preempt
+        ? preempt.from
+        : typeof options.account_switched_from === 'string'
           ? options.account_switched_from
           : null,
       exec_restore_values,
@@ -15244,6 +15265,7 @@ export function createScheduler(deps) {
       if (provider.held) {
         return { ok: false, reason: 'provider_held' };
       }
+      options.reserveExternalWait();
     }
     return relaunchResolvedAttempt(workspace, prior, options, continuation);
   }
@@ -15653,6 +15675,7 @@ export function createScheduler(deps) {
       speed: launch_speed,
       accounts,
       account_sources,
+      preempt: continuation.preempt,
       prior_wf,
       stamped_keys,
       wt_path,
