@@ -2587,7 +2587,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
   const STALE_VALUE = 'plan_approval_stale:revise';
 
   /**
-   * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any }} [options]
+   * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any, timeline?: any }} [options]
    */
   function conversationEnv(options = {}) {
     const pane = {
@@ -2645,7 +2645,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
         : undefined,
       verifyOk: false,
       notify,
-      timeline: { append: vi.fn() },
+      timeline: options.timeline || { append: vi.fn() },
       admission: options.admission,
       directionInquiry: {
         onParkedAttempt: vi.fn(async () => ({
@@ -2754,6 +2754,41 @@ describe('same-session conversation return (UI-nuwy)', () => {
     Object.values(env.store.snapshot(WS).attempts).filter(
       (attempt) => attempt.resumed_from === prior_id
     );
+
+  test('appends one start event while an absent conversation pane waits for handoff readback', async () => {
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    const append = vi.spyOn(timeline, 'append');
+    const env = conversationEnv({
+      park: PARK_VALUE,
+      bead: { park_run: true },
+      timeline
+    });
+    const prior = await stopForConversation(env);
+    openConversation(env, prior, {
+      conversation: {
+        stop: `awaiting_user=${PARK_VALUE}`,
+        handoff: {
+          line: '인계 · 계속 진행',
+          source: 'result_line',
+          message_at: 900,
+          reserved_at: 1000
+        }
+      }
+    });
+    env.panes.rows = [];
+    vi.spyOn(env.bd, 'readMetadata').mockRejectedValue(
+      new Error('bd unavailable')
+    );
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(record(env).turn_state).toBeNull();
+    expect(
+      append.mock.calls.filter(([event]) => event.seq === 'inquiry:500:started')
+    ).toHaveLength(1);
+  });
 
   test('reserves the handoff and closes the window without resuming yet', async () => {
     const env = conversationEnv();
@@ -4857,6 +4892,47 @@ describe('scheduler provider hold and recovery', () => {
     });
   });
 
+  test('holds a provider recovery wait whose stream carries a rejected account window', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('B1', {
+      summary: '대기 · recovery:provider',
+      terminal_result: { kind: 'recovery_wait', reason: 'provider' },
+      raw: [
+        {
+          type: 'rate_limit_event',
+          parent_tool_use_id: 'leaf-1',
+          rate_limit_info: { status: 'rejected', resetsAt: 1790874000 }
+        },
+        { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } },
+        {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result: '대기 · recovery:provider'
+        }
+      ]
+    });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    expect(queue.attempts[attempt_id]).toMatchObject({
+      status: 'paused',
+      cause: 'provider_outage:usage_limit'
+    });
+    expect(queue.provider_hold.claude.targets).toMatchObject([
+      {
+        kind: 'usage_limit',
+        resets_at: 1790874000000,
+        attempt_ids: [attempt_id]
+      }
+    ]);
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
   test('reconciles a persisted 529 as provider hold before PR observation', async () => {
     const sessionLog = createSessionLog();
     const log_path = beadSessionLogPath(WS, 'B1', 'att-1');
@@ -4890,6 +4966,240 @@ describe('scheduler provider hold and recovery', () => {
     });
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
   });
+
+  /**
+   * Feed the same recovery evidence through live completion or restart replay.
+   *
+   * @param {string} source
+   * @param {{ runner?: string, reason?: string, rejected?: boolean, switch_account?: boolean, disposition?: boolean }} [options]
+   */
+  async function providerRecoveryFixture(source, options = {}) {
+    const runner = options.runner ?? 'claude';
+    const reason = options.reason ?? 'provider';
+    const summary = `대기 · recovery:${reason}`;
+    const raw = [
+      {
+        type: 'rate_limit_event',
+        parent_tool_use_id: 'leaf-1',
+        rate_limit_info: {
+          status: options.rejected === false ? 'allowed' : 'rejected',
+          resetsAt: 1790874000
+        }
+      },
+      { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } },
+      ...(runner === 'claude'
+        ? [
+            {
+              type: 'result',
+              subtype: 'success',
+              is_error: false,
+              result: summary
+            }
+          ]
+        : [
+            {
+              type: 'item.completed',
+              item: { type: 'agent_message', text: summary }
+            },
+            { type: 'turn.completed' }
+          ])
+    ];
+    const rows = [
+      {
+        key: 'hot@example.com',
+        email: 'hot@example.com',
+        status: 'ok',
+        windows: [{ pct: 100, resetsAt: null }]
+      },
+      {
+        key: 'cool@example.com',
+        email: 'cool@example.com',
+        status: 'ok',
+        windows: [{ pct: 5, resetsAt: null }]
+      }
+    ];
+    const disposition = {
+      complete: vi.fn(async () => ({ ok: true })),
+      release: vi.fn()
+    };
+    const env = setup({
+      config: {
+        B1:
+          runner === 'claude'
+            ? { claude_account: rows[0].email }
+            : { model: 'sol' }
+      },
+      slots: 1,
+      sessionLog: createSessionLog(),
+      probePid: () => ({ alive: false, started_at: null }),
+      disposition,
+      ...accountDeps({
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: rows.find((row) => row.email === email)
+          })),
+          readClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: rows.find((row) => row.email === email)
+          })),
+          listClaude: vi.fn(async () => ({
+            ok: true,
+            accounts: rows,
+            active_key: rows[0].email
+          }))
+        }
+      })
+    });
+    if (options.switch_account) {
+      allowSwitchAccounts(env.store, 'claude', [rows[1].email]);
+    }
+    const hold = vi.spyOn(env.store, 'holdProviderAttempt');
+    let attempt_id = 'persisted-recovery';
+    if (source === 'live') {
+      seedQueue(env.store, ['B1']);
+      await env.scheduler.tick(WS);
+      attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+      env.runner.eventsFor('B1').emit('session_id', 'sid-recovery');
+    } else {
+      const log_path = beadSessionLogPath(WS, 'B1', attempt_id);
+      fs.mkdirSync(path.dirname(log_path), { recursive: true });
+      fs.writeFileSync(
+        log_path,
+        raw.map((event) => JSON.stringify(event)).join('\n') + '\n'
+      );
+      seedProviderAttempt(env.store, attempt_id, 'B1', {
+        runner,
+        model: runner === 'claude' ? 'opus' : 'sol',
+        pid: 4242,
+        started_at: 1000,
+        log_path,
+        claude_account: rows[0].email,
+        session_id: 'sid-recovery',
+        effort: 'high',
+        speed: 'default',
+        base_oid: 'base-B1',
+        target_base: 'main',
+        exec_values: resumableExecValues()
+      });
+    }
+    if (options.disposition) {
+      env.store.updateAttempt(WS, {
+        attempt_id,
+        patch: { disposition: 'revise_fix' }
+      });
+    }
+    return {
+      ...env,
+      attempt_id,
+      hold,
+      disposition,
+      async finish() {
+        if (source === 'live') {
+          env.runner.finish('B1', {
+            summary,
+            terminal_result: { kind: 'recovery_wait', reason },
+            raw
+          });
+          await flush();
+          await flush();
+        } else {
+          await env.scheduler.reconcile(WS);
+        }
+      }
+    };
+  }
+
+  test.each(['live', 'persisted'])(
+    'holds a provider recovery wait on its recorded account through %s',
+    async (source) => {
+      const env = await providerRecoveryFixture(source);
+
+      await env.finish();
+
+      const queue = env.store.snapshot(WS);
+      expect(queue.attempts[env.attempt_id]).toMatchObject({
+        status: 'paused',
+        cause: 'provider_outage:usage_limit'
+      });
+      expect(queue.provider_hold.claude.targets).toMatchObject([
+        {
+          account: 'hot@example.com',
+          kind: 'usage_limit',
+          resets_at: 1790874000000,
+          attempt_ids: [env.attempt_id]
+        }
+      ]);
+      expect(queue.auto_resume_pending).toEqual([]);
+    }
+  );
+
+  test.each(['live', 'persisted'])(
+    'switches a provider recovery wait to a healthy account through %s',
+    async (source) => {
+      const env = await providerRecoveryFixture(source, {
+        switch_account: true
+      });
+
+      await env.finish();
+
+      expect(env.hold).toHaveBeenCalledWith(
+        WS,
+        expect.objectContaining({
+          auto_switch: { candidate_account: 'cool@example.com' }
+        })
+      );
+      const child = Object.values(env.store.snapshot(WS).attempts).find(
+        (attempt) => attempt.resumed_from === env.attempt_id
+      );
+      expect(child).toMatchObject({
+        claude_account: 'cool@example.com',
+        auto_resume_kind: 'account_switch',
+        account_switched_from: 'hot@example.com'
+      });
+    }
+  );
+
+  test.each(['live', 'persisted'])(
+    'releases disposition before holding a provider recovery wait through %s',
+    async (source) => {
+      const env = await providerRecoveryFixture(source, { disposition: true });
+
+      await env.finish();
+
+      expect(env.store.snapshot(WS).attempts[env.attempt_id]).toMatchObject({
+        status: 'paused',
+        cause: 'provider_outage:usage_limit'
+      });
+      expect(env.disposition.complete).not.toHaveBeenCalled();
+      expect(env.disposition.release).toHaveBeenCalledWith('B1');
+      expect(env.disposition.release.mock.invocationCallOrder[0]).toBeLessThan(
+        env.hold.mock.invocationCallOrder[0]
+      );
+    }
+  );
+
+  test.each([
+    ['live', { rejected: false }],
+    ['persisted', { rejected: false }],
+    ['live', { reason: 'credential' }],
+    ['persisted', { reason: 'credential' }],
+    ['live', { runner: 'codex' }],
+    ['persisted', { runner: 'codex' }]
+  ])(
+    'keeps unmatched recovery waits unchanged through %s (%j)',
+    async (source, options) => {
+      const env = await providerRecoveryFixture(source, options);
+
+      await env.finish();
+
+      expect(env.store.snapshot(WS).attempts[env.attempt_id]).toMatchObject({
+        status: 'waiting',
+        cause: 'session_recovery_wait'
+      });
+      expect(env.hold).not.toHaveBeenCalled();
+    }
+  );
 
   /**
    * Allow one runner to switch onto a given account set (spec §3.1).
@@ -15429,6 +15739,185 @@ describe('scheduler closed-queue sweep (UI-m6bg)', () => {
       cause: 'bead_closed',
       finished_at: expect.any(Number)
     });
+  });
+
+  test('settles a recovery-waiting attempt when its bead reads closed', async () => {
+    const env = setup({ config: { S1: { status: 'closed', ready: false } } });
+    seedQueue(env.store, ['S1']);
+    seedAttempt(env.store, 'S1', 'att-1', {
+      status: 'waiting',
+      cause: 'session_recovery_wait',
+      cause_detail: { recovery: { reason: 'verification' } },
+      repo: '/repo',
+      target_base: 'release'
+    });
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    await vi.waitFor(() => {
+      expect(env.store.snapshot(WS).attempts['att-1']).toMatchObject({
+        status: 'stopped',
+        cause: 'bead_closed'
+      });
+      expect(env.store.snapshot(WS).done.map((entry) => entry.bead_id)).toEqual(
+        ['S1']
+      );
+    });
+    expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(false);
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+    expect(env.worktree.remove).not.toHaveBeenCalled();
+  });
+
+  test('retries the done move after a closed recovery final status read fails', async () => {
+    const env = setup({ config: { S1: { status: 'closed', ready: false } } });
+    seedAttempt(env.store, 'S1', 'att-1', {
+      status: 'waiting',
+      cause_detail: { recovery: { reason: 'authority' } }
+    });
+    const read_status = vi
+      .spyOn(env.bd, 'readStatus')
+      .mockResolvedValueOnce('closed')
+      .mockRejectedValueOnce(new Error('bd unavailable'))
+      .mockResolvedValue('closed');
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    await vi.waitFor(() => expect(read_status).toHaveBeenCalledTimes(2));
+    expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('stopped');
+    expect(env.store.snapshot(WS).done).toEqual([]);
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    await vi.waitFor(() => {
+      expect(env.store.snapshot(WS).done.map((entry) => entry.bead_id)).toEqual(
+        ['S1']
+      );
+    });
+    const settled = env.store.snapshot(WS);
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    await flush();
+    expect(env.store.snapshot(WS)).toEqual(settled);
+  });
+
+  test('preserves recovery residue when an inquiry registers during claim release', async () => {
+    const env = setup({ config: { S1: { status: 'closed', ready: false } } });
+    seedAttempt(env.store, 'S1', 'att-1', {
+      status: 'waiting',
+      cause_detail: { recovery: { reason: 'authority' } },
+      repo: '/repo'
+    });
+    /** @type {(status: string) => void} */
+    let finishRead = () => {};
+    const read_status = vi
+      .spyOn(env.bd, 'readStatus')
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishRead = resolve;
+          })
+      )
+      .mockResolvedValue('closed');
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    await vi.waitFor(() => expect(read_status).toHaveBeenCalledTimes(1));
+    env.store.recordInteractiveSession(WS, {
+      bead_id: 'S1',
+      kind: 'inquiry',
+      provider: 'claude',
+      pane_id: '%5',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'S1',
+      launched_at: 500,
+      last_seen_alive_at: 500,
+      state: 'live',
+      mode: 'resume',
+      attempt_id: 'att-1'
+    });
+
+    finishRead('closed');
+
+    await vi.waitFor(() => {
+      expect(env.store.snapshot(WS).done.map((entry) => entry.bead_id)).toEqual(
+        ['S1']
+      );
+    });
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+    expect(env.worktree.remove).not.toHaveBeenCalled();
+  });
+
+  test('waits for an inquiry to exit before settling a closed recovery attempt', async () => {
+    const env = setup({ config: { S1: { status: 'closed', ready: false } } });
+    seedAttempt(env.store, 'S1', 'att-1', {
+      status: 'waiting',
+      cause_detail: { recovery: { reason: 'authority' } },
+      repo: '/repo'
+    });
+    env.store.recordInteractiveSession(WS, {
+      bead_id: 'S1',
+      kind: 'inquiry',
+      provider: 'claude',
+      pane_id: '%5',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'S1',
+      launched_at: 500,
+      last_seen_alive_at: 500,
+      state: 'live',
+      mode: 'resume',
+      attempt_id: 'att-1'
+    });
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('waiting');
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+    expect(
+      env.store.snapshot(WS).interactive_sessions['S1:inquiry'].settled_by
+    ).toBe('bd_closed');
+    env.store.removeInteractiveSession(WS, 'S1:inquiry');
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    await vi.waitFor(() => {
+      expect(env.store.snapshot(WS).done.map((entry) => entry.bead_id)).toEqual(
+        ['S1']
+      );
+    });
+  });
+
+  test.each(['deferred', 'resolved', 'open'])(
+    'preserves a recovery wait when its bead reads %s',
+    async (status) => {
+      const env = setup({ config: { S1: { status, ready: false } } });
+      seedQueue(env.store, ['S1']);
+      seedAttempt(env.store, 'S1', 'att-1', {
+        status: 'waiting',
+        cause_detail: { recovery: { reason: 'authority' } }
+      });
+      const before = env.store.snapshot(WS);
+
+      env.scheduler.sweepClosedQueue(WS, { S1: status });
+      await flush();
+
+      const after = env.store.snapshot(WS);
+      expect(after.attempts).toEqual(before.attempts);
+      expect(after.done).toEqual([]);
+      expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+    }
+  );
+
+  test('preserves a recovery ancestor when a newer attempt owns the closed bead', async () => {
+    const env = setup({ config: { S1: { status: 'closed', ready: false } } });
+    seedQueue(env.store, ['S1']);
+    seedAttempt(env.store, 'S1', 'att-1', {
+      status: 'waiting',
+      cause_detail: { recovery: { reason: 'authority' } }
+    });
+    seedAttempt(env.store, 'S1', 'att-2', {
+      status: 'running',
+      resumed_from: 'att-1'
+    });
+    const before = env.store.snapshot(WS);
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    await flush();
+
+    expect(env.store.snapshot(WS)).toEqual(before);
   });
 
   test('waits for a held paused_done before disposing the paused record', async () => {

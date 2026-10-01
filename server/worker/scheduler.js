@@ -2496,6 +2496,41 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Require both the session's provider wait and adapter-owned stream evidence.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {RunnerVerdict|null} verdict
+   * @returns {Promise<{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null }|null>}
+   */
+  async function providerRecoveryOutageFor(workspace, attempt_id, verdict) {
+    if (
+      !verdict?.success ||
+      verdict.blocked ||
+      verdict.terminal_result?.kind !== 'recovery_wait' ||
+      verdict.terminal_result.reason !== 'provider'
+    ) {
+      return null;
+    }
+    const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
+    if (!attempt) {
+      return null;
+    }
+    const classifier = adapterSpec(
+      attempt.runner
+    ).classifyProviderRecoveryOutage;
+    if (typeof classifier !== 'function') {
+      return null;
+    }
+    const outage = classifier({ raw: verdict.raw });
+    if (!outage) {
+      return null;
+    }
+    const account = await providerAccountContext(attempt);
+    return { outage, account: account.account };
+  }
+
+  /**
    * Extract the explicit hard-stop line from the final runner result.
    *
    * @param {unknown[]} raw
@@ -4776,6 +4811,36 @@ export function createScheduler(deps) {
           moved = result.ok || moved;
         }
       }
+      for (const [bead_id, status] of Object.entries(statuses)) {
+        if (status !== 'closed') {
+          continue;
+        }
+        const attempt = latestImplementationAttempt(q, bead_id);
+        const stopped_recovery =
+          attempt?.status === 'stopped' && attempt.cause === 'bead_closed';
+        if (
+          !attempt?.cause_detail?.recovery ||
+          (attempt.status !== 'waiting' && !stopped_recovery) ||
+          (stopped_recovery &&
+            q.done.some((entry) => entry.bead_id === bead_id))
+        ) {
+          continue;
+        }
+        // Its lane move belongs to the retirement's final status read.
+        active.add(bead_id);
+        if (
+          // The inquiry may still be writing in the attempt's worktree until
+          // reconciliation observes its settled window disappear.
+          Object.values(q.interactive_sessions).some(
+            (record) => record.bead_id === bead_id
+          ) ||
+          activeBeadIdsFrom(q).has(bead_id)
+        ) {
+          continue;
+        }
+        retiring.add(bead_id);
+        void retireClosedRecovery(workspace, bead_id, attempt.attempt_id);
+      }
       for (const entry of [
         ...q.queue,
         ...q.serial_lanes.flatMap((lane) => lane.entries)
@@ -4831,6 +4896,51 @@ export function createScheduler(deps) {
       if (moved) {
         notifyChanged(workspace);
       }
+    }
+  }
+
+  /**
+   * Settle a closed bead's recovery wait through the paused disposal path.
+   * The retiring fence covers its asynchronous settlement and final status read.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   */
+  async function retireClosedRecovery(workspace, bead_id, attempt_id) {
+    try {
+      const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
+      if (
+        attempt?.status !== 'stopped' &&
+        !(await disposePausedRecord(workspace, attempt_id, {
+          cause: 'bead_closed'
+        }))
+      ) {
+        return;
+      }
+      const status = await deps.bd.readStatus(bead_id);
+      retiring.delete(bead_id);
+      const q = deps.store.snapshot(workspace);
+      if (
+        status === 'closed' &&
+        latestImplementationAttempt(q, bead_id)?.attempt_id === attempt_id &&
+        !activeBeadIdsFrom(q).has(bead_id) &&
+        deps.store.moveToDone(workspace, { bead_id }).ok
+      ) {
+        appendTimeline({
+          bead_id,
+          kind: 'queue_removed',
+          seq: q.revision,
+          summary: '대기열에서 제거 — bd closed',
+          detail: `bead_closed ${attempt_id}`
+        });
+        notifyChanged(workspace);
+        await tick(workspace);
+      }
+    } catch (err) {
+      log('recovery retirement failed for %s: %o', bead_id, err);
+    } finally {
+      retiring.delete(bead_id);
     }
   }
 
@@ -6900,6 +7010,17 @@ export function createScheduler(deps) {
         verdict.terminal_result?.kind === 'environment' ||
         verdict.terminal_result?.kind === 'recovery_wait'
       ) {
+        const outage = await providerRecoveryOutageFor(
+          workspace,
+          attempt_id,
+          verdict
+        );
+        if (outage) {
+          await holdAttempt(workspace, attempt_id, bead_id, prior, outage);
+          notifyChanged(workspace);
+          await tick(workspace);
+          return;
+        }
         const delivery_observation = await reportedQuickfixFacts(
           workspace,
           attempt_id,
@@ -8003,6 +8124,18 @@ export function createScheduler(deps) {
     kind
   ) {
     const record = deps.store.snapshot(workspace).attempts[attempt_id] || {};
+    const recovery_outage = await providerRecoveryOutageFor(
+      workspace,
+      attempt_id,
+      verdict
+    );
+    if (recovery_outage) {
+      releaseDisposition(bead_id);
+      await holdAttempt(workspace, attempt_id, bead_id, prior, recovery_outage);
+      notifyChanged(workspace);
+      await tick(workspace);
+      return;
+    }
     if (!verdict.success) {
       if (!verdict.blocked) {
         const outage = await providerOutageFor(
@@ -8620,10 +8753,22 @@ export function createScheduler(deps) {
     const outage =
       persisted_raw === null
         ? null
-        : await providerOutageFor(workspace, attempt_id, persisted_raw, false);
+        : ((await providerOutageFor(
+            workspace,
+            attempt_id,
+            persisted_raw,
+            false
+          )) ??
+          (await providerRecoveryOutageFor(
+            workspace,
+            attempt_id,
+            persisted_verdict
+          )));
     if (outage) {
       if (kind) {
         releaseDisposition(bead_id);
+      } else if (persisted_verdict?.success) {
+        await recordReceiptCheck(workspace, attempt_id, bead_id);
       }
       await holdAttempt(workspace, attempt_id, bead_id, prior, outage);
       notifyChanged(workspace);
@@ -10035,14 +10180,24 @@ export function createScheduler(deps) {
             : record.source === 'recovered'
               ? '복구'
               : `새 세션${record.fallback_reason ? ` (${record.fallback_reason})` : ''}`;
-      // Launch fills `last_seen_alive_at`; the first reconcile observation is
-      // the pass that has not yet written a turn state. Later passes must not
-      // grow the timeline file with the same start event.
-      if (record.turn_state === null) {
+      const start_seq = `${record.kind}:${record.launched_at}:started`;
+      // A missing pane can keep a handoff pending without ever writing a turn
+      // state. The durable event also covers that path across server restarts.
+      const started =
+        record.turn_state !== null ||
+        (typeof deps.timeline?.readTimeline === 'function' &&
+          deps.timeline
+            .readTimeline(record.bead_id)
+            .some(
+              (event) =>
+                event.event_id ===
+                `interactive_session:${record.bead_id}:${start_seq}`
+            ));
+      if (!started) {
         appendTimeline({
           bead_id: record.bead_id,
           kind: 'interactive_session',
-          seq: `${record.kind}:${record.launched_at}:started`,
+          seq: start_seq,
           summary: `${label} 세션 시작 · ${source}`
         });
       }
@@ -18613,20 +18768,24 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Share paused stop settlement with automatic queue retirement. A sweep waits
-   * for the process inline and preserves the seat until its final bd read.
+   * Share paused stop settlement with automatic queue and closed recovery
+   * retirement. A sweep waits for the process inline and preserves the seat
+   * until its final bd read.
    *
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {{ cause: string|null }} options
-   * @returns {Promise<boolean>} True when the paused leaf was settled.
+   * @returns {Promise<boolean>} True when the stopped leaf was settled.
    */
   async function disposePausedRecord(workspace, attempt_id, { cause }) {
-    // No live process: a paused attempt discarded from its tile. Stamps were
-    // already reverted at pause time.
     const snap = deps.store.snapshot(workspace);
     const rec = snap.attempts[attempt_id];
-    if (!rec || rec.status !== 'paused') {
+    const recovery_wait =
+      cause === 'bead_closed' &&
+      rec?.status === 'waiting' &&
+      !!rec.cause_detail?.recovery &&
+      latestImplementationAttempt(snap, rec.bead_id)?.attempt_id === attempt_id;
+    if (!rec || (rec.status !== 'paused' && !recovery_wait)) {
       return false;
     }
     // Leaf guard (§1.1): a resumed ancestor stays `paused` forever, and a
@@ -18659,7 +18818,11 @@ export function createScheduler(deps) {
       const current = settled.attempts[attempt_id];
       if (
         !current ||
-        current.status !== 'paused' ||
+        current.status !== rec.status ||
+        (recovery_wait &&
+          (!current.cause_detail?.recovery ||
+            latestImplementationAttempt(settled, rec.bead_id)?.attempt_id !==
+              attempt_id)) ||
         Object.values(settled.attempts).some(
           (attempt) => attempt.resumed_from === attempt_id
         )
@@ -18707,7 +18870,11 @@ export function createScheduler(deps) {
       removeGuardHook(workspace, attempt_id);
     }
     await releaseBeadClaim(rec.bead_id, { workspace, attempt_id });
-    if (pending_done && cause !== null) {
+    if (recovery_wait) {
+      // Inquiry launch can be in flight before its record exists and does not
+      // share the retirement fence. Preserve residue instead of racing it.
+      log('closed recovery residue preserved for %s', attempt_id);
+    } else if (pending_done && cause !== null) {
       await finishStopCleanup(workspace, repo, rec.bead_id, base);
     } else if (pending_done) {
       // Detached exactly like the live path: stop() must answer its ws caller
