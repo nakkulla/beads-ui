@@ -1,6 +1,14 @@
+import { render } from 'lit-html';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { providerProbeRefusalText } from '../worker/lanes.js';
 import { createMonitorView } from './index.js';
+
+// A pass-through spy: the idle-render tests count how often the view hands its
+// console to lit (UI-yu2o), every other test renders exactly as before.
+vi.mock('lit-html', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return { ...actual, render: vi.fn(actual.render) };
+});
 
 const NOW = 1_700_000_000_000;
 const WS_A = '/tmp/example/repo-a';
@@ -2764,6 +2772,120 @@ describe('views/monitor live clock', () => {
 
     expect(mount.children).toHaveLength(0);
     vi.useRealTimers();
+  });
+});
+
+describe('views/monitor idle rendering (UI-yu2o)', () => {
+  /**
+   * How many times the console host went through lit since `from`.
+   *
+   * @param {HTMLElement} mount
+   * @returns {number}
+   */
+  function consoleRenders(mount) {
+    const host = mount.querySelector('.mon');
+    return vi.mocked(render).mock.calls.filter((call) => call[1] === host)
+      .length;
+  }
+
+  test('renders nothing on idle one-second ticks', () => {
+    vi.useFakeTimers();
+    try {
+      const { mount, view } = setup({
+        workspaces: [workspace({ runnable: [{ bead_id: 'A-1', title: 't' }] })],
+        workspaces_state: [state()]
+      });
+      view.load();
+      const before = consoleRenders(mount);
+
+      vi.advanceTimersByTime(60_000);
+
+      expect(consoleRenders(mount)).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('advances the running clock text without a render', () => {
+    vi.useFakeTimers();
+    try {
+      let now = NOW;
+      const { mount, view } = setup({
+        workspaces: [
+          workspace({
+            attempts: {
+              t1: {
+                attempt_id: 't1',
+                bead_id: 'A-1',
+                status: 'running',
+                started_at: NOW - 1000
+              }
+            }
+          })
+        ],
+        workspaces_state: [state()],
+        now: () => now
+      });
+      view.load();
+      const before = consoleRenders(mount);
+
+      now = NOW + 64_000;
+      vi.advanceTimersByTime(1000);
+
+      expect(el(mount, '.rtile__elapsed').textContent).toBe('1m 05s');
+      expect(consoleRenders(mount)).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('renders once at the grace expiry and drops the grace chip', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    try {
+      const { mount, view } = setup({
+        workspaces: [
+          workspace({ queue: [{ bead_id: 'A-1', added_at: NOW - 5_000 }] })
+        ],
+        workspaces_state: [state({ auto_advance: true })],
+        now: () => Date.now()
+      });
+      view.load();
+      const before = consoleRenders(mount);
+
+      vi.advanceTimersByTime(5_000);
+      const counting = el(mount, '.worker-dep--grace').textContent;
+      vi.advanceTimersByTime(10_000);
+
+      expect(counting).toBe('⏳ 10초');
+      expect(consoleRenders(mount)).toBe(before + 1);
+      expect(mount.querySelector('.worker-dep--grace')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('arms no boundary render once the tab is paused', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    try {
+      const { mount, view } = setup({
+        workspaces: [
+          workspace({ queue: [{ bead_id: 'A-1', added_at: NOW - 5_000 }] })
+        ],
+        workspaces_state: [state({ auto_advance: true })],
+        now: () => Date.now()
+      });
+      view.load();
+      view.pause();
+      const before = consoleRenders(mount);
+
+      vi.advanceTimersByTime(30_000);
+
+      expect(consoleRenders(mount)).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

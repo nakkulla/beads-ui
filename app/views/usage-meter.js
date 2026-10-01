@@ -31,6 +31,7 @@ const CARD_ID = 'usage-meter-card';
 // sheet anchored `bottom: 0` to the header and grew upward out of the viewport.
 const LAYER_ID = 'usage-meter-layer';
 const STALE_AGE_SECONDS = 600;
+const POLL_MS = 60_000;
 const RELOGIN_STATUSES = ['token_expired', 'relogin_required'];
 
 /**
@@ -63,12 +64,13 @@ function formatCountdown(reset_ms, now_ms) {
 }
 
 /**
- * Format a reset as `countdown · local time` at render time.
+ * Format a reset as its local clock: `HH:MM` on the same day, `Mon D HH:MM`
+ * otherwise. Unparseable input is empty.
  *
  * @param {string} resets_at
  * @param {number} [now_ms]
  */
-export function formatResetTime(resets_at, now_ms = Date.now()) {
+export function formatResetClock(resets_at, now_ms = Date.now()) {
   const reset_ms = Date.parse(resets_at);
   if (!Number.isFinite(reset_ms)) {
     return '';
@@ -80,10 +82,23 @@ export function formatResetTime(resets_at, now_ms = Date.now()) {
     reset.getFullYear() === now.getFullYear() &&
     reset.getMonth() === now.getMonth() &&
     reset.getDate() === now.getDate();
-  const local_time = same_day
+  return same_day
     ? clock
     : `${MONTH_NAMES[reset.getMonth()]} ${reset.getDate()} ${clock}`;
-  return `${formatCountdown(reset_ms, now_ms)} · ${local_time}`;
+}
+
+/**
+ * Format a reset as `countdown · local time` at render time.
+ *
+ * @param {string} resets_at
+ * @param {number} [now_ms]
+ */
+export function formatResetTime(resets_at, now_ms = Date.now()) {
+  const reset_ms = Date.parse(resets_at);
+  if (!Number.isFinite(reset_ms)) {
+    return '';
+  }
+  return `${formatCountdown(reset_ms, now_ms)} · ${formatResetClock(resets_at, now_ms)}`;
 }
 
 /**
@@ -314,6 +329,25 @@ function displaySnapshot(snapshot, now_ms) {
 }
 
 /**
+ * Whether a snapshot reads as stale right now, and the note its tooltips add.
+ * A held snapshot is stale from the first failed poll, however young its
+ * measurement was: the number stopped tracking the provider.
+ *
+ * @param {ProviderSnapshot} snapshot
+ * @param {number} now_ms
+ * @returns {{ stale: boolean, stale_note: string }}
+ */
+function staleOf(snapshot, now_ms) {
+  const age_seconds = effectiveAgeSeconds(snapshot, now_ms);
+  const stale =
+    snapshot.available && (snapshot.held || age_seconds > STALE_AGE_SECONDS);
+  return {
+    stale,
+    stale_note: stale ? `${Math.floor(age_seconds / 60)}분 전 측정` : ''
+  };
+}
+
+/**
  * Row-message key: the tool number is unique per provider, the email is not.
  *
  * @param {string} provider_key
@@ -350,10 +384,29 @@ export function createUsageMeter(mount_element) {
   let refresh_generation = 0;
   /** @type {HTMLElement | null} */
   let layer_element = null;
+  const doc = mount_element.ownerDocument;
+  /**
+   * What the header last drew, as {@link headerSignature}; `''` once the empty
+   * mount is drawn, so an empty poll does not draw it again; `null` before the
+   * first draw.
+   *
+   * @type {string | null}
+   */
+  let drawn = null;
+  /** A poll came due while the page was hidden. */
+  let missed_poll = false;
+
+  /** @returns {boolean} */
+  function pageShown() {
+    return doc.visibilityState !== 'hidden';
+  }
 
   /** Hide the fail-quiet mount and discard its previous snapshot. */
   function hide() {
-    render(html``, mount_element);
+    if (drawn !== '') {
+      render(html``, mount_element);
+      drawn = '';
+    }
     mount_element.hidden = true;
     removeLayer();
   }
@@ -563,7 +616,9 @@ export function createUsageMeter(mount_element) {
    */
   function renderHeaderWindow(window, stale, stale_note, now_ms) {
     const pct = clampPct(window.pct);
-    const reset_time = formatResetTime(window.resetsAt, now_ms);
+    // The header names the reset clock only; the countdown lives in the card,
+    // so a poll that reads the same usage leaves the header untouched.
+    const reset_time = formatResetClock(window.resetsAt, now_ms);
     const title = `resets ${reset_time}${stale ? ` · ${stale_note}` : ''}`;
     return html`<span
       class="usage-meter__window ${colorClass(pct)}"
@@ -588,12 +643,7 @@ export function createUsageMeter(mount_element) {
    * @param {number} now_ms
    */
   function renderGroup(provider, snapshot, now_ms) {
-    const age_seconds = effectiveAgeSeconds(snapshot, now_ms);
-    // A held snapshot is stale from the first failed poll, however young its
-    // measurement was: the number stopped tracking the provider.
-    const stale =
-      snapshot.available && (snapshot.held || age_seconds > STALE_AGE_SECONDS);
-    const stale_note = stale ? `${Math.floor(age_seconds / 60)}분 전 측정` : '';
+    const { stale, stale_note } = staleOf(snapshot, now_ms);
     const inactive_count = snapshot.accounts.filter(
       (account) => !account.active
     ).length;
@@ -629,6 +679,32 @@ export function createUsageMeter(mount_element) {
     >
       ${content}
     </button>`;
+  }
+
+  /**
+   * Every value the header draws from these entries, so an equal signature
+   * means an equal header DOM.
+   *
+   * @param {{ provider: ProviderDescriptor, snapshot: ProviderSnapshot }[]} entries
+   * @param {number} now_ms
+   * @returns {string}
+   */
+  function headerSignature(entries, now_ms) {
+    return JSON.stringify({
+      open: open_provider,
+      groups: entries.map(({ provider, snapshot }) => ({
+        key: provider.key,
+        available: snapshot.available,
+        ...staleOf(snapshot, now_ms),
+        inactive: snapshot.accounts.filter((account) => !account.active).length,
+        toggle: snapshot.accounts.length > 0,
+        windows: snapshot.windows.map((window) => [
+          window.key,
+          clampPct(window.pct),
+          formatResetClock(window.resetsAt, now_ms)
+        ])
+      }))
+    });
   }
 
   /**
@@ -846,7 +922,13 @@ export function createUsageMeter(mount_element) {
       closeCard();
     }
 
-    render(renderMeter(entries, now_ms), mount_element);
+    // Draw the header only when what it shows changed (UI-yu2o): an idle page
+    // whose polls read the same usage renders nothing.
+    const signature = headerSignature(entries, now_ms);
+    if (signature !== drawn) {
+      drawn = signature;
+      render(renderMeter(entries, now_ms), mount_element);
+    }
     mount_element.hidden = false;
     if (open_entry) {
       renderLayer(open_entry, now_ms);
@@ -939,11 +1021,30 @@ export function createUsageMeter(mount_element) {
     renderProviders();
   }
 
+  /**
+   * A poll tick (UI-yu2o): read now while the page shows, else remember that a
+   * poll came due so the page reads once when it shows again.
+   */
+  function onTick() {
+    if (pageShown()) {
+      void refresh();
+    } else {
+      missed_poll = true;
+    }
+  }
+
+  /** The page shows again: run the poll that came due while it was hidden. */
+  function onVisibilityChange() {
+    if (pageShown() && missed_poll) {
+      missed_poll = false;
+      void refresh();
+    }
+  }
+
   hide();
-  void refresh();
-  interval_id = setInterval(() => {
-    void refresh();
-  }, 60_000);
+  onTick();
+  interval_id = setInterval(onTick, POLL_MS);
+  doc.addEventListener('visibilitychange', onVisibilityChange);
 
   return {
     /** Stop polling, release the document listeners and clear the mount. */
@@ -953,6 +1054,7 @@ export function createUsageMeter(mount_element) {
         clearInterval(interval_id);
         interval_id = null;
       }
+      doc.removeEventListener('visibilitychange', onVisibilityChange);
       closeCard();
       hide();
     }

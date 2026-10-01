@@ -31,6 +31,7 @@ import { errorText } from '../../utils/error-text.js';
 import {
   formatImplReviewChip,
   formatOrchestrationChip,
+  formatQuickFixChip,
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
@@ -72,11 +73,22 @@ function countOf(row, key) {
   return count;
 }
 
+/** Queue-level orchestration keys a row carries on top of the kv layer. */
+const QUEUE_ORCHESTRATION_KEYS = [
+  'orchestration_model',
+  'orchestration_effort',
+  'orchestration_speed',
+  'quick_fix_orchestration_model',
+  'quick_fix_orchestration_effort',
+  'quick_fix_orchestration_speed'
+];
+
 /**
- * One repo's 오케/워커 exec chips. 재료(투영 3종)가 하나라도 없으면 `null`이다.
+ * One repo's 오케/워커/구현 리뷰/qf exec chips. 재료(투영 3종)가 하나라도 없으면
+ * `null`이다.
  *
  * @param {any} row
- * @returns {{ orchestration: { text: string, title: string }|null, worker: { text: string, title: string }|null, review: { text: string, title: string }|null }|null}
+ * @returns {{ orchestration: { text: string, title: string }|null, worker: { text: string, title: string }|null, review: { text: string, title: string }|null, quick_fix: { text: string, title: string }|null }|null}
  */
 export function deckExecChips(row) {
   if (
@@ -89,11 +101,7 @@ export function deckExecChips(row) {
   }
   /** @type {Record<string, unknown>} */
   const global_values = { ...row.session_defaults };
-  for (const key of [
-    'orchestration_model',
-    'orchestration_effort',
-    'orchestration_speed'
-  ]) {
+  for (const key of QUEUE_ORCHESTRATION_KEYS) {
     if (typeof row[key] === 'string' && row[key].length > 0) {
       global_values[key] = row[key];
     }
@@ -110,9 +118,26 @@ export function deckExecChips(row) {
   const orchestration = formatOrchestrationChip(rows, row.runner_catalog);
   const worker = formatWorkerChip(rows, controller_runtime);
   const review = formatImplReviewChip(rows);
-  return orchestration === null && worker === null && review === null
+  const quick_fix = formatQuickFixChip(
+    resolveExecutionSettings({
+      global: global_values,
+      execution_defaults: row.execution_defaults,
+      runner_catalog: row.runner_catalog,
+      route: 'quick_fix'
+    }),
+    row.runner_catalog,
+    {
+      impl_model_set:
+        typeof global_values.quick_fix_impl_model === 'string' &&
+        global_values.quick_fix_impl_model.length > 0
+    }
+  );
+  return orchestration === null &&
+    worker === null &&
+    review === null &&
+    quick_fix === null
     ? null
-    : { orchestration, worker, review };
+    : { orchestration, worker, review, quick_fix };
 }
 
 /**
@@ -377,145 +402,12 @@ export function createRepoDeck(mount_element, options) {
             >구현 리뷰 ${chips.review.text}</span
           >`
         : ''}
+      ${chips.quick_fix
+        ? html`<span class="mon2-deck__chip" title=${chips.quick_fix.title}
+            >qf ${chips.quick_fix.text}</span
+          >`
+        : ''}
     </div>`;
-  }
-
-  /**
-   * D6 `head_relation` in the words the header uses.
-   *
-   * @type {Record<string, string>}
-   */
-  const HEALTH_RELATION_LABELS = {
-    equal: '동기',
-    behind: '뒤처짐',
-    ahead: '앞섬',
-    diverged: '갈라짐'
-  };
-
-  /**
-   * D6 `error_code` in the words the header uses.
-   *
-   * @type {Record<string, string>}
-   */
-  const HEALTH_ERROR_LABELS = {
-    missing_checkout: '체크아웃 없음',
-    invalid_target: '기준 대상 확인 불가',
-    fetch_failed: '원격 갱신 실패',
-    judge_failed: '판정 실패',
-    invalid_result: '결과 형식 오류'
-  };
-
-  /** The dirty classes the header names, in the order it names them. */
-  const HEALTH_CLASS_LABELS = [
-    ['conflict', '충돌'],
-    ['staged', 'staged'],
-    ['unmerged', 'unmerged']
-  ];
-
-  /**
-   * One class count. A truncated record shows `3+` because the collector stopped
-   * counting, and the classes are NEVER summed — one path can sit in more than
-   * one class, so a total would name a file count that does not exist.
-   *
-   * @param {number} count
-   * @param {boolean} truncated
-   * @returns {string}
-   */
-  function healthCount(count, truncated) {
-    return truncated ? `${count}+` : String(count);
-  }
-
-  /**
-   * The observation age, in the coarsest unit that is still true.
-   *
-   * @param {string} observed_at
-   * @param {number} now
-   * @returns {string}
-   */
-  function healthAge(observed_at, now) {
-    const at = Date.parse(observed_at);
-    if (Number.isNaN(at)) {
-      return '';
-    }
-    const minutes = Math.max(0, Math.floor((now - at) / 60_000));
-    if (minutes < 60) {
-      return `${minutes}분 전`;
-    }
-    const hours = Math.floor(minutes / 60);
-    return hours < 24 ? `${hours}시간 전` : `${Math.floor(hours / 24)}일 전`;
-  }
-
-  /**
-   * The repo header's health group (UI-y9hl U2).
-   *
-   * dotfiles collects the record every 15 minutes and this only reads it — the
-   * deck runs no git command of its own. `unknown` renders an explicit
-   * explanation of the missing observation
-   * rather than a guess, and an old record keeps its last error instead of
-   * reading as currently healthy.
-   *
-   * @param {any} row
-   * @returns {import('lit-html').TemplateResult|''}
-   */
-  function healthTemplate(row) {
-    const health = isRecord(row?.repo_health) ? row.repo_health : null;
-    const state = health ? health.state : 'unknown';
-    if (!health || state === 'unknown') {
-      return html`<span
-        class="mon2-deck__health is-unknown"
-        title="저장소 건강 점검의 유효한 기록을 아직 확인하지 못했습니다. 기록 부재·조회 중·조회 실패가 포함되며, 실행 설정 오류를 뜻하지 않습니다."
-        >건강 점검 정보 없음</span
-      >`;
-    }
-    const age =
-      typeof health.observed_at === 'string'
-        ? healthAge(health.observed_at, Date.now())
-        : '';
-    /** @type {string[]} */
-    const parts = [];
-    if (state === 'error' || state === 'stale') {
-      const label = HEALTH_ERROR_LABELS[health.error_code];
-      if (label) {
-        parts.push(`수집 실패 ${label}`);
-      }
-    }
-    if (typeof health.head_relation === 'string') {
-      const relation = HEALTH_RELATION_LABELS[health.head_relation];
-      const drift = [
-        typeof health.behind === 'number' && health.behind > 0
-          ? `-${health.behind}`
-          : '',
-        typeof health.ahead === 'number' && health.ahead > 0
-          ? `+${health.ahead}`
-          : ''
-      ].filter((part) => part.length > 0);
-      parts.push([relation || health.head_relation, ...drift].join(' '));
-    }
-    const classes = isRecord(health.classes) ? health.classes : null;
-    if (classes) {
-      for (const [key, label] of HEALTH_CLASS_LABELS) {
-        const count = classes[key];
-        if (typeof count === 'number' && count > 0) {
-          parts.push(
-            `${label} ${healthCount(count, health.truncated === true)}`
-          );
-        }
-      }
-    }
-    if (state === 'stale') {
-      parts.push('오래된 관찰값');
-    }
-    if (age.length > 0) {
-      parts.push(age);
-    }
-    if (parts.length === 0) {
-      return '';
-    }
-    return html`<span
-      class=${`mon2-deck__health is-${state}`}
-      title=${`저장소 건강 — ${health.truncated === true ? '수치는 잘려 이상값입니다' : '15분마다 dotfiles가 기록합니다'}`}
-      >${parts.join(' · ')}</span
-    >`;
   }
 
   /**
@@ -579,7 +471,7 @@ export function createRepoDeck(mount_element, options) {
       <div class="mon2-deck__tile-ft">
         <div class="mon2-deck__ops">${switchesTemplate(row)}</div>
         <span class="mon2-deck__counts">${tileCounts(row)}</span>
-        ${healthTemplate(row)} ${chipsTemplate(row)}
+        ${chipsTemplate(row)}
       </div>
     </div>`;
   }

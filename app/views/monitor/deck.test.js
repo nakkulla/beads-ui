@@ -388,6 +388,49 @@ describe('createRepoDeck tile content (§4.2)', () => {
     }
   );
 
+  test('renders the qf chip from the quick fix orchestration alone', () => {
+    const { mount, deck } = setup({
+      rows: [
+        state({
+          quick_fix_orchestration_model: 'opus',
+          quick_fix_orchestration_effort: 'high'
+        })
+      ]
+    });
+
+    deck.render();
+
+    const chips = Array.from(mount.querySelectorAll('.mon2-deck__chip')).map(
+      (chip) => chip.textContent?.replace(/\s+/g, ' ').trim()
+    );
+    expect(chips.at(-1)).toBe('qf claude · opus · high');
+  });
+
+  test('appends the quick fix impl model to the qf chip when it is set', () => {
+    const { mount, deck } = setup({
+      rows: [
+        state({
+          quick_fix_orchestration_model: 'opus',
+          quick_fix_orchestration_effort: 'high',
+          session_defaults: {
+            quick_fix_impl_model: 'sol',
+            quick_fix_impl_effort: 'medium'
+          }
+        })
+      ]
+    });
+
+    deck.render();
+
+    const qf = Array.from(mount.querySelectorAll('.mon2-deck__chip')).at(-1);
+    expect(qf?.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'qf claude · opus · high · 구현 5.6-sol medium'
+    );
+    expect(qf?.getAttribute('title')).toContain(
+      '구현 모델: 5.6-sol (quick_fix) (전역)'
+    );
+  });
+
   test('omits the chip row entirely on an older server payload (§12)', () => {
     const row = state({
       counts: { running: 1, pr_wait: 0, queue: 0, runnable: 0 }
@@ -818,192 +861,20 @@ describe('createRepoDeck 세션 counts (UI-yrzu §8)', () => {
   });
 });
 
-describe('repo health header group (UI-y9hl U2)', () => {
-  /**
-   * A `repo_health` projection as `workspaces_state[]` carries it.
-   *
-   * @param {Record<string, any>} [patch]
-   * @returns {Record<string, any>}
-   */
-  function health(patch = {}) {
-    return {
-      state: 'ok',
-      observed_at: new Date(Date.now() - 5 * 60_000).toISOString(),
-      last_success_at: null,
-      error_code: null,
-      base: 'main',
-      head_relation: 'equal',
-      behind: 0,
-      ahead: 0,
-      classes: {
-        disjoint: 0,
-        converged: 0,
-        conflict: 0,
-        staged: 0,
-        unmerged: 0
-      },
-      truncated: false,
-      ...patch
-    };
-  }
-
-  test('explains when the health record is unknown', () => {
+describe('repo deck info row without a health group (UI-yu2o)', () => {
+  test('draws no health group even when a row still carries repo_health', () => {
     const { mount, deck } = setup({
-      rows: [state({ repo_health: health({ state: 'unknown' }) })]
+      rows: [state({ repo_health: { state: 'unknown' } })]
     });
+
     deck.render();
 
-    const chip = el(mount, '.mon2-deck__health');
-    expect(chip.textContent?.trim()).toBe('건강 점검 정보 없음');
-    expect(chip.title).toBe(
-      '저장소 건강 점검의 유효한 기록을 아직 확인하지 못했습니다. 기록 부재·조회 중·조회 실패가 포함되며, 실행 설정 오류를 뜻하지 않습니다.'
-    );
-  });
-
-  test('explains when a server ships no repo_health field', () => {
-    const { mount, deck } = setup();
-    deck.render();
-
-    expect(el(mount, '.mon2-deck__health').textContent?.trim()).toBe(
-      '건강 점검 정보 없음'
-    );
-  });
-
-  test('names the relation and the observation age for a current record', () => {
-    const { mount, deck } = setup({ rows: [state({ repo_health: health() })] });
-    deck.render();
-
-    const text = el(mount, '.mon2-deck__health').textContent || '';
-    expect(text).toContain('동기');
-    expect(text).toContain('5분 전');
-  });
-
-  test('names behind and ahead counts', () => {
-    const { mount, deck } = setup({
-      rows: [
-        state({
-          repo_health: health({
-            head_relation: 'diverged',
-            behind: 3,
-            ahead: 2
-          })
-        })
-      ]
-    });
-    deck.render();
-
-    expect(el(mount, '.mon2-deck__health').textContent).toContain(
-      '갈라짐 -3 +2'
-    );
-  });
-
-  test('names conflict, staged and unmerged counts without summing them', () => {
-    const { mount, deck } = setup({
-      rows: [
-        state({
-          repo_health: health({
-            classes: {
-              disjoint: 4,
-              converged: 0,
-              conflict: 2,
-              staged: 1,
-              unmerged: 3
-            }
-          })
-        })
-      ]
-    });
-    deck.render();
-
-    const text = el(mount, '.mon2-deck__health').textContent || '';
-    expect(text).toContain('충돌 2');
-    expect(text).toContain('staged 1');
-    expect(text).toContain('unmerged 3');
-    expect(text).not.toContain('10');
-  });
-
-  test('marks truncated counts as at-least values', () => {
-    const { mount, deck } = setup({
-      rows: [
-        state({
-          repo_health: health({
-            truncated: true,
-            classes: {
-              disjoint: 0,
-              converged: 0,
-              conflict: 3,
-              staged: 0,
-              unmerged: 0
-            }
-          })
-        })
-      ]
-    });
-    deck.render();
-
-    expect(el(mount, '.mon2-deck__health').textContent).toContain('충돌 3+');
-  });
-
-  test('names a collection failure in user words', () => {
-    const { mount, deck } = setup({
-      rows: [
-        state({
-          repo_health: health({
-            state: 'error',
-            error_code: 'fetch_failed',
-            head_relation: null,
-            behind: null,
-            ahead: null,
-            classes: null
-          })
-        })
-      ]
-    });
-    deck.render();
-
-    expect(el(mount, '.mon2-deck__health').textContent).toContain(
-      '수집 실패 원격 갱신 실패'
-    );
-  });
-
-  test('marks a stale record and keeps its last error', () => {
-    const { mount, deck } = setup({
-      rows: [
-        state({
-          repo_health: health({
-            state: 'stale',
-            error_code: 'judge_failed',
-            observed_at: new Date(Date.now() - 90 * 60_000).toISOString(),
-            head_relation: null,
-            classes: null
-          })
-        })
-      ]
-    });
-    deck.render();
-
-    const text = el(mount, '.mon2-deck__health').textContent || '';
-    expect(text).toContain('오래된 관찰값');
-    expect(text).toContain('판정 실패');
-    expect(text).toContain('1시간 전');
-  });
-
-  test('adds no chip to the tile for a healthy repo', () => {
-    const bare = setup();
-    bare.deck.render();
-    const bare_chips = bare.mount.querySelectorAll('.mon2-deck__chip').length;
-
-    const { mount, deck } = setup({ rows: [state({ repo_health: health() })] });
-    deck.render();
-
-    expect(mount.querySelectorAll('.mon2-deck__chip')).toHaveLength(bare_chips);
-    expect(el(mount, '.mon2-deck__health').className).not.toContain(
-      'mon2-deck__chip'
-    );
+    expect(el(mount, '.mon2-deck__health')).toBe(null);
+    expect(mount.textContent).not.toContain('건강 점검');
   });
 
   test('keeps the repo operation area first and unshrinkable in the info row', () => {
-    const { mount, deck } = setup({ rows: [state({ repo_health: health() })] });
+    const { mount, deck } = setup();
     deck.render();
     const css = readFileSync(
       path.resolve(process.cwd(), 'app/styles.css'),
@@ -1018,7 +889,6 @@ describe('repo health header group (UI-y9hl U2)', () => {
     const row_rule = css.slice(css.indexOf('.mon2-deck__tile-ft {'));
 
     expect(children[0]).toBe('mon2-deck__ops');
-    expect(children).toContain('mon2-deck__health');
     expect(ops_rule.slice(0, ops_rule.indexOf('}'))).toContain(
       'flex: 0 0 auto'
     );

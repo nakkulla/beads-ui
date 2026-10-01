@@ -1582,6 +1582,15 @@ subscription push protocol and `update-exec-settings` instead.
 or `rows[].is_bench`, and the request's `include_bench` is accepted and ignored
 (never `bad_request`) so a tab opened before the removal keeps working.
 
+`monitor-auto-toggle` (the master automation switch across every visible
+workspace) was removed: no screen sent it any more, and sending it now replies
+`unknown_type`. Per-workspace `worker-automation-toggle` and
+`worker-merge-auto-toggle` are unchanged.
+
+The `workspaces_state[]` row no longer carries `repo_health`. The repo deck was
+its only consumer and no longer draws a health group, so the server stops
+reading the workspace's `repo_health` kv key; dotfiles may keep writing it.
+
 ## Errors
 
 Errors follow `{ code, message, details? }`. Common codes: `bad_request`

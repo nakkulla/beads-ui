@@ -64,8 +64,8 @@ vi.mock('./context.js', async (importOriginal) => {
   return {
     ...actual,
     /**
-     * One `bd kv list` per workspace fills the session-defaults, account and
-     * `repo_health` caches together (UI-j2h3 §4.3); the stubbed answer is the
+     * One `bd kv list` per workspace fills the session-defaults and account
+     * caches together (UI-j2h3 §4.3); the stubbed answer is the
      * session-defaults entry.
      *
      * @param {string} root

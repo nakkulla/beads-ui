@@ -227,6 +227,10 @@ describe('server/protocol', () => {
     );
   });
 
+  test('drops the retired master automation switch', () => {
+    expect(MESSAGE_TYPES).not.toContain('monitor-auto-toggle');
+  });
+
   test('registers the queue start-now message type', () => {
     expect(MESSAGE_TYPES).toContain('worker-queue-start-now');
   });

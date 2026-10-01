@@ -38,6 +38,7 @@ import {
 } from '../../utils/token-usage.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
 import { stepperTemplate } from '../stepper.js';
+import { timeSpan } from '../time-text.js';
 import {
   autoResumeText,
   autoSwitchText,
@@ -395,24 +396,29 @@ export function repoOpsStripTemplate(operations, cleanup_failures) {
  *
  * 두 시각이 모두 없으면 아무것도 그리지 않는다 (fail-quiet).
  *
+ * 나이 글자는 `[data-ts]`라 모니터 ticker가 렌더 없이 고친다 (UI-yu2o).
+ *
  * @param {{ created_at?: number|string, updated_at?: number|string }} item
+ * @param {number} [now]
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function timesMeta(item) {
-  const created = formatRelativeTime(item.created_at);
-  const updated = formatRelativeTime(item.updated_at);
+export function timesMeta(item, now = Date.now()) {
+  const created = formatRelativeTime(item.created_at, now);
+  const updated = formatRelativeTime(item.updated_at, now);
   if (!created && !updated) {
     return '';
   }
   return html`<div class="worker-mini__meta">
     ${created
-      ? html`<span title=${`생성 ${formatTimestampLocal(item.created_at)}`}
-          >생성 ${created}</span
-        >`
+      ? timeSpan(item.created_at, 'rel', now, {
+          title: `생성 ${formatTimestampLocal(item.created_at)}`,
+          pre: '생성 '
+        })
       : ''}${created && updated ? html`<span>·</span>` : ''}${updated
-      ? html`<span title=${`수정 ${formatTimestampLocal(item.updated_at)}`}
-          >수정 ${updated}</span
-        >`
+      ? timeSpan(item.updated_at, 'rel', now, {
+          title: `수정 ${formatTimestampLocal(item.updated_at)}`,
+          pre: '수정 '
+        })
       : ''}
   </div>`;
 }
@@ -1652,37 +1658,62 @@ export function liveInquiryView(views) {
  * @returns {string}
  */
 export function interactiveTurnTail(view, now = Date.now()) {
-  const elapsed = formatElapsedSince(view.turn_state_since, now).replace(
-    /째$/,
-    ''
-  );
+  const { word, timed } = interactiveTurnWord(view);
+  const elapsed = timed ? turnElapsed(view, now) : '';
+  return elapsed ? `${word} ${elapsed}` : word;
+}
+
+/**
+ * The word of {@link interactiveTurnTail}, and whether the turn's elapsed
+ * follows it.
+ *
+ * @param {import('./lane-model.js').InteractiveSessionView} view
+ * @returns {{ word: string, timed: boolean }}
+ */
+function interactiveTurnWord(view) {
   const conversation = view.conversation;
   if (conversation) {
     if (conversation.result?.kind === 'takeover') {
-      return '사람 인수';
+      return { word: '사람 인수', timed: false };
     }
     if (view.turn_state === 'running') {
-      return elapsed ? `대화 중 ${elapsed}` : '대화 중';
+      return { word: '대화 중', timed: true };
     }
-    return view.turn_state === 'question' ||
-      view.turn_state === 'limit' ||
-      (view.turn_state === 'idle' &&
-        typeof conversation.processed_message_at === 'number')
-      ? '답 대기'
-      : '';
+    return {
+      word:
+        view.turn_state === 'question' ||
+        view.turn_state === 'limit' ||
+        (view.turn_state === 'idle' &&
+          typeof conversation.processed_message_at === 'number')
+          ? '답 대기'
+          : '',
+      timed: false
+    };
   }
   switch (view.turn_state) {
     case 'running':
-      return elapsed ? `작업 중 ${elapsed}` : '작업 중';
+      return { word: '작업 중', timed: true };
     case 'question':
-      return '질문 대기';
+      return { word: '질문 대기', timed: false };
     case 'limit':
-      return '한도 대기';
+      return { word: '한도 대기', timed: false };
     case 'idle':
-      return elapsed ? `턴 종료 ${elapsed}` : '턴 종료';
+      return { word: '턴 종료', timed: true };
     default:
-      return '';
+      return { word: '', timed: false };
   }
+}
+
+/**
+ * How long the turn has been in its state, `formatElapsedSince` without its
+ * running suffix (`3분`); empty without material.
+ *
+ * @param {import('./lane-model.js').InteractiveSessionView} view
+ * @param {number} now
+ * @returns {string}
+ */
+function turnElapsed(view, now) {
+  return formatElapsedSince(view.turn_state_since, now).replace(/째$/, '');
 }
 
 /**
@@ -1701,9 +1732,7 @@ export function interactiveProgressLineTemplate(views, now = Date.now()) {
   return html`<div class="rtile__activity rtile__activity--session">
     <span class="rtile__activity-text">▤ ${message.text}</span>
     ${typeof message.at === 'number'
-      ? html`<span class="rtile__activity-age"
-          >${formatRelativeTime(message.at, now)}</span
-        >`
+      ? timeSpan(message.at, 'rel', now, { cls: 'rtile__activity-age' })
       : ''}
   </div>`;
 }
@@ -1715,7 +1744,12 @@ export function interactiveProgressLineTemplate(views, now = Date.now()) {
 export function interactiveSessionBadgesTemplate(views, options) {
   const now = options.now ?? Date.now();
   return (views || []).map((view) => {
-    const tail = interactiveTurnTail(view, now);
+    const { word, timed } = interactiveTurnWord(view);
+    const elapsed = timed ? turnElapsed(view, now) : '';
+    // 턴 경과는 `[data-ts]` 글자라 ticker가 렌더 없이 고친다 (UI-yu2o).
+    const tail = elapsed
+      ? timeSpan(view.turn_state_since, 'dur', now, { pre: `${word} ` })
+      : word;
     // A same-session conversation reopens the attempt's own session, so it is
     // neither a fork nor a new session (UI-nuwy §3.2).
     const mode =
@@ -1759,14 +1793,14 @@ export function interactiveSessionBadgesTemplate(views, options) {
       : mode === '같은 세션'
         ? ''
         : mode;
-    const label = [
+    const head = [
       `▤ ${resumed ? '재개' : view.kind === 'resolve' ? '해결' : '문의'} 세션`,
       mode_word,
-      place,
-      tail
+      place
     ]
       .filter(Boolean)
       .join(' · ');
+    const label = tail ? html`${head} · ${tail}` : head;
     return html`${view.session_id
       ? html`<button
           type="button"
@@ -2048,11 +2082,11 @@ function doneThreeLineRow(item) {
         : ''}
       <span class="worker-mini__id" title="클릭하면 ID 복사">${item.id}</span>
       ${prLinkTemplate(item.pr_url, item.pr_number)}${done_at_label
-        ? html`<span
-            class="worker-mini__done-at"
-            title=${`완료 ${formatTimestampLocal(item.done_at)}`}
-            >완료 ${done_at_label}</span
-          >`
+        ? timeSpan(item.done_at, 'rel', Date.now(), {
+            cls: 'worker-mini__done-at',
+            title: `완료 ${formatTimestampLocal(item.done_at)}`,
+            pre: '완료 '
+          })
         : ''}
       ${badges.map(
         (b) =>
@@ -2171,11 +2205,14 @@ export function graceChipTemplate(item, now = Date.now()) {
   if (remaining_ms <= 0) {
     return '';
   }
-  return html`<span
-    class="worker-dep worker-dep--grace"
-    title="대기에 막 들어온 항목입니다 — 남은 시간 동안 자동 실행이 미뤄집니다"
-    >⏳ ${Math.ceil(remaining_ms / 1000)}초</span
-  >`;
+  // 남은 초는 ticker가 렌더 없이 세고, 칩이 사라지는 만료 시각은 뷰가 그 시각에
+  // 한 번 다시 그린다 (UI-yu2o).
+  return timeSpan(now + remaining_ms, 'countdown', now, {
+    cls: 'worker-dep worker-dep--grace',
+    title:
+      '대기에 막 들어온 항목입니다 — 남은 시간 동안 자동 실행이 미뤄집니다',
+    pre: '⏳ '
+  });
 }
 
 /**
@@ -2283,6 +2320,31 @@ export function providerProbeButtonTemplate(item) {
   >
     ↻ 지금 프로브
   </button>`;
+}
+
+/**
+ * The card badge text of {@link waitBadgeText} whose overdue `지연 <n>분` tail is
+ * a `[data-ts]` span, so the monitor ticker keeps counting it without a render
+ * (UI-yu2o). Every other verdict is the plain text.
+ *
+ * @param {import('./wait-vocabulary.js').WaitKindRow|null} row
+ * @param {import('./wait-vocabulary.js').WaitVerdict|null|undefined} verdict
+ * @param {unknown} since
+ * @param {number} now
+ * @param {string} [label]
+ * @returns {string|import('lit-html').TemplateResult}
+ */
+function liveWaitBadgeText(row, verdict, since, now, label) {
+  const labelled = label ? { label } : {};
+  if (
+    verdict !== 'overdue' ||
+    typeof since !== 'number' ||
+    !Number.isFinite(since)
+  ) {
+    return waitBadgeText(row, verdict, { since, now, ...labelled });
+  }
+  const head = waitBadgeText(row, verdict, { since: null, now, ...labelled });
+  return html`${head}${timeSpan(since, 'min', now, { pre: ' ' })}`;
 }
 
 /**
@@ -2502,11 +2564,13 @@ function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
   const text =
     !reason && overrides.text
       ? overrides.text
-      : waitBadgeText(row, reason ? reason.verdict : null, {
-          since: reason?.since,
+      : liveWaitBadgeText(
+          row,
+          reason ? reason.verdict : null,
+          reason?.since,
           now,
           label
-        });
+        );
   if (!text) {
     return '';
   }
@@ -2604,9 +2668,11 @@ function stopWaitClick(event) {
  * 낱말은 어휘 표가 종류별로 소유하므로 범례와 카드가 갈라지지 않고, 재료가 없는
  * 조각은 그리지 않는다 (fail-quiet) — 두 조각이 다 비면 줄 자체가 서지 않는다.
  *
+ * 경과 조각은 `[data-ts]` 글자라 모니터 ticker가 렌더 없이 센다 (UI-yu2o).
+ *
  * @param {import('../../protocol.js').WaitReason} reason
  * @param {number} now_ms
- * @returns {string}
+ * @returns {string|import('lit-html').TemplateResult}
  */
 function waitTimesText(reason, now_ms) {
   const row = waitKindRow(reason);
@@ -2620,12 +2686,14 @@ function waitTimesText(reason, now_ms) {
   const next = row.next_word
     ? formatClockLocal(reason.next_check_at, now_ms)
     : '';
-  return [
-    elapsed ? `${elapsed} ${row.elapsed_word}` : '',
-    reset ? `리셋 ${reset}` : next ? `${row.next_word} ${next}` : ''
-  ]
-    .filter(Boolean)
-    .join(' · ');
+  const tail = reset ? `리셋 ${reset}` : next ? `${row.next_word} ${next}` : '';
+  if (!elapsed) {
+    return tail;
+  }
+  const elapsed_el = timeSpan(reason.since, 'since', now_ms, {
+    post: ` ${row.elapsed_word}`
+  });
+  return tail ? html`${elapsed_el} · ${tail}` : elapsed_el;
 }
 
 /**
@@ -2644,7 +2712,12 @@ export function waitReasonLines(reason, options = {}) {
   const record = options.external_wait || options.item?.external_wait;
   const label = external
     ? externalWaitBadgeText(reason, record)
-    : waitVerdictLabel(reason, { now: now_ms });
+    : liveWaitBadgeText(
+        waitKindRow(reason),
+        reason.verdict,
+        reason.since,
+        now_ms
+      );
   const since = formatClockLocal(reason.since, now_ms);
   const next = formatClockLocal(reason.next_check_at, now_ms);
   const reset = formatClockLocal(reason.resets_at, now_ms);
@@ -2656,8 +2729,10 @@ export function waitReasonLines(reason, options = {}) {
     reason.kind === 'provider_hold' &&
     reason.verdict === 'normal' &&
     typeof reason.resets_at === 'number' &&
-    reason.resets_at > (options.now ?? Date.now())
-      ? ` · 리셋까지 ${Math.ceil((reason.resets_at - (options.now ?? Date.now())) / 60000)}분`
+    reason.resets_at > now_ms
+      ? timeSpan(reason.resets_at, 'until-min', now_ms, {
+          pre: ' · 리셋까지 '
+        })
       : '';
   const item = options.item;
   const surface = options.surface || 'card';
@@ -2684,8 +2759,8 @@ export function waitReasonLines(reason, options = {}) {
   const times_text =
     external && record
       ? externalWaitTimes(record, now_ms)
-      : inquiry_elapsed && !observed_line
-        ? `문의 세션 ${inquiry_elapsed}`
+      : inquiry && inquiry_elapsed && !observed_line
+        ? timeSpan(inquiry.launched_at, 'since', now_ms, { pre: '문의 세션 ' })
         : observed_line
           ? reset
             ? `리셋 ${reset}`
@@ -2770,12 +2845,14 @@ export function waitReasonLines(reason, options = {}) {
             ${reason.headline
               ? html`<div class="wait-reason__headline">
                   ${external && record?.jobs.length === 1
-                    ? reason.headline.replace(/ · 경과 .*$/, '') +
-                      externalElapsed(
+                    ? html`${reason.headline.replace(
+                        / · 경과 .*$/,
+                        ''
+                      )}${externalElapsed(
                         record.jobs[0].submitted_at,
                         record.completion?.completed_at,
                         now_ms
-                      )
+                      )}`
                     : reason.headline}
                 </div>`
               : ''}
@@ -4063,11 +4140,15 @@ function externalJobLinesTemplate(reason, record, now) {
                   ? html`<span class="external-job__id">${row.id}</span>`
                   : ''}${row.state
                   ? html`<span class="external-job__state">${row.state}</span>`
-                  : ''}${row.elapsed
-                  ? html`<span class="external-job__elapsed"
-                      >${row.elapsed}</span
-                    >`
-                  : ''}
+                  : ''}${row.elapsed && row.live_since !== null
+                  ? timeSpan(row.live_since, 'job', now, {
+                      cls: 'external-job__elapsed'
+                    })
+                  : row.elapsed
+                    ? html`<span class="external-job__elapsed"
+                        >${row.elapsed}</span
+                      >`
+                    : ''}
               </div>`
           )}${more ? html`<div class="external-jobs__more">${more}</div>` : ''}
         </div>`
@@ -4113,9 +4194,14 @@ function externalWaitTimes(record, now) {
 }
 
 /**
+ * The headline's ` · <word> <h>h<mm>m` tail. A job that has not completed
+ * still counts with the clock, so its tail is a `[data-ts]` span the monitor
+ * ticker rewrites without a render (UI-yu2o).
+ *
  * @param {string} submitted_at
  * @param {string|undefined} completed_at
  * @param {number} now
+ * @returns {string|import('lit-html').TemplateResult}
  */
 function externalElapsed(submitted_at, completed_at, now) {
   const start = Date.parse(submitted_at);
@@ -4124,6 +4210,9 @@ function externalElapsed(submitted_at, completed_at, now) {
   )?.elapsed_word;
   if (!Number.isFinite(start) || !word) {
     return '';
+  }
+  if (!completed_at) {
+    return timeSpan(start, 'hm', now, { pre: ` · ${word} ` });
   }
   const minutes = Math.max(
     0,

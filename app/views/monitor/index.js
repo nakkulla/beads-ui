@@ -35,6 +35,7 @@ import { sessionRefDrawerInput } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import { watchMobile } from '../../utils/viewport.js';
 import { createChipPopover } from '../chip-popover.js';
+import { TICK_MS, refreshTimeText } from '../time-text.js';
 import {
   resolveLaunchText,
   runExternalWaitAction,
@@ -59,6 +60,7 @@ import {
   discardCompletionMessage,
   discardConfirmationMessage,
   expandWaitSubject,
+  graceRemainingMs,
   judgementPopoverOf,
   miniRow,
   nowPanel,
@@ -303,12 +305,6 @@ function saveShelvedOpen(open) {
 
 /** Client id of the monitor tab's aggregated pipeline subscription. */
 export const MONITOR_PIPELINE_KEY = 'tab:monitor:pipeline';
-
-/**
- * Live-metric redraw cadence while the tab is visible. Push alone is not enough:
- * 경과시간·활동 나이는 시계가 지나가는 것만으로 값이 바뀐다.
- */
-const TICK_MS = 1_000;
 
 /**
  * @typedef {Object} MonitorViewOptions
@@ -556,8 +552,19 @@ export function createMonitorView(mount_element, options) {
   let unsubscribe_presets = null;
   /** @type {(() => void) | null} */
   let unsubscribe_model_visibility = null;
-  /** @type {any} */
+  /**
+   * The 1s time-text ticker while the tab is loaded (UI-yu2o): it rewrites the
+   * `[data-ts]` text only and never renders.
+   *
+   * @type {any}
+   */
   let tick_timer = null;
+  /**
+   * The one render due at the next time boundary — the earliest grace expiry.
+   *
+   * @type {any}
+   */
+  let boundary_timer = null;
   /** @type {ReturnType<typeof createRepoDeck>|null} */
   let deck = null;
 
@@ -1933,6 +1940,47 @@ export function createMonitorView(mount_element, options) {
     ensureDeck()?.render();
     applyRepoAutomationTooltips();
     applyFocusClasses();
+    scheduleBoundary(now);
+  }
+
+  /**
+   * Arm the one render due at the next time boundary (UI-yu2o). A grace chip
+   * and the `[지금 시작]` it stands up disappear when the clock passes the
+   * grace expiry, which no push announces and the text ticker cannot draw. Only
+   * a loaded tab arms it; every render re-arms from the lanes it just drew.
+   *
+   * @param {number} now
+   */
+  function scheduleBoundary(now) {
+    if (boundary_timer !== null) {
+      clearTimeout(boundary_timer);
+      boundary_timer = null;
+    }
+    if (tick_timer === null) {
+      return;
+    }
+    /** @type {number|null} */
+    let next = null;
+    for (const item of lanes.queue) {
+      if (item.manual_only === true) {
+        continue;
+      }
+      const left = graceRemainingMs(item.added_at, now);
+      if (left > 0 && (next === null || left < next)) {
+        next = left;
+      }
+    }
+    if (next === null) {
+      return;
+    }
+    boundary_timer = setTimeout(() => {
+      boundary_timer = null;
+      try {
+        doRender();
+      } catch {
+        // ignore
+      }
+    }, next);
   }
 
   /**
@@ -3104,21 +3152,21 @@ export function createMonitorView(mount_element, options) {
       clearInterval(tick_timer);
       tick_timer = null;
     }
+    if (boundary_timer !== null) {
+      clearTimeout(boundary_timer);
+      boundary_timer = null;
+    }
   }
 
   return {
     load() {
       log('load');
-      doRender();
       if (tick_timer === null) {
         tick_timer = setInterval(() => {
-          try {
-            doRender();
-          } catch {
-            // ignore
-          }
+          refreshTimeText(console_el, nowFn());
         }, TICK_MS);
       }
+      doRender();
     },
     pause() {
       stopTick();

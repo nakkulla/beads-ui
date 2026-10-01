@@ -1,6 +1,18 @@
+import { render } from 'lit-html';
 import fs from 'node:fs';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { createUsageMeter, formatResetTime } from './usage-meter.js';
+import {
+  createUsageMeter,
+  formatResetClock,
+  formatResetTime
+} from './usage-meter.js';
+
+// A pass-through spy: the idle tests count how often the header goes through
+// lit (UI-yu2o); every other test renders exactly as before.
+vi.mock('lit-html', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return { ...actual, render: vi.fn(actual.render) };
+});
 
 /**
  * @param {Array<{ key: string, pct: number, resetsAt: string }>} windows
@@ -1431,3 +1443,143 @@ function stubOnceThenFail(claude_payload) {
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
 }
+
+describe('usage meter polling while idle (UI-yu2o)', () => {
+  /**
+   * Make the page read as shown or hidden.
+   *
+   * @param {'visible'|'hidden'} value
+   */
+  function setVisibility(value) {
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => value
+    });
+  }
+
+  afterEach(() => {
+    // @ts-expect-error -- drop the instance override, back to the prototype getter.
+    delete document.visibilityState;
+  });
+
+  /** @returns {HTMLElement} */
+  function mountMeter() {
+    document.body.innerHTML = '<div id="usage-meter"></div>';
+    return /** @type {HTMLElement} */ (document.getElementById('usage-meter'));
+  }
+
+  test('skips a poll that comes due while the page is hidden', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    const { fetchMock } = stubFetch(
+      usageResponse([{ key: '5h', pct: 26, resetsAt: reset_at }])
+    );
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    setVisibility('hidden');
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    meter.destroy();
+  });
+
+  test('reads once when the page shows again after a missed poll', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    const { fetchMock } = stubFetch(
+      usageResponse([{ key: '5h', pct: 26, resetsAt: reset_at }])
+    );
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    setVisibility('hidden');
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    setVisibility('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    meter.destroy();
+  });
+
+  test('leaves the header untouched when a poll reads the same usage', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 3 * 60 * 60_000).toISOString();
+    stubFetch(usageResponse([{ key: '5h', pct: 26, resetsAt: reset_at }]));
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    const renders = () =>
+      vi.mocked(render).mock.calls.filter((call) => call[1] === mount).length;
+    const before = renders();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(renders()).toBe(before);
+    meter.destroy();
+  });
+
+  test('defers the first read of a meter created in a hidden page', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    const { fetchMock } = stubFetch(
+      usageResponse([{ key: '5h', pct: 26, resetsAt: reset_at }])
+    );
+    setVisibility('hidden');
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    const hidden_calls = fetchMock.mock.calls.length;
+
+    setVisibility('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect([hidden_calls, fetchMock.mock.calls.length]).toEqual([0, 2]);
+    meter.destroy();
+  });
+
+  test('leaves an already empty meter untouched when a poll reads nothing', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ available: false })
+        })
+      )
+    );
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    const renders = () =>
+      vi.mocked(render).mock.calls.filter((call) => call[1] === mount).length;
+    const before = renders();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect([renders() - before, mount.hidden]).toEqual([0, true]);
+    meter.destroy();
+  });
+
+  test('names only the reset clock in the header tooltip', async () => {
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 3 * 60 * 60_000).toISOString();
+    stubFetch(usageResponse([{ key: '5h', pct: 26, resetsAt: reset_at }]));
+
+    const meter = createUsageMeter(mount);
+    await vi.waitFor(() =>
+      expect(mount.querySelector('.usage-meter__window')).not.toBeNull()
+    );
+
+    expect(
+      mount.querySelector('.usage-meter__window')?.getAttribute('title')
+    ).toBe(`resets ${formatResetClock(reset_at)}`);
+    meter.destroy();
+  });
+});

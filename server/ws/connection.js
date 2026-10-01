@@ -49,7 +49,6 @@ import {
 import {
   detachMonitorPipeline,
   ensureRunnableScanWired,
-  handleMonitorAutoToggle,
   handleSubscribeMonitorPipeline,
   handleUnsubscribeMonitorPipeline
 } from './monitor-handlers.js';
@@ -567,9 +566,6 @@ export async function handleMessage(ws, data) {
       return;
     case 'apply-impl-preset-global':
       await handleApplyImplPresetGlobal(ws, req);
-      return;
-    case 'monitor-auto-toggle':
-      handleMonitorAutoToggle(ws, req);
       return;
     case 'worker-queue-place':
       await handleWorkerQueuePlace(ws, req);

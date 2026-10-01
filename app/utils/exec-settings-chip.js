@@ -311,6 +311,85 @@ export function formatImplReviewChip(rows) {
   };
 }
 
+/** The marker the resolver appends to a value read from a quick_fix layer. */
+const QUICK_FIX_MARK = ' (quick_fix)';
+
+/**
+ * A chip token without the resolver's quick_fix layer marker — the chip's own
+ * `qf` label already says which layer it speaks for.
+ *
+ * @param {string|null} token
+ * @returns {string|null}
+ */
+function withoutQuickFixMark(token) {
+  return token !== null && token.endsWith(QUICK_FIX_MARK)
+    ? token.slice(0, -QUICK_FIX_MARK.length)
+    : token;
+}
+
+/**
+ * The repo deck's quick fix chip (UI-yu2o): the quick fix orchestration in the
+ * orchestration chip's grammar, plus `· 구현 <model effort>` only when the
+ * quick fix implementation model is set on its own layer.
+ *
+ * @param {Record<string, ExecutionValue>|null|undefined} rows - Resolved with
+ * `route: 'quick_fix'`, so the orchestration rows already carry the quick fix
+ * override.
+ * @param {any} runner_catalog
+ * @param {{ impl_model_set?: boolean }} [options] - `impl_model_set` is true when
+ * `quick_fix_impl_model` holds a value of its own.
+ * @returns {ExecChip|null}
+ */
+export function formatQuickFixChip(rows, runner_catalog, options = {}) {
+  const model = rowOf(rows, 'orchestration_model');
+  if (model === null || model.resolution === 'unavailable') {
+    return null;
+  }
+  const effort = rowOf(rows, 'orchestration_effort');
+  const speed = rowOf(rows, 'orchestration_speed');
+  const impl_model = options.impl_model_set
+    ? rowOf(rows, 'quick_fix_impl_model')
+    : null;
+  const impl_effort = rowOf(rows, 'quick_fix_impl_effort');
+  const impl_model_token = withoutQuickFixMark(modelToken(impl_model));
+  const impl_text =
+    impl_model_token === null
+      ? null
+      : `구현 ${[
+          impl_model_token,
+          withoutQuickFixMark(effortToken(impl_effort))
+        ]
+          .filter((token) => token !== null)
+          .join(' ')}`;
+  const text = joinTokens([
+    resolvedRunnerOf(rows, runner_catalog),
+    withoutQuickFixMark(model.display),
+    effort !== null && effort.value !== null
+      ? withoutQuickFixMark(effort.display)
+      : null,
+    speed !== null && speed.value === 'fast' ? 'Fast' : null,
+    impl_text
+  ]);
+  if (text === '') {
+    return null;
+  }
+  const implLine = (/** @type {string} */ key, /** @type {any} */ row) => {
+    const line = layerLine(key, row);
+    return line === null ? null : `구현 ${line}`;
+  };
+  return {
+    text,
+    title: joinLines([
+      'quick fix — 현재 해석값 (quick fix 설정 > 일반 설정)',
+      layerLine('orchestration_model', model),
+      layerLine('orchestration_effort', effort),
+      layerLine('orchestration_speed', speed),
+      impl_text === null ? null : implLine('impl_model', impl_model),
+      impl_text === null ? null : implLine('impl_effort', impl_effort)
+    ])
+  };
+}
+
 /**
  * `impl_actor` 하나로 서는 완료 행의 워커(구현 위임) 칩 (UI-ys18 §5.2). 재료는 그 완료를 만든 attempt가
  * 보존한 영수증에서 서버가 해석한 `impl_actor` 하나뿐이다 — 현재 핀·전역

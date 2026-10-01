@@ -325,6 +325,9 @@ export const RELATION_CHIPS = Object.freeze(
  * @property {string} state - The state word; `''` without material.
  * @property {ExternalJobTone} tone
  * @property {string} elapsed - `1h29m` · `19m` · `<1m`; `''` without material.
+ * @property {number|null} live_since - The submit instant of a job that has not
+ * ended, whose elapsed still grows with the clock; `null` once it ended or
+ * without material.
  * @property {string} title - The raw state, exit code and evidence.
  * @typedef {Object} ExternalJobRows
  * @property {ExternalJobRow[]} rows - At most four lines, overflow included.
@@ -380,7 +383,7 @@ function externalJobState(job) {
  * @param {number} to
  * @returns {string}
  */
-function externalJobElapsed(from, to) {
+export function externalJobElapsed(from, to) {
   if (!Number.isFinite(from) || !Number.isFinite(to)) {
     return '';
   }
@@ -433,6 +436,8 @@ export function externalJobRows(record, now) {
           state: judged.state,
           tone: judged.tone,
           elapsed: externalJobElapsed(submitted, end),
+          live_since:
+            !job.terminal && Number.isFinite(submitted) ? submitted : null,
           title: [
             job.state || '',
             typeof exit_code === 'number' ? `exit ${exit_code}` : '',

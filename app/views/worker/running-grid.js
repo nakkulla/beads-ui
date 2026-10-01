@@ -28,6 +28,7 @@ import {
 } from '../../utils/token-usage.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
 import { execReceiptActor, formatExecReceipt } from '../exec-format.js';
+import { timeSpan } from '../time-text.js';
 import {
   failureCategory,
   failureNextAction,
@@ -291,24 +292,6 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * @property {string} summary
  * @property {number|null} at
  */
-
-/**
- * Format an elapsed duration (ms) as `MmSSs` / `SSs`. Exported so the monitor
- * tab writes a running attempt's elapsed the same way this tile does (UI-53es
- * §1) — the same fact must not read differently on two tabs.
- *
- * @param {number} ms
- * @returns {string}
- */
-export function formatElapsed(ms) {
-  if (!Number.isFinite(ms) || ms < 0) {
-    return '0s';
-  }
-  const total = Math.floor(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return m > 0 ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`;
-}
 
 /**
  * 세션이 남긴 한 줄의 표시 길이 (UI-5ym8 §6). 기록 쪽 규칙과 같은 200자다 —
@@ -786,19 +769,25 @@ function monitorTileBody(monitor, now, paused, session = null) {
   const session_update_age = session
     ? formatRelativeTime(session.updated_at, now)
     : '';
-  const session_activity = session_event_age
-    ? `최근 활동 ${session_event_age}`
-    : session_update_age
-      ? `갱신 ${session_update_age}`
-      : '';
+  // 나이 글자는 `[data-ts]`라 ticker가 렌더 없이 고친다 (UI-yu2o).
+  const session_activity =
+    session && session_event_age
+      ? timeSpan(session.last_event_at, 'rel', now, {
+          cls: 'rtile__activity-text',
+          pre: '최근 활동 '
+        })
+      : session && session_update_age
+        ? timeSpan(session.updated_at, 'rel', now, {
+            cls: 'rtile__activity-text',
+            pre: '갱신 '
+          })
+        : '';
   return html`${activity_text
     ? html`<div class="rtile__activity${paused ? ' is-paused' : ''}">
         <span class="rtile__activity-dot" aria-hidden="true"></span>
         <span class="rtile__activity-text">${activity_text}</span>
         ${activity_at !== null
-          ? html`<span class="rtile__activity-age"
-              >${formatRelativeTime(activity_at, now)}</span
-            >`
+          ? timeSpan(activity_at, 'rel', now, { cls: 'rtile__activity-age' })
           : ''}
       </div>`
     : session_activity
@@ -806,7 +795,7 @@ function monitorTileBody(monitor, now, paused, session = null) {
         // 주장하지 않는다 (§6) — 초록 점은 라이브 전사만 얻는다.
         html`<div class="rtile__activity rtile__activity--session">
           <span class="rtile__activity-dot" aria-hidden="true"></span>
-          <span class="rtile__activity-text">${session_activity}</span>
+          ${session_activity}
         </div>`
       : ''}${legs.length > 0
     ? html`<div class="rtile__legs">
@@ -1132,6 +1121,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 대기 중인 타일에 시계를 돌리면 멈춰 있는 것이 일하는 것처럼 읽힌다.
   // held 타일의 경과/상태 라벨은 그리지 않는다 (§6.2) — 슬롯 1 배지가 이미 그
   // 종류와 판정을 말한다. 실패 타일의 `실패`·`중단됨`은 그대로다.
+  const clock_live =
+    !failed && !held && !paused && typeof tile.started_at === 'number';
   const elapsed =
     failed || held
       ? held
@@ -1139,14 +1130,14 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         : tile.status_label || (tile.status === 'orphaned' ? '중단됨' : '실패')
       : paused
         ? '일시정지'
-        : [
-            tile.status_label,
-            typeof tile.started_at === 'number'
-              ? formatElapsed(now - tile.started_at)
-              : '—'
-          ]
-            .filter(Boolean)
-            .join(' · ');
+        : [tile.status_label, '—'].filter(Boolean).join(' · ');
+  // 도는 시계는 `[data-ts]` 글자라 ticker가 렌더 없이 1초마다 고친다 (UI-yu2o).
+  const elapsed_el = clock_live
+    ? timeSpan(tile.started_at, 'clock', now, {
+        cls: 'rtile__elapsed',
+        ...(tile.status_label ? { pre: `${tile.status_label} · ` } : {})
+      })
+    : html`<span class="rtile__elapsed">${elapsed}</span>`;
   // 오케 칩이 종전 `formatAttemptTuple` 줄을 대신한다 (§4); 워커 칩만 있어도
   // meta 줄은 그려져야 하므로 표시 조건은 두 칩의 존재로 판정한다.
   const exec_chips =
@@ -1539,10 +1530,10 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         ${interactiveSessionClosingTemplate(tile.interactive_sessions)}
         ${wait_lines.map((line) => line.actions)}${session
           ? html`${typeof tile.started_at === 'number' && !external_wait
-              ? html`<span class="rtile__elapsed">${elapsed}</span>`
+              ? elapsed_el
               : ''}${sessionOpenButton(session_current)}`
-          : elapsed
-            ? html`<span class="rtile__elapsed">${elapsed}</span>`
+          : clock_live || elapsed
+            ? elapsed_el
             : ''}
         ${session || held
           ? ''

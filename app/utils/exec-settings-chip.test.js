@@ -4,6 +4,7 @@ import {
   formatImplActorChip,
   formatImplReviewChip,
   formatOrchestrationChip,
+  formatQuickFixChip,
   formatWorkerChip
 } from './exec-settings-chip.js';
 import { resolveExecutionSettings } from './execution-defaults.js';
@@ -275,6 +276,84 @@ describe('formatWorkerChip', () => {
     const chip = formatWorkerChip(rows, 'codex');
 
     expect(chip?.title).not.toContain('undefined');
+  });
+});
+
+describe('formatQuickFixChip', () => {
+  test('shows the quick fix orchestration alone without its own impl model', () => {
+    const rows = resolve({
+      route: 'quick_fix',
+      global: {
+        quick_fix_orchestration_model: 'fable',
+        quick_fix_orchestration_effort: 'high'
+      }
+    });
+
+    const chip = formatQuickFixChip(rows, RUNNER_CATALOG);
+
+    expect(chip?.text).toBe('claude · fable · high');
+  });
+
+  test('appends the quick fix impl model and effort when set on their own', () => {
+    const rows = resolve({
+      route: 'quick_fix',
+      global: {
+        quick_fix_orchestration_model: 'fable',
+        quick_fix_orchestration_effort: 'high',
+        quick_fix_impl_model: 'terra',
+        quick_fix_impl_effort: 'medium'
+      }
+    });
+
+    const chip = formatQuickFixChip(rows, RUNNER_CATALOG, {
+      impl_model_set: true
+    });
+
+    expect(chip?.text).toBe('claude · fable · high · 구현 5.6-terra medium');
+  });
+
+  test('falls through to the general orchestration when no quick fix value is set', () => {
+    const rows = resolve({ route: 'quick_fix' });
+
+    const chip = formatQuickFixChip(rows, RUNNER_CATALOG);
+
+    expect(chip?.text).toBe('claude · opus');
+  });
+
+  test('returns null when the orchestration model is unavailable', () => {
+    const rows = resolveExecutionSettings({
+      execution_defaults: null,
+      route: 'quick_fix'
+    });
+
+    const chip = formatQuickFixChip(rows, RUNNER_CATALOG);
+
+    expect(chip).toBeNull();
+  });
+
+  test('names each layer with its source in the tooltip', () => {
+    const rows = resolve({
+      route: 'quick_fix',
+      global: {
+        quick_fix_orchestration_model: 'fable',
+        quick_fix_impl_model: 'terra'
+      }
+    });
+
+    const chip = formatQuickFixChip(rows, RUNNER_CATALOG, {
+      impl_model_set: true
+    });
+
+    expect(chip?.title).toBe(
+      [
+        'quick fix — 현재 해석값 (quick fix 설정 > 일반 설정)',
+        '오케스트레이션 모델: fable (quick_fix) (전역)',
+        '오케스트레이션 effort: CLI 기본 (미지정) (기본)',
+        '오케스트레이션 속도: default (일반) (기본)',
+        '구현 모델: 5.6-terra (quick_fix) (전역)',
+        '구현 effort: auto (실행 시 결정) (기본)'
+      ].join('\n')
+    );
   });
 });
 

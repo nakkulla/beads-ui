@@ -22,7 +22,7 @@ import {
   canonicalJson,
   splitMonitorPipeline
 } from '../../app/data/keyed-patch.js';
-import { makeError, makeOk } from '../../app/protocol.js';
+import { makeOk } from '../../app/protocol.js';
 import {
   activeBeadIds,
   isImplementationAttempt
@@ -35,13 +35,7 @@ import {
   normalizeSessionDefaults
 } from '../session-defaults.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
-import {
-  enrollWorkerMergeCandidates,
-  observeWorkerPrs,
-  refreshWorkerExternalPrs,
-  tickWorkerQueue,
-  workerMergeQueueState
-} from '../worker/attach.js';
+import { refreshWorkerExternalPrs } from '../worker/attach.js';
 import { projectExecutionDefaults } from '../worker/execution-defaults.js';
 import {
   __resetForeignBlockerCachesForTest,
@@ -310,255 +304,6 @@ export function __resetWorkspaceAccountsCacheForTest() {
 }
 
 /**
- * The per-repo health record dotfiles writes (D6 `repo-health-v1`). Fixed key,
- * read from the repo's own bd rig — the rig already separates repositories, so
- * the key carries no rig name.
- */
-const REPO_HEALTH_KV_KEY = 'repo_health';
-
-/**
- * How old an observation may be before it is shown as stale.
- *
- * The collector runs every 15 minutes (dotfiles D6), so 45 minutes is three
- * missed periods: long enough that one slow run is not called stale, short
- * enough that a dead timer surfaces.
- */
-const REPO_HEALTH_STALE_MS = 45 * 60_000;
-
-/** How long a successful `repo_health` read stays fresh in this process. */
-const REPO_HEALTH_TTL_MS = 5 * 60_000;
-
-/** How long a FAILED `repo_health` read is remembered before another try. */
-const REPO_HEALTH_RETRY_MS = 60_000;
-
-/** D6 `error_code` allowlist. */
-const REPO_HEALTH_ERROR_CODES = new Set([
-  'missing_checkout',
-  'invalid_target',
-  'fetch_failed',
-  'judge_failed',
-  'invalid_result'
-]);
-
-/** D6 `head_relation` allowlist. */
-const REPO_HEALTH_RELATIONS = new Set(['equal', 'behind', 'ahead', 'diverged']);
-
-/** D6 `classes` allowlist. Each class may overlap, so they are never summed. */
-const REPO_HEALTH_CLASSES = [
-  'disjoint',
-  'converged',
-  'conflict',
-  'staged',
-  'unmerged'
-];
-
-/**
- * The allowlisted projection of one repo's health record.
- *
- * @typedef {Object} RepoHealthState
- * @property {'ok'|'error'|'stale'|'unknown'} state
- * @property {string|null} observed_at
- * @property {string|null} last_success_at
- * @property {string|null} error_code
- * @property {string|null} base
- * @property {string|null} head_relation
- * @property {number|null} behind
- * @property {number|null} ahead
- * @property {Record<string, number>|null} classes
- * @property {boolean} truncated
- */
-
-/** The projection every unusable record collapses to. */
-const UNKNOWN_REPO_HEALTH = Object.freeze({
-  state: /** @type {const} */ ('unknown'),
-  observed_at: null,
-  last_success_at: null,
-  error_code: null,
-  base: null,
-  head_relation: null,
-  behind: null,
-  ahead: null,
-  classes: null,
-  truncated: false
-});
-
-/**
- * @param {unknown} value
- * @returns {value is number}
- */
-function isCount(value) {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
-}
-
-/** Strict UTC ISO8601 with optional fractional seconds (dotfiles D6). */
-const UTC_ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
-
-/**
- * Parse a D6 UTC timestamp, rejecting a future or unparseable one.
- *
- * `Date.parse` alone is too permissive: it accepts a timezone-less value and
- * silently rolls an impossible date such as `2026-02-30` forward. The shape is
- * therefore matched first and the parse is confirmed by a round trip, so only a
- * real instant the producer could have written survives.
- *
- * @param {unknown} value
- * @param {number} now
- * @returns {number|null}
- */
-function observedMs(value, now) {
-  if (typeof value !== 'string' || !UTC_ISO_RE.test(value)) {
-    return null;
-  }
-  const at = Date.parse(value);
-  if (Number.isNaN(at) || at > now) {
-    return null;
-  }
-  return new Date(at).toISOString().slice(0, 19) === value.slice(0, 19)
-    ? at
-    : null;
-}
-
-/**
- * Project one raw `repo_health` kv value onto the display allowlist (D6).
- *
- * Everything outside the contract collapses to `unknown`: an absent key, a
- * malformed record, an unsupported schema, a broken or future timestamp. A
- * record older than {@link REPO_HEALTH_STALE_MS} is `stale` and keeps its last
- * error rather than reading as currently healthy. No path, command, stderr or
- * remote URL has a field here at all.
- *
- * @param {unknown} value
- * @param {number} now
- * @returns {RepoHealthState}
- */
-export function projectRepoHealth(value, now) {
-  if (
-    !value ||
-    typeof value !== 'object' ||
-    Array.isArray(value) ||
-    /** @type {any} */ (value).schema !== 'repo-health-v1'
-  ) {
-    return { ...UNKNOWN_REPO_HEALTH };
-  }
-  const record = /** @type {Record<string, unknown>} */ (value);
-  const at = observedMs(record.observed_at, now);
-  const status = record.status;
-  if (at === null || (status !== 'ok' && status !== 'error')) {
-    return { ...UNKNOWN_REPO_HEALTH };
-  }
-  const stale = now - at > REPO_HEALTH_STALE_MS;
-  const error_code =
-    status === 'error' &&
-    typeof record.error_code === 'string' &&
-    REPO_HEALTH_ERROR_CODES.has(record.error_code)
-      ? record.error_code
-      : null;
-  if (status === 'error' && error_code === null) {
-    return { ...UNKNOWN_REPO_HEALTH };
-  }
-  /** @type {RepoHealthState} */
-  const out = {
-    ...UNKNOWN_REPO_HEALTH,
-    state: stale ? 'stale' : status,
-    observed_at: /** @type {string} */ (record.observed_at),
-    last_success_at:
-      typeof record.last_success_at === 'string' &&
-      observedMs(record.last_success_at, now) !== null
-        ? record.last_success_at
-        : null,
-    error_code,
-    base: typeof record.base === 'string' ? record.base : null,
-    truncated: record.truncated === true
-  };
-  if (status !== 'ok') {
-    return out;
-  }
-  const classes_raw = record.classes;
-  if (
-    !(
-      typeof record.head_relation === 'string' &&
-      REPO_HEALTH_RELATIONS.has(record.head_relation)
-    ) ||
-    !isCount(record.behind) ||
-    !isCount(record.ahead) ||
-    !classes_raw ||
-    typeof classes_raw !== 'object' ||
-    Array.isArray(classes_raw)
-  ) {
-    return { ...UNKNOWN_REPO_HEALTH };
-  }
-  /** @type {Record<string, number>} */
-  const classes = {};
-  for (const name of REPO_HEALTH_CLASSES) {
-    const count = /** @type {Record<string, unknown>} */ (classes_raw)[name];
-    if (!isCount(count)) {
-      return { ...UNKNOWN_REPO_HEALTH };
-    }
-    classes[name] = count;
-  }
-  return {
-    ...out,
-    head_relation: record.head_relation,
-    behind: record.behind,
-    ahead: record.ahead,
-    classes
-  };
-}
-
-/**
- * Process-local `repo_health` cache per workspace, holding the RAW record.
- *
- * Same async-prewarm boundary as {@link prewarmSessionDefaults} (ADR 0043): the
- * read is `bd kv get` while `workspaces_state` is built synchronously, so a cold
- * entry ships `unknown` and the fill schedules the push that carries the real
- * value. The stored value is raw because staleness has to be re-derived on every
- * build, not frozen at fill time.
- *
- * @type {Map<string, { value: unknown, expires_at: number, in_flight: boolean }>}
- */
-const repo_health_cache = new Map();
-
-/**
- * Synchronous cache-hit projection used by `buildMonitorWorkspacesState()`.
- *
- * @param {string} root_dir
- * @returns {RepoHealthState}
- */
-function cachedRepoHealthFor(root_dir) {
-  const hit = repo_health_cache.get(path.resolve(root_dir));
-  if (!hit || hit.expires_at <= Date.now()) {
-    return { ...UNKNOWN_REPO_HEALTH };
-  }
-  return projectRepoHealth(hit.value, Date.now());
-}
-
-/**
- * Warm the repo-health record through the shared workspace kv read.
- *
- * @param {string} root_dir
- * @param {{ kvList?: typeof kvListJsonAtRoot }} [options]
- * @returns {Promise<void>}
- */
-export function prewarmRepoHealth(root_dir, options = {}) {
-  return prewarmWorkspaceKv(root_dir, options);
-}
-
-/**
- * Fill the repo-health cache from one kv read.
- *
- * @param {string} key - Resolved workspace root.
- * @param {KvGetResult} read
- */
-function fillRepoHealth(key, read) {
-  repo_health_cache.set(key, {
-    value: read.ok ? read.value : null,
-    expires_at:
-      Date.now() + (read.ok ? REPO_HEALTH_TTL_MS : REPO_HEALTH_RETRY_MS),
-    in_flight: false
-  });
-}
-
-/**
  * In-flight `bd kv list` read per resolved workspace root.
  *
  * @type {Map<string, Promise<void>>}
@@ -576,11 +321,11 @@ function needsKvRead(entry) {
 }
 
 /**
- * Warm the session-defaults, workspace-account and repo-health caches of one
- * workspace with a single `bd kv list` (UI-j2h3 §4.3).
+ * Warm the session-defaults and workspace-account caches of one workspace with
+ * a single `bd kv list` (UI-j2h3 §4.3).
  *
- * At most one read runs per workspace. When any of the three caches is cold or
- * expired, one list read fills all three with the same per-key KvGetResult a
+ * At most one read runs per workspace. When either cache is cold or expired,
+ * one list read fills both with the same per-key KvGetResult a
  * single `bd kv get` would have returned, so each cache keeps its own TTL,
  * retry window and failure projection. One push is scheduled after the fill.
  *
@@ -597,8 +342,7 @@ export function prewarmWorkspaceKv(root_dir, prewarm_options = {}) {
   }
   if (
     !needsKvRead(session_defaults_cache.get(key)) &&
-    !needsKvRead(workspace_accounts_cache.get(key)) &&
-    !needsKvRead(repo_health_cache.get(key))
+    !needsKvRead(workspace_accounts_cache.get(key))
   ) {
     return Promise.resolve();
   }
@@ -617,7 +361,6 @@ export function prewarmWorkspaceKv(root_dir, prewarm_options = {}) {
           : { ok: false, error: listed.error };
       fillSessionDefaults(key, readFor(SESSION_DEFAULTS_KV_KEY));
       fillWorkspaceAccounts(key, readFor(WORKSPACE_ACCOUNTS_KV_KEY));
-      fillRepoHealth(key, readFor(REPO_HEALTH_KV_KEY));
     } catch (err) {
       session_defaults_cache.set(key, {
         ok: false,
@@ -631,11 +374,6 @@ export function prewarmWorkspaceKv(root_dir, prewarm_options = {}) {
         expires_at: Date.now() + SESSION_DEFAULTS_RETRY_MS,
         in_flight: false
       });
-      repo_health_cache.set(key, {
-        value: null,
-        expires_at: Date.now() + REPO_HEALTH_RETRY_MS,
-        in_flight: false
-      });
       log('monitor: workspace kv lookup failed for %s: %o', key, err);
     } finally {
       workspace_kv_in_flight.delete(key);
@@ -647,7 +385,7 @@ export function prewarmWorkspaceKv(root_dir, prewarm_options = {}) {
 }
 
 /**
- * Mark the three kv-backed caches of a workspace as being read, keeping the
+ * Mark the two kv-backed caches of a workspace as being read, keeping the
  * values they already hold.
  *
  * @param {string} key - Resolved workspace root.
@@ -667,20 +405,6 @@ function markKvInFlight(key) {
     expires_at: accounts?.expires_at || 0,
     in_flight: true
   });
-  const health = repo_health_cache.get(key);
-  repo_health_cache.set(key, {
-    value: health?.value ?? null,
-    expires_at: health?.expires_at || 0,
-    in_flight: true
-  });
-}
-
-/**
- * Drop every cached repo-health record. Test-only, like the prefix cache reset.
- */
-export function __resetRepoHealthCacheForTest() {
-  repo_health_cache.clear();
-  workspace_kv_in_flight.clear();
 }
 
 /**
@@ -1183,7 +907,6 @@ function laneCountsFor(root_dir, queue, runnableFor, sessionActiveFor) {
  *   issuePrefixFor?: (workspace_key: string) => string|null,
  *   sessionDefaultsFor?: (workspace_key: string) => { values: Record<string, string|boolean>, warnings: string[], state?: 'ready'|'pending' },
  *   workspaceAccountsFor?: (workspace_key: string) => { state: 'absent'|'usable'|'unusable', values: Record<string, string>, warnings: string[] }|null,
- *   repoHealthFor?: (workspace_key: string) => RepoHealthState,
  *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>, options?: RunnableReadOptions) => Array<Record<string, unknown>>,
  *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
  * }} [options] - Test seams; each defaults to the live server source.
@@ -1199,7 +922,6 @@ export function buildMonitorWorkspacesState(options = {}) {
     options.sessionDefaultsFor || cachedSessionDefaultsFor;
   const workspaceAccountsFor =
     options.workspaceAccountsFor || cachedWorkspaceAccountsFor;
-  const repoHealthFor = options.repoHealthFor || cachedRepoHealthFor;
   const runnableFor =
     options.runnableFor ||
     ((
@@ -1277,20 +999,10 @@ export function buildMonitorWorkspacesState(options = {}) {
     } catch {
       workspace_accounts = null;
     }
-    /** @type {RepoHealthState} */
-    let repo_health;
-    try {
-      repo_health = repoHealthFor(root_dir) || { ...UNKNOWN_REPO_HEALTH };
-    } catch {
-      repo_health = { ...UNKNOWN_REPO_HEALTH };
-    }
     out.push({
       root_dir,
       name: path.basename(root_dir),
       issue_prefix,
-      // Cold/expired cache ships `unknown` and the fill re-pushes; see
-      // `prewarmRepoHealth` (UI-y9hl U2).
-      repo_health,
       auto_advance: queue.auto_advance === true,
       auto_merge: queue.auto_merge === true,
       slots: typeof queue.slots === 'number' ? queue.slots : 1,
@@ -1914,146 +1626,6 @@ export function handleUnsubscribeMonitorPipeline(ws, req) {
   ws.send(
     JSON.stringify(makeOk(req, { id: client_id, unsubscribed: removed }))
   );
-}
-
-/**
- * Handle `monitor-auto-toggle`. Payload: `{ on: boolean }` (UI-qrfo §6).
- *
- * The master automation switch. It takes NO `root_dir`: the target is always
- * every VISIBLE workspace, which is also the master button's denominator.
- *
- * Both axes go through the same integrated USER mutation as the workspace
- * automation button. What this removes is the CLIENT's CAS precondition, not
- * CAS: the server reads each workspace's own current revision, because
- * `expected_revision` differs per repo and no client can know twenty of them.
- *
- * The single-workspace effects are reproduced exactly: ON kicks that
- * workspace's dispatch loop, observes PRs, and conditionally enrolls while
- * auto-merge remains enabled. OFF empties the waiting merge queue in the SAME
- * write that clears both flags (a restart between two writes would leave
- * "stopped" with a full queue for the boot-resume driver).
- *
- * Partial failure PROCEEDS (§10): one unreadable repo must not veto the other
- * nineteen, so the reply names the ones that failed instead.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- * @param {{
- *   queueStore?: () => ReturnType<typeof getWorkerRuntime>['queueStore'],
- *   listWorkspaces?: () => Array<{ path: string }>,
- *   listHidden?: () => string[],
- *   listRoots?: () => string[],
- *   tick?: (workspace_key: string) => unknown,
- *   observe?: (workspace_key: string) => unknown,
- *   enroll?: (workspace_key: string) => unknown,
- *   mergeQueueState?: (workspace_key: string) => { active: string|null } | null,
- *   onApplied?: () => void
- * }} [options] - Test seams; each defaults to the live server source.
- */
-export function handleMonitorAutoToggle(ws, req, options = {}) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.on !== 'boolean') {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { on: boolean }')
-      )
-    );
-    return;
-  }
-  const on = /** @type {boolean} */ (p.on);
-  const storeOf = options.queueStore || (() => getWorkerRuntime().queueStore);
-  const listRoots = options.listRoots || (() => visibleWorkspaceRoots(options));
-  const kick = options.tick || tickWorkerQueue;
-  const observe = options.observe || observeWorkerPrs;
-  const enroll = options.enroll || enrollWorkerMergeCandidates;
-  const mergeStateOf = options.mergeQueueState || workerMergeQueueState;
-  const onApplied = options.onApplied || schedulePush;
-
-  let applied = 0;
-  /** @type {Array<{ root_dir: string, reason: string }>} */
-  const failed = [];
-  /** @type {string[]} */
-  let roots = [];
-  try {
-    roots = listRoots();
-  } catch (err) {
-    log('monitor: master toggle could not list workspaces: %o', err);
-    roots = [];
-  }
-
-  for (const root_dir of roots) {
-    try {
-      const store = storeOf();
-      const state = on === false ? mergeStateOf(root_dir) : null;
-      const result = store.toggleAutomation(root_dir, {
-        expected_revision: /** @type {any} */ (store.snapshot(root_dir))
-          .revision,
-        on,
-        keep: state ? state.active : null
-      });
-      if (!result.ok) {
-        failed.push({ root_dir, reason: reasonOf(result) });
-        continue;
-      }
-      applied += 1;
-      if (on === true) {
-        // Both pipelines are fire-and-forget: session dispatch and PR
-        // observation must not hold the cross-workspace reply.
-        Promise.resolve()
-          .then(() => kick(root_dir))
-          .catch((err) => {
-            log(
-              'monitor: tick after master toggle failed for %s: %o',
-              root_dir,
-              err
-            );
-          });
-        Promise.resolve()
-          .then(() => observe(root_dir))
-          .catch((err) => {
-            log(
-              'monitor: observation after master toggle failed for %s: %o',
-              root_dir,
-              err
-            );
-          })
-          .then(() => {
-            if (store.snapshot(root_dir).auto_merge !== true) {
-              return;
-            }
-            return enroll(root_dir);
-          })
-          .catch((err) => {
-            log(
-              'monitor: enrolment after master toggle failed for %s: %o',
-              root_dir,
-              err
-            );
-          });
-      }
-    } catch (err) {
-      log('monitor: master toggle failed for %s: %o', root_dir, err);
-      failed.push({ root_dir, reason: 'error' });
-    }
-  }
-
-  ws.send(JSON.stringify(makeOk(req, { on, applied, failed })));
-  // ONE push for the whole sweep — `schedulePush` coalesces, so the per-workspace
-  // queue-changed events and this land as a single rebuild.
-  onApplied();
-}
-
-/**
- * Why a queue mutation did not apply, in the master toggle's vocabulary.
- *
- * @param {import('../worker/queue-store.js').QueueOpResult} result
- * @returns {string}
- */
-function reasonOf(result) {
-  if (result.conflict) {
-    return 'conflict';
-  }
-  return result.reason || 'rejected';
 }
 
 /**

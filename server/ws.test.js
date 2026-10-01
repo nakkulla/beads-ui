@@ -73,6 +73,25 @@ describe('ws message handling', () => {
     expect(obj.error.code).toBe('unknown_type');
   });
 
+  test('removed monitor-auto-toggle returns unknown_type error', async () => {
+    const ws = makeStubSocket();
+    const req = {
+      id: 'master-1',
+      type: 'monitor-auto-toggle',
+      payload: { on: true }
+    };
+
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(JSON.stringify(req))
+    );
+
+    const last = ws.sent[ws.sent.length - 1];
+    const obj = JSON.parse(last);
+    expect(obj.ok).toBe(false);
+    expect(obj.error.code).toBe('unknown_type');
+  });
+
   test('set-workspace rejects paths outside the available workspace list', async () => {
     const ws = makeStubSocket();
     const req = {
