@@ -9,8 +9,11 @@ import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStore } from './data/subscription-issue-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createWorkerQueueStore } from './data/worker-queue-store.js';
+import { DEFAULT_PROBLEM_CRITERIA } from './utils/compare-problem-criteria.js';
 import { chooseContinuation } from './utils/continuation-dialog.js';
 import { requestResumeInstructions } from './utils/resume-instructions-dialog.js';
+import { createAdrView } from './views/adr/index.js';
+import { createCompareView } from './views/compare/index.js';
 import { createDetailPanel } from './views/detail-panel/index.js';
 import { createMdViewer } from './views/detail-panel/md-viewer.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
@@ -116,21 +119,6 @@ function rawLengths(value) {
 }
 
 /**
- * The marked design-system regions of styles.css (`@ds-region <name>:begin` …
- * `:end`). The region list is documented in docs/design-system.md.
- *
- * @param {string} css
- * @returns {Array<{ name: string, body: string }>}
- */
-function regions(css) {
-  return [
-    ...css.matchAll(
-      /\/\*\s*@ds-region\s+([a-z-]+):begin\s*\*\/([\s\S]*?)\/\*\s*@ds-region\s+\1:end\s*\*\//g
-    )
-  ].map((m) => ({ name: m[1], body: m[2] }));
-}
-
-/**
  * Split a selector list on its top-level commas only — `:is(button, summary)`
  * is one selector.
  *
@@ -201,34 +189,12 @@ describe('raw-value scanner', () => {
 });
 
 describe('design-system CSS rules (§3.4 check 1)', () => {
-  test('marks the Worker, header, Monitor, detail, drawer, dialog and repo-ops regions', () => {
-    const names = regions(STYLES).map((r) => r.name);
-
-    expect(names.filter((name) => name === 'worker').length).toBeGreaterThan(0);
-    expect(names).toContain('header');
-    expect(names).toContain('monitor');
-    expect(names).toContain('detail');
-    expect(names).toContain('drawer');
-    expect(names).toContain('dialogs');
-    expect(names).toContain('repo-ops');
-  });
-
-  test('pairs every region marker with an end marker', () => {
-    const begins = STYLES.match(/@ds-region\s+[a-z-]+:begin/g) || [];
-    const ends = STYLES.match(/@ds-region\s+[a-z-]+:end/g) || [];
-
-    expect(begins.length).toBe(ends.length);
-    expect(regions(STYLES).length).toBe(begins.length);
-  });
-
-  test('keeps components.css free of raw colours and raw sizes', () => {
-    expect(findings(COMPONENTS)).toEqual([]);
-  });
-
-  test('keeps every marked region free of raw colours and raw sizes', () => {
-    const found = regions(STYLES).flatMap((r) =>
-      findings(r.body).map((f) => `${r.name}: ${f}`)
-    );
+  test.each([
+    ['app/styles.css', STYLES],
+    ['app/styles/base.css', BASE],
+    ['app/styles/components.css', COMPONENTS]
+  ])('keeps %s free of raw colours and raw sizes', (_name, css) => {
+    const found = findings(css);
 
     expect(found).toEqual([]);
   });
@@ -280,11 +246,12 @@ describe('design-system CSS rules (§3.4 check 1)', () => {
  * taking it to 57 (10 + 47); the detail unit moved the issue detail panel, the
  * transcript and repo-ops drawers, the script viewer and the Worker popovers,
  * taking it to 12 (3 + 9); the dialogs unit moved every dialog and the repo-ops
- * declaration settings, taking it to 3 (0 + 3, the compare tab's). All counted
- * with this scanner; UI-k5s2 takes it to 0. Lower the number when a change
- * removes raw values — never raise it.
+ * declaration settings, taking it to 3 (0 + 3, the compare tab's); the close
+ * unit moved the compare and ADR tabs, taking it to 0. All counted with this
+ * scanner. Check 1 now holds every stylesheet outside tokens.css at zero, so
+ * this baseline stays 0 — never raise it.
  */
-const RATCHET_BASELINE = 3;
+const RATCHET_BASELINE = 0;
 
 describe('design-system ratchet (§3.4 check 2)', () => {
   test('keeps raw colours and raw sizes outside tokens.css at or under the baseline', () => {
@@ -703,6 +670,44 @@ describe('Worker tab controls use parts (§3.4 check 3)', () => {
     expect(chips.length).toBeGreaterThan(0);
     expect(chips.every((el) => el.classList.contains('ui-chip'))).toBe(true);
     expect(chips.some((el) => el.classList.contains('op-btn'))).toBe(false);
+  });
+
+  test('draws the stepper document cell of a card with a part', () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const none = { fill: 'none', glyph: null, stale: false, receipt: null };
+
+    render(
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'C-2',
+          title: 'spec candidate',
+          draggable: false,
+          lane: 'candidate',
+          reason: '',
+          workflow: {
+            route: 'spec_backed',
+            route_source: 'explicit',
+            stages: {
+              spec: {
+                ...none,
+                fill: 'full',
+                doc: { path: 'docs/spec.md', missing_state: null }
+              },
+              impl: none,
+              pr: none,
+              merge: none
+            }
+          }
+        }),
+        null,
+        { onOpenDoc: vi.fn() }
+      ),
+      mount
+    );
+
+    expect(mount.querySelectorAll('button.seg--doc').length).toBe(1);
+    expect(controlsWithoutPart(mount)).toEqual([]);
   });
 });
 
@@ -1999,6 +2004,269 @@ describe('repo-ops settings use parts (§3.4 check 3)', () => {
     expect(
       mount.querySelectorAll('.worker-repo-ops-settings button').length
     ).toBe(3);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+});
+
+/** One comparison group (preset) with its own landed session row. */
+const COMPARE_GROUP = {
+  key: 'preset:p1',
+  name: '프리셋 A',
+  badge: 'preset',
+  n: 1,
+  issue_count: 1,
+  landed: 1,
+  judged: 1,
+  in_flight: 0,
+  landing_rate: 1,
+  problem_count: 1,
+  problem_rate: 1,
+  problems: { failed: 0, retry: 1, review: 0, human: 0 },
+  duration_ms: { mean: 60000, median: 60000, sample: 1, total: 1 },
+  cost_usd: { mean: 2, median: 2, sample: 1, total: 1, partial_count: 0 },
+  compositions: [{ composition: 'astra/high → main 직접', count: 1 }],
+  best: ['landing'],
+  attempt_ids: ['session-1']
+};
+
+/** @type {Array<{ destroy: () => void }>} */
+const tab_views = [];
+
+/**
+ * Open the compare tab the way `main.js` does (`load()` on tab entry) over a
+ * reply with a summary, one group card and its session row, and let it land.
+ *
+ * @returns {Promise<HTMLElement>}
+ */
+async function renderCompareTab() {
+  document.body.innerHTML = '<div id="m"></div>';
+  const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+  const snapshot = {
+    summary: COMPARE_GROUP,
+    groups: [COMPARE_GROUP],
+    rows: [
+      {
+        attempt_id: 'session-1',
+        bead_id: 'UI-one',
+        title: '세션',
+        outcome: { kind: 'landed', evidence: 'closed' },
+        duration_ms: 60000,
+        finished_at: 1750000000000,
+        usage: { total_cost_usd: 2 },
+        problems: {
+          retry: true,
+          evidence: {
+            retry: { origin: 'o-1', kind: 'resume', cause: null, env: false }
+          }
+        }
+      }
+    ],
+    workspaces: [{ root_dir: '/repo', name: '저장소 A' }],
+    warnings: [],
+    criteria: {
+      effective: DEFAULT_PROBLEM_CRITERIA,
+      is_default: false,
+      baselines: {
+        duration_ms: { median: 60000, sample: 1, active: true },
+        cost_usd: { median: 2, sample: 1, active: true, partial_count: 0 }
+      }
+    }
+  };
+  const view = createCompareView(mount, {
+    transport: vi.fn(async () => ({ payload: snapshot })),
+    gotoIssue: vi.fn()
+  });
+  tab_views.push(view);
+  view.load();
+  await vi.waitFor(() =>
+    expect(mount.querySelector('.cmp-card')).not.toBeNull()
+  );
+  return mount;
+}
+
+/**
+ * Pick a value of one compare filter select and let the re-read land.
+ *
+ * @param {HTMLElement} mount
+ * @param {string} label
+ * @param {string} value
+ */
+async function chooseCompareFilter(mount, label, value) {
+  const field = Array.from(mount.querySelectorAll('.cmp-filter')).find(
+    (el) => el.querySelector('.cmp-filter__label')?.textContent === label
+  );
+  const select = /** @type {HTMLSelectElement} */ (
+    field?.querySelector('select')
+  );
+  select.value = value;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  await settle();
+}
+
+describe('compare tab controls use parts (§3.4 check 3)', () => {
+  afterEach(() => {
+    while (tab_views.length > 0) {
+      tab_views.pop()?.destroy();
+    }
+    window.localStorage.clear();
+    document.body.innerHTML = '';
+  });
+
+  test('draws every compare tab control with a part', async () => {
+    const mount = await renderCompareTab();
+
+    clickOn(mount, '.cmp-expand');
+
+    expect(mount.querySelectorAll('.cmp-criteria__number').length).toBe(5);
+    expect(
+      mount.querySelectorAll('button, input, select').length
+    ).toBeGreaterThan(15);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws the custom period date inputs with a part', async () => {
+    const mount = await renderCompareTab();
+
+    await chooseCompareFilter(mount, '기간', 'custom');
+
+    expect(mount.querySelectorAll('.cmp-filter__date').length).toBe(2);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws the arrowless filter selects on the bare select variant', async () => {
+    const mount = await renderCompareTab();
+
+    const selects = Array.from(mount.querySelectorAll('.cmp-filter__select'));
+
+    expect(selects.length).toBe(4);
+    expect(
+      selects.every((el) => el.classList.contains('ui-select--bare'))
+    ).toBe(true);
+  });
+
+  test('marks the chosen grouping axis as the active segment', async () => {
+    const mount = await renderCompareTab();
+
+    const active = Array.from(
+      mount.querySelectorAll('.cmp-group-by .op-btn.is-active')
+    );
+
+    expect(active.map((el) => el.getAttribute('aria-pressed'))).toEqual([
+      'true'
+    ]);
+  });
+});
+
+/**
+ * One ADR record of the ADR tab snapshot.
+ *
+ * @param {number} id
+ * @param {Record<string, any>} [extra]
+ * @returns {Record<string, any>}
+ */
+function adrRecord(id, extra = {}) {
+  const num = String(id).padStart(4, '0');
+  return {
+    file: `${num}-decision.md`,
+    id,
+    title: `결정 ${id}`,
+    status: 'accepted',
+    date: '2026-01-01',
+    summary: `summary ${id}`,
+    supersedes: [],
+    superseded_by: null,
+    superseded_by_note: null,
+    spec: null,
+    bead: null,
+    ...extra
+  };
+}
+
+/**
+ * Two workspaces whose first one lights up every ADR tab surface: the current
+ * table (title, spec and bead links, signal chip), the history with a
+ * superseded link, and the folded 점검 sections (citations, candidates with a
+ * pending spec, cross citations).
+ *
+ * @returns {any[]}
+ */
+function adrWorkspaces() {
+  /** @param {Record<string, any>} extra */
+  const workspace = (extra) => ({
+    name_duplicate: false,
+    computing: false,
+    computed_at: null,
+    env_errors: { index: null, citations: null, candidates: null },
+    adr_dir_missing: false,
+    current: [],
+    history: [],
+    frontmatter_errors: [],
+    index_drift: { ok: true, detail: null },
+    citations_stale: [],
+    candidates: [],
+    cross_citations: [],
+    ...extra
+  });
+  return [
+    workspace({
+      root_dir: '/repo/a',
+      name: 'a',
+      current: [
+        adrRecord(2, { spec: 'docs/specs/x.md', bead: 'UI-a', supersedes: [1] })
+      ],
+      history: [adrRecord(1, { status: 'superseded', superseded_by: 2 })],
+      index_drift: { ok: false, detail: 'drift' },
+      citations_stale: [
+        { kind: 'retired', file: 'docs/guide.md', line: 4, adr: 2, detail: 'x' }
+      ],
+      candidates: [
+        {
+          spec: 'docs/specs/y.md',
+          errors: [{ kind: 'adr_missing', adr: null, detail: 'y' }]
+        },
+        {
+          spec: 'docs/specs/z.md',
+          errors: [{ kind: 'section_missing', adr: null, detail: 'z' }]
+        }
+      ],
+      cross_citations: [
+        {
+          file: 'docs/cross.md',
+          line: 9,
+          repo: 'dotfiles',
+          adr: 45,
+          target: { status: 'accepted' }
+        }
+      ]
+    }),
+    workspace({ root_dir: '/repo/b', name: 'b', current: [adrRecord(3)] })
+  ];
+}
+
+describe('ADR tab controls use parts (§3.4 check 3)', () => {
+  afterEach(() => {
+    while (tab_views.length > 0) {
+      tab_views.pop()?.destroy();
+    }
+    document.body.innerHTML = '';
+  });
+
+  test('draws every ADR tab control with a part', () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const workspaces = adrWorkspaces();
+
+    tab_views.push(
+      createAdrView(mount, {
+        adrStore: { get: () => ({ workspaces }), subscribe: () => () => {} },
+        openDoc: vi.fn(),
+        gotoIssue: vi.fn()
+      })
+    );
+
+    expect(mount.querySelectorAll('.adr-doc--link').length).toBeGreaterThan(5);
+    expect(mount.querySelectorAll('.adr-bead').length).toBe(1);
+    expect(mount.querySelectorAll('.adr-filter').length).toBe(3);
     expect(controlsWithoutPart(mount)).toEqual([]);
   });
 });

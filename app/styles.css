@@ -52,7 +52,6 @@ a {
   }
 }
 
-/* @ds-region header:begin */
 /* 헤더의 조작(작업 공간 선택·프로젝트 관리·Git Pull·사용량 미터·테마 스위치·
    `?`·`⚙`·`New issue`)은 부품이 크기를 정하고, 여기 역할 규칙은 색과 배치만
    적는다 (UI-kqta §3.3, UI-k5s2). */
@@ -781,7 +780,6 @@ a {
 .ui-field.theme-toggle {
   border-color: transparent;
 }
-/* @ds-region header:end */
 
 /* sticky 헤더는 문서 흐름 안에 있으므로 셸은 헤더 아래에서 시작한다. 남은 한
    화면을 하한으로만 잡고 상한은 두지 않는다 — 예전의 `height: calc(100% - 53px)`는
@@ -1437,7 +1435,6 @@ input.inline-edit:focus {
 .detail-title .detail-id {
   color: var(--muted);
 }
-/* @ds-region dialogs:begin */
 /* 치명 오류 대화상자의 `[Reload]`·`[Dismiss]` — 크기는 `.op-btn`이 정하고 이
    규칙은 전역 버튼 팔레트와 primary 틴트만 적는다 (UI-k5s2). */
 .btn {
@@ -1449,7 +1446,6 @@ input.inline-edit:focus {
   background: color-mix(in srgb, var(--link) 18%, var(--button-bg));
   border-color: color-mix(in srgb, var(--link) 32%, var(--button-border));
 }
-/* @ds-region dialogs:end */
 .prop {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1543,7 +1539,6 @@ input.inline-edit:focus {
   backdrop-filter: blur(1px);
 }
 
-/* @ds-region dialogs:begin */
 .new-issue__body {
   padding: var(--sp-12);
 }
@@ -1700,7 +1695,6 @@ input.inline-edit:focus {
   margin-top: 10px;
   flex-wrap: wrap;
 }
-/* @ds-region dialogs:end */
 
 /* List row layout closer to mock */
 #list-panel .panel__body li.issue-item {
@@ -1824,7 +1818,6 @@ input.inline-edit:focus {
    unify-design.md` §5.1)가 조작의 **자리**를, 부품이 **모양**을 정한다. 이 파일의
    화면 규칙은 색과 배치만 덧붙인다. */
 
-/* @ds-region worker:begin */
 /* ---------- Worker console (queue + running grid + transcript, spec §5) ---------- */
 /* Token-driven (tokens.css): dark default + [data-theme='light'] both supported. */
 .worker-console {
@@ -2044,12 +2037,9 @@ input.inline-edit:focus {
   }
 }
 
-/* @ds-region worker:end */
-
 /* 막힘 요약은 브라우저 최상위 층의 modal `<dialog>`다 (UI-0bvr §8). 종전
    `position: absolute` 팝오버는 모바일 리본의 `overflow-x: auto`가 만든 클리핑
    문맥에 잘렸다 — 최상위 층은 조상의 overflow와 무관하다. */
-/* @ds-region dialogs:begin */
 .wait-summary__dialog {
   width: min(520px, calc(100vw - 32px));
   max-height: 70vh;
@@ -2085,9 +2075,7 @@ input.inline-edit:focus {
   cursor: pointer;
   overflow-wrap: anywhere;
 }
-/* @ds-region dialogs:end */
 
-/* @ds-region worker:begin */
 .wait-reason--highlight {
   outline: 2px solid var(--accent-warn);
   outline-offset: 2px;
@@ -2195,8 +2183,6 @@ input.inline-edit:focus {
   font-variant-numeric: tabular-nums;
 }
 
-/* @ds-region worker:end */
-
 .worker-repo-ops__vd,
 .settings-dialog__sp {
   margin-top: var(--sp-14);
@@ -2290,7 +2276,6 @@ input.inline-edit:focus {
   margin-top: var(--sp-10);
 }
 
-/* @ds-region repo-ops:begin */
 /* Read-only 검증·배포 설정 section (worker-deploy-hook §4): the commands are
    defined in config.toml, which is the security boundary. Its two controls —
    the script path that opens the viewer and `배포 실행` — are `.op-btn`s; these
@@ -2387,9 +2372,7 @@ input.inline-edit:focus {
   color: var(--text-dim);
   cursor: not-allowed;
 }
-/* @ds-region repo-ops:end */
 
-/* @ds-region drawer:begin */
 /* 고정 base의 검증·배포 blob만 보여주는 Worker 전용 코드 팝업. */
 .repo-ops-script-viewer {
   position: fixed;
@@ -2582,9 +2565,6 @@ input.inline-edit:focus {
   }
 }
 
-/* @ds-region drawer:end */
-
-/* @ds-region repo-ops:begin */
 .worker-repo-ops__vd-badge {
   display: inline-block;
   padding: 0 var(--sp-7);
@@ -2657,9 +2637,7 @@ input.inline-edit:focus {
   color: var(--text-secondary);
   font-size: var(--fs-caption);
 }
-/* @ds-region repo-ops:end */
 
-/* @ds-region worker:begin */
 /* ==== 저장소 작업 상태 스트립 (UI-q0uy §4.1) ====
    기존 `<details>` 패널은 실패 1건에 전체를 강제로 펼쳐 화면을 덮었다. 접힌
    상태에서 사실을 다 말하는 한 줄 버튼으로 바꾸고, 부르는 일은 배지에 맡긴다. */
@@ -2738,9 +2716,6 @@ input.inline-edit:focus {
   color: var(--text-dim);
 }
 
-/* @ds-region worker:end */
-
-/* @ds-region drawer:begin */
 /* ==== 저장소 작업 타임라인 드로어 (UI-q0uy §4.2) ==== */
 .worker-repo-drawer {
   display: block;
@@ -3123,9 +3098,6 @@ input.inline-edit:focus {
   font-weight: 700;
 }
 
-/* @ds-region drawer:end */
-
-/* @ds-region repo-ops:begin */
 /* ==== 설정: 저장소 작업 선언 (UI-q0uy §4.5) ==== */
 .worker-repo-ops__vd-src {
   color: var(--text-dim);
@@ -3210,9 +3182,7 @@ input.inline-edit:focus {
   background: none;
   color: var(--text-muted);
 }
-/* @ds-region repo-ops:end */
 
-/* @ds-region worker:begin */
 .worker-rungrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
@@ -3819,9 +3789,6 @@ input.inline-edit:focus {
   }
 }
 
-/* @ds-region worker:end */
-
-/* @ds-region drawer:begin */
 /* ---------- Transcript drawer (session viewer, spec §5.6) ---------- */
 .worker-drawer-host:empty {
   display: none;
@@ -4816,9 +4783,6 @@ input.inline-edit:focus {
   box-shadow: var(--shadow-overlay);
 }
 
-/* @ds-region drawer:end */
-
-/* @ds-region worker:begin */
 /* ---------- Worker lanes ---------- */
 /* lit-html render host between .worker-console and .worker-lanes: must forward
    the flex chain (flex + min-height:0) or the lane bodies lose their height
@@ -6276,9 +6240,6 @@ input.inline-edit:focus {
   align-self: flex-end;
 }
 
-/* @ds-region worker:end */
-
-/* @ds-region detail:begin */
 /* 이슈 상세 상단 바의 `[↴ 대기로]` (UI-6g3t §6.2). 바는 카드 1번 줄과 같은 문법
    (왼쪽 정체성 · 오른쪽 조작)이라 auto margin이 ID와 조작 묶음을 가른다 — 닫기
    `✕`는 그대로 오른쪽 끝이다. 모양은 `.op-btn`이 정하므로 여기는 자리만 정한다. */
@@ -6298,9 +6259,6 @@ input.inline-edit:focus {
   margin: var(--sp-4) 0 var(--sp-2);
 }
 
-/* @ds-region detail:end */
-
-/* @ds-region monitor:begin */
 /* --- 모니터 탭 (UI-qrfo §8) --- */
 
 /* 모니터는 Worker 콘솔과 같은 레인 레이아웃을 쓰므로 같은 flex 사슬이 필요하다:
@@ -6348,9 +6306,6 @@ input.inline-edit:focus {
   cursor: pointer;
 }
 
-/* @ds-region monitor:end */
-
-/* @ds-region worker:begin */
 /* 레포 뱃지 (Worker 템플릿 안, 값이 있을 때만): 전체 레포를 한 화면에 섞는
    순간 레포는 부가 정보가 아니라 좌표다. */
 .worker-mini__repo,
@@ -6386,9 +6341,6 @@ input.inline-edit:focus {
   border-color: var(--stage-merge-on);
 }
 
-/* @ds-region worker:end */
-
-/* @ds-region monitor:begin */
 /* --- 모니터 세로 5레인 (UI-eey2 §3) --------------------------------------
    Worker 탭과 **같은** `.worker-lanes` flex다. 3열 grid·가로 스와이프 칸반은
    폐기했다 (같은 사실이 두 탭에서 다른 모양이 되던 원인). 다섯 레인은 같은
@@ -6764,9 +6716,6 @@ input.inline-edit:focus {
     0 0 0 1px var(--accent-success);
 }
 
-/* @ds-region monitor:end */
-
-/* @ds-region worker:begin */
 /* 대기 행 조작 묶음 (UI-5ksp §4.6). 행 밖 별도 줄이던 Monitor 조작 묶음을 행
    1번 줄 조작 슬롯으로 옮긴 것이라, 아래 줄을 위한 세로 여백은 없다. */
 .worker-mini__rowops {
@@ -7231,9 +7180,6 @@ input.inline-edit:focus {
   font-size: var(--fs-small);
 }
 
-/* @ds-region worker:end */
-
-/* @ds-region monitor:begin */
 /* 모바일 (§3): Worker와 같은 세로 스택. 관제 우선 순서는 이제 DOM이 소유한다
    (UI-5ksp §4.7) — 실행 중·PR 대기가 `지금` 패널로 합쳐지는 것은 restyle이
    아니라 recombination이라 `order`로는 표현할 수 없었다. */
@@ -7259,9 +7205,7 @@ input.inline-edit:focus {
     -webkit-overflow-scrolling: touch;
   }
 }
-/* @ds-region monitor:end */
 
-/* @ds-region header:begin */
 /* 헤더 사용량 리본 — 모바일 폭 맞춤 (UI-eey2 §11.1, 전 탭 공통, CSS만).
    ≤900 규칙만으로는 Claude 그룹(5h·7d·모델 창 + 배지)과 Codex 그룹이 한 줄에
    남아 뷰포트 밖으로 잘린다. ≤640에서는 리본을 헤더 아래 **전폭 두 행**으로
@@ -7307,9 +7251,7 @@ input.inline-edit:focus {
     flex: 0 0 auto;
   }
 }
-/* @ds-region header:end */
 
-/* @ds-region detail:begin */
 /* ---------- Detail-panel session history (spec §5.6) ---------- */
 .detail-sessions {
   display: flex;
@@ -7886,8 +7828,6 @@ button.detail-session__leg:focus-visible {
   }
 }
 
-/* @ds-region detail:end */
-
 /* 중간 폭에서는 5개 레인을 유지하되 툴바의 두 의미 그룹을 각각 한 줄로 둔다.
    KPI 일부만 오른쪽 아래로 떨어지는 대신 조작 → 상태 순서로 자연스럽게 읽힌다. */
 @media (min-width: 641px) and (max-width: 1400px) {
@@ -7923,7 +7863,6 @@ button.detail-session__leg:focus-visible {
 
 /* ---------- Worker responsive (<=640px): single-column lanes + grid ---------- */
 @media (max-width: 640px) {
-  /* @ds-region header:begin */
   /* App shell header: wrap instead of forcing title+picker+tabs+actions onto one
      line; buttons/icons keep their size, only spacing shrinks (§1.1). */
   .app-header {
@@ -7951,17 +7890,12 @@ button.detail-session__leg:focus-visible {
     gap: var(--space-4);
   }
 
-  /* @ds-region header:end */
-
-  /* @ds-region dialogs:begin */
   /* New-issue dialog form: label above, input below (§1.6). */
   .new-issue__form {
     grid-template-columns: 1fr;
     align-items: stretch;
   }
-  /* @ds-region dialogs:end */
 
-  /* @ds-region worker:begin */
   /* 내부 스크롤 없음 (§4.7): 문서 스크롤 하나만 남긴다. */
   .worker-rungrid {
     grid-template-columns: 1fr;
@@ -8082,9 +8016,6 @@ button.detail-session__leg:focus-visible {
     overflow: visible;
   }
 
-  /* @ds-region worker:end */
-
-  /* @ds-region drawer:begin */
   /* 전사 드로어 (UI-2dbn §4.2·§4.3): 1행은 줄바꿈하지 않고 제목이 먼저 줄며, 단계
      칩은 12자까지 남는다. 도구 줄은 결과 요약만 둘째 줄로 내려간다. */
   .sv__id {
@@ -8180,9 +8111,6 @@ button.detail-session__leg:focus-visible {
     box-shadow: none;
   }
 
-  /* @ds-region drawer:end */
-
-  /* @ds-region worker:begin */
   /* 저장소 작업 스트립 (UI-q0uy §4.1): 한 줄로 사실을 다 말하는 계약은 데스크톱
      폭에서만 성립한다. 폰에서는 ▸·이름·배지가 첫 줄에 남고 배포 사실이 둘째 줄로
      흐른다 — 부르는 쪽인 배지는 밀려나면 안 되고, 사실은 잘리느니 줄을 하나 더
@@ -8211,9 +8139,6 @@ button.detail-session__leg:focus-visible {
     padding-left: calc(var(--sp-10) + var(--sp-10));
   }
 
-  /* @ds-region worker:end */
-
-  /* @ds-region drawer:begin */
   /* 타임라인 드로어는 전사 드로어와 같은 전체 화면 셸을 쓰므로 `.sv`와 같은
      모서리를 갖는다 (UI-2dbn §4.1). */
   .worker-drawer-overlay .worker-repo-drawer {
@@ -8256,8 +8181,6 @@ button.detail-session__leg:focus-visible {
     word-break: keep-all;
     line-height: 1.25;
   }
-
-  /* @ds-region drawer:end */
 }
 
 /* Prompt inspection (UI-rxp3 §4/§5): the shared block used by the ⚙ dialog's
@@ -8305,7 +8228,6 @@ button.detail-session__leg:focus-visible {
   font-size: var(--fs-caption);
 }
 
-/* @ds-region detail:begin */
 /* Detail panel 과업 프롬프트 section. 알약 버튼이라 크기는 `.ui-chip`이 정한다
    (UI-k5s2). */
 .detail-prompt__toggle {
@@ -8365,9 +8287,6 @@ button.detail-session__leg:focus-visible {
   font-size: var(--fs-caption);
 }
 
-/* @ds-region detail:end */
-
-/* @ds-region drawer:begin */
 /* Transcript drawer sent-prompt panel. The drawer is a fixed-height column, so
    the panel must not shrink under the body that owns the scroll. */
 .sv__prompt {
@@ -8399,9 +8318,6 @@ button.detail-session__leg:focus-visible {
   color: var(--text-primary);
 }
 
-/* @ds-region drawer:end */
-
-/* @ds-region dialogs:begin */
 /* ⚙ dialog worker system-prompt section. */
 .settings-dialog__sp {
   margin-top: var(--sp-14);
@@ -9276,9 +9192,7 @@ button.detail-session__leg:focus-visible {
     padding: var(--sp-6) 0;
   }
 }
-/* @ds-region dialogs:end */
 
-/* @ds-region detail:begin */
 /* ============================================================================
    이슈 상세 — 요약 헤더 + 유효 실행 설정 카드 (spec §E)
    ========================================================================== */
@@ -9734,9 +9648,6 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   text-align: right;
 }
 
-/* @ds-region detail:end */
-
-/* @ds-region repo-ops:begin */
 /* Worker 화면 인라인 운영 설정 (검증·배포 선언) — 접힘 기본. 머리
    `<summary>`는 접기 머리줄이지 버튼이 아니라 부품을 받지 않는다 (UI-k5s2). */
 .worker-repo-ops-settings {
@@ -9766,9 +9677,7 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 .worker-repo-ops-settings > section {
   padding: var(--sp-4) var(--sp-10) var(--sp-8);
 }
-/* @ds-region repo-ops:end */
 
-/* @ds-region detail:begin */
 /* 좁은 화면: 유효 설정 카드의 키 열을 좁혀 값·배지·편집이 한 줄에 들어가게. */
 @media (max-width: 640px) {
   .detail-effective__row {
@@ -9781,8 +9690,6 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
     font-size: var(--fs-body-sm);
   }
 }
-
-/* @ds-region detail:end */
 
 /* --- 비교 탭 (compare-redesign §3): 그룹 카드와 접힌 실험 표 --- */
 .cmp {
@@ -9820,14 +9727,15 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   color: var(--text-muted);
 }
 
+/* 크기는 `.ui-select--bare`가 정한다 — 아래 `background` 단축 속성이 전역
+   select의 화살표를 지우는 select다 (UI-k5s2). */
 .cmp-filter__select {
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
   background: var(--bg-card);
   color: var(--text-primary);
-  font: inherit;
-  font-size: var(--fs-small);
-  padding: 2px var(--sp-4);
+  font-family: inherit;
+  font-style: inherit;
+  font-weight: inherit;
 }
 
 .cmp-filter--dates {
@@ -9836,16 +9744,11 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 }
 
 .cmp-filter__date {
-  box-sizing: border-box;
   width: 100%;
   min-width: 0;
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
   background: var(--bg-card);
   color: var(--text-primary);
-  font: inherit;
-  font-size: var(--fs-small);
-  padding: 2px var(--sp-4);
 }
 
 .cmp-filter__error {
@@ -9866,7 +9769,7 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 .cmp-note {
   margin-left: var(--sp-4);
   color: var(--text-muted);
-  font-size: var(--fs-tiny, 11px);
+  font-size: var(--fs-chip);
   white-space: nowrap;
 }
 
@@ -9982,13 +9885,13 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   flex-wrap: wrap;
 }
 
+/* `.ui-input`의 좌우 여백(--px-control)이 전역 숫자 입력 여백(--space-3)보다
+   넓은 만큼 상자를 넓혀, 값이 서는 자리(5ch − 전역 여백)는 그대로 둔다 (UI-k5s2). */
 .cmp-criteria__number {
-  width: 5ch;
+  width: calc(5ch + 2 * (var(--px-control) - var(--space-3)));
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
   background: var(--bg-input, var(--bg-card));
   color: var(--text-primary);
-  font: inherit;
   /* A 4ch~5ch box has no room for the spinner and its own value at once. */
   appearance: textfield;
 }
@@ -10262,7 +10165,6 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   }
 
   .cmp-group-by .op-btn {
-    padding: var(--sp-8) var(--sp-4);
     height: 100%;
   }
 
@@ -10315,7 +10217,7 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   }
 
   .cmp-criteria__number {
-    width: 4ch;
+    width: calc(4ch + 2 * (var(--px-control) - var(--space-3)));
   }
 
   .cmp-filters .cmp-filter {
@@ -10385,15 +10287,16 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   gap: var(--sp-3);
 }
 
+/* 저장소 필터와 `stale 우선`은 칩 토글이다 — 크기는 `.ui-chip`이 정한다
+   (UI-k5s2). */
 .adr-filter,
 .adr-sort {
-  padding: var(--sp-2) var(--sp-5);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
   background: transparent;
   color: var(--text-muted);
-  font: inherit;
-  font-size: var(--fs-chip);
+  font-family: inherit;
+  font-style: inherit;
+  font-weight: inherit;
   cursor: pointer;
 }
 
@@ -10407,13 +10310,9 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 .adr-search {
   flex: 1 1 220px;
   min-width: 160px;
-  padding: var(--sp-2) var(--sp-5);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
   background: transparent;
   color: var(--text-primary);
-  font: inherit;
-  font-size: var(--fs-caption);
 }
 
 .adr-body {
@@ -10572,19 +10471,21 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   color: var(--text-muted);
 }
 
+/* 문서·bead 링크는 상자 없는 글자 버튼(`.op-btn--ghost`)이다. 줄바꿈은 칸을
+   따른다 — 제목 칸은 감기고 spec 칸은 한 줄로 잘린다 (UI-k5s2). */
 .adr-doc--link,
 .adr-bead {
-  padding: 0;
   border: none;
   background: transparent;
   color: var(--link);
-  font: inherit;
+  white-space: inherit;
   text-align: left;
   cursor: pointer;
 }
 
-.adr-doc--link:hover,
-.adr-bead:hover {
+.adr-doc--link:hover:not(:disabled),
+.adr-bead:hover:not(:disabled) {
+  color: var(--link);
   text-decoration: underline;
 }
 
@@ -10731,7 +10632,6 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   text-align: left;
 }
 
-/* @ds-region detail:begin */
 /* 상세 외부 작업 표의 로그 경로 복사 버튼 (UI-l48z §4.2). 크기는 `.op-btn`이
    정하고, 색은 그동안 그려 온 전역 버튼 팔레트다 (UI-k5s2). */
 .detail-external-wait__log {
@@ -10812,8 +10712,6 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   color: var(--stage-pr-on);
 }
 
-/* @ds-region detail:end */
-
 @media (max-width: 640px) {
   .worker-mini--external-wait {
     min-width: 0;
@@ -10833,7 +10731,6 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
    본문만 어휘 표를 그대로 읽어 그리는 표들이다. 640px 이하는 전체 화면·세로
    스크롤.
    ========================================================================== */
-/* @ds-region dialogs:begin */
 .help-dialog {
   width: min(760px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
@@ -10958,4 +10855,3 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
     white-space: nowrap;
   }
 }
-/* @ds-region dialogs:end */

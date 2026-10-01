@@ -227,7 +227,7 @@ function segTemplate(key, stage, current, onOpenDoc) {
   return html`
     <button
       type="button"
-      class="seg seg--doc"
+      class="op-btn op-btn--ghost seg seg--doc"
       aria-label=${open_label}
       title=${open_label}
       @click=${(/** @type {Event} */ ev) => {

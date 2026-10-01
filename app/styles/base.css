@@ -572,8 +572,12 @@ button.interactive-session-badge {
 }
 
 /* A cell that stands for an openable spec/plan document is a button; the reset
-   keeps the segment's layout identical to the static `div` variant. */
+   keeps the segment's layout identical to the static `div` variant. It carries
+   `.op-btn--ghost` for the part's touch floor and hover/focus, and keeps the
+   cell's own box (`display: block`, no padding, inherited font) — a named
+   exception in docs/design-system.md §3 (UI-k5s2). */
 .stp .seg--doc {
+  display: block;
   appearance: none;
   background: none;
   border: 0;

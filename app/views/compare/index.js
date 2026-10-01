@@ -331,7 +331,7 @@ export function createCompareView(root, options = {}) {
       <label class="cmp-filter">
         <span class="cmp-filter__label">${label}</span>
         <select
-          class="cmp-filter__select"
+          class="ui-select ui-select--bare cmp-filter__select"
           .value=${value}
           @change=${(/** @type {Event} */ ev) =>
             onChange(/** @type {HTMLSelectElement} */ (ev.target).value)}
@@ -426,7 +426,7 @@ export function createCompareView(root, options = {}) {
     const reviewInput = (field) => {
       const limits = PROBLEM_CRITERIA_LIMITS[field];
       return html`<input
-        class="cmp-criteria__number"
+        class="ui-input cmp-criteria__number"
         type="number"
         min=${limits.min}
         max=${limits.max}
@@ -445,7 +445,7 @@ export function createCompareView(root, options = {}) {
     /** @param {'duration'|'cost'} key */
     const factorInput = (key) =>
       html`<input
-        class="cmp-criteria__number"
+        class="ui-input cmp-criteria__number"
         type="number"
         min=${PROBLEM_CRITERIA_LIMITS.factor.min}
         max=${PROBLEM_CRITERIA_LIMITS.factor.max}
@@ -570,7 +570,7 @@ export function createCompareView(root, options = {}) {
             (choice) =>
               html`<button
                 type="button"
-                class="op-btn"
+                class=${`op-btn${group_by === choice.value ? ' is-active' : ''}`}
                 aria-pressed=${group_by === choice.value}
                 @click=${() => {
                   group_by = choice.value;
@@ -595,7 +595,7 @@ export function createCompareView(root, options = {}) {
             ? html`<div class="cmp-filter cmp-filter--dates">
                 <input
                   type="date"
-                  class="cmp-filter__date"
+                  class="ui-input cmp-filter__date"
                   aria-label="시작일"
                   .value=${filters.start_date}
                   @change=${(/** @type {Event} */ ev) =>
@@ -607,7 +607,7 @@ export function createCompareView(root, options = {}) {
                 <span aria-hidden="true">~</span>
                 <input
                   type="date"
-                  class="cmp-filter__date"
+                  class="ui-input cmp-filter__date"
                   aria-label="종료일"
                   .value=${filters.end_date}
                   @change=${(/** @type {Event} */ ev) =>

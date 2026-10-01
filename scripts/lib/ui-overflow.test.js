@@ -1,10 +1,15 @@
 import { describe, expect, test } from 'vitest';
 import {
+  DEFAULT_PROBE_HASHES,
+  HEADER_CONTAINERS,
   distinctHeights,
   documentOverflowPx,
   ellipsized,
   outOfScope,
-  overflowFailures
+  overflowFailures,
+  parseProbeArgs,
+  probeExitCode,
+  probeTarget
 } from './ui-overflow.js';
 
 /**
@@ -211,5 +216,106 @@ describe('distinctHeights', () => {
     ]);
 
     expect(heights).toEqual([24, 32]);
+  });
+});
+
+describe('probeTarget', () => {
+  test.each([
+    ['#/worker', 'worker'],
+    ['#/monitor', 'monitor'],
+    ['#/compare', 'compare'],
+    ['#/adr', 'adr']
+  ])('resolves %s to its tab entry', (hash, name) => {
+    const target = probeTarget(hash);
+
+    expect(target.name).toBe(name);
+  });
+
+  test('resolves any worker issue deep link to the detail panel', () => {
+    const target = probeTarget('#/worker?issue=UI-k5s2');
+
+    expect(target.name).toBe('detail');
+    expect(target.containers).toContain('.detail-overlay__panel');
+  });
+
+  test('keeps a worker hash without an issue on the worker tab', () => {
+    const target = probeTarget('#/worker?issue=');
+
+    expect(target.name).toBe('worker');
+  });
+
+  test('prefixes every tab container list with the shared header', () => {
+    const lists = DEFAULT_PROBE_HASHES.map(
+      (hash) => probeTarget(hash).containers
+    );
+
+    expect(lists.every((list) => list.startsWith(HEADER_CONTAINERS))).toBe(
+      true
+    );
+  });
+
+  test('reports toolbar heights only on the worker and monitor tabs', () => {
+    const labels = DEFAULT_PROBE_HASHES.map(
+      (hash) => probeTarget(hash).toolbar_label
+    );
+
+    expect(labels).toEqual(['toolbar controls', 'deck controls', '', '']);
+  });
+
+  test('probes only the header on a hash without an entry', () => {
+    const target = probeTarget('#/toString');
+
+    expect(target).toEqual({
+      name: 'other',
+      ready: '.app-header',
+      containers: HEADER_CONTAINERS,
+      toolbar: '',
+      toolbar_label: ''
+    });
+  });
+});
+
+describe('parseProbeArgs', () => {
+  test('defaults to every tab when no hash is given', () => {
+    const args = parseProbeArgs(['http://127.0.0.1:3917/']);
+
+    expect(args).toEqual({
+      url: 'http://127.0.0.1:3917',
+      hashes: ['#/worker', '#/monitor', '#/compare', '#/adr']
+    });
+  });
+
+  test('keeps the given hashes in order and adds the missing route prefix', () => {
+    const args = parseProbeArgs([
+      'http://h',
+      '#/adr',
+      'monitor',
+      '/worker?issue=UI-1'
+    ]);
+
+    expect(args?.hashes).toEqual(['#/adr', '#/monitor', '#/worker?issue=UI-1']);
+  });
+
+  test('rejects a command line without a server URL', () => {
+    expect(parseProbeArgs([])).toBeNull();
+    expect(parseProbeArgs(['#/worker'])).toBeNull();
+  });
+});
+
+describe('probeExitCode', () => {
+  test('passes only when every hash and width passed', () => {
+    expect(probeExitCode(['pass', 'pass', 'pass'])).toBe(0);
+  });
+
+  test('fails on any overflow', () => {
+    expect(probeExitCode(['pass', 'overflow', 'pass'])).toBe(1);
+  });
+
+  test('reports an unavailable page over an overflow', () => {
+    expect(probeExitCode(['overflow', 'unavailable'])).toBe(2);
+  });
+
+  test('reports nothing measured as unavailable', () => {
+    expect(probeExitCode([])).toBe(2);
   });
 });

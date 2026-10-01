@@ -347,7 +347,7 @@ export function createAdrView(root, options = {}) {
     }
     return html`<button
       type="button"
-      class="adr-doc adr-doc--link"
+      class="op-btn op-btn--ghost adr-doc adr-doc--link"
       @click=${() => openDoc({ path, missing_state: null }, root_dir)}
     >
       ${text}
@@ -363,7 +363,7 @@ export function createAdrView(root, options = {}) {
   function beadCell(bead_id, root_dir) {
     return html`<button
       type="button"
-      class="adr-bead"
+      class="op-btn op-btn--ghost adr-bead"
       @click=${async () => {
         const current = getWorkspacePath ? getWorkspacePath() : undefined;
         if (switchWorkspace && root_dir && root_dir !== current) {
@@ -817,7 +817,7 @@ export function createAdrView(root, options = {}) {
         <div class="adr-filters" role="group" aria-label="저장소 필터">
           <button
             type="button"
-            class="adr-filter"
+            class="ui-chip adr-filter"
             aria-pressed=${ui.repo === '' ? 'true' : 'false'}
             @click=${() => {
               ui.repo = '';
@@ -831,7 +831,7 @@ export function createAdrView(root, options = {}) {
             (ws) => html`
               <button
                 type="button"
-                class="adr-filter"
+                class="ui-chip adr-filter"
                 data-repo=${ws.root_dir}
                 aria-pressed=${ui.repo === ws.root_dir ? 'true' : 'false'}
                 @click=${() => {
@@ -847,7 +847,7 @@ export function createAdrView(root, options = {}) {
         </div>
         <input
           type="search"
-          class="adr-search"
+          class="ui-input adr-search"
           placeholder="번호·제목·summary·spec·bead"
           aria-label="ADR 검색"
           .value=${ui.query}
@@ -858,7 +858,7 @@ export function createAdrView(root, options = {}) {
         />
         <button
           type="button"
-          class="adr-sort"
+          class="ui-chip adr-sort"
           aria-pressed=${ui.stale_first ? 'true' : 'false'}
           @click=${() => {
             ui.stale_first = !ui.stale_first;

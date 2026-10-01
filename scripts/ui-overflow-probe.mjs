@@ -1,68 +1,43 @@
 #!/usr/bin/env node
 /**
  * Width-overflow probe against a running beads-ui server (UI-kqta §3.5).
- * Read-only: it loads one tab, measures, and closes — it never clicks.
+ * Read-only: it loads each tab, measures, and closes — it never clicks.
  *
  * Usage:
- *   node scripts/ui-overflow-probe.mjs <url> <hash>
- *   node scripts/ui-overflow-probe.mjs http://127.0.0.1:3917 '#/worker'
+ *   node scripts/ui-overflow-probe.mjs <url> [hash …]
+ *   node scripts/ui-overflow-probe.mjs http://127.0.0.1:3917
+ *   node scripts/ui-overflow-probe.mjs http://127.0.0.1:3917 '#/worker?issue=UI-1'
  *
- * Measures at 390×844 (mobile touch: `isMobile` + `hasTouch`, so
+ * Without a hash it probes `#/worker`, `#/monitor`, `#/compare` and `#/adr`;
+ * any `#/worker?issue=<id>` probes the issue detail panel. Every hash is
+ * measured at 390×844 (mobile touch: `isMobile` + `hasTouch`, so
  * `any-pointer: coarse` applies) and at 1280×900:
  *   (1) document overflow — `scrollWidth - innerWidth`;
- *   (2) descendant boxes and text runs leaving a visible container
- *       (`scripts/lib/ui-overflow.js` owns the rules);
- *   (3) on `#/worker`, the rendered heights of the part-class controls of the
- *       toolbar (`.worker-ctrl`, `.worker-ribbon`) — reported, not judged.
+ *   (2) descendant boxes and text runs leaving a visible container of that
+ *       tab or of the shared header (`scripts/lib/ui-overflow.js` owns the
+ *       containers and the rules);
+ *   (3) on `#/worker` the rendered heights of the toolbar's part controls,
+ *       on `#/monitor` those of the deck — reported, not judged.
  *
- * Exit: 0 = no overflow at either width, 1 = overflow, 2 = the browser (the
- * installed Google Chrome via `playwright-core`) or the page is unavailable.
- * Point it at an isolated 127.0.0.1 dev server (docs/design-system.md), never
- * at a shared port.
+ * Exit: 0 = no overflow on any hash at either width, 1 = overflow, 2 = the
+ * browser (the installed Google Chrome via `playwright-core`) or a page is
+ * unavailable. Point it at an isolated 127.0.0.1 dev server
+ * (docs/design-system.md), never at a shared port.
  */
 /* global document, getComputedStyle, NodeFilter, window, process */
 import {
   distinctHeights,
   documentOverflowPx,
-  overflowFailures
+  overflowFailures,
+  parseProbeArgs,
+  probeExitCode,
+  probeTarget
 } from './lib/ui-overflow.js';
 
 const VIEWPORTS = [
   { name: '390', width: 390, height: 844, mobile: true },
   { name: '1280', width: 1280, height: 900, mobile: false }
 ];
-
-/** Header containers every tab shares. */
-const HEADER_CONTAINERS = '.app-header, .header-actions';
-
-/**
- * Per-tab containers and the selector that says the tab has rendered. Tabs
- * without an entry probe the document and the header only (UI-k5s2 widens
- * this list).
- *
- * @type {Record<string, { ready: string, containers: string, toolbar?: string }>}
- */
-const TABS = {
-  '#/worker': {
-    ready: '.worker-console .worker-ctrl',
-    // `.worker-console`, not `.worker-top`: the mobile ribbon bleeds into the
-    // console padding on purpose (negative margins), and stays inside it.
-    containers: [
-      '.worker-console',
-      '.worker-ctrl',
-      '.worker-kpi',
-      '.worker-filter',
-      '.worker-pane',
-      '.worker-now',
-      '.worker-card',
-      '.worker-mini',
-      '.rtile',
-      '.worker-repo-strip'
-    ].join(', '),
-    toolbar:
-      ':is(.worker-ctrl, .worker-ribbon) :is(.op-btn, .ui-field, .ui-input, .ui-select)'
-  }
-};
 
 /**
  * In-page measurement. Returns plain data for `overflowFailures`.
@@ -162,25 +137,68 @@ function measure(selectors) {
 }
 
 /**
- * @param {string[]} argv
- * @returns {{ url: string, hash: string }|null}
+ * Measure one hash at one viewport.
+ *
+ * @param {any} browser
+ * @param {string} url
+ * @param {string} hash
+ * @param {(typeof VIEWPORTS)[number]} vp
+ * @returns {Promise<'pass'|'overflow'|'unavailable'>}
  */
-function parseArgs(argv) {
-  const [url, hash] = argv;
-  if (!url || !hash) {
-    return null;
+async function probeOne(browser, url, hash, vp) {
+  const target = probeTarget(hash);
+  const label = `${hash} ${vp.name}×${vp.height}${vp.mobile ? ' touch' : ''}`;
+  const context = await browser.newContext({
+    viewport: { width: vp.width, height: vp.height },
+    isMobile: vp.mobile,
+    hasTouch: vp.mobile,
+    deviceScaleFactor: 1
+  });
+  try {
+    const page = await context.newPage();
+    try {
+      await page.goto(`${url}/${hash}`, { waitUntil: 'load', timeout: 30000 });
+      await page.waitForSelector(target.ready, { timeout: 30000 });
+      await page
+        .waitForLoadState('networkidle', { timeout: 10000 })
+        .catch(() => {});
+      await page.waitForTimeout(1000);
+    } catch (error) {
+      process.stderr.write(
+        `page unavailable at ${label}: ${String(error).split('\n')[0]}\n`
+      );
+      return 'unavailable';
+    }
+    const snapshot = await page.evaluate(measure, {
+      containers: target.containers,
+      toolbar: target.toolbar
+    });
+    const doc_px = documentOverflowPx(snapshot);
+    const result = overflowFailures(snapshot.containers);
+    const ok = doc_px === 0 && result.count === 0;
+    process.stdout.write(
+      `${ok ? 'PASS' : 'FAIL'} ${label} — document +${doc_px}px (scrollWidth ${snapshot.scroll_width} / innerWidth ${snapshot.inner_width}), containers ${result.containers}, overflow ${result.count}\n`
+    );
+    for (const line of result.failures) {
+      process.stdout.write(`  ${line}\n`);
+    }
+    if (snapshot.toolbar.length > 0) {
+      const heights = distinctHeights(snapshot.toolbar);
+      process.stdout.write(
+        `  ${target.toolbar_label} ${snapshot.toolbar.length}: ${heights.map((h) => `${h}px`).join(', ')}${heights.length === 1 ? ' (uniform)' : ' (mixed)'} — ${snapshot.toolbar.map((/** @type {{ name: string, height: number }} */ c) => `${c.name} ${c.height.toFixed(1)}`).join(' · ')}\n`
+      );
+    }
+    return ok ? 'pass' : 'overflow';
+  } finally {
+    await context.close();
   }
-  return {
-    url: url.replace(/\/+$/, ''),
-    hash: hash.startsWith('#') ? hash : `#${hash}`
-  };
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseProbeArgs(process.argv.slice(2));
   if (!args) {
     process.stderr.write(
-      'usage: node scripts/ui-overflow-probe.mjs <url> <hash>  (e.g. http://127.0.0.1:3917 "#/worker")\n'
+      'usage: node scripts/ui-overflow-probe.mjs <url> [hash …]  (e.g. http://127.0.0.1:3917 "#/worker"; no hash = every tab)\n'
     );
     return 2;
   }
@@ -204,65 +222,18 @@ async function main() {
     );
     return 2;
   }
-  const tab = TABS[args.hash];
-  const selectors = {
-    containers: tab
-      ? `${HEADER_CONTAINERS}, ${tab.containers}`
-      : HEADER_CONTAINERS,
-    toolbar: tab?.toolbar || ''
-  };
-  let overflow = false;
+  /** @type {Array<'pass'|'overflow'|'unavailable'>} */
+  const outcomes = [];
   try {
-    for (const vp of VIEWPORTS) {
-      const context = await browser.newContext({
-        viewport: { width: vp.width, height: vp.height },
-        isMobile: vp.mobile,
-        hasTouch: vp.mobile,
-        deviceScaleFactor: 1
-      });
-      const page = await context.newPage();
-      try {
-        await page.goto(`${args.url}/${args.hash}`, {
-          waitUntil: 'load',
-          timeout: 30000
-        });
-        await page.waitForSelector(tab ? tab.ready : '.app-header', {
-          timeout: 30000
-        });
-        await page
-          .waitForLoadState('networkidle', { timeout: 10000 })
-          .catch(() => {});
-        await page.waitForTimeout(1000);
-      } catch (error) {
-        process.stderr.write(
-          `page unavailable at ${vp.name}: ${String(error).split('\n')[0]}\n`
-        );
-        await context.close();
-        return 2;
-      }
-      const snapshot = await page.evaluate(measure, selectors);
-      await context.close();
-      const doc_px = documentOverflowPx(snapshot);
-      const result = overflowFailures(snapshot.containers);
-      const ok = doc_px === 0 && result.count === 0;
-      overflow ||= !ok;
-      process.stdout.write(
-        `${ok ? 'PASS' : 'FAIL'} ${vp.name}×${vp.height}${vp.mobile ? ' touch' : ''} — document +${doc_px}px (scrollWidth ${snapshot.scroll_width} / innerWidth ${snapshot.inner_width}), containers ${result.containers}, overflow ${result.count}\n`
-      );
-      for (const line of result.failures) {
-        process.stdout.write(`  ${line}\n`);
-      }
-      if (snapshot.toolbar.length > 0) {
-        const heights = distinctHeights(snapshot.toolbar);
-        process.stdout.write(
-          `  toolbar controls ${snapshot.toolbar.length}: ${heights.map((h) => `${h}px`).join(', ')}${heights.length === 1 ? ' (uniform)' : ' (mixed)'} — ${snapshot.toolbar.map((c) => `${c.name} ${c.height.toFixed(1)}`).join(' · ')}\n`
-        );
+    for (const hash of args.hashes) {
+      for (const vp of VIEWPORTS) {
+        outcomes.push(await probeOne(browser, args.url, hash, vp));
       }
     }
   } finally {
     await browser.close();
   }
-  return overflow ? 1 : 0;
+  return probeExitCode(outcomes);
 }
 
 process.exitCode = await main();
