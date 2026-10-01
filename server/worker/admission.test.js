@@ -85,7 +85,7 @@ function makeGitRun(opts = {}) {
 }
 
 /**
- * @param {Partial<{ route: string|null, description: string|null, spec_id: string|null, spec_id_conflict: boolean, spec_review: unknown, plan_path: unknown, plan_approval: unknown, last_checked_sha: unknown, labels: unknown }>} [bead]
+ * @param {Partial<{ route: string|null, description: string|null, spec_id: string|null, spec_id_conflict: boolean, spec_review: unknown, plan_path: unknown, plan_review: unknown, plan_approval: unknown, last_checked_sha: unknown, labels: unknown }>} [bead]
  */
 function makeBead(bead = {}) {
   /** @type {Record<string, unknown>} */
@@ -99,7 +99,10 @@ function makeBead(bead = {}) {
     labels: Object.hasOwn(bead, 'labels') ? bead.labels : [],
     spec_review: Object.hasOwn(bead, 'spec_review')
       ? bead.spec_review
-      : `codex@${SHA}`
+      : `codex@${SHA}`,
+    plan_review: Object.hasOwn(bead, 'plan_review')
+      ? bead.plan_review
+      : 'astra@0123456789ab'
   };
   if (Object.hasOwn(bead, 'plan_path')) {
     result.plan_path = bead.plan_path;
@@ -402,7 +405,8 @@ describe('worker/admission fail-closed validator', () => {
     expect(r).toEqual({ ok: true });
     expect(
       gitRun.mock.calls.some(
-        ([args]) => args[0] === 'cat-file' && args[2] === `${BASE}:${PLAN_PATH}`
+        ([args]) =>
+          args[0] === '--literal-pathspecs' && args.includes(PLAN_PATH)
       )
     ).toBe(false);
   });
@@ -713,8 +717,9 @@ describe('worker/admission fail-closed validator', () => {
     ]);
   });
 
-  test('falls back for every unusable plan_path form', async () => {
-    for (const plan_path of [undefined, '', '  ', 42]) {
+  test.each([undefined, null, '', '  ', 42])(
+    'rejects an unusable plan_path (%s)',
+    async (plan_path) => {
       const gitRun = makeGitRun({
         spec_content: artifactContent(['server/spec-scope/'])
       });
@@ -728,12 +733,56 @@ describe('worker/admission fail-closed validator', () => {
         })
       );
 
-      expect(r).toEqual({ ok: true });
-      expect(gitRun).toHaveBeenCalledWith(
-        expect.arrayContaining([SPEC_PATH, 'server/spec-scope/']),
-        { cwd: '/repo' }
-      );
+      expect(r).toEqual({ ok: false, reason: 'plan_missing' });
     }
+  );
+
+  test.each([
+    undefined,
+    null,
+    '',
+    42,
+    'astra@123456789ab',
+    `astra@${PLAN_SHA}`,
+    'astra@0123456789AB',
+    '@0123456789ab',
+    'bad.token@0123456789ab',
+    `${'a'.repeat(33)}@0123456789ab`
+  ])('rejects an absent or malformed plan_review (%s)', async (plan_review) => {
+    const gitRun = makeGitRun();
+
+    const r = await run(
+      gitRun,
+      makeBead({ route: 'full_plan', plan_path: PLAN_PATH, plan_review })
+    );
+
+    expect(r).toEqual({ ok: false, reason: 'plan_missing' });
+  });
+
+  test('admits a reviewed plan without plan_approval', async () => {
+    const gitRun = makeGitRun();
+
+    const r = await run(
+      gitRun,
+      makeBead({ route: 'full_plan', plan_path: PLAN_PATH })
+    );
+
+    expect(r).toEqual({ ok: true });
+    expect(gitRun).toHaveBeenCalledWith(
+      ['cat-file', '-e', `${BASE}:${PLAN_PATH}`],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('rejects a plan existence process failure without plan_approval', async () => {
+    const gitRun = makeGitRun({ plan_catfile_code: 127 });
+
+    const r = await run(
+      gitRun,
+      makeBead({ route: 'full_plan', plan_path: PLAN_PATH })
+    );
+
+    expect(r).toEqual({ ok: false, reason: 'git_error' });
   });
 
   test('falls back for absent malformed and unreachable plan approvals', async () => {
@@ -767,26 +816,32 @@ describe('worker/admission fail-closed validator', () => {
     }
   });
 
-  test('falls back when the plan file is absent at base', async () => {
-    const gitRun = makeGitRun({
-      plan_catfile_code: 128,
-      spec_content: artifactContent(['server/spec-scope/'])
-    });
+  test.each([undefined, `user@${PLAN_SHA}`])(
+    'rejects a plan absent at base with approval %s',
+    async (plan_approval) => {
+      const gitRun = makeGitRun({
+        plan_catfile_code: 128,
+        spec_content: artifactContent(['server/spec-scope/'])
+      });
 
-    const r = await run(
-      gitRun,
-      makeBead({
-        route: 'full_plan',
-        plan_path: PLAN_PATH,
-        plan_approval: `user@${PLAN_SHA}`
-      })
-    );
+      const r = await run(
+        gitRun,
+        makeBead({
+          route: 'full_plan',
+          plan_path: PLAN_PATH,
+          plan_approval
+        })
+      );
 
-    expect(r).toEqual({ ok: true });
-    expect(gitRun).not.toHaveBeenCalledWith(['show', `${BASE}:${PLAN_PATH}`], {
-      cwd: '/repo'
-    });
-  });
+      expect(r).toEqual({ ok: false, reason: 'plan_missing' });
+      expect(gitRun).not.toHaveBeenCalledWith(
+        ['show', `${BASE}:${PLAN_PATH}`],
+        {
+          cwd: '/repo'
+        }
+      );
+    }
+  );
 
   test('falls back when the plan declares no valid scope', async () => {
     const gitRun = makeGitRun({

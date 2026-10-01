@@ -644,6 +644,7 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * absence ⇒ `undefined`; any present value must reach the admission
  * validator so a malformed receipt rejects instead of reading as absent.
  * @property {unknown} [plan_path] - Raw plan_path admission input.
+ * @property {unknown} [plan_review] - Raw plan_review admission input.
  * @property {unknown} [plan_approval] - Raw plan_approval admission input.
  * @property {unknown} [last_checked_sha] - Raw freshness cursor admission input.
  * @property {unknown} [issue_type] - Raw top-level issue type. A quick_fix

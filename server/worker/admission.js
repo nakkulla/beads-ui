@@ -34,7 +34,10 @@
  *   5. a `<reviewer>@<40hex>` spec_review receipt — `skipped@<40hex>` counts
  *      (a skip is explicit user authority to proceed), short/non-hex does not,
  *   6. the receipt SHA reachable as a commit,
- *   7. freshness: artifact files plus their declared scope prefixes are probed.
+ *   7. `full_plan` requires a non-empty plan_path, that path at the base, and
+ *      a `<reviewer>@<12hex>` plan_review; any miss refuses as `plan_missing`.
+ *      plan_approval remains optional.
+ *   8. freshness: artifact files plus their declared scope prefixes are probed.
  *      A NON-empty delta does not refuse (UI-dlim §3.1): refusing on it stopped
  *      the unattended lane until a human refreshed the receipt by hand, and the
  *      probe cannot tell a change that invalidates this bead's premises from an
@@ -42,12 +45,12 @@
  *      the dispatched session re-reviews it in-session (the lane's procedure is
  *      contract-owned — dotfiles `docs/contracts/workflow.md`). A probe FAILURE
  *      is still a refusal because an unknown verdict is not a pass. Enumerated
- *      full-plan readiness misses instead fall back to the spec scope; they are
- *      observations, not probe failures.
+ *      plan approval/scope misses instead fall back to the spec scope; they
+ *      are observations, not probe failures.
  *
  * Process failures always reject as `git_error`. Cursor validation fails quiet
- * to the artifact receipt, and the four enumerated plan-readiness misses fail
- * quiet to the spec scope. `git cat-file -e` cannot distinguish a missing path
+ * to the artifact receipt, and unusable plan approvals or scopes fail quiet
+ * to the spec scope. `git cat-file -e` cannot distinguish a missing path
  * from a bad revision by exit code (both 128), so the base is verified first;
  * after that, a non-zero spec cat-file means the spec is missing at that base.
  */
@@ -68,6 +71,7 @@ export const ADMISSION_RECEIPT_RE = /^[A-Za-z0-9_.:-]+@[0-9a-fA-F]{40}$/;
 export const ADMISSIBLE_ROUTES = WORKFLOW_ROUTES;
 const EXACT_SHA_RE = /^[0-9a-fA-F]{40}$/;
 const PLAN_APPROVAL_RE = /^user@([0-9a-fA-F]{40})$/;
+const PLAN_REVIEW_RE = /^[A-Za-z0-9_-]{1,32}@[0-9a-f]{12}$/;
 
 /**
  * Refusal reason. `spec_missing_at_base:<base>` follows this repo's existing
@@ -80,7 +84,7 @@ const PLAN_APPROVAL_RE = /^user@([0-9a-fA-F]{40})$/;
  * base there is nothing for this validator to ask git about
  * (worker-base-scope-alignment §1).
  *
- * @typedef {'worker_ineligible'|'awaiting_user'|'external_wait'|'bd_snapshot_failed'|'gh_unavailable'|'invalid_route'|'missing_description'|'spec_id_conflict'|'spec_missing'|`spec_missing_at_base:${string}`|`base_unresolved:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
+ * @typedef {'worker_ineligible'|'awaiting_user'|'external_wait'|'bd_snapshot_failed'|'gh_unavailable'|'invalid_route'|'missing_description'|'spec_id_conflict'|'spec_missing'|'plan_missing'|`spec_missing_at_base:${string}`|`base_unresolved:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
  */
 
 /**
@@ -153,6 +157,7 @@ const PLAN_APPROVAL_RE = /^user@([0-9a-fA-F]{40})$/;
  *     spec_id_conflict?: boolean,
  *     spec_review?: unknown,
  *     plan_path?: unknown,
+ *     plan_review?: unknown,
  *     plan_approval?: unknown,
  *     last_checked_sha?: unknown,
  *     labels?: unknown,
@@ -363,11 +368,25 @@ export async function validateAdmission(input) {
     if (bead.route === 'full_plan') {
       const plan_path =
         typeof bead.plan_path === 'string' ? bead.plan_path.trim() : '';
+      if (
+        plan_path.length === 0 ||
+        typeof bead.plan_review !== 'string' ||
+        !PLAN_REVIEW_RE.test(bead.plan_review.trim())
+      ) {
+        return { ok: false, reason: 'plan_missing' };
+      }
+      const plan_exists = await git(['cat-file', '-e', `${base}:${plan_path}`]);
+      if (plan_exists.code === 127) {
+        return { ok: false, reason: 'git_error' };
+      }
+      if (plan_exists.code !== 0) {
+        return { ok: false, reason: 'plan_missing' };
+      }
       const approval_match =
         typeof bead.plan_approval === 'string'
           ? PLAN_APPROVAL_RE.exec(bead.plan_approval.trim())
           : null;
-      if (plan_path.length > 0 && approval_match) {
+      if (approval_match) {
         const plan_receipt_sha = approval_match[1];
         const approval_reachable = await git([
           'rev-parse',
@@ -379,26 +398,16 @@ export async function validateAdmission(input) {
           return { ok: false, reason: 'git_error' };
         }
         if (approval_reachable.code === 0) {
-          const plan_exists = await git([
-            'cat-file',
-            '-e',
-            `${base}:${plan_path}`
-          ]);
-          if (plan_exists.code === 127) {
+          const plan_scope = await readScope(plan_path);
+          if (plan_scope === null) {
             return { ok: false, reason: 'git_error' };
           }
-          if (plan_exists.code === 0) {
-            const plan_scope = await readScope(plan_path);
-            if (plan_scope === null) {
-              return { ok: false, reason: 'git_error' };
-            }
-            if (plan_scope.length > 0) {
-              plan_probe = {
-                path: plan_path,
-                scope: plan_scope,
-                anchor: cursor.sha || plan_receipt_sha
-              };
-            }
+          if (plan_scope.length > 0) {
+            plan_probe = {
+              path: plan_path,
+              scope: plan_scope,
+              anchor: cursor.sha || plan_receipt_sha
+            };
           }
         }
       }

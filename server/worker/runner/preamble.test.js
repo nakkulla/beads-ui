@@ -364,6 +364,17 @@ describe('runner/preamble unattended framing (UI-rxp3 §1)', () => {
     expect(UNATTENDED_PREAMBLE).toContain('영수증 위조로 fail-closed');
     expect(UNATTENDED_PREAMBLE).toContain('main 실행 근거가 아니다');
   });
+
+  test('fixes the Worker route and artifacts while preserving bounded correction', () => {
+    const lines = UNATTENDED_PREAMBLE.split('\n');
+    const user_keys_index = lines.findIndex((line) =>
+      line.startsWith('- 현재 사용자가 없으므로 사용자만 쓰는 Bead metadata 키')
+    );
+
+    expect(lines[user_keys_index + 1]).toBe(
+      '- 이 세션은 실행 중인 Bead의 `route`를 바꾸거나 spec·plan을 새로 쓰거나 게시하지 않는다(스테일 재검토 레인의 bounded correction 재게시는 예외). 먼저 착지해야 할 일이 드러나면 선행 Bead를 만들고 `대기 · blocks:<ID>`로 끝낸다.'
+    );
+  });
 });
 
 describe('runner/preamble PR-submit directive (worker-phase2 §1)', () => {

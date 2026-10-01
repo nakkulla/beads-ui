@@ -2669,6 +2669,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
                 route: 'spec_backed',
                 spec_review: 'codex@' + 'a'.repeat(40),
                 plan_path: 42,
+                plan_review: 42,
                 plan_approval: null,
                 last_checked_sha: 'malformed'
               }
@@ -2689,6 +2690,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.spec_id).toBe('docs/spec.md');
     expect(snap.spec_review).toBe('codex@' + 'a'.repeat(40));
     expect(snap.plan_path).toBe(42);
+    expect(snap.plan_review).toBe(42);
     expect(snap.plan_approval).toBeNull();
     expect(snap.last_checked_sha).toBe('malformed');
     expect(snap.ready).toBe(true);
@@ -3430,6 +3432,55 @@ describe('worker/attach target base resolution wiring (worker-base-scope-alignme
     ]);
   });
 
+  test.each([
+    { plan_review: 'astra@0123456789ab', expected: { ok: true } },
+    {
+      plan_review: 'malformed',
+      expected: { ok: false, reason: 'plan_missing' }
+    },
+    {
+      plan_review: undefined,
+      expected: { ok: false, reason: 'plan_missing' }
+    }
+  ])(
+    'carries plan_review $plan_review from metadata into admission',
+    async ({ plan_review, expected }) => {
+      const bd = createLiveBd({
+        cwd: '/ws',
+        repo: '/repo',
+        resolveBase: okBase('main'),
+        runJson: asProjected(async (/** @type {string[]} */ args) => ({
+          code: 0,
+          stdoutJson:
+            args[0] === 'show'
+              ? {
+                  id: 'UI-1',
+                  status: 'open',
+                  spec_id: 'docs/spec.md',
+                  metadata: {
+                    route: 'full_plan',
+                    spec_review: `astra@${'b'.repeat(40)}`,
+                    plan_path: 'docs/plan.md',
+                    ...(plan_review === undefined ? {} : { plan_review })
+                  }
+                }
+              : [{ id: 'UI-1' }]
+        }))
+      });
+      const att = attach({
+        bd,
+        gh: { checkAvailability: async () => ({ state: 'ok' }) },
+        gitRun: async () => ({ code: 0, stdout: '', stderr: '' })
+      });
+
+      const snap = await bd.snapshotBead('UI-1');
+      const result = await att.admission.validate(snap);
+
+      expect(snap.plan_review).toBe(plan_review);
+      expect(result).toEqual(expected);
+    }
+  );
+
   test('passes plan and cursor snapshot fields into admission', async () => {
     const spec_sha = 'b'.repeat(40);
     const plan_sha = 'c'.repeat(40);
@@ -3460,6 +3511,7 @@ describe('worker/attach target base resolution wiring (worker-base-scope-alignme
         spec_id: 'docs/spec.md',
         spec_review: `codex@${spec_sha}`,
         plan_path: 'docs/plan.md',
+        plan_review: 'astra@0123456789ab',
         plan_approval: `user@${plan_sha}`,
         last_checked_sha: cursor_sha
       })

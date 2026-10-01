@@ -560,6 +560,9 @@ export function createLiveBd(config) {
       const plan_path = Object.hasOwn(md, 'plan_path')
         ? md.plan_path
         : undefined;
+      const plan_review = Object.hasOwn(md, 'plan_review')
+        ? md.plan_review
+        : undefined;
       const plan_approval = Object.hasOwn(md, 'plan_approval')
         ? md.plan_approval
         : undefined;
@@ -690,6 +693,7 @@ export function createLiveBd(config) {
         spec_id_conflict: spec.conflict,
         spec_review,
         plan_path,
+        plan_review,
         plan_approval,
         last_checked_sha,
         issue_type,
@@ -1023,6 +1027,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           spec_id_conflict: snap.spec_id_conflict,
           spec_review: snap.spec_review,
           plan_path: snap.plan_path,
+          plan_review: snap.plan_review,
           plan_approval: snap.plan_approval,
           last_checked_sha: snap.last_checked_sha,
           labels: snap.labels,
