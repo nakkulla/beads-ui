@@ -54,6 +54,25 @@ describe('ws message handling', () => {
     expect(obj.error.code).toBe('unknown_type');
   });
 
+  test('removed bench-run-create returns unknown_type error', async () => {
+    const ws = makeStubSocket();
+    const req = {
+      id: 'bench-1',
+      type: 'bench-run-create',
+      payload: { source_id: 'UI-1', preset_ids: ['p1'], repeats: 1 }
+    };
+
+    await handleMessage(
+      /** @type {any} */ (ws),
+      Buffer.from(JSON.stringify(req))
+    );
+
+    const last = ws.sent[ws.sent.length - 1];
+    const obj = JSON.parse(last);
+    expect(obj.ok).toBe(false);
+    expect(obj.error.code).toBe('unknown_type');
+  });
+
   test('set-workspace rejects paths outside the available workspace list', async () => {
     const ws = makeStubSocket();
     const req = {

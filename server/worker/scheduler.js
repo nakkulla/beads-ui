@@ -69,11 +69,6 @@ import {
 import { buildAttemptFacts } from './attempt-facts.js';
 import { observeBaseDrift } from './base-drift.js';
 import {
-  benchCellTerminal,
-  benchRunBeadIds,
-  readBenchManifest
-} from './bench-runs.js';
-import {
   observeClaudeEffort as defaultObserveClaudeEffort,
   observeClaudeSubagentEffort as defaultObserveClaudeSubagentEffort
 } from './claude-effort-observer.js';
@@ -665,15 +660,6 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * the interactive sessions that worked this bead (UI-p206 §5.1). The fork
  * qualification's only input; same presence rule, so a malformed value reaches
  * it as present-and-invalid.
- * @property {string|null} [bench_run] - The bench experiment run this bead is a
- * cell of (preset-compare §4.3). Worker-owned metadata the workflow contract
- * only declares (`out_of_registry.known`); its presence is what selects the
- * `deny` pre-push hook and what a `bench:` close is matched against.
- * @property {string|null} [bench_base] - The exact 40hex commit every cell of
- * that run is cut from (§4.4), pinned once when the experiment was created so a
- * base that moves mid-run cannot change what the cells are comparing.
- * @property {string|null} [landing] - The contract's `landing` key. `none`
- * means the session finishes at verification and pushes nothing (§5.2).
  * @property {string[]} [deps] - Direct `blocks` blocker ids (UI-04vo §3) —
  * the lane-ordering edge source. Consumers intersect these with the current
  * queue membership.
@@ -726,7 +712,6 @@ export function withQuickFixSelfReview(base_prompt, block) {
  *   readStatus: (bead_id: string) => Promise<string|null>,
  *   comment?: (bead_id: string, text: string) => Promise<unknown>,
  *   readIssue?: (bead_id: string) => Promise<Record<string, any>>,
- *   closeWithReason?: (bead_id: string, reason: string) => Promise<unknown>,
  *   readyBeadIds?: () => Promise<Set<string>>
  * }} bd
  * `comment` is OPTIONAL because a scheduler built without it — every existing
@@ -742,14 +727,6 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean, bead_status?: string|null, awaiting_user?: string|null }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
- * @property {(pin?: { sha?: string|null }) => Promise<any>} [resolveVerify]
- * The repository `[verify]` declaration read at one exact commit. Optional: a
- * scheduler built without it simply scores no bench cell, which is the same
- * answer a repository that declares no `[verify]` gives (preset-compare §4.5-3).
- * @property {(input: any) => Promise<any>} [runVerify]
- * The merge-candidate verification runner. Bench scoring goes through the SAME
- * envelope so a cell's score and a PR's receipt mean the same thing in the
- * comparison table.
  * @property {{ settle: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<{ ok: boolean, reason?: string, step?: string|null, detail?: any }>, observeFailureFacts?: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<Record<string, unknown>> }} [quickfixLanding]
  * Worker-dispatched quick_fix landing settlement (design §6). An attachment
  * without this dep fails the landing attempt closed; it never falls back to PR
@@ -4074,9 +4051,8 @@ export function createScheduler(deps) {
    * "reject" (2026-08-28 worker-failure-tiers spec §5): the quick_fix lane's
    * terminal duty IS a base push, so it needs the push LOG the ordinary hook
    * produces without the refusal that would block its own landing.
-   * `mode:'deny'` refuses every ref (preset-compare §4.5-2): a bench cell has no
-   * destination at all, so its lane is the one that outranks the quick_fix
-   * exemption.
+   * `mode:'deny'` refuses every ref, so an attempt installed with it can push
+   * nothing at all.
    * @returns {boolean} Whether the hook is in place.
    */
   function installGuardHook(input) {
@@ -6066,10 +6042,6 @@ export function createScheduler(deps) {
     // point of a park is that the USER's own session picks the bead up, and it
     // cannot while the worker still holds the claim (spec §3.1).
     await releaseBeadClaim(bead_id, { workspace, attempt_id });
-    // A bench cell has no user to pick it up: the run owns it, so its terminal
-    // failure closes the clone and offers the run its residue sweep
-    // (preset-compare §4.6). Inert for every other attempt.
-    await settleBenchCellTerminal(workspace, attempt_id, bead_id);
   }
 
   /**
@@ -6560,21 +6532,15 @@ export function createScheduler(deps) {
       // died on a blocker may still have pushed first, and in that case the
       // landing is the honest cause.
       const landed = await settleBaseDrift(workspace, attempt_id);
-      // A BENCH cell is failed by the ATTEMPT, not by the landing: it may push
-      // nothing at all, so a recorded base-destined push is a violation even
-      // when the `deny` hook refused it and nothing moved (§4.5-2). Asked first
-      // so the cell reports its own token instead of the generic one.
-      const bench_pushed =
-        benchRunOf(workspace, attempt_id) !== null &&
-        benchPushObserved(workspace, attempt_id);
-      if (landed || bench_pushed) {
-        const cause = bench_pushed
-          ? 'bench_push_observed'
-          : 'base_landing_detected';
-        await failAttempt(workspace, attempt_id, bead_id, prior, cause, {
-          reason: cause,
-          command: null
-        });
+      if (landed) {
+        await failAttempt(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior,
+          'base_landing_detected',
+          { reason: 'base_landing_detected', command: null }
+        );
         notifyChanged(workspace);
         await tick(workspace);
         return;
@@ -6804,16 +6770,7 @@ export function createScheduler(deps) {
         ) {
           return;
         }
-        const bench_run = benchRunOf(workspace, attempt_id);
-        if (bench_run !== null && verdict.success === true) {
-          // Scored BEFORE the settlement: the score's subject is the clone
-          // worktree's HEAD, and a settlement is the step that is allowed to
-          // take that worktree away. A failed session is not scored at all —
-          // §4.5-3 — because a `[verify]` run on an abandoned tree measures the
-          // abandonment, not the preset.
-          await recordBenchVerify(workspace, attempt_id, bead_id, snap.repo);
-        }
-        const settled = await settleQuickfixLanding(
+        await settleQuickfixLanding(
           workspace,
           attempt_id,
           bead_id,
@@ -6821,9 +6778,6 @@ export function createScheduler(deps) {
           snap.target_base,
           true
         );
-        if (bench_run !== null && settled.ok) {
-          await sweepBenchRun(workspace, bench_run);
-        }
         return;
       }
 
@@ -7673,314 +7627,6 @@ export function createScheduler(deps) {
       log('prerequisite wait head observation failed for %s: %o', bead_id, err);
       return null;
     }
-  }
-
-  /**
-   * The bench run one attempt is a cell of, read off the attempt's own
-   * snapshot (preset-compare §4). Off the ATTEMPT rather than the bead so a
-   * settlement that runs after the bead is closed still knows the run.
-   *
-   * @param {string} workspace
-   * @param {string} attempt_id
-   * @returns {string|null}
-   */
-  function benchRunOf(workspace, attempt_id) {
-    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
-    const run_id = attempt?.bench_run;
-    return typeof run_id === 'string' && run_id.length > 0 ? run_id : null;
-  }
-
-  /**
-   * Verify the run's pinned base commit before a cell is cut from it (§4.4).
-   *
-   * Two conditions, in the order the operator can act on: the commit has to be
-   * OBTAINABLE (already local, else fetched by object name), and it has to be
-   * an ancestor of the base this repository currently declares. The second is
-   * what keeps a run pinned to this repository's own history instead of an
-   * abandoned branch that merely happens to be fetchable.
-   *
-   * @param {BeadSnapshot} snap
-   * @param {string} resolved_base
-   * @returns {Promise<{ ok: true, sha: string }|{ ok: false }>}
-   */
-  async function resolveBenchCutBase(snap, resolved_base) {
-    const sha =
-      typeof snap.bench_base === 'string' ? snap.bench_base.trim() : '';
-    const repo = typeof snap.repo === 'string' ? snap.repo : '';
-    if (
-      !/^[0-9a-f]{40}$/i.test(sha) ||
-      repo.length === 0 ||
-      typeof deps.gitRun !== 'function'
-    ) {
-      return { ok: false };
-    }
-    try {
-      let present = await deps.gitRun(['cat-file', '-e', `${sha}^{commit}`], {
-        cwd: repo
-      });
-      if (present.code !== 0) {
-        // One fetch by object name, then re-ask. A server that refuses to serve
-        // an arbitrary oid simply leaves the cell unreachable, which is the
-        // honest answer — never a silent fall back to the moving tip.
-        await deps.gitRun(['fetch', '--no-tags', 'origin', sha], { cwd: repo });
-        present = await deps.gitRun(['cat-file', '-e', `${sha}^{commit}`], {
-          cwd: repo
-        });
-      }
-      if (present.code !== 0) {
-        return { ok: false };
-      }
-      const ancestor = await deps.gitRun(
-        ['merge-base', '--is-ancestor', sha, resolved_base],
-        { cwd: repo }
-      );
-      if (ancestor.code !== 0) {
-        return { ok: false };
-      }
-    } catch (err) {
-      log('bench base probe failed for %s: %o', snap.bench_base, err);
-      return { ok: false };
-    }
-    return { ok: true, sha };
-  }
-
-  /**
-   * Whether this bench cell's own push record shows a base-destined push
-   * (§4.5-2 사후 불변식).
-   *
-   * The `deny` hook already refused the push, but the refusal is recorded, and
-   * a cell that TRIED is not a clean measurement: whatever the session did
-   * next was done believing it had landed.
-   *
-   * @param {string} workspace
-   * @param {string} attempt_id
-   * @returns {boolean}
-   */
-  function benchPushObserved(workspace, attempt_id) {
-    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
-    const pushed = attempt?.base_drift?.pushed;
-    return Array.isArray(pushed) && pushed.length > 0;
-  }
-
-  /**
-   * Score one finished bench cell with the repository's own `[verify]` script
-   * (§4.5-3), in the SAME envelope a merge candidate is verified in.
-   *
-   * The subject is the clone worktree's HEAD — the commit the session actually
-   * produced — and the declaration is read at that same commit, exactly as the
-   * post-merge path reads it at the base it verifies. A repository that
-   * declares no `[verify]` leaves `bench_verify` null, which the comparison
-   * table reads as 미상 rather than as a failure.
-   *
-   * Never throws and never fails the attempt: this is scoring, not a gate.
-   *
-   * @param {string} workspace
-   * @param {string} attempt_id
-   * @param {string} bead_id
-   * @param {string} repo
-   */
-  async function recordBenchVerify(workspace, attempt_id, bead_id, repo) {
-    if (
-      typeof deps.resolveVerify !== 'function' ||
-      typeof deps.runVerify !== 'function' ||
-      typeof deps.gitRun !== 'function' ||
-      typeof deps.worktree.pathFor !== 'function' ||
-      typeof repo !== 'string' ||
-      repo.length === 0
-    ) {
-      return;
-    }
-    /** @type {string|null} */
-    let head_sha = null;
-    try {
-      const head = await deps.gitRun(['rev-parse', 'HEAD'], {
-        cwd: deps.worktree.pathFor(repo, bead_id)
-      });
-      const oid = head.code === 0 ? String(head.stdout || '').trim() : '';
-      head_sha = /^[0-9a-f]{40}$/i.test(oid) ? oid : null;
-    } catch (err) {
-      log('bench verify head read failed for %s: %o', bead_id, err);
-    }
-    if (head_sha === null) {
-      return;
-    }
-    /** @type {any} */
-    let resolved;
-    try {
-      resolved = await deps.resolveVerify({ sha: head_sha });
-    } catch (err) {
-      log('bench verify resolution failed for %s: %o', bead_id, err);
-      return;
-    }
-    if (!resolved || resolved.state !== 'resolved') {
-      return;
-    }
-    const started_at = now();
-    /** @type {any} */
-    let result;
-    try {
-      result = await deps.runVerify({
-        repo,
-        // Distinct from the bead's own worktree name so the detached verify
-        // checkout can never collide with the cell still being scored.
-        bead_id: `${bead_id}-bench`,
-        sha: head_sha,
-        pr_number: null,
-        cmd: resolved.value.cmd,
-        timeout_ms: resolved.value.timeout_ms
-      });
-    } catch (err) {
-      log('bench verify run failed for %s: %o', bead_id, err);
-      return;
-    }
-    deps.store.updateAttempt(workspace, {
-      attempt_id,
-      patch: {
-        bench_verify: {
-          ok: result?.ok === true,
-          exit: typeof result?.exit === 'number' ? result.exit : null,
-          duration_ms: Math.max(0, now() - started_at),
-          head_sha
-        }
-      }
-    });
-    notifyChanged(workspace);
-  }
-
-  /**
-   * Remove one bench cell's worktree and local branch (§4.6).
-   *
-   * The same fail-closed primitive every other residue path uses: anything
-   * that would lose work stays and is logged. A clone has never been pushed,
-   * so there is no remote side to clean.
-   *
-   * @param {string} repo
-   * @param {string} bead_id
-   * @param {string} base
-   */
-  async function cleanupBenchResidue(repo, bead_id, base) {
-    await cleanupStopResidue(repo, bead_id, base);
-    const gitRun = deps.gitRun;
-    const withTopologyLock = deps.worktree.withTopologyLock;
-    if (
-      typeof gitRun !== 'function' ||
-      typeof withTopologyLock !== 'function'
-    ) {
-      return;
-    }
-    try {
-      await withTopologyLock(repo, () =>
-        gitRun(['branch', '-D', branchForBead(bead_id)], { cwd: repo })
-      );
-    } catch (err) {
-      log('bench branch delete failed for %s: %o', bead_id, err);
-    }
-  }
-
-  /**
-   * Sweep one run's residue once EVERY cell has terminated (§4.6).
-   *
-   * "Terminated" is {@link benchCellTerminal}'s answer, shared with the run
-   * projection so one cell cannot read as finished on the board and resumable
-   * here. It needs BOTH halves: the clone bead closed, and no attempt of the
-   * lineage in a resumable status. `parked`, `waiting`, `retry_wait` and
-   * `stopped` all release the bead for scheduling while the cell is still
-   * expected to come back — sweeping on that release would delete the worktree
-   * and branch the resume needs.
-   *
-   * A run with one such cell keeps EVERY worktree: a half-swept run is harder
-   * to read than an unswept one, and a status this loop cannot read is a
-   * reason to keep, never to remove.
-   *
-   * @param {string} workspace
-   * @param {string} run_id
-   */
-  async function sweepBenchRun(workspace, run_id) {
-    const manifest = readBenchManifest(workspace, run_id);
-    const bead_ids = benchRunBeadIds(manifest);
-    if (bead_ids.length === 0) {
-      return;
-    }
-    const attempts = /** @type {Record<string, any>} */ (
-      deps.store.snapshot(workspace).attempts || {}
-    );
-    const rows = Object.values(attempts);
-    for (const bead_id of bead_ids) {
-      if (claimed.has(bead_id)) {
-        return;
-      }
-      /** @type {string|null} */
-      let bead_status = null;
-      try {
-        bead_status = await deps.bd.readStatus(bead_id);
-      } catch (err) {
-        log('bench cell status read failed for %s: %o', bead_id, err);
-        return;
-      }
-      const terminal = benchCellTerminal({
-        attempts: rows.filter(
-          (/** @type {any} */ attempt) => attempt?.bead_id === bead_id
-        ),
-        bead_closed: bead_status === 'closed'
-      });
-      if (!terminal) {
-        return;
-      }
-    }
-    for (const bead_id of bead_ids) {
-      const cell_rows = rows.filter((attempt) => attempt?.bead_id === bead_id);
-      const repo = cell_rows.find(
-        (attempt) => typeof attempt.repo === 'string' && attempt.repo.length > 0
-      )?.repo;
-      if (typeof repo !== 'string' || repo.length === 0) {
-        continue;
-      }
-      const base =
-        cell_rows.find(
-          (attempt) =>
-            typeof attempt.target_base === 'string' &&
-            attempt.target_base.length > 0
-        )?.target_base ?? 'main';
-      await cleanupBenchResidue(repo, bead_id, base);
-    }
-  }
-
-  /**
-   * Terminal handling for one bench cell (§4.6).
-   *
-   * A cell whose session never closed its own bead is closed HERE with the
-   * Worker's own `bench:<run_id>:failed` reason — the contract's
-   * `close_reason_writers` gives the Worker exactly that tail, and leaving the
-   * bead open would make a finished experiment look like it is still waiting
-   * for one more run. Then the run's residue sweep is offered its chance.
-   *
-   * @param {string} workspace
-   * @param {string} attempt_id
-   * @param {string} bead_id
-   */
-  async function settleBenchCellTerminal(workspace, attempt_id, bead_id) {
-    const run_id = benchRunOf(workspace, attempt_id);
-    if (run_id === null) {
-      return;
-    }
-    const status =
-      deps.store.snapshot(workspace).attempts?.[attempt_id]?.status;
-    if (status !== 'failed' && status !== 'orphaned') {
-      // Only a TERMINAL failure closes the cell. A retry rung or a park is an
-      // ending this cell is expected to come back from.
-      return;
-    }
-    if (typeof deps.bd.closeWithReason === 'function') {
-      try {
-        const current = await deps.bd.readStatus(bead_id);
-        if (current !== 'closed') {
-          await deps.bd.closeWithReason(bead_id, `bench:${run_id}:failed`);
-        }
-      } catch (err) {
-        log('bench failed-cell close failed for %s: %o', bead_id, err);
-      }
-    }
-    await sweepBenchRun(workspace, run_id);
   }
 
   /**
@@ -8941,15 +8587,6 @@ export function createScheduler(deps) {
       return;
     }
     claimed.add(bead_id);
-    /**
-     * The bench run whose residue sweep this settlement earned, deferred to
-     * AFTER the claim is released: `sweepBenchRun` refuses to touch a run any
-     * of whose cells is still claimed, and this path holds the claim of the
-     * very cell that just finished.
-     *
-     * @type {string|null}
-     */
-    let sweep_run = null;
     /** @type {string|null} */
     let handback_parent_id = null;
     try {
@@ -8975,29 +8612,6 @@ export function createScheduler(deps) {
           notifyChanged(workspace);
           await tick(workspace);
         } else {
-          // A RECOVERED bench cell joins the same verify → settle → sweep path
-          // its live sibling takes (§4.5-3·§4.6). Without this a restart would
-          // leave the cell unscored and the whole run unswept, which the
-          // comparison table reads as 미상 forever.
-          //
-          // The success test here is the clone bead reading `closed`: a bench
-          // session ends by closing its own bead with `bench:<run_id>`, and
-          // §4.5-3 forbids scoring a session that failed — a `[verify]` run on
-          // an abandoned tree measures the abandonment, not the preset. There
-          // is no verdict to consult on a restart, so this IS that fact.
-          const bench_run = benchRunOf(workspace, attempt_id);
-          let bench_succeeded = false;
-          if (bench_run !== null) {
-            try {
-              bench_succeeded =
-                (await deps.bd.readStatus(bead_id)) === 'closed';
-            } catch (err) {
-              log('bench recovery status read failed for %s: %o', bead_id, err);
-            }
-          }
-          if (bench_succeeded) {
-            await recordBenchVerify(workspace, attempt_id, bead_id, repo);
-          }
           if (
             await judgePrerequisiteWait(
               workspace,
@@ -9019,7 +8633,7 @@ export function createScheduler(deps) {
           ) {
             return;
           }
-          const settled = await settleQuickfixLanding(
+          await settleQuickfixLanding(
             workspace,
             attempt_id,
             bead_id,
@@ -9027,9 +8641,6 @@ export function createScheduler(deps) {
             target_base,
             repo.length > 0
           );
-          if (bench_run !== null && settled.ok) {
-            sweep_run = bench_run;
-          }
         }
         return;
       }
@@ -9213,9 +8824,6 @@ export function createScheduler(deps) {
       // Never leak the claim: an unexpected throw here would otherwise fence
       // the bead out of every later dispatch for the life of the process.
       claimed.delete(bead_id);
-      if (sweep_run !== null) {
-        await sweepBenchRun(workspace, sweep_run);
-      }
     }
     if (handback_parent_id !== null) {
       return handback_parent_id;
@@ -10797,29 +10405,9 @@ export function createScheduler(deps) {
         return;
       }
       const quickfix_lane = laneOfRoute(snap.route) === 'quick_fix';
-      const bench_run =
-        typeof snap.bench_run === 'string' && snap.bench_run.length > 0
-          ? snap.bench_run
-          : null;
       // The cut source: the FETCHED remote tip when the resolver produced one, so
       // a stale local `<base>` cannot silently become the worktree's parent.
-      //
-      // A BENCH cell overrides it with the run's pinned commit (§4.4). Every
-      // cell of one experiment has to start from the same tree or the columns
-      // are not comparable, and the pin is what makes a base that moved during
-      // the run inert. It is verified — present locally or fetchable, and an
-      // ancestor of the resolved base — before anything is cut, because a cell
-      // dispatched from an unknown commit would produce a number nobody can
-      // reproduce.
-      let cut_base = snap.base_oid || snap.target_base;
-      if (bench_run !== null) {
-        const pinned = await resolveBenchCutBase(snap, cut_base);
-        if (!pinned.ok) {
-          refuseDispatch(workspace, bead_id, 'bench_base_unreachable');
-          return;
-        }
-        cut_base = pinned.sha;
-      }
+      const cut_base = snap.base_oid || snap.target_base;
 
       // PREVENTION LAYER (UI-8mvc §2): the pre-push hook goes in HERE — after the
       // base re-resolution that supplies its subject, and before the first state
@@ -10839,10 +10427,8 @@ export function createScheduler(deps) {
           // The quick_fix lane installs the RECORD-mode hook (spec §5): its
           // landing is judged from the push log this produces, so the lane can
           // no longer run without one — but it must still be allowed to push
-          // the base it is there to push. A BENCH cell is the exception to that
-          // exception (preset-compare §4.5-2): it lands nothing, so every ref
-          // is refused and only the record survives.
-          mode: bench_run !== null ? 'deny' : quickfix_lane ? 'record' : 'guard'
+          // the base it is there to push.
+          mode: quickfix_lane ? 'record' : 'guard'
         })
       ) {
         refuseDispatch(workspace, bead_id, 'guard_hook_install_failed');
@@ -11181,11 +10767,6 @@ export function createScheduler(deps) {
           // from the record's birth even if the process dies between the two.
           worker_claim: 'pending',
           ...(worktree_setup !== null ? { worktree_setup } : {}),
-          // Snapshotted like `quickfix_lane` and for the same reason: every
-          // later settlement — the push invariant, the `:failed` close, the
-          // run's own residue sweep — has to know which run owns this cell
-          // without re-reading a bead it may already have closed.
-          bench_run,
           serial_lane_id,
           ...(retry_context
             ? {
@@ -15613,7 +15194,6 @@ export function createScheduler(deps) {
       exec_restore_values,
       serial_lane_id: prior.serial_lane_id ?? null,
       quickfix_lane,
-      bench_run: prior.bench_run ?? null,
       resumed_from: attempt_id,
       ...(options.conversation_return === true
         ? {
@@ -15657,17 +15237,10 @@ export function createScheduler(deps) {
           attempt_id: new_attempt_id,
           repo,
           target_base,
-          // Same split as first dispatch (worker-failure-tiers §5;
-          // preset-compare §4.5-2): a bench cell keeps its DENY hook across a
-          // relaunch, the quick_fix lane gets the RECORD-mode hook so its
-          // landing keeps a push log, and only a disposition is left without
-          // one.
-          mode:
-            typeof prior.bench_run === 'string' && prior.bench_run.length > 0
-              ? 'deny'
-              : quickfix_lane
-                ? 'record'
-                : 'guard'
+          // Same split as first dispatch (worker-failure-tiers §5): the
+          // quick_fix lane gets the RECORD-mode hook so its landing keeps a
+          // push log, and only a disposition is left without one.
+          mode: quickfix_lane ? 'record' : 'guard'
         })
       ) {
         serial_lease.release();

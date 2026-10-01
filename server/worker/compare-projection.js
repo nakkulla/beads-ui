@@ -16,11 +16,6 @@ import { projectAttemptUsage } from '../../app/utils/token-usage.js';
 import { parseExecReceipt, parseReviewStats } from '../workflow-enrich.js';
 import { peekWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { createBeadTimeline } from './bead-timeline.js';
-import {
-  benchCellTerminal,
-  benchRunBeadIds,
-  listBenchManifests
-} from './bench-runs.js';
 import { visibleWorkspaceRoots } from './foreign-blocker-status.js';
 import { TERMINAL_ATTEMPT_STATUSES } from './queue-store.js';
 import {
@@ -59,22 +54,12 @@ export const UNRECORDED = '미기록';
 export const VERIFY_UNKNOWN = '미상';
 
 /**
- * The label a bench-experiment bead carries. `bench-runs.js` (§4) owns the
- * write; this projection only reads it, so an install without that unit simply
- * never sees one.
- *
- * @type {string}
- */
-const BENCH_LABEL = 'bench';
-
-/**
  * @typedef {Object} CompareFilters
  * @property {string[]} root_dirs - Empty means every workspace.
  * @property {'preset'|'orchestration'|'impl_actor'} group_by
  * @property {string[]} routes - Empty means every route.
  * @property {number|null} since - Lower bound on `finished_at`, or null.
  * @property {number|null} until - Exclusive upper bound on `finished_at`, or null.
- * @property {boolean} include_bench
  * @property {ReturnType<typeof normalizeProblemCriteria>} problem_criteria
  */
 
@@ -85,8 +70,8 @@ const BENCH_LABEL = 'bench';
  * @property {string|null} route
  * @property {string[]} labels
  * @property {string|null} [close_reason]
- * @property {string|null} [status] - The bead's own status; a bench cell is
- * only finished once this reads `closed` (§4.6).
+ * @property {string|null} [status] - The bead's own status; `closed` marks a
+ * landed outcome.
  * @property {{ round: number, blocking: number, minor: number, verdict: string, anchor: string }|null} impl_review_stats
  */
 
@@ -315,10 +300,7 @@ function modelToken(token, catalog) {
  * ambiguous, while candidates preserve every matching name for the UI.
  *
  * Every preset is read by its CANONICAL keys and no candidate is filtered by
- * profile (design §7). A bench clone is built with `route=quick_fix` and
- * `impl_dispatch=delegated` (`benchCloneFields`), so narrowing candidates by
- * the attempt route would stop an experiment run from a general preset from
- * ever matching the preset that produced it.
+ * profile (design §7).
  *
  * @param {{ route: string|null, orch_model: string|null, orch_effort: string|null, impl_actor: ImplActor }} attempt_facts
  * @param {Array<{ id?: string, name?: string, settings?: Record<string, any> }>} presets
@@ -564,9 +546,8 @@ export function passCaret(rows) {
 
 /**
  * Normalize a client filter payload. Everything is optional and an unreadable
- * value falls back to "no restriction" — except `include_bench`, whose default
- * is EXCLUDE (§3.4): a comparison of real work must not silently absorb
- * synthetic clone runs.
+ * value falls back to "no restriction", and an unknown key is ignored so a
+ * request from an older open tab still gets its normal answer.
  *
  * @param {unknown} raw
  * @returns {CompareFilters}
@@ -582,7 +563,6 @@ export function normalizeCompareFilters(raw) {
     routes: stringList(input.routes),
     since: num(input.since),
     until: num(input.until),
-    include_bench: input.include_bench === true,
     problem_criteria: normalizeProblemCriteria(input.problem_criteria)
   };
 }
@@ -630,10 +610,6 @@ function workspaceRows(workspace, catalog) {
     const impl_actor = implActorOf(attempt.receipt_check);
     const model = str(attempt.model);
     const effort = str(attempt.effort);
-    const bench_verify = isRecord(attempt.bench_verify)
-      ? attempt.bench_verify
-      : null;
-    const labels = issue ? stringList(issue.labels) : [];
     rows.push({
       attempt_id,
       bead_id,
@@ -653,14 +629,8 @@ function workspaceRows(workspace, catalog) {
       failed: COMPARE_FAILED_STATUSES.has(status),
       is_retry: isRetryAttempt(attempt),
       retry_kind: retryKindOf(attempt),
-      is_bench: labels.includes(BENCH_LABEL) || bench_verify !== null,
-      verify:
-        bench_verify === null
-          ? null
-          : bench_verify.ok === true
-            ? 'pass'
-            : 'fail',
-      verify_source: bench_verify === null ? null : 'bench_verify',
+      verify: null,
+      verify_source: null,
       review: null,
       usage: attemptUsageSummary(attempt, catalog),
       orchestration: { model, effort },
@@ -728,9 +698,6 @@ function attachBeadLevelFacts(rows, issues, verify_receipts) {
         anchor: str(stats.anchor)
       };
     }
-    if (row.verify !== null) {
-      continue;
-    }
     const receipt = verify_receipts[bead_id];
     if (isRecord(receipt) && typeof receipt.ok === 'boolean') {
       row.verify = receipt.ok ? 'pass' : 'fail';
@@ -745,9 +712,6 @@ function attachBeadLevelFacts(rows, issues, verify_receipts) {
  * @returns {boolean}
  */
 function rowPassesFilters(row, filters) {
-  if (!filters.include_bench && row.is_bench) {
-    return false;
-  }
   if (
     filters.root_dirs.length > 0 &&
     !filters.root_dirs.includes(path.resolve(String(row.root_dir || '')))
@@ -800,7 +764,7 @@ function outcomeOf(row, issue, pr_url) {
     return { kind: 'superseded', evidence: 'later_done' };
   }
   if (
-    ['no_delta', 'bench'].includes(row.attempt.done_kind) ||
+    row.attempt.done_kind === 'no_delta' ||
     /^(refuted:|no-delta:)/u.test(issue?.close_reason ?? '')
   ) {
     return { kind: 'landed', evidence: 'no_change' };
@@ -949,7 +913,7 @@ function humanEventsByAttempt(workspace) {
 }
 
 /**
- * Compute filter-wide baselines used by both real and bench rows.
+ * Compute the filter-wide baselines every row is judged against.
  *
  * @param {Array<Record<string, any>>} rows
  */
@@ -1269,31 +1233,17 @@ function compareGroups(left, right) {
 }
 
 /**
- * @param {Array<Record<string, any>>} rows
- */
-function sortedRows(rows) {
-  return [...rows].sort(
-    (left, right) =>
-      (right.finished_at ?? 0) - (left.finished_at ?? 0) ||
-      left.attempt_id.localeCompare(right.attempt_id)
-  );
-}
-
-/**
  * Strip private evidence and obsolete main-table fields before serialization.
  *
  * @param {Array<Record<string, any>>} rows
- * @param {boolean} [bench]
  */
-function wireRows(rows, bench = false) {
+function wireRows(rows) {
   return rows.map((row) => {
     const rest = { ...row };
     delete rest.attempt;
     delete rest.human_summaries;
     delete rest.representative;
-    if (!bench) {
-      delete rest.verify_source;
-    }
+    delete rest.verify_source;
     return rest;
   });
 }
@@ -1301,14 +1251,8 @@ function wireRows(rows, bench = false) {
 /**
  * The whole comparison model — pure (§3.5).
  *
- * `bench_rows` is the experiment half and is deliberately NOT filtered: an
- * experiment is chosen by name, and a person who picked one must not get an
- * empty table because the main table's period or repository filter happened to
- * be narrower (§4.7). It is the same row material either way — one projection,
- * two selections of it, never a second ledger.
- *
  * @param {{ workspaces: CompareWorkspaceInput[], presets?: Array<{ id?: string, name?: string, settings?: Record<string, any> }>, catalog?: ResolvedCatalog|null, filters?: unknown, warnings?: string[] }} input
- * @returns {{ rows: Array<Record<string, any>>, groups: Array<Record<string, any>>, bench_rows: Array<Record<string, any>>, summary: Record<string, any>, warnings: string[], criteria: Record<string, any> }}
+ * @returns {{ rows: Array<Record<string, any>>, groups: Array<Record<string, any>>, summary: Record<string, any>, warnings: string[], criteria: Record<string, any> }}
  */
 export function buildCompareModel(input) {
   const filters = normalizeCompareFilters(input?.filters);
@@ -1318,8 +1262,6 @@ export function buildCompareModel(input) {
   const warnings = input.warnings || [];
   /** @type {Array<Record<string, any>>} */
   const rows = [];
-  /** @type {Array<Record<string, any>>} */
-  const bench_rows = [];
   for (const workspace of Array.isArray(input?.workspaces)
     ? input.workspaces
     : []) {
@@ -1359,9 +1301,6 @@ export function buildCompareModel(input) {
       if (row.preset !== null) {
         delete row.preset_candidates;
       }
-      if (row.is_bench) {
-        bench_rows.push(row);
-      }
       if (rowPassesFilters(row, filters)) {
         rows.push(row);
       }
@@ -1373,7 +1312,7 @@ export function buildCompareModel(input) {
       left.attempt_id.localeCompare(right.attempt_id)
   );
   const baselines = problemBaselines(rows);
-  for (const row of [...rows, ...bench_rows]) {
+  for (const row of rows) {
     row.problems = judgeProblems(row, criteria, baselines);
   }
   /** @type {Map<string, Array<Record<string, any>>>} */
@@ -1394,7 +1333,6 @@ export function buildCompareModel(input) {
   return {
     rows: wireRows(rows),
     groups,
-    bench_rows: wireRows(sortedRows(bench_rows), true),
     summary: aggregateRows(rows, criteria),
     warnings,
     criteria: {
@@ -1561,116 +1499,6 @@ export function compareVerifyReceipts(root_dir, seams = {}) {
 }
 
 /**
- * Project one run manifest's cells from the clone beads' own attempt records
- * (§4.7). The manifest is never rewritten, so this — not a stored result — is
- * what "how far has the experiment got" means.
- *
- * Terminality is {@link benchCellTerminal}'s answer, the same one the
- * scheduler's residue sweep asks: a cell is finished when its clone bead is
- * closed AND no attempt of its lineage is resumable. A `parked` cell therefore
- * reads as still running here exactly as it does there.
- *
- * @param {Record<string, any>} manifest
- * @param {string} root_dir
- * @param {{ queueStore?: any, issues?: Record<string, CompareIssueInput> }} [seams]
- * @returns {Record<string, any>}
- */
-export function projectBenchRun(manifest, root_dir, seams = {}) {
-  /** @type {any} */
-  let store = seams.queueStore ?? null;
-  if (store === null) {
-    try {
-      store = getWorkerRuntime().queueStore;
-    } catch {
-      store = null;
-    }
-  }
-  const issues = isRecord(seams.issues) ? seams.issues : {};
-  const cells = Array.isArray(manifest.cells) ? manifest.cells : [];
-  const projected = cells.map((/** @type {any} */ cell) => {
-    const bead_id = str(cell?.bead_id);
-    /** @type {Array<Record<string, any>>} */
-    let attempts = [];
-    if (
-      bead_id !== null &&
-      store &&
-      typeof store.readAttemptsForBead === 'function'
-    ) {
-      try {
-        attempts = store.readAttemptsForBead(root_dir, bead_id) || [];
-      } catch {
-        attempts = [];
-      }
-    }
-    const implementations = attempts.filter(
-      (attempt) => attempt?.kind !== 'review_session'
-    );
-    const last = implementations[implementations.length - 1] ?? null;
-    const status = last ? str(last.status) : null;
-    const issue =
-      bead_id !== null && isRecord(issues[bead_id]) ? issues[bead_id] : null;
-    return {
-      preset_id: str(cell?.preset_id),
-      k: typeof cell?.k === 'number' ? cell.k : null,
-      bead_id,
-      attempt_id: last ? str(last.attempt_id) : null,
-      status,
-      terminal: benchCellTerminal({
-        attempts,
-        bead_closed: issue ? str(issue.status) === 'closed' : false
-      }),
-      done_kind: last ? str(last.done_kind) : null,
-      bench_verify:
-        last && isRecord(last.bench_verify) ? last.bench_verify : null
-    };
-  });
-  return {
-    ...manifest,
-    root_dir,
-    cell_count: benchRunBeadIds(manifest).length,
-    terminal_count: projected.filter((cell) => cell.terminal).length,
-    cells: projected
-  };
-}
-
-/**
- * Every visible workspace's run manifests, newest first (§4.7). Fail-quiet per
- * workspace: a state directory that cannot be listed contributes nothing
- * rather than emptying the list.
- *
- * @param {CompareWorkspaceInput[]} workspaces
- * @param {{ queueStore?: any, list?: typeof listBenchManifests }} [seams]
- * @returns {Array<Record<string, any>>}
- */
-export function compareBenchRuns(workspaces, seams = {}) {
-  const list = seams.list || listBenchManifests;
-  /** @type {Array<Record<string, any>>} */
-  const runs = [];
-  for (const workspace of Array.isArray(workspaces) ? workspaces : []) {
-    /** @type {Array<Record<string, any>>} */
-    let manifests = [];
-    try {
-      manifests = list(workspace.root_dir);
-    } catch {
-      manifests = [];
-    }
-    for (const manifest of manifests) {
-      runs.push(
-        projectBenchRun(manifest, workspace.root_dir, {
-          ...(seams.queueStore ? { queueStore: seams.queueStore } : {}),
-          issues: isRecord(workspace.issues) ? workspace.issues : {}
-        })
-      );
-    }
-  }
-  runs.sort(
-    (left, right) =>
-      Number(right.created_at ?? 0) - Number(left.created_at ?? 0)
-  );
-  return runs;
-}
-
-/**
  * Collect the first PR URL found in queue lane order, then completion intents.
  *
  * @param {string} root_dir
@@ -1788,13 +1616,8 @@ export function collectCompareWorkspaces(seams = {}) {
 /**
  * The `compare-snapshot` payload: collect, then project.
  *
- * The experiment list rides HERE rather than on an op of its own: §3.5
- * enumerates the three ws ops this design adds, and the run manifests are read
- * against the same rows in the same response — which also removes the second
- * `get-compare` the client used to need for its experiment table.
- *
  * @param {unknown} filters
- * @param {{ roots?: string[], workspaces?: CompareWorkspaceInput[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, timeline?: (root_dir: string) => { readTimeline: (bead_id: string) => any[] }, presets?: any[], catalog?: ResolvedCatalog|null, listRuns?: typeof listBenchManifests }} [seams]
+ * @param {{ roots?: string[], workspaces?: CompareWorkspaceInput[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, timeline?: (root_dir: string) => { readTimeline: (bead_id: string) => any[] }, presets?: any[], catalog?: ResolvedCatalog|null }} [seams]
  */
 export function compareSnapshot(filters, seams = {}) {
   /** @type {any[]} */
@@ -1836,10 +1659,6 @@ export function compareSnapshot(filters, seams = {}) {
   });
   return {
     ...model,
-    runs: compareBenchRuns(workspaces, {
-      ...(seams.queueStore ? { queueStore: seams.queueStore } : {}),
-      ...(seams.listRuns ? { list: seams.listRuns } : {})
-    }),
     workspaces: workspaces.map((workspace) => ({
       root_dir: workspace.root_dir,
       name: workspace.name
@@ -1853,7 +1672,7 @@ export function compareSnapshot(filters, seams = {}) {
  * detail and compare requests.
  *
  * @param {unknown} filters - User-selected row restrictions.
- * @param {{ roots?: string[], workspaces?: CompareWorkspaceInput[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, timeline?: (root_dir: string) => { readTimeline: (bead_id: string) => any[] }, presets?: any[], catalog?: ResolvedCatalog|null, listRuns?: typeof listBenchManifests, observations?: ReturnType<typeof import('./session-observation.js').createWorkerSessionObservationStore> }} [seams]
+ * @param {{ roots?: string[], workspaces?: CompareWorkspaceInput[], queueStore?: any, peek?: (root_dir: string) => any, prObservations?: any, timeline?: (root_dir: string) => { readTimeline: (bead_id: string) => any[] }, presets?: any[], catalog?: ResolvedCatalog|null, observations?: ReturnType<typeof import('./session-observation.js').createWorkerSessionObservationStore> }} [seams]
  */
 export async function prepareCompareSnapshot(filters, seams = {}) {
   const workspaces = seams.workspaces || collectCompareWorkspaces(seams);
@@ -1865,12 +1684,6 @@ export async function prepareCompareSnapshot(filters, seams = {}) {
       workspace.attempts
         .filter((attempt) => {
           const issue = workspace.issues?.[attempt.bead_id];
-          const bench =
-            stringList(issue?.labels).includes(BENCH_LABEL) ||
-            isRecord(attempt.bench_verify);
-          if (bench) {
-            return true;
-          }
           return (
             (normalized.root_dirs.length === 0 ||
               normalized.root_dirs.includes(

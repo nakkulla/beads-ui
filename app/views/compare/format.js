@@ -40,24 +40,6 @@ export function formatDuration(ms) {
 }
 
 /**
- * @param {unknown} tokens
- * @returns {string}
- */
-export function formatTokens(tokens) {
-  const value = num(tokens);
-  if (value === null || value <= 0) {
-    return EMPTY_CELL;
-  }
-  if (value >= 1_000_000) {
-    return `τ ${(value / 1_000_000).toFixed(1)}M`;
-  }
-  if (value >= 1000) {
-    return `τ ${(value / 1000).toFixed(1)}k`;
-  }
-  return `τ ${value}`;
-}
-
-/**
  * The 가격 cell. Delegates to the shared formatter so the partial-sum notation
  * `$1.23 (+2 leg 단가 없음)` is written in exactly one place (§1.3).
  *
@@ -227,66 +209,4 @@ export function outcomeDotKind(row) {
   return PROBLEM_KEYS.some((key) => row.problems?.[key] === true)
     ? 'problem'
     : 'muted';
-}
-
-/**
- * The 검증 cell. `null` is 미상 — never a failure, and never counted as a pass.
- *
- * @param {unknown} verify
- * @returns {string}
- */
-export function formatVerify(verify) {
-  if (verify === 'pass') {
-    return '통과';
-  }
-  if (verify === 'fail') {
-    return '실패';
-  }
-  return '미상';
-}
-
-/**
- * The 실패·재시도 cell: the cause of a failure, the retry mark, or both.
- *
- * @param {{ failed?: boolean, cause?: string|null, is_retry?: boolean }} row
- * @returns {string}
- */
-export function formatOutcome(row) {
-  /** @type {string[]} */
-  const parts = [];
-  if (row.failed === true) {
-    parts.push(
-      typeof row.cause === 'string' && row.cause.length > 0
-        ? `실패 · ${row.cause}`
-        : '실패'
-    );
-  }
-  if (row.is_retry === true) {
-    parts.push('재시도');
-  }
-  return parts.length === 0 ? EMPTY_CELL : parts.join(' · ');
-}
-
-/**
- * The 리뷰 지적·라운드 cell, `b0/m3 · r2`.
- *
- * @param {{ blocking?: number|null, minor?: number|null, round?: number|null }|null|undefined} review
- * @returns {string}
- */
-export function formatReview(review) {
-  if (!review) {
-    return EMPTY_CELL;
-  }
-  const blocking = num(review.blocking);
-  const minor = num(review.minor);
-  const round = num(review.round);
-  if (blocking === null && minor === null && round === null) {
-    return EMPTY_CELL;
-  }
-  const counts =
-    blocking === null && minor === null
-      ? null
-      : `b${blocking ?? 0}/m${minor ?? 0}`;
-  const rounds = round === null ? null : `r${round}`;
-  return [counts, rounds].filter((part) => part !== null).join(' · ');
 }

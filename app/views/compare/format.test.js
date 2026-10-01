@@ -5,13 +5,9 @@ import {
   formatCriteriaLegend,
   formatDuration,
   formatFactorChip,
-  formatOutcome,
   formatOutcomeText,
   formatPrice,
   formatRate,
-  formatReview,
-  formatTokens,
-  formatVerify,
   outcomeDotKind,
   sampleNote
 } from './format.js';
@@ -132,12 +128,6 @@ describe('views/compare/format', () => {
     expect(formatDuration(null)).toBe(EMPTY_CELL);
   });
 
-  test('abbreviates the token total', () => {
-    expect(formatTokens(940)).toBe('τ 940');
-    expect(formatTokens(12_400)).toBe('τ 12.4k');
-    expect(formatTokens(2_500_000)).toBe('τ 2.5M');
-  });
-
   test('names the unpriced legs beside a partial price', () => {
     expect(formatPrice({ total_cost_usd: 1.234, unpriced_leg_count: 2 })).toBe(
       '$1.23 (+2 leg 단가 없음)'
@@ -159,27 +149,6 @@ describe('views/compare/format', () => {
     expect(sampleNote({ sample: 3, total: 5 })).toBe('n=3/5');
     expect(sampleNote({ sample: 5, total: 5 })).toBe('');
     expect(sampleNote({ sample: 0, total: 5 })).toBe('');
-  });
-
-  test('renders 미상 for an unjudged verification', () => {
-    expect(formatVerify('pass')).toBe('통과');
-    expect(formatVerify('fail')).toBe('실패');
-    expect(formatVerify(null)).toBe('미상');
-  });
-
-  test('says nothing in the outcome cell for a plain success', () => {
-    expect(formatOutcome({ failed: false, is_retry: false })).toBe(EMPTY_CELL);
-    expect(formatOutcome({ failed: true, cause: 'timeout' })).toBe(
-      '실패 · timeout'
-    );
-    expect(formatOutcome({ failed: false, is_retry: true })).toBe('재시도');
-  });
-
-  test('renders the review counts and round together', () => {
-    expect(formatReview({ blocking: 0, minor: 3, round: 2 })).toBe(
-      'b0/m3 · r2'
-    );
-    expect(formatReview(null)).toBe(EMPTY_CELL);
   });
 
   test('renders rates and cost medians', () => {

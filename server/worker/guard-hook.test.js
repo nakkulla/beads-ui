@@ -443,7 +443,7 @@ describe('guard-hook record mode (worker-failure-tiers §5.1)', () => {
   });
 });
 
-describe('guard-hook deny mode (preset-compare §4.5-2)', () => {
+describe('guard-hook deny mode (ADR UI-a5l2)', () => {
   /**
    * @param {'guard'|'record'|'deny'} [mode]
    * @returns {string}
@@ -477,7 +477,7 @@ describe('guard-hook deny mode (preset-compare §4.5-2)', () => {
     );
   });
 
-  test('omits the docs-only exemption a bench cell can never use', () => {
+  test('omits the docs-only exemption a denied attempt can never use', () => {
     const script = render('deny');
 
     expect(script).not.toContain('guard_docs_only');
@@ -513,7 +513,7 @@ describe('guard-hook deny mode (preset-compare §4.5-2)', () => {
         target_base: 'main',
         attempt_id: ATTEMPT,
         push_log: '/state/pushes.jsonl',
-        mode: /** @type {any} */ ('bench')
+        mode: /** @type {any} */ ('unknown')
       })
     ).toBe(render('guard'));
   });

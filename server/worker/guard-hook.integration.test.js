@@ -450,7 +450,7 @@ describe('guard hook — record mode (worker-failure-tiers §5.1)', () => {
   });
 });
 
-describe('guard hook — deny mode (preset-compare §4.5-2)', () => {
+describe('guard hook — deny mode (ADR UI-a5l2)', () => {
   /**
    * Re-install this attempt's hook in deny mode. Same attempt id, so the
    * `core.hooksPath` env the suite already exported keeps pointing at it and
@@ -492,7 +492,7 @@ describe('guard hook — deny mode (preset-compare §4.5-2)', () => {
 
     const result = run(
       'git',
-      ['push', 'origin', 'HEAD:refs/heads/UI-bench-cell'],
+      ['push', 'origin', 'HEAD:refs/heads/UI-deny-cell'],
       worktree
     );
 
