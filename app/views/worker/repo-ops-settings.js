@@ -122,7 +122,7 @@ export function createRepoOpsSettings(options) {
   function laneScriptButton(lane, repo_ops, declaration) {
     return html`<button
       type="button"
-      class="worker-repo-ops__vd-cmd worker-repo-ops__vd-cmd--link"
+      class="op-btn worker-repo-ops__vd-cmd worker-repo-ops__vd-cmd--link"
       .textContent=${declaration.script}
       @click=${(/** @type {MouseEvent} */ event) => {
         if (!onOpenScript) {
@@ -193,7 +193,7 @@ export function createRepoOpsSettings(options) {
     const unnamed = currentRepoId() === null;
     return html`<button
       type="button"
-      class="worker-repo-ops__deploy-run"
+      class="op-btn worker-repo-ops__deploy-run"
       data-seam="repo-ops-deploy-run"
       ?disabled=${blocked || unnamed}
       title=${blocked

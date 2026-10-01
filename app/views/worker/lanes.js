@@ -3272,7 +3272,7 @@ export function blockedSummaryTemplate(workspaces, reveal) {
                   (reason) =>
                     html`<button
                       type="button"
-                      class="wait-summary__item"
+                      class="op-btn wait-summary__item"
                       @click=${(/** @type {Event} */ event) =>
                         scrollToWaitCard(
                           event,

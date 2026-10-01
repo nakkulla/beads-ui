@@ -174,8 +174,8 @@ function accountRow(model) {
     <span class="detail-kv__vgroup">
       <select
         class=${model.selected
-          ? 'ui-select detail-kv__v detail-kv__v--sel'
-          : 'ui-select detail-kv__v'}
+          ? 'ui-select ui-select--bare detail-kv__v detail-kv__v--sel'
+          : 'ui-select ui-select--bare detail-kv__v'}
         aria-label=${model.title}
         data-exec-key=${model.key}
         @change=${(/** @type {Event} */ event) =>

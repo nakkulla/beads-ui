@@ -3,17 +3,32 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { createDisplayPolicyStore } from './data/display-policy-store.js';
 import { createExecPresetStore } from './data/exec-preset-store.js';
 import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStore } from './data/subscription-issue-store.js';
 import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createWorkerQueueStore } from './data/worker-queue-store.js';
+import { chooseContinuation } from './utils/continuation-dialog.js';
+import { requestResumeInstructions } from './utils/resume-instructions-dialog.js';
 import { createDetailPanel } from './views/detail-panel/index.js';
 import { createMdViewer } from './views/detail-panel/md-viewer.js';
+import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
+import { createHelpDialog } from './views/help-dialog/index.js';
 import { createMonitorView } from './views/monitor/index.js';
+import { createNewIssueDialog } from './views/new-issue-dialog.js';
+import {
+  BULK_SETTINGS_TABS,
+  SETTINGS_TABS,
+  createSettingsDialog
+} from './views/settings-dialog/index.js';
 import { createUsageMeter } from './views/usage-meter.js';
 import { createWorkerView } from './views/worker/index.js';
 import { candidateCard, miniRow, queueRowOps } from './views/worker/lanes.js';
+import {
+  providerResumeDialogTemplate,
+  providerResumeDraft
+} from './views/worker/provider-resume-dialog.js';
 import { createRepoOpsScriptViewer } from './views/worker/repo-ops-script-viewer.js';
 import {
   repoOpsTimelineTemplate,
@@ -186,7 +201,7 @@ describe('raw-value scanner', () => {
 });
 
 describe('design-system CSS rules (§3.4 check 1)', () => {
-  test('marks the Worker, header, Monitor, detail and drawer regions', () => {
+  test('marks the Worker, header, Monitor, detail, drawer, dialog and repo-ops regions', () => {
     const names = regions(STYLES).map((r) => r.name);
 
     expect(names.filter((name) => name === 'worker').length).toBeGreaterThan(0);
@@ -194,6 +209,8 @@ describe('design-system CSS rules (§3.4 check 1)', () => {
     expect(names).toContain('monitor');
     expect(names).toContain('detail');
     expect(names).toContain('drawer');
+    expect(names).toContain('dialogs');
+    expect(names).toContain('repo-ops');
   });
 
   test('pairs every region marker with an end marker', () => {
@@ -242,6 +259,14 @@ describe('design-system CSS rules (§3.4 check 1)', () => {
       'padding: 0 calc(var(--sp-12) * 2) 0 var(--sp-6)'
     );
   });
+
+  test('gives the arrowless select variant symmetric padding and no arrow', () => {
+    const bare_rule =
+      COMPONENTS.match(/\nselect\.ui-select--bare\s*{([^}]*)}/)?.[1] || '';
+
+    expect(bare_rule).toContain('padding: 0 var(--sp-6)');
+    expect(bare_rule).toContain('background-image: none');
+  });
 });
 
 /**
@@ -254,10 +279,12 @@ describe('design-system CSS rules (§3.4 check 1)', () => {
  * monitor unit moved the Monitor tab, header and usage meter onto the parts,
  * taking it to 57 (10 + 47); the detail unit moved the issue detail panel, the
  * transcript and repo-ops drawers, the script viewer and the Worker popovers,
- * taking it to 12 (3 + 9). All counted with this scanner; UI-k5s2 takes it to
- * 0. Lower the number when a change removes raw values — never raise it.
+ * taking it to 12 (3 + 9); the dialogs unit moved every dialog and the repo-ops
+ * declaration settings, taking it to 3 (0 + 3, the compare tab's). All counted
+ * with this scanner; UI-k5s2 takes it to 0. Lower the number when a change
+ * removes raw values — never raise it.
  */
-const RATCHET_BASELINE = 12;
+const RATCHET_BASELINE = 3;
 
 describe('design-system ratchet (§3.4 check 2)', () => {
   test('keeps raw colours and raw sizes outside tokens.css at or under the baseline', () => {
@@ -268,13 +295,6 @@ describe('design-system ratchet (§3.4 check 2)', () => {
     expect(count).toBeLessThanOrEqual(RATCHET_BASELINE);
   });
 });
-
-/**
- * Overlay surfaces inside the Worker tab that a later UI-k5s2 unit moves —
- * dialogs and the repo-ops settings disclosure. The popovers, the place menu,
- * the drawers and the script viewer moved with the detail unit.
- */
-const OVERLAY_SELECTOR = ['dialog', '.worker-repo-ops-settings'].join(', ');
 
 const PART_CLASSES = ['op-btn', 'ui-input', 'ui-select', 'ui-chip'];
 
@@ -292,7 +312,6 @@ const NATIVE_CONTROL = 'input[type=checkbox], input[type=radio]';
  */
 function controlsWithoutPart(root) {
   return Array.from(root.querySelectorAll('button, input, select'))
-    .filter((el) => !el.closest(OVERLAY_SELECTOR))
     .filter((el) => !el.matches(NATIVE_CONTROL))
     .filter(
       (el) =>
@@ -661,6 +680,17 @@ describe('Worker tab controls use parts (§3.4 check 3)', () => {
 
     expect(controls.length).toBeGreaterThan(15);
     expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws the arrowless lane sort and filter selects on the bare select variant', () => {
+    const mount = renderWorkerTab(false);
+
+    const selects = Array.from(mount.querySelectorAll('select.worker-sort'));
+
+    expect(selects.length).toBeGreaterThan(1);
+    expect(
+      selects.every((el) => el.classList.contains('ui-select--bare'))
+    ).toBe(true);
   });
 
   test('keeps chip buttons on the chip part rather than the button part', () => {
@@ -1556,6 +1586,419 @@ describe('drawers and the script viewer use parts (§3.4 check 3)', () => {
     await viewer.open('docs/x.md');
 
     expect(mount.querySelector('.mv__close')).not.toBeNull();
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+});
+
+const DIALOG_CATALOG = {
+  runners: {
+    claude: { models: { opus: { id: 'opus', efforts: ['low', 'high'] } } },
+    codex: {
+      models: {
+        sol: {
+          id: 'gpt-5.6-sol',
+          efforts: ['medium'],
+          orchestration_efforts: ['medium', 'ultra'],
+          speed_tiers: ['default', 'fast']
+        }
+      }
+    }
+  },
+  model_index: { opus: 'claude', sol: 'codex' }
+};
+
+const DIALOG_EXECUTION_DEFAULTS = {
+  supported: true,
+  schema_version: 1,
+  session: {
+    workflow_mode_default: 'standard',
+    review: {
+      default: 'codex',
+      reviewers: {
+        codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+        fable: { model: 'fable', effort: 'high' }
+      }
+    },
+    plan_review: { standard_recommended: 'codex', fast_track_default: 'fable' },
+    implementation: {
+      default: {
+        dispatch: 'delegated',
+        runtime: 'codex',
+        model: 'sol',
+        model_id: 'gpt-5.6-sol',
+        effort: 'auto',
+        speed: 'default'
+      },
+      route_defaults: { quick_fix: { dispatch: 'main' } },
+      model_catalog: { codex: { sol: 'gpt-5.6-sol' } },
+      effort_by_transport: {}
+    }
+  },
+  orchestration: {
+    runtime: 'claude',
+    model: 'opus',
+    model_id: 'opus',
+    effort: null,
+    speed: 'default'
+  }
+};
+
+/** Both limit policies on `switch` with a threshold, so every row draws. */
+const DIALOG_LIMIT_POLICY = {
+  claude: { mode: 'switch', accounts: ['a@example.com'], preempt_pct: 80 },
+  codex: { mode: 'switch', accounts: [], preempt_pct: null }
+};
+
+/**
+ * One monitor row the bulk mode reads — the same shape as the connected
+ * workspace's queue snapshot.
+ *
+ * @param {string} root_dir
+ * @param {string} name
+ * @returns {Record<string, any>}
+ */
+function dialogMonitorRow(root_dir, name) {
+  return {
+    root_dir,
+    name,
+    revision: 1,
+    auto_advance: true,
+    quick_fix_orchestration_model: null,
+    runner_catalog: DIALOG_CATALOG,
+    execution_defaults: DIALOG_EXECUTION_DEFAULTS,
+    session_defaults: {},
+    session_defaults_state: 'ready',
+    workspace_accounts: { state: 'absent', values: {}, warnings: [] },
+    applied_exec_preset: null,
+    provider_limit_policy: DIALOG_LIMIT_POLICY
+  };
+}
+
+/** Serve both providers' managed accounts to the account tabs. */
+function stubAccountFetch() {
+  const rows = {
+    claude: {
+      accounts: [
+        { key: 'a@example.com', email: 'a@example.com', active: true },
+        { key: 'b@example.com', email: 'b@example.com' }
+      ]
+    },
+    codex: {
+      accounts: [{ key: 'codex-key', email: 'codex@example.com', plan: 'pro' }]
+    }
+  };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (/** @type {string} */ url) => ({
+      ok: true,
+      json: async () => (url.includes('claude') ? rows.claude : rows.codex)
+    }))
+  );
+}
+
+/** @type {Array<{ destroy: () => void }>} */
+const dialog_parts = [];
+
+/**
+ * Mount the settings dialog the way `main.js` does, over fixtures that light
+ * up every row of every tab: a preset, the worker URL rows, both limit
+ * policies, a hidden prefix, two monitor rows (bulk mode) and the model list
+ * (bulk `전역`).
+ *
+ * @param {'single'|'monitor'} scope
+ * @returns {Promise<HTMLElement>}
+ */
+async function renderSettingsDialog(scope) {
+  stubAccountFetch();
+  document.body.innerHTML = '<div id="m"></div>';
+  const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+  const policy_store = createDisplayPolicyStore();
+  policy_store.set({
+    revision: 0,
+    hidden_labels: ['ui'],
+    hidden_prefixes: ['reviewed:'],
+    visible_labels: [],
+    chips: {
+      route: true,
+      fast_track: true,
+      pr: true,
+      from: true,
+      blocked: true,
+      stepper: true
+    }
+  });
+  /** @type {Record<string, any>} */
+  const replies = {
+    'get-session-defaults': {
+      values: {},
+      warnings: [],
+      worker_url: {
+        status: 'ok',
+        effective_url: 'http://host:3000',
+        source: 'common',
+        workspace_override: null,
+        common: {
+          value: 'http://host:3000',
+          state: 'configured',
+          revision: 'r1'
+        },
+        warnings: []
+      }
+    },
+    'get-workspace-accounts': { state: 'absent', values: {}, warnings: [] },
+    'get-worker-system-prompt': {
+      variants: [
+        { key: 'v', label: 'worker', condition: '항상', system_prompt: 'x' }
+      ]
+    }
+  };
+  const dialog = createSettingsDialog(mount, {
+    transport: vi.fn(
+      async (/** @type {string} */ type) =>
+        replies[type] || { values: {}, warnings: [] }
+    ),
+    policyStore: policy_store,
+    queueStore: {
+      get: () => ({
+        revision: 3,
+        slots: 2,
+        runner_catalog: DIALOG_CATALOG,
+        execution_defaults: DIALOG_EXECUTION_DEFAULTS,
+        provider_limit_policy: DIALOG_LIMIT_POLICY
+      }),
+      set: () => {}
+    },
+    implPresetStore: {
+      get: () => ({
+        revision: 1,
+        presets: [{ id: 'p1', name: '위임', settings: {}, compatible: true }]
+      })
+    },
+    modelVisibilityStore: {
+      get: () => ({
+        revision: 1,
+        disabled_models: [],
+        runners: {
+          claude: [{ name: 'opus', id: 'opus' }],
+          codex: [{ name: 'sol', id: 'gpt-5.6-sol' }]
+        }
+      }),
+      set: () => {}
+    },
+    labelOptions: () => ['ui', 'worker-serial'],
+    notify: vi.fn(),
+    monitorRows: () => [
+      dialogMonitorRow('/repo-a', 'repo-a'),
+      dialogMonitorRow('/repo-b', 'repo-b')
+    ]
+  });
+  dialog_parts.push(dialog);
+  dialog.open('worker', scope === 'monitor' ? { scope: 'monitor' } : {});
+  await settle();
+  return /** @type {HTMLElement} */ (
+    document.getElementById('settings-dialog')
+  );
+}
+
+/**
+ * Open one rail tab of a rendered settings dialog and let its loads land.
+ *
+ * @param {HTMLElement} dialog
+ * @param {string} tab_id
+ */
+async function openSettingsTab(dialog, tab_id) {
+  clickOn(dialog, `[data-tab="${tab_id}"]`);
+  await settle();
+  const toggle = dialog.querySelector('[data-seam="system-prompt-toggle"]');
+  if (toggle) {
+    clickOn(dialog, '[data-seam="system-prompt-toggle"]');
+    await settle();
+  }
+}
+
+describe('dialogs use parts (§3.4 check 3)', () => {
+  afterEach(() => {
+    while (dialog_parts.length > 0) {
+      dialog_parts.pop()?.destroy();
+    }
+    vi.unstubAllGlobals();
+    document.body.innerHTML = '';
+  });
+
+  test.each(SETTINGS_TABS.map((tab) => tab.id))(
+    'draws every control of the %s settings tab with a part',
+    async (tab_id) => {
+      const dialog = await renderSettingsDialog('single');
+
+      await openSettingsTab(dialog, tab_id);
+
+      expect(
+        dialog.querySelectorAll('button, input, select').length
+      ).toBeGreaterThan(7);
+      expect(controlsWithoutPart(dialog)).toEqual([]);
+    }
+  );
+
+  test.each(BULK_SETTINGS_TABS.map((tab) => tab.id))(
+    'draws every control of the %s bulk settings tab with a part',
+    async (tab_id) => {
+      const dialog = await renderSettingsDialog('monitor');
+
+      await openSettingsTab(dialog, tab_id);
+
+      expect(
+        dialog.querySelectorAll('button, input, select').length
+      ).toBeGreaterThan(7);
+      expect(controlsWithoutPart(dialog)).toEqual([]);
+    }
+  );
+
+  test('draws every new issue dialog control with a part', () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createNewIssueDialog(
+      mount,
+      vi.fn(async () => null)
+    );
+
+    expect(mount.querySelectorAll('button, input, select').length).toBe(7);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws the help dialog close button with a part', () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const help = createHelpDialog(mount);
+
+    help.open();
+
+    expect(mount.querySelector('.help-dialog__close')).not.toBeNull();
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws both fatal error dialog buttons with a part', () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createFatalErrorDialog(mount).open('Command failed', 'bd exited', 'stderr');
+
+    expect(mount.querySelectorAll('button').length).toBe(2);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws every provider resume dialog control with a part', () => {
+    const queue = {
+      attempts: { a1: { runner: 'claude', model: 'opus' } },
+      runner_catalog: {
+        runners: {
+          claude: { default_model: 'opus', models: { opus: { id: 'opus' } } },
+          codex: { default_model: 'sol', models: { sol: { id: 'gpt-6-sol' } } }
+        }
+      },
+      account_catalog: {
+        claude: [{ email: 'a@example.com', status: 'ok' }]
+      }
+    };
+    const mount = document.createElement('div');
+
+    render(
+      providerResumeDialogTemplate(providerResumeDraft('a1', queue), queue),
+      mount
+    );
+
+    expect(mount.querySelectorAll('select').length).toBe(3);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws both states of the resume instructions dialog with a part', async () => {
+    const pending = requestResumeInstructions({ bead_id: 'UI-1' });
+    const choices = controlsWithoutPart(document.body);
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector(
+        '.resume-instructions-dialog__choices .op-btn:nth-child(2)'
+      )
+    ).click();
+
+    const inputs = controlsWithoutPart(document.body);
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector(
+        '.resume-instructions-dialog__actions .op-btn:last-child'
+      )
+    ).click();
+    await pending;
+
+    expect(choices).toEqual([]);
+    expect(inputs).toEqual([]);
+  });
+
+  test('draws every continuation dialog button with a part', async () => {
+    const pending = chooseContinuation({ prior: {}, current: {} });
+
+    const missing = controlsWithoutPart(document.body);
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.continuation-dialog .op-btn:last-child')
+    ).click();
+    await pending;
+
+    expect(document.querySelectorAll('.continuation-dialog').length).toBe(0);
+    expect(missing).toEqual([]);
+  });
+
+  test('draws the blocked summary dialog items with a part', () => {
+    const mount = renderMonitorTab(false);
+
+    clickOn(mount, '.wait-summary > .worker-kpi__chip');
+
+    expect(
+      mount.querySelectorAll('.wait-summary__dialog .wait-summary__item').length
+    ).toBeGreaterThan(0);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+});
+
+describe('repo-ops settings use parts (§3.4 check 3)', () => {
+  afterEach(() => {
+    window.localStorage.clear();
+    document.body.innerHTML = '';
+  });
+
+  test('draws every repo-ops declaration control with a part', () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set({
+      ...richQueue(),
+      workspace_info: {
+        repo_ops: {
+          status: 'resolved',
+          source_path: 'repo-ops/config.toml',
+          base_ref: 'main',
+          base_sha: 'a'.repeat(40),
+          repo_id: '/repo',
+          verify: { script: 'repo-ops/script/verify', timeout_ms: 300_000 },
+          deploy: { script: 'repo-ops/script/deploy', timeout_ms: 600_000 },
+          error_code: null
+        }
+      },
+      repo_operation_policy: {
+        schema_version: 3,
+        supported: true,
+        worker_automatic: ['repo_serial_lock_wait'],
+        never_automatic: ['history_rewrite']
+      }
+    });
+
+    createWorkerView(mount, {
+      issueStores: issueStores(),
+      queueStore,
+      transport: vi.fn(async () => ({ ok: true })),
+      getWorkspacePath: () => '/repo'
+    });
+
+    expect(
+      mount.querySelectorAll('.worker-repo-ops-settings button').length
+    ).toBe(3);
     expect(controlsWithoutPart(mount)).toEqual([]);
   });
 });

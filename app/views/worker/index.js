@@ -4049,7 +4049,7 @@ export function createWorkerView(mount_element, options = {}) {
           : ''}
       </div>
       <select
-        class="ui-select worker-sort worker-filter__type"
+        class="ui-select ui-select--bare worker-sort worker-filter__type"
         aria-label="타입 필터"
       >
         ${TYPE_FILTER_OPTIONS.map(
@@ -4164,7 +4164,7 @@ export function createWorkerView(mount_element, options = {}) {
       ? 'custom'
       : presetIdOf(candidate_sort) || 'custom';
     return html`<select
-      class="ui-select worker-sort"
+      class="ui-select ui-select--bare worker-sort"
       aria-label="후보 정렬"
       title="후보 정렬"
       .value=${current}
@@ -4202,7 +4202,7 @@ export function createWorkerView(mount_element, options = {}) {
         const step = chain[index];
         return html`<span class="worker-sort-chain__step">
           <select
-            class="ui-select worker-sort-chain__key"
+            class="ui-select ui-select--bare worker-sort-chain__key"
             data-step=${index}
             aria-label=${`${index + 1}차 정렬 키`}
             .value=${step ? step.key : ''}
@@ -4247,7 +4247,7 @@ export function createWorkerView(mount_element, options = {}) {
   function doneRangeTemplate() {
     return html`<div class="worker-done-controls">
       <select
-        class="ui-select worker-sort worker-done-range"
+        class="ui-select ui-select--bare worker-sort worker-done-range"
         aria-label="완료 기간"
         title="완료 기간"
         .value=${done_range}

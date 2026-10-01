@@ -298,7 +298,7 @@ export function createHelpDialog(mount_element, options = {}) {
           <h1 class="help-dialog__title">${DIALOG_TITLE}</h1>
           <button
             type="button"
-            class="help-dialog__close"
+            class="op-btn help-dialog__close"
             aria-label="닫기"
             @click=${close}
           >

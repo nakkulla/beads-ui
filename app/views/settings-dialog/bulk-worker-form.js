@@ -730,7 +730,9 @@ export function createBulkWorkerForm({
     const full_value =
       selected === UNSET ? view.full_value : chosen?.full_value;
     return html`<select
-        class=${selected === UNSET ? 'settings-dialog__unset' : ''}
+        class=${selected === UNSET
+          ? 'ui-select ui-select--bare settings-dialog__unset'
+          : 'ui-select ui-select--bare'}
         data-bulk-key=${key}
         aria-label=${label}
         title=${full_value || ''}
@@ -906,6 +908,7 @@ export function createBulkWorkerForm({
         <span class="settings-dialog__row-label">런타임</span>
         <span class="settings-dialog__controls">
           <select
+            class="ui-select ui-select--bare"
             aria-label="런타임"
             data-bulk-key="orchestration_runtime"
             ?disabled=${disabled}

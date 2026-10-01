@@ -1787,7 +1787,7 @@ export function createMonitorView(mount_element, options) {
   function laneHeaderControl(lane, count) {
     if (lane === 'runnable') {
       return html`<select
-        class="ui-select mon-candidate-sort worker-sort"
+        class="ui-select ui-select--bare mon-candidate-sort worker-sort"
         aria-label="후보 정렬"
         title="후보 정렬"
         .value=${candidate_sort}
@@ -1805,7 +1805,7 @@ export function createMonitorView(mount_element, options) {
     }
     if (lane === 'running') {
       return html`<select
-        class="ui-select mon-running-sort worker-sort"
+        class="ui-select ui-select--bare mon-running-sort worker-sort"
         aria-label="실행중 정렬"
         title="실행중 정렬"
         .value=${running_sort}
@@ -1829,7 +1829,7 @@ export function createMonitorView(mount_element, options) {
     }
     if (lane === 'done') {
       return html`<select
-        class="ui-select mon-done-range worker-sort"
+        class="ui-select ui-select--bare mon-done-range worker-sort"
         aria-label="완료 기간"
         title="완료 기간"
         .value=${done_range}

@@ -522,7 +522,7 @@ export function createSettingsDialog(mount_element, options) {
               (tab) =>
                 html`<button
                   type="button"
-                  class="settings-dialog__tab"
+                  class="op-btn settings-dialog__tab"
                   role="tab"
                   data-tab=${tab.id}
                   aria-selected=${String(active_tab === tab.id)}
@@ -535,7 +535,7 @@ export function createSettingsDialog(mount_element, options) {
             )}
             <button
               type="button"
-              class="settings-dialog__close"
+              class="op-btn settings-dialog__close"
               aria-label="닫기"
               @click=${close}
             >

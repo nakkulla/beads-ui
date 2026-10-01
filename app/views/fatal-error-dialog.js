@@ -19,8 +19,8 @@ export function createFatalErrorDialog(mount_element) {
         <p class="fatal-error__message" id="fatal-error-message"></p>
         <pre class="fatal-error__detail" id="fatal-error-detail"></pre>
         <div class="fatal-error__actions">
-          <button type="button" class="btn primary" id="fatal-error-reload">Reload</button>
-          <button type="button" class="btn" id="fatal-error-close">Dismiss</button>
+          <button type="button" class="op-btn btn primary" id="fatal-error-reload">Reload</button>
+          <button type="button" class="op-btn btn" id="fatal-error-close">Dismiss</button>
         </div>
       </div>
     </div>`;

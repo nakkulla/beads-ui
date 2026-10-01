@@ -20,21 +20,21 @@ export function createNewIssueDialog(mount_element, sendFn) {
     <div class="new-issue__container" part="container">
       <header class="new-issue__header">
         <div class="new-issue__title">New Issue</div>
-        <button type="button" class="new-issue__close" aria-label="Close">×</button>
+        <button type="button" class="op-btn op-btn--icon new-issue__close" aria-label="Close">×</button>
       </header>
       <div class="new-issue__body">
         <form id="new-issue-form" class="new-issue__form">
           <label for="new-title">Title</label>
-          <input id="new-title" name="title" type="text" required placeholder="Short summary" />
+          <input id="new-title" class="ui-input" name="title" type="text" required placeholder="Short summary" />
 
           <label for="new-type">Type</label>
-          <select id="new-type" name="type" aria-label="Issue type"></select>
+          <select id="new-type" class="ui-select" name="type" aria-label="Issue type"></select>
 
           <label for="new-priority">Priority</label>
-          <select id="new-priority" name="priority" aria-label="Priority"></select>
+          <select id="new-priority" class="ui-select" name="priority" aria-label="Priority"></select>
 
           <label for="new-labels">Labels</label>
-          <input id="new-labels" name="labels" type="text" placeholder="comma,separated" />
+          <input id="new-labels" class="ui-input" name="labels" type="text" placeholder="comma,separated" />
 
           <label for="new-description">Description</label>
           <textarea id="new-description" name="description" rows="6" placeholder="Optional markdown description"></textarea>
@@ -42,8 +42,8 @@ export function createNewIssueDialog(mount_element, sendFn) {
           <div aria-live="polite" role="status" class="new-issue__error" id="new-issue-error"></div>
 
           <div class="new-issue__actions" style="grid-column: 1 / -1">
-            <button type="button" id="btn-cancel">Cancel (Esc)</button>
-            <button type="submit" id="btn-create">Create</button>
+            <button type="button" class="op-btn" id="btn-cancel">Cancel (Esc)</button>
+            <button type="submit" class="op-btn" id="btn-create">Create</button>
           </div>
         </form>
       </div>

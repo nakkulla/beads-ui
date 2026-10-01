@@ -731,8 +731,8 @@ function selectRow(
       <span class="detail-kv__vgroup">
         <select
           class=${highlight
-            ? 'ui-select detail-kv__v detail-kv__v--sel'
-            : 'ui-select detail-kv__v'}
+            ? 'ui-select ui-select--bare detail-kv__v detail-kv__v--sel'
+            : 'ui-select ui-select--bare detail-kv__v'}
           aria-label=${key}
           data-key=${key}
           ?disabled=${disabled}

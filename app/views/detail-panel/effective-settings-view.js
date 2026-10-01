@@ -241,7 +241,7 @@ function rowTemplate(row, view) {
     >
     ${view.expanded
       ? html`<select
-          class="ui-select detail-effective__edit"
+          class="ui-select ui-select--bare detail-effective__edit"
           data-edit-key=${row.key}
           aria-label=${`${SETTING_LABELS[row.key] || row.key} 편집`}
           ?disabled=${row.resolution === 'not_applicable'}

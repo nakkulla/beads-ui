@@ -1437,18 +1437,19 @@ input.inline-edit:focus {
 .detail-title .detail-id {
   color: var(--muted);
 }
+/* @ds-region dialogs:begin */
+/* 치명 오류 대화상자의 `[Reload]`·`[Dismiss]` — 크기는 `.op-btn`이 정하고 이
+   규칙은 전역 버튼 팔레트와 primary 틴트만 적는다 (UI-k5s2). */
 .btn {
   background: var(--button-bg);
   color: var(--button-fg);
   border: 1px solid var(--button-border);
-  border-radius: var(--r-6);
-  padding: var(--sp-6) var(--sp-10);
-  font-size: var(--fs-small);
 }
 .btn.primary {
   background: color-mix(in srgb, var(--link) 18%, var(--button-bg));
   border-color: color-mix(in srgb, var(--link) 32%, var(--button-border));
 }
+/* @ds-region dialogs:end */
 .prop {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1542,6 +1543,7 @@ input.inline-edit:focus {
   backdrop-filter: blur(1px);
 }
 
+/* @ds-region dialogs:begin */
 .new-issue__body {
   padding: var(--sp-12);
 }
@@ -1593,11 +1595,14 @@ input.inline-edit:focus {
 .new-issue__title {
   font-weight: 700;
 }
-.new-issue__close {
-  border-radius: var(--r-4);
-  padding: var(--sp-4) var(--sp-8);
-  min-width: 28px;
-  line-height: 1.2;
+/* `×`와 `Cancel`·`Create`는 `.op-btn`(`×`는 `--icon`) 크기에 지금의 전역 버튼
+   팔레트를 그대로 쓴다 (UI-k5s2). 입력·선택은 `.ui-input`·`.ui-select`이고 색은
+   전역 폼 팔레트다. */
+.new-issue__close,
+.new-issue__actions > .op-btn {
+  border-color: var(--button-border);
+  background: var(--button-bg);
+  color: var(--button-fg);
 }
 
 /* --- Fatal Error Dialog --- */
@@ -1695,6 +1700,7 @@ input.inline-edit:focus {
   margin-top: 10px;
   flex-wrap: wrap;
 }
+/* @ds-region dialogs:end */
 
 /* List row layout closer to mock */
 #list-panel .panel__body li.issue-item {
@@ -2043,6 +2049,7 @@ input.inline-edit:focus {
 /* 막힘 요약은 브라우저 최상위 층의 modal `<dialog>`다 (UI-0bvr §8). 종전
    `position: absolute` 팝오버는 모바일 리본의 `overflow-x: auto`가 만든 클리핑
    문맥에 잘렸다 — 최상위 층은 조상의 overflow와 무관하다. */
+/* @ds-region dialogs:begin */
 .wait-summary__dialog {
   width: min(520px, calc(100vw - 32px));
   max-height: 70vh;
@@ -2055,7 +2062,7 @@ input.inline-edit:focus {
 }
 
 .wait-summary__dialog::backdrop {
-  background: color-mix(in srgb, #000 45%, transparent);
+  background: var(--scrim-dialog);
 }
 
 .wait-summary__popover {
@@ -2065,17 +2072,20 @@ input.inline-edit:focus {
   white-space: normal;
 }
 
+/* 항목 줄은 줄 전체가 눌리는 행 버튼이다 — 크기는 `.op-btn`이 정하고, 이 규칙은
+   행 배치·여러 줄·상자 없음·글자색만 적는다 (UI-k5s2). */
 .wait-summary__item {
   display: block;
   width: 100%;
-  padding: var(--sp-6);
   text-align: left;
+  white-space: normal;
   color: inherit;
   background: transparent;
   border: 0;
   cursor: pointer;
   overflow-wrap: anywhere;
 }
+/* @ds-region dialogs:end */
 
 /* @ds-region worker:begin */
 .wait-reason--highlight {
@@ -2280,9 +2290,11 @@ input.inline-edit:focus {
   margin-top: var(--sp-10);
 }
 
-/* Read-only 검증·배포 설정 section (worker-deploy-hook §4): display only —
-   the commands are defined in config.toml, which is the security boundary, so
-   this block styles no interactive control. */
+/* @ds-region repo-ops:begin */
+/* Read-only 검증·배포 설정 section (worker-deploy-hook §4): the commands are
+   defined in config.toml, which is the security boundary. Its two controls —
+   the script path that opens the viewer and `배포 실행` — are `.op-btn`s; these
+   rules only colour them (UI-k5s2). */
 .worker-repo-ops__vd {
   margin-top: var(--sp-14);
 }
@@ -2325,13 +2337,13 @@ input.inline-edit:focus {
   font-size: var(--fs-body-sm);
 }
 
+/* 스크립트 경로는 코드 상자 모양의 `.op-btn`이다 — 크기는 부품이, 상자 색·
+   고정폭 글꼴·긴 경로의 줄바꿈은 이 규칙이 정한다. */
 .worker-repo-ops__vd-cmd {
-  padding: var(--sp-1) var(--sp-6);
-  border-radius: var(--r-4);
   background: var(--bg-card);
   color: var(--text-primary);
   font-family: var(--font-mono, monospace);
-  font-size: var(--fs-small);
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 
@@ -2341,7 +2353,8 @@ input.inline-edit:focus {
   text-align: left;
 }
 
-.worker-repo-ops__vd-cmd--link:hover,
+/* 부품 hover(0,2,1)를 이기도록 `:hover:not(:disabled)`로 적어 지금 색을 지킨다. */
+.worker-repo-ops__vd-cmd--link:hover:not(:disabled),
 .worker-repo-ops__vd-cmd--link:focus-visible {
   color: var(--accent-child);
   text-decoration: underline;
@@ -2354,14 +2367,12 @@ input.inline-edit:focus {
   outline-offset: 2px;
 }
 
-/* 선언된 deploy 레인을 사람이 1회 실행시키는 버튼 (UI-s582 §3). */
+/* 선언된 deploy 레인을 사람이 1회 실행시키는 버튼 (UI-s582 §3). 크기는
+   `.op-btn`이 정한다. */
 .worker-repo-ops__deploy-run {
-  padding: var(--sp-1) var(--sp-8);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-4);
   background: var(--bg-card);
   color: var(--text-primary);
-  font-size: var(--fs-chip);
   font-weight: 600;
   cursor: pointer;
 }
@@ -2376,6 +2387,7 @@ input.inline-edit:focus {
   color: var(--text-dim);
   cursor: not-allowed;
 }
+/* @ds-region repo-ops:end */
 
 /* @ds-region drawer:begin */
 /* 고정 base의 검증·배포 blob만 보여주는 Worker 전용 코드 팝업. */
@@ -2572,6 +2584,7 @@ input.inline-edit:focus {
 
 /* @ds-region drawer:end */
 
+/* @ds-region repo-ops:begin */
 .worker-repo-ops__vd-badge {
   display: inline-block;
   padding: 0 var(--sp-7);
@@ -2644,6 +2657,7 @@ input.inline-edit:focus {
   color: var(--text-secondary);
   font-size: var(--fs-caption);
 }
+/* @ds-region repo-ops:end */
 
 /* @ds-region worker:begin */
 /* ==== 저장소 작업 상태 스트립 (UI-q0uy §4.1) ====
@@ -3111,6 +3125,7 @@ input.inline-edit:focus {
 
 /* @ds-region drawer:end */
 
+/* @ds-region repo-ops:begin */
 /* ==== 설정: 저장소 작업 선언 (UI-q0uy §4.5) ==== */
 .worker-repo-ops__vd-src {
   color: var(--text-dim);
@@ -3127,7 +3142,7 @@ input.inline-edit:focus {
 }
 
 .worker-repo-ops__lane-k {
-  padding-top: 1px;
+  padding-top: var(--sp-1);
   color: var(--text-muted);
   font-size: var(--fs-body-sm);
 }
@@ -3195,6 +3210,7 @@ input.inline-edit:focus {
   background: none;
   color: var(--text-muted);
 }
+/* @ds-region repo-ops:end */
 
 /* @ds-region worker:begin */
 .worker-rungrid {
@@ -7937,11 +7953,13 @@ button.detail-session__leg:focus-visible {
 
   /* @ds-region header:end */
 
+  /* @ds-region dialogs:begin */
   /* New-issue dialog form: label above, input below (§1.6). */
   .new-issue__form {
     grid-template-columns: 1fr;
     align-items: stretch;
   }
+  /* @ds-region dialogs:end */
 
   /* @ds-region worker:begin */
   /* 내부 스크롤 없음 (§4.7): 문서 스크롤 하나만 남긴다. */
@@ -8383,6 +8401,7 @@ button.detail-session__leg:focus-visible {
 
 /* @ds-region drawer:end */
 
+/* @ds-region dialogs:begin */
 /* ⚙ dialog worker system-prompt section. */
 .settings-dialog__sp {
   margin-top: var(--sp-14);
@@ -8422,16 +8441,16 @@ button.detail-session__leg:focus-visible {
   border-radius: var(--r-10);
   background: var(--bg-panel);
   color: var(--text-primary);
-  box-shadow: 0 24px 70px rgb(0 0 0 / 35%);
+  box-shadow: var(--shadow-op-dialog);
 }
 
 .op-dialog::backdrop {
-  background: rgb(0 0 0 / 48%);
+  background: var(--scrim-op-dialog);
 }
 
 .op-dialog h2 {
   margin: 0 0 0.65rem;
-  font-size: 1rem;
+  font-size: var(--fs-dialog-title);
 }
 
 .op-dialog__actions {
@@ -8463,7 +8482,7 @@ button.detail-session__leg:focus-visible {
 .resume-instructions-dialog textarea {
   box-sizing: border-box;
   width: 100%;
-  min-height: 8rem;
+  min-height: var(--h-dialog-textarea);
   resize: vertical;
 }
 
@@ -8482,11 +8501,11 @@ button.detail-session__leg:focus-visible {
   font-size: var(--fs-small);
 }
 
+/* 선택기는 화살표 없는 `.ui-select--bare`다 — `background` 단축 속성이 전역
+   화살표를 지운다. 크기는 부품이 정한다 (UI-k5s2). */
 .provider-resume-dialog select {
   min-width: 0;
-  padding: var(--sp-4) var(--sp-8);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
   background: var(--bg-drawer);
   color: var(--text-primary);
 }
@@ -8535,7 +8554,7 @@ button.detail-session__leg:focus-visible {
 .settings-dialog__container {
   display: grid;
   grid-template-columns: 148px minmax(0, 1fr);
-  min-height: min(460px, 100%);
+  min-height: var(--h-settings-dialog);
   max-height: inherit;
 }
 
@@ -8555,27 +8574,28 @@ button.detail-session__leg:focus-visible {
   font-weight: 650;
 }
 
+/* 레일 탭은 줄 전체가 눌리는 행 버튼(`.op-btn`)이다 — 크기는 부품이, 행 배치·
+   상자 없음·색은 이 규칙이 정한다. hover·선택은 부품 hover(0,2,1)를 이기도록
+   `:hover:not(:disabled)`로 적어 지금 색을 지킨다 (UI-k5s2). */
 .settings-dialog__tab {
   display: flex;
   align-items: center;
   gap: var(--sp-8);
   width: 100%;
-  padding: var(--sp-7) var(--sp-10);
   border: 0;
-  border-radius: var(--r-6);
   background: none;
   color: var(--text-muted);
-  font-size: var(--fs-body-sm);
   text-align: left;
   cursor: pointer;
 }
 
-.settings-dialog__tab:hover {
+.settings-dialog__tab:hover:not(:disabled) {
   background: var(--bg-card);
   color: var(--text-primary);
 }
 
-.settings-dialog__tab[aria-selected='true'] {
+.settings-dialog__tab[aria-selected='true'],
+.settings-dialog__tab[aria-selected='true']:hover:not(:disabled) {
   background: var(--bg-card);
   color: var(--text-title);
   box-shadow: inset 2px 0 0 var(--layer-global);
@@ -8587,14 +8607,14 @@ button.detail-session__leg:focus-visible {
   opacity: 0.85;
 }
 
+/* `닫기`는 `.op-btn`이다 — 테두리·글자색은 부품 기본과 같다. 세로 레일에서
+   폭을 채우므로 글자는 지금처럼 가운데에 둔다. */
 .settings-dialog__close {
+  justify-content: center;
   margin-top: auto;
-  padding: var(--sp-5) var(--sp-10);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
   background: none;
   color: var(--text-muted);
-  font-size: var(--fs-small);
   cursor: pointer;
 }
 
@@ -8728,14 +8748,28 @@ button.detail-session__leg:focus-visible {
   font-size: var(--fs-small);
 }
 
+/* 값 select는 `.ui-select--bare`(이 `background` 단축 속성이 전역 화살표를
+   지운다), 글자 입력은 `.ui-input`이다 — 크기는 부품이 정한다 (UI-k5s2). */
 .settings-dialog__controls select,
 .settings-dialog__text {
-  padding: var(--sp-4) var(--sp-9);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
   background: var(--bg-drawer);
   color: var(--text-primary);
-  font-size: var(--fs-small);
+}
+
+/* 클래스 없이 전역 버튼 팔레트로 그려지던 Worker 주소 줄 버튼(`새로고침`·
+   `저장`·`지우기`·`취소/최신값 채택`)은 `.op-btn` 크기에 그 팔레트를 그대로
+   쓴다. */
+.settings-dialog__controls
+  > :is(
+    [data-worker-url-refresh],
+    [data-worker-common-save],
+    [data-worker-common-clear],
+    [data-worker-common-cancel]
+  ) {
+  border-color: var(--button-border);
+  background: var(--button-bg);
+  color: var(--button-fg);
 }
 
 /* 옵션 문구(`현재 로그인(<email> · <plan>)`)가 길면 select의 고유 폭이 좁은 패널을
@@ -8774,8 +8808,8 @@ button.detail-session__leg:focus-visible {
 /* 리뷰 게이트 행의 stage 색 점 — 게이트 어휘를 카드 스텝퍼와 공유한다. */
 .settings-dialog__stage-dot {
   display: inline-block;
-  width: 7px;
-  height: 7px;
+  width: var(--sp-7);
+  height: var(--sp-7);
   margin-right: var(--sp-6);
   border-radius: 50%;
   vertical-align: middle;
@@ -8790,13 +8824,12 @@ button.detail-session__leg:focus-visible {
   background: var(--bg-drawer);
 }
 
+/* 세그먼트 그룹: 상자(배치·색)만 이 규칙이 그리고, 안의 버튼은 `.op-btn`이다
+   (켜진 것은 `is-active`·`aria-pressed`). 크기는 부품이 정한다 (UI-k5s2). */
 .settings-dialog__seg button {
-  padding: var(--sp-3) var(--sp-10);
   border: 0;
-  border-radius: var(--r-4);
   background: none;
   color: var(--text-muted);
-  font-size: var(--fs-small);
   cursor: pointer;
 }
 
@@ -8838,12 +8871,9 @@ button.detail-session__leg:focus-visible {
 .settings-dialog__preset-name {
   min-width: 0;
   max-width: 170px;
-  padding: var(--sp-4) var(--sp-9);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
   background: var(--bg-panel);
   color: var(--text-primary);
-  font-size: var(--fs-small);
 }
 
 .settings-dialog__preset-bar {
@@ -8912,17 +8942,17 @@ button.detail-session__leg:focus-visible {
   font-size: var(--fs-small);
 }
 
+/* 설정 버튼은 `.op-btn`(`적용`은 `--primary`)이다 — 크기는 부품이, 상자 색은
+   이 규칙이 정한다. hover는 부품 hover(0,2,1)를 이기도록
+   `:hover:not(:disabled)`로 적어 지금 색을 지킨다 (UI-k5s2). */
 .settings-dialog__btn {
-  padding: var(--sp-4) var(--sp-12);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
   background: var(--bg-drawer);
   color: var(--text-secondary);
-  font-size: var(--fs-small);
   cursor: pointer;
 }
 
-.settings-dialog__btn:hover {
+.settings-dialog__btn:hover:not(:disabled) {
   border-color: var(--border-card);
   color: var(--text-title);
 }
@@ -8970,13 +9000,13 @@ button.detail-session__leg:focus-visible {
   font-weight: 600;
 }
 
+/* 라벨 알약과 숨김 prefix 칩은 `.ui-chip`이다 — 크기는 부품이, 테두리·색은 이
+   규칙이 정한다. prefix 칩 안의 `×`는 칩의 내용이라 칩 글자를 물려받는다
+   (UI-k5s2). */
 .settings-dialog__pill {
-  padding: var(--sp-2) var(--sp-9);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-9);
   background: var(--bg-drawer);
   color: var(--text-secondary);
-  font-size: var(--fs-chip);
   cursor: pointer;
 }
 
@@ -8990,17 +9020,16 @@ button.detail-session__leg:focus-visible {
   display: inline-flex;
   gap: var(--sp-4);
   align-items: center;
-  padding: var(--sp-2) var(--sp-8);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-9);
   color: var(--text-secondary);
-  font-size: var(--fs-chip);
 }
 
 .settings-dialog__prefix-remove {
+  padding: 0;
   border: 0;
   background: none;
   color: var(--text-dim);
+  font-size: inherit;
   cursor: pointer;
 }
 
@@ -9011,12 +9040,9 @@ button.detail-session__leg:focus-visible {
 }
 
 .settings-dialog__prefix-input {
-  padding: var(--sp-4) var(--sp-8);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
   background: var(--bg-drawer);
   color: var(--text-primary);
-  font-size: var(--fs-small);
 }
 
 .settings-dialog__toggle {
@@ -9089,12 +9115,9 @@ button.detail-session__leg:focus-visible {
   flex: 1 1 auto;
   min-width: 0;
   max-width: 100%;
-  padding: var(--sp-4) var(--sp-9);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
   background: var(--bg-drawer);
   color: var(--text-primary);
-  font-size: var(--fs-small);
   text-overflow: ellipsis;
 }
 
@@ -9245,24 +9268,15 @@ button.detail-session__leg:focus-visible {
   }
 }
 
-/* 터치 표적: 좁은 화면·coarse 포인터에서 컨트롤을 키운다. */
+/* 터치 표적: 좁은 화면·coarse 포인터에서 컨트롤을 키운다. 탭·select·입력·
+   세그먼트 버튼은 부품의 coarse 분기가 키운다 (UI-k5s2). */
 @media (any-pointer: coarse), (max-width: 640px) {
-  .settings-dialog__tab {
-    padding: var(--sp-9) var(--sp-12);
-  }
-
-  .settings-dialog__controls select,
-  .settings-dialog__text,
-  .settings-dialog__seg button {
-    padding: var(--sp-7) var(--sp-12);
-    font-size: var(--fs-body-sm);
-  }
-
   .settings-dialog__stepper button {
     width: 34px;
     padding: var(--sp-6) 0;
   }
 }
+/* @ds-region dialogs:end */
 
 /* @ds-region detail:begin */
 /* ============================================================================
@@ -9722,7 +9736,9 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 
 /* @ds-region detail:end */
 
-/* Worker 화면 인라인 운영 설정 (검증·배포 선언) — 접힘 기본. */
+/* @ds-region repo-ops:begin */
+/* Worker 화면 인라인 운영 설정 (검증·배포 선언) — 접힘 기본. 머리
+   `<summary>`는 접기 머리줄이지 버튼이 아니라 부품을 받지 않는다 (UI-k5s2). */
 .worker-repo-ops-settings {
   margin-top: var(--sp-10);
   border: 1px solid var(--border-panel);
@@ -9750,6 +9766,7 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 .worker-repo-ops-settings > section {
   padding: var(--sp-4) var(--sp-10) var(--sp-8);
 }
+/* @ds-region repo-ops:end */
 
 /* @ds-region detail:begin */
 /* 좁은 화면: 유효 설정 카드의 키 열을 좁혀 값·배지·편집이 한 줄에 들어가게. */
@@ -10816,6 +10833,7 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
    본문만 어휘 표를 그대로 읽어 그리는 표들이다. 640px 이하는 전체 화면·세로
    스크롤.
    ========================================================================== */
+/* @ds-region dialogs:begin */
 .help-dialog {
   width: min(760px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
@@ -10847,13 +10865,11 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   font-weight: 600;
 }
 
+/* `닫기`는 `.op-btn`이다 — 크기는 부품이, 상자 색은 이 규칙이 정한다. */
 .help-dialog__close {
-  padding: var(--sp-4) var(--sp-10);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
   background: var(--bg-drawer);
   color: var(--text-secondary);
-  font-size: var(--fs-small);
   cursor: pointer;
 }
 
@@ -10908,8 +10924,8 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
 @media (max-width: 640px) {
   .help-dialog {
     width: 100vw;
-    max-height: 100dvh;
-    height: 100dvh;
+    max-height: var(--h-viewport);
+    height: var(--h-viewport);
     margin: 0;
     border-radius: 0;
   }
@@ -10942,3 +10958,4 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
     white-space: nowrap;
   }
 }
+/* @ds-region dialogs:end */

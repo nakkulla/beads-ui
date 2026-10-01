@@ -2926,7 +2926,7 @@ export function createDetailPanel(mount_element, options) {
       return html`<div class="detail-kv">
         <span class="detail-kv__k">${key}</span>
         <select
-          class="ui-select detail-kv__v detail-kv__v--sel"
+          class="ui-select ui-select--bare detail-kv__v detail-kv__v--sel"
           aria-label=${key}
           data-edit=${`wfmeta-${key}`}
           @change=${(/** @type {Event} */ ev) => onWorkflowMetaChange(key, ev)}
@@ -3042,7 +3042,7 @@ export function createDetailPanel(mount_element, options) {
       <div class="detail-kv">
         <span class="detail-kv__k">status</span>
         <select
-          class="ui-select detail-kv__v detail-kv__v--sel"
+          class="ui-select ui-select--bare detail-kv__v detail-kv__v--sel"
           aria-label="status"
           data-edit="status"
           @change=${onStatusChange}
@@ -3056,7 +3056,7 @@ export function createDetailPanel(mount_element, options) {
       <div class="detail-kv">
         <span class="detail-kv__k">priority</span>
         <select
-          class="ui-select detail-kv__v"
+          class="ui-select ui-select--bare detail-kv__v"
           aria-label="priority"
           data-edit="priority"
           @change=${onPriorityChange}
