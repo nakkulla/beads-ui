@@ -686,11 +686,12 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryReady'|'workRecoveryClassification'|'workRecoveryReadinessEnv'|'recoveryResultLineReasons'>} [workRecoveryPolicy]
  * @property {any} store - Queue store (queue-store.js).
  * @property {ReturnType<typeof import('./tmux-launcher.js').createTmuxLauncher>} [interactiveLauncher]
- * @property {Pick<ReturnType<typeof import('./external-wait/store.js').createExternalWaitStore>, 'findByBead'|'get'|'update'|'list'> & {onCompletion?:import('./external-wait/observer.js').RecordCallback, stop?:(workspace: string, wait_id: string) => Promise<{ ok?: boolean, status?: number, error?: string }|Record<string, unknown>>}} [externalWait]
+ * @property {Pick<ReturnType<typeof import('./external-wait/store.js').createExternalWaitStore>, 'findByBead'|'get'|'update'|'list'> & {onCompletion?:import('./external-wait/observer.js').RecordCallback, stop?:(workspace: string, wait_id: string, bead_id?: string) => Promise<{ ok?: boolean, status?: number, error?: string }|Record<string, unknown>>}} [externalWait]
  * `stop` is the service's [관찰 중단]: it ends observation AND unsets the
- * bead's `external_wait` key. The ✕ withdrawal of an external-job attempt
- * runs it first (2026-10-01 stall-reconcile D7); absent wiring withdraws such
- * an attempt only when no live wait record names it.
+ * bead's `external_wait` key; given the `bead_id` it also clears a key whose
+ * wait record is gone. The ✕ withdrawal of an external-job attempt runs it
+ * first (2026-10-01 stall-reconcile D7); absent wiring withdraws such an
+ * attempt only when no live wait record names it.
  * @property {ReturnType<typeof import('./exec-preset-coordinator.js').createExecPresetCoordinator>} execPresetCoordinator
  * The sole authority for workspace preset resolution. It snapshots the selected
  * preset before launch state changes, so the scheduler never reads mutable
@@ -13533,6 +13534,35 @@ export function createScheduler(deps) {
       recordSkipReason(workspace, bead_id, 'bd_snapshot_failed');
       return { ok: false, reason: 'bd_snapshot_failed' };
     }
+    // A retry rung that continues the session obeys the launch conditions a
+    // fresh rung's `dispatch` does (2026-10-01 stall-reconcile D3): a bead
+    // that is not ready, waits on a prerequisite or was closed, or whose
+    // runner is held, turns the rung away with that reason, and the due
+    // retry defers or closes the ladder by its class.
+    if (continuation.retry) {
+      if (!snap.ready || snap.blocked) {
+        if (dequeueIfClosed(workspace, bead_id, snap)) {
+          return { ok: false, reason: notReadyReason(snap) };
+        }
+        const prerequisite = await recordNotReady(workspace, bead_id, snap);
+        return {
+          ok: false,
+          reason: prerequisite ? 'prerequisite_unmet' : notReadyReason(snap)
+        };
+      }
+      const provider_gate = await providerDispatchHeld(
+        workspace,
+        prior.runner,
+        recordedDispatchSettings(prior).accounts
+      );
+      if (provider_gate.held) {
+        const { runner, kind, account, unresolved } = provider_gate;
+        recordSkipReason(workspace, bead_id, 'provider_gate', {
+          gate: { runner, kind, account, unresolved }
+        });
+        return { ok: false, reason: 'provider_gate' };
+      }
+    }
     const lane_mismatch = refuseLaneMismatch(workspace, prior, snap);
     if (lane_mismatch) {
       return lane_mismatch;
@@ -15536,6 +15566,17 @@ export function createScheduler(deps) {
       serial_lease.release();
       return { ok: false, reason: 'bead_running' };
     }
+    // Same window: a ✕ recorded while an AUTOMATIC continuation — a provider
+    // auto-resume receipt or a retry rung — was under way took the attempt
+    // off the Worker (2026-10-01 stall-reconcile D7), so that continuation
+    // records no child. A person's own resume of the attempt still goes on.
+    if (
+      (options.provider_auto_resume === true || !!options.retry) &&
+      isWithdrawnAttempt(deps.store.snapshot(workspace).attempts?.[attempt_id])
+    ) {
+      serial_lease.release();
+      return { ok: false, reason: 'withdrawn' };
+    }
     continuation.expected_revision = revalidated.expected_revision;
     const prior_wf =
       typeof bead_snapshot.workflow_mode === 'string'
@@ -16959,6 +17000,17 @@ export function createScheduler(deps) {
        * @type {string|null}
        */
       let refusal = null;
+      // This pass judged from a snapshot taken before its awaits, and a ✕
+      // (D7) or [폐기] landing in one of them already ended this ladder.
+      // Re-read in the same synchronous step that takes the claim: once the
+      // claim is held, ✕ waits for this rung instead.
+      if (
+        !retryStateOf(workspace).lineages.some(
+          (entry) => entry.bead_id === bead_id
+        )
+      ) {
+        continue;
+      }
       claimed.add(bead_id);
       try {
         if (
@@ -18114,6 +18166,15 @@ export function createScheduler(deps) {
     if (settling.has(attempt.attempt_id)) {
       return 'attempt_settling';
     }
+    // An automatic continuation already under way — the attempt's own
+    // auto-resume, or a retry rung or dispatch holding the bead — owns the
+    // next move; ✕ waits for it instead of racing its child record.
+    if (
+      resume_in_flight.has(attempt.attempt_id) ||
+      (attempt.status !== 'running' && claimed.has(attempt.bead_id))
+    ) {
+      return 'continuation_in_flight';
+    }
     if (
       attempt.status === 'running' &&
       claimed.has(attempt.bead_id) &&
@@ -18151,10 +18212,18 @@ export function createScheduler(deps) {
         : { ok: true };
     }
     try {
-      const result = /** @type {any} */ (await stopWait(workspace, wait_id));
-      // `not_found`/`invalid_stage` mean nothing is left to stop; only a
-      // failed metadata write leaves the key that would block admission.
-      if (result?.ok === false && result.error === 'bead_write_failed') {
+      // The bead id lets the service clear a key whose record is gone.
+      const result = /** @type {any} */ (
+        await stopWait(workspace, wait_id, attempt.bead_id)
+      );
+      // `wait_changed`/`invalid_stage`: the key is gone or names another
+      // wait, so nothing of THIS attempt blocks admission. `not_found` (no
+      // record, key not cleared) and a failed write may leave the key that
+      // refuses the bead's next admission (D7), so the ✕ fails instead.
+      if (
+        result?.ok === false &&
+        (result.error === 'bead_write_failed' || result.error === 'not_found')
+      ) {
         return { ok: false, reason: 'external_wait_stop_failed' };
       }
     } catch (err) {
@@ -18298,6 +18367,16 @@ export function createScheduler(deps) {
       const stopped_wait = await stopExternalWaitOf(workspace, attempt);
       if (!stopped_wait.ok) {
         return stopped_wait;
+      }
+      // The stop awaited, so a continuation may have started meanwhile: the
+      // same judgment again on the current record, right before the write.
+      const current = deps.store.snapshot(workspace);
+      const current_attempt = current.attempts?.[attempt_id];
+      const late_refusal = current_attempt
+        ? withdrawRefusal(current, current_attempt)
+        : 'attempt_not_found';
+      if (late_refusal !== null) {
+        return { ok: false, reason: late_refusal };
       }
     }
     const result = deps.store.withdrawAttempt(workspace, {

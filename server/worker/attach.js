@@ -1241,8 +1241,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       onCompletion: (ws, record) =>
         EXTERNAL_WAIT_HOOKS.get(runtime)?.get(ws)?.onCompletion(record),
       // The SAME [관찰 중단] the card button runs, so a ✕ withdrawal of an
-      // external-job attempt also unsets the bead's `external_wait` key.
-      stop: (ws, wait_id) => runtime.externalWait.stop(ws, wait_id)
+      // external-job attempt also unsets the bead's `external_wait` key —
+      // through the bead id when the wait record itself is gone.
+      stop: (ws, wait_id, bead_id) =>
+        runtime.externalWait.stop(ws, wait_id, bead_id)
     },
     // The workspace's ONE bead-history writer (record-timeline-retention §5) —
     // the same instance the queue store was registered with above, never a
