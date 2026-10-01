@@ -690,7 +690,6 @@ function failurePopoverTemplate(failure, now) {
  * The attempt's last non-thinking transcript line (§9.3).
  * @property {Array<{ label: string, state: 'live'|'done'|'failed'|'interrupted', agent_type?: string|null, model?: string|null, usage?: Record<string, number>|null, price_usd?: number|null, price_basis?: string, native?: boolean, usage_included?: boolean }>} [legs] -
  * Delegation legs; only the unfinished ones are spelled out.
- * `연결 n` 소속 칩 (UI-8x90 §4.1): 슬롯 5 좌표 칩이므로 직렬 레인 칩 다음이다.
  * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
  * 의존·겹침 칩 (§5.1). 실행중 타일도 `⛓ blocked` · `⧉ 겹침` · `scope 없음`을
  * 모두 받는다 (UI-anna §4·§5.3): 이미 출발한 레인에서 blocked는 "선행이 아직
@@ -729,8 +728,8 @@ const FORWARDER_AGENT_TYPES = new Set(['codex-runner']);
  * 목록은 툴팁으로 물러난다 ("기본은 접고 중요한 것만", 스펙 §2). 재료가 없는
  * 줄은 통째로 생략한다.
  *
- * 의존 칩은 슬롯 4라 이 함수가 싣지 않는다 (UI-251y §2). 자식 롤업과 landing
- * 진행도 같은 슬롯 3이고 이 줄 뒤에 오므로, 의존 칩을 여기 붙이면 슬롯 4가
+ * 의존 칩은 슬롯 4라 이 함수가 싣지 않는다 (UI-251y §2). landing 진행도
+ * 같은 슬롯 3이고 이 줄 뒤에 오므로, 의존 칩을 여기 붙이면 슬롯 4가
  * 슬롯 3보다 앞선다.
  *
  * 세션 타일은 전사도 위임 로그도 없다 (UI-yrzu §6): 활동 줄이 답할 수 있는
@@ -1156,8 +1155,8 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     /** @type {any} */ (tile),
     tile.chip_popover?.chip_key === 'plan'
   );
-  // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 자식 롤업·landing
-  // 진행이 모두 슬롯 3이므로 그 뒤에 선다.
+  // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 landing 진행이
+  // 모두 슬롯 3이므로 그 뒤에 선다.
   const monitor_relations = dependencyChipsTemplate(monitor?.dependency_chips);
   const monitor_body = monitorTileBody(
     monitor,
