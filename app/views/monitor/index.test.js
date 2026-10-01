@@ -4705,6 +4705,30 @@ describe('views/monitor PR 대기 보관 (UI-sd12 §3.4)', () => {
     );
   });
 
+  test('keeps [보관 해제] clickable on a shelved row whose cleanup stopped', () => {
+    const { mount, view } = setupShelf({
+      cleanup_failed: {
+        'A-2': {
+          step: 'branch_cleanup',
+          reason: 'x',
+          at: 1,
+          retryable: true,
+          next_retry_at: 1
+        }
+      }
+    });
+
+    view.load();
+
+    const button = /** @type {HTMLButtonElement} */ (
+      el(
+        mount,
+        '.worker-shelved .worker-mini[data-bead-id="A-2"]'
+      ).querySelector('.worker-mini__shelve')
+    );
+    expect(button.disabled).toBe(false);
+  });
+
   test('leaves shelved rows out of the PR 대기 lane count', () => {
     const { mount, view } = setupShelf();
 

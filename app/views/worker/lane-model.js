@@ -3783,7 +3783,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
             : merge_observed
               ? null
               : 'shelve',
-        shelve_enabled: !merge_step,
+        // Worker 탭과 같다: 멈춘 정리 단계는 [보관 해제]를 잠그지 않는다.
+        shelve_enabled: merge_step?.active !== true,
         shelve_title: shelved
           ? '보관을 풉니다 — 자동 머지가 켜져 있으면 다음 관측에서 다시 머지 대상이 됩니다'
           : '자동 머지·일괄 머지에서 이 PR을 빼고 [보관 해제]까지 둡니다 (머지 큐에 있으면 빠집니다)',

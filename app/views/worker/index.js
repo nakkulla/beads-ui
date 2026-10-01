@@ -1604,7 +1604,9 @@ function prWaitRow(
               progress_input.merge_sha.length > 0)
           ? null
           : 'shelve',
-    shelve_enabled: !merge_step,
+    // Only a step still running locks the button: a stopped cleanup is a
+    // step object too, and [보관 해제] is that row's way back to its retry.
+    shelve_enabled: merge_step?.active !== true,
     shelve_title: shelved
       ? '보관을 풉니다 — 자동 머지가 켜져 있으면 다음 관측에서 다시 머지 대상이 됩니다'
       : '자동 머지·일괄 머지에서 이 PR을 빼고 [보관 해제]까지 둡니다 (머지 큐에 있으면 빠집니다)',

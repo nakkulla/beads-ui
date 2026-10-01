@@ -12318,6 +12318,29 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
   });
 
+  test('keeps [보관 해제] clickable on a shelved row whose cleanup stopped', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_shelved: { 'RD-1': { at: 1 } },
+        cleanup_failed: {
+          'RD-1': {
+            step: 'branch_cleanup',
+            reason: 'x',
+            at: 1,
+            retryable: true,
+            next_retry_at: 1
+          }
+        }
+      })
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__shelve')
+    );
+
+    expect(button.disabled).toBe(false);
+  });
+
   test('[보관 해제] sends worker-merge-shelve with on false', () => {
     const { mount, transport } = mountLane(
       laneOf(['RD-1'], { merge_shelved: { 'RD-1': { at: 1 } } })
