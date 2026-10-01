@@ -28,13 +28,15 @@ const SIZE_PROPERTY =
   /^(height|min-height|font-size|border-radius|border-(top|bottom)-(left|right)-radius|padding|padding-(top|right|bottom|left|inline|block)(-(start|end))?)$/;
 
 const RAW_COLOR = /#[0-9a-fA-F]{3,8}\b|\b(rgba?|hsla?)\(/g;
-const RAW_LENGTH =
-  /(?<![\w-])\d*\.?\d+(px|rem|em|ex|ch|vh|vw|dvh|svh|lvh|pt)\b/g;
+/** In a size property any number directly followed by letters is a length
+ * (`px`, `vmin`, `cqi`, …); `%`, unitless numbers and `0` are not. */
+const RAW_LENGTH = /(?<![\w-])\d*\.?\d+[a-zA-Z]+/g;
 
 /**
- * Every `prop: value;` declaration of a stylesheet, comments removed. A
- * declaration may span lines; selectors never match because they are followed
- * by `{` rather than ending in `;`.
+ * Every `prop: value` declaration of a stylesheet, comments removed. A
+ * declaration ends at `;` or at the rule's closing `}` (the last one may omit
+ * the semicolon) and may span lines; selectors never match because they are
+ * followed by `{`.
  *
  * @param {string} css
  * @returns {Array<{ prop: string, value: string }>}
@@ -44,7 +46,7 @@ function declarations(css) {
   /** @type {Array<{ prop: string, value: string }>} */
   const out = [];
   for (const m of text.matchAll(
-    /(^|[{;\s])(--[\w-]+|[a-z-]+)\s*:\s*([^;{}]+);/g
+    /(^|[{;\s])(--[\w-]+|[a-z-]+)\s*:\s*([^;{}]+)(?:;|(?=}))/g
   )) {
     out.push({ prop: m[2], value: m[3].trim() });
   }
@@ -74,8 +76,8 @@ function rawColors(value) {
 }
 
 /**
- * Raw lengths of one size declaration: a length unit outside a plain token, or
- * a token reference that carries a literal fallback.
+ * Raw lengths of one size declaration: a number with a length unit outside a
+ * plain token, or inside a token reference's literal fallback.
  *
  * @param {string} value
  * @returns {string[]}
@@ -147,6 +149,28 @@ function findings(css) {
   return out;
 }
 
+describe('raw-value scanner', () => {
+  test('flags a last declaration without a trailing semicolon', () => {
+    const found = findings('.ui-chip { height: 27px }');
+
+    expect(found).toEqual(['height: 27px (27px)']);
+  });
+
+  test('flags a length unit outside the common unit list', () => {
+    const found = findings('.ui-chip { padding: 2vmin; }');
+
+    expect(found).toEqual(['padding: 2vmin (2vmin)']);
+  });
+
+  test('allows zero, percentages and unitless token multipliers', () => {
+    const found = findings(
+      '.ui-chip { height: 0; border-radius: 50%; min-height: calc(var(--sp-12) * 5) }'
+    );
+
+    expect(found).toEqual([]);
+  });
+});
+
 describe('design-system CSS rules (§3.4 check 1)', () => {
   test('marks at least one Worker region and the header region', () => {
     const names = regions(STYLES).map((r) => r.name);
@@ -194,10 +218,10 @@ describe('design-system CSS rules (§3.4 check 1)', () => {
 
 /**
  * Ratchet (§3.4 check 2): raw colour literals in any declaration plus raw
- * lengths in size declarations, over every stylesheet outside tokens.css.
- * UI-kqta lowered it from 470 (base d24f47a1: 194 colours + 276 sizes) to 428
- * (194 + 234); UI-k5s2 takes it to 0. Lower the number when a change removes
- * raw values — never raise it.
+ * lengths (any number with a unit) in size declarations, over every stylesheet
+ * outside tokens.css. UI-kqta lowered it from 470 (base d24f47a1: 194 colours +
+ * 276 sizes) to 428 (194 + 234), both counted with this scanner; UI-k5s2 takes
+ * it to 0. Lower the number when a change removes raw values — never raise it.
  */
 const RATCHET_BASELINE = 428;
 

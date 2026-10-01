@@ -5966,26 +5966,31 @@ html[data-theme='dark'] {
    토글이 된 같은 레인이므로 `data-lane`이 살아 있고 드롭 타깃도 유지된다. */
 /* 토글은 헤더 전체가 아니라 헤더 안의 버튼 하나다 (UI-5ksp §4.4) — 그래야
    `header_control`(정렬 select·범위 선택)이 형제로 서고, 그 조작이 접힘을
-   건드리지 않는다. 버튼 크롬만 지우고 타이포는 부모 `.worker-pane__hd`에서
-   물려받는다. */
+   건드리지 않는다. 버튼 크롬만 지우고 글자색·대소문자는 부모
+   `.worker-pane__hd`에서 물려받는다. */
 .worker-pane__toggle {
   display: flex;
   flex: 1 1 auto;
   align-items: center;
   gap: var(--sp-6);
   min-width: 0;
-  padding: 0;
   border: none;
   background: transparent;
   color: inherit;
-  font: inherit;
   letter-spacing: inherit;
   text-align: left;
   text-transform: inherit;
   cursor: pointer;
 }
 
-/* Worker 탭의 토글은 `.op-btn` 높이를 받지만 (UI-kqta §3.3) 글자는 머리줄을
+/* 크기(여백·글자)는 부품이 없는 Monitor 레인 머리만 머리줄에서 물려받는다.
+   Worker 탭의 토글은 `.op-btn`의 여백·글자 크기를 받는다 (UI-kqta §3.3). */
+.worker-pane__toggle:not(.op-btn) {
+  padding: 0;
+  font: inherit;
+}
+
+/* Worker 탭의 토글은 `.op-btn` 크기를 받지만 (UI-kqta §3.3) 글자색은 머리줄을
    그대로 물려받으므로 hover에서도 머리줄 색이다. */
 .worker-pane__toggle:hover:not(:disabled) {
   color: inherit;
@@ -6169,8 +6174,13 @@ html[data-theme='dark'] {
   border: none;
   background: transparent;
   color: var(--text-muted);
-  font: inherit;
   cursor: pointer;
+}
+
+/* 글자는 부품이 없는 Monitor 영역 토글만 머리줄에서 물려받는다. Worker 탭의
+   토글은 `.op-btn--icon`의 글자 크기를 받는다 (UI-kqta §3.3). */
+.worker-wait__area-toggle:not(.op-btn) {
+  font: inherit;
 }
 
 .worker-wait__area-toggle:hover:not(:disabled) {
