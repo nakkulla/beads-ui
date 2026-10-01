@@ -2587,7 +2587,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
   const STALE_VALUE = 'plan_approval_stale:revise';
 
   /**
-   * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any }} [options]
+   * @param {{ bead?: Record<string, any>, park?: string|null, admission?: any, timeline?: any }} [options]
    */
   function conversationEnv(options = {}) {
     const pane = {
@@ -2645,7 +2645,7 @@ describe('same-session conversation return (UI-nuwy)', () => {
         : undefined,
       verifyOk: false,
       notify,
-      timeline: { append: vi.fn() },
+      timeline: options.timeline || { append: vi.fn() },
       admission: options.admission,
       directionInquiry: {
         onParkedAttempt: vi.fn(async () => ({
@@ -2754,6 +2754,41 @@ describe('same-session conversation return (UI-nuwy)', () => {
     Object.values(env.store.snapshot(WS).attempts).filter(
       (attempt) => attempt.resumed_from === prior_id
     );
+
+  test('appends one start event while an absent conversation pane waits for handoff readback', async () => {
+    const timeline = createBeadTimeline({ workspace_root: WS });
+    const append = vi.spyOn(timeline, 'append');
+    const env = conversationEnv({
+      park: PARK_VALUE,
+      bead: { park_run: true },
+      timeline
+    });
+    const prior = await stopForConversation(env);
+    openConversation(env, prior, {
+      conversation: {
+        stop: `awaiting_user=${PARK_VALUE}`,
+        handoff: {
+          line: '인계 · 계속 진행',
+          source: 'result_line',
+          message_at: 900,
+          reserved_at: 1000
+        }
+      }
+    });
+    env.panes.rows = [];
+    vi.spyOn(env.bd, 'readMetadata').mockRejectedValue(
+      new Error('bd unavailable')
+    );
+
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+    await env.scheduler.reconcileInteractiveSessions(WS);
+
+    expect(record(env).turn_state).toBeNull();
+    expect(
+      append.mock.calls.filter(([event]) => event.seq === 'inquiry:500:started')
+    ).toHaveLength(1);
+  });
 
   test('reserves the handoff and closes the window without resuming yet', async () => {
     const env = conversationEnv();
@@ -15429,6 +15464,185 @@ describe('scheduler closed-queue sweep (UI-m6bg)', () => {
       cause: 'bead_closed',
       finished_at: expect.any(Number)
     });
+  });
+
+  test('settles a recovery-waiting attempt when its bead reads closed', async () => {
+    const env = setup({ config: { S1: { status: 'closed', ready: false } } });
+    seedQueue(env.store, ['S1']);
+    seedAttempt(env.store, 'S1', 'att-1', {
+      status: 'waiting',
+      cause: 'session_recovery_wait',
+      cause_detail: { recovery: { reason: 'verification' } },
+      repo: '/repo',
+      target_base: 'release'
+    });
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    await vi.waitFor(() => {
+      expect(env.store.snapshot(WS).attempts['att-1']).toMatchObject({
+        status: 'stopped',
+        cause: 'bead_closed'
+      });
+      expect(env.store.snapshot(WS).done.map((entry) => entry.bead_id)).toEqual(
+        ['S1']
+      );
+    });
+    expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(false);
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+    expect(env.worktree.remove).not.toHaveBeenCalled();
+  });
+
+  test('retries the done move after a closed recovery final status read fails', async () => {
+    const env = setup({ config: { S1: { status: 'closed', ready: false } } });
+    seedAttempt(env.store, 'S1', 'att-1', {
+      status: 'waiting',
+      cause_detail: { recovery: { reason: 'authority' } }
+    });
+    const read_status = vi
+      .spyOn(env.bd, 'readStatus')
+      .mockResolvedValueOnce('closed')
+      .mockRejectedValueOnce(new Error('bd unavailable'))
+      .mockResolvedValue('closed');
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    await vi.waitFor(() => expect(read_status).toHaveBeenCalledTimes(2));
+    expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('stopped');
+    expect(env.store.snapshot(WS).done).toEqual([]);
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+
+    await vi.waitFor(() => {
+      expect(env.store.snapshot(WS).done.map((entry) => entry.bead_id)).toEqual(
+        ['S1']
+      );
+    });
+    const settled = env.store.snapshot(WS);
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    await flush();
+    expect(env.store.snapshot(WS)).toEqual(settled);
+  });
+
+  test('preserves recovery residue when an inquiry registers during claim release', async () => {
+    const env = setup({ config: { S1: { status: 'closed', ready: false } } });
+    seedAttempt(env.store, 'S1', 'att-1', {
+      status: 'waiting',
+      cause_detail: { recovery: { reason: 'authority' } },
+      repo: '/repo'
+    });
+    /** @type {(status: string) => void} */
+    let finishRead = () => {};
+    const read_status = vi
+      .spyOn(env.bd, 'readStatus')
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishRead = resolve;
+          })
+      )
+      .mockResolvedValue('closed');
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    await vi.waitFor(() => expect(read_status).toHaveBeenCalledTimes(1));
+    env.store.recordInteractiveSession(WS, {
+      bead_id: 'S1',
+      kind: 'inquiry',
+      provider: 'claude',
+      pane_id: '%5',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'S1',
+      launched_at: 500,
+      last_seen_alive_at: 500,
+      state: 'live',
+      mode: 'resume',
+      attempt_id: 'att-1'
+    });
+
+    finishRead('closed');
+
+    await vi.waitFor(() => {
+      expect(env.store.snapshot(WS).done.map((entry) => entry.bead_id)).toEqual(
+        ['S1']
+      );
+    });
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+    expect(env.worktree.remove).not.toHaveBeenCalled();
+  });
+
+  test('waits for an inquiry to exit before settling a closed recovery attempt', async () => {
+    const env = setup({ config: { S1: { status: 'closed', ready: false } } });
+    seedAttempt(env.store, 'S1', 'att-1', {
+      status: 'waiting',
+      cause_detail: { recovery: { reason: 'authority' } },
+      repo: '/repo'
+    });
+    env.store.recordInteractiveSession(WS, {
+      bead_id: 'S1',
+      kind: 'inquiry',
+      provider: 'claude',
+      pane_id: '%5',
+      tmux_session: 'bdui-inquiry',
+      tmux_window: 'S1',
+      launched_at: 500,
+      last_seen_alive_at: 500,
+      state: 'live',
+      mode: 'resume',
+      attempt_id: 'att-1'
+    });
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('waiting');
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+    expect(
+      env.store.snapshot(WS).interactive_sessions['S1:inquiry'].settled_by
+    ).toBe('bd_closed');
+    env.store.removeInteractiveSession(WS, 'S1:inquiry');
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    await vi.waitFor(() => {
+      expect(env.store.snapshot(WS).done.map((entry) => entry.bead_id)).toEqual(
+        ['S1']
+      );
+    });
+  });
+
+  test.each(['deferred', 'resolved', 'open'])(
+    'preserves a recovery wait when its bead reads %s',
+    async (status) => {
+      const env = setup({ config: { S1: { status, ready: false } } });
+      seedQueue(env.store, ['S1']);
+      seedAttempt(env.store, 'S1', 'att-1', {
+        status: 'waiting',
+        cause_detail: { recovery: { reason: 'authority' } }
+      });
+      const before = env.store.snapshot(WS);
+
+      env.scheduler.sweepClosedQueue(WS, { S1: status });
+      await flush();
+
+      const after = env.store.snapshot(WS);
+      expect(after.attempts).toEqual(before.attempts);
+      expect(after.done).toEqual([]);
+      expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+    }
+  );
+
+  test('preserves a recovery ancestor when a newer attempt owns the closed bead', async () => {
+    const env = setup({ config: { S1: { status: 'closed', ready: false } } });
+    seedQueue(env.store, ['S1']);
+    seedAttempt(env.store, 'S1', 'att-1', {
+      status: 'waiting',
+      cause_detail: { recovery: { reason: 'authority' } }
+    });
+    seedAttempt(env.store, 'S1', 'att-2', {
+      status: 'running',
+      resumed_from: 'att-1'
+    });
+    const before = env.store.snapshot(WS);
+
+    env.scheduler.sweepClosedQueue(WS, { S1: 'closed' });
+    await flush();
+
+    expect(env.store.snapshot(WS)).toEqual(before);
   });
 
   test('waits for a held paused_done before disposing the paused record', async () => {
