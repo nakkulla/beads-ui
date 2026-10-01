@@ -20,6 +20,10 @@ function stripComments(css) {
 
 const CSS = readFileSync(path.resolve(process.cwd(), 'app/styles.css'), 'utf8');
 const RULES = stripComments(CSS);
+/** The layout constants live with the legacy palette in tokens.css (UI-k5s2). */
+const TOKEN_RULES = stripComments(
+  readFileSync(path.resolve(process.cwd(), 'app/styles/tokens.css'), 'utf8')
+);
 
 /**
  * Body of the first rule whose selector matches, or an empty string.
@@ -82,7 +86,7 @@ describe('document scroll layout', () => {
   });
 
   test('derives the lane cap from the measured header height', () => {
-    const root = ruleBody(RULES, /:root\s*{([^}]*--lane-max-h[^}]*)}/);
+    const root = ruleBody(TOKEN_RULES, /:root\s*{([^}]*--lane-max-h[^}]*)}/);
 
     expect(root).toMatch(/--app-header-h:/);
     expect(root).toMatch(/--lane-max-h:[^;]*var\(--app-header-h\)/);

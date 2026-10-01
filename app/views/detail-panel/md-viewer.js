@@ -96,7 +96,7 @@ export function createMdViewer(mount_element, options) {
             >
             <button
               type="button"
-              class="mv__close"
+              class="op-btn op-btn--icon op-btn--ghost mv__close"
               aria-label="닫기"
               @click=${() => close()}
             >

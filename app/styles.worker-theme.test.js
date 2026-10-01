@@ -137,9 +137,14 @@ describe('worker console styles', () => {
       )?.[1] || '';
     const detailRule =
       CSS.match(/(?:^|\n)\.session-log-root \.sv\s*{([^}]*)}/)?.[1] || '';
+    const tokens = readFileSync(
+      path.resolve(process.cwd(), 'app/styles/tokens.css'),
+      'utf8'
+    );
 
-    expect(hostRule).toContain('height: min(88vh, 1000px)');
-    expect(detailRule).toContain('height: min(88vh, 1000px)');
+    expect(tokens).toContain('--h-drawer: min(88vh, 1000px);');
+    expect(hostRule).toContain('height: var(--h-drawer)');
+    expect(detailRule).toContain('height: var(--h-drawer)');
   });
 
   test('turns every transcript host into a full-screen sheet below 640px', () => {
@@ -154,9 +159,9 @@ describe('worker console styles', () => {
       mq.match(/(?:^|\n)\s*\.session-log-root \.sv\s*{([^}]*)}/)?.[1] || '';
 
     expect(hostRule).toContain('width: 100%');
-    expect(hostRule).toContain('height: 100dvh');
+    expect(hostRule).toContain('height: var(--h-viewport)');
     expect(detailRule).toContain('inset: 0');
-    expect(detailRule).toContain('height: 100dvh');
+    expect(detailRule).toContain('height: var(--h-viewport)');
     expect(detailRule).toContain('border-radius: 0');
     expect(detailRule).toContain('box-shadow: none');
   });
@@ -735,33 +740,24 @@ describe('worker console styles', () => {
     expect(toggleRule).not.toContain('width: 100%');
   });
 
-  // Worker 탭 토글은 부품 크기를 받는다 (UI-kqta §3.3): 머리줄 여백·글자를
-  // 물려받는 규칙은 부품이 없는 Monitor 토글에만 걸린다.
-  test('keeps the pane toggle padding and type only on the part-less toggle', () => {
+  // 두 탭의 토글은 부품 크기를 받는다 (UI-kqta §3.3, UI-k5s2): 머리줄 여백·글자를
+  // 물려받던 부품 없는 토글 규칙은 남지 않는다.
+  test('leaves the pane toggle size to the part in both tabs', () => {
     const toggleRule =
       workerBlock.match(/(?:^|\n)\.worker-pane__toggle\s*{([^}]*)}/)?.[1] || '';
-    const partlessRule =
-      workerBlock.match(
-        /(?:^|\n)\.worker-pane__toggle:not\(\.op-btn\)\s*{([^}]*)}/
-      )?.[1] || '';
 
     expect(toggleRule).not.toMatch(/padding|font/);
-    expect(partlessRule).toContain('padding: 0');
-    expect(partlessRule).toContain('font: inherit');
+    expect(CSS).not.toContain('.worker-pane__toggle:not(.op-btn)');
   });
 
-  test('keeps the area toggle type only on the part-less toggle', () => {
+  test('leaves the area toggle size to the part in both tabs', () => {
     const toggleRule =
       workerBlock.match(
         /(?:^|\n)\.worker-wait__area-toggle\s*{([^}]*)}/
       )?.[1] || '';
-    const partlessRule =
-      workerBlock.match(
-        /(?:^|\n)\.worker-wait__area-toggle:not\(\.op-btn\)\s*{([^}]*)}/
-      )?.[1] || '';
 
     expect(toggleRule).not.toMatch(/padding|font/);
-    expect(partlessRule).toContain('font: inherit');
+    expect(CSS).not.toContain('.worker-wait__area-toggle:not(.op-btn)');
   });
 
   test('pushes the card head actions to the end of the first line', () => {

@@ -62,7 +62,7 @@ export function labelsSection(policy, labels, onPillClick) {
               const pill_state = labelPillState(label, policy);
               return html`<button
                 type="button"
-                class=${`settings-dialog__pill settings-dialog__pill--${pill_state}`}
+                class=${`ui-chip settings-dialog__pill settings-dialog__pill--${pill_state}`}
                 data-label=${label}
                 data-state=${pill_state}
                 @click=${() => onPillClick(label)}
@@ -88,7 +88,7 @@ export function prefixesSection(policy, draft, handlers) {
       <div class="settings-dialog__prefixes">
         ${policy.hidden_prefixes.map(
           (prefix) =>
-            html`<span class="settings-dialog__prefix">
+            html`<span class="ui-chip settings-dialog__prefix">
               ${prefix}
               <button
                 type="button"
@@ -104,7 +104,7 @@ export function prefixesSection(policy, draft, handlers) {
       <div class="settings-dialog__prefix-add">
         <input
           type="text"
-          class="settings-dialog__prefix-input"
+          class="ui-input settings-dialog__prefix-input"
           aria-label="숨길 prefix"
           placeholder="예: reviewed:"
           .value=${draft}
@@ -115,7 +115,7 @@ export function prefixesSection(policy, draft, handlers) {
         />
         <button
           type="button"
-          class="settings-dialog__btn"
+          class="op-btn settings-dialog__btn"
           @click=${handlers.onAdd}
         >
           추가

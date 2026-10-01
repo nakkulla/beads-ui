@@ -364,7 +364,9 @@ export function providerResumeDialogTemplate(
     <div class="provider-resume-dialog__fields">
       <label>
         러너
-        <select class="provider-resume-dialog__runner">
+        <select
+          class="ui-select ui-select--bare provider-resume-dialog__runner"
+        >
           ${Object.keys(runners).map(
             (runner) =>
               html`<option value=${runner} ?selected=${runner === draft.runner}>
@@ -375,7 +377,7 @@ export function providerResumeDialogTemplate(
       </label>
       <label>
         모델
-        <select class="provider-resume-dialog__model">
+        <select class="ui-select ui-select--bare provider-resume-dialog__model">
           ${Object.entries(runners).map(
             ([runner, entry]) =>
               html`<optgroup label=${runner}>
@@ -402,7 +404,9 @@ export function providerResumeDialogTemplate(
       ${runnerHasAccounts(draft.runner)
         ? html`<label>
             계정
-            <select class="provider-resume-dialog__account">
+            <select
+              class="ui-select ui-select--bare provider-resume-dialog__account"
+            >
               ${draft.account
                 ? ''
                 : html`<option value="" selected>계정 선택</option>`}

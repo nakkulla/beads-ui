@@ -202,7 +202,7 @@ export function createRepoOpsScriptViewer(options) {
           <div class="repo-ops-script-viewer__actions">
             <button
               type="button"
-              class="repo-ops-script-viewer__copy"
+              class="op-btn repo-ops-script-viewer__copy"
               ?disabled=${state !== 'ready'}
               @click=${() => void copyContent()}
             >
@@ -210,7 +210,7 @@ export function createRepoOpsScriptViewer(options) {
             </button>
             <button
               type="button"
-              class="repo-ops-script-viewer__close"
+              class="op-btn op-btn--icon repo-ops-script-viewer__close"
               aria-label="스크립트 팝업 닫기"
               @click=${() => close()}
             >

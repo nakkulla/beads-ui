@@ -471,7 +471,7 @@ function monitoredLegTemplate(session, leg, attempt_id, handlers, continued) {
   const short_id = shortIdOf(session, terminal_leg, continued);
   return html`<button
     type="button"
-    class="detail-session__leg detail-session__usage-detail detail-session__leg--${session.status}"
+    class="op-btn detail-session__leg detail-session__usage-detail detail-session__leg--${session.status}"
     data-launch-id=${session.launch_id}
     @click=${() =>
       handlers.onOpenDelegation &&
@@ -1054,7 +1054,7 @@ function sessionRefRow(view, handlers) {
   return html`<div class="detail-session-row">
     <button
       type="button"
-      class="detail-session detail-session--session"
+      class="op-btn detail-session detail-session--session"
       data-session-key=${sessionRefKey(view)}
       ?disabled=${blocked.length > 0}
       title=${blocked}
@@ -1233,7 +1233,7 @@ export function sessionHistoryTemplate(
     const open = expanded.has(a.attempt_id);
     return html`<button
       type="button"
-      class="detail-session__usage-toggle"
+      class="op-btn detail-session__usage-toggle"
       data-attempt-id=${a.attempt_id}
       aria-expanded=${open ? 'true' : 'false'}
       title=${open ? '토큰 내역 접기' : '토큰 내역 펼치기'}
@@ -1265,7 +1265,8 @@ export function sessionHistoryTemplate(
         return html`<div class="detail-session-row">
           <button
             type="button"
-            class="detail-session detail-session--${a.status || 'unknown'}"
+            class="op-btn detail-session detail-session--${a.status ||
+            'unknown'}"
             data-attempt-id=${a.attempt_id}
             @click=${() => handlers.onOpen && handlers.onOpen(a.attempt_id)}
           >

@@ -1225,7 +1225,7 @@ export function createBulkPane(host, options) {
       data-bulk-preset-bar=${profile}
     >
       <select
-        class="settings-dialog__bulk-preset"
+        class="ui-select ui-select--bare settings-dialog__bulk-preset"
         aria-label="적용할 실행 프리셋"
         data-bulk-preset
         title=${lane_title}
@@ -1253,7 +1253,7 @@ export function createBulkPane(host, options) {
       </select>
       <input
         type="text"
-        class="settings-dialog__preset-name"
+        class="ui-input settings-dialog__preset-name"
         aria-label="프리셋 이름"
         data-bulk-preset-name
         placeholder=${chosen ? '이름 (비우면 유지)' : '새 프리셋 이름'}
@@ -1375,7 +1375,7 @@ export function createBulkPane(host, options) {
       row.kind === 'text'
         ? html`<input
             type="text"
-            class="settings-dialog__text"
+            class="ui-input settings-dialog__text"
             aria-label=${row.label}
             data-bulk-session=${row.key}
             placeholder=${hold === null
@@ -1387,6 +1387,7 @@ export function createBulkPane(host, options) {
               onPick(String(/** @type {HTMLInputElement} */ (ev.target).value))}
           />`
         : html`<select
+            class="ui-select ui-select--bare"
             aria-label=${row.label}
             data-bulk-session=${row.key}
             ?disabled=${disabled}
@@ -1496,6 +1497,7 @@ export function createBulkPane(host, options) {
     return html`<span class="settings-dialog__bulk-field">
       <span class="settings-dialog__row-label">${label}</span>
       <select
+        class="ui-select ui-select--bare"
         aria-label=${`${label} 실행 계정`}
         data-bulk-account=${key}
         ?disabled=${running !== null || !provider}
@@ -1604,6 +1606,7 @@ export function createBulkPane(host, options) {
               ? ''
               : html`<button
                   type="button"
+                  class=${mode_hold !== null ? 'op-btn is-active' : 'op-btn'}
                   data-bulk-limit-mode=${HOLD}
                   aria-pressed=${String(mode_hold !== null)}
                   ?disabled=${disabled}
@@ -1618,6 +1621,9 @@ export function createBulkPane(host, options) {
               ([mode, text]) =>
                 html`<button
                   type="button"
+                  class=${mode_hold === null && form.mode === mode
+                    ? 'op-btn is-active'
+                    : 'op-btn'}
                   data-bulk-limit-mode=${mode}
                   aria-pressed=${String(
                     mode_hold === null && form.mode === mode
@@ -1703,6 +1709,7 @@ export function createBulkPane(host, options) {
         <span class="settings-dialog__row-label">선제 전환</span>
         <span class="settings-dialog__controls">
           <select
+            class="ui-select ui-select--bare"
             aria-label=${`${label} 선제 전환`}
             data-bulk-preempt=${runner}
             ?disabled=${disabled}
@@ -1739,7 +1746,7 @@ export function createBulkPane(host, options) {
           </select>
           <input
             type="number"
-            class="settings-dialog__text settings-dialog__bulk-pct"
+            class="ui-input settings-dialog__text settings-dialog__bulk-pct"
             min="1"
             max="99"
             step="1"

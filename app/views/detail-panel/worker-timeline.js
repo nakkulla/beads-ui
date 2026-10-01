@@ -99,7 +99,7 @@ export function workerTimelineTemplate(state, handlers = {}) {
     ${remaining > 0
       ? html`<button
           type="button"
-          class="detail-timeline__more"
+          class="ui-chip detail-timeline__more"
           data-seam="worker-timeline-more"
           @click=${() => handlers.onMore && handlers.onMore()}
         >

@@ -178,7 +178,7 @@ export function createWorkspacePicker(
     return html`
       <button
         type="button"
-        class="workspace-picker__git-pull-button"
+        class="op-btn op-btn--icon workspace-picker__git-pull-button"
         @click=${onGitPullClick}
         ?disabled=${is_switching || is_git_pulling}
         aria-label="Git Pull"
@@ -201,7 +201,7 @@ export function createWorkspacePicker(
       <div class="workspace-picker__manage">
         <button
           type="button"
-          class="workspace-picker__manage-button"
+          class="op-btn workspace-picker__manage-button"
           @click=${onManageClick}
           aria-haspopup="true"
           aria-expanded=${is_managing ? 'true' : 'false'}
@@ -287,7 +287,7 @@ export function createWorkspacePicker(
     return html`
       <div class="workspace-picker">
         <select
-          class="workspace-picker__select"
+          class="ui-select workspace-picker__select"
           @change=${onChange}
           .value=${live(selecting_from_monitor ? '' : current_path)}
           ?disabled=${is_switching || is_git_pulling}

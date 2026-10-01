@@ -123,7 +123,7 @@ export function createChipBindingsTab(host, options) {
     return html`<div class="settings-chips__row" data-chip=${chip}>
       <span class="settings-chips__label">${chipDisplayName(chip)}</span>
       <select
-        class="settings-chips__select"
+        class="ui-select settings-chips__select"
         data-chip=${chip}
         ?disabled=${state === null || busy.has(chip)}
         .value=${bound}

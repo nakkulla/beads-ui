@@ -171,6 +171,7 @@ export function paneSectionSegmentTemplate(active, onSelect) {
       (section) =>
         html`<button
           type="button"
+          class=${active === section.id ? 'op-btn is-active' : 'op-btn'}
           data-pane-section=${section.id}
           aria-pressed=${String(active === section.id)}
           @click=${() => onSelect(section.id)}
@@ -575,7 +576,12 @@ export function createExecutionPane(mount_element, binding) {
         <span class="settings-dialog__row-label">실제 적용 주소</span>
         <span class="settings-dialog__controls">
           <span data-worker-url-effective>${workerUrlMessage(worker_url)}</span>
-          <button type="button" data-worker-url-refresh @click=${onWindowFocus}>
+          <button
+            type="button"
+            class="op-btn"
+            data-worker-url-refresh
+            @click=${onWindowFocus}
+          >
             새로고침
           </button>
           ${worker_url?.warnings?.length
@@ -600,7 +606,7 @@ export function createExecutionPane(mount_element, binding) {
             type="text"
             data-worker-common-input
             aria-label="공통 기본값"
-            class=${`settings-dialog__text${common_invalid ? ' settings-dialog__text--invalid' : ''}`}
+            class=${`ui-input settings-dialog__text${common_invalid ? ' settings-dialog__text--invalid' : ''}`}
             aria-invalid=${String(common_invalid)}
             .value=${live(common_draft.value)}
             ?disabled=${!commonEditable()}
@@ -608,6 +614,7 @@ export function createExecutionPane(mount_element, binding) {
           />
           <button
             type="button"
+            class="op-btn"
             data-worker-common-save
             ?disabled=${!commonEditable()}
             @click=${() => saveCommon()}
@@ -616,6 +623,7 @@ export function createExecutionPane(mount_element, binding) {
           </button>
           <button
             type="button"
+            class="op-btn"
             data-worker-common-clear
             ?disabled=${!commonEditable()}
             @click=${() => saveCommon(true)}
@@ -624,6 +632,7 @@ export function createExecutionPane(mount_element, binding) {
           </button>
           <button
             type="button"
+            class="op-btn"
             data-worker-common-cancel
             ?disabled=${common_saving || !common_draft.dirty}
             @click=${cancelCommonEdit}
@@ -1806,7 +1815,7 @@ export function createExecutionPane(mount_element, binding) {
       </div>
       <button
         type="button"
-        class="settings-dialog__btn"
+        class="op-btn settings-dialog__btn"
         data-seam="system-prompt-toggle"
         aria-expanded=${prompt_expanded ? 'true' : 'false'}
         @click=${toggleSystemPrompt}
@@ -1866,7 +1875,9 @@ export function createExecutionPane(mount_element, binding) {
     const full_value =
       selected === UNSET ? view.full_value : selected_option?.full_value;
     return html`<select
-        class=${selected === UNSET ? 'settings-dialog__unset' : ''}
+        class=${selected === UNSET
+          ? 'ui-select ui-select--bare settings-dialog__unset'
+          : 'ui-select ui-select--bare'}
         data-key=${key}
         aria-label=${label}
         title=${full_value || ''}
@@ -1968,7 +1979,7 @@ export function createExecutionPane(mount_element, binding) {
       <span class="settings-dialog__controls">
         <input
           type="text"
-          class=${`settings-dialog__text${invalid ? ' settings-dialog__text--invalid' : ''}`}
+          class=${`ui-input settings-dialog__text${invalid ? ' settings-dialog__text--invalid' : ''}`}
           data-key=${key}
           aria-label=${label}
           aria-invalid=${String(invalid)}
@@ -2053,6 +2064,7 @@ export function createExecutionPane(mount_element, binding) {
       <span class="settings-dialog__row-label">${label}</span>
       <span class="settings-dialog__controls">
         <select
+          class="ui-select ui-select--bare"
           aria-label=${label}
           data-account-key=${key}
           @change=${(/** @type {Event} */ ev) =>
@@ -2112,6 +2124,7 @@ export function createExecutionPane(mount_element, binding) {
           >
             <button
               type="button"
+              class=${policy.mode === 'wait' ? 'op-btn is-active' : 'op-btn'}
               data-limit-mode="wait"
               aria-pressed=${String(policy.mode === 'wait')}
               @click=${() => onLimitModeChange(runner, 'wait')}
@@ -2120,6 +2133,7 @@ export function createExecutionPane(mount_element, binding) {
             </button>
             <button
               type="button"
+              class=${policy.mode === 'switch' ? 'op-btn is-active' : 'op-btn'}
               data-limit-mode="switch"
               aria-pressed=${String(policy.mode === 'switch')}
               @click=${() => onLimitModeChange(runner, 'switch')}
@@ -2196,6 +2210,7 @@ export function createExecutionPane(mount_element, binding) {
           </label>
           <input
             type="number"
+            class="ui-input"
             min="1"
             max="99"
             step="1"
@@ -2448,6 +2463,7 @@ export function createExecutionPane(mount_element, binding) {
     return html`
       <div class="settings-dialog__preset-bar" data-preset-bar=${profile}>
         <select
+          class="ui-select"
           aria-label="실행 프리셋"
           title=${lane_title}
           ?disabled=${lane_locked}
@@ -2472,7 +2488,7 @@ export function createExecutionPane(mount_element, binding) {
         </select>
         <button
           type="button"
-          class="settings-dialog__btn settings-dialog__btn--primary op-btn"
+          class="op-btn op-btn--primary settings-dialog__btn settings-dialog__btn--primary"
           data-preset-apply-global
           title=${apply_title}
           ?disabled=${lane_locked ||
@@ -2484,7 +2500,7 @@ export function createExecutionPane(mount_element, binding) {
         </button>
         <input
           type="text"
-          class="settings-dialog__preset-name"
+          class="ui-input settings-dialog__preset-name"
           placeholder=${selected_preset
             ? '이름 (비우면 유지)'
             : '새 프리셋 이름'}
@@ -2500,7 +2516,7 @@ export function createExecutionPane(mount_element, binding) {
         />
         <button
           type="button"
-          class="settings-dialog__btn"
+          class="op-btn settings-dialog__btn"
           data-preset-save
           title=${save_title}
           ?disabled=${lane_locked}
@@ -2510,7 +2526,7 @@ export function createExecutionPane(mount_element, binding) {
         </button>
         <button
           type="button"
-          class="settings-dialog__btn"
+          class="op-btn settings-dialog__btn"
           data-preset-delete
           title=${lane_title}
           ?disabled=${lane_locked || selected_preset === null}
@@ -2543,6 +2559,7 @@ export function createExecutionPane(mount_element, binding) {
         <span class="settings-dialog__row-label">런타임</span>
         <span class="settings-dialog__controls">
           <select
+            class="ui-select ui-select--bare"
             aria-label="런타임"
             data-key="orchestration_runtime"
             .value=${live(runtime || UNSET)}
@@ -2908,6 +2925,9 @@ export function createExecutionPane(mount_element, binding) {
             <span class="settings-dialog__seg" role="group">
               <button
                 type="button"
+                class=${session_draft.workflow_mode
+                  ? 'op-btn'
+                  : 'op-btn is-active'}
                 data-mode=${UNSET}
                 aria-pressed=${String(!session_draft.workflow_mode)}
                 @click=${() => onSessionChange('workflow_mode', UNSET)}
@@ -2921,6 +2941,9 @@ export function createExecutionPane(mount_element, binding) {
                 (mode) =>
                   html`<button
                     type="button"
+                    class=${session_draft.workflow_mode === mode
+                      ? 'op-btn is-active'
+                      : 'op-btn'}
                     data-mode=${mode}
                     aria-pressed=${String(session_draft.workflow_mode === mode)}
                     @click=${() => onSessionChange('workflow_mode', mode)}

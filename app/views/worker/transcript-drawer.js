@@ -1107,7 +1107,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
             : ''}
           <button
             type="button"
-            class="sv__follow${follow ? ' sv__follow--on' : ''}"
+            class="ui-chip sv__follow${follow ? ' sv__follow--on' : ''}"
             aria-pressed=${follow ? 'true' : 'false'}
             aria-label=${follow_label}
             @click=${toggleFollow}
@@ -1117,7 +1117,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
           </button>
           <button
             type="button"
-            class="sv__close"
+            class="op-btn op-btn--icon op-btn--ghost sv__close"
             aria-label="닫기"
             @click=${() => close()}
           >
@@ -1130,7 +1130,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
               ${session_id
                 ? html`<button
                     type="button"
-                    class="sv__session"
+                    class="op-btn op-btn--ghost sv__session"
                     title=${session_id}
                     aria-label=${`세션 ID 복사: ${session_id}`}
                     @click=${() => copyValue(session_id)}
@@ -1141,7 +1141,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
               ${meta.resume_command
                 ? html`<button
                     type="button"
-                    class="sv__resume-cmd"
+                    class="op-btn op-btn--ghost sv__resume-cmd"
                     title=${meta.resume_command}
                     aria-label=${`재개 명령 복사: ${meta.resume_command}`}
                     @click=${() => copyValue(meta.resume_command || '')}
@@ -1152,8 +1152,8 @@ export function createTranscriptDrawer(mount_element, options = {}) {
               ${show_prompt
                 ? html`<button
                     type="button"
-                    class="sv__prompt-toggle${prompt_expanded
-                      ? ' sv__prompt-toggle--on'
+                    class="op-btn op-btn--ghost sv__prompt-toggle${prompt_expanded
+                      ? ' sv__prompt-toggle--on is-active'
                       : ''}"
                     data-seam="attempt-prompt-toggle"
                     aria-pressed=${prompt_expanded ? 'true' : 'false'}
@@ -1235,7 +1235,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     return html`<div class="sv__work${is_open ? ' sv__work--open' : ''}">
       <button
         type="button"
-        class="sv__work-sum"
+        class="op-btn sv__work-sum"
         aria-expanded=${is_open ? 'true' : 'false'}
         @click=${() => toggleBundle(block.idx, is_open)}
       >

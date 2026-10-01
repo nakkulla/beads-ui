@@ -730,7 +730,9 @@ function selectRow(
       <span class="detail-kv__k">${execSettingLabelTemplate(key)}</span>
       <span class="detail-kv__vgroup">
         <select
-          class=${highlight ? 'detail-kv__v detail-kv__v--sel' : 'detail-kv__v'}
+          class=${highlight
+            ? 'ui-select ui-select--bare detail-kv__v detail-kv__v--sel'
+            : 'ui-select ui-select--bare detail-kv__v'}
           aria-label=${key}
           data-key=${key}
           ?disabled=${disabled}

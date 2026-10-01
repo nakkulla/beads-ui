@@ -54,7 +54,7 @@ export function logPathTemplate(value) {
     ><code class="worker-ev__path">${value}</code
     ><button
       type="button"
-      class="worker-ev__copy"
+      class="op-btn op-btn--icon worker-ev__copy"
       data-seam="log-path-copy"
       title="로그 경로 복사"
       aria-label=${`로그 경로 복사: ${value}`}
