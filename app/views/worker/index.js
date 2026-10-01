@@ -3796,7 +3796,9 @@ export function createWorkerView(mount_element, options = {}) {
     const next_head = parallel.length > 0 ? parallel[0].id : '—';
     const play = html`<button
       type="button"
-      class="worker-play${q.auto_advance ? ' is-active' : ''}"
+      class="op-btn op-btn--success worker-play${q.auto_advance
+        ? ' is-active'
+        : ''}"
     >
       ${q.auto_advance ? '⏸ 자동화 멈춤' : '▶ 자동화'}
     </button>`;
@@ -3814,6 +3816,7 @@ export function createWorkerView(mount_element, options = {}) {
     // 세 카운트는 데스크톱 KPI 줄과 모바일 리본이 함께 쓴다 — 같은 수를 두 번
     // 정의하지 않기 위해 템플릿 하나로 둔다.
     const counts = summaryChipsTemplate({
+      parts: true,
       running: group.live_count,
       // 보관 행은 PR 대기 개수에 들지 않는다 (UI-sd12 §3.4).
       pr_wait: prWaitRows(m).filter((/** @type {any} */ r) => !r.shelved)
@@ -3835,13 +3838,13 @@ export function createWorkerView(mount_element, options = {}) {
     // 여는 순간 되돌리기 어려운 선택이라, 예외가 생겼을 때만 나타나는 표시로는
     // 늦다. 읽지 못한 선언을 `main`으로 그리지는 않는다.
     const base_chip = html`<span
-      class="worker-kpi__chip worker-kpi__chip--base"
+      class="ui-chip worker-kpi__chip worker-kpi__chip--base"
       title=${group.declared_base
         ? '이 워크스페이스가 선언한 target base (docs/agents/repo-ops.toml). 디스패치 시점의 검증은 별도'
         : '선언 파일을 읽지 못했습니다 — target base 확인 불가'}
       >base ${group.declared_base || '?'}</span
     >`;
-    const settings = html`<label class="worker-tgl worker-slots"
+    const settings = html`<label class="ui-field worker-tgl worker-slots"
         >동시 실행
         <input
           type="number"
@@ -3852,7 +3855,7 @@ export function createWorkerView(mount_element, options = {}) {
           title="동시에 실행할 세션 수 (최소 1 = 순차 실행)"
       /></label>
       <label
-        class="worker-tgl worker-serial-lanes"
+        class="ui-field worker-tgl worker-serial-lanes"
         title="고정 직렬 레인 수 (1~5). 축소 시 잘린 레인의 대기 항목은 병렬 대기로 돌아갑니다"
         >직렬 레인
         <select class="worker-serial-lane-count" aria-label="직렬 레인 수">
@@ -3870,10 +3873,10 @@ export function createWorkerView(mount_element, options = {}) {
     // 검색은 "누르는 곳"이므로 조작 묶음의 끝이다 (UI-6g3t §7, 툴바 규칙은
     // UI-58y2). 후보 필터 strip과는 답하는 질문이 다르다 — strip은 후보 페인의
     // 표시 조건이고 이 입력은 탭 전체의 강조다. 버튼이 아니므로 `.op-btn`을
-    // 주지 않는다.
+    // 주지 않는다 — 입력 부품 `.ui-input`이 같은 높이를 준다 (UI-kqta §3.3).
     const search = html`<input
       type="search"
-      class="worker-search"
+      class="ui-input worker-search"
       placeholder="ID·제목 검색"
       aria-label="이슈 검색 (ID·제목)"
       .value=${search_query}
@@ -3929,7 +3932,7 @@ export function createWorkerView(mount_element, options = {}) {
           ).map(
             (badge) =>
               html`<span
-                class="worker-kpi__chip worker-kpi__chip--tokens"
+                class="ui-chip worker-kpi__chip worker-kpi__chip--tokens"
                 title=${badge.tooltip}
                 >${tokenChipTemplate(
                   `${doneRangeLabel()} 완료 · 누적 ${badge.label}`,
@@ -3956,7 +3959,10 @@ export function createWorkerView(mount_element, options = {}) {
   function candidateControlsTemplate(m) {
     const hidden = m.runnable_hidden;
     return html`<div class="worker-filter">
-      <label class="worker-filter__tgl" title="blocked 이슈 표시 (기본 숨김)">
+      <label
+        class="ui-field worker-filter__tgl"
+        title="blocked 이슈 표시 (기본 숨김)"
+      >
         <input
           type="checkbox"
           class="worker-filter__blocked"
@@ -3973,7 +3979,8 @@ export function createWorkerView(mount_element, options = {}) {
           (o) =>
             html`<button
               type="button"
-              class="worker-filter__chip${candidate_filter.readiness === o.value
+              class="ui-chip worker-filter__chip${candidate_filter.readiness ===
+              o.value
                 ? ' is-active'
                 : ''}"
               data-readiness=${o.value}
@@ -3995,7 +4002,7 @@ export function createWorkerView(mount_element, options = {}) {
           (o) =>
             html`<button
               type="button"
-              class="worker-filter__chip worker-filter__route${candidate_filter.routes.includes(
+              class="ui-chip worker-filter__chip worker-filter__route${candidate_filter.routes.includes(
                 o.value
               )
                 ? ' is-active'
@@ -4023,7 +4030,7 @@ export function createWorkerView(mount_element, options = {}) {
           (o) =>
             html`<button
               type="button"
-              class="worker-filter__chip worker-filter__priority${priorityFilter().includes(
+              class="ui-chip worker-filter__chip worker-filter__priority${priorityFilter().includes(
                 o.value
               )
                 ? ' is-active'
@@ -4042,7 +4049,10 @@ export function createWorkerView(mount_element, options = {}) {
             >`
           : ''}
       </div>
-      <select class="worker-sort worker-filter__type" aria-label="타입 필터">
+      <select
+        class="ui-select worker-sort worker-filter__type"
+        aria-label="타입 필터"
+      >
         ${TYPE_FILTER_OPTIONS.map(
           (o) =>
             html`<option value=${o.value} ?selected=${typeFilter() === o.value}>
@@ -4107,7 +4117,7 @@ export function createWorkerView(mount_element, options = {}) {
     return html`<div class="worker-filter__labels">
       <button
         type="button"
-        class="worker-filter__chip worker-filter__labels-btn${selected.length >
+        class="ui-chip worker-filter__chip worker-filter__labels-btn${selected.length >
         0
           ? ' is-active'
           : ''}"
@@ -4155,7 +4165,7 @@ export function createWorkerView(mount_element, options = {}) {
       ? 'custom'
       : presetIdOf(candidate_sort) || 'custom';
     return html`<select
-      class="worker-sort"
+      class="ui-select worker-sort"
       aria-label="후보 정렬"
       title="후보 정렬"
       .value=${current}
@@ -4193,7 +4203,7 @@ export function createWorkerView(mount_element, options = {}) {
         const step = chain[index];
         return html`<span class="worker-sort-chain__step">
           <select
-            class="worker-sort-chain__key"
+            class="ui-select worker-sort-chain__key"
             data-step=${index}
             aria-label=${`${index + 1}차 정렬 키`}
             .value=${step ? step.key : ''}
@@ -4214,7 +4224,7 @@ export function createWorkerView(mount_element, options = {}) {
           ${step
             ? html`<button
                 type="button"
-                class="worker-sort-chain__dir"
+                class="op-btn op-btn--icon worker-sort-chain__dir"
                 data-step=${index}
                 aria-label=${step.dir === 'asc' ? '오름차순' : '내림차순'}
                 title=${step.dir === 'asc' ? '오름차순' : '내림차순'}
@@ -4238,7 +4248,7 @@ export function createWorkerView(mount_element, options = {}) {
   function doneRangeTemplate() {
     return html`<div class="worker-done-controls">
       <select
-        class="worker-sort worker-done-range"
+        class="ui-select worker-sort worker-done-range"
         aria-label="완료 기간"
         title="완료 기간"
         .value=${done_range}
@@ -4279,7 +4289,7 @@ export function createWorkerView(mount_element, options = {}) {
     if (merge.running) {
       return html`<button
         type="button"
-        class="worker-merge-all worker-merge-all--stop${auto
+        class="op-btn op-btn--warn worker-merge-all worker-merge-all--stop${auto
           ? ' is-active'
           : ''}"
         title=${auto
@@ -4292,7 +4302,7 @@ export function createWorkerView(mount_element, options = {}) {
     if (auto) {
       return html`<button
         type="button"
-        class="worker-merge-all worker-merge-all--stop is-active"
+        class="op-btn op-btn--warn worker-merge-all worker-merge-all--stop is-active"
         title="자동 머지 켜짐 — 자격이 생기는 PR을 계속 큐에 넣습니다. 클릭하면 끕니다"
       >
         ⏸ 자동 머지
@@ -4305,7 +4315,7 @@ export function createWorkerView(mount_element, options = {}) {
     ).length;
     return html`<button
       type="button"
-      class="worker-merge-all"
+      class="op-btn worker-merge-all"
       title="켜 두면 자격이 생기는 PR을 계속 큐에 넣어 순서대로 충돌 해소·머지합니다"
     >
       ▶ 자동 머지${count > 0 ? ` ${count}` : ''}
@@ -4357,6 +4367,7 @@ export function createWorkerView(mount_element, options = {}) {
     const root_dir = rootDir();
     const group = groupOf(m);
     return waitBody({
+      parts: true,
       parallel: {
         rows: parallel_rows.map((/** @type {any} */ it, index) =>
           dragRow(it, { kind: 'parallel', root_dir, row_index: index })
@@ -4472,6 +4483,7 @@ export function createWorkerView(mount_element, options = {}) {
     );
     const running = runningTiles(m);
     const candidate_pane = paneTemplate({
+      parts: true,
       id: 'worker-pane-candidate',
       lane: 'candidate',
       title: '후보',
@@ -4493,6 +4505,7 @@ export function createWorkerView(mount_element, options = {}) {
         : undefined
     });
     const done_pane = paneTemplate({
+      parts: true,
       id: 'worker-pane-done',
       lane: 'done',
       title: '완료',
@@ -4524,6 +4537,7 @@ export function createWorkerView(mount_element, options = {}) {
             count: running.length + pr_wait.length
           })}
           ${paneTemplate({
+            parts: true,
             id: 'worker-pane-queue',
             lane: 'queue',
             title: '대기',
@@ -4546,6 +4560,7 @@ export function createWorkerView(mount_element, options = {}) {
     return html`<div class="worker-lanes">
         ${candidate_pane}
         ${paneTemplate({
+          parts: true,
           id: 'worker-pane-queue',
           lane: 'queue',
           title: '대기',
@@ -4557,6 +4572,7 @@ export function createWorkerView(mount_element, options = {}) {
           body: waitBodyTemplate(m)
         })}
         ${paneTemplate({
+          parts: true,
           id: 'worker-pane-running',
           lane: 'running',
           title: '실행 중',
@@ -4573,6 +4589,7 @@ export function createWorkerView(mount_element, options = {}) {
           body: runningBody(m)
         })}
         ${paneTemplate({
+          parts: true,
           id: 'worker-pane-pr-wait',
           lane: 'pr_wait',
           title: 'PR 대기',

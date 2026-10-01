@@ -356,7 +356,7 @@ export function repoOpsStripTemplate(operations, cleanup_failures) {
   }
   return html`<button
     type="button"
-    class="worker-repo-strip"
+    class="op-btn worker-repo-strip"
     data-seam="repo-ops-strip"
     aria-label="저장소 작업 타임라인 열기"
   >
@@ -380,8 +380,8 @@ export function repoOpsStripTemplate(operations, cleanup_failures) {
       : ''}
     <span class="worker-repo-strip__spacer"></span>
     <span
-      class="worker-repo-strip__badge worker-repo-strip__badge--${model.badge
-        .tone}"
+      class="ui-chip worker-repo-strip__badge worker-repo-strip__badge--${model
+        .badge.tone}"
       >${model.badge.label}</span
     >
   </button>`;
@@ -817,7 +817,7 @@ export function execChipsTemplate(chips, options = {}) {
  * @returns {import('lit-html').TemplateResult}
  */
 function openableChipTemplate(chip, kind) {
-  const cls = `worker-dep worker-dep--${kind}${chip.foreign ? ' worker-dep--foreign' : ''}`;
+  const cls = `ui-chip worker-dep worker-dep--${kind}${chip.foreign ? ' worker-dep--foreign' : ''}`;
   return chip.openable === true
     ? html`<button
         type="button"
@@ -880,7 +880,7 @@ export function specAfterBlockerChipTemplate(active, open = false) {
   }
   return html`<button
     type="button"
-    class="ctl-chip ctl-chip--label judgement-chip worker-card__spec-after-blocker"
+    class="ui-chip ctl-chip ctl-chip--label judgement-chip worker-card__spec-after-blocker"
     data-chip-key="spec_after_blocker"
     aria-expanded=${open ? 'true' : 'false'}
     title="선행의 결과가 설계 전제라 스펙도 선행 뒤에 씁니다"
@@ -949,7 +949,7 @@ function readinessChipTemplate(judgement, open) {
   }
   return html`<button
     type="button"
-    class="ctl-chip ctl-chip--label judgement-chip worker-card__readiness"
+    class="ui-chip ctl-chip ctl-chip--label judgement-chip worker-card__readiness"
     data-chip-key="readiness"
     aria-expanded=${open ? 'true' : 'false'}
     title=${judgement.title}
@@ -1029,7 +1029,7 @@ export function dependencyChipsTemplate(
           openableChipTemplate(overlapAsChip(chip), 'overlap')
         )}${scope_missing
           ? html`<span
-              class="worker-dep worker-dep--muted"
+              class="ui-chip worker-dep worker-dep--muted"
               title="겹침 판정 불가 — 아티팩트가 있으면 스펙/플랜 front-matter, 없으면 description \`## scope\`에 선언 필요"
               >scope 없음</span
             >`
@@ -1058,7 +1058,7 @@ export function routeChipTemplate(workflow) {
   // `data-route`는 칩의 색 토큰을 고르는 같은 분류다 (UI-kyky §3.2): 카드 배경과
   // 칩이 한 판정에서 나오므로 두 표면이 다른 종류를 말할 수 없다.
   return html`<span
-    class="ctl-chip ctl-chip--route${derived ? ' is-derived' : ''}"
+    class="ui-chip ctl-chip ctl-chip--route${derived ? ' is-derived' : ''}"
     data-route=${value}
     title=${derived ? 'route 미핀 (metadata unset)' : 'route'}
     >${value}</span
@@ -1126,7 +1126,7 @@ export function quickFixReviewChipTemplate(workflow, open = false) {
   ].join('\n');
   return html`<button
     type="button"
-    class="ctl-chip judgement-chip worker-card__qfr worker-card__qfr--${state}"
+    class="ui-chip ctl-chip judgement-chip worker-card__qfr worker-card__qfr--${state}"
     data-chip-key="qfr"
     aria-expanded=${open ? 'true' : 'false'}
     title=${title}
@@ -1152,7 +1152,7 @@ export function fromChipTemplate(from_id) {
   }
   return html`<button
     type="button"
-    class="ctl-chip ctl-chip--from"
+    class="ui-chip ctl-chip ctl-chip--from"
     data-from-id=${from_id}
     title=${`출처 ${from_id} 열기`}
   >
@@ -1185,13 +1185,13 @@ export function creationSourceChipsTemplate(item, options = {}) {
     return relation;
   }
   return html`<span
-      class="ctl-chip ctl-chip--worker-created"
+      class="ui-chip ctl-chip ctl-chip--worker-created"
       title=${`Worker가 ${source_id}에서 새로 만든 이슈입니다`}
       >워커 생성</span
     >${source_root.length > 0
       ? html`<button
           type="button"
-          class="ctl-chip ctl-chip--from worker-created-source"
+          class="ui-chip ctl-chip ctl-chip--from worker-created-source"
           data-source-id=${source_id}
           data-root-dir=${source_root}
           title=${`생성 원본 ${source_id} 열기`}
@@ -1199,7 +1199,7 @@ export function creationSourceChipsTemplate(item, options = {}) {
           ↩ 생성 원본 ${source_id}
         </button>`
       : html`<span
-          class="ctl-chip ctl-chip--from ctl-chip--disabled"
+          class="ui-chip ctl-chip ctl-chip--from ctl-chip--disabled"
           title="원본 저장소를 확인할 수 없음"
           >↩ 생성 원본 ${source_id}</span
         >`}${relation}`;
@@ -1293,7 +1293,7 @@ function judgementChipTemplate(input) {
   if (!binding) {
     return html`<button
       type="button"
-      class="ctl-chip ctl-chip--label judgement-chip ${extra_class}"
+      class="ui-chip ctl-chip ctl-chip--label judgement-chip ${extra_class}"
       data-chip-key=${chip_key}
       aria-expanded=${open ? 'true' : 'false'}
       title=${title}
@@ -1303,7 +1303,7 @@ function judgementChipTemplate(input) {
   }
   return html`<button
     type="button"
-    class="ctl-chip ctl-chip--label judgement-chip judgement-chip--bound ${extra_class}"
+    class="ui-chip ctl-chip ctl-chip--label judgement-chip judgement-chip--bound ${extra_class}"
     data-chip-key=${chip_key}
     data-bead-id=${item ? item.id : ''}
     data-root-dir=${item && item.root_dir ? item.root_dir : ''}
@@ -1411,7 +1411,7 @@ export function receiptBadgeChipTemplate(item, open = false) {
       : `영수증 · ${codes[0]}`;
   return html`<button
     type="button"
-    class="ctl-chip ctl-chip--label judgement-chip worker-card__receipt"
+    class="ui-chip ctl-chip ctl-chip--label judgement-chip worker-card__receipt"
     data-chip-key="receipt"
     data-bead-id=${item.id}
     aria-expanded=${open ? 'true' : 'false'}
@@ -1487,7 +1487,7 @@ export function planChipTemplate(item, open = false) {
   const label = planChipLabel(item);
   return html`<button
     type="button"
-    class="ctl-chip ctl-chip--label judgement-chip worker-card__plan"
+    class="ui-chip ctl-chip ctl-chip--label judgement-chip worker-card__plan"
     data-chip-key="plan"
     data-bead-id=${item.id}
     aria-expanded=${open ? 'true' : 'false'}
@@ -1529,7 +1529,7 @@ export function withdrawnChipTemplate(item, open = false) {
   }
   return html`<button
     type="button"
-    class="ctl-chip ctl-chip--label judgement-chip worker-card__withdrawn"
+    class="ui-chip ctl-chip ctl-chip--label judgement-chip worker-card__withdrawn"
     data-chip-key="withdrawn"
     data-bead-id=${item.id}
     aria-expanded=${open ? 'true' : 'false'}
@@ -1622,7 +1622,7 @@ export function laneOriginChipTemplate(origin) {
   }
   const serial = origin.kind === 'serial';
   return html`<span
-    class="ctl-chip ctl-chip--lane"
+    class="ui-chip ctl-chip ctl-chip--lane"
     title=${serial
       ? `직렬 레인 ${origin.index} — 이 레인은 이 일감이 끝날 때까지 다음 항목을 내보내지 않는다`
       : '병렬 큐 — 슬롯이 남는 한 다른 항목과 함께 실행된다'}
@@ -1804,7 +1804,7 @@ export function interactiveSessionBadgesTemplate(views, options) {
     return html`${view.session_id
       ? html`<button
           type="button"
-          class="interactive-session-badge"
+          class="ui-chip interactive-session-badge"
           data-session-provider=${view.provider}
           data-session-id=${view.session_id}
           data-bead-id=${options.bead_id}
@@ -1812,7 +1812,7 @@ export function interactiveSessionBadgesTemplate(views, options) {
         >
           ${label}
         </button>`
-      : html`<span class="interactive-session-badge" title=${title}
+      : html`<span class="ui-chip interactive-session-badge" title=${title}
           >${label}</span
         >`}${view.discord_url
       ? html`<a
@@ -2173,7 +2173,7 @@ export function gateChipTemplate(gate, bead_id, open) {
   }
   return html`<button
     type="button"
-    class="worker-dep worker-dep--gate worker-dep--gate-${gate.kind} judgement-chip"
+    class="ui-chip worker-dep worker-dep--gate worker-dep--gate-${gate.kind} judgement-chip"
     data-chip-key="gate"
     data-bead-id=${bead_id}
     aria-expanded=${open ? 'true' : 'false'}
@@ -2208,7 +2208,7 @@ export function graceChipTemplate(item, now = Date.now()) {
   // 남은 초는 ticker가 렌더 없이 세고, 칩이 사라지는 만료 시각은 뷰가 그 시각에
   // 한 번 다시 그린다 (UI-yu2o).
   return timeSpan(now + remaining_ms, 'countdown', now, {
-    cls: 'worker-dep worker-dep--grace',
+    cls: 'ui-chip worker-dep worker-dep--grace',
     title:
       '대기에 막 들어온 항목입니다 — 남은 시간 동안 자동 실행이 미뤄집니다',
     pre: '⏳ '
@@ -3230,12 +3230,15 @@ function waitSummaryItemLine(reason) {
 }
 
 /**
- * Shared Worker/Monitor summary and its grouped navigation popup.
+ * Shared Worker/Monitor summary and its grouped navigation popup. `parts` puts
+ * the chip on the shared `.ui-chip` size (UI-kqta §3.3) — only the Worker tab
+ * passes it; the Monitor deck keeps its own size until UI-k5s2.
  *
  * @param {Parameters<typeof blockedSummary>[0]} workspaces
  * @param {(root_dir: string, bead_id: string) => void} [reveal]
+ * @param {boolean} [parts]
  */
-export function blockedSummaryTemplate(workspaces, reveal) {
+export function blockedSummaryTemplate(workspaces, reveal, parts = false) {
   const summary = blockedSummary(workspaces);
   if (summary.count === 0) {
     return '';
@@ -3243,7 +3246,7 @@ export function blockedSummaryTemplate(workspaces, reveal) {
   return html`<span class="wait-summary" @click=${stopWaitClick}>
     <button
       type="button"
-      class="worker-kpi__chip"
+      class="${parts ? 'ui-chip ' : ''}worker-kpi__chip"
       aria-haspopup="dialog"
       @click=${openWaitSummary}
     >
@@ -3325,26 +3328,31 @@ function summaryChipPrefix(id) {
  * @param {Parameters<typeof blockedSummary>[0]} options.workspaces
  * @param {(root_dir: string, bead_id: string) => void} [options.reveal]
  * @param {number} [options.session] - 세션 N, drawn only above zero.
+ * @param {boolean} [options.parts] - Draw the chips with the shared `.ui-chip`
+ * size (UI-kqta §3.3). Only the Worker tab passes it; the Monitor deck's
+ * totals keep their own size until UI-k5s2.
  * @returns {import('lit-html').TemplateResult}
  */
 export function summaryChipsTemplate(options) {
   const short = options.range_short || options.range_label;
   const done_prefix = summaryChipPrefix('done');
-  return html`<span class="worker-kpi__chip worker-kpi__chip--running"
+  const part = options.parts === true ? 'ui-chip ' : '';
+  return html`<span class="${part}worker-kpi__chip worker-kpi__chip--running"
       >${summaryChipPrefix('running')} <b>${options.running}</b></span
     ><span
-      class="worker-kpi__chip worker-kpi__chip--pr"
+      class="${part}worker-kpi__chip worker-kpi__chip--pr"
       title="PR 머지를 기다리는 이슈"
       >${summaryChipPrefix('pr_wait')} <b>${options.pr_wait}</b></span
     ><span
-      class="worker-kpi__chip worker-kpi__chip--done"
+      class="${part}worker-kpi__chip worker-kpi__chip--done"
       title=${`${options.range_label} ${done_prefix}`}
       >${short} ${done_prefix} <b>${options.done}</b></span
     >${blockedSummaryTemplate(
       options.workspaces,
-      options.reveal
+      options.reveal,
+      options.parts === true
     )}${typeof options.session === 'number' && options.session > 0
-      ? html`<span class="worker-kpi__chip worker-kpi__chip--session"
+      ? html`<span class="${part}worker-kpi__chip worker-kpi__chip--session"
           >세션 <b>${options.session}</b></span
         >`
       : ''}`;
@@ -3762,7 +3770,7 @@ export function miniRow(item, options = {}) {
   const merge_el = item.merge_action
     ? html`<button
         type="button"
-        class="worker-mini__merge"
+        class="op-btn worker-mini__merge"
         data-bead-id=${item.id}
         ?disabled=${item.merge_enabled === false}
         title=${item.merge_title || ''}
@@ -3776,7 +3784,7 @@ export function miniRow(item, options = {}) {
   const cancel_el = item.cancel_action
     ? html`<button
         type="button"
-        class="worker-mini__merge-cancel"
+        class="op-btn worker-mini__merge-cancel"
         data-bead-id=${item.id}
         ?disabled=${item.cancel_enabled === false}
         title=${item.cancel_title || ''}
@@ -3802,7 +3810,7 @@ export function miniRow(item, options = {}) {
     discard?.action || item.discard_action
       ? html`<button
           type="button"
-          class="worker-mini__discard"
+          class="op-btn worker-mini__discard"
           data-bead-id=${item.id}
           data-attempt-id=${discard?.attempt_id || ''}
           data-operation-id=${discard?.operation?.operation_id || ''}
@@ -3822,7 +3830,7 @@ export function miniRow(item, options = {}) {
   const abandon_el = discard?.abandon.action
     ? html`<button
         type="button"
-        class="worker-mini__discard-abandon"
+        class="op-btn worker-mini__discard-abandon"
         data-bead-id=${item.id}
         data-operation-id=${discard.operation.operation_id}
         data-operation-kind=${discard.operation.kind || ''}
@@ -3873,7 +3881,7 @@ export function miniRow(item, options = {}) {
   const revise_els = item.revise_action
     ? html`<button
           type="button"
-          class="worker-mini__revise-fix"
+          class="op-btn worker-mini__revise-fix"
           data-bead-id=${item.id}
           ?disabled=${item.revise_enabled === false}
           title=${item.revise_title ||
@@ -3883,7 +3891,7 @@ export function miniRow(item, options = {}) {
         </button>
         <button
           type="button"
-          class="worker-mini__revise-approve"
+          class="op-btn worker-mini__revise-approve"
           data-bead-id=${item.id}
           ?disabled=${item.revise_enabled === false}
           title="델타를 사용자 권한으로 승인해 영수증을 갱신하고 파킹을 해제합니다 (세션 없음)"
@@ -4843,7 +4851,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
       ${worker_ineligible
         ? html`<button
             type="button"
-            class="ctl-chip ctl-chip--label judgement-chip worker-card__ineligible"
+            class="ui-chip ctl-chip ctl-chip--label judgement-chip worker-card__ineligible"
             data-chip-key="ineligible"
             aria-expanded=${chipOpen(item, 'ineligible') ? 'true' : 'false'}
             title="worker-ineligible label이 붙어 워커 실행 대상이 아닙니다"
@@ -4853,7 +4861,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
         : session_preferred
           ? html`<button
               type="button"
-              class="ctl-chip ctl-chip--label judgement-chip worker-card__session-preferred"
+              class="ui-chip ctl-chip ctl-chip--label judgement-chip worker-card__session-preferred"
               data-chip-key="session_preferred"
               aria-expanded=${chipOpen(item, 'session_preferred')
                 ? 'true'
@@ -4997,7 +5005,10 @@ export function candidateCard(item, place_menu = null, options = {}) {
  * 보류 선반). 헤더 건수는 `items`만 세므로 이 조각의 내용은 pane 건수에 들지
  * 않고, 재료가 없으면 호출 측이 키를 넘기지 않아 아무것도 그려지지 않는다.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, footer?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, match_count?: number, place_menu?: PlaceMenu|null, onOpenDoc?: import('../stepper.js').OpenDocHandler }} pane
+ * `parts`는 헤더 토글을 공용 버튼 부품 `.op-btn`으로 그린다 (UI-kqta §3.3).
+ * Worker 탭만 넘긴다 — Monitor 레인 머리는 UI-k5s2가 옮길 때까지 지금 모양이다.
+ *
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, footer?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, match_count?: number, place_menu?: PlaceMenu|null, onOpenDoc?: import('../stepper.js').OpenDocHandler, parts?: boolean }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -5028,7 +5039,7 @@ export function paneTemplate(pane) {
       ? html`<header class="worker-pane__hd">
           <button
             type="button"
-            class="worker-pane__toggle"
+            class="${pane.parts ? 'op-btn ' : ''}worker-pane__toggle"
             data-lane=${pane.lane}
             aria-expanded=${collapsed ? 'false' : 'true'}
           >
@@ -5103,22 +5114,25 @@ export function paneTemplate(pane) {
  * @property {{ rows: import('lit-html').TemplateResult[], completed?: import('lit-html').TemplateResult[], count: number }} [external]
  * @property {{ rows: import('lit-html').TemplateResult[], count: number, collapsed: boolean, drop?: WaitDropAttrs, slots?: Array<{root_dir: string, name: string, live: number, cap: number, saturated: boolean}> }} parallel
  * @property {{ lanes: WaitSerialLane[], collapsed: boolean, extra_panes?: import('lit-html').TemplateResult[], header_control?: import('lit-html').TemplateResult, notice?: import('lit-html').TemplateResult }} serial
+ * @property {boolean} [parts] - 영역 토글과 직렬 pane 머리를 공용 부품으로 그린다
+ * (UI-kqta §3.3). Worker 탭만 넘긴다.
  */
 
 /**
  * One 영역 접기 토글 (§4.2). 클릭 처리는 두 탭의 index.js가 `lane-collapse`
  * 스토어로 위임한다 — 여기서는 좌표(`data-area`)와 상태(`aria-expanded`)만
- * 싣는다.
+ * 싣는다. `parts`는 토글을 아이콘 버튼 부품으로 그린다 (Worker 탭만, UI-kqta).
  *
  * @param {'parallel'|'serial'} area
  * @param {string} name
  * @param {boolean} collapsed
+ * @param {boolean} parts
  * @returns {import('lit-html').TemplateResult}
  */
-function areaToggle(area, name, collapsed) {
+function areaToggle(area, name, collapsed, parts) {
   return html`<button
       type="button"
-      class="worker-wait__area-toggle"
+      class="${parts ? 'op-btn op-btn--icon ' : ''}worker-wait__area-toggle"
       data-area=${area}
       aria-expanded=${collapsed ? 'false' : 'true'}
       aria-label=${`${name} ${collapsed ? '펼치기' : '접기'}`}
@@ -5168,7 +5182,12 @@ export function waitBody(model) {
       data-area="parallel"
     >
       <header class="worker-wait__area-hd">
-        ${areaToggle('parallel', '병렬 영역', parallel.collapsed)}
+        ${areaToggle(
+          'parallel',
+          '병렬 영역',
+          parallel.collapsed,
+          model.parts === true
+        )}
         <span class="worker-wait__area-count">${parallel.count}</span>
         ${(parallel.slots || []).map(
           (slot) =>
@@ -5206,7 +5225,12 @@ export function waitBody(model) {
       data-area="serial"
     >
       <header class="worker-wait__area-hd">
-        ${areaToggle('serial', '직렬 영역', serial.collapsed)}
+        ${areaToggle(
+          'serial',
+          '직렬 영역',
+          serial.collapsed,
+          model.parts === true
+        )}
         ${serial.header_control ? serial.header_control : ''}
       </header>
       ${serial.collapsed
@@ -5214,7 +5238,9 @@ export function waitBody(model) {
         : html`<div class="worker-wait__area-body">
             ${serial.notice ? serial.notice : ''}
             ${serial.extra_panes ? serial.extra_panes : ''}
-            ${serial.lanes.map((lane) => serialLaneTemplate(lane))}
+            ${serial.lanes.map((lane) =>
+              serialLaneTemplate(lane, model.parts === true)
+            )}
           </div>`}
     </section>
   </div>`;
@@ -5225,9 +5251,10 @@ export function waitBody(model) {
  * 호출 측 `after`. pane/힌트의 표시 조건은 `app/styles.css` 한 곳이 소유한다.
  *
  * @param {WaitSerialLane} lane
+ * @param {boolean} parts - `paneTemplate`의 `parts` (Worker 탭만).
  * @returns {import('lit-html').TemplateResult}
  */
-function serialLaneTemplate(lane) {
+function serialLaneTemplate(lane, parts) {
   const drop = lane.drop || {};
   const badge_el = lane.badge
     ? html`<span
@@ -5251,6 +5278,7 @@ function serialLaneTemplate(lane) {
       count: lane.count,
       match_count: lane.match_count,
       empty: '비어 있음 — 행을 여기로 드래그',
+      parts,
       header_control: html`${badge_el}${lane.header_control
         ? lane.header_control
         : ''}`,

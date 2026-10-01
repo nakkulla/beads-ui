@@ -897,7 +897,7 @@ function sessionOpenButton(current) {
   const blocked = SESSION_OPEN_BLOCKED[current.locality] || '';
   return html`<button
     type="button"
-    class="rtile__session"
+    class="op-btn rtile__session"
     ?disabled=${blocked.length > 0}
     title=${blocked || '라이브 세션 열기'}
     aria-label="라이브 세션 열기"
@@ -1217,7 +1217,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     : '';
   const session_receipt_chip = session_receipt
     ? html`<span
-        class="ctl-chip ctl-chip--exec-receipt"
+        class="ui-chip ctl-chip ctl-chip--exec-receipt"
         title=${`exec_receipt ${formatExecReceipt(session_receipt)}`}
         >${`${session_receipt.kind}:${execReceiptActor(session_receipt)}`}</span
       >`
@@ -1229,7 +1229,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const session_ref_chip = session_current
     ? html`<button
         type="button"
-        class="ctl-chip ctl-chip--sref"
+        class="ui-chip ctl-chip ctl-chip--sref"
         title=${`${session_current.provider}:${session_current.session_id}@${session_current.host}${
           (tile.session_refs || []).length >= 2
             ? ` · 이력 ${(tile.session_refs || []).length}`
@@ -1300,7 +1300,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const failure_badges = failure
     ? html`<button
           type="button"
-          class="rtile__failure-badge"
+          class="ui-chip rtile__failure-badge"
           data-attempt-id=${failure.attempt_id}
           aria-expanded=${failure.open === true ? 'true' : 'false'}
           aria-label="실패 상세"
@@ -1412,7 +1412,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     tile.discard?.action && !(failed && failure?.landed === true)
       ? html`<button
           type="button"
-          class="rtile__discard"
+          class="op-btn op-btn--danger rtile__discard"
           data-operation-id=${tile.discard.operation?.operation_id || ''}
           data-confirmation=${failure?.confirmation || 'unmerged'}
           ?disabled=${!tile.discard.enabled}
@@ -1431,7 +1431,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     discard_button && tile.discard?.abandon?.action === true
       ? html`<button
           type="button"
-          class="rtile__discard-abandon"
+          class="op-btn rtile__discard-abandon"
           data-operation-id=${tile.discard.operation?.operation_id || ''}
           data-operation-kind=${tile.discard.operation?.kind || ''}
           data-last-error=${tile.discard.error || ''}
@@ -1553,7 +1553,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 ${discard_actions}`
             : html`<button
                   type="button"
-                  class="rtile__session"
+                  class="op-btn rtile__session"
                   title="라이브 세션 열기"
                   aria-label="라이브 세션 열기"
                 >
@@ -1570,7 +1570,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                     </button>`
                   : html`<button
                       type="button"
-                      class="rtile__pause"
+                      class="op-btn rtile__pause"
                       ?disabled=${tile.can_pause === false}
                       title=${tile.can_pause === false
                         ? '세션 ID 기록 전 — 일시정지 불가'

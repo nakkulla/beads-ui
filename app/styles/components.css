@@ -1,0 +1,214 @@
+/*
+ * Shared control parts (UI-kqta §3.2). The rule book is
+ * `docs/design-system.md`; this file is the only place a part's size lives.
+ *
+ * Loaded AFTER `app/styles.css` (index.html). Sizes come from the
+ * `tokens.css` scale only; colours stay with the existing role tokens.
+ *
+ *   .op-btn    operation button — variants --primary · --success · --warn ·
+ *              --danger · --ghost · --icon; `is-active` marks a toggle's on
+ *              state
+ *   .ui-field  label text + number input/select in one box
+ *   .ui-input  text · search · number input
+ *   .ui-select select
+ *   .ui-chip   chip/pill box (height · padding · radius · type size)
+ *
+ * Selector strategy (docs/design-system.md "선택자 구체도"):
+ * - `.op-btn` keeps the cascade it had as a styles.css rule: its selectors are
+ *   `:is(button, summary):where(.op-btn…)` — one type selector, so the part
+ *   still wins over the global `button {}` rule (same specificity, loaded
+ *   later) while every single-class rule of a screen still overrides it, as it
+ *   did when `.op-btn` sat in front of those rules.
+ * - `.ui-input` / `.ui-select` / `.ui-field` controls tie the global
+ *   `input[type=…]` (0,1,1) rule and win by load order. They declare sizes
+ *   only — the control colours keep coming from the global control palette.
+ * - `.ui-chip` is one class: loaded last, it sizes every chip it is put on
+ *   over that chip's own single-class rule. It declares no colour.
+ * No rule here matches an element that does not carry a part class.
+ */
+
+/* ---------- button ---------- */
+:is(button, summary):where(.op-btn) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: var(--h-control);
+  padding: var(--sp-2) var(--sp-6);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: var(--fs-control);
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+:is(button, summary):where(.op-btn):hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+:is(button, summary):where(.op-btn):disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+:is(button, summary):where(.op-btn--primary) {
+  border-color: var(--stage-plan-dim);
+  color: var(--stage-plan-on);
+}
+
+/* 채운 success (`▶ 자동화`). hover에서도 채움이 그대로다 — 글자색이 accent로
+   바뀌면 초록 위 파랑이 되어 읽히지 않는다. */
+:is(button, summary):where(.op-btn--success) {
+  border-color: var(--accent-success);
+  background: var(--accent-success);
+  color: var(--bg-app);
+}
+
+:is(button, summary):where(.op-btn--success):hover:not(:disabled) {
+  border-color: var(--accent-success);
+  color: var(--bg-app);
+}
+
+/* 켜진 토글의 표시는 채운 변형만 고리를 얻는다 — 테두리 변형은 자기 색이
+   이미 상태를 말한다. */
+:is(button, summary):where(.op-btn--success.is-active) {
+  box-shadow: var(--ring-selected);
+}
+
+/* 테두리 warn (`⏸ 자동 머지`). */
+:is(button, summary):where(.op-btn--warn) {
+  border-color: var(--accent-warn);
+  background: transparent;
+  color: var(--accent-warn);
+}
+
+:is(button, summary):where(.op-btn--warn):hover:not(:disabled) {
+  border-color: var(--accent-warn);
+  color: var(--accent-warn);
+}
+
+/* 테두리 danger (`폐기`). 되돌릴 수 없는 조작이라 hover에서도 색을 지킨다. */
+:is(button, summary):where(.op-btn--danger) {
+  border-color: color-mix(in srgb, var(--accent-danger) 45%, transparent);
+  background: transparent;
+  color: var(--accent-danger);
+}
+
+:is(button, summary):where(.op-btn--danger):hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent-danger) 45%, transparent);
+  color: var(--accent-danger);
+}
+
+:is(button, summary):where(.op-btn--icon) {
+  min-width: var(--h-control);
+  padding: var(--sp-2);
+  justify-content: center;
+}
+
+/* 자리 조작의 ghost 변형 (UI-0bvr §7.2): 보이는 상자만 걷는다 — 최소 표적
+   크기는 `--icon`과 coarse 분기가 그대로 소유한다. 상자는 hover·focus·active
+   에서만 돌아온다. */
+:is(button, summary):where(.op-btn--ghost) {
+  border-color: transparent;
+  font-size: var(--fs-body);
+}
+
+:is(button, summary):where(.op-btn--ghost):hover:not(:disabled),
+:is(button, summary):where(.op-btn--ghost):focus-visible,
+:is(button, summary):where(.op-btn--ghost):active:not(:disabled) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--text-muted) 16%, transparent);
+}
+
+/* ---------- field: label + control in one box ---------- */
+.ui-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-control);
+  box-sizing: border-box;
+  height: var(--h-control);
+  padding: 0 var(--sp-2) 0 var(--px-control);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-control);
+  font-size: var(--fs-control);
+  white-space: nowrap;
+}
+
+/* 상자 안 컨트롤은 상자보다 한 단계 낮다. 좌우 여백·색·모서리는 전역 폼
+   규칙이 지금처럼 정한다 — select의 화살표 자리도 거기 있다. 체크박스는 자기
+   크기 그대로 상자 안에 선다. */
+.ui-field > :is(input:not([type='checkbox'], [type='radio']), select) {
+  box-sizing: border-box;
+  height: calc(var(--h-control) - var(--sp-6));
+  margin: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  font: inherit;
+  line-height: 1.2;
+}
+
+/* ---------- input / select ---------- */
+input.ui-input {
+  box-sizing: border-box;
+  height: var(--h-control);
+  padding: 0 var(--px-control);
+  border-radius: var(--r-control);
+  font: inherit;
+  font-size: var(--fs-control);
+  line-height: 1.2;
+}
+
+select.ui-select {
+  box-sizing: border-box;
+  height: var(--h-control);
+  padding: 0 var(--sp-6);
+  border-radius: var(--r-control);
+  font-size: var(--fs-control);
+  line-height: 1.2;
+}
+
+/* ---------- chip ---------- */
+/* 표시 방식은 칩 자신의 규칙이 있으면 그쪽이 이긴다(`:where`) — 줄 안에 흐르던
+   칩만 상자가 되도록 inline-block을 준다. */
+:where(.ui-chip) {
+  display: inline-block;
+}
+
+.ui-chip {
+  box-sizing: border-box;
+  min-height: var(--h-chip);
+  padding: 0 var(--sp-7);
+  border-radius: var(--r-chip);
+  font-size: var(--fs-chip);
+  line-height: calc(var(--h-chip) - 2 * var(--sp-1));
+}
+
+/* ---------- coarse pointer · narrow width ---------- */
+@media (any-pointer: coarse), (max-width: 640px) {
+  :is(button, summary):where(.op-btn) {
+    min-height: var(--h-control-coarse);
+  }
+
+  :is(button, summary):where(.op-btn--icon) {
+    min-width: var(--h-control-coarse);
+  }
+
+  .ui-field,
+  input.ui-input,
+  select.ui-select {
+    height: var(--h-control-coarse);
+  }
+
+  .ui-field > :is(input:not([type='checkbox'], [type='radio']), select) {
+    height: calc(var(--h-control-coarse) - var(--sp-6));
+  }
+
+  .ui-chip {
+    min-height: var(--h-chip-coarse);
+    line-height: calc(var(--h-chip-coarse) - 2 * var(--sp-1));
+  }
+}

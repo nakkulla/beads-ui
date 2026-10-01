@@ -40,6 +40,8 @@
 - 공급자 보류의 해제는 프로브가 판정하고 `↻ 지금 프로브`는 그 판정을 앞당기는
   조작이다 — 카드 위의 조작은 target을 지우지 않는다
   (`2026-09-09-provider-outage-hold-release-design.md`).
+- 조작·칩의 모양(크기 토큰·공용 부품 `.op-btn`·`.ui-*`·원시 값 금지·폭 넘침
+  탐침)은 `docs/design-system.md`가 정본이다 — 새 조작은 부품으로만 그린다.
 
 ## Unit Testing Standards
 
