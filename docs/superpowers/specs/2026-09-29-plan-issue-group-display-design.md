@@ -4,12 +4,13 @@ scope:
   - server/worker/
   - server/ws/
   - server/workflow-enrich.js
+  - server/list-adapters.js
   - docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md
   - docs/superpowers/specs/2026-08-28-chip-grammar-unify-design.md
 ---
 # plan 묶음 표시와 plan 일괄 레인 배치 — full_plan 착지 모델 개정의 beads-ui 소비
 
-Bead: `UI-ruwu` · 형제: `dotfiles-b0xsk` · 선행: `UI-dbn6` · 2026-09-29
+Bead: `UI-ruwu` · 형제: `dotfiles-b0xsk` · 2026-09-29 · 정정 2026-10-01(`UI-dbn6` 미적용 — 지금 프런트엔드 기준)
 
 ## 목적
 
@@ -24,7 +25,7 @@ dotfiles 계약이 full_plan의 착지 모델을 바꾼다. 정본은 dotfiles
 beads-ui는 이 이슈 묶음을 한눈에 보여 주고, 묶음 전체를 한 번에 레인에 올릴 수 있게 해야 한다. 쓸모가
 없어진 자식 롤업, 이월 표시, 머지 단계는 정리한다.
 
-## 배경(2026-09-29 코드 읽기)
+## 배경(2026-09-29 코드 읽기, 2026-10-01 지금 프런트엔드 기준 정정)
 
 - **Worker 서버.** 자식 없는 full_plan 이슈를 그대로 받아들인다. 읽는 값은 이슈 자신의 `plan_path`,
   `plan_approval`, `planned_execution`, `exec_receipt`다.
@@ -35,10 +36,13 @@ beads-ui는 이 이슈 묶음을 한눈에 보여 주고, 묶음 전체를 한 �
     `P<a>:delegated; P<b>:main`을 위반으로 본다.
 - **묶음 표시.** `plan_path`나 `spec_id`로 이슈를 묶어 보여 주는 곳이 없다.
 - **자식 롤업과 이월.**
-  - 자식 롤업은 Worker 실행 타일에만 있다(슬롯 3, `child-rollup.js`).
-  - 이월 칩은 완료 행 슬롯 4b에 있다(`carryover-index.js`, `lanes.js`).
+  - 자식 롤업은 실행 타일 슬롯 3에만 있다(`app/views/child-rollup.js`, `app/utils/child-rollup.js`,
+    `running-grid.js`). Worker 탭은 `workspace-adapter.js`가 목록 구독 열에서 자식 색인을 만들어 붙인다.
+  - 이월 칩은 완료 행 슬롯 4b에 있다(`lanes.js`, 필드 `carried_to`). Worker 탭은 `workspace-adapter.js`가
+    `app/utils/carryover-index.js`로 만들고, 모니터 탭은 `monitor-handlers.js`가 `runnable-cache.js`
+    `carriedToFor`를 읽어 단다.
   - 머지 단계 목록에 `child_sweep`("자식 정리")가 있다(`pr-actions.js` `CLOSURE_STEPS`, `merge-steps.js`,
-    `pr-wait-progress.js`).
+    `pr-wait-progress.js`, `lane-model.js`).
 - **레인 배치.**
   - `blocks`로 막힌 이슈도 배치할 수 있다(`placement.js`는 blocker를 보지 않는다).
   - 직렬 레인은 `blocks` 순으로 정렬된다(`server/worker/lane-order.js`).
@@ -48,35 +52,50 @@ beads-ui는 이 이슈 묶음을 한눈에 보여 주고, 묶음 전체를 한 �
     `member_absent`로 거부한다. 이 함수를 부르는 WS 핸들러와 UI는 없다.
   - 단건 배치 `placeBeadInQueue`(`server/worker/queue-place.js`)는 서버 배치 자격 검사
     `checkWorkerQueueAdmission`을 거친다. `placement.js`의 `placementFromFacts`는 화면 표시용 판정이다.
-  - Worker 조작 요청은 대상 저장소를 `root_dir`로 명시하고, `targetWorkspaceOf`(`server/ws/workspace-target.js`)가
-    검증한다. 이는 `UI-dbn6` 스펙 §3.2의 결정이다.
-  - 화면 행 입력(`runnable-cache.js` `qualify`, `title-cache.js` `recordFromIssue`)은 `plan_task_anchor`를
-    싣지 않는다. `UI-dbn6`는 목록 구독을 서버 투영으로 바꾼다.
+  - Worker 조작 요청은 대상 저장소를 `root_dir`로 싣고, `mutationWorkspaceOf`가 부르는
+    `targetWorkspaceOf`(`server/ws/workspace-target.js`)가 검증한다. 목록에 없는 저장소면 `bad_request`이고,
+    `root_dir`이 없으면 연결 저장소다.
+  - 화면 행 입력은 `plan_task_anchor`를 싣지 않는다. 행을 만드는 곳은 셋이고, 모두 같은 워크스페이스
+    스냅샷(`snapshot.all`)을 읽는다.
+    - 목록 구독 항목: `list-adapters.js` 스냅샷 투영. Worker 탭 후보 레인(`workspace-adapter.js`가 준비·막힘·
+      진행·resolved·닫힘·보류 열을 합친다)과 상세 패널 이슈가 이것을 읽는다.
+    - 모니터 탭 후보: `runnable-cache.js` `qualify`.
+    - 두 탭의 대기·실행·PR 대기·완료 행: `decorateQueue`(`server/ws/worker-handlers.js`)의 `bead_*` 장식
+      (`title-cache.js` `recordFromIssue`, `peekWorkspaceSnapshot`을 읽는 `bead_dependents` 등). 모니터 탭도
+      같은 함수로 조립한다.
   - 실행 계획 파서 `server/workflow-enrich.js` `parsePlannedExecution`은 scalar만 받는다. 나열 값은 `null`이
     된다.
   - 머지 뒤 정리 단계는 `CLEANUP_STEPS = [base_containment, repo_operations, post_merge_jobs, child_sweep,
     branch_cleanup, parent_close]`이다(`pr-actions.js`). `CLOSURE_STEPS`는 `post_merge_jobs`부터 끝까지다.
 - **겹침 칩.** 같은 spec을 공유하는 이슈끼리 `⧉` scope 겹침 칩이 서로 뜰 수 있다. `scope-overlap.js`가
   artifact scope를 비교하기 때문이다(미검증).
-- **UI-dbn6 선행.** 이 작업은 프런트엔드 재작성 `UI-dbn6` 위에 얹는다.
-  - `UI-dbn6`는 dotfiles-b0xsk 뒤에서 정정된다. 정정 내용은 새 프런트엔드에 자식 롤업·이월 칩 렌더와
-    `bead_children` 투영을 만들지 않는 것이다.
-  - 서버 쪽 `carryover-index` 같은 코드는 이 이슈가 은퇴시킨다.
-  - 새 프런트엔드는 카드 슬롯 표(`2026-08-25-card-header-grammar-unify-design.md` §5.1)를 승계한다.
+- **UI-dbn6 미적용(2026-10-01 사용자 결정).** 처음 이 스펙은 프런트엔드 재작성 `UI-dbn6` 위에 얹도록
+  썼다. `UI-dbn6`(PR #338)은 적용하지 않기로 했으므로 이 작업은 지금 프런트엔드 위에서 한다.
+  - 카드 렌더러 `candidateCard`·`miniRow`(`app/views/worker/lanes.js`)와 `runningTile`(`running-grid.js`)은
+    Worker 탭과 모니터 탭(`app/views/monitor/index.js`)이 같이 쓴다. 판정 칩 팝업은
+    `app/views/chip-popover.js`이고 상세 헤더도 같은 팝업을 쓴다.
+  - 카드 슬롯 표(`2026-08-25-card-header-grammar-unify-design.md` §5.1)는 지금 값 그대로다. 3 행에 "자식
+    롤업", 4b 행에 `이월 → <ID>`가 남아 있다.
+  - `UI-dbn6`가 맡기로 했던 프런트엔드 쪽 자식 롤업·이월 칩 정리도 이 이슈가 한다(§6).
 
 ## 설계
 
-### 1. 묶음 모델 — `model/plan-group.js`(신규, 순수 모듈)
+### 1. 묶음 모델 — `app/utils/plan-group.js`(신규, 순수 모듈)
 
 - **입력.** 서버가 워크스페이스 전체 이슈 스냅샷(`bd list --all`)에서 같은 `plan_path`를 가진 이슈를 모은다.
-  이 스냅샷은 `runnable-cache.js`가 이미 읽는 것이다. 화면의 레인 행만으로는 입력이 모자란다. 닫히거나
-  보류됐거나 화면 필터에 걸린 구성원을 볼 수 없어서, 순번과 총수가 틀어진다.
+  이 스냅샷은 `runnable-cache.js`와 `list-adapters.js`가 이미 읽는 `snapshot.all`이다. 새 bd read는 없다
+  (ADR UI-u6ud). 화면의 레인 행만으로는 입력이 모자란다. 닫히거나 보류됐거나 화면 필터에 걸린 구성원을
+  볼 수 없어서, 순번과 총수가 틀어진다.
 - **전달.** 묶음 요약 `plan_group`을 행 투영에 붙여 기존 채널로 보낸다.
   - 대상은 묶음에 속한 행이다.
-  - 투영 위치: 재작성 뒤에는 `UI-dbn6`의 서버 투영(`bead_overlay` 필드), 그 전에는 `runnable-cache.js`
-    `qualify` 행.
+  - 투영 위치는 배경의 행 생성처 셋이다.
+    - `list-adapters.js` 스냅샷 투영: 목록 구독 항목과 상세 이슈에 `plan_group`을 붙인다.
+    - `runnable-cache.js` `qualify`: 모니터 탭 후보 행에 붙인다.
+    - `decorateQueue`: 레인 구성원 id별 `bead_plan_groups` 장식으로 싣는다. `bead_dependents`처럼
+      `peekWorkspaceSnapshot`을 읽고, 두 탭의 대기·실행·PR 대기·완료 행이 이것을 읽는다.
   - `plan_group` 필드: `{ plan_path, slug, index, total, members: [{ id, anchor, status, blocked_by }] }`.
-  - `model/plan-group.js`는 이 계산을 하는 순수 모듈이고, 서버와 화면이 같이 쓴다.
+  - `app/utils/plan-group.js`는 이 계산을 하는 순수 모듈이고, 서버와 화면이 같이 쓴다(`scope-overlap.js`와
+    같은 자리).
 - **모듈 출력.** `plan_path`별 묶음 `{ plan_path, slug, members: [{ id, anchor, first_phase, status, blocked_by }] }`.
   행마다 붙는 `plan_group`은 여기에 그 행의 `index`(1부터)와 `total`(= `members` 수)을 더한 것이다.
   - `members`는 `first_phase`(anchor의 첫 Phase 번호) 오름차순이다.
@@ -93,11 +112,13 @@ beads-ui는 이 이슈 묶음을 한눈에 보여 주고, 묶음 전체를 한 �
 ### 2. plan 묶음 칩 — 슬롯 5a
 
 - **슬롯.** 칩은 5a "어느 자리의 것인가"에 둔다. 이 슬롯에 이미 있는 소속 칩과 같은 부류다.
-  - 카드 문법 스펙 §5.1 표의 5a 행에 `plan <slug> <i>/<n>`을 먼저 추가한다(ADR UI-l48z).
+  - 카드 문법 스펙 §5.1 표의 5a 행에 `plan <slug> <i>/<n>`을 먼저 추가한다. 이 표 정정은 같은 변경에
+    넣는다(ADR UI-nuwy).
   - 같은 표의 3 행에서 "자식 롤업", 4b 행에서 `이월 → <ID>`를 지운다.
 - **문구.** `plan <slug> <i>/<n>`이다. `i`는 이 이슈의 묶음 순번이고 `n`은 묶음의 이슈 수다. 진행률은
   칩이 아니라 팝업에서 보여 준다. 진행을 표시하는 슬롯 3과 겹치지 않게 하려는 것이다.
-- **표면.** 후보, 대기, 실행 타일, 완료 행, 상세 헤더.
+- **표면.** 후보, 대기, 실행 타일, 완료 행, 상세 헤더. 카드 표면은 Worker 탭과 모니터 탭이 같은 렌더러로
+  그린다.
 - **클릭.** 칩 문법 스펙 §4.5 판정 칩 팝업 방식을 따르며, `data-chip-key="plan"`이다. 팝업 내용은 다음과
   같다.
   - 제목: `plan <slug>`
@@ -111,7 +132,8 @@ beads-ui는 이 이슈 묶음을 한눈에 보여 주고, 묶음 전체를 한 �
 ### 3. plan 일괄 레인 배치
 
 - **WS 요청.** `worker-queue-place-plan { root_dir, plan_path, lane, expected_revision }`.
-  - 대상 저장소는 `root_dir`로 명시하고, 기존 `targetWorkspaceOf`가 검증한다(`UI-dbn6` §3.2).
+  - 대상 저장소는 `root_dir`로 명시하고, 기존 `mutationWorkspaceOf`(→ `targetWorkspaceOf`)가 검증한다.
+    팝업은 항목의 저장소를 항상 싣는다.
   - 연결 저장소와 `root_dir`이 다르면 `root_dir` 쪽 큐에 쓰거나, 검증 실패로 거부한다. 연결 저장소로 조용히
     바뀌는 일은 없다.
 - **대상 선정.** 서버가 한다.
@@ -166,9 +188,15 @@ plan의 이슈들은 설계상 같은 scope를 나누어 갖기 때문이다. �
       (`between_repo_operations_and_branch_cleanup`)과 같다.
     - 저장된 정리 기록의 재개 위치가 `child_sweep`이면 `branch_cleanup`부터 이어간다.
     - `classifyChildren`의 이월 분기와 `convertToCarryover`를 삭제한다.
-  - `runnable-cache.js`: 이월 색인을 삭제한다. `app/utils/carryover-index.js`는 삭제하거나, 서버 import가
-    남아 있으면 그 import와 함께 삭제한다.
-  - `merge-steps.js`와 `pr-wait-progress.js`에서 "자식 정리" 항목을 삭제한다.
+  - `runnable-cache.js`: 이월 색인과 `carriedToFor`를 삭제하고, `monitor-handlers.js`의 `carried_to` 장식도
+    뺀다.
+- **화면.** `UI-dbn6`가 맡기로 했던 몫이다(배경 참조).
+  - 실행 타일 슬롯 3의 자식 롤업을 지운다. `app/views/child-rollup.js`, `app/utils/child-rollup.js`와 그것만
+    쓰는 모듈, `workspace-adapter.js`의 자식 색인을 삭제한다. 롤업만 쓰던 목록 구독 열은 다른 소비자가
+    없으면 함께 뺀다.
+  - 완료 행 슬롯 4b의 `이월 → <ID>` 칩과 `carried_to` 필드를 지운다. `app/utils/carryover-index.js`와
+    `workspace-adapter.js`의 이월 색인을 삭제한다.
+  - `merge-steps.js`, `pr-wait-progress.js`, `lane-model.js`에서 "자식 정리" 항목을 삭제한다.
 - **유지.**
   - `isPhaseChild` 제외 규칙. 닫힌 옛 자식과 dotted id 행을 후보에서 계속 빼야 하기 때문이다.
   - 상세 관계의 `⌸ <ID>` 부모 관계 표시. bd의 일반 parent 관계를 보여 주는 것이다.
@@ -192,7 +220,9 @@ plan의 이슈들은 설계상 같은 scope를 나누어 갖기 때문이다. �
 
 - 전제: ADR UI-u6ud-2 — 계약 키(`plan_task_anchor`, `plan_path`, `planned_execution` 나열 형식)는 dotfiles
   정본의 부분집합을 복사해 쓰고, 키가 없으면 표시를 생략한다.
-- 전제: ADR UI-l48z — 새 칩은 카드 문법 스펙 §5.1 슬롯 표를 먼저 고친 뒤 단다.
+- 전제: ADR UI-nuwy(UI-l48z·UI-ri8n 조항 승계) — 슬롯 표에 없는 새 칩은 카드 문법 스펙 §5.1 슬롯 표를
+  먼저 고친 뒤 달고, 그 표 정정은 같은 변경에 넣는다.
+- 전제: ADR UI-u6ud — `plan_group`은 같은 워크스페이스 스냅샷 세대에서 투영하고 새 bd read를 띄우지 않는다.
 - plan 묶음 칩의 슬롯·문구와 팝업 안 일괄 배치 버튼: 되돌림 어려움=미충족(칩 템플릿·팝업·슬롯 표 한 줄을 고치면 되돌아간다), 의외=미충족(슬롯 표가 자리의 근거를 적는다), 대안=있음(슬롯 3 진행 칩, 상세 패널 버튼). 기본 제외 목록의 UI 배치·표시 형식에 해당한다. → ADR 아님.
 - 자식 롤업·이월·자식 정리 단계 은퇴: 되돌림 어려움=충족하지만 그 결정의 소유자는 dotfiles 계약(dotfiles-b0xsk의 ADR 후보)이다, 의외=미충족(계약이 Phase 자식을 폐지했으므로 소비자 정리가 뒤따르는 것은 자연스럽다), 대안=없음(계약 폐지 뒤 유지하면 죽은 코드다). beads-ui가 따로 결정하는 것이 아니다. → ADR 아님.
 
@@ -200,15 +230,18 @@ plan의 이슈들은 설계상 같은 scope를 나누어 갖기 때문이다. �
 
 RED→GREEN 시임:
 
-1. **`model/plan-group.test.js`(신규).**
+1. **`app/utils/plan-group.test.js`(신규).**
    - 같은 `plan_path` 2개 이상이면 묶음이 되고 순서가 맞다.
    - anchor가 없거나, 형식이 틀리거나, 범위가 겹치면 묶음을 만들지 않는다.
    - slug를 계산한다.
    - 구성원 하나가 닫혀도 `index`와 `total`이 유지된다.
-1a. **서버 투영.** `server/worker/runnable-cache.test.js`와 `UI-dbn6` 이후의 투영 테스트를 쓴다.
-   - 전체 스냅샷에서 계산한 `plan_group`이 묶음에 속한 행에 붙는다.
+1a. **서버 투영.** `server/list-adapters.test.js`, `server/worker/runnable-cache.test.js`, `decorateQueue` 장식
+   테스트(`server/ws/worker-handlers*.test.js`)를 쓴다.
+   - 전체 스냅샷에서 계산한 `plan_group`이 세 투영 위치 모두에서 묶음에 속한 행에 붙는다.
    - 구성원이 닫히거나 보류되거나 화면 필터에 걸려도 `index`, `total`, `members`가 유지된다.
-2. **칩 템플릿과 팝업 테스트.** UI-dbn6 재작성 후의 카드·팝업 테스트 파일을 쓴다.
+2. **칩 템플릿과 팝업 테스트.** `app/views/worker/lanes.test.js`·`running-grid.test.js`(카드),
+   `app/views/worker/index.test.js`·`app/views/monitor/index.test.js`(팝업), `app/views/detail-panel/index.test.js`
+   (상세 헤더)를 쓴다.
    - 5a에 `plan <slug> <i>/<n>`이 그려진다.
    - 팝업의 줄 목록과 현재 이슈 강조가 맞다.
    - 재료가 없으면 칩이 없다.
@@ -234,6 +267,10 @@ RED→GREEN 시임:
    - 재개 위치가 `child_sweep`인 저장 기록은 `branch_cleanup`부터 이어간다.
    - 이월 변환 경로가 없다.
    - 머지 단계 목록에 "자식 정리"가 없다.
+8. **화면 은퇴.** `running-grid.test.js`, `lanes.test.js`, `workspace-adapter.test.js`,
+   `server/ws/monitor-handlers.test.js`.
+   - 실행 타일에 자식 롤업이 그려지지 않는다.
+   - 완료 행에 `이월 → <ID>` 칩이 없고, 두 탭의 투영에 `carried_to`가 없다.
 
 제외: 라이브 Worker 실행, dotfiles 계약 검사기.
 
