@@ -28473,14 +28473,25 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
 
       test('keeps the rung of a bead that is not ready waiting', async () => {
         const env = await sessionRetryEnv();
-        Object.assign(env.config.B1, { ready: false, status: 'in_progress' });
+        Object.assign(env.config.B1, { ready: false, status: 'blocked' });
 
         await runDue(env);
 
         const queue = env.store.snapshot(WS);
-        expect(queue.admission.B1.reason).toBe('not_ready:in_progress');
+        expect(queue.admission.B1.reason).toBe('not_ready:blocked');
         expect(queue.lineages).toMatchObject([{ bead_id: 'B1', attempts: 1 }]);
         expect(childOf(env, env.attempt_id)).toBeUndefined();
+      });
+
+      test('resumes the session of a bead its earlier claim still holds', async () => {
+        const env = await sessionRetryEnv();
+        Object.assign(env.config.B1, { ready: false, status: 'in_progress' });
+
+        await runDue(env);
+
+        expect(childOf(env, env.attempt_id)).toMatchObject({
+          status: 'running'
+        });
       });
 
       test('keeps the rung behind a provider hold and resumes once it releases', async () => {

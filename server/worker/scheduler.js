@@ -13538,9 +13538,12 @@ export function createScheduler(deps) {
     // fresh rung's `dispatch` does (2026-10-01 stall-reconcile D3): a bead
     // that is not ready, waits on a prerequisite or was closed, or whose
     // runner is held, turns the rung away with that reason, and the due
-    // retry defers or closes the ladder by its class.
+    // retry defers or closes the ladder by its class. An `in_progress` bead
+    // is the exception: that is the earlier attempt's own claim, which every
+    // session continuation resumes under, so refusing it would park the rung
+    // for good on the claim it is meant to carry on.
     if (continuation.retry) {
-      if (!snap.ready || snap.blocked) {
+      if ((!snap.ready || snap.blocked) && snap.status !== 'in_progress') {
         if (dequeueIfClosed(workspace, bead_id, snap)) {
           return { ok: false, reason: notReadyReason(snap) };
         }
