@@ -48,34 +48,34 @@ scope:
 
 ## 2. 검증된 전제
 
-base `4be748eaeab7f6de6e8b0f4018d728bde0767da0` 기준이다.
+base `7d183710189f508ce152f03673ecc7192b4cf1eb` 기준이다(2026-10-01 재리뷰에서 UI-o27t 착지 뒤 줄 번호를 갱신했다).
 
 **벤치 핵심 모듈과 소비자**
 
 - `bench-runs.js`(829줄)가 벤치 상수·튜플·클론 필드·매니페스트 읽기와 쓰기·`createBenchRun`을 모두 담는다. 클론은 `landing: 'none'`을 쓴다 — server/worker/bench-runs.js:53-158,437-454,503-637
-- 비테스트 importer는 셋이다 — server/worker/scheduler.js:71-74, server/worker/compare-projection.js:20-23, server/ws/bench-handlers.js:24-28
-- 생성 op는 `bench-run-create` 하나다. 클론을 만들어 병렬 레인에 놓고, 실패하면 `bench:<run_id>:aborted`로 닫는다 — server/ws/bench-handlers.js:64,280,341; server/ws/connection.js:15,697-698
+- 비테스트 importer는 셋이다 — server/worker/scheduler.js:72-75, server/worker/compare-projection.js:20-23, server/ws/bench-handlers.js:24-28
+- 생성 op는 `bench-run-create` 하나다. 클론을 만들어 병렬 레인에 놓고, 실패하면 `bench:<run_id>:aborted`로 닫는다 — server/ws/bench-handlers.js:64,280,341; server/ws/connection.js:15,709-710
 
 **스케줄러 벤치 레인** — server/worker/scheduler.js 안에 있다.
 
-- 스냅샷의 `bench_run`·`bench_base`를 읽는다 — :662-666
-- cut base를 고정한다 — :7658
-- `bench_base_unreachable`이면 디스패치를 거부한다 — :10742-10745
-- 가드 모드를 고른다 — :10772, 재실행 시 :15365-15371
-- 벤치 전용 함수 — :7639,7711,7734,7813,7850,7913
-- 호출부 — :6024,6759-6777,8897-8983,9169,11115,15320
+- 스냅샷의 `bench_run`·`bench_base`를 읽는다 — :668-672
+- cut base를 고정한다 — :7706
+- `bench_base_unreachable`이면 디스패치를 거부한다 — :10815-10818
+- 가드 모드를 고른다 — :10845, 재실행 시 :15661-15667
+- 벤치 전용 함수 — :7687,7759,7782,7861,7898,7961
+- 호출부 — :6072,6563-6572,6807-6825,8945-9031,9217,11188,15616
 
 **나머지 워커 모듈의 벤치 분기**
 
 - quickfix-landing.js — `bench_close` cursor, `readBenchBinding`, `settleBenchClose`, 그리고 no-change보다 먼저 도는 벤치 판정. server/worker/quickfix-landing.js:72,87,1029-1031,1063,1146-1166
-- queue-store.js — `Attempt.bench_run`·`bench_verify`와 cursor `bench_close`. server/worker/queue-store.js:173-181,278-282,3384,3575-3579
-- attach.js — 벤치 metadata 읽기와 `[verify]` 채점 연결. server/worker/attach.js:698-713,1280
+- queue-store.js — `Attempt.bench_run`·`bench_verify`와 cursor `bench_close`. server/worker/queue-store.js:182-190,287-291,3457,3712-3716
+- attach.js — 벤치 metadata 읽기와 `[verify]` 채점 연결. server/worker/attach.js:698-713,1285
 - base-drift.js — `benchCell` 예외. server/worker/base-drift.js:156-202
 - state-paths.js — 매니페스트 경로. server/worker/state-paths.js:409-433
 
 **가드 훅**
 
-- 가드 훅에는 guard·record·deny 세 모드가 있다. deny 모드의 유일한 호출자는 스케줄러의 벤치 분기이고, 주석과 거부 문구가 벤치를 말한다 — server/worker/guard-hook.js:333-431,542; scheduler.js:4041,10772
+- 가드 훅에는 guard·record·deny 세 모드가 있다. deny 모드의 유일한 호출자는 스케줄러의 벤치 분기이고, 주석과 거부 문구가 벤치를 말한다 — server/worker/guard-hook.js:333-431,542; scheduler.js:4077,10845
 - ADR UI-a5l2는 모드 3종과 선택 규칙(bench=deny, quick_fix lane=record, 그 외 guard)을 "바꾸지 않는다"고 적는다 — docs/adr/UI-a5l2-guard-pre-tool-deny-no-kill-no-queue-hold.md:71
 
 **비교 탭**
@@ -89,15 +89,15 @@ base `4be748eaeab7f6de6e8b0f4018d728bde0767da0` 기준이다.
   - 벤치 attempt 사전 준비 — :1868-1871
 - `compare-handlers.js`는 `include_bench`를 그대로 넘긴다 — server/ws/compare-handlers.js:62
 - 화면은 실험 절·`include_bench` 체크박스·생성 폼·`bench-run-create` 송신·벤치 verify 칩을 그린다. 폼 규칙과 진행 묶음은 `bench-form.js`·`bench-model.js`에 있다 — app/views/compare/index.js:35-43,180-187,256-262,327-328,382,849,1002,1208-1566,1656; app/views/compare/bench-form.js; app/views/compare/bench-model.js
-- `main.js`는 비교 뷰에 `sourceCandidates`를 넘긴다 — app/main.js:1657-1678
+- `main.js`는 비교 뷰에 `sourceCandidates`를 넘긴다 — app/main.js:1657-1677
 
 **프로토콜·문서·사본**
 
-- 프로토콜 — app/protocol.js:15,371-374; app/protocol.md:1404-1422,1445,1486-1530
+- 프로토콜 — app/protocol.js:15,380-383; app/protocol.md:1491-1509,1532,1573-1617
 - 결과 줄 템플릿 사본에 `bench:<run_id>`가 있다 — server/worker/runner/preamble.js:139 (스냅샷 포함)
 - 사본을 dotfiles 정본과 실시간으로 대조하는 검사는 없다. 테스트는 "정본은 dotfiles … 위는 사본이다" 문장이 있는지만 본다 — server/worker/runner/preamble.test.js:376,781
 - `label-policy.js`의 벤치 export 셋은 importer가 없다 — app/utils/label-policy.js:94-124
-- 벤치 스타일 — app/styles.css:10930-10956
+- 실험 절 스타일 — `.cmp-bench*`·`.cmp-runs`·`.cmp-run*`·`.cmp-form*`·`.cmp-candidate*`. 이 선택자는 모두 index.js 실험 절(1208-1566)에서만 쓰인다 — app/styles.css:10945-11135
 - 문서 언급 — docs/bd-json-compatibility.md:58
 
 **디스크와 Bead 실측**
@@ -140,7 +140,7 @@ base `4be748eaeab7f6de6e8b0f4018d728bde0767da0` 기준이다.
 - 비교 화면에서 지운다: 실험 절, `include_bench` 체크박스, 생성 폼, 벤치 verify 출처 분기, 벤치 상태와 펼침.
   - `bench-form.js`·`bench-model.js`는 테스트와 함께 지운다.
   - verify 칸은 머지 후보 `[verify]` 영수증으로만 채운다.
-- 함께 정리한다: `main.js`의 `sourceCandidates` 전달, `.cmp-bench*` 스타일, `label-policy.js`의 벤치 export.
+- 함께 정리한다: `main.js`의 `sourceCandidates` 전달, 실험 절 스타일(§2의 `.cmp-bench*`·`.cmp-runs`·`.cmp-run*`·`.cmp-form*`·`.cmp-candidate*`), `label-policy.js`의 벤치 export.
 - 기존 `queue.json`의 `bench_run`·`bench_verify` 키(모두 null)와 cursor 값 `bench_close`(0건)는 읽을 때 정규화가 버린다. 다시 쓸 때는 이 키가 없다. 마이그레이션은 없다.
 - 혹시 남은 bench 라벨 Bead는 일반 Bead로 다룬다(fail-quiet).
 
