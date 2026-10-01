@@ -1858,6 +1858,49 @@ describe('buildMonitorPipeline runnable description scope (UI-f1qy §4.4)', () =
     expect(Object.hasOwn(row, 'scope_spec_id')).toBe(false);
   });
 
+  test('ships the plan_group of a runnable candidate unchanged', () => {
+    __setScopeCacheForTest(scopeCacheOver({}));
+    const plan_group = {
+      plan_path: 'docs/superpowers/plans/2026-09-29-plan-issue-group.md',
+      slug: 'plan-issue-group',
+      index: 1,
+      total: 2,
+      members: [
+        { id: 'A-1', anchor: 'Phase 1', status: 'open', blocked_by: [] },
+        { id: 'A-2', anchor: 'Phase 2', status: 'open', blocked_by: ['A-1'] }
+      ]
+    };
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [artifactCandidate('A-1', { plan_group })] }
+    });
+
+    expect(/** @type {any[]} */ (out[0].runnable)[0].plan_group).toEqual(
+      plan_group
+    );
+  });
+
+  test('ships the plan_group even when the scope attach throws', () => {
+    __setScopeCacheForTest(
+      /** @type {any} */ ({
+        peek: () => {
+          throw new Error('scope cache unavailable');
+        }
+      })
+    );
+    const plan_group = { plan_path: 'p.md', slug: 'p', index: 1, total: 2 };
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [artifactCandidate('A-1', { plan_group })] }
+    });
+
+    expect(/** @type {any[]} */ (out[0].runnable)[0].plan_group).toEqual(
+      plan_group
+    );
+  });
+
   test('prefers the resolved artifact of a quick_fix row over its description', async () => {
     const cache = scopeCacheOver({
       'docs/specs/thing.md': scopeArtifact(['server/worker/'])

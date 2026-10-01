@@ -82,7 +82,32 @@ consumer omits the chip and sorts the row last (fail-quiet).
   when neither is present). NOT display material: it is the delta fingerprint
   that lets an upsert reach the client when only a decoration moved, since
   neither key touches the issue's own `updated_at`/`closed_at`. Other list types
-  carry no such key and compare as `''`.
+  carry no such key and compare as `''`, except an item that belongs to a plan
+  group (below), whose `plan_group` fingerprint is appended.
+
+### `plan_group` on snapshot-projected list items (UI-ruwu §1)
+
+A confirmed full_plan lands as several top-level issues that share
+`metadata.plan_path` and each carry `metadata.plan_task_anchor` (`Phase <a>` or
+`Phase <a>-<b>`). Every item of a workspace-snapshot list subscription (and the
+`issue-detail` item) that belongs to such a group carries:
+
+- `plan_group?: { plan_path, slug, index, total, members: [{ id, anchor, status, blocked_by }] }`
+  — `slug` is the `plan_path` file name without its `YYYY-MM-DD-` prefix and
+  `.md`; `members` is ordered by the anchor's first Phase; `index` is the
+  1-based place of THIS item in `members` and `total` is `members.length`;
+  `blocked_by` is that member's open `blocks` blocker ids (empty when unknown).
+
+The group is computed from the SAME `snapshot.all` generation the list is
+projected from (no extra `bd` read), over EVERY member of the plan — a closed,
+deferred or list-filtered member still counts, so `index`/`total` do not move
+while the plan is worked. A `plan_path` yields a group only when at least two
+issues share it, every one of them has a well-formed anchor (integers, `b > a`)
+and no two Phase ranges overlap; otherwise the whole `plan_path` carries no
+group and the key is absent (fail-quiet). The key is also absent on an older
+server. `decoration_rev` folds a fingerprint of `plan_group` in, because a
+sibling's status or blockers change this item's group without moving its own
+timestamps.
 
 ## Issue mutations
 
@@ -230,7 +255,8 @@ Candidate placement facts are `route`, `spec_state`, `has_description`,
 `spec_after_blocker` (true only with an unsatisfied blocker), and optional
 `awaiting_user_reason` (formatted from the complete metadata object). Optional
 `release_info` and `dependents_info` use the same snapshot decoration functions
-as Ready/Blocked lists. These fields do not change admission or scheduling.
+as Ready/Blocked lists, and `plan_group` (above) is attached from the same
+snapshot. These fields do not change admission or scheduling.
 
 The `session-preferred` label is ADVISORY and, unlike `worker-ineligible`, never
 removes a row from the runnable verdict — `qualify()` in
@@ -505,6 +531,15 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   key is absent when this workspace has no snapshot yet or the lookup context
   would not assemble — that is 모름, and an older server omits it too.
 
+- `bead_plan_groups: Record<bead_id, PlanGroup>` (UI-ruwu §1) is the plan 묶음
+  (`PlanGroup` is the `plan_group` shape above) of the beads in exactly the
+  `bead_dependents` target set, projected from this workspace's last snapshot —
+  peeked, never requested. Only beads that belong to a valid group have an
+  entry. Non-persisted, display only, fail-quiet: the whole key is absent when
+  the workspace has no snapshot yet or no target belongs to a group, and an
+  older server omits it too. Both the worker-queue and monitor-pipeline channels
+  carry it, because both assemble their snapshot through `decorateQueue`.
+
 - `session_active[]` (UI-0a2m) is the SAME per-repo bucket the monitor
   aggregation ships (UI-yrzu §4.1, row shape and semantics above): beads an
   interactive session holds `in_progress`, minus this snapshot's `queue` ∪
@@ -679,6 +714,25 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   is rejected without a write. A successful placement also kicks the live
   dispatch loop (`tick`), so an auto_advance-ON queue with a free slot starts
   the bead without waiting for another trigger.
+- `worker-queue-place-plan` payload:
+  `{ root_dir?, plan_path, lane: 's1'..'s5', expected_revision }` (UI-ruwu §3) —
+  puts a plan's issues into one SERIAL lane. The workspace is `root_dir`
+  (validated like every Worker mutation: `bad_request` when it is not an
+  available workspace; never silently the connection's), `lane` must be a
+  configured serial lane (`parallel`, a malformed id or a slot beyond the
+  configured count is `bad_request`). The server picks the targets from its own
+  workspace snapshot: the plan group's members that are `open` and stand in no
+  lane, in anchor order. Each target runs the same `checkWorkerQueueAdmission` a
+  single placement runs; a refused one is not placed and comes back in
+  `skipped: [{ id, reason }]` (reply-only, no refusal is persisted). One
+  survivor takes the `worker-queue-place` path, none writes nothing, and two or
+  more are added to the lane in ONE revision-checked mutation, then the `blocks`
+  order correction applies; a member that became present concurrently refuses
+  the whole op. Reply:
+  `{ applied, conflict, reason?, placed: [bead_id], skipped, queue }`; `reason`
+  is `snapshot_unavailable`, `plan_group_not_found`, `no_eligible`, `rejected`
+  or the store's refusal such as `member_present`. A stale `expected_revision`
+  is `conflict: true` with no write.
 - `worker-queue-reorder` payload:
   `{ bead_id, lane?: 'parallel' | 's1'..'s5', to_index, expected_revision }` —
   reorders within one lane; cross-lane moves go through `worker-queue-place`.

@@ -73,6 +73,55 @@ describe('deriveWorkerOverlaps', () => {
     expect(facts_old.size).toBe(0);
   });
 
+  test('skips a pair declared from the same plan under different specs', () => {
+    const bead_scope = {
+      'A-1': { scope: ['app'], artifacts: ['a.md', 'plans/p.md'] },
+      'B-2': { scope: ['app/views'], artifacts: ['b.md', 'plans/p.md'] }
+    };
+
+    const facts = deriveWorkerOverlaps(bead_scope, [
+      member({ id: 'A-1' }),
+      member({ id: 'B-2' })
+    ]);
+
+    expect(facts.get('A-1')?.overlaps).toEqual([]);
+    expect(facts.get('B-2')?.overlaps).toEqual([]);
+  });
+
+  test('skips a pair declared from the same spec', () => {
+    const bead_scope = {
+      'A-1': { scope: ['app'], artifacts: ['shared.md'] },
+      'B-2': { scope: ['app/views'], artifacts: ['shared.md'] }
+    };
+
+    const facts = deriveWorkerOverlaps(bead_scope, [
+      member({ id: 'A-1' }),
+      member({ id: 'B-2' })
+    ]);
+
+    expect(facts.get('A-1')?.overlaps).toEqual([]);
+  });
+
+  test('keeps the pair that differs on spec and plan', () => {
+    const bead_scope = {
+      'A-1': { scope: ['app'], artifacts: ['a.md', 'plans/p.md'] },
+      'B-2': { scope: ['app/views'], artifacts: ['b.md', 'plans/q.md'] },
+      'C-3': { scope: ['app/views'], artifacts: ['a.md', 'plans/p.md'] }
+    };
+
+    const facts = deriveWorkerOverlaps(bead_scope, [
+      member({ id: 'A-1' }),
+      member({ id: 'B-2' }),
+      member({ id: 'C-3' })
+    ]);
+
+    expect(facts.get('A-1')?.overlaps.map((chip) => chip.id)).toEqual(['B-2']);
+    expect(facts.get('B-2')?.overlaps.map((chip) => chip.id)).toEqual([
+      'A-1',
+      'C-3'
+    ]);
+  });
+
   test('keeps the first occurrence when the same bead appears twice', () => {
     const bead_scope = {
       'A-1': { scope: ['app'], artifacts: [] },

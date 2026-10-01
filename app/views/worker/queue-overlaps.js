@@ -11,7 +11,11 @@
  *
  * @import { OverlapChip } from './lanes.js'
  */
-import { overlapPrefixes } from '../../utils/scope-overlap.js';
+import {
+  overlapPrefixes,
+  scopeSourceOf,
+  sharesScopeSource
+} from '../../utils/scope-overlap.js';
 
 /**
  * One 화면 사실 항목: 후보·병렬 대기·직렬 레인·실행 중·PR 대기 어딘가에 서 있는
@@ -50,7 +54,7 @@ export function deriveWorkerOverlaps(bead_scope, members) {
     return facts;
   }
   const record = /** @type {Record<string, any>} */ (bead_scope);
-  /** @type {Array<{ member: LaneMember, scope: string[] }>} */
+  /** @type {Array<{ member: LaneMember, scope: string[], source: import('../../utils/scope-overlap.js').ScopeSource }>} */
   const declared = [];
   /** @type {Set<string>} */
   const seen = new Set();
@@ -72,10 +76,15 @@ export function deriveWorkerOverlaps(bead_scope, members) {
       continue;
     }
     facts.set(member.id, { overlaps: [], scope_missing: false });
-    declared.push({ member, scope });
+    declared.push({ member, scope, source: scopeSourceOf(entry.artifacts) });
   }
   for (let left = 0; left < declared.length; left += 1) {
     for (let right = left + 1; right < declared.length; right += 1) {
+      // 한 plan의 이슈들은 설계상 같은 scope를 나누어 가지므로 서로 겹침이
+      // 아니다 (UI-ruwu §4).
+      if (sharesScopeSource(declared[left].source, declared[right].source)) {
+        continue;
+      }
       const prefixes = overlapPrefixes(
         declared[left].scope,
         declared[right].scope

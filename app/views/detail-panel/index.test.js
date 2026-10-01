@@ -1013,6 +1013,48 @@ describe('views/detail-panel', () => {
     quiet_panel.destroy();
   });
 
+  test('renders an enumerated planned execution as unit rows', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seedPanel(
+      mount,
+      {
+        ...baseIssue,
+        metadata: { route: 'full_plan' },
+        workflow: {
+          route: 'full_plan',
+          route_source: 'explicit',
+          stages: { spec: {}, impl: {} },
+          planned_execution: {
+            units: [
+              { unit: 'P1', kind: 'delegated', reason: null },
+              { unit: 'P2', kind: 'main', reason: '직접 통합 필요' }
+            ]
+          },
+          exec_receipt: null,
+          impl_entry: null
+        }
+      },
+      vi.fn()
+    );
+
+    const rows = Array.from(mount.querySelectorAll('.detail-kv')).map(
+      (row) => ({
+        key: row.querySelector('.detail-kv__k')?.textContent?.trim(),
+        value: row.querySelector('.detail-kv__v')?.textContent?.trim()
+      })
+    );
+
+    expect(rows).toContainEqual({
+      key: 'planned_execution',
+      value: 'P1:delegated; P2:main'
+    });
+    expect(rows).toContainEqual({
+      key: 'planned_execution_reason',
+      value: 'P2:직접 통합 필요'
+    });
+    panel.destroy();
+  });
+
   test('renders the conflict-resolution row beside a resolver impl_review', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const prior = 'd'.repeat(40);

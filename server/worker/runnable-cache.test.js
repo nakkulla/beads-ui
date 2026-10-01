@@ -333,6 +333,94 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     expect(out[0].dependents_info).toEqual(dependentsInfoFor('UI-1', context));
     expect(out[0].dependents_info?.ids).toContain('UI-3');
   });
+
+  describe('plan 묶음 (UI-ruwu §1)', () => {
+    const PLAN = 'docs/superpowers/plans/2026-09-29-plan-issue-group.md';
+
+    /**
+     * @param {string} id
+     * @param {string} anchor
+     * @param {Record<string, any>} [patch]
+     * @returns {Record<string, any>}
+     */
+    function planRow(id, anchor, patch = {}) {
+      return row({
+        id,
+        ...patch,
+        metadata: { plan_path: PLAN, plan_task_anchor: anchor }
+      });
+    }
+
+    test('carries the group on a qualified row', async () => {
+      const cache = createRunnableCache({
+        requestSnapshot: vi.fn(async () =>
+          snapshotOk([planRow('UI-1', 'Phase 1'), planRow('UI-2', 'Phase 2')])
+        )
+      });
+
+      const out = await warmExpanded(cache, WS_A);
+
+      expect(out.find((item) => item.bead_id === 'UI-2')?.plan_group).toEqual({
+        plan_path: PLAN,
+        slug: 'plan-issue-group',
+        index: 2,
+        total: 2,
+        members: [
+          { id: 'UI-1', anchor: 'Phase 1', status: 'open', blocked_by: [] },
+          { id: 'UI-2', anchor: 'Phase 2', status: 'open', blocked_by: [] }
+        ]
+      });
+    });
+
+    test('keeps index and total while a member is closed or deferred', async () => {
+      const cache = createRunnableCache({
+        requestSnapshot: vi.fn(async () =>
+          snapshotOk([
+            planRow('UI-1', 'Phase 1', { status: 'closed' }),
+            planRow('UI-2', 'Phase 2'),
+            planRow('UI-3', 'Phase 3', { status: 'deferred' })
+          ])
+        )
+      });
+
+      const out = await warmExpanded(cache, WS_A);
+
+      expect(out.map((item) => item.bead_id)).toEqual(['UI-2']);
+      expect(out[0].plan_group).toMatchObject({ index: 2, total: 3 });
+      expect(out[0].plan_group?.members.map((member) => member.status)).toEqual(
+        ['closed', 'open', 'deferred']
+      );
+    });
+
+    test('carries a member open blockers from the explain rows', async () => {
+      const cache = createRunnableCache({
+        requestSnapshot: vi.fn(async () =>
+          snapshotOk([planRow('UI-1', 'Phase 1'), planRow('UI-2', 'Phase 2')], {
+            ready_explain: { blocked: [{ id: 'UI-2', blocked_by: ['UI-1'] }] }
+          })
+        )
+      });
+
+      const out = await warmExpanded(cache, WS_A);
+
+      expect(
+        out
+          .find((item) => item.bead_id === 'UI-2')
+          ?.plan_group?.members.map((member) => member.blocked_by)
+      ).toEqual([[], ['UI-1']]);
+    });
+
+    test('leaves a row outside every group without the field', async () => {
+      const cache = createRunnableCache({
+        requestSnapshot: vi.fn(async () => snapshotOk([row()]))
+      });
+
+      const out = await warmExpanded(cache, WS_A);
+
+      expect('plan_group' in out[0]).toBe(false);
+    });
+  });
+
   test('projects open runnable candidates from a shared workspace snapshot', async () => {
     const requestSnapshot = vi.fn(async () => snapshotOk([row()]));
     const cache = createRunnableCache({ requestSnapshot });

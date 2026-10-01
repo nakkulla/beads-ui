@@ -10,12 +10,18 @@
  * @import { Queue } from './queue-store.js'
  * @import { AdmissionResult } from './admission.js'
  */
+import { planGroupForPath } from '../list-adapters.js';
 import { debug } from '../logging.js';
+import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 // Import cycle accepted: `worker-handlers.js` imports this module back. Both
 // symbols are function declarations called only after both modules initialize,
 // so ESM live bindings resolve regardless of which loads first. Relocating
 // `fanout` would drag `decorateQueue` and the whole wire projection with it.
-import { fanout, laneBlocksEdges } from '../ws/worker-handlers.js';
+import {
+  fanout,
+  laneBlocksEdges,
+  laneMemberIds
+} from '../ws/worker-handlers.js';
 import { checkWorkerQueueAdmission, tickWorkerQueue } from './attach.js';
 import { getWorkerRuntime } from './runtime.js';
 
@@ -74,6 +80,44 @@ function waitingSeatOf(queue, bead_id) {
 }
 
 /**
+ * Run the server's queue-entry admission for one bead. A thrown check reads as
+ * a refusal (`git_error`) rather than an escape, so a caller never has to guess
+ * whether a bead it could not check may be placed.
+ *
+ * @param {string} workspace_key
+ * @param {string} bead_id
+ * @returns {Promise<AdmissionResult>}
+ */
+async function admitBead(workspace_key, bead_id) {
+  try {
+    return await checkWorkerQueueAdmission(workspace_key, bead_id);
+  } catch (err) {
+    log('admission check failed for %s/%s: %o', workspace_key, bead_id, err);
+    return { ok: false, reason: 'git_error' };
+  }
+}
+
+/**
+ * The admission record a successful placement leaves behind: the non-blocking
+ * stale mark when the pass observed a stale receipt (UI-dlim §3.2), else the
+ * clearing of any prior refusal.
+ *
+ * @param {string} workspace_key
+ * @param {string} bead_id
+ * @param {AdmissionResult} admission
+ * @returns {import('./queue-store.js').QueueOpResult}
+ */
+function settleAdmission(workspace_key, bead_id, admission) {
+  return admission.stale
+    ? queueStore().recordAdmission(workspace_key, {
+        bead_id,
+        reason: 'spec_review_stale',
+        stale: true
+      })
+    : queueStore().clearAdmission(workspace_key, bead_id);
+}
+
+/**
  * Place a bead into a waiting lane, admission-gated and CAS-guarded.
  *
  * Every branch that CHANGED the queue — a placement, a persisted refusal, the
@@ -87,15 +131,8 @@ function waitingSeatOf(queue, bead_id) {
  */
 export async function placeBeadInQueue(workspace_key, input) {
   const { bead_id } = input;
-  /** @type {AdmissionResult | null} */
-  let admission = null;
-  try {
-    admission = await checkWorkerQueueAdmission(workspace_key, bead_id);
-  } catch (err) {
-    log('admission check failed for %s/%s: %o', workspace_key, bead_id, err);
-    admission = { ok: false, reason: 'git_error' };
-  }
-  if (admission && !admission.ok) {
+  const admission = await admitBead(workspace_key, bead_id);
+  if (!admission.ok) {
     const reason = admission.reason || 'git_error';
     // Persist the refusal so the candidate badge renders it for EVERY client
     // (the reply-only admission_reason was droppable — implementation review
@@ -152,14 +189,7 @@ export async function placeBeadInQueue(workspace_key, input) {
   // case the placement REPLACES the refusal with the non-blocking stale mark
   // so the queued row announces the in-session re-review from the moment it
   // enters the lane.
-  const applied =
-    admission && admission.stale
-      ? queueStore().recordAdmission(workspace_key, {
-          bead_id,
-          reason: 'spec_review_stale',
-          stale: true
-        })
-      : queueStore().clearAdmission(workspace_key, bead_id);
+  const applied = settleAdmission(workspace_key, bead_id, admission);
   if (applied.ok) {
     result = { ...result, queue: applied.queue };
   }
@@ -177,5 +207,175 @@ export async function placeBeadInQueue(workspace_key, input) {
     conflict: false,
     ...(seat ? { lane: seat.lane, index: seat.index } : {}),
     queue: result.queue
+  };
+}
+
+/**
+ * @typedef {Object} PlacePlanOutcome
+ * @property {boolean} applied - True when at least one bead was written.
+ * @property {boolean} conflict - True when the revision CAS rejected the write.
+ * @property {string} [reason] - Why nothing was written (`snapshot_unavailable`,
+ * `plan_group_not_found`, `no_eligible`, `rejected`, or the store's own reason
+ * such as `member_present`); absent on success.
+ * @property {string[]} placed - Bead ids written into the lane, in anchor order.
+ * @property {Array<{ id: string, reason: string }>} skipped - Group members the
+ * server's admission refused. REPLY-ONLY: no refusal is persisted for them.
+ * @property {Queue} queue - The snapshot the caller should project.
+ */
+
+/**
+ * Place a plan's open, not-yet-queued issues into one serial lane (UI-ruwu §3).
+ *
+ * The targets come from the SERVER's own workspace snapshot, never from the
+ * request: the plan group's members in anchor order that are `open` and stand
+ * in no lane. Each target goes through the same {@link checkWorkerQueueAdmission}
+ * a single placement runs; a refused one is reported in `skipped` and left out.
+ * One survivor takes the single {@link placeBeadInQueue} path, none writes
+ * nothing, and two or more are added in ONE revision-checked store mutation so
+ * the group is never half-placed. The `blocks` correction is the final order.
+ *
+ * @param {string} workspace_key
+ * @param {{ plan_path: string, lane: string, expected_revision: number }} input
+ * @returns {Promise<PlacePlanOutcome>}
+ */
+export async function placePlanInQueue(workspace_key, input) {
+  const { plan_path, lane, expected_revision } = input;
+  /** @type {Array<{ id: string, reason: string }>} */
+  const skipped = [];
+  /**
+   * @param {string} reason
+   * @returns {PlacePlanOutcome}
+   */
+  const nothingWritten = (reason) => ({
+    applied: false,
+    conflict: false,
+    reason,
+    placed: [],
+    skipped,
+    queue: queueStore().snapshot(workspace_key)
+  });
+  // A stale view is refused before any admission work: the store would reject
+  // the write at its own CAS anyway, and a git-backed check per member is the
+  // expensive part.
+  if (queueStore().snapshot(workspace_key).revision !== expected_revision) {
+    return {
+      applied: false,
+      conflict: true,
+      placed: [],
+      skipped,
+      queue: queueStore().snapshot(workspace_key)
+    };
+  }
+  const fetched = await requestWorkspaceSnapshot(
+    workspace_key,
+    'worker-queue-place-plan'
+  );
+  const group =
+    fetched.ok && !fetched.stale && fetched.snapshot
+      ? planGroupForPath(fetched.snapshot, plan_path)
+      : null;
+  if (!group) {
+    return nothingWritten(
+      fetched.ok && !fetched.stale
+        ? 'plan_group_not_found'
+        : 'snapshot_unavailable'
+    );
+  }
+  const standing = new Set(
+    laneMemberIds(queueStore().snapshot(workspace_key), true)
+  );
+  /** @type {Array<{ id: string, admission: AdmissionResult }>} */
+  const eligible = [];
+  for (const member of group.members) {
+    if (member.status !== 'open' || standing.has(member.id)) {
+      continue;
+    }
+    const admission = await admitBead(workspace_key, member.id);
+    if (admission.ok) {
+      eligible.push({ id: member.id, admission });
+    } else {
+      skipped.push({ id: member.id, reason: admission.reason || 'git_error' });
+    }
+  }
+  if (eligible.length === 0) {
+    return nothingWritten('no_eligible');
+  }
+  if (eligible.length === 1) {
+    const outcome = await placeBeadInQueue(workspace_key, {
+      bead_id: eligible[0].id,
+      lane,
+      expected_revision
+    });
+    if (typeof outcome.admission_reason === 'string') {
+      skipped.push({ id: eligible[0].id, reason: outcome.admission_reason });
+    }
+    const reason = outcome.admission_reason ? 'no_eligible' : outcome.reason;
+    return {
+      applied: outcome.applied,
+      conflict: outcome.conflict,
+      ...(reason ? { reason } : {}),
+      placed: outcome.applied ? [eligible[0].id] : [],
+      skipped,
+      queue: outcome.queue
+    };
+  }
+  const ordered_bead_ids = eligible.map((entry) => entry.id);
+  const blocks_edges = laneBlocksEdges(
+    workspace_key,
+    queueStore().snapshot(workspace_key),
+    lane,
+    ordered_bead_ids
+  );
+  // The member's open blockers ride the same snapshot generation, so a target
+  // the title cache has not read yet still orders correctly.
+  const in_lane = new Set(ordered_bead_ids);
+  for (const member of group.members) {
+    if (!in_lane.has(member.id)) {
+      continue;
+    }
+    for (const blocker of member.blocked_by) {
+      if (
+        in_lane.has(blocker) &&
+        !blocks_edges.some(
+          (edge) => edge.blocker === blocker && edge.blockee === member.id
+        )
+      ) {
+        blocks_edges.push({ blocker, blockee: member.id });
+      }
+    }
+  }
+  const result = queueStore().placeSerialGroup(workspace_key, {
+    expected_revision,
+    lane,
+    ordered_bead_ids,
+    blocks_edges
+  });
+  if (!result.ok) {
+    return {
+      applied: false,
+      conflict: result.conflict,
+      ...(result.conflict ? {} : { reason: result.reason || 'rejected' }),
+      placed: [],
+      skipped,
+      queue: result.queue
+    };
+  }
+  let queue = result.queue;
+  for (const entry of eligible) {
+    const settled = settleAdmission(workspace_key, entry.id, entry.admission);
+    if (settled.ok) {
+      queue = settled.queue;
+    }
+  }
+  fanout(workspace_key, queue);
+  Promise.resolve(tickWorkerQueue(workspace_key)).catch((err) => {
+    log('worker tick after plan place failed for %s: %o', workspace_key, err);
+  });
+  return {
+    applied: true,
+    conflict: false,
+    placed: ordered_bead_ids,
+    skipped,
+    queue
   };
 }

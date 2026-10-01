@@ -79,6 +79,101 @@ describe('views/exec-format planned execution', () => {
     );
   });
 
+  test('summarizes an enumerated plan by its delegated and main counts', () => {
+    const presentation = formatPlannedExecution(
+      {
+        units: [
+          { unit: 'P1', kind: 'delegated', reason: null },
+          { unit: 'P2', kind: 'main', reason: '직접 통합 필요' },
+          { unit: 'P3', kind: 'delegated', reason: null }
+        ]
+      },
+      null
+    );
+
+    expect(presentation?.label).toBe('계획 · 위임 2 / 메인 1');
+  });
+
+  test('lists each unit of an enumerated plan with its kind and reason', () => {
+    const presentation = formatPlannedExecution(
+      {
+        units: [
+          { unit: 'P1', kind: 'delegated', reason: null },
+          { unit: 'P2', kind: 'main', reason: '직접 통합 필요' }
+        ]
+      },
+      null
+    );
+
+    expect(presentation?.units).toEqual([
+      { unit: 'P1', kind: 'delegated', kind_label: '위임', reason: null },
+      { unit: 'P2', kind: 'main', kind_label: '메인', reason: '직접 통합 필요' }
+    ]);
+  });
+
+  test('carries the unit enumeration and main reasons in the title', () => {
+    const presentation = formatPlannedExecution(
+      {
+        units: [
+          { unit: 'P1', kind: 'delegated', reason: null },
+          { unit: 'P2', kind: 'main', reason: '직접 통합 필요' }
+        ]
+      },
+      null
+    );
+
+    expect(presentation?.title).toBe(
+      'planned_execution P1:delegated; P2:main · planned_execution_reason P2:직접 통합 필요'
+    );
+  });
+
+  test('marks an enumerated plan main only when a unit is main', () => {
+    const all_delegated = formatPlannedExecution(
+      {
+        units: [
+          { unit: 'P1', kind: 'delegated', reason: null },
+          { unit: 'P2', kind: 'delegated', reason: null }
+        ]
+      },
+      null
+    );
+    const mixed = formatPlannedExecution(
+      {
+        units: [
+          { unit: 'P1', kind: 'delegated', reason: null },
+          { unit: 'P2', kind: 'main', reason: '사유' }
+        ]
+      },
+      null
+    );
+
+    expect(all_delegated?.kind).toBe('delegated');
+    expect(mixed?.kind).toBe('main');
+  });
+
+  test('returns null for an enumerated plan with no units', () => {
+    expect(formatPlannedExecution({ units: [] }, null)).toBeNull();
+  });
+
+  test('returns null when an enumerated unit carries an unreadable reason', () => {
+    const presentation = formatPlannedExecution(
+      { units: [{ unit: 'P1', kind: 'main', reason: '  ' }] },
+      null
+    );
+
+    expect(presentation).toBeNull();
+  });
+
+  test('keeps the scalar presentation free of a unit list', () => {
+    const presentation = formatPlannedExecution(
+      { kind: 'main', reason: '직접 통합' },
+      null
+    );
+
+    expect(presentation?.units).toBeUndefined();
+    expect(presentation?.label).toBe('계획 · 메인');
+  });
+
   test('renders the planned-to-actual mismatch in the label', () => {
     const sha = 'd'.repeat(40);
 

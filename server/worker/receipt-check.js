@@ -23,7 +23,8 @@
  */
 import {
   DELEGATED_EFFORT_TOKENS,
-  parseExecReceipt
+  parseExecReceipt,
+  parsePlannedExecutionUnits
 } from '../workflow-enrich.js';
 
 /**
@@ -499,7 +500,8 @@ function takeoverLineage(lineage) {
  * the merge proceeds.
  *
  * @param {{ kind: string, actor: string, effort: string|null, sha: string }} parsed
- * @param {{ metadata: Record<string, unknown>, defaults: ReceiptDefaultsInput|null|undefined, lineage: ReceiptLineageInput|null|undefined }} ctx
+ * @param {{ metadata: Record<string, unknown>, defaults: ReceiptDefaultsInput|null|undefined, lineage: ReceiptLineageInput|null|undefined, unit?: string|null }} ctx - `unit` is the
+ * multi-unit item's unit name; absent for a single receipt.
  * @returns {{ violations: ReceiptViolation[], notes: Record<string, unknown> }}
  */
 function backingFor(parsed, ctx) {
@@ -556,10 +558,30 @@ function backingFor(parsed, ctx) {
     return { violations, notes };
   }
   if (token === 'phase_line') {
-    if (str(ctx.metadata.planned_execution) !== 'main') {
+    const planned = str(ctx.metadata.planned_execution);
+    if (planned === 'main') {
+      return { violations, notes };
+    }
+    // The unit enumeration `P<a>:<kind>; ...` backs a `main:phase_line` item
+    // only through ITS unit: a single receipt names no unit, an unlisted unit
+    // has no planned kind, and a malformed enumeration reads as absent.
+    const units = planned === null ? null : parsePlannedExecutionUnits(planned);
+    if (units === null) {
       violations.push({
         code: 'main_receipt_unbacked',
         detail: 'main:phase_line without planned_execution=main'
+      });
+      return { violations, notes };
+    }
+    const unit_kind = ctx.unit
+      ? units.find((entry) => entry.unit === ctx.unit)?.kind
+      : undefined;
+    if (unit_kind !== 'main') {
+      violations.push({
+        code: 'main_receipt_unbacked',
+        detail: ctx.unit
+          ? `main:phase_line unit ${ctx.unit} is ${unit_kind ?? 'not listed'} in planned_execution`
+          : 'main:phase_line receipt names no unit of the planned_execution enumeration'
       });
     }
     return { violations, notes };
@@ -796,7 +818,7 @@ export async function checkReceipts(input) {
           unit_checks.push({ unit: item.unit, malformed: true });
           continue;
         }
-        const backing = backingFor(form.parsed, ctx);
+        const backing = backingFor(form.parsed, { ...ctx, unit: item.unit });
         violations.push(...backing.violations);
         const ancestry = await receiptAncestry(
           form.parsed.sha,

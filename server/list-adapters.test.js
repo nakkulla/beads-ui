@@ -9,7 +9,8 @@ import {
 import { runBdJsonProjected } from './bd.js';
 import {
   fetchListForSubscription,
-  mapSubscriptionToBdArgs
+  mapSubscriptionToBdArgs,
+  planGroupIndexFor
 } from './list-adapters.js';
 import {
   cachedIssuePrefixFor,
@@ -1946,5 +1947,199 @@ describe('ready/blocked candidate decorations (UI-d13v §3.3·§3.5·§3.7)', ()
     const items = await projectIn(WS_MAIN);
 
     expect(items[0].decoration_rev).toBe('');
+  });
+});
+
+describe('plan 묶음 투영 (UI-ruwu §1)', () => {
+  const WS_PLAN = '/repos/plan';
+  const PLAN = 'docs/superpowers/plans/2026-09-29-plan-issue-group.md';
+
+  beforeEach(() => {
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockReset();
+    __resetWorkspaceSnapshotRuntimeForTest();
+    vi.mocked(visibleWorkspaceRoots).mockReturnValue([WS_PLAN]);
+    vi.mocked(cachedIssuePrefixFor).mockReturnValue(null);
+  });
+
+  /**
+   * @param {string} id
+   * @param {string} anchor
+   * @param {string} [status]
+   * @returns {Record<string, unknown>}
+   */
+  function planIssue(id, anchor, status = 'open') {
+    return {
+      id,
+      status,
+      metadata: { plan_path: PLAN, plan_task_anchor: anchor }
+    };
+  }
+
+  /**
+   * @param {Array<Record<string, unknown>>} all
+   * @param {Record<string, string[]>} [blocked]
+   */
+  function mockPlanWorkspace(all, blocked = {}) {
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (_family, args) => {
+      if (args[0] === 'version') {
+        return supportedVersion();
+      }
+      if (args[0] === 'list') {
+        return asProjectedResponse({ code: 0, stdoutJson: all });
+      }
+      if (args[0] === 'ready') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: {
+            ready: [],
+            blocked: Object.entries(blocked).map(([id, blocked_by]) => ({
+              id,
+              blocked_by
+            }))
+          }
+        });
+      }
+      throw new Error(`unexpected command: ${args.join(' ')}`);
+    });
+  }
+
+  /**
+   * @param {string} type
+   * @param {Record<string, string>} [params]
+   */
+  async function project(type, params) {
+    __resetWorkspaceSnapshotRuntimeForTest();
+    const result = await fetchListForSubscription(
+      { type, ...(params ? { params } : {}) },
+      { cwd: WS_PLAN, workspace_snapshot: true }
+    );
+    if (!result.ok) {
+      throw new Error(`projection failed: ${result.error.message}`);
+    }
+    return result.items;
+  }
+
+  test('attaches the group summary to each member of a plan', async () => {
+    mockPlanWorkspace([
+      planIssue('UI-b', 'Phase 2'),
+      planIssue('UI-a', 'Phase 1')
+    ]);
+
+    const items = await project('all-issues');
+
+    const by_id = Object.fromEntries(items.map((item) => [item.id, item]));
+    expect(by_id['UI-a'].plan_group).toMatchObject({
+      plan_path: PLAN,
+      slug: 'plan-issue-group',
+      index: 1,
+      total: 2
+    });
+    expect(by_id['UI-b'].plan_group).toMatchObject({ index: 2, total: 2 });
+  });
+
+  test('keeps index and total when a member is closed and filtered out of the list', async () => {
+    mockPlanWorkspace([
+      planIssue('UI-a', 'Phase 1', 'closed'),
+      planIssue('UI-b', 'Phase 2'),
+      planIssue('UI-c', 'Phase 3')
+    ]);
+
+    const items = await project('all-issues');
+
+    expect(items.map((item) => item.id)).toEqual(['UI-b', 'UI-c']);
+    expect(items[0].plan_group).toMatchObject({ index: 2, total: 3 });
+    expect(
+      /** @type {any} */ (items[0].plan_group).members.map(
+        (/** @type {any} */ member) => `${member.id}:${member.status}`
+      )
+    ).toEqual(['UI-a:closed', 'UI-b:open', 'UI-c:open']);
+  });
+
+  test('carries a member open blockers from the explain rows', async () => {
+    mockPlanWorkspace(
+      [planIssue('UI-a', 'Phase 1'), planIssue('UI-b', 'Phase 2')],
+      { 'UI-b': ['UI-a'] }
+    );
+
+    const items = await project('all-issues');
+
+    const second = /** @type {any} */ (
+      items.find((item) => item.id === 'UI-b')
+    );
+    expect(
+      second.plan_group.members.map(
+        (/** @type {any} */ member) => member.blocked_by
+      )
+    ).toEqual([[], ['UI-a']]);
+  });
+
+  test('leaves an issue outside every plan group without the field', async () => {
+    mockPlanWorkspace([
+      planIssue('UI-a', 'Phase 1'),
+      planIssue('UI-b', 'Phase 2'),
+      { id: 'UI-z', status: 'open', metadata: {} }
+    ]);
+
+    const items = await project('all-issues');
+
+    const loose = items.find((item) => item.id === 'UI-z');
+    expect(loose && 'plan_group' in loose).toBe(false);
+  });
+
+  test('omits the group when a member has no anchor', async () => {
+    mockPlanWorkspace([
+      planIssue('UI-a', 'Phase 1'),
+      { id: 'UI-b', status: 'open', metadata: { plan_path: PLAN } }
+    ]);
+
+    const items = await project('all-issues');
+
+    expect(items.some((item) => 'plan_group' in item)).toBe(false);
+  });
+
+  test('attaches the group to the detail issue', async () => {
+    mockPlanWorkspace([
+      planIssue('UI-a', 'Phase 1'),
+      planIssue('UI-b', 'Phase 2')
+    ]);
+
+    const items = await project('issue-detail', { id: 'UI-b' });
+
+    expect(items[0].plan_group).toMatchObject({ index: 2, total: 2 });
+  });
+
+  test('changes decoration_rev when only a sibling status changed', async () => {
+    mockPlanWorkspace([
+      planIssue('UI-a', 'Phase 1'),
+      planIssue('UI-b', 'Phase 2')
+    ]);
+    const before = (await project('all-issues')).find(
+      (item) => item.id === 'UI-b'
+    );
+    mockPlanWorkspace([
+      planIssue('UI-a', 'Phase 1', 'closed'),
+      planIssue('UI-b', 'Phase 2')
+    ]);
+
+    const after = (await project('all-issues')).find(
+      (item) => item.id === 'UI-b'
+    );
+
+    expect(after?.decoration_rev).not.toBe(before?.decoration_rev);
+    expect(before?.decoration_rev).toContain('plan_group=');
+  });
+
+  test('computes the group once per snapshot generation', () => {
+    const snapshot = {
+      all: [planIssue('UI-a', 'Phase 1'), planIssue('UI-b', 'Phase 2')],
+      ready_explain: { ready: [], blocked: [] }
+    };
+
+    const first = planGroupIndexFor(snapshot);
+    const second = planGroupIndexFor(snapshot);
+
+    expect(second).toBe(first);
   });
 });

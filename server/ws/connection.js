@@ -112,6 +112,7 @@ import {
   handleWorkerProviderLimitPolicySet,
   handleWorkerProviderProbeNow,
   handleWorkerQueuePlace,
+  handleWorkerQueuePlacePlan,
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
   handleWorkerQueueSetOrchestrationDefaults,
@@ -571,6 +572,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-place':
       await handleWorkerQueuePlace(ws, req);
+      return;
+    case 'worker-queue-place-plan':
+      await handleWorkerQueuePlacePlan(ws, req);
       return;
     case 'worker-queue-reorder':
       handleWorkerQueueReorder(ws, req);

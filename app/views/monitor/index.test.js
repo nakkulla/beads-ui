@@ -3098,12 +3098,18 @@ describe('views/monitor 세션 타일 drawer (UI-4xzk §6.4)', () => {
 });
 
 describe('monitor 겹침 칩 (UI-qm12 §5.3, 클릭은 UI-8x90 §4.3)', () => {
+  let spec_seq = 0;
+
   /**
+   * Each declaration reads from its OWN spec: two beads sharing a spec or a
+   * plan are one plan's issues and draw no overlap chip (UI-ruwu §4).
+   *
    * @param {string[]} [scope]
    * @returns {{ scope: string[], artifacts: string[] }}
    */
   function declared(scope = ['server/worker']) {
-    return { scope, artifacts: ['docs/spec.md'] };
+    spec_seq += 1;
+    return { scope, artifacts: [`docs/spec-${spec_seq}.md`] };
   }
 
   test('draws one chip per counterpart with no +n fold', () => {
@@ -4029,12 +4035,17 @@ describe('접힌 레인 띠 드롭·행 조작 드래그 가드 (UI-5ksp REVISE)
 });
 
 describe('monitor PR 대기·완료 레인 겹침 칩 (UI-e9sg)', () => {
+  let spec_seq = 0;
+
   /**
+   * Each declaration reads from its OWN spec (UI-ruwu §4).
+   *
    * @param {string[]} [scope]
    * @returns {{ scope: string[], artifacts: string[] }}
    */
   function declared(scope = ['server/worker']) {
-    return { scope, artifacts: ['docs/spec.md'] };
+    spec_seq += 1;
+    return { scope, artifacts: [`docs/spec-${spec_seq}.md`] };
   }
 
   test('draws the overlap chip on a PR 대기 row', () => {

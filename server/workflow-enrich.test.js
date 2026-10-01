@@ -451,6 +451,109 @@ describe('execution metadata display projection', PURE, () => {
     expect(planned_execution).toBeNull();
   });
 
+  test('normalizes a unit enumeration with per-unit reasons into units', () => {
+    const planned_execution = parsePlannedExecution(
+      'P1:delegated; P2:main; P3:delegated',
+      'P2:직접 통합 필요'
+    );
+
+    expect(planned_execution).toEqual({
+      units: [
+        { unit: 'P1', kind: 'delegated', reason: null },
+        { unit: 'P2', kind: 'main', reason: '직접 통합 필요' },
+        { unit: 'P3', kind: 'delegated', reason: null }
+      ]
+    });
+  });
+
+  test('gives each main unit its own reason', () => {
+    const planned_execution = parsePlannedExecution(
+      'P1:main; P2:main',
+      'P1:계약 변경; P2:국소 수정'
+    );
+
+    expect(planned_execution).toEqual({
+      units: [
+        { unit: 'P1', kind: 'main', reason: '계약 변경' },
+        { unit: 'P2', kind: 'main', reason: '국소 수정' }
+      ]
+    });
+  });
+
+  test('keeps a semicolon inside a unit reason', () => {
+    const planned_execution = parsePlannedExecution(
+      'P1:delegated; P2:main',
+      'P2:한 가지; 그리고 또 하나'
+    );
+
+    expect(planned_execution).toEqual({
+      units: [
+        { unit: 'P1', kind: 'delegated', reason: null },
+        { unit: 'P2', kind: 'main', reason: '한 가지; 그리고 또 하나' }
+      ]
+    });
+  });
+
+  test('normalizes an all-delegated enumeration without a reason', () => {
+    const planned_execution = parsePlannedExecution(
+      'P1:delegated; P2:delegated',
+      undefined
+    );
+
+    expect(planned_execution).toEqual({
+      units: [
+        { unit: 'P1', kind: 'delegated', reason: null },
+        { unit: 'P2', kind: 'delegated', reason: null }
+      ]
+    });
+  });
+
+  test.each([
+    ['an unknown kind', 'P1:worker; P2:main', 'P2:사유'],
+    ['a unit without a P prefix', 'one:delegated; P2:main', 'P2:사유'],
+    ['a repeated unit', 'P1:delegated; P1:main', 'P1:사유'],
+    ['an empty item', 'P1:delegated;; P2:main', 'P2:사유'],
+    ['a main unit without a reason entry', 'P1:delegated; P2:main', undefined],
+    [
+      'a reason for a unit that is not main',
+      'P1:delegated; P2:main',
+      'P1:x; P2:y'
+    ],
+    ['a reason for an unlisted unit', 'P1:delegated; P2:main', 'P2:x; P9:y'],
+    ['a blank unit reason', 'P1:main', 'P1:   '],
+    ['a repeated unit reason', 'P1:main', 'P1:a; P1:b'],
+    ['a multiline reason', 'P1:main', 'P1:첫 줄\n둘째 줄'],
+    ['a reason on an all-delegated enumeration', 'P1:delegated', 'P1:x']
+  ])('returns null for %s', (_name, kind_value, reason_value) => {
+    const planned_execution = parsePlannedExecution(kind_value, reason_value);
+
+    expect(planned_execution).toBeNull();
+  });
+
+  test('exposes an enumerated plan on both enrichment surfaces', () => {
+    const workflow = enrichIssueWorkflow(
+      {
+        id: 'UI-1',
+        metadata: {
+          planned_execution: 'P1:delegated; P2:main',
+          planned_execution_reason: 'P2:직접 통합'
+        }
+      },
+      null,
+      null
+    );
+
+    expect(workflow.planned_execution).toEqual({
+      units: [
+        { unit: 'P1', kind: 'delegated', reason: null },
+        { unit: 'P2', kind: 'main', reason: '직접 통합' }
+      ]
+    });
+    expect(workflow.chips.planned_execution).toEqual(
+      workflow.planned_execution
+    );
+  });
+
   test('keeps existing enrichment when planned execution is malformed', () => {
     const workflow = enrichIssueWorkflow(
       {

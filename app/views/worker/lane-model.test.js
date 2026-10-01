@@ -4291,12 +4291,19 @@ describe('validTime (UI-yrzu §5)', () => {
 });
 
 describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
+  let spec_seq = 0;
+
   /**
+   * Each declaration reads from its OWN spec: two beads sharing a spec or a
+   * plan are one plan's issues and draw no overlap chip (UI-ruwu §4).
+   *
    * @param {string[]} scope
+   * @param {string[]} [artifacts]
    * @returns {{ scope: string[], artifacts: string[] }}
    */
-  function declared(scope) {
-    return { scope, artifacts: ['docs/spec.md'] };
+  function declared(scope, artifacts) {
+    spec_seq += 1;
+    return { scope, artifacts: artifacts ?? [`docs/spec-${spec_seq}.md`] };
   }
 
   test('gives a running and a waiting bead each other as an overlap chip', () => {
@@ -4410,6 +4417,88 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
 
     expect(lanes.queue[0].overlap_chips).toBeUndefined();
     expect(lanes.queue[1].overlap_chips).toBeUndefined();
+  });
+
+  test('skips a pair reading the same spec (UI-ruwu §4)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_scope: {
+            'A-1': declared(['server/worker'], ['docs/shared.md']),
+            'A-2': declared(['server/worker'], ['docs/shared.md'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].overlap_chips).toBeUndefined();
+    expect(lanes.queue[1].overlap_chips).toBeUndefined();
+  });
+
+  test('skips a pair reading the same plan under different specs (UI-ruwu §4)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_scope: {
+            'A-1': declared(['server/worker'], ['docs/a.md', 'plans/p.md']),
+            'A-2': declared(['server/worker'], ['docs/b.md', 'plans/p.md'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].overlap_chips).toBeUndefined();
+    expect(lanes.queue[1].overlap_chips).toBeUndefined();
+  });
+
+  test('keeps a pair reading different specs and plans (UI-ruwu §4)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_scope: {
+            'A-1': declared(['server/worker'], ['docs/a.md', 'plans/p.md']),
+            'A-2': declared(['server/worker'], ['docs/b.md', 'plans/q.md'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].overlap_chips?.map((chip) => chip.id)).toEqual([
+      'A-2'
+    ]);
+  });
+
+  test('skips a runnable candidate sharing a plan with a waiting bead (UI-ruwu §4)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          runnable: [
+            runnable('A-9', {
+              spec_id: 'docs/x.md',
+              plan_path: 'plans/p.md',
+              scope: ['app/views']
+            })
+          ],
+          bead_scope: {
+            'A-1': declared(
+              ['app/views/monitor/index.js'],
+              ['docs/y.md', 'plans/p.md']
+            )
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].overlap_chips).toBeUndefined();
+    expect(lanes.queue[0].overlap_chips).toBeUndefined();
   });
 
   test('marks a read declaration with no items as missing', () => {

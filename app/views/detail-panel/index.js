@@ -2667,6 +2667,20 @@ export function createDetailPanel(mount_element, options) {
     // the missing metadata pin instead of exposing the fallback value.
     const route_derived = wf.route_source === 'derived';
     const route_label = wf.route || md.route || '—';
+    // 나열 형식 계획은 `{ units }`로 정규화돼 온다 (UI-ruwu §5): kind 한 줄 대신
+    // `P<a>:<kind>; ...`와 main unit별 사유 줄을 같은 키로 보인다.
+    /** @type {Array<{ unit: string, kind: string, reason: string|null }>|null} */
+    const planned_execution_units = Array.isArray(wf.planned_execution?.units)
+      ? wf.planned_execution.units
+      : null;
+    const planned_execution_reason = planned_execution_units
+      ? planned_execution_units
+          .filter((entry) => entry.kind === 'main')
+          .map((entry) => `${entry.unit}:${entry.reason}`)
+          .join('; ')
+      : wf.planned_execution?.kind === 'main'
+        ? wf.planned_execution.reason
+        : '';
     return html`
       <div class="detail-section-label">워크플로우</div>
       <div class="detail-kv">
@@ -2737,13 +2751,19 @@ export function createDetailPanel(mount_element, options) {
       ${wf.planned_execution
         ? html`<div class="detail-kv">
               <span class="detail-kv__k">planned_execution</span>
-              <span class="detail-kv__v">${wf.planned_execution.kind}</span>
+              <span class="detail-kv__v"
+                >${planned_execution_units
+                  ? planned_execution_units
+                      .map((entry) => `${entry.unit}:${entry.kind}`)
+                      .join('; ')
+                  : wf.planned_execution.kind}</span
+              >
             </div>
-            ${wf.planned_execution.kind === 'main'
+            ${planned_execution_reason
               ? html`<div class="detail-kv">
                   <span class="detail-kv__k">planned_execution_reason</span>
                   <span class="detail-kv__v detail-kv__v--wrap"
-                    >${wf.planned_execution.reason}</span
+                    >${planned_execution_reason}</span
                   >
                 </div>`
               : ''}`

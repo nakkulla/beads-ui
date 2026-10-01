@@ -2,7 +2,9 @@ import { describe, expect, test } from 'vitest';
 import {
   normalizeScopePrefix,
   overlapPrefixes,
-  scopeItemsOverlap
+  scopeItemsOverlap,
+  scopeSourceOf,
+  sharesScopeSource
 } from './scope-overlap.js';
 
 describe('scopeItemsOverlap (UI-t4zy §3.3, moved by UI-qm12 §5.1)', () => {
@@ -75,5 +77,71 @@ describe('normalizeScopePrefix', () => {
     const normalized = normalizeScopePrefix('server/worker///');
 
     expect(normalized).toBe('server/worker');
+  });
+});
+
+describe('scopeSourceOf (UI-ruwu §4)', () => {
+  test('reads the spec first and the plan second', () => {
+    const source = scopeSourceOf(['docs/spec.md', 'plans/p.md']);
+
+    expect(source).toEqual({
+      spec_path: 'docs/spec.md',
+      plan_path: 'plans/p.md'
+    });
+  });
+
+  test('leaves the plan empty when only a spec was read', () => {
+    const source = scopeSourceOf(['docs/spec.md']);
+
+    expect(source).toEqual({ spec_path: 'docs/spec.md', plan_path: '' });
+  });
+
+  test('leaves both empty for a description-sourced declaration', () => {
+    expect(scopeSourceOf([])).toEqual({ spec_path: '', plan_path: '' });
+    expect(scopeSourceOf(undefined)).toEqual({ spec_path: '', plan_path: '' });
+  });
+});
+
+describe('sharesScopeSource (UI-ruwu §4)', () => {
+  test('matches two issues of the same spec', () => {
+    const shared = sharesScopeSource(
+      { spec_path: 'docs/spec.md', plan_path: 'plans/a.md' },
+      { spec_path: 'docs/spec.md', plan_path: 'plans/b.md' }
+    );
+
+    expect(shared).toBe(true);
+  });
+
+  test('matches two issues of the same plan under different specs', () => {
+    const shared = sharesScopeSource(
+      { spec_path: 'docs/a.md', plan_path: 'plans/p.md' },
+      { spec_path: 'docs/b.md', plan_path: 'plans/p.md' }
+    );
+
+    expect(shared).toBe(true);
+  });
+
+  test('keeps a pair of different specs and different plans apart', () => {
+    const shared = sharesScopeSource(
+      { spec_path: 'docs/a.md', plan_path: 'plans/p.md' },
+      { spec_path: 'docs/b.md', plan_path: 'plans/q.md' }
+    );
+
+    expect(shared).toBe(false);
+  });
+
+  test('never matches on two empty paths', () => {
+    const shared = sharesScopeSource(
+      { spec_path: '', plan_path: '' },
+      { spec_path: '', plan_path: '' }
+    );
+
+    expect(shared).toBe(false);
+  });
+
+  test('never matches when a side names no source', () => {
+    const shared = sharesScopeSource({}, { spec_path: 'docs/a.md' });
+
+    expect(shared).toBe(false);
   });
 });

@@ -37,7 +37,8 @@ import {
 } from '../../app/utils/active-attempts.js';
 import {
   createDecorationContext,
-  openDependentsWithOwners
+  openDependentsWithOwners,
+  planGroupIndexFor
 } from '../list-adapters.js';
 import { listAccounts as listClaudeAccounts } from '../routes/claude-usage.js';
 import { listAccounts as listCodexAccounts } from '../routes/codex-usage.js';
@@ -90,7 +91,7 @@ import {
 import { sanitizeOutput } from '../worker/output-sanitize.js';
 import { OUTAGE_BACKOFF_MS } from '../worker/provider-health.js';
 import { onQueueChanged } from '../worker/queue-events.js';
-import { placeBeadInQueue } from '../worker/queue-place.js';
+import { placeBeadInQueue, placePlanInQueue } from '../worker/queue-place.js';
 import { removeBeadFromQueue } from '../worker/queue-remove.js';
 import {
   APPLIED_PRESET_FIELDS,
@@ -1292,11 +1293,12 @@ function beadLabelsFor(workspace_key, queue) {
  * Edges naming a bead outside that set carry no in-lane ordering signal.
  *
  * Exported for `worker/queue-place.js`, which runs the shared place body.
+ * `bead_id` is one incoming bead, or the whole group a plan placement adds.
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue - Normalized queue snapshot.
  * @param {unknown} lane
- * @param {string} bead_id
+ * @param {string|string[]} bead_id
  * @returns {{ blocker: string, blockee: string }[]}
  */
 export function laneBlocksEdges(workspace_key, queue, lane, bead_id) {
@@ -1311,7 +1313,9 @@ export function laneBlocksEdges(workspace_key, queue, lane, bead_id) {
       (/** @type {any} */ entry) => entry.bead_id
     )
   );
-  members.add(bead_id);
+  for (const incoming of Array.isArray(bead_id) ? bead_id : [bead_id]) {
+    members.add(incoming);
+  }
   const blocked_by = beadBlockedByFor(workspace_key, {
     queue: [...members].map((id) => ({ bead_id: id }))
   });
@@ -1714,7 +1718,7 @@ function runningLaneBeadIds(queue) {
  * @param {boolean} include_pr_wait
  * @returns {string[]}
  */
-function laneMemberIds(queue, include_pr_wait) {
+export function laneMemberIds(queue, include_pr_wait) {
   /** @type {string[]} */
   const ids = [];
   const lanes = [
@@ -1962,6 +1966,43 @@ function beadDependentsFor(workspace_key, queue) {
     out[bead_id] = has_owners ? { ids, root_dirs } : { ids };
   }
   return out;
+}
+
+/**
+ * The plan 묶음 of the same beads {@link beadDependentsFor} answers for
+ * (UI-ruwu §1), projected from this workspace's last snapshot — peeked, never
+ * fetched. Only beads that belong to a valid group get an entry; `null` (no
+ * snapshot yet, or no member among the targets) omits the key, which is 모름.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, import('../../app/utils/plan-group.js').PlanGroup>|null}
+ */
+function beadPlanGroupsFor(workspace_key, queue) {
+  /** @type {Map<string, import('../../app/utils/plan-group.js').PlanGroup>} */
+  let index;
+  try {
+    const snapshot = peekWorkspaceSnapshot(workspace_key);
+    if (snapshot === null) {
+      return null;
+    }
+    index = planGroupIndexFor(snapshot);
+  } catch (err) {
+    log('bead plan groups failed for %s: %o', workspace_key, err);
+    return null;
+  }
+  if (index.size === 0) {
+    return null;
+  }
+  /** @type {Record<string, import('../../app/utils/plan-group.js').PlanGroup>} */
+  const out = {};
+  for (const bead_id of dependentsTargetIds(workspace_key, queue)) {
+    const plan_group = index.get(bead_id);
+    if (plan_group) {
+      out[bead_id] = plan_group;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 /**
@@ -3211,6 +3252,7 @@ export function decorateQueue(workspace_key, raw_queue) {
   }
   const bead_scope = beadScopeFor(workspace_key, queue);
   const bead_dependents = beadDependentsFor(workspace_key, queue);
+  const bead_plan_groups = beadPlanGroupsFor(workspace_key, queue);
   return {
     ...queue,
     // The manual-continuation capability (UI-58w8 §8): a read-only projection
@@ -3295,6 +3337,10 @@ export function decorateQueue(workspace_key, raw_queue) {
     // the snapshots this process can see", so the client unions it with the
     // 후보 행's `dependents_info` instead of letting one source erase the other.
     ...(bead_dependents ? { bead_dependents } : {}),
+    // plan 묶음 of the same beads (UI-ruwu §1), from the same workspace snapshot
+    // generation. Non-persisted; the key is absent when no target belongs to a
+    // valid group, which the client reads as "no plan chip" (fail-quiet).
+    ...(bead_plan_groups ? { bead_plan_groups } : {}),
     // Direct blocks blocker ids for the same beads (UI-04vo §3) — the
     // wait-reason chip and lane topological corrections read from this, and
     // CLOSED cross-rig blockers are already gone from it (UI-u6zf §3.2).
@@ -4466,6 +4512,74 @@ export async function handleWorkerQueuePlace(ws, req) {
     conflict: outcome.conflict,
     queue: outcome.queue
   });
+}
+
+/**
+ * Handle `worker-queue-place-plan`. Payload:
+ * `{ root_dir?, plan_path, lane: 's1'..'s5', expected_revision }` (UI-ruwu §3).
+ *
+ * The workspace is the request's `root_dir` (validated by
+ * {@link mutationWorkspaceOf}), never silently the connection's. The targets are
+ * chosen by the server from its own snapshot, so the payload names only the
+ * plan and the serial lane. The reply carries `placed` and `skipped`
+ * (admission-refused members, reply-only) next to the usual
+ * `{ applied, conflict, queue }`; a write fans out like every queue mutation.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerQueuePlacePlan(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.plan_path !== 'string' || p.plan_path.trim().length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { plan_path: string }')
+      )
+    );
+    return;
+  }
+  if (typeof p.lane !== 'string' || !/^s[1-5]$/.test(p.lane)) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          "payload.lane must be a serial lane id ('s1'..'s5')"
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const lane_count = queueStore().snapshot(key).serial_lane_count;
+  if (Number(p.lane.slice(1)) > lane_count) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', `serial lane ${p.lane} is not configured`)
+      )
+    );
+    return;
+  }
+  const outcome = await placePlanInQueue(key, {
+    plan_path: p.plan_path.trim(),
+    lane: p.lane,
+    expected_revision: revisionOf(p)
+  });
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        applied: outcome.applied,
+        conflict: outcome.conflict,
+        ...(outcome.reason ? { reason: outcome.reason } : {}),
+        placed: outcome.placed,
+        skipped: outcome.skipped,
+        queue: decorateQueue(key, outcome.queue)
+      })
+    )
+  );
 }
 
 /**

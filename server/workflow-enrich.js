@@ -320,9 +320,21 @@ export function parseWorkerCreatedFrom(value, issue_id) {
 }
 
 /**
- * @typedef {Object} PlannedExecution
+ * One unit of a plan issue's execution enumeration (`P<a>:<kind>`), with the
+ * reason `planned_execution_reason` gives for it (`null` for a delegated unit).
+ *
+ * @typedef {Object} PlannedExecutionUnit
+ * @property {string} unit
  * @property {'delegated'|'main'} kind
  * @property {string | null} reason
+ */
+
+/**
+ * The normalized `planned_execution`: the scalar form (`delegated`, or `main`
+ * with its reason) or, when a plan issue's units disagree, the unit enumeration
+ * `P<a>:delegated; P<b>:main` carried as `units`.
+ *
+ * @typedef {{ kind: 'delegated'|'main', reason: string | null } | { units: PlannedExecutionUnit[] }} PlannedExecution
  */
 
 /**
@@ -340,9 +352,72 @@ export function parseWorkerCreatedFrom(value, issue_id) {
  * @property {string} sha - Head the resolution produced and self-reviewed.
  */
 
+/** One `P<a>:<delegated|main>` item of the `planned_execution` enumeration. */
+const PLANNED_UNIT_RE = /^(P\d+):(delegated|main)$/;
+/** One `P<b>:<reason>` item of the `planned_execution_reason` enumeration. */
+const PLANNED_UNIT_REASON_RE = /^(P\d+):([\s\S]*)$/;
+
+/**
+ * Parse the `planned_execution` unit enumeration `P<a>:<kind>[; P<b>:<kind>...]`.
+ * Returns null for a scalar value and for anything malformed — an empty item, a
+ * kind outside `delegated|main`, or a repeated unit — so a caller that must
+ * tell the two apart tests the scalar forms first.
+ *
+ * Shared with the receipt check, which reads each unit's planned kind from here
+ * rather than from a second copy of the format.
+ *
+ * @param {unknown} value
+ * @returns {Array<{ unit: string, kind: 'delegated'|'main' }> | null}
+ */
+export function parsePlannedExecutionUnits(value) {
+  if (typeof value !== 'string' || /[\r\n]/.test(value)) {
+    return null;
+  }
+  /** @type {Array<{ unit: string, kind: 'delegated'|'main' }>} */
+  const units = [];
+  for (const part of value.split(';')) {
+    const match = PLANNED_UNIT_RE.exec(part.trim());
+    if (!match || units.some((entry) => entry.unit === match[1])) {
+      return null;
+    }
+    units.push({
+      unit: match[1],
+      kind: /** @type {'delegated'|'main'} */ (match[2])
+    });
+  }
+  return units;
+}
+
+/**
+ * Parse `planned_execution_reason=P<b>:<reason>[; P<b>:<reason>...]` into a
+ * unit-to-reason map. A `;` only separates items before a `P<n>:` boundary, so
+ * a reason may itself contain one. Null when any item has no unit, an empty
+ * reason, or a unit that repeats.
+ *
+ * @param {string} value
+ * @returns {Map<string, string> | null}
+ */
+function parsePlannedUnitReasons(value) {
+  /** @type {Map<string, string>} */
+  const reasons = new Map();
+  for (const part of value.split(/;\s*(?=P\d+:)/)) {
+    const match = PLANNED_UNIT_REASON_RE.exec(part.trim());
+    if (!match || match[2].trim().length === 0 || reasons.has(match[1])) {
+      return null;
+    }
+    reasons.set(match[1], match[2].trim());
+  }
+  return reasons;
+}
+
 /**
  * Parse approved-plan execution ownership for display only. The two metadata
  * fields form one value, so any invalid combination omits the whole display.
+ *
+ * The scalar forms (`delegated`, or `main` with a reason) keep their result.
+ * An enumeration `P<a>:<kind>; ...` becomes `{ units }`, each `main` unit
+ * carrying the reason `planned_execution_reason` gives it; a main unit without
+ * one, a reason for a unit that is not main, or any malformed piece is `null`.
  *
  * @param {unknown} kind_value
  * @param {unknown} reason_value
@@ -354,13 +429,42 @@ export function parsePlannedExecution(kind_value, reason_value) {
       ? { kind: 'delegated', reason: null }
       : null;
   }
-  if (kind_value !== 'main' || typeof reason_value !== 'string') {
+  if (kind_value === 'main') {
+    if (typeof reason_value !== 'string') {
+      return null;
+    }
+    if (reason_value.trim().length === 0 || /[\r\n]/.test(reason_value)) {
+      return null;
+    }
+    return { kind: 'main', reason: reason_value };
+  }
+  const planned = parsePlannedExecutionUnits(kind_value);
+  if (planned === null) {
     return null;
   }
-  if (reason_value.trim().length === 0 || /[\r\n]/.test(reason_value)) {
+  const main_units = planned.filter((entry) => entry.kind === 'main');
+  if (main_units.length === 0) {
+    return reason_value === undefined
+      ? { units: planned.map((entry) => ({ ...entry, reason: null })) }
+      : null;
+  }
+  if (typeof reason_value !== 'string' || /[\r\n]/.test(reason_value)) {
     return null;
   }
-  return { kind: 'main', reason: reason_value };
+  const reasons = parsePlannedUnitReasons(reason_value);
+  if (
+    reasons === null ||
+    reasons.size !== main_units.length ||
+    main_units.some((entry) => !reasons.has(entry.unit))
+  ) {
+    return null;
+  }
+  return {
+    units: planned.map((entry) => ({
+      ...entry,
+      reason: entry.kind === 'main' ? (reasons.get(entry.unit) ?? null) : null
+    }))
+  };
 }
 
 /** @param {unknown} value */

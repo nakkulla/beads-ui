@@ -9472,6 +9472,193 @@ describe('worker/queue-store — 분석 제출 단일 CAS (UI-04vo seam J)', () 
   });
 });
 
+describe('worker/queue-store — plan 묶음 일괄 배치 단일 CAS (UI-ruwu §3)', () => {
+  test('adds every unqueued bead to the lane in submit order in one revision', () => {
+    const store = createQueueStore();
+    const before = store.snapshot(WS).revision;
+
+    const r = store.placeSerialGroup(WS, {
+      expected_revision: before,
+      lane: 's1',
+      ordered_bead_ids: ['P1', 'P2', 'P3']
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.revision).toBe(before + 1);
+    expect(r.queue.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual([
+      'P1',
+      'P2',
+      'P3'
+    ]);
+  });
+
+  test('appends after the entries the lane already holds', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'HEAD', lane: 's1' });
+
+    const r = store.placeSerialGroup(WS, {
+      expected_revision: 1,
+      lane: 's1',
+      ordered_bead_ids: ['P1', 'P2']
+    });
+
+    expect(r.queue.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual([
+      'HEAD',
+      'P1',
+      'P2'
+    ]);
+  });
+
+  test('applies the blocks correction as the final order', () => {
+    const store = createQueueStore();
+
+    const r = store.placeSerialGroup(WS, {
+      expected_revision: 0,
+      lane: 's1',
+      ordered_bead_ids: ['P2', 'P1'],
+      blocks_edges: [{ blocker: 'P1', blockee: 'P2' }]
+    });
+
+    expect(r.queue.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual([
+      'P1',
+      'P2'
+    ]);
+  });
+
+  test('stamps a shared added_at and leaves no other lane touched', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'PARALLEL' });
+
+    const r = store.placeSerialGroup(WS, {
+      expected_revision: 1,
+      lane: 's1',
+      ordered_bead_ids: ['P1', 'P2']
+    });
+
+    const [first, second] = r.queue.serial_lanes[0].entries;
+    expect(first.added_at).toBe(second.added_at);
+    expect(r.queue.queue.map((e) => e.bead_id)).toEqual(['PARALLEL']);
+  });
+
+  test('refuses the whole group when one member is already queued', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'P2' });
+    const before = store.snapshot(WS);
+
+    const r = store.placeSerialGroup(WS, {
+      expected_revision: before.revision,
+      lane: 's1',
+      ordered_bead_ids: ['P1', 'P2']
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.conflict).toBe(false);
+    expect(r.reason).toBe('member_present');
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('refuses the whole group when one member is already in a serial lane', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'P2', lane: 's1' });
+    const before = store.snapshot(WS);
+
+    const r = store.placeSerialGroup(WS, {
+      expected_revision: before.revision,
+      lane: 's1',
+      ordered_bead_ids: ['P1', 'P2']
+    });
+
+    expect(r.reason).toBe('member_present');
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('refuses the whole group when one member has an active lineage', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-P2', bead_id: 'P2', status: 'running' }
+    });
+    const before = store.snapshot(WS);
+
+    const r = store.placeSerialGroup(WS, {
+      expected_revision: before.revision,
+      lane: 's1',
+      ordered_bead_ids: ['P1', 'P2']
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.reason).toBe('member_present');
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
+  test('refuses a lane outside the configured count, a short group and duplicates', () => {
+    const store = createQueueStore();
+
+    const bad_lane = store.placeSerialGroup(WS, {
+      expected_revision: 0,
+      lane: 's4',
+      ordered_bead_ids: ['P1', 'P2']
+    });
+    const parallel = store.placeSerialGroup(WS, {
+      expected_revision: 0,
+      lane: 'parallel',
+      ordered_bead_ids: ['P1', 'P2']
+    });
+    const short = store.placeSerialGroup(WS, {
+      expected_revision: 0,
+      lane: 's1',
+      ordered_bead_ids: ['P1']
+    });
+    const duplicated = store.placeSerialGroup(WS, {
+      expected_revision: 0,
+      lane: 's1',
+      ordered_bead_ids: ['P1', 'P1']
+    });
+
+    expect([
+      bad_lane.reason,
+      parallel.reason,
+      short.reason,
+      duplicated.reason
+    ]).toEqual([
+      'lane_invalid',
+      'lane_invalid',
+      'group_size',
+      'duplicate_member'
+    ]);
+    expect(store.snapshot(WS).revision).toBe(0);
+  });
+
+  test('refuses a stale revision as a conflict without writing', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'OTHER' });
+
+    const r = store.placeSerialGroup(WS, {
+      expected_revision: 0,
+      lane: 's1',
+      ordered_bead_ids: ['P1', 'P2']
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.conflict).toBe(true);
+    expect(store.snapshot(WS).serial_lanes[0].entries).toEqual([]);
+  });
+
+  test('re-queues a member that sits in the done lane like a single place', () => {
+    const store = createQueueStore();
+    store.moveToDone(WS, { bead_id: 'P1' });
+
+    const r = store.placeSerialGroup(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      lane: 's1',
+      ordered_bead_ids: ['P1', 'P2']
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.done.some((e) => e.bead_id === 'P1')).toBe(false);
+  });
+});
+
 describe('worker/queue-store — 레인 이동 시 lineage 재바인딩 (UI-04vo 구현 리뷰 1)', () => {
   test('moving a failed bead to another lane moves its lane occupancy with it', () => {
     const store = createQueueStore();

@@ -719,6 +719,164 @@ describe('worker attempt route refusal', () => {
   );
 });
 
+describe('decorateQueue bead_plan_groups (UI-ruwu §1)', () => {
+  const PLAN = 'docs/superpowers/plans/2026-09-29-plan-issue-group.md';
+
+  /**
+   * A snapshot carrying the rows a plan group is computed from.
+   *
+   * @param {Array<{ id: string, anchor?: string, status?: string, plan_path?: string }>} issues
+   * @param {Array<Record<string, unknown>>} [blocked]
+   * @returns {any}
+   */
+  function planSnapshot(issues, blocked = []) {
+    const all = issues.map((issue) => ({
+      id: issue.id,
+      status: issue.status ?? 'open',
+      updated_at: 1,
+      closed_at: null,
+      metadata: {
+        plan_path: issue.plan_path ?? PLAN,
+        ...(issue.anchor === undefined
+          ? {}
+          : { plan_task_anchor: issue.anchor })
+      }
+    }));
+    return {
+      ...snapshotOf([]),
+      all,
+      id_index: new Map(all.map((issue) => [issue.id, issue])),
+      ready_explain: { ready: [], blocked }
+    };
+  }
+
+  test('maps each lane bead of a plan to its group', () => {
+    seedSnapshots({
+      [WS]: planSnapshot([
+        { id: 'UI-1', anchor: 'Phase 1' },
+        { id: 'UI-4', anchor: 'Phase 2' }
+      ])
+    });
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(Object.keys(out.bead_plan_groups).sort()).toEqual(['UI-1', 'UI-4']);
+    expect(out.bead_plan_groups['UI-4']).toMatchObject({
+      plan_path: PLAN,
+      slug: 'plan-issue-group',
+      index: 2,
+      total: 2
+    });
+  });
+
+  test('keeps index and total over members that stand in no lane', () => {
+    seedSnapshots({
+      [WS]: planSnapshot([
+        { id: 'UI-90', anchor: 'Phase 1', status: 'closed' },
+        { id: 'UI-1', anchor: 'Phase 2' },
+        { id: 'UI-91', anchor: 'Phase 3', status: 'deferred' }
+      ])
+    });
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(Object.keys(out.bead_plan_groups)).toEqual(['UI-1']);
+    expect(out.bead_plan_groups['UI-1']).toMatchObject({ index: 2, total: 3 });
+    expect(
+      out.bead_plan_groups['UI-1'].members.map(
+        (/** @type {any} */ member) => member.id
+      )
+    ).toEqual(['UI-90', 'UI-1', 'UI-91']);
+  });
+
+  test('answers for runnable and session rows like bead_dependents', () => {
+    seedSnapshots({
+      [WS]: planSnapshot([
+        { id: 'UI-9', anchor: 'Phase 1' },
+        { id: 'UI-8', anchor: 'Phase 2' }
+      ])
+    });
+    mockRunnableRows([
+      { bead_id: 'UI-9', scope_spec_id: '', description_scope: ['app/'] }
+    ]);
+    mockSessionRows([{ bead_id: 'UI-8', spec_id: '' }]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(Object.keys(out.bead_plan_groups).sort()).toEqual(['UI-8', 'UI-9']);
+  });
+
+  test('carries a member open blockers from the snapshot explain rows', () => {
+    seedSnapshots({
+      [WS]: planSnapshot(
+        [
+          { id: 'UI-1', anchor: 'Phase 1' },
+          { id: 'UI-4', anchor: 'Phase 2' }
+        ],
+        [{ id: 'UI-4', blocked_by: ['UI-1'] }]
+      )
+    });
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(
+      out.bead_plan_groups['UI-4'].members.map(
+        (/** @type {any} */ member) => member.blocked_by
+      )
+    ).toEqual([[], ['UI-1']]);
+  });
+
+  test('omits the key when this workspace has no snapshot yet', () => {
+    seedSnapshots({});
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(Object.hasOwn(out, 'bead_plan_groups')).toBe(false);
+  });
+
+  test('omits the key when no target belongs to a group', () => {
+    seedSnapshots({
+      [WS]: planSnapshot([
+        { id: 'UI-1', anchor: 'Phase 1' },
+        { id: 'UI-50', anchor: 'Phase 2' }
+      ])
+    });
+    mockRunnableRows([]);
+    mockSessionRows([]);
+
+    const out = /** @type {any} */ (
+      decorateQueue(WS, { ...laneQueue(), queue: [], serial_lanes: [] })
+    );
+
+    expect(Object.hasOwn(out, 'bead_plan_groups')).toBe(false);
+  });
+
+  test('omits the key when the plan fails the group rule', () => {
+    seedSnapshots({
+      [WS]: planSnapshot([
+        { id: 'UI-1', anchor: 'Phase 1-3' },
+        { id: 'UI-4', anchor: 'Phase 2' }
+      ])
+    });
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(Object.hasOwn(out, 'bead_plan_groups')).toBe(false);
+  });
+
+  test('omits the key when the snapshot read throws', () => {
+    seedSnapshots({
+      [WS]: () => {
+        throw new Error('coordinator gone');
+      }
+    });
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(Object.hasOwn(out, 'bead_plan_groups')).toBe(false);
+  });
+});
+
 describe('decorateQueue bead_dependents (UI-8x90 §6.2)', () => {
   test('answers for the same beads bead_scope targets', () => {
     seedSnapshots({

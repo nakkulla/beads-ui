@@ -41,6 +41,7 @@ import {
 import {
   createDecorationContext,
   dependentsInfoFor,
+  planGroupIndexFor,
   releaseInfoFor
 } from '../list-adapters.js';
 import { debug } from '../logging.js';
@@ -160,6 +161,9 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * non-empty string (UI-qm12 §4.4). Carried so a runnable bead's declared scope
  * is read from the SAME artifact set as the queued beads' — loading it into a
  * lane must not change the overlap verdict. Pairs with the artifact source.
+ * @property {import('../../app/utils/plan-group.js').PlanGroup} [plan_group] -
+ * The plan 묶음 this row belongs to (UI-ruwu §1), projected from the same
+ * workspace snapshot. Absent when the row is in no valid group.
  * @property {string[]} [scope] - The declared scope, attached ADDITIVELY by the
  * monitor pipeline: at the pinned base on a scope-cache hit, or copied straight
  * off `description_scope`. Absent means 판정 불가 (not yet read, unreadable, or
@@ -417,6 +421,7 @@ function qualify(row, blocked_by, context) {
   const awaiting_user_reason = awaitingUserReason(meta);
   const release_info = releaseInfoFor(bead_id, context);
   const dependents_info = dependentsInfoFor(bead_id, context);
+  const plan_group = planGroupIndexFor(context.snapshot).get(bead_id);
   const admitted =
     RUNNABLE_ROUTES.has(route) &&
     !worker_ineligible &&
@@ -463,6 +468,7 @@ function qualify(row, blocked_by, context) {
     published,
     scope_spec_id,
     plan_path: plan_path.length > 0 ? plan_path : null,
+    ...(plan_group ? { plan_group } : {}),
     spec_reviewer,
     plan_state:
       is_quick_fix || spec_state !== 'published'
