@@ -27,6 +27,7 @@
  * 있는 것처럼 말하는 것보다 침묵이 낫다.
  */
 import { html, render } from 'lit-html';
+import { errorText } from '../../utils/error-text.js';
 import {
   formatImplReviewChip,
   formatOrchestrationChip,
@@ -228,9 +229,7 @@ export function createRepoDeck(mount_element, options) {
         }
       }
     } catch (err) {
-      notify(
-        `설정 저장 실패: ${err instanceof Error ? err.message : String(err)}`
-      );
+      notify(`설정 저장 실패: ${errorText(err)}`);
     }
     doRender();
   }

@@ -1,6 +1,11 @@
 /**
  * Move waiting rows between repository-local parallel and serial queues.
  *
+ * A mouse drags through the native HTML5 `draggable` events. Touch and pen
+ * have no native drag here, so they drag through pointer events after a
+ * {@link LONG_PRESS_MS} long press — a finger that moves first scrolls the page
+ * instead — and land on the same drop targets and queue requests.
+ *
  * @typedef {{ kind: 'candidate'|'parallel'|'repo-serial', bead_id: string, root_dir: string, queue_index?: number, lane_id?: string }} DropDrag
  * @typedef {{ kind: 'candidate' }|{ kind: 'parallel', marker_index: number }|{ kind: 'repo-serial', root_dir: string, lane_id: 's1'|'s2'|'s3'|'s4'|'s5', index: number }} DropTarget
  * @typedef {Object} LaneDragOptions
@@ -13,7 +18,38 @@
  * @property {(root_dir: string, queue: any) => void} [adoptQueue]
  * @property {() => void} [onDragBegin]
  * @property {boolean} [candidate_drop]
+ * @property {(x: number, y: number) => Element|null} [hitTest] - The element
+ * under a touch point; defaults to `document.elementFromPoint`.
  */
+
+/** How long a touch or pen press holds still before it becomes a drag. */
+export const LONG_PRESS_MS = 350;
+/** How far a press may wander before the long press counts as a scroll. */
+const TOUCH_SLOP_PX = 8;
+/** The band at a scroller's edge where a held drag scrolls it. */
+const EDGE_PX = 48;
+const SCROLL_STEP_PX = 14;
+/** A press on one of these is that control's own gesture, never a row drag. */
+const TOUCH_DRAG_SKIP = 'button, a, input, select, textarea, summary, label';
+
+/**
+ * The nearest vertically scrollable ancestor, or the page scroller.
+ *
+ * @param {Element|null} el
+ * @returns {Element|null}
+ */
+function scrollerOf(el) {
+  for (let node = el; node; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (
+      /(auto|scroll)/.test(style.overflowY) &&
+      node.scrollHeight > node.clientHeight
+    ) {
+      return node;
+    }
+  }
+  return document.scrollingElement;
+}
 
 /**
  * @param {unknown} error
@@ -45,6 +81,12 @@ export function createLaneDrag(options) {
     onDragBegin,
     candidate_drop
   } = options;
+  const hitTest =
+    options.hitTest ||
+    ((/** @type {number} */ x, /** @type {number} */ y) =>
+      typeof document.elementFromPoint === 'function'
+        ? document.elementFromPoint(x, y)
+        : null);
   /** @type {DropDrag|null} */
   let dragging = null;
   let suppress_open_click = false;
@@ -54,6 +96,30 @@ export function createLaneDrag(options) {
   let press_target = null;
   /** @type {HTMLElement|null} */
   let mounted_el = null;
+  /**
+   * A touch or pen press on a draggable row: waiting out the long press, or —
+   * once `touch_active` — dragging.
+   *
+   * @type {{ id: number, x: number, y: number, handle: HTMLElement, holder: HTMLElement }|null}
+   */
+  let touch_press = null;
+  let touch_active = false;
+  /**
+   * Whether the dragging finger has left the slop since it pressed. Starting a
+   * drag reveals the empty serial lanes and moves the rows, so a finger that
+   * lifts without moving is over a different row than the one it meant.
+   */
+  let touch_moved = false;
+  /** @type {any} */
+  let long_press_timer = null;
+  /** @type {{ zone: HTMLElement, target: DropTarget }|null} */
+  let touch_over = null;
+  /** @type {HTMLElement|null} */
+  let ghost = null;
+  let last_x = 0;
+  let last_y = 0;
+  /** @type {number|null} */
+  let scroll_frame = null;
 
   function expireDragSuppressSoon() {
     if (suppress_timer !== null) {
@@ -324,11 +390,12 @@ export function createLaneDrag(options) {
    * The zone a drop may actually land on. 레포 직렬 레인만 `root_dir` 일치를
    * 요구한다 (§4.2).
    *
-   * @param {Event} ev
+   * @param {EventTarget|null} hit - The drag event's target, or the element
+   * under a touch point.
    * @returns {{ zone: HTMLElement, target: DropTarget }|null}
    */
-  function dropTarget(ev) {
-    const node = /** @type {HTMLElement|null} */ (ev.target);
+  function dropTarget(hit) {
+    const node = /** @type {HTMLElement|null} */ (hit);
     if (!dragging) {
       return null;
     }
@@ -383,16 +450,252 @@ export function createLaneDrag(options) {
   }
 
   /**
+   * Start a drag of the row `holder` stands for — the step the native and the
+   * touch drags share.
+   *
+   * @param {HTMLElement} holder
+   * @returns {boolean} false when the row carries no drag coordinate.
+   */
+  function beginDrag(holder) {
+    const bead_id = holder.getAttribute('data-bead-id') || '';
+    const kind = holder.getAttribute('data-drag-kind') || '';
+    const root_dir = holder.getAttribute('data-root-dir') || '';
+    if (!bead_id || !kind) {
+      return false;
+    }
+    const raw_index = holder.getAttribute('data-queue-index') || '';
+    const queue_index = Number(raw_index);
+    const lane_id = holder.getAttribute('data-lane-id') || '';
+    dragging = {
+      kind: /** @type {any} */ (kind),
+      bead_id,
+      root_dir,
+      ...(raw_index !== '' && Number.isFinite(queue_index)
+        ? { queue_index }
+        : {}),
+      ...(lane_id ? { lane_id } : {})
+    };
+    suppress_open_click = true;
+    onDragBegin?.();
+    // ≤640px에서 접혀 있던 빈 직렬 레인을 드롭 타깃으로 되살린다 — 표시 조건은
+    // CSS 한 곳이 소유하고, 여기서는 "지금 드래그 중"만 말한다.
+    console_el.classList.add('is-dragging');
+    return true;
+  }
+
+  function endDrag() {
+    dragging = null;
+    clearDragOver();
+    console_el.classList.remove('is-dragging');
+  }
+
+  function autoScroll() {
+    scroll_frame = null;
+    if (!touch_active) {
+      return;
+    }
+    const scroller = scrollerOf(hitTest(last_x, last_y));
+    if (scroller) {
+      const rect =
+        scroller === document.scrollingElement
+          ? { top: 0, bottom: window.innerHeight }
+          : scroller.getBoundingClientRect();
+      if (last_y < rect.top + EDGE_PX) {
+        scroller.scrollTop -= SCROLL_STEP_PX;
+      } else if (last_y > rect.bottom - EDGE_PX) {
+        scroller.scrollTop += SCROLL_STEP_PX;
+      }
+    }
+    if (typeof requestAnimationFrame === 'function') {
+      scroll_frame = requestAnimationFrame(autoScroll);
+    }
+  }
+
+  function beginTouchDrag() {
+    long_press_timer = null;
+    const press = touch_press;
+    // Read before `beginDrag` reveals the empty lanes and moves the row.
+    const rect = press ? press.handle.getBoundingClientRect() : null;
+    if (!press || !rect || !beginDrag(press.holder)) {
+      touch_press = null;
+      return;
+    }
+    touch_active = true;
+    touch_moved = false;
+    // The auto-scroll reads the last pointer position; until the finger moves
+    // that is where it pressed, not (0,0), which would scroll the page up while
+    // a long press holds still.
+    last_x = press.x;
+    last_y = press.y;
+    ghost = /** @type {HTMLElement} */ (press.handle.cloneNode(true));
+    ghost.classList.add('worker-drag-ghost');
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.style.width = `${rect.width}px`;
+    ghost.style.left = `${rect.left}px`;
+    ghost.style.top = `${rect.top}px`;
+    document.body.appendChild(ghost);
+    press.handle.classList.add('is-drag-source');
+    try {
+      mounted_el?.setPointerCapture?.(press.id);
+    } catch {
+      /* capture keeps events coming if the row re-renders; hit-testing works without it */
+    }
+    if (typeof requestAnimationFrame === 'function') {
+      scroll_frame = requestAnimationFrame(autoScroll);
+    }
+  }
+
+  /**
+   * @param {number} x
+   * @param {number} y
+   */
+  function trackTouch(x, y) {
+    last_x = x;
+    last_y = y;
+    if (ghost && touch_press) {
+      ghost.style.transform = `translate(${x - touch_press.x}px, ${y - touch_press.y}px)`;
+    }
+    clearDragOver();
+    touch_over = dropTarget(hitTest(x, y));
+    touch_over?.zone.classList.add('is-drop-over');
+  }
+
+  /** End a touch press, dragging or not, without dropping. */
+  function endTouch() {
+    if (long_press_timer !== null) {
+      clearTimeout(long_press_timer);
+      long_press_timer = null;
+    }
+    if (scroll_frame !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(scroll_frame);
+    }
+    scroll_frame = null;
+    touch_press?.handle.classList.remove('is-drag-source');
+    touch_press = null;
+    touch_over = null;
+    ghost?.remove();
+    ghost = null;
+    if (touch_active) {
+      touch_active = false;
+      endDrag();
+      expireDragSuppressSoon();
+    }
+  }
+
+  /**
    * @param {PointerEvent} ev
    */
   function onPointerDown(ev) {
     press_target = ev.target instanceof Element ? ev.target : null;
+    if (!ev.pointerType || ev.pointerType === 'mouse' || touch_press) {
+      return;
+    }
+    const target = press_target;
+    if (!target || target.closest(TOUCH_DRAG_SKIP)) {
+      return;
+    }
+    const handle = target.closest('[draggable="true"][data-bead-id]');
+    const holder = handle ? handle.closest('[data-drag-kind]') : null;
+    if (!(handle instanceof HTMLElement) || !(holder instanceof HTMLElement)) {
+      return;
+    }
+    touch_press = {
+      id: ev.pointerId,
+      x: ev.clientX,
+      y: ev.clientY,
+      handle,
+      holder
+    };
+    long_press_timer = setTimeout(beginTouchDrag, LONG_PRESS_MS);
+  }
+
+  /**
+   * @param {PointerEvent} ev
+   */
+  function onPointerMove(ev) {
+    if (!touch_press || ev.pointerId !== touch_press.id) {
+      return;
+    }
+    const beyond_slop =
+      Math.hypot(ev.clientX - touch_press.x, ev.clientY - touch_press.y) >
+      TOUCH_SLOP_PX;
+    if (!touch_active) {
+      if (beyond_slop) {
+        // The finger moved before the long press finished: that is a scroll.
+        endTouch();
+      }
+      return;
+    }
+    ev.preventDefault();
+    if (!touch_moved && !beyond_slop) {
+      return;
+    }
+    touch_moved = true;
+    trackTouch(ev.clientX, ev.clientY);
+  }
+
+  /**
+   * @param {PointerEvent} ev
+   */
+  function onPointerUp(ev) {
+    if (!touch_press || ev.pointerId !== touch_press.id) {
+      return;
+    }
+    if (!touch_active || !touch_moved) {
+      endTouch();
+      return;
+    }
+    trackTouch(ev.clientX, ev.clientY);
+    const drag = dragging;
+    const target = touch_over;
+    endTouch();
+    if (drag && target) {
+      void applyDrop(drag, target.target);
+    }
+  }
+
+  /**
+   * @param {PointerEvent} ev
+   */
+  function onPointerCancel(ev) {
+    if (touch_press && ev.pointerId === touch_press.id) {
+      endTouch();
+    }
+  }
+
+  /**
+   * Holds the page still under a dragging finger; before the long press
+   * finishes the move stays a scroll.
+   *
+   * @param {TouchEvent} ev
+   */
+  function onTouchMove(ev) {
+    if (touch_active) {
+      ev.preventDefault();
+    }
+  }
+
+  /**
+   * A long press must not open the 길게 누르기 menu over the row it drags.
+   *
+   * @param {Event} ev
+   */
+  function onContextMenu(ev) {
+    if (touch_press) {
+      ev.preventDefault();
+    }
   }
 
   /**
    * @param {DragEvent} ev
    */
   function onDragStart(ev) {
+    // A touch or pen press is the pointer drag's; a browser that would also
+    // start its own native drag from the long press must not run a second one.
+    if (touch_press) {
+      ev.preventDefault();
+      return;
+    }
     const target = /** @type {HTMLElement|null} */ (ev.target);
     const handle =
       typeof target?.closest === 'function'
@@ -418,31 +721,14 @@ export function createLaneDrag(options) {
       ev.preventDefault();
       return;
     }
-    const bead_id = holder.getAttribute('data-bead-id') || '';
-    const kind = holder.getAttribute('data-drag-kind') || '';
-    const root_dir = holder.getAttribute('data-root-dir') || '';
-    if (!bead_id || !kind) {
+    if (!beginDrag(holder)) {
       return;
     }
-    const raw_index = holder.getAttribute('data-queue-index') || '';
-    const queue_index = Number(raw_index);
-    const lane_id = holder.getAttribute('data-lane-id') || '';
-    dragging = {
-      kind: /** @type {any} */ (kind),
-      bead_id,
-      root_dir,
-      ...(raw_index !== '' && Number.isFinite(queue_index)
-        ? { queue_index }
-        : {}),
-      ...(lane_id ? { lane_id } : {})
-    };
-    suppress_open_click = true;
-    onDragBegin?.();
-    // ≤640px에서 접혀 있던 빈 직렬 레인을 드롭 타깃으로 되살린다 — 표시 조건은
-    // CSS 한 곳이 소유하고, 여기서는 "지금 드래그 중"만 말한다.
-    console_el.classList.add('is-dragging');
     try {
-      ev.dataTransfer?.setData('text/plain', bead_id);
+      ev.dataTransfer?.setData(
+        'text/plain',
+        holder.getAttribute('data-bead-id') || ''
+      );
       if (ev.dataTransfer) {
         ev.dataTransfer.effectAllowed = 'move';
       }
@@ -455,7 +741,7 @@ export function createLaneDrag(options) {
    * @param {DragEvent} ev
    */
   function onDragOver(ev) {
-    const target = dropTarget(ev);
+    const target = dropTarget(ev.target);
     if (!target) {
       return;
     }
@@ -479,9 +765,7 @@ export function createLaneDrag(options) {
   }
 
   function onDragEnd() {
-    dragging = null;
-    clearDragOver();
-    console_el.classList.remove('is-dragging');
+    endDrag();
     expireDragSuppressSoon();
   }
 
@@ -489,11 +773,9 @@ export function createLaneDrag(options) {
    * @param {DragEvent} ev
    */
   function onDrop(ev) {
-    const target = dropTarget(ev);
+    const target = dropTarget(ev.target);
     const drag = dragging;
-    dragging = null;
-    clearDragOver();
-    console_el.classList.remove('is-dragging');
+    endDrag();
     if (!target || !drag) {
       return;
     }
@@ -519,8 +801,20 @@ export function createLaneDrag(options) {
       mount_el.addEventListener('dragleave', /** @type {any} */ (onDragLeave));
       mount_el.addEventListener('drop', /** @type {any} */ (onDrop));
       mount_el.addEventListener('dragend', onDragEnd);
+      mount_el.addEventListener(
+        'pointermove',
+        /** @type {any} */ (onPointerMove)
+      );
+      mount_el.addEventListener('pointerup', /** @type {any} */ (onPointerUp));
+      mount_el.addEventListener(
+        'pointercancel',
+        /** @type {any} */ (onPointerCancel)
+      );
+      mount_el.addEventListener('touchmove', onTouchMove, { passive: false });
+      mount_el.addEventListener('contextmenu', onContextMenu);
     },
     detach() {
+      endTouch();
       if (suppress_timer !== null) {
         clearTimeout(suppress_timer);
         suppress_timer = null;
@@ -530,6 +824,20 @@ export function createLaneDrag(options) {
       if (!mount_el) {
         return;
       }
+      mount_el.removeEventListener(
+        'pointermove',
+        /** @type {any} */ (onPointerMove)
+      );
+      mount_el.removeEventListener(
+        'pointerup',
+        /** @type {any} */ (onPointerUp)
+      );
+      mount_el.removeEventListener(
+        'pointercancel',
+        /** @type {any} */ (onPointerCancel)
+      );
+      mount_el.removeEventListener('touchmove', onTouchMove);
+      mount_el.removeEventListener('contextmenu', onContextMenu);
       mount_el.removeEventListener(
         'pointerdown',
         /** @type {any} */ (onPointerDown)

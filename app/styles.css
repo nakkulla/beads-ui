@@ -7805,6 +7805,33 @@ html[data-theme='dark'] {
   outline-offset: 2px;
 }
 
+/* 터치 끌기 (UI-97xm): 손가락은 350ms 길게 눌러 행을 끈다. 그동안 글자 선택과
+   길게 누르기 메뉴가 끼어들지 않게 하고, 끌리는 행 대신 손가락을 따라가는
+   복제본이 보인다. 마우스 기기의 행은 지금 그대로 둔다. */
+@media (pointer: coarse) {
+  .worker-mini[draggable='true'],
+  .worker-card[draggable='true'] {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+}
+
+.worker-mini.is-drag-source,
+.worker-card.is-drag-source {
+  opacity: 0.4;
+}
+
+.worker-drag-ghost {
+  position: fixed;
+  z-index: 1000;
+  margin: 0;
+  pointer-events: none;
+  box-shadow:
+    var(--shadow-popover, 0 8px 24px rgb(0 0 0 / 20%)),
+    0 0 0 1px var(--accent-success);
+}
+
 /* 대기 행 조작 묶음 (UI-5ksp §4.6). 행 밖 별도 줄이던 Monitor 조작 묶음을 행
    1번 줄 조작 슬롯으로 옮긴 것이라, 아래 줄을 위한 세로 여백은 없다. */
 .worker-mini__rowops {

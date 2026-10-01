@@ -9210,6 +9210,103 @@ describe('merge progress — view (UI-raqh §4)', () => {
     );
   });
 
+  /**
+   * A merged row whose cleanup stopped at its verify script, with that
+   * script's operation in `state`.
+   *
+   * @param {string} state
+   * @param {any} [transport]
+   */
+  function mountStalledVerifyRow(state, transport) {
+    const merge_sha = 'a'.repeat(40);
+    return mountRow(null, transport, {
+      gate: { enabled: false, tier: 'merged', gate_badge: '머지됨' },
+      pr_wait_entry: {
+        bead_id: 'RD-1',
+        added_at: 1,
+        merge_sha,
+        cleanup_cursor: 'repo_operations'
+      },
+      cleanup_failed: {
+        'RD-1': { step: 'repo_operations', reason: 'verify failed' }
+      },
+      repo_operations: [
+        {
+          operation_id: 'verify-1',
+          kind: 'verify',
+          state,
+          requested_at: 1,
+          subjects: [{ bead_id: 'RD-1', merged_sha: merge_sha }],
+          superseded_by: null
+        }
+      ]
+    });
+  }
+
+  test('enables the resume action of a stalled verify script', () => {
+    const mount = mountStalledVerifyRow('failed');
+
+    const merge = /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="RD-1"] .worker-mini__merge'
+      )
+    );
+
+    expect(merge.disabled).toBe(false);
+  });
+
+  test('explains the stalled script in the resume action tooltip', () => {
+    const mount = mountStalledVerifyRow('failed');
+
+    const merge = /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="RD-1"] .worker-mini__merge'
+      )
+    );
+
+    expect(merge.title).toBe(
+      '머지 완료 — 검증 스크립트가 실패해 정리가 멈췄습니다. 클릭하면 저장소 작업부터 정리를 다시 진행합니다'
+    );
+  });
+
+  test('keeps the resume action locked while the re-run script runs', () => {
+    const mount = mountStalledVerifyRow('running');
+
+    const merge = /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="RD-1"] .worker-mini__merge'
+      )
+    );
+
+    expect(merge.disabled).toBe(true);
+  });
+
+  test('locks the resume action while its retry request is in flight', () => {
+    const transport = vi.fn((/** @type {string} */ type) =>
+      type === 'worker-cleanup-retry'
+        ? new Promise(() => {})
+        : Promise.resolve({ applied: true, conflict: false })
+    );
+    const mount = mountStalledVerifyRow('failed', transport);
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="RD-1"] .worker-mini__merge'
+      )
+    ).click();
+
+    const merge = /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="RD-1"] .worker-mini__merge'
+      )
+    );
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-cleanup-retry',
+      expect.objectContaining({ bead_id: 'RD-1' })
+    );
+    expect(merge.disabled).toBe(true);
+  });
+
   test('disables both actions while merging', () => {
     const mount = mountRow({
       activity: null,

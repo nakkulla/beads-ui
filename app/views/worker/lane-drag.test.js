@@ -155,7 +155,8 @@ function setup(over = {}) {
     showToast,
     requestRender,
     adoptQueue: over.adoptQueue ?? (() => {}),
-    candidate_drop: over.candidate_drop
+    candidate_drop: over.candidate_drop,
+    hitTest: over.hitTest
   });
   drag.attach(dom.mount);
   return {
@@ -182,8 +183,69 @@ function startDrag(mount, bead_id) {
   fireDrag(row, 'dragstart');
 }
 
+/**
+ * @param {Element} target
+ * @param {string} type
+ * @param {{ pointerType: string, x: number, y: number }} input
+ */
+function firePointer(target, type, input) {
+  target.dispatchEvent(
+    new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 7,
+      pointerType: input.pointerType,
+      button: 0,
+      clientX: input.x,
+      clientY: input.y
+    })
+  );
+}
+
+/**
+ * @param {HTMLElement} mount
+ * @param {string} bead_id
+ * @returns {HTMLElement}
+ */
+function rowOf(mount, bead_id) {
+  return /** @type {HTMLElement} */ (
+    mount.querySelector(`.worker-mini[data-bead-id="${bead_id}"]`)
+  );
+}
+
+/**
+ * A queue row `A` in the parallel area, and a hit-test the case points at.
+ *
+ * @returns {{ ctx: ReturnType<typeof setup>, hit: { current: Element|null } }}
+ */
+function setupTouch() {
+  /** @type {{ current: Element|null }} */
+  const hit = { current: null };
+  const dom = mountDom({
+    rows: sourceHtml({
+      id: 'A',
+      kind: 'parallel',
+      row_index: 0,
+      queue_index: 0
+    })
+  });
+  const ctx = setup({
+    dom,
+    hitTest: () => hit.current,
+    lanes: laneModelOf({
+      parallel_rows: [parallelRow('A', 0)],
+      parallel_raw_length: { '/r': 1 },
+      owner_of: { A: '/r' },
+      queue: [parallelRow('A', 0)],
+      queue_groups: [groupOf(7)]
+    })
+  });
+  return { ctx, hit };
+}
+
 beforeEach(() => {
   document.body.innerHTML = '';
+  vi.useRealTimers();
 });
 
 describe('드롭 타깃 식별자 (UI-4tud §4.5)', () => {
@@ -386,6 +448,155 @@ describe('드롭 타깃 식별자 (UI-4tud §4.5)', () => {
     fireDrag(ctx.mount, 'dragend');
 
     expect(ctx.console_el.classList.contains('is-dragging')).toBe(false);
+    expect(ctx.drag.isDragging()).toBe(false);
+  });
+});
+
+describe('터치 길게 누르기 끌기 (UI-97xm)', () => {
+  test('starts no touch drag before the 350 ms long press', () => {
+    vi.useFakeTimers();
+    const { ctx } = setupTouch();
+    firePointer(rowOf(ctx.mount, 'A'), 'pointerdown', {
+      pointerType: 'touch',
+      x: 10,
+      y: 10
+    });
+
+    vi.advanceTimersByTime(300);
+
+    expect(ctx.drag.isDragging()).toBe(false);
+    expect(ctx.console_el.classList.contains('is-dragging')).toBe(false);
+  });
+
+  test('places a long-pressed row on the serial lane it is dropped on', async () => {
+    vi.useFakeTimers();
+    const { ctx, hit } = setupTouch();
+    const row = rowOf(ctx.mount, 'A');
+    firePointer(row, 'pointerdown', { pointerType: 'touch', x: 10, y: 10 });
+    vi.advanceTimersByTime(360);
+    hit.current = document.getElementById('serial');
+
+    firePointer(row, 'pointermove', { pointerType: 'touch', x: 10, y: 60 });
+    firePointer(row, 'pointerup', { pointerType: 'touch', x: 10, y: 60 });
+    await flush();
+
+    expect(ctx.sent).toEqual([
+      {
+        type: 'worker-queue-place',
+        payload: {
+          bead_id: 'A',
+          lane: 's1',
+          index: 2,
+          root_dir: '/r',
+          expected_revision: 1
+        }
+      }
+    ]);
+  });
+
+  test('leaves a finger that moves before the long press to scroll', async () => {
+    vi.useFakeTimers();
+    const { ctx, hit } = setupTouch();
+    const row = rowOf(ctx.mount, 'A');
+    firePointer(row, 'pointerdown', { pointerType: 'touch', x: 10, y: 10 });
+    vi.advanceTimersByTime(100);
+    hit.current = document.getElementById('serial');
+
+    firePointer(row, 'pointermove', { pointerType: 'touch', x: 10, y: 60 });
+    vi.advanceTimersByTime(400);
+    firePointer(row, 'pointerup', { pointerType: 'touch', x: 10, y: 60 });
+    await flush();
+
+    expect(ctx.drag.isDragging()).toBe(false);
+    expect(ctx.sent).toEqual([]);
+  });
+
+  test('holds the lane still after a long press until the finger moves', () => {
+    vi.useFakeTimers();
+    const { ctx, hit } = setupTouch();
+    const scroller = /** @type {HTMLElement} */ (
+      document.getElementById('parallel')
+    );
+    const writes = vi.fn();
+    scroller.style.overflowY = 'auto';
+    Object.defineProperties(scroller, {
+      scrollHeight: { configurable: true, get: () => 2000 },
+      clientHeight: { configurable: true, get: () => 800 },
+      scrollTop: { configurable: true, get: () => 400, set: writes }
+    });
+    scroller.getBoundingClientRect = () =>
+      /** @type {DOMRect} */ ({ top: 0, bottom: 800, left: 0, right: 400 });
+    const row = rowOf(ctx.mount, 'A');
+    hit.current = row;
+    firePointer(row, 'pointerdown', { pointerType: 'touch', x: 10, y: 400 });
+
+    vi.advanceTimersByTime(360 + 160);
+
+    expect(ctx.drag.isDragging()).toBe(true);
+    expect(writes).not.toHaveBeenCalled();
+  });
+
+  test('drops nothing when a long press lifts without moving', async () => {
+    vi.useFakeTimers();
+    const { ctx, hit } = setupTouch();
+    const row = rowOf(ctx.mount, 'A');
+    firePointer(row, 'pointerdown', { pointerType: 'touch', x: 10, y: 10 });
+    vi.advanceTimersByTime(360);
+    // Starting the drag revealed the empty lanes: another lane now sits under
+    // the finger that never moved.
+    hit.current = document.getElementById('serial');
+
+    firePointer(row, 'pointermove', { pointerType: 'touch', x: 12, y: 13 });
+    firePointer(row, 'pointerup', { pointerType: 'touch', x: 12, y: 13 });
+    await flush();
+
+    expect(ctx.sent).toEqual([]);
+    expect(ctx.drag.isDragging()).toBe(false);
+  });
+
+  test('places the ghost where the row was before the lanes moved', () => {
+    vi.useFakeTimers();
+    const { ctx } = setupTouch();
+    const row = rowOf(ctx.mount, 'A');
+    row.getBoundingClientRect = () =>
+      /** @type {DOMRect} */ ({
+        top: ctx.console_el.classList.contains('is-dragging') ? 300 : 100,
+        left: 0,
+        width: 200,
+        height: 40
+      });
+    firePointer(row, 'pointerdown', { pointerType: 'touch', x: 10, y: 110 });
+
+    vi.advanceTimersByTime(360);
+
+    const ghost = /** @type {HTMLElement} */ (
+      document.querySelector('.worker-drag-ghost')
+    );
+    expect(ghost.style.top).toBe('100px');
+  });
+
+  test('keeps a native drag out of a touch press', () => {
+    vi.useFakeTimers();
+    const { ctx } = setupTouch();
+    const row = rowOf(ctx.mount, 'A');
+    firePointer(row, 'pointerdown', { pointerType: 'touch', x: 10, y: 10 });
+
+    const ev = fireDrag(row, 'dragstart');
+
+    expect(ev.defaultPrevented).toBe(true);
+  });
+
+  test('leaves a mouse press to the native drag', () => {
+    vi.useFakeTimers();
+    const { ctx } = setupTouch();
+    firePointer(rowOf(ctx.mount, 'A'), 'pointerdown', {
+      pointerType: 'mouse',
+      x: 10,
+      y: 10
+    });
+
+    vi.advanceTimersByTime(400);
+
     expect(ctx.drag.isDragging()).toBe(false);
   });
 });

@@ -11,6 +11,7 @@
  */
 import { html, render } from 'lit-html';
 import { chipDisplayName } from '../../utils/chip-preset-binding.js';
+import { errorText } from '../../utils/error-text.js';
 import { CHIP_BINDING_KEYS, normalizeAppliesTo } from './session-model.js';
 
 /** The one-line header every row reads under. */
@@ -102,7 +103,7 @@ export function createChipBindingsTab(host, options) {
         options.toast?.(error, 'error');
       }
     } catch (err) {
-      error = `바인딩 실패: ${err instanceof Error ? err.message : String(err)}`;
+      error = `바인딩 실패: ${errorText(err)}`;
     } finally {
       busy.delete(chip);
       doRender();

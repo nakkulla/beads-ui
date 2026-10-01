@@ -1404,13 +1404,6 @@ function prWaitRow(
     repo_operations: progress_input.repo_operations
   });
   const cleanup_active = isPrWaitCleanupActive(merge_step);
-  // The click's own in-flight window. It locks the buttons exactly as a merge
-  // step does — a second click has nothing to land on — but it is NOT a merge
-  // step: the server is still taking the request, and drawing 머지 중 1/6 here
-  // made the bar run forward and then fall back to a queue position the moment
-  // the real snapshot arrived.
-  const queueing =
-    active && !merge_step && (active.queueing ?? null) ? active.queueing : null;
   // An already-merged PR whose cleanup stopped: the click re-runs the cleanup
   // from the top. Nothing retries automatically (§6), so this button is the
   // human's way back in once they have fixed whatever stopped it.
@@ -1441,6 +1434,18 @@ function prWaitRow(
     merge_step?.failed === true &&
     (merge_step.step === 'deploy' || merge_step.step === 'verify')
       ? merge_step.step
+      : null;
+  // The click's own in-flight window. It locks the buttons exactly as a merge
+  // step does — a second click has nothing to land on — but it is NOT a merge
+  // step: the server is still taking the request, and drawing 머지 중 1/6 here
+  // made the bar run forward and then fall back to a queue position the moment
+  // the real snapshot arrived. A stalled script's failed step is not in flight,
+  // so its resume click has the same window.
+  const queueing =
+    active &&
+    (!merge_step || stalled_script !== null) &&
+    (active.queueing ?? null)
+      ? active.queueing
       : null;
   const external_cleanup =
     external && !!cleanup_failed && !!gate && gate.tier === 'merged';
@@ -1642,7 +1647,10 @@ function prWaitRow(
     // click-time branch order puts DIRTY before the gate, so the server refuses
     // a conflicting external PR whatever its cached eligibility says (UI-7agi §5).
     merge_enabled:
-      !merge_step &&
+      // A stalled verify/deploy script leaves its failed step on the row; that
+      // is the very state the `… 재시도 후 정리` click exists for, not a step in
+      // flight.
+      (!merge_step || stalled_script !== null) &&
       // The click is still in flight. It used to be the fake merge step that
       // held the button; the lock has to survive that step going away.
       !queueing &&
@@ -1708,10 +1716,10 @@ function prWaitRow(
         ? '실행 provider가 변경되었습니다 — 이어갈 방식을 선택하세요'
         : queueing
           ? '요청을 보내는 중 — 서버 응답을 기다립니다'
-          : merge_step
-            ? `머지 진행 중 — ${merge_step.label}`
-            : stalled_script
-              ? `머지 완료 — ${stalled_script === 'deploy' ? '배포' : '검증'} 스크립트가 실패해 정리가 멈췄습니다. 클릭하면 저장소 작업부터 정리를 다시 진행합니다`
+          : stalled_script
+            ? `머지 완료 — ${stalled_script === 'deploy' ? '배포' : '검증'} 스크립트가 실패해 정리가 멈췄습니다. 클릭하면 저장소 작업부터 정리를 다시 진행합니다`
+            : merge_step
+              ? `머지 진행 중 — ${merge_step.label}`
               : external_cleanup
                 ? '머지 완료 — 클릭하면 실패한 정리를 다시 시도합니다'
                 : external_conflict_unresolvable

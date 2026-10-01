@@ -31,6 +31,7 @@ import {
   CHIP_BINDING_KEYS,
   CHIP_PRESET_SOURCE_KEY
 } from '../views/settings-dialog/session-model.js';
+import { errorText } from './error-text.js';
 
 /**
  * Whether one chip's click writes the issue instead of opening the 사유 팝업.
@@ -246,10 +247,7 @@ export function createChipPresetToggle(options) {
           say('클릭 전 설정으로 복원', 'success');
         }
       } catch (err) {
-        say(
-          `칩 적용 실패: ${err instanceof Error ? err.message : String(err)}`,
-          'error'
-        );
+        say(`칩 적용 실패: ${errorText(err)}`, 'error');
       } finally {
         in_flight.delete(key);
         options.onChange?.();

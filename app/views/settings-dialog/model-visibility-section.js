@@ -12,6 +12,7 @@
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
+import { errorText } from '../../utils/error-text.js';
 
 /** The info line under the group title. */
 export const MODEL_VISIBILITY_INTRO =
@@ -19,6 +20,35 @@ export const MODEL_VISIBILITY_INTRO =
 
 /** Tooltip of a runner's last enabled checkbox. */
 const LAST_ENABLED_TITLE = '러너마다 하나 이상 켜 두어야 합니다.';
+
+/**
+ * What each `model-visibility-set` refusal means (server
+ * `ModelVisibilityErrorCode`); an unknown code travels through raw.
+ */
+const REFUSAL_SENTENCES = /** @type {Record<string, string>} */ ({
+  conflict:
+    '다른 창에서 먼저 바뀌었습니다 — 새 목록으로 다시 시도해도 저장하지 못했습니다',
+  unknown_model: '카탈로그에 없는 모델입니다',
+  runner_all_disabled: '러너마다 하나 이상 켜 두어야 합니다',
+  invalid_disabled_models: '끈 모델 목록 형식이 올바르지 않습니다'
+});
+
+/**
+ * The refusal line: the sentence and, for tracing, the code itself.
+ *
+ * @param {unknown} err
+ * @returns {string}
+ */
+function refusalText(err) {
+  const code = /** @type {any} */ (err)?.code;
+  if (typeof code !== 'string' || code.length === 0) {
+    return `활성 모델 저장 실패: ${errorText(err)}`;
+  }
+  const sentence = REFUSAL_SENTENCES[code];
+  return sentence
+    ? `활성 모델 저장 실패 — ${sentence} (${code})`
+    : `활성 모델 저장 실패: ${code}`;
+}
 
 /** Subheading per runner key. */
 const RUNNER_LABELS = /** @type {Record<string, string>} */ ({
@@ -130,8 +160,7 @@ export function createModelVisibilitySection(host, options) {
       adopt(res?.snapshot);
     } catch (err) {
       adopt(/** @type {any} */ (err)?.details?.snapshot);
-      const code = /** @type {any} */ (err)?.code;
-      error = `활성 모델 저장 실패: ${typeof code === 'string' ? code : String(err)}`;
+      error = refusalText(err);
     } finally {
       busy = false;
       doRender();

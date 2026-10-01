@@ -758,6 +758,32 @@ describe('createSettingsDialog session tab', () => {
     expect(notify).toHaveBeenCalled();
     expect(dialog.sessionDraft()).toEqual({ impl_runtime: 'codex' });
   });
+
+  test('names the reason of a session default the server refuses', async () => {
+    const transport = vi.fn(async (/** @type {string} */ type) => {
+      if (type === 'get-session-defaults') {
+        return { values: {}, warnings: [] };
+      }
+      if (type === 'set-session-defaults') {
+        throw { code: 'bad_request', message: 'impl_runtime: not allowed' };
+      }
+      return {};
+    });
+    const { root, dialog, notify } = mount({ transport });
+    dialog.open();
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('select[data-key="impl_runtime"]')
+    );
+    select.value = 'codex';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(notify).toHaveBeenCalledWith(
+      '세션 기본값 저장 실패: impl_runtime: not allowed'
+    );
+  });
 });
 
 describe('createSettingsDialog execution tab orchestration', () => {

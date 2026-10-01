@@ -20,6 +20,7 @@ import {
   PROBLEM_LABELS,
   normalizeProblemCriteria
 } from '../../utils/compare-problem-criteria.js';
+import { errorText } from '../../utils/error-text.js';
 import { debug } from '../../utils/logging.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { costTooltipLines } from '../../utils/token-usage.js';
@@ -271,7 +272,7 @@ export function createCompareView(root, options = {}) {
         return;
       }
       log('get-compare failed: %o', err);
-      error = err instanceof Error ? err.message : String(err);
+      error = errorText(err);
     } finally {
       if (seq === request_seq) {
         loading = false;
