@@ -4,6 +4,7 @@
  * @import { ChildProcess } from 'node:child_process'
  * @import { Account } from './account-catalog.js'
  */
+import debug from 'debug';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,9 +23,10 @@ const OUTAGE_BACKOFF_MS = Object.freeze([
 ]);
 const USAGE_FALLBACK_MS = 900_000;
 const USAGE_RESET_GRACE_MS = 60_000;
+const log = debug('beads-ui:provider-health');
 
 /**
- * @typedef {{ kind: 'outage'|'usage_limit', model: string, account: string|null, detail: string, last_error: string, resets_at: number|null, rearm_count: number, attempt_ids: string[], auto_switch?: 'none'|'unconfigured'|'disabled'|null }} ProviderTarget
+ * @typedef {import('./queue-store.js').ProviderTarget} ProviderTarget
  */
 
 /**
@@ -208,6 +210,7 @@ function decodeCodexProbe(stdout) {
  *   notify: any,
  *   timeline?: any,
  *   onPending: (workspace: string) => Promise<any>,
+ *   onSwitchReady?: (workspace: string, accounts?: Account[]) => Promise<void>,
  *   tick: (workspace: string) => Promise<any>|any,
  *   repo?: string,
  *   spawnImpl?: (command: string, args: string[], options: any) => any,
@@ -234,6 +237,8 @@ export function createProviderHealth(deps) {
   const clearTimeoutImpl = deps.clearTimeoutImpl || clearTimeout;
   /** @type {Map<string, { timer: any, failures: number, next_probe_at: number }> } */
   const timers = new Map();
+  /** @type {Map<string, { timer: any, ready_at: number }>} */
+  const switch_timers = new Map();
   /** @type {Map<string, string>} */
   const catalog_hints = new Map();
   /** @type {(() => void)|null} */
@@ -248,12 +253,35 @@ export function createProviderHealth(deps) {
   const active_workspaces = new Set();
 
   /**
+   * Reevaluate without releasing the source target or launching a probe.
+   *
+   * @param {string} workspace
+   * @param {Account[]} [accounts]
+   */
+  async function reevaluateSwitches(workspace, accounts) {
+    if (!active_workspaces.has(workspace) || !deps.onSwitchReady) {
+      return;
+    }
+    try {
+      if (accounts) {
+        await deps.onSwitchReady(workspace, accounts);
+      } else {
+        await deps.onSwitchReady(workspace);
+      }
+      sync(workspace);
+    } catch (err) {
+      log('account switch reevaluation failed for %s: %o', workspace, err);
+    }
+  }
+
+  /**
    * Advance usage probes from catalog evidence; only the probe releases a hold.
    *
    * @param {Account[]} accounts
    */
   function refreshUsageTargets(accounts) {
     for (const workspace of active_workspaces) {
+      void reevaluateSwitches(workspace, accounts);
       const hold = deps.store.snapshot(workspace).provider_hold.claude;
       if (!hold) {
         continue;
@@ -658,6 +686,7 @@ export function createProviderHealth(deps) {
             }
           }
           await deps.onPending(workspace);
+          await reevaluateSwitches(workspace);
           await deps.tick(workspace);
         }
         sync(workspace);
@@ -691,6 +720,7 @@ export function createProviderHealth(deps) {
         }
       }
       const outcome = await deps.onPending(workspace);
+      await reevaluateSwitches(workspace);
       const recovered_attempt_id = (recovered.recovered_attempt_ids || [])[0];
       const recovered_attempt = recovered_attempt_id
         ? recovered.queue.attempts[recovered_attempt_id]
@@ -878,6 +908,8 @@ export function createProviderHealth(deps) {
     const queue = deps.store.snapshot(workspace);
     /** @type {Set<string>} */
     const wanted = new Set();
+    /** @type {Set<string>} */
+    const wanted_switches = new Set();
     for (const [runner, hold] of Object.entries(queue.provider_hold)) {
       for (const target of hold.targets) {
         const key = targetKey(workspace, runner, hold.generation, target);
@@ -891,6 +923,40 @@ export function createProviderHealth(deps) {
           target,
           failures
         );
+        if (
+          deps.onSwitchReady &&
+          target.kind === 'usage_limit' &&
+          target.auto_switch === 'none' &&
+          typeof target.switch_ready_at === 'number' &&
+          Number.isFinite(target.switch_ready_at)
+        ) {
+          wanted_switches.add(key);
+          const previous = switch_timers.get(key);
+          if (previous?.ready_at === target.switch_ready_at) {
+            continue;
+          }
+          if (previous) {
+            clearTimeoutImpl(previous.timer);
+          }
+          const timer = setTimeoutImpl(
+            () => {
+              switch_timers.delete(key);
+              void reevaluateSwitches(workspace);
+            },
+            Math.min(2_147_483_647, Math.max(0, target.switch_ready_at - now()))
+          );
+          timer?.unref?.();
+          switch_timers.set(key, {
+            timer,
+            ready_at: target.switch_ready_at
+          });
+        }
+      }
+    }
+    for (const [key, entry] of switch_timers) {
+      if (key.startsWith(`["${workspace}",`) && !wanted_switches.has(key)) {
+        clearTimeoutImpl(entry.timer);
+        switch_timers.delete(key);
       }
     }
     for (const [key, entry] of timers) {
@@ -917,6 +983,7 @@ export function createProviderHealth(deps) {
       observeCatalog();
       deps.store.discardStaleAutoResumePending(workspace);
       await deps.onPending(workspace);
+      await reevaluateSwitches(workspace);
       sync(workspace);
     },
 
@@ -946,6 +1013,12 @@ export function createProviderHealth(deps) {
         if (key.startsWith(`["${workspace}",`)) {
           clearTimeoutImpl(entry.timer);
           timers.delete(key);
+        }
+      }
+      for (const [key, entry] of switch_timers) {
+        if (key.startsWith(`["${workspace}",`)) {
+          clearTimeoutImpl(entry.timer);
+          switch_timers.delete(key);
         }
       }
       for (const key of catalog_hints.keys()) {

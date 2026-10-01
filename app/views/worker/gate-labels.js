@@ -30,6 +30,20 @@ export function providerClock(value) {
 }
 
 /**
+ * Use the earliest server-owned opportunity to leave a usage hold.
+ *
+ * @param {{ resets_at?: number|null, auto_switch?: string|null, switch_ready_at?: number|null }} hold
+ * @returns {number|null}
+ */
+export function providerReadyAt(hold) {
+  const times = [
+    hold.resets_at,
+    hold.auto_switch === 'none' ? hold.switch_ready_at : null
+  ].filter((value) => typeof value === 'number' && Number.isFinite(value));
+  return times.length > 0 ? Math.min(.../** @type {number[]} */ (times)) : null;
+}
+
+/**
  * Compose the exclusive slot-1 provider-hold verdict badge.
  *
  * @param {HoldTile|null|undefined} hold
@@ -40,7 +54,7 @@ export function providerHoldBadgeText(hold) {
     return '';
   }
   if (hold.kind === 'usage_limit') {
-    const reset = providerClock(hold.resets_at);
+    const reset = providerClock(providerReadyAt(hold));
     if (!reset) {
       return `⏳ 공급자 보류 · 리셋 미상`;
     }
@@ -114,11 +128,17 @@ export function autoResumeRefusalBadge(hold) {
  * rather than the machine did. Retired cap markers render no text.
  *
  * @param {HoldTile['auto_switch']|undefined} value
+ * @param {{ switch_ready_at?: number|null, switch_ready_account?: string|null }} [ready]
  * @returns {string}
  */
-export function autoSwitchText(value) {
+export function autoSwitchText(value, ready = {}) {
   if (value === 'none') {
-    return '허용 계정 중 사용 가능한 계정 없음';
+    const clock = providerClock(ready.switch_ready_at);
+    const planned =
+      clock && ready.switch_ready_account
+        ? ` · 전환 예정 ${ready.switch_ready_account} ${clock}`
+        : '';
+    return `허용 계정 중 사용 가능한 계정 없음${planned}`;
   }
   if (value === 'unconfigured') {
     return '계정 전환 안 함 · 전환 허용 계정 미지정';

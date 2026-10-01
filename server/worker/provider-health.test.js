@@ -211,6 +211,169 @@ function setup(store, timers, spawnImpl, overrides = {}) {
   return { health, notify, onPending, tick };
 }
 
+describe('none-held account switch reevaluation', () => {
+  /**
+   * Persist a switchable hold without an available receiving account.
+   *
+   * @param {ReturnType<typeof createQueueStore>} store
+   */
+  function seedSwitchHold(store) {
+    seedHold(store, 'usage_limit', 'old@example.com', {
+      resets_at: NOW + 90_000
+    });
+    store.setProviderLimitPolicy(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      runner: 'claude',
+      patch: { mode: 'switch', accounts: ['new@example.com'] }
+    });
+    store.holdProviderAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: {},
+      runner: 'claude',
+      target: store.snapshot(WS).provider_hold.claude.targets[0],
+      auto_switch: { candidate_account: null }
+    });
+    return store.snapshot(WS).provider_hold.claude.generation;
+  }
+
+  test('reconsiders persisted none holds on startup without a stored switch deadline', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    seedSwitchHold(store);
+    const onSwitchReady = vi.fn(async () => {});
+    const { health } = setup(store, makeTimers(), makeSpawn({}, 0), {
+      onSwitchReady
+    });
+
+    await health.start(WS);
+
+    expect(onSwitchReady).toHaveBeenCalledExactlyOnceWith(WS);
+    health.stop(WS);
+  });
+
+  test('reevaluates at the switch deadline and rearms from the renewed target', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    const generation = seedSwitchHold(store);
+    const timers = makeTimers();
+    const spawnImpl = makeSpawn({}, 0);
+    const identity = {
+      runner: 'claude',
+      generation: /** @type {number} */ (generation),
+      kind: /** @type {const} */ ('usage_limit'),
+      model: 'opus',
+      account: 'old@example.com'
+    };
+    store.updateProviderTarget(WS, {
+      ...identity,
+      patch: {
+        switch_ready_at: NOW + 10_000,
+        switch_ready_account: 'new@example.com'
+      }
+    });
+    const onSwitchReady = vi.fn(async () => {
+      store.updateProviderTarget(WS, {
+        ...identity,
+        patch: {
+          switch_ready_at: NOW + 30_000,
+          switch_ready_account: 'new@example.com'
+        }
+      });
+    });
+    const { health } = setup(store, timers, spawnImpl, { onSwitchReady });
+    health.sync(WS);
+    const ready = timers.entries.find((entry) => entry.delay === 10_000);
+    expect(ready).toBeDefined();
+
+    /** @type {NonNullable<typeof ready>} */ (ready).fired = true;
+    /** @type {NonNullable<typeof ready>} */ (ready).fn();
+    await flush();
+
+    expect(onSwitchReady).toHaveBeenCalledExactlyOnceWith(WS);
+    expect(
+      timers.entries
+        .filter((entry) => !entry.fired && !entry.cleared)
+        .map((entry) => entry.delay)
+    ).toContain(30_000);
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).provider_hold.claude.targets[0].account).toBe(
+      'old@example.com'
+    );
+    health.stop(WS);
+    expect(
+      timers.entries.filter((entry) => !entry.fired && !entry.cleared)
+    ).toEqual([]);
+  });
+
+  test('reconsiders other none holds immediately after a successful recovery', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    seedSwitchHold(store);
+    seedHold(store, 'usage_limit', 'new@example.com', {
+      attempt_id: 'att-2',
+      resets_at: NOW
+    });
+    const timers = makeTimers();
+    const onSwitchReady = vi.fn(async () => {});
+    const { health } = setup(store, timers, makeSpawn({ is_error: false }, 0), {
+      onSwitchReady
+    });
+    health.sync(WS);
+
+    const recovered_timer = timers.entries.find(
+      (entry) => entry.delay === 60_000
+    );
+    /** @type {NonNullable<typeof recovered_timer>} */ (recovered_timer).fired =
+      true;
+    /** @type {NonNullable<typeof recovered_timer>} */ (recovered_timer).fn();
+    await flush();
+
+    expect(onSwitchReady).toHaveBeenCalledExactlyOnceWith(WS);
+    expect(
+      store
+        .snapshot(WS)
+        .provider_hold.claude.targets.map((target) => target.account)
+    ).toEqual(['old@example.com']);
+    health.stop(WS);
+  });
+
+  test('reconsiders a none hold when the Claude catalog observes another account', async () => {
+    const store = createQueueStore({ now: () => NOW });
+    seedSwitchHold(store);
+    const accountCatalog = createAccountCatalog({
+      listClaude: async () => ({
+        ok: true,
+        active_key: null,
+        accounts: [
+          {
+            key: 'new@example.com',
+            email: 'new@example.com',
+            status: 'ok',
+            windows: [{ key: '5h', pct: 0, resetsAt: null }]
+          }
+        ]
+      }),
+      listCodex: async () => ({ ok: true, active_key: null, accounts: [] })
+    });
+    const onSwitchReady = vi.fn(async () => {});
+    const { health } = setup(store, makeTimers(), makeSpawn({}, 0), {
+      onSwitchReady,
+      accountCatalog
+    });
+    health.sync(WS);
+
+    await accountCatalog.listClaude();
+    await flush();
+
+    expect(onSwitchReady).toHaveBeenCalledExactlyOnceWith(
+      WS,
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'new@example.com' })
+      ])
+    );
+    health.stop(WS);
+    await accountCatalog.listClaude();
+    expect(onSwitchReady).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('catalog-driven usage probes', () => {
   /**
    * Exercise the same catalog read used by the existing hold-evaluation tick.

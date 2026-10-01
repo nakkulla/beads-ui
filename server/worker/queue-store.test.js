@@ -1122,6 +1122,144 @@ describe('worker/queue-store provider hold', () => {
     expect(result.queue.auto_resume_pending).toEqual([]);
   });
 
+  /**
+   * Store a none-held source whose next receiving account is known.
+   *
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {Partial<import('./queue-store.js').Attempt>} [patch]
+   */
+  function noneSwitchHold(store, patch = {}) {
+    seedProviderAttempt(store, 'none-source', patch);
+    allowSwitchAccounts(store, ['new@example.com']);
+    const result = store.holdProviderAttempt(WS, {
+      attempt_id: 'none-source',
+      patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+      runner: 'claude',
+      target: {
+        kind: 'usage_limit',
+        model: 'opus',
+        account: 'old@example.com',
+        detail: 'usage_limit',
+        last_error: 'limit',
+        resets_at: 90_000,
+        rearm_count: 0,
+        attempt_ids: []
+      },
+      auto_switch: { candidate_account: null }
+    });
+    return {
+      runner: 'claude',
+      generation: /** @type {number} */ (result.generation),
+      model: 'opus',
+      account: 'old@example.com',
+      candidate_account: 'new@example.com'
+    };
+  }
+
+  test('persists the switch deadline and receiving account through cold load', () => {
+    const store = createQueueStore();
+    const identity = noneSwitchHold(store);
+    store.updateProviderTarget(WS, {
+      ...identity,
+      kind: 'usage_limit',
+      patch: {
+        switch_ready_at: 10_000,
+        switch_ready_account: 'new@example.com'
+      }
+    });
+
+    store.__clearCacheForTest();
+
+    expect(store.snapshot(WS).provider_hold.claude.targets[0]).toMatchObject({
+      switch_ready_at: 10_000,
+      switch_ready_account: 'new@example.com'
+    });
+  });
+
+  test('queues one switch receipt while retaining the exhausted source target', () => {
+    const store = createQueueStore();
+    const identity = noneSwitchHold(store, {
+      auto_resume_kind: 'provider_outage'
+    });
+
+    store.switchHeldProviderAttempts(WS, identity);
+    store.switchHeldProviderAttempts(WS, identity);
+
+    const queue = store.snapshot(WS);
+    expect(queue.auto_resume_pending).toEqual([
+      {
+        attempt_id: 'none-source',
+        generation: identity.generation,
+        account: 'new@example.com',
+        kind: 'account_switch'
+      }
+    ]);
+    expect(queue.provider_hold.claude.targets[0]).toMatchObject({
+      account: 'old@example.com',
+      auto_switch: null,
+      switch_ready_at: null,
+      switch_ready_account: null
+    });
+  });
+
+  test.each([
+    'wait',
+    'unallowed',
+    'held',
+    'generation',
+    'resumed',
+    'withdrawn',
+    'dismissed'
+  ])(
+    'rejects a switch when %s changes after candidate selection',
+    (condition) => {
+      const store = createQueueStore();
+      const identity = noneSwitchHold(store);
+      if (condition === 'wait' || condition === 'unallowed') {
+        store.setProviderLimitPolicy(WS, {
+          expected_revision: store.snapshot(WS).revision,
+          runner: 'claude',
+          patch: condition === 'wait' ? { mode: 'wait' } : { accounts: [] }
+        });
+      } else if (condition === 'held') {
+        seedProviderAttempt(store, 'candidate');
+        store.holdProviderAttempt(WS, {
+          attempt_id: 'candidate',
+          patch: { status: 'paused' },
+          runner: 'claude',
+          target: {
+            ...store.snapshot(WS).provider_hold.claude.targets[0],
+            account: 'new@example.com',
+            attempt_ids: []
+          }
+        });
+      } else if (condition === 'generation') {
+        identity.generation += 1;
+      } else if (condition === 'resumed') {
+        seedProviderAttempt(store, 'child', { resumed_from: 'none-source' });
+      } else {
+        store.updateAttempt(WS, {
+          attempt_id: 'none-source',
+          patch:
+            condition === 'withdrawn'
+              ? {
+                  withdrawn: {
+                    at: 1000,
+                    from_status: 'paused',
+                    from_cause: 'provider_outage:usage_limit'
+                  }
+                }
+              : { dismissed_at: 1000 }
+        });
+      }
+
+      const result = store.switchHeldProviderAttempts(WS, identity);
+
+      expect(result.ok).toBe(false);
+      expect(store.snapshot(WS).auto_resume_pending).toEqual([]);
+    }
+  );
+
   // RED 7 (spec §5)
   test('still switches a lineage that already consumed its reset resume', () => {
     const store = createQueueStore();

@@ -1372,6 +1372,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       resolveCswapPath,
       spawnImpl: options.spawn_impl,
       onPending: (workspace) => scheduler.consumeProviderAutoResume(workspace),
+      onSwitchReady: (workspace, accounts) =>
+        scheduler.reevaluateProviderSwitches(workspace, accounts),
       tick: (workspace) => scheduler.tick(workspace)
     });
 

@@ -199,6 +199,8 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * limit hold did not move to another account (UI-13o1 §3.4). Absent when it did
  * switch; `cap` is retired vocabulary that old queue files may still carry.
  * @property {number} [resets_at]
+ * @property {number} [switch_ready_at]
+ * @property {string} [switch_ready_account]
  * @property {number} [next_probe_at]
  * @property {number} [live_preempt_skipped_at] - When the last live preempt
  * pass found no switch candidate for this attempt (UI-inge §3.6).

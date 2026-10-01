@@ -746,6 +746,8 @@
  * @property {number} rearm_count
  * @property {string[]} attempt_ids
  * @property {'none'|'unconfigured'|'disabled'|null} [auto_switch]
+ * @property {number|null} [switch_ready_at]
+ * @property {string|null} [switch_ready_account]
  * @property {number|null} [next_probe_at] - When the prober next touches this
  * target. Durable rather than timer-local because the held tile shows it: an
  * in-memory deadline reads as absent for every viewer after a restart.
@@ -4714,6 +4716,18 @@ function normalizeProviderTarget(value) {
       value.auto_switch === 'disabled'
         ? value.auto_switch
         : null,
+    switch_ready_at:
+      value.auto_switch === 'none' &&
+      typeof value.switch_ready_at === 'number' &&
+      Number.isFinite(value.switch_ready_at)
+        ? value.switch_ready_at
+        : null,
+    switch_ready_account:
+      value.auto_switch === 'none' &&
+      typeof value.switch_ready_account === 'string' &&
+      value.switch_ready_account.length > 0
+        ? value.switch_ready_account
+        : null,
     next_probe_at:
       typeof value.next_probe_at === 'number' &&
       Number.isFinite(value.next_probe_at)
@@ -4770,6 +4784,8 @@ function normalizeProviderHolds(value) {
           target.rearm_count
         );
         existing.auto_switch = target.auto_switch;
+        existing.switch_ready_at = target.switch_ready_at;
+        existing.switch_ready_account = target.switch_ready_account;
       } else {
         targets.push(target);
       }
@@ -8715,7 +8731,104 @@ export function createQueueStore(options = {}) {
         ) {
           target.next_probe_at = input.patch.next_probe_at;
         }
+        if (Object.hasOwn(input.patch, 'switch_ready_at')) {
+          const ready_at = input.patch.switch_ready_at;
+          const ready_account = input.patch.switch_ready_account;
+          const policy =
+            input.runner === 'claude' || input.runner === 'codex'
+              ? next.provider_limit_policy[input.runner]
+              : null;
+          const valid =
+            target.auto_switch === 'none' &&
+            policy?.mode === 'switch' &&
+            typeof ready_at === 'number' &&
+            Number.isFinite(ready_at) &&
+            typeof ready_account === 'string' &&
+            policy.accounts.includes(ready_account);
+          target.switch_ready_at = valid ? ready_at : null;
+          target.switch_ready_account = valid ? ready_account : null;
+        }
         return true;
+      });
+    },
+
+    /**
+     * Queue switches for the still-paused leaves of a none-held target. The
+     * exhausted source stays gated until its own probe releases it.
+     *
+     * @param {string} workspace
+     * @param {{ runner: string, generation: number, model: string, account: string, candidate_account: string }} input
+     * @returns {QueueOpResult}
+     */
+    switchHeldProviderAttempts(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const hold = next.provider_hold[input.runner];
+        const policy =
+          input.runner === 'claude' || input.runner === 'codex'
+            ? next.provider_limit_policy[input.runner]
+            : null;
+        if (
+          !hold ||
+          hold.generation !== input.generation ||
+          policy?.mode !== 'switch' ||
+          !policy.accounts.includes(input.candidate_account) ||
+          input.candidate_account === input.account ||
+          Object.values(next.provider_hold).some((candidate_hold) =>
+            candidate_hold.targets.some(
+              (target) => target.account === input.candidate_account
+            )
+          )
+        ) {
+          return false;
+        }
+        const target = hold.targets.find(
+          (candidate) =>
+            candidate.kind === 'usage_limit' &&
+            candidate.detail === 'usage_limit' &&
+            candidate.model === input.model &&
+            candidate.account === input.account &&
+            candidate.auto_switch === 'none'
+        );
+        if (!target) {
+          return false;
+        }
+        let queued = false;
+        for (const attempt_id of target.attempt_ids) {
+          const attempt = next.attempts[attempt_id];
+          if (
+            !attempt ||
+            attempt.status !== 'paused' ||
+            attempt.cause !== 'provider_outage:usage_limit' ||
+            attempt.withdrawn ||
+            typeof attempt.dismissed_at === 'number' ||
+            next.auto_resume_pending.some(
+              (entry) => entry.attempt_id === attempt_id
+            ) ||
+            Object.values(next.attempts).some(
+              (candidate) => candidate.resumed_from === attempt_id
+            ) ||
+            Object.values(next.discard_operations).some(
+              (operation) =>
+                operation.attempt_id === attempt_id &&
+                discardOperationActive(operation)
+            )
+          ) {
+            continue;
+          }
+          next.auto_resume_pending.push({
+            attempt_id,
+            generation: hold.generation,
+            account: input.candidate_account,
+            kind: 'account_switch'
+          });
+          queued = true;
+        }
+        if (queued) {
+          target.auto_switch = null;
+          target.switch_ready_at = null;
+          target.switch_ready_account = null;
+        }
+        return queued;
       });
     },
 

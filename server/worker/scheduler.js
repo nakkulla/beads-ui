@@ -1332,6 +1332,7 @@ export function interactiveTurnState(running, attention) {
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
  *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
  *   consumeProviderAutoResume: (workspace: string) => Promise<{ resumed_beads: string[], refusals: string[] }>,
+ *   reevaluateProviderSwitches: (workspace: string, catalog_accounts?: import('./account-catalog.js').Account[]) => Promise<void>,
  *   livePreemptPass: (workspace: string) => Promise<void>,
  *   preemptRunningAttempt: (workspace: string, attempt_id: string, switch_to: { from: string, to: string, window: string, pct: number }) => Promise<{ ok: boolean, reason?: string }>,
  *   holdAttempt: (workspace: string, attempt_id: string, bead_id: string, prior: string|null, classified: { outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null }) => Promise<void>,
@@ -1381,6 +1382,8 @@ export function createScheduler(deps) {
     deps.makeAttemptId || ((bead_id) => `${bead_id}-${now()}-${++attempt_seq}`);
   /** @type {Set<string>} */
   const external_wait_resumes = new Set();
+  /** @type {Map<string, { promise: Promise<void>, rerun: boolean, refresh_catalog: boolean, all_runners: boolean, catalog_accounts: import('./account-catalog.js').Account[]|null, catalog_signature: string|null }>} */
+  const provider_switch_passes = new Map();
   /** @type {ReturnType<typeof createExternalWaitSessionResume>|null} */
   let external_wait_session_resume = null;
 
@@ -1804,13 +1807,37 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Read switch candidates without turning unavailable usage into evidence.
+   *
+   * @param {string} runner
+   * @returns {Promise<import('./account-catalog.js').Account[]>}
+   */
+  async function providerSwitchAccounts(runner) {
+    const list =
+      runner === 'codex'
+        ? deps.accountCatalog?.listCodex
+        : deps.accountCatalog?.listClaude;
+    if (!deps.accountCatalog || typeof list !== 'function') {
+      return [];
+    }
+    try {
+      const listed = await list.call(deps.accountCatalog);
+      return listed?.ok && Array.isArray(listed.accounts)
+        ? listed.accounts
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Choose the lowest-usage healthy account the user allows for one runner.
    *
    * @param {string} workspace
    * @param {string} runner
    * @param {string|null} current_account
    * @param {string[]} allowed
-   * @param {{ max_pct?: number|null }} [options]
+   * @param {{ max_pct?: number|null, catalog_accounts?: import('./account-catalog.js').Account[] }} [options]
    * @returns {Promise<string|null>}
    */
   async function selectProviderSwitchAccount(
@@ -1820,25 +1847,11 @@ export function createScheduler(deps) {
     allowed,
     options = {}
   ) {
-    const list =
-      runner === 'codex'
-        ? deps.accountCatalog?.listCodex
-        : deps.accountCatalog?.listClaude;
-    if (!deps.accountCatalog || typeof list !== 'function') {
-      return null;
-    }
     if (!Array.isArray(allowed) || allowed.length === 0) {
       return null;
     }
-    let listed;
-    try {
-      listed = await list.call(deps.accountCatalog);
-    } catch {
-      return null;
-    }
-    if (!listed?.ok || !Array.isArray(listed.accounts)) {
-      return null;
-    }
+    const accounts =
+      options.catalog_accounts || (await providerSwitchAccounts(runner));
     const held_accounts = new Set();
     for (const hold of Object.values(
       deps.store.snapshot(workspace).provider_hold || {}
@@ -1850,7 +1863,7 @@ export function createScheduler(deps) {
       }
     }
     return (
-      listed.accounts
+      accounts
         .filter((/** @type {any} */ account) => {
           if (
             account?.status !== 'ok' ||
@@ -1897,6 +1910,217 @@ export function createScheduler(deps) {
           return String(left.key).localeCompare(String(right.key));
         })[0]?.key || null
     );
+  }
+
+  /**
+   * Estimate when an allowed account can next pass the existing selector.
+   * A held account needs every local target to reset; an unheld account needs
+   * every over-threshold window to reset. Unknown deadlines supply no timer.
+   *
+   * @param {string} workspace
+   * @param {string} current_account
+   * @param {string[]} allowed
+   * @param {import('./account-catalog.js').Account[]} accounts
+   * @returns {{ switch_ready_at: number|null, switch_ready_account: string|null }}
+   */
+  function providerSwitchReady(workspace, current_account, allowed, accounts) {
+    const targets = Object.values(
+      deps.store.snapshot(workspace).provider_hold
+    ).flatMap((/** @type {any} */ hold) => hold.targets);
+    /** @type {{ switch_ready_at: number|null, switch_ready_account: string|null }} */
+    const ready = { switch_ready_at: null, switch_ready_account: null };
+    for (const account of accounts) {
+      if (
+        account.status !== 'ok' ||
+        account.key === current_account ||
+        !allowed.includes(account.key)
+      ) {
+        continue;
+      }
+      const held = targets.filter(
+        (/** @type {any} */ target) => target.account === account.key
+      );
+      /** @type {number[]} */
+      let deadlines;
+      if (held.length > 0) {
+        deadlines = held.map(
+          (/** @type {any} */ target) => target.resets_at ?? NaN
+        );
+      } else {
+        const windows = account.windows || [];
+        if (
+          windows.length === 0 ||
+          windows.some((window) => !Number.isFinite(window.pct))
+        ) {
+          continue;
+        }
+        deadlines = windows
+          .filter(
+            (window) =>
+              window.pct >
+              (window.key === '5h'
+                ? AUTO_SWITCH_5H_MAX_PCT
+                : AUTO_SWITCH_7D_MAX_PCT)
+          )
+          .map((window) =>
+            window.resetsAt === null ? NaN : Date.parse(window.resetsAt)
+          );
+      }
+      if (deadlines.length === 0 || !deadlines.every(Number.isFinite)) {
+        continue;
+      }
+      const reset_at = Math.max(...deadlines);
+      // An expired observation cannot create a zero-delay catalog loop. The
+      // same renewed deadline is persisted for both the badge and the timer.
+      const ready_at = reset_at > now() ? reset_at : now() + 60_000;
+      if (ready.switch_ready_at === null || ready_at < ready.switch_ready_at) {
+        ready.switch_ready_at = ready_at;
+        ready.switch_ready_account = account.key;
+      }
+    }
+    return ready;
+  }
+
+  /**
+   * Reconsider exhausted allow lists after recovery, reset, or catalog evidence.
+   * Catalog reads themselves notify observers, so one workspace shares a pass.
+   *
+   * @param {string} workspace
+   * @param {import('./account-catalog.js').Account[]} [catalog_accounts] - An observed Claude catalog; absence requests a fresh read after recovery or a timer.
+   */
+  async function reevaluateProviderSwitches(workspace, catalog_accounts) {
+    const running = provider_switch_passes.get(workspace);
+    if (running) {
+      if (catalog_accounts) {
+        const signature = JSON.stringify(catalog_accounts);
+        running.catalog_accounts = catalog_accounts;
+        if (signature !== running.catalog_signature) {
+          running.catalog_signature = signature;
+          running.rerun = true;
+        }
+      } else {
+        running.rerun = true;
+        running.refresh_catalog = true;
+        running.all_runners = true;
+      }
+      return running.promise;
+    }
+    const state = {
+      promise: Promise.resolve(),
+      rerun: false,
+      refresh_catalog: !catalog_accounts,
+      all_runners: !catalog_accounts,
+      catalog_accounts: catalog_accounts || null,
+      catalog_signature: catalog_accounts
+        ? JSON.stringify(catalog_accounts)
+        : null
+    };
+    state.promise = Promise.resolve().then(async () => {
+      try {
+        do {
+          state.rerun = false;
+          if (state.refresh_catalog) {
+            state.catalog_accounts = null;
+            state.refresh_catalog = false;
+          }
+          const snapshot = deps.store.snapshot(workspace);
+          for (const [runner, hold] of Object.entries(snapshot.provider_hold)) {
+            if (!state.all_runners && runner !== 'claude') {
+              continue;
+            }
+            const policy = providerLimitPolicyOf(workspace, runner);
+            const targets =
+              /** @type {import('./queue-store.js').ProviderHold} */ (
+                hold
+              ).targets.filter(
+                (target) =>
+                  target.kind === 'usage_limit' &&
+                  target.detail === 'usage_limit' &&
+                  target.account !== null &&
+                  target.auto_switch === 'none'
+              );
+            if (targets.length === 0) {
+              continue;
+            }
+            const accounts =
+              policy.mode === 'switch' && policy.accounts.length > 0
+                ? runner === 'claude' && state.catalog_accounts
+                  ? state.catalog_accounts
+                  : await providerSwitchAccounts(runner)
+                : [];
+            for (const target of targets) {
+              const current = deps.store.snapshot(workspace);
+              const eligible = target.attempt_ids.some((attempt_id) => {
+                const attempt = current.attempts[attempt_id];
+                return (
+                  attempt?.status === 'paused' &&
+                  attempt.cause === 'provider_outage:usage_limit' &&
+                  !attempt.withdrawn &&
+                  typeof attempt.dismissed_at !== 'number' &&
+                  !Object.values(current.attempts).some(
+                    (/** @type {any} */ candidate) =>
+                      candidate.resumed_from === attempt_id
+                  ) &&
+                  !current.auto_resume_pending.some(
+                    (/** @type {any} */ entry) =>
+                      entry.attempt_id === attempt_id
+                  )
+                );
+              });
+              const account = /** @type {string} */ (target.account);
+              const candidate =
+                eligible && policy.mode === 'switch'
+                  ? await selectProviderSwitchAccount(
+                      workspace,
+                      runner,
+                      account,
+                      policy.accounts,
+                      { catalog_accounts: accounts }
+                    )
+                  : null;
+              const switched = candidate
+                ? deps.store.switchHeldProviderAttempts(workspace, {
+                    runner,
+                    generation: /** @type {any} */ (hold).generation,
+                    model: target.model,
+                    account,
+                    candidate_account: candidate
+                  }).ok
+                : false;
+              if (!switched) {
+                const ready = eligible
+                  ? providerSwitchReady(
+                      workspace,
+                      account,
+                      policy.accounts,
+                      accounts
+                    )
+                  : { switch_ready_at: null, switch_ready_account: null };
+                if (
+                  target.switch_ready_at !== ready.switch_ready_at ||
+                  target.switch_ready_account !== ready.switch_ready_account
+                ) {
+                  deps.store.updateProviderTarget(workspace, {
+                    runner,
+                    generation: /** @type {any} */ (hold).generation,
+                    kind: target.kind,
+                    model: target.model,
+                    account,
+                    patch: ready
+                  });
+                }
+              }
+            }
+          }
+          await consumeProviderAutoResume(workspace);
+        } while (state.rerun);
+        deps.providerHealth?.sync(workspace);
+      } finally {
+        provider_switch_passes.delete(workspace);
+      }
+    });
+    provider_switch_passes.set(workspace, state);
+    await state.promise;
   }
 
   /**
@@ -6194,6 +6418,9 @@ export function createScheduler(deps) {
     );
     if (pending_switch) {
       await consumeProviderAutoResume(workspace);
+    }
+    if (usage_limit && !pending_switch) {
+      await reevaluateProviderSwitches(workspace);
     }
     deps.providerHealth?.sync(workspace);
   }
@@ -18454,6 +18681,7 @@ export function createScheduler(deps) {
     resumeExternalWait,
     settleExternalWaitReservations,
     consumeProviderAutoResume,
+    reevaluateProviderSwitches,
     livePreemptPass,
     preemptRunningAttempt,
     holdAttempt,

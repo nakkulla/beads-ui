@@ -52,6 +52,24 @@ import { SUMMARY_CHIPS } from './wait-vocabulary.js';
 /** @type {HTMLElement} */
 let mount;
 
+test('renders the switch clock in the held badge and its existing detail popup', () => {
+  const hold = {
+    kind: /** @type {const} */ ('usage_limit'),
+    detail: 'usage_limit',
+    auto_switch: /** @type {const} */ ('none'),
+    resets_at: 7_200_000,
+    switch_ready_at: 3_600_000,
+    switch_ready_account: 'recovered@example.com'
+  };
+
+  render(waitStatusBadge({ held_kind: 'provider_hold', hold }), mount);
+
+  expect(
+    mount.querySelector('.wait-verdict > summary')?.textContent?.trim()
+  ).toBe(providerHoldBadgeText(hold));
+  expect(mount.textContent).toContain('전환 예정 recovered@example.com');
+});
+
 /**
  * @param {Partial<import('./lane-model.js').InteractiveSessionView>} [patch]
  * @returns {import('./lane-model.js').InteractiveSessionView}

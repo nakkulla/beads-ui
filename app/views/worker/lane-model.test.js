@@ -2619,6 +2619,8 @@ describe('monitor 공급자 보류 attempt 투영', () => {
               detail: 'usage_limit',
               resets_at: 2000,
               next_probe_at: 3000,
+              switch_ready_at: 1500,
+              switch_ready_account: 'two@example.com',
               rearm_count: 0,
               attempt_ids: ['t1'],
               auto_switch: 'none'
@@ -2631,7 +2633,13 @@ describe('monitor 공급자 보류 attempt 투영', () => {
       ],
       account_catalog: {
         claude: [
-          { email: 'one@example.com', alias: '업무', status: 'ok', windows: [] }
+          {
+            email: 'one@example.com',
+            alias: '업무',
+            status: 'ok',
+            windows: []
+          },
+          { email: 'two@example.com', alias: '대안', status: 'ok', windows: [] }
         ]
       }
     });
@@ -2643,6 +2651,8 @@ describe('monitor 공급자 보류 attempt 투영', () => {
       message: 'API Error: usage limit',
       resets_at: 2000,
       next_probe_at: 3000,
+      switch_ready_at: 1500,
+      switch_ready_account: '대안',
       auto_resume: 'pending',
       target: {
         model: 'opus-4.8',

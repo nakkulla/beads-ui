@@ -4205,6 +4205,256 @@ describe('scheduler provider hold and recovery', () => {
     ).toEqual([]);
   });
 
+  /**
+   * Exhaust both allowed accounts, preserving the held session for a switch.
+   *
+   * @param {'claude'|'codex'} [runner]
+   * @param {boolean} [hold_candidate]
+   */
+  async function noneHeldEnv(runner = 'claude', hold_candidate = true) {
+    const rows = ['old@example.com', 'new@example.com'].map((key, index) => ({
+      key,
+      email: key,
+      status: 'ok',
+      windows: [
+        {
+          key: '5h',
+          pct: 100,
+          resetsAt: new Date(index ? 10_000 : 90_000).toISOString()
+        }
+      ]
+    }));
+    const model = runner === 'claude' ? 'opus' : 'sol';
+    const accounts = accountDeps();
+    const list = vi.fn(async () => ({
+      ok: true,
+      accounts: rows,
+      active_key: rows[0].key
+    }));
+    const env = setup({
+      config: { B1: { orchestration_model: model } },
+      ...accounts,
+      accountCatalog: {
+        ...accounts.accountCatalog,
+        listClaude: list,
+        listCodex: list
+      }
+    });
+    allowSwitchAccounts(
+      env.store,
+      runner,
+      rows.map((row) => row.key)
+    );
+    if (hold_candidate) {
+      seedProviderAttempt(env.store, 'other', 'H1', {
+        runner,
+        model,
+        dismissed_at: 1000
+      });
+      const held = registerProviderHold(
+        env.store,
+        'other',
+        'usage_limit',
+        rows[1].key,
+        runner
+      );
+      env.store.updateProviderTarget(WS, {
+        runner,
+        generation: held.generation,
+        kind: 'usage_limit',
+        model,
+        account: rows[1].key,
+        patch: { resets_at: 10_000 }
+      });
+    }
+    seedProviderAttempt(env.store, 'none-held', 'B1', {
+      runner,
+      model,
+      effort: 'high',
+      speed: 'default',
+      session_id: 'preserved-session',
+      base_oid: 'base-B1',
+      target_base: 'main',
+      [runner === 'claude' ? 'claude_account' : 'codex_account']: rows[0].key,
+      exec_values: { ...resumableExecValues(), orchestration_model: model }
+    });
+    await env.scheduler.holdAttempt(WS, 'none-held', 'B1', null, {
+      account: rows[0].key,
+      outage: {
+        detail: 'usage_limit',
+        message: 'limit',
+        scope: 'account',
+        resets_at: 90_000
+      }
+    });
+    return { ...env, rows, list, model };
+  }
+
+  test.each(['claude', 'codex'])(
+    'switches a none-held attempt after another %s account recovers',
+    async (runtime) => {
+      const runner = /** @type {'claude'|'codex'} */ (runtime);
+      const env = await noneHeldEnv(runner);
+      const before = env.store.snapshot(WS).provider_hold[runner];
+      expect(
+        before.targets.find((target) => target.account === env.rows[0].key)
+      ).toMatchObject({
+        auto_switch: 'none',
+        switch_ready_at: 10_000,
+        switch_ready_account: env.rows[1].key
+      });
+      env.rows[1].windows[0].pct = 0;
+      env.store.recoverProviderTarget(WS, {
+        runner,
+        generation: before.generation,
+        kind: 'usage_limit',
+        model: env.model,
+        account: env.rows[1].key
+      });
+
+      await Promise.all([
+        env.scheduler.reevaluateProviderSwitches(WS),
+        env.scheduler.reevaluateProviderSwitches(WS)
+      ]);
+
+      const queue = env.store.snapshot(WS);
+      const children = Object.values(queue.attempts).filter(
+        (attempt) => attempt.resumed_from === 'none-held'
+      );
+      expect(children).toHaveLength(1);
+      expect(children[0]).toMatchObject({
+        auto_resume_kind: 'account_switch',
+        account_switched_from: env.rows[0].key,
+        [runner === 'claude' ? 'claude_account' : 'codex_account']:
+          env.rows[1].key
+      });
+      expect(queue.provider_hold[runner].targets).toHaveLength(1);
+      expect(queue.provider_hold[runner].targets[0].account).toBe(
+        env.rows[0].key
+      );
+      expect(queue.auto_resume_pending).toEqual([]);
+    }
+  );
+
+  test.each(['recovery', 'catalog'])(
+    'replays a %s signal received after the held target was inspected',
+    async (signal) => {
+      const env = await noneHeldEnv('claude', false);
+      env.rows[1].windows[0].resetsAt = '';
+      const update = env.store.updateProviderTarget.bind(env.store);
+      let signaled = false;
+      vi.spyOn(env.store, 'updateProviderTarget').mockImplementation(
+        (workspace, input) => {
+          const result = update(workspace, input);
+          if (!signaled && input.patch.switch_ready_at === null) {
+            signaled = true;
+            env.rows[1].windows[0].pct = 0;
+            void env.scheduler.reevaluateProviderSwitches(
+              WS,
+              signal === 'catalog' ? structuredClone(env.rows) : undefined
+            );
+          }
+          return result;
+        }
+      );
+
+      await env.scheduler.reevaluateProviderSwitches(WS);
+
+      expect(signaled).toBe(true);
+      expect(
+        Object.values(env.store.snapshot(WS).attempts).filter(
+          (attempt) => attempt.resumed_from === 'none-held'
+        )
+      ).toHaveLength(1);
+    }
+  );
+
+  test('does not loop on its own catalog observation', async () => {
+    const env = await noneHeldEnv('claude', false);
+    env.list.mockClear();
+    env.list.mockImplementation(async () => {
+      void env.scheduler.reevaluateProviderSwitches(
+        WS,
+        structuredClone(env.rows)
+      );
+      return { ok: true, accounts: env.rows, active_key: env.rows[0].key };
+    });
+
+    await env.scheduler.reevaluateProviderSwitches(WS);
+
+    expect(env.list).toHaveBeenCalledTimes(1);
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('waits for every over-threshold window of an unheld candidate', async () => {
+    const env = await noneHeldEnv('claude', false);
+    env.rows[1].windows.push({
+      key: '7d',
+      pct: 95,
+      resetsAt: new Date(40_000).toISOString()
+    });
+
+    await env.scheduler.reevaluateProviderSwitches(WS);
+
+    expect(
+      env.store.snapshot(WS).provider_hold.claude.targets[0]
+    ).toMatchObject({
+      switch_ready_at: 40_000,
+      switch_ready_account: env.rows[1].key
+    });
+  });
+
+  test('renews an elapsed switch deadline while the catalog remains exhausted', async () => {
+    const env = await noneHeldEnv('claude', false);
+    env.rows[1].windows[0].resetsAt = new Date(0).toISOString();
+
+    await env.scheduler.reevaluateProviderSwitches(WS);
+
+    expect(
+      env.store.snapshot(WS).provider_hold.claude.targets[0].switch_ready_at
+    ).toBe(61_000);
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('omits a switch deadline when an exhausted window has no reset', async () => {
+    const env = await noneHeldEnv('claude', false);
+    env.rows[1].windows[0].resetsAt = '';
+
+    await env.scheduler.reevaluateProviderSwitches(WS);
+
+    expect(
+      env.store.snapshot(WS).provider_hold.claude.targets[0]
+    ).toMatchObject({
+      switch_ready_at: null,
+      switch_ready_account: null
+    });
+  });
+
+  test.each(['disabled', 'unconfigured'])(
+    'does not reevaluate a %s hold',
+    async (reason) => {
+      const env = await noneHeldEnv();
+      env.store.setProviderLimitPolicy(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        runner: 'claude',
+        patch: { mode: reason === 'disabled' ? 'wait' : 'switch', accounts: [] }
+      });
+      env.store.holdProviderAttempt(WS, {
+        attempt_id: 'none-held',
+        patch: {},
+        runner: 'claude',
+        target: env.store.snapshot(WS).provider_hold.claude.targets[1],
+        auto_switch: { candidate_account: null }
+      });
+      env.list.mockClear();
+
+      await env.scheduler.reevaluateProviderSwitches(WS);
+
+      expect(env.list).not.toHaveBeenCalled();
+      expect(env.store.snapshot(WS).auto_resume_pending).toEqual([]);
+    }
+  );
+
   // RED 5 companion at the scheduler seam (spec §5)
   test('keeps the timer path when the runner waits out its limit', async () => {
     const listClaude = vi.fn(async () => ({ ok: true, accounts: [] }));

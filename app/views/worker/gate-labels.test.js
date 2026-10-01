@@ -2,12 +2,44 @@ import { describe, expect, test } from 'vitest';
 import {
   autoResumeRefusalBadge,
   autoSwitchText,
+  providerClock,
   providerHoldBadgeText
 } from './gate-labels.js';
 
 // 타일 뱃지와 대기 행의 게이트 칩이 같은 문자열을 내야 하므로 문구는 여기 하나다
 // (UI-01wh §3.2). 원래 running-grid.test.js가 들고 있던 검증을 그대로 옮겼다.
 describe('provider hold badge text (UI-01wh §3.2)', () => {
+  test.each([
+    { resets_at: 7_200_000, switch_ready_at: 3_600_000, expected: 3_600_000 },
+    { resets_at: 3_600_000, switch_ready_at: 7_200_000, expected: 3_600_000 },
+    { resets_at: undefined, switch_ready_at: 3_600_000, expected: 3_600_000 }
+  ])(
+    'uses the earliest available usage-hold deadline ($resets_at, $switch_ready_at)',
+    ({ resets_at, switch_ready_at, expected }) => {
+      const text = providerHoldBadgeText({
+        kind: 'usage_limit',
+        detail: 'usage_limit',
+        auto_switch: 'none',
+        resets_at,
+        switch_ready_at
+      });
+
+      expect(text).toBe(`⏳ 공급자 보류 ${providerClock(expected)}`);
+    }
+  );
+
+  test('ignores a stale switch deadline in wait mode', () => {
+    const text = providerHoldBadgeText({
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      auto_switch: 'disabled',
+      resets_at: 7_200_000,
+      switch_ready_at: 3_600_000
+    });
+
+    expect(text).toBe(`⏳ 공급자 보류 ${providerClock(7_200_000)}`);
+  });
+
   test('formats the outage badge with its next probe', () => {
     const clock = new Date(3000).toLocaleTimeString('ko-KR', {
       hour: '2-digit',
@@ -70,6 +102,17 @@ describe('provider hold badge text (UI-01wh §3.2)', () => {
 
 // 한도 보류가 왜 계정을 바꾸지 않았는지는 정책 어휘로 읽힌다 (UI-13o1 §3.4, RED 21).
 describe('auto switch reason text (UI-13o1 §3.4)', () => {
+  test('adds the server-selected receiving account and deadline to the reason', () => {
+    const text = autoSwitchText('none', {
+      switch_ready_at: 3_600_000,
+      switch_ready_account: '업무'
+    });
+
+    expect(text).toBe(
+      `허용 계정 중 사용 가능한 계정 없음 · 전환 예정 업무 ${providerClock(3_600_000)}`
+    );
+  });
+
   test('words the wait mode as a mode choice, not a broken switch', () => {
     const text = autoSwitchText('disabled');
 

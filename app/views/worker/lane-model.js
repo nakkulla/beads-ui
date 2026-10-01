@@ -63,7 +63,11 @@ import {
   serialCycleKey
 } from '../monitor/blockers.js';
 import { recoveryWaitSentence } from './failure-labels.js';
-import { autoSwitchText, providerHoldBadgeText } from './gate-labels.js';
+import {
+  autoSwitchText,
+  providerHoldBadgeText,
+  providerReadyAt
+} from './gate-labels.js';
 import {
   discardProjection,
   quickFixLanded,
@@ -1448,6 +1452,20 @@ function providerHoldProjection(attempt, input) {
         }
       : {}),
     ...(resets_at === null ? {} : { resets_at }),
+    ...(target?.auto_switch === 'none' &&
+    typeof target.switch_ready_at === 'number'
+      ? { switch_ready_at: target.switch_ready_at }
+      : {}),
+    ...(target?.auto_switch === 'none' &&
+    typeof target.switch_ready_account === 'string'
+      ? {
+          switch_ready_account:
+            accountAliasOf(
+              target.switch_ready_account,
+              input.account_catalog
+            ) || target.switch_ready_account
+        }
+      : {}),
     ...(auto_resume === null ? {} : { auto_resume }),
     // `cap` is already what `auto_resume: 'disarmed'` says, so only the two
     // reasons no other field reports reach the popover (§8.3).
@@ -1566,6 +1584,9 @@ function providerGateOf(runner, entry, target, account_catalog, extra_lines) {
     ...(typeof target.resets_at === 'number'
       ? { resets_at: target.resets_at }
       : {}),
+    ...(typeof target.switch_ready_at === 'number'
+      ? { switch_ready_at: target.switch_ready_at }
+      : {}),
     ...(typeof target.next_probe_at === 'number'
       ? { next_probe_at: target.next_probe_at }
       : {}),
@@ -1595,7 +1616,12 @@ function providerGateOf(runner, entry, target, account_catalog, extra_lines) {
   const when = outage
     ? formatClockLocal(target.next_probe_at)
     : formatClockLocal(target.resets_at);
-  const auto_switch = autoSwitchText(target.auto_switch);
+  const auto_switch = autoSwitchText(target.auto_switch, {
+    switch_ready_at: target.switch_ready_at,
+    switch_ready_account:
+      accountAliasOf(target.switch_ready_account, account_catalog) ||
+      target.switch_ready_account
+  });
   // 보류가 선 시각은 러너 단위 레코드의 것이다 — target별 시각은 따로 없다.
   const since_clock = formatClockLocal(entry.since);
   // `account:null`인 usage_limit은 프로브를 예약하지 않으므로 (공급자 스펙 §6 F3)
@@ -1622,9 +1648,7 @@ function providerGateOf(runner, entry, target, account_catalog, extra_lines) {
       ? typeof target.next_probe_at === 'number'
         ? target.next_probe_at
         : null
-      : typeof target.resets_at === 'number'
-        ? target.resets_at
-        : null,
+      : providerReadyAt(target),
     lines: [
       label,
       ...(since_clock ? [`시작 ${since_clock}`] : []),

@@ -41,7 +41,9 @@ import { stepperTemplate } from '../stepper.js';
 import {
   autoResumeText,
   autoSwitchText,
-  providerClock
+  providerClock,
+  providerHoldBadgeText,
+  providerReadyAt
 } from './gate-labels.js';
 import { QUEUE_GRACE_MS, routeChipValue } from './lane-model.js';
 import { logPathTemplate } from './log-path.js';
@@ -2439,7 +2441,7 @@ export function waitStatusBadge(material) {
     material.hold || null,
     now,
     {
-      label: material.label || badge_row.label,
+      label: material.label,
       inquiry: liveInquiryView(material.interactive_sessions),
       ...(material.text ? { text: material.text } : {}),
       ...(material.verdict ? { verdict: material.verdict } : {}),
@@ -2483,7 +2485,15 @@ function externalGuidanceLines(reason) {
  * @returns {import('lit-html').TemplateResult|''}
  */
 function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
-  const label = overrides.label || row.label;
+  const label =
+    overrides.label ||
+    (row.kind === 'provider_hold' &&
+    hold?.kind === 'usage_limit' &&
+    providerReadyAt(hold) !== null
+      ? providerHoldBadgeText(
+          /** @type {import('./running-grid.js').HoldTile} */ (hold)
+        ).replace(/^⏳ /, '')
+      : row.label);
   if (!label) {
     return '';
   }
@@ -2530,7 +2540,7 @@ function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
             ? `다음 프로브 ${formatClockLocal(hold.next_probe_at, now)}`
             : '',
           autoResumeText(hold.auto_resume),
-          autoSwitchText(hold.auto_switch),
+          autoSwitchText(hold.auto_switch, hold),
           typeof hold.live_preempt_skipped_at === 'number'
             ? `전환 후보 없음 · ${formatRelativeTime(hold.live_preempt_skipped_at)}`
             : '',
