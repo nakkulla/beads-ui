@@ -1,8 +1,8 @@
 /**
  * Claude provider-outage classifier (provider-outage-hold-resume §3).
  *
- * Only the final `result` event, or stderr when no result exists, may supply a
- * signal. This keeps quoted API errors in assistant/tool text from becoming
+ * For classifyProviderOutage, only the final `result` event, or stderr when
+ * no result exists, may supply a signal. This keeps quoted API errors in assistant/tool text from becoming
  * worker state. The one typed companion is the CLI's own `rate_limit_event`
  * in that result's turn: a `rejected` account-window verdict makes a
  * structured 429 an account usage limit whatever the result wording says.
@@ -495,6 +495,40 @@ function rejectedWindow(raw, result_index) {
     }
     const resets_at_seconds = info.resetsAt;
     return {
+      resets_at:
+        typeof resets_at_seconds === 'number' &&
+        Number.isFinite(resets_at_seconds) &&
+        resets_at_seconds > 0
+          ? resets_at_seconds * 1000
+          : null
+    };
+  }
+  return null;
+}
+
+/**
+ * Find account rejection evidence for an explicit provider recovery wait.
+ * A leaf rejection remains relevant after the controller's allowed events.
+ * The caller must require the same attempt's recovery:provider result line.
+ *
+ * @param {{ raw: any[] }} ctx
+ * @returns {ProviderOutage|null}
+ */
+export function classifyProviderRecoveryOutage(ctx) {
+  const raw = Array.isArray(ctx.raw) ? ctx.raw : [];
+  for (let index = raw.length - 1; index >= 0; index -= 1) {
+    const event = raw[index];
+    if (
+      event?.type !== 'rate_limit_event' ||
+      event.rate_limit_info?.status !== 'rejected'
+    ) {
+      continue;
+    }
+    const resets_at_seconds = event.rate_limit_info.resetsAt;
+    return {
+      detail: 'usage_limit',
+      scope: 'account',
+      message: 'rate_limit_event: account usage limit rejected',
       resets_at:
         typeof resets_at_seconds === 'number' &&
         Number.isFinite(resets_at_seconds) &&

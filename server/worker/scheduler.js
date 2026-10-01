@@ -2496,6 +2496,41 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Require both the session's provider wait and adapter-owned stream evidence.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {RunnerVerdict|null} verdict
+   * @returns {Promise<{ outage: { detail: string, message: string, scope: 'provider'|'account', resets_at: number|null }, account: string|null }|null>}
+   */
+  async function providerRecoveryOutageFor(workspace, attempt_id, verdict) {
+    if (
+      !verdict?.success ||
+      verdict.blocked ||
+      verdict.terminal_result?.kind !== 'recovery_wait' ||
+      verdict.terminal_result.reason !== 'provider'
+    ) {
+      return null;
+    }
+    const attempt = deps.store.snapshot(workspace).attempts[attempt_id];
+    if (!attempt) {
+      return null;
+    }
+    const classifier = adapterSpec(
+      attempt.runner
+    ).classifyProviderRecoveryOutage;
+    if (typeof classifier !== 'function') {
+      return null;
+    }
+    const outage = classifier({ raw: verdict.raw });
+    if (!outage) {
+      return null;
+    }
+    const account = await providerAccountContext(attempt);
+    return { outage, account: account.account };
+  }
+
+  /**
    * Extract the explicit hard-stop line from the final runner result.
    *
    * @param {unknown[]} raw
@@ -6975,6 +7010,17 @@ export function createScheduler(deps) {
         verdict.terminal_result?.kind === 'environment' ||
         verdict.terminal_result?.kind === 'recovery_wait'
       ) {
+        const outage = await providerRecoveryOutageFor(
+          workspace,
+          attempt_id,
+          verdict
+        );
+        if (outage) {
+          await holdAttempt(workspace, attempt_id, bead_id, prior, outage);
+          notifyChanged(workspace);
+          await tick(workspace);
+          return;
+        }
         const delivery_observation = await reportedQuickfixFacts(
           workspace,
           attempt_id,
@@ -8078,6 +8124,18 @@ export function createScheduler(deps) {
     kind
   ) {
     const record = deps.store.snapshot(workspace).attempts[attempt_id] || {};
+    const recovery_outage = await providerRecoveryOutageFor(
+      workspace,
+      attempt_id,
+      verdict
+    );
+    if (recovery_outage) {
+      releaseDisposition(bead_id);
+      await holdAttempt(workspace, attempt_id, bead_id, prior, recovery_outage);
+      notifyChanged(workspace);
+      await tick(workspace);
+      return;
+    }
     if (!verdict.success) {
       if (!verdict.blocked) {
         const outage = await providerOutageFor(
@@ -8695,10 +8753,22 @@ export function createScheduler(deps) {
     const outage =
       persisted_raw === null
         ? null
-        : await providerOutageFor(workspace, attempt_id, persisted_raw, false);
+        : ((await providerOutageFor(
+            workspace,
+            attempt_id,
+            persisted_raw,
+            false
+          )) ??
+          (await providerRecoveryOutageFor(
+            workspace,
+            attempt_id,
+            persisted_verdict
+          )));
     if (outage) {
       if (kind) {
         releaseDisposition(bead_id);
+      } else if (persisted_verdict?.success) {
+        await recordReceiptCheck(workspace, attempt_id, bead_id);
       }
       await holdAttempt(workspace, attempt_id, bead_id, prior, outage);
       notifyChanged(workspace);

@@ -4892,6 +4892,47 @@ describe('scheduler provider hold and recovery', () => {
     });
   });
 
+  test('holds a provider recovery wait whose stream carries a rejected account window', async () => {
+    const env = setup({ config: { B1: {} }, slots: 1 });
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('B1', {
+      summary: '대기 · recovery:provider',
+      terminal_result: { kind: 'recovery_wait', reason: 'provider' },
+      raw: [
+        {
+          type: 'rate_limit_event',
+          parent_tool_use_id: 'leaf-1',
+          rate_limit_info: { status: 'rejected', resetsAt: 1790874000 }
+        },
+        { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } },
+        {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          result: '대기 · recovery:provider'
+        }
+      ]
+    });
+    await flush();
+
+    const queue = env.store.snapshot(WS);
+    expect(queue.attempts[attempt_id]).toMatchObject({
+      status: 'paused',
+      cause: 'provider_outage:usage_limit'
+    });
+    expect(queue.provider_hold.claude.targets).toMatchObject([
+      {
+        kind: 'usage_limit',
+        resets_at: 1790874000000,
+        attempt_ids: [attempt_id]
+      }
+    ]);
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+  });
+
   test('reconciles a persisted 529 as provider hold before PR observation', async () => {
     const sessionLog = createSessionLog();
     const log_path = beadSessionLogPath(WS, 'B1', 'att-1');
@@ -4925,6 +4966,240 @@ describe('scheduler provider hold and recovery', () => {
     });
     expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
   });
+
+  /**
+   * Feed the same recovery evidence through live completion or restart replay.
+   *
+   * @param {string} source
+   * @param {{ runner?: string, reason?: string, rejected?: boolean, switch_account?: boolean, disposition?: boolean }} [options]
+   */
+  async function providerRecoveryFixture(source, options = {}) {
+    const runner = options.runner ?? 'claude';
+    const reason = options.reason ?? 'provider';
+    const summary = `대기 · recovery:${reason}`;
+    const raw = [
+      {
+        type: 'rate_limit_event',
+        parent_tool_use_id: 'leaf-1',
+        rate_limit_info: {
+          status: options.rejected === false ? 'allowed' : 'rejected',
+          resetsAt: 1790874000
+        }
+      },
+      { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } },
+      ...(runner === 'claude'
+        ? [
+            {
+              type: 'result',
+              subtype: 'success',
+              is_error: false,
+              result: summary
+            }
+          ]
+        : [
+            {
+              type: 'item.completed',
+              item: { type: 'agent_message', text: summary }
+            },
+            { type: 'turn.completed' }
+          ])
+    ];
+    const rows = [
+      {
+        key: 'hot@example.com',
+        email: 'hot@example.com',
+        status: 'ok',
+        windows: [{ pct: 100, resetsAt: null }]
+      },
+      {
+        key: 'cool@example.com',
+        email: 'cool@example.com',
+        status: 'ok',
+        windows: [{ pct: 5, resetsAt: null }]
+      }
+    ];
+    const disposition = {
+      complete: vi.fn(async () => ({ ok: true })),
+      release: vi.fn()
+    };
+    const env = setup({
+      config: {
+        B1:
+          runner === 'claude'
+            ? { claude_account: rows[0].email }
+            : { model: 'sol' }
+      },
+      slots: 1,
+      sessionLog: createSessionLog(),
+      probePid: () => ({ alive: false, started_at: null }),
+      disposition,
+      ...accountDeps({
+        accountCatalog: {
+          resolveClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: rows.find((row) => row.email === email)
+          })),
+          readClaude: vi.fn(async (email) => ({
+            ok: true,
+            account: rows.find((row) => row.email === email)
+          })),
+          listClaude: vi.fn(async () => ({
+            ok: true,
+            accounts: rows,
+            active_key: rows[0].email
+          }))
+        }
+      })
+    });
+    if (options.switch_account) {
+      allowSwitchAccounts(env.store, 'claude', [rows[1].email]);
+    }
+    const hold = vi.spyOn(env.store, 'holdProviderAttempt');
+    let attempt_id = 'persisted-recovery';
+    if (source === 'live') {
+      seedQueue(env.store, ['B1']);
+      await env.scheduler.tick(WS);
+      attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+      env.runner.eventsFor('B1').emit('session_id', 'sid-recovery');
+    } else {
+      const log_path = beadSessionLogPath(WS, 'B1', attempt_id);
+      fs.mkdirSync(path.dirname(log_path), { recursive: true });
+      fs.writeFileSync(
+        log_path,
+        raw.map((event) => JSON.stringify(event)).join('\n') + '\n'
+      );
+      seedProviderAttempt(env.store, attempt_id, 'B1', {
+        runner,
+        model: runner === 'claude' ? 'opus' : 'sol',
+        pid: 4242,
+        started_at: 1000,
+        log_path,
+        claude_account: rows[0].email,
+        session_id: 'sid-recovery',
+        effort: 'high',
+        speed: 'default',
+        base_oid: 'base-B1',
+        target_base: 'main',
+        exec_values: resumableExecValues()
+      });
+    }
+    if (options.disposition) {
+      env.store.updateAttempt(WS, {
+        attempt_id,
+        patch: { disposition: 'revise_fix' }
+      });
+    }
+    return {
+      ...env,
+      attempt_id,
+      hold,
+      disposition,
+      async finish() {
+        if (source === 'live') {
+          env.runner.finish('B1', {
+            summary,
+            terminal_result: { kind: 'recovery_wait', reason },
+            raw
+          });
+          await flush();
+          await flush();
+        } else {
+          await env.scheduler.reconcile(WS);
+        }
+      }
+    };
+  }
+
+  test.each(['live', 'persisted'])(
+    'holds a provider recovery wait on its recorded account through %s',
+    async (source) => {
+      const env = await providerRecoveryFixture(source);
+
+      await env.finish();
+
+      const queue = env.store.snapshot(WS);
+      expect(queue.attempts[env.attempt_id]).toMatchObject({
+        status: 'paused',
+        cause: 'provider_outage:usage_limit'
+      });
+      expect(queue.provider_hold.claude.targets).toMatchObject([
+        {
+          account: 'hot@example.com',
+          kind: 'usage_limit',
+          resets_at: 1790874000000,
+          attempt_ids: [env.attempt_id]
+        }
+      ]);
+      expect(queue.auto_resume_pending).toEqual([]);
+    }
+  );
+
+  test.each(['live', 'persisted'])(
+    'switches a provider recovery wait to a healthy account through %s',
+    async (source) => {
+      const env = await providerRecoveryFixture(source, {
+        switch_account: true
+      });
+
+      await env.finish();
+
+      expect(env.hold).toHaveBeenCalledWith(
+        WS,
+        expect.objectContaining({
+          auto_switch: { candidate_account: 'cool@example.com' }
+        })
+      );
+      const child = Object.values(env.store.snapshot(WS).attempts).find(
+        (attempt) => attempt.resumed_from === env.attempt_id
+      );
+      expect(child).toMatchObject({
+        claude_account: 'cool@example.com',
+        auto_resume_kind: 'account_switch',
+        account_switched_from: 'hot@example.com'
+      });
+    }
+  );
+
+  test.each(['live', 'persisted'])(
+    'releases disposition before holding a provider recovery wait through %s',
+    async (source) => {
+      const env = await providerRecoveryFixture(source, { disposition: true });
+
+      await env.finish();
+
+      expect(env.store.snapshot(WS).attempts[env.attempt_id]).toMatchObject({
+        status: 'paused',
+        cause: 'provider_outage:usage_limit'
+      });
+      expect(env.disposition.complete).not.toHaveBeenCalled();
+      expect(env.disposition.release).toHaveBeenCalledWith('B1');
+      expect(env.disposition.release.mock.invocationCallOrder[0]).toBeLessThan(
+        env.hold.mock.invocationCallOrder[0]
+      );
+    }
+  );
+
+  test.each([
+    ['live', { rejected: false }],
+    ['persisted', { rejected: false }],
+    ['live', { reason: 'credential' }],
+    ['persisted', { reason: 'credential' }],
+    ['live', { runner: 'codex' }],
+    ['persisted', { runner: 'codex' }]
+  ])(
+    'keeps unmatched recovery waits unchanged through %s (%j)',
+    async (source, options) => {
+      const env = await providerRecoveryFixture(source, options);
+
+      await env.finish();
+
+      expect(env.store.snapshot(WS).attempts[env.attempt_id]).toMatchObject({
+        status: 'waiting',
+        cause: 'session_recovery_wait'
+      });
+      expect(env.hold).not.toHaveBeenCalled();
+    }
+  );
 
   /**
    * Allow one runner to switch onto a given account set (spec §3.1).

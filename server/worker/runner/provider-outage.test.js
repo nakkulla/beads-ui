@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'vitest';
-import { classifyProviderOutage } from './provider-outage.js';
+import {
+  classifyProviderOutage,
+  classifyProviderRecoveryOutage
+} from './provider-outage.js';
 
 /**
  * Build one terminal Claude result event with safe defaults.
@@ -344,6 +347,73 @@ describe('runner/provider-outage result classification', () => {
     const result = classifyProviderOutage({ raw, stderr_tail: null });
 
     expect(result?.message).toHaveLength(512);
+  });
+});
+
+describe('runner/provider-outage recovery wait classification', () => {
+  test.each([null, 'leaf-1'])(
+    'retains a rejected window after allowed events and a normal result (parent %s)',
+    (parent_tool_use_id) => {
+      const raw = [
+        {
+          ...rateLimitEvent({ status: 'rejected', resetsAt: 1790874000 }),
+          parent_tool_use_id
+        },
+        resultEvent({ result: 'API Error: 429' }),
+        rateLimitEvent({ status: 'allowed', resetsAt: 1790877600 }),
+        resultEvent({ is_error: false, result: '대기 · recovery:provider' })
+      ];
+
+      const result = classifyProviderRecoveryOutage({ raw });
+
+      expect(result).toMatchObject({
+        detail: 'usage_limit',
+        scope: 'account',
+        resets_at: 1790874000000
+      });
+    }
+  );
+
+  test('uses the last rejected window across result boundaries', () => {
+    const raw = [
+      rateLimitEvent({ status: 'rejected', resetsAt: 1790874000 }),
+      resultEvent({ is_error: false }),
+      rateLimitEvent({ status: 'rejected', resetsAt: 1790877600 }),
+      rateLimitEvent({ status: 'allowed' })
+    ];
+
+    const result = classifyProviderRecoveryOutage({ raw });
+
+    expect(result?.resets_at).toBe(1790877600000);
+  });
+
+  test.each([undefined, null, '1790874000', 0, -1, NaN, Infinity])(
+    'keeps a rejected window without a valid reset time (%s)',
+    (resetsAt) => {
+      const raw = [rateLimitEvent({ status: 'rejected', resetsAt })];
+
+      const result = classifyProviderRecoveryOutage({ raw });
+
+      expect(result).toMatchObject({ detail: 'usage_limit', resets_at: null });
+    }
+  );
+
+  test('ignores quoted rejections and events without rejected status', () => {
+    const raw = [
+      null,
+      { type: 'rate_limit_event' },
+      rateLimitEvent({ status: 'allowed' }),
+      rateLimitEvent({ status: 'allowed_warning' }),
+      { type: 'assistant', rate_limit_info: { status: 'rejected' } },
+      resultEvent({
+        is_error: false,
+        result: JSON.stringify(rateLimitEvent({ status: 'rejected' }))
+      })
+    ];
+
+    const result = classifyProviderRecoveryOutage({ raw });
+
+    expect(result).toBeNull();
   });
 });
 

@@ -19,7 +19,10 @@ import { builtinCatalog } from '../runner-catalog.js';
 import { workRecoveryReadinessEnv } from '../work-recovery-policy.js';
 import { probeGuardMirror } from './guard-mirror.js';
 import { applyPreamble, defaultTaskPrompt } from './preamble.js';
-import { classifyProviderOutage } from './provider-outage.js';
+import {
+  classifyProviderOutage,
+  classifyProviderRecoveryOutage
+} from './provider-outage.js';
 import { runSession } from './session.js';
 
 const LAUNCH_SPACING_MS = 3_000;
@@ -940,6 +943,7 @@ export function claudeSpec(options = {}) {
     probeGuardMirror,
     extractSessionId,
     classifyProviderOutage,
+    classifyProviderRecoveryOutage,
     verdict
   };
 }
