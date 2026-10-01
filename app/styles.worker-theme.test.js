@@ -9,6 +9,11 @@ import { describe, expect, test } from 'vitest';
  * ≤640px responsive rules must be present.
  */
 const CSS = readFileSync(path.resolve(process.cwd(), 'app/styles.css'), 'utf8');
+/** Shared control parts (UI-kqta §3.2): `.op-btn`, `.ui-field` and friends. */
+const COMPONENTS = readFileSync(
+  path.resolve(process.cwd(), 'app/styles/components.css'),
+  'utf8'
+);
 
 /**
  * Every `@media (any-pointer: coarse), (max-width: 640px)` block body, matched by
@@ -19,27 +24,27 @@ const CSS = readFileSync(path.resolve(process.cwd(), 'app/styles.css'), 'utf8');
  *
  * @returns {string[]}
  */
-function coarsePointerBlocks() {
+function coarsePointerBlocks(css = CSS) {
   const query = '@media (any-pointer: coarse), (max-width: 640px)';
   /** @type {string[]} */
   const blocks = [];
-  let from = CSS.indexOf(query);
+  let from = css.indexOf(query);
   while (from >= 0) {
-    const open = CSS.indexOf('{', from);
+    const open = css.indexOf('{', from);
     let depth = 0;
     let i = open;
-    for (; i < CSS.length; i++) {
-      if (CSS[i] === '{') {
+    for (; i < css.length; i++) {
+      if (css[i] === '{') {
         depth += 1;
-      } else if (CSS[i] === '}') {
+      } else if (css[i] === '}') {
         depth -= 1;
         if (depth === 0) {
           break;
         }
       }
     }
-    blocks.push(CSS.slice(open, i + 1));
-    from = CSS.indexOf(query, i);
+    blocks.push(css.slice(open, i + 1));
+    from = css.indexOf(query, i);
   }
   return blocks;
 }
@@ -275,7 +280,9 @@ describe('worker console styles', () => {
     expect(responsiveMarker).toBeGreaterThan(markerIndex);
     expect(reasonRule).toContain('min-width: 0');
     expect(reasonRule).toContain('overflow-wrap: anywhere');
-    expect(headRule).toContain('min-height: 28px');
+    expect(headRule).toContain(
+      'min-height: calc(var(--h-control) + var(--sp-4))'
+    );
   });
 
   test('shares the card reason line across Worker and Monitor roots', () => {
@@ -305,7 +312,9 @@ describe('worker console styles', () => {
       workerBlock.match(/(?:^|\n)\.worker-card__head\s*{([^}]*)}/)?.[1] || '';
 
     expect(headRule).not.toContain('flex-wrap: nowrap');
-    expect(headRule).toContain('min-height: 28px');
+    expect(headRule).toContain(
+      'min-height: calc(var(--h-control) + var(--sp-4))'
+    );
     expect(headRule).toContain('min-width: 0');
   });
 
@@ -471,7 +480,9 @@ describe('worker console styles', () => {
       workerBlock.match(/(?:^|\n)\.rtile__hd\s*{([^}]*)}/)?.[1] || '';
 
     expect(headerRule).not.toContain('flex-wrap: nowrap');
-    expect(headerRule).toContain('min-height: 28px');
+    expect(headerRule).toContain(
+      'min-height: calc(var(--h-control) + var(--sp-4))'
+    );
     expect(headerRule).toContain('min-width: 0');
   });
 
@@ -724,6 +735,35 @@ describe('worker console styles', () => {
     expect(toggleRule).not.toContain('width: 100%');
   });
 
+  // Worker 탭 토글은 부품 크기를 받는다 (UI-kqta §3.3): 머리줄 여백·글자를
+  // 물려받는 규칙은 부품이 없는 Monitor 토글에만 걸린다.
+  test('keeps the pane toggle padding and type only on the part-less toggle', () => {
+    const toggleRule =
+      workerBlock.match(/(?:^|\n)\.worker-pane__toggle\s*{([^}]*)}/)?.[1] || '';
+    const partlessRule =
+      workerBlock.match(
+        /(?:^|\n)\.worker-pane__toggle:not\(\.op-btn\)\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(toggleRule).not.toMatch(/padding|font/);
+    expect(partlessRule).toContain('padding: 0');
+    expect(partlessRule).toContain('font: inherit');
+  });
+
+  test('keeps the area toggle type only on the part-less toggle', () => {
+    const toggleRule =
+      workerBlock.match(
+        /(?:^|\n)\.worker-wait__area-toggle\s*{([^}]*)}/
+      )?.[1] || '';
+    const partlessRule =
+      workerBlock.match(
+        /(?:^|\n)\.worker-wait__area-toggle:not\(\.op-btn\)\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(toggleRule).not.toMatch(/padding|font/);
+    expect(partlessRule).toContain('font: inherit');
+  });
+
   test('pushes the card head actions to the end of the first line', () => {
     const rule =
       workerBlock.match(
@@ -756,36 +796,43 @@ describe('worker console styles', () => {
     expect(hidden_group).not.toContain('rowops-remove');
   });
 
+  // 툴바의 버튼·묶음은 부품이 줄바꿈 금지를 소유한다 (UI-kqta §3.2).
   test('keeps the toolbar labels on one line at every width (UI-0bvr §7.3)', () => {
-    const play =
-      workerBlock.match(/(?:^|\n)\.worker-play\s*{([^}]*)}/)?.[1] || '';
-    const toggle =
-      workerBlock.match(/(?:^|\n)\.worker-tgl\s*{([^}]*)}/)?.[1] || '';
+    const button =
+      COMPONENTS.match(
+        /(?:^|\n):is\(button, summary\):where\(\.op-btn\)\s*{([^}]*)}/
+      )?.[1] || '';
+    const field = COMPONENTS.match(/(?:^|\n)\.ui-field\s*{([^}]*)}/)?.[1] || '';
 
-    expect(play).toContain('white-space: nowrap');
-    expect(toggle).toContain('white-space: nowrap');
+    expect(button).toContain('white-space: nowrap');
+    expect(field).toContain('white-space: nowrap');
   });
 
   test('lays the toolbar toggle label and its input on one row', () => {
-    const toggle =
-      workerBlock.match(/(?:^|\n)\.worker-tgl\s*{([^}]*)}/)?.[1] || '';
+    const field = COMPONENTS.match(/(?:^|\n)\.ui-field\s*{([^}]*)}/)?.[1] || '';
 
-    expect(toggle).toContain('display: inline-flex');
-    expect(toggle).toContain('align-items: center');
+    expect(field).toContain('display: inline-flex');
+    expect(field).toContain('align-items: center');
   });
 
   test('drops the visible box from the ghost operation button (UI-0bvr §7.2)', () => {
-    const ghost = CSS.match(/(?:^|\n)\.op-btn--ghost\s*{([^}]*)}/)?.[1] || '';
+    const ghost =
+      COMPONENTS.match(
+        /(?:^|\n):is\(button, summary\):where\(\.op-btn--ghost\)\s*{([^}]*)}/
+      )?.[1] || '';
 
     expect(ghost).toContain('border-color: transparent');
   });
 
   test('keeps the coarse-pointer target size of the ghost icon button', () => {
-    const icon_sizes = coarsePointerBlocks()
-      .map((block) => block.match(/\.op-btn--icon\s*{([^}]*)}/)?.[1] || '')
+    const icon_sizes = coarsePointerBlocks(COMPONENTS)
+      .map(
+        (block) =>
+          block.match(/:where\(\.op-btn--icon\)\s*{([^}]*)}/)?.[1] || ''
+      )
       .filter(Boolean);
 
-    expect(icon_sizes.join('')).toContain('min-width: 32px');
+    expect(icon_sizes.join('')).toContain('min-width: var(--h-control-coarse)');
   });
 
   // 칩은 제자리에서 압축되지 않고 줄을 넘긴다 (UI-pw2g §3.2): `1 1 auto`와
@@ -1021,7 +1068,7 @@ describe('design token definitions', () => {
   });
 
   test('leaves no var() reference without a definition or a fallback', () => {
-    const all_css = [BASE, TOKENS, CSS].join('\n');
+    const all_css = [BASE, TOKENS, CSS, COMPONENTS].join('\n');
     /** @type {Set<string>} */
     const defined = new Set();
     for (const m of all_css.matchAll(/(--[a-z0-9-]+)\s*:/g)) {

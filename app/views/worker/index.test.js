@@ -12407,7 +12407,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     ).map((button) => button.className);
 
     expect(actions.slice(0, 2)).toEqual([
-      'worker-mini__merge',
+      'op-btn worker-mini__merge',
       'op-btn worker-mini__shelve'
     ]);
   });
@@ -17219,7 +17219,7 @@ describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
     expect(
       /** @type {HTMLElement} */ (ops.lastElementChild?.previousElementSibling)
         ?.className
-    ).toBe('worker-search');
+    ).toBe('ui-input worker-search');
   });
 
   test('dims candidate cards the query does not match', () => {

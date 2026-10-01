@@ -70,16 +70,17 @@
   --outline-offset-m: 2px;
   --outline-offset-s: 0px;
 
-  /* Spacing scale (2px baseline) */
+  /* Spacing scale (2px baseline). 같은 값의 tokens.css `--sp-*`에 별칭으로 묶는다
+     (UI-kqta §3.1) — 9·10은 같은 값의 토큰이 없어 지금 값 그대로 둔다. */
   --space-0: 0;
-  --space-1: 2px;
-  --space-2: 4px;
-  --space-3: 6px;
-  --space-4: 8px;
-  --space-5: 10px;
-  --space-6: 12px;
-  --space-7: 14px;
-  --space-8: 16px;
+  --space-1: var(--sp-2);
+  --space-2: var(--sp-4);
+  --space-3: var(--sp-6);
+  --space-4: var(--sp-8);
+  --space-5: var(--sp-10);
+  --space-6: var(--sp-12);
+  --space-7: var(--sp-14);
+  --space-8: var(--sp-16);
   --space-9: 18px;
   --space-10: 20px;
 
@@ -401,6 +402,7 @@ a {
 
 /* 헤더가 뷰포트보다 넓어지면 액션 묶음이 둘째 줄로 내려간다. 그때도 오른쪽
    정렬을 지키도록 auto margin으로 민다. */
+/* @ds-region header:begin */
 .header-actions {
   display: flex;
   flex-wrap: wrap;
@@ -409,12 +411,29 @@ a {
   margin-left: auto;
 }
 
+/* 공용 헤더 버튼(`?`·`⚙`·`New issue`)은 부품 `.op-btn`의 크기를 쓰고, 색은
+   지금의 전역 버튼 팔레트 그대로다 (UI-kqta §3.3). hover도 전역 버튼처럼 색을
+   바꾸지 않는다. */
+.header-actions > .op-btn,
+.header-actions > .op-btn:hover:not(:disabled) {
+  border-color: var(--button-border);
+  background: var(--button-bg);
+  color: var(--button-fg);
+}
+
 /* Provider usage meters: active account windows, in source order. */
 .usage-meter-mount,
 .usage-meter {
   display: inline-flex;
   align-items: center;
 }
+
+/* 미터 칸은 헤더 조작 줄의 높이를 따른다 — 미터가 없는 칸은 좁은 폭에서 빈 줄이
+   되지 않도록 높이를 갖지 않는다. 칸 안의 미터 모양은 UI-k5s2가 옮긴다. */
+.usage-meter-mount:not(:empty) {
+  min-height: var(--h-control);
+}
+/* @ds-region header:end */
 
 .usage-meter {
   gap: var(--sp-12);
@@ -2752,96 +2771,13 @@ html[data-theme='dark'] {
   color: var(--fg);
 }
 
-/* ---------- 조작 형태 토큰 `.op-btn` (UI-6g3t §3.1) ---------- */
-/* 슬롯 표(`2026-08-25-card-header-grammar-unify-design.md` §5.1)가 조작의
-   **자리**를 정하고, 이 토큰이 **모양**을 정한다. 둘을 나눠야 다음에 버튼을 다는
-   사람이 자리도 모양도 고르지 않는다. 토큰이 정하는 것은 크기·테두리 두께·글자
-   크기·hover·disabled뿐이고 색은 변형 클래스나 기존 클래스가 덮어쓰므로, 색
-   의미가 있는 이웃(`.rtile__discard`의 danger, `.worker-mini__merge`의 success)은
-   토큰을 받지 않고 높이만 맞춘다. 적용 대상 표는
-   `2026-09-02-worker-operation-surface-unify-design.md` §3.2가 소유한다. */
-.op-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-3);
-  min-height: 24px;
-  padding: 2px var(--sp-6);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: var(--fs-small);
-  line-height: 1.2;
-  white-space: nowrap;
-  cursor: pointer;
-}
+/* ---------- 조작 형태 토큰 `.op-btn` ---------- */
+/* `.op-btn`과 그 변형은 `app/styles/components.css`가 소유한다 (UI-kqta §3.2,
+   규칙은 `docs/design-system.md`). 슬롯 표(`2026-08-25-card-header-grammar-
+   unify-design.md` §5.1)가 조작의 **자리**를, 부품이 **모양**을 정한다. 이 파일의
+   화면 규칙은 색과 배치만 덧붙인다. */
 
-.op-btn:hover:not(:disabled) {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-.op-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.op-btn--primary {
-  border-color: var(--stage-plan-dim);
-  color: var(--stage-plan-on);
-}
-
-.op-btn--icon {
-  min-width: 24px;
-  padding: 2px;
-  justify-content: center;
-}
-
-/* 자리 조작의 ghost 변형 (UI-0bvr §7.2). 32px 정사각 테두리 안에 작은 글리프만
-   남아 빈 상자로 읽히던 모양에서 **보이는 상자만** 걷는다 — 최소 표적 크기는
-   `.op-btn--icon`과 아래 coarse 블록이 그대로 소유하므로 누를 수 있는 넓이는
-   줄지 않는다. 상자는 hover·focus·active에서만 돌아온다. */
-.op-btn--ghost {
-  border-color: transparent;
-  font-size: var(--fs-body);
-}
-
-.op-btn--ghost:hover:not(:disabled),
-.op-btn--ghost:focus-visible,
-.op-btn--ghost:active:not(:disabled) {
-  border-color: transparent;
-  background: color-mix(in srgb, var(--text-muted) 16%, transparent);
-}
-
-/* 같은 묶음의 이웃 버튼은 **높이만** 맞춘다 (§3.2). 한 묶음 안에서 높이가 갈리면
-   줄이 들쭉날쭉해 어느 것이 버튼인지 다시 읽어야 하고, 반대로 색까지 통일하면
-   `폐기`의 danger 신호가 사라진다 — 그래서 색·테두리·문구는 각자의 규칙이
-   그대로 소유한다. */
-.rtile__hd-actions > button,
-.worker-mini__rowops > button,
-.worker-mini__actions > button,
-.worker-card__foot > button {
-  min-height: 24px;
-}
-
-@media (any-pointer: coarse), (max-width: 640px) {
-  .op-btn {
-    min-height: 32px;
-  }
-
-  .op-btn--icon {
-    min-width: 32px;
-  }
-
-  .rtile__hd-actions > button,
-  .worker-mini__rowops > button,
-  .worker-mini__actions > button,
-  .worker-card__foot > button {
-    min-height: 32px;
-  }
-}
-
+/* @ds-region worker:begin */
 /* ---------- Worker console (queue + running grid + transcript, spec §5) ---------- */
 /* Token-driven (tokens.css): dark default + [data-theme='light'] both supported. */
 .worker-console {
@@ -2870,19 +2806,13 @@ html[data-theme='dark'] {
 }
 
 /* 워커 탭 이슈 검색 (UI-6g3t §7). 조작 묶음 끝에 서지만 버튼이 아니므로
-   `.op-btn` 토큰을 주지 않는다 — 높이만 같은 묶음에 맞춘다. */
+   입력 부품 `.ui-input`이 크기를 정한다 (UI-kqta §3.3) — 여기는 폭만 정한다. */
 .worker-search {
   flex: 0 1 180px;
   min-width: 96px;
-  min-height: 24px;
-  padding: 2px var(--sp-6);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
   background: transparent;
   color: var(--text-primary);
-  font: inherit;
-  font-size: var(--fs-small);
-  line-height: 1.2;
 }
 
 /* 포커스 테두리는 `outline: none`과 겹쳐 있어 이 한 줄이 유일한 포커스 표시다.
@@ -3067,6 +2997,8 @@ html[data-theme='dark'] {
   }
 }
 
+/* @ds-region worker:end */
+
 /* 막힘 요약은 브라우저 최상위 층의 modal `<dialog>`다 (UI-0bvr §8). 종전
    `position: absolute` 팝오버는 모바일 리본의 `overflow-x: auto`가 만든 클리핑
    문맥에 잘렸다 — 최상위 층은 조상의 overflow와 무관하다. */
@@ -3104,6 +3036,7 @@ html[data-theme='dark'] {
   overflow-wrap: anywhere;
 }
 
+/* @ds-region worker:begin */
 .wait-reason--highlight {
   outline: 2px solid var(--accent-warn);
   outline-offset: 2px;
@@ -3131,7 +3064,7 @@ html[data-theme='dark'] {
 }
 
 .worker-kpi__chip {
-  padding: 1px var(--sp-7);
+  padding: var(--sp-1) var(--sp-7);
   border: 1px solid var(--border-chip);
   border-radius: var(--r-10);
   color: var(--text-muted);
@@ -3174,23 +3107,11 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
-/* 툴바 라벨의 줄바꿈 금지는 모든 폭에 적용된다 (UI-0bvr §7.3). `min-width: 1401px`
-   안에만 있던 탓에 좁은 화면에서 `동시 실행`·`직렬 레인`의 입력이 라벨 아래로
-   떨어졌다 — 두 알약은 글자와 입력을 함께 담은 `<label>`이라 한 줄이어야 한다. */
+/* 툴바 라벨의 줄바꿈 금지는 모든 폭에 적용된다 (UI-0bvr §7.3) — 부품
+   `.op-btn`·`.ui-field`가 `nowrap`을 소유한다. `▶ 자동화`의 채운 색과 켜짐 고리는
+   `.op-btn--success`가, 크기는 부품이 정하고 여기는 굵기만 남는다 (UI-kqta §3.3). */
 .worker-play {
-  padding: 3px 12px;
-  border: none;
-  border-radius: var(--r-6);
-  background: var(--accent-success);
-  color: var(--bg-app);
-  font-size: var(--fs-body);
   font-weight: 700;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.worker-play.is-active {
-  box-shadow: var(--ring-selected);
 }
 
 .worker-stat {
@@ -3203,16 +3124,10 @@ html[data-theme='dark'] {
   font-weight: 700;
 }
 
+/* `동시 실행`·`직렬 레인`: 글자와 입력을 한 상자에 담는 `.ui-field`다 (UI-kqta
+   §3.3). 상자·높이는 부품이, 글자색만 여기서 정한다. */
 .worker-tgl {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-4);
-  padding: var(--sp-2) var(--sp-8);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-10);
-  font-size: var(--fs-chip);
   color: var(--chip-neutral);
-  white-space: nowrap;
 }
 
 .worker-tgl b {
@@ -3220,18 +3135,17 @@ html[data-theme='dark'] {
   font-weight: 700;
 }
 
-/* 동시 실행 슬롯 편집 (worker-phase2 §3) */
+/* 동시 실행 슬롯 편집 (worker-phase2 §3). 높이·글자는 `.ui-field` 안 컨트롤
+   규칙이 정한다. */
 .worker-slots__input {
   width: 3.5em;
-  margin-left: var(--sp-4);
-  padding: 1px var(--sp-4);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
   background: var(--bg-panel);
   color: var(--text-primary);
-  font-size: var(--fs-chip);
   font-variant-numeric: tabular-nums;
 }
+
+/* @ds-region worker:end */
 
 .worker-repo-ops__vd,
 .settings-dialog__sp {
@@ -3691,27 +3605,27 @@ html[data-theme='dark'] {
   font-size: var(--fs-caption);
 }
 
+/* @ds-region worker:begin */
 /* ==== 저장소 작업 상태 스트립 (UI-q0uy §4.1) ====
    기존 `<details>` 패널은 실패 1건에 전체를 강제로 펼쳐 화면을 덮었다. 접힌
    상태에서 사실을 다 말하는 한 줄 버튼으로 바꾸고, 부르는 일은 배지에 맡긴다. */
+/* 한 줄 버튼이라 크기는 `.op-btn`이 정한다 (UI-kqta §3.3). 사실 조각은 좁은 폭에서
+   줄을 넘겨야 하므로 부품의 `nowrap`을 푼다. */
 .worker-repo-strip {
   display: flex;
   align-items: center;
   gap: var(--sp-10);
   width: 100%;
-  padding: var(--sp-6) var(--sp-10);
   border: 1px solid var(--border-panel);
-  border-radius: var(--r-8);
   background: var(--bg-panel);
   color: var(--text-primary);
-  font: inherit;
-  font-size: var(--fs-body-sm);
   text-align: left;
-  cursor: pointer;
+  white-space: normal;
 }
 
-.worker-repo-strip:hover {
+.worker-repo-strip:hover:not(:disabled) {
   border-color: var(--border-chip);
+  color: var(--text-primary);
 }
 
 .worker-repo-strip__cue {
@@ -3752,9 +3666,6 @@ html[data-theme='dark'] {
 }
 
 .worker-repo-strip__badge {
-  padding: 1px var(--sp-8);
-  border-radius: 999px;
-  font-size: var(--fs-chip);
   font-weight: 600;
 }
 
@@ -3772,6 +3683,8 @@ html[data-theme='dark'] {
 .worker-repo-strip__badge--quiet {
   color: var(--text-dim);
 }
+
+/* @ds-region worker:end */
 
 /* ==== 저장소 작업 타임라인 드로어 (UI-q0uy §4.2) ==== */
 .worker-repo-drawer {
@@ -4245,11 +4158,12 @@ html[data-theme='dark'] {
   color: var(--text-muted);
 }
 
+/* @ds-region worker:begin */
 .worker-rungrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
   gap: var(--sp-3);
-  min-height: 60px;
+  min-height: calc(var(--sp-12) * 5);
   max-height: min(46vh, 100%);
   margin-bottom: var(--sp-10);
   overflow-y: auto;
@@ -4283,7 +4197,7 @@ html[data-theme='dark'] {
 
 .rtile__hd {
   display: flex;
-  min-height: 28px;
+  min-height: calc(var(--h-control) + var(--sp-4));
   align-items: center;
   gap: var(--sp-2);
   min-width: 0;
@@ -4291,7 +4205,7 @@ html[data-theme='dark'] {
 
 .rtile__dot {
   width: 7px;
-  height: 7px;
+  height: var(--sp-7);
   border-radius: 50%;
   background: var(--accent-success);
   box-shadow: var(--glow-dot);
@@ -4333,26 +4247,24 @@ html[data-theme='dark'] {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
+  white-space: nowrap;
+}
+
+/* 타일 머리의 `▤ 세션`은 `.op-btn` 크기다 (UI-kqta §3.3). 실패 팝오버 안의 같은
+   버튼은 겹친 표면이라 UI-k5s2가 옮길 때까지 지금 크기를 지킨다. */
+.rtile__failure-pop .rtile__session {
+  padding: 0 var(--sp-2);
   font-size: var(--fs-small);
   line-height: 1;
-  padding: 0 2px;
-  white-space: nowrap;
 }
 
 .rtile__session:hover {
   color: var(--accent);
 }
 
+/* `[폐기]`의 danger 색은 `.op-btn--danger`가 소유한다 (UI-kqta §3.2). */
 .rtile__discard {
   flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, var(--accent-danger) 45%, transparent);
-  border-radius: var(--r-3);
-  background: transparent;
-  color: var(--accent-danger);
-  cursor: pointer;
-  font-size: var(--fs-small);
-  line-height: 1.2;
-  padding: 2px 5px;
 }
 
 .rtile__discard:disabled {
@@ -4367,18 +4279,18 @@ html[data-theme='dark'] {
 .rtile__discard-abandon {
   flex: 0 0 auto;
   border: 1px solid var(--border-card);
-  border-radius: var(--r-3);
   background: transparent;
   color: var(--text-secondary);
-  cursor: pointer;
-  font-size: var(--fs-small);
-  line-height: 1.2;
-  padding: 2px 5px;
 }
 
 .rtile__resolve:hover:not(:disabled),
 .rtile__discard-abandon:hover:not(:disabled) {
   color: var(--text-primary);
+}
+
+/* `[폐기 포기]`는 부품을 받기 전부터 hover에 테두리를 바꾸지 않았다. */
+.rtile__discard-abandon:hover:not(:disabled) {
+  border-color: var(--border-card);
 }
 
 .rtile__resolve:disabled,
@@ -4417,10 +4329,6 @@ html[data-theme='dark'] {
   border: none;
   background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
-  font-size: var(--fs-small);
-  line-height: 1;
-  padding: 0 2px;
 }
 
 .rtile__resume {
@@ -4465,7 +4373,7 @@ html[data-theme='dark'] {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: 1px var(--sp-4);
+  padding: var(--sp-1) var(--sp-4);
   border: 1px solid color-mix(in srgb, var(--accent-danger) 45%, transparent);
   border-radius: var(--r-3);
   background: color-mix(in srgb, var(--accent-danger) 8%, transparent);
@@ -4507,7 +4415,7 @@ html[data-theme='dark'] {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding: 1px var(--sp-4);
+  padding: var(--sp-1) var(--sp-4);
   border: 1px solid var(--border-chip);
   border-radius: var(--r-3);
   background: transparent;
@@ -4589,13 +4497,9 @@ html[data-theme='dark'] {
 
 .rtile__resume-alternate {
   flex: 0 0 auto;
-  padding: var(--sp-2) var(--sp-5);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-3);
   background: transparent;
   color: var(--text-secondary);
-  font-size: var(--fs-small);
-  cursor: pointer;
 }
 
 .rtile__resume-alternate:hover {
@@ -4767,11 +4671,10 @@ html[data-theme='dark'] {
   flex-wrap: wrap;
 }
 
+/* 크기·모서리는 칩 부품 `.ui-chip`이 정한다 (UI-kqta §3.3). */
 :is(.worker-card__head, .worker-mini__head, .worker-mini__row1, .rtile__hd)
   > .ctl-chip {
   min-width: 0;
-  font-size: var(--fs-chip);
-  border-radius: var(--r-3);
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -4801,17 +4704,11 @@ html[data-theme='dark'] {
   font-size: var(--fs-small);
 }
 
+/* 칩(`.ctl-chip`·`.worker-dep`)은 `.ui-chip`이 크기를 정하고 (UI-kqta §3.3),
+   칩이 아닌 사실 표기만 줄의 글자 크기를 여기서 맞춘다. */
 :is(.worker-card, .worker-mini, .rtile)
   :is(.worker-chips, .worker-deps, .rtile__meta)
-  :is(
-    .ctl-chip,
-    .worker-dep,
-    .exec-chip,
-    .worker-usage,
-    .worker-card__repo,
-    .worker-mini__repo,
-    .ctl-chip--lane
-  ) {
+  :is(.exec-chip, .worker-usage, .worker-card__repo, .worker-mini__repo) {
   font-size: var(--fs-chip);
   border-radius: var(--r-4);
 }
@@ -4844,7 +4741,7 @@ html[data-theme='dark'] {
 /* 살아있음만 말하는 비의미적 액센트 (UI-58y2): 진행률이 아니므로 폭이 변하지
    않는다 — 스냅샷에 페이즈·퍼센트가 없는 이상 진행 바는 거짓말이 된다. */
 .rtile__accent {
-  height: 2px;
+  height: var(--sp-2);
   margin: var(--sp-2) calc(-1 * var(--sp-4)) calc(-1 * var(--sp-3));
   border-radius: 0 0 var(--r-7) var(--r-7);
   background: linear-gradient(
@@ -4873,6 +4770,8 @@ html[data-theme='dark'] {
     opacity: 0.5;
   }
 }
+
+/* @ds-region worker:end */
 
 /* ---------- Transcript drawer (session viewer, spec §5.6) ---------- */
 .worker-drawer-host:empty {
@@ -5878,6 +5777,7 @@ html[data-theme='dark'] {
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
 }
 
+/* @ds-region worker:begin */
 /* ---------- Worker lanes ---------- */
 /* lit-html render host between .worker-console and .worker-lanes: must forward
    the flex chain (flex + min-height:0) or the lane bodies lose their height
@@ -5968,7 +5868,7 @@ html[data-theme='dark'] {
 .worker-pane__dot {
   flex: 0 0 auto;
   width: 6px;
-  height: 6px;
+  height: var(--sp-6);
   border-radius: 50%;
   background: var(--text-dim);
 }
@@ -6066,23 +5966,34 @@ html[data-theme='dark'] {
    토글이 된 같은 레인이므로 `data-lane`이 살아 있고 드롭 타깃도 유지된다. */
 /* 토글은 헤더 전체가 아니라 헤더 안의 버튼 하나다 (UI-5ksp §4.4) — 그래야
    `header_control`(정렬 select·범위 선택)이 형제로 서고, 그 조작이 접힘을
-   건드리지 않는다. 버튼 크롬만 지우고 타이포는 부모 `.worker-pane__hd`에서
-   물려받는다. */
+   건드리지 않는다. 버튼 크롬만 지우고 글자색·대소문자는 부모
+   `.worker-pane__hd`에서 물려받는다. */
 .worker-pane__toggle {
   display: flex;
   flex: 1 1 auto;
   align-items: center;
   gap: var(--sp-6);
   min-width: 0;
-  padding: 0;
   border: none;
   background: transparent;
   color: inherit;
-  font: inherit;
   letter-spacing: inherit;
   text-align: left;
   text-transform: inherit;
   cursor: pointer;
+}
+
+/* 크기(여백·글자)는 부품이 없는 Monitor 레인 머리만 머리줄에서 물려받는다.
+   Worker 탭의 토글은 `.op-btn`의 여백·글자 크기를 받는다 (UI-kqta §3.3). */
+.worker-pane__toggle:not(.op-btn) {
+  padding: 0;
+  font: inherit;
+}
+
+/* Worker 탭의 토글은 `.op-btn` 크기를 받지만 (UI-kqta §3.3) 글자색은 머리줄을
+   그대로 물려받으므로 hover에서도 머리줄 색이다. */
+.worker-pane__toggle:hover:not(:disabled) {
+  color: inherit;
 }
 
 .worker-pane--collapsed {
@@ -6263,11 +6174,16 @@ html[data-theme='dark'] {
   border: none;
   background: transparent;
   color: var(--text-muted);
-  font: inherit;
   cursor: pointer;
 }
 
-.worker-wait__area-toggle:hover {
+/* 글자는 부품이 없는 Monitor 영역 토글만 머리줄에서 물려받는다. Worker 탭의
+   토글은 `.op-btn--icon`의 글자 크기를 받는다 (UI-kqta §3.3). */
+.worker-wait__area-toggle:not(.op-btn) {
+  font: inherit;
+}
+
+.worker-wait__area-toggle:hover:not(:disabled) {
   color: var(--text-primary);
 }
 
@@ -6405,7 +6321,7 @@ html[data-theme='dark'] {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2);
-  min-height: 28px;
+  min-height: calc(var(--h-control) + var(--sp-4));
   min-width: 0;
 }
 
@@ -6456,12 +6372,19 @@ html[data-theme='dark'] {
   margin-top: var(--sp-2);
 }
 
+/* Monitor 후보 필터도 이 클래스를 쓴다 — 크기는 그쪽을 위해 남기고, Worker 탭의
+   토글만 `.ui-field` 상자 크기를 받는다 (UI-kqta §3.3). */
 .worker-filter__tgl {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-4);
   color: var(--text-muted);
   cursor: pointer;
+}
+
+/* 상자 테두리는 그리지 않는다 — 필터 줄의 다른 조작과 높이만 맞춘다. */
+.ui-field.worker-filter__tgl {
+  border-color: transparent;
 }
 
 .worker-filter__readiness {
@@ -6481,8 +6404,10 @@ html[data-theme='dark'] {
   gap: var(--sp-4);
 }
 
+/* Monitor 후보 필터와 같이 쓰는 칩이다. Worker 탭 칩은 `.ui-chip`이 크기를
+   덮는다 (UI-kqta §3.3). */
 .worker-filter__chip {
-  padding: 1px var(--sp-5);
+  padding: var(--sp-1) var(--sp-5);
   border: 1px solid var(--border-chip);
   border-radius: var(--r-6);
   background: transparent;
@@ -6498,6 +6423,20 @@ html[data-theme='dark'] {
 
 .worker-filter__hidden {
   color: var(--text-dim);
+}
+
+/* 칩이 부품 크기(`.ui-chip`)로 자란 Worker 후보 필터는 다섯 레인이 다 펼쳐진 좁은
+   레인에서 묶음 안에서도 줄을 넘긴다 (UI-kqta §3.5 탐침) — 레인 밖으로 나가지 않는다.
+   Monitor 후보 필터는 UI-k5s2가 옮길 때까지 지금 배치다. */
+#worker-pane-candidate
+  :is(
+    .worker-filter__readiness,
+    .worker-filter__routes,
+    .worker-filter__priorities
+  ) {
+  flex-wrap: wrap;
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* 우선순위 묶음 (UI-p7s2 §6): route 묶음과 같은 치수다 — 세 묶음이 같은
@@ -6617,7 +6556,7 @@ html[data-theme='dark'] {
    후보 카드 머리줄과 같은 기준 상자다. */
 .worker-mini__head {
   position: relative;
-  min-height: 28px;
+  min-height: calc(var(--h-control) + var(--sp-4));
 }
 
 /* 좁은 컬럼 방어 (UI-yp64 §3): foot만 접어서는 단일 자식인 actions span 안의
@@ -6787,7 +6726,7 @@ html[data-theme='dark'] {
   position: absolute;
   bottom: 0;
   left: 0;
-  height: 1px;
+  height: var(--sp-1);
   width: var(--progress, 0%);
   background: var(--accent-success);
   opacity: 0.8;
@@ -6840,7 +6779,7 @@ html[data-theme='dark'] {
 
 .act-dot {
   width: 4px;
-  height: 4px;
+  height: var(--sp-4);
   border-radius: 50%;
   background: currentColor;
   animation: act-breathe 1.9s ease-in-out infinite;
@@ -6902,22 +6841,21 @@ html[data-theme='dark'] {
   min-width: 0;
 }
 
+/* 크기는 `.ui-select`·`.op-btn--icon`이 정한다 (UI-kqta §3.3). */
 .worker-sort-chain__key,
 .worker-sort-chain__dir {
-  padding: 0 var(--sp-4);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: var(--fs-chip);
   letter-spacing: normal;
   text-transform: none;
   cursor: pointer;
 }
 
-.worker-sort-chain__key:hover,
-.worker-sort-chain__dir:hover {
+.worker-sort-chain__key:hover:not(:disabled),
+.worker-sort-chain__dir:hover:not(:disabled) {
+  border-color: var(--border-chip);
   color: var(--text-primary);
 }
 
@@ -6939,15 +6877,11 @@ html[data-theme='dark'] {
 /* [머지] — the ONE action-class button in this lane (worker-phase2 §6). It is
    the only affordance here that changes the world, so it is the only one drawn
    as a solid action. */
-.worker-mini__merge {
-  padding: 1px var(--sp-6);
+.worker-mini__merge,
+.worker-mini__merge:hover:not(:disabled) {
   border: 1px solid var(--border-tile-run);
-  border-radius: var(--r-6);
   background: var(--bg-tile-run);
   color: var(--accent-success);
-  font-size: var(--fs-chip);
-  white-space: nowrap;
-  cursor: pointer;
 }
 
 .worker-mini__merge:disabled {
@@ -6962,17 +6896,13 @@ html[data-theme='dark'] {
    같은 무게로 그리지 않는다. [폐기]와 달리 파괴적이지 않으므로 경고색도 쓰지
    않는다 (UI-5v7d §4). */
 .worker-mini__merge-cancel {
-  padding: 1px var(--sp-6);
   border: 1px solid var(--border-card);
-  border-radius: var(--r-6);
   background: transparent;
   color: var(--text-secondary);
-  font-size: var(--fs-chip);
-  white-space: nowrap;
-  cursor: pointer;
 }
 
 .worker-mini__merge-cancel:hover:not(:disabled) {
+  border-color: var(--border-card);
   color: var(--text-primary);
 }
 
@@ -6984,19 +6914,19 @@ html[data-theme='dark'] {
 /* [세션에서 해결]·[폐기 포기] — 둘 다 액션 foot의 조용한 보조 출구다. */
 .worker-mini__resolve,
 .worker-mini__discard-abandon {
-  padding: 1px var(--sp-6);
   border: 1px solid var(--border-card);
-  border-radius: var(--r-6);
   background: transparent;
   color: var(--text-secondary);
-  font-size: var(--fs-chip);
-  white-space: nowrap;
-  cursor: pointer;
 }
 
 .worker-mini__resolve:hover:not(:disabled),
 .worker-mini__discard-abandon:hover:not(:disabled) {
   color: var(--text-primary);
+}
+
+/* `[폐기 포기]`는 부품을 받기 전부터 hover에 테두리를 바꾸지 않았다. */
+.worker-mini__discard-abandon:hover:not(:disabled) {
+  border-color: var(--border-card);
 }
 
 .worker-mini__resolve:disabled,
@@ -7006,19 +6936,18 @@ html[data-theme='dark'] {
 }
 
 /* 툴바 [자동 머지] / [자동 머지 중단] (UI-5v7d §4). 한 자리에서 상태만
-   바뀌는 단일 버튼이라 [자동 진행] 바로 옆에 고정되어야 오조작이 없다. */
-.worker-merge-all {
-  padding: 1px var(--sp-6);
-  border: 1px solid var(--border-tile-run);
-  border-radius: var(--r-6);
+   바뀌는 단일 버튼이라 [자동 진행] 바로 옆에 고정되어야 오조작이 없다. 크기는
+   `.op-btn`이 정한다 (UI-kqta §3.3). 켜진 쪽은 `.op-btn--warn`과 같은 색인데,
+   바로 위 규칙이 변형보다 구체적이라 여기서 다시 적는다. */
+.worker-merge-all,
+.worker-merge-all:hover:not(:disabled) {
+  border-color: var(--border-tile-run);
   background: var(--bg-tile-run);
   color: var(--accent-success);
-  font-size: var(--fs-chip);
-  white-space: nowrap;
-  cursor: pointer;
 }
 
-.worker-merge-all--stop {
+.worker-merge-all--stop,
+.worker-merge-all--stop:hover:not(:disabled) {
   border-color: var(--accent-warn);
   background: transparent;
   color: var(--accent-warn);
@@ -7027,18 +6956,19 @@ html[data-theme='dark'] {
 /* [폐기] — deliberately SUBORDINATE: a misclick here throws a PR away, so it
    is drawn as quiet text rather than a peer of [머지] (§6). */
 .worker-mini__discard {
-  padding: 1px var(--sp-5);
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  font-size: var(--fs-chip);
-  white-space: nowrap;
   text-decoration: underline;
-  cursor: pointer;
 }
 
-.worker-mini__discard:hover {
+.worker-mini__discard:hover:not(:disabled) {
   color: var(--accent-warn);
+}
+
+/* 부품의 disabled 흐림(0.45)보다 옅게 남던 전역 버튼 값을 지킨다. */
+.worker-mini__discard:disabled {
+  opacity: 0.6;
 }
 
 /* REVISE 파킹 처분 (UI-hs11 §3.5). 대기 레인 행에 붙는 두 버튼이라 한 줄
@@ -7047,14 +6977,9 @@ html[data-theme='dark'] {
    선택지다. */
 .worker-mini__revise-fix,
 .worker-mini__revise-approve {
-  padding: 1px var(--sp-6);
   border: 1px solid var(--border-card);
-  border-radius: var(--r-6);
   background: transparent;
   color: var(--text-primary);
-  font-size: var(--fs-chip);
-  white-space: nowrap;
-  cursor: pointer;
 }
 
 .worker-mini__revise-fix:hover:not(:disabled),
@@ -7087,7 +7012,7 @@ html[data-theme='dark'] {
 .worker-card__head {
   position: relative;
   display: flex;
-  min-height: 28px;
+  min-height: calc(var(--h-control) + var(--sp-4));
   align-items: center;
   gap: var(--sp-2);
   min-width: 0;
@@ -7328,6 +7253,8 @@ html[data-theme='dark'] {
   align-self: flex-end;
 }
 
+/* @ds-region worker:end */
+
 /* 이슈 상세 상단 바의 `[↴ 대기로]` (UI-6g3t §6.2). 바는 카드 1번 줄과 같은 문법
    (왼쪽 정체성 · 오른쪽 조작)이라 auto margin이 ID와 조작 묶음을 가른다 — 닫기
    `✕`는 그대로 오른쪽 끝이다. 모양은 `.op-btn`이 정하므로 여기는 자리만 정한다. */
@@ -7396,13 +7323,14 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
+/* @ds-region worker:begin */
 /* 레포 뱃지 (Worker 템플릿 안, 값이 있을 때만): 전체 레포를 한 화면에 섞는
    순간 레포는 부가 정보가 아니라 좌표다. */
 .worker-mini__repo,
 .worker-card__repo {
   flex: 0 0 auto;
   max-width: 12ch;
-  padding: 1px var(--sp-5);
+  padding: var(--sp-1) var(--sp-5);
   border: 1px solid var(--border-chip);
   border-radius: var(--r-5);
   color: var(--text-muted);
@@ -7430,6 +7358,8 @@ html[data-theme='dark'] {
 .rtile--sel:hover {
   border-color: var(--stage-merge-on);
 }
+
+/* @ds-region worker:end */
 
 /* --- 모니터 세로 5레인 (UI-eey2 §3) --------------------------------------
    Worker 탭과 **같은** `.worker-lanes` flex다. 3열 grid·가로 스와이프 칸반은
@@ -7813,6 +7743,7 @@ html[data-theme='dark'] {
     0 0 0 1px var(--accent-success);
 }
 
+/* @ds-region worker:begin */
 /* 대기 행 조작 묶음 (UI-5ksp §4.6). 행 밖 별도 줄이던 Monitor 조작 묶음을 행
    1번 줄 조작 슬롯으로 옮긴 것이라, 아래 줄을 위한 세로 여백은 없다. */
 .worker-mini__rowops {
@@ -7883,12 +7814,14 @@ html[data-theme='dark'] {
 /* 칩은 22글자에서 잘리지 않는다 (UI-pw2g §3.2): 담는 `.worker-deps`가 이미
    `flex-wrap: wrap`이라 칩은 다음 줄로 내려가고, 한 칩이 줄보다 넓으면 그 칩
    안에서 접힌다. 말줄임은 어느 층에도 남기지 않는다. */
+/* 도움말 범례도 이 칩을 그리므로 크기는 그쪽을 위해 남긴다 — 카드의 칩은
+   `.ui-chip`이 크기를 덮는다 (UI-kqta §3.3). */
 .worker-dep {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
   max-width: 100%;
-  padding: 1px var(--sp-5);
+  padding: var(--sp-1) var(--sp-5);
   border: 1px solid var(--border-chip);
   border-radius: var(--r-5);
   font-size: var(--fs-caption);
@@ -7902,7 +7835,6 @@ html[data-theme='dark'] {
   background: transparent;
   color: inherit;
   font: inherit;
-  font-size: var(--fs-caption);
   cursor: pointer;
 }
 
@@ -8108,11 +8040,8 @@ html[data-theme='dark'] {
 }
 
 .ctl-chip--lane {
-  padding: 0 var(--sp-4);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
   color: var(--text-muted);
-  font-size: var(--fs-chip);
 }
 
 /* route 칩 일관 표시 (UI-yrzu §7.3). 전역 `.ctl-chip--route`(styles/base.css)를
@@ -8122,7 +8051,6 @@ html[data-theme='dark'] {
 .rtile .ctl-chip--route {
   flex: 0 0 auto;
   margin: 0;
-  line-height: 1.35;
 }
 
 /* 작업 종류(route) 카드 배경 (UI-kyky §3.1). 배경 클래스는 렌더러가 중립 상태로
@@ -8160,7 +8088,6 @@ html[data-theme='dark'] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  line-height: 1.35;
 }
 
 /* 세션이 잡은 이슈의 타일 (UI-yrzu §6): 좌측 액센트만 route 칩과 같은 중립
@@ -8222,7 +8149,7 @@ html[data-theme='dark'] {
 .rtile__activity-dot {
   flex: 0 0 auto;
   width: 6px;
-  height: 6px;
+  height: var(--sp-6);
   border-radius: 50%;
   background: var(--accent-success);
 }
@@ -8277,6 +8204,8 @@ html[data-theme='dark'] {
   color: var(--text-muted);
   font-size: var(--fs-small);
 }
+
+/* @ds-region worker:end */
 
 /* 모바일 (§3): Worker와 같은 세로 스택. 관제 우선 순서는 이제 DOM이 소유한다
    (UI-5ksp §4.7) — 실행 중·PR 대기가 `지금` 패널로 합쳐지는 것은 restyle이
@@ -8985,6 +8914,7 @@ button.detail-session__leg:focus-visible {
     align-items: stretch;
   }
 
+  /* @ds-region worker:begin */
   /* 내부 스크롤 없음 (§4.7): 문서 스크롤 하나만 남긴다. */
   .worker-rungrid {
     grid-template-columns: 1fr;
@@ -9105,6 +9035,8 @@ button.detail-session__leg:focus-visible {
     overflow: visible;
   }
 
+  /* @ds-region worker:end */
+
   /* 전사 드로어 (UI-2dbn §4.2·§4.3): 1행은 줄바꿈하지 않고 제목이 먼저 줄며, 단계
      칩은 12자까지 남는다. 도구 줄은 결과 요약만 둘째 줄로 내려간다. */
   .sv__id {
@@ -9202,6 +9134,7 @@ button.detail-session__leg:focus-visible {
     box-shadow: none;
   }
 
+  /* @ds-region worker:begin */
   /* 저장소 작업 스트립 (UI-q0uy §4.1): 한 줄로 사실을 다 말하는 계약은 데스크톱
      폭에서만 성립한다. 폰에서는 ▸·이름·배지가 첫 줄에 남고 배포 사실이 둘째 줄로
      흐른다 — 부르는 쪽인 배지는 밀려나면 안 되고, 사실은 잘리느니 줄을 하나 더
@@ -9210,7 +9143,6 @@ button.detail-session__leg:focus-visible {
   .worker-repo-strip {
     flex-wrap: wrap;
     row-gap: var(--sp-4);
-    padding: var(--sp-8) var(--sp-10);
   }
 
   .worker-repo-strip__spacer {
@@ -9230,6 +9162,8 @@ button.detail-session__leg:focus-visible {
     row-gap: 2px;
     padding-left: calc(var(--sp-10) + var(--sp-10));
   }
+
+  /* @ds-region worker:end */
 
   /* 타임라인 드로어는 전사 드로어와 같은 전체 화면 셸을 쓰므로 `.sv`와 같은
      모서리를 갖는다 (UI-2dbn §4.1). */

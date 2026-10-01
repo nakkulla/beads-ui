@@ -151,6 +151,20 @@
   --fs-title: 16px;
   --fs-title-lg: 17px;
 
+  /* --- control size scale (UI-kqta §3.1, docs/design-system.md) --- */
+  /* 조작 부품(`app/styles/components.css`)이 읽는 크기 단계. 색은 위 역할
+     토큰이 그대로 소유하고, 여기는 높이·글자·모서리·여백만 정한다. coarse 값은
+     `(any-pointer: coarse), (max-width: 640px)` 분기에서 부품이 바꿔 읽는다. */
+  --h-control: 24px;
+  --h-control-coarse: 32px;
+  --h-chip: 18px;
+  --h-chip-coarse: 22px;
+  --fs-control: var(--fs-small);
+  --r-control: var(--r-5);
+  --r-chip: var(--r-9);
+  --px-control: 10px;
+  --gap-control: var(--sp-6);
+
   /* --- glows / accent shadows (flat design; no elevation shadows) --- */
   --glow-current: 0 0 8px currentColor;
   --glow-dot: 0 0 6px #5ad198;

@@ -184,7 +184,7 @@ describe('interactive session badges', () => {
         expect(link?.getAttribute('target')).toBe('_blank');
         expect(link?.getAttribute('rel')).toBe('noopener');
         expect(link?.previousElementSibling?.className).toBe(
-          'interactive-session-badge'
+          'ui-chip interactive-session-badge'
         );
       }
     }
@@ -3685,8 +3685,8 @@ describe('카드 배치 문법 (UI-251y §2)', () => {
     );
 
     expect(markersOf(chips)).toEqual([
-      'ctl-chip ctl-chip--route',
-      'ctl-chip ctl-chip--from'
+      'ui-chip ctl-chip ctl-chip--route',
+      'ui-chip ctl-chip ctl-chip--from'
     ]);
     expect(
       markersOf(
@@ -3780,8 +3780,8 @@ describe('카드 배치 문법 (UI-251y §2)', () => {
     );
 
     expect(markersOf(chips)).toEqual([
-      'ctl-chip ctl-chip--route',
-      'ctl-chip ctl-chip--from'
+      'ui-chip ctl-chip ctl-chip--route',
+      'ui-chip ctl-chip ctl-chip--from'
     ]);
     expect(
       markersOf(
@@ -5375,7 +5375,13 @@ describe('슬롯 4 두 줄 (UI-8x90 §4.1)', () => {
    * @returns {string[]}
    */
   function kindsOf(line) {
-    return Array.from(line.children, (chip) => chip.className.split(' ')[1]);
+    return Array.from(
+      line.children,
+      (chip) =>
+        chip.className
+          .split(' ')
+          .find((cls) => cls.startsWith('worker-dep--')) || ''
+    );
   }
 
   test('splits the slot into an 의존 line and an 정보 line', () => {
@@ -7539,7 +7545,7 @@ describe('waiting row gate chip and operations (UI-01wh §3.2·§3.3)', () => {
     );
 
     expect([first.className, first.getAttribute('data-chip-key')]).toEqual([
-      'worker-dep worker-dep--gate worker-dep--gate-provider_outage judgement-chip',
+      'ui-chip worker-dep worker-dep--gate worker-dep--gate-provider_outage judgement-chip',
       'gate'
     ]);
   });

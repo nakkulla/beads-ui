@@ -921,7 +921,7 @@ describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', 
     expect(tile).not.toContain('rtile__legs');
     expect(tile).not.toContain('stepper');
     expect(tile).toMatchInlineSnapshot(
-      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span>  <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions">  <span class="rtile__elapsed" data-ts-fmt="clock" data-ts="1000">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button> <button aria-label="Worker에서 내리기 — 작업은 보존" class="op-btn op-btn--icon op-btn--ghost rtile__withdraw" title="Worker에서 내리기 — 작업은 보존" type="button"> ✕ </button> </div> </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div>  </div>"`
+      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span>  <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions">  <span class="rtile__elapsed" data-ts-fmt="clock" data-ts="1000">4s</span> <button aria-label="라이브 세션 열기" class="op-btn rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="op-btn rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button> <button aria-label="Worker에서 내리기 — 작업은 보존" class="op-btn op-btn--icon op-btn--ghost rtile__withdraw" title="Worker에서 내리기 — 작업은 보존" type="button"> ✕ </button> </div> </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div>  </div>"`
     );
   });
 
@@ -1475,8 +1475,8 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
         (child) => child.className
       )
     ).toEqual([
-      'ctl-chip ctl-chip--lane',
-      'ctl-chip ctl-chip--route',
+      'ui-chip ctl-chip ctl-chip--lane',
+      'ui-chip ctl-chip ctl-chip--route',
       'exec-chip exec-chip--orch',
       'exec-chip exec-chip--worker',
       'worker-usage'
@@ -1818,7 +1818,7 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
     );
     const order = Array.from(actions.children).map((el) => el.className);
 
-    expect(order).toEqual(['rtile__elapsed', 'rtile__session']);
+    expect(order).toEqual(['rtile__elapsed', 'op-btn rtile__session']);
     expect(
       tile.querySelectorAll('.rtile__hd > .rtile__session-badge')
     ).toHaveLength(1);
@@ -1876,8 +1876,8 @@ describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
     expect(tile.querySelector('.ctl-chip--sref')?.textContent?.trim()).toBe(
       'claude · a1b2c3d4'
     );
-    expect(chips.indexOf('ctl-chip ctl-chip--sref')).toBeLessThan(
-      chips.indexOf('ctl-chip ctl-chip--exec-receipt')
+    expect(chips.indexOf('ui-chip ctl-chip ctl-chip--sref')).toBeLessThan(
+      chips.indexOf('ui-chip ctl-chip ctl-chip--exec-receipt')
     );
   });
 
@@ -3860,7 +3860,8 @@ describe('실행 타일 조작 형태 (UI-6g3t §3.2·§3.3)', () => {
     expect(resume.classList.contains('op-btn')).toBe(true);
   });
 
-  test('leaves the ⏸ neighbour icon-only', () => {
+  // 이웃 조작도 이제 같은 부품이다 (UI-kqta §3.3): 높이만 맞추던 예외가 사라졌다.
+  test('draws the ⏸ neighbour as an icon-only operation part', () => {
     const tile = tileEl({});
 
     const pause = /** @type {HTMLElement} */ (
@@ -3868,7 +3869,7 @@ describe('실행 타일 조작 형태 (UI-6g3t §3.2·§3.3)', () => {
     );
 
     expect(pause.textContent?.trim()).toBe('⏸');
-    expect(pause.classList.contains('op-btn')).toBe(false);
+    expect(pause.classList.contains('op-btn')).toBe(true);
   });
 });
 describe('지시 재시작 조작 (UI-qce9 §3.1)', () => {
@@ -4062,8 +4063,8 @@ describe('worker running tile — [폐기 포기] (discard-abandon §3.1)', () =
     ).map((el) => el.className);
 
     expect(order).toEqual([
-      'rtile__discard',
-      'rtile__discard-abandon',
+      'op-btn op-btn--danger rtile__discard',
+      'op-btn rtile__discard-abandon',
       'op-btn rtile__resolve'
     ]);
   });
