@@ -52,6 +52,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   isImplementationAttempt,
+  isWithdrawnAttempt,
   latestImplementationAttempts
 } from '../../app/utils/active-attempts.js';
 import { laneMismatchOf, laneOfRoute } from '../../app/utils/quickfix-lane.js';
@@ -82,6 +83,11 @@ import {
   prepareCodexGuardHome
 } from './codex-account-home.js';
 import { observeCodexEffort as defaultObserveCodexEffort } from './codex-effort-observer.js';
+import {
+  autoResumeRetryDelayMs,
+  continuationRefusalClass,
+  isRetryableRefusal
+} from './continuation-refusal.js';
 import * as default_delegation_monitor from './delegation-monitor.js';
 import { discardOperationActive } from './discard-phase.js';
 import { errorDetail } from './error-detail.js';
@@ -680,7 +686,12 @@ export function withQuickFixSelfReview(base_prompt, block) {
  * @property {Pick<typeof default_work_recovery_policy, 'workRecoveryReady'|'workRecoveryClassification'|'workRecoveryReadinessEnv'|'recoveryResultLineReasons'>} [workRecoveryPolicy]
  * @property {any} store - Queue store (queue-store.js).
  * @property {ReturnType<typeof import('./tmux-launcher.js').createTmuxLauncher>} [interactiveLauncher]
- * @property {Pick<ReturnType<typeof import('./external-wait/store.js').createExternalWaitStore>, 'findByBead'|'get'|'update'|'list'> & {onCompletion?:import('./external-wait/observer.js').RecordCallback}} [externalWait]
+ * @property {Pick<ReturnType<typeof import('./external-wait/store.js').createExternalWaitStore>, 'findByBead'|'get'|'update'|'list'> & {onCompletion?:import('./external-wait/observer.js').RecordCallback, stop?:(workspace: string, wait_id: string, bead_id?: string) => Promise<{ ok?: boolean, status?: number, error?: string }|Record<string, unknown>>}} [externalWait]
+ * `stop` is the service's [관찰 중단]: it ends observation AND unsets the
+ * bead's `external_wait` key; given the `bead_id` it also clears a key whose
+ * wait record is gone. The ✕ withdrawal of an external-job attempt runs it
+ * first (2026-10-01 stall-reconcile D7); absent wiring withdraws such an
+ * attempt only when no live wait record names it.
  * @property {ReturnType<typeof import('./exec-preset-coordinator.js').createExecPresetCoordinator>} execPresetCoordinator
  * The sole authority for workspace preset resolution. It snapshots the selected
  * preset before launch state changes, so the scheduler never reads mutable
@@ -1336,6 +1347,9 @@ export function interactiveTurnState(running, attention) {
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   stopReviewSessionProcess: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string, options?: { require_durable?: boolean }) => Promise<{ ok: boolean, reason?: string }>,
+ *   withdraw: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string, already_settled?: boolean }>,
+ *   retryNow: (workspace: string, bead_id: string) => Promise<{ ok: boolean, reason?: string }>,
+ *   sweepStalledContinuations: (workspace: string) => { rearmed: string[], restored: string[] },
  *   resumeExternalWait: (workspace: string, wait_id: string, options: { mode: 'fork'|'fresh'|'session' }) => Promise<{ ok: true, attempt_id: string }|import('./external-wait/session-resume.js').SessionResumeResult|{ ok: false, reason: string }>,
  *   settleExternalWaitReservations: (workspace: string) => Promise<void>,
  *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string } }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, fallback?: string|null }>,
@@ -1641,6 +1655,15 @@ export function createScheduler(deps) {
    * @type {Set<string>}
    */
   const dispatch_refused = new Set();
+  /**
+   * The skip reason recorded for a bead while a due retry dispatches it, so
+   * the retry can tell WHY nothing launched (2026-10-01 stall-reconcile D3)
+   * without re-reading a badge an unchanged record leaves untouched. Only the
+   * beads {@link dispatchForRetry} is watching have an entry.
+   *
+   * @type {Map<string, string|null>}
+   */
+  const retry_skip_watch = new Map();
   /**
    * Waiting entries the current drain refused for their queue grace (§3.3),
    * keyed to the moment that grace ends. A grace can elapse while the drain is
@@ -2809,6 +2832,18 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Hand a skip reason to the due retry watching this bead, if one is.
+   *
+   * @param {string} bead_id
+   * @param {string} reason
+   */
+  function noteRetrySkip(bead_id, reason) {
+    if (retry_skip_watch.has(bead_id)) {
+      retry_skip_watch.set(bead_id, reason);
+    }
+  }
+
+  /**
    * Record why a bead was skipped and fan out ONLY when the store applied the
    * record. The store no-ops an unchanged reason, so a bead parked at the same
    * reason cannot bump the revision on every tick.
@@ -2821,6 +2856,7 @@ export function createScheduler(deps) {
   function recordSkipReason(workspace, bead_id, reason, extra) {
     const blockers = extra?.blockers;
     const gate = extra?.gate;
+    noteRetrySkip(bead_id, reason);
     const result = deps.store.recordAdmission(workspace, {
       bead_id,
       reason,
@@ -4419,7 +4455,9 @@ export function createScheduler(deps) {
       }
       if (
         a.status === 'paused' &&
-        (options.leaf_paused === false || resumed_from.has(a.attempt_id))
+        (options.leaf_paused === false ||
+          resumed_from.has(a.attempt_id) ||
+          isWithdrawnAttempt(a))
       ) {
         continue;
       }
@@ -4580,6 +4618,11 @@ export function createScheduler(deps) {
         moved =
           deps.store.dropClosedMergeShelves(workspace, statuses).ok || moved;
       }
+      // `statuses` IS a successful bd read of this workspace, so the transient
+      // admission badges recorded before it no longer describe bd
+      // (2026-10-01 stall-reconcile D4). Riding the poller's existing read
+      // adds no bd call, and works with automatic dispatch off too.
+      moved = deps.store.clearTransientAdmissions(workspace).ok || moved;
     } finally {
       // A persist that throws mid-sweep leaves the EARLIER moves durable. The
       // caller swallows the error, so without the finally those rows would sit
@@ -5120,7 +5163,12 @@ export function createScheduler(deps) {
     );
     const out = new Set();
     for (const a of attempts) {
-      if (a && a.status === 'paused' && !resumed_from.has(a.attempt_id)) {
+      if (
+        a &&
+        a.status === 'paused' &&
+        !resumed_from.has(a.attempt_id) &&
+        !isWithdrawnAttempt(a)
+      ) {
         out.add(a.bead_id);
       }
     }
@@ -9284,6 +9332,27 @@ export function createScheduler(deps) {
     }
     reconciling.add(workspace);
     try {
+      // The stalled-continuation sweep rides this pass (2026-10-01
+      // stall-reconcile D6). What it re-arms runs off this pass, so a slow or
+      // failing resume never holds up the dead-attempt reconciliation below.
+      /** @type {{ rearmed: string[], restored: string[] }|null} */
+      let swept = null;
+      try {
+        swept = sweepStalledContinuations(workspace);
+      } catch (err) {
+        log('continuation sweep failed for %s: %o', workspace, err);
+      }
+      if (swept && swept.rearmed.length + swept.restored.length > 0) {
+        notifyChanged(workspace);
+      }
+      if (swept && swept.restored.length > 0) {
+        armRetryTimer(workspace);
+      }
+      if (swept && swept.rearmed.length > 0) {
+        consumeProviderAutoResume(workspace).catch((err) => {
+          log('swept auto resume failed for %s: %o', workspace, err);
+        });
+      }
       let q = deps.store.snapshot(workspace);
       if (recoverTerminalUsageReceipts(workspace, q.attempts)) {
         q = deps.store.snapshot(workspace);
@@ -10581,7 +10650,11 @@ export function createScheduler(deps) {
       if (!snap.ready || snap.blocked) {
         reservation?.release();
         claimed.delete(bead_id);
-        if (!dequeueIfClosed(workspace, bead_id, snap)) {
+        if (dequeueIfClosed(workspace, bead_id, snap)) {
+          // A terminal bead records no badge, but a due retry still has to
+          // learn that its bead closed (D3).
+          noteRetrySkip(bead_id, notReadyReason(snap));
+        } else {
           await recordNotReady(workspace, bead_id, snap);
         }
         return;
@@ -13461,6 +13534,38 @@ export function createScheduler(deps) {
       recordSkipReason(workspace, bead_id, 'bd_snapshot_failed');
       return { ok: false, reason: 'bd_snapshot_failed' };
     }
+    // A retry rung that continues the session obeys the launch conditions a
+    // fresh rung's `dispatch` does (2026-10-01 stall-reconcile D3): a bead
+    // that is not ready, waits on a prerequisite or was closed, or whose
+    // runner is held, turns the rung away with that reason, and the due
+    // retry defers or closes the ladder by its class. An `in_progress` bead
+    // is the exception: that is the earlier attempt's own claim, which every
+    // session continuation resumes under, so refusing it would park the rung
+    // for good on the claim it is meant to carry on.
+    if (continuation.retry) {
+      if ((!snap.ready || snap.blocked) && snap.status !== 'in_progress') {
+        if (dequeueIfClosed(workspace, bead_id, snap)) {
+          return { ok: false, reason: notReadyReason(snap) };
+        }
+        const prerequisite = await recordNotReady(workspace, bead_id, snap);
+        return {
+          ok: false,
+          reason: prerequisite ? 'prerequisite_unmet' : notReadyReason(snap)
+        };
+      }
+      const provider_gate = await providerDispatchHeld(
+        workspace,
+        prior.runner,
+        recordedDispatchSettings(prior).accounts
+      );
+      if (provider_gate.held) {
+        const { runner, kind, account, unresolved } = provider_gate;
+        recordSkipReason(workspace, bead_id, 'provider_gate', {
+          gate: { runner, kind, account, unresolved }
+        });
+        return { ok: false, reason: 'provider_gate' };
+      }
+    }
     const lane_mismatch = refuseLaneMismatch(workspace, prior, snap);
     if (lane_mismatch) {
       return lane_mismatch;
@@ -13604,6 +13709,172 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The refusal record a recovery-resume refusal leaves (2026-10-01
+   * stall-reconcile D2): one more in the streak, and — for a `transient` or
+   * `wait` reason — when the reconcile sweep re-arms it, on the 5·15·30·60
+   * minute ladder. A record without a prior streak (including one refused
+   * before the field existed) starts at one.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} reason
+   * @returns {import('./queue-store.js').AutoResumeRefusal}
+   */
+  function nextAutoResumeRefusal(workspace, attempt_id, reason) {
+    const at = now();
+    const prior =
+      deps.store.snapshot(workspace).attempts?.[attempt_id]
+        ?.auto_resume_refusal;
+    const count = (prior ? prior.count : 0) + 1;
+    const kind = continuationRefusalClass(reason);
+    return {
+      at,
+      count,
+      kind,
+      next_at: isRetryableRefusal(kind)
+        ? at + autoResumeRetryDelayMs(count)
+        : null
+    };
+  }
+
+  /**
+   * The memory-only reconcile sweep (2026-10-01 stall-reconcile D2·D3·D6). It
+   * reads the queue snapshot this process already holds and makes NO bd, git,
+   * gh or network call; the only I/O it causes is a queue write. Executing
+   * what it re-arms — the resume or the retry — is left to the caller, so the
+   * bd calls happen only when one actually runs, at the D2/ladder cadence.
+   *
+   *   - D2: a leaf `paused` provider-outage attempt whose last automatic
+   *     resume was refused for a `transient`/`wait` reason, with no hold on
+   *     its runner, no receipt pending, no child and no ✕, gets its receipt
+   *     back once the refusal's `next_at` passed. A refusal recorded before
+   *     the refusal record existed is due at once; a `closed`/`permanent` one
+   *     of that age only gains the record the badge reads, and is not retried.
+   *   - D3: the bead's latest implementation attempt sitting in `retry_wait`
+   *     without a lineage gets the lineage back, due now.
+   *
+   * An attempt whose resume is in flight, whose bead is claimed, or whose
+   * discard is running is left for its owner. Each candidate is judged and
+   * written on its own, so one failing record cannot stop the others.
+   *
+   * @param {string} workspace
+   * @returns {{ rearmed: string[], restored: string[] }}
+   */
+  function sweepStalledContinuations(workspace) {
+    const at = now();
+    const q = deps.store.snapshot(workspace);
+    /** @type {string[]} */
+    const rearmed = [];
+    /** @type {string[]} */
+    const restored = [];
+    const attempts = /** @type {any[]} */ (Object.values(q.attempts || {}));
+    const resumed_from = new Set(
+      attempts.map((attempt) => attempt?.resumed_from).filter(Boolean)
+    );
+    const pending = new Set(
+      (q.auto_resume_pending || []).map(
+        (/** @type {{ attempt_id: string }} */ entry) => entry.attempt_id
+      )
+    );
+    const lineage_beads = new Set(
+      (q.lineages || []).map(
+        (/** @type {{ bead_id: string }} */ lineage) => lineage.bead_id
+      )
+    );
+    for (const attempt of attempts) {
+      try {
+        if (
+          !attempt ||
+          typeof attempt.bead_id !== 'string' ||
+          !isImplementationAttempt(attempt) ||
+          resume_in_flight.has(attempt.attempt_id) ||
+          claimed.has(attempt.bead_id) ||
+          discardActive(q, {
+            bead_id: attempt.bead_id,
+            attempt_id: attempt.attempt_id
+          })
+        ) {
+          continue;
+        }
+        if (
+          attempt.status === 'paused' &&
+          typeof attempt.cause === 'string' &&
+          attempt.cause.startsWith('provider_outage:') &&
+          typeof attempt.auto_resume_refused === 'string' &&
+          !isWithdrawnAttempt(attempt) &&
+          typeof attempt.dismissed_at !== 'number' &&
+          !resumed_from.has(attempt.attempt_id) &&
+          !pending.has(attempt.attempt_id) &&
+          !(
+            typeof attempt.runner === 'string' &&
+            q.provider_hold?.[attempt.runner]
+          )
+        ) {
+          const refusal = attempt.auto_resume_refusal;
+          const kind = refusal
+            ? refusal.kind
+            : continuationRefusalClass(attempt.auto_resume_refused);
+          if (!isRetryableRefusal(kind)) {
+            if (!refusal) {
+              deps.store.updateAttempt(workspace, {
+                attempt_id: attempt.attempt_id,
+                patch: {
+                  auto_resume_refusal: {
+                    at,
+                    count: 1,
+                    kind,
+                    next_at: null
+                  }
+                }
+              });
+            }
+            continue;
+          }
+          if (
+            refusal &&
+            (typeof refusal.next_at !== 'number' || refusal.next_at > at)
+          ) {
+            continue;
+          }
+          const result = deps.store.rearmAutoResume(workspace, {
+            attempt_id: attempt.attempt_id
+          });
+          if (result?.ok) {
+            rearmed.push(attempt.attempt_id);
+          }
+          continue;
+        }
+        if (
+          attempt.status === 'retry_wait' &&
+          !lineage_beads.has(attempt.bead_id) &&
+          latestImplementationAttempt(q, attempt.bead_id) === attempt
+        ) {
+          const result = deps.store.restoreRetryLineage(workspace, {
+            attempt_id: attempt.attempt_id,
+            at
+          });
+          if (result?.ok) {
+            lineage_beads.add(attempt.bead_id);
+            restored.push(attempt.attempt_id);
+            log(
+              'retry lineage restored for %s/%s',
+              attempt.bead_id,
+              attempt.attempt_id
+            );
+          }
+        }
+      } catch (err) {
+        log(
+          'continuation sweep failed for %s: %o',
+          attempt?.attempt_id ?? '?',
+          err
+        );
+      }
+    }
+    return { rearmed, restored };
+  }
+
+  /**
    * Consume recovery receipts only after their target-removal write is durable.
    *
    * @param {string} workspace
@@ -13706,6 +13977,13 @@ export function createScheduler(deps) {
         consumed = true;
         if (result.ok && prior) {
           resumed_beads.push(prior.bead_id);
+          if (prior.auto_resume_refused !== null || prior.auto_resume_refusal) {
+            // D2: a resume that went through ends the refusal streak.
+            deps.store.updateAttempt(workspace, {
+              attempt_id: pending.attempt_id,
+              patch: { auto_resume_refused: null, auto_resume_refusal: null }
+            });
+          }
           if (live_preempt) {
             const intent = prior.control?.intent;
             appendTimeline({
@@ -13755,7 +14033,14 @@ export function createScheduler(deps) {
           refusals.push(`${prior.bead_id}:${reason}`);
           deps.store.updateAttempt(workspace, {
             attempt_id: pending.attempt_id,
-            patch: { auto_resume_refused: reason }
+            patch: {
+              auto_resume_refused: reason,
+              auto_resume_refusal: nextAutoResumeRefusal(
+                workspace,
+                pending.attempt_id,
+                reason
+              )
+            }
           });
           log(
             'provider auto resume refused for %s/%s: %s',
@@ -15284,6 +15569,17 @@ export function createScheduler(deps) {
       serial_lease.release();
       return { ok: false, reason: 'bead_running' };
     }
+    // Same window: a ✕ recorded while an AUTOMATIC continuation — a provider
+    // auto-resume receipt or a retry rung — was under way took the attempt
+    // off the Worker (2026-10-01 stall-reconcile D7), so that continuation
+    // records no child. A person's own resume of the attempt still goes on.
+    if (
+      (options.provider_auto_resume === true || !!options.retry) &&
+      isWithdrawnAttempt(deps.store.snapshot(workspace).attempts?.[attempt_id])
+    ) {
+      serial_lease.release();
+      return { ok: false, reason: 'withdrawn' };
+    }
     continuation.expected_revision = revalidated.expected_revision;
     const prior_wf =
       typeof bead_snapshot.workflow_mode === 'string'
@@ -16517,19 +16813,121 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Dispatch one due retry and report the skip reason it recorded for the
+   * bead, or null when it recorded none (2026-10-01 stall-reconcile D3).
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {{ retry: any, retry_source: any }} options
+   * @returns {Promise<string|null>}
+   */
+  async function dispatchForRetry(workspace, bead_id, options) {
+    retry_skip_watch.set(bead_id, null);
+    try {
+      await dispatch(workspace, bead_id, null, options);
+      return retry_skip_watch.get(bead_id) ?? null;
+    } finally {
+      retry_skip_watch.delete(bead_id);
+    }
+  }
+
+  /**
+   * Settle a due rung whose launch was refused, by the refusal's D1 class
+   * (2026-10-01 stall-reconcile D3). A `transient` or `wait` refusal — and a
+   * launch that named no reason at all — defers the rung exactly as before, so
+   * a retry behind a prerequisite or a provider hold keeps waiting. A
+   * `closed` bead ends the ladder only; its `retry.next_at` is cleared so the
+   * reconcile sweep does not revive a rung on a finished bead. A `permanent`
+   * refusal ends the ladder AND fails the attempt, so the same bead does not
+   * wake every two minutes for a launch that can never happen.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string|null} refusal
+   * @param {number} at
+   */
+  function settleRefusedRetry(workspace, bead_id, refusal, at) {
+    const refusal_class =
+      refusal === null ? 'transient' : continuationRefusalClass(refusal);
+    if (isRetryableRefusal(refusal_class)) {
+      // Nothing launched. The rung stays unspent, but its `next_at` has to
+      // move off the past or `armRetryTimer` would re-fire on it in a tight
+      // loop.
+      deps.store.applyRetryEvent(workspace, {
+        event: { kind: 'retry_deferred', bead_id, at },
+        now: at
+      });
+      return;
+    }
+    // Closed directly rather than through `closeRetryLineage`, which arms the
+    // retry timer mid-loop (2026-08-29 retry-lineage spec D5).
+    const closed = deps.store.applyRetryEvent(workspace, {
+      event: { kind: 'retry_succeeded', bead_id, at },
+      now: at
+    });
+    if (!closed.ok) {
+      log('retry lineage close failed for %s', bead_id);
+    }
+    const latest = latestImplementationAttempt(
+      deps.store.snapshot(workspace),
+      bead_id
+    );
+    if (!latest || latest.status !== 'retry_wait') {
+      return;
+    }
+    if (refusal_class === 'closed') {
+      deps.store.updateAttempt(workspace, {
+        attempt_id: latest.attempt_id,
+        patch: latest.retry ? { retry: { ...latest.retry, next_at: null } } : {}
+      });
+      log('retry lineage closed for %s: bead closed', bead_id);
+      return;
+    }
+    deps.store.updateAttempt(workspace, {
+      attempt_id: latest.attempt_id,
+      patch: {
+        status: 'failed',
+        cause_detail: mergeCauseDetail(latest.cause_detail ?? null, null, {
+          retry_refused: refusal
+        })
+      }
+    });
+    notifyLifecycle('attemptFailed', {
+      bead_id,
+      cause: latest.cause,
+      repo: latest.repo,
+      cause_detail: { retry_refused: refusal }
+    });
+    appendTimeline({
+      bead_id,
+      attempt_id: latest.attempt_id,
+      kind: 'attempt_failed',
+      seq: 'failed',
+      summary: `자동 재시도 출발 거부 — ${refusal}`,
+      at
+    });
+    log('retry lineage failed for %s: %s', bead_id, refusal);
+  }
+
+  /**
    * Dispatch every lineage whose backoff has elapsed (spec §3.3). The retry is a
    * NEW attempt of the same bead carrying the lineage's origin, and it bypasses
    * the candidate fence {@link runPass} applies — the whole point of the ladder
    * is that this bead's last attempt failed.
    *
    * Every due lineage leaves exactly one outcome, so no `next_at` survives this
-   * pass in the past (2026-08-29-worker-retry-lineage-off-lane-design.md §3):
-   * a bead the user pulled out of the waiting lanes has abandoned the ladder,
-   * so its lineage is closed (D1); a claimed or active bead is deferred without
-   * spending a rung, because the live attempt's settlement is the real answer
-   * about the environment (D2); and no branch here arms the retry timer — that
-   * happens once after the loop, since a mid-loop arm would see an unprocessed
-   * past `next_at`, fire at 0ms and re-enter this scan under `await` (D5).
+   * pass in the past (2026-08-29-worker-retry-lineage-off-lane-design.md §3): a
+   * claimed or active bead is deferred without spending a rung, because the
+   * live attempt's settlement is the real answer about the environment (D2); a
+   * refused launch is settled by its reason's class ({@link settleRefusedRetry});
+   * and no branch here arms the retry timer — that happens once after the
+   * loop, since a mid-loop arm would see an unprocessed past `next_at`, fire at
+   * 0ms and re-enter this scan under `await` (D5).
+   *
+   * Waiting-lane membership is NOT a condition (2026-10-01 stall-reconcile
+   * D3, replacing that spec's D1): a lineage started outside the lanes — or
+   * whose bead was pulled out of them — still retries where it is. The ways a
+   * person ends a ladder are [폐기] and ✕, and both close the lineage.
    *
    * @param {string} workspace
    */
@@ -16544,46 +16942,18 @@ export function createScheduler(deps) {
       return;
     }
     const q = deps.store.snapshot(workspace);
-    const waiting = new Set([
-      ...q.queue.map(
-        (/** @type {{ bead_id: string }} */ entry) => entry.bead_id
-      ),
-      ...(q.serial_lanes || []).flatMap(
-        (/** @type {{ entries: Array<{ bead_id: string }> }} */ lane) =>
-          lane.entries.map((entry) => entry.bead_id)
-      )
-    ]);
     const active = activeBeadIdsFrom(q);
     let dispatched = false;
     for (const lineage of dueRetries(state, at)) {
       const bead_id = lineage.bead_id;
       if (claimed.has(bead_id) || active.has(bead_id)) {
-        // Judged BEFORE the lane check: a bead the user removed mid-attempt is
-        // running outside the lanes, and closing its lineage before that
-        // attempt settles would restart the ladder at `attempts: 1` on the next
-        // env failure. The rung stays unspent — the settlement closes or
-        // advances the lineage.
+        // A bead the user removed mid-attempt may be running outside the
+        // lanes. The rung stays unspent — the live attempt's settlement closes
+        // or advances the lineage.
         deps.store.applyRetryEvent(workspace, {
           event: { kind: 'retry_deferred', bead_id, at },
           now: at
         });
-        continue;
-      }
-      if (!waiting.has(bead_id)) {
-        // Leaving the waiting lanes abandons the ladder: nothing will retry
-        // this bead. Closing here, not
-        // through `closeRetryLineage`, because that arms the retry timer (D5).
-        log(
-          'retry lineage abandoned for %s: bead left the waiting lanes',
-          bead_id
-        );
-        const closed = deps.store.applyRetryEvent(workspace, {
-          event: { kind: 'retry_succeeded', bead_id, at },
-          now: at
-        });
-        if (!closed.ok) {
-          log('retry lineage close failed for %s', bead_id);
-        }
         continue;
       }
       // The rung is consumed by the ATTEMPT, not by the intent to dispatch
@@ -16626,6 +16996,24 @@ export function createScheduler(deps) {
         !session_retry &&
         (latest_attempt?.continuation_choice === 'prior_attempt' ||
           (await attemptHasPreservedWork(latest_attempt)));
+      /**
+       * What turned this rung away when nothing launched: the resume's own
+       * reason, or the skip the dispatch recorded for the bead (D3).
+       *
+       * @type {string|null}
+       */
+      let refusal = null;
+      // This pass judged from a snapshot taken before its awaits, and a ✕
+      // (D7) or [폐기] landing in one of them already ended this ladder.
+      // Re-read in the same synchronous step that takes the claim: once the
+      // claim is held, ✕ waits for this rung instead.
+      if (
+        !retryStateOf(workspace).lineages.some(
+          (entry) => entry.bead_id === bead_id
+        )
+      ) {
+        continue;
+      }
       claimed.add(bead_id);
       try {
         if (
@@ -16646,21 +17034,18 @@ export function createScheduler(deps) {
               !base_moved
             ) {
               claimed.add(bead_id);
-              await dispatch(workspace, bead_id, null, {
+              refusal = await dispatchForRetry(workspace, bead_id, {
                 retry,
                 retry_source: latest_attempt
               });
             } else {
               claimed.delete(bead_id);
-              log(
-                'retry resume refused for %s: %s',
-                bead_id,
-                resumed.reason || 'unknown'
-              );
+              refusal = resumed.reason || 'resume_refused';
+              log('retry resume refused for %s: %s', bead_id, refusal);
             }
           }
         } else {
-          await dispatch(workspace, bead_id, null, {
+          refusal = await dispatchForRetry(workspace, bead_id, {
             retry,
             retry_source: latest_attempt
           });
@@ -16682,13 +17067,7 @@ export function createScheduler(deps) {
         }
         dispatched = true;
       } else {
-        // Nothing launched. The rung stays unspent, but its `next_at` has to
-        // move off the past or `armRetryTimer` below would re-fire on it in a
-        // tight loop.
-        deps.store.applyRetryEvent(workspace, {
-          event: { kind: 'retry_deferred', bead_id, at },
-          now: at
-        });
+        settleRefusedRetry(workspace, bead_id, refusal, at);
       }
     }
     armRetryTimer(workspace);
@@ -16836,7 +17215,14 @@ export function createScheduler(deps) {
    */
   function settledAttemptFence(q, bead_id) {
     const latest = latestImplementationAttempt(q, bead_id);
-    if (!latest || typeof latest.dismissed_at === 'number') {
+    // A withdrawn attempt (D7) is handled the same way a dismissed one is:
+    // the person already decided, and putting the bead back in a lane is
+    // exactly the request to run it again.
+    if (
+      !latest ||
+      typeof latest.dismissed_at === 'number' ||
+      isWithdrawnAttempt(latest)
+    ) {
       return null;
     }
     if (latest.status === 'failed') {
@@ -17594,6 +17980,12 @@ export function createScheduler(deps) {
       bead_id: attempt.bead_id,
       prior: attempt.workflow_mode_prior ?? null
     });
+    if (isWithdrawnAttempt(latest)) {
+      // A ✕ withdrawal hands the bead back as an `open` candidate (D7); a
+      // plain ⏸ keeps it claimed in its lane.
+      await releaseBeadClaim(attempt.bead_id, { workspace, attempt_id });
+      armRetryTimer(workspace);
+    }
     notifyChanged(workspace);
     await tick(workspace);
     if (latest?.status !== 'paused') {
@@ -17710,6 +18102,342 @@ export function createScheduler(deps) {
       ok: false,
       reason: latest?.control?.last_error || 'pause_not_confirmed'
     };
+  }
+
+  /**
+   * Attempt statuses a ✕ finds already over: it records nothing new on them
+   * and answers success (2026-10-01 stall-reconcile §2).
+   *
+   * @type {ReadonlySet<string>}
+   */
+  const WITHDRAW_SETTLED_STATUSES = new Set([
+    'done',
+    'stopped',
+    'discarded',
+    'superseded'
+  ]);
+
+  /**
+   * Why ✕ must not take this attempt, or null when it may (D7). The tiles
+   * that carry no ✕ — 확인 필요, 세션 대기, a conversation or a person
+   * holding the session, PR 대기 — are refused here too, so a stale client
+   * cannot reach around the ADR UI-nuwy conversation-record table.
+   *
+   * @param {any} q
+   * @param {any} attempt
+   * @returns {string|null}
+   */
+  function withdrawRefusal(q, attempt) {
+    if (attempt.status === 'parked') {
+      return 'parked';
+    }
+    if (attempt.status === 'waiting' && attempt.cause_detail?.recovery) {
+      return 'recovery_wait';
+    }
+    if (
+      !['running', 'paused', 'retry_wait', 'failed', 'orphaned'].includes(
+        attempt.status
+      ) &&
+      !(attempt.status === 'waiting' && attempt.cause === 'external_job')
+    ) {
+      return 'not_withdrawable';
+    }
+    if (
+      Object.values(q.attempts || {}).some(
+        (/** @type {any} */ candidate) =>
+          candidate?.resumed_from === attempt.attempt_id
+      )
+    ) {
+      return 'already_resumed';
+    }
+    if (
+      (q.pr_wait || []).some(
+        (/** @type {{ bead_id: string }} */ entry) =>
+          entry.bead_id === attempt.bead_id
+      )
+    ) {
+      return 'pr_wait';
+    }
+    if (
+      Object.values(q.interactive_sessions || {}).some(
+        (/** @type {any} */ record) =>
+          record?.bead_id === attempt.bead_id && record.settled_at === null
+      )
+    ) {
+      return 'interactive_session_active';
+    }
+    if (settling.has(attempt.attempt_id)) {
+      return 'attempt_settling';
+    }
+    // An automatic continuation already under way — the attempt's own
+    // auto-resume, or a retry rung or dispatch holding the bead — owns the
+    // next move; ✕ waits for it instead of racing its child record.
+    if (
+      resume_in_flight.has(attempt.attempt_id) ||
+      (attempt.status !== 'running' && claimed.has(attempt.bead_id))
+    ) {
+      return 'continuation_in_flight';
+    }
+    if (
+      attempt.status === 'running' &&
+      claimed.has(attempt.bead_id) &&
+      !running.has(attempt.attempt_id)
+    ) {
+      return 'launch_in_flight';
+    }
+    return null;
+  }
+
+  /**
+   * Run [관찰 중단] for an external-job attempt before it is withdrawn (D7):
+   * observation ends and the bead's `external_wait` key goes, so putting the
+   * bead back in a lane is not refused by the `external_wait` admission. The
+   * remote job itself is left running.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function stopExternalWaitOf(workspace, attempt) {
+    const record = deps.externalWait?.findByBead(workspace, attempt.bead_id);
+    const recorded_wait_id =
+      typeof attempt.cause_detail?.wait_id === 'string'
+        ? attempt.cause_detail.wait_id
+        : null;
+    const wait_id = record?.wait_id ?? recorded_wait_id;
+    if (wait_id === null) {
+      return { ok: true };
+    }
+    const stopWait = deps.externalWait?.stop;
+    if (typeof stopWait !== 'function') {
+      return record
+        ? { ok: false, reason: 'external_wait_stop_unwired' }
+        : { ok: true };
+    }
+    try {
+      // The bead id lets the service clear a key whose record is gone.
+      const result = /** @type {any} */ (
+        await stopWait(workspace, wait_id, attempt.bead_id)
+      );
+      // `wait_changed`/`invalid_stage`: the key is gone or names another
+      // wait, so nothing of THIS attempt blocks admission. `not_found` (no
+      // record, key not cleared) and a failed write may leave the key that
+      // refuses the bead's next admission (D7), so the ✕ fails instead.
+      if (
+        result?.ok === false &&
+        (result.error === 'bead_write_failed' || result.error === 'not_found')
+      ) {
+        return { ok: false, reason: 'external_wait_stop_failed' };
+      }
+    } catch (err) {
+      log('external wait stop failed for %s: %o', attempt.bead_id, err);
+      return { ok: false, reason: 'external_wait_stop_failed' };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * The ✕ withdrawal of a running attempt (D7). With the process controller
+   * wired this is the durable ⏸ control carrying a `withdraw` intent: the
+   * group is ended by its recorded process identity — so an attempt whose
+   * session id has not landed yet can be withdrawn too — and the completion
+   * write settles the withdrawal; a restart in between is finished by
+   * {@link recoverControls}.
+   * Without the controller the process-local handle is torn down instead,
+   * exactly as the legacy ⏸ does.
+   *
+   * @param {string} workspace
+   * @param {any} attempt
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function withdrawRunning(workspace, attempt) {
+    const attempt_id = attempt.attempt_id;
+    if (deps.processController) {
+      if (attempt.control !== null) {
+        const phase = attempt.control.phase;
+        if (
+          attempt.control.intent?.reason !== 'withdraw' ||
+          phase === 'done' ||
+          phase === 'failed'
+        ) {
+          return { ok: false, reason: 'control_exists' };
+        }
+      } else {
+        if (!processIdentityOf(attempt)) {
+          return { ok: false, reason: 'identity_unknown' };
+        }
+        const requested = deps.store.requestAttemptControl(workspace, {
+          attempt_id,
+          kind: 'pause',
+          intent: {
+            reason: 'withdraw',
+            from_status: 'running',
+            from_cause: attempt.cause ?? null
+          }
+        });
+        if (!requested.ok) {
+          return {
+            ok: false,
+            reason: requested.reason || 'control_persist_failed'
+          };
+        }
+        notifyChanged(workspace);
+      }
+      const driven = await drivePauseControl(workspace, attempt_id);
+      if (!driven.ok) {
+        return driven;
+      }
+      return isWithdrawnAttempt(
+        deps.store.snapshot(workspace).attempts?.[attempt_id]
+      )
+        ? { ok: true }
+        : { ok: false, reason: 'withdraw_not_confirmed' };
+    }
+    const entry = running.get(attempt_id);
+    if (!entry) {
+      return { ok: false, reason: 'not_running' };
+    }
+    const done = entry.settled;
+    paused_done.set(attempt_id, done);
+    const forgetDone = () => {
+      paused_done.delete(attempt_id);
+    };
+    done.then(forgetDone, forgetDone);
+    teardownLiveSession(attempt_id, entry);
+    const at = now();
+    const result = deps.store.withdrawAttempt(workspace, {
+      attempt_id,
+      from_status: 'running',
+      at,
+      patch: { finished_at: at, ...usagePatch(workspace, attempt_id) }
+    });
+    await revertStamps(workspace, attempt_id, entry);
+    if (!result.ok) {
+      notifyChanged(workspace);
+      return { ok: false, reason: result.reason || 'withdraw_persist_failed' };
+    }
+    await releaseBeadClaim(entry.bead_id, { workspace, attempt_id });
+    armRetryTimer(workspace);
+    notifyChanged(workspace);
+    await tick(workspace);
+    return { ok: true };
+  }
+
+  /**
+   * Withdraw one implementation attempt with ✕ (Worker에서 내리기, 2026-10-01
+   * stall-reconcile D7) while KEEPING its work. In one durable request the
+   * live runner (if any) is ended, every automatic continuation of the
+   * attempt — retry lineage, auto-resume receipts, external-job observation —
+   * is stopped, the attempt is settled `paused` with a `withdrawn` stamp, the
+   * bead leaves the waiting lanes with its serial-lane hold released, and its
+   * Worker claim and stamps are given back so it stands as an `open`
+   * candidate. The worktree, branch and session record stay; putting the bead
+   * back in a lane lets the residue disposition continue the same session.
+   *
+   * An attempt that is already over answers success without a new record;
+   * one a discard owns is refused.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {Promise<{ ok: boolean, reason?: string, already_settled?: boolean }>}
+   */
+  async function withdraw(workspace, attempt_id) {
+    const q = deps.store.snapshot(workspace);
+    const attempt = q.attempts?.[attempt_id];
+    if (!attempt) {
+      return { ok: false, reason: 'attempt_not_found' };
+    }
+    if (!isImplementationAttempt(attempt)) {
+      return { ok: false, reason: 'not_withdrawable' };
+    }
+    if (discardActive(q, { attempt_id, bead_id: attempt.bead_id })) {
+      return { ok: false, reason: 'discard_in_progress' };
+    }
+    if (
+      isWithdrawnAttempt(attempt) ||
+      WITHDRAW_SETTLED_STATUSES.has(attempt.status)
+    ) {
+      return { ok: true, already_settled: true };
+    }
+    const refusal = withdrawRefusal(q, attempt);
+    if (refusal !== null) {
+      return { ok: false, reason: refusal };
+    }
+    if (attempt.status === 'running') {
+      return withdrawRunning(workspace, attempt);
+    }
+    if (attempt.status === 'waiting') {
+      const stopped_wait = await stopExternalWaitOf(workspace, attempt);
+      if (!stopped_wait.ok) {
+        return stopped_wait;
+      }
+      // The stop awaited, so a continuation may have started meanwhile: the
+      // same judgment again on the current record, right before the write.
+      const current = deps.store.snapshot(workspace);
+      const current_attempt = current.attempts?.[attempt_id];
+      const late_refusal = current_attempt
+        ? withdrawRefusal(current, current_attempt)
+        : 'attempt_not_found';
+      if (late_refusal !== null) {
+        return { ok: false, reason: late_refusal };
+      }
+    }
+    const result = deps.store.withdrawAttempt(workspace, {
+      attempt_id,
+      from_status: attempt.status,
+      at: now()
+    });
+    if (!result.ok) {
+      return { ok: false, reason: result.reason || 'withdraw_persist_failed' };
+    }
+    await releaseBeadClaim(attempt.bead_id, { workspace, attempt_id });
+    armRetryTimer(workspace);
+    notifyChanged(workspace);
+    await tick(workspace);
+    return { ok: true };
+  }
+
+  /**
+   * The [지금 재시도] click on a `retry_wait` tile (2026-10-01 stall-reconcile
+   * D9): pull THIS bead's rung forward to now and run the due retries. The
+   * rung is still spent by the attempt that launches — only the wait is
+   * skipped — and no other bead's ladder moves (ADR UI-a5l2: a retry is the
+   * bead's own). A `retry_wait` attempt that lost its lineage gets it back
+   * first, the same repair the reconcile sweep makes.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: boolean, reason?: string }>}
+   */
+  async function retryNow(workspace, bead_id) {
+    const at = now();
+    if (
+      !retryStateOf(workspace).lineages.some(
+        (lineage) => lineage.bead_id === bead_id
+      )
+    ) {
+      const latest = latestImplementationAttempt(
+        deps.store.snapshot(workspace),
+        bead_id
+      );
+      if (
+        !latest ||
+        latest.status !== 'retry_wait' ||
+        !deps.store.restoreRetryLineage(workspace, {
+          attempt_id: latest.attempt_id,
+          at
+        }).ok
+      ) {
+        return { ok: false, reason: 'no_retry_lineage' };
+      }
+    }
+    deps.store.applyRetryEvent(workspace, {
+      event: { kind: 'retry_now', bead_id, at },
+      now: at
+    });
+    notifyChanged(workspace);
+    await runDueRetries(workspace);
+    return { ok: true };
   }
 
   /**
@@ -18145,6 +18873,9 @@ export function createScheduler(deps) {
     stop,
     stopReviewSessionProcess,
     pause,
+    withdraw,
+    retryNow,
+    sweepStalledContinuations,
     resume,
     resumeExternalWait,
     settleExternalWaitReservations,

@@ -32,6 +32,8 @@ import {
   attemptsWithUsage,
   decorateQueue,
   handleWorkerAttemptResume,
+  handleWorkerAttemptRetryNow,
+  handleWorkerAttemptWithdraw,
   handleWorkerQueueSetOrchestrationDefaults,
   handleWorkerResolveInSession,
   onWorkerSnapshotRefresh
@@ -1073,5 +1075,177 @@ describe('decorateQueue persisted blocker owners (UI-yue8 §6.2)', () => {
 
     expect(out.blocker_workspaces).toEqual({ 'dotfiles-9': WS_PEER });
     expect(runBdJsonProjected).not.toHaveBeenCalled();
+  });
+});
+
+describe('✕ withdrawal and [지금 재시도] ops (2026-10-01 stall-reconcile)', () => {
+  /**
+   * @param {Record<string, any>} scheduler
+   */
+  function attachedSocket(scheduler) {
+    const socket = /** @type {any} */ ({ send: vi.fn() });
+    setConnWorkspace(socket, { root_dir: WS, db_path: '/tmp/db' });
+    __registerWorkerAttachmentForTest(WS, /** @type {any} */ ({ scheduler }));
+    return socket;
+  }
+
+  /**
+   * @param {any} socket
+   * @returns {any}
+   */
+  function replyOf(socket) {
+    return JSON.parse(socket.send.mock.calls[0][0]);
+  }
+
+  test('forwards worker-attempt-withdraw to the scheduler and reports the withdrawal', async () => {
+    const withdraw = vi.fn(async () => ({ ok: true }));
+    const socket = attachedSocket({ withdraw });
+
+    await handleWorkerAttemptWithdraw(socket, {
+      id: 'w1',
+      type: 'worker-attempt-withdraw',
+      payload: { attempt_id: 'a1' }
+    });
+
+    expect(withdraw).toHaveBeenCalledExactlyOnceWith(WS, 'a1');
+    expect(replyOf(socket).payload).toEqual({
+      attempt_id: 'a1',
+      withdrawn: true,
+      already_settled: false,
+      reason: null
+    });
+  });
+
+  test('carries a withdrawal refusal reason back to the client', async () => {
+    const socket = attachedSocket({
+      withdraw: vi.fn(async () => ({ ok: false, reason: 'parked' }))
+    });
+
+    await handleWorkerAttemptWithdraw(socket, {
+      id: 'w2',
+      type: 'worker-attempt-withdraw',
+      payload: { attempt_id: 'a1' }
+    });
+
+    expect(replyOf(socket).payload).toMatchObject({
+      withdrawn: false,
+      reason: 'parked'
+    });
+  });
+
+  test('rejects a withdrawal without an attempt id', async () => {
+    const withdraw = vi.fn();
+    const socket = attachedSocket({ withdraw });
+
+    await handleWorkerAttemptWithdraw(socket, {
+      id: 'w3',
+      type: 'worker-attempt-withdraw',
+      payload: {}
+    });
+
+    expect(replyOf(socket)).toMatchObject({
+      ok: false,
+      error: { code: 'bad_request' }
+    });
+    expect(withdraw).not.toHaveBeenCalled();
+  });
+
+  test('forwards worker-attempt-retry-now for one bead', async () => {
+    const retryNow = vi.fn(async () => ({ ok: true }));
+    const socket = attachedSocket({ retryNow });
+
+    await handleWorkerAttemptRetryNow(socket, {
+      id: 'r1',
+      type: 'worker-attempt-retry-now',
+      payload: { bead_id: 'UI-5' }
+    });
+
+    expect(retryNow).toHaveBeenCalledExactlyOnceWith(WS, 'UI-5');
+    expect(replyOf(socket).payload).toEqual({
+      bead_id: 'UI-5',
+      retried: true,
+      reason: null
+    });
+  });
+
+  /**
+   * @param {Record<string, any>} attempts
+   * @returns {Record<string, unknown>}
+   */
+  function withdrawnQueue(attempts) {
+    return {
+      revision: 1,
+      auto_advance: false,
+      auto_merge: false,
+      queue: [],
+      serial_lanes: [],
+      pr_wait: [],
+      done: [],
+      attempts,
+      admission: {},
+      exec_defaults: {}
+    };
+  }
+
+  test('projects the ⏏ material of a bead whose latest attempt was withdrawn', () => {
+    const out = /** @type {any} */ (
+      decorateQueue(
+        WS,
+        withdrawnQueue({
+          w1: {
+            attempt_id: 'w1',
+            bead_id: 'UI-9',
+            status: 'paused',
+            cause: 'withdrawn',
+            started_at: 5,
+            session_id: 'sid-9',
+            withdrawn: {
+              at: 9,
+              from_status: 'retry_wait',
+              from_cause: 'verify_failed:gh_observation_failed'
+            }
+          }
+        })
+      )
+    );
+
+    expect(out.withdrawn_beads).toEqual({
+      'UI-9': {
+        attempt_id: 'w1',
+        at: 9,
+        from_status: 'retry_wait',
+        from_cause: 'verify_failed:gh_observation_failed',
+        worktree_path: null,
+        worktree_present: false,
+        branch: 'UI-9',
+        has_session: true
+      }
+    });
+  });
+
+  test('drops the ⏏ material once a newer attempt of the bead exists', () => {
+    const out = /** @type {any} */ (
+      decorateQueue(
+        WS,
+        withdrawnQueue({
+          w1: {
+            attempt_id: 'w1',
+            bead_id: 'UI-9',
+            status: 'paused',
+            started_at: 5,
+            withdrawn: { at: 9, from_status: 'running', from_cause: null }
+          },
+          w2: {
+            attempt_id: 'w2',
+            bead_id: 'UI-9',
+            status: 'running',
+            started_at: 20,
+            resumed_from: 'w1'
+          }
+        })
+      )
+    );
+
+    expect(Object.hasOwn(out, 'withdrawn_beads')).toBe(false);
   });
 });

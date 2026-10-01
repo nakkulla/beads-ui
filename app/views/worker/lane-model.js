@@ -18,6 +18,7 @@
  * 레포 섹션은 **`workspaces_state`를 돌며** 만든다: 큐가 빈 레포에도 후보가
  * 있으면 드롭 타깃이 필요하고 (§6), 순서는 데크 순서와 같아야 한다.
  */
+import { TRANSIENT_ADMISSION_REASONS } from '../../../server/worker/continuation-refusal.js';
 import { priceUsage } from '../../../server/worker/usage-pricing.js';
 import { isExternalWaitObservation } from '../../protocol.js';
 import {
@@ -1340,6 +1341,42 @@ function providerAutoResumeState(attempt, target, last_error, input) {
     : null;
 }
 
+/** @type {ReadonlyArray<string>} */
+const AUTO_RESUME_REFUSAL_KINDS = Object.freeze([
+  'transient',
+  'wait',
+  'closed',
+  'permanent'
+]);
+
+/**
+ * The last automatic resume refusal of a provider-held attempt (2026-10-01
+ * stall-reconcile D5), or null when the attempt carries no well-formed
+ * `auto_resume_refusal` — a record refused before the field existed waits for
+ * the server's first sweep to gain it, and keeps today's badge until then.
+ *
+ * @param {any} attempt
+ * @returns {{ kind: 'transient'|'wait'|'closed'|'permanent', next_at: number|null, reason: string }|null}
+ */
+function autoResumeRefusalOf(attempt) {
+  const record = attempt.auto_resume_refusal;
+  if (
+    !record ||
+    typeof record !== 'object' ||
+    !AUTO_RESUME_REFUSAL_KINDS.includes(record.kind)
+  ) {
+    return null;
+  }
+  return {
+    kind: record.kind,
+    next_at: typeof record.next_at === 'number' ? record.next_at : null,
+    reason:
+      typeof attempt.auto_resume_refused === 'string'
+        ? attempt.auto_resume_refused
+        : ''
+  };
+}
+
 /**
  * Project one provider-held attempt from its attempt and queue gate records.
  *
@@ -1383,6 +1420,12 @@ function providerHoldProjection(attempt, input) {
     typeof target?.next_probe_at === 'number' ? target.next_probe_at : null;
   const account_alias = accountAliasOf(account, input.account_catalog);
   const history = timelineFields(input.history);
+  // 활성 보류가 있으면 프로브가 판정하므로 배지는 지금 그대로다 (D5). 서버
+  // sweep과 같은 술어 — 그 러너에 보류 기록이 있는가 — 를 읽는다.
+  const runner_held =
+    typeof attempt.runner === 'string' &&
+    Boolean(objectOf(input.provider_hold)[attempt.runner]);
+  const auto_resume_refusal = runner_held ? null : autoResumeRefusalOf(attempt);
   return {
     kind:
       target?.kind === 'usage_limit' || detail === 'usage_limit'
@@ -1415,6 +1458,7 @@ function providerHoldProjection(attempt, input) {
     ...(typeof attempt.live_preempt_last_skip?.at === 'number'
       ? { live_preempt_skipped_at: attempt.live_preempt_last_skip.at }
       : {}),
+    ...(auto_resume_refusal ? { auto_resume_refusal } : {}),
     ...(history.log_path ? { log_path: history.log_path } : {})
   };
 }
@@ -1840,13 +1884,51 @@ function heldAttemptStates(attempts, done_at_by_bead) {
 }
 
 /**
+ * The `⏏ 내려옴` chip material of one bead (2026-10-01 stall-reconcile D8):
+ * the server projects `withdrawn_beads[bead_id]` while the bead's latest
+ * implementation attempt is a withdrawn one and drops it on a new attempt or a
+ * discard. Only candidate cards and waiting rows read it — a closed bead never
+ * stands there. Each fact is kept or nulled on its own, so a thin entry still
+ * draws the chip; the worktree path survives only while the server finds the
+ * directory.
+ *
+ * @param {Record<string, any>} withdrawn_beads
+ * @param {string} bead_id
+ * @returns {{ withdrawn?: import('./lanes.js').WithdrawnMark }}
+ */
+function withdrawnFields(withdrawn_beads, bead_id) {
+  const entry = withdrawn_beads[bead_id];
+  if (!entry || typeof entry !== 'object') {
+    return {};
+  }
+  /**
+   * @param {unknown} value
+   * @returns {string|null}
+   */
+  const text = (value) =>
+    typeof value === 'string' && value.length > 0 ? value : null;
+  return {
+    withdrawn: {
+      at: typeof entry.at === 'number' ? entry.at : null,
+      from_status: text(entry.from_status),
+      from_cause: text(entry.from_cause),
+      worktree_path:
+        entry.worktree_present === true ? text(entry.worktree_path) : null,
+      branch: text(entry.branch),
+      has_session: entry.has_session === true
+    }
+  };
+}
+
+/**
  * The ⛔ chip an admission record renders as.
  *
  * @param {Record<string, any>} admission
  * @param {string} bead_id
+ * @param {number} now - The reference clock of the record time tail.
  * @returns {string}
  */
-function admissionBadge(admission, bead_id) {
+function admissionBadge(admission, bead_id, now) {
   const record = admission[bead_id];
   if (!record) {
     return '';
@@ -1883,6 +1965,13 @@ function admissionBadge(admission, bead_id) {
   // 갈래 삭제여서는 안 된다 — 지우면 아래 `⛔ prerequisite_unmet`으로 떨어진다.
   if (reason === 'prerequisite_unmet') {
     return '';
+  }
+  // 일시 사유는 기록 시각을 함께 보인다 (2026-10-01 stall-reconcile D4): 서버가
+  // 다음 bd 읽기 성공에 지우지만, 그 전까지는 언제의 사정인지가 읽혀야 한다.
+  // 분류표는 서버 한 곳이 소유한다. 시각이 없는 기록은 지금 그대로다.
+  if (TRANSIENT_ADMISSION_REASONS.includes(reason)) {
+    const clock = formatClockLocal(record.at, now);
+    return clock ? `⛔ ${reason} · ${clock}` : `⛔ ${reason}`;
   }
   const sep = reason.indexOf(':');
   if (sep > 0 && sep < reason.length - 1) {
@@ -3010,6 +3099,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const times = objectOf(workspace.bead_times);
     const observations = objectOf(workspace.pr_observations);
     const admission = objectOf(workspace.admission);
+    // `⏏ 내려옴` 재료 (2026-10-01 stall-reconcile D8). 키가 없는 스냅샷은 내린
+    // 이슈가 없는 것으로 읽는다 (fail-quiet).
+    const withdrawn_beads = objectOf(workspace.withdrawn_beads);
     const blocker_workspaces = objectOf(workspace.blocker_workspaces);
     blocker_workspaces_by_root.set(root_dir, blocker_workspaces);
     const revise_parked = objectOf(workspace.revise_parked);
@@ -3931,7 +4023,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...(chip_pins ? { chip_metadata: chip_pins } : {}),
         draggable: !discard,
         discard: discard || undefined,
-        reason: admissionBadge(admission, bead_id),
+        // 출발 전까지 대기 행도 같은 칩을 단다 (D8) — 출발이 새 attempt를 만들면
+        // 서버가 항목을 지운다.
+        ...withdrawnFields(withdrawn_beads, bead_id),
+        reason: admissionBadge(admission, bead_id, now),
         ...(admission[bead_id]?.stale === true
           ? { rereview_required: true }
           : {}),
@@ -4235,7 +4330,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       ) {
         reason_parts.push(entry.awaiting_user_reason);
       }
-      const admission_badge = admissionBadge(admission, bead_id);
+      const admission_badge = admissionBadge(admission, bead_id, now);
       if (admission_badge) {
         reason_parts.push(admission_badge);
       }
@@ -4277,6 +4372,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...(entry.plan_group && typeof entry.plan_group === 'object'
           ? { plan_group: entry.plan_group }
           : {}),
+        ...withdrawnFields(withdrawn_beads, bead_id),
         reason: reason_parts.join(' · '),
         ...(admission[bead_id]?.stale === true
           ? { rereview_required: true }
@@ -4458,6 +4554,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...(entry.plan_group && typeof entry.plan_group === 'object'
           ? { plan_group: entry.plan_group }
           : {}),
+        // 보류 선반도 후보 카드 렌더러다 (ADR 0014) — 같은 칩을 단다 (D8).
+        ...withdrawnFields(withdrawn_beads, bead_id),
         labels: Array.isArray(entry.labels) ? entry.labels : [],
         ...(typeof entry.issue_type === 'string' && entry.issue_type.length > 0
           ? { issue_type: entry.issue_type }

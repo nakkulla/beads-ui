@@ -3617,6 +3617,106 @@ describe('views/worker', () => {
     });
   });
 
+  // ✕ Worker에서 내리기 (2026-10-01 stall-reconcile D7): ⏸처럼 확인 없이 그
+  // attempt 하나를 보낸다.
+  test('tile ✕ sends worker-attempt-withdraw for its attempt', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      attempt_id: 'live',
+      withdrawn: true,
+      already_settled: false,
+      reason: null
+    });
+    const mount = mountAttemptTiles(
+      {
+        queue: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          live: {
+            attempt_id: 'live',
+            bead_id: 'S1',
+            status: 'running',
+            session_id: 'sid-1',
+            started_at: Date.now()
+          }
+        }
+      },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="live"] .rtile__withdraw')
+    ).click();
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-attempt-withdraw', {
+      attempt_id: 'live'
+    });
+  });
+
+  // [지금 재시도] (D9): Bead 단위 조작이라 payload는 그 Bead 하나다.
+  test('retry_wait [지금 재시도] sends worker-attempt-retry-now for its bead', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      bead_id: 'S1',
+      retried: true,
+      reason: null
+    });
+    const mount = mountAttemptTiles(
+      {
+        queue: [{ bead_id: 'S1', added_at: 0 }],
+        attempts: {
+          backoff: {
+            attempt_id: 'backoff',
+            bead_id: 'S1',
+            status: 'retry_wait',
+            cause: 'env:git',
+            retry: { cause: 'env:git', attempts: 1, max: 3, next_at: 9000 },
+            started_at: 1
+          }
+        }
+      },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="backoff"] .rtile__retry-now')
+    ).click();
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-attempt-retry-now', {
+      bead_id: 'S1'
+    });
+  });
+
+  // `⏏ 내려옴` (D8): 큐 투영의 `withdrawn_beads`가 후보 카드의 칩과 팝업이 된다.
+  test('opens the withdrawn popup from the candidate card chip', async () => {
+    const at = Date.now();
+    const mount = mountAttemptTiles({
+      withdrawn_beads: {
+        'RD-1': {
+          attempt_id: 'w1',
+          at,
+          from_status: 'running',
+          from_cause: null,
+          worktree_path: '/repo/.worktrees/RD-1',
+          worktree_present: true,
+          branch: 'RD-1',
+          has_session: true
+        }
+      }
+    });
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-card[data-bead-id="RD-1"] [data-chip-key="withdrawn"]'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(
+      mount.querySelector('.worker-card[data-bead-id="RD-1"] .chip-popover')
+        ?.textContent
+    ).toContain('보존된 워크트리 /repo/.worktrees/RD-1');
+  });
+
   test('draws no restart-instructions button for an old instructions_restart snapshot', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();

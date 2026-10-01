@@ -50,7 +50,7 @@
  * @property {number|null} pid - OS process id of the runner.
  * @property {{ pid: number, pgid: number, started_at: number }|null} process_identity -
  * Verified detached process-group identity used for restart-safe control.
- * @property {{ kind: 'pause', phase: 'requested'|'signaled'|'terminated'|'done'|'failed', requested_at: number, last_error: string|null, intent?: AccountPreemptIntent }|null} control -
+ * @property {{ kind: 'pause', phase: 'requested'|'signaled'|'terminated'|'done'|'failed', requested_at: number, last_error: string|null, intent?: AccountPreemptIntent|WithdrawIntent }|null} control -
  * Durable pause intent and monotonic recovery phase.
  * @property {string|null} runner - Runner adapter (claude/codex/ccx).
  * @property {string|null} session_id - Runner session identifier (claude
@@ -120,6 +120,15 @@
  * @property {string|null} auto_resume_refused - Why the recovery resume was
  * turned away (`worktree_missing` and the like). Kept on the attempt because
  * recovery deletes the target the receipt came from before the resume runs.
+ * @property {AutoResumeRefusal|null} [auto_resume_refusal] - When the latest
+ * recovery-resume refusal happened, how many came in a row, and when the
+ * reconcile sweep tries again (2026-10-01 stall-reconcile D2). It sits BESIDE
+ * `auto_resume_refused`, which keeps its meaning; absent on a record that was
+ * never refused and on every refusal recorded before the field existed.
+ * @property {AttemptWithdrawal|null} [withdrawn] - Set when a person took this
+ * attempt off the Worker with ✕ (2026-10-01 stall-reconcile D7): the work is
+ * kept, the attempt is settled `paused`, and no automatic continuation may
+ * touch it again. Absent on every attempt nobody withdrew.
  * @property {{ reason?: string, command?: string|null, summary?: string|null, [k: string]: unknown }|null} cause_detail -
  * What the fail-closed path actually caught, when the cause alone cannot say
  * it (UI-2o4z §2): the caught `reason` plus the simple command it matched
@@ -609,11 +618,13 @@
  * @property {AutoResumePending[]} auto_resume_pending - Recovery receipts consumed only after the hold mutation is durable.
  * @property {Record<string, Attempt>} attempts - Attempt records by attempt_id.
  * @property {Record<string, AdmissionRecord>} admission -
- * Auto-run admission observations by bead_id (badge display). Cleared only on a
- * successful dispatch or queue removal — never auto-expired. `stale:true` marks
- * the ONE non-blocking record (UI-dlim §3.4): the bead was ADMITTED with a
- * stale spec_review receipt, so the badge must not read as a refusal. Every
- * record without the flag is a refusal, exactly as before.
+ * Auto-run admission observations by bead_id (badge display). Cleared on a
+ * successful dispatch or queue removal, and — for the transient
+ * `bd_snapshot_failed`/`gh_unavailable`/`git_error` only — on the workspace's
+ * next successful bd read (2026-10-01 stall-reconcile D4); never by time alone.
+ * `stale:true` marks the ONE non-blocking record (UI-dlim §3.4): the bead was
+ * ADMITTED with a stale spec_review receipt, so the badge must not read as a
+ * refusal. Every record without the flag is a refusal, exactly as before.
  * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, summary?: string, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, next_retry_at?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
@@ -708,6 +719,27 @@
  */
 /**
  * @typedef {{ reason: 'account_preempt', from: string, to: string, window: string, pct: number }} AccountPreemptIntent
+ */
+/**
+ * A ✕ withdrawal of a running attempt rides the durable pause control so a
+ * restart finishes it like any other pause (2026-10-01 stall-reconcile D7).
+ *
+ * @typedef {{ reason: 'withdraw', from_status: string, from_cause: string|null }} WithdrawIntent
+ */
+/**
+ * @typedef {Object} AutoResumeRefusal
+ * @property {number} at - Epoch ms of the latest refusal.
+ * @property {number} count - Consecutive refusals so far (≥ 1).
+ * @property {import('./continuation-refusal.js').RefusalClass} kind - The D1
+ * class of the latest reason (the reason itself is `auto_resume_refused`).
+ * @property {number|null} next_at - When the reconcile sweep re-arms the
+ * resume; null for a `closed`/`permanent` refusal, which is never retried.
+ */
+/**
+ * @typedef {Object} AttemptWithdrawal
+ * @property {number} at - Epoch ms of the ✕.
+ * @property {string} from_status - The attempt status the ✕ found.
+ * @property {string|null} from_cause - The attempt cause the ✕ found.
  */
 /**
  * @typedef {Object} ProviderLimitPolicy
@@ -1106,6 +1138,7 @@ import { observeCodexChildren } from './codex-children/reader.js';
 // only because neither side touches the other's bindings at module-evaluation
 // time. Nothing here may move a use of this import to the top level.
 import { migrateStoredNeedsHumanReason } from './completion-intent.js';
+import { TRANSIENT_ADMISSION_REASONS } from './continuation-refusal.js';
 import {
   finalizeDelegationSessions,
   normalizeDelegationSessions,
@@ -3065,6 +3098,22 @@ function normalizeAttemptControl(value) {
     Number.isFinite(value.intent.pct)
       ? { intent: /** @type {AccountPreemptIntent} */ ({ ...value.intent }) }
       : {}),
+    ...(isRecord(value.intent) &&
+    value.intent.reason === 'withdraw' &&
+    typeof value.intent.from_status === 'string' &&
+    value.intent.from_status.length > 0
+      ? {
+          intent: /** @type {WithdrawIntent} */ ({
+            reason: 'withdraw',
+            from_status: value.intent.from_status,
+            from_cause:
+              typeof value.intent.from_cause === 'string' &&
+              value.intent.from_cause.length > 0
+                ? value.intent.from_cause
+                : null
+          })
+        }
+      : {}),
     last_error:
       typeof value.last_error === 'string' && value.last_error.length > 0
         ? value.last_error
@@ -3477,6 +3526,64 @@ function normalizeAttemptRetry(value) {
   };
 }
 
+/** @type {ReadonlyArray<string>} */
+const REFUSAL_CLASSES = ['transient', 'wait', 'closed', 'permanent'];
+
+/**
+ * Normalize the D2 refusal record; a malformed one reads as absent, which is
+ * the legacy shape the reconcile sweep already knows how to retry.
+ *
+ * @param {unknown} value
+ * @returns {AutoResumeRefusal|null}
+ */
+function normalizeAutoResumeRefusal(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.at !== 'number' ||
+    !Number.isFinite(value.at) ||
+    typeof value.count !== 'number' ||
+    !Number.isInteger(value.count) ||
+    value.count < 1 ||
+    typeof value.kind !== 'string' ||
+    !REFUSAL_CLASSES.includes(value.kind)
+  ) {
+    return null;
+  }
+  return {
+    at: value.at,
+    count: value.count,
+    kind: /** @type {AutoResumeRefusal['kind']} */ (value.kind),
+    next_at:
+      typeof value.next_at === 'number' && Number.isFinite(value.next_at)
+        ? value.next_at
+        : null
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {AttemptWithdrawal|null}
+ */
+function normalizeWithdrawal(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.at !== 'number' ||
+    !Number.isFinite(value.at) ||
+    typeof value.from_status !== 'string' ||
+    value.from_status.length === 0
+  ) {
+    return null;
+  }
+  return {
+    at: value.at,
+    from_status: value.from_status,
+    from_cause:
+      typeof value.from_cause === 'string' && value.from_cause.length > 0
+        ? value.from_cause
+        : null
+  };
+}
+
 /**
  * Fill an attempt container over its default (all-null) shape.
  *
@@ -3484,6 +3591,10 @@ function normalizeAttemptRetry(value) {
  * @returns {Attempt}
  */
 export function makeAttempt(fields) {
+  const auto_resume_refusal = normalizeAutoResumeRefusal(
+    fields.auto_resume_refusal
+  );
+  const withdrawn = normalizeWithdrawal(fields.withdrawn);
   return {
     attempt_id: fields.attempt_id,
     bead_id: fields.bead_id,
@@ -3566,6 +3677,8 @@ export function makeAttempt(fields) {
       fields.auto_resume_refused.length > 0
         ? fields.auto_resume_refused
         : null,
+    ...(auto_resume_refusal ? { auto_resume_refusal } : {}),
+    ...(withdrawn ? { withdrawn } : {}),
     cause_detail: isRecord(fields.cause_detail)
       ? /** @type {Attempt['cause_detail']} */ (fields.cause_detail)
       : null,
@@ -5287,6 +5400,43 @@ function removeFromLanes(q, bead_id) {
   // The shelf goes with every lane exit too (UI-sd12 §3.1). The ONE caller that
   // must keep it — a `pr_wait` re-entry — restores it itself (`moveToPrWait`).
   delete q.merge_shelved[bead_id];
+}
+
+/**
+ * Settle one attempt as withdrawn (2026-10-01 stall-reconcile D7) inside the
+ * caller's mutation: `paused` with the `withdrawn` stamp, the bead out of every
+ * waiting lane with its serial-lane binding released, and every automatic
+ * continuation of it — the retry lineage and the auto-resume receipts — gone,
+ * all in ONE persist so a restart never sees half of it.
+ *
+ * The cause becomes `withdrawn` so every cause-keyed continuation path
+ * (`provider_outage:*` recovery, `account_preempt:*` relaunch) passes it by;
+ * what the ✕ found survives in the stamp.
+ *
+ * @param {Queue} q
+ * @param {Attempt} cur
+ * @param {AttemptWithdrawal} withdrawal
+ * @param {Partial<Attempt>} [patch]
+ */
+function applyWithdrawal(q, cur, withdrawal, patch = {}) {
+  q.attempts[cur.attempt_id] = makeAttempt({
+    ...cur,
+    ...patch,
+    attempt_id: cur.attempt_id,
+    bead_id: cur.bead_id,
+    status: 'paused',
+    cause: 'withdrawn',
+    finished_at: patch.finished_at ?? cur.finished_at ?? withdrawal.at,
+    auto_resume_refusal: null,
+    withdrawn: withdrawal
+  });
+  removeFromLanes(q, cur.bead_id);
+  rebindLineageLane(q, cur.bead_id, null);
+  delete q.admission[cur.bead_id];
+  q.lineages = q.lineages.filter((lineage) => lineage.bead_id !== cur.bead_id);
+  q.auto_resume_pending = q.auto_resume_pending.filter(
+    (entry) => entry.attempt_id !== cur.attempt_id
+  );
 }
 
 /**
@@ -8740,6 +8890,67 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Re-arm one refused recovery resume (2026-10-01 stall-reconcile D2) with
+     * the receipt a hold release writes. Every durable condition the reconcile
+     * sweep selected on is re-read in this mutation: a leaf, undismissed,
+     * not-withdrawn `paused` provider-outage attempt, no hold on its runner (a
+     * live hold is the prober's to release), no receipt pending, no discard in
+     * flight, and the lineage's one automatic resume still unspent.
+     *
+     * The generation obeys the hold rule: a hold that starts later takes a
+     * HIGHER generation than every receipt, so `discardStaleAutoResumePending`
+     * drops this receipt if the provider fails again before it is consumed. A
+     * null account lets ordinary resolution pick the account, as an
+     * account-less hold release does.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    rearmAutoResume(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const attempt = next.attempts[input.attempt_id];
+        if (
+          !attempt ||
+          attempt.status !== 'paused' ||
+          !attempt.cause?.startsWith('provider_outage:') ||
+          attempt.withdrawn ||
+          typeof attempt.dismissed_at === 'number' ||
+          (typeof attempt.runner === 'string' &&
+            Object.hasOwn(next.provider_hold, attempt.runner)) ||
+          next.auto_resume_pending.some(
+            (entry) => entry.attempt_id === attempt.attempt_id
+          ) ||
+          Object.values(next.attempts).some(
+            (candidate) => candidate.resumed_from === attempt.attempt_id
+          ) ||
+          Object.values(next.discard_operations).some(
+            (operation) =>
+              operation.attempt_id === attempt.attempt_id &&
+              discardOperationActive(operation)
+          ) ||
+          providerAutoResumeCapped(next.attempts, attempt)
+        ) {
+          return false;
+        }
+        let generation = 1;
+        for (const hold of Object.values(next.provider_hold)) {
+          generation = Math.max(generation, hold.generation);
+        }
+        for (const pending of next.auto_resume_pending) {
+          generation = Math.max(generation, pending.generation);
+        }
+        next.auto_resume_pending.push({
+          attempt_id: attempt.attempt_id,
+          generation,
+          account: null,
+          kind: 'provider_outage'
+        });
+        return true;
+      });
+    },
+
+    /**
      * Clear only runner-wide usage-limit targets after a manual continuation.
      *
      * @param {string} workspace
@@ -8776,7 +8987,7 @@ export function createQueueStore(options = {}) {
      * Persist a pause request before any signal is attempted.
      *
      * @param {string} workspace
-     * @param {{ attempt_id: string, kind: 'pause', intent?: AccountPreemptIntent }} input
+     * @param {{ attempt_id: string, kind: 'pause', intent?: AccountPreemptIntent|WithdrawIntent }} input
      * @returns {QueueOpResult}
      */
     requestAttemptControl(workspace, input) {
@@ -8894,6 +9105,23 @@ export function createQueueStore(options = {}) {
         // pause 성공으로 지우면 안 된다. control은 그대로 `done`까지 전진한다.
         const settled_failed = cur.status === 'failed';
         const intent = cur.control.intent;
+        if (intent?.reason === 'withdraw' && !settled_failed) {
+          applyWithdrawal(
+            next,
+            cur,
+            {
+              at: finished_at,
+              from_status: intent.from_status,
+              from_cause: intent.from_cause
+            },
+            {
+              ...(patch || {}),
+              finished_at,
+              control: { ...cur.control, phase: 'done', last_error: null }
+            }
+          );
+          return true;
+        }
         const preempt = intent?.reason === 'account_preempt';
         next.attempts[attempt_id] = makeAttempt({
           ...cur,
@@ -9236,6 +9464,68 @@ export function createQueueStore(options = {}) {
       });
       consumeTerminalReceipts(result, prepared.files, prepared.drain);
       return result;
+    },
+
+    /**
+     * Withdraw an attempt with ✕ (2026-10-01 stall-reconcile D7) in ONE
+     * persist: `paused` + the `withdrawn` stamp, the bead out of the lanes, and
+     * its retry lineage and auto-resume receipts gone ({@link applyWithdrawal}).
+     * Scheduler-owned (no CAS). `from_status` is the status the caller judged
+     * eligible; a record that moved since is refused rather than overwritten.
+     * A running attempt reaches here only through the process-local fallback —
+     * the durable path settles it in {@link completeAttemptControl}.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, from_status: string, at: number, patch?: Partial<Attempt> }} input
+     * @returns {QueueOpResult}
+     */
+    withdrawAttempt(workspace, input) {
+      const prepared = terminalReceiptPatch(
+        workspace,
+        input.attempt_id,
+        input.patch || {}
+      );
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const cur = next.attempts[input.attempt_id];
+        if (!cur) {
+          reason = 'attempt_not_found';
+          return false;
+        }
+        if (cur.status !== input.from_status) {
+          reason = 'status_changed';
+          return false;
+        }
+        if (
+          Object.values(next.attempts).some(
+            (candidate) => candidate.resumed_from === cur.attempt_id
+          )
+        ) {
+          reason = 'already_resumed';
+          return false;
+        }
+        if (
+          Object.values(next.discard_operations).some(
+            (operation) =>
+              discardOperationActive(operation) &&
+              (operation.attempt_id === cur.attempt_id ||
+                operation.bead_id === cur.bead_id)
+          )
+        ) {
+          reason = 'discard_in_progress';
+          return false;
+        }
+        applyWithdrawal(
+          next,
+          cur,
+          { at: input.at, from_status: cur.status, from_cause: cur.cause },
+          prepared.patch
+        );
+        return true;
+      });
+      consumeTerminalReceipts(result, prepared.files, prepared.drain);
+      return reason === null ? result : { ...result, reason };
     },
 
     /**
@@ -9964,6 +10254,29 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Drop every transient admission badge of the workspace (2026-10-01
+     * stall-reconcile D4) once a bd read there succeeded: what the badge
+     * reported is no longer what the environment says, and the next
+     * evaluation records it again if it still holds. No-op (no revision bump)
+     * when none is recorded.
+     *
+     * @param {string} workspace
+     * @returns {QueueOpResult}
+     */
+    clearTransientAdmissions(workspace) {
+      return applyUnconditional(workspace, (next) => {
+        let changed = false;
+        for (const [bead_id, admission] of Object.entries(next.admission)) {
+          if (TRANSIENT_ADMISSION_REASONS.includes(admission.reason)) {
+            delete next.admission[bead_id];
+            changed = true;
+          }
+        }
+        return changed;
+      });
+    },
+
+    /**
      * Force the auto_advance flag (scheduler-owned, no CAS) — used to turn
      * execution OFF on a session failure or a reconcile failure. The failed
      * decision tile makes that halt actionable (worker-phase2 §2).
@@ -10083,6 +10396,59 @@ export function createQueueStore(options = {}) {
           changed = true;
         }
         return changed;
+      });
+    },
+
+    /**
+     * Give a `retry_wait` attempt back the lineage it lost (2026-10-01
+     * stall-reconcile D3): the bead's latest implementation attempt waiting
+     * on a rung must have a ladder, or nothing will ever wake it. Rebuilt from
+     * the attempt's own `retry` stamp and due at `at`. A rung whose `next_at`
+     * was cleared is one the ladder deliberately stopped (a closed bead), so
+     * it is not revived.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, at: number }} input
+     * @returns {QueueOpResult}
+     */
+    restoreRetryLineage(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const attempt = next.attempts[input.attempt_id];
+        if (
+          !attempt ||
+          attempt.status !== 'retry_wait' ||
+          attempt.withdrawn ||
+          !attempt.retry ||
+          typeof attempt.retry.next_at !== 'number' ||
+          next.lineages.some((lineage) => lineage.bead_id === attempt.bead_id)
+        ) {
+          return false;
+        }
+        /** @type {Attempt|null} */
+        let latest = null;
+        for (const candidate of Object.values(next.attempts)) {
+          if (
+            candidate.bead_id === attempt.bead_id &&
+            candidate.kind === 'implementation'
+          ) {
+            latest = candidate;
+          }
+        }
+        if (latest !== attempt) {
+          return false;
+        }
+        const retry = attempt.retry;
+        next.lineages.push({
+          bead_id: attempt.bead_id,
+          origin_attempt_id: retry.origin_attempt_id ?? attempt.attempt_id,
+          cause: retry.cause,
+          attempts: retry.attempts,
+          ...(retry.base_moved_count
+            ? { base_moved_count: retry.base_moved_count }
+            : {}),
+          next_at: input.at
+        });
+        return true;
       });
     },
 

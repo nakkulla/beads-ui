@@ -1490,6 +1490,48 @@ export function planChipTemplate(item, open = false) {
 }
 
 /**
+ * The material of the `⏏ 내려옴` chip (2026-10-01 stall-reconcile D8): the
+ * bead's latest implementation attempt was taken off the Worker with ✕. Every
+ * fact is nullable on its own — a missing one drops its popup line, never the
+ * chip. `worktree_path` is null unless the server still finds that directory,
+ * so the popup never claims a worktree that a discard took away.
+ *
+ * @typedef {Object} WithdrawnMark
+ * @property {number|null} at - When the ✕ was pressed.
+ * @property {string|null} from_status - The attempt status the ✕ found.
+ * @property {string|null} from_cause - The attempt cause the ✕ found.
+ * @property {string|null} worktree_path - The kept worktree, when present.
+ * @property {string|null} branch - The kept branch's name.
+ * @property {boolean} has_session - Whether a session record survives.
+ */
+
+/**
+ * The `⏏ 내려옴` chip (2026-10-01 stall-reconcile D8). 슬롯 1 정체성이다:
+ * "진행하다 Worker에서 내려왔다"는 이 카드의 상태다. `↩`는 발견·생성 출처 칩이
+ * 쓰므로 `⏏`다. 클릭은 판정 칩 팝업(`data-chip-key="withdrawn"`)이고 재료가
+ * 없으면 그리지 않는다 (fail-quiet).
+ *
+ * @param {MiniItem|null|undefined} item
+ * @param {boolean} [open] - Whether its popup is open on this card.
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function withdrawnChipTemplate(item, open = false) {
+  if (!item || !item.withdrawn) {
+    return '';
+  }
+  return html`<button
+    type="button"
+    class="ctl-chip ctl-chip--label judgement-chip worker-card__withdrawn"
+    data-chip-key="withdrawn"
+    data-bead-id=${item.id}
+    aria-expanded=${open ? 'true' : 'false'}
+    title="진행하다 Worker에서 내린 이슈 — 작업은 보존됨, 다시 대기에 넣으면 이어간다"
+  >
+    ⏏ 내려옴
+  </button>`;
+}
+
+/**
  * Whether a PR reference is safe to render as a link: an absolute `http(s)`
  * URL and a positive integer number (UI-kyky §6.1). Both tabs build every PR
  * link through {@link prLinkTemplate}, so this is the one boundary where an
@@ -1945,6 +1987,9 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {import('../../utils/plan-group.js').PlanGroup} [plan_group] - 이
  * 이슈가 속한 plan 묶음 (UI-ruwu §2). 슬롯 5a `plan <slug> <i>/<n>` 칩과 그 팝업의
  * 유일한 재료이고, 묶음이 아니면 필드도 없어 칩이 그려지지 않는다 (fail-quiet).
+ * @property {WithdrawnMark} [withdrawn] - 이 이슈의 최신 구현 attempt를 ✕로
+ * 내렸다 (2026-10-01 stall-reconcile D8). 후보 카드와 출발 전 대기 행의 슬롯 1
+ * `⏏ 내려옴` 칩과 그 팝업의 재료이고, 아니면 필드도 없다.
  * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
  * @property {string} [worker_created_from] - Immutable Worker creation source.
  * @property {string} [worker_created_from_root_dir] - Confirmed source owner.
@@ -2305,6 +2350,12 @@ function waitPopoverTemplate(title, lines, anchor_id) {
  * explicit reason that bypasses the representative rule (외부 작업 행).
  * @property {string} [label] - A label the card knows better than the table
  * (`retry_wait`의 회차·예약 시각).
+ * @property {string} [text] - The whole badge text when the card's state does
+ * not fit the `<글리프> <라벨>` shape — the provider-held tile's auto-resume
+ * refusal (2026-10-01 stall-reconcile D5). Only a reason-less badge reads it.
+ * @property {'action_required'|null} [verdict] - The `data-verdict` of that
+ * reason-less badge, so a `⛔` text keeps the action colour.
+ * @property {string} [release] - The popup's release line for that badge.
  * @property {import('./lane-model.js').InteractiveSessionView[]} [interactive_sessions]
  * - The card's interactive sessions; a live inquiry adds one popup line.
  * @property {number} [now]
@@ -2389,7 +2440,10 @@ export function waitStatusBadge(material) {
     now,
     {
       label: material.label || badge_row.label,
-      inquiry: liveInquiryView(material.interactive_sessions)
+      inquiry: liveInquiryView(material.interactive_sessions),
+      ...(material.text ? { text: material.text } : {}),
+      ...(material.verdict ? { verdict: material.verdict } : {}),
+      ...(material.release ? { release: material.release } : {})
     }
   );
 }
@@ -2425,7 +2479,7 @@ function externalGuidanceLines(reason) {
  * bead-scope reasons this card carries, one popup line each.
  * @param {Record<string, any>|null} hold - `HoldTile` for provider holds.
  * @param {number} now
- * @param {{ label?: string, release?: string, inquiry?: import('./lane-model.js').InteractiveSessionView|null }} [overrides]
+ * @param {{ label?: string, release?: string, text?: string, verdict?: 'action_required'|null, inquiry?: import('./lane-model.js').InteractiveSessionView|null }} [overrides]
  * @returns {import('lit-html').TemplateResult|''}
  */
 function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
@@ -2433,11 +2487,16 @@ function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
   if (!label) {
     return '';
   }
-  const text = waitBadgeText(row, reason ? reason.verdict : null, {
-    since: reason?.since,
-    now,
-    label
-  });
+  // 사유 없는 배지만 카드가 아는 전체 문구를 받는다 (stall-reconcile D5): 서버
+  // 판정이 있으면 그 판정이 배지를 소유한다.
+  const text =
+    !reason && overrides.text
+      ? overrides.text
+      : waitBadgeText(row, reason ? reason.verdict : null, {
+          since: reason?.since,
+          now,
+          label
+        });
   if (!text) {
     return '';
   }
@@ -2506,7 +2565,9 @@ function waitBadgeTemplate(row, reason, others, hold, now, overrides = {}) {
   return html`<details class="wait-verdict" @click=${stopWaitClick}>
     <summary
       class="worker-mini__badge"
-      data-verdict=${ifDefined(reason ? reason.verdict : undefined)}
+      data-verdict=${ifDefined(
+        reason ? reason.verdict : overrides.verdict || undefined
+      )}
       title=${row.when}
     >
       ${text}
@@ -3522,6 +3583,14 @@ export function miniRow(item, options = {}) {
   });
   // 우선순위는 ID 바로 다음이다 — Board 카드와 같은 자리, 같은 문장.
   const pri_el = priorityBadgeTemplate(item.priority);
+  // `⏏ 내려옴`은 후보 카드와 같은 슬롯 1 자리, 우선순위 바로 뒤다 (2026-10-01
+  // stall-reconcile D8). 팝업은 그 칩이 선 머리줄 아래에 열린다.
+  const withdrawn_open = chipOpen(item, 'withdrawn');
+  const withdrawn_el = item.withdrawn
+    ? html`${withdrawnChipTemplate(item, withdrawn_open)}${withdrawn_open
+        ? judgementPopover(item)
+        : ''}`
+    : '';
   const title_el = html`<span class="worker-mini__title">${item.title}</span>`;
   const pr_el = prLinkTemplate(item.pr_url, item.pr_number);
   // 외부 저장소 PR 대상 표시 (UI-kyky §6.2). 자리는 슬롯 1의 PR 링크 바로
@@ -3794,7 +3863,8 @@ export function miniRow(item, options = {}) {
     log_path_el
       ? html`<div class="worker-chips worker-chips--run">
           ${exec_chips_el}${complex_el}${area_el}${receipt_badge_el}${usage_el}${log_path_el}${gate_open ||
-          plan_open
+          plan_open ||
+          withdrawn_open
             ? ''
             : judgementPopover(item)}
         </div>`
@@ -3887,7 +3957,7 @@ export function miniRow(item, options = {}) {
             ${timesMeta(item)}
           </div>`
       : html`<div class="worker-mini__head">
-            ${grip}${seq_el}${repo_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${badge_els}${interactive_badges}${wait_badge}${interactive_closing}${actions_el}
+            ${grip}${seq_el}${repo_el}${id_el}${pri_el}${withdrawn_el}${pr_el}${foreign_repo_el}${badge_els}${interactive_badges}${wait_badge}${interactive_closing}${actions_el}
           </div>
           ${reason_el
             ? html`<div class="worker-mini__reason-line">${reason_el}</div>`
@@ -4134,8 +4204,72 @@ const SESSION_PREFERRED_TOOLTIP = {
  * The 판정 칩 keys (UI-8x90 §4.5, UI-svh6 §4.3). `data-chip-key` carries them
  * into the DOM so one click handler per tab covers every surface.
  *
- * @typedef {'complex'|'frontend'|'backend'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'|'readiness'|'plan'} JudgementChipKey
+ * @typedef {'complex'|'frontend'|'backend'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'|'readiness'|'plan'|'withdrawn'} JudgementChipKey
  */
+
+/**
+ * The attempt statuses a ✕ can find (2026-10-01 stall-reconcile D7), worded
+ * the way the tile said them. An unknown status reads as itself.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+const WITHDRAWN_FROM_LABELS = Object.freeze({
+  running: '실행 중',
+  paused: '일시정지',
+  retry_wait: '재시도 대기',
+  failed: '실패',
+  orphaned: '중단됨',
+  waiting: '외부 작업 대기'
+});
+
+/**
+ * `그때 상태` of the withdrawn popup: the status label, with the cause after it
+ * — except a provider pause, whose cause IS its name (`공급자 보류`).
+ *
+ * @param {WithdrawnMark} mark
+ * @returns {string}
+ */
+function withdrawnFromText(mark) {
+  if (mark.from_status === null) {
+    return '';
+  }
+  const cause = mark.from_cause || '';
+  if (mark.from_status === 'paused' && cause.startsWith('provider_outage:')) {
+    return '공급자 보류';
+  }
+  const label = WITHDRAWN_FROM_LABELS[mark.from_status] || mark.from_status;
+  return cause.length > 0 ? `${label} · ${cause}` : label;
+}
+
+/**
+ * The `⏏ 내려옴` popup (2026-10-01 stall-reconcile D8): when it came off, from
+ * what state, the worktree and branch it kept, and the way back. Without the
+ * time and the state there is nothing to explain, so no popup opens and the
+ * chip stands alone (§2 fail-quiet).
+ *
+ * @param {MiniItem} item
+ * @returns {import('../chip-popover.js').ChipPopoverContent|null}
+ */
+function withdrawnPopoverContent(item) {
+  const mark = item.withdrawn;
+  if (!mark || (mark.at === null && mark.from_status === null)) {
+    return null;
+  }
+  const clock = formatClockLocal(mark.at);
+  const from = withdrawnFromText(mark);
+  return {
+    title: 'Worker에서 내린 작업 — 작업은 보존됨',
+    lines: [
+      clock ? `내린 시각 ${clock}` : '',
+      from ? `그때 상태 ${from}` : '',
+      mark.worktree_path ? `보존된 워크트리 ${mark.worktree_path}` : '',
+      mark.worktree_path && mark.branch ? `브랜치 ${mark.branch}` : '',
+      mark.has_session
+        ? '다시 대기에 넣으면 같은 세션으로 이어간다'
+        : '다시 대기에 넣으면 이어간다'
+    ].filter((line) => line.length > 0)
+  };
+}
 
 /**
  * @typedef {(item: MiniItem) => import('./plan-place.js').PlanPlaceContext|null} PlanContextOf
@@ -4372,6 +4506,9 @@ export function judgementPopoverContent(item, chip_key, plan_context) {
   if (chip_key === 'plan') {
     return planPopoverContent(item, plan_context);
   }
+  if (chip_key === 'withdrawn') {
+    return withdrawnPopoverContent(item);
+  }
   if (chip_key === 'qfr') {
     const review = item.workflow ? item.workflow.quick_fix_review : null;
     if (!review || (review.state !== 'reviewed' && review.state !== 'stale')) {
@@ -4408,7 +4545,8 @@ export const JUDGEMENT_CHIP_KEYS = [
   'qfr',
   'spec_after_blocker',
   'readiness',
-  'plan'
+  'plan',
+  'withdrawn'
 ];
 
 /**
@@ -4593,7 +4731,10 @@ export function candidateCard(item, place_menu = null, options = {}) {
         : ''}
       ${repo_el}
       <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span
-      >${priorityBadgeTemplate(item.priority)}${item.rereview_required === true
+      >${priorityBadgeTemplate(item.priority)}${withdrawnChipTemplate(
+        item,
+        chipOpen(item, 'withdrawn')
+      )}${item.rereview_required === true
         ? html`<span
             class="worker-card__badge worker-card__badge--rereview"
             title="stale 판정 — 디스패치가 세션 내 재리뷰를 요구합니다. 실행은 admit됐고 거절이 아닙니다"

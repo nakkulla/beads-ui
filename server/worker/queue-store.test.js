@@ -14990,3 +14990,212 @@ describe('worker/queue-store — PR 대기 보관 (UI-sd12)', () => {
     expect(result.queue.merge_shelved).toEqual({ 'UI-1': { at: 500 } });
   });
 });
+
+describe('worker/queue-store stall-reconcile records (2026-10-01)', () => {
+  /**
+   * @param {any} queue_store
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {Partial<import('./queue-store.js').Attempt>} patch
+   */
+  function seed(queue_store, attempt_id, bead_id, patch) {
+    queue_store.appendAttempt(WS, {
+      expected_revision: queue_store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id }
+    });
+    queue_store.updateAttempt(WS, {
+      attempt_id,
+      patch: { runner: 'claude', model: 'opus', ...patch }
+    });
+  }
+
+  test('round-trips the refusal and withdrawal records through a cold load', () => {
+    const store = createQueueStore();
+    seed(store, 'a1', 'B1', {
+      status: 'paused',
+      cause: 'withdrawn',
+      auto_resume_refusal: { at: 5, count: 2, kind: 'transient', next_at: 905 },
+      withdrawn: { at: 7, from_status: 'running', from_cause: null }
+    });
+
+    const loaded = createQueueStore().load(WS).attempts.a1;
+
+    expect(loaded).toMatchObject({
+      auto_resume_refusal: { at: 5, count: 2, kind: 'transient', next_at: 905 },
+      withdrawn: { at: 7, from_status: 'running', from_cause: null }
+    });
+  });
+
+  test('leaves both records off an attempt that never carried them', () => {
+    const attempt = makeAttempt({ attempt_id: 'a1', bead_id: 'B1' });
+
+    expect(attempt).not.toHaveProperty('auto_resume_refusal');
+    expect(attempt).not.toHaveProperty('withdrawn');
+  });
+
+  test('re-arms a refused provider resume with a fresh receipt', () => {
+    const store = createQueueStore();
+    seed(store, 'held', 'B1', {
+      status: 'paused',
+      cause: 'provider_outage:overloaded_529',
+      auto_resume_refused: 'bd_snapshot_failed'
+    });
+
+    const result = store.rearmAutoResume(WS, { attempt_id: 'held' });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).auto_resume_pending).toEqual([
+      {
+        attempt_id: 'held',
+        generation: 1,
+        account: null,
+        kind: 'provider_outage'
+      }
+    ]);
+  });
+
+  test('refuses to re-arm while the runner is held', () => {
+    const store = createQueueStore();
+    seed(store, 'held', 'B1', {
+      status: 'paused',
+      cause: 'provider_outage:overloaded_529'
+    });
+    seed(store, 'other', 'B2', { status: 'running' });
+    store.holdProviderAttempt(WS, {
+      attempt_id: 'other',
+      runner: 'claude',
+      patch: { status: 'paused', cause: 'provider_outage:overloaded_529' },
+      target: {
+        kind: 'outage',
+        model: 'opus',
+        account: null,
+        detail: 'overloaded_529',
+        last_error: '',
+        resets_at: null,
+        rearm_count: 0,
+        attempt_ids: []
+      }
+    });
+
+    const result = store.rearmAutoResume(WS, { attempt_id: 'held' });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).auto_resume_pending).toEqual([]);
+  });
+
+  test('restores the lineage of the latest retry_wait attempt from its stamp', () => {
+    const store = createQueueStore();
+    seed(store, 'r1', 'B1', {
+      status: 'retry_wait',
+      retry: {
+        cause: 'verify_failed:gh_observation_failed',
+        attempts: 2,
+        max: 3,
+        next_at: 50,
+        origin_attempt_id: 'r0'
+      }
+    });
+
+    store.restoreRetryLineage(WS, { attempt_id: 'r1', at: 77 });
+
+    expect(store.snapshot(WS).lineages).toEqual([
+      {
+        bead_id: 'B1',
+        origin_attempt_id: 'r0',
+        cause: 'verify_failed:gh_observation_failed',
+        attempts: 2,
+        next_at: 77
+      }
+    ]);
+  });
+
+  test('withdraws an attempt off the lanes, its lineage and its receipts in one write', () => {
+    const store = createQueueStore();
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'B1'
+    });
+    seed(store, 'r1', 'B1', {
+      status: 'retry_wait',
+      cause: 'verify_failed:gh_observation_failed',
+      retry: {
+        cause: 'verify_failed:gh_observation_failed',
+        attempts: 1,
+        max: 3,
+        next_at: 50,
+        origin_attempt_id: 'r1'
+      }
+    });
+    store.restoreRetryLineage(WS, { attempt_id: 'r1', at: 50 });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.withdrawAttempt(WS, {
+      attempt_id: 'r1',
+      from_status: 'retry_wait',
+      at: 90
+    });
+
+    const queue = store.snapshot(WS);
+    expect(result.ok).toBe(true);
+    expect(queue.revision).toBe(revision + 1);
+    expect(queue.queue).toEqual([]);
+    expect(queue.lineages).toEqual([]);
+    expect(queue.attempts.r1).toMatchObject({
+      status: 'paused',
+      cause: 'withdrawn',
+      withdrawn: {
+        at: 90,
+        from_status: 'retry_wait',
+        from_cause: 'verify_failed:gh_observation_failed'
+      }
+    });
+  });
+
+  test('refuses a withdrawal whose attempt moved since it was judged', () => {
+    const store = createQueueStore();
+    seed(store, 'f1', 'B1', { status: 'failed', cause: 'x' });
+
+    const result = store.withdrawAttempt(WS, {
+      attempt_id: 'f1',
+      from_status: 'paused',
+      at: 90
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'status_changed' });
+    expect(store.snapshot(WS).attempts.f1.status).toBe('failed');
+  });
+
+  test('releases the serial lane a withdrawn attempt held', () => {
+    const store = createQueueStore();
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'B1',
+      lane: 's1'
+    });
+    seed(store, 'f1', 'B1', {
+      status: 'failed',
+      cause: 'x',
+      serial_lane_id: 's1'
+    });
+
+    store.withdrawAttempt(WS, {
+      attempt_id: 'f1',
+      from_status: 'failed',
+      at: 9
+    });
+
+    expect(activeLaneLineages(store.snapshot(WS)).get('s1')).toBeUndefined();
+  });
+
+  test('drops only the transient admission badges', () => {
+    const store = createQueueStore();
+    store.recordAdmission(WS, { bead_id: 'B1', reason: 'bd_snapshot_failed' });
+    store.recordAdmission(WS, { bead_id: 'B2', reason: 'gh_unavailable' });
+    store.recordAdmission(WS, { bead_id: 'B3', reason: 'git_error' });
+    store.recordAdmission(WS, { bead_id: 'B4', reason: 'prerequisite_unmet' });
+
+    store.clearTransientAdmissions(WS);
+
+    expect(Object.keys(store.snapshot(WS).admission)).toEqual(['B4']);
+  });
+});

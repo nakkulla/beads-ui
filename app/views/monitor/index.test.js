@@ -5195,3 +5195,126 @@ describe('monitor plan 묶음 칩과 일괄 배치 (UI-ruwu §2·§3)', () => {
     expect(gotoIssue).toHaveBeenCalledWith('B-p3');
   });
 });
+
+// ✕ 내리기·[지금 재시도]·`⏏ 내려옴` (2026-10-01 stall-reconcile D7~D9): 모니터는
+// Worker 탭과 같은 타일·카드 마크업을 그리고, 조작은 그 행의 저장소를 싣는다.
+describe('monitor 내리기·지금 재시도·내려옴 (stall-reconcile D7~D9)', () => {
+  /**
+   * @param {Record<string, any>} attempt
+   * @param {Partial<Record<string, any>>} [patch]
+   * @returns {ReturnType<typeof setup>}
+   */
+  function withAttempt(attempt, patch = {}) {
+    return setup({
+      workspaces: [
+        workspace({
+          attempts: { t1: { attempt_id: 't1', bead_id: 'A-1', ...attempt } },
+          ...patch
+        })
+      ],
+      workspaces_state: [state()]
+    });
+  }
+
+  const RUNNING = {
+    status: 'running',
+    started_at: NOW - 100,
+    session_id: 's'
+  };
+
+  test('draws ✕ at the right end of the running tile header', () => {
+    const { mount, view } = withAttempt(RUNNING);
+
+    view.load();
+
+    const actions = el(
+      mount,
+      '#monitor-running .rtile[data-attempt-id="t1"] .rtile__hd-actions'
+    );
+    const last = /** @type {HTMLElement} */ (actions.lastElementChild);
+    expect([
+      last.classList.contains('rtile__withdraw'),
+      last.classList.contains('op-btn--ghost'),
+      last.getAttribute('title')
+    ]).toEqual([true, true, 'Worker에서 내리기 — 작업은 보존']);
+  });
+
+  test('omits ✕ on a conflict-resolution running tile', () => {
+    const { mount, view } = withAttempt({
+      ...RUNNING,
+      conflict_resolution: true
+    });
+
+    view.load();
+
+    const tile = el(mount, '#monitor-running .rtile[data-attempt-id="t1"]');
+    expect([
+      Boolean(tile),
+      tile?.querySelector('.rtile__withdraw') ?? null
+    ]).toEqual([true, null]);
+  });
+
+  test('withdraws the attempt of the tile with its repo', () => {
+    const { mount, view, sent } = withAttempt(RUNNING);
+
+    view.load();
+    click(mount, '.rtile__withdraw');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-attempt-withdraw',
+      payload: { attempt_id: 't1', root_dir: WS_A }
+    });
+  });
+
+  test('retries the bead of a retry_wait tile now with its repo', () => {
+    const { mount, view, sent } = withAttempt(
+      {
+        status: 'retry_wait',
+        cause: 'env:git',
+        retry: { cause: 'env:git', attempts: 1, max: 3, next_at: NOW + 60_000 },
+        started_at: NOW - 100
+      },
+      { queue: [{ bead_id: 'A-1' }] }
+    );
+
+    view.load();
+    click(mount, '.rtile__retry-now');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-attempt-retry-now',
+      payload: { bead_id: 'A-1', root_dir: WS_A }
+    });
+  });
+
+  test('draws the withdrawn chip on the candidate card', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-9', title: 'cand' }],
+          withdrawn_beads: {
+            'A-9': {
+              attempt_id: 'w1',
+              at: NOW - 60_000,
+              from_status: 'running',
+              from_cause: null,
+              worktree_path: '/repo/.worktrees/A-9',
+              worktree_present: true,
+              branch: 'A-9',
+              has_session: true
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      el(
+        mount,
+        '.worker-card[data-bead-id="A-9"] [data-chip-key="withdrawn"]'
+      )?.textContent?.trim()
+    ).toBe('⏏ 내려옴');
+  });
+});
