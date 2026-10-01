@@ -95,6 +95,7 @@ base `4be748eaeab7f6de6e8b0f4018d728bde0767da0` 기준이다.
 
 - 프로토콜 — app/protocol.js:15,371-374; app/protocol.md:1404-1422,1445,1486-1530
 - 결과 줄 템플릿 사본에 `bench:<run_id>`가 있다 — server/worker/runner/preamble.js:139 (스냅샷 포함)
+- 사본을 dotfiles 정본과 실시간으로 대조하는 검사는 없다. 테스트는 "정본은 dotfiles … 위는 사본이다" 문장이 있는지만 본다 — server/worker/runner/preamble.test.js:376,781
 - `label-policy.js`의 벤치 export 셋은 importer가 없다 — app/utils/label-policy.js:94-124
 - 벤치 스타일 — app/styles.css:10930-10956
 - 문서 언급 — docs/bd-json-compatibility.md:58
@@ -119,7 +120,7 @@ base `4be748eaeab7f6de6e8b0f4018d728bde0767da0` 기준이다.
   - `attach.js`: 벤치 metadata 읽기와 `[verify]` 채점
   - `base-drift.js`: `benchCell` 예외
   - `state-paths.js`: 벤치 경로
-- 결과 줄 템플릿 사본(`preamble.js`)에서 `bench:<run_id>` 형태를 뺀다. 정본(dotfiles)은 형제 dotfiles-9nnnb가 착지하기 전까지 이 형태를 더 갖는다. 그래도 beads-ui가 벤치 attempt를 더 만들지 않으므로 그 형태를 쓸 세션이 없다. 사본과 정본을 실시간으로 대조하는 검사도 없다(server/worker/runner/preamble.test.js:376,781은 문장 존재만 본다).
+- 결과 줄 템플릿 사본(`preamble.js`)에서 `bench:<run_id>` 형태를 뺀다. 정본(dotfiles)은 형제 dotfiles-9nnnb가 착지하기 전까지 이 형태를 더 갖는다. 그래도 beads-ui가 벤치 attempt를 더 만들지 않으므로 그 형태를 쓸 세션이 없고, 사본과 정본을 대조하는 검사도 없다(§2).
 
 ### 3.2 가드 모드
 
@@ -149,7 +150,9 @@ base `4be748eaeab7f6de6e8b0f4018d728bde0767da0` 기준이다.
 2. 비교 탭 본 표의 행·묶음·요약·문제 기준 결과는 벤치 행이 없던 입력에서 이전과 같다(기존 테스트 통과).
 3. `bench_run`·`bench_verify`·cursor `bench_close`가 있는 옛 `queue.json`을 읽어도 오류가 없고, 저장한 파일에는 그 키가 없다.
 4. 스케줄러가 설치하는 가드 모드는 quick_fix lane이면 `record`, 그 외에는 `guard`다. `deny` 모드는 가드 훅 단위 테스트에서 지금처럼 동작한다.
-5. `git grep -n -i bench -- server app ':!*.map' ':!app/main.bundle.js' ':!app/protocol.md'` 결과가 0건이다(deny 모드 주석·거부 문구와 `exec-enums.js` 주석 포함). `app/protocol.md`에는 `Removed (historical)` 기록만 남는다.
+5. 운영 코드에 벤치가 남지 않는다: `git grep -n -i bench -- server app ':!*.map' ':!app/main.bundle.js' ':!app/protocol.md' ':!*.test.js' ':!**/__snapshots__/**'` 결과가 0건이다(deny 모드 주석·거부 문구와 `exec-enums.js` 주석 포함).
+   - `app/protocol.md`에는 `Removed (historical)` 기록만 남는다.
+   - 테스트에는 §5의 호환성 회귀 테스트가 쓰는 레거시 입력만 남을 수 있다: `bench-run-create`, `include_bench`, 옛 queue의 `bench_run`·`bench_verify`·`bench_close`.
 6. Pre-Handoff Validation(`npm run tsc`, `npm run lint`, prettier, `npx vitest run --reporter=dot`)이 통과한다.
 
 ## 5. 테스트
@@ -168,6 +171,6 @@ base `4be748eaeab7f6de6e8b0f4018d728bde0767da0` 기준이다.
 
 | 종류 | 저장소/rig | admission 클래스 | 분할 근거 | 선행(blocked_by) | Bead ID |
 | --- | --- | --- | --- | --- | --- |
-| 형제 | dotfiles | user_request | 다른 저장소 — workflow 계약·스킬의 `landing=none`(bench) 꼬리, close 가드, 계약 검사의 은퇴(ADR dotfiles-o7y9-6 대체). 벤치를 만들 수 있는 동안 계약을 지우면 클론 세션이 일반 꼬리로 push할 수 있어 이 이슈 뒤에 착지 | UI-pfbj | dotfiles-9nnnb |
+| 형제 | dotfiles | user_request | 다른 저장소 — workflow 계약·스킬의 `landing=none`(bench) 꼬리, close 가드, 계약 검사의 은퇴(ADR dotfiles/dotfiles-o7y9-6 대체). 벤치를 만들 수 있는 동안 계약을 지우면 클론 세션이 일반 꼬리로 push할 수 있어 이 이슈 뒤에 착지 | UI-pfbj | dotfiles-9nnnb |
 
 - 핀 사본 `generated/contracts/quick-fix-handoff.json`의 `landing_none` 항목은 dotfiles-9nnnb 착지 뒤 그 스펙의 크로스 리포 unit이 다시 고정한다. 이 이슈는 건드리지 않는다.
