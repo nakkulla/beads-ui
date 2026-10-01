@@ -5288,14 +5288,48 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
 
     store.recordCleanupFailure(WS, {
       bead_id: 'UI-1',
-      step: 'child_sweep',
-      reason: 'child_close_failed:UI-1.1'
+      step: 'branch_cleanup',
+      reason: 'local_branch_delete_failed'
     });
 
     expect(createQueueStore().load(WS).cleanup_failed['UI-1']).toMatchObject({
-      step: 'child_sweep',
-      reason: 'child_close_failed:UI-1.1'
+      step: 'branch_cleanup',
+      reason: 'local_branch_delete_failed'
     });
+  });
+
+  test('reads a stored child_sweep failure as a branch_cleanup failure', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-1',
+      step: 'branch_cleanup',
+      reason: 'local_branch_delete_failed'
+    });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.cleanup_failed['UI-1'].step = 'child_sweep';
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.cleanup_failed['UI-1'].step).toBe('branch_cleanup');
+  });
+
+  test('reads a stored child_sweep cursor as a branch_cleanup cursor', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.setCleanupCursor(WS, {
+      bead_id: 'UI-1',
+      cursor: 'base_containment',
+      merge_sha: 'a'.repeat(40)
+    });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.pr_wait[0].cleanup_cursor = 'child_sweep';
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.pr_wait[0].cleanup_cursor).toBe('branch_cleanup');
   });
 
   test('refuses a cleanup failure for a bead already in done', () => {
@@ -5325,8 +5359,8 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
 
     const result = store.recordCleanupFailure(WS, {
       bead_id: 'UI-waiting',
-      step: 'child_sweep',
-      reason: 'child_close_failed'
+      step: 'branch_cleanup',
+      reason: 'local_branch_delete_failed'
     });
 
     expect(result.ok).toBe(false);
@@ -5892,8 +5926,8 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     seedPrWait(store);
     store.recordCleanupFailure(WS, {
       bead_id: 'UI-1',
-      step: 'child_sweep',
-      reason: 'child_close_failed'
+      step: 'branch_cleanup',
+      reason: 'local_branch_delete_failed'
     });
     const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
     delete raw.cleanup_failed['UI-1'].detail;
@@ -8622,7 +8656,6 @@ describe('worker/queue-store — 자동 머지 durable 상태 (UI-yk55 §2/§3)'
       'base_containment',
       'repo_operations',
       'post_merge_jobs',
-      'child_sweep',
       'branch_cleanup',
       'parent_close'
     ]) {
@@ -8646,7 +8679,7 @@ describe('worker/queue-store — 자동 머지 durable 상태 (UI-yk55 §2/§3)'
 
     const skipped = store.setCleanupCursor(WS, {
       bead_id: 'UI-cursor',
-      cursor: 'child_sweep'
+      cursor: 'branch_cleanup'
     });
     const retired = store.setCleanupCursor(WS, {
       bead_id: 'UI-cursor',
@@ -8656,6 +8689,22 @@ describe('worker/queue-store — 자동 머지 durable 상태 (UI-yk55 §2/§3)'
     expect(skipped.ok).toBe(false);
     expect(retired.ok).toBe(false);
     expect(store.snapshot(WS).pr_wait[0].cleanup_cursor).toBeNull();
+  });
+
+  test('rejects the retired child_sweep cursor step', () => {
+    const store = createQueueStore();
+    park(store, ['UI-cursor']);
+    store.setCleanupCursor(WS, {
+      bead_id: 'UI-cursor',
+      cursor: 'base_containment'
+    });
+
+    const result = store.setCleanupCursor(WS, {
+      bead_id: 'UI-cursor',
+      cursor: 'child_sweep'
+    });
+
+    expect(result.ok).toBe(false);
   });
 });
 
@@ -14094,8 +14143,8 @@ describe('worker/queue-store discard abandonment', () => {
     });
     store.recordCleanupFailure(WS, {
       bead_id: 'UI-merged',
-      step: 'child_sweep',
-      reason: 'child_close_failed'
+      step: 'branch_cleanup',
+      reason: 'local_branch_delete_failed'
     });
     const { operation_id } = seedOperation(store);
     const before = store.snapshot(WS);

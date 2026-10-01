@@ -893,8 +893,8 @@ export function createGh(deps = {}) {
      *
      * The branch is NOT deleted here (`--delete-branch` is deliberately absent):
      * branch removal is a LATER step of the pr-finish cleanup order, after the
-     * post-merge verification and the bd sweep, and folding it into the merge
-     * call would run it out of order and unconditionally.
+     * post-merge verification, and folding it into the merge call would run it
+     * out of order and unconditionally.
      *
      * Two states only — the caller holds the PR number, so there is nothing a
      * successful-but-empty result could mean. A refusal by GitHub (not

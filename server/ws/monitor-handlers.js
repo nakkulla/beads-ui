@@ -867,10 +867,10 @@ function laneMemberIds(snapshot) {
  * `{ [bead_id]: { route?: string, metadata?: Record<string, string> } }`.
  *
  * `route` covers lane members and `done`; execution pins cover non-done lane
- * members. `carried_to` covers this root's `done` alone. `runnable` rows carry
- * their own workflow values, but join this projection for the independently
- * confirmed source workspace. `pr_wait` and `session_active` also join the
- * provenance read even though they remain outside execution-pin selection.
+ * members. `runnable` rows carry their own workflow values, but join this
+ * projection for the independently confirmed source workspace. `pr_wait` and
+ * `session_active` also join the provenance read even though they remain
+ * outside execution-pin selection.
  *
  * Reads the warm cache alone, so this projection spawns no synchronous child
  * process (ADR 0043), and is partial on the cache's existing contract: a bead
@@ -880,33 +880,13 @@ function laneMemberIds(snapshot) {
  * @param {string} root_dir
  * @param {Record<string, any>} snapshot
  * @param {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null} cache
- * @param {((workspace_key: string, parent_ids: Iterable<string>) => Record<string, string[]>)|null} [carriedToFor]
  * @param {string[]} [workspace_roots]
- * @returns {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string }>}
+ * @returns {Record<string, { route?: string, metadata?: Record<string, string>, worker_created_from?: string, worker_created_from_root_dir?: string }>}
  */
-function beadOverlayFor(
-  root_dir,
-  snapshot,
-  cache,
-  carriedToFor = null,
-  workspace_roots = []
-) {
-  /** @type {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[], worker_created_from?: string, worker_created_from_root_dir?: string }>} */
+function beadOverlayFor(root_dir, snapshot, cache, workspace_roots = []) {
+  /** @type {Record<string, { route?: string, metadata?: Record<string, string>, worker_created_from?: string, worker_created_from_root_dir?: string }>} */
   const overlay = {};
   const done_ids = [...laneBeadIds(snapshot, ['done'])];
-  if (carriedToFor && done_ids.length > 0) {
-    try {
-      for (const [bead_id, carried_to] of Object.entries(
-        carriedToFor(root_dir, done_ids)
-      )) {
-        if (Array.isArray(carried_to) && carried_to.length > 0) {
-          (overlay[bead_id] || (overlay[bead_id] = {})).carried_to = carried_to;
-        }
-      }
-    } catch (err) {
-      log('monitor: carryover projection failed for %s: %o', root_dir, err);
-    }
-  }
   if (!cache) {
     return overlay;
   }
@@ -985,7 +965,6 @@ function beadOverlayFor(
  *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>, options?: RunnableReadOptions) => Array<Record<string, unknown>>,
  *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
  *   titleCache?: () => ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null,
- *   carriedToFor?: (workspace_key: string, parent_ids: Iterable<string>) => Record<string, string[]>,
  * }} [options] - Test seams; each defaults to the live server source. The
  * @returns {Array<Record<string, unknown>>}
  */
@@ -1006,10 +985,6 @@ export function buildMonitorPipeline(options = {}) {
     ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
       getWorkerRuntime().runnableCache.sessionActiveFor(key, exclude_ids));
   const titleCache = options.titleCache || titleCacheHandle;
-  const carriedToFor =
-    options.carriedToFor ||
-    ((/** @type {string} */ key, /** @type {Iterable<string>} */ parent_ids) =>
-      getWorkerRuntime().runnableCache.carriedToFor(key, parent_ids));
 
   /** @type {Array<Record<string, unknown>>} */
   const out = [];
@@ -1066,7 +1041,6 @@ export function buildMonitorPipeline(options = {}) {
         root_dir,
         projected,
         cache,
-        carriedToFor,
         workspace_roots
       );
     } catch (err) {

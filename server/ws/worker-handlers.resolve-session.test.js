@@ -80,8 +80,8 @@ function revision() {
 function recordCleanupStop() {
   getWorkerRuntime().queueStore.recordCleanupFailure(WS, {
     bead_id: BEAD,
-    step: 'child_sweep',
-    reason: 'child_close_failed'
+    step: 'branch_cleanup',
+    reason: 'local_branch_delete_failed'
   });
 }
 
@@ -185,8 +185,8 @@ describe('worker-resolve-in-session (UI-jw27 §4)', () => {
         }),
         failure: {
           failure_class: '정리 중단',
-          reason: 'child_close_failed',
-          stage: 'child_sweep',
+          reason: 'local_branch_delete_failed',
+          stage: 'branch_cleanup',
           detail: null
         }
       }

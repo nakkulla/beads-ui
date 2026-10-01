@@ -965,10 +965,15 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
         closePr: async () => ({ state: 'error', reason: 'unexpected' })
       },
       bd: {
+        // bd cannot take the close — the parent stays `resolved` and the stop is
+        // recorded for the human instead of being retried (§6).
         setStatus: async (
           /** @type {string} */ _id,
           /** @type {string} */ status
         ) => {
+          if (status === 'closed') {
+            throw new Error('bd down');
+          }
           bd_record.status = status;
         },
         readStatus: async () => bd_record.status,
@@ -978,12 +983,7 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
           id,
           status: bd_record.status,
           metadata: bd_record.metadata
-        }),
-        // bd cannot answer — an unreadable child list STOPS the sweep rather
-        // than closing a parent over unknown children (§6).
-        listChildren: async () => {
-          throw new Error('bd down');
-        }
+        })
       },
       worktree: prActionsWorktree(runtime),
       gitRun,
@@ -1019,14 +1019,14 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
     expect(result).toMatchObject({
       ok: false,
       action: 'merged',
-      cleanup_step: 'child_sweep'
+      cleanup_step: 'parent_close'
     });
     const snap = runtime.queueStore.snapshot(WS);
     // Returned to the human: still in pr_wait, still `resolved`, banner record
     // written, nothing retried.
     expect(snap.pr_wait.map((e) => e.bead_id)).toContain('M2');
     expect(snap.done.map((e) => e.bead_id)).not.toContain('M2');
-    expect(snap.cleanup_failed.M2.step).toBe('child_sweep');
+    expect(snap.cleanup_failed.M2.step).toBe('parent_close');
     expect(bd_record.status).toBe('resolved');
   });
 });
@@ -1696,8 +1696,7 @@ describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', 
           status: bd_record.status,
           spec_id: 'docs/spec.md',
           metadata: bd_record.metadata
-        }),
-        listChildren: async () => []
+        })
       },
       worktree: prActionsWorktree(runtime),
       gitRun,

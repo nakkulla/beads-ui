@@ -318,7 +318,6 @@ describe('monitor pipeline implementation actor (UI-ys18 §5.1)', () => {
       listHidden: () => [],
       runnableFor: () => [],
       sessionActiveFor: () => [],
-      carriedToFor: () => ({}),
       snapshotFor: (key) => decorateQueue(key, raw)
     });
 

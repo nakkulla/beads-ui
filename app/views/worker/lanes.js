@@ -1030,49 +1030,6 @@ export function dependencyChipsTemplate(
 }
 
 /**
- * The 이월 칩 줄 (UI-btj6 §3). 완료 카드의 bead에서 이월된 후속 하나마다 열리는
- * 칩 `이월 → <ID>` 하나이고, 클릭은 다른 열리는 칩 넷과 같은 이슈 상세 열기다
- * — 카드 위의 칩은 상태를 쓰지 않는다 (UI-8x90 §4.3).
- *
- * 자리는 슬롯 **4b 정보**다 (2026-08-25 카드 문법 §5.1 정정(UI-btj6)): 문답은
- * 4a `→ <ID>`와 같은 후속 관계지만, 완료 카드에서는 "지금 갈 수 있나"라는 행동에
- * 답하지 않는 관계 정보다. 색은 그래서 후속 칩(`--dependents`) 그대로 쓴다 —
- * 같은 관계에 새 색 토큰을 두면 어휘가 갈라진다. 재료가 없으면 줄 자체를 그리지
- * 않는다 (fail-quiet).
- *
- * `root_dir`는 그 행이 속한 저장소다. 후속은 원본 자식과 같은 rig에 만들어지므로
- * (이월 변환 스펙 §2) 완료 행의 저장소가 곧 후속의 저장소이고, 여러 레포를 한
- * 화면에 섞는 모니터에서 다른 레포의 상세를 열지 않게 하는 것이 그 값이다.
- *
- * @param {MiniItem['carried_to']} carried_to
- * @param {string} [root_dir]
- * @returns {import('lit-html').TemplateResult|''}
- */
-export function carryoverChipsTemplate(carried_to, root_dir = '') {
-  const ids = (Array.isArray(carried_to) ? carried_to : [])
-    .filter((/** @type {unknown} */ id) => typeof id === 'string' && id !== '')
-    .slice()
-    .sort();
-  if (ids.length === 0) {
-    return '';
-  }
-  return html`<div class="worker-deps worker-deps--secondary">
-    ${ids.map((id) =>
-      openableChipTemplate(
-        {
-          id,
-          label: `이월 → ${id}`,
-          title: `이월된 후속 ${id} 열기`,
-          openable: true,
-          ...(root_dir ? { root_dir } : {})
-        },
-        'dependents'
-      )
-    )}
-  </div>`;
-}
-
-/**
  * The route 칩 하나 (UI-yrzu §7.1). 실행가능·대기·PR 대기·실행중 카드와 완료
  * 행(UI-q1tg §3.4)이 모두 이 함수를 부르므로 route는 어디서나 같은 모양·같은
  * 파생 규칙으로 읽힌다 — 규칙이 카드마다 복제되면 한쪽은 반드시 낡는다. 재료가
@@ -1922,10 +1879,6 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
  * @property {string} [worker_created_from] - Immutable Worker creation source.
  * @property {string} [worker_created_from_root_dir] - Confirmed source owner.
- * @property {string[]} [carried_to] - 이 bead에서 이월된 후속 ID들 (UI-btj6 §3).
- * 투영이 `carried_from` metadata와 이 bead를 가리키는 `blocks` 간선만으로 접은
- * 값이며, 완료 행만 싣는다. 칩은 {@link carryoverChipsTemplate}이 슬롯 4b에
- * 그리고, 재료가 없으면 필드도 없다.
  * @property {number} [priority] - Bead 우선순위 0..4. 숫자가 아니면 배지를
  * 그리지 않는다.
  * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
@@ -1997,7 +1950,6 @@ function doneThreeLineRow(item) {
     <div class="worker-mini__row2">
       <span class="worker-mini__title">${item.title}</span>
     </div>
-    ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
     <div class="worker-mini__row3">
       ${route_el || from_el
         ? html`<div class="worker-chips worker-chips--coords">
@@ -3831,7 +3783,6 @@ export function miniRow(item, options = {}) {
             ${repo_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${interactive_badges}${interactive_closing}${actions_el}
           </div>
           <div class="worker-mini__row2">${title_el}</div>
-          ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
           <div class="worker-mini__row3">
             ${coords_el}${exec_chips_el || usage_el
               ? html`<div class="worker-chips worker-chips--run">

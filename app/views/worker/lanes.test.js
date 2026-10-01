@@ -3005,7 +3005,7 @@ describe('repoOpsStripModel (UI-q0uy §4.1)', () => {
 
   test('renders for a workspace whose only state is a stopped cleanup', () => {
     expect(
-      repoOpsStripModel([], [{ bead_id: 'UI-a', step: 'child_sweep' }])
+      repoOpsStripModel([], [{ bead_id: 'UI-a', step: 'branch_cleanup' }])
     ).not.toBeNull();
   });
 
@@ -3078,7 +3078,7 @@ describe('repoOpsStripModel (UI-q0uy §4.1)', () => {
   test('counts an unresolved failure and a stopped cleanup together', () => {
     const model = repoOpsStripModel(
       [card({ state: 'failed' })],
-      [{ bead_id: 'UI-a', step: 'child_sweep' }]
+      [{ bead_id: 'UI-a', step: 'branch_cleanup' }]
     );
 
     expect(model?.unresolved).toBe(2);
@@ -3863,83 +3863,55 @@ describe('카드 배치 문법 (UI-251y §2)', () => {
   });
 });
 
-describe('worker lanes 이월 칩 (UI-btj6 §3)', () => {
-  test('renders one chip per carryover successor on the worker done row', () => {
-    const row = renderRow({
-      lane: 'done',
-      done: true,
-      carried_to: ['UI-s2', 'UI-s1']
-    });
+describe('worker lanes done row without the 이월 chip (UI-ruwu §6)', () => {
+  test('draws no 이월 chip on the worker done row', () => {
+    const row = renderRow(
+      /** @type {any} */ ({
+        lane: 'done',
+        done: true,
+        carried_to: ['UI-s1']
+      })
+    );
 
-    const chips = row.querySelectorAll('.worker-deps--secondary .worker-dep');
+    expect(row.textContent).not.toContain('이월');
+  });
 
-    expect(Array.from(chips, (chip) => chip.textContent?.trim())).toEqual([
-      '이월 → UI-s1',
-      '이월 → UI-s2'
+  test('draws no 이월 chip on the three-line done row', () => {
+    const row = renderRow(
+      /** @type {any} */ ({
+        lane: 'done',
+        done: true,
+        done_layout: 'three_line',
+        carried_to: ['UI-s1']
+      })
+    );
+
+    expect(row.textContent).not.toContain('이월');
+  });
+
+  test('keeps the done row to its coordinate lines', () => {
+    const row = renderRow(
+      /** @type {any} */ ({
+        lane: 'done',
+        done: true,
+        carried_to: ['UI-s1']
+      })
+    );
+
+    const classes = Array.from(row.children, (el) => el.className);
+
+    expect(classes).toEqual([
+      'worker-mini__row1',
+      'worker-mini__row2',
+      'worker-mini__row3'
     ]);
   });
 
-  test('renders the chip on the three-line done row too', () => {
-    const row = renderRow({
-      lane: 'done',
-      done: true,
-      done_layout: 'three_line',
-      carried_to: ['UI-s1']
-    });
-
-    const chip = row.querySelector('.worker-deps--secondary .worker-dep');
-
-    expect(chip?.textContent?.trim()).toBe('이월 → UI-s1');
-  });
-
-  test('makes the chip an opening one carrying the successor id', () => {
-    const row = renderRow({
-      lane: 'done',
-      done: true,
-      carried_to: ['UI-s1']
-    });
-
-    const chip = /** @type {HTMLElement} */ (
-      row.querySelector('.worker-deps--secondary .worker-dep__open')
-    );
-
-    expect(chip.tagName).toBe('BUTTON');
-    expect(chip.dataset.depId).toBe('UI-s1');
-  });
-
-  test('carries the done row own root_dir onto the chip', () => {
-    const row = renderRow({
-      lane: 'done',
-      done: true,
-      root_dir: '/repos/other',
-      carried_to: ['UI-s1']
-    });
-
-    const chip = /** @type {HTMLElement} */ (
-      row.querySelector('.worker-deps--secondary .worker-dep__open')
-    );
-
-    expect(chip.dataset.rootDir).toBe('/repos/other');
-  });
-
-  test('omits the line when the done row carries no successor', () => {
-    const row = renderRow({ lane: 'done', done: true });
-
-    expect(row.querySelector('.worker-deps--secondary')).toBeNull();
-  });
-
-  test('omits the line when the successor list is empty', () => {
-    const row = renderRow({ lane: 'done', done: true, carried_to: [] });
-
-    expect(row.querySelector('.worker-deps')).toBeNull();
-  });
-
-  test('shows the same chips and carryover link on both done layouts', () => {
+  test('shows the same exec chips on both done layouts', () => {
     /** @type {Partial<import('./lanes.js').MiniItem>} */
     const item = {
       lane: 'done',
       done: true,
-      carried_to: ['UI-s1'],
       exec_chips: {
         orchestration: { text: 'codex · sonnet', title: '오케' },
         worker: { text: 'gpt-5-codex · high', title: '워커' }
@@ -3953,38 +3925,13 @@ describe('worker lanes 이월 칩 (UI-btj6 §3)', () => {
      * @param {HTMLElement} row
      * @returns {string[]}
      */
-    const texts = (row) => [
-      ...Array.from(
+    const texts = (row) =>
+      Array.from(
         row.querySelectorAll('.exec-chip__v'),
         (chip) => chip.textContent?.trim() || ''
-      ),
-      /** @type {HTMLElement} */ (
-        row.querySelector('.worker-deps--secondary .worker-dep__open')
-      ).dataset.depId || ''
-    ];
-    expect(texts(two_line)).toEqual([
-      'codex · sonnet',
-      'gpt-5-codex · high',
-      'UI-s1'
-    ]);
+      );
+    expect(texts(two_line)).toEqual(['codex · sonnet', 'gpt-5-codex · high']);
     expect(texts(three_line)).toEqual(texts(two_line));
-  });
-
-  test('draws the chips below the title and above the coordinate line', () => {
-    const row = renderRow({
-      lane: 'done',
-      done: true,
-      carried_to: ['UI-s1']
-    });
-
-    const classes = Array.from(row.children, (el) => el.className);
-
-    expect(classes).toEqual([
-      'worker-mini__row1',
-      'worker-mini__row2',
-      'worker-deps worker-deps--secondary',
-      'worker-mini__row3'
-    ]);
   });
 });
 

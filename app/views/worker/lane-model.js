@@ -452,7 +452,6 @@ const DONE_KIND_LABELS = {
  *   retry?: import('./running-grid.js').RetryTile|null,
  *   conflict_resolution?: boolean,
  *   base_exception?: string|null,
- *   rollup?: import('../../utils/child-rollup.js').ChildRollup|null,
  *   landing?: { step: string, label: string, index: number, total: number, percent: number, active: boolean, failed: boolean },
  *   added_at?: number,
  *   queue_position?: number,
@@ -463,7 +462,6 @@ const DONE_KIND_LABELS = {
  *   place_lanes?: Array<{ id: 's1'|'s2'|'s3'|'s4'|'s5', index: number, length: number, occupied_by: string[] }>,
  *   blocked?: boolean,
  *   blocked_by?: string[],
- *   carried_to?: string[],
  *   blockers?: import('../monitor/blockers.js').BlockerDisplay[],
  *   done_kind?: string|null,
  *   spec_id?: string,
@@ -3043,7 +3041,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }))
     );
     // 이슈 필드 오버레이 (§4.1): `{ priority?, from_id?, metadata?, labels?,
-    // route?, rollup? }`. `labels`는 다섯 열 모두에서 실리고 복잡 판정이
+    // route? }`. `labels`는 다섯 열 모두에서 실리고 복잡 판정이
     // `metadata`와 함께 읽는다 (UI-p7s2 §6, UI-7nhi §3). 키가 없는 bead는
     // 스냅샷 장식만으로 그린다.
     for (const [bead_id, entry] of Object.entries(
@@ -3389,7 +3387,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
       // 만들지 않는다 (fail-quiet) — Monitor 타일 표시는 그대로다.
       const attempt = attempt_by_id.get(live.attempt_id) || null;
       const overlay = overlay_by_key.get(`${root_dir}\u0000${bead_id}`);
-      const rollup = overlay && overlay.rollup ? overlay.rollup : null;
       const base_exception = baseException(
         declared_base,
         attempt ? attempt.target_base : null
@@ -3474,7 +3471,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
             live.failure?.confirmation === 'merged' ||
             objectOf(observations[bead_id]).pr?.state === 'MERGED'
         }),
-        ...(rollup ? { rollup } : {}),
         ...(conflict_resolution ? { conflict_resolution: true } : {}),
         ...(base_exception ? { base_exception } : {}),
         ...(landing ? { landing } : {}),
@@ -3717,12 +3713,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
       // closure steps do.
       const cleanup_retry =
         !!cleanup &&
-        [
-          'post_merge_jobs',
-          'child_sweep',
-          'branch_cleanup',
-          'parent_close'
-        ].includes(cleanup.step) &&
+        ['post_merge_jobs', 'branch_cleanup', 'parent_close'].includes(
+          cleanup.step
+        ) &&
         !!gate &&
         gate.tier === 'merged';
       const external_cleanup =
@@ -4494,17 +4487,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
       ) {
         item.worker_created_from_root_dir =
           overlay.worker_created_from_root_dir;
-      }
-      // 이월 후속 (UI-btj6 §3). 완료 행만 이 사실을 묻는다 — 끝난 일이 무엇으로
-      // 이어졌나. metadata 검사보다 앞에 서는 이유는 완료 bead가 닫힌 열에
-      // 있어 오버레이가 그 metadata를 싣지 않기 때문이다. 재료가 없으면 필드
-      // 자체가 없다 (fail-quiet).
-      if (
-        item.lane === 'done' &&
-        Array.isArray(overlay.carried_to) &&
-        overlay.carried_to.length > 0
-      ) {
-        item.carried_to = overlay.carried_to;
       }
       // 모니터 채널에는 `bead_workflow`가 없다 (UI-q1tg §3.1) — 대기·완료 행
       // route의 유일한 재료가 오버레이다. 완료 행만이 아니라 route를 실어 보내는

@@ -1401,7 +1401,7 @@ function prWaitRow(
   const cleanup_active = isPrWaitCleanupActive(merge_step);
   // The click's own in-flight window. It locks the buttons exactly as a merge
   // step does — a second click has nothing to land on — but it is NOT a merge
-  // step: the server is still taking the request, and drawing 머지 중 1/7 here
+  // step: the server is still taking the request, and drawing 머지 중 1/6 here
   // made the bar run forward and then fall back to a queue position the moment
   // the real snapshot arrived.
   const queueing =
@@ -1423,7 +1423,6 @@ function prWaitRow(
     [
       'repo_operations',
       'post_merge_jobs',
-      'child_sweep',
       'branch_cleanup',
       'parent_close'
     ].includes(cleanup_failed.step) &&
@@ -2029,15 +2028,6 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {Set<string>}
    */
   const revise_pending = new Set();
-  /**
-   * Beads whose running-tile child rollup is EXPANDED
-   * (worker-card-exec-chips §3.3). Only the expanded ones are remembered — the
-   * list is collapsed by default — and the set lives as long as the view, so a
-   * queue-snapshot re-render never forgets what the user opened.
-   *
-   * @type {Set<string>}
-   */
-  const rollup_expanded_ids = new Set();
   /**
    * PR 대기 행 투영의 렌더 1회 메모. `topTemplate`(자동 머지 버튼의 N)과
    * `lanesTemplate`(행 자체)이 같은 모델을 두 번 읽으므로, 모델 객체를 키로
@@ -3319,7 +3309,6 @@ export function createWorkerView(mount_element, options = {}) {
             workspace_name: '',
             dependency_chips: chipsWithOverlaps(item) || undefined,
             chip_popover: popoverOf(item),
-            rollup_expanded: rollup_expanded_ids.has(item.id),
             failure: item.failure
               ? {
                   ...item.failure,
@@ -5645,34 +5634,6 @@ export function createWorkerView(mount_element, options = {}) {
     }
     // Clicks inside the drawer are owned by the drawer's own handlers.
     if (target?.closest?.('.worker-drawer-host')) {
-      return;
-    }
-    // rollup 토글·child 행은 타일의 기본 클릭(이슈 상세)보다 앞선다 (§3.4):
-    // 뒤에 두면 어느 쪽을 눌러도 부모 이슈가 열려 버린다. Board와 달리 여기서는
-    // 템플릿에 핸들러를 주지 않고 DOM에 실린 id로 위임 처리한다.
-    const rollup_toggle = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.rtile .worker-card__roll-toggle')
-    );
-    if (rollup_toggle) {
-      const parent_id = rollup_toggle.dataset.rollParent;
-      if (parent_id) {
-        if (rollup_expanded_ids.has(parent_id)) {
-          rollup_expanded_ids.delete(parent_id);
-        } else {
-          rollup_expanded_ids.add(parent_id);
-        }
-        doRender();
-      }
-      return;
-    }
-    const rollup_child = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.rtile .worker-card__roll-child')
-    );
-    if (rollup_child) {
-      const child_id = rollup_child.dataset.childId;
-      if (child_id && gotoIssue) {
-        gotoIssue(child_id);
-      }
       return;
     }
     // 타일 기본 클릭 = 이슈 상세 (UI-k59y §3): 다른 모든 레인 표면과 같은 규칙.

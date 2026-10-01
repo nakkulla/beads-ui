@@ -4836,13 +4836,6 @@ html[data-theme='dark'] {
   overflow-wrap: anywhere;
 }
 
-/* 타일 안에서 rollup은 카드의 footer가 아니라 그냥 한 줄이다. */
-.rtile .worker-card__roll {
-  border-top: none;
-  margin-top: var(--sp-4);
-  padding-top: 0;
-}
-
 .rtile__meta .worker-usage {
   margin-left: 0;
   font-size: var(--fs-chip);

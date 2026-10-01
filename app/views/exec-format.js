@@ -1,14 +1,8 @@
-import { html } from 'lit-html';
-
 /**
  * Shared execution-ownership formatters: `planned_execution` and `exec_receipt`
- * presentation used by the Worker running tiles, the child rollup chips and the
- * issue detail panel. These moved out of the retired Board card module when the
- * Board tab was retired (UI-p7s2 §7.3) — the Board was never their only reader.
- */
-
-/**
- * @typedef {import('lit-html').TemplateResult} TemplateResult
+ * presentation used by the Worker running tiles and the issue detail panel.
+ * These moved out of the retired Board card module when the Board tab was
+ * retired (UI-p7s2 §7.3) — the Board was never their only reader.
  */
 
 /**
@@ -186,59 +180,4 @@ export function formatPlannedExecution(planned_execution, exec_receipt) {
     label,
     title: `${planned_summary}${actual_summary}`
   };
-}
-
-/**
- * @param {{ kind: string, reason: string | null } | { units: unknown[] } | null | undefined} planned_execution
- * @param {ExecReceipt | null | undefined} exec_receipt
- * @returns {TemplateResult | null}
- */
-function plannedExecutionChip(planned_execution, exec_receipt) {
-  const presentation = formatPlannedExecution(planned_execution, exec_receipt);
-  return presentation
-    ? html`<span
-        class="ctl-chip ctl-chip--planned"
-        data-kind=${presentation.kind}
-        title=${presentation.title}
-        >${presentation.label}</span
-      >`
-    : null;
-}
-
-/**
- * @param {ExecReceipt | null | undefined} exec_receipt
- * @returns {TemplateResult | null}
- */
-function compactExecutionChip(exec_receipt) {
-  if (!exec_receipt) {
-    return null;
-  }
-  const label = executionKindLabel(exec_receipt.kind);
-  if (!label) {
-    return null;
-  }
-  return html`<span
-    class="ctl-chip ctl-chip--exec-receipt"
-    title=${`exec_receipt ${formatExecReceipt(exec_receipt)}`}
-    >${`실행 · ${label}`}</span
-  >`;
-}
-
-/**
- * Planned/actual execution chips for one rollup child row. Renders nothing when
- * the child carries no valid `planned_execution` presentation.
- *
- * @param {any} child
- * @returns {TemplateResult | null}
- */
-export function childExecChips(child) {
-  const planned_execution = child?.workflow?.chips?.planned_execution;
-  const exec_receipt = child?.workflow?.chips?.exec_receipt;
-  if (!formatPlannedExecution(planned_execution, exec_receipt)) {
-    return null;
-  }
-  return html`<span class="worker-card__roll-child-chips">
-    ${plannedExecutionChip(planned_execution, exec_receipt)}
-    ${compactExecutionChip(exec_receipt)}
-  </span>`;
 }

@@ -23,13 +23,8 @@ import {
   providerUsageBadges,
   usageTooltip
 } from '../../utils/token-usage.js';
-import { childRollupTemplate } from '../child-rollup.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
-import {
-  childExecChips,
-  execReceiptActor,
-  formatExecReceipt
-} from '../exec-format.js';
+import { execReceiptActor, formatExecReceipt } from '../exec-format.js';
 import {
   failureCategory,
   failureNextAction,
@@ -132,12 +127,6 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * available for the shared resume action.
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4.1).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4.1).
- * @property {import('../../utils/child-rollup.js').ChildRollup|null} [rollup] -
- * Child 진행도 (worker-card-exec-chips §3.3) — 큐 스냅샷에 페이즈명이 없으므로
- * `children N/M` + 현재 child 줄이 "지금 어디까지"에 답하는 유일한 사실이다.
- * child가 없는 bead는 null이고 블록 자체가 생략된다 (fail-quiet).
- * @property {boolean} [rollup_expanded] - 이 bead의 child 목록이 펼쳐져 있는지.
- * 기본은 접힘이고, 펼침 상태는 뷰가 소유한다.
  * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} [exec_chips] -
  * 오케(이 attempt의 기록값) + 워커(현재 해석값) 실행 설정 칩 (§2.2); 둘 다
  * 없으면 null이고 meta 줄이 그만큼 짧아진다.
@@ -1549,13 +1538,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           )
         : failed
           ? ''
-          : html`${monitor_body}${tile.rollup
-                ? childRollupTemplate(tile.rollup, {
-                    parent_id: tile.bead_id,
-                    expanded: tile.rollup_expanded === true,
-                    childChips: childExecChips
-                  })
-                : ''}
+          : html`${monitor_body}
               ${landing
                 ? html`<div class="rtile__landing">
                     <span

@@ -300,7 +300,7 @@ describe('worker/bd-metadata repair issue operations', () => {
   });
 });
 
-describe('worker/bd-metadata child listing (post-merge sweep)', () => {
+describe('worker/bd-metadata child listing', () => {
   /**
    * @param {Record<string, any[]>} by_selector - Keyed by the selector flag.
    */
@@ -359,36 +359,7 @@ describe('worker/bd-metadata child listing (post-merge sweep)', () => {
 
     const children = await createBdMetadata({ runJson }).listChildren('UI-1');
 
-    expect(children).toEqual([
-      { id: 'UI-1.1', status: 'open', parent_child_dep: true }
-    ]);
-  });
-
-  test('reports which relation found each child', async () => {
-    const runJson = listRunner({
-      parent: [{ id: 'UI-1.1', status: 'open' }],
-      metadata: [{ id: 'UI-1.2', status: 'open' }]
-    });
-
-    const children = await createBdMetadata({ runJson }).listChildren('UI-1');
-
-    expect(children.map((c) => [c.id, c.parent_child_dep])).toEqual([
-      ['UI-1.1', true],
-      ['UI-1.2', false]
-    ]);
-  });
-
-  test('marks a child carrying BOTH relations as a dependency child', async () => {
-    const runJson = listRunner({
-      parent: [{ id: 'UI-1.1', status: 'open' }],
-      metadata: [{ id: 'UI-1.1', status: 'open' }]
-    });
-
-    const children = await createBdMetadata({ runJson }).listChildren('UI-1');
-
-    expect(children).toEqual([
-      { id: 'UI-1.1', status: 'open', parent_child_dep: true }
-    ]);
+    expect(children).toEqual([{ id: 'UI-1.1', status: 'open' }]);
   });
 
   test('throws on a malformed payload rather than sweeping nothing', async () => {
@@ -431,8 +402,8 @@ describe('worker/bd-metadata fail-closed writes (implementation review 2026-07-2
   });
 });
 
-describe('worker/bd-metadata carryover mutators (2026-09-01 sweep carryover §2)', () => {
-  test('creates a top-level issue with the succession metadata inline', async () => {
+describe('worker/bd-metadata top-level issue mutators', () => {
+  test('creates a top-level issue with the identity metadata inline', async () => {
     const run = vi.fn(async () => ({
       code: 0,
       stdout: JSON.stringify({ id: 'UI-9' }),
@@ -474,7 +445,7 @@ describe('worker/bd-metadata carryover mutators (2026-09-01 sweep carryover §2)
     );
   });
 
-  test('never passes --parent, so a successor cannot be created as a phase child', async () => {
+  test('never passes --parent, so the created issue stays top-level', async () => {
     /** @type {string[][]} */
     const argv = [];
     const run = vi.fn(async (/** @type {string[]} */ args) => {
@@ -589,7 +560,7 @@ describe('worker/bd-metadata carryover mutators (2026-09-01 sweep carryover §2)
     expect(rows[0].metadata.carried_from).toBe('UI-1.2');
   });
 
-  test('throws rather than reporting no successor when the lookup fails', async () => {
+  test('throws rather than reporting no match when the lookup fails', async () => {
     const runJson = vi.fn(async () => ({
       code: 1,
       stdoutJson: null,
@@ -620,7 +591,7 @@ describe('worker/bd-metadata carryover mutators (2026-09-01 sweep carryover §2)
     expect(rows).toEqual([{ id: 'UI-1', dependency_type: 'blocks' }]);
   });
 
-  test('refuses every carryover write on a closed effect gate', async () => {
+  test('refuses every top-level write on a closed effect gate', async () => {
     const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
     const meta = createBdMetadata({
       run,

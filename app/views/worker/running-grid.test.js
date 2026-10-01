@@ -316,8 +316,7 @@ describe('worker failed running tile template', () => {
         tileInput({
           failed: true,
           failure: failureInput(),
-          usage: { input_tokens: 1 },
-          rollup: /** @type {any} */ ({ total: 1, done: 0 })
+          usage: { input_tokens: 1 }
         }),
         5000,
         null,
@@ -669,18 +668,19 @@ describe('worker failed running tile template', () => {
     ).toBe('메인');
   });
 
-  test('renders the child rollup collapsed with its current child line', () => {
+  test('draws no child rollup for a tile that still carries one', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(
       runningGridTemplate([
-        {
+        /** @type {any} */ ({
           bead_id: 'UI-7',
           attempt_id: 'attempt-7',
           title: 'parent work',
           runner: 'claude',
           model: 'opus',
           started_at: null,
+          rollup_expanded: true,
           rollup: {
             total: 3,
             count: 1,
@@ -691,81 +691,12 @@ describe('worker failed running tile template', () => {
               { id: 'UI-7.3', title: 'T3', status: 'open' }
             ]
           }
-        }
-      ]),
-      mount
-    );
-
-    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
-
-    expect(
-      tile.querySelector('.worker-card__roll-toggle')?.textContent
-    ).toContain('children 1/3');
-    expect(
-      tile.querySelector('.worker-card__roll-current')?.textContent
-    ).toContain('T2: 서버 배선');
-    expect(tile.querySelector('.worker-card__roll-list')).toBeNull();
-    expect(tile.querySelector('.rtile__child')).toBeNull();
-  });
-
-  test('expands the child rollup list when the tile says it is expanded', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    render(
-      runningGridTemplate([
-        {
-          bead_id: 'UI-8',
-          attempt_id: 'attempt-8',
-          title: 'parent work',
-          runner: 'claude',
-          model: 'opus',
-          started_at: null,
-          rollup_expanded: true,
-          rollup: {
-            total: 2,
-            count: 0,
-            current: null,
-            children: [
-              { id: 'UI-8.1', title: 'T1', status: 'open' },
-              { id: 'UI-8.2', title: 'T2', status: 'open' }
-            ]
-          }
-        }
-      ]),
-      mount
-    );
-
-    const rows = mount.querySelectorAll('.worker-card__roll-child');
-
-    expect(rows).toHaveLength(2);
-    expect(
-      Array.from(
-        rows,
-        (row) => /** @type {HTMLElement} */ (row).dataset.childId
-      )
-    ).toEqual(['UI-8.1', 'UI-8.2']);
-  });
-
-  test('omits the rollup block when the tile has no rollup', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    render(
-      runningGridTemplate([
-        {
-          bead_id: 'UI-9',
-          attempt_id: 'attempt-9',
-          title: 'childless work',
-          runner: 'claude',
-          model: 'opus',
-          started_at: null,
-          rollup: null
-        }
+        })
       ]),
       mount
     );
 
     expect(mount.querySelector('.worker-card__roll')).toBeNull();
-    expect(mount.querySelector('.rtile__child')).toBeNull();
   });
 
   test('renders a landing progress line only on the tile carrying its projection', () => {
@@ -1601,21 +1532,12 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
     expect(tile.querySelector('.rtile__meta')).toBeNull();
   });
 
-  // 슬롯 3(진행)은 활동·위임 줄 하나가 아니다 — 자식 롤업과 landing 진행도
-  // 같은 슬롯이므로 의존 칩은 그 셋 모두의 뒤에 선다 (§2).
+  // 슬롯 3(진행)은 활동·위임 줄 하나가 아니다 — landing 진행도도 같은
+  // 슬롯이므로 의존 칩은 그 둘 모두의 뒤에 선다 (§2).
   test('draws the dependency chips after every progress line', () => {
     const tile = renderTile(
       {
         lane_origin: { kind: 'parallel' },
-        rollup: /** @type {any} */ ({
-          total: 2,
-          count: 1,
-          current: { id: 'UI-t1.2', title: 'T2' },
-          children: [
-            { id: 'UI-t1.1', title: 'T1', status: 'closed' },
-            { id: 'UI-t1.2', title: 'T2', status: 'in_progress' }
-          ]
-        }),
         landing: /** @type {any} */ ({
           step: 'deploy',
           label: '배포 중',
@@ -1645,7 +1567,6 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
 
     const deps = order.indexOf('worker-deps worker-deps--secondary');
     expect(deps).toBeGreaterThan(order.indexOf('rtile__activity'));
-    expect(deps).toBeGreaterThan(order.indexOf('worker-card__roll'));
     expect(deps).toBeGreaterThan(order.indexOf('rtile__landing'));
     expect(deps).toBeLessThan(order.indexOf('rtile__meta'));
   });

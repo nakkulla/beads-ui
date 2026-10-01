@@ -21,9 +21,8 @@ export const MERGE_STEPS = [
   { step: 'base', label: 'base', index: 2 },
   { step: 'verify', label: '검증', index: 3 },
   { step: 'deploy', label: '배포', index: 4 },
-  { step: 'child', label: '자식', index: 5 },
-  { step: 'branch', label: '브랜치', index: 6 },
-  { step: 'close', label: 'close', index: 7 }
+  { step: 'branch', label: '브랜치', index: 5 },
+  { step: 'close', label: 'close', index: 6 }
 ];
 
 /**
@@ -33,7 +32,8 @@ export const MERGE_STEPS = [
  * This ONE list is where the client's copy of the cursor order lives: the
  * stepper, the step label, the `N단계 중 M단계` counter and the stalled sentence
  * all read it, so a server that grows a step is followed in one place
- * (UI-i60a §1 added `post_merge_jobs`, taking the sequence from five to six).
+ * (UI-i60a §1 added `post_merge_jobs`; the contract's abolition of Phase
+ * children later took the child sweep out again, leaving five steps).
  *
  * @type {Array<{ step: string, label: string }>}
  */
@@ -41,7 +41,6 @@ export const CLEANUP_STEPS = [
   { step: 'base_containment', label: 'base 포함 확인' },
   { step: 'repo_operations', label: '저장소 작업' },
   { step: 'post_merge_jobs', label: '머지 후 잡' },
-  { step: 'child_sweep', label: '자식 정리' },
   { step: 'branch_cleanup', label: '브랜치 정리' },
   { step: 'parent_close', label: '부모 close' }
 ];
@@ -62,7 +61,6 @@ const UNPOSITIONED_CURSOR_STEPS = new Set([
 const MERGE_PROGRESS_STEPS = {
   merging: { step: 'merge', label: '머지 중' },
   base_containment: { step: 'base', label: 'base 확인 중' },
-  child_sweep: { step: 'child', label: '자식 정리 중' },
   branch_cleanup: { step: 'branch', label: '브랜치 정리 중' },
   parent_close: { step: 'close', label: '부모 close 중' }
 };

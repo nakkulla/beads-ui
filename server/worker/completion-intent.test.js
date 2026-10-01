@@ -1572,7 +1572,7 @@ describe('worker/completion-intent action driver', () => {
     });
     store.recordCleanupFailure(DRIVER_WS, {
       bead_id: 'UI-root',
-      step: 'child_sweep',
+      step: 'branch_cleanup',
       reason: 'bd_read_failed',
       detail: 'bd unavailable'
     });
@@ -1587,7 +1587,7 @@ describe('worker/completion-intent action driver', () => {
     });
     expect(fact).toMatchObject({
       state: 'cleanup_repairable',
-      failure_key: { stage: 'child_sweep', reason: 'bd_read_failed' }
+      failure_key: { stage: 'branch_cleanup', reason: 'bd_read_failed' }
     });
     expect(action).toEqual({
       kind: 'needs_human',

@@ -66,7 +66,7 @@ import { RECEIPT_METADATA_KEYS } from './receipt-check.js';
  *   listByMetadataField: (key: string, value: string) => Promise<Record<string, any>[]>,
  *   listDeps: (bead_id: string) => Promise<Record<string, any>[]>,
  *   updateFields: (bead_id: string, input: { set?: Record<string, string>, unset?: string[], status?: string, append_notes?: string }) => Promise<void>,
- *   listChildren: (bead_id: string) => Promise<{ id: string, status: string, parent_child_dep: boolean }[]>,
+ *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>,
  *   scanBeads: () => Promise<{ pr_rows: ExternalPrScanRow[], statuses: Record<string, string>, generation?: number, fresh?: boolean }>
  * }}
  */
@@ -395,15 +395,15 @@ export function createBdMetadata(deps = {}) {
     /**
      * Create ONE issue whose id bd allocates, returning that id.
      *
-     * `--parent` is deliberately not reachable from here: the carryover
-     * successor of a swept phase child is a TOP-LEVEL bead (2026-09-01 sweep
-     * carryover spec §2-3), and a wrapper able to pass `--parent` would let a
-     * caller rebuild the very phase-child relation the conversion dissolves.
+     * `--parent` is deliberately not reachable from here: the issue this
+     * creates is a TOP-LEVEL bead, and a wrapper able to pass `--parent` would
+     * let a caller rebuild a parent-child relation the caller has no business
+     * making.
      *
      * Identity metadata is written AT CREATE (`--metadata` JSON), not by a
-     * following update: the retry lookup finds an already-created successor by
-     * its `carried_from`, so a successor created without it would be invisible
-     * to the next attempt, which would then create a SECOND one.
+     * following update: a retry lookup finds an already-created issue by that
+     * metadata, so an issue created without it would be invisible to the next
+     * attempt, which would then create a SECOND one.
      *
      * @param {{ title: string, description?: string, type: string, priority: number, metadata?: Record<string, string> }} input
      * @returns {Promise<string>} The id bd allocated.
@@ -440,9 +440,8 @@ export function createBdMetadata(deps = {}) {
 
     /**
      * One dependency edge, `<from_id>` depending on `<to_id>`. A non-zero exit
-     * throws like every other mutator: the carryover conversion verifies its
-     * edges before closing the original child, and a swallowed failure would
-     * close it over a successor nothing links back.
+     * throws like every other mutator: a caller that verifies its edges before
+     * moving on would otherwise proceed over an edge that never landed.
      *
      * @param {string} from_id
      * @param {string} to_id
@@ -461,9 +460,9 @@ export function createBdMetadata(deps = {}) {
      * Close one issue WITH its contract reason, then confirm it.
      *
      * A reasoned close is a different act from {@link setStatus}: the reason is
-     * the durable record of WHY a child the sweep never executed is being
-     * closed (carried over, out of scope, canceled), and the sweep must not be
-     * able to produce a reasonless close for those children. The readback is
+     * the durable record of WHY a bead is being closed without having been
+     * executed, and a caller must not be able to produce a reasonless close for
+     * it. The readback is
      * the same rule the parent close follows — a close nobody confirmed is not
      * a close.
      *
@@ -488,13 +487,13 @@ export function createBdMetadata(deps = {}) {
     /**
      * Every issue carrying one exact metadata key=value, WHOLE rows.
      *
-     * The carryover lookup needs the candidate's own `metadata` to verify the
-     * identity triple, so this returns bd's rows untouched instead of the
-     * `{id, status}` projection {@link listChildren} builds.
+     * A lookup needs the candidate's own `metadata` to verify its identity, so
+     * this returns bd's rows untouched instead of the `{id, status}` projection
+     * {@link listChildren} builds.
      *
      * Fail-closed like the other listings: a failed query THROWS rather than
-     * reading as "no successor exists", which is the one answer that would make
-     * the conversion create a duplicate.
+     * reading as "no such issue exists", which is the one answer that would make
+     * a caller create a duplicate.
      *
      * @param {string} key
      * @param {string} value
@@ -532,8 +531,8 @@ export function createBdMetadata(deps = {}) {
      * shape is bare `{issue_id, depends_on_id, type}` edges. Both survive here
      * untouched because interpreting them is the caller's job.
      *
-     * Fail-closed: an unreadable dependency list must stop the carryover
-     * conversion, not read as "the edges are missing".
+     * Fail-closed: an unreadable dependency list must stop the caller, not read
+     * as "the edges are missing".
      *
      * @param {string} bead_id
      * @returns {Promise<Record<string, any>[]>}
@@ -620,8 +619,7 @@ export function createBdMetadata(deps = {}) {
     },
 
     /**
-     * Direct children of a bead, for the post-merge linked-Beads sweep
-     * (worker-phase2 §6 / pr-finish contract order).
+     * Direct children of a bead, for the discard coordinator's child handling.
      *
      * TWO relations are queried and unioned, because they are genuinely
      * different things and either one alone under-reports:
@@ -629,51 +627,40 @@ export function createBdMetadata(deps = {}) {
      *     `bd create --parent` records (AGENTS.md's documented relation),
      *   - `--metadata-field parent=<id>` — the phase-child metadata convention
      *     written separately by the workflow skill.
-     * A child carrying only one of them is still a child, and a sweep that
-     * missed it would close the parent over an open leaf.
+     * A child carrying only one of them is still a child, and a caller that
+     * missed it would act over an open leaf.
      *
-     * `--all` is required: a sweep must SEE already-closed children so it can
+     * `--all` is required: the caller must SEE already-closed children so it can
      * skip them, and the default listing hides closed issues. A non-zero bd exit
-     * THROWS, mirroring the other mutators — the sweep is fail-closed, and an
-     * unreadable child list must stop the cleanup rather than read as "this
-     * bead has no children, go ahead and close the parent".
+     * THROWS, mirroring the other mutators — an unreadable child list must stop
+     * the caller rather than read as "this bead has no children".
      *
      * A MALFORMED payload on a zero exit throws for the same reason
      * (implementation review 2026-07-26): skipping a selector whose rows are not
-     * an array silently reduced the sweep to nothing and closed the parent over
-     * its open leaves. The exit code and the payload shape are BOTH checked; an
-     * empty array is the only thing that may mean "no children".
-     *
-     * `parent_child_dep` reports WHICH relation found the row, because the two
-     * are not interchangeable to the sweep's classifier (2026-09-01 sweep
-     * carryover spec §1): a phase child is one linked by the `parent-child`
-     * dependency OR by `metadata.parent`, and only the caller that knows the
-     * relation can tell an unexecuted phase child from an ordinary linked bead.
-     * A row found by both relations carries `true`.
+     * an array silently reduced the listing to nothing. The exit code and the
+     * payload shape are BOTH checked; an empty array is the only thing that may
+     * mean "no children".
      *
      * @param {string} bead_id
-     * @returns {Promise<{ id: string, status: string, parent_child_dep: boolean }[]>}
+     * @returns {Promise<{ id: string, status: string }[]>}
      */
     async listChildren(bead_id) {
-      /** @type {Map<string, { id: string, status: string, parent_child_dep: boolean }>} */
+      /** @type {Map<string, { id: string, status: string }>} */
       const merged = new Map();
-      /** @type {{ flags: string[], parent_child_dep: boolean }[]} */
+      /** @type {string[][]} */
       const selectors = [
-        { flags: ['--parent', bead_id], parent_child_dep: true },
-        {
-          flags: ['--metadata-field', `parent=${bead_id}`],
-          parent_child_dep: false
-        }
+        ['--parent', bead_id],
+        ['--metadata-field', `parent=${bead_id}`]
       ];
-      for (const selector of selectors) {
+      for (const flags of selectors) {
         const r = await runJson(
           'list',
-          ['list', '--json', '--all', '--limit', '0', ...selector.flags],
+          ['list', '--json', '--all', '--limit', '0', ...flags],
           opts
         );
         if (!r || r.ok !== true) {
           throw new Error(
-            `bd list ${selector.flags.join(' ')} failed (${
+            `bd list ${flags.join(' ')} failed (${
               r && r.error ? r.error.code : 'no result'
             })`
           );
@@ -691,17 +678,12 @@ export function createBdMetadata(deps = {}) {
           ) {
             continue;
           }
-          const prior = merged.get(row.id);
-          if (prior) {
-            prior.parent_child_dep =
-              prior.parent_child_dep || selector.parent_child_dep;
-            continue;
+          if (!merged.has(row.id)) {
+            merged.set(row.id, {
+              id: row.id,
+              status: typeof row.status === 'string' ? row.status : ''
+            });
           }
-          merged.set(row.id, {
-            id: row.id,
-            status: typeof row.status === 'string' ? row.status : '',
-            parent_child_dep: selector.parent_child_dep
-          });
         }
       }
       return [...merged.values()];

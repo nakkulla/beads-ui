@@ -1,19 +1,9 @@
-import { render } from 'lit-html';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vitest';
 import {
-  childExecChips,
   execReceiptActor,
   formatExecReceipt,
   formatPlannedExecution
 } from './exec-format.js';
-
-/** @type {HTMLElement} */
-let mount;
-
-beforeEach(() => {
-  document.body.innerHTML = '<div id="m"></div>';
-  mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-});
 
 describe('views/exec-format receipt strings', () => {
   test('joins the pinned effort onto the actor', () => {
@@ -186,38 +176,5 @@ describe('views/exec-format planned execution', () => {
     expect(presentation?.title).toContain(
       `exec_receipt delegated:fable:high@${sha}`
     );
-  });
-});
-
-describe('views/exec-format child chips', () => {
-  test('renders the planned and actual chips under a worker class', () => {
-    const sha = 'e'.repeat(40);
-
-    render(
-      childExecChips({
-        workflow: {
-          chips: {
-            planned_execution: { kind: 'delegated', reason: null },
-            exec_receipt: {
-              kind: 'delegated',
-              actor: 'fable',
-              effort: 'high',
-              sha
-            }
-          }
-        }
-      }),
-      mount
-    );
-
-    expect(
-      mount.querySelector('.worker-card__roll-child-chips')
-    ).not.toBeNull();
-    expect(mount.querySelectorAll('.ctl-chip--planned').length).toBe(1);
-    expect(mount.querySelectorAll('.ctl-chip--exec-receipt').length).toBe(1);
-  });
-
-  test('renders nothing for a child without a planned execution', () => {
-    expect(childExecChips({ workflow: { chips: {} } })).toBeNull();
   });
 });

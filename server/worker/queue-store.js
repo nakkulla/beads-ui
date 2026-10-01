@@ -2832,6 +2832,30 @@ function clone(value) {
 }
 
 /**
+ * Post-merge cleanup steps a later build retired, each mapped to the step that
+ * took over its place. The child sweep left the sequence when the contract
+ * abolished Phase children, so a record stored while it was a step resumes at
+ * the step that follows it.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+const RETIRED_CLEANUP_STEPS = Object.freeze({
+  child_sweep: 'branch_cleanup'
+});
+
+/**
+ * One stored cleanup step or cursor name, read forward past a retired step.
+ *
+ * @param {string} step
+ * @returns {string}
+ */
+function currentCleanupStep(step) {
+  return Object.hasOwn(RETIRED_CLEANUP_STEPS, step)
+    ? RETIRED_CLEANUP_STEPS[step]
+    : step;
+}
+
+/**
  * @param {unknown} entry
  * @returns {QueueEntry|null}
  */
@@ -2849,7 +2873,7 @@ function normalizeEntry(entry) {
     cleanup_cursor:
       typeof entry.cleanup_cursor === 'string' &&
       entry.cleanup_cursor.length > 0
-        ? entry.cleanup_cursor
+        ? currentCleanupStep(entry.cleanup_cursor)
         : null,
     head_ref:
       typeof entry.head_ref === 'string' && entry.head_ref.length > 0
@@ -4944,7 +4968,10 @@ function normalizeQueue(raw) {
       }
       if (isRecord(value) && typeof value.reason === 'string') {
         q.cleanup_failed[bead_id] = {
-          step: typeof value.step === 'string' ? value.step : '',
+          step:
+            typeof value.step === 'string'
+              ? currentCleanupStep(value.step)
+              : '',
           reason: value.reason,
           bd_restore:
             typeof value.bd_restore === 'string' ? value.bd_restore : null,
@@ -9421,7 +9448,6 @@ export function createQueueStore(options = {}) {
         'base_containment',
         'repo_operations',
         'post_merge_jobs',
-        'child_sweep',
         'branch_cleanup',
         'parent_close'
       ];

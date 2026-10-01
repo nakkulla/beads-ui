@@ -48,11 +48,7 @@ const LEGACY_OPERATION_STEPS = new Set([
   'deploy'
 ]);
 
-const LEGACY_CLOSURE_STEPS = new Set([
-  'child_sweep',
-  'branch_cleanup',
-  'parent_close'
-]);
+const LEGACY_CLOSURE_STEPS = new Set(['branch_cleanup', 'parent_close']);
 
 const FETCH_TIMEOUT_MS = 60_000;
 

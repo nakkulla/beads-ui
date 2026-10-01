@@ -1643,7 +1643,7 @@ describe('monitor PR 대기 — 정리 재시도 라벨 (UI-jw27 §3)', () => {
         workspace({
           pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
           cleanup_failed: {
-            'A-1': { step: 'child_sweep', reason: 'boom', at: 42 }
+            'A-1': { step: 'branch_cleanup', reason: 'boom', at: 42 }
           },
           pr_observations: {
             'A-1': {
@@ -5261,16 +5261,11 @@ describe('lane model group retention (UI-4tud §4.3)', () => {
 });
 
 describe('lane model running tile worker fields (UI-4tud §4.3)', () => {
-  test('carries the failed tile discard, conflict, base and rollup facts', () => {
+  test('carries the failed tile discard, conflict and base facts', () => {
     const lanes = buildLanes(
       [
         workspace({
           declared_base: 'main',
-          bead_overlay: {
-            'A-1': {
-              rollup: { total: 3, count: 1, current: null, children: [] }
-            }
-          },
           attempts: {
             t1: {
               attempt_id: 't1',
@@ -5291,14 +5286,8 @@ describe('lane model running tile worker fields (UI-4tud §4.3)', () => {
     expect([
       tile.conflict_resolution,
       tile.base_exception,
-      tile.rollup,
       !!tile.discard
-    ]).toEqual([
-      true,
-      '→ release',
-      { total: 3, count: 1, current: null, children: [] },
-      true
-    ]);
+    ]).toEqual([true, '→ release', true]);
   });
 
   test('inherits conflict resolution through the resumed attempt chain', () => {
@@ -6227,7 +6216,7 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
     }
   });
 
-  test('overlays the carryover successors on the done row (UI-btj6 §3)', () => {
+  test('ships no carried_to on the done row', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -6238,21 +6227,33 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
       [state()]
     );
 
-    expect(lanes.done[0].carried_to).toEqual(['A-7', 'A-8']);
+    expect(lanes.done[0]).not.toHaveProperty('carried_to');
   });
 
-  test('omits the carryover successors on a row outside the done lane', () => {
+  test('ships no rollup on the running tile', () => {
     const lanes = buildLanes(
       [
         workspace({
-          queue: [{ bead_id: 'A-2' }],
-          bead_overlay: { 'A-2': { carried_to: ['A-7'] } }
+          bead_overlay: {
+            'A-1': {
+              rollup: { total: 3, count: 1, current: null, children: [] }
+            }
+          },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              cause: 'verify_failed',
+              finished_at: 9
+            }
+          }
         })
       ],
       [state()]
     );
 
-    expect(lanes.queue[0].carried_to).toBeUndefined();
+    expect(lanes.running[0]).not.toHaveProperty('rollup');
   });
 
   test('leaves a bead without an overlay key unchanged', () => {

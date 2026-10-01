@@ -255,9 +255,9 @@ describe('resolveFailureContext (UI-jw27 §4)', () => {
     const queue = {
       cleanup_failed: {
         [BEAD]: {
-          step: 'child_sweep',
-          reason: 'child_close_failed',
-          detail: 'RD-1.1'
+          step: 'branch_cleanup',
+          reason: 'local_branch_delete_failed',
+          detail: 'RD-1'
         }
       }
     };
@@ -266,9 +266,9 @@ describe('resolveFailureContext (UI-jw27 §4)', () => {
 
     expect(context).toEqual({
       failure_class: '정리 중단',
-      reason: 'child_close_failed',
-      stage: 'child_sweep',
-      detail: 'RD-1.1'
+      reason: 'local_branch_delete_failed',
+      stage: 'branch_cleanup',
+      detail: 'RD-1'
     });
   });
 
