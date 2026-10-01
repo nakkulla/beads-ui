@@ -220,10 +220,13 @@ describe('design-system CSS rules (§3.4 check 1)', () => {
  * Ratchet (§3.4 check 2): raw colour literals in any declaration plus raw
  * lengths (any number with a unit) in size declarations, over every stylesheet
  * outside tokens.css. UI-kqta lowered it from 470 (base d24f47a1: 194 colours +
- * 276 sizes) to 428 (194 + 234), both counted with this scanner; UI-k5s2 takes
- * it to 0. Lower the number when a change removes raw values — never raise it.
+ * 276 sizes) to 428 (194 + 234); the UI-k5s2 tokens unit moved the legacy
+ * palette into tokens.css and tokenized the legacy shared CSS and base.css,
+ * taking it to 62 (11 + 51, all in styles.css below the `.op-btn` heading). All
+ * counted with this scanner; UI-k5s2 takes it to 0. Lower the number when a
+ * change removes raw values — never raise it.
  */
-const RATCHET_BASELINE = 428;
+const RATCHET_BASELINE = 62;
 
 describe('design-system ratchet (§3.4 check 2)', () => {
   test('keeps raw colours and raw sizes outside tokens.css at or under the baseline', () => {

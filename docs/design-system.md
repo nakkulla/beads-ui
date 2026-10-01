@@ -34,9 +34,35 @@ beads-ui의 지금 색·글꼴은 그대로 두고, 조작(버튼·입력·선�
 - coarse 값은 `@media (any-pointer: coarse), (max-width: 640px)`에서 부품이 바꿔
   읽는다. 토큰 자체를 미디어 쿼리로 바꾸지 않는다.
 - 간격·모서리·글자의 나머지 단계는 기존 `--sp-*`·`--r-*`·`--fs-*`다.
-- 옛 `app/styles.css` `:root`의 `--space-1..8`은 같은 값의 `--sp-*` 별칭이다.
-  `--space-9`·`--space-10`과 옛 색 이름(`--fg`·`--muted`·`--border`·`--panel-bg`
-  ·`--control-*`·`--button-*`)은 tokens.css에 같은 값이 없어 지금 값을 유지한다.
+- 옛 팔레트(예전 `app/styles.css` 맨 앞의 `:root`·테마 블록)는 `tokens.css` 끝의
+  "Legacy palette" 묶음으로 옮겼다(UI-k5s2). 블록 순서와 선택자는 그대로다.
+  `--space-1..10`은 같은 값의 `--sp-*` 별칭이다(9·10은 `--sp-18`·`--sp-20`). 옛
+  색 이름(`--fg`·`--muted`·`--border`·`--panel-bg`·`--control-*`·`--button-*`
+  ·`--badge-*`)은 역할 토큰과 값이 달라 지금 값을 유지한다.
+
+옛 공용 CSS(`styles.css` 앞부분·`base.css`)에 리터럴로 적혀 있던 값은 같은 값
+그대로 `tokens.css`의 `legacy role tokens` 묶음에 옮겼다(UI-k5s2). 단계에 없는
+크기와 테마와 무관한 색만 있다:
+
+| 토큰                                                                                                    | 값                   | 쓰는 곳                                  |
+| ------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------- |
+| `--sp-11`·`--sp-18`·`--sp-20`                                                                           | 11·18·20px           | 간격 단계의 빈칸                         |
+| `--r-12`                                                                                                | 12px                 | 치명 오류 대화상자·아이콘 모서리         |
+| `--r-pill`                                                                                              | 999px                | 원형 스피너·스위치 손잡이·점             |
+| `--fs-tab`                                                                                              | 13.5px               | 저장소 캡슐 안 탭 글자                   |
+| `--fs-title-xl`·`--fs-title-2xl`·`--fs-title-3xl`                                                       | 18·20·22px           | 앱 제목·마크다운 제목·치명 오류 제목     |
+| `--fs-section-label`                                                                                    | 0.78rem              | 상세 요약 구역 제목                      |
+| `--fs-code-inline`                                                                                      | 0.9em                | 문서 뷰어 인라인 코드                    |
+| `--py-chip`                                                                                             | 1.5px                | 칩·칩 모양 입력의 위아래 여백            |
+| `--h-header-item`                                                                                       | 22px                 | 헤더 줄 항목(구분선·로딩·캡슐 버튼) 높이 |
+| `--h-touch-target`                                                                                      | 44px                 | 손가락 표적·패널 머리 최소 높이          |
+| `--h-viewport`                                                                                          | 100dvh               | 화면 높이                                |
+| `--mix-black`·`--mix-white`·`--mix-ink`                                                                 | #000·#fff·#111       | `color-mix()` 재료                       |
+| `--danger`·`--fg-on-danger`                                                                             | #b00020·#fff         | 옛 위험 버튼·오류 글자, 그 위 글자       |
+| `--danger-strong`·`--danger-strong-bg`·`--danger-strong-border`                                         | #c62828와 그 10%·30% | 이슈 삭제 버튼                           |
+| `--fatal-error-glow`·`--pre-border-mix`                                                                 | #fca5a5·#1f2937      | 치명 오류 대화상자 빛·코드 상자 테두리   |
+| `--scrim-dialog`·`--scrim-fatal`·`--scrim-overlay`·`--scrim-viewer`                                     | 반투명 검정·남색     | 대화상자·상세 오버레이·문서 뷰어 뒤 막   |
+| `--shadow-switch-knob`·`--shadow-menu`·`--shadow-overlay`·`--shadow-fatal-dialog`·`--shadow-fatal-icon` | `box-shadow` 전체 값 | 테마 스위치·메뉴·상세 오버레이·치명 오류 |
 
 ## 2. 부품
 
@@ -121,8 +147,10 @@ Monitor 전용 표면과 같이 쓰는 클래스(`.worker-pane__toggle`·`.worke
    CSS(`styles.css`·`base.css`·`components.css`)의 원시 값 수가 기록된
    기준(`RATCHET_BASELINE`)을 넘지 않는다. 세는 규칙: 주석을 뺀 모든 선언 값의
    원시 색 리터럴 하나하나 + 위 크기 속성 선언 값의 길이 리터럴 하나하나(토큰
-   밖·fallback 포함). UI-kqta 착지 전 470(색 194 + 크기 276) → 428 (194 + 234).
-   원시 값을 줄인 변경은 기준을 같이 내린다. UI-k5s2가 0으로 내린다.
+   밖·fallback 포함). UI-kqta 착지 전 470(색 194 + 크기 276) → 428 (194 + 234,
+   UI-kqta) → 62 (11 + 51, UI-k5s2 tokens — 옛 팔레트를 `tokens.css`로 옮기고
+   `.op-btn` 표지 앞의 레거시 공용 CSS와 `base.css`를 토큰으로). 원시 값을 줄인
+   변경은 기준을 같이 내린다. UI-k5s2가 0으로 내린다.
 3. **부품 렌더 검사** — Worker 탭 본문(데스크톱·모바일)과 카드 렌더러 변형을
    그린 결과에서 모든 `button`·`input`·`select`가 `.op-btn`·`.ui-input`
    ·`.ui-select`·`.ui-chip` 중 하나를 갖거나 `.ui-field` 안에 있다. 겹친 표면은
