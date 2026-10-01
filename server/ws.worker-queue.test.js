@@ -4627,3 +4627,353 @@ describe('worker-queue session_active projection (UI-0a2m)', () => {
     expect(snapshot.session_active).toEqual([]);
   });
 });
+
+describe('ws worker-queue-place-plan (UI-ruwu §3)', () => {
+  const PLAN = 'docs/superpowers/plans/2026-09-29-plan-issue-group.md';
+
+  afterEach(() => {
+    snapshot_seam.response = { ok: false };
+    __setUnattachedAdmissionCheckForTest(async () => ({ ok: true }));
+    getWorkerRuntime().runnableCache.clear();
+  });
+
+  /**
+   * @param {string} id
+   * @param {string} anchor
+   * @param {string} [status]
+   * @returns {Record<string, unknown>}
+   */
+  function planIssue(id, anchor, status = 'open') {
+    return {
+      id,
+      title: id,
+      status,
+      labels: [],
+      metadata: { plan_path: PLAN, plan_task_anchor: anchor },
+      updated_at: '2026-09-29T00:00:00Z'
+    };
+  }
+
+  /**
+   * @param {Array<Record<string, unknown>>} all
+   * @param {Array<Record<string, unknown>>} [blocked]
+   */
+  function seedPlan(all, blocked = []) {
+    snapshot_seam.response = {
+      ok: true,
+      stale: false,
+      snapshot: {
+        generation: 1,
+        all,
+        ready_explain: { ready: [], blocked }
+      }
+    };
+  }
+
+  /**
+   * @param {{ sent: string[] }} sock
+   * @param {Record<string, unknown>} [patch]
+   * @returns {Promise<any>}
+   */
+  async function placePlan(sock, patch = {}) {
+    await send(sock, 'pp', 'worker-queue-place-plan', {
+      plan_path: PLAN,
+      lane: 's1',
+      expected_revision: 0,
+      ...patch
+    });
+    return replyFor(sock, 'pp');
+  }
+
+  /**
+   * @param {any} queue
+   * @param {string} lane_id
+   * @returns {string[]}
+   */
+  function laneIds(queue, lane_id) {
+    return queue.serial_lanes
+      .find((/** @type {any} */ lane) => lane.id === lane_id)
+      .entries.map((/** @type {any} */ entry) => entry.bead_id);
+  }
+
+  test('puts two unplaced members into the serial lane in anchor order in one revision', async () => {
+    seedPlan([planIssue('UI-b', 'Phase 2'), planIssue('UI-a', 'Phase 1')]);
+    const sock = fakeSocket();
+
+    const reply = await placePlan(sock);
+
+    expect(reply.payload.applied).toBe(true);
+    expect(reply.payload.placed).toEqual(['UI-a', 'UI-b']);
+    expect(reply.payload.skipped).toEqual([]);
+    expect(reply.payload.queue.revision).toBe(1);
+    expect(laneIds(reply.payload.queue, 's1')).toEqual(['UI-a', 'UI-b']);
+    expect(reply.payload.queue.queue).toEqual([]);
+  });
+
+  test('lets a blocks edge between members override the anchor order', async () => {
+    seedPlan(
+      [planIssue('UI-a', 'Phase 1'), planIssue('UI-b', 'Phase 2')],
+      [{ id: 'UI-a', blocked_by: ['UI-b'] }]
+    );
+    const sock = fakeSocket();
+
+    const reply = await placePlan(sock);
+
+    expect(laneIds(reply.payload.queue, 's1')).toEqual(['UI-b', 'UI-a']);
+  });
+
+  test('seats a sibling already in the lane after the blocker placed now', async () => {
+    seedPlan(
+      [
+        planIssue('UI-a', 'Phase 1'),
+        planIssue('UI-b', 'Phase 2'),
+        planIssue('UI-c', 'Phase 3')
+      ],
+      [{ id: 'UI-c', blocked_by: ['UI-b'] }]
+    );
+    const sock = fakeSocket();
+    await send(sock, 'm0', 'worker-queue-place', {
+      bead_id: 'UI-c',
+      lane: 's1',
+      expected_revision: 0
+    });
+
+    const reply = await placePlan(sock, { expected_revision: 1 });
+
+    expect(reply.payload.placed).toEqual(['UI-a', 'UI-b']);
+    expect(laneIds(reply.payload.queue, 's1')).toEqual([
+      'UI-a',
+      'UI-b',
+      'UI-c'
+    ]);
+  });
+
+  test('fans the placed group out to subscribers', async () => {
+    seedPlan([planIssue('UI-a', 'Phase 1'), planIssue('UI-b', 'Phase 2')]);
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    await placePlan(sock);
+
+    const pushed = queueSnapshots(sock).filter(
+      (snapshot) => snapshot.revision === 1
+    );
+    expect(pushed.length).toBeGreaterThan(0);
+    expect(laneIds(pushed[0], 's1')).toEqual(['UI-a', 'UI-b']);
+  });
+
+  test('takes the single place path when one member is eligible', async () => {
+    seedPlan([
+      planIssue('UI-a', 'Phase 1', 'closed'),
+      planIssue('UI-b', 'Phase 2')
+    ]);
+    const sock = fakeSocket();
+
+    const reply = await placePlan(sock);
+
+    expect(reply.payload.applied).toBe(true);
+    expect(reply.payload.placed).toEqual(['UI-b']);
+    expect(laneIds(reply.payload.queue, 's1')).toEqual(['UI-b']);
+  });
+
+  test('writes nothing when no member is eligible', async () => {
+    seedPlan([
+      planIssue('UI-a', 'Phase 1', 'closed'),
+      planIssue('UI-b', 'Phase 2', 'in_progress')
+    ]);
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    const reply = await placePlan(sock);
+
+    expect(reply.payload).toMatchObject({
+      applied: false,
+      conflict: false,
+      reason: 'no_eligible',
+      placed: [],
+      skipped: []
+    });
+    expect(reply.payload.queue.revision).toBe(0);
+    expect(queueSnapshots(sock).filter((s) => s.revision > 0)).toEqual([]);
+  });
+
+  test('leaves a member already in the queue where it is', async () => {
+    seedPlan([planIssue('UI-a', 'Phase 1'), planIssue('UI-b', 'Phase 2')]);
+    const sock = fakeSocket();
+    await send(sock, 'm0', 'worker-queue-place', {
+      bead_id: 'UI-a',
+      expected_revision: 0
+    });
+
+    const reply = await placePlan(sock, { expected_revision: 1 });
+
+    expect(reply.payload.placed).toEqual(['UI-b']);
+    expect(
+      reply.payload.queue.queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-a']);
+    expect(laneIds(reply.payload.queue, 's1')).toEqual(['UI-b']);
+  });
+
+  test('skips a member the server admission refuses without placing or recording it', async () => {
+    seedPlan([
+      planIssue('UI-a', 'Phase 1'),
+      planIssue('UI-b', 'Phase 2'),
+      planIssue('UI-c', 'Phase 3')
+    ]);
+    __setUnattachedAdmissionCheckForTest(async (_root, bead_id) =>
+      bead_id === 'UI-b'
+        ? { ok: false, reason: 'worker_ineligible' }
+        : { ok: true }
+    );
+    const sock = fakeSocket();
+
+    const reply = await placePlan(sock);
+
+    expect(reply.payload.skipped).toEqual([
+      { id: 'UI-b', reason: 'worker_ineligible' }
+    ]);
+    expect(reply.payload.placed).toEqual(['UI-a', 'UI-c']);
+    expect(laneIds(reply.payload.queue, 's1')).toEqual(['UI-a', 'UI-c']);
+    expect(reply.payload.queue.admission).toEqual({});
+  });
+
+  test('takes the single place path when admission leaves one survivor', async () => {
+    seedPlan([planIssue('UI-a', 'Phase 1'), planIssue('UI-b', 'Phase 2')]);
+    __setUnattachedAdmissionCheckForTest(async (_root, bead_id) =>
+      bead_id === 'UI-a' ? { ok: false, reason: 'spec_missing' } : { ok: true }
+    );
+    const sock = fakeSocket();
+
+    const reply = await placePlan(sock);
+
+    expect(reply.payload.placed).toEqual(['UI-b']);
+    expect(reply.payload.skipped).toEqual([
+      { id: 'UI-a', reason: 'spec_missing' }
+    ]);
+  });
+
+  test('writes nothing and records no refusal when admission refuses every member', async () => {
+    seedPlan([planIssue('UI-a', 'Phase 1'), planIssue('UI-b', 'Phase 2')]);
+    __setUnattachedAdmissionCheckForTest(async () => ({
+      ok: false,
+      reason: 'worker_ineligible'
+    }));
+    const sock = fakeSocket();
+
+    const reply = await placePlan(sock);
+
+    expect(reply.payload).toMatchObject({
+      applied: false,
+      reason: 'no_eligible',
+      placed: []
+    });
+    expect(reply.payload.skipped.map((/** @type {any} */ s) => s.id)).toEqual([
+      'UI-a',
+      'UI-b'
+    ]);
+    expect(reply.payload.queue.revision).toBe(0);
+    expect(reply.payload.queue.admission).toEqual({});
+  });
+
+  test('refuses a stale expected_revision as a conflict before any admission work', async () => {
+    seedPlan([planIssue('UI-a', 'Phase 1'), planIssue('UI-b', 'Phase 2')]);
+    const admission = vi.fn(async () => ({ ok: true }));
+    __setUnattachedAdmissionCheckForTest(admission);
+    const sock = fakeSocket();
+    await send(sock, 'm0', 'worker-queue-place', {
+      bead_id: 'UI-other',
+      expected_revision: 0
+    });
+    admission.mockClear();
+
+    const reply = await placePlan(sock, { expected_revision: 0 });
+
+    expect(reply.payload).toMatchObject({ applied: false, conflict: true });
+    expect(admission).not.toHaveBeenCalled();
+    expect(laneIds(reply.payload.queue, 's1')).toEqual([]);
+  });
+
+  test('reports a conflict when the queue moves during admission', async () => {
+    seedPlan([planIssue('UI-a', 'Phase 1'), planIssue('UI-b', 'Phase 2')]);
+    const store = getWorkerRuntime().queueStore;
+    __setUnattachedAdmissionCheckForTest(async (root, bead_id) => {
+      if (bead_id === 'UI-b') {
+        store.place(root, { expected_revision: 0, bead_id: 'UI-other' });
+      }
+      return { ok: true };
+    });
+    const sock = fakeSocket();
+
+    const reply = await placePlan(sock);
+
+    expect(reply.payload).toMatchObject({
+      applied: false,
+      conflict: true,
+      placed: []
+    });
+    expect(laneIds(reply.payload.queue, 's1')).toEqual([]);
+  });
+
+  test('answers plan_group_not_found for a plan that yields no group', async () => {
+    seedPlan([
+      planIssue('UI-a', 'Phase 1'),
+      { ...planIssue('UI-b', 'Phase 2'), metadata: { plan_path: PLAN } }
+    ]);
+    const sock = fakeSocket();
+
+    const reply = await placePlan(sock);
+
+    expect(reply.payload).toMatchObject({
+      applied: false,
+      reason: 'plan_group_not_found'
+    });
+    expect(reply.payload.queue.revision).toBe(0);
+  });
+
+  test('answers snapshot_unavailable when the workspace snapshot cannot be read', async () => {
+    snapshot_seam.response = { ok: false };
+    const sock = fakeSocket();
+
+    const reply = await placePlan(sock);
+
+    expect(reply.payload).toMatchObject({
+      applied: false,
+      reason: 'snapshot_unavailable'
+    });
+  });
+
+  test('refuses a parallel lane as a bad request', async () => {
+    seedPlan([planIssue('UI-a', 'Phase 1'), planIssue('UI-b', 'Phase 2')]);
+    const sock = fakeSocket();
+
+    await placePlan(sock, { lane: 'parallel' });
+
+    expect(replyFor(sock, 'pp').error.code).toBe('bad_request');
+    expect(getWorkerRuntime().queueStore.snapshot(process.cwd()).revision).toBe(
+      0
+    );
+  });
+
+  test('refuses a serial lane beyond the configured count as a bad request', async () => {
+    seedPlan([planIssue('UI-a', 'Phase 1'), planIssue('UI-b', 'Phase 2')]);
+    const sock = fakeSocket();
+
+    await placePlan(sock, { lane: 's5' });
+
+    expect(replyFor(sock, 'pp').error.code).toBe('bad_request');
+  });
+
+  test('refuses a payload without a plan_path as a bad request', async () => {
+    const sock = fakeSocket();
+
+    await placePlan(sock, { plan_path: '  ' });
+
+    expect(replyFor(sock, 'pp').error.code).toBe('bad_request');
+  });
+
+  test('is a client-sendable message type', () => {
+    expect(MESSAGE_TYPES).toContain('worker-queue-place-plan');
+  });
+});

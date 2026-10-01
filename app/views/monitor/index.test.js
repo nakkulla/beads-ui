@@ -3098,12 +3098,18 @@ describe('views/monitor 세션 타일 drawer (UI-4xzk §6.4)', () => {
 });
 
 describe('monitor 겹침 칩 (UI-qm12 §5.3, 클릭은 UI-8x90 §4.3)', () => {
+  let spec_seq = 0;
+
   /**
+   * Each declaration reads from its OWN spec: two beads sharing a spec or a
+   * plan are one plan's issues and draw no overlap chip (UI-ruwu §4).
+   *
    * @param {string[]} [scope]
    * @returns {{ scope: string[], artifacts: string[] }}
    */
   function declared(scope = ['server/worker']) {
-    return { scope, artifacts: ['docs/spec.md'] };
+    spec_seq += 1;
+    return { scope, artifacts: [`docs/spec-${spec_seq}.md`] };
   }
 
   test('draws one chip per counterpart with no +n fold', () => {
@@ -4029,12 +4035,17 @@ describe('접힌 레인 띠 드롭·행 조작 드래그 가드 (UI-5ksp REVISE)
 });
 
 describe('monitor PR 대기·완료 레인 겹침 칩 (UI-e9sg)', () => {
+  let spec_seq = 0;
+
   /**
+   * Each declaration reads from its OWN spec (UI-ruwu §4).
+   *
    * @param {string[]} [scope]
    * @returns {{ scope: string[], artifacts: string[] }}
    */
   function declared(scope = ['server/worker']) {
-    return { scope, artifacts: ['docs/spec.md'] };
+    spec_seq += 1;
+    return { scope, artifacts: [`docs/spec-${spec_seq}.md`] };
   }
 
   test('draws the overlap chip on a PR 대기 row', () => {
@@ -4840,5 +4851,347 @@ describe('views/monitor PR 대기 보관 (UI-sd12 §3.4)', () => {
     click(mount, '.worker-shelved__summary');
 
     expect(window.localStorage.getItem('bdui.monitor.shelved-open')).toBe('1');
+  });
+});
+
+describe('monitor plan 묶음 칩과 일괄 배치 (UI-ruwu §2·§3)', () => {
+  const PLAN_PATH = 'docs/superpowers/plans/2026-09-29-plan-landing.md';
+  const PLAN_GROUP = {
+    plan_path: PLAN_PATH,
+    slug: 'plan-landing',
+    index: 2,
+    total: 3,
+    members: [
+      { id: 'B-p1', anchor: 'Phase 1', status: 'open', blocked_by: [] },
+      {
+        id: 'B-p2',
+        anchor: 'Phase 2-3',
+        status: 'open',
+        blocked_by: ['B-p1']
+      },
+      { id: 'B-p3', anchor: 'Phase 4', status: 'open', blocked_by: ['B-p2'] }
+    ]
+  };
+
+  /**
+   * Repo B is not the connected repo (`WS_A`), has its own revision and its
+   * own serial lanes; `B-p1` waits in `s2`.
+   *
+   * @param {Record<string, any>} [over]
+   * @param {Record<string, any>} [input]
+   */
+  function setupPlan(over = {}, input = {}) {
+    return setup({
+      workspaces: [
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          revision: 7,
+          queue: [{ bead_id: 'B-p2' }],
+          serial_lane_count: 2,
+          serial_lanes: [
+            { id: 's1', entries: [] },
+            { id: 's2', entries: [{ bead_id: 'B-p1' }] }
+          ],
+          bead_plan_groups: { 'B-p1': PLAN_GROUP, 'B-p2': PLAN_GROUP },
+          ...over
+        })
+      ],
+      workspaces_state: [
+        state({
+          root_dir: WS_B,
+          name: 'repo-b',
+          revision: 7,
+          issue_prefix: 'B'
+        })
+      ],
+      ...input
+    });
+  }
+
+  const CHIP = '[data-bead-id="B-p2"] [data-chip-key="plan"]';
+
+  /**
+   * @param {HTMLElement} mount
+   */
+  function clickPlace(mount) {
+    click(mount, '.chip-popover [data-action="plan-place"]');
+  }
+
+  test('draws the 5a chip on a waiting row from the queue decoration', () => {
+    const { mount, view } = setupPlan();
+
+    view.load();
+
+    expect(el(mount, CHIP).textContent?.trim()).toBe('plan plan-landing 2/3');
+  });
+
+  test('draws the 5a chip on a running tile', () => {
+    const { mount, view } = setupPlan({
+      queue: [],
+      attempts: {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'B-p2',
+          status: 'running',
+          started_at: NOW - 1000
+        }
+      }
+    });
+
+    view.load();
+
+    expect(
+      el(
+        mount,
+        '.rtile[data-bead-id="B-p2"] [data-chip-key="plan"]'
+      ).textContent?.trim()
+    ).toBe('plan plan-landing 2/3');
+  });
+
+  test('draws the 5a chip on a candidate card from its own row', () => {
+    const { mount, view } = setupPlan({
+      queue: [],
+      bead_plan_groups: {},
+      runnable: [{ bead_id: 'B-p2', title: 'cand', plan_group: PLAN_GROUP }]
+    });
+
+    view.load();
+
+    expect(
+      el(
+        mount,
+        '.worker-card[data-bead-id="B-p2"] [data-chip-key="plan"]'
+      ).textContent?.trim()
+    ).toBe('plan plan-landing 2/3');
+  });
+
+  test('draws the 5a chip on a PR 대기 row and a done row', () => {
+    const { mount, view } = setupPlan({
+      queue: [],
+      pr_wait: [{ bead_id: 'B-p2' }],
+      done: [{ bead_id: 'B-p1', added_at: NOW }],
+      bead_plan_groups: { 'B-p1': PLAN_GROUP, 'B-p2': PLAN_GROUP }
+    });
+
+    view.load();
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('.worker-mini [data-chip-key="plan"]'),
+        (chip) => chip.closest('.worker-mini')?.getAttribute('data-bead-id')
+      ).sort()
+    ).toEqual(['B-p1', 'B-p2']);
+  });
+
+  test('draws no chip on a row outside every plan', () => {
+    const { mount, view } = setupPlan({ bead_plan_groups: {} });
+
+    view.load();
+
+    expect(mount.querySelector('[data-chip-key="plan"]')).toBeNull();
+  });
+
+  test('opens the popup with the members in order and the current one emphasized', () => {
+    const { mount, view } = setupPlan();
+    view.load();
+
+    click(mount, CHIP);
+
+    const popup = el(mount, '.chip-popover');
+    expect(
+      Array.from(popup.querySelectorAll('li .worker-dep__open'), (node) =>
+        node.textContent?.trim()
+      )
+    ).toEqual(['B-p1', 'B-p2', 'B-p3']);
+    expect(
+      popup.querySelector('li.chip-popover__line--current .worker-dep__open')
+        ?.textContent
+    ).toContain('B-p2');
+    expect(
+      popup.querySelector('.chip-popover__member-blocker')?.textContent
+    ).toContain('⛓ B-p1');
+  });
+
+  test('opens the popup under a running tile', () => {
+    const { mount, view } = setupPlan({
+      queue: [],
+      attempts: {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'B-p2',
+          status: 'running',
+          started_at: NOW - 1000
+        }
+      }
+    });
+    view.load();
+
+    click(mount, '.rtile[data-bead-id="B-p2"] [data-chip-key="plan"]');
+
+    expect(
+      mount.querySelector('.rtile[data-bead-id="B-p2"] .chip-popover')
+    ).not.toBeNull();
+  });
+
+  test('preselects the lane where the first member waits', () => {
+    const { mount, view } = setupPlan();
+    view.load();
+
+    click(mount, CHIP);
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        el(mount, '.chip-popover [data-plan-lane]')
+      ).value
+    ).toBe('s2');
+  });
+
+  test('sends the placement to the repo of the item, not the connected one', async () => {
+    const { mount, view, sent } = setupPlan(
+      {},
+      {
+        transport: async () => ({
+          applied: true,
+          conflict: false,
+          placed: ['B-p2', 'B-p3'],
+          skipped: []
+        })
+      }
+    );
+    view.load();
+    click(mount, CHIP);
+
+    clickPlace(mount);
+    await flushMicrotasks();
+
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-place-plan',
+        payload: {
+          root_dir: WS_B,
+          plan_path: PLAN_PATH,
+          lane: 's2',
+          expected_revision: 7
+        }
+      }
+    ]);
+  });
+
+  test('sends the lane the user picked', async () => {
+    const { mount, view, sent } = setupPlan(
+      {},
+      { transport: async () => ({ applied: true, placed: [], skipped: [] }) }
+    );
+    view.load();
+    click(mount, CHIP);
+    /** @type {HTMLSelectElement} */ (
+      el(mount, '.chip-popover [data-plan-lane]')
+    ).value = 's1';
+
+    clickPlace(mount);
+    await flushMicrotasks();
+
+    expect(sent[0].payload.lane).toBe('s1');
+  });
+
+  test('omits the exit line when the repo has no serial lane', () => {
+    const { mount, view } = setupPlan({
+      serial_lane_count: 0,
+      serial_lanes: []
+    });
+    view.load();
+
+    click(mount, CHIP);
+
+    expect(mount.querySelector('.chip-popover')).not.toBeNull();
+    expect(mount.querySelector('.chip-popover__exit')).toBeNull();
+  });
+
+  test('toasts the skipped issues of the reply', async () => {
+    const { mount, view } = setupPlan(
+      {},
+      {
+        transport: async () => ({
+          applied: true,
+          conflict: false,
+          placed: ['B-p2'],
+          skipped: [{ id: 'B-p1', reason: 'worker-ineligible' }]
+        })
+      }
+    );
+    view.load();
+    click(mount, CHIP);
+
+    clickPlace(mount);
+    await flushMicrotasks();
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      'plan 배치: 1개 추가 · 건너뜀 B-p1(worker-ineligible)'
+    );
+  });
+
+  test('marks a blocker the placement skipped as 세션 필요', async () => {
+    const { mount, view } = setupPlan(
+      {},
+      {
+        transport: async () => ({
+          applied: true,
+          conflict: false,
+          placed: ['B-p2'],
+          skipped: [{ id: 'B-p1', reason: 'worker-ineligible' }]
+        })
+      }
+    );
+    view.load();
+    click(mount, CHIP);
+
+    clickPlace(mount);
+    await flushMicrotasks();
+
+    expect(
+      el(mount, '.chip-popover .chip-popover__member-blocker')
+        .textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).toBe('⛓ B-p1 · 세션 필요');
+  });
+
+  test('retries once on a stale revision with the revision the reply carries', async () => {
+    const { mount, view, sent } = setupPlan(
+      {},
+      {
+        transport: async () => ({
+          applied: false,
+          conflict: true,
+          placed: [],
+          skipped: [],
+          queue: { revision: 9, queue: [], serial_lanes: [] }
+        })
+      }
+    );
+    view.load();
+    click(mount, CHIP);
+
+    clickPlace(mount);
+    await flushMicrotasks();
+
+    expect(sent.map((entry) => entry.payload.expected_revision)).toEqual([
+      7, 9
+    ]);
+    expect(document.querySelector('.toast')?.textContent).toContain(
+      '목록을 다시 읽고'
+    );
+  });
+
+  test('switches to the repo of the plan before opening a member issue', async () => {
+    const { mount, view, gotoIssue, switchWorkspace } = setupPlan();
+    view.load();
+    click(mount, CHIP);
+
+    click(mount, '.chip-popover [data-dep-id="B-p3"]');
+    await flushMicrotasks();
+
+    expect(switchWorkspace).toHaveBeenCalledWith(WS_B);
+    expect(gotoIssue).toHaveBeenCalledWith('B-p3');
   });
 });

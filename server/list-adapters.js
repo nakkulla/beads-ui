@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { buildPlanGroupIndex } from '../app/utils/plan-group.js';
 import { isBdProtocolFailure } from './bd-json.js';
 import { runBdJsonProjected } from './bd.js';
 import {
@@ -19,6 +20,7 @@ import {
 } from './workspace-snapshot-runtime.js';
 
 /**
+ * @import { PlanGroup } from '../app/utils/plan-group.js'
  * @import { WorkspaceSnapshot } from './workspace-snapshot-coordinator.js'
  */
 
@@ -244,6 +246,7 @@ async function fetchWorkspaceSnapshotProjection(spec, options) {
     snapshot_result.snapshot,
     options.cwd
   );
+  items = attachPlanGroups(items, snapshot_result.snapshot);
   /** @type {FetchListResultSuccess} */
   const result = {
     ok: true,
@@ -283,6 +286,112 @@ function attachWorkerCreationOwners(items, snapshot, root_dir) {
       return item;
     }
     return { ...item, worker_created_from_root_dir: owners[0].root_dir };
+  });
+}
+
+/** @type {WeakMap<object, Map<string, PlanGroup>>} */
+const plan_group_index_by_snapshot = new WeakMap();
+
+/**
+ * Bead id to `plan_group` for one workspace generation (UI-ruwu §1).
+ *
+ * Computed from `snapshot.all`, the generation every projection already holds,
+ * so no group read ever issues a `bd` command. Open blockers come from the same
+ * `ready_explain.blocked` rows the Blocked column reads. The result is memoized
+ * per snapshot object because the list, runnable and queue projections of one
+ * generation all ask for it.
+ *
+ * @param {unknown} snapshot
+ * @returns {Map<string, PlanGroup>}
+ */
+export function planGroupIndexFor(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') {
+    return new Map();
+  }
+  const cached = plan_group_index_by_snapshot.get(snapshot);
+  if (cached) {
+    return cached;
+  }
+  const record = /** @type {Record<string, any>} */ (snapshot);
+  /** @type {Map<string, string[]>} */
+  const blockers_by_id = new Map();
+  const blocked = record.ready_explain?.blocked;
+  if (Array.isArray(blocked)) {
+    for (const entry of blocked) {
+      if (entry && typeof entry === 'object' && typeof entry.id === 'string') {
+        blockers_by_id.set(entry.id, extractBlockerIds(entry));
+      }
+    }
+  }
+  const index = buildPlanGroupIndex(
+    Array.isArray(record.all) ? record.all : [],
+    (id) => blockers_by_id.get(id) ?? []
+  );
+  plan_group_index_by_snapshot.set(snapshot, index);
+  return index;
+}
+
+/**
+ * The plan 묶음 a `plan_path` names in one workspace generation, or null when
+ * that path yields no valid group (fail-quiet).
+ *
+ * @param {unknown} snapshot
+ * @param {string} plan_path
+ * @returns {PlanGroup | null}
+ */
+export function planGroupForPath(snapshot, plan_path) {
+  for (const group of planGroupIndexFor(snapshot).values()) {
+    if (group.plan_path === plan_path) {
+      return group;
+    }
+  }
+  return null;
+}
+
+/**
+ * Fingerprint of one `plan_group` for the subscription delta. A sibling closing
+ * or gaining a blocker changes this row's group while the row's own timestamps
+ * stand still, so without it in `decoration_rev` the delta would never upsert.
+ *
+ * @param {PlanGroup} plan_group
+ * @returns {string}
+ */
+function planGroupRev(plan_group) {
+  const members = plan_group.members
+    .map(
+      (member) =>
+        `${member.id}:${member.anchor}:${member.status}:${member.blocked_by.join('+')}`
+    )
+    .join(',');
+  return `plan_group=${plan_group.plan_path}:${plan_group.index}/${plan_group.total}:${members}`;
+}
+
+/**
+ * Attach the plan 묶음 summary to every item that belongs to a group.
+ *
+ * @param {NormalizedIssue[]} items
+ * @param {WorkspaceSnapshot} snapshot
+ * @returns {NormalizedIssue[]}
+ */
+function attachPlanGroups(items, snapshot) {
+  const index = planGroupIndexFor(snapshot);
+  if (index.size === 0) {
+    return items;
+  }
+  return items.map((item) => {
+    const plan_group = index.get(item.id);
+    if (!plan_group) {
+      return item;
+    }
+    const previous_rev =
+      typeof item.decoration_rev === 'string' ? item.decoration_rev : '';
+    return {
+      ...item,
+      plan_group,
+      decoration_rev: [previous_rev, planGroupRev(plan_group)]
+        .filter((part) => part.length > 0)
+        .join(DECORATION_FIELD_SEPARATOR)
+    };
   });
 }
 

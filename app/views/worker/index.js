@@ -120,6 +120,11 @@ import {
 } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
 import { placeMenuLanes } from './placement.js';
+import {
+  createPlanSkipMemory,
+  placePlanFromPopup,
+  planPlaceLanesOf
+} from './plan-place.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
 import {
   providerResumeDialogTemplate,
@@ -1401,7 +1406,7 @@ function prWaitRow(
   const cleanup_active = isPrWaitCleanupActive(merge_step);
   // The click's own in-flight window. It locks the buttons exactly as a merge
   // step does — a second click has nothing to land on — but it is NOT a merge
-  // step: the server is still taking the request, and drawing 머지 중 1/7 here
+  // step: the server is still taking the request, and drawing 머지 중 1/6 here
   // made the bar run forward and then fall back to a queue position the moment
   // the real snapshot arrived.
   const queueing =
@@ -1423,7 +1428,6 @@ function prWaitRow(
     [
       'repo_operations',
       'post_merge_jobs',
-      'child_sweep',
       'branch_cleanup',
       'parent_close'
     ].includes(cleanup_failed.step) &&
@@ -1893,6 +1897,12 @@ export function createWorkerView(mount_element, options = {}) {
    */
   const chip_popover = createChipPopover(() => doRender());
   /**
+   * plan 묶음 팝업이 기억하는 마지막 일괄 배치 응답의 `skipped` (UI-ruwu §3).
+   * 서버는 거절을 남기지 않으므로 이 화면의 기억이 `세션 필요` 표시의 유일한
+   * 재료다.
+   */
+  const plan_skips = createPlanSkipMemory();
+  /**
    * 이 렌더의 겹침 파생 (UI-jbao). 한 레포 화면의 위치 어휘(`후보`·`#n`·`s1 #n`)
    * 는 모니터의 것과 다르므로 워커 탭이 자기 비교 집합으로 다시 판정한다.
    *
@@ -2029,15 +2039,6 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {Set<string>}
    */
   const revise_pending = new Set();
-  /**
-   * Beads whose running-tile child rollup is EXPANDED
-   * (worker-card-exec-chips §3.3). Only the expanded ones are remembered — the
-   * list is collapsed by default — and the set lives as long as the view, so a
-   * queue-snapshot re-render never forgets what the user opened.
-   *
-   * @type {Set<string>}
-   */
-  const rollup_expanded_ids = new Set();
   /**
    * PR 대기 행 투영의 렌더 1회 메모. `topTemplate`(자동 머지 버튼의 N)과
    * `lanesTemplate`(행 자체)이 같은 모델을 두 번 읽으므로, 모델 객체를 키로
@@ -3138,9 +3139,51 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null}
    */
   function popoverOf(item) {
-    return judgementPopoverOf(/** @type {any} */ (item), (chip_key) =>
-      chip_popover.isOpen({ bead_id: item.id, chip_key })
+    return judgementPopoverOf(
+      /** @type {any} */ (item),
+      (chip_key) => chip_popover.isOpen({ bead_id: item.id, chip_key }),
+      planContextOf
     );
+  }
+
+  /**
+   * Surface material of the plan popup (UI-ruwu §3). 저장소는 이 탭의 현재
+   * 워크스페이스고, 알 수 없으면 출구 줄이 서지 않는다 — `root_dir` 없는 요청은
+   * 보내지 않는다.
+   *
+   * @param {any} item
+   * @returns {import('./plan-place.js').PlanPlaceContext|null}
+   */
+  function planContextOf(item) {
+    const root_dir = rootDir();
+    const plan_path = item.plan_group ? item.plan_group.plan_path : '';
+    return {
+      root_dir,
+      lanes: planPlaceLanesOf(currentQueue()),
+      skipped: plan_skips.get(root_dir, String(plan_path))
+    };
+  }
+
+  /**
+   * `plan 전체를 레인에 배치` (UI-ruwu §3). 단건 배치와 같은 큐 revision 규율로
+   * 보내고, 응답의 큐를 먼저 채택해 화면이 팬아웃 푸시를 기다리지 않는다.
+   *
+   * @param {string} plan_path
+   * @param {string} root_dir
+   * @param {string} lane
+   */
+  async function placePlan(plan_path, root_dir, lane) {
+    await placePlanFromPopup({
+      transport,
+      showToast,
+      memory: plan_skips,
+      root_dir,
+      plan_path,
+      lane,
+      revision: currentRevision,
+      adopt
+    });
+    doRender();
   }
 
   /**
@@ -3319,7 +3362,6 @@ export function createWorkerView(mount_element, options = {}) {
             workspace_name: '',
             dependency_chips: chipsWithOverlaps(item) || undefined,
             chip_popover: popoverOf(item),
-            rollup_expanded: rollup_expanded_ids.has(item.id),
             failure: item.failure
               ? {
                   ...item.failure,
@@ -3573,6 +3615,10 @@ export function createWorkerView(mount_element, options = {}) {
             ? {}
             : { filter_match: item.filter_match }),
           workflow: bead_workflow[e.bead_id] || null,
+          // plan 묶음은 레인 모델이 얹은 것을 옮긴다 (UI-ruwu §2): PR 대기 행은 행
+          // 투영이 새로 만드는 객체라 키를 여기서 실어야 하고, 없으면 옮길 것도
+          // 없다 (fail-quiet).
+          ...(item?.plan_group ? { plan_group: item.plan_group } : {}),
           priority: item?.priority,
           from_id: item?.from_id,
           worker_created_from: item?.worker_created_from,
@@ -5174,6 +5220,23 @@ export function createWorkerView(mount_element, options = {}) {
       );
       return;
     }
+    // `plan 전체를 레인에 배치`는 plan 묶음 칩 팝업 안의 출구다 (UI-ruwu §3) —
+    // 위 프로브와 같은 이유로 팝업 조기 반환보다 먼저 잡는다. 레인은 같은 줄의
+    // select가 말하고, 저장소와 plan은 버튼이 실은 값이다.
+    const plan_place = /** @type {HTMLElement|null} */ (
+      target?.closest?.('[data-action="plan-place"]')
+    );
+    if (plan_place) {
+      const lane_select = /** @type {HTMLSelectElement|null} */ (
+        plan_place.parentElement?.querySelector('[data-plan-lane]') || null
+      );
+      void placePlan(
+        plan_place.dataset.planPath || '',
+        plan_place.dataset.rootDir || '',
+        lane_select ? lane_select.value : ''
+      );
+      return;
+    }
     // 팝업 내부의 나머지 클릭은 카드 클릭(상세 열기)으로 흐르지 않는다.
     if (target?.closest?.('.chip-popover')) {
       return;
@@ -5645,34 +5708,6 @@ export function createWorkerView(mount_element, options = {}) {
     }
     // Clicks inside the drawer are owned by the drawer's own handlers.
     if (target?.closest?.('.worker-drawer-host')) {
-      return;
-    }
-    // rollup 토글·child 행은 타일의 기본 클릭(이슈 상세)보다 앞선다 (§3.4):
-    // 뒤에 두면 어느 쪽을 눌러도 부모 이슈가 열려 버린다. Board와 달리 여기서는
-    // 템플릿에 핸들러를 주지 않고 DOM에 실린 id로 위임 처리한다.
-    const rollup_toggle = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.rtile .worker-card__roll-toggle')
-    );
-    if (rollup_toggle) {
-      const parent_id = rollup_toggle.dataset.rollParent;
-      if (parent_id) {
-        if (rollup_expanded_ids.has(parent_id)) {
-          rollup_expanded_ids.delete(parent_id);
-        } else {
-          rollup_expanded_ids.add(parent_id);
-        }
-        doRender();
-      }
-      return;
-    }
-    const rollup_child = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.rtile .worker-card__roll-child')
-    );
-    if (rollup_child) {
-      const child_id = rollup_child.dataset.childId;
-      if (child_id && gotoIssue) {
-        gotoIssue(child_id);
-      }
       return;
     }
     // 타일 기본 클릭 = 이슈 상세 (UI-k59y §3): 다른 모든 레인 표면과 같은 규칙.

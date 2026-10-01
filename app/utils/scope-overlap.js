@@ -59,3 +59,45 @@ export function overlapPrefixes(scope_a, scope_b) {
   }
   return [...prefixes].sort();
 }
+
+/**
+ * Where a declared scope was read from (UI-ruwu §4): the spec and, when the
+ * issue pins one, the plan. Either may be absent — an issue whose scope comes
+ * from its description names neither.
+ *
+ * @typedef {Object} ScopeSource
+ * @property {string} [spec_path]
+ * @property {string} [plan_path]
+ */
+
+/**
+ * The {@link ScopeSource} of a `bead_scope` entry's `artifacts`, which the
+ * server lists spec first and plan second.
+ *
+ * @param {unknown} artifacts
+ * @returns {ScopeSource}
+ */
+export function scopeSourceOf(artifacts) {
+  const list = Array.isArray(artifacts) ? artifacts : [];
+  return {
+    spec_path: typeof list[0] === 'string' ? list[0] : '',
+    plan_path: typeof list[1] === 'string' ? list[1] : ''
+  };
+}
+
+/**
+ * Whether two issues declare their scope from the same spec or the same plan.
+ * The issues one plan landed as share a scope by design, so a `⧉` chip between
+ * them says nothing; a pair that differs on both, or has nothing to compare,
+ * keeps its overlap.
+ *
+ * @param {ScopeSource} left
+ * @param {ScopeSource} right
+ * @returns {boolean}
+ */
+export function sharesScopeSource(left, right) {
+  return (
+    (!!left.spec_path && left.spec_path === right.spec_path) ||
+    (!!left.plan_path && left.plan_path === right.plan_path)
+  );
+}

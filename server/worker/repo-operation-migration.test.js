@@ -273,13 +273,13 @@ describe('worker/repo-operation-migration', () => {
   test('resumes the idempotent closure for a legacy closure-step failure', async () => {
     const queue = fixture('legacy-cleanup-beads-ui.json');
     queue.cleanup_failed['UI-f17c'] = {
-      step: 'child_sweep',
-      reason: 'child_sweep_failed',
+      step: 'parent_close',
+      reason: 'bd_close_failed',
       bd_restore: null,
       at: 1786581584471,
       detail: null
     };
-    queue.pr_wait[0].cleanup_cursor = 'child_sweep';
+    queue.pr_wait[0].cleanup_cursor = 'parent_close';
     const store = storeWith(queue);
     const resumeClosure = vi.fn(async () => ({ ok: true }));
     const migration = migrationWith({

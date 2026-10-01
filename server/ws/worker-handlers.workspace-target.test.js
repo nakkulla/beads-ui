@@ -21,8 +21,20 @@ const state = vi.hoisted(() => ({
   attach_calls: [],
   /** @type {string[]} */
   workspaces: [],
-  merge_reason: 'no_attachment'
+  merge_reason: 'no_attachment',
+  /** @type {{ ok: boolean, stale?: boolean, snapshot?: any }} */
+  snapshot_response: { ok: false }
 }));
+
+// `worker-queue-place-plan` reads its targets from a fresh workspace snapshot;
+// answering it here keeps the table from spawning a real `bd` per repo.
+vi.mock('../workspace-snapshot-runtime.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    requestWorkspaceSnapshot: vi.fn(async () => state.snapshot_response)
+  };
+});
 
 vi.mock('../registry-watcher.js', async (importOriginal) => {
   const actual = /** @type {any} */ (await importOriginal());
@@ -116,6 +128,11 @@ const MUTATIONS = [
     action: 'worker-queue-place',
     run: handlers.handleWorkerQueuePlace,
     payload: { bead_id: 'UI-1', expected_revision: 0 }
+  },
+  {
+    action: 'worker-queue-place-plan',
+    run: handlers.handleWorkerQueuePlacePlan,
+    payload: { plan_path: 'plans/p.md', lane: 's1', expected_revision: 0 }
   },
   {
     action: 'worker-queue-reorder',
@@ -219,6 +236,7 @@ beforeEach(() => {
   state.attach_calls = [];
   state.workspaces = [WS_CONN, WS_TARGET];
   state.merge_reason = 'no_attachment';
+  state.snapshot_response = { ok: false };
   handlers.__resetWorkerQueueForTest();
 });
 
@@ -267,6 +285,76 @@ describe.each(MUTATIONS)('$action workspace targeting (UI-qrfo §5)', (row) => {
     const { keys } = await dispatch(row, { ...row.payload });
 
     expect(keys).toEqual([WS_CONN]);
+  });
+});
+
+describe('worker-queue-place-plan target repo (UI-ruwu §3)', () => {
+  const PLAN = 'docs/superpowers/plans/2026-09-29-plan-issue-group.md';
+
+  /**
+   * @param {string} id
+   * @param {string} anchor
+   * @returns {Record<string, unknown>}
+   */
+  function planIssue(id, anchor) {
+    return {
+      id,
+      status: 'open',
+      metadata: { plan_path: PLAN, plan_task_anchor: anchor }
+    };
+  }
+
+  beforeEach(() => {
+    state.snapshot_response = {
+      ok: true,
+      stale: false,
+      snapshot: {
+        generation: 1,
+        all: [planIssue('UI-a', 'Phase 1'), planIssue('UI-b', 'Phase 2')],
+        ready_explain: { ready: [], blocked: [] }
+      }
+    };
+  });
+
+  const row = /** @type {any} */ (
+    MUTATIONS.find((entry) => entry.action === 'worker-queue-place-plan')
+  );
+
+  test('writes the group into the queue of the repo root_dir names', async () => {
+    await dispatch(row, {
+      ...row.payload,
+      plan_path: PLAN,
+      root_dir: WS_TARGET
+    });
+
+    const store = getWorkerRuntime().queueStore;
+    expect(
+      store.snapshot(WS_TARGET).serial_lanes[0].entries.map((e) => e.bead_id)
+    ).toEqual(['UI-a', 'UI-b']);
+    expect(store.snapshot(WS_CONN).serial_lanes[0].entries).toEqual([]);
+  });
+
+  test('writes into the connection repo only when root_dir is absent', async () => {
+    await dispatch(row, { ...row.payload, plan_path: PLAN });
+
+    const store = getWorkerRuntime().queueStore;
+    expect(
+      store.snapshot(WS_CONN).serial_lanes[0].entries.map((e) => e.bead_id)
+    ).toEqual(['UI-a', 'UI-b']);
+    expect(store.snapshot(WS_TARGET).serial_lanes[0].entries).toEqual([]);
+  });
+
+  test('writes into no repo when root_dir is outside the workspace list', async () => {
+    await dispatch(row, {
+      ...row.payload,
+      plan_path: PLAN,
+      root_dir: WS_FORBIDDEN
+    });
+
+    const store = getWorkerRuntime().queueStore;
+    expect(store.snapshot(WS_CONN).serial_lanes[0].entries).toEqual([]);
+    expect(store.snapshot(WS_TARGET).serial_lanes[0].entries).toEqual([]);
+    expect(store.snapshot(WS_FORBIDDEN).serial_lanes[0].entries).toEqual([]);
   });
 });
 

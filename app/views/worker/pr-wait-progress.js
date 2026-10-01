@@ -16,7 +16,6 @@ const OPERATION_STATE_LABELS = {
 /** @type {Record<string, { step: string, label: string }>} */
 const CURSOR_STEPS = {
   base_containment: { step: 'base', label: 'base 확인 중' },
-  child_sweep: { step: 'child', label: '자식 정리 중' },
   branch_cleanup: { step: 'branch', label: '브랜치 정리 중' },
   parent_close: { step: 'close', label: '부모 close 중' }
 };
@@ -25,7 +24,6 @@ const CURSOR_STEPS = {
 const TRANSIENT_STEPS = {
   merging: { step: 'merge', label: '머지 중' },
   base_containment: CURSOR_STEPS.base_containment,
-  child_sweep: CURSOR_STEPS.child_sweep,
   branch_cleanup: CURSOR_STEPS.branch_cleanup,
   parent_close: CURSOR_STEPS.parent_close
 };
@@ -46,7 +44,7 @@ function isExactOperation(operation, bead_id, merge_sha) {
   if (
     // kind `job` is deliberately absent: the merge card's positions are fixed
     // (`MERGE_STEPS`) and a repository may run any number of jobs, so there is
-    // no honest `N/7` for one. Jobs report on the 저장소 작업 timeline instead.
+    // no honest `N/6` for one. Jobs report on the 저장소 작업 timeline instead.
     !['verify', 'deploy'].includes(operation.kind) ||
     ![...ACTIVE_OPERATION_STATES, ...TERMINAL_OPERATION_STATES].includes(
       operation.state
@@ -160,7 +158,6 @@ export function prWaitProgress(input) {
   // current progress.
   const cursor_after_repo_operations = [
     'post_merge_jobs',
-    'child_sweep',
     'branch_cleanup',
     'parent_close'
   ].includes(

@@ -126,23 +126,11 @@ function warmCache(root_dir, issues) {
  *   fail?: string[],
  *   runnableFails?: string[],
  *   sessionActiveFails?: string[],
- *   titleCache?: any,
- *   carried_to?: Record<string, Record<string, string[]>>
+ *   titleCache?: any
  * }} input
  */
 function build(input) {
   return buildMonitorPipeline({
-    carriedToFor: (key, parent_ids) => {
-      const index = (input.carried_to || {})[key] || {};
-      /** @type {Record<string, string[]>} */
-      const out = {};
-      for (const parent_id of parent_ids) {
-        if (index[parent_id]) {
-          out[parent_id] = index[parent_id];
-        }
-      }
-      return out;
-    },
     // 시드하지 않은 테스트는 차가운 캐시를 본다 — 프로세스 런타임을 건드리지
     // 않도록 seam은 항상 넘긴다.
     titleCache: () => input.titleCache || null,
@@ -834,7 +822,7 @@ describe('buildMonitorPipeline decorated contract (UI-nprg)', () => {
  * assertions below (`out[0]` is an untyped `Record<string, unknown>`).
  *
  * @param {Array<Record<string, unknown>>} out
- * @returns {Record<string, { route?: string, metadata?: Record<string, string>, carried_to?: string[] }>}
+ * @returns {Record<string, { route?: string, metadata?: Record<string, string> }>}
  */
 function overlayOf(out) {
   return /** @type {any} */ (out[0].bead_overlay);
@@ -1083,64 +1071,19 @@ describe('buildMonitorPipeline bead overlay (UI-q1tg §3.1)', () => {
   });
 });
 
-describe('buildMonitorPipeline carryover overlay (UI-ys18 §3.2)', () => {
-  test('carries the carryover successors of a done bead', () => {
+describe('buildMonitorPipeline overlay of a done bead (UI-ruwu §6)', () => {
+  test('ships no carried_to on a done bead', () => {
     const out = build({
       workspaces: [WS_A],
       snapshots: {
         [WS_A]: snapshot({ done: [{ bead_id: 'A-done', added_at: NOW }] })
       },
-      carried_to: { [WS_A]: { 'A-done': ['A-s1', 'A-s2'] } }
+      titleCache: warmCache(WS_A, [
+        { id: 'A-done', title: '완료', workflow: { route: 'quick_fix' } }
+      ])
     });
 
-    expect(overlayOf(out)['A-done'].carried_to).toEqual(['A-s1', 'A-s2']);
-  });
-
-  test('carries the successors even without a title cache record', () => {
-    const out = build({
-      workspaces: [WS_A],
-      snapshots: {
-        [WS_A]: snapshot({ done: [{ bead_id: 'A-done', added_at: NOW }] })
-      },
-      carried_to: { [WS_A]: { 'A-done': ['A-s1'] } }
-    });
-
-    expect(overlayOf(out)['A-done']).toEqual({ carried_to: ['A-s1'] });
-  });
-
-  test('asks the projection for the done ids alone', () => {
-    /** @type {string[][]} */
-    const asked = [];
-    buildMonitorPipeline({
-      titleCache: () => null,
-      listWorkspaces: () => [{ path: WS_A }],
-      listHidden: () => [],
-      snapshotFor: () =>
-        snapshot({
-          queue: [{ bead_id: 'A-q', added_at: NOW }],
-          done: [{ bead_id: 'A-done', added_at: NOW }]
-        }),
-      runnableFor: () => [],
-      sessionActiveFor: () => [],
-      carriedToFor: (_key, parent_ids) => {
-        asked.push([...parent_ids]);
-        return {};
-      }
-    });
-
-    expect(asked).toEqual([['A-done']]);
-  });
-
-  test('omits the key when the projection answers nothing', () => {
-    const out = build({
-      workspaces: [WS_A],
-      snapshots: {
-        [WS_A]: snapshot({ done: [{ bead_id: 'A-done', added_at: NOW }] })
-      },
-      carried_to: { [WS_A]: {} }
-    });
-
-    expect(overlayOf(out)['A-done']).toBeUndefined();
+    expect(overlayOf(out)['A-done']).toEqual({ route: 'quick_fix' });
   });
 });
 
@@ -1856,6 +1799,49 @@ describe('buildMonitorPipeline runnable description scope (UI-f1qy §4.4)', () =
     const row = /** @type {any[]} */ (out[0].runnable)[0];
     expect(Object.hasOwn(row, 'description_scope')).toBe(false);
     expect(Object.hasOwn(row, 'scope_spec_id')).toBe(false);
+  });
+
+  test('ships the plan_group of a runnable candidate unchanged', () => {
+    __setScopeCacheForTest(scopeCacheOver({}));
+    const plan_group = {
+      plan_path: 'docs/superpowers/plans/2026-09-29-plan-issue-group.md',
+      slug: 'plan-issue-group',
+      index: 1,
+      total: 2,
+      members: [
+        { id: 'A-1', anchor: 'Phase 1', status: 'open', blocked_by: [] },
+        { id: 'A-2', anchor: 'Phase 2', status: 'open', blocked_by: ['A-1'] }
+      ]
+    };
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [artifactCandidate('A-1', { plan_group })] }
+    });
+
+    expect(/** @type {any[]} */ (out[0].runnable)[0].plan_group).toEqual(
+      plan_group
+    );
+  });
+
+  test('ships the plan_group even when the scope attach throws', () => {
+    __setScopeCacheForTest(
+      /** @type {any} */ ({
+        peek: () => {
+          throw new Error('scope cache unavailable');
+        }
+      })
+    );
+    const plan_group = { plan_path: 'p.md', slug: 'p', index: 1, total: 2 };
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [artifactCandidate('A-1', { plan_group })] }
+    });
+
+    expect(/** @type {any[]} */ (out[0].runnable)[0].plan_group).toEqual(
+      plan_group
+    );
   });
 
   test('prefers the resolved artifact of a quick_fix row over its description', async () => {

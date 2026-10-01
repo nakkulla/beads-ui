@@ -3978,7 +3978,7 @@ describe('views/worker', () => {
     expect(pane.classList.contains('worker-pane--drag-over')).toBe(false);
   });
 
-  test('running tile shows the current in_progress child in its rollup', () => {
+  test('running tile draws no child rollup for a bead with in_progress children', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const stores = seedCandidates();
     const now = Date.now();
@@ -4019,43 +4019,9 @@ describe('views/worker', () => {
       transport: vi.fn()
     });
 
-    expect(
-      mount.querySelector(
-        '.rtile[data-bead-id="S1"] .worker-card__roll-current'
-      )?.textContent
-    ).toContain('T2: 서버 배선');
-  });
-
-  test('running tile omits the rollup block when the bead has no child', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf({
-        queue: [{ bead_id: 'S1', added_at: 0 }],
-        attempts: {
-          a1: {
-            attempt_id: 'a1',
-            bead_id: 'S1',
-            status: 'running',
-            started_at: Date.now() - 3000
-          }
-        }
-      })
-    );
-
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport: vi.fn()
-    });
-
+    expect(mount.querySelector('.rtile[data-bead-id="S1"]')).not.toBeNull();
     expect(
       mount.querySelector('.rtile[data-bead-id="S1"] .worker-card__roll')
-    ).toBeNull();
-    expect(
-      mount.querySelector(
-        '.rtile[data-bead-id="S1"] .worker-card__roll-current'
-      )
     ).toBeNull();
   });
 
@@ -5922,7 +5888,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
         },
         {
           cleanup_failed: {
-            'RD-1': { step: 'child_sweep', reason: 'boom', at: 1 }
+            'RD-1': { step: 'branch_cleanup', reason: 'boom', at: 1 }
           }
         }
       )
@@ -5943,7 +5909,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
         },
         {
           cleanup_failed: {
-            'RD-1': { step: 'child_sweep', reason: 'boom', at: 1 }
+            'RD-1': { step: 'branch_cleanup', reason: 'boom', at: 1 }
           },
           discard_operations: {
             op1: {
@@ -5979,7 +5945,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
         pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
         pr_observations: {},
         cleanup_failed: {
-          'RD-1': { step: 'child_sweep', reason: 'boom', at: 1 }
+          'RD-1': { step: 'branch_cleanup', reason: 'boom', at: 1 }
         }
       })
     );
@@ -6339,8 +6305,8 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
   test('renders a stopped cleanup as a timeline event, not a banner', () => {
     const { mount } = mountWith(
       mergedWithCleanup({
-        step: 'child_sweep',
-        reason: 'child_close_failed:RD-1.1',
+        step: 'branch_cleanup',
+        reason: 'local_branch_delete_failed',
         at: 1
       })
     );
@@ -6355,14 +6321,14 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
   test('marks the stopped step on the cleanup stepper', () => {
     const { mount } = mountWith(
-      mergedWithCleanup({ step: 'child_sweep', reason: 'x', at: 1 })
+      mergedWithCleanup({ step: 'branch_cleanup', reason: 'x', at: 1 })
     );
 
     const drawer = openTimeline(mount);
 
     expect(
       drawer.querySelector('.worker-step--stall')?.textContent?.trim()
-    ).toBe('자식 정리');
+    ).toBe('브랜치 정리');
   });
 
   test('names the resume point on the resume button', () => {
@@ -6541,8 +6507,8 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
   test('omits detail rows a cleanup record does not carry', () => {
     const { mount } = mountWith(
       mergedWithCleanup({
-        step: 'child_sweep',
-        reason: 'child_close_failed',
+        step: 'branch_cleanup',
+        reason: 'local_branch_delete_failed',
         at: 1
       })
     );
@@ -6554,7 +6520,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
   test('keeps the merged row clickable as a cleanup resume', () => {
     const { mount } = mountWith(
-      mergedWithCleanup({ step: 'child_sweep', reason: 'x', at: 1 })
+      mergedWithCleanup({ step: 'branch_cleanup', reason: 'x', at: 1 })
     );
 
     const btn = /** @type {HTMLButtonElement} */ (
@@ -6609,7 +6575,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
   // (fail-quiet).
   test('offers 세션에서 해결 on a stopped cleanup row', () => {
     const { mount } = mountWith(
-      mergedWithCleanup({ step: 'child_sweep', reason: 'boom', at: 1 })
+      mergedWithCleanup({ step: 'branch_cleanup', reason: 'boom', at: 1 })
     );
 
     const button = mount.querySelector('.worker-mini__resolve');
@@ -6839,7 +6805,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
   test('sends worker-resolve-in-session from that button', async () => {
     const transport = vi.fn(async () => ({ ok: true, launched: true }));
     const { mount } = mountWith(
-      mergedWithCleanup({ step: 'child_sweep', reason: 'boom', at: 1 }),
+      mergedWithCleanup({ step: 'branch_cleanup', reason: 'boom', at: 1 }),
       transport
     );
 
@@ -6872,7 +6838,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
   test('sends one cleanup retry with the current revision while pending', () => {
     const transport = vi.fn(() => new Promise(() => {}));
     const { mount } = mountWith(
-      mergedWithCleanup({ step: 'child_sweep', reason: 'x', at: 1 }),
+      mergedWithCleanup({ step: 'branch_cleanup', reason: 'x', at: 1 }),
       transport
     );
     const btn = /** @type {HTMLButtonElement} */ (
@@ -6895,7 +6861,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
   test('adopts a cleanup conflict without automatically retrying it', async () => {
     const queue = mergedWithCleanup({
-      step: 'child_sweep',
+      step: 'branch_cleanup',
       reason: 'x',
       at: 1
     });
@@ -6985,14 +6951,14 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
   test('names the stopped step on the pr_wait badge', () => {
     const { mount } = mountWith(
-      mergedWithCleanup({ step: 'child_sweep', reason: 'x', at: 1 })
+      mergedWithCleanup({ step: 'branch_cleanup', reason: 'x', at: 1 })
     );
 
     expect(
       Array.from(mount.querySelectorAll('.worker-mini__badge')).map(
         (el) => el.textContent
       )
-    ).toContain('정리 멈춤 · 자식 정리');
+    ).toContain('정리 멈춤 · 브랜치 정리');
   });
 });
 
@@ -8889,20 +8855,20 @@ describe('poller activity badge — view (UI-raqh §3)', () => {
 });
 
 describe('merge progress — projection (UI-raqh §4)', () => {
-  test('labels the first step as 1 of 7', () => {
+  test('labels the first step as 1 of 6', () => {
     expect(mergeStepView('merging')).toEqual({
       label: '머지 중',
       index: 1,
-      total: 7,
-      percent: 14
+      total: 6,
+      percent: 17
     });
   });
 
-  test('labels the last step as 7 of 7', () => {
+  test('labels the last step as 6 of 6', () => {
     expect(mergeStepView('parent_close')).toMatchObject({
       label: '부모 close 중',
-      index: 7,
-      total: 7,
+      index: 6,
+      total: 6,
       percent: 100
     });
   });
@@ -8911,7 +8877,6 @@ describe('merge progress — projection (UI-raqh §4)', () => {
     const labels = [
       'base_containment',
       'repo_operations',
-      'child_sweep',
       'branch_cleanup',
       'parent_close'
     ].map((s) => mergeStepView(s)?.label);
@@ -8919,7 +8884,6 @@ describe('merge progress — projection (UI-raqh §4)', () => {
     expect(labels).toEqual([
       'base 확인 중',
       '저장소 작업',
-      '자식 정리 중',
       '브랜치 정리 중',
       '부모 close 중'
     ]);
@@ -8992,26 +8956,26 @@ describe('merge progress — view (UI-raqh §4)', () => {
   test('shows the step name and its position while merging', () => {
     const mount = mountRow({
       activity: null,
-      merge_progress: { step: 'child_sweep', started_at: 1 }
+      merge_progress: { step: 'branch_cleanup', started_at: 1 }
     });
 
     const step = /** @type {HTMLElement} */ (
       mount.querySelector('.merge-step')
     );
-    expect(step.textContent?.replace(/\s+/g, '')).toBe('자식정리중5/7');
+    expect(step.textContent?.replace(/\s+/g, '')).toBe('브랜치정리중5/6');
   });
 
   test('marks the row and its progress width', () => {
     const mount = mountRow({
       activity: null,
-      merge_progress: { step: 'child_sweep', started_at: 1 }
+      merge_progress: { step: 'branch_cleanup', started_at: 1 }
     });
 
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
     expect(row.classList.contains('worker-mini--merging')).toBe(true);
-    expect(row.getAttribute('style')).toContain('--progress: 71%');
+    expect(row.getAttribute('style')).toContain('--progress: 83%');
   });
 
   test('shows exact deploy progress beside the merged badge', () => {
@@ -9046,7 +9010,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
     expect(row.textContent?.replace(/\s+/g, '')).toContain('머지됨');
-    expect(row.textContent?.replace(/\s+/g, '')).toContain('배포중4/7');
+    expect(row.textContent?.replace(/\s+/g, '')).toContain('배포중4/6');
     expect(row.querySelector('.worker-mini__merge')).toBeNull();
   });
 
@@ -9107,7 +9071,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
-    expect(row.textContent?.replace(/\s+/g, '')).toContain('배포재시도대기4/7');
+    expect(row.textContent?.replace(/\s+/g, '')).toContain('배포재시도대기4/6');
     expect(row.textContent).not.toContain('정리 5단계 중');
   });
 
@@ -9139,7 +9103,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
-    expect(row.textContent?.replace(/\s+/g, '')).toContain('검증실패3/7');
+    expect(row.textContent?.replace(/\s+/g, '')).toContain('검증실패3/6');
     expect(row.querySelector('.merge-step--failed')).not.toBeNull();
     expect(row.querySelector('.worker-mini__merge')?.textContent?.trim()).toBe(
       '검증 재시도 후 정리'
@@ -9241,13 +9205,13 @@ describe('merge progress — view (UI-raqh §4)', () => {
   test('lets the server step supersede the local pending one', async () => {
     const mount = mountRow({
       activity: null,
-      merge_progress: { step: 'child_sweep', started_at: 1 }
+      merge_progress: { step: 'branch_cleanup', started_at: 1 }
     });
 
     expect(
       mount.querySelector('.worker-mini[data-bead-id="RD-1"] .merge-step')
         ?.textContent
-    ).toContain('자식 정리');
+    ).toContain('브랜치 정리');
   });
 });
 
@@ -13897,7 +13861,7 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
   });
 });
 
-describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', () => {
+describe('worker 실행 설정 칩 (worker-card-exec-chips)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
@@ -14298,117 +14262,6 @@ describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', ()
       mount.querySelector('.worker-mini--ghost[data-bead-id="RD-1"]')
     );
     expect(ghost.querySelector('.worker-chips .exec-chip')).toBeNull();
-  });
-
-  test('counts resolved children in the running tile rollup', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const stores = seedCandidates();
-    seed(stores, 'tab:worker:in-progress', [
-      { id: 'S1.2', title: 'T2', status: 'in_progress', parent: 'S1' }
-    ]);
-    seed(stores, 'tab:worker:resolved', [
-      { id: 'S1.1', title: 'T1', status: 'resolved', parent: 'S1' }
-    ]);
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      execQueue({
-        attempts: {
-          a1: {
-            attempt_id: 'a1',
-            bead_id: 'S1',
-            status: 'running',
-            started_at: Date.now() - 3000
-          }
-        }
-      })
-    );
-
-    createWorkerView(mount, {
-      issueStores: stores,
-      queueStore,
-      transport: vi.fn()
-    });
-
-    expect(
-      mount.querySelector('.rtile[data-bead-id="S1"] .worker-card__roll-toggle')
-        ?.textContent
-    ).toContain('children 1/2');
-  });
-
-  test('toggles the tile rollup instead of opening the parent detail', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const stores = seedCandidates();
-    seed(stores, 'tab:worker:in-progress', [
-      { id: 'S1.1', title: 'T1', status: 'in_progress', parent: 'S1' }
-    ]);
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      execQueue({
-        attempts: {
-          a1: {
-            attempt_id: 'a1',
-            bead_id: 'S1',
-            status: 'running',
-            started_at: Date.now() - 3000
-          }
-        }
-      })
-    );
-    const gotoIssue = vi.fn();
-    createWorkerView(mount, {
-      issueStores: stores,
-      queueStore,
-      transport: vi.fn(),
-      gotoIssue
-    });
-
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile[data-bead-id="S1"] .worker-card__roll-toggle')
-    ).click();
-
-    expect(gotoIssue).not.toHaveBeenCalled();
-    expect(
-      mount.querySelectorAll(
-        '.rtile[data-bead-id="S1"] .worker-card__roll-child'
-      )
-    ).toHaveLength(1);
-  });
-
-  test('opens the child issue from a tile rollup child row', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const stores = seedCandidates();
-    seed(stores, 'tab:worker:in-progress', [
-      { id: 'S1.1', title: 'T1', status: 'in_progress', parent: 'S1' }
-    ]);
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      execQueue({
-        attempts: {
-          a1: {
-            attempt_id: 'a1',
-            bead_id: 'S1',
-            status: 'running',
-            started_at: Date.now() - 3000
-          }
-        }
-      })
-    );
-    const gotoIssue = vi.fn();
-    createWorkerView(mount, {
-      issueStores: stores,
-      queueStore,
-      transport: vi.fn(),
-      gotoIssue
-    });
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile[data-bead-id="S1"] .worker-card__roll-toggle')
-    ).click();
-
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.rtile[data-bead-id="S1"] .worker-card__roll-child')
-    ).click();
-
-    expect(gotoIssue).toHaveBeenCalledWith('S1.1');
   });
 });
 
@@ -18229,7 +18082,9 @@ describe('resolve action while an interactive session lives (UI-ri8n)', () => {
           }
         }
       },
-      cleanup_failed: { 'RD-1': { step: 'child_sweep', reason: 'x', at: 1 } },
+      cleanup_failed: {
+        'RD-1': { step: 'branch_cleanup', reason: 'x', at: 1 }
+      },
       interactive_sessions
     });
   }
@@ -18272,5 +18127,392 @@ describe('resolve action while an interactive session lives (UI-ri8n)', () => {
     const button = mount.querySelector('.worker-mini__resolve');
 
     expect(button).not.toBeNull();
+  });
+});
+
+describe('worker plan 묶음 칩과 일괄 배치 (UI-ruwu §2·§3)', () => {
+  const PLAN_PATH = 'docs/superpowers/plans/2026-09-29-plan-landing.md';
+  const PLAN_GROUP = {
+    plan_path: PLAN_PATH,
+    slug: 'plan-landing',
+    index: 2,
+    total: 3,
+    members: [
+      { id: 'UI-p1', anchor: 'Phase 1', status: 'open', blocked_by: [] },
+      {
+        id: 'UI-p2',
+        anchor: 'Phase 2-3',
+        status: 'open',
+        blocked_by: ['UI-p1']
+      },
+      { id: 'UI-p3', anchor: 'Phase 4', status: 'open', blocked_by: ['UI-p2'] }
+    ]
+  };
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * One repo whose second issue waits in a serial lane; `UI-p1` waits in `s2`
+   * unless the patch moves it.
+   *
+   * @param {{ transport?: any, queue?: Record<string, any>, workspace?: string|undefined, issueStores?: any, gotoIssue?: any }} [over]
+   * @returns {{ mount: HTMLElement, queueStore: any }}
+   */
+  function mountPlan(over = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'UI-p2', added_at: 1 }],
+        serial_lane_count: 2,
+        serial_lanes: [
+          { id: 's1', entries: [] },
+          { id: 's2', entries: [{ bead_id: 'UI-p1', added_at: 1 }] }
+        ],
+        lane_states: {
+          s1: { occupied_by: [], order: [], corrections: [], cycle: false },
+          s2: {
+            occupied_by: [],
+            order: ['UI-p1'],
+            corrections: [],
+            cycle: false
+          }
+        },
+        bead_plan_groups: { 'UI-p2': PLAN_GROUP, 'UI-p1': PLAN_GROUP },
+        ...(over.queue || {})
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: over.issueStores || createTestIssueStores(),
+      queueStore,
+      transport: over.transport || vi.fn().mockResolvedValue({}),
+      gotoIssue: over.gotoIssue,
+      getWorkspacePath: () =>
+        'workspace' in over ? over.workspace : '/repo/plan'
+    });
+    return { mount, queueStore };
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} bead_id
+   * @returns {HTMLElement}
+   */
+  function chipOf(mount, bead_id) {
+    return /** @type {HTMLElement} */ (
+      mount.querySelector(
+        `.worker-mini[data-bead-id="${bead_id}"] [data-chip-key="plan"]`
+      )
+    );
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   */
+  function openPopup(mount) {
+    chipOf(mount, 'UI-p2').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   */
+  function clickPlace(mount) {
+    mount
+      .querySelector('.chip-popover [data-action="plan-place"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }
+
+  test('draws the 5a chip on a waiting row from the queue decoration', () => {
+    const { mount } = mountPlan();
+
+    expect(chipOf(mount, 'UI-p2').textContent?.trim()).toBe(
+      'plan plan-landing 2/3'
+    );
+  });
+
+  test('draws the 5a chip on a candidate card from its list item', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'UI-p3',
+        title: 'ready phase 4',
+        status: 'open',
+        priority: 1,
+        updated_at: Date.now(),
+        spec_id: 'SPEC-1',
+        metadata: { route: 'spec_backed', spec_review: RECEIPT },
+        plan_group: { ...PLAN_GROUP, index: 3 }
+      }
+    ]);
+    const { mount } = mountPlan({ issueStores: stores, queue: { queue: [] } });
+
+    expect(
+      mount
+        .querySelector(
+          '.worker-card[data-bead-id="UI-p3"] [data-chip-key="plan"]'
+        )
+        ?.textContent?.trim()
+    ).toBe('plan plan-landing 3/3');
+  });
+
+  test('draws the 5a chip on a PR 대기 row from the queue decoration', () => {
+    const { mount } = mountPlan({
+      queue: {
+        queue: [],
+        pr_wait: [{ bead_id: 'UI-p2', added_at: 1 }],
+        bead_plan_groups: { 'UI-p2': PLAN_GROUP }
+      }
+    });
+
+    expect(chipOf(mount, 'UI-p2')?.textContent?.trim()).toBe(
+      'plan plan-landing 2/3'
+    );
+  });
+
+  test('draws no chip on a row outside every plan', () => {
+    const { mount } = mountPlan({ queue: { bead_plan_groups: {} } });
+
+    expect(mount.querySelector('[data-chip-key="plan"]')).toBeNull();
+  });
+
+  test('opens the popup with the members in order and the current one emphasized', () => {
+    const { mount } = mountPlan();
+
+    openPopup(mount);
+
+    const popup = /** @type {HTMLElement} */ (
+      mount.querySelector('.chip-popover')
+    );
+    expect(
+      Array.from(popup.querySelectorAll('li .worker-dep__open'), (el) =>
+        el.textContent?.trim()
+      )
+    ).toEqual(['UI-p1', 'UI-p2', 'UI-p3']);
+    expect(
+      popup.querySelector('li.chip-popover__line--current .worker-dep__open')
+        ?.textContent
+    ).toContain('UI-p2');
+  });
+
+  test('titles the popup with the plan slug and keeps it open across a render', () => {
+    const { mount, queueStore } = mountPlan();
+    openPopup(mount);
+
+    queueStore.set(queueOf({ ...queueStore.get(), revision: 2 }));
+
+    expect(mount.querySelector('.chip-popover__title')?.textContent).toBe(
+      'plan plan-landing'
+    );
+  });
+
+  test('opens a member issue from the popup without opening the card', () => {
+    const gotoIssue = vi.fn();
+    const { mount } = mountPlan({ gotoIssue });
+    openPopup(mount);
+
+    mount
+      .querySelector('.chip-popover [data-dep-id="UI-p3"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(gotoIssue).toHaveBeenCalledTimes(1);
+    expect(gotoIssue).toHaveBeenCalledWith('UI-p3');
+  });
+
+  test('preselects the serial lane where the first member already waits', () => {
+    const { mount } = mountPlan();
+
+    openPopup(mount);
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('.chip-popover [data-plan-lane]')
+      ).value
+    ).toBe('s2');
+  });
+
+  test('preselects the first serial lane when the first member waits nowhere', () => {
+    const { mount } = mountPlan({
+      queue: {
+        serial_lanes: [
+          { id: 's1', entries: [] },
+          { id: 's2', entries: [] }
+        ]
+      }
+    });
+
+    openPopup(mount);
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('.chip-popover [data-plan-lane]')
+      ).value
+    ).toBe('s1');
+  });
+
+  test('sends the placement with repository, plan, lane and revision', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      placed: ['UI-p2', 'UI-p3'],
+      skipped: []
+    });
+    const { mount } = mountPlan({ transport });
+    openPopup(mount);
+
+    clickPlace(mount);
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-place-plan', {
+      root_dir: '/repo/plan',
+      plan_path: PLAN_PATH,
+      lane: 's2',
+      expected_revision: 1
+    });
+  });
+
+  test('sends the lane the user picked', async () => {
+    const transport = vi.fn().mockResolvedValue({ applied: true, placed: [] });
+    const { mount } = mountPlan({ transport });
+    openPopup(mount);
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.chip-popover [data-plan-lane]')
+    );
+    select.value = 's1';
+
+    clickPlace(mount);
+    await flush();
+
+    expect(transport.mock.calls[0][1].lane).toBe('s1');
+  });
+
+  test('does not open the card when the placement button is clicked', async () => {
+    const gotoIssue = vi.fn();
+    const { mount } = mountPlan({
+      gotoIssue,
+      transport: vi.fn().mockResolvedValue({ applied: true, placed: [] })
+    });
+    openPopup(mount);
+
+    clickPlace(mount);
+    await flush();
+
+    expect(gotoIssue).not.toHaveBeenCalled();
+  });
+
+  test('omits the exit line without a workspace path', () => {
+    const { mount } = mountPlan({ workspace: undefined });
+
+    openPopup(mount);
+
+    expect(mount.querySelector('.chip-popover')).not.toBeNull();
+    expect(mount.querySelector('.chip-popover__exit')).toBeNull();
+  });
+
+  test('omits the exit line when no serial lane is configured', () => {
+    const { mount } = mountPlan({
+      queue: { serial_lane_count: 0, serial_lanes: [] }
+    });
+
+    openPopup(mount);
+
+    expect(mount.querySelector('.chip-popover__exit')).toBeNull();
+  });
+
+  test('toasts how many issues were placed', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      placed: ['UI-p2', 'UI-p3'],
+      skipped: []
+    });
+    const { mount } = mountPlan({ transport });
+    openPopup(mount);
+
+    clickPlace(mount);
+    await flush();
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      'plan 배치: 2개 추가'
+    );
+  });
+
+  test('toasts each skipped issue with its reason', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      placed: ['UI-p2'],
+      skipped: [{ id: 'UI-p1', reason: 'worker-ineligible' }]
+    });
+    const { mount } = mountPlan({ transport });
+    openPopup(mount);
+
+    clickPlace(mount);
+    await flush();
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      'plan 배치: 1개 추가 · 건너뜀 UI-p1(worker-ineligible)'
+    );
+  });
+
+  test('retries once on a stale revision and then reports the conflict', async () => {
+    const stale = {
+      applied: false,
+      conflict: true,
+      placed: [],
+      skipped: [],
+      queue: queueOf({
+        revision: 5,
+        queue: [{ bead_id: 'UI-p2', added_at: 1 }],
+        bead_plan_groups: { 'UI-p2': PLAN_GROUP }
+      })
+    };
+    const transport = vi.fn().mockResolvedValue(stale);
+    const { mount } = mountPlan({ transport });
+    openPopup(mount);
+
+    clickPlace(mount);
+    await flush();
+
+    expect(
+      transport.mock.calls.map((call) => call[1].expected_revision)
+    ).toEqual([1, 5]);
+    expect(document.querySelector('.toast')?.textContent).toContain(
+      '목록을 다시 읽고'
+    );
+  });
+
+  test('marks a blocker the placement skipped as 세션 필요', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      placed: ['UI-p2'],
+      skipped: [{ id: 'UI-p1', reason: 'worker-ineligible' }]
+    });
+    const { mount } = mountPlan({ transport });
+    openPopup(mount);
+
+    clickPlace(mount);
+    await flush();
+
+    expect(
+      mount
+        .querySelector('.chip-popover .chip-popover__member-blocker')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).toBe('⛓ UI-p1 · 세션 필요');
+  });
+
+  test('draws no 세션 필요 mark before any placement', () => {
+    const { mount } = mountPlan();
+
+    openPopup(mount);
+
+    expect(mount.querySelector('.chip-popover')?.textContent).not.toContain(
+      '세션 필요'
+    );
   });
 });

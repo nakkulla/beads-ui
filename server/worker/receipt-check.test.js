@@ -183,6 +183,75 @@ describe('receipt-check main token backing', () => {
     expect(codesOf(result)).toEqual(['main_receipt_unbacked']);
   });
 
+  test('accepts a main:phase_line unit the enumeration plans as main', async () => {
+    const result = await run({
+      exec_receipt: `P1:delegated:sol:high@${SHA}; P2:main:phase_line@${OTHER_SHA}`,
+      planned_execution: 'P1:delegated; P2:main',
+      planned_execution_reason: 'P2:직접 통합'
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  test('reports a main:phase_line unit the enumeration plans as delegated', async () => {
+    const result = await run({
+      exec_receipt: `P1:main:phase_line@${SHA}; P2:main:phase_line@${OTHER_SHA}`,
+      planned_execution: 'P1:delegated; P2:main',
+      planned_execution_reason: 'P2:직접 통합'
+    });
+
+    expect(codesOf(result)).toEqual(['main_receipt_unbacked']);
+  });
+
+  test('names the unit whose main:phase_line receipt the enumeration does not back', async () => {
+    const result = await run({
+      exec_receipt: `P1:main:phase_line@${SHA}; P2:main:phase_line@${OTHER_SHA}`,
+      planned_execution: 'P1:delegated; P2:main'
+    });
+
+    expect(result.violations[0].detail).toBe(
+      'main:phase_line unit P1 is delegated in planned_execution'
+    );
+  });
+
+  test('reports a main:phase_line unit the enumeration does not list', async () => {
+    const result = await run({
+      exec_receipt: `P3:main:phase_line@${SHA}`,
+      planned_execution: 'P1:delegated; P2:main'
+    });
+
+    expect(result.violations.map((violation) => violation.detail)).toEqual([
+      'main:phase_line unit P3 is not listed in planned_execution'
+    ]);
+  });
+
+  test('reports main:phase_line items under a malformed enumeration', async () => {
+    const result = await run({
+      exec_receipt: `P1:main:phase_line@${SHA}`,
+      planned_execution: 'P1:main; broken'
+    });
+
+    expect(codesOf(result)).toEqual(['main_receipt_unbacked']);
+  });
+
+  test('reports a single main:phase_line receipt under an enumeration', async () => {
+    const result = await run({
+      exec_receipt: `main:phase_line@${SHA}`,
+      planned_execution: 'P1:delegated; P2:main'
+    });
+
+    expect(codesOf(result)).toEqual(['main_receipt_unbacked']);
+  });
+
+  test('keeps accepting multi-unit main:phase_line items under a scalar main plan', async () => {
+    const result = await run({
+      exec_receipt: `P1:main:phase_line@${SHA}; P2:main:phase_line@${OTHER_SHA}`,
+      planned_execution: 'main'
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
   test('accepts main:takeover backed by a finished delegation of the same model', async () => {
     const result = await run(
       { exec_receipt: `main:takeover@${SHA}` },

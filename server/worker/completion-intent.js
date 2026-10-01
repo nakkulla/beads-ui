@@ -862,7 +862,6 @@ const PUBLIC_FAILURE_STAGES = Object.freeze({
   base_sync: 'cleanup',
   repo_operations: 'cleanup',
   post_merge_jobs: 'cleanup',
-  child_sweep: 'cleanup',
   branch_cleanup: 'cleanup',
   parent_close: 'cleanup',
   cleanup: 'cleanup'

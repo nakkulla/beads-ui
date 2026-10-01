@@ -1,4 +1,4 @@
-import { render } from 'lit-html';
+import { html, render } from 'lit-html';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { chipPopoverTemplate, createChipPopover } from './chip-popover.js';
 
@@ -185,6 +185,52 @@ describe('chipPopoverTemplate (UI-8x90 §5)', () => {
         li.textContent?.trim()
       )
     ).toEqual(['첫 줄', '둘째 줄']);
+  });
+
+  test('draws a template line as its own list item', () => {
+    render(
+      chipPopoverTemplate({
+        title: '제목',
+        lines: [{ body: html`<button type="button">UI-2</button> 본문` }]
+      }),
+      mountEl()
+    );
+
+    expect(
+      mountEl().querySelector('.chip-popover__lines li button')?.textContent
+    ).toBe('UI-2');
+  });
+
+  test('emphasizes only the template line marked current', () => {
+    render(
+      chipPopoverTemplate({
+        title: '제목',
+        lines: [
+          { body: html`첫 줄` },
+          { body: html`현재 줄`, current: true },
+          '문장 줄'
+        ]
+      }),
+      mountEl()
+    );
+
+    expect(
+      Array.from(
+        mountEl().querySelectorAll('li.chip-popover__line--current'),
+        (li) => li.textContent?.trim()
+      )
+    ).toEqual(['현재 줄']);
+  });
+
+  test('draws a text line without an emphasis class', () => {
+    render(
+      chipPopoverTemplate({ title: '제목', lines: ['문장 줄'] }),
+      mountEl()
+    );
+
+    expect(mountEl().querySelector('.chip-popover__lines li')?.className).toBe(
+      ''
+    );
   });
 
   test('draws the title alone when there is no line', () => {

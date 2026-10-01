@@ -316,8 +316,7 @@ describe('worker failed running tile template', () => {
         tileInput({
           failed: true,
           failure: failureInput(),
-          usage: { input_tokens: 1 },
-          rollup: /** @type {any} */ ({ total: 1, done: 0 })
+          usage: { input_tokens: 1 }
         }),
         5000,
         null,
@@ -669,18 +668,19 @@ describe('worker failed running tile template', () => {
     ).toBe('메인');
   });
 
-  test('renders the child rollup collapsed with its current child line', () => {
+  test('draws no child rollup for a tile that still carries one', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(
       runningGridTemplate([
-        {
+        /** @type {any} */ ({
           bead_id: 'UI-7',
           attempt_id: 'attempt-7',
           title: 'parent work',
           runner: 'claude',
           model: 'opus',
           started_at: null,
+          rollup_expanded: true,
           rollup: {
             total: 3,
             count: 1,
@@ -691,81 +691,12 @@ describe('worker failed running tile template', () => {
               { id: 'UI-7.3', title: 'T3', status: 'open' }
             ]
           }
-        }
-      ]),
-      mount
-    );
-
-    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
-
-    expect(
-      tile.querySelector('.worker-card__roll-toggle')?.textContent
-    ).toContain('children 1/3');
-    expect(
-      tile.querySelector('.worker-card__roll-current')?.textContent
-    ).toContain('T2: 서버 배선');
-    expect(tile.querySelector('.worker-card__roll-list')).toBeNull();
-    expect(tile.querySelector('.rtile__child')).toBeNull();
-  });
-
-  test('expands the child rollup list when the tile says it is expanded', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    render(
-      runningGridTemplate([
-        {
-          bead_id: 'UI-8',
-          attempt_id: 'attempt-8',
-          title: 'parent work',
-          runner: 'claude',
-          model: 'opus',
-          started_at: null,
-          rollup_expanded: true,
-          rollup: {
-            total: 2,
-            count: 0,
-            current: null,
-            children: [
-              { id: 'UI-8.1', title: 'T1', status: 'open' },
-              { id: 'UI-8.2', title: 'T2', status: 'open' }
-            ]
-          }
-        }
-      ]),
-      mount
-    );
-
-    const rows = mount.querySelectorAll('.worker-card__roll-child');
-
-    expect(rows).toHaveLength(2);
-    expect(
-      Array.from(
-        rows,
-        (row) => /** @type {HTMLElement} */ (row).dataset.childId
-      )
-    ).toEqual(['UI-8.1', 'UI-8.2']);
-  });
-
-  test('omits the rollup block when the tile has no rollup', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    render(
-      runningGridTemplate([
-        {
-          bead_id: 'UI-9',
-          attempt_id: 'attempt-9',
-          title: 'childless work',
-          runner: 'claude',
-          model: 'opus',
-          started_at: null,
-          rollup: null
-        }
+        })
       ]),
       mount
     );
 
     expect(mount.querySelector('.worker-card__roll')).toBeNull();
-    expect(mount.querySelector('.rtile__child')).toBeNull();
   });
 
   test('renders a landing progress line only on the tile carrying its projection', () => {
@@ -1601,21 +1532,12 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
     expect(tile.querySelector('.rtile__meta')).toBeNull();
   });
 
-  // 슬롯 3(진행)은 활동·위임 줄 하나가 아니다 — 자식 롤업과 landing 진행도
-  // 같은 슬롯이므로 의존 칩은 그 셋 모두의 뒤에 선다 (§2).
+  // 슬롯 3(진행)은 활동·위임 줄 하나가 아니다 — landing 진행도도 같은
+  // 슬롯이므로 의존 칩은 그 둘 모두의 뒤에 선다 (§2).
   test('draws the dependency chips after every progress line', () => {
     const tile = renderTile(
       {
         lane_origin: { kind: 'parallel' },
-        rollup: /** @type {any} */ ({
-          total: 2,
-          count: 1,
-          current: { id: 'UI-t1.2', title: 'T2' },
-          children: [
-            { id: 'UI-t1.1', title: 'T1', status: 'closed' },
-            { id: 'UI-t1.2', title: 'T2', status: 'in_progress' }
-          ]
-        }),
         landing: /** @type {any} */ ({
           step: 'deploy',
           label: '배포 중',
@@ -1645,7 +1567,6 @@ describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
 
     const deps = order.indexOf('worker-deps worker-deps--secondary');
     expect(deps).toBeGreaterThan(order.indexOf('rtile__activity'));
-    expect(deps).toBeGreaterThan(order.indexOf('worker-card__roll'));
     expect(deps).toBeGreaterThan(order.indexOf('rtile__landing'));
     expect(deps).toBeLessThan(order.indexOf('rtile__meta'));
   });
@@ -4282,5 +4203,122 @@ describe('retry_wait tile hold retry (UI-01wh §3.3)', () => {
     ).map((button) => button.textContent?.trim());
 
     expect(labels).toEqual(['폐기']);
+  });
+});
+
+describe('plan 묶음 칩 on the running tile (UI-ruwu §2)', () => {
+  const PLAN_GROUP = {
+    plan_path: 'docs/superpowers/plans/2026-09-29-plan-landing.md',
+    slug: 'plan-landing',
+    index: 2,
+    total: 3,
+    members: [
+      { id: 'UI-p1', anchor: 'Phase 1', status: 'closed', blocked_by: [] },
+      {
+        id: 'UI-p2',
+        anchor: 'Phase 2-3',
+        status: 'in_progress',
+        blocked_by: []
+      },
+      { id: 'UI-p3', anchor: 'Phase 4', status: 'open', blocked_by: ['UI-p2'] }
+    ]
+  };
+
+  /**
+   * @param {Record<string, any>} [patch]
+   * @param {any} [monitor]
+   * @returns {HTMLElement}
+   */
+  function renderPlanTile(patch = {}, monitor = null) {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(
+        /** @type {any} */ (tileInput({ bead_id: 'UI-p2', ...patch })),
+        5000,
+        null,
+        { monitor }
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  test('draws the 5a chip text on the coordinate line', () => {
+    const tile = renderPlanTile({ plan_group: PLAN_GROUP });
+
+    expect(
+      tile
+        .querySelector(
+          '.rtile__meta .worker-chips--coords [data-chip-key="plan"]'
+        )
+        ?.textContent?.trim()
+    ).toBe('plan plan-landing 2/3');
+  });
+
+  test('draws the chip alone on the meta row of an otherwise bare tile', () => {
+    const tile = renderPlanTile({ plan_group: PLAN_GROUP });
+
+    expect(tile.querySelector('.rtile__meta')).not.toBeNull();
+  });
+
+  test('stands after the lane origin chip and before the route chip', () => {
+    const tile = renderPlanTile({
+      plan_group: PLAN_GROUP,
+      lane_origin: { kind: 'serial', index: 2 },
+      workflow: /** @type {any} */ ({
+        chips: { route: 'spec_backed', route_source: 'explicit' }
+      })
+    });
+
+    expect(
+      Array.from(tile.querySelectorAll('.worker-chips--coords > *'), (chip) =>
+        chip.classList.contains('ctl-chip--lane')
+          ? 'lane'
+          : chip.classList.contains('worker-card__plan')
+            ? 'plan'
+            : chip.classList.contains('ctl-chip--route')
+              ? 'route'
+              : 'other'
+      )
+    ).toEqual(['lane', 'plan', 'route']);
+  });
+
+  test('draws the chip on a Monitor tile too', () => {
+    const tile = renderPlanTile(
+      { plan_group: PLAN_GROUP },
+      { repo: 'repo-a', root_dir: '/tmp/repo-a' }
+    );
+
+    expect(tile.querySelector('[data-chip-key="plan"]')).not.toBeNull();
+  });
+
+  test('draws no chip without a plan group', () => {
+    const tile = renderPlanTile({});
+
+    expect(tile.querySelector('[data-chip-key="plan"]')).toBeNull();
+  });
+
+  test('keeps the bare tile free of an empty meta row', () => {
+    const tile = renderPlanTile({});
+
+    expect(tile.querySelector('.rtile__meta')).toBeNull();
+  });
+
+  test('opens the popup in the meta block when the plan chip is open', () => {
+    const tile = renderPlanTile({
+      plan_group: PLAN_GROUP,
+      chip_popover: {
+        chip_key: 'plan',
+        content: { title: 'plan plan-landing', lines: ['UI-p2'] }
+      }
+    });
+
+    expect(tile.querySelector('.rtile__meta .chip-popover')).not.toBeNull();
+    expect(
+      tile
+        .querySelector('[data-chip-key="plan"]')
+        ?.getAttribute('aria-expanded')
+    ).toBe('true');
   });
 });

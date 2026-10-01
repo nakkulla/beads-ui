@@ -76,9 +76,9 @@ export async function refreshConfigSnapshot(store, log_error) {
 /**
  * Worker subscription keys (spec §5.1) and their bd list-adapter types. Since
  * the Board tab retired (UI-p7s2 §7) these are the repo's only issue lists: the
- * candidate lane reads ready/blocked, the running tiles' child rollup reads
- * in-progress/resolved (UI-53es §2, worker-card-exec-chips §3.3), the completed
- * lane reads closed, and the 보류 shelf reads deferred.
+ * candidate lane reads ready/blocked, the running tiles' execution pins read
+ * in-progress, the PR-wait rows' type/label/priority material reads resolved,
+ * the completed lane reads closed, and the 보류 shelf reads deferred.
  *
  * @type {ReadonlyArray<[string, string]>}
  */

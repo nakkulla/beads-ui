@@ -13,8 +13,6 @@
 import { resolveSpecEvidence } from '../../../server/spec-id.js';
 import { createListSelectors } from '../../data/list-selectors.js';
 import { awaitingUserReason } from '../../utils/awaiting-user-reason.js';
-import { buildCarryoverIndex } from '../../utils/carryover-index.js';
-import { buildChildrenIndex, rollupFor } from '../../utils/child-rollup.js';
 import { debug } from '../../utils/logging.js';
 import { coerceTimestampMs } from '../../utils/relative-time.js';
 import { parseReport } from '../../utils/report-marker.js';
@@ -38,12 +36,14 @@ const log = debug('views:worker:adapter');
 const READY_KEY = 'tab:worker:ready';
 const BLOCKED_KEY = 'tab:worker:blocked';
 /**
- * The Worker tab's own in_progress subscription (UI-53es §2). It is one of the
- * five columns the running tile's child rollup counts from
- * (worker-card-exec-chips §3.3).
+ * The Worker tab's own in_progress subscription (UI-53es §2). Its issues carry
+ * the execution pins the running tiles' chips resolve.
  */
 const IN_PROGRESS_KEY = 'tab:worker:in-progress';
-/** Resolved children (worker-card-exec-chips §3.3), for the rollup alone. */
+/**
+ * Resolved issues are the PR-wait beads: the overlay reads their priority,
+ * type and label material here, which the queue snapshot rows do not carry.
+ */
 const RESOLVED_KEY = 'tab:worker:resolved';
 const CLOSED_KEY = 'tab:worker:closed';
 /**
@@ -454,7 +454,10 @@ export function createWorkspaceAdapter(options = {}) {
         spec_after_blocker: specAfterBlockerActive(it.labels, blocker_ids),
         // UI-d13v 재료는 서버 Ready/Blocked 장식을 그대로 전달한다.
         release_info: it.release_info,
-        dependents_info: it.dependents_info
+        dependents_info: it.dependents_info,
+        // plan 묶음은 목록 구독 항목이 싣고 온다 (UI-ruwu §1). 묶음이 아니면 키를
+        // 만들지 않는다 — 칩은 재료가 없으면 그려지지 않는다 (fail-quiet).
+        ...(it.plan_group ? { plan_group: it.plan_group } : {})
       };
     });
   }
@@ -506,7 +509,8 @@ export function createWorkspaceAdapter(options = {}) {
         observation: true,
         deferred: true,
         release_info: it.release_info,
-        dependents_info: it.dependents_info
+        dependents_info: it.dependents_info,
+        ...(it.plan_group ? { plan_group: it.plan_group } : {})
       });
     }
     rows.sort(
@@ -524,34 +528,11 @@ export function createWorkspaceAdapter(options = {}) {
    * 싣는다 — 나머지 두 열의 이슈는 실행 설정·복잡 판정의 핀을 볼 수 없으므로
    * 전역값만으로 해석하면 틀린 칩이 된다.
    *
-   * 이월 후속 색인(`carried_to`)도 여기서 같이 만든다 (UI-btj6 §3):
-   * {@link buildChildrenIndex}와 같이 이미 구독된 이슈 집합 하나에서 파생하는
-   * 교차 이슈 색인이라 서버 왕복이 없다.
-   *
    * @param {any[][]} columns - `[ready, blocked, in_progress, resolved, closed]`
    * @returns {Record<string, any>}
    */
   function beadOverlay(columns) {
     const [ready, blocked, in_progress, resolved, closed] = columns;
-    // 실행 타일의 child rollup이 읽는 자식 집합 (worker-card-exec-chips §3.3):
-    // Board와 같은 5집합에서 센다.
-    const children_by_parent = buildChildrenIndex([
-      ...ready,
-      ...blocked,
-      ...in_progress,
-      ...resolved,
-      ...closed
-    ]);
-    // 이월 후속 색인 (UI-btj6 §3). 닫힌 후속만 재료에서 빠진다 — `resolved`는
-    // PR을 이미 낸 후속이고 아직 살아 있는 일이라 부모 카드에서 지울 이유가
-    // 없다. 이 색인은 오버레이의 metadata 적재 규칙과 무관하게 열의 이슈를
-    // 직접 읽으므로 네 열 모두에서 파생할 수 있다.
-    const carried_to_by_parent = buildCarryoverIndex([
-      ...ready,
-      ...blocked,
-      ...in_progress,
-      ...resolved
-    ]);
     /** @type {Record<string, any>} */
     const overlay = {};
     /**
@@ -615,28 +596,6 @@ export function createWorkspaceAdapter(options = {}) {
     for (const issue of [...resolved, ...closed]) {
       add(issue, false);
     }
-    // 큐 스냅샷에는 페이즈명이 없다 — child 진행도가 "지금 어디까지"를 말하는
-    // 유일한 사실이다. 자식이 없는 bead는 키를 만들지 않는다: 빈 블록은
-    // "0/0"이라 주장하지만 진실은 "그런 종류의 bead가 아니다"이다 (§3.3).
-    // 부모가 어느 구독 열에도 없을 수 있다 (실행 중인 bead는 큐 스냅샷이 알고
-    // Board는 모른다) — 자식 색인의 부모 키도 함께 돈다.
-    for (const bead_id of new Set([
-      ...Object.keys(overlay),
-      ...children_by_parent.keys()
-    ])) {
-      const rollup = rollupFor(children_by_parent, bead_id);
-      if (rollup.total > 0) {
-        const entry = overlay[bead_id] || (overlay[bead_id] = {});
-        entry.rollup = rollup;
-      }
-    }
-    // 이월된 부모도 어느 구독 열에도 없을 수 있다 (완료 레인 행은 큐 스냅샷이
-    // 알고 Board는 닫힌 열에서만 안다) — 자식 색인과 같이 색인의 부모 키도 함께
-    // 돈다. 후속이 없는 bead는 키를 만들지 않는다 (fail-quiet).
-    for (const [bead_id, carried_to] of carried_to_by_parent) {
-      const entry = overlay[bead_id] || (overlay[bead_id] = {});
-      entry.carried_to = carried_to;
-    }
     return overlay;
   }
 
@@ -685,7 +644,10 @@ export function createWorkspaceAdapter(options = {}) {
           : {}),
         ...(typeof issue.priority === 'number'
           ? { priority: issue.priority }
-          : {})
+          : {}),
+        // 같은 plan의 닫힌 이슈도 슬롯 5a 칩을 얻는다 (UI-ruwu §2): 목록 구독 항목이
+        // 싣고 온 묶음이고, 없으면 키를 만들지 않는다.
+        ...(issue.plan_group ? { plan_group: issue.plan_group } : {})
       };
       /**
        * One 닫힘 행 whose origin is unknown (§5). 세션 배지도 `작업` 시간도 없다.

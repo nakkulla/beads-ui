@@ -218,7 +218,7 @@ describe('저장소 작업 상태 스트립 (UI-q0uy §4.1)', () => {
   test('counts a stopped cleanup in the same badge', () => {
     const { mount } = mountWorker({
       repo_operations: [operationCard({ state: 'succeeded', failure: null })],
-      cleanup_failed: { 'UI-a': { step: 'child_sweep', reason: 'x', at: 1 } }
+      cleanup_failed: { 'UI-a': { step: 'branch_cleanup', reason: 'x', at: 1 } }
     });
 
     expect(mount.querySelector('.worker-repo-strip__badge')?.textContent).toBe(
@@ -478,7 +478,9 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
   test('merges operations and stopped cleanups newest first', () => {
     const { mount } = mountWorker({
       repo_operations: [operationCard({ finished_at: 1000 })],
-      cleanup_failed: { 'UI-b': { step: 'child_sweep', reason: 'x', at: 5000 } }
+      cleanup_failed: {
+        'UI-b': { step: 'branch_cleanup', reason: 'x', at: 5000 }
+      }
     });
 
     expect(

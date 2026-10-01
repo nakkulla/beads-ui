@@ -47,8 +47,8 @@ describe('prWaitProgress', () => {
       step: 'deploy',
       label: '배포 중',
       index: 4,
-      total: 7,
-      percent: 57,
+      total: 6,
+      percent: 67,
       active: true,
       failed: false
     });
@@ -76,7 +76,7 @@ describe('prWaitProgress', () => {
         step: kind,
         label,
         index,
-        total: 7,
+        total: 6,
         active,
         failed
       });
@@ -261,10 +261,9 @@ describe('prWaitProgress', () => {
   });
 
   test.each([
-    ['base_containment', 'base', 'base 확인 중', 2, 29],
-    ['child_sweep', 'child', '자식 정리 중', 5, 71],
-    ['branch_cleanup', 'branch', '브랜치 정리 중', 6, 86],
-    ['parent_close', 'close', '부모 close 중', 7, 100]
+    ['base_containment', 'base', 'base 확인 중', 2, 33],
+    ['branch_cleanup', 'branch', '브랜치 정리 중', 5, 83],
+    ['parent_close', 'close', '부모 close 중', 6, 100]
   ])(
     'restores %s from the durable cleanup cursor',
     (cleanup_cursor, step, label, index, percent) => {
@@ -276,7 +275,7 @@ describe('prWaitProgress', () => {
         step,
         label,
         index,
-        total: 7,
+        total: 6,
         percent,
         active: true,
         failed: false
@@ -311,12 +310,12 @@ describe('prWaitProgress', () => {
   test('keeps a later cursor ahead of an older succeeded operation', () => {
     const result = prWaitProgress(
       progressInput({
-        cleanup_cursor: 'child_sweep',
+        cleanup_cursor: 'branch_cleanup',
         repo_operations: [operation({ state: 'succeeded' })]
       })
     );
 
-    expect(result).toMatchObject({ step: 'child', index: 5 });
+    expect(result).toMatchObject({ step: 'branch', index: 5 });
   });
 
   test('projects transient merging at the first fixed position', () => {
@@ -332,8 +331,8 @@ describe('prWaitProgress', () => {
       step: 'merge',
       label: '머지 중',
       index: 1,
-      total: 7,
-      percent: 14
+      total: 6,
+      percent: 17
     });
   });
 

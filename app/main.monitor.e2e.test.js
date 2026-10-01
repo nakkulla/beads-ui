@@ -1142,7 +1142,7 @@ describe('subscription lifecycle after a reconnect', () => {
 });
 
 describe('worker tab direct entry (UI-53es §2)', () => {
-  test('subscribes the child columns and renders the running tile rollup', async () => {
+  test('subscribes the in-progress and resolved columns and renders the running tile without a child rollup', async () => {
     const client = /** @type {any} */ (createWsClient());
     window.location.hash = '#/worker';
     document.body.innerHTML = '<main id="app"></main>';
@@ -1193,10 +1193,8 @@ describe('worker tab direct entry (UI-53es §2)', () => {
     const tile = document.querySelector(
       '#worker-root .rtile[data-bead-id="UI-run"]'
     );
-    expect(
-      tile?.querySelector('.worker-card__roll-current')?.textContent
-    ).toContain('T2: 서버 배선');
-    expect(tile?.querySelector('.rtile__child')).toBe(null);
+    expect(tile).not.toBeNull();
+    expect(tile?.querySelector('.worker-card__roll')).toBeNull();
   });
 });
 

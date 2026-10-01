@@ -252,6 +252,7 @@ type="button" class="ctl-chip … judgement-chip" data-chip-key="<kind>" aria-ex
 | `worker-ineligible` | `ineligible` | 워커 실행 대상이 아니다 | `worker-ineligible 라벨이 붙어 있다 — 라벨은 이슈 상세의 라벨 절에서 뗀다` |
 | `리뷰 ✓` / `리뷰 stale` | `qfr` | 현행 상태 문장 | `missing[]` 목록(없으면 `빠진 항목 없음`) |
 | `영수증 · <code>` 정정(UI-h6t1) | `receipt` | 실행 영수증 회계 잔여 — 머지는 진행 | 코드별 한 줄(`RECEIPT_BADGE_TEXT`; 어휘 밖 코드는 코드 문자열 그대로) · 안내 `자동 머지 판정에는 영향이 없다 — 정정은 bd update --set-metadata exec_receipt=… 로` |
+| `plan <slug> <i>/<n>` 정정(UI-ruwu) | `plan` | `plan <slug>` | 묶음 이슈 한 줄씩(ID · anchor · 상태 · `⛓ <선행>`, 현재 이슈 강조) · 끝 줄 `[plan 전체를 레인에 배치]`(직렬 레인 선택 포함) |
 
 - 팝업은 한 번에 하나다. 같은 칩을 다시 누르면 닫히고, 다른 칩을 누르면 바뀐다. 바깥
   클릭·Esc로 닫힌다. 카드가 재렌더돼도 열림 상태는 `bead_id + chip_key`로 유지된다.

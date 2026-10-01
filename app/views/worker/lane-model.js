@@ -39,7 +39,11 @@ import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { RESUME_REFUSALS } from '../../utils/failure-sentences.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
 import { formatClockLocal } from '../../utils/relative-time.js';
-import { overlapPrefixes } from '../../utils/scope-overlap.js';
+import {
+  overlapPrefixes,
+  scopeSourceOf,
+  sharesScopeSource
+} from '../../utils/scope-overlap.js';
 import {
   SUM_FIELDS,
   formatUsageTotalWithCost,
@@ -448,7 +452,6 @@ const DONE_KIND_LABELS = {
  *   retry?: import('./running-grid.js').RetryTile|null,
  *   conflict_resolution?: boolean,
  *   base_exception?: string|null,
- *   rollup?: import('../../utils/child-rollup.js').ChildRollup|null,
  *   landing?: { step: string, label: string, index: number, total: number, percent: number, active: boolean, failed: boolean },
  *   added_at?: number,
  *   queue_position?: number,
@@ -459,7 +462,6 @@ const DONE_KIND_LABELS = {
  *   place_lanes?: Array<{ id: 's1'|'s2'|'s3'|'s4'|'s5', index: number, length: number, occupied_by: string[] }>,
  *   blocked?: boolean,
  *   blocked_by?: string[],
- *   carried_to?: string[],
  *   blockers?: import('../monitor/blockers.js').BlockerDisplay[],
  *   done_kind?: string|null,
  *   spec_id?: string,
@@ -2336,6 +2338,30 @@ function rowLocationLabel(bead_id, locations, states) {
 }
 
 /**
+ * Where a runnable candidate's declared scope was read from (UI-ruwu §4). The
+ * wire row's admission `spec_id` is blank for a quick_fix or an unpublished
+ * spec, and the row sheds the server's `scope_spec_id`, so the source the
+ * server actually read is the candidate's `bead_scope.artifacts` entry (same
+ * artifact set `[scope_spec_id, plan_path?]`). A field that entry does not
+ * carry falls back to the row's own `spec_id` / `plan_path`.
+ *
+ * @param {LaneItem} item
+ * @param {Map<string, Record<string, any>>} bead_scope_by_root
+ * @param {Map<string, import('../../utils/scope-overlap.js').ScopeSource>} runnable_source_by_bead
+ * @returns {import('../../utils/scope-overlap.js').ScopeSource}
+ */
+function runnableSourceOf(item, bead_scope_by_root, runnable_source_by_bead) {
+  const own = runnable_source_by_bead.get(item.id) || {};
+  const record = bead_scope_by_root.get(item.root_dir);
+  const entry = record ? record[item.id] : undefined;
+  const read = scopeSourceOf(entry ? entry.artifacts : undefined);
+  return {
+    spec_path: read.spec_path || own.spec_path || '',
+    plan_path: read.plan_path || own.plan_path || ''
+  };
+}
+
+/**
  * The declared scope of ONE comparison-set item, and what that declaration says
  * about itself (UI-qm12 §5.2). 큐·실행 중 버드는 스냅샷 장식 `bead_scope`에서,
  * 실행가능 항목은 자기 행이 실어 온 `scope`에서 읽는다 — 같은 버드가 큐에
@@ -2344,39 +2370,56 @@ function rowLocationLabel(bead_id, locations, states) {
  * 두 분기 모두 세 상태를 같은 뜻으로 읽는다: 값 없음 = 판정 불가, 빈 배열 =
  * 선언은 읽었는데 비었다(`missing`), 항목 n개 = `declared`.
  *
+ * `source` is the spec and plan the declaration was read from (UI-ruwu §4):
+ * a queued bead's `bead_scope.artifacts`, a runnable candidate's own
+ * `bead_scope.artifacts` entry ({@link runnableSourceOf}). Two beads of one
+ * plan share it, which is what the `⧉` pair loop keys the suppression on.
+ *
  * @param {LaneItem} item
  * @param {Map<string, Record<string, any>>} bead_scope_by_root
  * @param {Map<string, string[]>} runnable_scope_by_bead
- * @returns {{ scope: string[], state: 'declared'|'missing'|undefined }}
+ * @param {Map<string, import('../../utils/scope-overlap.js').ScopeSource>} runnable_source_by_bead
+ * @returns {{ scope: string[], state: 'declared'|'missing'|undefined, source: import('../../utils/scope-overlap.js').ScopeSource }}
  */
-function declaredScopeOf(item, bead_scope_by_root, runnable_scope_by_bead) {
+function declaredScopeOf(
+  item,
+  bead_scope_by_root,
+  runnable_scope_by_bead,
+  runnable_source_by_bead
+) {
   if (item.lane === 'runnable') {
     const scope = runnable_scope_by_bead.get(item.id);
+    const source = runnableSourceOf(
+      item,
+      bead_scope_by_root,
+      runnable_source_by_bead
+    );
     if (!scope) {
-      return { scope: [], state: undefined };
+      return { scope: [], state: undefined, source };
     }
     if (scope.length === 0) {
       // 행이 `scope` 필드를 실었다 = 서버가 원천(아티팩트 front-matter 또는
       // description `## scope`)을 읽는 데 성공했다는 뜻이므로, 빈 선언은 route와
       // `spec_id`에 무관하게 판정 불가를 드러낸다 (UI-f1qy §5). 필드 부재는 위
       // `!scope`에서 이미 아무 말도 하지 않고 빠진다.
-      return { scope: [], state: 'missing' };
+      return { scope: [], state: 'missing', source };
     }
-    return { scope, state: 'declared' };
+    return { scope, state: 'declared', source };
   }
   const record = bead_scope_by_root.get(item.root_dir);
   const entry = record ? record[item.id] : undefined;
   // 항목 없음 = 아직 안 읽음·스펙 없음, `null` = 읽기 실패 (§4.3) — 둘 다
   // 아무 말도 하지 않는다.
   if (!entry || !Array.isArray(entry.scope)) {
-    return { scope: [], state: undefined };
+    return { scope: [], state: undefined, source: {} };
   }
   const scope = entry.scope.filter(
     (/** @type {unknown} */ path) => typeof path === 'string' && path.length > 0
   );
   return {
     scope,
-    state: scope.length === 0 ? 'missing' : 'declared'
+    state: scope.length === 0 ? 'missing' : 'declared',
+    source: scopeSourceOf(entry.artifacts)
   };
 }
 
@@ -2384,6 +2427,7 @@ function declaredScopeOf(item, bead_scope_by_root, runnable_scope_by_bead) {
  * @typedef {Object} ScopeBead
  * @property {LaneItem[]} cards - 이 bead가 지금 서 있는 **모든** 표시 카드.
  * @property {string[]} scope
+ * @property {import('../../utils/scope-overlap.js').ScopeSource} source
  */
 
 /**
@@ -2401,6 +2445,7 @@ function declaredScopeOf(item, bead_scope_by_root, runnable_scope_by_bead) {
  * @param {LaneModel} model
  * @param {Map<string, Record<string, any>>} bead_scope_by_root
  * @param {Map<string, string[]>} runnable_scope_by_bead
+ * @param {Map<string, import('../../utils/scope-overlap.js').ScopeSource>} runnable_source_by_bead
  * @param {Map<string, import('../monitor/blockers.js').BlockerLocation>} locations
  * @param {Array<Record<string, any>>} states
  */
@@ -2408,6 +2453,7 @@ function applyScopeOverlaps(
   model,
   bead_scope_by_root,
   runnable_scope_by_bead,
+  runnable_source_by_bead,
   locations,
   states
 ) {
@@ -2428,15 +2474,16 @@ function applyScopeOverlaps(
       seen.cards.push(item);
       continue;
     }
-    const { scope, state } = declaredScopeOf(
+    const { scope, state, source } = declaredScopeOf(
       item,
       bead_scope_by_root,
-      runnable_scope_by_bead
+      runnable_scope_by_bead,
+      runnable_source_by_bead
     );
     if (state !== undefined) {
       item.scope_state = state;
     }
-    bead_by_key.set(key, { cards: [item], scope });
+    bead_by_key.set(key, { cards: [item], scope, source });
   }
 
   /** @type {Map<string, ScopeBead[]>} */
@@ -2493,6 +2540,11 @@ function applyScopeOverlaps(
   for (const entries of declared_by_root.values()) {
     for (let left = 0; left < entries.length; left += 1) {
       for (let right = left + 1; right < entries.length; right += 1) {
+        // 한 plan의 이슈들은 설계상 같은 scope를 나누어 가지므로 서로 겹침이
+        // 아니다 (UI-ruwu §4).
+        if (sharesScopeSource(entries[left].source, entries[right].source)) {
+          continue;
+        }
         const prefixes = overlapPrefixes(
           entries[left].scope,
           entries[right].scope
@@ -2884,6 +2936,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const bead_scope_by_root = new Map();
   /** @type {Map<string, string[]>} */
   const runnable_scope_by_bead = new Map();
+  /** @type {Map<string, import('../../utils/scope-overlap.js').ScopeSource>} */
+  const runnable_source_by_bead = new Map();
+  // plan 묶음 장식 (UI-ruwu §2): 레포별 `bead_plan_groups`. 후보·보류 행은 자기
+  // 행이 `plan_group`을 싣고 오므로 이 표는 대기·실행·PR 대기·완료 행의 재료다.
+  /** @type {Map<string, Record<string, any>>} */
+  const plan_groups_by_root = new Map();
   // 살아 있는 외부 대기 레코드 (UI-l48z §4.1). 세션 타일 조립이 레코드 유무로
   // 필드를 정하므로 레인 루프보다 먼저 모은다; 뒤의 부착 루프도 같은 표를 읽는다.
   /** @type {Map<string, import('../../protocol.js').ExternalWaitObservation>} */
@@ -2968,6 +3026,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
     if (Object.hasOwn(workspace, 'bead_scope')) {
       bead_scope_by_root.set(root_dir, objectOf(workspace.bead_scope));
     }
+    // 키가 없는 구서버 스냅샷은 묶음이 없는 것으로 읽는다 (fail-quiet).
+    if (Object.hasOwn(workspace, 'bead_plan_groups')) {
+      plan_groups_by_root.set(root_dir, objectOf(workspace.bead_plan_groups));
+    }
     // 대기·PR 대기·실행중 행의 route 칩 재료 (UI-yrzu §7.2).
     const bead_workflow = objectOf(workspace.bead_workflow);
     const pr_activity = objectOf(workspace.pr_activity);
@@ -3015,7 +3077,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }))
     );
     // 이슈 필드 오버레이 (§4.1): `{ priority?, from_id?, metadata?, labels?,
-    // route?, rollup? }`. `labels`는 다섯 열 모두에서 실리고 복잡 판정이
+    // route? }`. `labels`는 다섯 열 모두에서 실리고 복잡 판정이
     // `metadata`와 함께 읽는다 (UI-p7s2 §6, UI-7nhi §3). 키가 없는 bead는
     // 스냅샷 장식만으로 그린다.
     for (const [bead_id, entry] of Object.entries(
@@ -3361,7 +3423,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
       // 만들지 않는다 (fail-quiet) — Monitor 타일 표시는 그대로다.
       const attempt = attempt_by_id.get(live.attempt_id) || null;
       const overlay = overlay_by_key.get(`${root_dir}\u0000${bead_id}`);
-      const rollup = overlay && overlay.rollup ? overlay.rollup : null;
       const base_exception = baseException(
         declared_base,
         attempt ? attempt.target_base : null
@@ -3446,7 +3507,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
             live.failure?.confirmation === 'merged' ||
             objectOf(observations[bead_id]).pr?.state === 'MERGED'
         }),
-        ...(rollup ? { rollup } : {}),
         ...(conflict_resolution ? { conflict_resolution: true } : {}),
         ...(base_exception ? { base_exception } : {}),
         ...(landing ? { landing } : {}),
@@ -3689,12 +3749,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
       // closure steps do.
       const cleanup_retry =
         !!cleanup &&
-        [
-          'post_merge_jobs',
-          'child_sweep',
-          'branch_cleanup',
-          'parent_close'
-        ].includes(cleanup.step) &&
+        ['post_merge_jobs', 'branch_cleanup', 'parent_close'].includes(
+          cleanup.step
+        ) &&
         !!gate &&
         gate.tier === 'merged';
       const external_cleanup =
@@ -4129,6 +4186,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
               typeof path === 'string' && path.length > 0
           )
         );
+        runnable_source_by_bead.set(bead_id, {
+          spec_path: typeof entry.spec_id === 'string' ? entry.spec_id : '',
+          plan_path: typeof entry.plan_path === 'string' ? entry.plan_path : ''
+        });
       }
       const has_placement_facts =
         Object.hasOwn(entry, 'route') &&
@@ -4212,6 +4273,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...(released ? { dependency_chips: { released } } : {}),
         ...(entry.dependents_info && typeof entry.dependents_info === 'object'
           ? { dependents_info: entry.dependents_info }
+          : {}),
+        ...(entry.plan_group && typeof entry.plan_group === 'object'
+          ? { plan_group: entry.plan_group }
           : {}),
         reason: reason_parts.join(' · '),
         ...(admission[bead_id]?.stale === true
@@ -4391,6 +4455,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...(entry.dependents_info && typeof entry.dependents_info === 'object'
           ? { dependents_info: entry.dependents_info }
           : {}),
+        ...(entry.plan_group && typeof entry.plan_group === 'object'
+          ? { plan_group: entry.plan_group }
+          : {}),
         labels: Array.isArray(entry.labels) ? entry.labels : [],
         ...(typeof entry.issue_type === 'string' && entry.issue_type.length > 0
           ? { issue_type: entry.issue_type }
@@ -4462,17 +4529,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
       ) {
         item.worker_created_from_root_dir =
           overlay.worker_created_from_root_dir;
-      }
-      // 이월 후속 (UI-btj6 §3). 완료 행만 이 사실을 묻는다 — 끝난 일이 무엇으로
-      // 이어졌나. metadata 검사보다 앞에 서는 이유는 완료 bead가 닫힌 열에
-      // 있어 오버레이가 그 metadata를 싣지 않기 때문이다. 재료가 없으면 필드
-      // 자체가 없다 (fail-quiet).
-      if (
-        item.lane === 'done' &&
-        Array.isArray(overlay.carried_to) &&
-        overlay.carried_to.length > 0
-      ) {
-        item.carried_to = overlay.carried_to;
       }
       // 모니터 채널에는 `bead_workflow`가 없다 (UI-q1tg §3.1) — 대기·완료 행
       // route의 유일한 재료가 오버레이다. 완료 행만이 아니라 route를 실어 보내는
@@ -4827,6 +4883,26 @@ export function buildLanes(workspaces, workspaces_state, options) {
       interactive_by_bead.get(`${item.root_dir}\u0000${item.id}`) || [];
   }
 
+  // plan 묶음은 한 경로로 모든 레인 행에 얹는다 (UI-ruwu §2): 행이 이미 자기
+  // `plan_group`을 실었으면(후보·보류·세션 완료 행) 그것이 이기고, 나머지는 레포의
+  // `bead_plan_groups` 장식에서 ID로 읽는다. Worker 탭과 Monitor 탭이 같은 길이다.
+  for (const item of [
+    ...model.runnable,
+    ...model.deferred,
+    ...model.queue,
+    ...model.running,
+    ...model.pr_wait,
+    ...model.done
+  ]) {
+    if (item.plan_group) {
+      continue;
+    }
+    const decorated = plan_groups_by_root.get(item.root_dir)?.[item.id];
+    if (decorated && typeof decorated === 'object') {
+      item.plan_group = decorated;
+    }
+  }
+
   // 대기 행만 `manual_only`를 진다 (UI-3pu9 §4.1) — `model.queue`는 병렬 행과
   // 직렬 레인 행 전부다. 유예 칩과 유예로 서는 `[지금 시작]`이 이 값을 읽는다.
   for (const item of model.queue) {
@@ -4995,6 +5071,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     model,
     bead_scope_by_root,
     runnable_scope_by_bead,
+    runnable_source_by_bead,
     locations,
     states
   );

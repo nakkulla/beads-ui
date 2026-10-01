@@ -1643,7 +1643,7 @@ describe('monitor PR 대기 — 정리 재시도 라벨 (UI-jw27 §3)', () => {
         workspace({
           pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
           cleanup_failed: {
-            'A-1': { step: 'child_sweep', reason: 'boom', at: 42 }
+            'A-1': { step: 'branch_cleanup', reason: 'boom', at: 42 }
           },
           pr_observations: {
             'A-1': {
@@ -4291,12 +4291,19 @@ describe('validTime (UI-yrzu §5)', () => {
 });
 
 describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
+  let spec_seq = 0;
+
   /**
+   * Each declaration reads from its OWN spec: two beads sharing a spec or a
+   * plan are one plan's issues and draw no overlap chip (UI-ruwu §4).
+   *
    * @param {string[]} scope
+   * @param {string[]} [artifacts]
    * @returns {{ scope: string[], artifacts: string[] }}
    */
-  function declared(scope) {
-    return { scope, artifacts: ['docs/spec.md'] };
+  function declared(scope, artifacts) {
+    spec_seq += 1;
+    return { scope, artifacts: artifacts ?? [`docs/spec-${spec_seq}.md`] };
   }
 
   test('gives a running and a waiting bead each other as an overlap chip', () => {
@@ -4410,6 +4417,134 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
 
     expect(lanes.queue[0].overlap_chips).toBeUndefined();
     expect(lanes.queue[1].overlap_chips).toBeUndefined();
+  });
+
+  test('skips a pair reading the same spec (UI-ruwu §4)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_scope: {
+            'A-1': declared(['server/worker'], ['docs/shared.md']),
+            'A-2': declared(['server/worker'], ['docs/shared.md'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].overlap_chips).toBeUndefined();
+    expect(lanes.queue[1].overlap_chips).toBeUndefined();
+  });
+
+  test('skips a pair reading the same plan under different specs (UI-ruwu §4)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_scope: {
+            'A-1': declared(['server/worker'], ['docs/a.md', 'plans/p.md']),
+            'A-2': declared(['server/worker'], ['docs/b.md', 'plans/p.md'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].overlap_chips).toBeUndefined();
+    expect(lanes.queue[1].overlap_chips).toBeUndefined();
+  });
+
+  test('keeps a pair reading different specs and plans (UI-ruwu §4)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_scope: {
+            'A-1': declared(['server/worker'], ['docs/a.md', 'plans/p.md']),
+            'A-2': declared(['server/worker'], ['docs/b.md', 'plans/q.md'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].overlap_chips?.map((chip) => chip.id)).toEqual([
+      'A-2'
+    ]);
+  });
+
+  test('skips a runnable candidate sharing a plan with a waiting bead (UI-ruwu §4)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          runnable: [
+            runnable('A-9', {
+              spec_id: 'docs/x.md',
+              plan_path: 'plans/p.md',
+              scope: ['app/views']
+            })
+          ],
+          bead_scope: {
+            'A-1': declared(
+              ['app/views/monitor/index.js'],
+              ['docs/y.md', 'plans/p.md']
+            )
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].overlap_chips).toBeUndefined();
+    expect(lanes.queue[0].overlap_chips).toBeUndefined();
+  });
+
+  test('skips two runnable candidates reading one spec despite blank admission spec ids (UI-ruwu §4)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-8', { spec_id: '', scope: ['app/views'] }),
+            runnable('A-9', { spec_id: '', scope: ['app/views/monitor'] })
+          ],
+          bead_scope: {
+            'A-8': declared(['app/views'], ['docs/shared.md']),
+            'A-9': declared(['app/views/monitor'], ['docs/shared.md'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].overlap_chips).toBeUndefined();
+    expect(lanes.runnable[1].overlap_chips).toBeUndefined();
+  });
+
+  test('keeps two runnable candidates reading different specs despite blank admission spec ids', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-8', { spec_id: '', scope: ['app/views'] }),
+            runnable('A-9', { spec_id: '', scope: ['app/views/monitor'] })
+          ],
+          bead_scope: {
+            'A-8': declared(['app/views'], ['docs/a.md']),
+            'A-9': declared(['app/views/monitor'], ['docs/b.md'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].overlap_chips?.map((chip) => chip.id)).toEqual([
+      'A-9'
+    ]);
+    expect(lanes.runnable[1].overlap_chips?.map((chip) => chip.id)).toEqual([
+      'A-8'
+    ]);
   });
 
   test('marks a read declaration with no items as missing', () => {
@@ -5172,16 +5307,11 @@ describe('lane model group retention (UI-4tud §4.3)', () => {
 });
 
 describe('lane model running tile worker fields (UI-4tud §4.3)', () => {
-  test('carries the failed tile discard, conflict, base and rollup facts', () => {
+  test('carries the failed tile discard, conflict and base facts', () => {
     const lanes = buildLanes(
       [
         workspace({
           declared_base: 'main',
-          bead_overlay: {
-            'A-1': {
-              rollup: { total: 3, count: 1, current: null, children: [] }
-            }
-          },
           attempts: {
             t1: {
               attempt_id: 't1',
@@ -5202,14 +5332,8 @@ describe('lane model running tile worker fields (UI-4tud §4.3)', () => {
     expect([
       tile.conflict_resolution,
       tile.base_exception,
-      tile.rollup,
       !!tile.discard
-    ]).toEqual([
-      true,
-      '→ release',
-      { total: 3, count: 1, current: null, children: [] },
-      true
-    ]);
+    ]).toEqual([true, '→ release', true]);
   });
 
   test('inherits conflict resolution through the resumed attempt chain', () => {
@@ -6138,7 +6262,7 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
     }
   });
 
-  test('overlays the carryover successors on the done row (UI-btj6 §3)', () => {
+  test('ships no carried_to on the done row', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -6149,21 +6273,33 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
       [state()]
     );
 
-    expect(lanes.done[0].carried_to).toEqual(['A-7', 'A-8']);
+    expect(lanes.done[0]).not.toHaveProperty('carried_to');
   });
 
-  test('omits the carryover successors on a row outside the done lane', () => {
+  test('ships no rollup on the running tile', () => {
     const lanes = buildLanes(
       [
         workspace({
-          queue: [{ bead_id: 'A-2' }],
-          bead_overlay: { 'A-2': { carried_to: ['A-7'] } }
+          bead_overlay: {
+            'A-1': {
+              rollup: { total: 3, count: 1, current: null, children: [] }
+            }
+          },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'failed',
+              cause: 'verify_failed',
+              finished_at: 9
+            }
+          }
         })
       ],
       [state()]
     );
 
-    expect(lanes.queue[0].carried_to).toBeUndefined();
+    expect(lanes.running[0]).not.toHaveProperty('rollup');
   });
 
   test('leaves a bead without an overlay key unchanged', () => {
@@ -8164,5 +8300,177 @@ describe('칩 바인딩 판정 재료 (UI-wg68 §5.1)', () => {
     );
 
     expect(chip.dataset.state).toBe('unapplied');
+  });
+});
+
+describe('plan 묶음 장식 (UI-ruwu §2)', () => {
+  /**
+   * @param {string} id
+   * @returns {Record<string, any>}
+   */
+  function planGroup(id) {
+    return {
+      plan_path: 'plans/2026-09-29-landing.md',
+      slug: 'landing',
+      index: 1,
+      total: 2,
+      members: [
+        { id, anchor: 'Phase 1', status: 'open', blocked_by: [] },
+        { id: 'A-peer', anchor: 'Phase 2', status: 'open', blocked_by: [id] }
+      ]
+    };
+  }
+
+  test('carries the decorated plan group onto a waiting row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_plan_groups: { 'A-1': planGroup('A-1') }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].plan_group).toEqual(planGroup('A-1'));
+  });
+
+  test('carries the decorated plan group onto a running tile', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 10
+            }
+          },
+          bead_plan_groups: { 'A-1': planGroup('A-1') }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].plan_group).toEqual(planGroup('A-1'));
+  });
+
+  test('carries the decorated plan group onto a PR 대기 row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          bead_plan_groups: { 'A-1': planGroup('A-1') }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0].plan_group).toEqual(planGroup('A-1'));
+  });
+
+  test('carries the decorated plan group onto a done row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 100 }],
+          bead_plan_groups: { 'A-1': planGroup('A-1') }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].plan_group).toEqual(planGroup('A-1'));
+  });
+
+  test('keeps the plan group a candidate row carries itself', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-9', { plan_group: planGroup('A-9') })]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].plan_group).toEqual(planGroup('A-9'));
+  });
+
+  test('keeps the plan group a deferred row carries itself', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          deferred: [runnable('A-9', { plan_group: planGroup('A-9') })]
+        })
+      ],
+      [state()],
+      { groups: 'all' }
+    );
+
+    expect(lanes.deferred[0].plan_group).toEqual(planGroup('A-9'));
+  });
+
+  test('prefers the row own plan group over the decoration', () => {
+    const own = { ...planGroup('A-9'), index: 2 };
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-9', { plan_group: own })],
+          bead_plan_groups: { 'A-9': planGroup('A-9') }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].plan_group?.index).toBe(2);
+  });
+
+  test('leaves a bead outside every group without a plan group', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_plan_groups: { 'A-1': planGroup('A-1') }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue.find((item) => item.id === 'A-2')?.plan_group).toBe(
+      undefined
+    );
+  });
+
+  test('leaves rows without a plan group when the snapshot has no decoration', () => {
+    const lanes = buildLanes(
+      [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      [state()]
+    );
+
+    expect(lanes.queue[0].plan_group).toBe(undefined);
+  });
+
+  test('reads each repo decoration for that repo only', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'X-1' }],
+          bead_plan_groups: { 'X-1': planGroup('X-1') }
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'X-1' }]
+        })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b' })]
+    );
+
+    const by_root = Object.fromEntries(
+      lanes.queue.map((item) => [item.root_dir, item.plan_group?.slug])
+    );
+
+    expect(by_root).toEqual({ [WS_A]: 'landing', [WS_B]: undefined });
   });
 });

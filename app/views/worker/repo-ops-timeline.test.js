@@ -31,7 +31,7 @@ function operation(patch = {}) {
 function cleanup(patch = {}) {
   return {
     bead_id: 'UI-a',
-    step: 'child_sweep',
+    step: 'branch_cleanup',
     reason: 'x',
     at: 300,
     ...patch
@@ -1008,12 +1008,12 @@ describe('post_merge_jobs 정리 멈춤 행 (UI-i60a §1)', () => {
     return /** @type {HTMLElement} */ (mount.querySelector('.worker-ev'));
   }
 
-  test('draws six pips in the cleanup stepper', () => {
+  test('draws five pips in the cleanup stepper', () => {
     const row = renderCleanupRow(cleanup({ step: 'post_merge_jobs' }));
 
     const pips = row.querySelectorAll('.worker-step');
 
-    expect(pips.length).toBe(6);
+    expect(pips.length).toBe(5);
   });
 
   test('stalls the stepper on the post_merge_jobs pip', () => {

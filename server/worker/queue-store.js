@@ -2832,6 +2832,30 @@ function clone(value) {
 }
 
 /**
+ * Post-merge cleanup steps a later build retired, each mapped to the step that
+ * took over its place. The child sweep left the sequence when the contract
+ * abolished Phase children, so a record stored while it was a step resumes at
+ * the step that follows it.
+ *
+ * @type {Readonly<Record<string, string>>}
+ */
+const RETIRED_CLEANUP_STEPS = Object.freeze({
+  child_sweep: 'branch_cleanup'
+});
+
+/**
+ * One stored cleanup step or cursor name, read forward past a retired step.
+ *
+ * @param {string} step
+ * @returns {string}
+ */
+function currentCleanupStep(step) {
+  return Object.hasOwn(RETIRED_CLEANUP_STEPS, step)
+    ? RETIRED_CLEANUP_STEPS[step]
+    : step;
+}
+
+/**
  * @param {unknown} entry
  * @returns {QueueEntry|null}
  */
@@ -2849,7 +2873,7 @@ function normalizeEntry(entry) {
     cleanup_cursor:
       typeof entry.cleanup_cursor === 'string' &&
       entry.cleanup_cursor.length > 0
-        ? entry.cleanup_cursor
+        ? currentCleanupStep(entry.cleanup_cursor)
         : null,
     head_ref:
       typeof entry.head_ref === 'string' && entry.head_ref.length > 0
@@ -4944,7 +4968,10 @@ function normalizeQueue(raw) {
       }
       if (isRecord(value) && typeof value.reason === 'string') {
         q.cleanup_failed[bead_id] = {
-          step: typeof value.step === 'string' ? value.step : '',
+          step:
+            typeof value.step === 'string'
+              ? currentCleanupStep(value.step)
+              : '',
           reason: value.reason,
           bd_restore:
             typeof value.bd_restore === 'string' ? value.bd_restore : null,
@@ -5206,6 +5233,32 @@ function applyLaneBlocksOrder(q, lane, blocks_edges) {
   target.entries = topo.order.map(
     (bead_id) => /** @type {QueueEntry} */ (by_id.get(bead_id))
   );
+}
+
+/**
+ * The beads that are doing work right now: a non-terminal attempt, a PR wait,
+ * or a discard in flight. A lane op that would move or add one is refused.
+ *
+ * @param {Queue} q
+ * @returns {Set<string>}
+ */
+function activeBeadIds(q) {
+  /** @type {Set<string>} */
+  const active = new Set();
+  for (const attempt of Object.values(q.attempts)) {
+    if (!TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status))) {
+      active.add(attempt.bead_id);
+    }
+  }
+  for (const entry of q.pr_wait) {
+    active.add(entry.bead_id);
+  }
+  for (const operation of Object.values(q.discard_operations)) {
+    if (discardOperationActive(operation)) {
+      active.add(operation.bead_id);
+    }
+  }
+  return active;
 }
 
 /**
@@ -6861,20 +6914,7 @@ export function createQueueStore(options = {}) {
           reason = 'duplicate_member';
           return false;
         }
-        const active = new Set();
-        for (const attempt of Object.values(next.attempts)) {
-          if (!TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status))) {
-            active.add(attempt.bead_id);
-          }
-        }
-        for (const entry of next.pr_wait) {
-          active.add(entry.bead_id);
-        }
-        for (const operation of Object.values(next.discard_operations)) {
-          if (discardOperationActive(operation)) {
-            active.add(operation.bead_id);
-          }
-        }
+        const active = activeBeadIds(next);
         for (const bead_id of ordered_bead_ids) {
           const queued =
             next.queue.some((e) => e.bead_id === bead_id) ||
@@ -6887,6 +6927,68 @@ export function createQueueStore(options = {}) {
           }
           if (active.has(bead_id)) {
             reason = 'member_active';
+            return false;
+          }
+        }
+        const added_at = now();
+        for (const bead_id of ordered_bead_ids) {
+          removeFromLanes(next, bead_id);
+        }
+        const target = next.serial_lanes[index];
+        for (const bead_id of ordered_bead_ids) {
+          target.entries.push(makeQueueEntry(bead_id, added_at));
+          rebindLineageLane(next, bead_id, String(lane));
+        }
+        applyLaneBlocksOrder(next, lane, input.blocks_edges);
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
+    },
+
+    /**
+     * Add a group of beads that are NOT in the queue yet to one serial lane in
+     * a SINGLE CAS (UI-ruwu §3) — the add-mode sibling of
+     * {@link applySerialGroup}, which only reorders members already queued.
+     *
+     * All-or-nothing on the clone the write lands on: a lane that is not an
+     * active serial lane, fewer than two or duplicate ids, or ANY member that
+     * is already queued or doing work (it may have been placed concurrently)
+     * rejects the whole mutation without a revision bump. Members append after
+     * the lane's existing entries in submit order, and the blocks correction
+     * ({@link orderLaneByBlocks}) is the FINAL order. A member sitting in the
+     * `done` lane is re-queued exactly as a single {@link place} would.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, lane: string, ordered_bead_ids: string[], blocks_edges?: { blocker: string, blockee: string }[] }} input
+     * @returns {QueueOpResult & { reason?: string }}
+     */
+    placeSerialGroup(workspace, input) {
+      const { expected_revision, lane, ordered_bead_ids } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyMutation(workspace, expected_revision, (next) => {
+        const index = serialLaneIndex(lane);
+        if (index === null || index >= next.serial_lane_count) {
+          reason = 'lane_invalid';
+          return false;
+        }
+        if (!Array.isArray(ordered_bead_ids) || ordered_bead_ids.length < 2) {
+          reason = 'group_size';
+          return false;
+        }
+        if (new Set(ordered_bead_ids).size !== ordered_bead_ids.length) {
+          reason = 'duplicate_member';
+          return false;
+        }
+        const active = activeBeadIds(next);
+        for (const bead_id of ordered_bead_ids) {
+          const queued =
+            next.queue.some((e) => e.bead_id === bead_id) ||
+            next.serial_lanes.some((entry_lane) =>
+              entry_lane.entries.some((e) => e.bead_id === bead_id)
+            );
+          if (queued || active.has(bead_id)) {
+            reason = 'member_present';
             return false;
           }
         }
@@ -9346,7 +9448,6 @@ export function createQueueStore(options = {}) {
         'base_containment',
         'repo_operations',
         'post_merge_jobs',
-        'child_sweep',
         'branch_cleanup',
         'parent_close'
       ];

@@ -328,7 +328,7 @@ describe('worker/merge-queue — sequencing', () => {
         ok: false,
         action: 'merged',
         reason: 'boom',
-        cleanup_step: 'child_sweep'
+        cleanup_step: 'branch_cleanup'
       })
     });
 

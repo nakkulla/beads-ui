@@ -10,7 +10,7 @@ import {
 } from './merge-steps.js';
 
 describe('MERGE_STEPS', () => {
-  test('keeps the seven card steps at fixed semantic positions', () => {
+  test('keeps the six card steps at fixed semantic positions', () => {
     expect(
       MERGE_STEPS.map(({ step, label, index }) => ({ step, label, index }))
     ).toEqual([
@@ -18,44 +18,55 @@ describe('MERGE_STEPS', () => {
       { step: 'base', label: 'base', index: 2 },
       { step: 'verify', label: '검증', index: 3 },
       { step: 'deploy', label: '배포', index: 4 },
-      { step: 'child', label: '자식', index: 5 },
-      { step: 'branch', label: '브랜치', index: 6 },
-      { step: 'close', label: 'close', index: 7 }
+      { step: 'branch', label: '브랜치', index: 5 },
+      { step: 'close', label: 'close', index: 6 }
     ]);
   });
 });
 
 describe('CLEANUP_STEPS', () => {
-  test('holds the six post-merge cleanup steps in cursor order', () => {
+  test('holds the five post-merge cleanup steps in cursor order', () => {
     expect(CLEANUP_STEPS.map((entry) => entry.step)).toEqual([
       'base_containment',
       'repo_operations',
       'post_merge_jobs',
-      'child_sweep',
       'branch_cleanup',
       'parent_close'
     ]);
   });
 
-  test('places post_merge_jobs between repo_operations and child_sweep', () => {
+  test('lists no child cleanup entry', () => {
+    expect(CLEANUP_STEPS.map((entry) => entry.label)).not.toContain(
+      '자식 정리'
+    );
+  });
+
+  test('places post_merge_jobs between repo_operations and branch_cleanup', () => {
     const steps = CLEANUP_STEPS.map((entry) => entry.step);
 
     const index = steps.indexOf('post_merge_jobs');
 
     expect([steps[index - 1], steps[index + 1]]).toEqual([
       'repo_operations',
-      'child_sweep'
+      'branch_cleanup'
     ]);
   });
 });
 
 describe('mergeStepView', () => {
   test('projects a known step with its position', () => {
-    expect(mergeStepView('child_sweep')).toEqual({
-      label: '자식 정리 중',
+    expect(mergeStepView('branch_cleanup')).toEqual({
+      label: '브랜치 정리 중',
       index: 5,
-      total: 7,
-      percent: 71
+      total: 6,
+      percent: 83
+    });
+  });
+
+  test('renders the retired child_sweep step by its raw name', () => {
+    expect(mergeStepView('child_sweep')).toMatchObject({
+      label: 'child_sweep',
+      index: 0
     });
   });
 
@@ -63,7 +74,7 @@ describe('mergeStepView', () => {
     expect(mergeStepView('post_merge_jobs')).toEqual({
       label: '머지 후 잡',
       index: 0,
-      total: 7,
+      total: 6,
       percent: 0
     });
   });
@@ -82,20 +93,15 @@ describe('mergeStepView', () => {
 
 describe('cleanupStepperView', () => {
   test('marks the stopped step and everything before it', () => {
-    expect(cleanupStepperView('child_sweep').map((pip) => pip.state)).toEqual([
-      'done',
-      'done',
-      'done',
-      'stall',
-      'todo',
-      'todo'
-    ]);
+    expect(
+      cleanupStepperView('branch_cleanup').map((pip) => pip.state)
+    ).toEqual(['done', 'done', 'done', 'stall', 'todo']);
   });
 
   test('stalls on the post_merge_jobs pip', () => {
     expect(
       cleanupStepperView('post_merge_jobs').map((pip) => pip.state)
-    ).toEqual(['done', 'done', 'stall', 'todo', 'todo', 'todo']);
+    ).toEqual(['done', 'done', 'stall', 'todo', 'todo']);
   });
 
   test('leaves every pip unreached for an unknown step', () => {
@@ -125,14 +131,14 @@ describe('cleanupStepPosition', () => {
   test('counts a known step within the sequence', () => {
     expect(cleanupStepPosition('repo_operations')).toEqual({
       index: 2,
-      total: 6
+      total: 5
     });
   });
 
-  test('counts post_merge_jobs as the third of six steps', () => {
+  test('counts post_merge_jobs as the third of five steps', () => {
     expect(cleanupStepPosition('post_merge_jobs')).toEqual({
       index: 3,
-      total: 6
+      total: 5
     });
   });
 
@@ -144,7 +150,7 @@ describe('cleanupStepPosition', () => {
 describe('cleanupStalledReason', () => {
   test('says where a stopped cleanup stopped', () => {
     expect(cleanupStalledReason('repo_operations')).toBe(
-      '머지 완료 · 정리 6단계 중 2단계에서 멈춤'
+      '머지 완료 · 정리 5단계 중 2단계에서 멈춤'
     );
   });
 

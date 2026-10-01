@@ -582,7 +582,7 @@ describe('worker workspace adapter', () => {
     expect(overlay.QF.route).toBe('quick_fix');
   });
 
-  test('carries a child rollup for a parent that is in no subscribed column', () => {
+  test('ships no child rollup for the parent of subscribed children', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:in-progress', [
       { id: 'S1.1', parent: 'S1', status: 'in_progress' }
@@ -593,10 +593,10 @@ describe('worker workspace adapter', () => {
     const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
       .bead_overlay;
 
-    expect(overlay.S1.rollup.total).toBe(2);
+    expect(overlay.S1).toBeUndefined();
   });
 
-  test('derives one carryover successor per blocked bead (UI-btj6 §3)', () => {
+  test('ships no carried_to for the parent of a carryover successor', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:blocked', [
       {
@@ -604,113 +604,6 @@ describe('worker workspace adapter', () => {
         metadata: { carried_from: 'UI-p1.1' },
         dependencies: [{ depends_on_id: 'UI-p1', type: 'blocks' }],
         blocked_info: { blockers: ['UI-p1'] }
-      },
-      {
-        id: 'UI-s2',
-        metadata: { carried_from: 'UI-p1.2' },
-        dependencies: [{ depends_on_id: 'UI-p1', type: 'blocks' }],
-        blocked_info: { blockers: ['UI-p1'] }
-      }
-    ]);
-    const adapter = adapterOf({ stores });
-
-    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
-      .bead_overlay;
-
-    expect(overlay['UI-p1'].carried_to).toEqual(['UI-s1', 'UI-s2']);
-  });
-
-  test('reads the carryover blocks edge off an unblocked successor', () => {
-    const stores = createTestIssueStores();
-    seed(stores, 'tab:worker:ready', [
-      {
-        id: 'UI-s1',
-        metadata: { carried_from: 'UI-p1.1' },
-        dependencies: [{ depends_on_id: 'UI-p1', type: 'blocks' }]
-      }
-    ]);
-    const adapter = adapterOf({ stores });
-
-    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
-      .bead_overlay;
-
-    expect(overlay['UI-p1'].carried_to).toEqual(['UI-s1']);
-  });
-
-  test('reads the raw blocks edge when blocked_info lists no blocker', () => {
-    const stores = createTestIssueStores();
-    seed(stores, 'tab:worker:blocked', [
-      {
-        id: 'UI-s1',
-        metadata: { carried_from: 'UI-p1.1' },
-        dependencies: [{ depends_on_id: 'UI-p1', type: 'blocks' }],
-        blocked_info: { blockers: [] }
-      }
-    ]);
-    const adapter = adapterOf({ stores });
-
-    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
-      .bead_overlay;
-
-    expect(overlay['UI-p1'].carried_to).toEqual(['UI-s1']);
-  });
-
-  test('omits a carryover successor that blocks on another bead', () => {
-    const stores = createTestIssueStores();
-    seed(stores, 'tab:worker:blocked', [
-      {
-        id: 'UI-s1',
-        metadata: { carried_from: 'UI-p2.1' },
-        dependencies: [{ depends_on_id: 'UI-p2', type: 'blocks' }],
-        blocked_info: { blockers: ['UI-p2'] }
-      }
-    ]);
-    const adapter = adapterOf({ stores });
-
-    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
-      .bead_overlay;
-
-    expect(overlay['UI-p1']).toBeUndefined();
-    expect(overlay['UI-p2'].carried_to).toEqual(['UI-s1']);
-  });
-
-  test('omits a successor without the carried_from metadata', () => {
-    const stores = createTestIssueStores();
-    seed(stores, 'tab:worker:blocked', [
-      { id: 'UI-s1', metadata: {}, blocked_info: { blockers: ['UI-p1'] } }
-    ]);
-    const adapter = adapterOf({ stores });
-
-    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
-      .bead_overlay;
-
-    expect(Object.hasOwn(overlay['UI-p1'] || {}, 'carried_to')).toBe(false);
-  });
-
-  test('derives a carryover successor still sitting in resolved', () => {
-    const stores = createTestIssueStores();
-    seed(stores, 'tab:worker:resolved', [
-      {
-        id: 'UI-s1',
-        metadata: { carried_from: 'UI-p1.1' },
-        dependencies: [{ depends_on_id: 'UI-p1', type: 'blocks' }]
-      }
-    ]);
-    const adapter = adapterOf({ stores });
-
-    const overlay = adapter.read({ candidate_sort: SORT }).workspaces[0]
-      .bead_overlay;
-
-    expect(overlay['UI-p1'].carried_to).toEqual(['UI-s1']);
-  });
-
-  test('omits a carryover successor that is already closed', () => {
-    const stores = createTestIssueStores();
-    seed(stores, 'tab:worker:closed', [
-      {
-        id: 'UI-s1',
-        metadata: { carried_from: 'UI-p1.1' },
-        dependencies: [{ depends_on_id: 'UI-p1', type: 'blocks' }]
       }
     ]);
     const adapter = adapterOf({ stores });
@@ -1158,5 +1051,102 @@ describe('worker workspace adapter', () => {
     await flush();
 
     expect(onInvalidate).not.toHaveBeenCalled();
+  });
+  test('carries the plan group of a ready issue onto its candidate row', () => {
+    const stores = createTestIssueStores();
+    const plan_group = {
+      plan_path: 'plans/2026-09-29-landing.md',
+      slug: 'landing',
+      index: 1,
+      total: 2,
+      members: []
+    };
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'RD-1',
+        title: 'phase 1',
+        status: 'open',
+        spec_id: 'S',
+        metadata: { route: 'spec_backed', spec_review: RECEIPT },
+        plan_group
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .runnable[0];
+
+    expect(row.plan_group).toEqual(plan_group);
+  });
+
+  test('leaves a candidate row without a plan group key when the issue has none', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'RD-1',
+        title: 'plain',
+        status: 'open',
+        spec_id: 'S',
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .runnable[0];
+
+    expect(Object.hasOwn(row, 'plan_group')).toBe(false);
+  });
+
+  test('carries the plan group of a deferred issue onto its shelf row', () => {
+    const stores = createTestIssueStores();
+    const plan_group = {
+      plan_path: 'plans/2026-09-29-landing.md',
+      slug: 'landing',
+      index: 2,
+      total: 2,
+      members: []
+    };
+    seed(stores, 'tab:worker:deferred', [
+      { id: 'DF-1', title: 'later', status: 'deferred', plan_group }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .deferred[0];
+
+    expect(row.plan_group).toEqual(plan_group);
+  });
+
+  test('carries the plan group of a closed issue onto its 닫힘 행', () => {
+    const stores = createTestIssueStores();
+    const closed_at = Date.now();
+    const plan_group = {
+      plan_path: 'plans/2026-09-29-landing.md',
+      slug: 'landing',
+      index: 1,
+      total: 2,
+      members: []
+    };
+    seed(stores, 'tab:worker:closed', [
+      { id: 'CL-1', title: 'done', closed_at, comment_count: 0, plan_group }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .session_done[0];
+
+    expect(row.plan_group).toEqual(plan_group);
+  });
+
+  test('passes the queue plan group decoration through to the workspace item', () => {
+    const adapter = adapterOf({
+      stores: createTestIssueStores(),
+      queue: { bead_plan_groups: { 'A-1': { slug: 'landing' } } }
+    });
+
+    const workspace = adapter.read({ candidate_sort: SORT }).workspaces[0];
+
+    expect(workspace.bead_plan_groups).toEqual({ 'A-1': { slug: 'landing' } });
   });
 });

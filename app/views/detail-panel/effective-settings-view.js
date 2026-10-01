@@ -42,7 +42,7 @@ import {
   orchestrationModelOptions,
   speedVisible
 } from '../settings-dialog/session-model.js';
-import { judgementPopoverContent } from '../worker/lanes.js';
+import { judgementPopoverContent, planChipLabel } from '../worker/lanes.js';
 import {
   EFFECTIVE_GROUPS,
   SETTING_LABELS,
@@ -775,8 +775,13 @@ function detailJudgementChip(input) {
  * 있고 이슈 route가 `quick_fix`가 아니면 클릭이 그 프리셋을 적용·복원하고, 그
  * 밖에는 UI-8x90 §5.1 그대로 사유 팝업을 연다.
  *
+ * plan 묶음 칩 `plan <slug> <i>/<n>`은 route 칩 다음에 서고 (UI-ruwu §2) 팝업은
+ * 카드와 같은 함수가 만든다. 출구 줄의 재료(`planContext`)와 팝업 안 클릭
+ * (`onPopupClick`)은 패널이 소유한다 — 상세는 오버레이라 Worker·Monitor의 클릭
+ * 위임이 닿지 않는다.
+ *
  * @param {any} data - The bd issue payload.
- * @param {{ onChipToggle?: (chip_key: string) => void, isChipOpen?: (chip_key: string) => boolean, onChipPresetToggle?: (chip_key: string) => void, chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null }} [handlers]
+ * @param {{ onChipToggle?: (chip_key: string) => void, isChipOpen?: (chip_key: string) => boolean, onChipPresetToggle?: (chip_key: string) => void, chipPresets?: import('../../utils/chip-preset-binding.js').ChipPresetContext|null, planContext?: (item: any) => import('../worker/plan-place.js').PlanPlaceContext|null, onPopupClick?: (event: Event) => void }} [handlers]
  * @returns {TemplateResult}
  */
 export function summaryHeaderTemplate(data, handlers = {}) {
@@ -821,20 +826,36 @@ export function summaryHeaderTemplate(data, handlers = {}) {
   // 자리를 나눠 쓰므로 열린 칩 하나를 먼저 고르고 그 내용만 그린다.
   // `judgementPopoverContent`가 읽는 필드만 지어 넘긴다 — 레인 항목 전체를
   // 만들지 않는다.
+  const plan_item = {
+    id: typeof data?.id === 'string' ? data.id : '',
+    plan_group: data?.plan_group
+  };
+  const plan_label = planChipLabel(plan_item);
+  const plan_open =
+    plan_label.length > 0 && handlers.isChipOpen?.('plan') === true;
   const open_chip_key = complex_open
     ? 'complex'
-    : area_labels.find((label) => handlers.isChipOpen?.(label) === true) || '';
+    : plan_open
+      ? 'plan'
+      : area_labels.find((label) => handlers.isChipOpen?.(label) === true) ||
+        '';
   const chip_popover = open_chip_key
     ? judgementPopoverContent(
         /** @type {any} */ ({
+          ...plan_item,
           complex_reason: reason,
           route,
           labels: data?.labels
         }),
-        open_chip_key
+        open_chip_key,
+        handlers.planContext
       )
     : null;
-  return html`<section class="detail-summary" data-seam="detail-summary">
+  return html`<section
+    class="detail-summary"
+    data-seam="detail-summary"
+    @click=${handlers.onPopupClick}
+  >
     <div class="detail-summary__chips">
       <span class="detail-summary__chip detail-summary__chip--status"
         >${data?.status || '—'}</span
@@ -843,6 +864,19 @@ export function summaryHeaderTemplate(data, handlers = {}) {
         ? html`<span class="detail-summary__chip detail-summary__chip--route"
             >${route}</span
           >`
+        : ''}
+      ${plan_label.length > 0
+        ? detailJudgementChip({
+            chip_key: 'plan',
+            label: plan_label,
+            title: `${data.plan_group.plan_path} — 같은 plan에서 나온 이슈 ${data.plan_group.total}개 중 ${data.plan_group.index}번째`,
+            modifier: 'plan',
+            open: plan_open,
+            metadata,
+            route,
+            data,
+            handlers
+          })
         : ''}
       ${metadata.workflow_mode === 'fast_track'
         ? html`<span class="detail-summary__chip detail-summary__chip--mode"

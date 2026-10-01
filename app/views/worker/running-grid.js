@@ -23,13 +23,8 @@ import {
   providerUsageBadges,
   usageTooltip
 } from '../../utils/token-usage.js';
-import { childRollupTemplate } from '../child-rollup.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
-import {
-  childExecChips,
-  execReceiptActor,
-  formatExecReceipt
-} from '../exec-format.js';
+import { execReceiptActor, formatExecReceipt } from '../exec-format.js';
 import {
   failureCategory,
   failureNextAction,
@@ -48,6 +43,7 @@ import {
   interactiveSessionBadgesTemplate,
   interactiveSessionClosingTemplate,
   laneOriginChipTemplate,
+  planChipTemplate,
   priorityBadgeTemplate,
   routeCardTone,
   routeChipTemplate,
@@ -132,12 +128,6 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * available for the shared resume action.
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4.1).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4.1).
- * @property {import('../../utils/child-rollup.js').ChildRollup|null} [rollup] -
- * Child 진행도 (worker-card-exec-chips §3.3) — 큐 스냅샷에 페이즈명이 없으므로
- * `children N/M` + 현재 child 줄이 "지금 어디까지"에 답하는 유일한 사실이다.
- * child가 없는 bead는 null이고 블록 자체가 생략된다 (fail-quiet).
- * @property {boolean} [rollup_expanded] - 이 bead의 child 목록이 펼쳐져 있는지.
- * 기본은 접힘이고, 펼침 상태는 뷰가 소유한다.
  * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} [exec_chips] -
  * 오케(이 attempt의 기록값) + 워커(현재 해석값) 실행 설정 칩 (§2.2); 둘 다
  * 없으면 null이고 meta 줄이 그만큼 짧아진다.
@@ -185,6 +175,8 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * 위임 leg. 끝난 것은 접혀 한 칩이 된다.
  * @property {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null} [chip_popover] -
  * 이 타일에서 열려 있는 판정 칩 사유 팝업 (UI-8x90 §4.5). 슬롯 5 줄이 싣는다.
+ * @property {import('../../utils/plan-group.js').PlanGroup} [plan_group] - 이 타일의
+ * 이슈가 속한 plan 묶음 (UI-ruwu §2). 슬롯 5a 칩의 재료이고 없으면 칩도 없다.
  * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
  * 의존·겹침 칩 (슬롯 4). 재료가 없으면 줄이 통째로 빠진다 (fail-quiet).
  */
@@ -698,7 +690,6 @@ function failurePopoverTemplate(failure, now) {
  * The attempt's last non-thinking transcript line (§9.3).
  * @property {Array<{ label: string, state: 'live'|'done'|'failed'|'interrupted', agent_type?: string|null, model?: string|null, usage?: Record<string, number>|null, price_usd?: number|null, price_basis?: string, native?: boolean, usage_included?: boolean }>} [legs] -
  * Delegation legs; only the unfinished ones are spelled out.
- * `연결 n` 소속 칩 (UI-8x90 §4.1): 슬롯 5 좌표 칩이므로 직렬 레인 칩 다음이다.
  * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
  * 의존·겹침 칩 (§5.1). 실행중 타일도 `⛓ blocked` · `⧉ 겹침` · `scope 없음`을
  * 모두 받는다 (UI-anna §4·§5.3): 이미 출발한 레인에서 blocked는 "선행이 아직
@@ -737,8 +728,8 @@ const FORWARDER_AGENT_TYPES = new Set(['codex-runner']);
  * 목록은 툴팁으로 물러난다 ("기본은 접고 중요한 것만", 스펙 §2). 재료가 없는
  * 줄은 통째로 생략한다.
  *
- * 의존 칩은 슬롯 4라 이 함수가 싣지 않는다 (UI-251y §2). 자식 롤업과 landing
- * 진행도 같은 슬롯 3이고 이 줄 뒤에 오므로, 의존 칩을 여기 붙이면 슬롯 4가
+ * 의존 칩은 슬롯 4라 이 함수가 싣지 않는다 (UI-251y §2). landing 진행도
+ * 같은 슬롯 3이고 이 줄 뒤에 오므로, 의존 칩을 여기 붙이면 슬롯 4가
  * 슬롯 3보다 앞선다.
  *
  * 세션 타일은 전사도 위임 로그도 없다 (UI-yrzu §6): 활동 줄이 답할 수 있는
@@ -1158,10 +1149,14 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const monitor = options.monitor || null;
   const repo_chip = monitorTileHead(monitor);
   const lane_chip = session ? '' : laneOriginChipTemplate(tile.lane_origin);
-  // 소속 칩은 좌표(레포·직렬 레인) 다음이다 (UI-8x90 §4.1). 재료가 없으면 빈
-  // 문자열이라 줄 판정에 영향이 없다.
-  // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 자식 롤업·landing
-  // 진행이 모두 슬롯 3이므로 그 뒤에 선다.
+  // plan 묶음 칩은 5a 좌표다 (UI-ruwu §2): 레인 출처 칩 다음, route 앞. 재료가
+  // 없으면 빈 문자열이라 줄 판정에 영향이 없고, 팝업은 아래 meta 끝이 싣는다.
+  const plan_chip = planChipTemplate(
+    /** @type {any} */ (tile),
+    tile.chip_popover?.chip_key === 'plan'
+  );
+  // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 landing 진행이
+  // 모두 슬롯 3이므로 그 뒤에 선다.
   const monitor_relations = dependencyChipsTemplate(monitor?.dependency_chips);
   const monitor_body = monitorTileBody(
     monitor,
@@ -1236,6 +1231,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     : '';
   const tile_meta =
     lane_chip ||
+    plan_chip ||
     route_chip ||
     source_chips ||
     session_ref_chip ||
@@ -1246,9 +1242,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     provider_badges.length > 0 ||
     usage_label
       ? html`<div class="rtile__meta">
-          ${lane_chip || route_chip || source_chips
+          ${lane_chip || plan_chip || route_chip || source_chips
             ? html`<div class="worker-chips worker-chips--coords">
-                ${lane_chip}${route_chip}${source_chips}
+                ${lane_chip}${plan_chip}${route_chip}${source_chips}
               </div>`
             : ''}${session_ref_chip ||
           session_receipt_chip ||
@@ -1549,13 +1545,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           )
         : failed
           ? ''
-          : html`${monitor_body}${tile.rollup
-                ? childRollupTemplate(tile.rollup, {
-                    parent_id: tile.bead_id,
-                    expanded: tile.rollup_expanded === true,
-                    childChips: childExecChips
-                  })
-                : ''}
+          : html`${monitor_body}
               ${landing
                 ? html`<div class="rtile__landing">
                     <span

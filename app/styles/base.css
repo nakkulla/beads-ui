@@ -672,110 +672,6 @@ button.interactive-session-badge {
   }
 }
 
-/* --- worker card / running tile: child rollup footer --- */
-.worker-card__roll {
-  font-size: var(--fs-small);
-  color: var(--text-muted);
-  border-top: 1px dashed var(--border-empty-fill);
-  padding-top: var(--sp-6);
-  margin-top: var(--sp-8);
-}
-
-.worker-card__roll-meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--sp-6);
-}
-
-.worker-card__roll-toggle {
-  border: none;
-  background: none;
-  padding: 0;
-  color: var(--text-muted);
-  font-size: var(--fs-small);
-  font-family: var(--font-sans);
-  cursor: pointer;
-}
-
-.worker-card__roll-toggle:hover {
-  color: var(--text-primary);
-}
-
-.worker-card__roll-none {
-  color: var(--text-dim);
-}
-
-.worker-card__roll-current {
-  margin-top: var(--sp-4);
-  color: var(--text-dim);
-}
-
-.worker-card__cur-child {
-  color: var(--accent-child);
-}
-
-.worker-card__roll-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  margin-top: var(--sp-5);
-}
-
-.worker-card__roll-child {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-5);
-  border: none;
-  background: none;
-  padding: var(--sp-2) 0;
-  color: var(--text-primary);
-  font-size: var(--fs-small);
-  font-family: var(--font-sans);
-  text-align: left;
-  cursor: pointer;
-}
-
-.worker-card__roll-child-ord {
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-  min-width: 1.25em;
-  text-align: right;
-  flex: 0 0 auto;
-}
-
-.worker-card__roll-child-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.worker-card__roll-child-chips {
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: var(--sp-3);
-  white-space: nowrap;
-}
-
-.worker-card__dot {
-  color: var(--text-dim);
-  font-size: var(--fs-chip);
-}
-.worker-card__dot--progress {
-  color: var(--accent-child);
-}
-.worker-card__dot--resolved {
-  color: var(--accent-success);
-}
-.worker-card__dot--closed {
-  color: var(--text-dim);
-}
-.worker-card__dot--blocked {
-  color: var(--accent-danger);
-}
-
 /* --- detail overlay (minimal; Phase 8 expands) --- */
 .detail-overlay {
   position: fixed;
@@ -1622,13 +1518,6 @@ select.detail-kv__v:disabled {
   padding: var(--sp-16);
   color: var(--text-muted);
   font-size: var(--fs-body-lg);
-}
-
-/* --- shared focus visibility (frontend-design quality floor) --- */
-.worker-card__roll-toggle:focus-visible,
-.worker-card__roll-child:focus-visible {
-  outline: 2px solid var(--stage-plan-on);
-  outline-offset: 1px;
 }
 
 /* --- mobile: columns stack vertically (no horizontal scroll) --- */

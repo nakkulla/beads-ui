@@ -46,6 +46,7 @@ import {
 import { QUEUE_GRACE_MS, routeChipValue } from './lane-model.js';
 import { logPathTemplate } from './log-path.js';
 import { placementTitle } from './placement.js';
+import { planDefaultLane } from './plan-place.js';
 import {
   SUMMARY_CHIPS,
   WAIT_KINDS,
@@ -1030,49 +1031,6 @@ export function dependencyChipsTemplate(
 }
 
 /**
- * The 이월 칩 줄 (UI-btj6 §3). 완료 카드의 bead에서 이월된 후속 하나마다 열리는
- * 칩 `이월 → <ID>` 하나이고, 클릭은 다른 열리는 칩 넷과 같은 이슈 상세 열기다
- * — 카드 위의 칩은 상태를 쓰지 않는다 (UI-8x90 §4.3).
- *
- * 자리는 슬롯 **4b 정보**다 (2026-08-25 카드 문법 §5.1 정정(UI-btj6)): 문답은
- * 4a `→ <ID>`와 같은 후속 관계지만, 완료 카드에서는 "지금 갈 수 있나"라는 행동에
- * 답하지 않는 관계 정보다. 색은 그래서 후속 칩(`--dependents`) 그대로 쓴다 —
- * 같은 관계에 새 색 토큰을 두면 어휘가 갈라진다. 재료가 없으면 줄 자체를 그리지
- * 않는다 (fail-quiet).
- *
- * `root_dir`는 그 행이 속한 저장소다. 후속은 원본 자식과 같은 rig에 만들어지므로
- * (이월 변환 스펙 §2) 완료 행의 저장소가 곧 후속의 저장소이고, 여러 레포를 한
- * 화면에 섞는 모니터에서 다른 레포의 상세를 열지 않게 하는 것이 그 값이다.
- *
- * @param {MiniItem['carried_to']} carried_to
- * @param {string} [root_dir]
- * @returns {import('lit-html').TemplateResult|''}
- */
-export function carryoverChipsTemplate(carried_to, root_dir = '') {
-  const ids = (Array.isArray(carried_to) ? carried_to : [])
-    .filter((/** @type {unknown} */ id) => typeof id === 'string' && id !== '')
-    .slice()
-    .sort();
-  if (ids.length === 0) {
-    return '';
-  }
-  return html`<div class="worker-deps worker-deps--secondary">
-    ${ids.map((id) =>
-      openableChipTemplate(
-        {
-          id,
-          label: `이월 → ${id}`,
-          title: `이월된 후속 ${id} 열기`,
-          openable: true,
-          ...(root_dir ? { root_dir } : {})
-        },
-        'dependents'
-      )
-    )}
-  </div>`;
-}
-
-/**
  * The route 칩 하나 (UI-yrzu §7.1). 실행가능·대기·PR 대기·실행중 카드와 완료
  * 행(UI-q1tg §3.4)이 모두 이 함수를 부르므로 route는 어디서나 같은 모양·같은
  * 파생 규칙으로 읽힌다 — 규칙이 카드마다 복제되면 한쪽은 반드시 낡는다. 재료가
@@ -1464,6 +1422,71 @@ function receiptBadgeCodesOf(item) {
   return Array.isArray(codes)
     ? codes.filter((code) => typeof code === 'string' && code.length > 0)
     : [];
+}
+
+/**
+ * The row's plan 묶음, or `null` when it carries none or a malformed one. 칩과
+ * 팝업이 같은 판정을 읽도록 검증이 여기 하나다 (fail-quiet).
+ *
+ * @param {{ plan_group?: unknown }|null|undefined} item
+ * @returns {import('../../utils/plan-group.js').PlanGroup|null}
+ */
+function planGroupOf(item) {
+  const group = /** @type {any} */ (item ? item.plan_group : null);
+  if (
+    !group ||
+    typeof group !== 'object' ||
+    typeof group.slug !== 'string' ||
+    group.slug.length === 0 ||
+    typeof group.plan_path !== 'string' ||
+    !Number.isInteger(group.index) ||
+    !Number.isInteger(group.total) ||
+    !Array.isArray(group.members)
+  ) {
+    return null;
+  }
+  return group;
+}
+
+/**
+ * The chip text `plan <slug> <i>/<n>`, or `''` when the row is no plan 묶음
+ * member. 이슈 상세 헤더가 같은 문구를 쓰도록 문구의 정의는 여기 하나다.
+ *
+ * @param {{ plan_group?: unknown }|null|undefined} item
+ * @returns {string}
+ */
+export function planChipLabel(item) {
+  const group = planGroupOf(item);
+  return group ? `plan ${group.slug} ${group.index}/${group.total}` : '';
+}
+
+/**
+ * The `plan <slug> <i>/<n>` chip (UI-ruwu §2). 슬롯 5a 좌표 칩이다: 어느 plan
+ * 묶음의 몇 번째 이슈인가가 이 줄이 답하는 질문이다. 진행률은 칩이 아니라 팝업이
+ * 말한다 (슬롯 3과 겹치지 않게). 클릭은 판정 칩 팝업(`data-chip-key="plan"`)이고
+ * 재료가 없으면 그리지 않는다 (fail-quiet).
+ *
+ * @param {MiniItem|null|undefined} item
+ * @param {boolean} [open] - 사유 팝업이 지금 이 카드에서 이 칩 아래에 펼쳐져
+ * 있는지. `aria-expanded`가 되는 값이다.
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function planChipTemplate(item, open = false) {
+  const group = planGroupOf(item);
+  if (!item || !group) {
+    return '';
+  }
+  const label = planChipLabel(item);
+  return html`<button
+    type="button"
+    class="ctl-chip ctl-chip--label judgement-chip worker-card__plan"
+    data-chip-key="plan"
+    data-bead-id=${item.id}
+    aria-expanded=${open ? 'true' : 'false'}
+    title=${`${group.plan_path} — 같은 plan에서 나온 이슈 ${group.total}개 중 ${group.index}번째`}
+  >
+    ${label}
+  </button>`;
 }
 
 /**
@@ -1919,13 +1942,12 @@ export function interactiveSessionClosingTemplate(views) {
  * (UI-h6t1 §4.3): dotfiles 계약이 `badge` 등급으로 확정한 코드들이다. 머지
  * 판정을 바꾸지 않으므로 슬롯 5 판정 칩 하나로만 선다. 코드가 없으면 필드도
  * 없다.
+ * @property {import('../../utils/plan-group.js').PlanGroup} [plan_group] - 이
+ * 이슈가 속한 plan 묶음 (UI-ruwu §2). 슬롯 5a `plan <slug> <i>/<n>` 칩과 그 팝업의
+ * 유일한 재료이고, 묶음이 아니면 필드도 없어 칩이 그려지지 않는다 (fail-quiet).
  * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
  * @property {string} [worker_created_from] - Immutable Worker creation source.
  * @property {string} [worker_created_from_root_dir] - Confirmed source owner.
- * @property {string[]} [carried_to] - 이 bead에서 이월된 후속 ID들 (UI-btj6 §3).
- * 투영이 `carried_from` metadata와 이 bead를 가리키는 `blocks` 간선만으로 접은
- * 값이며, 완료 행만 싣는다. 칩은 {@link carryoverChipsTemplate}이 슬롯 4b에
- * 그리고, 재료가 없으면 필드도 없다.
  * @property {number} [priority] - Bead 우선순위 0..4. 숫자가 아니면 배지를
  * 그리지 않는다.
  * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
@@ -1959,6 +1981,9 @@ function doneThreeLineRow(item) {
   const route_el = routeChipTemplate(item.workflow);
   const from_el = creationSourceChipsTemplate(item, { include_from: false });
   const exec_el = execChipsTemplate(item.exec_chips);
+  // plan 묶음 칩은 슬롯 5a 좌표다 (UI-ruwu §2): route 앞, 팝업은 그 줄 아래.
+  const plan_open = chipOpen(item, 'plan');
+  const plan_el = planChipTemplate(item, plan_open);
   return html`<div
     class="worker-mini worker-mini--static worker-mini--done worker-mini--three-line${item.search_match ===
     false
@@ -1997,11 +2022,12 @@ function doneThreeLineRow(item) {
     <div class="worker-mini__row2">
       <span class="worker-mini__title">${item.title}</span>
     </div>
-    ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
     <div class="worker-mini__row3">
-      ${route_el || from_el
+      ${plan_el || route_el || from_el
         ? html`<div class="worker-chips worker-chips--coords">
-            ${route_el}${from_el}
+            ${plan_el}${route_el}${from_el}${plan_open
+              ? judgementPopover(item)
+              : ''}
           </div>`
         : ''}
       ${exec_el || provider_badges.length > 0 || usage_label
@@ -3742,16 +3768,21 @@ export function miniRow(item, options = {}) {
     item,
     chipOpen(item, 'receipt')
   );
-  // 소속 칩은 슬롯 5의 좌표 칩이다 (UI-8x90 §4.1): 레포 다음, route 앞.
   // 실패 로그 경로도 슬롯 5다 (UI-251y §5.1 정정, UI-8w4t §4): "어느 경로의
   // 것인가"는 이 줄이 답하는 질문이고, 복사 버튼은 값에 붙은 어포던스일 뿐
   // 카드의 처분을 바꾸지 않는다. 타임라인 `세부`와 같은 템플릿·같은 토스트를
   // 쓰므로 두 표면이 같은 값을 다르게 다루지 않는다. 재료가 없으면 없다.
   const log_path_el = logPathTemplate(item.log_path);
+  // plan 묶음 칩은 5a 좌표다 (UI-ruwu §2): 레인 출처 칩 다음, route 앞이고 팝업은
+  // 그 칩이 선 이 줄 아래에 열린다.
+  const plan_open = chipOpen(item, 'plan');
+  const plan_el = planChipTemplate(item, plan_open);
   const coords_el =
-    lane_el || route_el || from_el
+    lane_el || plan_el || route_el || from_el
       ? html`<div class="worker-chips worker-chips--coords">
-          ${lane_el}${route_el}${from_el}
+          ${lane_el}${plan_el}${route_el}${from_el}${plan_open
+            ? judgementPopover(item)
+            : ''}
         </div>`
       : '';
   const run_el =
@@ -3762,7 +3793,8 @@ export function miniRow(item, options = {}) {
     usage_el ||
     log_path_el
       ? html`<div class="worker-chips worker-chips--run">
-          ${exec_chips_el}${complex_el}${area_el}${receipt_badge_el}${usage_el}${log_path_el}${gate_open
+          ${exec_chips_el}${complex_el}${area_el}${receipt_badge_el}${usage_el}${log_path_el}${gate_open ||
+          plan_open
             ? ''
             : judgementPopover(item)}
         </div>`
@@ -3831,7 +3863,6 @@ export function miniRow(item, options = {}) {
             ${repo_el}${id_el}${pri_el}${pr_el}${foreign_repo_el}${interactive_badges}${interactive_closing}${actions_el}
           </div>
           <div class="worker-mini__row2">${title_el}</div>
-          ${carryoverChipsTemplate(item.carried_to, item.root_dir)}
           <div class="worker-mini__row3">
             ${coords_el}${exec_chips_el || usage_el
               ? html`<div class="worker-chips worker-chips--run">
@@ -4103,8 +4134,117 @@ const SESSION_PREFERRED_TOOLTIP = {
  * The 판정 칩 keys (UI-8x90 §4.5, UI-svh6 §4.3). `data-chip-key` carries them
  * into the DOM so one click handler per tab covers every surface.
  *
- * @typedef {'complex'|'frontend'|'backend'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'|'readiness'} JudgementChipKey
+ * @typedef {'complex'|'frontend'|'backend'|'receipt'|'session_preferred'|'ineligible'|'qfr'|'spec_after_blocker'|'readiness'|'plan'} JudgementChipKey
  */
+
+/**
+ * @typedef {(item: MiniItem) => import('./plan-place.js').PlanPlaceContext|null} PlanContextOf
+ */
+
+/**
+ * One member line of the plan popup (UI-ruwu §2): ID (눌러서 열기), anchor,
+ * 상태, 그리고 열린 선행마다 `⛓ <ID>`. 서버가 이번 배치에서 거절한 이슈를 기다리는
+ * 줄은 그 선행이 세션이 닫아야 풀린다는 사실을 덧붙인다 (spec §3 직렬 레인에서의
+ * 진행).
+ *
+ * @param {import('../../utils/plan-group.js').PlanGroupMember} member
+ * @param {string} root_dir - 구성원은 같은 저장소라 ID 열기가 이 저장소를 가리킨다.
+ * @param {Set<string>} skipped_ids
+ * @returns {import('lit-html').TemplateResult}
+ */
+function planMemberLineTemplate(member, root_dir, skipped_ids) {
+  const blockers = Array.isArray(member.blocked_by) ? member.blocked_by : [];
+  // 줄 안의 공백은 식 안에 둔다 — 템플릿 본문의 줄바꿈은 포매터가 옮기므로 문자
+  // 사이 공백을 거기 맡기면 textContent가 포매터에 따라 달라진다.
+  const detail = ` ${member.anchor} · ${member.status}`;
+  return html`<button
+      type="button"
+      class="worker-dep__open chip-popover__member-id"
+      data-dep-id=${member.id}
+      data-root-dir=${ifDefined(root_dir.length > 0 ? root_dir : undefined)}
+      title="이슈 열기"
+    >
+      ${member.id}</button
+    ><span class="chip-popover__member-detail">${detail}</span>${blockers.map(
+      (blocker_id) => {
+        const mark = skipped_ids.has(blocker_id)
+          ? ` ⛓ ${blocker_id} · 세션 필요`
+          : ` ⛓ ${blocker_id}`;
+        return html`<span class="chip-popover__member-blocker">${mark}</span>`;
+      }
+    )}`;
+}
+
+/**
+ * The popup's last line: the serial lane to put the plan in and the button that
+ * puts all of it there (UI-ruwu §3). 버튼은 카드의 조작 슬롯이 아니라 팝업 안에
+ * 서므로 카드 줄 문법의 조작 자리 규칙과 충돌하지 않는다. 클릭은 각 뷰가 위임으로
+ * 받고, 보낼 재료는 버튼이 실은 `data-plan-path`·`data-root-dir`와 같은 줄의 레인
+ * select가 말한다. 직렬 레인이 없거나 저장소를 모르면 줄 자체가 없다 (fail-quiet).
+ *
+ * @param {import('../../utils/plan-group.js').PlanGroup} group
+ * @param {import('./plan-place.js').PlanPlaceContext|null} context
+ * @returns {import('lit-html').TemplateResult|undefined}
+ */
+function planPlaceExitTemplate(group, context) {
+  if (!context || context.root_dir.length === 0 || context.lanes.length === 0) {
+    return undefined;
+  }
+  const default_lane = planDefaultLane(group.members[0].id, context.lanes);
+  return html`<select
+      class="chip-popover__lane"
+      data-plan-lane
+      aria-label="plan을 배치할 직렬 레인"
+    >
+      ${context.lanes.map(
+        (lane) =>
+          html`<option value=${lane.id} ?selected=${lane.id === default_lane}>
+            ${lane.label}
+          </option>`
+      )}
+    </select>
+    <button
+      type="button"
+      class="op-btn chip-popover__plan-place"
+      data-action="plan-place"
+      data-plan-path=${group.plan_path}
+      data-root-dir=${context.root_dir}
+      title="이 plan에서 아직 큐에 없는 열린 이슈를 고른 직렬 레인에 anchor 순서로 올립니다 — 자격이 안 되는 이슈는 건너뜁니다"
+    >
+      plan 전체를 레인에 배치
+    </button>`;
+}
+
+/**
+ * The plan 묶음 칩's 팝업 (UI-ruwu §2): 제목 `plan <slug>`, 본문은 묶음 이슈를
+ * 순서대로 한 줄씩(이 이슈의 줄은 강조), 끝은 일괄 배치 출구다.
+ *
+ * @param {MiniItem} item
+ * @param {PlanContextOf} [plan_context]
+ * @returns {import('../chip-popover.js').ChipPopoverContent|null}
+ */
+function planPopoverContent(item, plan_context) {
+  const group = planGroupOf(item);
+  if (!group || group.members.length === 0) {
+    return null;
+  }
+  const context = plan_context ? plan_context(item) : null;
+  const root_dir =
+    context?.root_dir ||
+    (typeof item.root_dir === 'string' ? item.root_dir : '');
+  const skipped_ids = new Set(
+    (context?.skipped || []).map((entry) => entry.id)
+  );
+  const exit = planPlaceExitTemplate(group, context);
+  return {
+    title: `plan ${group.slug}`,
+    lines: group.members.map((member) => ({
+      body: planMemberLineTemplate(member, root_dir, skipped_ids),
+      current: member.id === item.id
+    })),
+    ...(exit ? { exit } : {})
+  };
+}
 
 /**
  * The last guidance line of a chip that still opens a 팝업 (UI-wg68 §5.2).
@@ -4124,11 +4264,16 @@ function chipBindingGuidance(item) {
  * 함수를 부르므로 같은 판정이 어디서나 같은 문장으로 읽힌다. 재료가 없으면
  * `null`이고 그 칩에는 팝업이 열리지 않는다 (fail-quiet).
  *
+ * `plan_context`는 plan 묶음 팝업만 읽는다 (UI-ruwu §3): 출구 줄의 레인 선택지와
+ * 마지막 응답의 `skipped`는 표면(Worker·Monitor·상세)이 아는 사실이라 뷰가 넘긴다.
+ * 함수인 것은 그 팝업이 열릴 때만 계산하려는 것이다 — 모든 행이 이 함수를 부른다.
+ *
  * @param {MiniItem} item
  * @param {string} chip_key
+ * @param {PlanContextOf} [plan_context]
  * @returns {import('../chip-popover.js').ChipPopoverContent|null}
  */
-export function judgementPopoverContent(item, chip_key) {
+export function judgementPopoverContent(item, chip_key, plan_context) {
   if (chip_key === 'complex') {
     const reason = item.complex_reason;
     if (typeof reason !== 'string' || reason.length === 0) {
@@ -4224,6 +4369,9 @@ export function judgementPopoverContent(item, chip_key) {
       ]
     };
   }
+  if (chip_key === 'plan') {
+    return planPopoverContent(item, plan_context);
+  }
   if (chip_key === 'qfr') {
     const review = item.workflow ? item.workflow.quick_fix_review : null;
     if (!review || (review.state !== 'reviewed' && review.state !== 'stale')) {
@@ -4259,7 +4407,8 @@ export const JUDGEMENT_CHIP_KEYS = [
   'ineligible',
   'qfr',
   'spec_after_blocker',
-  'readiness'
+  'readiness',
+  'plan'
 ];
 
 /**
@@ -4269,14 +4418,15 @@ export const JUDGEMENT_CHIP_KEYS = [
  *
  * @param {MiniItem} item
  * @param {(chip_key: string) => boolean} isOpen
+ * @param {PlanContextOf} [plan_context]
  * @returns {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null}
  */
-export function judgementPopoverOf(item, isOpen) {
+export function judgementPopoverOf(item, isOpen, plan_context) {
   for (const chip_key of JUDGEMENT_CHIP_KEYS) {
     if (!isOpen(chip_key)) {
       continue;
     }
-    const content = judgementPopoverContent(item, chip_key);
+    const content = judgementPopoverContent(item, chip_key, plan_context);
     return content ? { chip_key, content } : null;
   }
   return null;
@@ -4400,6 +4550,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
     : '';
   const route_el = routeChipTemplate(workflow);
   const from_el = creationSourceChipsTemplate(item);
+  // plan 묶음 칩은 5a 좌표다 (UI-ruwu §2): route 앞이고 팝업은 그 칩이 선 줄 아래다.
+  const plan_open = chipOpen(item, 'plan');
+  const plan_el = planChipTemplate(item, plan_open);
   const has_exec_chips = !!(
     item.exec_chips &&
     (item.exec_chips.orchestration || item.exec_chips.worker)
@@ -4483,7 +4636,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
       )}${interactiveSessionBadgesTemplate(item.interactive_sessions, {
         bead_id: item.id
       })}
-      ${spec_after_blocker_open || readiness_open
+      ${spec_after_blocker_open || readiness_open || plan_open
         ? ''
         : judgementPopover(
             item
@@ -4497,9 +4650,11 @@ export function candidateCard(item, place_menu = null, options = {}) {
           onOpenDoc: options.onOpenDoc
         })
       : ''}${external.body}${deps_el}
-    ${route_el || from_el
+    ${plan_el || route_el || from_el
       ? html`<div class="worker-chips worker-chips--coords">
-          ${route_el}${from_el}
+          ${plan_el}${route_el}${from_el}${plan_open
+            ? judgementPopover(item)
+            : ''}
         </div>`
       : ''}
     ${has_exec_chips
