@@ -755,3 +755,65 @@ describe('worker/merge-candidates — completion repair intake', () => {
     expect(result).toBe(null);
   });
 });
+
+describe('worker/merge-candidates — 보관 행 제외 (UI-sd12 §3.3)', () => {
+  /**
+   * Record one eligible observation of the given kind.
+   *
+   * @param {string} bead_id
+   * @param {'green'|'conflict'|'repairable'} kind
+   */
+  function observe(bead_id, kind) {
+    const runtime = getWorkerRuntime();
+    const conflict = kind === 'conflict';
+    runtime.prObservations.record(WS, bead_id, {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'OPEN',
+        mergeable: conflict ? 'CONFLICTING' : 'MERGEABLE',
+        merge_state_status: conflict ? 'DIRTY' : 'CLEAN',
+        head_ref: bead_id,
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main'
+      },
+      review_receipt: { state: 'current', head_sha: 'a'.repeat(40) }
+    });
+    if (!conflict) {
+      runtime.prObservations.recordVerify(WS, bead_id, {
+        effective_base_sha: 'b'.repeat(40),
+        head_sha: 'a'.repeat(40),
+        ok: kind === 'green',
+        reason: kind === 'green' ? 'ok' : 'script_failed',
+        at: 1
+      });
+    }
+  }
+
+  test.each(
+    /** @type {Array<'green'|'conflict'|'repairable'>} */ ([
+      'green',
+      'conflict',
+      'repairable'
+    ])
+  )('leaves a shelved %s row out of the candidates', (kind) => {
+    observe(`UI-open-${kind}`, kind);
+    observe(`UI-shelf-${kind}`, kind);
+
+    const result = mergeQueueCandidates(
+      WS,
+      {
+        pr_wait: [
+          { bead_id: `UI-open-${kind}` },
+          { bead_id: `UI-shelf-${kind}` }
+        ],
+        attempts: {},
+        cleanup_failed: {},
+        merge_shelved: { [`UI-shelf-${kind}`]: { at: 1 } }
+      },
+      verifyPolicy('present')
+    );
+
+    expect(result.map((row) => row.bead_id)).toEqual([`UI-open-${kind}`]);
+  });
+});

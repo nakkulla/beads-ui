@@ -3071,6 +3071,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
     });
     // durable 제외 기록 (UI-yk55 §3): 계약 키가 없는 구버전 스냅샷은 빈 맵이다.
     const auto_merge_skips = objectOf(workspace.auto_merge_skips);
+    // 보관 기록 (UI-sd12 §3.1). 키가 없는 구서버 스냅샷은 보관 행이 없다.
+    const merge_shelved = objectOf(workspace.merge_shelved);
     /**
      * Whether a row's exclusion still holds (UI-yk55 §3.2): only when the
      * recorded head is the one now observed. head가 움직였으면 다음 스캔이
@@ -3718,6 +3720,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
       // hold는 Monitor도 이미 `gate.gate_badge`로 그린다. 코드가 없으면 필드도
       // 없다 (fail-quiet).
       const receipt_badge_codes = receiptBadgeCodesOf(observed.receipt_check);
+      // Worker 탭과 같은 보관 판정 (UI-sd12 §3.4): 외부 행은 보관할 수 없고,
+      // 머지가 관측된 정리 단계 행에는 [보관]이 없다.
+      const shelved = !external && Object.hasOwn(merge_shelved, bead_id);
+      const merge_observed =
+        gate?.tier === 'merged' ||
+        !!cleanup ||
+        (typeof entry.merge_sha === 'string' && entry.merge_sha.length > 0);
       pr_wait.push({
         ...base(bead_id),
         lane: 'pr_wait',
@@ -3761,10 +3770,23 @@ export function buildLanes(workspaces, workspaces_state, options) {
           cleanup && merge_step?.active !== true
             ? cleanupStalledReason(cleanup.step)
             : 'PR 대기',
-        merge_action:
-          gate?.tier === 'merged' && !cleanup_retry && !external_cleanup
+        merge_action: shelved
+          ? false
+          : gate?.tier === 'merged' && !cleanup_retry && !external_cleanup
             ? false
             : !queued || continuation_required,
+        shelved,
+        shelve_action: external
+          ? null
+          : shelved
+            ? 'unshelve'
+            : merge_observed
+              ? null
+              : 'shelve',
+        shelve_enabled: !merge_step,
+        shelve_title: shelved
+          ? '보관을 풉니다 — 자동 머지가 켜져 있으면 다음 관측에서 다시 머지 대상이 됩니다'
+          : '자동 머지·일괄 머지에서 이 PR을 빼고 [보관 해제]까지 둡니다 (머지 큐에 있으면 빠집니다)',
         merge_enabled:
           !discard_blocks_merge &&
           (continuation_required ||

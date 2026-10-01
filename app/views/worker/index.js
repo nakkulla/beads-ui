@@ -112,6 +112,8 @@ import {
   repoOpsStripTemplate,
   reviewSessionRowState,
   setChipPresetContext,
+  shelveReplyToast,
+  shelvedSectionTemplate,
   summaryChipsTemplate,
   tokenChipTemplate,
   waitBody
@@ -237,25 +239,35 @@ const CANDIDATE_FILTER_DEFAULT = {
 const DEFERRED_OPEN_KEY = 'bdui.worker.deferred-open';
 
 /**
+ * PR 대기 레인 아래 `보관 N` 묶음의 열림 상태 저장 키 (UI-sd12 §3.4). `보류 N`과
+ * 같이 기본은 접힘이고, 읽기 실패도 접힘이다.
+ *
+ * @type {string}
+ */
+const SHELVED_OPEN_KEY = 'bdui.worker.shelved-open';
+
+/**
+ * @param {string} key
  * @returns {boolean}
  */
-function loadDeferredOpen() {
+function loadOpenFlag(key) {
   try {
-    return window.localStorage.getItem(DEFERRED_OPEN_KEY) === '1';
+    return window.localStorage.getItem(key) === '1';
   } catch {
     return false;
   }
 }
 
 /**
+ * @param {string} key
  * @param {boolean} open
  */
-function saveDeferredOpen(open) {
+function saveOpenFlag(key, open) {
   try {
     if (open) {
-      window.localStorage.setItem(DEFERRED_OPEN_KEY, '1');
+      window.localStorage.setItem(key, '1');
     } else {
-      window.localStorage.removeItem(DEFERRED_OPEN_KEY);
+      window.localStorage.removeItem(key);
     }
   } catch {
     /* ignore — a private-mode storage denial must not break the shelf */
@@ -491,6 +503,9 @@ export function mergeFailureText(reason) {
 export function mergeQueueRefusalText(reason) {
   if (reason === 'lane_occupied') {
     return '실행 레인에 남아 있어 머지 대상이 아닙니다';
+  }
+  if (reason === 'shelved') {
+    return '보관된 PR이라 머지 큐에 넣지 않습니다 — [보관 해제] 뒤 다시 누르세요';
   }
   const base = '머지 큐에 넣지 못했습니다 (이미 대기 중이거나 대상 아님)';
   return typeof reason === 'string' && reason.length > 0
@@ -1274,6 +1289,8 @@ export function prStatusBadge(input) {
  * built from these verified values instead of the (absent) observation, and a
  * same-repo row keeps preferring what the poller observed. `repo_slug` alone
  * never re-decides `foreign`.
+ * @param {boolean} [shelved] - 이 로컬 행이 `merge_shelved`에 있는지 (UI-sd12
+ * §3.4). true면 [머지] 대신 [보관 해제]를 싣고 레인은 `보관 N` 묶음에 그린다.
  * @returns {any}
  */
 function prWaitRow(
@@ -1296,7 +1313,8 @@ function prWaitRow(
   dependency_chips = null,
   review_session = { active: false, failure: null, origin: null },
   resolve_pending = false,
-  external_pr = {}
+  external_pr = {},
+  shelved = false
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const continuation_required =
@@ -1562,14 +1580,34 @@ function prWaitRow(
     // The exception is a row the driver will not carry forward on its own
     // (UI-58w8 §1) — there the click IS the recovery path, and the server
     // re-validates the PR identity before issuing a new manual authority.
-    merge_action:
-      gate?.tier === 'merged' && !cleanup_retry && !external_cleanup
+    // A shelved row has no [머지] (UI-sd12 §3.4): the server refuses its
+    // enqueue, and [보관 해제] beside it is the way back.
+    merge_action: shelved
+      ? false
+      : gate?.tier === 'merged' && !cleanup_retry && !external_cleanup
         ? false
         : !queued ||
           continuation_required ||
           needs_reclick ||
           review_after_merge,
     cancel_action: queued && !continuation_required,
+    shelved,
+    // [보관] stands on a local row until its merge is observed; [보관 해제]
+    // on every shelved row (UI-sd12 §3.4).
+    shelve_action: external
+      ? null
+      : shelved
+        ? 'unshelve'
+        : gate?.tier === 'merged' ||
+            !!cleanup_failed ||
+            (typeof progress_input.merge_sha === 'string' &&
+              progress_input.merge_sha.length > 0)
+          ? null
+          : 'shelve',
+    shelve_enabled: !merge_step,
+    shelve_title: shelved
+      ? '보관을 풉니다 — 자동 머지가 켜져 있으면 다음 관측에서 다시 머지 대상이 됩니다'
+      : '자동 머지·일괄 머지에서 이 PR을 빼고 [보관 해제]까지 둡니다 (머지 큐에 있으면 빠집니다)',
     // 잠겨야 하는 것은 되돌릴 수 없는 머지 효과뿐이다 (UI-d7fy §5.6).
     cancel_enabled: !queue_active && !(recovery && recovery.lock_actions),
     cancel_title:
@@ -1803,7 +1841,13 @@ export function createWorkerView(mount_element, options = {}) {
    *
    * @type {boolean}
    */
-  let deferred_open = loadDeferredOpen();
+  let deferred_open = loadOpenFlag(DEFERRED_OPEN_KEY);
+  /**
+   * `보관 N` 묶음의 열림 상태 (UI-sd12 §3.4), 뷰 생성 시 복원된다.
+   *
+   * @type {boolean}
+   */
+  let shelved_open = loadOpenFlag(SHELVED_OPEN_KEY);
   /**
    * The three Board-inherited filter axes, normalized at every read so a stored
    * value that drifted cannot empty a lane (UI-p7s2 §6).
@@ -2647,6 +2691,35 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Shelve or unshelve a local PR 대기 row — [보관]/[보관 해제] (UI-sd12
+   * §3.2). The server owns every refusal; the reply only becomes a toast.
+   *
+   * @param {string} bead_id
+   * @param {boolean} on
+   */
+  async function shelveMerge(bead_id, on) {
+    if (!transport || !bead_id) {
+      return;
+    }
+    /** @type {any} */
+    let res;
+    try {
+      res = await sendMergeQueue('worker-merge-shelve', { bead_id, on });
+    } catch {
+      showToast(
+        '보관 클릭이 서버에 전달되지 않았습니다(연결 문제) — 연결 복구 후 다시 눌러주세요',
+        'error',
+        3200
+      );
+      return;
+    }
+    const toast = shelveReplyToast(res, bead_id, on);
+    if (toast) {
+      showToast(toast.text, toast.type, 2800);
+    }
+  }
+
+  /**
    * Empty the queue ([일괄 머지 중단]): drop every WAITING item, while the
    * active one runs to completion — its merge already reached GitHub.
    */
@@ -3367,6 +3440,8 @@ export function createWorkerView(mount_element, options = {}) {
       }
     }
     const auto_merge_skips = objectOf(q.auto_merge_skips);
+    // 보관 기록 (UI-sd12 §3.1). 키가 없는 구서버 스냅샷은 보관 행이 없다.
+    const merge_shelved = objectOf(q.merge_shelved);
     /** @type {Set<string>} */
     const auto_excluded = new Set(group.merge.auto_excluded);
     const pr_obs = objectOf(q.pr_observations);
@@ -3468,7 +3543,9 @@ export function createWorkerView(mount_element, options = {}) {
             ...(typeof e.pr_number === 'number'
               ? { pr_number: e.pr_number }
               : {})
-          }
+          },
+          // 외부 행은 보관할 수 없다 (UI-sd12 §3.1) — 기록이 있어도 읽지 않는다.
+          e.external !== true && Object.hasOwn(merge_shelved, e.bead_id)
         );
         // 살아 있는 해결 세션이 이미 이 질문에 답하고 있다 (UI-ri8n §3.4).
         const row = {
@@ -3638,7 +3715,9 @@ export function createWorkerView(mount_element, options = {}) {
     // 정의하지 않기 위해 템플릿 하나로 둔다.
     const counts = summaryChipsTemplate({
       running: group.live_count,
-      pr_wait: prWaitRows(m).length,
+      // 보관 행은 PR 대기 개수에 들지 않는다 (UI-sd12 §3.4).
+      pr_wait: prWaitRows(m).filter((/** @type {any} */ r) => !r.shelved)
+        .length,
       done: m.done.length,
       range_label: doneRangeLabel(),
       range_short: doneRangeShort(),
@@ -4282,7 +4361,15 @@ export function createWorkerView(mount_element, options = {}) {
     const candidates = candidateRows(m);
     const waiting = waitingRows(m);
     const done = doneRows(m);
-    const pr_wait = prWaitRows(m);
+    // 보관 행은 레인 본문과 개수에서 빠져 `보관 N` 묶음에만 선다 (UI-sd12 §3.4).
+    const pr_wait_all = prWaitRows(m);
+    const pr_wait = pr_wait_all.filter((/** @type {any} */ r) => !r.shelved);
+    const pr_wait_shelved = shelvedSectionTemplate(
+      pr_wait_all
+        .filter((/** @type {any} */ r) => r.shelved)
+        .map((/** @type {any} */ r) => miniRow(r)),
+      shelved_open
+    );
     const running = runningTiles(m);
     const candidate_pane = paneTemplate({
       id: 'worker-pane-candidate',
@@ -4333,6 +4420,7 @@ export function createWorkerView(mount_element, options = {}) {
             live: runningLive(m),
             running_body: running.length > 0 ? runningBody(m) : '',
             pr_wait_rows: pr_wait.map((/** @type {any} */ it) => miniRow(it)),
+            pr_wait_footer: pr_wait_shelved,
             count: running.length + pr_wait.length
           })}
           ${paneTemplate({
@@ -4391,6 +4479,7 @@ export function createWorkerView(mount_element, options = {}) {
           items: pr_wait,
           match_count: matchCountOf(pr_wait),
           empty: 'PR 대기 없음',
+          footer: pr_wait_shelved,
           collapsible: true,
           collapsed: collapse.isCollapsed('pr_wait')
         })}
@@ -4947,7 +5036,13 @@ export function createWorkerView(mount_element, options = {}) {
     // 그 결과를 저장해 다음 렌더가 같은 상태로 선다.
     if (target?.closest?.('.worker-deferred__summary')) {
       deferred_open = !deferred_open;
-      saveDeferredOpen(deferred_open);
+      saveOpenFlag(DEFERRED_OPEN_KEY, deferred_open);
+      return;
+    }
+    // `보관 N` 묶음도 같은 규칙이다 (UI-sd12 §3.4).
+    if (target?.closest?.('.worker-shelved__summary')) {
+      shelved_open = !shelved_open;
+      saveOpenFlag(SHELVED_OPEN_KEY, shelved_open);
       return;
     }
     const external_open = target.closest('[data-external-open]');
@@ -5307,6 +5402,16 @@ export function createWorkerView(mount_element, options = {}) {
     );
     if (mergeCancelBtn) {
       void cancelMerge(mergeCancelBtn.dataset.beadId || '');
+      return;
+    }
+    const shelveBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__shelve')
+    );
+    if (shelveBtn) {
+      void shelveMerge(
+        shelveBtn.dataset.beadId || '',
+        shelveBtn.dataset.shelve === 'on'
+      );
       return;
     }
     const resolveBtn = /** @type {HTMLElement|null} */ (

@@ -12237,6 +12237,141 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     expect(discard.disabled).toBe(true);
     expect(discard.getAttribute('title')).toContain('[취소]');
   });
+
+  test('offers [보관] right after [머지] on an unshelved local row', () => {
+    const { mount } = mountLane(laneOf(['RD-1']));
+
+    const actions = Array.from(
+      rowOf(mount, 'RD-1').querySelectorAll('.worker-mini__actions button')
+    ).map((button) => button.className);
+
+    expect(actions.slice(0, 2)).toEqual([
+      'worker-mini__merge',
+      'op-btn worker-mini__shelve'
+    ]);
+  });
+
+  test('[보관] sends worker-merge-shelve for that row', () => {
+    const { mount, transport } = mountLane(laneOf(['RD-1']));
+
+    /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__shelve')
+    ).click();
+
+    expect(transport).toHaveBeenCalledWith('worker-merge-shelve', {
+      bead_id: 'RD-1',
+      on: true,
+      expected_revision: 1
+    });
+  });
+
+  test('toasts the shelve the server applied', async () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1']),
+      vi.fn(async () => ({ applied: true, conflict: false, queued: 0 }))
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__shelve')
+    ).click();
+
+    await vi.waitFor(() =>
+      expect(document.querySelector('.toast')?.textContent).toBe(
+        'RD-1 보관 — 자동 머지·일괄 머지에서 빠집니다'
+      )
+    );
+  });
+
+  test('draws a shelved row only in the 보관 bundle under the lane', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1', 'RD-2'], { merge_shelved: { 'RD-2': { at: 1 } } })
+    );
+
+    const body_ids = Array.from(
+      mount.querySelectorAll(
+        '#worker-pane-pr-wait .worker-pane__body > .worker-mini'
+      )
+    ).map((row) => row.getAttribute('data-bead-id'));
+    const shelved_ids = Array.from(
+      mount.querySelectorAll(
+        '#worker-pane-pr-wait .worker-shelved .worker-mini'
+      )
+    ).map((row) => row.getAttribute('data-bead-id'));
+
+    expect(body_ids).toEqual(['RD-1']);
+    expect(shelved_ids).toEqual(['RD-2']);
+    expect(
+      mount.querySelector('.worker-shelved__summary')?.textContent?.trim()
+    ).toBe('보관 1');
+  });
+
+  test('gives a shelved row [보관 해제] and no [머지]', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], { merge_shelved: { 'RD-1': { at: 1 } } })
+    );
+
+    const row = rowOf(mount, 'RD-1');
+
+    expect(row.querySelector('.worker-mini__merge')).toBeNull();
+    expect(row.querySelector('.worker-mini__shelve')?.textContent?.trim()).toBe(
+      '보관 해제'
+    );
+  });
+
+  test('[보관 해제] sends worker-merge-shelve with on false', () => {
+    const { mount, transport } = mountLane(
+      laneOf(['RD-1'], { merge_shelved: { 'RD-1': { at: 1 } } })
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__shelve')
+    ).click();
+
+    expect(transport).toHaveBeenCalledWith('worker-merge-shelve', {
+      bead_id: 'RD-1',
+      on: false,
+      expected_revision: 1
+    });
+  });
+
+  test('leaves shelved rows out of the lane count and the 자동 머지 count', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1', 'RD-2'], { merge_shelved: { 'RD-2': { at: 1 } } })
+    );
+
+    expect(
+      mount
+        .querySelector('#worker-pane-pr-wait .worker-pane__count')
+        ?.textContent?.trim()
+    ).toBe('1');
+    expect(mount.querySelector('.worker-merge-all')?.textContent?.trim()).toBe(
+      '▶ 자동 머지 1'
+    );
+  });
+
+  test('draws no [보관] on an external row', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1, external: true }]
+      })
+    );
+
+    expect(
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__shelve')
+    ).toBeNull();
+  });
+
+  test('remembers the 보관 bundle open state for the next visit', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], { merge_shelved: { 'RD-1': { at: 1 } } })
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-shelved__summary')
+    ).click();
+
+    expect(window.localStorage.getItem('bdui.worker.shelved-open')).toBe('1');
+  });
 });
 
 describe('mergeFailureText (UI-5v7d §4)', () => {
@@ -12300,6 +12435,12 @@ describe('mergeQueueRefusalText (UI-75xw §6)', () => {
 
   test('appends an unknown server reason', () => {
     expect(mergeQueueRefusalText('future_reason')).toContain('future_reason');
+  });
+
+  test('points a shelved refusal at [보관 해제]', () => {
+    expect(mergeQueueRefusalText('shelved')).toBe(
+      '보관된 PR이라 머지 큐에 넣지 않습니다 — [보관 해제] 뒤 다시 누르세요'
+    );
   });
 });
 

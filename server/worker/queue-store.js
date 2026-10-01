@@ -659,6 +659,13 @@
  * a conflict item an endless supply of resolution sessions. A record is dropped
  * as soon as the head moves (someone actually changed the branch), when a human
  * clicks [머지] on the row, or when the bead leaves the lane.
+ * @property {Record<string, MergeShelf>} merge_shelved - Local `pr_wait` beads
+ * a person withdrew from EVERY automatic merge path with [보관] (UI-sd12 §3.1).
+ * Unlike {@link Queue.auto_merge_skips} the record is not pinned to a head and
+ * survives a `pr_wait` re-entry: only [보관 해제], the MERGED completion move,
+ * a discard, or a queue operation that takes the bead out of `pr_wait` drops
+ * it. Invariant: no committed state holds a shelved bead in
+ * {@link Queue.merge_queue}.
  * @property {Record<string, CompletionIntent>} completion_intents - Durable
  * root-scoped completion sagas. Missing on legacy queue files and normalized
  * to an empty map; execution lives in `completion-intent.js`.
@@ -944,6 +951,13 @@
  * @property {string} reason - The driver's own skip vocabulary, so the row can
  * say WHY it is being passed over with the same words the failure badge uses.
  * @property {number} at - Epoch ms of the disposition.
+ */
+/**
+ * One merge shelf record (UI-sd12 §3.1). The key's presence is the whole
+ * fact; `at` only says when the person shelved the row.
+ *
+ * @typedef {Object} MergeShelf
+ * @property {number} at - Epoch ms of the [보관] click.
  */
 /**
  * @typedef {'gating'|'holding'|'merging'|'cleaning'|'waiting_metadata'|'reviewing'|'retrying'|'paused'|'needs_human'|'completed'} CompletionPhase
@@ -2248,6 +2262,7 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'merge_queue',
   'auto_merge',
   'auto_merge_skips',
+  'merge_shelved',
   'completion_intents',
   'discard_operations',
   'interactive_sessions',
@@ -2313,6 +2328,7 @@ function emptyQueue() {
     merge_queue: [],
     auto_merge: false,
     auto_merge_skips: {},
+    merge_shelved: {},
     completion_intents: {},
     discard_operations: {},
     interactive_sessions: {},
@@ -2355,6 +2371,44 @@ function normalizeMergeSkips(raw) {
     };
   }
   return out;
+}
+
+/**
+ * Normalize the durable merge shelf map (UI-sd12 §3.1). Only a record-shaped
+ * value is a shelf record; an unreadable `at` reads as 0 rather than dropping
+ * the record, because the key's presence — not the timestamp — is what keeps
+ * the bead out of the merge queue.
+ *
+ * @param {unknown} raw
+ * @returns {Record<string, MergeShelf>}
+ */
+function normalizeMergeShelved(raw) {
+  /** @type {Record<string, MergeShelf>} */
+  const out = {};
+  if (!isRecord(raw)) {
+    return out;
+  }
+  for (const [bead_id, value] of Object.entries(raw)) {
+    if (bead_id.length === 0 || !isRecord(value)) {
+      continue;
+    }
+    out[bead_id] = {
+      at:
+        typeof value.at === 'number' && Number.isFinite(value.at) ? value.at : 0
+    };
+  }
+  return out;
+}
+
+/**
+ * Whether a bead carries a merge shelf record (UI-sd12 §3.1).
+ *
+ * @param {Queue} q
+ * @param {string} bead_id
+ * @returns {boolean}
+ */
+function isMergeShelved(q, bead_id) {
+  return Object.hasOwn(q.merge_shelved, bead_id);
 }
 
 /**
@@ -4964,6 +5018,8 @@ function normalizeQueue(raw) {
   // `auto_advance` the stored value IS honoured on load — see the field doc.
   q.auto_merge = raw.auto_merge === true;
   q.auto_merge_skips = normalizeMergeSkips(raw.auto_merge_skips);
+  // A queue.json written before UI-sd12 has no key → nothing shelved.
+  q.merge_shelved = normalizeMergeShelved(raw.merge_shelved);
   q.completion_intents = normalizeCompletionIntents(raw.completion_intents);
   recoverLegacyCompletionAnchors(q);
   q.discard_operations = normalizeDiscardOperations(raw.discard_operations);
@@ -5172,6 +5228,9 @@ function removeFromLanes(q, bead_id) {
   // bead that merged, was discarded, or was dragged back out of the lane carries
   // no exclusion into whatever happens to it next.
   delete q.auto_merge_skips[bead_id];
+  // The shelf goes with every lane exit too (UI-sd12 §3.1). The ONE caller that
+  // must keep it — a `pr_wait` re-entry — restores it itself (`moveToPrWait`).
+  delete q.merge_shelved[bead_id];
 }
 
 /**
@@ -5230,15 +5289,56 @@ function inNonPrWaitLane(q, bead_id) {
 /**
  * Insert runnable work immediately before the durable yielded suffix.
  *
+ * Every NEW merge-queue entry comes through here, so this is where the shelf
+ * invariant is canonical (UI-sd12 §3.3): a shelved bead is refused and nothing
+ * is written. Callers check {@link isMergeShelved} first wherever the refusal
+ * must also skip their own side effects or name a reason.
+ *
  * @param {Queue} q
  * @param {MergeQueueEntry} entry
+ * @returns {boolean} false when the bead is shelved and nothing was inserted.
  */
 function insertRunnableMergeEntry(q, entry) {
+  if (isMergeShelved(q, entry.bead_id)) {
+    return false;
+  }
   const yielded_at = q.merge_queue.findIndex(
     (item) => item.resolution?.state === 'yielded'
   );
   const index = yielded_at < 0 ? q.merge_queue.length : yielded_at;
   q.merge_queue.splice(index, 0, entry);
+  return true;
+}
+
+/**
+ * Settle every unsettled review session of the given beads as cancelled — the
+ * shared half of [취소] and [보관] (UI-d7fy §5.6, UI-sd12 §3.2). The authority
+ * those sessions were dispatched under leaves in the same write, and the
+ * caller stops the processes AFTER the persist.
+ *
+ * @param {Queue} next
+ * @param {string[]} bead_ids
+ * @param {number} at
+ * @returns {string[]} The attempt ids this write settled.
+ */
+function cancelReviewSessions(next, bead_ids, at) {
+  /** @type {string[]} */
+  const cancelled = [];
+  for (const attempt of Object.values(next.attempts)) {
+    if (
+      attempt.kind !== 'review_session' ||
+      !bead_ids.includes(attempt.bead_id) ||
+      TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status))
+    ) {
+      continue;
+    }
+    attempt.status = 'failed';
+    attempt.cause = 'cancelled';
+    attempt.control = null;
+    attempt.finished_at = at;
+    cancelled.push(attempt.attempt_id);
+  }
+  return cancelled;
 }
 
 /**
@@ -5255,7 +5355,10 @@ function resumeCompletionIntentRecord(next, root_bead_id) {
     next.auto_merge !== true ||
     !intent ||
     intent.phase !== 'paused' ||
-    intent.active_op !== null
+    intent.active_op !== null ||
+    // A shelved root stays paused (UI-sd12 §3.3): resuming would hand it a
+    // queue position, which the shelf exists to withhold.
+    isMergeShelved(next, root_bead_id)
   ) {
     return false;
   }
@@ -9071,7 +9174,15 @@ export function createQueueStore(options = {}) {
           (e) => e.bead_id === bead_id
         );
         const queued = queued_at >= 0 ? next.merge_queue[queued_at] : null;
+        // A shelf survives the re-entry (UI-sd12 §3.1): the session that
+        // re-delivers the bead is not the person who shelved it. The invariant
+        // keeps a shelved bead out of `merge_queue`, so the restore below never
+        // brings a shelved item back.
+        const shelf = next.merge_shelved[bead_id] || null;
         removeFromLanes(next, bead_id);
+        if (shelf) {
+          next.merge_shelved[bead_id] = shelf;
+        }
         if (queued) {
           // Its ORIGINAL position, not the head: a waiting item whose own
           // session finished must not overtake the queue.
@@ -9956,7 +10067,10 @@ export function createQueueStore(options = {}) {
           if (typeof bead_id !== 'string' || bead_id.length === 0) {
             continue;
           }
-          if (!enqueueMember(next, bead_id, entry.external === true)) {
+          if (
+            isMergeShelved(next, bead_id) ||
+            !enqueueMember(next, bead_id, entry.external === true)
+          ) {
             continue;
           }
           // A human clicking [머지] on an auto-excluded row IS the retry the
@@ -10197,6 +10311,12 @@ export function createQueueStore(options = {}) {
           if (typeof bead_id !== 'string' || bead_id.length === 0) {
             continue;
           }
+          // A shelved row takes no authority and no place in line (UI-sd12
+          // §3.3); the reply says why so a stale tab's click is not silent.
+          if (isMergeShelved(next, bead_id)) {
+            reason = 'shelved';
+            continue;
+          }
           const head_sha =
             typeof entry.head_sha === 'string' && SHA40_RE.test(entry.head_sha)
               ? entry.head_sha.toLowerCase()
@@ -10309,7 +10429,9 @@ export function createQueueStore(options = {}) {
           granted.set(bead_id, { authority_id, head_sha });
           changed += 1;
         }
-        if (review_session !== null) {
+        // A shelved `[리뷰 후 머지]` click granted nothing to bind to; skipping
+        // the registration keeps `shelved` as the reply's reason.
+        if (review_session !== null && reason !== 'shelved') {
           changed += registerReviewSessionAttempt(next, review_session, granted)
             ? 1
             : 0;
@@ -10786,7 +10908,11 @@ export function createQueueStore(options = {}) {
           target_base,
           normalized.subject
         );
-        if (!source || !enqueueMember(next, root_bead_id, external === true)) {
+        if (
+          !source ||
+          isMergeShelved(next, root_bead_id) ||
+          !enqueueMember(next, root_bead_id, external === true)
+        ) {
           return false;
         }
         source.completion_root_id = root_bead_id;
@@ -11368,6 +11494,9 @@ export function createQueueStore(options = {}) {
             normalized_subject.head_sha ||
           normalized_op.failure_key.base_sha !== normalized_subject.base_sha ||
           !active_op_consistent ||
+          // A shelved root is not re-adopted into the queue (UI-sd12 §3.3);
+          // its terminal evidence stays as it was.
+          isMergeShelved(next, root_bead_id) ||
           next.merge_queue.some((entry) => entry.bead_id === root_bead_id) ||
           typeof resolution_rounds !== 'number' ||
           !Number.isInteger(resolution_rounds) ||
@@ -11457,6 +11586,12 @@ export function createQueueStore(options = {}) {
         for (const entry of Array.isArray(entries) ? entries : []) {
           const bead_id = entry && entry.bead_id;
           if (typeof bead_id !== 'string' || bead_id.length === 0) {
+            continue;
+          }
+          // The candidate list already leaves shelved rows out; this is the
+          // write-time recheck against the state the decision lands on
+          // (UI-sd12 §3.3).
+          if (isMergeShelved(next, bead_id)) {
             continue;
           }
           if (entry.completion) {
@@ -11903,29 +12038,80 @@ export function createQueueStore(options = {}) {
         // dispatched, settle together. The process stop is the caller's and
         // comes AFTER — a late session result then fails its binding check and
         // writes nothing, whether or not the process died on time.
-        /** @type {string[]} */
-        const cancelled = [];
-        const at = now();
-        for (const attempt of Object.values(next.attempts)) {
-          if (
-            attempt.kind !== 'review_session' ||
-            !doomed.includes(attempt.bead_id) ||
-            TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status))
-          ) {
-            continue;
-          }
-          attempt.status = 'failed';
-          attempt.cause = 'cancelled';
-          attempt.control = null;
-          attempt.finished_at = at;
-          cancelled.push(attempt.attempt_id);
-        }
-        cancelled_attempt_ids = cancelled;
+        cancelled_attempt_ids = cancelReviewSessions(
+          next,
+          removed.map((e) => e.bead_id),
+          now()
+        );
         return true;
       });
       return result.ok
         ? { ...result, cancelled_attempt_ids }
         : { ...result, cancelled_attempt_ids: [] };
+    },
+
+    /**
+     * Shelve or unshelve one local `pr_wait` row ([보관]/[보관 해제], UI-sd12
+     * §3.2). CAS-guarded like every other merge op.
+     *
+     * Shelving is ONE write: the record, the bead's merge-queue entry leaving
+     * whatever its authority, and the cancellation of the review sessions that
+     * entry dispatched — the same settlement [취소] performs, so the caller
+     * stops their processes afterwards exactly as it does for a cancel. Whether
+     * the driver currently holds the item is the caller's judgment, made
+     * before this, as for [취소].
+     *
+     * Unshelving only drops the record; the next enrolment pass re-judges the
+     * row. Setting the value a row already has is `ok:false` with no reason.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, bead_id: string, on: boolean }} input
+     * @returns {QueueOpResult}
+     */
+    setMergeShelved(workspace, input) {
+      const { expected_revision, bead_id, on } = input;
+      /** @type {string|null} */
+      let reason = null;
+      /** @type {string[]} */
+      let cancelled_attempt_ids = [];
+      const result = applyMutation(workspace, expected_revision, (next) => {
+        if (typeof bead_id !== 'string' || bead_id.length === 0) {
+          return false;
+        }
+        if (on !== true) {
+          if (!isMergeShelved(next, bead_id)) {
+            return false;
+          }
+          delete next.merge_shelved[bead_id];
+          return true;
+        }
+        const row = next.pr_wait.find((entry) => entry.bead_id === bead_id);
+        if (!row) {
+          reason = 'not_pr_wait';
+          return false;
+        }
+        if (row.external === true) {
+          reason = 'external';
+          return false;
+        }
+        if (isMergeShelved(next, bead_id)) {
+          return false;
+        }
+        next.merge_shelved[bead_id] = { at: now() };
+        next.merge_queue = next.merge_queue.filter(
+          (entry) => entry.bead_id !== bead_id
+        );
+        cancelled_attempt_ids = cancelReviewSessions(next, [bead_id], now());
+        return true;
+      });
+      if (!result.ok) {
+        return {
+          ...result,
+          ...(reason === null ? {} : { reason }),
+          cancelled_attempt_ids: []
+        };
+      }
+      return { ...result, cancelled_attempt_ids };
     },
 
     /**

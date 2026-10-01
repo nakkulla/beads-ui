@@ -6548,20 +6548,24 @@ html[data-theme='dark'] {
 }
 
 /* 보류 선반 (UI-p7s2 §3.2): 후보 카드 목록 뒤에 서는 접힌 구역. 기본은 접힘이고
-   펼쳐도 후보 레인의 일부로 읽히도록 카드와 같은 간격을 쓴다. */
-.worker-deferred {
+   펼쳐도 후보 레인의 일부로 읽히도록 카드와 같은 간격을 쓴다. PR 대기 레인의
+   `보관 N` 묶음 (UI-sd12 §3.4)도 같은 레인 footer 자리라 같은 모양을 쓴다. */
+.worker-deferred,
+.worker-shelved {
   margin-top: var(--sp-6);
   border-top: 1px solid var(--border-panel);
   padding-top: var(--sp-6);
 }
 
-.worker-deferred__summary {
+.worker-deferred__summary,
+.worker-shelved__summary {
   color: var(--text-dim);
   cursor: pointer;
   font-size: var(--fs-chip);
 }
 
-.worker-deferred__body {
+.worker-deferred__body,
+.worker-shelved__body {
   display: flex;
   flex-direction: column;
   gap: var(--sp-6);

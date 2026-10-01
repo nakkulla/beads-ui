@@ -4635,3 +4635,149 @@ describe('views/monitor resolve action while an inquiry lives (UI-ri8n)', () => 
     expect(button !== null).toBe(drawn);
   });
 });
+
+describe('views/monitor PR 대기 보관 (UI-sd12 §3.4)', () => {
+  /**
+   * A green observation for each id, so every row offers [머지] unless shelved.
+   *
+   * @param {string[]} bead_ids
+   */
+  function greenObservations(bead_ids) {
+    /** @type {Record<string, any>} */
+    const out = {};
+    for (const bead_id of bead_ids) {
+      out[bead_id] = {
+        pr: { number: 5, url: 'http://x' },
+        gate: { tier: 'ready', enabled: true, gate_badge: 'ok' }
+      };
+    }
+    return out;
+  }
+
+  /**
+   * @param {Partial<Record<string, any>>} [patch]
+   * @param {(type: string, payload?: any) => Promise<any>} [transport]
+   */
+  function setupShelf(patch = {}, transport) {
+    return setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          pr_observations: greenObservations(['A-1', 'A-2']),
+          merge_shelved: { 'A-2': { at: 1 } },
+          ...patch
+        })
+      ],
+      workspaces_state: [state()],
+      ...(transport ? { transport } : {})
+    });
+  }
+
+  test('draws a shelved row only in the 보관 bundle under the lane', () => {
+    const { mount, view } = setupShelf();
+
+    view.load();
+
+    const body_ids = Array.from(
+      mount.querySelectorAll(
+        '#monitor-pr_wait .worker-pane__body > .worker-mini'
+      )
+    ).map((row) => row.getAttribute('data-bead-id'));
+    const shelved_ids = Array.from(
+      mount.querySelectorAll('#monitor-pr_wait .worker-shelved .worker-mini')
+    ).map((row) => row.getAttribute('data-bead-id'));
+    expect(body_ids).toEqual(['A-1']);
+    expect(shelved_ids).toEqual(['A-2']);
+    expect(
+      mount.querySelector('.worker-shelved__summary')?.textContent?.trim()
+    ).toBe('보관 1');
+  });
+
+  test('gives a shelved row [보관 해제] and no [머지]', () => {
+    const { mount, view } = setupShelf();
+
+    view.load();
+
+    const row = el(mount, '.worker-shelved .worker-mini[data-bead-id="A-2"]');
+    expect(row.querySelector('.worker-mini__merge')).toBeNull();
+    expect(row.querySelector('.worker-mini__shelve')?.textContent?.trim()).toBe(
+      '보관 해제'
+    );
+  });
+
+  test('leaves shelved rows out of the PR 대기 lane count', () => {
+    const { mount, view } = setupShelf();
+
+    view.load();
+
+    expect(
+      mount
+        .querySelector('#monitor-pr_wait .worker-pane__count')
+        ?.textContent?.trim()
+    ).toBe('1');
+  });
+
+  test('hides 일괄 머지 when every PR 대기 row is shelved', () => {
+    const { mount, view } = setupShelf({
+      merge_shelved: { 'A-1': { at: 1 }, 'A-2': { at: 1 } }
+    });
+
+    view.load();
+
+    expect(mount.querySelector('.mon-merge-all')).toBeNull();
+  });
+
+  test('[보관] sends worker-merge-shelve with the row repo and revision', () => {
+    const { mount, view, sent } = setupShelf();
+    view.load();
+
+    click(mount, '.worker-mini[data-bead-id="A-1"] .worker-mini__shelve');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-merge-shelve',
+      payload: {
+        bead_id: 'A-1',
+        on: true,
+        root_dir: WS_A,
+        expected_revision: 1
+      }
+    });
+  });
+
+  test('toasts the merge_active refusal', async () => {
+    const { mount, view } = setupShelf({}, async () => ({
+      applied: false,
+      conflict: false,
+      reason: 'merge_active'
+    }));
+    view.load();
+
+    click(mount, '.worker-mini[data-bead-id="A-1"] .worker-mini__shelve');
+
+    await vi.waitFor(() =>
+      expect(document.querySelector('.toast')?.textContent).toBe(
+        '머지 큐가 이 PR을 처리 중이라 지금은 보관할 수 없습니다 — 처리가 끝나거나 차례를 넘긴 뒤 다시 누르세요'
+      )
+    );
+  });
+
+  test('draws no [보관] on an external row', () => {
+    const { mount, view } = setupShelf({
+      pr_wait: [{ bead_id: 'A-1', external: true }],
+      merge_shelved: {}
+    });
+
+    view.load();
+
+    expect(mount.querySelector('.worker-mini__shelve')).toBeNull();
+  });
+
+  test('remembers the 보관 bundle open state for the next visit', () => {
+    const { mount, view } = setupShelf();
+    view.load();
+
+    click(mount, '.worker-shelved__summary');
+
+    expect(window.localStorage.getItem('bdui.monitor.shelved-open')).toBe('1');
+  });
+});

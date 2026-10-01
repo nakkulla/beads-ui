@@ -1822,6 +1822,14 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {boolean} [cancel_enabled] - Whether [취소] may be clicked; false on
  * the item the driver is actively merging.
  * @property {string} [cancel_title] - Tooltip for [취소].
+ * @property {boolean} [shelved] - The row is a shelved local PR 대기 row
+ * (UI-sd12 §3.4): the lane draws it in the `보관 N` bundle, not its body.
+ * @property {'shelve'|'unshelve'|null} [shelve_action] - Render [보관] or
+ * [보관 해제] in the slot-6 foot right after [머지]/[취소]; absent on external
+ * rows and on rows whose merge was already observed.
+ * @property {boolean} [shelve_enabled] - Whether [보관]/[보관 해제] may be
+ * clicked; false while a merge step runs on the row.
+ * @property {string} [shelve_title] - Tooltip for [보관]/[보관 해제].
  * @property {boolean} [revise_action] - Render the REVISE-disposition actions
  * (`queue` rows parked at `spec_review_stale:revise`, UI-hs11 §3.5).
  * @property {boolean} [revise_enabled] - Whether the two disposition buttons
@@ -3594,6 +3602,19 @@ export function miniRow(item, options = {}) {
         취소
       </button>`
     : '';
+  // [보관]/[보관 해제] (UI-sd12 §3.4): slot 6, right after [머지]/[취소].
+  const shelve_el = item.shelve_action
+    ? html`<button
+        type="button"
+        class="op-btn worker-mini__shelve"
+        data-bead-id=${item.id}
+        data-shelve=${item.shelve_action === 'shelve' ? 'on' : 'off'}
+        ?disabled=${item.shelve_enabled === false}
+        title=${item.shelve_title || ''}
+      >
+        ${item.shelve_action === 'shelve' ? '보관' : '보관 해제'}
+      </button>`
+    : '';
   const discard = item.discard;
   const discard_el =
     discard?.action || item.discard_action
@@ -3769,6 +3790,7 @@ export function miniRow(item, options = {}) {
     merging ||
     item.merge_action ||
     item.cancel_action ||
+    item.shelve_action ||
     item.resolve_action ||
     item.handoff_action ||
     item.discard_action ||
@@ -3846,7 +3868,7 @@ export function miniRow(item, options = {}) {
             ? html`<div class="worker-mini__foot">
                 ${merge_step_el}
                 <span class="worker-mini__actions"
-                  >${external_foot_el}${merge_el}${cancel_el}${discard_actions_el}${revise_els}</span
+                  >${external_foot_el}${merge_el}${cancel_el}${shelve_el}${discard_actions_el}${revise_els}</span
                 >
                 ${discardReceiptTemplate(item)}
               </div>`
@@ -4869,11 +4891,15 @@ function serialLaneTemplate(lane) {
  * 패널 자체를 그리지 않는다 — 빈 관제 패널은 화면만 먹고 아무것도 말하지
  * 않는다.
  *
- * @param {{ live?: boolean, running_body?: import('lit-html').TemplateResult|string, pr_wait_rows?: import('lit-html').TemplateResult[], count: number }} model
+ * `pr_wait_footer` is the `보관 N` bundle (UI-sd12 §3.4). It is not part of
+ * `count`, yet it keeps the panel up on its own: shelved rows have nowhere else
+ * to stand on the narrow screen.
+ *
+ * @param {{ live?: boolean, running_body?: import('lit-html').TemplateResult|string, pr_wait_rows?: import('lit-html').TemplateResult[], pr_wait_footer?: import('lit-html').TemplateResult|string, count: number }} model
  * @returns {import('lit-html').TemplateResult|string}
  */
 export function nowPanel(model) {
-  if (!model.count) {
+  if (!model.count && !model.pr_wait_footer) {
     return '';
   }
   return html`<section
@@ -4890,5 +4916,69 @@ export function nowPanel(model) {
     </header>
     ${model.running_body ? model.running_body : ''}
     ${model.pr_wait_rows ? model.pr_wait_rows : ''}
+    ${model.pr_wait_footer ? model.pr_wait_footer : ''}
   </section>`;
+}
+
+/**
+ * The collapsed `보관 N` bundle under the PR 대기 lane (UI-sd12 §3.4) — the
+ * `보류 N` shelf's shape in the same lane-footer position. Both tabs draw it,
+ * each with its own viewer-local open state. Without rows there is no bundle
+ * (fail-quiet).
+ *
+ * @param {import('lit-html').TemplateResult[]} rows - Already rendered rows.
+ * @param {boolean} open
+ * @returns {import('lit-html').TemplateResult|undefined}
+ */
+export function shelvedSectionTemplate(rows, open) {
+  if (rows.length === 0) {
+    return undefined;
+  }
+  return html`<details class="worker-shelved" ?open=${open}>
+    <summary class="worker-shelved__summary">보관 ${rows.length}</summary>
+    <div class="worker-shelved__body">${rows}</div>
+  </details>`;
+}
+
+/**
+ * The toast one `worker-merge-shelve` reply becomes (UI-sd12 §3.4), shared by
+ * both tabs so the same click reads the same. Null when there is nothing to
+ * say — the value was already set.
+ *
+ * @param {any} res - What the server answered, `applied`/`conflict`/`reason`.
+ * @param {string} bead_id
+ * @param {boolean} on - Whether the click asked to shelve.
+ * @returns {{ text: string, type: 'success'|'info'|'error' }|null}
+ */
+export function shelveReplyToast(res, bead_id, on) {
+  if (!res || typeof res !== 'object') {
+    return null;
+  }
+  if (res.applied === true) {
+    return on
+      ? {
+          text: `${bead_id} 보관 — 자동 머지·일괄 머지에서 빠집니다`,
+          type: 'success'
+        }
+      : {
+          text: `${bead_id} 보관 해제 — 자동 머지가 켜져 있으면 다시 머지 대상이 됩니다`,
+          type: 'info'
+        };
+  }
+  if (res.conflict === true) {
+    return {
+      text: '큐가 바뀌어 클릭이 적용되지 않았습니다 — 다시 눌러주세요',
+      type: 'error'
+    };
+  }
+  if (res.reason === 'merge_active') {
+    return {
+      text: '머지 큐가 이 PR을 처리 중이라 지금은 보관할 수 없습니다 — 처리가 끝나거나 차례를 넘긴 뒤 다시 누르세요',
+      type: 'error'
+    };
+  }
+  if (typeof res.reason === 'string' && res.reason.length > 0) {
+    return { text: `보관하지 못했습니다: ${res.reason}`, type: 'error' };
+  }
+  return null;
 }

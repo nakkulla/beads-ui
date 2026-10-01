@@ -767,3 +767,77 @@ describe('worker/auto-merge — 구독 (UI-yk55 §4.1/§4.3)', () => {
     expect(() => auto.scan()).not.toThrow();
   });
 });
+
+describe('worker/auto-merge — 보관 (UI-sd12 §3.3)', () => {
+  /**
+   * A conflicting local row: eligible for enrolment under any readable
+   * repo-ops policy, so only the shelf can keep it out.
+   *
+   * @param {string} bead_id
+   */
+  function observeConflict(bead_id) {
+    getWorkerRuntime().prObservations.record(WS, bead_id, {
+      pr: {
+        number: 1,
+        url: `https://github.com/o/r/pull/${bead_id}`,
+        state: 'OPEN',
+        mergeable: 'CONFLICTING',
+        merge_state_status: 'DIRTY',
+        head_ref: bead_id,
+        head_sha: HEAD,
+        base_ref: 'main'
+      },
+      review_receipt: { state: 'current', head_sha: HEAD }
+    });
+  }
+
+  /**
+   * A workspace with auto-merge ON, one shelved conflicting row, and the
+   * enroller wired to the REAL lane and candidate judgment.
+   */
+  function shelvedWorkspace() {
+    getWorkerRuntime().externalPrs.clear();
+    const store = park(createQueueStore(), ['UI-shelf']);
+    observeConflict('UI-shelf');
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    store.setMergeShelved(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-shelf',
+      on: true
+    });
+    const auto = createAutoMerge({
+      workspace: WS,
+      store,
+      verifyState: () => verifyPolicy('absent'),
+      notifyChanged: vi.fn(),
+      kick: vi.fn(async () => {})
+    });
+    return { store, auto };
+  }
+
+  test('does not enroll a shelved row while auto merge is on', () => {
+    const { store, auto } = shelvedWorkspace();
+
+    auto.scan();
+
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('enrolls the row on the pass after it is unshelved', () => {
+    const { store, auto } = shelvedWorkspace();
+    store.setMergeShelved(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-shelf',
+      on: false
+    });
+
+    auto.scan();
+
+    expect(
+      store.snapshot(WS).merge_queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-shelf']);
+  });
+});

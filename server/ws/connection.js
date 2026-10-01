@@ -107,6 +107,7 @@ import {
   handleWorkerMergeQueueAdd,
   handleWorkerMergeQueueAddAll,
   handleWorkerMergeQueueRemove,
+  handleWorkerMergeShelve,
   handleWorkerPrDiscard,
   handleWorkerProviderLimitPolicySet,
   handleWorkerProviderProbeNow,
@@ -644,6 +645,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-merge-queue-remove':
       handleWorkerMergeQueueRemove(ws, req);
+      return;
+    case 'worker-merge-shelve':
+      handleWorkerMergeShelve(ws, req);
       return;
     case 'worker-discard':
       await handleWorkerDiscard(ws, req);
