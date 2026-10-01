@@ -2338,6 +2338,30 @@ function rowLocationLabel(bead_id, locations, states) {
 }
 
 /**
+ * Where a runnable candidate's declared scope was read from (UI-ruwu §4). The
+ * wire row's admission `spec_id` is blank for a quick_fix or an unpublished
+ * spec, and the row sheds the server's `scope_spec_id`, so the source the
+ * server actually read is the candidate's `bead_scope.artifacts` entry (same
+ * artifact set `[scope_spec_id, plan_path?]`). A field that entry does not
+ * carry falls back to the row's own `spec_id` / `plan_path`.
+ *
+ * @param {LaneItem} item
+ * @param {Map<string, Record<string, any>>} bead_scope_by_root
+ * @param {Map<string, import('../../utils/scope-overlap.js').ScopeSource>} runnable_source_by_bead
+ * @returns {import('../../utils/scope-overlap.js').ScopeSource}
+ */
+function runnableSourceOf(item, bead_scope_by_root, runnable_source_by_bead) {
+  const own = runnable_source_by_bead.get(item.id) || {};
+  const record = bead_scope_by_root.get(item.root_dir);
+  const entry = record ? record[item.id] : undefined;
+  const read = scopeSourceOf(entry ? entry.artifacts : undefined);
+  return {
+    spec_path: read.spec_path || own.spec_path || '',
+    plan_path: read.plan_path || own.plan_path || ''
+  };
+}
+
+/**
  * The declared scope of ONE comparison-set item, and what that declaration says
  * about itself (UI-qm12 §5.2). 큐·실행 중 버드는 스냅샷 장식 `bead_scope`에서,
  * 실행가능 항목은 자기 행이 실어 온 `scope`에서 읽는다 — 같은 버드가 큐에
@@ -2347,9 +2371,9 @@ function rowLocationLabel(bead_id, locations, states) {
  * 선언은 읽었는데 비었다(`missing`), 항목 n개 = `declared`.
  *
  * `source` is the spec and plan the declaration was read from (UI-ruwu §4):
- * a queued bead's `bead_scope.artifacts`, a runnable row's own `spec_id` and
- * `plan_path`. Two beads of one plan share it, which is what the `⧉` pair loop
- * keys the suppression on.
+ * a queued bead's `bead_scope.artifacts`, a runnable candidate's own
+ * `bead_scope.artifacts` entry ({@link runnableSourceOf}). Two beads of one
+ * plan share it, which is what the `⧉` pair loop keys the suppression on.
  *
  * @param {LaneItem} item
  * @param {Map<string, Record<string, any>>} bead_scope_by_root
@@ -2365,7 +2389,11 @@ function declaredScopeOf(
 ) {
   if (item.lane === 'runnable') {
     const scope = runnable_scope_by_bead.get(item.id);
-    const source = runnable_source_by_bead.get(item.id) || {};
+    const source = runnableSourceOf(
+      item,
+      bead_scope_by_root,
+      runnable_source_by_bead
+    );
     if (!scope) {
       return { scope: [], state: undefined, source };
     }

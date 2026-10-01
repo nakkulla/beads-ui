@@ -320,15 +320,26 @@ export async function placePlanInQueue(workspace_key, input) {
     };
   }
   const ordered_bead_ids = eligible.map((entry) => entry.id);
+  const lane_snapshot = queueStore().snapshot(workspace_key);
   const blocks_edges = laneBlocksEdges(
     workspace_key,
-    queueStore().snapshot(workspace_key),
+    lane_snapshot,
     lane,
     ordered_bead_ids
   );
-  // The member's open blockers ride the same snapshot generation, so a target
-  // the title cache has not read yet still orders correctly.
-  const in_lane = new Set(ordered_bead_ids);
+  // The member's open blockers ride the same snapshot generation, so a member
+  // the title cache has not read yet still orders correctly. The edge set spans
+  // the lane's standing entries as well as the new targets: a sibling already
+  // seated in the lane must still land after a blocker that arrives now.
+  const lane_entries = (
+    Array.isArray(lane_snapshot.serial_lanes) ? lane_snapshot.serial_lanes : []
+  ).find((serial_lane) => serial_lane.id === lane)?.entries;
+  const in_lane = new Set([
+    ...(Array.isArray(lane_entries)
+      ? lane_entries.map((entry) => entry.bead_id)
+      : []),
+    ...ordered_bead_ids
+  ]);
   for (const member of group.members) {
     if (!in_lane.has(member.id)) {
       continue;

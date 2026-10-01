@@ -1969,10 +1969,11 @@ function beadDependentsFor(workspace_key, queue) {
 }
 
 /**
- * The plan 묶음 of the same beads {@link beadDependentsFor} answers for
- * (UI-ruwu §1), projected from this workspace's last snapshot — peeked, never
- * fetched. Only beads that belong to a valid group get an entry; `null` (no
- * snapshot yet, or no member among the targets) omits the key, which is 모름.
+ * The plan 묶음 of the beads {@link beadDependentsFor} answers for plus the
+ * `done` lane (UI-ruwu §1), projected from this workspace's last snapshot —
+ * peeked, never fetched. Only beads that belong to a valid group get an entry;
+ * `null` (no snapshot yet, or no member among the targets) omits the key, which
+ * is 모름.
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
@@ -1996,7 +1997,12 @@ function beadPlanGroupsFor(workspace_key, queue) {
   }
   /** @type {Record<string, import('../../app/utils/plan-group.js').PlanGroup>} */
   const out = {};
-  for (const bead_id of dependentsTargetIds(workspace_key, queue)) {
+  // A finished bead stands in no lane the dependents set reads, yet its 완료 행
+  // still draws the plan chip, so `done` joins this one decoration's targets.
+  for (const bead_id of [
+    ...dependentsTargetIds(workspace_key, queue),
+    ...laneBeadIds(queue, ['done'])
+  ]) {
     const plan_group = index.get(bead_id);
     if (plan_group) {
       out[bead_id] = plan_group;

@@ -4722,6 +4722,32 @@ describe('ws worker-queue-place-plan (UI-ruwu §3)', () => {
     expect(laneIds(reply.payload.queue, 's1')).toEqual(['UI-b', 'UI-a']);
   });
 
+  test('seats a sibling already in the lane after the blocker placed now', async () => {
+    seedPlan(
+      [
+        planIssue('UI-a', 'Phase 1'),
+        planIssue('UI-b', 'Phase 2'),
+        planIssue('UI-c', 'Phase 3')
+      ],
+      [{ id: 'UI-c', blocked_by: ['UI-b'] }]
+    );
+    const sock = fakeSocket();
+    await send(sock, 'm0', 'worker-queue-place', {
+      bead_id: 'UI-c',
+      lane: 's1',
+      expected_revision: 0
+    });
+
+    const reply = await placePlan(sock, { expected_revision: 1 });
+
+    expect(reply.payload.placed).toEqual(['UI-a', 'UI-b']);
+    expect(laneIds(reply.payload.queue, 's1')).toEqual([
+      'UI-a',
+      'UI-b',
+      'UI-c'
+    ]);
+  });
+
   test('fans the placed group out to subscribers', async () => {
     seedPlan([planIssue('UI-a', 'Phase 1'), planIssue('UI-b', 'Phase 2')]);
     const sock = fakeSocket();

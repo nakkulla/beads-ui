@@ -769,6 +769,27 @@ describe('decorateQueue bead_plan_groups (UI-ruwu §1)', () => {
     });
   });
 
+  test('maps a done-lane bead of a plan to its group', () => {
+    seedSnapshots({
+      [WS]: planSnapshot([
+        { id: 'UI-70', anchor: 'Phase 1', status: 'closed' },
+        { id: 'UI-1', anchor: 'Phase 2' }
+      ])
+    });
+    const queue = {
+      ...laneQueue(),
+      done: [{ bead_id: 'UI-70', added_at: Date.now() }]
+    };
+
+    const out = /** @type {any} */ (decorateQueue(WS, queue));
+
+    expect(out.bead_plan_groups['UI-70']).toMatchObject({
+      plan_path: PLAN,
+      index: 1,
+      total: 2
+    });
+  });
+
   test('keeps index and total over members that stand in no lane', () => {
     seedSnapshots({
       [WS]: planSnapshot([

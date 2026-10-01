@@ -4501,6 +4501,52 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
     expect(lanes.queue[0].overlap_chips).toBeUndefined();
   });
 
+  test('skips two runnable candidates reading one spec despite blank admission spec ids (UI-ruwu §4)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-8', { spec_id: '', scope: ['app/views'] }),
+            runnable('A-9', { spec_id: '', scope: ['app/views/monitor'] })
+          ],
+          bead_scope: {
+            'A-8': declared(['app/views'], ['docs/shared.md']),
+            'A-9': declared(['app/views/monitor'], ['docs/shared.md'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].overlap_chips).toBeUndefined();
+    expect(lanes.runnable[1].overlap_chips).toBeUndefined();
+  });
+
+  test('keeps two runnable candidates reading different specs despite blank admission spec ids', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-8', { spec_id: '', scope: ['app/views'] }),
+            runnable('A-9', { spec_id: '', scope: ['app/views/monitor'] })
+          ],
+          bead_scope: {
+            'A-8': declared(['app/views'], ['docs/a.md']),
+            'A-9': declared(['app/views/monitor'], ['docs/b.md'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].overlap_chips?.map((chip) => chip.id)).toEqual([
+      'A-9'
+    ]);
+    expect(lanes.runnable[1].overlap_chips?.map((chip) => chip.id)).toEqual([
+      'A-8'
+    ]);
+  });
+
   test('marks a read declaration with no items as missing', () => {
     const lanes = buildLanes(
       [
