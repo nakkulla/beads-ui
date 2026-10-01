@@ -10,6 +10,7 @@
  * (which replaces every card element) keeps the popup open on the same chip.
  */
 import { html } from 'lit-html';
+import { ifDefined } from 'lit-html/directives/if-defined.js';
 
 /**
  * @typedef {{ bead_id: string, chip_key: string }} ChipPopoverKey
@@ -23,7 +24,15 @@ import { html } from 'lit-html';
  * 사실을 앞당기는 조작이 한자리에 모인다. 재료가 없으면 undefined고 줄 자체를
  * 그리지 않는다 (fail-quiet).
  *
- * @typedef {{ title: string, lines: string[], exit?: import('lit-html').TemplateResult }} ChipPopoverContent
+ * 한 줄은 문장이거나 `body` 템플릿이다 (UI-ruwu §2 plan 묶음 팝업): 이슈 ID를
+ * 눌러 열 수 있는 줄처럼 문장으로 담기지 않는 줄과, `current`로 강조할 줄을 같은
+ * 목록에 둔다. 문장 줄은 지금 그대로다.
+ *
+ * @typedef {string|{ body: import('lit-html').TemplateResult, current?: boolean }} ChipPopoverLine
+ */
+
+/**
+ * @typedef {{ title: string, lines: ChipPopoverLine[], exit?: import('lit-html').TemplateResult }} ChipPopoverContent
  */
 
 /**
@@ -141,7 +150,18 @@ export function chipPopoverTemplate(content) {
   >
     <div class="chip-popover__title">${content.title}</div>
     <ul class="chip-popover__lines">
-      ${content.lines.map((line) => html`<li>${line}</li>`)}
+      ${content.lines.map((line) =>
+        typeof line === 'string'
+          ? html`<li>${line}</li>`
+          : html`<li
+              class=${ifDefined(
+                line.current ? 'chip-popover__line--current' : undefined
+              )}
+              aria-current=${ifDefined(line.current ? 'true' : undefined)}
+            >
+              ${line.body}
+            </li>`
+      )}
     </ul>
     ${content.exit
       ? html`<div class="chip-popover__exit">${content.exit}</div>`

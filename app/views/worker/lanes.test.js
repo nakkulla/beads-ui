@@ -6325,6 +6325,386 @@ describe('영수증 회계 잔여 칩 (UI-h6t1 §4.3)', () => {
   });
 });
 
+const PLAN_GROUP = {
+  plan_path: 'docs/superpowers/plans/2026-09-29-plan-landing.md',
+  slug: 'plan-landing',
+  index: 2,
+  total: 3,
+  members: [
+    { id: 'UI-p1', anchor: 'Phase 1', status: 'closed', blocked_by: [] },
+    {
+      id: 'UI-p2',
+      anchor: 'Phase 2-3',
+      status: 'open',
+      blocked_by: ['UI-p1']
+    },
+    { id: 'UI-p3', anchor: 'Phase 4', status: 'open', blocked_by: ['UI-p2'] }
+  ]
+};
+
+/** @type {import('./plan-place.js').PlanPlaceContext} */
+const PLAN_CONTEXT = {
+  root_dir: '/repo/a',
+  lanes: [
+    { id: 's1', label: '직렬 1', ids: ['UI-x9'] },
+    { id: 's2', label: '직렬 2', ids: ['UI-p1'] }
+  ],
+  skipped: []
+};
+
+describe('plan 묶음 칩 (UI-ruwu §2)', () => {
+  /**
+   * @param {Element} scope
+   * @returns {HTMLElement|null}
+   */
+  function planChip(scope) {
+    return scope.querySelector('.worker-chips--coords [data-chip-key="plan"]');
+  }
+
+  test('draws the 5a chip text on a candidate card', () => {
+    const card = renderCandidate({ id: 'UI-p2', plan_group: PLAN_GROUP });
+
+    expect(planChip(card)?.textContent?.trim()).toBe('plan plan-landing 2/3');
+  });
+
+  test('draws the 5a chip on a waiting row', () => {
+    const row = renderRow({
+      id: 'UI-p2',
+      lane: 'queue',
+      done: false,
+      plan_group: PLAN_GROUP
+    });
+
+    expect(planChip(row)?.textContent?.trim()).toBe('plan plan-landing 2/3');
+  });
+
+  test('draws the 5a chip on a PR 대기 row', () => {
+    const row = renderRow({
+      id: 'UI-p2',
+      lane: 'pr_wait',
+      done: false,
+      plan_group: PLAN_GROUP
+    });
+
+    expect(planChip(row)?.textContent?.trim()).toBe('plan plan-landing 2/3');
+  });
+
+  test('draws the 5a chip on the two-line done row', () => {
+    const row = renderRow({ id: 'UI-p2', plan_group: PLAN_GROUP });
+
+    expect(
+      row.querySelector('.worker-mini__row3 [data-chip-key="plan"]')
+        ?.textContent
+    ).toContain('plan plan-landing 2/3');
+  });
+
+  test('draws the 5a chip on the three-line done row', () => {
+    const row = renderRow({
+      id: 'UI-p2',
+      done_layout: 'three_line',
+      plan_group: PLAN_GROUP
+    });
+
+    expect(
+      row.querySelector('.worker-mini__row3 [data-chip-key="plan"]')
+        ?.textContent
+    ).toContain('plan plan-landing 2/3');
+  });
+
+  test('draws the 5a chip on a deferred candidate card', () => {
+    render(
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'UI-p2',
+          title: 'deferred',
+          lane: 'candidate',
+          draggable: false,
+          plan_group: PLAN_GROUP
+        }),
+        null,
+        { variant: 'deferred' }
+      ),
+      mount
+    );
+
+    expect(planChip(mount)).not.toBeNull();
+  });
+
+  test('stands before the route chip on the coordinate line', () => {
+    const row = renderRow({
+      id: 'UI-p2',
+      lane: 'queue',
+      done: false,
+      plan_group: PLAN_GROUP,
+      workflow: /** @type {any} */ ({
+        route: 'spec_backed',
+        chips: { route: 'spec_backed', route_source: 'explicit' }
+      })
+    });
+    const coords = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-chips--coords')
+    );
+
+    expect(
+      Array.from(coords.children, (chip) =>
+        chip.classList.contains('worker-card__plan')
+          ? 'plan'
+          : chip.classList.contains('ctl-chip--route')
+            ? 'route'
+            : 'other'
+      )
+    ).toEqual(['plan', 'route']);
+  });
+
+  test('makes the chip a judgement button keyed plan', () => {
+    const card = renderCandidate({ id: 'UI-p2', plan_group: PLAN_GROUP });
+    const chip = /** @type {HTMLElement} */ (planChip(card));
+
+    expect([
+      chip.tagName,
+      chip.classList.contains('judgement-chip'),
+      chip.dataset.chipKey,
+      chip.getAttribute('aria-expanded')
+    ]).toEqual(['BUTTON', true, 'plan', 'false']);
+  });
+
+  test.each([
+    ['a candidate card', () => renderCandidate({ id: 'UI-p2' })],
+    [
+      'a waiting row',
+      () => renderRow({ id: 'UI-p2', lane: 'queue', done: false })
+    ],
+    ['a done row', () => renderRow({ id: 'UI-p2' })],
+    [
+      'a three-line done row',
+      () => renderRow({ id: 'UI-p2', done_layout: 'three_line' })
+    ]
+  ])('draws no chip on %s without a plan group', (_name, draw) => {
+    const scope = draw();
+
+    expect(scope.querySelector('[data-chip-key="plan"]')).toBeNull();
+  });
+
+  test('draws no chip for a malformed plan group', () => {
+    const card = renderCandidate({
+      id: 'UI-p2',
+      plan_group: /** @type {any} */ ({ slug: 'plan-landing' })
+    });
+
+    expect(card.querySelector('[data-chip-key="plan"]')).toBeNull();
+  });
+
+  test.each([
+    ['candidate card', () => renderCandidate(POPUP_ITEM)],
+    [
+      'waiting row',
+      () => renderRow({ ...POPUP_ITEM, lane: 'queue', done: false })
+    ],
+    ['done row', () => renderRow(POPUP_ITEM)],
+    [
+      'three-line done row',
+      () => renderRow({ ...POPUP_ITEM, done_layout: 'three_line' })
+    ]
+  ])('opens the popup under the coordinate line of a %s', (_name, draw) => {
+    const scope = draw();
+
+    expect(
+      scope.querySelector('.worker-chips--coords .chip-popover')
+    ).not.toBeNull();
+    expect(
+      scope
+        .querySelector('[data-chip-key="plan"]')
+        ?.getAttribute('aria-expanded')
+    ).toBe('true');
+    expect(scope.querySelectorAll('.chip-popover')).toHaveLength(1);
+  });
+});
+
+const POPUP_ITEM = {
+  id: 'UI-p2',
+  plan_group: PLAN_GROUP,
+  chip_popover: {
+    chip_key: 'plan',
+    content: { title: 'plan plan-landing', lines: ['한 줄'] }
+  }
+};
+
+describe('plan 묶음 팝업 내용 (UI-ruwu §2·§3)', () => {
+  /**
+   * @param {Record<string, any>} [patch]
+   * @param {import('./lanes.js').PlanContextOf} [context]
+   * @returns {HTMLElement}
+   */
+  function renderPopup(patch = {}, context = undefined) {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-p2',
+        root_dir: '/repo/a',
+        plan_group: PLAN_GROUP,
+        ...patch
+      }),
+      'plan',
+      context
+    );
+    render(chipPopoverTemplate(/** @type {any} */ (content)), mount);
+    return /** @type {HTMLElement} */ (mount.querySelector('.chip-popover'));
+  }
+
+  test('titles the popup with the plan slug', () => {
+    const popup = renderPopup();
+
+    expect(popup.querySelector('.chip-popover__title')?.textContent).toBe(
+      'plan plan-landing'
+    );
+  });
+
+  test('lists one line per member in order', () => {
+    const popup = renderPopup();
+
+    expect(
+      Array.from(popup.querySelectorAll('li .worker-dep__open'), (el) =>
+        el.textContent?.trim()
+      )
+    ).toEqual(['UI-p1', 'UI-p2', 'UI-p3']);
+  });
+
+  test('writes anchor and status on each member line', () => {
+    const popup = renderPopup();
+    const lines = Array.from(popup.querySelectorAll('li'), (li) =>
+      (li.textContent || '').replace(/\s+/g, ' ').trim()
+    );
+
+    expect(lines[0]).toBe('UI-p1 Phase 1 · closed');
+    expect(lines[1]).toBe('UI-p2 Phase 2-3 · open ⛓ UI-p1');
+  });
+
+  test('emphasizes only the line of the current issue', () => {
+    const popup = renderPopup();
+
+    const current = Array.from(
+      popup.querySelectorAll('li.chip-popover__line--current'),
+      (li) => li.querySelector('.worker-dep__open')?.textContent?.trim()
+    );
+
+    expect(current).toEqual(['UI-p2']);
+  });
+
+  test('opens a member issue from its id button', () => {
+    const popup = renderPopup();
+    const open = /** @type {HTMLElement} */ (
+      popup.querySelectorAll('.worker-dep__open')[2]
+    );
+
+    expect([open.dataset.depId, open.dataset.rootDir]).toEqual([
+      'UI-p3',
+      '/repo/a'
+    ]);
+  });
+
+  test('writes a ⛓ mark for each open blocker', () => {
+    const popup = renderPopup();
+
+    expect(
+      Array.from(
+        popup.querySelectorAll('.chip-popover__member-blocker'),
+        (el) => el.textContent?.trim()
+      )
+    ).toEqual(['⛓ UI-p1', '⛓ UI-p2']);
+  });
+
+  test('marks a blocker the last placement skipped as 세션 필요', () => {
+    const popup = renderPopup({}, () => ({
+      ...PLAN_CONTEXT,
+      skipped: [{ id: 'UI-p1', reason: 'worker-ineligible' }]
+    }));
+
+    expect(
+      popup.querySelector('.chip-popover__member-blocker')?.textContent?.trim()
+    ).toBe('⛓ UI-p1 · 세션 필요');
+  });
+
+  test('draws no exit line without a surface context', () => {
+    const popup = renderPopup();
+
+    expect(popup.querySelector('.chip-popover__exit')).toBeNull();
+  });
+
+  test('draws no exit line when no serial lane exists', () => {
+    const popup = renderPopup({}, () => ({ ...PLAN_CONTEXT, lanes: [] }));
+
+    expect(popup.querySelector('.chip-popover__exit')).toBeNull();
+  });
+
+  test('draws no exit line without a repository', () => {
+    const popup = renderPopup({ root_dir: '' }, () => ({
+      ...PLAN_CONTEXT,
+      root_dir: ''
+    }));
+
+    expect(popup.querySelector('.chip-popover__exit')).toBeNull();
+  });
+
+  test('puts the exit line last with the placement button', () => {
+    const popup = renderPopup({}, () => PLAN_CONTEXT);
+    const button = /** @type {HTMLButtonElement} */ (
+      popup.querySelector('.chip-popover__exit [data-action="plan-place"]')
+    );
+
+    expect(
+      popup.lastElementChild?.classList.contains('chip-popover__exit')
+    ).toBe(true);
+    expect(button.textContent?.trim()).toBe('plan 전체를 레인에 배치');
+    expect([button.dataset.planPath, button.dataset.rootDir]).toEqual([
+      PLAN_GROUP.plan_path,
+      '/repo/a'
+    ]);
+  });
+
+  test('offers serial lanes only', () => {
+    const popup = renderPopup({}, () => PLAN_CONTEXT);
+
+    expect(
+      Array.from(popup.querySelectorAll('[data-plan-lane] option'), (el) =>
+        el.getAttribute('value')
+      )
+    ).toEqual(['s1', 's2']);
+  });
+
+  test('preselects the lane where the first member already waits', () => {
+    const popup = renderPopup({}, () => PLAN_CONTEXT);
+
+    expect(
+      /** @type {HTMLSelectElement} */ (popup.querySelector('[data-plan-lane]'))
+        .value
+    ).toBe('s2');
+  });
+
+  test('preselects the first serial lane when the first member waits nowhere', () => {
+    const popup = renderPopup({}, () => ({
+      ...PLAN_CONTEXT,
+      lanes: [
+        { id: 's1', label: '직렬 1', ids: [] },
+        { id: 's2', label: '직렬 2', ids: ['UI-other'] }
+      ]
+    }));
+
+    expect(
+      /** @type {HTMLSelectElement} */ (popup.querySelector('[data-plan-lane]'))
+        .value
+    ).toBe('s1');
+  });
+
+  test('answers null without a plan group', () => {
+    expect(
+      judgementPopoverContent(/** @type {any} */ ({ id: 'UI-p2' }), 'plan')
+    ).toBeNull();
+  });
+
+  test('carries the plan key among the judgement chip keys', () => {
+    expect(JUDGEMENT_CHIP_KEYS).toContain('plan');
+  });
+});
+
 describe('스펙 대기 칩 (UI-svh6 §4.3)', () => {
   test('draws the chip right after the ⛓ chip on the dependency line', () => {
     const card = renderCandidate({

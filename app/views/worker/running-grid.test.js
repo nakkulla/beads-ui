@@ -4205,3 +4205,120 @@ describe('retry_wait tile hold retry (UI-01wh §3.3)', () => {
     expect(labels).toEqual(['폐기']);
   });
 });
+
+describe('plan 묶음 칩 on the running tile (UI-ruwu §2)', () => {
+  const PLAN_GROUP = {
+    plan_path: 'docs/superpowers/plans/2026-09-29-plan-landing.md',
+    slug: 'plan-landing',
+    index: 2,
+    total: 3,
+    members: [
+      { id: 'UI-p1', anchor: 'Phase 1', status: 'closed', blocked_by: [] },
+      {
+        id: 'UI-p2',
+        anchor: 'Phase 2-3',
+        status: 'in_progress',
+        blocked_by: []
+      },
+      { id: 'UI-p3', anchor: 'Phase 4', status: 'open', blocked_by: ['UI-p2'] }
+    ]
+  };
+
+  /**
+   * @param {Record<string, any>} [patch]
+   * @param {any} [monitor]
+   * @returns {HTMLElement}
+   */
+  function renderPlanTile(patch = {}, monitor = null) {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(
+        /** @type {any} */ (tileInput({ bead_id: 'UI-p2', ...patch })),
+        5000,
+        null,
+        { monitor }
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  test('draws the 5a chip text on the coordinate line', () => {
+    const tile = renderPlanTile({ plan_group: PLAN_GROUP });
+
+    expect(
+      tile
+        .querySelector(
+          '.rtile__meta .worker-chips--coords [data-chip-key="plan"]'
+        )
+        ?.textContent?.trim()
+    ).toBe('plan plan-landing 2/3');
+  });
+
+  test('draws the chip alone on the meta row of an otherwise bare tile', () => {
+    const tile = renderPlanTile({ plan_group: PLAN_GROUP });
+
+    expect(tile.querySelector('.rtile__meta')).not.toBeNull();
+  });
+
+  test('stands after the lane origin chip and before the route chip', () => {
+    const tile = renderPlanTile({
+      plan_group: PLAN_GROUP,
+      lane_origin: { kind: 'serial', index: 2 },
+      workflow: /** @type {any} */ ({
+        chips: { route: 'spec_backed', route_source: 'explicit' }
+      })
+    });
+
+    expect(
+      Array.from(tile.querySelectorAll('.worker-chips--coords > *'), (chip) =>
+        chip.classList.contains('ctl-chip--lane')
+          ? 'lane'
+          : chip.classList.contains('worker-card__plan')
+            ? 'plan'
+            : chip.classList.contains('ctl-chip--route')
+              ? 'route'
+              : 'other'
+      )
+    ).toEqual(['lane', 'plan', 'route']);
+  });
+
+  test('draws the chip on a Monitor tile too', () => {
+    const tile = renderPlanTile(
+      { plan_group: PLAN_GROUP },
+      { repo: 'repo-a', root_dir: '/tmp/repo-a' }
+    );
+
+    expect(tile.querySelector('[data-chip-key="plan"]')).not.toBeNull();
+  });
+
+  test('draws no chip without a plan group', () => {
+    const tile = renderPlanTile({});
+
+    expect(tile.querySelector('[data-chip-key="plan"]')).toBeNull();
+  });
+
+  test('keeps the bare tile free of an empty meta row', () => {
+    const tile = renderPlanTile({});
+
+    expect(tile.querySelector('.rtile__meta')).toBeNull();
+  });
+
+  test('opens the popup in the meta block when the plan chip is open', () => {
+    const tile = renderPlanTile({
+      plan_group: PLAN_GROUP,
+      chip_popover: {
+        chip_key: 'plan',
+        content: { title: 'plan plan-landing', lines: ['UI-p2'] }
+      }
+    });
+
+    expect(tile.querySelector('.rtile__meta .chip-popover')).not.toBeNull();
+    expect(
+      tile
+        .querySelector('[data-chip-key="plan"]')
+        ?.getAttribute('aria-expanded')
+    ).toBe('true');
+  });
+});

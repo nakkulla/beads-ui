@@ -43,6 +43,7 @@ import {
   interactiveSessionBadgesTemplate,
   interactiveSessionClosingTemplate,
   laneOriginChipTemplate,
+  planChipTemplate,
   priorityBadgeTemplate,
   routeCardTone,
   routeChipTemplate,
@@ -174,6 +175,8 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * 위임 leg. 끝난 것은 접혀 한 칩이 된다.
  * @property {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null} [chip_popover] -
  * 이 타일에서 열려 있는 판정 칩 사유 팝업 (UI-8x90 §4.5). 슬롯 5 줄이 싣는다.
+ * @property {import('../../utils/plan-group.js').PlanGroup} [plan_group] - 이 타일의
+ * 이슈가 속한 plan 묶음 (UI-ruwu §2). 슬롯 5a 칩의 재료이고 없으면 칩도 없다.
  * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
  * 의존·겹침 칩 (슬롯 4). 재료가 없으면 줄이 통째로 빠진다 (fail-quiet).
  */
@@ -1147,8 +1150,12 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const monitor = options.monitor || null;
   const repo_chip = monitorTileHead(monitor);
   const lane_chip = session ? '' : laneOriginChipTemplate(tile.lane_origin);
-  // 소속 칩은 좌표(레포·직렬 레인) 다음이다 (UI-8x90 §4.1). 재료가 없으면 빈
-  // 문자열이라 줄 판정에 영향이 없다.
+  // plan 묶음 칩은 5a 좌표다 (UI-ruwu §2): 레인 출처 칩 다음, route 앞. 재료가
+  // 없으면 빈 문자열이라 줄 판정에 영향이 없고, 팝업은 아래 meta 끝이 싣는다.
+  const plan_chip = planChipTemplate(
+    /** @type {any} */ (tile),
+    tile.chip_popover?.chip_key === 'plan'
+  );
   // 의존·겹침 칩은 슬롯 4다 (UI-251y §2): 활동·위임 줄과 자식 롤업·landing
   // 진행이 모두 슬롯 3이므로 그 뒤에 선다.
   const monitor_relations = dependencyChipsTemplate(monitor?.dependency_chips);
@@ -1225,6 +1232,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     : '';
   const tile_meta =
     lane_chip ||
+    plan_chip ||
     route_chip ||
     source_chips ||
     session_ref_chip ||
@@ -1235,9 +1243,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     provider_badges.length > 0 ||
     usage_label
       ? html`<div class="rtile__meta">
-          ${lane_chip || route_chip || source_chips
+          ${lane_chip || plan_chip || route_chip || source_chips
             ? html`<div class="worker-chips worker-chips--coords">
-                ${lane_chip}${route_chip}${source_chips}
+                ${lane_chip}${plan_chip}${route_chip}${source_chips}
               </div>`
             : ''}${session_ref_chip ||
           session_receipt_chip ||

@@ -71,6 +71,11 @@ import {
   waitBody
 } from '../worker/lanes.js';
 import {
+  createPlanSkipMemory,
+  placePlanFromPopup,
+  planPlaceLanesOf
+} from '../worker/plan-place.js';
+import {
   providerResumeDialogTemplate,
   providerResumeDraft,
   providerResumeDraftChange,
@@ -476,6 +481,11 @@ export function createMonitorView(mount_element, options) {
    * 다시 그려져도 같은 칩 아래에 그대로 열려 있다.
    */
   const chip_popover = createChipPopover(() => doRender());
+  /**
+   * plan 묶음 팝업이 기억하는 마지막 일괄 배치 응답의 `skipped` (UI-ruwu §3).
+   * 레포마다 따로 기억한다 — 같은 `plan_path` 문자열이 두 레포에 있을 수 있다.
+   */
+  const plan_skips = createPlanSkipMemory();
 
   /**
    * 데크가 소유하는 포커스 필터의 현재 대상 (§4.2). 여기서는 클래스만 반영한다.
@@ -987,9 +997,61 @@ export function createMonitorView(mount_element, options) {
    * @returns {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null}
    */
   function popoverOf(item) {
-    return judgementPopoverOf(/** @type {any} */ (item), (chip_key) =>
-      chip_popover.isOpen({ bead_id: item.id, chip_key })
+    return judgementPopoverOf(
+      /** @type {any} */ (item),
+      (chip_key) => chip_popover.isOpen({ bead_id: item.id, chip_key }),
+      planContextOf
     );
+  }
+
+  /**
+   * Surface material of the plan popup (UI-ruwu §3). 저장소는 그 이슈의
+   * `root_dir`이고, 큐는 그 저장소의 것이다 — 레포마다 직렬 레인 수와 revision이
+   * 다르다.
+   *
+   * @param {any} item
+   * @returns {import('../worker/plan-place.js').PlanPlaceContext|null}
+   */
+  function planContextOf(item) {
+    const root_dir = typeof item.root_dir === 'string' ? item.root_dir : '';
+    if (root_dir.length === 0) {
+      return null;
+    }
+    const plan_path = item.plan_group ? String(item.plan_group.plan_path) : '';
+    return {
+      root_dir,
+      lanes: planPlaceLanesOf(queueOf(root_dir)),
+      skipped: plan_skips.get(root_dir, plan_path)
+    };
+  }
+
+  /**
+   * `plan 전체를 레인에 배치` (UI-ruwu §3). revision은 그 레포의 가장 최근 큐가
+   * 말한다 — 응답의 큐를 채택하므로 충돌 재시도가 새 값으로 간다.
+   *
+   * @param {string} plan_path
+   * @param {string} root_dir
+   * @param {string} lane
+   */
+  async function placePlan(plan_path, root_dir, lane) {
+    await placePlanFromPopup({
+      transport,
+      showToast,
+      memory: plan_skips,
+      root_dir,
+      plan_path,
+      lane,
+      revision: () => {
+        const revision = queueOf(root_dir).revision;
+        return typeof revision === 'number' ? revision : 0;
+      },
+      adopt: (reply) => {
+        if (reply && reply.queue) {
+          exec_adopted.set(root_dir, reply.queue);
+        }
+      }
+    });
+    doRender();
   }
 
   /**
@@ -1451,6 +1513,7 @@ export function createMonitorView(mount_element, options) {
                 exec_chips: item.exec_chips || null,
                 usage: item.usage || null,
                 chip_popover: popoverOf(item),
+                ...(item.plan_group ? { plan_group: item.plan_group } : {}),
                 discard: item.discard,
                 failure: item.failure
                   ? {
@@ -2266,6 +2329,19 @@ export function createMonitorView(mount_element, options) {
         button.getAttribute('data-runner') || '',
         Number(button.getAttribute('data-since')),
         root_dir
+      );
+      return;
+    }
+    if (cls.contains('chip-popover__plan-place')) {
+      // plan 묶음 칩 팝업의 출구 (UI-ruwu §3): 레인은 같은 줄의 select가 말하고
+      // 저장소와 plan은 버튼이 실은 값이다.
+      const lane_select = /** @type {HTMLSelectElement|null} */ (
+        button.parentElement?.querySelector('[data-plan-lane]') || null
+      );
+      void placePlan(
+        button.getAttribute('data-plan-path') || '',
+        button.getAttribute('data-root-dir') || root_dir,
+        lane_select ? lane_select.value : ''
       );
       return;
     }

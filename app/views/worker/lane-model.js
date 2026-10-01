@@ -2910,6 +2910,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const runnable_scope_by_bead = new Map();
   /** @type {Map<string, import('../../utils/scope-overlap.js').ScopeSource>} */
   const runnable_source_by_bead = new Map();
+  // plan 묶음 장식 (UI-ruwu §2): 레포별 `bead_plan_groups`. 후보·보류 행은 자기
+  // 행이 `plan_group`을 싣고 오므로 이 표는 대기·실행·PR 대기·완료 행의 재료다.
+  /** @type {Map<string, Record<string, any>>} */
+  const plan_groups_by_root = new Map();
   // 살아 있는 외부 대기 레코드 (UI-l48z §4.1). 세션 타일 조립이 레코드 유무로
   // 필드를 정하므로 레인 루프보다 먼저 모은다; 뒤의 부착 루프도 같은 표를 읽는다.
   /** @type {Map<string, import('../../protocol.js').ExternalWaitObservation>} */
@@ -2993,6 +2997,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
     // 빈 객체와 "서버가 사실을 보내지 않는다"는 다른 말이다.
     if (Object.hasOwn(workspace, 'bead_scope')) {
       bead_scope_by_root.set(root_dir, objectOf(workspace.bead_scope));
+    }
+    // 키가 없는 구서버 스냅샷은 묶음이 없는 것으로 읽는다 (fail-quiet).
+    if (Object.hasOwn(workspace, 'bead_plan_groups')) {
+      plan_groups_by_root.set(root_dir, objectOf(workspace.bead_plan_groups));
     }
     // 대기·PR 대기·실행중 행의 route 칩 재료 (UI-yrzu §7.2).
     const bead_workflow = objectOf(workspace.bead_workflow);
@@ -4238,6 +4246,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ...(entry.dependents_info && typeof entry.dependents_info === 'object'
           ? { dependents_info: entry.dependents_info }
           : {}),
+        ...(entry.plan_group && typeof entry.plan_group === 'object'
+          ? { plan_group: entry.plan_group }
+          : {}),
         reason: reason_parts.join(' · '),
         ...(admission[bead_id]?.stale === true
           ? { rereview_required: true }
@@ -4415,6 +4426,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
           : {}),
         ...(entry.dependents_info && typeof entry.dependents_info === 'object'
           ? { dependents_info: entry.dependents_info }
+          : {}),
+        ...(entry.plan_group && typeof entry.plan_group === 'object'
+          ? { plan_group: entry.plan_group }
           : {}),
         labels: Array.isArray(entry.labels) ? entry.labels : [],
         ...(typeof entry.issue_type === 'string' && entry.issue_type.length > 0
@@ -4839,6 +4853,26 @@ export function buildLanes(workspaces, workspaces_state, options) {
   ]) {
     item.interactive_sessions =
       interactive_by_bead.get(`${item.root_dir}\u0000${item.id}`) || [];
+  }
+
+  // plan 묶음은 한 경로로 모든 레인 행에 얹는다 (UI-ruwu §2): 행이 이미 자기
+  // `plan_group`을 실었으면(후보·보류·세션 완료 행) 그것이 이기고, 나머지는 레포의
+  // `bead_plan_groups` 장식에서 ID로 읽는다. Worker 탭과 Monitor 탭이 같은 길이다.
+  for (const item of [
+    ...model.runnable,
+    ...model.deferred,
+    ...model.queue,
+    ...model.running,
+    ...model.pr_wait,
+    ...model.done
+  ]) {
+    if (item.plan_group) {
+      continue;
+    }
+    const decorated = plan_groups_by_root.get(item.root_dir)?.[item.id];
+    if (decorated && typeof decorated === 'object') {
+      item.plan_group = decorated;
+    }
   }
 
   // 대기 행만 `manual_only`를 진다 (UI-3pu9 §4.1) — `model.queue`는 병렬 행과

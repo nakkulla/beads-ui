@@ -120,6 +120,11 @@ import {
 } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
 import { placeMenuLanes } from './placement.js';
+import {
+  createPlanSkipMemory,
+  placePlanFromPopup,
+  planPlaceLanesOf
+} from './plan-place.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
 import {
   providerResumeDialogTemplate,
@@ -1892,6 +1897,12 @@ export function createWorkerView(mount_element, options = {}) {
    */
   const chip_popover = createChipPopover(() => doRender());
   /**
+   * plan 묶음 팝업이 기억하는 마지막 일괄 배치 응답의 `skipped` (UI-ruwu §3).
+   * 서버는 거절을 남기지 않으므로 이 화면의 기억이 `세션 필요` 표시의 유일한
+   * 재료다.
+   */
+  const plan_skips = createPlanSkipMemory();
+  /**
    * 이 렌더의 겹침 파생 (UI-jbao). 한 레포 화면의 위치 어휘(`후보`·`#n`·`s1 #n`)
    * 는 모니터의 것과 다르므로 워커 탭이 자기 비교 집합으로 다시 판정한다.
    *
@@ -3128,9 +3139,51 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {{ chip_key: string, content: import('../chip-popover.js').ChipPopoverContent }|null}
    */
   function popoverOf(item) {
-    return judgementPopoverOf(/** @type {any} */ (item), (chip_key) =>
-      chip_popover.isOpen({ bead_id: item.id, chip_key })
+    return judgementPopoverOf(
+      /** @type {any} */ (item),
+      (chip_key) => chip_popover.isOpen({ bead_id: item.id, chip_key }),
+      planContextOf
     );
+  }
+
+  /**
+   * Surface material of the plan popup (UI-ruwu §3). 저장소는 이 탭의 현재
+   * 워크스페이스고, 알 수 없으면 출구 줄이 서지 않는다 — `root_dir` 없는 요청은
+   * 보내지 않는다.
+   *
+   * @param {any} item
+   * @returns {import('./plan-place.js').PlanPlaceContext|null}
+   */
+  function planContextOf(item) {
+    const root_dir = rootDir();
+    const plan_path = item.plan_group ? item.plan_group.plan_path : '';
+    return {
+      root_dir,
+      lanes: planPlaceLanesOf(currentQueue()),
+      skipped: plan_skips.get(root_dir, String(plan_path))
+    };
+  }
+
+  /**
+   * `plan 전체를 레인에 배치` (UI-ruwu §3). 단건 배치와 같은 큐 revision 규율로
+   * 보내고, 응답의 큐를 먼저 채택해 화면이 팬아웃 푸시를 기다리지 않는다.
+   *
+   * @param {string} plan_path
+   * @param {string} root_dir
+   * @param {string} lane
+   */
+  async function placePlan(plan_path, root_dir, lane) {
+    await placePlanFromPopup({
+      transport,
+      showToast,
+      memory: plan_skips,
+      root_dir,
+      plan_path,
+      lane,
+      revision: currentRevision,
+      adopt
+    });
+    doRender();
   }
 
   /**
@@ -3562,6 +3615,10 @@ export function createWorkerView(mount_element, options = {}) {
             ? {}
             : { filter_match: item.filter_match }),
           workflow: bead_workflow[e.bead_id] || null,
+          // plan 묶음은 레인 모델이 얹은 것을 옮긴다 (UI-ruwu §2): PR 대기 행은 행
+          // 투영이 새로 만드는 객체라 키를 여기서 실어야 하고, 없으면 옮길 것도
+          // 없다 (fail-quiet).
+          ...(item?.plan_group ? { plan_group: item.plan_group } : {}),
           priority: item?.priority,
           from_id: item?.from_id,
           worker_created_from: item?.worker_created_from,
@@ -5160,6 +5217,23 @@ export function createWorkerView(mount_element, options = {}) {
       void probeProviderNow(
         probe.dataset.runner || '',
         Number(probe.dataset.since)
+      );
+      return;
+    }
+    // `plan 전체를 레인에 배치`는 plan 묶음 칩 팝업 안의 출구다 (UI-ruwu §3) —
+    // 위 프로브와 같은 이유로 팝업 조기 반환보다 먼저 잡는다. 레인은 같은 줄의
+    // select가 말하고, 저장소와 plan은 버튼이 실은 값이다.
+    const plan_place = /** @type {HTMLElement|null} */ (
+      target?.closest?.('[data-action="plan-place"]')
+    );
+    if (plan_place) {
+      const lane_select = /** @type {HTMLSelectElement|null} */ (
+        plan_place.parentElement?.querySelector('[data-plan-lane]') || null
+      );
+      void placePlan(
+        plan_place.dataset.planPath || '',
+        plan_place.dataset.rootDir || '',
+        lane_select ? lane_select.value : ''
       );
       return;
     }

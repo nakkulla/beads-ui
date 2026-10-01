@@ -1052,4 +1052,101 @@ describe('worker workspace adapter', () => {
 
     expect(onInvalidate).not.toHaveBeenCalled();
   });
+  test('carries the plan group of a ready issue onto its candidate row', () => {
+    const stores = createTestIssueStores();
+    const plan_group = {
+      plan_path: 'plans/2026-09-29-landing.md',
+      slug: 'landing',
+      index: 1,
+      total: 2,
+      members: []
+    };
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'RD-1',
+        title: 'phase 1',
+        status: 'open',
+        spec_id: 'S',
+        metadata: { route: 'spec_backed', spec_review: RECEIPT },
+        plan_group
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .runnable[0];
+
+    expect(row.plan_group).toEqual(plan_group);
+  });
+
+  test('leaves a candidate row without a plan group key when the issue has none', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'RD-1',
+        title: 'plain',
+        status: 'open',
+        spec_id: 'S',
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
+      }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .runnable[0];
+
+    expect(Object.hasOwn(row, 'plan_group')).toBe(false);
+  });
+
+  test('carries the plan group of a deferred issue onto its shelf row', () => {
+    const stores = createTestIssueStores();
+    const plan_group = {
+      plan_path: 'plans/2026-09-29-landing.md',
+      slug: 'landing',
+      index: 2,
+      total: 2,
+      members: []
+    };
+    seed(stores, 'tab:worker:deferred', [
+      { id: 'DF-1', title: 'later', status: 'deferred', plan_group }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .deferred[0];
+
+    expect(row.plan_group).toEqual(plan_group);
+  });
+
+  test('carries the plan group of a closed issue onto its 닫힘 행', () => {
+    const stores = createTestIssueStores();
+    const closed_at = Date.now();
+    const plan_group = {
+      plan_path: 'plans/2026-09-29-landing.md',
+      slug: 'landing',
+      index: 1,
+      total: 2,
+      members: []
+    };
+    seed(stores, 'tab:worker:closed', [
+      { id: 'CL-1', title: 'done', closed_at, comment_count: 0, plan_group }
+    ]);
+    const adapter = adapterOf({ stores });
+
+    const row = adapter.read({ candidate_sort: SORT }).workspaces[0]
+      .session_done[0];
+
+    expect(row.plan_group).toEqual(plan_group);
+  });
+
+  test('passes the queue plan group decoration through to the workspace item', () => {
+    const adapter = adapterOf({
+      stores: createTestIssueStores(),
+      queue: { bead_plan_groups: { 'A-1': { slug: 'landing' } } }
+    });
+
+    const workspace = adapter.read({ candidate_sort: SORT }).workspaces[0];
+
+    expect(workspace.bead_plan_groups).toEqual({ 'A-1': { slug: 'landing' } });
+  });
 });

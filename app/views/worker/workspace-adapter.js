@@ -454,7 +454,10 @@ export function createWorkspaceAdapter(options = {}) {
         spec_after_blocker: specAfterBlockerActive(it.labels, blocker_ids),
         // UI-d13v 재료는 서버 Ready/Blocked 장식을 그대로 전달한다.
         release_info: it.release_info,
-        dependents_info: it.dependents_info
+        dependents_info: it.dependents_info,
+        // plan 묶음은 목록 구독 항목이 싣고 온다 (UI-ruwu §1). 묶음이 아니면 키를
+        // 만들지 않는다 — 칩은 재료가 없으면 그려지지 않는다 (fail-quiet).
+        ...(it.plan_group ? { plan_group: it.plan_group } : {})
       };
     });
   }
@@ -506,7 +509,8 @@ export function createWorkspaceAdapter(options = {}) {
         observation: true,
         deferred: true,
         release_info: it.release_info,
-        dependents_info: it.dependents_info
+        dependents_info: it.dependents_info,
+        ...(it.plan_group ? { plan_group: it.plan_group } : {})
       });
     }
     rows.sort(
@@ -640,7 +644,10 @@ export function createWorkspaceAdapter(options = {}) {
           : {}),
         ...(typeof issue.priority === 'number'
           ? { priority: issue.priority }
-          : {})
+          : {}),
+        // 같은 plan의 닫힌 이슈도 슬롯 5a 칩을 얻는다 (UI-ruwu §2): 목록 구독 항목이
+        // 싣고 온 묶음이고, 없으면 키를 만들지 않는다.
+        ...(issue.plan_group ? { plan_group: issue.plan_group } : {})
       };
       /**
        * One 닫힘 행 whose origin is unknown (§5). 세션 배지도 `작업` 시간도 없다.

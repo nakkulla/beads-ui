@@ -18129,3 +18129,390 @@ describe('resolve action while an interactive session lives (UI-ri8n)', () => {
     expect(button).not.toBeNull();
   });
 });
+
+describe('worker plan 묶음 칩과 일괄 배치 (UI-ruwu §2·§3)', () => {
+  const PLAN_PATH = 'docs/superpowers/plans/2026-09-29-plan-landing.md';
+  const PLAN_GROUP = {
+    plan_path: PLAN_PATH,
+    slug: 'plan-landing',
+    index: 2,
+    total: 3,
+    members: [
+      { id: 'UI-p1', anchor: 'Phase 1', status: 'open', blocked_by: [] },
+      {
+        id: 'UI-p2',
+        anchor: 'Phase 2-3',
+        status: 'open',
+        blocked_by: ['UI-p1']
+      },
+      { id: 'UI-p3', anchor: 'Phase 4', status: 'open', blocked_by: ['UI-p2'] }
+    ]
+  };
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * One repo whose second issue waits in a serial lane; `UI-p1` waits in `s2`
+   * unless the patch moves it.
+   *
+   * @param {{ transport?: any, queue?: Record<string, any>, workspace?: string|undefined, issueStores?: any, gotoIssue?: any }} [over]
+   * @returns {{ mount: HTMLElement, queueStore: any }}
+   */
+  function mountPlan(over = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'UI-p2', added_at: 1 }],
+        serial_lane_count: 2,
+        serial_lanes: [
+          { id: 's1', entries: [] },
+          { id: 's2', entries: [{ bead_id: 'UI-p1', added_at: 1 }] }
+        ],
+        lane_states: {
+          s1: { occupied_by: [], order: [], corrections: [], cycle: false },
+          s2: {
+            occupied_by: [],
+            order: ['UI-p1'],
+            corrections: [],
+            cycle: false
+          }
+        },
+        bead_plan_groups: { 'UI-p2': PLAN_GROUP, 'UI-p1': PLAN_GROUP },
+        ...(over.queue || {})
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: over.issueStores || createTestIssueStores(),
+      queueStore,
+      transport: over.transport || vi.fn().mockResolvedValue({}),
+      gotoIssue: over.gotoIssue,
+      getWorkspacePath: () =>
+        'workspace' in over ? over.workspace : '/repo/plan'
+    });
+    return { mount, queueStore };
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} bead_id
+   * @returns {HTMLElement}
+   */
+  function chipOf(mount, bead_id) {
+    return /** @type {HTMLElement} */ (
+      mount.querySelector(
+        `.worker-mini[data-bead-id="${bead_id}"] [data-chip-key="plan"]`
+      )
+    );
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   */
+  function openPopup(mount) {
+    chipOf(mount, 'UI-p2').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   */
+  function clickPlace(mount) {
+    mount
+      .querySelector('.chip-popover [data-action="plan-place"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }
+
+  test('draws the 5a chip on a waiting row from the queue decoration', () => {
+    const { mount } = mountPlan();
+
+    expect(chipOf(mount, 'UI-p2').textContent?.trim()).toBe(
+      'plan plan-landing 2/3'
+    );
+  });
+
+  test('draws the 5a chip on a candidate card from its list item', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'UI-p3',
+        title: 'ready phase 4',
+        status: 'open',
+        priority: 1,
+        updated_at: Date.now(),
+        spec_id: 'SPEC-1',
+        metadata: { route: 'spec_backed', spec_review: RECEIPT },
+        plan_group: { ...PLAN_GROUP, index: 3 }
+      }
+    ]);
+    const { mount } = mountPlan({ issueStores: stores, queue: { queue: [] } });
+
+    expect(
+      mount
+        .querySelector(
+          '.worker-card[data-bead-id="UI-p3"] [data-chip-key="plan"]'
+        )
+        ?.textContent?.trim()
+    ).toBe('plan plan-landing 3/3');
+  });
+
+  test('draws the 5a chip on a PR 대기 row from the queue decoration', () => {
+    const { mount } = mountPlan({
+      queue: {
+        queue: [],
+        pr_wait: [{ bead_id: 'UI-p2', added_at: 1 }],
+        bead_plan_groups: { 'UI-p2': PLAN_GROUP }
+      }
+    });
+
+    expect(chipOf(mount, 'UI-p2')?.textContent?.trim()).toBe(
+      'plan plan-landing 2/3'
+    );
+  });
+
+  test('draws no chip on a row outside every plan', () => {
+    const { mount } = mountPlan({ queue: { bead_plan_groups: {} } });
+
+    expect(mount.querySelector('[data-chip-key="plan"]')).toBeNull();
+  });
+
+  test('opens the popup with the members in order and the current one emphasized', () => {
+    const { mount } = mountPlan();
+
+    openPopup(mount);
+
+    const popup = /** @type {HTMLElement} */ (
+      mount.querySelector('.chip-popover')
+    );
+    expect(
+      Array.from(popup.querySelectorAll('li .worker-dep__open'), (el) =>
+        el.textContent?.trim()
+      )
+    ).toEqual(['UI-p1', 'UI-p2', 'UI-p3']);
+    expect(
+      popup.querySelector('li.chip-popover__line--current .worker-dep__open')
+        ?.textContent
+    ).toContain('UI-p2');
+  });
+
+  test('titles the popup with the plan slug and keeps it open across a render', () => {
+    const { mount, queueStore } = mountPlan();
+    openPopup(mount);
+
+    queueStore.set(queueOf({ ...queueStore.get(), revision: 2 }));
+
+    expect(mount.querySelector('.chip-popover__title')?.textContent).toBe(
+      'plan plan-landing'
+    );
+  });
+
+  test('opens a member issue from the popup without opening the card', () => {
+    const gotoIssue = vi.fn();
+    const { mount } = mountPlan({ gotoIssue });
+    openPopup(mount);
+
+    mount
+      .querySelector('.chip-popover [data-dep-id="UI-p3"]')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(gotoIssue).toHaveBeenCalledTimes(1);
+    expect(gotoIssue).toHaveBeenCalledWith('UI-p3');
+  });
+
+  test('preselects the serial lane where the first member already waits', () => {
+    const { mount } = mountPlan();
+
+    openPopup(mount);
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('.chip-popover [data-plan-lane]')
+      ).value
+    ).toBe('s2');
+  });
+
+  test('preselects the first serial lane when the first member waits nowhere', () => {
+    const { mount } = mountPlan({
+      queue: {
+        serial_lanes: [
+          { id: 's1', entries: [] },
+          { id: 's2', entries: [] }
+        ]
+      }
+    });
+
+    openPopup(mount);
+
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        mount.querySelector('.chip-popover [data-plan-lane]')
+      ).value
+    ).toBe('s1');
+  });
+
+  test('sends the placement with repository, plan, lane and revision', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      placed: ['UI-p2', 'UI-p3'],
+      skipped: []
+    });
+    const { mount } = mountPlan({ transport });
+    openPopup(mount);
+
+    clickPlace(mount);
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-place-plan', {
+      root_dir: '/repo/plan',
+      plan_path: PLAN_PATH,
+      lane: 's2',
+      expected_revision: 1
+    });
+  });
+
+  test('sends the lane the user picked', async () => {
+    const transport = vi.fn().mockResolvedValue({ applied: true, placed: [] });
+    const { mount } = mountPlan({ transport });
+    openPopup(mount);
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.chip-popover [data-plan-lane]')
+    );
+    select.value = 's1';
+
+    clickPlace(mount);
+    await flush();
+
+    expect(transport.mock.calls[0][1].lane).toBe('s1');
+  });
+
+  test('does not open the card when the placement button is clicked', async () => {
+    const gotoIssue = vi.fn();
+    const { mount } = mountPlan({
+      gotoIssue,
+      transport: vi.fn().mockResolvedValue({ applied: true, placed: [] })
+    });
+    openPopup(mount);
+
+    clickPlace(mount);
+    await flush();
+
+    expect(gotoIssue).not.toHaveBeenCalled();
+  });
+
+  test('omits the exit line without a workspace path', () => {
+    const { mount } = mountPlan({ workspace: undefined });
+
+    openPopup(mount);
+
+    expect(mount.querySelector('.chip-popover')).not.toBeNull();
+    expect(mount.querySelector('.chip-popover__exit')).toBeNull();
+  });
+
+  test('omits the exit line when no serial lane is configured', () => {
+    const { mount } = mountPlan({
+      queue: { serial_lane_count: 0, serial_lanes: [] }
+    });
+
+    openPopup(mount);
+
+    expect(mount.querySelector('.chip-popover__exit')).toBeNull();
+  });
+
+  test('toasts how many issues were placed', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      placed: ['UI-p2', 'UI-p3'],
+      skipped: []
+    });
+    const { mount } = mountPlan({ transport });
+    openPopup(mount);
+
+    clickPlace(mount);
+    await flush();
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      'plan 배치: 2개 추가'
+    );
+  });
+
+  test('toasts each skipped issue with its reason', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      placed: ['UI-p2'],
+      skipped: [{ id: 'UI-p1', reason: 'worker-ineligible' }]
+    });
+    const { mount } = mountPlan({ transport });
+    openPopup(mount);
+
+    clickPlace(mount);
+    await flush();
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      'plan 배치: 1개 추가 · 건너뜀 UI-p1(worker-ineligible)'
+    );
+  });
+
+  test('retries once on a stale revision and then reports the conflict', async () => {
+    const stale = {
+      applied: false,
+      conflict: true,
+      placed: [],
+      skipped: [],
+      queue: queueOf({
+        revision: 5,
+        queue: [{ bead_id: 'UI-p2', added_at: 1 }],
+        bead_plan_groups: { 'UI-p2': PLAN_GROUP }
+      })
+    };
+    const transport = vi.fn().mockResolvedValue(stale);
+    const { mount } = mountPlan({ transport });
+    openPopup(mount);
+
+    clickPlace(mount);
+    await flush();
+
+    expect(
+      transport.mock.calls.map((call) => call[1].expected_revision)
+    ).toEqual([1, 5]);
+    expect(document.querySelector('.toast')?.textContent).toContain(
+      '목록을 다시 읽고'
+    );
+  });
+
+  test('marks a blocker the placement skipped as 세션 필요', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      placed: ['UI-p2'],
+      skipped: [{ id: 'UI-p1', reason: 'worker-ineligible' }]
+    });
+    const { mount } = mountPlan({ transport });
+    openPopup(mount);
+
+    clickPlace(mount);
+    await flush();
+
+    expect(
+      mount
+        .querySelector('.chip-popover .chip-popover__member-blocker')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).toBe('⛓ UI-p1 · 세션 필요');
+  });
+
+  test('draws no 세션 필요 mark before any placement', () => {
+    const { mount } = mountPlan();
+
+    openPopup(mount);
+
+    expect(mount.querySelector('.chip-popover')?.textContent).not.toContain(
+      '세션 필요'
+    );
+  });
+});

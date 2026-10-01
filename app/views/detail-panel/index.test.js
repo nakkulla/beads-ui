@@ -4280,3 +4280,292 @@ describe('views/detail-panel [↴ 대기로] (UI-6g3t §6)', () => {
     panel.destroy();
   });
 });
+
+describe('views/detail-panel plan 묶음 칩과 일괄 배치 (UI-ruwu §2·§3)', () => {
+  const PLAN_PATH = 'docs/superpowers/plans/2026-09-29-plan-landing.md';
+  const PLAN_GROUP = {
+    plan_path: PLAN_PATH,
+    slug: 'plan-landing',
+    index: 2,
+    total: 3,
+    members: [
+      { id: 'UI-p1', anchor: 'Phase 1', status: 'open', blocked_by: [] },
+      {
+        id: 'UI-p2',
+        anchor: 'Phase 2-3',
+        status: 'open',
+        blocked_by: ['UI-p1']
+      },
+      { id: 'UI-p3', anchor: 'Phase 4', status: 'open', blocked_by: ['UI-p2'] }
+    ]
+  };
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  afterEach(() => {
+    for (const el of Array.from(document.querySelectorAll('.toast'))) {
+      el.remove();
+    }
+  });
+
+  /**
+   * @param {Partial<any>} [over]
+   * @returns {any}
+   */
+  function queueOf(over = {}) {
+    return {
+      revision: 7,
+      auto_advance: false,
+      auto_merge: false,
+      slots: 2,
+      queue: [],
+      serial_lane_count: 2,
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [{ bead_id: 'UI-p1', added_at: 1 }] }
+      ],
+      pr_wait: [],
+      done: [],
+      attempts: {},
+      ...over
+    };
+  }
+
+  /**
+   * @param {{ plan_group?: any, queue?: any, transport?: any, onNavigate?: any }} [over]
+   */
+  function planPanel(over = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createSubscriptionIssueStores();
+    const queueStore = createWorkerQueueStore();
+    const queue = 'queue' in over ? over.queue : queueOf();
+    if (queue) {
+      queueStore.set(queue);
+    }
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      queueStore: queue ? queueStore : undefined,
+      transport: over.transport || vi.fn().mockResolvedValue({}),
+      onNavigate: over.onNavigate,
+      getWorkspacePath: () => '/repo/plan',
+      onClose: vi.fn()
+    });
+    issueStores.register('detail:UI-p2', {
+      type: 'issue-detail',
+      params: { id: 'UI-p2' }
+    });
+    issueStores.getStore('detail:UI-p2')?.applyPush({
+      type: 'snapshot',
+      id: 'detail:UI-p2',
+      revision: 1,
+      issues: /** @type {any} */ ([
+        {
+          id: 'UI-p2',
+          title: 'phase 2-3',
+          status: 'open',
+          labels: [],
+          metadata: { route: 'spec_backed' },
+          ...('plan_group' in over
+            ? over.plan_group
+              ? { plan_group: over.plan_group }
+              : {}
+            : { plan_group: PLAN_GROUP })
+        }
+      ])
+    });
+    panel.load('UI-p2');
+    return { mount, panel, queueStore };
+  }
+
+  /** @param {HTMLElement} mount */
+  function chip(mount) {
+    return /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.detail-summary [data-chip-key="plan"]')
+    );
+  }
+
+  /** @param {HTMLElement} mount */
+  function clickPlace(mount) {
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.chip-popover [data-action="plan-place"]')
+    ).click();
+  }
+
+  test('draws the chip text in the header after the route chip', () => {
+    const { mount, panel } = planPanel();
+
+    const chips = Array.from(
+      mount.querySelectorAll('.detail-summary__chips > *'),
+      (node) => node.textContent?.trim()
+    );
+
+    expect(chips.slice(0, 3)).toEqual([
+      'open',
+      'spec_backed',
+      'plan plan-landing 2/3'
+    ]);
+    panel.destroy();
+  });
+
+  test('draws no chip without a plan group', () => {
+    const { mount, panel } = planPanel({ plan_group: null });
+
+    expect(chip(mount)).toBeNull();
+    panel.destroy();
+  });
+
+  test('opens the popup with the members in order and the current one emphasized', () => {
+    const { mount, panel } = planPanel();
+
+    chip(mount).click();
+
+    const popup = /** @type {HTMLElement} */ (
+      mount.querySelector('.chip-popover')
+    );
+    expect(popup.querySelector('.chip-popover__title')?.textContent).toBe(
+      'plan plan-landing'
+    );
+    expect(
+      Array.from(popup.querySelectorAll('li .worker-dep__open'), (node) =>
+        node.textContent?.trim()
+      )
+    ).toEqual(['UI-p1', 'UI-p2', 'UI-p3']);
+    expect(
+      popup.querySelector('li.chip-popover__line--current .worker-dep__open')
+        ?.textContent
+    ).toContain('UI-p2');
+    panel.destroy();
+  });
+
+  test('closes the popup on a second click of the same chip', () => {
+    const { mount, panel } = planPanel();
+
+    chip(mount).click();
+    chip(mount).click();
+
+    expect(mount.querySelector('.chip-popover')).toBeNull();
+    panel.destroy();
+  });
+
+  test('opens a member issue from the popup', () => {
+    const onNavigate = vi.fn();
+    const { mount, panel } = planPanel({ onNavigate });
+    chip(mount).click();
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.chip-popover [data-dep-id="UI-p3"]')
+    ).click();
+
+    expect(onNavigate).toHaveBeenCalledWith('UI-p3', '/repo/plan');
+    panel.destroy();
+  });
+
+  test('sends the placement with repository, plan, default lane and revision', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      placed: ['UI-p2', 'UI-p3'],
+      skipped: []
+    });
+    const { mount, panel } = planPanel({ transport });
+    chip(mount).click();
+
+    clickPlace(mount);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-place-plan', {
+      root_dir: '/repo/plan',
+      plan_path: PLAN_PATH,
+      lane: 's2',
+      expected_revision: 7
+    });
+    panel.destroy();
+  });
+
+  test('sends the lane the user picked', async () => {
+    const transport = vi.fn().mockResolvedValue({ applied: true, placed: [] });
+    const { mount, panel } = planPanel({ transport });
+    chip(mount).click();
+    /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.chip-popover [data-plan-lane]')
+    ).value = 's1';
+
+    clickPlace(mount);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      transport.mock.calls.find(
+        (call) => call[0] === 'worker-queue-place-plan'
+      )?.[1].lane
+    ).toBe('s1');
+    panel.destroy();
+  });
+
+  test('omits the exit line without a queue snapshot', () => {
+    const { mount, panel } = planPanel({ queue: null });
+
+    chip(mount).click();
+
+    expect(mount.querySelector('.chip-popover')).not.toBeNull();
+    expect(mount.querySelector('.chip-popover__exit')).toBeNull();
+    panel.destroy();
+  });
+
+  test('omits the exit line when no serial lane is configured', () => {
+    const { mount, panel } = planPanel({
+      queue: queueOf({ serial_lane_count: 0, serial_lanes: [] })
+    });
+
+    chip(mount).click();
+
+    expect(mount.querySelector('.chip-popover__exit')).toBeNull();
+    panel.destroy();
+  });
+
+  test('toasts the skipped issues of the reply', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      placed: ['UI-p2'],
+      skipped: [{ id: 'UI-p1', reason: 'worker-ineligible' }]
+    });
+    const { mount, panel } = planPanel({ transport });
+    chip(mount).click();
+
+    clickPlace(mount);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.querySelector('.toast')?.textContent).toBe(
+      'plan 배치: 1개 추가 · 건너뜀 UI-p1(worker-ineligible)'
+    );
+    panel.destroy();
+  });
+
+  test('marks a blocker the placement skipped as 세션 필요', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      placed: ['UI-p2'],
+      skipped: [{ id: 'UI-p1', reason: 'worker-ineligible' }]
+    });
+    const { mount, panel } = planPanel({ transport });
+    chip(mount).click();
+
+    clickPlace(mount);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      mount
+        .querySelector('.chip-popover .chip-popover__member-blocker')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).toBe('⛓ UI-p1 · 세션 필요');
+    panel.destroy();
+  });
+});

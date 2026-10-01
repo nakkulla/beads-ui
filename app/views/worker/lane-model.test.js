@@ -8256,3 +8256,175 @@ describe('칩 바인딩 판정 재료 (UI-wg68 §5.1)', () => {
     expect(chip.dataset.state).toBe('unapplied');
   });
 });
+
+describe('plan 묶음 장식 (UI-ruwu §2)', () => {
+  /**
+   * @param {string} id
+   * @returns {Record<string, any>}
+   */
+  function planGroup(id) {
+    return {
+      plan_path: 'plans/2026-09-29-landing.md',
+      slug: 'landing',
+      index: 1,
+      total: 2,
+      members: [
+        { id, anchor: 'Phase 1', status: 'open', blocked_by: [] },
+        { id: 'A-peer', anchor: 'Phase 2', status: 'open', blocked_by: [id] }
+      ]
+    };
+  }
+
+  test('carries the decorated plan group onto a waiting row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_plan_groups: { 'A-1': planGroup('A-1') }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].plan_group).toEqual(planGroup('A-1'));
+  });
+
+  test('carries the decorated plan group onto a running tile', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 10
+            }
+          },
+          bead_plan_groups: { 'A-1': planGroup('A-1') }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].plan_group).toEqual(planGroup('A-1'));
+  });
+
+  test('carries the decorated plan group onto a PR 대기 row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          bead_plan_groups: { 'A-1': planGroup('A-1') }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0].plan_group).toEqual(planGroup('A-1'));
+  });
+
+  test('carries the decorated plan group onto a done row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 100 }],
+          bead_plan_groups: { 'A-1': planGroup('A-1') }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].plan_group).toEqual(planGroup('A-1'));
+  });
+
+  test('keeps the plan group a candidate row carries itself', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-9', { plan_group: planGroup('A-9') })]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].plan_group).toEqual(planGroup('A-9'));
+  });
+
+  test('keeps the plan group a deferred row carries itself', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          deferred: [runnable('A-9', { plan_group: planGroup('A-9') })]
+        })
+      ],
+      [state()],
+      { groups: 'all' }
+    );
+
+    expect(lanes.deferred[0].plan_group).toEqual(planGroup('A-9'));
+  });
+
+  test('prefers the row own plan group over the decoration', () => {
+    const own = { ...planGroup('A-9'), index: 2 };
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-9', { plan_group: own })],
+          bead_plan_groups: { 'A-9': planGroup('A-9') }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].plan_group?.index).toBe(2);
+  });
+
+  test('leaves a bead outside every group without a plan group', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_plan_groups: { 'A-1': planGroup('A-1') }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue.find((item) => item.id === 'A-2')?.plan_group).toBe(
+      undefined
+    );
+  });
+
+  test('leaves rows without a plan group when the snapshot has no decoration', () => {
+    const lanes = buildLanes(
+      [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      [state()]
+    );
+
+    expect(lanes.queue[0].plan_group).toBe(undefined);
+  });
+
+  test('reads each repo decoration for that repo only', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'X-1' }],
+          bead_plan_groups: { 'X-1': planGroup('X-1') }
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'X-1' }]
+        })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b' })]
+    );
+
+    const by_root = Object.fromEntries(
+      lanes.queue.map((item) => [item.root_dir, item.plan_group?.slug])
+    );
+
+    expect(by_root).toEqual({ [WS_A]: 'landing', [WS_B]: undefined });
+  });
+});

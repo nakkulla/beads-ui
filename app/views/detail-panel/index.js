@@ -43,6 +43,11 @@ import {
   placeMenuLanes,
   placementTitle
 } from '../worker/placement.js';
+import {
+  createPlanSkipMemory,
+  placePlanFromPopup,
+  planPlaceLanesOf
+} from '../worker/plan-place.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
 import { commentsTemplate } from './comments.js';
@@ -1438,6 +1443,76 @@ export function createDetailPanel(mount_element, options) {
    */
   const chip_popover = createChipPopover(() => doRender());
   chip_popover.attach();
+  /**
+   * plan 묶음 팝업이 기억하는 마지막 일괄 배치 응답의 `skipped` (UI-ruwu §3).
+   * 서버는 거절을 남기지 않으므로 이 기억이 `세션 필요` 표시의 유일한 재료다.
+   */
+  const plan_skips = createPlanSkipMemory();
+
+  /**
+   * Surface material of the plan popup (UI-ruwu §3). 저장소는 이 패널이 구독한
+   * 워크스페이스이고, 큐 스냅샷이 없으면 출구 줄이 서지 않는다 (fail-quiet).
+   *
+   * @param {any} item
+   * @returns {import('../worker/plan-place.js').PlanPlaceContext|null}
+   */
+  function planContextOf(item) {
+    const root_dir =
+      (options.getWorkspacePath && options.getWorkspacePath()) || '';
+    const queue = queueStore ? queueStore.get() : null;
+    const plan_path = item.plan_group ? String(item.plan_group.plan_path) : '';
+    return {
+      root_dir,
+      lanes: queue ? planPlaceLanesOf(queue) : [],
+      skipped: plan_skips.get(root_dir, plan_path)
+    };
+  }
+
+  /**
+   * Clicks inside the summary header popup (UI-ruwu §2·§3). 묶음 줄의 이슈 ID는 그
+   * 이슈 상세로 가고, `plan 전체를 레인에 배치`는 단건 배치와 같은 revision 규율로
+   * 보낸다. 이 패널은 Worker·Monitor의 클릭 위임 바깥이라 스스로 받는다.
+   *
+   * @param {Event} event
+   */
+  function onSummaryClick(event) {
+    const target = /** @type {HTMLElement|null} */ (event.target);
+    const place = /** @type {HTMLElement|null} */ (
+      target?.closest?.('[data-action="plan-place"]') || null
+    );
+    if (place) {
+      const lane_select = /** @type {HTMLSelectElement|null} */ (
+        place.parentElement?.querySelector('[data-plan-lane]') || null
+      );
+      void placePlanFromPopup({
+        transport: transport
+          ? (type, payload) => Promise.resolve(transport(type, payload))
+          : undefined,
+        showToast,
+        memory: plan_skips,
+        root_dir: place.dataset.rootDir || '',
+        plan_path: place.dataset.planPath || '',
+        lane: lane_select ? lane_select.value : '',
+        revision: () => {
+          const q = queueStore ? queueStore.get() : null;
+          return q && typeof q.revision === 'number' ? q.revision : 0;
+        },
+        adopt: (reply) => {
+          if (reply?.queue && queueStore?.set) {
+            queueStore.set(reply.queue);
+          }
+        }
+      }).then(() => doRender());
+      return;
+    }
+    const open = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-dep__open') || null
+    );
+    const dep_id = open?.dataset.depId || '';
+    if (open && dep_id && onNavigate) {
+      onNavigate(dep_id, open.dataset.rootDir || undefined);
+    }
+  }
 
   function refreshFromStore() {
     if (!current_id) {
@@ -3201,6 +3276,8 @@ export function createDetailPanel(mount_element, options) {
             : ''}
           ${titleTemplate(title, total_usage)}
           ${summaryHeaderTemplate(effective, {
+            planContext: planContextOf,
+            onPopupClick: onSummaryClick,
             onChipToggle: (chip_key) =>
               chip_popover.toggle({ bead_id: id, chip_key }),
             isChipOpen: (chip_key) =>
