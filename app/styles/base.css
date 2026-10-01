@@ -711,37 +711,32 @@ button.interactive-session-badge {
   background: var(--bg-panel);
 }
 
+/* 크기는 `.op-btn--icon`·`--ghost`가 정한다 (UI-k5s2). 여기는 색과 자리만. */
 .detail-overlay__close {
   flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 32px;
-  min-height: var(--h-control-coarse);
-  padding: 0;
   border: none;
-  border-radius: var(--r-6);
   background: none;
   color: var(--text-dim);
-  font-size: var(--fs-title);
-  line-height: 1;
   cursor: pointer;
 }
 
-.detail-overlay__close:hover {
+.detail-overlay__close:hover:not(:disabled) {
   color: var(--text-primary);
   background: var(--bg-card);
 }
 
 .detail-overlay__id {
   font-family: var(--font-mono);
-  font-size: var(--fs-body-lg);
   color: var(--text-id-mono);
   cursor: pointer;
   border: none;
   background: none;
-  padding: 0;
   border-bottom: 1px dotted var(--text-id-mono);
+}
+
+/* ghost hover가 테두리를 투명으로 바꾸므로 점선 밑줄만 되살린다. */
+.detail-overlay__id:hover:not(:disabled) {
+  border-bottom-color: var(--text-id-mono);
 }
 
 .detail-overlay__title {
@@ -805,16 +800,15 @@ button.interactive-session-badge {
   gap: var(--sp-4);
 }
 
+/* 칩 상자의 크기는 `.ui-chip`이 정한다 (UI-k5s2). 안의 링크·✕ 버튼은 칩의
+   글자를 물려받는 칩 내용이다. */
 .detail-dep {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
   font-family: var(--font-mono);
-  font-size: var(--fs-chip-lg);
   color: var(--text-id-mono);
-  padding: var(--py-chip) var(--sp-7);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
   background: none;
 }
 
@@ -864,12 +858,9 @@ button.interactive-session-badge {
 .detail-dep-add__input {
   width: 100%;
   font-family: var(--font-sans);
-  font-size: var(--fs-chip-lg);
   color: var(--text-primary);
   background: var(--bg-card);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
-  padding: var(--py-chip) var(--sp-7);
 }
 
 .detail-dep-add__list {
@@ -888,15 +879,14 @@ button.interactive-session-badge {
   align-items: baseline;
   gap: var(--sp-4);
   text-align: left;
-  font-size: var(--fs-small);
   color: var(--text-secondary);
   border: none;
   background: none;
-  padding: var(--sp-3) var(--sp-7);
   cursor: pointer;
 }
 .detail-dep-add__cand:hover:not(:disabled) {
   background: var(--bg-candidate);
+  color: var(--text-secondary);
 }
 .detail-dep-add__cand:disabled {
   color: var(--text-dim);
@@ -944,11 +934,13 @@ button.interactive-session-badge {
   font-size: var(--fs-body);
 }
 
+/* 글자 링크 버튼이라 `.op-btn--ghost`가 크기를 정한다 (UI-k5s2). 말줄임은
+   block 상자에서만 그려지므로 부품의 inline-flex를 block으로 되돌린다. */
 .detail-art__path {
+  display: block;
   flex: 1;
   min-width: 0;
   font-family: var(--font-mono);
-  font-size: var(--fs-chip-lg);
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -956,7 +948,6 @@ button.interactive-session-badge {
   text-align: left;
   border: none;
   background: none;
-  padding: 0;
   cursor: pointer;
 }
 
@@ -972,11 +963,8 @@ button.interactive-session-badge {
 }
 
 .detail-art__op {
-  font-size: var(--fs-chip);
   color: var(--accent-success);
   border: 1px solid var(--border-tile-run);
-  border-radius: var(--r-5);
-  padding: var(--sp-1) var(--sp-7);
   background: none;
   cursor: pointer;
 }
@@ -1072,13 +1060,18 @@ button.interactive-session-badge {
 }
 
 .detail-kv__v {
-  font-size: var(--fs-small);
   color: var(--text-primary);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  padding: var(--sp-1) var(--sp-8);
   background: var(--bg-panel);
   max-width: 60%;
+}
+
+/* 값 칸의 크기는 글자 값(span)만 갖는다 — 같은 클래스의 select는 `.ui-select`가
+   크기를 정한다 (UI-k5s2). */
+span.detail-kv__v {
+  font-size: var(--fs-small);
+  border-radius: var(--r-5);
+  padding: var(--sp-1) var(--sp-8);
 }
 
 .detail-kv__v--sel {
@@ -1160,11 +1153,9 @@ select.detail-kv__v:disabled {
   border: none;
   background: none;
   color: var(--text-dim);
-  font-size: var(--fs-body);
   cursor: pointer;
-  padding: 0 var(--sp-2);
 }
-.detail-edit-btn:hover {
+.detail-edit-btn:hover:not(:disabled) {
   color: var(--chip-route);
 }
 
@@ -1175,20 +1166,22 @@ select.detail-kv__v:disabled {
   margin: var(--sp-6) 0 var(--sp-10);
 }
 
+/* 제목 입력의 크기는 `.ui-input`이 정한다 (UI-k5s2). 설명 textarea는 부품이
+   없어 자기 크기를 지킨다. */
 .detail-edit__input,
 .detail-edit__textarea {
   width: 100%;
   box-sizing: border-box;
   font-family: var(--font-sans);
-  font-size: var(--fs-body-sm);
   color: var(--text-primary);
   background: var(--bg-card);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
-  padding: var(--sp-6) var(--sp-8);
 }
 
 .detail-edit__textarea {
+  font-size: var(--fs-body-sm);
+  border-radius: var(--r-6);
+  padding: var(--sp-6) var(--sp-8);
   resize: vertical;
   line-height: 1.6;
 }
@@ -1200,9 +1193,6 @@ select.detail-kv__v:disabled {
 
 .detail-edit__save,
 .detail-edit__cancel {
-  font-size: var(--fs-chip);
-  border-radius: var(--r-5);
-  padding: var(--sp-3) var(--sp-8);
   background: none;
   cursor: pointer;
 }
@@ -1224,15 +1214,13 @@ select.detail-kv__v:disabled {
   gap: var(--sp-4);
 }
 
+/* 칩 상자의 크기는 `.ui-chip`이 정하고, 안의 `×`는 칩 내용이다 (UI-k5s2). */
 .detail-label-chip {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
-  font-size: var(--fs-chip-lg);
   color: var(--text-secondary);
-  padding: var(--py-chip) var(--sp-4) var(--py-chip) var(--sp-7);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
 }
 
 .detail-label-chip__x {
@@ -1257,20 +1245,14 @@ select.detail-kv__v:disabled {
 .detail-label-add__input {
   width: 96px;
   font-family: var(--font-sans);
-  font-size: var(--fs-chip-lg);
   color: var(--text-primary);
   background: var(--bg-card);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
-  padding: var(--py-chip) var(--sp-7);
 }
 
 .detail-label-add__btn {
-  font-size: var(--fs-chip);
   color: var(--chip-route);
   border: 1px solid var(--border-route);
-  border-radius: var(--r-5);
-  padding: var(--py-chip) var(--sp-7);
   background: none;
   cursor: pointer;
 }
@@ -1333,7 +1315,6 @@ select.detail-kv__v:disabled {
 
 .mv__close {
   color: var(--text-dim);
-  font-size: var(--fs-body-lg);
   border: none;
   background: none;
   cursor: pointer;
@@ -1531,13 +1512,6 @@ select.detail-kv__v:disabled {
     box-shadow: none;
   }
 
-  /* 손가락 표적: ✕를 44px 박스로 키운다. */
-  .detail-overlay__close {
-    min-width: 44px;
-    min-height: var(--h-touch-target);
-    font-size: var(--fs-title-lg);
-  }
-
   .detail-overlay__bar {
     padding-right: var(--sp-4);
   }
@@ -1571,13 +1545,6 @@ select.detail-kv__v:disabled {
   .mv__bar {
     padding: var(--sp-6) var(--sp-8) var(--sp-6) var(--sp-12);
     padding-top: max(var(--sp-6), env(safe-area-inset-top));
-  }
-
-  /* 손가락 표적: ✕를 44px 박스로 키운다. */
-  .mv__close {
-    min-width: 44px;
-    min-height: var(--h-touch-target);
-    font-size: var(--fs-title-lg);
   }
 
   .mv__body {

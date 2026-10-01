@@ -73,7 +73,7 @@ export function artifactsTemplate(issue, handlers) {
                 <span class="detail-art__ic" aria-hidden="true">▤</span>
                 <button
                   type="button"
-                  class="detail-art__path"
+                  class="op-btn op-btn--ghost detail-art__path"
                   title=${`${row.path} · 클릭하면 복사`}
                   @click=${(/** @type {Event} */ ev) =>
                     handlers.onCopyPath(ev, row.path)}
@@ -85,7 +85,7 @@ export function artifactsTemplate(issue, handlers) {
                   : null}
                 <button
                   type="button"
-                  class="detail-art__op"
+                  class="op-btn detail-art__op"
                   @click=${(/** @type {Event} */ ev) =>
                     handlers.onOpenDoc(ev, row.path, row.missing_state)}
                 >

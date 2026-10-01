@@ -162,10 +162,12 @@ input.ui-input {
   line-height: 1.2;
 }
 
+/* 오른쪽 여백은 전역 `select`가 그리는 12px 화살표 자리다 — 긴 선택지 글자가
+   화살표 밑으로 들어가지 않는다. */
 select.ui-select {
   box-sizing: border-box;
   height: var(--h-control);
-  padding: 0 var(--sp-6);
+  padding: 0 calc(var(--sp-12) * 2) 0 var(--sp-6);
   border-radius: var(--r-control);
   font-size: var(--fs-control);
   line-height: 1.2;

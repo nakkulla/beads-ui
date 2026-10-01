@@ -137,9 +137,14 @@ describe('worker console styles', () => {
       )?.[1] || '';
     const detailRule =
       CSS.match(/(?:^|\n)\.session-log-root \.sv\s*{([^}]*)}/)?.[1] || '';
+    const tokens = readFileSync(
+      path.resolve(process.cwd(), 'app/styles/tokens.css'),
+      'utf8'
+    );
 
-    expect(hostRule).toContain('height: min(88vh, 1000px)');
-    expect(detailRule).toContain('height: min(88vh, 1000px)');
+    expect(tokens).toContain('--h-drawer: min(88vh, 1000px);');
+    expect(hostRule).toContain('height: var(--h-drawer)');
+    expect(detailRule).toContain('height: var(--h-drawer)');
   });
 
   test('turns every transcript host into a full-screen sheet below 640px', () => {
@@ -154,9 +159,9 @@ describe('worker console styles', () => {
       mq.match(/(?:^|\n)\s*\.session-log-root \.sv\s*{([^}]*)}/)?.[1] || '';
 
     expect(hostRule).toContain('width: 100%');
-    expect(hostRule).toContain('height: 100dvh');
+    expect(hostRule).toContain('height: var(--h-viewport)');
     expect(detailRule).toContain('inset: 0');
-    expect(detailRule).toContain('height: 100dvh');
+    expect(detailRule).toContain('height: var(--h-viewport)');
     expect(detailRule).toContain('border-radius: 0');
     expect(detailRule).toContain('box-shadow: none');
   });

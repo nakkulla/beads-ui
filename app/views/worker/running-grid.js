@@ -631,7 +631,7 @@ function failurePopoverTemplate(failure, now) {
               <code>${failure.attempt_id}</code>
               <button
                 type="button"
-                class="rtile__attempt-copy"
+                class="op-btn op-btn--icon op-btn--ghost rtile__attempt-copy"
                 data-attempt-id=${failure.attempt_id}
                 title="attempt id 복사"
                 aria-label="attempt id 복사"
@@ -659,7 +659,7 @@ function failurePopoverTemplate(failure, now) {
     ${failure.attempt_id
       ? html`<button
           type="button"
-          class="rtile__session"
+          class="op-btn rtile__session"
           title="실패 세션 열기"
           aria-label="실패 세션 열기"
         >

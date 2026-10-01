@@ -241,7 +241,7 @@ function rowTemplate(row, view) {
     >
     ${view.expanded
       ? html`<select
-          class="detail-effective__edit"
+          class="ui-select detail-effective__edit"
           data-edit-key=${row.key}
           aria-label=${`${SETTING_LABELS[row.key] || row.key} 편집`}
           ?disabled=${row.resolution === 'not_applicable'}
@@ -422,6 +422,7 @@ export function effectiveSettingsCardTemplate(model, handlers) {
         @click=${(/** @type {Event} */ event) => event.stopPropagation()}
       >
         <select
+          class="ui-select"
           data-impl-preset-select
           aria-label="실행 프리셋"
           title=${issue_profile === 'quick_fix'
@@ -455,6 +456,7 @@ export function effectiveSettingsCardTemplate(model, handlers) {
         </select>
         <button
           type="button"
+          class="op-btn"
           data-apply-impl-preset
           ?disabled=${model.preset_id.length === 0 || model.preset_busy}
           @click=${(/** @type {Event} */ event) => {
@@ -740,7 +742,7 @@ function detailJudgementChip(input) {
   if (!binding) {
     return html`<button
       type="button"
-      class="detail-summary__chip detail-summary__chip--${modifier} judgement-chip"
+      class="ui-chip detail-summary__chip detail-summary__chip--${modifier} judgement-chip"
       data-chip-key=${chip_key}
       aria-expanded=${open ? 'true' : 'false'}
       title=${title}
@@ -751,7 +753,7 @@ function detailJudgementChip(input) {
   }
   return html`<button
     type="button"
-    class="detail-summary__chip detail-summary__chip--${modifier} judgement-chip judgement-chip--bound"
+    class="ui-chip detail-summary__chip detail-summary__chip--${modifier} judgement-chip judgement-chip--bound"
     data-chip-key=${chip_key}
     data-bead-id=${typeof data?.id === 'string' ? data.id : ''}
     data-state=${binding.state}

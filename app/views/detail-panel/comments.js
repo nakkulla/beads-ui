@@ -90,7 +90,7 @@ function reportTemplate(comment, report, handlers, open) {
   return html`<div class="detail-report">
     <button
       type="button"
-      class="detail-report__head"
+      class="op-btn detail-report__head"
       data-comment-id=${comment.id}
       aria-expanded=${open ? 'true' : 'false'}
       @click=${() => handlers.onToggle && handlers.onToggle(comment.id)}
@@ -160,7 +160,7 @@ function reviewTemplate(comment, review, handlers, open) {
   return html`<div class="detail-report detail-report--review">
     <button
       type="button"
-      class="detail-report__head"
+      class="op-btn detail-report__head"
       data-comment-id=${comment.id}
       aria-expanded=${open ? 'true' : 'false'}
       @click=${() => handlers.onToggle && handlers.onToggle(comment.id)}
@@ -284,7 +284,7 @@ export function commentsTemplate(comments, handlers = {}, view = {}) {
       <div class="detail-comment-compose__row">
         <button
           type="button"
-          class="detail-comment-compose__btn"
+          class="op-btn detail-comment-compose__btn"
           ?disabled=${sending || draft.trim().length === 0}
           @click=${() => handlers.onSubmit && handlers.onSubmit()}
         >

@@ -3,13 +3,24 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { createExecPresetStore } from './data/exec-preset-store.js';
+import { createSessionLogStore } from './data/session-log-store.js';
 import { createSubscriptionIssueStore } from './data/subscription-issue-store.js';
+import { createSubscriptionIssueStores } from './data/subscription-issue-stores.js';
 import { createWorkerQueueStore } from './data/worker-queue-store.js';
+import { createDetailPanel } from './views/detail-panel/index.js';
+import { createMdViewer } from './views/detail-panel/md-viewer.js';
 import { createMonitorView } from './views/monitor/index.js';
 import { createUsageMeter } from './views/usage-meter.js';
 import { createWorkerView } from './views/worker/index.js';
 import { candidateCard, miniRow, queueRowOps } from './views/worker/lanes.js';
+import { createRepoOpsScriptViewer } from './views/worker/repo-ops-script-viewer.js';
+import {
+  repoOpsTimelineTemplate,
+  timelineView
+} from './views/worker/repo-ops-timeline.js';
 import { runningGridTemplate } from './views/worker/running-grid.js';
+import { createTranscriptDrawer } from './views/worker/transcript-drawer.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
 
 /**
@@ -175,12 +186,14 @@ describe('raw-value scanner', () => {
 });
 
 describe('design-system CSS rules (§3.4 check 1)', () => {
-  test('marks the Worker, header and Monitor regions', () => {
+  test('marks the Worker, header, Monitor, detail and drawer regions', () => {
     const names = regions(STYLES).map((r) => r.name);
 
     expect(names.filter((name) => name === 'worker').length).toBeGreaterThan(0);
     expect(names).toContain('header');
     expect(names).toContain('monitor');
+    expect(names).toContain('detail');
+    expect(names).toContain('drawer');
   });
 
   test('pairs every region marker with an end marker', () => {
@@ -218,6 +231,17 @@ describe('design-system CSS rules (§3.4 check 1)', () => {
       )
     ).toEqual([]);
   });
+
+  test('keeps the global select arrow room on the select part', () => {
+    const select_rule =
+      COMPONENTS.match(/\nselect\.ui-select\s*{([^}]*)}/)?.[1] || '';
+    const global_select = STYLES.match(/\nselect\s*{([^}]*)}/)?.[1] || '';
+
+    expect(global_select).toContain('padding-right: calc(var(--sp-12) * 2)');
+    expect(select_rule).toContain(
+      'padding: 0 calc(var(--sp-12) * 2) 0 var(--sp-6)'
+    );
+  });
 });
 
 /**
@@ -228,10 +252,12 @@ describe('design-system CSS rules (§3.4 check 1)', () => {
  * palette into tokens.css and tokenized the legacy shared CSS and base.css,
  * taking it to 62 (11 + 51, all in styles.css below the `.op-btn` heading); the
  * monitor unit moved the Monitor tab, header and usage meter onto the parts,
- * taking it to 57 (10 + 47). All counted with this scanner; UI-k5s2 takes it
- * to 0. Lower the number when a change removes raw values — never raise it.
+ * taking it to 57 (10 + 47); the detail unit moved the issue detail panel, the
+ * transcript and repo-ops drawers, the script viewer and the Worker popovers,
+ * taking it to 12 (3 + 9). All counted with this scanner; UI-k5s2 takes it to
+ * 0. Lower the number when a change removes raw values — never raise it.
  */
-const RATCHET_BASELINE = 57;
+const RATCHET_BASELINE = 12;
 
 describe('design-system ratchet (§3.4 check 2)', () => {
   test('keeps raw colours and raw sizes outside tokens.css at or under the baseline', () => {
@@ -244,19 +270,11 @@ describe('design-system ratchet (§3.4 check 2)', () => {
 });
 
 /**
- * Overlay surfaces inside the Worker tab — dialogs, popovers, drawers, the
- * shared place menu and the repo-ops settings disclosure — move with UI-k5s2.
+ * Overlay surfaces inside the Worker tab that a later UI-k5s2 unit moves —
+ * dialogs and the repo-ops settings disclosure. The popovers, the place menu,
+ * the drawers and the script viewer moved with the detail unit.
  */
-const OVERLAY_SELECTOR = [
-  'dialog',
-  '.chip-popover',
-  '.rtile__failure-pop',
-  '.place-menu',
-  '.worker-filter__labels-pop',
-  '.worker-repo-drawer',
-  '.worker-drawer-host',
-  '.worker-repo-ops-settings'
-].join(', ');
+const OVERLAY_SELECTOR = ['dialog', '.worker-repo-ops-settings'].join(', ');
 
 const PART_CLASSES = ['op-btn', 'ui-input', 'ui-select', 'ui-chip'];
 
@@ -265,7 +283,9 @@ const NATIVE_CONTROL = 'input[type=checkbox], input[type=radio]';
 
 /**
  * Controls of a rendered surface that carry no part class. Checkboxes and
- * radios keep their native size and have no part, so they are not counted.
+ * radios keep their native size and have no part, so they are not counted. A
+ * control inside a `.ui-field` is sized by the field, and one inside a
+ * `.ui-chip` is that chip's own label or `✕` — the chip part sizes it.
  *
  * @param {ParentNode} root
  * @returns {string[]}
@@ -277,7 +297,8 @@ function controlsWithoutPart(root) {
     .filter(
       (el) =>
         !PART_CLASSES.some((cls) => el.classList.contains(cls)) &&
-        !el.closest('.ui-field')
+        !el.closest('.ui-field') &&
+        !el.parentElement?.closest('.ui-chip')
     )
     .map(
       (el) =>
@@ -845,6 +866,15 @@ describe('part check helper (§3.4 check 3)', () => {
 
     expect(missing).toEqual(['input.x ']);
   });
+
+  test('counts a button inside a chip as part of that chip', () => {
+    document.body.innerHTML =
+      '<span class="ui-chip">ui<button class="x">×</button></span><button class="y">✕</button>';
+
+    const missing = controlsWithoutPart(document.body);
+
+    expect(missing).toEqual(['button.y ✕']);
+  });
 });
 
 /** The `<header class="app-header">` markup of app/index.html. */
@@ -980,5 +1010,552 @@ describe('header controls use parts (§3.4 check 3)', () => {
       document.querySelectorAll('.workspace-picker__manage-checkbox').length
     ).toBe(2);
     expect(controlsWithoutPart(document.body)).toEqual([]);
+  });
+});
+
+/** Let the panel's transport replies (comments, defaults, accounts) land. */
+async function settle() {
+  for (let i = 0; i < 8; i++) {
+    await Promise.resolve();
+  }
+}
+
+const REPORT_TEXT = [
+  '## 🤖 작업 보고서',
+  '> worker · attempt 1785076768091-1 · 2026-08-04T09:12:33Z',
+  '',
+  '**결론** — 머지 가능. 검증 전부 통과.',
+  '',
+  '### 진행 경과',
+  '',
+  '이어받아 마감했다.'
+].join('\n');
+
+/** @type {Array<{ destroy: () => void }>} */
+const detail_parts = [];
+
+/**
+ * Open the issue detail panel the way `#/worker?issue=<id>` does, over a
+ * fixture that lights up every section: the bar with `[↴ 대기로]` and its lane
+ * menu, the plan chip popover, the gate stepper, the effective settings card
+ * (expanded) with a preset, both inline editors, labels, the dependency
+ * editor with its candidate list, artifacts, the task prompt toggle, session
+ * history and the comment cards with the compose box.
+ *
+ * @returns {Promise<HTMLElement>}
+ */
+async function renderDetailPanel() {
+  document.body.innerHTML = '<div id="m"></div>';
+  const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+  const issueStores = createSubscriptionIssueStores();
+  const queueStore = createWorkerQueueStore();
+  queueStore.set(
+    /** @type {any} */ ({
+      revision: 7,
+      auto_advance: false,
+      auto_merge: false,
+      slots: 2,
+      queue: [],
+      serial_lane_count: 2,
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [{ bead_id: 'UI-p1', added_at: 1 }] }
+      ],
+      pr_wait: [],
+      done: [],
+      attempts: {
+        a7: {
+          attempt_id: 'a7',
+          bead_id: 'UI-p2',
+          status: 'done',
+          runner: 'claude',
+          model: 'opus',
+          session_id: 'sid-7',
+          started_at: Date.now() - 60000,
+          finished_at: Date.now() - 1000,
+          usage: { input_tokens: 10, output_tokens: 2 },
+          delegation_sessions: [
+            {
+              launch_id: 'launch-done',
+              provider: 'codex',
+              role: 'implementation',
+              model: 'gpt-5.6-sol',
+              session_id: 'session-done',
+              turn_id: 'turn-1',
+              status: 'done',
+              started_at: 100,
+              completed_at: '2026-08-18T04:27:00.000Z',
+              last_event_at: 200
+            }
+          ]
+        }
+      }
+    })
+  );
+  const execPresetStore = createExecPresetStore();
+  execPresetStore.set({
+    revision: 1,
+    presets: [{ id: 'p1', name: '프리셋', settings: {}, compatible: true }]
+  });
+  const comments = [
+    { id: 'c1', author: 'worker', text: REPORT_TEXT, created_at: 1 },
+    { id: 'c2', author: 'ilsun yun', text: '사람 댓글', created_at: 2 }
+  ];
+  /** @type {Record<string, any>} */
+  const replies = {
+    'get-comments': comments,
+    'get-session-refs': {
+      bead_id: 'UI-p2',
+      sessions: [
+        {
+          index: 0,
+          provider: 'claude',
+          session_id: 'a1b2c3d4-5e6f',
+          host: 'mac-studio',
+          current: true,
+          locality: 'local',
+          last_event_at: 1_700_000_000_000,
+          resume_command: "claude --resume 'a1b2c3d4-5e6f'"
+        }
+      ]
+    },
+    'get-bead-timeline': {
+      events: Array.from({ length: 12 }, (_, i) => ({
+        at: 1000 + i,
+        summary: `event ${i}`
+      }))
+    }
+  };
+  const transport = vi.fn(
+    async (/** @type {string} */ type) =>
+      replies[type] || { values: {}, warnings: [] }
+  );
+  const panel = createDetailPanel(mount, {
+    issueStores,
+    queueStore,
+    execPresetStore,
+    sessionLogStore: createSessionLogStore(),
+    transport: /** @type {any} */ (transport),
+    getWorkspacePath: () => '/repo',
+    pipelineStore: {
+      get: () => [
+        {
+          root_dir: '/repo',
+          external_waits: [
+            {
+              wait_id: 'w-0123456789ab',
+              root_dir: '/repo',
+              bead_id: 'UI-p2',
+              owner_kind: 'worker',
+              stage: 'detached',
+              budget: { turns_total: 3, turns_used: 3 },
+              registered_at: '2026-09-21T00:00:00Z',
+              next_observation_at: '2026-09-21T03:14:00Z',
+              error_count: 0,
+              last_error: null,
+              jobs: [
+                {
+                  adapter: 'slurm',
+                  ssh_host: 'wallace',
+                  job_id: '42',
+                  submitted_at: '2026-09-21T00:00:00Z',
+                  log_path: '/logs/job.log',
+                  state: 'RUNNING',
+                  observed_at: '2026-09-21T03:12:00Z',
+                  terminal: null
+                }
+              ],
+              completion: null,
+              resume: null
+            }
+          ],
+          wait_reasons: [
+            {
+              kind: 'external_job',
+              subject: { root_dir: '/repo', bead_id: 'UI-p2' },
+              headline: 'wallace 작업 42 · RUNNING',
+              release: '완료되면 같은 세션을 이어간다',
+              verdict: 'normal',
+              targets: [],
+              actions: [
+                {
+                  op: 'external_wait_check',
+                  label: '[지금 확인]',
+                  title: '관찰을 지금 한 번 더 한다',
+                  payload: { root_dir: '/repo', wait_id: 'w-0123456789ab' }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    onNavigate: vi.fn(),
+    depCandidates: () => ({
+      issues: [
+        {
+          bead_id: 'UI-c1',
+          root_dir: '/repo',
+          workspace_name: 'repo',
+          title: 'candidate',
+          lane: 'runnable'
+        }
+      ],
+      blocked_by_map: new Map()
+    }),
+    onClose: vi.fn()
+  });
+  detail_parts.push(panel);
+  issueStores.register('detail:UI-p2', {
+    type: 'issue-detail',
+    params: { id: 'UI-p2' }
+  });
+  issueStores.getStore('detail:UI-p2')?.applyPush({
+    type: 'snapshot',
+    id: 'detail:UI-p2',
+    revision: 1,
+    issues: /** @type {any} */ ([
+      {
+        id: 'UI-p2',
+        title: 'phase 2-3',
+        status: 'open',
+        priority: 1,
+        description: '설명 본문',
+        notes: 'spec_review: codex@' + 'a'.repeat(40),
+        labels: ['ui'],
+        spec_id: 'docs/specs/x.md',
+        comment_count: 2,
+        created_at: 1,
+        updated_at: 2,
+        dependencies: [{ id: 'UI-p1', dependency_type: 'blocks' }],
+        dependents: [{ id: 'UI-p3', dependency_type: 'blocks' }],
+        metadata: {
+          route: 'spec_backed',
+          spec_review: RECEIPT,
+          session_ref: 'claude:a1b2c3d4-5e6f@mac-studio'
+        },
+        workflow: {
+          route: 'spec_backed',
+          route_source: 'explicit',
+          stages: {
+            spec: {
+              fill: 'done',
+              glyph: null,
+              stale: false,
+              doc: { path: 'docs/specs/x.md' }
+            },
+            plan: {
+              fill: 'none',
+              glyph: null,
+              stale: false,
+              doc: { path: 'docs/plans/x.md', missing_state: 'spec_draft' }
+            }
+          }
+        },
+        plan_group: {
+          plan_path: 'docs/superpowers/plans/2026-09-29-plan-landing.md',
+          slug: 'plan-landing',
+          index: 2,
+          total: 3,
+          members: [
+            { id: 'UI-p1', anchor: 'Phase 1', status: 'open', blocked_by: [] },
+            {
+              id: 'UI-p2',
+              anchor: 'Phase 2-3',
+              status: 'open',
+              blocked_by: ['UI-p1']
+            }
+          ]
+        }
+      }
+    ])
+  });
+  panel.load('UI-p2');
+  await settle();
+  /** @param {string} selector */
+  const click = (selector) =>
+    /** @type {HTMLElement} */ (mount.querySelector(selector)).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+  click('[data-seam="effective-settings-toggle"]');
+  click('.detail-report__head');
+  click('.detail-session__usage-toggle');
+  /** @type {HTMLElement} */ (
+    mount.querySelector('.detail-dep-add__input')
+  ).dispatchEvent(new FocusEvent('focus', { bubbles: true }));
+  await settle();
+  return mount;
+}
+
+/**
+ * Click one element of a rendered surface the way a pointer does.
+ *
+ * @param {ParentNode} root
+ * @param {string} selector
+ */
+function clickOn(root, selector) {
+  /** @type {HTMLElement} */ (root.querySelector(selector)).dispatchEvent(
+    new MouseEvent('click', { bubbles: true })
+  );
+}
+
+describe('issue detail panel controls use parts (§3.4 check 3)', () => {
+  afterEach(() => {
+    while (detail_parts.length > 0) {
+      detail_parts.pop()?.destroy();
+    }
+    document.body.innerHTML = '';
+  });
+
+  test('draws every detail panel control with a part', async () => {
+    const mount = await renderDetailPanel();
+
+    const controls = mount.querySelectorAll('button, input, select');
+
+    expect(mount.querySelector('.detail-dep-add__cand')).not.toBeNull();
+    expect(mount.querySelector('button.detail-session__leg')).not.toBeNull();
+    expect(mount.querySelector('.detail-external-wait__log')).not.toBeNull();
+    expect(controls.length).toBeGreaterThan(30);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws the title and description editors with a part', async () => {
+    const mount = await renderDetailPanel();
+
+    clickOn(mount, '.detail-edit-btn[data-edit="title"]');
+    clickOn(mount, '.detail-edit-btn[data-edit="description"]');
+
+    expect(mount.querySelector('input.detail-edit__input')).not.toBeNull();
+    expect(mount.querySelectorAll('.detail-edit__save').length).toBe(2);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws the lane menu of the detail bar with a part', async () => {
+    const mount = await renderDetailPanel();
+
+    clickOn(mount, '.detail-overlay__place');
+
+    expect(
+      mount.querySelectorAll('.place-menu .worker-card__place-lane').length
+    ).toBeGreaterThan(1);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws the plan chip popover controls with a part', async () => {
+    const mount = await renderDetailPanel();
+
+    clickOn(mount, '.detail-summary [data-chip-key="plan"]');
+
+    expect(
+      mount.querySelectorAll('.chip-popover button, .chip-popover select')
+        .length
+    ).toBeGreaterThan(2);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+});
+
+describe('Worker tab overlays use parts (§3.4 check 3)', () => {
+  afterEach(() => {
+    window.localStorage.clear();
+    stubMatchMedia(false);
+    document.body.innerHTML = '';
+  });
+
+  test('draws the label filter popover with a part', () => {
+    const mount = renderWorkerTab(false);
+
+    clickOn(mount, '.worker-filter__labels-btn');
+
+    expect(mount.querySelector('.worker-filter__labels-pop')).not.toBeNull();
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws the failure popover of a failed tile with a part', () => {
+    const mount = renderWorkerTab(false);
+
+    clickOn(mount, '.rtile__failure-badge');
+
+    expect(
+      mount.querySelectorAll('.rtile__failure-pop button').length
+    ).toBeGreaterThan(0);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws the candidate lane menu with a part', () => {
+    const mount = renderWorkerTab(false);
+
+    clickOn(mount, '.worker-card__place[data-bead-id="RD-1"]');
+
+    expect(
+      mount.querySelectorAll(
+        '.worker-card__place-menu .worker-card__place-lane'
+      ).length
+    ).toBeGreaterThan(1);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws a judgement chip popover with a part', () => {
+    const mount = renderWorkerTab(false);
+
+    clickOn(mount, '[data-chip-key="readiness"]');
+
+    expect(mount.querySelector('.chip-popover')).not.toBeNull();
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+});
+
+const TOOL_USE = {
+  type: 'assistant',
+  message: {
+    content: [
+      {
+        type: 'tool_use',
+        id: 't1',
+        name: 'Read',
+        input: { file_path: '/repo/server/auth.js' }
+      }
+    ]
+  }
+};
+
+describe('drawers and the script viewer use parts (§3.4 check 3)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.innerHTML = '';
+  });
+
+  test('draws every transcript drawer control with a part', () => {
+    document.body.innerHTML = '<div id="drawer"></div>';
+    const mount = /** @type {HTMLElement} */ (
+      document.getElementById('drawer')
+    );
+    const store = createSessionLogStore();
+    store.set('session-log:a1', [
+      TOOL_USE,
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: '구현합니다.' }] }
+      },
+      { type: 'result', subtype: 'success', is_error: false, result: 'DONE' }
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: async () => ({ ok: true }),
+      sessionLogStore: store
+    });
+
+    drawer.open({
+      attempt_id: 'a1',
+      meta: {
+        runner: 'claude',
+        model: 'opus',
+        session_id: 'a1b2c3d4-5e6f',
+        resume_command: "claude --resume 'a1b2c3d4-5e6f'",
+        worktree: '/repo/.worktrees/UI-1'
+      }
+    });
+
+    expect(mount.querySelector('.sv__work-sum')).not.toBeNull();
+    expect(mount.querySelectorAll('button').length).toBeGreaterThan(5);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+    drawer.destroy();
+  });
+
+  test('draws every repo-ops timeline drawer control with a part', () => {
+    const mount = document.createElement('div');
+    const view = timelineView(
+      [
+        {
+          operation_id: 'op-1',
+          kind: 'deploy',
+          state: 'failed',
+          target_base: 'main',
+          target_sha: 'c'.repeat(40),
+          requested_at: 100,
+          finished_at: 200,
+          log_path: '/logs/deploy.log'
+        }
+      ],
+      [
+        {
+          bead_id: 'UI-a',
+          step: 'branch_cleanup',
+          reason: 'x',
+          at: 300,
+          log_path: '/logs/cleanup.log'
+        }
+      ],
+      { expanded: true }
+    );
+
+    render(
+      repoOpsTimelineTemplate({
+        events: view.visible,
+        hidden: view.hidden,
+        expanded: true,
+        repo: '/repo'
+      }),
+      mount
+    );
+
+    expect(mount.querySelector('.worker-ev__copy')).not.toBeNull();
+    expect(mount.querySelectorAll('button').length).toBeGreaterThan(5);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws the repo-ops script viewer controls with a part', async () => {
+    const viewer = createRepoOpsScriptViewer({
+      getWorkspacePath: () => '/repo',
+      fetchImpl: /** @type {any} */ (
+        vi.fn(async () => ({
+          ok: true,
+          json: async () => ({
+            ok: true,
+            lane: 'deploy',
+            path: 'repo-ops/script/deploy',
+            base_ref: 'main',
+            base_sha: 'a'.repeat(40),
+            blob_sha: 'b'.repeat(40),
+            mode: '100755',
+            timeout_ms: 600_000,
+            content: '#!/bin/sh\necho hello\n'
+          })
+        }))
+      )
+    });
+
+    await viewer.open(
+      {
+        lane: 'deploy',
+        base_sha: 'a'.repeat(40),
+        path: 'repo-ops/script/deploy',
+        base_ref: 'main'
+      },
+      document.body
+    );
+
+    expect(
+      document.querySelectorAll('.repo-ops-script-viewer button').length
+    ).toBe(2);
+    expect(controlsWithoutPart(document.body)).toEqual([]);
+    viewer.destroy();
+  });
+
+  test('draws the document viewer controls with a part', async () => {
+    document.body.innerHTML = '<div id="mv"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mv'));
+    const viewer = createMdViewer(mount, {
+      getWorkspacePath: () => '/repo',
+      fetchImpl: /** @type {any} */ (
+        vi.fn(async () => ({
+          ok: true,
+          json: async () => ({ ok: true, path: 'docs/x.md', content: '# x' })
+        }))
+      )
+    });
+
+    await viewer.open('docs/x.md');
+
+    expect(mount.querySelector('.mv__close')).not.toBeNull();
+    expect(controlsWithoutPart(mount)).toEqual([]);
   });
 });

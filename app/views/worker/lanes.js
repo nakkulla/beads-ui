@@ -2376,7 +2376,7 @@ export function waitVerdictLabel(reason, clocks = {}) {
 function legendLinkTemplate(anchor_id) {
   return html`<button
     type="button"
-    class="wait-verdict__legend"
+    class="op-btn op-btn--ghost wait-verdict__legend"
     data-help-anchor=${anchor_id}
   >
     범례 보기
@@ -4269,7 +4269,7 @@ export function placeMenuList(entries, bead_id) {
     rows.push(
       html`<button
         type="button"
-        class="worker-card__place-lane${group.length > 0
+        class="op-btn op-btn--primary worker-card__place-lane${group.length > 0
           ? ' worker-card__place-lane--nested'
           : ''}"
         data-bead-id=${bead_id}
@@ -4393,7 +4393,7 @@ function planMemberLineTemplate(member, root_dir, skipped_ids) {
   const detail = ` ${member.anchor} · ${member.status}`;
   return html`<button
       type="button"
-      class="worker-dep__open chip-popover__member-id"
+      class="op-btn op-btn--ghost worker-dep__open chip-popover__member-id"
       data-dep-id=${member.id}
       data-root-dir=${ifDefined(root_dir.length > 0 ? root_dir : undefined)}
       title="이슈 열기"
@@ -4426,7 +4426,7 @@ function planPlaceExitTemplate(group, context) {
   }
   const default_lane = planDefaultLane(group.members[0].id, context.lanes);
   return html`<select
-      class="chip-popover__lane"
+      class="ui-select chip-popover__lane"
       data-plan-lane
       aria-label="plan을 배치할 직렬 레인"
     >

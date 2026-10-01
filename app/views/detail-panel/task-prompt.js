@@ -37,7 +37,7 @@ export function taskPromptTemplate(state, handlers = {}) {
       과업 프롬프트
       <button
         type="button"
-        class="detail-prompt__toggle"
+        class="ui-chip detail-prompt__toggle"
         data-seam="task-prompt-toggle"
         aria-expanded=${state.expanded ? 'true' : 'false'}
         title=${state.expanded ? '접기' : '워커가 보낸 프롬프트 보기'}

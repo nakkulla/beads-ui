@@ -416,7 +416,7 @@ function operationActionsTemplate(operation) {
   return html`<div class="worker-ev__acts">
     <button
       type="button"
-      class="worker-ev__btn worker-repo-op__dismiss"
+      class="op-btn worker-ev__btn worker-repo-op__dismiss"
       data-operation-id=${operation.operation_id}
       title="사람이 확인한 실패로 접수합니다 — 기록은 그대로 남고 해결 필요 집계에서만 빠집니다"
     >
@@ -563,14 +563,14 @@ function cleanupEventTemplate(event) {
       <div class="worker-ev__acts">
         <button
           type="button"
-          class="worker-ev__btn worker-ev__btn--warn worker-cleanup__resume"
+          class="op-btn worker-ev__btn worker-ev__btn--warn worker-cleanup__resume"
           data-bead-id=${cleanup.bead_id}
         >
           정리 재시도${step_label ? ` — ${step_label} 단계부터` : ''}
         </button>
         <button
           type="button"
-          class="worker-ev__btn worker-cleanup__resolve"
+          class="op-btn worker-ev__btn worker-cleanup__resolve"
           data-bead-id=${cleanup.bead_id}
           title="이 실패를 사람이 이어받는 대화형 세션을 띄웁니다 — 기록된 세션이 있으면 fork하고, 없으면 새 세션에 사유를 싣습니다"
         >
@@ -603,7 +603,7 @@ export function repoOpsTimelineTemplate(model) {
       <span class="worker-repo-drawer__spacer"></span>
       <button
         type="button"
-        class="worker-repo-drawer__close"
+        class="op-btn op-btn--icon worker-repo-drawer__close"
         aria-label="닫기"
         data-seam="repo-ops-close"
       >
@@ -623,7 +623,7 @@ export function repoOpsTimelineTemplate(model) {
       ? html`<div class="worker-repo-drawer__more">
           <button
             type="button"
-            class="worker-ev__btn"
+            class="op-btn worker-ev__btn"
             data-seam="repo-ops-more"
           >
             ${expanded ? '접기' : `이전 ${hidden}개 더 보기`}

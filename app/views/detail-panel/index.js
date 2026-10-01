@@ -2237,7 +2237,7 @@ export function createDetailPanel(mount_element, options) {
   function depAddTemplate(shown, direct_id) {
     return html`<div class="detail-dep-add">
       <input
-        class="detail-dep-add__input"
+        class="ui-input detail-dep-add__input"
         aria-label="막는 이슈 추가"
         placeholder="막는 이슈 추가"
         .value=${dep_query}
@@ -2254,7 +2254,7 @@ export function createDetailPanel(mount_element, options) {
                   (candidate) =>
                     html`<button
                       type="button"
-                      class="detail-dep-add__cand"
+                      class="op-btn detail-dep-add__cand"
                       data-dep-cand=${candidate.bead_id}
                       ?disabled=${candidate.disabled}
                       title=${ifDefined(candidate.reason)}
@@ -2275,7 +2275,7 @@ export function createDetailPanel(mount_element, options) {
               ? ''
               : html`<button
                   type="button"
-                  class="detail-dep-add__cand"
+                  class="op-btn detail-dep-add__cand"
                   data-dep-cand=${direct_id}
                   data-dep-direct="1"
                   @click=${() => addDepId(direct_id)}
@@ -2312,7 +2312,7 @@ export function createDetailPanel(mount_element, options) {
           >${chip.label}</span
         >`;
     return html`<span
-      class=${`detail-dep detail-dep--${chip.kind}${
+      class=${`ui-chip detail-dep detail-dep--${chip.kind}${
         onNavigate ? ' detail-dep--link' : ''
       }`}
       >${body}${chip.kind === 'pred'
@@ -2458,7 +2458,7 @@ export function createDetailPanel(mount_element, options) {
                   ${job.log_path
                     ? html`<button
                         type="button"
-                        class="detail-external-wait__log"
+                        class="op-btn detail-external-wait__log"
                         title="클릭하면 복사"
                         @click=${() => copyText(job.log_path)}
                       >
@@ -2926,7 +2926,7 @@ export function createDetailPanel(mount_element, options) {
       return html`<div class="detail-kv">
         <span class="detail-kv__k">${key}</span>
         <select
-          class="detail-kv__v detail-kv__v--sel"
+          class="ui-select detail-kv__v detail-kv__v--sel"
           aria-label=${key}
           data-edit=${`wfmeta-${key}`}
           @change=${(/** @type {Event} */ ev) => onWorkflowMetaChange(key, ev)}
@@ -2953,7 +2953,7 @@ export function createDetailPanel(mount_element, options) {
       return html`
         <div class="detail-edit">
           <input
-            class="detail-edit__input"
+            class="ui-input detail-edit__input"
             data-edit="title"
             aria-label="제목 편집"
             .value=${title_draft}
@@ -2964,7 +2964,7 @@ export function createDetailPanel(mount_element, options) {
           <div class="detail-edit__actions">
             <button
               type="button"
-              class="detail-edit__save"
+              class="op-btn detail-edit__save"
               data-edit="title-save"
               @click=${saveTitle}
             >
@@ -2972,7 +2972,7 @@ export function createDetailPanel(mount_element, options) {
             </button>
             <button
               type="button"
-              class="detail-edit__cancel"
+              class="op-btn detail-edit__cancel"
               data-edit="title-cancel"
               @click=${cancelTitle}
             >
@@ -2993,7 +2993,7 @@ export function createDetailPanel(mount_element, options) {
         )}
         <button
           type="button"
-          class="detail-edit-btn"
+          class="op-btn op-btn--icon op-btn--ghost detail-edit-btn"
           data-edit="title"
           aria-label="제목 편집"
           @click=${startEditTitle}
@@ -3042,7 +3042,7 @@ export function createDetailPanel(mount_element, options) {
       <div class="detail-kv">
         <span class="detail-kv__k">status</span>
         <select
-          class="detail-kv__v detail-kv__v--sel"
+          class="ui-select detail-kv__v detail-kv__v--sel"
           aria-label="status"
           data-edit="status"
           @change=${onStatusChange}
@@ -3056,7 +3056,7 @@ export function createDetailPanel(mount_element, options) {
       <div class="detail-kv">
         <span class="detail-kv__k">priority</span>
         <select
-          class="detail-kv__v"
+          class="ui-select detail-kv__v"
           aria-label="priority"
           data-edit="priority"
           @change=${onPriorityChange}
@@ -3083,7 +3083,7 @@ export function createDetailPanel(mount_element, options) {
           ? ''
           : html`<button
               type="button"
-              class="detail-edit-btn"
+              class="op-btn op-btn--icon op-btn--ghost detail-edit-btn"
               data-edit="description"
               aria-label="설명 편집"
               @click=${startEditDesc}
@@ -3106,7 +3106,7 @@ export function createDetailPanel(mount_element, options) {
             <div class="detail-edit__actions">
               <button
                 type="button"
-                class="detail-edit__save"
+                class="op-btn detail-edit__save"
                 data-edit="description-save"
                 @click=${saveDesc}
               >
@@ -3114,7 +3114,7 @@ export function createDetailPanel(mount_element, options) {
               </button>
               <button
                 type="button"
-                class="detail-edit__cancel"
+                class="op-btn detail-edit__cancel"
                 data-edit="description-cancel"
                 @click=${cancelDesc}
               >
@@ -3158,7 +3158,7 @@ export function createDetailPanel(mount_element, options) {
       <div class="detail-labels">
         ${labels.map(
           (/** @type {string} */ label) =>
-            html`<span class="detail-label-chip"
+            html`<span class="ui-chip detail-label-chip"
               >${label}<button
                 type="button"
                 class="detail-label-chip__x"
@@ -3172,7 +3172,7 @@ export function createDetailPanel(mount_element, options) {
         )}
         <span class="detail-label-add">
           <input
-            class="detail-label-add__input"
+            class="ui-input detail-label-add__input"
             aria-label="라벨 추가"
             placeholder="라벨 추가"
             .value=${label_draft}
@@ -3181,7 +3181,7 @@ export function createDetailPanel(mount_element, options) {
           />
           <button
             type="button"
-            class="detail-label-add__btn"
+            class="op-btn detail-label-add__btn"
             @click=${addLabel}
           >
             추가
@@ -3225,7 +3225,7 @@ export function createDetailPanel(mount_element, options) {
           <div class="detail-overlay__bar">
             <button
               type="button"
-              class="detail-overlay__id"
+              class="op-btn op-btn--ghost detail-overlay__id"
               title="ID 복사"
               @click=${onCopyId}
             >
@@ -3245,7 +3245,7 @@ export function createDetailPanel(mount_element, options) {
               : ''}
             <button
               type="button"
-              class="detail-overlay__close"
+              class="op-btn op-btn--icon op-btn--ghost detail-overlay__close"
               aria-label="닫기"
               @click=${() => onClose()}
             >
