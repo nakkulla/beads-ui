@@ -71,6 +71,44 @@ export function autoResumeText(value) {
 }
 
 /**
+ * The slot-1 badge of a provider-held tile whose hold record is gone and whose
+ * last automatic resume was refused (2026-10-01 stall-reconcile D5). It is the
+ * same exclusive verdict badge with other words, not a new slot: a
+ * `transient`/`wait` refusal is retried by the server on its own clock, so it
+ * reads `⏳` with the next try for slot 7; a `closed`/`permanent` one is never
+ * retried and asks for a person. `null` when the projection carries no refusal
+ * record — an active hold, no refusal yet, or a record from before the field —
+ * so the current badge stays (fail-quiet).
+ *
+ * @param {HoldTile|null|undefined} hold
+ * @returns {{ text: string, verdict: 'action_required'|null, release: string, next_at: number|null }|null}
+ */
+export function autoResumeRefusalBadge(hold) {
+  const refusal = hold ? hold.auto_resume_refusal : undefined;
+  if (!refusal) {
+    return null;
+  }
+  if (refusal.kind === 'transient' || refusal.kind === 'wait') {
+    return {
+      text: '⏳ 자동 재개 재시도',
+      verdict: null,
+      release:
+        '거절된 자동 재개를 간격을 두고 다시 시도 — 5·15·30분, 이후 60분',
+      next_at: typeof refusal.next_at === 'number' ? refusal.next_at : null
+    };
+  }
+  return {
+    text: ['⛔ 조치 필요 · 자동 재개 거부', refusal.reason]
+      .filter((part) => part.length > 0)
+      .join(' '),
+    verdict: 'action_required',
+    release:
+      '자동 재개를 다시 시도하지 않음 — ↻ 이어하기로 직접 재개하거나 ✕로 내린다',
+    next_at: null
+  };
+}
+
+/**
  * Say why a limit hold stayed on its own account (UI-13o1 §3.4). The candidate
  * set is the user's per-runner allow list, so `none` says the list ran out
  * rather than the machine did. Retired cap markers render no text.

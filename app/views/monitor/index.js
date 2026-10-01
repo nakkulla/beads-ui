@@ -821,6 +821,47 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * Take one attempt off the Worker — ✕ Worker에서 내리기 (2026-10-01
+   * stall-reconcile D7), the Monitor twin of the Worker tab's click: one
+   * attempt, no confirmation, no CAS, carrying the tile's own repo. A refusal
+   * surfaces its reason.
+   *
+   * @param {string} attempt_id
+   * @param {string} root_dir
+   */
+  async function withdrawAttempt(attempt_id, root_dir) {
+    if (!attempt_id) {
+      return;
+    }
+    const res = /** @type {any} */ (
+      await send('worker-attempt-withdraw', { attempt_id }, root_dir)
+    );
+    if (res && res.withdrawn === false && res.reason) {
+      showToast(`내리기 거부: ${res.reason}`, 'error', 2400);
+    }
+  }
+
+  /**
+   * Pull one bead's retry rung in its own repo to now — [지금 재시도]
+   * (2026-10-01 stall-reconcile D9), not the retired queue-wide retry (ADR
+   * UI-a5l2).
+   *
+   * @param {string} bead_id
+   * @param {string} root_dir
+   */
+  async function retryBeadNow(bead_id, root_dir) {
+    if (!bead_id) {
+      return;
+    }
+    const res = /** @type {any} */ (
+      await send('worker-attempt-retry-now', { bead_id }, root_dir)
+    );
+    if (res && res.retried === false && res.reason) {
+      showToast(`지금 재시도 거부: ${res.reason}`, 'error', 2400);
+    }
+  }
+
+  /**
    * Launch the interactive session for one terminal or parked tile.
    *
    * @param {string} bead_id
@@ -2476,6 +2517,14 @@ export function createMonitorView(mount_element, options) {
     }
     if (cls.contains('rtile__pause')) {
       void send('worker-attempt-pause', { attempt_id }, root_dir);
+      return;
+    }
+    if (cls.contains('rtile__withdraw')) {
+      void withdrawAttempt(attempt_id, root_dir);
+      return;
+    }
+    if (cls.contains('rtile__retry-now')) {
+      void retryBeadNow(bead_id, root_dir);
       return;
     }
     if (cls.contains('rtile__resume-alternate')) {

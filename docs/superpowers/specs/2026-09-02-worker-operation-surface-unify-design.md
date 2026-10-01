@@ -134,6 +134,8 @@ scope:
 | 대기 행 (Worker·Monitor) | `▶ 재개` | `op-btn worker-mini__hold-resume` | UI-01wh — 체계적 정지에 막힌 행에만; `[지금 시작]` 앞 |
 | 대기 행 (Worker·Monitor) | `↻ 지금 프로브` | `op-btn worker-mini__provider-probe` | UI-o5ll — 공급자 보류에 막힌 행에만; `▶ 재개`와 `[지금 시작]` 사이 |
 | `retry_wait` 타일 foot | `↻ 지금 재시도` | `op-btn rtile__hold-retry` | UI-01wh — 환경 보류가 서 있을 때만; `폐기`가 있으면 그 뒤 |
+| 실행 타일 헤더 (Worker·Monitor) | `✕` (Worker에서 내리기) | `op-btn op-btn--icon op-btn--ghost rtile__withdraw` | 2026-10-01 stall-reconcile D7 — 실행 중·일시정지·공급자 보류·재시도 대기·실패·외부 작업 타일에만; 슬롯 1 조작 맨 끝; 대기 행 `✕`와 같은 부품·변형, 툴팁·`aria-label` `Worker에서 내리기 — 작업은 보존` |
+| `retry_wait` 타일 foot (Worker·Monitor) | `지금 재시도` | `op-btn rtile__retry-now` | 2026-10-01 stall-reconcile D9 — 모든 `retry_wait` 타일; `폐기` 앞. 위 행의 큐 전체 조작(UI-a5l2가 은퇴)과 달리 그 Bead의 예약만 당긴다 |
 
 같은 묶음의 이웃 — 실행 타일의 `⏸`·`▤ 세션`·`폐기`·`세션에서 해결`, 행·foot의
 `머지`·`취소`·`폐기` — 는 **높이만** 맞춘다: 묶음 컨테이너(`.rtile__hd-actions`,

@@ -6267,6 +6267,198 @@ describe('JUDGEMENT_CHIP_KEYS (UI-h6t1 §4.3)', () => {
   test('carries the receipt chip key', () => {
     expect(JUDGEMENT_CHIP_KEYS).toContain('receipt');
   });
+
+  test('carries the withdrawn chip key (stall-reconcile D8)', () => {
+    expect(JUDGEMENT_CHIP_KEYS).toContain('withdrawn');
+  });
+});
+
+// `⏏ 내려옴` 칩 (2026-10-01 stall-reconcile D8): 후보 카드와 대기 행의 슬롯 1
+// 정체성에 서고, 클릭은 판정 칩 팝업이다.
+describe('내려옴 칩 (stall-reconcile D8)', () => {
+  const WITHDRAWN_AT = new Date(2026, 9, 1, 9, 1).getTime();
+  const MARK = {
+    at: WITHDRAWN_AT,
+    from_status: 'running',
+    from_cause: null,
+    worktree_path: '/repo/.worktrees/UI-w1',
+    branch: 'UI-w1',
+    has_session: true
+  };
+
+  /**
+   * @param {Element} scope
+   * @returns {HTMLElement|null}
+   */
+  function withdrawnChip(scope) {
+    return scope.querySelector('[data-chip-key="withdrawn"]');
+  }
+
+  test('draws the chip in the candidate card identity line', () => {
+    const card = renderCandidate({ id: 'UI-w1', withdrawn: MARK });
+
+    expect(
+      card
+        .querySelector('.worker-card__head [data-chip-key="withdrawn"]')
+        ?.textContent?.trim()
+    ).toBe('⏏ 내려옴');
+  });
+
+  test('stands right after the priority badge', () => {
+    const card = renderCandidate({
+      id: 'UI-w1',
+      priority: 1,
+      withdrawn: MARK
+    });
+
+    expect(
+      withdrawnChip(card)?.previousElementSibling?.textContent?.trim()
+    ).toBe('P1');
+  });
+
+  test('makes the chip a judgement button with the shared chip part', () => {
+    const card = renderCandidate({ id: 'UI-w1', withdrawn: MARK });
+
+    const chip = /** @type {HTMLElement} */ (withdrawnChip(card));
+    expect([
+      chip.tagName,
+      chip.classList.contains('ctl-chip'),
+      chip.classList.contains('judgement-chip'),
+      chip.getAttribute('aria-expanded')
+    ]).toEqual(['BUTTON', true, true, 'false']);
+  });
+
+  test('draws the chip in a waiting row identity line', () => {
+    const row = renderRow({
+      id: 'UI-w1',
+      lane: 'queue',
+      done: false,
+      withdrawn: MARK
+    });
+
+    expect(
+      row
+        .querySelector('.worker-mini__head [data-chip-key="withdrawn"]')
+        ?.textContent?.trim()
+    ).toBe('⏏ 내려옴');
+  });
+
+  test('opens the waiting row popup under the identity line', () => {
+    const row = renderRow({
+      id: 'UI-w1',
+      lane: 'queue',
+      done: false,
+      withdrawn: MARK,
+      chip_popover: {
+        chip_key: 'withdrawn',
+        content: { title: 'Worker에서 내린 작업', lines: ['내린 시각'] }
+      }
+    });
+
+    expect(
+      row.querySelector('.worker-mini__head .chip-popover')
+    ).not.toBeNull();
+  });
+
+  test('opens the candidate popup under the identity line', () => {
+    const card = renderCandidate({
+      id: 'UI-w1',
+      withdrawn: MARK,
+      chip_popover: {
+        chip_key: 'withdrawn',
+        content: { title: 'Worker에서 내린 작업', lines: ['내린 시각'] }
+      }
+    });
+
+    expect(
+      card.querySelector('.worker-card__head .chip-popover')
+    ).not.toBeNull();
+  });
+
+  test('draws no chip without the withdrawn material', () => {
+    const card = renderCandidate({ id: 'UI-w1' });
+
+    expect(withdrawnChip(card)).toBeNull();
+  });
+
+  test('lists when, from what state, the kept worktree and the way back', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({ id: 'UI-w1', withdrawn: MARK }),
+      'withdrawn'
+    );
+
+    expect(content).toEqual({
+      title: 'Worker에서 내린 작업 — 작업은 보존됨',
+      lines: [
+        `내린 시각 ${formatClockLocal(WITHDRAWN_AT)}`,
+        '그때 상태 실행 중',
+        '보존된 워크트리 /repo/.worktrees/UI-w1',
+        '브랜치 UI-w1',
+        '다시 대기에 넣으면 같은 세션으로 이어간다'
+      ]
+    });
+  });
+
+  test('names a provider pause and the cause of a failure', () => {
+    const provider = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-w1',
+        withdrawn: {
+          ...MARK,
+          from_status: 'paused',
+          from_cause: 'provider_outage:usage_limit'
+        }
+      }),
+      'withdrawn'
+    );
+    const failed = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-w1',
+        withdrawn: { ...MARK, from_status: 'failed', from_cause: 'env:git' }
+      }),
+      'withdrawn'
+    );
+
+    expect([provider?.lines[1], failed?.lines[1]]).toEqual([
+      '그때 상태 공급자 보류',
+      '그때 상태 실패 · env:git'
+    ]);
+  });
+
+  test('claims no worktree the server no longer finds', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-w1',
+        withdrawn: { ...MARK, worktree_path: null, has_session: false }
+      }),
+      'withdrawn'
+    );
+
+    expect(content?.lines).toEqual([
+      `내린 시각 ${formatClockLocal(WITHDRAWN_AT)}`,
+      '그때 상태 실행 중',
+      '다시 대기에 넣으면 이어간다'
+    ]);
+  });
+
+  test('opens no popup when the time and state are both missing', () => {
+    const content = judgementPopoverContent(
+      /** @type {any} */ ({
+        id: 'UI-w1',
+        withdrawn: {
+          at: null,
+          from_status: null,
+          from_cause: null,
+          worktree_path: null,
+          branch: null,
+          has_session: false
+        }
+      }),
+      'withdrawn'
+    );
+
+    expect(content).toBeNull();
+  });
 });
 
 describe('영수증 회계 잔여 칩 (UI-h6t1 §4.3)', () => {

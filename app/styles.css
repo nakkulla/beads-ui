@@ -6613,7 +6613,10 @@ html[data-theme='dark'] {
   min-width: 0;
 }
 
+/* 머리줄의 판정 칩(`⏏ 내려옴`) 팝업은 그 줄 바로 아래에 연다 (UI-8x90 §5) —
+   후보 카드 머리줄과 같은 기준 상자다. */
 .worker-mini__head {
+  position: relative;
   min-height: 28px;
 }
 

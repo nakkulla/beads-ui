@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { autoSwitchText, providerHoldBadgeText } from './gate-labels.js';
+import {
+  autoResumeRefusalBadge,
+  autoSwitchText,
+  providerHoldBadgeText
+} from './gate-labels.js';
 
 // 타일 뱃지와 대기 행의 게이트 칩이 같은 문자열을 내야 하므로 문구는 여기 하나다
 // (UI-01wh §3.2). 원래 running-grid.test.js가 들고 있던 검증을 그대로 옮겼다.
@@ -88,5 +92,83 @@ describe('auto switch reason text (UI-13o1 §3.4)', () => {
     const text = autoSwitchText('cap');
 
     expect(text).toBe('');
+  });
+});
+
+// 보류 기록이 없는 공급자 보류 타일의 슬롯 1 배지 (2026-10-01 stall-reconcile D5):
+// 같은 배타 자리의 문구만 바뀌고, 거절 기록이 없으면 지금 배지 그대로다.
+describe('auto-resume refusal badge (stall-reconcile D5)', () => {
+  test('words a transient refusal as an automatic retry with its next time', () => {
+    const badge = autoResumeRefusalBadge({
+      kind: 'outage',
+      detail: 'overloaded_529',
+      auto_resume_refusal: {
+        kind: 'transient',
+        next_at: 9000,
+        reason: 'bd_snapshot_failed'
+      }
+    });
+
+    expect([badge?.text, badge?.verdict, badge?.next_at]).toEqual([
+      '⏳ 자동 재개 재시도',
+      null,
+      9000
+    ]);
+  });
+
+  test('words a wait refusal as the same automatic retry', () => {
+    const badge = autoResumeRefusalBadge({
+      kind: 'usage_limit',
+      detail: 'usage_limit',
+      auto_resume_refusal: {
+        kind: 'wait',
+        next_at: 9000,
+        reason: 'provider_gate'
+      }
+    });
+
+    expect(badge?.text).toBe('⏳ 자동 재개 재시도');
+  });
+
+  test('words a permanent refusal as an action with its reason', () => {
+    const badge = autoResumeRefusalBadge({
+      kind: 'outage',
+      detail: 'overloaded_529',
+      auto_resume_refusal: {
+        kind: 'permanent',
+        next_at: null,
+        reason: 'worktree_missing'
+      }
+    });
+
+    expect([badge?.text, badge?.verdict, badge?.next_at]).toEqual([
+      '⛔ 조치 필요 · 자동 재개 거부 worktree_missing',
+      'action_required',
+      null
+    ]);
+  });
+
+  test('words a closed refusal as the same action', () => {
+    const badge = autoResumeRefusalBadge({
+      kind: 'outage',
+      detail: 'overloaded_529',
+      auto_resume_refusal: {
+        kind: 'closed',
+        next_at: null,
+        reason: 'not_ready:closed'
+      }
+    });
+
+    expect(badge?.text).toBe('⛔ 조치 필요 · 자동 재개 거부 not_ready:closed');
+  });
+
+  test('returns nothing without a refusal record', () => {
+    const badge = autoResumeRefusalBadge({
+      kind: 'outage',
+      detail: 'overloaded_529',
+      auto_resume: 'refused:bd_snapshot_failed'
+    });
+
+    expect(badge).toBeNull();
   });
 });

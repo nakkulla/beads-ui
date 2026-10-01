@@ -4,6 +4,7 @@ import {
   formatAttemptOrchestrationChip,
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
+import { formatClockLocal } from '../../utils/relative-time.js';
 import { runningGridTemplate, runningTile } from './running-grid.js';
 
 describe('worker failed running tile template', () => {
@@ -920,7 +921,7 @@ describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', 
     expect(tile).not.toContain('rtile__legs');
     expect(tile).not.toContain('stepper');
     expect(tile).toMatchInlineSnapshot(
-      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span>  <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions">  <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div>  </div>"`
+      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span>  <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions">  <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button> <button aria-label="Worker에서 내리기 — 작업은 보존" class="op-btn op-btn--icon op-btn--ghost rtile__withdraw" title="Worker에서 내리기 — 작업은 보존" type="button"> ✕ </button> </div> </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div>  </div>"`
     );
   });
 
@@ -2703,8 +2704,13 @@ describe('worker 대기 타일 (UI-5ym8 §8)', () => {
       })}`
     );
     expect(tile.classList.contains('rtile--retry-wait')).toBe(true);
-    // 투영이 폐기를 주지 않으면 액션 foot 자체가 재료 없는 줄이다.
-    expect(tile.querySelector('.rtile__foot')).toBeNull();
+    // 투영이 폐기를 주지 않아도 foot은 Bead 단위 [지금 재시도]를 싣는다
+    // (2026-10-01 stall-reconcile D9).
+    expect(
+      Array.from(tile.querySelectorAll('.rtile__foot button'), (button) =>
+        button.textContent?.trim()
+      )
+    ).toEqual(['지금 재시도']);
   });
 
   test('offers 폐기 alone in the retry_wait action foot', () => {
@@ -4184,7 +4190,9 @@ describe('retry_wait tile hold retry (UI-01wh §3.3)', () => {
     expect(mount.querySelector('.rtile__hold-retry')).toBeNull();
   });
 
-  test('keeps discard without the retired queue retry', () => {
+  // 큐 전체 재시도는 은퇴한 채로 남고, 그 자리에는 Bead 단위 [지금 재시도]가
+  // [폐기] 앞에 선다 (2026-10-01 stall-reconcile D9).
+  test('keeps discard after the bead retry without the retired queue retry', () => {
     const mount = renderRetryTile({
       hold_since: 4242,
       discard: {
@@ -4202,7 +4210,355 @@ describe('retry_wait tile hold retry (UI-01wh §3.3)', () => {
       ).querySelectorAll('button')
     ).map((button) => button.textContent?.trim());
 
-    expect(labels).toEqual(['폐기']);
+    expect(labels).toEqual(['지금 재시도', '폐기']);
+  });
+});
+
+// ✕ Worker에서 내리기 (2026-10-01 stall-reconcile D7): 실행 중 칸의 구현 attempt
+// 타일 중 정해진 종류에만, 슬롯 1 조작의 오른쪽 끝에 선다.
+describe('실행 중 칸의 ✕ 내리기 (stall-reconcile D7)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  const EXTERNAL_REASON = {
+    kind: 'external_job',
+    subject: { root_dir: '/repo', bead_id: 'UI-t1' },
+    headline: 'wallace 작업 42 · RUNNING',
+    release: '완료되면 같은 세션을 이어간다',
+    verdict: 'normal',
+    targets: [],
+    actions: []
+  };
+
+  /** @type {Record<string, Record<string, any>>} */
+  const WITHDRAWABLE = {
+    running: { status: 'running' },
+    paused: { status: 'paused', paused: true },
+    provider_hold: {
+      status: 'paused',
+      provider_hold: true,
+      hold: { kind: 'outage', detail: 'overloaded_529' }
+    },
+    retry_wait: {
+      status: 'retry_wait',
+      retry_wait: true,
+      retry: { cause: 'env', attempts: 1, max: 3, next_at: 9000 }
+    },
+    failed: { status: 'failed', failed: true, failure: failureInput() },
+    orphaned: { status: 'orphaned', failed: true, failure: failureInput() },
+    external_job: {
+      status: 'waiting',
+      waiting: true,
+      wait: { summary: null, blockers: [], since: null },
+      wait_reasons: [EXTERNAL_REASON]
+    }
+  };
+
+  /** @type {Record<string, Record<string, any>>} */
+  const KEPT = {
+    parked: { status: 'parked', parked: true, failure: failureInput() },
+    recovery_wait: {
+      status: 'waiting',
+      waiting: true,
+      wait: {
+        summary: null,
+        blockers: [],
+        since: null,
+        cause: 'recovery_wait',
+        recovery: {
+          classification: 'retryable',
+          disposition: 'session',
+          reason: 'stalled',
+          no_progress: null,
+          label: '세션 대기',
+          sentence: '세션 확인 필요'
+        }
+      }
+    },
+    conversation: {
+      status: 'failed',
+      failed: true,
+      failure: failureInput(),
+      interactive_sessions: [
+        {
+          key: 'UI-t1:resolve',
+          kind: 'resolve',
+          provider: 'claude',
+          session_id: 'sid',
+          mode: 'fork',
+          source: 'attempt',
+          fallback_reason: null,
+          attempt_id: 'a1',
+          tmux_session: 'bdui',
+          tmux_window: 'resolve-UI-t1',
+          state: 'live',
+          settled_at: null,
+          launched_at: 1,
+          closing: false
+        }
+      ]
+    },
+    session: { kind: 'session', attempt_id: '', status: 'in_progress' },
+    conflict_resolution: { status: 'running', conflict_resolution: true }
+  };
+
+  /**
+   * @param {Record<string, any>} patch
+   * @returns {HTMLElement}
+   */
+  function renderTile(patch) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(runningTile(/** @type {any} */ (tileInput(patch)), 5000), mount);
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  test.each(Object.keys(WITHDRAWABLE))(
+    'puts ✕ at the right end of slot 1 on a %s tile',
+    (kind) => {
+      const tile = renderTile(WITHDRAWABLE[kind]);
+
+      const actions = /** @type {HTMLElement} */ (
+        tile.querySelector('.rtile__hd-actions')
+      );
+      expect(
+        actions.lastElementChild?.classList.contains('rtile__withdraw')
+      ).toBe(true);
+    }
+  );
+
+  test.each(Object.keys(KEPT))('draws no ✕ on a %s tile', (kind) => {
+    const tile = renderTile(KEPT[kind]);
+
+    expect(tile.querySelector('.rtile__withdraw')).toBeNull();
+  });
+
+  test('names the withdrawal in the tooltip and the accessible label', () => {
+    const tile = renderTile(WITHDRAWABLE.running);
+
+    const button = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__withdraw')
+    );
+    expect([
+      button.getAttribute('title'),
+      button.getAttribute('aria-label'),
+      button.textContent?.trim()
+    ]).toEqual([
+      'Worker에서 내리기 — 작업은 보존',
+      'Worker에서 내리기 — 작업은 보존',
+      '✕'
+    ]);
+  });
+
+  test('uses the waiting-row ✕ button part', () => {
+    const tile = renderTile(WITHDRAWABLE.running);
+
+    const button = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__withdraw')
+    );
+    expect(
+      ['op-btn', 'op-btn--icon', 'op-btn--ghost'].every((name) =>
+        button.classList.contains(name)
+      )
+    ).toBe(true);
+  });
+
+  test('keeps ✕ off a tile whose discard is under way', () => {
+    const tile = renderTile({
+      ...WITHDRAWABLE.failed,
+      discard: {
+        ...discardInput(),
+        enabled: false,
+        operation: { operation_id: 'op-1', phase: 'requested' }
+      }
+    });
+
+    expect(tile.querySelector('.rtile__withdraw')).toBeNull();
+  });
+
+  test('keeps ✕ on a running tile whose session id is not recorded yet', () => {
+    const tile = renderTile({ status: 'running', can_pause: false });
+
+    expect(tile.querySelector('.rtile__withdraw')).not.toBeNull();
+  });
+});
+
+// [지금 재시도] (2026-10-01 stall-reconcile D9): `retry_wait` 타일 슬롯 6 foot의
+// [폐기] 앞이다.
+describe('retry_wait 타일의 [지금 재시도] (stall-reconcile D9)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Record<string, any>} [patch]
+   * @returns {HTMLElement}
+   */
+  function renderRetry(patch = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(
+        /** @type {any} */ (
+          tileInput({
+            status: 'retry_wait',
+            retry_wait: true,
+            retry: { cause: 'env', attempts: 1, max: 3, next_at: 9000 },
+            ...patch
+          })
+        ),
+        5000
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  test('puts [지금 재시도] before [폐기] in the action foot', () => {
+    const tile = renderRetry({ discard: discardInput() });
+
+    expect(
+      Array.from(tile.querySelectorAll('.rtile__foot button'), (button) =>
+        button.textContent?.trim()
+      )
+    ).toEqual(['지금 재시도', '폐기']);
+  });
+
+  test('draws [지금 재시도] without a discard button', () => {
+    const tile = renderRetry();
+
+    expect(
+      Array.from(tile.querySelectorAll('.rtile__foot button'), (button) =>
+        button.textContent?.trim()
+      )
+    ).toEqual(['지금 재시도']);
+  });
+
+  test('uses the operation token on [지금 재시도]', () => {
+    const tile = renderRetry();
+
+    const button = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__retry-now')
+    );
+    expect(button.classList.contains('op-btn')).toBe(true);
+  });
+
+  test('keeps [지금 재시도] off a tile whose discard is under way', () => {
+    const tile = renderRetry({
+      discard: {
+        ...discardInput(),
+        enabled: false,
+        operation: { operation_id: 'op-1', phase: 'requested' }
+      }
+    });
+
+    expect(tile.querySelector('.rtile__retry-now')).toBeNull();
+  });
+
+  test('draws no [지금 재시도] on a running tile', () => {
+    const tile = renderRetry({ status: 'running', retry_wait: false });
+
+    expect(tile.querySelector('.rtile__retry-now')).toBeNull();
+  });
+});
+
+// 보류 기록이 없는 공급자 보류 타일 (2026-10-01 stall-reconcile D5): 슬롯 1의 같은
+// 배타 배지 자리에서 문구만 바뀌고, 재시도 중이면 슬롯 7에 다음 시각이 선다.
+describe('공급자 보류 타일의 자동 재개 거절 배지 (stall-reconcile D5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {Record<string, any>} [hold_patch]
+   * @returns {HTMLElement}
+   */
+  function renderHeld(hold_patch = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(
+        /** @type {any} */ (
+          tileInput({
+            status: 'paused',
+            provider_hold: true,
+            hold: { kind: 'outage', detail: 'overloaded_529', ...hold_patch }
+          })
+        ),
+        5000
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  const RETRY = {
+    auto_resume: 'refused:bd_snapshot_failed',
+    auto_resume_refusal: {
+      kind: 'transient',
+      next_at: 9000,
+      reason: 'bd_snapshot_failed'
+    }
+  };
+
+  test('draws the automatic retry badge in slot 1', () => {
+    const tile = renderHeld(RETRY);
+
+    expect(
+      tile
+        .querySelector('.rtile__hd .wait-verdict summary')
+        ?.textContent?.trim()
+    ).toBe('⏳ 자동 재개 재시도');
+  });
+
+  test('puts the next retry time on the slot 7 line', () => {
+    const tile = renderHeld(RETRY);
+
+    expect(tile.querySelector('.wait-reason__times')?.textContent?.trim()).toBe(
+      `다음 ${formatClockLocal(9000, 5000)}`
+    );
+  });
+
+  test('draws the action badge for a permanent refusal', () => {
+    const tile = renderHeld({
+      auto_resume: 'refused:worktree_missing',
+      auto_resume_refusal: {
+        kind: 'permanent',
+        next_at: null,
+        reason: 'worktree_missing'
+      }
+    });
+
+    const summary = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__hd .wait-verdict summary')
+    );
+    expect([
+      summary.textContent?.trim(),
+      summary.getAttribute('data-verdict')
+    ]).toEqual([
+      '⛔ 조치 필요 · 자동 재개 거부 worktree_missing',
+      'action_required'
+    ]);
+  });
+
+  test('draws no slot 7 time for a permanent refusal', () => {
+    const tile = renderHeld({
+      auto_resume_refusal: {
+        kind: 'permanent',
+        next_at: null,
+        reason: 'worktree_missing'
+      }
+    });
+
+    expect(tile.querySelector('.wait-reason__times')).toBeNull();
+  });
+
+  test('keeps the hold badge when no refusal is projected', () => {
+    const tile = renderHeld({ auto_resume: 'refused:bd_snapshot_failed' });
+
+    expect(
+      tile
+        .querySelector('.rtile__hd .wait-verdict summary')
+        ?.textContent?.trim()
+    ).toBe('⏳ 공급자 보류');
   });
 });
 

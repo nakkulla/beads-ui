@@ -2318,6 +2318,47 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Take one attempt off the Worker — ✕ Worker에서 내리기 (2026-10-01
+   * stall-reconcile D7). Like ⏸ it targets one attempt with no confirmation
+   * and no CAS. The server ends the runner, keeps the worktree, branch and
+   * session, and returns the bead to the candidates; the fanout push redraws.
+   * A refusal surfaces its reason.
+   *
+   * @param {string} attempt_id
+   */
+  async function withdrawAttempt(attempt_id) {
+    if (!transport || !attempt_id) {
+      return;
+    }
+    const res = /** @type {any} */ (
+      await transport('worker-attempt-withdraw', { attempt_id })
+    );
+    if (res && res.withdrawn === false && res.reason) {
+      showToast(`내리기 거부: ${res.reason}`, 'error', 2400);
+    }
+  }
+
+  /**
+   * Pull THIS bead's retry rung to now — [지금 재시도] (2026-10-01
+   * stall-reconcile D9). It is not the retired queue-wide retry (ADR
+   * UI-a5l2); the rung is still spent by the attempt that launches. A refusal
+   * surfaces its reason.
+   *
+   * @param {string} bead_id
+   */
+  async function retryBeadNow(bead_id) {
+    if (!transport || !bead_id) {
+      return;
+    }
+    const res = /** @type {any} */ (
+      await transport('worker-attempt-retry-now', { bead_id })
+    );
+    if (res && res.retried === false && res.reason) {
+      showToast(`지금 재시도 거부: ${res.reason}`, 'error', 2400);
+    }
+  }
+
+  /**
    * Resume (↻ / paused tile ▶) an attempt (spec §1). The flow itself — 지시
    * 다이얼로그, 충돌 1회 재시도, provider 경계, 거부 토스트 — 는
    * `runResumeFlow`가 소유하고(UI-6g3t §5.1), 이 화면이 넘기는 것은 대상 문맥과
@@ -5643,6 +5684,26 @@ export function createWorkerView(mount_element, options = {}) {
       const att = tile?.dataset?.attemptId;
       if (att) {
         void pauseAttempt(att);
+      }
+      return;
+    }
+    if (target?.closest?.('.rtile__withdraw')) {
+      const tile = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile')
+      );
+      const att = tile?.dataset?.attemptId;
+      if (att) {
+        void withdrawAttempt(att);
+      }
+      return;
+    }
+    if (target?.closest?.('.rtile__retry-now')) {
+      const tile = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.rtile')
+      );
+      const bead_id = tile?.dataset?.beadId;
+      if (bead_id) {
+        void retryBeadNow(bead_id);
       }
       return;
     }

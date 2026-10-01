@@ -15,7 +15,10 @@ import { ifDefined } from 'lit-html/directives/if-defined.js';
 import { formatContinuationLineage } from '../../utils/attempt-display.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resumeKindOf } from '../../utils/quickfix-resume-kind.js';
-import { formatRelativeTime } from '../../utils/relative-time.js';
+import {
+  formatClockLocal,
+  formatRelativeTime
+} from '../../utils/relative-time.js';
 import { sessionRefLabel } from '../../utils/session-ref.js';
 import { showToast } from '../../utils/toast.js';
 import {
@@ -31,6 +34,7 @@ import {
   failureSentence,
   failureText
 } from './failure-labels.js';
+import { autoResumeRefusalBadge } from './gate-labels.js';
 import {
   areaChipsTemplate,
   complexChipTemplate,
@@ -96,8 +100,9 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * (UI-5ym8 §3.1). 실패가 아니므로 큐는 계속 가고, 타일은 `cause_detail.summary`
  * 한 줄과 `재시도`·`폐기`만 싣는다.
  * @property {boolean} [retry_wait] - 환경성 실패의 backoff를 기다리는 attempt
- * (§3.3). 배지가 상태를 말하므로 본문은 비고, 액션 foot에는 `폐기` 하나만 선다
- * (2026-08-29 held-tile-discard §5.1) — 재시도는 사다리가 스스로 한다.
+ * (§3.3). 배지가 상태를 말하므로 본문은 비고, 액션 foot에는 `[지금 재시도]`와
+ * `폐기`가 선다 (2026-10-01 stall-reconcile D9) — 재시도는 사다리가 스스로 하고,
+ * `[지금 재시도]`는 그 Bead의 예약을 지금으로 당길 뿐이다.
  * @property {boolean} [waiting] - 선행 미충족으로 착수를 거부하고 정상 종료한
  * attempt (선행 대기 계층 §5.2). 실패도 파킹도 아니므로 `재시도`가 없다 — 선행이
  * 닫히면 보통 후보로 저절로 돌아온다.
@@ -114,8 +119,7 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * @property {RetryTile|null} [retry] - backoff 사실 (§6). `retry_wait` 타일의
  * 배지 재료이며, 없으면 배지가 그려지지 않는다 (fail-quiet).
  * @property {HoldTile|null} [hold] - 슬롯 1 판정과 상세 팝오버에만 쓰는 hold 재료.
- * `retry_wait` 타일 foot의 `↻ 지금 재시도`가 쓰는 CAS 재료이고, 보류가 없으면
- * 키 자체가 없어 버튼이 서지 않는다 (fail-quiet).
+ * 재료가 없으면 키 자체가 없다 (fail-quiet).
  * @property {'running'|'paused'|'failed'|'orphaned'|'parked'|'retry_wait'|'waiting'|'provider_hold'|'in_progress'|'open'} [status] - Raw
  * attempt status, used to distinguish failure from orphan interruption. A
  * session tile carries the Bead status (`in_progress` or `open`) instead.
@@ -198,6 +202,10 @@ import { representativeWaitReason } from './wait-vocabulary.js';
  * @property {number} [next_probe_at]
  * @property {number} [live_preempt_skipped_at] - When the last live preempt
  * pass found no switch candidate for this attempt (UI-inge §3.6).
+ * @property {{ kind: 'transient'|'wait'|'closed'|'permanent', next_at: number|null, reason: string }} [auto_resume_refusal] -
+ * The last automatic resume refusal (2026-10-01 stall-reconcile D5), projected
+ * only while the runner has NO active hold — with one the probe decides and
+ * the badge stays as it is. Absent on a record written before the field.
  * @property {string} [log_path]
  * @property {boolean} [open]
  */
@@ -912,11 +920,12 @@ function sessionOpenButton(current) {
  * 계층 §5.2).
  *
  * A `retry_wait` tile carries the action foot and nothing else, and not even
- * that when the projection withholds the button (2026-08-29 held-tile-discard
+ * that when the projection withholds both buttons (2026-08-29 held-tile-discard
  * §5.1): its badge already says how many tries are left and
  * when the next one fires, so a summary line would only make the grid taller
- * while the queue works. `재시도` is not there — the ladder retries by itself
- * and `지금 재시도` is the queue header's operation.
+ * while the queue works. The ladder retries by itself; the foot's
+ * `[지금 재시도]` only pulls THIS bead's rung to now (2026-10-01
+ * stall-reconcile D9), which the caller composes in front of `폐기`.
  *
  * A `parked` tile has exactly two things to say: the one line the session left
  * behind, and the two exits. The buttons sit in an action foot rather than in
@@ -1009,6 +1018,23 @@ function heldBodyTemplate(
         ? html`${discard_actions}${resolve_action}`
         : html`${resolve_action}${discard_actions}`}
     </div>`;
+}
+
+/**
+ * Whether a conversation or a person holds this bead's session right now — an
+ * interactive record not yet settled. Such a tile's operations belong to the
+ * ADR UI-nuwy conversation-record table, so ✕ stays off it (2026-10-01
+ * stall-reconcile D7); the server refuses the same case as
+ * `interactive_session_active`.
+ *
+ * @param {import('./lane-model.js').InteractiveSessionView[]|undefined} views
+ * @returns {boolean}
+ */
+function conversationHolds(views) {
+  return (
+    Array.isArray(views) &&
+    views.some((view) => Boolean(view) && view.settled_at === null)
+  );
 }
 
 /**
@@ -1292,6 +1318,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           ? html`<span class="rtile__auto-halted">자동 진행 꺼짐</span>`
           : ''}`
     : '';
+  // 보류 기록이 사라진 공급자 보류 타일은 같은 배지 자리에서 자동 재개의 거절을
+  // 말한다 (2026-10-01 stall-reconcile D5). 재료가 없으면 null이라 지금 그대로다.
+  const refusal_badge = provider_hold ? autoResumeRefusalBadge(hold) : null;
   // 판정 칩 슬롯은 하나다 (카드 문법 §5.1): 실패 뱃지가 서는 그 자리에 파킹과
   // backoff·선행·공급자 대기가 선다. 다섯은 배타적이라 폭이 늘지 않는다.
   const wait_status_badge =
@@ -1314,8 +1343,23 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
       // 재시도 대기 라벨은 회차와 예약 시각까지 말한다 (§5.2 "기존 문구").
       ...(retry_wait
         ? { label: retryWaitBadgeText(tile.retry).replace('↻ ', '') }
+        : {}),
+      ...(refusal_badge
+        ? {
+            text: refusal_badge.text,
+            verdict: refusal_badge.verdict,
+            release: refusal_badge.release
+          }
         : {})
     });
+  // 재시도 중인 거절은 슬롯 7에 다음 시도 시각을 둔다 (D5). 시각 줄은 카드당
+  // 하나이고, 이 배지가 카드를 대표하므로 다른 사유의 시각보다 앞선다.
+  const refusal_times =
+    refusal_badge && refusal_badge.next_at !== null
+      ? html`<div class="worker-mini__times wait-reason__times">
+          다음 ${formatClockLocal(refusal_badge.next_at, now)}
+        </div>`
+      : '';
   const status_badges = html`${conflict_badge
     ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
     : ''}${base_badge
@@ -1407,6 +1451,44 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const discard_actions = abandon_button
     ? html`${discard_button}${abandon_button}`
     : discard_button;
+  // 폐기가 진행 중인 attempt는 그 작업이 처분을 쥐고 있다 — 서버도 내리기를
+  // `discard_in_progress`로 거부하므로 두 조작을 함께 세우지 않는다.
+  const discard_running = Boolean(tile.discard && tile.discard.operation);
+  // ✕ Worker에서 내리기 (2026-10-01 stall-reconcile D7): 구현 attempt 타일 중
+  // 실행 중·일시정지·공급자 보류·재시도 대기·실패·외부 작업 타일에만 선다.
+  // 확인 필요·세션 대기와 대화·사람 인수 중인 타일의 조작은 ADR UI-nuwy의 대화
+  // 레코드 표가 정하고, PR 대기(충돌 해소 세션)와 세션 타일은 대상이 아니다.
+  // 대기 타일 중 외부 작업만 남는 것은 배지 술어(`external.badge`)가 정한다.
+  const withdraw_button =
+    !session &&
+    Boolean(tile.attempt_id) &&
+    !parked &&
+    !(waiting && !external.badge) &&
+    tile.conflict_resolution !== true &&
+    !discard_running &&
+    !conversationHolds(tile.interactive_sessions)
+      ? html`<button
+          type="button"
+          class="op-btn op-btn--icon op-btn--ghost rtile__withdraw"
+          title="Worker에서 내리기 — 작업은 보존"
+          aria-label="Worker에서 내리기 — 작업은 보존"
+        >
+          ✕
+        </button>`
+      : '';
+  // [지금 재시도] (D9): 이 Bead의 재시도 예약만 지금으로 당긴다 — 큐 전체를
+  // 움직이던 은퇴한 조작(UI-a5l2)과 다르다. 자리는 슬롯 6 foot의 `폐기` 앞이다.
+  const retry_now_button =
+    retry_wait && !discard_running
+      ? html`<button
+          type="button"
+          class="op-btn rtile__retry-now"
+          title="예약 시각을 기다리지 않고 지금 재시도 — 재시도 횟수는 그대로 쓴다"
+          aria-label="지금 재시도"
+        >
+          지금 재시도
+        </button>`
+      : '';
   // 작업 종류 분류 (UI-kyky §3.1). 실행 타일은 배경을 켜지 않는다 — '실행 중'
   // 자체가 §3.1이 우선한다고 정한 상태 표현이라 이 그리드의 어떤 타일도 중립이
   // 아니다. `data-route`는 칩과 같은 분류를 실어 두 표면이 어긋나지 않게 한다.
@@ -1504,7 +1586,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                     >
                       ⏸
                     </button>`}
-                ${discard_actions}`}${parked || waiting ? '' : resolve_button}
+                ${discard_actions}`}${parked || waiting
+          ? ''
+          : resolve_button}${withdraw_button}
       </div>
     </div>
     <div class="rtile__title">${tile.title}</div>
@@ -1538,7 +1622,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 : hold,
             external_foot
               ? html`${external_foot}${discard_actions}`
-              : discard_actions,
+              : retry_now_button
+                ? html`${retry_now_button}${discard_actions}`
+                : discard_actions,
             waiting ? monitor_relations : '',
             parked || waiting ? resolve_button : '',
             parked && !!tile.discard?.error
@@ -1571,7 +1657,10 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
                 : html`<div class="rtile__accent" aria-hidden="true"></div>`}`}
     ${(held || failed) && lane_chip
       ? html`<div class="worker-chips worker-chips--coords">${lane_chip}</div>`
-      : ''}${wait_body_lines.times}${failurePopoverTemplate(failure, now)}
+      : ''}${refusal_times || wait_body_lines.times}${failurePopoverTemplate(
+      failure,
+      now
+    )}
   </div>`;
 }
 

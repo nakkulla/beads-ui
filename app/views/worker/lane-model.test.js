@@ -1,6 +1,7 @@
 import { render } from 'lit-html';
 import { describe, expect, test } from 'vitest';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
+import { formatClockLocal } from '../../utils/relative-time.js';
 import { normalizeCandidateSort } from './candidate-sort.js';
 import {
   CANDIDATE_FILTER_DEFAULT,
@@ -2753,6 +2754,222 @@ describe('monitor 공급자 보류 attempt 투영', () => {
       run_state: 'provider_hold',
       hold: { auto_resume: 'disarmed' }
     });
+  });
+});
+
+// 보류 기록이 없는 공급자 보류 타일의 거절 재료 (2026-10-01 stall-reconcile D5).
+// 활성 보류가 있으면 프로브가 판정하므로 지금 표시 그대로다.
+describe('공급자 보류 타일의 자동 재개 거절 재료 (stall-reconcile D5)', () => {
+  /** @returns {Record<string, any>} */
+  function refusedAttempt() {
+    return {
+      t1: {
+        attempt_id: 't1',
+        bead_id: 'A-1',
+        status: 'paused',
+        cause: 'provider_outage:usage_limit',
+        runner: 'claude',
+        auto_resume_refused: 'bd_snapshot_failed',
+        auto_resume_refusal: {
+          at: 1000,
+          count: 1,
+          kind: 'transient',
+          next_at: 301000
+        }
+      }
+    };
+  }
+
+  test('carries the refusal kind, next time and reason without an active hold', () => {
+    const map = activeByBead(refusedAttempt(), new Map());
+
+    expect(map.get('A-1')?.hold?.auto_resume_refusal).toEqual({
+      kind: 'transient',
+      next_at: 301000,
+      reason: 'bd_snapshot_failed'
+    });
+  });
+
+  test('leaves the refusal out while the runner has an active hold', () => {
+    const map = activeByBead(refusedAttempt(), new Map(), {
+      provider_hold: {
+        claude: {
+          since: 1000,
+          generation: 1,
+          targets: [
+            {
+              kind: 'usage_limit',
+              detail: 'usage_limit',
+              attempt_ids: ['t1'],
+              rearm_count: 0
+            }
+          ]
+        }
+      }
+    });
+
+    expect(map.get('A-1')?.hold?.auto_resume_refusal).toBe(undefined);
+  });
+
+  test('leaves the refusal out of a record written before it existed', () => {
+    const attempts = refusedAttempt();
+    delete attempts.t1.auto_resume_refusal;
+
+    const map = activeByBead(attempts, new Map());
+
+    expect(map.get('A-1')?.hold?.auto_resume_refusal).toBe(undefined);
+  });
+});
+
+// 일시 admission 배지의 기록 시각 꼬리 (2026-10-01 stall-reconcile D4).
+describe('일시 admission 배지 시각 (stall-reconcile D4)', () => {
+  test.each(['bd_snapshot_failed', 'gh_unavailable', 'git_error'])(
+    'appends the record clock to the %s badge',
+    (reason) => {
+      const at = new Date(2026, 9, 1, 9, 1).getTime();
+      const lanes = buildLanes(
+        [
+          workspace({
+            runnable: [runnable('A-1')],
+            admission: { 'A-1': { reason, at } }
+          })
+        ],
+        [state()]
+      );
+
+      expect(lanes.runnable[0].reason).toBe(
+        `⛔ ${reason} · ${formatClockLocal(at)}`
+      );
+    }
+  );
+
+  test('keeps a non-transient badge without the clock', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-1')],
+          admission: {
+            'A-1': { reason: 'worktree_stale_work', at: Date.now() }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].reason).toBe('⛔ worktree_stale_work');
+  });
+
+  test('appends the clock to a waiting row badge too', () => {
+    const at = new Date(2026, 9, 1, 9, 1).getTime();
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1', added_at: 1 }],
+          admission: { 'A-1': { reason: 'bd_snapshot_failed', at } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].reason).toBe(
+      `⛔ bd_snapshot_failed · ${formatClockLocal(at)}`
+    );
+  });
+});
+
+// `⏏ 내려옴` 칩 재료 (2026-10-01 stall-reconcile D8): 후보 카드와 출발 전 대기
+// 행에만 싣는다 — 닫힌 이슈는 그 자리에 서지 않는다.
+describe('내려옴 칩 재료 (stall-reconcile D8)', () => {
+  const WITHDRAWN = {
+    attempt_id: 'w1',
+    at: 5000,
+    from_status: 'running',
+    from_cause: null,
+    worktree_path: '/repo/.worktrees/A-1',
+    worktree_present: true,
+    branch: 'A-1',
+    has_session: true
+  };
+
+  test('carries the withdrawn material to the candidate card', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-1')],
+          withdrawn_beads: { 'A-1': WITHDRAWN }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].withdrawn).toEqual({
+      at: 5000,
+      from_status: 'running',
+      from_cause: null,
+      worktree_path: '/repo/.worktrees/A-1',
+      branch: 'A-1',
+      has_session: true
+    });
+  });
+
+  test('carries the withdrawn material to a waiting row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1', added_at: 1 }],
+          withdrawn_beads: { 'A-1': WITHDRAWN }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].withdrawn?.from_status).toBe('running');
+  });
+
+  test('drops the worktree path the server no longer finds', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-1')],
+          withdrawn_beads: {
+            'A-1': { ...WITHDRAWN, worktree_present: false }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].withdrawn?.worktree_path).toBe(null);
+  });
+
+  test('keeps the chip material when the entry lacks its facts', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-1')],
+          withdrawn_beads: { 'A-1': { attempt_id: 'w1' } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].withdrawn).toEqual({
+      at: null,
+      from_status: null,
+      from_cause: null,
+      worktree_path: null,
+      branch: null,
+      has_session: false
+    });
+  });
+
+  test('carries nothing for a bead outside the projection', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1')] })],
+      [state()]
+    );
+
+    expect(Object.hasOwn(lanes.runnable[0], 'withdrawn')).toBe(false);
   });
 });
 
