@@ -172,9 +172,9 @@
   --ring-selected: 0 0 0 1px #5ad19855;
 
   /* --- legacy role tokens (UI-k5s2 tokens, docs/design-system.md §1) --- */
-  /* 옛 공용 CSS(styles.css 앞부분·base.css)에 리터럴로 적혀 있던 값을 같은 값
-     그대로 옮긴 토큰이다. 위 단계에 없는 크기와 테마와 무관한 색만 여기 둔다 —
-     값을 바꾸면 그 화면의 계산 값이 바뀐다. */
+  /* 옛 공용 CSS(styles.css 앞부분·base.css)와 UI-k5s2가 옮기는 화면(Monitor…)에
+     리터럴로 적혀 있던 값을 같은 값 그대로 옮긴 토큰이다. 위 단계에 없는 크기와
+     테마와 무관한 색만 여기 둔다 — 값을 바꾸면 그 화면의 계산 값이 바뀐다. */
   /* sizes */
   --sp-11: 11px;
   --sp-18: 18px;
@@ -191,6 +191,7 @@
   --h-header-item: 22px;
   --h-touch-target: 44px;
   --h-viewport: 100dvh;
+  --size-icon-mon: 13px;
   /* colours (same literal in every theme) */
   --mix-black: #000;
   --mix-white: #fff;
@@ -209,6 +210,7 @@
   --shadow-switch-knob: 0 1px 2px rgba(0, 0, 0, 0.2);
   --shadow-menu: 0 4px 12px rgba(0, 0, 0, 0.15);
   --shadow-overlay: 0 10px 40px rgba(0, 0, 0, 0.45);
+  --shadow-popover: 0 8px 24px rgb(0 0 0 / 20%);
   --shadow-fatal-dialog: 0 18px 48px -16px rgba(17, 24, 39, 0.35);
   --shadow-fatal-icon: 0 10px 24px -12px rgba(159, 32, 17, 0.6);
 }

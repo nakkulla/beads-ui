@@ -5,9 +5,12 @@ import process from 'node:process';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { createSubscriptionIssueStore } from './data/subscription-issue-store.js';
 import { createWorkerQueueStore } from './data/worker-queue-store.js';
+import { createMonitorView } from './views/monitor/index.js';
+import { createUsageMeter } from './views/usage-meter.js';
 import { createWorkerView } from './views/worker/index.js';
 import { candidateCard, miniRow, queueRowOps } from './views/worker/lanes.js';
 import { runningGridTemplate } from './views/worker/running-grid.js';
+import { createWorkspacePicker } from './views/workspace-picker.js';
 
 /**
  * Design-system guards (UI-kqta §3.4). The rules themselves live in
@@ -172,11 +175,12 @@ describe('raw-value scanner', () => {
 });
 
 describe('design-system CSS rules (§3.4 check 1)', () => {
-  test('marks at least one Worker region and the header region', () => {
+  test('marks the Worker, header and Monitor regions', () => {
     const names = regions(STYLES).map((r) => r.name);
 
     expect(names.filter((name) => name === 'worker').length).toBeGreaterThan(0);
     expect(names).toContain('header');
+    expect(names).toContain('monitor');
   });
 
   test('pairs every region marker with an end marker', () => {
@@ -191,7 +195,7 @@ describe('design-system CSS rules (§3.4 check 1)', () => {
     expect(findings(COMPONENTS)).toEqual([]);
   });
 
-  test('keeps the marked Worker and header regions free of raw colours and raw sizes', () => {
+  test('keeps every marked region free of raw colours and raw sizes', () => {
     const found = regions(STYLES).flatMap((r) =>
       findings(r.body).map((f) => `${r.name}: ${f}`)
     );
@@ -222,11 +226,12 @@ describe('design-system CSS rules (§3.4 check 1)', () => {
  * outside tokens.css. UI-kqta lowered it from 470 (base d24f47a1: 194 colours +
  * 276 sizes) to 428 (194 + 234); the UI-k5s2 tokens unit moved the legacy
  * palette into tokens.css and tokenized the legacy shared CSS and base.css,
- * taking it to 62 (11 + 51, all in styles.css below the `.op-btn` heading). All
- * counted with this scanner; UI-k5s2 takes it to 0. Lower the number when a
- * change removes raw values — never raise it.
+ * taking it to 62 (11 + 51, all in styles.css below the `.op-btn` heading); the
+ * monitor unit moved the Monitor tab, header and usage meter onto the parts,
+ * taking it to 57 (10 + 47). All counted with this scanner; UI-k5s2 takes it
+ * to 0. Lower the number when a change removes raw values — never raise it.
  */
-const RATCHET_BASELINE = 62;
+const RATCHET_BASELINE = 57;
 
 describe('design-system ratchet (§3.4 check 2)', () => {
   test('keeps raw colours and raw sizes outside tokens.css at or under the baseline', () => {
@@ -255,8 +260,12 @@ const OVERLAY_SELECTOR = [
 
 const PART_CLASSES = ['op-btn', 'ui-input', 'ui-select', 'ui-chip'];
 
+/** Native-size controls with no part (docs/design-system.md §2·§4). */
+const NATIVE_CONTROL = 'input[type=checkbox], input[type=radio]';
+
 /**
- * Controls of a rendered surface that carry no part class.
+ * Controls of a rendered surface that carry no part class. Checkboxes and
+ * radios keep their native size and have no part, so they are not counted.
  *
  * @param {ParentNode} root
  * @returns {string[]}
@@ -264,6 +273,7 @@ const PART_CLASSES = ['op-btn', 'ui-input', 'ui-select', 'ui-chip'];
 function controlsWithoutPart(root) {
   return Array.from(root.querySelectorAll('button, input, select'))
     .filter((el) => !el.closest(OVERLAY_SELECTOR))
+    .filter((el) => !el.matches(NATIVE_CONTROL))
     .filter(
       (el) =>
         !PART_CLASSES.some((cls) => el.classList.contains(cls)) &&
@@ -642,5 +652,333 @@ describe('Worker tab controls use parts (§3.4 check 3)', () => {
     expect(chips.length).toBeGreaterThan(0);
     expect(chips.every((el) => el.classList.contains('ui-chip'))).toBe(true);
     expect(chips.some((el) => el.classList.contains('op-btn'))).toBe(false);
+  });
+});
+
+/**
+ * Two repositories that light up the Monitor deck (tiles, switches, totals),
+ * every lane head, the candidate sections and filter, both wait areas with a
+ * serial lane, a running and a failed tile, a PR-wait row and a done row.
+ *
+ * @param {number} now
+ * @returns {Array<Record<string, any>>}
+ */
+function monitorWorkspaces(now) {
+  return [
+    {
+      root_dir: '/repo-a',
+      name: 'repo-a',
+      revision: 1,
+      queue: [{ bead_id: 'A-q', added_at: now }],
+      serial_lane_count: 2,
+      serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-s', added_at: 1 }] }],
+      pr_wait: [{ bead_id: 'A-pr', added_at: 1 }],
+      pr_observations: richQueue().pr_observations,
+      done: [{ bead_id: 'A-d', added_at: now, outcome: 'merged' }],
+      runnable: [
+        {
+          bead_id: 'A-1',
+          title: 'candidate a',
+          updated_at: now,
+          blocked_by: [],
+          metadata: { route: 'quick_fix' }
+        }
+      ],
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'A-r',
+          status: 'running',
+          runner: 'claude',
+          model: 'opus',
+          started_at: now - 5000
+        },
+        a2: {
+          attempt_id: 'a2',
+          bead_id: 'A-f',
+          status: 'failed',
+          cause: 'runner_exit',
+          started_at: 1,
+          finished_at: 2
+        }
+      },
+      bead_titles: { 'A-q': 'queued', 'A-s': 'serial', 'A-d': 'done' },
+      wait_reasons: [
+        {
+          kind: 'prerequisite',
+          subject: { root_dir: '/repo-a', bead_id: 'A-q' },
+          headline: 'A-2 완료를 기다림',
+          release: '재스캔으로 자동 복귀',
+          verdict: 'normal',
+          targets: [{ id: 'A-2', kind: 'issue' }],
+          actions: []
+        }
+      ]
+    },
+    {
+      root_dir: '/repo-b',
+      name: 'repo-b',
+      revision: 1,
+      queue: [],
+      serial_lanes: [],
+      pr_wait: [],
+      done: [],
+      runnable: [
+        {
+          bead_id: 'B-1',
+          title: 'candidate b',
+          updated_at: now,
+          blocked_by: []
+        }
+      ],
+      attempts: {},
+      pr_observations: {},
+      bead_titles: {}
+    }
+  ];
+}
+
+/**
+ * Point `window.matchMedia` at the mobile query or remove it (desktop).
+ *
+ * @param {boolean} mobile
+ */
+function stubMatchMedia(mobile) {
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: mobile
+      ? () => ({
+          matches: true,
+          media: '(max-width: 640px)',
+          addEventListener() {},
+          removeEventListener() {}
+        })
+      : undefined
+  });
+}
+
+/** @type {Array<{ clear: () => void }>} */
+const monitor_views = [];
+
+/**
+ * Render the whole Monitor tab body — deck, lanes and their heads — into a
+ * fresh mount.
+ *
+ * @param {boolean} mobile
+ * @returns {HTMLElement}
+ */
+function renderMonitorTab(mobile) {
+  stubMatchMedia(mobile);
+  window.localStorage.setItem(
+    'beads-ui.monitor.lane-collapsed',
+    JSON.stringify({ lanes: { done: false }, areas: {} })
+  );
+  document.body.innerHTML = '<div id="m"></div>';
+  const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+  const now = Date.now();
+  const workspaces = monitorWorkspaces(now);
+  const states = workspaces.map((ws) => ({
+    root_dir: ws.root_dir,
+    name: ws.name,
+    auto_advance: ws.root_dir === '/repo-a',
+    auto_merge: false,
+    slots: 2,
+    revision: 1,
+    issue_prefix: ws.name === 'repo-a' ? 'A' : 'B',
+    counts: { running: 1, pr_wait: 1, queue: 2, session_active: 0 }
+  }));
+  const view = createMonitorView(mount, {
+    gotoIssue: vi.fn(),
+    transport: vi.fn(async () => null),
+    router: { gotoView: vi.fn() },
+    pipelineStore: /** @type {any} */ ({
+      get: () => workspaces,
+      getWorkspacesState: () => states,
+      crossLanes: () => null,
+      subscribe: () => () => {}
+    }),
+    getWorkspacePath: () => '/repo-a',
+    switchWorkspace: vi.fn(() => Promise.resolve(null)),
+    confirm: vi.fn(() => true),
+    now: () => now
+  });
+  monitor_views.push(view);
+  view.load();
+  return mount;
+}
+
+describe('Monitor tab controls use parts (§3.4 check 3)', () => {
+  afterEach(() => {
+    while (monitor_views.length > 0) {
+      monitor_views.pop()?.clear();
+    }
+    window.localStorage.clear();
+    stubMatchMedia(false);
+  });
+
+  test('draws every desktop Monitor tab control with a part', () => {
+    const mount = renderMonitorTab(false);
+
+    const controls = mount.querySelectorAll('button, input, select');
+
+    expect(controls.length).toBeGreaterThan(20);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+
+  test('draws every mobile Monitor tab control with a part', () => {
+    const mount = renderMonitorTab(true);
+
+    const controls = mount.querySelectorAll('button, input, select');
+
+    expect(controls.length).toBeGreaterThan(15);
+    expect(controlsWithoutPart(mount)).toEqual([]);
+  });
+});
+
+describe('part check helper (§3.4 check 3)', () => {
+  test('leaves native checkboxes and radios out of the part check', () => {
+    document.body.innerHTML =
+      '<input type="checkbox" /><input type="radio" /><input type="text" class="x" />';
+
+    const missing = controlsWithoutPart(document.body);
+
+    expect(missing).toEqual(['input.x ']);
+  });
+});
+
+/** The `<header class="app-header">` markup of app/index.html. */
+const HEADER_HTML =
+  readFileSync(path.resolve(process.cwd(), 'app/index.html'), 'utf8').match(
+    /<header class="app-header">[\s\S]*?<\/header>/
+  )?.[0] || '';
+
+/**
+ * Serve the Claude usage with three managed accounts (one active) and answer
+ * an account switch with `account_in_use`, so the card can show `[전환]` and
+ * the `[그래도 전환]`·`[취소]` confirmation at once.
+ */
+function stubUsageFetch() {
+  const resets_at = new Date(Date.now() + 60 * 60_000).toISOString();
+  const usage = {
+    available: true,
+    email: 'one@example.com',
+    windows: [{ key: '5h', pct: 10, resetsAt: resets_at }],
+    fetchedAt: new Date().toISOString(),
+    ageSeconds: 30,
+    accounts: [1, 2, 3].map((number) => ({
+      number,
+      email: `user${number}@example.com`,
+      alias: null,
+      plan: 'max',
+      active: number === 1,
+      status: 'ok',
+      windows: [],
+      fetchedAt: null,
+      ageSeconds: null
+    }))
+  };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((/** @type {string} */ url) =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve(
+            url === '/api/claude-usage'
+              ? usage
+              : url === '/api/claude-account/switch'
+                ? { ok: false, error: 'account_in_use', in_use: ['UI-one'] }
+                : { available: false }
+          )
+      })
+    )
+  );
+}
+
+/** @type {Array<{ destroy: () => void }>} */
+const header_parts = [];
+
+/**
+ * Mount the app header the way `main.js` does: the index.html markup, the
+ * workspace picker (several visible workspaces, so the select is drawn) and
+ * the usage meter (managed accounts, so each provider group is a toggle).
+ *
+ * @returns {Promise<HTMLElement>}
+ */
+async function renderHeader() {
+  stubUsageFetch();
+  document.body.innerHTML = HEADER_HTML;
+  const header = /** @type {HTMLElement} */ (
+    document.querySelector('.app-header')
+  );
+  const state = {
+    view: 'worker',
+    workspace: {
+      current: { path: '/repo-a' },
+      available: [{ path: '/repo-a' }, { path: '/repo-b' }],
+      hidden: []
+    }
+  };
+  header_parts.push(
+    createWorkspacePicker(
+      /** @type {HTMLElement} */ (document.getElementById('workspace-picker')),
+      { getState: () => state, subscribe: () => () => {} },
+      async () => {}
+    ),
+    createUsageMeter(
+      /** @type {HTMLElement} */ (document.getElementById('usage-meter'))
+    )
+  );
+  await vi.waitFor(() =>
+    expect(header.querySelector('.usage-meter__toggle')).not.toBeNull()
+  );
+  return header;
+}
+
+describe('header controls use parts (§3.4 check 3)', () => {
+  afterEach(() => {
+    while (header_parts.length > 0) {
+      header_parts.pop()?.destroy();
+    }
+    vi.unstubAllGlobals();
+    document.body.innerHTML = '';
+  });
+
+  test('draws every header control with a part', async () => {
+    const header = await renderHeader();
+
+    const controls = header.querySelectorAll('button, input, select');
+
+    expect(controls.length).toBeGreaterThan(6);
+    expect(controlsWithoutPart(header)).toEqual([]);
+  });
+
+  test('draws the project popover and the usage card controls with a part', async () => {
+    const header = await renderHeader();
+    /** @type {HTMLButtonElement} */ (
+      header.querySelector('.workspace-picker__manage-button')
+    ).click();
+    /** @type {HTMLButtonElement} */ (
+      header.querySelector('.usage-meter__toggle')
+    ).click();
+    await vi.waitFor(() =>
+      expect(document.querySelector('.usage-meter__switch')).not.toBeNull()
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.usage-meter__switch')
+    ).click();
+    await vi.waitFor(() =>
+      expect(document.querySelector('.usage-meter__confirm')).not.toBeNull()
+    );
+
+    expect(
+      document.querySelectorAll('.usage-meter__switch').length
+    ).toBeGreaterThan(2);
+    expect(
+      document.querySelectorAll('.workspace-picker__manage-checkbox').length
+    ).toBe(2);
+    expect(controlsWithoutPart(document.body)).toEqual([]);
   });
 });

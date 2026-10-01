@@ -52,6 +52,10 @@ a {
   }
 }
 
+/* @ds-region header:begin */
+/* 헤더의 조작(작업 공간 선택·프로젝트 관리·Git Pull·사용량 미터·테마 스위치·
+   `?`·`⚙`·`New issue`)은 부품이 크기를 정하고, 여기 역할 규칙은 색과 배치만
+   적는다 (UI-kqta §3.3, UI-k5s2). */
 .app-header {
   position: sticky;
   top: 0;
@@ -113,11 +117,8 @@ a {
 }
 
 .workspace-picker__select {
-  font-size: var(--fs-body);
   font-weight: 500;
-  padding: var(--space-2) var(--space-6) var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-6);
   background: var(--control-bg);
   color: var(--fg);
   cursor: pointer;
@@ -146,27 +147,20 @@ a {
 }
 
 /* Git Pull: compact icon button (spec §7). Square, glyph-only; the accessible
-   name lives on aria-label/title. */
+   name lives on aria-label/title. The square box is `.op-btn--icon`. */
 .workspace-picker__git-pull-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: calc(var(--h-control) + var(--sp-4));
-  padding: 0;
-  font-size: var(--fs-body-lg);
-  line-height: 1;
   border: 1px solid var(--border);
-  border-radius: var(--r-6);
   background: var(--control-bg);
   color: var(--fg);
   cursor: pointer;
 
-  &:hover {
+  /* hover·focus는 부품 hover(`.op-btn`)를 이겨야 하므로 `:not(:disabled)`로 한
+     단계 올린다 — 둘이 겹치면 지금처럼 focus가 이긴다. */
+  &:hover:not(:disabled) {
     border-color: color-mix(in srgb, var(--link) 50%, var(--border));
   }
 
-  &:focus {
+  &:focus:not(:disabled) {
     outline: none;
     border-color: var(--link);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--link) 20%, transparent);
@@ -196,20 +190,17 @@ a {
 }
 
 .workspace-picker__manage-button {
-  font-size: var(--fs-small);
   font-weight: 600;
-  padding: var(--space-2) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: var(--r-6);
   background: var(--control-bg);
   color: var(--fg);
   cursor: pointer;
 
-  &:hover {
+  &:hover:not(:disabled) {
     border-color: color-mix(in srgb, var(--link) 50%, var(--border));
   }
 
-  &:focus {
+  &:focus:not(:disabled) {
     outline: none;
     border-color: var(--link);
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--link) 20%, transparent);
@@ -298,7 +289,6 @@ a {
 
 /* 헤더가 뷰포트보다 넓어지면 액션 묶음이 둘째 줄로 내려간다. 그때도 오른쪽
    정렬을 지키도록 auto margin으로 민다. */
-/* @ds-region header:begin */
 .header-actions {
   display: flex;
   flex-wrap: wrap;
@@ -325,11 +315,11 @@ a {
 }
 
 /* 미터 칸은 헤더 조작 줄의 높이를 따른다 — 미터가 없는 칸은 좁은 폭에서 빈 줄이
-   되지 않도록 높이를 갖지 않는다. 칸 안의 미터 모양은 UI-k5s2가 옮긴다. */
+   되지 않도록 높이를 갖지 않는다. 칸 안의 provider 토글·[전환]은 `.op-btn`이다
+   (UI-k5s2). */
 .usage-meter-mount:not(:empty) {
   min-height: var(--h-control);
 }
-/* @ds-region header:end */
 
 .usage-meter {
   gap: var(--sp-12);
@@ -444,18 +434,19 @@ a {
 
 /* 다계정 카드: accounts[]가 있는 provider 그룹이 각자 토글 버튼이 되고, 그
    아래에 그 provider의 계정 목록 카드를 띄운다. 버튼 크롬은 지우고 그룹
-   레이아웃만 남긴다(그룹 사이 구분선 padding은 `__group + __group`이 보존). */
+   레이아웃만 남긴다(그룹 사이 구분선 padding은 `__group + __group`이 보존).
+   크기(높이·여백·글자·모서리)는 `.op-btn`이 정하고, hover에서도 글자색은
+   그대로다 (UI-k5s2). */
 .usage-meter__toggle {
-  display: inline-flex;
-  align-items: center;
   margin: 0;
-  padding: 0;
   border: 0;
-  border-radius: var(--r-6);
   background: none;
   color: inherit;
-  font: inherit;
   cursor: pointer;
+
+  &:hover:not(:disabled) {
+    color: inherit;
+  }
 
   &:hover .usage-meter__provider {
     color: var(--text-primary);
@@ -598,14 +589,12 @@ a {
   font-size: var(--fs-label-tiny);
 }
 
+/* `[전환]`·`[그래도 전환]`·`[취소]`: 크기는 `.op-btn`이 정한다 (UI-k5s2). */
 .usage-meter__switch {
   flex: 0 0 auto;
-  padding: var(--sp-2) var(--sp-8);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
   background: transparent;
   color: var(--text-secondary);
-  font-size: var(--fs-chip);
   font-weight: 600;
   cursor: pointer;
 
@@ -747,11 +736,10 @@ a {
     transform: rotate(360deg);
   }
 }
+/* 테마 스위치: 글자와 스위치를 한 상자에 담는 `.ui-field`다 (UI-k5s2). 상자
+   테두리는 그리지 않는다 — 헤더 조작 줄의 높이만 맞춘다. 스위치 트랙·손잡이는
+   자기 그림과 색 그대로다. */
 .theme-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-3);
-  font-size: var(--fs-small);
   color: var(--muted);
 
   input[type='checkbox'] {
@@ -789,6 +777,11 @@ a {
     }
   }
 }
+
+.ui-field.theme-toggle {
+  border-color: transparent;
+}
+/* @ds-region header:end */
 
 /* sticky 헤더는 문서 흐름 안에 있으므로 셸은 헤더 아래에서 시작한다. 남은 한
    화면을 하한으로만 잡고 상한은 두지 않는다 — 예전의 `height: calc(100% - 53px)`는
@@ -1987,10 +1980,11 @@ input.inline-edit:focus {
 }
 
 /* 막힘 요약 칩은 `<button>`이다 (UI-0bvr §8): `<details>` summary 자리를 대신하
-   므로 UA 버튼 기본값을 걷고 이웃 칩과 같은 모양으로 돌아온다. */
+   므로 UA 버튼 기본값을 걷고 이웃 칩과 같은 모양으로 돌아온다. 크기는 `.ui-chip`이
+   정하므로 글꼴은 크기가 없는 longhand로만 물려받는다 (UI-k5s2). */
 .wait-summary > .worker-kpi__chip {
-  font: inherit;
-  font-size: var(--fs-chip);
+  font-family: inherit;
+  font-weight: inherit;
   font-variant-numeric: tabular-nums;
   background: transparent;
   cursor: pointer;
@@ -2111,12 +2105,11 @@ input.inline-edit:focus {
   margin-left: auto;
 }
 
+/* 두 탭의 요약 칩(Worker KPI·Monitor 합계 줄)이다. 크기는 `.ui-chip`이 정한다
+   (UI-kqta §3.3, UI-k5s2). */
 .worker-kpi__chip {
-  padding: var(--sp-1) var(--sp-7);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-10);
   color: var(--text-muted);
-  font-size: var(--fs-chip);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -5015,7 +5008,8 @@ input.inline-edit:focus {
 /* 토글은 헤더 전체가 아니라 헤더 안의 버튼 하나다 (UI-5ksp §4.4) — 그래야
    `header_control`(정렬 select·범위 선택)이 형제로 서고, 그 조작이 접힘을
    건드리지 않는다. 버튼 크롬만 지우고 글자색·대소문자는 부모
-   `.worker-pane__hd`에서 물려받는다. */
+   `.worker-pane__hd`에서 물려받는다. 여백·글자 크기는 두 탭 모두 `.op-btn`이
+   정한다 (UI-kqta §3.3, UI-k5s2). */
 .worker-pane__toggle {
   display: flex;
   flex: 1 1 auto;
@@ -5031,15 +5025,8 @@ input.inline-edit:focus {
   cursor: pointer;
 }
 
-/* 크기(여백·글자)는 부품이 없는 Monitor 레인 머리만 머리줄에서 물려받는다.
-   Worker 탭의 토글은 `.op-btn`의 여백·글자 크기를 받는다 (UI-kqta §3.3). */
-.worker-pane__toggle:not(.op-btn) {
-  padding: 0;
-  font: inherit;
-}
-
-/* Worker 탭의 토글은 `.op-btn` 크기를 받지만 (UI-kqta §3.3) 글자색은 머리줄을
-   그대로 물려받으므로 hover에서도 머리줄 색이다. */
+/* 토글은 `.op-btn` 크기를 받지만 글자색은 머리줄을 그대로 물려받으므로
+   hover에서도 머리줄 색이다. */
 .worker-pane__toggle:hover:not(:disabled) {
   color: inherit;
 }
@@ -5218,17 +5205,12 @@ input.inline-edit:focus {
   color: var(--accent-warn);
 }
 
+/* 크기는 두 탭 모두 `.op-btn--icon`이 정한다 (UI-kqta §3.3, UI-k5s2). */
 .worker-wait__area-toggle {
   border: none;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-}
-
-/* 글자는 부품이 없는 Monitor 영역 토글만 머리줄에서 물려받는다. Worker 탭의
-   토글은 `.op-btn--icon`의 글자 크기를 받는다 (UI-kqta §3.3). */
-.worker-wait__area-toggle:not(.op-btn) {
-  font: inherit;
 }
 
 .worker-wait__area-toggle:hover:not(:disabled) {
@@ -5420,8 +5402,8 @@ input.inline-edit:focus {
   margin-top: var(--sp-2);
 }
 
-/* Monitor 후보 필터도 이 클래스를 쓴다 — 크기는 그쪽을 위해 남기고, Worker 탭의
-   토글만 `.ui-field` 상자 크기를 받는다 (UI-kqta §3.3). */
+/* 두 탭의 후보 필터 토글은 `.ui-field` 상자 크기를 받는다 (UI-kqta §3.3,
+   UI-k5s2). */
 .worker-filter__tgl {
   display: inline-flex;
   align-items: center;
@@ -5452,15 +5434,12 @@ input.inline-edit:focus {
   gap: var(--sp-4);
 }
 
-/* Monitor 후보 필터와 같이 쓰는 칩이다. Worker 탭 칩은 `.ui-chip`이 크기를
-   덮는다 (UI-kqta §3.3). */
+/* 두 탭의 후보 필터가 같이 쓰는 칩이다. 크기는 `.ui-chip`이 정한다 (UI-kqta
+   §3.3, UI-k5s2). */
 .worker-filter__chip {
-  padding: var(--sp-1) var(--sp-5);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
   background: transparent;
   color: var(--text-dim);
-  font-size: var(--fs-chip);
   cursor: pointer;
 }
 
@@ -5473,10 +5452,10 @@ input.inline-edit:focus {
   color: var(--text-dim);
 }
 
-/* 칩이 부품 크기(`.ui-chip`)로 자란 Worker 후보 필터는 다섯 레인이 다 펼쳐진 좁은
+/* 칩이 부품 크기(`.ui-chip`)로 자란 후보 필터는 다섯 레인이 다 펼쳐진 좁은
    레인에서 묶음 안에서도 줄을 넘긴다 (UI-kqta §3.5 탐침) — 레인 밖으로 나가지 않는다.
-   Monitor 후보 필터는 UI-k5s2가 옮길 때까지 지금 배치다. */
-#worker-pane-candidate
+   Monitor 후보 레인(`#monitor-runnable`)도 같은 필터다 (UI-k5s2). */
+:is(#worker-pane-candidate, #monitor-runnable)
   :is(
     .worker-filter__readiness,
     .worker-filter__routes,
@@ -5851,16 +5830,14 @@ input.inline-edit:focus {
 }
 
 /* Candidate sort select (UI-raqh §2) — part of the pane header, not a control
-   competing with it: borderless until hover, header-sized, no uppercase. */
+   competing with it: borderless until hover, no uppercase. Its size comes from
+   `.ui-select` in both tabs (UI-kqta §3.3, UI-k5s2). */
 .worker-sort {
   margin-left: auto;
-  padding: 0 var(--sp-4);
   border: 1px solid transparent;
-  border-radius: var(--r-6);
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: var(--fs-chip);
   letter-spacing: normal;
   text-transform: none;
   cursor: pointer;
@@ -6322,6 +6299,7 @@ input.inline-edit:focus {
   margin: var(--sp-4) 0 var(--sp-2);
 }
 
+/* @ds-region monitor:begin */
 /* --- 모니터 탭 (UI-qrfo §8) --- */
 
 /* 모니터는 Worker 콘솔과 같은 레인 레이아웃을 쓰므로 같은 flex 사슬이 필요하다:
@@ -6344,15 +6322,13 @@ input.inline-edit:focus {
 }
 
 /* 완료 기간 select (§3) — Worker 탭 `.worker-sort`와 같은 톤. 레인 헤더의
-   header_control 자리에 앉으므로 자기 정렬은 헤더 flex가 소유한다. */
+   header_control 자리에 앉으므로 자기 정렬은 헤더 flex가 소유한다. 크기는
+   `.ui-select`가 정한다 (UI-k5s2). */
 .mon-done-range {
-  padding: 0 var(--sp-4);
   border: 1px solid transparent;
-  border-radius: var(--r-6);
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: var(--fs-chip);
   cursor: pointer;
 }
 
@@ -6361,15 +6337,17 @@ input.inline-edit:focus {
   color: var(--text-primary);
 }
 
-.mon-lane-op {
-  padding: 0 var(--sp-6);
+/* `[일괄 머지]`: 크기는 `.op-btn`이 정한다 (UI-k5s2). 부품을 받기 전부터 hover에
+   색을 바꾸지 않았다. */
+.mon-lane-op,
+.mon-lane-op:hover:not(:disabled) {
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
   background: transparent;
   color: var(--text-muted);
-  font-size: var(--fs-chip);
   cursor: pointer;
 }
+
+/* @ds-region monitor:end */
 
 /* @ds-region worker:begin */
 /* 레포 뱃지 (Worker 템플릿 안, 값이 있을 때만): 전체 레포를 한 화면에 섞는
@@ -6409,6 +6387,7 @@ input.inline-edit:focus {
 
 /* @ds-region worker:end */
 
+/* @ds-region monitor:begin */
 /* --- 모니터 세로 5레인 (UI-eey2 §3) --------------------------------------
    Worker 탭과 **같은** `.worker-lanes` flex다. 3열 grid·가로 스와이프 칸반은
    폐기했다 (같은 사실이 두 탭에서 다른 모양이 되던 원인). 다섯 레인은 같은
@@ -6539,18 +6518,16 @@ input.inline-edit:focus {
   white-space: nowrap;
 }
 
+/* `↗`: 상자 없는 아이콘 버튼. 크기는 `.op-btn--icon`이 정한다 (UI-k5s2). */
 .mon2-deck__worker {
   flex: 0 0 auto;
-  padding: 0 var(--sp-2);
   border: none;
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
-  font-size: var(--fs-chip);
-  line-height: 1;
 }
 
-.mon2-deck__worker:hover {
+.mon2-deck__worker:hover:not(:disabled) {
   color: var(--text-primary);
 }
 
@@ -6594,12 +6571,10 @@ input.inline-edit:focus {
   min-width: 0;
 }
 
+/* 실행 칩: 크기는 `.ui-chip`이 정한다 (UI-k5s2). */
 .mon2-deck__chip {
-  padding: 0 var(--sp-4);
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
   color: var(--text-muted);
-  font-size: var(--fs-caption);
 }
 
 .mon2-deck__ops {
@@ -6613,27 +6588,23 @@ input.inline-edit:focus {
    기본 300×150 캔버스가 타일을 통째로 삼킨다. */
 .mon-i {
   flex: 0 0 auto;
-  width: 13px;
-  height: 13px;
+  width: var(--size-icon-mon);
+  height: var(--size-icon-mon);
 }
 
 /* 라벨을 버린 아이콘 전용 스위치: 뜻은 `title`·`aria-label`이 싣는다. 정사각
-   히트박스라 세 개가 나란히 서도 광학 중심이 흔들리지 않는다. */
-.mon2-deck__op {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
+   히트박스(`.op-btn--icon`, UI-k5s2)라 세 개가 나란히 서도 광학 중심이 흔들리지
+   않는다. 부품을 받기 전부터 hover에 색을 바꾸지 않았다 — 켜짐 색도 그대로다. */
+.mon2-deck__op,
+.mon2-deck__op:hover:not(:disabled) {
   border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
 }
 
-.mon2-deck__op.is-on {
+.mon2-deck__op.is-on,
+.mon2-deck__op.is-on:hover:not(:disabled) {
   border-color: var(--border-tile-run);
   color: var(--accent-success);
 }
@@ -6678,17 +6649,18 @@ input.inline-edit:focus {
   font-size: var(--fs-chip);
 }
 
+/* 섹션 캐럿(`.op-btn--icon`)과 `Worker ↗`(`.op-btn`): 상자 없는 버튼이고 크기는
+   부품이 정한다 (UI-k5s2). */
 .mon2-sec__toggle,
 .mon2-sec__worker {
   border: none;
   background: transparent;
   color: var(--text-muted);
-  font: inherit;
   cursor: pointer;
 }
 
-.mon2-sec__toggle:hover,
-.mon2-sec__worker:hover {
+.mon2-sec__toggle:hover:not(:disabled),
+.mon2-sec__worker:hover:not(:disabled) {
   color: var(--text-primary);
 }
 
@@ -6787,9 +6759,11 @@ input.inline-edit:focus {
   margin: 0;
   pointer-events: none;
   box-shadow:
-    var(--shadow-popover, 0 8px 24px rgb(0 0 0 / 20%)),
+    var(--shadow-popover),
     0 0 0 1px var(--accent-success);
 }
+
+/* @ds-region monitor:end */
 
 /* @ds-region worker:begin */
 /* 대기 행 조작 묶음 (UI-5ksp §4.6). 행 밖 별도 줄이던 Monitor 조작 묶음을 행
@@ -7255,6 +7229,7 @@ input.inline-edit:focus {
 
 /* @ds-region worker:end */
 
+/* @ds-region monitor:begin */
 /* 모바일 (§3): Worker와 같은 세로 스택. 관제 우선 순서는 이제 DOM이 소유한다
    (UI-5ksp §4.7) — 실행 중·PR 대기가 `지금` 패널로 합쳐지는 것은 restyle이
    아니라 recombination이라 `order`로는 표현할 수 없었다. */
@@ -7280,7 +7255,9 @@ input.inline-edit:focus {
     -webkit-overflow-scrolling: touch;
   }
 }
+/* @ds-region monitor:end */
 
+/* @ds-region header:begin */
 /* 헤더 사용량 리본 — 모바일 폭 맞춤 (UI-eey2 §11.1, 전 탭 공통, CSS만).
    ≤900 규칙만으로는 Claude 그룹(5h·7d·모델 창 + 배지)과 Codex 그룹이 한 줄에
    남아 뷰포트 밖으로 잘린다. ≤640에서는 리본을 헤더 아래 **전폭 두 행**으로
@@ -7326,6 +7303,7 @@ input.inline-edit:focus {
     flex: 0 0 auto;
   }
 }
+/* @ds-region header:end */
 
 /* ---------- Detail-panel session history (spec §5.6) ---------- */
 .detail-sessions {
@@ -7929,11 +7907,12 @@ button.detail-session__leg:focus-visible {
 
 /* ---------- Worker responsive (<=640px): single-column lanes + grid ---------- */
 @media (max-width: 640px) {
+  /* @ds-region header:begin */
   /* App shell header: wrap instead of forcing title+picker+tabs+actions onto one
      line; buttons/icons keep their size, only spacing shrinks (§1.1). */
   .app-header {
-    gap: var(--space-4, 8px);
-    padding: var(--space-4, 8px) var(--space-5, 12px) 0;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-5) 0;
     /* 여기서만 고정을 푼다. 줄바꿈한 헤더는 120~183px까지 자라 세로의 5분의 1을
        상시 점유하는데, 좁은 화면에서 그만한 몫을 늘 내주는 것보다 스크롤아웃
        시키는 쪽이 낫다 — 리본과 같은 선택이다. >640px에서는 헤더가 한 줄(79px)로
@@ -7943,7 +7922,7 @@ button.detail-session__leg:focus-visible {
 
   .header-left {
     flex-wrap: wrap;
-    gap: var(--space-4, 8px);
+    gap: var(--space-4);
   }
 
   /* The capsule wraps as one block; inside it the picker row and the tab row
@@ -7953,8 +7932,10 @@ button.detail-session__leg:focus-visible {
   }
 
   .header-actions {
-    gap: var(--space-4, 8px);
+    gap: var(--space-4);
   }
+
+  /* @ds-region header:end */
 
   /* New-issue dialog form: label above, input below (§1.6). */
   .new-issue__form {

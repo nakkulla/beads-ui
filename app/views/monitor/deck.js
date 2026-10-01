@@ -343,7 +343,7 @@ export function createRepoDeck(mount_element, options) {
     const merge = row.auto_merge === true;
     return html`<button
         type="button"
-        class=${`mon2-deck__op mon2-deck__auto${auto ? ' is-on' : ''}`}
+        class=${`op-btn op-btn--icon mon2-deck__op mon2-deck__auto${auto ? ' is-on' : ''}`}
         data-act="auto"
         aria-pressed=${auto ? 'true' : 'false'}
         aria-label=${`${row.name} 자동화`}
@@ -355,7 +355,7 @@ export function createRepoDeck(mount_element, options) {
       </button>
       <button
         type="button"
-        class=${`mon2-deck__op mon2-deck__merge${merge ? ' is-on' : ''}`}
+        class=${`op-btn op-btn--icon mon2-deck__op mon2-deck__merge${merge ? ' is-on' : ''}`}
         data-act="merge"
         aria-pressed=${merge ? 'true' : 'false'}
         aria-label=${`${row.name} 자동 머지`}
@@ -367,7 +367,7 @@ export function createRepoDeck(mount_element, options) {
       </button>
       <button
         type="button"
-        class=${`mon2-deck__op mon2-deck__gear${openRoot() === row.root_dir ? ' is-on' : ''}`}
+        class=${`op-btn op-btn--icon mon2-deck__op mon2-deck__gear${openRoot() === row.root_dir ? ' is-on' : ''}`}
         data-act="gear"
         aria-haspopup="dialog"
         aria-label=${`${row.name} 실행 설정`}
@@ -388,22 +388,26 @@ export function createRepoDeck(mount_element, options) {
     }
     return html`<div class="mon2-deck__chips">
       ${chips.orchestration
-        ? html`<span class="mon2-deck__chip" title=${chips.orchestration.title}
+        ? html`<span
+            class="ui-chip mon2-deck__chip"
+            title=${chips.orchestration.title}
             >오케 ${chips.orchestration.text}</span
           >`
         : ''}
       ${chips.worker
-        ? html`<span class="mon2-deck__chip" title=${chips.worker.title}
+        ? html`<span class="ui-chip mon2-deck__chip" title=${chips.worker.title}
             >워커 ${chips.worker.text}</span
           >`
         : ''}
       ${chips.review
-        ? html`<span class="mon2-deck__chip" title=${chips.review.title}
+        ? html`<span class="ui-chip mon2-deck__chip" title=${chips.review.title}
             >구현 리뷰 ${chips.review.text}</span
           >`
         : ''}
       ${chips.quick_fix
-        ? html`<span class="mon2-deck__chip" title=${chips.quick_fix.title}
+        ? html`<span
+            class="ui-chip mon2-deck__chip"
+            title=${chips.quick_fix.title}
             >qf ${chips.quick_fix.text}</span
           >`
         : ''}
@@ -460,7 +464,7 @@ export function createRepoDeck(mount_element, options) {
         </span>
         <button
           type="button"
-          class="mon2-deck__worker"
+          class="op-btn op-btn--icon mon2-deck__worker"
           data-act="worker"
           aria-label=${`${row.name} Worker 탭으로 이동`}
           title="이 레포의 Worker 탭으로 이동"

@@ -3230,15 +3230,13 @@ function waitSummaryItemLine(reason) {
 }
 
 /**
- * Shared Worker/Monitor summary and its grouped navigation popup. `parts` puts
- * the chip on the shared `.ui-chip` size (UI-kqta §3.3) — only the Worker tab
- * passes it; the Monitor deck keeps its own size until UI-k5s2.
+ * Shared Worker/Monitor summary and its grouped navigation popup. The chip is
+ * drawn on the shared `.ui-chip` size in both tabs (UI-kqta §3.3, UI-k5s2).
  *
  * @param {Parameters<typeof blockedSummary>[0]} workspaces
  * @param {(root_dir: string, bead_id: string) => void} [reveal]
- * @param {boolean} [parts]
  */
-export function blockedSummaryTemplate(workspaces, reveal, parts = false) {
+export function blockedSummaryTemplate(workspaces, reveal) {
   const summary = blockedSummary(workspaces);
   if (summary.count === 0) {
     return '';
@@ -3246,7 +3244,7 @@ export function blockedSummaryTemplate(workspaces, reveal, parts = false) {
   return html`<span class="wait-summary" @click=${stopWaitClick}>
     <button
       type="button"
-      class="${parts ? 'ui-chip ' : ''}worker-kpi__chip"
+      class="ui-chip worker-kpi__chip"
       aria-haspopup="dialog"
       @click=${openWaitSummary}
     >
@@ -3328,31 +3326,26 @@ function summaryChipPrefix(id) {
  * @param {Parameters<typeof blockedSummary>[0]} options.workspaces
  * @param {(root_dir: string, bead_id: string) => void} [options.reveal]
  * @param {number} [options.session] - 세션 N, drawn only above zero.
- * @param {boolean} [options.parts] - Draw the chips with the shared `.ui-chip`
- * size (UI-kqta §3.3). Only the Worker tab passes it; the Monitor deck's
- * totals keep their own size until UI-k5s2.
  * @returns {import('lit-html').TemplateResult}
  */
 export function summaryChipsTemplate(options) {
   const short = options.range_short || options.range_label;
   const done_prefix = summaryChipPrefix('done');
-  const part = options.parts === true ? 'ui-chip ' : '';
-  return html`<span class="${part}worker-kpi__chip worker-kpi__chip--running"
+  return html`<span class="ui-chip worker-kpi__chip worker-kpi__chip--running"
       >${summaryChipPrefix('running')} <b>${options.running}</b></span
     ><span
-      class="${part}worker-kpi__chip worker-kpi__chip--pr"
+      class="ui-chip worker-kpi__chip worker-kpi__chip--pr"
       title="PR 머지를 기다리는 이슈"
       >${summaryChipPrefix('pr_wait')} <b>${options.pr_wait}</b></span
     ><span
-      class="${part}worker-kpi__chip worker-kpi__chip--done"
+      class="ui-chip worker-kpi__chip worker-kpi__chip--done"
       title=${`${options.range_label} ${done_prefix}`}
       >${short} ${done_prefix} <b>${options.done}</b></span
     >${blockedSummaryTemplate(
       options.workspaces,
-      options.reveal,
-      options.parts === true
+      options.reveal
     )}${typeof options.session === 'number' && options.session > 0
-      ? html`<span class="${part}worker-kpi__chip worker-kpi__chip--session"
+      ? html`<span class="ui-chip worker-kpi__chip worker-kpi__chip--session"
           >세션 <b>${options.session}</b></span
         >`
       : ''}`;
@@ -5005,10 +4998,10 @@ export function candidateCard(item, place_menu = null, options = {}) {
  * 보류 선반). 헤더 건수는 `items`만 세므로 이 조각의 내용은 pane 건수에 들지
  * 않고, 재료가 없으면 호출 측이 키를 넘기지 않아 아무것도 그려지지 않는다.
  *
- * `parts`는 헤더 토글을 공용 버튼 부품 `.op-btn`으로 그린다 (UI-kqta §3.3).
- * Worker 탭만 넘긴다 — Monitor 레인 머리는 UI-k5s2가 옮길 때까지 지금 모양이다.
+ * 헤더 토글은 두 탭 모두 공용 버튼 부품 `.op-btn`으로 그린다 (UI-kqta §3.3,
+ * UI-k5s2).
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, footer?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, match_count?: number, place_menu?: PlaceMenu|null, onOpenDoc?: import('../stepper.js').OpenDocHandler, parts?: boolean }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, footer?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, match_count?: number, place_menu?: PlaceMenu|null, onOpenDoc?: import('../stepper.js').OpenDocHandler }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -5039,7 +5032,7 @@ export function paneTemplate(pane) {
       ? html`<header class="worker-pane__hd">
           <button
             type="button"
-            class="${pane.parts ? 'op-btn ' : ''}worker-pane__toggle"
+            class="op-btn worker-pane__toggle"
             data-lane=${pane.lane}
             aria-expanded=${collapsed ? 'false' : 'true'}
           >
@@ -5114,25 +5107,22 @@ export function paneTemplate(pane) {
  * @property {{ rows: import('lit-html').TemplateResult[], completed?: import('lit-html').TemplateResult[], count: number }} [external]
  * @property {{ rows: import('lit-html').TemplateResult[], count: number, collapsed: boolean, drop?: WaitDropAttrs, slots?: Array<{root_dir: string, name: string, live: number, cap: number, saturated: boolean}> }} parallel
  * @property {{ lanes: WaitSerialLane[], collapsed: boolean, extra_panes?: import('lit-html').TemplateResult[], header_control?: import('lit-html').TemplateResult, notice?: import('lit-html').TemplateResult }} serial
- * @property {boolean} [parts] - 영역 토글과 직렬 pane 머리를 공용 부품으로 그린다
- * (UI-kqta §3.3). Worker 탭만 넘긴다.
  */
 
 /**
  * One 영역 접기 토글 (§4.2). 클릭 처리는 두 탭의 index.js가 `lane-collapse`
  * 스토어로 위임한다 — 여기서는 좌표(`data-area`)와 상태(`aria-expanded`)만
- * 싣는다. `parts`는 토글을 아이콘 버튼 부품으로 그린다 (Worker 탭만, UI-kqta).
+ * 싣는다. 토글은 두 탭 모두 아이콘 버튼 부품이다 (UI-kqta, UI-k5s2).
  *
  * @param {'parallel'|'serial'} area
  * @param {string} name
  * @param {boolean} collapsed
- * @param {boolean} parts
  * @returns {import('lit-html').TemplateResult}
  */
-function areaToggle(area, name, collapsed, parts) {
+function areaToggle(area, name, collapsed) {
   return html`<button
       type="button"
-      class="${parts ? 'op-btn op-btn--icon ' : ''}worker-wait__area-toggle"
+      class="op-btn op-btn--icon worker-wait__area-toggle"
       data-area=${area}
       aria-expanded=${collapsed ? 'false' : 'true'}
       aria-label=${`${name} ${collapsed ? '펼치기' : '접기'}`}
@@ -5182,12 +5172,7 @@ export function waitBody(model) {
       data-area="parallel"
     >
       <header class="worker-wait__area-hd">
-        ${areaToggle(
-          'parallel',
-          '병렬 영역',
-          parallel.collapsed,
-          model.parts === true
-        )}
+        ${areaToggle('parallel', '병렬 영역', parallel.collapsed)}
         <span class="worker-wait__area-count">${parallel.count}</span>
         ${(parallel.slots || []).map(
           (slot) =>
@@ -5225,12 +5210,7 @@ export function waitBody(model) {
       data-area="serial"
     >
       <header class="worker-wait__area-hd">
-        ${areaToggle(
-          'serial',
-          '직렬 영역',
-          serial.collapsed,
-          model.parts === true
-        )}
+        ${areaToggle('serial', '직렬 영역', serial.collapsed)}
         ${serial.header_control ? serial.header_control : ''}
       </header>
       ${serial.collapsed
@@ -5238,9 +5218,7 @@ export function waitBody(model) {
         : html`<div class="worker-wait__area-body">
             ${serial.notice ? serial.notice : ''}
             ${serial.extra_panes ? serial.extra_panes : ''}
-            ${serial.lanes.map((lane) =>
-              serialLaneTemplate(lane, model.parts === true)
-            )}
+            ${serial.lanes.map((lane) => serialLaneTemplate(lane))}
           </div>`}
     </section>
   </div>`;
@@ -5251,10 +5229,9 @@ export function waitBody(model) {
  * 호출 측 `after`. pane/힌트의 표시 조건은 `app/styles.css` 한 곳이 소유한다.
  *
  * @param {WaitSerialLane} lane
- * @param {boolean} parts - `paneTemplate`의 `parts` (Worker 탭만).
  * @returns {import('lit-html').TemplateResult}
  */
-function serialLaneTemplate(lane, parts) {
+function serialLaneTemplate(lane) {
   const drop = lane.drop || {};
   const badge_el = lane.badge
     ? html`<span
@@ -5278,7 +5255,6 @@ function serialLaneTemplate(lane, parts) {
       count: lane.count,
       match_count: lane.match_count,
       empty: '비어 있음 — 행을 여기로 드래그',
-      parts,
       header_control: html`${badge_el}${lane.header_control
         ? lane.header_control
         : ''}`,

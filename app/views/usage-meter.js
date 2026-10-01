@@ -671,7 +671,7 @@ export function createUsageMeter(mount_element) {
     const is_open = open_provider === provider.key;
     return html`<button
       type="button"
-      class=${`usage-meter__toggle ${group_class}`}
+      class=${`op-btn usage-meter__toggle ${group_class}`}
       aria-label=${`${provider.label} usage`}
       aria-expanded=${is_open ? 'true' : 'false'}
       aria-controls=${CARD_ID}
@@ -809,7 +809,7 @@ export function createUsageMeter(mount_element) {
           ? ''
           : html`<button
               type="button"
-              class="usage-meter__switch"
+              class="op-btn usage-meter__switch"
               ?disabled=${provider_switching}
               @click=${() => void switchAccount(provider, account.number)}
             >
@@ -837,7 +837,7 @@ export function createUsageMeter(mount_element) {
             ${message.kind === 'confirm'
               ? html`<button
                     type="button"
-                    class="usage-meter__switch usage-meter__confirm"
+                    class="op-btn usage-meter__switch usage-meter__confirm"
                     ?disabled=${provider_switching}
                     @click=${() =>
                       void switchAccount(provider, account.number, true)}
@@ -846,7 +846,7 @@ export function createUsageMeter(mount_element) {
                   </button>
                   <button
                     type="button"
-                    class="usage-meter__switch usage-meter__cancel"
+                    class="op-btn usage-meter__switch usage-meter__cancel"
                     @click=${() => cancelSwitch(provider.key, account.number)}
                   >
                     취소

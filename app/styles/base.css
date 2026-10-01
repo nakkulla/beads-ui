@@ -312,13 +312,10 @@ button.interactive-session-badge {
 }
 
 /* Longhand only: the shorthands would drop the select arrow background-image
-   and the hover border-width/style that styles.css owns. The fixed height must
-   drop the inherited vertical padding, or the 13px label gets clipped. */
+   and the hover border-width/style that styles.css owns. Sizes come from the
+   parts (`.ui-select`, `.op-btn`) — these rules only flatten the colours
+   (UI-k5s2). */
 .repo-scope .workspace-picker__select {
-  height: var(--h-control);
-  padding-top: 0;
-  padding-bottom: 0;
-  line-height: 22px;
   min-width: 0;
   border-color: transparent;
   background-color: transparent;
@@ -328,7 +325,6 @@ button.interactive-session-badge {
 
 .repo-scope .workspace-picker__manage-button,
 .repo-scope .workspace-picker__git-pull-button {
-  height: var(--h-header-item);
   border-color: transparent;
   background-color: transparent;
   color: var(--text-muted);

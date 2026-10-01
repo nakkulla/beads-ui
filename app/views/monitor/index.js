@@ -1132,7 +1132,7 @@ export function createMonitorView(mount_element, options) {
     return html`<header class="mon2-sec__hd">
       <button
         type="button"
-        class="mon2-sec__toggle"
+        class="op-btn op-btn--icon mon2-sec__toggle"
         data-root-dir=${input.root_dir}
         data-section="runnable"
         aria-expanded=${collapsed ? 'false' : 'true'}
@@ -1144,7 +1144,7 @@ export function createMonitorView(mount_element, options) {
       <span class="mon2-sec__count">${input.count}</span>
       <button
         type="button"
-        class="mon2-sec__worker"
+        class="op-btn mon2-sec__worker"
         data-root-dir=${input.root_dir}
         title="이 레포의 Worker 탭으로 이동"
       >
@@ -1399,7 +1399,7 @@ export function createMonitorView(mount_element, options) {
       cycle: lane.cycle,
       header_control: html`<button
         type="button"
-        class="mon2-sec__worker"
+        class="op-btn mon2-sec__worker"
         data-root-dir=${group.root_dir}
         title="이 레포의 Worker 탭으로 이동"
       >
@@ -1714,7 +1714,7 @@ export function createMonitorView(mount_element, options) {
    */
   function candidateFilterStrip() {
     return html`<div class="worker-filter">
-      <label class="worker-filter__tgl" title="blocked 이슈 표시">
+      <label class="ui-field worker-filter__tgl" title="blocked 이슈 표시">
         <input
           type="checkbox"
           class="mon-filter__blocked"
@@ -1734,7 +1734,7 @@ export function createMonitorView(mount_element, options) {
           (o) =>
             html`<button
               type="button"
-              class="mon-filter__readiness worker-filter__chip${candidate_filter.readiness ===
+              class="ui-chip mon-filter__readiness worker-filter__chip${candidate_filter.readiness ===
               o.value
                 ? ' is-active'
                 : ''}"
@@ -1757,7 +1757,7 @@ export function createMonitorView(mount_element, options) {
           (o) =>
             html`<button
               type="button"
-              class="mon-filter__route worker-filter__chip${candidate_filter.routes.includes(
+              class="ui-chip mon-filter__route worker-filter__chip${candidate_filter.routes.includes(
                 o.value
               )
                 ? ' is-active'
@@ -1787,7 +1787,7 @@ export function createMonitorView(mount_element, options) {
   function laneHeaderControl(lane, count) {
     if (lane === 'runnable') {
       return html`<select
-        class="mon-candidate-sort worker-sort"
+        class="ui-select mon-candidate-sort worker-sort"
         aria-label="후보 정렬"
         title="후보 정렬"
         .value=${candidate_sort}
@@ -1805,7 +1805,7 @@ export function createMonitorView(mount_element, options) {
     }
     if (lane === 'running') {
       return html`<select
-        class="mon-running-sort worker-sort"
+        class="ui-select mon-running-sort worker-sort"
         aria-label="실행중 정렬"
         title="실행중 정렬"
         .value=${running_sort}
@@ -1821,7 +1821,7 @@ export function createMonitorView(mount_element, options) {
     if (lane === 'pr_wait' && count > 0) {
       return html`<button
         type="button"
-        class="mon-lane-op mon-merge-all"
+        class="op-btn mon-lane-op mon-merge-all"
         title="자격이 생기는 PR을 각 레포의 머지 큐에 한 번에 넣습니다"
       >
         일괄 머지
@@ -1829,7 +1829,7 @@ export function createMonitorView(mount_element, options) {
     }
     if (lane === 'done') {
       return html`<select
-        class="mon-done-range worker-sort"
+        class="ui-select mon-done-range worker-sort"
         aria-label="완료 기간"
         title="완료 기간"
         .value=${done_range}

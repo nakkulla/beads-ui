@@ -44,7 +44,7 @@ describe('monitor tab styles (UI-eey2)', () => {
   test('sizes the inline SVG icons and gives the five lanes equal width (UI-thwe)', () => {
     const block = monitorBlock();
 
-    expect(block).toMatch(/\.mon-i\s*{[^}]*width:\s*13px/);
+    expect(block).toMatch(/\.mon-i\s*{[^}]*width:\s*var\(--size-icon-mon\)/);
     expect(block).not.toContain('flex: 1.35 1 0');
     expect(block).not.toContain('flex: 1.05 1 0');
     expect(block).not.toContain('.mon2-deck__pill');

@@ -3816,7 +3816,6 @@ export function createWorkerView(mount_element, options = {}) {
     // 세 카운트는 데스크톱 KPI 줄과 모바일 리본이 함께 쓴다 — 같은 수를 두 번
     // 정의하지 않기 위해 템플릿 하나로 둔다.
     const counts = summaryChipsTemplate({
-      parts: true,
       running: group.live_count,
       // 보관 행은 PR 대기 개수에 들지 않는다 (UI-sd12 §3.4).
       pr_wait: prWaitRows(m).filter((/** @type {any} */ r) => !r.shelved)
@@ -4367,7 +4366,6 @@ export function createWorkerView(mount_element, options = {}) {
     const root_dir = rootDir();
     const group = groupOf(m);
     return waitBody({
-      parts: true,
       parallel: {
         rows: parallel_rows.map((/** @type {any} */ it, index) =>
           dragRow(it, { kind: 'parallel', root_dir, row_index: index })
@@ -4483,7 +4481,6 @@ export function createWorkerView(mount_element, options = {}) {
     );
     const running = runningTiles(m);
     const candidate_pane = paneTemplate({
-      parts: true,
       id: 'worker-pane-candidate',
       lane: 'candidate',
       title: '후보',
@@ -4505,7 +4502,6 @@ export function createWorkerView(mount_element, options = {}) {
         : undefined
     });
     const done_pane = paneTemplate({
-      parts: true,
       id: 'worker-pane-done',
       lane: 'done',
       title: '완료',
@@ -4537,7 +4533,6 @@ export function createWorkerView(mount_element, options = {}) {
             count: running.length + pr_wait.length
           })}
           ${paneTemplate({
-            parts: true,
             id: 'worker-pane-queue',
             lane: 'queue',
             title: '대기',
@@ -4560,7 +4555,6 @@ export function createWorkerView(mount_element, options = {}) {
     return html`<div class="worker-lanes">
         ${candidate_pane}
         ${paneTemplate({
-          parts: true,
           id: 'worker-pane-queue',
           lane: 'queue',
           title: '대기',
@@ -4572,7 +4566,6 @@ export function createWorkerView(mount_element, options = {}) {
           body: waitBodyTemplate(m)
         })}
         ${paneTemplate({
-          parts: true,
           id: 'worker-pane-running',
           lane: 'running',
           title: '실행 중',
@@ -4589,7 +4582,6 @@ export function createWorkerView(mount_element, options = {}) {
           body: runningBody(m)
         })}
         ${paneTemplate({
-          parts: true,
           id: 'worker-pane-pr-wait',
           lane: 'pr_wait',
           title: 'PR 대기',

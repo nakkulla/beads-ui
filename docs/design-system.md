@@ -5,10 +5,14 @@ beads-ui의 지금 색·글꼴은 그대로 두고, 조작(버튼·입력·선�
 `docs/superpowers/specs/2026-10-01-design-system-current-theme-design.md`(UI-kqta)다.
 
 - 적용된 곳: Worker 탭(툴바·KPI·필터·레인 머리·저장소 작업 줄), 공유 카드
-  렌더러(`candidateCard`·`miniRow`·`runningTile` — Monitor 카드도 같다), 공용
-  헤더 버튼(`?`·`⚙`·`New issue`)과 사용량 미터 칸.
-- 아직 아닌 곳: Monitor 전용 표면(레포 데크·레인 머리·툴바·합계 줄·후보 필터),
-  이슈 상세, 대화상자, 전사 드로어, 비교·ADR 탭. UI-k5s2가 같은 규칙으로 옮긴다.
+  렌더러(`candidateCard`·`miniRow`·`runningTile` — Monitor 카드도 같다), Monitor
+  탭(레포 데크의 스위치·`↗`·실행 칩, 합계 줄 칩, 레인 머리
+  토글·정렬·기간·`일괄 머지`, 후보 섹션 머리, 후보 필터, 대기 영역 토글 —
+  UI-k5s2), 공용 헤더(`?`·`⚙`·`New issue`, 작업 공간 선택·`프로젝트 관리`·Git
+  Pull, 테마 스위치)와 사용량 미터(provider 토글, 계정 카드의
+  `[전환]`·`[그래도 전환]`·`[취소]`).
+- 아직 아닌 곳: 이슈 상세, 대화상자, 전사 드로어, 비교·ADR 탭. UI-k5s2가 같은
+  규칙으로 옮긴다.
 - 카드의 줄 순서·슬롯·칩 의미는 이 문서가 아니라 카드 문법 스펙과 ADR UI-nuwy가
   정한다. 이 문서는 모양만 정한다.
 
@@ -40,9 +44,9 @@ beads-ui의 지금 색·글꼴은 그대로 두고, 조작(버튼·입력·선�
   색 이름(`--fg`·`--muted`·`--border`·`--panel-bg`·`--control-*`·`--button-*`
   ·`--badge-*`)은 역할 토큰과 값이 달라 지금 값을 유지한다.
 
-옛 공용 CSS(`styles.css` 앞부분·`base.css`)에 리터럴로 적혀 있던 값은 같은 값
-그대로 `tokens.css`의 `legacy role tokens` 묶음에 옮겼다(UI-k5s2). 단계에 없는
-크기와 테마와 무관한 색만 있다:
+옛 공용 CSS(`styles.css` 앞부분·`base.css`)와 UI-k5s2가 옮긴 화면(Monitor…)에
+리터럴로 적혀 있던 값은 같은 값 그대로 `tokens.css`의 `legacy role tokens`
+묶음에 옮겼다(UI-k5s2). 단계에 없는 크기와 테마와 무관한 색만 있다:
 
 | 토큰                                                                                                    | 값                   | 쓰는 곳                                  |
 | ------------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------- |
@@ -57,12 +61,14 @@ beads-ui의 지금 색·글꼴은 그대로 두고, 조작(버튼·입력·선�
 | `--h-header-item`                                                                                       | 22px                 | 헤더 줄 항목(구분선·로딩·캡슐 버튼) 높이 |
 | `--h-touch-target`                                                                                      | 44px                 | 손가락 표적·패널 머리 최소 높이          |
 | `--h-viewport`                                                                                          | 100dvh               | 화면 높이                                |
+| `--size-icon-mon`                                                                                       | 13px                 | Monitor 인라인 SVG 아이콘(`.mon-i`) 상자 |
 | `--mix-black`·`--mix-white`·`--mix-ink`                                                                 | #000·#fff·#111       | `color-mix()` 재료                       |
 | `--danger`·`--fg-on-danger`                                                                             | #b00020·#fff         | 옛 위험 버튼·오류 글자, 그 위 글자       |
 | `--danger-strong`·`--danger-strong-bg`·`--danger-strong-border`                                         | #c62828와 그 10%·30% | 이슈 삭제 버튼                           |
 | `--fatal-error-glow`·`--pre-border-mix`                                                                 | #fca5a5·#1f2937      | 치명 오류 대화상자 빛·코드 상자 테두리   |
 | `--scrim-dialog`·`--scrim-fatal`·`--scrim-overlay`·`--scrim-viewer`                                     | 반투명 검정·남색     | 대화상자·상세 오버레이·문서 뷰어 뒤 막   |
 | `--shadow-switch-knob`·`--shadow-menu`·`--shadow-overlay`·`--shadow-fatal-dialog`·`--shadow-fatal-icon` | `box-shadow` 전체 값 | 테마 스위치·메뉴·상세 오버레이·치명 오류 |
+| `--shadow-popover`                                                                                      | `box-shadow` 전체 값 | 터치 끌기 복제본·외부 대기 팝오버        |
 
 ## 2. 부품
 
@@ -93,6 +99,11 @@ beads-ui의 지금 색·글꼴은 그대로 두고, 조작(버튼·입력·선�
   테스트 선택자의 계약이므로 이름을 바꾸지 않는다.
 - 칩 모양의 `<button>`(판정 칩·의존 칩·필터 칩)은 `.ui-chip`이다. `.op-btn`을
   함께 붙이지 않는다 — 칩은 칩 높이를 갖는다.
+- 체크박스·라디오(`input[type=checkbox|radio]`)는 부품이 없다 — 자기 크기로
+  선다. 필터 줄·툴바에서 다른 조작 옆에 서는 체크박스 토글은 라벨째
+  `.ui-field`로 감싸 줄 높이를 맞춘다(`label.ui-field.worker-filter__tgl`, 헤더
+  테마 스위치 `label.ui-field.theme-toggle`). 상자 테두리를 그리지 않던 토글은
+  역할 규칙이 `border-color: transparent`를 적는다.
 - `is-active`는 토글 버튼의 켜짐 상태다(`▶ 자동화`, `⏸ 자동 머지`). 채운 변형만
   고리가 생기고, 테두리 변형은 자기 색이 상태를 말한다.
 - 화면의 역할 규칙은 **색과 배치만** 적는다. 높이·여백·글자 크기·모서리를 다시
@@ -109,11 +120,18 @@ beads-ui의 지금 색·글꼴은 그대로 두고, 조작(버튼·입력·선�
 | `.ui-field` 안 컨트롤    | `.ui-field > :is(input:not([type=checkbox], [type=radio]), select)` | (0,2,1) | 전역 폼 규칙과 역할 클래스의 크기를 이긴다. 체크박스는 자기 크기다                                                                                                                                                                                                                                                        |
 | `.ui-chip`               | `.ui-chip`                                                          | (0,1,0) | 나중에 읽혀 같은 구체도의 칩 규칙(`.ctl-chip` 등)의 크기를 이긴다. 더 구체적인 칩 크기 규칙은 두지 않는다                                                                                                                                                                                                                 |
 
-Monitor 전용 표면과 같이 쓰는 클래스(`.worker-pane__toggle`·`.worker-sort`
-·`.worker-kpi__chip`·`.worker-filter__chip`·`.worker-filter__tgl`)는 그쪽을 위해
-지금 크기 규칙을 남겨 두었다. Worker 탭은 같은 요소에 부품을
-붙여(`parts: true`로 그리는 공유 템플릿 포함) 크기를 받는다. UI-k5s2가 Monitor를
-옮기면 남은 크기 규칙을 지운다.
+Worker와 Monitor가 같이 쓰는 클래스 여섯(`.worker-pane__toggle`, `.worker-sort`,
+`.worker-kpi__chip`, `.worker-filter__chip`, `.worker-filter__tgl`,
+`.worker-wait__area-toggle`)은 두 탭 모두 부품을 붙여 그리고(공유 템플릿
+`paneTemplate`·`waitBody`·`summaryChipsTemplate`·`blockedSummaryTemplate`에는
+부품을 켜고 끄는 옵션이 없다), 역할 규칙에는 크기 선언이 없다(UI-k5s2).
+
+역할 규칙의 `:hover`(0,2,0)는 부품의 hover(0,2,1)에 진다. 부품 hover의
+`--accent` 색을 받지 않던 버튼은 역할 hover를 `:hover:not(:disabled)`(0,3,0)로
+적어 지금 색을 지킨다(예: `.mon2-deck__op`·`.mon-lane-op`·작업 공간
+`프로젝트 관리`·Git Pull). 같은 이유로 `font: inherit` 같은 단축 속성은 글자
+크기·줄 높이를 다시 적으므로 역할 규칙에 두지 않는다 — 글꼴만 물려받을 때는
+`font-family: inherit`처럼 longhand를 쓴다.
 
 ## 3. 원시 값 금지
 
@@ -149,14 +167,18 @@ Monitor 전용 표면과 같이 쓰는 클래스(`.worker-pane__toggle`·`.worke
    원시 색 리터럴 하나하나 + 위 크기 속성 선언 값의 길이 리터럴 하나하나(토큰
    밖·fallback 포함). UI-kqta 착지 전 470(색 194 + 크기 276) → 428 (194 + 234,
    UI-kqta) → 62 (11 + 51, UI-k5s2 tokens — 옛 팔레트를 `tokens.css`로 옮기고
-   `.op-btn` 표지 앞의 레거시 공용 CSS와 `base.css`를 토큰으로). 원시 값을 줄인
+   `.op-btn` 표지 앞의 레거시 공용 CSS와 `base.css`를 토큰으로) → 57 (10 + 47,
+   UI-k5s2 monitor — Monitor 탭·헤더·사용량 미터를 부품으로). 원시 값을 줄인
    변경은 기준을 같이 내린다. UI-k5s2가 0으로 내린다.
-3. **부품 렌더 검사** — Worker 탭 본문(데스크톱·모바일)과 카드 렌더러 변형을
-   그린 결과에서 모든 `button`·`input`·`select`가 `.op-btn`·`.ui-input`
-   ·`.ui-select`·`.ui-chip` 중 하나를 갖거나 `.ui-field` 안에 있다. 겹친 표면은
-   UI-k5s2 범위라 뺀다: `dialog`, `.chip-popover`, `.rtile__failure-pop`,
-   `.place-menu`(상세 패널과 같이 쓰는 레인 메뉴), `.worker-filter__labels-pop`,
-   `.worker-repo-drawer`, `.worker-drawer-host`,
+3. **부품 렌더 검사** — Worker 탭 본문(데스크톱·모바일), 카드 렌더러 변형,
+   Monitor 탭 본문(데크·레인·후보 필터, 데스크톱·모바일), 앱 헤더(`index.html`
+   마크업에 작업 공간 선택·사용량 미터를 `main.js`처럼 붙인 것, 프로젝트 관리
+   팝오버·사용량 계정 카드를 연 상태 포함)를 그린 결과에서 모든
+   `button`·`input`·`select`가 `.op-btn`·`.ui-input`·`.ui-select`·`.ui-chip` 중
+   하나를 갖거나 `.ui-field` 안에 있다. 체크박스·라디오는 부품이 없어(2절) 세지
+   않는다. 겹친 표면은 UI-k5s2 범위라 뺀다: `dialog`, `.chip-popover`,
+   `.rtile__failure-pop`, `.place-menu`(상세 패널과 같이 쓰는 레인 메뉴),
+   `.worker-filter__labels-pop`, `.worker-repo-drawer`, `.worker-drawer-host`,
    `.worker-repo-ops-settings`(설정과 같은 저장소 작업 선언).
 
 검사 구역은 `styles.css` 안의 표지 주석 쌍이다:
@@ -167,9 +189,14 @@ Monitor 전용 표면과 같이 쓰는 클래스(`.worker-pane__toggle`·`.worke
 /* @ds-region worker:end */
 ```
 
-지금 구역(이름 `worker` 9쌍, `header` 1쌍):
+지금 구역(이름 `worker` 9쌍, `header` 3쌍, `monitor` 3쌍):
 
-- `header` — `.header-actions`·헤더 버튼·사용량 미터 칸
+- `header` — 앱 헤더 전체(`.app-header`부터 작업 공간 선택, 탭,
+  `.header-actions`, 사용량 미터와 그 카드, 로딩, 테마 스위치까지), 사용량
+  리본의 ≤640px 블록, Worker 반응형 블록 안의 헤더 줄바꿈 규칙
+- `monitor` — Monitor 탭 머리(`모니터 탭`부터 `[일괄 머지]`까지), 레포 데크·레포
+  섹션·상호 정지 경고·드롭 표시·터치 끌기 복제본(`모니터 세로 5레인`부터 대기 행
+  조작 묶음 앞까지), Monitor 모바일 블록
 - Worker 콘솔 — `.worker-console`부터 막힘 요약 `<dialog>` 앞까지, 그 뒤
   `.wait-reason--highlight`부터 `동시 실행` 입력까지(설정 대화상자 규칙 앞)
 - 저장소 작업 줄(`.worker-repo-strip`)
@@ -180,8 +207,8 @@ Monitor 전용 표면과 같이 쓰는 클래스(`.worker-pane__toggle`·`.worke
   세션 타일)
 - Worker 반응형(≤640px) 블록 안의 레인·카드 규칙과 저장소 작업 줄 규칙
 
-전사 드로어·저장소 작업 드로어·스크립트 뷰어·막힘 요약 대화상자·터치 끌기
-복제본은 구역 밖이다(겹친 표면, UI-k5s2).
+전사 드로어·저장소 작업 드로어·스크립트 뷰어·막힘 요약 대화상자는 구역
+밖이다(겹친 표면, UI-k5s2).
 
 ## 5. 폭 넘침 확인
 
