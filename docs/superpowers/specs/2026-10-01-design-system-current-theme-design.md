@@ -66,7 +66,9 @@ base `4be748eaeab7f6de6e8b0f4018d728bde0767da0` 기준이다.
 **전역 폼 규칙과 부품 후보**
 - 전역 폼 규칙이 `input[type=text|search|number]`·`select`·`button`에 걸린다 — app/styles.css:1008-1056
   - 선택자 구체도가 (0,1,1)이라 단일 클래스 규칙(0,1,0)을 이긴다(예: `.worker-search`, `.worker-slots__input`).
-- `.op-btn`은 min-height 24px이고 coarse 포인터·≤640px에서 32px이다. 2026-09-02 조작 표면 스펙이 정의했다 — app/styles.css:2763-2841; docs/superpowers/specs/2026-09-02-worker-operation-surface-unify-design.md:96-125
+- `.op-btn`은 min-height 24px이고 `(any-pointer: coarse), (max-width: 640px)`에서 32px이다. 2026-09-02 조작 표면 스펙이 정의했다 — app/styles.css:2763-2841(분기 :2828); docs/superpowers/specs/2026-09-02-worker-operation-surface-unify-design.md:96-125
+- `.op-btn`은 9개 파일에서 43번 쓰인다. 그중 Worker 밖은 비교·상세·세션 이력·설정(일괄·실행)·공급자 재개 대화상자다 — 명령: `git grep -c op-btn -- 'app/views/**/*.js' ':!*.test.js'`(2026-10-01)
+- 카드 렌더러 `candidateCard`·`miniRow`·`runningTile`은 Worker와 Monitor가 공유한다. 정의는 app/views/worker/lanes.js·running-grid.js에 있고, Monitor는 app/views/monitor/index.js에서 같은 렌더러를 쓴다. 공유 사실은 ADR UI-nuwy 승계 조항(UI-u6ud-8)이 고정한다 — docs/adr/UI-nuwy-same-worker-session-conversation-and-return.md:262
 - 버튼 계열 클래스는 약 15개, 칩 69·알약 11·배지 45개다. 쓰이는 원시 글자 크기는 13종(8~28px)이다 — 명령: `grep -oE` 집계(2026-10-01)
 
 **Worker 툴바**
@@ -103,7 +105,7 @@ base `4be748eaeab7f6de6e8b0f4018d728bde0767da0` 기준이다.
 | `--px-control` | 10px | |
 | `--gap-control` | `--sp-6` | |
 
-`(pointer: coarse)`와 `max-width: 640px`에서는 조작·칩 높이가 coarse 값으로 바뀐다. 이 분기는 지금 `.op-btn` 분기와 같다.
+`(any-pointer: coarse), (max-width: 640px)`에서는 조작·칩 높이가 coarse 값으로 바뀐다. 이 분기는 지금 `.op-btn` 분기(app/styles.css:2828)와 같다.
 
 옛 `:root` 블록에서 같은 역할의 이름은 이렇게 정리한다:
 - 지금 화면에 실제로 렌더되는 값이 같으면 tokens.css 이름의 별칭으로 합친다.
@@ -113,7 +115,9 @@ base `4be748eaeab7f6de6e8b0f4018d728bde0767da0` 기준이다.
 
 새 파일 `app/styles/components.css`에 부품을 정의한다. styles.css 다음에 로드하고 `index.html`·`package.json#files`에 추가한다.
 
-결정: 버튼 부품은 새 클래스를 만들지 않고 기존 `.op-btn`을 승격한다 — 2026-09-02 스펙이 크기·아이콘·글자 규칙을 이미 정했고 약 51곳이 쓴다.
+결정: 버튼 부품은 새 클래스를 만들지 않고 기존 `.op-btn`을 승격한다 — 2026-09-02 스펙이 크기·아이콘·글자 규칙을 이미 정했고 9개 파일 43곳이 쓴다.
+
+결정: 승격 때 `.op-btn`과 기존 변형(`--primary`·`--icon`·`--ghost`)의 계산 값(높이 24/32px, 글자 `--fs-small`, 모서리 `--r-5`, 여백)은 바꾸지 않는다 — Worker 밖의 `.op-btn` 사용처(비교·상세·설정·대화상자)가 이 이슈에서 모양을 바꾸지 않게 하기 위해서다. 승격은 값을 3.1 토큰 참조로 옮기고 새 변형(`--success`·`--warn`·`--danger`)을 더하는 것뿐이다.
 
 | 부품 | 용도 |
 | --- | --- |
@@ -127,22 +131,26 @@ base `4be748eaeab7f6de6e8b0f4018d728bde0767da0` 기준이다.
 
 ### 3.3 Worker 탭과 헤더 적용
 
-- **대상**: Worker 탭 툴바·KPI·필터, 레인 머리, 카드의 버튼·칩, 공용 헤더의 버튼(`#help-btn`, `#display-settings-btn`, `#new-issue-btn`)과 사용량 미터 칸
-- **바꾸는 것**: 마크업에 부품 클래스를 붙이고 Worker 전용 크기 규칙을 지운다. 색·배치·줄 순서·문구·동작은 바꾸지 않는다.
+- **대상**:
+  - Worker 탭 전용 표면: 툴바·KPI·필터·레인 머리
+  - 공유 카드 렌더러(`candidateCard`·`miniRow`·`runningTile`)의 버튼·칩. 이 렌더러는 Monitor도 쓰므로 Monitor의 카드도 함께 바뀐다(의도된 변경).
+  - 공용 헤더의 버튼(`#help-btn`, `#display-settings-btn`, `#new-issue-btn`)과 사용량 미터 칸
+- **바꾸지 않는 것**: Monitor 전용 표면(레포 띠·레인 머리·툴바·합계 줄), 이슈 상세, 대화상자(설정·새 이슈·도움말·치명 오류·공급자 재개), 전사 드로어, 비교·ADR 탭. 이들은 UI-k5s2가 옮긴다. 이 표면들의 마크업과 크기 규칙은 이 이슈에서 건드리지 않는다. 함께 쓰는 `.op-btn`은 3.2 결정대로 계산 값이 그대로다.
+- **바꾸는 것**: 대상 마크업에 부품 클래스를 붙이고 대상 전용 크기 규칙을 지운다. 색·배치·줄 순서·문구·동작은 바꾸지 않는다.
 - **툴바 예시**:
   - `▶ 자동화` → `.op-btn--success`
   - `⏸ 자동 머지` → `.op-btn--warn`
   - `동시 실행`·`직렬 레인` → `.ui-field`
   - 검색 → `.ui-input`
   - `+ 새 이슈` → `.op-btn--primary`
-- **Worker 밖 화면**: 이 이슈에서는 지금 모양을 유지한다. components.css가 전역 요소 선택자를 새로 걸지 않으므로 영향이 없다.
+- **모양 보존 기준**: "바꾸지 않는 것"의 표면은 전후 캡처(390·1280, 다크)에서 조작·칩의 높이·모서리·글자 크기가 같아야 한다. components.css는 전역 요소 선택자를 걸지 않고, 부품 클래스가 붙은 요소에만 적용된다.
 
 ### 3.4 검사와 문서
 
 `app/styles.design-system.test.js`(이름은 예)에 vitest 검사를 둔다:
 1. components.css와 Worker 영역 CSS에는 원시 색(hex·rgb)이 없고, `height`·`min-height`·`font-size`·`border-radius`·`padding`이 토큰만 쓴다.
 2. 래칫: tokens.css 밖 전체 CSS의 원시 색·크기 값 개수가 기록된 기준을 넘지 않는다. 기준은 이 이슈 착지 때 줄이고 UI-k5s2가 0으로 내린다.
-3. Worker 탭을 렌더한 결과에서 모든 `button`·`input`·`select`가 부품 클래스(`.op-btn`·`.ui-input`·`.ui-select`, `.ui-field` 안 컨트롤)를 가진다.
+3. Worker 탭 본문(툴바·KPI·필터·레인·카드)을 렌더한 결과에서 모든 `button`·`input`·`select`가 부품 클래스(`.op-btn`·`.ui-input`·`.ui-select`, `.ui-field` 안 컨트롤)를 가진다. 상세 패널·대화상자 같은 겹친 표면은 UI-k5s2 범위라 제외한다.
 
 styles.css를 잘라 읽는 기존 테스트(`styles.worker-theme.test.js` 등)는 규칙이 옮겨 간 위치에 맞게 고친다. 이것은 의도된 변경이다.
 
@@ -175,7 +183,7 @@ styles.css를 잘라 읽는 기존 테스트(`styles.worker-theme.test.js` 등)�
 3. Worker 툴바의 모든 조작은 탐침 측정에서 같은 높이다. 1280에서 24px, 390 터치에서 32px이다.
 4. `scripts/ui-overflow-probe.mjs <dev-url> '#/worker'`가 390·1280 모두에서 넘침 0으로 끝난다.
 5. 3.4 검사 1~3이 통과한다. 래칫 기준은 착지 전 값보다 작다.
-6. 전후 캡처(390·1280, 다크·라이트)에서 Worker 탭 색이 같다. 캡처는 완료 보고서에 목업 서비스 링크로 남긴다.
+6. 전후 캡처(390·1280, 다크·라이트)에서 Worker 탭 색이 같다. 3.3 "바꾸지 않는 것" 표면(Monitor 레포 띠·툴바, 상세, 설정 대화상자, 비교·ADR 탭)은 전후 캡처에서 조작·칩의 높이·모서리·글자 크기가 같다. 공유 카드의 Monitor 쪽 변화만 예외다. 캡처는 완료 보고서에 목업 서비스 링크로 남긴다.
 7. `docs/design-system.md`가 있고, `AGENTS.md`가 그 문서를 가리킨다.
 8. Pre-Handoff Validation이 통과한다(`npm run tsc`, `npm run lint`, prettier, `npx vitest run --reporter=dot`).
 
@@ -188,12 +196,7 @@ styles.css를 잘라 읽는 기존 테스트(`styles.worker-theme.test.js` 등)�
 
 - 전제: ADR UI-nuwy — 카드 슬롯과 줄 문법은 바꾸지 않는다. 새 버튼·칩을 달지 않고 모양만 바꾼다.
 - 전제: ADR UI-u6ud-5 — 번들은 배포 때 빌드한다. 새 CSS 파일은 `package.json#files`와 `index.html`에 둔다.
-- beads-ui 화면의 조작은 지금 테마의 색과 글꼴을 유지한 채 크기 토큰과 공용 부품 클래스로만 그린다(크기: 조작 24px, 터치·좁은 폭 32px, 칩 18px). 이 규칙은 vitest CSS 검사와 `docs/design-system.md`로 지킨다.
-  - 되돌리기 어려움: 성립한다. 함께 움직이는 소비자는 모든 화면의 마크업(app/views/**), styles.css와 components.css, CSS를 읽는 테스트, AGENTS.md이다. 이후 모든 UI 변경이 이 규칙을 따른다.
-  - 맥락 필요: 성립한다. 새 테마를 버리고 지금 테마를 유지한 이유, `.op-btn`을 승격한 이유, 24px을 고른 이유(밀도 유지)가 남지 않으면 다음 재설계가 같은 비교를 반복한다.
-  - 실제 트레이드오프: 성립한다. 누르기 편한 28px 대신 지금 밀도를 택했다. stylelint 대신 의존성 없는 vitest 검사를 택했다.
-  - 새 주제: 가장 가까운 현재 ADR은 UI-nuwy(카드 슬롯·문법)이다. 이 결정은 모양·크기 체계이고 소비자가 다르다.
-  - `summary`: "beads-ui 화면의 조작은 지금 테마 색·글꼴을 유지한 채 tokens.css 크기 토큰(조작 24px·터치/좁은 폭 32px·칩 18px)과 공용 부품(.op-btn 승격·ui-input·ui-select·ui-field·ui-chip)으로만 그리고, vitest CSS 검사와 docs/design-system.md 규칙으로 지키며, 390·1280 폭 가로 넘침 0을 실제 서버 대상 탐침으로 확인한다" → ADR
+- beads-ui 화면의 조작은 지금 테마의 색과 글꼴을 유지한 채 크기 토큰과 공용 부품 클래스로만 그린다(조작 24px, 터치·좁은 폭 32px, 칩 18px). 이 규칙은 vitest CSS 검사와 `docs/design-system.md`로 지킨다 — 기본 제외 목록(UI 배치·칩·버튼)에 속한다. 규칙의 정본은 `docs/design-system.md`와 그 검사이고, 되돌림은 이 저장소의 CSS·문서·검사를 고치는 일로 끝난다. 공유 카드 렌더러의 줄·슬롯 조항(ADR UI-nuwy)은 건드리지 않는다 → ADR 아님
 - 탐침 의존성으로 `playwright-core`와 설치된 Chrome을 쓴다 — 되돌리기 쉬움(devDependency 하나와 스크립트 하나) → ADR 아님
 
 ## 7. 경계·후속
