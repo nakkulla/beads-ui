@@ -27838,6 +27838,292 @@ describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
     });
   }
 
+  describe('provider continuation of a conversation return', () => {
+    const PARK_VALUE = 'plan_approval_stale:revise';
+
+    /**
+     * @param {Record<string, unknown>} [patch]
+     */
+    function conversationHoldEnv(patch = {}) {
+      const validate = vi.fn(async (snap, _base, options) =>
+        Object.hasOwn(snap, 'awaiting_user') &&
+        options.allow_conversation_return !== true
+          ? { ok: false, reason: 'awaiting_user' }
+          : { ok: true }
+      );
+      const env = stallEnv({ ...accountDeps(), admission: { validate } });
+      env.config.B1.awaiting_user = PARK_VALUE;
+      seedAttempt(env.store, 'park', 'B1', {
+        status: 'parked',
+        cause_detail: { awaiting_user: PARK_VALUE }
+      });
+      seedAttempt(env.store, 'returned', 'B1', {
+        status: 'paused',
+        cause: 'provider_outage:usage_limit',
+        session_id: 'sid-conversation',
+        effort: 'high',
+        exec_values: {
+          ...Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null])),
+          orchestration_model: 'opus',
+          orchestration_effort: 'high'
+        },
+        resumed_from: 'park',
+        conversation_return: { line: '인계 · 계속 진행', source: 'button' },
+        ...patch
+      });
+      env.store.setProviderLimitPolicy(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        runner: 'claude',
+        patch: { mode: 'switch', accounts: ['cool@example.com'] }
+      });
+      return { ...env, validate };
+    }
+
+    /**
+     * Queue the account-switch receipt while retaining the exhausted target.
+     *
+     * @param {ReturnType<typeof conversationHoldEnv>} env
+     * @param {string} [attempt_id]
+     */
+    function queueSwitch(env, attempt_id = 'returned') {
+      env.store.holdProviderAttempt(WS, {
+        attempt_id,
+        runner: 'claude',
+        patch: { status: 'paused', cause: 'provider_outage:usage_limit' },
+        target: {
+          kind: 'usage_limit',
+          model: 'opus',
+          account: 'hot@example.com',
+          detail: 'usage_limit',
+          last_error: 'limit',
+          resets_at: null,
+          rearm_count: 0,
+          attempt_ids: []
+        },
+        auto_switch: { candidate_account: 'cool@example.com' }
+      });
+    }
+
+    test('resumes a conversation-return attempt held by a usage limit through its own awaiting_user park', async () => {
+      const env = conversationHoldEnv();
+      queueSwitch(env);
+
+      const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(result).toEqual({ resumed_beads: ['B1'], refusals: [] });
+      expect(childOf(env, 'returned')).toMatchObject({
+        status: 'running',
+        auto_resume_kind: 'account_switch',
+        claude_account: 'cool@example.com'
+      });
+      expect(env.runner.settingsFor('B1').resume_session_id).toBe(
+        'sid-conversation'
+      );
+    });
+
+    test('refuses a different awaiting_user park written after the handoff', async () => {
+      const env = conversationHoldEnv();
+      env.config.B1.awaiting_user = 'impl_review_conflict:design';
+      queueSwitch(env);
+
+      const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(result.refusals).toEqual(['B1:awaiting_user']);
+      expect(childOf(env, 'returned')).toBeUndefined();
+    });
+
+    test('refuses an awaiting_user change at the final continuation snapshot', async () => {
+      const env = conversationHoldEnv();
+      env.config.B1.onSnapshot = (/** @type {number} */ nth) => {
+        if (nth === 2) {
+          env.config.B1.awaiting_user = 'impl_review_conflict:design';
+        }
+      };
+      queueSwitch(env);
+
+      const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(result.refusals).toEqual(['B1:awaiting_user']);
+      expect(childOf(env, 'returned')).toBeUndefined();
+      expect(env.runner.spawnOrder).toEqual([]);
+    });
+
+    test.each(['account_switch', 'provider_outage'])(
+      'continues the handoff through a %s child',
+      async (auto_resume_kind) => {
+        const env = conversationHoldEnv();
+        seedAttempt(env.store, 'switched', 'B1', {
+          status: 'paused',
+          session_id: 'sid-conversation',
+          effort: 'high',
+          exec_values: env.store.snapshot(WS).attempts.returned.exec_values,
+          resumed_from: 'returned',
+          auto_resume_kind
+        });
+        queueSwitch(env, 'switched');
+
+        const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+        expect(result).toEqual({ resumed_beads: ['B1'], refusals: [] });
+        expect(childOf(env, 'switched')).toMatchObject({ status: 'running' });
+      }
+    );
+
+    test('continues the handoff through a live-preemption receipt', async () => {
+      const env = conversationHoldEnv({ status: 'running' });
+      env.store.requestAttemptControl(WS, {
+        attempt_id: 'returned',
+        kind: 'pause',
+        intent: {
+          reason: 'account_preempt',
+          from: 'hot@example.com',
+          to: 'cool@example.com',
+          window: '5h',
+          pct: 90
+        }
+      });
+      env.store.updateAttempt(WS, {
+        attempt_id: 'returned',
+        patch: { status: 'paused', cause: 'account_preempt:5h' }
+      });
+
+      const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(result).toEqual({ resumed_beads: ['B1'], refusals: [] });
+      expect(childOf(env, 'returned')).toMatchObject({
+        status: 'running',
+        account_sources: { claude: 'live_switch' }
+      });
+    });
+
+    test('refuses an automatic resume with no conversation return', async () => {
+      const env = conversationHoldEnv({ conversation_return: null });
+      queueSwitch(env);
+
+      const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(result.refusals).toEqual(['B1:awaiting_user']);
+      expect(childOf(env, 'returned')).toBeUndefined();
+    });
+
+    test('keeps the ordinary resume blocked by the same awaiting_user park', async () => {
+      const env = conversationHoldEnv();
+
+      const result = await env.scheduler.resume(WS, 'returned');
+
+      expect(result).toEqual({ ok: false, reason: 'awaiting_user' });
+      expect(childOf(env, 'returned')).toBeUndefined();
+    });
+
+    test.each([
+      {
+        label: 'an ordinary continuation',
+        auto_resume_kind: null,
+        resumed_from: 'returned'
+      },
+      {
+        label: 'a missing parent',
+        auto_resume_kind: 'account_switch',
+        resumed_from: 'missing'
+      },
+      {
+        label: 'a cycle',
+        auto_resume_kind: 'account_switch',
+        resumed_from: 'intermediate'
+      }
+    ])(
+      'stops the authority chain at $label',
+      async ({ auto_resume_kind, resumed_from }) => {
+        const env = conversationHoldEnv();
+        seedAttempt(env.store, 'intermediate', 'B1', {
+          status: 'paused',
+          auto_resume_kind,
+          resumed_from
+        });
+        seedAttempt(env.store, 'leaf', 'B1', {
+          status: 'paused',
+          resumed_from: 'intermediate',
+          auto_resume_kind: 'account_switch'
+        });
+        queueSwitch(env, 'leaf');
+
+        const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+        expect(result.refusals).toEqual(['B1:awaiting_user']);
+        expect(childOf(env, 'leaf')).toBeUndefined();
+      }
+    );
+
+    test('compares the nearest conversation park instead of an older handoff', async () => {
+      const env = conversationHoldEnv();
+      seedAttempt(env.store, 'new-park', 'B1', {
+        status: 'parked',
+        resumed_from: 'returned',
+        cause_detail: { awaiting_user: 'impl_review_conflict:design' }
+      });
+      seedAttempt(env.store, 'new-return', 'B1', {
+        status: 'paused',
+        resumed_from: 'new-park',
+        conversation_return: { line: '인계 · 새 결정', source: 'button' }
+      });
+      queueSwitch(env, 'new-return');
+
+      const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(result.refusals).toEqual(['B1:awaiting_user']);
+      expect(childOf(env, 'new-return')).toBeUndefined();
+    });
+
+    test('re-arms an old awaiting_user refusal once for a conversation return', async () => {
+      const env = conversationHoldEnv({
+        auto_resume_refused: 'awaiting_user',
+        auto_resume_refusal: {
+          at: 900,
+          count: 1,
+          kind: 'permanent',
+          next_at: null
+        }
+      });
+
+      const swept = env.scheduler.sweepStalledContinuations(WS);
+      const result = await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(swept.rearmed).toEqual(['returned']);
+      expect(result).toEqual({ resumed_beads: ['B1'], refusals: [] });
+    });
+
+    test('never re-arms a changed park again after its one conversation retry', async () => {
+      const env = conversationHoldEnv({ auto_resume_refused: 'awaiting_user' });
+      env.config.B1.awaiting_user = 'impl_review_conflict:design';
+      env.scheduler.sweepStalledContinuations(WS);
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      const swept = env.scheduler.sweepStalledContinuations(WS);
+
+      expect(swept.rearmed).toEqual([]);
+      expect(env.store.snapshot(WS).auto_resume_pending).toEqual([]);
+      expect(env.store.snapshot(WS).attempts.returned.auto_resume_refused).toBe(
+        'awaiting_user'
+      );
+      const reloaded = stallEnv({ store: makeQueueStore() });
+      expect(reloaded.scheduler.sweepStalledContinuations(WS).rearmed).toEqual(
+        []
+      );
+    });
+
+    test('leaves an old awaiting_user refusal blocked without a conversation return', () => {
+      const env = conversationHoldEnv({
+        auto_resume_refused: 'awaiting_user',
+        conversation_return: null
+      });
+
+      const swept = env.scheduler.sweepStalledContinuations(WS);
+
+      expect(swept.rearmed).toEqual([]);
+      expect(env.store.snapshot(WS).auto_resume_pending).toEqual([]);
+    });
+  });
+
   describe('provider auto resume retry (D2)', () => {
     test('re-arms a bd_snapshot_failed refusal on the reconcile five minutes later', async () => {
       const env = stallEnv();

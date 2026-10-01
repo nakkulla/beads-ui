@@ -13160,6 +13160,44 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Read the nearest conversation's original park through provider-only
+   * continuations. An ordinary resume ends that authority chain.
+   *
+   * @param {Record<string, any>} attempts
+   * @param {any} attempt
+   * @returns {string|null}
+   */
+  function providerConversationPark(attempts, attempt) {
+    /** @type {Set<string>} */
+    const seen = new Set();
+    let cursor = attempt;
+    while (
+      cursor &&
+      cursor.bead_id === attempt.bead_id &&
+      !seen.has(cursor.attempt_id)
+    ) {
+      seen.add(cursor.attempt_id);
+      const parent = cursor.resumed_from ? attempts[cursor.resumed_from] : null;
+      if (cursor.conversation_return) {
+        const park = parent?.cause_detail?.awaiting_user;
+        return parent?.bead_id === attempt.bead_id &&
+          typeof park === 'string' &&
+          park.length > 0
+          ? park
+          : null;
+      }
+      if (
+        cursor.auto_resume_kind !== 'provider_outage' &&
+        cursor.auto_resume_kind !== 'account_switch'
+      ) {
+        return null;
+      }
+      cursor = parent;
+    }
+    return null;
+  }
+
+  /**
    * Manually resume a paused/failed/orphaned attempt in its EXISTING worktree
    * (spec §1, extended by worker-phase1 §1.2). A failed quick_fix at a durable
    * cleanup cursor resumes settlement on its original attempt, even after its
@@ -13178,10 +13216,11 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' } }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current'|'prior_attempt', decision_token?: any, instructions?: string, preclaimed?: boolean, retry?: import('./queue-store.js').Attempt['retry'], provider_auto_resume?: boolean, provider_receipt_resume?: boolean, resolve_provider_account?: boolean, auto_resume_kind?: 'provider_outage'|'account_switch', auto_resume_origin?: 'live_preempt', exec_override?: { runner?: string, model?: string, effort?: string, claude_account?: string, codex_account?: string }, account_switched_from?: string, resume_fallback?: { reason: 'transcript_missing', session_id: string }, conversation_return?: { line: string, source: 'result_line'|'button' } }} [continuation]
    * `conversation_return` is the UI-nuwy §3.4 handoff: it alone admits a
    * `parked` prior, skips only admission's `awaiting_user` presence refusal,
    * and puts the `## 대화 결과` block at the head of the resume prompt.
+   * Provider receipts can continue that handoff through its unchanged park.
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any, route_change?: { prior_lane: string, current_route: string|null }, fallback?: string|null }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
@@ -13442,12 +13481,19 @@ export function createScheduler(deps) {
         return { ok: false, reason: 'preserved_candidate_invalid' };
       }
     }
+    const conversation_park =
+      continuation.provider_receipt_resume === true
+        ? providerConversationPark(q.attempts, prior)
+        : null;
     const adm = await checkAdmission(
       snap,
       typeof prior.base_oid === 'string' && prior.base_oid.length > 0
         ? prior.base_oid
         : undefined,
-      conversation_return ? { allow_conversation_return: true } : {}
+      conversation_return ||
+        (conversation_park !== null && snap.awaiting_user === conversation_park)
+        ? { allow_conversation_return: true }
+        : {}
     );
     if (!adm.ok) {
       const reason = adm.reason || 'git_error';
@@ -13502,6 +13548,7 @@ export function createScheduler(deps) {
       decision_token: continuation.decision_token,
       retry: continuation.retry,
       provider_auto_resume: continuation.provider_auto_resume === true,
+      provider_receipt_resume: continuation.provider_receipt_resume === true,
       resolve_provider_account: continuation.resolve_provider_account === true,
       auto_resume_kind: continuation.auto_resume_kind,
       auto_resume_origin: continuation.auto_resume_origin,
@@ -13574,6 +13621,8 @@ export function createScheduler(deps) {
    *     back once the refusal's `next_at` passed. A refusal recorded before
    *     the refusal record existed is due at once; a `closed`/`permanent` one
    *     of that age only gains the record the badge reads, and is not retried.
+   *     A conversation's old `awaiting_user` refusal gets one recheck; resume
+   *     still compares the current park with the handed-back park.
    *   - D3: the bead's latest implementation attempt sitting in `retry_wait`
    *     without a lineage gets the lineage back, due now.
    *
@@ -13638,7 +13687,13 @@ export function createScheduler(deps) {
           const kind = refusal
             ? refusal.kind
             : continuationRefusalClass(attempt.auto_resume_refused);
-          if (!isRetryableRefusal(kind)) {
+          const conversation_recheck =
+            attempt.auto_resume_refused === 'awaiting_user' &&
+            kind === 'permanent' &&
+            typeof attempt.cause_detail?.conversation_return_rearmed_at !==
+              'number' &&
+            providerConversationPark(q.attempts, attempt) !== null;
+          if (!isRetryableRefusal(kind) && !conversation_recheck) {
             if (!refusal) {
               deps.store.updateAttempt(workspace, {
                 attempt_id: attempt.attempt_id,
@@ -13655,6 +13710,7 @@ export function createScheduler(deps) {
             continue;
           }
           if (
+            !conversation_recheck &&
             refusal &&
             (typeof refusal.next_at !== 'number' || refusal.next_at > at)
           ) {
@@ -13664,6 +13720,17 @@ export function createScheduler(deps) {
             attempt_id: attempt.attempt_id
           });
           if (result?.ok) {
+            if (conversation_recheck) {
+              deps.store.updateAttempt(workspace, {
+                attempt_id: attempt.attempt_id,
+                patch: {
+                  cause_detail: {
+                    ...attempt.cause_detail,
+                    conversation_return_rearmed_at: at
+                  }
+                }
+              });
+            }
             rearmed.push(attempt.attempt_id);
           }
           continue;
@@ -13756,6 +13823,7 @@ export function createScheduler(deps) {
             locked ? 'prior_attempt' : 'auto'
           ),
           provider_auto_resume: true,
+          provider_receipt_resume: true,
           resolve_provider_account: pending.account === null,
           auto_resume_kind: resume_kind,
           auto_resume_origin: pending.origin,
@@ -14832,6 +14900,21 @@ export function createScheduler(deps) {
     const lane_mismatch = refuseLaneMismatch(workspace, prior, bead_snapshot);
     if (lane_mismatch) {
       return lane_mismatch;
+    }
+    if (
+      options.provider_receipt_resume === true &&
+      Object.hasOwn(bead_snapshot, 'awaiting_user')
+    ) {
+      const conversation_park = providerConversationPark(
+        deps.store.snapshot(workspace).attempts,
+        prior
+      );
+      if (
+        conversation_park === null ||
+        bead_snapshot.awaiting_user !== conversation_park
+      ) {
+        return { ok: false, reason: 'awaiting_user' };
+      }
     }
     // A conversation return keeps the recorded execution too (UI-nuwy §3.4):
     // a parked attempt is no recovery wait, yet the same session goes on.
