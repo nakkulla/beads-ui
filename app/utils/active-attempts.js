@@ -41,6 +41,25 @@ export function isImplementationAttempt(attempt) {
 }
 
 /**
+ * Whether a person took this attempt off the Worker with ✕ (2026-10-01
+ * stall-reconcile D7). Such a `paused` record keeps its work but holds no
+ * 실행중 seat, blocks no dispatch, and no automatic continuation reads it.
+ *
+ * @param {unknown} attempt
+ */
+export function isWithdrawnAttempt(attempt) {
+  if (!attempt || typeof attempt !== 'object') {
+    return false;
+  }
+  const record = /** @type {Record<string, unknown>} */ (attempt);
+  return (
+    record.status === 'paused' &&
+    Boolean(record.withdrawn) &&
+    typeof record.withdrawn === 'object'
+  );
+}
+
+/**
  * Select each bead's latest implementation independently of snapshot key order.
  *
  * @param {Record<string, any>} attempts
@@ -162,7 +181,11 @@ export function activeAttemptStates(attempts, done_at_by_bead) {
     let run_state = null;
     if (a.status === 'running') {
       run_state = 'running';
-    } else if (a.status === 'paused' && !resumed_from_ids.has(a.attempt_id)) {
+    } else if (
+      a.status === 'paused' &&
+      !resumed_from_ids.has(a.attempt_id) &&
+      !isWithdrawnAttempt(a)
+    ) {
       run_state = 'paused';
     } else if (a.status === 'failed' || a.status === 'orphaned') {
       const done_at = done_at_by_bead.get(a.bead_id);

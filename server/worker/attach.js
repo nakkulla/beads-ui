@@ -1239,7 +1239,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     externalWait: {
       ...runtime.externalWaitStore,
       onCompletion: (ws, record) =>
-        EXTERNAL_WAIT_HOOKS.get(runtime)?.get(ws)?.onCompletion(record)
+        EXTERNAL_WAIT_HOOKS.get(runtime)?.get(ws)?.onCompletion(record),
+      // The SAME [관찰 중단] the card button runs, so a ✕ withdrawal of an
+      // external-job attempt also unsets the bead's `external_wait` key.
+      stop: (ws, wait_id) => runtime.externalWait.stop(ws, wait_id)
     },
     // The workspace's ONE bead-history writer (record-timeline-retention §5) —
     // the same instance the queue store was registered with above, never a
@@ -3299,6 +3302,23 @@ export function workerWorktreeExists(workspace_root, bead_id) {
 }
 
 /**
+ * The bead's worktree path under the attached repo, or null without an
+ * attachment that can name one. A path, not a probe — pair it with
+ * {@link workerWorktreeExists}.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {string|null}
+ */
+export function workerWorktreePath(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.worktree || typeof att.worktree.pathFor !== 'function') {
+    return null;
+  }
+  return att.worktree.pathFor(att.repo, bead_id);
+}
+
+/**
  * Discard an attempt (tile ■), IF an attachment is registered.
  *
  * @param {string} workspace_root
@@ -3388,6 +3408,39 @@ export async function pauseWorkerAttempt(workspace_root, attempt_id, options) {
   return att.scheduler.pause(keyFor(workspace_root), attempt_id, {
     require_durable: options?.require_durable === true
   });
+}
+
+/**
+ * Withdraw an attempt with ✕ (Worker에서 내리기, 2026-10-01 stall-reconcile
+ * D7), IF an attachment is registered. Inert (`no_attachment`) without one.
+ *
+ * @param {string} workspace_root
+ * @param {string} attempt_id
+ * @returns {Promise<{ ok: boolean, reason?: string, already_settled?: boolean }>}
+ */
+export async function withdrawWorkerAttempt(workspace_root, attempt_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.withdraw(keyFor(workspace_root), attempt_id);
+}
+
+/**
+ * Pull one bead's retry rung to now ([지금 재시도], 2026-10-01
+ * stall-reconcile D9), IF an attachment is registered. Inert
+ * (`no_attachment`) without one.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<{ ok: boolean, reason?: string }>}
+ */
+export async function retryWorkerBeadNow(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.retryNow(keyFor(workspace_root), bead_id);
 }
 
 /**

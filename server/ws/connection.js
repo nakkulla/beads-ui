@@ -96,7 +96,9 @@ import {
   handleUnsubscribeWorkerQueue,
   handleWorkerAttemptPause,
   handleWorkerAttemptResume,
+  handleWorkerAttemptRetryNow,
   handleWorkerAttemptStop,
+  handleWorkerAttemptWithdraw,
   handleWorkerAutomationToggle,
   handleWorkerCleanupRetry,
   handleWorkerConversationHandoff,
@@ -622,6 +624,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-attempt-pause':
       await handleWorkerAttemptPause(ws, req);
+      return;
+    case 'worker-attempt-withdraw':
+      await handleWorkerAttemptWithdraw(ws, req);
+      return;
+    case 'worker-attempt-retry-now':
+      await handleWorkerAttemptRetryNow(ws, req);
       return;
     case 'worker-attempt-stop':
       await handleWorkerAttemptStop(ws, req);

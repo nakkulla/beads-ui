@@ -393,10 +393,18 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `prerequisite_unmet` reason: the unmet `blocks` prerequisites the scheduler
   proved, same-rig (`rig: null`) and foreign alike (UI-d3i1 §5.1). A malformed
   list is dropped whole, and consumers fail-quiet on the key being absent (older
-  server) — plus the server-decorated, NON-persisted keys:
-  `workspace_info: { slots, repo_ops }` — where `repo_ops` additionally carries
-  `repo_id`, the canonical repository path the registered attachment resolved
-  the declaration against, `null` where no attachment is registered —,
+  server). The admission `at` is when the reason was recorded; the transient
+  reasons `bd_snapshot_failed`/`gh_unavailable`/`git_error` are cleared on the
+  workspace's next successful bd read (2026-10-01 stall-reconcile D4). An
+  attempt refused by an automatic provider resume carries `auto_resume_refused`
+  (the reason) and, from the same spec D2,
+  `auto_resume_refusal: { at, count, kind, next_at }` — `kind` is
+  `transient`|`wait` (retried automatically at `next_at`) or
+  `closed`|`permanent` (`next_at: null`, never retried); the key is absent on a
+  refusal recorded before it existed — plus the server-decorated, NON-persisted
+  keys: `workspace_info: { slots, repo_ops }` — where `repo_ops` additionally
+  carries `repo_id`, the canonical repository path the registered attachment
+  resolved the declaration against, `null` where no attachment is registered —,
   `runner_catalog`, `execution_defaults`, `pr_observations` (per-`pr_wait` PR
   state + merge-gate verdict, memory cache only), `bead_titles`
   (`Record<bead_id, title>` for the `queue`/`pr_wait`/`done` beads, memory cache
@@ -908,6 +916,31 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `prior_session_unavailable`), then answers only after the durable control AND
   the parent's whole settlement chain finished. A non-boolean value is
   `bad_request`.
+- `worker-attempt-withdraw` payload: `{ attempt_id }` — ✕ Worker에서 내리기
+  (2026-10-01 stall-reconcile D7). One durable request: a live runner is ended
+  (the ⏸ durable control, which needs only the recorded process identity, so an
+  attempt without a session id can be withdrawn too), the attempt's retry
+  lineage, auto-resume receipt and external-job observation stop (the latter
+  through the same [관찰 중단], which unsets the bead's `external_wait` key),
+  the attempt settles `paused` with `withdrawn: { at, from_status, from_cause }`
+  and cause `withdrawn`, and the bead leaves the waiting lanes with its
+  serial-lane hold, Worker claim and stamps released. The worktree, branch and
+  session record are kept. Reply
+  `{ attempt_id, withdrawn, already_settled, reason }`: an attempt already over
+  answers `withdrawn: true, already_settled: true`; refusals include
+  `discard_in_progress`, `parked`, `recovery_wait`,
+  `interactive_session_active`, `pr_wait`, `already_resumed`,
+  `not_withdrawable`, `launch_in_flight`, `attempt_settling`, `control_exists`,
+  `identity_unknown`, `external_wait_stop_failed`, `attempt_not_found`,
+  `no_attachment`. The snapshot projects
+  `withdrawn_beads[bead_id] = { attempt_id, at, from_status, from_cause, worktree_path, worktree_present, branch, has_session }`
+  for every bead whose latest implementation attempt was withdrawn (absent key ⇒
+  none).
+- `worker-attempt-retry-now` payload: `{ bead_id }` — [지금 재시도] (D9): pulls
+  that bead's retry rung to now and runs the due retries; the rung is still
+  spent by the attempt that launches, and no other bead moves (this is not the
+  queue-wide retry-now ADR UI-a5l2 retired). Reply
+  `{ bead_id, retried, reason }`; `no_retry_lineage` when the bead has no rung.
 - `worker-attempt-resume` payload:
   `{ attempt_id, expected_revision, continuation?, decision_token?, instructions?, exec_override? }`
   — `exec_override` accepts `runner`, `model`, `effort`, `claude_account` and

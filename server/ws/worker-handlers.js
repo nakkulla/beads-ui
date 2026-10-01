@@ -33,7 +33,9 @@ import { canonicalJson, splitWorkerQueue } from '../../app/data/keyed-patch.js';
 import { makeError, makeOk } from '../../app/protocol.js';
 import {
   activeAttemptStates,
-  isImplementationAttempt
+  isImplementationAttempt,
+  isWithdrawnAttempt,
+  latestImplementationAttempts
 } from '../../app/utils/active-attempts.js';
 import {
   createDecorationContext,
@@ -58,18 +60,21 @@ import {
   refreshWorkerExternalPrs,
   refreshWorkerWaitReasons,
   resumeWorkerAttempt,
+  retryWorkerBeadNow,
   retryWorkerCleanup,
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
   startWorkerRepoOperationDeployRun,
   stopWorkerReviewSessionProcess,
   tickWorkerQueue,
+  withdrawWorkerAttempt,
   workerMergeEffectInFlight,
   workerMergeQueueState,
   workerRepoId,
   workerSlots,
   workerWaitState,
-  workerWorktreeExists
+  workerWorktreeExists,
+  workerWorktreePath
 } from '../worker/attach.js';
 import { implActorOf } from '../worker/compare-projection.js';
 import {
@@ -135,6 +140,7 @@ import {
   normalizeUsageLegs,
   readAttemptUsageReceipts
 } from '../worker/usage-receipts.js';
+import { branchForBead } from '../worker/worktree.js';
 import {
   WORKSPACE_ACCOUNTS_KV_KEY,
   normalizeWorkspaceAccounts
@@ -3013,6 +3019,71 @@ function publicProviderHolds(value) {
 }
 
 /**
+ * @typedef {Object} WithdrawnBead
+ * @property {string} attempt_id - The withdrawn attempt.
+ * @property {number} at - Epoch ms of the ✕.
+ * @property {string} from_status - The attempt status the ✕ found.
+ * @property {string|null} from_cause - The attempt cause the ✕ found.
+ * @property {string|null} worktree_path - The kept worktree's path, or null
+ * when no attachment can name it.
+ * @property {boolean} worktree_present - Whether that directory is there now.
+ * @property {string} branch - The kept branch's name.
+ * @property {boolean} has_session - Whether a session record survives, i.e.
+ * putting the bead back in a lane can continue the same session.
+ */
+
+/**
+ * The `⏏ 내려옴` chip material (2026-10-01 stall-reconcile D8): every bead
+ * whose LATEST implementation attempt was taken off with ✕, with when and
+ * from what state, and the worktree and branch it kept. Read off the raw
+ * attempts because a withdrawn `paused` record holds no 실행중 seat, so the
+ * push retention drops it once its bead stands in no lane. A newer attempt or
+ * a discard (the record turns `discarded`) removes the entry; whether the bead
+ * is still an open candidate is the client's own knowledge. Fail-quiet and
+ * non-persisted: null when no bead qualifies, and an unreadable worktree reads
+ * as absent.
+ *
+ * @param {string} workspace_key
+ * @param {unknown} attempts
+ * @returns {Record<string, WithdrawnBead>|null}
+ */
+function withdrawnBeadsFor(workspace_key, attempts) {
+  /** @type {Record<string, WithdrawnBead>} */
+  const out = {};
+  const records =
+    attempts && typeof attempts === 'object' && !Array.isArray(attempts)
+      ? /** @type {Record<string, any>} */ (attempts)
+      : {};
+  for (const [bead_id, attempt] of latestImplementationAttempts(records)) {
+    if (!isWithdrawnAttempt(attempt)) {
+      continue;
+    }
+    /** @type {string|null} */
+    let worktree_path = null;
+    let worktree_present = false;
+    try {
+      worktree_path = workerWorktreePath(workspace_key, bead_id);
+      worktree_present = workerWorktreeExists(workspace_key, bead_id);
+    } catch {
+      worktree_path = null;
+      worktree_present = false;
+    }
+    out[bead_id] = {
+      attempt_id: attempt.attempt_id,
+      at: attempt.withdrawn.at,
+      from_status: attempt.withdrawn.from_status,
+      from_cause: attempt.withdrawn.from_cause ?? null,
+      worktree_path,
+      worktree_present,
+      branch: branchForBead(bead_id),
+      has_session:
+        typeof attempt.session_id === 'string' && attempt.session_id.length > 0
+    };
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
  * `impl_actor`를 붙인 종료 attempt 하나의 **복사본** (UI-ys18 §5.1).
  *
  * 해석 정본은 프리셋 비교 화면과 같은 순수 `implActorOf`다. 내부 필드 제거
@@ -3259,6 +3330,7 @@ export function decorateQueue(workspace_key, raw_queue) {
   const bead_scope = beadScopeFor(workspace_key, queue);
   const bead_dependents = beadDependentsFor(workspace_key, queue);
   const bead_plan_groups = beadPlanGroupsFor(workspace_key, queue);
+  const withdrawn_beads = withdrawnBeadsFor(workspace_key, overlaid.attempts);
   return {
     ...queue,
     // The manual-continuation capability (UI-58w8 §8): a read-only projection
@@ -3347,6 +3419,9 @@ export function decorateQueue(workspace_key, raw_queue) {
     // generation. Non-persisted; the key is absent when no target belongs to a
     // valid group, which the client reads as "no plan chip" (fail-quiet).
     ...(bead_plan_groups ? { bead_plan_groups } : {}),
+    // `⏏ 내려옴` material by bead (2026-10-01 stall-reconcile D8); absent when
+    // no bead's latest implementation attempt was withdrawn.
+    ...(withdrawn_beads ? { withdrawn_beads } : {}),
     // Direct blocks blocker ids for the same beads (UI-04vo §3) — the
     // wait-reason chip and lane topological corrections read from this, and
     // CLOSED cross-rig blockers are already gone from it (UI-u6zf §3.2).
@@ -5353,6 +5428,115 @@ export async function handleWorkerAttemptPause(ws, req) {
   );
   if (result.ok) {
     fanout(key, queue);
+  }
+}
+
+/**
+ * Handle `worker-attempt-withdraw`. Payload: `{ attempt_id: string }` (plus
+ * the optional `root_dir` every worker mutation takes). ✕ Worker에서 내리기
+ * (2026-10-01 stall-reconcile D7): ends the runner if one is alive, stops the
+ * attempt's retry lineage, auto-resume receipt and external observation,
+ * settles it `paused` with a `withdrawn` stamp, takes the bead out of the
+ * waiting lanes and gives its claim back — keeping the worktree, branch and
+ * session. No CAS: like ⏸ it targets one attempt, and the scheduler re-reads
+ * the record it acts on. Reply `{ attempt_id, withdrawn, already_settled,
+ * reason }`; an attempt that was already over answers `withdrawn: true,
+ * already_settled: true`.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerAttemptWithdraw(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.attempt_id !== 'string' || p.attempt_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { attempt_id: string }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const bead_id = /** @type {any} */ (queueStore().snapshot(key)).attempts?.[
+    p.attempt_id
+  ]?.bead_id;
+  /** @type {{ ok: boolean, reason?: string, already_settled?: boolean }} */
+  let result = { ok: false, reason: 'no_attachment' };
+  try {
+    result = await withdrawWorkerAttempt(key, p.attempt_id);
+  } catch (err) {
+    log('worker-attempt-withdraw failed for %s/%s: %o', key, p.attempt_id, err);
+    result = { ok: false, reason: 'error' };
+  }
+  if (result.ok && typeof bead_id === 'string') {
+    recordUserAction(key, bead_id, 'withdraw', '✕ Worker에서 내리기');
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        attempt_id: p.attempt_id,
+        withdrawn: result.ok === true,
+        already_settled: result.already_settled === true,
+        reason: result.ok ? null : result.reason || null
+      })
+    )
+  );
+  if (result.ok) {
+    fanout(key, queueStore().snapshot(key));
+  }
+}
+
+/**
+ * Handle `worker-attempt-retry-now`. Payload: `{ bead_id: string }` (plus the
+ * optional `root_dir`). [지금 재시도] on a `retry_wait` tile (2026-10-01
+ * stall-reconcile D9): pulls THIS bead's retry rung to now and runs the due
+ * retries; the rung is still spent by the attempt that launches. It is not
+ * the retired queue-wide retry-now (ADR UI-a5l2) — no other bead moves.
+ * Reply `{ bead_id, retried, reason }`; `no_retry_lineage` when the bead has
+ * no rung to pull.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerAttemptRetryNow(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  /** @type {{ ok: boolean, reason?: string }} */
+  let result = { ok: false, reason: 'no_attachment' };
+  try {
+    result = await retryWorkerBeadNow(key, p.bead_id);
+  } catch (err) {
+    log('worker-attempt-retry-now failed for %s/%s: %o', key, p.bead_id, err);
+    result = { ok: false, reason: 'error' };
+  }
+  if (result.ok) {
+    recordUserAction(key, p.bead_id, 'retry_now', '[지금 재시도]');
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        retried: result.ok === true,
+        reason: result.ok ? null : result.reason || null
+      })
+    )
+  );
+  if (result.ok) {
+    fanout(key, queueStore().snapshot(key));
   }
 }
 

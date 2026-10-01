@@ -108,6 +108,22 @@ describe('activeAttemptStates', () => {
     expect(winners.get('UI-1')?.run_state).toEqual('paused');
   });
 
+  test('drops a paused attempt a person withdrew with ✕', () => {
+    const attempts = attemptsOf([
+      {
+        attempt_id: 'a1',
+        bead_id: 'UI-1',
+        status: 'paused',
+        cause: 'withdrawn',
+        withdrawn: { at: 5, from_status: 'running', from_cause: null }
+      }
+    ]);
+
+    const { winners } = activeAttemptStates(attempts, new Map());
+
+    expect(winners.has('UI-1')).toEqual(false);
+  });
+
   test('drops a paused attempt another attempt resumed from', () => {
     const attempts = attemptsOf([
       { attempt_id: 'a1', bead_id: 'UI-1', status: 'paused' },

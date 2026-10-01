@@ -1753,6 +1753,8 @@ function setup(opts) {
     probePid: opts.probePid,
     processController: opts.processController,
     sessionMonitors: opts.sessionMonitors,
+    // Absent by default: the external-wait store is a live-wiring dep.
+    externalWait: /** @type {any} */ (opts).externalWait,
     execPresetCoordinator,
     // Absent ⇒ the REAL guard-hook module, writing under the tmp
     // XDG_STATE_HOME this file arms. An override is only how a test drives an
@@ -23959,7 +23961,10 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
     }
   });
 
-  test('defers a prior_attempt lineage when the resume is refused', async () => {
+  // 2026-10-01 stall-reconcile D3: a refusal is settled by its D1 class. A
+  // `prior_attempt` lineage whose recorded session is gone can never resume,
+  // so the rung ends instead of waking every two minutes.
+  test('fails a prior_attempt lineage whose recorded session is gone', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout'] });
     try {
       let clock = 1000;
@@ -23995,17 +24000,19 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
           (/** @type {any} */ a) => a.resumed_from === first
         )
       ).toEqual([]);
-      expect(snap.lineages[0]).toMatchObject({
-        bead_id: 'S1',
-        attempts: 1,
-        next_at: clock + RETRY_DELAYS_MS[0]
+      expect(snap.lineages).toEqual([]);
+      expect(snap.attempts[first]).toMatchObject({
+        status: 'failed',
+        cause_detail: { retry_refused: 'prior_session_unavailable' }
       });
     } finally {
       vi.useRealTimers();
     }
   });
 
-  test('closes a due lineage whose bead left the waiting lanes', async () => {
+  // 2026-10-01 stall-reconcile D3 replaces "leaving the lanes abandons the
+  // ladder" (UI-c5ko D1): the rung runs where the bead is.
+  test('retries a due lineage after its bead left the waiting lanes', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout'] });
     try {
       let clock = 1000;
@@ -24030,17 +24037,9 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
       await flush();
 
       const snap = env.store.snapshot(WS);
-      expect(snap.lineages).toEqual([]);
-      expect(snap).not.toHaveProperty('hold');
-      expect(Object.keys(snap.attempts).length).toBe(1);
-
-      // Nothing is due any more, so the pass leaves no timer behind: the
-      // observable form of the hot loop's absence.
-      await vi.advanceTimersByTimeAsync(0);
-      await vi.advanceTimersByTimeAsync(0);
-      const after = env.store.snapshot(WS);
-      expect(Object.keys(after.attempts).length).toBe(1);
-      expect(after.revision).toBe(snap.revision);
+      expect(env.runner.spawnOrder).toEqual(['S1', 'S1']);
+      expect(snap.lineages).toMatchObject([{ bead_id: 'S1', next_at: null }]);
+      expect(snap.queue).toEqual([]);
     } finally {
       vi.useRealTimers();
     }
@@ -24083,7 +24082,7 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
     }
   });
 
-  test('dispatches the lane-side lineage exactly once beside an abandoned one', async () => {
+  test('dispatches a lane-side and an off-lane lineage once each', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout'] });
     try {
       let clock = 1000;
@@ -24124,16 +24123,23 @@ describe('scheduler 실패 계층·큐 보류 (UI-5ym8)', () => {
       await flush();
 
       const snap = env.store.snapshot(WS);
-      expect(snap.lineages).toHaveLength(1);
-      expect(snap.lineages[0]).toMatchObject({ bead_id: 'S2', next_at: null });
-      expect(Object.keys(snap.attempts).length).toBe(3);
+      expect(
+        snap.lineages.map((/** @type {any} */ lineage) => [
+          lineage.bead_id,
+          lineage.next_at
+        ])
+      ).toEqual([
+        ['S1', null],
+        ['S2', null]
+      ]);
+      expect(Object.keys(snap.attempts).length).toBe(4);
 
-      // Closing S1 mid-loop must not arm a 0ms timer off S2's still-past
+      // Dispatching S1 mid-loop must not arm a 0ms timer off S2's still-past
       // `next_at` and re-enter the scan under the awaited dispatch.
       await vi.advanceTimersByTimeAsync(0);
       await vi.advanceTimersByTimeAsync(0);
       const after = env.store.snapshot(WS);
-      expect(Object.keys(after.attempts).length).toBe(3);
+      expect(Object.keys(after.attempts).length).toBe(4);
       expect(after.revision).toBe(snap.revision);
     } finally {
       vi.useRealTimers();
@@ -27922,5 +27928,946 @@ describe('scheduler prerequisite wait residue resume (prerequisite-wait-residue 
     expect(latestAttempt(env)).toMatchObject({ status: 'running' });
     expect(latestAttempt(env)?.resumed_from).toBeNull();
     expect(env.runner.settingsFor('S1').resume_session_id).toBeUndefined();
+  });
+});
+
+describe('일시 장애 정지 복구 (2026-10-01 stall-reconcile)', () => {
+  const MINUTE = 60_000;
+
+  /**
+   * A scheduler on a clock the test moves, over a bead config the test can
+   * break and heal between steps.
+   *
+   * @param {Record<string, any>} [extra]
+   */
+  function stallEnv(extra = {}) {
+    const clock = { now: 1000 };
+    /** @type {Record<string, any>} */
+    const config = { B1: {}, B2: {}, B3: {} };
+    const env = setup({ config, slots: 1, now: () => clock.now, ...extra });
+    return { ...env, clock, config };
+  }
+
+  /**
+   * A verifier that reads the environment as down, so a finished session
+   * lands on the env retry ladder.
+   *
+   * @returns {any}
+   */
+  function ghDown() {
+    return {
+      verifyPrSubmitted: vi.fn(async () => ({
+        ok: false,
+        reason: 'gh_observation_failed',
+        pr_url: null
+      }))
+    };
+  }
+
+  /**
+   * Dispatch B1, hold it on a 529 outage, release the hold, and let the
+   * recovery receipt's resume meet `breakResume`'s broken environment.
+   *
+   * @param {ReturnType<typeof stallEnv>} env
+   * @param {(env: ReturnType<typeof stallEnv>) => void} [breakResume]
+   * @returns {Promise<string>} The held attempt id.
+   */
+  async function refusedResume(
+    env,
+    breakResume = (broken) => {
+      broken.config.B1.throwOnSnapshotAt = 'all';
+    }
+  ) {
+    seedQueue(env.store, ['B1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.runner.eventsFor('B1').emit('session_id', 'sid-held');
+    env.runner.finish('B1', {
+      success: false,
+      reason: 'is_error',
+      raw: [
+        {
+          type: 'result',
+          subtype: 'success',
+          is_error: true,
+          result: 'API Error: 529 Overloaded'
+        }
+      ]
+    });
+    await flush();
+    const hold = env.store.snapshot(WS).provider_hold.claude;
+    env.store.recoverProviderTarget(WS, {
+      runner: 'claude',
+      generation: hold.generation,
+      kind: hold.targets[0].kind,
+      model: hold.targets[0].model,
+      account: hold.targets[0].account
+    });
+    breakResume(env);
+    await env.scheduler.consumeProviderAutoResume(WS);
+    return attempt_id;
+  }
+
+  /**
+   * @param {ReturnType<typeof stallEnv>} env
+   * @param {string} attempt_id
+   * @returns {any}
+   */
+  function childOf(env, attempt_id) {
+    return Object.values(env.store.snapshot(WS).attempts).find(
+      (/** @type {any} */ attempt) => attempt.resumed_from === attempt_id
+    );
+  }
+
+  /**
+   * Persist one attempt record straight through the store.
+   *
+   * @param {any} store
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {Record<string, unknown>} patch
+   */
+  function seedAttempt(store, attempt_id, bead_id, patch) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id, bead_id }
+    });
+    store.updateAttempt(WS, {
+      attempt_id,
+      patch: { repo: '/repo', runner: 'claude', model: 'opus', ...patch }
+    });
+  }
+
+  describe('provider auto resume retry (D2)', () => {
+    test('re-arms a bd_snapshot_failed refusal on the reconcile five minutes later', async () => {
+      const env = stallEnv();
+      const attempt_id = await refusedResume(env);
+      delete env.config.B1.throwOnSnapshotAt;
+      env.clock.now += 5 * MINUTE;
+
+      await env.scheduler.reconcile(WS);
+      await vi.waitFor(() => expect(childOf(env, attempt_id)).toBeDefined());
+
+      expect(childOf(env, attempt_id)).toMatchObject({
+        status: 'running',
+        auto_resume_kind: 'provider_outage'
+      });
+    });
+
+    test('spaces consecutive refusals five, fifteen, thirty, then sixty minutes apart', async () => {
+      const env = stallEnv();
+      const attempt_id = await refusedResume(env);
+      /** @type {number[]} */
+      const gaps = [];
+
+      for (let round = 0; round < 5; round += 1) {
+        const refusal = /** @type {any} */ (
+          env.store.snapshot(WS).attempts[attempt_id].auto_resume_refusal
+        );
+        gaps.push((refusal.next_at - refusal.at) / MINUTE);
+        env.clock.now = refusal.next_at;
+        env.scheduler.sweepStalledContinuations(WS);
+        await env.scheduler.consumeProviderAutoResume(WS);
+      }
+
+      expect(gaps).toEqual([5, 15, 30, 60, 60]);
+    });
+
+    test('keeps the refused resume waiting until its retry time', async () => {
+      const env = stallEnv();
+      await refusedResume(env);
+      env.clock.now += 5 * MINUTE - 1;
+
+      const swept = env.scheduler.sweepStalledContinuations(WS);
+
+      expect(swept.rearmed).toEqual([]);
+      expect(env.store.snapshot(WS).auto_resume_pending).toEqual([]);
+    });
+
+    test('never re-arms a permanently refused resume', async () => {
+      const env = stallEnv();
+      const attempt_id = await refusedResume(env, (broken) => {
+        broken.worktree.exists.mockReturnValue(false);
+      });
+      env.clock.now += 3 * 60 * MINUTE;
+
+      const swept = env.scheduler.sweepStalledContinuations(WS);
+
+      expect(swept.rearmed).toEqual([]);
+      expect(
+        env.store.snapshot(WS).attempts[attempt_id].auto_resume_refusal
+      ).toMatchObject({ kind: 'permanent', next_at: null });
+    });
+
+    test('leaves the re-arm to the prober while its runner is held again', async () => {
+      const env = stallEnv();
+      await refusedResume(env);
+      seedAttempt(env.store, 'other', 'B2', { status: 'running' });
+      env.store.holdProviderAttempt(WS, {
+        attempt_id: 'other',
+        runner: 'claude',
+        patch: { status: 'paused', cause: 'provider_outage:overloaded_529' },
+        target: {
+          kind: 'outage',
+          model: 'opus',
+          account: null,
+          detail: 'overloaded_529',
+          last_error: '',
+          resets_at: null,
+          rearm_count: 0,
+          attempt_ids: []
+        }
+      });
+      env.clock.now += 5 * MINUTE;
+
+      const swept = env.scheduler.sweepStalledContinuations(WS);
+
+      expect(swept.rearmed).toEqual([]);
+    });
+
+    test('never resumes a parent again once its resume recorded a child', async () => {
+      const env = stallEnv();
+      const attempt_id = await refusedResume(env, (broken) => {
+        broken.config.B1.throwOnSet = true;
+      });
+      delete env.config.B1.throwOnSet;
+      env.clock.now += 3 * 60 * MINUTE;
+
+      env.scheduler.sweepStalledContinuations(WS);
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      const queue = env.store.snapshot(WS);
+      expect(childOf(env, attempt_id)).toMatchObject({
+        status: 'failed',
+        cause: 'workflow_mode_record_failed'
+      });
+      expect(queue.attempts[attempt_id].auto_resume_refused).toBe(
+        'workflow_mode_record_failed'
+      );
+      expect(queue.auto_resume_pending).toEqual([]);
+    });
+
+    test('retries a refusal recorded before refusal times existed on the first sweep after reload', () => {
+      const before_restart = makeQueueStore();
+      seedAttempt(before_restart, 'legacy', 'B1', {
+        status: 'paused',
+        cause: 'provider_outage:overloaded_529',
+        session_id: 'sid-legacy',
+        auto_resume_refused: 'bd_snapshot_failed'
+      });
+      const env = stallEnv({ store: makeQueueStore() });
+
+      const swept = env.scheduler.sweepStalledContinuations(WS);
+
+      expect(swept.rearmed).toEqual(['legacy']);
+      expect(env.store.snapshot(WS).auto_resume_pending).toMatchObject([
+        { attempt_id: 'legacy', kind: 'provider_outage', account: null }
+      ]);
+    });
+
+    test('counts the first refusal after a legacy record as the first of its streak', async () => {
+      const env = stallEnv();
+      seedAttempt(env.store, 'legacy', 'B1', {
+        status: 'paused',
+        cause: 'provider_outage:overloaded_529',
+        session_id: 'sid-legacy',
+        auto_resume_refused: 'bd_snapshot_failed'
+      });
+      env.config.B1.throwOnSnapshotAt = 'all';
+      env.scheduler.sweepStalledContinuations(WS);
+
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      expect(
+        env.store.snapshot(WS).attempts.legacy.auto_resume_refusal
+      ).toEqual({
+        at: 1000,
+        count: 1,
+        kind: 'transient',
+        next_at: 1000 + 5 * MINUTE
+      });
+    });
+
+    test('clears the refusal record once the re-armed resume goes through', async () => {
+      const env = stallEnv();
+      const attempt_id = await refusedResume(env);
+      delete env.config.B1.throwOnSnapshotAt;
+      env.clock.now += 5 * MINUTE;
+      env.scheduler.sweepStalledContinuations(WS);
+
+      await env.scheduler.consumeProviderAutoResume(WS);
+
+      const parent = env.store.snapshot(WS).attempts[attempt_id];
+      expect(parent.auto_resume_refused).toBeNull();
+      expect(parent).not.toHaveProperty('auto_resume_refusal');
+    });
+  });
+
+  describe('retry_wait lineage invariant (D3·D9)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['setTimeout'] });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /**
+     * B1 dispatched once and settled on the env ladder (retry 1/3 due in two
+     * minutes).
+     *
+     * @param {Record<string, any>} [extra]
+     */
+    async function retryWaitEnv(extra = {}) {
+      const env = stallEnv({ verify: ghDown(), ...extra });
+      seedQueue(env.store, ['B1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+      env.runner.finish('B1', { success: true });
+      await flush();
+      await flush();
+      return { ...env, attempt_id };
+    }
+
+    /**
+     * Let the earliest rung come due and its timer fire.
+     *
+     * @param {ReturnType<typeof stallEnv>} env
+     */
+    async function runDue(env) {
+      env.clock.now += RETRY_DELAYS_MS[0];
+      await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0]);
+      await flush();
+    }
+
+    test('starts the rung of an attempt that ran outside the waiting lanes', async () => {
+      const env = stallEnv({ verify: ghDown() });
+      seedQueue(env.store, ['B1']);
+      await env.scheduler.tick(WS);
+      env.store.remove(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        bead_id: 'B1'
+      });
+      env.runner.finish('B1', { success: true });
+      await flush();
+      await flush();
+
+      await runDue(env);
+
+      expect(env.runner.spawnOrder).toEqual(['B1', 'B1']);
+    });
+
+    test('restores the lineage of a retry_wait attempt that lost it', async () => {
+      const env = await retryWaitEnv();
+      env.store.applyRetryEvent(WS, {
+        event: { kind: 'retry_succeeded', bead_id: 'B1' }
+      });
+
+      const swept = env.scheduler.sweepStalledContinuations(WS);
+
+      expect(swept.restored).toEqual([env.attempt_id]);
+      expect(env.store.snapshot(WS).lineages).toMatchObject([
+        { bead_id: 'B1', attempts: 1, next_at: env.clock.now }
+      ]);
+    });
+
+    test('retries an orphaned retry_wait attempt right after the reconcile', async () => {
+      const env = await retryWaitEnv();
+      env.store.applyRetryEvent(WS, {
+        event: { kind: 'retry_succeeded', bead_id: 'B1' }
+      });
+
+      await env.scheduler.reconcile(WS);
+      await vi.advanceTimersByTimeAsync(0);
+      await flush();
+
+      expect(env.runner.spawnOrder).toEqual(['B1', 'B1']);
+    });
+
+    test('fails the attempt and ends the ladder when the retry is refused for good', async () => {
+      const env = await retryWaitEnv();
+      env.config.B1.labels = ['worker-ineligible'];
+
+      await runDue(env);
+
+      const queue = env.store.snapshot(WS);
+      expect(queue.lineages).toEqual([]);
+      expect(queue.attempts[env.attempt_id]).toMatchObject({
+        status: 'failed',
+        cause_detail: { retry_refused: 'worker_ineligible' }
+      });
+    });
+
+    test('keeps the ladder behind an unmet prerequisite and starts once it closes', async () => {
+      const env = await retryWaitEnv();
+      Object.assign(env.config.B1, {
+        ready: false,
+        status: 'open',
+        dependencies: [{ id: 'B2', dependency_type: 'blocks' }]
+      });
+      env.bd.statuses.B2 = 'open';
+      await runDue(env);
+      const deferred = env.store.snapshot(WS);
+      env.config.B1.ready = true;
+
+      await runDue(env);
+
+      expect(deferred.admission.B1.reason).toBe('prerequisite_unmet');
+      expect(deferred.lineages).toMatchObject([{ bead_id: 'B1', attempts: 1 }]);
+      expect(env.runner.spawnOrder).toEqual(['B1', 'B1']);
+    });
+
+    test('keeps the ladder behind a provider hold and starts once it releases', async () => {
+      const env = await retryWaitEnv();
+      seedAttempt(env.store, 'other', 'B2', { status: 'running' });
+      const held = env.store.holdProviderAttempt(WS, {
+        attempt_id: 'other',
+        runner: 'claude',
+        patch: { status: 'paused', cause: 'provider_outage:overloaded_529' },
+        target: {
+          kind: 'outage',
+          model: 'opus',
+          account: null,
+          detail: 'overloaded_529',
+          last_error: '',
+          resets_at: null,
+          rearm_count: 0,
+          attempt_ids: []
+        }
+      });
+      await runDue(env);
+      const deferred = env.store.snapshot(WS);
+      env.store.recoverProviderTarget(WS, {
+        runner: 'claude',
+        generation: Number(held.generation),
+        kind: 'outage',
+        model: 'opus',
+        account: null
+      });
+
+      await runDue(env);
+
+      expect(deferred.admission.B1.reason).toBe('provider_gate');
+      expect(deferred.lineages).toMatchObject([{ bead_id: 'B1', attempts: 1 }]);
+      expect(env.runner.spawnOrder).toEqual(['B1', 'B1']);
+    });
+
+    test('ends only the ladder of a bead that was closed meanwhile', async () => {
+      const env = await retryWaitEnv();
+      Object.assign(env.config.B1, { ready: false, status: 'closed' });
+      await runDue(env);
+
+      env.scheduler.sweepStalledContinuations(WS);
+
+      const queue = env.store.snapshot(WS);
+      expect(queue.lineages).toEqual([]);
+      expect(queue.attempts[env.attempt_id]).toMatchObject({
+        status: 'retry_wait',
+        retry: { next_at: null }
+      });
+    });
+
+    test('starts the rung at once on [지금 재시도]', async () => {
+      const env = await retryWaitEnv();
+      env.clock.now += 10_000;
+
+      const result = await env.scheduler.retryNow(WS, 'B1');
+
+      expect(result).toEqual({ ok: true });
+      expect(env.runner.spawnOrder).toEqual(['B1', 'B1']);
+    });
+
+    test('refuses [지금 재시도] for a bead with no rung', async () => {
+      const env = stallEnv();
+
+      const result = await env.scheduler.retryNow(WS, 'B1');
+
+      expect(result).toEqual({ ok: false, reason: 'no_retry_lineage' });
+    });
+  });
+
+  describe('memory-only sweep (D6)', () => {
+    test('makes no bd, git or worktree call while it re-arms and restores', () => {
+      const gitRun = vi.fn(async () => ({ code: 1, stdout: '', stderr: '' }));
+      const env = stallEnv({ gitRun });
+      seedAttempt(env.store, 'held', 'B1', {
+        status: 'paused',
+        cause: 'provider_outage:overloaded_529',
+        session_id: 'sid-held',
+        auto_resume_refused: 'bd_snapshot_failed'
+      });
+      seedAttempt(env.store, 'orphan', 'B2', {
+        status: 'retry_wait',
+        cause: 'verify_failed:gh_observation_failed',
+        retry: {
+          cause: 'verify_failed:gh_observation_failed',
+          attempts: 1,
+          max: 3,
+          next_at: 5000,
+          origin_attempt_id: 'orphan'
+        }
+      });
+      seedAttempt(env.store, 'gone', 'B3', {
+        status: 'paused',
+        cause: 'provider_outage:overloaded_529',
+        auto_resume_refused: 'worktree_missing'
+      });
+      const spies = [
+        ...Object.keys(env.bd).filter(
+          (key) => typeof (/** @type {any} */ (env.bd)[key]) === 'function'
+        ),
+        ...Object.keys(env.worktree)
+      ].map((key) =>
+        Object.hasOwn(env.bd, key)
+          ? vi.spyOn(/** @type {any} */ (env.bd), key)
+          : vi.spyOn(/** @type {any} */ (env.worktree), key)
+      );
+
+      const swept = env.scheduler.sweepStalledContinuations(WS);
+
+      expect(swept).toEqual({ rearmed: ['held'], restored: ['orphan'] });
+      expect(spies.filter((spy) => spy.mock.calls.length > 0)).toEqual([]);
+      expect(gitRun).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('transient admission badge (D4)', () => {
+    test("clears a bd_snapshot_failed badge on the workspace's next bd read", () => {
+      const env = stallEnv();
+      env.store.recordAdmission(WS, {
+        bead_id: 'B1',
+        reason: 'bd_snapshot_failed'
+      });
+
+      env.scheduler.sweepClosedQueue(WS, { B1: 'open' });
+
+      expect(env.store.snapshot(WS).admission.B1).toBeUndefined();
+    });
+
+    test('keeps a prerequisite badge across the bd read', () => {
+      const env = stallEnv();
+      env.store.recordAdmission(WS, {
+        bead_id: 'B1',
+        reason: 'prerequisite_unmet'
+      });
+
+      env.scheduler.sweepClosedQueue(WS, { B1: 'open' });
+
+      expect(env.store.snapshot(WS).admission.B1.reason).toBe(
+        'prerequisite_unmet'
+      );
+    });
+  });
+
+  describe('✕ Worker에서 내리기 (D7)', () => {
+    /**
+     * @param {Record<string, any>} [extra]
+     */
+    function withdrawEnv(extra = {}) {
+      const processController = {
+        terminate: vi.fn(async () => ({ ok: true, state: 'gone' })),
+        probe: vi.fn(() => ({ state: 'gone' }))
+      };
+      const env = stallEnv({ processController, ...extra });
+      Object.assign(env.config.B1, { status: 'open' });
+      env.bd.statuses.B1 = 'open';
+      return { ...env, processController };
+    }
+
+    /**
+     * A uniquely owned residue of B1 whose HEAD the given attempt recorded.
+     *
+     * @returns {any}
+     */
+    function keptResidue() {
+      return {
+        ok: false,
+        state: 'unique',
+        removed: false,
+        cause: 'dirty_unique',
+        owned: true,
+        identity: {
+          worktree_realpath: '/wt/B1',
+          branch: 'B1',
+          head_sha: 'a'.repeat(40),
+          base_oid: 'b'.repeat(40),
+          status_digest: 'c'.repeat(64)
+        },
+        summary: {
+          staged_count: 1,
+          unstaged_count: 0,
+          untracked_count: 0,
+          branch_ahead: 1,
+          head_ahead: 1
+        }
+      };
+    }
+
+    test('ends a running session and settles it withdrawn off the lanes', async () => {
+      const env = withdrawEnv();
+      seedQueue(env.store, ['B1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+      env.runner.eventsFor('B1').emit('session_id', 'sid-1');
+
+      const result = await env.scheduler.withdraw(WS, attempt_id);
+
+      const queue = env.store.snapshot(WS);
+      expect(result).toEqual({ ok: true });
+      expect(env.processController.terminate).toHaveBeenCalledOnce();
+      expect(queue.attempts[attempt_id]).toMatchObject({
+        status: 'paused',
+        cause: 'withdrawn',
+        session_id: 'sid-1',
+        withdrawn: { at: 1000, from_status: 'running', from_cause: null }
+      });
+      expect(queue.queue).toEqual([]);
+      expect(env.bd.statuses.B1).toBe('open');
+    });
+
+    test('ends a running session that has no session id by its process group', async () => {
+      const env = withdrawEnv();
+      seedQueue(env.store, ['B1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+      const result = await env.scheduler.withdraw(WS, attempt_id);
+
+      expect(result).toEqual({ ok: true });
+      expect(env.processController.terminate).toHaveBeenCalledWith({
+        pid: 9000,
+        pgid: 9000,
+        started_at: 1000
+      });
+      expect(env.store.snapshot(WS).attempts[attempt_id]).toMatchObject({
+        status: 'paused',
+        session_id: null,
+        withdrawn: { from_status: 'running' }
+      });
+    });
+
+    test('finishes a withdrawal a restart interrupted', async () => {
+      const env = withdrawEnv();
+      seedAttempt(env.store, 'live', 'B1', {
+        status: 'running',
+        process_identity: { pid: 4242, pgid: 4242, started_at: 1000 }
+      });
+      env.store.requestAttemptControl(WS, {
+        attempt_id: 'live',
+        kind: 'pause',
+        intent: { reason: 'withdraw', from_status: 'running', from_cause: null }
+      });
+
+      await env.scheduler.recoverControls(WS);
+
+      expect(env.store.snapshot(WS).attempts.live).toMatchObject({
+        status: 'paused',
+        cause: 'withdrawn',
+        withdrawn: { from_status: 'running' },
+        control: { phase: 'done' }
+      });
+    });
+
+    test('drops the pending resume receipt of a provider-held attempt', async () => {
+      const env = withdrawEnv();
+      seedAttempt(env.store, 'held', 'B1', { status: 'running' });
+      const held = env.store.holdProviderAttempt(WS, {
+        attempt_id: 'held',
+        runner: 'claude',
+        patch: { status: 'paused', cause: 'provider_outage:overloaded_529' },
+        target: {
+          kind: 'outage',
+          model: 'opus',
+          account: null,
+          detail: 'overloaded_529',
+          last_error: '',
+          resets_at: null,
+          rearm_count: 0,
+          attempt_ids: []
+        }
+      });
+      env.store.recoverProviderTarget(WS, {
+        runner: 'claude',
+        generation: Number(held.generation),
+        kind: 'outage',
+        model: 'opus',
+        account: null
+      });
+
+      const result = await env.scheduler.withdraw(WS, 'held');
+
+      const queue = env.store.snapshot(WS);
+      expect(result).toEqual({ ok: true });
+      expect(queue.auto_resume_pending).toEqual([]);
+      expect(queue.attempts.held).toMatchObject({
+        status: 'paused',
+        cause: 'withdrawn',
+        withdrawn: {
+          from_status: 'paused',
+          from_cause: 'provider_outage:overloaded_529'
+        }
+      });
+    });
+
+    test('keeps a later hold release off a withdrawn attempt', async () => {
+      const env = withdrawEnv();
+      seedAttempt(env.store, 'held', 'B1', { status: 'running' });
+      const held = env.store.holdProviderAttempt(WS, {
+        attempt_id: 'held',
+        runner: 'claude',
+        patch: { status: 'paused', cause: 'provider_outage:overloaded_529' },
+        target: {
+          kind: 'outage',
+          model: 'opus',
+          account: null,
+          detail: 'overloaded_529',
+          last_error: '',
+          resets_at: null,
+          rearm_count: 0,
+          attempt_ids: []
+        }
+      });
+      await env.scheduler.withdraw(WS, 'held');
+
+      env.store.recoverProviderTarget(WS, {
+        runner: 'claude',
+        generation: Number(held.generation),
+        kind: 'outage',
+        model: 'opus',
+        account: null
+      });
+
+      expect(env.store.snapshot(WS).auto_resume_pending).toEqual([]);
+    });
+
+    test('closes the retry lineage of a retry_wait attempt', async () => {
+      const env = withdrawEnv({ verify: ghDown() });
+      seedQueue(env.store, ['B1']);
+      await env.scheduler.tick(WS);
+      const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+      env.runner.finish('B1', { success: true });
+      await flush();
+      await flush();
+
+      const result = await env.scheduler.withdraw(WS, attempt_id);
+
+      const queue = env.store.snapshot(WS);
+      expect(result).toEqual({ ok: true });
+      expect(queue.lineages).toEqual([]);
+      expect(queue.attempts[attempt_id]).toMatchObject({
+        status: 'paused',
+        withdrawn: { from_status: 'retry_wait' }
+      });
+    });
+
+    test('returns the bead of a failed attempt to the candidates', async () => {
+      const env = withdrawEnv();
+      seedQueue(env.store, ['B1']);
+      seedAttempt(env.store, 'failed-1', 'B1', {
+        status: 'failed',
+        cause: 'session_failed:reported_failure'
+      });
+
+      const result = await env.scheduler.withdraw(WS, 'failed-1');
+
+      const queue = env.store.snapshot(WS);
+      expect(result).toEqual({ ok: true });
+      expect(queue.queue).toEqual([]);
+      expect(queue.attempts['failed-1']).toMatchObject({
+        status: 'paused',
+        withdrawn: {
+          from_status: 'failed',
+          from_cause: 'session_failed:reported_failure'
+        }
+      });
+    });
+
+    test('stops the external observation before withdrawing an external-job attempt', async () => {
+      const record = {
+        wait_id: 'w-0123456789ab',
+        bead_id: 'B1',
+        stage: 'detached'
+      };
+      const externalWait = {
+        findByBead: vi.fn(() => record),
+        get: vi.fn(() => record),
+        update: vi.fn(),
+        list: vi.fn(() => []),
+        stop: vi.fn(async () => ({ ...record, stage: 'stopped' }))
+      };
+      const env = withdrawEnv({ externalWait });
+      seedAttempt(env.store, 'ext', 'B1', {
+        status: 'waiting',
+        cause: 'external_job',
+        cause_detail: { wait_id: 'w-0123456789ab' }
+      });
+
+      const result = await env.scheduler.withdraw(WS, 'ext');
+
+      expect(result).toEqual({ ok: true });
+      expect(externalWait.stop).toHaveBeenCalledWith(WS, 'w-0123456789ab');
+      expect(env.store.snapshot(WS).attempts.ext).toMatchObject({
+        status: 'paused',
+        withdrawn: { from_status: 'waiting', from_cause: 'external_job' }
+      });
+    });
+
+    test('lets the next bead of the serial lane start', async () => {
+      const env = withdrawEnv({ slots: 2 });
+      seedLanes(env.store, { s1: ['B1', 'B2'] });
+      await env.scheduler.tick(WS);
+      const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+      await env.scheduler.withdraw(WS, attempt_id);
+
+      expect(env.runner.spawnOrder).toEqual(['B1', 'B2']);
+    });
+
+    test('continues the same session when the withdrawn bead is queued again', async () => {
+      const env = withdrawEnv({
+        resolveBase: async () => ({
+          ok: true,
+          base: 'main',
+          base_oid: 'b'.repeat(40)
+        })
+      });
+      seedAttempt(env.store, 'kept', 'B1', {
+        status: 'paused',
+        session_id: 'sid-kept',
+        head_oid: 'a'.repeat(40),
+        base_oid: 'b'.repeat(40),
+        target_base: 'main'
+      });
+      await env.scheduler.withdraw(WS, 'kept');
+      env.worktree.removeIfDiscardable.mockResolvedValue(keptResidue());
+      seedQueue(env.store, ['B1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-kept');
+      expect(childOf(env, 'kept')).toMatchObject({ status: 'running' });
+    });
+
+    test('adopts the kept worktree of a session-less withdrawn bead queued again', async () => {
+      const env = withdrawEnv({
+        resolveBase: async () => ({
+          ok: true,
+          base: 'main',
+          base_oid: 'b'.repeat(40)
+        })
+      });
+      seedAttempt(env.store, 'kept', 'B1', {
+        status: 'failed',
+        cause: 'session_failed:reported_failure',
+        head_oid: 'a'.repeat(40),
+        base_oid: 'b'.repeat(40)
+      });
+      await env.scheduler.withdraw(WS, 'kept');
+      env.worktree.removeIfDiscardable.mockResolvedValue(keptResidue());
+      seedQueue(env.store, ['B1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.worktree.add).not.toHaveBeenCalled();
+      expect(env.runner.cwdFor('B1')).toBe('/wt/B1');
+      expect(env.runner.settingsFor('B1').resume_session_id).toBeUndefined();
+    });
+
+    test('admits a bead withdrawn from external work when it is queued again', async () => {
+      const key = { present: true };
+      const record = {
+        wait_id: 'w-0123456789ab',
+        bead_id: 'B1',
+        stage: 'detached'
+      };
+      const externalWait = {
+        findByBead: vi.fn(() => (key.present ? record : null)),
+        get: vi.fn(() => record),
+        update: vi.fn(),
+        list: vi.fn(() => []),
+        stop: vi.fn(async () => {
+          key.present = false;
+          return { ...record, stage: 'stopped' };
+        })
+      };
+      const admission = {
+        validate: vi.fn(async () =>
+          key.present ? { ok: false, reason: 'external_wait' } : { ok: true }
+        )
+      };
+      const env = withdrawEnv({ externalWait, admission });
+      seedAttempt(env.store, 'ext', 'B1', {
+        status: 'waiting',
+        cause: 'external_job',
+        cause_detail: { wait_id: 'w-0123456789ab' }
+      });
+      await env.scheduler.withdraw(WS, 'ext');
+      seedQueue(env.store, ['B1']);
+
+      await env.scheduler.tick(WS);
+
+      expect(env.runner.spawnOrder).toEqual(['B1']);
+    });
+
+    test('answers success without a new record for an attempt already over', async () => {
+      const env = withdrawEnv();
+      seedAttempt(env.store, 'over', 'B1', { status: 'done' });
+      const revision = env.store.snapshot(WS).revision;
+
+      const result = await env.scheduler.withdraw(WS, 'over');
+
+      expect(result).toEqual({ ok: true, already_settled: true });
+      expect(env.store.snapshot(WS).revision).toBe(revision);
+    });
+
+    test.each([
+      [
+        'a discard owns the attempt',
+        'discard_in_progress',
+        /** @param {any} store */ (store) => {
+          seedAttempt(store, 'target', 'B1', {
+            status: 'failed',
+            cause: 'session_failed:reported_failure'
+          });
+          seedActiveDiscard(store, 'B1', 'target');
+        }
+      ],
+      [
+        'the attempt awaits a confirmation',
+        'parked',
+        /** @param {any} store */ (store) => {
+          seedAttempt(store, 'target', 'B1', {
+            status: 'parked',
+            cause: 'session_ended_unresolved'
+          });
+        }
+      ],
+      [
+        'the session awaits recovery',
+        'recovery_wait',
+        /** @param {any} store */ (store) => {
+          seedAttempt(store, 'target', 'B1', {
+            status: 'waiting',
+            cause: 'session_recovery_wait',
+            cause_detail: {
+              recovery: {
+                classification: 'session_recovery_wait',
+                disposition: 'wait',
+                reason: 'authority'
+              }
+            }
+          });
+        }
+      ]
+    ])('refuses ✕ when %s', async (_case, reason, seed) => {
+      const env = withdrawEnv();
+      seed(env.store);
+      const status = env.store.snapshot(WS).attempts.target.status;
+
+      const result = await env.scheduler.withdraw(WS, 'target');
+
+      expect(result).toEqual({ ok: false, reason });
+      expect(env.store.snapshot(WS).attempts.target.status).toBe(status);
+    });
   });
 });
