@@ -182,9 +182,16 @@ beads-ui의 지금 색·글꼴은 그대로 두고, 조작(버튼·입력·선�
 레일 탭(선택된 탭의 hover도 함께)·설정 버튼, 저장소 작업 스크립트 경로, ADR
 문서·bead 링크의 `--link` 색). 역할 hover가 테두리를 건드리지 않던 테두리 버튼은
 그 hover에 지금 테두리 색도 적는다(`.worker-ev__copy`). 역할 hover가 없던 버튼은
-부품 hover를 받는다. 같은 이유로 `font: inherit` 같은 단축 속성은 글자 크기·줄
-높이를 다시 적으므로 역할 규칙에 두지 않는다 — 글꼴만 물려받을 때는
-`font-family: inherit`처럼 longhand를 쓴다.
+부품 hover를 받는다. 단 대화상자·저장소 작업 선언(UI-k5s2 dialogs)의 버튼은
+부품을 받기 전 hover 색을 지킨다 — 그때 전역 `button:hover`는 밝기만 바꿨으므로
+역할 규칙이 같은 색을 `:hover:not(:disabled)` 선택자에도 함께 적는다(새 이슈
+`×`·`Cancel`·`Create`, 치명 오류 버튼, Worker 주소 줄 버튼의 전역 버튼 팔레트,
+설정 세그먼트의 켜짐·꺼짐 각자의 색, 설정·도움말 `닫기`, 막힘 요약 항목).
+비활성에도 hover 색이 걸리던 역할 hover는 `:hover`도 함께 적고
+(`.settings-dialog__btn`), `border: 0` 버튼의 hover는 0폭 테두리 색을 지금처럼
+`currentColor`로 둔다(설정 레일 탭, 저장소 작업 스크립트 경로). 같은 이유로
+`font: inherit` 같은 단축 속성은 글자 크기·줄 높이를 다시 적으므로 역할 규칙에
+두지 않는다 — 글꼴만 물려받을 때는 `font-family: inherit`처럼 longhand를 쓴다.
 
 ## 3. 원시 값 금지
 

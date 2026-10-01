@@ -1436,13 +1436,17 @@ input.inline-edit:focus {
   color: var(--muted);
 }
 /* 치명 오류 대화상자의 `[Reload]`·`[Dismiss]` — 크기는 `.op-btn`이 정하고 이
-   규칙은 전역 버튼 팔레트와 primary 틴트만 적는다 (UI-k5s2). */
-.btn {
+   규칙은 전역 버튼 팔레트와 primary 틴트만 적는다 (UI-k5s2). 전역
+   `button:hover`는 밝기만 바꿨으므로 hover에도 같은 색을 적어 부품 hover
+   (0,2,1)의 accent를 받지 않는다. */
+.btn,
+.fatal-error__actions > .btn:hover:not(:disabled) {
   background: var(--button-bg);
   color: var(--button-fg);
   border: 1px solid var(--button-border);
 }
-.btn.primary {
+.btn.primary,
+.fatal-error__actions > .btn.primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--link) 18%, var(--button-bg));
   border-color: color-mix(in srgb, var(--link) 32%, var(--button-border));
 }
@@ -1591,10 +1595,13 @@ input.inline-edit:focus {
   font-weight: 700;
 }
 /* `×`와 `Cancel`·`Create`는 `.op-btn`(`×`는 `--icon`) 크기에 지금의 전역 버튼
-   팔레트를 그대로 쓴다 (UI-k5s2). 입력·선택은 `.ui-input`·`.ui-select`이고 색은
+   팔레트를 그대로 쓴다 (UI-k5s2). 전역 `button:hover`는 밝기만 바꿨으므로
+   hover에도 같은 팔레트를 적는다. 입력·선택은 `.ui-input`·`.ui-select`이고 색은
    전역 폼 팔레트다. */
 .new-issue__close,
-.new-issue__actions > .op-btn {
+.new-issue__close:hover:not(:disabled),
+.new-issue__actions > .op-btn,
+.new-issue__actions > .op-btn:hover:not(:disabled) {
   border-color: var(--button-border);
   background: var(--button-bg);
   color: var(--button-fg);
@@ -2063,8 +2070,10 @@ input.inline-edit:focus {
 }
 
 /* 항목 줄은 줄 전체가 눌리는 행 버튼이다 — 크기는 `.op-btn`이 정하고, 이 규칙은
-   행 배치·여러 줄·상자 없음·글자색만 적는다 (UI-k5s2). */
-.wait-summary__item {
+   행 배치·여러 줄·상자 없음·글자색만 적는다 (UI-k5s2). 전역 `button:hover`는
+   밝기만 바꿨으므로 hover에도 같은 색을 적는다. */
+.wait-summary__item,
+.wait-summary__item:hover:not(:disabled) {
   display: block;
   width: 100%;
   text-align: left;
@@ -2338,9 +2347,11 @@ input.inline-edit:focus {
   text-align: left;
 }
 
-/* 부품 hover(0,2,1)를 이기도록 `:hover:not(:disabled)`로 적어 지금 색을 지킨다. */
+/* 부품 hover(0,2,1)를 이기도록 `:hover:not(:disabled)`로 적어 지금 색을 지킨다.
+   0폭 테두리의 색도 지금처럼 글자색(`currentColor`)이다. */
 .worker-repo-ops__vd-cmd--link:hover:not(:disabled),
 .worker-repo-ops__vd-cmd--link:focus-visible {
+  border-color: currentColor;
   color: var(--accent-child);
   text-decoration: underline;
   text-decoration-thickness: 1px;
@@ -8492,7 +8503,8 @@ button.detail-session__leg:focus-visible {
 
 /* 레일 탭은 줄 전체가 눌리는 행 버튼(`.op-btn`)이다 — 크기는 부품이, 행 배치·
    상자 없음·색은 이 규칙이 정한다. hover·선택은 부품 hover(0,2,1)를 이기도록
-   `:hover:not(:disabled)`로 적어 지금 색을 지킨다 (UI-k5s2). */
+   `:hover:not(:disabled)`로 적어 지금 색을 지킨다 — 0폭 테두리의 색도 지금처럼
+   글자색(`currentColor`)이다 (UI-k5s2). */
 .settings-dialog__tab {
   display: flex;
   align-items: center;
@@ -8506,12 +8518,14 @@ button.detail-session__leg:focus-visible {
 }
 
 .settings-dialog__tab:hover:not(:disabled) {
+  border-color: currentColor;
   background: var(--bg-card);
   color: var(--text-primary);
 }
 
 .settings-dialog__tab[aria-selected='true'],
 .settings-dialog__tab[aria-selected='true']:hover:not(:disabled) {
+  border-color: currentColor;
   background: var(--bg-card);
   color: var(--text-title);
   box-shadow: inset 2px 0 0 var(--layer-global);
@@ -8524,7 +8538,8 @@ button.detail-session__leg:focus-visible {
 }
 
 /* `닫기`는 `.op-btn`이다 — 테두리·글자색은 부품 기본과 같다. 세로 레일에서
-   폭을 채우므로 글자는 지금처럼 가운데에 둔다. */
+   폭을 채우므로 글자는 지금처럼 가운데에 둔다. 전역 `button:hover`는 밝기만
+   바꿨으므로 hover에도 같은 색을 적는다. */
 .settings-dialog__close {
   justify-content: center;
   margin-top: auto;
@@ -8532,6 +8547,11 @@ button.detail-session__leg:focus-visible {
   background: none;
   color: var(--text-muted);
   cursor: pointer;
+}
+
+.settings-dialog__close:hover:not(:disabled) {
+  border-color: var(--border-chip);
+  color: var(--text-muted);
 }
 
 .settings-dialog__panes {
@@ -8675,14 +8695,21 @@ button.detail-session__leg:focus-visible {
 
 /* 클래스 없이 전역 버튼 팔레트로 그려지던 Worker 주소 줄 버튼(`새로고침`·
    `저장`·`지우기`·`취소/최신값 채택`)은 `.op-btn` 크기에 그 팔레트를 그대로
-   쓴다. */
+   쓴다. 전역 `button:hover`는 밝기만 바꿨으므로 hover에도 같은 팔레트다. */
 .settings-dialog__controls
   > :is(
     [data-worker-url-refresh],
     [data-worker-common-save],
     [data-worker-common-clear],
     [data-worker-common-cancel]
-  ) {
+  ),
+.settings-dialog__controls
+  > :is(
+    [data-worker-url-refresh],
+    [data-worker-common-save],
+    [data-worker-common-clear],
+    [data-worker-common-cancel]
+  ):hover:not(:disabled) {
   border-color: var(--button-border);
   background: var(--button-bg);
   color: var(--button-fg);
@@ -8741,15 +8768,19 @@ button.detail-session__leg:focus-visible {
 }
 
 /* 세그먼트 그룹: 상자(배치·색)만 이 규칙이 그리고, 안의 버튼은 `.op-btn`이다
-   (켜진 것은 `is-active`·`aria-pressed`). 크기는 부품이 정한다 (UI-k5s2). */
-.settings-dialog__seg button {
+   (켜진 것은 `is-active`·`aria-pressed`). 크기는 부품이 정한다 (UI-k5s2). 전역
+   `button:hover`는 밝기만 바꿨으므로 hover에도 켜짐·꺼짐 각자의 색을 적어 부품
+   hover(0,2,1)의 accent를 받지 않는다. */
+.settings-dialog__seg button,
+.settings-dialog__seg button:hover:not(:disabled) {
   border: 0;
   background: none;
   color: var(--text-muted);
   cursor: pointer;
 }
 
-.settings-dialog__seg button[aria-pressed='true'] {
+.settings-dialog__seg button[aria-pressed='true'],
+.settings-dialog__seg button[aria-pressed='true']:hover:not(:disabled) {
   background: var(--bg-card);
   color: var(--text-title);
   box-shadow: inset 0 0 0 1px var(--border-card);
@@ -8868,6 +8899,9 @@ button.detail-session__leg:focus-visible {
   cursor: pointer;
 }
 
+/* 비활성 버튼에도 hover 색이 걸리던 것(`:hover`)과 부품 hover를 이기는
+   것(`:hover:not(:disabled)`)을 함께 적는다. */
+.settings-dialog__btn:hover,
 .settings-dialog__btn:hover:not(:disabled) {
   border-color: var(--border-card);
   color: var(--text-title);
@@ -10762,8 +10796,10 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   font-weight: 600;
 }
 
-/* `닫기`는 `.op-btn`이다 — 크기는 부품이, 상자 색은 이 규칙이 정한다. */
-.help-dialog__close {
+/* `닫기`는 `.op-btn`이다 — 크기는 부품이, 상자 색은 이 규칙이 정한다. 전역
+   `button:hover`는 밝기만 바꿨으므로 hover에도 같은 색을 적는다. */
+.help-dialog__close,
+.help-dialog__close:hover:not(:disabled) {
   border: 1px solid var(--border-chip);
   background: var(--bg-drawer);
   color: var(--text-secondary);

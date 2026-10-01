@@ -263,6 +263,114 @@ describe('design-system ratchet (§3.4 check 2)', () => {
   });
 });
 
+/**
+ * One selector with its whitespace collapsed, so a selector prettier wrapped
+ * over several lines compares equal to its one-line spelling.
+ *
+ * @param {string} selector
+ * @returns {string}
+ */
+function normalizeSelector(selector) {
+  return selector
+    .replace(/\s+/g, ' ')
+    .replace(/\(\s+/g, '(')
+    .replace(/\s+\)/g, ')')
+    .trim();
+}
+
+/**
+ * The declarations of every styles.css rule whose selector list carries
+ * `selector`, comments removed and whitespace collapsed.
+ *
+ * @param {string} selector
+ * @returns {string}
+ */
+function declarationsFor(selector) {
+  const wanted = normalizeSelector(selector);
+  const text = STYLES.replace(/\/\*[\s\S]*?\*\//g, '');
+  return Array.from(text.matchAll(/([^{};]+)\{([^{}]*)\}/g))
+    .filter((m) => topLevelSplit(m[1]).map(normalizeSelector).includes(wanted))
+    .map((m) => m[2].replace(/\s+/g, ' ').trim())
+    .join(' ');
+}
+
+/**
+ * Dialog controls whose role rule states a colour of its own. The global
+ * `button:hover` only changed brightness, so each hover restates that colour
+ * over the part hover (0,2,1) and its `--accent` (UI-k5s2 dialogs gate-r1).
+ *
+ * @type {Array<[string, string[]]>}
+ */
+const DIALOG_HOVER_COLOURS = [
+  [
+    '.new-issue__close:hover:not(:disabled)',
+    ['border-color: var(--button-border)', 'color: var(--button-fg)']
+  ],
+  [
+    '.new-issue__actions > .op-btn:hover:not(:disabled)',
+    ['border-color: var(--button-border)', 'color: var(--button-fg)']
+  ],
+  [
+    '.fatal-error__actions > .btn:hover:not(:disabled)',
+    ['border: 1px solid var(--button-border)', 'color: var(--button-fg)']
+  ],
+  [
+    '.fatal-error__actions > .btn.primary:hover:not(:disabled)',
+    ['border-color: color-mix(in srgb, var(--link) 32%, var(--button-border))']
+  ],
+  [
+    '.settings-dialog__controls > :is([data-worker-url-refresh], [data-worker-common-save], [data-worker-common-clear], [data-worker-common-cancel]):hover:not(:disabled)',
+    ['border-color: var(--button-border)', 'color: var(--button-fg)']
+  ],
+  [
+    '.settings-dialog__seg button:hover:not(:disabled)',
+    ['border: 0', 'color: var(--text-muted)']
+  ],
+  [
+    ".settings-dialog__seg button[aria-pressed='true']:hover:not(:disabled)",
+    ['background: var(--bg-card)', 'color: var(--text-title)']
+  ],
+  [
+    '.settings-dialog__tab:hover:not(:disabled)',
+    ['border-color: currentColor', 'color: var(--text-primary)']
+  ],
+  [
+    ".settings-dialog__tab[aria-selected='true']:hover:not(:disabled)",
+    ['border-color: currentColor', 'color: var(--text-title)']
+  ],
+  [
+    '.settings-dialog__close:hover:not(:disabled)',
+    ['border-color: var(--border-chip)', 'color: var(--text-muted)']
+  ],
+  [
+    '.settings-dialog__btn:hover',
+    ['border-color: var(--border-card)', 'color: var(--text-title)']
+  ],
+  [
+    '.help-dialog__close:hover:not(:disabled)',
+    ['border: 1px solid var(--border-chip)', 'color: var(--text-secondary)']
+  ],
+  ['.wait-summary__item:hover:not(:disabled)', ['border: 0', 'color: inherit']],
+  [
+    '.worker-repo-ops__vd-cmd--link:hover:not(:disabled)',
+    ['border-color: currentColor', 'color: var(--accent-child)']
+  ]
+];
+
+describe('dialog hover colours (UI-k5s2 dialogs)', () => {
+  test.each(DIALOG_HOVER_COLOURS)(
+    'restates the pre-part hover colour of %s',
+    (selector, expected) => {
+      const declarations = declarationsFor(selector);
+
+      expect(declarations).not.toBe('');
+      for (const declaration of expected) {
+        expect(declarations).toContain(declaration);
+      }
+    }
+  );
+});
+
 const PART_CLASSES = ['op-btn', 'ui-input', 'ui-select', 'ui-chip'];
 
 /** Native-size controls with no part (docs/design-system.md §2·§4). */
