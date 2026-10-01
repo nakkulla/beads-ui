@@ -327,25 +327,22 @@ exit $status
 `;
 
 /**
- * The deny-mode ref loop (preset-compare §4.5-2): the same record, the same
- * line shape, and a refusal for EVERY destination.
+ * The deny-mode ref loop (ADR UI-a5l2): the same record, the same line shape,
+ * and a refusal for EVERY destination.
  *
- * A bench clone opens no PR, lands no base and deploys nothing, so no remote
- * ref is a legitimate destination for it. The record still comes first, because
- * the post-hoc `bench_push_observed` invariant is built on the same log the
- * other two modes write.
+ * A deny-mode attempt has no legitimate remote ref to reach. The record still
+ * comes first, because it is built on the same log the other two modes write.
  *
  * @type {string}
  */
-const DENY_LOOP = `# 2) Record every ref of this push and REFUSE all of them (preset-compare §4.5).
-#    A bench clone never lands, so there is no destination it may reach; the
-#    base line gets no special case because none of the others are allowed
-#    either.
+const DENY_LOOP = `# 2) Record every ref of this push and REFUSE all of them.
+#    A deny-mode attempt may reach no destination; the base line gets no
+#    special case because none of the others are allowed either.
 status=0
 while read -r local_ref local_oid remote_ref remote_oid; do
   [ -n "$remote_ref" ] || continue
   guard_record "$local_ref" "$local_oid" "$remote_ref" "$remote_oid"
-  printf '%s\\n' "bdui guard: refusing push to $remote_ref in $mine — bench attempt $guard_attempt must not push any ref (local ref: $local_ref)" >&2
+  printf '%s\\n' "bdui guard: refusing push to $remote_ref in $mine — deny-mode attempt $guard_attempt must not push any ref (local ref: $local_ref)" >&2
   status=1
 done
 exit $status
@@ -400,13 +397,12 @@ function normalizeMode(mode) {
  * line's verdict now belongs in its record, base lines are judged and then
  * recorded; every other line is recorded exactly as before.
  *
- * DENY MODE (preset-compare §4.5-2) keeps the record and refuses every ref. It
- * is the bench lane's hook: a clone bead is executed for measurement only, so
- * a push of any kind — base, branch, tag — is out of scope by construction, and
- * git refusing it is the same prevention layer ADR 0007 chose over a command
- * string kill. The docs-only judgment is not rendered for it either: the
- * exemption exists so an artifact publication can reach the BASE, and a bench
- * clone publishes nothing.
+ * DENY MODE (ADR UI-a5l2) keeps the record and refuses every ref: a push of any
+ * kind — base, branch, tag — is out of scope by construction, and git refusing
+ * it is the same prevention layer ADR 0007 chose over a command string kill.
+ * The docs-only judgment is not rendered for it either: the exemption exists so
+ * an artifact publication can reach the BASE, and a deny-mode attempt publishes
+ * nothing.
  *
  * RECORD MODE (worker-failure-tiers §5.1) keeps every one of those decisions
  * except the refusal. The quick_fix lane's whole errand IS the base push, so it
@@ -533,11 +529,11 @@ export function envFor(input, options = {}) {
  * from "this attempt predates the record" — so a failure to create it is a
  * dispatch refusal like any other, not a silent downgrade to guessing.
  *
- * `mode` picks which script is written (worker-failure-tiers §5.1;
- * preset-compare §4.5-2). It is an input rather than an option because it is a
- * property of the ATTEMPT — a bench clone installs `deny`, the quick_fix lane
- * `record`, every other lane `guard` — and defaults to `guard`, so an unset
- * value fails closed on the refusing script.
+ * `mode` picks which script is written (worker-failure-tiers §5.1; ADR
+ * UI-a5l2). It is an input rather than an option because it is a property of
+ * the ATTEMPT — the quick_fix lane installs `record`, every other lane `guard`,
+ * and `deny` refuses every ref — and defaults to `guard`, so an unset value
+ * fails closed on the refusing script.
  *
  * @param {{ workspace: string, attempt_id: string, repo: string, target_base: string, mode?: 'guard'|'record'|'deny' }} input
  * @param {{ fs?: typeof import('node:fs') }} [options]

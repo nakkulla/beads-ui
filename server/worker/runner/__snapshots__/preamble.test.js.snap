@@ -19,7 +19,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
-성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
+성공 · <PR #N|push <sha7>|refuted: …|no-delta: …>
 파킹 · <awaiting_user 값>
 실패 · <원인>
 환경 · <오류 문장 원문>
@@ -88,7 +88,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
-성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
+성공 · <PR #N|push <sha7>|refuted: …|no-delta: …>
 파킹 · <awaiting_user 값>
 실패 · <원인>
 환경 · <오류 문장 원문>
@@ -411,7 +411,7 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
-성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
+성공 · <PR #N|push <sha7>|refuted: …|no-delta: …>
 파킹 · <awaiting_user 값>
 실패 · <원인>
 환경 · <오류 문장 원문>
@@ -601,7 +601,7 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
-성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
+성공 · <PR #N|push <sha7>|refuted: …|no-delta: …>
 파킹 · <awaiting_user 값>
 실패 · <원인>
 환경 · <오류 문장 원문>
@@ -712,7 +712,7 @@ Bead 본문 \`## scope\`가 표면을 열거한 attempt는 수집 위임(subagen
 종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
-성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
+성공 · <PR #N|push <sha7>|refuted: …|no-delta: …>
 파킹 · <awaiting_user 값>
 실패 · <원인>
 환경 · <오류 문장 원문>
@@ -799,7 +799,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
-성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
+성공 · <PR #N|push <sha7>|refuted: …|no-delta: …>
 파킹 · <awaiting_user 값>
 실패 · <원인>
 환경 · <오류 문장 원문>
@@ -868,7 +868,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
-성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
+성공 · <PR #N|push <sha7>|refuted: …|no-delta: …>
 파킹 · <awaiting_user 값>
 실패 · <원인>
 환경 · <오류 문장 원문>
@@ -929,7 +929,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
-성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
+성공 · <PR #N|push <sha7>|refuted: …|no-delta: …>
 파킹 · <awaiting_user 값>
 실패 · <원인>
 환경 · <오류 문장 원문>
@@ -995,7 +995,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
-성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
+성공 · <PR #N|push <sha7>|refuted: …|no-delta: …>
 파킹 · <awaiting_user 값>
 실패 · <원인>
 환경 · <오류 문장 원문>
@@ -1055,7 +1055,7 @@ exports[`runner/preamble channel split (UI-rxp3 §1) > freezes the assembled sys
 종료 메시지의 첫 줄은 결과 줄 하나다.
 
 \`\`\`
-성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>
+성공 · <PR #N|push <sha7>|refuted: …|no-delta: …>
 파킹 · <awaiting_user 값>
 실패 · <원인>
 환경 · <오류 문장 원문>

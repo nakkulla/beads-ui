@@ -12,7 +12,6 @@ import {
   handleSubscribeAdr,
   handleUnsubscribeAdr
 } from './adr-handlers.js';
-import { handleBenchRunCreate } from './bench-handlers.js';
 import { handleGetCompare } from './compare-handlers.js';
 import {
   detachConnectionFromAllRegistries,
@@ -705,9 +704,6 @@ export async function handleMessage(ws, data) {
       return;
     case 'get-compare':
       await handleGetCompare(ws, req);
-      return;
-    case 'bench-run-create':
-      void handleBenchRunCreate(ws, req);
       return;
     case 'unsubscribe-session-log':
       handleUnsubscribeSessionLog(ws, req);

@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
+import { compareSnapshot } from '../worker/compare-projection.js';
 import { compareRangeSince, handleGetCompare } from './compare-handlers.js';
 
 function makeSocket() {
@@ -44,7 +45,6 @@ describe('ws/compare-handlers', () => {
           root_dirs: ['/repo/one'],
           issue_types: ['bug'],
           routes: ['quick_fix'],
-          include_bench: true,
           problem_criteria: { failed: { on: false } }
         }
       }),
@@ -55,10 +55,37 @@ describe('ws/compare-handlers', () => {
     expect(passed.root_dirs).toEqual(['/repo/one']);
     expect(passed).not.toHaveProperty('issue_types');
     expect(passed.group_by).toBe('preset');
-    expect(passed.include_bench).toBe(true);
     expect(passed.problem_criteria).toEqual({ failed: { on: false } });
     expect(typeof passed.since).toBe('number');
     expect(passed.until).toBeNull();
+  });
+
+  test('answers a legacy include_bench request with a plain snapshot', async () => {
+    const ws = makeSocket();
+    const snapshot = vi.fn((/** @type {unknown} */ filters) =>
+      compareSnapshot(filters, { workspaces: [], presets: [], catalog: null })
+    );
+
+    await handleGetCompare(
+      /** @type {any} */ (ws),
+      /** @type {any} */ ({
+        id: 'legacy-tab',
+        type: 'get-compare',
+        payload: { include_bench: true }
+      }),
+      { snapshot: /** @type {any} */ (snapshot) }
+    );
+
+    expect(ws.sent[0].ok).toBe(true);
+    expect(ws.sent[0].type).toBe('compare-snapshot');
+    expect(Object.keys(ws.sent[0].payload).sort()).toEqual([
+      'criteria',
+      'groups',
+      'rows',
+      'summary',
+      'warnings',
+      'workspaces'
+    ]);
   });
 
   test('forwards both custom boundaries to the projection', async () => {

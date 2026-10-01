@@ -5,13 +5,6 @@
  * 보이는 저장소 전부를 한 표에 놓고 저장소 필터로 좁힌다(§3.1). 데이터는
  * `get-compare` → `compare-snapshot` 요청·응답 한 쌍이고 실시간 push는 없다 —
  * 탭을 열 때·필터를 바꿀 때·`새로고침`을 누를 때만 다시 읽는다(§3.5).
- *
- * 탭 아래 접힌 절은 실험(§4.7)이다: `새 실험` 폼과 실험 목록, 그리고 고른 실험을
- * 프리셋별로 묶어 §3과 같은 여섯 열로 보이는 표. 실험 목록 `runs`와 실험 셀 행
- * `bench_rows`는 같은 `compare-snapshot` 응답에 함께 온다 — 이 스펙이 더하는 ws
- * op은 §3.5가 셋으로 열거했고, 결과 원장을 따로 두지 않는다는 §4.7의 결정이
- * 여기서도 그대로다. `bench_rows`는 서버가 필터와 무관하게 싣기 때문에 본 표의
- * 기간·저장소 필터를 좁혀도 고른 실험의 셀이 사라지지 않는다.
  */
 import { html, nothing, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
@@ -32,28 +25,14 @@ import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { costTooltipLines } from '../../utils/token-usage.js';
 import { ROUTE_FILTER_OPTIONS } from '../worker/lane-model.js';
 import {
-  BENCH_REVIEWER_KEYS,
-  benchErrorMessage,
-  benchFormReady,
-  benchSourceEligibility,
-  benchSourceOptions,
-  clampRepeats,
-  reviewerDefaults
-} from './bench-form.js';
-import { benchPresetGroups, benchProgress } from './bench-model.js';
-import {
   EMPTY_CELL,
   formatCostMedian,
   formatCriteriaLegend,
   formatDuration,
   formatFactorChip,
-  formatOutcome,
   formatOutcomeText,
   formatPrice,
   formatRate,
-  formatReview,
-  formatTokens,
-  formatVerify,
   outcomeDotKind,
   sampleNote
 } from './format.js';
@@ -162,8 +141,6 @@ function compositionLineTemplate(row) {
  * @typedef {Object} CompareViewOptions
  * @property {(type: string, payload?: unknown) => Promise<any>} [transport]
  * @property {(id: string) => void} [gotoIssue]
- * @property {{ get: () => ({ presets: Array<Record<string, any>> }|null), subscribe?: (fn: () => void) => () => void }} [execPresetStore]
- * @property {() => Array<Record<string, any>>} [sourceCandidates]
  */
 
 /**
@@ -174,17 +151,14 @@ export function createCompareView(root, options = {}) {
   const log = debug('views:compare');
   const transport = options.transport;
   const gotoIssue = options.gotoIssue;
-  const execPresetStore = options.execPresetStore;
-  const sourceCandidates = options.sourceCandidates;
 
-  /** @type {{ range: string, start_date: string, end_date: string, root_dir: string, route: string, include_bench: boolean }} */
+  /** @type {{ range: string, start_date: string, end_date: string, root_dir: string, route: string }} */
   const filters = {
     range: loadCompareRange(),
     start_date: '',
     end_date: '',
     root_dir: '',
-    route: '',
-    include_bench: false
+    route: ''
   };
   /** @type {{ rows: any[], groups: any[], summary: any, warnings: string[], workspaces: Array<{ root_dir: string, name: string }>, criteria: any }} */
   let model = {
@@ -248,40 +222,8 @@ export function createCompareView(root, options = {}) {
   }
 
   /**
-   * 실험(§4.7) 상태. `runs`와 `rows` 모두 같은 `compare-snapshot` 응답에서
-   * 온다 — 실험 표의 행 재료는 서버가 필터와 무관하게 싣는 `bench_rows`다.
-   *
-   * @type {{ runs: Array<Record<string, any>>, selected: string|null, rows: Array<Record<string, any>> }}
-   */
-  const bench = {
-    runs: [],
-    selected: null,
-    rows: []
-  };
-  /** @type {Set<string>} */
-  const bench_expanded = new Set();
-
-  /**
-   * The new-experiment form state. Only drawn while `open`.
-   *
-   * @type {{ open: boolean, source_id: string, query: string, preset_ids: string[], repeats: number, reviewer_mode: 'fixed'|'preset', reviewer: Record<string, string>, error: string|null, submitting: boolean }}
-   */
-  const form = {
-    open: false,
-    source_id: '',
-    query: '',
-    preset_ids: [],
-    repeats: 1,
-    reviewer_mode: 'fixed',
-    reviewer: reviewerDefaults([]),
-    error: null,
-    submitting: false
-  };
-
-  /**
-   * `get-compare` 한 번 — 본 표·실험 목록·실험 셀 행이 모두 이 응답 하나에
-   * 온다. 응답이 늦게 도착한 이전 요청은 버린다: 필터를 빠르게 바꾸면 오래된
-   * 표가 새 표를 덮어쓸 수 있다.
+   * `get-compare` 한 번. 응답이 늦게 도착한 이전 요청은 버린다: 필터를 빠르게
+   * 바꾸면 오래된 표가 새 표를 덮어쓸 수 있다.
    */
   async function fetchSnapshot() {
     if (customRangeError() !== null) {
@@ -302,7 +244,6 @@ export function createCompareView(root, options = {}) {
         range: filters.range,
         root_dirs: filters.root_dir ? [filters.root_dir] : [],
         routes: filters.route ? [filters.route] : [],
-        include_bench: filters.include_bench,
         group_by,
         ...(saved_criteria === null
           ? {}
@@ -324,17 +265,6 @@ export function createCompareView(root, options = {}) {
           ? payload.workspaces
           : model.workspaces
       };
-      bench.runs = Array.isArray(payload?.runs) ? payload.runs : [];
-      bench.rows = Array.isArray(payload?.bench_rows) ? payload.bench_rows : [];
-      if (
-        bench.selected !== null &&
-        !bench.runs.some((run) => run.run_id === bench.selected)
-      ) {
-        bench.selected = null;
-      }
-      if (!form.open) {
-        form.reviewer = reviewerDefaults(bench.runs);
-      }
       loaded_once = true;
     } catch (err) {
       if (seq !== request_seq) {
@@ -348,78 +278,6 @@ export function createCompareView(root, options = {}) {
         doRender();
       }
     }
-  }
-
-  /** @param {string} run_id */
-  function selectRun(run_id) {
-    bench.selected = bench.selected === run_id ? null : run_id;
-    doRender();
-  }
-
-  /** Whether the payload is submittable — the server `bad_request` rules. */
-  function formReady() {
-    const issue = candidateById(form.source_id);
-    return benchFormReady({
-      source_id: form.source_id,
-      source_eligible:
-        issue === null ? false : benchSourceEligibility(issue).eligible,
-      preset_ids: form.preset_ids,
-      repeats: form.repeats,
-      reviewer_mode: form.reviewer_mode,
-      reviewer: form.reviewer
-    });
-  }
-
-  /** `bench-run-create` 한 번. 성공하면 폼을 닫고 새 실험을 골라 둔다. */
-  async function submitForm() {
-    if (!transport || form.submitting || !formReady()) {
-      return;
-    }
-    form.submitting = true;
-    form.error = null;
-    doRender();
-    try {
-      const reply = await transport('bench-run-create', {
-        source_id: form.source_id,
-        preset_ids: [...form.preset_ids],
-        repeats: form.repeats,
-        reviewer_mode: form.reviewer_mode,
-        ...(form.reviewer_mode === 'fixed' ? { reviewer: form.reviewer } : {})
-      });
-      const payload = reply && reply.payload ? reply.payload : reply;
-      const run_id =
-        payload && payload.run && typeof payload.run.run_id === 'string'
-          ? payload.run.run_id
-          : null;
-      form.open = false;
-      form.error = null;
-      await fetchSnapshot();
-      if (run_id !== null && bench.selected !== run_id) {
-        selectRun(run_id);
-      }
-    } catch (err) {
-      log('bench-run-create failed: %o', err);
-      form.error = benchErrorMessage(err);
-    } finally {
-      form.submitting = false;
-      doRender();
-    }
-  }
-
-  /**
-   * @param {string} id
-   * @returns {Record<string, any>|null}
-   */
-  function candidateById(id) {
-    if (!sourceCandidates || id.length === 0) {
-      return null;
-    }
-    for (const issue of sourceCandidates()) {
-      if (issue && issue.id === id) {
-        return issue;
-      }
-    }
-    return null;
   }
 
   /**
@@ -810,70 +668,6 @@ export function createCompareView(root, options = {}) {
   }
 
   /** @param {any} group */
-  function successTemplate(group) {
-    const rate = formatRate(group.success_rate);
-    const unknown =
-      typeof group.unknown_count === 'number' && group.unknown_count > 0
-        ? html`<span class="cmp-note">미상 ${group.unknown_count}</span>`
-        : null;
-    const caret = group.pass_caret
-      ? html`<span class="cmp-note"
-          >pass^${group.pass_caret.k}
-          ${formatRate(group.pass_caret.value)}</span
-        >`
-      : null;
-    const sample =
-      typeof group.success_sample === 'number' &&
-      group.success_sample !== group.n
-        ? html`<span class="cmp-note"
-            >n=${group.success_sample}/${group.n}</span
-          >`
-        : null;
-    return html`${rate} ${sample} ${caret} ${unknown}`;
-  }
-
-  /**
-   * @param {{ median: number|null, sample: number, total: number, partial?: boolean }|null|undefined} stat
-   * @param {(value: number|null|undefined) => string} formatValue
-   */
-  function medianTemplate(stat, formatValue) {
-    const note = sampleNote(stat);
-    return html`${formatValue(stat?.median)}
-    ${note ? html`<span class="cmp-note">${note}</span>` : null}
-    ${stat?.partial === true
-      ? html`<span class="cmp-note">부분 집계</span>`
-      : null}`;
-  }
-
-  /** @param {any} row */
-  function benchAttemptRowTemplate(row) {
-    const cost_title = costTooltipLines(row.usage || null).join('\n');
-    return html`
-      <tr
-        class="cmp-row cmp-row--attempt"
-        @click=${() => gotoIssue && gotoIssue(row.bead_id)}
-      >
-        <td class="cmp-cell cmp-cell--issue">
-          <span class="cmp-issue-id">${row.bead_id}</span>
-          <span class="cmp-issue-title">${row.title || ''}</span>
-          <span class="cmp-note">${row.workspace_name}</span>
-        </td>
-        <td class="cmp-cell">${formatDuration(row.duration_ms)}</td>
-        <td class="cmp-cell">${formatOutcome(row)}</td>
-        <td class="cmp-cell">${formatVerify(row.verify)}</td>
-        <td class="cmp-cell">${formatReview(row.review)}</td>
-        <td class="cmp-cell">${formatTokens(row.usage?.tokens)}</td>
-        <td class="cmp-cell" title=${cost_title}>${formatPrice(row.usage)}</td>
-        <td class="cmp-cell cmp-cell--time">
-          ${row.finished_at
-            ? formatTimestampLocal(row.finished_at)
-            : EMPTY_CELL}
-        </td>
-      </tr>
-    `;
-  }
-
-  /** @param {any} group */
   function groupCardTemplate(group) {
     const open = expanded.has(group.key);
     const ids = new Set(group.attempt_ids || []);
@@ -997,11 +791,7 @@ export function createCompareView(root, options = {}) {
         show: problems?.verify,
         label: 'verify 실패',
         title:
-          evidence?.verify === 'merge_verify'
-            ? '머지 후보 [verify] 실패'
-            : evidence?.verify === 'bench_verify'
-              ? 'bench 검증 실패'
-              : ''
+          evidence?.verify === 'merge_verify' ? '머지 후보 [verify] 실패' : ''
       },
       {
         show: problems?.duration,
@@ -1076,7 +866,7 @@ export function createCompareView(root, options = {}) {
   }
 
   /**
-   * Keep benchmark sampleNote behavior; comparison KPIs always show coverage.
+   * Keep the sampleNote behavior; comparison KPIs always show coverage.
    *
    * @param {any} stat
    */
@@ -1197,380 +987,6 @@ export function createCompareView(root, options = {}) {
     });
   }
 
-  /**
-   * One experiment row: source title, preset count, repeats, creation time and
-   * the `3/9` progress (§4.7). The manifest carries no source title, so it is
-   * looked up among the loaded issues and falls back to the id (fail-quiet).
-   *
-   * @param {Record<string, any>} run
-   */
-  function runRowTemplate(run) {
-    const selected = bench.selected === run.run_id;
-    const source = candidateById(String(run.source_bead_id || ''));
-    const title =
-      source && typeof source.title === 'string' && source.title.length > 0
-        ? source.title
-        : String(run.source_bead_id || '');
-    const progress = benchProgress(run);
-    const preset_count = Array.isArray(run.presets) ? run.presets.length : 0;
-    return html`
-      <button
-        type="button"
-        class="cmp-run ${selected ? 'is-selected' : ''}"
-        data-run-id=${run.run_id}
-        @click=${() => selectRun(String(run.run_id))}
-      >
-        <span class="cmp-run__title">${title}</span>
-        <span class="cmp-note">프리셋 ${preset_count}</span>
-        <span class="cmp-note">반복 ${run.repeats ?? EMPTY_CELL}</span>
-        <span class="cmp-note"
-          >${typeof run.created_at === 'number'
-            ? formatTimestampLocal(run.created_at)
-            : EMPTY_CELL}</span
-        >
-        <span class="cmp-run__progress"
-          >${progress === null ? EMPTY_CELL : progress.text}</span
-        >
-      </button>
-    `;
-  }
-
-  /**
-   * One preset group of the experiment table. Same cell renderers as the main
-   * comparison table; only the grouping key differs.
-   *
-   * @param {Record<string, any>} group
-   */
-  function benchGroupTemplate(group) {
-    const open = bench_expanded.has(group.key);
-    return html`
-      <tr
-        class="cmp-row cmp-row--group ${open ? 'is-open' : ''}"
-        @click=${() => {
-          if (bench_expanded.has(group.key)) {
-            bench_expanded.delete(group.key);
-          } else {
-            bench_expanded.add(group.key);
-          }
-          doRender();
-        }}
-      >
-        <td class="cmp-cell cmp-cell--name">
-          <span class="cmp-caret" aria-hidden="true">${open ? '▾' : '▸'}</span>
-          <span class="cmp-group-name">${group.name}</span>
-          <span class="cmp-note">${group.n}건</span>
-        </td>
-        <td class="cmp-cell">
-          ${medianTemplate(group.duration_ms, formatDuration)}
-        </td>
-        <td class="cmp-cell">
-          실패 ${group.failed_count} · 재시도 ${group.retry_count}
-        </td>
-        <td class="cmp-cell">${successTemplate(group)}</td>
-        <td class="cmp-cell">
-          ${medianTemplate(group.blocking, (value) =>
-            typeof value === 'number' ? `b${value}` : EMPTY_CELL
-          )}
-          ${medianTemplate(group.minor, (value) =>
-            typeof value === 'number' ? `m${value}` : EMPTY_CELL
-          )}
-          ${medianTemplate(group.round, (value) =>
-            typeof value === 'number' ? `r${value}` : EMPTY_CELL
-          )}
-        </td>
-        <td class="cmp-cell">${medianTemplate(group.tokens, formatTokens)}</td>
-        <td class="cmp-cell">
-          ${medianTemplate(group.cost_usd, formatCostMedian)}
-        </td>
-        <td class="cmp-cell cmp-cell--time"></td>
-      </tr>
-      ${open
-        ? (group.rows || []).map((/** @type {any} */ row) =>
-            benchAttemptRowTemplate(row)
-          )
-        : null}
-    `;
-  }
-
-  /** @param {Record<string, any>} run */
-  function runDetailTemplate(run) {
-    const groups = benchPresetGroups(run, bench.rows);
-    return html`
-      <div class="cmp-run-detail">
-        <div class="cmp-run-detail__head">
-          <span class="cmp-run-detail__flag">구현 위임 강제</span>
-          <span class="cmp-note"
-            >리뷰어
-            ${run.reviewer_mode === 'preset' ? '프리셋 값' : '고정'}</span
-          >
-          <span class="cmp-note"
-            >base ${String(run.base_sha || '').slice(0, 12)}</span
-          >
-        </div>
-        ${groups.length === 0
-          ? html`<div class="cmp-empty">셀이 없습니다</div>`
-          : html`<table class="cmp-table cmp-table--bench">
-              <thead>
-                <tr>
-                  <th scope="col">프리셋</th>
-                  <th scope="col">시간</th>
-                  <th scope="col">실패 · 재시도</th>
-                  <th scope="col">검증</th>
-                  <th scope="col">리뷰 지적 · 라운드</th>
-                  <th scope="col">토큰</th>
-                  <th scope="col">가격</th>
-                  <th scope="col">종료</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${groups.map((group) => benchGroupTemplate(group))}
-              </tbody>
-            </table>`}
-      </div>
-    `;
-  }
-
-  /** The new-experiment form (§4.2·§4.7). */
-  function formTemplate() {
-    const preset_state = execPresetStore ? execPresetStore.get() : null;
-    const presets = Array.isArray(preset_state?.presets)
-      ? preset_state.presets
-      : [];
-    const candidates = benchSourceOptions(
-      sourceCandidates ? sourceCandidates() : [],
-      form.query
-    );
-    return html`
-      <form
-        class="cmp-form"
-        @submit=${(/** @type {Event} */ ev) => {
-          ev.preventDefault();
-          void submitForm();
-        }}
-      >
-        <div class="cmp-form__note">구현 위임 강제</div>
-        <label class="cmp-form__field">
-          <span class="cmp-form__label">원본 이슈</span>
-          <input
-            type="text"
-            class="cmp-form__input"
-            placeholder="제목 또는 ID"
-            .value=${form.query}
-            @input=${(/** @type {Event} */ ev) => {
-              form.query = String(
-                /** @type {HTMLInputElement} */ (ev.target).value || ''
-              );
-              doRender();
-            }}
-          />
-        </label>
-        <div class="cmp-form__candidates">
-          ${candidates.length === 0
-            ? html`<div class="cmp-empty">후보 없음</div>`
-            : candidates.map(
-                (candidate) => html`
-                  <button
-                    type="button"
-                    class="cmp-candidate ${form.source_id === candidate.id
-                      ? 'is-selected'
-                      : ''}"
-                    data-source-id=${candidate.id}
-                    ?disabled=${!candidate.eligible}
-                    title=${candidate.reason}
-                    @click=${() => {
-                      form.source_id = candidate.id;
-                      doRender();
-                    }}
-                  >
-                    <span class="cmp-candidate__id">${candidate.id}</span>
-                    <span class="cmp-candidate__title">${candidate.title}</span>
-                    ${candidate.eligible
-                      ? null
-                      : html`<span class="cmp-candidate__reason"
-                          >${candidate.reason}</span
-                        >`}
-                  </button>
-                `
-              )}
-        </div>
-        <div class="cmp-form__field">
-          <span class="cmp-form__label">프리셋</span>
-          <div class="cmp-form__presets">
-            ${presets.length === 0
-              ? html`<div class="cmp-empty">프리셋 없음</div>`
-              : presets.map(
-                  (preset) => html`
-                    <label class="cmp-form__preset">
-                      <input
-                        type="checkbox"
-                        data-preset-id=${preset.id}
-                        .checked=${form.preset_ids.includes(preset.id)}
-                        @change=${(/** @type {Event} */ ev) => {
-                          const checked = /** @type {HTMLInputElement} */ (
-                            ev.target
-                          ).checked;
-                          form.preset_ids = checked
-                            ? [...form.preset_ids, preset.id]
-                            : form.preset_ids.filter((id) => id !== preset.id);
-                          doRender();
-                        }}
-                      />
-                      <span>${preset.name}</span>
-                    </label>
-                  `
-                )}
-          </div>
-        </div>
-        <label class="cmp-form__field">
-          <span class="cmp-form__label">반복</span>
-          <input
-            type="number"
-            class="cmp-form__input cmp-form__input--repeats"
-            min="1"
-            max="5"
-            .value=${String(form.repeats)}
-            @change=${(/** @type {Event} */ ev) => {
-              const input = /** @type {HTMLInputElement} */ (ev.target);
-              form.repeats = clampRepeats(input.value);
-              input.value = String(form.repeats);
-              doRender();
-            }}
-          />
-        </label>
-        <div class="cmp-form__field">
-          <span class="cmp-form__label">리뷰어</span>
-          <div class="cmp-form__reviewer-mode">
-            ${[
-              { value: 'fixed', label: '고정' },
-              { value: 'preset', label: '프리셋 값' }
-            ].map(
-              (choice) => html`
-                <label class="cmp-form__radio">
-                  <input
-                    type="radio"
-                    name="cmp-reviewer-mode"
-                    value=${choice.value}
-                    .checked=${form.reviewer_mode === choice.value}
-                    @change=${() => {
-                      form.reviewer_mode = /** @type {'fixed'|'preset'} */ (
-                        choice.value
-                      );
-                      doRender();
-                    }}
-                  />
-                  <span>${choice.label}</span>
-                </label>
-              `
-            )}
-          </div>
-        </div>
-        ${form.reviewer_mode === 'fixed'
-          ? html`<div class="cmp-form__reviewer">
-              ${BENCH_REVIEWER_KEYS.map(
-                (key) => html`
-                  <label class="cmp-form__field">
-                    <span class="cmp-form__label">${key}</span>
-                    <input
-                      type="text"
-                      class="cmp-form__input"
-                      data-reviewer-key=${key}
-                      .value=${form.reviewer[key] || ''}
-                      @input=${(/** @type {Event} */ ev) => {
-                        form.reviewer = {
-                          ...form.reviewer,
-                          [key]: String(
-                            /** @type {HTMLInputElement} */ (ev.target).value ||
-                              ''
-                          )
-                        };
-                      }}
-                    />
-                  </label>
-                `
-              )}
-            </div>`
-          : null}
-        ${form.error !== null
-          ? html`<div class="cmp-error" role="alert">${form.error}</div>`
-          : null}
-        <div class="cmp-form__actions">
-          <button
-            type="submit"
-            class="op-btn"
-            ?disabled=${form.submitting || !formReady()}
-          >
-            실험 시작
-          </button>
-          <button
-            type="button"
-            class="op-btn"
-            @click=${() => {
-              form.open = false;
-              form.error = null;
-              doRender();
-            }}
-          >
-            취소
-          </button>
-        </div>
-      </form>
-    `;
-  }
-
-  /** The collapsed experiment section below the comparison cards (§4.7). */
-  function benchTemplate() {
-    const selected =
-      bench.selected === null
-        ? null
-        : (bench.runs.find((run) => run.run_id === bench.selected) ?? null);
-    return html`
-      <details class="cmp-bench">
-        <summary>실험 (bench 클론 실행) · ${bench.runs.length}건</summary>
-        <div class="cmp-bench__body">
-          <label class="cmp-filter cmp-filter--check">
-            <input
-              type="checkbox"
-              .checked=${filters.include_bench}
-              @change=${(/** @type {Event} */ ev) => {
-                filters.include_bench = /** @type {HTMLInputElement} */ (
-                  ev.target
-                ).checked;
-                void fetchSnapshot();
-              }}
-            />
-            <span>실사용 표에 실험 세션 포함</span>
-          </label>
-          <div class="cmp-bench__head">
-            <h3 class="cmp-bench__title">실험</h3>
-            <button
-              type="button"
-              class="op-btn cmp-bench__new"
-              @click=${() => {
-                form.open = !form.open;
-                if (form.open) {
-                  form.error = null;
-                  form.reviewer = reviewerDefaults(bench.runs);
-                }
-                doRender();
-              }}
-            >
-              새 실험
-            </button>
-          </div>
-          ${form.open ? formTemplate() : null}
-          ${bench.runs.length === 0
-            ? html`<div class="cmp-empty">
-                ${loading ? '읽는 중…' : '실험 없음'}
-              </div>`
-            : html`<div class="cmp-runs">
-                ${bench.runs.map((run) => runRowTemplate(run))}
-              </div>`}
-          ${selected === null ? null : runDetailTemplate(selected)}
-        </div>
-      </details>
-    `;
-  }
-
   function bodyTemplate() {
     if (error !== null) {
       return html`
@@ -1653,7 +1069,6 @@ export function createCompareView(root, options = {}) {
             model.criteria.baselines
           )}
         </p>
-        ${benchTemplate()}
       </div>
     `;
   }
@@ -1662,29 +1077,13 @@ export function createCompareView(root, options = {}) {
     render(template(), root);
   }
 
-  // 프리셋 목록이 늦게 도착해도 폼의 체크박스가 채워지도록 구독한다. 폼이 닫혀
-  // 있으면 그릴 것이 없으므로 다시 그리지 않는다.
-  /** @type {null | (() => void)} */
-  let unsubscribe_presets = null;
-  if (execPresetStore && execPresetStore.subscribe) {
-    unsubscribe_presets = execPresetStore.subscribe(() => {
-      if (form.open) {
-        doRender();
-      }
-    });
-  }
-
   doRender();
 
   return {
-    /**
-     * Called when the tab opens. One request answers both halves now, so the
-     * experiment list's own refresh cadence is what this follows.
-     */
+    /** Called when the tab opens. */
     load() {
-      // 탭을 열 때마다 다시 읽는다: 같은 응답이 실험 목록도 싣고, 셀 상태는
-      // Worker 진행에 따라 바뀌므로 탭을 다시 여는 것이 진행 `3/9`를 새로 보는
-      // 자연스러운 계기다.
+      // 탭을 열 때마다 다시 읽는다: 실행 기록은 Worker 진행에 따라 바뀌므로 탭을
+      // 다시 여는 것이 새 값을 보는 자연스러운 계기다.
       if (!loading) {
         void fetchSnapshot();
       }
@@ -1702,10 +1101,6 @@ export function createCompareView(root, options = {}) {
       return fetchSnapshot();
     },
     destroy() {
-      if (unsubscribe_presets) {
-        unsubscribe_presets();
-        unsubscribe_presets = null;
-      }
       render(html``, root);
     }
   };

@@ -136,7 +136,7 @@ const RESULT_LINE_GRAMMAR = [
   '종료 메시지의 첫 줄은 결과 줄 하나다.',
   '',
   '```',
-  '성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>',
+  '성공 · <PR #N|push <sha7>|refuted: …|no-delta: …>',
   '파킹 · <awaiting_user 값>',
   '실패 · <원인>',
   '환경 · <오류 문장 원문>',

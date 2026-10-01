@@ -1656,24 +1656,7 @@ export function bootstrap(root_element) {
     // Monitor와 같은 global 마운트 쪽이고, 요청·응답 한 쌍만 쓰므로 구독이 없다.
     const compare_view = createCompareView(compare_root, {
       transport,
-      gotoIssue: (id) => router.gotoIssue(id),
-      // 실험 폼의 프리셋 목록은 서버 전역 프리셋 저장소 그대로다 (§4.2).
-      execPresetStore: exec_preset_store,
-      // 원본 후보는 현재 저장소에 로드된 이슈들이다 — `bench-run-create`가
-      // 연결의 워크스페이스에만 쓰기 때문에 후보도 그 워크스페이스여야 한다.
-      sourceCandidates: () => {
-        /** @type {Map<string, any>} */
-        const seen = new Map();
-        for (const [client_id] of WORKER_SUBS) {
-          for (const issue of sub_issue_stores.snapshotFor(client_id) || []) {
-            const id = /** @type {any} */ (issue)?.id;
-            if (typeof id === 'string' && id.length > 0 && !seen.has(id)) {
-              seen.set(id, issue);
-            }
-          }
-        }
-        return Array.from(seen.values());
-      }
+      gotoIssue: (id) => router.gotoIssue(id)
     });
 
     // ADR 탭 (다섯 번째 탭, UI-8uz7 §7): 저장소별 ADR 표와 신호를 그린다.

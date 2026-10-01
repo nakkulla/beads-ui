@@ -748,7 +748,7 @@ describe('runner/preamble runtime lifetime split (codex-orchestration-parity §3
 describe('runner/preamble result line grammar (spec D1)', () => {
   test('inlines the result forms in the PR-submit terminal', () => {
     for (const form of [
-      '성공 · <PR #N|push <sha7>|refuted: …|no-delta: …|bench:<run_id>>',
+      '성공 · <PR #N|push <sha7>|refuted: …|no-delta: …>',
       '파킹 · <awaiting_user 값>',
       '실패 · <원인>',
       '환경 · <오류 문장 원문>',

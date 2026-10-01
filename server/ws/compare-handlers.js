@@ -59,7 +59,6 @@ export async function handleGetCompare(ws, req, seams = {}) {
           ? payload.group_by
           : 'preset',
       routes: payload.routes,
-      include_bench: payload.include_bench,
       problem_criteria: payload.problem_criteria,
       since: bounds.since,
       until: bounds.until

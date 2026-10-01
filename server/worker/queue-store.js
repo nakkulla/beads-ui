@@ -179,18 +179,7 @@
  * once in this attempt's total. An attempt written before the field existed
  * normalizes to an empty list, which reads as "not observed", never as zero.
  * @property {string|null} done_kind - 무변경 종결의 종류 (`'refuted'`·
- * `'no_delta'`, quick_fix 착지가 씀) 또는 `'bench'`(preset-compare §4.5-1의
- * `landing=none` 종결); 그 밖의 값은 legacy 머지 축 기록.
- * @property {string|null} bench_run - The bench experiment run id this attempt
- * belongs to (preset-compare §4). Snapshotted at dispatch from the clone bead's
- * `bench_run` metadata so a settlement that never reads the bead again — the
- * push invariant, the `:failed` close, the run's own cleanup — still knows
- * which run owns this cell. Null for every ordinary attempt.
- * @property {{ ok: boolean, exit: number|null, duration_ms: number, head_sha: string }|null} bench_verify -
- * The repository `[verify]` score of one bench cell (§4.5-3), run in the same
- * envelope as merge-candidate verification against the clone worktree's HEAD.
- * Null when the repository declares no `[verify]`, when the session failed, and
- * on every attempt recorded before this field existed.
+ * `'no_delta'`, quick_fix 착지가 씀); 그 밖의 값은 legacy 머지 축 기록.
  *
  * RETIRED merge-axis fields (worker-phase2 §2). New attempts never write them,
  * but attempt history is immutable (§9), so the shape is preserved so a legacy
@@ -284,12 +273,11 @@
  * not re-discover an empty `node_modules` with an `npm ls` round trip. Null
  * when the attempt adopted an existing worktree and nothing was installed.
  * @property {ExecPresetRecord|null} [exec_preset] - Observed dispatch preset, independent of workflow receipts.
- * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|'bench_close'|null, head_sha: string|null, reason: string|null, resolved_by?: string, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }|null} quickfix_landing -
+ * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|'no_change_close'|null, head_sha: string|null, reason: string|null, resolved_by?: string, cleanup_detail?: { manager_reason: string|null, worktree_removed: boolean, branch_removed: boolean } }|null} quickfix_landing -
  * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
  * before the first cleanup step) plus `no_change_close` for either kind of
  * contract no-change close (`refuted:`·`no-delta:`) settled without a delta
- * head and `bench_close` for a `landing=none` bench cell, `head_sha` is the
- * 40hex bound by
+ * head, `head_sha` is the 40hex bound by
  * `impl_review` (null under `no_change_close`), and `reason` records a landing
  * failure. Its shape is directly
  * consumable by the existing `prWaitProgress` projection.
@@ -3444,38 +3432,39 @@ function normalizeInteractiveSessions(raw) {
 }
 
 /**
- * Normalize one bench cell's `[verify]` score (preset-compare §4.5-3).
+ * The `quickfix_landing.cursor` vocabulary — the steps `quickfix-landing.js`
+ * records.
  *
- * A record that cannot name the commit it ran on is DROPPED, for the same
- * reason a verify result is only ever valid for its own SHA: a score with no
- * head is a claim about nothing, and the comparison table would read it as a
- * judged row.
+ * @type {ReadonlySet<string>}
+ */
+const QUICKFIX_LANDING_CURSORS = new Set([
+  'base_containment',
+  'repo_operations',
+  'branch_cleanup',
+  'parent_close',
+  'no_change_close'
+]);
+
+/**
+ * Normalize one durable `quickfix_landing` record. A stored `cursor` outside
+ * {@link QUICKFIX_LANDING_CURSORS} names a retired step no reader judges, so it
+ * reads as null and the next write no longer carries it.
  *
  * @param {unknown} value
- * @returns {Attempt['bench_verify']}
+ * @returns {Attempt['quickfix_landing']}
  */
-function normalizeBenchVerify(value) {
-  if (
-    !isRecord(value) ||
-    typeof value.ok !== 'boolean' ||
-    typeof value.head_sha !== 'string' ||
-    value.head_sha.length === 0
-  ) {
+function normalizeQuickfixLanding(value) {
+  if (!isRecord(value)) {
     return null;
   }
-  return {
-    ok: value.ok,
-    exit:
-      typeof value.exit === 'number' && Number.isFinite(value.exit)
-        ? value.exit
-        : null,
-    duration_ms:
-      typeof value.duration_ms === 'number' &&
-      Number.isFinite(value.duration_ms)
-        ? value.duration_ms
-        : 0,
-    head_sha: value.head_sha
-  };
+  const landing = clone(value);
+  if (
+    typeof landing.cursor === 'string' &&
+    !QUICKFIX_LANDING_CURSORS.has(landing.cursor)
+  ) {
+    landing.cursor = null;
+  }
+  return /** @type {Attempt['quickfix_landing']} */ (landing);
 }
 
 /**
@@ -3709,11 +3698,6 @@ export function makeAttempt(fields) {
     demoted_reason: fields.demoted_reason ?? null,
     release_rejected: fields.release_rejected ?? null,
     done_kind: fields.done_kind ?? null,
-    bench_run:
-      typeof fields.bench_run === 'string' && fields.bench_run.length > 0
-        ? fields.bench_run
-        : null,
-    bench_verify: normalizeBenchVerify(fields.bench_verify),
     verify_cmd_result: fields.verify_cmd_result ?? null,
     exec_default_preset_id: fields.exec_default_preset_id ?? null,
     exec_default_preset_revision:
@@ -3790,9 +3774,7 @@ export function makeAttempt(fields) {
         ? fields.worktree_setup
         : null,
     exec_preset: normalizeExecPresetRecord(fields.exec_preset),
-    quickfix_landing: isRecord(fields.quickfix_landing)
-      ? clone(fields.quickfix_landing)
-      : null,
+    quickfix_landing: normalizeQuickfixLanding(fields.quickfix_landing),
     external_conflict: fields.external_conflict === true,
     cleanup_diagnosis: fields.cleanup_diagnosis === true,
     cleanup_diagnosis_result_path:

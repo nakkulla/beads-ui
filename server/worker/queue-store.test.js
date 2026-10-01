@@ -11228,6 +11228,95 @@ describe('unclassified wait migration', () => {
   });
 });
 
+describe('queue store retired experiment fields', () => {
+  function writeLegacyQueue() {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        attempts: {
+          old: {
+            bead_id: 'UI-1',
+            status: 'running',
+            bench_run: 'run-1',
+            bench_verify: {
+              ok: true,
+              exit: 0,
+              duration_ms: 5,
+              head_sha: 'a'.repeat(40)
+            },
+            quickfix_landing: {
+              cursor: 'bench_close',
+              head_sha: null,
+              reason: null
+            }
+          }
+        }
+      })
+    );
+  }
+
+  test('drops the retired bench keys when an old queue loads', () => {
+    writeLegacyQueue();
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.attempts.old.status).toBe('running');
+    expect(loaded.attempts.old).not.toHaveProperty('bench_run');
+    expect(loaded.attempts.old).not.toHaveProperty('bench_verify');
+  });
+
+  test('drops a retired bench_close landing cursor when an old queue loads', () => {
+    writeLegacyQueue();
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.attempts.old.quickfix_landing).toEqual({
+      cursor: null,
+      head_sha: null,
+      reason: null
+    });
+  });
+
+  test('keeps a current landing cursor when a queue loads', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        attempts: {
+          cur: {
+            bead_id: 'UI-2',
+            status: 'running',
+            quickfix_landing: {
+              cursor: 'parent_close',
+              head_sha: 'b'.repeat(40),
+              reason: null
+            }
+          }
+        }
+      })
+    );
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.attempts.cur.quickfix_landing?.cursor).toBe('parent_close');
+  });
+
+  test('saves the queue without the retired bench keys', () => {
+    writeLegacyQueue();
+    const store = createQueueStore();
+    store.load(WS);
+
+    store.updateAttempt(WS, { attempt_id: 'old', patch: { pid: 4242 } });
+
+    const saved = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    expect(saved.attempts.old.pid).toBe(4242);
+    expect(saved.attempts.old).not.toHaveProperty('bench_run');
+    expect(saved.attempts.old).not.toHaveProperty('bench_verify');
+    expect(saved.attempts.old.quickfix_landing.cursor).toBeNull();
+  });
+});
+
 describe('queue store failure-tier fields (UI-5ym8)', () => {
   test('starts a fresh queue with no hold and no lineages', () => {
     const store = createQueueStore();
