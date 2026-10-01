@@ -659,12 +659,15 @@
  * a conflict item an endless supply of resolution sessions. A record is dropped
  * as soon as the head moves (someone actually changed the branch), when a human
  * clicks [머지] on the row, or when the bead leaves the lane.
- * @property {Record<string, MergeShelf>} merge_shelved - Local `pr_wait` beads
- * a person withdrew from EVERY automatic merge path with [보관] (UI-sd12 §3.1).
+ * @property {Record<string, MergeShelf>} merge_shelved - PR 대기 beads a
+ * person withdrew from EVERY automatic merge path with [보관] (UI-sd12 §3.1).
  * Unlike {@link Queue.auto_merge_skips} the record is not pinned to a head and
  * survives a `pr_wait` re-entry: only [보관 해제], the MERGED completion move,
  * a discard, or a queue operation that takes the bead out of `pr_wait` drops
- * it. Invariant: no committed state holds a shelved bead in
+ * it. A session-delivered external row is shelved here too although it has no
+ * durable row (UI-8d8y); its record has no lane exit to go with, so it is
+ * dropped once bd reads the bead `closed` ({@link dropClosedMergeShelves}).
+ * Invariant: no committed state holds a shelved bead in
  * {@link Queue.merge_queue}.
  * @property {Record<string, CompletionIntent>} completion_intents - Durable
  * root-scoped completion sagas. Missing on legacy queue files and normalized
@@ -12051,8 +12054,14 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Shelve or unshelve one local `pr_wait` row ([보관]/[보관 해제], UI-sd12
-     * §3.2). CAS-guarded like every other merge op.
+     * Shelve or unshelve one PR 대기 row ([보관]/[보관 해제], UI-sd12 §3.2).
+     * CAS-guarded like every other merge op.
+     *
+     * A durable `pr_wait` row is found here. A session-delivered external row
+     * lives only in the registry overlay this store cannot see, so the caller
+     * vouches for it with `overlay: true` (UI-8d8y) — without that a bead with
+     * no durable row is `not_pr_wait`. A durable `external` row is one promoted
+     * after its merge was observed, which [보관] no longer applies to.
      *
      * Shelving is ONE write: the record, the bead's merge-queue entry leaving
      * whatever its authority, and the cancellation of the review sessions that
@@ -12065,11 +12074,12 @@ export function createQueueStore(options = {}) {
      * row. Setting the value a row already has is `ok:false` with no reason.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, bead_id: string, on: boolean }} input
+     * @param {{ expected_revision: number, bead_id: string, on: boolean, overlay?: boolean }} input
      * @returns {QueueOpResult}
      */
     setMergeShelved(workspace, input) {
       const { expected_revision, bead_id, on } = input;
+      const overlay = input.overlay === true;
       /** @type {string|null} */
       let reason = null;
       /** @type {string[]} */
@@ -12086,11 +12096,11 @@ export function createQueueStore(options = {}) {
           return true;
         }
         const row = next.pr_wait.find((entry) => entry.bead_id === bead_id);
-        if (!row) {
+        if (!row && !overlay) {
           reason = 'not_pr_wait';
           return false;
         }
-        if (row.external === true) {
+        if (row && row.external === true) {
           reason = 'external';
           return false;
         }
@@ -12112,6 +12122,40 @@ export function createQueueStore(options = {}) {
         };
       }
       return { ...result, cancelled_attempt_ids };
+    },
+
+    /**
+     * Drop the shelf records of beads bd now reads as `closed` (UI-8d8y). A
+     * shelved session-delivered external row has no durable row whose lane exit
+     * could take the record with it, and `closed` is the status it does not
+     * come back from as the same PR wait. Leaving the overlay is not enough: a
+     * session that takes the bead back to `in_progress` for a base sync is
+     * exactly when the shelf has to hold.
+     *
+     * A bead still in durable `pr_wait` keeps its record whatever bd says — that
+     * row's own lane exit owns it (UI-sd12 §3.1). A bead absent from `statuses`
+     * is left alone: an unread status moves nothing. Scheduler-owned (no CAS).
+     *
+     * @param {string} workspace
+     * @param {Record<string, string>} statuses - Bead id → bd status, from ONE
+     * scan.
+     * @returns {QueueOpResult}
+     */
+    dropClosedMergeShelves(workspace, statuses) {
+      return applyUnconditional(workspace, (next) => {
+        let dropped = false;
+        for (const bead_id of Object.keys(next.merge_shelved)) {
+          if (
+            statuses[bead_id] !== 'closed' ||
+            next.pr_wait.some((entry) => entry.bead_id === bead_id)
+          ) {
+            continue;
+          }
+          delete next.merge_shelved[bead_id];
+          dropped = true;
+        }
+        return dropped;
+      });
     },
 
     /**

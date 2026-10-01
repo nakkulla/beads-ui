@@ -4494,7 +4494,9 @@ export function createScheduler(deps) {
    * scheduler tick, and a tick returns immediately when `auto_advance` is off —
    * which is exactly the workspace where a bead finished in a normal session
    * sits in the waiting lane forever. This sweep is the `auto_advance`-
-   * independent trigger for the same disposition.
+   * independent trigger for the same disposition. The same read also retires
+   * the merge shelf of a closed bead that has no durable `pr_wait` row
+   * (UI-8d8y).
    *
    * `statuses` is the CALLER's authoritative read (the poller's `bd list` pass
    * hands its own response in), so this sweep spawns no `bd` process of its own
@@ -4562,6 +4564,21 @@ export function createScheduler(deps) {
         ) {
           moved = true;
         }
+      }
+      // A shelved session-delivered external row has no lane exit to drop its
+      // record with; the same authoritative `closed` read retires it (UI-8d8y).
+      // Judged on the snapshot first so an ordinary pass writes nothing.
+      const shelved = /** @type {Record<string, unknown>} */ (
+        q.merge_shelved || {}
+      );
+      const closed_shelf = Object.keys(shelved).some(
+        (bead_id) =>
+          statuses[bead_id] === 'closed' &&
+          !q.pr_wait.some((entry) => entry.bead_id === bead_id)
+      );
+      if (closed_shelf) {
+        moved =
+          deps.store.dropClosedMergeShelves(workspace, statuses).ok || moved;
       }
     } finally {
       // A persist that throws mid-sweep leaves the EARLIER moves durable. The

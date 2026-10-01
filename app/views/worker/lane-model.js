@@ -3720,9 +3720,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
       // hold는 Monitor도 이미 `gate.gate_badge`로 그린다. 코드가 없으면 필드도
       // 없다 (fail-quiet).
       const receipt_badge_codes = receiptBadgeCodesOf(observed.receipt_check);
-      // Worker 탭과 같은 보관 판정 (UI-sd12 §3.4): 외부 행은 보관할 수 없고,
-      // 머지가 관측된 정리 단계 행에는 [보관]이 없다.
-      const shelved = !external && Object.hasOwn(merge_shelved, bead_id);
+      // Worker 탭과 같은 보관 판정 (UI-sd12 §3.4, UI-8d8y): 다른 저장소 행만
+      // 보관할 수 없고, 머지가 관측된 정리 단계 행에는 [보관]이 없다.
+      const shelved = Object.hasOwn(merge_shelved, bead_id);
       const merge_observed =
         gate?.tier === 'merged' ||
         !!cleanup ||
@@ -3776,7 +3776,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
             ? false
             : !queued || continuation_required,
         shelved,
-        shelve_action: external
+        shelve_action: foreign_pr
           ? null
           : shelved
             ? 'unshelve'

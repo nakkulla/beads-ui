@@ -12372,10 +12372,50 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
   });
 
-  test('draws no [보관] on an external row', () => {
+  test('offers [보관] on a session-delivered external row (UI-8d8y)', () => {
     const { mount } = mountLane(
       laneOf(['RD-1'], {
         pr_wait: [{ bead_id: 'RD-1', added_at: 1, external: true }]
+      })
+    );
+
+    expect(
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__shelve')?.textContent
+    ).toContain('보관');
+  });
+
+  test('draws a shelved external row in the 보관 bundle with [보관 해제]', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        pr_wait: [{ bead_id: 'RD-1', added_at: 1, external: true }],
+        merge_shelved: { 'RD-1': { at: 1 } }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-pr-wait .worker-shelved .worker-mini[data-bead-id="RD-1"]'
+      )
+    );
+
+    expect(row.querySelector('.worker-mini__merge')).toBeNull();
+    expect(row.querySelector('.worker-mini__shelve')?.textContent?.trim()).toBe(
+      '보관 해제'
+    );
+  });
+
+  test('draws no [보관] on a foreign-repository row', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        pr_wait: [
+          {
+            bead_id: 'RD-1',
+            added_at: 1,
+            external: true,
+            foreign: true,
+            repo_slug: 'other/repo'
+          }
+        ]
       })
     );
 

@@ -15111,6 +15111,36 @@ describe('scheduler closed-queue sweep (UI-m6bg)', () => {
     expect(env.store.snapshot(WS).revision).toBe(revision);
   });
 
+  test('retires the merge shelf of a closed external bead (UI-8d8y)', () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.store.setMergeShelved(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'EXT-1',
+      on: true,
+      overlay: true
+    });
+
+    env.scheduler.sweepClosedQueue(WS, { 'EXT-1': 'closed' });
+
+    expect(env.store.snapshot(WS).merge_shelved).toEqual({});
+  });
+
+  test('keeps the merge shelf of an external bead a session took back', () => {
+    const env = setup({ config: {}, slots: 1 });
+    env.store.setMergeShelved(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'EXT-1',
+      on: true,
+      overlay: true
+    });
+    const revision = env.store.snapshot(WS).revision;
+
+    env.scheduler.sweepClosedQueue(WS, { 'EXT-1': 'in_progress' });
+
+    expect(env.store.snapshot(WS).merge_shelved).toHaveProperty('EXT-1');
+    expect(env.store.snapshot(WS).revision).toBe(revision);
+  });
+
   test('leaves a closed bead sitting in pr_wait and the merge queue alone', () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);

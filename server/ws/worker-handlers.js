@@ -5886,13 +5886,15 @@ export function handleWorkerMergeQueueRemove(ws, req) {
  * Handle `worker-merge-shelve`. Payload: `{ bead_id, on, expected_revision }`.
  * Reply: `{ bead_id, applied, conflict, reason?, queue }`.
  *
- * [보관]/[보관 해제] on a local PR 대기 row (UI-sd12 §3.2). Shelving takes the
- * row out of every automatic merge path and its queue entry out of line in one
- * CAS write; the driver-held item is refused with `merge_active` by exactly the
+ * [보관]/[보관 해제] on a PR 대기 row (UI-sd12 §3.2). Shelving takes the row
+ * out of every automatic merge path and its queue entry out of line in one CAS
+ * write; the driver-held item is refused with `merge_active` by exactly the
  * [취소] rule, and the review sessions the write settled are stopped afterwards
- * as for [취소]. An external row is refused with `external` — it is a registry
- * overlay the store cannot see, so that judgment is made here — and a bead with
- * no PR 대기 row with `not_pr_wait`.
+ * as for [취소]. A session-delivered external row is shelvable like a local one
+ * (UI-8d8y): it is a registry overlay the store cannot see, so its membership
+ * is vouched for here. A foreign-repository row is refused with `foreign` —
+ * nothing in this workspace merges it — and a bead with no PR 대기 row with
+ * `not_pr_wait`.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -5938,6 +5940,7 @@ export function handleWorkerMergeShelve(ws, req) {
       )
     );
   };
+  let overlay = false;
   if (p.on === true) {
     const overlaid = withExternalPrWait(
       key,
@@ -5948,19 +5951,21 @@ export function handleWorkerMergeShelve(ws, req) {
         ? /** @type {any[]} */ (overlaid.pr_wait)
         : []
     ).find((entry) => entry && entry.bead_id === p.bead_id);
-    if (row && row.external === true) {
-      refuse('external');
+    if (row && row.foreign === true) {
+      refuse('foreign');
       return;
     }
     if (mergeItemLocked(key, p.bead_id, workerMergeQueueState(key))) {
       refuse('merge_active');
       return;
     }
+    overlay = !!row && row.external === true;
   }
   const result = queueStore().setMergeShelved(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
-    on: p.on
+    on: p.on,
+    overlay
   });
   if (result.ok) {
     recordUserAction(

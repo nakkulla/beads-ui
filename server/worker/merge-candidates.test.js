@@ -816,4 +816,25 @@ describe('worker/merge-candidates — 보관 행 제외 (UI-sd12 §3.3)', () => 
 
     expect(result.map((row) => row.bead_id)).toEqual([`UI-open-${kind}`]);
   });
+
+  test('leaves a shelved green external row out of the candidates (UI-8d8y)', () => {
+    observe('UI-ext-open', 'green');
+    observe('UI-ext-shelf', 'green');
+
+    const result = mergeQueueCandidates(
+      WS,
+      {
+        pr_wait: [
+          { bead_id: 'UI-ext-open', external: true },
+          { bead_id: 'UI-ext-shelf', external: true }
+        ],
+        attempts: {},
+        cleanup_failed: {},
+        merge_shelved: { 'UI-ext-shelf': { at: 1 } }
+      },
+      verifyPolicy('present')
+    );
+
+    expect(result).toEqual([{ bead_id: 'UI-ext-open', external: true }]);
+  });
 });

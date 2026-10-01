@@ -1289,8 +1289,9 @@ export function prStatusBadge(input) {
  * built from these verified values instead of the (absent) observation, and a
  * same-repo row keeps preferring what the poller observed. `repo_slug` alone
  * never re-decides `foreign`.
- * @param {boolean} [shelved] - 이 로컬 행이 `merge_shelved`에 있는지 (UI-sd12
- * §3.4). true면 [머지] 대신 [보관 해제]를 싣고 레인은 `보관 N` 묶음에 그린다.
+ * @param {boolean} [shelved] - 이 행이 `merge_shelved`에 있는지 (UI-sd12
+ * §3.4, 외부 행 포함 UI-8d8y). true면 [머지] 대신 [보관 해제]를 싣고 레인은
+ * `보관 N` 묶음에 그린다.
  * @returns {any}
  */
 function prWaitRow(
@@ -1592,9 +1593,11 @@ function prWaitRow(
           review_after_merge,
     cancel_action: queued && !continuation_required,
     shelved,
-    // [보관] stands on a local row until its merge is observed; [보관 해제]
-    // on every shelved row (UI-sd12 §3.4).
-    shelve_action: external
+    // [보관] stands on a row until its merge is observed; [보관 해제] on every
+    // shelved row (UI-sd12 §3.4). A session-delivered external row is shelvable
+    // too — only a foreign-repository row, which nothing here merges, is not
+    // (UI-8d8y).
+    shelve_action: foreign_pr
       ? null
       : shelved
         ? 'unshelve'
@@ -3546,8 +3549,8 @@ export function createWorkerView(mount_element, options = {}) {
               ? { pr_number: e.pr_number }
               : {})
           },
-          // 외부 행은 보관할 수 없다 (UI-sd12 §3.1) — 기록이 있어도 읽지 않는다.
-          e.external !== true && Object.hasOwn(merge_shelved, e.bead_id)
+          // 세션이 배달한 외부 행도 보관된다 (UI-8d8y) — 기록이 곧 판정이다.
+          Object.hasOwn(merge_shelved, e.bead_id)
         );
         // 살아 있는 해결 세션이 이미 이 질문에 답하고 있다 (UI-ri8n §3.4).
         const row = {

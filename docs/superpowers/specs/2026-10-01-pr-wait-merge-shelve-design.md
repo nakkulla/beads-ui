@@ -101,6 +101,17 @@ UI-6mpl이 `자동화`와 `자동 머지`를 떼어도 이 문제는 남는다 �
   (ADR UI-u6ud-2), 클릭마다 bd 쓰기를 더할 이유도 없다.
 - 결정: 보관은 로컬 PR 대기 행에만 건다. 외부(다른 저장소) 행에는 `[보관]`이 없다 —
   durable 행이 없는 overlay라 수명을 묶을 곳이 없고, 지금 필요한 것은 이 저장소의 PR이다.
+- **정정(UI-8d8y).** 위 결정의 전제가 틀렸다. `external: true`는 다른 저장소가 아니라
+  Worker attempt 없이 세션이 배달한 PR 대기 행(registry overlay)이고, 같은 저장소 PR도
+  여기 들어온다 — 보관하려던 PR #338이 바로 그 행이었다. 다른 저장소 여부는 overlay의
+  `foreign`(UI-lpg1)이 따로 판정한다. 그래서 `[보관]`은 `foreign` 행에만 없고 서버는 그
+  행을 `foreign`으로 거부한다. 같은 저장소 overlay 행은 handler가 overlay 소속을 보증해
+  store가 기록하고(`not_pr_wait` 대신), 기존 차단 경로는 bead_id로 판정하므로 그대로
+  적용된다. 그 기록은 레인 퇴장이 없으므로 poller 전체 상태 스캔이 그 Bead를 `closed`로
+  읽을 때 지운다 — overlay에서 빠지는 것만으로는 지우지 않는다. base 동기화 세션이
+  Bead를 잠시 `in_progress`로 가져가는 동안 보관이 풀리면 다시 resolved가 될 때 자동 머지
+  대상이 되기 때문이다. 머지가 관측된 뒤 정리용으로 승격된 durable external 행은 계속
+  `external`로 거부한다. §3.2 거부 사유와 §4 수용 기준 8도 이 정정을 따른다.
 - 수명: 기록은 head 이동, PR 대기 재진입(세션이 같은 Bead를 다시 배달), 서버 재시작, PR
   CLOSED(미머지)에도 남는다. 사용자 해제, MERGED 완료 이동, 폐기, Bead를 PR 대기에서 빼는
   큐 조작(다른 레인으로 옮기기·제거)에서만 지운다. `auto_merge_skips`와 달리 재진입 경로는

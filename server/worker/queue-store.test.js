@@ -14395,6 +14395,76 @@ describe('worker/queue-store — PR 대기 보관 (UI-sd12)', () => {
     expect(store.snapshot(WS).merge_shelved).toEqual({});
   });
 
+  test('shelves a vouched overlay bead and drops its queue entry', () => {
+    const store = parkedStore([]);
+    store.enqueueMergeAuto(WS, {
+      entries: [
+        {
+          bead_id: 'EXT-1',
+          head_sha: HEAD,
+          target_base: 'main',
+          external: true
+        }
+      ]
+    });
+
+    const result = store.setMergeShelved(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'EXT-1',
+      on: true,
+      overlay: true
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.merge_shelved).toEqual({ 'EXT-1': { at: 500 } });
+    expect(result.queue.merge_queue).toEqual([]);
+    expect(result.queue.pr_wait).toEqual([]);
+  });
+
+  test('drops the shelf of a closed bead that has no durable row', () => {
+    const store = parkedStore([]);
+    store.setMergeShelved(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'EXT-1',
+      on: true,
+      overlay: true
+    });
+
+    const result = store.dropClosedMergeShelves(WS, { 'EXT-1': 'closed' });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.merge_shelved).toEqual({});
+  });
+
+  test('keeps the shelf of a bead that left the overlay without closing', () => {
+    const store = parkedStore([]);
+    store.setMergeShelved(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'EXT-1',
+      on: true,
+      overlay: true
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.dropClosedMergeShelves(WS, {
+      'EXT-1': 'in_progress'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).merge_shelved).toHaveProperty('EXT-1');
+    expect(store.snapshot(WS).revision).toBe(revision);
+  });
+
+  test('keeps the shelf of a closed bead still in durable pr_wait', () => {
+    const store = parkedStore(['UI-1']);
+    shelve(store, 'UI-1');
+
+    const result = store.dropClosedMergeShelves(WS, { 'UI-1': 'closed' });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).merge_shelved).toHaveProperty('UI-1');
+  });
+
   test('answers a repeated shelve with applied false and no reason', () => {
     const store = parkedStore(['UI-1']);
     shelve(store, 'UI-1');

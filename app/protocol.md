@@ -898,19 +898,22 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   removed; asking for it by id refuses with `reason:'merge_active'`, since its
   merge is already running against GitHub. Reply
   `{ bead_id, applied, conflict, reason, queue }`.
-- `worker-merge-shelve` payload: `{ bead_id, on, expected_revision }` — the
-  local PR-wait row's `[보관]` (`on: true`) and `[보관 해제]` (`on: false`)
-  (UI-sd12). Shelving writes `merge_shelved[bead_id] = { at }`, drops the bead's
-  `merge_queue` entry whatever its authority, and settles that entry's unsettled
-  review sessions in ONE CAS write, exactly as `[취소]` does. While shelved the
-  row is out of automatic enrolment, `[일괄 머지]`, the repairable red intake,
+- `worker-merge-shelve` payload: `{ bead_id, on, expected_revision }` — a
+  PR-wait row's `[보관]` (`on: true`) and `[보관 해제]` (`on: false`) (UI-sd12).
+  A session-delivered external row is shelvable too (UI-8d8y); its record is
+  dropped once bd reads the bead `closed`. Shelving writes
+  `merge_shelved[bead_id] = { at }`, drops the bead's `merge_queue` entry
+  whatever its authority, and settles that entry's unsettled review sessions in
+  ONE CAS write, exactly as `[취소]` does. While shelved the row is out of
+  automatic enrolment, `[일괄 머지]`, the repairable red intake,
   completion-intent resume and legacy adoption, and `worker-merge-queue-add`
   refuses it with `reason:'shelved'`. Unshelving only drops the record. Reply
   `{ bead_id, applied, conflict, reason?, queue }`; `reason` is `merge_active`
   (the driver holds the item — the `[취소]` rule), `not_pr_wait` (no PR-wait
-  row) or `external` (an external row). Setting the value the row already has
-  replies `applied:false` with no reason. The snapshot carries the map as
-  `merge_shelved`.
+  row), `foreign` (a row whose PR is in another repository) or `external` (a
+  durable external row promoted after its merge was observed). Setting the value
+  the row already has replies `applied:false` with no reason. The snapshot
+  carries the map as `merge_shelved`.
 - The `worker-queue-snapshot` carries the queue as `merge_queue`
   (`[{ bead_id, resolution_rounds, resolution?, continuation_action? }]`,
   durable order). The optional `resolution` projection is the exact durable wait

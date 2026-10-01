@@ -3070,7 +3070,7 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     });
   });
 
-  test('refuses an external row as external', async () => {
+  test('shelves a same-repo external row', async () => {
     getWorkerRuntime().externalPrs.replace('', [
       {
         bead_id: 'UI-EXT',
@@ -3089,9 +3089,41 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     });
 
     expect(replyFor(sock, 'm1').payload).toMatchObject({
+      bead_id: 'UI-EXT',
+      applied: true,
+      conflict: false
+    });
+    expect(
+      getWorkerRuntime().queueStore.snapshot('').merge_shelved
+    ).toHaveProperty('UI-EXT');
+  });
+
+  test('refuses a foreign-repository row as foreign', async () => {
+    getWorkerRuntime().externalPrs.replace(
+      '',
+      [
+        {
+          bead_id: 'UI-EXT',
+          pr_url: 'https://github.com/other/repo/pull/9',
+          pr_number: 9
+        }
+      ],
+      { origin_slug: 'o/r' }
+    );
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-shelve', {
+      bead_id: 'UI-EXT',
+      on: true,
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
       applied: false,
       conflict: false,
-      reason: 'external'
+      reason: 'foreign'
     });
     expect(getWorkerRuntime().queueStore.snapshot('').merge_shelved).toEqual(
       {}
