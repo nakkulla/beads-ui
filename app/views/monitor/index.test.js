@@ -5239,6 +5239,21 @@ describe('monitor 내리기·지금 재시도·내려옴 (stall-reconcile D7~D9)
     ]).toEqual([true, true, 'Worker에서 내리기 — 작업은 보존']);
   });
 
+  test('omits ✕ on a conflict-resolution running tile', () => {
+    const { mount, view } = withAttempt({
+      ...RUNNING,
+      conflict_resolution: true
+    });
+
+    view.load();
+
+    const tile = el(mount, '#monitor-running .rtile[data-attempt-id="t1"]');
+    expect([
+      Boolean(tile),
+      tile?.querySelector('.rtile__withdraw') ?? null
+    ]).toEqual([true, null]);
+  });
+
   test('withdraws the attempt of the tile with its repo', () => {
     const { mount, view, sent } = withAttempt(RUNNING);
 

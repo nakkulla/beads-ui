@@ -1555,6 +1555,11 @@ export function createMonitorView(mount_element, options) {
                 usage: item.usage || null,
                 chip_popover: popoverOf(item),
                 ...(item.plan_group ? { plan_group: item.plan_group } : {}),
+                // 충돌 해소 attempt는 PR 대기 Bead의 것이라 ✕ 대상이 아니다
+                // (2026-10-01 stall-reconcile D7) — Worker 탭과 같은 키를 싣는다.
+                ...(item.conflict_resolution === true
+                  ? { conflict_resolution: true }
+                  : {}),
                 discard: item.discard,
                 failure: item.failure
                   ? {
