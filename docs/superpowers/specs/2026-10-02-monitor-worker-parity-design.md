@@ -10,12 +10,13 @@ scope:
   - server/ws/monitor-handlers.js
   - server/ws/connection.js
   - server/worker/runnable-cache.js
+  - server/worker/title-cache.js
   - AGENTS.md
 ---
 
 # 모니터 탭과 Worker 탭 일관성 — 카드는 같게, 탭 도구는 필요한 것만 (UI-f2sy)
 
-Bead: UI-f2sy · 선행: UI-yvhx · 작성 2026-10-02 · 기준 base `9bc8eb10aaa8dc8703ea14771ff849967c601319`
+Bead: UI-f2sy · 선행: UI-yvhx(닫힘, `6cb9f912`) · 작성 2026-10-02 · 기준 base `1756216ce66e71c8f2b67c512415c3059ae1b199`
 
 ## 1. 배경
 
@@ -28,28 +29,28 @@ Bead: UI-f2sy · 선행: UI-yvhx · 작성 2026-10-02 · 기준 base `9bc8eb10aa
 카드 재료·조작(PR 대기 줄 투영, 실행중 타일 입력, 정리 재시도 배선 등)이 `app/views/worker/index.js`
 안에서만 만들어졌고 모니터는 그 축소 복제본을 따로 가졌다. Worker에 기능이 붙을 때마다 모니터만
 뒤처졌다. 같은 카드의 재료 누락(복잡·영역 칩, 칩 적용 상태, 우선순위·from 칩, 실행중 타일 문구)은
-선행 quick_fix UI-yvhx가 고친다. 이 스펙은 남은 PR 대기 줄·리뷰 세션·후보 도구·저장소별 조작·검색과,
+선행 quick_fix UI-yvhx가 고쳤다(`6cb9f912`). 이 스펙은 남은 PR 대기 줄·리뷰 세션·후보 도구·저장소별 조작·검색과,
 재발 방지를 정한다.
 
 ## 2. 검증된 전제
 
 - 모니터 PR 대기 줄은 lane-model의 간이 재료(`merge_action`·`merge_label` 등)로 그려지고 Worker는
   `prWaitRow`(21개 인자, 모듈 수준 함수)로 큐 위치·리뷰 상태·충돌·자동 제외·정리 상태를 만든다 —
-  app/views/worker/lane-model.js:3971, app/views/worker/index.js:1302, app/views/worker/index.js:3464
+  app/views/worker/lane-model.js:3982, app/views/worker/index.js:1302, app/views/worker/index.js:3419
 - `prWaitRow`가 읽는 스냅샷 키(`pr_observations`·`pr_activity`·`merge_queue`·`cleanup_failed`·
-  `attempts` 등)는 모니터가 펼치는 저장소별 장식 스냅샷에 이미 있다 — server/ws/monitor-handlers.js:695
+  `attempts` 등)는 모니터가 펼치는 저장소별 장식 스냅샷에 이미 있다 — server/ws/monitor-handlers.js:711
 - 모니터는 `groups: 'all'` 없이 `buildLanes`를 불러 PR 대기만 있는 저장소는 머지 그룹이 없다; Worker는
-  `groups: 'all'`이다 — app/views/monitor/index.js:1853, app/views/worker/index.js:3108,
+  `groups: 'all'`이다 — app/views/monitor/index.js:1794, app/views/worker/index.js:3108,
   app/views/worker/lane-model.js:2951
 - 모니터 `worker-mini__merge` 클릭은 정리 실패 저장소에서도 `worker-merge-queue-add`만 보내고 Worker는
-  정리 실패면 `worker-cleanup-retry`를 보낸다 — app/views/monitor/index.js:2665,
+  정리 실패면 `worker-cleanup-retry`를 보낸다 — app/views/monitor/index.js:2612,
   app/views/worker/index.js:2522
 - 모니터는 조작 응답의 큐를 `exec_adopted`에만 두고 레인은 다음 푸시까지 그대로다 —
-  app/views/monitor/index.js:543, app/views/monitor/index.js:628, app/views/monitor/index.js:1853
+  app/views/monitor/index.js:543, app/views/monitor/index.js:630, app/views/monitor/index.js:1794
 - Worker는 비점유 리뷰 세션 타일을 실행중 그리드에서 빼고, 모니터는 그려서 `직접 세션` 배지가 붙는다 —
-  app/views/worker/index.js:3372, app/views/monitor/index.js:1478, app/views/worker/running-grid.js:1523
+  app/views/worker/index.js:3372, app/views/monitor/index.js:1512, app/views/worker/running-grid.js:1524
 - 모니터 후보 필터는 blocked·readiness·route 셋뿐이고 저장 키도 그 셋만 싣는다 —
-  app/views/monitor/index.js:1715, app/views/monitor/index.js:158
+  app/views/monitor/index.js:1656, app/views/monitor/index.js:158
 - 모니터 후보 정렬은 `repo_spec`·`repo_updated`·`updated_flat` 세 값이고 Worker는 정렬 체인을
   `applyCandidateSort`로 `buildLanes` 앞에서 적용한다 — app/views/worker/lane-model.js:168,
   app/views/worker/workspace-adapter.js:370
@@ -70,7 +71,16 @@ Bead: UI-f2sy · 선행: UI-yvhx · 작성 2026-10-02 · 기준 base `9bc8eb10aa
 - 레포 띠에는 마스터 자동화 토글이 없고 레포별 스위치가 유일한 제어다 — app/views/monitor/deck.js:11
 - 저장소 작업 띠·선언 블록은 Worker 전용 컴포넌트다 — app/views/worker/lanes.js:352,
   app/views/worker/repo-ops-settings.js:533
-- 모니터 파이프라인 항목은 `done`만 있어도 실린다 — server/ws/monitor-handlers.js:453
+- 모니터 파이프라인 항목은 `done`만 있어도 실리지만 `repo_operations`·`cleanup_failed`는 보지 않아, 저장소 작업
+  실패만 남은 저장소는 항목이 없다 — server/ws/monitor-handlers.js:453
+- 우선순위·타입·라벨 필터는 후보·보류를 숨기고 나머지 레인 항목에 `filter_match`를 달아 흐리며, 값이 없는
+  항목은 일치로 본다 — app/views/worker/lane-model.js:2868, app/views/worker/lane-model.js:5282,
+  app/views/worker/lane-model.js:5301
+- 모니터 `bead_overlay`는 UI-yvhx 뒤 `priority`·`from_id`·판정된 `complex_reason`을 싣지만 `issue_type`은 싣지
+  않고, `buildLanes`는 오버레이의 `issue_type`을 비어 있는 행에 채운다 — server/worker/title-cache.js:808,
+  server/ws/monitor-handlers.js:662, app/views/worker/lane-model.js:4649
+- Worker 완료 레인은 Worker 완료 행에 `closed-issues` 구독의 기간 내 닫힌 이슈를 더하고, 세션 보고서가 확인된
+  행만 세션 배지를 단다; 모니터에는 이 경로가 없다 — app/views/worker/workspace-adapter.js:620, app/main.js:90
 
 ## 3. 원칙
 
@@ -108,6 +118,8 @@ Bead: UI-f2sy · 선행: UI-yvhx · 작성 2026-10-02 · 기준 base `9bc8eb10aa
   Worker와 같다: 후보는 숨기고 대기·실행중·PR 대기·완료는 흐린다.
 - 모니터 저장 키 `beads-ui.monitor.candidate-filter`가 세 축을 더 싣는다. 모르는 값은 무시한다.
 - 서버 후보 행이 같은 스냅샷 행에서 `priority`·`issue_type`을 싣는다(새 bd 호출 없음).
+- 모니터 `bead_overlay`도 UI-yvhx가 `priority`를 꺼내는 같은 `bd show` 기록에서 `issue_type`을 실어, 대기·
+  실행중·PR 대기·완료 행이 타입 필터에서 흐려질 수 있다(값이 없으면 지금처럼 일치).
 
 ### 6.2 정렬
 
@@ -142,8 +154,10 @@ Bead: UI-f2sy · 선행: UI-yvhx · 작성 2026-10-02 · 기준 base `9bc8eb10aa
 - 레포 띠 ⚙ 설정창(scope `repo`)에 `저장소` 탭을 더한다: 동시 실행 수·직렬 레인 수(편집, 기존 op에
   `root_dir`), base 브랜치(읽기), 저장소 작업 선언 블록(Worker 컴포넌트: 검증/배포 선언·opt-out·
   `배포 실행`), `저장소 작업 기록 열기` 버튼. 연결 저장소 설정창과 일괄 창에는 없다.
-- 재료는 그 저장소의 파이프라인 항목에서 읽는다. 항목이 없는 저장소(Worker 기록 없음)는 배지가 없고
-  `저장소` 탭은 동시 실행 수·직렬 레인 수만 보인다.
+- 재료는 그 저장소의 파이프라인 항목에서 읽는다. 서버는 `repo_operations`나 `cleanup_failed`가 비어 있지
+  않은 저장소도 파이프라인 항목으로 싣는다 — 저장소 작업 실패만 남아도 `⚠ N`과 서랍이 사라지지 않는다.
+  그래도 항목이 없는 저장소는 배지가 없고, `저장소` 탭은 `workspaces_state`의 동시 실행 수·직렬 레인 수만
+  보인다.
 
 ## 8. 새 이슈
 
@@ -161,6 +175,7 @@ Bead: UI-f2sy · 선행: UI-yvhx · 작성 2026-10-02 · 기준 base `9bc8eb10aa
 | cap 초과 | 배지 | 레포 띠 슬롯 레일의 넘친 칸 | 같은 사실을 레일이 말함 |
 | `다음 <id>`·레포별 토큰 칩 | 툴바 | 없음(대기 순번·합계 토큰) | 필요한 것만 |
 | 보류 선반 | 있음 | 없음 | 백로그 정리는 Worker에서 |
+| 완료 레인 모집단 | Worker 완료 행 + 기간 내 닫힌 이슈(세션 보고서 확인 시 세션 배지) | Worker 완료 행만 | 저장소마다 닫힌 이슈와 세션 보고서 조회(bd 호출)가 늘어남; 세션·수동 닫힘은 그 저장소 Worker 탭에서 |
 | 새 이슈 | 툴바·헤더·Cmd+N | 없음 | 저장소가 모호하고 필요하지 않음 |
 | 정렬 `레포별로 묶기` | 없음 | 있음 | 저장소 좌표 |
 | 검색 범위 | 연결 저장소 | 보이는 저장소 전부 | 탭의 범위 |
@@ -176,8 +191,10 @@ Bead: UI-f2sy · 선행: UI-yvhx · 작성 2026-10-02 · 기준 base `9bc8eb10aa
 - 카드 동일성 테스트: 같은 원시 저장소 상태(이슈 목록·큐 레코드·`bd show` 응답)를 두 탭의 실제 서버
   투영과 클라이언트 경로로 그린다 — 탭별 입력을 손으로 만들지 않는다(데이터 누락도 잡기 위해). 각 Bead
   카드의 칩·배지·버튼(클래스와 글자)이 §9의 카드 항목(레포 배지·완료 3줄)을 뺀 나머지에서 같아야 한다.
-  고정 자료는 최소: 복잡+영역 라벨(대기·실행중), 우선순위·discovered-from, 파킹·orphaned 실패·base_moved
-  대기, 리뷰 세션이 도는 PR 대기, 정리 실패 PR 대기, 충돌 해소, plan 묶음.
+  비교는 두 탭에 모두 서는 Bead에 하고, §9의 모집단 차이(보류 선반·완료 레인 모집단)는 따로 단언한다: Worker
+  밖에서 닫힌 이슈는 Worker 완료 레인에만, 보류 이슈는 Worker 보류 선반에만 선다. 고정 자료는 최소:
+  복잡+영역 라벨(대기·실행중), 우선순위·타입·discovered-from, 파킹·orphaned 실패·base_moved 대기, 리뷰
+  세션이 도는 PR 대기, 정리 실패 PR 대기, 충돌 해소, plan 묶음, Worker 밖에서 닫힌 이슈, 보류 이슈.
 
 ## 11. 오류 처리
 
@@ -190,7 +207,9 @@ Bead: UI-f2sy · 선행: UI-yvhx · 작성 2026-10-02 · 기준 base `9bc8eb10aa
   `worker-cleanup-retry`, `[세션에서 해결]`이 `worker-resolve-in-session`(둘 다 `root_dir`); 조작 직후
   응답 큐가 레인에 반영; PR 대기만 있는 저장소의 머지 재료; 빈 저장소의 빈 직렬 레인 없음.
 - 리뷰 세션 타일이 모니터 실행중 레인·개수에서 빠지고 PR 대기 배지로 보인다.
-- 필터 세 축의 모니터 적용·저장·복원; 후보 행 `priority`·`issue_type`.
+- 필터 세 축의 모니터 적용·저장·복원; 후보 행 `priority`·`issue_type`; 타입 필터에서 모니터 대기·실행중·
+  PR 대기·완료 행 중 타입이 다른 행이 흐려짐(오버레이 `issue_type`).
+- 저장소 작업 실패만 남은 저장소가 모니터 파이프라인 항목으로 실리고 `⚠ N`이 선다.
 - 정렬: 옛 값 이행 세 가지, 묶기 켬·끔, 같은 사실의 두 탭 같은 순서(spec 키·의존 인접화 포함).
 - 검색: 서버 처리기(범위 두 가지·partial·순서·최대 20·bd 미실행), 두 탭 드롭다운(클릭 상세, 모니터는
   저장소 전환), 레인 흐림·`일치 n` 없음, 실패 줄.
@@ -226,7 +245,7 @@ Bead: UI-f2sy · 선행: UI-yvhx · 작성 2026-10-02 · 기준 base `9bc8eb10aa
 ## 15. 구현 unit 후보 (권고)
 
 - U1 공유 PR 대기 투영·리뷰 세션 규칙·모니터 클릭 배선·응답 반영 — `app/views/worker/`, `app/views/monitor/index.js`
-- U2 후보 도구(필터·정렬)와 서버 후보 행 필드 — `app/views/monitor/index.js`, `app/data/sort.js`, `server/worker/runnable-cache.js`
+- U2 후보 도구(필터·정렬)와 서버 후보 행·오버레이 필드 — `app/views/monitor/index.js`, `app/data/sort.js`, `server/worker/runnable-cache.js`, `server/worker/title-cache.js`, `server/ws/monitor-handlers.js`
 - U3 검색 드롭다운과 `search-issues` — `app/views/worker/`, `app/views/monitor/`, `server/ws/`, `app/protocol.*`
-- U4 레포 띠 `⚠ N`·⚙ `저장소` 탭·새 이슈 숨김 — `app/views/monitor/deck.js`, `app/views/settings-dialog/`, `app/main.js`
+- U4 레포 띠 `⚠ N`·⚙ `저장소` 탭·파이프라인 항목 조건·새 이슈 숨김 — `app/views/monitor/deck.js`, `app/views/settings-dialog/`, `app/main.js`, `server/ws/monitor-handlers.js`
 - U5 카드 동일성 테스트·`AGENTS.md` 규칙 — 마지막
