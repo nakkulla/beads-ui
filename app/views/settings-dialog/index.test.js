@@ -416,6 +416,18 @@ describe('createSettingsDialog 저장소 tab (UI-f2sy §7)', () => {
     ]).toEqual(['2', '1', 'main', true, true]);
   });
 
+  test('shows the declared script paths as text with no dead button', async () => {
+    const { root } = await openRepoTab();
+
+    const lanes = root.querySelector('[data-seam="repo-ops"]');
+
+    expect([
+      lanes?.querySelectorAll('button.worker-repo-ops__vd-cmd').length,
+      lanes?.querySelector('[data-lane="verify"] code.worker-repo-ops__vd-cmd')
+        ?.textContent
+    ]).toEqual([0, 'repo-ops/script/verify']);
+  });
+
   test('draws only the cap and lane count for a repository without an entry', async () => {
     const { root } = await openRepoTab({ monitorPipeline: [] });
 
