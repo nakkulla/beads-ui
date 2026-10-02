@@ -77,6 +77,7 @@ import {
   placePlanFromPopup,
   planPlaceLanesOf
 } from '../worker/plan-place.js';
+import { pendingKey, prWaitRowsOf } from '../worker/pr-wait-row.js';
 import {
   providerResumeDialogTemplate,
   providerResumeDraft,
@@ -84,7 +85,11 @@ import {
   providerResumeOverride,
   showProviderResumeDialog
 } from '../worker/provider-resume-dialog.js';
-import { runningTile, runningTileInput } from '../worker/running-grid.js';
+import {
+  drawsRunningTile,
+  runningTile,
+  runningTileInput
+} from '../worker/running-grid.js';
 import { tileResolveFields } from '../worker/tile-resolve.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
@@ -541,8 +546,21 @@ export function createMonitorView(mount_element, options) {
    * @type {Map<string, any>}
    */
   const exec_adopted = new Map();
+  /**
+   * This render's PR 대기 rows — the shared projection per repository
+   * (UI-f2sy §4).
+   *
+   * @type {any[]}
+   */
+  let pr_rows = [];
+  // 뷰 로컬 진행 중 집합 (UI-f2sy §4). 여러 저장소를 한 화면에 모으므로 키는
+  // `pendingKey(root_dir, bead_id)`다.
   /** @type {Set<string>} */
   const resolve_pending = new Set();
+  /** [머지] 클릭이 응답을 기다리는 행. @type {Set<string>} */
+  const merge_pending = new Set();
+  /** [정리 재시도] 클릭이 응답을 기다리는 행. @type {Set<string>} */
+  const cleanup_pending = new Set();
   /** @type {Set<string>} */
   const handoff_pending = new Set();
   /** REVISE 처분 클릭이 응답을 기다리는 bead (UI-hs11 §3.5). @type {Set<string>} */
@@ -899,17 +917,19 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * Launch the interactive session for one terminal or parked tile.
+   * Launch the interactive session for one terminal or parked tile, or for a
+   * PR 대기 row's `[세션에서 해결]` (UI-f2sy §4).
    *
    * @param {string} bead_id
    * @param {string} root_dir
    * @param {number} revision
    */
   async function resolveInSession(bead_id, root_dir, revision) {
-    if (resolve_pending.has(bead_id)) {
+    const key = pendingKey(root_dir, bead_id);
+    if (resolve_pending.has(key)) {
       return;
     }
-    resolve_pending.add(bead_id);
+    resolve_pending.add(key);
     doRender();
     try {
       const res = await sendCas(
@@ -928,7 +948,75 @@ export function createMonitorView(mount_element, options) {
         showToast(resolveLaunchText(res), 'success');
       }
     } finally {
-      resolve_pending.delete(bead_id);
+      resolve_pending.delete(key);
+      doRender();
+    }
+  }
+
+  /**
+   * The [머지] click on a PR 대기 row — the Worker tab's `queueMerge` against the
+   * row's own repository. The in-flight window is drawn by the shared row as
+   * `큐 등록 중` until the reply lands.
+   *
+   * @param {string} bead_id
+   * @param {string} root_dir
+   * @param {number} revision
+   */
+  async function queueMerge(bead_id, root_dir, revision) {
+    const action = queuedContinuation(root_dir, bead_id);
+    if (action?.mismatch && action.continuation === null) {
+      await decideQueuedContinuation(
+        root_dir,
+        bead_id,
+        revision,
+        action.mismatch
+      );
+      return;
+    }
+    const key = pendingKey(root_dir, bead_id);
+    if (merge_pending.has(key)) {
+      return;
+    }
+    merge_pending.add(key);
+    doRender();
+    try {
+      await sendCas('worker-merge-queue-add', { bead_id }, root_dir, revision);
+    } finally {
+      merge_pending.delete(key);
+      doRender();
+    }
+  }
+
+  /**
+   * Retry the stopped post-merge cleanup of one PR 대기 row — [정리 재시도]
+   * (UI-f2sy §4), the Worker tab's `retryCleanup` against the row's own repository. A
+   * conflict is adopted but never retried automatically: another explicit
+   * click against the fresh snapshot is the authorization boundary.
+   *
+   * @param {string} bead_id
+   * @param {string} root_dir
+   * @param {number} revision
+   */
+  async function retryCleanup(bead_id, root_dir, revision) {
+    const key = pendingKey(root_dir, bead_id);
+    if (cleanup_pending.has(key)) {
+      return;
+    }
+    cleanup_pending.add(key);
+    doRender();
+    try {
+      const res = await sendCas(
+        'worker-cleanup-retry',
+        { bead_id },
+        root_dir,
+        revision,
+        false
+      );
+      if (res && !res.retried && !res.conflict && res.reason) {
+        showToast(`정리 재시도 거부: ${res.reason}`, 'error', 2400);
+      }
+    } finally {
+      cleanup_pending.delete(key);
       doRender();
     }
   }
@@ -995,7 +1083,7 @@ export function createMonitorView(mount_element, options) {
     /** @type {Map<string, number>} */
     const targets = new Map();
     // 보관 행만 남은 레포에는 보낼 것이 없다 (UI-sd12 §3.3).
-    for (const item of lanes.pr_wait.filter((row) => !row.shelved)) {
+    for (const item of pr_rows.filter((row) => !row.shelved)) {
       if (!targets.has(item.root_dir)) {
         targets.set(item.root_dir, item.expected_revision);
       }
@@ -1313,7 +1401,7 @@ export function createMonitorView(mount_element, options) {
           ...withOverlaps(item),
           ...tileResolveFields(
             item,
-            resolve_pending.has(item.id),
+            resolve_pending.has(pendingKey(item.root_dir, item.id)),
             handoff_pending.has(item.id)
           )
         },
@@ -1345,7 +1433,7 @@ export function createMonitorView(mount_element, options) {
           ...withOverlaps(item),
           ...tileResolveFields(
             item,
-            resolve_pending.has(item.id),
+            resolve_pending.has(pendingKey(item.root_dir, item.id)),
             handoff_pending.has(item.id)
           )
         },
@@ -1506,19 +1594,33 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * The 실행 중 lane items that get a tile — Worker 탭과 같은 술어다 (UI-f2sy §5):
+   * 비점유 리뷰 세션은 타일도, 레인 개수·실행 수도 갖지 않고 진행은 PR 대기
+   * 줄 배지가 말한다.
+   *
+   * @returns {LaneItem[]}
+   */
+  function runningItems() {
+    return lanes.running.filter((item) => drawsRunningTile(item));
+  }
+
+  /**
    * @param {number} now
+   * @param {LaneItem[]} running
    * @returns {import('lit-html').TemplateResult}
    */
-  function runningBody(now) {
+  function runningBody(now, running) {
     return html`<div class="worker-rungrid">
-      ${lanes.running.length === 0
+      ${running.length === 0
         ? html`<div class="worker-rungrid__empty">실행 세션 없음</div>`
-        : lanes.running.map((item) =>
+        : running.map((item) =>
             runningTile(
               runningTileInput(item, {
                 chip_popover: popoverOf(item),
                 open_failure_detail,
-                resolve_pending: resolve_pending.has(item.id),
+                resolve_pending: resolve_pending.has(
+                  pendingKey(item.root_dir, item.id)
+                ),
                 handoff_pending: handoff_pending.has(item.id)
               }),
               now,
@@ -1543,18 +1645,18 @@ export function createMonitorView(mount_element, options) {
    */
   function monitorTemplate(now) {
     // 보관 행은 레인 본문과 개수에서 빠져 `보관 N` 묶음에만 선다 (UI-sd12 §3.4).
-    const pr_wait_open = lanes.pr_wait.filter((item) => !item.shelved);
+    // PR 대기 행은 공유 투영이 이미 칩·팝업까지 실었다 (UI-f2sy §4).
+    const pr_wait_open = pr_rows.filter((row) => !row.shelved);
     const pr_wait_shelved = shelvedSectionTemplate(
-      lanes.pr_wait
-        .filter((item) => item.shelved)
-        .map((item) => miniRow(withOverlaps(item))),
+      pr_rows.filter((row) => row.shelved).map((row) => miniRow(row)),
       shelved_open
     );
+    const running = runningItems();
     /** @type {Record<string, LaneItem[]>} */
     const by_lane = {
       runnable: lanes.runnable,
       queue: lanes.queue,
-      running: lanes.running,
+      running,
       pr_wait: pr_wait_open,
       done: lanes.done
     };
@@ -1578,13 +1680,17 @@ export function createMonitorView(mount_element, options) {
               ? waitBodyTemplate()
               : undefined
             : meta.lane === 'running'
-              ? runningBody(now)
-              : items.length > 0
-                ? // PR 대기·완료 레인 본문도 겹침 파생을 얹어 그린다 (UI-e9sg):
-                  // 투영이 계산한 `⧉ 겹침`·`scope 없음` 칩을 여기서 버리면 같은
-                  // 사실이 레인마다 다르게 보인다.
-                  html`${items.map((item) => miniRow(withOverlaps(item)))}`
-                : undefined;
+              ? runningBody(now, running)
+              : meta.lane === 'pr_wait'
+                ? items.length > 0
+                  ? html`${items.map((row) => miniRow(row))}`
+                  : undefined
+                : items.length > 0
+                  ? // 완료 레인 본문도 겹침 파생을 얹어 그린다 (UI-e9sg):
+                    // 투영이 계산한 `⧉ 겹침`·`scope 없음` 칩을 여기서 버리면
+                    // 같은 사실이 레인마다 다르게 보인다.
+                    html`${items.map((item) => miniRow(withOverlaps(item)))}`
+                  : undefined;
       const display_count = meta.lane === 'queue' ? items.length : items.length;
       return paneTemplate({
         id: `monitor-${meta.lane}`,
@@ -1617,13 +1723,11 @@ export function createMonitorView(mount_element, options) {
         <div class="worker-lanes-host">
           <div class="worker-lanes worker-lanes--mobile mon2-lanes">
             ${nowPanel({
-              live: lanes.running.length > 0,
-              running_body: lanes.running.length > 0 ? runningBody(now) : '',
-              pr_wait_rows: pr_wait_open.map((item) =>
-                miniRow(withOverlaps(item))
-              ),
+              live: running.length > 0,
+              running_body: running.length > 0 ? runningBody(now, running) : '',
+              pr_wait_rows: pr_wait_open.map((row) => miniRow(row)),
               pr_wait_footer: pr_wait_shelved,
-              count: lanes.running.length + pr_wait_open.length
+              count: running.length + pr_wait_open.length
             })}
             ${mobile_metas.map((meta) => lanePane(meta))}
           </div>
@@ -1792,12 +1896,21 @@ export function createMonitorView(mount_element, options) {
    * @returns {LaneModel}
    */
   function projectLanes() {
-    const workspaces =
-      pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
-    const workspaces_state =
+    const workspaces = adoptedWorkspaces();
+    const raw_state =
       pipelineStore && pipelineStore.getWorkspacesState
         ? pipelineStore.getWorkspacesState()
         : [];
+    const workspaces_state = (Array.isArray(raw_state) ? raw_state : []).map(
+      (row) => {
+        // 채택한 응답 큐의 revision이 그 저장소의 최신이다 — 행의 다음 조작이
+        // 낡은 revision으로 한 번 더 충돌하지 않는다.
+        const adopted = row ? exec_adopted.get(row.root_dir) : undefined;
+        return adopted && typeof adopted.revision === 'number'
+          ? { ...row, revision: adopted.revision }
+          : row;
+      }
+    );
     /** @type {Record<string, any>} */
     const options = {
       done_since: closedRangeSince(done_range, nowFn()),
@@ -1806,6 +1919,98 @@ export function createMonitorView(mount_element, options) {
       candidate_sort
     };
     return buildLanes(workspaces, workspaces_state, options);
+  }
+
+  /**
+   * The pipeline's workspace entries with each mutation reply's queue laid over
+   * its own repository (UI-f2sy §4), so a click's effect shows at once instead
+   * of at the next push — Worker의 `adopt`와 같은 효과다. 응답 큐는
+   * `decorateQueue` 장식이라 파이프라인 전용 키(후보·세션·외부 대기·오버레이·
+   * 좌표)만 파이프라인 항목의 것을 지킨다. 다음 푸시가 채택분을 비운다.
+   *
+   * @returns {Array<Record<string, any>>|null}
+   */
+  function adoptedWorkspaces() {
+    const workspaces =
+      pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
+    if (!Array.isArray(workspaces) || exec_adopted.size === 0) {
+      return workspaces;
+    }
+    return workspaces.map((entry) => {
+      const adopted = entry ? exec_adopted.get(entry.root_dir) : undefined;
+      if (!adopted || typeof adopted !== 'object') {
+        return entry;
+      }
+      return {
+        ...entry,
+        ...adopted,
+        root_dir: entry.root_dir,
+        name: entry.name,
+        runnable: entry.runnable,
+        session_active: entry.session_active,
+        external_waits: entry.external_waits,
+        bead_overlay: entry.bead_overlay
+      };
+    });
+  }
+
+  /**
+   * This render's PR 대기 rows (UI-f2sy §4): the Worker tab's shared projection
+   * called once per repository, with only the repository coordinates (레포
+   * 배지·`root_dir`·그 저장소 revision) and the view-local popover laid over.
+   * 저장소 순서는 파이프라인 항목 순서이고, 열은 Worker 탭처럼 그 저장소 스냅샷의
+   * `pr_wait` 전체다 — 충돌 해소 세션이 도는 bead는 실행 중 타일과 PR 대기 행에
+   * 함께 선다 (UI-dxgz §1).
+   *
+   * @param {LaneModel} model
+   * @param {Array<Record<string, any>>|null} workspaces
+   * @returns {any[]}
+   */
+  function projectPrWaitRows(model, workspaces) {
+    /** @type {any[]} */
+    const rows = [];
+    for (const queue of Array.isArray(workspaces) ? workspaces : []) {
+      if (
+        !queue ||
+        typeof queue.root_dir !== 'string' ||
+        !Array.isArray(queue.pr_wait) ||
+        queue.pr_wait.length === 0
+      ) {
+        continue;
+      }
+      const root_dir = queue.root_dir;
+      const group = model.groups_by_root.get(root_dir) || null;
+      const workspace_name =
+        typeof queue.name === 'string' && queue.name ? queue.name : root_dir;
+      // 그 저장소 revision은 레인 모델이 행마다 판정한 값이다 (채택한 응답이
+      // 덮은 상태 행 우선). PR 대기 항목은 PR 대기 레인이나 실행 중 레인에 선다.
+      const lane_item = [...model.pr_wait, ...model.running].find(
+        (item) => item.root_dir === root_dir
+      );
+      const expected_revision = lane_item
+        ? lane_item.expected_revision
+        : typeof queue.revision === 'number'
+          ? queue.revision
+          : 0;
+      for (const row of prWaitRowsOf({
+        root_dir,
+        queue,
+        group,
+        model,
+        isPending: (kind, row_root, bead_id) =>
+          (kind === 'merge'
+            ? merge_pending
+            : kind === 'cleanup'
+              ? cleanup_pending
+              : resolve_pending
+          ).has(pendingKey(row_root, bead_id)),
+        dependencyChipsOf: chipsWithOverlaps
+      })) {
+        const placed = { ...row, root_dir, workspace_name, expected_revision };
+        rows.push({ ...placed, chip_popover: popoverOf(placed) });
+      }
+    }
+    return rows;
   }
 
   /**
@@ -1862,6 +2067,7 @@ export function createMonitorView(mount_element, options) {
     setChipPresetContext(chipPresetContext());
     lanes = projectLanes();
     item_by_bead = new Map();
+    pr_rows = projectPrWaitRows(lanes, adoptedWorkspaces());
     for (const item of [
       ...lanes.runnable,
       ...lanes.queue,
@@ -2551,7 +2757,11 @@ export function createMonitorView(mount_element, options) {
       );
       return;
     }
-    if (cls.contains('rtile__resolve')) {
+    // 대기·PR 대기 줄의 `[세션에서 해결]`도 타일과 같은 op다 (UI-f2sy §4).
+    if (
+      cls.contains('rtile__resolve') ||
+      cls.contains('worker-mini__resolve')
+    ) {
       void resolveInSession(
         bead_id,
         root_dir,
@@ -2610,16 +2820,12 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('worker-mini__merge')) {
-      const action = queuedContinuation(root_dir, bead_id);
-      if (action?.mismatch && action.continuation === null) {
-        void decideQueuedContinuation(
-          root_dir,
-          bead_id,
-          revision,
-          action.mismatch
-        );
+      // Worker 탭과 같은 분기 (UI-f2sy §4): 정리가 멈춘 행의 같은 버튼은
+      // [정리 재시도]다 — 머지 큐에 넣는 클릭이 아니다.
+      if (queueOf(root_dir).cleanup_failed?.[bead_id]) {
+        void retryCleanup(bead_id, root_dir, revision);
       } else {
-        void sendCas('worker-merge-queue-add', { bead_id }, root_dir, revision);
+        void queueMerge(bead_id, root_dir, revision);
       }
       return;
     }

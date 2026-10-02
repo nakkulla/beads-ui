@@ -1720,6 +1720,21 @@ function runningStatusLabel(item) {
 }
 
 /**
+ * Whether one running lane item gets a tile of its own — the one predicate the
+ * Worker tab and the Monitor tab share (UI-f2sy §5). A running review session
+ * is `non_occupying` and does not: its progress is the PR 대기 row's badge, and
+ * a tile would stand the same bead in two lanes and aim the tile's operating
+ * buttons, built for implementation attempts, at the review attempt (UI-hk74
+ * §7, UI-d7fy §5.5). It is out of the lane's count and run total as well.
+ *
+ * @param {{ non_occupying?: boolean }} item
+ * @returns {boolean}
+ */
+export function drawsRunningTile(item) {
+  return item.non_occupying !== true;
+}
+
+/**
  * The tile input of one running lane item, built by the Worker tab and the
  * Monitor tab alike (ADR 0014): the whole item is spread so a field the lane
  * model learns reaches both tabs, and only the run-state flags, the shared

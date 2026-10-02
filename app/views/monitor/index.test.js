@@ -5491,3 +5491,266 @@ describe('monitor 내리기·지금 재시도·내려옴 (stall-reconcile D7~D9)
     ).toBe('⏏ 내려옴');
   });
 });
+
+describe('views/monitor PR 대기 줄 공유 투영 (UI-f2sy §4·§5)', () => {
+  const GREEN = {
+    pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
+    gate: {
+      enabled: true,
+      tier: 'eligible',
+      gate_badge: '머지 가능',
+      base_badge: '최신',
+      reason: null
+    }
+  };
+  const MERGED = {
+    pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
+    gate: {
+      enabled: false,
+      tier: 'merged',
+      gate_badge: '머지됨',
+      base_badge: '머지됨',
+      reason: null
+    }
+  };
+  const REVIEW_HOLD = {
+    pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
+    gate: {
+      enabled: false,
+      tier: 'review',
+      gate_badge: '',
+      base_badge: '최신',
+      reason: 'review_receipt_missing'
+    }
+  };
+  const REVIEW_SESSION = {
+    r1: {
+      attempt_id: 'r1',
+      bead_id: 'A-1',
+      status: 'running',
+      started_at: NOW - 100,
+      kind: 'review_session',
+      origin: 'auto'
+    }
+  };
+
+  /**
+   * A PR 대기 row whose post-merge cleanup stopped.
+   *
+   * @returns {Record<string, any>}
+   */
+  function stoppedCleanup() {
+    return workspace({
+      pr_wait: [{ bead_id: 'A-1' }],
+      cleanup_failed: {
+        'A-1': { step: 'branch_cleanup', reason: 'boom', at: 42 }
+      },
+      pr_observations: { 'A-1': MERGED }
+    });
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string}
+   */
+  function prBadge(mount) {
+    return (
+      el(mount, '#monitor-pr_wait .worker-mini__badge')?.textContent?.trim() ||
+      ''
+    );
+  }
+
+  test('draws 머지 대기 #N on a repository with only PR 대기', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          pr_observations: { 'A-1': GREEN },
+          merge_queue: [{ bead_id: 'A-1', authority: { source: 'manual' } }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(prBadge(mount)).toBe('머지 대기 #1');
+  });
+
+  test('adds no serial lane or slot cell for a repository with only PR 대기', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({ queue: [{ bead_id: 'A-1' }] }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          serial_lane_count: 2,
+          serial_lanes: [
+            { id: 's1', entries: [] },
+            { id: 's2', entries: [] }
+          ],
+          pr_wait: [{ bead_id: 'B-1' }],
+          pr_observations: { 'B-1': GREEN }
+        })
+      ],
+      workspaces_state: [
+        state(),
+        state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })
+      ]
+    });
+
+    view.load();
+
+    expect(
+      mount.querySelector(`#monitor-queue [data-root-dir="${WS_B}"]`)
+    ).toBeNull();
+  });
+
+  test('labels a review-hold row button 리뷰 후 머지', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          pr_observations: { 'A-1': REVIEW_HOLD }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      el(mount, '#monitor-pr_wait .worker-mini__merge')?.textContent?.trim()
+    ).toBe('리뷰 후 머지');
+  });
+
+  test('labels a queued row without an authority 다시 머지', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          pr_observations: { 'A-1': GREEN },
+          merge_queue: [{ bead_id: 'A-1' }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      el(mount, '#monitor-pr_wait .worker-mini__merge')?.textContent?.trim()
+    ).toBe('다시 머지');
+  });
+
+  test('labels a stopped cleanup 정리 재시도 beside [세션에서 해결]', () => {
+    const { mount, view } = setup({
+      workspaces: [stoppedCleanup()],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect([
+      el(mount, '#monitor-pr_wait .worker-mini__merge')?.textContent?.trim(),
+      mount.querySelector('#monitor-pr_wait .worker-mini__resolve') !== null
+    ]).toEqual(['정리 재시도', true]);
+  });
+
+  test('sends worker-cleanup-retry with its repository from a stopped cleanup row', () => {
+    const { mount, view, sent } = setup({
+      workspaces: [stoppedCleanup()],
+      workspaces_state: [state({ revision: 4 })]
+    });
+
+    view.load();
+    click(mount, '#monitor-pr_wait .worker-mini__merge');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-cleanup-retry',
+      payload: { bead_id: 'A-1', root_dir: WS_A, expected_revision: 4 }
+    });
+  });
+
+  test('sends worker-resolve-in-session with its repository from [세션에서 해결]', () => {
+    const { mount, view, sent } = setup({
+      workspaces: [stoppedCleanup()],
+      workspaces_state: [state({ revision: 4 })]
+    });
+
+    view.load();
+    click(mount, '#monitor-pr_wait .worker-mini__resolve');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-resolve-in-session',
+      payload: { bead_id: 'A-1', root_dir: WS_A, expected_revision: 4 }
+    });
+  });
+
+  test('shows the reply queue on the lane before the next push', async () => {
+    const queue = workspace({
+      pr_wait: [{ bead_id: 'A-1' }],
+      pr_observations: { 'A-1': GREEN }
+    });
+    const { mount, view } = setup({
+      workspaces: [queue],
+      workspaces_state: [state()],
+      transport: async (type) =>
+        type === 'worker-merge-queue-add'
+          ? {
+              applied: true,
+              queue: {
+                ...queue,
+                revision: 2,
+                merge_queue: [
+                  { bead_id: 'A-1', authority: { source: 'manual' } }
+                ]
+              }
+            }
+          : null
+    });
+
+    view.load();
+    click(mount, '#monitor-pr_wait .worker-mini__merge');
+    await flushMicrotasks();
+
+    expect(prBadge(mount)).toBe('머지 대기 #1');
+  });
+
+  test('keeps a running review session out of the 실행 중 lane and its count', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          pr_observations: { 'A-1': REVIEW_HOLD },
+          attempts: REVIEW_SESSION
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect([
+      mount.querySelectorAll('#monitor-running .rtile').length,
+      el(mount, '#monitor-running .worker-pane__count')?.textContent?.trim()
+    ]).toEqual([0, '0']);
+  });
+
+  test('says the running review session on the PR 대기 row badge', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          pr_observations: { 'A-1': REVIEW_HOLD },
+          attempts: REVIEW_SESSION
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(prBadge(mount)).toBe('최종 변경 리뷰 필요 · 자동 리뷰 세션 실행 중');
+  });
+});
