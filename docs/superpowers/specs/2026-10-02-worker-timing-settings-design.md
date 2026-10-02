@@ -136,7 +136,7 @@ Worker가 일을 바로 시작하지 않고 기다리는 시간, 외부 작업�
 - 결정: 완료 재시도의 검증 환경 오류 300초 분기는 바꾸지 않는다 — 사다리가 아니라 원인별 고정 분기다.
 - 결정: attempt 재조정 주기(60초·30초), 캐시 TTL, 디바운스, 하위 프로세스 timeout은 노출하지 않는다 — 내부 배관이다.
 - 결정: config.toml `poll_interval_seconds`는 그대로 읽는다 — 손으로 고친 설정을 깨지 않도록 기본값의 출처로 남긴다.
-- 크로스 리포 unit: dotfiles — 계약 `external_wait.observation`의 `slurm_interval_seconds`·`process_interval_seconds`를 "기본값이며 런타임 소유자(beads-ui Worker)의 설정이 덮어쓸 수 있다"로 선언하고(`docs/contracts/workflow-state.yaml`, `docs/contracts/external-wait.md` §Observation, `check-workflow-contract.py` 기대 블록), `error_backoff_seconds`는 고정으로 남긴다. hand-off에서 dotfiles rig에 quick_fix Bead를 만들고 이 Bead의 구현 진입 전 선행(`blocks`)으로 건다. 키 이름과 문구는 dotfiles가 정한다.
+- 크로스 리포 unit: dotfiles — 계약 `external_wait.observation`의 `slurm_interval_seconds`·`process_interval_seconds`를 "기본값이며 런타임 소유자(beads-ui Worker)의 설정이 덮어쓸 수 있다"로 선언하고(`docs/contracts/workflow-state.yaml`, `docs/contracts/external-wait.md` §Observation, `check-workflow-contract.py` 기대 블록), `error_backoff_seconds`는 고정으로 남긴다. dotfiles rig의 quick_fix Bead dotfiles-4yl8n이 맡고, 이 Bead의 구현 진입 전 선행(`blocks`)으로 걸려 있다. 키 이름과 문구는 dotfiles가 정한다.
 
 ## 5. 수락 기준
 
