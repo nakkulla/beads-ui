@@ -503,7 +503,9 @@ describe('ws worker-queue channel', () => {
     expect(snaps.at(-1).auto_advance).toBe(true);
   });
 
-  test('automation toggle turns both axes on in one queue revision', async () => {
+  test('automation toggle turns only auto advance on in one queue revision', async () => {
+    const store = getWorkerRuntime().queueStore;
+    const merge_queue_before = store.snapshot('').merge_queue;
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
     sock.sent = [];
@@ -519,14 +521,15 @@ describe('ws worker-queue channel', () => {
       queue: {
         revision: 1,
         auto_advance: true,
-        auto_merge: true
+        auto_merge: false
       }
     });
     expect(queueSnapshots(sock).at(-1)).toMatchObject({
       revision: 1,
       auto_advance: true,
-      auto_merge: true
+      auto_merge: false
     });
+    expect(store.snapshot('').merge_queue).toEqual(merge_queue_before);
   });
 
   test('toggle ON kicks the live tick; retired stop never mutates', async () => {
@@ -2344,7 +2347,7 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     expect(kick).toHaveBeenCalled();
   });
 
-  test('automation ON starts dispatch, observes PRs, and enrolls eligible rows', async () => {
+  test('automation ON starts dispatch without observing PRs or enrolling merges', async () => {
     parkInPrWait('UI-1');
     observeGreen('UI-1');
     const tick = vi.fn(async () => {});
@@ -2373,58 +2376,14 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     await Promise.resolve();
     await Promise.resolve();
 
+    expect(tick).toHaveBeenCalledOnce();
     expect(tick).toHaveBeenCalledWith(process.cwd());
-    expect(observe).toHaveBeenCalledOnce();
-    expect(
-      store
-        .snapshot('')
-        .merge_queue.map((/** @type {any} */ entry) => entry.bead_id)
-    ).toEqual(['UI-1']);
-    expect(kick).toHaveBeenCalled();
+    expect(observe).not.toHaveBeenCalled();
+    expect(store.snapshot('').merge_queue).toEqual([]);
+    expect(kick).not.toHaveBeenCalled();
   });
 
-  test('independent merge OFF during automation observation prevents enrollment', async () => {
-    parkInPrWait('UI-1');
-    observeGreen('UI-1');
-    /** @type {() => void} */
-    let release = () => {};
-    const observing = new Promise((resolve) => {
-      release = () => resolve(undefined);
-    });
-    __registerWorkerAttachmentForTest(
-      process.cwd(),
-      /** @type {any} */ ({
-        scheduler: { tick: vi.fn(), stop: vi.fn() },
-        prActions: { merge: vi.fn(), discard: vi.fn() },
-        mergeQueue: {
-          kick: vi.fn(async () => {}),
-          state: () => ({ active: null, failures: {} })
-        },
-        prPoller: { tick: () => observing }
-      })
-    );
-    const store = getWorkerRuntime().queueStore;
-    const sock = fakeSocket();
-    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
-
-    await send(sock, 'm1', 'worker-automation-toggle', {
-      on: true,
-      expected_revision: store.snapshot('').revision
-    });
-    await send(sock, 'm2', 'worker-merge-auto-toggle', {
-      on: false,
-      expected_revision: store.snapshot('').revision
-    });
-    release();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    const queue = store.snapshot('');
-    expect(queue.auto_advance).toBe(true);
-    expect(queue.auto_merge).toBe(false);
-    expect(queue.merge_queue).toEqual([]);
-  });
-
-  test('automation OFF clears waiting merges without starting ON effects', async () => {
+  test('automation OFF keeps auto merge and every merge entry without starting ON effects', async () => {
     parkInPrWait('UI-1');
     parkInPrWait('UI-2');
     const tick = vi.fn(async () => {});
@@ -2446,10 +2405,15 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
       expected_revision: store.snapshot('').revision,
       entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }]
     });
-    store.toggleAutomation('', {
+    store.toggleAutoMerge('', {
       expected_revision: store.snapshot('').revision,
       on: true
     });
+    store.toggleAutoAdvance('', {
+      expected_revision: store.snapshot('').revision,
+      on: true
+    });
+    const merge_queue_before = store.snapshot('').merge_queue;
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
 
@@ -2461,13 +2425,14 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
 
     expect(replyFor(sock, 'm1').payload.queue).toMatchObject({
       auto_advance: false,
-      auto_merge: false
+      auto_merge: true
     });
+    expect(store.snapshot('').merge_queue).toEqual(merge_queue_before);
     expect(
       store
         .snapshot('')
         .merge_queue.map((/** @type {any} */ entry) => entry.bead_id)
-    ).toEqual(['UI-1']);
+    ).toEqual(['UI-1', 'UI-2']);
     expect(tick).not.toHaveBeenCalled();
     expect(observe).not.toHaveBeenCalled();
   });

@@ -10,12 +10,11 @@
  * On conflict the handler replies with the current snapshot so the client
  * re-syncs and retries.
  *
- * Execution: `worker-queue-toggle` retains the legacy independent
- * `auto_advance` mutation. `worker-automation-toggle` atomically aligns
- * `auto_advance` and `auto_merge`, then starts both live automation pipelines
- * on turn-ON. Legacy destructive messages bridge into the same durable
- * `worker-discard` coordinator and are inert when no attachment is registered
- * for the workspace.
+ * Execution: `worker-queue-toggle` and `worker-automation-toggle` both persist
+ * only `auto_advance` and kick the dispatch tick on turn-ON;
+ * `worker-merge-auto-toggle` alone owns `auto_merge`. Legacy destructive
+ * messages bridge into the same durable `worker-discard` coordinator and are
+ * inert when no attachment is registered for the workspace.
  *
  * Auth: these handlers only run for already-authenticated sockets — the
  * connection layer's first-frame auth gate fronts `handleMessage`, and these
@@ -4822,6 +4821,11 @@ function observeAndEnrollAutoMerge(workspace_key) {
  * Handle `worker-automation-toggle`.
  * Payload: `{ on: boolean, expected_revision }`.
  *
+ * Persists only `auto_advance` (CAS), the same behavior as
+ * `worker-queue-toggle`; on a successful turn-ON it kicks one fire-and-forget
+ * dispatch tick. It never reads or writes `auto_merge` or `merge_queue` —
+ * `worker-merge-auto-toggle` is the only message that changes `auto_merge`.
+ *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
@@ -4839,18 +4843,15 @@ export function handleWorkerAutomationToggle(ws, req) {
   if (key === null) {
     return;
   }
-  const state = p.on === false ? workerMergeQueueState(key) : null;
-  const result = queueStore().toggleAutomation(key, {
+  const result = queueStore().toggleAutoAdvance(key, {
     expected_revision: revisionOf(p),
-    on: p.on,
-    keep: state ? state.active : null
+    on: p.on
   });
   replyMutation(ws, req, key, result);
   if (result.ok && p.on === true) {
     Promise.resolve(tickWorkerQueue(key)).catch((err) => {
       log('worker tick after automation toggle failed for %s: %o', key, err);
     });
-    observeAndEnrollAutoMerge(key);
   }
 }
 
@@ -5943,10 +5944,9 @@ export function handleWorkerMergeQueueAddAll(ws, req) {
 /**
  * Handle `worker-merge-auto-toggle`. Payload: `{ on: boolean, expected_revision }`.
  *
- * The PR 대기 lane's durable independent auto-merge switch (UI-yk55 §5). The
- * workspace automation control may align both axes at click time, but this
- * message remains available afterwards so merge automation can be changed on
- * its own.
+ * The PR 대기 lane's durable independent auto-merge switch (UI-yk55 §5). This
+ * is the only message that changes `auto_merge`; `worker-automation-toggle`
+ * changes `auto_advance` only.
  *
  * Turning it ON does three things in order — persist, observe once, enroll once
  * — because the enrolment judges against the observation cache, and after a

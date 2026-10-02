@@ -94,7 +94,7 @@
 ## GitHub Actions
 
 - `.github/workflows/`는 비어 있고 재추가하면 테스트가 실패한다. 머지 자격은
-  checks를 보지 않는다(ADR UI-u6ud-3) — `gh pr checks`를 호출하지 않는다.
+  checks를 보지 않는다(ADR UI-6mpl) — `gh pr checks`를 호출하지 않는다.
 - 머지 전 검증은 Pre-Handoff Validation이 맡고,
   `[verify]`(`repo-ops/script/verify`)는 머지 직전 candidate에서 도는 별개
   안전망이다.

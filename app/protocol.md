@@ -759,9 +759,10 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
 - `worker-queue-toggle` payload: `{ on, expected_revision }` — persists the
   legacy independent `auto_advance` surface and, on turn-ON, kicks the live
   dispatch loop (`tick`).
-- `worker-automation-toggle` payload: `{ on, expected_revision }` — atomically
-  aligns `auto_advance` and `auto_merge`; OFF also clears ordinary waiting merge
-  entries while preserving active and resolution-bound work.
+- `worker-automation-toggle` payload: `{ on, expected_revision }` — persists
+  only `auto_advance` (CAS) and, on turn-ON, kicks the live dispatch loop
+  (`tick`); it never reads or writes `auto_merge` or the merge queue.
+  `worker-merge-auto-toggle` is the only message that changes `auto_merge`.
 - The `worker-queue-snapshot` carries `repo_operation_policy` — the projection
   of the PINNED contract copy `generated/contracts/repo-operation-policy.json`
   (an exact byte copy of the dotfiles artifact, with its source commit and

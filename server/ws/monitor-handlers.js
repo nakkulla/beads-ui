@@ -906,11 +906,10 @@ function laneCountsFor(root_dir, queue, runnableFor, sessionActiveFor) {
  * Build the per-workspace CONTROL state that rides beside the heavy pipeline
  * array (UI-qrfo §4 집계 payload 구조).
  *
- * Covers EVERY visible workspace, pipeline-empty ones included, because three
- * things need a repo that has nothing in flight: the master automation toggle's
- * denominator, the waiting lane's group header for an empty queue, and that
- * header's CAS controls — which cannot send `expected_revision` for a workspace
- * the payload never mentions.
+ * Covers EVERY visible workspace, pipeline-empty ones included, because two
+ * things need a repo that has nothing in flight: the waiting lane's group header
+ * for an empty queue, and that header's CAS controls — which cannot send
+ * `expected_revision` for a workspace the payload never mentions.
  *
  * Reads the RAW queue snapshot, not the decorated one: the seven fields here are
  * all plain `Queue` state, and the decoration is the expensive part.
