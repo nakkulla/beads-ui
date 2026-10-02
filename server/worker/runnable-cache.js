@@ -159,6 +159,11 @@ export const RUNNABLE_ROUTES = new Set(WORKFLOW_ROUTES);
  * @property {string[]} blocked_by - Direct `blocks` blocker ids.
  * @property {true} [blocked_without_ids] - A blocked candidate has no known blocker ids.
  * @property {string[]} labels - Labels carried for display.
+ * @property {number} [priority] - The bd `priority` of the same snapshot row
+ * (UI-f2sy §6.1): the monitor's priority filter and sort chain read it. Absent
+ * when the row carries no finite number — never defaulted.
+ * @property {string} [issue_type] - The bd `issue_type` of the same snapshot
+ * row, for the monitor's type filter. Absent when empty.
  * @property {number|string|null} created_at
  * @property {number|string|null} updated_at
  * @property {Record<string, unknown>|null} workflow - The stepper projection for
@@ -465,6 +470,12 @@ function qualify(row, blocked_by, context) {
       ? { blocked_without_ids: true }
       : {}),
     labels: workerLabels(row.labels),
+    ...(typeof row.priority === 'number' && Number.isFinite(row.priority)
+      ? { priority: row.priority }
+      : {}),
+    ...(typeof row.issue_type === 'string' && row.issue_type.length > 0
+      ? { issue_type: row.issue_type }
+      : {}),
     created_at: stampOf(row.created_at),
     updated_at: stampOf(row.updated_at),
     workflow: null,

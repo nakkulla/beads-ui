@@ -157,6 +157,8 @@ function discoveredFromId(raw_issue) {
  * workspace defaults", not "unknown".
  * @property {number|null} priority - `priority` of the same `bd show` payload,
  * `null` when it is not a finite number.
+ * @property {string} issue_type - `issue_type` of the same payload, `''` when it
+ * is not a non-empty string (UI-f2sy §6.1).
  * @property {string} from_id - The first `discovered-from` dependency id of the
  * same payload, `''` when there is none.
  * @property {string} complex_reason - The contract's 복잡 판정 signals, judged
@@ -389,6 +391,12 @@ export function createTitleCache(options = {}) {
         Number.isFinite(raw_issue.priority)
           ? raw_issue.priority
           : null,
+      issue_type:
+        raw_issue &&
+        typeof raw_issue.issue_type === 'string' &&
+        raw_issue.issue_type.length > 0
+          ? raw_issue.issue_type
+          : '',
       from_id: discoveredFromId(raw_issue),
       complex_reason: complexReason(raw_issue && raw_issue.labels, metadata),
       description_scope: parseDescriptionScope(
@@ -796,22 +804,24 @@ export function createTitleCache(options = {}) {
 
     /**
      * Cache hits for `ids` as the issue fields the monitor overlay carries
-     * beside the pin: `priority`, `from_id`, and the judged `complex_reason`.
+     * beside the pin: `priority`, `issue_type`, `from_id`, and the judged
+     * `complex_reason`.
      * A field the record cannot supply is omitted, never defaulted (fail-quiet);
      * a bead with none of them is absent. Same partiality contract as the
      * projections above, and no `bd` process of its own.
      *
      * @param {string} workspace
      * @param {string[]} ids
-     * @returns {Record<string, { priority?: number, from_id?: string, complex_reason?: string }>}
+     * @returns {Record<string, { priority?: number, issue_type?: string, from_id?: string, complex_reason?: string }>}
      */
     overlayFieldsFor(workspace, ids) {
       const projected = collect(workspace, ids, (rec) => ({
         ...(rec.priority !== null ? { priority: rec.priority } : {}),
+        ...(rec.issue_type ? { issue_type: rec.issue_type } : {}),
         ...(rec.from_id ? { from_id: rec.from_id } : {}),
         ...(rec.complex_reason ? { complex_reason: rec.complex_reason } : {})
       }));
-      /** @type {Record<string, { priority?: number, from_id?: string, complex_reason?: string }>} */
+      /** @type {Record<string, { priority?: number, issue_type?: string, from_id?: string, complex_reason?: string }>} */
       const out = {};
       for (const [bead_id, fields] of Object.entries(projected)) {
         if (Object.keys(fields).length > 0) {

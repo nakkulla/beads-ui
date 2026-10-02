@@ -93,7 +93,7 @@ const EXECUTION_DEFAULTS = {
 };
 
 /**
- * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, modelVisibility?: any }} [options]
+ * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, monitorPipeline?: Array<Record<string, any>>, onOpenRepoOps?: (root_dir: string) => void, modelVisibility?: any }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -142,7 +142,9 @@ function mount(options = {}) {
     },
     labelOptions: () => ['worker-serial'],
     notify,
-    monitorRows: () => options.monitorRows || []
+    monitorRows: () => options.monitorRows || [],
+    monitorPipeline: () => options.monitorPipeline || [],
+    onOpenRepoOps: options.onOpenRepoOps
   });
   return { root, dialog, transport, notify, policy_store };
 }
@@ -294,7 +296,7 @@ describe('createSettingsDialog repo scope (UI-e1ta §7)', () => {
     }
   ];
 
-  test('draws the three execution tabs titled after that repository', async () => {
+  test('draws the four execution tabs and the 저장소 tab titled after that repository', async () => {
     const { root, dialog } = mount({ monitorRows: REPO_ROWS });
 
     dialog.open(undefined, {
@@ -306,7 +308,13 @@ describe('createSettingsDialog repo scope (UI-e1ta §7)', () => {
     const tabs = Array.from(root.querySelectorAll('[role="tab"]')).map((tab) =>
       tab.textContent?.replace(/\s+/g, ' ').trim()
     );
-    expect(tabs).toEqual(['◆ 워커', '◈ quick fix', '◇ 세션', '◎ 계정']);
+    expect(tabs).toEqual([
+      '◆ 워커',
+      '◈ quick fix',
+      '◇ 세션',
+      '◎ 계정',
+      '▣ 저장소'
+    ]);
     expect(
       root.querySelector('.settings-dialog__pane-head h2')?.textContent
     ).toBe('repo-b 실행 설정');
@@ -328,6 +336,234 @@ describe('createSettingsDialog repo scope (UI-e1ta §7)', () => {
     ]);
     expect(dialog.repoRoot()).toBe('/tmp/example/repo-b');
     dialog.destroy();
+  });
+});
+
+describe('createSettingsDialog 저장소 tab (UI-f2sy §7)', () => {
+  const REPO_B = '/tmp/example/repo-b';
+  const STATE_ROW = {
+    root_dir: REPO_B,
+    name: 'repo-b',
+    revision: 4,
+    slots: 2,
+    serial_lane_count: 1,
+    runner_catalog: CATALOG,
+    execution_defaults: EXECUTION_DEFAULTS,
+    quick_fix_orchestration_model: null
+  };
+  const ENTRY = {
+    root_dir: REPO_B,
+    name: 'repo-b',
+    revision: 4,
+    slots: 2,
+    serial_lane_count: 1,
+    declared_base: 'main',
+    repo_operations: [],
+    repo_ops_opt_out: { verify: false, deploy: false },
+    workspace_info: {
+      repo_ops: {
+        status: 'resolved',
+        source_path: 'repo-ops/config.toml',
+        base_ref: 'main',
+        base_sha: 'a'.repeat(40),
+        repo_id: REPO_B,
+        verify: { script: 'repo-ops/script/verify', timeout_ms: 300_000 },
+        deploy: { script: 'repo-ops/script/deploy', timeout_ms: 600_000 },
+        error_code: null
+      }
+    }
+  };
+
+  /**
+   * @param {Parameters<typeof mount>[0]} [extra]
+   * @returns {Promise<ReturnType<typeof mount>>}
+   */
+  async function openRepoTab(extra = {}) {
+    const view = mount({
+      monitorRows: [STATE_ROW],
+      monitorPipeline: [ENTRY],
+      ...extra
+    });
+    view.dialog.open('repo', { scope: 'repo', root_dir: REPO_B });
+    await settle();
+    return view;
+  }
+
+  /**
+   * @param {any} transport
+   * @param {string} type
+   * @returns {any[][]}
+   */
+  function callsOf(transport, type) {
+    return transport.mock.calls.filter(
+      (/** @type {any[]} */ call) => call[0] === type
+    );
+  }
+
+  test('draws the cap, lane count, base and declaration for a repository with an entry', async () => {
+    const { root } = await openRepoTab();
+
+    expect([
+      /** @type {HTMLInputElement} */ (
+        root.querySelector('[data-seam="repo-slots"]')
+      ).value,
+      /** @type {HTMLSelectElement} */ (
+        root.querySelector('[data-seam="repo-serial-lanes"]')
+      ).value,
+      root.querySelector('[data-seam="repo-base"]')?.textContent,
+      root.querySelector('[data-seam="repo-ops"]') !== null,
+      root.querySelector('[data-seam="repo-ops-open"]') !== null
+    ]).toEqual(['2', '1', 'main', true, true]);
+  });
+
+  test('shows the declared script paths as text with no dead button', async () => {
+    const { root } = await openRepoTab();
+
+    const lanes = root.querySelector('[data-seam="repo-ops"]');
+
+    expect([
+      lanes?.querySelectorAll('button.worker-repo-ops__vd-cmd').length,
+      lanes?.querySelector('[data-lane="verify"] code.worker-repo-ops__vd-cmd')
+        ?.textContent
+    ]).toEqual([0, 'repo-ops/script/verify']);
+  });
+
+  test('draws only the cap and lane count for a repository without an entry', async () => {
+    const { root } = await openRepoTab({ monitorPipeline: [] });
+
+    expect([
+      root.querySelector('[data-seam="repo-slots"]') !== null,
+      root.querySelector('[data-seam="repo-serial-lanes"]') !== null,
+      root.querySelector('[data-seam="repo-base"]'),
+      root.querySelector('[data-seam="repo-ops"]'),
+      root.querySelector('[data-seam="repo-ops-open"]')
+    ]).toEqual([true, true, null, null, null]);
+  });
+
+  test('sends the cap with its repository and revision', async () => {
+    const { root, transport } = await openRepoTab();
+    const input = /** @type {HTMLInputElement} */ (
+      root.querySelector('[data-seam="repo-slots"]')
+    );
+
+    input.value = '5';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+
+    expect(callsOf(transport, 'worker-queue-set-slots')).toEqual([
+      [
+        'worker-queue-set-slots',
+        { slots: 5, root_dir: REPO_B, expected_revision: 4 }
+      ]
+    ]);
+  });
+
+  test('sends the serial lane count with its repository and revision', async () => {
+    const { root, transport } = await openRepoTab();
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('[data-seam="repo-serial-lanes"]')
+    );
+
+    select.value = '3';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+
+    expect(callsOf(transport, 'worker-queue-set-serial-lane-count')).toEqual([
+      [
+        'worker-queue-set-serial-lane-count',
+        { count: 3, root_dir: REPO_B, expected_revision: 4 }
+      ]
+    ]);
+  });
+
+  test('retries a conflicting cap change once on the revision the reply carried', async () => {
+    const transport = vi.fn(
+      async (/** @type {string} */ type, /** @type {any} */ payload) =>
+        type === 'worker-queue-set-slots' && payload.expected_revision === 4
+          ? { applied: false, conflict: true, queue: { ...ENTRY, revision: 9 } }
+          : { applied: true, queue: { ...ENTRY, revision: 10, slots: 5 } }
+    );
+    const { root } = await openRepoTab({ transport });
+    const input = /** @type {HTMLInputElement} */ (
+      root.querySelector('[data-seam="repo-slots"]')
+    );
+
+    input.value = '5';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+    await settle();
+
+    expect(
+      callsOf(transport, 'worker-queue-set-slots').map(
+        (call) => call[1].expected_revision
+      )
+    ).toEqual([4, 9]);
+  });
+
+  test('sends the opt-out toggle with its repository', async () => {
+    const { root, transport } = await openRepoTab();
+    const check = /** @type {HTMLInputElement} */ (
+      root.querySelector('[data-lane="verify"] input[type="checkbox"]')
+    );
+
+    check.checked = false;
+    check.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+
+    expect(callsOf(transport, 'worker-repo-ops-opt-out-toggle')).toEqual([
+      [
+        'worker-repo-ops-opt-out-toggle',
+        {
+          kind: 'verify',
+          opted_out: true,
+          expected_revision: 4,
+          root_dir: REPO_B
+        }
+      ]
+    ]);
+  });
+
+  test('sends 배포 실행 with its repository', async () => {
+    const { root, transport } = await openRepoTab();
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-seam="repo-ops-deploy-run"]')
+    ).click();
+    await settle();
+
+    expect(callsOf(transport, 'worker-repo-operation-deploy-run')).toEqual([
+      [
+        'worker-repo-operation-deploy-run',
+        { repo_id: REPO_B, root_dir: REPO_B }
+      ]
+    ]);
+  });
+
+  test('closes the window and opens that repository timeline from 저장소 작업 기록 열기', async () => {
+    const onOpenRepoOps = vi.fn();
+    const { root } = await openRepoTab({ onOpenRepoOps });
+
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-seam="repo-ops-open"]')
+    ).click();
+
+    expect(onOpenRepoOps).toHaveBeenCalledWith(REPO_B);
+  });
+
+  test('leaves the 저장소 tab out of the connected-workspace and bulk windows', async () => {
+    const { root, dialog } = mount({ monitorRows: [STATE_ROW] });
+
+    dialog.open();
+    await settle();
+    const single = root.querySelector('[data-tab="repo"]');
+    dialog.close();
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    expect([single, root.querySelector('[data-tab="repo"]')]).toEqual([
+      null,
+      null
+    ]);
   });
 });
 

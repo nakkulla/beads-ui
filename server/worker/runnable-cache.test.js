@@ -2265,3 +2265,46 @@ describe('plan review record discrimination (UI-y9hl U3)', () => {
     });
   }
 });
+
+describe('runnable cache priority and issue type (UI-f2sy §6.1)', () => {
+  test('carries the priority and issue type of the same snapshot row', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [row({ priority: 1, issue_type: 'bug' })]
+      }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect([out[0].priority, out[0].issue_type]).toEqual([1, 'bug']);
+  });
+
+  test('omits both keys when the row carries neither', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [row()] }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(
+      ['priority', 'issue_type'].some((key) => Object.hasOwn(out[0], key))
+    ).toBe(false);
+  });
+
+  test('omits an empty issue type and a non-numeric priority', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [row({ priority: 'high', issue_type: '' })]
+      }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(
+      ['priority', 'issue_type'].some((key) => Object.hasOwn(out[0], key))
+    ).toBe(false);
+  });
+});

@@ -62,6 +62,10 @@ import {
   detectSerialLaneHeadCycles,
   serialCycleKey
 } from '../monitor/blockers.js';
+import {
+  applyCandidateSort,
+  normalizeCandidateSort
+} from './candidate-sort.js';
 import { recoveryWaitSentence } from './failure-labels.js';
 import {
   autoSwitchText,
@@ -74,9 +78,8 @@ import {
   reviewSessionAttemptBadges,
   sumAttemptWorkMs
 } from './lanes.js';
-import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
 import { placementFromFacts } from './placement.js';
-import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
+import { prWaitProgress } from './pr-wait-progress.js';
 // 칩의 모양은 두 탭이 공유한다 (UI-anna §5.1): 워커 투영도 같은 함수를 불러
 // 같은 라벨·같은 툴팁 문장 틀을 낸다.
 import {
@@ -450,7 +453,6 @@ const DONE_KIND_LABELS = {
  *   speed?: string|null,
  *   resumed_from?: string|null,
  *   continuation_mode?: 'session'|'fresh'|null,
- *   continuation_mismatch?: any,
  *   failure?: import('./running-grid.js').FailureTile|null,
  *   hold?: import('./running-grid.js').HoldTile|null,
  *   wait?: import('./running-grid.js').WaitTile|null,
@@ -484,7 +486,6 @@ const DONE_KIND_LABELS = {
  *   gate_open?: boolean,
  *   consumer_id?: string|null,
  *   recent_complete?: boolean,
- *   search_match?: boolean,
  *   issue_type?: string,
  *   deferred?: boolean,
  *   filter_match?: boolean
@@ -504,10 +505,9 @@ const DONE_KIND_LABELS = {
  * @property {string} id
  * @property {string} title
  * @property {string} badge
- * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
- * 점유 ghost 행도 직렬 레인의 항목이므로 다른 레인 항목과 같은 판정을 받는다.
  * @property {boolean} [filter_match] - 우선순위·타입·라벨 필터와의 일치
- * (UI-p7s2 §6). 같은 이유로 ghost 행도 같은 판정을 받는다.
+ * (UI-p7s2 §6). 점유 ghost 행도 직렬 레인의 항목이므로 다른 레인 항목과 같은
+ * 판정을 받는다.
  */
 
 /**
@@ -545,7 +545,8 @@ const DONE_KIND_LABELS = {
  * @property {boolean} over_cap - {@link live_count}가 {@link slots}를 넘었다.
  * 수동 ▶가 의도적으로 넘길 수 있으므로 막지 않고 드러낸다.
  * @property {LaneMergeQueue} merge - 순차 머지 큐의 위치·해소·이어하기·권한과
- * 드라이버의 라이브 기억 (UI-5v7d). Monitor는 읽지 않는다.
+ * 드라이버의 라이브 기억 (UI-5v7d). 두 탭의 PR 대기 줄 공유 투영이 읽는다
+ * (UI-f2sy §4).
  * @property {string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null} token_total
  * - 이 레포 완료 레인의 토큰 합계. 아무 행도 보고하지 않았으면 `null`이다.
  * @property {Array<Record<string, any>>} cleanup_failures - durable 정리 실패
@@ -604,6 +605,9 @@ const DONE_KIND_LABELS = {
  * @property {LaneQueueGroup[]} queue_groups - 대기 레인의 레포 섹션. 큐가
  * 비어 있어도 그 레포에 후보가 있으면 남는다 — 데스크톱의 유일한 적재 수단이
  * 드래그이므로 같은 레포 드롭 타깃이 있어야 한다 (§6).
+ * @property {Map<string, LaneQueueGroup>} groups_by_root - root_dir → 그 저장소의
+ * 그룹. `groups` 모드와 무관하게 모든 저장소가 실린다 — PR 대기 줄의 공유 투영이
+ * 대기 레인에 서지 않는 저장소의 머지 재료도 읽어야 하기 때문이다 (UI-f2sy §4).
  * @property {LaneItem[]} running
  * @property {LaneItem[]} pr_wait
  * @property {LaneItem[]} done
@@ -2029,21 +2033,6 @@ function workspaceNameFromRoot(root_dir) {
 }
 
 /**
- * The DISPLAY-ONLY receipt codes on a `receipt_check` summary (UI-h6t1 §4.3).
- * dotfiles 계약의 `badge` 등급이며, 서버가 `summarizeReceiptCheck`로 실어 보낸다.
- * 부재·비배열·빈 문자열은 전부 빈 목록이다 (fail-quiet).
- *
- * @param {unknown} summary
- * @returns {string[]}
- */
-function receiptBadgeCodesOf(summary) {
-  const codes = objectOf(summary).badge_codes;
-  return Array.isArray(codes)
-    ? codes.filter((code) => typeof code === 'string' && code.length > 0)
-    : [];
-}
-
-/**
  * Resolve effective candidate and waiting-row settings with per-axis pin marks.
  *
  * @param {Record<string, any>} state - The repo's `workspaces_state` row.
@@ -2809,58 +2798,13 @@ function timeOf(value) {
 }
 
 /**
- * One query's match predicate (UI-6g3t §7). 빈 질의는 `null`이고, 그때 모델은
- * `search_match` 키를 아예 달지 않는다 (fail-quiet): "검색하지 않았다"와 "아무것도
- * 맞지 않았다"는 다른 사실이라, 렌더러가 둘을 같은 흐림으로 그리면 안 된다.
- *
- * @param {string|undefined} query
- * @returns {((item: LaneItem) => boolean)|null}
- */
-function searchMatcher(query) {
-  const needle = typeof query === 'string' ? query.trim().toLowerCase() : '';
-  if (needle.length === 0) {
-    return null;
-  }
-  return (item) => {
-    const id = typeof item.id === 'string' ? item.id.toLowerCase() : '';
-    const title =
-      typeof item.title === 'string' ? item.title.toLowerCase() : '';
-    return id.includes(needle) || title.includes(needle);
-  };
-}
-
-/**
- * Tag every lane item with the search verdict (UI-6g3t §7). 숨기지도 빼지도
- * 않으므로 순번·드래그 좌표·헤더 카운트·필터 카운트·겹침 비교 집합은 그대로이고,
- * 바뀌는 것은 카드의 흐림 하나뿐이다.
- *
- * 후보 섹션 항목은 모델이 이미 복사본으로 들고 있으므로 (`{ ...item }`) 원본과
- * 따로 달아야 한다 — 그 사본이 실제로 그려지는 카드다.
- *
- * @param {LaneModel} model
- * @param {(item: LaneItem) => boolean} matches
- */
-function tagSearchMatches(model, matches) {
-  const { buckets, occupant_buckets } = laneItemBuckets(model);
-  for (const bucket of buckets) {
-    for (const item of bucket) {
-      item.search_match = matches(item);
-    }
-  }
-  for (const bucket of occupant_buckets) {
-    for (const occupant of bucket) {
-      occupant.search_match = matches(
-        /** @type {LaneItem} */ (/** @type {unknown} */ (occupant))
-      );
-    }
-  }
-}
-
-/**
  * Tag every lane item with the 우선순위·타입·라벨 필터 verdict (UI-p7s2 §6).
  * 후보·보류는 이미 숨김으로 걸러졌으므로 여기서 받는 값은 언제나 `true`이고,
  * 실제로 읽히는 것은 대기·실행 중·PR 대기·완료 행의 `false`다 — 그 레인들은
- * 숨기면 직렬 순번과 슬롯 점유가 어긋나므로 검색어와 같은 흐림을 쓴다.
+ * 숨기면 직렬 순번과 슬롯 점유가 어긋나므로 흐림으로 그린다.
+ *
+ * 후보 섹션 항목은 모델이 이미 복사본으로 들고 있으므로 (`{ ...item }`) 원본과
+ * 따로 달아야 한다 — 그 사본이 실제로 그려지는 카드다.
  *
  * @param {LaneModel} model
  * @param {(item: LaneItem) => boolean} matches
@@ -2883,7 +2827,7 @@ function tagFilterMatches(model, matches) {
 
 /**
  * Every rendered lane item of one model, grouped so a per-item verdict
- * (`search_match`·`filter_match`) reaches the copies that actually get drawn.
+ * (`filter_match`) reaches the copies that actually get drawn.
  *
  * @param {LaneModel} model
  * @returns {{ buckets: LaneItem[][], occupant_buckets: MonitorOccupant[][] }}
@@ -2944,9 +2888,10 @@ function chipPinsOf(entry) {
  * 어댑터)의 값이다 (UI-4tud §4.3): 입력 순서를 그대로 두고 섹션도 만들지 않는다.
  * Hidden counts name rows revealed by relaxing exactly one filter.
  *
- * `options.search`는 워커 탭의 이슈 검색어다 (UI-6g3t §7). 값이 있으면 모든 레인
- * 항목에 `search_match`가 실리고, 없거나 공백뿐이면 키 자체가 붙지 않는다 —
- * 그래서 검색을 받지 않는 Monitor 탭의 렌더는 한 글자도 달라지지 않는다.
+ * `options.candidate_chain`은 Worker 탭과 같은 정렬 체인(`CandidateSortState`)이다
+ * (UI-f2sy §6.2). 값이 있으면 `candidate_sort` 문자열을 대신해 `applyCandidateSort`가
+ * 순서를 정하고, `options.group_by_repo`가 `false`가 아니면 레포 섹션 안에서,
+ * `false`면 저장소를 무시한 한 줄 목록에서 그 순서를 쓴다.
  *
  * `options.groups: 'all'`은 대기·직렬·후보가 모두 비어도 `workspaces_state` 행
  * 하나당 그룹을 남긴다 — 실행 중·PR 대기·완료·저장소 작업만 있는 스냅샷에서도
@@ -2954,7 +2899,7 @@ function chipPinsOf(entry) {
  *
  * @param {Array<Record<string, any>>|null|undefined} workspaces
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state]
- * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', groups?: 'nonempty'|'all', search?: string }} [options]
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', candidate_chain?: import('./candidate-sort.js').CandidateSortState, group_by_repo?: boolean, groups?: 'nonempty'|'all' }} [options]
  * @returns {LaneModel}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
@@ -2979,6 +2924,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
             options.candidate_sort
           )
         : 'repo_spec';
+  const candidate_chain =
+    options && options.candidate_chain
+      ? normalizeCandidateSort(options.candidate_chain)
+      : null;
+  const candidate_flat = candidate_chain
+    ? options?.group_by_repo === false
+    : candidate_sort === 'updated_flat' || candidate_sort === 'as_given';
   const groups_mode = options && options.groups === 'all' ? 'all' : 'nonempty';
   // 해제 칩의 7일 창 기준 시각 (UI-d13v §5.3). 모델 조립당 한 번만 읽어 같은
   // 렌더 안의 모든 카드가 같은 창을 본다.
@@ -3014,8 +2966,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const serial_count_by_root = new Map();
   /** @type {Map<string, number>} */
   const raw_queue_length_by_root = new Map();
-  // Worker 전용 그룹 값 (UI-4tud §4.3). 재료가 워크스페이스별이므로 레포별로
-  // 모아 `queue_groups[i]`에 싣는다 — Monitor는 읽지 않는다.
+  // 레포별 그룹 값 (UI-4tud §4.3). 재료가 워크스페이스별이므로 레포별로 모아
+  // `queue_groups[i]`·`groups_by_root`에 싣는다 — PR 대기 줄의 공유 투영이 두
+  // 탭에서 읽는다 (UI-f2sy §4).
   /** @type {Map<string, LaneMergeQueue>} */
   const merge_by_root = new Map();
   /** @type {Map<string, Array<Record<string, any>>>} */
@@ -3150,7 +3103,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
     // 대기·PR 대기·실행중 행의 route 칩 재료 (UI-yrzu §7.2).
     const bead_workflow = objectOf(workspace.bead_workflow);
-    const pr_activity = objectOf(workspace.pr_activity);
     const repo_operations = Array.isArray(workspace.repo_operations)
       ? workspace.repo_operations
       : [];
@@ -3225,18 +3177,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const merge_queue = Array.isArray(workspace.merge_queue)
       ? workspace.merge_queue
       : [];
-    /** @type {Set<string>} */
-    const merge_queued = new Set(
-      merge_queue
-        .filter((/** @type {any} */ e) => e && typeof e.bead_id === 'string')
-        .map((/** @type {any} */ e) => e.bead_id)
-    );
-    /** @type {Map<string, any>} */
-    const merge_entries = new Map(
-      merge_queue
-        .filter((/** @type {any} */ e) => e && typeof e.bead_id === 'string')
-        .map((/** @type {any} */ e) => [e.bead_id, e])
-    );
     // 순차 머지 큐 (UI-5v7d, UI-4tud §4.3). 멤버십·순서는 durable하고, 활성
     // 항목과 스킵 사유는 드라이버의 라이브 기억이다.
     /** @type {Map<string, number>} */
@@ -3260,8 +3200,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
     });
     // durable 제외 기록 (UI-yk55 §3): 계약 키가 없는 구버전 스냅샷은 빈 맵이다.
     const auto_merge_skips = objectOf(workspace.auto_merge_skips);
-    // 보관 기록 (UI-sd12 §3.1). 키가 없는 구서버 스냅샷은 보관 행이 없다.
-    const merge_shelved = objectOf(workspace.merge_shelved);
     /**
      * Whether a row's exclusion still holds (UI-yk55 §3.2): only when the
      * recorded head is the one now observed. head가 움직였으면 다음 스캔이
@@ -3835,179 +3773,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
         continue;
       }
       claimed.add(bead_id);
-      const observed = objectOf(observations[bead_id]);
-      const pr = objectOf(observed.pr);
-      const gate = observed.gate ? objectOf(observed.gate) : null;
-      const queued = merge_queued.has(bead_id);
-      const continuation_action =
-        merge_entries.get(bead_id)?.continuation_action || null;
-      const continuation_required =
-        !!continuation_action && continuation_action.continuation === null;
-      const active = merge_state.active === bead_id;
-      const external = entry.external === true;
-      // 등록부가 소유한 네 필드 (UI-kyky §6.1). Worker 탭과 같은
-      // `withExternalPrWait` 결과에서 오므로 두 탭이 같은 행을 같게 말한다.
-      // `foreign`은 서버 판정 그대로다 — `repo_slug`로 다시 판정하지 않는다.
-      const foreign_pr = entry.foreign === true;
-      const foreign_repo =
-        foreign_pr && typeof entry.repo_slug === 'string'
-          ? entry.repo_slug
-          : '';
-      const foreign_pr_url =
-        foreign_pr && typeof entry.pr_url === 'string' ? entry.pr_url : '';
-      const foreign_pr_number =
-        foreign_pr && typeof entry.pr_number === 'number'
-          ? entry.pr_number
-          : null;
-      const cleanup = cleanup_failed[bead_id] || null;
-      const activity = objectOf(pr_activity[bead_id]);
-      const merge_step = prWaitProgress({
-        bead_id,
-        merge_sha: entry.merge_sha,
-        cleanup_cursor: entry.cleanup_cursor,
-        merge_progress: activity.merge_progress || null,
-        cleanup_failed: cleanup,
-        repo_operations
-      });
-      const cleanup_active = isPrWaitCleanupActive(merge_step);
-      const conflicting = !!gate && gate.base_badge === '충돌';
-      // `post_merge_jobs` is the first closure step (UI-i60a §1), so a job that
-      // stopped the cleanup offers the Monitor mirror the same resume the other
-      // closure steps do.
-      const cleanup_retry =
-        !!cleanup &&
-        ['post_merge_jobs', 'branch_cleanup', 'parent_close'].includes(
-          cleanup.step
-        ) &&
-        !!gate &&
-        gate.tier === 'merged';
-      const external_cleanup =
-        external && !!cleanup && !!gate && gate.tier === 'merged';
-      // `review_receipt_undetermined`도 이제 알린다 (UI-qksl §4 1번): 큐가 그
-      // 사유에서 보류하고 head당 1회 리뷰 lineage를 띄우며, 소진 뒤의 출구는
-      // `[리뷰 후 머지]` 클릭이다 — "다음 관측이 다시 가져가므로 아무도 할 일이
-      // 없다"던 UI-32he의 전제가 사라졌다. Worker 카드가 그 행에 보류 뱃지와
-      // 버튼을 그리는데 레인 투영만 조용하면 같은 행을 두 화면이 다르게 말한다.
-      const gate_alert =
-        !!gate &&
-        ['closed_unmerged', 'review', 'undecidable'].includes(gate.tier);
-      const discard = discardProjection(discard_operations, bead_id, {
-        external,
-        merge_active: active || merge_step?.step === 'merge',
-        merge_queued: queued,
-        cleanup_active,
-        merged: !!cleanup || gate?.tier === 'merged'
-      });
-      const discard_blocks_merge = !!discard.operation;
-      // 회계 잔여 판정 칩의 재료 (UI-h6t1 §4.3). Worker 탭과 같은
-      // `receipt_check` 관측에서 오므로 두 탭이 같은 행을 같게 말한다 —
-      // hold는 Monitor도 이미 `gate.gate_badge`로 그린다. 코드가 없으면 필드도
-      // 없다 (fail-quiet).
-      const receipt_badge_codes = receiptBadgeCodesOf(observed.receipt_check);
-      // Worker 탭과 같은 보관 판정 (UI-sd12 §3.4, UI-8d8y): 다른 저장소 행만
-      // 보관할 수 없고, 머지가 관측된 정리 단계 행에는 [보관]이 없다.
-      const shelved = Object.hasOwn(merge_shelved, bead_id);
-      const merge_observed =
-        gate?.tier === 'merged' ||
-        !!cleanup ||
-        (typeof entry.merge_sha === 'string' && entry.merge_sha.length > 0);
+      // 레인 소속과 좌표만 싣는다 (UI-f2sy §4): 배지·버튼·머지 큐 위치 같은 줄
+      // 재료는 두 탭이 저장소마다 부르는 공유 투영 `pr-wait-row.js`가 만든다 —
+      // 여기에 간이 재료를 두면 같은 줄을 두 벌이 다르게 말한다.
       pr_wait.push({
         ...base(bead_id),
         lane: 'pr_wait',
         ...prWaitLaneOriginFields(entry, last_impl_by_bead),
         ...decoratedBlockedBy(bead_id),
-        ...(receipt_badge_codes.length > 0
-          ? { receipt_badge: { codes: receipt_badge_codes } }
-          : {}),
         // 대기 행과 같은 route 칩 재료 (UI-yrzu §5·§7.2).
-        workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
-        pr_number:
-          foreign_pr_number ??
-          (typeof pr.number === 'number' ? pr.number : null),
-        pr_url:
-          foreign_pr_url || (typeof pr.url === 'string' ? pr.url : undefined),
-        external,
-        ...(foreign_repo ? { foreign_repo } : {}),
-        usage: sumAttemptUsage(attempts, bead_id, runner_catalog),
-        merge_step,
-        badges: continuation_required
-          ? ['이어하기 선택 필요']
-          : merge_step
-            ? [gate?.tier === 'merged' ? '머지됨' : '머지 중']
-            : cleanup
-              ? [
-                  cleanupStepLabel(cleanup.step)
-                    ? `정리 멈춤 · ${cleanupStepLabel(cleanup.step)}`
-                    : '정리 멈춤'
-                ]
-              : gate?.reason === 'pr_repo_foreign'
-                ? // 관측 실패가 아니라 관측 대상이 아니다 (UI-kyky §6.2).
-                  ['외부 저장소 PR']
-                : typeof gate?.gate_badge === 'string' &&
-                    gate.gate_badge.length > 0
-                  ? [gate.gate_badge]
-                  : [],
-        alert: merge_step
-          ? merge_step.failed === true
-          : !!cleanup || gate_alert,
-        reason:
-          cleanup && merge_step?.active !== true
-            ? cleanupStalledReason(cleanup.step)
-            : 'PR 대기',
-        merge_action: shelved
-          ? false
-          : gate?.tier === 'merged' && !cleanup_retry && !external_cleanup
-            ? false
-            : !queued || continuation_required,
-        shelved,
-        shelve_action: foreign_pr
-          ? null
-          : shelved
-            ? 'unshelve'
-            : merge_observed
-              ? null
-              : 'shelve',
-        // Worker 탭과 같다: 멈춘 정리 단계는 [보관 해제]를 잠그지 않는다.
-        shelve_enabled: merge_step?.active !== true,
-        shelve_title: shelved
-          ? '보관을 풉니다 — 자동 머지가 켜져 있으면 다음 관측에서 다시 머지 대상이 됩니다'
-          : '자동 머지·일괄 머지에서 이 PR을 빼고 [보관 해제]까지 둡니다 (머지 큐에 있으면 빠집니다)',
-        merge_enabled:
-          !discard_blocks_merge &&
-          (continuation_required ||
-            gate?.enabled === true ||
-            conflicting ||
-            cleanup_retry ||
-            external_cleanup),
-        merge_label: continuation_required
-          ? '이어하기 선택'
-          : external_cleanup || cleanup_retry
-            ? '정리 재시도'
-            : conflicting && !cleanup_retry
-              ? '충돌 해소 후 머지'
-              : undefined,
-        merge_title: continuation_required
-          ? '실행 provider가 변경되었습니다 — 이어갈 방식을 선택하세요'
-          : discard_blocks_merge
-            ? discard.error
-              ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`
-              : `폐기 진행 중 — ${discard.progress || '완료를 기다리세요'}`
-            : external_cleanup
-              ? '머지 완료 — 클릭하면 실패한 정리를 다시 시도합니다'
-              : cleanup_retry
-                ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 다시 시도합니다'
-                : conflicting
-                  ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
-                  : gate?.enabled === true
-                    ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다`
-                    : `머지 불가: ${gate?.reason || '관측 대기'}`,
-        cancel_action: queued && !continuation_required,
-        cancel_enabled: !active,
-        continuation_mismatch: continuation_action?.mismatch || null,
-        discard,
-        discard_action: discard.action,
-        discard_enabled: discard.enabled,
-        discard_title: discard.title
+        workflow: /** @type {any} */ (bead_workflow[bead_id] || null)
       });
     }
 
@@ -4401,6 +4176,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
           ? { spec_after_blocker: true }
           : {}),
         ...(released ? { dependency_chips: { released } } : {}),
+        // 정렬 체인의 `released` 키 재료 (UI-f2sy §6.2): 체인을 레인 항목에
+        // 거는 Monitor 탭도 Worker 탭의 어댑터 행과 같은 사실로 순서를 낸다.
+        ...(entry.release_info && typeof entry.release_info === 'object'
+          ? { release_info: entry.release_info }
+          : {}),
         ...(entry.dependents_info && typeof entry.dependents_info === 'object'
           ? { dependents_info: entry.dependents_info }
           : {}),
@@ -4934,6 +4714,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
 
   /** @type {LaneQueueGroup[]} */
   const queue_groups = [];
+  /** @type {Map<string, LaneQueueGroup>} */
+  const groups_by_root = new Map();
   for (const source of group_sources) {
     if (!source || typeof source.root_dir !== 'string') {
       continue;
@@ -4946,21 +4728,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
       serial.some(
         (lane) => lane.items.length > 0 || lane.occupied_by.length > 0
       );
-    // `all`은 대기가 비어도 그룹을 남긴다 (§4.3): 실행 중·PR 대기·완료·저장소
-    // 작업만 있는 스냅샷에서도 슬롯·머지 큐·저장소 작업이 살아 있어야 한다.
-    if (
-      groups_mode !== 'all' &&
-      !has_queue &&
-      live_count === 0 &&
-      !roots_with_candidates.has(source.root_dir)
-    ) {
-      continue;
-    }
     const slots =
       typeof source.slots === 'number' && source.slots >= MIN_SLOTS
         ? source.slots
         : MIN_SLOTS;
-    queue_groups.push({
+    /** @type {LaneQueueGroup} */
+    const group = {
       live_count,
       over_cap: live_count > slots,
       merge: merge_by_root.get(source.root_dir) || empty_merge,
@@ -4979,7 +4752,21 @@ export function buildLanes(workspaces, workspaces_state, options) {
       sublanes: { parallel, serial },
       serial_lane_count: serial_count_by_root.get(source.root_dir) || 0,
       raw_queue_length: raw_queue_length_by_root.get(source.root_dir) || 0
-    });
+    };
+    // PR 대기 줄의 머지 재료는 대기 레인 표시와 무관하게 모든 저장소가 얻는다
+    // (UI-f2sy §4) — PR 대기만 있는 저장소도 머지 큐 위치·자동 제외를 말한다.
+    groups_by_root.set(source.root_dir, group);
+    // `all`은 대기가 비어도 그룹을 남긴다 (§4.3): 실행 중·PR 대기·완료·저장소
+    // 작업만 있는 스냅샷에서도 슬롯·머지 큐·저장소 작업이 살아 있어야 한다.
+    if (
+      groups_mode !== 'all' &&
+      !has_queue &&
+      live_count === 0 &&
+      !roots_with_candidates.has(source.root_dir)
+    ) {
+      continue;
+    }
+    queue_groups.push(group);
   }
 
   /** @type {LaneModel} */
@@ -4997,10 +4784,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
     deferred,
     deferred_all: deferred.slice(),
     runnable_sections: [],
-    runnable_flat:
-      candidate_sort === 'updated_flat' || candidate_sort === 'as_given',
+    runnable_flat: candidate_flat,
     queue,
     queue_groups,
+    groups_by_root,
     running,
     pr_wait,
     done,
@@ -5420,14 +5207,24 @@ export function buildLanes(workspaces, workspaces_state, options) {
   };
   const within =
     candidate_sort === 'repo_spec' ? byReadinessSpecThenUpdated : byUpdated;
+  // 체인이 있으면 Worker 탭과 같은 `applyCandidateSort`가 순서를 정한다 — 정렬
+  // 키와 의존 인접화 모두 (UI-f2sy §6.2).
+  /**
+   * @param {LaneItem[]} items
+   * @returns {LaneItem[]}
+   */
+  const orderItems = (items) =>
+    candidate_chain
+      ? applyCandidateSort(items, candidate_chain)
+      : items.slice().sort(within);
 
-  if (candidate_sort === 'as_given') {
+  if (!candidate_chain && candidate_sort === 'as_given') {
     // 정렬을 이미 끝낸 호출자의 값 (§4.3): 순서를 다시 정하지 않고 섹션도
     // 만들지 않는다 — 필터만 걸린 입력 순서가 그대로 화면 순서다.
     model.runnable = visible;
     model.runnable_sections = [];
-  } else if (candidate_sort === 'updated_flat') {
-    model.runnable = visible.slice().sort(byUpdated);
+  } else if (candidate_flat) {
+    model.runnable = orderItems(visible);
     model.runnable_sections = [];
   } else {
     /** @type {Map<string, LaneItem[]>} */
@@ -5448,7 +5245,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       if (!source || typeof source.root_dir !== 'string') {
         continue;
       }
-      const items = (by_root.get(source.root_dir) || []).slice().sort(within);
+      const items = orderItems(by_root.get(source.root_dir) || []);
       by_root.delete(source.root_dir);
       if (items.length === 0) {
         continue;
@@ -5465,7 +5262,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
     // 제어 상태에 없는 레포(구버전 스냅샷)는 뒤에 붙인다 — 후보를 지우지 않는다.
     for (const [root_dir, items] of by_root) {
-      const sorted = items.slice().sort(within);
+      const sorted = orderItems(items);
       sections.push({
         root_dir,
         name: sorted[0]?.workspace_name || root_dir,
@@ -5477,14 +5274,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
     model.runnable_sections = sections;
   }
 
-  // 검색 태깅은 정렬·섹션 조립보다 뒤다 (§7): 섹션이 만드는 사본까지 같은 판정을
-  // 지녀야 그려지는 카드와 모델이 어긋나지 않는다.
-  const matchesSearch = searchMatcher(options ? options.search : undefined);
-  if (matchesSearch) {
-    tagSearchMatches(model, matchesSearch);
-  }
-  // 필터 흐림도 같은 자리다 (UI-p7s2 §6): 세 축을 하나도 쓰지 않으면 키를 아예
-  // 달지 않으므로 필터를 만지지 않은 화면과 Monitor 탭의 렌더는 그대로다.
+  // 필터 흐림 태깅은 정렬·섹션 조립보다 뒤다 (UI-p7s2 §6): 섹션이 만드는 사본까지
+  // 같은 판정을 지녀야 그려지는 카드와 모델이 어긋나지 않는다. 세 축을 하나도 쓰지
+  // 않으면 키를 아예 달지 않으므로 필터를 만지지 않은 화면의 렌더는 그대로다.
   if (field_filters_active) {
     tagFilterMatches(model, fieldFiltersPass);
   }

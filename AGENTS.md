@@ -40,6 +40,12 @@
 - 공급자 보류의 해제는 프로브가 판정하고 `↻ 지금 프로브`는 그 판정을 앞당기는
   조작이다 — 카드 위의 조작은 target을 지우지 않는다
   (`2026-09-09-provider-outage-hold-release-design.md`).
+- 모니터는 여러 저장소를 한 번에 보는 Worker 탭이다. 같은 Bead의 카드는 두
+  탭에서 같은 칩·배지·줄·버튼을 갖고, 카드 재료는 `buildLanes`나
+  `app/views/worker/` 공유 함수 한 곳에서 만든다 — 탭 파일이 카드 입력을 손으로
+  다시 조립하지 않는다. Worker에 탭 도구를 더하면 모니터에도 달거나
+  `docs/superpowers/specs/2026-10-02-monitor-worker-parity-design.md` §9 의도된
+  차이 표에 행을 더한다. 카드 동일성 테스트가 표 밖의 차이를 잡는다.
 - 조작·칩의 모양(크기 토큰·공용 부품 `.op-btn`·`.ui-*`·원시 값 금지·폭 넘침
   탐침)은 `docs/design-system.md`가 정본이다 — 새 조작은 부품으로만 그린다.
 

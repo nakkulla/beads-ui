@@ -1637,260 +1637,6 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
   });
 });
 
-describe('monitor PR 대기 — 정리 재시도 라벨 (UI-jw27 §3)', () => {
-  test('names the stopped-cleanup action 정리 재시도', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
-          cleanup_failed: {
-            'A-1': { step: 'branch_cleanup', reason: 'boom', at: 42 }
-          },
-          pr_observations: {
-            'A-1': {
-              pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
-              gate: {
-                enabled: false,
-                tier: 'merged',
-                gate_badge: '머지됨',
-                base_badge: '머지됨',
-                reason: null
-              }
-            }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    expect(lanes.pr_wait[0].merge_label).toBe('정리 재시도');
-  });
-});
-
-describe('monitor PR 대기 — 외부 저장소 PR (UI-kyky §6)', () => {
-  const FOREIGN_GATE = {
-    enabled: false,
-    tier: 'undecidable',
-    gate_badge: '관측 오류',
-    base_badge: '',
-    reason: 'pr_repo_foreign'
-  };
-
-  /**
-   * @param {Record<string, unknown>} entry
-   * @returns {any}
-   */
-  function foreignLane(entry) {
-    return buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-1', added_at: 1, external: true, ...entry }],
-          pr_observations: { 'A-1': { pr: null, gate: FOREIGN_GATE } }
-        })
-      ],
-      [state()]
-    ).pr_wait[0];
-  }
-
-  test('carries the foreign PR reference the registry verified', () => {
-    const row = foreignLane({
-      foreign: true,
-      repo_slug: 'other/repo',
-      pr_url: 'https://github.com/other/repo/pull/12',
-      pr_number: 12
-    });
-
-    expect(row.pr_url).toBe('https://github.com/other/repo/pull/12');
-    expect(row.pr_number).toBe(12);
-    expect(row.foreign_repo).toBe('other/repo');
-  });
-
-  test('says 외부 저장소 PR rather than an observation error', () => {
-    const row = foreignLane({
-      foreign: true,
-      repo_slug: 'other/repo',
-      pr_url: 'https://github.com/other/repo/pull/12',
-      pr_number: 12
-    });
-
-    expect(row.badges).toEqual(['외부 저장소 PR']);
-  });
-
-  test('never re-derives foreign from the repo slug alone', () => {
-    const row = foreignLane({
-      repo_slug: 'other/repo',
-      pr_url: 'https://github.com/other/repo/pull/12',
-      pr_number: 12
-    });
-
-    expect(row.foreign_repo).toBe(undefined);
-    expect(row.pr_url).toBe(undefined);
-  });
-
-  test('prefers the observed PR of a same-repo external row', () => {
-    const row = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-1', added_at: 1, external: true }],
-          pr_observations: {
-            'A-1': {
-              pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
-              gate: {
-                enabled: true,
-                tier: 'eligible',
-                gate_badge: '머지 가능',
-                base_badge: '최신',
-                reason: null
-              }
-            }
-          }
-        })
-      ],
-      [state()]
-    ).pr_wait[0];
-
-    expect(row.pr_url).toBe('https://github.com/o/r/pull/7');
-    expect(row.foreign_repo).toBe(undefined);
-  });
-
-  test('leaves merge and discard refused on a foreign row', () => {
-    const row = foreignLane({
-      foreign: true,
-      repo_slug: 'other/repo',
-      pr_url: 'https://github.com/other/repo/pull/12',
-      pr_number: 12
-    });
-
-    expect(row.merge_enabled).toBe(false);
-    expect(row.discard?.action ?? false).toBe(false);
-  });
-});
-
-describe('monitor PR 대기 — 리뷰 판정 미결 (UI-32he, UI-qksl §4 1번이 넓힘)', () => {
-  test('alerts on an undetermined review verdict without a gate badge', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
-          pr_observations: {
-            'A-1': {
-              pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
-              gate: {
-                enabled: false,
-                tier: 'review',
-                gate_badge: '',
-                base_badge: '최신',
-                reason: 'review_receipt_undetermined'
-              }
-            }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    expect(lanes.pr_wait[0]).toMatchObject({
-      id: 'A-1',
-      badges: [],
-      alert: true
-    });
-  });
-
-  test('carries the receipt badge codes onto the Monitor PR 대기 row', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
-          pr_observations: {
-            'A-1': {
-              pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
-              receipt_check: {
-                ok: false,
-                probe_error: false,
-                codes: ['absent'],
-                blocking_codes: [],
-                badge_codes: ['absent']
-              }
-            }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    expect(lanes.pr_wait[0].receipt_badge).toEqual({ codes: ['absent'] });
-  });
-
-  test('omits the receipt badge field for an empty code list', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
-          pr_observations: {
-            'A-1': {
-              pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
-              receipt_check: {
-                ok: true,
-                probe_error: false,
-                codes: [],
-                blocking_codes: [],
-                badge_codes: []
-              }
-            }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    expect('receipt_badge' in lanes.pr_wait[0]).toBe(false);
-  });
-
-  test('omits the receipt badge field without an observation', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
-          pr_observations: {
-            'A-1': { pr: { number: 7, url: 'https://github.com/o/r/pull/7' } }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    expect('receipt_badge' in lanes.pr_wait[0]).toBe(false);
-  });
-
-  test('still alerts on a stale review verdict', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
-          pr_observations: {
-            'A-1': {
-              pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
-              gate: {
-                enabled: false,
-                tier: 'review',
-                gate_badge: '리뷰 확인 필요',
-                base_badge: '최신',
-                reason: 'review_receipt_stale'
-              }
-            }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    expect(lanes.pr_wait[0]).toMatchObject({
-      badges: ['리뷰 확인 필요'],
-      alert: true
-    });
-  });
-});
-
 describe('monitor 세션 타일 — 리뷰 세션 (UI-d7fy §5.5)', () => {
   test('draws a running head review as its own session tile', () => {
     const lanes = buildLanes(
@@ -6055,6 +5801,30 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
   });
 });
 
+describe('lane model candidate chain released key (UI-f2sy §6.2)', () => {
+  test('orders candidates by the last release like the Worker adapter rows', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', { release_info: { last_released_at: 100 } }),
+            runnable('A-2', { release_info: { last_released_at: 300 } }),
+            runnable('A-3')
+          ]
+        })
+      ],
+      [state()],
+      { candidate_chain: { chain: [{ key: 'released', dir: 'desc' }] } }
+    );
+
+    expect(lanes.runnable.map((item) => item.id)).toEqual([
+      'A-2',
+      'A-1',
+      'A-3'
+    ]);
+  });
+});
+
 describe('lane model candidate release chips (UI-d13v §5.3)', () => {
   test('draws every released chip in the window, newest first', () => {
     const now = Date.now();
@@ -7016,8 +6786,8 @@ describe('quick_fix 착지 재개 자격 (UI-8h1x §3.3b)', () => {
 });
 
 /**
- * One workspace carrying exactly one item of every lane kind the Worker search
- * tags (UI-6g3t §7): 후보 · 병렬 · 직렬 · 실행중 · 세션 · PR 대기 · 완료.
+ * One workspace carrying exactly one item of every lane kind: 후보 · 병렬 · 직렬
+ * · 실행중 · 세션 · PR 대기 · 완료.
  *
  * @returns {Record<string, any>}
  */
@@ -7047,67 +6817,8 @@ function everyLaneWorkspace() {
   });
 }
 
-/**
- * The search verdict of every lane kind, keyed by bead id.
- *
- * @param {Record<string, any>} lanes
- * @returns {Record<string, any>}
- */
-function searchVerdicts(lanes) {
-  return Object.fromEntries(
-    [
-      lanes.runnable[0],
-      lanes.queue_groups[0].sublanes.parallel[0],
-      lanes.queue_groups[0].sublanes.serial[0].items[0],
-      ...lanes.running,
-      lanes.pr_wait[0],
-      lanes.done[0]
-    ].map((/** @type {any} */ item) => [item.id, item.search_match])
-  );
-}
-
-describe('워커 탭 검색 태깅 (UI-6g3t §7)', () => {
-  test('tags every lane kind with the search verdict', () => {
-    const lanes = buildLanes([everyLaneWorkspace()], [state()], {
-      search: 'ser-1'
-    });
-
-    expect(searchVerdicts(lanes)).toEqual({
-      'CAND-1': false,
-      'PAR-1': false,
-      'SER-1': true,
-      'RUN-1': false,
-      'SES-1': false,
-      'PR-1': false,
-      'DONE-1': false
-    });
-  });
-
-  test('matches a title as well as an id, case-insensitively', () => {
-    const lanes = buildLanes([everyLaneWorkspace()], [state()], {
-      search: '  TITLE Par  '
-    });
-
-    expect(lanes.queue_groups[0].sublanes.parallel[0].search_match).toBe(true);
-  });
-
-  test('tags the candidate section copies the renderer draws', () => {
-    const lanes = buildLanes([everyLaneWorkspace()], [state()], {
-      search: 'cand'
-    });
-
-    expect(lanes.runnable_sections[0].items[0].search_match).toBe(true);
-  });
-
-  test('sets no search key for a blank query', () => {
-    const lanes = buildLanes([everyLaneWorkspace()], [state()], {
-      search: '   '
-    });
-
-    expect(Object.hasOwn(lanes.runnable[0], 'search_match')).toBe(false);
-  });
-
-  test('sets no search key when no search option is given', () => {
+describe('레인 항목에는 검색 판정이 없다 (UI-f2sy §6.3)', () => {
+  test('tags no lane kind with a search verdict', () => {
     const lanes = buildLanes([everyLaneWorkspace()], [state()]);
 
     const untagged = [
@@ -7120,61 +6831,6 @@ describe('워커 탭 검색 태깅 (UI-6g3t §7)', () => {
     ].every((/** @type {any} */ item) => !Object.hasOwn(item, 'search_match'));
 
     expect(untagged).toBe(true);
-  });
-
-  test('tags a serial lane occupant ghost with the search verdict', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          bead_titles: { 'OCC-1': '점유 중인 작업', 'SER-1': 'title SER-1' },
-          serial_lanes: [
-            {
-              id: 's1',
-              entries: [{ bead_id: 'OCC-1' }, { bead_id: 'SER-1' }]
-            }
-          ],
-          lane_states: { s1: { occupied_by: ['OCC-1'] } },
-          attempts: {
-            t1: {
-              attempt_id: 't1',
-              bead_id: 'OCC-1',
-              status: 'paused',
-              started_at: 10
-            }
-          }
-        })
-      ],
-      [state()],
-      { search: 'occ' }
-    );
-
-    const lane = lanes.queue_groups[0].sublanes.serial[0];
-    expect([
-      lane.occupants[0].search_match,
-      lane.items[0].search_match
-    ]).toEqual([true, false]);
-  });
-
-  test('leaves lane membership and order unchanged while searching', () => {
-    const plain = buildLanes([everyLaneWorkspace()], [state()]);
-
-    const searched = buildLanes([everyLaneWorkspace()], [state()], {
-      search: 'ser'
-    });
-
-    expect([
-      searched.runnable.map((/** @type {any} */ i) => i.id),
-      searched.queue.map((/** @type {any} */ i) => i.id),
-      searched.running.map((/** @type {any} */ i) => i.id),
-      searched.pr_wait.map((/** @type {any} */ i) => i.id),
-      searched.done.map((/** @type {any} */ i) => i.id)
-    ]).toEqual([
-      plain.runnable.map((/** @type {any} */ i) => i.id),
-      plain.queue.map((/** @type {any} */ i) => i.id),
-      plain.running.map((/** @type {any} */ i) => i.id),
-      plain.pr_wait.map((/** @type {any} */ i) => i.id),
-      plain.done.map((/** @type {any} */ i) => i.id)
-    ]);
   });
 });
 
@@ -8310,14 +7966,6 @@ describe('보류 선반과 세 필터 축 (UI-p7s2 §3·§6)', () => {
     });
 
     expect(lanes.deferred).toEqual([]);
-  });
-
-  test('dims a deferred row the search query does not match', () => {
-    const lanes = buildLanes([shelfWorkspace()], [state()], {
-      search: 'candidate'
-    });
-
-    expect(lanes.deferred[0].search_match).toBe(false);
   });
 
   test('counts priority-hidden candidate and deferred rows under the priority control', () => {

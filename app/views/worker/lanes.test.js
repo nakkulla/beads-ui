@@ -4374,11 +4374,11 @@ describe('작업 종류 카드 색 (UI-kyky §3.1)', () => {
     expect(row.classList.contains('worker-mini--route-bg')).toBe(true);
   });
 
-  test('keeps the search-mismatch class alongside the tint', () => {
+  test('keeps the filter-mismatch class alongside the tint', () => {
     const row = renderRow({
       lane: 'queue',
       done: false,
-      search_match: false,
+      filter_match: false,
       workflow: workflowOf('unset')
     });
 

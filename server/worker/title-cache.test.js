@@ -1167,6 +1167,33 @@ describe('overlay issue fields (UI-yvhx)', () => {
     expect(out).toEqual({ 'UI-1': { priority: 2 } });
   });
 
+  test('projects the issue type of the same bd show record (UI-f2sy §6.1)', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '타입 있는 이슈',
+      issue_type: 'bug'
+    });
+
+    const out = cache.overlayFieldsFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({ 'UI-1': { issue_type: 'bug' } });
+  });
+
+  test('omits an empty issue type (UI-f2sy §6.1)', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '타입 없는 이슈',
+      issue_type: '',
+      priority: 2
+    });
+
+    const out = cache.overlayFieldsFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({ 'UI-1': { priority: 2 } });
+  });
+
   test('omits a bead that has none of the fields and a cold miss', () => {
     const cache = createTitleCache({ enrichWorkflow: () => null });
     cache.refreshFromIssue('/ws', { id: 'UI-1', title: '평범한 이슈' });

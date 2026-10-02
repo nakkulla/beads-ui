@@ -37,19 +37,38 @@ import { watchMobile } from '../../utils/viewport.js';
 import { createChipPopover } from '../chip-popover.js';
 import { TICK_MS, refreshTimeText } from '../time-text.js';
 import {
+  CANDIDATE_SORT_DEFAULT,
+  chainOf,
+  flipChainStepDir,
+  normalizeCandidateSort,
+  presetIdOf,
+  setChainStepKey
+} from '../worker/candidate-sort.js';
+import {
+  candidateSortChainTemplate,
+  candidateSortSelectTemplate,
+  fieldFiltersTemplate,
+  labelOptionsOf
+} from '../worker/candidate-tools.js';
+import {
   resolveLaunchText,
   runExternalWaitAction,
   sessionWindowText
 } from '../worker/external-wait-action.js';
+import { createIssueSearch } from '../worker/issue-search.js';
 import { createLaneCollapse } from '../worker/lane-collapse.js';
 import { createLaneDrag } from '../worker/lane-drag.js';
 import {
   CANDIDATE_FILTER_DEFAULT,
-  CANDIDATE_SORT_OPTIONS,
   READINESS_FILTER_OPTIONS,
   ROUTE_FILTER_OPTIONS,
   buildLanes,
+  normalizeLabelFilter,
+  normalizePriorityFilter,
   normalizeRouteFilter,
+  normalizeTypeFilter,
+  toggleLabelFilter,
+  togglePriorityFilter,
   toggleRouteFilter
 } from '../worker/lane-model.js';
 import {
@@ -77,6 +96,7 @@ import {
   placePlanFromPopup,
   planPlaceLanesOf
 } from '../worker/plan-place.js';
+import { pendingKey, prWaitRowsOf } from '../worker/pr-wait-row.js';
 import {
   providerResumeDialogTemplate,
   providerResumeDraft,
@@ -84,7 +104,12 @@ import {
   providerResumeOverride,
   showProviderResumeDialog
 } from '../worker/provider-resume-dialog.js';
-import { runningTile, runningTileInput } from '../worker/running-grid.js';
+import { createRepoOpsDrawer } from '../worker/repo-ops-timeline.js';
+import {
+  drawsRunningTile,
+  runningTile,
+  runningTileInput
+} from '../worker/running-grid.js';
 import { tileResolveFields } from '../worker/tile-resolve.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
@@ -145,7 +170,10 @@ function loadCandidateFilter() {
       )
         ? parsed.readiness
         : 'all',
-      routes: normalizeRouteFilter(parsed.routes)
+      routes: normalizeRouteFilter(parsed.routes),
+      priorities: normalizePriorityFilter(parsed.priorities),
+      type: normalizeTypeFilter(parsed.type),
+      labels: normalizeLabelFilter(parsed.labels)
     };
   } catch {
     return { ...CANDIDATE_FILTER_DEFAULT };
@@ -162,7 +190,10 @@ function saveCandidateFilter(filter) {
       JSON.stringify({
         show_blocked: filter.show_blocked,
         readiness: filter.readiness,
-        routes: filter.routes
+        routes: filter.routes,
+        priorities: filter.priorities,
+        type: filter.type,
+        labels: filter.labels
       })
     );
   } catch {
@@ -171,25 +202,75 @@ function saveCandidateFilter(filter) {
 }
 
 /**
- * @returns {'repo_spec'|'repo_updated'|'updated_flat'}
+ * The monitor's candidate order: the Worker tab's sort chain plus the
+ * monitor-only `레포별로 묶기` switch (UI-f2sy §6.2).
+ *
+ * @typedef {{ sort: import('../worker/candidate-sort.js').CandidateSortState, group_by_repo: boolean }} MonitorCandidateSort
+ */
+
+/**
+ * The retired three-value sort, read as a chain plus the grouping switch it
+ * implied. A value not listed here is unknown and falls to the default.
+ *
+ * @type {Readonly<Record<string, MonitorCandidateSort>>}
+ */
+const LEGACY_CANDIDATE_SORT = Object.freeze({
+  repo_spec: { sort: { preset: 'spec' }, group_by_repo: true },
+  repo_updated: { sort: { preset: 'updated' }, group_by_repo: true },
+  updated_flat: { sort: { preset: 'updated' }, group_by_repo: false }
+});
+
+/**
+ * Narrow a stored candidate-sort value — a legacy string, the current JSON, or
+ * anything else — to a usable preference. The default is the `spec` preset with
+ * grouping on.
+ *
+ * @param {unknown} raw
+ * @returns {MonitorCandidateSort}
+ */
+export function parseCandidateSort(raw) {
+  if (typeof raw === 'string' && Object.hasOwn(LEGACY_CANDIDATE_SORT, raw)) {
+    return { ...LEGACY_CANDIDATE_SORT[raw] };
+  }
+  /** @type {unknown} */
+  let parsed = null;
+  try {
+    parsed = typeof raw === 'string' ? JSON.parse(raw) : null;
+  } catch {
+    parsed = null;
+  }
+  const record =
+    parsed && typeof parsed === 'object'
+      ? /** @type {Record<string, unknown>} */ (parsed)
+      : {};
+  return {
+    sort: normalizeCandidateSort(
+      parsed && typeof parsed === 'object' ? parsed : CANDIDATE_SORT_DEFAULT
+    ),
+    group_by_repo: record.group_by_repo !== false
+  };
+}
+
+/**
+ * @returns {MonitorCandidateSort}
  */
 function loadCandidateSort() {
   try {
-    const raw = window.localStorage.getItem(CANDIDATE_SORT_KEY);
-    return CANDIDATE_SORT_OPTIONS.some((o) => o.value === raw)
-      ? /** @type {any} */ (raw)
-      : 'repo_spec';
+    return parseCandidateSort(window.localStorage.getItem(CANDIDATE_SORT_KEY));
   } catch {
-    return 'repo_spec';
+    return parseCandidateSort(null);
   }
 }
 
 /**
- * @param {string} sort
+ * @param {MonitorCandidateSort} pref
  */
-function saveCandidateSort(sort) {
+function saveCandidateSort(pref) {
   try {
-    window.localStorage.setItem(CANDIDATE_SORT_KEY, sort);
+    window.localStorage.setItem(
+      CANDIDATE_SORT_KEY,
+      JSON.stringify({ ...pref.sort, group_by_repo: pref.group_by_repo })
+    );
   } catch {
     /* ignore */
   }
@@ -432,8 +513,15 @@ export function createMonitorView(mount_element, options) {
   let running_sort = loadRunningSort();
   /** @type {CandidateFilter} */
   let candidate_filter = loadCandidateFilter();
-  /** @type {'repo_spec'|'repo_updated'|'updated_flat'} */
-  let candidate_sort = loadCandidateSort();
+  const stored_sort = loadCandidateSort();
+  /** @type {import('../worker/candidate-sort.js').CandidateSortState} */
+  let candidate_sort = stored_sort.sort;
+  /** `레포별로 묶기` (UI-f2sy §6.2): 켜면 레포 섹션 안에서 체인 순서. */
+  let group_by_repo = stored_sort.group_by_repo;
+  /** 체인 편집 줄이 펼쳐졌는지 (UI-f2sy §6.2) — 저장 상태가 아니라 view flag다. */
+  let sort_chain_open = presetIdOf(candidate_sort) === null;
+  /** 라벨 필터 팝오버의 열림 상태 (UI-f2sy §6.1), 저장하지 않는 view flag다. */
+  let label_filter_open = false;
   /** @type {Record<string, any>} */
   let sections_state = loadSections();
   /** `보관 N` 묶음의 열림 상태 (UI-sd12 §3.4). */
@@ -527,7 +615,12 @@ export function createMonitorView(mount_element, options) {
   drawer_backdrop_el.className = 'worker-drawer-overlay__backdrop';
   const drawer_el = document.createElement('div');
   drawer_el.className = 'worker-drawer-host mon2-drawer';
-  drawer_overlay_el.append(drawer_backdrop_el, drawer_el);
+  // 저장소 작업 타임라인은 같은 오버레이를 쓰되 자기 lit 루트를 따로 갖는다
+  // (Worker 탭과 같은 구성, UI-f2sy §7): 둘 중 하나만 동시에 열린다.
+  const repo_ops_drawer_el = document.createElement('div');
+  repo_ops_drawer_el.className = 'worker-drawer-host mon2-drawer';
+  repo_ops_drawer_el.hidden = true;
+  drawer_overlay_el.append(drawer_backdrop_el, drawer_el, repo_ops_drawer_el);
   mount_element.appendChild(drawer_overlay_el);
 
   /** @type {LaneModel} */
@@ -541,8 +634,21 @@ export function createMonitorView(mount_element, options) {
    * @type {Map<string, any>}
    */
   const exec_adopted = new Map();
+  /**
+   * This render's PR 대기 rows — the shared projection per repository
+   * (UI-f2sy §4).
+   *
+   * @type {any[]}
+   */
+  let pr_rows = [];
+  // 뷰 로컬 진행 중 집합 (UI-f2sy §4). 여러 저장소를 한 화면에 모으므로 키는
+  // `pendingKey(root_dir, bead_id)`다.
   /** @type {Set<string>} */
   const resolve_pending = new Set();
+  /** [머지] 클릭이 응답을 기다리는 행. @type {Set<string>} */
+  const merge_pending = new Set();
+  /** [정리 재시도] 클릭이 응답을 기다리는 행. @type {Set<string>} */
+  const cleanup_pending = new Set();
   /** @type {Set<string>} */
   const handoff_pending = new Set();
   /** REVISE 처분 클릭이 응답을 기다리는 bead (UI-hs11 §3.5). @type {Set<string>} */
@@ -569,6 +675,15 @@ export function createMonitorView(mount_element, options) {
   let boundary_timer = null;
   /** @type {ReturnType<typeof createRepoDeck>|null} */
   let deck = null;
+  /**
+   * 이슈 검색 상자 (UI-f2sy §6.3). 보이는 저장소 전부를 찾고, 결과를 누르면 카드
+   * 클릭과 같은 `openRow` 경로로 그 저장소로 전환한 뒤 상세를 연다.
+   */
+  const issue_search = createIssueSearch({
+    scope: 'visible',
+    transport,
+    openIssue: (id, root_dir) => openRow(id, root_dir)
+  });
 
   const drawer = createTranscriptDrawer(drawer_el, {
     transport,
@@ -579,6 +694,87 @@ export function createMonitorView(mount_element, options) {
       doRender();
     }
   });
+
+  /**
+   * 저장소 작업 타임라인 서랍이 지금 말하는 저장소 (UI-f2sy §7). 서랍은 모니터에
+   * 하나뿐이고 레포 띠 `⚠ N`과 설정창 `저장소` 탭이 저장소 단위로 연다. 서랍 안
+   * 조작은 이 `root_dir`로 간다.
+   *
+   * @type {string|null}
+   */
+  let repo_ops_root = null;
+  // Session-ephemeral like the Worker tab's (§4.1): a drawer that reopened itself
+  // on every reload would be the forced expansion the redesign removed.
+  const repo_ops_drawer = createRepoOpsDrawer(repo_ops_drawer_el, {
+    onClose: () => {
+      repo_ops_root = null;
+      repo_ops_drawer_el.hidden = true;
+      drawer_overlay_el.hidden = true;
+      doRender();
+    }
+  });
+
+  /**
+   * The timeline's material for one repository: the lane model's group, which
+   * already reads the pipeline entry with a mutation reply laid over it. A
+   * repository without an entry has no group material, so the caller draws
+   * nothing for it (fail-quiet).
+   *
+   * @param {string} root_dir
+   * @returns {{ operations: any, cleanup_failures: any }|null}
+   */
+  function repoOpsMaterial(root_dir) {
+    const group = lanes.groups_by_root.get(root_dir);
+    return group
+      ? {
+          operations: group.repo_operations,
+          cleanup_failures: group.cleanup_failures
+        }
+      : null;
+  }
+
+  /**
+   * @param {string} root_dir
+   * @returns {{ operations: any, cleanup_failures: any, repo: string, repo_ops: any }}
+   */
+  function repoOpsDrawerInput(root_dir) {
+    const material = repoOpsMaterial(root_dir);
+    const info = queueOf(root_dir).workspace_info;
+    const repo_ops =
+      info && typeof info === 'object' && info.repo_ops ? info.repo_ops : null;
+    return {
+      operations: material ? material.operations : [],
+      cleanup_failures: material ? material.cleanup_failures : [],
+      repo: root_dir,
+      repo_ops
+    };
+  }
+
+  /**
+   * Open the 저장소 작업 타임라인 for one repository. The transcript drawer
+   * closes first: the two share one overlay and only one is ever the subject.
+   *
+   * @param {string} root_dir
+   */
+  function openRepoOpsDrawer(root_dir) {
+    if (!root_dir) {
+      return;
+    }
+    if (drawer.isOpen()) {
+      drawer.close();
+    }
+    repo_ops_root = root_dir;
+    repo_ops_drawer_el.hidden = false;
+    drawer_overlay_el.hidden = false;
+    repo_ops_drawer.open(repoOpsDrawerInput(root_dir));
+    doRender();
+  }
+
+  /** Show the shared overlay for the transcript drawer (never both at once). */
+  function showTranscriptOverlay() {
+    repo_ops_drawer.close();
+    drawer_overlay_el.hidden = false;
+  }
 
   /** 드롭 식별자·계획 실행 컨트롤러 (UI-4tud §4.5). */
   const lane_drag = createLaneDrag({
@@ -620,6 +816,7 @@ export function createMonitorView(mount_element, options) {
     if (!transport || !root_dir) {
       return null;
     }
+    let adopted = false;
     let res = await transport(type, {
       ...payload,
       root_dir,
@@ -628,6 +825,7 @@ export function createMonitorView(mount_element, options) {
     if (res && res.conflict && retry_conflict) {
       if (res.queue) {
         exec_adopted.set(root_dir, res.queue);
+        adopted = true;
       }
       const fresh =
         res.queue && typeof res.queue.revision === 'number'
@@ -639,8 +837,12 @@ export function createMonitorView(mount_element, options) {
         expected_revision: fresh
       });
     }
-    if (res && res.queue && root_dir) {
+    if (res && res.queue) {
       exec_adopted.set(root_dir, res.queue);
+      adopted = true;
+    }
+    if (adopted) {
+      doRender();
     }
     return res;
   }
@@ -899,17 +1101,19 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * Launch the interactive session for one terminal or parked tile.
+   * Launch the interactive session for one terminal or parked tile, or for a
+   * PR 대기 row's `[세션에서 해결]` (UI-f2sy §4).
    *
    * @param {string} bead_id
    * @param {string} root_dir
    * @param {number} revision
    */
   async function resolveInSession(bead_id, root_dir, revision) {
-    if (resolve_pending.has(bead_id)) {
+    const key = pendingKey(root_dir, bead_id);
+    if (resolve_pending.has(key)) {
       return;
     }
-    resolve_pending.add(bead_id);
+    resolve_pending.add(key);
     doRender();
     try {
       const res = await sendCas(
@@ -928,8 +1132,149 @@ export function createMonitorView(mount_element, options) {
         showToast(resolveLaunchText(res), 'success');
       }
     } finally {
-      resolve_pending.delete(bead_id);
+      resolve_pending.delete(key);
       doRender();
+    }
+  }
+
+  /**
+   * The [머지] click on a PR 대기 row — the Worker tab's `queueMerge` against the
+   * row's own repository. The in-flight window is drawn by the shared row as
+   * `큐 등록 중` until the reply lands.
+   *
+   * @param {string} bead_id
+   * @param {string} root_dir
+   * @param {number} revision
+   */
+  async function queueMerge(bead_id, root_dir, revision) {
+    const action = queuedContinuation(root_dir, bead_id);
+    if (action?.mismatch && action.continuation === null) {
+      await decideQueuedContinuation(
+        root_dir,
+        bead_id,
+        revision,
+        action.mismatch
+      );
+      return;
+    }
+    const key = pendingKey(root_dir, bead_id);
+    if (merge_pending.has(key)) {
+      return;
+    }
+    merge_pending.add(key);
+    doRender();
+    try {
+      await sendCas('worker-merge-queue-add', { bead_id }, root_dir, revision);
+    } finally {
+      merge_pending.delete(key);
+      doRender();
+    }
+  }
+
+  /**
+   * Retry the stopped post-merge cleanup of one PR 대기 row — [정리 재시도]
+   * (UI-f2sy §4), the Worker tab's `retryCleanup` against the row's own repository. A
+   * conflict is adopted but never retried automatically: another explicit
+   * click against the fresh snapshot is the authorization boundary.
+   *
+   * @param {string} bead_id
+   * @param {string} root_dir
+   * @param {number} revision
+   */
+  async function retryCleanup(bead_id, root_dir, revision) {
+    const key = pendingKey(root_dir, bead_id);
+    if (cleanup_pending.has(key)) {
+      return;
+    }
+    cleanup_pending.add(key);
+    doRender();
+    try {
+      const res = await sendCas(
+        'worker-cleanup-retry',
+        { bead_id },
+        root_dir,
+        revision,
+        false
+      );
+      if (res && !res.retried && !res.conflict && res.reason) {
+        showToast(`정리 재시도 거부: ${res.reason}`, 'error', 2400);
+      }
+    } finally {
+      cleanup_pending.delete(key);
+      doRender();
+    }
+  }
+
+  /**
+   * One repository's latest queue revision — the coordinate every drawer
+   * mutation is CAS-guarded under.
+   *
+   * @param {string} root_dir
+   * @returns {number}
+   */
+  function revisionOf(root_dir) {
+    const revision = queueOf(root_dir)?.revision;
+    return typeof revision === 'number' ? revision : 0;
+  }
+
+  /**
+   * Acknowledge ONE failed repo operation from the timeline drawer — 기록 닫기,
+   * the Worker tab's `dismissRepoOperation` against the drawer's own repository.
+   * Not a retry and not a state transition: only the 해결 필요 tally lets it go.
+   *
+   * @param {string} operation_id
+   * @param {string} root_dir
+   */
+  async function dismissRepoOperation(operation_id, root_dir) {
+    if (!operation_id) {
+      return;
+    }
+    const res = await sendCas(
+      'worker-repo-operation-dismiss',
+      { operation_id },
+      root_dir,
+      revisionOf(root_dir)
+    );
+    if (res && res.ok === false) {
+      showToast(`기록 닫기 거부: ${res.reason || ''}`, 'error', 3000);
+    }
+    doRender();
+  }
+
+  /**
+   * The timeline drawer's three controls, each against the repository the drawer
+   * is open on (UI-f2sy §7).
+   *
+   * @param {HTMLElement} target
+   */
+  function onRepoOpsDrawerClick(target) {
+    const root_dir = repo_ops_root;
+    if (root_dir === null) {
+      return;
+    }
+    const dismiss = /** @type {HTMLElement|null} */ (
+      target.closest('.worker-repo-op__dismiss')
+    );
+    if (dismiss) {
+      void dismissRepoOperation(dismiss.dataset.operationId || '', root_dir);
+      return;
+    }
+    const resume = /** @type {HTMLElement|null} */ (
+      target.closest('.worker-cleanup__resume')
+    );
+    if (resume?.dataset.beadId) {
+      void retryCleanup(resume.dataset.beadId, root_dir, revisionOf(root_dir));
+      return;
+    }
+    const resolve = /** @type {HTMLElement|null} */ (
+      target.closest('.worker-cleanup__resolve')
+    );
+    if (resolve?.dataset.beadId) {
+      void resolveInSession(
+        resolve.dataset.beadId,
+        root_dir,
+        revisionOf(root_dir)
+      );
     }
   }
 
@@ -995,7 +1340,7 @@ export function createMonitorView(mount_element, options) {
     /** @type {Map<string, number>} */
     const targets = new Map();
     // 보관 행만 남은 레포에는 보낼 것이 없다 (UI-sd12 §3.3).
-    for (const item of lanes.pr_wait.filter((row) => !row.shelved)) {
+    for (const item of pr_rows.filter((row) => !row.shelved)) {
       if (!targets.has(item.root_dir)) {
         targets.set(item.root_dir, item.expected_revision);
       }
@@ -1256,7 +1601,7 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * The 실행가능 lane body (§5). `updated_flat`만 섹션 없이 평평하다.
+   * The 실행가능 lane body (§5). `레포별로 묶기`를 끄면 섹션 없이 평평하다.
    *
    * @returns {import('lit-html').TemplateResult}
    */
@@ -1313,7 +1658,7 @@ export function createMonitorView(mount_element, options) {
           ...withOverlaps(item),
           ...tileResolveFields(
             item,
-            resolve_pending.has(item.id),
+            resolve_pending.has(pendingKey(item.root_dir, item.id)),
             handoff_pending.has(item.id)
           )
         },
@@ -1345,7 +1690,7 @@ export function createMonitorView(mount_element, options) {
           ...withOverlaps(item),
           ...tileResolveFields(
             item,
-            resolve_pending.has(item.id),
+            resolve_pending.has(pendingKey(item.root_dir, item.id)),
             handoff_pending.has(item.id)
           )
         },
@@ -1506,19 +1851,33 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * The 실행 중 lane items that get a tile — Worker 탭과 같은 술어다 (UI-f2sy §5):
+   * 비점유 리뷰 세션은 타일도, 레인 개수·실행 수도 갖지 않고 진행은 PR 대기
+   * 줄 배지가 말한다.
+   *
+   * @returns {LaneItem[]}
+   */
+  function runningItems() {
+    return lanes.running.filter((item) => drawsRunningTile(item));
+  }
+
+  /**
    * @param {number} now
+   * @param {LaneItem[]} running
    * @returns {import('lit-html').TemplateResult}
    */
-  function runningBody(now) {
+  function runningBody(now, running) {
     return html`<div class="worker-rungrid">
-      ${lanes.running.length === 0
+      ${running.length === 0
         ? html`<div class="worker-rungrid__empty">실행 세션 없음</div>`
-        : lanes.running.map((item) =>
+        : running.map((item) =>
             runningTile(
               runningTileInput(item, {
                 chip_popover: popoverOf(item),
                 open_failure_detail,
-                resolve_pending: resolve_pending.has(item.id),
+                resolve_pending: resolve_pending.has(
+                  pendingKey(item.root_dir, item.id)
+                ),
                 handoff_pending: handoff_pending.has(item.id)
               }),
               now,
@@ -1543,18 +1902,18 @@ export function createMonitorView(mount_element, options) {
    */
   function monitorTemplate(now) {
     // 보관 행은 레인 본문과 개수에서 빠져 `보관 N` 묶음에만 선다 (UI-sd12 §3.4).
-    const pr_wait_open = lanes.pr_wait.filter((item) => !item.shelved);
+    // PR 대기 행은 공유 투영이 이미 칩·팝업까지 실었다 (UI-f2sy §4).
+    const pr_wait_open = pr_rows.filter((row) => !row.shelved);
     const pr_wait_shelved = shelvedSectionTemplate(
-      lanes.pr_wait
-        .filter((item) => item.shelved)
-        .map((item) => miniRow(withOverlaps(item))),
+      pr_rows.filter((row) => row.shelved).map((row) => miniRow(row)),
       shelved_open
     );
+    const running = runningItems();
     /** @type {Record<string, LaneItem[]>} */
     const by_lane = {
       runnable: lanes.runnable,
       queue: lanes.queue,
-      running: lanes.running,
+      running,
       pr_wait: pr_wait_open,
       done: lanes.done
     };
@@ -1578,13 +1937,17 @@ export function createMonitorView(mount_element, options) {
               ? waitBodyTemplate()
               : undefined
             : meta.lane === 'running'
-              ? runningBody(now)
-              : items.length > 0
-                ? // PR 대기·완료 레인 본문도 겹침 파생을 얹어 그린다 (UI-e9sg):
-                  // 투영이 계산한 `⧉ 겹침`·`scope 없음` 칩을 여기서 버리면 같은
-                  // 사실이 레인마다 다르게 보인다.
-                  html`${items.map((item) => miniRow(withOverlaps(item)))}`
-                : undefined;
+              ? runningBody(now, running)
+              : meta.lane === 'pr_wait'
+                ? items.length > 0
+                  ? html`${items.map((row) => miniRow(row))}`
+                  : undefined
+                : items.length > 0
+                  ? // 완료 레인 본문도 겹침 파생을 얹어 그린다 (UI-e9sg):
+                    // 투영이 계산한 `⧉ 겹침`·`scope 없음` 칩을 여기서 버리면
+                    // 같은 사실이 레인마다 다르게 보인다.
+                    html`${items.map((item) => miniRow(withOverlaps(item)))}`
+                  : undefined;
       const display_count = meta.lane === 'queue' ? items.length : items.length;
       return paneTemplate({
         id: `monitor-${meta.lane}`,
@@ -1603,6 +1966,10 @@ export function createMonitorView(mount_element, options) {
         collapsible: true,
         collapsed: collapse.isCollapsed(meta.pane),
         controls: meta.lane === 'runnable' ? candidateFilterStrip() : undefined,
+        header_row:
+          meta.lane === 'runnable' && sort_chain_open
+            ? candidateSortChainTemplate(candidate_sort)
+            : undefined,
         header_control: laneHeaderControl(meta.lane, display_count)
       });
     };
@@ -1617,13 +1984,11 @@ export function createMonitorView(mount_element, options) {
         <div class="worker-lanes-host">
           <div class="worker-lanes worker-lanes--mobile mon2-lanes">
             ${nowPanel({
-              live: lanes.running.length > 0,
-              running_body: lanes.running.length > 0 ? runningBody(now) : '',
-              pr_wait_rows: pr_wait_open.map((item) =>
-                miniRow(withOverlaps(item))
-              ),
+              live: running.length > 0,
+              running_body: running.length > 0 ? runningBody(now, running) : '',
+              pr_wait_rows: pr_wait_open.map((row) => miniRow(row)),
               pr_wait_footer: pr_wait_shelved,
-              count: lanes.running.length + pr_wait_open.length
+              count: running.length + pr_wait_open.length
             })}
             ${mobile_metas.map((meta) => lanePane(meta))}
           </div>
@@ -1717,6 +2082,28 @@ export function createMonitorView(mount_element, options) {
             >`
           : ''}
       </div>
+      ${fieldFiltersTemplate({
+        priorities: normalizePriorityFilter(candidate_filter.priorities),
+        type: normalizeTypeFilter(candidate_filter.type),
+        labels: normalizeLabelFilter(candidate_filter.labels),
+        label_options: labelOptionsOf(
+          lanes,
+          normalizeLabelFilter(candidate_filter.labels)
+        ),
+        labels_open: label_filter_open,
+        hidden: lanes.runnable_hidden
+      })}
+      <label
+        class="ui-field worker-filter__tgl"
+        title="후보를 레포 섹션으로 묶어 각 섹션 안에서 정렬합니다"
+      >
+        <input
+          type="checkbox"
+          class="mon-filter__group"
+          .checked=${group_by_repo}
+        />
+        레포별로 묶기
+      </label>
     </div>`;
   }
 
@@ -1727,22 +2114,11 @@ export function createMonitorView(mount_element, options) {
    */
   function laneHeaderControl(lane, count) {
     if (lane === 'runnable') {
-      return html`<select
-        class="ui-select ui-select--bare mon-candidate-sort worker-sort"
-        aria-label="후보 정렬"
-        title="후보 정렬"
-        .value=${candidate_sort}
-      >
-        ${CANDIDATE_SORT_OPTIONS.map(
-          (o) =>
-            html`<option
-              value=${o.value}
-              ?selected=${candidate_sort === o.value}
-            >
-              ${o.label}
-            </option>`
-        )}
-      </select>`;
+      return candidateSortSelectTemplate({
+        sort: candidate_sort,
+        chain_open: sort_chain_open,
+        extra_class: 'mon-candidate-sort'
+      });
     }
     if (lane === 'running') {
       return html`<select
@@ -1792,20 +2168,122 @@ export function createMonitorView(mount_element, options) {
    * @returns {LaneModel}
    */
   function projectLanes() {
-    const workspaces =
-      pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
-    const workspaces_state =
+    const workspaces = adoptedWorkspaces();
+    const raw_state =
       pipelineStore && pipelineStore.getWorkspacesState
         ? pipelineStore.getWorkspacesState()
         : [];
+    const workspaces_state = (Array.isArray(raw_state) ? raw_state : []).map(
+      (row) => {
+        // 채택한 응답 큐의 revision이 그 저장소의 최신이다 — 행의 다음 조작이
+        // 낡은 revision으로 한 번 더 충돌하지 않는다.
+        const adopted = row ? exec_adopted.get(row.root_dir) : undefined;
+        return adopted && typeof adopted.revision === 'number'
+          ? { ...row, revision: adopted.revision }
+          : row;
+      }
+    );
     /** @type {Record<string, any>} */
     const options = {
       done_since: closedRangeSince(done_range, nowFn()),
       running_sort,
       candidate_filter,
-      candidate_sort
+      candidate_chain: candidate_sort,
+      group_by_repo
     };
     return buildLanes(workspaces, workspaces_state, options);
+  }
+
+  /**
+   * The pipeline's workspace entries with each mutation reply's queue laid over
+   * its own repository (UI-f2sy §4), so a click's effect shows at once instead
+   * of at the next push — Worker의 `adopt`와 같은 효과다. 응답 큐는
+   * `decorateQueue` 장식이라 파이프라인 전용 키(후보·세션·외부 대기·오버레이·
+   * 좌표)만 파이프라인 항목의 것을 지킨다. 다음 푸시가 채택분을 비운다.
+   *
+   * @returns {Array<Record<string, any>>|null}
+   */
+  function adoptedWorkspaces() {
+    const workspaces =
+      pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
+    if (!Array.isArray(workspaces) || exec_adopted.size === 0) {
+      return workspaces;
+    }
+    return workspaces.map((entry) => {
+      const adopted = entry ? exec_adopted.get(entry.root_dir) : undefined;
+      if (!adopted || typeof adopted !== 'object') {
+        return entry;
+      }
+      return {
+        ...entry,
+        ...adopted,
+        root_dir: entry.root_dir,
+        name: entry.name,
+        runnable: entry.runnable,
+        session_active: entry.session_active,
+        external_waits: entry.external_waits,
+        bead_overlay: entry.bead_overlay
+      };
+    });
+  }
+
+  /**
+   * This render's PR 대기 rows (UI-f2sy §4): the Worker tab's shared projection
+   * called once per repository, with only the repository coordinates (레포
+   * 배지·`root_dir`·그 저장소 revision) and the view-local popover laid over.
+   * 저장소 순서는 파이프라인 항목 순서이고, 열은 Worker 탭처럼 그 저장소 스냅샷의
+   * `pr_wait` 전체다 — 충돌 해소 세션이 도는 bead는 실행 중 타일과 PR 대기 행에
+   * 함께 선다 (UI-dxgz §1).
+   *
+   * @param {LaneModel} model
+   * @param {Array<Record<string, any>>|null} workspaces
+   * @returns {any[]}
+   */
+  function projectPrWaitRows(model, workspaces) {
+    /** @type {any[]} */
+    const rows = [];
+    for (const queue of Array.isArray(workspaces) ? workspaces : []) {
+      if (
+        !queue ||
+        typeof queue.root_dir !== 'string' ||
+        !Array.isArray(queue.pr_wait) ||
+        queue.pr_wait.length === 0
+      ) {
+        continue;
+      }
+      const root_dir = queue.root_dir;
+      const group = model.groups_by_root.get(root_dir) || null;
+      const workspace_name =
+        typeof queue.name === 'string' && queue.name ? queue.name : root_dir;
+      // 그 저장소 revision은 레인 모델이 행마다 판정한 값이다 (채택한 응답이
+      // 덮은 상태 행 우선). PR 대기 항목은 PR 대기 레인이나 실행 중 레인에 선다.
+      const lane_item = [...model.pr_wait, ...model.running].find(
+        (item) => item.root_dir === root_dir
+      );
+      const expected_revision = lane_item
+        ? lane_item.expected_revision
+        : typeof queue.revision === 'number'
+          ? queue.revision
+          : 0;
+      for (const row of prWaitRowsOf({
+        root_dir,
+        queue,
+        group,
+        model,
+        isPending: (kind, row_root, bead_id) =>
+          (kind === 'merge'
+            ? merge_pending
+            : kind === 'cleanup'
+              ? cleanup_pending
+              : resolve_pending
+          ).has(pendingKey(row_root, bead_id)),
+        dependencyChipsOf: chipsWithOverlaps
+      })) {
+        const placed = { ...row, root_dir, workspace_name, expected_revision };
+        rows.push({ ...placed, chip_popover: popoverOf(placed) });
+      }
+    }
+    return rows;
   }
 
   /**
@@ -1861,7 +2339,13 @@ export function createMonitorView(mount_element, options) {
     const now = nowFn();
     setChipPresetContext(chipPresetContext());
     lanes = projectLanes();
+    // 열린 타임라인은 새 투영에서 다시 도출한다 — 닫은 기록이나 끝난 정리가
+    // 다시 열지 않고도 사라져야 한다 (접힘 상태는 서랍이 지킨다).
+    if (repo_ops_root !== null && repo_ops_drawer.isOpen()) {
+      repo_ops_drawer.refresh(repoOpsDrawerInput(repo_ops_root));
+    }
     item_by_bead = new Map();
+    pr_rows = projectPrWaitRows(lanes, adoptedWorkspaces());
     for (const item of [
       ...lanes.runnable,
       ...lanes.queue,
@@ -1982,6 +2466,7 @@ export function createMonitorView(mount_element, options) {
           ? pipelineStore.getWorkspacesState()
           : [],
       doneItems: () => lanes.done,
+      searchElement: issue_search.element,
       rangeLabel: doneRangeLabel,
       rangeShort: doneRangeShort,
       transport,
@@ -1990,6 +2475,8 @@ export function createMonitorView(mount_element, options) {
       openSettings: (root_dir) => options.openRepoSettings?.(root_dir),
       closeSettings: () => options.closeRepoSettings?.(),
       settingsRoot: () => options.repoSettingsRoot?.() ?? null,
+      repoOps: repoOpsMaterial,
+      openRepoOps: openRepoOpsDrawer,
       onFocusChange: (root_dir) => {
         focus_root = root_dir;
         applyFocusClasses();
@@ -2465,7 +2952,7 @@ export function createMonitorView(mount_element, options) {
       const provider = button.getAttribute('data-session-provider');
       const session_id = button.getAttribute('data-session-id');
       if ((provider === 'claude' || provider === 'codex') && session_id) {
-        drawer_overlay_el.hidden = false;
+        showTranscriptOverlay();
         drawer.open(
           sessionRefDrawerInput(
             {
@@ -2495,7 +2982,7 @@ export function createMonitorView(mount_element, options) {
           (view) => view && view.current === true
         );
         if (current) {
-          drawer_overlay_el.hidden = false;
+          showTranscriptOverlay();
           drawer.open(
             sessionRefDrawerInput(current, bead_id, 'in_progress', root_dir)
           );
@@ -2505,7 +2992,7 @@ export function createMonitorView(mount_element, options) {
       }
       selected_attempt = attempt_id;
       if (attempt_id && item) {
-        drawer_overlay_el.hidden = false;
+        showTranscriptOverlay();
         drawer.open({
           attempt_id,
           root_dir,
@@ -2551,7 +3038,11 @@ export function createMonitorView(mount_element, options) {
       );
       return;
     }
-    if (cls.contains('rtile__resolve')) {
+    // 대기·PR 대기 줄의 `[세션에서 해결]`도 타일과 같은 op다 (UI-f2sy §4).
+    if (
+      cls.contains('rtile__resolve') ||
+      cls.contains('worker-mini__resolve')
+    ) {
       void resolveInSession(
         bead_id,
         root_dir,
@@ -2610,16 +3101,12 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('worker-mini__merge')) {
-      const action = queuedContinuation(root_dir, bead_id);
-      if (action?.mismatch && action.continuation === null) {
-        void decideQueuedContinuation(
-          root_dir,
-          bead_id,
-          revision,
-          action.mismatch
-        );
+      // Worker 탭과 같은 분기 (UI-f2sy §4): 정리가 멈춘 행의 같은 버튼은
+      // [정리 재시도]다 — 머지 큐에 넣는 클릭이 아니다.
+      if (queueOf(root_dir).cleanup_failed?.[bead_id]) {
+        void retryCleanup(bead_id, root_dir, revision);
       } else {
-        void sendCas('worker-merge-queue-add', { bead_id }, root_dir, revision);
+        void queueMerge(bead_id, root_dir, revision);
       }
       return;
     }
@@ -2715,7 +3202,17 @@ export function createMonitorView(mount_element, options) {
       confirmProviderResumeDialog();
       return;
     }
-    if (target.closest('dialog') || target.closest('.worker-drawer-overlay')) {
+    // 백드롭 클릭은 타임라인 서랍을 닫는다 (전사 서랍은 자기 바깥 mousedown이
+    // 닫는다); 서랍 안 나머지 클릭은 서랍 자기 핸들러의 몫이다.
+    if (target.closest('.worker-drawer-overlay__backdrop')) {
+      repo_ops_drawer.close();
+      return;
+    }
+    if (target.closest('.worker-drawer-overlay')) {
+      onRepoOpsDrawerClick(target);
+      return;
+    }
+    if (target.closest('dialog')) {
       return;
     }
     if (target.closest('a')) {
@@ -2842,6 +3339,47 @@ export function createMonitorView(mount_element, options) {
       return;
     }
 
+    // 공유 후보 도구 (UI-f2sy §6): 같은 마크업이라 Worker 탭과 같은 클래스를 읽는다.
+    const priority_chip = /** @type {HTMLElement|null} */ (
+      target.closest('.worker-filter__priority')
+    );
+    if (priority_chip) {
+      ev.preventDefault();
+      const parsed = Number.parseInt(priority_chip.dataset.priority || '', 10);
+      if (Number.isFinite(parsed)) {
+        setCandidateFilter({
+          ...candidate_filter,
+          priorities: togglePriorityFilter(
+            normalizePriorityFilter(candidate_filter.priorities),
+            parsed
+          )
+        });
+      }
+      return;
+    }
+    if (target.closest('.worker-filter__labels-btn')) {
+      ev.preventDefault();
+      label_filter_open = !label_filter_open;
+      doRender();
+      return;
+    }
+    const dir_btn = /** @type {HTMLElement|null} */ (
+      target.closest('.worker-sort-chain__dir')
+    );
+    if (dir_btn) {
+      ev.preventDefault();
+      const step_index = Number.parseInt(
+        dir_btn.getAttribute('data-step') || '',
+        10
+      );
+      if (Number.isFinite(step_index)) {
+        setCandidateSortChain(
+          flipChainStepDir(chainOf(candidate_sort), step_index)
+        );
+      }
+      return;
+    }
+
     // route 칩이 준비도 칩보다 먼저다: 두 묶음이 같은 형태 토큰을 공유하므로,
     // 뒤에 두면 route 클릭이 준비도 분기에서 값 없이 삼켜진다.
     const route_chip = /** @type {HTMLElement|null} */ (
@@ -2906,6 +3444,32 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * Adopt a new candidate filter: persist first, then re-render.
+   *
+   * @param {CandidateFilter} next
+   */
+  function setCandidateFilter(next) {
+    candidate_filter = next;
+    saveCandidateFilter(next);
+    doRender();
+  }
+
+  function persistCandidateSort() {
+    saveCandidateSort({ sort: candidate_sort, group_by_repo });
+  }
+
+  /**
+   * Adopt an edited chain. The row stays open: only a preset pick folds it.
+   *
+   * @param {import('../../data/sort.js').SortStep[]} chain
+   */
+  function setCandidateSortChain(chain) {
+    candidate_sort = normalizeCandidateSort({ chain });
+    persistCandidateSort();
+    doRender();
+  }
+
+  /**
    * @param {Event} ev
    */
   function onChange(ev) {
@@ -2942,16 +3506,73 @@ export function createMonitorView(mount_element, options) {
       doRender();
       return;
     }
+    const group_toggle = /** @type {HTMLInputElement|null} */ (
+      target.closest('.mon-filter__group')
+    );
+    if (group_toggle) {
+      group_by_repo = group_toggle.checked;
+      persistCandidateSort();
+      doRender();
+      return;
+    }
+    // 체인 편집 줄·라벨·타입 select는 `.worker-sort` 톤을 공유하는 정렬 select보다
+    // 먼저 읽는다 — 뒤에 두면 한 step 변경이나 타입 변경이 프리셋 전환으로 읽힌다.
+    const chain_select = /** @type {HTMLSelectElement|null} */ (
+      target.closest('.worker-sort-chain__key')
+    );
+    if (chain_select) {
+      const step_index = Number.parseInt(
+        chain_select.getAttribute('data-step') || '',
+        10
+      );
+      if (Number.isFinite(step_index)) {
+        setCandidateSortChain(
+          setChainStepKey(
+            chainOf(candidate_sort),
+            step_index,
+            chain_select.value
+          )
+        );
+      }
+      return;
+    }
+    const label_check = /** @type {HTMLInputElement|null} */ (
+      target.closest('.worker-filter__label-check')
+    );
+    if (label_check) {
+      const value = label_check.dataset.label || '';
+      if (value) {
+        setCandidateFilter({
+          ...candidate_filter,
+          labels: toggleLabelFilter(
+            normalizeLabelFilter(candidate_filter.labels),
+            value
+          )
+        });
+      }
+      return;
+    }
+    const type_select = /** @type {HTMLSelectElement|null} */ (
+      target.closest('.worker-filter__type')
+    );
+    if (type_select) {
+      setCandidateFilter({
+        ...candidate_filter,
+        type: normalizeTypeFilter(type_select.value)
+      });
+      return;
+    }
     const candidate_select = /** @type {HTMLSelectElement|null} */ (
       target.closest('.mon-candidate-sort')
     );
     if (candidate_select) {
-      candidate_sort = /** @type {any} */ (
-        CANDIDATE_SORT_OPTIONS.some((o) => o.value === candidate_select.value)
-          ? candidate_select.value
-          : 'repo_spec'
-      );
-      saveCandidateSort(candidate_sort);
+      if (candidate_select.value === 'custom') {
+        sort_chain_open = true;
+      } else {
+        candidate_sort = normalizeCandidateSort(candidate_select.value);
+        persistCandidateSort();
+        sort_chain_open = false;
+      }
       doRender();
       return;
     }
@@ -3000,6 +3621,10 @@ export function createMonitorView(mount_element, options) {
       !closest('.rtile__failure-pop, .rtile__failure-badge')
     ) {
       open_failure_detail = null;
+      changed = true;
+    }
+    if (label_filter_open && !closest('.worker-filter__labels')) {
+      label_filter_open = false;
       changed = true;
     }
     if (changed) {
@@ -3118,6 +3743,15 @@ export function createMonitorView(mount_element, options) {
     pause() {
       stopTick();
     },
+    /**
+     * Open one repository's 저장소 작업 타임라인 — the settings window's
+     * `저장소 작업 기록 열기` reaches the same drawer as the deck's `⚠ N`.
+     *
+     * @param {string} root_dir
+     */
+    openRepoOps(root_dir) {
+      openRepoOpsDrawer(root_dir);
+    },
     clear() {
       stopTick();
       lane_drag.detach();
@@ -3141,6 +3775,7 @@ export function createMonitorView(mount_element, options) {
       drawer_overlay_el.hidden = true;
       deck?.destroy();
       deck = null;
+      issue_search.destroy();
       mount_element.removeEventListener('click', onClick);
       mount_element.removeEventListener('change', onChange);
       document.removeEventListener('click', onDocumentClick);

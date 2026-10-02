@@ -446,6 +446,11 @@ function prewarmVisibleIssuePrefixes() {
  * activity is an interactive session's `in_progress` bead has no worker state at
  * all.
  *
+ * `repo_operations` and `cleanup_failed` count as well (UI-f2sy §7): a repo
+ * whose only remaining content is a failed repo operation or a stopped cleanup
+ * still owes the monitor its `⚠ N` badge and the timeline drawer, and neither
+ * can be drawn without an entry that carries those two keys.
+ *
  * @param {Record<string, any>} snapshot - Decorated snapshot plus `runnable` and
  * `session_active`.
  * @returns {boolean}
@@ -457,12 +462,21 @@ function hasPipeline(snapshot) {
     'done',
     'runnable',
     'session_active',
-    'external_waits'
+    'external_waits',
+    'repo_operations'
   ];
   for (const lane of lanes) {
     if (Array.isArray(snapshot[lane]) && snapshot[lane].length > 0) {
       return true;
     }
+  }
+  const cleanup_failed = snapshot.cleanup_failed;
+  if (
+    cleanup_failed &&
+    typeof cleanup_failed === 'object' &&
+    Object.keys(cleanup_failed).length > 0
+  ) {
+    return true;
   }
   if (serialLaneBeadIds(snapshot).size > 0) {
     return true;
@@ -605,10 +619,10 @@ function laneMemberIds(snapshot) {
  * @param {Record<string, any>} snapshot
  * @param {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null} cache
  * @param {string[]} [workspace_roots]
- * @returns {Record<string, { route?: string, priority?: number, from_id?: string, metadata?: Record<string, string>, worker_created_from?: string, worker_created_from_root_dir?: string }>}
+ * @returns {Record<string, { route?: string, priority?: number, issue_type?: string, from_id?: string, metadata?: Record<string, string>, worker_created_from?: string, worker_created_from_root_dir?: string }>}
  */
 function beadOverlayFor(root_dir, snapshot, cache, workspace_roots = []) {
-  /** @type {Record<string, { route?: string, priority?: number, from_id?: string, metadata?: Record<string, string>, worker_created_from?: string, worker_created_from_root_dir?: string }>} */
+  /** @type {Record<string, { route?: string, priority?: number, issue_type?: string, from_id?: string, metadata?: Record<string, string>, worker_created_from?: string, worker_created_from_root_dir?: string }>} */
   const overlay = {};
   const done_ids = [...laneBeadIds(snapshot, ['done'])];
   if (!cache) {
@@ -656,7 +670,7 @@ function beadOverlayFor(root_dir, snapshot, cache, workspace_roots = []) {
       }
     }
   }
-  // `priority`·`from_id`·판정된 `complex_reason`은 같은 `bd show` 기록에서 온다
+  // `priority`·`issue_type`·`from_id`·판정된 `complex_reason`은 같은 `bd show` 기록에서 온다
   // — Worker 탭이 보드 스토어에서 읽는 값과 같은 사실이라 두 탭의 칩이 같다.
   const issue_fields =
     typeof cache.overlayFieldsFor === 'function'
@@ -666,6 +680,9 @@ function beadOverlayFor(root_dir, snapshot, cache, workspace_roots = []) {
     const entry = overlay[bead_id] || (overlay[bead_id] = {});
     if (typeof fields.priority === 'number') {
       entry.priority = fields.priority;
+    }
+    if (typeof fields.issue_type === 'string') {
+      entry.issue_type = fields.issue_type;
     }
     if (typeof fields.from_id === 'string') {
       entry.from_id = fields.from_id;

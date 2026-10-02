@@ -119,3 +119,66 @@ describe('UI-106 new issue flow', () => {
     expect(types).toContain('create-issue');
   });
 });
+
+describe('UI-f2sy §8 new issue on the monitor tab', () => {
+  const HEADER =
+    '<header class="app-header"><div class="header-actions"><button id="new-issue-btn">New issue</button></div></header><main id="app"></main>';
+
+  /**
+   * @param {'monitor'|'worker'} view
+   * @returns {Promise<void>}
+   */
+  async function bootOn(view) {
+    window.location.hash = `#/${view}`;
+    document.body.innerHTML = HEADER;
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+    bootstrap(root);
+    await Promise.resolve();
+  }
+
+  test('hides the header button on the monitor tab', async () => {
+    await bootOn('monitor');
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      document.getElementById('new-issue-btn')
+    );
+    expect(btn.hidden).toBe(true);
+  });
+
+  test('keeps the header button visible on the worker tab', async () => {
+    await bootOn('worker');
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      document.getElementById('new-issue-btn')
+    );
+    expect(btn.hidden).toBe(false);
+  });
+
+  test('ignores Ctrl+N on the monitor tab', async () => {
+    await bootOn('monitor');
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, bubbles: true })
+    );
+    await Promise.resolve();
+
+    const dlg = /** @type {HTMLDialogElement} */ (
+      document.getElementById('new-issue-dialog')
+    );
+    expect(dlg.hasAttribute('open')).toBe(false);
+  });
+
+  test('opens the dialog with Ctrl+N on the worker tab', async () => {
+    await bootOn('worker');
+
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, bubbles: true })
+    );
+    await Promise.resolve();
+
+    const dlg = /** @type {HTMLDialogElement} */ (
+      document.getElementById('new-issue-dialog')
+    );
+    expect(dlg.hasAttribute('open')).toBe(true);
+  });
+});

@@ -434,6 +434,78 @@ describe('applyCandidateSort (UI-d13v §4.1)', () => {
   });
 });
 
+describe('one order from both tabs facts (UI-f2sy §6.2)', () => {
+  test('orders monitor rows by published like Worker rows by the raw spec keys', () => {
+    const worker_rows = [
+      issue('draft', { created_at: 100, spec_id: 'docs/a.md', metadata: {} }),
+      issue('published', {
+        created_at: 200,
+        spec_id: 'docs/b.md',
+        metadata: { spec_review: RECEIPT }
+      })
+    ];
+    const monitor_rows = [
+      issue('draft', { created_at: 100, published: false }),
+      issue('published', { created_at: 200, published: true })
+    ];
+
+    const worker_order = applyCandidateSort(worker_rows, { preset: 'spec' });
+    const monitor_order = applyCandidateSort(monitor_rows, { preset: 'spec' });
+
+    expect(monitor_order.map((i) => i.id)).toEqual(
+      worker_order.map((i) => i.id)
+    );
+  });
+
+  test('keeps a monitor row without published after one that has it', () => {
+    const rows = [
+      issue('plain', { created_at: 100 }),
+      issue('published', { created_at: 200, published: true })
+    ];
+
+    const sorted = applyCandidateSort(rows, { preset: 'spec' });
+
+    expect(sorted.map((i) => i.id)).toEqual(['published', 'plain']);
+  });
+
+  test('pulls a dependent behind its blocker from blocked_by like from blocked_info', () => {
+    const worker_rows = [
+      issue('dep', { created_at: 300, blocked_info: { blockers: ['pre'] } }),
+      issue('other', { created_at: 200 }),
+      issue('pre', { created_at: 100 })
+    ];
+    const monitor_rows = [
+      issue('dep', { created_at: 300, blocked_by: ['pre'] }),
+      issue('other', { created_at: 200, blocked_by: [] }),
+      issue('pre', { created_at: 100, blocked_by: [] })
+    ];
+
+    const worker_order = applyCandidateSort(worker_rows, NEWEST_FIRST);
+    const monitor_order = applyCandidateSort(monitor_rows, NEWEST_FIRST);
+
+    expect(worker_order.map((i) => i.id)).toEqual(['other', 'pre', 'dep']);
+    expect(monitor_order.map((i) => i.id)).toEqual(
+      worker_order.map((i) => i.id)
+    );
+  });
+
+  test('prefers blocked_info over blocked_by when a row carries both', () => {
+    const rows = [
+      issue('dep', {
+        created_at: 300,
+        blocked_info: { blockers: [] },
+        blocked_by: ['pre']
+      }),
+      issue('other', { created_at: 200 }),
+      issue('pre', { created_at: 100 })
+    ];
+
+    const sorted = applyCandidateSort(rows, NEWEST_FIRST);
+
+    expect(sorted.map((i) => i.id)).toEqual(['dep', 'other', 'pre']);
+  });
+});
+
 describe('chain editing (UI-d13v §4.4)', () => {
   test('starts a freshly picked key at its default direction', () => {
     const chain = [{ key: 'created', dir: 'asc' }];

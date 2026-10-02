@@ -120,14 +120,19 @@ export function createRepoOpsSettings(options) {
    * @returns {import('lit-html').TemplateResult}
    */
   function laneScriptButton(lane, repo_ops, declaration) {
+    // A host with no script viewer (the monitor's repo settings window, UI-f2sy
+    // §7) shows the path as text: a link that opens nothing is a dead control.
+    if (!onOpenScript) {
+      return html`<code
+        class="worker-repo-ops__vd-cmd"
+        .textContent=${declaration.script}
+      ></code>`;
+    }
     return html`<button
       type="button"
       class="op-btn worker-repo-ops__vd-cmd worker-repo-ops__vd-cmd--link"
       .textContent=${declaration.script}
       @click=${(/** @type {MouseEvent} */ event) => {
-        if (!onOpenScript) {
-          return;
-        }
         onOpenScript(
           {
             lane,

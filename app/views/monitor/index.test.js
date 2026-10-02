@@ -1,7 +1,7 @@
 import { render } from 'lit-html';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { providerProbeRefusalText } from '../worker/lanes.js';
-import { createMonitorView } from './index.js';
+import { createMonitorView, parseCandidateSort } from './index.js';
 
 // A pass-through spy: the idle-render tests count how often the view hands its
 // console to lit (UI-yu2o), every other test renders exactly as before.
@@ -588,7 +588,7 @@ describe('views/monitor repo sections (UI-eey2 §5·§6)', () => {
 });
 
 describe('views/monitor lane header controls (UI-eey2 §3)', () => {
-  test('persists and applies the candidate sort', () => {
+  test('persists the chosen sort preset and applies it inside the section', () => {
     const { mount, view } = setup({
       workspaces: [
         workspace({
@@ -605,16 +605,252 @@ describe('views/monitor lane header controls (UI-eey2 §3)', () => {
     const select = /** @type {HTMLSelectElement} */ (
       el(mount, '.mon-candidate-sort')
     );
-    select.value = 'updated_flat';
+    select.value = 'updated';
     select.dispatchEvent(new Event('change', { bubbles: true }));
 
-    expect(window.localStorage.getItem('bdui.monitor.candidate_sort')).toBe(
-      'updated_flat'
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('bdui.monitor.candidate_sort') || '{}'
+      )
+    ).toEqual({ preset: 'updated', group_by_repo: true });
+    expect(mount.querySelectorAll('#monitor-runnable .mon2-sec')).toHaveLength(
+      1
     );
+    expect(idsIn(mount, 'runnable')).toEqual(['A-2', 'A-1']);
+  });
+
+  test('drops the repo sections and persists when grouping is switched off', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-1', title: 'a', updated_at: 10 }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const toggle = /** @type {HTMLInputElement} */ (
+      el(mount, '.mon-filter__group')
+    );
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event('change', { bubbles: true }));
+
     expect(mount.querySelectorAll('#monitor-runnable .mon2-sec')).toHaveLength(
       0
     );
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('bdui.monitor.candidate_sort') || '{}'
+      ).group_by_repo
+    ).toBe(false);
+  });
+
+  test('orders one list across repos when grouping is off', () => {
+    window.localStorage.setItem(
+      'bdui.monitor.candidate_sort',
+      JSON.stringify({ preset: 'updated', group_by_repo: false })
+    );
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-1', title: 'a1', updated_at: 10 },
+            { bead_id: 'A-2', title: 'a2', updated_at: 20 }
+          ]
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          runnable: [{ bead_id: 'B-1', title: 'b1', updated_at: 30 }]
+        })
+      ],
+      workspaces_state: [state(), state({ root_dir: WS_B, name: 'repo-b' })]
+    });
+
+    view.load();
+
+    expect(idsIn(mount, 'runnable')).toEqual(['B-1', 'A-2', 'A-1']);
+  });
+
+  test('orders inside each repo section when grouping is on', () => {
+    window.localStorage.setItem(
+      'bdui.monitor.candidate_sort',
+      JSON.stringify({ preset: 'updated', group_by_repo: true })
+    );
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-1', title: 'a1', updated_at: 10 },
+            { bead_id: 'A-2', title: 'a2', updated_at: 20 }
+          ]
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          runnable: [
+            { bead_id: 'B-1', title: 'b1', updated_at: 5 },
+            { bead_id: 'B-2', title: 'b2', updated_at: 30 }
+          ]
+        })
+      ],
+      workspaces_state: [state(), state({ root_dir: WS_B, name: 'repo-b' })]
+    });
+
+    view.load();
+
+    expect(
+      Array.from(mount.querySelectorAll('#monitor-runnable .mon2-sec')).map(
+        (section) =>
+          Array.from(section.querySelectorAll('.worker-card')).map((card) =>
+            card.getAttribute('data-bead-id')
+          )
+      )
+    ).toEqual([
+      ['A-2', 'A-1'],
+      ['B-2', 'B-1']
+    ]);
+  });
+
+  test('ranks a published candidate first under the default spec preset', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-1', title: 'a', published: false },
+            { bead_id: 'A-2', title: 'b', published: true }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
     expect(idsIn(mount, 'runnable')).toEqual(['A-2', 'A-1']);
+  });
+
+  test('pulls a dependent candidate behind its blocker from blocked_by', () => {
+    window.localStorage.setItem(
+      'bdui.monitor.candidate_sort',
+      JSON.stringify({ preset: 'updated', group_by_repo: true })
+    );
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-2',
+              title: 'dep',
+              updated_at: 30,
+              blocked: true,
+              blocked_by: ['A-1']
+            },
+            { bead_id: 'A-3', title: 'other', updated_at: 20 },
+            { bead_id: 'A-1', title: 'pre', updated_at: 10 }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(idsIn(mount, 'runnable')).toEqual(['A-3', 'A-1', 'A-2']);
+  });
+
+  test('opens the chain editor row from the custom option', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ runnable: [{ bead_id: 'A-1', title: 'a' }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const select = /** @type {HTMLSelectElement} */ (
+      el(mount, '.mon-candidate-sort')
+    );
+    select.value = 'custom';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(el(mount, '#monitor-runnable .worker-sort-chain')).toBeTruthy();
+  });
+
+  test('stores an edited chain with the grouping switch', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ runnable: [{ bead_id: 'A-1', title: 'a' }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const select = /** @type {HTMLSelectElement} */ (
+      el(mount, '.mon-candidate-sort')
+    );
+    select.value = 'custom';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    const second = /** @type {HTMLSelectElement} */ (
+      el(mount, '.worker-sort-chain__key[data-step="1"]')
+    );
+    second.value = 'priority';
+    second.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('bdui.monitor.candidate_sort') || '{}'
+      )
+    ).toEqual({
+      chain: [
+        { key: 'spec', dir: 'desc' },
+        { key: 'priority', dir: 'asc' }
+      ],
+      group_by_repo: true
+    });
+  });
+
+  test('reads the stored retired repo_updated value as the updated preset with grouping', () => {
+    window.localStorage.setItem('bdui.monitor.candidate_sort', 'repo_updated');
+    const { mount, view } = setup({
+      workspaces: [workspace({ runnable: [{ bead_id: 'A-1', title: 'a' }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      /** @type {HTMLSelectElement} */ (el(mount, '.mon-candidate-sort')).value
+    ).toBe('updated');
+    expect(mount.querySelectorAll('#monitor-runnable .mon2-sec')).toHaveLength(
+      1
+    );
+  });
+
+  test('reads the retired repo_spec value as the spec preset with grouping', () => {
+    const pref = parseCandidateSort('repo_spec');
+
+    expect(pref).toEqual({ sort: { preset: 'spec' }, group_by_repo: true });
+  });
+
+  test('reads the retired updated_flat value as the updated preset without grouping', () => {
+    const pref = parseCandidateSort('updated_flat');
+
+    expect(pref).toEqual({ sort: { preset: 'updated' }, group_by_repo: false });
+  });
+
+  test('reads an unknown stored sort as the spec preset with grouping', () => {
+    window.localStorage.setItem('bdui.monitor.candidate_sort', 'nonsense');
+    const { mount, view } = setup({
+      workspaces: [workspace({ runnable: [{ bead_id: 'A-1', title: 'a' }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      /** @type {HTMLSelectElement} */ (el(mount, '.mon-candidate-sort')).value
+    ).toBe('spec');
+    expect(mount.querySelectorAll('#monitor-runnable .mon2-sec')).toHaveLength(
+      1
+    );
   });
 
   test('shows the repo badge again once the flat sort removes the headers', () => {
@@ -744,6 +980,259 @@ describe('views/monitor lane header controls (UI-eey2 §3)', () => {
         '.mon-filter__readiness[data-readiness="all"].is-active'
       )
     ).not.toBeNull();
+  });
+
+  test('hides candidates outside the picked priority and persists the chip', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-1', title: 'a', priority: 0 },
+            { bead_id: 'A-2', title: 'b', priority: 2 }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.worker-filter__priority[data-priority="0"]');
+
+    expect(idsIn(mount, 'runnable')).toEqual(['A-1']);
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('beads-ui.monitor.candidate-filter') || '{}'
+      ).priorities
+    ).toEqual([0]);
+  });
+
+  test('keeps a candidate without a priority under the priority filter', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-1', title: 'a', priority: 2 },
+            { bead_id: 'A-2', title: 'b' }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.worker-filter__priority[data-priority="0"]');
+
+    expect(idsIn(mount, 'runnable')).toEqual(['A-2']);
+  });
+
+  test('restores the stored priority axis on load', () => {
+    window.localStorage.setItem(
+      'beads-ui.monitor.candidate-filter',
+      JSON.stringify({ show_blocked: true, priorities: [2] })
+    );
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-1', title: 'a', priority: 0 },
+            { bead_id: 'A-2', title: 'b', priority: 2 }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(idsIn(mount, 'runnable')).toEqual(['A-2']);
+    expect(
+      el(mount, '.worker-filter__priority[data-priority="2"]').getAttribute(
+        'aria-pressed'
+      )
+    ).toBe('true');
+  });
+
+  test('hides candidates of another type and persists the type select', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-1', title: 'a', issue_type: 'bug' },
+            { bead_id: 'A-2', title: 'b', issue_type: 'task' }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const select = /** @type {HTMLSelectElement} */ (
+      el(mount, '.worker-filter__type')
+    );
+    select.value = 'bug';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(idsIn(mount, 'runnable')).toEqual(['A-1']);
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('beads-ui.monitor.candidate-filter') || '{}'
+      ).type
+    ).toBe('bug');
+  });
+
+  test('opens the label popover from the dropdown button', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-1', title: 'a', labels: ['frontend'] }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.worker-filter__labels-btn');
+
+    expect(
+      Array.from(mount.querySelectorAll('.worker-filter__label-check')).map(
+        (box) => box.getAttribute('data-label')
+      )
+    ).toEqual(['frontend']);
+  });
+
+  test('hides candidates without the checked label and persists it', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-1', title: 'a', labels: ['frontend'] },
+            { bead_id: 'A-2', title: 'b', labels: ['backend'] }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.worker-filter__labels-btn');
+    const check = /** @type {HTMLInputElement} */ (
+      el(mount, '.worker-filter__label-check[data-label="frontend"]')
+    );
+    check.checked = true;
+    check.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(idsIn(mount, 'runnable')).toEqual(['A-1']);
+    expect(
+      JSON.parse(
+        window.localStorage.getItem('beads-ui.monitor.candidate-filter') || '{}'
+      ).labels
+    ).toEqual(['frontend']);
+  });
+
+  test('closes the label popover on an outside click', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-1', title: 'a', labels: ['frontend'] }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.worker-filter__labels-btn');
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.worker-filter__labels-pop')).toBeNull();
+  });
+
+  test('ignores unknown stored values on the three field axes', () => {
+    window.localStorage.setItem(
+      'beads-ui.monitor.candidate-filter',
+      JSON.stringify({
+        show_blocked: true,
+        priorities: [9, 'x'],
+        type: 'zzz',
+        labels: 'bad'
+      })
+    );
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-1', title: 'a', priority: 0, issue_type: 'bug' }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(idsIn(mount, 'runnable')).toEqual(['A-1']);
+    expect(
+      mount.querySelectorAll('.worker-filter__priority.is-active')
+    ).toHaveLength(0);
+  });
+
+  /**
+   * Waiting, running, PR-wait and done rows of one repo whose overlay type is
+   * `feature`, plus one waiting row with no overlay at all (UI-f2sy §6.1).
+   *
+   * @returns {ReturnType<typeof setup>}
+   */
+  function setupTypedLanes() {
+    expandDoneLane();
+    window.localStorage.setItem(
+      'beads-ui.monitor.candidate-filter',
+      JSON.stringify({ show_blocked: true, type: 'bug' })
+    );
+    return setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-2' }, { bead_id: 'A-6' }],
+          pr_wait: [{ bead_id: 'A-3' }],
+          done: [{ bead_id: 'A-4', added_at: NOW }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-5',
+              status: 'running',
+              started_at: NOW - 1000
+            }
+          },
+          bead_overlay: {
+            'A-2': { issue_type: 'feature' },
+            'A-3': { issue_type: 'feature' },
+            'A-4': { issue_type: 'feature' },
+            'A-5': { issue_type: 'feature' }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+  }
+
+  test('dims waiting, running, PR-wait and done rows whose overlay type differs', () => {
+    const { mount, view } = setupTypedLanes();
+
+    view.load();
+
+    expect(
+      Array.from(mount.querySelectorAll('.is-dimmed'))
+        .map((node) => node.getAttribute('data-bead-id'))
+        .sort()
+    ).toEqual(['A-2', 'A-3', 'A-4', 'A-5']);
+  });
+
+  test('leaves a row without an overlay type undimmed under the type filter', () => {
+    const { mount, view } = setupTypedLanes();
+
+    view.load();
+
+    expect(
+      el(mount, '#monitor-queue .worker-mini[data-bead-id="A-6"]').classList
+    ).not.toContain('is-dimmed');
   });
 });
 
@@ -1021,6 +1510,106 @@ describe('views/monitor repo badge navigation (UI-eey2 §11)', () => {
     await Promise.resolve();
 
     expect(gotoView).not.toHaveBeenCalled();
+  });
+});
+
+describe('views/monitor issue search (UI-f2sy §6.3)', () => {
+  /**
+   * @param {string} current - Workspace the connection is on.
+   * @returns {Promise<ReturnType<typeof setup>>}
+   */
+  async function searchedSetup(current) {
+    vi.useFakeTimers();
+    const ctx = setup({
+      workspaces: [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      workspaces_state: [state()],
+      current,
+      transport: async (type) =>
+        type === 'search-issues'
+          ? {
+              results: [
+                {
+                  id: 'A-9',
+                  status: 'closed',
+                  title: 'found one',
+                  root_dir: WS_A,
+                  workspace_name: 'repo-a'
+                }
+              ],
+              partial: false
+            }
+          : null
+    });
+    ctx.view.load();
+    const input = /** @type {HTMLInputElement} */ (
+      ctx.mount.querySelector('.issue-search__input')
+    );
+    input.value = 'found';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(150);
+    vi.useRealTimers();
+    return ctx;
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('places the search box at the end of the totals bar', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      mount.querySelector('.mon2-deck__bar')?.lastElementChild?.className
+    ).toBe('issue-search issue-search--visible');
+  });
+
+  test('asks for the visible scope', async () => {
+    const { sent } = await searchedSetup(WS_A);
+
+    expect(
+      sent.filter((entry) => entry.type === 'search-issues')[0].payload
+    ).toEqual({ query: 'found', scope: 'visible' });
+  });
+
+  test('shows the repo badge before the id of a result', async () => {
+    const { mount } = await searchedSetup(WS_A);
+
+    expect(
+      mount.querySelector('.issue-search__row .issue-search__repo')?.textContent
+    ).toBe('repo-a');
+  });
+
+  test('opens a result of the current repo without switching', async () => {
+    const { mount, gotoIssue, switchWorkspace } = await searchedSetup(WS_A);
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.issue-search__row')
+    ).click();
+
+    expect([
+      vi.mocked(switchWorkspace).mock.calls.length,
+      gotoIssue.mock.calls
+    ]).toEqual([0, [['A-9']]]);
+  });
+
+  test('switches repo before opening a result of another repo', async () => {
+    const { mount, gotoIssue, switchWorkspace } = await searchedSetup(WS_B);
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.issue-search__row')
+    ).click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect([
+      vi.mocked(switchWorkspace).mock.calls,
+      gotoIssue.mock.calls
+    ]).toEqual([[[WS_A]], [['A-9']]]);
   });
 });
 
@@ -1471,6 +2060,25 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     expect(sent.every((s) => s.type === 'worker-merge-queue-add-all')).toBe(
       true
     );
+  });
+
+  test('draws the reply queue of the bulk merge without waiting for a push', async () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ pr_wait: [{ bead_id: 'A-1' }] })],
+      workspaces_state: [state()],
+      transport: async (type) =>
+        type === 'worker-merge-queue-add-all'
+          ? { queue: { revision: 2, pr_wait: [] } }
+          : null
+    });
+    view.load();
+
+    click(mount, '.mon-merge-all');
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(idsIn(mount, 'pr_wait')).toEqual([]);
   });
 
   test('uses the shared unmerged confirmation for a running discard', () => {
@@ -5489,5 +6097,445 @@ describe('monitor 내리기·지금 재시도·내려옴 (stall-reconcile D7~D9)
         '.worker-card[data-bead-id="A-9"] [data-chip-key="withdrawn"]'
       )?.textContent?.trim()
     ).toBe('⏏ 내려옴');
+  });
+});
+
+describe('views/monitor PR 대기 줄 공유 투영 (UI-f2sy §4·§5)', () => {
+  const GREEN = {
+    pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
+    gate: {
+      enabled: true,
+      tier: 'eligible',
+      gate_badge: '머지 가능',
+      base_badge: '최신',
+      reason: null
+    }
+  };
+  const MERGED = {
+    pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
+    gate: {
+      enabled: false,
+      tier: 'merged',
+      gate_badge: '머지됨',
+      base_badge: '머지됨',
+      reason: null
+    }
+  };
+  const REVIEW_HOLD = {
+    pr: { number: 7, url: 'https://github.com/o/r/pull/7' },
+    gate: {
+      enabled: false,
+      tier: 'review',
+      gate_badge: '',
+      base_badge: '최신',
+      reason: 'review_receipt_missing'
+    }
+  };
+  const REVIEW_SESSION = {
+    r1: {
+      attempt_id: 'r1',
+      bead_id: 'A-1',
+      status: 'running',
+      started_at: NOW - 100,
+      kind: 'review_session',
+      origin: 'auto'
+    }
+  };
+
+  /**
+   * A PR 대기 row whose post-merge cleanup stopped.
+   *
+   * @returns {Record<string, any>}
+   */
+  function stoppedCleanup() {
+    return workspace({
+      pr_wait: [{ bead_id: 'A-1' }],
+      cleanup_failed: {
+        'A-1': { step: 'branch_cleanup', reason: 'boom', at: 42 }
+      },
+      pr_observations: { 'A-1': MERGED }
+    });
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {string}
+   */
+  function prBadge(mount) {
+    return (
+      el(mount, '#monitor-pr_wait .worker-mini__badge')?.textContent?.trim() ||
+      ''
+    );
+  }
+
+  test('draws 머지 대기 #N on a repository with only PR 대기', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          pr_observations: { 'A-1': GREEN },
+          merge_queue: [{ bead_id: 'A-1', authority: { source: 'manual' } }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(prBadge(mount)).toBe('머지 대기 #1');
+  });
+
+  test('adds no serial lane or slot cell for a repository with only PR 대기', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({ queue: [{ bead_id: 'A-1' }] }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          serial_lane_count: 2,
+          serial_lanes: [
+            { id: 's1', entries: [] },
+            { id: 's2', entries: [] }
+          ],
+          pr_wait: [{ bead_id: 'B-1' }],
+          pr_observations: { 'B-1': GREEN }
+        })
+      ],
+      workspaces_state: [
+        state(),
+        state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })
+      ]
+    });
+
+    view.load();
+
+    expect(
+      mount.querySelector(`#monitor-queue [data-root-dir="${WS_B}"]`)
+    ).toBeNull();
+  });
+
+  test('labels a review-hold row button 리뷰 후 머지', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          pr_observations: { 'A-1': REVIEW_HOLD }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      el(mount, '#monitor-pr_wait .worker-mini__merge')?.textContent?.trim()
+    ).toBe('리뷰 후 머지');
+  });
+
+  test('labels a queued row without an authority 다시 머지', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          pr_observations: { 'A-1': GREEN },
+          merge_queue: [{ bead_id: 'A-1' }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      el(mount, '#monitor-pr_wait .worker-mini__merge')?.textContent?.trim()
+    ).toBe('다시 머지');
+  });
+
+  test('labels a stopped cleanup 정리 재시도 beside [세션에서 해결]', () => {
+    const { mount, view } = setup({
+      workspaces: [stoppedCleanup()],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect([
+      el(mount, '#monitor-pr_wait .worker-mini__merge')?.textContent?.trim(),
+      mount.querySelector('#monitor-pr_wait .worker-mini__resolve') !== null
+    ]).toEqual(['정리 재시도', true]);
+  });
+
+  test('sends worker-cleanup-retry with its repository from a stopped cleanup row', () => {
+    const { mount, view, sent } = setup({
+      workspaces: [stoppedCleanup()],
+      workspaces_state: [state({ revision: 4 })]
+    });
+
+    view.load();
+    click(mount, '#monitor-pr_wait .worker-mini__merge');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-cleanup-retry',
+      payload: { bead_id: 'A-1', root_dir: WS_A, expected_revision: 4 }
+    });
+  });
+
+  test('sends worker-resolve-in-session with its repository from [세션에서 해결]', () => {
+    const { mount, view, sent } = setup({
+      workspaces: [stoppedCleanup()],
+      workspaces_state: [state({ revision: 4 })]
+    });
+
+    view.load();
+    click(mount, '#monitor-pr_wait .worker-mini__resolve');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-resolve-in-session',
+      payload: { bead_id: 'A-1', root_dir: WS_A, expected_revision: 4 }
+    });
+  });
+
+  test('shows the reply queue on the lane before the next push', async () => {
+    const queue = workspace({
+      pr_wait: [{ bead_id: 'A-1' }],
+      pr_observations: { 'A-1': GREEN }
+    });
+    const { mount, view } = setup({
+      workspaces: [queue],
+      workspaces_state: [state()],
+      transport: async (type) =>
+        type === 'worker-merge-queue-add'
+          ? {
+              applied: true,
+              queue: {
+                ...queue,
+                revision: 2,
+                merge_queue: [
+                  { bead_id: 'A-1', authority: { source: 'manual' } }
+                ]
+              }
+            }
+          : null
+    });
+
+    view.load();
+    click(mount, '#monitor-pr_wait .worker-mini__merge');
+    await flushMicrotasks();
+
+    expect(prBadge(mount)).toBe('머지 대기 #1');
+  });
+
+  test('keeps a running review session out of the 실행 중 lane and its count', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          pr_observations: { 'A-1': REVIEW_HOLD },
+          attempts: REVIEW_SESSION
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect([
+      mount.querySelectorAll('#monitor-running .rtile').length,
+      el(mount, '#monitor-running .worker-pane__count')?.textContent?.trim()
+    ]).toEqual([0, '0']);
+  });
+
+  test('says the running review session on the PR 대기 row badge', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          pr_observations: { 'A-1': REVIEW_HOLD },
+          attempts: REVIEW_SESSION
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(prBadge(mount)).toBe('최종 변경 리뷰 필요 · 자동 리뷰 세션 실행 중');
+  });
+});
+
+describe('views/monitor 저장소 작업 서랍 (UI-f2sy §7)', () => {
+  const FAILED_OP = {
+    operation_id: 'op-1',
+    kind: 'deploy',
+    state: 'failed',
+    target_sha: 'a'.repeat(40),
+    finished_at: NOW - 5000,
+    failure: { code: 'script_failed' }
+  };
+  const STOPPED_CLEANUP = { 'A-1': { step: 'branch_cleanup', reason: 'boom' } };
+
+  /**
+   * Two repositories, only repo-b carrying repo-operation failures.
+   *
+   * @param {Parameters<typeof setup>[0]} [extra]
+   * @returns {ReturnType<typeof setup>}
+   */
+  function twoRepos(extra = {}) {
+    return setup({
+      workspaces: [
+        workspace(),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          revision: 7,
+          repo_operations: [FAILED_OP],
+          cleanup_failed: STOPPED_CLEANUP
+        })
+      ],
+      workspaces_state: [state(), state({ root_dir: WS_B, name: 'repo-b' })],
+      ...extra
+    });
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} root_dir
+   * @returns {string}
+   */
+  function badgeText(mount, root_dir) {
+    return (
+      mount
+        .querySelector(
+          `.mon2-deck__tile[data-root-dir="${root_dir}"] [data-act="repo-ops"]`
+        )
+        ?.textContent?.trim() ?? ''
+    );
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} root_dir
+   */
+  function openDrawer(mount, root_dir) {
+    click(
+      mount,
+      `.mon2-deck__tile[data-root-dir="${root_dir}"] [data-act="repo-ops"]`
+    );
+  }
+
+  test('draws the unresolved count on the tile of the repository that has failures', () => {
+    const { mount, view } = twoRepos();
+
+    view.load();
+
+    expect([badgeText(mount, WS_B), badgeText(mount, WS_A)]).toEqual([
+      '⚠ 2',
+      ''
+    ]);
+  });
+
+  test('draws no badge for a repository with only a succeeded operation', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          repo_operations: [{ ...FAILED_OP, state: 'succeeded' }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(badgeText(mount, WS_A)).toBe('');
+  });
+
+  test('opens the timeline drawer on the badge repository', () => {
+    const { mount, view } = twoRepos();
+
+    view.load();
+    openDrawer(mount, WS_B);
+
+    expect([
+      el(mount, '.worker-repo-drawer__hint').textContent,
+      el(mount, '.worker-drawer-overlay').hidden
+    ]).toEqual([WS_B, false]);
+  });
+
+  test('opens the same drawer from the view method the settings window calls', () => {
+    const { mount, view } = twoRepos();
+
+    view.load();
+    view.openRepoOps(WS_B);
+
+    expect(el(mount, '.worker-repo-drawer__hint').textContent).toBe(WS_B);
+  });
+
+  test('sends 기록 닫기 with the drawer repository and its revision', () => {
+    const { mount, view, sent } = twoRepos();
+
+    view.load();
+    openDrawer(mount, WS_B);
+    click(mount, '.worker-repo-op__dismiss');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-repo-operation-dismiss',
+      payload: { operation_id: 'op-1', root_dir: WS_B, expected_revision: 7 }
+    });
+  });
+
+  test('sends 정리 재시도 with the drawer repository and its revision', () => {
+    const { mount, view, sent } = twoRepos();
+
+    view.load();
+    openDrawer(mount, WS_B);
+    click(mount, '.worker-cleanup__resume');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-cleanup-retry',
+      payload: { bead_id: 'A-1', root_dir: WS_B, expected_revision: 7 }
+    });
+  });
+
+  test('sends 세션에서 해결 with the drawer repository and its revision', () => {
+    const { mount, view, sent } = twoRepos();
+
+    view.load();
+    openDrawer(mount, WS_B);
+    click(mount, '.worker-cleanup__resolve');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-resolve-in-session',
+      payload: { bead_id: 'A-1', root_dir: WS_B, expected_revision: 7 }
+    });
+  });
+
+  test('retries a conflicting 기록 닫기 once on that repository revision', async () => {
+    const { mount, view, sent } = twoRepos({
+      transport: async (type, payload) =>
+        type === 'worker-repo-operation-dismiss' &&
+        payload.expected_revision === 7
+          ? { ok: false, conflict: true, queue: { revision: 9 } }
+          : { ok: true }
+    });
+
+    view.load();
+    openDrawer(mount, WS_B);
+    click(mount, '.worker-repo-op__dismiss');
+    await flushMicrotasks();
+
+    expect(sent.map((call) => call.payload.expected_revision)).toEqual([7, 9]);
+  });
+
+  test('closes the drawer from a backdrop click', () => {
+    const { mount, view } = twoRepos();
+
+    view.load();
+    openDrawer(mount, WS_B);
+    click(mount, '.worker-drawer-overlay__backdrop');
+
+    expect([
+      mount.querySelector('.worker-repo-drawer'),
+      el(mount, '.worker-drawer-overlay').hidden
+    ]).toEqual([null, true]);
   });
 });

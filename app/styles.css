@@ -1852,30 +1852,103 @@ input.inline-edit:focus {
   gap: var(--sp-8);
 }
 
-/* 워커 탭 이슈 검색 (UI-6g3t §7). 조작 묶음 끝에 서지만 버튼이 아니므로
-   입력 부품 `.ui-input`이 크기를 정한다 (UI-kqta §3.3) — 여기는 폭만 정한다. */
-.worker-search {
+/* 이슈 검색 상자와 결과 드롭다운 (UI-f2sy §6.3). 두 탭이 같은 부품을 쓴다 —
+   Worker는 조작 묶음 끝, Monitor는 레포 띠 합계 줄 오른쪽. 입력은 버튼이
+   아니므로 입력 부품 `.ui-input`이 크기를 정한다 (UI-kqta §3.3) — 여기는 폭과
+   색, 드롭다운 배치만 정한다. */
+.issue-search {
+  position: relative;
   flex: 0 1 180px;
   min-width: 96px;
+}
+
+.issue-search__input {
+  width: 100%;
   border: 1px solid var(--border-chip);
   background: transparent;
   color: var(--text-primary);
 }
 
-/* 포커스 테두리는 `outline: none`과 겹쳐 있어 이 한 줄이 유일한 포커스 표시다.
-   UI-6g3t 당시 `--accent`에 정의가 없어 무효값이 되던 것을 정의된 토큰으로
-   바꿨고(UI-fj0b가 그 정의를 채운 뒤에도 그대로 둔다), 값이 같은 계열이라
-   겉모습은 변하지 않는다. */
-.worker-search:focus {
+/* 포커스 테두리는 `outline: none`과 겹쳐 있어 이 한 줄이 유일한 포커스 표시다. */
+.issue-search__input:focus {
   border-color: var(--stage-plan-on);
   outline: none;
 }
 
-.worker-search::placeholder {
+.issue-search__input::placeholder {
   color: var(--text-dim);
 }
 
-/* 검색이 걸러 낸 카드 (§7). 숨기지 않고 흐릴 뿐이라 순번·드래그 좌표·건수가
+.issue-search__menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  width: min(32rem, 90vw);
+  max-height: 60vh;
+  margin-top: var(--sp-4);
+  overflow-y: auto;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-6);
+  box-shadow: var(--shadow-menu);
+  padding: var(--sp-4) 0;
+}
+
+/* Monitor의 상자는 줄의 오른쪽 끝에 서므로 드롭다운이 왼쪽으로 펼쳐진다. */
+.issue-search--visible .issue-search__menu {
+  right: 0;
+  left: auto;
+}
+
+.issue-search__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-6);
+  width: 100%;
+  border-color: transparent;
+  text-align: left;
+}
+
+.issue-search__repo {
+  flex: 0 0 auto;
+  max-width: 12ch;
+  padding: var(--sp-1) var(--sp-5);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issue-search__id {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+}
+
+.issue-search__status {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+}
+
+.issue-search__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.issue-search__note {
+  padding: var(--sp-4) var(--sp-10);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+}
+
+/* 필터가 흐린 카드 (UI-p7s2 §6). 숨기지 않고 흐릴 뿐이라 순번·드래그 좌표·건수가
    그대로이고, `pointer-events`를 남겨 두므로 흐린 카드도 그대로 조작된다. */
 .is-dimmed {
   opacity: 0.35;
@@ -5048,17 +5121,6 @@ input.inline-edit:focus {
     flex: 0 0 auto;
     margin-left: 0;
   }
-}
-
-/* 검색 중인 레인의 일치 건수 (UI-6g3t §7): 전체 건수(`worker-pane__count`)를
-   대체하지 않고 뒤에 덧붙는다 — 흐린 카드도 레인의 구성원이기 때문이다. */
-.worker-pane__match {
-  flex: 0 0 auto;
-  padding: 0 var(--sp-6);
-  border-radius: var(--r-10);
-  background: var(--bg-app);
-  color: var(--stage-plan-on);
-  font-variant-numeric: tabular-nums;
 }
 
 /* 탭 부가정보 칩 (§4.5): 제목 어휘는 두 탭이 같고, 탭이 다른 것(`슬롯 N`)은

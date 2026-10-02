@@ -167,17 +167,27 @@ and, since UI-e1ta §8, the observation fields
 `issue_prefix` comes from that workspace's bd config cache; missing, malformed,
 or temporarily unreadable config is `null`.
 
+A `workspaces[]` entry exists only for a repository that still has something to
+show: a non-empty `queue`, `pr_wait`, `done`, `runnable`, `session_active`,
+`external_waits` or `repo_operations`, a non-empty `cleanup_failed` record, a
+serial-lane occupant, or a running implementation attempt (UI-f2sy §7).
+`repo_operations` and `cleanup_failed` keep a repository whose only remaining
+content is a failed operation or a stopped cleanup in the list, so the monitor's
+`⚠ N` badge and timeline drawer read them from that entry. A repository without
+an entry still has its `workspaces_state` row.
+
 Each `workspaces[]` row carries a `bead_overlay: Record<bead_id, entry>` — the
 issue facts the lane rows draw but the queue snapshot lacks. An entry holds
-`route`, `worker_created_from`(`_root_dir`), `priority` and `from_id` (the first
-`discovered-from` dependency), and for the non-done lane members a `metadata`
-pin: the execution-pin keys, the chip identity keys `applied_exec_preset` and
-`chip_preset_source`, and the judged `complex_reason` (present only when label
-`complex` and a contract-enum signal both exist). Every value is read off the
-same cached `bd show` record, so it costs no extra process. The overlay carries
-no `labels`: both tabs read them from the queue snapshot's `bead_labels`, and
-`buildLanes` uses that as the fallback source for the 복잡·`frontend`·`backend`
-chips of waiting, serial, running, PR-wait and done rows.
+`route`, `worker_created_from`(`_root_dir`), `priority`, `issue_type` and
+`from_id` (the first `discovered-from` dependency), and for the non-done lane
+members a `metadata` pin: the execution-pin keys, the chip identity keys
+`applied_exec_preset` and `chip_preset_source`, and the judged `complex_reason`
+(present only when label `complex` and a contract-enum signal both exist). Every
+value is read off the same cached `bd show` record, so it costs no extra
+process. The overlay carries no `labels`: both tabs read them from the queue
+snapshot's `bead_labels`, and `buildLanes` uses that as the fallback source for
+the 복잡·`frontend`·`backend` chips of waiting, serial, running, PR-wait and
+done rows.
 
 Each `workspaces[]` row and decorated Worker queue may carry `external_waits[]`,
 the public projection of the server's external-wait records:
@@ -260,6 +270,10 @@ Runnable rows inside `workspaces[].runnable` additionally carry
 of the shared `ready_explain` snapshot. A legacy snapshot without that source
 uses `false` / `[]` and does not remove the candidate. Blocked candidates with
 no known blocker IDs also carry `blocked_without_ids: true`.
+
+Runnable rows also carry the bd `priority` (finite number) and `issue_type`
+(non-empty string) of the same snapshot row — the monitor's priority/type
+filters and sort chain read them; a missing value is simply absent.
 
 Candidate placement facts are `route`, `spec_state`, `has_description`,
 `awaiting_user`, and `worker_ineligible`. Display observations also carry
@@ -1497,6 +1511,25 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
   the cache alive it receives the last snapshot immediately; if the cache was
   dropped it receives `computing: true` rows first and the results as they land.
 - This channel WRITES nothing — not bd, not files, not kv.
+
+## Issue search (UI-f2sy §6.3)
+
+- `search-issues` payload: `{ query, scope }` where `scope` is `workspace` (this
+  connection's repository) or `visible` (every repository the monitor shows).
+  Replies `{ results, partial }`; a missing `query` or an unknown `scope` is
+  `bad_request`. This request/response pair never subscribes or pushes.
+- The scan reads only each repository's LAST workspace snapshot
+  (`bd list --all`, so closed issues are included) and starts no bd process. A
+  repository with no snapshot yet is skipped and `partial` is `true`, so an
+  empty `results` means nothing among the repositories read, not nothing at all.
+- Match is a case-insensitive substring of the id or the title, whatever the
+  status. Order: exact id, then ids that start with the query, then the rest;
+  each group newest `updated_at` first. At most 20 rows.
+- One `results[]` row is `{ id, status, title, root_dir, workspace_name }` —
+  `root_dir` is the owning repository (the Monitor switches to it before opening
+  the detail) and `workspace_name` its directory name for the repo badge.
+- A legacy server answers `unknown_type`; the client treats that as a failed
+  search.
 
 ## Preset comparison channel (preset-compare §3.5)
 
