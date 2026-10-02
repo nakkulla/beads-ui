@@ -17134,7 +17134,7 @@ describe('해제·후속 칩과 대기 행 ✕ (UI-d13v §5·§6)', () => {
   });
 });
 
-describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
+describe('워커 탭 이슈 검색 (UI-f2sy §6.3)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
@@ -17142,8 +17142,8 @@ describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
   });
 
   /**
-   * Type one query into the toolbar's search input. lit keeps the same DOM node
-   * across the re-render, so the returned element stays live.
+   * Type one query into the toolbar's search input. The search box is a
+   * persistent node, so the returned element stays live.
    *
    * @param {HTMLElement} mount
    * @param {string} value
@@ -17151,7 +17151,7 @@ describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
    */
   function typeSearch(mount, value) {
     const input = /** @type {HTMLInputElement} */ (
-      mount.querySelector('.worker-search')
+      mount.querySelector('.issue-search__input')
     );
     input.value = value;
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -17186,9 +17186,10 @@ describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
   /**
    * Mount the Worker console over three candidates and a two-row 병렬 대기.
    *
+   * @param {Record<string, any>} [view_options] - Extra view options.
    * @returns {HTMLElement}
    */
-  function mountWithQueue() {
+  function mountWithQueue(view_options = {}) {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     presetCandidateFilter({ show_blocked: true });
     const queueStore = createWorkerQueueStore();
@@ -17204,12 +17205,13 @@ describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
-      transport: vi.fn()
+      transport: vi.fn(),
+      ...view_options
     });
     return mount;
   }
 
-  test('places the search input just before the new-issue button', () => {
+  test('places the search box just before the new-issue button', () => {
     const mount = mountWithQueue();
 
     const ops = /** @type {HTMLElement} */ (
@@ -17219,46 +17221,70 @@ describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
     expect(
       /** @type {HTMLElement} */ (ops.lastElementChild?.previousElementSibling)
         ?.className
-    ).toBe('ui-input worker-search');
+    ).toBe('issue-search issue-search--workspace');
   });
 
-  test('dims candidate cards the query does not match', () => {
+  test('dims no lane card while a query is typed', () => {
     const mount = mountWithQueue();
 
     typeSearch(mount, 'RD-1');
 
-    const cand = /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-pane-candidate')
-    );
-    expect([
-      cand
-        .querySelector('.worker-card[data-bead-id="RD-1"]')
-        ?.classList.contains('is-dimmed'),
-      cand
-        .querySelector('.worker-card[data-bead-id="RD-2"]')
-        ?.classList.contains('is-dimmed'),
-      cand
-        .querySelector('.worker-card[data-bead-id="BL-1"]')
-        ?.classList.contains('is-dimmed')
-    ]).toEqual([false, true, true]);
+    expect(mount.querySelectorAll('.is-dimmed').length).toBe(0);
   });
 
-  test('appends 일치 n to the pane header while searching', () => {
+  test('shows no 일치 count on a pane header while a query is typed', () => {
     const mount = mountWithQueue();
 
     typeSearch(mount, 'ready');
 
-    const cand = /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-pane-candidate')
-    );
-    expect(cand.querySelector('.worker-pane__match')?.textContent).toBe(
-      '일치 2'
-    );
+    expect(mount.querySelectorAll('.worker-pane__match').length).toBe(0);
+  });
+
+  test('asks for the workspace scope after the debounce', async () => {
+    vi.useFakeTimers();
+    const transport = vi.fn(async () => ({ results: [], partial: false }));
+    const mount = mountWithQueue({ transport });
+
+    typeSearch(mount, 'RD-1');
+    await vi.advanceTimersByTimeAsync(150);
+    vi.useRealTimers();
+
+    expect(transport).toHaveBeenCalledWith('search-issues', {
+      query: 'RD-1',
+      scope: 'workspace'
+    });
+  });
+
+  test('opens the detail of a clicked result in the connected repository', async () => {
+    vi.useFakeTimers();
+    const gotoIssue = vi.fn();
+    const transport = vi.fn(async () => ({
+      results: [
+        {
+          id: 'RD-1',
+          status: 'open',
+          title: 'ready one',
+          root_dir: '/repo',
+          workspace_name: 'repo'
+        }
+      ],
+      partial: false
+    }));
+    const mount = mountWithQueue({ transport, gotoIssue });
+    typeSearch(mount, 'RD-1');
+    await vi.advanceTimersByTimeAsync(150);
+    vi.useRealTimers();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.issue-search__row')
+    ).click();
+
+    expect(gotoIssue).toHaveBeenCalledWith('RD-1');
   });
 
   /**
    * Mount the Worker console over one 직렬 레인 holding an occupant ghost row and
-   * one waiting row, so the search can be judged on both (UI-6g3t §7).
+   * one waiting row, so the search can be judged on both.
    *
    * @returns {HTMLElement}
    */
@@ -17301,7 +17327,7 @@ describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
     return mount;
   }
 
-  test('dims a serial lane occupant ghost row the query does not match', () => {
+  test('dims no serial lane row and shows no 일치 count while a query is typed', () => {
     const mount = mountWithSerialLane();
 
     typeSearch(mount, 'SL-1');
@@ -17310,24 +17336,9 @@ describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
       mount.querySelector('#worker-pane-lane-s1')
     );
     expect([
-      lane
-        .querySelector('.worker-mini[data-bead-id="OCC-1"]')
-        ?.classList.contains('is-dimmed'),
-      lane
-        .querySelector('.worker-mini[data-bead-id="SL-1"]')
-        ?.classList.contains('is-dimmed')
-    ]).toEqual([true, false]);
-  });
-
-  test('appends 일치 n to a serial lane header while searching', () => {
-    const mount = mountWithSerialLane();
-
-    typeSearch(mount, 'one');
-
-    expect(
-      mount.querySelector('#worker-pane-lane-s1 .worker-pane__match')
-        ?.textContent
-    ).toBe('일치 2');
+      lane.querySelectorAll('.is-dimmed').length,
+      lane.querySelectorAll('.worker-pane__match').length
+    ]).toEqual([0, 0]);
   });
 
   test('leaves the pane count itself untouched by the query', () => {
@@ -17353,39 +17364,13 @@ describe('워커 탭 이슈 검색 (UI-6g3t §7)', () => {
     expect(queueRowFacts(mount)).toEqual(before);
   });
 
-  test('dims no card and shows no 일치 count for an empty query', () => {
-    const mount = mountWithQueue();
-
-    typeSearch(mount, '');
-
-    expect([
-      mount.querySelectorAll('.is-dimmed').length,
-      mount.querySelectorAll('.worker-pane__match').length
-    ]).toEqual([0, 0]);
-  });
-
-  test('clears the query on Escape', () => {
-    const mount = mountWithQueue();
-    const input = typeSearch(mount, 'RD-1');
-
-    input.dispatchEvent(
-      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
-    );
-
-    expect([
-      /** @type {HTMLInputElement} */ (mount.querySelector('.worker-search'))
-        .value,
-      mount.querySelectorAll('.is-dimmed').length
-    ]).toEqual(['', 0]);
-  });
-
   test('writes nothing to localStorage while searching', () => {
     const mount = mountWithQueue();
     const before = JSON.stringify({ ...window.localStorage });
 
     typeSearch(mount, 'RD-1');
     /** @type {HTMLInputElement} */ (
-      mount.querySelector('.worker-search')
+      mount.querySelector('.issue-search__input')
     ).dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })
     );
@@ -17662,21 +17647,20 @@ describe('views/worker 숨김과 lifecycle (UI-hhn9 §6)', () => {
     vi.restoreAllMocks();
   });
 
-  test('destroy removes the input and keydown listeners it registered', () => {
+  test('destroy tears down the search box it created', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const removed = vi.spyOn(mount, 'removeEventListener');
     const view = createWorkerView(mount, {
       issueStores: createTestIssueStores(),
       queueStore: createWorkerQueueStore(),
       transport: vi.fn()
     });
+    const box = /** @type {HTMLElement} */ (
+      mount.querySelector('.issue-search')
+    );
 
     view.destroy();
 
-    const types = removed.mock.calls.map((call) => call[0]);
-    expect(types).toContain('input');
-    expect(types).toContain('keydown');
-    removed.mockRestore();
+    expect(box.querySelector('.issue-search__input')).toBeNull();
   });
 });
 

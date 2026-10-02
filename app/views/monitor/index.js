@@ -55,6 +55,7 @@ import {
   runExternalWaitAction,
   sessionWindowText
 } from '../worker/external-wait-action.js';
+import { createIssueSearch } from '../worker/issue-search.js';
 import { createLaneCollapse } from '../worker/lane-collapse.js';
 import { createLaneDrag } from '../worker/lane-drag.js';
 import {
@@ -668,6 +669,15 @@ export function createMonitorView(mount_element, options) {
   let boundary_timer = null;
   /** @type {ReturnType<typeof createRepoDeck>|null} */
   let deck = null;
+  /**
+   * 이슈 검색 상자 (UI-f2sy §6.3). 보이는 저장소 전부를 찾고, 결과를 누르면 카드
+   * 클릭과 같은 `openRow` 경로로 그 저장소로 전환한 뒤 상세를 연다.
+   */
+  const issue_search = createIssueSearch({
+    scope: 'visible',
+    transport,
+    openIssue: (id, root_dir) => openRow(id, root_dir)
+  });
 
   const drawer = createTranscriptDrawer(drawer_el, {
     transport,
@@ -2285,6 +2295,7 @@ export function createMonitorView(mount_element, options) {
           ? pipelineStore.getWorkspacesState()
           : [],
       doneItems: () => lanes.done,
+      searchElement: issue_search.element,
       rangeLabel: doneRangeLabel,
       rangeShort: doneRangeShort,
       transport,
@@ -3572,6 +3583,7 @@ export function createMonitorView(mount_element, options) {
       drawer_overlay_el.hidden = true;
       deck?.destroy();
       deck = null;
+      issue_search.destroy();
       mount_element.removeEventListener('click', onClick);
       mount_element.removeEventListener('change', onChange);
       document.removeEventListener('click', onDocumentClick);

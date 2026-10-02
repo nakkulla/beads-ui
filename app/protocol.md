@@ -1503,6 +1503,25 @@ CheckerError = { kind, file, line: number|null, adr: number|string|null, detail 
   dropped it receives `computing: true` rows first and the results as they land.
 - This channel WRITES nothing — not bd, not files, not kv.
 
+## Issue search (UI-f2sy §6.3)
+
+- `search-issues` payload: `{ query, scope }` where `scope` is `workspace` (this
+  connection's repository) or `visible` (every repository the monitor shows).
+  Replies `{ results, partial }`; a missing `query` or an unknown `scope` is
+  `bad_request`. This request/response pair never subscribes or pushes.
+- The scan reads only each repository's LAST workspace snapshot
+  (`bd list --all`, so closed issues are included) and starts no bd process. A
+  repository with no snapshot yet is skipped and `partial` is `true`, so an
+  empty `results` means nothing among the repositories read, not nothing at all.
+- Match is a case-insensitive substring of the id or the title, whatever the
+  status. Order: exact id, then ids that start with the query, then the rest;
+  each group newest `updated_at` first. At most 20 rows.
+- One `results[]` row is `{ id, status, title, root_dir, workspace_name }` —
+  `root_dir` is the owning repository (the Monitor switches to it before opening
+  the detail) and `workspace_name` its directory name for the repo badge.
+- A legacy server answers `unknown_type`; the client treats that as a failed
+  search.
+
 ## Preset comparison channel (preset-compare §3.5)
 
 - `get-compare` payload:

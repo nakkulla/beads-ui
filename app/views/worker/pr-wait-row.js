@@ -1579,13 +1579,9 @@ export function prWaitRowsOf(input) {
       return {
         ...row,
         ...prWaitLaneOriginFields(e, last_impl_by_bead),
-        // 검색 판정은 레인 모델이 소유한다 (UI-6g3t §7). PR 대기 행은 행
-        // 투영이 새로 만드는 객체라 그 키를 여기서 옮겨 실어야 하고, 검색이
-        // 없으면 옮길 키도 없다 (fail-quiet).
-        ...(item?.search_match === undefined
-          ? {}
-          : { search_match: item.search_match }),
-        // 우선순위·타입·라벨 필터의 흐림도 같은 이유로 옮긴다 (UI-p7s2 §6).
+        // 우선순위·타입·라벨 필터의 흐림 판정은 레인 모델이 소유한다 (UI-p7s2
+        // §6). PR 대기 행은 행 투영이 새로 만드는 객체라 그 키를 여기서 옮겨
+        // 실어야 한다.
         ...(item?.filter_match === undefined
           ? {}
           : { filter_match: item.filter_match }),

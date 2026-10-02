@@ -6786,8 +6786,8 @@ describe('quick_fix 착지 재개 자격 (UI-8h1x §3.3b)', () => {
 });
 
 /**
- * One workspace carrying exactly one item of every lane kind the Worker search
- * tags (UI-6g3t §7): 후보 · 병렬 · 직렬 · 실행중 · 세션 · PR 대기 · 완료.
+ * One workspace carrying exactly one item of every lane kind: 후보 · 병렬 · 직렬
+ * · 실행중 · 세션 · PR 대기 · 완료.
  *
  * @returns {Record<string, any>}
  */
@@ -6817,67 +6817,8 @@ function everyLaneWorkspace() {
   });
 }
 
-/**
- * The search verdict of every lane kind, keyed by bead id.
- *
- * @param {Record<string, any>} lanes
- * @returns {Record<string, any>}
- */
-function searchVerdicts(lanes) {
-  return Object.fromEntries(
-    [
-      lanes.runnable[0],
-      lanes.queue_groups[0].sublanes.parallel[0],
-      lanes.queue_groups[0].sublanes.serial[0].items[0],
-      ...lanes.running,
-      lanes.pr_wait[0],
-      lanes.done[0]
-    ].map((/** @type {any} */ item) => [item.id, item.search_match])
-  );
-}
-
-describe('워커 탭 검색 태깅 (UI-6g3t §7)', () => {
-  test('tags every lane kind with the search verdict', () => {
-    const lanes = buildLanes([everyLaneWorkspace()], [state()], {
-      search: 'ser-1'
-    });
-
-    expect(searchVerdicts(lanes)).toEqual({
-      'CAND-1': false,
-      'PAR-1': false,
-      'SER-1': true,
-      'RUN-1': false,
-      'SES-1': false,
-      'PR-1': false,
-      'DONE-1': false
-    });
-  });
-
-  test('matches a title as well as an id, case-insensitively', () => {
-    const lanes = buildLanes([everyLaneWorkspace()], [state()], {
-      search: '  TITLE Par  '
-    });
-
-    expect(lanes.queue_groups[0].sublanes.parallel[0].search_match).toBe(true);
-  });
-
-  test('tags the candidate section copies the renderer draws', () => {
-    const lanes = buildLanes([everyLaneWorkspace()], [state()], {
-      search: 'cand'
-    });
-
-    expect(lanes.runnable_sections[0].items[0].search_match).toBe(true);
-  });
-
-  test('sets no search key for a blank query', () => {
-    const lanes = buildLanes([everyLaneWorkspace()], [state()], {
-      search: '   '
-    });
-
-    expect(Object.hasOwn(lanes.runnable[0], 'search_match')).toBe(false);
-  });
-
-  test('sets no search key when no search option is given', () => {
+describe('레인 항목에는 검색 판정이 없다 (UI-f2sy §6.3)', () => {
+  test('tags no lane kind with a search verdict', () => {
     const lanes = buildLanes([everyLaneWorkspace()], [state()]);
 
     const untagged = [
@@ -6890,61 +6831,6 @@ describe('워커 탭 검색 태깅 (UI-6g3t §7)', () => {
     ].every((/** @type {any} */ item) => !Object.hasOwn(item, 'search_match'));
 
     expect(untagged).toBe(true);
-  });
-
-  test('tags a serial lane occupant ghost with the search verdict', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          bead_titles: { 'OCC-1': '점유 중인 작업', 'SER-1': 'title SER-1' },
-          serial_lanes: [
-            {
-              id: 's1',
-              entries: [{ bead_id: 'OCC-1' }, { bead_id: 'SER-1' }]
-            }
-          ],
-          lane_states: { s1: { occupied_by: ['OCC-1'] } },
-          attempts: {
-            t1: {
-              attempt_id: 't1',
-              bead_id: 'OCC-1',
-              status: 'paused',
-              started_at: 10
-            }
-          }
-        })
-      ],
-      [state()],
-      { search: 'occ' }
-    );
-
-    const lane = lanes.queue_groups[0].sublanes.serial[0];
-    expect([
-      lane.occupants[0].search_match,
-      lane.items[0].search_match
-    ]).toEqual([true, false]);
-  });
-
-  test('leaves lane membership and order unchanged while searching', () => {
-    const plain = buildLanes([everyLaneWorkspace()], [state()]);
-
-    const searched = buildLanes([everyLaneWorkspace()], [state()], {
-      search: 'ser'
-    });
-
-    expect([
-      searched.runnable.map((/** @type {any} */ i) => i.id),
-      searched.queue.map((/** @type {any} */ i) => i.id),
-      searched.running.map((/** @type {any} */ i) => i.id),
-      searched.pr_wait.map((/** @type {any} */ i) => i.id),
-      searched.done.map((/** @type {any} */ i) => i.id)
-    ]).toEqual([
-      plain.runnable.map((/** @type {any} */ i) => i.id),
-      plain.queue.map((/** @type {any} */ i) => i.id),
-      plain.running.map((/** @type {any} */ i) => i.id),
-      plain.pr_wait.map((/** @type {any} */ i) => i.id),
-      plain.done.map((/** @type {any} */ i) => i.id)
-    ]);
   });
 });
 
@@ -8080,14 +7966,6 @@ describe('보류 선반과 세 필터 축 (UI-p7s2 §3·§6)', () => {
     });
 
     expect(lanes.deferred).toEqual([]);
-  });
-
-  test('dims a deferred row the search query does not match', () => {
-    const lanes = buildLanes([shelfWorkspace()], [state()], {
-      search: 'candidate'
-    });
-
-    expect(lanes.deferred[0].search_match).toBe(false);
   });
 
   test('counts priority-hidden candidate and deferred rows under the priority control', () => {

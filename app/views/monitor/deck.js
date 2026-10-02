@@ -152,6 +152,8 @@ export function deckExecChips(row) {
  * @property {(type: any, payload?: unknown) => Promise<any>} [transport]
  * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [implPresetStore]
  * @property {(message: string) => void} [notify]
+ * @property {HTMLElement} [searchElement] - 합계 줄 오른쪽에 끼우는 이슈 검색
+ * 상자 (UI-f2sy §6.3). 영속 노드라 합계가 다시 그려져도 입력 포커스가 남는다.
  * @property {(root_dir: string) => void} [gotoWorkerTab] - 그 레포로
  * `switchWorkspace` 후 Worker 탭으로 넘어가는 경로 (§11).
  * @property {(root_dir: string|null) => void} [onFocusChange] - Focus filter
@@ -543,6 +545,7 @@ export function createRepoDeck(mount_element, options) {
                     >`
                 )}
           </span>`}
+      ${options.searchElement ? options.searchElement : ''}
     </div>`;
   }
 

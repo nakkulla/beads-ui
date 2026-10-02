@@ -2031,12 +2031,9 @@ export function interactiveSessionClosingTemplate(views) {
  * @property {string} [worker_created_from_root_dir] - Confirmed source owner.
  * @property {number} [priority] - Bead 우선순위 0..4. 숫자가 아니면 배지를
  * 그리지 않는다.
- * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
- * `false`인 행만 `is-dimmed`로 흐려지고, 검색 중이 아니면 키 자체가 없어 지금
- * 그대로 그려진다 (fail-quiet). 숨김이 아니므로 순번·좌표·건수는 그대로다.
  * @property {boolean} [filter_match] - 우선순위·타입·라벨 필터와의 일치
- * (UI-p7s2 §6). 검색과 같은 자리·같은 흐림이다: 대기 행을 숨기면 직렬 순번과
- * 큐 위치가 어긋나므로 이 레인들은 숨기지 않는다.
+ * (UI-p7s2 §6). `false`인 행만 `is-dimmed`로 흐려진다: 대기 행을 숨기면 직렬
+ * 순번과 큐 위치가 어긋나므로 이 레인들은 숨기지 않는다.
  * @property {string} [issue_type] - bd `issue_type` (타입 필터의 재료).
  * @property {boolean} [deferred] - 보류 선반의 행 (UI-p7s2 §3).
  */
@@ -2066,8 +2063,8 @@ function doneThreeLineRow(item) {
   const plan_open = chipOpen(item, 'plan');
   const plan_el = planChipTemplate(item, plan_open);
   return html`<div
-    class="worker-mini worker-mini--static worker-mini--done worker-mini--three-line${item.search_match ===
-      false || item.filter_match === false
+    class="worker-mini worker-mini--static worker-mini--done worker-mini--three-line${item.filter_match ===
+    false
       ? ' is-dimmed'
       : ''}"
     draggable="false"
@@ -4006,9 +4003,7 @@ export function miniRow(item, options = {}) {
       ? ' worker-mini--prerequisite'
       : ''}${route_tone.tinted
       ? ' worker-mini--route-bg'
-      : ''}${item.search_match === false || item.filter_match === false
-      ? ' is-dimmed'
-      : ''}"
+      : ''}${item.filter_match === false ? ' is-dimmed' : ''}"
     style=${merging ? `--progress: ${merging.percent}%` : ''}
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
@@ -4819,7 +4814,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
       ? ' worker-card--blocked'
       : ''}${route_tone.tinted ? ' worker-card--route-bg' : ''}${is_deferred
       ? ' worker-card--deferred'
-      : ''}${item.search_match === false ? ' is-dimmed' : ''}"
+      : ''}"
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
     data-lane=${item.lane}
@@ -4991,9 +4986,6 @@ export function candidateCard(item, place_menu = null, options = {}) {
  * 그대로 두므로 후보→대기 드롭이 띠 위에서도 성립한다. `live`는 실제로 일이
  * 도는 레인 하나를 표시한다 — 헤더 점이 숨쉬는 유일한 레인이다.
  *
- * `match_count`는 워커 탭 검색이 켜져 있을 때만 실리는 「일치 n」이다 (UI-6g3t
- * §7): `worker-pane__count` 뒤에 덧붙고, 키가 없으면 헤더는 지금 그대로다.
- *
  * `footer`는 본문 맨 아래, 행 목록 **뒤**에 서는 한 조각이다 (UI-p7s2 §3.2의
  * 보류 선반). 헤더 건수는 `items`만 세므로 이 조각의 내용은 pane 건수에 들지
  * 않고, 재료가 없으면 호출 측이 키를 넘기지 않아 아무것도 그려지지 않는다.
@@ -5001,7 +4993,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
  * 헤더 토글은 두 탭 모두 공용 버튼 부품 `.op-btn`으로 그린다 (UI-kqta §3.3,
  * UI-k5s2).
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, footer?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, match_count?: number, place_menu?: PlaceMenu|null, onOpenDoc?: import('../stepper.js').OpenDocHandler }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], count?: number, src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, header_row?: import('lit-html').TemplateResult, footer?: import('lit-html').TemplateResult, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: PlaceMenu|null, onOpenDoc?: import('../stepper.js').OpenDocHandler }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -5015,10 +5007,7 @@ export function paneTemplate(pane) {
     ${collapsed && pane.preview
       ? html`<span class="worker-pane__preview">${pane.preview}</span>`
       : ''}
-    <span class="worker-pane__count">${count}</span>
-    ${typeof pane.match_count === 'number'
-      ? html`<span class="worker-pane__match">일치 ${pane.match_count}</span>`
-      : ''}`;
+    <span class="worker-pane__count">${count}</span>`;
   return html`<section
     class="worker-pane worker-pane--lane-${pane.lane}${pane.src
       ? ' worker-pane--src'
@@ -5087,8 +5076,6 @@ export function paneTemplate(pane) {
  * 넘긴 행 목록 (`miniRow` 등). 본문은 구조만 소유하므로 행 렌더링에 관여하지
  * 않는다.
  * @property {number} count - 헤더가 쓰는 건수. `rows`와 다를 수 있다 (점유자).
- * @property {number} [match_count] - 검색 중인 레인의 「일치 n」 (UI-6g3t §7).
- * 다른 pane과 같은 규칙으로, 검색 중이 아니면 키가 없어 헤더가 지금 그대로다.
  * @property {boolean} empty - `rows`도 점유자도 없어 힌트 한 줄로 접히는 상태.
  * @property {import('lit-html').TemplateResult|string} [badge] - 누가 잡고
  * 있는지 말하는 점유 표시 (Worker 점유자 id). 재료가 없으면 그리지 않는다.
@@ -5253,7 +5240,6 @@ function serialLaneTemplate(lane) {
       title: lane.title,
       items: [],
       count: lane.count,
-      match_count: lane.match_count,
       empty: '비어 있음 — 행을 여기로 드래그',
       header_control: html`${badge_el}${lane.header_control
         ? lane.header_control

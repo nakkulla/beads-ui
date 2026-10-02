@@ -70,6 +70,7 @@ import {
   handleUpdateWorkflowMeta
 } from './mutation-handlers.js';
 import { scheduleListRefresh, setRefreshDebounceMs } from './refresh.js';
+import { handleSearchIssues } from './search-handlers.js';
 import {
   handleGetSessionDefaults,
   handleGetWorkspaceAccounts,
@@ -700,6 +701,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'get-compare':
       await handleGetCompare(ws, req);
+      return;
+    case 'search-issues':
+      handleSearchIssues(ws, req);
       return;
     case 'unsubscribe-session-log':
       handleUnsubscribeSessionLog(ws, req);

@@ -486,7 +486,6 @@ const DONE_KIND_LABELS = {
  *   gate_open?: boolean,
  *   consumer_id?: string|null,
  *   recent_complete?: boolean,
- *   search_match?: boolean,
  *   issue_type?: string,
  *   deferred?: boolean,
  *   filter_match?: boolean
@@ -506,10 +505,9 @@ const DONE_KIND_LABELS = {
  * @property {string} id
  * @property {string} title
  * @property {string} badge
- * @property {boolean} [search_match] - 워커 탭 검색어와의 일치 (UI-6g3t §7).
- * 점유 ghost 행도 직렬 레인의 항목이므로 다른 레인 항목과 같은 판정을 받는다.
  * @property {boolean} [filter_match] - 우선순위·타입·라벨 필터와의 일치
- * (UI-p7s2 §6). 같은 이유로 ghost 행도 같은 판정을 받는다.
+ * (UI-p7s2 §6). 점유 ghost 행도 직렬 레인의 항목이므로 다른 레인 항목과 같은
+ * 판정을 받는다.
  */
 
 /**
@@ -2800,58 +2798,13 @@ function timeOf(value) {
 }
 
 /**
- * One query's match predicate (UI-6g3t §7). 빈 질의는 `null`이고, 그때 모델은
- * `search_match` 키를 아예 달지 않는다 (fail-quiet): "검색하지 않았다"와 "아무것도
- * 맞지 않았다"는 다른 사실이라, 렌더러가 둘을 같은 흐림으로 그리면 안 된다.
- *
- * @param {string|undefined} query
- * @returns {((item: LaneItem) => boolean)|null}
- */
-function searchMatcher(query) {
-  const needle = typeof query === 'string' ? query.trim().toLowerCase() : '';
-  if (needle.length === 0) {
-    return null;
-  }
-  return (item) => {
-    const id = typeof item.id === 'string' ? item.id.toLowerCase() : '';
-    const title =
-      typeof item.title === 'string' ? item.title.toLowerCase() : '';
-    return id.includes(needle) || title.includes(needle);
-  };
-}
-
-/**
- * Tag every lane item with the search verdict (UI-6g3t §7). 숨기지도 빼지도
- * 않으므로 순번·드래그 좌표·헤더 카운트·필터 카운트·겹침 비교 집합은 그대로이고,
- * 바뀌는 것은 카드의 흐림 하나뿐이다.
- *
- * 후보 섹션 항목은 모델이 이미 복사본으로 들고 있으므로 (`{ ...item }`) 원본과
- * 따로 달아야 한다 — 그 사본이 실제로 그려지는 카드다.
- *
- * @param {LaneModel} model
- * @param {(item: LaneItem) => boolean} matches
- */
-function tagSearchMatches(model, matches) {
-  const { buckets, occupant_buckets } = laneItemBuckets(model);
-  for (const bucket of buckets) {
-    for (const item of bucket) {
-      item.search_match = matches(item);
-    }
-  }
-  for (const bucket of occupant_buckets) {
-    for (const occupant of bucket) {
-      occupant.search_match = matches(
-        /** @type {LaneItem} */ (/** @type {unknown} */ (occupant))
-      );
-    }
-  }
-}
-
-/**
  * Tag every lane item with the 우선순위·타입·라벨 필터 verdict (UI-p7s2 §6).
  * 후보·보류는 이미 숨김으로 걸러졌으므로 여기서 받는 값은 언제나 `true`이고,
  * 실제로 읽히는 것은 대기·실행 중·PR 대기·완료 행의 `false`다 — 그 레인들은
- * 숨기면 직렬 순번과 슬롯 점유가 어긋나므로 검색어와 같은 흐림을 쓴다.
+ * 숨기면 직렬 순번과 슬롯 점유가 어긋나므로 흐림으로 그린다.
+ *
+ * 후보 섹션 항목은 모델이 이미 복사본으로 들고 있으므로 (`{ ...item }`) 원본과
+ * 따로 달아야 한다 — 그 사본이 실제로 그려지는 카드다.
  *
  * @param {LaneModel} model
  * @param {(item: LaneItem) => boolean} matches
@@ -2874,7 +2827,7 @@ function tagFilterMatches(model, matches) {
 
 /**
  * Every rendered lane item of one model, grouped so a per-item verdict
- * (`search_match`·`filter_match`) reaches the copies that actually get drawn.
+ * (`filter_match`) reaches the copies that actually get drawn.
  *
  * @param {LaneModel} model
  * @returns {{ buckets: LaneItem[][], occupant_buckets: MonitorOccupant[][] }}
@@ -2935,10 +2888,6 @@ function chipPinsOf(entry) {
  * 어댑터)의 값이다 (UI-4tud §4.3): 입력 순서를 그대로 두고 섹션도 만들지 않는다.
  * Hidden counts name rows revealed by relaxing exactly one filter.
  *
- * `options.search`는 워커 탭의 이슈 검색어다 (UI-6g3t §7). 값이 있으면 모든 레인
- * 항목에 `search_match`가 실리고, 없거나 공백뿐이면 키 자체가 붙지 않는다 —
- * 그래서 검색을 받지 않는 Monitor 탭의 렌더는 한 글자도 달라지지 않는다.
- *
  * `options.candidate_chain`은 Worker 탭과 같은 정렬 체인(`CandidateSortState`)이다
  * (UI-f2sy §6.2). 값이 있으면 `candidate_sort` 문자열을 대신해 `applyCandidateSort`가
  * 순서를 정하고, `options.group_by_repo`가 `false`가 아니면 레포 섹션 안에서,
@@ -2950,7 +2899,7 @@ function chipPinsOf(entry) {
  *
  * @param {Array<Record<string, any>>|null|undefined} workspaces
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state]
- * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', candidate_chain?: import('./candidate-sort.js').CandidateSortState, group_by_repo?: boolean, groups?: 'nonempty'|'all', search?: string }} [options]
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', candidate_chain?: import('./candidate-sort.js').CandidateSortState, group_by_repo?: boolean, groups?: 'nonempty'|'all' }} [options]
  * @returns {LaneModel}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
@@ -5325,14 +5274,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
     model.runnable_sections = sections;
   }
 
-  // 검색 태깅은 정렬·섹션 조립보다 뒤다 (§7): 섹션이 만드는 사본까지 같은 판정을
-  // 지녀야 그려지는 카드와 모델이 어긋나지 않는다.
-  const matchesSearch = searchMatcher(options ? options.search : undefined);
-  if (matchesSearch) {
-    tagSearchMatches(model, matchesSearch);
-  }
-  // 필터 흐림도 같은 자리다 (UI-p7s2 §6): 세 축을 하나도 쓰지 않으면 키를 아예
-  // 달지 않으므로 필터를 만지지 않은 화면과 Monitor 탭의 렌더는 그대로다.
+  // 필터 흐림 태깅은 정렬·섹션 조립보다 뒤다 (UI-p7s2 §6): 섹션이 만드는 사본까지
+  // 같은 판정을 지녀야 그려지는 카드와 모델이 어긋나지 않는다. 세 축을 하나도 쓰지
+  // 않으면 키를 아예 달지 않으므로 필터를 만지지 않은 화면의 렌더는 그대로다.
   if (field_filters_active) {
     tagFilterMatches(model, fieldFiltersPass);
   }

@@ -1513,6 +1513,106 @@ describe('views/monitor repo badge navigation (UI-eey2 §11)', () => {
   });
 });
 
+describe('views/monitor issue search (UI-f2sy §6.3)', () => {
+  /**
+   * @param {string} current - Workspace the connection is on.
+   * @returns {Promise<ReturnType<typeof setup>>}
+   */
+  async function searchedSetup(current) {
+    vi.useFakeTimers();
+    const ctx = setup({
+      workspaces: [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      workspaces_state: [state()],
+      current,
+      transport: async (type) =>
+        type === 'search-issues'
+          ? {
+              results: [
+                {
+                  id: 'A-9',
+                  status: 'closed',
+                  title: 'found one',
+                  root_dir: WS_A,
+                  workspace_name: 'repo-a'
+                }
+              ],
+              partial: false
+            }
+          : null
+    });
+    ctx.view.load();
+    const input = /** @type {HTMLInputElement} */ (
+      ctx.mount.querySelector('.issue-search__input')
+    );
+    input.value = 'found';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(150);
+    vi.useRealTimers();
+    return ctx;
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('places the search box at the end of the totals bar', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      mount.querySelector('.mon2-deck__bar')?.lastElementChild?.className
+    ).toBe('issue-search issue-search--visible');
+  });
+
+  test('asks for the visible scope', async () => {
+    const { sent } = await searchedSetup(WS_A);
+
+    expect(
+      sent.filter((entry) => entry.type === 'search-issues')[0].payload
+    ).toEqual({ query: 'found', scope: 'visible' });
+  });
+
+  test('shows the repo badge before the id of a result', async () => {
+    const { mount } = await searchedSetup(WS_A);
+
+    expect(
+      mount.querySelector('.issue-search__row .issue-search__repo')?.textContent
+    ).toBe('repo-a');
+  });
+
+  test('opens a result of the current repo without switching', async () => {
+    const { mount, gotoIssue, switchWorkspace } = await searchedSetup(WS_A);
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.issue-search__row')
+    ).click();
+
+    expect([
+      vi.mocked(switchWorkspace).mock.calls.length,
+      gotoIssue.mock.calls
+    ]).toEqual([0, [['A-9']]]);
+  });
+
+  test('switches repo before opening a result of another repo', async () => {
+    const { mount, gotoIssue, switchWorkspace } = await searchedSetup(WS_B);
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.issue-search__row')
+    ).click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect([
+      vi.mocked(switchWorkspace).mock.calls,
+      gotoIssue.mock.calls
+    ]).toEqual([[[WS_A]], [['A-9']]]);
+  });
+});
+
 describe('views/monitor card click (UI-nprg)', () => {
   test('opens a card of the current workspace immediately', () => {
     const { mount, view, gotoIssue, switchWorkspace } = setup({
