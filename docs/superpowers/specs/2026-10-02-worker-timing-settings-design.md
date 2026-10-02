@@ -145,6 +145,7 @@ Worker가 일을 바로 시작하지 않고 기다리는 시간, 외부 작업�
 - UI-u6ud-3 → 해소 세션의 큐 점유는 실패가 아니라 queue-yield deadline이라는 의미는 그대로 두고, 그 길이는 서버 전역 타이밍 설정(`merge_resolution_wait_seconds`)이 정한다고 적는다. deadline이 거는 순간의 값으로 계산한 절대 시각이라 재시작이 시계를 되감지 않는다는 조항도 승계한다.
 - UI-nuwy → 미분류 실패 사다리와 base_moved 재개 지연의 길이는 서버 전역 타이밍 설정(`env_retry_delays_seconds`·`base_moved_retry_seconds`)이 정한다고 적는다. 바뀐 값은 다음 예약부터 적용되고 기록된 `next_at`은 다시 쓰지 않는다.
 - 두 새 ADR 모두, 승계하는 조항 안의 다른 조정 가능한 수치(예: UI-nuwy의 매 pass 30초, 재시도 횟수 3회, base_moved 반복 3회, UI-u6ud-3의 라운드 상한)도 결정 문장으로 고정하지 않는다. 값의 정본(설정 키 또는 코드 상수 이름)을 가리키고 필요하면 현재 값을 "기본값" 또는 "현재 값"으로만 적는다.
+- 결정: UI-nuwy를 대체하는 열린 스펙이 하나 더 있다(UI-18a5, `docs/superpowers/specs/2026-10-02-session-worker-continue-pair-design.md` §7 — 대화 대상·출구 조항을 넓힌다). 바꾸는 조항이 겹치지 않으므로 순서만 맞춘다. Finish의 ADR 단계에서 `docs/adr/README.md` 현재 표를 다시 읽어, UI-18a5의 ADR이 먼저 착지했으면 그 ADR을 supersede 대상으로 삼고 그 조항(UI-18a5가 넓힌 조항 포함)을 승계한다. 대상 id가 바뀌면 이 스펙의 §7 후보 줄을 정정해 재게시한다(staleness 재검토 경로).
 - 다른 유효 ADR(UI-nuwy-2의 대화형 종료 유예 등)은 이 스펙이 값을 열지 않으므로 건드리지 않는다. 그 수치는 그 ADR을 다음에 대체할 때 같은 원칙으로 고친다.
 
 ## 4. 경계
