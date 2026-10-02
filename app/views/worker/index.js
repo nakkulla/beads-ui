@@ -138,7 +138,7 @@ import { deriveWorkerOverlaps } from './queue-overlaps.js';
 import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
 import { createRepoOpsDrawer } from './repo-ops-timeline.js';
-import { runningGridTemplate } from './running-grid.js';
+import { runningGridTemplate, runningTileInput } from './running-grid.js';
 import { hasLiveResolveSession, tileResolveFields } from './tile-resolve.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
 import { createWorkspaceAdapter } from './workspace-adapter.js';
@@ -3370,59 +3370,14 @@ export function createWorkerView(mount_element, options = {}) {
     // 경로로 리뷰 시도를 건드린다.
     const tiles = m.running
       .filter((item) => item.non_occupying !== true)
-      .map(
-        (item) =>
-          /** @type {any} */ ({
-            ...item,
-            bead_id: item.id,
-            attempt_id: item.attempt_id || '',
-            paused: item.run_state === 'paused',
-            failed: item.run_state === 'failed',
-            // 파킹·backoff 대기 (UI-5ym8 §8). 실패와 같은 자리(판정 칩)를 쓰되
-            // 실패는 아니므로 별도 플래그다 — 하나로 합치면 큐가 멈췄다는 뜻이
-            // 딸려 온다.
-            parked: item.run_state === 'parked',
-            retry_wait: item.run_state === 'retry_wait',
-            // 선행 대기는 Monitor 어댑터와 같은 네 키로 싣는다 (선행 대기 계층
-            // §5.4, ADR 0014). 여기서 빠뜨리면 같은 렌더러가 이 타일을 실행 중
-            // 타일로 그려 시계와 세션 조작을 준다.
-            waiting: item.run_state === 'waiting',
-            wait: item.wait || null,
-            provider_hold: item.run_state === 'provider_hold',
-            hold: item.hold || null,
-            status_label:
-              item.run_state === 'failed'
-                ? item.status === 'orphaned'
-                  ? '중단됨'
-                  : '실패'
-                : item.run_state === 'parked'
-                  ? '확인 필요'
-                  : item.run_state === 'retry_wait'
-                    ? '재시도 대기'
-                    : item.run_state === 'waiting'
-                      ? item.wait?.recovery
-                        ? item.wait.recovery.label || ''
-                        : '선행 대기'
-                      : item.run_state === 'provider_hold'
-                        ? '공급자 보류'
-                        : item.status_label,
-            can_pause: item.can_pause !== false,
-            // 레포 배지는 한 레포 화면의 사실이 아니다 (모니터 타일만 그린다).
-            workspace_name: '',
-            dependency_chips: chipsWithOverlaps(item) || undefined,
-            chip_popover: popoverOf(item),
-            failure: item.failure
-              ? {
-                  ...item.failure,
-                  open: open_failure_detail === item.attempt_id
-                }
-              : null,
-            ...tileResolveFields(
-              item,
-              resolve_pending.has(item.id),
-              handoff_pending.has(item.id)
-            )
-          })
+      .map((item) =>
+        runningTileInput(item, {
+          dependency_chips: chipsWithOverlaps(item),
+          chip_popover: popoverOf(item),
+          open_failure_detail,
+          resolve_pending: resolve_pending.has(item.id),
+          handoff_pending: handoff_pending.has(item.id)
+        })
       );
     // 사람이 결정할 것이 먼저 보여야 한다: 실패, 그 다음 파킹(사용자 결정을
     // 기다리는 중), 그 다음 스스로 굴러가는 나머지. backoff 대기는 사람이 할 일이

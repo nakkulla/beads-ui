@@ -1108,6 +1108,38 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     });
   });
 
+  test('disables the REVISE buttons until the disposition reply lands', async () => {
+    /** @type {(value: unknown) => void} */
+    let reply = () => {};
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          revise_parked: { 'A-1': { notes_tail: 'n' } }
+        })
+      ],
+      workspaces_state: [state({ revision: 4 })],
+      transport: () =>
+        new Promise((resolve) => {
+          reply = resolve;
+        })
+    });
+
+    view.load();
+    click(mount, '.worker-mini__revise-approve');
+    await flushMicrotasks();
+    const during = /** @type {HTMLButtonElement} */ (
+      el(mount, '.worker-mini__revise-approve')
+    ).disabled;
+    reply({ ok: true });
+    await flushMicrotasks();
+    const after = /** @type {HTMLButtonElement} */ (
+      el(mount, '.worker-mini__revise-approve')
+    ).disabled;
+
+    expect([during, after]).toEqual([true, false]);
+  });
+
   test('retries once with the revision the conflict reply reported', async () => {
     /** @type {number[]} */
     const calls = [];
@@ -2693,6 +2725,25 @@ describe('monitor 의존성 편집 이관 (UI-lx45 §5)', () => {
 
     expect(switchWorkspace).toHaveBeenCalledWith(WS_B);
     expect(gotoIssue).toHaveBeenCalledWith('B-source');
+  });
+
+  test('opens the discovered-from source of a waiting row through its own repo', async () => {
+    const { mount, view, gotoIssue, switchWorkspace } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_overlay: { 'A-1': { from_id: 'A-0' } }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '#monitor-queue .ctl-chip--from');
+    await flushMicrotasks();
+
+    expect(gotoIssue).toHaveBeenCalledWith('A-0');
+    expect(switchWorkspace).not.toHaveBeenCalled();
   });
 
   test('switches the repo before opening a blocker of another one', async () => {

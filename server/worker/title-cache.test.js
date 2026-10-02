@@ -869,6 +869,28 @@ describe('execution pin projection (UI-q1tg §3.1)', () => {
     });
   });
 
+  test('keeps the chip identity keys in the projection', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '칩이 적용된 이슈',
+      metadata: {
+        applied_exec_preset: '97bd55f4-3bf5-41d7-9107-721e6a3d43b7',
+        chip_preset_source: 'complex',
+        complex_reason: 'hard_diagnosis'
+      }
+    });
+
+    const out = cache.execPinFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({
+      'UI-1': {
+        applied_exec_preset: '97bd55f4-3bf5-41d7-9107-721e6a3d43b7',
+        chip_preset_source: 'complex'
+      }
+    });
+  });
+
   test('projects an empty pin for a bead that pins nothing', () => {
     const cache = createTitleCache({ enrichWorkflow: () => null });
     cache.refreshFromIssue('/ws', {
@@ -1101,5 +1123,56 @@ describe('title cache description scope (UI-f1qy §4.2)', () => {
     expect(cache.descriptionScopeFor('/ws', ['UI-2'])).toEqual({
       'UI-2': ['app/views/']
     });
+  });
+});
+
+describe('overlay issue fields (UI-yvhx)', () => {
+  test('projects priority, the discovered-from id and the judged complex reason', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '복잡한 이슈',
+      priority: 1,
+      labels: ['complex', 'frontend'],
+      metadata: { complex_reason: 'hard_diagnosis+made_up' },
+      dependencies: [
+        { id: 'UI-0', dependency_type: 'blocks' },
+        { id: 'UI-origin', dependency_type: 'discovered-from' }
+      ]
+    });
+
+    const out = cache.overlayFieldsFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({
+      'UI-1': {
+        priority: 1,
+        from_id: 'UI-origin',
+        complex_reason: 'hard_diagnosis'
+      }
+    });
+  });
+
+  test('drops the complex reason when the complex label is missing', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '라벨 없는 이슈',
+      priority: 2,
+      labels: ['frontend'],
+      metadata: { complex_reason: 'hard_diagnosis' }
+    });
+
+    const out = cache.overlayFieldsFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({ 'UI-1': { priority: 2 } });
+  });
+
+  test('omits a bead that has none of the fields and a cold miss', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', { id: 'UI-1', title: '평범한 이슈' });
+
+    const out = cache.overlayFieldsFor('/ws', ['UI-1', 'UI-cold']);
+
+    expect(out).toEqual({});
   });
 });

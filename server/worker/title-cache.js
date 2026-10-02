@@ -24,6 +24,7 @@
  * `bd show` between them.
  */
 import path from 'node:path';
+import { complexReason } from '../../app/utils/complex-judgement.js';
 import { EXECUTION_SETTING_KEYS } from '../../app/utils/execution-defaults.js';
 import { workerLabels } from '../../app/utils/worker-eligibility.js';
 import { isBdProtocolFailure } from '../bd-json.js';
@@ -32,7 +33,11 @@ import { debug } from '../logging.js';
 import { resolveSpecId } from '../spec-id.js';
 import { enrichIssueWorkflow } from '../workflow-enrich.js';
 import { parseDescriptionScope } from './artifact-scope.js';
-import { ACCOUNT_KEYS } from './exec-enums.js';
+import {
+  ACCOUNT_KEYS,
+  APPLIED_EXEC_PRESET_KEY,
+  CHIP_PRESET_SOURCE_KEY
+} from './exec-enums.js';
 
 const log = debug('worker:title-cache');
 
@@ -72,7 +77,9 @@ const POSITIVE_TTL_MS = 5 * 60_000;
 const EXEC_PIN_KEYS = new Set([
   ...EXECUTION_SETTING_KEYS,
   'impl_dispatch',
-  ...ACCOUNT_KEYS
+  ...ACCOUNT_KEYS,
+  APPLIED_EXEC_PRESET_KEY,
+  CHIP_PRESET_SOURCE_KEY
 ]);
 
 /**
@@ -94,6 +101,32 @@ function execPinFromMetadata(metadata) {
     }
   }
   return pin;
+}
+
+/**
+ * The bead this one was discovered from — the first `discovered-from`
+ * dependency of a `bd show` payload, or `''`. Provenance is an edge, never a
+ * label, so it is read off the same dependency list `blocked_by` is.
+ *
+ * @param {any} raw_issue
+ * @returns {string}
+ */
+function discoveredFromId(raw_issue) {
+  if (!raw_issue || !Array.isArray(raw_issue.dependencies)) {
+    return '';
+  }
+  for (const dep of raw_issue.dependencies) {
+    if (
+      dep &&
+      typeof dep === 'object' &&
+      dep.dependency_type === 'discovered-from' &&
+      typeof dep.id === 'string' &&
+      dep.id.length > 0
+    ) {
+      return dep.id;
+    }
+  }
+  return '';
 }
 
 /**
@@ -122,6 +155,13 @@ function execPinFromMetadata(metadata) {
  * arrives on so the monitor's overlay costs no extra process. Always an object:
  * a bead that pins nothing has an EMPTY pin, which still means "resolve from the
  * workspace defaults", not "unknown".
+ * @property {number|null} priority - `priority` of the same `bd show` payload,
+ * `null` when it is not a finite number.
+ * @property {string} from_id - The first `discovered-from` dependency id of the
+ * same payload, `''` when there is none.
+ * @property {string} complex_reason - The contract's 복잡 판정 signals, judged
+ * from label `complex` together with `metadata.complex_reason`; `''` when
+ * either half is missing (UI-7nhi §1).
  * @property {string[]|null} description_scope - The `## scope` section of the
  * issue description (UI-f1qy §4.2), read off the SAME `bd show` payload so the
  * fallback declaration costs no extra process. `null` means the description
@@ -343,6 +383,14 @@ export function createTitleCache(options = {}) {
       scope_spec_id: spec.conflict ? '' : spec.path,
       plan_path: plan_path.length > 0 ? plan_path : null,
       exec_pin: execPinFromMetadata(metadata),
+      priority:
+        raw_issue &&
+        typeof raw_issue.priority === 'number' &&
+        Number.isFinite(raw_issue.priority)
+          ? raw_issue.priority
+          : null,
+      from_id: discoveredFromId(raw_issue),
+      complex_reason: complexReason(raw_issue && raw_issue.labels, metadata),
       description_scope: parseDescriptionScope(
         raw_issue && raw_issue.description
       ),
@@ -744,6 +792,33 @@ export function createTitleCache(options = {}) {
      */
     execPinFor(workspace, ids) {
       return collect(workspace, ids, (rec) => rec.exec_pin);
+    },
+
+    /**
+     * Cache hits for `ids` as the issue fields the monitor overlay carries
+     * beside the pin: `priority`, `from_id`, and the judged `complex_reason`.
+     * A field the record cannot supply is omitted, never defaulted (fail-quiet);
+     * a bead with none of them is absent. Same partiality contract as the
+     * projections above, and no `bd` process of its own.
+     *
+     * @param {string} workspace
+     * @param {string[]} ids
+     * @returns {Record<string, { priority?: number, from_id?: string, complex_reason?: string }>}
+     */
+    overlayFieldsFor(workspace, ids) {
+      const projected = collect(workspace, ids, (rec) => ({
+        ...(rec.priority !== null ? { priority: rec.priority } : {}),
+        ...(rec.from_id ? { from_id: rec.from_id } : {}),
+        ...(rec.complex_reason ? { complex_reason: rec.complex_reason } : {})
+      }));
+      /** @type {Record<string, { priority?: number, from_id?: string, complex_reason?: string }>} */
+      const out = {};
+      for (const [bead_id, fields] of Object.entries(projected)) {
+        if (Object.keys(fields).length > 0) {
+          out[bead_id] = fields;
+        }
+      }
+      return out;
     },
 
     /**

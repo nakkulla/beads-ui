@@ -6565,6 +6565,55 @@ describe('lane model bead overlay (UI-4tud §4.1)', () => {
     expect(lanes.queue[0].complex_reason).toBe('hard_diagnosis');
   });
 
+  test('derives the 복잡 chip and the area labels from the snapshot bead_labels', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_labels: { 'A-2': ['complex', 'frontend'] },
+          bead_overlay: {
+            'A-2': { metadata: { complex_reason: 'hard_diagnosis' } }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect([lanes.queue[0].complex_reason, lanes.queue[0].labels]).toEqual([
+      'hard_diagnosis',
+      ['complex', 'frontend']
+    ]);
+  });
+
+  test('keeps the overlay labels ahead of the snapshot bead_labels', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_labels: { 'A-2': ['backend'] },
+          bead_overlay: { 'A-2': { labels: ['frontend'], metadata: {} } }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].labels).toEqual(['frontend']);
+  });
+
+  test('keeps labels unknown for a bead absent from bead_labels', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_labels: { 'A-9': ['complex'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].labels).toBeUndefined();
+  });
+
   test('leaves the 복잡 chip off an overlay carrying the reason without the label', () => {
     const lanes = buildLanes(
       [

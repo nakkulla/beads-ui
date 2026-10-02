@@ -5,7 +5,11 @@ import {
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
 import { formatClockLocal } from '../../utils/relative-time.js';
-import { runningGridTemplate, runningTile } from './running-grid.js';
+import {
+  runningGridTemplate,
+  runningTile,
+  runningTileInput
+} from './running-grid.js';
 
 describe('worker failed running tile template', () => {
   beforeEach(() => {
@@ -4677,5 +4681,65 @@ describe('plan 묶음 칩 on the running tile (UI-ruwu §2)', () => {
         .querySelector('[data-chip-key="plan"]')
         ?.getAttribute('aria-expanded')
     ).toBe('true');
+  });
+});
+
+describe('shared running tile input (UI-yvhx)', () => {
+  test.each([
+    [{ run_state: 'failed', status: 'failed' }, '실패'],
+    [{ run_state: 'failed', status: 'orphaned' }, '중단됨'],
+    [{ run_state: 'parked' }, '확인 필요'],
+    [{ run_state: 'retry_wait' }, '재시도 대기'],
+    [{ run_state: 'waiting', wait: { cause: 'base_moved' } }, '반영 대기'],
+    [{ run_state: 'waiting', wait: { cause: 'blocked' } }, '선행 대기'],
+    [
+      {
+        run_state: 'waiting',
+        wait: { cause: 'base_moved', recovery: { label: '복구 대기' } }
+      },
+      '복구 대기'
+    ],
+    [{ run_state: 'provider_hold' }, '공급자 보류'],
+    [{ run_state: 'running', status_label: '실행 중' }, '실행 중']
+  ])('words the status of %j as %s', (item, label) => {
+    const tile = runningTileInput({ id: 'A-1', attempt_id: 'att', ...item });
+
+    expect(tile.status_label).toBe(label);
+  });
+
+  test('keeps the lane item fields a hand-picked list would drop', () => {
+    const tile = runningTileInput({
+      id: 'A-1',
+      run_state: 'running',
+      priority: 1,
+      created_at: 5,
+      base_exception: '→ release',
+      landing: { step: 'push', label: '푸시', index: 1, total: 3 }
+    });
+
+    expect([
+      tile.priority,
+      tile.created_at,
+      tile.base_exception,
+      tile.landing?.step
+    ]).toEqual([1, 5, '→ release', 'push']);
+  });
+
+  test('marks the run-state flags and the view-local failure detail', () => {
+    const tile = runningTileInput(
+      {
+        id: 'A-1',
+        attempt_id: 'att-1',
+        run_state: 'failed',
+        failure: { cause: 'x' }
+      },
+      { open_failure_detail: 'att-1' }
+    );
+
+    expect([tile.failed, tile.parked, tile.failure?.open]).toEqual([
+      true,
+      false,
+      true
+    ]);
   });
 });

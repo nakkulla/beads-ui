@@ -3028,6 +3028,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
   /** @type {Map<string, Record<string, any>>} */
   const overlay_by_key = new Map();
   /** @type {Map<string, string[]>} */
+  const labels_by_key = new Map();
+  /** @type {Map<string, string[]>} */
   const blocked_by_map = new Map();
   /** @type {Map<string, Record<string, string>>} */
   const blocker_workspaces_by_root = new Map();
@@ -3201,6 +3203,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
     )) {
       if (entry && typeof entry === 'object') {
         overlay_by_key.set(`${root_dir}\u0000${bead_id}`, entry);
+      }
+    }
+    // 두 탭이 이미 받는 큐 스냅샷의 `bead_labels`가 오버레이 라벨의 대체 원천이다
+    // — 모니터 오버레이는 라벨을 싣지 않으므로 같은 값을 두 번 보내지 않는다.
+    for (const [bead_id, labels] of Object.entries(
+      objectOf(workspace.bead_labels)
+    )) {
+      if (Array.isArray(labels)) {
+        labels_by_key.set(`${root_dir}\u0000${bead_id}`, labels);
       }
     }
     /** @type {Map<string, any>} */
@@ -4606,7 +4617,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
   // Board live store가 아는 이슈 필드를 모든 레인 행에 덧씌운다 (§4.1) — 지금
   // Worker의 `idToPriority`·`idToFromId`·`beadRec`·`beadExecChips`가 하는 일이다.
   // Candidate exec pins already came from their facts; running chips keep the attempt record.
-  if (overlay_by_key.size > 0) {
+  if (overlay_by_key.size > 0 || labels_by_key.size > 0) {
     for (const item of [
       ...runnable,
       ...deferred,
@@ -4615,7 +4626,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
       ...pr_wait,
       ...done
     ]) {
-      const overlay = overlay_by_key.get(`${item.root_dir}\u0000${item.id}`);
+      const item_key = `${item.root_dir}\u0000${item.id}`;
+      const overlay = overlay_by_key.get(item_key);
+      const bead_labels =
+        overlay && Array.isArray(overlay.labels)
+          ? overlay.labels
+          : labels_by_key.get(item_key);
+      // 빈 배열도 옮긴다 — "라벨 없음"이 확인된 사실이고, 배열 부재만 모름이다.
+      if (bead_labels && !Array.isArray(item.labels)) {
+        item.labels = bead_labels;
+      }
       if (!overlay) {
         continue;
       }
@@ -4631,10 +4651,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
         typeof item.issue_type !== 'string'
       ) {
         item.issue_type = overlay.issue_type;
-      }
-      // 빈 배열도 옮긴다 — "라벨 없음"이 확인된 사실이고, 배열 부재만 모름이다.
-      if (Array.isArray(overlay.labels) && !Array.isArray(item.labels)) {
-        item.labels = overlay.labels;
       }
       if (typeof overlay.from_id === 'string' && overlay.from_id.length > 0) {
         item.from_id = overlay.from_id;
@@ -4678,7 +4694,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const metadata = objectOf(overlay.metadata);
       // 복잡 판정 (UI-7nhi §3): 라벨과 사유를 함께 읽는다 — 어느 한쪽만 있는
       // 부착은 무효라 칩이 서지 않는다 (fail-quiet).
-      const complex_reason = complexReason(overlay.labels, metadata);
+      const complex_reason = complexReason(bead_labels, metadata);
       if (complex_reason.length > 0) {
         item.complex_reason = complex_reason;
       }

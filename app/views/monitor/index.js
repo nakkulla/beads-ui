@@ -84,7 +84,7 @@ import {
   providerResumeOverride,
   showProviderResumeDialog
 } from '../worker/provider-resume-dialog.js';
-import { runningTile } from '../worker/running-grid.js';
+import { runningTile, runningTileInput } from '../worker/running-grid.js';
 import { tileResolveFields } from '../worker/tile-resolve.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { createRepoDeck } from './deck.js';
@@ -545,6 +545,8 @@ export function createMonitorView(mount_element, options) {
   const resolve_pending = new Set();
   /** @type {Set<string>} */
   const handoff_pending = new Set();
+  /** REVISE 처분 클릭이 응답을 기다리는 bead (UI-hs11 §3.5). @type {Set<string>} */
+  const revise_pending = new Set();
 
   /** @type {null | (() => void)} */
   let unsubscribe_pipeline = null;
@@ -674,6 +676,34 @@ export function createMonitorView(mount_element, options) {
     return queue?.merge_queue?.find(
       (/** @type {any} */ entry) => entry.bead_id === bead_id
     )?.continuation_action;
+  }
+
+  /**
+   * The REVISE-parking disposition clicks (UI-hs11 §3.5), the Worker tab's
+   * `reviseDisposition`: the row's buttons stay disabled for the whole round
+   * trip so a second click cannot land mid-dispatch.
+   *
+   * @param {'worker-revise-fix'|'worker-revise-approve'} type
+   * @param {string} bead_id
+   * @param {string} root_dir
+   * @param {number} revision
+   */
+  async function reviseDisposition(type, bead_id, root_dir, revision) {
+    if (!bead_id || revise_pending.has(bead_id)) {
+      return;
+    }
+    revise_pending.add(bead_id);
+    doRender();
+    try {
+      if (type === 'worker-revise-fix') {
+        await sendContinuationAction(type, { bead_id }, root_dir, revision);
+      } else {
+        await sendCas(type, { bead_id }, root_dir, revision);
+      }
+    } finally {
+      revise_pending.delete(bead_id);
+      doRender();
+    }
   }
 
   /**
@@ -1109,11 +1139,15 @@ export function createMonitorView(mount_element, options) {
   function withOverlaps(item) {
     const chips = chipsWithOverlaps(item);
     const popover = popoverOf(item);
-    return chips || popover
+    // 처분 세션 요청의 in-flight 창 (UI-hs11 §3.5) — 두 번째 클릭을 막는다.
+    const revise_busy =
+      item.revise_enabled === true && revise_pending.has(item.id);
+    return chips || popover || revise_busy
       ? {
           ...item,
           ...(chips ? { dependency_chips: chips } : {}),
-          ...(popover ? { chip_popover: popover } : {})
+          ...(popover ? { chip_popover: popover } : {}),
+          ...(revise_busy ? { revise_enabled: false } : {})
         }
       : item;
   }
@@ -1481,105 +1515,12 @@ export function createMonitorView(mount_element, options) {
         ? html`<div class="worker-rungrid__empty">실행 세션 없음</div>`
         : lanes.running.map((item) =>
             runningTile(
-              {
-                bead_id: item.id,
-                // 판정 칩은 bead 식별자를 `id`에서 읽는다 (UI-wg68 §5.3): 바인딩된
-                // 칩이 싣는 `data-bead-id`·`data-root-dir`가 클릭의 유일한 재료라
-                // `bead_id`만 실으면 모니터 타일의 칩이 빈 id로 그려진다.
-                id: item.id,
-                root_dir: item.root_dir,
-                attempt_id: item.attempt_id || '',
-                lane_origin: item.lane_origin,
-                title: item.title,
-                // 판정 칩 3종의 재료 (UI-wg68 §5.4, ADR 0014): Worker 타일은
-                // 레인 항목을 통째로 펼쳐 이미 싣는다. 여기서 빠뜨리면 같은
-                // 렌더러가 모니터에서만 칩 없는 타일을 그린다.
-                labels: item.labels,
-                complex_reason: item.complex_reason,
-                chip_metadata: item.chip_metadata,
-                route: item.route,
-                runner: item.runner ?? null,
-                model: item.model ?? null,
-                effort: item.effort ?? null,
-                speed: item.speed ?? null,
-                started_at: item.started_at ?? null,
-                // 세션 타일 판별자와 route 칩 재료 (UI-yrzu §6·§7.2). Worker
-                // 타일은 `kind`를 싣지 않는다. `updated_at`도 세션 타일만
-                // 받는다 — Worker 타일에 실으면 없던 시각 메타 줄이 생긴다.
-                kind: item.kind === 'session' ? 'session' : undefined,
-                external_wait: item.external_wait,
-                interactive_sessions: item.interactive_sessions,
-                wait_reasons: item.wait_reasons,
-                ...(item.kind === 'session'
-                  ? {
-                      updated_at: item.updated_at,
-                      // 세션 정체·transcript 좌표 (UI-4xzk §6.4).
-                      session_refs: item.session_refs || []
-                    }
-                  : {}),
-                workflow: /** @type {any} */ (item.workflow || null),
-                worker_created_from: item.worker_created_from,
-                worker_created_from_root_dir: item.worker_created_from_root_dir,
-                resumed_from: item.resumed_from ?? null,
-                continuation_mode: item.continuation_mode ?? null,
-                paused: item.run_state === 'paused',
-                failed: item.run_state === 'failed',
-                // 파킹·backoff 대기·선행 대기 (UI-5ym8 §8, 선행 대기 계층
-                // §5.4). 같은 렌더러를 쓰는 두 탭이 같은 사실을 같은 모양으로
-                // 그려야 하므로 (ADR 14) Worker 탭의 투영과 같은 키를 여기서도
-                // 싣는다 — 빠지면 기다리는 세션이 모니터에서만 돌아가는 시계와
-                // ⏸를 얻는다.
-                parked: item.run_state === 'parked',
-                retry_wait: item.run_state === 'retry_wait',
-                waiting: item.run_state === 'waiting',
-                wait: item.wait || null,
-                // 공급자 보류도 같은 규칙이다 (UI-jr8v §10, ADR 0014): 투영이
-                // 이미 실어 온 두 값을 여기서 버리면 보류 attempt가 모니터에서만
-                // 실행 중 타일 — 도는 시계와 ⏸ — 로 보인다.
-                provider_hold: item.run_state === 'provider_hold',
-                hold: item.hold || null,
-                retry: item.retry || null,
-                status: /** @type {any} */ (item.status),
-                status_label:
-                  item.run_state === 'failed'
-                    ? '실패'
-                    : item.run_state === 'parked'
-                      ? '세션 대기'
-                      : item.run_state === 'retry_wait'
-                        ? '재시도 대기'
-                        : item.run_state === 'waiting'
-                          ? item.wait?.recovery
-                            ? item.wait.recovery.label || ''
-                            : item.wait?.cause === 'base_moved'
-                              ? '반영 대기'
-                              : '선행 대기'
-                          : item.run_state === 'provider_hold'
-                            ? '공급자 보류'
-                            : item.status_label,
-                can_pause: item.can_pause !== false,
-                can_resume: item.can_resume,
-                exec_chips: item.exec_chips || null,
-                usage: item.usage || null,
+              runningTileInput(item, {
                 chip_popover: popoverOf(item),
-                ...(item.plan_group ? { plan_group: item.plan_group } : {}),
-                // 충돌 해소 attempt는 PR 대기 Bead의 것이라 ✕ 대상이 아니다
-                // (2026-10-01 stall-reconcile D7) — Worker 탭과 같은 키를 싣는다.
-                ...(item.conflict_resolution === true
-                  ? { conflict_resolution: true }
-                  : {}),
-                discard: item.discard,
-                failure: item.failure
-                  ? {
-                      ...item.failure,
-                      open: open_failure_detail === item.attempt_id
-                    }
-                  : null,
-                ...tileResolveFields(
-                  item,
-                  resolve_pending.has(item.id),
-                  handoff_pending.has(item.id)
-                )
-              },
+                open_failure_detail,
+                resolve_pending: resolve_pending.has(item.id),
+                handoff_pending: handoff_pending.has(item.id)
+              }),
               now,
               selected_attempt,
               {
@@ -2456,6 +2397,12 @@ export function createMonitorView(mount_element, options) {
       );
       return;
     }
+    if (cls.contains('ctl-chip--from')) {
+      // `↩ from` 칩 (Worker `onClick`과 같은 의미): 출처 bead는 이 행과 같은
+      // 저장소에 있으므로 행의 저장소를 거쳐 연다.
+      openRow(button.getAttribute('data-from-id') || '', root_dir || '');
+      return;
+    }
     if (cls.contains('judgement-chip--bound')) {
       // 바인딩된 칩은 팝업 칩보다 먼저 판정한다 (UI-wg68 §5.3) — 같은 버튼에
       // 두 선택자가 걸리므로 순서가 클릭 의미다.
@@ -2735,16 +2682,16 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('worker-mini__revise-fix')) {
-      void sendContinuationAction(
-        'worker-revise-fix',
-        { bead_id },
-        root_dir,
-        revision
-      );
+      void reviseDisposition('worker-revise-fix', bead_id, root_dir, revision);
       return;
     }
     if (cls.contains('worker-mini__revise-approve')) {
-      void sendCas('worker-revise-approve', { bead_id }, root_dir, revision);
+      void reviseDisposition(
+        'worker-revise-approve',
+        bead_id,
+        root_dir,
+        revision
+      );
     }
   }
 

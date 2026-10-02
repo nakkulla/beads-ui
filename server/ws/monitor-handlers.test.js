@@ -1037,6 +1037,100 @@ describe('buildMonitorPipeline bead overlay (UI-q1tg §3.1)', () => {
     });
   });
 
+  test('carries priority, from_id and the judged complex reason', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'A-q', added_at: NOW }],
+          done: [{ bead_id: 'A-done', added_at: NOW }]
+        })
+      },
+      titleCache: warmCache(WS_A, [
+        {
+          id: 'A-q',
+          title: '대기',
+          priority: 1,
+          labels: ['complex'],
+          workflow: { route: 'spec_backed' },
+          metadata: {
+            complex_reason: 'invariant_reasoning',
+            applied_exec_preset: 'preset-1',
+            chip_preset_source: 'complex'
+          },
+          dependencies: [{ id: 'A-src', dependency_type: 'discovered-from' }]
+        },
+        {
+          id: 'A-done',
+          title: '완료',
+          priority: 3,
+          labels: ['complex'],
+          metadata: { complex_reason: 'hard_diagnosis' }
+        }
+      ])
+    });
+
+    expect(overlayOf(out)['A-q']).toMatchObject({
+      priority: 1,
+      from_id: 'A-src',
+      metadata: {
+        complex_reason: 'invariant_reasoning',
+        applied_exec_preset: 'preset-1',
+        chip_preset_source: 'complex'
+      }
+    });
+    expect(overlayOf(out)['A-done']).toEqual({ priority: 3 });
+  });
+
+  test('carries priority and from_id of a runnable candidate', () => {
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [candidate('A-cand')] },
+      titleCache: warmCache(WS_A, [
+        {
+          id: 'A-cand',
+          title: '후보',
+          priority: 0,
+          dependencies: [{ id: 'A-src', dependency_type: 'discovered-from' }]
+        }
+      ])
+    });
+
+    expect(overlayOf(out)['A-cand']).toEqual({
+      priority: 0,
+      from_id: 'A-src'
+    });
+  });
+
+  test('draws the complex chip material on a waiting row through buildLanes', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'A-q', added_at: NOW }],
+          bead_labels: { 'A-q': ['complex', 'frontend'] }
+        })
+      },
+      titleCache: warmCache(WS_A, [
+        {
+          id: 'A-q',
+          title: '대기',
+          priority: 0,
+          labels: ['complex', 'frontend'],
+          workflow: { route: 'spec_backed' },
+          metadata: { complex_reason: 'hard_diagnosis' }
+        }
+      ])
+    });
+
+    expect(lanesOf(out).queue[0]).toMatchObject({
+      id: 'A-q',
+      priority: 0,
+      labels: ['complex', 'frontend'],
+      complex_reason: 'hard_diagnosis'
+    });
+  });
+
   test('omits a bead whose cache record has not landed', () => {
     const out = build({
       workspaces: [WS_A],

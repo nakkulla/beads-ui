@@ -167,6 +167,18 @@ and, since UI-e1ta §8, the observation fields
 `issue_prefix` comes from that workspace's bd config cache; missing, malformed,
 or temporarily unreadable config is `null`.
 
+Each `workspaces[]` row carries a `bead_overlay: Record<bead_id, entry>` — the
+issue facts the lane rows draw but the queue snapshot lacks. An entry holds
+`route`, `worker_created_from`(`_root_dir`), `priority` and `from_id` (the first
+`discovered-from` dependency), and for the non-done lane members a `metadata`
+pin: the execution-pin keys, the chip identity keys `applied_exec_preset` and
+`chip_preset_source`, and the judged `complex_reason` (present only when label
+`complex` and a contract-enum signal both exist). Every value is read off the
+same cached `bd show` record, so it costs no extra process. The overlay carries
+no `labels`: both tabs read them from the queue snapshot's `bead_labels`, and
+`buildLanes` uses that as the fallback source for the 복잡·`frontend`·`backend`
+chips of waiting, serial, running, PR-wait and done rows.
+
 Each `workspaces[]` row and decorated Worker queue may carry `external_waits[]`,
 the public projection of the server's external-wait records:
 `{wait_id, root_dir, bead_id, owner_kind, stage, budget, registered_at, next_observation_at, error_count, last_error, jobs, completion, resume}`.

@@ -57,6 +57,7 @@ import {
   waitStatusBadge
 } from './lanes.js';
 import { logPathTemplate } from './log-path.js';
+import { tileResolveFields } from './tile-resolve.js';
 import { representativeWaitReason } from './wait-vocabulary.js';
 
 /**
@@ -1688,6 +1689,81 @@ function tileOverlay(tile) {
     ...(legs.length > 0 ? { legs } : {}),
     ...(chips ? { dependency_chips: chips } : {})
   };
+}
+
+/**
+ * The status wording of one running lane item, one table for both tabs: an
+ * orphaned failure reads `중단됨`, a parked session `확인 필요`, and a wait
+ * caused by a moved base `반영 대기`.
+ *
+ * @param {any} item - A lane-model running item.
+ * @returns {string|undefined}
+ */
+function runningStatusLabel(item) {
+  switch (item.run_state) {
+    case 'failed':
+      return item.status === 'orphaned' ? '중단됨' : '실패';
+    case 'parked':
+      return '확인 필요';
+    case 'retry_wait':
+      return '재시도 대기';
+    case 'waiting':
+      if (item.wait?.recovery) {
+        return item.wait.recovery.label || '';
+      }
+      return item.wait?.cause === 'base_moved' ? '반영 대기' : '선행 대기';
+    case 'provider_hold':
+      return '공급자 보류';
+    default:
+      return item.status_label;
+  }
+}
+
+/**
+ * The tile input of one running lane item, built by the Worker tab and the
+ * Monitor tab alike (ADR 0014): the whole item is spread so a field the lane
+ * model learns reaches both tabs, and only the run-state flags, the shared
+ * status wording and the view-local state are laid over it. The renderer
+ * reads nothing else, so a hand-picked key list can no longer drift.
+ *
+ * @param {any} item - A lane-model running item.
+ * @param {{ chip_popover?: RunningTile['chip_popover'], dependency_chips?: RunningTile['dependency_chips'], open_failure_detail?: string|null, resolve_pending?: boolean, handoff_pending?: boolean }} [view]
+ * @returns {RunningTile}
+ */
+export function runningTileInput(item, view = {}) {
+  return /** @type {any} */ ({
+    ...item,
+    bead_id: item.id,
+    attempt_id: item.attempt_id || '',
+    paused: item.run_state === 'paused',
+    failed: item.run_state === 'failed',
+    // 파킹·backoff 대기 (UI-5ym8 §8). 실패와 같은 자리(판정 칩)를 쓰되 실패는
+    // 아니므로 별도 플래그다 — 하나로 합치면 큐가 멈췄다는 뜻이 딸려 온다.
+    parked: item.run_state === 'parked',
+    retry_wait: item.run_state === 'retry_wait',
+    // 선행 대기와 공급자 보류도 같은 키로 싣는다 (선행 대기 계층 §5.4,
+    // UI-jr8v §10): 빠지면 렌더러가 이 타일을 실행 중으로 그려 시계와 세션
+    // 조작을 준다.
+    waiting: item.run_state === 'waiting',
+    wait: item.wait || null,
+    provider_hold: item.run_state === 'provider_hold',
+    hold: item.hold || null,
+    status_label: runningStatusLabel(item),
+    can_pause: item.can_pause !== false,
+    dependency_chips: view.dependency_chips || undefined,
+    chip_popover: view.chip_popover ?? null,
+    failure: item.failure
+      ? {
+          ...item.failure,
+          open: view.open_failure_detail === item.attempt_id
+        }
+      : null,
+    ...tileResolveFields(
+      item,
+      view.resolve_pending === true,
+      view.handoff_pending === true
+    )
+  });
 }
 
 /**
