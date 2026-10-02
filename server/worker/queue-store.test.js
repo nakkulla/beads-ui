@@ -1908,20 +1908,6 @@ describe('worker/queue-store', () => {
     expect(restarted.autoAdvanceAtShutdown(WS)).toBe(false);
   });
 
-  test('consumes the restart snapshot after a successful automation toggle', () => {
-    const store = createQueueStore();
-    store.toggleAutoAdvance(WS, { expected_revision: 0, on: true });
-    const restarted = createQueueStore();
-    restarted.load(WS);
-
-    restarted.toggleAutomation(WS, {
-      expected_revision: restarted.snapshot(WS).revision,
-      on: false
-    });
-
-    expect(restarted.autoAdvanceAtShutdown(WS)).toBe(false);
-  });
-
   test('preserves the restart snapshot across scheduler-owned auto advance writes', () => {
     const store = createQueueStore();
     store.toggleAutoAdvance(WS, { expected_revision: 0, on: true });
@@ -1934,45 +1920,47 @@ describe('worker/queue-store', () => {
     expect(restarted.autoAdvanceAtShutdown(WS)).toBe(true);
   });
 
-  test('turns both automation flags on in one revision', () => {
-    const store = createQueueStore();
-
-    const result = store.toggleAutomation(WS, {
-      expected_revision: 0,
-      on: true
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.queue.revision).toBe(1);
-    expect(result.queue.auto_advance).toBe(true);
-    expect(result.queue.auto_merge).toBe(true);
-  });
-
-  test('turns both automation flags off and clears ordinary merge waits', () => {
+  test('turns auto advance on in one revision without touching auto merge', () => {
     fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
     fs.writeFileSync(
       queueFilePath(WS),
       JSON.stringify({
         revision: 3,
-        auto_advance: true,
+        auto_advance: false,
         auto_merge: true,
         merge_queue: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }]
       })
     );
     const store = createQueueStore();
 
-    const result = store.toggleAutomation(WS, {
+    const result = store.toggleAutoAdvance(WS, {
       expected_revision: 3,
-      on: false
+      on: true
     });
 
+    expect(result.ok).toBe(true);
     expect(result.queue.revision).toBe(4);
-    expect(result.queue.auto_advance).toBe(false);
-    expect(result.queue.auto_merge).toBe(false);
-    expect(result.queue.merge_queue).toEqual([]);
+    expect(result.queue.auto_advance).toBe(true);
+    expect(result.queue.auto_merge).toBe(true);
+    expect(result.queue.merge_queue.map((entry) => entry.bead_id)).toEqual([
+      'UI-1',
+      'UI-2'
+    ]);
   });
 
-  test('preserves the active merge and resolution journal while turning automation off', () => {
+  test('leaves auto merge off when turning auto advance on', () => {
+    const store = createQueueStore();
+
+    const result = store.toggleAutoAdvance(WS, {
+      expected_revision: 0,
+      on: true
+    });
+
+    expect(result.queue.auto_advance).toBe(true);
+    expect(result.queue.auto_merge).toBe(false);
+  });
+
+  test('keeps auto merge and every merge entry when turning auto advance off', () => {
     fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
     fs.writeFileSync(
       queueFilePath(WS),
@@ -1998,28 +1986,27 @@ describe('worker/queue-store', () => {
       })
     );
     const store = createQueueStore();
+    const before = store.snapshot(WS).merge_queue;
 
-    const result = store.toggleAutomation(WS, {
+    const result = store.toggleAutoAdvance(WS, {
       expected_revision: 7,
-      on: false,
-      keep: 'UI-active'
+      on: false
     });
 
-    expect(result.queue.merge_queue.map((entry) => entry.bead_id)).toEqual([
-      'UI-active',
-      'UI-resolution'
-    ]);
+    expect(result.queue.revision).toBe(8);
+    expect(result.queue.auto_advance).toBe(false);
+    expect(result.queue.auto_merge).toBe(true);
+    expect(result.queue.merge_queue).toEqual(before);
   });
 
-  test('rejects a stale automation revision without changing state', () => {
+  test('rejects a stale auto advance revision without changing state', () => {
     const store = createQueueStore();
-    store.toggleAutomation(WS, { expected_revision: 0, on: true });
+    store.toggleAutoAdvance(WS, { expected_revision: 0, on: true });
     const before = store.snapshot(WS);
 
-    const result = store.toggleAutomation(WS, {
+    const result = store.toggleAutoAdvance(WS, {
       expected_revision: 0,
-      on: false,
-      keep: 'UI-active'
+      on: false
     });
 
     expect(result.conflict).toBe(true);

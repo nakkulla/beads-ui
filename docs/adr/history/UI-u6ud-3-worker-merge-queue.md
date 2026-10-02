@@ -1,7 +1,8 @@
 ---
 id: UI-u6ud-3
 title: Worker 머지 큐와 머지 자격
-status: accepted
+status: superseded
+superseded_by: UI-6mpl
 date: 2026-09-23
 summary: "PR 랜딩 작업의 머지는 Worker의 단일 순차 큐만 실행하고 완료는 MERGED 관측이다; 머지 자격은 저장소 안의 입력(PR·base·head identity, mergeability, 리뷰·실행 영수증, [verify])만 보고 GitHub checks는 읽지 않는다; auto_merge와 auto_advance는 독립 스위치이고 자동화 클릭만 둘을 원자적으로 맞춘다; 30분은 실패가 아니라 queue-yield deadline이고 충돌 해소 fence는 수동 권한 면제·슬롯 여유로 판정한다"
 supersedes: [6, 3, 11, 15]

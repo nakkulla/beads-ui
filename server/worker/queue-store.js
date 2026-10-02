@@ -8225,34 +8225,6 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Toggle both workspace automation axes in one CAS-guarded mutation. OFF
-     * also removes ordinary merge waits while preserving the active item and
-     * every durable resolution journal.
-     *
-     * @param {string} workspace
-     * @param {{ expected_revision: number, on: boolean, keep?: string|null }} input
-     * @returns {QueueOpResult}
-     */
-    toggleAutomation(workspace, input) {
-      const { expected_revision, on, keep } = input;
-      const result = applyMutation(workspace, expected_revision, (next) => {
-        next.auto_advance = !!on;
-        next.auto_merge = !!on;
-        if (!on) {
-          next.merge_queue = next.merge_queue.filter(
-            (entry) =>
-              entry.bead_id === (keep || null) || entry.resolution !== null
-          );
-        }
-        return true;
-      });
-      if (result.ok) {
-        auto_advance_at_shutdown.delete(keyFor(workspace));
-      }
-      return result;
-    },
-
-    /**
      * Merge one runner's usage-limit policy patch with revision CAS.
      *
      * @param {string} workspace
@@ -12279,7 +12251,7 @@ export function createQueueStore(options = {}) {
      *
      * `clear_waiting` removes ordinary queued work in the SAME mutation while
      * preserving the active item and every durable resolution journal. Turning
-     * automation off pauses new merge/update/resolver effects; it does not
+     * auto-merge off pauses new merge/update/resolver effects; it does not
      * cancel a resolver already running or erase its late settlement identity.
      *
      * @param {string} workspace
