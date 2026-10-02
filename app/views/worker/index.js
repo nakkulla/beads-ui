@@ -708,10 +708,8 @@ export function createWorkerView(mount_element, options = {}) {
   const issue_search = createIssueSearch({
     scope: 'workspace',
     transport,
-    openIssue: (id) => {
-      if (gotoIssue) {
-        gotoIssue(id);
-      }
+    openIssue: (id, root_dir) => {
+      openBlocker(id, root_dir || '');
     }
   });
   /**
@@ -4179,6 +4177,7 @@ export function createWorkerView(mount_element, options = {}) {
         if (current_workspace !== script_viewer_workspace) {
           script_viewer_workspace = current_workspace;
           repo_ops_script_viewer.close();
+          issue_search.reset();
         }
         doRender();
         refreshOpenDrawerMeta();

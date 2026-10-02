@@ -816,6 +816,7 @@ export function createMonitorView(mount_element, options) {
     if (!transport || !root_dir) {
       return null;
     }
+    let adopted = false;
     let res = await transport(type, {
       ...payload,
       root_dir,
@@ -824,6 +825,7 @@ export function createMonitorView(mount_element, options) {
     if (res && res.conflict && retry_conflict) {
       if (res.queue) {
         exec_adopted.set(root_dir, res.queue);
+        adopted = true;
       }
       const fresh =
         res.queue && typeof res.queue.revision === 'number'
@@ -835,8 +837,12 @@ export function createMonitorView(mount_element, options) {
         expected_revision: fresh
       });
     }
-    if (res && res.queue && root_dir) {
+    if (res && res.queue) {
       exec_adopted.set(root_dir, res.queue);
+      adopted = true;
+    }
+    if (adopted) {
+      doRender();
     }
     return res;
   }

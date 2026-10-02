@@ -355,6 +355,68 @@ describe('views/worker/issue-search', () => {
     expect(box.element.querySelector('.issue-search__menu')).toBeNull();
   });
 
+  test('opens the new reply first result when Enter lands before an edited query replies', async () => {
+    /** @type {Array<(value: any) => void>} */
+    const resolvers = [];
+    const transport = vi.fn(
+      () => new Promise((resolve) => resolvers.push(resolve))
+    );
+    const { input, openIssue } = mountSearch({ transport });
+    type(input, 'a');
+    await settle();
+    resolvers[0]({ results: [row('OLD-1')], partial: false });
+    await vi.advanceTimersByTimeAsync(0);
+    type(input, 'ab');
+    await settle();
+
+    press(input, 'Enter');
+    resolvers[1]({ results: [row('NEW-1')], partial: false });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(openIssue.mock.calls).toEqual([['NEW-1', '/repo/a']]);
+  });
+
+  test('keeps a dropdown closed by an outside click closed when the late reply lands', async () => {
+    /** @type {Array<(value: any) => void>} */
+    const resolvers = [];
+    const transport = vi.fn(
+      () => new Promise((resolve) => resolvers.push(resolve))
+    );
+    const { box, input } = mountSearch({ transport });
+    type(input, 'a');
+    await settle();
+    resolvers[0]({ results: [row('A-1')], partial: false });
+    await vi.advanceTimersByTimeAsync(0);
+    type(input, 'ab');
+    await settle();
+
+    document.body.click();
+    resolvers[1]({ results: [row('A-2')], partial: false });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(box.element.querySelector('.issue-search__menu')).toBeNull();
+  });
+
+  test('empties the box and drops the in-flight reply on reset', async () => {
+    /** @type {Array<(value: any) => void>} */
+    const resolvers = [];
+    const transport = vi.fn(
+      () => new Promise((resolve) => resolvers.push(resolve))
+    );
+    const { box, input } = mountSearch({ transport });
+    type(input, 'a');
+    await settle();
+
+    box.reset();
+    resolvers[0]({ results: [row('OLD-1')], partial: false });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect([
+      input.value,
+      box.element.querySelector('.issue-search__menu')
+    ]).toEqual(['', null]);
+  });
+
   test('writes nothing to localStorage', async () => {
     window.localStorage.clear();
     const { input } = mountSearch();

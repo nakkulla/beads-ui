@@ -2062,6 +2062,25 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     );
   });
 
+  test('draws the reply queue of the bulk merge without waiting for a push', async () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ pr_wait: [{ bead_id: 'A-1' }] })],
+      workspaces_state: [state()],
+      transport: async (type) =>
+        type === 'worker-merge-queue-add-all'
+          ? { queue: { revision: 2, pr_wait: [] } }
+          : null
+    });
+    view.load();
+
+    click(mount, '.mon-merge-all');
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(idsIn(mount, 'pr_wait')).toEqual([]);
+  });
+
   test('uses the shared unmerged confirmation for a running discard', () => {
     const { mount, view, sent, confirmFn } = setup({
       workspaces: [

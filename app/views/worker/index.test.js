@@ -15368,6 +15368,99 @@ describe('worker 탭 blocked 칩 열기 (UI-u6zf §5)', () => {
     expect(gotoIssue.mock.calls).toEqual([['UI-x']]);
   });
 
+  describe('이슈 검색 상자 (UI-f2sy §6.3)', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /**
+     * @param {Array<Record<string, string>>} found
+     * @param {{ gotoIssue: any, switchWorkspace?: any }} handlers
+     * @returns {{ mount: HTMLElement, queueStore: any, setWorkspace: (ws: string) => void, type: (value: string) => Promise<void> }}
+     */
+    function mountSearch(found, handlers) {
+      vi.useFakeTimers();
+      const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+      const queueStore = createWorkerQueueStore();
+      let workspace = CURRENT_WS;
+      createWorkerView(mount, {
+        issueStores: seedCandidates(),
+        queueStore,
+        transport: vi.fn(async () => ({ results: found, partial: false })),
+        getWorkspacePath: () => workspace,
+        ...handlers
+      });
+      queueStore.set(queueOf());
+      return {
+        mount,
+        queueStore,
+        setWorkspace: (ws) => {
+          workspace = ws;
+        },
+        type: async (value) => {
+          const input = /** @type {HTMLInputElement} */ (
+            mount.querySelector('.issue-search__input')
+          );
+          input.value = value;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          await vi.advanceTimersByTimeAsync(200);
+        }
+      };
+    }
+
+    test('empties the search box when the connected repository changes', async () => {
+      const ctx = mountSearch(
+        [
+          {
+            id: 'W-1',
+            status: 'open',
+            title: 't',
+            root_dir: CURRENT_WS,
+            workspace_name: 'worker'
+          }
+        ],
+        { gotoIssue: vi.fn() }
+      );
+      await ctx.type('w');
+
+      ctx.setWorkspace(OTHER_WS);
+      ctx.queueStore.set(queueOf({ revision: 2 }));
+
+      expect([
+        /** @type {HTMLInputElement} */ (
+          ctx.mount.querySelector('.issue-search__input')
+        ).value,
+        ctx.mount.querySelector('.issue-search__menu')
+      ]).toEqual(['', null]);
+    });
+
+    test('switches to the result repository before opening its detail', async () => {
+      const gotoIssue = vi.fn();
+      const switchWorkspace = vi.fn(async () => {});
+      const ctx = mountSearch(
+        [
+          {
+            id: 'UI-x',
+            status: 'open',
+            title: 'other repo issue',
+            root_dir: OTHER_WS,
+            workspace_name: 'beads-ui'
+          }
+        ],
+        { gotoIssue, switchWorkspace }
+      );
+      await ctx.type('x');
+
+      /** @type {HTMLElement} */ (
+        ctx.mount.querySelector('.issue-search__row')
+      ).click();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(switchWorkspace.mock.calls).toEqual([[OTHER_WS]]);
+      expect(gotoIssue.mock.calls).toEqual([['UI-x']]);
+    });
+  });
+
   test('does not open the issue when the workspace switch fails', async () => {
     const gotoIssue = vi.fn();
     const switchWorkspace = vi.fn(async () => {
