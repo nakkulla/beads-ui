@@ -5801,6 +5801,30 @@ describe('lane model candidate eligibility (UI-4tud §4.2)', () => {
   });
 });
 
+describe('lane model candidate chain released key (UI-f2sy §6.2)', () => {
+  test('orders candidates by the last release like the Worker adapter rows', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-1', { release_info: { last_released_at: 100 } }),
+            runnable('A-2', { release_info: { last_released_at: 300 } }),
+            runnable('A-3')
+          ]
+        })
+      ],
+      [state()],
+      { candidate_chain: { chain: [{ key: 'released', dir: 'desc' }] } }
+    );
+
+    expect(lanes.runnable.map((item) => item.id)).toEqual([
+      'A-2',
+      'A-1',
+      'A-3'
+    ]);
+  });
+});
+
 describe('lane model candidate release chips (UI-d13v §5.3)', () => {
   test('draws every released chip in the window, newest first', () => {
     const now = Date.now();

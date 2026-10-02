@@ -4227,6 +4227,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
           ? { spec_after_blocker: true }
           : {}),
         ...(released ? { dependency_chips: { released } } : {}),
+        // 정렬 체인의 `released` 키 재료 (UI-f2sy §6.2): 체인을 레인 항목에
+        // 거는 Monitor 탭도 Worker 탭의 어댑터 행과 같은 사실로 순서를 낸다.
+        ...(entry.release_info && typeof entry.release_info === 'object'
+          ? { release_info: entry.release_info }
+          : {}),
         ...(entry.dependents_info && typeof entry.dependents_info === 'object'
           ? { dependents_info: entry.dependents_info }
           : {}),
