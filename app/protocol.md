@@ -167,6 +167,15 @@ and, since UI-e1ta §8, the observation fields
 `issue_prefix` comes from that workspace's bd config cache; missing, malformed,
 or temporarily unreadable config is `null`.
 
+A `workspaces[]` entry exists only for a repository that still has something to
+show: a non-empty `queue`, `pr_wait`, `done`, `runnable`, `session_active`,
+`external_waits` or `repo_operations`, a non-empty `cleanup_failed` record, a
+serial-lane occupant, or a running implementation attempt (UI-f2sy §7).
+`repo_operations` and `cleanup_failed` keep a repository whose only remaining
+content is a failed operation or a stopped cleanup in the list, so the monitor's
+`⚠ N` badge and timeline drawer read them from that entry. A repository without
+an entry still has its `workspaces_state` row.
+
 Each `workspaces[]` row carries a `bead_overlay: Record<bead_id, entry>` — the
 issue facts the lane rows draw but the queue snapshot lacks. An entry holds
 `route`, `worker_created_from`(`_root_dir`), `priority`, `issue_type` and

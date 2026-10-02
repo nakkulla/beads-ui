@@ -79,7 +79,7 @@ function state(patch = {}) {
 const active = [];
 
 /**
- * @param {{ rows?: any[], done?: any[], presets?: any, transport?: (type: string, payload: any) => any }} [input]
+ * @param {{ rows?: any[], done?: any[], presets?: any, transport?: (type: string, payload: any) => any, repoOps?: Record<string, { operations: any, cleanup_failures: any }> }} [input]
  */
 function setup(input = {}) {
   document.body.innerHTML = '<div id="d"></div>';
@@ -103,9 +103,12 @@ function setup(input = {}) {
   const closeSettings = vi.fn(() => {
     settings_root = null;
   });
+  const openRepoOps = vi.fn();
   const deck = createRepoDeck(mount, {
     openSettings,
     closeSettings,
+    openRepoOps,
+    repoOps: (root_dir) => (input.repoOps || {})[root_dir] || null,
     settingsRoot: () => settings_root,
     workspacesState: () => rows,
     doneItems: () => input.done || [],
@@ -127,6 +130,7 @@ function setup(input = {}) {
     onFocusChange,
     openSettings,
     closeSettings,
+    openRepoOps,
     settingsRoot: () => settings_root,
     setRows: (/** @type {any[]} */ next) => {
       rows = next;
@@ -786,6 +790,103 @@ describe('createRepoDeck 레포 설정 진입 (UI-e1ta §7)', () => {
     );
 
     expect(mount.children).toHaveLength(0);
+  });
+});
+
+describe('createRepoDeck 저장소 작업 배지 (UI-f2sy §7)', () => {
+  const FAILED_CARD = {
+    operation_id: 'op-1',
+    kind: 'deploy',
+    state: 'failed',
+    dismissed: false,
+    superseded_by: null
+  };
+
+  /**
+   * @param {Record<string, { operations: any, cleanup_failures: any }>} repo_ops
+   * @returns {ReturnType<typeof setup>}
+   */
+  function twoRepos(repo_ops) {
+    return setup({
+      rows: [state(), state({ root_dir: WS_B, name: 'repo-b', revision: 5 })],
+      repoOps: repo_ops
+    });
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} root_dir
+   * @returns {HTMLElement|null}
+   */
+  function badgeOf(mount, root_dir) {
+    return mount.querySelector(
+      `.mon2-deck__tile[data-root-dir="${root_dir}"] [data-act="repo-ops"]`
+    );
+  }
+
+  test('draws the unresolved count of failed operations and stopped cleanups', () => {
+    const { mount, deck } = twoRepos({
+      [WS_A]: {
+        operations: [FAILED_CARD],
+        cleanup_failures: [{ bead_id: 'A-1' }]
+      }
+    });
+
+    deck.render();
+
+    expect(badgeOf(mount, WS_A)?.textContent?.trim()).toBe('⚠ 2');
+  });
+
+  test('draws no badge when every failure is already resolved', () => {
+    const { mount, deck } = twoRepos({
+      [WS_A]: {
+        operations: [{ ...FAILED_CARD, dismissed: true }],
+        cleanup_failures: []
+      }
+    });
+
+    deck.render();
+
+    expect(badgeOf(mount, WS_A)).toBeNull();
+  });
+
+  test('draws no badge for a repository without pipeline material', () => {
+    const { mount, deck } = twoRepos({
+      [WS_A]: { operations: [FAILED_CARD], cleanup_failures: [] }
+    });
+
+    deck.render();
+
+    expect(badgeOf(mount, WS_B)).toBeNull();
+  });
+
+  test('opens the repository timeline drawer from the clicked tile', () => {
+    const { mount, deck, openRepoOps } = twoRepos({
+      [WS_A]: { operations: [FAILED_CARD], cleanup_failures: [] },
+      [WS_B]: { operations: [FAILED_CARD], cleanup_failures: [] }
+    });
+
+    deck.render();
+    click(
+      mount,
+      `.mon2-deck__tile[data-root-dir="${WS_B}"] [data-act="repo-ops"]`
+    );
+
+    expect(openRepoOps).toHaveBeenCalledWith(WS_B);
+  });
+
+  test('keeps the focus filter untouched when the badge is clicked', () => {
+    const { mount, deck, onFocusChange } = twoRepos({
+      [WS_A]: { operations: [FAILED_CARD], cleanup_failures: [] }
+    });
+
+    deck.render();
+    click(
+      mount,
+      `.mon2-deck__tile[data-root-dir="${WS_A}"] [data-act="repo-ops"]`
+    );
+
+    expect(onFocusChange).not.toHaveBeenCalled();
   });
 });
 

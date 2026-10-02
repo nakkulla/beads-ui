@@ -1818,7 +1818,7 @@ const dialog_parts = [];
  * policies, a hidden prefix, two monitor rows (bulk mode) and the model list
  * (bulk `전역`).
  *
- * @param {'single'|'monitor'} scope
+ * @param {'single'|'monitor'|'repo'} scope
  * @returns {Promise<HTMLElement>}
  */
 async function renderSettingsDialog(scope) {
@@ -1903,10 +1903,40 @@ async function renderSettingsDialog(scope) {
     monitorRows: () => [
       dialogMonitorRow('/repo-a', 'repo-a'),
       dialogMonitorRow('/repo-b', 'repo-b')
+    ],
+    // The `저장소` tab's material: repo-a's pipeline entry, with a declared
+    // verify and deploy lane so every declaration control is on screen.
+    monitorPipeline: () => [
+      {
+        root_dir: '/repo-a',
+        name: 'repo-a',
+        revision: 1,
+        slots: 2,
+        serial_lane_count: 1,
+        declared_base: 'main',
+        repo_operations: [],
+        repo_ops_opt_out: { verify: false, deploy: false },
+        workspace_info: {
+          repo_ops: {
+            status: 'resolved',
+            source_path: 'repo-ops/config.toml',
+            base_ref: 'main',
+            base_sha: 'a'.repeat(40),
+            repo_id: '/repo-a',
+            verify: { script: 'repo-ops/script/verify', timeout_ms: 300_000 },
+            deploy: { script: 'repo-ops/script/deploy', timeout_ms: 600_000 },
+            error_code: null
+          }
+        }
+      }
     ]
   });
   dialog_parts.push(dialog);
-  dialog.open('worker', scope === 'monitor' ? { scope: 'monitor' } : {});
+  if (scope === 'repo') {
+    dialog.open('repo', { scope: 'repo', root_dir: '/repo-a' });
+  } else {
+    dialog.open('worker', scope === 'monitor' ? { scope: 'monitor' } : {});
+  }
   await settle();
   return /** @type {HTMLElement} */ (
     document.getElementById('settings-dialog')
@@ -1965,6 +1995,17 @@ describe('dialogs use parts (§3.4 check 3)', () => {
       expect(controlsWithoutPart(dialog)).toEqual([]);
     }
   );
+
+  test('draws every control of the 저장소 tab with a part', async () => {
+    const dialog = await renderSettingsDialog('repo');
+
+    expect(
+      dialog.querySelectorAll(
+        '[data-pane="repo"] button, [data-pane="repo"] input, [data-pane="repo"] select'
+      ).length
+    ).toBeGreaterThan(5);
+    expect(controlsWithoutPart(dialog)).toEqual([]);
+  });
 
   test('draws every new issue dialog control with a part', () => {
     document.body.innerHTML = '<div id="m"></div>';

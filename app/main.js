@@ -1506,6 +1506,11 @@ export function bootstrap(root_element) {
       // (UI-nu43 §4.1). 레포 카드 ⚙도 같은 창을 `scope: 'repo'`로 열므로 일괄
       // 적용 뒤 열린 패널을 다시 읽던 경로는 없다 (UI-e1ta §7).
       monitorRows: () => monitor_pipeline_store.getWorkspacesState(),
+      // 레포 `⚙`의 `저장소` 탭은 그 저장소의 파이프라인 항목과 저장소 작업 서랍을
+      // 읽는다 (UI-f2sy §7). `monitor_view`는 아래에서 만들어지지만 서랍은 창이
+      // 열린 뒤의 클릭에서만 열린다.
+      monitorPipeline: () => monitor_pipeline_store.get(),
+      onOpenRepoOps: (root_dir) => monitor_view.openRepoOps(root_dir),
       subscribeMonitorRows: (fn) => monitor_pipeline_store.subscribe(fn),
       onOpenChange: (open) => {
         const was_open = settings_dialog_open;
@@ -1790,6 +1795,12 @@ export function bootstrap(root_element) {
       monitor_root.hidden = s.view !== 'monitor';
       compare_root.hidden = s.view !== 'compare';
       adr_root.hidden = s.view !== 'adr';
+      // 모니터는 여러 저장소를 한 번에 보는 탭이라 새 이슈를 만들 저장소가
+      // 모호하다 — 헤더 버튼을 숨기고 단축키도 열지 않는다 (UI-f2sy §8).
+      const new_issue_button = document.getElementById('new-issue-btn');
+      if (new_issue_button) {
+        new_issue_button.hidden = s.view === 'monitor';
+      }
       if (repo_scope_mount) {
         // 비교도 Monitor와 같이 저장소 전체를 보는 탭이라 레포 캡슐이 물러난다.
         repo_scope_mount.classList.toggle(
@@ -1855,7 +1866,7 @@ export function bootstrap(root_element) {
           typeof target.isContentEditable === 'boolean' &&
           target.isContentEditable);
       if (is_modifier && key === 'n') {
-        if (!is_editable) {
+        if (!is_editable && store.getState().view !== 'monitor') {
           ev.preventDefault();
           new_issue_dialog.open();
         }

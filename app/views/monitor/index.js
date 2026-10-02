@@ -104,6 +104,7 @@ import {
   providerResumeOverride,
   showProviderResumeDialog
 } from '../worker/provider-resume-dialog.js';
+import { createRepoOpsDrawer } from '../worker/repo-ops-timeline.js';
 import {
   drawsRunningTile,
   runningTile,
@@ -614,7 +615,12 @@ export function createMonitorView(mount_element, options) {
   drawer_backdrop_el.className = 'worker-drawer-overlay__backdrop';
   const drawer_el = document.createElement('div');
   drawer_el.className = 'worker-drawer-host mon2-drawer';
-  drawer_overlay_el.append(drawer_backdrop_el, drawer_el);
+  // 저장소 작업 타임라인은 같은 오버레이를 쓰되 자기 lit 루트를 따로 갖는다
+  // (Worker 탭과 같은 구성, UI-f2sy §7): 둘 중 하나만 동시에 열린다.
+  const repo_ops_drawer_el = document.createElement('div');
+  repo_ops_drawer_el.className = 'worker-drawer-host mon2-drawer';
+  repo_ops_drawer_el.hidden = true;
+  drawer_overlay_el.append(drawer_backdrop_el, drawer_el, repo_ops_drawer_el);
   mount_element.appendChild(drawer_overlay_el);
 
   /** @type {LaneModel} */
@@ -688,6 +694,87 @@ export function createMonitorView(mount_element, options) {
       doRender();
     }
   });
+
+  /**
+   * 저장소 작업 타임라인 서랍이 지금 말하는 저장소 (UI-f2sy §7). 서랍은 모니터에
+   * 하나뿐이고 레포 띠 `⚠ N`과 설정창 `저장소` 탭이 저장소 단위로 연다. 서랍 안
+   * 조작은 이 `root_dir`로 간다.
+   *
+   * @type {string|null}
+   */
+  let repo_ops_root = null;
+  // Session-ephemeral like the Worker tab's (§4.1): a drawer that reopened itself
+  // on every reload would be the forced expansion the redesign removed.
+  const repo_ops_drawer = createRepoOpsDrawer(repo_ops_drawer_el, {
+    onClose: () => {
+      repo_ops_root = null;
+      repo_ops_drawer_el.hidden = true;
+      drawer_overlay_el.hidden = true;
+      doRender();
+    }
+  });
+
+  /**
+   * The timeline's material for one repository: the lane model's group, which
+   * already reads the pipeline entry with a mutation reply laid over it. A
+   * repository without an entry has no group material, so the caller draws
+   * nothing for it (fail-quiet).
+   *
+   * @param {string} root_dir
+   * @returns {{ operations: any, cleanup_failures: any }|null}
+   */
+  function repoOpsMaterial(root_dir) {
+    const group = lanes.groups_by_root.get(root_dir);
+    return group
+      ? {
+          operations: group.repo_operations,
+          cleanup_failures: group.cleanup_failures
+        }
+      : null;
+  }
+
+  /**
+   * @param {string} root_dir
+   * @returns {{ operations: any, cleanup_failures: any, repo: string, repo_ops: any }}
+   */
+  function repoOpsDrawerInput(root_dir) {
+    const material = repoOpsMaterial(root_dir);
+    const info = queueOf(root_dir).workspace_info;
+    const repo_ops =
+      info && typeof info === 'object' && info.repo_ops ? info.repo_ops : null;
+    return {
+      operations: material ? material.operations : [],
+      cleanup_failures: material ? material.cleanup_failures : [],
+      repo: root_dir,
+      repo_ops
+    };
+  }
+
+  /**
+   * Open the 저장소 작업 타임라인 for one repository. The transcript drawer
+   * closes first: the two share one overlay and only one is ever the subject.
+   *
+   * @param {string} root_dir
+   */
+  function openRepoOpsDrawer(root_dir) {
+    if (!root_dir) {
+      return;
+    }
+    if (drawer.isOpen()) {
+      drawer.close();
+    }
+    repo_ops_root = root_dir;
+    repo_ops_drawer_el.hidden = false;
+    drawer_overlay_el.hidden = false;
+    repo_ops_drawer.open(repoOpsDrawerInput(root_dir));
+    doRender();
+  }
+
+  /** Show the shared overlay for the transcript drawer (never both at once). */
+  function showTranscriptOverlay() {
+    repo_ops_drawer.close();
+    drawer_overlay_el.hidden = false;
+  }
 
   /** 드롭 식별자·계획 실행 컨트롤러 (UI-4tud §4.5). */
   const lane_drag = createLaneDrag({
@@ -1109,6 +1196,79 @@ export function createMonitorView(mount_element, options) {
     } finally {
       cleanup_pending.delete(key);
       doRender();
+    }
+  }
+
+  /**
+   * One repository's latest queue revision — the coordinate every drawer
+   * mutation is CAS-guarded under.
+   *
+   * @param {string} root_dir
+   * @returns {number}
+   */
+  function revisionOf(root_dir) {
+    const revision = queueOf(root_dir)?.revision;
+    return typeof revision === 'number' ? revision : 0;
+  }
+
+  /**
+   * Acknowledge ONE failed repo operation from the timeline drawer — 기록 닫기,
+   * the Worker tab's `dismissRepoOperation` against the drawer's own repository.
+   * Not a retry and not a state transition: only the 해결 필요 tally lets it go.
+   *
+   * @param {string} operation_id
+   * @param {string} root_dir
+   */
+  async function dismissRepoOperation(operation_id, root_dir) {
+    if (!operation_id) {
+      return;
+    }
+    const res = await sendCas(
+      'worker-repo-operation-dismiss',
+      { operation_id },
+      root_dir,
+      revisionOf(root_dir)
+    );
+    if (res && res.ok === false) {
+      showToast(`기록 닫기 거부: ${res.reason || ''}`, 'error', 3000);
+    }
+    doRender();
+  }
+
+  /**
+   * The timeline drawer's three controls, each against the repository the drawer
+   * is open on (UI-f2sy §7).
+   *
+   * @param {HTMLElement} target
+   */
+  function onRepoOpsDrawerClick(target) {
+    const root_dir = repo_ops_root;
+    if (root_dir === null) {
+      return;
+    }
+    const dismiss = /** @type {HTMLElement|null} */ (
+      target.closest('.worker-repo-op__dismiss')
+    );
+    if (dismiss) {
+      void dismissRepoOperation(dismiss.dataset.operationId || '', root_dir);
+      return;
+    }
+    const resume = /** @type {HTMLElement|null} */ (
+      target.closest('.worker-cleanup__resume')
+    );
+    if (resume?.dataset.beadId) {
+      void retryCleanup(resume.dataset.beadId, root_dir, revisionOf(root_dir));
+      return;
+    }
+    const resolve = /** @type {HTMLElement|null} */ (
+      target.closest('.worker-cleanup__resolve')
+    );
+    if (resolve?.dataset.beadId) {
+      void resolveInSession(
+        resolve.dataset.beadId,
+        root_dir,
+        revisionOf(root_dir)
+      );
     }
   }
 
@@ -2173,6 +2333,11 @@ export function createMonitorView(mount_element, options) {
     const now = nowFn();
     setChipPresetContext(chipPresetContext());
     lanes = projectLanes();
+    // 열린 타임라인은 새 투영에서 다시 도출한다 — 닫은 기록이나 끝난 정리가
+    // 다시 열지 않고도 사라져야 한다 (접힘 상태는 서랍이 지킨다).
+    if (repo_ops_root !== null && repo_ops_drawer.isOpen()) {
+      repo_ops_drawer.refresh(repoOpsDrawerInput(repo_ops_root));
+    }
     item_by_bead = new Map();
     pr_rows = projectPrWaitRows(lanes, adoptedWorkspaces());
     for (const item of [
@@ -2304,6 +2469,8 @@ export function createMonitorView(mount_element, options) {
       openSettings: (root_dir) => options.openRepoSettings?.(root_dir),
       closeSettings: () => options.closeRepoSettings?.(),
       settingsRoot: () => options.repoSettingsRoot?.() ?? null,
+      repoOps: repoOpsMaterial,
+      openRepoOps: openRepoOpsDrawer,
       onFocusChange: (root_dir) => {
         focus_root = root_dir;
         applyFocusClasses();
@@ -2779,7 +2946,7 @@ export function createMonitorView(mount_element, options) {
       const provider = button.getAttribute('data-session-provider');
       const session_id = button.getAttribute('data-session-id');
       if ((provider === 'claude' || provider === 'codex') && session_id) {
-        drawer_overlay_el.hidden = false;
+        showTranscriptOverlay();
         drawer.open(
           sessionRefDrawerInput(
             {
@@ -2809,7 +2976,7 @@ export function createMonitorView(mount_element, options) {
           (view) => view && view.current === true
         );
         if (current) {
-          drawer_overlay_el.hidden = false;
+          showTranscriptOverlay();
           drawer.open(
             sessionRefDrawerInput(current, bead_id, 'in_progress', root_dir)
           );
@@ -2819,7 +2986,7 @@ export function createMonitorView(mount_element, options) {
       }
       selected_attempt = attempt_id;
       if (attempt_id && item) {
-        drawer_overlay_el.hidden = false;
+        showTranscriptOverlay();
         drawer.open({
           attempt_id,
           root_dir,
@@ -3029,7 +3196,17 @@ export function createMonitorView(mount_element, options) {
       confirmProviderResumeDialog();
       return;
     }
-    if (target.closest('dialog') || target.closest('.worker-drawer-overlay')) {
+    // 백드롭 클릭은 타임라인 서랍을 닫는다 (전사 서랍은 자기 바깥 mousedown이
+    // 닫는다); 서랍 안 나머지 클릭은 서랍 자기 핸들러의 몫이다.
+    if (target.closest('.worker-drawer-overlay__backdrop')) {
+      repo_ops_drawer.close();
+      return;
+    }
+    if (target.closest('.worker-drawer-overlay')) {
+      onRepoOpsDrawerClick(target);
+      return;
+    }
+    if (target.closest('dialog')) {
       return;
     }
     if (target.closest('a')) {
@@ -3559,6 +3736,15 @@ export function createMonitorView(mount_element, options) {
     },
     pause() {
       stopTick();
+    },
+    /**
+     * Open one repository's 저장소 작업 타임라인 — the settings window's
+     * `저장소 작업 기록 열기` reaches the same drawer as the deck's `⚠ N`.
+     *
+     * @param {string} root_dir
+     */
+    openRepoOps(root_dir) {
+      openRepoOpsDrawer(root_dir);
     },
     clear() {
       stopTick();

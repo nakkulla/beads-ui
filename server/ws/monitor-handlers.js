@@ -446,6 +446,11 @@ function prewarmVisibleIssuePrefixes() {
  * activity is an interactive session's `in_progress` bead has no worker state at
  * all.
  *
+ * `repo_operations` and `cleanup_failed` count as well (UI-f2sy §7): a repo
+ * whose only remaining content is a failed repo operation or a stopped cleanup
+ * still owes the monitor its `⚠ N` badge and the timeline drawer, and neither
+ * can be drawn without an entry that carries those two keys.
+ *
  * @param {Record<string, any>} snapshot - Decorated snapshot plus `runnable` and
  * `session_active`.
  * @returns {boolean}
@@ -457,12 +462,21 @@ function hasPipeline(snapshot) {
     'done',
     'runnable',
     'session_active',
-    'external_waits'
+    'external_waits',
+    'repo_operations'
   ];
   for (const lane of lanes) {
     if (Array.isArray(snapshot[lane]) && snapshot[lane].length > 0) {
       return true;
     }
+  }
+  const cleanup_failed = snapshot.cleanup_failed;
+  if (
+    cleanup_failed &&
+    typeof cleanup_failed === 'object' &&
+    Object.keys(cleanup_failed).length > 0
+  ) {
+    return true;
   }
   if (serialLaneBeadIds(snapshot).size > 0) {
     return true;

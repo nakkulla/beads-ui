@@ -6343,3 +6343,180 @@ describe('views/monitor PR 대기 줄 공유 투영 (UI-f2sy §4·§5)', () => {
     expect(prBadge(mount)).toBe('최종 변경 리뷰 필요 · 자동 리뷰 세션 실행 중');
   });
 });
+
+describe('views/monitor 저장소 작업 서랍 (UI-f2sy §7)', () => {
+  const FAILED_OP = {
+    operation_id: 'op-1',
+    kind: 'deploy',
+    state: 'failed',
+    target_sha: 'a'.repeat(40),
+    finished_at: NOW - 5000,
+    failure: { code: 'script_failed' }
+  };
+  const STOPPED_CLEANUP = { 'A-1': { step: 'branch_cleanup', reason: 'boom' } };
+
+  /**
+   * Two repositories, only repo-b carrying repo-operation failures.
+   *
+   * @param {Parameters<typeof setup>[0]} [extra]
+   * @returns {ReturnType<typeof setup>}
+   */
+  function twoRepos(extra = {}) {
+    return setup({
+      workspaces: [
+        workspace(),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          revision: 7,
+          repo_operations: [FAILED_OP],
+          cleanup_failed: STOPPED_CLEANUP
+        })
+      ],
+      workspaces_state: [state(), state({ root_dir: WS_B, name: 'repo-b' })],
+      ...extra
+    });
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} root_dir
+   * @returns {string}
+   */
+  function badgeText(mount, root_dir) {
+    return (
+      mount
+        .querySelector(
+          `.mon2-deck__tile[data-root-dir="${root_dir}"] [data-act="repo-ops"]`
+        )
+        ?.textContent?.trim() ?? ''
+    );
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} root_dir
+   */
+  function openDrawer(mount, root_dir) {
+    click(
+      mount,
+      `.mon2-deck__tile[data-root-dir="${root_dir}"] [data-act="repo-ops"]`
+    );
+  }
+
+  test('draws the unresolved count on the tile of the repository that has failures', () => {
+    const { mount, view } = twoRepos();
+
+    view.load();
+
+    expect([badgeText(mount, WS_B), badgeText(mount, WS_A)]).toEqual([
+      '⚠ 2',
+      ''
+    ]);
+  });
+
+  test('draws no badge for a repository with only a succeeded operation', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          repo_operations: [{ ...FAILED_OP, state: 'succeeded' }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(badgeText(mount, WS_A)).toBe('');
+  });
+
+  test('opens the timeline drawer on the badge repository', () => {
+    const { mount, view } = twoRepos();
+
+    view.load();
+    openDrawer(mount, WS_B);
+
+    expect([
+      el(mount, '.worker-repo-drawer__hint').textContent,
+      el(mount, '.worker-drawer-overlay').hidden
+    ]).toEqual([WS_B, false]);
+  });
+
+  test('opens the same drawer from the view method the settings window calls', () => {
+    const { mount, view } = twoRepos();
+
+    view.load();
+    view.openRepoOps(WS_B);
+
+    expect(el(mount, '.worker-repo-drawer__hint').textContent).toBe(WS_B);
+  });
+
+  test('sends 기록 닫기 with the drawer repository and its revision', () => {
+    const { mount, view, sent } = twoRepos();
+
+    view.load();
+    openDrawer(mount, WS_B);
+    click(mount, '.worker-repo-op__dismiss');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-repo-operation-dismiss',
+      payload: { operation_id: 'op-1', root_dir: WS_B, expected_revision: 7 }
+    });
+  });
+
+  test('sends 정리 재시도 with the drawer repository and its revision', () => {
+    const { mount, view, sent } = twoRepos();
+
+    view.load();
+    openDrawer(mount, WS_B);
+    click(mount, '.worker-cleanup__resume');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-cleanup-retry',
+      payload: { bead_id: 'A-1', root_dir: WS_B, expected_revision: 7 }
+    });
+  });
+
+  test('sends 세션에서 해결 with the drawer repository and its revision', () => {
+    const { mount, view, sent } = twoRepos();
+
+    view.load();
+    openDrawer(mount, WS_B);
+    click(mount, '.worker-cleanup__resolve');
+
+    expect(sent[0]).toEqual({
+      type: 'worker-resolve-in-session',
+      payload: { bead_id: 'A-1', root_dir: WS_B, expected_revision: 7 }
+    });
+  });
+
+  test('retries a conflicting 기록 닫기 once on that repository revision', async () => {
+    const { mount, view, sent } = twoRepos({
+      transport: async (type, payload) =>
+        type === 'worker-repo-operation-dismiss' &&
+        payload.expected_revision === 7
+          ? { ok: false, conflict: true, queue: { revision: 9 } }
+          : { ok: true }
+    });
+
+    view.load();
+    openDrawer(mount, WS_B);
+    click(mount, '.worker-repo-op__dismiss');
+    await flushMicrotasks();
+
+    expect(sent.map((call) => call.payload.expected_revision)).toEqual([7, 9]);
+  });
+
+  test('closes the drawer from a backdrop click', () => {
+    const { mount, view } = twoRepos();
+
+    view.load();
+    openDrawer(mount, WS_B);
+    click(mount, '.worker-drawer-overlay__backdrop');
+
+    expect([
+      mount.querySelector('.worker-repo-drawer'),
+      el(mount, '.worker-drawer-overlay').hidden
+    ]).toEqual([null, true]);
+  });
+});

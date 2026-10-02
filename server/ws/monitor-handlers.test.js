@@ -750,6 +750,49 @@ describe('buildMonitorPipeline empty-workspace omission (UI-nprg)', () => {
 
     expect(out.map((w) => w.root_dir)).toEqual([WS_A]);
   });
+
+  test('keeps a workspace whose only content is a failed repo operation', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          repo_operations: [
+            { operation_id: 'op-1', kind: 'deploy', state: 'failed' }
+          ]
+        })
+      }
+    });
+
+    expect(out.map((w) => w.root_dir)).toEqual([WS_A]);
+    expect(out[0].repo_operations).toHaveLength(1);
+  });
+
+  test('keeps a workspace whose only content is a stopped cleanup', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          cleanup_failed: { 'A-1': { step: 'worktree', reason: 'busy' } }
+        })
+      }
+    });
+
+    expect(out.map((w) => w.root_dir)).toEqual([WS_A]);
+    expect(Object.keys(/** @type {any} */ (out[0].cleanup_failed))).toEqual([
+      'A-1'
+    ]);
+  });
+
+  test('omits a workspace whose repo operation and cleanup keys are empty', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ repo_operations: [], cleanup_failed: {} })
+      }
+    });
+
+    expect(out).toEqual([]);
+  });
 });
 
 describe('buildMonitorPipeline fail-quiet (UI-nprg §에러 처리)', () => {

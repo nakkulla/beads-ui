@@ -37,7 +37,11 @@ import {
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
 import { modelRunnerOf } from '../detail-panel/exec-settings.js';
-import { summaryChipsTemplate, tokenChipTemplate } from '../worker/lanes.js';
+import {
+  repoOpsStripModel,
+  summaryChipsTemplate,
+  tokenChipTemplate
+} from '../worker/lanes.js';
 import { pruneAdopted as dropCaughtUp, mergeQueue } from './adopted-queue.js';
 import { iconGear, iconMerge, iconPause, iconPlay } from './icons.js';
 import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
@@ -164,6 +168,11 @@ export function deckExecChips(row) {
  * 행 소멸이 함께 쓴다.
  * @property {() => string|null} [settingsRoot] - 지금 창이 묶인 root_dir, 또는
  * null.
+ * @property {(root_dir: string) => { operations: any, cleanup_failures: any }|null} [repoOps] -
+ * 그 저장소 파이프라인 항목의 저장소 작업 재료. 항목이 없으면 null이고 그 타일은
+ * `⚠ N`을 그리지 않는다 (UI-f2sy §7).
+ * @property {(root_dir: string) => void} [openRepoOps] - 그 저장소의 타임라인
+ * drawer를 여는 경로 (`⚠ N` 클릭).
  */
 
 /**
@@ -441,6 +450,37 @@ export function createRepoDeck(mount_element, options) {
   }
 
   /**
+   * The `⚠ N` badge (UI-f2sy §7): 해결 필요 저장소 작업 수. N은 Worker 탭 저장소
+   * 작업 띠가 세는 그 판정(`repoOpsStripModel`)이고, 재료가 없거나 0이면 그리지
+   * 않는다. 누르면 그 저장소의 타임라인 서랍이 열린다.
+   *
+   * @param {any} row
+   * @returns {import('lit-html').TemplateResult|''}
+   */
+  function repoOpsBadge(row) {
+    const material = options.repoOps ? options.repoOps(row.root_dir) : null;
+    if (!material) {
+      return '';
+    }
+    const model = repoOpsStripModel(
+      material.operations,
+      material.cleanup_failures
+    );
+    if (!model || model.unresolved <= 0) {
+      return '';
+    }
+    return html`<button
+      type="button"
+      class="op-btn op-btn--warn mon2-deck__repo-ops"
+      data-act="repo-ops"
+      aria-label=${`${row.name} 해결 필요 저장소 작업 ${model.unresolved}건`}
+      title="해결 필요 저장소 작업 — 눌러서 이 저장소의 작업 기록을 엽니다"
+    >
+      ⚠ ${model.unresolved}
+    </button>`;
+  }
+
+  /**
    * @param {any} row
    * @returns {import('lit-html').TemplateResult}
    */
@@ -477,7 +517,7 @@ export function createRepoDeck(mount_element, options) {
       <div class="mon2-deck__tile-ft">
         <div class="mon2-deck__ops">${switchesTemplate(row)}</div>
         <span class="mon2-deck__counts">${tileCounts(row)}</span>
-        ${chipsTemplate(row)}
+        ${repoOpsBadge(row)} ${chipsTemplate(row)}
       </div>
     </div>`;
   }
@@ -618,6 +658,10 @@ export function createRepoDeck(mount_element, options) {
     }
     if (action === 'gear') {
       toggleSettings(root_dir);
+      return;
+    }
+    if (action === 'repo-ops') {
+      options.openRepoOps?.(root_dir);
       return;
     }
     toggleFocus(root_dir);

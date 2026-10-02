@@ -29,6 +29,7 @@ import { createChipBindingsTab } from './chip-bindings-tab.js';
 import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import { createExecutionPane } from './execution-pane.js';
 import { createModelVisibilitySection } from './model-visibility-section.js';
+import { createRepoPane } from './repo-pane.js';
 
 /**
  * The rail's tabs, in display order. `quick fix` carries `◈` — the same
@@ -44,23 +45,34 @@ export const SETTINGS_TABS = [
 ];
 
 /**
- * The tabs of the two monitor-tab modes, in display order. `표시` is a
- * workspace-global policy, so it stays on the connected-workspace window
- * (UI-e1ta §5, §7).
+ * The four execution tabs both monitor-tab modes share, in display order.
+ * `표시` is a workspace-global policy, so it stays on the connected-workspace
+ * window (UI-e1ta §5, §7).
  */
-export const REPO_SETTINGS_TABS = SETTINGS_TABS.filter(
+const EXECUTION_SETTINGS_TABS = SETTINGS_TABS.filter(
   (tab) => tab.id !== 'display'
 );
+
+/**
+ * 레포 띠 `⚙`(scope `repo`)만 `저장소` 탭을 갖는다 (UI-f2sy §7): 동시 실행 수·
+ * 직렬 레인 수·base·저장소 작업 선언은 그 저장소 하나의 사실이라 여러 저장소를
+ * 한 번에 고치는 일괄 창에도, 연결 저장소 창(Worker 탭이 같은 조작을 인라인으로
+ * 갖는다)에도 없다. `▣`는 다른 탭의 글리프와 겹치지 않는다.
+ */
+export const REPO_SETTINGS_TABS = [
+  ...EXECUTION_SETTINGS_TABS,
+  { id: 'repo', label: '저장소', glyph: '▣' }
+];
 
 /**
  * 일괄 모드(모니터 탭 헤더 `⚙`)만 다섯 번째 탭 `전역`을 갖는다 (UI-wg68 §6,
  * UI-ooc0 §5). 판정 칩 프리셋과 활성 모델은 서버 전역이라 `적용 대상` 저장소
  * 선택과 무관하고, 그래서 저장소 하나를 편집하는 전체 설정 창·레포 카드 창에는
- * 없다 — 두 배열이 갈라지는 유일한 이유다. `⬡`는 `quick fix`의 `◈`와 겹치지
- * 않는 글리프다.
+ * 없다 — 배열이 갈라지는 이유다. `⬡`는 `quick fix`의 `◈`와 겹치지 않는
+ * 글리프다.
  */
 export const BULK_SETTINGS_TABS = [
-  ...REPO_SETTINGS_TABS,
+  ...EXECUTION_SETTINGS_TABS,
   { id: 'global', label: '전역', glyph: '⬡' }
 ];
 
@@ -116,8 +128,10 @@ const TAB_COPY = {
  *   notify?: (message: string) => void,
  *   onOpenChange?: (open: boolean) => void,
  *   monitorRows?: () => Array<Record<string, any>>,
+ *   monitorPipeline?: () => Array<Record<string, any>>|null,
  *   subscribeMonitorRows?: (fn: () => void) => () => void,
- *   onBulkApplied?: (root_dirs: string[]) => void
+ *   onBulkApplied?: (root_dirs: string[]) => void,
+ *   onOpenRepoOps?: (root_dir: string) => void
  * }} options
  */
 export function createSettingsDialog(mount_element, options) {
@@ -228,13 +242,101 @@ export function createSettingsDialog(mount_element, options) {
     return execution_pane;
   }
 
-  /** This window's title: the repo's own name in `scope: 'repo'` (§7). */
-  function repoTitle() {
+  /** This window's repository name: the monitor row's own, else its path. */
+  function repoName() {
     const row = (options.monitorRows?.() || []).find(
       (entry) => entry && entry.root_dir === repo_root_dir
     );
-    const name = row && typeof row.name === 'string' ? row.name : repo_root_dir;
-    return `${name} 실행 설정`;
+    return row && typeof row.name === 'string' ? row.name : repo_root_dir;
+  }
+
+  /** This window's title: the repo's own name in `scope: 'repo'` (§7). */
+  function repoTitle() {
+    return `${repoName()} 실행 설정`;
+  }
+
+  /** @type {ReturnType<typeof createRepoPane>|null} */
+  let repo_pane = null;
+  /** The `저장소` tab's own host, re-parented like {@link pane_host}. */
+  const repo_host = document.createElement('div');
+  repo_host.className = 'settings-dialog__pane-host';
+
+  /**
+   * The `저장소` tab (UI-f2sy §7), bound to the repo this window was opened on.
+   * Its material is that repo's `workspaces_state` row and pipeline entry, laid
+   * over by whatever a mutation reply adopted (shared with the execution pane).
+   *
+   * @returns {ReturnType<typeof createRepoPane>|null}
+   */
+  function ensureRepoPane() {
+    if (repo_pane) {
+      return repo_pane;
+    }
+    const bound_root = repo_root_dir;
+    if (scope !== 'repo' || bound_root === null) {
+      return null;
+    }
+    repo_pane = createRepoPane(repo_host, {
+      root_dir: bound_root,
+      transport,
+      stateRow: () =>
+        (options.monitorRows?.() || []).find(
+          (row) => row && row.root_dir === bound_root
+        ) ?? null,
+      pipelineItem: () =>
+        (options.monitorPipeline?.() || []).find(
+          (item) => item && item.root_dir === bound_root
+        ) ?? null,
+      adopted: () => repo_queue,
+      onQueueAdopt: (queue) => {
+        repo_queue = queue;
+      },
+      onOpenRepoOps: () => {
+        close();
+        options.onOpenRepoOps?.(bound_root);
+      },
+      notify
+    });
+    return repo_pane;
+  }
+
+  /**
+   * The `저장소` tab's pane: a heading and an empty body slot the pane's own
+   * host is appended into (`mountRepoHost`).
+   *
+   * @returns {TemplateResult}
+   */
+  function repoPaneSection() {
+    return html`
+      <section
+        class="settings-dialog__pane settings-dialog__pane--active"
+        role="tabpanel"
+        id="settings-pane-repo"
+        aria-label=${`${repoName()} 저장소 설정`}
+      >
+        <header class="settings-dialog__pane-head">
+          <h2>${`${repoName()} 저장소 설정`}</h2>
+        </header>
+        <p class="settings-dialog__pane-sub">
+          이 저장소의 동시 실행·base·저장소 작업입니다.
+        </p>
+        <div class="settings-dialog__pane-body" data-pane="repo"></div>
+      </section>
+    `;
+  }
+
+  /** Move the `저장소` host into the body and draw it. */
+  function mountRepoHost() {
+    const slot = /** @type {HTMLElement|null} */ (
+      dialog.querySelector('[data-pane="repo"]')
+    );
+    if (!slot) {
+      return;
+    }
+    if (repo_host.parentElement !== slot) {
+      slot.appendChild(repo_host);
+    }
+    ensureRepoPane()?.render();
   }
 
   /**
@@ -356,7 +458,11 @@ export function createSettingsDialog(mount_element, options) {
     );
   }
 
-  function destroyBulkPane() {
+  /** Tear down every pane that lives for one open: the bulk and repo tabs. */
+  function destroyOpenPanes() {
+    repo_pane?.destroy();
+    repo_pane = null;
+    repo_host.remove();
     bulk_pane?.destroy();
     bulk_pane = null;
     bulk_host.remove();
@@ -504,6 +610,9 @@ export function createSettingsDialog(mount_element, options) {
     if (scope === 'monitor') {
       return bulkPaneSection();
     }
+    if (scope === 'repo' && active_tab === 'repo') {
+      return repoPaneSection();
+    }
     return active_tab === 'display' ? displayPane() : executionPaneSection();
   }
 
@@ -549,6 +658,8 @@ export function createSettingsDialog(mount_element, options) {
     );
     if (scope === 'monitor') {
       mountBulkHost();
+    } else if (scope === 'repo' && active_tab === 'repo') {
+      mountRepoHost();
     } else {
       mountExecutionHost();
     }
@@ -565,7 +676,7 @@ export function createSettingsDialog(mount_element, options) {
     // `cancel` fires while the dialog is still open, and a queued `close` may
     // land after a reopen — only a dialog that is really shut drops its pane.
     if (!dialog.open) {
-      destroyBulkPane();
+      destroyOpenPanes();
     }
     options.onOpenChange?.(false);
   };
@@ -614,6 +725,18 @@ export function createSettingsDialog(mount_element, options) {
     );
   }
 
+  // The `저장소` tab reads the monitor's live rows, so a push redraws it while it
+  // is the visible tab (a repo's failure count or revision moves under it).
+  /** @type {null | (() => void)} */
+  let unsubscribe_rows = null;
+  if (options.subscribeMonitorRows) {
+    unsubscribe_rows = options.subscribeMonitorRows(() => {
+      if (is_open && scope === 'repo' && active_tab === 'repo') {
+        repo_pane?.render();
+      }
+    });
+  }
+
   /**
    * Open the dialog on one rail tab. An id the rail does not carry opens the
    * default `워커` tab rather than an empty pane. `scope: 'monitor'` opens the
@@ -649,7 +772,7 @@ export function createSettingsDialog(mount_element, options) {
     active_tab = tabs.some((tab) => tab.id === tab_id) ? tab_id : 'worker';
     prefix_draft = '';
     // A bulk pane is per open: its selection and form start fresh each time.
-    destroyBulkPane();
+    destroyOpenPanes();
     doRender();
     if (typeof dialog.showModal === 'function') {
       dialog.showModal();
@@ -666,7 +789,7 @@ export function createSettingsDialog(mount_element, options) {
       return;
     }
     is_open = false;
-    destroyBulkPane();
+    destroyOpenPanes();
     options.onOpenChange?.(false);
     if (typeof dialog.close === 'function') {
       dialog.close();
@@ -705,9 +828,13 @@ export function createSettingsDialog(mount_element, options) {
         unsubscribe_model_visibility();
         unsubscribe_model_visibility = null;
       }
+      if (unsubscribe_rows) {
+        unsubscribe_rows();
+        unsubscribe_rows = null;
+      }
       execution_pane?.destroy();
       execution_pane = null;
-      destroyBulkPane();
+      destroyOpenPanes();
       dialog.remove();
     }
   };
