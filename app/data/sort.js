@@ -137,9 +137,10 @@ export function cmpClosedDesc(a, b) {
 
 /**
  * The issue shape a chain step reads. The two decoration keys are PARTIAL
- * (server §3.3·§3.5): an absent one means "모름", never "0".
+ * (server §3.3·§3.5): an absent one means "모름", never "0". `published` is the
+ * monitor candidate row's spec-evidence boolean (UI-f2sy §6.2).
  *
- * @typedef {IssueLite & { release_info?: { last_released_at?: number } | null, dependents_info?: { count?: number } | null }} ChainSortable
+ * @typedef {IssueLite & { release_info?: { last_released_at?: number } | null, dependents_info?: { count?: number } | null, published?: boolean }} ChainSortable
  */
 
 /**
@@ -230,7 +231,13 @@ function chainValue(issue, key) {
       return typeof at === 'number' && Number.isFinite(at) ? at : null;
     }
     case 'spec': {
-      return resolveSpecEvidence(issue).evidence === 'published' ? 1 : 0;
+      // A monitor candidate row carries the server's `published` boolean
+      // instead of the raw spec keys (UI-f2sy §6.2); both tabs must order the
+      // same fact the same way.
+      return resolveSpecEvidence(issue).evidence === 'published' ||
+        issue.published === true
+        ? 1
+        : 0;
     }
     case 'created': {
       return toOptionalTimestamp(issue.created_at);

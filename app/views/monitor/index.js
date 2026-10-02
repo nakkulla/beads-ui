@@ -37,6 +37,20 @@ import { watchMobile } from '../../utils/viewport.js';
 import { createChipPopover } from '../chip-popover.js';
 import { TICK_MS, refreshTimeText } from '../time-text.js';
 import {
+  CANDIDATE_SORT_DEFAULT,
+  chainOf,
+  flipChainStepDir,
+  normalizeCandidateSort,
+  presetIdOf,
+  setChainStepKey
+} from '../worker/candidate-sort.js';
+import {
+  candidateSortChainTemplate,
+  candidateSortSelectTemplate,
+  fieldFiltersTemplate,
+  labelOptionsOf
+} from '../worker/candidate-tools.js';
+import {
   resolveLaunchText,
   runExternalWaitAction,
   sessionWindowText
@@ -45,11 +59,15 @@ import { createLaneCollapse } from '../worker/lane-collapse.js';
 import { createLaneDrag } from '../worker/lane-drag.js';
 import {
   CANDIDATE_FILTER_DEFAULT,
-  CANDIDATE_SORT_OPTIONS,
   READINESS_FILTER_OPTIONS,
   ROUTE_FILTER_OPTIONS,
   buildLanes,
+  normalizeLabelFilter,
+  normalizePriorityFilter,
   normalizeRouteFilter,
+  normalizeTypeFilter,
+  toggleLabelFilter,
+  togglePriorityFilter,
   toggleRouteFilter
 } from '../worker/lane-model.js';
 import {
@@ -150,7 +168,10 @@ function loadCandidateFilter() {
       )
         ? parsed.readiness
         : 'all',
-      routes: normalizeRouteFilter(parsed.routes)
+      routes: normalizeRouteFilter(parsed.routes),
+      priorities: normalizePriorityFilter(parsed.priorities),
+      type: normalizeTypeFilter(parsed.type),
+      labels: normalizeLabelFilter(parsed.labels)
     };
   } catch {
     return { ...CANDIDATE_FILTER_DEFAULT };
@@ -167,7 +188,10 @@ function saveCandidateFilter(filter) {
       JSON.stringify({
         show_blocked: filter.show_blocked,
         readiness: filter.readiness,
-        routes: filter.routes
+        routes: filter.routes,
+        priorities: filter.priorities,
+        type: filter.type,
+        labels: filter.labels
       })
     );
   } catch {
@@ -176,25 +200,75 @@ function saveCandidateFilter(filter) {
 }
 
 /**
- * @returns {'repo_spec'|'repo_updated'|'updated_flat'}
+ * The monitor's candidate order: the Worker tab's sort chain plus the
+ * monitor-only `레포별로 묶기` switch (UI-f2sy §6.2).
+ *
+ * @typedef {{ sort: import('../worker/candidate-sort.js').CandidateSortState, group_by_repo: boolean }} MonitorCandidateSort
+ */
+
+/**
+ * The retired three-value sort, read as a chain plus the grouping switch it
+ * implied. A value not listed here is unknown and falls to the default.
+ *
+ * @type {Readonly<Record<string, MonitorCandidateSort>>}
+ */
+const LEGACY_CANDIDATE_SORT = Object.freeze({
+  repo_spec: { sort: { preset: 'spec' }, group_by_repo: true },
+  repo_updated: { sort: { preset: 'updated' }, group_by_repo: true },
+  updated_flat: { sort: { preset: 'updated' }, group_by_repo: false }
+});
+
+/**
+ * Narrow a stored candidate-sort value — a legacy string, the current JSON, or
+ * anything else — to a usable preference. The default is the `spec` preset with
+ * grouping on.
+ *
+ * @param {unknown} raw
+ * @returns {MonitorCandidateSort}
+ */
+export function parseCandidateSort(raw) {
+  if (typeof raw === 'string' && Object.hasOwn(LEGACY_CANDIDATE_SORT, raw)) {
+    return { ...LEGACY_CANDIDATE_SORT[raw] };
+  }
+  /** @type {unknown} */
+  let parsed = null;
+  try {
+    parsed = typeof raw === 'string' ? JSON.parse(raw) : null;
+  } catch {
+    parsed = null;
+  }
+  const record =
+    parsed && typeof parsed === 'object'
+      ? /** @type {Record<string, unknown>} */ (parsed)
+      : {};
+  return {
+    sort: normalizeCandidateSort(
+      parsed && typeof parsed === 'object' ? parsed : CANDIDATE_SORT_DEFAULT
+    ),
+    group_by_repo: record.group_by_repo !== false
+  };
+}
+
+/**
+ * @returns {MonitorCandidateSort}
  */
 function loadCandidateSort() {
   try {
-    const raw = window.localStorage.getItem(CANDIDATE_SORT_KEY);
-    return CANDIDATE_SORT_OPTIONS.some((o) => o.value === raw)
-      ? /** @type {any} */ (raw)
-      : 'repo_spec';
+    return parseCandidateSort(window.localStorage.getItem(CANDIDATE_SORT_KEY));
   } catch {
-    return 'repo_spec';
+    return parseCandidateSort(null);
   }
 }
 
 /**
- * @param {string} sort
+ * @param {MonitorCandidateSort} pref
  */
-function saveCandidateSort(sort) {
+function saveCandidateSort(pref) {
   try {
-    window.localStorage.setItem(CANDIDATE_SORT_KEY, sort);
+    window.localStorage.setItem(
+      CANDIDATE_SORT_KEY,
+      JSON.stringify({ ...pref.sort, group_by_repo: pref.group_by_repo })
+    );
   } catch {
     /* ignore */
   }
@@ -437,8 +511,15 @@ export function createMonitorView(mount_element, options) {
   let running_sort = loadRunningSort();
   /** @type {CandidateFilter} */
   let candidate_filter = loadCandidateFilter();
-  /** @type {'repo_spec'|'repo_updated'|'updated_flat'} */
-  let candidate_sort = loadCandidateSort();
+  const stored_sort = loadCandidateSort();
+  /** @type {import('../worker/candidate-sort.js').CandidateSortState} */
+  let candidate_sort = stored_sort.sort;
+  /** `레포별로 묶기` (UI-f2sy §6.2): 켜면 레포 섹션 안에서 체인 순서. */
+  let group_by_repo = stored_sort.group_by_repo;
+  /** 체인 편집 줄이 펼쳐졌는지 (UI-f2sy §6.2) — 저장 상태가 아니라 view flag다. */
+  let sort_chain_open = presetIdOf(candidate_sort) === null;
+  /** 라벨 필터 팝오버의 열림 상태 (UI-f2sy §6.1), 저장하지 않는 view flag다. */
+  let label_filter_open = false;
   /** @type {Record<string, any>} */
   let sections_state = loadSections();
   /** `보관 N` 묶음의 열림 상태 (UI-sd12 §3.4). */
@@ -1344,7 +1425,7 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * The 실행가능 lane body (§5). `updated_flat`만 섹션 없이 평평하다.
+   * The 실행가능 lane body (§5). `레포별로 묶기`를 끄면 섹션 없이 평평하다.
    *
    * @returns {import('lit-html').TemplateResult}
    */
@@ -1709,6 +1790,10 @@ export function createMonitorView(mount_element, options) {
         collapsible: true,
         collapsed: collapse.isCollapsed(meta.pane),
         controls: meta.lane === 'runnable' ? candidateFilterStrip() : undefined,
+        header_row:
+          meta.lane === 'runnable' && sort_chain_open
+            ? candidateSortChainTemplate(candidate_sort)
+            : undefined,
         header_control: laneHeaderControl(meta.lane, display_count)
       });
     };
@@ -1821,6 +1906,28 @@ export function createMonitorView(mount_element, options) {
             >`
           : ''}
       </div>
+      ${fieldFiltersTemplate({
+        priorities: normalizePriorityFilter(candidate_filter.priorities),
+        type: normalizeTypeFilter(candidate_filter.type),
+        labels: normalizeLabelFilter(candidate_filter.labels),
+        label_options: labelOptionsOf(
+          lanes,
+          normalizeLabelFilter(candidate_filter.labels)
+        ),
+        labels_open: label_filter_open,
+        hidden: lanes.runnable_hidden
+      })}
+      <label
+        class="ui-field worker-filter__tgl"
+        title="후보를 레포 섹션으로 묶어 각 섹션 안에서 정렬합니다"
+      >
+        <input
+          type="checkbox"
+          class="mon-filter__group"
+          .checked=${group_by_repo}
+        />
+        레포별로 묶기
+      </label>
     </div>`;
   }
 
@@ -1831,22 +1938,11 @@ export function createMonitorView(mount_element, options) {
    */
   function laneHeaderControl(lane, count) {
     if (lane === 'runnable') {
-      return html`<select
-        class="ui-select ui-select--bare mon-candidate-sort worker-sort"
-        aria-label="후보 정렬"
-        title="후보 정렬"
-        .value=${candidate_sort}
-      >
-        ${CANDIDATE_SORT_OPTIONS.map(
-          (o) =>
-            html`<option
-              value=${o.value}
-              ?selected=${candidate_sort === o.value}
-            >
-              ${o.label}
-            </option>`
-        )}
-      </select>`;
+      return candidateSortSelectTemplate({
+        sort: candidate_sort,
+        chain_open: sort_chain_open,
+        extra_class: 'mon-candidate-sort'
+      });
     }
     if (lane === 'running') {
       return html`<select
@@ -1916,7 +2012,8 @@ export function createMonitorView(mount_element, options) {
       done_since: closedRangeSince(done_range, nowFn()),
       running_sort,
       candidate_filter,
-      candidate_sort
+      candidate_chain: candidate_sort,
+      group_by_repo
     };
     return buildLanes(workspaces, workspaces_state, options);
   }
@@ -3048,6 +3145,47 @@ export function createMonitorView(mount_element, options) {
       return;
     }
 
+    // 공유 후보 도구 (UI-f2sy §6): 같은 마크업이라 Worker 탭과 같은 클래스를 읽는다.
+    const priority_chip = /** @type {HTMLElement|null} */ (
+      target.closest('.worker-filter__priority')
+    );
+    if (priority_chip) {
+      ev.preventDefault();
+      const parsed = Number.parseInt(priority_chip.dataset.priority || '', 10);
+      if (Number.isFinite(parsed)) {
+        setCandidateFilter({
+          ...candidate_filter,
+          priorities: togglePriorityFilter(
+            normalizePriorityFilter(candidate_filter.priorities),
+            parsed
+          )
+        });
+      }
+      return;
+    }
+    if (target.closest('.worker-filter__labels-btn')) {
+      ev.preventDefault();
+      label_filter_open = !label_filter_open;
+      doRender();
+      return;
+    }
+    const dir_btn = /** @type {HTMLElement|null} */ (
+      target.closest('.worker-sort-chain__dir')
+    );
+    if (dir_btn) {
+      ev.preventDefault();
+      const step_index = Number.parseInt(
+        dir_btn.getAttribute('data-step') || '',
+        10
+      );
+      if (Number.isFinite(step_index)) {
+        setCandidateSortChain(
+          flipChainStepDir(chainOf(candidate_sort), step_index)
+        );
+      }
+      return;
+    }
+
     // route 칩이 준비도 칩보다 먼저다: 두 묶음이 같은 형태 토큰을 공유하므로,
     // 뒤에 두면 route 클릭이 준비도 분기에서 값 없이 삼켜진다.
     const route_chip = /** @type {HTMLElement|null} */ (
@@ -3112,6 +3250,32 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * Adopt a new candidate filter: persist first, then re-render.
+   *
+   * @param {CandidateFilter} next
+   */
+  function setCandidateFilter(next) {
+    candidate_filter = next;
+    saveCandidateFilter(next);
+    doRender();
+  }
+
+  function persistCandidateSort() {
+    saveCandidateSort({ sort: candidate_sort, group_by_repo });
+  }
+
+  /**
+   * Adopt an edited chain. The row stays open: only a preset pick folds it.
+   *
+   * @param {import('../../data/sort.js').SortStep[]} chain
+   */
+  function setCandidateSortChain(chain) {
+    candidate_sort = normalizeCandidateSort({ chain });
+    persistCandidateSort();
+    doRender();
+  }
+
+  /**
    * @param {Event} ev
    */
   function onChange(ev) {
@@ -3148,16 +3312,73 @@ export function createMonitorView(mount_element, options) {
       doRender();
       return;
     }
+    const group_toggle = /** @type {HTMLInputElement|null} */ (
+      target.closest('.mon-filter__group')
+    );
+    if (group_toggle) {
+      group_by_repo = group_toggle.checked;
+      persistCandidateSort();
+      doRender();
+      return;
+    }
+    // 체인 편집 줄·라벨·타입 select는 `.worker-sort` 톤을 공유하는 정렬 select보다
+    // 먼저 읽는다 — 뒤에 두면 한 step 변경이나 타입 변경이 프리셋 전환으로 읽힌다.
+    const chain_select = /** @type {HTMLSelectElement|null} */ (
+      target.closest('.worker-sort-chain__key')
+    );
+    if (chain_select) {
+      const step_index = Number.parseInt(
+        chain_select.getAttribute('data-step') || '',
+        10
+      );
+      if (Number.isFinite(step_index)) {
+        setCandidateSortChain(
+          setChainStepKey(
+            chainOf(candidate_sort),
+            step_index,
+            chain_select.value
+          )
+        );
+      }
+      return;
+    }
+    const label_check = /** @type {HTMLInputElement|null} */ (
+      target.closest('.worker-filter__label-check')
+    );
+    if (label_check) {
+      const value = label_check.dataset.label || '';
+      if (value) {
+        setCandidateFilter({
+          ...candidate_filter,
+          labels: toggleLabelFilter(
+            normalizeLabelFilter(candidate_filter.labels),
+            value
+          )
+        });
+      }
+      return;
+    }
+    const type_select = /** @type {HTMLSelectElement|null} */ (
+      target.closest('.worker-filter__type')
+    );
+    if (type_select) {
+      setCandidateFilter({
+        ...candidate_filter,
+        type: normalizeTypeFilter(type_select.value)
+      });
+      return;
+    }
     const candidate_select = /** @type {HTMLSelectElement|null} */ (
       target.closest('.mon-candidate-sort')
     );
     if (candidate_select) {
-      candidate_sort = /** @type {any} */ (
-        CANDIDATE_SORT_OPTIONS.some((o) => o.value === candidate_select.value)
-          ? candidate_select.value
-          : 'repo_spec'
-      );
-      saveCandidateSort(candidate_sort);
+      if (candidate_select.value === 'custom') {
+        sort_chain_open = true;
+      } else {
+        candidate_sort = normalizeCandidateSort(candidate_select.value);
+        persistCandidateSort();
+        sort_chain_open = false;
+      }
       doRender();
       return;
     }
@@ -3206,6 +3427,10 @@ export function createMonitorView(mount_element, options) {
       !closest('.rtile__failure-pop, .rtile__failure-badge')
     ) {
       open_failure_detail = null;
+      changed = true;
+    }
+    if (label_filter_open && !closest('.worker-filter__labels')) {
+      label_filter_open = false;
       changed = true;
     }
     if (changed) {

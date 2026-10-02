@@ -2067,7 +2067,7 @@ function doneThreeLineRow(item) {
   const plan_el = planChipTemplate(item, plan_open);
   return html`<div
     class="worker-mini worker-mini--static worker-mini--done worker-mini--three-line${item.search_match ===
-    false
+      false || item.filter_match === false
       ? ' is-dimmed'
       : ''}"
     draggable="false"

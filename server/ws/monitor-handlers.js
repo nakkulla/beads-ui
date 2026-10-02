@@ -605,10 +605,10 @@ function laneMemberIds(snapshot) {
  * @param {Record<string, any>} snapshot
  * @param {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null} cache
  * @param {string[]} [workspace_roots]
- * @returns {Record<string, { route?: string, priority?: number, from_id?: string, metadata?: Record<string, string>, worker_created_from?: string, worker_created_from_root_dir?: string }>}
+ * @returns {Record<string, { route?: string, priority?: number, issue_type?: string, from_id?: string, metadata?: Record<string, string>, worker_created_from?: string, worker_created_from_root_dir?: string }>}
  */
 function beadOverlayFor(root_dir, snapshot, cache, workspace_roots = []) {
-  /** @type {Record<string, { route?: string, priority?: number, from_id?: string, metadata?: Record<string, string>, worker_created_from?: string, worker_created_from_root_dir?: string }>} */
+  /** @type {Record<string, { route?: string, priority?: number, issue_type?: string, from_id?: string, metadata?: Record<string, string>, worker_created_from?: string, worker_created_from_root_dir?: string }>} */
   const overlay = {};
   const done_ids = [...laneBeadIds(snapshot, ['done'])];
   if (!cache) {
@@ -656,7 +656,7 @@ function beadOverlayFor(root_dir, snapshot, cache, workspace_roots = []) {
       }
     }
   }
-  // `priority`·`from_id`·판정된 `complex_reason`은 같은 `bd show` 기록에서 온다
+  // `priority`·`issue_type`·`from_id`·판정된 `complex_reason`은 같은 `bd show` 기록에서 온다
   // — Worker 탭이 보드 스토어에서 읽는 값과 같은 사실이라 두 탭의 칩이 같다.
   const issue_fields =
     typeof cache.overlayFieldsFor === 'function'
@@ -666,6 +666,9 @@ function beadOverlayFor(root_dir, snapshot, cache, workspace_roots = []) {
     const entry = overlay[bead_id] || (overlay[bead_id] = {});
     if (typeof fields.priority === 'number') {
       entry.priority = fields.priority;
+    }
+    if (typeof fields.issue_type === 'string') {
+      entry.issue_type = fields.issue_type;
     }
     if (typeof fields.from_id === 'string') {
       entry.from_id = fields.from_id;

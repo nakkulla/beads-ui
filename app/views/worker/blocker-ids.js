@@ -9,7 +9,8 @@
 /**
  * The blocker ids of a blocked candidate. The server-synthesized
  * `blocked_info.blockers` is the primary source; when the whole object is absent
- * (older server) the embedded `blocks` dependency edges answer instead.
+ * (older server) the embedded `blocks` dependency edges answer instead, and a
+ * row with neither (a monitor candidate row) answers with its `blocked_by`.
  *
  * @param {any} issue
  * @returns {string[]}
@@ -22,6 +23,13 @@ export function blockerIdsOf(issue) {
           (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
         )
       : [];
+  }
+  // A monitor candidate row carries the server's flattened `blocked_by` ids
+  // instead of either raw source (UI-f2sy §6.2).
+  if (!Array.isArray(issue?.dependencies) && Array.isArray(issue?.blocked_by)) {
+    return issue.blocked_by.filter(
+      (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+    );
   }
   const deps = Array.isArray(issue?.dependencies) ? issue.dependencies : [];
   return deps

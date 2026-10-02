@@ -62,6 +62,10 @@ import {
   detectSerialLaneHeadCycles,
   serialCycleKey
 } from '../monitor/blockers.js';
+import {
+  applyCandidateSort,
+  normalizeCandidateSort
+} from './candidate-sort.js';
 import { recoveryWaitSentence } from './failure-labels.js';
 import {
   autoSwitchText,
@@ -2935,13 +2939,18 @@ function chipPinsOf(entry) {
  * 항목에 `search_match`가 실리고, 없거나 공백뿐이면 키 자체가 붙지 않는다 —
  * 그래서 검색을 받지 않는 Monitor 탭의 렌더는 한 글자도 달라지지 않는다.
  *
+ * `options.candidate_chain`은 Worker 탭과 같은 정렬 체인(`CandidateSortState`)이다
+ * (UI-f2sy §6.2). 값이 있으면 `candidate_sort` 문자열을 대신해 `applyCandidateSort`가
+ * 순서를 정하고, `options.group_by_repo`가 `false`가 아니면 레포 섹션 안에서,
+ * `false`면 저장소를 무시한 한 줄 목록에서 그 순서를 쓴다.
+ *
  * `options.groups: 'all'`은 대기·직렬·후보가 모두 비어도 `workspaces_state` 행
  * 하나당 그룹을 남긴다 — 실행 중·PR 대기·완료·저장소 작업만 있는 스냅샷에서도
  * `slots`·`merge`·`repo_operations`가 살아 있어야 하기 때문이다.
  *
  * @param {Array<Record<string, any>>|null|undefined} workspaces
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state]
- * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', groups?: 'nonempty'|'all', search?: string }} [options]
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat'|'as_given', candidate_chain?: import('./candidate-sort.js').CandidateSortState, group_by_repo?: boolean, groups?: 'nonempty'|'all', search?: string }} [options]
  * @returns {LaneModel}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
@@ -2966,6 +2975,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
             options.candidate_sort
           )
         : 'repo_spec';
+  const candidate_chain =
+    options && options.candidate_chain
+      ? normalizeCandidateSort(options.candidate_chain)
+      : null;
+  const candidate_flat = candidate_chain
+    ? options?.group_by_repo === false
+    : candidate_sort === 'updated_flat' || candidate_sort === 'as_given';
   const groups_mode = options && options.groups === 'all' ? 'all' : 'nonempty';
   // 해제 칩의 7일 창 기준 시각 (UI-d13v §5.3). 모델 조립당 한 번만 읽어 같은
   // 렌더 안의 모든 카드가 같은 창을 본다.
@@ -4814,8 +4830,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     deferred,
     deferred_all: deferred.slice(),
     runnable_sections: [],
-    runnable_flat:
-      candidate_sort === 'updated_flat' || candidate_sort === 'as_given',
+    runnable_flat: candidate_flat,
     queue,
     queue_groups,
     groups_by_root,
@@ -5238,14 +5253,24 @@ export function buildLanes(workspaces, workspaces_state, options) {
   };
   const within =
     candidate_sort === 'repo_spec' ? byReadinessSpecThenUpdated : byUpdated;
+  // 체인이 있으면 Worker 탭과 같은 `applyCandidateSort`가 순서를 정한다 — 정렬
+  // 키와 의존 인접화 모두 (UI-f2sy §6.2).
+  /**
+   * @param {LaneItem[]} items
+   * @returns {LaneItem[]}
+   */
+  const orderItems = (items) =>
+    candidate_chain
+      ? applyCandidateSort(items, candidate_chain)
+      : items.slice().sort(within);
 
-  if (candidate_sort === 'as_given') {
+  if (!candidate_chain && candidate_sort === 'as_given') {
     // 정렬을 이미 끝낸 호출자의 값 (§4.3): 순서를 다시 정하지 않고 섹션도
     // 만들지 않는다 — 필터만 걸린 입력 순서가 그대로 화면 순서다.
     model.runnable = visible;
     model.runnable_sections = [];
-  } else if (candidate_sort === 'updated_flat') {
-    model.runnable = visible.slice().sort(byUpdated);
+  } else if (candidate_flat) {
+    model.runnable = orderItems(visible);
     model.runnable_sections = [];
   } else {
     /** @type {Map<string, LaneItem[]>} */
@@ -5266,7 +5291,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
       if (!source || typeof source.root_dir !== 'string') {
         continue;
       }
-      const items = (by_root.get(source.root_dir) || []).slice().sort(within);
+      const items = orderItems(by_root.get(source.root_dir) || []);
       by_root.delete(source.root_dir);
       if (items.length === 0) {
         continue;
@@ -5283,7 +5308,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
     // 제어 상태에 없는 레포(구버전 스냅샷)는 뒤에 붙인다 — 후보를 지우지 않는다.
     for (const [root_dir, items] of by_root) {
-      const sorted = items.slice().sort(within);
+      const sorted = orderItems(items);
       sections.push({
         root_dir,
         name: sorted[0]?.workspace_name || root_dir,

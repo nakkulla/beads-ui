@@ -52,8 +52,6 @@ import { showToast } from '../../utils/toast.js';
 import { watchMobile } from '../../utils/viewport.js';
 import { createChipPopover } from '../chip-popover.js';
 import {
-  CANDIDATE_SORT_PRESETS,
-  SORT_KEY_OPTIONS,
   chainOf,
   flipChainStepDir,
   loadCandidateSort,
@@ -63,6 +61,12 @@ import {
   setChainStepKey
 } from './candidate-sort.js';
 import {
+  candidateSortChainTemplate,
+  candidateSortSelectTemplate,
+  fieldFiltersTemplate,
+  labelOptionsOf
+} from './candidate-tools.js';
+import {
   resolveLaunchText,
   runExternalWaitAction,
   sessionWindowText
@@ -70,10 +74,8 @@ import {
 import { createLaneCollapse } from './lane-collapse.js';
 import { createLaneDrag } from './lane-drag.js';
 import {
-  PRIORITY_FILTER_OPTIONS,
   READINESS_FILTER_OPTIONS,
   ROUTE_FILTER_OPTIONS,
-  TYPE_FILTER_OPTIONS,
   buildLanes,
   normalizeLabelFilter,
   normalizePriorityFilter,
@@ -2486,218 +2488,13 @@ export function createWorkerView(mount_element, options = {}) {
             >`
           : ''}
       </div>
-      <div
-        class="worker-filter__priorities"
-        role="group"
-        aria-label="우선순위 필터"
-      >
-        ${PRIORITY_FILTER_OPTIONS.map(
-          (o) =>
-            html`<button
-              type="button"
-              class="ui-chip worker-filter__chip worker-filter__priority${priorityFilter().includes(
-                o.value
-              )
-                ? ' is-active'
-                : ''}"
-              data-priority=${String(o.value)}
-              aria-pressed=${priorityFilter().includes(o.value)
-                ? 'true'
-                : 'false'}
-            >
-              ${o.label}
-            </button>`
-        )}
-        ${hidden.priority > 0
-          ? html`<span class="worker-filter__hidden"
-              >숨김 ${hidden.priority}</span
-            >`
-          : ''}
-      </div>
-      <select
-        class="ui-select ui-select--bare worker-sort worker-filter__type"
-        aria-label="타입 필터"
-      >
-        ${TYPE_FILTER_OPTIONS.map(
-          (o) =>
-            html`<option value=${o.value} ?selected=${typeFilter() === o.value}>
-              ${o.label}
-            </option>`
-        )}
-      </select>
-      ${hidden.type > 0
-        ? html`<span class="worker-filter__hidden">숨김 ${hidden.type}</span>`
-        : ''}
-      ${labelFilterTemplate(m)}
-      ${hidden.label > 0
-        ? html`<span class="worker-filter__hidden">숨김 ${hidden.label}</span>`
-        : ''}
-    </div>`;
-  }
-
-  /**
-   * Union of the labels on every lane row this render draws (UI-p7s2 §6). 표시 정책과
-   * 무관하게 전부 보인다 — 감춰진 라벨도 필터로는 걸 수 있어야 한다.
-   *
-   * @param {LaneModel} m
-   * @returns {string[]}
-   */
-  function labelOptions(m) {
-    /** @type {Set<string>} */
-    const labels = new Set();
-    // 보류도 필터 **이전** 집합에서 모은다 — 필터 뒤 목록에서 모으면 보류에만
-    // 있는 라벨 A를 고른 순간 B 옵션이 사라져 다중 선택이 성립하지 않는다.
-    for (const item of [
-      ...m.runnable_all,
-      ...m.deferred_all,
-      ...m.queue,
-      ...m.running,
-      ...m.pr_wait,
-      ...m.done
-    ]) {
-      for (const label of Array.isArray(item.labels) ? item.labels : []) {
-        if (typeof label === 'string' && label.length > 0) {
-          labels.add(label);
-        }
-      }
-    }
-    // 고른 라벨이 이 렌더의 행에 하나도 없어도 목록에 남아야 끌 수 있다.
-    for (const label of labelFilter()) {
-      labels.add(label);
-    }
-    return [...labels].sort((a, b) => a.localeCompare(b));
-  }
-
-  /**
-   * The 라벨 필터 button and its check-list popover (UI-p7s2 §6). 기존 판정 칩 팝오버와 같은
-   * `.chip-popover` 문법을 쓰되 열림은 이 조작 자신이 들고 있다 — 판정 칩 팝업은
-   * bead 하나에 매인 열림 키를 쓰므로 카드 밖 조작이 올라탈 자리가 없다.
-   *
-   * @param {LaneModel} m
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function labelFilterTemplate(m) {
-    const selected = labelFilter();
-    const options = labelOptions(m);
-    return html`<div class="worker-filter__labels">
-      <button
-        type="button"
-        class="ui-chip worker-filter__chip worker-filter__labels-btn${selected.length >
-        0
-          ? ' is-active'
-          : ''}"
-        aria-expanded=${label_filter_open ? 'true' : 'false'}
-        title="라벨 필터"
-      >
-        라벨${selected.length > 0 ? ` ${selected.length}` : ''} ▾
-      </button>
-      ${label_filter_open
-        ? html`<div class="chip-popover worker-filter__labels-pop">
-            ${options.length === 0
-              ? html`<div class="chip-popover__line">라벨 없음</div>`
-              : options.map(
-                  (label) =>
-                    html`<label class="worker-filter__label-option">
-                      <input
-                        type="checkbox"
-                        class="worker-filter__label-check"
-                        data-label=${label}
-                        .checked=${selected.includes(label)}
-                      />
-                      ${label}
-                    </label>`
-                )}
-          </div>`
-        : ''}
-    </div>`;
-  }
-
-  /**
-   * Candidate pane sort select (UI-raqh §2, chain in UI-d13v §4.4). It sits IN
-   * the pane header rather than in the filter strip below it: the filters answer
-   * "what is shown", this answers "in what order", and reading it as part of the
-   * header keeps the strip about one question only.
-   *
-   * The value is `custom` for as long as the chain row is open, whatever the
-   * stored state turned out to be — an edit that happens to land on a preset
-   * must not yank the row shut under the cursor (§4.3 still stores it as that
-   * preset).
-   *
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function candidateSortTemplate() {
-    const current = sort_chain_open
-      ? 'custom'
-      : presetIdOf(candidate_sort) || 'custom';
-    return html`<select
-      class="ui-select ui-select--bare worker-sort"
-      aria-label="후보 정렬"
-      title="후보 정렬"
-      .value=${current}
-    >
-      ${CANDIDATE_SORT_PRESETS.map(
-        (o) =>
-          html`<option value=${o.id} ?selected=${current === o.id}>
-            ${o.label}
-          </option>`
-      )}
-      <option value="custom" ?selected=${current === 'custom'}>
-        사용자 지정…
-      </option>
-    </select>`;
-  }
-
-  /**
-   * The chain editor row (§4.4): three key selects, each with a direction
-   * toggle, on ONE line directly under the pane header. Same markup on desktop
-   * and mobile — there is no mobile-only header to branch on (UI-5ksp).
-   *
-   * A step whose key is `없음` renders no toggle: the row draws only what it has
-   * material for, and a direction without a key answers nothing.
-   *
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function candidateSortChainTemplate() {
-    const chain = chainOf(candidate_sort);
-    return html`<div
-      class="worker-sort-chain"
-      role="group"
-      aria-label="후보 정렬 체인"
-    >
-      ${[0, 1, 2].map((index) => {
-        const step = chain[index];
-        return html`<span class="worker-sort-chain__step">
-          <select
-            class="ui-select ui-select--bare worker-sort-chain__key"
-            data-step=${index}
-            aria-label=${`${index + 1}차 정렬 키`}
-            .value=${step ? step.key : ''}
-          >
-            ${index === 0
-              ? ''
-              : html`<option value="" ?selected=${!step}>없음</option>`}
-            ${SORT_KEY_OPTIONS.map(
-              (o) =>
-                html`<option
-                  value=${o.key}
-                  ?selected=${!!step && step.key === o.key}
-                >
-                  ${o.label}
-                </option>`
-            )}
-          </select>
-          ${step
-            ? html`<button
-                type="button"
-                class="op-btn op-btn--icon worker-sort-chain__dir"
-                data-step=${index}
-                aria-label=${step.dir === 'asc' ? '오름차순' : '내림차순'}
-                title=${step.dir === 'asc' ? '오름차순' : '내림차순'}
-              >
-                ${step.dir === 'asc' ? '↑' : '↓'}
-              </button>`
-            : ''}
-        </span>`;
+      ${fieldFiltersTemplate({
+        priorities: priorityFilter(),
+        type: typeFilter(),
+        labels: labelFilter(),
+        label_options: labelOptionsOf(m, labelFilter()),
+        labels_open: label_filter_open,
+        hidden
       })}
     </div>`;
   }
@@ -2954,8 +2751,13 @@ export function createWorkerView(mount_element, options = {}) {
       match_count: matchCountOf(candidates),
       src: true,
       empty: '후보 없음',
-      header_control: candidateSortTemplate(),
-      header_row: sort_chain_open ? candidateSortChainTemplate() : undefined,
+      header_control: candidateSortSelectTemplate({
+        sort: candidate_sort,
+        chain_open: sort_chain_open
+      }),
+      header_row: sort_chain_open
+        ? candidateSortChainTemplate(candidate_sort)
+        : undefined,
       controls: candidateControlsTemplate(m),
       footer: deferredSectionTemplate(m),
       collapsible: true,

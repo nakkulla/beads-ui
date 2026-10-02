@@ -829,8 +829,9 @@ function overlayOf(out) {
  * Feed a server pipeline result into the Monitor's shared lane projection.
  *
  * @param {Array<Record<string, any>>} out
+ * @param {Parameters<typeof buildLanes>[2]} [options]
  */
-function lanesOf(out) {
+function lanesOf(out, options) {
   return buildLanes(
     out,
     out.map((workspace) => ({
@@ -840,7 +841,8 @@ function lanesOf(out) {
       slots: 1,
       auto_advance: false,
       auto_merge: false
-    }))
+    })),
+    options
   );
 }
 
@@ -1100,6 +1102,41 @@ describe('buildMonitorPipeline bead overlay (UI-q1tg §3.1)', () => {
       priority: 0,
       from_id: 'A-src'
     });
+  });
+
+  test('carries the issue type of a lane member into its overlay entry (UI-f2sy §6.1)', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ queue: [{ bead_id: 'A-q', added_at: NOW }] })
+      },
+      titleCache: warmCache(WS_A, [
+        { id: 'A-q', title: '대기', priority: 1, issue_type: 'bug' }
+      ])
+    });
+
+    expect(overlayOf(out)['A-q']).toMatchObject({
+      priority: 1,
+      issue_type: 'bug'
+    });
+  });
+
+  test('dims a waiting row of another type through buildLanes (UI-f2sy §6.1)', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ queue: [{ bead_id: 'A-q', added_at: NOW }] })
+      },
+      titleCache: warmCache(WS_A, [
+        { id: 'A-q', title: '대기', issue_type: 'bug' }
+      ])
+    });
+
+    const lanes = lanesOf(out, {
+      candidate_filter: /** @type {any} */ ({ type: 'feature' })
+    });
+
+    expect(lanes.queue[0].filter_match).toBe(false);
   });
 
   test('draws the complex chip material on a waiting row through buildLanes', () => {
