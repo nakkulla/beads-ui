@@ -16,7 +16,7 @@ scope:
 # 외부 작업은 등록 잡이 던진 하위 Slurm 잡까지 이름으로 보인다 — 카드는 요약, 이슈 상세는 전체 표
 
 - Bead: UI-q15q (`spec_backed`)
-- 작성: 2026-10-02 · r0
+- 작성: 2026-10-02 · r1 (spec_review r1 astra REVISE b4/m2 반영 — 개수는 원격에서 자르기 전에 센다, 행 상한은 완료 행에만, 완료 기록 지원 안 함과 읽기 실패를 구분, ADR UI-nuwy supersede, 전제 정정·보강)
 - 사용자 결정: 2026-10-02 대화
   - snakemake·sjob 로그에 기대지 않고 Slurm 정보만 쓴다. 번호 대신 이름으로 보인다.
   - 카드는 요약만 보이고 전체는 이슈 상세 외부 작업 섹션에 둔다.
@@ -48,7 +48,7 @@ scope:
 - scontrol 출력은 `key=value` 전체를 읽지만 쓰는 값은 `JobId`·`SubmitTime`·`TimeLimit`·`RunTime`·`JobState`·`ExitCode`뿐이다 — server/worker/external-wait/adapters/slurm.js:152-177
 - 관찰기는 종결된 잡을 다시 관찰하지 않고, slurm 잡에는 시간 필드만 더 저장한다 — server/worker/external-wait/observer.js:81-117
 - 레코드 검증은 잡의 필수 필드만 보고 추가 필드를 막지 않는다 — server/worker/external-wait/store.js:139-186
-- 완료 digest는 잡별 `job_id`·exit·근거·기대 산출물·`recovery_needed`만 해시한다 — server/worker/external-wait/decision.js:75-94
+- 완료 digest는 잡별 `adapter`·`job_id`(process는 `pid`)·exit·근거·기대 산출물·`recovery_needed`만 해시한다 — server/worker/external-wait/decision.js:75-94
 - 등록 판정은 등록 잡 집합만 본다 — server/worker/external-wait/decision.js:9-40
 - 투영은 잡마다 정해진 필드만 복사한다. 클라이언트 검증은 최상위 키만 엄격하고 잡의 추가 필드는 막지 않는다 — server/worker/attach.js:133-166, app/protocol.js:115-173
 - 카드 슬롯 3은 `externalJobRows`가 고른 등록 잡 줄(최대 4줄, `<글리프> <호스트> <잡 번호> <상태어> <경과>`)이고, 모든 카드 표면이 `waitReasonLines`의 `card` 갈래로 같은 함수를 쓴다 — app/views/worker/wait-vocabulary.js:409-475, app/views/worker/lanes.js:2741, app/views/worker/lanes.js:2841-2842, app/views/worker/lanes.js:4126-4167
@@ -56,12 +56,16 @@ scope:
 - 이슈 상세 외부 작업 섹션은 등록 잡마다 잡·상태·exit·기대 산출물·로그 열의 표를 그린다 — app/views/detail-panel/index.js:2387-2483
 - 재개 완료 블록은 등록 잡별 번호·state·exit·근거·기대 산출물을 쓴다. Worker fork와 세션 재개가 같은 바이트를 쓴다 — server/worker/external-wait/completion-prompt.js:5-35
 - 서버 headline과 완료 알림 문장은 등록 잡으로 만든다 — server/worker/wait-judgment.js:332-360, server/worker/notify.js:320, server/worker/notify.js:763
-- 카드에는 ssh·잡 번호·log 칩이 없고, 잡 표는 상세 패널이 가진다 — docs/adr/UI-nuwy-same-worker-session-conversation-and-return.md:239
+- ADR UI-nuwy는 결정 조항으로 "카드에 ssh·잡 번호·log 칩이 없고 상세 패널 `externalJobsTemplate`이 잡·상태·exit·expected·로그 표를 갖는다"와 "대기 레코드 투영 `projectExternalWait`·`EXTERNAL_WAIT_FIELDS`, `/resume` fork·fresh와 `/stop`의 서버 동작, 관찰기 주기·hold 예산·admission의 `external_wait` 거절은 바꾸지 않는다"를 두고, 외부 작업 대기의 관찰·완료·재개도 다룬다 — docs/adr/UI-nuwy-same-worker-session-conversation-and-return.md:239-241, docs/adr/UI-nuwy-same-worker-session-conversation-and-return.md:251-253, docs/adr/UI-nuwy-same-worker-session-conversation-and-return.md:438-446
+- 열린 스펙 UI-18a5·UI-ny0h도 ADR UI-nuwy를 supersede하고, Finish의 ADR 단계에서 현재 표를 다시 읽어 먼저 착지한 쪽을 대상으로 삼는다 — docs/superpowers/specs/2026-10-02-session-worker-continue-pair-design.md:207, docs/superpowers/specs/2026-10-02-worker-timing-settings-design.md:148
 - 레코드 형식과 Slurm 관찰 프로그램의 정본은 dotfiles 계약이다. 관찰은 잡을 바꾸지 않는다 — dotfiles docs/contracts/external-wait.md:64-92, dotfiles docs/contracts/external-wait.md:109-125, dotfiles docs/contracts/workflow-state.yaml:1171-1212(`mutates_job: never`)
+- 레코드 GET은 레코드 전체를 돌려주고 `bead-wait`가 그 소비자다 — server/app.js:170, dotfiles docs/contracts/external-wait.md:26
 - wallace·hamilton 모두 `AccountingStorageType = accounting_storage/none`, `JobCompType = jobcomp/filetxt`, `JobCompLoc = /var/log/slurm_jobcomp.log`(누구나 읽기), `MinJobAge = 300`이다 — 명령: `scontrol show config`, `ls -la`
 - 완료 기록 한 줄에는 `JobId`·`UserId`·`Name`·`JobState`·`TimeLimit`·`StartTime`·`EndTime`·`ProcCnt`·`WorkDir`·`Tres`(cpu·mem)·`SubmitTime`·`ExitCode`가 있고 comment는 없다. 최근 2000·5000줄에서 `EndTime`이 내림 없이 이어진다 — 명령: 두 호스트 `tail` + awk 순서 검사
 - 248075·248076(PROSTATE-u6u의 하위 잡)은 등록 잡 248074와 같은 사용자·같은 `WorkDir`이고, 248074 시작 뒤에 제출됐다 — 명령: `squeue -o "%i|%u|...|%Z"`, 완료 기록 grep
 - snakemake-executor-plugin-slurm 2.8.0은 하위 잡 이름을 실행 ID(`[<접두어>_]<uuid>`)로 쓰고, rule 이름을 comment `rule_<rule>[_wildcards_<w>]`에 둔다 — 명령: wallace prostate venv 설치 소스 grep(`submit_string.py`, `__init__.py:840-847,1101-1103`)
+- snakemake는 실행 중 작업 폴더에 입력·출력 잠금(`.snakemake/locks/0.input.lock`·`0.output.lock`)을 두어 산출물이 겹치는 두 실행을 막는다 — 명령: wallace prostate `ls .snakemake/locks`(PROSTATE-u6u 실행 중)
+- 설치된 플러그인 2.8.0 소스에는 Slurm 의존성(`--dependency`)·immediate submit 경로가 없다. wallace는 `DependencyParameters = (null)`이라, 앞 잡이 실패한 `afterok` 의존 잡은 취소되지 않고 대기로 남는다 — 명령: 플러그인 소스 `grep -i -E "dependency|immediate"` 무출력, `scontrol show config`
 - sjob은 잡 이름 끝에 생성 꼬리 `__YYYYmmdd_HHMMSS_<hex>`를 붙인다 — dotfiles src/shell/bin/sjob:124
 - 미확인: `squeue -t all`이 `MinJobAge` 안의 완료 잡을 comment와 함께 보이는지 — 조회 시점에 최근 완료 잡이 없었다. 안 보여도 §3.3의 이름 대체 규칙으로 동작한다
 
@@ -78,7 +82,7 @@ scope:
   - `SubmitTime`이 기준 `StartTime` 이상
   - 같은 레코드의 등록 잡이 아님
 - 한 하위 잡은 한 등록 잡에만 속한다. 같은 호스트·같은 폴더의 등록 잡이 여럿이면, 하위 잡 제출 시각 이전에 시작한 등록 잡 중 가장 늦게 시작한 잡에 붙인다.
-- 결정: 다른 Bead의 외부 대기가 같은 폴더를 동시에 쓰는 경우는 구분하지 않는다. snakemake는 한 폴더의 동시 실행을 잠그고, 그 밖의 경우에도 표시만 섞일 뿐 판정·완료에는 영향이 없다.
+- 결정: 다른 Bead의 외부 대기가 같은 폴더를 동시에 쓰는 경우는 구분하지 않는다. snakemake는 같은 폴더에서 산출물이 겹치는 두 실행을 잠그고(§2), 그 밖의 동시 실행은 표시만 섞일 뿐 판정·완료에는 영향이 없다.
 - 판정 시점:
   - 등록 잡이 종결될 때까지 관찰마다 판정한다.
   - 등록 잡이 종결된 관찰에서도 한 번 더 판정해 마지막 상태를 남긴다.
@@ -92,7 +96,8 @@ scope:
 - **끝난 하위 잡**: `JobCompType`이 `jobcomp/filetxt`일 때 `JobCompLoc` 파일에서 읽는다.
   - 파일 끝에서 거꾸로 읽다가 `EndTime`이 기준 `StartTime`보다 이른 줄에서 멈춘다. 그래서 읽는 양은 등록 잡 시작 이후 끝난 잡 수에 비례한다(hamilton 파일 418MB를 매번 다 읽지 않는다).
   - 읽는 값은 번호·이름·상태·제출·시작·종료·CPU·메모리·`ExitCode`다.
-- 원격 출력은 재료마다 줄 수 상한(예: 1000줄)으로 자른다.
+- 개수는 자르기 전에 센다. 원격 프로그램이 두 재료를 잡 번호로 합치고(같은 잡이 두 곳에 있으면 완료 기록의 종결 상태가 우선), 소속 필터·중복 제거·상태별 집계를 먼저 한 뒤 표시 행을 고른다.
+- 표시 행은 완료가 아닌 행 전부와, 가장 최근에 끝난 완료 행 300개다. 서버가 넘긴 "지난 관찰의 비종결 하위 잡 번호"는 찾으면 상한과 무관하게 행으로 돌려준다. 그래야 상태 전이를 놓치지 않는다.
 - 경과는 Slurm이 준 실행 시간(큐)이나, 같은 원격 시계의 시작·종료 시각 차(완료 기록)로 계산한다. 원격과 서버의 시간대 차이에 기대지 않는다.
 - 관찰은 잡을 바꾸지 않는다(`mutates_job: never` 유지).
 
@@ -112,10 +117,10 @@ scope:
   - `name`: 원래 `JobName`
   - `anchor`: `{user, workdir, started_at}`
   - `spawned`: `{total, counts, rows, omitted}`
-- `counts`는 `running`·`pending`·`completed`·`failed`·`unknown`이다. 매 관찰마다 재료에서 다시 세므로 `rows` 상한과 무관하게 정확하다.
+- `counts`는 `running`·`pending`·`completed`·`failed`·`unknown`이다. 앞의 넷은 매 관찰의 원격 집계(§3.2; 완료 기록을 지원하지 않으면 §4)이고, `unknown`은 서버가 저장 행과 비교해 센다. 그래서 `rows` 상한과 무관하게 정확하다.
 - `rows` 항목은 번호·원래 이름·rule·상태·제출·시작·종료(또는 실행 시간)·제한·CPU·메모리·exit다.
-  - 상한은 300개다.
-  - 넘으면 완료 줄을 오래 끝난 순으로 빼고, 뺀 수를 `omitted`에 둔다.
+  - 상한은 완료 행에만 적용하고 300개다. 완료가 아닌 행(실행·대기·실패·확인 중)은 모두 남긴다.
+  - 완료 행이 넘치면 오래 끝난 순으로 빼고, 뺀 수를 `omitted`에 둔다.
 - 상태 분류:
 
 | 분류 | 조건 |
@@ -124,10 +129,10 @@ scope:
 | `pending` | `PENDING`·`CONFIGURING`·`REQUEUED`·`SUSPENDED` |
 | `completed` | `COMPLETED`이고 exit가 0 또는 없음 |
 | `failed` | 그 밖의 종결 상태, 또는 exit ≠ 0 |
-| `unknown` | 전에 봤지만 이번 관찰의 두 재료 어디에도 없음 |
+| `unknown` | 지난 관찰에서 비종결이었는데, 이번 관찰의 두 재료 어디에도 없음(§4 조건 아래) |
 
 - 하위 잡은 다음 어디에도 들어가지 않는다: 등록 판정, hold 판정, `completion`, `completionDigest`, 판정 배지(verdict), 알림.
-- 투영(`projectExternalWait`)은 이 필드를 싣는다. 새 필드가 없는 옛 레코드도 지금처럼 그려진다.
+- 투영(`projectExternalWait`)은 이 필드를 싣는다. 이것은 ADR UI-nuwy의 "투영을 바꾸지 않는다" 조항을 바꾼다(결정 (ADR 후보)). 최상위 키 `EXTERNAL_WAIT_FIELDS`는 그대로다. 새 필드가 없는 옛 레코드도 지금처럼 그려진다.
 - 로그 내용은 여전히 저장하지 않는다.
 
 ### 3.5 카드 슬롯 3
@@ -198,6 +203,13 @@ Worker fork와 세션 재개가 같은 바이트를 쓰는 규칙은 그대로�
 - 배지는 등록 잡만 센다.
 - 근거는 이 문서 §3.5가 소유한다.
 
+### 3.10 ADR UI-nuwy 대체 순서
+
+- 결정: ADR UI-nuwy를 대체하는 열린 스펙이 둘 더 있다. UI-18a5(대화 대상·출구 조항)와 UI-ny0h(재시도 사다리·재개 지연 조항)다(§2). 바꾸는 조항이 이 문서와 겹치지 않으므로 순서만 맞춘다.
+  - Finish의 ADR 단계에서 `docs/adr/README.md` 현재 표를 다시 읽는다.
+  - 둘 중 먼저 착지한 ADR이 있으면 그 ADR을 supersede 대상으로 삼고, 그 ADR이 바꾼 조항까지 승계한다.
+  - 대상 id가 바뀌면 결정 (ADR 후보)의 후보 줄을 정정해 재게시한다(staleness 재검토 경로).
+
 ## 4. 오류와 대체
 
 모두 fail-quiet다.
@@ -205,8 +217,9 @@ Worker fork와 세션 재개가 같은 바이트를 쓰는 규칙은 그대로�
 | 상황 | 동작 |
 | --- | --- |
 | 기준 부재 | 하위 잡 없음. 화면은 지금과 같다 |
-| 큐 조회·완료 기록 읽기·파싱 실패 | 그 관찰은 저장된 하위 잡을 바꾸지 않는다. 레코드의 `error_count`·`last_error`·백오프는 등록 잡 관찰 결과만으로 정한다 |
-| 완료 기록이 filetxt가 아니거나 읽을 수 없음 | 끝난 하위 잡은 큐에서 사라진 뒤 `unknown`이 된다. 카드와 상세는 `확인 중`으로 보인다 |
+| 완료 기록을 지원하지 않음(`JobCompType`이 `jobcomp/filetxt`가 아니거나 `JobCompLoc` 파일이 없음) | 큐 재료만으로 판정한다. `-t all`에서 종결 상태로 보인 잡은 그 상태로 저장되고, 종결을 못 본 채 큐에서 사라진 지난 비종결 잡은 `unknown`(`확인 중`)이 된다. 큐에서 사라진 종결 잡도 개수에 남도록, 개수는 서버가 저장 행(`omitted` 포함)과 이번 큐를 합쳐 센다 |
+| 이번 관찰에서 큐 조회 실패, 또는 지원되는 완료 기록의 읽기·파싱 실패 | 그 관찰은 저장된 하위 잡(`counts`·`rows`)을 바꾸지 않는다. `unknown` 전이도 하지 않는다 |
+| 위 어느 경우든 | 레코드의 `error_count`·`last_error`·백오프는 등록 잡 관찰 결과만으로 정한다 |
 | 이름 재료 없음 | 번호로 보인다 |
 
 ## 5. 수용 기준
@@ -228,9 +241,11 @@ Worker fork와 세션 재개가 같은 바이트를 쓰는 규칙은 그대로�
   - 기준 필드 파싱
   - 큐·완료 기록 줄 파싱
   - 소속 필터(사용자·폴더·제출 시각·등록 잡 제외)
-  - 재료 부재·형식 다름·줄 상한
+  - 자르기 전 집계(표시 행보다 많은 잡의 정확한 개수), 완료 행 300 상한, 지난 비종결 번호의 행 반환
+  - 완료 기록 지원 안 함·읽기 실패
 - `server/worker/external-wait/observer.test.js`:
-  - 하위 잡 병합(이름 유지, `unknown` 전이)
+  - 하위 잡 병합(이름 유지)
+  - `unknown` 전이는 완료 기록 지원 안 함에서만, 읽기 실패에서는 저장값 유지
   - 여러 등록 잡 사이 귀속
   - 종결 관찰의 마지막 판정
   - 재료 실패가 `error_count`·백오프를 바꾸지 않음
@@ -269,16 +284,16 @@ Worker fork와 세션 재개가 같은 바이트를 쓰는 규칙은 그대로�
 ## 결정 (ADR 후보)
 
 - 전제: ADR UI-u6ud-2 — beads-ui는 dotfiles 계약의 소비자이고, 레코드 형식 정본은 dotfiles다. 새 필드는 계약 정정과 함께 움직인다(§3.8).
-- 전제: ADR UI-nuwy — 카드에 ssh·잡 번호·log 칩을 두지 않고 잡 표는 상세가 가진다. 번호는 `title`과 상세 표에만 둔다.
-- 외부 작업 하위 잡의 소속과 쓰임새:
-  - 하위 잡은 등록 잡과 같은 사용자·같은 `WorkDir`에서 등록 잡 시작 이후 제출된 Slurm 잡이다. 사용자 큐와 Slurm 작업 완료 기록만으로 관찰하고, 로그는 읽지 않는다.
-  - 하위 잡은 표시 재료일 뿐 대기 판정·완료·digest·알림에 들어가지 않는다.
-  - 왜 ADR인가:
-    - 되돌리기 어렵다: 레코드 필드 형식(dotfiles 계약), 원격 관찰 프로그램, 투영, 카드·상세 렌더러, 재개 완료 블록이 함께 움직인다.
-    - 맥락 없이는 의외다: 왜 snakemake 진행률이나 로그가 아니라 `WorkDir`·제출 시각인지.
-    - 실제 트레이드오프가 있다: 일반성·로그 비의존을 얻고, 전체 단계 수와 폴더 공유 구분을 잃는다.
-  - 새 주제: 가장 가까운 현재 ADR UI-u6ud-2(계약 소비 방식)와는 소비자 집합이 다르고, 외부 대기 관찰을 다루는 현재 ADR은 없다.
-  - `summary`: "외부 작업의 하위 잡은 등록 잡과 같은 사용자·WorkDir에서 등록 잡 시작 이후 제출된 Slurm 잡이고 사용자 큐와 Slurm 작업 완료 기록만으로 관찰하며, 표시 재료일 뿐 대기 판정·완료·digest·알림에 들어가지 않는다" → ADR
+- ADR UI-nuwy를 supersede해 다시 쓴다(새 id UI-q15q; §3.10의 순서 규칙에 따라 대상이 바뀔 수 있다).
+  - 바뀌는 조항 1: "대기 레코드 투영 `projectExternalWait`·`EXTERNAL_WAIT_FIELDS` … 는 바꾸지 않는다"(UI-nuwy:251-253). `projectExternalWait`는 slurm 잡의 관찰 표시 필드(`name`·`anchor`·`spawned`)를 더 싣는다. `EXTERNAL_WAIT_FIELDS`(최상위 키), `/resume` fork·fresh와 `/stop`의 서버 동작, 관찰기 주기·hold 예산·admission의 `external_wait` 거절은 그대로다.
+  - 바뀌는 조항 2: 상세 패널 `externalJobsTemplate` 표(UI-nuwy:239-241). 열은 이름·상태·경과/제한·자원·번호·exit·expected·로그이고, 등록 잡 아래에 하위 잡 행이 붙는다(완료는 접힘). 카드에 ssh·잡 번호·log 칩을 두지 않는 조항은 그대로다.
+  - 더하는 조항: 외부 작업의 하위 잡은 등록 잡과 같은 사용자·같은 `WorkDir`에서 등록 잡 시작 이후 제출된 Slurm 잡이다. 사용자 큐와 Slurm 작업 완료 기록만으로 관찰하고 로그는 읽지 않는다. 하위 잡은 표시 재료일 뿐 대기 판정·완료·digest·알림에 들어가지 않는다.
+  - 나머지 조항은 모두 승계한다.
+  - 되돌리기 어렵다: dotfiles `docs/contracts/external-wait.md` Record·관찰 절, `server/worker/external-wait/adapters/slurm.js` 원격 프로그램, `observer.js`·`store.js` 저장, `server/worker/attach.js` 투영, 카드 렌더러(`app/views/worker/wait-vocabulary.js`·`lanes.js`), 상세 패널(`app/views/detail-panel/index.js`), `completion-prompt.js`가 함께 움직인다.
+  - 맥락 없이는 의외다: 왜 snakemake 진행률이나 로그가 아니라 `WorkDir`·제출 시각으로 찾는지, 왜 하위 잡 실패가 알림을 내지 않는지.
+  - 실제 트레이드오프가 있다: 일반성과 로그 비의존을 얻고, 전체 단계 수와 같은 폴더 동시 실행의 구분을 잃는다.
+  - 통합: ADR UI-nuwy와 소비자(`projectExternalWait`, 상세 패널 `externalJobsTemplate`, 외부 대기 카드 표면)를 공유한다. 그래서 새 주제가 아니라 UI-nuwy의 다시 쓰기다.
+  - `summary`: "사람이 필요한 멈춤(파킹, recovery authority·no_progress, 옛 사유 읽기 호환)은 같은 Worker 세션을 fork 없이 tmux 대화형으로 열어 해결한다; 대화 턴 종료는 답 대기(action_required)이고 첫 줄 인계를 관측하면 창 소멸 확인 뒤 같은 attempt를 같은 세션·기록 실행 설정으로 재개하며(parked·awaiting_user 예외는 이 경로뿐, 사람 ↻·자동 재디스패치는 없음) 인수면 관찰만, 보류면 대기로 남는다; 알림은 확인 필요·답 대기·Worker가 이어감·사람 인수 넷이다; 외부 작업의 하위 잡은 등록 잡과 같은 사용자·WorkDir에서 등록 잡 시작 이후 제출된 Slurm 잡이고 사용자 큐와 Slurm 작업 완료 기록만으로 관찰하며, 표시 재료일 뿐 대기 판정·완료·digest·알림에 들어가지 않는다" → ADR, supersede UI-nuwy
 - 카드 요약 줄(개수 + 실패 우선 이름)과 상세 표 완료 접힘 — UI 레이아웃·표시 형식(기본 제외 목록) → ADR 아님
 - 이름 규칙(sjob 꼬리 제거, comment rule 이름, UUID면 번호) — 되돌리기 쉬움: 순수 함수 하나 → ADR 아님
-- `rows` 상한 300과 원격 줄 상한 — 값 조정(기본 제외 목록) → ADR 아님
+- 완료 행 상한 300 — 값 조정(기본 제외 목록) → ADR 아님
