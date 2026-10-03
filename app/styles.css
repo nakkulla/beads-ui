@@ -2041,6 +2041,28 @@ input.inline-edit:focus {
   color: var(--text-muted);
 }
 
+/* 하위 잡 요약 줄 (UI-q15q §3.5): 잡 줄 격자의 전체 폭 줄. 이름이 길어도 줄을
+   넘겨 카드 폭 안에 머문다. */
+.external-spawned {
+  grid-column: 1 / -1;
+  min-width: 0;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.external-spawned__part {
+  white-space: nowrap;
+}
+
+.external-spawned__part--failed,
+.external-spawned__names[data-tone='danger'] .external-spawned__glyph {
+  color: var(--accent-danger);
+}
+
+.external-spawned__names[data-tone='progress'] .external-spawned__glyph {
+  color: var(--accent);
+}
+
 .wait-verdict,
 .wait-summary {
   position: relative;
@@ -10734,6 +10756,38 @@ a.detail-summary__gate:focus-visible .detail-summary__gate-label {
   border-color: var(--button-border);
   background: var(--button-bg);
   color: var(--button-fg);
+}
+
+/* 상세 외부 작업 표 (UI-q15q §3.6): 좁은 폭에서는 표 영역만 가로로 스크롤하고
+   페이지는 넘치지 않는다. 하위 잡 행은 등록 잡 행 밑에 가지 글리프로 들여 쓴다. */
+.detail-external-wait__jobs {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.detail-external-wait__jobs :is(th, td) {
+  vertical-align: top;
+}
+
+.detail-external-wait__jobs :is(th, td):nth-child(-n + 6) {
+  white-space: nowrap;
+}
+
+.detail-external-wait__sub {
+  color: var(--text-muted);
+}
+
+.detail-external-wait__branch {
+  padding-inline-start: var(--sp-4);
+}
+
+.detail-external-wait__sub[data-spawned-group='failed'] td:nth-child(2) {
+  color: var(--accent-danger);
+}
+
+.detail-external-wait__fold-btn {
+  color: var(--text-muted);
 }
 
 .external-wait__kind,

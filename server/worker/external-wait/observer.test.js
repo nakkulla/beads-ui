@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
-import { createExternalWaitObserver } from './observer.js';
+import { createExternalWaitObserver, mergeSpawned } from './observer.js';
 import { createExternalWaitStore } from './store.js';
 
 let workspace = '';
@@ -422,4 +422,286 @@ test('keeps callback failure separate from observation success', async () => {
     last_error: null
   });
   expect(log).toHaveBeenCalledWith('External wait callback failed');
+});
+
+/**
+ * One slurm wait record (UI-q15q).
+ *
+ * @param {Array<Partial<import('./store.js').SlurmJob>>} [jobs]
+ */
+function insertSlurm(jobs = [{}]) {
+  return store.insert(workspace, {
+    root_dir: workspace,
+    bead_id: `UI-${sequence}`,
+    owner: { kind: 'worker', attempt_id: 'attempt-1' },
+    worktree: workspace,
+    execution_sha: 'a'.repeat(40),
+    stage: 'detached',
+    jobs: jobs.map((job) => ({
+      adapter: /** @type {const} */ ('slurm'),
+      ssh_host: 'cluster',
+      job_id: '123',
+      submitted_at: new Date(time).toISOString(),
+      log_path: '/log',
+      expected: ['/result'],
+      ...job
+    }))
+  });
+}
+
+/**
+ * A remote observation of a registered job plus its sub-job section.
+ *
+ * @param {{rows?: string[], comp?: string, counts?: string, uq_rc?: number, terminal?: boolean}} [options]
+ */
+function slurmStdout({
+  rows = [],
+  comp = 'filetxt',
+  counts = '0|0|0|0',
+  uq_rc = 0,
+  terminal = false
+} = {}) {
+  return [
+    terminal ? '' : 'RUNNING',
+    '__EWM_SQUEUE_RC__=0',
+    terminal
+      ? 'JobId=123 JobName=snake__20260921_090000_ab12 JobState=COMPLETED ExitCode=0:0'
+      : 'JobId=123 JobName=snake__20260921_090000_ab12 JobState=RUNNING TimeLimit=00:30:00 RunTime=00:20:00',
+    '__EWM_SCONTROL_RC__=0',
+    '',
+    '__EWM_LOG_RC__=0',
+    '__EWM_ARTIFACT__0=1|1|1',
+    '__EWM_SPAWN_BEGIN__',
+    '__EWM_SPAWN_USER__=alice',
+    '__EWM_SPAWN_WORKDIR__=/work',
+    '__EWM_SPAWN_START__=2026-09-21T09:00:00',
+    `__EWM_SPAWN_UQ_RC__=${uq_rc}`,
+    `__EWM_SPAWN_COMP__=${comp}`,
+    ...rows,
+    `__EWM_SPAWN_COUNTS__=${counts}`,
+    '__EWM_SPAWN_NOW__=2026-09-21T10:00:00',
+    '__EWM_SPAWN_END__',
+    ''
+  ].join('\n');
+}
+
+const RUNNING_ROW =
+  '__EWM_SPAWN_ROW__=Q|201|run-a|rule_align|RUNNING|2026-09-21T09:10:00|2026-09-21T09:11:00|N/A|10:00|1:00:00|4|16G||/work';
+const COMPLETED_ROW =
+  '__EWM_SPAWN_DONE__=2026-09-21T09:30:00|C|201|run-a||COMPLETED|2026-09-21T09:10:00|2026-09-21T09:11:00|2026-09-21T09:30:00||60|4|16G|0:0|/work';
+
+/**
+ * @param {string[]} outputs
+ */
+function sequenceObserver(outputs) {
+  const run = vi.fn(
+    /** @type {import('./store.js').Run} */ (
+      async () => ({
+        code: 0,
+        stdout: outputs.shift() || '',
+        stderr: ''
+      })
+    )
+  );
+  const observer = createExternalWaitObserver({
+    store,
+    listWorkspaces: () => [workspace],
+    run,
+    now: () => time
+  });
+  return { observer, run };
+}
+
+/**
+ * @param {import('./store.js').Job|undefined} job
+ */
+function slurmOf(job) {
+  if (job?.adapter !== 'slurm') {
+    throw new Error('slurm job expected');
+  }
+  return job;
+}
+
+test('stores the name, anchor and sub-jobs on the registered slurm job', async () => {
+  const record = insertSlurm();
+  const { observer } = sequenceObserver([
+    slurmStdout({ rows: [RUNNING_ROW], counts: '1|0|0|0' })
+  ]);
+
+  const result = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(slurmOf(result?.jobs[0])).toMatchObject({
+    name: 'snake__20260921_090000_ab12',
+    anchor: {
+      user: 'alice',
+      workdir: '/work',
+      started_at: '2026-09-21T09:00:00'
+    },
+    spawned: {
+      total: 1,
+      counts: { running: 1, pending: 0, completed: 0, failed: 0, unknown: 0 },
+      omitted: 0,
+      rows: [expect.objectContaining({ job_id: '201', state: 'RUNNING' })]
+    }
+  });
+});
+
+test('keeps a rule name seen in the queue once the completion row lacks it', async () => {
+  const record = insertSlurm();
+  const { observer } = sequenceObserver([
+    slurmStdout({ rows: [RUNNING_ROW], counts: '1|0|0|0' }),
+    slurmStdout({ rows: [COMPLETED_ROW], counts: '0|0|1|0' })
+  ]);
+
+  await observer.observeRecord(workspace, record.wait_id);
+  time += 120000;
+  const result = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(slurmOf(result?.jobs[0]).spawned?.rows).toEqual([
+    expect.objectContaining({
+      job_id: '201',
+      state: 'COMPLETED',
+      rule: 'rule_align'
+    })
+  ]);
+});
+
+test('passes the previously nonterminal sub-job ids to the next read', async () => {
+  const record = insertSlurm();
+  const { observer, run } = sequenceObserver([
+    slurmStdout({ rows: [RUNNING_ROW], counts: '1|0|0|0' }),
+    slurmStdout({ rows: [RUNNING_ROW], counts: '1|0|0|0' })
+  ]);
+
+  await observer.observeRecord(workspace, record.wait_id);
+  time += 120000;
+  await observer.observeRecord(workspace, record.wait_id);
+
+  expect(String(run.mock.calls[1]?.[0]?.[6])).toContain(
+    "previous='\\''201'\\''"
+  );
+});
+
+test('turns a vanished running sub-job unknown without a completion log', async () => {
+  const record = insertSlurm();
+  const { observer } = sequenceObserver([
+    slurmStdout({ rows: [RUNNING_ROW], counts: '1|0|0|0' }),
+    slurmStdout({ comp: 'unsupported' })
+  ]);
+
+  await observer.observeRecord(workspace, record.wait_id);
+  time += 120000;
+  const result = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(slurmOf(result?.jobs[0]).spawned).toMatchObject({
+    total: 1,
+    counts: { running: 0, unknown: 1 },
+    rows: [expect.objectContaining({ job_id: '201', state: 'UNKNOWN' })]
+  });
+});
+
+test('keeps a vanished running sub-job as stored when the completion log is read', async () => {
+  const record = insertSlurm();
+  const { observer } = sequenceObserver([
+    slurmStdout({ rows: [RUNNING_ROW], counts: '1|0|0|0' }),
+    slurmStdout()
+  ]);
+
+  await observer.observeRecord(workspace, record.wait_id);
+  time += 120000;
+  const result = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(slurmOf(result?.jobs[0]).spawned).toMatchObject({
+    total: 1,
+    counts: { running: 1, unknown: 0 },
+    rows: [expect.objectContaining({ job_id: '201', state: 'RUNNING' })]
+  });
+});
+
+test('leaves the stored sub-jobs unchanged when their material fails', async () => {
+  const record = insertSlurm();
+  const { observer } = sequenceObserver([
+    slurmStdout({ rows: [RUNNING_ROW], counts: '1|0|0|0' }),
+    slurmStdout({ uq_rc: 1 })
+  ]);
+
+  const first = await observer.observeRecord(workspace, record.wait_id);
+  time += 120000;
+  const second = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(slurmOf(second?.jobs[0]).spawned).toEqual(
+    slurmOf(first?.jobs[0]).spawned
+  );
+});
+
+test('keeps error count and backoff free of sub-job material failure', async () => {
+  const record = insertSlurm();
+  const { observer } = sequenceObserver([slurmStdout({ uq_rc: 1 })]);
+
+  const result = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(result).toMatchObject({ error_count: 0, last_error: null });
+  expect(Date.parse(result?.next_observation_at || '') - time).toBe(120000);
+});
+
+test('bounds a registered job by the later-started sibling in the same place', async () => {
+  const anchor = { user: 'alice', workdir: '/work' };
+  const record = insertSlurm([
+    { anchor: { ...anchor, started_at: '2026-09-21T09:00:00' } },
+    {
+      job_id: '124',
+      anchor: { ...anchor, started_at: '2026-09-21T09:20:00' }
+    }
+  ]);
+  const { observer, run } = sequenceObserver([slurmStdout(), slurmStdout()]);
+
+  await observer.observeRecord(workspace, record.wait_id);
+
+  const first = String(run.mock.calls[0]?.[0]?.[6]);
+  expect(first).toContain("later='\\''2026-09-21T09:20:00'\\''");
+  expect(first).toContain("exclude='\\''123 124'\\''");
+});
+
+test('takes the final sub-job snapshot on the terminal observation and stops there', async () => {
+  const record = insertSlurm();
+  const { observer, run } = sequenceObserver([
+    slurmStdout({ rows: [COMPLETED_ROW], counts: '0|0|1|0', terminal: true })
+  ]);
+
+  const result = await observer.observeRecord(workspace, record.wait_id);
+  await observer.observeRecord(workspace, record.wait_id);
+
+  expect(slurmOf(result?.jobs[0]).spawned?.counts.completed).toBe(1);
+  expect(result?.completion).not.toBeNull();
+  expect(run).toHaveBeenCalledTimes(1);
+});
+
+test('caps completed rows at 300 and counts the omitted rows', () => {
+  const rows = Array.from({ length: 302 }, (_, index) => ({
+    job_id: String(1000 + index),
+    name: '',
+    rule: '',
+    state: 'COMPLETED',
+    submitted_at: '2026-09-21T09:01:00',
+    started_at: '2026-09-21T09:02:00',
+    ended_at: `2026-09-21T09:${String(10 + Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}`,
+    elapsed_seconds: 60,
+    time_limit_seconds: 3600,
+    unlimited: false,
+    cpus: 1,
+    memory: '1G',
+    exit_code: 0
+  }));
+
+  const spawned = mergeSpawned(undefined, {
+    status: 'ok',
+    completion_log: 'filetxt',
+    counts: { running: 0, pending: 0, completed: 310, failed: 0 },
+    rows
+  });
+
+  expect(spawned?.rows).toHaveLength(300);
+  expect(spawned?.omitted).toBe(10);
+  expect(spawned?.total).toBe(310);
+  expect(spawned?.rows.map((row) => row.job_id)).not.toContain('1000');
 });

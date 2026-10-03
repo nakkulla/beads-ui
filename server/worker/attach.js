@@ -151,6 +151,16 @@ export function projectExternalWait(record) {
       log_path: job.log_path,
       state: job.state,
       observed_at: job.observed_at,
+      // Display-only sub-job material (UI-q15q §3.4); old jobs keep their shape.
+      ...(job.adapter === 'slurm' && job.name !== undefined
+        ? { name: job.name }
+        : {}),
+      ...(job.adapter === 'slurm' && job.anchor !== undefined
+        ? { anchor: job.anchor }
+        : {}),
+      ...(job.adapter === 'slurm' && job.spawned !== undefined
+        ? { spawned: job.spawned }
+        : {}),
       terminal: job.terminal
         ? {
             exit_code: job.terminal.exit_code,

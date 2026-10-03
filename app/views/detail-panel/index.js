@@ -49,6 +49,11 @@ import {
   planPlaceLanesOf
 } from '../worker/plan-place.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
+import {
+  externalJobDisplayName,
+  externalJobElapsed,
+  externalSpawnedTable
+} from '../worker/wait-vocabulary.js';
 import { artifactsTemplate } from './artifacts.js';
 import { commentsTemplate } from './comments.js';
 import {
@@ -2349,6 +2354,12 @@ export function createDetailPanel(mount_element, options) {
 
   /** @type {Set<string>} */
   const external_pending = new Set();
+  /**
+   * Registered jobs whose completed sub-jobs are unfolded (`wait_id:job_id`).
+   *
+   * @type {Set<string>}
+   */
+  const spawned_open = new Set();
 
   /**
    * The detail panel is a sibling of the Worker/Monitor mounts, so their
@@ -2381,6 +2392,102 @@ export function createDetailPanel(mount_element, options) {
       button.disabled = false;
       doRender();
     }
+  }
+
+  /**
+   * Sub-job rows under one registered job (UI-q15q §3.6): open groups first,
+   * then the completed fold and the omitted line. The last line takes `└`.
+   *
+   * @param {string} wait_id
+   * @param {string} job_id
+   * @param {unknown} spawned
+   */
+  function spawnedRowsTemplate(wait_id, job_id, spawned) {
+    const table = externalSpawnedTable(spawned);
+    if (!table) {
+      return '';
+    }
+    const key = `${wait_id}:${job_id}`;
+    const open = spawned_open.has(key);
+    /** @type {Array<(branch: string) => import('lit-html').TemplateResult>} */
+    const lines = table.open.map(
+      (cell) => (branch) => spawnedCellRow(cell, branch)
+    );
+    if (table.completed_count > 0) {
+      lines.push(
+        (branch) =>
+          html`<tr class="detail-external-wait__sub detail-external-wait__fold">
+            <td colspan="8">
+              <span class="detail-external-wait__branch" aria-hidden="true"
+                >${branch}</span
+              >&nbsp;<button
+                type="button"
+                class="op-btn op-btn--ghost detail-external-wait__fold-btn"
+                aria-expanded=${open ? 'true' : 'false'}
+                @click=${() => {
+                  if (spawned_open.has(key)) {
+                    spawned_open.delete(key);
+                  } else {
+                    spawned_open.add(key);
+                  }
+                  doRender();
+                }}
+              >
+                완료 ${table.completed_count}개 ${open ? '▾' : '▸'}
+              </button>
+            </td>
+          </tr>`
+      );
+      if (open) {
+        lines.push(
+          ...table.completed.map(
+            (cell) => (/** @type {string} */ branch) =>
+              spawnedCellRow(cell, branch)
+          )
+        );
+      }
+    }
+    if (table.omitted > 0) {
+      lines.push(
+        (branch) =>
+          html`<tr
+            class="detail-external-wait__sub detail-external-wait__omitted"
+          >
+            <td colspan="8">
+              <span class="detail-external-wait__branch" aria-hidden="true"
+                >${branch}</span
+              >&nbsp;완료 중 ${table.omitted}개는 목록에서 생략
+            </td>
+          </tr>`
+      );
+    }
+    return html`${lines.map((line, index) =>
+      line(index === lines.length - 1 ? '└' : '├')
+    )}`;
+  }
+
+  /**
+   * @param {import('../worker/wait-vocabulary.js').SpawnedCell} cell
+   * @param {string} branch
+   */
+  function spawnedCellRow(cell, branch) {
+    return html`<tr
+      class="detail-external-wait__sub"
+      data-spawned-group=${cell.group}
+    >
+      <td title=${ifDefined(cell.title || undefined)}>
+        <span class="detail-external-wait__branch" aria-hidden="true"
+          >${branch}</span
+        >&nbsp;${cell.name || cell.id}
+      </td>
+      <td>${cell.state}</td>
+      <td>${cell.elapsed}</td>
+      <td>${cell.resources}</td>
+      <td>${cell.id}</td>
+      <td>${cell.exit}</td>
+      <td></td>
+      <td></td>
+    </tr>`;
   }
 
   /** Render expected-path observations on the consumer issue. */
@@ -2420,8 +2527,11 @@ export function createDetailPanel(mount_element, options) {
       <table class="detail-external-wait__jobs">
         <thead>
           <tr>
-            <th>잡</th>
+            <th>이름</th>
             <th>상태</th>
+            <th>경과 / 제한</th>
+            <th>자원</th>
+            <th>번호</th>
             <th>exit</th>
             <th>expected 경로별 결과</th>
             <th>로그</th>
@@ -2431,42 +2541,57 @@ export function createDetailPanel(mount_element, options) {
           ${record.jobs.map(
             (
               /** @type {import('../../protocol.js').ExternalWaitObservation['jobs'][number]} */ job
-            ) =>
-              html`<tr>
-                <td>
-                  ${[job.ssh_host, job.job_id ?? job.pid]
-                    .filter((value) => value !== undefined)
-                    .join(' · ')}
-                </td>
-                <td>${job.state || ''}</td>
-                <td>${job.terminal?.exit_code ?? ''}</td>
-                <td>
-                  ${(job.terminal?.expected_results || []).map(
-                    (result) =>
-                      html`<div>
-                        <code>${result.path}</code> ·
-                        ${result.exists ? '존재' : '없음'}${result.size === null
-                          ? ''
-                          : ` · ${result.size} bytes`}
-                        ${result.mtime === null
-                          ? ''
-                          : ` · mtime ${result.mtime}`}
-                      </div>`
-                  )}
-                </td>
-                <td>
-                  ${job.log_path
-                    ? html`<button
-                        type="button"
-                        class="op-btn detail-external-wait__log"
-                        title="클릭하면 복사"
-                        @click=${() => copyText(job.log_path)}
-                      >
-                        ${job.log_path}
-                      </button>`
-                    : ''}
-                </td>
-              </tr>`
+            ) => {
+              const display =
+                job.adapter === 'slurm'
+                  ? externalJobDisplayName(job)
+                  : { name: '', detail: '' };
+              const number = String(job.job_id ?? job.pid ?? '');
+              const submitted = Date.parse(job.submitted_at);
+              const end = job.terminal
+                ? Date.parse(job.observed_at || '')
+                : Date.now();
+              return html`<tr class="detail-external-wait__job">
+                  <td title=${ifDefined(display.detail || undefined)}>
+                    ${[job.ssh_host, display.name || number]
+                      .filter(Boolean)
+                      .join(' ')}
+                  </td>
+                  <td>${job.state || ''}</td>
+                  <td>${externalJobElapsed(submitted, end)}</td>
+                  <td></td>
+                  <td>${number}</td>
+                  <td>${job.terminal?.exit_code ?? ''}</td>
+                  <td>
+                    ${(job.terminal?.expected_results || []).map(
+                      (result) =>
+                        html`<div>
+                          <code>${result.path}</code> ·
+                          ${result.exists ? '존재' : '없음'}${result.size ===
+                          null
+                            ? ''
+                            : ` · ${result.size} bytes`}
+                          ${result.mtime === null
+                            ? ''
+                            : ` · mtime ${result.mtime}`}
+                        </div>`
+                    )}
+                  </td>
+                  <td>
+                    ${job.log_path
+                      ? html`<button
+                          type="button"
+                          class="op-btn detail-external-wait__log"
+                          title="클릭하면 복사"
+                          @click=${() => copyText(job.log_path)}
+                        >
+                          ${job.log_path}
+                        </button>`
+                      : ''}
+                  </td>
+                </tr>
+                ${spawnedRowsTemplate(record.wait_id, number, job.spawned)}`;
+            }
           )}
         </tbody>
       </table>

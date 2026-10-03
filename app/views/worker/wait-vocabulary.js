@@ -5,6 +5,19 @@
  *
  * `⚠` is U+26A0 with no VS16, so the badge keeps text metrics (§5.1).
  */
+import {
+  externalJobDisplayName,
+  externalSpawnedClass,
+  externalSpawnedCountParts
+} from '../../protocol.js';
+
+export {
+  SLURM_RUNNING_STATES,
+  SLURM_TERMINAL_STATES,
+  externalJobDisplayName,
+  externalSpawnedClass,
+  externalSpawnedCountParts
+} from '../../protocol.js';
 
 /**
  * @typedef {'normal'|'overdue'|'action_required'} WaitVerdict
@@ -317,11 +330,222 @@ export const RELATION_CHIPS = Object.freeze(
 );
 
 /**
+ * @typedef {import('../../protocol.js').SpawnedClass} SpawnedClass
+ * @typedef {import('../../protocol.js').SpawnedRowView} SpawnedRowView
+ * @typedef {import('../../protocol.js').SpawnedView} SpawnedView
+ */
+
+/**
+ * Whether a stored `spawned` value carries countable material.
+ *
+ * @param {unknown} value
+ * @returns {value is SpawnedView}
+ */
+function isSpawnedView(value) {
+  const spawned = /** @type {Record<string, any>|null} */ (value);
+  return (
+    !!spawned &&
+    typeof spawned === 'object' &&
+    Number.isInteger(spawned.total) &&
+    !!spawned.counts &&
+    typeof spawned.counts === 'object' &&
+    Array.isArray(spawned.rows)
+  );
+}
+
+/**
+ * @typedef {Object} ExternalSpawnedSummary
+ * @property {number} total
+ * @property {Array<{ key: SpawnedClass, label: string, count: number }>} parts
+ * @property {{ tone: 'danger'|'progress', glyph: string, items: string[], more: number }|null} names
+ */
+
+/**
+ * The sub-job summary lines under an external-work card's job lines (UI-q15q
+ * §3.5). Counts come from `spawned.counts`, never from the capped rows. One
+ * registered job adds a names line — the two most recently ended failures,
+ * else the two most recently started running jobs; two or more registered
+ * jobs share one summed count line. No sub-job returns `null`.
+ *
+ * @param {import('../../protocol.js').ExternalWaitObservation|null|undefined} record
+ * @returns {ExternalSpawnedSummary|null}
+ */
+export function externalSpawnedSummary(record) {
+  const jobs = Array.isArray(record?.jobs) ? record.jobs : [];
+  /** @type {Record<SpawnedClass, number>} */
+  const counts = {
+    running: 0,
+    pending: 0,
+    completed: 0,
+    failed: 0,
+    unknown: 0
+  };
+  /** @type {SpawnedView[]} */
+  const spawned_list = [];
+  for (const job of jobs) {
+    const spawned = /** @type {Record<string, unknown>} */ (job).spawned;
+    if (isSpawnedView(spawned)) {
+      spawned_list.push(spawned);
+      for (const part of externalSpawnedCountParts(spawned.counts)) {
+        counts[part.key] += part.count;
+      }
+    }
+  }
+  const parts = externalSpawnedCountParts(counts);
+  const total = parts.reduce((sum, part) => sum + part.count, 0);
+  if (total === 0) {
+    return null;
+  }
+  /** @type {ExternalSpawnedSummary['names']} */
+  let names = null;
+  if (jobs.length === 1 && spawned_list.length === 1) {
+    const rows = spawned_list[0].rows;
+    const failed = rows
+      .filter((row) => externalSpawnedClass(row) === 'failed')
+      .sort((a, b) =>
+        String(b.ended_at || '').localeCompare(String(a.ended_at || ''))
+      );
+    const running = rows
+      .filter((row) => externalSpawnedClass(row) === 'running')
+      .sort((a, b) =>
+        String(b.started_at || '').localeCompare(String(a.started_at || ''))
+      );
+    const pick = failed.length > 0 ? failed : running;
+    const count = failed.length > 0 ? counts.failed : counts.running;
+    if (pick.length > 0) {
+      const items = pick
+        .slice(0, 2)
+        .map((row) => externalJobDisplayName(row).name || row.job_id);
+      names = {
+        tone: failed.length > 0 ? 'danger' : 'progress',
+        glyph: failed.length > 0 ? '✕' : '◐',
+        items,
+        more: Math.max(0, count - items.length)
+      };
+    }
+  }
+  return { total, parts, names };
+}
+
+/**
+ * Seconds as a duration cell: `1h29m` · `19m` · `<1m`, `''` without material.
+ *
+ * @param {number|null|undefined} seconds
+ * @returns {string}
+ */
+function spawnedDuration(seconds) {
+  return typeof seconds === 'number' && Number.isFinite(seconds)
+    ? externalJobElapsed(0, seconds * 1000)
+    : '';
+}
+
+/**
+ * @typedef {Object} SpawnedCell
+ * @property {string} id
+ * @property {string} name - The display name; `''` means the job number.
+ * @property {string} title - Wildcards and the original JobName.
+ * @property {string} state - The raw Slurm state.
+ * @property {SpawnedClass} group
+ * @property {string} elapsed - The elapsed / limit cell (§3.6 table).
+ * @property {string} resources - `<CPU>코어 <메모리>`, `''` without material.
+ * @property {string} exit
+ */
+
+/** Open sub-job groups of the detail table, in drawing order (§3.6). */
+const SPAWNED_OPEN_ORDER = Object.freeze(
+  /** @type {SpawnedClass[]} */ (['running', 'pending', 'failed', 'unknown'])
+);
+
+/**
+ * The sub-job rows of one registered job in the issue-detail table (UI-q15q
+ * §3.6). Running → pending → failed → unknown rows stay open; completed rows
+ * fold in submission order behind `completed_count`, and `omitted` counts the
+ * completed rows the record no longer keeps. A job without sub-jobs returns
+ * `null`.
+ *
+ * @param {unknown} spawned
+ * @returns {{ open: SpawnedCell[], completed: SpawnedCell[], completed_count: number, omitted: number }|null}
+ */
+export function externalSpawnedTable(spawned) {
+  if (!isSpawnedView(spawned) || spawned.total <= 0) {
+    return null;
+  }
+  /** @param {SpawnedRowView} row */
+  const cell = (row) => {
+    const group = externalSpawnedClass(row);
+    const display = externalJobDisplayName(row);
+    const elapsed = spawnedDuration(row.elapsed_seconds);
+    const limit =
+      row.unlimited === true ? '' : spawnedDuration(row.time_limit_seconds);
+    return {
+      id: row.job_id,
+      name: display.name,
+      title: [display.detail, row.name ? `JobName ${row.name}` : '']
+        .filter(Boolean)
+        .join(' · '),
+      state: typeof row.state === 'string' ? row.state : '',
+      group,
+      elapsed:
+        group === 'running'
+          ? elapsed && limit
+            ? `${elapsed} / ${limit}`
+            : elapsed
+          : group === 'pending'
+            ? elapsed
+              ? `대기 ${elapsed}`
+              : ''
+            : group === 'unknown'
+              ? ''
+              : elapsed,
+      resources: [
+        typeof row.cpus === 'number' && Number.isFinite(row.cpus)
+          ? `${row.cpus}코어`
+          : '',
+        typeof row.memory === 'string' ? row.memory : ''
+      ]
+        .filter(Boolean)
+        .join(' '),
+      exit: typeof row.exit_code === 'number' ? String(row.exit_code) : ''
+    };
+  };
+  /**
+   * @param {SpawnedRowView} a
+   * @param {SpawnedRowView} b
+   */
+  const bySubmit = (a, b) =>
+    String(a.submitted_at || '').localeCompare(String(b.submitted_at || '')) ||
+    String(a.job_id).localeCompare(String(b.job_id), undefined, {
+      numeric: true
+    });
+  const rows = [...spawned.rows].sort(bySubmit);
+  const open = SPAWNED_OPEN_ORDER.flatMap((group) =>
+    rows.filter((row) => externalSpawnedClass(row) === group)
+  ).map(cell);
+  const completed = rows
+    .filter((row) => externalSpawnedClass(row) === 'completed')
+    .map(cell);
+  const completed_count = Number.isInteger(spawned.counts.completed)
+    ? spawned.counts.completed
+    : completed.length;
+  return {
+    open,
+    completed,
+    completed_count,
+    omitted:
+      Number.isInteger(spawned.omitted) && spawned.omitted > 0
+        ? spawned.omitted
+        : 0
+  };
+}
+
+/**
  * @typedef {'success'|'danger'|'progress'|'neutral'} ExternalJobTone
  * @typedef {Object} ExternalJobRow
  * @property {string} glyph
  * @property {string} host - `로컬` when the job names no host.
  * @property {string} id - Slurm `job_id` or `pid <n>`; `''` without material.
+ * @property {string} name - The registered job's display name (UI-q15q §3.3);
+ * `''` means the renderer shows `id`.
  * @property {string} state - The state word; `''` without material.
  * @property {ExternalJobTone} tone
  * @property {string} elapsed - `1h29m` · `19m` · `<1m`; `''` without material.
@@ -428,17 +652,23 @@ export function externalJobRows(record, now) {
             ? `pid ${job.pid}`
             : '';
       const exit_code = job.terminal?.exit_code;
+      const display =
+        job.adapter === 'slurm'
+          ? externalJobDisplayName(job)
+          : { name: '', detail: '' };
       return {
         row: {
           glyph: judged.glyph,
           host,
           id,
+          name: display.name,
           state: judged.state,
           tone: judged.tone,
           elapsed: externalJobElapsed(submitted, end),
           live_since:
             !job.terminal && Number.isFinite(submitted) ? submitted : null,
           title: [
+            display.name ? id : '',
             job.state || '',
             typeof exit_code === 'number' ? `exit ${exit_code}` : '',
             job.terminal?.recovery_needed === true ? 'recovery_needed' : '',
@@ -452,7 +682,10 @@ export function externalJobRows(record, now) {
         index
       };
     })
-    .filter((entry) => entry.row.id || entry.row.state || entry.row.elapsed)
+    .filter(
+      (entry) =>
+        entry.row.id || entry.row.name || entry.row.state || entry.row.elapsed
+    )
     .sort(
       (a, b) =>
         a.group - b.group ||

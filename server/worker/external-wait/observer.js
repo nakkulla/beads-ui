@@ -1,12 +1,161 @@
+import { externalSpawnedClass } from '../../../app/protocol.js';
 import { observeProcessJob } from './adapters/process.js';
-import { observeSlurmJob } from './adapters/slurm.js';
+import {
+  SPAWNED_COMPLETED_ROW_LIMIT,
+  observeSlurmJob
+} from './adapters/slurm.js';
 import { OBSERVATION } from './contract.js';
 import { completionDigest } from './decision.js';
 
 /**
  * @typedef {import('./store.js').WaitRecord} WaitRecord
  * @typedef {(workspace:string, record:WaitRecord)=>void|Promise<void>} RecordCallback
+ * @typedef {import('./store.js').SlurmJob} SlurmJob
+ * @typedef {import('./store.js').Spawned} Spawned
+ * @typedef {import('./store.js').SpawnedRow} SpawnedRow
  */
+
+/**
+ * The record context of one registered job's sub-job read (UI-q15q §3.1):
+ * every registered id is excluded, previously nonterminal rows come back
+ * regardless of the row cap, and a later-started sibling in the same place
+ * bounds the submission window so each sub-job belongs to one registered job.
+ * A sibling without an anchor has not started and owns no sub-job.
+ *
+ * @param {SlurmJob} job
+ * @param {import('./store.js').Job[]} jobs
+ * @returns {import('./adapters/slurm.js').SpawnedContext}
+ */
+function spawnedContext(job, jobs) {
+  const own = job.anchor;
+  return {
+    exclude: jobs.flatMap((other) =>
+      other.adapter === 'slurm' ? [other.job_id] : []
+    ),
+    previous: (job.spawned?.rows || [])
+      .filter((row) =>
+        ['running', 'pending', 'unknown'].includes(externalSpawnedClass(row))
+      )
+      .map((row) => row.job_id),
+    later: jobs.flatMap((other) =>
+      other !== job &&
+      other.adapter === 'slurm' &&
+      other.ssh_host === job.ssh_host &&
+      other.anchor &&
+      (!own ||
+        (other.anchor.user === own.user &&
+          other.anchor.workdir === own.workdir))
+        ? [other.anchor.started_at]
+        : []
+    )
+  };
+}
+
+/**
+ * Merge one observation's sub-job material into the stored snapshot
+ * (UI-q15q §3.4, §4). Failed or absent material keeps the stored value. Only
+ * without a completion file does a vanished nonterminal row become `UNKNOWN`,
+ * and then the counts are the stored rows, `omitted` and this queue together;
+ * with a completion file the remote counts stand and a vanished row keeps its
+ * stored state. Completed rows are capped, oldest end first.
+ *
+ * @param {Spawned|undefined} previous
+ * @param {import('./store.js').SpawnedMaterial|undefined} material
+ * @returns {Spawned|undefined}
+ */
+export function mergeSpawned(previous, material) {
+  if (!material || material.status !== 'ok') {
+    return previous;
+  }
+  const prior_rows = previous?.rows || [];
+  const prior = new Map(prior_rows.map((row) => [row.job_id, row]));
+  /** @type {Map<string, SpawnedRow>} */
+  const merged = new Map();
+  for (const row of material.rows) {
+    const old = prior.get(row.job_id);
+    merged.set(row.job_id, {
+      ...row,
+      name: row.name || old?.name || '',
+      rule: row.rule || old?.rule || ''
+    });
+  }
+  /** @type {import('./store.js').SpawnedCounts} */
+  let counts = { ...material.counts, unknown: 0 };
+  if (material.completion_log === 'unsupported') {
+    for (const old of prior_rows) {
+      if (!merged.has(old.job_id)) {
+        const group = externalSpawnedClass(old);
+        merged.set(
+          old.job_id,
+          group === 'running' || group === 'pending'
+            ? { ...old, state: 'UNKNOWN' }
+            : old
+        );
+      }
+    }
+    counts = { running: 0, pending: 0, completed: 0, failed: 0, unknown: 0 };
+    for (const row of merged.values()) {
+      counts[externalSpawnedClass(row)] += 1;
+    }
+    counts.completed += previous?.omitted || 0;
+  } else {
+    for (const old of prior_rows) {
+      const group = externalSpawnedClass(old);
+      if (
+        !merged.has(old.job_id) &&
+        group !== 'completed' &&
+        group !== 'failed'
+      ) {
+        merged.set(old.job_id, old);
+        counts[group] += 1;
+      }
+    }
+  }
+  const rows = [...merged.values()];
+  const kept = new Set(
+    rows
+      .filter((row) => externalSpawnedClass(row) === 'completed')
+      .sort((a, b) =>
+        String(b.ended_at || '').localeCompare(String(a.ended_at || ''))
+      )
+      .slice(0, SPAWNED_COMPLETED_ROW_LIMIT)
+  );
+  return {
+    total:
+      counts.running +
+      counts.pending +
+      counts.completed +
+      counts.failed +
+      counts.unknown,
+    counts,
+    rows: rows
+      .filter(
+        (row) => externalSpawnedClass(row) !== 'completed' || kept.has(row)
+      )
+      .sort((a, b) => a.submitted_at.localeCompare(b.submitted_at)),
+    omitted: Math.max(0, counts.completed - kept.size)
+  };
+}
+
+/**
+ * Store the display-only fields of a registered slurm job. They never touch
+ * the job's state, terminal proof or the record's error accounting.
+ *
+ * @param {SlurmJob} job
+ * @param {import('./store.js').Observation} observation
+ */
+function applySpawned(job, observation) {
+  if (observation.name) {
+    job.name = observation.name;
+  }
+  if (observation.anchor) {
+    job.anchor = observation.anchor;
+  }
+  const spawned = mergeSpawned(job.spawned, observation.spawned);
+  if (spawned) {
+    job.spawned = spawned;
+  }
+}
 
 /**
  * @param {{store:ReturnType<import('./store.js').createExternalWaitStore>, listWorkspaces:()=>string[], run:import('./store.js').Run, now?:()=>number, onRecordChanged?:RecordCallback, onCompletion?:RecordCallback, log?:(message:string)=>void, interval_ms?:number}} options
@@ -85,7 +234,11 @@ export function createExternalWaitObserver({
       try {
         const observation =
           job.adapter === 'slurm'
-            ? await observeSlurmJob(job, { run, now })
+            ? await observeSlurmJob(job, {
+                run,
+                now,
+                spawned: spawnedContext(job, record.jobs)
+              })
             : await observeProcessJob(job, { run });
         if (
           job.adapter === 'process' &&
@@ -105,6 +258,7 @@ export function createExternalWaitObserver({
           job.run_time_seconds = observation.run_time_seconds;
           job.unlimited = observation.unlimited;
           job.unparseable = observation.unparseable;
+          applySpawned(job, observation);
         }
         if (observation.terminal) {
           job.terminal = {

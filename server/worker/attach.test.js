@@ -423,6 +423,75 @@ describe('external wait check-now attachment seams', () => {
     expect(row.jobs[0]).not.toHaveProperty('workdir');
   });
 
+  test('projects the slurm sub-job display fields (UI-q15q §3.4)', () => {
+    const spawned = {
+      total: 1,
+      counts: { running: 1, pending: 0, completed: 0, failed: 0, unknown: 0 },
+      rows: [{ job_id: '201', state: 'RUNNING' }],
+      omitted: 0
+    };
+    const anchor = {
+      user: 'alice',
+      workdir: '/work',
+      started_at: '2026-09-21T09:00:00'
+    };
+    const record = /** @type {any} */ ({
+      wait_id: 'w-0123456789ab',
+      root_dir: '/repo',
+      bead_id: 'A-1',
+      owner: { kind: 'worker', attempt_id: 'attempt-1' },
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '123',
+          submitted_at: '2026-09-21T00:00:00Z',
+          log_path: '/logs/job.log',
+          name: 'snake',
+          anchor,
+          spawned,
+          terminal: null
+        }
+      ]
+    });
+
+    const row = attachModule.projectExternalWait(record);
+
+    expect(row.jobs[0]).toMatchObject({ name: 'snake', anchor, spawned });
+  });
+
+  test('keeps an old slurm job projection without sub-job fields', () => {
+    const record = /** @type {any} */ ({
+      wait_id: 'w-0123456789ab',
+      root_dir: '/repo',
+      bead_id: 'A-1',
+      owner: { kind: 'worker', attempt_id: 'attempt-1' },
+      jobs: [
+        {
+          adapter: 'slurm',
+          ssh_host: 'wallace',
+          job_id: '123',
+          submitted_at: '2026-09-21T00:00:00Z',
+          log_path: '/logs/job.log',
+          terminal: null
+        }
+      ]
+    });
+
+    const row = attachModule.projectExternalWait(record);
+
+    expect(Object.keys(row.jobs[0])).toEqual([
+      'adapter',
+      'ssh_host',
+      'job_id',
+      'submitted_at',
+      'log_path',
+      'state',
+      'observed_at',
+      'terminal'
+    ]);
+  });
+
   test('collects again after an older judgment finishes', async () => {
     /** @type {() => void} */
     let finishOldRead = () => {};

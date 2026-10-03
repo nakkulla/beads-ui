@@ -5168,6 +5168,62 @@ describe('views/monitor external job lines and resume window (UI-a119)', () => {
     ).toBe('⏳ 외부 작업 · 1/2 완료');
   });
 
+  test('draws the sub-job summary on a monitor wait row and keeps the badge (UI-q15q)', () => {
+    const row = externalWait({
+      jobs: [
+        {
+          ...externalWait().jobs[0],
+          name: 'snake__20260921_090000_ab12',
+          spawned: {
+            total: 3,
+            counts: {
+              running: 1,
+              pending: 0,
+              completed: 2,
+              failed: 0,
+              unknown: 0
+            },
+            rows: [],
+            omitted: 0
+          }
+        }
+      ]
+    });
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          root_dir: '/repo',
+          queue: [{ bead_id: 'A-1' }],
+          external_waits: [row],
+          wait_reasons: [
+            externalWaitReason({
+              op: 'external_wait_check',
+              label: '[지금 확인]',
+              payload: { root_dir: '/repo', wait_id: row.wait_id }
+            })
+          ]
+        })
+      ],
+      workspaces_state: [state({ root_dir: '/repo' })]
+    });
+
+    view.load();
+
+    const card = el(mount, '.worker-mini[data-bead-id="A-1"]');
+    expect(card.querySelector('.external-job__name')?.textContent).toBe(
+      'snake'
+    );
+    expect(
+      card
+        .querySelector('.external-spawned__counts')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).toBe('하위 잡 3개 · 완료 2 · 실행 1');
+    expect(
+      card.querySelector('.wait-verdict summary')?.textContent?.trim()
+    ).toBe('⏳ 외부 작업');
+  });
+
   test('stands a live resume window bead in the monitor running lane', () => {
     const { mount, view } = setup({
       workspaces: [

@@ -54,6 +54,7 @@ import {
   SUMMARY_CHIPS,
   WAIT_KINDS,
   externalJobRows,
+  externalSpawnedSummary,
   representativeWaitReason,
   waitBadgeText,
   waitKindRow,
@@ -4120,6 +4121,7 @@ function externalWaitBadgeText(reason, record) {
  */
 function externalJobLinesTemplate(reason, record, now) {
   const { rows, more } = externalJobRows(record, now);
+  const spawned = externalSpawnedSummary(record);
   const jobs =
     rows.length > 0
       ? html`<div class="external-jobs">
@@ -4132,9 +4134,13 @@ function externalJobLinesTemplate(reason, record, now) {
               >
                 <span class="external-job__glyph" aria-hidden="true"
                   >${row.glyph}</span
-                ><span class="external-job__host">${row.host}</span>${row.id
-                  ? html`<span class="external-job__id">${row.id}</span>`
-                  : ''}${row.state
+                ><span class="external-job__host">${row.host}</span>${row.name
+                  ? html`<span class="external-job__id external-job__name"
+                      >${row.name}</span
+                    >`
+                  : row.id
+                    ? html`<span class="external-job__id">${row.id}</span>`
+                    : ''}${row.state
                   ? html`<span class="external-job__state">${row.state}</span>`
                   : ''}${row.elapsed && row.live_since !== null
                   ? timeSpan(row.live_since, 'job', now, {
@@ -4146,7 +4152,9 @@ function externalJobLinesTemplate(reason, record, now) {
                       >`
                     : ''}
               </div>`
-          )}${more ? html`<div class="external-jobs__more">${more}</div>` : ''}
+          )}${more
+            ? html`<div class="external-jobs__more">${more}</div>`
+            : ''}${spawned ? externalSpawnedTemplate(spawned) : ''}
         </div>`
       : reason.headline
         ? html`<div class="wait-reason__headline">${reason.headline}</div>`
@@ -4159,6 +4167,40 @@ function externalJobLinesTemplate(reason, record, now) {
       ? html`<div class="wait-reason__error">${reason.error}</div>`
       : ''}
   </div>`;
+}
+
+/**
+ * The sub-job summary lines of slot 3 (UI-q15q §3.5): the count line, then
+ * the names line when {@link externalSpawnedSummary} gives one.
+ *
+ * @param {import('./wait-vocabulary.js').ExternalSpawnedSummary} summary
+ * @returns {import('lit-html').TemplateResult}
+ */
+function externalSpawnedTemplate(summary) {
+  const names = summary.names;
+  // Text lives in expressions so template reflow never changes the spacing.
+  const parts = summary.parts.map(
+    (part) =>
+      html`${' · '}<span
+          class=${part.key === 'failed'
+            ? 'external-spawned__part external-spawned__part--failed'
+            : 'external-spawned__part'}
+          >${`${part.label} ${part.count}`}</span
+        >`
+  );
+  return html`<div class="external-spawned external-spawned__counts">
+      ${`하위 잡 ${summary.total}개`}${parts}
+    </div>
+    ${names
+      ? html`<div
+          class="external-spawned external-spawned__names"
+          data-tone=${names.tone}
+        >
+          <span class="external-spawned__glyph" aria-hidden="true"
+            >${names.glyph}</span
+          >${` ${names.items.join(' · ')}${names.more > 0 ? ` 외 ${names.more}` : ''}`}
+        </div>`
+      : ''}`;
 }
 
 /**

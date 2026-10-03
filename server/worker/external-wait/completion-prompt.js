@@ -1,6 +1,44 @@
+import {
+  externalJobDisplayName,
+  externalSpawnedClass,
+  externalSpawnedCountParts
+} from '../../../app/protocol.js';
+
 /**
- * @import { WaitRecord } from './store.js'
+ * @import { WaitRecord, Job } from './store.js'
  */
+
+/** Failed sub-job lines one registered job lists (UI-q15q §3.7). */
+const FAILED_SPAWNED_LINE_LIMIT = 10;
+
+/**
+ * The sub-job lines under one registered job: a count line, then one line per
+ * failed sub-job, most recently ended first. No sub-job gives no line.
+ *
+ * @param {Job} job
+ * @returns {string[]}
+ */
+function spawnedLines(job) {
+  const spawned = job.adapter === 'slurm' ? job.spawned : undefined;
+  const parts = externalSpawnedCountParts(spawned?.counts);
+  if (!spawned || parts.length === 0) {
+    return [];
+  }
+  const total = parts.reduce((sum, part) => sum + part.count, 0);
+  const failed = spawned.rows
+    .filter((row) => externalSpawnedClass(row) === 'failed')
+    .sort((a, b) =>
+      String(b.ended_at || '').localeCompare(String(a.ended_at || ''))
+    )
+    .slice(0, FAILED_SPAWNED_LINE_LIMIT);
+  return [
+    `하위 잡 ${total}개 · ${parts.map((part) => `${part.label} ${part.count}`).join(' · ')}`,
+    ...failed.map((row) => {
+      const name = externalJobDisplayName(row).name;
+      return `✕ ${row.job_id}${name ? ` ${name}` : ''} · ${row.state} · exit=${row.exit_code ?? 'unknown'}`;
+    })
+  ];
+}
 
 /**
  * Give the resumed session observations, without claiming artifact
@@ -23,7 +61,8 @@ export function externalWaitCompletionPrompt(record) {
       );
     }
     lines.push(
-      `recovery_needed=${terminal?.recovery_needed ?? true} · log=${job.log_path}`
+      `recovery_needed=${terminal?.recovery_needed ?? true} · log=${job.log_path}`,
+      ...spawnedLines(job)
     );
   }
   lines.push(
