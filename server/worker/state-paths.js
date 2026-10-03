@@ -156,6 +156,16 @@ export function modelVisibilityFilePath() {
 }
 
 /**
+ * Absolute path to the SERVER-GLOBAL timing-settings file: the user-changed
+ * wait, observation, and retry durations. Shared across workspaces.
+ *
+ * @returns {string} `$XDG_STATE_HOME/bdui/timing-settings.json`.
+ */
+export function timingSettingsFilePath() {
+  return path.join(stateHome(), 'bdui', 'timing-settings.json');
+}
+
+/**
  * Absolute account-isolated Codex HOME for one durable account key.
  *
  * @param {string} key

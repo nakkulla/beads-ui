@@ -9036,6 +9036,67 @@ button.detail-session__leg:focus-visible {
   font-weight: 600;
 }
 
+/* 전역 탭 대기·주기 묶음 (UI-ny0h §3.5): 행은 줄바꿈으로 좁은 폭을 견디고,
+   입력·버튼은 부품(`.ui-input`·`.op-btn`)이 크기를 정한다. */
+.settings-timing__group + .settings-timing__group {
+  margin-top: var(--sp-10);
+}
+
+.settings-timing__title {
+  margin-bottom: var(--sp-4);
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+  font-weight: 600;
+}
+
+.settings-timing__row + .settings-timing__row {
+  margin-top: var(--sp-6);
+}
+
+.settings-timing__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4) var(--sp-8);
+}
+
+.settings-timing__name {
+  flex: 1 1 calc(var(--sp-20) * 6);
+  min-width: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+  overflow-wrap: anywhere;
+}
+
+.settings-timing__inputs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4) var(--sp-6);
+}
+
+.settings-timing__input {
+  width: calc(var(--sp-20) * 3);
+}
+
+.settings-timing__unit,
+.settings-timing__arrow,
+.settings-timing__default {
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+}
+
+.settings-timing__error {
+  margin: var(--sp-4) 0 0;
+}
+
+.settings-timing__foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  margin-top: var(--sp-10);
+}
+
 /* 라벨 알약과 숨김 prefix 칩은 `.ui-chip`이다 — 크기는 부품이, 테두리·색은 이
    규칙이 정한다. prefix 칩 안의 `×`는 칩의 내용이라 칩 글자를 물려받는다
    (UI-k5s2). */

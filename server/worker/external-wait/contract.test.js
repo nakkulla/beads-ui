@@ -4,6 +4,7 @@ import {
   EXTERNAL_WAIT_CAUSE,
   EXTERNAL_WAIT_KEY,
   HOLD_BUDGET,
+  INTERVAL_POLICY,
   NOTES_LINE_PREFIX,
   OBSERVATION,
   RECORD_STAGES,
@@ -45,9 +46,23 @@ test('copies the external-wait contract vocabulary', () => {
   });
 });
 
+test('limits interval overrides to the two observation intervals', () => {
+  expect(INTERVAL_POLICY).toEqual({
+    values: 'defaults',
+    override_owner: 'beads_ui_worker',
+    override_source: 'server_global_timing_settings',
+    override_fields: ['slurm_interval_seconds', 'process_interval_seconds']
+  });
+  expect(INTERVAL_POLICY.override_fields).not.toContain(
+    'error_backoff_seconds'
+  );
+});
+
 test.each([
   HOLD_BUDGET,
   OBSERVATION,
+  INTERVAL_POLICY,
+  INTERVAL_POLICY.override_fields,
   OBSERVATION.error_backoff_seconds,
   ADAPTERS,
   RECORD_STAGES,

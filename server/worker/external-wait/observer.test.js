@@ -2,6 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import {
+  __resetTimingSettingsForTest,
+  __setTimingOverridesForTest
+} from '../../timing-settings.js';
 import { createExternalWaitObserver, mergeSpawned } from './observer.js';
 import { createExternalWaitStore } from './store.js';
 
@@ -50,6 +54,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  __resetTimingSettingsForTest();
 });
 
 test.each(['hold', 'detached'])(
@@ -337,6 +342,60 @@ test('uses the shortest interval among remaining adapters', async () => {
 
   expect(Date.parse(mixed?.next_observation_at || '') - time).toBe(30000);
   expect(Date.parse(slurm?.next_observation_at || '') - time).toBe(120000);
+});
+
+test('schedules the next observation at the overridden intervals', async () => {
+  __setTimingOverridesForTest({
+    external_wait_process_interval_seconds: 45,
+    external_wait_slurm_interval_seconds: 240
+  });
+  const record = insert();
+  const observer = createExternalWaitObserver({
+    store,
+    listWorkspaces: () => [workspace],
+    run: async () => ({ code: 0, stdout: 'same', stderr: '' }),
+    now: () => time
+  });
+
+  const result = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(Date.parse(result?.next_observation_at || '') - time).toBe(45000);
+});
+
+test('keeps the error backoff at the contract copy when intervals are overridden', async () => {
+  __setTimingOverridesForTest({
+    external_wait_process_interval_seconds: 45,
+    external_wait_slurm_interval_seconds: 240
+  });
+  const record = insert();
+  const observer = createExternalWaitObserver({
+    store,
+    listWorkspaces: () => [workspace],
+    run: async () => ({ code: 2, stdout: '', stderr: 'probe failed' }),
+    now: () => time
+  });
+
+  const result = await observer.observeRecord(workspace, record.wait_id);
+
+  expect(Date.parse(result?.next_observation_at || '') - time).toBe(60000);
+});
+
+test('keeps a recorded next_observation_at when the setting changes later', async () => {
+  const record = insert();
+  const observer = createExternalWaitObserver({
+    store,
+    listWorkspaces: () => [workspace],
+    run: async () => ({ code: 0, stdout: 'same', stderr: '' }),
+    now: () => time
+  });
+  const result = await observer.observeRecord(workspace, record.wait_id);
+  const recorded = result?.next_observation_at;
+
+  __setTimingOverridesForTest({ external_wait_process_interval_seconds: 900 });
+
+  expect(store.get(workspace, record.wait_id)?.next_observation_at).toBe(
+    recorded
+  );
 });
 
 test('keeps a stop made during an outstanding probe', async () => {

@@ -93,7 +93,11 @@ import {
   observedReviewReceiptState
 } from '../worker/merge-gate.js';
 import { sanitizeOutput } from '../worker/output-sanitize.js';
-import { OUTAGE_BACKOFF_MS } from '../worker/provider-health.js';
+import {
+  outageBackoffMs,
+  usageResetGraceMs,
+  usageUnknownResetMs
+} from '../worker/provider-health.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { placeBeadInQueue, placePlanInQueue } from '../worker/queue-place.js';
 import { removeBeadFromQueue } from '../worker/queue-remove.js';
@@ -2999,13 +3003,14 @@ function publicProviderHolds(value) {
         ) {
           const candidate =
             typeof target.resets_at === 'number'
-              ? target.resets_at + 60_000
+              ? target.resets_at + usageResetGraceMs()
               : raw_hold.since +
-                (Math.max(0, Number(target.rearm_count) || 0) + 1) * 900_000;
+                (Math.max(0, Number(target.rearm_count) || 0) + 1) *
+                  usageUnknownResetMs();
           next_probe_at = candidate > now ? candidate : null;
         }
       } else if (target.kind === 'outage') {
-        const candidate = raw_hold.since + OUTAGE_BACKOFF_MS[0];
+        const candidate = raw_hold.since + outageBackoffMs()[0];
         next_probe_at = candidate > now ? candidate : null;
       }
       return next_probe_at === null

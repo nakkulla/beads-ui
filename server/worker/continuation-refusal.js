@@ -9,6 +9,7 @@
  * reason — including one this table has never heard of — is `permanent`, so
  * an unknown refusal is never retried forever.
  */
+import { timingLadder } from '../timing-settings.js';
 
 /** @typedef {'transient'|'wait'|'closed'|'permanent'} RefusalClass */
 
@@ -50,8 +51,10 @@ export const TRANSIENT_ADMISSION_REASONS = Object.freeze([
 ]);
 
 /**
- * Delay before the next automatic resume after the 1st, 2nd and 3rd
- * consecutive refusal; every later refusal waits the last entry (D2).
+ * Default delay before the next automatic resume after the 1st, 2nd and 3rd
+ * consecutive refusal; every later refusal waits the last entry (D2). The ladder
+ * in effect is the timing setting `auto_resume_retry_delays_seconds` (UI-ny0h),
+ * read by {@link autoResumeRetryDelayMs}; this constant is its default.
  *
  * @type {ReadonlyArray<number>}
  */
@@ -104,9 +107,7 @@ export function isRetryableRefusal(refusal_class) {
  * @returns {number}
  */
 export function autoResumeRetryDelayMs(count) {
-  const index = Math.min(
-    Math.max(0, Math.floor(count) - 1),
-    AUTO_RESUME_RETRY_DELAYS_MS.length - 1
-  );
-  return AUTO_RESUME_RETRY_DELAYS_MS[index];
+  const ladder = timingLadder('auto_resume_retry_delays_seconds');
+  const index = Math.min(Math.max(0, Math.floor(count) - 1), ladder.length - 1);
+  return ladder[index] * 1000;
 }

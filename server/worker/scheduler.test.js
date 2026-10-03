@@ -6,6 +6,10 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createExecPresetStore } from '../exec-preset-store.js';
+import {
+  __resetTimingSettingsForTest,
+  __setTimingOverridesForTest
+} from '../timing-settings.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
@@ -26407,6 +26411,7 @@ describe('scheduler abandoned discard release', () => {
 describe('대기 진입 유예 (§3.3)', () => {
   afterEach(() => {
     vi.useRealTimers();
+    __resetTimingSettingsForTest();
   });
 
   /**
@@ -26436,6 +26441,19 @@ describe('대기 진입 유예 (§3.3)', () => {
 
     expect(env.store.snapshot(WS).admission.G1?.reason).toBe('grace_period');
     expect(env.scheduler.isRunning('G1')).toBe(false);
+  });
+
+  test('judges the grace by the timing setting at tick time', async () => {
+    const clock = { at: 1000 };
+    const env = graceEnv({ clock, config: { G7: {} } });
+    seedQueue(env.store, ['G7']);
+    await env.scheduler.tick(WS);
+    expect(env.scheduler.isRunning('G7')).toBe(false);
+
+    __setTimingOverridesForTest({ queue_grace_seconds: 0 });
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('G7')).toBe(true);
   });
 
   test('dispatches the same bead one grace later', async () => {

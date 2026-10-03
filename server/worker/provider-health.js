@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
+import { timingLadder, timingSeconds } from '../timing-settings.js';
 import {
   codexAccountAuthFile,
   prepareCodexAccountHome as defaultPrepareCodexAccountHome
@@ -18,16 +19,47 @@ import { adapterSpec, runtimeCatalog } from './runner/index.js';
 import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths.js';
 
 const PROBE_TIMEOUT_MS = 120_000;
+// Defaults of the server-global timing settings `provider_outage_backoff_seconds`,
+// `provider_usage_unknown_reset_seconds`, `provider_usage_reset_grace_seconds`
+// (UI-ny0h); the values in effect come from the accessors below.
 const OUTAGE_BACKOFF_MS = Object.freeze([
   60_000, 120_000, 240_000, 480_000, 900_000, 3_600_000
 ]);
-const USAGE_FALLBACK_MS = 900_000;
-const USAGE_RESET_GRACE_MS = 60_000;
 const log = debug('beads-ui:provider-health');
 
 /**
  * @typedef {import('./queue-store.js').ProviderTarget} ProviderTarget
  */
+
+/**
+ * The outage backoff ladder in effect right now, in ms. Read when a probe is
+ * scheduled, so a settings change reaches the next scheduling only.
+ *
+ * @returns {number[]}
+ */
+export function outageBackoffMs() {
+  return timingLadder('provider_outage_backoff_seconds').map(
+    (seconds) => seconds * 1000
+  );
+}
+
+/**
+ * Wait before re-probing a usage limit whose reset time is unknown, in ms.
+ *
+ * @returns {number}
+ */
+export function usageUnknownResetMs() {
+  return timingSeconds('provider_usage_unknown_reset_seconds') * 1000;
+}
+
+/**
+ * Wait after a usage limit's reset time before the probe, in ms.
+ *
+ * @returns {number}
+ */
+export function usageResetGraceMs() {
+  return timingSeconds('provider_usage_reset_grace_seconds') * 1000;
+}
 
 /**
  * Compose an in-memory timer key from one durable target identity.
@@ -341,7 +373,7 @@ export function createProviderHealth(deps) {
           ? now()
           : Math.max(
               now(),
-              /** @type {number} */ (reset_at) + USAGE_RESET_GRACE_MS
+              /** @type {number} */ (reset_at) + usageResetGraceMs()
             );
         if (deadline >= entry.next_probe_at) {
           continue;
@@ -571,12 +603,13 @@ export function createProviderHealth(deps) {
     if (timers.has(key) || in_flight.has(key)) {
       return;
     }
+    const backoff = outageBackoffMs();
     const default_delay =
       target.kind === 'usage_limit' && failures === 0
         ? target.resets_at === null
-          ? USAGE_FALLBACK_MS
-          : Math.max(0, target.resets_at + USAGE_RESET_GRACE_MS - now())
-        : OUTAGE_BACKOFF_MS[Math.min(failures, OUTAGE_BACKOFF_MS.length - 1)];
+          ? usageUnknownResetMs()
+          : Math.max(0, target.resets_at + usageResetGraceMs() - now())
+        : backoff[Math.min(failures, backoff.length - 1)];
     const next_probe_at =
       deadline === undefined ? now() + default_delay : deadline;
     const delay = Math.max(0, next_probe_at - now());

@@ -62,6 +62,7 @@ import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { DEFAULT_INQUIRY_TMUX_SESSION } from '../config.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
+import { timingSeconds } from '../timing-settings.js';
 import {
   WORKSPACE_ACCOUNTS_KV_KEY,
   normalizeWorkspaceAccounts
@@ -169,12 +170,23 @@ const WAITING_RESCAN_MAX_WAIT_MS = 30_000;
 export const INTERACTIVE_EXIT_GRACE_MS = 90_000;
 export const INTERACTIVE_EXIT_DEFER_MAX_MS = 1_800_000;
 /**
- * 대기 진입 유예 (2026-09-03 monitor-exec-material-queue-grace §3.3): 자동
- * dispatch는 큐 항목이 대기 레인에 앉은 지 이만큼 지나야 그 항목을 집는다.
- * 워크스페이스 실행 프로파일의 키가 아니라 고정 상수다(결정 8, ADR 0032).
+ * 대기 진입 유예의 기본값 (2026-09-03 monitor-exec-material-queue-grace §3.3):
+ * 자동 dispatch는 큐 항목이 대기 레인에 앉은 지 이만큼 지나야 그 항목을 집는다.
+ * 실제 길이는 서버 전역 타이밍 설정 `queue_grace_seconds`가 정하며(UI-ny0h)
+ * 이 상수는 그 기본값과 같다. 판정은 `queueGraceMs()`로 읽는다.
  */
 export const QUEUE_GRACE_MS = 20_000;
 export const LIVE_PREEMPT_POLL_MS = 60_000;
+
+/**
+ * The queue grace in effect right now, in ms. Read at every judgment so a
+ * settings change reaches rows already waiting.
+ *
+ * @returns {number}
+ */
+function queueGraceMs() {
+  return timingSeconds('queue_grace_seconds') * 1000;
+}
 /** @type {Set<string>} */
 const resume_in_flight = new Set();
 const AUTO_SWITCH_5H_MAX_PCT = 80;
@@ -974,7 +986,7 @@ export function requestStartNow(workspace, bead_id, at) {
     by_bead = fresh;
   }
   for (const [id, requested_at] of by_bead) {
-    if (requested_at + QUEUE_GRACE_MS < at) {
+    if (requested_at + queueGraceMs() < at) {
       by_bead.delete(id);
     }
   }
@@ -1000,7 +1012,7 @@ function startNowRequestedAt(workspace, bead_id, at) {
   if (typeof requested_at !== 'number') {
     return null;
   }
-  if (requested_at + QUEUE_GRACE_MS < at) {
+  if (requested_at + queueGraceMs() < at) {
     by_bead.delete(bead_id);
     return null;
   }
@@ -1066,7 +1078,7 @@ function graceRemainingMs(workspace, entry, at) {
     return 0;
   }
   const added_at = typeof entry.added_at === 'number' ? entry.added_at : 0;
-  return Math.max(0, added_at + QUEUE_GRACE_MS - at);
+  return Math.max(0, added_at + queueGraceMs() - at);
 }
 
 /**

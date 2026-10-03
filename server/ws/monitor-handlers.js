@@ -28,12 +28,12 @@ import {
   isImplementationAttempt
 } from '../../app/utils/active-attempts.js';
 import { entryFor } from '../bd.js';
-import { getConfig } from '../config.js';
 import { createPoller } from '../poller.js';
 import {
   SESSION_DEFAULTS_KV_KEY,
   normalizeSessionDefaults
 } from '../session-defaults.js';
+import { onTimingSettingsChanged, timingSeconds } from '../timing-settings.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
 import { refreshWorkerExternalPrs } from '../worker/attach.js';
 import { projectExecutionDefaults } from '../worker/execution-defaults.js';
@@ -1402,34 +1402,6 @@ function refillRunnableForVisible(refresh, listRoots) {
 }
 
 /**
- * The configured poll cadence, in seconds. Read lazily and memoized: `getConfig`
- * touches the filesystem, and this module is imported long before any subscriber
- * exists.
- *
- * A configured `0` disables polling, exactly as it does for the server's own
- * list poller — the setting means "do not poll", and the monitor honouring it
- * differently would make one knob mean two things.
- *
- * @type {number|null}
- */
-let poll_interval_seconds = null;
-
-/**
- * @returns {number}
- */
-function pollIntervalSeconds() {
-  if (poll_interval_seconds === null) {
-    try {
-      poll_interval_seconds = getConfig().poll_interval_seconds;
-    } catch (err) {
-      log('monitor: poll interval unreadable, falling back to 30s: %o', err);
-      poll_interval_seconds = 30;
-    }
-  }
-  return poll_interval_seconds;
-}
-
-/**
  * The periodic runnable-refresh driver (UI-qrfo §4 갱신 driver).
  *
  * TTL alone is not enough. The aggregation only pushes on a queue/snapshot
@@ -1453,17 +1425,37 @@ function pollIntervalSeconds() {
  */
 export function createRunnableRefreshDriver(options = {}) {
   const onRefreshed = options.onRefreshed || schedulePush;
-  return createPoller({
-    intervalSeconds:
-      typeof options.intervalSeconds === 'number'
-        ? options.intervalSeconds
-        : pollIntervalSeconds(),
+  const fixed_interval = typeof options.intervalSeconds === 'number';
+  const poller = createPoller({
+    intervalSeconds: fixed_interval
+      ? /** @type {number} */ (options.intervalSeconds)
+      : timingSeconds('list_poll_interval_seconds'),
     getClientCount: options.subscriberCount || runnableScanSubscriberCount,
     onTick() {
       refillRunnableForVisible(options.refresh, options.listRoots);
       onRefreshed();
     }
   });
+  /** @type {(() => void) | null} */
+  let unsubscribe = null;
+  return {
+    start() {
+      if (!fixed_interval && !unsubscribe) {
+        // The settings value re-arms the running driver at once (UI-ny0h §3.3).
+        unsubscribe = onTimingSettingsChanged((snapshot) => {
+          poller.setIntervalSeconds(
+            /** @type {number} */ (snapshot.values.list_poll_interval_seconds)
+          );
+        });
+      }
+      poller.start();
+    },
+    stop() {
+      unsubscribe?.();
+      unsubscribe = null;
+      poller.stop();
+    }
+  };
 }
 
 /**
@@ -1706,5 +1698,4 @@ export function __resetMonitorPipelineForTest() {
   session_defaults_cache.clear();
   workspace_accounts_cache.clear();
   workspace_kv_in_flight.clear();
-  poll_interval_seconds = null;
 }

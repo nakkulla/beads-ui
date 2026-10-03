@@ -4,8 +4,8 @@ import {
   SPAWNED_COMPLETED_ROW_LIMIT,
   observeSlurmJob
 } from './adapters/slurm.js';
-import { OBSERVATION } from './contract.js';
 import { completionDigest } from './decision.js';
+import { effectiveObservation } from './observation.js';
 
 /**
  * @typedef {import('./store.js').WaitRecord} WaitRecord
@@ -355,6 +355,7 @@ export function createExternalWaitObserver({
       return latest;
     }
     const timestamp = now();
+    const effective_observation = effectiveObservation();
     const observed = store.update(workspace, wait_id, (current) => {
       current.jobs = record.jobs;
       current.error_count = errors.length ? current.error_count + 1 : 0;
@@ -363,14 +364,14 @@ export function createExternalWaitObserver({
         .filter((job) => !job.terminal)
         .map((job) =>
           job.adapter === 'slurm'
-            ? OBSERVATION.slurm_interval_seconds
-            : OBSERVATION.process_interval_seconds
+            ? effective_observation.slurm_interval_seconds
+            : effective_observation.process_interval_seconds
         );
       const seconds = errors.length
-        ? OBSERVATION.error_backoff_seconds[
+        ? effective_observation.error_backoff_seconds[
             Math.min(
               current.error_count - 1,
-              OBSERVATION.error_backoff_seconds.length - 1
+              effective_observation.error_backoff_seconds.length - 1
             )
           ]
         : intervals.length

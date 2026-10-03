@@ -2,7 +2,12 @@
  * Per-Bead retry lineages. The reducer never mutates its input or reads a clock.
  * Queue-wide stops are retired; one lineage cannot stop another Bead.
  */
-import { RETRY_DELAYS_MS, RETRY_MAX } from './failure-class.js';
+import {
+  RETRY_DELAYS_MS,
+  RETRY_MAX,
+  baseMovedRetryDelayMs,
+  envRetryDelaysMs
+} from './failure-class.js';
 
 export { RETRY_DELAYS_MS, RETRY_MAX };
 
@@ -139,10 +144,11 @@ function scheduleRetry(state, event, at) {
     (prior?.base_moved_count ?? 0) + (event.cause === 'base_moved' ? 1 : 0);
   const exhausted =
     event.cause === 'base_moved' ? base_moved_count >= 3 : attempts > RETRY_MAX;
+  const ladder = envRetryDelaysMs();
   const delay =
     event.cause === 'base_moved'
-      ? RETRY_DELAYS_MS[0]
-      : RETRY_DELAYS_MS[Math.min(attempts - 1, RETRY_DELAYS_MS.length - 1)];
+      ? baseMovedRetryDelayMs()
+      : ladder[Math.min(attempts - 1, ladder.length - 1)];
   const next_at = exhausted ? null : at + delay;
   const origin_attempt_id =
     prior?.origin_attempt_id ?? event.origin_attempt_id ?? event.attempt_id;
@@ -220,7 +226,10 @@ export function reduceRetryState(state, event, now) {
                   ? null
                   : event.kind === 'retry_now'
                     ? at
-                    : at + RETRY_DELAYS_MS[0]
+                    : at +
+                      (lineage.cause === 'base_moved'
+                        ? baseMovedRetryDelayMs()
+                        : envRetryDelaysMs()[0])
             }
           : lineage
       )

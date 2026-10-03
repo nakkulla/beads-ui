@@ -32,6 +32,7 @@
 import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
+import { onTimingSettingsChanged, timingSeconds } from '../timing-settings.js';
 import { discardOperationActive } from './discard-phase.js';
 import { failureTokenSummary } from './failure-class.js';
 import { createAncestryProbe, reviewReceiptState } from './merge-gate.js';
@@ -831,11 +832,13 @@ export function createPrPoller(deps) {
     }
   }
 
+  const fixed_interval = typeof deps.intervalSeconds === 'number';
+  /** @type {(() => void) | null} */
+  let off_timing_changed = null;
   const poller = createPoller({
-    intervalSeconds:
-      typeof deps.intervalSeconds === 'number'
-        ? deps.intervalSeconds
-        : DEFAULT_PR_POLL_INTERVAL_SECONDS,
+    intervalSeconds: fixed_interval
+      ? /** @type {number} */ (deps.intervalSeconds)
+      : timingSeconds('pr_poll_interval_seconds'),
     // The interval carries the SAME demand rule as `tick` — the shared poller
     // gates on this count before it ever calls onTick, so gating only inside
     // `tick` would leave the timer half-armed (UI-yk55 §4.4).
@@ -857,6 +860,14 @@ export function createPrPoller(deps) {
      */
     start() {
       poller.start();
+      if (!fixed_interval && !off_timing_changed) {
+        // A settings change re-arms the running interval at once (UI-ny0h §3.3).
+        off_timing_changed = onTimingSettingsChanged((snapshot) => {
+          poller.setIntervalSeconds(
+            /** @type {number} */ (snapshot.values.pr_poll_interval_seconds)
+          );
+        });
+      }
       if (off_queue_changed) {
         return;
       }
@@ -887,6 +898,10 @@ export function createPrPoller(deps) {
 
     stop() {
       poller.stop();
+      if (off_timing_changed) {
+        off_timing_changed();
+        off_timing_changed = null;
+      }
       if (off_queue_changed) {
         off_queue_changed();
         off_queue_changed = null;

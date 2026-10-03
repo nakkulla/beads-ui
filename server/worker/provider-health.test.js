@@ -4,6 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import {
+  __resetTimingSettingsForTest,
+  __setTimingOverridesForTest
+} from '../timing-settings.js';
 import { createAccountCatalog } from './account-catalog.js';
 import { createBeadTimeline } from './bead-timeline.js';
 import { OUTAGE_BACKOFF_MS, createProviderHealth } from './provider-health.js';
@@ -21,6 +25,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetTimingSettingsForTest();
   delete process.env.XDG_STATE_HOME;
   fs.rmSync(tmp_state, { recursive: true, force: true });
 });
@@ -1106,6 +1111,58 @@ describe('provider health probe', () => {
     expect(timers.next()?.delay).toBe(3_660_000);
     expect(spawnImpl).not.toHaveBeenCalled();
     expect(env.notify.providerAutoResumeDisarmed).not.toHaveBeenCalled();
+  });
+
+  test('arms an outage target at the first rung of the backoff setting', async () => {
+    __setTimingOverridesForTest({
+      provider_outage_backoff_seconds: [180, 300, 600, 900, 1800, 7200]
+    });
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ is_error: false, result: 'ok' }, 0)
+    );
+    seedHold(store, 'outage', null);
+
+    await env.health.start(WS);
+
+    expect(timers.next()?.delay).toBe(180_000);
+  });
+
+  test('arms an unknown-reset usage target at the unknown-reset setting', async () => {
+    __setTimingOverridesForTest({ provider_usage_unknown_reset_seconds: 1800 });
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ is_error: false, result: 'ok' }, 0)
+    );
+    seedHold(store, 'usage_limit', 'held@example.com', { resets_at: null });
+
+    await env.health.start(WS);
+
+    expect(timers.next()?.delay).toBe(1_800_000);
+  });
+
+  test('arms a usage target at reset plus the grace setting', async () => {
+    __setTimingOverridesForTest({ provider_usage_reset_grace_seconds: 120 });
+    const store = createQueueStore({ now: () => NOW });
+    const timers = makeTimers();
+    const env = setup(
+      store,
+      timers,
+      makeSpawn({ is_error: false, result: 'ok' }, 0)
+    );
+    seedHold(store, 'usage_limit', 'held@example.com', {
+      resets_at: NOW + 3_600_000
+    });
+
+    await env.health.start(WS);
+
+    expect(timers.next()?.delay).toBe(3_720_000);
   });
 
   test('schedules a repeatedly rearmed target during a standalone sync', async () => {

@@ -83,6 +83,12 @@ import {
   handleUnsubscribeList
 } from './subscription-handlers.js';
 import {
+  detachTimingSettings,
+  handleSubscribeTimingSettings,
+  handleTimingSettingsSet,
+  handleUnsubscribeTimingSettings
+} from './timing-settings-handlers.js';
+import {
   detachWorkerQueue,
   handleGetAttemptPrompt,
   handleGetBeadPrompt,
@@ -305,6 +311,7 @@ export function attachWsServer(http_server, options = {}) {
         detachDisplayPolicy(ws);
         detachImplPresets(ws);
         detachModelVisibility(ws);
+        detachTimingSettings(ws);
       } catch {
         // ignore cleanup errors
       }
@@ -546,6 +553,15 @@ export async function handleMessage(ws, data) {
       return;
     case 'model-visibility-set':
       handleModelVisibilitySet(ws, req);
+      return;
+    case 'subscribe-timing-settings':
+      handleSubscribeTimingSettings(ws, req);
+      return;
+    case 'unsubscribe-timing-settings':
+      handleUnsubscribeTimingSettings(ws, req);
+      return;
+    case 'timing-settings-set':
+      handleTimingSettingsSet(ws, req);
       return;
     case 'impl-preset-create':
       handleImplPresetCreate(ws, req);

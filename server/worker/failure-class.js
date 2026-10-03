@@ -20,6 +20,7 @@
 // direction `completion-intent.js` already takes: the map is pure data shared
 // by both runtimes, so reading it here keeps this module pure.
 import { FAILURE_SENTENCES } from '../../app/utils/failure-sentences.js';
+import { timingLadder, timingSeconds } from '../timing-settings.js';
 import { EXTERNAL_WAIT_CAUSE } from './external-wait/contract.js';
 
 /**
@@ -65,13 +66,37 @@ import { EXTERNAL_WAIT_CAUSE } from './external-wait/contract.js';
  */
 
 /**
- * Backoff ladder for `env` retries. Owned here because it is part of the
- * classification output contract (spec §3); `queue-hold.js` re-exports it so a
- * scheduler reads one ladder.
+ * Default backoff ladder for `env` retries. Owned here because it is part of
+ * the classification output contract (spec §3); `queue-hold.js` re-exports it.
+ * The ladder in effect is the server-global timing setting
+ * `env_retry_delays_seconds` (UI-ny0h), read through {@link envRetryDelaysMs};
+ * this constant equals that setting's default.
  *
  * @type {ReadonlyArray<number>}
  */
 export const RETRY_DELAYS_MS = Object.freeze([120000, 300000, 900000]);
+
+/**
+ * The env retry ladder in effect right now, in ms. Read when a delay is
+ * computed so a settings change reaches the next scheduling only.
+ *
+ * @returns {ReadonlyArray<number>}
+ */
+export function envRetryDelaysMs() {
+  return Object.freeze(
+    timingLadder('env_retry_delays_seconds').map((seconds) => seconds * 1000)
+  );
+}
+
+/**
+ * The `base_moved` resume delay in effect right now, in ms. It is its own
+ * setting and never borrows the env ladder's first rung.
+ *
+ * @returns {number}
+ */
+export function baseMovedRetryDelayMs() {
+  return timingSeconds('base_moved_retry_seconds') * 1000;
+}
 
 /** Retry rungs available to a single env lineage. */
 export const RETRY_MAX = 3;
@@ -393,7 +418,7 @@ function classification(tier, cause, summary, env_group) {
   return {
     tier,
     retry:
-      tier === 'env' ? { max: RETRY_MAX, delays_ms: RETRY_DELAYS_MS } : null,
+      tier === 'env' ? { max: RETRY_MAX, delays_ms: envRetryDelaysMs() } : null,
     cause,
     summary: summary ?? failureTokenSummary(cause),
     env_group

@@ -6,6 +6,7 @@ import {
 } from '../../utils/relative-time.js';
 import { chipPopoverTemplate } from '../chip-popover.js';
 import { providerHoldBadgeText } from './gate-labels.js';
+import { bindQueueGraceSource } from './lane-model.js';
 import {
   JUDGEMENT_CHIP_KEYS,
   blockedSummary,
@@ -7324,6 +7325,7 @@ describe('대기 진입 유예 (UI-q1tg §3.3)', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    bindQueueGraceSource(null);
   });
 
   /**
@@ -7364,6 +7366,37 @@ describe('대기 진입 유예 (UI-q1tg §3.3)', () => {
     expect(
       row.querySelector('.worker-deps--primary .worker-dep--grace')?.textContent
     ).toContain('⏳ 15초');
+  });
+
+  test('counts down the grace the timing settings name', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    bindQueueGraceSource(() => 60);
+
+    const row = renderWaitingRow({ added_at: NOW - 5_000 });
+
+    expect(
+      row.querySelector('.worker-deps--primary .worker-dep--grace')?.textContent
+    ).toContain('⏳ 55초');
+  });
+
+  test('falls back to twenty seconds when no timing value is bound', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    bindQueueGraceSource(() => null);
+
+    const row = renderWaitingRow({ added_at: NOW - 5_000 });
+
+    expect(
+      row.querySelector('.worker-deps--primary .worker-dep--grace')?.textContent
+    ).toContain('⏳ 15초');
+  });
+
+  test('draws no grace for a zero-second setting', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    bindQueueGraceSource(() => 0);
+
+    const row = renderWaitingRow({ added_at: NOW - 1_000 });
+
+    expect(row.querySelector('.worker-dep--grace')).toBeNull();
   });
 
   test('draws the start-now button in the slot 1 조작 group', () => {

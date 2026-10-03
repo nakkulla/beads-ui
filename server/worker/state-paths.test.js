@@ -22,6 +22,7 @@ import {
   recordMigrationMarkerPath,
   retentionPolicyPath,
   sessionLogPath,
+  timingSettingsFilePath,
   usageReceiptInboxDir,
   workspaceSlug,
   workspaceStateDir
@@ -135,6 +136,14 @@ describe('modelVisibilityFilePath', () => {
   test('derives one server-global file under the bdui state root', () => {
     expect(modelVisibilityFilePath()).toBe(
       path.join('/state', 'bdui', 'model-visibility.json')
+    );
+  });
+});
+
+describe('timingSettingsFilePath', () => {
+  test('derives one server-global file under the bdui state root', () => {
+    expect(timingSettingsFilePath()).toBe(
+      path.join('/state', 'bdui', 'timing-settings.json')
     );
   });
 });

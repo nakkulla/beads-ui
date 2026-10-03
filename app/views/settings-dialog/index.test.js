@@ -93,7 +93,7 @@ const EXECUTION_DEFAULTS = {
 };
 
 /**
- * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, monitorPipeline?: Array<Record<string, any>>, onOpenRepoOps?: (root_dir: string) => void, modelVisibility?: any }} [options]
+ * @param {{ values?: Record<string, string>, warnings?: string[], transport?: any, queue?: any, presets?: any, monitorRows?: Array<Record<string, any>>, monitorPipeline?: Array<Record<string, any>>, onOpenRepoOps?: (root_dir: string) => void, modelVisibility?: any, timingSettings?: any }} [options]
  */
 function mount(options = {}) {
   const root = document.createElement('div');
@@ -138,6 +138,10 @@ function mount(options = {}) {
     },
     modelVisibilityStore: {
       get: () => options.modelVisibility ?? null,
+      set: () => {}
+    },
+    timingSettingsStore: {
+      get: () => options.timingSettings ?? null,
       set: () => {}
     },
     labelOptions: () => ['worker-serial'],
@@ -604,6 +608,47 @@ describe('createSettingsDialog global tab (UI-ooc0 §5)', () => {
       root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
     ).map((title) => title.textContent?.trim());
     expect(titles).toEqual(['판정 칩 프리셋', '활성 모델']);
+    dialog.destroy();
+  });
+
+  test('draws the 대기·주기 group third in the 전역 tab', async () => {
+    const { root, dialog } = mount({
+      modelVisibility: MODEL_VISIBILITY,
+      timingSettings: {
+        revision: 1,
+        values: { queue_grace_seconds: 20 },
+        overrides: {},
+        fields: {
+          queue_grace_seconds: {
+            default: 20,
+            min: 0,
+            max: 600,
+            unit: 'seconds'
+          }
+        }
+      }
+    });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    await openGlobalTab(root);
+
+    const titles = Array.from(
+      root.querySelectorAll('[data-pane="bulk"] .settings-dialog__group-title')
+    ).map((title) => title.textContent?.trim());
+    expect(titles).toEqual(['판정 칩 프리셋', '활성 모델', '대기·주기']);
+    expect(root.querySelectorAll('[role="tab"]')).toHaveLength(5);
+    dialog.destroy();
+  });
+
+  test('draws no 대기·주기 group before a timing snapshot arrives', async () => {
+    const { root, dialog } = mount({ modelVisibility: MODEL_VISIBILITY });
+    dialog.open(undefined, { scope: 'monitor' });
+    await settle();
+
+    await openGlobalTab(root);
+
+    expect(root.querySelector('[data-group="timing"]')).toBeNull();
     dialog.destroy();
   });
 

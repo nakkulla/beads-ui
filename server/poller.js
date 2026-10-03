@@ -12,33 +12,61 @@
  * `intervalSeconds` (0 or negative) disables polling entirely — no timer is
  * armed.
  *
+ * `setIntervalSeconds` changes the cadence of a running poller at once: the
+ * old timer is dropped and a new one armed (or none, for a non-positive value),
+ * so a later positive value restarts a poller that was switched off. Before
+ * `start()` or after `stop()` it only records the value.
+ *
  * @param {{ intervalSeconds: number, getClientCount: () => number, onTick: () => void }} options
- * @returns {{ start: () => void, stop: () => void }}
+ * @returns {{ start: () => void, stop: () => void, setIntervalSeconds: (seconds: number) => void }}
  */
 export function createPoller({ intervalSeconds, getClientCount, onTick }) {
   /** @type {ReturnType<typeof setInterval> | null} */
   let timer = null;
+  let started = false;
+  let interval_seconds = intervalSeconds;
 
-  function start() {
+  function arm() {
     // Non-positive interval → polling off; never arm a timer. Guard re-entry so
     // a double start() does not stack intervals.
-    if (!(intervalSeconds > 0) || timer) {
+    if (!(interval_seconds > 0) || timer) {
       return;
     }
     timer = setInterval(() => {
       if (getClientCount() > 0) {
         onTick();
       }
-    }, intervalSeconds * 1000);
+    }, interval_seconds * 1000);
     timer.unref?.();
   }
 
-  function stop() {
+  function disarm() {
     if (timer) {
       clearInterval(timer);
       timer = null;
     }
   }
 
-  return { start, stop };
+  function start() {
+    started = true;
+    arm();
+  }
+
+  function stop() {
+    started = false;
+    disarm();
+  }
+
+  /**
+   * @param {number} seconds
+   */
+  function setIntervalSeconds(seconds) {
+    interval_seconds = seconds;
+    if (started) {
+      disarm();
+      arm();
+    }
+  }
+
+  return { start, stop, setIntervalSeconds };
 }

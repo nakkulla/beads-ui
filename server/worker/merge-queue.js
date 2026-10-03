@@ -39,6 +39,7 @@
  *
  * @import { MergeClickResult } from './pr-actions.js'
  */
+import { timingSeconds } from '../timing-settings.js';
 import { failureTokenSummary } from './failure-class.js';
 import { cleanupRetryParked } from './resolution-ladder.js';
 
@@ -82,6 +83,37 @@ export const UNCONFIRMED_POLL_MS = 60 * 1000;
 
 /** @type {number} */
 export const UNCONFIRMED_WAIT_MS = 30 * 60 * 1000;
+
+/**
+ * The resolution wait in effect right now, in ms: the server-global timing
+ * setting `merge_resolution_wait_seconds` (UI-ny0h). {@link RESOLUTION_WAIT_MS}
+ * is its default.
+ *
+ * @returns {number}
+ */
+export function resolutionWaitSettingMs() {
+  return timingSeconds('merge_resolution_wait_seconds') * 1000;
+}
+
+/**
+ * The unconfirmed-merge re-observation interval in effect right now, in ms
+ * (`merge_unconfirmed_poll_seconds`; {@link UNCONFIRMED_POLL_MS} is its default).
+ *
+ * @returns {number}
+ */
+export function unconfirmedPollSettingMs() {
+  return timingSeconds('merge_unconfirmed_poll_seconds') * 1000;
+}
+
+/**
+ * The unconfirmed-merge wait cap in effect right now, in ms
+ * (`merge_unconfirmed_wait_seconds`; {@link UNCONFIRMED_WAIT_MS} is its default).
+ *
+ * @returns {number}
+ */
+export function unconfirmedWaitSettingMs() {
+  return timingSeconds('merge_unconfirmed_wait_seconds') * 1000;
+}
 
 /**
  * Backstop wake interval while waiting on a resolution session. The primary
@@ -204,9 +236,15 @@ export function createMergeQueue(deps) {
   const headSha = deps.headSha || (() => null);
   const round_cap = deps.resolution_round_cap ?? RESOLUTION_ROUND_CAP;
   const rebase_cap = deps.rebase_round_cap ?? RESOLUTION_REBASE_CAP;
-  const resolution_wait_ms = deps.resolution_wait_ms ?? RESOLUTION_WAIT_MS;
-  const unconfirmed_poll_ms = deps.unconfirmed_poll_ms ?? UNCONFIRMED_POLL_MS;
-  const unconfirmed_wait_ms = deps.unconfirmed_wait_ms ?? UNCONFIRMED_WAIT_MS;
+  // The three waits are read when a timer or deadline is armed, so a timing
+  // settings change reaches the next arming (UI-ny0h §3.3); `deps` overrides
+  // pin a value for tests.
+  const resolutionWaitMs = () =>
+    deps.resolution_wait_ms ?? resolutionWaitSettingMs();
+  const unconfirmedPollMs = () =>
+    deps.unconfirmed_poll_ms ?? unconfirmedPollSettingMs();
+  const unconfirmedWaitMs = () =>
+    deps.unconfirmed_wait_ms ?? unconfirmedWaitSettingMs();
 
   let started = false;
   let stopped = false;
@@ -1162,7 +1200,7 @@ export function createMergeQueue(deps) {
         bead_id: queue_bead_id,
         subject_bead_id,
         attempt_id,
-        wait_ms: resolution_wait_ms,
+        wait_ms: resolutionWaitMs(),
         ...identity
       }).ok;
     } catch (err) {
@@ -1546,7 +1584,7 @@ export function createMergeQueue(deps) {
       if (left <= 0) {
         return 'merge_unconfirmed_timeout';
       }
-      await sleepOrWake(Math.min(unconfirmed_poll_ms, left));
+      await sleepOrWake(Math.min(unconfirmedPollMs(), left));
       if (stopped) {
         return 'stopped';
       }
@@ -1836,7 +1874,7 @@ export function createMergeQueue(deps) {
         },
         {
           queue_bead_id,
-          wait_ms: resolution_wait_ms,
+          wait_ms: resolutionWaitMs(),
           manual_authority: manualContinuation(queue_bead_id),
           ...identity
         },
@@ -2011,7 +2049,7 @@ export function createMergeQueue(deps) {
       }
       if (action === 'merge_unconfirmed') {
         if (unconfirmed_deadline === null) {
-          unconfirmed_deadline = now() + unconfirmed_wait_ms;
+          unconfirmed_deadline = now() + unconfirmedWaitMs();
         }
         const verdict = await watchUnconfirmed(
           root_bead_id,
@@ -2272,7 +2310,7 @@ export function createMergeQueue(deps) {
 
       if (action === 'merge_unconfirmed') {
         if (unconfirmed_deadline === null) {
-          unconfirmed_deadline = now() + unconfirmed_wait_ms;
+          unconfirmed_deadline = now() + unconfirmedWaitMs();
         }
         const verdict = await watchUnconfirmed(
           bead_id,

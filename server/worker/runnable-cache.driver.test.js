@@ -81,6 +81,8 @@ vi.mock('./runtime.js', () => ({
   })
 }));
 
+const { __resetTimingSettingsForTest, __setTimingOverridesForTest } =
+  await import('../timing-settings.js');
 const {
   __resetMonitorPipelineForTest,
   createRunnableRefreshDriver,
@@ -134,11 +136,13 @@ beforeEach(() => {
   runnable_refreshes = [];
   poll_interval_seconds = 30;
   queue_revision = 1;
+  __resetTimingSettingsForTest();
   __resetMonitorPipelineForTest();
 });
 
 afterEach(() => {
   __resetMonitorPipelineForTest();
+  __resetTimingSettingsForTest();
   vi.useRealTimers();
 });
 
@@ -301,5 +305,28 @@ describe('monitor runnable refresh driver gating (UI-qrfo §4)', () => {
 
     expect(refreshed).toEqual([WS_B]);
     driver.stop();
+  });
+
+  test('re-arms at once when the list poll setting changes', () => {
+    const ws = fakeWs();
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+    runnable_refreshes = [];
+    vi.advanceTimersByTime(20_000);
+
+    __setTimingOverridesForTest({ list_poll_interval_seconds: 5 });
+    vi.advanceTimersByTime(5_000);
+
+    expect(runnable_refreshes).toEqual([WS_A, WS_B]);
+  });
+
+  test('stops refilling when the list poll setting turns off', () => {
+    const ws = fakeWs();
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+    runnable_refreshes = [];
+
+    __setTimingOverridesForTest({ list_poll_interval_seconds: 0 });
+    vi.advanceTimersByTime(120_000);
+
+    expect(runnable_refreshes).toEqual([]);
   });
 });

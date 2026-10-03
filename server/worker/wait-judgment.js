@@ -4,7 +4,7 @@ import {
 } from '../../app/utils/active-attempts.js';
 import { RECOVERY_WAIT_SENTENCES } from '../../app/utils/failure-sentences.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
-import { OBSERVATION } from './external-wait/contract.js';
+import { effectiveObservation } from './external-wait/observation.js';
 import { isSessionStalledRecovery } from './session-stall.js';
 
 /** All display/notification thresholds live here (UI-n99w §5.2). */
@@ -497,24 +497,25 @@ export function judgeWaitReasons(input) {
       next_check_at: row.completion ? undefined : row.next_observation_at,
       completed_at: row.completion?.completed_at
     });
+    const effective_observation = effectiveObservation();
     const intervals = jobs
       .filter((job) => !job.terminal)
       .map((job) =>
         job.adapter === 'slurm'
-          ? OBSERVATION.slurm_interval_seconds
-          : OBSERVATION.process_interval_seconds
+          ? effective_observation.slurm_interval_seconds
+          : effective_observation.process_interval_seconds
       );
     const interval =
       row.error_count > 0
-        ? OBSERVATION.error_backoff_seconds[
+        ? effective_observation.error_backoff_seconds[
             Math.min(
               row.error_count - 1,
-              OBSERVATION.error_backoff_seconds.length - 1
+              effective_observation.error_backoff_seconds.length - 1
             )
           ]
         : intervals.length
           ? Math.min(...intervals)
-          : OBSERVATION.slurm_interval_seconds;
+          : effective_observation.slurm_interval_seconds;
     if (
       ['hold', 'detached'].includes(row.stage) &&
       now >

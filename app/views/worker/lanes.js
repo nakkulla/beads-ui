@@ -46,7 +46,7 @@ import {
   providerHoldBadgeText,
   providerReadyAt
 } from './gate-labels.js';
-import { QUEUE_GRACE_MS, routeChipValue } from './lane-model.js';
+import { queueGraceMs, routeChipValue } from './lane-model.js';
 import { logPathTemplate } from './log-path.js';
 import { placementTitle } from './placement.js';
 import { planDefaultLane } from './plan-place.js';
@@ -2150,7 +2150,7 @@ function doneThreeLineRow(item) {
  * @returns {number}
  */
 export function graceRemainingMs(added_at, now) {
-  return typeof added_at === 'number' ? added_at + QUEUE_GRACE_MS - now : 0;
+  return typeof added_at === 'number' ? added_at + queueGraceMs() - now : 0;
 }
 
 /**
